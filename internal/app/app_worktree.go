@@ -731,8 +731,11 @@ func pathWithin(path, root string) bool {
 // So the session is stopped, never restarted; the next send starts it from
 // the row's new workspace. A running turn ends interrupted, as it does when
 // any session is stopped, and the thread's background tasks show as died.
-// Messages queued behind the turn go back to the composer, as they do when a
-// session dies, rather than being dropped by a stop nobody asked for.
+// The stop hands the messages queued behind the turn back to the composer,
+// as a session death does, rather than dropping them: nobody asked for it
+// (teardownAndCloseSessionRestoringQueue). It empties the queue under the
+// lock every queue write takes, so a message queued before the stop goes
+// to the composer with the rest and one queued after it stays queued.
 //
 // Detaching first is what lets the caller move the row before the process
 // exits, which can take seconds: a detached session's late events cannot
@@ -746,23 +749,13 @@ func (a *App) detachSessionForRemovedWorkspace(threadID string) func() error {
 	if !a.hasActiveSession(threadID) {
 		return nil
 	}
-	requeued := a.restoreUnconfirmedQueueLocked(threadID)
 	sess, _ := a.sessionManager().take(threadID)
 	a.drainProviderEvents(threadID, "detach session from removed worktree")
 	return func() error {
-		var err error
 		if a.stopSessionFn != nil {
-			err = a.stopSessionFn(threadID)
-		} else {
-			err = a.teardownAndCloseSession(threadID, sess)
+			return a.stopSessionFn(threadID)
 		}
-		if len(requeued) > 0 {
-			// The stop wiped the queue these re-entered; register them again
-			// so the next start's flush still finds them.
-			a.requeueUnconfirmedFlushItems(threadID, requeued)
-			a.emitQueueStateChanged(threadID)
-		}
-		return err
+		return a.teardownAndCloseSessionRestoringQueue(threadID, sess)
 	}
 }
 

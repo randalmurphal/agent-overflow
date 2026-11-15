@@ -35,9 +35,24 @@ func (s *Store) InsertFlushQueueItem(item FlushQueueItem) error {
 	return insertFlushQueueItem(s.db, item)
 }
 
+// EnsureFlushQueueItem persists a queued message that the app is putting
+// back on the queue, unless its row is still there. A message taken back from
+// a session it had already reached lost its row at that write; the requeue
+// gives it one again before the in-memory register, as InsertFlushQueueItem
+// does for a new message.
+func (s *Store) EnsureFlushQueueItem(item FlushQueueItem) error {
+	return writeFlushQueueItem(s.db, item, ` ON CONFLICT(id) DO NOTHING`)
+}
+
 func insertFlushQueueItem(db interface {
 	Exec(string, ...any) (sql.Result, error)
 }, item FlushQueueItem) error {
+	return writeFlushQueueItem(db, item, "")
+}
+
+func writeFlushQueueItem(db interface {
+	Exec(string, ...any) (sql.Result, error)
+}, item FlushQueueItem, conflict string) error {
 	if strings.TrimSpace(item.ID) == "" {
 		return fmt.Errorf("store: insert flush queue item: id is required")
 	}
@@ -50,7 +65,7 @@ func insertFlushQueueItem(db interface {
 	}
 	if _, err := db.Exec(
 		`INSERT INTO flush_queue_items (id, thread_id, send_id, message, payload, enqueued_at)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?)`+conflict,
 		item.ID, item.ThreadID, item.SendID, item.Message, payload, item.EnqueuedAt,
 	); err != nil {
 		return fmt.Errorf("store: insert flush queue item %s: %w", item.ID, err)

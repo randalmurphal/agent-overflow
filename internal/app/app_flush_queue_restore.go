@@ -600,6 +600,14 @@ func unconfirmedFlushRestoreScore(item triage.UnconfirmedFlushItem) int {
 	return score
 }
 
+// requeueUnconfirmedFlushItems puts messages a restore could not return to
+// the composer back on the queue, durable first like any queued message. One
+// that had reached the provider lost its durable row at that write, so it
+// gets the row again, and a settlement that retires it when the requeued
+// message is dispatched or restored. One whose earlier row is still in the
+// store (StaleUserItemID) keeps that row as its durable copy instead: the
+// boot restore takes an unconfirmed row back with its text, so a queue row
+// as well would put the message in the composer twice.
 func (a *App) requeueUnconfirmedFlushItems(threadID string, items []triage.UnconfirmedFlushItem) {
 	if a.triage == nil {
 		return
@@ -608,6 +616,26 @@ func (a *App) requeueUnconfirmedFlushItems(threadID string, items []triage.Uncon
 		queued, ok := queuedFlushItemFromUnconfirmed(item, nil)
 		if !ok {
 			continue
+		}
+		if queued.StaleUserItemID == "" {
+			var payload flushQueuePayload
+			if len(queued.Payload) > 0 {
+				if err := json.Unmarshal(queued.Payload, &payload); err != nil {
+					log.Printf("flush queue: decode requeued payload %s/%s for its send id: %v", threadID, queued.ID, err)
+				}
+			}
+			if err := a.store.EnsureFlushQueueItem(store.FlushQueueItem{
+				ID:         queued.ID,
+				ThreadID:   threadID,
+				SendID:     payload.SendID,
+				Message:    queued.Message,
+				Payload:    queued.Payload,
+				EnqueuedAt: queued.EnqueuedAt,
+			}); err != nil {
+				log.Printf("flush queue: persist requeued message %s/%s: %v", threadID, queued.ID, err)
+				a.emitErrorToThread(threadID, "Saving a queued message failed. It stays queued but will not survive an app restart: "+err.Error())
+			}
+			queued.Settlement = triage.CombineFlushSettlements(queued.Settlement, a.flushQueueSettlement(threadID, queued.ID, nil))
 		}
 		a.triage.RegisterQueueItem(threadID, queued)
 	}

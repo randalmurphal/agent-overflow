@@ -2040,9 +2040,15 @@ func TestSessionDeathDraftFailureRequeuesWithoutSettling(t *testing.T) {
 	if len(requeued) != 1 || requeued[0].Settlement != settlement {
 		t.Fatalf("requeued recovery = %+v, want the original pending settlement", requeued)
 	}
+	// The live requeue carries the original settlement, joined with the
+	// retirement of the durable row the requeue gives it.
 	queued := app.triage.QueuedFlushItems(thread.ID)
-	if len(queued) != 1 || queued[0].Settlement != settlement {
-		t.Fatalf("live requeue = %+v, want the original pending settlement", queued)
+	if len(queued) != 1 {
+		t.Fatalf("live requeue = %+v, want the message queued once", queued)
+	}
+	queued[0].Settlement.Settle()
+	if settled != 1 {
+		t.Fatalf("settling the live requeue ran the original settlement %d times, want 1", settled)
 	}
 }
 
