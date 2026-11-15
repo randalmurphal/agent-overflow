@@ -2,7 +2,7 @@ import { unpackText } from './packedText';
 import { PatchChunks, type PatchTextLost, type PatchTextSource } from './patchChunks';
 
 // Compact storage for the review pane's patches. A patch of any size
-// arrives in chunks (`ReadReviewDiff`) and is held as those chunk
+// arrives in chunks (`reviewDiffStream.ts`) and is held as those chunk
 // strings (`patchChunks.ts`) plus typed-array indexes: one Uint32 line
 // start per line, and one kind byte per line. Nothing allocates per line.
 // Rows, line objects and line strings are materialized only for the rows
