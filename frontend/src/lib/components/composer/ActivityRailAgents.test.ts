@@ -275,9 +275,11 @@ describe('the Agents segment', () => {
     expect(view.queryByTestId('activity-rail-agents-past')).toBeNull();
   });
 
-  it('shows for a thread whose agents are all past, and collapses Past when the body closes', async () => {
+  it('shows for a thread whose agents are all past, with no count, and collapses Past when the body closes', async () => {
     const { view, toggle } = await openTray(() => [], (caller) => [row('p0', { callerThreadId: caller, state: 'finished', settledAt: Date.now() })]);
-    expect(view.getByTestId('activity-rail-agents-count').textContent?.trim()).toBe('0');
+    // Nothing is open: the chip names the segment and counts nothing.
+    expect(view.queryByTestId('activity-rail-agents-count')).toBeNull();
+    expect(toggle.getAttribute('aria-label')).toBe('Agents');
     await fireEvent.click(toggle);
     expect(view.getByTestId('activity-rail-agents-running-label').textContent?.trim()).toBe('idle');
     expect(view.queryByTestId('activity-rail-agents-stop-all')).toBeNull();

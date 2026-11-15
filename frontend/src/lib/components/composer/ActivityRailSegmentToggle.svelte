@@ -1,6 +1,7 @@
 <script lang="ts">
   // An activity rail segment's toggle: icon, name, count and a pulse while
-  // a row runs. The Background segment uses it in the composer's rail and
+  // a row runs. A count of nothing open is left out: the Agents segment
+  // shows with none open while it has Past rows or a failed read. The Background segment uses it in the composer's rail and
   // an agent pane's rail, the Agents segment in the composer's; each host
   // owns the open state and the body.
   import type { Component } from 'svelte';
@@ -40,7 +41,7 @@
   onclick={onToggle}
   aria-controls={controls}
   aria-expanded={open}
-  aria-label={`${name} ${count}`}
+  aria-label={count > 0 ? `${name} ${count}` : name}
   title={name}
   data-testid="{testIdPrefix}-{segment}-toggle"
 >
@@ -51,10 +52,12 @@
     class="shrink-0 text-fg-hint/70"
   />
   <span data-activity-rail-name>{name}</span>
-  <span
-    class="rounded-[var(--radius-field)] bg-accent/15 px-1 text-[0.625rem] font-medium text-accent"
-    data-testid="{testIdPrefix}-{segment}-count"
-  >{count}</span>
+  {#if count > 0}
+    <span
+      class="rounded-[var(--radius-field)] bg-accent/15 px-1 text-[0.625rem] font-medium text-accent"
+      data-testid="{testIdPrefix}-{segment}-count"
+    >{count}</span>
+  {/if}
   {#if running}
     <span
       class="h-1.5 w-1.5 rounded-full bg-accent animate-pulse"
