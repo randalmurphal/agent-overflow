@@ -693,8 +693,10 @@ Ruling 36, as built:
   closes the panes showing the thread.
 - Archiving a thread, through `ArchiveThread` or `thread_update`, then
   archives each unarchived owned thread whose newest local spawn names
-  it as caller (`ListOwnedWorkerIDs`), through the same archive, so the
-  cascade runs down the lineage. The workers are read under the
+  it as caller, at any depth through workers already archived
+  (`ListOwnedWorkersToArchive`), through the same archive, so the
+  cascade runs down the lineage and an already archived worker's own
+  archive is not repeated. The workers are read under the
   owner's action lock once its archive committed and its session
   stopped, and each worker's flip holds only while the owner is still
   archived and still owns it (`ArchiveOwnedWorker`), so a cleanup that
@@ -703,7 +705,8 @@ Ruling 36, as built:
   worker that cannot be archived is named beside it
   (`ArchiveThreadResult.WorkersNotArchived`, `workers_not_archived`),
   the others are still archived, and archiving the worker or the
-  owner again retries it without repeating the owner's own cleanup.
+  owner again retries it, however deep, without repeating any archived
+  thread's own cleanup.
   The sidebar's archive says so in a toast that archives them again.
 
 ### Sidebar

@@ -489,10 +489,11 @@ func TestCatalogLeavesOwnedThreadsOut(t *testing.T) {
 	}
 }
 
-// ListOwnedWorkerIDs names the unarchived owned threads whose newest local
+// ListOwnedWorkersToArchive names the unarchived owned threads whose newest local
 // spawn names the owner: not a standalone or archived worker, not one a
-// later spawn row gave another owner, not a worker's own worker.
-func TestListOwnedWorkerIDs(t *testing.T) {
+// later spawn row gave another owner, not a worker's own worker unless that
+// worker is archived.
+func TestListOwnedWorkersToArchive(t *testing.T) {
 	s := newTestStore(t)
 	for _, id := range []string{"owner", "other", "owned", "deep", "placed", "archived", "moved"} {
 		mustCreateThread(t, s, id)
@@ -509,14 +510,36 @@ func TestListOwnedWorkerIDs(t *testing.T) {
 	if _, _, err := s.ArchiveThread("archived"); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := s.ListOwnedWorkerIDs("owner"); err != nil || !slices.Equal(got, []string{"owned"}) {
-		t.Errorf("owner's workers = %v, %v; want [owned]", got, err)
+	list := func(owner string) []OwnedWorker {
+		t.Helper()
+		got, err := s.ListOwnedWorkersToArchive(owner)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
 	}
-	if got, err := s.ListOwnedWorkerIDs("owned"); err != nil || !slices.Equal(got, []string{"deep"}) {
-		t.Errorf("a worker's workers = %v, %v; want [deep]", got, err)
+	if got := list("owner"); !slices.Equal(got, []OwnedWorker{{"owned", "owner"}}) {
+		t.Errorf("owner's workers = %v; want [owned], stopping there", got)
 	}
-	if got, err := s.ListOwnedWorkerIDs("other"); err != nil || !slices.Equal(got, []string{"moved"}) {
-		t.Errorf("the later spawner's workers = %v, %v; want [moved]", got, err)
+	if got := list("owned"); !slices.Equal(got, []OwnedWorker{{"deep", "owned"}}) {
+		t.Errorf("a worker's workers = %v; want [deep]", got)
+	}
+	if got := list("other"); !slices.Equal(got, []OwnedWorker{{"moved", "other"}}) {
+		t.Errorf("the later spawner's workers = %v; want [moved]", got)
+	}
+	// Through an archived worker the read goes on to the unarchived ones
+	// beneath it, each fenced by its own owner; not beneath one moved away.
+	if _, _, err := s.ArchiveThread("owned"); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"under-archived", "under-placed", "under-under"} {
+		mustCreateThread(t, s, id)
+	}
+	spawnLocal(t, s, "tok-under-archived", "archived", "under-archived", true)
+	spawnLocal(t, s, "tok-under-placed", "placed", "under-placed", true)
+	spawnLocal(t, s, "tok-under-under", "under-archived", "under-under", true)
+	if got := list("owner"); !slices.Equal(got, []OwnedWorker{{"deep", "owned"}, {"under-archived", "archived"}}) {
+		t.Errorf("owner's workers through archived ones = %v; want deep and under-archived, not beneath the placed one or the unarchived one", got)
 	}
 }
 

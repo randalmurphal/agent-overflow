@@ -431,39 +431,75 @@ func TestAWorkerThatCannotBeArchivedIsReported(t *testing.T) {
 			return ids
 		},
 	}
-	for name, archive := range doors {
-		t.Run(name, func(t *testing.T) {
-			t.Parallel()
-			f := newOrganizeFixture(t)
-			owner := f.thread(t, "owner")
-			stuck := f.thread(t, "stuck", func(row *store.Thread) { row.ForkPreparing = true })
-			sibling := f.thread(t, "sibling")
-			recordSpawn(t, f.app, "tok-stuck", owner.ID, stuck.ID)
-			recordSpawn(t, f.app, "tok-sibling", owner.ID, sibling.ID)
-			if got := archive(t, f.app, owner.ID); !slices.Equal(got, []string{stuck.ID}) {
-				t.Fatalf("workers not archived = %v, want [%s]", got, stuck.ID)
-			}
-			for id, want := range map[string]bool{owner.ID: true, sibling.ID: true, stuck.ID: false} {
-				if got := f.reload(t, id).Archived; got != want {
-					t.Errorf("%s archived = %v, want %v", id, got, want)
+	// The stuck worker is the owner's own, or beneath a worker the first
+	// archive did archive, so the retry has to pass through that worker
+	// without replaying its archive. Beside it there, a worker that refused
+	// too and was moved to the sidebar before the retry is no longer the
+	// owner's to archive.
+	for _, depth := range []string{"direct", "beneath an archived worker"} {
+		for name, archive := range doors {
+			t.Run(depth+"/"+name, func(t *testing.T) {
+				t.Parallel()
+				f := newOrganizeFixture(t)
+				owner := f.thread(t, "owner")
+				stuckOwner := owner.ID
+				var middle, moved store.Thread
+				if depth != "direct" {
+					middle = f.thread(t, "middle")
+					recordSpawn(t, f.app, "tok-middle", owner.ID, middle.ID)
+					stuckOwner = middle.ID
+					moved = f.thread(t, "moved", func(row *store.Thread) { row.ForkPreparing = true })
+					recordSpawn(t, f.app, "tok-moved", middle.ID, moved.ID)
 				}
-			}
+				stuck := f.thread(t, "stuck", func(row *store.Thread) { row.ForkPreparing = true })
+				sibling := f.thread(t, "sibling")
+				recordSpawn(t, f.app, "tok-stuck", stuckOwner, stuck.ID)
+				recordSpawn(t, f.app, "tok-sibling", owner.ID, sibling.ID)
+				want := []string{stuck.ID}
+				if moved.ID != "" {
+					want = []string{moved.ID, stuck.ID}
+				}
+				got := archive(t, f.app, owner.ID)
+				slices.Sort(got)
+				if !slices.Equal(got, want) {
+					t.Fatalf("workers not archived = %v, want %v", got, want)
+				}
+				for id, want := range map[string]bool{owner.ID: true, sibling.ID: true, stuck.ID: false} {
+					if got := f.reload(t, id).Archived; got != want {
+						t.Errorf("%s archived = %v, want %v", id, got, want)
+					}
+				}
+				if middle.ID != "" && !f.reload(t, middle.ID).Archived {
+					t.Errorf("the middle worker was left unarchived")
+				}
 
-			if _, err := f.app.store.FinishForkPreparation(stuck.ID); err != nil {
-				t.Fatal(err)
-			}
-			f.events.reset()
-			if got := archive(t, f.app, owner.ID); len(got) != 0 {
-				t.Fatalf("workers not archived on the retry = %v, want none", got)
-			}
-			if !f.reload(t, stuck.ID).Archived {
-				t.Fatal("the retry left the worker unarchived")
-			}
-			frames := f.threadFrames(t)
-			if len(frames) != 1 || frames[0].Thread.ID != stuck.ID || frames[0].Action != triage.ThreadActionUnlisted {
-				t.Errorf("frames on the retry = %+v, want only the worker's unlisted frame", frames)
-			}
-		})
+				if _, err := f.app.store.FinishForkPreparation(stuck.ID); err != nil {
+					t.Fatal(err)
+				}
+				if moved.ID != "" {
+					if _, err := f.app.store.FinishForkPreparation(moved.ID); err != nil {
+						t.Fatal(err)
+					}
+					if _, err := f.app.SetThreadPlacement([]string{moved.ID}, store.PlacementStandalone); err != nil {
+						t.Fatal(err)
+					}
+				}
+				f.events.reset()
+				if got := archive(t, f.app, owner.ID); len(got) != 0 {
+					t.Fatalf("workers not archived on the retry = %v, want none", got)
+				}
+				if !f.reload(t, stuck.ID).Archived {
+					t.Fatal("the retry left the worker unarchived")
+				}
+				if moved.ID != "" && f.reload(t, moved.ID).Archived {
+					t.Error("the retry archived a worker moved to the sidebar")
+				}
+				frames := f.threadFrames(t)
+				if len(frames) != 1 || frames[0].Thread.ID != stuck.ID || frames[0].Action != triage.ThreadActionUnlisted {
+					t.Errorf("frames on the retry = %+v, want only the worker's unlisted frame", frames)
+				}
+			})
+		}
 	}
 }
 

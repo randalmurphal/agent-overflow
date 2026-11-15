@@ -123,11 +123,12 @@ type archivedThreadWork struct {
 	commands []store.RemoteWatch
 	// queued are the send ids of the messages in the thread's queue.
 	queued []string
-	// workers are the unarchived threads it owned once its archive stood
-	// and its session was stopped (readArchivedWorkers). A repeated archive
-	// reads them too, so a worker an earlier one could not archive is tried
-	// again.
-	workers []string
+	// workers are the unarchived threads it owned, at any depth through
+	// archived workers, once its archive stood and its session was stopped
+	// (readArchivedWorkers), each with the owner that fences its flip. A
+	// repeated archive reads them too, so a worker an earlier one could not
+	// archive is tried again however deep it is.
+	workers []store.OwnedWorker
 	err     error
 }
 
@@ -210,12 +211,12 @@ func (a *App) stopArchivedThreadWork(work archivedThreadWork) error {
 func (a *App) finishArchive(work archivedThreadWork) archiveOutcome {
 	outcome := archiveOutcome{cleanup: a.stopArchivedThreadWork(work)}
 	for _, worker := range work.workers {
-		child, err := a.archiveThreadLocked(worker, work.threadID)
+		child, err := a.archiveThreadLocked(worker.ThreadID, worker.OwnerID)
 		switch {
 		case errors.Is(err, sql.ErrNoRows), errors.Is(err, store.ErrThreadGone):
 			// Deleted since: there is nothing left to archive.
 		case err != nil:
-			outcome.workers = append(outcome.workers, workerArchiveFailure{threadID: worker, err: err})
+			outcome.workers = append(outcome.workers, workerArchiveFailure{threadID: worker.ThreadID, err: err})
 		case child.archived:
 			outcome.add(a.finishArchive(child))
 		}
@@ -254,12 +255,14 @@ func (a *App) archiveThreadLocked(id, ownerID string) (archivedThreadWork, error
 	return work, nil
 }
 
-// readArchivedWorkers names the workers an archive goes on to archive. Its
-// caller holds the thread's action lock, which unarchive takes, after the
-// archive committed and the session stopped, so a thread the owner spawns
-// once reopened is never among them.
+// readArchivedWorkers names the workers an archive goes on to archive: the
+// unarchived ones the thread owns, at any depth through workers already
+// archived, whose own archives are not replayed. Its caller holds the
+// thread's action lock, which unarchive takes, after the archive committed
+// and the session stopped, so a thread the owner spawns once reopened is
+// never among them.
 func (a *App) readArchivedWorkers(work *archivedThreadWork) {
-	workers, err := a.store.ListOwnedWorkerIDs(work.threadID)
+	workers, err := a.store.ListOwnedWorkersToArchive(work.threadID)
 	if err != nil {
 		work.err = errors.Join(work.err, fmt.Errorf("archive the workers of %s: %w", work.threadID, err))
 		return
