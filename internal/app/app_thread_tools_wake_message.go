@@ -195,13 +195,18 @@ func (a *App) deliverThreadWakeMessage(message threadWakeMessage) bool {
 	wake := a.threadWakeFor(message)
 	origin, originThread := a.threadWakeAttribution(carrier, wake)
 	body := wake.String()
+	// The thread the notice is queued on, which a handoff since the read
+	// above makes the assistant's current thread: the unarchive decides for
+	// the thread the message lands in.
+	recipient := thread.ID
 	if err := a.queueAgentNotice(agentNotice{
 		threadID:     thread.ID,
 		sendID:       threadWakeSendIDFor(carrier.Token, message.late),
 		origin:       origin,
 		originThread: originThread,
+		recipient:    func(threadID string) { recipient = threadID },
 		prepare: func() (string, bool, error) {
-			return body, true, a.unarchiveForThreadWake(thread.ID, carrier, message.late)
+			return body, true, a.unarchiveForThreadWake(recipient, carrier, message.late)
 		},
 		// One transaction writes the durable queue row and every delivery
 		// mark, so a second observation of the same settlement cannot queue
@@ -232,7 +237,10 @@ func (a *App) deliverThreadWakeMessage(message threadWakeMessage) bool {
 // the caller's action lock, which an archive holds while it flips the row
 // and disarms the thread's wakes, so a wake that was on its way when the
 // thread was archived finds its request disarmed and is not delivered, and
-// only one re-armed since (a later wait or thread_status) unarchives.
+// only one re-armed since (a later wait or thread_status) unarchives. A
+// handoff archives a thread under the same lock in the transaction that
+// moves its requests to the successor, so a request whose caller is no
+// longer threadID is refused here and rebuilt for the thread it moved to.
 func (a *App) unarchiveForThreadWake(threadID string, carrier store.ThreadRequest, late bool) error {
 	thread, err := a.store.GetThread(threadID)
 	if err != nil {
@@ -257,7 +265,7 @@ func (a *App) unarchiveForThreadWake(threadID string, carrier store.ThreadReques
 	if err != nil {
 		return fmt.Errorf("read request %s: %w", carrier.Token, err)
 	}
-	if !found || !row.Notify || !row.WakeOwed(late) {
+	if !found || !row.Notify || !row.WakeOwed(late) || row.CallerThreadID != threadID {
 		return fmt.Errorf("request %s: %w", carrier.Token, store.ErrThreadWakeNotOwed)
 	}
 	if _, err := a.unarchiveThreadLocked(thread.ID); err != nil {
