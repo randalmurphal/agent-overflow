@@ -824,6 +824,15 @@ export class GitStatus {
      */
     "pendingOperation"?: string;
 
+    /**
+     * Seq orders the statuses handed to clients for one workspace: the
+     * gitwatch.Manager position taken before this status's reads began, so
+     * a higher Seq never comes from a read that started earlier. Zero is
+     * unsequenced. It says when the status was read, not what it says, so
+     * Equal ignores it.
+     */
+    "seq"?: number;
+
     /** Creates a new GitStatus instance. */
     constructor($$source: Partial<GitStatus> = {}) {
         if (!("isRepo" in $$source)) {

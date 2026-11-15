@@ -31,21 +31,18 @@ export interface EvictableText {
 interface Entry {
   store: EvictableText;
   chunk: number;
-  /** Not read since it arrived; listed in `unread`. */
-  unread: boolean;
 }
 
 let heldBytes = 0;
 let pinnedBytes = 0;
 let budgetForTest: number | null = null;
-// Every evictable resident chunk.
-const entries = new Map<string, Entry>();
+// Every evictable resident chunk is in exactly one of these two lists and
+// leaves it the moment it stops being evictable: an entry keeps its store,
+// and so all of that store's text, alive.
+// Chunks not read since they arrived, in arrival order.
+const unread = new Map<string, Entry>();
 // Chunks read since they arrived, least recently read first.
 const read = new Map<string, Entry>();
-// Chunks not read since they arrived, in arrival order. Entries that were
-// read or withdrawn since stay until the list is compacted.
-let unread: Entry[] = [];
-let staleUnread = 0;
 
 // Bumped when evicted text is read again. Readers that met evicted text
 // read this, so they run again once the text is back.
@@ -65,19 +62,12 @@ function key(store: EvictableText, chunk: number): string {
   return `${store.id}:${chunk}`;
 }
 
-function leaveUnread(entry: Entry): void {
-  entry.unread = false;
-  staleUnread += 1;
-  if (staleUnread > 64 && staleUnread * 2 > unread.length) {
-    unread = unread.filter((candidate) => candidate.unread);
-    staleUnread = 0;
-  }
-}
-
-function drop(id: string, entry: Entry): void {
-  entries.delete(id);
-  if (entry.unread) leaveUnread(entry);
-  else read.delete(id);
+/** Takes a chunk off whichever list holds it. */
+function drop(id: string): Entry | undefined {
+  const entry = unread.get(id) ?? read.get(id);
+  unread.delete(id);
+  read.delete(id);
+  return entry;
 }
 
 export const patchMemory = {
@@ -91,7 +81,8 @@ export const patchMemory = {
     heldBytes -= bytes;
   },
 
-  /** Changes the bytes of pinned text, which the budget leaves out. */
+  /** Changes the bytes of text both held and pinned, which the budget
+   * leaves out. */
   pin(delta: number): void {
     pinnedBytes += delta;
   },
@@ -100,49 +91,39 @@ export const patchMemory = {
    * arrived, else as the most recently read. */
   offer(store: EvictableText, chunk: number, arrived: boolean): void {
     const id = key(store, chunk);
-    const existing = entries.get(id);
-    if (existing) drop(id, existing);
-    const entry: Entry = { store, chunk, unread: arrived };
-    entries.set(id, entry);
-    if (arrived) unread.push(entry);
-    else read.set(id, entry);
+    drop(id);
+    (arrived ? unread : read).set(id, { store, chunk });
   },
 
   /** Marks an evictable chunk as just read. */
   touch(store: EvictableText, chunk: number): void {
     const id = key(store, chunk);
-    const entry = entries.get(id);
-    if (!entry) return;
-    if (entry.unread) leaveUnread(entry);
-    else read.delete(id);
-    read.set(id, entry);
+    const entry = drop(id);
+    if (entry) read.set(id, entry);
   },
 
   /** Makes a chunk no longer evictable. */
   withdraw(store: EvictableText, chunk: number): void {
-    const id = key(store, chunk);
-    const entry = entries.get(id);
-    if (entry) drop(id, entry);
+    drop(key(store, chunk));
   },
 
   /** Evicts chunks until the held text fits. */
   enforce(): void {
     const limit = budget() + pinnedBytes;
     if (heldBytes <= limit) return;
-    const evict = (id: string, entry: Entry): void => {
-      drop(id, entry);
-      heldBytes -= entry.store.evict(entry.chunk);
-    };
-    // Evicting can compact `unread`; the entries' flags stay current.
-    const arrived = unread;
+    // Unread text goes latest first; a Map only walks forward.
+    const arrived = [...unread];
     for (let index = arrived.length - 1; index >= 0 && heldBytes > limit; index -= 1) {
-      const entry = arrived[index];
-      if (!entry.unread || entry.store.pinned(entry.chunk)) continue;
-      evict(key(entry.store, entry.chunk), entry);
+      const [id, entry] = arrived[index];
+      if (entry.store.pinned(entry.chunk)) continue;
+      unread.delete(id);
+      heldBytes -= entry.store.evict(entry.chunk);
     }
     for (const [id, entry] of read) {
       if (heldBytes <= limit) break;
-      if (!entry.store.pinned(entry.chunk)) evict(id, entry);
+      if (entry.store.pinned(entry.chunk)) continue;
+      read.delete(id);
+      heldBytes -= entry.store.evict(entry.chunk);
     }
   },
 
@@ -152,9 +133,16 @@ export const patchMemory = {
   },
 };
 
-/** Held text in bytes, for tests and measurement. */
+/** Held text in bytes: what tests read to see the budget kept. */
 export function patchTextHeldBytes(): number {
   return heldBytes;
+}
+
+/** Chunks the budget can still reach: what tests read to see a store let
+ * go, since each one keeps its store, and so all of that store's text,
+ * alive. */
+export function patchTextEvictableChunks(): number {
+  return unread.size + read.size;
 }
 
 export function setPatchTextBudgetForTest(bytes: number | null): void {

@@ -4,7 +4,7 @@ import type { SuggestionApply } from '../../../bindings/agent-overflow/internal/
 import { threadWhere } from './reviewCommentWrites.svelte';
 import type { ForgeOps } from './reviewForgeOps.svelte';
 import { prReferenceWire } from '../utils/prReference';
-import type { ReviewFile } from '../utils/patchStore';
+import type { ReviewFile } from '../utils/patchParser';
 import { newSideLineIndexes } from '../utils/suggestionLines';
 import type { CommentSuggestion, ReviewComment, ReviewThread } from '../types/models';
 

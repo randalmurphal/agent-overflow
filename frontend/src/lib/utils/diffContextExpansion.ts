@@ -3,6 +3,8 @@ import {
   hunkHeaderSuffix,
   type DiffGap,
 } from './patchFiles';
+import { PatchBody, type BodySegment, whenResident } from './patchBody';
+import type { ReviewFile } from './patchParser';
 import {
   LINE_ADD,
   LINE_CONTEXT,
@@ -10,12 +12,8 @@ import {
   LINE_HUNK,
   LINE_MARKER,
   ownText,
-  PatchBody,
   PatchStore,
-  type BodySegment,
-  type ReviewFile,
   type StoredLine,
-  whenResident,
 } from './patchStore';
 
 // Hunk-gap context expansion: merges fetched new-side source lines
@@ -204,7 +202,7 @@ function applyContextExpansionUncached(file: ReviewFile, state: ContextExpansion
     const header = added.length;
     added.push({
       content: formatHunkHeader(hunk.oldStart, hunk.oldCount + extra, hunk.newStart, hunk.newCount + extra, hunk.suffix),
-      kind: LINE_HUNK,
+      kind: { oldStart: hunk.oldStart, newStart: hunk.newStart },
     });
     const before = added.length;
     for (const text of hunk.before) added.push({ content: ` ${text}`, kind: LINE_CONTEXT });

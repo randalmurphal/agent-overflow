@@ -653,6 +653,7 @@ export const ListCommitFiles = dispatch('ListCommitFiles');
 export const OpenBranchBaseDiff = dispatch('OpenBranchBaseDiff');
 export const OpenCommitDiff = dispatch('OpenCommitDiff');
 export const ReadReviewDiff = dispatch('ReadReviewDiff');
+export const ReadReviewDiffPacked = dispatch('ReadReviewDiffPacked');
 export const ReleaseReviewDiff = dispatch('ReleaseReviewDiff');
 export const ListBranchCommits = dispatch('ListBranchCommits');
 export const ListRecentCommits = dispatch('ListRecentCommits');
@@ -922,6 +923,11 @@ export const GetServiceUpdateStatus = dispatch('GetServiceUpdateStatus');
 export const ListServiceReleases = dispatch('ListServiceReleases');
 export const RequestServiceUpdate = dispatch('RequestServiceUpdate');
 export const CancelServiceUpdate = dispatch('CancelServiceUpdate');
+
+export const GetProviderUpdates = dispatch('GetProviderUpdates');
+export const CheckProviderUpdates = dispatch('CheckProviderUpdates');
+export const GetProviderUpdateNotes = dispatch('GetProviderUpdateNotes');
+export const RunProviderUpdate = dispatch('RunProviderUpdate');
 
 export const GetNativeNetworkConfig = dispatch('GetNativeNetworkConfig');
 

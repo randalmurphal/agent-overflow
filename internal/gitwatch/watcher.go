@@ -95,11 +95,15 @@ func (s *Subscription) Close() {
 }
 
 // workspaceWatcher serializes git status checks and subscriber fan-out
-// for one cwd. Run loop is the sole writer to lastStatus and to
-// subscribers' Updates() channels.
+// for one cwd. lastStatus is the published status: start sets the
+// initial one before the run loop begins, and after that it and
+// subscribers' Updates() channels are written only by publishLocked.
 type workspaceWatcher struct {
 	cwd      string
 	statusFn StatusFn
+	// seq is the Manager's: every status this watcher reads to publish
+	// takes its position there before the read begins.
+	seq *sequence
 
 	// fastStatusFn backs the liveness probe: same shape as statusFn but
 	// guaranteed network-free (cache-only PR lookup), so probing an idle
@@ -158,13 +162,23 @@ type workspaceWatcher struct {
 	// suppressed counts the outstanding Manager.Suppress holds. While it is
 	// non-zero no status is computed or broadcast; it dies with the watcher.
 	suppressed int
+	// offeredChange is set when an offer published a non-PR change and
+	// cleared by the run loop's next requested refresh, which counts it as
+	// a change that refresh observed.
+	offeredChange bool
+	// unpublishedAnswerSeq is the highest Seq of an offer answered during a
+	// hold, a status some client holds that was never published; zero when
+	// none. Until a broadcast passes it, publishLocked broadcasts equal
+	// content too.
+	unpublishedAnswerSeq uint64
 }
 
-func newWorkspaceWatcher(cwd string, statusFn, fastStatusFn StatusFn, initial gitops.GitStatus, watchRoots []gitops.WatchRoot, rootsFn func() ([]gitops.WatchRoot, error)) *workspaceWatcher {
+func newWorkspaceWatcher(cwd string, statusFn, fastStatusFn StatusFn, watchRoots []gitops.WatchRoot, rootsFn func() ([]gitops.WatchRoot, error), seq *sequence) *workspaceWatcher {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &workspaceWatcher{
 		cwd:              cwd,
 		statusFn:         statusFn,
+		seq:              seq,
 		fastStatusFn:     fastStatusFn,
 		livenessInterval: watchLivenessInterval,
 		livenessQuiet:    livenessQuietAfterEvent,
@@ -174,25 +188,28 @@ func newWorkspaceWatcher(cwd string, statusFn, fastStatusFn StatusFn, initial gi
 		eventsCh:         make(chan notify.EventInfo, notifyChannelSize),
 		refreshCh:        make(chan struct{}, 1),
 		done:             make(chan struct{}),
-		lastStatus:       initial,
 		watchRoots:       append([]gitops.WatchRoot(nil), watchRoots...),
 		rootsFn:          rootsFn,
 		stopFn:           func(ch chan<- notify.EventInfo) { notify.Stop(ch) },
 		// The initial roots were computed before notify was installed;
 		// a directory created inside that window is invisible to both.
-		// Starting flagged makes the first refresh edge revalidate —
-		// equality-gated, so the common case is one cheap recompute and
-		// no reinstall.
+		// Starting flagged makes the run loop revalidate before its
+		// first wait: equality-gated, so the common case is one cheap
+		// recompute and no reinstall.
 		needsRebuild: true,
 	}
 }
 
-// start installs the fs watcher and spawns the run loop. Falls back
-// transparently to polling on installation failure (the most common
-// cause is the user's inotify watch limit being exhausted on Linux).
-// The fallback uses the same Updates() channel, so callers see a
-// uniform interface.
-func (w *workspaceWatcher) start(installFn func(roots []gitops.WatchRoot, ch chan<- notify.EventInfo) error) {
+// install installs the fs watches. Falls back transparently to polling
+// on installation failure (the most common cause is the user's inotify
+// watch limit being exhausted on Linux). The fallback uses the same
+// Updates() channel, so callers see a uniform interface.
+//
+// The caller reads the watcher's initial status after install returns
+// and passes it to start: a change made after that read raises an event
+// the installed watches queue for the run loop. A status read before
+// install would leave a change between the two unreported.
+func (w *workspaceWatcher) install(installFn func(roots []gitops.WatchRoot, ch chan<- notify.EventInfo) error) {
 	if installFn == nil {
 		installFn = installNotifyWatcher
 	}
@@ -202,7 +219,20 @@ func (w *workspaceWatcher) start(installFn func(roots []gitops.WatchRoot, ch cha
 			w.cwd, w.watchRoots, err, w.pollInterval)
 		w.fallbackPolling = true
 	}
+}
+
+// start spawns the run loop of an installed watcher whose subscribers
+// hold `initial`, the status read after install, which becomes the
+// published status.
+func (w *workspaceWatcher) start(initial gitops.GitStatus) {
+	w.lastStatus = initial
 	go w.run()
+}
+
+// discard releases an installed watcher that was never started.
+func (w *workspaceWatcher) discard() {
+	w.cancel()
+	w.stopFn(w.eventsCh)
 }
 
 // currentWatchRoots returns the live roots slice. Callers must treat it
@@ -313,13 +343,15 @@ func (w *workspaceWatcher) run() {
 	// leaves the watcher blind, so it escalates to polling; a later
 	// reinstall that succeeds proves the watches are live again, so the
 	// now-redundant ticker stops.
-	applyRebuild := func() {
-		switch w.maybeRebuildWatches() {
+	applyRebuild := func() rebuildOutcome {
+		outcome := w.maybeRebuildWatches()
+		switch outcome {
 		case rebuildLostWatches:
 			startPolling()
 		case rebuildReinstalled:
 			stopPolling()
 		}
+		return outcome
 	}
 	// retry re-runs a refresh whose status fetch failed. Without it a
 	// transient failure leaves subscribers on a stale status until the
@@ -384,17 +416,31 @@ func (w *workspaceWatcher) run() {
 		applyRebuild()
 		refresh()
 	}
+	// rebuildThenRefresh is for a rebuild no refresh follows on its own:
+	// a change made while the watches were out raised no event, so a
+	// rebuild that took them out is followed by a refresh.
+	rebuildThenRefresh := func() {
+		if applyRebuild() != rebuildNone {
+			refresh()
+		}
+	}
 
-	// lastEventAt is when the fs event stream last proved itself alive.
-	// The liveness probe and the requestRefresh miss-detection both key
-	// off it: an event inside the quiet window means an observed status
-	// change is (or soon will be) explained by the debounced refresh,
-	// not evidence of dead watchpoints. Zero value = never, so a
-	// watcher that has yet to see a single event is eligible to probe.
+	// lastEventAt is when the loop last handled an fs event, the stream
+	// proving itself alive. The liveness probe and the requestRefresh
+	// miss-detection both key off it, read before their status read
+	// begins: an event inside the quiet window before then, or one still
+	// queued in eventsCh when the read ends, means an observed status
+	// change is (or soon will be) explained by the debounced refresh, not
+	// evidence of dead watchpoints. Zero value = never, so a watcher that
+	// has yet to see a single event is eligible to probe.
 	var lastEventAt time.Time
 
 	liveness := time.NewTicker(w.livenessInterval)
 	defer liveness.Stop()
+
+	// The roots installed at start are revalidated now that events flow
+	// (needsRebuild starts set).
+	rebuildThenRefresh()
 
 	for {
 		select {
@@ -454,24 +500,34 @@ func (w *workspaceWatcher) run() {
 			// A refresh nothing on the fs side asked for (subscriber
 			// attach, post-action refresh). If it observes real working-
 			// tree changes while the event stream has been quiet, the
-			// watches missed them — reinstall. PR-field-only changes are
-			// excluded: the attach hook exists precisely to warm the PR
-			// cache, and a remote PR appearing says nothing about local
-			// watchpoints.
-			if refresh() && time.Since(lastEventAt) >= w.livenessQuiet {
+			// watches missed them — reinstall. Quiet means no event was
+			// handled within livenessQuiet before the refresh began, which
+			// can outlast that window in its forge lookup, and none is
+			// queued when it ends. A change an offer already published
+			// (Manager.Publish, which requested this refresh) was observed
+			// for it. PR-field-only changes are excluded: the attach hook
+			// exists precisely to warm the PR cache, and a remote PR
+			// appearing says nothing about local watchpoints.
+			quiet := time.Since(lastEventAt) >= w.livenessQuiet
+			observed := refresh()
+			if w.takeOfferedChange() {
+				observed = true
+			}
+			if observed && quiet && len(w.eventsCh) == 0 {
 				log.Printf("gitwatch: refresh observed changes the fs watches never reported for %s; reinstalling watches", w.cwd)
 				w.needsRebuild, w.forceReinstall = true, true
-				applyRebuild()
+				rebuildThenRefresh()
 			}
 		case <-liveness.C:
 			// Silent-death safety net. Skip while fallback polling owns
 			// refreshes, and skip when any fs event arrived within the
 			// interval — a live stream needs no probe, so this costs
-			// nothing during active use.
+			// nothing during active use. An event queued while the probe
+			// ran explains the drift it found.
 			if pollTicker != nil || time.Since(lastEventAt) < w.livenessInterval {
 				continue
 			}
-			if w.probeLiveness() {
+			if w.probeLiveness() && len(w.eventsCh) == 0 {
 				log.Printf("gitwatch: liveness probe found changes the fs watches never reported for %s; reinstalling watches", w.cwd)
 				w.needsRebuild, w.forceReinstall = true, true
 				refreshEdge()
@@ -491,46 +547,103 @@ func (w *workspaceWatcher) requestRefresh() {
 	}
 }
 
-// refresh re-reads git status, dedups against lastStatus, and broadcasts
-// to subscribers. A status fetch error is logged and returned for the run
-// loop to retry; lastStatus stays as-is so we don't mistake a transient
-// error for a real change. Reports whether the observed status differed
-// from lastStatus on any non-PR field — the run loop's miss-detection signal (PR fields change
-// through cache warming, not the filesystem, so they prove nothing
-// about watchpoint health). prRecheckAt is the fetched status's
-// OpenPRRecheckAt, whether or not it was broadcast; zero when suppressed.
+// refresh re-reads git status and publishes it (publishLocked). A status
+// fetch error is logged and returned for the run loop to retry; the
+// published status stays as-is so we don't mistake a transient error for
+// a real change. Reports whether publishing changed the published status
+// on any non-PR field — the run loop's miss-detection signal (PR fields
+// change through cache warming, not the filesystem, so they prove
+// nothing about watchpoint health). prRecheckAt is the fetched status's
+// OpenPRRecheckAt, whether or not it was published; zero when suppressed.
+func (w *workspaceWatcher) refresh() (nonPRChanged bool, prRecheckAt time.Time, err error) {
+	if w.isSuppressed() {
+		return false, time.Time{}, nil
+	}
+	seq := w.seq.next()
+	status, err := w.statusFn(w.ctx, w.cwd)
+	if err != nil {
+		log.Printf("gitwatch: status fetch for %s: %v", w.cwd, err)
+		return false, time.Time{}, err
+	}
+	status.Seq = seq
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	nonPRChanged, held := w.publishLocked(status)
+	if held {
+		return false, time.Time{}, nil
+	}
+	return nonPRChanged, status.OpenPRRecheckAt, nil
+}
+
+// offer publishes status, read outside the run loop, and requests a
+// refresh. It returns the published status after the offer, or status
+// itself while a hold keeps it from being published.
+func (w *workspaceWatcher) offer(status gitops.GitStatus) gitops.GitStatus {
+	w.mu.Lock()
+	nonPRChanged, held := w.publishLocked(status)
+	if nonPRChanged {
+		w.offeredChange = true
+	}
+	answer := w.lastStatus
+	if held {
+		answer = status
+		w.unpublishedAnswerSeq = max(w.unpublishedAnswerSeq, status.Seq)
+	}
+	w.mu.Unlock()
+	w.requestRefresh()
+	return answer
+}
+
+// takeOfferedChange reports and clears offeredChange. While a hold is
+// taken it reports nothing and leaves it for the refresh the last resume
+// requests: the workspace may be going, and its watches with it.
+func (w *workspaceWatcher) takeOfferedChange() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.suppressed > 0 {
+		return false
+	}
+	changed := w.offeredChange
+	w.offeredChange = false
+	return changed
+}
+
+// publishLocked makes status, whose reads began at status.Seq, the
+// published status (lastStatus) and broadcasts it, with three exceptions.
+// While a Suppress hold is taken nothing is published (held). A status
+// whose Seq is not above the published one's is not published: a read
+// that began later already was. A status equal in content (Equal) to the
+// published one takes its place without a broadcast, so the published
+// status carries the newer Seq, unless an answer handed out during a hold
+// (unpublishedAnswerSeq) may differ from what subscribers hold: then it is
+// broadcast, and one above that answer's Seq clears it. Reports whether
+// the published status changed on any non-PR field. w.mu must be held.
 //
 // The broadcast runs UNDER w.mu so a concurrent removeSubscriber can't
 // close(s.updates) on a sub we're about to send to — sending on a
 // closed channel panics even from a non-blocking select. The sends are
 // themselves non-blocking (buffer size 1, supersede-on-overflow), so
 // the lock is held for microseconds bounded by len(subscribers).
-func (w *workspaceWatcher) refresh() (nonPRChanged bool, prRecheckAt time.Time, err error) {
-	if w.isSuppressed() {
-		return false, time.Time{}, nil
-	}
-	status, err := w.statusFn(w.ctx, w.cwd)
-	if err != nil {
-		log.Printf("gitwatch: status fetch for %s: %v", w.cwd, err)
-		return false, time.Time{}, err
-	}
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	// Rechecked under the lock: a hold taken while statusFn ran must still
-	// keep this status off the wire.
+func (w *workspaceWatcher) publishLocked(status gitops.GitStatus) (nonPRChanged, held bool) {
 	if w.suppressed > 0 {
-		return false, time.Time{}, nil
+		return false, true
 	}
-	if status.Equal(w.lastStatus) {
-		return false, status.OpenPRRecheckAt, nil
+	if status.Seq <= w.lastStatus.Seq {
+		return false, false
 	}
-	nonPRChanged = statusDiffersIgnoringPR(status, w.lastStatus)
+	previous := w.lastStatus
 	w.lastStatus = status
+	if status.Equal(previous) && w.unpublishedAnswerSeq == 0 {
+		return false, false
+	}
+	if status.Seq > w.unpublishedAnswerSeq {
+		w.unpublishedAnswerSeq = 0
+	}
 	for _, s := range w.subscribers {
 		// Subscription channels are sized 1 with supersede-on-overflow:
 		// the latest status is always more useful than a queued older
 		// one, so we drain any pending value before sending. Both selects
-		// are non-blocking, so the run loop never stalls.
+		// are non-blocking, so no publisher stalls.
 		select {
 		case <-s.updates:
 		default:
@@ -540,12 +653,13 @@ func (w *workspaceWatcher) refresh() (nonPRChanged bool, prRecheckAt time.Time, 
 		default:
 		}
 	}
-	return nonPRChanged, status.OpenPRRecheckAt, nil
+	return statusDiffersIgnoringPR(status, previous), false
 }
 
 // probeLiveness checks whether the working tree drifted from lastStatus
-// without the fs watches saying so. Uses the fast status fn — probing an
-// idle workspace must never spawn a network PR lookup — and compares
+// without the fs watches saying so. It publishes nothing, so it takes no
+// Seq. Uses the fast status fn — probing an idle workspace must never
+// spawn a network PR lookup — and compares
 // ignoring PR fields for the same reason refresh's miss signal does.
 // Errors are treated as "no evidence": a transient git failure must not
 // trigger reinstall churn.

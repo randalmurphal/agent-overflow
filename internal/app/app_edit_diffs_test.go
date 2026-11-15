@@ -1,12 +1,16 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
+	"agent-overflow/internal/gitdiff"
 	"agent-overflow/internal/highlight"
 	"agent-overflow/internal/store"
 )
@@ -354,7 +358,7 @@ func TestEditsDiffReadsALargeTurnInChunks(t *testing.T) {
 
 	// A chunk read again from its offset is the same chunk.
 	again, err := app.ReadReviewDiff(ctx, opened.ID, chunks[1].Offset, 256<<10)
-	if err != nil || again != chunks[1] {
+	if err != nil || !reflect.DeepEqual(again, chunks[1]) {
 		t.Fatalf("re-read = %+v, %v; want the chunk served first", again.Offset, err)
 	}
 	if _, err := app.ReadReviewDiff(ctx, opened.ID, chunks[1].Offset+1, 256<<10); err == nil {
@@ -399,6 +403,38 @@ func TestEditsDiffRefusesAPayloadThatChangedSinceTheOpen(t *testing.T) {
 	}
 	if _, err := app.ReadReviewDiff(ctx, opened.ID, next.NextOffset, 256<<10); err == nil || !strings.Contains(err.Error(), "the diff changed since it was opened") {
 		t.Fatalf("read of a resized payload: err = %v, want a changed diff", err)
+	}
+}
+
+// A boundary reached again by another span, over bytes that changed since
+// a chunk first ended there, has another key: the read fails instead of
+// answering a key that contradicts the one served.
+func TestEditsDiffRefusesABoundaryReachedWithAnotherKey(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	body := generatedPatch("big.go", 60000)
+	threadID := seedEditPayloads(t, app, 1, body)
+	ctx := context.Background()
+	diff, err := newEditsDiff(ctx, app.store, threadID, []string{"edit-0"})
+	if err != nil {
+		t.Fatalf("newEditsDiff() error = %v", err)
+	}
+	whole, err := diff.Read(ctx, 0, 256<<10)
+	if err != nil || whole.EOF {
+		t.Fatalf("Read(0) = %+v, %v", whole.NextOffset, err)
+	}
+	changed := []byte(strings.ReplaceAll(body, "line", "LINE"))
+	if err := app.store.ReplacePayloadData(threadID, "edit-0", changed, "{}", time.Now().UnixMilli()); err != nil {
+		t.Fatalf("ReplacePayloadData() error = %v", err)
+	}
+	// Neither span was served before, so only the key at their end can
+	// tell.
+	head, err := diff.Read(ctx, 0, gitdiff.MinChunkBytes)
+	if err != nil {
+		t.Fatalf("Read(0, min) error = %v", err)
+	}
+	if _, err := diff.Read(ctx, head.NextOffset, int(whole.NextOffset-head.NextOffset)); !errors.Is(err, errEditsDiffChanged) {
+		t.Fatalf("read ending at %d over changed bytes: err = %v, want errEditsDiffChanged", whole.NextOffset, err)
 	}
 }
 

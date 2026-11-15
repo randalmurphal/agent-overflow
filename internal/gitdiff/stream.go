@@ -1,6 +1,7 @@
 package gitdiff
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -10,13 +11,16 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode/utf8"
+
+	"agent-overflow/internal/jstext"
+	"agent-overflow/internal/stringsx"
 )
 
 // Chunk bounds for Diff.Read. The ceiling keeps one chunk's JSON frame
-// under the transport's frame limit even when every byte needs a six-byte
-// escape; the floor keeps a caller from splitting a large diff into
-// millions of reads.
+// under the transport's 75 MiB read limit: at seven bytes per raw byte,
+// the bound jstext.PackText states for a packed chunk and above the six
+// of a plain one, 56 MiB. The floor keeps a caller from splitting a large
+// diff into millions of reads.
 const (
 	MinChunkBytes = 64 << 10
 	MaxChunkBytes = 8 << 20
@@ -42,12 +46,23 @@ var (
 )
 
 // Chunk is the patch bytes [Offset, NextOffset) of a Diff. EOF reports
-// that NextOffset is the end of the patch.
+// that NextOffset is the end of the patch. Key is the key of the patch
+// text [0, NextOffset), which ChunkCut makes the key of the chunks' text
+// in order.
 type Chunk struct {
-	Data       string `json:"data"`
-	Offset     int64  `json:"offset"`
-	NextOffset int64  `json:"nextOffset"`
-	EOF        bool   `json:"eof"`
+	Data       string
+	Offset     int64
+	NextOffset int64
+	EOF        bool
+	Key        jstext.Key
+}
+
+// boundary is what a read records at an offset a chunk ended at: the
+// maphash of the patch bytes before it, which verifies a re-read, and the
+// key of their text, which the next chunk's key extends.
+type boundary struct {
+	sum uint64
+	key jstext.Key
 }
 
 // Diff is a patch between fixed endpoints, read in chunks by byte offset.
@@ -67,10 +82,10 @@ type Diff struct {
 	mu     sync.Mutex
 	closed bool
 	seed   maphash.Seed
-	// marks holds, for every offset a read has ended at, the hash of the
-	// patch bytes before it. Only these offsets can start a read, which is
-	// what makes every re-read verifiable.
-	marks map[int64]uint64
+	// marks holds the boundary at 0 and at every offset a read has ended
+	// at. Only these offsets can start a read, which is what makes every
+	// re-read verifiable.
+	marks map[int64]boundary
 	// size is the patch length once a read has reached the end, else -1.
 	size    int64
 	live    *diffStream
@@ -80,6 +95,7 @@ type Diff struct {
 
 func newDiff(workspace string, env []string, release func() error, args []string) *Diff {
 	ctx, cancel := context.WithCancel(context.Background())
+	seed := maphash.MakeSeed()
 	return &Diff{
 		workspace: workspace,
 		env:       env,
@@ -87,16 +103,16 @@ func newDiff(workspace string, env []string, release func() error, args []string
 		release:   release,
 		ctx:       ctx,
 		cancel:    cancel,
-		seed:      maphash.MakeSeed(),
-		marks:     map[int64]uint64{},
+		seed:      seed,
+		marks:     map[int64]boundary{0: {sum: maphash.String(seed, ""), key: jstext.EmptyKey}},
 		size:      -1,
 	}
 }
 
 // Read returns up to maxBytes of the patch from offset, which must be 0 or
-// a NextOffset an earlier read returned. A chunk ends after its last
-// newline; a line longer than the chunk splits at a UTF-8 character
-// boundary. Reads with the same offset and maxBytes return the same chunk.
+// a NextOffset an earlier read returned, with its key. A chunk ends where
+// ChunkCut puts it. Reads with the same offset and maxBytes return the
+// same chunk, and a read at the end of the patch an empty chunk.
 func (d *Diff) Read(ctx context.Context, offset int64, maxBytes int) (Chunk, error) {
 	maxBytes = min(max(maxBytes, MinChunkBytes), MaxChunkBytes)
 	d.mu.Lock()
@@ -104,12 +120,12 @@ func (d *Diff) Read(ctx context.Context, offset int64, maxBytes int) (Chunk, err
 	if d.closed {
 		return Chunk{}, ErrDiffClosed
 	}
-	want, known := d.marks[offset]
-	if offset != 0 && !known {
+	start, known := d.marks[offset]
+	if !known {
 		return Chunk{}, fmt.Errorf("gitdiff: offset %d is not a chunk boundary", offset)
 	}
 	if offset == d.size {
-		return Chunk{Offset: offset, NextOffset: offset, EOF: true}, nil
+		return Chunk{Offset: offset, NextOffset: offset, EOF: true, Key: start.key}, nil
 	}
 	d.idleGen++
 	if d.live == nil || d.live.pos != offset {
@@ -140,7 +156,7 @@ func (d *Diff) Read(ctx context.Context, offset int64, maxBytes int) (Chunk, err
 		if err := stream.skip(offset); err != nil {
 			return fail(err)
 		}
-		if stream.hash.Sum64() != want {
+		if stream.hash.Sum64() != start.sum {
 			return fail(ErrDiffChanged)
 		}
 	}
@@ -149,21 +165,24 @@ func (d *Diff) Read(ctx context.Context, offset int64, maxBytes int) (Chunk, err
 		return fail(err)
 	}
 	next := stream.pos
-	sum := stream.hash.Sum64()
-	if prev, ok := d.marks[next]; ok && prev != sum {
+	end := boundary{sum: stream.hash.Sum64()}
+	if prev, ok := d.marks[next]; ok && prev.sum != end.sum {
 		return fail(ErrDiffChanged)
 	}
 	if eof && d.size >= 0 && next != d.size {
 		return fail(ErrDiffChanged)
 	}
-	d.marks[next] = sum
+	// The bytes before offset match the ones start was recorded for, so
+	// its key is theirs.
+	end.key = start.key.Extend(data)
+	d.marks[next] = end
 	if eof {
 		d.size = next
 		d.endLive()
 	} else {
 		d.armIdle(stream)
 	}
-	return Chunk{Data: data, Offset: offset, NextOffset: next, EOF: eof}, nil
+	return Chunk{Data: data, Offset: offset, NextOffset: next, EOF: eof, Key: end.key}, nil
 }
 
 // Close ends any running git process and removes the diff's snapshot. It
@@ -338,23 +357,22 @@ func (s *diffStream) stop() {
 }
 
 // ChunkCut returns where a full window ends: after its last newline, or,
-// for a window inside one long line, before a trailing incomplete UTF-8
-// sequence so the split falls between characters. Every review diff reader
-// cuts its chunks here.
+// for a window inside one long line, before a trailing unfinished UTF-8
+// sequence (stringsx.CompleteRunePrefix) so the split falls between
+// characters. A window that is one unfinished sequence is cut whole, so
+// every cut makes progress. Every review diff reader cuts its chunks here.
+//
+// For a window longer than utf8.UTFMax, as every reader's is
+// (MinChunkBytes), the cut is never inside a valid UTF-8 sequence of the
+// patch, so the text of consecutive chunks is the text of the whole patch
+// and a key extended chunk by chunk is the whole patch's (see package
+// jstext).
 func ChunkCut(window []byte) int {
-	for i := len(window) - 1; i >= 0; i-- {
-		if window[i] == '\n' {
-			return i + 1
-		}
+	if i := bytes.LastIndexByte(window, '\n'); i >= 0 {
+		return i + 1
 	}
-	for back := 1; back <= utf8.UTFMax && back < len(window); back++ {
-		start := len(window) - back
-		if utf8.RuneStart(window[start]) {
-			if !utf8.FullRune(window[start:]) {
-				return start
-			}
-			break
-		}
+	if cut := stringsx.CompleteRunePrefix(window); cut > 0 {
+		return cut
 	}
 	return len(window)
 }

@@ -503,7 +503,9 @@ computer with an agent peer, network bind /
 exposure changes, provider custom-env writes, MCP config writes, WSL
 distro preference, worktree-setup recipe writes (stored argv that runs
 unattended with the user's environment on every worktree cut — the
-same class as an MCP config write), and remote update triggering (§7).
+same class as an MCP config write), remote update triggering (§7), and
+running a provider CLI's update command (`RunProviderUpdate`), which
+replaces the provider binary the host runs.
 These calls require step-up because they change credentials, prompt
 routing, or commands the host will execute.
 
@@ -949,7 +951,7 @@ waves:
   device label/platform, deriving the device ID from its session. It cannot
   rename another device or change keys/grants. Renaming the host itself
   uses `SetDeviceName` and requires `access:admin`.
-  `ReadReviewDiff` and `ReleaseReviewDiff` act only on a review-diff handle
+  `ReadReviewDiff`, `ReadReviewDiffPacked` and `ReleaseReviewDiff` act only on a review-diff handle
   the calling connection opened. The handle records the scope its `Open*`
   method required (`files:read`, `git:operate` or `threads:read`), and every
   read requires that scope again, so a session narrowed after the open

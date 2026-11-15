@@ -1025,6 +1025,21 @@ var channelPolicies = []ChannelPolicy{
 			"ordered: never latest-only.",
 	},
 	{
+		Channel:   eventchan.ProviderUpdates,
+		Audience:  AudienceAny,
+		Retention: RetentionLatestOnly,
+		Scope:     ScopeAccessAdmin,
+		Why: "Every provider CLI's update state on this computer: installed " +
+			"and latest version, whether an update is offered, and the phase " +
+			"and output tail of the last update run. access:admin by the rule " +
+			"on Scope: GetProviderUpdates returns this exact list, and the " +
+			"same grant starts a run. AudienceAny because the owner updating " +
+			"a remote computer's CLI is a remote admin. Latest-only, and the " +
+			"membership rule holds: each frame carries the whole list, so the " +
+			"newest supersedes every earlier one and a reconnecting client " +
+			"wants the current state rather than the phases it missed.",
+	},
+	{
 		Channel:   eventchan.ProviderUsage,
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,

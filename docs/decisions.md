@@ -550,6 +550,16 @@ Mechanism in
   account switch land after it.
 - Binary upgrades under a running app: per-thread restart button, never an
   auto-recycle of sessions; no version ranking or auto-default.
+- Provider CLI updates (`internal/providerupdate`): the app never updates
+  a provider CLI on its own. It offers an update only when the version the
+  provider's own updater would install is newer than the installed one,
+  because `claude update` on the stable channel installs an older
+  version; it runs that updater and nothing of its own. A Codex install
+  that npm, Homebrew or the Codex installer does not own has no updater,
+  so its check fails saying so and nothing is offered. A provider whose
+  update command could not be stopped is refused further runs until the
+  app restarts. One toast per provider version per client, a dot on the
+  provider's settings entry, and nothing in the sidebar footer.
 - Session import (`internal/sessionimport/AGENTS.md`): one AO thread per
   Claude leaf; dedup mandatory; non-active branches materialize lazily at
   first send; no "imported" badge; no auto-sync; an imported historic model

@@ -203,4 +203,164 @@ describe('<VirtualList>', () => {
     const rows = container.querySelectorAll('[data-testid="virtual-list-row"]');
     expect(rows.length).toBe(3);
   });
+
+  it('shows the end of a list that shrank under a scrolled reader, before any scroll event', async () => {
+    stubDim(500);
+    const props = { rowHeight: 50, overscan: 2, children: null as unknown as undefined };
+    const { container, rerender } = render(VirtualList as any, { props: { ...props, items: makeItems(1000) } });
+    await tick();
+    const viewport = container.querySelector<HTMLElement>('[data-testid="virtual-list-viewport"]')!;
+    viewport.scrollTop = 45000;
+    viewport.dispatchEvent(new Event('scroll'));
+    await tick();
+
+    // The browser clamps scrollTop and reports it a frame later; the
+    // window must not sit past the list's end until then.
+    await rerender({ ...props, items: makeItems(40) });
+    await tick();
+    const indices = Array.from(
+      container.querySelectorAll<HTMLElement>('[data-testid="virtual-list-row"]'),
+    ).map((row) => Number(row.dataset.rowIndex));
+    expect(indices.at(-1)).toBe(39);
+    expect(indices.length).toBe(14);
+  });
+
+  it('keeps a row\'s element with its item when `key` names the item', async () => {
+    const paths = (names: string[]) => names.map((path) => ({ path }));
+    const props = {
+      rowHeight: 50,
+      children: null as unknown as undefined,
+      key: (item: { path: string }) => item.path,
+    };
+    const { container, rerender } = render(VirtualList as any, { props: { ...props, items: paths(['b', 'c']) } });
+    await tick();
+    const rowsNow = () => Array.from(container.querySelectorAll<HTMLElement>('[data-testid="virtual-list-row"]'));
+    const [b, c] = rowsNow();
+
+    await rerender({ ...props, items: paths(['a', 'b', 'c']) });
+    await tick();
+    const after = rowsNow();
+    expect(after).toHaveLength(3);
+    expect(after[1]).toBe(b);
+    expect(after[2]).toBe(c);
+    expect(after.map((row) => row.dataset.rowIndex)).toEqual(['0', '1', '2']);
+  });
+
+  it('keeps the focused row and its neighbors mounted outside the window until focus leaves the list', async () => {
+    stubDim(500);
+    const { container } = render(VirtualList as any, {
+      props: { items: makeItems(1000), rowHeight: 50, overscan: 2, children: null as unknown as undefined },
+    });
+    await tick();
+    const viewport = container.querySelector<HTMLElement>('[data-testid="virtual-list-viewport"]')!;
+    const rowAt = (index: number) => container.querySelector<HTMLElement>(`[data-row-index="${index}"]`);
+    const scrollTo = async (top: number) => {
+      viewport.scrollTop = top;
+      viewport.dispatchEvent(new Event('scroll'));
+      await tick();
+    };
+    const focused = rowAt(3)!;
+    focused.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
+    await tick();
+
+    // Above the window: the same element, at its own offset, between its
+    // neighbors and before the window's 14 rows.
+    await scrollTo(25000);
+    expect(rowAt(3)).toBe(focused);
+    expect(focused.style.position).toBe('absolute');
+    expect(focused.style.top).toBe('150px');
+    const mounted = Array.from(container.querySelectorAll<HTMLElement>('[data-testid="virtual-list-row"]'));
+    expect(mounted.slice(0, 4).map((row) => row.dataset.rowIndex)).toEqual(['2', '3', '4', '498']);
+    expect(mounted.length).toBe(17);
+
+    // Back in the window it is an in-flow row again, still the same element.
+    await scrollTo(0);
+    expect(rowAt(3)).toBe(focused);
+    expect(focused.style.position).toBe('');
+
+    await scrollTo(25000);
+    focused.dispatchEvent(new FocusEvent('focusout', { bubbles: true, relatedTarget: document.body }));
+    await tick();
+    expect([rowAt(2), rowAt(3), rowAt(4)]).toEqual([null, null, null]);
+  });
+
+  it('keeps a focused row below the window after the rows of the window', async () => {
+    stubDim(500);
+    const { container } = render(VirtualList as any, {
+      props: { items: makeItems(1000), rowHeight: 50, overscan: 2, children: null as unknown as undefined },
+    });
+    await tick();
+    const viewport = container.querySelector<HTMLElement>('[data-testid="virtual-list-viewport"]')!;
+    viewport.scrollTop = 25000;
+    viewport.dispatchEvent(new Event('scroll'));
+    await tick();
+    const focused = container.querySelector<HTMLElement>('[data-row-index="505"]')!;
+    focused.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
+    viewport.scrollTop = 0;
+    viewport.dispatchEvent(new Event('scroll'));
+    await tick();
+
+    const rows = Array.from(container.querySelectorAll<HTMLElement>('[data-testid="virtual-list-row"]'));
+    expect(rows.slice(-4).map((row) => row.dataset.rowIndex)).toEqual(['13', '504', '505', '506']);
+    expect(rows.at(-2)).toBe(focused);
+    expect(focused.style.top).toBe('25250px');
+    expect(rows[0].dataset.rowIndex).toBe('0');
+  });
+
+  it('keeps the keepIndex row mounted outside the window while it is set', async () => {
+    const props = { items: makeItems(1000), rowHeight: 50, overscan: 2, children: null as unknown as undefined };
+    stubDim(500);
+    const { container, rerender } = render(VirtualList as any, { props: { ...props, keepIndex: 3 } });
+    await tick();
+    const rowAt = (index: number) => container.querySelector<HTMLElement>(`[data-row-index="${index}"]`);
+    const count = () => container.querySelectorAll('[data-testid="virtual-list-row"]').length;
+    // In the window it is one of the window's rows.
+    expect(count()).toBe(14);
+    const kept = rowAt(3)!;
+
+    const viewport = container.querySelector<HTMLElement>('[data-testid="virtual-list-viewport"]')!;
+    viewport.scrollTop = 25000;
+    viewport.dispatchEvent(new Event('scroll'));
+    await tick();
+    expect(rowAt(3)).toBe(kept);
+    expect(kept.style.top).toBe('150px');
+    expect(rowAt(2)).toBeNull();
+    expect(rowAt(4)).toBeNull();
+    expect(count()).toBe(15);
+
+    await rerender({ ...props, keepIndex: -1 });
+    await tick();
+    expect(rowAt(3)).toBeNull();
+    expect(count()).toBe(14);
+  });
+
+  it('forgets a focused row whose item left the list', async () => {
+    const props = { rowHeight: 50, overscan: 2, children: null as unknown as undefined };
+    stubDim(500);
+    const { container, rerender } = render(VirtualList as any, { props: { ...props, items: makeItems(1000) } });
+    await tick();
+    container.querySelector<HTMLElement>('[data-row-index="3"]')!.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
+    await tick();
+
+    await rerender({ ...props, items: makeItems(1000).filter((item) => item.id !== 'item-3') });
+    await tick();
+    const viewport = container.querySelector<HTMLElement>('[data-testid="virtual-list-viewport"]')!;
+    viewport.scrollTop = 25000;
+    viewport.dispatchEvent(new Event('scroll'));
+    await rerender({ ...props, items: makeItems(1000) });
+    await tick();
+    expect(container.querySelector('[data-row-index="3"]')).toBeNull();
+  });
+
+  it('names each row\'s place in the whole list', async () => {
+    stubDim(500);
+    const { container } = render(VirtualList as any, {
+      props: { items: makeItems(1000), rowHeight: 50, children: null as unknown as undefined },
+    });
+    await tick();
+    const row = container.querySelector<HTMLElement>('[data-row-index="4"]')!;
+    expect(row.getAttribute('role')).toBe('listitem');
+    expect(row.getAttribute('aria-setsize')).toBe('1000');
+    expect(row.getAttribute('aria-posinset')).toBe('5');
+  });
 });

@@ -191,8 +191,10 @@ func (a *App) Shutdown(ctx context.Context) error {
 		record("close worktree registry watcher", nil)
 	}
 	// Review diff pins run git in the background; stop and join them.
-	a.dropReviewDiffRecords()
+	a.closeReviewDiffRecords()
 	record("stop review diff pins", nil)
+	// An open review diff holds a git process and a snapshot directory.
+	record("close review diffs", a.closeReviewDiffs())
 	// A tool command is stopped with SIGTERM first, so its reaper is joined
 	// here: before the engine it reports to closes, and so the process does
 	// not outlive the app inside the grace.
@@ -279,6 +281,10 @@ func (a *App) Shutdown(ctx context.Context) error {
 	// The passive release check emits status frames. It has its own
 	// lifetime, which this cancels before joining it.
 	a.stopServiceUpdateChecks()
+	// The provider update checks and a running update command emit status
+	// frames and spawn provider CLIs. Stop cancels the command (SIGTERM)
+	// and joins every one.
+	a.providerUpdateService().Stop()
 	// A permission-mode follow writes the thread row; appCtx is cancelled,
 	// so it is returning or finishing one bounded write.
 	a.permissionModeFollowWG.Wait()

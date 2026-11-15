@@ -131,6 +131,9 @@ var (
 		// every earlier one, and a client reconnecting mid-download wants
 		// the current phase rather than the ticks it missed.
 		"service:update-status",
+		// The whole per-provider update list on every change, so the
+		// newest frame is the entire answer.
+		"provider:updates",
 		"sound:changed",
 		"spinner:changed",
 		"system:stats",

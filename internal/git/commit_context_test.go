@@ -17,20 +17,20 @@ func seedRepo(t *testing.T) string {
 	run := func(args ...string) {
 		cmd := exec.Command("git", args...)
 		cmd.Dir = dir
-		cmd.Env = append(os.Environ(),
-			"GIT_AUTHOR_NAME=Tester", "GIT_AUTHOR_EMAIL=t@t",
-			"GIT_COMMITTER_NAME=Tester", "GIT_COMMITTER_EMAIL=t@t",
-		)
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v\n%s", args, err, out)
 		}
 	}
 	run("init", "-q", "-b", "main")
+	// The repository carries its identity, so a test's later commits need
+	// none from the machine.
+	run("config", "user.email", "t@t")
+	run("config", "user.name", "Tester")
 	if err := os.WriteFile(filepath.Join(dir, "README"), []byte("hello\n"), 0o644); err != nil {
 		t.Fatalf("seed file: %v", err)
 	}
 	run("add", "-A")
-	run("-c", "user.email=t@t", "-c", "user.name=Tester", "commit", "-q", "-m", "init")
+	run("commit", "-q", "-m", "init")
 	return dir
 }
 

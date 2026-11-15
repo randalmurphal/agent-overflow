@@ -7,7 +7,7 @@
 // held-window digest, where the width buys collision headroom against a
 // server that answers `fresh` on a match.
 
-const FNV_OFFSET_BASIS_32 = 0x811c9dc5;
+export const FNV_OFFSET_BASIS_32 = 0x811c9dc5;
 const FNV_PRIME_32 = 0x01000193;
 
 /** Continue an FNV-1a hash with an appended UTF-16 suffix. */
@@ -25,7 +25,13 @@ export function fnv1a32(input: string): number {
 
 /** Compact string form for cache keys: `<length>:<hash base36>`. */
 export function contentKey(input: string): string {
-  return `${input.length}:${fnv1a32(input).toString(36)}`;
+  return formatContentKey(fnv1a32(input), input.length);
+}
+
+/** The cache key (`contentKey`) of text of `length` code units whose
+ * fnv1a32 is `hash`, for a caller that hashed the text in pieces. */
+export function formatContentKey(hash: number, length: number): string {
+  return `${length}:${hash.toString(36)}`;
 }
 
 // FNV-1a 64 offset basis 0xcbf29ce484222325 and prime 0x100000001b3,

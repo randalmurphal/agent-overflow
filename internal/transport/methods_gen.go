@@ -101,6 +101,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "CancelThreadTransfer", ID: 930267104, Scope: "threads:operate", Route: "thread"},                                  // main.App.CancelThreadTransfer
 	{Name: "CancelThreadWake", ID: 2490904523, Scope: "threads:operate", Route: "thread"},                                     // main.App.CancelThreadWake
 	{Name: "CheckForUpdate", ID: 2347956003, Scope: "host", Route: "home"},                                                    // main.App.CheckForUpdate
+	{Name: "CheckProviderUpdates", ID: 987486764, Scope: "access:admin", Route: "selected"},                                   // main.App.CheckProviderUpdates
 	{Name: "CheckThreadImportUpdates", ID: 2932719708, Scope: "threads:operate", Route: "thread"},                             // main.App.CheckThreadImportUpdates
 	{Name: "CleanCodexBackgroundTerminals", ID: 16360282, Scope: "threads:operate", Route: "thread"},                          // main.App.CleanCodexBackgroundTerminals
 	{Name: "ClearBrowserSiteData", ID: 544013229, Scope: "terminal:operate", Route: "home"},                                   // main.App.ClearBrowserSiteData
@@ -199,6 +200,8 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "GetProjectWorktreeSetup", ID: 471350242, Scope: "terminal:operate", Route: "project"},                             // main.App.GetProjectWorktreeSetup
 	{Name: "GetProviderLoginState", ID: 84914540, Scope: "access:admin", Route: "home"},                                       // main.App.GetProviderLoginState
 	{Name: "GetProviderStatuses", ID: 3829328996, Scope: "access:admin", Route: "home"},                                       // main.App.GetProviderStatuses
+	{Name: "GetProviderUpdateNotes", ID: 2744542956, Scope: "access:admin", Route: "selected"},                                // main.App.GetProviderUpdateNotes
+	{Name: "GetProviderUpdates", ID: 563257916, Scope: "access:admin", Route: "selected"},                                     // main.App.GetProviderUpdates
 	{Name: "GetPushSenderStatus", ID: 447579616, Scope: "access:admin", Route: "home"},                                        // main.App.GetPushSenderStatus
 	{Name: "GetQueueState", ID: 3079581691, Scope: "threads:operate", Route: "thread"},                                        // main.App.GetQueueState
 	{Name: "GetRateLimitsSnapshots", ID: 3325141610, Scope: "threads:read", Route: "home"},                                    // main.App.GetRateLimitsSnapshots
@@ -384,6 +387,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "ReadAloudSource", ID: 1797221017, Scope: "threads:operate", Route: "selected"},                                    // main.App.ReadAloudSource
 	{Name: "ReadPipelineStages", ID: 2036690300, Scope: "git:operate", Route: "selected"},                                     // main.App.ReadPipelineStages
 	{Name: "ReadReviewDiff", ID: 2473150982, Scope: "session", Route: "home", CallerBound: true},                              // main.App.ReadReviewDiff
+	{Name: "ReadReviewDiffPacked", ID: 4058838878, Scope: "session", Route: "home", CallerBound: true},                        // main.App.ReadReviewDiffPacked
 	{Name: "ReadShellAttachmentOutput", ID: 3285994337, Scope: "threads:read", Route: "thread"},                               // main.App.ReadShellAttachmentOutput
 	{Name: "ReadThreadRemoteLog", ID: 2424974671, Scope: "terminal:operate", Route: "thread"},                                 // main.App.ReadThreadRemoteLog
 	{Name: "RecheckClaudeAccount", ID: 2274850917, Scope: "access:admin", Route: "home"},                                      // main.App.RecheckClaudeAccount
@@ -445,6 +449,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "RevokeAccessSession", ID: 2284519219, Scope: "access:admin", Route: "home"},                                       // main.App.RevokeAccessSession
 	{Name: "RunPRCIAction", ID: 1262689694, Scope: "git:operate", Route: "home"},                                              // main.App.RunPRCIAction
 	{Name: "RunPipelineAction", ID: 3964218798, Scope: "git:operate", Route: "home"},                                          // main.App.RunPipelineAction
+	{Name: "RunProviderUpdate", ID: 4161672510, Scope: "access:admin", Route: "selected", StepUp: true},                       // main.App.RunProviderUpdate
 	{Name: "RunThreadShellCommand", ID: 651196145, Scope: "terminal:operate", Route: "thread"},                                // main.App.RunThreadShellCommand
 	{Name: "RunningBackgroundAgents", ID: 2886446326, Scope: "threads:read", Route: "thread"},                                 // main.App.RunningBackgroundAgents
 	{Name: "SaveAttachment", ID: 2182723789, Scope: "attachments:write", Route: "thread"},                                     // main.App.SaveAttachment

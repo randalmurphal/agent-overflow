@@ -1,5 +1,5 @@
 import { RowWalker } from './patchRows';
-import type { ReviewFile } from './patchStore';
+import type { ReviewFile } from './patchParser';
 import type { RowAnchor } from './patchRows';
 
 // The lines of a pull request's whole diff a PR comment can sit on, by

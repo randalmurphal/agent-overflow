@@ -15,6 +15,7 @@ import (
 	"agent-overflow/internal/notify"
 	replaylog "agent-overflow/internal/observability/replay"
 	"agent-overflow/internal/provider/claude/claudefake"
+	"agent-overflow/internal/providerupdate/updatefake"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/store/storetest"
 	"agent-overflow/internal/testutil/providerpath"
@@ -40,6 +41,9 @@ type testHost struct {
 	updateWorkReason  string
 	claudeUsage       *claudefake.Usage
 	usageReadings     int
+	updateFeed        *updatefake.Feed
+	updateRechecks    int
+	onUpdateRecheck   func()
 	droppedRetained   int
 	droppedImages     int
 	broadcastRows     []string
@@ -116,11 +120,18 @@ func (h *testHost) ForgetPushSent()         { h.pushSent = nil }
 func (h *testHost) UpdateWorkReason() (string, error) {
 	return h.updateWorkReason, nil
 }
-func (h *testHost) StallProviderEvents(string) error   { return nil }
-func (h *testHost) ReleaseProviderEvents(string) error { return nil }
-func (h *testHost) PendingProviderEvents(string) int   { return 0 }
-func (h *testHost) ClaudeUsageFake() *claudefake.Usage { return h.claudeUsage }
-func (h *testHost) RequestClaudeUsageReading()         { h.usageReadings++ }
+func (h *testHost) StallProviderEvents(string) error     { return nil }
+func (h *testHost) ReleaseProviderEvents(string) error   { return nil }
+func (h *testHost) PendingProviderEvents(string) int     { return 0 }
+func (h *testHost) ClaudeUsageFake() *claudefake.Usage   { return h.claudeUsage }
+func (h *testHost) RequestClaudeUsageReading()           { h.usageReadings++ }
+func (h *testHost) ProviderUpdateFeed() *updatefake.Feed { return h.updateFeed }
+func (h *testHost) RecheckProviderUpdates() {
+	h.updateRechecks++
+	if h.onUpdateRecheck != nil {
+		h.onUpdateRecheck()
+	}
+}
 func (h *testHost) BrowserPressKey(string, string, keybindings.Accelerator) error {
 	return errors.New("no browser engine in the fixture")
 }

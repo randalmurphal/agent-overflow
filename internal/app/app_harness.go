@@ -20,6 +20,7 @@ import (
 	replaylog "agent-overflow/internal/observability/replay"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude/claudefake"
+	"agent-overflow/internal/providerupdate/updatefake"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/transport"
 	"agent-overflow/internal/triage"
@@ -95,6 +96,10 @@ func (h *harnessHost) ClaudeUsageFake() *claudefake.Usage { return h.app.claudeU
 func (h *harnessHost) RequestClaudeUsageReading() {
 	h.app.providerLifecycleService().RequestReading(string(provider.Claude))
 }
+
+func (h *harnessHost) ProviderUpdateFeed() *updatefake.Feed { return h.app.providerUpdateFeed }
+
+func (h *harnessHost) RecheckProviderUpdates() { h.app.providerUpdateService().Check() }
 
 func (h *harnessHost) PauseMergedPRCleanup() (resume func()) { return h.app.pauseMergedPRCleanup() }
 

@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach, vi } from 'vitest';
+import { afterEach, describe, expect, it, beforeEach, vi } from 'vitest';
 import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import SettingsView from './SettingsView.svelte';
 import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
@@ -12,6 +12,12 @@ import {
   settingsSectionIds,
   SETTINGS_SECTIONS,
 } from './sections';
+import { emitWailsEvent } from '../../../test/mocks/wailsio-runtime';
+import { REMOTE_BACKEND_UUID, stageBackend } from '../../../test/helpers/backends';
+import { grantBackendScopes } from '../../../test/helpers/scopes';
+import { SCOPES } from '../../transport/scopes';
+import { listenProviderUpdates } from '../../../test/helpers/providerUpdates';
+import { resetSettingsOverlayForTest, setSettingsComputer } from '../../stores/settingsOverlay.svelte';
 
 const BASE_SETTINGS: Settings = makeSettings();
 
@@ -20,6 +26,7 @@ async function seed(): Promise<void> {
   setBindingMock('UpdateSettings', async () => BASE_SETTINGS);
   setBindingMock('Version', async () => '0.0.1');
   setBindingMock('GetProviderStatuses', async () => []);
+  setBindingMock('CheckProviderUpdates', async () => []);
   setBindingMock('GetModelsForProvider', async () => modelCatalog([], 'shipped'));
   setBindingMock('ListProviderAccounts', async () => []);
   setBindingMock('GetKeybindings', async () => ({ bindings: [] }));
@@ -298,5 +305,25 @@ describe('<SettingsView> search', () => {
     const input = getByTestId('settings-search') as HTMLInputElement;
     await fireEvent.input(input, { target: { value: 'qwertyuiop' } });
     expect(getByTestId('settings-search-results')).toHaveTextContent('No settings match.');
+  });
+});
+
+describe('settings rail: provider update dots', () => {
+  beforeEach(seed);
+  afterEach(() => resetSettingsOverlayForTest());
+
+  it('follows the computer the view shows', async () => {
+    stageBackend();
+    await grantBackendScopes('laptop', SCOPES);
+    listenProviderUpdates();
+    const update = (provider: string, available: boolean) => ({
+      provider, installedVersion: '1.0.0', latestVersion: '1.1.0', available, checkedAt: 1, run: { phase: 'idle' },
+    });
+    emitWailsEvent('provider:updates', [update('claude', false), update('codex', true)], REMOTE_BACKEND_UUID);
+    const dot = () => document.querySelector<HTMLElement>('[data-testid="settings-rail-provider-update-dot"]');
+    render(SettingsView, { onClose: vi.fn() });
+    expect(dot()).toBeNull();
+    setSettingsComputer('laptop');
+    await waitFor(() => expect(dot()?.dataset.provider).toBe('codex'));
   });
 });

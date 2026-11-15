@@ -478,6 +478,7 @@ export {
   OpenBranchBaseDiff,
   OpenCommitDiff,
   ReadReviewDiff,
+  ReadReviewDiffPacked,
   ReleaseReviewDiff,
   ListBranchCommits,
   ListRecentCommits,
@@ -713,6 +714,13 @@ export {
   RequestServiceUpdate,
   CancelServiceUpdate,
 
+  // Provider CLI updates on the selected computer. All four are
+  // `access:admin`; RunProviderUpdate is step-up gated on top.
+  GetProviderUpdates,
+  CheckProviderUpdates,
+  GetProviderUpdateNotes,
+  RunProviderUpdate,
+
   // Workflows
   WorkflowAnswerQuestion,
   WorkflowBindThread,
@@ -836,6 +844,7 @@ export type { BackgroundTaskStop } from '../../../bindings/agent-overflow/intern
 export type { DictationSources as DictationSourceSet } from '../../../bindings/agent-overflow/internal/app/models.js';
 export type { OpenAIKeyFile as OpenAIKeyFileStatus } from '../../../bindings/agent-overflow/internal/app/models.js';
 export type { ReadAloudSourceStatus, ReadAloudVoice } from '../../../bindings/agent-overflow/internal/app/models.js';
+export type { ReviewDiffChunk, ReviewDiffOpened } from '../../../bindings/agent-overflow/internal/app/models.js';
 export type {
   ForgeProject,
   OpenPRThreadRequest,
@@ -850,6 +859,11 @@ export type {
   PRThreadsRequest,
   ProjectPRList,
 } from '../../../bindings/agent-overflow/internal/app/models.js';
+export type {
+  Notes as ProviderUpdateNotes,
+  Note as ProviderUpdateNote,
+  Status as ProviderUpdateStatus,
+} from '../../../bindings/agent-overflow/internal/providerupdate/models.js';
 export type { Snapshot as BackgroundTaskOutputSnapshot } from '../../../bindings/agent-overflow/internal/tasktail/models.js';// Dev-server rows are read-only views of one machine's scan, never
 // constructed by a component.
 export type {

@@ -16,7 +16,7 @@ import (
 // The canonical flags every patch-producing invocation carries. Spelled
 // out here rather than referenced from options.go so silently dropping
 // one (--no-ext-diff, say — an execution surface) fails this test.
-var canonicalPatchFlags = []string{"--patch", "--minimal", "--no-color", "--no-ext-diff", "--no-textconv",
+var canonicalPatchFlags = []string{"--patch", "--no-color", "--minimal", "--no-ext-diff", "--no-textconv",
 	"--find-renames", "--no-relative", "--src-prefix=a/", "--dst-prefix=b/"}
 
 func TestOptionsGitArgs(t *testing.T) {

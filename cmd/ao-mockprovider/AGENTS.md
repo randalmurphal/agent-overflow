@@ -12,10 +12,16 @@ Route exact provider invocation shapes before the general session sniff:
 - Claude and Codex one-shot structured text generation;
 - Claude sign-in and account probe;
 - Codex `app-server`;
-- provider version queries; and
+- provider version queries;
+- `doctor` and `update` (CLI update); and
 - Claude streaming sessions.
 
 One-shot modes do not register with scenario control or enter turn lifecycle.
+`update` installs the version the harness advertised, recording it under the
+home directory and moving the executable's mtime forward, and changes nothing
+when none is advertised; `--version` and `doctor` report the recorded version.
+`updatefake.MockInstall` owns that state and its reset. Both providers share
+the routes, so the report uses Claude's shape.
 Codex writes structured output to `--output-last-message`; Claude emits the
 last structured result line. Validate schemas with the provider-specific
 `internal/providerschema` rules and generate answers from the requested schema.

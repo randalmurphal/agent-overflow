@@ -1,7 +1,7 @@
 import { render } from '@testing-library/svelte';
 import { describe, expect, it, vi } from 'vitest';
 import ReviewLineBlockRow from './ReviewLineBlockRow.svelte';
-import { parseReviewFiles } from '../../utils/patchStore';
+import { parseReviewFiles } from '../../utils/patchParser';
 import type { PatchDisplayRow } from '../../utils/patchFiles';
 
 const file = parseReviewFiles([

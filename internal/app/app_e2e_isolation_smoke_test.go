@@ -10,8 +10,12 @@ import "testing"
 // the binary settings or detaching HOME would defeat the only assertion a mock
 // cannot make. That build is manual-only (`make provider-smoke`), documented
 // as spending real tokens, and never part of `make go-test` / `make verify`.
+//
+// Provider updates stay isolated even here: the smoke gate asserts sessions,
+// and an update run would replace the developer's installed CLI.
 func isolateE2EProviderSpawns(t *testing.T, app *App) {
 	t.Helper()
+	isolateProviderUpdates(app)
 }
 
 // detachTestProcessHome keeps the real home for the same reason.

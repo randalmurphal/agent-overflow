@@ -20,6 +20,7 @@ import (
 	"agent-overflow/internal/openai/openaifake"
 	"agent-overflow/internal/provider/claude/claudefake"
 	"agent-overflow/internal/provider/codex"
+	"agent-overflow/internal/providerupdate/updatefake"
 	"agent-overflow/internal/transport"
 	"agent-overflow/internal/windowgeom"
 )
@@ -145,6 +146,11 @@ func ConfigureIsolation(a *App, config IsolationConfig) {
 	a.rateLimitProbeClientOverride = &http.Client{
 		Transport: isolatedProviderTransport{claudeUsage: a.claudeUsageFake},
 	}
+	// Provider update checks and release notes read the release hosts,
+	// answered in process by a feed that advertises the mock provider's own
+	// version until a harness seeds a later one.
+	a.providerUpdateFeed = updatefake.New()
+	a.providerUpdateClientOverride = isolatedProviderUpdateClient(a.providerUpdateFeed)
 	// The user's OpenAI key file lives under the test's own data root, and
 	// what it would send to OpenAI is answered in process.
 	a.openAIClientOverride = isolatedHTTPClient
@@ -162,6 +168,12 @@ var errIsolatedNetwork = errors.New("isolated boot: outbound provider requests a
 
 var isolatedHTTPClient = &http.Client{Transport: isolatedProviderTransport{}}
 
+// isolatedProviderUpdateClient answers the provider release hosts from feed
+// and refuses everything else isolatedProviderTransport refuses.
+func isolatedProviderUpdateClient(feed *updatefake.Feed) *http.Client {
+	return &http.Client{Transport: isolatedProviderTransport{providerUpdates: feed}}
+}
+
 // isolatedProviderTransport refuses every request except Claude's OAuth
 // profile, the two transcriptions and OpenAI speech, which it answers
 // in-process so account identification, dictation and read aloud run end to
@@ -169,9 +181,11 @@ var isolatedHTTPClient = &http.Client{Transport: isolatedProviderTransport{}}
 // answered from claudeUsage for an identity it holds a reading for and
 // refused otherwise. Codex transcription names the bytes and type it
 // received, and an access token of "refused" is answered as an expired
-// login; OpenAI live transcription and speech are openaifake's.
+// login; OpenAI live transcription and speech are openaifake's. The
+// provider release hosts are answered by providerUpdates when it is set.
 type isolatedProviderTransport struct {
-	claudeUsage *claudefake.Usage
+	claudeUsage     *claudefake.Usage
+	providerUpdates *updatefake.Feed
 }
 
 func (t isolatedProviderTransport) RoundTrip(req *http.Request) (resp *http.Response, err error) {
@@ -186,6 +200,9 @@ func (t isolatedProviderTransport) RoundTrip(req *http.Request) (resp *http.Resp
 		return claudefake.ServeProfile(req)
 	}
 	if resp, ok, err := t.claudeUsage.Serve(req); ok {
+		return resp, err
+	}
+	if resp, ok, err := t.providerUpdates.Serve(req); ok {
 		return resp, err
 	}
 	if req.Method == http.MethodPost && req.URL.String() == codex.TranscribeURL {

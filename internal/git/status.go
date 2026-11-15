@@ -55,14 +55,21 @@ type GitStatus struct {
 	// pending. The commit dialog shows it as a notice; git itself decides
 	// whether a commit can be recorded.
 	PendingOperation string `json:"pendingOperation,omitempty"`
+	// Seq orders the statuses handed to clients for one workspace: the
+	// gitwatch.Manager position taken before this status's reads began, so
+	// a higher Seq never comes from a read that started earlier. Zero is
+	// unsequenced. It says when the status was read, not what it says, so
+	// Equal ignores it.
+	Seq uint64 `json:"seq,omitempty"`
 }
 
-// Equal reports whether two GitStatus values are field-by-field
-// identical. Used on hot paths (gitwatch dedup at 250ms cadence) where
-// reflect.DeepEqual would add reflection overhead — and would silently
-// keep working if the struct grew a pointer/map/slice field that the
-// caller forgot to consider. A typed Equal forces every new field to
-// be added here too.
+// Equal reports whether two GitStatus values say the same thing: every
+// field but Seq is identical. Used on hot paths (gitwatch dedup at 250ms
+// cadence) where reflect.DeepEqual would add reflection overhead and
+// would silently keep working if the struct grew a pointer/map/slice
+// field that the caller forgot to consider. A typed Equal forces every
+// new field to be added here too; TestGitStatusEqualComparesEveryField
+// fails until it is.
 func (s GitStatus) Equal(other GitStatus) bool {
 	return s.IsRepo == other.IsRepo &&
 		s.Branch == other.Branch &&
@@ -121,6 +128,39 @@ func (c *Core) StatusFast(cwd string) (GitStatus, error) {
 	return status, nil
 }
 
+// statusScan is one status read and the churn of the paths it lists.
+type statusScan struct {
+	result commandResult
+	err    error
+	// parsed, churn and churnErr are set when the read succeeded.
+	parsed   porcelainStatus
+	churn    trackedChurnTotals
+	churnErr error
+}
+
+// scanStatus reads status and the churn of the changed paths it lists.
+// The churn follows the read because it diffs only the paths that read
+// names; a scan with nothing stored to choose them by diffs the whole
+// tree beside the read instead (startChurnInputs).
+func (c *Core) scanStatus(cwd string) statusScan {
+	in := c.startChurnInputs(cwd, c.nowFn())
+	var scan statusScan
+	// C locale: the non-repo classification in baseStatus matches git's
+	// own English message, which a git built with NLS would otherwise
+	// translate, misreporting a plain non-repo path as a hard error.
+	scan.result, scan.err = c.runSpec(commandSpec{
+		binary: "git", cwd: cwd, extraEnv: localeCEnv, maxBytes: statusOutputLimit,
+		args: []string{"status", "--porcelain=v2", "--branch", "-z"},
+	})
+	if scan.err != nil || scan.result.exitCode != 0 {
+		in.wait()
+		return scan
+	}
+	scan.parsed = parsePorcelainStatus(scan.result.stdout)
+	scan.churn, scan.churnErr = c.trackedChurn(cwd, scan.parsed, in)
+	return scan
+}
+
 // baseStatus gathers every status field shared by Status and StatusFast:
 // branch and ahead/behind, workspace churn (insertions/deletions/files),
 // detected forge, and any pending merge/rebase/bisect. The open-PR lookup is
@@ -128,23 +168,23 @@ func (c *Core) StatusFast(cwd string) (GitStatus, error) {
 // so it stays with them; centralising the rest keeps the two entry points from
 // drifting apart.
 func (c *Core) baseStatus(cwd string) (GitStatus, error) {
-	// The six probes below are mutually independent, so they run concurrently
+	// The five probes below are mutually independent, so they run concurrently
 	// and the refresh costs max(probe) instead of the sum. That matters on
 	// filesystems where a git subprocess is expensive: on a repo reached over
-	// WSL's 9P bridge (a Windows drive) `status` alone measures ~1.1s and the
-	// numstat diff ~0.9s, and gitwatch runs this on every debounce edge — the
-	// serial batch measured 2.4s there versus 0.6s fanned out (14ms vs 6ms on
-	// native ext4). Results land in per-probe slots rather than a shared error
-	// channel so the join below keeps the exact error precedence the serial
-	// version had: status first, then the non-repo classification, then diff.
+	// WSL's 9P bridge (a Windows drive) `status` alone measures ~1.1s, and
+	// gitwatch runs this on every debounce edge. Results land in per-probe
+	// slots rather than a shared error channel so the join below keeps a
+	// fixed error precedence: status first, then the non-repo
+	// classification, then the churn diff.
 	var (
 		wg sync.WaitGroup
 
 		statusResult commandResult
 		statusErr    error
+		parsed       porcelainStatus
 
-		numstat    commandResult
-		numstatErr error
+		churn    trackedChurnTotals
+		churnErr error
 
 		defaultBranch  string
 		origin         originIdentity
@@ -152,27 +192,13 @@ func (c *Core) baseStatus(cwd string) (GitStatus, error) {
 		untrackedFiles int
 		pending        string
 	)
-	wg.Add(6)
+	wg.Add(5)
 
 	go func() {
 		defer wg.Done()
-		// runLocaleC: the non-repo classification below matches git's own
-		// English message, which a git built with NLS would otherwise translate
-		// — misreporting a plain non-repo path as a hard error.
-		statusResult, statusErr = c.runLocaleC(cwd, "status", "--porcelain=v2", "--branch")
-	}()
-
-	go func() {
-		defer wg.Done()
-		// Tracked churn measured against HEAD with the same diff the panel's
-		// gitdiff.OpenWorktreeDiff produces (HEAD, --minimal --no-ext-diff
-		// --no-textconv --find-renames):
-		// numstat's per-file insertion/deletion counts equal the '+'/'-' content
-		// lines the panel parses from --patch, so the header badge and the panel
-		// report the same numbers. On a fresh repo with no HEAD this exits non-zero
-		// with empty output (runBinary surfaces that as a result, not an error),
-		// yielding zero tracked churn — which is exactly what the panel shows there.
-		numstat, numstatErr = c.run(cwd, "diff", "--numstat", "--minimal", "--no-ext-diff", "--no-textconv", "--find-renames", "HEAD", "--")
+		scan := c.scanStatus(cwd)
+		statusResult, statusErr = scan.result, scan.err
+		parsed, churn, churnErr = scan.parsed, scan.churn, scan.churnErr
 	}()
 
 	go func() {
@@ -190,7 +216,7 @@ func (c *Core) baseStatus(cwd string) (GitStatus, error) {
 		// Untracked, non-ignored files count as all-insertions — the same files the
 		// diff panel folds into its workspace total. They're counted individually
 		// (git status collapses a wholly-untracked directory to one porcelain entry,
-		// which parseStatusOutput excludes from FileCount to avoid undercounting).
+		// which the tracked file count excludes to avoid undercounting).
 		// Best-effort: any failure degrades to the tracked-only counts rather than
 		// failing the whole refresh, matching how branch/forge/pending degrade.
 		untrackedIns, untrackedFiles = c.untrackedStats(cwd, maxUntrackedScanBytes)
@@ -203,9 +229,8 @@ func (c *Core) baseStatus(cwd string) (GitStatus, error) {
 
 	wg.Wait()
 
-	// A non-repo cwd fails all six probes; only status's failure is
-	// classified, and the other five results are dropped unread exactly as
-	// they were when the early return happened before they ran.
+	// A non-repo cwd fails every probe; only status's failure is
+	// classified, and the other results are dropped unread.
 	if statusErr != nil {
 		return GitStatus{}, statusErr
 	}
@@ -215,8 +240,8 @@ func (c *Core) baseStatus(cwd string) (GitStatus, error) {
 		}
 		return GitStatus{}, fmt.Errorf("git status failed: %s", strings.TrimSpace(statusResult.stderr))
 	}
-	if numstatErr != nil {
-		return GitStatus{}, numstatErr
+	if churnErr != nil {
+		return GitStatus{}, churnErr
 	}
 
 	// Populate the forge cache so any concurrent DetectForge call (e.g. through
@@ -227,9 +252,19 @@ func (c *Core) baseStatus(cwd string) (GitStatus, error) {
 	// one of the discarded failures, still leaves no entry behind.
 	forge := c.recordOrigin(cwd, origin, c.nowFn())
 
-	status := parseStatusOutput(statusResult.stdout, numstat.stdout)
-	status.Insertions += untrackedIns
-	status.FileCount += untrackedFiles
+	status := GitStatus{
+		Branch:      parsed.branch,
+		HasUpstream: parsed.hasUpstream,
+		AheadCount:  parsed.ahead,
+		BehindCount: parsed.behind,
+		HasChanges:  parsed.hasChanges,
+		Insertions:  churn.insertions + untrackedIns,
+		Deletions:   churn.deletions,
+		FileCount:   churn.files + untrackedFiles,
+	}
+	if parsed.detached && isFullCommitID(parsed.oid) {
+		status.HeadCommit = parsed.oid
+	}
 	status.IsRepo = true
 	status.HasOriginRemote = origin.known
 	status.Forge = forge
@@ -303,116 +338,6 @@ func (c *Core) CurrentBranch(cwd string) string {
 	return branch
 }
 
-// parseStatusOutput derives the porcelain-v2 fields (branch, ahead/behind,
-// changed paths) and folds in the tracked churn from `git diff HEAD --numstat`.
-// FileCount here counts only tracked and staged changes (porcelain paths plus
-// the numstat paths, which are a subset). Untracked entries are excluded and
-// counted individually by the caller via untrackedStats, because git status
-// collapses a wholly-untracked directory to a single porcelain entry and would
-// undercount. Untracked insertions are likewise added by the caller.
-func parseStatusOutput(statusStdout, headNumstat string) GitStatus {
-	var status GitStatus
-	paths := make(map[string]struct{})
-	// branch.oid is "(initial)" before the first commit; branch.head is
-	// "(detached)" on a detached HEAD.
-	oid, detached := "", false
-
-	for _, line := range strings.Split(statusStdout, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		switch {
-		case strings.HasPrefix(line, "# branch.oid "):
-			oid = strings.TrimSpace(strings.TrimPrefix(line, "# branch.oid "))
-		case strings.HasPrefix(line, "# branch.head "):
-			branch := strings.TrimSpace(strings.TrimPrefix(line, "# branch.head "))
-			if !strings.HasPrefix(branch, "(") {
-				status.Branch = branch
-			}
-			detached = branch == "(detached)"
-		case strings.HasPrefix(line, "# branch.upstream "):
-			status.HasUpstream = strings.TrimSpace(strings.TrimPrefix(line, "# branch.upstream ")) != ""
-		case strings.HasPrefix(line, "# branch.ab "):
-			status.AheadCount, status.BehindCount = parseAheadBehind(strings.TrimSpace(strings.TrimPrefix(line, "# branch.ab ")))
-		case !strings.HasPrefix(line, "#"):
-			status.HasChanges = true
-			// Untracked ('?') and ignored ('!') entries are excluded from
-			// FileCount here — untracked files are counted individually via
-			// ls-files in baseStatus because git status collapses a
-			// wholly-untracked directory to a single entry. Tracked and staged
-			// changes are counted from their porcelain paths.
-			if strings.HasPrefix(line, "? ") || strings.HasPrefix(line, "! ") {
-				continue
-			}
-			if path := parsePorcelainPath(line); path != "" {
-				paths[path] = struct{}{}
-			}
-		}
-	}
-
-	insertions, deletions := 0, 0
-	for _, entry := range parseNumstat(headNumstat) {
-		insertions += entry.Insertions
-		deletions += entry.Deletions
-		paths[entry.Path] = struct{}{}
-	}
-
-	if detached && isFullCommitID(oid) {
-		status.HeadCommit = oid
-	}
-	status.Insertions = insertions
-	status.Deletions = deletions
-	status.FileCount = len(paths)
-	return status
-}
-
-type numstatEntry struct {
-	Path       string
-	Insertions int
-	Deletions  int
-}
-
-func parseNumstat(stdout string) []numstatEntry {
-	var entries []numstatEntry
-	for _, line := range strings.Split(stdout, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		parts := strings.Split(line, "\t")
-		if len(parts) < 3 {
-			continue
-		}
-
-		path := normalizeNumstatPath(parts[len(parts)-1])
-		entries = append(entries, numstatEntry{
-			Path:       path,
-			Insertions: parseNumstatCount(parts[0]),
-			Deletions:  parseNumstatCount(parts[1]),
-		})
-	}
-	return entries
-}
-
-func parseNumstatCount(raw string) int {
-	if raw == "-" {
-		return 0
-	}
-	value, err := strconv.Atoi(raw)
-	if err != nil {
-		return 0
-	}
-	return value
-}
-
-func normalizeNumstatPath(path string) string {
-	if idx := strings.Index(path, " => "); idx >= 0 {
-		return strings.TrimSpace(path[idx+4:])
-	}
-	return strings.TrimSpace(path)
-}
-
 func parseAheadBehind(raw string) (int, int) {
 	fields := strings.Fields(raw)
 	if len(fields) != 2 {
@@ -421,21 +346,6 @@ func parseAheadBehind(raw string) (int, int) {
 	ahead, _ := strconv.Atoi(strings.TrimPrefix(fields[0], "+"))
 	behind, _ := strconv.Atoi(strings.TrimPrefix(fields[1], "-"))
 	return ahead, behind
-}
-
-func parsePorcelainPath(line string) string {
-	if strings.HasPrefix(line, "? ") || strings.HasPrefix(line, "! ") {
-		return strings.TrimSpace(line[2:])
-	}
-	if idx := strings.Index(line, "\t"); idx >= 0 {
-		fields := strings.Split(line[idx+1:], "\t")
-		return strings.TrimSpace(fields[0])
-	}
-	fields := strings.Fields(line)
-	if len(fields) == 0 {
-		return ""
-	}
-	return strings.TrimSpace(fields[len(fields)-1])
 }
 
 func combineDiffs(headDiff, cachedDiff string) string {

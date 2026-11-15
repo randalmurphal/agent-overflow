@@ -15,7 +15,7 @@ import FootnotePopoverHost from '../chat/FootnotePopoverHost.svelte';
 import { markdownFindText } from '../chat/markdown/markdownFindText';
 import { resetCodeSpanCacheForTest } from '../chat/markdown/codeSpanCache';
 import { __resetStreamdownCodeHostForTest } from '../chat/markdown/StreamdownCodeHost.svelte';
-import { countFindMatches, findNeedle, foldFindText } from '../../utils/findMatch';
+import { countFindMatches, findNeedle } from '../../utils/findMatch';
 import { findTextSegments } from '../../utils/findHighlights';
 import { isSuggestionMark, markSuggestionFences, type PlacedBlock } from '../../utils/suggestionMarks';
 
@@ -135,7 +135,7 @@ describe('a comment body with suggestions', () => {
     expect(shown(host)).toEqual([0, 1]);
     const dom = findTextSegments(host.querySelector('.markdown-body')!);
     const projected = markdownFindText(markSuggestionFences(body, blocks).source, { embeddedHtml: true, claimsCode: isSuggestionMark });
-    const count = (runs: readonly string[], query: string) => runs.reduce((total, run) => total + countFindMatches(foldFindText(run), findNeedle(query)), 0);
+    const count = (runs: readonly string[], query: string) => runs.reduce((total, run) => total + countFindMatches(run, findNeedle(query)), 0);
     for (const query of ['needle', 'proposed', 'listed', 'inside', 'note', 'end', 'ao-suggestion']) {
       expect(count(projected.runs, query), query).toBe(count(dom, query));
     }

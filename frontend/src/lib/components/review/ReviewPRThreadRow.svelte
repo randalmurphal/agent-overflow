@@ -24,7 +24,7 @@
   } from '../../utils/reviewThreadStyle';
   import { relativeTime } from '../../utils/format';
   import { jumpPulse } from '../../utils/reviewJumpPulse';
-  import { findThreadCommentKey, reviewCommentKey } from '../../utils/reviewFindScan';
+  import { findThreadCommentKey, reviewCommentKey } from '../../utils/reviewFindIdentity';
   import type { ReviewThread } from '../../types/models';
   import type { CommentAnchor, ReviewPaneState } from '../../stores/reviewPane.svelte';
   import { commentWriteKey } from '../../stores/reviewCommentWrites.svelte';

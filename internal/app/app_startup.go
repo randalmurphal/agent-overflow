@@ -263,6 +263,11 @@ func (a *App) startUnattendedWork() error {
 	// spawns `<binary> --version`. See app_provider_binary_watch.go.
 	a.startProviderBinaryWatcher()
 
+	// Check for newer provider CLIs now and hourly. Behind the gate
+	// because a check runs `claude doctor` and reaches the release hosts.
+	// See app_provider_update.go.
+	a.providerUpdateService().Start()
+
 	// Start the background `git fetch` cadence so ahead/behind counts
 	// track the remote instead of the user's last manual fetch. Reads
 	// Settings.BackgroundGitFetch live each tick; skipped entirely in

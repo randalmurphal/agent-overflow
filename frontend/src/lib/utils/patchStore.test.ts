@@ -1,483 +1,204 @@
-import { describe, expect, it, vi } from 'vitest';
-import { conflictPatchFile } from './conflictFile';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { diffSourceKey } from './diffSourceKey';
 import { contentKey } from './fnv1a';
-import {
-  buildPatchDisplayRows,
-  buildSplitDisplayRows,
-  parsePatchFiles,
-  type PatchDisplayRow,
-  type PatchFile,
-} from './patchFiles';
-import {
-  anchorLines,
-  anchorRows,
-  completeAnchor,
-  anchorLinesMatch,
-  anchorRow,
-  displayRowCount,
-  FILE_START,
-  materializeRows,
-  nearestLineRow,
-  RowWalker,
-  rowStartAt,
-  splitRowCount,
-} from './patchRows';
-import { keptText, PatchParser, parseReviewFiles, reviewFileFromPatchFile, type ReviewFile } from './patchStore';
+import { patchTextHeldBytes } from './patchMemory.svelte';
+import { PatchParser, sourceHash, type ReviewFile } from './patchParser';
+import { LINE_ADD, LINE_CONTEXT, LINE_HUNK, LINE_MARKER, PatchStore } from './patchStore';
+import { MIXED_PATCH, parseInChunks, randomPatch, sparselyWide, UNICODE_PATCH } from '../../test/helpers/patchFixtures';
+import { packText, patchChunks, textKey, type PatchForm, type StreamedChunk } from '../../test/helpers/streamedPatch';
 
-// The compact store must describe every patch exactly as parsePatchFiles +
-// buildPatchDisplayRows do: same files, same lines, same rows, same row ids,
-// same intraline pairing, same highlight keys — at any chunking.
+// Whatever form the chunks arrive in and wherever they are cut, the store
+// reads exactly as a store of the whole plain text.
 
-const mixed = [
-  'preamble line before any file',
-  'diff --git a/src/app.ts b/src/app.ts',
-  'index 1111111..2222222 100644',
-  '--- a/src/app.ts',
-  '+++ b/src/app.ts',
-  '@@ -10,6 +10,7 @@ export function app() {',
-  ' const a = 1;',
-  '-const b = 2;',
-  '-const c = 3;',
-  '+const b = 20;',
-  '+const c = 30;',
-  '+const d = 40;',
-  ' const e = 5;',
-  '@@ -40,3 +41,3 @@',
-  ' tail();',
-  '--- removed "-- note" reads like a header',
-  '+++ added "++i" reads like a header',
-  '-old();',
-  '+new();',
-  '\\ No newline at end of file',
-  'diff --git a/docs/readme.md b/docs/renamed.md',
-  'similarity index 90%',
-  'rename from docs/readme.md',
-  'rename to docs/renamed.md',
-  'index 3333333..4444444 100644',
-  '--- a/docs/readme.md',
-  '+++ b/docs/renamed.md',
-  '@@ -1,3 +1,3 @@',
-  ' # Title',
-  '-héllo wörld',
-  '+hello world ✓',
-  ' end',
-  'diff --git a/img.png b/img.png',
-  'index 5555555..6666666 100644',
-  'Binary files a/img.png and b/img.png differ',
-  'diff --git a/new.txt b/new.txt',
-  'new file mode 100644',
-  'index 0000000..7777777',
-  '--- /dev/null',
-  '+++ b/new.txt',
-  '@@ -0,0 +1,2 @@',
-  '+one\r',
-  '+two',
-  'diff --git a/gone.txt b/gone.txt',
-  'deleted file mode 100644',
-  'index 8888888..0000000',
-  '--- a/gone.txt',
-  '+++ /dev/null',
-  '@@ -1,2 +0,0 @@',
-  '-first',
-  '-second',
-  'diff --git a/link b/link',
-  'deleted file mode 100644',
-  'index 9999999..0000000',
-  '--- a/link',
-  '+++ /dev/null',
-  '@@ -1 +0,0 @@',
-  '-target',
-  '\\ No newline at end of file',
-  'diff --git a/link b/link',
-  'new file mode 120000',
-  'index 0000000..aaaaaaa',
-  '--- /dev/null',
-  '+++ b/link',
-  '@@ -0,0 +1 @@',
-  '+other-target',
-  'diff --git a/mode.sh b/mode.sh',
-  'old mode 100644',
-  'new mode 100755',
-  'diff --git a/z.go b/z.go',
-  '--- a/z.go',
-  '+++ b/z.go',
-  '@@ -1,2 +1,2 @@',
-  '-package z',
-  '+package zz',
-  ' ',
-  '',
-  '@@ -20,2 +20,3 @@ func Z() {',
-  ' 	return',
-  '+	// more',
-  ' }',
-].join('\n') + '\n';
+const disposers: (() => void)[] = [];
 
-function randomPatch(seed: number): string {
-  let state = seed;
-  const rand = (n: number) => {
-    state = (Math.imul(state, 1103515245) + 12345) >>> 0;
-    return state % n;
-  };
-  const out: string[] = [];
-  const fileCount = 1 + rand(6);
-  for (let file = 0; file < fileCount; file += 1) {
-    const path = `dir${rand(3)}/file${file}.${['ts', 'go', 'md'][rand(3)]}`;
-    out.push(`diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`);
-    let oldLine = 1 + rand(5);
-    let newLine = oldLine;
-    const hunks = 1 + rand(4);
-    for (let hunk = 0; hunk < hunks; hunk += 1) {
-      const body: string[] = [];
-      let oldCount = 0;
-      let newCount = 0;
-      const lines = 1 + rand(40);
-      for (let line = 0; line < lines; line += 1) {
-        const pick = rand(4);
-        // Some lines' text starts with "--" or "++", so the line reads
-        // like a file header with its prefix.
-        const lead = ['', '', '', '--', '++'][rand(5)];
-        const text = `${lead}line ${rand(1000)} ${'x'.repeat(rand(30))}`;
-        if (pick === 0) {
-          body.push(`-${text}`);
-          oldCount += 1;
-        } else if (pick === 1) {
-          body.push(`+${text}`);
-          newCount += 1;
-        } else {
-          body.push(` ${text}`);
-          oldCount += 1;
-          newCount += 1;
+afterEach(() => {
+  for (const dispose of disposers.splice(0)) dispose();
+});
+
+// Every chunk carries its key, so the parser hashes none of the text.
+function streamed(chunks: readonly StreamedChunk[]): PatchParser {
+  const append = vi.spyOn(sourceHash, 'append');
+  try {
+    const parser = new PatchParser();
+    disposers.push(() => parser.store.dispose());
+    for (const chunk of chunks) parser.append(chunk.data, chunk);
+    parser.end();
+    expect(append).not.toHaveBeenCalled();
+    return parser;
+  } finally {
+    append.mockRestore();
+  }
+}
+
+function expectSameAsPlain(patch: string, parser: PatchParser, label: string): void {
+  const reference = new PatchParser();
+  reference.append(patch);
+  reference.end();
+  disposers.push(() => reference.store.dispose());
+  const store = parser.store;
+  expect(store.lineCount, label).toBe(reference.store.lineCount);
+  for (let line = 0; line < store.lineCount; line += 1) expect(store.text(line), `${label} line ${line}`).toBe(reference.store.text(line));
+  for (let start = 0; start < store.lineCount; start += 3) {
+    for (const end of [start + 1, start + 4, store.lineCount]) {
+      const to = Math.min(end, store.lineCount);
+      expect(store.textRange(start, to), `${label} range ${start}-${to}`).toBe(reference.store.textRange(start, to));
+    }
+  }
+  expect(parser.sourceKey(), label).toBe(diffSourceKey(patch));
+  const summary = (file: ReviewFile) => ({
+    path: file.path,
+    kind: file.kind,
+    additions: file.additions,
+    deletions: file.deletions,
+    header: file.header,
+    lines: file.body.toPatchLines(),
+    text: file.body.patchText(),
+    key: file.body.contentKey(),
+  });
+  expect(parser.files.map(summary), label).toEqual(reference.files.map(summary));
+  for (const file of parser.files) expect(file.body.contentKey(), label).toBe(contentKey(file.body.patchText()));
+}
+
+describe('PatchStore', () => {
+  it('reads plain lines as stored at any chunking', () => {
+    for (const patch of [MIXED_PATCH, UNICODE_PATCH]) {
+      for (const size of [1, 7, 64, 4096]) {
+        const store = streamed(patchChunks(patch, size)).store;
+        for (let start = 0; start < store.lineCount; start += 3) {
+          for (const end of [start, start + 1, start + 4, store.lineCount]) {
+            const to = Math.min(end, store.lineCount);
+            expect(store.storedRange(start, to), `${size} ${start}-${to}`).toBe(store.textRange(start, to));
+          }
         }
       }
-      out.push(`@@ -${oldLine},${oldCount} +${newLine},${newCount} @@`, ...body);
-      const between = rand(8);
-      oldLine += oldCount + between;
-      newLine += newCount + between;
     }
-  }
-  return out.join('\n') + (rand(2) === 0 ? '\n' : '');
-}
-
-function patchTextOf(file: PatchFile): string {
-  return file.lines
-    .map((line) => (line.type === 'marker' || line.fold !== undefined ? '\\ marker' : line.content))
-    .join('\n');
-}
-
-function withoutLineIndex(rows: PatchDisplayRow[]): PatchDisplayRow[] {
-  return rows.map(({ lineIndex: _lineIndex, ...row }) => row);
-}
-
-function expectSameFile(review: ReviewFile, parsed: PatchFile): void {
-  expect({
-    path: review.path,
-    kind: review.kind,
-    additions: review.additions,
-    deletions: review.deletions,
-    suppressGaps: review.suppressGaps === true,
-  }).toEqual({
-    path: parsed.path,
-    kind: parsed.kind,
-    additions: parsed.additions,
-    deletions: parsed.deletions,
-    suppressGaps: parsed.suppressGaps === true,
   });
-  expect(review.body.toPatchLines()).toEqual(parsed.lines);
-  expect(review.body.patchText()).toBe(patchTextOf(parsed));
-  expect(review.body.contentKey()).toBe(contentKey(patchTextOf(parsed)));
 
-  for (const newSideTotal of [undefined, 0, 3, 50, 10_000]) {
-    for (const suppressGaps of [false, true]) {
-      const reviewVariant: ReviewFile = { ...review, newSideTotal, suppressGaps: suppressGaps || review.suppressGaps };
-      const expected = buildPatchDisplayRows(parsed.lines, newSideTotal, suppressGaps || parsed.suppressGaps === true);
-      expect(displayRowCount(reviewVariant)).toBe(expected.length);
-      expect(withoutLineIndex(materializeRows(reviewVariant, FILE_START, expected.length + 5).rows)).toEqual(expected);
-      for (let start = 0; start < expected.length; start += 7) {
-        const count = 11;
-        const rows = materializeRows(reviewVariant, rowStartAt(reviewVariant, start), count).rows;
-        expect(withoutLineIndex(rows)).toEqual(expected.slice(start, start + count));
-        expect(splitRowCount(reviewVariant, rowStartAt(reviewVariant, start), count))
-          .toBe(buildSplitDisplayRows(expected.slice(start, start + count)).length);
+  it('reads as the plain store does at any chunking and form', () => {
+    for (const patch of [UNICODE_PATCH, `${UNICODE_PATCH}\n`, MIXED_PATCH]) {
+      for (const form of ['plain', 'packed'] as const satisfies readonly PatchForm[]) {
+        for (const size of [1, 2, 3, 5, 7, 64, 100, 10_000]) {
+          expectSameAsPlain(patch, streamed(patchChunks(patch, size, form)), `${form} ${size}`);
+        }
+        expectSameAsPlain(patch, streamed(patchChunks(patch, (index) => [61, 2, 173, 3][index % 4], form)), `${form} varied`);
       }
     }
-  }
-}
-
-function expectParity(patch: string, reviewFiles: ReviewFile[]): void {
-  const parsed = parsePatchFiles(patch);
-  expect(reviewFiles.map((file) => file.path)).toEqual(parsed.map((file) => file.path));
-  reviewFiles.forEach((file, index) => expectSameFile(file, parsed[index]));
-}
-
-function parseInChunks(patch: string, sizes: (index: number) => number): { parser: PatchParser; files: ReviewFile[] } {
-  const parser = new PatchParser();
-  let pos = 0;
-  for (let index = 0; pos < patch.length; index += 1) {
-    const size = Math.max(1, sizes(index));
-    parser.append(patch.slice(pos, pos + size));
-    pos += size;
-  }
-  parser.end();
-  return { parser, files: parser.files };
-}
-
-describe('PatchParser', () => {
-  it('describes a patch exactly as parsePatchFiles and buildPatchDisplayRows do', () => {
-    expectParity(mixed, parseReviewFiles(mixed));
   });
 
-  it('reads header lookalikes inside a hunk as the lines they are', () => {
-    const [file] = parseReviewFiles(mixed);
-    const lines = file.body.toPatchLines();
-    const removed = lines.findIndex((line) => line.content.startsWith('--- removed'));
-    const added = lines.findIndex((line) => line.content.startsWith('+++ added'));
-    expect(lines[removed].type).toBe('del');
-    expect(lines[added].type).toBe('add');
-    expect(file.path).toBe('src/app.ts');
-    expect([file.additions, file.deletions]).toEqual([5, 4]);
-  });
-
-  it('describes random patches exactly', () => {
-    for (let seed = 1; seed <= 40; seed += 1) {
-      const patch = randomPatch(seed);
-      expectParity(patch, parseReviewFiles(patch));
+  // Packing needs wide lines to be sparse in their chunk, so these
+  // patches hold ASCII files between the wide ones.
+  it('reads packed chunks as the plain store does', () => {
+    for (const base of [UNICODE_PATCH, `${UNICODE_PATCH}\n`, MIXED_PATCH]) {
+      const patch = sparselyWide(base, 40);
+      for (const size of [4096, 9000, 16 * 1024, (index: number) => [6100, 2, 9000, 3][index % 4]]) {
+        const chunks = patchChunks(patch, size, 'packed');
+        const label = `${base.slice(0, 12)} ${typeof size === 'number' ? size : 'varied'}`;
+        expect(chunks.filter((chunk) => chunk.wide !== undefined).length, label).toBeGreaterThan(0);
+        expectSameAsPlain(patch, streamed(chunks), label);
+      }
     }
   });
 
-  it('gives the same result at every chunking, including mid-line cuts', () => {
-    const whole = parseReviewFiles(mixed);
-    for (const size of [1, 2, 3, 5, 17, 64, 1000]) {
-      const { parser, files } = parseInChunks(mixed, () => size);
-      expect(parser.sourceKey()).toBe(diffSourceKey(mixed));
-      expectParity(mixed, files);
-      expect(files.map((file) => file.body.contentKey())).toEqual(whole.map((file) => file.body.contentKey()));
+  // A line longer than the read arrives in plain pieces (each is all of
+  // one wide line), and its end can arrive packed with the lines after it.
+  it('reads a wide line whose pieces arrive plain and whose end arrives packed', () => {
+    const long = 'ü✓😀'.repeat(230);
+    const tail = Array.from({ length: 120 }, (_, index) => `+ascii line ${index}`);
+    const header = 'diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1,121 @@\n';
+    const patch = `${header}-${long}\n${tail.join('\n')}\n`;
+    const lineStart = new TextEncoder().encode(header).length;
+    const lineEnd = lineStart + new TextEncoder().encode(`-${long}`).length;
+    // Windows whose last piece of the line is short.
+    for (const size of [690, 1010, 1020]) {
+      const chunks = patchChunks(patch, size, 'packed');
+      const pieces = chunks.filter((chunk) => chunk.nextOffset > lineStart && chunk.offset < lineEnd);
+      expect(pieces.length, `${size}`).toBeGreaterThan(1);
+      expect(pieces.slice(0, -1).every((chunk) => chunk.wide === undefined), `${size}`).toBe(true);
+      expect(pieces[pieces.length - 1].wide, `${size}`).toBeDefined();
+      expectSameAsPlain(patch, streamed(chunks), `packed ${size}`);
     }
   });
 
-  it('reads a line longer than several chunks', () => {
-    const long = 'x'.repeat(5000);
-    const patch = `diff --git a/min.js b/min.js\n--- a/min.js\n+++ b/min.js\n@@ -1 +1 @@\n-${long}\n+${long}y\n`;
-    const { files } = parseInChunks(patch, (index) => (index % 2 === 0 ? 700 : 1300));
-    expectParity(patch, files);
-    const rows = materializeRows(files[0], FILE_START, 10).rows;
-    expect(rows.filter((row) => !row.gap).map((row) => row.line.content.length)).toEqual([5001, 5002]);
+  it('marks wide lines past the first block of line kinds', () => {
+    const lines = Array.from({ length: 3000 }, (_, index) => (index % 50 === 0 ? `+ligne ${index} ✓` : `+line ${index}`));
+    const patch = `diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -0,0 +1,3000 @@\n${lines.join('\n')}\n`;
+    const chunks = patchChunks(patch, 4096, 'packed');
+    expect(chunks.filter((chunk) => chunk.wide !== undefined).length).toBeGreaterThan(3);
+    expectSameAsPlain(patch, streamed(chunks), 'packed');
   });
 
-  it('publishes a file only once the next section shows it is final', () => {
+  it('decodes only the lines the chunk marks', () => {
     const parser = new PatchParser();
-    const lines = mixed.split('\n');
-    const deletedLink = lines.indexOf('diff --git a/link b/link');
-    parser.append(lines.slice(0, deletedLink + 6).join('\n') + '\n');
-    const before = parser.files.map((file) => file.path);
-    expect(before).not.toContain('link');
-    parser.append(lines.slice(deletedLink + 6).join('\n'));
+    const data = packText('+é\n+ü\n');
+    parser.append(data, { offset: 0, nextOffset: data.length, wide: [5], key: textKey('+é\n+ü\n') });
     parser.end();
-    const link = parser.files.filter((file) => file.path === 'link');
-    expect(link).toHaveLength(1);
-    expect(link[0].kind).toBe('modified');
-    expect(parser.files.slice(0, before.length).map((file) => file.path)).toEqual(before);
+    expect([parser.store.text(0), parser.store.text(1)]).toEqual([data.slice(0, 3), '+ü']);
   });
 
-  it('keys an empty patch as nothing', () => {
-    const parser = new PatchParser();
-    parser.end();
-    expect(parser.files).toEqual([]);
-    expect(parser.sourceKey()).toBe('');
+  it('records the kinds and hunk starts of explicitly typed lines', () => {
+    const store = PatchStore.fromLines([
+      { content: '@@ -3,1 +4,2 @@ not parsed', kind: { oldStart: 30, newStart: 40 } },
+      { content: ' same', kind: LINE_CONTEXT },
+      { content: '+new', kind: LINE_ADD },
+      { content: '+++++++ fold', kind: LINE_MARKER, fold: { id: 1, lines: 3 } },
+    ]);
+    expect([0, 1, 2, 3].map((line) => store.kind(line))).toEqual([LINE_HUNK, LINE_CONTEXT, LINE_ADD, LINE_MARKER]);
+    // The starts are the ones given, not the header text's.
+    expect([store.hunkOldStart(0), store.hunkNewStart(0)]).toEqual([30, 40]);
+    expect(store.fold(3)).toEqual({ id: 1, lines: 3 });
+    expect(() => store.hunkOldStart(1)).toThrow('not a hunk header');
   });
 
-  it('records what each header says as it parses, at every chunking, and the same as a PatchFile of it', () => {
-    const patch = [
-      'diff --git a/src/old.ts b/src/new.ts',
-      'similarity index 90%',
-      'rename from src/old.ts',
-      'rename to src/new.ts',
-      'index 1111111..2222222 100644',
-      '--- a/src/old.ts',
-      '+++ b/src/new.ts',
-      '@@ -1,1 +1,1 @@',
-      '-rename from not/a/header',
-      '+index 3333333..4444444 100644',
-      'diff --git a/lib b/lib',
-      'index abcdef0..1234567 160000',
-      '--- a/lib',
-      '+++ b/lib',
-      '@@ -1 +1 @@',
-      '-Subproject commit abcdef0',
-      '+Subproject commit 1234567',
-      'diff --git a/added.ts b/added.ts',
-      'new file mode 100644',
-      'index 0000000..5555555',
-      '--- /dev/null',
-      '+++ b/added.ts',
-      '@@ -0,0 +1 @@',
-      '+x',
-      'diff --git a/logo.png b/logo.png',
-      'index 6666666..7777777 100644',
-      'Binary files a/logo.png and b/logo.png differ',
-    ].join('\n');
-    const expected = [
-      { sections: 1, oldPath: 'src/old.ts', indexed: true, oldBlob: '1111111', newBlob: '2222222', submodule: false, binary: false },
-      { sections: 1, oldPath: null, indexed: true, oldBlob: 'abcdef0', newBlob: '1234567', submodule: true, binary: false },
-      { sections: 1, oldPath: null, indexed: true, oldBlob: null, newBlob: '5555555', submodule: false, binary: false },
-      { sections: 1, oldPath: null, indexed: true, oldBlob: '6666666', newBlob: '7777777', submodule: false, binary: true },
+  it('answers its line count and size read-only', () => {
+    const store = PatchStore.fromLines([{ content: '+a', kind: LINE_ADD }]);
+    // @ts-expect-error lineCount is read-only.
+    expect(() => { store.lineCount = 5; }).toThrow(TypeError);
+    // @ts-expect-error storedSize is read-only.
+    expect(() => { store.storedSize = 5; }).toThrow(TypeError);
+    expect([store.lineCount, store.storedSize]).toEqual([1, 3]);
+  });
+
+  // The line-start buffer every store shares grows for a chunk of many
+  // lines. However a parse stops, the next parse that needs it grown
+  // grows it again from its first size.
+  it('gives up the grown line-start buffer however a parse stops', () => {
+    const many = Array.from({ length: 5000 }, (_, index) => `+line ${index}`).join('\n') + '\n';
+    const stops: [string, (parser: PatchParser) => void][] = [
+      ['end', (parser) => parser.end()],
+      ['dispose mid-stream', (parser) => parser.store.dispose()],
+      ['dispose after a refused chunk', (parser) => {
+        expect(() => parser.append('+b\n', { offset: 0, nextOffset: 3, wide: [1] })).toThrow('without its key');
+        parser.store.dispose();
+      }],
     ];
-    for (const size of [1, 7, 64, 10_000]) expect(parseInChunks(patch, () => size).files.map((file) => file.header)).toEqual(expected);
-    expect(parsePatchFiles(patch).map((file) => reviewFileFromPatchFile(file).header)).toEqual(expected);
-  });
-
-  // A tripwire: JS cannot see whether a string is a slice holding its
-  // chunk alive, only whether it went through the copy.
-  it('copies every string a file keeps from the patch\'s chunks', () => {
-    const own = vi.spyOn(keptText, 'own').mockImplementation((text) => `owned:${text}`);
-    try {
-      const files = parseReviewFiles([
-        'diff --git a/src/old.ts b/src/new.ts',
-        'rename from src/old.ts',
-        'rename to src/new.ts',
-        'index 1111111..2222222 100644',
-        '--- a/src/old.ts',
-        '+++ b/src/new.ts',
-        '@@ -1 +1 @@',
-        '-a',
-        '+b',
-        'diff --git a/link b/link',
-        'deleted file mode 120000',
-        'index 3333333..0000000',
-        '--- a/link',
-        '+++ /dev/null',
-        '@@ -1 +0,0 @@',
-        '-target',
-        'diff --git a/link b/link',
-        'new file mode 100644',
-        'index 0000000..4444444',
-        '--- /dev/null',
-        '+++ b/link',
-        '@@ -0,0 +1 @@',
-        '+file',
-      ].join('\n'));
-      expect(files.map((file) => [file.path, file.header?.oldPath ?? null, file.header?.oldBlob ?? null, file.header?.newBlob ?? null])).toEqual([
-        ['owned:src/new.ts', 'owned:src/old.ts', 'owned:1111111', 'owned:2222222'],
-        // A type change: one file, its deleted section's header.
-        ['owned:link', null, 'owned:3333333', null],
-      ]);
-    } finally {
-      own.mockRestore();
+    for (const [name, stop] of stops) {
+      const stopped = new PatchParser();
+      stopped.append(many);
+      stop(stopped);
+      const sizes: number[] = [];
+      vi.stubGlobal('Uint32Array', class extends Uint32Array {
+        constructor(...args: ConstructorParameters<typeof Uint32Array>) {
+          super(...args);
+          sizes.push(this.length);
+        }
+      });
+      try {
+        const next = new PatchParser();
+        next.append(many);
+        next.store.dispose();
+      } finally {
+        vi.unstubAllGlobals();
+      }
+      expect(sizes, name).toContain(8192);
     }
   });
 
-  it('holds one copy of the text and a few bytes per line', () => {
+  it('holds one copy of the text', () => {
+    const base = patchTextHeldBytes();
     const patch = randomPatch(7).repeat(50);
     const { parser } = parseInChunks(patch, () => 4096);
-    const lines = patch.split('\n').length;
-    expect(parser.store.heldBytes()).toBeLessThan(patch.length + lines * 6 + 4096);
-  });
-});
-
-describe('conflict pseudo-files', () => {
-  it('rows match the PatchFile rows, folds and markers included', () => {
-    const content = [
-      'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h',
-      '<<<<<<< ours', 'mine', '=======', 'theirs', '>>>>>>> theirs',
-      'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p',
-    ].join('\n');
-    for (const expandedFolds of [undefined, new Set([0]), new Set([0, 1])]) {
-      const parsed = conflictPatchFile('c.txt', content, { baseLabel: 'main', headLabel: 'pr', expandedFolds, notes: ['CONFLICT (content): c.txt'] });
-      expectSameFile(reviewFileFromPatchFile(parsed), parsed);
-    }
-  });
-});
-
-describe('split-view halves of a context row', () => {
-  // Old 1..3, new 1..3: 1 and 3 unchanged, 2 replaced.
-  const file = parseReviewFiles([
-    'diff --git a/src/app.ts b/src/app.ts',
-    'index 1111111..2222222 100644',
-    '--- a/src/app.ts',
-    '+++ b/src/app.ts',
-    '@@ -1,3 +1,4 @@',
-    ' alpha',
-    '-beta',
-    '+beta two',
-    '+inserted',
-    ' gamma',
-  ].join('\n'))[0];
-
-  it('names the context row from either half with both numbers; one number names it only for a forge thread', () => {
-    const gamma = anchorRow(file, { side: 'context', oldLine: 3, newLine: 4 });
-    expect(gamma).toBeGreaterThan(0);
-    expect(anchorRow(file, { side: 'old', oldLine: 3, newLine: 4 })).toBe(gamma);
-    expect(anchorRow(file, { side: 'new', oldLine: 3, newLine: 4 })).toBe(gamma);
-    // A saved draft with one number on an unchanged line names no row.
-    expect(anchorRow(file, { side: 'old', oldLine: 3 })).toBe(-1);
-    expect(anchorRow(file, { side: 'new', newLine: 4 })).toBe(-1);
-    expect(anchorRow(file, { side: 'old', oldLine: 3 }, true)).toBe(gamma);
-    expect(anchorRow(file, { side: 'new', newLine: 4 }, true)).toBe(gamma);
-    expect(anchorRow(file, { side: 'old', oldLine: 2 })).toBeGreaterThan(0);
-    expect(anchorRow(file, { side: 'old', oldLine: 4 }, true)).toBe(-1);
-  });
-
-  it('completes a half to both numbers, and leaves a changed line as it is', () => {
-    expect(completeAnchor(file, { side: 'old' as const, oldLine: 3 })).toEqual({ side: 'old', oldLine: 3, newLine: 4 });
-    expect(completeAnchor(file, { side: 'new' as const, newLine: 4 })).toEqual({ side: 'new', oldLine: 3, newLine: 4 });
-    expect(completeAnchor(file, { side: 'old' as const, oldLine: 2 })).toEqual({ side: 'old', oldLine: 2 });
-    expect(completeAnchor(file, { side: 'new' as const, newLine: 9 })).toEqual({ side: 'new', newLine: 9 });
-  });
-
-  it('agrees with the membership check, strict and loose', () => {
-    const lines = anchorLines(file);
-    for (const anchor of [
-      { side: 'old' as const, oldLine: 3 },
-      { side: 'new' as const, newLine: 4 },
-      { side: 'old' as const, oldLine: 3, newLine: 4 },
-      { side: 'new' as const, oldLine: 3, newLine: 4 },
-      { side: 'old' as const, oldLine: 2 },
-      { side: 'new' as const, newLine: 3 },
-      { side: 'context' as const, oldLine: 1, newLine: 1 },
-      { side: 'old' as const, oldLine: 4 },
-      { side: 'new' as const, newLine: 5 },
-      { side: 'context' as const, oldLine: 3, newLine: 3 },
-    ]) {
-      for (const loose of [false, true]) {
-        expect(anchorLinesMatch(lines, anchor, loose), `${JSON.stringify(anchor)} ${loose}`).toBe(anchorRow(file, anchor, loose) >= 0);
-      }
-    }
-  });
-
-  it('counts the rows an anchor names and the place of the one at a line', () => {
-    expect(anchorRows(file, { side: 'old', oldLine: 3, newLine: 4 })).toMatchObject({ count: 1, occurrence: 0, context: true });
-    expect(anchorRows(file, { side: 'new', newLine: 9 })).toMatchObject({ count: 0, row: -1 });
-  });
-});
-
-describe('row lookups', () => {
-  const file = parseReviewFiles(mixed)[0];
-  const rows = buildPatchDisplayRows(parsePatchFiles(mixed)[0].lines);
-
-  it('finds the row a comment anchor names', () => {
-    rows.forEach((row, index) => {
-      if (row.gap) return;
-      const side = row.side;
-      const expected = rows.findIndex((candidate) => !candidate.gap && candidate.side === side
-        && (side === 'old' ? candidate.oldLine === row.oldLine
-          : side === 'new' ? candidate.newLine === row.newLine
-            : candidate.oldLine === row.oldLine && candidate.newLine === row.newLine));
-      expect(anchorRow(file, { side, oldLine: row.oldLine, newLine: row.newLine })).toBe(expected);
-      expect(expected).toBeLessThanOrEqual(index);
-    });
-    expect(anchorRow(file, { side: 'new', newLine: 9999 })).toBe(-1);
-  });
-
-  it('finds the nearest row on a side', () => {
-    expect(nearestLineRow(file, 'new', 12)).toBe(rows.findIndex((row) => row.newLine === 12));
-    expect(nearestLineRow(file, 'old', 11)).toBe(rows.findIndex((row) => row.oldLine === 11 && row.newLine === 0));
-    expect(nearestLineRow(file, 'new', 1)).toBe(rows.findIndex((row) => row.newLine > 0));
-  });
-
-  it('walks rows with the ids buildPatchDisplayRows assigns', () => {
-    const walker = new RowWalker(file);
-    const ids: string[] = [];
-    while (walker.next()) ids.push(walker.rowId());
-    expect(ids).toEqual(rows.map((row) => row.id));
+    disposers.push(() => parser.store.dispose());
+    expect(patchTextHeldBytes() - base).toBe(patch.length);
   });
 });

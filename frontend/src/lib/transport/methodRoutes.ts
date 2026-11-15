@@ -62,6 +62,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	930267104: 'thread', // CancelThreadTransfer
 	2490904523: 'thread', // CancelThreadWake
 	2347956003: 'home', // CheckForUpdate
+	987486764: 'selected', // CheckProviderUpdates
 	2932719708: 'thread', // CheckThreadImportUpdates
 	16360282: 'thread', // CleanCodexBackgroundTerminals
 	544013229: 'home', // ClearBrowserSiteData
@@ -160,6 +161,8 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	471350242: 'project', // GetProjectWorktreeSetup
 	84914540: 'home', // GetProviderLoginState
 	3829328996: 'home', // GetProviderStatuses
+	2744542956: 'selected', // GetProviderUpdateNotes
+	563257916: 'selected', // GetProviderUpdates
 	447579616: 'home', // GetPushSenderStatus
 	3079581691: 'thread', // GetQueueState
 	3325141610: 'home', // GetRateLimitsSnapshots
@@ -345,6 +348,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1797221017: 'selected', // ReadAloudSource
 	2036690300: 'selected', // ReadPipelineStages
 	2473150982: 'home', // ReadReviewDiff
+	4058838878: 'home', // ReadReviewDiffPacked
 	3285994337: 'thread', // ReadShellAttachmentOutput
 	2424974671: 'thread', // ReadThreadRemoteLog
 	2274850917: 'home', // RecheckClaudeAccount
@@ -406,6 +410,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2284519219: 'home', // RevokeAccessSession
 	1262689694: 'home', // RunPRCIAction
 	3964218798: 'home', // RunPipelineAction
+	4161672510: 'selected', // RunProviderUpdate
 	651196145: 'thread', // RunThreadShellCommand
 	2886446326: 'thread', // RunningBackgroundAgents
 	2182723789: 'thread', // SaveAttachment

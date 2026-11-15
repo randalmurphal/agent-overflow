@@ -1,4 +1,4 @@
-import type { ReviewFile } from './patchStore';
+import type { ReviewFile } from './patchParser';
 
 // The review diff's media row: a binary file's images (or its sizes), or a
 // text SVG shown rendered. Its height is reserved from the image area's

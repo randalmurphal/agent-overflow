@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { lineLink, linePositionAt } from './reviewLineLink';
-import { parseReviewFiles } from './patchStore';
+import { parseReviewFiles } from './patchParser';
 
 // Lines 1-3 unchanged, 4 removed, 5-6 (new 4-5) added, then unchanged;
 // a second hunk, a line ahead on the new side, removes one.

@@ -9,7 +9,7 @@
   import type { DiffReviewComment } from '../../types/models';
   import { draftRange, rangeLabel } from '../../utils/reviewRange';
   import { jumpPulse } from '../../utils/reviewJumpPulse';
-  import { findDraftKey } from '../../utils/reviewFindScan';
+  import { findDraftKey } from '../../utils/reviewFindIdentity';
 
   // The reader's own draft comment on the diff surface: the same card
   // shape as a PR thread, with an accent edge in place of a state edge

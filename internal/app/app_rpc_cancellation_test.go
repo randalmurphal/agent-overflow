@@ -38,6 +38,7 @@ var callerBoundMethods = map[string]string{
 	"SearchPRCILog":             "local file read",
 	"MintDictationChunkTicket":  "in-memory snapshot",
 	"ReadReviewDiff":            "stream released by cleanup",
+	"ReadReviewDiffPacked":      "stream released by cleanup",
 	"OpenEditDiff":              "store read; stream released by cleanup",
 	"OpenTurnEditsDiff":         "store read; stream released by cleanup",
 	"SubscribePRList":           "store read; subscription released by cleanup",

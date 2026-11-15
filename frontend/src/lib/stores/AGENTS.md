@@ -122,6 +122,22 @@ gap on `pr:ci_log`. The log view reads lines through
 `ciLogBlocks.svelte.ts`, a bounded block cache that keeps a block's lines
 across a version only within the index's `stableLines`.
 
+A workspace's git status has four writers (the `GitStatusSubscribe` reply,
+`git:status` frames, `refreshGitStatus` and the checkout answer of
+`withCheckoutAnswer`), and every status carries the `seq` its backend
+process took before its reads began. `gitStatusStore.svelte.ts#applyStatus`
+is the only way a status reaches the store, and orders it by the seq of the
+value the key holds: below it nothing is written, equal to it the held value
+stays (`keepValue`: an error clears, no reader wakes), above it the status
+applies. The entity store drops the value on every transport edge of the
+key's backend, which is what lets a restarted backend's count begin again;
+a re-source on the same connection keeps the value and orders against it.
+A frame that overtakes its subscribe reply is kept, newest per
+backend and cwd, while a subscribe is in flight on that backend, and the
+reply applies it. An unsequenced status (an older backend) is never kept and
+applies as it arrives, except a checkout answer, which stands down when any
+status landed during the call.
+
 Live turn, approval, user-input, compacting, sends-pending and session
 state is backend state, never derived from items or rows. Whether a
 thread has a session (`provider:session_live`, capability

@@ -84,6 +84,7 @@ const PROVIDER_ACCOUNTS_STORE = 'lib/stores/computerAccounts.svelte.ts';
 const SYSTEMS_STORE = 'lib/stores/systems.svelte.ts';
 const SERVICE_UPDATE_STORE = 'lib/stores/serviceUpdate.svelte.ts';
 const DEV_SERVERS_STORE = 'lib/stores/devServers.svelte.ts';
+const PROVIDER_UPDATES_STORE = 'lib/stores/providerUpdates.svelte.ts';
 const THREADS_STORE = 'lib/stores/threads.svelte.ts';
 
 const ENTITY_OWNED_BINDINGS: Record<string, EntityOwnedBinding> = {
@@ -193,6 +194,14 @@ const ENTITY_OWNED_BINDINGS: Record<string, EntityOwnedBinding> = {
   GetServiceUpdateStatus: owned(SERVICE_UPDATE_STORE, 'loadMachineUpdate()'),
   ListServiceReleases: owned(SERVICE_UPDATE_STORE, 'loadServiceReleases()'),
   RequestServiceUpdate: owned(SERVICE_UPDATE_STORE, 'requestServiceUpdate()'),
+  // Provider CLI updates are one snapshot per computer fed by one channel.
+  // A page calling RunProviderUpdate itself would start a run the Update
+  // control never shows as busy, and a second reader of the snapshot would
+  // hold a state the frames never converge.
+  GetProviderUpdates: owned(PROVIDER_UPDATES_STORE, 'loadProviderUpdates()'),
+  CheckProviderUpdates: owned(PROVIDER_UPDATES_STORE, 'checkProviderUpdates()'),
+  GetProviderUpdateNotes: owned(PROVIDER_UPDATES_STORE, 'openProviderUpdateNotes()'),
+  RunProviderUpdate: owned(PROVIDER_UPDATES_STORE, 'runProviderUpdate()'),
   // One machine's shareable ports is one list per backend fed by one
   // channel, and the two mutations reconcile against it. A markdown link
   // or a settings row calling AllowPreviewPort itself would share a port

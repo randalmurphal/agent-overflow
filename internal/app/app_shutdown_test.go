@@ -155,6 +155,10 @@ func TestShutdownWalksDocumentedOrder(t *testing.T) {
 		// "stop review diff pins" joins the background git runs that pin
 		// review diffs' files; nothing they do outlives the app.
 		"stop review diff pins",
+		// "close review diffs" ends the git process and removes the
+		// snapshot of every diff still open, and joins the closes that
+		// connections started.
+		"close review diffs",
 		"drain triage",
 		"drain flush dispatch",
 		// "drain notifications" MUST appear before "close store" — a queued

@@ -176,22 +176,12 @@ func (s *Store) GetPayloadData(threadID, id string) ([]byte, error) {
 	return data, nil
 }
 
-// GetPayloadPreview returns up to maxBytes of the payload prefix together
-// with the full payload length and a completion flag. For blob-backed
-// payloads the slice still happens inside SQLite; for append-backed
-// payloads only chunks that overlap the requested prefix are read.
-// The completion flag is true only when total <= maxBytes.
-func (s *Store) GetPayloadPreview(threadID, id string, maxBytes int) ([]byte, int, bool, error) {
-	if maxBytes < 0 {
-		maxBytes = 0
-	}
-	return s.GetPayloadChunk(threadID, id, 0, maxBytes)
-}
-
-// GetPayloadChunk returns a bounded payload slice starting at byte offset.
-// Slicing happens inside SQLite for the base blob and uses payload chunk
-// offsets for append-backed data, so loading the next 256 KB chunk of a
-// 50 MB command output never materializes the full payload in Go memory.
+// GetPayloadChunk returns up to maxBytes of a payload starting at byte
+// offset, with the full payload length and whether the slice reaches its
+// end. Slicing happens inside SQLite for the base blob and uses payload
+// chunk offsets for append-backed data, so loading the next 256 KB chunk
+// of a 50 MB command output never materializes the full payload in Go
+// memory. The slice is bytes: it can end inside a character.
 func (s *Store) GetPayloadChunk(threadID, id string, offset, maxBytes int) ([]byte, int, bool, error) {
 	if offset < 0 {
 		offset = 0
@@ -208,9 +198,10 @@ func (s *Store) GetPayloadChunk(threadID, id string, offset, maxBytes int) ([]by
 	}
 
 	requestOffset := offset
-	limit := offset + maxBytes
-	if limit > total {
-		limit = total
+	// Compared before it is added: offset + maxBytes can overflow.
+	limit := total
+	if maxBytes < total-offset {
+		limit = offset + maxBytes
 	}
 	result := make([]byte, 0, limit-offset)
 	if offset < baseLen {

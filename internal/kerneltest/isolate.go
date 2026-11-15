@@ -12,6 +12,7 @@ import (
 	"agent-overflow/internal/codexmodels"
 	"agent-overflow/internal/procutil"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/providerupdate"
 	"agent-overflow/internal/textgen"
 )
 
@@ -267,6 +268,19 @@ func StubTextGenerationExecutor() textgen.CLIExecutor {
 	return func(context.Context, textgen.CLISpec) (textgen.CLIResult, error) {
 		return textgen.CLIResult{}, errors.New(
 			"text generation is stubbed in tests; assign app.textGenerationExecutor a fake to exercise it",
+		)
+	}
+}
+
+// StubProviderUpdateRunner returns a provider update runner that always
+// errors. A provider update check runs `claude doctor` and a run replaces
+// the provider CLI on the machine, so neither may reach a real binary from
+// a test; a check records the error as its CheckError. A test of update
+// runs installs its own fake over this.
+func StubProviderUpdateRunner() providerupdate.Runner {
+	return func(context.Context, providerupdate.Command) (providerupdate.Output, error) {
+		return providerupdate.Output{}, errors.New(
+			"provider update commands are stubbed in tests; assign app.providerUpdateRunner a fake to exercise them",
 		)
 	}
 }

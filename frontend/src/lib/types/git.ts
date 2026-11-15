@@ -65,6 +65,13 @@ export interface GitStatus {
   tag?: string;
   /** Full commit id of HEAD, set only when HEAD is detached. */
   headCommit?: string;
+  /**
+   * The backend process's position for this status, taken before its reads
+   * began: a higher seq never comes from a read that started earlier. Only
+   * comparable within one backend process. Absent or 0 is an unsequenced
+   * status from an older backend.
+   */
+  seq?: number;
 }
 
 export interface GitBranch {

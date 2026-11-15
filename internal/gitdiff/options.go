@@ -23,18 +23,29 @@ type Options struct {
 	IgnoreWhitespace bool
 }
 
+// LineCountFlags returns the diff flags that decide which files a patch
+// lists and the added and removed lines of each: a minimal diff with no
+// repo-defined external diff driver and no textconv filter, rename
+// detection on, and paths from the repository root. A `--numstat` run
+// with them counts the '+' and '-' lines of the patch patchFlags prints.
+func LineCountFlags() []string {
+	return []string{"--minimal", "--no-ext-diff", "--no-textconv", "--find-renames", "--no-relative"}
+}
+
 // patchFlags returns the flags shared by every patch-producing invocation
-// in this package: a plain unified patch with no color, no repo-defined
-// external diff driver, and no textconv filter — the same reasons gitEnv
-// scrubs GIT_EXTERNAL_DIFF/GIT_DIFF_OPTS. Rename detection, the a/ b/
-// prefixes and repository-root paths are pinned so neither user
-// configuration (diff.renames, diff.noprefix, diff.mnemonicPrefix,
-// diff.relative) nor plumbing's different defaults change the patch
-// shape callers parse. Options-driven flags append after them.
+// in this package: LineCountFlags, and a plain unified patch with no
+// color and a/ b/ prefixes. Excluding the external diff driver and
+// textconv has the same reasons gitEnv scrubs
+// GIT_EXTERNAL_DIFF/GIT_DIFF_OPTS. Rename detection, the prefixes and
+// repository-root paths are pinned so neither user configuration
+// (diff.renames, diff.noprefix, diff.mnemonicPrefix, diff.relative) nor
+// plumbing's different defaults change the patch shape callers parse.
+// Options-driven flags append after them.
 func (o Options) patchFlags() []string {
 	flags := make([]string, 0, 10)
-	flags = append(flags, "--patch", "--minimal", "--no-color", "--no-ext-diff", "--no-textconv",
-		"--find-renames", "--no-relative", "--src-prefix=a/", "--dst-prefix=b/")
+	flags = append(flags, "--patch", "--no-color")
+	flags = append(flags, LineCountFlags()...)
+	flags = append(flags, "--src-prefix=a/", "--dst-prefix=b/")
 	if o.IgnoreWhitespace {
 		flags = append(flags, "-w")
 	}

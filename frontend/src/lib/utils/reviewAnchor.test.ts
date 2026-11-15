@@ -7,7 +7,7 @@ import {
   type ReadingPosition,
   type RowGeometry,
 } from './reviewAnchor';
-import { parseReviewFiles, type ReviewFile } from './patchStore';
+import { parseReviewFiles, type ReviewFile } from './patchParser';
 import {
   BlockRowsCache,
   buildReviewRows,

@@ -2,7 +2,8 @@
 // says about each identity, and the content as the resolver reads it.
 
 import type { ReviewFindResolved, ReviewFindShown } from '../../lib/utils/reviewFindRows';
-import { scanReviewFind, type ReviewFindContent, type ReviewFindHit } from '../../lib/utils/reviewFindScan';
+import type { ReviewFindHit } from '../../lib/utils/reviewFindIdentity';
+import { scanReviewFind, type ReviewFindContent } from '../../lib/utils/reviewFindScan';
 
 /** The scan's content, as the resolver reads it. */
 export function shownOf(content: ReviewFindContent): ReviewFindShown {

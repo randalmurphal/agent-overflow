@@ -129,6 +129,7 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
   import { initUpdates } from './lib/stores/updates.svelte';
   import { watchReadAloudVoices } from './lib/stores/readAloud.svelte';
   import { initServiceUpdates } from './lib/stores/serviceUpdate.svelte';
+  import ProviderUpdateNotesHost from './lib/components/settings/ProviderUpdateNotesHost.svelte';
   import { initDevServers } from './lib/stores/devServers.svelte';
 
   let searchFocuser = $state<(() => void) | null>(null);
@@ -704,6 +705,7 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
 
 <UnsentMessageConfirmationHost />
 <BackgroundKillConfirmationHost />
+<ProviderUpdateNotesHost />
 <KeybindingsCheatSheet open={isCheatSheetOpen()} onClose={closeCheatSheet} />
 <MessageSearch open={isMessageSearchOpen()} pane={messageSearchPane} onClose={closeMessageSearch} />
 <UnifiedThreadPicker open={isThreadPickerOpen()} pane={threadPickerPane} onClose={closeThreadPicker} />

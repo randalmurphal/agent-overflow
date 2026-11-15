@@ -3,7 +3,7 @@
 // Plain keys only, and never from a text field.
 
 import type { LongListHandle } from '../virtual/LongListVirtualizer.svelte';
-import type { ReviewFile } from '../../utils/patchStore';
+import type { ReviewFile } from '../../utils/patchParser';
 import { REVIEW_FILE_HEADER_BAR_PX, type CommentAnchor, type ReviewRowsResult } from '../../utils/reviewRows';
 
 export interface ReviewDiffKeysHost {

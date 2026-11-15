@@ -214,6 +214,7 @@ func TestStepUpMethodsAreTheSpecSet(t *testing.T) {
 		"BeginPasskeyRegistration":      "registering a credential that admits a future caller, on the same argument as minting a pairing link",
 		"RequestServiceUpdate": "replacing the code this machine runs: §7's remote update trigger, " +
 			"which the spec admits precisely on the condition that it rides step-up",
+		"RunProviderUpdate":         "replacing the provider CLI this machine runs, the same class of act as RequestServiceUpdate",
 		"SetPushSenderCredential":   "installing the service-account key this backend wakes phones with",
 		"ClearPushSenderCredential": "withdrawing it, which stops every registered phone being woken",
 	}
@@ -306,8 +307,9 @@ func TestSessionFloorMethodsAreTheSpecSet(t *testing.T) {
 		"AcceptOwnDeviceIntroduction": "requires personal membership and catalog-bound target identity/address/pin; target verifies this host's key",
 		// Review-diff handles are connection-owned, and each records the
 		// scope its Open method required; a read requires it again.
-		"ReadReviewDiff":    "reads only a handle the calling connection opened, under the scope its Open required",
-		"ReleaseReviewDiff": "releases only a handle the calling connection opened",
+		"ReadReviewDiff":       "reads only a handle the calling connection opened, under the scope its Open required",
+		"ReadReviewDiffPacked": "reads only a handle the calling connection opened, under the scope its Open required",
+		"ReleaseReviewDiff":    "releases only a handle the calling connection opened",
 	}
 	got := map[string]bool{}
 	for _, method := range GeneratedMethods {

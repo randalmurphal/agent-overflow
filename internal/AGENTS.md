@@ -29,6 +29,7 @@ All non-main Go packages live under `internal/`. Root `main*.go` and
 | Memory scopes, fact files, the delivery and its hooks | `memory/` (package comment), `app/app_memory*.go`; contract in [memory.md](../docs/specs/memory.md) |
 | Loopback MCP transport for built-in tool servers | [threadmcp/](threadmcp/AGENTS.md), `mcpargs/` |
 | Settings ownership and persistence | [settings/](settings/AGENTS.md) |
+| Provider CLI update checks, release notes and update runs | `providerupdate/` (package comment); app wiring in `app/app_provider_update.go` |
 | Account auto-switch and continue after a usage limit | `accountswitch/` (package comment); contract in [account-auto-switch.md](../docs/specs/account-auto-switch.md) |
 | Test fixtures and provider isolation | [kerneltest/](kerneltest/AGENTS.md), [testutil/](testutil/AGENTS.md) |
 | Backend harness and scenarios | [harness/](harness/AGENTS.md) |

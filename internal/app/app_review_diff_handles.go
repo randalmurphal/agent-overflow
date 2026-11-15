@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 
 	"agent-overflow/internal/gitdiff"
+	"agent-overflow/internal/jstext"
 	"agent-overflow/internal/transport"
 )
 
@@ -41,8 +42,48 @@ var ErrTooManyReviewDiffs = errors.New("review diff: too many open diffs")
 var ErrReviewDiffNotFound = errors.New("review diff: not open")
 
 // ReviewDiffChunk is patch bytes [Offset, NextOffset) of an open review
-// diff; EOF marks the end of the patch.
-type ReviewDiffChunk = gitdiff.Chunk
+// diff; EOF marks the end of the patch. An open's first chunk and
+// ReadReviewDiff's answer the bytes as text; ReadReviewDiffPacked's
+// answers them packed where jstext.PackText packs them.
+type ReviewDiffChunk struct {
+	// Data is the chunk's text, or, when Wide is non-empty, that text
+	// packed: its UTF-8 one byte per character (U+0000..U+00FF). A packed
+	// chunk's length in characters differs from NextOffset-Offset when the
+	// chunk held invalid UTF-8.
+	Data string `json:"data"`
+	// Wide holds, for each line of packed Data that has a byte past
+	// ASCII, the index in Data of the first such byte, ascending. A line
+	// here is a run of Data between newlines, so the piece of a line that
+	// began in an earlier chunk counts as one. Packed text always has one,
+	// so a chunk is packed exactly when Wide is non-empty.
+	Wide       []uint32 `json:"wide,omitempty"`
+	Offset     int64    `json:"offset"`
+	NextOffset int64    `json:"nextOffset"`
+	EOF        bool     `json:"eof"`
+	// Key is the key of the patch text [0, NextOffset), whichever form
+	// carries it. No key is zero, so every chunk carries one; omitzero
+	// makes the generated binding leave a chunk from an older backend
+	// without a key instead of filling in a zero one.
+	Key jstext.Key `json:"key,omitzero"`
+}
+
+// plainReviewDiffChunk answers a chunk as text.
+func plainReviewDiffChunk(chunk gitdiff.Chunk) ReviewDiffChunk {
+	return ReviewDiffChunk{Data: chunk.Data, Offset: chunk.Offset, NextOffset: chunk.NextOffset, EOF: chunk.EOF, Key: chunk.Key}
+}
+
+// packedReviewDiffChunk answers a chunk packed where that is its cheaper
+// form for the client.
+func packedReviewDiffChunk(chunk gitdiff.Chunk) ReviewDiffChunk {
+	answer := plainReviewDiffChunk(chunk)
+	answer.Data, answer.Wide = jstext.PackText(chunk.Data)
+	return answer
+}
+
+// emptyReviewDiffOpened answers an open of a diff that has no patch.
+func emptyReviewDiffOpened() ReviewDiffOpened {
+	return ReviewDiffOpened{Chunk: ReviewDiffChunk{EOF: true, Key: jstext.EmptyKey}}
+}
 
 // ReviewDiffOpened answers an Open*Diff call: the diff's first chunk, and
 // the handle that reads the rest with ReadReviewDiff. ID is empty when the
@@ -64,18 +105,26 @@ type ReviewDiffOpened struct {
 // reviewDiffReader is an open review diff: a git diff or a thread's edit
 // payloads. Read keeps gitdiff.Diff.Read's contract: offset is 0 or a
 // NextOffset an earlier read returned, chunks end where gitdiff.ChunkCut
-// puts them, and re-reads that no longer match what was served fail with
-// an error that says the diff changed since it was opened.
+// puts them, each carries the key of the patch text up to its end, and
+// re-reads that no longer match what was served fail with an error that
+// says the diff changed since it was opened. Reads may run concurrently.
 type reviewDiffReader interface {
 	Read(ctx context.Context, offset int64, maxBytes int) (gitdiff.Chunk, error)
 	Close() error
 }
 
 // appReviewDiffState holds the review diffs clients have open. Each belongs
-// to the connection that opened it and is closed when that connection ends.
+// to the connection that opened it and is closed when that connection
+// ends; shutdown closes the rest and joins every close (closeReviewDiffs).
 type appReviewDiffState struct {
 	mu    sync.Mutex
 	diffs map[string]*openReviewDiff
+	// closed refuses new handles once shutdown has closed the held ones.
+	closed bool
+	// closing counts the closes in progress. A close is added under mu
+	// while its diff is still in diffs, so none starts after shutdown has
+	// emptied the map.
+	closing sync.WaitGroup
 }
 
 type openReviewDiff struct {
@@ -107,6 +156,10 @@ func (a *App) openReviewDiff(ctx context.Context, action string, scope transport
 	owner := transport.ConnStateFromContext(ctx)
 	pinCtx, cancelPin := context.WithTimeout(context.Background(), a.reviewDiffPinWait())
 	record, evicted := a.reviewDiffFiles.reserve(sides.Workspace(), owner, scope, cancelPin)
+	if record == nil {
+		cancelPin()
+		return ReviewDiffOpened{}, fmt.Errorf("%s: %w", action, errors.Join(ErrShuttingDown, diff.Close(), releasePin()))
+	}
 	a.startReviewDiffPin(pinCtx, record, sides, releasePin)
 	stopReviewDiffRecords(evicted...)
 	if owner != nil && !owner.BindCleanup(reviewDiffFilesCleanupKey(record.id), func() { a.dropReviewDiffRecord(record.id) }) {
@@ -133,13 +186,13 @@ func (a *App) holdOpenedReviewDiff(ctx context.Context, action string, scope tra
 			return ReviewDiffOpened{}, fmt.Errorf("%s: %w", action, errors.Join(err, closeErr))
 		}
 		logReviewDiffCloseError(closeErr)
-		return ReviewDiffOpened{Chunk: chunk}, nil
+		return ReviewDiffOpened{Chunk: plainReviewDiffChunk(chunk)}, nil
 	}
 	id, err := a.holdReviewDiff(ctx, diff, scope)
 	if err != nil {
 		return ReviewDiffOpened{}, fmt.Errorf("%s: %w", action, err)
 	}
-	return ReviewDiffOpened{ID: id, Chunk: chunk}, nil
+	return ReviewDiffOpened{ID: id, Chunk: plainReviewDiffChunk(chunk)}, nil
 }
 
 // holdReviewDiff registers diff under a new handle owned by the calling
@@ -149,6 +202,10 @@ func (a *App) holdReviewDiff(ctx context.Context, diff reviewDiffReader, scope t
 	owner := transport.ConnStateFromContext(ctx)
 	id := uuid.NewString()
 	state.mu.Lock()
+	if state.closed {
+		state.mu.Unlock()
+		return "", errors.Join(ErrShuttingDown, diff.Close())
+	}
 	if len(state.diffs) >= maxReviewDiffHandles {
 		state.mu.Unlock()
 		return "", errors.Join(ErrTooManyReviewDiffs, diff.Close())
@@ -183,23 +240,51 @@ func (a *App) holdReviewDiff(ctx context.Context, diff reviewDiffReader, scope t
 //ao:route home
 //ao:callerbound
 func (a *App) ReadReviewDiff(ctx context.Context, id string, offset int64, maxBytes int) (ReviewDiffChunk, error) {
-	if a.shuttingDown.Load() {
-		return ReviewDiffChunk{}, ErrShuttingDown
-	}
-	open, err := a.ownedReviewDiff(ctx, id)
+	chunk, err := a.readReviewDiff(ctx, id, offset, maxBytes)
 	if err != nil {
 		return ReviewDiffChunk{}, err
 	}
-	if err := a.requireScope(ctx, open.scope, "reading a review diff"); err != nil {
+	return plainReviewDiffChunk(chunk), nil
+}
+
+// ReadReviewDiffPacked is ReadReviewDiff with the chunk's text packed
+// where that is its cheaper form for the client (jstext.PackText): the
+// same chunk, key, handle, owner and scope rules. The form depends on the
+// chunk's bytes alone, so a chunk read again has the form it had. A
+// client calls it only on a backend that advertises
+// transport.CapabilityReviewDiffPacked.
+//
+//ao:scope session
+//ao:route home
+//ao:callerbound
+func (a *App) ReadReviewDiffPacked(ctx context.Context, id string, offset int64, maxBytes int) (ReviewDiffChunk, error) {
+	chunk, err := a.readReviewDiff(ctx, id, offset, maxBytes)
+	if err != nil {
 		return ReviewDiffChunk{}, err
+	}
+	return packedReviewDiffChunk(chunk), nil
+}
+
+// readReviewDiff reads a chunk of a diff the calling connection holds,
+// under the scope its Open required.
+func (a *App) readReviewDiff(ctx context.Context, id string, offset int64, maxBytes int) (gitdiff.Chunk, error) {
+	if a.shuttingDown.Load() {
+		return gitdiff.Chunk{}, ErrShuttingDown
+	}
+	open, err := a.ownedReviewDiff(ctx, id)
+	if err != nil {
+		return gitdiff.Chunk{}, err
+	}
+	if err := a.requireScope(ctx, open.scope, "reading a review diff"); err != nil {
+		return gitdiff.Chunk{}, err
 	}
 	chunk, err := open.diff.Read(ctx, offset, maxBytes)
 	if errors.Is(err, gitdiff.ErrDiffClosed) {
 		// Released while this read ran.
-		return ReviewDiffChunk{}, ErrReviewDiffNotFound
+		return gitdiff.Chunk{}, ErrReviewDiffNotFound
 	}
 	if err != nil {
-		return ReviewDiffChunk{}, fmt.Errorf("read review diff: %w", err)
+		return gitdiff.Chunk{}, fmt.Errorf("read review diff: %w", err)
 	}
 	return chunk, nil
 }
@@ -238,12 +323,34 @@ func (a *App) dropReviewDiff(id string) error {
 	state := &a.reviewDiffs
 	state.mu.Lock()
 	open, ok := state.diffs[id]
-	delete(state.diffs, id)
-	state.mu.Unlock()
 	if !ok {
+		state.mu.Unlock()
 		return nil
 	}
+	delete(state.diffs, id)
+	state.closing.Add(1)
+	state.mu.Unlock()
+	defer state.closing.Done()
 	return open.diff.Close()
+}
+
+// closeReviewDiffs closes every held review diff, waits for the closes
+// their connections started, and refuses handles from then on: shutdown.
+// It returns what the closes it ran reported; a connection's close logs
+// its own.
+func (a *App) closeReviewDiffs() error {
+	state := &a.reviewDiffs
+	state.mu.Lock()
+	state.closed = true
+	held := state.diffs
+	state.diffs = nil
+	state.mu.Unlock()
+	var errs []error
+	for _, open := range held {
+		errs = append(errs, open.diff.Close())
+	}
+	state.closing.Wait()
+	return errors.Join(errs...)
 }
 
 func reviewDiffCleanupKey(id string) string { return "review-diff:" + id }

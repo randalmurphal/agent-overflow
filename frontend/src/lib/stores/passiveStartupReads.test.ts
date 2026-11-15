@@ -9,9 +9,11 @@ import { refreshProjects } from './projects.svelte';
 import { refreshThreadGroups } from './threadGroups.svelte';
 import { loadSettings } from './settings.svelte';
 import { getKeybindingRules, loadKeybindings, resyncKeybindings, saveKeybindings, setKeybindingsForTest } from './keybindings.svelte';
-import { getToasts, removeToast } from './toast.svelte';
+import { getToasts, resetToastsForTest } from './toast.svelte';
+import { checkProviderUpdates, loadProviderUpdates, providerUpdatesLoadError } from './providerUpdates.svelte';
+import { HOME_BACKEND } from '../transport/backendKey';
 
-beforeEach(() => { resetStagedBackends(); for (const toast of [...getToasts()]) removeToast(toast.id); });
+beforeEach(() => { resetStagedBackends(); resetToastsForTest(); });
 afterEach(() => { resetStagedBackends(); vi.useRealTimers(); });
 
 it.each([
@@ -20,10 +22,14 @@ it.each([
   new TransportError('auth_failed', 'pairing required'),
   new ReadDeadlineError(),
 ])('keeps automatic startup/reconnect reads quiet for $name', async (error) => {
-  for (const method of ['ListThreads', 'ListProjects', 'ListThreadGroups', 'GetSettings', 'GetKeybindings']) {
+  for (const method of ['ListThreads', 'ListProjects', 'ListThreadGroups', 'GetSettings', 'GetKeybindings', 'GetProviderUpdates', 'CheckProviderUpdates']) {
     setBindingMock(method, async () => { throw error; });
   }
-  await Promise.all([refreshThreads(), refreshProjects(), refreshThreadGroups(), loadSettings(), loadKeybindings()]);
+  await Promise.all([
+    refreshThreads(), refreshProjects(), refreshThreadGroups(), loadSettings(), loadKeybindings(),
+    loadProviderUpdates(HOME_BACKEND), checkProviderUpdates(HOME_BACKEND),
+  ]);
+  expect(providerUpdatesLoadError(HOME_BACKEND)).toBe('');
   await refreshThreads();
   expect(getToasts()).toEqual([]);
   // Unknown catalogs must not become a successful empty response: startup

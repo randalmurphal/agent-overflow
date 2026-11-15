@@ -20,6 +20,31 @@ deduplicate without dropping trigger-bearing roots, and never recursively
 follow repository symlink trees. Root changes and ignore/config/index changes
 must rebuild the installed watch set.
 
+A status is read only while watches are installed: a new watcher installs
+them before its initial read and recomputes its roots before its first
+wait, and a reinstall is followed by a refresh. A change made after a read
+then raises an event or is covered by that refresh.
+
+Every status handed to a client carries `Seq`, a position from the
+Manager's counter taken before the status's reads begin, so a higher Seq
+never comes from a read that started earlier. The initial read and every
+refresh take one; the liveness probe publishes nothing and takes none.
+A watcher starts from its initial status, and after that `publishLocked`
+is the only writer of its published status: a status whose Seq is not
+above the published one's is dropped, equal content takes the newer Seq
+without a broadcast, anything else is published and broadcast, and a
+suppressed watcher publishes nothing. A status read outside the watcher
+reaches a client only through `Publish`, which takes the Seq before
+running the caller's read, requests a refresh, and returns the published
+status, or the read itself when nothing could publish it (nobody watches,
+or a `Suppress` hold). An answer handed out during a hold was never
+published, so the watcher broadcasts equal content too until it
+broadcasts a status with a Seq above that answer's. A non-PR change
+`Publish` published counts as observed by its refresh for missed-event
+detection, or, when a hold is taken first, by the last resume's refresh.
+A `Publish` while a cwd's first watcher reads its initial status is kept,
+and the newer of the two is that watcher's initial status.
+
 Filesystem delivery is an invalidation signal. Coalesce bursts, recompute
 status, and use bounded subscriber channels so a slow client cannot block the
 watch loop. If watcher installation or reinstallation fails, keep status fresh
@@ -35,4 +60,5 @@ goroutines and closes update channels before returning.
 
 Tests cover shared subscriptions, index and ref changes, linked worktrees,
 ignored-tree rebuilds, dropped watchpoints, polling recovery, missed-event
-detection, slow subscribers, liveness, and shutdown races.
+detection, slow subscribers, liveness, status order by read start, and
+shutdown races.

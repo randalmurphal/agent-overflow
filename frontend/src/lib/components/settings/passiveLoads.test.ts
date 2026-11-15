@@ -39,6 +39,9 @@ import WebviewGPUVsyncField from './WebviewGPUVsyncField.svelte';
 import NotificationsSection from './NotificationsSection.svelte';
 import SystemsSection from './SystemsSection.svelte';
 import { __resetSystemsForTest } from '../../stores/systems.svelte';
+import ClaudeSettings from './ClaudeSettings.svelte';
+import CodexSettings from './CodexSettings.svelte';
+import { seedSettingsPages } from '../../../test/helpers/settingsPages';
 
 /** A device paired with full access holds every grantable scope — not `host`. */
 function pairFullAccess(): Promise<void> {
@@ -243,6 +246,43 @@ describe('settings sections issue no passive RPC they were not granted', () => {
       // screen the person is on, and every screen has them.
       expect(getByTestId('settings-notifications-section')).toBeTruthy();
       expect(queryByTestId('settings-phone-push')).toBeNull();
+    });
+  });
+
+  describe('provider pages — the CLI update check is access:admin', () => {
+    beforeEach(seedSettingsPages);
+
+    function stubCheck() {
+      return {
+        check: setBindingMock('CheckProviderUpdates', async () => []),
+        run: setBindingMock('RunProviderUpdate', async () => {
+          throw new Error('RunProviderUpdate must never be called by a passive load');
+        }),
+      };
+    }
+
+    it('checks on the owner’s own screen', async () => {
+      const { check, run } = stubCheck();
+      render(ClaudeSettings);
+      await waitFor(() => expect(check).toHaveBeenCalled());
+      expect(run).not.toHaveBeenCalled();
+    });
+
+    it('checks for a device paired with FULL access, which holds the scope', async () => {
+      await pairFullAccess();
+      const { check, run } = stubCheck();
+      render(CodexSettings);
+      await waitFor(() => expect(check).toHaveBeenCalled());
+      expect(run).not.toHaveBeenCalled();
+    });
+
+    it('does not ask a view-only device’s session', async () => {
+      await pairViewOnly();
+      const { check, run } = stubCheck();
+      render(ClaudeSettings);
+      await settle();
+      expect(check).not.toHaveBeenCalled();
+      expect(run).not.toHaveBeenCalled();
     });
   });
 

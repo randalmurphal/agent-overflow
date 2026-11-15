@@ -8,7 +8,7 @@
   import { untrack } from 'svelte';
   import LongListVirtualizer, { type LongListHandle } from '../virtual/LongListVirtualizer.svelte';
   import PatchLinesBlock from './PatchLinesBlock.svelte';
-  import type { ReviewFile } from '../../utils/patchStore';
+  import type { ReviewFile } from '../../utils/patchParser';
   import type { RowEstimate } from '../../utils/virtual/types';
 
   // One file's raw patch lines in a bounded

@@ -62,9 +62,8 @@ func (s *WorktreeSnapshot) Close() error {
 // Changes lists the snapshot's changes ordered by path. A rename is one
 // entry.
 func (s *WorktreeSnapshot) Changes(ctx context.Context) ([]ChangedFile, error) {
-	stdout, _, _, err := runGit(ctx, s.workspace, s.tree.env, false,
-		"diff", "-z", "--raw", "--numstat", "--no-abbrev", "--no-color", "--no-ext-diff", "--no-textconv",
-		"--find-renames", "--no-relative", s.oldSide, s.tree.oid, "--")
+	args := append([]string{"diff", "-z", "--raw", "--numstat", "--no-abbrev", "--no-color"}, LineCountFlags()...)
+	stdout, _, _, err := runGit(ctx, s.workspace, s.tree.env, false, append(args, s.oldSide, s.tree.oid, "--")...)
 	if err != nil {
 		return nil, fmt.Errorf("gitdiff: list worktree changes: %w", err)
 	}

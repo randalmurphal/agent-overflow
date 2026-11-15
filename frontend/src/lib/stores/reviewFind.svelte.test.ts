@@ -2,7 +2,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createReviewFind, REVIEW_FIND_REMOTE_DEBOUNCE_MS, type ReviewFindHost, type ReviewFindSource } from './reviewFind.svelte';
 import { closePaneFind, openPaneFind, registerPaneFindProvider, resetPaneFindForTest, setPaneFindQuery } from './paneFind.svelte';
 import { setPatchTextBudgetForTest } from '../utils/patchMemory.svelte';
-import { scanReviewFind, type ReviewFindHit } from '../utils/reviewFindScan';
+import type { ReviewFindHit } from '../utils/reviewFindIdentity';
+import { scanReviewFind } from '../utils/reviewFindScan';
 import { placeReviewFindHit } from '../utils/reviewFindRows';
 import { streamPatch } from '../../test/helpers/streamedPatch';
 
@@ -849,9 +850,9 @@ describe('review find over evicted diff text', () => {
   function gate(source: ReturnType<typeof evictedFiles>['source']): () => void {
     const gates: (() => void)[] = [];
     const real = source.read.getMockImplementation()!;
-    source.read.mockImplementation(async (offset, next) => {
+    source.read.mockImplementation(async (offset, next, packed) => {
       await new Promise<void>((resolve) => gates.push(resolve));
-      return real(offset, next);
+      return real(offset, next, packed);
     });
     return () => {
       source.read.mockImplementation(real);
