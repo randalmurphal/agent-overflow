@@ -1465,6 +1465,9 @@ func (a *App) teardownSession(threadID string, sess session, mutationsHeld bool)
 			log.Printf("app: settle background launches on session close for thread %s: %v", threadID, err)
 			a.emitErrorToThread(threadID, triage.BackgroundSettleFailureSummary(err))
 		}
+		// Its prompts went with the process, and so do their copies routed
+		// to the thread that spawned it.
+		a.settleEndedWorkerPrompts(threadID)
 	}
 	if sess.Provider != "" {
 		a.emitProviderSessionDisconnected(threadID, sess.Provider)

@@ -22,47 +22,60 @@ import (
 func TestAStoppedRequestsWakeNamesWhoStoppedIt(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
-		name  string
-		stop  func(f *requestFixture, threadID string) error
-		want  func(f *requestFixture) string
-		label func(f *requestFixture) string
+		name string
+		// before sets up another thread's cancel and returns that thread.
+		before func(t *testing.T, f *requestFixture, threadID string) threadtools.Caller
+		stop   func(f *requestFixture, threadID string, by threadtools.Caller) error
+		want   func(by threadtools.Caller) string
+		label  func(by threadtools.Caller) string
 	}{
 		{
-			name:  "the user's Stop",
-			stop:  func(f *requestFixture, threadID string) error { return f.app.InterruptTurn(threadID, nil) },
-			want:  func(*requestFixture) string { return "]: " + threadtools.WakePersonStopped },
-			label: func(*requestFixture) string { return "Stopped by user" },
+			name: "the user's Stop",
+			stop: func(f *requestFixture, threadID string, _ threadtools.Caller) error {
+				return f.app.InterruptTurn(threadID, nil)
+			},
+			want:  func(threadtools.Caller) string { return "]: " + threadtools.WakePersonStopped },
+			label: func(threadtools.Caller) string { return "Stopped by user" },
 		},
 		{
+			// A thread that sent to it, not the one that spawned it: a
+			// spawner's thread_cancel brings the thread to rest instead.
 			name: "another thread's thread_cancel",
-			stop: func(f *requestFixture, threadID string) error {
-				_, err := f.adapter().Cancel(context.Background(), f.callerIdentity(), threadtools.CancelCall{ThreadID: threadID})
+			before: func(t *testing.T, f *requestFixture, threadID string) threadtools.Caller {
+				other := f.targetIdentity(t, f.plainThread(t).ID)
+				if _, err := f.adapter().Send(t.Context(), other, threadtools.SendCall{ThreadID: threadID, Message: "and this"}); err != nil {
+					t.Fatalf("the other thread's send: %v", err)
+				}
+				return other
+			},
+			stop: func(f *requestFixture, threadID string, by threadtools.Caller) error {
+				_, err := f.adapter().Cancel(context.Background(), by, threadtools.CancelCall{ThreadID: threadID})
 				return err
 			},
-			want: func(f *requestFixture) string {
-				return fmt.Sprintf("]: %q (%s) stopped its turn with thread_cancel before it answered.", f.caller.Title, f.caller.ID)
+			want: func(by threadtools.Caller) string {
+				return fmt.Sprintf("]: %q (%s) stopped its turn with thread_cancel before it answered.", by.Title, by.ThreadID)
 			},
-			label: func(f *requestFixture) string { return fmt.Sprintf("Stopped by thread %q", f.caller.Title) },
+			label: func(by threadtools.Caller) string { return fmt.Sprintf("Stopped by thread %q", by.Title) },
 		},
 		{
 			name: "the user taking the thread over from its workflow",
-			stop: func(f *requestFixture, threadID string) error {
+			stop: func(f *requestFixture, threadID string, _ threadtools.Caller) error {
 				return f.app.interruptTurnForWorkflow(context.Background(), threadID, workflowhost.InterruptForTakeover)
 			},
-			want: func(*requestFixture) string {
+			want: func(threadtools.Caller) string {
 				return "]: The user took the thread over from its workflow before it answered."
 			},
-			label: func(*requestFixture) string { return "Stopped by user" },
+			label: func(threadtools.Caller) string { return "Stopped by user" },
 		},
 		{
 			name: "its workflow ending the attempt",
-			stop: func(f *requestFixture, threadID string) error {
+			stop: func(f *requestFixture, threadID string, _ threadtools.Caller) error {
 				return f.app.interruptTurnForWorkflow(context.Background(), threadID, workflowhost.InterruptStoppedAttempt)
 			},
-			want: func(*requestFixture) string {
+			want: func(threadtools.Caller) string {
 				return "]: Its workflow stopped the turn before it answered."
 			},
-			label: func(*requestFixture) string { return "Stopped by its workflow" },
+			label: func(threadtools.Caller) string { return "Stopped by its workflow" },
 		},
 	}
 	for _, testCase := range cases {
@@ -80,8 +93,12 @@ func TestAStoppedRequestsWakeNamesWhoStoppedIt(t *testing.T) {
 			// once the gate lets it read past the held turn. The gate opens
 			// once the stop is recorded, which is just before the interrupt
 			// is sent, so the turn ends after the stop sampled it.
+			var by threadtools.Caller
+			if testCase.before != nil {
+				by = testCase.before(t, f, ack.ThreadID)
+			}
 			stopped := make(chan error, 1)
-			go func() { stopped <- testCase.stop(f, ack.ThreadID) }()
+			go func() { stopped <- testCase.stop(f, ack.ThreadID, by) }()
 			waitUntil(t, 10*time.Second, func() bool { return f.app.holdsTurnStop(ack.ThreadID) })
 			if err := os.WriteFile(gate, nil, 0o600); err != nil {
 				t.Fatalf("open gate: %v", err)
@@ -92,7 +109,7 @@ func TestAStoppedRequestsWakeNamesWhoStoppedIt(t *testing.T) {
 			f.awaitRequestState(t, ack.Token, store.ThreadRequestInterrupted)
 
 			message := f.awaitWake(t, ack.Token)
-			if want := testCase.want(f); !strings.Contains(message, want) {
+			if want := testCase.want(by); !strings.Contains(message, want) {
 				t.Errorf("wake = %q, want it to contain %q", message, want)
 			}
 			var stopRows []string
@@ -105,7 +122,7 @@ func TestAStoppedRequestsWakeNamesWhoStoppedIt(t *testing.T) {
 					stopRows = append(stopRows, item.Summary)
 				}
 			}
-			if want := testCase.label(f); len(stopRows) != 1 || stopRows[0] != want {
+			if want := testCase.label(by); len(stopRows) != 1 || stopRows[0] != want {
 				t.Errorf("stop rows in the stopped thread = %q, want [%q]", stopRows, want)
 			}
 

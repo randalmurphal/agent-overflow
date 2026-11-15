@@ -267,6 +267,19 @@ func (a *App) settleWorkerPrompt(workerID, requestID string, occurrence provider
 	a.withdrawWorkerPromptWake(prompt)
 }
 
+// settleEndedWorkerPrompts closes the prompts a worker's session took with
+// it when it ended, which no resolution settles, and withdraws their wakes
+// still queued for the agent, so the agent is not asked what nobody waits
+// on. It runs on the prompts' serial queue, after any delivery announced
+// before the end.
+func (a *App) settleEndedWorkerPrompts(workerID string) {
+	a.workerPrompts.queue.Go(func() {
+		for _, prompt := range a.workerPrompts.settleWorker(workerID) {
+			a.withdrawWorkerPromptWake(prompt)
+		}
+	})
+}
+
 // withdrawWorkerPromptWake takes a closed registration's wake out of its
 // agent's queue, when it is still there.
 func (a *App) withdrawWorkerPromptWake(prompt workerPrompt) {
@@ -557,6 +570,22 @@ func (w *workerPrompts) settle(workerID, requestID string, upTo provider.PromptO
 	}
 	prompt.state, prompt.closedAt = workerPromptSettled, time.Now()
 	return *prompt, true
+}
+
+// settleWorker closes every routed registration of workerID's prompts.
+func (w *workerPrompts) settleWorker(workerID string) []workerPrompt {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	var closed []workerPrompt
+	now := time.Now()
+	for _, prompt := range w.byToken {
+		if prompt.workerID != workerID || prompt.state != workerPromptRouted {
+			continue
+		}
+		prompt.state, prompt.closedAt = workerPromptSettled, now
+		closed = append(closed, *prompt)
+	}
+	return closed
 }
 
 // settleToken closes the registration under token when it is routed.

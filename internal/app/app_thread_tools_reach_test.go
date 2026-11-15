@@ -1926,12 +1926,20 @@ func TestAStopFromAnotherComputerNamesItByThisComputersPairing(t *testing.T) {
 		_, err := pair.adapter().Cancel(ctx, pair.callerIdentity(), threadtools.CancelCall{ThreadID: threadID, ComputerID: pair.computer})
 		stopped <- err
 	}()
-	waitUntilE2E(t, 30*time.Second, "the destination records the stop", func() bool { return pair.dest.holdsTurnStop(threadID) })
+	// The cancel of a thread the caller spawned brings it to rest: the
+	// spawn's receipt settles first, then its turn is interrupted, which the
+	// mock acknowledges once the gate opens.
+	waitUntilE2E(t, 30*time.Second, "the destination settles the spawn", func() bool {
+		return pair.receipt(t, spawn.Token).State == store.ThreadReceiptCancelled
+	})
 	if err := os.WriteFile(gate, nil, 0o600); err != nil {
 		t.Fatalf("open gate: %v", err)
 	}
 	if err := <-stopped; err != nil {
 		t.Fatalf("cancel the thread on the other computer: %v", err)
+	}
+	if _, live := pair.dest.sessionManager().get(threadID); live {
+		t.Fatal("the spawned thread on the other computer still has a session")
 	}
 
 	sourceID, _ := pair.source.backendIdentity()

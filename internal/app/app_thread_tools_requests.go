@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -696,9 +697,43 @@ func (t threadToolsApp) Cancel(ctx context.Context, caller threadtools.Caller, c
 		return t.cancelRequest(ctx, caller, call.Token)
 	}
 	if t.remoteDestination(call.ComputerID) {
-		return t.cancelRemoteThread(ctx, caller, call, false)
+		return t.cancelRemoteSpawnedThread(ctx, caller, call)
 	}
 	return t.cancelThread(ctx, caller, call.ThreadID)
+}
+
+// cancelRemoteSpawnedThread is an agent's thread_cancel by thread id of a
+// thread on a paired computer. The destination brings a thread the caller
+// spawned there to rest; the caller's spawns of it are disarmed first, as a
+// local one's are, since the agent reads what happened in the report. A
+// destination that only interrupted, being older or the thread not a spawn,
+// leaves the spawns as they were.
+func (t threadToolsApp) cancelRemoteSpawnedThread(ctx context.Context, caller threadtools.Caller, call threadtools.CancelCall) (threadtools.CancelReport, error) {
+	_, spawns, err := t.callerStartedThread(caller.ThreadID, call.ComputerID, call.ThreadID)
+	if err != nil {
+		return threadtools.CancelReport{}, err
+	}
+	var disarmed []string
+	for _, spawn := range spawns {
+		if !spawn.Notify {
+			continue
+		}
+		if _, err := t.app.store.SetThreadRequestNotify(spawn.Token, false); err != nil {
+			return threadtools.CancelReport{}, err
+		}
+		disarmed = append(disarmed, spawn.Token)
+	}
+	report, err := t.cancelRemoteThread(ctx, caller, call, false)
+	if err == nil && report.Effect == threadtools.EffectThreadStopped {
+		report.State = threadtools.RequestCancelled
+		return report, nil
+	}
+	for _, token := range disarmed {
+		if _, rearmErr := t.app.store.SetThreadRequestNotify(token, true); rearmErr != nil {
+			err = errors.Join(err, rearmErr)
+		}
+	}
+	return report, err
 }
 
 func (t threadToolsApp) cancelRequest(ctx context.Context, caller threadtools.Caller, token string) (threadtools.CancelReport, error) {
@@ -869,20 +904,25 @@ func (t threadToolsApp) cancelRemoteThread(ctx context.Context, caller threadtoo
 	return report, nil
 }
 
-// cancelThread interrupts a thread the caller started, sent to or asked. The
+// cancelThread stops a thread the caller started, sent to or asked. The
 // lineage is the request ledger: without a row linking the two, a thread is
-// none of this caller's business.
+// none of this caller's business. A thread the caller spawned is brought to
+// rest (restSpawnedThread); one it only sent to or asked has its running
+// turn interrupted.
 func (t threadToolsApp) cancelThread(ctx context.Context, caller threadtools.Caller, threadID string) (threadtools.CancelReport, error) {
 	thread, err := t.localThread(threadID)
 	if err != nil {
 		return threadtools.CancelReport{}, err
 	}
-	linked, err := t.callerStartedThread(caller.ThreadID, threadID)
+	linked, spawns, err := t.callerStartedThread(caller.ThreadID, "", thread.ID)
 	if err != nil {
 		return threadtools.CancelReport{}, err
 	}
 	if !linked {
 		return threadtools.CancelReport{}, threadNotYoursToInterrupt(threadID)
+	}
+	if len(spawns) > 0 {
+		return t.restSpawnedThread(ctx, thread.ID, spawns, threadRestStop(caller.Title, caller.ThreadID, ""))
 	}
 	effect, err := t.interruptRunningThread(ctx, thread.ID, stopByThread(caller.Title, caller.ThreadID, ""))
 	if err != nil {
@@ -917,7 +957,8 @@ func (t threadToolsApp) interruptRunningThread(ctx context.Context, threadID str
 // interruptForeignThread is the destination half of a thread_cancel by
 // thread id: the same lineage rule as cancelThread, read from the receipts
 // this computer holds for the calling thread rather than from source rows
-// it does not have.
+// it does not have. A thread the caller spawned here is brought to rest; the
+// source disarmed its own spawn's wake before it asked.
 func (t threadToolsApp) interruptForeignThread(ctx context.Context, origin threadRequestOrigin, threadID string, userStop bool) (string, error) {
 	thread, err := t.localThread(threadID)
 	if err != nil {
@@ -927,15 +968,23 @@ func (t threadToolsApp) interruptForeignThread(ctx context.Context, origin threa
 	if err != nil {
 		return "", err
 	}
-	linked := false
+	linked, spawned := false, false
 	for _, receipt := range receipts {
 		if receipt.OwnerDeviceID == origin.ownerDevice && receipt.SourceThreadID == origin.caller.ThreadID {
 			linked = true
-			break
+			spawned = spawned || receipt.Kind == store.ThreadRequestSpawn
 		}
 	}
 	if !linked {
 		return "", threadNotYoursToInterrupt(threadID)
+	}
+	if spawned {
+		by := userRestStop()
+		if !userStop {
+			by = threadRestStop(origin.caller.Title, origin.caller.ThreadID, t.app.stoppingComputerName(origin.caller.ComputerID))
+		}
+		report, err := t.restSpawnedThread(ctx, thread.ID, nil, by)
+		return report.Effect, err
 	}
 	return t.interruptRunningThread(ctx, thread.ID, t.foreignThreadStop(origin.caller, userStop))
 }
@@ -959,25 +1008,57 @@ func threadNotYoursToInterrupt(threadID string) error {
 }
 
 // callerStartedThread reports whether any request, settled or not, links this
-// caller to that thread.
-func (t threadToolsApp) callerStartedThread(callerThreadID, threadID string) (bool, error) {
+// caller to that thread, and returns the caller's spawns of it on computerID
+// (empty for this computer).
+func (t threadToolsApp) callerStartedThread(callerThreadID, computerID, threadID string) (bool, []store.ThreadRequest, error) {
+	linked := false
+	var spawns []store.ThreadRequest
 	offset := 0
 	for offset < threadCancelLineageScan {
 		rows, err := t.app.store.ListThreadRequestsByCaller(callerThreadID, threadCancelLineagePage, offset)
 		if err != nil {
-			return false, err
+			return false, nil, err
 		}
 		for _, row := range rows {
 			if row.TargetThreadID == threadID || row.OriginThreadID == threadID {
-				return true, nil
+				linked = true
+			}
+			if row.Kind == store.ThreadRequestSpawn && row.TargetComputerID == computerID && row.TargetThreadID == threadID {
+				spawns = append(spawns, row)
 			}
 		}
 		if len(rows) < threadCancelLineagePage {
-			return false, nil
+			break
 		}
 		offset += len(rows)
 	}
-	return false, nil
+	return linked, spawns, nil
+}
+
+// restSpawnedThread is a thread_cancel by thread id of a thread the caller
+// spawned: the caller's spawns of it are disarmed, since the calling agent
+// reads what happened in this call's report, and the thread is brought to
+// rest with the stop attributed as by names it. A step that failed fails the
+// call; the steps after it still ran.
+func (t threadToolsApp) restSpawnedThread(ctx context.Context, threadID string, spawns []store.ThreadRequest, by restStop) (threadtools.CancelReport, error) {
+	var errs []error
+	for _, spawn := range spawns {
+		if !spawn.Notify {
+			continue
+		}
+		if _, err := t.app.store.SetThreadRequestNotify(spawn.Token, false); err != nil {
+			errs = append(errs, fmt.Errorf("disarm the wake of %s: %w", spawn.Token, err))
+		}
+	}
+	var result ThreadAgentStop
+	t.app.restThreadHere(ctx, threadID, by, map[string]bool{threadID: true}, &result)
+	for _, failure := range result.Failures {
+		errs = append(errs, errors.New(failure))
+	}
+	if err := errors.Join(errs...); err != nil {
+		return threadtools.CancelReport{}, fmt.Errorf("thread tools: stop thread %s: %w", threadID, err)
+	}
+	return threadtools.CancelReport{ThreadID: threadID, State: threadtools.RequestCancelled, Effect: threadtools.EffectThreadStopped}, nil
 }
 
 // threadCancelLineagePage and threadCancelLineageScan bound the lineage walk.
