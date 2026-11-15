@@ -709,7 +709,7 @@ func (t threadToolsApp) Cancel(ctx context.Context, caller threadtools.Caller, c
 // destination that only interrupted, being older or the thread not a spawn,
 // leaves the spawns as they were.
 func (t threadToolsApp) cancelRemoteSpawnedThread(ctx context.Context, caller threadtools.Caller, call threadtools.CancelCall) (threadtools.CancelReport, error) {
-	_, spawns, err := t.callerStartedThread(caller.ThreadID, call.ComputerID, call.ThreadID)
+	spawns, err := t.app.store.CallerSpawnsOf(caller.ThreadID, call.ComputerID, call.ThreadID)
 	if err != nil {
 		return threadtools.CancelReport{}, err
 	}
@@ -914,15 +914,19 @@ func (t threadToolsApp) cancelThread(ctx context.Context, caller threadtools.Cal
 	if err != nil {
 		return threadtools.CancelReport{}, err
 	}
-	linked, spawns, err := t.callerStartedThread(caller.ThreadID, "", thread.ID)
+	spawns, err := t.app.store.CallerSpawnsOf(caller.ThreadID, "", thread.ID)
+	if err != nil {
+		return threadtools.CancelReport{}, err
+	}
+	if len(spawns) > 0 {
+		return t.restSpawnedThread(ctx, thread.ID, spawns, threadRestStop(caller.Title, caller.ThreadID, ""))
+	}
+	linked, err := t.app.store.CallerRequestedOf(caller.ThreadID, thread.ID)
 	if err != nil {
 		return threadtools.CancelReport{}, err
 	}
 	if !linked {
 		return threadtools.CancelReport{}, threadNotYoursToInterrupt(threadID)
-	}
-	if len(spawns) > 0 {
-		return t.restSpawnedThread(ctx, thread.ID, spawns, threadRestStop(caller.Title, caller.ThreadID, ""))
 	}
 	effect, err := t.interruptRunningThread(ctx, thread.ID, stopByThread(caller.Title, caller.ThreadID, ""))
 	if err != nil {
@@ -1007,34 +1011,6 @@ func threadNotYoursToInterrupt(threadID string) error {
 		threadID), nil)
 }
 
-// callerStartedThread reports whether any request, settled or not, links this
-// caller to that thread, and returns the caller's spawns of it on computerID
-// (empty for this computer).
-func (t threadToolsApp) callerStartedThread(callerThreadID, computerID, threadID string) (bool, []store.ThreadRequest, error) {
-	linked := false
-	var spawns []store.ThreadRequest
-	offset := 0
-	for offset < threadCancelLineageScan {
-		rows, err := t.app.store.ListThreadRequestsByCaller(callerThreadID, threadCancelLineagePage, offset)
-		if err != nil {
-			return false, nil, err
-		}
-		for _, row := range rows {
-			if row.TargetThreadID == threadID || row.OriginThreadID == threadID {
-				linked = true
-			}
-			if row.Kind == store.ThreadRequestSpawn && row.TargetComputerID == computerID && row.TargetThreadID == threadID {
-				spawns = append(spawns, row)
-			}
-		}
-		if len(rows) < threadCancelLineagePage {
-			break
-		}
-		offset += len(rows)
-	}
-	return linked, spawns, nil
-}
-
 // restSpawnedThread is a thread_cancel by thread id of a thread the caller
 // spawned: the caller's spawns of it are disarmed, since the calling agent
 // reads what happened in this call's report, and the thread is brought to
@@ -1061,13 +1037,8 @@ func (t threadToolsApp) restSpawnedThread(ctx context.Context, threadID string, 
 	return threadtools.CancelReport{ThreadID: threadID, State: threadtools.RequestCancelled, Effect: threadtools.EffectThreadStopped}, nil
 }
 
-// threadCancelLineagePage and threadCancelLineageScan bound the lineage walk.
-// A thread that made more requests than this and is asking about one older
-// than all of them is past the point where an interrupt is the right tool.
-const (
-	threadCancelLineagePage = 200
-	threadCancelLineageScan = 2000
-)
+// threadCancelLineagePage bounds one read of the requests a caller made.
+const threadCancelLineagePage = 200
 
 // threadRequestExportAge is how long an answer file with no reader is kept.
 // The tool tells the model to read it now; a file still there a day later was

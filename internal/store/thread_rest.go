@@ -48,6 +48,40 @@ func (s *Store) ListThreadRestRequests(callerThreadID string, after ThreadRestCu
 	return collectThreadRequests(rows, "store: list the requests a rest of "+callerThreadID+" stops")
 }
 
+// CallerSpawnsOf returns callerThreadID's spawns of threadID on computerID,
+// "" for this computer, which a thread_cancel by thread id brings to rest.
+// Here that is the spawn link (agentSpawnLinkSQL), a link the retention
+// floor reduced to lineage included and a superseded spawn excluded; on a
+// paired computer it is every spawn row the caller still holds for it.
+func (s *Store) CallerSpawnsOf(callerThreadID, computerID, threadID string) ([]ThreadRequest, error) {
+	link := agentSpawnLinkSQL("thread_requests")
+	args := []any{callerThreadID, threadID}
+	if computerID != "" {
+		link = `kind = 'spawn' AND target_computer_id = ` + boundText
+		args = append(args, computerID)
+	}
+	rows, err := s.reader().Query(`SELECT `+threadRequestColumns+` FROM thread_requests
+		WHERE caller_thread_id = ? AND target_thread_id = ? AND `+link, args...)
+	if err != nil {
+		return nil, fmt.Errorf("store: read the spawns of %s by %s: %w", threadID, callerThreadID, err)
+	}
+	return collectThreadRequests(rows, "store: read the spawns of "+threadID+" by "+callerThreadID)
+}
+
+// CallerRequestedOf reports whether callerThreadID ever sent to, asked or
+// spawned threadID, settled or not: a request naming it as its target or,
+// for an ask, as the thread its copy was made from.
+func (s *Store) CallerRequestedOf(callerThreadID, threadID string) (bool, error) {
+	var linked bool
+	err := s.reader().QueryRow(`SELECT EXISTS(SELECT 1 FROM thread_requests
+		WHERE caller_thread_id = ?1 AND (target_thread_id = ?2 OR origin_thread_id = ?2))`,
+		callerThreadID, threadID).Scan(&linked)
+	if err != nil {
+		return false, fmt.Errorf("store: read whether %s made a request of %s: %w", callerThreadID, threadID, err)
+	}
+	return linked, nil
+}
+
 // ListThreadStartedWorkItems returns, oldest first, the runs threadID
 // started that have not ended: bound to it, which only a root run can be,
 // and recorded with source and no source ref, as a run an interactive thread

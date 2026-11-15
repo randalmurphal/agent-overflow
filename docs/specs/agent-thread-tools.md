@@ -595,10 +595,11 @@ a thread the caller spawned is brought to rest
 ([at rest](standing-agents.md#at-rest)) on whichever computer it runs,
 with the caller's spawn wakes disarmed, and the effect is
 `thread_stopped`; a step that fails refuses the call with the failures
-while the other steps run. A thread the caller only sent to or asked has
-its running turn interrupted (lineage from `thread_requests`, which is
-kept for every request the caller ever made to that thread, settled or
-not). Never a revert; a turn that some other request or the user
+while the other steps run. "Spawned" is the caller's spawn link to the
+thread, which outlives the request ledger's retention as lineage, or on
+a paired computer a spawn row the caller still holds. A thread the caller
+only sent to or asked, by any request it still holds naming the thread,
+settled or not, has its running turn interrupted. Never a revert; a turn that some other request or the user
 started is never interrupted through a token. Refused for any other
 thread with the reason. A destination that predates the rest interrupts
 the turn, and the caller keeps its spawn wakes armed; a caller that

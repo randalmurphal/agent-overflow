@@ -69,6 +69,63 @@ func TestListThreadRestRequestsReadsWhatARestStops(t *testing.T) {
 	}
 }
 
+// A caller's spawn of a thread is its spawn link here, lineage included and
+// a superseded spawn excluded, and every spawn row it holds for a thread on
+// a paired computer; any request naming the thread links the caller to it.
+func TestCallerSpawnsOfReadsTheSpawnLink(t *testing.T) {
+	s := newTestStore(t)
+	for _, id := range []string{"t-caller", "t-other", "t-worker", "t-old", "t-sent"} {
+		mustCreateThread(t, s, id)
+	}
+	insert := func(token, caller, kind, target, computer string) {
+		t.Helper()
+		if err := s.InsertThreadRequest(ThreadRequest{
+			Token: token, CallerThreadID: caller, Kind: kind, TargetThreadID: target, TargetComputerID: computer,
+			State: ThreadRequestAccepted, CreatedAt: 100, UpdatedAt: 100,
+		}); err != nil {
+			t.Fatalf("insert %s: %v", token, err)
+		}
+	}
+	insert("lineage", "t-caller", ThreadRequestSpawn, "t-worker", "")
+	insert("superseded", "t-caller", ThreadRequestSpawn, "t-old", "")
+	insert("remote", "t-caller", ThreadRequestSpawn, "t-remote", "computer-b")
+	insert("sent", "t-caller", ThreadRequestSend, "t-sent", "")
+	insert("elsewhere", "t-other", ThreadRequestSpawn, "t-sent", "")
+	if _, err := s.db.Exec(clearLineagePayloadSQL + ` AND token = 'lineage'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(`UPDATE thread_requests SET superseded = 1 WHERE token = 'superseded'`); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		computer, target string
+		want             []string
+	}{
+		{"", "t-worker", []string{"lineage"}},
+		{"", "t-old", nil},
+		{"computer-b", "t-remote", []string{"remote"}},
+		{"", "t-remote", nil},
+		{"", "t-sent", nil},
+	} {
+		rows, err := s.CallerSpawnsOf("t-caller", tc.computer, tc.target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got []string
+		for _, row := range rows {
+			got = append(got, row.Token)
+		}
+		if !slices.Equal(got, tc.want) {
+			t.Errorf("CallerSpawnsOf(%q, %q) = %q, want %q", tc.computer, tc.target, got, tc.want)
+		}
+	}
+	for target, want := range map[string]bool{"t-sent": true, "t-worker": true, "t-other": false} {
+		if got, err := s.CallerRequestedOf("t-caller", target); err != nil || got != want {
+			t.Errorf("CallerRequestedOf(%s) = %v, %v; want %v", target, got, err, want)
+		}
+	}
+}
+
 // A rest pauses the root runs the thread started and that have not ended:
 // not a run a person bound to it, one a phase started, a run that ended, or
 // another thread's. A called run is never bound.
