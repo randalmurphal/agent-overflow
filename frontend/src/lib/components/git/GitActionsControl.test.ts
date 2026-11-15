@@ -394,6 +394,27 @@ describe('<GitActionsControl> palette dialog event', () => {
     expect(await findByText('Commit Changes')).toBeInTheDocument();
   });
 
+  it('keeps an open dialog, and what it holds, while the status fails and recovers', async () => {
+    setBindingMock('GetWorkspaceActivity', async () => idleWorkspaceActivity());
+    const pane = await buildPane();
+    __seedGitStatusForTest(WORKSPACE, status({ hasChanges: true }));
+    const { findByText, findByLabelText, findByTestId } = render(GitActionsControl, { props: { pane } });
+    await flush();
+    dispatchOpen(pane.paneId, 'commit');
+    await findByText('Commit Changes');
+    const subject = await findByLabelText('Subject');
+    await fireEvent.input(subject, { target: { value: 'Draft subject' } });
+
+    // A dropped connection fails the status refresh, then recovery answers.
+    __seedGitStatusErrorForTest(WORKSPACE, 'connection lost');
+    expect(await findByTestId('git-actions-error')).toBeInTheDocument();
+    expect(await findByLabelText('Subject')).toBe(subject);
+    __seedGitStatusForTest(WORKSPACE, status({ hasChanges: true }));
+    await flush();
+    expect(await findByLabelText('Subject')).toBe(subject);
+    expect(subject).toHaveValue('Draft subject');
+  });
+
   it('does not open a dialog for a view-only session', async () => {
     await pairViewOnly();
     const pane = await buildPane();
