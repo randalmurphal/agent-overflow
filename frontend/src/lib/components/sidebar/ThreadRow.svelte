@@ -581,7 +581,7 @@
     />
     {#if workers.open > 0}
       <span
-        class="-ml-0.5 shrink-0 min-w-5 text-right text-[0.625rem] tabular-nums text-fg-hint"
+        class="-ml-0.5 mr-1 shrink-0 min-w-5 text-right text-[0.625rem] tabular-nums text-fg-hint"
         title={countNoun(workers.open, 'open worker')}
         data-testid="thread-row-workers"
       >
