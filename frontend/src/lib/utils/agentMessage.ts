@@ -474,8 +474,12 @@ function parseDigest(text: string): AgentMessagePart | null {
     facts.stoppedBy = head.stoppedBy ?? '';
     shared = head.shared;
   }
+  if (threadCount < 2) return null;
+  // The list is exactly as long as the count: a shared text that opens with
+  // a Markdown list is text, not more threads.
   let i = 1;
-  while (lines[i]?.startsWith('- ')) {
+  while (facts.threads.length < threadCount) {
+    if (!lines[i]?.startsWith('- ')) return null;
     const naming = readThreadNaming(lines[i].slice(2));
     if (!naming) return null;
     const { tokens, rest } = readTokens(naming.rest);
@@ -492,7 +496,6 @@ function parseDigest(text: string): AgentMessagePart | null {
     facts.threads.push(thread);
     facts.tokens.push(...tokens);
   }
-  if (facts.threads.length !== threadCount || threadCount < 2) return null;
   facts.token = facts.tokens[0] ?? '';
   let body = readMadeIn(lines.slice(i).join('\n'), facts);
   if (shared === 'reason') {

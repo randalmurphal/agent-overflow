@@ -296,6 +296,9 @@ func agentMessageFixtureCases() []fixtureCase {
 		one("digest: stopped by the person, with the same last message", wake(Wake{Kind: WakeStopped, Text: "Half done.", Sources: digestSources})),
 		one("digest: expired", wake(Wake{Kind: WakeExpired, Sources: digestSources})),
 		one("digest: clipped shared error", wake(Wake{Kind: WakeErrored, Text: long, Sources: digestSources})),
+		// The list is as long as the count says; a shared answer that is a
+		// Markdown list is the answer, not more threads.
+		one("digest: the same reply, a Markdown list", wake(Wake{Kind: WakeReply, Text: "- No findings.\n- \"Lexer\" (t-lex) [token tok-2]", Sources: digestSources})),
 		// A request made in an assistant's past thread names it after the
 		// status line and, in a digest, after the list.
 		one("reply made in a past thread", wake(Wake{Kind: WakeReply, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}, Agent: &SenderAgent{Role: "Runs the builds."}}}, Text: "All green.", MadeIn: "t-old", Now: "t-new"})),

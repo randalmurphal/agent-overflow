@@ -162,6 +162,12 @@
     "label": "2 threads: Worker, Lexer"
   },
   {
+    "name": "a digest whose shared reply is a Markdown list",
+    "text": "2 threads sent the same reply:\n- \"Worker\" (t-worker) [token tok-1]\n  That thread is a standing agent. Its role, in its own words: \"Runs the builds.\"\n- \"Lexer\" (t-lexer, on desk) [tokens tok-2, tok-3]\n- No findings.\n- Nothing else.",
+    "meta": "{\"sendId\":\"thread-wake:tok-1\",\"origin\":\"agent-thread\",\"originThread\":{\"threadId\":\"t-worker\",\"title\":\"Worker\",\"token\":\"tok-1\",\"kind\":\"wake\"}}",
+    "label": "2 threads: - No findings."
+  },
+  {
     "name": "a digest of sessions that ended during the turn",
     "text": "2 threads were interrupted, each for the same reason:\n- \"Worker\" (t-worker) [token tok-1]\n  That thread is a standing agent. Its role, in its own words: \"Runs the builds.\"\n- \"Lexer\" (t-lexer, on desk) [tokens tok-2, tok-3]\nThe thread's session ended during the turn that read the request. What it had written by then:\n\nHalf done.",
     "meta": "{\"sendId\":\"thread-wake:tok-1\",\"origin\":\"agent-thread\",\"originThread\":{\"threadId\":\"t-worker\",\"title\":\"Worker\",\"token\":\"tok-1\",\"kind\":\"wake\"}}",

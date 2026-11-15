@@ -1987,6 +1987,60 @@
     ]
   },
   {
+    "name": "digest: the same reply, a Markdown list",
+    "text": "2 threads sent the same reply:\n- \"Worker\" (t-work) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d]\n- \"Lexer\" (t-lex, on desk, answered 3h ago) [tokens tok-2, tok-3]\n- No findings.\n- \"Lexer\" (t-lex) [token tok-2]",
+    "members": [
+      208
+    ],
+    "parts": [
+      {
+        "body": "- No findings.\n- \"Lexer\" (t-lex) [token tok-2]",
+        "footer": null,
+        "wake": {
+          "kind": "reply",
+          "title": "",
+          "threadId": "",
+          "computer": "",
+          "age": "",
+          "token": "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+          "tokens": [
+            "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d",
+            "tok-2",
+            "tok-3"
+          ],
+          "agentRole": null,
+          "stoppedBy": "",
+          "clipped": false,
+          "madeIn": "",
+          "now": "",
+          "threads": [
+            {
+              "title": "Worker",
+              "threadId": "t-work",
+              "computer": "",
+              "age": "",
+              "tokens": [
+                "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d"
+              ],
+              "agentRole": null
+            },
+            {
+              "title": "Lexer",
+              "threadId": "t-lex",
+              "computer": "desk",
+              "age": "3h",
+              "tokens": [
+                "tok-2",
+                "tok-3"
+              ],
+              "agentRole": null
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
     "name": "reply made in a past thread",
     "text": "Reply from \"Worker\" (t-work) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d]:\nThat thread is a standing agent. Its role, in its own words: \"Runs the builds.\"\nMade in thread t-old, before New Thread, Same Assistant; now t-new.\nAll green.",
     "members": [

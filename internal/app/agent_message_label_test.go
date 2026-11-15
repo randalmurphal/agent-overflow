@@ -132,6 +132,8 @@ func agentMessageLabelCases(t *testing.T) []agentMessageLabelCase {
 	add("a digest of the same reply", text, meta)
 	text, meta = answer(threadtools.Wake{Kind: threadtools.WakeExpired, Sources: digest}, from("wake", worker))
 	add("a digest with no text", text, meta)
+	text, meta = answer(threadtools.Wake{Kind: threadtools.WakeReply, Sources: digest, Text: "- No findings.\n- Nothing else."}, from("wake", worker))
+	add("a digest whose shared reply is a Markdown list", text, meta)
 	text, meta = answer(threadtools.Wake{Kind: threadtools.WakeInterrupted, Sources: digest, Text: threadtools.InterruptSessionEndedMidTurn + threadtools.SessionEndedWrittenSoFar + "Half done."}, from("wake", worker))
 	add("a digest of sessions that ended during the turn", text, meta)
 	text, meta = answer(threadtools.Wake{Kind: threadtools.WakeInterrupted, Sources: digest, Text: stopByWorkflow().cause}, from("wake", worker))
@@ -230,10 +232,11 @@ func TestAgentMessageLabelFixture(t *testing.T) {
 	}
 }
 
-// TestAgentMessageLabelReadsPastThePastThreadLine: the line a wake carries
+// TestAgentMessageLabelQuotesTheAnswerNotTheRouting: the line a wake carries
 // for a request made in an assistant's past thread is routing, never the
-// answer the label quotes.
-func TestAgentMessageLabelReadsPastThePastThreadLine(t *testing.T) {
+// answer the label quotes, and a digest lists only as many threads as it
+// counts, so a shared answer that is a Markdown list is still the answer.
+func TestAgentMessageLabelQuotesTheAnswerNotTheRouting(t *testing.T) {
 	t.Parallel()
 	want := map[string]string{
 		"made in a past thread: reply from 1 sources, All green.":                                           "Worker: All green.",
@@ -243,6 +246,7 @@ func TestAgentMessageLabelReadsPastThePastThreadLine(t *testing.T) {
 		"made in a past thread: interrupted from 1 sources, " + threadtools.InterruptSessionEndedUnanswered: "Worker",
 		"made in a past thread: reply from 2 sources, Same answer.":                                         "2 threads: Same answer.",
 		"made in a past thread: interrupted from 2 sources, " + threadtools.InterruptSessionEndedUnread:     "2 threads: Worker, Lexer",
+		"a digest whose shared reply is a Markdown list":                                                    "2 threads: - No findings.",
 	}
 	seen := 0
 	for _, tc := range agentMessageLabelCases(t) {

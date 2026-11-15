@@ -171,8 +171,13 @@ func readThreadWakeDigest(text string) (titles []string, body string, ok bool) {
 	if !found || err != nil || want < 2 {
 		return nil, "", false
 	}
+	// The list is exactly as long as the count: a shared text that opens
+	// with a Markdown list is text, not more threads.
 	at := 1
-	for ; at < len(lines) && strings.HasPrefix(lines[at], "- "); at++ {
+	for ; len(titles) < want; at++ {
+		if at >= len(lines) || !strings.HasPrefix(lines[at], "- ") {
+			return nil, "", false
+		}
 		naming := lines[at][len("- "):]
 		quoted, err := strconv.QuotedPrefix(naming)
 		if err != nil || !strings.HasPrefix(naming[len(quoted):], " (") {
@@ -188,9 +193,6 @@ func readThreadWakeDigest(text string) (titles []string, body string, ok bool) {
 		if at+1 < len(lines) && strings.HasPrefix(lines[at+1], "  That thread "+threadtools.AgentSentence) {
 			at++
 		}
-	}
-	if len(titles) != want {
-		return nil, "", false
 	}
 	_, _, body, _ = threadtools.CutWakeMadeIn(strings.Join(lines[at:], "\n"))
 	if opening == " were interrupted, each for the same reason:" {
