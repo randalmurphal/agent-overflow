@@ -86,7 +86,8 @@ export function createAgentRowMemo(): (next: ThreadAgentRow[]) => ThreadAgentRow
   };
 }
 
-function sameAgentRow(a: ThreadAgentRow, b: ThreadAgentRow): boolean {
+/** Whether two reads of a row say the same of it, field by field. */
+export function sameAgentRow(a: ThreadAgentRow, b: ThreadAgentRow): boolean {
   const keys = new Set([...Object.keys(a), ...Object.keys(b)]) as Set<keyof ThreadAgentRow>;
   for (const key of keys) {
     if (a[key] !== b[key]) return false;

@@ -352,6 +352,38 @@ describe('the Agents segment', () => {
     expect(within(past).getByTestId('agent-tray-row-show-in-sidebar').hasAttribute('disabled')).toBe(false);
   });
 
+  for (const compact of [false, true]) {
+    it(`${compact ? 'under compact, ' : ''}shows a failed first read with Retry, which reads the list and Past again`, async () => {
+      setCompactLayoutForTest(compact);
+      noteThread('thread-1', '', 2);
+      const pane = await buildPane();
+      setBindingMock('ListThreadAgentRows', async () => { throw new Error('ledger offline'); });
+      setBindingMock('ListThreadPastAgentRows', async () => { throw new Error('ledger offline'); });
+      const view = render(ActivityRailHost, { props: { pane } });
+      const toggle = await view.findByTestId('activity-rail-agents-toggle');
+      expect(view.queryByTestId('activity-rail-agents-count')).toBeNull();
+      await fireEvent.click(toggle);
+      const error = await view.findByTestId('activity-rail-agents-error');
+      expect(within(error).getByTestId('row-error-msg').textContent).toBe('Could not read agents: ledger offline');
+      const pastError = view.getByTestId('activity-rail-agents-past-error');
+      expect(within(pastError).getByTestId('row-error-msg').textContent).toBe('Could not read past agents: ledger offline');
+      const retry = within(error).getByTestId('activity-rail-agents-error-retry');
+      expect(retry.getAttribute('title')).toBe('Retry');
+      expect(retry.getAttribute('aria-label')).toBe('Retry reading agents');
+      expect(within(pastError).getByTestId('activity-rail-agents-past-error-retry').getAttribute('aria-label')).toBe('Retry reading past agents');
+
+      setBindingMock('ListThreadAgentRows', async () => ({ rows: [row('child', { callerThreadId: pane.threadId! })], hidden: false }));
+      await fireEvent.click(retry);
+      await waitFor(() => expect(view.getAllByTestId('agent-tray-row').map((r) => r.dataset.token)).toEqual(['child']));
+      expect(view.queryByTestId('activity-rail-agents-error')).toBeNull();
+      expect(view.getByTestId('activity-rail-agents-past-error')).toBeTruthy();
+      setBindingMock('ListThreadPastAgentRows', async () => ({ rows: [row('p0', { state: 'finished', settledAt: Date.now() })], total: 1 }));
+      await fireEvent.click(view.getByTestId('activity-rail-agents-past-error-retry'));
+      await waitFor(() => expect(view.getByTestId('activity-rail-agents-past-count').textContent).toBe('1'));
+      expect(view.queryByTestId('activity-rail-agents-past-error')).toBeNull();
+    });
+  }
+
   it('is not shown for a thread waiting on nobody', async () => {
     noteThread('thread-1', '', 2);
     const pane = await buildPane();

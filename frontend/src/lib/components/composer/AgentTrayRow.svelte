@@ -27,6 +27,7 @@
   import PanelRightOpen from '@lucide/svelte/icons/panel-right-open';
   import UsersRound from '@lucide/svelte/icons/users-round';
   import AgentTrayRowDigest from './AgentTrayRowDigest.svelte';
+  import { activityRailIconActionClasses } from './activityRailClasses';
 
   interface Props {
     row: ThreadAgentRow;
@@ -93,10 +94,6 @@
   let degraded = $derived(row.nestedUnavailable ? `Its own agents and background work are not shown: ${row.nestedUnavailable}` : '');
   let compact = $derived(isCompactLayout());
 
-  // BackgroundTaskTrayRow's Open in Agent Pane, with the compact hit target
-  // the row's other icon button carries.
-  const iconActionClasses =
-    'inline-flex shrink-0 rounded p-0.5 text-text-secondary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-50 compact:min-h-9 compact:min-w-9 compact:items-center compact:justify-center';
   const actionClasses =
     'shrink-0 rounded-[var(--radius-field)] border border-border-subtle px-1.5 py-0.5 text-[0.6875rem] font-medium text-text-secondary transition-colors hover:bg-surface-2/40 hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-50 compact:min-h-9 compact:select-none';
 </script>
@@ -129,7 +126,7 @@
     {#if showInSidebar}
       <button
         type="button"
-        class={iconActionClasses}
+        class={activityRailIconActionClasses}
         onclick={() => onShowInSidebar(row)}
         disabled={isPlacing}
         title="Show in sidebar"
@@ -144,7 +141,7 @@
     {/if}
     <button
       type="button"
-      class={iconActionClasses}
+      class={activityRailIconActionClasses}
       onclick={() => onOpenPane(row)}
       title="Open in agent pane"
       aria-label="Open in Agent Pane"

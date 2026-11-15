@@ -33,7 +33,8 @@
   import Icon from '../primitives/Icon.svelte';
   import RowError from '../chat/RowError.svelte';
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
-  import { activityRailRevealClasses } from './activityRailClasses';
+  import RefreshCw from '@lucide/svelte/icons/refresh-cw';
+  import { activityRailIconActionClasses, activityRailRevealClasses } from './activityRailClasses';
   import type { AgentController, IncomingAgentMessage } from './activityRailAgents.svelte';
 
   interface Props {
@@ -206,6 +207,22 @@
   let canStopAll = $derived(agents.count > 0);
 </script>
 
+{#snippet readError(testId: string, msg: string, retryLabel: string, onRetry: () => void)}
+  <li class="flex items-center gap-1 px-1" data-testid={testId}>
+    <RowError tone="error" msg={msg} class="flex-1" />
+    <button
+      type="button"
+      class={activityRailIconActionClasses}
+      onclick={onRetry}
+      title="Retry"
+      aria-label={retryLabel}
+      data-testid="{testId}-retry"
+    >
+      <Icon icon={RefreshCw} size={12} />
+    </button>
+  </li>
+{/snippet}
+
 <div
   id="activity-rail-agents-body"
   class="border-t border-border-subtle px-3 py-2"
@@ -229,6 +246,9 @@
     {/if}
   </div>
   <ul class="flex flex-col gap-1 overflow-y-auto {expanded.size > 0 || past.expanded ? 'max-h-[min(70vh,32rem)]' : 'max-h-56'}">
+    {#if agents.error}
+      {@render readError('activity-rail-agents-error', `Could not read agents: ${agents.error}`, 'Retry reading agents', () => agents.retry())}
+    {/if}
     {#each agents.rows as row (row.token)}
       <li>
         <AgentTrayRow
@@ -312,12 +332,10 @@
             Show {past.moreCount} more…
           </button>
         {/if}
-        {#if past.error}
-          <div class="px-1 pt-0.5" data-testid="activity-rail-agents-past-error">
-            <RowError tone="error" msg={`Could not read past agents: ${past.error}`} />
-          </div>
-        {/if}
       </li>
+    {/if}
+    {#if past.error}
+      {@render readError('activity-rail-agents-past-error', `Could not read past agents: ${past.error}`, 'Retry reading past agents', () => past.retry())}
     {/if}
   </ul>
 </div>

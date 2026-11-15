@@ -24,8 +24,14 @@
 // Below the open rows is Past (activityRailAgentsPast.svelte.ts), the
 // thread's settled rows from the ledger. This controller says when it may
 // have changed: on the reads above, a frame naming the thread and no row the
-// list holds, and a row of the thread's own that the list shows settling.
-// The segment shows while Past holds any row, so it stays reachable.
+// list holds open or settled, a row of the thread's own that the list shows
+// settling, and a frame about a settled row the next read did not supply.
+// A settled row of the thread's own that a read supplies is patched into
+// Past, and while Past lists it the open rows leave it out. The segment
+// shows while Past holds any row, so it stays reachable.
+//
+// A failed list read keeps the last list and is the controller's `error`
+// until a read succeeds; the segment shows while it stands, with a Retry.
 //
 // It also lists the incoming messages: what other threads' agents, wakes
 // and workers queued for this thread and still held there, read from the
@@ -53,7 +59,9 @@ import {
   visibleAgentRows,
 } from '../../utils/agentTray';
 import { AGENT_ROW_SETTLED_LINGER_MS } from './activityRailBackground.svelte';
-import { createPastAgentRows, type PastAgentRows } from './activityRailAgentsPast.svelte';
+import { createPastAgentRows, type AgentReadStatus, type PastAgentRows } from './activityRailAgentsPast.svelte';
+import { errString } from '../../utils/errors';
+import { reportFrontendDiagnostic } from '../../utils/frontendErrorCapture';
 
 const REFRESH_DELAY_MS = 100;
 // The backend's bound on one row read (maxThreadAgentRowReads). A read of
@@ -114,6 +122,12 @@ export interface AgentController {
   /** A settled row is shown and waits on the clock to leave. */
   readonly hasPendingSettled: boolean;
   readonly threadId: string | null;
+  /** Whether a list read answered for the thread, and whether the last failed. */
+  readonly status: AgentReadStatus;
+  /** Why the last list read failed, until one succeeds. */
+  readonly error: string;
+  /** Read the list again after a failure. */
+  retry(): void;
   /** Take a settled row out now, as its click does. */
   dismiss(token: string): void;
   /** A row's thread got a new sidebar placement (Show in Sidebar). */
@@ -128,6 +142,13 @@ export function createAgentController(
 ): AgentController {
   let listed: ThreadAgentRow[] = $state.raw([]);
   let hidden = $state(false);
+  // Whether a list read answered for this thread, and why the last one
+  // failed, until one succeeds.
+  let listLoaded = $state(false);
+  let listError = $state('');
+  // Settled rows frames named that a read of the open list answers for:
+  // Past takes each from that read, or reads it when the read does not.
+  const pastNamed = new Set<string>();
   // When this pane first saw each settled row, and the settled rows a click
   // took out. Plain maps rewritten whole, so the rows derivation reruns.
   let settledSeen: ReadonlyMap<string, number> = $state.raw(new Map());
@@ -164,7 +185,19 @@ export function createAgentController(
 
   const past = createPastAgentRows(() => threadId);
 
-  function replace(forThreadId: string | null, next: ThreadAgentRow[], more: boolean): void {
+  /**
+   * Puts a read's rows in place. `read` is the rows the read itself
+   * supplied (all of `next` for a list read): Past takes its settled rows
+   * of this thread's own from them, and reads again for a settled row a
+   * frame named (`named`) that the read did not supply.
+   */
+  function replace(
+    forThreadId: string | null,
+    next: ThreadAgentRow[],
+    more: boolean,
+    read: readonly ThreadAgentRow[] = next,
+    named: readonly string[] = [],
+  ): void {
     // The wall clock, not the rail's: the rail's clock stops while nothing
     // it shows needs it, and a stamp from its last tick would end the
     // linger on the first tick after it starts again.
@@ -178,7 +211,10 @@ export function createAgentController(
     // A row of this thread's own that settled is Past's newest. One the
     // list never held came with a frame that already said so.
     const wasOpen = new Set(listed.filter((row) => !isSettledAgentRow(row)).map((row) => row.token));
-    if (next.some((row) => row.callerThreadId === forThreadId && isSettledAgentRow(row) && wasOpen.has(row.token))) past.due();
+    const own = read.filter((row) => row.callerThreadId === forThreadId && isSettledAgentRow(row));
+    past.patch(own);
+    const supplied = new Set(read.map((row) => row.token));
+    if (own.some((row) => wasOpen.has(row.token)) || named.some((token) => !supplied.has(token))) past.due();
     settledSeen = seen;
     dismissed = new Set([...dismissed].filter((token) => tokens.has(token)));
     listed = next;
@@ -199,13 +235,14 @@ export function createAgentController(
    * list says of its nesting. False when one left the listing, which only a
    * read of the list can place.
    */
-  async function readRows(id: string, tokens: string[], token: RefreshToken): Promise<boolean> {
+  async function readRows(id: string, tokens: string[], token: RefreshToken, named: readonly string[]): Promise<boolean> {
     if (tokens.length > MAX_ROW_READ) return false;
     let reads;
     try {
       reads = await GetThreadAgentRows(id, tokens);
     } catch (err) {
-      if (token.isCurrent() && id === threadId) console.error('ActivityRail: GetThreadAgentRows failed:', err);
+      // The list read that follows says whether the requests can be read.
+      if (token.isCurrent() && id === threadId) reportFrontendDiagnostic('Agents segment: agent row read failed', errString(err));
       return false;
     }
     if (!token.isCurrent() || id !== threadId) return true;
@@ -215,13 +252,14 @@ export function createAgentController(
       byToken.set(read.row.token, read.row);
     }
     if (![...byToken.keys()].every(patchable)) return false;
-    replace(id, listed.map((row) => {
+    const next = listed.map((row) => {
       const read = byToken.get(row.token);
       return read ? {
         ...read, depth: row.depth, nestedHidden: row.nestedHidden,
         nestedUnavailable: row.nestedUnavailable, ownerComputerId: row.ownerComputerId,
       } : row;
-    }), hidden);
+    });
+    replace(id, next, hidden, next.filter((row) => byToken.has(row.token)), named);
     return true;
   }
 
@@ -237,10 +275,12 @@ export function createAgentController(
       }
       const owner = threadBackend(id);
       if (owner !== undefined && getTransportStatusFor(owner).status !== 'connected') return;
+      const named = [...pastNamed];
+      pastNamed.clear();
       if (!listDue) {
         const tokens = [...rowsDue];
         rowsDue.clear();
-        if (tokens.length === 0 || await readRows(id, tokens, token)) return;
+        if (tokens.length === 0 || await readRows(id, tokens, token, named)) return;
         if (!token.isCurrent() || id !== threadId) return;
       }
       listDue = false;
@@ -250,7 +290,10 @@ export function createAgentController(
       try {
         const agents = await ListThreadAgentRows(id);
         if (!token.isCurrent() || id !== threadId) return;
-        replace(id, agents?.rows ?? [], agents?.hidden ?? false);
+        const next = agents?.rows ?? [];
+        replace(id, next, agents?.hidden ?? false, next, named);
+        listError = '';
+        listLoaded = true;
         if ([...heard].some((caller) => callers.has(caller))) {
           listDue = true;
           refresh.request();
@@ -258,10 +301,12 @@ export function createAgentController(
       } catch (err) {
         if (!token.isCurrent() || id !== threadId) return;
         // A failed read says nothing about the requests. Keep the last list
-        // until a read succeeds or the thread changes; the next frame reads
-        // the list.
+        // until a read succeeds or the thread changes; the next frame or a
+        // Retry reads the list, and Past reads the rows it was told of.
         listDue = true;
-        console.error('ActivityRail: ListThreadAgentRows failed:', err);
+        if (named.length > 0) past.due();
+        listError = errString(err);
+        reportFrontendDiagnostic('Agents segment: agent rows read failed', listError);
       } finally {
         if (heardDuringList === heard) heardDuringList = null;
       }
@@ -282,6 +327,9 @@ export function createAgentController(
       // Not replace(): an empty list would forget what kept holds.
       listed = [];
       hidden = false;
+      listLoaded = false;
+      listError = '';
+      pastNamed.clear();
       callers = id ? new Set([id]) : new Set();
       heardDuringList = null;
       refresh.reset();
@@ -290,9 +338,17 @@ export function createAgentController(
     });
   });
 
+  // A settled row Past lists is listed there alone: it leaves the open rows
+  // as a click takes it out, kept while a row open under it is shown.
+  const leftOpen = $derived.by<ReadonlySet<string>>(() => {
+    if (past.rows.length === 0) return dismissed;
+    const out = new Set(dismissed);
+    for (const row of past.rows) out.add(row.token);
+    return out;
+  });
   const keepRows = createAgentRowMemo();
   const rows = $derived(
-    keepRows(visibleAgentRows(listed, settledSeen, dismissed, getNow(), AGENT_ROW_SETTLED_LINGER_MS)),
+    keepRows(visibleAgentRows(listed, settledSeen, leftOpen, getNow(), AGENT_ROW_SETTLED_LINGER_MS)),
   );
   // Identity per queue item comes from the queue store, which replaces an
   // entry only when its snapshot does.
@@ -305,7 +361,10 @@ export function createAgentController(
     return out;
   });
   const count = $derived(rows.filter((row) => !isSettledAgentRow(row)).length + incoming.length);
-  const shown = $derived(rows.length + incoming.length + (past.total > 0 ? 1 : 0));
+  // A failed read is shown, with its Retry, wherever it leaves the segment.
+  const shown = $derived(
+    rows.length + incoming.length + (listError ? 1 : 0) + (past.total > 0 || past.error ? 1 : 0),
+  );
   const runningCount = $derived(rows.filter((row) => row.state === 'running').length);
   const hasPendingSettled = $derived(rows.some(isSettledAgentRow));
 
@@ -319,6 +378,13 @@ export function createAgentController(
     get runningCount() { return runningCount; },
     get hasPendingSettled() { return hasPendingSettled; },
     get threadId() { return threadId; },
+    get status() { return listError ? 'error' : listLoaded ? 'loaded' : 'loading'; },
+    get error() { return listError; },
+
+    retry(): void {
+      listDue = true;
+      refresh.request({ immediate: true });
+    },
 
     dismiss(token: string): void {
       if (dismissed.has(token)) return;
@@ -343,10 +409,15 @@ export function createAgentController(
         } else if (!callers.has(change.threadId)) {
           heardDuringList?.add(change.threadId);
           return;
-        } else if (change.threadId === threadId && !(change.id && listed.some((row) => row.token === change.id))) {
-          // A request the list does not hold, or every request: a past
-          // row's late reply, or one that settled out of the list.
-          past.due();
+        } else if (change.threadId === threadId) {
+          // A request the list holds open changes Past when it settles,
+          // which the read below sees. One it holds settled is in Past too:
+          // the read below supplies it. Any other, or every request (a past
+          // row's late reply, one that settled out of the list), is Past's
+          // to read.
+          const held = change.id ? listed.find((row) => row.token === change.id) : undefined;
+          if (!held) past.due();
+          else if (isSettledAgentRow(held)) pastNamed.add(held.token);
         }
         if (change?.id && !listDue && patchable(change.id)) rowsDue.add(change.id);
         else listDue = true;

@@ -10,6 +10,12 @@ import { setupEventListeners } from '../../stores/events';
 import type { ThreadAgentRow } from '../../stores/bindings';
 import type { UserMessageOriginWake } from '../../utils/userMessageMeta';
 import { replaceQueueForThread, resetForTest as resetSendQueue, type QueueItem } from '../../stores/sendQueue.svelte';
+import { reportFrontendDiagnostic } from '../../utils/frontendErrorCapture';
+
+vi.mock('../../utils/frontendErrorCapture', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../utils/frontendErrorCapture')>()),
+  reportFrontendDiagnostic: vi.fn(),
+}));
 
 function queued(id: string, over: Partial<QueueItem> = {}): QueueItem {
   return { id, sendId: id, threadId: '', message: id, attachmentIds: [], enqueuedAt: 1_000, ...over } as QueueItem;
@@ -40,6 +46,7 @@ describe('agents controller', () => {
     const pane = await buildPane();
     noteThread(pane.threadId!, '', 2);
     const read = setBindingMock('ListThreadAgentRows', async () => ({ rows, hidden }));
+    setBindingMock('ListThreadPastAgentRows', async () => ({ rows: [], total: 0 }));
     stopEvents = setupEventListeners();
     // The rail's clock, which a test can hold still while time passes.
     const clock = $state({ now: Date.now() });
@@ -341,14 +348,43 @@ describe('agents controller', () => {
     ]);
   });
 
-  it('keeps the last list through a failed read', async () => {
+  it('keeps the last list through a failed read, says so and reports it', async () => {
     const { pane, controller } = await mountAgents([row('child')]);
-    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    expect(controller.status).toBe('loaded');
+    vi.mocked(reportFrontendDiagnostic).mockClear();
     setBindingMock('GetThreadAgentRows', async () => { throw new Error('row read failed'); });
     setBindingMock('ListThreadAgentRows', async () => { throw new Error('read failed'); });
     emitWailsEvent('thread:agent_rows_changed', { threadId: pane.threadId, id: 'child' });
     await vi.advanceTimersByTimeAsync(500);
-    expect(log).toHaveBeenCalled();
+    expect(reportFrontendDiagnostic).toHaveBeenCalled();
+    expect(controller.rows.map((r) => r.token)).toEqual(['child']);
+    expect(controller.status).toBe('error');
+    expect(controller.error).toContain('read failed');
+  });
+
+  it('shows the segment when the first read fails, and a retry reads it again', async () => {
+    vi.useFakeTimers();
+    const pane = await buildPane();
+    noteThread(pane.threadId!, '', 2);
+    setBindingMock('ListThreadPastAgentRows', async () => ({ rows: [], total: 0 }));
+    const read = setBindingMock('ListThreadAgentRows', async () => { throw new Error('ledger offline'); });
+    stopEvents = setupEventListeners();
+    let controller!: AgentController;
+    release = $effect.root(() => {
+      controller = createAgentController(() => pane, () => Date.now());
+      return controller.mount();
+    });
+    expect(controller.status).toBe('loading');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(controller.status).toBe('error');
+    expect(controller.error).toContain('ledger offline');
+    expect(controller.shown, 'a failed read looks like no agents').toBeGreaterThan(0);
+    setBindingMock('ListThreadAgentRows', async () => ({ rows: [row('child')], hidden: false }));
+    controller.retry();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(controller.status).toBe('loaded');
+    expect(controller.error).toBe('');
     expect(controller.rows.map((r) => r.token)).toEqual(['child']);
   });
 

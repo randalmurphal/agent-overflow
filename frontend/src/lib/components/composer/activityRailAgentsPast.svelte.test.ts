@@ -8,6 +8,12 @@ import { noteThread } from '../../transport/entityIndex';
 import { setupEventListeners } from '../../stores/events';
 import type { ThreadAgentRow } from '../../stores/bindings';
 import { resetForTest as resetSendQueue } from '../../stores/sendQueue.svelte';
+import { reportFrontendDiagnostic } from '../../utils/frontendErrorCapture';
+
+vi.mock('../../utils/frontendErrorCapture', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../utils/frontendErrorCapture')>()),
+  reportFrontendDiagnostic: vi.fn(),
+}));
 
 interface Cursor { settledAt: number; token: string }
 
@@ -169,16 +175,17 @@ describe('the Agents segment\'s Past', () => {
     rows = [row('newest', { state: 'replied', settledAt: 2_000_000 }), ...rows];
     emitWailsEvent('thread:agent_rows_changed', { threadId: 'thread-a' });
     await vi.advanceTimersByTimeAsync(500);
-    expect(readPast).toHaveBeenCalledWith('thread-a', { settledAt: 0, token: '' }, 28);
-    // The head reaches the rows shown, so none of them goes.
+    expect(readPast).toHaveBeenCalledWith('thread-a', { settledAt: 0, token: '' }, 50);
+    expect(readPast, 'one page reached the oldest row shown').toHaveBeenCalledTimes(1);
+    // Every row shown stays, below the new one.
     expect(controller.past.rows.map((r) => r.token)).toEqual(rows.slice(0, 29).map((r) => r.token));
     expect(controller.past.total).toBe(31);
     expect(controller.past.moreCount).toBe(2);
   });
 
-  it('keeps rows past the backend\'s page after a head that reaches them, and drops them after one that does not', async () => {
+  it('rereads every row it shows through cursor pages, past the backend\'s page, and keeps them after a burst', async () => {
     let rows = ledger(80);
-    const { controller } = await mount({ past: () => rows });
+    const { controller, readPast } = await mount({ past: () => rows });
     controller.past.toggle();
     await vi.advanceTimersByTimeAsync(0);
     for (let index = 0; index < 3; index++) {
@@ -186,19 +193,118 @@ describe('the Agents segment\'s Past', () => {
       await vi.advanceTimersByTimeAsync(0);
     }
     expect(controller.past.rows).toHaveLength(68);
-    rows = [row('one', { state: 'finished', settledAt: 2_000_000 }), ...rows];
+
+    // A row beyond the first page changes: its late reply is read.
+    rows = rows.map((r, index) => (index === 60 ? { ...r, lateReply: true, answer: 'late' } : r));
+    readPast.mockClear();
     emitWailsEvent('thread:agent_rows_changed', { threadId: 'thread-a' });
     await vi.advanceTimersByTimeAsync(500);
-    expect(controller.past.rows.map((r) => r.token)).toEqual(rows.slice(0, 69).map((r) => r.token));
+    expect(controller.past.rows[60].answer, 'the row past the first page was not reread').toBe('late');
+    expect(readPast.mock.calls.map((call) => call[2])).toEqual([50, 50]);
     expect(controller.past.moreCount).toBe(12);
 
-    // More settled at once than one page holds: what follows the head is unread.
+    // More settled at once than one page holds: the rows it showed stay below them.
     const burst = Array.from({ length: 60 }, (_, index) => row(`burst-${index}`, { state: 'finished', settledAt: 3_000_000 - index }));
     rows = [...burst, ...rows];
     emitWailsEvent('thread:agent_rows_changed', { threadId: 'thread-a' });
     await vi.advanceTimersByTimeAsync(500);
-    expect(controller.past.rows.map((r) => r.token)).toEqual(burst.slice(0, 50).map((r) => r.token));
+    expect(controller.past.rows.map((r) => r.token)).toEqual(rows.slice(0, 128).map((r) => r.token));
+    expect(controller.past.total).toBe(140);
+    expect(controller.past.moreCount).toBe(12);
+    controller.past.showMore();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(controller.past.rows.map((r) => r.token)).toEqual(rows.map((r) => r.token));
+  });
+
+  it('takes a late reply to a row the open list still lingers on into Past, by the open list\'s read', async () => {
+    const done = row('child', { callerThreadId: 'thread-a', state: 'finished', settledAt: 900, answer: 'first' });
+    let settledRows = [done];
+    const { controller, readPast } = await mount({ open: [done], past: () => settledRows });
+    controller.past.toggle();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(controller.past.rows.map((r) => r.answer)).toEqual(['first']);
+    const late = { ...done, lateReply: true, answer: 'late' };
+    settledRows = [late];
+    readPast.mockClear();
+    const readRows = setBindingMock('GetThreadAgentRows', async () => [{ token: 'child', row: late, listed: true }]);
+    emitWailsEvent('thread:agent_rows_changed', { threadId: 'thread-a', id: 'child' });
+    await vi.advanceTimersByTimeAsync(500);
+    expect(readRows).toHaveBeenCalledTimes(1);
+    expect(controller.past.rows[0].lateReply, 'Past kept the copy from before the late reply').toBe(true);
+    expect(controller.past.rows[0].answer).toBe('late');
+    expect(readPast, 'the open list\'s read already said it').not.toHaveBeenCalled();
+  });
+
+  it('reads Past for a frame about a lingering row that the open list\'s read no longer lists', async () => {
+    const done = row('child', { callerThreadId: 'thread-a', state: 'finished', settledAt: 900 });
+    const { readPast } = await mount({ open: [done], past: () => [done] });
+    setBindingMock('GetThreadAgentRows', async () => [{ token: 'child', listed: false }]);
+    setBindingMock('ListThreadAgentRows', async () => ({ rows: [], hidden: false }));
+    readPast.mockClear();
+    emitWailsEvent('thread:agent_rows_changed', { threadId: 'thread-a', id: 'child' });
+    await vi.advanceTimersByTimeAsync(500);
+    expect(readPast).toHaveBeenCalledTimes(1);
+  });
+
+  it('drops a Show more that answers after Past collapsed, and opens again on the first page', async () => {
+    const { controller, readPast } = await mount({ past: () => ledger(40) });
+    controller.past.toggle();
+    await vi.advanceTimersByTimeAsync(0);
+    const held: Array<() => void> = [];
+    const answer = pages(() => ledger(40));
+    readPast.mockImplementation((id: unknown, after: unknown, limit: unknown) => new Promise((resolve) => {
+      held.push(() => resolve(answer(id as string, after as Cursor, limit as number)));
+    }));
+    controller.past.showMore();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(held).toHaveLength(1);
+    controller.past.collapse();
+    held[0]();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(controller.past.rows, 'the reply landed in the collapsed Past').toEqual([]);
+    expect(controller.past.moreCount).toBe(0);
+    readPast.mockImplementation(answer as never);
+    controller.past.toggle();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(controller.past.rows.map((r) => r.token)).toEqual(ledger(PAST_FIRST_PAGE).map((r) => r.token));
     expect(controller.past.moreCount).toBe(PAST_MORE_PAGE);
+  });
+
+  it('says a failed first read of the count, keeps Past reachable, reports it, and recovers on retry', async () => {
+    vi.mocked(reportFrontendDiagnostic).mockClear();
+    vi.useFakeTimers();
+    noteThread('thread-a', '', 2);
+    setBindingMock('ListThreadAgentRows', async () => ({ rows: [], hidden: false }));
+    setBindingMock('ListThreadPastAgentRows', async () => { throw new Error('ledger offline'); });
+    stopEvents = setupEventListeners();
+    let controller!: AgentController;
+    release = $effect.root(() => {
+      controller = createAgentController(() => ({ thread: { id: 'thread-a' }, hasDraftPlaceholder: false }) as never, () => Date.now());
+      return controller.mount();
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(controller.past.error).toContain('ledger offline');
+    expect(controller.past.status).toBe('error');
+    expect(controller.shown, 'the segment went away with the failed read').toBeGreaterThan(0);
+    expect(reportFrontendDiagnostic).toHaveBeenCalled();
+    setBindingMock('ListThreadPastAgentRows', pages(() => ledger(3)));
+    controller.past.retry();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(controller.past.error).toBe('');
+    expect(controller.past.status).toBe('loaded');
+    expect(controller.past.total).toBe(3);
+  });
+
+  it('lists a settled row once: Past open takes it out of the open rows, and closing Past gives it back', async () => {
+    const done = row('child', { callerThreadId: 'thread-a', state: 'finished', settledAt: Date.now() });
+    const { controller } = await mount({ open: [done, row('other', { callerThreadId: 'thread-a' })], past: () => [done] });
+    expect(controller.rows.map((r) => r.token)).toEqual(['child', 'other']);
+    controller.past.toggle();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(controller.past.rows.map((r) => r.token)).toEqual(['child']);
+    expect(controller.rows.map((r) => r.token), 'listed twice').toEqual(['other']);
+    controller.past.collapse();
+    expect(controller.rows.map((r) => r.token)).toEqual(['child', 'other']);
   });
 
   it('applies only the newest read, and reads again for a change during one', async () => {
@@ -274,8 +380,11 @@ describe('the Agents segment\'s Past', () => {
   });
 
   it('takes a placement into the rows it holds, open and past', async () => {
-    const owned = { placement: 'owned', state: 'finished', settledAt: 5 } as const;
-    const { controller } = await mount({ open: [row('w', owned)], past: () => [row('w', owned)] });
+    // A send to the worker is open while its spawn is past.
+    const { controller } = await mount({
+      open: [row('w', { kind: 'send', placement: 'owned' })],
+      past: () => [row('spawn', { threadId: 't-w', placement: 'owned', state: 'finished', settledAt: 5 })],
+    });
     controller.past.toggle();
     await vi.advanceTimersByTimeAsync(0);
     controller.placed('t-w', 'standalone');
