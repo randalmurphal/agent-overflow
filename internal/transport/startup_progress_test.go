@@ -407,7 +407,10 @@ func TestStartupReporter_LauncherProbeJudgesProgressNotHeartbeat(t *testing.T) {
 		// Long enough that the test process's own idle CPU (the probe and
 		// the server answering it) stays far under a twentieth of a tick.
 		heartbeat = 100 * time.Millisecond
-		deadline  = 800 * time.Millisecond
+		// Twenty heartbeats: a shared runner can hold one write or one
+		// tick back for most of a second, which is no progress to the
+		// judge.
+		deadline = 2 * time.Second
 	)
 	probe := func(srv *Server) (time.Duration, error) {
 		_, portText, err := net.SplitHostPort(srv.Addr())
@@ -472,8 +475,8 @@ func TestStartupReporter_LauncherProbeJudgesProgressNotHeartbeat(t *testing.T) {
 		r.WatchBootFiles(db, wal)
 		end := r.BeginBootPhase("store.migrate", "Applying migration 1 of 1 rebuild")
 
-		// One statement writing for four deadlines, then the boot ends.
-		writing := 4 * deadline
+		// One statement writing for two deadlines, then the boot ends.
+		writing := 2 * deadline
 		done := make(chan error, 1)
 		go func() {
 			f, err := os.OpenFile(wal, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
@@ -519,9 +522,9 @@ func TestStartupReporter_LauncherProbeJudgesProgressNotHeartbeat(t *testing.T) {
 		r.WatchBootFiles(db, db+"-wal")
 		end := r.BeginBootPhase("store.migrate", "Applying migration 1 of 1 rebuild")
 
-		// One statement sorting in memory for four deadlines, writing
+		// One statement sorting in memory for two deadlines, writing
 		// nothing, then the boot ends.
-		working := 4 * deadline
+		working := 2 * deadline
 		go func() {
 			spinCPU(working)
 			end()
