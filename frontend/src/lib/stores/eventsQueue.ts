@@ -6,6 +6,7 @@ import {
   applyFlushedLifecycle,
   flushMarkAt,
   markItemsFlushed,
+  noteQueueFrame,
   queueItemFromWire,
   removeRestoredQueueItems,
   replaceQueueForThread,
@@ -82,6 +83,7 @@ export function applyQueueStateChanged(evt: QueueStateChangedPayload | undefined
   if (!evt || !evt.threadId) return;
   const items = (evt.items ?? []).map(queueItemFromWire);
   replaceQueueForThread(evt.threadId, items);
+  noteQueueFrame(evt.threadId);
   for (const pane of ingestPanes()) {
     if (pane.threadId !== evt.threadId) continue;
     for (const item of items) pane.confirmSend(evt.threadId, item.sendId);

@@ -41,47 +41,49 @@ func consumeTransferredDraft(tx *sql.Tx, transfer ThreadTransfer) error {
 }
 
 // MoveThreadDraft publishes the destination and consumes the exact source in
-// one transaction. Both threads must still be unsent chat/plan drafts.
-func (s *Store) MoveThreadDraft(expected, destination ThreadDraft) error {
+// one transaction. Both threads must still be unsent chat/plan drafts. It
+// reports the destination's write.
+func (s *Store) MoveThreadDraft(expected, destination ThreadDraft) (DraftWrite, error) {
 	if expected.ThreadID == "" || destination.ThreadID == "" || expected.ThreadID == destination.ThreadID {
-		return errors.New("draft move requires two different threads")
+		return DraftWrite{}, errors.New("draft move requires two different threads")
 	}
 	tx, release, err := s.beginDurableTx(context.Background())
 	if err != nil {
-		return err
+		return DraftWrite{}, err
 	}
 	defer release()
 	defer tx.Rollback()
 	for _, id := range []string{expected.ThreadID, destination.ThreadID} {
 		if err := checkThreadTransferAccess(tx, id); err != nil {
-			return err
+			return DraftWrite{}, err
 		}
 		if err := checkUnsentDraft(tx, id); err != nil {
-			return err
+			return DraftWrite{}, err
 		}
 	}
 	current, _, err := getThreadDraft(tx, expected.ThreadID)
 	if err != nil {
-		return err
+		return DraftWrite{}, err
 	}
 	current.UpdatedAt, expected.UpdatedAt = 0, 0
 	if current != expected {
-		return errors.New("The draft changed while switching projects. Try again.")
+		return DraftWrite{}, errors.New("The draft changed while switching projects. Try again.")
 	}
 	target, _, err := getThreadDraft(tx, destination.ThreadID)
 	if err != nil {
-		return err
+		return DraftWrite{}, err
 	}
 	if target.Content != "" || target.Attachments != "[]" || target.TerminalChips != "[]" || target.PendingPlanImplementation != "" {
-		return errors.New("The destination already contains a draft.")
+		return DraftWrite{}, errors.New("The destination already contains a draft.")
 	}
-	if _, err = upsertThreadDraft(tx, destination); err != nil {
-		return err
+	write, err := upsertThreadDraft(tx, destination)
+	if err != nil {
+		return DraftWrite{}, err
 	}
 	if _, err = tx.Exec(`DELETE FROM thread_drafts WHERE thread_id = ?`, expected.ThreadID); err != nil {
-		return err
+		return DraftWrite{}, err
 	}
-	return tx.Commit()
+	return write, tx.Commit()
 }
 
 // CheckUnsentDraft rejects history, accepted sends, and provider sessions, even

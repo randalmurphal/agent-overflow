@@ -110,8 +110,12 @@ type ThreadTitleGenerationEvent struct {
 // it in its sidebar without a refresh, matching what the creating client does
 // with the return value.
 //
+// The budget covers cutting a worktree, whose post-checkout hook runs
+// inside its add (gitops.HookTimeout).
+//
 //ao:scope threads:operate
 //ao:route selected
+//ao:budget 12m
 func (a *App) CreateThread(ctx context.Context, opts CreateThreadOptions) (store.Thread, error) {
 	return a.createThread(ctx, opts, true)
 }
@@ -279,7 +283,9 @@ func (a *App) GetThreadDefaults(opts CreateThreadOptions) (ThreadDefaults, error
 
 // ListThreads backs the frontend sidebar. It deliberately excludes
 // "draft" threads (newly created but never sent) so the sidebar stays
-// clean: a thread only becomes visible once its first item lands.
+// clean: a thread becomes visible once its draft has content or its first
+// item lands (store.ListThreadsWithItems), and the write that does it
+// announces the row as listed.
 // Internal callers that need every thread (tests, fork inspection,
 // discussion runtime) go through a.store.ListThreads directly: an answer
 // here is a client's catalog read, which releases heavy post-boot work.

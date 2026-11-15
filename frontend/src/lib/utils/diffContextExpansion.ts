@@ -11,7 +11,6 @@ import {
   LINE_DEL,
   LINE_HUNK,
   LINE_MARKER,
-  ownText,
   PatchStore,
   type StoredLine,
 } from './patchStore';
@@ -116,7 +115,7 @@ export function readHunkHeadings(body: PatchBody): Promise<Map<number, string>> 
     if (body.kind(index) === LINE_HUNK) headers.push(index);
   }
   return whenResident(headers.flatMap((index) => body.slice(index, index + 1)), () =>
-    new Map(headers.map((index) => [index, ownText(hunkHeaderSuffix(body.text(index)))])));
+    new Map(headers.map((index) => [index, hunkHeaderSuffix(body.text(index))])));
 }
 
 interface Hunk {

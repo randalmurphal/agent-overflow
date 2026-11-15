@@ -81,7 +81,8 @@ func (c *Core) MergeBranch(cwd, base, head string) (MergeResult, error) {
 	if mode == "merge" {
 		args = []string{"merge", "--no-ff", "--no-edit", headRev}
 	}
-	if _, _, err := c.Execute(cwd, args...); err != nil {
+	// The merge's hooks (pre-merge-commit, post-merge) run inside it.
+	if _, _, err := c.executeWithHooks(cwd, args...); err != nil {
 		mergeErr := fmt.Errorf("merge %q into %q: %w", head, base, err)
 		return MergeResult{}, errors.Join(mergeErr, c.abortMergeIfActive(cwd))
 	}

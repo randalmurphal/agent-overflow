@@ -158,7 +158,10 @@ type MergedPRHead struct {
 const (
 	ReviewVerdictApprove        = "approve"
 	ReviewVerdictRequestChanges = "request-changes"
-	ReviewVerdictComment        = "comment"
+	// ReviewChangesNeedSummary refuses a Request changes review without a
+	// summary, on both forges.
+	ReviewChangesNeedSummary = "Request changes needs a summary saying what to change."
+	ReviewVerdictComment     = "comment"
 
 	MergeabilityConflicts = "conflicts"
 	MergeabilityClean     = "clean"
@@ -386,11 +389,19 @@ type PartialSubmitError struct {
 	UnpostedReplies []int
 	Unconfirmed     bool
 	Err             error
-	// ApproveErr is an approval the forge refused or did not confirm
-	// besides Err (GitLab approves after the publish): a second outcome,
-	// reported with the first.
-	ApproveErr error
+	// Verdict names the verdict's own write after GitLab's publish, the
+	// approval or the changes-requested thread, when it failed: as Err when
+	// it is the only failure, as VerdictErr beside another one (a second
+	// outcome, reported with the first).
+	Verdict    string
+	VerdictErr error
 }
+
+// The verdict writes PartialSubmitError.Verdict names.
+const (
+	SubmitStepApproval      = "approval"
+	SubmitStepChangesThread = "changes-requested thread"
+)
 
 // ReplyThreadGoneError is a held reply the forge refused because its
 // thread no longer exists (deleted, or its only comment deleted).
@@ -436,10 +447,13 @@ func (e *PartialSubmitError) Error() string {
 	}
 	if e.FailedThreadID != "" {
 		msg := fmt.Sprintf("review submitted, but posting the reply to thread %s failed: %v", e.FailedThreadID, e.Err)
-		if e.ApproveErr != nil {
-			msg += fmt.Sprintf("; the approval failed too: %v", e.ApproveErr)
+		if e.VerdictErr != nil {
+			msg += fmt.Sprintf("; the %s failed too: %v", e.Verdict, e.VerdictErr)
 		}
 		return msg
+	}
+	if e.Verdict != "" {
+		return fmt.Sprintf("review submitted, but the %s failed: %v", e.Verdict, e.Err)
 	}
 	return fmt.Sprintf("review submitted, but a follow-up step failed: %v", e.Err)
 }
@@ -726,6 +740,11 @@ func (c *Core) SubmitReview(ctx context.Context, ref PRReference, review SubmitR
 	head, err := validMergeHead(review.HeadSHA)
 	if err != nil {
 		return SubmitReviewResult{}, err
+	}
+	// GitHub refuses Request changes without a body, and GitLab's is a
+	// thread to resolve, which needs one: both say what to change.
+	if strings.EqualFold(review.Verdict, ReviewVerdictRequestChanges) && strings.TrimSpace(review.Body) == "" {
+		return SubmitReviewResult{}, &ForgeActionError{Kind: ForgeErrorRefused, Message: ReviewChangesNeedSummary}
 	}
 	review.HeadSHA = head
 	return c.ForgeByID(ref.Forge).SubmitReview(forgeWrite(ctx), ref, review)

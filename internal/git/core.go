@@ -22,12 +22,13 @@ import (
 )
 
 const (
-	// defaultTimeout bounds every git / gh / glab subprocess. It fits
-	// transport.DefaultMethodBudget, which a client waits out plus a
-	// margin: when a forge CLI hangs on a dead network, the descriptive
-	// error here ("gh ... timed out after 45s") reaches the pane before
-	// the opaque client-side "RPC timed out". A command bounded longer
-	// belongs to a method that declares a //ao:budget covering it.
+	// defaultTimeout bounds every git / gh / glab subprocess that runs no
+	// hook (HookTimeout). It fits transport.DefaultMethodBudget, which a
+	// client waits out plus a margin: when a forge CLI hangs on a dead
+	// network, the descriptive error here ("gh ... timed out after 45s")
+	// reaches the pane before the opaque client-side "RPC timed out". A
+	// command bounded longer belongs to a method that declares a
+	// //ao:budget covering it.
 	defaultTimeout        = 45 * time.Second
 	defaultMaxOutputBytes = int64(1_000_000)
 
@@ -60,6 +61,17 @@ const (
 	// open; staleness shorter than this returns quickly without
 	// spawning git.
 	FetchStaleWindow = 5 * time.Minute
+
+	// HookTimeout bounds one command that runs a user's hooks: commit,
+	// push, pull, checkout, branch creation, worktree add, merge, and the
+	// forge CLIs' create, which pushes. A hook that runs a project's checks,
+	// a signing prompt, an LFS download in post-checkout, or the transfer a
+	// push or pull carries routinely outlasts defaultTimeout; the bound is
+	// there to end a hook that hangs, not to rush one that works.
+	HookTimeout = 10 * time.Minute
+	// HookStopGrace is how long a stopped command has to exit after
+	// SIGTERM, which it and its hooks get together, before it is killed.
+	HookStopGrace = 5 * time.Second
 )
 
 // localeCEnv pins a child git's message catalogue to the C locale. See
@@ -85,9 +97,8 @@ type Core struct {
 	repositoryLookups     repositoryLookups
 	repositoryLookupSlots chan struct{}
 	timeout               time.Duration
-	// commitTimeout replaces CommitTimeout for a test; zero
-	// keeps it.
-	commitTimeout  time.Duration
+	// hookTimeout replaces HookTimeout for a test; zero keeps it.
+	hookTimeout    time.Duration
 	maxOutputBytes int64
 
 	// prCache memoizes lookupOpenPR results so a refresh storm (gitwatch
@@ -387,7 +398,13 @@ func (c *Core) executeNetwork(cwd string, allowCredentialPrompt bool, args ...st
 // The nested git inherits our environment, so the opt-out has to be made
 // here rather than at a git call site we never see.
 func (c *Core) runBinaryInteractive(ctx context.Context, binary, cwd string, args ...string) (commandResult, error) {
-	return c.runSpec(commandSpec{ctx: ctx, binary: binary, cwd: cwd, allowCredentialPrompt: true, updatesRemoteRefs: true, args: args})
+	return c.runSpec(commandSpec{ctx: ctx, binary: binary, cwd: cwd, allowCredentialPrompt: true, updatesRemoteRefs: true, runsHooks: true, args: args})
+}
+
+// executeWithHooks is Execute for a git command that runs the user's hooks
+// (commandSpec.runsHooks).
+func (c *Core) executeWithHooks(cwd string, args ...string) (stdout, stderr string, err error) {
+	return c.executeSpec(commandSpec{binary: "git", cwd: cwd, runsHooks: true, args: args})
 }
 
 func (c *Core) executeSpec(spec commandSpec) (stdout, stderr string, err error) {
@@ -649,11 +666,12 @@ type commandSpec struct {
 	outputLimit int64
 	// timeout overrides the interactive default for app-lifetime transfer jobs.
 	timeout time.Duration
-	// stopGracefully runs the command in its own process group and stops
-	// it, at its timeout or its context's end, with SIGTERM to the group
-	// (then SIGKILL after CommitStopGrace), so the children it started stop
-	// with it. A commit sets it: its hooks may be running when it stops.
-	stopGracefully bool
+	// runsHooks marks a command that runs the user's hooks (HookTimeout):
+	// it is bounded by HookTimeout, unless timeout says otherwise, runs in
+	// its own process group, and is stopped, at its bound or its context's
+	// end, with SIGTERM to the group (then SIGKILL after HookStopGrace), so
+	// the hooks it started stop with it.
+	runsHooks bool
 	// maxBytes caps stdout and stderr independently; <= 0 falls back to
 	// the Core's configured cap, then the package default.
 	maxBytes int64
@@ -697,6 +715,12 @@ func (c *Core) runSpec(spec commandSpec) (commandResult, error) {
 		return commandResult{}, errors.New("git: invalid streaming command configuration")
 	}
 	timeout := c.timeout
+	if spec.runsHooks {
+		timeout = c.hookTimeout
+		if timeout <= 0 {
+			timeout = HookTimeout
+		}
+	}
 	if spec.timeout > 0 {
 		timeout = spec.timeout
 	}
@@ -737,10 +761,10 @@ func (c *Core) runSpec(spec commandSpec) (commandResult, error) {
 	}
 	cmd := exec.CommandContext(ctx, target.path, spec.args...)
 	cmd.Args[0] = target.argv0
-	if spec.stopGracefully {
+	if spec.runsHooks {
 		procutil.ConfigureGroup(cmd)
 		cmd.Cancel = func() error { return procutil.TerminateConfiguredGroup(cmd) }
-		cmd.WaitDelay = CommitStopGrace
+		cmd.WaitDelay = HookStopGrace
 	}
 	// Background-cadence git (`status` every debounce edge) must not
 	// opportunistically rewrite .git/index: the write is a pure cache
@@ -789,13 +813,13 @@ func (c *Core) runSpec(spec commandSpec) (commandResult, error) {
 	}
 
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		return result, fmt.Errorf("%s timed out after %s", formatCommand(spec.binary, spec.args...), timeout)
+		return result, &commandStoppedError{fmt.Sprintf("%s timed out after %s", formatCommand(spec.binary, spec.args...), timeout)}
 	}
 	// Cancelled by the caller's context rather than by our own timeout —
 	// app shutdown killing a background command mid-flight. Distinct
 	// message so it never reads as a repository or network problem.
 	if errors.Is(ctx.Err(), context.Canceled) {
-		return result, fmt.Errorf("%s cancelled", formatCommand(spec.binary, spec.args...))
+		return result, &commandStoppedError{fmt.Sprintf("%s cancelled", formatCommand(spec.binary, spec.args...))}
 	}
 	if stdoutBuf.Truncated() || stderrBuf.Truncated() {
 		return result, fmt.Errorf(
@@ -815,6 +839,13 @@ func (c *Core) runSpec(spec commandSpec) (commandResult, error) {
 
 	return result, fmt.Errorf("%s failed: %w", formatCommand(spec.binary, spec.args...), err)
 }
+
+// commandStoppedError is a command ended by its bound or its owner's
+// context rather than by its own exit: what it did before it stopped is
+// unknown, so no caller reads its effects as the command's answer.
+type commandStoppedError struct{ message string }
+
+func (e *commandStoppedError) Error() string { return e.message }
 
 func formatCommand(binary string, args ...string) string {
 	var b strings.Builder

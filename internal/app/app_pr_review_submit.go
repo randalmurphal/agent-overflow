@@ -150,9 +150,23 @@ func (a *App) SubmitPRReview(ctx context.Context, pr gitops.PRReference, review 
 	if review.Drafts == nil {
 		result, err := a.gitCore().SubmitReview(forgeapi.WithInteractive(ctx), pr, gitops.SubmitReviewRequest{Verdict: review.Verdict, Body: review.Body, HeadSHA: review.HeadSHA, Comments: review.Comments})
 		mapped, err := mapSubmitPRReviewResult(pr, gitops.ActionReview, result, err)
+		a.refreshAfterSubmit(ctx, pr, err)
 		return mapped, gitops.ExplainForgeError(pr, gitops.ActionReview, err)
 	}
-	return a.submitPRReviewDrafts(ctx, pr, review)
+	mapped, err := a.submitPRReviewDrafts(ctx, pr, review)
+	a.refreshAfterSubmit(ctx, pr, err)
+	return mapped, err
+}
+
+// refreshAfterSubmit polls the PR's live pump once a submit answered or
+// may have posted, so the pane shows what the forge holds now: the
+// viewer's reviewer state as the forge set it (GitLab may record reviewed
+// for a Request changes its tier lacks), the review's threads and the
+// merge blockers, never the verdict the request asked for.
+func (a *App) refreshAfterSubmit(ctx context.Context, pr gitops.PRReference, err error) {
+	if _, unconfirmed := errors.AsType[*gitops.UnconfirmedSubmitError](err); err == nil || unconfirmed {
+		a.refreshPRSnapshot(ctx, pr)
+	}
 }
 
 // submitPRReviewDrafts is SubmitPRReview with Drafts, under the PR's lock.

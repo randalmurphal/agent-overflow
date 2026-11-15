@@ -414,10 +414,10 @@ test('text typed on other screens into a new thread this screen erases ends in a
       return { page: other, saves: await holdDraftSaves(other, () => shared) };
     }));
     await openFreshDraft(harness, page);
-    for (const screen of screens) await harness.open(screen.page);
     await page.getByLabel('Message Input').fill('half a thought');
     await expect.poll(async () => (await threadRows(harness)).length).toBe(1);
     shared = (await threadRows(harness))[0].id;
+    for (const screen of screens) await harness.open(screen.page);
     const texts = ['typed on the second screen', 'typed on the third screen'];
     for (const [i, screen] of screens.entries()) {
       await screen.page.getByTestId('thread-row').click();

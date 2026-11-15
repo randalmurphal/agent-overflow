@@ -1,6 +1,6 @@
 // Package jstexttest holds test helpers for text a JavaScript client
-// receives: what JSON delivers for a string, how packed text decodes, and
-// text with every shape a patch carries. Only tests import it. It does not
+// receives: what JSON delivers for a string, and text with every shape a
+// patch carries. Only tests import it. It does not
 // import jstext, so jstext's own tests can use it.
 package jstexttest
 
@@ -9,7 +9,6 @@ import (
 	"math/rand/v2"
 	"strings"
 	"testing"
-	"unicode/utf8"
 )
 
 // JSONDelivered is the string a JSON client receives for raw: each invalid
@@ -25,23 +24,6 @@ func JSONDelivered(t testing.TB, raw string) string {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	return got
-}
-
-// Unpack decodes packed text: each character's code point is one byte of
-// UTF-8, decoded as a JSON client's TextDecoder would.
-func Unpack(t testing.TB, packed string) string {
-	t.Helper()
-	out := make([]byte, 0, len(packed))
-	for _, r := range packed {
-		if r > 0xFF {
-			t.Fatalf("packed text holds %U, past U+00FF", r)
-		}
-		out = append(out, byte(r))
-	}
-	if !utf8.Valid(out) {
-		t.Fatalf("packed text unpacks to invalid UTF-8 %q", out)
-	}
-	return string(out)
 }
 
 // ArbitraryText is about size bytes drawn from characters of every UTF-8

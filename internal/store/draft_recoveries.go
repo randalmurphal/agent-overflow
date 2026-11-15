@@ -54,39 +54,39 @@ func (s *Store) DeleteThreadDraftRecovery(threadID, sendID string) error {
 
 // CommitThreadDraftRecovery compares the current draft and moves recovery into it
 // in one transaction. A racing edit returns false so the caller can merge again.
-func (s *Store) CommitThreadDraftRecovery(r ThreadDraftRecovery, expected, merged ThreadDraft) (committed bool, changed bool, err error) {
+func (s *Store) CommitThreadDraftRecovery(r ThreadDraftRecovery, expected, merged ThreadDraft) (committed bool, write DraftWrite, err error) {
 	if r.ThreadID == "" || r.SendID == "" || expected.ThreadID != r.ThreadID || merged.ThreadID != r.ThreadID {
-		return false, false, fmt.Errorf("draft recovery: matching thread and send IDs required")
+		return false, DraftWrite{}, fmt.Errorf("draft recovery: matching thread and send IDs required")
 	}
 	tx, err := s.db.BeginTx(context.Background(), nil)
 	if err != nil {
-		return false, false, err
+		return false, DraftWrite{}, err
 	}
 	defer tx.Rollback()
 	current, _, err := getThreadDraft(tx, r.ThreadID)
 	if err != nil {
-		return false, false, err
+		return false, DraftWrite{}, err
 	}
 	if current != expected {
-		return false, false, nil
+		return false, DraftWrite{}, nil
 	}
 	var id string
 	err = tx.QueryRow(`SELECT send_id FROM thread_draft_recoveries WHERE thread_id = ?`, r.ThreadID).Scan(&id)
 	if err == sql.ErrNoRows {
-		return true, false, nil
+		return true, DraftWrite{}, nil
 	}
 	if err != nil {
-		return false, false, err
+		return false, DraftWrite{}, err
 	}
 	if id != r.SendID {
-		return false, false, fmt.Errorf("draft recovery changed")
+		return false, DraftWrite{}, fmt.Errorf("draft recovery changed")
 	}
-	changed, err = upsertThreadDraft(tx, merged)
+	write, err = upsertThreadDraft(tx, merged)
 	if err != nil {
-		return false, false, err
+		return false, DraftWrite{}, err
 	}
 	if _, err := tx.Exec(`DELETE FROM thread_draft_recoveries WHERE thread_id = ? AND send_id = ?`, r.ThreadID, r.SendID); err != nil {
-		return false, false, err
+		return false, DraftWrite{}, err
 	}
-	return true, changed, tx.Commit()
+	return true, write, tx.Commit()
 }

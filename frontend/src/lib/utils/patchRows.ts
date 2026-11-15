@@ -8,7 +8,6 @@ import {
   LINE_HUNK,
   LINE_MARKER,
   LINE_META,
-  ownText,
 } from './patchStore';
 
 // Display rows of a review file, computed from its compact body the way
@@ -293,12 +292,12 @@ export function materializeRows(file: ReviewFile, start: Readonly<RowStart>, cou
   const rows: PatchDisplayRow[] = [];
   const lines = { start: start.line, end: start.line };
   let complete = true;
-  // Rows outlive the chunks their text was read from (ownText).
+  // Each read decodes a string of its own, so a row keeps no chunk.
   const texts = new Map<number, string | null>();
   const textOf = (index: number): string | null => {
     let text = texts.get(index);
     if (text === undefined) {
-      text = body.resident(index, index + 1) ? ownText(body.text(index)) : null;
+      text = body.resident(index, index + 1) ? body.text(index) : null;
       texts.set(index, text);
       if (text === null) complete = false;
       lines.start = Math.min(lines.start, index);

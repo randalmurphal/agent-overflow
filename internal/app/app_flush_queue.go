@@ -261,18 +261,12 @@ func (a *App) ensureFlushDispatchMapsLocked() {
 // the history they were queued against, and a teardown dropping the queue.
 // A surviving row would make the next boot restore a message the user's
 // revert or Stop discarded, and a surviving batch would be dispatched to the
-// next session. The caller clears triage's own queue.
-func (a *App) dropFlushQueue(threadID string) {
+// next session. The caller clears triage's own queue. It returns the
+// batches it took from the worker, for a caller that must also retire the
+// rows a requeued message still has (QueuedFlushItem.StaleUserItemID).
+func (a *App) dropFlushQueue(threadID string) []triage.QueuedFlushItem {
 	a.dropDurableFlushQueue(threadID)
-	a.flushDispatch.mu.Lock()
-	a.ensureFlushDispatchMapsLocked()
-	a.flushDispatch.generation[threadID]++
-	delete(a.flushDispatch.queues, threadID)
-	delete(a.flushDispatch.current, threadID)
-	delete(a.flushDispatch.dispatching, threadID)
-	delete(a.flushDispatch.inflightItems, threadID)
-	a.markSendsPendingDirty(threadID)
-	a.flushDispatch.mu.Unlock()
+	return a.drainFlushDispatchForSessionEnd(threadID)
 }
 
 func (a *App) drainFlushDispatchForSessionEnd(threadID string) []triage.QueuedFlushItem {

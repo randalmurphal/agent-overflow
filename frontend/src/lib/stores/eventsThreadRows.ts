@@ -12,7 +12,7 @@ import { closePanesShowingThread, findPaneShowingThread, followDeletedThread, it
 import { refreshProjects, touchProjectActivity } from './projects.svelte';
 import { refreshThreadGroups } from './threadGroups.svelte';
 import { addErrorToast, addToast } from './toast.svelte';
-import { getThreadById, getThreadLiveActivityAt, getThreads, loadThreads, prependThread, removeThread, replaceAllThreads, replaceThread, touchThreadActivity } from './threads.svelte';
+import { getThreadById, getThreadLiveActivityAt, getThreads, listThread, loadThreads, removeThread, replaceAllThreads, replaceThread, touchThreadActivity } from './threads.svelte';
 import { projectReaderMessageSent, projectThreadError } from './threadStatuses.svelte';
 import type { ThreadPaneIngest } from './threadPaneRoles';
 import { pendingLocalReadMarker } from './threadReadWrites';
@@ -464,13 +464,13 @@ export function applyThreadUpdated(evt: ThreadUpdateEvent): void {
       return;
     }
     case 'listed': {
-      // Created, forked, or unarchived: the row belongs in the active
-      // sidebar now. Insert it if this client does not have it — the
-      // initiating client's own prepend is the same step, so an echo of
-      // its own creation is idempotent.
+      // Created, forked, unarchived, or listed by its first draft content
+      // or item: the row belongs in the active sidebar now. Insert it if
+      // this client does not have it — the initiating client's own prepend
+      // is the same step, so an echo of its own creation is idempotent.
       if (!evt.thread?.id) return;
       const merged = mergeThreadRowWithLocal(evt.thread);
-      if (!getThreadById(merged.id)) prependThread(merged);
+      listThread(merged);
       syncThread(merged);
       return;
     }

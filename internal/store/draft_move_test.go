@@ -38,7 +38,7 @@ func TestDraftTransferKeepsSourceFencedAndConsumesOnlyAtCompletion(t *testing.T)
 		t.Fatal("second transfer bypassed draft fence")
 	}
 	target := createDraftCleanupThread(t, s, "other", "chat")
-	if err := s.MoveThreadDraft(draft, ThreadDraft{ThreadID: target.ID, Content: draft.Content, Attachments: "[]", TerminalChips: "[]"}); err == nil {
+	if _, err := s.MoveThreadDraft(draft, ThreadDraft{ThreadID: target.ID, Content: draft.Content, Attachments: "[]", TerminalChips: "[]"}); err == nil {
 		t.Fatal("local move bypassed the transfer fence")
 	}
 	for _, phase := range []string{"prepared", "committed"} {
@@ -82,7 +82,7 @@ func TestMoveThreadDraftRollsBackWhenDestinationAlreadyHasContent(t *testing.T) 
 			t.Fatal(err)
 		}
 	}
-	if err := s.MoveThreadDraft(source, ThreadDraft{ThreadID: b.ID, Content: source.Content, Attachments: "[]", TerminalChips: "[]"}); err == nil {
+	if _, err := s.MoveThreadDraft(source, ThreadDraft{ThreadID: b.ID, Content: source.Content, Attachments: "[]", TerminalChips: "[]"}); err == nil {
 		t.Fatal("overwrote destination")
 	}
 	for _, want := range []ThreadDraft{source, target} {
@@ -108,7 +108,7 @@ func TestMoveThreadDraftCommitsDurablyBeforeSourceFilesCanBeRemoved(t *testing.T
 	}
 	target := draft
 	target.ThreadID = b.ID
-	if err := s.MoveThreadDraft(draft, target); err != nil {
+	if _, err := s.MoveThreadDraft(draft, target); err != nil {
 		t.Fatal(err)
 	}
 }

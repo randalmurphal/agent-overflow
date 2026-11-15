@@ -3,7 +3,6 @@
   import { lineTypeOf } from '../../utils/patchBody';
   import type { ReviewFile } from '../../utils/patchParser';
   import { PatchTextLost } from '../../utils/patchChunks';
-  import { ownText } from '../../utils/patchStore';
   import { lineTintClass } from '../../utils/diffLineTint';
   import { reportFrontendDiagnostic } from '../../utils/frontendErrorCapture';
   import { PATCH_LINES_LINE_PX } from './PatchLines.svelte';
@@ -40,8 +39,7 @@
     body.whenResident(() => {
       const lines: string[] = [];
       for (let index = from; index < to; index += 1) lines.push(body.text(index));
-      // A copy: a kept line must not keep its whole chunk.
-      return ownText(lines.join('\n'));
+      return lines.join('\n');
     }, from, to).then(
       (read) => {
         if (!live) return;

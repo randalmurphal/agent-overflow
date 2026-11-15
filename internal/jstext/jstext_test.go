@@ -1,7 +1,10 @@
 package jstext
 
 import (
+	"encoding/hex"
+	"encoding/json"
 	"math/rand/v2"
+	"os"
 	"testing"
 	"unicode/utf8"
 
@@ -122,6 +125,46 @@ func TestKeyExtendIsTheJoinedTextsKey(t *testing.T) {
 		}
 		if got := EmptyKey.Extend(text[:cut]).Extend(text[cut:]); got != whole {
 			t.Fatalf("cut at %d: %+v, want %+v", cut, got, whole)
+		}
+	}
+}
+
+// textVector is one entry of the vectors the frontend's patch store reads
+// too (frontend/src/lib/utils/patchParser.test.ts): a chunk's bytes, the
+// text a JSON client receives for them, and that text's key as a whole
+// patch.
+type textVector struct {
+	Name   string `json:"name"`
+	RawHex string `json:"rawHex"`
+	Text   string `json:"text"`
+	Key    *Key   `json:"key"`
+}
+
+const textVectorsPath = "../../frontend/src/test/fixtures/patchTextVectors.json"
+
+func TestFoldUTF16MatchesTheSharedVectors(t *testing.T) {
+	t.Parallel()
+	buf, err := os.ReadFile(textVectorsPath)
+	if err != nil {
+		t.Fatalf("read vectors: %v", err)
+	}
+	var vectors []textVector
+	if err := json.Unmarshal(buf, &vectors); err != nil {
+		t.Fatalf("decode vectors: %v", err)
+	}
+	if len(vectors) == 0 {
+		t.Fatal("no vectors")
+	}
+	for _, v := range vectors {
+		raw, err := hex.DecodeString(v.RawHex)
+		if err != nil {
+			t.Fatalf("%s: rawHex: %v", v.Name, err)
+		}
+		if got := jstexttest.JSONDelivered(t, string(raw)); got != v.Text {
+			t.Errorf("%s: a JSON client receives %q, the vector says %q", v.Name, got, v.Text)
+		}
+		if got := EmptyKey.Extend(string(raw)); v.Key == nil || *v.Key != got {
+			t.Errorf("%s: the bytes key as %+v, the vector says %+v", v.Name, got, v.Key)
 		}
 	}
 }
