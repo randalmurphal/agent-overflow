@@ -209,8 +209,8 @@ Eviction takes text nobody has read first, the latest to arrive first, so a
 large diff keeps its beginning. Read text goes after, least recently read
 first. Pinned text (a line still arriving, a range a reader holds) is not
 evicted and does not count while it is held; a chunk pinned twice counts
-once, and pinned text that is evicted, waiting to be read again, counts
-nothing.
+once, and pinned text that is evicted, waiting to be read again, or that
+the budget never counted (a store built in memory), counts nothing.
 
 The store releases the handle when the patch ends with all of its text
 held. A read that
@@ -233,6 +233,10 @@ once and the owner reads the diff again.
   PR comment excerpts, the blocks of an expanded gate diff file) read
   inside `whenResident`, which reads evicted text again and pins it while
   the reader runs.
+- Find (`utils/reviewFindScan.ts`) reads evicted lines back in ranges
+  bounded by size, an eighth of the budget (`patchTextReadAheadBytes`) or
+  one line when that is longer, and holds each range until its walk leaves
+  it.
 - A synchronous derivation must not read text that can be evicted: it would
   request the text and run again whenever the text returns. Read what it
   needs beforehand, as context expansion records hunk headings in its state
