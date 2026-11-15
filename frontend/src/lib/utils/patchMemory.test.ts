@@ -10,6 +10,7 @@ import { parsePatchFiles } from './patchFiles';
 import { whenResident } from './patchBody';
 import { PatchParser, parseReviewFiles, type ReviewFile } from './patchParser';
 import { PatchTextLost, PatchTextNotResident } from './patchChunks';
+import { LINE_ADD, PatchStore } from './patchStore';
 import { packText, streamPatch, textKey, type PatchForm, type StreamedPatch } from '../../test/helpers/streamedPatch';
 
 // Patch text past the memory budget: what is evicted first, how it is read
@@ -348,6 +349,22 @@ describe('patch text past the memory budget', () => {
 
     stream(patchOf(20, 6), 160);
     expect(patchTextHeldBytes() - base).toBeLessThanOrEqual(160);
+  });
+
+  // Text built in memory (expanded context, conflict files) is not
+  // counted, so pinning it does not raise the limit the rest is held to.
+  it('meets the budget from read text while text it never counted is pinned', async () => {
+    const base = patchTextHeldBytes();
+    setPatchTextBudgetForTest(1600);
+    const built = PatchStore.fromLines(Array.from({ length: 200 }, (_, index) => ({ content: `+built ${index}`.padEnd(40, '.'), kind: LINE_ADD })));
+    disposers.push(() => built.dispose());
+    expect(patchTextHeldBytes()).toBe(base);
+    const release = built.pin(0, built.lineCount);
+    disposers.push(release);
+
+    const { files } = stream(patchOf(20, 6), 160);
+    for (const file of files) await load(file);
+    expect(patchTextHeldBytes() - base).toBeLessThanOrEqual(1600);
   });
 
   it('counts text past Latin-1 at two bytes a character', () => {

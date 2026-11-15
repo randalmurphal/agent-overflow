@@ -68,7 +68,8 @@ export class PatchChunks implements EvictableText {
   private readonly texts: (string | null)[] = [];
   private readonly packed: boolean[] = [];
   // Per chunk: its stored length, its backend byte range (-1 when it has
-  // none), what its text costs and how many pins hold it.
+  // none), what the budget counts for its text (0 for text it does not
+  // count, which so never raises the pinned sum) and how many pins hold it.
   private readonly lengths: number[] = [];
   private readonly offsets: number[] = [];
   private readonly nextOffsets: number[] = [];
@@ -99,17 +100,17 @@ export class PatchChunks implements EvictableText {
 
   /** Adds a chunk and returns its number. A chunk with a `range` can be
    * evicted once indexed; one with none is never. `counted` false keeps
-   * text built in memory off the budget. */
+   * text built in memory off the budget, pinned or not. */
   push(data: string, packed: boolean, range: { offset: number; nextOffset: number } | undefined, counted: boolean): number {
     this.texts.push(data);
     this.packed.push(packed);
     this.lengths.push(data.length);
     this.offsets.push(range?.offset ?? -1);
     this.nextOffsets.push(range?.nextOffset ?? -1);
-    const size = packed ? data.length : textBytes(data);
+    const size = !counted ? 0 : packed ? data.length : textBytes(data);
     this.sizes.push(size);
     this.pins.push(0);
-    if (counted) this.hold(size);
+    this.hold(size);
     return this.texts.length - 1;
   }
 
