@@ -201,7 +201,6 @@ async function waitForDrain(pane: ThreadPane, id: string): Promise<void> {
   await waitFor(
     () => !pane.isItemSmoothing(id) && pane.revealBoundary === null,
     `smoother for ${id} to drain and the reveal gate to drop`,
-    900,
   );
 }
 
@@ -394,7 +393,6 @@ describe('append after a quiet gap — the growth glides', () => {
     await waitFor(
       () => scrollEl.querySelector('[data-item-id="q-bash-1"]') !== null,
       'withheld bash row to be released',
-      900,
     );
 
     const opened = distanceToBottom(scrollEl);

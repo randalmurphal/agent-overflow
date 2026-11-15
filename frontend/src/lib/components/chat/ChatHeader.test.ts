@@ -604,6 +604,8 @@ describe('<ChatHeader>', () => {
 
   it('terminal-toggle click on a placeholder opens without creating a thread', async () => {
     const { pane } = placeholderPane('placeholder-term-click');
+    // The shared teardown closes the placeholder, which closes the terminal it opened.
+    setBindingMock('CloseThreadTerminals', async () => undefined);
     const create = setBindingMock('CreateThread', async () => {
       throw new Error('CreateThread must not be called for terminal-toggle on a placeholder');
     });

@@ -35,6 +35,8 @@ export type TurnStep =
   | { emitLines: string[] }
   /** Park the turn until the test advances the named gate. */
   | { gate: string }
+  /** Claude under holdQueuedInput: consume every held message into this turn. */
+  | { drainQueued: true }
   /** Ask the app for a decision and branch on it. */
   | { approval: ApprovalRequest }
   | { delayMs: number };
@@ -126,6 +128,7 @@ function stepJSON(step: TurnStep): Record<string, unknown> {
   }
   if ('capture' in step) return { capture: step.capture };
   if ('gate' in step) return { waitSignal: { name: step.gate } };
+  if ('drainQueued' in step) return { drainQueuedInput: true };
   if ('approval' in step) {
     const { toolName, input, toolUseId, onAllow, onDeny, timeoutMs } = step.approval;
     return {

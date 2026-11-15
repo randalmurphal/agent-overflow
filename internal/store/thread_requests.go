@@ -627,18 +627,20 @@ func (s *Store) RetireThreadRequestPoll(token string) (bool, error) {
 
 // ScheduleThreadRequestWake books the next attempt at one undelivered wake.
 // It is written before the attempt, so a delivery that fails or hangs cannot
-// bring the retry round again at once.
-func (s *Store) ScheduleThreadRequestWake(token string, nextCheck, attempts int64) error {
+// bring the retry round again at once. It reports false, booking nothing,
+// when the row owes no wake: a delivery since the caller read it cleared the
+// schedule, and a booking then would leave a retry on a delivered row.
+func (s *Store) ScheduleThreadRequestWake(token string, nextCheck, attempts int64) (bool, error) {
 	action := fmt.Sprintf("store: schedule thread request wake %s", token)
 	result, err := s.db.Exec(
 		`UPDATE thread_requests SET wake_next_check = ?, wake_attempts = ?, updated_at = ?
-		  WHERE token = ?`,
+		  WHERE token = ? AND notify = 1 AND `+threadWakeOwedSQL,
 		nextCheck, attempts, nowMillis(), token,
 	)
 	if err != nil {
-		return fmt.Errorf("%s: %w", action, err)
+		return false, fmt.Errorf("%s: %w", action, err)
 	}
-	return requireRowsAffected(result, action)
+	return rowsChanged(result, action)
 }
 
 // NoteThreadRequestWakeIssue records why a wake could not be handed over.
