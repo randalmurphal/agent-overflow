@@ -1,7 +1,7 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import PatchLines from '../shared/PatchLines.svelte';
-  import type { ReviewFile } from '../../utils/patchStore';
+  import type { ReviewFile } from '../../utils/patchParser';
   interface Props {
     files: readonly ReviewFile[];
     expandFirst?: boolean;

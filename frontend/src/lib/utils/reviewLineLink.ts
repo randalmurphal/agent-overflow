@@ -1,5 +1,5 @@
 import { RowWalker } from './patchRows';
-import type { ReviewFile } from './patchStore';
+import type { ReviewFile } from './patchParser';
 import { sha1Hex, sha256Hex } from './hashes';
 
 // "Copy link to line": the line's place on the PR's own diff page. Neither

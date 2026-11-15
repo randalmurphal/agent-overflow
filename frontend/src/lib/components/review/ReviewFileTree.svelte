@@ -15,7 +15,7 @@
   import MenuItem from '../primitives/MenuItem.svelte';
   import Popover from '../primitives/Popover.svelte';
   import VirtualList from '../shared/VirtualList.svelte';
-  import type { DiffFileSummary } from '../../utils/patchStore';
+  import type { DiffFileSummary } from '../../utils/patchParser';
   import {
     buildReviewTree,
     fileExtensionLabel,

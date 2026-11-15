@@ -13,7 +13,7 @@
   import type { ExpandDirection } from '../../utils/diffContextExpansion';
   import type { PaintedSpans, PatchScopeContext } from '../../utils/diffSpanCache.svelte';
   import type { DiffGap } from '../../utils/patchFiles';
-  import type { ReviewFile } from '../../utils/patchStore';
+  import type { ReviewFile } from '../../utils/patchParser';
   import {
     captureReadingAnchor,
     resolveReadingAnchor,

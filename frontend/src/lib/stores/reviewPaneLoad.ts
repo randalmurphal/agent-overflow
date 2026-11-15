@@ -31,7 +31,8 @@ import type { DiffReviewComment, DiffReviewScope, ReviewLineComment } from '../t
 import { seedPayloadPatchSpans } from '../utils/diffSpanCache.svelte';
 import { mergePatchFilesByPath } from '../utils/patchFiles';
 import { anchorRow, displayRowCount } from '../utils/patchRows';
-import { patchFileFromReviewFile, reviewFileFromPatchFile, whenResident, type ReviewFile } from '../utils/patchStore';
+import { whenResident } from '../utils/patchBody';
+import { patchFileFromReviewFile, reviewFileFromPatchFile, type ReviewFile } from '../utils/patchParser';
 import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
 import { prReferenceWire, type PRRef } from '../utils/prReference';
 import { prRevision, type PRRevision } from '../utils/prRevision';

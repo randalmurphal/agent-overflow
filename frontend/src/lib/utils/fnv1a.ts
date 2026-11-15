@@ -7,7 +7,7 @@
 // held-window digest, where the width buys collision headroom against a
 // server that answers `fresh` on a match.
 
-const FNV_OFFSET_BASIS_32 = 0x811c9dc5;
+export const FNV_OFFSET_BASIS_32 = 0x811c9dc5;
 const FNV_PRIME_32 = 0x01000193;
 
 /** Continue an FNV-1a hash with an appended UTF-16 suffix. */

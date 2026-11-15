@@ -3,7 +3,8 @@ import { getTransportHelloFor } from './transportStatus.svelte';
 import { withBackendTarget } from '../transport/backends';
 import type { BackendKey } from '../transport/backendKey';
 import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
-import { PatchParser, type PatchChunkSpan, type PatchTextKey, type PatchTextLost, type PatchTextSource } from '../utils/patchStore';
+import { PatchParser } from '../utils/patchParser';
+import type { PatchChunkSpan, PatchTextKey, PatchTextLost, PatchTextSource } from '../utils/patchStore';
 
 // A review diff read from the backend in chunks. An Open*Diff call returns
 // the first chunk and, when the patch continues, a handle that only the

@@ -4,7 +4,7 @@
   import Icon from '../primitives/Icon.svelte';
   import ReviewFileTree from './ReviewFileTree.svelte';
   import { appStorageGet, appStorageSet } from '../../stores/appStorage';
-  import type { DiffFileSummary } from '../../utils/patchStore';
+  import type { DiffFileSummary } from '../../utils/patchParser';
   import type { CommentFileCounts } from '../../utils/reviewComments';
 
   // The review pane's left rail: the file tree in a resizable shell, or,

@@ -1,0 +1,380 @@
+import { appendFNV1a32, FNV_OFFSET_BASIS_32 } from './fnv1a';
+import { parseHunkHeader, type PatchLine } from './patchFiles';
+import {
+  LINE_ADD,
+  LINE_CONTEXT,
+  LINE_DEL,
+  LINE_HUNK,
+  LINE_MARKER,
+  LINE_META,
+  PatchStore,
+  type LineKind,
+  type StoredLine,
+} from './patchStore';
+
+// Each file of a review patch is a `PatchBody`, a view over line ranges
+// of one or more stores (`patchStore.ts`).
+
+/** What the highlighter receives in place of a marker or fold row: a
+ * `\`-prefixed line is a non-content marker that keeps line alignment
+ * (see `diffSpanCache.svelte.ts`). */
+const MARKER_PATCH_TEXT = '\\ marker';
+
+let nextBodyId = 1;
+
+/** One run of a file's lines: lines [start, end) of a store. */
+export interface BodySegment {
+  store: PatchStore;
+  start: number;
+  end: number;
+}
+
+/**
+ * One file's patch lines, as ranges of stores, with the per-file facts
+ * the row model needs without reading any text. Lines are addressed by
+ * their index in the file, which is also the index the highlighter's
+ * spans are aligned with.
+ *
+ * The facts are computed as `buildPatchDisplayRows` would with gaps on;
+ * `patchRows.ts` applies a file's `suppressGaps` and `newSideTotal`.
+ */
+export class PatchBody {
+  readonly id = nextBodyId++;
+  readonly segments: readonly BodySegment[];
+  private readonly bases: number[];
+  readonly lineCount: number;
+  /** Display rows that are not gaps: content, marker and fold lines. */
+  readonly contentRows: number;
+  /** Hunk-header lines that open a gap, in line order. */
+  readonly gapLines: Int32Array;
+  /** Whether the file can continue past its last hunk. */
+  readonly trailingGap: boolean;
+  /** The new-side line after the last row. */
+  readonly endNew: number;
+  /** Largest line number on either side. */
+  readonly maxLine: number;
+  /** Conflict pseudo-files carry marker rows and never show gaps. */
+  readonly hasMarkers: boolean;
+  /** Stored size of `patchText()`, known without its text: at least its
+   * UTF-16 length and at most its UTF-8 length (packed text stores
+   * bytes). A size bound, never a string length. */
+  readonly textSize: number;
+  private key: string | null = null;
+
+  constructor(segments: readonly BodySegment[]) {
+    this.segments = segments.filter((segment) => segment.end > segment.start);
+    this.bases = [];
+    let lineCount = 0;
+    for (const segment of this.segments) {
+      this.bases.push(lineCount);
+      lineCount += segment.end - segment.start;
+    }
+    this.lineCount = lineCount;
+
+    let contentRows = 0;
+    const gaps: number[] = [];
+    let sawHunk = false;
+    let firstOldStart = 0;
+    let lastNewStart = 0;
+    let oldLine = 0;
+    let newLine = 0;
+    let maxLine = 0;
+    let hasMarkers = false;
+    let markerChars = 0;
+    for (let index = 0; index < lineCount; index += 1) {
+      const kind = this.kind(index);
+      if (kind === LINE_HUNK) {
+        const oldStart = this.hunkOldStart(index);
+        const newStart = this.hunkNewStart(index);
+        if (!sawHunk) {
+          firstOldStart = oldStart;
+          if (oldStart > 1 && newStart > 1) gaps.push(index);
+        } else if (newStart > 0 && newStart > newLine) {
+          gaps.push(index);
+        }
+        sawHunk = true;
+        lastNewStart = newStart;
+        oldLine = oldStart;
+        newLine = newStart;
+      } else if (kind === LINE_DEL) {
+        if (oldLine > maxLine) maxLine = oldLine;
+        oldLine += 1;
+        contentRows += 1;
+      } else if (kind === LINE_ADD) {
+        if (newLine > maxLine) maxLine = newLine;
+        newLine += 1;
+        contentRows += 1;
+      } else if (kind === LINE_CONTEXT) {
+        if (oldLine > maxLine) maxLine = oldLine;
+        if (newLine > maxLine) maxLine = newLine;
+        oldLine += 1;
+        newLine += 1;
+        contentRows += 1;
+      } else if (kind === LINE_MARKER) {
+        hasMarkers = true;
+        contentRows += 1;
+        const { store, line } = this.locate(index);
+        markerChars += MARKER_PATCH_TEXT.length - (store.storedLineEnd(line) - store.storedLineStart(line));
+      }
+    }
+    this.contentRows = contentRows;
+    this.gapLines = Int32Array.from(gaps);
+    this.trailingGap = sawHunk && firstOldStart > 0 && lastNewStart > 0;
+    this.endNew = newLine;
+    this.maxLine = maxLine;
+    this.hasMarkers = hasMarkers;
+
+    let textSize = Math.max(0, this.segments.length - 1);
+    for (const segment of this.segments) {
+      textSize += segment.store.storedLineEnd(segment.end - 1) - segment.store.storedLineStart(segment.start);
+    }
+    this.textSize = lineCount === 0 ? 0 : textSize + markerChars;
+  }
+
+  /** A body over explicitly typed lines. */
+  static fromLines(lines: readonly StoredLine[]): PatchBody {
+    const store = PatchStore.fromLines(lines);
+    return new PatchBody([{ store, start: 0, end: store.lineCount }]);
+  }
+
+  /** A body over a parsed PatchFile's lines (conflict pseudo-files,
+   * merged edit sections). */
+  static fromPatchLines(lines: readonly PatchLine[]): PatchBody {
+    return PatchBody.fromLines(lines.map(storedLine));
+  }
+
+  kind(index: number): LineKind {
+    const { store, line } = this.locate(index);
+    return store.kind(line);
+  }
+
+  /** A line's text. Throws PatchTextNotResident when it is evicted. */
+  text(index: number): string {
+    const { store, line } = this.locate(index);
+    return store.text(line);
+  }
+
+  /** A line's stored size, known without its text: bounded as
+   * `textSize` is. */
+  lineSize(index: number): number {
+    const { store, line } = this.locate(index);
+    return store.storedLineEnd(line) - store.storedLineStart(line);
+  }
+
+  /** Whether a line's text is resident. */
+  residentLine(index: number): boolean {
+    const { store, line } = this.locate(index);
+    return store.resident(line);
+  }
+
+  /** The end of the segment holding line `index`: lines [index, end) are
+   * consecutive lines of one store. */
+  segmentEnd(index: number): number {
+    if (!(index >= 0 && index < this.lineCount)) throw new RangeError(`patch body: line ${index} is not in the body`);
+    let segment = 0;
+    while (segment + 1 < this.bases.length && this.bases[segment + 1] <= index) segment += 1;
+    return this.bases[segment] + this.segments[segment].end - this.segments[segment].start;
+  }
+
+  /** Stored position of a line's first character in its store. Within one
+   * segment, the distance between two lines' positions is their distance
+   * in `storedRange`. A size, not a UTF-16 offset (packed text stores
+   * bytes). */
+  storedLineStart(index: number): number {
+    const { store, line } = this.locate(index);
+    return store.storedLineStart(line);
+  }
+
+  /** Stored position just past a line's last character, as
+   * `storedLineStart` counts. */
+  storedLineEnd(index: number): number {
+    const { store, line } = this.locate(index);
+    return store.storedLineEnd(line);
+  }
+
+  /** Whether the text of lines [start, end) is resident. */
+  residentRange(start: number, end: number): boolean {
+    return this.slice(start, end).every((range) => range.store.residentRange(range.start, range.end));
+  }
+
+  /** Lines [start, end) of one segment (`segmentEnd`) as stored, joined
+   * with newlines: not their text (PatchStore.storedRange), for a filter
+   * that runs over storage. Throws PatchTextNotResident when any is
+   * evicted. */
+  storedRange(start: number, end: number): string {
+    if (end <= start) return '';
+    if (end > this.segmentEnd(start)) throw new RangeError(`patch body: lines ${start}..${end} are not in one segment`);
+    const { store, line } = this.locate(start);
+    return store.storedRange(line, line + end - start);
+  }
+
+  /** Whether the text of every line is resident. */
+  resident(): boolean {
+    return this.segments.every((segment) => segment.store.residentRange(segment.start, segment.end));
+  }
+
+  /** Reads the evicted text of lines [start, end) again (PatchStore.load). */
+  loadLines(start: number, end: number): Promise<void> {
+    return Promise.all(
+      this.slice(start, end).map((range) => range.store.load(range.start, range.end)),
+    ).then(() => undefined);
+  }
+
+  /** Runs `read` with lines [start, end) resident (whenResident). */
+  whenResident<T>(read: () => T, start = 0, end = this.lineCount): Promise<T> {
+    return whenResident(this.slice(start, end), read);
+  }
+
+  hunkOldStart(index: number): number {
+    const { store, line } = this.locate(index);
+    return store.hunkOldStart(line);
+  }
+
+  hunkNewStart(index: number): number {
+    const { store, line } = this.locate(index);
+    return store.hunkNewStart(line);
+  }
+
+  fold(index: number): { id: number; lines: number } | undefined {
+    const { store, line } = this.locate(index);
+    return store.fold(line);
+  }
+
+  /**
+   * The text the highlighter aligns spans with: every line joined by
+   * newlines, marker and fold rows replaced by a non-content marker (see
+   * `diffSpanCache.svelte.ts` patchTextOf, which this must match).
+   * Throws PatchTextNotResident when any line is evicted.
+   */
+  patchText(): string {
+    if (!this.hasMarkers) {
+      return this.segments.map((segment) => segment.store.textRange(segment.start, segment.end)).join('\n');
+    }
+    const parts: string[] = [];
+    for (let index = 0; index < this.lineCount; index += 1) {
+      parts.push(this.kind(index) === LINE_MARKER ? MARKER_PATCH_TEXT : this.text(index));
+    }
+    return parts.join('\n');
+  }
+
+  /** The highlighter cache key for this file's patch text
+   * (`contentKey` of `patchText()`), computed once. Null while any line
+   * is evicted and the key was not computed yet. */
+  contentKey(): string | null {
+    if (this.key !== null) return this.key;
+    if (!this.resident()) return null;
+    let hash = FNV_OFFSET_BASIS_32;
+    // The length of the text hashed: the stored size is not it.
+    let length = 0;
+    if (!this.hasMarkers) {
+      for (let index = 0; index < this.segments.length; index += 1) {
+        if (index > 0) {
+          hash = appendFNV1a32(hash, '\n');
+          length += 1;
+        }
+        const segment = this.segments[index];
+        const text = segment.store.textRange(segment.start, segment.end);
+        hash = appendFNV1a32(hash, text);
+        length += text.length;
+      }
+    } else {
+      const text = this.patchText();
+      hash = appendFNV1a32(hash, text);
+      length = text.length;
+    }
+    this.key = `${length}:${hash.toString(36)}`;
+    return this.key;
+  }
+
+  /** Store ranges holding the file's lines [start, end). */
+  slice(start: number, end: number): BodySegment[] {
+    const out: BodySegment[] = [];
+    for (let index = 0; index < this.segments.length; index += 1) {
+      const segment = this.segments[index];
+      const base = this.bases[index];
+      const from = Math.max(start, base);
+      const to = Math.min(end, base + segment.end - segment.start);
+      if (from < to) out.push({ store: segment.store, start: segment.start + from - base, end: segment.start + to - base });
+    }
+    return out;
+  }
+
+  /** The file's lines as PatchLine objects. Allocates per line: only for
+   * joining edit sections into one file (reviewPaneLoad). Throws
+   * PatchTextNotResident when any line is evicted. */
+  toPatchLines(): PatchLine[] {
+    const lines: PatchLine[] = [];
+    for (let index = 0; index < this.lineCount; index += 1) {
+      const kind = this.kind(index);
+      const line: PatchLine = { content: this.text(index), type: lineTypeOf(kind) };
+      const fold = kind === LINE_MARKER ? this.fold(index) : undefined;
+      if (fold) line.fold = fold;
+      lines.push(line);
+    }
+    return lines;
+  }
+
+  private locate(index: number): { store: PatchStore; line: number } {
+    if (this.segments.length === 1) {
+      const segment = this.segments[0];
+      return { store: segment.store, line: segment.start + index };
+    }
+    let low = 0;
+    let high = this.bases.length - 1;
+    while (low < high) {
+      const mid = (low + high + 1) >> 1;
+      if (this.bases[mid] <= index) low = mid;
+      else high = mid - 1;
+    }
+    const segment = this.segments[low];
+    return { store: segment.store, line: segment.start + index - this.bases[low] };
+  }
+}
+
+/**
+ * Runs `read` once the text of every range is resident, and keeps it
+ * resident while `read` runs; synchronously when it already is. Rejects
+ * with PatchTextLost when evicted text can no longer be read.
+ */
+export async function whenResident<T>(ranges: readonly BodySegment[], read: () => T): Promise<T> {
+  const releases = ranges.map((range) => range.store.pin(range.start, range.end));
+  try {
+    const loads = ranges
+      .filter((range) => !range.store.residentRange(range.start, range.end))
+      .map((range) => range.store.load(range.start, range.end));
+    if (loads.length > 0) await Promise.all(loads);
+    return read();
+  } finally {
+    for (const release of releases) release();
+  }
+}
+
+export function lineTypeOf(kind: LineKind): PatchLine['type'] {
+  switch (kind) {
+    case LINE_ADD:
+      return 'add';
+    case LINE_DEL:
+      return 'del';
+    case LINE_CONTEXT:
+      return 'context';
+    case LINE_MARKER:
+      return 'marker';
+    default:
+      return 'meta';
+  }
+}
+
+function storedLine(line: PatchLine): StoredLine {
+  switch (line.type) {
+    case 'add':
+      return { content: line.content, kind: LINE_ADD };
+    case 'del':
+      return { content: line.content, kind: LINE_DEL };
+    case 'context':
+      return { content: line.content, kind: LINE_CONTEXT };
+    case 'marker':
+      return line.fold ? { content: line.content, kind: LINE_MARKER, fold: line.fold } : { content: line.content, kind: LINE_MARKER };
+    default:
+      return { content: line.content, kind: parseHunkHeader(line.content) ? LINE_HUNK : LINE_META };
+  }
+}

@@ -1,6 +1,6 @@
 import type { DiffReviewComment, ReviewThread } from '../types/models';
 import { anchorRows, RowWalker } from './patchRows';
-import type { ReviewFile } from './patchStore';
+import type { ReviewFile } from './patchParser';
 import type { CommentAnchor } from './reviewRows';
 
 // A comment on a range of lines: one file, one half of the diff, and lines

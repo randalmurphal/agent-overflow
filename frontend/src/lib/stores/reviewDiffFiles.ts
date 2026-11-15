@@ -3,7 +3,7 @@ import { withBackendTarget } from '../transport/backends';
 import { TransportError } from '../transport/wsClient';
 import type { BackendKey } from '../transport/backendKey';
 import type { WorkspaceRef } from '../types/git';
-import type { ReviewFile } from '../utils/patchStore';
+import type { ReviewFile } from '../utils/patchParser';
 
 // A review diff's files read by the diff they belong to: their two sides'
 // byte sizes and, for an image, the bytes behind a single-use URL

@@ -45,7 +45,7 @@
   import { ciLogAnswerHits, resolveCILogHit, type CILogFindHit, type CILogFindShown, type CILogResolution } from '../../utils/ciLogFind';
   import { findNeedle } from '../../utils/findMatch';
   import { createFindHighlighter, findHighlightName, type FindCurrent, type FindHighlighter } from '../../utils/findHighlights';
-  import type { ReviewFile } from '../../utils/patchStore';
+  import type { ReviewFile } from '../../utils/patchParser';
   import { createRefreshScheduler } from '../../utils/refreshScheduler';
   import { createMarkdownFindTextCache, type MarkdownFindText } from '../chat/markdown/markdownFindText';
   import { FORGE_ATTACHMENT_SOURCE_CONTEXT, type ForgeAttachmentSourceReader } from '../chat/markdown/forgeAttachmentContext';

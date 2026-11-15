@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { conflictPatchFile } from './conflictFile';
 import { findNeedle } from './findMatch';
-import { parseReviewFiles, reviewFileFromPatchFile, type ReviewFile } from './patchStore';
+import { parseReviewFiles, reviewFileFromPatchFile, type ReviewFile } from './patchParser';
 import { visibleBody } from './reviewComments';
 import { forgetReviewFindSpotsForTest, placeReviewFindHit, resolveReviewFindHit, seedReviewFindSpot, type ReviewFindLocateContent, type ReviewFindResolution } from './reviewFindRows';
 import { findThreadCommentKey, makeReviewFindHit, reviewCommentKey, scanReviewFind, type ReviewFindContent, type ReviewFindHit } from './reviewFindScan';

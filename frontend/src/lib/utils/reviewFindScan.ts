@@ -49,7 +49,8 @@ import type { DiffReviewComment, ReviewComment, ReviewThread } from '../types/mo
 import { findFilterPattern, findNeedle, foldFindText } from './findMatch';
 import type { FindRun } from './findHighlights';
 import { RowWalker } from './patchRows';
-import type { PatchBody, ReviewFile } from './patchStore';
+import type { PatchBody } from './patchBody';
+import type { ReviewFile } from './patchParser';
 import { findableBody } from './suggestionMarks';
 import { reviewInsertsByFile, type InsertRow } from './reviewRows';
 

@@ -15,7 +15,7 @@ import { createCommentWrites } from '../../stores/reviewCommentWrites.svelte';
 import { createReviewCommentExtras } from '../../stores/reviewCommentExtras.svelte';
 import { __setTransportHelloForTest } from '../../stores/transportStatus.svelte';
 import { HOME_BACKEND } from '../../transport/backendKey';
-import { parseReviewFiles } from '../../utils/patchStore';
+import { parseReviewFiles } from '../../utils/patchParser';
 import { FILE_START, materializeRows } from '../../utils/patchRows';
 import type { ReviewThread } from '../../types/models';
 import { setBindingMock } from '../../../test/mocks/bindings-app';

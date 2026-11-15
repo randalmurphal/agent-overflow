@@ -12,7 +12,7 @@ import {
   lineCommentReason,
 } from './reviewRangeComments';
 import { buildPRLineIndex, resolvePRNewLine } from '../utils/prLineIndex';
-import { parseReviewFiles } from '../utils/patchStore';
+import { parseReviewFiles } from '../utils/patchParser';
 import type { DiffReviewComment } from '../types/models';
 
 // The whole PR's diff of src/app.ts: hunk one is new 1-4 (1 unchanged,

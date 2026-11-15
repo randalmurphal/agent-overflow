@@ -2,7 +2,7 @@
   import type { Snippet } from 'svelte';
   import ReviewSuggestionDiff from './ReviewSuggestionDiff.svelte';
   import { readNewSideLines } from '../../utils/suggestionLines';
-  import type { ReviewFile } from '../../utils/patchStore';
+  import type { ReviewFile } from '../../utils/patchParser';
 
   // One suggestion block with the lines it replaces: the forge's own when
   // it reports them (`removedKnown`, GitLab's from_content), else the

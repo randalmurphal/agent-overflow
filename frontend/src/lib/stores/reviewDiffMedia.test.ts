@@ -7,7 +7,7 @@ import { TransportError } from '../transport/wsClient';
 import { frontendErrorCaptureStateForTest, resetFrontendErrorCaptureForTest } from '../utils/frontendErrorCapture';
 import { __mediaBlobCacheKeysForTest, __resetMediaBlobCacheForTest, __setMediaBlobCacheLimitsForTest } from '../utils/mediaBlobCache';
 import { __setBackendStatusForTest } from './transportStatus.svelte';
-import { parseReviewFiles, type ReviewFile } from '../utils/patchStore';
+import { parseReviewFiles, type ReviewFile } from '../utils/patchParser';
 
 const fetched: string[] = [];
 let failFetch: string | null = null;

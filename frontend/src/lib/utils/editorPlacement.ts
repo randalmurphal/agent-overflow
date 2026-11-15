@@ -1,5 +1,8 @@
+import { FNV_OFFSET_BASIS_32 } from './fnv1a';
 import { namesOneRow, rowMatchesAnchor, RowWalker, type RowType } from './patchRows';
-import { keptText, LINE_HUNK, LINE_META, whenResident, type ReviewFile } from './patchStore';
+import { whenResident } from './patchBody';
+import type { ReviewFile } from './patchParser';
+import { keptText, LINE_HUNK, LINE_META } from './patchStore';
 import type { CommentAnchor } from './reviewRows';
 
 // Which line of a reloaded diff an open new-comment editor is on. A line
@@ -27,7 +30,7 @@ export interface LineGuard {
 
 export function lineGuard(text: string): LineGuard {
   const normalized = text.replace(/\s+/g, '');
-  let hash = 0x811c9dc5;
+  let hash = FNV_OFFSET_BASIS_32;
   for (let index = 0; index < normalized.length; index += 1) {
     hash ^= normalized.charCodeAt(index);
     hash = Math.imul(hash, 0x01000193) >>> 0;

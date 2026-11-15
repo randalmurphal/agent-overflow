@@ -2,7 +2,7 @@ import { render, waitFor } from '@testing-library/svelte';
 import { describe, expect, it } from 'vitest';
 import ReviewEditorPreview from './ReviewEditorPreview.svelte';
 import ReviewSentCommentBody from './ReviewSentCommentBody.svelte';
-import { parseReviewFiles } from '../../utils/patchStore';
+import { parseReviewFiles } from '../../utils/patchParser';
 import type { CommentSuggestion, ReviewComment, ReviewThread } from '../../types/models';
 import type { Block } from '../../../../bindings/agent-overflow/internal/mdsuggest/models';
 

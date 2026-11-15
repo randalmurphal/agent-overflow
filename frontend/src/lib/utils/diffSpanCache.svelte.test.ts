@@ -21,7 +21,7 @@ import {
 import { applyContextExpansion, nextExpansionVersion } from './diffContextExpansion';
 import { contentKey } from './fnv1a';
 import { parsePatchFiles, type PatchFile, type PatchLine } from './patchFiles';
-import { parseReviewFiles } from './patchStore';
+import { parseReviewFiles } from './patchParser';
 import { patchMemory, setPatchTextBudgetForTest } from './patchMemory.svelte';
 import { streamPatch } from '../../test/helpers/streamedPatch';
 import { resetSyntaxClassNamesForTest } from './syntaxSpans';

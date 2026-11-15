@@ -19,7 +19,7 @@ import {
 import { acquireMediaBlob, discardMediaBlobs, objectOrDataUrl, type MediaBytes, type MediaHandle } from '../utils/mediaBlobCache';
 import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
 import { onBackendStatusChange } from './transportStatus.svelte';
-import type { ReviewFile } from '../utils/patchStore';
+import type { ReviewFile } from '../utils/patchParser';
 
 // A review pane's binary and image files (docs/specs/pull-requests.md,
 // "Image diffs"), for the diff on screen. A file row asks for its image

@@ -23,7 +23,8 @@ import {
   rowStartAt,
   splitRowCount,
 } from './patchRows';
-import { keptText, PatchParser, parseReviewFiles, reviewFileFromPatchFile, sourceHash, type PatchChunkSpan, type ReviewFile } from './patchStore';
+import { PatchParser, parseReviewFiles, reviewFileFromPatchFile, sourceHash, type ReviewFile } from './patchParser';
+import { keptText, type PatchChunkSpan } from './patchStore';
 import { packText, patchChunks, textKey, unkeyed, wideMarks, type PatchForm, type StreamedChunk } from '../../test/helpers/streamedPatch';
 import packedVectors from '../../test/fixtures/packedTextVectors.json';
 

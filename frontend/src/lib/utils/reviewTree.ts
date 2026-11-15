@@ -1,4 +1,4 @@
-import type { DiffFileSummary } from './patchStore';
+import type { DiffFileSummary } from './patchParser';
 
 export type ReviewTreeNode = ReviewTreeDirectoryNode | ReviewTreeFileNode;
 

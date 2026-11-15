@@ -149,7 +149,9 @@ import {
 import type { DiffGap } from '../utils/patchFiles';
 import { createReviewDiffMedia, type ReviewMediaHost } from './reviewDiffMedia.svelte';
 import { DiffFilesHandle, type DiffFilesTarget } from './reviewDiffFiles';
-import { keptText, PatchTextLost, reviewFileFromPatchFile, whenResident, type PatchParser, type ReviewFile } from '../utils/patchStore';
+import { whenResident } from '../utils/patchBody';
+import { reviewFileFromPatchFile, type PatchParser, type ReviewFile } from '../utils/patchParser';
+import { keptText, PatchTextLost } from '../utils/patchStore';
 import { anchorRow, anchorRows, completeAnchor, namesOneRow } from '../utils/patchRows';
 import { anchorKey, type CommentAnchor, type EditorRow, type EditorState } from '../utils/reviewRows';
 import {

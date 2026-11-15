@@ -8,7 +8,7 @@ import {
 } from './diffContextExpansion';
 import type { DiffGap, PatchDisplayRow } from './patchFiles';
 import { displayRowCount, FILE_START, materializeRows } from './patchRows';
-import { parseReviewFiles, reviewFileFromPatchFile, type ReviewFile } from './patchStore';
+import { parseReviewFiles, reviewFileFromPatchFile, type ReviewFile } from './patchParser';
 import { setPatchTextBudgetForTest } from './patchMemory.svelte';
 import { streamPatch } from '../../test/helpers/streamedPatch';
 

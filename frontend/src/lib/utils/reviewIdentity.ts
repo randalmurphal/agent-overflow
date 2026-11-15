@@ -3,6 +3,8 @@
 // `authorName`); surfaces show the name and keep the login as the
 // secondary line, the way GitHub and GitLab present an author.
 
+import { FNV_OFFSET_BASIS_32 } from './fnv1a';
+
 export interface ReviewAuthor {
   authorLogin: string;
   authorName?: string;
@@ -31,7 +33,7 @@ export const AUTHOR_TONE_COUNT = 7;
 /** A stable tone index for an author's avatar, from the login so the
  * same person keeps one color across PRs. */
 export function authorTone(login: string): number {
-  let hash = 2166136261;
+  let hash = FNV_OFFSET_BASIS_32;
   for (const char of login) {
     hash ^= char.codePointAt(0) ?? 0;
     hash = Math.imul(hash, 16777619) >>> 0;

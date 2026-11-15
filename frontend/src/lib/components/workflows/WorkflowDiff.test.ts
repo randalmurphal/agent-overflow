@@ -1,6 +1,6 @@
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { afterEach, describe, expect, it } from 'vitest';
-import { parseReviewFiles, type ReviewFile } from '../../utils/patchStore';
+import { parseReviewFiles, type ReviewFile } from '../../utils/patchParser';
 import WorkflowDiff from './WorkflowDiff.svelte';
 
 const disposers: ReviewFile[][] = [];

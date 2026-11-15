@@ -12,7 +12,7 @@ import { REVIEW_FIND_REMOTE_DEBOUNCE_MS, type ReviewFind } from '../../stores/re
 import type { ReviewPaneState } from '../../stores/reviewPane.svelte';
 import { placeCILogLine, type CILogFindHit } from '../../utils/ciLogFind';
 import type { CILogSearch, CILogSection } from '../../types/models';
-import { parseReviewFiles } from '../../utils/patchStore';
+import { parseReviewFiles } from '../../utils/patchParser';
 import type { ReviewFindHit, ReviewFindPlace } from '../../utils/reviewFindScan';
 
 // The diff shows every draft as drafted and no file as an image.

@@ -7,7 +7,7 @@
   import { gutterTintClass, lineTintClass } from '../../utils/diffLineTint';
   import { diffSpanCacheGeneration, getSpansForReviewLine, requestReviewFileSpans, type PaintedSpans, type PatchScopeContext } from '../../utils/diffSpanCache.svelte';
   import { stripPatchLinePrefix, type DiffGap, type PatchDisplayRow, type SplitDisplayRow } from '../../utils/patchFiles';
-  import type { ReviewFile } from '../../utils/patchStore';
+  import type { ReviewFile } from '../../utils/patchParser';
   import { REVIEW_LINE_HEIGHT_PX } from '../../utils/reviewRows';
   import { findLineKey } from '../../utils/reviewFindScan';
   import { seenActivation } from '../../utils/seenActivation';

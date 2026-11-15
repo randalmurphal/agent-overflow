@@ -1,5 +1,5 @@
 import { buildPRLineIndex, resolvePRNewLine, prIndexHasAnchor, type PRLine, type PRLineIndex } from '../utils/prLineIndex';
-import type { ReviewFile } from '../utils/patchStore';
+import type { ReviewFile } from '../utils/patchParser';
 import type { RowAnchor } from '../utils/patchRows';
 import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
 

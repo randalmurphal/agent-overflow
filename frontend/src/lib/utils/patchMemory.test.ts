@@ -7,14 +7,9 @@ import {
   setPatchTextBudgetForTest,
 } from './patchMemory.svelte';
 import { parsePatchFiles } from './patchFiles';
-import {
-  PatchParser,
-  PatchTextLost,
-  PatchTextNotResident,
-  parseReviewFiles,
-  whenResident,
-  type ReviewFile,
-} from './patchStore';
+import { whenResident } from './patchBody';
+import { PatchParser, parseReviewFiles, type ReviewFile } from './patchParser';
+import { PatchTextLost, PatchTextNotResident } from './patchStore';
 import { packText, streamPatch, textKey, type PatchForm, type StreamedPatch } from '../../test/helpers/streamedPatch';
 
 // Patch text past the memory budget: what is evicted first, how it is read

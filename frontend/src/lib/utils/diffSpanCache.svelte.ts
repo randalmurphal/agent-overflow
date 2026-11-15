@@ -36,7 +36,8 @@ import { contentKey } from './fnv1a';
 import { workspaceKeyForRef } from './workspaceKey';
 import type { WorkspaceRef } from '../types/git';
 import type { PatchFile, PatchLine } from './patchFiles';
-import { PatchTextLost, type ReviewFile } from './patchStore';
+import type { ReviewFile } from './patchParser';
+import { PatchTextLost } from './patchStore';
 import {
   ensureHighlightSchemaVersion,
   ensureSyntaxClassNames,

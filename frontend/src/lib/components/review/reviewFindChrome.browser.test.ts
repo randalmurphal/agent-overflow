@@ -10,7 +10,7 @@ import { createMarkdownFindTextCache } from '../chat/markdown/markdownFindText';
 import { conflictPatchFile } from '../../utils/conflictFile';
 import { createFindHighlighter, type FindHighlighter } from '../../utils/findHighlights';
 import { countFindMatches } from '../../utils/findMatch';
-import { parseReviewFiles, reviewFileFromPatchFile, type ReviewFile } from '../../utils/patchStore';
+import { parseReviewFiles, reviewFileFromPatchFile, type ReviewFile } from '../../utils/patchParser';
 import { scanReviewFind, type ReviewFindFileSpot, type ReviewFindHit } from '../../utils/reviewFindScan';
 import type { CommentAnchor } from '../../utils/reviewRows';
 import type { DiffReviewComment, ReviewThread } from '../../types/models';

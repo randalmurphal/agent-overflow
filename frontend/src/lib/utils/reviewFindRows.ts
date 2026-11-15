@@ -20,7 +20,7 @@
 import type { DiffReviewComment, ReviewThread } from '../types/models';
 import type { FindRun } from './findHighlights';
 import { RowWalker, splitRowCount } from './patchRows';
-import type { ReviewFile } from './patchStore';
+import type { ReviewFile } from './patchParser';
 import { findableBody } from './suggestionMarks';
 import {
   countFindMatches,

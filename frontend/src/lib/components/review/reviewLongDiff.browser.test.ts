@@ -18,7 +18,7 @@ import { REVIEW_FILE_HEADER_BAR_PX } from '../../utils/reviewRows';
 import { findDraftKey, findLineKey, scanReviewFind, type ReviewFindHit } from '../../utils/reviewFindScan';
 import { placeReviewFindHit } from '../../utils/reviewFindRows';
 import { findHighlightName } from '../../utils/findHighlights';
-import { parseReviewFiles, reviewFileFromPatchFile, type ReviewFile } from '../../utils/patchStore';
+import { parseReviewFiles, reviewFileFromPatchFile, type ReviewFile } from '../../utils/patchParser';
 import { conflictPatchFile } from '../../utils/conflictFile';
 import { HELD_EDGE_PX, HELD_LIMIT_PX } from '../../utils/virtual/heldRows';
 import { setPatchTextBudgetForTest } from '../../utils/patchMemory.svelte';

@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { mount, unmount } from 'svelte';
 import '../../../app.css';
 import WorkflowDiff from './WorkflowDiff.svelte';
-import { parseReviewFiles, type ReviewFile } from '../../utils/patchStore';
+import { parseReviewFiles, type ReviewFile } from '../../utils/patchParser';
 import { HELD_LIMIT_PX } from '../../utils/virtual/heldRows';
 import { waitFor } from '../../../test/helpers/browserFrames';
 

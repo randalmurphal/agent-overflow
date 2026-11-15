@@ -138,7 +138,7 @@ export function parsePatchFiles(patch: string): PatchFile[] {
     // untracked tally) and its test twin countPatchAddsDels. If you change
     // the add/del rule here, update countAddedLines, the badge==panel tests
     // in internal/git and the review pane's streaming twin (PatchParser in
-    // patchStore.ts), or the badge will silently diverge from this panel.
+    // patchParser.ts), or the badge will silently diverge from this panel.
     const type = patchLineType(kind, line);
     if (type === 'add') current.additions += 1;
     if (type === 'del') current.deletions += 1;
@@ -815,7 +815,7 @@ export function formatHunkHeader(
 }
 
 /** Prefixes of the patch lines outside hunk bodies (HunkBody) that belong
- * to neither side. The review store's streaming parser (`patchStore.ts`)
+ * to neither side. The review store's streaming parser (`patchParser.ts`)
  * classifies with the same list, so both parsers agree on every line. */
 export const PATCH_META_PREFIXES: readonly string[] = [
   '@@',

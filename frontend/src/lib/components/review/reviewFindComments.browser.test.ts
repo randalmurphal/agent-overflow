@@ -10,7 +10,7 @@ import { getPaneFindProvider, openPaneFind, resetPaneFindForTest, setPaneFindQue
 import type { ReviewPaneState } from '../../stores/reviewPane.svelte';
 import { createMarkdownFindTextCache } from '../chat/markdown/markdownFindText';
 import { createFindHighlighter, findHighlightName, type FindHighlighter, type FindRun } from '../../utils/findHighlights';
-import { parseReviewFiles } from '../../utils/patchStore';
+import { parseReviewFiles } from '../../utils/patchParser';
 import { scanReviewFind, type ReviewFindFileSpot, type ReviewFindHit } from '../../utils/reviewFindScan';
 import type { DiffReviewComment, ReviewThread } from '../../types/models';
 import { installDiagnosticsCapture } from '../../../test/helpers/diagnostics';

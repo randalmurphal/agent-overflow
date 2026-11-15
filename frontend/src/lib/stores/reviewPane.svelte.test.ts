@@ -44,7 +44,8 @@ import type { GitStatus, WorkspaceRef } from '../types/git';
 import { diffSourceKey } from '../utils/diffSourceKey';
 import { PATCH_PARSE_CACHE_MAX_ENTRY_CHARS, type PatchDisplayRow, type PatchLine } from '../utils/patchFiles';
 import { displayRowCount, FILE_START, materializeRows } from '../utils/patchRows';
-import { keptText, parseReviewFiles, sourceHash, type ReviewFile } from '../utils/patchStore';
+import { parseReviewFiles, sourceHash, type ReviewFile } from '../utils/patchParser';
+import { keptText } from '../utils/patchStore';
 import { buildReviewRows, REVIEW_COMMIT_CARD_ROW_KEY } from '../utils/reviewRows';
 import { RANGE_LINE_NOT_IN_PR } from './reviewRangeComments';
 import {

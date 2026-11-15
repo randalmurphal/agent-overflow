@@ -56,6 +56,7 @@ import {
   type ThemeWarning,
 } from '../theme/themeParse';
 import { hasScope, pageGrantsResolved } from '../transport/scopes';
+import { FNV_OFFSET_BASIS_32 } from '../utils/fnv1a';
 import { errString } from '../utils/errors';
 import { SetAppearance, SetWindowBackgroundColor, ThemeAppearance } from './bindings';
 import { readAppearanceFiles, usesFrontendAssetLibrary } from './appearanceFiles';
@@ -297,7 +298,7 @@ function hashInto(hash: number, text: string): number {
 function digestFiles(files: readonly WireThemeFile[]): string {
   // Length-prefixed, so no separator has to be chosen that a raw file could
   // contain: `{id: 'ab', raw: 'c'}` and `{id: 'a', raw: 'bc'}` hash apart.
-  let hash = 2166136261;
+  let hash = FNV_OFFSET_BASIS_32;
   for (const file of files) {
     hash = hashInto(hash, `${file.id.length}:${file.id}${file.raw.length}:${file.raw}`);
   }

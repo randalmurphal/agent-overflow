@@ -7,7 +7,7 @@
     REVIEW_FILE_HEADER_BAR_PX,
     REVIEW_FILE_HEADER_PX,
   } from '../../utils/reviewRows';
-  import type { DiffFileSummary } from '../../utils/patchStore';
+  import type { DiffFileSummary } from '../../utils/patchParser';
   import { findHeaderKey } from '../../utils/reviewFindScan';
 
   // File header row — rendered both as a virtualized row and as the

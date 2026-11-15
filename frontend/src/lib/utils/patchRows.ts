@@ -1,15 +1,14 @@
 import { intralineRanges } from './intralineDiff';
 import { stripPatchLinePrefix, type DiffGap, type PatchDisplayRow, type PatchLine } from './patchFiles';
+import { lineTypeOf, type PatchBody } from './patchBody';
+import type { ReviewFile } from './patchParser';
 import {
   LINE_ADD,
   LINE_DEL,
   LINE_HUNK,
   LINE_MARKER,
   LINE_META,
-  lineTypeOf,
   ownText,
-  type PatchBody,
-  type ReviewFile,
 } from './patchStore';
 
 // Display rows of a review file, computed from its compact body the way

@@ -1,5 +1,5 @@
 <script lang="ts" module>
-  import type { ReviewFile } from '../../utils/patchStore';
+  import type { ReviewFile } from '../../utils/patchParser';
 
   /** Where a suggestion's replaced lines are read from: new-side lines
    * `from`..`to` of a file of the loaded diff. */

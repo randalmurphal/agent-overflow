@@ -4,7 +4,7 @@
   import { addToast } from '../../stores/toast.svelte';
   import { copyToClipboard } from '../../utils/clipboard';
   import { reportFrontendDiagnostic } from '../../utils/frontendErrorCapture';
-  import type { ReviewFile } from '../../utils/patchStore';
+  import type { ReviewFile } from '../../utils/patchParser';
   import { lineLink, linePositionAt, type LineLinkForge } from '../../utils/reviewLineLink';
 
   // A diff line's number gutter menu in a pull request's diff: a link to

@@ -241,7 +241,7 @@ func FuzzPack(f *testing.F) {
 }
 
 // packedVector is one entry of the vectors the frontend's patch store
-// reads too (frontend/src/lib/utils/patchStore.test.ts): the bytes of a
+// reads too (frontend/src/lib/utils/patchParser.test.ts): the bytes of a
 // chunk, the text a JSON client receives for them, and the chunk as
 // ReadReviewDiffPacked answers it, with the key of the text as a whole
 // patch.

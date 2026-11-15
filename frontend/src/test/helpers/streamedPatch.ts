@@ -1,6 +1,7 @@
 import { vi, type Mock } from 'vitest';
 import { appendFNV1a32, fnv1a32 } from '../../lib/utils/fnv1a';
-import { PatchParser, type PatchChunkSpan, type PatchTextKey, type PatchTextSource, type ReviewFile } from '../../lib/utils/patchStore';
+import { PatchParser, type ReviewFile } from '../../lib/utils/patchParser';
+import type { PatchChunkSpan, PatchTextKey, PatchTextSource } from '../../lib/utils/patchStore';
 
 // A patch streamed into compact storage the way ReviewDiffSource streams
 // it: chunk by chunk into a store that can read an evicted chunk again

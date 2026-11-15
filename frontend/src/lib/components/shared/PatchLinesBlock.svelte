@@ -1,6 +1,8 @@
 <script lang="ts">
   import { tick } from 'svelte';
-  import { lineTypeOf, ownText, PatchTextLost, type ReviewFile } from '../../utils/patchStore';
+  import { lineTypeOf } from '../../utils/patchBody';
+  import type { ReviewFile } from '../../utils/patchParser';
+  import { ownText, PatchTextLost } from '../../utils/patchStore';
   import { lineTintClass } from '../../utils/diffLineTint';
   import { reportFrontendDiagnostic } from '../../utils/frontendErrorCapture';
   import { PATCH_LINES_LINE_PX } from './PatchLines.svelte';
