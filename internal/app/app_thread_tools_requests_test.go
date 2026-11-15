@@ -20,6 +20,7 @@ import (
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/store/storetest"
 	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/threadapp"
 	"agent-overflow/internal/threadmode"
@@ -45,6 +46,9 @@ type requestFixture struct {
 	caller store.Thread
 	// callerHeld carries holdCallerTurn's session hold across restart.
 	callerHeld bool
+	// dbPath is the database file, for a test that injects a failure
+	// through a connection of its own.
+	dbPath string
 }
 
 func newRequestFixture(t *testing.T) *requestFixture {
@@ -56,7 +60,8 @@ func newRequestFixture(t *testing.T) *requestFixture {
 // what a test asserting project or worktree behavior needs.
 func newRequestFixtureIn(t *testing.T, workspace string) *requestFixture {
 	t.Helper()
-	app, bus := setupE2EApp(t)
+	dbPath := storetest.ClonePath(t)
+	app, bus := setupE2EAppOn(t, dbPath, t.TempDir())
 	// Exports and answer files land under the data directory; a fixture
 	// without one would write into the repository working directory.
 	app.configDir = t.TempDir()
@@ -65,7 +70,7 @@ func newRequestFixtureIn(t *testing.T, workspace string) *requestFixture {
 		t.Fatalf("create caller thread: %v", err)
 	}
 	app.installThreadRequestObserver()
-	return &requestFixture{app: app, bus: bus, caller: caller}
+	return &requestFixture{app: app, bus: bus, caller: caller, dbPath: dbPath}
 }
 
 // mockClaude installs a provider that answers each user message with one
@@ -2122,7 +2127,7 @@ func (f *requestFixture) restart(t *testing.T) *requestFixture {
 		app.threadRequestsWG.Wait()
 	})
 	app.installThreadRequestObserver()
-	after := &requestFixture{app: app, bus: bus, caller: f.caller}
+	after := &requestFixture{app: app, bus: bus, caller: f.caller, dbPath: f.dbPath}
 	if f.callerHeld {
 		after.holdCallerSession()
 	}
@@ -2431,6 +2436,7 @@ func TestBootSweepSettlesWhatTheRestartInterrupted(t *testing.T) {
 
 	after := f.restart(t)
 	after.app.sweepThreadRequestsAtBoot()
+	after.app.finishThreadRequestSweepAtBoot()
 
 	row := after.awaitRequestState(t, ack.Token, store.ThreadRequestInterrupted)
 	if row.State != store.ThreadRequestInterrupted {

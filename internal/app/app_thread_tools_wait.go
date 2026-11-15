@@ -76,6 +76,9 @@ type threadRequestState struct {
 	// source row, this is the live reading beside it, and after a restart
 	// it is empty until the next poll fills it in.
 	blocked map[string]bool
+	// boot is what the boot sweep's settlements owe until the activation
+	// gate opens (finishThreadRequestSweepAtBoot).
+	boot bootThreadRequestSweep
 }
 
 // threadRequestWait is one parked tool call.

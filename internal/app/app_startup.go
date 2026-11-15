@@ -198,6 +198,10 @@ func (a *App) startUnattendedWork() error {
 	a.startThreadSearchIndex()
 	a.startPendingThreadDeletes()
 	a.startRemoteWatches()
+	// Deliver what the boot's request sweep settled and delete the scratch
+	// threads the last run left, before the sweep loop starts. A wake can
+	// start the caller's session. See app_thread_tools_poll.go.
+	a.finishThreadRequestSweepAtBoot()
 	a.startThreadRequestSweeps()
 	if err := a.startThreadTransfers(); err != nil {
 		return err
@@ -774,7 +778,9 @@ func (a *App) initSubsystems(dbDir string, st *store.Store) error {
 	// The request ledger: settle what the last run left open, then watch
 	// every thread's turn ends for the receipts bound to them. Both need the
 	// store and the data directory, and neither may run before the flush
-	// queue has been restored.
+	// queue has been restored. The sweep writes rows only; the wakes and
+	// deletions its settlements owe wait for the activation gate
+	// (startUnattendedWork).
 	if err := a.cleanupPreparingForks(); err != nil {
 		return err
 	}

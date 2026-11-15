@@ -748,7 +748,12 @@ target computer, target thread, kind, notify, wait, state, created,
 settled-at, delivered-at). The token is minted by the source and doubles
 as the idempotency key; the model never chooses or types request ids.
 Locally the row is lineage for `thread_cancel`, the handle for
-`thread_status`, and the wake binding.
+`thread_status`, and the wake binding. A request between two threads of
+one computer has its receipt on the same computer, and every settlement
+or late reply writes both rows in one transaction. A boot settles every
+such request still open once the last run's receipts are settled:
+from its receipt when that settled without it, otherwise as
+`interrupted` by the restart.
 
 Across computers the destination stores its own row for the request
 (token, owning device, source computer, source thread, target thread,

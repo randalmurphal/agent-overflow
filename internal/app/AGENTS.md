@@ -124,7 +124,8 @@ is conditional on the state it expects to find, and a change that does not
 apply is a lost race rather than an error. A settlement takes the token's
 settle lock before it writes, releases it before queue or provider work, and
 is handed to the caller by the same door
-(`app_thread_tools_settle.go`). A wake (`app_thread_tools_wake.go`,
+(`app_thread_tools_settle.go`). A request between two threads of this
+computer settles its receipt and its request in one store transaction. A wake (`app_thread_tools_wake.go`,
 `app_thread_tools_wake_message.go`) writes its durable queue row and the
 delivery mark of every request it answers in one store transaction. Settling runs off the provider event
 worker because it can stop or start a session, and a stop drains that
