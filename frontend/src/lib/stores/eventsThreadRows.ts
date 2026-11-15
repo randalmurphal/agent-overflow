@@ -8,7 +8,7 @@ import { isPassiveConnectionFailure } from '../transport/passiveReadFailure';
 // setupEventListeners.
 import type { TurnCompletedEvent } from '../types/events';
 import type { Thread } from '../types/models';
-import { closePanesShowingThread, findPaneShowingThread, iterPanes, syncThread } from './panes.svelte';
+import { closePanesShowingThread, findPaneShowingThread, followDeletedThread, iterPanes, syncThread } from './panes.svelte';
 import { refreshProjects, touchProjectActivity } from './projects.svelte';
 import { refreshThreadGroups } from './threadGroups.svelte';
 import { addErrorToast, addToast } from './toast.svelte';
@@ -397,6 +397,17 @@ export function applyThreadErrorNotice(evt: ThreadErrorNoticeEvent): void {
   patchThreadDurableStatus(evt.threadId, { hasFailedTurn: true });
 }
 
+/**
+ * The thread row is gone from SQLite, learned from its broadcast or from a
+ * draft save answering not_found. Drop the row, then let panes showing it
+ * follow (panes.svelte.ts#followDeletedThread). An empty-draft cleanup this
+ * screen started applies its own result first. Repeating it is a no-op.
+ */
+export function applyThreadDeleted(id: string): void {
+  removeThread(id);
+  if (!deferEmptyDraftDeletion(id, () => followDeletedThread(id))) followDeletedThread(id);
+}
+
 export function applyThreadUpdated(evt: ThreadUpdateEvent): void {
   if (!evt) return;
   noteThreadFrame(evt);
@@ -434,14 +445,10 @@ export function applyThreadUpdated(evt: ThreadUpdateEvent): void {
       return;
     }
     case 'deleted': {
-      // The row is gone from SQLite. Same teardown the deleting client
-      // runs on its own RPC result: drop the row and its per-thread
-      // caches, then close panes that were showing it — a pane on a row
-      // that no longer exists cannot load, send, or resume.
+      // A pane on a row that no longer exists cannot load, send, or
+      // resume: it closes, unless it holds unsaved text to keep.
       if (!evt.id) return;
-      removeThread(evt.id);
-      const id = evt.id;
-      if (!deferEmptyDraftDeletion(id, () => closePanesShowingThread(id))) closePanesShowingThread(id);
+      applyThreadDeleted(evt.id);
       return;
     }
     case 'unlisted': {

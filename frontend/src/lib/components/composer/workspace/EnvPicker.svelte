@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { isEmptyDraftCleanupPending, settleEmptyDraftCleanup } from '../../../stores/emptyDraftCleanup';
   // Workspace trigger in the below-composer bar. Lists the project root,
   // staged new-worktree intent, and registered worktrees so the user can
   // choose where the next provider turn runs without leaving the chat.
@@ -228,6 +229,9 @@
   async function selectPath(path: string): Promise<void> {
     if (!pane.thread || applying) return;
     if (workspaceChangingDisabled) return;
+    // Applied wherever the emptied draft's in-flight delete leaves the pane.
+    if (isEmptyDraftCleanupPending(pane.threadId)) await settleEmptyDraftCleanup(pane.threadId);
+    if (!pane.thread) return;
     const threadId = pane.thread.id;
     const selectingProjectRoot = sameNormalizedPath(path, projectPath);
     if (selectingProjectRoot || pane.hasDraftPlaceholder) {
@@ -287,6 +291,8 @@
   async function selectNewWorktree(): Promise<void> {
     if (!pane.thread) return;
     if (workspaceChangingDisabled) return;
+    if (isEmptyDraftCleanupPending(pane.threadId)) await settleEmptyDraftCleanup(pane.threadId);
+    if (!pane.thread) return;
     setThreadEnvMode(pane.thread, 'new-worktree');
     if (!pane.hasDraftPlaceholder) {
       closeMenu();
