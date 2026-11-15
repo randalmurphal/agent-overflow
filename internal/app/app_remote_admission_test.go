@@ -32,6 +32,9 @@ type remoteAdmissionReceiver struct {
 	// cancelHold, when set, holds every RemoteCommandCancel until it is
 	// closed or the call's context ends.
 	cancelHold atomic.Pointer[chan struct{}]
+	// lostReply, when set, starts the command and then fails the call, as a
+	// reply lost on the way back does.
+	lostReply atomic.Bool
 }
 
 func (r *remoteAdmissionReceiver) RemoteCommandCancel(ctx context.Context, id string) (RemoteCommand, error) {
@@ -52,6 +55,12 @@ func (r *remoteAdmissionReceiver) RemoteCommandStart(ctx context.Context, worksp
 	r.calls.Add(1)
 	if r.refusal != nil {
 		return RemoteCommand{}, r.refusal
+	}
+	if r.lostReply.Load() {
+		if _, err := r.App.RemoteCommandStart(ctx, workspace, request); err != nil {
+			return RemoteCommand{}, err
+		}
+		return RemoteCommand{}, errors.New("the reply was lost")
 	}
 	return r.App.RemoteCommandStart(ctx, workspace, request)
 }

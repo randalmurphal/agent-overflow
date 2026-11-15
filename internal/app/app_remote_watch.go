@@ -311,6 +311,9 @@ func (a *App) checkRemoteWatch(w store.RemoteWatch) {
 	if issue != "" {
 		next = time.Now().Add(30 * time.Second).UnixMilli()
 	}
+	if hook := a.remoteStatusReadForTest; hook != nil {
+		hook(w)
+	}
 	if err = a.store.ObserveRemoteWatch(w.ComputerID, w.RequestID, receipt, issue, next); err != nil {
 		log.Printf("remote job observation: %v", err)
 		return
@@ -419,7 +422,8 @@ func (a *App) prepareRemoteCompletion(w store.RemoteWatch, output remoteCompleti
 	if err != nil {
 		return "", false, err
 	}
-	if current.Notification != "pending" {
+	if current.Notification != "pending" || current.CancelOwedAt != 0 {
+		// A job whose cancel is owed is delivered once the cancel settles.
 		return "", false, nil
 	}
 	// A direct status/cancel can finish while this watcher is in flight. The
@@ -647,9 +651,8 @@ func (a *App) disarmRemoteCommands(threadID string) ([]store.RemoteWatch, error)
 // owed and named in undelivered; the dismissal goes ahead, so the thread is
 // told nothing of the job either way. err is a store failure.
 func (a *App) cancelRemoteCommands(ctx context.Context, threadID string, rows []store.RemoteWatch, keepFinished bool) (undelivered, err error) {
-	dismiss := a.store.DismissRemoteWatch
-	if keepFinished {
-		dismiss = a.store.DismissUnfinishedRemoteWatch
+	dismiss := func(computerID, requestID string) error {
+		return a.store.StopRemoteWatch(computerID, requestID, keepFinished)
 	}
 	var cancels []error
 	for _, w := range rows {

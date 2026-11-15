@@ -250,7 +250,12 @@ is reported by that Stop or archive and owed on the watch
 (`cancel_owed_at`): the source watcher sends it again every 30 seconds, on a
 loop apart from its completion checks so an unanswered cancel delays none, until
 the destination takes it or holds no such job, and settles it once the job is
-owed longer than the hour, by which the destination has stopped it. The destination bounds active processes and retained disk output, with
+owed longer than the hour, by which the destination has stopped it. While a
+cancel is owed the watcher neither polls the job nor delivers its completion.
+The completion a Stop or an archive dismissed stays dismissed (`stopped_at`):
+a status reply already on its way, or a retry of the same request, does not
+bring it back, as they do for a start the destination refused and later
+proves it accepted. The destination bounds active processes and retained disk output, with
 truncation reported explicitly.
 After a destination restart, unfinished receipts say interrupted and are never
 automatically rerun. A process crash during a log overwrite reports the incomplete log explicitly; the acceptance

@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -235,7 +236,7 @@ func TestArchivedRemoteCompletionsAreKeptUntilTheirComputerIsForgotten(t *testin
 	finished := watch(computer, archived.ID, "succeeded")
 	running := watch(computer, archived.ID, "running")
 	for _, w := range []RemoteWatch{finished, running} {
-		if err := s.DismissUnfinishedRemoteWatch(w.ComputerID, w.RequestID); err != nil {
+		if err := s.StopRemoteWatch(w.ComputerID, w.RequestID, true); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -477,6 +478,91 @@ func mustRemoteWatch(t *testing.T, s *Store, w RemoteWatch) RemoteWatch {
 		t.Fatal(err)
 	}
 	return got
+}
+
+// A refused start's dismissal gives way to proof the destination accepted
+// it, by a status reply or a retry; a rest's dismissal does not, and a watch
+// whose cancel is owed is neither polled nor brought back.
+func TestOnlyARefusedStartsDismissalGivesWayToAcceptance(t *testing.T) {
+	s := newTestStore(t)
+	thread := Thread{ID: uuid.NewString(), Provider: "codex"}
+	if err := s.CreateThread(thread); err != nil {
+		t.Fatal(err)
+	}
+	computer := uuid.NewString()
+	register := func() RemoteWatch {
+		t.Helper()
+		w := RemoteWatch{ComputerID: computer, RequestID: uuid.NewString(), ThreadID: thread.ID, Fingerprint: strings.Repeat("a", 64), Label: "test"}
+		if _, err := s.RegisterRemoteWatch(w); err != nil {
+			t.Fatal(err)
+		}
+		return w
+	}
+	accepted := func(w RemoteWatch) {
+		t.Helper()
+		receipt := RemoteJob{ID: w.RequestID, SourceThreadID: thread.ID, State: "running"}
+		if err := s.ObserveRemoteWatch(w.ComputerID, w.RequestID, receipt, "", 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	refused := register()
+	if err := s.RefuseRemoteWatch(refused.ComputerID, refused.RequestID, "not ready"); err != nil {
+		t.Fatal(err)
+	}
+	accepted(refused)
+	if got := mustRemoteWatch(t, s, refused); got.Notification != "pending" {
+		t.Fatalf("a refused start the destination accepted = %q, want pending", got.Notification)
+	}
+
+	for name, stop := range map[string]func(RemoteWatch) error{
+		"stop": func(w RemoteWatch) error { return s.StopRemoteWatch(w.ComputerID, w.RequestID, false) },
+		"undelivered": func(RemoteWatch) error {
+			_, err := s.DismissUndeliveredRemoteWatches(thread.ID)
+			return err
+		},
+	} {
+		stopped := register()
+		if err := stop(stopped); err != nil {
+			t.Fatal(err)
+		}
+		if fresh, err := s.RegisterRemoteWatch(stopped); err != nil || fresh {
+			t.Fatalf("%s: a retry of a stopped command = %v, %v; want it not taken up again", name, fresh, err)
+		}
+		if got := mustRemoteWatch(t, s, stopped); got.Notification != "dismissed" {
+			t.Fatalf("%s: a stopped command after a retry = %q, want it dismissed", name, got.Notification)
+		}
+		accepted(stopped)
+		if got := mustRemoteWatch(t, s, stopped); got.Notification != "dismissed" || got.StoppedAt == 0 {
+			t.Fatalf("%s: a stopped command observed accepted = %q at %d, want it dismissed", name, got.Notification, got.StoppedAt)
+		}
+	}
+
+	owed := register()
+	if err := s.RefuseRemoteWatch(owed.ComputerID, owed.RequestID, "not ready"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.OweRemoteCancel(owed.ComputerID, owed.RequestID, 1, 2); err != nil {
+		t.Fatal(err)
+	}
+	accepted(owed)
+	if got := mustRemoteWatch(t, s, owed); got.Notification != "dismissed" {
+		t.Fatalf("a dismissed command whose cancel is owed observed accepted = %q, want dismissed", got.Notification)
+	}
+	pending := register()
+	accepted(pending)
+	if err := s.OweRemoteCancel(pending.ComputerID, pending.RequestID, 1, 2); err != nil {
+		t.Fatal(err)
+	}
+	due, err := s.ListRemoteWatches("", time.Now().Add(time.Hour).UnixMilli(), 32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, w := range due {
+		if w.RequestID == pending.RequestID {
+			t.Fatal("the watcher's due list holds a command whose cancel is owed")
+		}
+	}
 }
 
 // A completion whose queue row is still there never reached the provider,

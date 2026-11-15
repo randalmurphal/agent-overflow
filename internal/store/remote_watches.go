@@ -48,6 +48,10 @@ type RemoteWatch struct {
 	// CancelOwedAt is when a cancel the job is owed was first owed, 0 when
 	// none is (OweRemoteCancel).
 	CancelOwedAt int64 `json:"-"`
+	// StoppedAt is when a rest or an archive dismissed the completion, 0
+	// when none did (StopRemoteWatch, DismissUndeliveredRemoteWatches). Such
+	// a dismissal is final: nothing brings the completion back.
+	StoppedAt int64 `json:"-"`
 }
 
 // remoteWatchesV91SQL is the table as v91 made it. v150 rebuilt it with
@@ -65,12 +69,12 @@ CREATE INDEX idx_remote_watches_thread ON remote_watches(thread_id,created_at DE
 
 const remoteWatchesCommandV98SQL = `ALTER TABLE remote_watches ADD COLUMN command TEXT NOT NULL DEFAULT '';`
 
-const remoteWatchColumns = `computer_id,request_id,thread_id,launched_in_thread_id,fingerprint,label,command,receipt,error,notification,next_check,created_at,coalesce(confirmed_at,0),wake_attempts,wake_issue,cancel_owed_at`
+const remoteWatchColumns = `computer_id,request_id,thread_id,launched_in_thread_id,fingerprint,label,command,receipt,error,notification,next_check,created_at,coalesce(confirmed_at,0),wake_attempts,wake_issue,cancel_owed_at,stopped_at`
 
 func scanRemoteWatch(row rowScanner) (RemoteWatch, error) {
 	var w RemoteWatch
 	var raw string
-	err := row.Scan(&w.ComputerID, &w.RequestID, &w.ThreadID, &w.LaunchedIn, &w.Fingerprint, &w.Label, &w.Command, &raw, &w.Error, &w.Notification, &w.NextCheck, &w.CreatedAt, &w.ConfirmedAt, &w.WakeAttempts, &w.WakeIssue, &w.CancelOwedAt)
+	err := row.Scan(&w.ComputerID, &w.RequestID, &w.ThreadID, &w.LaunchedIn, &w.Fingerprint, &w.Label, &w.Command, &raw, &w.Error, &w.Notification, &w.NextCheck, &w.CreatedAt, &w.ConfirmedAt, &w.WakeAttempts, &w.WakeIssue, &w.CancelOwedAt, &w.StoppedAt)
 	if err == nil {
 		err = json.Unmarshal([]byte(raw), &w.Receipt)
 	}
@@ -100,7 +104,7 @@ func (s *Store) RegisterRemoteWatch(w RemoteWatch) (bool, error) {
 		if old.LaunchedIn != w.ThreadID || old.Fingerprint != w.Fingerprint {
 			return false, errorsx.Public("remote_request_conflict", "This request_id already belongs to another command or conversation. Retry only the original project, workspace, argv/script and timeout.", nil)
 		}
-		if old.Notification != "dismissed" || old.Receipt.ID != "" {
+		if old.Notification != "dismissed" || old.Receipt.ID != "" || old.StoppedAt != 0 {
 			return false, nil
 		}
 	} else if !errors.Is(err, sql.ErrNoRows) {
@@ -134,6 +138,9 @@ func (s *Store) RegisterRemoteWatch(w RemoteWatch) (bool, error) {
 
 // Update only the observed receipt; never overwrite notification ownership.
 // A stale reply must not defer a known completion or replace its error either.
+// Proof that the destination accepted a start refused earlier brings its
+// completion back; a dismissal by a rest or an archive (stopped_at), or one
+// whose cancel is owed, stays.
 func (s *Store) ObserveRemoteWatch(computerID, requestID string, receipt RemoteJob, issue string, next int64) error {
 	receipt.Output = "" // Output is fetched on demand; the monitor never retains logs.
 	raw, err := json.Marshal(receipt)
@@ -141,7 +148,7 @@ func (s *Store) ObserveRemoteWatch(computerID, requestID string, receipt RemoteJ
 		return err
 	}
 	_, err = s.db.Exec(`UPDATE remote_watches SET
- notification=CASE WHEN notification='dismissed' AND coalesce(json_extract(receipt,'$.id'),'')='' AND ?<>'' THEN 'pending' ELSE notification END,
+ notification=CASE WHEN notification='dismissed' AND stopped_at=0 AND cancel_owed_at=0 AND coalesce(json_extract(receipt,'$.id'),'')='' AND ?<>'' THEN 'pending' ELSE notification END,
  receipt=CASE WHEN coalesce(json_extract(receipt,'$.id'),'')<>'' AND json_extract(receipt,'$.state')<>'running' THEN receipt ELSE ? END,
  error=?,next_check=? WHERE computer_id=? AND request_id=?
  AND (coalesce(json_extract(receipt,'$.id'),'')='' OR
@@ -157,8 +164,9 @@ func (s *Store) ListRemoteWatches(threadID string, due int64, limit int) ([]Remo
 	args := []any{threadID}
 	if threadID == "" {
 		// An archived thread's completions wait for it to be unarchived, and
-		// must not take the due list's places meanwhile.
-		query = `SELECT ` + remoteWatchColumns + ` FROM remote_watches WHERE notification='pending' AND next_check<=?
+		// must not take the due list's places meanwhile. A job whose cancel
+		// is owed is not polled: its watch waits for the cancel to settle.
+		query = `SELECT ` + remoteWatchColumns + ` FROM remote_watches WHERE notification='pending' AND next_check<=? AND cancel_owed_at=0
  AND NOT EXISTS (SELECT 1 FROM threads t WHERE t.id=remote_watches.thread_id AND t.archived=1) ORDER BY next_check`
 		args = []any{due}
 	}
@@ -184,12 +192,16 @@ func (s *Store) DismissRemoteWatch(computerID, requestID string) error {
 	return err
 }
 
-// DismissUnfinishedRemoteWatch drops a pending notification only while its
-// receipt still says the job has not finished. A finish recorded first, by
-// the watcher or a reply, keeps it.
-func (s *Store) DismissUnfinishedRemoteWatch(computerID, requestID string) error {
-	_, err := s.db.Exec(`UPDATE remote_watches SET notification='dismissed' WHERE computer_id=? AND request_id=? AND notification='pending'
- AND (coalesce(json_extract(receipt,'$.id'),'')='' OR json_extract(receipt,'$.state')='running')`, computerID, requestID)
+// StopRemoteWatch is a rest's or an archive's dismissal of a pending
+// notification, final (stopped_at). With keepFinished it applies only while
+// the receipt still says the job has not finished: a finish recorded first,
+// by the watcher or a reply, keeps it.
+func (s *Store) StopRemoteWatch(computerID, requestID string, keepFinished bool) error {
+	query := `UPDATE remote_watches SET notification='dismissed',stopped_at=? WHERE computer_id=? AND request_id=? AND notification='pending'`
+	if keepFinished {
+		query += ` AND (coalesce(json_extract(receipt,'$.id'),'')='' OR json_extract(receipt,'$.state')='running')`
+	}
+	_, err := s.db.Exec(query, time.Now().UnixMilli(), computerID, requestID)
 	return err
 }
 
@@ -199,8 +211,8 @@ func (s *Store) DismissUnfinishedRemoteWatch(computerID, requestID string) error
 // teardown would otherwise give back to its watch for the watcher to deliver
 // again. It reports how many it dropped.
 func (s *Store) DismissUndeliveredRemoteWatches(threadID string) (int64, error) {
-	r, err := s.db.Exec(`UPDATE remote_watches SET notification='dismissed'
- WHERE thread_id=? AND (notification='pending' OR (notification='queued' AND confirmed_at IS NULL))`, threadID)
+	r, err := s.db.Exec(`UPDATE remote_watches SET notification='dismissed',stopped_at=?
+ WHERE thread_id=? AND (notification='pending' OR (notification='queued' AND confirmed_at IS NULL))`, time.Now().UnixMilli(), threadID)
 	if err != nil {
 		return 0, fmt.Errorf("store: dismiss the undelivered remote commands of %s: %w", threadID, err)
 	}

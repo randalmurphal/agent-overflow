@@ -258,6 +258,106 @@ func TestARemoteCancelTheDestinationRefusesIsReportedAndSentAgain(t *testing.T) 
 	}
 }
 
+// A status reply already on its way when a Stop dismisses a command's
+// completion does not bring the completion back, whether the Stop's cancel
+// landed or is owed: the watch stays dismissed, the watcher neither polls it
+// nor delivers it, and nothing reaches the stopped thread.
+func TestALateStatusReplyDoesNotBringBackACompletionAStopDismissed(t *testing.T) {
+	t.Parallel()
+	remotetest.Require(t)
+	for name, owed := range map[string]bool{"cancelled": false, "cancel owed": true} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			source, receiver, ctx, input := remoteAdmissionFixture(t)
+			receiver.remoteJobs.Close()
+			manager, err := remotejobs.New(ctx, receiver.store, func(ctx context.Context, _ string, _ []string, _ io.Writer) (remotejobs.Outcome, error) {
+				<-ctx.Done()
+				return remotejobs.Outcome{ExitCode: -1}, ctx.Err()
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			receiver.remoteJobs = manager
+			t.Cleanup(manager.Close)
+			// The destination starts the command and its reply is lost, so the
+			// watch is pending with no receipt, for the watcher to verify.
+			receiver.lostReply.Store(true)
+			if _, err := source.AgentRemoteStart(ctx, input); err == nil {
+				t.Fatal("the start with a lost reply succeeded")
+			}
+			watch, err := source.store.GetRemoteWatch(input.ComputerID, input.Request.ID)
+			if err != nil || watch.Notification != "pending" || watch.Receipt.ID != "" {
+				t.Fatalf("watch after the lost reply = %+v, %v; want it pending with no receipt", watch, err)
+			}
+			if owed {
+				refusal := errorsx.Public("remote_not_ready", "Remote commands are not ready on this computer.", nil)
+				receiver.cancelRefusal.Store(&refusal)
+			}
+
+			threadID := watch.ThreadID
+			source.remoteStatusReadForTest = func(store.RemoteWatch) {
+				var stop ThreadAgentStop
+				source.restThreadHere(context.Background(), threadID, userRestStop(), map[string]bool{}, &stop)
+			}
+			source.checkRemoteWatch(watch)
+			source.remoteStatusReadForTest = nil
+
+			after, err := source.store.GetRemoteWatch(input.ComputerID, input.Request.ID)
+			if err != nil || after.Notification != "dismissed" {
+				t.Fatalf("watch after the late reply = %+v, %v; want it still dismissed", after, err)
+			}
+			if owed != (after.CancelOwedAt != 0) {
+				t.Fatalf("watch's owed cancel = %d, want owed %v", after.CancelOwedAt, owed)
+			}
+			if due, err := source.store.ListRemoteWatches("", time.Now().Add(time.Hour).UnixMilli(), 32); err != nil || len(due) != 0 {
+				t.Fatalf("the watcher's due list = %+v, %v; want nothing", due, err)
+			}
+			if queued, err := source.store.ListFlushQueueItems(threadID); err != nil || len(queued) != 0 {
+				t.Fatalf("the stopped thread's queue = %+v, %v; want it empty", queued, err)
+			}
+		})
+	}
+}
+
+// A finished command whose cancel became owed after the watcher listed it is
+// not delivered as a completion until the cancel settles.
+func TestACompletionWhoseCancelIsOwedIsNotDelivered(t *testing.T) {
+	t.Parallel()
+	remotetest.Require(t)
+	source, _, ctx, input := remoteAdmissionFixture(t)
+	if _, err := source.AgentRemoteStart(ctx, input); err != nil {
+		t.Fatal(err)
+	}
+	waitUntil(t, 10*time.Second, func() bool {
+		w, err := source.store.GetRemoteWatch(input.ComputerID, input.Request.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if w.Receipt.State == "running" {
+			if _, err := source.AgentRemoteStatus(ctx, input.ComputerID, input.Request.ID); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return w.Receipt.ID != "" && w.Receipt.State != "running"
+	})
+	listed, err := source.store.GetRemoteWatch(input.ComputerID, input.Request.ID)
+	if err != nil || listed.Notification != "pending" {
+		t.Fatalf("the finished command's watch = %+v, %v; want it pending", listed, err)
+	}
+	if err := source.store.OweRemoteCancel(input.ComputerID, input.Request.ID, time.Now().UnixMilli(), time.Now().Add(time.Minute).UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
+	if _, deliver, err := source.prepareRemoteCompletion(listed, remoteCompletionOutput{Unavailable: true}); err != nil || deliver {
+		t.Fatalf("prepare = %v, %v; want the completion held while its cancel is owed", deliver, err)
+	}
+	if err := source.store.SettleRemoteCancel(input.ComputerID, input.Request.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, deliver, err := source.prepareRemoteCompletion(listed, remoteCompletionOutput{Unavailable: true}); err != nil || !deliver {
+		t.Fatalf("prepare once the cancel settled = %v, %v; want the completion delivered", deliver, err)
+	}
+}
+
 // An owed cancel the destination does not answer holds up no other job's
 // completion: the watcher sends owed cancels apart from its checks.
 func TestAnOwedRemoteCancelThatHangsHoldsUpNoCompletion(t *testing.T) {

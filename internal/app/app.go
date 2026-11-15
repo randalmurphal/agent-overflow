@@ -749,6 +749,10 @@ type App struct {
 	// workflow runs that report to the thread and before it acts on any
 	// (pauseRunsOfRestingThread), so a test can move a run at that moment.
 	restRunsListedForTest func(runs []store.WorkItem)
+	// remoteStatusReadForTest, when set, runs in a watch check once the
+	// destination answered its status call and before the answer is
+	// recorded (checkRemoteWatch), so a test can stop the thread then.
+	remoteStatusReadForTest func(w store.RemoteWatch)
 	// turnEndSettledForTest, when set, runs in a turn-end settlement pass
 	// after it settled its receipts and before it retires the stops it read
 	// (settleReceiptsForEndedTurn), so a test can stop or end a turn then.
