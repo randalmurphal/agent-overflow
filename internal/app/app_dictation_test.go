@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"agent-overflow/internal/dictation"
 	"agent-overflow/internal/errorsx"
@@ -432,6 +433,46 @@ func TestAnAbandonedDictationStartsNoRefresh(t *testing.T) {
 	}
 	if _, err := os.Stat(ran); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("the Codex CLI ran a refresh for an abandoned transcription (stat err = %v)", err)
+	}
+}
+
+// A transcription that outlasts the computer's budget ends with a readable
+// error and releases the recording, and DictationSources reports that
+// budget, which is what a client waits for (dictation.svelte.ts).
+func TestDictationEndsAtItsBudget(t *testing.T) {
+	t.Parallel()
+	app := newDictationTestApp(t, "fresh")
+	const budget = 100 * time.Millisecond
+	app.dictationOnce.Do(func() { app.dictation = dictation.New(0, budget) })
+	started := make(chan struct{})
+	app.rateLimitProbeClientOverride = &http.Client{Transport: blockingTranscription{started: started}}
+	ctx, _ := transport.WithConnState(context.Background(), transport.ConnPrincipal{})
+
+	sources, err := app.DictationSources()
+	if err != nil || sources.TranscribeWithinMs != budget.Milliseconds() {
+		t.Fatalf("DictationSources = %+v, %v; want the %v budget", sources, err, budget)
+	}
+	id, err := app.BeginDictation(ctx, "audio/webm")
+	if err != nil {
+		t.Fatal(err)
+	}
+	uploadDictation(t, app, id, "frames")
+	_, err = app.FinishDictation(ctx, id, 1)
+	if code, _, _ := errorsx.PublicDetails(err); code != dictationTranscriptionTimeoutCode {
+		t.Fatalf("FinishDictation err = %v, want the readable timeout", err)
+	}
+	if open := app.dictationRecordings().Open(); open != 0 {
+		t.Fatalf("open recordings after the budget ran out = %d", open)
+	}
+}
+
+// The production budget is what DictationSources reports.
+func TestDictationReportsItsBudget(t *testing.T) {
+	t.Parallel()
+	app := newDictationTestApp(t, "fresh")
+	sources, err := app.DictationSources()
+	if err != nil || sources.TranscribeWithinMs != dictation.TranscribeBudget.Milliseconds() {
+		t.Fatalf("DictationSources = %+v, %v; want %v", sources, err, dictation.TranscribeBudget)
 	}
 }
 

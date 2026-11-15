@@ -12,7 +12,7 @@ import (
 )
 
 func TestRecordingJoinsItsPiecesInOrder(t *testing.T) {
-	recordings := New(0)
+	recordings := New(0, 0)
 	id, err := recordings.Begin("audio/webm")
 	if err != nil {
 		t.Fatal(err)
@@ -40,7 +40,7 @@ func TestRecordingJoinsItsPiecesInOrder(t *testing.T) {
 }
 
 func TestRecordingRefusesWhatWouldCorruptIt(t *testing.T) {
-	recordings := New(0)
+	recordings := New(0, 0)
 	if _, err := recordings.Begin("audio/wav"); err == nil {
 		t.Fatal("a container MediaRecorder does not produce was accepted")
 	}
@@ -75,7 +75,7 @@ func TestRecordingRefusesWhatWouldCorruptIt(t *testing.T) {
 }
 
 func TestRecordingsAreBounded(t *testing.T) {
-	recordings := New(0)
+	recordings := New(0, 0)
 	var ids []string
 	for range MaxOpenRecordings {
 		id, err := recordings.Begin("audio/webm")
@@ -106,7 +106,7 @@ func (b *blockedBody) Read(p []byte) (int, error) {
 
 // No declared size, however large, wraps a cap's sum into admission.
 func TestNoPieceSizeOverflowsTheCaps(t *testing.T) {
-	recordings := New(0)
+	recordings := New(0, 0)
 	id, _ := recordings.Begin("audio/webm")
 	if err := recordings.Append(id, 0, 1, strings.NewReader("a")); err != nil {
 		t.Fatal(err)
@@ -142,7 +142,7 @@ func TestARecordingSaysWhenItIsReleased(t *testing.T) {
 		{"finished short of its pieces", func(_ *testing.T, r *Recordings, id string) { _, _ = r.Finish(context.Background(), id, 2) }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			recordings := New(0)
+			recordings := New(0, 0)
 			id, _ := recordings.Begin("audio/webm")
 			if err := recordings.Append(id, 0, 3, strings.NewReader("abc")); err != nil {
 				t.Fatal(err)
@@ -157,7 +157,7 @@ func TestARecordingSaysWhenItIsReleased(t *testing.T) {
 	}
 
 	t.Run("finished again while transcribing", func(t *testing.T) {
-		recordings := New(0)
+		recordings := New(0, 0)
 		id, _ := recordings.Begin("audio/webm")
 		if err := recordings.Append(id, 0, 3, strings.NewReader("abc")); err != nil {
 			t.Fatal(err)
@@ -181,7 +181,7 @@ func TestARecordingSaysWhenItIsReleased(t *testing.T) {
 	})
 
 	t.Run("finished while a piece is read", func(t *testing.T) {
-		recordings := New(0)
+		recordings := New(0, 0)
 		id, _ := recordings.Begin("audio/webm")
 		released := 0
 		recordings.OnRelease(id, func() { released++ })
@@ -206,7 +206,7 @@ func TestARecordingSaysWhenItIsReleased(t *testing.T) {
 // once cannot pass the caps: a recording reads one piece at a time, and
 // every reservation counts against the bytes held across recordings.
 func TestPiecesInFlightCountAgainstTheCaps(t *testing.T) {
-	recordings := New(0)
+	recordings := New(0, 0)
 	id, err := recordings.Begin("audio/webm")
 	if err != nil {
 		t.Fatal(err)
@@ -261,7 +261,7 @@ func TestPiecesInFlightCountAgainstTheCaps(t *testing.T) {
 // A recording dropped while its piece is read keeps that piece's
 // reservation until the read ends, and the piece is not stored.
 func TestADroppedRecordingReleasesItsPieceWhenTheReadEnds(t *testing.T) {
-	recordings := New(0)
+	recordings := New(0, 0)
 	id, _ := recordings.Begin("audio/webm")
 	body := &blockedBody{release: make(chan struct{}), data: strings.NewReader("abcd")}
 	done := make(chan error, 1)
@@ -284,7 +284,7 @@ func TestADroppedRecordingReleasesItsPieceWhenTheReadEnds(t *testing.T) {
 // A transcribing recording keeps its place and bytes until Done; Cancel
 // ends its context instead of dropping it out from under the job.
 func TestATranscriptionStaysOwnedUntilDone(t *testing.T) {
-	recordings := New(0)
+	recordings := New(0, 0)
 	id, _ := recordings.Begin("audio/webm")
 	if err := recordings.Append(id, 0, 3, strings.NewReader("abc")); err != nil {
 		t.Fatal(err)
@@ -312,7 +312,7 @@ func TestATranscriptionStaysOwnedUntilDone(t *testing.T) {
 // An abandoned recording expires on its own timer, with no other activity
 // on the backend, and says so to whoever owns its cleanup.
 func TestAnIdleRecordingExpiresOnItsOwn(t *testing.T) {
-	recordings := New(20 * time.Millisecond)
+	recordings := New(20*time.Millisecond, 0)
 	id, _ := recordings.Begin("audio/webm")
 	if err := recordings.Append(id, 0, 3, strings.NewReader("abc")); err != nil {
 		t.Fatal(err)
@@ -336,7 +336,7 @@ func TestAnIdleRecordingExpiresOnItsOwn(t *testing.T) {
 
 // Neither a piece being read nor a transcription expires.
 func TestWorkInProgressDoesNotExpire(t *testing.T) {
-	recordings := New(20 * time.Millisecond)
+	recordings := New(20*time.Millisecond, 0)
 	id, _ := recordings.Begin("audio/webm")
 	body := &blockedBody{release: make(chan struct{}), data: strings.NewReader("abc")}
 	done := make(chan error, 1)

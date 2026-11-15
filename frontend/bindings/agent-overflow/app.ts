@@ -1254,7 +1254,8 @@ export function FetchForgeAttachment(pr: git$0.PRReference, href: string, maxWid
  * FinishDictation closes a recording the caller uploaded pieces pieces of
  * and returns its transcript. Until the transcription ends the recording
  * still belongs to the caller's connection: CancelDictation or the
- * connection's end stops it, and it counts against the recording caps.
+ * connection's end stops it, and it counts against the recording caps. It
+ * returns within the recordings' budget (DictationSources reports it).
  */
 export function FinishDictation(recordingID: string, pieces: number): $CancellablePromise<string> {
     return $Call.ByID(2178028847, recordingID, pieces);

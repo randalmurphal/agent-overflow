@@ -76,6 +76,26 @@ describe('DictationSession', () => {
     expect(f.inserted).toEqual([]);
   });
 
+  it('drops on the computer a transcription whose answer never arrived', async () => {
+    const f = fixture();
+    f.remote.finish.mockRejectedValueOnce(new Error('The computer did not answer in time, so the transcription was stopped.'));
+    await f.session.start();
+    f.recorder().emit('a');
+    f.tick();
+    await f.session.stop();
+    expect(f.remote.cancel).toHaveBeenCalledWith('rec-1');
+    expect(f.session.error).toBe('The computer did not answer in time, so the transcription was stopped.');
+
+    const l = live();
+    l.remote.live.finish.mockRejectedValueOnce(new Error('timed out'));
+    await l.session.start();
+    await settle();
+    l.pcm().emit(0, 0x40);
+    l.tick();
+    await l.session.stop();
+    expect(l.remote.live.cancel).toHaveBeenCalledWith('live-1');
+  });
+
   it('skips transcription when the meter and the recording itself hold no sound', async () => {
     const f = fixture();
     f.level.value = 0.001;

@@ -69,6 +69,13 @@ after the server rotated the token, before the CLI saved it, would lose the
 sign-in. A Codex configured to keep credentials in the OS keyring has
 no `auth.json`, and dictation reads as unavailable there.
 
+A transcription has three minutes from finish (`dictation.TranscribeBudget`),
+every attempt and a refresh included; past it the computer stops it and the
+mic says ChatGPT took too long. `DictationSources` reports the budget, and
+the client waits 15 seconds past it, so the computer's answer always
+arrives first. A finish that fails, or whose answer never comes, cancels
+the recording on the computer.
+
 ## Live transcription with an API key
 
 Code: `internal/openaikey` (the key file), `internal/openai/live.go` (the

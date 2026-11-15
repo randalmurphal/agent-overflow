@@ -25,10 +25,6 @@ import (
 // keeps the uploaded recording for 30 days.
 const TranscribeURL = "https://chatgpt.com/backend-api/transcribe"
 
-// transcribeTimeout bounds one transcription: the upload and the model's
-// pass over at most a few minutes of speech.
-const transcribeTimeout = 90 * time.Second
-
 // maxTranscriptBytes bounds the response read. A transcript of the longest
 // recording AO sends is tens of kilobytes.
 const maxTranscriptBytes = 1 << 20
@@ -97,7 +93,8 @@ type TranscribeRequest struct {
 	UserAgent string
 }
 
-// Transcribe sends one recording to ChatGPT and returns its text.
+// Transcribe sends one recording to ChatGPT and returns its text. ctx bounds
+// the upload and the answer; the caller owns the time limit.
 func Transcribe(ctx context.Context, client *http.Client, request TranscribeRequest) (string, error) {
 	accessToken, accountID, ok := chatGPTRequestAuth(request.Credential)
 	if !ok {
@@ -126,8 +123,6 @@ func Transcribe(ctx context.Context, client *http.Client, request TranscribeRequ
 		return io.MultiReader(bytes.NewReader(head), bytes.NewReader(request.Audio), bytes.NewReader(tail))
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, transcribeTimeout)
-	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, request.Endpoint, newBody())
 	if err != nil {
 		return "", fmt.Errorf("codex: build transcription request: %w", err)

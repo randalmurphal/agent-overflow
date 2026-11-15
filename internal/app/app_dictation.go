@@ -30,6 +30,10 @@ type DictationSources struct {
 	// ChatGPTSignIn is true when Codex is signed in with ChatGPT here,
 	// whether or not dictation through it is on.
 	ChatGPTSignIn bool `json:"chatGPTSignIn"`
+	// TranscribeWithinMs is the most FinishDictation takes here: past it the
+	// transcription ends with an error. A client waits for the answer at
+	// least this long.
+	TranscribeWithinMs int64 `json:"transcribeWithinMs"`
 }
 
 // ErrDictationOff refuses a recording while no dictation source is on.
@@ -46,9 +50,10 @@ func (a *App) DictationSources() (DictationSources, error) {
 		return DictationSources{}, fmt.Errorf("read the Codex sign-in: %w", err)
 	}
 	return DictationSources{
-		Subscription:  signedIn && a.dictationSubscriptionOn(),
-		Live:          a.liveDictationAvailable(),
-		ChatGPTSignIn: signedIn,
+		Subscription:       signedIn && a.dictationSubscriptionOn(),
+		Live:               a.liveDictationAvailable(),
+		ChatGPTSignIn:      signedIn,
+		TranscribeWithinMs: a.dictationRecordings().Budget().Milliseconds(),
 	}, nil
 }
 
@@ -111,7 +116,8 @@ func (a *App) MintDictationChunkTicket(ctx context.Context, recordingID string, 
 // FinishDictation closes a recording the caller uploaded pieces pieces of
 // and returns its transcript. Until the transcription ends the recording
 // still belongs to the caller's connection: CancelDictation or the
-// connection's end stops it, and it counts against the recording caps.
+// connection's end stops it, and it counts against the recording caps. It
+// returns within the recordings' budget (DictationSources reports it).
 //
 //ao:scope threads:operate
 //ao:route selected
@@ -135,17 +141,27 @@ func (a *App) FinishDictation(ctx context.Context, recordingID string, pieces in
 		UserAgent: provider.CodexClientOrigin + "/" + a.version,
 	})
 	if err != nil {
-		return "", dictationFailure(err)
+		return "", dictationFailure(job.Context, err)
 	}
 	return text, nil
 }
 
-// dictationTranscriptionRefusedCode is the wire code of a 403 from ChatGPT.
-const dictationTranscriptionRefusedCode = "dictation_transcription_refused"
+// The wire codes of the transcription failures the mic shows in words of
+// their own.
+const (
+	dictationTranscriptionRefusedCode = "dictation_transcription_refused"
+	dictationTranscriptionTimeoutCode = "dictation_transcription_timeout"
+)
 
-// dictationFailure is a failed transcription as the mic shows it.
-func dictationFailure(err error) error {
-	if errors.Is(err, codex.ErrTranscribeForbidden) {
+// dictationFailure is a failed transcription as the mic shows it. job is
+// the transcription's context, to tell its budget running out from the
+// other ways it ends.
+func dictationFailure(job context.Context, err error) error {
+	switch {
+	case errors.Is(context.Cause(job), dictation.ErrTranscribeBudget):
+		return errorsx.Public(dictationTranscriptionTimeoutCode,
+			"ChatGPT took too long to transcribe the recording, so it was stopped. Try again, or dictate in shorter parts.", err)
+	case errors.Is(err, codex.ErrTranscribeForbidden):
 		return errorsx.Public(dictationTranscriptionRefusedCode,
 			"ChatGPT refused to transcribe the recording (HTTP 403). Signing in again will not change that; dictation through ChatGPT may be unavailable for now.", err)
 	}
@@ -166,7 +182,7 @@ func (a *App) CancelDictation(ctx context.Context, recordingID string) error {
 }
 
 func (a *App) dictationRecordings() *dictation.Recordings {
-	a.dictationOnce.Do(func() { a.dictation = dictation.New(0) })
+	a.dictationOnce.Do(func() { a.dictation = dictation.New(0, 0) })
 	return a.dictation
 }
 

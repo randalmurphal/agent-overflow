@@ -43,13 +43,24 @@ const MaxHeldBytes = 64 << 20
 // ten-minute cap on a recording.
 const IdleTimeout = 12 * time.Minute
 
+// TranscribeBudget bounds a transcription from Finish to its end, every
+// attempt and any sign-in refresh between them included. The client is told
+// it (DictationSources) and waits a little longer, so the computer's answer
+// always reaches it.
+const TranscribeBudget = 3 * time.Minute
+
+// ErrTranscribeBudget is the cause of a Job's Context ending because the
+// transcription outlasted its budget.
+var ErrTranscribeBudget = errors.New("dictation: the transcription outlasted its budget")
+
 // ErrUnknownRecording means the recording was finished, abandoned or never
 // opened here.
 var ErrUnknownRecording = errors.New("dictation: recording is not open")
 
 // Recordings is the set of open recordings.
 type Recordings struct {
-	idle time.Duration
+	idle   time.Duration
+	budget time.Duration
 
 	mu   sync.Mutex
 	open map[string]*recording
@@ -75,13 +86,20 @@ type recording struct {
 }
 
 // New returns an empty set whose recordings expire after idle without a
-// piece; zero means IdleTimeout.
-func New(idle time.Duration) *Recordings {
+// piece and whose transcriptions end after budget; zero means IdleTimeout
+// and TranscribeBudget.
+func New(idle, budget time.Duration) *Recordings {
 	if idle <= 0 {
 		idle = IdleTimeout
 	}
-	return &Recordings{idle: idle, open: make(map[string]*recording)}
+	if budget <= 0 {
+		budget = TranscribeBudget
+	}
+	return &Recordings{idle: idle, budget: budget, open: make(map[string]*recording)}
 }
+
+// Budget is how long a transcription may run.
+func (r *Recordings) Budget() time.Duration { return r.budget }
 
 // Begin opens a recording of the given container type and returns its id.
 func (r *Recordings) Begin(mimeType string) (string, error) {
@@ -211,7 +229,8 @@ func readPiece(seq int, size int64, body io.Reader) ([]byte, error) {
 
 // Job is a finished recording being transcribed. It keeps the recording's
 // place and bytes under the caps until Done, and its Context ends when the
-// recording is cancelled or the caller's context ends.
+// recording is cancelled, the caller's context ends, or the budget runs out
+// (cause ErrTranscribeBudget).
 type Job struct {
 	MimeType string
 	Audio    []byte
@@ -258,7 +277,7 @@ func (r *Recordings) Finish(ctx context.Context, id string, pieces int) (*Job, e
 	}
 	defer r.mu.Unlock()
 	rec.idle.Stop()
-	jobCtx, cancel := context.WithCancel(ctx)
+	jobCtx, cancel := context.WithTimeoutCause(ctx, r.budget, ErrTranscribeBudget)
 	rec.cancelJob = cancel
 	var once sync.Once
 	return &Job{

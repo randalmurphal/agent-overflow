@@ -295,7 +295,10 @@ export class DictationSession {
       // mic says so.
       this.settle(attempt, this.onTranscript(text) ? attempt.lostEnding() : 'The transcript could not be inserted.');
     } catch (err) {
-      attempt.finished();
+      // A finish whose answer never arrived may still be running on the
+      // computer; one the computer refused is gone, and the cancel does
+      // nothing there.
+      attempt.abandon();
       if (this.current !== attempt) return;
       if (attempt instanceof LiveAttempt) this.settleLiveFailure(attempt, err);
       else this.settle(attempt, errorMessage(err, 'Transcription failed.'));

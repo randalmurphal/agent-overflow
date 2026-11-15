@@ -41,8 +41,9 @@ func (m *Manager) CodexDictationAvailable() (bool, error) {
 
 // TranscribeWithCodexLogin transcribes a recording with the canonical Codex
 // ChatGPT sign-in, read fresh for each request. When ChatGPT refuses the
-// access token, the Codex CLI refreshes it in the canonical home and the
-// request is retried once.
+// access token (a 401), the Codex CLI refreshes it in the canonical home
+// and the request is retried once. It returns when ctx ends, also while
+// the refresh waits for the reconcile lock or runs.
 func (m *Manager) TranscribeWithCodexLogin(ctx context.Context, request CodexTranscription) (string, error) {
 	if !m.available() {
 		return "", errors.New("provider account storage is unavailable")
@@ -57,8 +58,24 @@ func (m *Manager) TranscribeWithCodexLogin(ctx context.Context, request CodexTra
 	if !errors.Is(err, codex.ErrTranscribeUnauthorized) {
 		return text, err
 	}
-	if err := m.refreshCanonicalCodexToken(ctx); err != nil {
+	// The refresh may outlive this call (refreshCanonicalCodexToken), so it
+	// runs under a work admission of its own.
+	endRefresh, err := m.beginWork(context.WithoutCancel(ctx))
+	if err != nil {
 		return "", err
+	}
+	refreshed := make(chan error, 1)
+	go func() {
+		defer endRefresh()
+		refreshed <- m.refreshCanonicalCodexToken(ctx)
+	}()
+	select {
+	case err := <-refreshed:
+		if err != nil {
+			return "", err
+		}
+	case <-ctx.Done():
+		return "", ctx.Err()
 	}
 	if err := ctx.Err(); err != nil {
 		return "", err
@@ -98,8 +115,9 @@ func (m *Manager) transcribeOnce(ctx context.Context, request CodexTranscription
 //
 // A transcription abandoned before the refresh starts, while it waits for
 // the lock or the slot promotion, starts none. One that started runs to the
-// end whatever happens to the caller: a refresh stopped after the server
-// rotated the token, before the CLI saved it, would lose the sign-in.
+// end whatever happens to the caller, which does not wait for it: a refresh
+// stopped after the server rotated the token, before the CLI saved it,
+// would lose the sign-in.
 func (m *Manager) refreshCanonicalCodexToken(ctx context.Context) error {
 	mu := m.reconcileMutex(string(provider.Codex))
 	mu.Lock()
