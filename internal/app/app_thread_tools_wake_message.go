@@ -19,10 +19,12 @@ import (
 
 // deliverThreadWakeMessages queues each message, and rebuilds the ones that
 // were not written because a request they name stopped owing the wake while
-// they were being written (store.QueueThreadWake): another route delivered
-// it, or a late reply superseded it. The rebuild reads the rows as they are
-// now, which drops that request and keeps the rest in one message. Every
-// rebuild drops at least one request, and the passes are bounded anyway.
+// they were being written (store.QueueThreadWake: another route delivered
+// it, or a late reply superseded it), or because New Thread, Same Assistant
+// moved their requests to another thread after they were built. The rebuild
+// reads the rows as they are now, which drops that request and keeps the
+// rest in one message, or names the thread they moved to and where they
+// were made. The passes are bounded.
 func (a *App) deliverThreadWakeMessages(messages []threadWakeMessage) {
 	for pass := 0; ; pass++ {
 		var stale []threadWakeRef
@@ -161,15 +163,7 @@ func (a *App) deliverThreadWakeMessage(message threadWakeMessage) bool {
 			a.failThreadWake(token, what, cause)
 		}
 	}
-	callerID := carrier.CallerThreadID
-	if current, ok := a.assistantCurrentThread(callerID); ok {
-		// A handoff that raced this read moved the requests; the answer is
-		// the assistant's current thread's, and its old thread stays
-		// archived. The queue write refuses a row still naming the old
-		// thread, and the rebuild reads it moved.
-		callerID = current
-	}
-	thread, err := a.store.GetThread(callerID)
+	thread, err := a.store.GetThread(carrier.CallerThreadID)
 	if errors.Is(err, sql.ErrNoRows) {
 		// The thread is gone. The request rows are cascading away with it;
 		// marking them keeps a concurrent reader from waiting on a wake that
@@ -195,9 +189,15 @@ func (a *App) deliverThreadWakeMessage(message threadWakeMessage) bool {
 	wake := a.threadWakeFor(message)
 	origin, originThread := a.threadWakeAttribution(carrier, wake)
 	body := wake.String()
-	// The thread the notice is queued on, which a handoff since the read
-	// above makes the assistant's current thread: the unarchive decides for
-	// the thread the message lands in.
+	if hook := a.threadWakeRenderedForTest; hook != nil {
+		hook(carrier.Token)
+	}
+	// The thread the notice is queued on: the assistant's current thread
+	// when New Thread, Same Assistant superseded the caller the message was
+	// built for. The message names its requests' caller and where they were
+	// made as they stood when it was built, so one bound for another thread
+	// is stale and is rebuilt from the requests as they are now, which the
+	// handoff moved with the thread they were made in.
 	recipient := thread.ID
 	if err := a.queueAgentNotice(agentNotice{
 		threadID:     thread.ID,
@@ -206,6 +206,9 @@ func (a *App) deliverThreadWakeMessage(message threadWakeMessage) bool {
 		originThread: originThread,
 		recipient:    func(threadID string) { recipient = threadID },
 		prepare: func() (string, bool, error) {
+			if recipient != thread.ID {
+				return "", false, fmt.Errorf("request %s was built for %s and goes to %s: %w", carrier.Token, thread.ID, recipient, store.ErrThreadWakeNotOwed)
+			}
 			return body, true, a.unarchiveForThreadWake(recipient, carrier, message.late)
 		},
 		// One transaction writes the durable queue row and every delivery

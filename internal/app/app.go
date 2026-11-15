@@ -715,6 +715,10 @@ type App struct {
 	// after it settled its receipts and before it retires the stops it read
 	// (settleReceiptsForEndedTurn), so a test can stop or end a turn then.
 	turnEndSettledForTest func(threadID string)
+	// threadWakeRenderedForTest, when set, runs in a wake's delivery after
+	// it rendered the message and before it is queued
+	// (deliverThreadWakeMessage), so a test can hand the caller off then.
+	threadWakeRenderedForTest func(carrier string)
 	// savePayloadPickerFn is a test-only override for the save-file
 	// dialog used by SavePayloadToFile. Production leaves it nil and
 	// the real Wails dialog runs; tests install a stub that returns a

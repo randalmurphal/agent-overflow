@@ -3,12 +3,14 @@ package app
 import (
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadmode"
+	"agent-overflow/internal/threadtools"
 )
 
 // A wake for a caller that is not archived does not wait for the caller's
@@ -121,10 +123,65 @@ func TestAWakeRacingAHandOffLeavesTheRetiredThreadArchived(t *testing.T) {
 	if old := f.reload(t, f.caller.ID); !old.Archived {
 		t.Fatal("the delivery unarchived the retired thread")
 	}
-	if durable, _ := queuedSendIDs(t, f.app, successor.ID); !slices.Equal(durable, []string{threadWakeSendID(token)}) {
-		t.Fatalf("successor queue = %q, want the wake", durable)
-	}
 	if durable, _ := queuedSendIDs(t, f.app, f.caller.ID); len(durable) != 0 {
 		t.Fatalf("retired thread queue = %q, want nothing", durable)
 	}
+	// It is rebuilt from the moved request, so it says where it was made.
+	requireWakeMadeIn(t, f.app, successor.ID, token, f.caller.ID, successor.ID)
+}
+
+// requireWakeMadeIn asserts threadID's queue holds token's wake alone, and
+// that it says it was made in madeIn and is now in now.
+func requireWakeMadeIn(t *testing.T, a *App, threadID, token, madeIn, now string) {
+	t.Helper()
+	rows := durableQueueRows(t, a, threadID)
+	if len(rows) != 1 || rows[0].SendID != threadWakeSendID(token) {
+		t.Fatalf("queue of %s = %+v, want the wake alone", threadID, rows)
+	}
+	if want := threadtools.WakeMadeIn(madeIn, now); !strings.Contains(rows[0].Message, want) {
+		t.Fatalf("wake = %q, want it to say %q", rows[0].Message, want)
+	}
+}
+
+// A second handoff between a wake's rendering and its queueing moves the
+// request again: the message is rebuilt for the thread it lands in and
+// names that thread as where the assistant is now.
+func TestAWakeRenderedBeforeASecondHandOffNamesTheThreadItLandsIn(t *testing.T) {
+	t.Parallel()
+	f := newAssistantFixture(t)
+	f.app.startSessionFn = func(string) error { return nil }
+	f.assistantCaller(t)
+	token := f.settledNotifyRequest(t, "done")
+	successors := make([]store.Thread, 2)
+	for i := range successors {
+		thread, err := createTestThread(t, f.app, string(provider.Claude), t.TempDir(), "claude-opus-4-7", threadmode.ModeChat)
+		if err != nil {
+			t.Fatal(err)
+		}
+		placeInAssistantHome(t, f.app, thread.ID, f.caller.ID)
+		successors[i] = thread
+	}
+	if _, err := f.app.store.HandOffAssistant(f.caller.ID, successors[0].ID, time.Now().UnixMilli()); err != nil {
+		t.Fatalf("first HandOffAssistant: %v", err)
+	}
+	built := f.app.threadWakeMessages([]threadWakeRef{{token: token}})
+	if len(built) != 1 || built[0].madeIn != f.caller.ID {
+		t.Fatalf("messages = %+v, want one made in %s", built, f.caller.ID)
+	}
+	once := false
+	f.app.threadWakeRenderedForTest = func(string) {
+		if once {
+			return
+		}
+		once = true
+		if _, err := f.app.store.HandOffAssistant(successors[0].ID, successors[1].ID, time.Now().UnixMilli()); err != nil {
+			t.Errorf("second HandOffAssistant: %v", err)
+		}
+	}
+	f.app.deliverThreadWakeMessages(built)
+	f.app.waitAgentNoticeWork()
+	if durable, _ := queuedSendIDs(t, f.app, successors[0].ID); len(durable) != 0 {
+		t.Fatalf("first successor's queue = %q, want nothing", durable)
+	}
+	requireWakeMadeIn(t, f.app, successors[1].ID, token, f.caller.ID, successors[1].ID)
 }
