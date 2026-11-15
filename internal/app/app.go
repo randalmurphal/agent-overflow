@@ -736,9 +736,10 @@ type App struct {
 	// test can settle the receipt at that moment.
 	cancelReadForTest func(token string)
 	// agentStopCapturedForTest, when set, runs in a Stop All and in each
-	// cascade it makes once it has read what it stops under threadID and
-	// before it stops any of it (threadAgentStopRows), so a test can make a
-	// request at that moment.
+	// rest it makes once it has read what it stops under threadID and
+	// before it stops any of it (threadAgentStopRows,
+	// stopRequestsOfRestingThread), so a test can make a request at that
+	// moment.
 	agentStopCapturedForTest func(threadID string)
 	// turnEndSettledForTest, when set, runs in a turn-end settlement pass
 	// after it settled its receipts and before it retires the stops it read

@@ -367,32 +367,49 @@ const restRequestsPage = 200
 // stopRequestsOfRestingThread stops every request the thread made: a
 // reminder is dropped, a send or ask is cancelled with its wake disarmed and
 // only the turn it started cut, and a spawn's thread is brought to rest by
-// the same rule, on whichever computer it runs (stopThreadAgentRequest).
+// the same rule, on whichever computer it runs (stopAgentRequestBy). What it
+// stops is what the ledger held once the session had ended, read whole before
+// any of it is stopped, as a Stop All reads its rows; a request made after
+// that read belongs to whoever started the thread again.
 func (a *App) stopRequestsOfRestingThread(ctx context.Context, threadID string, by restStop, visited map[string]bool, result *ThreadAgentStop) {
+	rows, err := a.threadRestRequests(threadID)
+	if err != nil {
+		result.Failures = append(result.Failures, "list its agents: "+err.Error())
+		return
+	}
+	if hook := a.agentStopCapturedForTest; hook != nil {
+		hook(threadID)
+	}
+	for _, row := range rows {
+		if row.Kind == store.ThreadRequestRemind {
+			if _, err := a.dropThreadReminder(row); err != nil {
+				result.Failures = append(result.Failures, "drop its reminder: "+err.Error())
+			}
+			continue
+		}
+		stop := a.stopAgentRequestBy(ctx, row, visited, false, by)
+		if stop.Outcome == threadAgentStopped {
+			result.Nested++
+		}
+		result.Nested += stop.Nested
+		result.Background += stop.Background
+		result.Failures = append(result.Failures, stop.Failures...)
+	}
+}
+
+// threadRestRequests reads every request a rest of threadID stops
+// (ListThreadRestRequests), page by page.
+func (a *App) threadRestRequests(threadID string) ([]store.ThreadRequest, error) {
+	var out []store.ThreadRequest
 	var after store.ThreadRestCursor
 	for {
 		rows, err := a.store.ListThreadRestRequests(threadID, after, restRequestsPage)
 		if err != nil {
-			result.Failures = append(result.Failures, "list its agents: "+err.Error())
-			return
+			return nil, err
 		}
-		for _, row := range rows {
-			if row.Kind == store.ThreadRequestRemind {
-				if _, err := a.dropThreadReminder(row); err != nil {
-					result.Failures = append(result.Failures, "drop its reminder: "+err.Error())
-				}
-				continue
-			}
-			stop := a.stopAgentRequestBy(ctx, row, visited, false, by)
-			if stop.Outcome == threadAgentStopped {
-				result.Nested++
-			}
-			result.Nested += stop.Nested
-			result.Background += stop.Background
-			result.Failures = append(result.Failures, stop.Failures...)
-		}
+		out = append(out, rows...)
 		if len(rows) < restRequestsPage {
-			return
+			return out, nil
 		}
 		after = after.After(rows[len(rows)-1])
 	}

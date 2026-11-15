@@ -1230,9 +1230,9 @@ func TestThreadAgentRowsForgetRacingAnswersKeepsNothing(t *testing.T) {
 	}
 }
 
-// A thread-id cancel of a spawn on a paired computer names who stopped its
-// turn there: the user for a Stop from the Agents tray, the calling thread
-// for its agent's thread_cancel.
+// A thread-id cancel of a spawn on a paired computer brings it to rest there
+// and names who stopped its turn: the user for a Stop from the Agents tray,
+// the calling thread for its agent's thread_cancel.
 func TestRemoteThreadCancelNamesTheUserForATrayStop(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -1252,8 +1252,11 @@ func TestRemoteThreadCancelNamesTheUserForATrayStop(t *testing.T) {
 			report, err := pair.source.threadTools().cancelRemoteThread(t.Context(),
 				pair.source.threadAgentCaller(pair.caller.ID),
 				threadtools.CancelCall{ThreadID: pair.child, ComputerID: pair.spawn.TargetComputerID}, tc.userStop)
-			if err != nil || report.Effect != threadtools.EffectInterrupted {
-				t.Fatalf("cancelRemoteThread = %+v, %v, want the child's turn interrupted", report, err)
+			if err != nil || report.Effect != threadtools.EffectThreadStopped {
+				t.Fatalf("cancelRemoteThread = %+v, %v, want the child brought to rest", report, err)
+			}
+			if _, live := pair.dest.sessionManager().get(pair.child); live {
+				t.Fatal("the child's session is still up after its rest")
 			}
 			var labels []string
 			waitUntil(t, 10*time.Second, func() bool {
