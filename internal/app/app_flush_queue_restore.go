@@ -2,6 +2,7 @@ package app
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"slices"
@@ -766,7 +767,12 @@ func (a *App) restoredDraftPartFromQueuedPayload(threadID string, item triage.Un
 
 // restoreDurableFlushQueueAtBoot puts every queued message the previous
 // process did not deliver back into its thread's composer draft, and deletes
-// the rows.
+// the rows: the durable queue rows, and the rows reserved for messages the
+// process wrote to the provider and never saw confirmed (a Claude message
+// queued behind a running turn, whose quiet row is still marked
+// pendingFlush). The provider may have read such a message before the crash
+// or never; the composer is where one that is not proven delivered goes, so
+// it never reads as sent.
 //
 // It NEVER re-dispatches. A queued message was written against a turn that no
 // longer exists, on a provider session that is gone, in a conversation the
@@ -782,42 +788,127 @@ func (a *App) restoredDraftPartFromQueuedPayload(threadID string, item triage.Un
 func (a *App) restoreDurableFlushQueueAtBoot() {
 	threadIDs, err := a.store.ListThreadsWithFlushQueueItems()
 	if err != nil {
-		log.Printf("flush queue: list threads with queued messages at boot: %v", err)
+		a.bootPhaseFailed(fmt.Errorf("list threads with queued messages: %w", err))
 		return
 	}
+	unconfirmed, err := a.store.ListUnconfirmedUserRows()
+	if err != nil {
+		// The queue rows are still restored; the unconfirmed rows wait for
+		// the next boot.
+		a.bootPhaseFailed(fmt.Errorf("list unconfirmed queued messages: %w", err))
+	}
+	unconfirmedByThread := make(map[string][]string)
+	for _, row := range unconfirmed {
+		if _, seen := unconfirmedByThread[row.ThreadID]; !seen {
+			threadIDs = append(threadIDs, row.ThreadID)
+		}
+		unconfirmedByThread[row.ThreadID] = append(unconfirmedByThread[row.ThreadID], row.ItemID)
+	}
+	threadIDs = slices.Compact(slices.Sorted(slices.Values(threadIDs)))
+	var errs []error
 	for _, threadID := range threadIDs {
-		rows, err := a.store.ListFlushQueueItems(threadID)
+		if err := a.restoreThreadQueueAtBoot(threadID, unconfirmedByThread[threadID]); err != nil {
+			errs = append(errs, fmt.Errorf("thread %s: %w", threadID, err))
+		}
+	}
+	if len(errs) > 0 {
+		a.bootPhaseFailed(fmt.Errorf("restore queued messages into the composer: %w", errors.Join(errs...)))
+	}
+}
+
+// restoreThreadQueueAtBoot is the boot restore of one thread. The rows of
+// unconfirmed messages come first: they were dispatched, so they were queued
+// before anything still on the queue. A queue row that outlived its message's
+// provider write (an answer to an agent's question keeps it until the echo)
+// is the same message as that write's row, so the row lends no second copy.
+//
+// The draft and the queue rows are written together; the unconfirmed rows
+// are retired after that write, so a failure between the two can leave a row
+// to restore again but never a message with no home.
+func (a *App) restoreThreadQueueAtBoot(threadID string, unconfirmedIDs []string) error {
+	rows, err := a.store.ListFlushQueueItems(threadID)
+	if err != nil {
+		return fmt.Errorf("list queued messages: %w", err)
+	}
+	queuedSends := make(map[string]bool, len(rows))
+	for _, row := range rows {
+		if row.SendID != "" {
+			queuedSends[row.SendID] = true
+		}
+	}
+	parts := make([]composerdraft.Part, 0, len(unconfirmedIDs)+len(rows))
+	var retire []string
+	var restoredSends []string
+	for _, id := range unconfirmedIDs {
+		item, found, err := a.store.GetThreadItem(threadID, id)
 		if err != nil {
-			log.Printf("flush queue: list queued messages for thread %s at boot: %v", threadID, err)
+			return fmt.Errorf("read unconfirmed message %s: %w", id, err)
+		}
+		if !found {
 			continue
 		}
-		if len(rows) == 0 {
+		retire = append(retire, id)
+		sends := userRowSendIDs(item)
+		if slices.ContainsFunc(sends, func(sendID string) bool { return queuedSends[sendID] }) {
 			continue
 		}
-		parts := make([]composerdraft.Part, 0, len(rows))
-		for _, row := range rows {
-			part := draftPartFromQueueRow(row)
-			if strings.TrimSpace(part.Content) == "" && len(part.AttachmentIDs) == 0 && part.SourceProposedPlan == nil {
-				continue
-			}
+		restoredSends = append(restoredSends, sends...)
+		if part := draftPartFromUserItem(item); !emptyDraftPart(part) {
 			parts = append(parts, part)
 		}
-		ids := make([]string, 0, len(rows))
-		for _, row := range rows {
-			ids = append(ids, row.ID)
+	}
+	ids := make([]string, 0, len(rows))
+	for _, row := range rows {
+		ids = append(ids, row.ID)
+		restoredSends = append(restoredSends, row.SendID)
+		if part := draftPartFromQueueRow(row); !emptyDraftPart(part) {
+			parts = append(parts, part)
 		}
+	}
+	if len(parts) == 0 && len(ids) == 0 && len(retire) == 0 {
+		return nil
+	}
+	if len(parts) > 0 || len(ids) > 0 {
 		if err := a.restoreQueuedDraft(threadID, parts, ids); err != nil {
 			// Leave the rows alone: the next boot tries again, which is
 			// the whole point of the message being durable.
-			log.Printf("flush queue: restore queued messages into the draft for thread %s at boot: %v", threadID, err)
-			continue
+			return fmt.Errorf("restore into the draft: %w", err)
 		}
-		for _, row := range rows {
-			noteThreadWakeRestoredToDraft(a, row.SendID)
-		}
-		a.emit(eventchan.ProviderAsyncQuestionsChanged, map[string]string{"threadId": threadID})
-		log.Printf("app: restored %d queued message(s) into the composer for thread %s", len(rows), threadID)
 	}
+	var errs []error
+	for _, id := range retire {
+		if _, err := a.store.RetireUndeliveredUserRow(threadID, id); err != nil {
+			errs = append(errs, fmt.Errorf("retire unconfirmed message %s: %w", id, err))
+		}
+	}
+	for _, sendID := range restoredSends {
+		noteThreadWakeRestoredToDraft(a, sendID)
+	}
+	a.emit(eventchan.ProviderAsyncQuestionsChanged, map[string]string{"threadId": threadID})
+	log.Printf("app: restored %d queued message(s) into the composer for thread %s", len(parts), threadID)
+	return errors.Join(errs...)
+}
+
+// userRowSendIDs is every send id a user row answers for: a joined row's
+// members, or its one send id.
+func userRowSendIDs(item store.Item) []string {
+	meta, err := usermessage.FromItem(item)
+	if err != nil {
+		return nil
+	}
+	if len(meta.JoinedSendIDs) > 0 {
+		return meta.JoinedSendIDs
+	}
+	if meta.SendID != "" {
+		return []string{meta.SendID}
+	}
+	return nil
+}
+
+// emptyDraftPart reports whether a restored part carries nothing for the
+// composer to hold.
+func emptyDraftPart(part composerdraft.Part) bool {
+	return strings.TrimSpace(part.Content) == "" && len(part.AttachmentIDs) == 0 && part.SourceProposedPlan == nil
 }
 
 // draftPartFromQueueRow projects one durable queue row into a composer part.

@@ -150,6 +150,11 @@ the session is ending: it returns with the rest of the queue in the
 session-end restore, in queue order, or when a replacement session starts, or
 is dropped with the queue by a Stop.
 Otherwise a send stays pending until session teardown repairs or restores it.
+A crash runs no teardown: the boot restore (`restoreDurableFlushQueueAtBoot`)
+retires every main-timeline user row still marked `pendingFlush` and returns
+its text to the composer, once when its queue row survived too. The draft is
+written before the rows are retired, so a crash between the two can repeat
+the text in the composer but cannot lose it.
 
 The first matched confirmation captures placement before fallible cache writes. A stable
 predecessor identifies that boundary; retries must never ask for the current tail.

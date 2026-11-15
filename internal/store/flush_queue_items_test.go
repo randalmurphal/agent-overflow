@@ -180,3 +180,82 @@ func TestFlushQueueItemInsertRefusesAnUnidentifiedRow(t *testing.T) {
 		t.Fatal("expected an error for a row with no thread")
 	}
 }
+
+// A requeue keeps a row that is still there and writes one that is gone.
+func TestEnsureFlushQueueItemKeepsAnExistingRow(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThread(t, s, "thread-a")
+	if err := s.InsertFlushQueueItem(FlushQueueItem{ID: "queue:1", ThreadID: "thread-a", Message: "original", EnqueuedAt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range []FlushQueueItem{
+		{ID: "queue:1", ThreadID: "thread-a", Message: "rewritten", EnqueuedAt: 9},
+		{ID: "queue:2", ThreadID: "thread-a", Message: "requeued", EnqueuedAt: 2},
+	} {
+		if err := s.EnsureFlushQueueItem(item); err != nil {
+			t.Fatalf("EnsureFlushQueueItem(%s): %v", item.ID, err)
+		}
+	}
+	rows, err := s.ListFlushQueueItems("thread-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 || rows[0].Message != "original" || rows[1].Message != "requeued" {
+		t.Fatalf("rows = %+v, want the original row kept and the requeued one added", rows)
+	}
+}
+
+// The boot restore reads exactly the main-timeline user rows still marked
+// pendingFlush, in timeline order, through the sparse user-row index.
+func TestListUnconfirmedUserRows(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThread(t, s, "unconfirmed-a")
+	mustCreateThread(t, s, "unconfirmed-b")
+	for _, item := range []Item{
+		{ID: "user:2:flush:1", ThreadID: "unconfirmed-a", TurnIndex: 2, Kind: "user_text", Role: "user", Meta: `{"pendingFlush":true}`},
+		{ID: "user:1:flush:1", ThreadID: "unconfirmed-a", TurnIndex: 1, Kind: "user_text", Role: "user", Meta: `{"sendId":"s","pendingFlush":true}`},
+		{ID: "user:1:confirmed", ThreadID: "unconfirmed-a", TurnIndex: 1, Kind: "user_text", Role: "user", Meta: `{"provider_item_id":"u"}`},
+		{ID: "user:1:false", ThreadID: "unconfirmed-a", TurnIndex: 1, Kind: "user_text", Role: "user", Meta: `{"pendingFlush":false}`},
+		{ID: "assistant:1", ThreadID: "unconfirmed-a", TurnIndex: 1, Kind: "assistant_text", Role: "assistant", Meta: `{"pendingFlush":true}`},
+		{ID: "user:3:flush:1", ThreadID: "unconfirmed-b", TurnIndex: 3, Kind: "user_text", Role: "user", Meta: `{"pendingFlush":true}`},
+	} {
+		item.Status = "completed"
+		if _, err := s.AppendItem(item); err != nil {
+			t.Fatalf("AppendItem(%s): %v", item.ID, err)
+		}
+	}
+	rows, err := s.ListUnconfirmedUserRows()
+	if err != nil {
+		t.Fatalf("ListUnconfirmedUserRows: %v", err)
+	}
+	want := []UnconfirmedUserRow{
+		{ThreadID: "unconfirmed-a", ItemID: "user:1:flush:1"},
+		{ThreadID: "unconfirmed-a", ItemID: "user:2:flush:1"},
+		{ThreadID: "unconfirmed-b", ItemID: "user:3:flush:1"},
+	}
+	if len(rows) != len(want) {
+		t.Fatalf("rows = %+v, want %+v", rows, want)
+	}
+	for i := range want {
+		if rows[i] != want[i] {
+			t.Fatalf("rows = %+v, want %+v", rows, want)
+		}
+	}
+	plan, err := s.db.Query("EXPLAIN QUERY PLAN " + listUnconfirmedUserRowsSQL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer plan.Close()
+	var steps []string
+	for plan.Next() {
+		var id, parent, unused int
+		var detail string
+		if err := plan.Scan(&id, &parent, &unused, &detail); err != nil {
+			t.Fatal(err)
+		}
+		steps = append(steps, detail)
+	}
+	if !strings.Contains(strings.Join(steps, "\n"), "idx_items_user_text") {
+		t.Fatalf("the unconfirmed-row scan does not use the user-row index:\n%s", strings.Join(steps, "\n"))
+	}
+}

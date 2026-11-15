@@ -112,7 +112,8 @@ Draft consumption compares and removes the exact saved snapshot in one store
 operation. Uploads stage outside the thread mutation lock, then reacquire it
 for ownership-checked publication. Durable flush rows are written before the
 in-memory queue, removed only on settlement or an explicit drop, and restored
-to the composer at boot instead of being dispatched without a user present.
+to the composer at boot instead of being dispatched without a user present,
+as is a written message whose row is still unconfirmed.
 A teardown empties the queue under the thread mutation lock that every queue
 write takes, so a message queued during it goes with the queue or is queued
 whole after it. The person's Stop of a session and archive drop the queue; a

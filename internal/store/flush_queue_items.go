@@ -246,3 +246,42 @@ func (s *Store) ListThreadsWithFlushQueueItems() ([]string, error) {
 	}
 	return threadIDs, nil
 }
+
+const listUnconfirmedUserRowsSQL = `SELECT thread_id, id FROM items
+  WHERE kind = 'user_text' AND parent_id = ''
+    AND instr(meta, '"pendingFlush"') > 0 AND json_valid(meta)
+    AND json_extract(meta, '$.pendingFlush') = 1
+  ORDER BY thread_id, turn_index, item_index`
+
+// UnconfirmedUserRow names a user row the app reserved for a queued message
+// and never saw confirmed: its meta still carries `pendingFlush`
+// (itemmeta.SetPendingFlush).
+type UnconfirmedUserRow struct {
+	ThreadID string
+	ItemID   string
+}
+
+// ListUnconfirmedUserRows returns every main-timeline user row still marked
+// pendingFlush, by thread in timeline order. Confirmation and interrupt
+// promotion clear the mark in the write that places the row, so at boot each
+// one is residue of a process that died with the message unconfirmed. The
+// predicate starts with idx_items_user_text's, so the scan is of user rows.
+func (s *Store) ListUnconfirmedUserRows() ([]UnconfirmedUserRow, error) {
+	rows, err := s.reader().Query(listUnconfirmedUserRowsSQL)
+	if err != nil {
+		return nil, fmt.Errorf("store: list unconfirmed user rows: %w", err)
+	}
+	defer rows.Close()
+	var out []UnconfirmedUserRow
+	for rows.Next() {
+		var row UnconfirmedUserRow
+		if err := rows.Scan(&row.ThreadID, &row.ItemID); err != nil {
+			return nil, fmt.Errorf("store: scan unconfirmed user row: %w", err)
+		}
+		out = append(out, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: list unconfirmed user rows: %w", err)
+	}
+	return out, nil
+}
