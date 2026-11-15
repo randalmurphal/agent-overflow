@@ -216,6 +216,18 @@ export class PatchBody {
     return pinRanges(this.slice(start, end));
   }
 
+  /** The end of the lines, within the segment holding line `end - 1`,
+   * that a pin of [start, end) holds anyway (PatchStore.pinnedEnd). */
+  pinnedEnd(start: number, end: number): number {
+    if (end <= start) return end;
+    const at = this.segmentAt(end - 1);
+    const segment = this.segments[at];
+    const base = this.bases[at];
+    const from = segment.start + Math.max(0, start - base);
+    const held = segment.store.pinnedEnd(from, segment.start + end - base);
+    return base + Math.min(held, segment.end) - segment.start;
+  }
+
   /** Reads the evicted text of lines [start, end) again: null when none
    * is evicted. Text can be evicted again once it lands unless it is
    * pinned (`pin`). Rejects with PatchTextLost when evicted text can no

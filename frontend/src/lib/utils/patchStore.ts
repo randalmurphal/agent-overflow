@@ -403,6 +403,19 @@ export class PatchStore {
     return this.chunks.pin(first, this.lastChunk(first, start, end));
   }
 
+  /** The end of the lines whose text lies in the chunks that hold lines
+   * [start, end), at least `end`: what a pin of [start, end) holds
+   * anyway, since a pin holds whole chunks. */
+  pinnedEnd(start: number, end: number): number {
+    if (end <= start) return end;
+    const last = this.lastChunk(this.chunkOf(start), start, end);
+    if (last === this.firstLines.length - 1) return Math.max(end, this.lines);
+    // The last line starting in the chunk continues past it unless the
+    // chunk ends with a newline.
+    const after = this.firstLines[last] + this.counts[last];
+    return Math.max(end, this.newlineEnds[last] ? after : after - 1);
+  }
+
   /** Makes the text held so far and appended from now on evictable: it
    * can be read again from `source`. The store releases the source when
    * it is disposed, or when the patch ends with nothing evicted. */
