@@ -133,17 +133,13 @@ type Core struct {
 	gitlabHosts   []string
 
 	// untrackedLines memoizes per-file added-line counts for the
-	// untracked-insertions badge: rel path → (size, mtime, lines) per
-	// workspace, written by every untrackedStats scan.
+	// untracked-insertions badge: rel path → (stat, lines) per workspace,
+	// written by every untrackedStats scan.
 	untrackedLines workspaceMemo[map[string]untrackedLineEntry]
 
 	// trackedChurnMemos memoizes the churn of changed tracked paths per
-	// workspace, written by every trackedChurn scan.
+	// workspace, and what keys it, written by every trackedChurn scan.
 	trackedChurnMemos workspaceMemo[trackedChurnMemo]
-	// worktreeRootProofs holds, per workspace, whether its cwd is the
-	// working tree's root (worktreeRoot).
-	worktreeRootProofs workspaceMemo[worktreeRootProof]
-	attributeSources   workspaceMemo[attributeSources]
 	// attributeFilesUnnamed is set once this git has shown it cannot name
 	// its attribute files (gitVarPath).
 	attributeFilesUnnamed atomic.Bool
@@ -509,30 +505,56 @@ func (c *Core) revParsePath(cwd string, arg string) (string, bool, error) {
 
 // revParsePathContext is revParsePath bounded by ctx.
 func (c *Core) revParsePathContext(ctx context.Context, cwd string, arg string) (string, bool, error) {
+	paths, found, err := c.revParsePaths(ctx, cwd, 1, arg)
+	if !found || err != nil {
+		return "", found, err
+	}
+	return paths[0], true, nil
+}
+
+// revParsePaths is revParsePath for args that ask one `git rev-parse` for
+// count paths, which git prints one per line in the order asked. A single
+// path keeps any newline it holds. Several paths are an error when any
+// holds a newline, since the lines no longer say where each one ends. The
+// bool is false when cwd is not inside a repository or git printed an
+// empty path.
+func (c *Core) revParsePaths(ctx context.Context, cwd string, count int, args ...string) ([]string, bool, error) {
 	// C locale: the non-repo branch below matches git's English message.
-	result, err := c.runSpec(commandSpec{ctx: ctx, binary: "git", cwd: cwd, extraEnv: localeCEnv, args: []string{"rev-parse", arg}})
+	result, err := c.runSpec(commandSpec{ctx: ctx, binary: "git", cwd: cwd, extraEnv: localeCEnv, args: append([]string{"rev-parse"}, args...)})
+	command := strings.Join(args, " ")
 	if err != nil {
-		return "", false, fmt.Errorf("git rev-parse %s: %w", arg, err)
+		return nil, false, fmt.Errorf("git rev-parse %s: %w", command, err)
 	}
 	if result.exitCode != 0 {
 		stderr := strings.TrimSpace(result.stderr)
 		if strings.Contains(strings.ToLower(stderr), "not a git repository") {
-			return "", false, nil
+			return nil, false, nil
 		}
 		if stderr == "" {
 			stderr = strings.TrimSpace(result.stdout)
 		}
-		return "", false, fmt.Errorf("git rev-parse %s failed: %s", arg, stderr)
+		return nil, false, fmt.Errorf("git rev-parse %s failed: %s", command, stderr)
 	}
 
-	path := strings.TrimSpace(result.stdout)
-	if path == "" {
-		return "", false, nil
+	lines := strings.SplitN(strings.TrimSuffix(result.stdout, "\n"), "\n", count)
+	if len(lines) < count {
+		return nil, false, fmt.Errorf("git rev-parse %s printed %d lines, want %d", command, len(lines), count)
 	}
-	if !filepath.IsAbs(path) {
-		path = filepath.Join(cwd, path)
+	if count > 1 && strings.Contains(lines[count-1], "\n") {
+		return nil, false, fmt.Errorf("git rev-parse %s printed more than %d lines: a path holds a newline", command, count)
 	}
-	return filepath.Clean(path), true, nil
+	paths := make([]string, len(lines))
+	for i, line := range lines {
+		path := strings.TrimSpace(line)
+		if path == "" {
+			return nil, false, nil
+		}
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(cwd, path)
+		}
+		paths[i] = filepath.Clean(path)
+	}
+	return paths, true, nil
 }
 
 // runLocaleC runs git with its own messages pinned to the C locale. Use it

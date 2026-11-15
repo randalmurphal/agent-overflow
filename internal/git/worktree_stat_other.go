@@ -6,18 +6,20 @@ import (
 	"errors"
 	"io/fs"
 	"os"
+	"syscall"
 )
 
 // statPath stats path, following a link at path only when follow is set.
-// missing reports a path that names nothing. This platform's stat reports
-// no change time or inode.
+// missing reports a path that names nothing, including one under a parent
+// that is no longer a directory (ENOTDIR; Windows reports that path as
+// not found). This platform's stat reports no change time or inode.
 func statPath(path string, follow bool) (stat worktreeStat, missing bool, err error) {
 	read := os.Lstat
 	if follow {
 		read = os.Stat
 	}
 	info, err := read(path)
-	if errors.Is(err, fs.ErrNotExist) {
+	if errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ENOTDIR) {
 		return worktreeStat{}, true, nil
 	}
 	if err != nil {

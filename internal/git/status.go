@@ -134,22 +134,23 @@ type statusScan struct {
 // scanStatus reads status and the churn of the changed paths it lists.
 // The churn follows the read because it diffs only the paths that read
 // names; a scan with nothing stored to choose them by diffs the whole
-// tree beside the read instead (startEarlyChurnDiff).
+// tree beside the read instead (startChurnInputs).
 func (c *Core) scanStatus(cwd string) statusScan {
-	scanStart := c.nowFn()
-	index := c.snapshotIndex(cwd, scanStart)
-	early := c.startEarlyChurnDiff(cwd)
+	in := c.startChurnInputs(cwd, c.nowFn())
 	var scan statusScan
+	// C locale: the non-repo classification in baseStatus matches git's
+	// own English message, which a git built with NLS would otherwise
+	// translate, misreporting a plain non-repo path as a hard error.
 	scan.result, scan.err = c.runSpec(commandSpec{
 		binary: "git", cwd: cwd, extraEnv: localeCEnv, maxBytes: statusOutputLimit,
 		args: []string{"status", "--porcelain=v2", "--branch", "-z"},
 	})
 	if scan.err != nil || scan.result.exitCode != 0 {
-		early.wait()
+		in.wait()
 		return scan
 	}
 	scan.parsed = parsePorcelainStatus(scan.result.stdout)
-	scan.churn, scan.churnErr = c.trackedChurn(cwd, scan.parsed, scanStart, index, early)
+	scan.churn, scan.churnErr = c.trackedChurn(cwd, scan.parsed, in)
 	return scan
 }
 
@@ -188,9 +189,6 @@ func (c *Core) baseStatus(cwd string) (GitStatus, error) {
 
 	go func() {
 		defer wg.Done()
-		// C locale: the non-repo classification below matches git's own
-		// English message, which a git built with NLS would otherwise translate
-		// — misreporting a plain non-repo path as a hard error.
 		scan := c.scanStatus(cwd)
 		statusResult, statusErr = scan.result, scan.err
 		parsed, churn, churnErr = scan.parsed, scan.churn, scan.churnErr
