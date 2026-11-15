@@ -28,10 +28,6 @@ type gitlabForge struct {
 	// MergeRequest.approvalState (GitLab CE), for gitlabCacheTTL
 	// (pr_list_gitlab.go).
 	noApprovalState gitlabCache[bool]
-	// noCIJobCancelPermission marks a host whose GraphQL has no
-	// JobPermissions.cancelBuild or PipelinePermissions.cancelPipeline
-	// (before GitLab 16.6), for gitlabCacheTTL (ci_gitlab.go).
-	noCIJobCancelPermission gitlabCache[bool]
 	// activity is each host's viewer activity, read once per list round
 	// (pr_list_gitlab.go).
 	activity gitlabActivityRounds
@@ -59,7 +55,6 @@ func (f *gitlabForge) resetCaches() {
 	f.projects.clear()
 	f.viewers.clear()
 	f.noApprovalState.clear()
-	f.noCIJobCancelPermission.clear()
 	f.routes.clear()
 	f.pipelineTags.forget()
 	f.versions.clear()

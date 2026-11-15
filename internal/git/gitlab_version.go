@@ -56,12 +56,12 @@ type gitlabServer struct {
 // supported is nil for a server at or past gitlabSupportedFloor; an
 // older one is refused, naming its release and the floor, and a failed
 // version read is its error.
-func (s gitlabServer) supported(ref PRReference) error {
+func (s gitlabServer) supported(host string) error {
 	if s.err != nil {
 		return fmt.Errorf("read the GitLab server's version: %w", s.err)
 	}
 	if !s.version.atLeast(gitlabSupportedFloor) {
-		return &ForgeActionError{Kind: ForgeErrorRefused, Message: fmt.Sprintf("GitLab on %s runs %s; GitLab %s or later is needed.", ref.Host, s.version, gitlabSupportedFloor)}
+		return &ForgeActionError{Kind: ForgeErrorRefused, Message: fmt.Sprintf("GitLab on %s runs %s; GitLab %s or later is needed.", host, s.version, gitlabSupportedFloor)}
 	}
 	return nil
 }
@@ -96,7 +96,7 @@ func (f *gitlabForge) writeClient(ctx context.Context, ref PRReference) (*forgea
 	if err != nil {
 		return nil, err
 	}
-	if err := f.server(ctx, client, ref.Host).supported(ref); err != nil {
+	if err := f.server(ctx, client, ref.Host).supported(ref.Host); err != nil {
 		return nil, &forgeapi.NotSentError{Err: err}
 	}
 	return client, nil

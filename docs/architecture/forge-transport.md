@@ -329,13 +329,12 @@ jobs list lacks, 100 per page by cursor, at most `gitlabCIJobsMaxPages`
 (5) pages, with each build's and the pipeline's `retryable`,
 `cancelable`, `playable`, `canPlayJob`, `userPermissions` and archive
 `artifacts` for the CI actions). Every field it selects exists from
-GitLab 18.0, the supported floor. The cancel permissions
-(`JobPermissions.cancelBuild`, `PipelinePermissions.cancelPipeline`)
-alone decide cancel, since a project can restrict cancel past update. A
-server older than 16.6 lacks them and refuses the whole document ("Field
-'cancelBuild' doesn't exist"); the read is sent once more without them,
-update deciding cancel as it did there, and the host is read that way for
-10 minutes. A build's trace is read on request (`StreamCIJobLog`, as on
+GitLab 18.0, the supported floor (`project.pipeline(id:)` from 17.2), and
+the rows read of a server below it is refused with the floor's sentence
+([Managing a PR](#managing-a-pr)) before `PipelineJobs` is sent. The
+cancel permissions (`JobPermissions.cancelBuild`,
+`PipelinePermissions.cancelPipeline`) alone decide cancel, since a
+project can restrict cancel past update. A build's trace is read on request (`StreamCIJobLog`, as on
 GitHub); a bridge or a commit status has no log and no job id, as a
 GitHub external check.
 
@@ -344,7 +343,7 @@ GitHub external check.
 | Pump (`Detail`, `Threads`, `Events`), warm | 1 merge request + 1 discussions page per 100 discussions + 1 state events page per 100 events (at most 3) + 1 approvals + 1 `PRManageChecks` (none below the supported floor) |
 | Pump, the notes changed, the viewer reacted, or the reactions read is 2 minutes old | the warm requests + 1 `MRNoteReactions` per 100 notes (at most 10) |
 | Pump, cold host or project (first read, then every 10 minutes) | the warm requests + 1 `metadata` per host + 1 `projects/P` per login and project + 1 `user` per login and host |
-| CI phase, a head pipeline | 1 merge request + 1 `PipelineJobs` per 100 rows |
+| CI phase, a head pipeline | 1 merge request + 1 `PipelineJobs` per 100 rows (+ 1 `metadata` per host per 10 minutes) |
 | CI phase, no head pipeline | 1 merge request |
 | Log follow, a followed running job (every 5s) | 1 trace (304 while unchanged) |
 
@@ -514,7 +513,7 @@ the 1000 most recently updated.
 |---|---|---|
 | Open PRs of a project | 1 `PullsSearch` per 100 PRs | 1 merge request list page per 100 MRs + 6 GraphQL reads, each 1 page per 100 MRs it returns + 2 to 6 `users/ID/events` (two feeds) per host per round; + 1 `user` per login and host per 10 minutes |
 | Pipelines of a project (`ListPipelines`, at most `Limit` rows, 100 when unset or larger) | 1 `GET repos/O/R/actions/runs?per_page=N[&branch=][&status=]` | 1 `GET projects/P/pipelines?per_page=N[&ref=][&status=]`; + `GET projects/P/pipelines?per_page=100&scope=tags[&ref=]` pages, at most `gitlabTagScopeMaxPages` (10): 1 for a ref, 1 or 2 without a status filter, none for a merge request ref or an empty list; + 1 `GET projects/P/pipelines/ID` per row on a tag's ref name whose id the tag scope does not hold, once per pipeline while the repository's listings hold it and shared by concurrent listings, 4 at a time per listing |
-| One pipeline (`ReadPipeline`) | 1 `GET repos/O/R/actions/runs/ID` + 1 jobs page per 100 jobs, at most `githubReadMaxPages`; + 1 `GET repos/O/R` (the viewer's `permissions`) per login and repository per 10 minutes, and the completed run's first artifacts page as the CI phase reads it | 1 `GET projects/P/pipelines/ID` + 1 `PipelineJobs` per 100 rows, at most `gitlabCIJobsMaxPages` |
+| One pipeline (`ReadPipeline`) | 1 `GET repos/O/R/actions/runs/ID` + 1 jobs page per 100 jobs, at most `githubReadMaxPages`; + 1 `GET repos/O/R` (the viewer's `permissions`) per login and repository per 10 minutes, and the completed run's first artifacts page as the CI phase reads it | 1 `GET projects/P/pipelines/ID` + 1 `PipelineJobs` per 100 rows, at most `gitlabCIJobsMaxPages`; + 1 `GET metadata` per host per 10 minutes |
 | Stages of 30 unchanged rows (`ReadPipelineStages`) | 30 runs + 30 jobs pages, each a 304 | 30 pipelines + 30 `PipelineJobs`, each a 200 with its body |
 
 `PipelineListFilter.Status` is a normalized status each forge filters by

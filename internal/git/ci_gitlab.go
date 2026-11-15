@@ -42,23 +42,15 @@ const gitlabCIJobsMaxPages = 5
 
 // gitlabPipelineJobsQuery reads one page of a pipeline's rows beside its
 // stages in pipeline order. Every field it selects exists from GitLab
-// 18.0, the supported floor (gitlabSupportedFloor). A server older than
-// 16.6 lacks the cancel permissions (JobPermissions.cancelBuild and
-// PipelinePermissions.cancelPipeline, beside the
-// restrict_pipeline_cancellation_role setting) and fails the whole
-// document, so a host that answers so is read with
-// gitlabPipelineJobsQueryNoCancel, where update decides cancel as it did
-// there (gitlabNoCIJobCancelPermission).
-var gitlabPipelineJobsQuery = gitlabPipelineJobsDocument(" cancelPipeline", " cancelBuild")
-
-var gitlabPipelineJobsQueryNoCancel = gitlabPipelineJobsDocument("", "")
-
-func gitlabPipelineJobsDocument(cancelPipeline, cancelBuild string) string {
-	return `query PipelineJobs($fullPath: ID!, $id: CiPipelineID!, $after: String) {
+// 18.0, the supported floor (gitlabSupportedFloor): project.pipeline(id:)
+// from 17.2, the cancel permissions (JobPermissions.cancelBuild,
+// PipelinePermissions.cancelPipeline) from 16.6. A server below the floor
+// is refused before the read (readGitLabPipeline).
+const gitlabPipelineJobsQuery = `query PipelineJobs($fullPath: ID!, $id: CiPipelineID!, $after: String) {
   project(fullPath: $fullPath) {
     pipeline(id: $id) {
       retryable cancelable
-      userPermissions { updatePipeline` + cancelPipeline + ` }
+      userPermissions { updatePipeline cancelPipeline }
       stages { nodes { name } }
       jobs(first: 100, after: $after, retried: false) {
         pageInfo { hasNextPage endCursor }
@@ -68,14 +60,13 @@ func gitlabPipelineJobsDocument(cancelPipeline, cancelBuild string) string {
           detailedStatus { detailsPath }
           downstreamPipeline { path }
           retryable cancelable playable canPlayJob
-          userPermissions { updateBuild` + cancelBuild + ` readJobArtifacts }
+          userPermissions { updateBuild cancelBuild readJobArtifacts }
           artifacts { nodes { fileType } }
         }
       }
     }
   }
 }`
-}
 
 // The gid types of a pipeline's rows.
 const (
@@ -107,10 +98,9 @@ type gitlabCIJobNode struct {
 	Playable        bool `json:"playable"`
 	CanPlayJob      bool `json:"canPlayJob"`
 	UserPermissions struct {
-		UpdateBuild bool `json:"updateBuild"`
-		// CancelBuild is nil on a server without the field.
-		CancelBuild      *bool `json:"cancelBuild"`
-		ReadJobArtifacts bool  `json:"readJobArtifacts"`
+		UpdateBuild      bool `json:"updateBuild"`
+		CancelBuild      bool `json:"cancelBuild"`
+		ReadJobArtifacts bool `json:"readJobArtifacts"`
 	} `json:"userPermissions"`
 	Artifacts *struct {
 		Nodes []gitlabArtifactNode `json:"nodes"`
@@ -127,8 +117,7 @@ type gitlabCIPipelineNode struct {
 	Cancelable      bool `json:"cancelable"`
 	UserPermissions struct {
 		UpdatePipeline bool `json:"updatePipeline"`
-		// CancelPipeline is nil on a server without the field.
-		CancelPipeline *bool `json:"cancelPipeline"`
+		CancelPipeline bool `json:"cancelPipeline"`
 	} `json:"userPermissions"`
 }
 
@@ -142,10 +131,14 @@ type gitlabCIRow struct {
 
 // readGitLabPipeline reads the rows of a pipeline already read: the merge
 // request's head pipeline, which the MR read named, or ReadPipeline's. A
-// merge request with no pipeline costs no request.
+// merge request with no pipeline costs no request. A server below the
+// supported floor is refused with its sentence before the rows are read.
 func (f *gitlabForge) readGitLabPipeline(ctx context.Context, client *forgeapi.Client, repo RepoReference, pipeline *gitlabPipelineRaw) (CIPipeline, error) {
 	if pipeline == nil || pipeline.ID <= 0 {
 		return CIPipeline{}, nil
+	}
+	if err := f.server(ctx, client, repo.Host).supported(repo.Host); err != nil {
+		return CIPipeline{}, err
 	}
 	web, err := url.Parse(pipeline.WebURL)
 	if err != nil || !web.IsAbs() {
@@ -177,16 +170,7 @@ func (f *gitlabForge) readGitLabPipeline(ctx context.Context, client *forgeapi.C
 			"id":       "gid://gitlab/Ci::Pipeline/" + strconv.FormatInt(pipeline.ID, 10),
 			"after":    after,
 		}
-		query := gitlabPipelineJobsQuery
-		if _, old := f.noCIJobCancelPermission.get(repo.Host, f.core.nowFn()); old {
-			query = gitlabPipelineJobsQueryNoCancel
-		}
-		_, err := client.GraphQL(ctx, "PipelineJobs", query, vars, &raw)
-		if query == gitlabPipelineJobsQuery && gitlabNoCIJobCancelPermission(err) {
-			f.noCIJobCancelPermission.put(repo.Host, true, f.core.nowFn())
-			_, err = client.GraphQL(ctx, "PipelineJobs", gitlabPipelineJobsQueryNoCancel, vars, &raw)
-		}
-		if err != nil {
+		if _, err := client.GraphQL(ctx, "PipelineJobs", gitlabPipelineJobsQuery, vars, &raw); err != nil {
 			return CIPipeline{}, fmt.Errorf("GitLab pipeline %d rows: %w", pipeline.ID, err)
 		}
 		if raw.Project == nil || raw.Project.Pipeline == nil {
@@ -237,26 +221,11 @@ func gitlabPipelineActions(pipeline CIPipeline, node gitlabCIPipelineNode) CIPip
 		out.RetryFailed = ciPermitted(node.UserPermissions.UpdatePipeline)
 	}
 	if live && node.Cancelable {
-		out.Cancel = ciPermitted(gitlabCancelPermitted(node.UserPermissions.CancelPipeline, node.UserPermissions.UpdatePipeline))
+		// GitLab's own cancel permission, which a project can restrict
+		// past update (restrict_pipeline_cancellation_role).
+		out.Cancel = ciPermitted(node.UserPermissions.CancelPipeline)
 	}
 	return out
-}
-
-// gitlabCancelPermitted is the viewer's cancel permission: GitLab's own
-// cancel permission, which a project can restrict past update
-// (restrict_pipeline_cancellation_role), or update on a server without
-// it, where update decided cancel.
-func gitlabCancelPermitted(cancel *bool, update bool) bool {
-	if cancel != nil {
-		return *cancel
-	}
-	return update
-}
-
-// gitlabNoCIJobCancelPermission reports whether err is a GitLab before
-// 16.6 refusing the cancel permission fields its schema lacks.
-func gitlabNoCIJobCancelPermission(err error) bool {
-	return gitlabSchemaLacks(err, "cancelBuild") || gitlabSchemaLacks(err, "cancelPipeline")
 }
 
 // gitlabJobActions applies GitLab's own answer to a build: Retry for a
@@ -270,7 +239,7 @@ func gitlabJobActions(job CIJob, node gitlabCIJobNode) CIJobActions {
 		out.Retry = ciPermitted(perms.UpdateBuild)
 	}
 	if CIJobLive(job.Status) && node.Cancelable {
-		out.Cancel = ciPermitted(gitlabCancelPermitted(perms.CancelBuild, perms.UpdateBuild))
+		out.Cancel = ciPermitted(perms.CancelBuild)
 	}
 	if job.Status == CIStatusManual && node.Playable {
 		out.Play = ciPermitted(node.CanPlayJob)

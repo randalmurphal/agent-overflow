@@ -581,7 +581,6 @@ func TestResetForgeCachesReachesEveryAdapterCache(t *testing.T) {
 	gl.projects.put("k", gitlabProjectSettings{}, now)
 	gl.viewers.put("k", gitlabViewer{}, now)
 	gl.noApprovalState.put("k", true, now)
-	gl.noCIJobCancelPermission.put("k", true, now)
 	gl.versions.put("k", gitlabVersion{19, 3}, now)
 	gl.routes.remember("k")
 	gl.stateEventRetries.failed("k", gitlabStateEventsRetry{failures: 1, due: now.Add(time.Hour)})
@@ -595,14 +594,13 @@ func TestResetForgeCachesReachesEveryAdapterCache(t *testing.T) {
 	_, project := gl.projects.get("k", now)
 	_, viewer := gl.viewers.get("k", now)
 	_, approval := gl.noApprovalState.get("k", now)
-	_, cancel := gl.noCIJobCancelPermission.get("k", now)
 	_, schema := gl.versions.get("k", now)
 	due, _ := gl.stateEventRetries.due("k", now)
 	_, _, known := gl.pipelineTags.beginListing("k", []int64{1})
 	_, _, permission := gh.ciPermissions.get("k", now)
 	_, _, artifacts := gh.ciArtifacts.get("k", now)
-	if project || viewer || approval || cancel || schema || gl.routes.get("k") || !due || len(known) != 0 || permission || artifacts {
-		t.Fatalf("kept: project %v viewer %v approval %v cancel %v schema %v route %v backoff %v tags %v permission %v artifacts %v",
-			project, viewer, approval, cancel, schema, gl.routes.get("k"), !due, known, permission, artifacts)
+	if project || viewer || approval || schema || gl.routes.get("k") || !due || len(known) != 0 || permission || artifacts {
+		t.Fatalf("kept: project %v viewer %v approval %v schema %v route %v backoff %v tags %v permission %v artifacts %v",
+			project, viewer, approval, schema, gl.routes.get("k"), !due, known, permission, artifacts)
 	}
 }

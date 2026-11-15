@@ -127,14 +127,14 @@ post pending: 15 late pending 0s -`,
 				t.Fatalf("stages =\n%s\nwant\n%s", got, tc.want)
 			}
 			sent := calls.all()
-			if len(sent) != 2 || sent[1].Op != "PipelineJobs" {
-				t.Fatalf("requests = %v, want the pipeline and one PipelineJobs", calls.ops())
+			if len(sent) != 3 || sent[1].Path != "metadata" || sent[2].Op != "PipelineJobs" {
+				t.Fatalf("requests = %v, want the pipeline, the release and one PipelineJobs", calls.ops())
 			}
-			if v := sent[1].Vars; v["fullPath"] != "grp/sub/app" || v["id"] != "gid://gitlab/Ci::Pipeline/7002" || v["after"] != nil {
+			if v := sent[2].Vars; v["fullPath"] != "grp/sub/app" || v["id"] != "gid://gitlab/Ci::Pipeline/7002" || v["after"] != nil {
 				t.Fatalf("PipelineJobs variables = %v", v)
 			}
-			if !strings.Contains(sent[1].Query, "retried: false") {
-				t.Fatalf("PipelineJobs reads retried jobs: %s", sent[1].Query)
+			if !strings.Contains(sent[2].Query, "retried: false") {
+				t.Fatalf("PipelineJobs reads retried jobs: %s", sent[2].Query)
 			}
 		})
 	}
@@ -208,7 +208,7 @@ func TestGitLabPipelineRowsPageToTheCap(t *testing.T) {
 			if n := len(pipeline.Stages[0].Jobs); n != tc.wantPages*gitlabPageSize {
 				t.Fatalf("rows = %d, want %d", n, tc.wantPages*gitlabPageSize)
 			}
-			if n := len(calls.all()) - 1; n != tc.wantPages {
+			if n := countOp(calls, "PipelineJobs"); n != tc.wantPages {
 				t.Fatalf("PipelineJobs pages = %d, want %d", n, tc.wantPages)
 			}
 		})
