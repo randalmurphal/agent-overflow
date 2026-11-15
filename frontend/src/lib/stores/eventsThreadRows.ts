@@ -12,7 +12,7 @@ import { closePanesShowingThread, findPaneShowingThread, iterPanes, moveAssistan
 import { refreshProjects, touchProjectActivity } from './projects.svelte';
 import { refreshThreadGroups } from './threadGroups.svelte';
 import { refreshAgentWakes } from './threadWakes.svelte';
-import { refreshThreadWorkerSummaries } from './threadWorkerSummaries.svelte';
+import { forgetThreadWorkerSummary, refreshThreadWorkerSummaries } from './threadWorkerSummaries.svelte';
 import { followAssistantHandOffInStash, followAssistantHandOffsInStash } from './companionStash';
 import { addErrorToast, addToast } from './toast.svelte';
 import { getThreadById, getThreadLiveActivityAt, getThreads, loadThreads, prependThread, removeThread, replaceAllThreads, replaceThread, touchThreadActivity } from './threads.svelte';
@@ -473,6 +473,7 @@ export function applyThreadUpdated(evt: ThreadUpdateEvent): void {
       // that no longer exists cannot load, send, or resume.
       if (!evt.id) return;
       removeThread(evt.id);
+      forgetThreadWorkerSummary(evt.id);
       const id = evt.id;
       if (!deferEmptyDraftDeletion(id, () => closePanesShowingThread(id))) closePanesShowingThread(id);
       return;

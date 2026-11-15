@@ -842,7 +842,8 @@ Mechanics, as built:
   The failure goes to the diagnostics log. A read the connection
   dropped is left to the reconnect, whose resync reads the computer
   again. A thread whose count reaches zero, and a detached computer's
-  counts, are dropped.
+  counts, are dropped. A deleted thread's count is dropped with its
+  row, and no read of it still out lands or is retried.
 - `ListAssistantPastThreads(agentID, after, limit)` (route home, sent to
   the assistant's computer) pages `agent_past_threads` newest superseded
   first by the `{supersededAt, threadId}` cursor and feeds

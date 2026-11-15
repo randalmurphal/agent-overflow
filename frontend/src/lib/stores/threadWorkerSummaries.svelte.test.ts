@@ -8,6 +8,7 @@ import {
   threadWorkerSummaryRetentionForTest,
 } from './threadWorkerSummaries.svelte';
 import { applyThreadAgentRowsChanged, applyThreadAgentRowsGap } from './eventsThreadAgentRows';
+import { applyThreadUpdated } from './eventsThreadRows';
 import { DisconnectedError } from '../transport/wsClient';
 import type { ThreadWorkerSummary, ThreadWorkerSummaryPage } from './bindings';
 import { HOME_BACKEND } from '../transport/backendKey';
@@ -352,5 +353,60 @@ describe('thread worker summaries', () => {
     await refreshThreadWorkerSummaries();
     expect(list).toHaveBeenCalledTimes(1);
     expect(getThreadWorkerCounts('spawner')).toEqual({ open: 1, needYou: 1 });
+  });
+
+  it('forgets a deleted thread\'s counts, and every answer for it still out', async () => {
+    setBindingMock('ListThreadWorkerSummaries', async () => page([summary('gone', 3, 2), summary('kept', 1), summary('failing', 2)]));
+    await refreshThreadWorkerSummaries();
+    const one = held<ThreadWorkerSummary>();
+    const failing = held<ThreadWorkerSummary>();
+    const get = setBindingMock('GetThreadWorkerSummary', (threadId: string) => (threadId === 'gone' ? one.promise : failing.promise));
+    applyThreadAgentRowsChanged({ threadId: 'gone' }, HOME_BACKEND);
+    applyThreadAgentRowsChanged({ threadId: 'failing' }, HOME_BACKEND);
+    await vi.advanceTimersByTimeAsync(500);
+    expect(get).toHaveBeenCalledTimes(2);
+    const bulk = held<ThreadWorkerSummaryPage>();
+    setBindingMock('ListThreadWorkerSummaries', () => bulk.promise);
+    const reading = refreshThreadWorkerSummaries();
+    await vi.advanceTimersByTimeAsync(0);
+
+    applyThreadUpdated({ action: 'deleted', id: 'gone' });
+    applyThreadUpdated({ action: 'deleted', id: 'failing' });
+    expect(getThreadWorkerCounts('gone')).toEqual({ open: 0, needYou: 0 });
+    expect(getThreadWorkerCounts('failing')).toEqual({ open: 0, needYou: 0 });
+
+    // The reads out when the threads went answer: none lands, and the one
+    // that failed for a deleted thread is not retried.
+    one.answer(summary('gone', 4, 4));
+    failing.answer(Promise.reject(new Error('thread not found')) as unknown as ThreadWorkerSummary);
+    bulk.answer(page([summary('gone', 5), summary('failing', 5), summary('kept', 2)]));
+    await reading;
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(get).toHaveBeenCalledTimes(2);
+    expect(getThreadWorkerCounts('gone')).toEqual({ open: 0, needYou: 0 });
+    expect(getThreadWorkerCounts('failing')).toEqual({ open: 0, needYou: 0 });
+    expect(getThreadWorkerCounts('kept')).toEqual({ open: 2, needYou: 0 });
+    expect(threadWorkerSummaryRetentionForTest()).toEqual({ ...EMPTY_RETENTION, counts: 1, owners: 1, snapshots: 1 });
+
+    // A thread deleted while its failed read waits on the backoff is not read again.
+    get.mockImplementation(async () => { throw new Error('database is locked'); });
+    applyThreadAgentRowsChanged({ threadId: 'kept' }, HOME_BACKEND);
+    await vi.advanceTimersByTimeAsync(500);
+    expect(get).toHaveBeenCalledTimes(3);
+    applyThreadUpdated({ action: 'deleted', id: 'kept' });
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(get).toHaveBeenCalledTimes(3);
+    expect(threadWorkerSummaryRetentionForTest()).toEqual({ ...EMPTY_RETENTION, snapshots: 1 });
+
+    // A frame queued for a thread deleted before its read starts reads nothing.
+    setBindingMock('ListThreadWorkerSummaries', async () => page([summary('kept', 1)]));
+    await refreshThreadWorkerSummaries();
+    applyThreadAgentRowsChanged({ threadId: 'kept' }, HOME_BACKEND);
+    expect(getThreadWorkerCounts('kept')).toEqual({ open: 1, needYou: 0 });
+    applyThreadUpdated({ action: 'deleted', id: 'kept' });
+    await vi.advanceTimersByTimeAsync(500);
+    expect(get).toHaveBeenCalledTimes(3);
+    expect(getThreadWorkerCounts('kept')).toEqual({ open: 0, needYou: 0 });
+    expect(threadWorkerSummaryRetentionForTest()).toEqual({ ...EMPTY_RETENTION, snapshots: 1 });
   });
 });

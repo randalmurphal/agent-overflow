@@ -229,7 +229,7 @@ const scheduler = createRefreshScheduler({
       } catch (err) {
         // A failed read says nothing about the workers: the row keeps
         // what it showed until a read succeeds.
-        // Nor does one a newer read covered.
+        // Nor does one a newer read covered, a deleted thread's included.
         if (isPassiveConnectionFailure(err) || !token.isCurrent() || !current() || covered(threadId, backend, seq)) return;
         failedThreads.set(threadId, backend);
         failed(`the read of ${threadId}`, backend, err);
@@ -239,6 +239,23 @@ const scheduler = createRefreshScheduler({
     })]);
   },
 });
+
+/**
+ * A thread was deleted: its counts go, a read queued for it never starts,
+ * and no read of it still out lands or is retried. The forget is a read of
+ * its own that found nothing, so every read that started before it is
+ * older than it.
+ */
+export function forgetThreadWorkerSummary(threadId: string): void {
+  due.delete(threadId);
+  failedThreads.delete(threadId);
+  recovered();
+  const seq = beginRead();
+  landed.set(threadId, seq);
+  owners.delete(threadId);
+  counts.drop(threadId);
+  endRead(seq);
+}
 
 onThreadAgentRowsChanged((change, backend) => {
   if (change === null) {
