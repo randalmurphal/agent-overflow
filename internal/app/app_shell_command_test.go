@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
@@ -159,6 +160,44 @@ func TestRunThreadShellCommandSendsAFailureWithItsExitCode(t *testing.T) {
 	if err != nil || meta.Attachments[0].Shell.ExitCode != 7 {
 		t.Fatalf("row meta: %+v %v", meta, err)
 	}
+}
+
+// A command that prints bytes that are not UTF-8 (a binary file, a NUL)
+// still reaches the agent, the row's preview and a page read as valid text,
+// with what could not be decoded replaced.
+func TestBinaryOutputReachesEveryReaderAsValidText(t *testing.T) {
+	app, rec := newShellCommandApp(t)
+	thread, capturePath := newMixedTurnThread(t, app, "thread-shell-binary")
+	runID := uuid.NewString()
+	if _, err := app.RunThreadShellCommand(context.Background(), thread.ID, ShellCommandRequest{
+		RunID: runID, Command: `printf 'head\377\376\000tail\n'`,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if final := waitShellFinished(t, rec, runID); final.State != shellrun.StateSent {
+		t.Fatalf("terminal frame: %+v", final)
+	}
+	// One replacement for the run of bytes that do not decode: what the app
+	// replaced, not what a JSON encoder on the way would have.
+	const output = "head\uFFFD\x00tail\n"
+	readable := func(reader, text, want string) {
+		t.Helper()
+		if !utf8.ValidString(text) || !strings.Contains(text, want) {
+			t.Errorf("%s = %q, want valid UTF-8 holding %q", reader, text, want)
+		}
+	}
+	readable("wire text", waitForCapturedUserMessages(t, capturePath, 1)[0],
+		"<bash-stdout>"+strings.TrimSuffix(output, "\n")+"</bash-stdout>")
+	meta, err := usermessageMetaFromItem(userItems(t, app, thread.ID)[0])
+	if err != nil || len(meta.Attachments) != 1 || meta.Attachments[0].Shell == nil {
+		t.Fatalf("row meta: %+v %v", meta, err)
+	}
+	readable("preview", meta.Attachments[0].Shell.Preview, output)
+	page, err := app.ReadShellAttachmentOutput(thread.ID, meta.Attachments[0].ID, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	readable("output page", page.Data, output)
 }
 
 // A command that settles while a turn is running joins the ordinary queue
