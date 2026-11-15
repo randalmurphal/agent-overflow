@@ -773,10 +773,10 @@ func TestGetPRReviewSubmitOutcomeForgottenAndNeverReceived(t *testing.T) {
 	}
 }
 
-// A GitHub review the forge took whose answer was lost or cut short is
-// unconfirmed: the drafts stay drafts and are not held, the outcome says
-// unconfirmed, and nothing posts again by itself.
-func TestSubmitPRReviewGitHubAnswerLostIsUnconfirmed(t *testing.T) {
+// A GitHub review whose answer was lost after GitHub applied it is settled
+// by the viewer's reviews: posted, its drafts marked, and a second Send has
+// nothing left to post.
+func TestSubmitPRReviewGitHubLostAnswerIsSettledByTheReviews(t *testing.T) {
 	t.Parallel()
 	for _, how := range []string{"drop", "truncate"} {
 		t.Run(how, func(t *testing.T) {
@@ -787,27 +787,73 @@ func TestSubmitPRReviewGitHubAnswerLostIsUnconfirmed(t *testing.T) {
 			review.AttemptID = "attempt-lost"
 			c.gate.lose(how)
 			result, err := c.submit(review)
-			if err != nil || !result.Unconfirmed || result.Posted {
-				t.Fatalf("submit = %+v, %v; want unconfirmed", result, err)
+			if err != nil || result.Unconfirmed || !result.Posted || len(result.SentDraftIDs) != 1 {
+				t.Fatalf("submit = %+v, %v; want posted", result, err)
 			}
-			if got := c.comment(t, false, draft.ID).Status; got != "draft" {
-				t.Fatalf("draft is %q, want draft", got)
-			}
-			if held := c.app.postedReviewDrafts.held(c.owner(false)); len(held) != 0 {
-				t.Fatalf("held %d batches for an unconfirmed review", len(held))
-			}
-			listed, err := c.app.ListPRDiffReviewComments(c.pr, draft.Scope, draft.SourceKey)
-			if err != nil || len(listed) != 1 || listed[0].Status != "draft" {
-				t.Fatalf("a read after = %+v, %v; want the draft unmarked", listed, err)
+			if got := c.comment(t, false, draft.ID).Status; got != "sent" {
+				t.Fatalf("draft is %q, want sent", got)
 			}
 			outcome, err := c.app.GetPRReviewSubmitOutcome(context.Background(), c.pr, "attempt-lost")
-			if err != nil || outcome.State != "unconfirmed" {
-				t.Fatalf("outcome = %+v, %v; want unconfirmed", outcome, err)
+			if err != nil || outcome.State != "posted" {
+				t.Fatalf("outcome = %+v, %v; want posted", outcome, err)
 			}
 			if n := c.published(); n != 1 {
 				t.Fatalf("published %d reviews, want 1", n)
 			}
 		})
+	}
+	// A lost answer GitHub did not apply is not posted: the drafts stay
+	// drafts for the next Send.
+	t.Run("unsent", func(t *testing.T) {
+		t.Parallel()
+		c := newReviewSubmitCase(t, "github")
+		draft := c.draft(t, false, 3, "Guard this.")
+		review := c.request(false, draft)
+		review.AttemptID = "attempt-unsent"
+		c.gate.lose("unsent")
+		result, err := c.submit(review)
+		if err == nil || result.Unconfirmed || result.Posted {
+			t.Fatalf("submit = %+v, %v; want not posted", result, err)
+		}
+		if got := c.comment(t, false, draft.ID).Status; got != "draft" {
+			t.Fatalf("draft is %q, want draft", got)
+		}
+		if n := c.published(); n != 0 {
+			t.Fatalf("published %d reviews, want none", n)
+		}
+	})
+}
+
+// A lost GitHub answer whose settling read fails is unconfirmed: the
+// drafts stay drafts and the outcome says so.
+func TestSubmitPRReviewGitHubUnsettledAnswerIsUnconfirmed(t *testing.T) {
+	t.Parallel()
+	c := newReviewSubmitCase(t, "github")
+	draft := c.draft(t, false, 3, "Guard this.")
+	review := c.request(false, draft)
+	review.AttemptID = "attempt-lost"
+	c.gate.lose("drop")
+	c.gate.onPublish = func() {
+		if err := c.engine.SetRefusal(forgefake.Refusal{Route: "gh graphql ViewerReviews", Status: http.StatusOK, Times: 1, Body: []byte(`{"errors":[{"message":"Something went wrong"}]}`)}); err != nil {
+			t.Error(err)
+		}
+	}
+	result, err := c.submit(review)
+	if err != nil || !result.Unconfirmed || result.Posted {
+		t.Fatalf("submit = %+v, %v; want unconfirmed", result, err)
+	}
+	if got := c.comment(t, false, draft.ID).Status; got != "draft" {
+		t.Fatalf("draft is %q, want draft", got)
+	}
+	if held := c.app.postedReviewDrafts.held(c.owner(false)); len(held) != 0 {
+		t.Fatalf("held %d batches for an unconfirmed review", len(held))
+	}
+	outcome, err := c.app.GetPRReviewSubmitOutcome(context.Background(), c.pr, "attempt-lost")
+	if err != nil || outcome.State != "unconfirmed" {
+		t.Fatalf("outcome = %+v, %v; want unconfirmed", outcome, err)
+	}
+	if n := c.published(); n != 1 {
+		t.Fatalf("published %d reviews, want 1", n)
 	}
 }
 

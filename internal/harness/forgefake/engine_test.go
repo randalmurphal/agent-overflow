@@ -1902,6 +1902,11 @@ func TestGitHubMergeMutationsTransitionThePull(t *testing.T) {
 		t.Fatalf("after approve: timeline %v", nodes)
 	}
 	reviewID := opinions[0].(map[string]any)["id"].(string)
+	// SubmitReview settles a lost answer by the viewer's reviews.
+	if got := graphQL(t, srv, "github.com", "ViewerReviews", map[string]any{"owner": "acme", "name": "merge", "number": 2}); !strings.Contains(got.body, `"viewerDidAuthor":true`) ||
+		!strings.Contains(got.body, `"state":"APPROVED"`) || !strings.Contains(got.body, `"oid":"2222222222222222222222222222222222222222"`) {
+		t.Fatalf("ViewerReviews = %s", got.body)
+	}
 	if got := graphQL(t, srv, "github.com", "ViewerApproval", map[string]any{"owner": "acme", "name": "merge", "number": 2}); !strings.Contains(got.body, reviewID) {
 		t.Fatalf("ViewerApproval = %s", got.body)
 	}

@@ -39,7 +39,10 @@ import (
 //   - A result means this submit reached the forge: Posted says the forge
 //     took a review from it, Unconfirmed that the forge's answer did not
 //     say (gitops.UnconfirmedSubmitError: its drafts stay drafts and are
-//     not held, since nothing proves they posted). An error means it
+//     not held, since nothing proves they posted). Each forge first settles
+//     a lost answer by reading what landed (GitLab's pending draft notes,
+//     GitHub's reviews by the viewer), so Unconfirmed is what that read
+//     could not decide. An error means it
 //     posted nothing. A draft that is not a draft any more (sent by an earlier
 //     submit, another tab or device, or a message) is refused with
 //     ReviewDraftsNotDraftsCode, and one an earlier review posted that is

@@ -35,7 +35,7 @@ func TestGitHubSubmitReviewPinsTheLoadedHead(t *testing.T) {
 	core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
 		switch {
 		case call.Op == "ViewerReviews":
-			return githubData(`{"repository":{"pullRequest":{"reviews":{"nodes":[]}}}}`)
+			return githubData(githubNoViewerReviews)
 		case call.Method == http.MethodPost && call.Path == "repos/o/r/pulls/5/reviews":
 			return forgeAPIAnswer{Body: `{"id":1}`}
 		case call.Method == http.MethodPost && call.Path == "repos/o/r/pulls/5/comments":
@@ -55,7 +55,7 @@ func TestGitHubSubmitReviewPinsTheLoadedHead(t *testing.T) {
 		if call.Op == "PRTick" {
 			t.Fatal("the submit read the live head")
 		}
-		if call.Method != http.MethodPost {
+		if call.Method != http.MethodPost || call.Op != "" {
 			continue
 		}
 		var body struct {

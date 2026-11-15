@@ -37,6 +37,8 @@ func TestGitHubSubmitReviewPostsEachKindOfLine(t *testing.T) {
 		switch {
 		case call.Op == "PRTick":
 			return githubData(`{"viewer":{"login":"v"},"repository":{"pullRequest":{"number":5,"headRefOid":"abc123","author":{"login":"a"},"latestReviews":{"nodes":[]},"commits":{"nodes":[]}}}}`)
+		case call.Op == "ViewerReviews":
+			return githubData(githubNoViewerReviews)
 		case call.Method == http.MethodPost && call.Path == "repos/o/r/pulls/5/reviews":
 			return forgeAPIAnswer{Body: `{"id":1}`}
 		}

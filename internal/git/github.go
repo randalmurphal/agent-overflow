@@ -274,10 +274,19 @@ func (f *githubForge) SubmitReview(ctx context.Context, ref PRReference, review 
 	followUps := len(fileComments) + len(replies)
 	emptyReview := body.Event == "COMMENT" && strings.TrimSpace(body.Body) == "" && len(body.Comments) == 0
 	if !emptyReview || followUps == 0 {
-		// The only write before the review exists: its error decides
-		// whether the review may have posted.
+		// The only write before the review exists: its error, or after a
+		// lost answer the viewer's reviews, decide whether it posted.
+		before, err := readGitHubViewerReviews(ctx, client, ref)
+		if err != nil {
+			return SubmitReviewResult{}, err
+		}
 		if err := postGitHubReview(ctx, client, ref, body); err != nil {
-			return SubmitReviewResult{}, submitWriteError(err)
+			if forgeapi.WriteNotApplied(err) {
+				return SubmitReviewResult{}, err
+			}
+			if err := settleGitHubReview(ctx, client, ref, body, before, err); err != nil {
+				return SubmitReviewResult{}, err
+			}
 		}
 		out.PostedReview = true
 	}

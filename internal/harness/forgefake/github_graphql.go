@@ -56,6 +56,7 @@ var githubGraphQL = []graphQLOp{
 	{kind: "query", name: "PRStates", required: []string{"ids"}, run: ghPRStates},
 	{kind: "query", name: "PRMergeTarget", required: []string{"owner", "name", "number"}, run: ghPRMergeTarget},
 	{kind: "query", name: "ViewerApproval", required: []string{"owner", "name", "number"}, run: ghViewerApproval},
+	{kind: "query", name: "ViewerReviews", required: []string{"owner", "name", "number"}, run: ghViewerReviews},
 	{kind: "mutation", name: "MergePR", required: []string{"pullRequestID", "method", "expectedHeadOid"}, run: ghMergePR},
 	{kind: "mutation", name: "EnableAutoMerge", required: []string{"pullRequestID", "method", "expectedHeadOid"}, run: ghEnableAutoMerge},
 	{kind: "mutation", name: "DisableAutoMerge", required: []string{"pullRequestID"}, run: ghDisableAutoMerge},
@@ -1154,6 +1155,30 @@ func ghViewerApproval(e *Engine, c *call, v graphQLVars) response {
 	}
 	return graphQLData(map[string]any{"repository": map[string]any{"pullRequest": map[string]any{
 		"latestOpinionatedReviews": map[string]any{"nodes": githubOpinionNodes(r, p, e.viewer, false)},
+	}}})
+}
+
+// ghViewerReviews answers the pull's newest 100 reviews, oldest first, each
+// with its id, whether the viewer wrote it, its state, body and commit.
+func ghViewerReviews(e *Engine, c *call, v graphQLVars) response {
+	project, number, err := v.pullVars()
+	if err != nil {
+		return unhandled("ViewerReviews: %v", err)
+	}
+	_, p, fail, ok := e.ghGraphQLPull(c, project, number, map[string]any{})
+	if !ok {
+		return fail
+	}
+	reviews := p.Reviews[max(0, len(p.Reviews)-100):]
+	nodes := make([]map[string]any, 0, len(reviews))
+	for _, review := range reviews {
+		nodes = append(nodes, map[string]any{
+			"databaseId": review.ID, "viewerDidAuthor": strings.EqualFold(review.Author, e.viewer),
+			"state": review.State, "body": review.Body, "commit": map[string]any{"oid": review.CommitSHA},
+		})
+	}
+	return graphQLData(map[string]any{"repository": map[string]any{"pullRequest": map[string]any{
+		"reviews": map[string]any{"nodes": nodes},
 	}}})
 }
 

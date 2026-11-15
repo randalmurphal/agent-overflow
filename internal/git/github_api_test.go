@@ -173,6 +173,9 @@ func forgeUnexpected(t *testing.T, call forgeAPICall) forgeAPIAnswer {
 	return forgeAPIAnswer{Status: http.StatusNotFound, Body: `{"message":"Not Found"}`}
 }
 
+// githubNoViewerReviews answers ViewerReviews for a PR with no reviews.
+const githubNoViewerReviews = `{"repository":{"pullRequest":{"reviews":{"nodes":[]}}}}`
+
 // githubTestPinnedHead is the head a test's review was written against.
 const githubTestPinnedHead = "abc1234"
 
@@ -895,6 +898,8 @@ func TestGitHubSubmitReview(t *testing.T) {
 		switch {
 		case call.Op == "PRTick":
 			return githubData(`{"viewer":{"login":"v"},"repository":{"pullRequest":{"number":5,"headRefOid":"abc123","author":{"login":"a"},"latestReviews":{"nodes":[]},"commits":{"nodes":[]}}}}`)
+		case call.Op == "ViewerReviews":
+			return githubData(githubNoViewerReviews)
 		case call.Method == http.MethodPost && call.Path == "repos/o/r/pulls/5/reviews":
 			return forgeAPIAnswer{Body: `{"id":1}`}
 		case call.Method == http.MethodPost && call.Path == "repos/o/r/pulls/5/comments":
@@ -913,7 +918,7 @@ func TestGitHubSubmitReview(t *testing.T) {
 	if err != nil || !result.PostedReview || result.PostedFileComments != 1 {
 		t.Fatalf("SubmitReview = %+v, %v", result, err)
 	}
-	sent := calls.all()
+	sent := slices.DeleteFunc(calls.all(), func(call forgeAPICall) bool { return call.Op == "ViewerReviews" })
 	if len(sent) != 2 {
 		t.Fatalf("requests = %v", calls.ops())
 	}

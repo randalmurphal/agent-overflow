@@ -192,6 +192,8 @@ func TestGitHubSubmitReviewPostsHeldReplies(t *testing.T) {
 	var goneRoot atomic.Int64
 	core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
 		switch {
+		case call.Op == "ViewerReviews":
+			return githubData(githubNoViewerReviews)
 		case call.Method == http.MethodPost && call.Path == "repos/o/r/pulls/5/reviews":
 			return forgeAPIAnswer{Body: `{"id":1}`}
 		case call.Method == http.MethodPost && strings.HasPrefix(call.Path, "repos/o/r/pulls/5/comments/"):
@@ -211,10 +213,10 @@ func TestGitHubSubmitReviewPostsHeldReplies(t *testing.T) {
 	if err != nil || !result.PostedReview || result.PostedReplies != 2 {
 		t.Fatalf("SubmitReview = %+v, %v", result, err)
 	}
-	if got := strings.Join(calls.ops(), ","); got != "POST repos/o/r/pulls/5/reviews,POST repos/o/r/pulls/5/comments/11/replies,POST repos/o/r/pulls/5/comments/12/replies" {
+	if got := strings.Join(calls.ops(), ","); got != "ViewerReviews,POST repos/o/r/pulls/5/reviews,POST repos/o/r/pulls/5/comments/11/replies,POST repos/o/r/pulls/5/comments/12/replies" {
 		t.Fatalf("requests = %s", got)
 	}
-	if body := string(calls.all()[1].Body); body != `{"body":"first"}` {
+	if body := string(calls.all()[2].Body); body != `{"body":"first"}` {
 		t.Fatalf("reply body = %s", body)
 	}
 
