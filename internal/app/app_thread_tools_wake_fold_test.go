@@ -285,6 +285,82 @@ func TestOneTurnAnsweringTwoRequestsWakesTheirSenderOnce(t *testing.T) {
 	}
 }
 
+// A session that ends during the turn that read two of one sender's
+// requests tells the sender once, as the turn's own end would have.
+func TestASessionEndDuringOneTurnAnsweringTwoRequestsWakesTheirSenderOnce(t *testing.T) {
+	t.Parallel()
+	q := newQueuedRequests(t)
+	f := q.f
+	f.mockClaudeHoldingTheTurn(t, "mid-thought")
+	f.holdCallerTurn(t)
+	q.notify = true
+	first, second := q.queue(t, 1, 1), q.queue(t, 2, 1)
+	first.bind(t)
+	second.bind(t)
+	q.endTurn(t)
+	q.startPickupTurn(t)
+	first.consumed(t)
+	second.consumed(t)
+	q.say(t, 1, "halfway through both")
+	f.app.settleReceiptsForEndedSession(q.target.ID)
+
+	wakes := f.wakesQueuedFor(t, first.token, second.token)
+	if len(wakes) != 1 {
+		t.Fatalf("queued wakes = %+v, want one message for the one session end", wakes)
+	}
+	if !strings.Contains(wakes[0].Message, "halfway through both") {
+		t.Fatalf("wake = %q, want what the turn wrote before the session ended", wakes[0].Message)
+	}
+	f.nothingOwed(t)
+}
+
+// A restore that settles two of one sender's requests as never read, because
+// the provider did not take them in or their queue refused them again,
+// tells the sender once.
+func TestARestoreSettlingTwoRequestsUnreadWakesTheirSenderOnce(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		settle func(t *testing.T, q *queuedRequests, requests []*queuedRequest)
+	}{
+		{"not taken in", func(t *testing.T, q *queuedRequests, requests []*queuedRequest) {
+			var unread []unreadRequest
+			for _, r := range requests {
+				r.bind(t)
+				unread = append(unread, unreadRequest{token: r.token, why: threadtools.InterruptSessionEndedUnread})
+			}
+			q.f.app.settleNotTakenIn(q.target.ID, []notTakenIn{{unread: unread}})
+		}},
+		{"queue refused at teardown", func(t *testing.T, q *queuedRequests, requests []*queuedRequest) {
+			if _, _, err := q.f.app.store.ArchiveThread(q.target.ID); err != nil {
+				t.Fatalf("ArchiveThread: %v", err)
+			}
+			var owed teardownRequests
+			for _, r := range requests {
+				owed.queued = append(owed.queued, returnedRequest{token: r.token, body: r.row.Summary})
+			}
+			q.f.app.giveBackTeardownRequests(q.target.ID, owed)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			q := newQueuedRequests(t)
+			f := q.f
+			f.mockClaudeHoldingTheTurn(t, "mid-thought")
+			f.holdCallerTurn(t)
+			q.notify = true
+			requests := []*queuedRequest{q.queue(t, 1, 1), q.queue(t, 2, 1)}
+			tc.settle(t, q, requests)
+
+			wakes := f.wakesQueuedFor(t, requests[0].token, requests[1].token)
+			if len(wakes) != 1 {
+				t.Fatalf("queued wakes = %+v, want one message for the one restore", wakes)
+			}
+			f.nothingOwed(t)
+		})
+	}
+}
+
 // A restart interrupts every open request. A thread with requests open on
 // several threads is told in one message which of them it interrupted,
 // attributed to the first of them as an agent's message, never the

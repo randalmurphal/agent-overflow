@@ -232,10 +232,11 @@ func TestASessionEndReadsEachReceiptOnce(t *testing.T) {
 		"tok-taken-in": {threadtools.InterruptSessionEndedUnanswered, 3},
 	} {
 		before := app.store.ReadCount()
-		if err := app.settleReceiptOnSessionEnd(thread.ID, token, map[string]bool{}); err != nil {
+		work, err := app.settleReceiptOnSessionEnd(thread.ID, token, map[string]bool{})
+		if err != nil {
 			t.Fatalf("%s: %v", token, err)
 		}
-		app.threadRequestsWG.Wait()
+		app.runThreadSettlementWork(work)
 		reads := app.store.ReadCount() - before
 		receipt, _, err := app.store.GetThreadRequestReceipt(token)
 		if err != nil || receipt.State != store.ThreadReceiptInterrupted || !strings.HasPrefix(string(receipt.Answer), want.why) {

@@ -1109,9 +1109,10 @@ books no attempt, so when that call's reply does not carry the answer,
 the wake is due again the moment the call lets go.
 
 Wakes that say the same thing to the same thread are one message. A
-turn that consumed several of a caller's messages ends once, and a
-restart or a deleted target ends every open request a caller made
-there at once; each of those is one settlement pass,
+turn that consumed several of a caller's messages ends once, whether
+on its own or with its session, and a restart, a deleted target or a
+session end that gives back several unread requests ends every open
+request a caller made there at once; each of those is one settlement pass,
 and every request in it whose wake has the same kind and the same text
 is answered by one message naming all of them, at most 512 per message.
 The message is queued under the oldest request's send id, and each

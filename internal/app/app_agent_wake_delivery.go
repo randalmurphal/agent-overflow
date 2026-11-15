@@ -671,12 +671,15 @@ func (a *App) returnRequestsAtTeardown(threadID string) teardownRequests {
 func (a *App) giveBackTeardownRequests(threadID string, owed teardownRequests) {
 	requests, wakes := owed.queued, owed.wakes
 	var userItemIDs, queueItemIDs []string
+	// The requests that settle run their work together, so a caller with
+	// several of them is told once.
+	var settled []threadSettlementWork
 	for _, send := range owed.sent {
 		if send.userItemID != "" {
 			if _, err := a.cleanupStaleFlushRow(threadID, send.userItemID); err != nil {
 				log.Printf("thread tools: remove the row of %s's dropped request message %s: %v", threadID, send.userItemID, err)
 				for _, r := range send.requests {
-					a.settleReceiptNotRead(threadID, r.token, store.ThreadReceiptAccepted, threadtools.InterruptSessionEndedUnread)
+					settled = append(settled, a.settleReceiptNotRead(threadID, r.token, store.ThreadReceiptAccepted, threadtools.InterruptSessionEndedUnread))
 				}
 				for _, w := range send.wakes {
 					a.noteMovedAgentWakeUndelivered(threadID, w)
@@ -706,11 +709,12 @@ func (a *App) giveBackTeardownRequests(threadID string, owed teardownRequests) {
 	for _, r := range requests {
 		if err := a.threadTools().requeueRequest(r.token, threadID, r.body); err != nil {
 			log.Printf("thread tools: give request %s back to %s after its session's end: %v", r.token, threadID, err)
-			a.settleReceiptNotRead(threadID, r.token, store.ThreadReceiptAccepted, threadtools.InterruptSessionEndedUnread)
+			settled = append(settled, a.settleReceiptNotRead(threadID, r.token, store.ThreadReceiptAccepted, threadtools.InterruptSessionEndedUnread))
 			continue
 		}
 		requeued = true
 	}
+	a.runThreadSettlementWorksDetached(settled)
 	// The torn-down session left the registry before the teardown, so a
 	// live one started after it: while the idle reaper held the lock this
 	// waited on, its start flushed the queue before these were back on it.
@@ -771,6 +775,7 @@ type appMessageOutcome struct {
 // one restore, once that restore has committed.
 func (a *App) settleNotTakenIn(threadID string, owed []notTakenIn) {
 	var owned []ownedMessage
+	var settled []threadSettlementWork
 	for _, item := range owed {
 		for _, m := range item.messages {
 			switch {
@@ -792,12 +797,15 @@ func (a *App) settleNotTakenIn(threadID string, owed []notTakenIn) {
 		}
 		owned = append(owned, item.owned...)
 		for _, r := range item.requests {
-			a.giveBackRequest(threadID, r.token, r.body)
+			settled = append(settled, a.giveBackRequestWork(threadID, r.token, r.body))
 		}
 		for _, r := range item.unread {
-			a.settleUndeliveredReceipt(threadID, r.token, r.why)
+			settled = append(settled, a.settleReceiptNotRead(threadID, r.token, store.ThreadReceiptRunning, r.why))
 		}
 	}
+	// Together, so a caller with several requests in this restore is told
+	// once.
+	a.runThreadSettlementWorksDetached(settled)
 	if len(owned) > 0 {
 		a.giveBackToOwners(threadID, owned)
 	}
