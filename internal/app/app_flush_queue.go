@@ -609,8 +609,11 @@ func (a *App) ensureSessionForFlushLocked(threadID string, items []triage.Queued
 			Settlement:      item.Settlement,
 		})
 	}
-	a.restoreFlushItemsToDraftLocked(threadID, restored, queueRestoredReasonSessionStartFailed)
+	// The batch leaves the worker before the composer gets it, as a session
+	// death drains the worker before its restore, so no read finds the
+	// message queued and in the composer at once.
 	a.noteFlushDispatchGroupSettled(threadID, items)
+	a.restoreFlushItemsToDraftLocked(threadID, restored, queueRestoredReasonSessionStartFailed)
 	a.emitErrorToThread(threadID, "Queued messages could not be sent and are back in the composer: "+err.Error())
 	a.emitQueueStateChanged(threadID)
 	return false
