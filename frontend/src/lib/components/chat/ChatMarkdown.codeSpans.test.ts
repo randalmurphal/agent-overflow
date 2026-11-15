@@ -551,6 +551,45 @@ describe('<ChatMarkdown> code-block spans', () => {
       expect(run).toHaveBeenCalledTimes(1);
     });
 
+    // A block still streaming holds the start of a command: running it would
+    // run something the model has not finished writing.
+    it('withholds Run from a block still streaming and offers it once the block completes', async () => {
+      setBindingMock('HighlightCode', async () => keywordSpans());
+      const run = setBindingMock('RunThreadShellCommand', async () => ({ state: 'running' }));
+      const target = chatSurface('thread-streaming');
+      const runControls = () =>
+        view.container.querySelectorAll('[aria-label="Run and send the output to the agent"]');
+      const view = render(ChatMarkdown, {
+        target,
+        props: { source: 'Run this:\n\n```bash\necho hi\nrm -rf bu', streaming: true, pathRefs: [] },
+      });
+      await waitFor(() => {
+        expect(view.container.querySelector('.streamdown-code-host[data-code-lang="bash"] code')?.textContent)
+          .toBe('echo hi\nrm -rf bu');
+      });
+      expect(runControls()).toHaveLength(0);
+
+      // The fence is still open as more of the command arrives.
+      await view.rerender({ source: 'Run this:\n\n```bash\necho hi\nrm -rf build\n', streaming: true, pathRefs: [] });
+      await waitFor(() => {
+        expect(view.container.querySelector('.streamdown-code-host[data-code-lang="bash"] code')?.textContent)
+          .toBe('echo hi\nrm -rf build');
+      });
+      expect(runControls()).toHaveLength(0);
+
+      // The closing fence and the next block arrive while the reply streams on.
+      await view.rerender({
+        source: 'Run this:\n\n```bash\necho hi\nrm -rf build\n```\n\nThen look at the',
+        streaming: true,
+        pathRefs: [],
+      });
+      await waitFor(() => expect(runControls()).toHaveLength(1));
+      await fireEvent.click(runControls()[0]);
+      await waitFor(() => expect(run).toHaveBeenCalledWith('thread-streaming', {
+        runId: expect.any(String), command: 'echo hi\nrm -rf build',
+      }));
+    });
+
     it('does nothing outside a chat surface, where no thread would receive the output', async () => {
       setBindingMock('HighlightCode', async () => keywordSpans());
       const run = setBindingMock('RunThreadShellCommand', async () => ({ state: 'running' }));
