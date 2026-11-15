@@ -37,6 +37,7 @@ async function buildWorktreePane(overrides: Record<string, unknown> = {}) {
   setBindingMock('ListLiveBackgroundTasks', async () => []);
   setBindingMock('ListThreadWakes', async () => ({ rows: [], moreReminders: 0 }));
   setBindingMock('ListThreadAgentRows', async () => ({ rows: [], hidden: false }));
+  setBindingMock('ListThreadPastAgentRows', async () => ({ rows: [], total: 0 }));
   setBindingMock('GetWorkspaceActivity', async () => idleWorkspaceActivity());
   return buildPane(makeThread({ ...threadOverrides(), ...overrides }));
 }

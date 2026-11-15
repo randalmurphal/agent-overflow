@@ -139,6 +139,7 @@ async function buildPane(
   setBindingMock('ListLiveBackgroundTasks', async () => []);
   setBindingMock('ListThreadWakes', async () => ({ rows: [], moreReminders: 0 }));
   setBindingMock('ListThreadAgentRows', async () => ({ rows: [], hidden: false }));
+  setBindingMock('ListThreadPastAgentRows', async () => ({ rows: [], total: 0 }));
   setBindingMock('GetWorkspaceActivity', async () => idleWorkspaceActivity());
   setBindingMock('CountRunningBackgroundTasks', async () => 0);
   // GitActionsControl calls GetGitStatus on mount; return "not a repo"

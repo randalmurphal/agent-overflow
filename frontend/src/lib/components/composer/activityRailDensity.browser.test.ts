@@ -30,6 +30,7 @@ it('protects both controls and holds the row height across sprites, widths and l
     token: `agent-${i}`, callerThreadId: pane.threadId!, kind: 'spawn', threadId: `agent-thread-${i}`,
     title: `Agent ${i}`, provider: 'claude', state: 'running', createdAt: Date.now(), depth: 0,
   })) }));
+  setBindingMock('ListThreadPastAgentRows', async () => ({ rows: [], total: 0 }));
   setBindingMock('GetUsageStats', async () => [new UsageBucket({
     bucket: '', outputTokens: 30800, costUsd: 5.49, turnCount: 1, unpricedRows: 0,
   })]);

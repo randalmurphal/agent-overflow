@@ -440,6 +440,7 @@ describe('<GitActionsControl> palette dialog event', () => {
     setBindingMock('ListLiveBackgroundTasks', async () => []);
     setBindingMock('ListThreadWakes', async () => ({ rows: [], moreReminders: 0 }));
     setBindingMock('ListThreadAgentRows', async () => ({ rows: [], hidden: false }));
+    setBindingMock('ListThreadPastAgentRows', async () => ({ rows: [], total: 0 }));
     setBindingMock('GetWorkspaceActivity', async () => idleWorkspaceActivity());
     const pane = await buildPane(makeThread({
       workspacePath: '/workspace-wt/feat',
@@ -467,6 +468,7 @@ describe('<GitActionsControl> palette dialog event', () => {
     setBindingMock('ListLiveBackgroundTasks', async () => []);
     setBindingMock('ListThreadWakes', async () => ({ rows: [], moreReminders: 0 }));
     setBindingMock('ListThreadAgentRows', async () => ({ rows: [], hidden: false }));
+    setBindingMock('ListThreadPastAgentRows', async () => ({ rows: [], total: 0 }));
     setBindingMock('GetWorkspaceActivity', async () => idleWorkspaceActivity());
     const status_ = setBindingMock('GitWorktreeStatus', async () => ({ path: '/workspace-wt/feat', terminals: 2 }));
     const pane = await buildPane(makeThread({
@@ -495,6 +497,7 @@ describe('<GitActionsControl> palette dialog event', () => {
     setBindingMock('ListLiveBackgroundTasks', async () => []);
     setBindingMock('ListThreadWakes', async () => ({ rows: [], moreReminders: 0 }));
     setBindingMock('ListThreadAgentRows', async () => ({ rows: [], hidden: false }));
+    setBindingMock('ListThreadPastAgentRows', async () => ({ rows: [], total: 0 }));
     setBindingMock('GetWorkspaceActivity', async (workspacePath: unknown) => {
       asked.push(String(workspacePath));
       return busyWorkspaceActivity(1);
