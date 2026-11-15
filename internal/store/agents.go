@@ -298,9 +298,8 @@ func (s *Store) PlaceThreadInHome(threadID, home string) error {
 }
 
 // SpawnerOf names the thread that spawned a thread on this computer, the
-// one its questions and approvals go to: the caller of the newest local
-// `spawn` request whose target is the thread, while that caller is not
-// archived. Any thread can be the spawner, an assistant, an ordinary thread
+// one its questions and approvals go to: the caller of its spawn link
+// (spawnerOfSQL), while that caller is not archived. Any thread can be the spawner, an assistant, an ordinary thread
 // or another worker. A handoff moves its predecessors' spawn rows to the
 // current thread, so a worker an earlier thread of an assistant spawned
 // names the current one. Found is false for a thread no local spawn made
@@ -309,10 +308,8 @@ func (s *Store) PlaceThreadInHome(threadID, home string) error {
 // lineage (spawnLineageSQL), so its prompts keep routing there.
 func (s *Store) SpawnerOf(threadID string) (spawnerThreadID, title string, found bool, err error) {
 	var archived bool
-	err = s.reader().QueryRow(`SELECT t.id, t.title, t.archived FROM thread_requests r
-		JOIN threads t ON t.id = r.caller_thread_id
-		WHERE r.kind = '`+ThreadRequestSpawn+`' AND r.target_computer_id = '' AND r.target_thread_id = ?
-		ORDER BY r.created_at DESC, r.token DESC LIMIT 1`, threadID).Scan(&spawnerThreadID, &title, &archived)
+	err = s.reader().QueryRow(`SELECT t.id, t.title, t.archived FROM threads t
+		WHERE t.id = `+spawnerOfSQL("?"), threadID).Scan(&spawnerThreadID, &title, &archived)
 	if errors.Is(err, sql.ErrNoRows) || (err == nil && archived) {
 		return "", "", false, nil
 	}

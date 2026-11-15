@@ -500,8 +500,8 @@ user while that spawner is not archived: each prompt is delivered to
 the spawner, an assistant, an ordinary thread or another worker alike,
 as a wake badged with the worker, the worker's text quoted as data,
 carrying a token for this tool. The spawner is the caller of the
-newest local spawn of the worker, so a worker's worker asks the worker
-that spawned it. The worker's status reads `waiting on <spawner>` and
+worker's spawn link, so a worker's worker asks the worker that spawned
+it. The worker's status reads `waiting on <spawner>` and
 raises no approval notification. The reply answers the prompt in the worker at
 once: `text` for a question with one part, `answers` with one entry per
 part for several, and `decision` `allow` or `deny` for an approval,

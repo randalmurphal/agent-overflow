@@ -35,8 +35,8 @@ func refuseAgentGroupingTx(tx *sql.Tx, threadID string) error {
 // re-emits them after either.
 func (s *Store) ListSpawnedThreadIDs(spawnerID string) ([]string, error) {
 	ids, err := queryIDs(s.reader(), `SELECT id FROM owned_threads WHERE archived = 0 AND id IN (
-		SELECT target_thread_id FROM thread_requests
-		 WHERE caller_thread_id = ? AND kind = 'spawn' AND target_computer_id = '')
+		SELECT r.target_thread_id FROM thread_requests r
+		 WHERE r.caller_thread_id = ? AND `+agentSpawnLinkSQL("r")+`)
 		ORDER BY id`, spawnerID)
 	if err != nil {
 		return nil, fmt.Errorf("store: list threads spawned by %s: %w", spawnerID, err)
@@ -54,8 +54,7 @@ type OwnedWorker struct {
 
 // ListOwnedWorkersToArchive lists the unarchived threads ownerID owns, at
 // any depth through workers already archived: a thread owns the owned
-// threads whose newest local spawn row names it as caller, the owner
-// SpawnedByThreadID reads. The walk stops at each unarchived worker, whose
+// threads whose spawn link it made, the owner SpawnedByThreadID reads. The walk stops at each unarchived worker, whose
 // own archive goes on to the threads it owns, so an archive of the owner
 // archives each of them, and a repeated one reaches a worker an earlier
 // one left open beneath a worker it did archive
@@ -67,14 +66,12 @@ func (s *Store) ListOwnedWorkersToArchive(ownerID string) (workers []OwnedWorker
 		  SELECT ?
 		  UNION
 		  SELECT threads.id FROM under
-		    JOIN thread_requests AS link ON link.caller_thread_id = under.id
-		         AND link.kind = 'spawn' AND link.target_computer_id = ''
+		    JOIN thread_requests AS link ON link.caller_thread_id = under.id AND `+agentSpawnLinkSQL("link")+`
 		    JOIN owned_threads AS threads ON threads.id = link.target_thread_id
 		   WHERE threads.archived = 1 AND `+ownedBySQL("under.id")+`
 		)
 		SELECT DISTINCT threads.id, under.id FROM under
-		  JOIN thread_requests AS link ON link.caller_thread_id = under.id
-		       AND link.kind = 'spawn' AND link.target_computer_id = ''
+		  JOIN thread_requests AS link ON link.caller_thread_id = under.id AND `+agentSpawnLinkSQL("link")+`
 		  JOIN owned_threads AS threads ON threads.id = link.target_thread_id
 		 WHERE threads.archived = 0 AND `+ownedBySQL("under.id")+`
 		 ORDER BY threads.id`, ownerID)
@@ -96,12 +93,9 @@ func (s *Store) ListOwnedWorkersToArchive(ownerID string) (workers []OwnedWorker
 }
 
 // ownedBySQL holds for the threads row that owner, an SQL expression, owns:
-// owned, with its newest local spawn naming owner as caller.
+// owned, with owner its spawner (spawnerOfSQL).
 func ownedBySQL(owner string) string {
-	return `threads.placement = 'owned'
-		  AND (SELECT caller_thread_id FROM thread_requests
-		        WHERE kind = 'spawn' AND target_computer_id = '' AND target_thread_id = threads.id
-		        ORDER BY created_at DESC LIMIT 1) = ` + owner
+	return `threads.placement = 'owned' AND ` + spawnerOfSQL("threads.id") + ` = ` + owner
 }
 
 // ArchiveOwnedWorker archives workerID for its owner's archive, and only

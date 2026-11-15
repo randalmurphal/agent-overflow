@@ -124,11 +124,7 @@ var threadColumns = `id, COALESCE(project_id, ''),
     COALESCE((SELECT agent_id FROM agent_past_threads WHERE agent_past_threads.thread_id = threads.id), ''),
     (SELECT superseded_at FROM agent_past_threads WHERE agent_past_threads.thread_id = threads.id),
     COALESCE((SELECT agent_id FROM agent_helpers WHERE agent_helpers.thread_id = threads.id), ''),
-    COALESCE((
-      SELECT caller_thread_id FROM thread_requests
-       WHERE kind = 'spawn' AND target_computer_id = '' AND target_thread_id = threads.id
-       ORDER BY created_at DESC LIMIT 1
-    ), ''),
+    COALESCE(` + spawnerOfSQL("threads.id") + `, ''),
     attention_kind, attention_reason, attention_at`
 
 // threadAgentColumn is the record column threadColumns reads for an

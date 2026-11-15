@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"errors"
 	"maps"
 	"slices"
 	"strings"
@@ -498,6 +499,100 @@ func TestMigrationV151AgentTreeMarks(t *testing.T) {
 	assertAgentTreeMarks(t, db, "after the fill")
 	mustExec(t, db, `UPDATE thread_requests SET settled_at = 50, state = 'finished' WHERE token = 'open-t5'`)
 	assertAgentTreeMarks(t, db, "after a settle")
+}
+
+// A store from before v151 that holds two local spawns of one thread, by
+// time and by token at an equal time, upgrades with the newest its one
+// owner on every surface: its spawner, its row's owner, the owner's
+// workers, spawns and archive, and the search of either caller. The
+// superseded spawn is no owner at all, so deleting the owner leaves the worker
+// standalone with no spawner, and owned is refused for it.
+func TestUpgradeSupersededSpawnOwnsNothing(t *testing.T) {
+	db, path := openFileDBThrough(t, assistantsMigrationVersion-1)
+	mustExec(t, db, `INSERT INTO projects (id, path, name, created_at, updated_at) VALUES ('p', '/p', 'p', 1, 1)`)
+	mustExec(t, db, `INSERT INTO threads (id, project_id, title, provider, workspace_path, model, created_at, updated_at, archived, placement) VALUES
+		('a', 'p', 'A', 'claude', '/p', '', 1, 1, 0, 'standalone'),
+		('b', 'p', 'B', 'claude', '/p', '', 1, 1, 0, 'standalone'),
+		('w', 'p', 'W', 'claude', '/p', '', 1, 1, 0, 'owned'),
+		('tie', 'p', 'Tie', 'claude', '/p', '', 1, 1, 0, 'owned')`)
+	mustExec(t, db, `INSERT INTO thread_requests (token, caller_thread_id, kind, target_thread_id, state, settled_at, created_at, updated_at) VALUES
+		('w-a', 'a', 'spawn', 'w', 'finished', 5, 1, 1),
+		('w-b', 'b', 'spawn', 'w', 'finished', 5, 2, 2),
+		('tie-b', 'b', 'spawn', 'tie', 'finished', 5, 3, 3),
+		('tie-a', 'a', 'spawn', 'tie', 'finished', 5, 3, 3)`)
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s, err := New(path)
+	if err != nil {
+		t.Fatalf("open through every migration: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	owners := func(when, want string) {
+		t.Helper()
+		for _, id := range []string{"w", "tie"} {
+			spawner, _, found, err := s.SpawnerOf(id)
+			if err != nil || spawner != want || found != (want != "") {
+				t.Errorf("%s: SpawnerOf(%s) = %q, %v, %v; want %q", when, id, spawner, found, err, want)
+			}
+			row, err := s.GetThread(id)
+			if err != nil || row.SpawnedByThreadID != want {
+				t.Errorf("%s: %s's row names %q, %v as its spawner; want %q", when, id, row.SpawnedByThreadID, err, want)
+			}
+		}
+		for _, caller := range []string{"a", "b"} {
+			var wantIDs []string
+			if caller == want {
+				wantIDs = []string{"tie", "w"}
+			}
+			workers, err := s.ListOwnedWorkersToArchive(caller)
+			var owned []string
+			for _, worker := range workers {
+				owned = append(owned, worker.ThreadID)
+			}
+			if err != nil || !slices.Equal(owned, wantIDs) {
+				t.Errorf("%s: %s owns %q, %v; want %q", when, caller, owned, err, wantIDs)
+			}
+			spawned, err := s.ListSpawnedThreadIDs(caller)
+			if err != nil || !slices.Equal(spawned, wantIDs) {
+				t.Errorf("%s: %s spawned %q, %v; want %q", when, caller, spawned, err, wantIDs)
+			}
+			found, err := s.ListThreadsByActivity(ThreadSearchFilter{SpawnedBy: caller})
+			var foundIDs []string
+			for _, row := range found {
+				foundIDs = append(foundIDs, row.ID)
+			}
+			slices.Sort(foundIDs)
+			if err != nil || !slices.Equal(foundIDs, wantIDs) {
+				t.Errorf("%s: the search spawned by %s finds %q, %v; want %q", when, caller, foundIDs, err, wantIDs)
+			}
+		}
+	}
+	owners("after the upgrade", "b")
+	if _, _, err := s.ArchiveThread("a"); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"w", "tie"} {
+		if _, changed, err := s.ArchiveOwnedWorker(id, "a"); err != nil || changed {
+			t.Errorf("%s for the superseded spawner's archive = changed %v, %v; want left alone", id, changed, err)
+		}
+	}
+	if _, _, err := s.UnarchiveThread("a"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.DeleteThread("b"); err != nil {
+		t.Fatal(err)
+	}
+	owners("after the owner's delete", "")
+	placements, err := queryIDs(s.db, `SELECT id || '|' || placement FROM threads WHERE id IN ('w', 'tie') ORDER BY id`)
+	if err != nil || !slices.Equal(placements, []string{"tie|standalone", "w|standalone"}) {
+		t.Fatalf("after the owner's delete the workers are %q, %v; want both standalone", placements, err)
+	}
+	if _, err := s.SetThreadPlacement([]string{"w"}, PlacementOwned); !errors.Is(err, ErrThreadNotSpawned) {
+		t.Fatalf("owned asked of a thread only a superseded spawn names = %v; want ErrThreadNotSpawned", err)
+	}
 }
 
 // olderReleaseSchemaVersion is the schema v0.0.16 shipped.

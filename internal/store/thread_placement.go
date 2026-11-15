@@ -11,8 +11,8 @@ import (
 // grouped exactly when it has a group, so a group move is the one writer of
 // grouped (SetThreadGroup) and this file writes the other two. An owned
 // thread belongs to the thread that spawned it: it has no sidebar row
-// (catalogThreadClause) and is otherwise an ordinary thread. Owned needs a
-// local spawn row naming the thread. A thread outside every project (an
+// (catalogThreadClause) and is otherwise an ordinary thread. Owned needs the
+// thread's spawn link (spawnerOfSQL). A thread outside every project (an
 // assistant's own, past or helper thread) takes no placement: a helper is
 // owned from its spawn and stays so. A row is inserted standalone or
 // grouped, the write that names a local spawn's thread makes it owned, and
@@ -33,7 +33,7 @@ var ErrInvalidPlacement = errors.New("store: invalid thread placement")
 var ErrPlacementNeedsGroup = errors.New("store: a grouped placement needs a group; move the thread into one")
 
 // ErrThreadNotSpawned is owned asked for a thread nothing would own: no
-// local spawn row names it.
+// spawn link reaches it.
 var ErrThreadNotSpawned = errors.New("store: no thread on this computer spawned that thread, so no thread can own it")
 
 // ErrStandingAgentPlaced is a placement asked for an assistant's current
@@ -55,10 +55,9 @@ func insertedPlacement(groupID string) string {
 	return PlacementStandalone
 }
 
-// spawnLinkSQL is true when ?1 names a thread that a local spawn row
-// names.
-const spawnLinkSQL = `EXISTS (SELECT 1 FROM thread_requests
-       WHERE kind = 'spawn' AND target_computer_id = '' AND target_thread_id = ?1)`
+// spawnLinkSQL is true when ?1 names a thread with a spawn link, the one
+// relation that owns it (spawnerOfSQL).
+var spawnLinkSQL = spawnerOfSQL("?1") + ` IS NOT NULL`
 
 // SetThreadPlacement makes each named thread owned or standalone, out of
 // any group it was in, and returns the rows as they now stand. A row whose

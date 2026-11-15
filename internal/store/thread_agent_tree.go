@@ -294,6 +294,16 @@ func agentSpawnLinkSQL(alias string) string {
 	return a + `kind = 'spawn' AND ` + a + `target_computer_id = '' AND ` + a + `superseded = 0 AND ` + a + `target_thread_id <> ''`
 }
 
+// spawnerOfSQL is the caller of the link of the thread the expression
+// target names, NULL for a thread no local spawn reaches: the one owner
+// every read of a thread's spawner names, its row, its prompts' route, its
+// owner's archive and an answer's read mark alike. A superseded spawn is
+// no owner.
+func spawnerOfSQL(target string) string {
+	return `(SELECT link.caller_thread_id FROM thread_requests AS link
+	          WHERE ` + agentSpawnLinkSQL("link") + ` AND link.target_thread_id = ` + target + `)`
+}
+
 // agentOpenBelowSQL is whether a local spawn has open work under its
 // target within agentOpenDepth, the term of idx_thread_requests_open_below.
 func agentOpenBelowSQL(alias string) string {

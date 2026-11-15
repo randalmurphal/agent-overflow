@@ -573,14 +573,9 @@ func (s *Store) SettleLocalThreadRequest(token string, from []string, settlement
 	out := LocalSettlement{Settled: true, Receipt: receipt}
 	var targetComputer string
 	var notify, answeredBySpawned int
-	// The spawner is read as threadColumns reads it: the caller of the
-	// newest local spawn request that made the thread.
+	// The spawner is read as threadColumns reads it (spawnerOfSQL).
 	err = tx.QueryRow(`SELECT target_computer_id, notify,
-	        COALESCE((
-	          SELECT spawn.caller_thread_id FROM thread_requests AS spawn
-	           WHERE spawn.kind = 'spawn' AND spawn.target_computer_id = '' AND spawn.target_thread_id = ?
-	           ORDER BY spawn.created_at DESC LIMIT 1
-	        ), '') = thread_requests.caller_thread_id
+	        COALESCE(`+spawnerOfSQL("?")+`, '') = thread_requests.caller_thread_id
 	   FROM thread_requests WHERE token = ? AND lineage_only = 0`, receipt.TargetThreadID, token).
 		Scan(&targetComputer, &notify, &answeredBySpawned)
 	switch {

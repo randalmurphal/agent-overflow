@@ -252,8 +252,9 @@ func TestNamingWriteOwnsOnRequest(t *testing.T) {
 	}
 }
 
-// When the last link an owned thread has is deleted, the trigger leaves it
-// standalone; a thread with another link stays owned.
+// When an owned thread's link is deleted, the trigger leaves it
+// standalone, a thread a superseded spawn row still names included: that
+// row owns nothing.
 func TestOwnedThreadLosingItsLinkBecomesStandalone(t *testing.T) {
 	s := newTestStore(t)
 	for _, id := range []string{"spawner", "other", "child", "shared"} {
@@ -271,8 +272,8 @@ func TestOwnedThreadLosingItsLinkBecomesStandalone(t *testing.T) {
 	if got, _ := placementOf(t, s, "child"); got != PlacementStandalone {
 		t.Errorf("child after its spawner's delete = %s, want standalone", got)
 	}
-	if got, _ := placementOf(t, s, "shared"); got != PlacementOwned {
-		t.Errorf("a thread another spawn row still names = %s, want owned", got)
+	if got, _ := placementOf(t, s, "shared"); got != PlacementStandalone {
+		t.Errorf("a thread only a superseded spawn row still names = %s, want standalone", got)
 	}
 }
 
@@ -489,10 +490,10 @@ func TestCatalogLeavesOwnedThreadsOut(t *testing.T) {
 	}
 }
 
-// ListOwnedWorkersToArchive names the unarchived owned threads whose newest local
-// spawn names the owner: not a standalone or archived worker, not one a
-// later spawn row gave another owner, not a worker's own worker unless that
-// worker is archived.
+// ListOwnedWorkersToArchive names the unarchived owned threads whose spawn link
+// the owner made: not a standalone or archived worker, not for a superseded
+// spawn row's caller, even a later one, not a worker's own worker unless
+// that worker is archived.
 func TestListOwnedWorkersToArchive(t *testing.T) {
 	s := newTestStore(t)
 	for _, id := range []string{"owner", "other", "owned", "deep", "placed", "archived", "moved"} {
@@ -518,14 +519,14 @@ func TestListOwnedWorkersToArchive(t *testing.T) {
 		}
 		return got
 	}
-	if got := list("owner"); !slices.Equal(got, []OwnedWorker{{"owned", "owner"}}) {
-		t.Errorf("owner's workers = %v; want [owned], stopping there", got)
+	if got := list("owner"); !slices.Equal(got, []OwnedWorker{{"moved", "owner"}, {"owned", "owner"}}) {
+		t.Errorf("owner's workers = %v; want [moved owned], stopping there", got)
 	}
 	if got := list("owned"); !slices.Equal(got, []OwnedWorker{{"deep", "owned"}}) {
 		t.Errorf("a worker's workers = %v; want [deep]", got)
 	}
-	if got := list("other"); !slices.Equal(got, []OwnedWorker{{"moved", "other"}}) {
-		t.Errorf("the later spawner's workers = %v; want [moved]", got)
+	if got := list("other"); len(got) != 0 {
+		t.Errorf("a superseded spawn's caller's workers = %v; want none", got)
 	}
 	// Through an archived worker the read goes on to the unarchived ones
 	// beneath it, each fenced by its own owner; not beneath one moved away.
@@ -538,8 +539,8 @@ func TestListOwnedWorkersToArchive(t *testing.T) {
 	spawnLocal(t, s, "tok-under-archived", "archived", "under-archived", true)
 	spawnLocal(t, s, "tok-under-placed", "placed", "under-placed", true)
 	spawnLocal(t, s, "tok-under-under", "under-archived", "under-under", true)
-	if got := list("owner"); !slices.Equal(got, []OwnedWorker{{"deep", "owned"}, {"under-archived", "archived"}}) {
-		t.Errorf("owner's workers through archived ones = %v; want deep and under-archived, not beneath the placed one or the unarchived one", got)
+	if got := list("owner"); !slices.Equal(got, []OwnedWorker{{"deep", "owned"}, {"moved", "owner"}, {"under-archived", "archived"}}) {
+		t.Errorf("owner's workers through archived ones = %v; want deep, moved and under-archived, not beneath the placed one or the unarchived one", got)
 	}
 }
 

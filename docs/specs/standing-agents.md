@@ -243,7 +243,8 @@ Ruling of 2026-11-14 (owned workers, amending spawn placement of
 
 36. **A spawned thread is its spawner's worker.** A thread any thread
     spawns on this computer is owned by its spawner, the caller of its
-    newest local spawn, unless the spawn places it standalone (a plain
+    spawn link (the one local spawn reaching it that is not
+    `superseded`), unless the spawn places it standalone (a plain
     row of its project) or in a named group. An owned thread has no
     sidebar row and is otherwise an ordinary thread: search and
     `thread_search` find it, it opens in a pane, keeps its session,
@@ -673,13 +674,13 @@ Ruling 36, as built:
 - `SetThreadGroup` makes a row grouped and an ungroup makes a grouped
   row standalone. `SetThreadPlacement` (the user's Show in Sidebar and
   Remove from Sidebar) and `thread_update` `placement` write owned or
-  standalone; owned is refused for a thread with no local spawn row
+  standalone; owned is refused for a thread with no spawn link
   (`ErrThreadNotSpawned`), and both are refused for an assistant's own
   thread (`ErrStandingAgentPlaced`) and a thread outside every project
-  (`ErrPlacementOutsideProjects`). When the last local spawn row naming
-  an owned project thread is deleted (its spawner's delete) the trigger
-  `trg_thread_placement_spawn_gone` makes it standalone; a helper stays
-  owned.
+  (`ErrPlacementOutsideProjects`). When an owned project thread's link
+  is deleted (its spawner's delete) the trigger
+  `trg_thread_placement_spawn_gone` makes it standalone, whatever
+  `superseded` rows still name it; a helper stays owned.
 - `catalogThreadClause` is the one predicate for what the sidebar
   lists: the thread catalog, the project thread counts and the archived
   threads list leave hidden-mode and owned threads out. Search,
@@ -692,8 +693,8 @@ Ruling 36, as built:
   and not owned, else `full`. Never `unlisted`, the archive frame that
   closes the panes showing the thread.
 - Archiving a thread, through `ArchiveThread` or `thread_update`, then
-  archives each unarchived owned thread whose newest local spawn names
-  it as caller, at any depth through workers already archived
+  archives each unarchived owned thread whose spawn link names it as
+  caller, at any depth through workers already archived
   (`ListOwnedWorkersToArchive`), through the same archive, so the
   cascade runs down the lineage and an already archived worker's own
   archive is not repeated. The workers are read under the
@@ -790,7 +791,7 @@ Mechanics, as built:
   current thread, with `agentAllProjects` and `agentProjectIds` (the
   projects it serves, sorted); `pastAgentId` and `agentSupersededAt` on a
   past thread; `helperOfAgentId` on a helper; `spawnedByThreadId` (the
-  newest local spawn request naming it) and `placement`
+  caller of its spawn link) and `placement`
   ([Owned workers](#owned-workers)). They are derived in
   `threadColumns`, so one `thread:updated` frame moves the row. A
   spawn's accept re-broadcasts the spawned thread; a handoff

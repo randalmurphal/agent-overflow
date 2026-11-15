@@ -98,7 +98,7 @@ type ThreadSearchFilter struct {
 	// thread that has never completed one.
 	SinceUnixMs int64
 	// SpawnedBy restricts to the threads one caller thread spawned: the
-	// targets of its `spawn` rows in the request ledger.
+	// threads whose spawn link it made (spawnerOfSQL).
 	SpawnedBy string
 	// Agents restricts to assistants' current threads.
 	Agents bool
@@ -203,10 +203,7 @@ func (f ThreadSearchFilter) threadRowConditions(alias string) ([]string, []any) 
 		conditions = append(conditions, `EXISTS (SELECT 1 FROM agents WHERE agents.thread_id = `+alias+`id)`)
 	}
 	if f.SpawnedBy != "" {
-		conditions = append(conditions, `EXISTS (SELECT 1 FROM thread_requests spawns
-		            WHERE spawns.caller_thread_id = ?
-		              AND spawns.kind = '`+ThreadRequestSpawn+`'
-		              AND spawns.target_thread_id = `+alias+`id)`)
+		conditions = append(conditions, spawnerOfSQL(alias+"id")+` = ?`)
 		args = append(args, f.SpawnedBy)
 	}
 	return conditions, args

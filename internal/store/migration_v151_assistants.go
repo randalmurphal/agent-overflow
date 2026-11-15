@@ -44,7 +44,8 @@ import (
 //     and its answer gone. It still links its target into the tree.
 //   - `superseded`: a local spawn of a thread that a newer local spawn
 //     also names, which only data from before this migration holds. It is
-//     not its target's link, and is kept as a lineage row.
+//     not its target's link and names no owner: every read of a thread's
+//     spawner, its owned workers and its placement reads the link alone.
 //   - `confirmed_at` and `late_confirmed_at`: the provider's echo of a
 //     queued answer and late reply. Every row delivered before this
 //     migration is recorded as confirmed: the rows still queued then are
@@ -77,8 +78,8 @@ import (
 // above it. The link outlives the retention floor: clearing a spawn's
 // payload (lineage_only) leaves it the link, so a worker reused after the
 // sweep nests its new work under its owner. A database that holds two such
-// rows for one thread keeps the newest, the spawner every lineage read
-// names, as the link, and marks the older ones superseded lineage rows.
+// rows for one thread keeps the newest as the link, by creation time then
+// token, and marks the older ones superseded lineage rows.
 //
 // open_below_0 to open_below_3 count, on each such spawn, the requests that
 // count as open work (agentOpenWorkSQL) made by the threads d spawns below
@@ -115,9 +116,9 @@ import (
 // their spawned thread is gone.
 //
 // trg_thread_placement_spawn_gone makes an owned thread of a project
-// standalone when the last local spawn row naming it is deleted, as a
-// spawner's delete does, so the thread gains a sidebar row rather than
-// being left owned by nothing. An assistant's helper, outside every
+// standalone when its link is deleted, as a spawner's delete does, so the
+// thread gains a sidebar row rather than being left owned by nothing; a
+// superseded row left behind owns nothing. An assistant's helper, outside every
 // project, stays owned: its assistant's delete deletes it.
 //
 // idx_agent_past_threads_agent orders an assistant's past threads newest
@@ -469,12 +470,12 @@ BEGIN
 END;
 
 CREATE TRIGGER trg_thread_placement_spawn_gone AFTER DELETE ON thread_requests
-WHEN OLD.kind = 'spawn' AND OLD.target_computer_id = '' AND OLD.target_thread_id <> ''
+WHEN OLD.kind = 'spawn' AND OLD.target_computer_id = '' AND OLD.superseded = 0 AND OLD.target_thread_id <> ''
 BEGIN
   UPDATE threads SET placement = 'standalone'
    WHERE id = OLD.target_thread_id AND placement = 'owned' AND project_id IS NOT NULL
      AND NOT EXISTS (SELECT 1 FROM thread_requests
-                      WHERE kind = 'spawn' AND target_computer_id = '' AND target_thread_id = OLD.target_thread_id);
+                      WHERE kind = 'spawn' AND target_computer_id = '' AND superseded = 0 AND target_thread_id = OLD.target_thread_id);
 END;
 `
 
