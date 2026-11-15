@@ -669,26 +669,7 @@ func (a *App) applyThreadPeerRequest(token, computerID string, answer ThreadPeer
 		a.forgetRemoteRequestBlocked(token)
 		return 0, nil, nil
 	}
-	revision, wakes, err := a.collectRemoteThreadRequest(row, answer)
-	if err == nil && row.Kind == store.ThreadRequestSpawn {
-		a.askSettledRemoteSpawn(token)
-	}
-	return revision, wakes, err
-}
-
-// askSettledRemoteSpawn asks the computer a spawn went to, once, for the
-// rows of the thread it made, now that the spawn settled: the answer
-// records whether that thread is still not at rest (recordPeerOpenWork),
-// which keeps the row open and the poller asking.
-func (a *App) askSettledRemoteSpawn(token string) {
-	spawn, found, err := a.store.GetThreadRequest(token)
-	if err != nil {
-		logThreadRequestSweep("read settled remote spawn "+token, err)
-		return
-	}
-	if found && threadRequestSettled(spawn) && spawn.TargetThreadID != "" && spawn.TargetComputerID != "" {
-		a.refreshPeerAgentRows(spawn, 0)
-	}
+	return a.collectRemoteThreadRequest(row, answer)
 }
 
 // collectThreadPeerReply applies an answer that came back on a call's own

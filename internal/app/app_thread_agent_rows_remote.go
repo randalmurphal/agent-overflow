@@ -21,9 +21,9 @@ import (
 // again. Every answer also records on the spawn's row whether that
 // computer listed open work or said the spawn's thread is not at rest
 // (`nested_open`), which keeps a settled remote spawn listed while it does;
-// the poller asks again at its own pace while a row says so. A remote
-// spawn that settles is asked about once at once, so a thread that keeps
-// working after it answered is recorded before the poller would look.
+// the poller asks again at its own pace while a row says so. The poll that
+// collects a remote spawn's answer asks for its rows too, so a thread that
+// keeps working after it answered is recorded as it settles.
 //
 // The asking is bounded whatever the number of spawns or computers: one
 // queue of spawns waiting to be asked, each once, at most
