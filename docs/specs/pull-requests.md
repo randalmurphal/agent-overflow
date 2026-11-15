@@ -145,13 +145,13 @@ base's rulesets (`allowedMergeMethods`).
   branch delete when asked and the repository does not do it itself. The
   head SHA is always sent: a push the pane has not seen yet is refused by
   the forge (409), not merged blind.
-- Auto-merge when ready: GitLab `PUT .../merge` with `auto_merge` (17.11+)
-  and `merge_when_pipeline_succeeds` (before) in one request; the server's
-  answer decides which checks it waits for, and the armed row shows the
-  forge's own wording;
+- Auto-merge when ready: GitLab `PUT .../merge` with `auto_merge`; the
+  server's answer decides which checks it waits for, and the armed row
+  shows the forge's own wording;
   GitHub `enablePullRequestAutoMerge`. Cancel: GitLab
-  `POST .../cancel_merge_when_pipeline_succeeds` (`cancel_auto_merge` on
-  19.5+), GitHub `disablePullRequestAutoMerge`. An armed auto-merge shows
+  `POST .../cancel_auto_merge` on 19.5 and later,
+  `POST .../cancel_merge_when_pipeline_succeeds` before, chosen by the
+  server's release; GitHub `disablePullRequestAutoMerge`. An armed auto-merge shows
   as a settled row "Auto-merge set by X · method" with Cancel, and the
   button reads "Auto-merge set".
 - No optimistic state: a successful action asks the PR's pump to poll at
@@ -804,11 +804,6 @@ fake forge on desktop and compact.
 - GitLab Free has no approval rules: `approvals_required` is 0 and
   `approved` is true with any approval; the approvals row then reads
   "N approvals" as a settled row, never a blocker.
-- GitLab before 17.11 has no `auto_merge` and ignores it as an undeclared
-  parameter (it never answers 400 for it), so auto-merge sends
-  `auto_merge` and `merge_when_pipeline_succeeds` together; 17.11+ reads
-  either. Cancel tries `cancel_auto_merge` and, on a 404 (before 19.5),
-  `cancel_merge_when_pipeline_succeeds`, remembered per host.
 - GitHub `latestReviews` lists each author's latest review, so a comment
   after an approval hides it; `latestOpinionatedReviews` lists each
   author's latest approval or change request, and the viewer's approval

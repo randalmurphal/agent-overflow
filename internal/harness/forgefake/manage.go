@@ -115,6 +115,13 @@ func (e *Engine) gitlabHostVersion(host string) string {
 	return gitlabDefaultVersion
 }
 
+// gitlabAtLeast reports whether host runs release (major, minor) or
+// later. A seeded version is validated, so it parses.
+func (e *Engine) gitlabAtLeast(host string, release [2]int) bool {
+	v, _ := parseGitLabRelease(e.gitlabHostVersion(host))
+	return v[0] > release[0] || (v[0] == release[0] && v[1] >= release[1])
+}
+
 // githubAssigneesMax is how many assignees GitHub keeps.
 const githubAssigneesMax = 10
 

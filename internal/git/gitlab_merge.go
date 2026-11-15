@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"slices"
 	"strings"
-	"sync"
 
 	"agent-overflow/internal/forgeapi"
 )
@@ -18,34 +17,10 @@ import (
 // app layer explains it (ExplainForgeError). See
 // docs/specs/pull-requests.md#actions.
 
-// gitlabRouteMemory remembers, per host and for the process, a server
-// without cancel_auto_merge (before 19.5) that answered
-// cancel_merge_when_pipeline_succeeds.
-type gitlabRouteMemory struct {
-	mu           sync.Mutex
-	legacyCancel map[string]bool
-}
-
-func (m *gitlabRouteMemory) clear() {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.legacyCancel = nil
-}
-
-func (m *gitlabRouteMemory) get(host string) bool {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.legacyCancel[host]
-}
-
-func (m *gitlabRouteMemory) remember(host string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.legacyCancel == nil {
-		m.legacyCancel = make(map[string]bool)
-	}
-	m.legacyCancel[host] = true
-}
+// gitlabCancelAutoMergeRelease is the release that added POST
+// .../cancel_auto_merge ("Introduced in GitLab 19.5", merge requests
+// API). Before it the route is .../cancel_merge_when_pipeline_succeeds.
+var gitlabCancelAutoMergeRelease = gitlabVersion{19, 5}
 
 // Approve posts the viewer's approval of headSHA; GitLab refuses it when
 // the merge request's head has moved past it.
@@ -87,9 +62,8 @@ type gitlabMergeAnswer struct {
 // takes no method: the project's merge_method decides merge, rebase_merge
 // or fast-forward, so req.Method must be one the project allows
 // (gitlabMethods) and only squash is sent. Auto-merge sends auto_merge
-// and merge_when_pipeline_succeeds together: 17.11+ reads either, and an
-// older server ignores the auto_merge it does not declare and arms on the
-// second. The answer is the merge request: merged is Merged, an armed
+// ("If true, the merge request is set to auto merge", GitLab 17.11 and
+// later). The answer is the merge request: merged is Merged, an armed
 // merge_when_pipeline_succeeds is AutoMerge, and a merge request still
 // open with neither is a merge GitLab runs asynchronously, which the
 // pump's next poll shows.
@@ -128,7 +102,6 @@ func (f *gitlabForge) Merge(ctx context.Context, ref PRReference, req MergeReque
 	}
 	if req.AutoMerge {
 		body["auto_merge"] = true
-		body["merge_when_pipeline_succeeds"] = true
 	}
 	var answer gitlabMergeAnswer
 	_, err = client.JSON(ctx, forgeapi.Request{Method: http.MethodPut, Path: gitlabMRPath(ref) + "/merge", Body: body}, &answer)
@@ -151,54 +124,38 @@ func (f *gitlabForge) Merge(ctx context.Context, ref PRReference, req MergeReque
 	return MergeOutcome{}, nil
 }
 
-// CancelAutoMerge disarms an armed auto-merge with POST
-// .../cancel_auto_merge. A server without that route (404) is asked
-// .../cancel_merge_when_pipeline_succeeds, remembered for the host once it
-// answers; a 404 there too is the merge request gone and the first 404 is
-// returned. The older route answers 201 with {"status":"error"} when
-// nothing was armed, which is an error here.
+// CancelAutoMerge disarms an armed auto-merge, on a merge train project
+// also removing the merge request from its train ("If the merge request
+// is on a merge train, this also removes it from the train"). The route
+// follows the server's release: POST .../cancel_auto_merge from
+// gitlabCancelAutoMergeRelease, which answers 409 when nothing is armed,
+// else POST .../cancel_merge_when_pipeline_succeeds, which answers 201
+// with {"status":"error"} then, an error here.
 func (f *gitlabForge) CancelAutoMerge(ctx context.Context, ref PRReference) error {
-	client, err := f.writeClient(ctx, ref)
+	client, version, err := f.writeServer(ctx, ref)
 	if err != nil {
 		return err
 	}
-	if !f.routes.get(ref.Host) {
+	if version.atLeast(gitlabCancelAutoMergeRelease) {
 		_, err := client.JSON(ctx, forgeapi.Request{Method: http.MethodPost, Path: gitlabMRPath(ref) + "/cancel_auto_merge"}, nil)
-		if !errors.Is(err, forgeapi.ErrNotFound) {
-			return err
-		}
-		answered, legacyErr := f.cancelLegacy(ctx, client, ref)
-		if errors.Is(legacyErr, forgeapi.ErrNotFound) {
-			return err
-		}
-		if answered {
-			f.routes.remember(ref.Host)
-		}
-		return legacyErr
+		return err
 	}
-	_, err = f.cancelLegacy(ctx, client, ref)
-	return err
-}
-
-// cancelLegacy posts .../cancel_merge_when_pipeline_succeeds. answered
-// reports that the route exists: it answered with its status hash.
-func (f *gitlabForge) cancelLegacy(ctx context.Context, client *forgeapi.Client, ref PRReference) (answered bool, err error) {
 	var answer struct {
 		Status  string `json:"status"`
 		Message string `json:"message"`
 	}
 	request := forgeapi.Request{Method: http.MethodPost, Path: gitlabMRPath(ref) + "/cancel_merge_when_pipeline_succeeds"}
 	if _, err := client.JSON(ctx, request, &answer); err != nil {
-		return false, err
+		return err
 	}
 	if answer.Status == "error" {
 		reason := strings.TrimSpace(answer.Message)
 		if reason == "" {
 			reason = "no auto-merge was set"
 		}
-		return true, fmt.Errorf("GitLab did not cancel the auto-merge: %s", reason)
+		return fmt.Errorf("GitLab did not cancel the auto-merge: %s", reason)
 	}
-	return true, nil
+	return nil
 }
 
 // UpdateBranch asks GitLab to rebase the source branch onto the target

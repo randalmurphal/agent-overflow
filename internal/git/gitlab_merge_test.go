@@ -914,25 +914,17 @@ func TestGitLabMergeRefusesAMethodTheProjectDoesNotAllow(t *testing.T) {
 	}
 }
 
-// Auto-merge sends auto_merge and merge_when_pipeline_succeeds in one
-// request: GitLab 17.11+ reads either, and an older server ignores the
-// auto_merge it does not know and arms on the second. An armed answer is
-// AutoMerge.
-func TestGitLabAutoMergeSendsBothParameters(t *testing.T) {
+// Auto-merge sends auto_merge alone, which every supported GitLab reads
+// (merge_when_pipeline_succeeds is its deprecated spelling from before
+// 17.11). An armed answer is AutoMerge.
+func TestGitLabAutoMergeSendsAutoMerge(t *testing.T) {
 	t.Parallel()
 	mr := gitlabTestProject + "/merge_requests/7"
 	core, calls := gitlabMergeForge(t, func(call forgeAPICall) (forgeAPIAnswer, bool) {
 		if call.Method != http.MethodPut || call.Path != mr+"/merge" {
 			return forgeAPIAnswer{}, false
 		}
-		// A server before 17.11: auto_merge is an undeclared parameter
-		// Grape drops, so only merge_when_pipeline_succeeds arms.
-		var body map[string]any
-		_ = json.Unmarshal(call.Body, &body)
-		if body["merge_when_pipeline_succeeds"] == true {
-			return forgeAPIAnswer{Body: `{"state":"opened","merge_when_pipeline_succeeds":true}`}, true
-		}
-		return forgeAPIAnswer{Status: http.StatusMethodNotAllowed, Body: `{"message":"405 Method Not Allowed"}`}, true
+		return forgeAPIAnswer{Body: `{"state":"opened","merge_when_pipeline_succeeds":true}`}, true
 	})
 	req := MergeRequest{Method: MergeMethodMerge, HeadSHA: "abc1234", AutoMerge: true}
 	for range 2 {
@@ -951,8 +943,8 @@ func TestGitLabAutoMergeSendsBothParameters(t *testing.T) {
 		t.Fatalf("merge bodies = %+v, want one PUT per auto-merge", puts)
 	}
 	for _, body := range puts {
-		if body["auto_merge"] != true || body["merge_when_pipeline_succeeds"] != true || body["sha"] != "abc1234" {
-			t.Fatalf("merge body = %+v, want auto_merge and merge_when_pipeline_succeeds with the head", body)
+		if _, deprecated := body["merge_when_pipeline_succeeds"]; body["auto_merge"] != true || deprecated || body["sha"] != "abc1234" {
+			t.Fatalf("merge body = %+v, want auto_merge alone with the head", body)
 		}
 	}
 	// A refusal is the caller's, with no second attempt.
@@ -991,69 +983,55 @@ func TestGitLabAutoMergeCarriesTheEditedMessage(t *testing.T) {
 		}
 		all := calls.all()
 		body := jsonBody(t, all[len(all)-1])
-		if body[tc.key] != msg.String() || body["auto_merge"] != true || len(body) != 6 {
+		if body[tc.key] != msg.String() || body["auto_merge"] != true || len(body) != 5 {
 			t.Fatalf("%s auto-merge body = %+v, want %s", tc.method, body, tc.key)
 		}
 	}
 }
 
-// Cancel uses cancel_auto_merge; a server without it (404) is asked the
-// older route, remembered for the host once it answers. A 404 on both is
-// the merge request gone, not remembered; the older route's error status
-// is an error.
-func TestGitLabCancelAutoMerge(t *testing.T) {
+// Cancel follows the server's release: cancel_auto_merge from 19.5 (a
+// 409 when nothing is armed), cancel_merge_when_pipeline_succeeds before
+// it (a 201 whose status field says error when nothing is armed). No
+// route is tried to learn which exists.
+func TestGitLabCancelAutoMergeFollowsTheRelease(t *testing.T) {
 	t.Parallel()
 	mr := gitlabTestProject + "/merge_requests/7"
-	var legacy atomic.Value
-	legacy.Store(`{"status":"success"}`)
-	var gone atomic.Bool
-	core, calls := gitlabMergeForge(t, func(call forgeAPICall) (forgeAPIAnswer, bool) {
-		switch call.Method + " " + call.Path {
-		case "POST " + mr + "/cancel_auto_merge":
-			return forgeAPIAnswer{Status: http.StatusNotFound, Body: `{"error":"404 Not Found"}`}, true
-		case "POST " + mr + "/cancel_merge_when_pipeline_succeeds":
-			if gone.Load() {
-				return forgeAPIAnswer{Status: http.StatusNotFound, Body: `{"message":"404 Merge Request Not Found"}`}, true
+	cancel := func(version, answer string) (error, []string) {
+		core, calls := gitlabMergeForge(t, func(call forgeAPICall) (forgeAPIAnswer, bool) {
+			switch call.Method + " " + call.Path {
+			case "GET metadata":
+				return forgeAPIAnswer{Body: `{"version":"` + version + `"}`}, true
+			case "POST " + mr + "/cancel_auto_merge", "POST " + mr + "/cancel_merge_when_pipeline_succeeds":
+				status, body, _ := strings.Cut(answer, " ")
+				code, _ := strconv.Atoi(status)
+				return forgeAPIAnswer{Status: code, Body: body}, true
 			}
-			return forgeAPIAnswer{Status: http.StatusCreated, Body: legacy.Load().(string)}, true
-		}
-		return forgeAPIAnswer{}, false
-	})
-	ref := gitlabTestRef(7)
-	gone.Store(true)
-	if err := core.CancelPRAutoMerge(t.Context(), ref); !errors.Is(err, forgeapi.ErrNotFound) || !strings.Contains(err.Error(), "cancel_auto_merge") {
-		t.Fatalf("both routes 404 = %v, want the first 404", err)
+			return forgeAPIAnswer{}, false
+		})
+		err := core.CancelPRAutoMerge(t.Context(), gitlabTestRef(7))
+		return err, gitlabPaths(calls)
 	}
-	gone.Store(false)
-	if err := core.CancelPRAutoMerge(t.Context(), ref); err != nil {
-		t.Fatal(err)
+	legacy := []string{"GET metadata", "POST " + mr + "/cancel_merge_when_pipeline_succeeds"}
+	current := []string{"GET metadata", "POST " + mr + "/cancel_auto_merge"}
+
+	if err, paths := cancel("19.4.2-ee", `201 {"status":"success"}`); err != nil || !slices.Equal(paths, legacy) {
+		t.Fatalf("19.4 cancel = %v, requests %q, want the older route alone", err, paths)
 	}
-	if err := core.CancelPRAutoMerge(t.Context(), ref); err != nil {
-		t.Fatal(err)
+	if err, _ := cancel("19.4.2-ee", `201 {"message":"Can't cancel the automatic merge","status":"error","http_status":406}`); err == nil || !strings.Contains(err.Error(), "Can't cancel the automatic merge") {
+		t.Fatalf("19.4 nothing armed = %v", err)
 	}
-	legacy.Store(`{"status":"error","message":"none set"}`)
-	if err := core.CancelPRAutoMerge(t.Context(), ref); err == nil || !strings.Contains(err.Error(), "none set") {
-		t.Fatalf("nothing armed = %v", err)
+	if err, paths := cancel("19.5.0-ee", `201 {"iid":7}`); err != nil || !slices.Equal(paths, current) {
+		t.Fatalf("19.5 cancel = %v, requests %q, want cancel_auto_merge alone", err, paths)
 	}
-	want := []string{
-		"GET metadata",
-		"POST " + mr + "/cancel_auto_merge", "POST " + mr + "/cancel_merge_when_pipeline_succeeds",
-		"POST " + mr + "/cancel_auto_merge", "POST " + mr + "/cancel_merge_when_pipeline_succeeds",
-		"POST " + mr + "/cancel_merge_when_pipeline_succeeds",
-		"POST " + mr + "/cancel_merge_when_pipeline_succeeds",
+	if err, paths := cancel("19.6.1-ee", `409 {"message":"Can't cancel the automatic merge"}`); err == nil || !slices.Equal(paths, current) {
+		t.Fatalf("19.6 nothing armed = %v, requests %q", err, paths)
 	}
-	if got := gitlabPaths(calls); strings.Join(got, "\n") != strings.Join(want, "\n") {
-		t.Fatalf("requests =\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	// A 404 is the merge request gone, on either route, with no second try.
+	if err, paths := cancel("19.5.0-ee", `404 {"message":"404 Merge Request Not Found"}`); !errors.Is(err, forgeapi.ErrNotFound) || !slices.Equal(paths, current) {
+		t.Fatalf("19.5 gone = %v, requests %q", err, paths)
 	}
-	// A current server answers the new route alone.
-	core2, calls2 := gitlabMergeForge(t, func(call forgeAPICall) (forgeAPIAnswer, bool) {
-		if call.Method == http.MethodPost && call.Path == mr+"/cancel_auto_merge" {
-			return forgeAPIAnswer{Status: http.StatusCreated, Body: `{"iid":7}`}, true
-		}
-		return forgeAPIAnswer{}, false
-	})
-	if err := core2.CancelPRAutoMerge(t.Context(), ref); err != nil || !slices.Equal(gitlabPaths(calls2), []string{"GET metadata", "POST " + mr + "/cancel_auto_merge"}) {
-		t.Fatalf("cancel = %v, requests %q", err, gitlabPaths(calls2))
+	if err, paths := cancel("18.0.0-ee", `404 {"message":"404 Merge Request Not Found"}`); !errors.Is(err, forgeapi.ErrNotFound) || !slices.Equal(paths, legacy) {
+		t.Fatalf("18.0 gone = %v, requests %q", err, paths)
 	}
 }
 

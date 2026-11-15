@@ -2054,6 +2054,46 @@ func TestGitHubTimelineAndThreadStatesPage(t *testing.T) {
 	}
 }
 
+// GitLab's cancel routes follow the host's release: cancel_auto_merge
+// exists from 19.5 (before it GitLab's route 404), and
+// cancel_merge_when_pipeline_succeeds on every supported release answers
+// 201 with a status hash, "error" when nothing is armed.
+func TestGitLabCancelRoutesFollowTheRelease(t *testing.T) {
+	t.Parallel()
+	e, srv := mergeEngine(t)
+	const mrPath = "projects/grp%2Fmerge/merge_requests/2"
+	const head = "3333333333333333333333333333333333333333"
+	arm := func() {
+		t.Helper()
+		if got := glabSend(t, srv, "PUT", mrPath+"/merge", `{"sha":"`+head+`","auto_merge":true}`); got.status != http.StatusOK {
+			t.Fatalf("auto-merge = %+v", got)
+		}
+	}
+	e.repoOn("gitlab", "gitlab.com", "grp/merge").ServerVersion = "19.4.2-ee"
+	arm()
+	if got := glabSend(t, srv, "POST", mrPath+"/cancel_auto_merge", ""); got.status != http.StatusNotFound {
+		t.Fatalf("cancel_auto_merge on 19.4 = %+v, want GitLab's 404 for a route it lacks", got)
+	}
+	if got := glabSend(t, srv, "POST", mrPath+"/cancel_merge_when_pipeline_succeeds", ""); got.status != http.StatusCreated || !strings.Contains(got.body, `"status":"success"`) {
+		t.Fatalf("legacy cancel = %+v", got)
+	}
+	if mr := glabJSON(t, srv, mrPath); mr["merge_when_pipeline_succeeds"] != false {
+		t.Fatalf("after the legacy cancel: %v", mr)
+	}
+	if got := glabSend(t, srv, "POST", mrPath+"/cancel_merge_when_pipeline_succeeds", ""); got.status != http.StatusCreated || !strings.Contains(got.body, `"status":"error"`) || !strings.Contains(got.body, "Can't cancel the automatic merge") {
+		t.Fatalf("a legacy cancel with nothing armed = %+v", got)
+	}
+	e.repoOn("gitlab", "gitlab.com", "grp/merge").ServerVersion = "19.5.0-ee"
+	arm()
+	if got := glabSend(t, srv, "POST", mrPath+"/cancel_auto_merge", ""); got.status != http.StatusCreated {
+		t.Fatalf("cancel_auto_merge on 19.5 = %+v", got)
+	}
+	arm()
+	if got := glabSend(t, srv, "POST", mrPath+"/cancel_merge_when_pipeline_succeeds", ""); got.status != http.StatusCreated || !strings.Contains(got.body, `"status":"success"`) {
+		t.Fatalf("legacy cancel on 19.5 = %+v", got)
+	}
+}
+
 // GitLab's merge routes transition the merge request and the next read
 // shows it; a wrong sha answers 409 and changes nothing.
 func TestGitLabMergeRoutesTransitionTheMergeRequest(t *testing.T) {

@@ -92,14 +92,22 @@ func (f *gitlabForge) server(ctx context.Context, client *forgeapi.Client, host 
 // A failed version read is a write not sent, so its caller never reports
 // it as one the forge may have applied.
 func (f *gitlabForge) writeClient(ctx context.Context, ref PRReference) (*forgeapi.Client, error) {
+	client, _, err := f.writeServer(ctx, ref)
+	return client, err
+}
+
+// writeServer is writeClient with the server's release, for a write whose
+// request depends on it.
+func (f *gitlabForge) writeServer(ctx context.Context, ref PRReference) (*forgeapi.Client, gitlabVersion, error) {
 	client, err := f.core.gitlabAPI(ref.Host)
 	if err != nil {
-		return nil, err
+		return nil, gitlabVersion{}, err
 	}
-	if err := f.server(ctx, client, ref.Host).supported(ref.Host); err != nil {
-		return nil, &forgeapi.NotSentError{Err: err}
+	server := f.server(ctx, client, ref.Host)
+	if err := server.supported(ref.Host); err != nil {
+		return nil, gitlabVersion{}, &forgeapi.NotSentError{Err: err}
 	}
-	return client, nil
+	return client, server.version, nil
 }
 
 // gitlabSchemaLacks reports whether err is GitLab refusing a document at

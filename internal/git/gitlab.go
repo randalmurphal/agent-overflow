@@ -31,9 +31,6 @@ type gitlabForge struct {
 	// activity is each host's viewer activity, read once per list round
 	// (pr_list_gitlab.go).
 	activity gitlabActivityRounds
-	// routes remembers, per host, a server that answered the older cancel
-	// route (gitlab_merge.go).
-	routes gitlabRouteMemory
 	// pipelineTags remembers which listed pipelines ran on a tag
 	// (ci_gitlab.go).
 	pipelineTags gitlabPipelineTags
@@ -55,7 +52,6 @@ func (f *gitlabForge) resetCaches() {
 	f.projects.clear()
 	f.viewers.clear()
 	f.noApprovalState.clear()
-	f.routes.clear()
 	f.pipelineTags.forget()
 	f.versions.clear()
 	f.stateEventRetries.clear()

@@ -1303,6 +1303,34 @@ func TestGitHubSubmitReviewLineCommentsThroughTheAppsForgeCode(t *testing.T) {
 	}
 }
 
+// A GitLab before 19.5 has no cancel_auto_merge: the app's cancel goes to
+// cancel_merge_when_pipeline_succeeds by the host's release alone, with no
+// request to the newer route, and a cancel with nothing armed is an error.
+func TestGitLabCancelAutoMergeOnAnOlderReleaseThroughTheAppsForgeCode(t *testing.T) {
+	fixture := gitlabMergeFixture("running")
+	fixture.Repos[0].ServerVersion = "19.4.1-ee"
+	r := newRig(t, fixture)
+	ref := gitops.PRReference{Forge: "gitlab", Host: "gitlab.com", Namespace: "grp", Repo: "merge", Number: 4}
+	ctx := forgeapi.WithInteractive(t.Context())
+	if outcome, err := r.core.MergePR(ctx, ref, gitops.MergeRequest{Method: "merge", HeadSHA: strings.Repeat("4", 40), AutoMerge: true}); err != nil || !outcome.AutoMerge {
+		t.Fatalf("auto-merge = %+v, %v", outcome, err)
+	}
+	if err := r.core.CancelPRAutoMerge(ctx, ref); err != nil {
+		t.Fatalf("CancelPRAutoMerge on 19.4: %v", err)
+	}
+	if read := mergeRead(t, r, ref); read.Detail.Merge.AutoMerge != nil {
+		t.Fatalf("after cancel: %+v", read.Detail.Merge.AutoMerge)
+	}
+	if err := r.core.CancelPRAutoMerge(ctx, ref); err == nil || !strings.Contains(err.Error(), "Can't cancel the automatic merge") {
+		t.Fatalf("a second cancel = %v", err)
+	}
+	for _, inv := range r.engine.Invocations(0).Invocations {
+		if inv.Unhandled || strings.HasSuffix(inv.Path, "/cancel_auto_merge") {
+			t.Errorf("%s %s (unhandled %v): %s", inv.Method, inv.Path, inv.Unhandled, inv.Detail)
+		}
+	}
+}
+
 // A GitLab review submit through the app's own code: the viewer's own
 // pending draft (a review started on GitLab) refuses it before any write,
 // since the publish would post that draft too. One that fails after

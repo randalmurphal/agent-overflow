@@ -951,12 +951,20 @@ func glabMerge(e *Engine, c *call, m []string) response {
 	return glabOK(jsonResponse(e.gitlabMRJSON(r, p)))
 }
 
+// gitlabCancelAutoMergeRelease is the release that added
+// cancel_auto_merge.
+var gitlabCancelAutoMergeRelease = [2]int{19, 5}
+
 // glabCancelAutoMerge disarms an armed auto-merge (409 when none is
 // armed, 403 for a viewer who cannot merge) and answers the merge request
-// with its system note added.
+// with its system note added. A host before 19.5 has no such route and
+// answers GitLab's 404.
 func glabCancelAutoMerge(e *Engine, c *call, m []string) response {
 	if err := noRESTBody(c); err != nil {
 		return unhandled("%v", err)
+	}
+	if !e.gitlabAtLeast(c.http.host, gitlabCancelAutoMergeRelease) {
+		return glabStatus(http.StatusNotFound, "404 Not Found")
 	}
 	r, p, fail, ok := e.glabMRFrom(c, m)
 	if !ok {
@@ -968,11 +976,42 @@ func glabCancelAutoMerge(e *Engine, c *call, m []string) response {
 	case p.Readiness.AutoMerge == nil:
 		return glabStatus(http.StatusConflict, "409 Conflict: Can't cancel the automatic merge")
 	}
-	p.Readiness.AutoMerge = nil
-	p.Events = append(p.Events, Event{ID: e.ids.next(), Kind: "auto_merge_canceled", Actor: e.viewer, At: glabNow()})
+	e.cancelGitLabAutoMerge(p)
 	resp := glabOK(jsonResponse(e.gitlabMRJSON(r, p)))
 	resp.status = http.StatusCreated
 	return resp
+}
+
+// glabCancelMergeWhenPipelineSucceeds is the deprecated cancel route every
+// supported release has: 401 for a viewer who cannot merge, else 201 with
+// a status hash, "error" with GitLab's 406 inside it when nothing is
+// armed.
+func glabCancelMergeWhenPipelineSucceeds(e *Engine, c *call, m []string) response {
+	if err := noRESTBody(c); err != nil {
+		return unhandled("%v", err)
+	}
+	r, p, fail, ok := e.glabMRFrom(c, m)
+	if !ok {
+		return fail
+	}
+	if gitlabRoles[r.Merge.Permission] < gitlabRoles["developer"] {
+		return glabStatus(http.StatusUnauthorized, "401 Unauthorized")
+	}
+	answer := map[string]any{"status": "success"}
+	if p.Readiness.AutoMerge == nil {
+		answer = map[string]any{"status": "error", "message": "Can't cancel the automatic merge", "http_status": 406}
+	} else {
+		e.cancelGitLabAutoMerge(p)
+	}
+	resp := glabOK(jsonResponse(answer))
+	resp.status = http.StatusCreated
+	return resp
+}
+
+// cancelGitLabAutoMerge disarms p's auto-merge with its system note.
+func (e *Engine) cancelGitLabAutoMerge(p *Pull) {
+	p.Readiness.AutoMerge = nil
+	p.Events = append(p.Events, Event{ID: e.ids.next(), Kind: "auto_merge_canceled", Actor: e.viewer, At: glabNow()})
 }
 
 // glabRebase rebases the source branch onto the target: 202
