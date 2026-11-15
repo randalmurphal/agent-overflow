@@ -1010,7 +1010,9 @@ func (a *App) dispatchFlushGroup(threadID string, group []triage.QueuedFlushItem
 			// preserve both across this placement-only fallback.
 			var refreshExpect triage.PendingSendExpectation
 			sendOpts.ClientUserMessageID, refreshExpect = providerSendIdentity(sess, userItem.ID, "")
-			a.triage.RegisterPendingFlushSendWithExpectation(
+			// The message is now the fresh turn's input, which a Stop does
+			// not discard, so the Stop does not send it again.
+			a.triage.RegisterPendingFlushTurnStartWithExpectation(
 				threadID, leadQueueItemID, userItem, leadEnqueuedAt, refreshExpect)
 			sess.Liveness.BumpActivity(time.Now())
 			if sendErr := sess.Codex.Send(context.Background(), joined.providerContent, sendOpts); sendErr != nil {

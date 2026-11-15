@@ -1056,8 +1056,11 @@ func (a *App) interruptTurnAtIndex(ctx context.Context, threadID string, expectT
 //     PromoteQuietFlushSends emits provider:item_event so they
 //     transition from Zone 2 to the timeline.
 //
-// For Codex, deferred sends are also re-sent as a fresh turn because
-// Codex discards steered pending_input on turn/interrupt.
+// For Codex, deferred sends steered into the running turn are also re-sent
+// as a fresh turn because Codex discards steered pending_input on
+// turn/interrupt. A send that went out as the input of a turn it starts
+// (EagerPersistedFlush.TurnInput) is that turn's own input and is not
+// re-sent.
 //
 // interruptedTurn is the caller's pre-ack OpenTurnIndex sample (-1
 // when no turn was open) — see EagerPersistDeferredFlushSends for why
@@ -1075,12 +1078,17 @@ func (a *App) eagerPersistFlushSendsOnInterrupt(threadID string, sess session, i
 	// review, CT4-1).
 	a.triage.PromoteQuietFlushSends(threadID, stampToken)
 
-	persisted := a.triage.EagerPersistDeferredFlushSends(threadID, interruptedTurn, stampToken)
-	if len(persisted) == 0 {
+	if sess.Codex == nil {
+		a.triage.EagerPersistDeferredFlushSends(threadID, interruptedTurn, stampToken)
 		return
 	}
-
-	if sess.Codex == nil {
+	var persisted []triage.EagerPersistedFlush
+	for _, flush := range a.triage.EagerPersistDeferredFlushSends(threadID, interruptedTurn, stampToken) {
+		if !flush.TurnInput {
+			persisted = append(persisted, flush)
+		}
+	}
+	if len(persisted) == 0 {
 		return
 	}
 
