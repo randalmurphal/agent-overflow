@@ -385,7 +385,7 @@ func TestTheObserverKeepsTheGateOfAnAcceptedReceipt(t *testing.T) {
 	}
 	f.app.noteReceiptRunning(target.ID, token)
 
-	work, _, err := f.app.settleReceiptOnTurnEnd(target.ID, token)
+	work, err := f.app.settleReceiptOnTurnEnd(target.ID, token)
 	if err != nil {
 		t.Fatalf("settleReceiptOnTurnEnd: %v", err)
 	}

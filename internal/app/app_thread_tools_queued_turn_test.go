@@ -139,7 +139,7 @@ func (r *queuedRequest) bind(t *testing.T) {
 
 func (r *queuedRequest) observeTurnEnd(t *testing.T) {
 	t.Helper()
-	work, _, err := r.q.f.app.settleReceiptOnTurnEnd(r.q.target.ID, r.token)
+	work, err := r.q.f.app.settleReceiptOnTurnEnd(r.q.target.ID, r.token)
 	if err != nil {
 		t.Fatalf("settleReceiptOnTurnEnd: %v", err)
 	}

@@ -1567,7 +1567,7 @@ func TestAPersonsStopReachesTheSenderAsThePersons(t *testing.T) {
 	}
 	appendTurnRow(t, f.app.store, store.Item{ID: "a:0", ThreadID: threadID, TurnIndex: 0, Kind: "assistant_text", Summary: "Half done."})
 	bindRunningReceipt(t, f.app, threadID, "tok-1", 0)
-	f.app.notePersonStop(threadID, 0)
+	f.app.recordTurnStop(threadID, f.app.stoppedTurnOf(threadID, "", 0, 0), stopByUser(nil))
 
 	wakeFor := func(turn store.Turn) string {
 		t.Helper()

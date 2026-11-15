@@ -155,18 +155,18 @@ func TestTurnStopRecordLifecycle(t *testing.T) {
 	app := &App{}
 	stop := stopByThread("Lead", "lead-id", "Studio")
 
-	app.recordTurnStop("thread", 3, stop)
+	app.recordTurnStop("thread", stoppedTurn{index: 3}, stop)
 	if got := app.turnStopCause("thread", 3); got != turnStoppedUnknown {
 		t.Fatalf("a thread with no open request kept a stop: %q", got)
 	}
 
 	app.noteReceiptRunning("thread", "tok-a")
 	app.noteReceiptRunning("thread", "tok-b")
-	app.recordTurnStop("thread", -1, stop)
+	app.recordTurnStop("thread", stoppedTurn{index: -1}, stop)
 	if app.holdsTurnStop("thread") {
 		t.Fatal("a stop with no open turn was kept")
 	}
-	app.recordTurnStop("thread", 3, stop)
+	app.recordTurnStop("thread", stoppedTurn{index: 3}, stop)
 	want := `"Lead" (lead-id, on Studio) stopped its turn with thread_cancel before it answered.`
 	if got := app.turnStopCause("thread", 3); got != want {
 		t.Fatalf("cause = %q, want %q", got, want)
@@ -186,7 +186,7 @@ func TestTurnStopRecordLifecycle(t *testing.T) {
 	}
 
 	// Two requests answered by one turn both read it; it leaves with the last.
-	app.recordTurnStop("thread", 3, stop)
+	app.recordTurnStop("thread", stoppedTurn{index: 3}, stop)
 	app.forgetReceiptRunning("thread", "tok-a")
 	if got := app.turnStopCause("thread", 3); got != want {
 		t.Fatalf("the second request lost the stop: %q", got)

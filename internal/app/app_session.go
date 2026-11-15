@@ -1071,10 +1071,7 @@ func (a *App) interruptTurnAtIndex(ctx context.Context, threadID string, expectT
 		stampToken = a.triage.MarkFlushSendsInterrupted(threadID, interruptedTurn)
 	}
 	discardsMessage := a.claudeTUIStopDiscardsMessage(threadID, sess, interruptedTurn, pendingTUISendTurn)
-	a.recordTurnStop(threadID, cutTurn, stop)
-	if consent != nil {
-		a.notePersonStop(threadID, cutTurn)
-	}
+	a.recordTurnStop(threadID, a.stoppedTurnOf(threadID, sess.Token, cutTurn, interruptedTurn), stop)
 	if expectTurnIndex != anyOpenTurn {
 		cancelParked()
 	}
@@ -1090,7 +1087,6 @@ func (a *App) interruptTurnAtIndex(ctx context.Context, threadID string, expectT
 		if a.triage != nil {
 			a.triage.RestoreFlushSendsInterrupted(threadID, stampToken)
 		}
-		a.forgetPersonStop(threadID, cutTurn)
 		return false, interruptErr
 	}
 	if !interruptSent {
@@ -1101,7 +1097,6 @@ func (a *App) interruptTurnAtIndex(ctx context.Context, threadID string, expectT
 		if a.triage != nil {
 			a.triage.RestoreFlushSendsInterrupted(threadID, stampToken)
 		}
-		a.forgetPersonStop(threadID, cutTurn)
 		return false, nil
 	}
 	if a.triage != nil {

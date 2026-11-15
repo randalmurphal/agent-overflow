@@ -149,11 +149,6 @@ func TestEveryTurnReaderReadsAKeptBinding(t *testing.T) {
 				t.Fatalf("receipt = %q, want a delivered request still running", receipt.State)
 			}
 		}},
-		{"person's Stop", func(t *testing.T, f *requestFixture, threadID, token string) {
-			if !f.app.turnSettlesAReceipt(threadID, 1) {
-				t.Fatal("the turn that read the request settles no receipt")
-			}
-		}},
 		{"handoff", func(t *testing.T, f *requestFixture, threadID, token string) {
 			if settled := f.app.settleReadRequestsForHandOff(threadID); len(settled) != 1 || settled[0] != token {
 				t.Fatalf("handoff settled %v, want the delivered request", settled)
