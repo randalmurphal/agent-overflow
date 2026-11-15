@@ -117,7 +117,9 @@ requires conversation resolution; a remainder is `rules`), `mergeable`,
 
 `PRDetail.Merge` is `{Methods, DeleteBranchOffered, DeleteBranchDefault,
 AutoMergeAvailable, AutoMerge, ViewerCanMerge, ViewerCanApprove,
-ViewerApproved, CannotApproveReason, CannotMergeReason}`. `Methods` lists
+ViewerApproved, CannotApproveReason, CannotMergeReason,
+ViewerCanUpdateBranch, ViewerCanUnapprove, ViewerCanMarkReady}`, each of
+the last three with its `Cannot*Reason`. `Methods` lists
 what the project allows (`merge`, `squash`, `rebase`; GitLab's `ff` is
 `rebase`), the project default first. `AutoMerge` is the armed request
 when one exists (`{Method, ByLogin, ByName, At, WaitsFor, CanCancel}`).
@@ -138,7 +140,21 @@ base's rulesets (`allowedMergeMethods`).
   named: the caller names no review, so nothing of another login's or
   another pull request's can be dismissed. A viewer who cannot approve
   (GitHub: the author; GitLab: `user_can_approve` false) sees no button,
-  and the approvals blocker row says why.
+  and the approvals blocker row says why. GitHub's dismissal needs write
+  access, so an approver without it sees no Unapprove and a row saying
+  why; a null `viewerPermission` does not hide it.
+- Update branch and Mark ready are the rebase and draft blockers' fixes,
+  shown when the forge would take them and otherwise replaced by the
+  reason. GitHub: `viewerCanUpdateBranch` (a fork's head whose author
+  turned off maintainer edits, `maintainerCanModify` false, is the
+  author's alone) and `viewerCanUpdate`, or the author and those who may
+  merge when the read left the management fields out. GitLab: merge
+  rights (`can_merge`), and the author for Mark ready.
+- A thread's Resolve is disabled, with the reason as its hover text, when
+  the forge would refuse it: GitHub `viewerCanResolve` (open) or
+  `viewerCanUnresolve` (resolved); GitLab below the Developer role, unless
+  the viewer opened the merge request. GitHub's `viewerCanReply` false
+  puts the reason in place of the reply field.
 - Merge now: GitLab `PUT .../merge` with `squash`,
   `should_remove_source_branch` and the head `sha`; GitHub
   `mergePullRequest` with `mergeMethod` and `expectedHeadOid`, then the
@@ -785,6 +801,7 @@ fake forge on desktop and compact.
 | Closed | `Closed` red | no actions | "Closed without merging · time" row |
 | Viewer cannot merge | as above | no Merge button | a row with `CannotMergeReason` |
 | Viewer is the author | as above | no Approve | the approvals blocker row carries no Approve; without one, a row with `CannotApproveReason` |
+| Viewer cannot update, mark ready or unapprove | as above | no Unapprove when it cannot | the rebase and draft rows carry the reason in place of their fix; a row with `CannotUnapproveReason` |
 | Action in flight | unchanged | the pressed button spins; every merge control disables until the pump's answer is on screen: the action answers with the pump's seq after its poll and the pane waits for its watermark to reach it (a poll that found nothing changed settles at once) | unchanged |
 | Action failed (e2e: 403, 409) | unchanged | buttons re-enable | toast with sentence, Details, Reload when 409 |
 | Stale snapshot under a banner (the diff predates the live head, or the pump is failing), or the PR's diff not loaded (loading, or its load failed) | last known | every action disabled, its hover text the reason; head-pinned actions always send the head the DIFF was loaded at | last known rows |

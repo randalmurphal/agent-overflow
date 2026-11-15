@@ -62,7 +62,9 @@
   const method = $derived(review.manage.mergeMessage.method);
   const deleteBranch = $derived(merge?.deleteBranchOffered ? (pickedDelete ?? merge.deleteBranchDefault) : false);
 
-  const showApprove = $derived(!settledPR && !!merge && (merge.viewerCanApprove || merge.viewerApproved));
+  // Unapprove shows while the forge would withdraw the standing approval.
+  const showApprove = $derived(!settledPR && !!merge && (merge.viewerApproved ? merge.viewerCanUnapprove : merge.viewerCanApprove));
+  const cannotUnapprove = $derived(!settledPR && merge?.viewerApproved && !merge.viewerCanUnapprove ? (merge.cannotUnapproveReason ?? null) : null);
   const showMerge = $derived(!settledPR && !!merge && merge.viewerCanMerge);
   const canMergeNow = $derived(mergeState === 'ready' && armed === null);
   const canAutoMerge = $derived(!!merge?.autoMergeAvailable && armed === null && mergeState !== 'ready' && mergeState !== 'draft');
@@ -208,14 +210,26 @@
         if (hasWorkspace) return { label: 'View conflicts', testid: 'review-merge-row-conflicts', run: () => { void review.openConflictView(); } };
         return blocker.url ? { label: 'Open', testid: 'review-merge-row-conflicts', run: () => { void openURL(blocker.url); } } : null;
       case 'rebase':
-        if (merge?.viewerCanMerge) return { label: 'Update branch', testid: 'review-merge-row-rebase', run: () => { void review.updatePRBranch(); }, merge: true };
+        if (merge?.viewerCanUpdateBranch) return { label: 'Update branch', testid: 'review-merge-row-rebase', run: () => { void review.updatePRBranch(); }, merge: true };
         return null;
       case 'draft':
-        if (merge?.viewerCanMerge || detail.viewerIsAuthor) return { label: 'Mark ready', testid: 'review-merge-row-ready', run: () => { void review.markPRReady(); }, merge: true };
+        if (merge?.viewerCanMarkReady) return { label: 'Mark ready', testid: 'review-merge-row-ready', run: () => { void review.markPRReady(); }, merge: true };
         return null;
       default:
         return blocker.url ? { label: 'Open', testid: 'review-merge-row-open', run: () => { void openURL(blocker.url); } } : null;
     }
+  }
+
+  // Why a row the forge would let someone fix has no fix for this viewer.
+  function blockerReason(blocker: MergeBlocker): { text: string; testid: string } | null {
+    if (!merge) return null;
+    if (blocker.kind === 'rebase' && !merge.viewerCanUpdateBranch && merge.cannotUpdateBranchReason) {
+      return { text: merge.cannotUpdateBranchReason, testid: 'review-merge-cannot-update' };
+    }
+    if (blocker.kind === 'draft' && !merge.viewerCanMarkReady && merge.cannotMarkReadyReason) {
+      return { text: merge.cannotMarkReadyReason, testid: 'review-merge-cannot-ready' };
+    }
+    return null;
   }
 
   function blockerDot(blocker: MergeBlocker): string {
@@ -338,6 +352,7 @@
       {/if}
       {#each blockers as blocker, index (`${blocker.kind}:${index}`)}
         {@const action = blockerAction(blocker)}
+        {@const reason = action ? null : blockerReason(blocker)}
         <div class={rowClass} data-testid="review-merge-blocker" data-kind={blocker.kind}>
           <span class="size-2 shrink-0 rounded-full {blockerDot(blocker)}"></span>
           <div class="min-w-0 flex-1">
@@ -356,6 +371,9 @@
           {:else if blocker.kind === 'approvals' && merge && !merge.viewerCanApprove && merge.cannotApproveReason}
             <!-- The row says why there is no Approve beside it. -->
             <span class="min-w-0 text-[0.6875rem] text-fg-subtle" data-testid="review-merge-cannot-approve">{merge.cannotApproveReason}</span>
+          {:else if reason}
+            <!-- The row says why there is no fix beside it. -->
+            <span class="min-w-0 text-[0.6875rem] text-fg-subtle" data-testid={reason.testid}>{reason.text}</span>
           {/if}
           {#if action}
             <Button variant="ghost" size="xs" class={actionClass} testId={action.testid} disabled={action.merge ? busy : false} onclick={action.run}>{action.label}</Button>
@@ -413,6 +431,12 @@
         <div class={rowClass} data-testid="review-merge-cannot-approve">
           <span class="size-2 shrink-0 rounded-full bg-fg-subtle"></span>
           <span class="min-w-0 flex-1 truncate text-fg-muted">{merge.cannotApproveReason}</span>
+        </div>
+      {/if}
+      {#if cannotUnapprove}
+        <div class={rowClass} data-testid="review-merge-cannot-unapprove">
+          <span class="size-2 shrink-0 rounded-full bg-fg-subtle"></span>
+          <span class="min-w-0 flex-1 truncate text-fg-muted compact:whitespace-normal compact:break-words" title={cannotUnapprove}>{cannotUnapprove}</span>
         </div>
       {/if}
       {#if mergeState === 'checking' && blockers.length === 0 && settled.length === 0}

@@ -260,9 +260,21 @@ func TestGitLabMergeOptions(t *testing.T) {
 	if o := gitlabMergeOptions(decodeGitLabMR(t, map[string]any{"user": map[string]any{"can_merge": false}}), approvals, reporter, ready, nil, false); o.CannotMergeReason != "Your role in this project cannot merge." {
 		t.Fatalf("reporter: %+v", o)
 	}
-	// Approved already: no approve, no reason.
-	if o := gitlabMergeOptions(decodeGitLabMR(t, nil), gitlabApprovalsRaw{UserHasApproved: true}, settings, ready, nil, false); !o.ViewerApproved || o.CannotApproveReason != "" {
+	// Approved already: no approve, no reason; the approval may be withdrawn.
+	if o := gitlabMergeOptions(decodeGitLabMR(t, nil), gitlabApprovalsRaw{UserHasApproved: true}, settings, ready, nil, false); !o.ViewerApproved || o.CannotApproveReason != "" || !o.ViewerCanUnapprove {
 		t.Fatalf("approved: %+v", o)
+	}
+	// A rebase and the draft toggle need merge rights; the author may
+	// always mark their draft ready.
+	if !options.ViewerCanUpdateBranch || !options.ViewerCanMarkReady || options.CannotUpdateBranchReason != "" || options.CannotMarkReadyReason != "" {
+		t.Fatalf("merge rights: %+v", options)
+	}
+	if o.ViewerCanUpdateBranch || o.CannotUpdateBranchReason != "Rebasing this branch needs merge access to this project." ||
+		o.ViewerCanMarkReady || o.CannotMarkReadyReason != "Only the author and people with merge access can mark this merge request ready." {
+		t.Fatalf("no rights: %+v", o)
+	}
+	if o := gitlabMergeOptions(decodeGitLabMR(t, map[string]any{"user": map[string]any{"can_merge": false}}), denied, settings, ready, nil, true); !o.ViewerCanMarkReady || o.CannotMarkReadyReason != "" {
+		t.Fatalf("author without merge rights: %+v", o)
 	}
 	armed := decodeGitLabMR(t, map[string]any{"merge_when_pipeline_succeeds": true, "squash": true, "merge_user": map[string]any{"username": "lead", "name": "Lead"}})
 	events := []ReviewEvent{
@@ -282,6 +294,30 @@ func TestGitLabMergeOptions(t *testing.T) {
 	merged := decodeGitLabMR(t, map[string]any{"state": "merged", "merge_when_pipeline_succeeds": true})
 	if o := gitlabMergeOptions(merged, approvals, settings, MergeReadiness{State: MergeStateMerged}, events, false); o.AutoMerge != nil || o.AutoMergeAvailable || o.DeleteBranchOffered {
 		t.Fatalf("merged: %+v", o)
+	}
+}
+
+// GitLab lets the merge request's author and the Developer role and above
+// resolve threads; below that each resolvable thread says why not, and
+// an unknown role gates nothing.
+func TestGitLabThreadResolveFollowsTheRole(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		author bool
+		access int
+		gated  bool
+	}{
+		{"reporter", false, 20, true},
+		{"reporter who opened it", true, 20, false},
+		{"developer", false, gitlabDeveloperAccess, false},
+		{"unknown role", false, 0, false},
+	} {
+		threads := []ReviewThread{{ID: "a", IsResolvable: true}, {ID: "b"}}
+		gateGitLabThreadResolve(threads, tc.author, tc.access)
+		if (threads[0].CannotResolveReason != "") != tc.gated || threads[1].CannotResolveReason != "" {
+			t.Fatalf("%s: %+v", tc.name, threads)
+		}
 	}
 }
 

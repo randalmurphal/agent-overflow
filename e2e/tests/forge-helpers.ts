@@ -74,6 +74,8 @@ export interface ForgePull {
   headRef?: string;
   /** The fork the head branch lives in ("owner/repo", a GitLab path); unset is the repository itself. */
   headRepo?: string;
+  /** A fork's pull letting people with write access push to its head (GitHub maintainerCanModify). */
+  maintainerCanModify?: boolean;
   /** Logins a review is requested from (GitHub reviewRequests, GitLab reviewers). */
   reviewers?: string[];
   /** RFC 3339; default 2026-01-01T00:00:00Z, updatedAt and committedAt (the head commit's time) to createdAt. */
@@ -121,7 +123,7 @@ export interface ForgePull {
   /** Names of the repository's `labels`. */
   labels?: string[];
   /** What the viewer may do here, each derived from the role and authorship when omitted. */
-  viewer?: { update?: boolean; label?: boolean; triage?: boolean; admin?: boolean; push?: boolean };
+  viewer?: { update?: boolean; label?: boolean; triage?: boolean; admin?: boolean; push?: boolean; updateBranch?: boolean; resolve?: boolean; reply?: boolean };
   /** The head's files by path, which a suggestion's apply rewrites. */
   files?: Record<string, string>;
   /** GitLab: close, reopen and merge events (resource state events). */

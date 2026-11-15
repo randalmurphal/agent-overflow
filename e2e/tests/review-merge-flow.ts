@@ -15,7 +15,9 @@
 // and a reviewer approved the pill reads "Ready to merge", a head that
 // moved refuses Merge now with the moved-head sentence and a Reload
 // action, and Merge now then merges: the pill reads "Merged", the section
-// shows the merged row and no actions. Screenshots: the blocked and ready
+// shows the merged row and no actions. A GitHub viewer GitHub refuses
+// Update branch, a thread's resolve and its reply sees each reason in the
+// control's place, and no refused request is sent. Screenshots: the blocked and ready
 // sections on desktop, the wrapped section header on compact.
 
 import { randomBytes } from 'node:crypto';
@@ -87,7 +89,7 @@ function repo(forge: Forge): ForgeRepo {
       };
 }
 
-async function seedMergeRequest(harness: HarnessApp, forge: Forge, title: string): Promise<ForgeRepo> {
+async function seedMergeRequest(harness: HarnessApp, forge: Forge, title: string, forgeRepo: ForgeRepo = repo(forge)): Promise<ForgeRepo> {
   const seed = await harness.rpc<SeedResult>('HarnessSeed', {
     projects: [
       {
@@ -97,7 +99,7 @@ async function seedMergeRequest(harness: HarnessApp, forge: Forge, title: string
       },
     ],
   });
-  return publishPullRequest(harness, seed.projects[0].path, repo(forge), {
+  return publishPullRequest(harness, seed.projects[0].path, forgeRepo, {
     'src/queue/deliver.ts': 'export async function deliver(): Promise<void> {\n  await post();\n}\n',
   });
 }
@@ -324,4 +326,44 @@ export function reviewMergeFlow({ compact }: MergeSurface): void {
       await expectEveryForgeCallHandled(harness);
     });
   }
+
+  test('github: Update branch and a thread action GitHub refuses this viewer say why in their place', async ({ harness, page }) => {
+    const title = 'Merge thread refused controls';
+    const base = repo('github');
+    await seedMergeRequest(harness, 'github', title, {
+      ...base,
+      merge: { ...base.merge, permission: 'READ' },
+      pulls: [{
+        ...pull('github', 'success', true),
+        readiness: { behind: true },
+        viewer: { updateBranch: false, resolve: false, reply: false },
+        threads: [{ id: 'T_refused', path: 'src/queue/deliver.ts', line: 2, comments: [{ author: 'rmurphy', body: 'Should this retry?', createdAt: '2026-10-19T10:00:00Z' }] }],
+      }],
+    });
+    await harness.open(page);
+    const review = await openReview(page, title, 'github', compact);
+    const press = (target: Locator) => (compact ? target.tap() : target.click());
+
+    const pill = review.getByTestId('review-pr-readiness');
+    await expect(pill).toHaveText(/Blocked/, { timeout: 30_000 });
+    await press(pill);
+    const section = review.getByTestId('review-pr-merge');
+    await expect(section).toHaveAttribute('data-open', 'true');
+    const rebase = section.locator('[data-testid="review-merge-blocker"][data-kind="rebase"]');
+    await expect(rebase.getByTestId('review-merge-cannot-update')).toHaveText('GitHub does not let you update this branch.');
+    await expect(rebase.getByTestId('review-merge-row-rebase')).toHaveCount(0);
+
+    const conversation = await expandReviewSection(page, 'review-pr-conversation');
+    const card = conversation.locator('[data-testid="review-conversation-thread"][data-thread-id="T_refused"]');
+    const resolve = card.getByTestId('review-thread-resolve');
+    await expect(resolve).toBeDisabled();
+    await expect(resolve).toHaveAttribute('title', "Only the pull request's author and people with write access can resolve or reopen conversations.");
+    await expect(card.getByTestId('review-thread-cannot-reply')).toHaveText('GitHub does not let you reply to this conversation.');
+    await expect(card.getByTestId('review-thread-reply')).toHaveCount(0);
+
+    const routes = (await forgeInvocations(harness)).map((call) => call.route);
+    expect(routes).not.toContain('gh graphql UpdatePRBranch');
+    expect(routes).not.toContain('gh graphql SetThreadResolved');
+    await expectEveryForgeCallHandled(harness);
+  });
 }

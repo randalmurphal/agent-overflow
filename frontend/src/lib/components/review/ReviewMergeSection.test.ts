@@ -284,6 +284,32 @@ describe('<ReviewMergeSection>', () => {
     });
   });
 
+  it('says why the rebase, draft and approval fixes the forge refuses this viewer are missing', async () => {
+    const view = await mountReviewPanePR(blocked({
+      readiness: { state: 'draft', blockers: [{ kind: 'draft', text: 'Still a draft' }, { kind: 'rebase', text: 'Behind main' }], settled: [{ kind: 'approvals', text: 'Approved by you' }] },
+      merge: {
+        ...blocked().merge,
+        viewerApproved: true,
+        viewerCanUpdateBranch: false,
+        cannotUpdateBranchReason: "The author's fork does not allow edits from maintainers, so only the author can update this branch.",
+        viewerCanMarkReady: false,
+        cannotMarkReadyReason: 'Only the author and people with write access can mark this pull request ready for review.',
+        viewerCanUnapprove: false,
+        cannotUnapproveReason: 'Withdrawing an approval dismisses it, which needs write access to this repository.',
+      },
+    }));
+    // Merging is still offered: the controls are each their own.
+    expect(view.getByTestId('review-merge-trigger')).toBeInTheDocument();
+    expect(view.queryByTestId('review-merge-approve')).toBeNull();
+    await openMergeSection(view);
+    const [draft, rebase] = view.getAllByTestId('review-merge-blocker');
+    expect(within(draft).queryByTestId('review-merge-row-ready')).toBeNull();
+    expect(within(draft).getByTestId('review-merge-cannot-ready')).toHaveTextContent('Only the author and people with write access');
+    expect(within(rebase).queryByTestId('review-merge-row-rebase')).toBeNull();
+    expect(within(rebase).getByTestId('review-merge-cannot-update')).toHaveTextContent("The author's fork does not allow edits from maintainers");
+    expect(view.getByTestId('review-merge-cannot-unapprove')).toHaveTextContent('Withdrawing an approval dismisses it');
+  });
+
   it('lists forge events in the conversation and counts them, without repeating a verdict', async () => {
     const detail = prDetailFixture({
       latestReviews: [{ authorLogin: 'alice', authorName: 'Alice', state: 'APPROVED', submittedAt: '2026-10-20T09:00:00Z', body: '', commitSHA: 'sha-a' }],

@@ -669,6 +669,15 @@ export interface MergeOptions {
   viewerApproved: boolean;
   cannotApproveReason?: string;
   cannotMergeReason?: string;
+  /** What the forge lets the viewer do beside merging, each with why not
+   * where its control would show. Go always sends the flags; absent reads
+   * as not allowed. */
+  viewerCanUpdateBranch?: boolean;
+  cannotUpdateBranchReason?: string;
+  viewerCanUnapprove?: boolean;
+  cannotUnapproveReason?: string;
+  viewerCanMarkReady?: boolean;
+  cannotMarkReadyReason?: string;
 }
 
 export interface AutoMergeRequest {
@@ -873,6 +882,10 @@ export interface ReviewThread {
   isResolved: boolean;
   isOutdated: boolean;
   comments: ReviewComment[];
+  /** Why the viewer may not resolve (or reopen) this thread, or reply to
+   * it; absent when they may or the forge does not say. */
+  cannotResolveReason?: string;
+  cannotReplyReason?: string;
 }
 
 export interface ReviewComment {

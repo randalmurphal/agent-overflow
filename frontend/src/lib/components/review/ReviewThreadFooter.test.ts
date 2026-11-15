@@ -115,6 +115,25 @@ describe('<ReviewThreadFooter> actions', () => {
     expect((view.getByTestId('review-thread-resolve') as HTMLButtonElement).disabled).toBe(true);
   });
 
+  it('disables Resolve with the reason when the forge does not let the viewer resolve', async () => {
+    const onResolve = vi.fn();
+    const reason = "Only the pull request's author and people with write access can resolve or reopen conversations.";
+    const view = renderFooter({ thread: { ...thread, cannotResolveReason: reason }, onResolve });
+    const button = view.getByTestId('review-thread-resolve') as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    expect(button.title).toBe(reason);
+    await fireEvent.click(button);
+    expect(onResolve).not.toHaveBeenCalled();
+    expect((renderFooter({ onResolve }).getAllByTestId('review-thread-resolve').at(-1) as HTMLButtonElement).title).toBe('');
+  });
+
+  it('shows why there is no reply in place of the reply field', () => {
+    const view = renderFooter({ thread: { ...thread, cannotReplyReason: 'GitHub does not let you reply to this conversation.' }, onResolve: vi.fn() });
+    expect(view.queryByTestId('review-thread-reply')).toBeNull();
+    expect(view.getByTestId('review-thread-cannot-reply')).toHaveTextContent('GitHub does not let you reply to this conversation.');
+    expect(view.getByTestId('review-thread-resolve')).toBeTruthy();
+  });
+
   it('disables Reply until there is text, and sends on click', async () => {
     const onSendReply = vi.fn();
     const empty = renderFooter({ replying: true, onSendReply });

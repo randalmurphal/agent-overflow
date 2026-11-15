@@ -414,6 +414,8 @@ func (e *Engine) githubPullDetail(r *Repo, p *Pull) map[string]any {
 		"closedAt":                  closedAt,
 		"viewerDidAuthor":           strings.EqualFold(p.Author, e.viewer),
 		"isCrossRepository":         p.HeadRepo != "",
+		"viewerCanUpdateBranch":     open && p.Readiness.Behind && e.mayUpdateBranch(r, p),
+		"maintainerCanModify":       p.MaintainerCanModify,
 		"viewerCanEnableAutoMerge":  open && r.Merge.AutoMergeAllowed && write && p.Readiness.AutoMerge == nil,
 		"viewerCanDisableAutoMerge": open && p.Readiness.AutoMerge != nil && (write || strings.EqualFold(p.Readiness.AutoMerge.By, e.viewer)),
 		"autoMergeRequest":          autoMerge,
@@ -712,18 +714,21 @@ func (e *Engine) githubThreadNodes(r *Repo, p *Pull, commentsPage int) []map[str
 			}
 		}
 		out = append(out, map[string]any{
-			"id":                thread.ID,
-			"isResolved":        thread.Resolved,
-			"isOutdated":        thread.Outdated,
-			"path":              thread.Path,
-			"line":              line,
-			"startLine":         startLine,
-			"originalLine":      originalLine,
-			"originalStartLine": originalStartLine,
-			"diffSide":          diffSide,
-			"startDiffSide":     startSide,
-			"subjectType":       subjectType,
-			"comments":          graphQLConnection(e.githubThreadCommentNodes(r, p, thread), 0, commentsPage),
+			"id":                 thread.ID,
+			"isResolved":         thread.Resolved,
+			"isOutdated":         thread.Outdated,
+			"path":               thread.Path,
+			"line":               line,
+			"startLine":          startLine,
+			"originalLine":       originalLine,
+			"originalStartLine":  originalStartLine,
+			"diffSide":           diffSide,
+			"startDiffSide":      startSide,
+			"subjectType":        subjectType,
+			"viewerCanResolve":   !thread.Resolved && e.mayResolve(r, p),
+			"viewerCanUnresolve": thread.Resolved && e.mayResolve(r, p),
+			"viewerCanReply":     p.mayReply(),
+			"comments":           graphQLConnection(e.githubThreadCommentNodes(r, p, thread), 0, commentsPage),
 		})
 	}
 	return out
@@ -902,9 +907,12 @@ func ghSetThreadResolved(e *Engine, c *call, v graphQLVars) response {
 	if resolved {
 		alias = "resolve"
 	}
-	_, _, thread := e.githubThread(c, id)
+	r, p, thread := e.githubThread(c, id)
 	if thread == nil {
 		return graphQLNotFound(map[string]any{alias: nil}, []string{alias}, fmt.Sprintf("Could not resolve to a node with the global id of '%s'", id))
+	}
+	if !e.mayResolve(r, p) {
+		return graphQLMutationError(alias, "FORBIDDEN", fmt.Sprintf("%s does not have the correct permissions to execute `%sReviewThread`", e.viewer, map[bool]string{true: "Resolve", false: "Unresolve"}[resolved]))
 	}
 	thread.Resolved = resolved
 	return graphQLData(map[string]any{alias: map[string]any{"thread": map[string]any{"isResolved": thread.Resolved}}})
@@ -1422,7 +1430,7 @@ func ghUpdatePRBranch(e *Engine, c *call, v graphQLVars) response {
 	switch {
 	case p.State != "open":
 		return graphQLMutationError(field, "UNPROCESSABLE", "Pull request is not open")
-	case githubRoles[r.Merge.Permission] < githubRoles["WRITE"]:
+	case !e.mayUpdateBranch(r, p):
 		return graphQLMutationError(field, "FORBIDDEN", fmt.Sprintf("%s does not have the correct permissions to execute `UpdatePullRequestBranch`", e.viewer))
 	case head != p.HeadSHA:
 		return graphQLMutationError(field, "UNPROCESSABLE", "Expected head sha didn't match current head ref.")

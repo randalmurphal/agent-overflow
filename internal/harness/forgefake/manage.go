@@ -49,17 +49,25 @@ type Label struct {
 // reviewers, assignees and labels: developer), push (pushing to the head
 // branch, which a suggestion's commit needs: GitHub
 // viewerCanApplySuggestion, WRITE on a head in the repository itself,
-// none on a fork's; GitLab developer). Each write refuses as its forge
-// does when its flag is false.
+// none on a fork's; GitLab developer), updateBranch (GitHub
+// viewerCanUpdateBranch while the head is behind: the author, or WRITE
+// on a head in the repository itself or on a fork's that allows
+// maintainer edits), resolve (GitHub viewerCanResolve and
+// viewerCanUnresolve: WRITE or the author), reply (GitHub
+// viewerCanReply: anyone). Each write refuses as its forge does when its
+// flag is false.
 type ViewerCan struct {
-	Update *bool `json:"update,omitempty"`
-	Close  *bool `json:"close,omitempty"`
-	Reopen *bool `json:"reopen,omitempty"`
-	Label  *bool `json:"label,omitempty"`
-	Assign *bool `json:"assign,omitempty"`
-	Triage *bool `json:"triage,omitempty"`
-	Admin  *bool `json:"admin,omitempty"`
-	Push   *bool `json:"push,omitempty"`
+	UpdateBranch *bool `json:"updateBranch,omitempty"`
+	Resolve      *bool `json:"resolve,omitempty"`
+	Reply        *bool `json:"reply,omitempty"`
+	Update       *bool `json:"update,omitempty"`
+	Close        *bool `json:"close,omitempty"`
+	Reopen       *bool `json:"reopen,omitempty"`
+	Label        *bool `json:"label,omitempty"`
+	Assign       *bool `json:"assign,omitempty"`
+	Triage       *bool `json:"triage,omitempty"`
+	Admin        *bool `json:"admin,omitempty"`
+	Push         *bool `json:"push,omitempty"`
 }
 
 // StateEvent is a GitLab resource state event: a close, a reopen
@@ -279,6 +287,23 @@ func (e *Engine) mayUpdate(r *Repo, p *Pull) bool {
 		role = role || gitlabRoles[r.Merge.Permission] >= gitlabRoles["developer"]
 	}
 	return viewerMay(p.viewer().Update, role)
+}
+
+// mayUpdateBranch is GitHub's viewerCanUpdateBranch but for the head
+// being behind: the author, or WRITE where the head accepts it.
+func (e *Engine) mayUpdateBranch(r *Repo, p *Pull) bool {
+	write := githubRoles[r.Merge.Permission] >= githubRoles["WRITE"] && (p.HeadRepo == "" || p.MaintainerCanModify)
+	return viewerMay(p.viewer().UpdateBranch, strings.EqualFold(p.Author, e.viewer) || write)
+}
+
+// mayResolve is GitHub's viewerCanResolve and viewerCanUnresolve.
+func (e *Engine) mayResolve(r *Repo, p *Pull) bool {
+	return viewerMay(p.viewer().Resolve, e.githubWriter(r, p))
+}
+
+// mayReply is GitHub's viewerCanReply.
+func (p *Pull) mayReply() bool {
+	return viewerMay(p.viewer().Reply, true)
 }
 
 // githubWriter is GitHub WRITE access or the pull's author.

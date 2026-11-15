@@ -46,6 +46,7 @@ const (
 	githubReactionGroupFields = `{ content viewerHasReacted reactors { totalCount } }`
 	githubThreadCommentFields = `id fullDatabaseId ` + githubActor + ` body createdAt ` + githubViewerCommentFields + ` replyTo { id fullDatabaseId }`
 	githubThreadFields        = `id isResolved isOutdated path line startLine originalLine originalStartLine diffSide startDiffSide subjectType ` +
+		`viewerCanResolve viewerCanUnresolve viewerCanReply ` +
 		`comments(first: $pageSize) { ` + githubPageInfoFields + ` nodes { ` + githubThreadCommentFields + ` } }`
 	githubCommentFields = `id fullDatabaseId ` + githubActor + ` body createdAt ` + githubViewerCommentFields + ` isMinimized`
 	// isRequired is the forge's own answer to whether the PR's base
@@ -67,7 +68,7 @@ const (
 	githubDetailFields = `title body state isDraft baseRefName baseRefOid headRefName headRefOid url ` +
 		`additions deletions changedFiles mergeable mergeStateStatus reviewDecision ` + githubActor + ` ` +
 		`latestReviews(first: 100) { nodes { ` + githubActor + ` body submittedAt state commit { oid } } } ` +
-		`merged mergedAt mergedBy { ` + githubActorAs + ` } closedAt viewerDidAuthor isCrossRepository ` +
+		`merged mergedAt mergedBy { ` + githubActorAs + ` } closedAt viewerDidAuthor isCrossRepository viewerCanUpdateBranch maintainerCanModify ` +
 		`viewerCanEnableAutoMerge viewerCanDisableAutoMerge ` +
 		`autoMergeRequest { enabledAt mergeMethod enabledBy { ` + githubActorAs + ` } } ` +
 		`latestOpinionatedReviews(first: 100) { nodes { id state viewerDidAuthor authorCanPushToRepository commit { oid } ` + githubActor + ` } } ` +
@@ -257,18 +258,21 @@ type githubThreadCommentsRaw struct {
 }
 
 type githubThreadRaw struct {
-	ID                string                  `json:"id"`
-	IsResolved        bool                    `json:"isResolved"`
-	IsOutdated        bool                    `json:"isOutdated"`
-	Path              string                  `json:"path"`
-	Line              *int                    `json:"line"`
-	StartLine         *int                    `json:"startLine"`
-	OriginalLine      *int                    `json:"originalLine"`
-	OriginalStartLine *int                    `json:"originalStartLine"`
-	DiffSide          string                  `json:"diffSide"`
-	StartDiffSide     string                  `json:"startDiffSide"`
-	SubjectType       string                  `json:"subjectType"`
-	Comments          githubThreadCommentsRaw `json:"comments"`
+	ID                 string                  `json:"id"`
+	IsResolved         bool                    `json:"isResolved"`
+	IsOutdated         bool                    `json:"isOutdated"`
+	Path               string                  `json:"path"`
+	Line               *int                    `json:"line"`
+	StartLine          *int                    `json:"startLine"`
+	OriginalLine       *int                    `json:"originalLine"`
+	OriginalStartLine  *int                    `json:"originalStartLine"`
+	DiffSide           string                  `json:"diffSide"`
+	StartDiffSide      string                  `json:"startDiffSide"`
+	SubjectType        string                  `json:"subjectType"`
+	ViewerCanResolve   bool                    `json:"viewerCanResolve"`
+	ViewerCanUnresolve bool                    `json:"viewerCanUnresolve"`
+	ViewerCanReply     bool                    `json:"viewerCanReply"`
+	Comments           githubThreadCommentsRaw `json:"comments"`
 }
 
 type githubThreadsRaw struct {
@@ -506,6 +510,7 @@ func (f *githubForge) readPR(ctx context.Context, client *forgeapi.Client, ref P
 			}
 		}
 		merge.checksUnknown = !shape.has(githubPartCheckRuns)
+		merge.manageUnknown = !shape.has(githubPartManage)
 		out.Detail.Readiness = merge.readiness()
 		out.Detail.Merge = merge.options(out.Detail.Readiness)
 		out.Detail.Manage = merge.manage()
@@ -887,6 +892,14 @@ func normalizeGitHubMergeability(mergeable, mergeStateStatus string) string {
 	}
 }
 
+// Why a thread's Resolve and Reply are unavailable. GitHub lets the pull
+// request's author and people with write access resolve; a reply is
+// refused on a locked conversation or without read access.
+const (
+	githubCannotResolveReason = "Only the pull request's author and people with write access can resolve or reopen conversations."
+	githubCannotReplyReason   = "GitHub does not let you reply to this conversation."
+)
+
 func githubReviewThreads(nodes []githubThreadRaw) []ReviewThread {
 	threads := make([]ReviewThread, 0, len(nodes))
 	for _, node := range nodes {
@@ -907,6 +920,18 @@ func githubReviewThreads(nodes []githubThreadRaw) []ReviewThread {
 			IsResolved:        node.IsResolved,
 			IsOutdated:        node.IsOutdated,
 			Comments:          make([]ReviewComment, 0, len(node.Comments.Nodes)),
+		}
+		// GitHub answers both directions; the one shown is the one the
+		// thread's state offers.
+		may := node.ViewerCanResolve
+		if node.IsResolved {
+			may = node.ViewerCanUnresolve
+		}
+		if !may {
+			thread.CannotResolveReason = githubCannotResolveReason
+		}
+		if !node.ViewerCanReply {
+			thread.CannotReplyReason = githubCannotReplyReason
 		}
 		for _, comment := range node.Comments.Nodes {
 			out := ReviewComment{

@@ -421,14 +421,45 @@ func TestReadPRRequestsOnlyTheWantedParts(t *testing.T) {
 			t.Fatalf("PRTick lacks %q", gate)
 		}
 	}
+	// What the viewer may do is GitHub's answer, read with the parts.
+	for _, field := range []string{" viewerCanUpdateBranch maintainerCanModify ", " viewerCanResolve viewerCanUnresolve viewerCanReply "} {
+		if !strings.Contains(query, field) {
+			t.Fatalf("PRTick lacks %q", field)
+		}
+	}
 	if _, err := NewCore().ReadPR(t.Context(), githubTestRef(1), PRReadParts{}, nil, nil); err == nil {
 		t.Fatal("a read naming no part succeeded")
 	}
 }
 
 func githubThreadJSON(id string, comments []string, hasNext bool) string {
-	return fmt.Sprintf(`{"id":%q,"isResolved":false,"isOutdated":false,"path":"a.go","line":1,"startLine":null,"originalLine":1,"originalStartLine":null,"diffSide":"RIGHT","startDiffSide":null,"subjectType":"LINE","comments":{"pageInfo":{"hasNextPage":%t,"endCursor":"c-%s"},"nodes":[%s]}}`,
+	return fmt.Sprintf(`{"id":%q,"isResolved":false,"isOutdated":false,"path":"a.go","line":1,"startLine":null,"originalLine":1,"originalStartLine":null,"diffSide":"RIGHT","startDiffSide":null,"subjectType":"LINE","viewerCanResolve":true,"viewerCanUnresolve":true,"viewerCanReply":true,"comments":{"pageInfo":{"hasNextPage":%t,"endCursor":"c-%s"},"nodes":[%s]}}`,
 		id, hasNext, id, strings.Join(comments, ","))
+}
+
+// A thread says why its Resolve or Reply is unavailable from GitHub's
+// answer for the direction the thread's state offers: an open thread by
+// viewerCanResolve, a resolved one by viewerCanUnresolve.
+func TestGitHubThreadControlsFollowGitHub(t *testing.T) {
+	t.Parallel()
+	thread := func(resolved, resolve, unresolve, reply bool) ReviewThread {
+		return githubReviewThreads([]githubThreadRaw{{ID: "T", IsResolved: resolved, ViewerCanResolve: resolve, ViewerCanUnresolve: unresolve, ViewerCanReply: reply}})[0]
+	}
+	for _, tc := range []struct {
+		name                       string
+		got                        ReviewThread
+		cannotResolve, cannotReply bool
+	}{
+		{"may do both", thread(false, true, false, true), false, false},
+		{"open, may not resolve", thread(false, false, true, true), true, false},
+		{"resolved, may reopen", thread(true, false, true, true), false, false},
+		{"resolved, may not reopen", thread(true, true, false, true), true, false},
+		{"may not reply", thread(false, true, true, false), false, true},
+	} {
+		if (tc.got.CannotResolveReason != "") != tc.cannotResolve || (tc.got.CannotReplyReason != "") != tc.cannotReply {
+			t.Fatalf("%s: resolve %q, reply %q", tc.name, tc.got.CannotResolveReason, tc.got.CannotReplyReason)
+		}
+	}
 }
 
 func githubCommentsJSON(prefix string, from, n int, reply bool) []string {

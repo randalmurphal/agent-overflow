@@ -21,6 +21,8 @@ type githubPullMergeRaw struct {
 	ClosedAt                  string          `json:"closedAt"`
 	ViewerDidAuthor           bool            `json:"viewerDidAuthor"`
 	IsCrossRepository         bool            `json:"isCrossRepository"`
+	ViewerCanUpdateBranch     bool            `json:"viewerCanUpdateBranch"`
+	MaintainerCanModify       bool            `json:"maintainerCanModify"`
 	ViewerCanEnableAutoMerge  bool            `json:"viewerCanEnableAutoMerge"`
 	ViewerCanDisableAutoMerge bool            `json:"viewerCanDisableAutoMerge"`
 	AutoMergeRequest          *struct {
@@ -142,6 +144,9 @@ type githubMergeInputs struct {
 	// checksUnknown is set when the read left check runs out
 	// (githubPartCheckRuns): the contexts are the status contexts alone.
 	checksUnknown bool
+	// manageUnknown is set when the read left the management fields out
+	// (githubPartManage), viewerCanUpdate with them.
+	manageUnknown bool
 }
 
 // githubBaseRules is the base branch's merge requirements, protection and
@@ -464,6 +469,41 @@ func (in githubMergeInputs) options(readiness MergeReadiness) MergeOptions {
 	for _, review := range pull.LatestOpinionatedReviews.Nodes {
 		if review.ViewerDidAuthor && strings.EqualFold(review.State, "APPROVED") {
 			out.ViewerApproved = true
+		}
+	}
+	if !open {
+		return out
+	}
+	// GitHub answers whether the viewer may update the branch (false too
+	// while it is up to date, when no control shows): a fork's PR whose
+	// author turned maintainer edits off is the author's alone.
+	out.ViewerCanUpdateBranch = pull.ViewerCanUpdateBranch
+	switch {
+	case pull.ViewerCanUpdateBranch:
+	case pull.IsCrossRepository && !pull.MaintainerCanModify && !pull.ViewerDidAuthor:
+		out.CannotUpdateBranchReason = "The author's fork does not allow edits from maintainers, so only the author can update this branch."
+	default:
+		out.CannotUpdateBranchReason = "GitHub does not let you update this branch."
+	}
+	// Withdrawing an approval dismisses it, which GitHub allows with write
+	// access (a protected base may narrow it further, which a non-admin
+	// cannot read); a null permission is unknown and does not hide it.
+	if out.ViewerApproved {
+		out.ViewerCanUnapprove = repo.ViewerPermission == "" || githubRoleAtLeast(repo.ViewerPermission, "WRITE")
+		if !out.ViewerCanUnapprove {
+			out.CannotUnapproveReason = "Withdrawing an approval dismisses it, which needs write access to this repository."
+		}
+	}
+	// Marking a draft ready updates the pull request: GitHub's
+	// viewerCanUpdate, read with the management fields; without them, the
+	// author and those who may merge.
+	if pull.IsDraft {
+		out.ViewerCanMarkReady = pull.ViewerCanUpdate
+		if in.manageUnknown {
+			out.ViewerCanMarkReady = out.ViewerCanMerge || pull.ViewerDidAuthor
+		}
+		if !out.ViewerCanMarkReady {
+			out.CannotMarkReadyReason = "Only the author and people with write access can mark this pull request ready for review."
 		}
 	}
 	return out

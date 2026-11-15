@@ -392,7 +392,9 @@ func (f *gitlabForge) ReadPR(ctx context.Context, ref PRReference, want PRReadPa
 		if err != nil {
 			return PRRead{}, err
 		}
-		markGitLabViewerNotes(out.Threads, f.viewerLogin(ctx, client, ref.Host), settings.accessLevel())
+		viewer := f.viewerLogin(ctx, client, ref.Host)
+		markGitLabViewerNotes(out.Threads, viewer, settings.accessLevel())
+		gateGitLabThreadResolve(out.Threads, viewer != "" && strings.EqualFold(viewer, mr.Author.Username), settings.accessLevel())
 		gateGitLabSuggestions(out.Threads, settings.accessLevel())
 		out.ReactionsUnavailable = f.fillReactions(ctx, client, ref, out.Threads)
 	}
@@ -612,6 +614,23 @@ func markGitLabViewerNotes(threads []ReviewThread, viewer string, access int) {
 		}
 	}
 }
+
+// gateGitLabThreadResolve says on each resolvable thread that the viewer
+// cannot resolve it: GitLab lets the merge request's author and the
+// developer role and above resolve threads, and its discussions carry no
+// permission. An unknown role (0) gates nothing; the forge refuses.
+func gateGitLabThreadResolve(threads []ReviewThread, author bool, access int) {
+	if author || access == 0 || access >= gitlabDeveloperAccess {
+		return
+	}
+	for i := range threads {
+		if threads[i].IsResolvable {
+			threads[i].CannotResolveReason = gitlabCannotResolveReason
+		}
+	}
+}
+
+const gitlabCannotResolveReason = "Only the merge request's author and people with the Developer role or above can resolve threads."
 
 // readGitLabDiscussions reads every page of the merge request's
 // discussions: the human notes as threads normalized against the MR's

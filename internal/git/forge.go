@@ -268,6 +268,13 @@ type ReviewThread struct {
 	IsResolved   bool            `json:"isResolved"`
 	IsOutdated   bool            `json:"isOutdated"`
 	Comments     []ReviewComment `json:"comments"`
+	// CannotResolveReason, set on a resolvable thread, is why the viewer
+	// may not resolve it (or reopen it, once resolved): GitHub's
+	// viewerCanResolve and viewerCanUnresolve, GitLab's role and
+	// authorship. CannotReplyReason is why the viewer may not reply
+	// (GitHub's viewerCanReply). Empty is allowed or unknown.
+	CannotResolveReason string `json:"cannotResolveReason,omitempty"`
+	CannotReplyReason   string `json:"cannotReplyReason,omitempty"`
 }
 
 // ReviewComment is one comment of a thread. ID is what an edit or a

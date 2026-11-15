@@ -1063,6 +1063,22 @@ export class MergeOptions {
      */
     "cannotMergeReason"?: string;
 
+    /**
+     * ViewerCanUpdateBranch is whether the forge would update the head
+     * branch from the base for this login (GitHub viewerCanUpdateBranch,
+     * GitLab can_merge); ViewerCanUnapprove whether it would withdraw the
+     * login's standing approval (GitHub dismisses it, which needs write
+     * access); ViewerCanMarkReady whether it would mark the draft ready
+     * (GitHub viewerCanUpdate). Each Cannot*Reason says why not, where
+     * the control would show.
+     */
+    "viewerCanUpdateBranch": boolean;
+    "cannotUpdateBranchReason"?: string;
+    "viewerCanUnapprove": boolean;
+    "cannotUnapproveReason"?: string;
+    "viewerCanMarkReady": boolean;
+    "cannotMarkReadyReason"?: string;
+
     /** Creates a new MergeOptions instance. */
     constructor($$source: Partial<MergeOptions> = {}) {
         if (!("methods" in $$source)) {
@@ -1085,6 +1101,15 @@ export class MergeOptions {
         }
         if (!("viewerApproved" in $$source)) {
             this["viewerApproved"] = false;
+        }
+        if (!("viewerCanUpdateBranch" in $$source)) {
+            this["viewerCanUpdateBranch"] = false;
+        }
+        if (!("viewerCanUnapprove" in $$source)) {
+            this["viewerCanUnapprove"] = false;
+        }
+        if (!("viewerCanMarkReady" in $$source)) {
+            this["viewerCanMarkReady"] = false;
         }
 
         Object.assign(this, $$source);
@@ -2421,6 +2446,16 @@ export class ReviewThread {
     "isResolved": boolean;
     "isOutdated": boolean;
     "comments": ReviewComment[];
+
+    /**
+     * CannotResolveReason, set on a resolvable thread, is why the viewer
+     * may not resolve it (or reopen it, once resolved): GitHub's
+     * viewerCanResolve and viewerCanUnresolve, GitLab's role and
+     * authorship. CannotReplyReason is why the viewer may not reply
+     * (GitHub's viewerCanReply). Empty is allowed or unknown.
+     */
+    "cannotResolveReason"?: string;
+    "cannotReplyReason"?: string;
 
     /** Creates a new ReviewThread instance. */
     constructor($$source: Partial<ReviewThread> = {}) {

@@ -151,6 +151,9 @@ type Pull struct {
 	// isCrossRepository (GitHub) and a source_project_id of its own
 	// (GitLab).
 	HeadRepo string `json:"headRepo,omitempty"`
+	// MaintainerCanModify is a fork's pull letting people with write
+	// access to the base push to its head (GitHub maintainerCanModify).
+	MaintainerCanModify bool `json:"maintainerCanModify,omitempty"`
 	// headRepoID is the fork's generated project id.
 	headRepoID int64
 	// Reviewers are the logins a review is requested from (GitHub

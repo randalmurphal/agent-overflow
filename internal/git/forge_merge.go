@@ -124,6 +124,19 @@ type MergeOptions struct {
 	// CannotMergeReason explains a greyed Merge now ("You do not have
 	// merge access to this project").
 	CannotMergeReason string `json:"cannotMergeReason,omitempty"`
+	// ViewerCanUpdateBranch is whether the forge would update the head
+	// branch from the base for this login (GitHub viewerCanUpdateBranch,
+	// GitLab can_merge); ViewerCanUnapprove whether it would withdraw the
+	// login's standing approval (GitHub dismisses it, which needs write
+	// access); ViewerCanMarkReady whether it would mark the draft ready
+	// (GitHub viewerCanUpdate). Each Cannot*Reason says why not, where
+	// the control would show.
+	ViewerCanUpdateBranch    bool   `json:"viewerCanUpdateBranch"`
+	CannotUpdateBranchReason string `json:"cannotUpdateBranchReason,omitempty"`
+	ViewerCanUnapprove       bool   `json:"viewerCanUnapprove"`
+	CannotUnapproveReason    string `json:"cannotUnapproveReason,omitempty"`
+	ViewerCanMarkReady       bool   `json:"viewerCanMarkReady"`
+	CannotMarkReadyReason    string `json:"cannotMarkReadyReason,omitempty"`
 }
 
 // AutoMergeRequest is an armed merge-when-ready: who set it, when, with
