@@ -119,6 +119,27 @@ func (h *WakeHold) Release(returned *ReturnedRest) {
 	})
 }
 
+// ReleaseCurrentRest ends the hold with the run's rest as it stands now
+// taken as delivered to the hold's thread, as a call that returned it is:
+// the thread learns of it another way and is not woken for it. A run that is
+// not resting, or cannot be read, ends the hold as Release(nil) does.
+func (h *WakeHold) ReleaseCurrentRest() {
+	// The head before the run, as RunStatus reads them: a move after the read
+	// is somebody acting on the run, whose own wakes settle it.
+	cursor := h.service.watch.Head()
+	item, err := h.service.deps.Store.GetWorkItemSummary(h.itemID)
+	if err != nil {
+		h.service.deps.Logf("workflow wake %s: read the rest to release a hold with: %v; a rest it kept back still wakes thread %s", h.itemID, err, h.threadID)
+		h.Release(nil)
+		return
+	}
+	if !restingWorkflowState(engine.State(item.State)) {
+		h.Release(nil)
+		return
+	}
+	h.Release(&ReturnedRest{Cursor: cursor, State: item.State, Reason: item.Reason, PhaseID: item.CurrentPhaseID})
+}
+
 // keepBackRest is the wake half's check, made for a root's rest before it is
 // composed: a call holding the run for its bound thread will hand the rest
 // over itself, or wake the thread with it when it ends without doing so.

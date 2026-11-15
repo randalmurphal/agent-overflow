@@ -69,6 +69,63 @@ func TestListThreadRestRequestsReadsWhatARestStops(t *testing.T) {
 	}
 }
 
+// A rest pauses the root runs the thread started and that have not ended:
+// not a run a person bound to it, one a phase started, a run that ended, or
+// another thread's. A called run is never bound.
+func TestListThreadStartedWorkItemsReadsTheRunsARestPauses(t *testing.T) {
+	s := newTestStore(t)
+	create := func(id, state, source, sourceRef, origin string, at int64) {
+		t.Helper()
+		item := testWorkItem(id, "project-a", state, at)
+		item.Source, item.SourceRef, item.OriginThreadID = source, sourceRef, origin
+		if err := s.CreateWorkItem(item); err != nil {
+			t.Fatalf("create %s: %v", id, err)
+		}
+	}
+	create("started", "running", "agent", "", "t-rest", 10)
+	create("parked", "needs-human", "agent", "", "t-rest", 20)
+	create("bound-by-a-person", "running", "manual", "", "t-rest", 30)
+	create("phase-started", "running", "agent", "phase:x", "t-rest", 40)
+	create("ended", "done", "agent", "", "t-rest", 60)
+	create("elsewhere", "running", "agent", "", "t-other", 70)
+
+	runs, err := s.ListThreadStartedWorkItems("t-rest", "agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, run := range runs {
+		got = append(got, run.ID)
+	}
+	if want := []string{"started", "parked"}; !slices.Equal(got, want) {
+		t.Fatalf("runs = %q, want %q", got, want)
+	}
+}
+
+// A thread works in a run while a running run holds it as a phase or a
+// unit; one that ended does not hold it.
+func TestThreadRunningWorkflowRunNamesTheRunAThreadWorksIn(t *testing.T) {
+	s := newTestStore(t)
+	for _, item := range []WorkItem{testWorkItem("live", "project-a", "running", 10), testWorkItem("over", "project-a", "done", 20)} {
+		if err := s.CreateWorkItem(item); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, phase := range []WorkItemPhase{
+		{ItemID: "live", PhaseID: "run", Attempt: 1, ThreadID: "t-member", Status: "running"},
+		{ItemID: "over", PhaseID: "run", Attempt: 1, ThreadID: "t-former", Status: "completed"},
+	} {
+		if err := s.CreateWorkItemPhase(phase); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for thread, want := range map[string]string{"t-member": "live", "t-former": "", "t-none": ""} {
+		if got, err := s.ThreadRunningWorkflowRun(thread); err != nil || got != want {
+			t.Errorf("ThreadRunningWorkflowRun(%s) = %q, %v; want %q", thread, got, err, want)
+		}
+	}
+}
+
 // A rest drops each notification of the thread's remote commands the agent
 // has not taken in, pending or queued and unconfirmed, and keeps one the
 // provider confirmed and every other thread's.

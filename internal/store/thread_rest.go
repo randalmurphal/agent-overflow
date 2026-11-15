@@ -1,6 +1,8 @@
 package store
 
 import (
+	"database/sql"
+	"errors"
 	"fmt"
 	"math"
 	"strconv"
@@ -44,4 +46,38 @@ func (s *Store) ListThreadRestRequests(callerThreadID string, after ThreadRestCu
 		return nil, fmt.Errorf("store: list the requests a rest of %s stops: %w", callerThreadID, err)
 	}
 	return collectThreadRequests(rows, "store: list the requests a rest of "+callerThreadID+" stops")
+}
+
+// ListThreadStartedWorkItems returns, oldest first, the runs threadID
+// started that have not ended: bound to it, which only a root run can be,
+// and recorded with source and no source ref, as a run an interactive thread
+// asks for is. A run a person bound to the thread carries another source and
+// is not listed.
+func (s *Store) ListThreadStartedWorkItems(threadID, source string) ([]WorkItem, error) {
+	return s.queryWorkItems(
+		`SELECT `+workItemColumns+` FROM work_items
+		 WHERE origin_thread_id = `+boundText+` AND origin_thread_id <> ''
+		   AND source = `+boundText+` AND source_ref = ''
+		   AND state NOT IN ('done','failed','cancelled')
+		 ORDER BY created_at ASC, id ASC`,
+		"list the runs thread "+threadID+" started", threadID, source,
+	)
+}
+
+// ThreadRunningWorkflowRun returns the id of a running run threadID works in
+// as one of its phases or fan-out units, or "" when it works in none.
+func (s *Store) ThreadRunningWorkflowRun(threadID string) (string, error) {
+	var itemID string
+	err := s.reader().QueryRow(`SELECT id FROM work_items
+		WHERE state = 'running'
+		  AND (id IN (SELECT item_id FROM work_item_phases WHERE thread_id = ?1)
+		       OR id IN (SELECT item_id FROM work_item_units WHERE thread_id = ?1))
+		ORDER BY created_at ASC, id ASC LIMIT 1`, threadID).Scan(&itemID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("store: read the running run thread %s works in: %w", threadID, err)
+	}
+	return itemID, nil
 }

@@ -561,11 +561,21 @@ func (a *App) WorkflowPauseItem(ctx context.Context, itemID string) error {
 //ao:scope threads:autonomy
 //ao:route home
 func (a *App) WorkflowPauseItemAndEndSessions(ctx context.Context, itemID string) error {
-	workflowEngine, err := a.requireWorkflowEngine()
-	if err != nil {
+	if _, err := a.requireWorkflowEngine(); err != nil {
 		return err
 	}
 	if err := a.authorizeScopedRunAction(ctx, itemID, "pause workflow run"); err != nil {
+		return err
+	}
+	return a.pauseWorkflowRunAndEndSessions(itemID)
+}
+
+// pauseWorkflowRunAndEndSessions is Pause and End Sessions for a caller that
+// already holds the right to it: the binding, and a Stop that brings the
+// thread that started the run to rest.
+func (a *App) pauseWorkflowRunAndEndSessions(itemID string) error {
+	workflowEngine, err := a.requireWorkflowEngine()
+	if err != nil {
 		return err
 	}
 	// Read before the pause: it is the running members that hold sessions,

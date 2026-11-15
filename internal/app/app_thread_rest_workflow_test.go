@@ -1,0 +1,308 @@
+package app
+
+import (
+	"context"
+	"encoding/json"
+	"path/filepath"
+	"slices"
+	"strings"
+	"testing"
+	"time"
+
+	"agent-overflow/internal/provider"
+	"agent-overflow/internal/store"
+	"agent-overflow/internal/testutil"
+	"agent-overflow/internal/threadmode"
+	"agent-overflow/internal/threadtools"
+	"agent-overflow/internal/workflow/engine"
+)
+
+// restRunFixture is a spawned worker thread with workflow runs on a live
+// engine whose members hold a provider session until stopped.
+type restRunFixture struct {
+	app      *App
+	project  store.Project
+	caller   store.Thread
+	worker   store.Thread
+	spawn    string
+	startLog string
+}
+
+func newRestRunFixture(t *testing.T) *restRunFixture {
+	t.Helper()
+	app, _ := setupE2EApp(t)
+	configRoot := t.TempDir()
+	writeReliabilityWorkflow(t, configRoot, `
+  - id: run
+    driver: agent
+    provider: claude
+    model: claude-opus-4-7
+    prompt: run.md
+    gate:
+      routes:
+        - to: done`)
+	startLog := filepath.Join(t.TempDir(), "starts")
+	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": writeRecordingStallClaude(t, startLog)}); err != nil {
+		t.Fatal(err)
+	}
+	project := testutil.EnsureProject(t, app.store, t.TempDir())
+	project = mustReloadProject(t, app.store, project.ID)
+	writeReliabilityProfile(t, configRoot, project.Slug, "watchdog: 1h\n  backoff: [5ms]\n")
+	startWorkflowEngineForTest(t, app, configRoot)
+	thread := func(title string) store.Thread {
+		row, err := app.CreateThread(t.Context(), CreateThreadOptions{
+			ProjectID: project.ID, Provider: string(provider.Claude), Model: "claude-opus-4-7", Mode: threadmode.ModeChat,
+		})
+		if err != nil {
+			t.Fatalf("create %s: %v", title, err)
+		}
+		return row
+	}
+	f := &restRunFixture{app: app, project: project, caller: thread("spawner"), worker: thread("worker"), spawn: "spawn-run-starter", startLog: startLog}
+	if err := app.store.InsertThreadRequest(store.ThreadRequest{
+		Token: f.spawn, CallerThreadID: f.caller.ID, Kind: store.ThreadRequestSpawn,
+		TargetThreadID: f.worker.ID, State: store.ThreadRequestAccepted,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return f
+}
+
+// startRun starts a run the worker asked for, as run_start does for an
+// interactive thread: agent-sourced and bound to it.
+func (f *restRunFixture) startRun(t *testing.T, goal string) (store.WorkItem, string) {
+	t.Helper()
+	item, err := f.app.startWorkflowRun(f.project.ID, "reliability-flow", "shared", goal, json.RawMessage(`{}`), nil, "", false, workflowSourceAgent, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.app.store.UpdateWorkItemOriginThread(item.ID, f.worker.ID); err != nil {
+		t.Fatal(err)
+	}
+	return item, awaitLivePhaseSession(t, f.app, item.ID)
+}
+
+// stop presses Stop on the worker's row.
+func (f *restRunFixture) stop(t *testing.T) ThreadAgentStop {
+	t.Helper()
+	stop, err := f.app.StopThreadAgentRow(t.Context(), f.caller.ID, f.spawn)
+	if err != nil {
+		t.Fatalf("StopThreadAgentRow: %v", err)
+	}
+	return stop
+}
+
+// settle lets every wake the run's transitions queued be delivered.
+func (f *restRunFixture) settle() {
+	f.app.workflowApplication().WaitWake()
+	f.app.waitAgentNoticeWork()
+	f.app.workflowApplication().WaitWake()
+}
+
+// assertAtRest checks that no wake reached the worker once the wakes have
+// settled: a wake is written to its timeline or queue before it starts a
+// session, so the check does not race the start.
+func (f *restRunFixture) assertAtRest(t *testing.T) {
+	t.Helper()
+	items, err := f.app.store.ListItems(f.worker.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range items {
+		if item.Kind == string(provider.ItemUserText) {
+			t.Fatalf("a message reached the stopped worker: %q", item.Summary)
+		}
+	}
+	if queued, err := f.app.store.ListFlushQueueItems(f.worker.ID); err != nil || len(queued) != 0 {
+		t.Fatalf("the stopped worker's queue = %+v, %v; want it empty", queued, err)
+	}
+	if _, live := f.app.sessionManager().get(f.worker.ID); live {
+		t.Fatal("the stopped worker started again")
+	}
+}
+
+// The Stop pauses the run the worker started and ends its members'
+// sessions, so the run's next transition, the pause itself, does not start
+// the worker again; Resume from the workflow surface continues the run on
+// the session it parked on.
+func TestAStopPausesTheWorkflowRunTheThreadStarted(t *testing.T) {
+	t.Parallel()
+	f := newRestRunFixture(t)
+	item, member := f.startRun(t, "hold")
+	waitUntil(t, 8*time.Second, func() bool {
+		row, err := f.app.store.GetThread(member)
+		return err == nil && row.SessionRef == "stall"
+	})
+	row, err := f.app.store.GetThread(member)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTranscriptContent(t, testProviderHome(t, f.app), row.WorkspacePath, "stall",
+		`{"type":"user","uuid":"u0","parentUuid":null,"sessionId":"stall","message":{"role":"user","content":"hold"}}
+{"type":"assistant","uuid":"a0","parentUuid":"u0","sessionId":"stall","message":{"role":"assistant","content":[{"type":"text","text":"holding"}]}}
+`)
+
+	if stop := f.stop(t); len(stop.Failures) != 0 {
+		t.Fatalf("the Stop failed: %q", stop.Failures)
+	}
+	waitForWorkflowItem(t, f.app, item.ID, engine.StateNeedsHuman, engine.ReasonPaused)
+	if _, live := f.app.sessionManager().get(member); live {
+		t.Fatal("the paused run's member kept its session")
+	}
+	f.settle()
+	f.assertAtRest(t)
+	if bound, err := f.app.store.GetWorkItem(item.ID); err != nil || bound.OriginThreadID != f.worker.ID {
+		t.Fatalf("the run's binding = %q, %v; want it still reporting to the worker", bound.OriginThreadID, err)
+	}
+
+	if err := f.app.WorkflowResumeItem(context.Background(), item.ID, "", false); err != nil {
+		t.Fatal(err)
+	}
+	waitForWorkflowItem(t, f.app, item.ID, engine.StateRunning, "")
+	waitUntil(t, 8*time.Second, func() bool {
+		starts := readLines(t, f.startLog)
+		return len(starts) == 2 && strings.Contains(starts[1], "--resume stall")
+	})
+	if _, live := f.app.sessionManager().get(f.worker.ID); live {
+		t.Fatal("the run's resume started the stopped worker")
+	}
+}
+
+// A run of the worker's that is already paused or has finished is left as it
+// is, and the Stop reports no failure for it.
+func TestAStopLeavesARunThatIsAlreadyAtRestAsItIs(t *testing.T) {
+	t.Parallel()
+	f := newRestRunFixture(t)
+	paused, _ := f.startRun(t, "paused")
+	cancelled, _ := f.startRun(t, "cancelled")
+	if err := f.app.WorkflowPauseItem(context.Background(), paused.ID); err != nil {
+		t.Fatal(err)
+	}
+	waitForWorkflowItem(t, f.app, paused.ID, engine.StateNeedsHuman, engine.ReasonPaused)
+	if err := f.app.WorkflowCancelItem(context.Background(), cancelled.ID); err != nil {
+		t.Fatal(err)
+	}
+	waitUntil(t, 8*time.Second, func() bool {
+		row, err := f.app.store.GetWorkItem(cancelled.ID)
+		return err == nil && row.State == string(engine.StateCancelled)
+	})
+	f.settle()
+
+	if stop := f.stop(t); len(stop.Failures) != 0 {
+		t.Fatalf("the Stop failed: %q", stop.Failures)
+	}
+	f.settle()
+	for id, want := range map[string]string{paused.ID: string(engine.StateNeedsHuman), cancelled.ID: string(engine.StateCancelled)} {
+		row, err := f.app.store.GetWorkItem(id)
+		if err != nil || row.State != want || row.OriginThreadID != f.worker.ID {
+			t.Fatalf("run %s = %s bound to %q, %v; want %s and still bound", id, row.State, row.OriginThreadID, err, want)
+		}
+	}
+	if _, live := f.app.sessionManager().get(f.worker.ID); live {
+		t.Fatal("the stopped worker has a session")
+	}
+}
+
+// A run that cannot be paused is named in the Stop's failures, and the rest
+// of the Stop still runs: here the store holds a running run the engine
+// does not, which the pause refuses.
+func TestAStopNamesARunItCouldNotPauseAndRunsTheRest(t *testing.T) {
+	t.Parallel()
+	f := newRestRunFixture(t)
+	orphan := store.WorkItem{
+		ID: "run-the-engine-lost", ProjectID: f.project.ID, Goal: "lost", WorkflowID: "reliability-flow",
+		WorkflowScope: "shared", State: string(engine.StateRunning), Source: workflowSourceAgent,
+		OriginThreadID: f.worker.ID, CreatedAt: time.Now().UnixMilli(),
+	}
+	if err := f.app.store.CreateWorkItem(orphan); err != nil {
+		t.Fatal(err)
+	}
+	loop := registerTestWake(t, f.app, store.AgentWake{
+		ThreadID: f.worker.ID, Kind: store.AgentWakeLoop, Label: "board", Note: "n",
+		IntervalSeconds: 3600, NextAt: time.Now().Add(time.Hour).UnixMilli(),
+	})
+
+	stop := f.stop(t)
+	if len(stop.Failures) != 1 || !strings.Contains(stop.Failures[0], "pause its workflow run run-the-engine-lost") {
+		t.Fatalf("the Stop's failures = %q, want the run it could not pause named", stop.Failures)
+	}
+	row, found, err := f.app.store.GetAgentWake(loop.ID)
+	if err != nil || !found || row.State != store.AgentWakeCancelled {
+		t.Fatalf("the worker's loop = %+v found %v, %v; want the rest of the Stop to have run", row, found, err)
+	}
+}
+
+// A thread a running run works in, and did not start, is that run's: the
+// Stop names the run and leaves the run and the thread's session alone,
+// rather than stopping the run's work or ending a session the run would
+// start again.
+func TestAStopLeavesAThreadARunWorksInToTheRun(t *testing.T) {
+	t.Parallel()
+	f := newRestRunFixture(t)
+	item, member := f.startRun(t, "member")
+	if err := f.app.store.InsertThreadRequest(store.ThreadRequest{
+		Token: "spawn-of-a-member", CallerThreadID: f.caller.ID, Kind: store.ThreadRequestSpawn,
+		TargetThreadID: member, State: store.ThreadRequestAccepted,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	stop, err := f.app.StopThreadAgentRow(t.Context(), f.caller.ID, "spawn-of-a-member")
+	if err != nil {
+		t.Fatalf("StopThreadAgentRow: %v", err)
+	}
+	if len(stop.Failures) != 1 || !strings.Contains(stop.Failures[0], "works in workflow run "+item.ID) {
+		t.Fatalf("the Stop's failures = %q, want the run named", stop.Failures)
+	}
+	if row, err := f.app.store.GetWorkItem(item.ID); err != nil || row.State != string(engine.StateRunning) {
+		t.Fatalf("the run = %s, %v; want it still running", row.State, err)
+	}
+	if _, live := f.app.sessionManager().get(member); !live {
+		t.Fatal("the Stop ended the session the run works in")
+	}
+}
+
+// An agent's thread_cancel of a thread it spawned pauses the runs every
+// thread below it started, at any depth.
+func TestAnAgentsCancelPausesTheRunsOfEveryThreadBelow(t *testing.T) {
+	t.Parallel()
+	f := newRestRunFixture(t)
+	grand, err := f.app.CreateThread(t.Context(), CreateThreadOptions{
+		ProjectID: f.project.ID, Provider: string(provider.Claude), Model: "claude-opus-4-7", Mode: threadmode.ModeChat,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.app.store.InsertThreadRequest(store.ThreadRequest{
+		Token: "spawn-of-the-grandchild", CallerThreadID: f.worker.ID, Kind: store.ThreadRequestSpawn,
+		TargetThreadID: grand.ID, State: store.ThreadRequestAccepted,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	own, _ := f.startRun(t, "the worker's")
+	below, err := f.app.startWorkflowRun(f.project.ID, "reliability-flow", "shared", "the grandchild's", json.RawMessage(`{}`), nil, "", false, workflowSourceAgent, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.app.store.UpdateWorkItemOriginThread(below.ID, grand.ID); err != nil {
+		t.Fatal(err)
+	}
+	awaitLivePhaseSession(t, f.app, below.ID)
+
+	report, err := f.app.threadTools().cancelThread(t.Context(), f.app.threadAgentCaller(f.caller.ID), f.worker.ID)
+	if err != nil || report.Effect != threadtools.EffectThreadStopped {
+		t.Fatalf("cancel = %+v, %v; want the worker brought to rest", report, err)
+	}
+	for _, id := range []string{own.ID, below.ID} {
+		waitForWorkflowItem(t, f.app, id, engine.StateNeedsHuman, engine.ReasonPaused)
+	}
+	f.settle()
+	f.assertAtRest(t)
+	for _, id := range []string{f.worker.ID, grand.ID} {
+		if items, err := f.app.store.ListItems(id); err != nil || slices.ContainsFunc(items, func(item store.Item) bool {
+			return item.Kind == string(provider.ItemUserText)
+		}) {
+			t.Fatalf("a wake reached %s after the cancel (%v)", id, err)
+		}
+	}
+}

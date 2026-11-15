@@ -197,7 +197,7 @@ func statusSchema() map[string]any {
 func cancelSchema(shape Shape) map[string]any {
 	properties := map[string]any{
 		"token":     map[string]any{"type": "string", "description": "Cancel this request of yours: a message still queued is removed from the queue, a turn that request's message started is interrupted, a reminder is dropped. A turn the user or another request started is never interrupted through a token."},
-		"thread_id": map[string]any{"type": "string", "description": "Stop this thread. A thread you spawned is stopped whole: its session ends, its queued messages, loops, watches, reminders and requests are cancelled, and so are the threads it spawned; it is not archived, and a later message starts it again. A thread you only sent to or asked has its running turn interrupted. Any other thread is refused."},
+		"thread_id": map[string]any{"type": "string", "description": "Stop this thread. A thread you spawned is stopped whole: its session ends; its queued messages, loops, watches, reminders and requests are cancelled; the workflow runs it started are paused; and the threads it spawned are stopped the same way. It is not archived, and a later message starts it again. A thread you only sent to or asked has its running turn interrupted. Any other thread is refused."},
 		"label":     map[string]any{"type": "string", "description": "Stop this thread's loop or watch with this label: it will not fire or run again, and a long-running watch's process is stopped."},
 	}
 	computerIDProperty(shape, properties, "the thread")

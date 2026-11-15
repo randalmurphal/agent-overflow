@@ -216,8 +216,8 @@ const (
 	EffectWakeCancelled   = "loop_or_watch_cancelled"
 	// EffectThreadStopped: a thread_cancel by thread id of a thread the
 	// caller spawned brought it to rest: its session ended and its queue,
-	// loops, watches, reminders and requests, and the threads it spawned,
-	// were stopped.
+	// loops, watches, reminders and requests, the workflow runs it started
+	// and the threads it spawned were stopped.
 	EffectThreadStopped = "thread_stopped"
 )
 

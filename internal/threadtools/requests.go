@@ -621,7 +621,7 @@ func cancelNote(effect string, remoteRequest bool) string {
 	case EffectLeftRunning:
 		return "The request is cancelled and no answer will come, but its message had already reached the thread. The thread keeps working on its current turn, which this request did not start, and may still act on the message; nothing was interrupted."
 	case EffectThreadStopped:
-		return "The thread you spawned was stopped: its session ended, and its queued messages, loops, watches, reminders and requests were cancelled, and so were the threads it spawned. Nothing it did was undone, and no message about it will come. A later message starts it again."
+		return "The thread you spawned was stopped: its session ended; its queued messages, loops, watches, reminders and requests were cancelled; the workflow runs it started were paused, to be resumed from the workflows view; and the threads it spawned were stopped the same way. Nothing it did was undone, and no message about it will come. A later message starts it again."
 	default:
 		return "This interrupted the work; it did not undo anything already done."
 	}

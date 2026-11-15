@@ -248,6 +248,17 @@ func (a *App) restThreadHere(ctx context.Context, threadID string, by restStop, 
 			result.Failures = append(result.Failures, step+": "+err.Error())
 		}
 	}
+	// A thread a running workflow run works in is that run's: ending its
+	// session would stop the run's work and the run would start it again.
+	// The runner makes every member thread, so a spawn reaches one only
+	// through a ledger row nothing writes.
+	if run, err := a.store.ThreadRunningWorkflowRun(threadID); err != nil {
+		fail("read its workflow runs", err)
+	} else if run != "" {
+		result.Failures = append(result.Failures, fmt.Sprintf(
+			"it works in workflow run %s, which it did not start; pause that run from the workflows view", run))
+		return
+	}
 	work, release, gone, err := a.captureThreadRest(threadID, by.cause)
 	if gone {
 		return
@@ -259,6 +270,9 @@ func (a *App) restThreadHere(ctx context.Context, threadID string, by restStop, 
 		// made are still stopped below.
 		work = restingThreadWork{threadID: threadID}
 	}
+	// Before anything else, so a run of the thread's that rests meanwhile
+	// does not start it again (pauseRunsOfRestingThread).
+	a.pauseRunsOfRestingThread(threadID, result)
 	// Every request on it settles before its session ends, so the teardown
 	// gives none of their messages back to the queue.
 	a.stopRequestsOnRestingThread(ctx, threadID, by, result)
