@@ -60,6 +60,42 @@ export interface SnapshotStream<F> {
   reset(): void;
 }
 
+/**
+ * Orders whole-state values a producer numbers itself (a per-process Seq),
+ * whether they arrive as frames or as call answers: per key, the highest
+ * number of the producer's current launch wins. The fold of a stream whose
+ * producer publishes outside the lock that numbers its states uses this
+ * instead of arrival order.
+ */
+export interface SequenceGate {
+  /**
+   * Whether a value numbered `seq` by launch `launch` is newer than what
+   * `key` holds, recording it when it is. A value of another launch is
+   * newer, since a restarted producer numbers from one again. An
+   * unnumbered value (an older producer, or a state built locally) is
+   * admitted and records nothing.
+   */
+  admit(key: string, seq: number | undefined, launch: string): boolean;
+  /** Forgets every key. */
+  reset(): void;
+}
+
+export function createSequenceGate(): SequenceGate {
+  const held = new Map<string, { launch: string; seq: number }>();
+  return {
+    admit(key, seq, launch) {
+      if (typeof seq !== 'number' || seq <= 0) return true;
+      const current = held.get(key);
+      if (current && current.launch === launch && seq <= current.seq) return false;
+      held.set(key, { launch, seq });
+      return true;
+    },
+    reset() {
+      held.clear();
+    },
+  };
+}
+
 const FAILED = Symbol('failed');
 
 export function createSnapshotStream<F, S = never>(options: SnapshotStreamOptions<F, S>): SnapshotStream<F> {
