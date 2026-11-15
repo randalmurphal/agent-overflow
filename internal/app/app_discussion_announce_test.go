@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 	"time"
@@ -40,7 +41,7 @@ func TestStartDiscussionAnnouncesTheParentRow(t *testing.T) {
 	other := bus.Subscribe()
 	t.Cleanup(other.Close)
 
-	if err := app.StartDiscussion(thread.ID, "Pair"); err != nil {
+	if err := app.StartDiscussion(context.Background(), thread.ID, "Pair"); err != nil {
 		t.Fatalf("StartDiscussion: %v", err)
 	}
 	stored, err := app.store.GetThread(thread.ID)

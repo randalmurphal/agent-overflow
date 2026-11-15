@@ -424,6 +424,9 @@ func workflowReasonText(reason engine.Reason) string {
 }
 
 func (a *App) generateWorkflowDigest(item store.WorkItem, template WorkflowDigest) (WorkflowDigest, error) {
+	if err := a.waitForBootSteps(a.lifeCtx()); err != nil {
+		return WorkflowDigest{}, err
+	}
 	primary := a.resolveTextGenerationConfig()
 	return runTextGenWithFallback(a, primary, workflowDigestTimeout, func(cfg textgen.Config, deadline time.Time) (WorkflowDigest, error) {
 		return a.runWorkflowDigestOnce(cfg, item, template, deadline)

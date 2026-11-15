@@ -220,9 +220,14 @@ func (a *App) initWorkflowEngine(dataRoot string) error {
 	// delivery queue. The rows they describe are surfaced only after Start has
 	// rebuilt workflow state below.
 	usageAttentionRecoveries := a.workflowApplication().ReclaimUsageAttention()
+	// The rebuild finishes runs and replays gate decisions, and the phases
+	// those start are provider turns, so a boot runs it with every start held
+	// until startBeforeClients: on a trial that is after the commit, and on
+	// every boot it is after the sweeps a new session must follow.
+	a.workflowStartsHeldForBoot = a.activation.bootStepsPending() && !settingsSnapshot.WorkflowPaused
 	if err := a.workflowApplication().StartEngine(a.lifeCtx(), workflowapp.EngineRuntimeConfig{
 		Runner: runner, Definitions: definitions, Profiles: profiles, BeginWork: a.workAdmission.begin,
-		Spend: workflowSpendSource{store: a.store}, Paused: settingsSnapshot.WorkflowPaused,
+		Spend: workflowSpendSource{store: a.store}, Paused: settingsSnapshot.WorkflowPaused || a.workflowStartsHeldForBoot,
 		Log: newWorkflowEngineLog(a.engineLogger), Emit: a.emitWithReplay(),
 	}); err != nil {
 		if a.triage != nil {
@@ -233,6 +238,23 @@ func (a *App) initWorkflowEngine(dataRoot string) error {
 	// A queued workflow wake is process memory. Re-surface the prior process's
 	// transferred claims only after the engine has rebuilt their item rows.
 	a.workflowApplication().SurfaceReclaimedUsageAttention(usageAttentionRecoveries)
+	return nil
+}
+
+// releaseWorkflowStartsHeldForBoot applies the persisted pause setting to the
+// engine the boot started paused, which starts what its rebuild held.
+func (a *App) releaseWorkflowStartsHeldForBoot() error {
+	if !a.workflowStartsHeldForBoot {
+		return nil
+	}
+	a.workflowStartsHeldForBoot = false
+	workflowEngine := a.workflowApplication().Engine()
+	if workflowEngine == nil {
+		return nil
+	}
+	if err := workflowEngine.PauseDetachedStarts(a.currentSettings().WorkflowPaused); err != nil {
+		return fmt.Errorf("release workflow starts held for boot: %w", err)
+	}
 	return nil
 }
 

@@ -3,17 +3,17 @@ package app
 import (
 	"context"
 	"go/ast"
-	"go/parser"
-	"go/token"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"agent-overflow/internal/errorsx"
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/identity"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/threadtools"
 	"agent-overflow/internal/transport"
 )
 
@@ -245,54 +245,106 @@ func TestCreateThreadJudgesTheResolvedMode(t *testing.T) {
 	}
 }
 
-// threadDrivingCalls is one call of every bound method that sends to an
-// existing thread or runs something in it, each selecting no mode.
-// TestEveryThreadDrivingMethodIsListed keeps it the set the code has.
-func threadDrivingCalls(app *App) map[string]func(ctx context.Context, threadID string) error {
-	return map[string]func(ctx context.Context, threadID string) error{
-		"SendMessage": func(ctx context.Context, id string) error {
+// threadDrivingCalls is one call of every bound method that drives an
+// existing thread, each selecting no mode. TestEveryThreadDrivingMethodIsListed
+// keeps it the set the code has.
+func threadDrivingCalls(app *App) map[string]func(t *testing.T, ctx context.Context, threadID string) error {
+	return map[string]func(t *testing.T, ctx context.Context, threadID string) error{
+		"SendMessage": func(_ *testing.T, ctx context.Context, id string) error {
 			return app.SendMessage(ctx, id, "hi", nil)
 		},
-		"SendMessageWithOptions": func(ctx context.Context, id string) error {
+		"SendMessageWithOptions": func(_ *testing.T, ctx context.Context, id string) error {
 			_, err := app.SendMessageWithOptions(ctx, id, "hi", SendMessageOptions{})
 			return err
 		},
-		"SteerMessageWithOptions": func(ctx context.Context, id string) error {
+		"SteerMessageWithOptions": func(_ *testing.T, ctx context.Context, id string) error {
 			_, err := app.SteerMessageWithOptions(ctx, id, "hi", SendMessageOptions{})
 			return err
 		},
-		"RegisterQueueItem": func(ctx context.Context, id string) error {
+		"RegisterQueueItem": func(_ *testing.T, ctx context.Context, id string) error {
 			_, err := app.RegisterQueueItem(ctx, id, "hi", SendMessageOptions{})
 			return err
 		},
-		"RevertConversationAndResendMessage": func(ctx context.Context, id string) error {
+		"RevertConversationAndResendMessage": func(_ *testing.T, ctx context.Context, id string) error {
 			_, err := app.RevertConversationAndResendMessage(ctx, id, "item", RevertAndResendOptions{Content: "hi"})
 			return err
 		},
-		"SubmitAsyncAnswers": func(ctx context.Context, id string) error {
+		"SubmitAsyncAnswers": func(_ *testing.T, ctx context.Context, id string) error {
 			return app.SubmitAsyncAnswers(ctx, id, "send", nil)
 		},
-		"StartCodexReview": func(ctx context.Context, id string) error {
+		"StartCodexReview": func(_ *testing.T, ctx context.Context, id string) error {
 			_, err := app.StartCodexReview(ctx, id, CodexReviewTarget{Kind: "uncommittedChanges"})
 			return err
 		},
-		"SendPlanRevisionComments": func(ctx context.Context, id string) error {
+		"SendPlanRevisionComments": func(_ *testing.T, ctx context.Context, id string) error {
 			_, err := app.SendPlanRevisionComments(ctx, id, "plan", []string{"comment"})
 			return err
 		},
-		"SendDiffReviewComments": func(ctx context.Context, id string) error {
+		"SendDiffReviewComments": func(_ *testing.T, ctx context.Context, id string) error {
 			_, err := app.SendDiffReviewComments(ctx, id, "", "", []string{"comment"}, SendDiffReviewCommentsInput{})
 			return err
 		},
-		"SendPRDiffReviewComments": func(ctx context.Context, id string) error {
+		"SendPRDiffReviewComments": func(_ *testing.T, ctx context.Context, id string) error {
 			_, err := app.SendPRDiffReviewComments(ctx, gitops.PRReference{}, id, "", "", []string{"comment"}, SendDiffReviewCommentsInput{})
 			return err
 		},
-		"RunThreadShellCommand": func(ctx context.Context, id string) error {
+		"RunThreadShellCommand": func(_ *testing.T, ctx context.Context, id string) error {
 			_, err := app.RunThreadShellCommand(ctx, id, ShellCommandRequest{RunID: "run", Command: "true"})
 			return err
 		},
+		// A discussion's participants start in full-access whatever the
+		// parent runs in, so these refuse on any parent.
+		"StartDiscussion": func(t *testing.T, ctx context.Context, id string) error {
+			return app.StartDiscussion(ctx, id, driveDiscussionDefinition(t, app, "drive-by-name").Name)
+		},
+		"StartDiscussionByID": func(t *testing.T, ctx context.Context, id string) error {
+			return app.StartDiscussionByID(ctx, id, driveDiscussionDefinition(t, app, "drive-by-id").ID)
+		},
+		"PostChannelMessage": func(t *testing.T, ctx context.Context, _ string) error {
+			parent, _ := seedDiscussionChannel(t, app, "drive", []string{"architect", "reviewer"}, 4)
+			_, err := app.PostChannelMessage(ctx, parent.DiscussionID, "go")
+			return err
+		},
 	}
+}
+
+// threadDrivingProvenElsewhere are bound methods that drive a thread and
+// check autonomy, whose refusal a named test proves on the path they share.
+var threadDrivingProvenElsewhere = map[string]string{
+	"ThreadToolCall":  "TestThreadToolsWritesNeedAutonomyForAnAutonomousThread",
+	"ThreadToolQuery": "TestThreadToolQueryRunsOnlyReadTools",
+}
+
+// TestThreadToolQueryRunsOnlyReadTools. ThreadToolQuery shares the forwarded
+// tool path that spawns and sends, under a read floor, so its tool list is
+// what keeps a threads:read peer from starting work.
+func TestThreadToolQueryRunsOnlyReadTools(t *testing.T) {
+	t.Parallel()
+	app, granted, _ := autonomyApp(t)
+	before := threadIDsInStore(t, app)
+	for _, tool := range []string{"thread_spawn", "thread_send", "thread_ask", "thread_cancel", "thread_update", "thread_group"} {
+		_, err := app.ThreadToolQuery(callFrom(granted, false), ThreadPeerCall{Tool: tool, Args: []byte(`{"prompt":"go"}`)})
+		if code, _, ok := errorsx.PublicDetails(err); !ok || code != threadtools.CodeInvalidRequest {
+			t.Errorf("ThreadToolQuery(%s) = %v, want %s", tool, err, threadtools.CodeInvalidRequest)
+		}
+	}
+	if after := threadIDsInStore(t, app); len(after) != len(before) {
+		t.Fatalf("threads before %v, after %v", before, after)
+	}
+}
+
+// driveDiscussionDefinition saves a global two-participant definition.
+func driveDiscussionDefinition(t *testing.T, app *App, name string) store.DiscussionDefinition {
+	t.Helper()
+	def := store.DiscussionDefinition{
+		ID: name, Name: name, Scope: "global",
+		Participants: []store.DiscussionParticipant{{Role: "architect"}, {Role: "reviewer"}},
+		Settings:     store.DiscussionSettings{MaxTurns: 4},
+	}
+	if err := app.store.CreateDiscussionDef(def); err != nil {
+		t.Fatalf("CreateDiscussionDef: %v", err)
+	}
+	return def
 }
 
 // TestDrivingAnAutonomousThreadNeedsAutonomy. These select nothing here.
@@ -303,13 +355,16 @@ func threadDrivingCalls(app *App) map[string]func(ctx context.Context, threadID 
 func TestDrivingAnAutonomousThreadNeedsAutonomy(t *testing.T) {
 	t.Parallel()
 	app, _, ungranted := autonomyApp(t)
+	// A discussion start that got past its check would start participant
+	// sessions; none may reach a provider.
+	app.startSessionFn = func(string) error { return nil }
 	ctx := callFrom(ungranted, false)
 	autonomous := threadInMode(t, app, provider.RuntimeFullAccess)
 	gated := threadInMode(t, app, provider.RuntimeApprovalRequired)
 
 	for name, call := range threadDrivingCalls(app) {
 		t.Run(name, func(t *testing.T) {
-			wantScopeRefusal(t, call(ctx, autonomous.ID), transport.ScopeThreadsAutonomy)
+			wantScopeRefusal(t, call(t, ctx, autonomous.ID), transport.ScopeThreadsAutonomy)
 		})
 	}
 
@@ -323,140 +378,138 @@ func TestDrivingAnAutonomousThreadNeedsAutonomy(t *testing.T) {
 	}
 }
 
-// threadDrivePrimitives are the calls that put a message on a thread or run
-// a command in it. shellCommands.Start is matched by its receiver as well.
+const appMethodKey = "(*agent-overflow/internal/app.App)."
+
+// threadDriveCheck is the check a thread-driving bound method must reach.
+const threadDriveCheck = appMethodKey + "requireAutonomyForThread"
+
+// threadDrivePrimitives are where content reaches a provider turn or a
+// thread's message queue, or a command starts in a thread.
 var threadDrivePrimitives = map[string]bool{
-	"sendMessageWithOptions":      true,
-	"sendMessageLocked":           true,
-	"steerMessageWithOptions":     true,
-	"registerQueueItem":           true,
-	"queueAgentNotice":            true,
-	"dispatchFlush":               true,
-	"dispatchFlushWithGeneration": true,
+	"(agent-overflow/internal/provider.Session).Send":                      true,
+	"(*agent-overflow/internal/provider/claude.Session).Send":              true,
+	"(*agent-overflow/internal/provider/codex.Session).Send":               true,
+	"(*agent-overflow/internal/provider/codex.Session).Steer":              true,
+	"(*agent-overflow/internal/provider/codex.Session).StartReviewForTurn": true,
+	"(*agent-overflow/internal/shellrun.Service).Start":                    true,
+	appMethodKey + "registerQueueItem":                                     true,
+	appMethodKey + "queueAgentNotice":                                      true,
 }
 
-// threadDriveDepth is how many calls below a bound method the walk follows.
-// The walk matches callees by name, and past this depth names shared by
-// unrelated receivers (Start, Cancel, Send) join paths that do not exist.
-const threadDriveDepth = 3
+// threadDriveBoundaries are where the walk stops, because the work past them
+// runs for something other than the calling method's request. Each names a
+// node of driveGraph; a "param:" entry stops calls through that parameter.
+var threadDriveBoundaries = map[string]string{
+	"result:" + appMethodKey + "sessionEventHandler":                       "runs on provider output, for a turn an earlier call started",
+	"field:agent-overflow/internal/provider/claude.Session.onEvent":        "runs on provider output, for a turn an earlier call started",
+	"field:agent-overflow/internal/provider/codex.Session.onEvent":         "runs on provider output, for a turn an earlier call started",
+	"param:" + appMethodKey + "subscribeGlobalTurnObserver#0":              "runs when a provider turn ends",
+	appMethodKey + "enqueueFlushDispatch":                                  "dispatches queue rows a checked call accepted",
+	appMethodKey + "codexResendAfterInterrupt":                             "resubmits queue rows a checked call accepted, which Codex dropped on interrupt",
+	appMethodKey + "deliverThreadWakes":                                    "answers a request the woken thread's own agent made, with the request's outcome as the text",
+	"(*agent-overflow/internal/provider/claude.Session).RenamePeerSession": "a /rename the Claude CLI answers itself, with no model turn",
+	"(*agent-overflow/internal/provider/claude.Session).sendConfigCommand": "a configuration command the Claude CLI answers itself, with no model turn",
+}
 
-// TestEveryThreadDrivingMethodIsListed derives the methods that drive a
-// thread from the code, so a new one cannot skip the autonomy check or its
-// test. A bound method that reaches a drive primitive must pass
-// requireAutonomyForThread on the way, in its own body or in a helper the
-// path goes through, unless its floor is threads:autonomy. Every bound
-// method that calls the check itself must be in threadDrivingCalls, which
-// proves the check refuses.
+// TestEveryThreadDrivingMethodIsListed derives the bound methods that drive a
+// thread from a whole-program call graph (driveGraph), across packages,
+// interfaces and function values, so a new one cannot skip the autonomy
+// check or its test. A bound method that reaches a drive primitive must
+// reach requireAutonomyForThread unless its floor is threads:autonomy, and
+// a driving method that checks must be in threadDrivingCalls, which proves
+// the check refuses, or in threadDrivingProvenElsewhere.
 //
-// The walk is by name over internal/app, follows calls threadDriveDepth
-// deep, and does not enter function literals below the method itself, where
-// a constructor wires callbacks it does not call. A drive that leaves the
-// package through a service's callback is beyond it.
+// Reaching the check is not proof it guards the drive; the refusal tests
+// are. The walk stops at threadDriveBoundaries, and a function value it
+// cannot follow (one sent on a channel, kept in a slice or map, or run by
+// code outside the module) counts as called by whoever made it.
 func TestEveryThreadDrivingMethodIsListed(t *testing.T) {
 	t.Parallel()
-	entries, err := os.ReadDir("internal/app")
+	g, err := buildDriveGraph()
 	if err != nil {
 		t.Fatal(err)
 	}
-	decls := map[string][]*ast.FuncDecl{}
-	var bound []*ast.FuncDecl
-	for _, entry := range entries {
-		name := entry.Name()
-		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+	for _, key := range []string{threadDriveCheck} {
+		if len(g.edges[key]) == 0 {
+			t.Fatalf("the graph has no node %s; the tripwire's keys no longer match the code", key)
+		}
+	}
+	for key := range threadDrivePrimitives {
+		if _, ok := g.edges[key]; !ok && !g.known(key) {
+			t.Errorf("drive primitive %s is not in the graph; rename it here", key)
+		}
+	}
+	for key := range threadDriveBoundaries {
+		if !g.known(strings.TrimPrefix(key, "param:")) && !g.known(key) {
+			t.Errorf("boundary %s is not in the graph; rename or remove it", key)
+		}
+	}
+	stop := func(node string) bool {
+		_, at := threadDriveBoundaries[node]
+		_, through := threadDriveBoundaries[viaParam(node)]
+		return at || through
+	}
+	never := func(string) bool { return false }
+
+	listed := threadDrivingCalls(nil)
+	driving, checking := map[string]bool{}, map[string]bool{}
+	for _, method := range g.bound {
+		checks := g.reach(method.key, func(node string) bool { return node == threadDriveCheck }, never) != nil
+		checking[method.name] = checks
+		if method.scope == string(transport.ScopeThreadsAutonomy) {
 			continue
 		}
-		parsed, err := parser.ParseFile(token.NewFileSet(), filepath.Join("internal/app", name), nil,
-			parser.ParseComments|parser.SkipObjectResolution)
+		path := g.reach(method.key, func(node string) bool { return threadDrivePrimitives[node] }, stop)
+		if path == nil {
+			continue
+		}
+		driving[method.name] = true
+		_, proven := threadDrivingProvenElsewhere[method.name]
+		_, tested := listed[method.name]
+		switch {
+		case !checks:
+			t.Errorf("%s drives a thread without requireAutonomyForThread: a session holding threads:operate "+
+				"but not threads:autonomy could drive a full-access thread through it:\n  %s",
+				method.name, strings.Join(path, "\n  > "))
+		case !tested && !proven:
+			t.Errorf("%s drives a thread and checks autonomy; add it to threadDrivingCalls so a test proves the check refuses:\n  %s",
+				method.name, strings.Join(path, "\n  > "))
+		}
+	}
+	// A discussion start drives no turn yet but creates the threads its
+	// posts will, so its entry is kept by the check it reaches.
+	for name := range listed {
+		if !driving[name] && !checking[name] {
+			t.Errorf("threadDrivingCalls lists %s, which is not a bound method that drives a thread or checks autonomy", name)
+		}
+	}
+	for name, test := range threadDrivingProvenElsewhere {
+		if !driving[name] {
+			t.Errorf("threadDrivingProvenElsewhere lists %s, which is not a bound method that drives a thread", name)
+		}
+		if !testFunctionExists(t, test) {
+			t.Errorf("threadDrivingProvenElsewhere names %s for %s, which is not a test in internal/app", test, name)
+		}
+	}
+}
+
+// testFunctionExists reports whether internal/app declares a test named name.
+func testFunctionExists(t *testing.T, name string) bool {
+	t.Helper()
+	files, err := filepath.Glob("internal/app/*_test.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, file := range files {
+		source, err := os.ReadFile(file)
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, decl := range parsed.Decls {
-			fn, ok := decl.(*ast.FuncDecl)
-			if !ok || fn.Body == nil {
-				continue
-			}
-			decls[fn.Name.Name] = append(decls[fn.Name.Name], fn)
-			if isAppMethod(fn) && fn.Name.IsExported() && boundScope(fn) != "" {
-				bound = append(bound, fn)
-			}
-		}
-	}
-
-	// drives reports the path from fn to a primitive that no autonomy check
-	// interrupts, or nil.
-	var drives func(fn *ast.FuncDecl, depth int, visiting map[string]bool) []string
-	drives = func(fn *ast.FuncDecl, depth int, visiting map[string]bool) []string {
-		if callsAutonomyCheck(fn) || visiting[fn.Name.Name] {
-			return nil
-		}
-		visiting[fn.Name.Name] = true
-		defer delete(visiting, fn.Name.Name)
-		var path []string
-		ast.Inspect(fn.Body, func(node ast.Node) bool {
-			if path != nil {
-				return false
-			}
-			if _, literal := node.(*ast.FuncLit); literal && depth > 0 {
-				return false
-			}
-			call, ok := node.(*ast.CallExpr)
-			if !ok {
-				return true
-			}
-			var callee string
-			switch fun := call.Fun.(type) {
-			case *ast.Ident:
-				callee = fun.Name
-			case *ast.SelectorExpr:
-				callee = fun.Sel.Name
-				if field, ok := fun.X.(*ast.SelectorExpr); ok && field.Sel.Name == "shellCommands" && callee == "Start" {
-					path = []string{"shellCommands.Start"}
-					return false
-				}
-			}
-			if threadDrivePrimitives[callee] {
-				path = []string{callee}
-				return false
-			}
-			if depth == threadDriveDepth {
-				return true
-			}
-			for _, next := range decls[callee] {
-				if below := drives(next, depth+1, visiting); below != nil {
-					path = append([]string{callee}, below...)
-					return false
-				}
-			}
+		if strings.Contains(string(source), "\nfunc "+name+"(t *testing.T) {") {
 			return true
-		})
-		return path
-	}
-
-	listed := threadDrivingCalls(nil)
-	checking := map[string]bool{}
-	for _, fn := range bound {
-		name := fn.Name.Name
-		if callsAutonomyCheck(fn) {
-			checking[name] = true
-			if _, ok := listed[name]; !ok {
-				t.Errorf("%s checks autonomy; add it to threadDrivingCalls so a test proves the check refuses", name)
-			}
-			continue
-		}
-		if boundScope(fn) == string(transport.ScopeThreadsAutonomy) {
-			continue
-		}
-		if path := drives(fn, 0, map[string]bool{}); path != nil {
-			t.Errorf("%s drives a thread (%s > %s) without requireAutonomyForThread: a session holding "+
-				"threads:operate but not threads:autonomy could drive a full-access thread through it",
-				name, name, strings.Join(path, " > "))
 		}
 	}
-	for name := range listed {
-		if !checking[name] {
-			t.Errorf("threadDrivingCalls lists %s, which is not a bound method that checks autonomy", name)
-		}
-	}
+	return false
 }
 
 // boundScope is a method's //ao:scope value, or empty for a method that is
@@ -471,20 +524,6 @@ func boundScope(fn *ast.FuncDecl) string {
 		}
 	}
 	return ""
-}
-
-// callsAutonomyCheck reports whether fn calls requireAutonomyForThread.
-func callsAutonomyCheck(fn *ast.FuncDecl) bool {
-	found := false
-	ast.Inspect(fn.Body, func(node ast.Node) bool {
-		if call, ok := node.(*ast.CallExpr); ok {
-			if selector, ok := call.Fun.(*ast.SelectorExpr); ok && selector.Sel.Name == "requireAutonomyForThread" {
-				found = true
-			}
-		}
-		return !found
-	})
-	return found
 }
 
 // TestSelectingAnAutonomousModeStillNeedsAutonomy is the original

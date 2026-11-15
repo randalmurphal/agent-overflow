@@ -62,6 +62,7 @@ func (a *App) Start(ctx context.Context) (startErr error) {
 	// fire-and-forget worker can derive from a single cancellable parent
 	// instead of context.Background.
 	a.appCtx, a.appCancel = context.WithCancel(context.Background())
+	a.activation.beginBoot()
 
 	endPhase := a.bootPhase("app.init_stores", "Opening the database")
 	dbDir, st, err := a.initStores(ctx)
@@ -84,12 +85,6 @@ func (a *App) Start(ctx context.Context) (startErr error) {
 		return err
 	}
 
-	// Publish this executable as the `agent-overflow` command before any
-	// session can be started, so the very first session already has it on
-	// PATH. Best-effort by design: the helper logs its own failure and
-	// returns "", which sessionProcessEnv reads as "nothing to prepend".
-	a.cliBinDir = a.ensureCLIBinDir(dbDir)
-
 	endPhase = a.bootPhase("app.init_observability", "Starting diagnostics")
 	err = a.initObservability(ctx, dbDir)
 	endPhase()
@@ -110,15 +105,6 @@ func (a *App) Start(ctx context.Context) (startErr error) {
 	}
 	endPhase = a.bootPhase("app.start_background_work", "Starting background work")
 	defer endPhase()
-
-	// Guard against the process groups the app starts outliving an
-	// ungraceful app death (every platform but Windows, whose backend runs
-	// in WSL). Runs after subsystems so the data dir is ready; before the probe
-	// goroutines and any session RPC so the startup sweep can't race a
-	// fresh registry Add. See app_orphan_reaper.go.
-	if err := a.startOrphanReaper(dbDir); err != nil {
-		return fmt.Errorf("start orphan reaper: %w", err)
-	}
 
 	// Start the sidebar's host CPU/memory sampler. Emits a
 	// `system:stats` event every ~2s. See app_sysstat.go.
@@ -178,9 +164,85 @@ func (a *App) Start(ctx context.Context) (startErr error) {
 	a.applyKeepAwake(a.currentSettings())
 
 	// Everything that can act on its own waits for the activation gate. On
-	// every boot but a supervisor trial the gate is already open and this
-	// runs inline, right here, in the order it always did.
-	return a.activation.Run(a.appCtx, a.startUnattendedWork)
+	// every boot but a supervisor trial the gate is already open and both
+	// halves run inline, right here, before the transport admits a client.
+	return a.activation.Run(a.appCtx, a.startBeforeClients, a.startUnattendedWork, a.bootPhaseFailed)
+}
+
+// startBeforeClients runs the boot steps that act outside the database and
+// must finish before any client is admitted, because a request could start a
+// session, open a diff or list a thread they are about to remove. It answers
+// the same question as startUnattendedWork: restoring a rolled-back trial's
+// database would undo none of these, so a trial runs them after its commit.
+//
+// A failure that stops an ordinary boot is returned after the other steps
+// have run, so a committed trial, which reports it through bootPhaseFailed,
+// still releases its workflow starts and admits its clients.
+func (a *App) startBeforeClients() error {
+	var fatal []error
+	// Guard against the process groups the app starts outliving an
+	// ungraceful app death (every platform but Windows, whose backend runs
+	// in WSL). First, so its startup sweep of the last run's process groups cannot
+	// race a fresh registry Add. See app_orphan_reaper.go.
+	if err := a.startOrphanReaper(a.configDir); err != nil {
+		fatal = append(fatal, fmt.Errorf("start orphan reaper: %w", err))
+	}
+	// Every prompt file here belongs to a process that exited without
+	// closing its sessions.
+	if err := sweepClaudePromptFiles(a.configDir); err != nil {
+		a.bootPhaseFailed(err)
+	}
+	// Prune the credential slots no saved account references and sweep the
+	// ephemeral homes a crash left, before any session or probe reads them.
+	if err := a.reconcileProviderHome(); err != nil {
+		fatal = append(fatal, err)
+	}
+	// Publish this executable as the `agent-overflow` command, so the very
+	// first session already has it on PATH. Best-effort by design: the
+	// helper logs its own failure and returns "", which sessionProcessEnv
+	// reads as "nothing to prepend".
+	a.cliBinDir = a.ensureCLIBinDir(a.configDir)
+	endPhase := a.bootPhase("app.sweep_review_diffs", "Removing review diff snapshots from the last run")
+	if err := a.sweepReviewDiffSnapshots(); err != nil {
+		a.bootPhaseFailed(err)
+	}
+	endPhase()
+	endPhase = a.bootPhase("app.clean_preparing_forks", "Removing forks the last run did not finish")
+	if err := a.cleanupPreparingForks(); err != nil {
+		fatal = append(fatal, err)
+	}
+	endPhase()
+	// Every terminal thread's shells ended with the last process, so the
+	// threads end too, before any client lists them.
+	endPhase = a.bootPhase("app.end_terminal_threads", "Closing terminals from the last run")
+	if err := a.endTerminalThreadsAtBoot(); err != nil {
+		a.bootPhaseFailed(err)
+	}
+	endPhase()
+	// The workflow engine rebuilt its runs during initSubsystems with its
+	// starts held; release them to the persisted pause setting now that a
+	// phase's session finds its prompt files swept and the command on PATH.
+	if err := a.releaseWorkflowStartsHeldForBoot(); err != nil {
+		a.bootPhaseFailed(err)
+	}
+	return errors.Join(fatal...)
+}
+
+// reconcileProviderHome binds the provider account metadata to this
+// process's provider home, prunes the credential slots no saved account
+// references and sweeps the ephemeral homes a crash left. It deletes
+// credentials, which live outside the database.
+//
+// A metadata store paired with the WRONG provider home would delete slots
+// that were never its to manage. The stamp binds store to home on first
+// contact; on mismatch the prune is skipped outright, because orphan slots
+// are benign and destroyed logins are not.
+func (a *App) reconcileProviderHome() error {
+	userHome, err := a.providerHome()
+	if err != nil {
+		return fmt.Errorf("failed to locate provider credential home: %w", err)
+	}
+	return a.providerAccounts.ReconcileProviderHome(a.configDir, userHome)
 }
 
 // startUnattendedWork starts every subsystem that can take an action nobody
@@ -345,11 +407,6 @@ func (a *App) initStores(ctx context.Context) (string, *store.Store, error) {
 	if err := repairStartupOwnedPaths(dbDir); err != nil {
 		return "", nil, err
 	}
-	// Before any session can start: every prompt file here belongs to a
-	// process that exited without closing its sessions.
-	if err := sweepClaudePromptFiles(dbDir); err != nil {
-		a.bootPhaseFailed(err)
-	}
 	dbPath := filepath.Join(dbDir, databaseFileName)
 	if err := prepareAppSensitiveFile(dbPath); err != nil {
 		return "", nil, fmt.Errorf("failed to prepare database file %s: %w", dbPath, err)
@@ -489,19 +546,6 @@ func (a *App) initStores(ctx context.Context) (string, *store.Store, error) {
 	// list. Never fatal — an unseeded catalog is the old behavior, a shipped
 	// list until the probe lands.
 	a.seedClaudeCatalogFromAccounts()
-	// The prune deletes credential slots, and a metadata store paired with
-	// the WRONG provider home deletes slots that were never its to manage
-	// (incident 2026-07-29: a scratch data dir against the real ~/.claude
-	// pruned every saved login). The stamp binds store to home on first
-	// contact; on mismatch the prune is skipped outright — orphan slots
-	// are benign, destroyed logins are not.
-	if err := a.providerAccounts.ReconcileProviderHome(dbDir, userHome); err != nil {
-		closeErr := st.Close()
-		return "", nil, errors.Join(
-			err,
-			errorsx.WrapLifecycle("close store after provider account reconciliation failure", closeErr),
-		)
-	}
 	// Server-imposed usage holds are per-bearer and run about an hour, far
 	// longer than the interval between app restarts, so they persist.
 	a.providerLifecycleService().LoadBackoff(filepath.Join(dbDir, "usage-backoff.json"))
@@ -771,29 +815,14 @@ func (a *App) initSubsystems(dbDir string, st *store.Store) error {
 	}
 	a.workspaceFiles = workspacefiles.NewSearcher(workspacefiles.Config{})
 	a.configDir = dbDir
-	endPhase = a.bootPhase("app.sweep_review_diffs", "Removing review diff snapshots from the last run")
-	if err := a.sweepReviewDiffSnapshots(); err != nil {
-		a.bootPhaseFailed(err)
-	}
-	endPhase()
 	// The request ledger: settle what the last run left open, then watch
 	// every thread's turn ends for the receipts bound to them. Both need the
 	// store and the data directory, and neither may run before the flush
 	// queue has been restored. The sweep writes rows only; the wakes and
 	// deletions its settlements owe wait for the activation gate
-	// (startUnattendedWork).
-	if err := a.cleanupPreparingForks(); err != nil {
-		return err
-	}
+	// (startUnattendedWork), as do the boot's other deletions
+	// (startBeforeClients).
 	a.sweepThreadRequestsAtBoot()
-	// Every terminal thread's shells ended with the last process, so the
-	// threads end too, before any client lists them. Beside the request
-	// sweep because deleting needs the same services.
-	endPhase = a.bootPhase("app.end_terminal_threads", "Closing terminals from the last run")
-	if err := a.endTerminalThreadsAtBoot(); err != nil {
-		a.bootPhaseFailed(err)
-	}
-	endPhase()
 	a.installThreadRequestObserver()
 	a.startAccountSwitch()
 	if err := a.initWorkflowEngine(dbDir); err != nil {
