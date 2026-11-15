@@ -140,7 +140,10 @@ base's rulesets (`allowedMergeMethods`).
   (GitHub: the author; GitLab: `user_can_approve` false, or a project that
   asks for the approver's password, `require_password_to_approve`, which the
   app does not send) sees no button,
-  and the approvals blocker row says why.
+  and the approvals blocker row says why. On such a GitLab project every
+  approve the app sends, Approve and a review whose verdict is Approve,
+  reads the approvals first and is refused with that sentence before any
+  write, so a review's drafts are neither created nor published.
 - Merge now: GitLab `PUT .../merge` with `squash`,
   `should_remove_source_branch` and the head `sha`; GitHub
   `mergePullRequest` with `mergeMethod` and `expectedHeadOid`, then the

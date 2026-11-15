@@ -28,7 +28,8 @@
 // control; and a GitLab 17.11, below the supported floor, shows Details
 // as the sentence naming its release and the floor, with no management
 // control anywhere. A GitLab project that asks for the approver's
-// password offers no Approve and says why, and one that takes one
+// password offers no Approve and says why, refuses a review sent with
+// Approve the same way before any write, and one that takes one
 // reviewer refuses a second with that limit. A Request changes on
 // GitLab 19.6 and 18.5 posts a thread to resolve, and Details shows the
 // reviewer state each recorded (changes requested, reviewed). A held
@@ -717,6 +718,23 @@ export function reviewManageFlow({ compact }: ManageSurface): void {
     const merge = await expandReviewSection(page, 'review-pr-merge');
     await expect(merge).toContainText('GitLab asks for your password to approve in this project. Approve on GitLab.');
     await expect(merge.getByTestId('review-merge-approve')).toHaveCount(0);
+
+    // A review sent with Approve gets the same refusal before any write:
+    // no draft note, publish or approval, and the comment stays to send.
+    const since = await lastSeq(harness);
+    const row = review.locator('[data-testid="review-line-block"] > div').filter({ hasText: 'await post()' });
+    if (!compact) await row.hover();
+    await press(row.getByTestId('review-add-comment'));
+    const editor = review.getByTestId('review-draft-editor');
+    await editor.locator('textarea').fill('Retry here, once.');
+    await press(editor.getByTestId('review-draft-editor-add'));
+    const strip = review.getByTestId('review-send-strip');
+    await strip.getByTestId('review-submit-target').selectOption('pr');
+    await press(strip.getByRole('button', { name: 'Approve' }));
+    await press(strip.getByTestId('review-send-comments'));
+    await expect(review.getByTestId('review-submit-error')).toContainText('GitLab asks for your password to approve in this project. Approve on GitLab.', { timeout: 30_000 });
+    await expect(strip).toBeVisible();
+    expect(await writes(harness, ['glab api create draft note', 'glab api publish draft notes', 'glab api approve'], since)).toEqual([]);
 
     const details = review.getByTestId('review-pr-details');
     await press(details.locator('button[aria-expanded]').first());

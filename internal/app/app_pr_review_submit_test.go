@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -42,13 +43,17 @@ const reviewTestDiff = "diff --git a/main.go b/main.go\n--- a/main.go\n+++ b/mai
 // reviewTestHead is the pull's head, the one every case's diff was loaded at.
 const reviewTestHead = "c0ffee0000000000000000000000000000000001"
 
-func newReviewSubmitCase(t *testing.T, forge string) *reviewSubmitCase {
+func newReviewSubmitCase(t *testing.T, forge string, setup ...func(*forgefake.Repo)) *reviewSubmitCase {
 	t.Helper()
 	app, path := newTestAppWithStorePath(t)
 	engine := forgefake.New(forgefake.Options{APIToken: mergeForgeToken})
-	if _, err := engine.Seed(forgefake.Fixture{Viewer: "alice", Repos: []forgefake.Repo{{Forge: forge, Project: "acme/widgets", Pulls: []forgefake.Pull{
+	repo := forgefake.Repo{Forge: forge, Project: "acme/widgets", Pulls: []forgefake.Pull{
 		{Number: 9, Title: "Widgets", Author: "octo", HeadRef: "feature", HeadSHA: reviewTestHead, State: "open", Diff: reviewTestDiff},
-	}}}}); err != nil {
+	}}
+	for _, apply := range setup {
+		apply(&repo)
+	}
+	if _, err := engine.Seed(forgefake.Fixture{Viewer: "alice", Repos: []forgefake.Repo{repo}}); err != nil {
 		t.Fatal(err)
 	}
 	gate := &forgeGate{next: engine, publish: map[string]string{"gitlab": "/draft_notes/bulk_publish", "github": "/reviews"}[forge]}
@@ -435,6 +440,33 @@ func TestSubmitPRReviewGitLabSubmitsOfOneMergeRequestDoNotInterleave(t *testing.
 	}
 	if n := c.published(); n != 2 {
 		t.Fatalf("published %d reviews, want 2", n)
+	}
+}
+
+// A review whose verdict is Approve, on a GitLab project that asks the
+// approver for their password, is refused with the Approve control's
+// sentence before any write: no draft note is created or published, no
+// approval is sent, and the stored drafts stay drafts to send again.
+func TestSubmitPRReviewGitLabApproveOnAPasswordProjectWritesNothing(t *testing.T) {
+	t.Parallel()
+	c := newReviewSubmitCase(t, "gitlab", func(r *forgefake.Repo) {
+		r.Merge = &forgefake.RepoMerge{ApprovalPassword: true}
+	})
+	draft := c.draft(t, false, 3, "Looks right.")
+	review := c.request(false, draft)
+	review.Verdict = gitops.ReviewVerdictApprove
+	_, err := c.submit(review)
+	if refused, ok := errors.AsType[*gitops.ForgeActionError](err); !ok || refused.Kind != gitops.ForgeErrorRefused ||
+		refused.Message != "GitLab asks for your password to approve in this project. Approve on GitLab." {
+		t.Fatalf("submit = %v, want the password refusal", err)
+	}
+	for _, inv := range c.engine.Invocations(0).Invocations {
+		if inv.Method != http.MethodGet {
+			t.Errorf("a refused review sent %s %s (route %q)", inv.Method, inv.Path, inv.Route)
+		}
+	}
+	if got := c.comment(t, false, draft.ID).Status; got != "draft" {
+		t.Fatalf("draft status = %q, want it kept as a draft", got)
 	}
 }
 

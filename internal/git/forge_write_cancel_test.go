@@ -38,12 +38,12 @@ func TestForgeWritesFinishAfterTheirCallerCancels(t *testing.T) {
 				_, err := core.SubmitReview(ctx, gitlabTestRef(7), review)
 				return err
 			},
-			want: []string{"GET metadata", "GET " + mr, "GET " + mr + "/draft_notes?per_page=100", "GET " + mr + "/diffs?per_page=100", "POST " + mr + "/draft_notes", "POST " + mr + "/draft_notes", "POST " + mr + "/draft_notes/bulk_publish", "POST " + mr + "/approve"},
+			want: []string{"GET metadata", "GET " + mr, "GET " + mr + "/approvals", "GET " + mr + "/draft_notes?per_page=100", "GET " + mr + "/diffs?per_page=100", "POST " + mr + "/draft_notes", "POST " + mr + "/draft_notes", "POST " + mr + "/draft_notes/bulk_publish", "POST " + mr + "/approve"},
 		},
 		"approve": {
 			hold:  "POST " + mr + "/approve",
 			write: func(ctx context.Context, core *Core) error { return core.ApprovePR(ctx, gitlabTestRef(7), "abc1234") },
-			want:  []string{"GET metadata", "POST " + mr + "/approve"},
+			want:  []string{"GET metadata", "GET " + mr + "/approvals", "POST " + mr + "/approve"},
 		},
 		"reply": {
 			hold: "POST " + discussion + "/notes",
@@ -76,6 +76,8 @@ func TestForgeWritesFinishAfterTheirCallerCancels(t *testing.T) {
 				switch {
 				case key == "GET "+mr:
 					return forgeAPIAnswer{Body: gitlabTestMR(7, 0)}
+				case key == "GET "+mr+"/approvals":
+					return forgeAPIAnswer{Body: `{"user_can_approve":true}`}
 				case key == "GET "+mr+"/draft_notes?per_page=100":
 					return forgeAPIAnswer{Body: `[]`}
 				case key == "GET "+mr+"/diffs?per_page=100":

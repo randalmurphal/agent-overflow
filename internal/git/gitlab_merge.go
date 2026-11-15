@@ -18,6 +18,10 @@ import (
 // app layer explains it (ExplainForgeError). See
 // docs/specs/pull-requests.md#actions.
 
+// gitlabApprovalPasswordReason is why a project that asks the approver for
+// their password is refused every approval (gitlabApproveRequest).
+const gitlabApprovalPasswordReason = "GitLab asks for your password to approve in this project. Approve on GitLab."
+
 // Approve posts the viewer's approval of headSHA; GitLab refuses it when
 // the merge request's head has moved past it.
 func (f *gitlabForge) Approve(ctx context.Context, ref PRReference, headSHA string) error {
@@ -29,9 +33,31 @@ func (f *gitlabForge) Approve(ctx context.Context, ref PRReference, headSHA stri
 	if err != nil {
 		return err
 	}
-	request := forgeapi.Request{Method: http.MethodPost, Path: gitlabMRPath(ref) + "/approve", Body: map[string]string{"sha": headSHA}}
+	request, err := gitlabApproveRequest(ctx, client, ref, headSHA)
+	if err != nil {
+		return err
+	}
 	_, err = client.JSON(ctx, request, nil)
 	return err
+}
+
+// gitlabApproveRequest is the approve of headSHA, and the only way to it:
+// Approve and a review whose verdict is Approve both send what it returns,
+// so neither can approve a project this refuses. A project with "Require
+// user re-authentication to approve" (the approvals'
+// require_password_to_approve) needs approval_password, "Required if
+// Require user re-authentication to approve is enabled", which the app does
+// not ask for; it is refused before anything is written, with the sentence
+// the Approve control shows.
+func gitlabApproveRequest(ctx context.Context, client *forgeapi.Client, ref PRReference, headSHA string) (forgeapi.Request, error) {
+	var approvals gitlabApprovalsRaw
+	if _, err := client.JSON(ctx, forgeapi.Request{Path: gitlabMRPath(ref) + "/approvals"}, &approvals); err != nil {
+		return forgeapi.Request{}, err
+	}
+	if approvals.RequirePasswordToApprove {
+		return forgeapi.Request{}, &ForgeActionError{Kind: ForgeErrorRefused, Message: gitlabApprovalPasswordReason}
+	}
+	return forgeapi.Request{Method: http.MethodPost, Path: gitlabMRPath(ref) + "/approve", Body: map[string]string{"sha": headSHA}}, nil
 }
 
 // Unapprove withdraws the viewer's approval. GitLab keeps one approval per

@@ -584,10 +584,9 @@ func gitlabMergeOptions(mr gitlabMRRaw, approvals gitlabApprovalsRaw, settings g
 			out.CannotApproveReason = "You cannot approve your own merge request."
 		}
 	case approvals.UserCanApprove && approvals.RequirePasswordToApprove:
-		// The approve would need the user's password (approval_password),
-		// which the app does not ask for.
+		// gitlabApproveRequest refuses the approve itself.
 		out.ViewerCanApprove = false
-		out.CannotApproveReason = "GitLab asks for your password to approve in this project. Approve on GitLab."
+		out.CannotApproveReason = gitlabApprovalPasswordReason
 	}
 	return out
 }

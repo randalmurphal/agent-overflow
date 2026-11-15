@@ -803,8 +803,11 @@ func gitlabMergeForge(t *testing.T, answer func(call forgeAPICall) (forgeAPIAnsw
 		if reply, ok := answer(call); ok {
 			return reply
 		}
-		if call.Method == http.MethodGet && call.Path == gitlabTestProject {
+		switch {
+		case call.Method == http.MethodGet && call.Path == gitlabTestProject:
 			return forgeAPIAnswer{Body: gitlabTestProjectSettings}
+		case call.Method == http.MethodGet && strings.HasSuffix(call.Path, "/approvals"):
+			return forgeAPIAnswer{Body: `{"user_can_approve":true}`}
 		}
 		return forgeUnexpected(t, call)
 	})
@@ -822,8 +825,8 @@ func jsonBody(t *testing.T, call forgeAPICall) map[string]any {
 	return out
 }
 
-// Approve posts the head sha; unapprove posts nothing; a malformed sha is
-// refused before anything is sent.
+// Approve reads the approvals settings and posts the head sha; unapprove
+// posts nothing; a malformed sha is refused before anything is sent.
 func TestGitLabApproveAndUnapprove(t *testing.T) {
 	t.Parallel()
 	mr := gitlabTestProject + "/merge_requests/7"
@@ -845,9 +848,59 @@ func TestGitLabApproveAndUnapprove(t *testing.T) {
 		t.Fatal("an approval without a head sha was sent")
 	}
 	sent := calls.all()
-	if len(sent) != 3 || sent[0].Path != "metadata" || sent[1].Method != http.MethodPost || sent[1].Path != mr+"/approve" || string(sent[1].Body) != `{"sha":"abc1234"}` ||
-		sent[2].Path != mr+"/unapprove" || len(sent[2].Body) != 0 {
-		t.Fatalf("requests = %q, approve body %s", gitlabPaths(calls), sent[1].Body)
+	if len(sent) != 4 || sent[0].Path != "metadata" || sent[1].Path != mr+"/approvals" || sent[2].Method != http.MethodPost || sent[2].Path != mr+"/approve" || string(sent[2].Body) != `{"sha":"abc1234"}` ||
+		sent[3].Path != mr+"/unapprove" || len(sent[3].Body) != 0 {
+		t.Fatalf("requests = %q, approve body %s", gitlabPaths(calls), sent[2].Body)
+	}
+}
+
+// A project that asks the approver for their password refuses every
+// approval with the Approve control's sentence before anything is
+// written: the control's approve, and a review whose verdict is Approve,
+// whose drafts are then never created or published. A Comment review on
+// the same project is not refused.
+func TestGitLabApprovalPasswordRefusesEveryApproveBeforeAnyWrite(t *testing.T) {
+	t.Parallel()
+	mr := gitlabTestProject + "/merge_requests/7"
+	core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
+		switch call.Method + " " + call.Path {
+		case "GET " + mr:
+			return forgeAPIAnswer{Body: gitlabTestMR(7, 0)}
+		case "GET " + mr + "/approvals":
+			return forgeAPIAnswer{Body: `{"user_can_approve":true,"require_password_to_approve":true}`}
+		case "GET " + mr + "/draft_notes?per_page=100":
+			return forgeAPIAnswer{Body: `[]`}
+		case "GET " + mr + "/diffs?per_page=100":
+			return gitlabTestDiffsAnswer()
+		case "POST " + mr + "/draft_notes":
+			return forgeAPIAnswer{Status: http.StatusCreated, Body: `{"id":1}`}
+		case "POST " + mr + "/draft_notes/bulk_publish":
+			return forgeAPIAnswer{Status: http.StatusNoContent}
+		}
+		return forgeUnexpected(t, call)
+	})
+	ref := gitlabTestRef(7)
+	refused := func(what string, err error) {
+		t.Helper()
+		if got, ok := errors.AsType[*ForgeActionError](err); !ok || got.Kind != ForgeErrorRefused || got.Message != gitlabApprovalPasswordReason {
+			t.Fatalf("%s = %v, want the password refusal", what, err)
+		}
+		for _, call := range calls.all() {
+			if call.Method != http.MethodGet {
+				t.Fatalf("%s sent %s %s", what, call.Method, call.Path)
+			}
+		}
+	}
+	refused("Approve", core.ApprovePR(t.Context(), ref, gitlabTestHead))
+	line := 3
+	review := SubmitReviewRequest{Verdict: ReviewVerdictApprove, HeadSHA: gitlabTestHead, Body: "Looks good", Comments: []ReviewLineComment{
+		{Path: "a.go", Body: "nit", Line: &line, Side: "right"},
+	}}
+	_, err := core.SubmitReview(t.Context(), ref, review)
+	refused("an Approve review", err)
+	review.Verdict = ReviewVerdictComment
+	if result, err := core.SubmitReview(t.Context(), ref, review); err != nil || !result.PostedReview {
+		t.Fatalf("a Comment review = %+v, %v", result, err)
 	}
 }
 

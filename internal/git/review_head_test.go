@@ -80,6 +80,8 @@ func TestGitLabSubmitReviewRefusesAMovedHead(t *testing.T) {
 		switch call.Method + " " + call.Path {
 		case "GET " + mr:
 			return forgeAPIAnswer{Body: gitlabTestMR(7, 0)}
+		case "GET " + mr + "/approvals":
+			return forgeAPIAnswer{Body: `{"user_can_approve":true}`}
 		case "GET " + mr + "/draft_notes?per_page=100":
 			return forgeAPIAnswer{Body: `[]`}
 		case "POST " + mr + "/draft_notes":

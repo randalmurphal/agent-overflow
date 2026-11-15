@@ -789,12 +789,26 @@ func (f *gitlabForge) SubmitReview(ctx context.Context, ref PRReference, review 
 	if have := mr.headSHA(); !strings.EqualFold(have, review.HeadSHA) {
 		return SubmitReviewResult{}, &HeadMovedError{Want: review.HeadSHA, Have: have}
 	}
-	diffRefs := mr.diffRefs()
-	notes := gitlabDraftNotes(review)
+	// The verdict's own write comes last: the approval, or the
+	// changes-requested thread. An approval GitLab cannot take from the app
+	// refuses the review here, before any draft is written.
+	var verdict forgeapi.Request
+	step := ""
 	mrPath := gitlabMRPath(ref)
 	// Request changes sets the viewer's reviewer state where the publish
 	// takes it, and always posts its summary as a thread to resolve.
 	requestChanges := strings.EqualFold(review.Verdict, ReviewVerdictRequestChanges)
+	switch {
+	case strings.EqualFold(review.Verdict, ReviewVerdictApprove):
+		if verdict, err = gitlabApproveRequest(ctx, client, ref, review.HeadSHA); err != nil {
+			return SubmitReviewResult{}, err
+		}
+		step = SubmitStepApproval
+	case requestChanges:
+		verdict, step = forgeapi.Request{Method: http.MethodPost, Path: mrPath + "/discussions", Body: map[string]string{"body": gitlabChangesThreadBody(review.Body)}}, SubmitStepChangesThread
+	}
+	diffRefs := mr.diffRefs()
+	notes := gitlabDraftNotes(review)
 	var publish any
 	if requestChanges && server.has(gitlabReviewerStateSince) {
 		publish = map[string]string{"reviewer_state": "requested_changes"}
@@ -894,16 +908,6 @@ func (f *gitlabForge) SubmitReview(ctx context.Context, ref PRReference, review 
 	var replyFailure *PartialSubmitError
 	if len(replies) > 0 {
 		replyFailure = f.confirmGitLabReplies(ctx, client, ref, mr, before, replies, &out)
-	}
-	// The verdict's own write comes last: the approval, or the
-	// changes-requested thread.
-	var verdict forgeapi.Request
-	step := ""
-	switch {
-	case strings.EqualFold(review.Verdict, ReviewVerdictApprove):
-		verdict, step = forgeapi.Request{Method: http.MethodPost, Path: mrPath + "/approve", Body: map[string]string{"sha": review.HeadSHA}}, SubmitStepApproval
-	case requestChanges:
-		verdict, step = forgeapi.Request{Method: http.MethodPost, Path: mrPath + "/discussions", Body: map[string]string{"body": gitlabChangesThreadBody(review.Body)}}, SubmitStepChangesThread
 	}
 	if step != "" {
 		if _, err := client.JSON(ctx, verdict, nil); err != nil {
