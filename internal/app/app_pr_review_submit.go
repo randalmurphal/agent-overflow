@@ -282,8 +282,8 @@ func (a *App) submitPRReviewDrafts(ctx context.Context, pr gitops.PRReference, r
 }
 
 // PRReviewSubmitOutcome is what a submit attempt did: "posted" (Result),
-// "unconfirmed" (Result: the forge did not say), "failed" (Code and
-// Message: it posted nothing), "unknown" (this process never received
+// "unconfirmed" (Result: the forge did not say), "failed" (Code,
+// Message and Chain, what its first caller was told: it posted nothing), "unknown" (this process never received
 // it), or "forgotten" (it may have received it and no longer keeps the
 // outcome).
 type PRReviewSubmitOutcome struct {
@@ -291,6 +291,7 @@ type PRReviewSubmitOutcome struct {
 	Result  *SubmitPRReviewResult `json:"result,omitempty"`
 	Code    string                `json:"code,omitempty"`
 	Message string                `json:"message,omitempty"`
+	Chain   []string              `json:"chain,omitempty"`
 }
 
 // GetPRReviewSubmitOutcome answers what the submit attempt attemptID to pr
@@ -304,9 +305,7 @@ func (a *App) GetPRReviewSubmitOutcome(ctx context.Context, pr gitops.PRReferenc
 	if err := pr.Validate(); err != nil {
 		return PRReviewSubmitOutcome{}, err
 	}
-	outcome, err := a.reviewAttempts.outcome(ctx, attemptID, pr.Identity(), attemptFailure{
-		code: reviewNotPostedCode, message: "The review was not posted.",
-	})
+	outcome, err := a.reviewAttempts.outcome(ctx, attemptID, pr.Identity())
 	if err != nil {
 		return PRReviewSubmitOutcome{}, err
 	}
@@ -316,14 +315,10 @@ func (a *App) GetPRReviewSubmitOutcome(ctx context.Context, pr gitops.PRReferenc
 	case outcome.state == attemptDone:
 		return PRReviewSubmitOutcome{State: "posted", Result: &outcome.result}, nil
 	case outcome.state == attemptFailed:
-		return PRReviewSubmitOutcome{State: "failed", Code: outcome.code, Message: outcome.message}, nil
+		return PRReviewSubmitOutcome{State: "failed", Code: outcome.code, Message: outcome.message, Chain: outcome.chain}, nil
 	}
 	return PRReviewSubmitOutcome{State: outcome.state}, nil
 }
-
-// reviewNotPostedCode is the code of a failed submit attempt whose error
-// has no public code of its own.
-const reviewNotPostedCode = "review_not_posted"
 
 // prDraftSource is the comment source of pr's pr-scope drafts; the
 // frontend's prSourceKey builds the same string.

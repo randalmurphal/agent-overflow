@@ -228,8 +228,9 @@ backend log line `(id: <ref>)` that holds the full error, `detail.method` and
 `detail.at` name the call and its time, and `detail.chain` lists the error's
 wrap layers outermost first (`errorsx.Chain`). Every caller is an
 authenticated session that was allowed to make the call, so the message and
-chain are the method's own on every origin. A panic's value stays in the log;
-its frame carries only the reference. `already_handled` carries no detail.
+chain are the method's own on every origin (`transport.CallerError`, the
+one rule for what a caller is told about an error). A panic's value stays
+in the log; its frame carries only the reference. `already_handled` carries no detail.
 A `forge_rate_limited` failure also carries `reserve` (the forge's quota was
 kept for the user's own actions rather than spent) and `resumeAt` (RFC 3339,
 when the forge may be asked again), from `forgeapi.RateLimitedError`, so a
@@ -322,9 +323,10 @@ a running attempt: `GitCommit`, `GitPush`, `GitPull` and `GitCreatePR` with
 One record keeps them (`writeAttempts` in
 `internal/app/app_write_attempts.go`): a repeated id writes nothing and is
 answered from the first arrival, and every outcome method answers a
-failure with the error's public code and message (`errorsx.Public`), or
-the write's own fallback pair, never the raw cause. Attempts live in process memory, so a
-restarted backend answers `unknown` for every earlier attempt.
+failure with the code, message and chain its first caller was told
+(`transport.CallerError`), so a lost answer still says why a hook or git
+refused the write. Attempts live in process memory, so a restarted
+backend answers `unknown` for every earlier attempt.
 
 ## Event replay and filtering
 

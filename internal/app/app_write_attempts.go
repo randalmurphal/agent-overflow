@@ -4,7 +4,7 @@ import (
 	"context"
 	"sync"
 
-	"agent-overflow/internal/errorsx"
+	"agent-overflow/internal/transport"
 )
 
 // writeAttempts holds the attempts of one kind of write this process
@@ -156,25 +156,20 @@ const (
 )
 
 // attemptOutcome is what a recorded attempt did, as every outcome method
-// answers it: the result when it is done, a public code and message when
-// it failed.
+// answers it: the result when it is done; when it failed, the code,
+// message and wrap chain its first caller was told.
 type attemptOutcome[T any] struct {
 	state         string
 	result        T
 	code, message string
-}
-
-// attemptFailure is the code and message a failed attempt answers with
-// when its error has no public ones of its own.
-type attemptFailure struct {
-	code, message string
+	chain         []string
 }
 
 // outcome answers what attempt id to key did, waiting on ctx for one still
-// running. A failure answers with its error's public code and message
-// (errorsx.PublicDetails), else with failed's: never the raw cause, which
-// the transport logged on the host when the write answered its caller.
-func (l *writeAttempts[T]) outcome(ctx context.Context, id, key string, failed attemptFailure) (attemptOutcome[T], error) {
+// running. A failure answers with what the transport told the write's
+// first caller (transport.CallerError): a lost answer says what the first
+// would have, a hook's or git's own reason included.
+func (l *writeAttempts[T]) outcome(ctx context.Context, id, key string) (attemptOutcome[T], error) {
 	attempt, forgotten := l.find(id, key)
 	switch {
 	case forgotten:
@@ -189,11 +184,8 @@ func (l *writeAttempts[T]) outcome(ctx context.Context, id, key string, failed a
 	if err == nil {
 		return attemptOutcome[T]{state: attemptDone, result: result}, nil
 	}
-	code, message, ok := errorsx.PublicDetails(err)
-	if !ok {
-		code, message = failed.code, failed.message
-	}
-	return attemptOutcome[T]{state: attemptFailed, code: code, message: message}, nil
+	answer := transport.CallerError(err)
+	return attemptOutcome[T]{state: attemptFailed, code: answer.Code, message: answer.Message, chain: answer.Chain}, nil
 }
 
 // wait returns the attempt's outcome once it has one.
