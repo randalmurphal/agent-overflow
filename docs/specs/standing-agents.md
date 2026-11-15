@@ -790,9 +790,10 @@ computer that holds the thread:
    the run reads paused, its members' sessions end, and it stays bound
    to the thread and resumable from the workflows view. The rest the
    pause makes does not wake the thread, whenever it arrives; a rest
-   after somebody resumes the run does. A run already paused, parked or
-   finished is left as it is; a run's running descendants under a parked
-   root are paused. A resume scheduled on any run in the tree is
+   after somebody resumes the run does. A run already paused or parked
+   keeps its state and reason and has its members' sessions ended too; a
+   finished run is left as it is; a run's running descendants under a
+   parked root are paused. A resume scheduled on any run in the tree is
    cancelled first, after one already firing has finished, so neither its
    timer nor the next boot resumes the run; Resume from the workflows
    view still does. A run a person bound to the thread is not the
@@ -1641,8 +1642,10 @@ session live or starting (`provider:session_live`, capability
 `sessionLive`); against a computer that does not publish it, End
 Session stays enabled. A workflow run's Pause is Interrupt for its
 members (it keeps their sessions, as it did); Pause and End Sessions
-also ends the session of every member it paused, and Resume starts them
-again on the same provider threads. A Stop that brings a thread to rest
+also ends the session of every member of the tree that has not ended,
+running or already parked, a running descendant of a parked root
+included, as the engine names them once the pause is made, and Resume
+starts them again on the same provider threads. A Stop that brings a thread to rest
 makes the same Pause and End Sessions of the runs it started. The Agents row's Stop on a spawned
 thread brings it to rest ([At rest](#at-rest)), which ends its session.
 

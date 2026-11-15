@@ -15,8 +15,9 @@ import (
 )
 
 // Pause keeps the paused members' sessions, as it always did; Pause and End
-// Sessions also ends them, and Resume starts them again on the same provider
-// session (docs/specs/standing-agents.md, "Interrupt and end session").
+// Sessions also ends them, a member already paused included, and Resume
+// starts them again on the same provider session
+// (docs/specs/standing-agents.md, "Interrupt and end session").
 func TestWorkflowPauseAndEndSessionsEndsThePausedMembersSessions(t *testing.T) {
 	t.Parallel()
 	app, _ := setupE2EApp(t)
@@ -103,6 +104,18 @@ func TestWorkflowPauseAndEndSessionsEndsThePausedMembersSessions(t *testing.T) {
 	}
 	if err := app.WorkflowPauseItem(ctx, item.ID); err != nil {
 		t.Fatal(err)
+	}
+	waitForWorkflowItem(t, app, item.ID, engine.StateNeedsHuman, engine.ReasonPaused)
+	if _, live := app.sessionManager().get(threadID); !live {
+		t.Fatal("a plain Pause ended the member's session")
+	}
+	// A member already parked is reached too: its session ends and it stays
+	// paused.
+	if err := app.WorkflowPauseItemAndEndSessions(ctx, item.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, live := app.sessionManager().get(threadID); live {
+		t.Fatal("Pause and End Sessions left the parked member's session running")
 	}
 	waitForWorkflowItem(t, app, item.ID, engine.StateNeedsHuman, engine.ReasonPaused)
 }

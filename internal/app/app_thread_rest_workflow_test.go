@@ -171,11 +171,12 @@ func TestAStopPausesTheWorkflowRunTheThreadStarted(t *testing.T) {
 }
 
 // A run of the worker's that is already paused or has finished is left as it
-// is, and the Stop reports no failure for it.
+// is, a paused run's member session ended, and the Stop reports no failure
+// for it.
 func TestAStopLeavesARunThatIsAlreadyAtRestAsItIs(t *testing.T) {
 	t.Parallel()
 	f := newRestRunFixture(t)
-	paused, _ := f.startRun(t, "paused")
+	paused, member := f.startRun(t, "paused")
 	cancelled, _ := f.startRun(t, "cancelled")
 	if err := f.app.WorkflowPauseItem(context.Background(), paused.ID); err != nil {
 		t.Fatal(err)
@@ -202,6 +203,9 @@ func TestAStopLeavesARunThatIsAlreadyAtRestAsItIs(t *testing.T) {
 	}
 	if _, live := f.app.sessionManager().get(f.worker.ID); live {
 		t.Fatal("the stopped worker has a session")
+	}
+	if _, live := f.app.sessionManager().get(member); live {
+		t.Fatal("the paused run's member kept its session")
 	}
 }
 

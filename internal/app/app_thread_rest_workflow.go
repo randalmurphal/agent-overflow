@@ -14,8 +14,9 @@ import (
 // resumable from the workflows view. The rest the pause makes is taken as
 // delivered to the thread, which the Stop already tells, so it does not wake
 // the thread however late it arrives; a rest after somebody resumes the run
-// wakes it as usual. A run already paused, parked or finished is left as it
-// is, with the resumes scheduled in its tree cancelled. Each run that could
+// wakes it as usual. A run already paused or parked keeps its state, with
+// its members' sessions ended and the resumes scheduled in its tree
+// cancelled. Each run that could
 // not be paused, or whose scheduled resumes could not be cancelled, is named
 // in the result.
 func (a *App) pauseRunsOfRestingThread(threadID string, result *ThreadAgentStop) {

@@ -2,6 +2,7 @@ package engine
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 
@@ -529,4 +530,38 @@ func TestPauseReleasesAHeldStartForAWaitingPhase(t *testing.T) {
 		t.Fatalf("runner starts after the holder finished = %+v, want the paused run left alone", starts)
 	}
 	h.requireNoHeldResources(t)
+}
+
+// A pause names the threads of every member of the tree it reached once the
+// tree is paused: a running member, a member already parked, and a running
+// child beneath a parked root.
+func TestPauseItemMembersNamesEveryMemberThePauseReached(t *testing.T) {
+	h := newCallHarness(t, defaultCallWorkflows(), nil)
+	parent := startCaller(t, h)
+	child := h.callChild(t, parent, "audit", 1)
+	seedThread(t, h.store, "child-thread")
+	if err := h.store.AttachWorkItemPhaseRun(child.ID, "work", 1, "child-thread", "/tmp/child.md"); err != nil {
+		t.Fatal(err)
+	}
+	members := func(step string) {
+		t.Helper()
+		got, err := h.engine.PauseItemMembers(parent)
+		if err != nil {
+			t.Fatalf("%s: %v", step, err)
+		}
+		if !slices.Equal(got, []string{"child-thread"}) {
+			t.Fatalf("%s: members = %q, want the child's thread", step, got)
+		}
+		requireItemState(t, h.store, parent, StateNeedsHuman, ReasonPaused)
+		requireItemState(t, h.store, child.ID, StateNeedsHuman, ReasonPaused)
+	}
+	members("a running tree")
+	members("a tree already paused")
+
+	if err := h.engine.ResumeItem(child.ID); err != nil {
+		t.Fatal(err)
+	}
+	requireItemState(t, h.store, parent, StateNeedsHuman, ReasonPaused)
+	requireItemState(t, h.store, child.ID, StateRunning, "")
+	members("a running child beneath a parked root")
 }
