@@ -3,12 +3,12 @@
 // leaves the thread's row where it was, read, and with no status. A tick
 // that raises thread_attention lifts the row, marks it unread and shows the
 // flag's kind and the agent's reason on the row; opening the thread clears
-// it the way it clears a completion. A flagged assistant's card stacks the
+// it the way it clears a completion. A flagged assistant's row stacks the
 // flag's line above its state and projects lines without overlap.
 import type { Locator, Page } from '@playwright/test';
 import { expect, test, type SeedResult } from './fixtures.js';
 import { awaitSidebarSettled, wakeLoopNow } from './wake-rows-helpers.js';
-import { cardRow, cardShell, rowIn, shellIn } from './sidebar-sections-helpers.js';
+import { assistantRow, assistantShell, rowIn, shellIn } from './sidebar-sections-helpers.js';
 import { awaitToolAnswer, awaitTurnCompleted, setScenario, threadToolsScenario } from './thread-tools-helpers.js';
 
 /** What the sidebar shows of one thread row. */
@@ -152,7 +152,7 @@ for (const provider of ['claude', 'codex'] as const) {
 
 // The lines under a row each tuck under the one above by the same small
 // overlap, whichever of them are present, so none covers another's text.
-test('a flagged assistant card stacks its lines without covering one another', async ({ harness, page }) => {
+test('a flagged assistant row stacks its lines without covering one another', async ({ harness, page }) => {
   test.setTimeout(120_000);
   const seed = await harness.rpc<SeedResult>('HarnessSeed', {
     projects: [{
@@ -182,11 +182,11 @@ test('a flagged assistant card stacks its lines without covering one another', a
 
   await harness.open(page);
   await awaitSidebarSettled(page);
-  const card = cardShell(page, agent);
+  const card = assistantShell(page, agent);
   const lines = ['thread-row-attention', 'thread-row-agent-state', 'thread-row-agent-projects'].map((id) => card.getByTestId(id));
   for (const line of lines) await expect(line).toBeVisible();
   const box = async (target: Locator) => (await target.boundingBox())!;
-  let above = await box(cardRow(page, agent));
+  let above = await box(assistantRow(page, agent));
   // The first line tucks 6px under the row's own padding; each later one
   // 2px under the line above it.
   let tuck = 6;

@@ -228,6 +228,9 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       const spawn = await awaitToolAnswer<{ thread_id: string }>(harness, { tool: 'thread_spawn', cwd: home });
       expect(spawn.isError).toBe(false);
       const worker = spawn.value!.thread_id;
+      // The worker is the agent's, with no sidebar row; shown there, as
+      // Show in Sidebar on its Agents row does, its row carries its state.
+      await harness.rpc('SetThreadPlacement', [worker], 'standalone');
       await nextPromptAfterTurn(spawnTurnsBefore, 'then-ask-target');
       const workerDot = page
         .getByTestId('thread-row')
@@ -322,9 +325,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       expect(refused.text).toContain('That prompt is no longer open');
       await workerDone;
 
-      // The worker carried on to the end of its turn. That turn answered the
-      // agent, which marked the worker read into the agent's done list.
-      await page.getByTestId('thread-row-agent-done-toggle').click();
+      // The worker carried on to the end of its turn.
       await page.getByTestId('thread-row').getByText('Release worker', { exact: true }).click();
       await expect(page.getByText('Release 4.2 is on staging.').first()).toBeVisible();
 
@@ -416,6 +417,8 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       await harness.rpc('SendMessage', agent, 'rotate the logs', null);
       const spawn = await awaitToolAnswer<{ thread_id: string }>(harness, { tool: 'thread_spawn', cwd: home });
       const worker = spawn.value!.thread_id;
+      // Shown in the sidebar, as Show in Sidebar does, so its row carries its state.
+      await harness.rpc('SetThreadPlacement', [worker], 'standalone');
       await awaitTurnCompleted(harness, agent);
       const askGate = await awaitGate(harness, 'ask', workerP.path);
 

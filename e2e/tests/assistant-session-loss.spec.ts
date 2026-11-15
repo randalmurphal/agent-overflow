@@ -9,13 +9,14 @@
 // thread's session, and reaches the provider; the person's message whose
 // send found the session gone waits in the successor's composer, not the
 // past thread's, and the opening says so; the pane follows to the successor
-// and the previous thread sits in the done footer. A plain thread whose
+// and the previous thread is listed in Previous Threads. A plain thread whose
 // session is gone is not moved anywhere.
 import { existsSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { test, expect, type SeedResult } from './fixtures.js';
 import { captureAgentMessage } from './wake-rows-helpers.js';
+import { openPreviousThreads, previousThreadIds } from './sidebar-sections-helpers.js';
 import { assistantHome, awaitMockInput, awaitTurnCompleted, plainScenario, setScenario, threadRows, type ProviderName } from './thread-tools-helpers.js';
 
 const NO_ROLLOUT = '{"jsonrpc":"2.0","id":${REQUEST_ID},"error":{"code":-32600,"message":"no rollout found for thread id ${THREAD_ID}"}}';
@@ -83,8 +84,8 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     await expect(opening).toHaveCount(1);
     await expect(opening.getByTestId('agent-message-sender')).toHaveText('Agent Overflow');
     await expect(page.locator(`[data-sidebar-agent][data-sidebar-thread-id="${second}"]`)).toBeVisible();
-    await expect(page.getByTestId('thread-row-agent-done').getByTestId('thread-row-agent-done-label')).toHaveText('1 done');
     await captureAgentMessage(page, `${provider}-assistant-session-lost.png`, opening);
+    expect(await previousThreadIds(await openPreviousThreads(page, 'desktop', second))).toEqual([first]);
   });
 }
 

@@ -530,6 +530,8 @@ test('thread_spawn opens a visible thread, delivers the prompt with its footer a
                   title: 'Launcher audit',
                   project_id: targetProject,
                   notify: true,
+                  // A sidebar row, which the spec opens it from (ruling 36).
+                  placement: 'standalone',
                 },
               },
             },
@@ -632,6 +634,8 @@ for (const provider of ['claude', 'codex'] as const) {
         tool: 'thread_spawn', args: {
           project_id: target.projectId, provider, model, effort: 'low',
           runtime_mode: 'read-only', title: 'Agent override', prompt: 'Read the code.',
+          // A sidebar row, which the spec opens it from (ruling 36).
+          placement: 'standalone',
         },
       } }], text: 'Spawned.' }],
     }));

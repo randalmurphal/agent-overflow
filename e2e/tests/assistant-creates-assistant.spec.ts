@@ -2,8 +2,8 @@
 // "thread_new_assistant"), end to end on both mock providers.
 //
 // Coverage: an assistant creates another one, which has its own record
-// naming its creator, its own home, the creator's projects and a card of
-// its own in the Assistants section, not nested under the creator; its
+// naming its creator, its own home, the creator's projects and a row of
+// its own in the Assistants section, none in the creator's project; its
 // opening block, delivered in its home, names the creator and quotes
 // the role text; its answer reaches the creator; a name in use is refused
 // naming the holder; a thread that is not an assistant is refused.
@@ -11,7 +11,7 @@ import { join } from 'node:path';
 
 import { test, expect, type SeedResult } from './fixtures.js';
 import { captureAgentMessage } from './wake-rows-helpers.js';
-import { cardRow, cardShell } from './sidebar-sections-helpers.js';
+import { assistantRow, assistantShell } from './sidebar-sections-helpers.js';
 import { assistantHome, awaitMockInput, awaitToolAnswer, awaitTurnCompleted, setScenario, threadRows, threadToolsScenario, type ProviderName } from './thread-tools-helpers.js';
 
 const ROLE = 'Watch the nightly build and tell me when it breaks.';
@@ -79,14 +79,15 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     await reported;
     await awaitTurnCompleted(harness, lead);
 
-    // A card of its own, not nested under the lead, serving the lead's project.
+    // A row of its own in the Assistants section, serving the lead's project.
     await harness.open(page);
-    const scoutRow = cardRow(page, scout.thread_id);
+    const scoutRow = assistantRow(page, scout.thread_id);
     await expect(scoutRow).toHaveAttribute('data-sidebar-agent', '');
     // The projects line sits under the row, in its shell.
-    await expect(cardShell(page, scout.thread_id).getByTestId('thread-row-agent-projects')).toHaveText(`assistant-creates-${provider}`);
-    await expect(page.locator(`[data-agent-member] [data-sidebar-thread-id="${scout.thread_id}"]`)).toHaveCount(0);
-    await captureAgentMessage(page, `${provider}-assistant-created-by-assistant.png`, cardRow(page, lead), scoutRow);
+    await expect(assistantShell(page, scout.thread_id).getByTestId('thread-row-agent-projects')).toHaveText(`assistant-creates-${provider}`);
+    // One row: the created assistant is no row of its creator's project.
+    await expect(page.locator(`[data-sidebar-thread-id="${scout.thread_id}"]`)).toHaveCount(1);
+    await captureAgentMessage(page, `${provider}-assistant-created-by-assistant.png`, assistantRow(page, lead), scoutRow);
     await scoutRow.click();
     const openingRow = page.locator('[data-testid="agent-message-row"]').filter({ hasText: 'created by the standing agent "Lead"' });
     await expect(openingRow.getByTestId('agent-message-sender')).toHaveText('Lead');

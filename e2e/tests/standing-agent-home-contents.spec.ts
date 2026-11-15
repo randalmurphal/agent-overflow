@@ -45,7 +45,7 @@ import {
   undeliveredWarning,
 } from './standing-agent-home-contents-helpers.js';
 
-/** Opens the row titled `title` in a sidebar section: an assistant's card, or a thread in a project. */
+/** Opens the row titled `title` in a sidebar section: an assistant's row, or a thread in a project. */
 async function openThread(page: Page, section: 'assistants' | 'projects', title: string): Promise<void> {
   await page.getByTestId(`sidebar-${section}-section`).getByTestId('thread-row').getByText(title, { exact: true }).click();
 }
@@ -53,7 +53,7 @@ async function openThread(page: Page, section: 'assistants' | 'projects', title:
 for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderName[]) {
   test(`${provider}: a standing agent's home reaches its sessions and its messages carry its context`, async ({ harness, page }) => {
     test.setTimeout(240_000);
-    await runHomeContents(harness, provider, 'home-contents');
+    const run = await runHomeContents(harness, provider, 'home-contents');
 
     await harness.open(page);
     // Every project has a verified forge origin.
@@ -71,9 +71,9 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     await expect(page.getByText(ROLE, { exact: false })).toHaveCount(0);
 
     // The worker's first message is the agent's spawn prompt, opening with
-    // the attached file. Its answer to the agent marked it read, so it is in
-    // the agent's done list.
-    await page.getByTestId('thread-row-agent-done-toggle').click();
+    // the attached file. The worker is owned, with no sidebar row until it
+    // is shown there, as Show in Sidebar on its Agents row does.
+    await harness.rpc('SetThreadPlacement', [run.worker], 'standalone');
     await openThread(page, 'projects', 'Parser review');
     const first = page.locator('[data-testid="agent-message-row"][data-agent-message-kind="spawn"]');
     await expect(first).toHaveCount(1);

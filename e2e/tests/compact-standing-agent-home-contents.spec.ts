@@ -17,11 +17,11 @@ import {
 
 test('compact: the agent session and the worker first message fit the phone', async ({ harness, page }) => {
   test.setTimeout(240_000);
-  await runHomeContents(harness, 'claude', 'compact-home-contents');
+  const run = await runHomeContents(harness, 'claude', 'compact-home-contents');
 
   await harness.open(page);
   await expect(page.getByLabel(/^Could not fully verify/)).toHaveCount(0);
-  // The card, not the agent's row in the workers' project.
+  // The assistant's one row, in the Assistants section.
   await page.getByTestId('sidebar-assistants-section').getByTestId('thread-row').getByText('Release lead', { exact: true }).tap();
   await expect(page.getByText('Noted.', { exact: true })).toBeVisible();
   await expect(page.getByText('Your standing instructions')).toHaveCount(0);
@@ -30,8 +30,9 @@ test('compact: the agent session and the worker first message fit the phone', as
   await capture(page, 'compact-agent-session.png', opening);
 
   await page.goBack();
-  // The worker's answer to the agent marked it read: it is in the done list.
-  await page.getByTestId('thread-row-agent-done-toggle').tap();
+  // The worker is owned, with no sidebar row until it is shown there, as
+  // Show in Sidebar on its Agents row does.
+  await harness.rpc('SetThreadPlacement', [run.worker], 'standalone');
   await page.getByTestId('thread-row').getByText('Parser review', { exact: true }).tap();
   const first = page.locator('[data-testid="agent-message-row"][data-agent-message-kind="spawn"]');
   await expect(first).toHaveCount(1);

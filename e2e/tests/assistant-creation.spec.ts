@@ -6,7 +6,7 @@
 // Create makes the record, the home with its README and the thread outside
 // every project, titled with the name, which opens in the pane; the
 // app-written opening message reaches the provider in the home and shows
-// as an agent row from Agent Overflow; the card lists in the Assistants
+// as an agent row from Agent Overflow; its row lists in the Assistants
 // section naming the projects it serves, and its Projects dialog changes
 // them; a name another assistant holds, in any case, is refused inline
 // naming it, from the dialog and from an inline rename, and nothing is
@@ -18,7 +18,7 @@ import type { Page } from '@playwright/test';
 
 import { test, expect, type SeedResult } from './fixtures.js';
 import { captureAgentMessage } from './wake-rows-helpers.js';
-import { assistantsSection, cardShell, projectRow } from './sidebar-sections-helpers.js';
+import { assistantsSection, assistantShell, projectRow } from './sidebar-sections-helpers.js';
 import { AO_MESSAGE_CLOSING, aoMessageOpening, awaitMockInput, plainScenario, setScenario, threadRows, type ProviderName } from './thread-tools-helpers.js';
 
 const MODEL: Record<ProviderName, string> = { claude: 'claude-opus-4-7', codex: 'gpt-5.2-codex' };
@@ -71,7 +71,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     const agentRow = assistants.locator(`[data-sidebar-agent][data-sidebar-thread-id="${thread}"]`);
     await expect(agentRow).toBeVisible();
     // The projects line sits under the row, in its shell.
-    const projectsLine = cardShell(page, thread).getByTestId('thread-row-agent-projects');
+    const projectsLine = assistantShell(page, thread).getByTestId('thread-row-agent-projects');
     await expect(projectsLine).toHaveText(projectName);
     await expect(projectRow(page, thread)).toHaveCount(0);
     // No branch or worktree: the thread has no checkout.

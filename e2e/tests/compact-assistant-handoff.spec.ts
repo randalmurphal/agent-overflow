@@ -6,6 +6,7 @@
 import { test, expect, type SeedResult } from './fixtures.js';
 import type { HarnessApp } from '../src/harness.js';
 import { captureAgentMessage } from './wake-rows-helpers.js';
+import { openPreviousThreads, previousThreadIds } from './sidebar-sections-helpers.js';
 import { assistantHome, awaitMockInput, plainScenario, setScenario, threadRows, type ProviderName } from './thread-tools-helpers.js';
 
 async function currentThread(harness: HarnessApp, not: string): Promise<string> {
@@ -39,14 +40,18 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     expect(box.width).toBeGreaterThanOrEqual(32);
     await captureAgentMessage(page, `${provider}-compact-assistant-row-next-thread.png`, firstRow);
 
-    // ---- From the row: the successor is the agent row, the old thread its done child.
+    // ---- From the row: the successor is the assistant's row, the old thread a previous one.
     const fromRow = awaitMockInput(harness, { cwd, includes: `The user replaced your previous thread ${first} with this one` });
     await button.tap();
     await fromRow;
     const second = await currentThread(harness, first);
     await expect(page.locator(`[data-sidebar-agent][data-sidebar-thread-id="${second}"]`)).toBeVisible();
-    const footer = page.getByTestId('thread-row-agent-done');
-    await expect(footer.getByTestId('thread-row-agent-done-label')).toHaveText('1 done');
+    await expect(firstRow).toHaveCount(0);
+    const previous = await openPreviousThreads(page, 'compact', second);
+    expect(await previousThreadIds(previous)).toEqual([first]);
+    await captureAgentMessage(page, `${provider}-compact-assistant-previous-threads.png`, previous);
+    await page.getByTestId('previous-threads-close').tap();
+    await expect(previous).toHaveCount(0);
 
     // ---- From the thread header.
     await page.locator(`[data-sidebar-thread-id="${second}"]`).click();

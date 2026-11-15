@@ -4,8 +4,8 @@
 // Coverage: the header button moves the assistant to a new thread in the
 // same pane; the successor's opening block names the previous thread and
 // what moved, and reaches the provider; it shows as an agent row from
-// Agent Overflow; the agent row is the successor and the previous thread
-// sits archived in its done footer; the loop the old thread registered is
+// Agent Overflow; the assistant's row is the successor and the previous
+// thread is listed in its Previous Threads; the loop the old thread registered is
 // the successor's; the sidebar row's button does the same from the list; a
 // second click on the row's button while the first handoff runs, with no
 // pane showing the thread, makes no second thread and no error.
@@ -14,6 +14,7 @@ import type { Page } from '@playwright/test';
 import { test, expect, type SeedResult } from './fixtures.js';
 import type { HarnessApp } from '../src/harness.js';
 import { captureAgentMessage, trayRow } from './wake-rows-helpers.js';
+import { openPreviousThreads, previousThreadIds } from './sidebar-sections-helpers.js';
 import { methodIdByName } from './offhost-helpers.js';
 import {
   AO_MESSAGE_CLOSING,
@@ -92,18 +93,18 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     await expect(page.getByText('Picked up the board check.')).toBeVisible();
     await captureAgentMessage(page, `${provider}-assistant-handoff.png`, handoff);
 
-    // The agent row is the successor; the previous thread is archived in its done footer.
+    // The assistant's row is the successor; the previous thread has no row
+    // and is listed in its Previous Threads.
     await expect(page.locator(`[data-sidebar-agent][data-sidebar-thread-id="${second}"]`)).toBeVisible();
-    const footer = page.getByTestId('thread-row-agent-done');
-    await expect(footer.getByTestId('thread-row-agent-done-label')).toHaveText('1 done');
-    await footer.getByTestId('thread-row-agent-done-toggle').click();
-    await expect(row(page, first)).toHaveAttribute('data-archived-child', 'true');
-    await expect(row(page, first).getByTestId('thread-row-time')).toHaveText(/^superseded /);
+    await expect(row(page, first)).toHaveCount(0);
+    const previous = await openPreviousThreads(page, 'desktop', second);
+    expect(await previousThreadIds(previous)).toEqual([first]);
+    await expect(previous.getByTestId('previous-threads-superseded')).toHaveText(/^Superseded /);
+    await captureAgentMessage(page, `${provider}-assistant-handoff-previous-threads.png`, previous);
+    await page.getByTestId('previous-threads-close').click();
+    await expect(previous).toHaveCount(0);
     expect(await harness.rpc('GetStandingAgent', first)).toBeNull();
     expect((await harness.rpc<{ threadId: string }>('GetStandingAgent', second)).threadId).toBe(second);
-    // Hover swaps a row's time for its actions; the shot shows the time.
-    await page.mouse.move(800, 400);
-    await captureAgentMessage(page, `${provider}-assistant-handoff-sidebar.png`, row(page, second), footer, row(page, first));
 
     // The loop is the successor's.
     const wakes = async (id: string) => (await harness.rpc<{ rows: { label: string }[] }>('ListThreadWakes', id)).rows.map((r) => r.label);
@@ -122,7 +123,8 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     const next = await currentThread(harness, 'Ops', second);
     expect(next).not.toBe(first);
     await expect(page.locator(`[data-sidebar-agent][data-sidebar-thread-id="${next}"]`)).toBeVisible();
-    await expect(footer.getByTestId('thread-row-agent-done-label')).toHaveText('2 done');
+    // Newest superseded first.
+    expect(await previousThreadIds(await openPreviousThreads(page, 'desktop', next))).toEqual([second, first]);
   });
 
   test(`${provider}: a second click on the row's New Thread, Same Assistant while the first runs makes one thread`, async ({ harness, page }) => {
@@ -157,7 +159,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     });
     const second = await currentThread(harness, 'Ops', first);
     await expect(page.locator(`[data-sidebar-agent][data-sidebar-thread-id="${second}"]`)).toBeVisible();
-    await expect(page.getByTestId('thread-row-agent-done').getByTestId('thread-row-agent-done-label')).toHaveText('1 done');
+    expect(await previousThreadIds(await openPreviousThreads(page, 'desktop', second))).toEqual([first]);
     expect((await threadRows(harness)).filter((r) => r.title === 'Ops').map((r) => r.id)).toEqual([second]);
     expect(calls).toBe(1);
     expect(await page.getByTestId('toast').count()).toBe(0);
