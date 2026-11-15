@@ -2288,6 +2288,36 @@ describe('reviewPane store — PR scope', () => {
       expect(state.drafts).toEqual([]);
     });
 
+    it('marks the drafts against the head it sent after the PR under the pane switched during the call', async () => {
+      installPRMocks();
+      setBindingMock('SubscribePRUpdates', async (pr: { Number: number }) => ({
+        id: `sub-${pr.Number}`,
+        prKey: `github:owner/repo:${pr.Number}`,
+        detail: prDetailStub({ number: pr.Number, headSHA: pr.Number === 5 ? 'sha-a' : 'sha-z' }),
+        threads: [],
+        headSHA: pr.Number === 5 ? 'sha-a' : 'sha-z',
+      }));
+      const rows = [draft({ id: 'd-1', scope: 'pr', sourceKey: PR_SOURCE_KEY, newLine: 1, side: 'new' })];
+      const { mark } = threadDraftsBackend(rows);
+      let answer!: () => void;
+      const submit = setBindingMock('SubmitPRReview', () => new Promise((resolve) => {
+        answer = () => resolve({ postedReview: true, postedFileComments: 0 });
+      }));
+      const state = await prScopeWith(rows);
+      state.setSummaryBody('overall note');
+
+      const submitting = state.submitPRReview();
+      await vi.waitFor(() => expect(submit).toHaveBeenCalledTimes(1));
+      seedPaneWorkspaceStatus('pane-1', { forge: 'github', openPrUrl: 'https://github.com/owner/repo/pull/7', openPrNumber: 7 });
+      await state.reload();
+      expect(state.prHeadSHA).toBe('sha-z');
+      answer();
+      await submitting;
+
+      expect(submit.mock.calls[0]?.[1]).toMatchObject({ headSha: 'sha-a' });
+      expect(mark).toHaveBeenCalledWith('thread-1', 'pr', PR_SOURCE_KEY, ['d-1'], 'pr:sha-a');
+    });
+
     it('sends no attempt id and, after a lost answer, asks nothing and says the review may be on the PR', async () => {
       installPRMocks();
       const rows = [draft({ id: 'd-1', scope: 'pr', sourceKey: PR_SOURCE_KEY, newLine: 1, side: 'new' })];
