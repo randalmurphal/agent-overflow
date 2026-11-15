@@ -3,6 +3,8 @@ package app
 import (
 	"context"
 	"sync"
+
+	"agent-overflow/internal/errorsx"
 )
 
 // writeAttempts holds the attempts of one kind of write this process
@@ -143,6 +145,55 @@ func (l *writeAttempts[T]) find(id, key string) (attempt *writeAttempt[T], forgo
 		return nil, forgottenKey == key
 	}
 	return nil, l.overflowed
+}
+
+// The states of an attempt's outcome (attemptOutcome).
+const (
+	attemptDone      = "done"
+	attemptFailed    = "failed"
+	attemptUnknown   = "unknown"   // this process never received it
+	attemptForgotten = "forgotten" // it may have, and no longer keeps the outcome
+)
+
+// attemptOutcome is what a recorded attempt did, as every outcome method
+// answers it: the result when it is done, a public code and message when
+// it failed.
+type attemptOutcome[T any] struct {
+	state         string
+	result        T
+	code, message string
+}
+
+// attemptFailure is the code and message a failed attempt answers with
+// when its error has no public ones of its own.
+type attemptFailure struct {
+	code, message string
+}
+
+// outcome answers what attempt id to key did, waiting on ctx for one still
+// running. A failure answers with its error's public code and message
+// (errorsx.PublicDetails), else with failed's: never the raw cause, which
+// the transport logged on the host when the write answered its caller.
+func (l *writeAttempts[T]) outcome(ctx context.Context, id, key string, failed attemptFailure) (attemptOutcome[T], error) {
+	attempt, forgotten := l.find(id, key)
+	switch {
+	case forgotten:
+		return attemptOutcome[T]{state: attemptForgotten}, nil
+	case attempt == nil:
+		return attemptOutcome[T]{state: attemptUnknown}, nil
+	}
+	result, err := attempt.wait(ctx)
+	if ctx.Err() != nil {
+		return attemptOutcome[T]{}, ctx.Err()
+	}
+	if err == nil {
+		return attemptOutcome[T]{state: attemptDone, result: result}, nil
+	}
+	code, message, ok := errorsx.PublicDetails(err)
+	if !ok {
+		code, message = failed.code, failed.message
+	}
+	return attemptOutcome[T]{state: attemptFailed, code: code, message: message}, nil
 }
 
 // wait returns the attempt's outcome once it has one.

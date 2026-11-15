@@ -321,7 +321,9 @@ a running attempt: `GitCommit`, `GitPush`, `GitPull` and `GitCreatePR` with
 `GetGitActionOutcome`, `SubmitPRReview` with `GetPRReviewSubmitOutcome`.
 One record keeps them (`writeAttempts` in
 `internal/app/app_write_attempts.go`): a repeated id writes nothing and is
-answered from the first arrival. Attempts live in process memory, so a
+answered from the first arrival, and every outcome method answers a
+failure with the error's public code and message (`errorsx.Public`), or
+the write's own fallback pair, never the raw cause. Attempts live in process memory, so a
 restarted backend answers `unknown` for every earlier attempt.
 
 ## Event replay and filtering
