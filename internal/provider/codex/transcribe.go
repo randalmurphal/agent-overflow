@@ -18,11 +18,12 @@ import (
 	"agent-overflow/internal/provider"
 )
 
-// TranscribeURL is ChatGPT's speech-to-text endpoint, the one the Codex
-// desktop app's dictation uses. It takes the recording as one multipart
-// `file` part and answers `{"text": ...}`, authorized by a ChatGPT sign-in's
-// access token and workspace like every other ChatGPT backend call. OpenAI
-// keeps the uploaded recording for 30 days.
+// TranscribeURL is ChatGPT's speech-to-text endpoint, which the Codex TUI's
+// dictation used (docs/references/voice-dictation.md). It takes the
+// recording as one multipart `file` part and answers `{"text": ...}`,
+// authorized by a ChatGPT sign-in's access token; the workspace header goes
+// with it as on every ChatGPT backend call, though the endpoint does not
+// enforce it. OpenAI keeps the uploaded recording for 30 days.
 const TranscribeURL = "https://chatgpt.com/backend-api/transcribe"
 
 // maxTranscriptBytes bounds the response read. A transcript of the longest
