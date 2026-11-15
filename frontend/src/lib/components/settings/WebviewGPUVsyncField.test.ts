@@ -9,7 +9,7 @@ const FIELD = '[data-settings-field="performance.disable-gpu-vsync"]';
 
 /** The backend's answer: the saved preference and the session's launch value. */
 function vsync(disabled: boolean, launched = disabled) {
-  return { disabled, launched };
+  return { value: disabled, launched };
 }
 
 function clearToasts(): void {
