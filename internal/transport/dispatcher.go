@@ -437,13 +437,10 @@ func (d *Dispatcher) buildArgs(ctx context.Context, m *Method, params []json.Raw
 // returned as a JSON array. The frontend's generated bindings don't use
 // those today; supporting it keeps methodgen unconstrained.
 //
-// Method-returned errors used to surface methodErr.Error() to the wire
-// directly. That leaks filesystem paths and internal state — a method
-// that wraps an os.PathError sends "/Users/<name>/secret/path: file not
-// found" to a LAN-attached caller. We now correlate logs with a short
-// random ID and return a generic "method failed (id: <id>)" message so
-// users can grep server logs for the full prose without surfacing it on
-// the wire.
+// A method's error answers with CallerError's code, message and chain, after
+// the thread-transfer and authorization answers, and is logged under a
+// correlation ID its detail carries, unless it is ordinary application
+// state (CallerAnswer.Expected).
 func (d *Dispatcher) processResults(m *Method, results []reflect.Value) (json.RawMessage, *FrameError) {
 	if m.hasError {
 		errResult := results[len(results)-1]
@@ -468,51 +465,35 @@ func (d *Dispatcher) processResults(m *Method, results []reflect.Value) (json.Ra
 				// is the whole answer, so it goes out verbatim.
 				return nil, frame
 			}
-			if code, message, ok := errorsx.PublicDetails(methodErr); ok {
-				cid := newCorrelationID()
-				log.Printf("transport: %s returned error (id: %s): %v", m.FQN, cid, methodErr)
-				frame := &FrameError{Code: code, Message: message, Detail: methodErrorDetail(m, cid, methodErr)}
-				// The refused stop names what it would have killed. A tiny
-				// interface for the same reason as the transfer ref above.
-				var agents interface{ RefusedBackgroundAgents() json.RawMessage }
-				if code == ErrCodeBackgroundAgentsRunning && errors.As(methodErr, &agents) {
-					frame.BackgroundAgents = agents.RefusedBackgroundAgents()
-				}
-				// A forge rate limit says whether it kept the reserve and
-				// when it lifts (forgeapi.RateLimitedError).
-				var limit interface {
-					RateLimitRelease() (bool, time.Time)
-				}
-				if code == ErrCodeForgeRateLimited && errors.As(methodErr, &limit) {
-					reserve, until := limit.RateLimitRelease()
-					frame.Reserve = reserve
-					if !until.IsZero() {
-						frame.ResumeAt = until.UTC().Format(time.RFC3339)
-					}
-				}
+			answer := CallerError(methodErr)
+			frame := &FrameError{Code: answer.Code, Message: answer.Message}
+			if answer.Expected {
 				return nil, frame
-			}
-			if errors.Is(methodErr, sql.ErrNoRows) {
-				// Missing history is ordinary application state. Preserve that
-				// verdict on every origin without exposing SQL or wrapper paths.
-				return nil, &FrameError{Code: ErrCodeNotFound, Message: "The requested item no longer exists."}
 			}
 			cid := newCorrelationID()
 			log.Printf("transport: %s returned error (id: %s): %v", m.FQN, cid, methodErr)
-			message := methodErr.Error()
-			code := ErrCodeMethodError
-			detail := methodErrorDetail(m, cid, methodErr)
-			switch {
-			case errors.Is(methodErr, ErrTemporarilyUnavailable):
-				code = ErrCodeTemporarilyUnavailable
-			case errors.Is(methodErr, ErrAlreadyHandled):
-				code, detail = ErrCodeAlreadyHandled, nil
+			if answer.Detailed {
+				frame.Detail = &ErrorDetail{Ref: cid, Method: m.Name, At: time.Now().UnixMilli(), Chain: answer.Chain}
 			}
-			return nil, &FrameError{
-				Code:    code,
-				Message: message,
-				Detail:  detail,
+			// The refused stop names what it would have killed. A tiny
+			// interface for the same reason as the transfer ref above.
+			var agents interface{ RefusedBackgroundAgents() json.RawMessage }
+			if answer.Code == ErrCodeBackgroundAgentsRunning && errors.As(methodErr, &agents) {
+				frame.BackgroundAgents = agents.RefusedBackgroundAgents()
 			}
+			// A forge rate limit says whether it kept the reserve and
+			// when it lifts (forgeapi.RateLimitedError).
+			var limit interface {
+				RateLimitRelease() (bool, time.Time)
+			}
+			if answer.Code == ErrCodeForgeRateLimited && errors.As(methodErr, &limit) {
+				reserve, until := limit.RateLimitRelease()
+				frame.Reserve = reserve
+				if !until.IsZero() {
+					frame.ResumeAt = until.UTC().Format(time.RFC3339)
+				}
+			}
+			return nil, frame
 		}
 		results = results[:len(results)-1]
 	}
@@ -545,6 +526,44 @@ func loggedFailure(m *Method, code, message, what string, err error) *FrameError
 	cid := newCorrelationID()
 	log.Printf("transport: %s (id: %s): %v", what, cid, err)
 	return &FrameError{Code: code, Message: message, Detail: methodErrorDetail(m, cid, err)}
+}
+
+// CallerAnswer is what a caller is told about a method's error.
+type CallerAnswer struct {
+	Code, Message string
+	// Detailed answers carry the error's diagnostic detail, with Chain,
+	// its wrap chain.
+	Detailed bool
+	Chain    []string
+	// Expected is a failure that is ordinary application state (a missing
+	// row), answered without a log line or detail.
+	Expected bool
+}
+
+// CallerError is the one rule for what a caller is told about a method's
+// error err: a public error's own code and message (errorsx.Public), a
+// missing row as not_found, and any other error's own text under
+// method_error (or the code of the sentinel it wraps), with its wrap chain.
+// processResults answers a method failure with it, and an outcome method
+// that answers a write whose first answer was lost uses it too, so the
+// late answer says exactly what the first would have.
+func CallerError(err error) CallerAnswer {
+	if code, message, ok := errorsx.PublicDetails(err); ok {
+		return CallerAnswer{Code: code, Message: message, Detailed: true, Chain: errorsx.Chain(err)}
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		// Missing history is ordinary application state. Preserve that
+		// verdict on every origin without exposing SQL or wrapper paths.
+		return CallerAnswer{Code: ErrCodeNotFound, Message: "The requested item no longer exists.", Expected: true}
+	}
+	answer := CallerAnswer{Code: ErrCodeMethodError, Message: err.Error(), Detailed: true, Chain: errorsx.Chain(err)}
+	switch {
+	case errors.Is(err, ErrTemporarilyUnavailable):
+		answer.Code = ErrCodeTemporarilyUnavailable
+	case errors.Is(err, ErrAlreadyHandled):
+		answer.Code, answer.Detailed, answer.Chain = ErrCodeAlreadyHandled, false, nil
+	}
+	return answer
 }
 
 // methodErrorDetail is the diagnostic record of m's failure logged under
