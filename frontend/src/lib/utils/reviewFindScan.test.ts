@@ -351,9 +351,9 @@ describe('scanReviewFind over evicted text', () => {
   // The budget (300) is smaller than one block or one read-back range:
   // released, the text would be evicted again before its lines are read.
   it('reads each chunk back once, holding what it read until the walk leaves it', async () => {
-    // 'line' flags every line (the filter's blocks); 'line\ufffd' cannot
+    // 'line' flags every line (the filter's blocks); 'line\ud800' cannot
     // be spelled, so every row is read (the rule's ranges).
-    for (const query of ['line', 'line\ufffd']) {
+    for (const query of ['line', 'line\ud800']) {
       const { files: evicted, source, spans } = streamed(2000);
       source.read.mockClear();
       const { hits } = await collectScan(content({ files: evicted }), query, 100_000);
@@ -408,9 +408,9 @@ describe('scanReviewFind over evicted text', () => {
     const { files: evicted, source, spans } = streamed(2000);
     const gates: (() => void)[] = [];
     const real = source.read.getMockImplementation()!;
-    source.read.mockImplementation(async (offset, next, packed) => {
+    source.read.mockImplementation(async (offset, next) => {
       await new Promise<void>((resolve) => gates.push(resolve));
-      return real(offset, next, packed);
+      return real(offset, next);
     });
     let live = true;
     const hits: ReviewFindHit[] = [];
@@ -487,9 +487,9 @@ describe('scanReviewFind over evicted text', () => {
     setPatchTextBudgetForTest(1 << 30);
     const gates: (() => void)[] = [];
     const real = source.read.getMockImplementation()!;
-    source.read.mockImplementation(async (offset, next, packed) => {
+    source.read.mockImplementation(async (offset, next) => {
       await new Promise<void>((resolve) => gates.push(resolve));
-      return real(offset, next, packed);
+      return real(offset, next);
     });
     let live = true;
     let emitted = 0;

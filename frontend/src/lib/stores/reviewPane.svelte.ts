@@ -2205,9 +2205,9 @@ export function createReviewPaneState(
   // Interval between publishes of a diff still arriving.
   const PROGRESS_PUBLISH_MS = 100;
   // One VerifyEditDiffs call: the files the backend verifies per call,
-  // and patch characters that stay far under a transport frame.
+  // and patch bytes that stay far under a transport frame.
   const VERIFY_BATCH_FILES = 200;
-  const VERIFY_BATCH_CHARS = 8 * 1024 * 1024;
+  const VERIFY_BATCH_BYTES = 8 * 1024 * 1024;
 
   /** One load's files on their way to the screen. */
   interface Arrival {
@@ -2449,10 +2449,10 @@ export function createReviewPaneState(
     // and within the files the backend verifies per call.
     for (let start = 0; start < candidates.length;) {
       let end = start + 1;
-      let chars = candidates[start].body.textSize;
+      let bytes = candidates[start].body.textSize;
       while (end < candidates.length && end - start < VERIFY_BATCH_FILES
-        && chars + candidates[end].body.textSize <= VERIFY_BATCH_CHARS) {
-        chars += candidates[end].body.textSize;
+        && bytes + candidates[end].body.textSize <= VERIFY_BATCH_BYTES) {
+        bytes += candidates[end].body.textSize;
         end += 1;
       }
       const batch = candidates.slice(start, end);

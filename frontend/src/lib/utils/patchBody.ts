@@ -55,9 +55,8 @@ export class PatchBody {
   readonly maxLine: number;
   /** Conflict pseudo-files carry marker rows and never show gaps. */
   readonly hasMarkers: boolean;
-  /** Stored size of `patchText()`, known without its text: at least its
-   * UTF-16 length and at most its UTF-8 length (packed text stores
-   * bytes). A size bound, never a string length. */
+  /** UTF-8 bytes of `patchText()`, known without its text. A size,
+   * never a string length. */
   readonly textSize: number;
   private key: string | null = null;
 
@@ -80,7 +79,7 @@ export class PatchBody {
     let newLine = 0;
     let maxLine = 0;
     let hasMarkers = false;
-    let markerChars = 0;
+    let markerBytes = 0;
     for (let index = 0; index < lineCount; index += 1) {
       const kind = this.kind(index);
       if (kind === LINE_HUNK) {
@@ -114,7 +113,7 @@ export class PatchBody {
         hasMarkers = true;
         contentRows += 1;
         const { store, line } = this.locate(index);
-        markerChars += MARKER_PATCH_TEXT.length - (store.storedLineEnd(line) - store.storedLineStart(line));
+        markerBytes += MARKER_PATCH_TEXT.length - (store.storedLineEnd(line) - store.storedLineStart(line));
       }
     }
     this.contentRows = contentRows;
@@ -128,7 +127,7 @@ export class PatchBody {
     for (const segment of this.segments) {
       textSize += segment.store.storedLineEnd(segment.end - 1) - segment.store.storedLineStart(segment.start);
     }
-    this.textSize = lineCount === 0 ? 0 : textSize + markerChars;
+    this.textSize = lineCount === 0 ? 0 : textSize + markerBytes;
   }
 
   /** A body over a parsed PatchFile's lines (conflict pseudo-files,
@@ -149,8 +148,7 @@ export class PatchBody {
     return store.text(line);
   }
 
-  /** A line's stored size, known without its text: bounded as
-   * `textSize` is. */
+  /** UTF-8 bytes of a line's text, known without its text. */
   lineSize(index: number): number {
     const { store, line } = this.locate(index);
     return store.storedLineEnd(line) - store.storedLineStart(line);
@@ -178,31 +176,28 @@ export class PatchBody {
     return this.bases[segment] + this.segments[segment].end - this.segments[segment].start;
   }
 
-  /** Stored position of a line's first character in its store. Within one
-   * segment, the distance between two lines' positions is their distance
-   * in `storedRange`. A size, not a UTF-16 offset (packed text stores
-   * bytes). */
+  /** Where a line starts in its store's UTF-8 bytes. Within one segment,
+   * the distance between two lines' positions is the bytes of the text
+   * between them. */
   storedLineStart(index: number): number {
     const { store, line } = this.locate(index);
     return store.storedLineStart(line);
   }
 
-  /** Stored position just past a line's last character, as
-   * `storedLineStart` counts. */
+  /** Where a line's text ends in its store's UTF-8 bytes. */
   storedLineEnd(index: number): number {
     const { store, line } = this.locate(index);
     return store.storedLineEnd(line);
   }
 
-  /** Lines [start, end) of one segment (`segmentEnd`) as stored, joined
-   * with newlines: not their text (PatchStore.storedRange), for a filter
-   * that runs over storage. Throws PatchTextNotResident when any is
-   * evicted. */
-  storedRange(start: number, end: number): string {
+  /** Lines [start, end) of one segment (`segmentEnd`) joined with
+   * newlines, decoded at once (PatchStore.textRange). Throws
+   * PatchTextNotResident when any is evicted. */
+  segmentText(start: number, end: number): string {
     if (end <= start) return '';
     if (end > this.segmentEnd(start)) throw new RangeError(`patch body: lines ${start}..${end} are not in one segment`);
     const { store, line } = this.locate(start);
-    return store.storedRange(line, line + end - start);
+    return store.textRange(line, line + end - start);
   }
 
   /** Runs `read` with lines [start, end) resident (whenResident). */

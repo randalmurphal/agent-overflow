@@ -2748,11 +2748,11 @@ function installChunkedDiff(
   const diff = fakeDiff(patch);
   let unblock!: () => void;
   const held = new Promise<void>((resolve) => { unblock = resolve; });
-  const open = setBindingMock(name, async () => ({ id, chunk: diff.read(0, size, false), headSha: opts.headSha ?? '', ...(opts.filesHandle ? { filesHandle: opts.filesHandle } : {}) }));
+  const open = setBindingMock(name, async () => ({ id, chunk: diff.read(0, size), headSha: opts.headSha ?? '', ...(opts.filesHandle ? { filesHandle: opts.filesHandle } : {}) }));
   const read = setBindingMock('ReadReviewDiff', async (handle: string, offset: number, maxBytes: number) => {
     if (handle !== id) throw new Error('review diff: not open');
     if (offset === opts.hold) await held;
-    return diff.read(offset, Math.min(maxBytes, size), false);
+    return diff.read(offset, Math.min(maxBytes, size));
   });
   const release = setBindingMock('ReleaseReviewDiff', async () => undefined);
   return { open, read, release, unblock };
@@ -4546,153 +4546,74 @@ describe('reviewPane store — diffs past the memory budget', () => {
   });
 });
 
-describe('reviewPane store — packed diff reads', () => {
+describe('reviewPane store — diff text past ASCII', () => {
   afterEach(() => {
     __resetReviewPaneStateForTest();
     setPatchTextBudgetForTest(null);
-    __setTransportHelloForTest(null);
   });
 
-  function packedHello(capabilities: string[]): void {
-    __setTransportHelloForTest({ launchId: 'l', protocolVersion: 1, capabilities, backendId: 'b1', backendName: '', serverTimeMs: 0, clockSkewMs: 0, bundleId: '', bundleVersion: '', minShellBuild: 0 });
-  }
-
-  // A diff served by the fake backend in both forms, windows clamped to
-  // `size`. `keyed` false is a backend older than the source key: no
-  // chunk carries one.
+  // A diff served by the fake backend, windows clamped to `size`. `keyed`
+  // false is a backend older than the source key: no chunk carries one.
   function installByteDiff(patch: string, size: number, keyed = true) {
     const diff = fakeDiff(patch);
-    // Offsets of the chunks the packed read answered plain, and how many
-    // it answered packed.
-    const answeredPlain = new Set<number>();
-    let answeredPacked = 0;
-    setBindingMock('OpenWorkspaceDiff', async () => ({ id: 'diff-1', chunk: diff.read(0, size, false, keyed), headSha: '' }));
-    const plain = setBindingMock('ReadReviewDiff', async (_id: string, offset: number, max: number) => diff.read(offset, Math.min(max, size), false, keyed));
-    const packed = setBindingMock('ReadReviewDiffPacked', async (_id: string, offset: number, max: number) => {
-      const chunk = diff.read(offset, Math.min(max, size), true, keyed);
-      if (chunk.wide === undefined) answeredPlain.add(offset);
-      else answeredPacked += 1;
-      return chunk;
-    });
+    setBindingMock('OpenWorkspaceDiff', async () => ({ id: 'diff-1', chunk: diff.read(0, size, keyed), headSha: '' }));
+    const read = setBindingMock('ReadReviewDiff', async (_id: string, offset: number, max: number) => diff.read(offset, Math.min(max, size), keyed));
     setBindingMock('ReleaseReviewDiff', async () => undefined);
-    return { plain, packed, answeredPlain, answeredPacked: () => answeredPacked };
+    return { read };
   }
 
-  // Three files whose wide lines are sparse enough for a 1000-byte chunk
-  // to pack, and whose wide paths make some chunks plain.
+  // Three files with lines and paths of two, three and four byte
+  // characters.
   const wideFile = (path: string) => patchFor(path, 150).replace(/^\+line (\d*0)$/gm, (line, n: string) => (Number(n) % 50 === 0 ? `+lïne ${n} ✓😀` : line));
   const lastFile = wideFile('src/c.ts');
   const patch = [wideFile('src/à côté.ts'), wideFile('src/日本.ts'), lastFile].join('\n');
   const SIZE = 1000;
   const BUDGET = 1000;
 
-  for (const capable of [true, false]) {
-    it(`reads ${capable ? 'packed from a backend that serves it' : 'plain from a backend that does not'}, and reads evicted text again the same way`, async () => {
-      packedHello(capable ? ['review-diff.packed.v1'] : []);
+  for (const keyed of [true, false]) {
+    it(`reads evicted text again as it was served${keyed ? '' : ' from a backend older than the key'}`, async () => {
       setPatchTextBudgetForTest(BUDGET);
-      // A backend without the packed read may also predate the key.
-      const { plain, packed, answeredPlain, answeredPacked } = installByteDiff(patch, SIZE, capable);
+      const { read } = installByteDiff(patch, SIZE, keyed);
       const state = reviewStateForPane('pane-1', subjectFor());
       await waitLoaded(state);
       expect(state.error).toBeNull();
-      const [used, unused] = capable ? [packed, plain] : [plain, packed];
-      expect(used).toHaveBeenCalled();
-      expect(unused).not.toHaveBeenCalled();
-      expect(answeredPacked() > 0).toBe(capable);
       expect(state.files.map((file) => file.path).sort()).toEqual(['src/c.ts', 'src/à côté.ts', 'src/日本.ts']);
       expect(state.sourceKey).toBe(diffSourceKey(patch));
 
       const last = state.files.find((file) => file.path === 'src/c.ts')!;
       expect(last.body.resident()).toBe(false);
-      used.mockClear();
+      read.mockClear();
       const lines = await last.body.whenResident(() => last.body.toPatchLines());
       expect(lines.map((line) => line.content)).toEqual(lastFile.split('\n'));
-      expect(used).toHaveBeenCalled();
-      // A chunk the packed read answered plain is read again plain.
-      expect(unused.mock.calls.map(([, offset]) => offset).filter((offset) => !answeredPlain.has(offset as number))).toEqual([]);
+      expect(read).toHaveBeenCalled();
     });
   }
 
-  it('holds a chunk the packed read answered as text as text, and reads it again with the plain read', async () => {
-    packedHello(['review-diff.packed.v1']);
+  it('reports text lost when a chunk is answered with other text of another length on its next read', async () => {
     setPatchTextBudgetForTest(BUDGET);
-    const { plain, packed } = installByteDiff(patch, SIZE);
-    const servePlain = plain.getMockImplementation()! as (...args: unknown[]) => Promise<object>;
-    packed.mockImplementation(async (...args: unknown[]) => servePlain(...args));
-    plain.mockClear();
-    const state = reviewStateForPane('pane-1', subjectFor());
-    await waitLoaded(state);
-    expect(state.error).toBeNull();
-    expect(packed).toHaveBeenCalled();
-    expect(plain).not.toHaveBeenCalled();
-    expect(state.files.map((file) => file.path).sort()).toEqual(['src/c.ts', 'src/à côté.ts', 'src/日本.ts']);
-    expect(state.sourceKey).toBe(diffSourceKey(patch));
-
-    const last = state.files.find((file) => file.path === 'src/c.ts')!;
-    expect(last.body.resident()).toBe(false);
-    packed.mockClear();
-    const lines = await last.body.whenResident(() => last.body.toPatchLines());
-    expect(lines.map((line) => line.content)).toEqual(lastFile.split('\n'));
-    expect(plain).toHaveBeenCalled();
-    expect(packed).not.toHaveBeenCalled();
-  });
-
-  it('reports text lost when a packed chunk is answered as text on its next read', async () => {
-    packedHello(['review-diff.packed.v1']);
-    setPatchTextBudgetForTest(BUDGET);
-    const { packed } = installByteDiff(patch, SIZE);
+    const { read } = installByteDiff(patch, SIZE);
     const state = reviewStateForPane('pane-1', subjectFor());
     await waitLoaded(state);
     const last = state.files.find((file) => file.path === 'src/c.ts')!;
     expect(last.body.resident()).toBe(false);
-    const serve = packed.getMockImplementation()! as (...args: unknown[]) => Promise<object>;
-    // The same chunk without its marks is the text form.
-    packed.mockImplementation(async (...args: unknown[]) => {
-      const { wide: _wide, ...chunk } = (await serve(...args)) as { wide?: number[] };
-      return chunk;
+    const serve = read.getMockImplementation()! as (...args: unknown[]) => Promise<{ data: string }>;
+    // The same characters, one byte wider each where they were narrower.
+    read.mockImplementation(async (...args: unknown[]) => {
+      const chunk = await serve(...args);
+      return { ...chunk, data: chunk.data.replace(/ï/g, '✓') };
     });
     await expect(last.body.whenResident(() => last.body.toPatchLines())).rejects.toBeInstanceOf(PatchTextLost);
   });
 
-  // The backend omits empty marks, but an empty list is no marks too.
-  it('holds a chunk whose marks are an empty list as text', async () => {
-    packedHello(['review-diff.packed.v1']);
-    setPatchTextBudgetForTest(BUDGET);
-    const { plain, packed } = installByteDiff(patch, SIZE);
-    const servePlain = plain.getMockImplementation()! as (...args: unknown[]) => Promise<object>;
-    packed.mockImplementation(async (...args: unknown[]) => ({ ...(await servePlain(...args)), wide: [] }));
-    plain.mockClear();
-    const state = reviewStateForPane('pane-1', subjectFor());
-    await waitLoaded(state);
-    expect(state.error).toBeNull();
-    expect(state.sourceKey).toBe(diffSourceKey(patch));
-    const last = state.files.find((file) => file.path === 'src/c.ts')!;
-    expect(last.body.resident()).toBe(false);
-    const lines = await last.body.whenResident(() => last.body.toPatchLines());
-    expect(lines.map((line) => line.content)).toEqual(lastFile.split('\n'));
-    expect(plain).toHaveBeenCalled();
-  });
-
-  it('fails the load on a packed chunk whose marks are not at bytes past ASCII', async () => {
-    packedHello(['review-diff.packed.v1']);
-    const { packed } = installByteDiff(patch, SIZE);
-    const serve = packed.getMockImplementation()! as (...args: unknown[]) => Promise<object>;
-    packed.mockImplementation(async (...args: unknown[]) => ({ ...(await serve(...args)), wide: [0, 1_000_000] }));
-    const state = reviewStateForPane('pane-1', subjectFor());
-    await waitLoaded(state);
-    expect(state.error).toContain('wide mark');
-  });
-
   it('keys the patch from the chunks\' keys without hashing its text', async () => {
-    packedHello(['review-diff.packed.v1']);
     setPatchTextBudgetForTest(BUDGET);
-    const { packed } = installByteDiff(patch, SIZE);
+    const { read } = installByteDiff(patch, SIZE);
     const append = vi.spyOn(sourceHash, 'append');
     try {
       const state = reviewStateForPane('pane-1', subjectFor());
       await waitLoaded(state);
       expect(state.error).toBeNull();
-      expect(packed).toHaveBeenCalled();
+      expect(read).toHaveBeenCalled();
       expect(state.sourceKey).toBe(diffSourceKey(patch));
       expect(append).not.toHaveBeenCalled();
     } finally {
@@ -4700,25 +4621,11 @@ describe('reviewPane store — packed diff reads', () => {
     }
   });
 
-  it('fails the load on a packed chunk without its key', async () => {
-    packedHello(['review-diff.packed.v1']);
-    const { packed } = installByteDiff(patch, SIZE);
-    const serve = packed.getMockImplementation()! as (...args: unknown[]) => Promise<object>;
-    packed.mockImplementation(async (...args: unknown[]) => {
-      const { key: _key, ...chunk } = (await serve(...args)) as { key?: unknown };
-      return chunk;
-    });
-    const state = reviewStateForPane('pane-1', subjectFor());
-    await waitLoaded(state);
-    expect(state.error).toContain('patch parser: a packed chunk came without its key');
-  });
-
   for (const key of [null, { hash: -1, units: 10_000 }, { hash: 1, units: 0 }]) {
     it(`fails the load on a chunk whose key is ${JSON.stringify(key)}`, async () => {
-      packedHello(['review-diff.packed.v1']);
-      const { packed } = installByteDiff(patch, SIZE);
-      const serve = packed.getMockImplementation()! as (...args: unknown[]) => Promise<object>;
-      packed.mockImplementation(async (...args: unknown[]) => ({ ...(await serve(...args)), key }));
+      const { read } = installByteDiff(patch, SIZE);
+      const serve = read.getMockImplementation()! as (...args: unknown[]) => Promise<object>;
+      read.mockImplementation(async (...args: unknown[]) => ({ ...(await serve(...args)), key }));
       const state = reviewStateForPane('pane-1', subjectFor());
       await waitLoaded(state);
       expect(state.error).toContain('key that cannot be');

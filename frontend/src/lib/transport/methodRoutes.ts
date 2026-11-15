@@ -340,7 +340,6 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1797221017: 'selected', // ReadAloudSource
 	2036690300: 'selected', // ReadPipelineStages
 	2473150982: 'home', // ReadReviewDiff
-	4058838878: 'home', // ReadReviewDiffPacked
 	3285994337: 'thread', // ReadShellAttachmentOutput
 	2424974671: 'thread', // ReadThreadRemoteLog
 	2274850917: 'home', // RecheckClaudeAccount

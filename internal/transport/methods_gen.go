@@ -379,7 +379,6 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "ReadAloudSource", ID: 1797221017, Scope: "threads:operate", Route: "selected"},                                    // main.App.ReadAloudSource
 	{Name: "ReadPipelineStages", ID: 2036690300, Scope: "git:operate", Route: "selected"},                                     // main.App.ReadPipelineStages
 	{Name: "ReadReviewDiff", ID: 2473150982, Scope: "session", Route: "home", CallerBound: true},                              // main.App.ReadReviewDiff
-	{Name: "ReadReviewDiffPacked", ID: 4058838878, Scope: "session", Route: "home", CallerBound: true},                        // main.App.ReadReviewDiffPacked
 	{Name: "ReadShellAttachmentOutput", ID: 3285994337, Scope: "threads:read", Route: "thread"},                               // main.App.ReadShellAttachmentOutput
 	{Name: "ReadThreadRemoteLog", ID: 2424974671, Scope: "terminal:operate", Route: "thread"},                                 // main.App.ReadThreadRemoteLog
 	{Name: "RecheckClaudeAccount", ID: 2274850917, Scope: "access:admin", Route: "home"},                                      // main.App.RecheckClaudeAccount

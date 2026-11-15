@@ -17,10 +17,9 @@ import (
 )
 
 // Chunk bounds for Diff.Read. The ceiling keeps one chunk's JSON frame
-// under the transport's 75 MiB read limit: at seven bytes per raw byte,
-// the bound jstext.PackText states for a packed chunk and above the six
-// of a plain one, 56 MiB. The floor keeps a caller from splitting a large
-// diff into millions of reads.
+// under the transport's 75 MiB read limit: at most six bytes per raw
+// byte, a control character's escape, 48 MiB. The floor keeps a caller
+// from splitting a large diff into millions of reads.
 const (
 	MinChunkBytes = 64 << 10
 	MaxChunkBytes = 8 << 20

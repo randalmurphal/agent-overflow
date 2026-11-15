@@ -3,8 +3,8 @@ import { PatchBody, type BodySegment } from './patchBody';
 import { setPatchTextBudgetForTest } from './patchMemory.svelte';
 import { parseReviewFiles } from './patchParser';
 import { LINE_ADD, LINE_CONTEXT, PatchStore } from './patchStore';
-import { packText, streamPatch, type PatchForm } from '../../test/helpers/streamedPatch';
-import { sparselyWide, UNICODE_PATCH } from '../../test/helpers/patchFixtures';
+import { streamPatch } from '../../test/helpers/streamedPatch';
+import { UNICODE_PATCH } from '../../test/helpers/patchFixtures';
 
 const disposers: (() => void)[] = [];
 
@@ -14,7 +14,7 @@ afterEach(() => {
 });
 
 describe('PatchBody', () => {
-  it('reads stored lines one segment at a time', () => {
+  it('reads lines one segment at a time', () => {
     const [changed] = parseReviewFiles([
       'diff --git a/t b/t', 'deleted file mode 100644', '--- a/t', '+++ /dev/null', '@@ -1,1 +0,0 @@', '-gone',
       'diff --git a/t b/t', 'new file mode 120000', '--- /dev/null', '+++ b/t', '@@ -0,0 +1,1 @@', '+came', '',
@@ -24,37 +24,30 @@ describe('PatchBody', () => {
     const first = body.segmentEnd(0);
     expect(first).toBe(6);
     expect(body.segmentEnd(first)).toBe(body.lineCount);
-    expect(body.storedRange(first - 1, first)).toBe('-gone');
-    expect(body.storedRange(first, body.lineCount)).toBe('@@ -0,0 +1,1 @@\n+came');
-    expect(() => body.storedRange(first - 1, first + 1)).toThrow(RangeError);
+    expect(body.segmentText(first - 1, first)).toBe('-gone');
+    expect(body.segmentText(first, body.lineCount)).toBe('@@ -0,0 +1,1 @@\n+came');
+    expect(() => body.segmentText(first - 1, first + 1)).toThrow(RangeError);
     expect(() => body.segmentEnd(body.lineCount)).toThrow(RangeError);
     expect(() => body.segmentEnd(-1)).toThrow(RangeError);
   });
 
-  it('places each line in its segment\'s stored range, plain or packed', () => {
-    const patch = sparselyWide(UNICODE_PATCH, 40);
-    for (const form of ['plain', 'packed'] as const satisfies readonly PatchForm[]) {
-      const streamed = streamPatch(patch, 16 * 1024, form);
+  // Positions are bytes of the segment's UTF-8, the patch's own offsets.
+  it('places each line at its UTF-8 bytes in its segment', () => {
+    const encoder = new TextEncoder();
+    for (const size of [7, 300, 16 * 1024]) {
+      const streamed = streamPatch(UNICODE_PATCH, size);
       disposers.push(() => streamed.parser.store.dispose());
-      expect(streamed.spans.some((span) => span.wide !== undefined)).toBe(form === 'packed');
-      // Where each chunk starts in stored characters, and whether it is packed.
-      let storedAt = 0;
-      const chunks = streamed.spans.map((span) => {
-        const chunk = { start: storedAt, packed: span.wide !== undefined };
-        storedAt += span.data.length;
-        return chunk;
-      });
+      const patch = encoder.encode(UNICODE_PATCH);
       for (const file of streamed.files) {
         const body = file.body;
-        const stored = body.storedRange(0, body.lineCount);
-        for (let index = 0; index < body.lineCount; index += 1) {
-          const start = body.storedLineStart(index);
-          const at = start - body.storedLineStart(0);
-          const line = stored.slice(at, at + body.storedLineEnd(index) - start);
-          const packed = chunks.filter((chunk) => chunk.start <= start).pop()!.packed;
-          // A line of a packed chunk is stored as its UTF-8 bytes.
-          expect(line, `${form} ${file.path} ${index}`).toBe(packed ? packText(body.text(index)) : body.text(index));
+        const text = body.segmentText(0, body.segmentEnd(0));
+        expect(encoder.encode(text).length, `${size} ${file.path}`).toBe(body.storedLineEnd(body.segmentEnd(0) - 1) - body.storedLineStart(0));
+        for (let index = 0; index < body.segmentEnd(0); index += 1) {
+          const line = patch.subarray(body.storedLineStart(index), body.storedLineEnd(index));
+          expect(new TextDecoder('utf-8', { ignoreBOM: true }).decode(line), `${size} ${file.path} ${index}`).toBe(body.text(index));
+          expect(body.lineSize(index)).toBe(line.length);
         }
+        expect(body.textSize, `${size} ${file.path}`).toBe(encoder.encode(body.patchText()).length);
       }
     }
   });

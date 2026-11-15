@@ -4,11 +4,11 @@ import { contentKey } from './fnv1a';
 import { patchTextHeldBytes } from './patchMemory.svelte';
 import { PatchParser, sourceHash, type ReviewFile } from './patchParser';
 import { LINE_ADD, LINE_CONTEXT, LINE_HUNK, LINE_MARKER, PatchStore } from './patchStore';
-import { MIXED_PATCH, parseInChunks, randomPatch, sparselyWide, UNICODE_PATCH } from '../../test/helpers/patchFixtures';
-import { packText, patchChunks, textKey, type PatchForm, type StreamedChunk } from '../../test/helpers/streamedPatch';
+import { MIXED_PATCH, parseInChunks, randomPatch, UNICODE_PATCH } from '../../test/helpers/patchFixtures';
+import { patchChunks, type StreamedChunk } from '../../test/helpers/streamedPatch';
 
-// Whatever form the chunks arrive in and wherever they are cut, the store
-// reads exactly as a store of the whole plain text.
+// Wherever the chunks are cut, the store reads exactly as a store of the
+// whole text.
 
 const disposers: (() => void)[] = [];
 
@@ -61,79 +61,50 @@ function expectSameAsPlain(patch: string, parser: PatchParser, label: string): v
 }
 
 describe('PatchStore', () => {
-  it('reads plain lines as stored at any chunking', () => {
-    for (const patch of [MIXED_PATCH, UNICODE_PATCH]) {
-      for (const size of [1, 7, 64, 4096]) {
-        const store = streamed(patchChunks(patch, size)).store;
-        for (let start = 0; start < store.lineCount; start += 3) {
-          for (const end of [start, start + 1, start + 4, store.lineCount]) {
-            const to = Math.min(end, store.lineCount);
-            expect(store.storedRange(start, to), `${size} ${start}-${to}`).toBe(store.textRange(start, to));
-          }
-        }
-      }
-    }
-  });
-
-  it('reads as the plain store does at any chunking and form', () => {
+  // The backend cuts a line longer than its window between characters,
+  // so windows of a few bytes put a cut beside every character of one,
+  // two, three and four bytes.
+  it('reads as the whole text does at any chunking', () => {
     for (const patch of [UNICODE_PATCH, `${UNICODE_PATCH}\n`, MIXED_PATCH]) {
-      for (const form of ['plain', 'packed'] as const satisfies readonly PatchForm[]) {
-        for (const size of [1, 2, 3, 5, 7, 64, 100, 10_000]) {
-          expectSameAsPlain(patch, streamed(patchChunks(patch, size, form)), `${form} ${size}`);
-        }
-        expectSameAsPlain(patch, streamed(patchChunks(patch, (index) => [61, 2, 173, 3][index % 4], form)), `${form} varied`);
+      for (const size of [1, 2, 3, 4, 5, 7, 64, 100, 10_000]) {
+        expectSameAsPlain(patch, streamed(patchChunks(patch, size)), `${size}`);
       }
+      expectSameAsPlain(patch, streamed(patchChunks(patch, (index) => [61, 2, 173, 3][index % 4])), 'varied');
     }
   });
 
-  // Packing needs wide lines to be sparse in their chunk, so these
-  // patches hold ASCII files between the wide ones.
-  it('reads packed chunks as the plain store does', () => {
-    for (const base of [UNICODE_PATCH, `${UNICODE_PATCH}\n`, MIXED_PATCH]) {
-      const patch = sparselyWide(base, 40);
-      for (const size of [4096, 9000, 16 * 1024, (index: number) => [6100, 2, 9000, 3][index % 4]]) {
-        const chunks = patchChunks(patch, size, 'packed');
-        const label = `${base.slice(0, 12)} ${typeof size === 'number' ? size : 'varied'}`;
-        expect(chunks.filter((chunk) => chunk.wide !== undefined).length, label).toBeGreaterThan(0);
-        expectSameAsPlain(patch, streamed(chunks), label);
-      }
-    }
-  });
-
-  // A line longer than the read arrives in plain pieces (each is all of
-  // one wide line), and its end can arrive packed with the lines after it.
-  it('reads a wide line whose pieces arrive plain and whose end arrives packed', () => {
-    const long = 'ü✓😀'.repeat(230);
-    const tail = Array.from({ length: 120 }, (_, index) => `+ascii line ${index}`);
+  it('reads a line longer than the read from its pieces, cut beside characters of every width', () => {
+    const long = 'ü✓😀a'.repeat(230);
+    const tail = Array.from({ length: 120 }, (_, index) => `+ascii line ${index} ✓`);
     const header = 'diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1,121 @@\n';
     const patch = `${header}-${long}\n${tail.join('\n')}\n`;
     const lineStart = new TextEncoder().encode(header).length;
     const lineEnd = lineStart + new TextEncoder().encode(`-${long}`).length;
-    // Windows whose last piece of the line is short.
-    for (const size of [690, 1010, 1020]) {
-      const chunks = patchChunks(patch, size, 'packed');
+    for (const size of [5, 6, 7, 8, 690, 1010, 1020]) {
+      const chunks = patchChunks(patch, size);
       const pieces = chunks.filter((chunk) => chunk.nextOffset > lineStart && chunk.offset < lineEnd);
       expect(pieces.length, `${size}`).toBeGreaterThan(1);
-      expect(pieces.slice(0, -1).every((chunk) => chunk.wide === undefined), `${size}`).toBe(true);
-      expect(pieces[pieces.length - 1].wide, `${size}`).toBeDefined();
-      expectSameAsPlain(patch, streamed(chunks), `packed ${size}`);
+      const parser = streamed(chunks);
+      expect(parser.store.text(4), `${size}`).toBe(`-${long}`);
+      expectSameAsPlain(patch, parser, `${size}`);
     }
   });
 
-  it('marks wide lines past the first block of line kinds', () => {
-    const lines = Array.from({ length: 3000 }, (_, index) => (index % 50 === 0 ? `+ligne ${index} ✓` : `+line ${index}`));
-    const patch = `diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -0,0 +1,3000 @@\n${lines.join('\n')}\n`;
-    const chunks = patchChunks(patch, 4096, 'packed');
-    expect(chunks.filter((chunk) => chunk.wide !== undefined).length).toBeGreaterThan(3);
-    expectSameAsPlain(patch, streamed(chunks), 'packed');
-  });
-
-  it('decodes only the lines the chunk marks', () => {
-    const parser = new PatchParser();
-    const data = packText('+é\n+ü\n');
-    parser.append(data, { offset: 0, nextOffset: data.length, wide: [5], key: textKey('+é\n+ü\n') });
-    parser.end();
-    expect([parser.store.text(0), parser.store.text(1)]).toEqual([data.slice(0, 3), '+ü']);
+  // A size is UTF-8 bytes, whatever the text holds.
+  it('sizes lines and ranges in UTF-8 bytes', () => {
+    const lines = ['+ascii', '+é ü', '+✓ 日本', '+😀 𝄞', '+\ufeff\ufffd'];
+    const patch = `${['diff --git a/x b/x', '--- a/x', '+++ b/x', '@@ -0,0 +1,5 @@', ...lines].join('\n')}\n`;
+    const bytes = (text: string) => new TextEncoder().encode(text).length;
+    for (const size of [3, 64, 10_000]) {
+      const store = streamed(patchChunks(patch, size)).store;
+      expect(store.storedSize, `${size}`).toBe(bytes(patch));
+      for (let line = 4; line < 9; line += 1) {
+        expect(store.storedLineEnd(line) - store.storedLineStart(line), `${size} ${line}`).toBe(bytes(lines[line - 4]));
+        expect(store.text(line), `${size} ${line}`).toBe(lines[line - 4]);
+      }
+      expect(store.storedLineEnd(8) - store.storedLineStart(4)).toBe(bytes(lines.join('\n')));
+      expect(store.textRange(4, 9)).toBe(lines.join('\n'));
+    }
   });
 
   it('records the kinds and hunk starts of explicitly typed lines', () => {
@@ -203,6 +174,15 @@ describe('PatchStore', () => {
     expect([store.lineCount, store.storedSize]).toEqual([1, 3]);
   });
 
+  // TextEncoder writes a lone surrogate as U+FFFD, three bytes.
+  it('holds explicitly typed lines as their UTF-8', () => {
+    const contents = ['+é😀', ' 日本', '+lone \ud83d end', '-\udc00'];
+    const store = PatchStore.fromLines(contents.map((content) => ({ content, kind: LINE_ADD })));
+    expect([0, 1, 2, 3].map((line) => store.text(line))).toEqual(['+é😀', ' 日本', '+lone \ufffd end', '-\ufffd']);
+    expect([0, 1, 2, 3].map((line) => store.storedLineEnd(line) - store.storedLineStart(line))).toEqual([7, 7, 13, 4]);
+    expect(store.storedSize).toBe(7 + 7 + 13 + 4 + 4);
+  });
+
   // The line-start buffer every store shares grows for a chunk of many
   // lines. However a parse stops, the next parse that needs it grown
   // grows it again from its first size.
@@ -212,7 +192,7 @@ describe('PatchStore', () => {
       ['end', (parser) => parser.end()],
       ['dispose mid-stream', (parser) => parser.store.dispose()],
       ['dispose after a refused chunk', (parser) => {
-        expect(() => parser.append('+b\n', { offset: 0, nextOffset: 3, wide: [1] })).toThrow('without its key');
+        expect(() => parser.append('+b\n', { offset: 0, nextOffset: 3, key: { hash: 1, units: 1 } })).toThrow('key that cannot be');
         parser.store.dispose();
       }],
     ];
@@ -238,7 +218,18 @@ describe('PatchStore', () => {
     }
   });
 
-  it('holds one copy of the text', () => {
+  // The budget counts the bytes held: one per ASCII character, two for
+  // Latin-1 past ASCII, three for the rest of the BMP and four for a
+  // character past it, whatever an engine would hold a string at.
+  it('counts the UTF-8 bytes it holds, once', () => {
+    for (const [label, line] of [['ascii', '+plain text'], ['latin-1', '+é ü ÿ'], ['bmp', '+✓ 日本'], ['astral', '+😀 𝄞']] as const) {
+      const base = patchTextHeldBytes();
+      const patch = `${randomPatch(7)}\ndiff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -0,0 +1,2000 @@\n${Array(2000).fill(line).join('\n')}\n`;
+      const parser = streamed(patchChunks(patch, 4096));
+      expect(patchTextHeldBytes() - base, label).toBe(new TextEncoder().encode(patch).length);
+      parser.store.dispose();
+      expect(patchTextHeldBytes(), label).toBe(base);
+    }
     const base = patchTextHeldBytes();
     const patch = randomPatch(7).repeat(50);
     const { parser } = parseInChunks(patch, () => 4096);
