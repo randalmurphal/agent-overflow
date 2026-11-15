@@ -17,6 +17,8 @@ packages. Test-specific setup stays beside the test that owns it.
   test package that links a provider spawn package installs it;
   `TestEveryTestBinaryThatCanStartAProviderInstallsThePoison` fails one that
   does not. Standard library only, like `mockexec/`.
+- `deadline.go` is a context whose deadline the test ends at a chosen
+  moment, for code that acts on a deadline without racing a real clock.
 - `git.go` creates local repositories and local bare origins. No helper here
   reaches a network, and its git commands do not read the user's global
   config: a fixture that commits sets its own identity.
