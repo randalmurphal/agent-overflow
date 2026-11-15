@@ -293,9 +293,12 @@ func (a *App) restoreEagerPersistedFlushesToDraft(threadID string, persisted []t
 const (
 	queueRestoredReasonSessionDied  = "session_died"
 	queueRestoredReasonNotDelivered = "not_delivered"
-	queueRestoredReasonResendFailed = "resend_failed"
-	queueRestoredReasonNeverQueued  = "provider_queue_never_taken"
-	queueRestoredReasonPurgeAborted = "provider_queue_purge_aborted"
+	// The thread had no session for a message queued on it, and starting
+	// one failed.
+	queueRestoredReasonSessionStartFailed = "session_start_failed"
+	queueRestoredReasonResendFailed       = "resend_failed"
+	queueRestoredReasonNeverQueued        = "provider_queue_never_taken"
+	queueRestoredReasonPurgeAborted       = "provider_queue_purge_aborted"
 )
 
 // restoreEagerPersistedFlushesForReason is the body, parameterised by the

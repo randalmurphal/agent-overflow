@@ -97,6 +97,9 @@ func TestComposerAdmissionConsumesOnlyCapturedDraft(t *testing.T) {
 					t.Fatal(err)
 				}
 				opts := SendMessageOptions{SendID: "draft-send", ReconcileBySendID: true, ConsumeDraft: &DraftSnapshot{Content: "raw composer"}}
+				if path != "direct" {
+					holdFlushQueue(app)
+				}
 				// The submitted text can differ after chip/slash-command expansion.
 				if path == "queue" {
 					if _, err := app.RegisterQueueItem(t.Context(), thread.ID, "provider-expanded text", opts); err != nil {
@@ -139,6 +142,7 @@ func TestQueueDispatchPreservesDraftWrittenAfterAdmission(t *testing.T) {
 	}
 	// Legacy admission still consumes the old draft; dispatch must never consume
 	// another draft typed after admission, regardless of original client version.
+	holdFlushQueue(app)
 	if _, err := app.RegisterQueueItem(t.Context(), thread.ID, "queued text", SendMessageOptions{}); err != nil {
 		t.Fatal(err)
 	}

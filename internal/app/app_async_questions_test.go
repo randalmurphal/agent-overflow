@@ -57,6 +57,7 @@ func TestAsyncAnswerSessionDeathRetainsRecoveryAfterStateWriteFailure(t *testing
 	a.testEmitHook = rec.capture
 	a.triage = triage.NewRouter(a.store, rec.captureChannel)
 	a.configureTriageQueueCallbacks()
+	holdFlushQueue(a)
 	thread := testThread("async-restore-failure")
 	thread.Provider = "codex"
 	thread.WorkspacePath = t.TempDir()

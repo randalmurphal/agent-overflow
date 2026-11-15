@@ -102,6 +102,7 @@ func TestMergedPRWorktreeBusyWaitsForPendingWork(t *testing.T) {
 	}
 
 	queued, queuedPath := mergeCleanupThread(t, app, repo, "feature/queued")
+	holdFlushQueue(app)
 	if _, err := app.RegisterQueueItem(context.Background(), queued.ID, "after this", SendMessageOptions{}); err != nil {
 		t.Fatalf("RegisterQueueItem: %v", err)
 	}

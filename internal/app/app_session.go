@@ -1392,7 +1392,7 @@ func (a *App) settleQueueForTeardown(threadID string, mutationsHeld bool, queue 
 	case restoreQueue:
 		requeued = a.restoreUnconfirmedQueueLocked(threadID)
 	default:
-		a.dropDurableFlushQueue(threadID)
+		a.dropFlushQueue(threadID)
 	}
 	a.triage.CleanupThread(threadID)
 	if len(requeued) > 0 {
