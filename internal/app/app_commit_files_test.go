@@ -77,7 +77,7 @@ func TestCommitFiles_SelectionsCommitUntilNothingIsLeft(t *testing.T) {
 		t.Fatalf("listed = %+v", listed)
 	}
 
-	first, err := app.GitCommit(ref, "first pick", "", pick(t, listed, "README.txt", "two.txt"))
+	first, err := app.GitCommit(ref, "first pick", "", pick(t, listed, "README.txt", "two.txt"), "")
 	if err != nil {
 		t.Fatalf("GitCommit selection: %v", err)
 	}
@@ -92,7 +92,7 @@ func TestCommitFiles_SelectionsCommitUntilNothingIsLeft(t *testing.T) {
 	if got := commitFilePaths(left.Files); !reflect.DeepEqual(got, []string{"one.txt"}) {
 		t.Fatalf("left %v", got)
 	}
-	if _, err := app.GitCommit(ref, "second pick", "", pick(t, left, "one.txt")); err != nil {
+	if _, err := app.GitCommit(ref, "second pick", "", pick(t, left, "one.txt"), ""); err != nil {
 		t.Fatalf("GitCommit rest: %v", err)
 	}
 	done, err := app.ListCommitFiles(ctx, ref)
@@ -130,10 +130,10 @@ func TestCommitFiles_WholeOnlyDuringAMergeAndCommitWithoutPathsCompletesIt(t *te
 	if !listed.WholeOnly {
 		t.Fatalf("a merge in progress was not reported whole-only: %+v", listed)
 	}
-	if _, err := app.GitCommit(ref, "partial", "", pick(t, listed, "README.txt")); err == nil || !strings.Contains(err.Error(), "merge is in progress") {
+	if _, err := app.GitCommit(ref, "partial", "", pick(t, listed, "README.txt"), ""); err == nil || !strings.Contains(err.Error(), "merge is in progress") {
 		t.Fatal("a selection committed during a merge")
 	}
-	if _, err := app.GitCommit(ref, "finish merge", "", CommitSelection{All: true}); err != nil {
+	if _, err := app.GitCommit(ref, "finish merge", "", CommitSelection{All: true}, ""); err != nil {
 		t.Fatalf("GitCommit of everything: %v", err)
 	}
 	if parents := strings.Fields(gitText(t, workspace, "rev-list", "--parents", "-n", "1", "HEAD")); len(parents) != 3 {
@@ -256,7 +256,7 @@ func TestCommitSelection_EmptyIsRefused(t *testing.T) {
 		"both forms": {All: true, Files: []CommitFile{{Path: "README.txt"}}},
 		"no path":    {Files: []CommitFile{{Status: "M"}}},
 	} {
-		if _, err := app.GitCommit(ref, "subject", "", selection); err == nil || !strings.Contains(err.Error(), "commit selection") {
+		if _, err := app.GitCommit(ref, "subject", "", selection, ""); err == nil || !strings.Contains(err.Error(), "commit selection") {
 			t.Errorf("%s: GitCommit err = %v", name, err)
 		}
 		if _, err := app.GenerateCommitMessage(ref, selection); err == nil || !strings.Contains(err.Error(), "commit selection") {
@@ -289,7 +289,7 @@ func TestGitCommit_RefusesFilesChangedSinceTheyWereListed(t *testing.T) {
 	head := gitText(t, workspace, "rev-parse", "HEAD")
 	refused := func(what string, selection CommitSelection, names ...string) {
 		t.Helper()
-		_, err := app.GitCommit(ref, "subject", "", selection)
+		_, err := app.GitCommit(ref, "subject", "", selection, "")
 		if !errors.Is(err, ErrCommitFilesChanged) {
 			t.Fatalf("%s: err = %v, want ErrCommitFilesChanged", what, err)
 		}
@@ -336,7 +336,7 @@ func TestGitCommit_RefusesFilesChangedSinceTheyWereListed(t *testing.T) {
 
 	// The fresh listing of the same files commits them as they are now.
 	fresh := list()
-	result, err := app.GitCommit(ref, "now listed", "", pick(t, fresh, "README.txt", "kept.txt"))
+	result, err := app.GitCommit(ref, "now listed", "", pick(t, fresh, "README.txt", "kept.txt"), "")
 	if err != nil {
 		t.Fatalf("GitCommit from a fresh listing: %v", err)
 	}
@@ -391,7 +391,7 @@ func TestGitCommit_RecordsTheContentItChecked(t *testing.T) {
 		if file == nil {
 			continue // Listed while it matched HEAD.
 		}
-		_, err = app.GitCommit(ref, "busy", "", CommitSelection{Files: []CommitFile{*file}})
+		_, err = app.GitCommit(ref, "busy", "", CommitSelection{Files: []CommitFile{*file}}, "")
 		if errors.Is(err, ErrCommitFilesChanged) {
 			continue
 		}
@@ -423,7 +423,7 @@ func TestGitCommit_CommitsAListedRenameWhole(t *testing.T) {
 	if len(listed.Files) != 1 || listed.Files[0].OldPath != "old.txt" {
 		t.Fatalf("listed = %+v", listed.Files)
 	}
-	if _, err := app.GitCommit(ref, "rename", "", pick(t, listed, "new.txt")); err != nil {
+	if _, err := app.GitCommit(ref, "rename", "", pick(t, listed, "new.txt"), ""); err != nil {
 		t.Fatalf("GitCommit: %v", err)
 	}
 	if got := gitText(t, workspace, "show", "--format=", "--name-status", "-M", "HEAD"); got != "R100\told.txt\tnew.txt\n" {

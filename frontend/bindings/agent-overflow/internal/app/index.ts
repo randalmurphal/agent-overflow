@@ -37,6 +37,7 @@ export {
     CodexReviewTarget,
     CommitFile,
     CommitFiles,
+    CommitOutcome,
     CommitSelection,
     ComputerPairingView,
     ComputerPairingWindow,

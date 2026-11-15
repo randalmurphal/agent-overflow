@@ -560,8 +560,7 @@ func waitForFile(t *testing.T, path string) {
 }
 
 // A transcription that outlasts the computer's budget ends with a readable
-// error and releases the recording, and DictationSources reports that
-// budget, which is what a client waits for (dictation.svelte.ts).
+// error and releases the recording.
 func TestDictationEndsAtItsBudget(t *testing.T) {
 	t.Parallel()
 	app := newDictationTestApp(t, "fresh")
@@ -572,10 +571,6 @@ func TestDictationEndsAtItsBudget(t *testing.T) {
 	app.rateLimitProbeClientOverride = &http.Client{Transport: blockingTranscription{started: started}}
 	ctx, _ := transport.WithConnState(context.Background(), transport.ConnPrincipal{})
 
-	sources, err := app.DictationSources()
-	if err != nil || sources.TranscribeWithinMs != budget.Milliseconds() {
-		t.Fatalf("DictationSources = %+v, %v; want the %v budget", sources, err, budget)
-	}
 	id, err := app.BeginDictation(ctx, "audio/webm")
 	if err != nil {
 		t.Fatal(err)
@@ -587,16 +582,6 @@ func TestDictationEndsAtItsBudget(t *testing.T) {
 	}
 	if open := app.dictationRecordings().Open(); open != 0 {
 		t.Fatalf("open recordings after the budget ran out = %d", open)
-	}
-}
-
-// The production budget is what DictationSources reports.
-func TestDictationReportsItsBudget(t *testing.T) {
-	t.Parallel()
-	app := newDictationTestApp(t, "fresh")
-	sources, err := app.DictationSources()
-	if err != nil || sources.TranscribeWithinMs != dictation.TranscribeBudget.Milliseconds() {
-		t.Fatalf("DictationSources = %+v, %v; want %v", sources, err, dictation.TranscribeBudget)
 	}
 }
 

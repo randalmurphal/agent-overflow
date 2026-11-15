@@ -3,11 +3,13 @@
 // Run "go run ./internal/transport/methodgen" to regenerate.
 //
 // Which attached backend each bound method's call belongs to
-// (docs/specs/remote-access.md §10, "Routing an RPC"). The Go half is
-// internal/transport/methods_gen.go's Route column, generated from the
-// same scan in the same run; the thread, project and workspace routes are
-// inferred from the method's first parameter, the rest are authored
-// //ao:route directives.
+// (docs/specs/remote-access.md §10, "Routing an RPC"), and how long its
+// server side may run (docs/architecture/transport.md#method-budgets). The
+// Go half is internal/transport/methods_gen.go's Route and Budget columns,
+// generated from the same scan in the same run; the thread, project and
+// workspace routes are inferred from the method's first parameter, the rest
+// are authored //ao:route directives, and budgets are //ao:budget
+// directives.
 
 export type MethodRoute = 'thread' | 'project' | 'workspace' | 'home' | 'selected' | 'all';
 
@@ -131,6 +133,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1092327307: 'home', // GetClaudeTranscriptRetention
 	1110466608: 'home', // GetCodexAccountUsage
 	1018032480: 'selected', // GetCodexSkills
+	3107819266: 'workspace', // GetCommitOutcome
 	873893084: 'selected', // GetComputerRoutes
 	3416004963: 'home', // GetContextSettings
 	3307838728: 'thread', // GetConversationMutationState
@@ -578,4 +581,16 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	536579134: 'home', // WorkflowUpdateAutomation
 	146795716: 'home', // WriteTerminal
 	1859440887: 'workspace', // WriteWorkspaceFile
+};
+
+/** How long a method that declares no budget may run on the server. */
+export const DEFAULT_METHOD_BUDGET_MS = 45000;
+/** How much longer than its method's budget a client waits for the answer. */
+export const METHOD_ANSWER_MARGIN_MS = 15000;
+
+/** The methods whose server side may run longer than the default, by id. */
+export const METHOD_BUDGETS_MS: Readonly<Record<number, number>> = {
+	2178028847: 180000, // FinishDictation
+	3107819266: 720000, // GetCommitOutcome
+	1971060042: 720000, // GitCommit
 };

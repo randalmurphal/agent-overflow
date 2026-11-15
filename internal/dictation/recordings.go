@@ -52,9 +52,9 @@ const MaxHeldBytes = 64 << 20
 const IdleTimeout = 12 * time.Minute
 
 // TranscribeBudget bounds a transcription from Finish to its end, every
-// attempt and any sign-in refresh between them included. The client is told
-// it (DictationSources) and waits a little longer, so the computer's answer
-// always reaches it.
+// attempt and any sign-in refresh between them included. FinishDictation
+// declares it as its //ao:budget, so a client waits a little longer and the
+// computer's answer always reaches it.
 const TranscribeBudget = 3 * time.Minute
 
 // ErrTranscribeBudget is the cause of a Job's Context ending because the
@@ -115,9 +115,6 @@ func New(idle, budget time.Duration) *Recordings {
 	}
 	return &Recordings{idle: idle, budget: budget, open: make(map[string]*recording)}
 }
-
-// Budget is how long a transcription may run.
-func (r *Recordings) Budget() time.Duration { return r.budget }
 
 // Begin opens a recording of the given container type, admitted at
 // settings revision admitted, and returns its id.
