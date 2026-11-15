@@ -302,7 +302,7 @@ func TestASessionEndDuringOneTurnAnsweringTwoRequestsWakesTheirSenderOnce(t *tes
 	first.consumed(t)
 	second.consumed(t)
 	q.say(t, 1, "halfway through both")
-	f.app.settleReceiptsForEndedSession(q.target.ID)
+	f.app.settleReceiptsForEndedSession(q.target.ID, "")
 
 	wakes := f.wakesQueuedFor(t, first.token, second.token)
 	if len(wakes) != 1 {

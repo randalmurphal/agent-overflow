@@ -79,7 +79,7 @@ func (a *App) installThreadRequestObserver() {
 					// was still waiting never opens its turn there. One the
 					// end failed to settle stays for the next try.
 					stops := a.sessionTurnStops(threadID, evt.SessionToken)
-					if a.settleReceiptsForEndedSession(threadID) {
+					if a.settleReceiptsForEndedSession(threadID, evt.SessionToken) {
 						a.retireTurnStops(threadID, stops)
 					}
 					return
@@ -147,9 +147,15 @@ func (a *App) settleReceiptsForEndedTurn(threadID string) {
 // this sees either the message held or the receipt returned, never the
 // moment between.
 //
+// session is the session that ended. The pass runs off the event worker,
+// so a replacement can have started and been handed requests by the time it
+// runs, a message this session never took in included: it settles only the
+// receipts whose message went to this session (receiptGate). An empty
+// session names none and settles every running receipt.
+//
 // It reports whether every receipt it read settled or was left to its
 // restore; false when a read or a settlement failed.
-func (a *App) settleReceiptsForEndedSession(threadID string) bool {
+func (a *App) settleReceiptsForEndedSession(threadID, session string) bool {
 	tokens, ok := a.runningReceiptTokens(threadID)
 	if !ok {
 		return true
@@ -165,7 +171,7 @@ func (a *App) settleReceiptsForEndedSession(threadID string) bool {
 	works := make([]threadSettlementWork, 0, len(tokens))
 	settled := true
 	for _, token := range tokens {
-		work, err := a.settleReceiptOnSessionEnd(threadID, token, held)
+		work, err := a.settleReceiptOnSessionEnd(threadID, session, token, held)
 		if err != nil {
 			log.Printf("thread tools: settle request %s on %s at its session's end: %v", token, threadID, err)
 			settled = false
@@ -212,9 +218,16 @@ func (a *App) heldSendIDs(threadID string) (map[string]bool, error) {
 // the one the settlement writes from. It returns the work the settlement
 // owes, for the caller to run with the work of the session's other receipts
 // once the lock is released.
-func (a *App) settleReceiptOnSessionEnd(threadID, token string, held map[string]bool) (threadSettlementWork, error) {
+//
+// A receipt whose message went to another session than the one that ended
+// (session) is that session's, and is left to it. The dispatch and the
+// delivery record their session under the same settle lock.
+func (a *App) settleReceiptOnSessionEnd(threadID, session, token string, held map[string]bool) (threadSettlementWork, error) {
 	unlock := a.threadRequestSettleLock(token)
 	defer unlock()
+	if went := a.receiptSession(threadID, token); session != "" && went != "" && went != session {
+		return threadSettlementWork{}, nil
+	}
 	receipt, found, err := a.deliveredReceiptLocked(token)
 	if err != nil {
 		return threadSettlementWork{}, err

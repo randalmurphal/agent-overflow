@@ -68,7 +68,7 @@ func TestEachInterruptionTellsTheSenderWhy(t *testing.T) {
 	if err := app.store.UpdateTurnCompleted("t0", 15, "interrupted", "", "", ""); err != nil {
 		t.Fatal(err)
 	}
-	app.settleReceiptsForEndedSession(thread.ID)
+	app.settleReceiptsForEndedSession(thread.ID, "")
 
 	moved := siblingThread(t, app, thread, "interrupt-reasons-moved")
 	runningReceipt(t, app, moved.ID, "tok-moved", 0)

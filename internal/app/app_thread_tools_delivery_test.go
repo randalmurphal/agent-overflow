@@ -859,14 +859,14 @@ func TestTheSessionEndLeavesAHeldRequestToItsRestore(t *testing.T) {
 	token := tokens[0]
 	h.lifecycle(t, uuid, provider.CommandQueued)
 
-	f.app.settleReceiptsForEndedSession(h.thread.ID)
+	f.app.settleReceiptsForEndedSession(h.thread.ID, "")
 	f.app.threadRequestsWG.Wait()
 	if receipt := f.receipt(t, token); receipt.State != store.ThreadReceiptRunning {
 		t.Fatalf("receipt = %q before the restore, want it left running", receipt.State)
 	}
 	f.app.restoreUnconfirmedQueueOnSessionDeath(h.thread.ID)
 	assertRequestOwedAgain(t, f, h.thread.ID, token)
-	f.app.settleReceiptsForEndedSession(h.thread.ID)
+	f.app.settleReceiptsForEndedSession(h.thread.ID, "")
 	f.app.threadRequestsWG.Wait()
 	assertRequestOwedAgain(t, f, h.thread.ID, token)
 }

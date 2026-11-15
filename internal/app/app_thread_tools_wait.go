@@ -39,9 +39,10 @@ type threadRequestState struct {
 	// gate: a thread with no entry here costs one map read per turn end
 	// and no query. Written only where a receipt enters and leaves
 	// `running`, so it cannot claim a receipt the store does not have. A
-	// token's value is whether the provider has taken its message in
-	// before the turn that reads it opened (SendDelivery.AwaitingTurn).
-	running map[string]map[string]bool
+	// token's value is the session its message went to and whether that
+	// session took it in before the turn that reads it opened
+	// (receiptGate).
+	running map[string]map[string]receiptGate
 	// bindings are the delivery turns whose receipt write failed, by
 	// token, and echoes the echoed answers, reminders and completions whose
 	// confirmation write failed, by send id (app_thread_tools_bookkeeping.go).
@@ -268,52 +269,72 @@ func (a *App) cancelWaits(threadID string, remote bool) {
 	}
 }
 
+// receiptGate is what the observer's gate records of one running receipt:
+// session, the session its message was dispatched to or delivered by,
+// empty when the thread had none live then; and takenIn, whether that
+// session took the message in before the turn that reads it opened
+// (SendDelivery.AwaitingTurn). A dispatch to another session, as when a
+// message given back from one that ended is sent again to its replacement,
+// names the new session and forgets what the old one took in. A session's
+// end settles only the receipts it names (settleReceiptOnSessionEnd).
+type receiptGate struct {
+	session string
+	takenIn bool
+}
+
 // noteReceiptRunning and forgetReceiptRunning maintain the settlement
-// observer's gate. Both are idempotent.
+// observer's gate. Both are idempotent. The thread's live session is the
+// one the message went to: they run as the message is dispatched to that
+// session or as that session reports its delivery.
 func (a *App) noteReceiptRunning(threadID, token string) {
-	if threadID == "" || token == "" {
-		return
-	}
-	a.threadRequests.mu.Lock()
-	defer a.threadRequests.mu.Unlock()
-	a.receiptGateLocked(threadID, token)
+	a.noteReceiptGate(threadID, token, false)
 }
 
 // noteReceiptTakenIn records that the provider took the receipt's message in
 // before the turn that reads it opened, so a session that ends before that
 // turn says the request was read and not answered.
 func (a *App) noteReceiptTakenIn(threadID, token string) {
+	a.noteReceiptGate(threadID, token, true)
+}
+
+func (a *App) noteReceiptGate(threadID, token string, takenIn bool) {
 	if threadID == "" || token == "" {
 		return
 	}
+	live := ""
+	if sess, ok := a.sessionManager().get(threadID); ok {
+		live = sess.Token
+	}
 	a.threadRequests.mu.Lock()
 	defer a.threadRequests.mu.Unlock()
-	a.receiptGateLocked(threadID, token)[token] = true
+	if a.threadRequests.running == nil {
+		a.threadRequests.running = make(map[string]map[string]receiptGate)
+	}
+	tokens := a.threadRequests.running[threadID]
+	if tokens == nil {
+		tokens = make(map[string]receiptGate)
+		a.threadRequests.running[threadID] = tokens
+	}
+	gate := tokens[token]
+	if live != "" && live != gate.session {
+		gate = receiptGate{session: live}
+	}
+	gate.takenIn = gate.takenIn || takenIn
+	tokens[token] = gate
 }
 
 // receiptTakenIn reports what noteReceiptTakenIn recorded.
 func (a *App) receiptTakenIn(threadID, token string) bool {
 	a.threadRequests.mu.Lock()
 	defer a.threadRequests.mu.Unlock()
-	return a.threadRequests.running[threadID][token]
+	return a.threadRequests.running[threadID][token].takenIn
 }
 
-// receiptGateLocked puts the token in the thread's gate, keeping what was
-// recorded for it, and returns the thread's tokens. Caller holds
-// threadRequests.mu.
-func (a *App) receiptGateLocked(threadID, token string) map[string]bool {
-	if a.threadRequests.running == nil {
-		a.threadRequests.running = make(map[string]map[string]bool)
-	}
-	tokens := a.threadRequests.running[threadID]
-	if tokens == nil {
-		tokens = make(map[string]bool)
-		a.threadRequests.running[threadID] = tokens
-	}
-	if _, ok := tokens[token]; !ok {
-		tokens[token] = false
-	}
-	return tokens
+// receiptSession is the session the gate names for the receipt.
+func (a *App) receiptSession(threadID, token string) string {
+	a.threadRequests.mu.Lock()
+	defer a.threadRequests.mu.Unlock()
+	return a.threadRequests.running[threadID][token].session
 }
 
 func (a *App) forgetReceiptRunning(threadID, token string) {
