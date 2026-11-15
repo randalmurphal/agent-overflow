@@ -22,6 +22,7 @@
   import AnsiText from './AnsiText.svelte';
   import BackgroundTaskLiveTail from './BackgroundTaskLiveTail.svelte';
   import {
+    commandDescriptionForItem,
     commandErrorForItem,
     commandTextForItem,
     stripShellWrapper,
@@ -132,13 +133,8 @@
   // distinct command.
   let commandText = $derived(commandTextForItem(effectiveDisplayItem, meta));
   let displayCommand = $derived(stripShellWrapper(commandText));
-  let commandDescription = $derived.by(() => {
-    const input = parseJsonObject(effectiveDisplayItem.meta)?.input;
-    const description = input && typeof input === 'object' && 'description' in input
-      ? input.description
-      : undefined;
-    return typeof description === 'string' ? description.trim() : '';
-  });
+  let commandDescription = $derived(commandDescriptionForItem(effectiveDisplayItem));
+  // commandHeaderText, split as above; the header is the row's find text.
   let headerText = $derived(commandDescription || displayCommand);
   let hasBody = $derived(
     (!bodyRequiresPayload && !!displayCommand)
@@ -294,6 +290,7 @@
       class="min-w-0 flex-1 truncate font-mono text-[0.75rem] text-fg-muted"
       title={displayCommand || undefined}
       data-testid="command-output-command"
+      data-find-text
     >
       {headerText}
     </span>

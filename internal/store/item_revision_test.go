@@ -93,7 +93,9 @@ func TestItemRevisionTriggerArithmetic(t *testing.T) {
 // TestItemRevUpdateTriggerListsEveryColumnButRev is the tripwire on the
 // update trigger's column list. A column missing from it is a write that
 // changes a read and moves no stamp; rev in it would run the trigger for
-// every row a stamp writes.
+// every row a stamp writes. find_text is no read's: it is the find
+// filter's derived text (migration v150), and filling it changes nothing a
+// client holds.
 func TestItemRevUpdateTriggerListsEveryColumnButRev(t *testing.T) {
 	s := newTestStore(t)
 	var ddl string
@@ -111,7 +113,7 @@ func TestItemRevUpdateTriggerListsEveryColumnButRev(t *testing.T) {
 	for _, column := range strings.Split(list, ",") {
 		got = append(got, strings.TrimSpace(column))
 	}
-	rows, err := s.db.Query(`SELECT name FROM pragma_table_info('items') WHERE name <> 'rev' ORDER BY cid`)
+	rows, err := s.db.Query(`SELECT name FROM pragma_table_info('items') WHERE name NOT IN ('rev', 'find_text') ORDER BY cid`)
 	if err != nil {
 		t.Fatalf("read items columns: %v", err)
 	}

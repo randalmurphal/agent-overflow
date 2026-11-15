@@ -66,6 +66,7 @@
     id,
     testId,
     class: extraClass = '',
+    findText = false,
   }: {
     text: string;
     /** Stream offset of `text`: 0, or just after a '\n'. */
@@ -74,6 +75,8 @@
     id?: string;
     testId?: string;
     class?: string;
+    /** The text is its row's find text (threadFindText.ts). */
+    findText?: boolean;
   } = $props();
 
   // Keep paragraph separators in the source, but lay them out only once text follows.
@@ -354,6 +357,7 @@
   {id}
   data-testid={testId}
   data-collapsed-lines={TAIL_CLAMP_LINES}
+  data-find-text={findText ? '' : undefined}
   class={[
     'flex-1 min-w-0 text-[0.75rem] text-fg-muted/70 italic whitespace-pre-wrap leading-relaxed',
     expanded ? 'block' : 'flex flex-col justify-end max-h-[3lh] overflow-hidden',

@@ -184,6 +184,7 @@ export function createAgentScopeView(
     setDiffCardExpanded: rows.setDiffCardExpanded,
     expansionSignature: rows.expansionSignature,
     hasUserExpansionWithin: rows.hasUserExpansionWithin,
+    expandedItemData: rows.expandedItemData,
     attachmentCacheFor: rows.attachmentCacheFor,
   } satisfies Partial<ThreadPane>;
 

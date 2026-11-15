@@ -3,6 +3,7 @@ import {
   createFindHighlighter,
   findHighlightName,
   findHighlightsSupported,
+  findTextSegments,
   type FindHighlighter,
 } from './findHighlights';
 
@@ -163,6 +164,31 @@ describe('find highlights', () => {
     expect(h.matches).toHaveLength(0);
     h.setQuery('13');
     expect(h.matches).toHaveLength(0);
+  });
+
+  it('ends a run at skipped content and at an image, so no match spans one', () => {
+    const root = mount(`
+      <div data-item-id="r1"><p>foo<span data-find-skip>x</span>bar and foo<img alt="">bar</p></div>
+      <div data-item-id="r2"><p>foo<b>bar</b></p></div>
+    `);
+    const h = highlighter(root, 'pane-a');
+    h.setQuery('foobar');
+    expect(h.matches.map((m) => m.rowKey)).toEqual(['r2']);
+    h.setQuery('foo');
+    expect(h.matches.map((m) => m.rowKey)).toEqual(['r1', 'r1', 'r2']);
+    expect(findTextSegments(root).filter((run) => run.trim())).toEqual(['foo', 'bar and foo', 'bar', 'foobar']);
+  });
+
+  it('with textSelector paints only text inside the selected elements, the edge of one ending a run', () => {
+    const root = mount(`
+      <div data-item-id="r1"><span>needle label</span><p data-find-text>body nee</p><p data-find-text>dle needle</p></div>
+      <div data-item-id="r2"><time>needle</time></div>
+    `);
+    const h = createFindHighlighter({ root, name: findHighlightName('pane-g'), rowSelector: '[data-item-id]', rowKeyAttribute: 'data-item-id', textSelector: '[data-find-text]' });
+    highlighters.push(h);
+    h.setQuery('needle');
+    expect(h.matches.map((m) => [m.range.toString(), m.rowKey])).toEqual([['needle', 'r1']]);
+    expect(findTextSegments(root, true, '[data-find-text]')).toEqual(['body nee', 'dle needle']);
   });
 
   it('paints one occurrence of a row as current and answers its range', () => {

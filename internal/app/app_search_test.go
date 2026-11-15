@@ -85,12 +85,12 @@ func TestSearchThreadMessagesBindingSurfacesResults(t *testing.T) {
 func TestSearchThreadItemsBindingReturnsEmptyOnBlankQuery(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)
-	hits, err := app.SearchThreadItems(context.Background(), "t1", "  ", 10)
+	answer, err := app.SearchThreadItems(context.Background(), "t1", "  ", 10, nil)
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}
-	if hits == nil || len(hits) != 0 {
-		t.Errorf("expected non-nil empty slice on blank query, got %+v", hits)
+	if answer.Items == nil || len(answer.Items) != 0 || answer.Changed == nil {
+		t.Errorf("expected non-nil empty lists on blank query, got %+v", answer)
 	}
 }
 
@@ -121,15 +121,12 @@ func TestSearchThreadItemsBindingIsThreadScoped(t *testing.T) {
 		t.Fatalf("insert item: %v", err)
 	}
 
-	hits, err := app.SearchThreadItems(context.Background(), "t1", "seconds", 10)
+	answer, err := app.SearchThreadItems(context.Background(), "t1", "seconds", 10, nil)
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}
 	// Only t1's message — not t2's, and not the matching title.
-	if len(hits) != 1 || hits[0].ThreadID != "t1" || hits[0].ItemID != "a1" {
-		t.Fatalf("expected only t1/a1, got %+v", hits)
-	}
-	if hits[0].MatchType != "item" {
-		t.Errorf("matchType: got %q, want item", hits[0].MatchType)
+	if len(answer.Items) != 1 || answer.Items[0].ThreadID != "t1" || answer.Items[0].ID != "a1" {
+		t.Fatalf("expected only t1/a1, got %+v", answer.Items)
 	}
 }

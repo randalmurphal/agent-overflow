@@ -281,6 +281,7 @@ export interface RowUiRegistry {
   /** Validity stamp for replaying a measured-size priors snapshot. */
   readonly expansionSignature: () => string;
   readonly hasUserExpansionWithin: (itemIds: Iterable<string>) => boolean;
+  readonly expandedItemData: (itemId: string, stateKey: string) => string | null | undefined;
   readonly pruneRowUiState: (retention: RowUiStateRetention) => void;
 }
 

@@ -312,7 +312,7 @@ func TestWholeHistoryReadsTakeAHistoryReadSlot(t *testing.T) {
 		{"ListTurnUserSummaries", func() error { _, err := s.ListTurnUserSummaries(thread); return err }},
 		{"SearchThreadMessages", func() error { _, err := s.SearchThreadMessages("answer", 10); return err }},
 		{"SearchThreadItems", func() error {
-			_, err := s.SearchThreadItems(context.Background(), thread, "answer", TimelineSelection{}, 10)
+			_, err := s.SearchThreadItems(context.Background(), thread, "answer", TimelineSelection{}, 10, nil)
 			return err
 		}},
 	} {

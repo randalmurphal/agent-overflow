@@ -24,7 +24,7 @@ func TestSearchHidesPreparingForkUntilPublication(t *testing.T) {
 	if hits, err := s.SearchThreadMessages("quokka", 10); err != nil || len(hits) != 0 {
 		t.Errorf("global search exposed preparing fork: %+v err=%v", hits, err)
 	}
-	if _, err := s.SearchThreadItems(context.Background(), thread.ID, "quokka", TimelineSelection{}, 10); !errors.Is(err, ErrForkPreparing) {
+	if _, err := s.SearchThreadItems(context.Background(), thread.ID, "quokka", TimelineSelection{}, 10, nil); !errors.Is(err, ErrForkPreparing) {
 		t.Errorf("thread search accepted preparing fork: %v", err)
 	}
 	if _, err := s.FinishForkPreparation(thread.ID); err != nil {
@@ -207,9 +207,9 @@ func TestSearchThreadMessages_TitleMatchesSortedBeforeItemMatches(t *testing.T) 
 
 // ---- Case-insensitivity ----
 
-// Thread find matches by the rule the find bar paints with: the shared
-// vectors (frontend/src/test/fixtures/findVectors.json, read by
-// findMatch.test.ts and stringsx) find a summary exactly when they count a
+// Thread find's candidates hold every row the find bar counts a match in:
+// the shared vectors (frontend/src/test/fixtures/findVectors.json, read by
+// findMatch.test.ts and stringsx) find a summary whenever they count a
 // match. The cross-thread search keeps SQLite's ASCII LOWER and LIKE.
 func TestSearchThreadItemsMatchesTheSharedFindVectors(t *testing.T) {
 	raw, err := os.ReadFile("../../frontend/src/test/fixtures/findVectors.json")
@@ -234,12 +234,12 @@ func TestSearchThreadItemsMatchesTheSharedFindVectors(t *testing.T) {
 		id := fmt.Sprintf("v%d", i)
 		mustCreateThreadForSearch(t, s, id, "vectors")
 		mustInsertItemForSearch(t, s, id, id+"-item", 0, v.Text, 100)
-		items, err := s.SearchThreadItems(context.Background(), id, v.Query, TimelineSelection{}, 10)
+		answer, err := s.SearchThreadItems(context.Background(), id, v.Query, TimelineSelection{}, 10, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got := len(items) > 0; got != (v.Count > 0) {
-			t.Errorf("thread find of %q in %q found %v, want %v", v.Query, v.Text, got, v.Count > 0)
+		if v.Count > 0 && len(answer.Items) == 0 {
+			t.Errorf("thread find of %q in %q missed a row the bar counts", v.Query, v.Text)
 		}
 	}
 	// The cross-thread search keeps its own rule: ASCII letters fold on
@@ -494,17 +494,17 @@ func TestMergeTitleFirst(t *testing.T) {
 
 // ---- In-thread find (SearchThreadItems) ----
 
-func TestSearchThreadItems_EmptyQueryReturnsNil(t *testing.T) {
+func TestSearchThreadItems_EmptyQueryAnswersNoRows(t *testing.T) {
 	s := newTestStore(t)
 	mustCreateThreadForSearch(t, s, "t1", "alpha")
 	mustInsertItemForSearch(t, s, "t1", "i1", 0, "hello seconds", 100)
 
-	got, err := s.SearchThreadItems(context.Background(), "t1", "   ", TimelineSelection{}, 10)
+	got, err := s.SearchThreadItems(context.Background(), "t1", "   ", TimelineSelection{}, 10, nil)
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}
-	if got != nil {
-		t.Errorf("expected nil for whitespace query, got %+v", got)
+	if len(got.Items) != 0 || got.Items == nil || got.Changed == nil {
+		t.Errorf("whitespace query answered %+v, want empty non-nil lists", got)
 	}
 }
 
@@ -515,15 +515,15 @@ func TestSearchThreadItems_ScopedToOneThread(t *testing.T) {
 	mustCreateThreadForSearch(t, s, "t2", "thread two")
 	mustInsertItemForSearch(t, s, "t2", "b1", 0, "also thirty seconds here", 100)
 
-	got, err := s.SearchThreadItems(context.Background(), "t1", "seconds", TimelineSelection{}, 10)
+	got, err := s.SearchThreadItems(context.Background(), "t1", "seconds", TimelineSelection{}, 10, nil)
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}
-	if len(got) != 1 || got[0].ThreadID != "t1" || got[0].ItemID != "a1" {
-		t.Fatalf("expected only t1/a1, got %+v", got)
+	if len(got.Items) != 1 || got.Items[0].ThreadID != "t1" || got.Items[0].ID != "a1" {
+		t.Fatalf("expected only t1/a1, got %+v", got.Items)
 	}
-	if got[0].MatchType != "item" {
-		t.Errorf("expected matchType=item, got %q", got[0].MatchType)
+	if got.Items[0].Summary != "it took thirty seconds" || got.Items[0].Kind != "assistant_text" {
+		t.Errorf("the candidate is not the row as a page serves it: %+v", got.Items[0])
 	}
 }
 
@@ -534,9 +534,9 @@ func TestSearchThreadItems_DoesNotMatchTitle(t *testing.T) {
 	mustCreateThreadForSearch(t, s, "t1", "All about seconds")
 	mustInsertItemForSearch(t, s, "t1", "i1", 0, "no temporal words here", 100)
 
-	got, _ := s.SearchThreadItems(context.Background(), "t1", "seconds", TimelineSelection{}, 10)
-	if len(got) != 0 {
-		t.Errorf("expected no item hits (term only in title), got %+v", got)
+	got, _ := s.SearchThreadItems(context.Background(), "t1", "seconds", TimelineSelection{}, 10, nil)
+	if len(got.Items) != 0 {
+		t.Errorf("expected no candidates (term only in title), got %+v", got.Items)
 	}
 }
 
@@ -551,16 +551,14 @@ func TestSearchThreadItems_DocumentOrder(t *testing.T) {
 	mustInsertItemForSearch(t, s, "t1", "first", 0, "find me A", 300)
 	mustInsertItemForSearch(t, s, "t1", "second", 1, "find me B", 200)
 
-	got, _ := s.SearchThreadItems(context.Background(), "t1", "find me", TimelineSelection{}, 10)
-	if len(got) != 3 {
-		t.Fatalf("expected 3 hits, got %d", len(got))
-	}
-	if got[0].ItemID != "first" || got[1].ItemID != "second" || got[2].ItemID != "third" {
-		t.Errorf("expected document order first,second,third; got %v %v %v",
-			got[0].ItemID, got[1].ItemID, got[2].ItemID)
+	got, _ := s.SearchThreadItems(context.Background(), "t1", "find me", TimelineSelection{}, 10, nil)
+	if ids := findHitIDs(got); ids != "[first second third]" {
+		t.Errorf("expected document order first,second,third; got %s", ids)
 	}
 }
 
+// A full answer stops at its limit and says it was capped only when a
+// candidate lies past it.
 func TestSearchThreadItems_LimitCapsAndZeroReturnsAll(t *testing.T) {
 	s := newTestStore(t)
 	mustCreateThreadForSearch(t, s, "t1", "x")
@@ -568,13 +566,17 @@ func TestSearchThreadItems_LimitCapsAndZeroReturnsAll(t *testing.T) {
 		mustInsertItemForSearch(t, s, "t1", fmt.Sprintf("i%d", i), i, "same match body", int64(100+i))
 	}
 
-	capped, _ := s.SearchThreadItems(context.Background(), "t1", "match", TimelineSelection{}, 4)
-	if len(capped) != 4 {
-		t.Errorf("expected 4 hits (limit), got %d", len(capped))
+	capped, _ := s.SearchThreadItems(context.Background(), "t1", "match", TimelineSelection{}, 4, nil)
+	if len(capped.Items) != 4 || !capped.Capped {
+		t.Errorf("limit 4: %d candidates, capped %v; want 4, true", len(capped.Items), capped.Capped)
 	}
-	all, _ := s.SearchThreadItems(context.Background(), "t1", "match", TimelineSelection{}, 0)
-	if len(all) != 9 {
-		t.Errorf("expected 9 hits (zero-limit), got %d", len(all))
+	exact, _ := s.SearchThreadItems(context.Background(), "t1", "match", TimelineSelection{}, 9, nil)
+	if len(exact.Items) != 9 || exact.Capped {
+		t.Errorf("limit 9: %d candidates, capped %v; want 9, false", len(exact.Items), exact.Capped)
+	}
+	all, _ := s.SearchThreadItems(context.Background(), "t1", "match", TimelineSelection{}, 0, nil)
+	if len(all.Items) != 9 || all.Capped {
+		t.Errorf("zero limit: %d candidates, capped %v; want 9, false", len(all.Items), all.Capped)
 	}
 }
 
@@ -599,26 +601,31 @@ func TestSearchThreadItems_ItemIndexBreaksTurnTies(t *testing.T) {
 		t.Fatalf("insert first: %v", err)
 	}
 
-	got, _ := s.SearchThreadItems(context.Background(), "t1", "find me", TimelineSelection{}, 10)
-	if len(got) != 2 {
-		t.Fatalf("expected 2 hits, got %d", len(got))
-	}
-	if got[0].ItemID != "first" || got[1].ItemID != "second" {
-		t.Errorf("expected item_index order first,second; got %v,%v", got[0].ItemID, got[1].ItemID)
+	got, _ := s.SearchThreadItems(context.Background(), "t1", "find me", TimelineSelection{}, 10, nil)
+	if ids := findHitIDs(got); ids != "[first second]" {
+		t.Errorf("expected item_index order first,second; got %s", ids)
 	}
 }
 
-// A literal % in the query matches a literal % in a summary, never a
-// wildcard: thread find matches literally (find_fold and instr).
-func TestSearchThreadItems_LiteralPercentInSummary(t *testing.T) {
+// The filter matches a query's letters and digits, never its punctuation
+// as a pattern: a % is no wildcard, and both rows whose letters and digits
+// read "100" stay candidates for the bar to decide between.
+func TestSearchThreadItems_PunctuationIsNoPattern(t *testing.T) {
 	s := newTestStore(t)
 	mustCreateThreadForSearch(t, s, "t1", "x")
 	mustInsertItemForSearch(t, s, "t1", "pct", 0, "build is 100% done", 100)
 	mustInsertItemForSearch(t, s, "t1", "nopct", 1, "build is 100 done", 200)
+	mustInsertItemForSearch(t, s, "t1", "other", 2, "build is 10 done", 300)
 
-	got, _ := s.SearchThreadItems(context.Background(), "t1", "100%", TimelineSelection{}, 10)
-	if len(got) != 1 || got[0].ItemID != "pct" {
-		t.Errorf("expected only the literal-%% item, got %+v", got)
+	got, _ := s.SearchThreadItems(context.Background(), "t1", "100%", TimelineSelection{}, 10, nil)
+	if ids := findHitIDs(got); ids != "[pct nopct]" {
+		t.Errorf("100%% candidates = %s, want [pct nopct]", ids)
+	}
+	// A query of punctuation alone narrows nothing: every row is a
+	// candidate and the limit decides, which the answer reports.
+	got, _ = s.SearchThreadItems(context.Background(), "t1", "%", TimelineSelection{}, 2, nil)
+	if ids := findHitIDs(got); ids != "[pct nopct]" || !got.Capped {
+		t.Errorf("%% candidates = %s capped %v, want [pct nopct] capped", ids, got.Capped)
 	}
 }
 
