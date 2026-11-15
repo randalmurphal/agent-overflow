@@ -19,6 +19,7 @@ func TestLiveQueueSnapshotCoversDispatchHandoff(t *testing.T) {
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatal(err)
 	}
+	holdFlushQueue(app)
 	queued, err := app.RegisterQueueItem(context.Background(), thread.ID, "keep visible", SendMessageOptions{})
 	if err != nil {
 		t.Fatal(err)

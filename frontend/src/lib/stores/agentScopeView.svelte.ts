@@ -184,6 +184,7 @@ export function createAgentScopeView(
     setDiffCardExpanded: rows.setDiffCardExpanded,
     expansionSignature: rows.expansionSignature,
     hasUserExpansionWithin: rows.hasUserExpansionWithin,
+    expandedItemData: rows.expandedItemData,
     attachmentCacheFor: rows.attachmentCacheFor,
   } satisfies Partial<ThreadPane>;
 
@@ -254,7 +255,6 @@ export function createAgentScopeView(
     get removeItemById() { return sourcePane.removeItemById; },
     get removeRevertedItems() { return sourcePane.removeRevertedItems; },
     get __syncLedgerArmedForTest() { return sourcePane.__syncLedgerArmedForTest; },
-    get __cancelReplicaWriteBackForTest() { return sourcePane.__cancelReplicaWriteBackForTest; },
     get applyItemDelta() { return sourcePane.applyItemDelta; },
     get applyItemMeta() { return sourcePane.applyItemMeta; },
     get applyItemPatch() { return sourcePane.applyItemPatch; },

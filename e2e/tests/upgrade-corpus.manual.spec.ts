@@ -193,7 +193,10 @@ test('the candidate migrates a large previous-release database and boots on it',
     const largest = await largestThread(rig.dbPath);
     const candidateVersion = await buildVersion();
 
-    assertExceptionsCurrent(before.schemaVersion);
+    // The stale-entry rule is the lineage's: a real data root can sit at any
+    // version, ahead of the newest release included, and says nothing about
+    // which entries the next release's corpus has crossed.
+    if (!corpusRoot) assertExceptionsCurrent(before.schemaVersion);
 
     // 2. The launcher's gate: a headless boot with --refuse-pending-migrations.
     const gated = await startHeadless(rig, 10 * MINUTE);

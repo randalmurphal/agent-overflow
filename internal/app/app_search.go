@@ -27,28 +27,30 @@ func (a *App) SearchThreadMessages(query string, limit int) ([]store.ThreadMessa
 	return slicesx.OrEmpty(hits), nil
 }
 
-// SearchThreadItems searches the main transcript of one thread for the
-// find bar: the visible top-level rows, in document order, so the UI can
-// step through them top-to-bottom. A blank query answers an empty slice
-// without an error. limit caps the result set. The store owns the query.
+// SearchThreadItems answers the find bar of one thread's main transcript:
+// the visible top-level rows that may hold a match, in document order, as
+// timeline pages serve them; the find bar decides which hold one. A blank
+// query answers no rows without an error. limit caps the rows. since, an
+// earlier answer's state, answers only what changed after it when the
+// store can. The store owns the query.
 //
 //ao:scope threads:read
 //ao:callerbound
-func (a *App) SearchThreadItems(ctx context.Context, threadID, query string, limit int) ([]store.ThreadMessageHit, error) {
-	return a.SearchTimelineItems(ctx, threadID, query, store.TimelineSelection{}, limit)
+func (a *App) SearchThreadItems(ctx context.Context, threadID, query string, limit int, since *store.ThreadFindSince) (store.ThreadFindAnswer, error) {
+	return a.SearchTimelineItems(ctx, threadID, query, store.TimelineSelection{}, limit, since)
 }
 
-// SearchTimelineItems searches the selected transcript of one thread: the
-// rows the timeline shows for that selection (an agent scope answers its
-// direct children), in document order. A cancelled call (the connection
+// SearchTimelineItems is SearchThreadItems over the selected transcript of
+// one thread: the rows the timeline shows for that selection (an agent
+// scope answers its direct children). A cancelled call (the connection
 // closed) stops the read.
 //
 //ao:scope threads:read
 //ao:callerbound
-func (a *App) SearchTimelineItems(ctx context.Context, threadID, query string, selection store.TimelineSelection, limit int) ([]store.ThreadMessageHit, error) {
-	hits, err := a.store.SearchThreadItems(ctx, threadID, query, selection, limit)
+func (a *App) SearchTimelineItems(ctx context.Context, threadID, query string, selection store.TimelineSelection, limit int, since *store.ThreadFindSince) (store.ThreadFindAnswer, error) {
+	answer, err := a.store.SearchThreadItems(ctx, threadID, query, selection, limit, since)
 	if err != nil {
-		return nil, fmt.Errorf("search thread items: %w", err)
+		return store.ThreadFindAnswer{}, fmt.Errorf("search thread items: %w", err)
 	}
-	return slicesx.OrEmpty(hits), nil
+	return answer, nil
 }

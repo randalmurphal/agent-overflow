@@ -381,7 +381,8 @@ func TestInterruptTurnClaudeTUIWithNoOpenTurnNoticesOnlyAPendingSend(t *testing.
 
 // A Stop after a send reached the provider, before its turn start reached
 // the router, cuts the turn that send opens: the turn gets the stop row
-// once it opens, and an open request answered by it reads the user's stop.
+// once it ends interrupted, and an open request answered by it reads the
+// user's stop.
 func TestInterruptTurnStopsTheTurnOfASendWaitingForIt(t *testing.T) {
 	t.Parallel()
 	f := newClaudeAgentKillFixture(t)
@@ -400,8 +401,14 @@ func TestInterruptTurnStopsTheTurnOfASendWaitingForIt(t *testing.T) {
 	if got, want := f.app.turnStopCause(f.thread.ID, 1), stopByUser(nil).cause; got != want {
 		t.Fatalf("cause of turn 1 = %q, want %q", got, want)
 	}
-	requireOneStopRowOnTurn(t, f.app.store, f.thread.ID, 1)
 	f.handle(t, provider.ProviderEvent{Kind: provider.EventInit}, nil)
+	if rows := stopRowsOf(t, f.app.store, f.thread.ID); len(rows) != 0 {
+		t.Fatalf("stop rows before the turn ended = %+v, want none", rows)
+	}
+	f.handle(t, provider.ProviderEvent{
+		Kind:         provider.EventTurnComplete,
+		TurnComplete: &provider.WireTurnCompleteMeta{StopReason: "interrupted", Aborted: true},
+	}, nil)
 	requireOneStopRowOnTurn(t, f.app.store, f.thread.ID, 1)
 }
 

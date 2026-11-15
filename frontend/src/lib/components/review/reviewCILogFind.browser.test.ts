@@ -17,7 +17,7 @@ import type { CILogFindHit } from '../../utils/ciLogFind';
 import { findHighlightName } from '../../utils/findHighlights';
 import type { CIJob, CILogSearch } from '../../types/models';
 import { FakeCILog, numberedLines } from '../../../test/helpers/ciLog';
-import { raf, waitFor } from '../../../test/helpers/browserFrames';
+import { raf, waitFor, withinFrames } from '../../../test/helpers/browserFrames';
 import { rawProps } from '../../../test/helpers/rawProps.svelte';
 import { spyScheduling } from '../../../test/helpers/schedulingSpy';
 import { resetScrollIntentModuleStateForTest } from '../../utils/scroll/intent';
@@ -136,7 +136,7 @@ describe('review find over a CI log', () => {
       expect(spy.calls).toEqual([]);
       fake.gate = null;
       block.release();
-      await waitFor(() => !find.wants(find.selected!), 'the reveal answered', 600);
+      await waitFor(() => !find.wants(find.selected!), 'the reveal answered');
       expect(painted()?.toString()).toBe('zq');
       expect(inView()).toBe(true);
       expect(find.result.error).toBeNull();
@@ -157,7 +157,7 @@ describe('review find over a CI log', () => {
     setPaneFindQuery('pane-log-away', 'zq');
     await waitFor(() => find.result.count === 1 && find.selected !== null, 'the answer');
     // The list was asked for the match's row: it is mounted, not loaded.
-    await waitFor(() => scroll.scrollTop < tail - 10_000 && scroll.querySelector('[data-testid="review-ci-log-block-placeholder"]') !== null, 'the row asked', 600);
+    await waitFor(() => scroll.scrollTop < tail - 10_000 && scroll.querySelector('[data-testid="review-ci-log-block-placeholder"]') !== null, 'the row asked');
     for (let i = 0; i < 10; i += 1) await raf();
     expect(find.wants(find.selected!)).toBe(true);
     const spy = spyScheduling('ReviewPaneFind.svelte', ['pause']);
@@ -170,7 +170,7 @@ describe('review find over a CI log', () => {
       fake.gate = null;
       block.release();
       // The block arrives and paints: the repaint asks nothing.
-      await waitFor(() => painted()?.toString() === 'zq', 'the block painted', 600);
+      await waitFor(() => painted()?.toString() === 'zq', 'the block painted');
       for (let i = 0; i < 30; i += 1) await raf();
       expect(find.wants(find.selected!)).toBe(false);
       // Still past it, as the reader left it (the rows above it grew and
@@ -194,20 +194,20 @@ describe('review find over a CI log', () => {
     await waitFor(() => find.result.count === 2 && find.selected !== null, 'the answer');
     // From the tail the first match is the last: its block's read starts.
     expect(find.hits[find.result.current].line).toBe(SECOND_LINE);
-    await waitFor(() => asked.includes(SECOND_LINE), 'the second block asked', 600);
+    await waitFor(() => asked.includes(SECOND_LINE), 'the second block asked');
     // Back to the first match: shown, far from the second.
     find.previous();
-    await waitFor(() => !find.wants(find.selected!) && painted()?.toString() === 'zq', 'the first match shown', 600);
+    await waitFor(() => !find.wants(find.selected!) && painted()?.toString() === 'zq', 'the first match shown');
     // The second match's row is not mounted, and its block's read is out.
     expect(scroll.textContent).not.toContain(`lines ${SECOND_LINE + 1} to`);
     // Forward again while the second block's first read is still out.
     find.next();
     expect(find.hits[find.result.current].line).toBe(SECOND_LINE);
     // The step asks for its row at once: it mounts on the read in flight.
-    await waitFor(() => scroll.textContent?.includes(`lines ${SECOND_LINE + 1} to`) === true, 'the second row mounted', 60);
+    await withinFrames(() => scroll.textContent?.includes(`lines ${SECOND_LINE + 1} to`) === true, 'the second row mounted', 60);
     expect(find.wants(find.selected!)).toBe(true);
     block.release();
-    await waitFor(() => !find.wants(find.selected!), 'the step answered', 600);
+    await waitFor(() => !find.wants(find.selected!), 'the step answered');
     expect(painted()?.startContainer.parentElement?.closest('[data-find-key]')?.textContent).toContain('the second match');
     expect(inView()).toBe(true);
   });
@@ -221,7 +221,7 @@ describe('review find over a CI log', () => {
     openPaneFind('pane-log-grow');
     setPaneFindQuery('pane-log-grow', 'zq');
     await waitFor(() => find.result.count === 1 && find.selected !== null, 'the answer');
-    await waitFor(() => !find.wants(find.selected!) && painted()?.toString() === 'zq' && inView(), 'the match shown', 600);
+    await waitFor(() => !find.wants(find.selected!) && painted()?.toString() === 'zq' && inView(), 'the match shown');
     const at = scroll.scrollTop;
     expect(at).toBe(scroll.scrollHeight - scroll.clientHeight);
     expect(at).toBeGreaterThan(0);
@@ -244,7 +244,7 @@ describe('review find over a CI log', () => {
     setPaneFindQuery('pane-log-fail', 'zq');
     await waitFor(() => find.result.count === 1 && find.selected !== null, 'the answer');
     block.release();
-    await waitFor(() => find.result.error !== null, 'the error', 600);
+    await waitFor(() => find.result.error !== null, 'the error');
     expect(find.result.error).toContain('read failed');
     expect(find.wants(find.selected!)).toBe(false);
   });

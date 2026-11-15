@@ -3,7 +3,7 @@ import {
   ListItemsBeforeCursor as ListItemsBeforeCursorRaw,
   ListItemsAfterCursor as ListItemsAfterCursorRaw,
 } from '../../../bindings/agent-overflow/app.js';
-import type { TimelineSelection, TimelineScopeContext, TimelineCursor } from '../../../bindings/agent-overflow/internal/store/models';
+import type { TimelineSelection, TimelineScopeContext, TimelineCursor, ThreadFindSince } from '../../../bindings/agent-overflow/internal/store/models';
 import { GetThreadUserMessageTicks as GetThreadUserMessageTicksRaw } from '../../../bindings/agent-overflow/app.js';
 import { GetTimelineUserMessageTicks as GetTimelineUserMessageTicksRaw } from '../../../bindings/agent-overflow/app.js';
 import {
@@ -291,6 +291,9 @@ export {
   // same wsl.json; the launcher reads it on its next start.
   GetWebviewGPUVsyncDisabled,
   SetWebviewGPUVsyncDisabled,
+  // OTLP tracing as saved and as this session started with it (Settings →
+  // Observability); tracing is wired once at start.
+  GetObservabilityTracing,
 
   // Host app launchers: editor, browser URL opener, catalog, persistence.
   OpenInEditor,
@@ -770,6 +773,8 @@ export {
 // Structured response types surfaced to components.
 export {
   ChatBarFavorite,
+  ThreadFindAnswer,
+  ThreadFindSince,
   ThreadMessageHit,
 } from '../../../bindings/agent-overflow/internal/store/models.js';
 export {
@@ -1283,13 +1288,21 @@ export function GetThreadUserMessageTicks(threadId: string, selection: TimelineS
     : GetThreadUserMessageTicksRaw(threadId);
 }
 
-/** Find hits in the selected transcript of one thread, in document order. */
-export function SearchThreadItems(threadId: string, query: string, limit: number, selection: TimelineSelection = {}) {
+/** Find candidates in the selected transcript of one thread, in document
+ * order; with `since`, an earlier answer's state, only what changed after
+ * it when the store can answer so. */
+export function SearchThreadItems(
+  threadId: string,
+  query: string,
+  limit: number,
+  selection: TimelineSelection = {},
+  since: ThreadFindSince | null = null,
+) {
   requireThreadFindSupport(threadId);
   requireTimelineSelectionSupport(threadId, selection);
   return selection.scopeRootId || selection.tools || selection.digestItemId
-    ? SearchTimelineItemsRaw(threadId, query, selection, limit)
-    : SearchThreadItemsRaw(threadId, query, limit);
+    ? SearchTimelineItemsRaw(threadId, query, selection, limit, since)
+    : SearchThreadItemsRaw(threadId, query, limit, since);
 }
 
 export { ListAsyncQuestions, SubmitAsyncAnswers, SetAsyncQuestionDismissed } from '../../../bindings/agent-overflow/app.js';

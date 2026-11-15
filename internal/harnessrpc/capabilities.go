@@ -39,7 +39,7 @@ var harnessCapabilityMeters = []string{
 
 var harnessCapabilityActions = []string{"open", "reload"}
 
-var harnessCapabilityQueries = []string{"element", "globals", "monitor", "open", "perf", "reload", "viewport"}
+var harnessCapabilityQueries = []string{"element", "globals", "monitor", "open", "perf", "reload", "review-diff-memory", "viewport"}
 
 // HarnessCapabilities returns the protocol revision and all named controls
 // available on this instance. Slices are copied so callers cannot mutate the

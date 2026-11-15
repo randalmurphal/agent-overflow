@@ -41637,33 +41637,6 @@
    },
    {
     "ui": "dispose"
-   },
-   {
-    "retry": true
-   },
-   {
-    "send": {
-     "kind": "stop",
-     "page": "page-1",
-     "seq": 1
-    }
-   },
-   {
-    "answer": {
-     "pageId": "page-1",
-     "incarnation": 1,
-     "mount": "",
-     "seq": 0,
-     "document": 1,
-     "session": 2,
-     "foreign": true,
-     "active": false,
-     "query": "",
-     "found": false,
-     "matches": 0,
-     "current": -1,
-     "capped": false
-    }
    }
   ],
   "bar": false,
@@ -42145,33 +42118,6 @@
    },
    {
     "ui": "dispose"
-   },
-   {
-    "retry": true
-   },
-   {
-    "send": {
-     "kind": "stop",
-     "page": "page-gone",
-     "seq": 2
-    }
-   },
-   {
-    "answer": {
-     "pageId": "page-gone",
-     "incarnation": 0,
-     "mount": "",
-     "seq": 0,
-     "document": 0,
-     "session": 0,
-     "foreign": true,
-     "active": false,
-     "query": "",
-     "found": false,
-     "matches": 0,
-     "current": -1,
-     "capped": false
-    }
    }
   ],
   "bar": false,
@@ -43047,33 +42993,6 @@
    },
    {
     "ui": "dispose"
-   },
-   {
-    "retry": true
-   },
-   {
-    "send": {
-     "kind": "stop",
-     "page": "page-1",
-     "seq": 2
-    }
-   },
-   {
-    "answer": {
-     "pageId": "page-1",
-     "incarnation": 1,
-     "mount": "",
-     "seq": 0,
-     "document": 1,
-     "session": 2,
-     "foreign": true,
-     "active": false,
-     "query": "",
-     "found": false,
-     "matches": 0,
-     "current": -1,
-     "capped": false
-    }
    }
   ],
   "bar": false,
@@ -43877,33 +43796,6 @@
    },
    {
     "ui": "dispose"
-   },
-   {
-    "retry": true
-   },
-   {
-    "send": {
-     "kind": "stop",
-     "page": "page-1",
-     "seq": 1
-    }
-   },
-   {
-    "answer": {
-     "pageId": "page-1",
-     "incarnation": 1,
-     "mount": "",
-     "seq": 0,
-     "document": 1,
-     "session": 2,
-     "foreign": true,
-     "active": false,
-     "query": "",
-     "found": false,
-     "matches": 0,
-     "current": -1,
-     "capped": false
-    }
    }
   ],
   "bar": false,

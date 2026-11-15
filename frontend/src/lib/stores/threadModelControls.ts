@@ -3,7 +3,8 @@
 // Extracted from the composer toolbar's two pickers so the composer's
 // `/model`, `/effort`, and `/fast` commands drive the exact same code —
 // including the parts that are easy to forget: a draft placeholder updates its
-// defaults instead of a thread row, and re-selecting the model a fallback
+// defaults instead of a thread row, a change made while the emptied draft's
+// delete is in flight goes wherever that delete leaves the pane, and re-selecting the model a fallback
 // displaced means "try my preferred model again" through the same live
 // model-selection binding.
 //
@@ -20,6 +21,7 @@ import {
 import { syncThreadReply } from './panes.svelte';
 import { threadRowFrameMark } from './threadRowFrames';
 import { updatePlaceholderDefaults } from './newThreadDefaults';
+import { isEmptyDraftCleanupPending, settleEmptyDraftCleanup } from './emptyDraftCleanup';
 import type { ThreadPane } from './thread.svelte';
 import type { Thread } from '../types/models';
 import type { ProviderID } from '../types/providers';
@@ -57,6 +59,7 @@ export async function applyThreadModelSelection(
     return OK;
   }
   try {
+    if (isEmptyDraftCleanupPending(pane.threadId)) await settleEmptyDraftCleanup(pane.threadId);
     if (pane.hasDraftPlaceholder) {
       await updatePlaceholderDefaults(pane, { provider, model: slug });
       return OK;
@@ -79,6 +82,7 @@ export async function applyThreadReasoningEffort(
   if (!pane.thread) return { ok: false, error: 'Open a thread first' };
   if (effort === (pane.thread.reasoningEffort ?? '')) return OK;
   try {
+    if (isEmptyDraftCleanupPending(pane.threadId)) await settleEmptyDraftCleanup(pane.threadId);
     if (pane.hasDraftPlaceholder) {
       await updatePlaceholderDefaults(pane, { reasoningEffort: effort });
       return OK;
@@ -101,6 +105,7 @@ export async function applyThreadFastMode(
   if (!pane.thread) return { ok: false, error: 'Open a thread first' };
   if (on === (pane.thread.fastMode === true)) return OK;
   try {
+    if (isEmptyDraftCleanupPending(pane.threadId)) await settleEmptyDraftCleanup(pane.threadId);
     if (pane.hasDraftPlaceholder) {
       await updatePlaceholderDefaults(pane, { fastMode: on });
       return OK;
@@ -123,6 +128,7 @@ export async function applyThreadContextWindow(
   if (!pane.thread) return { ok: false, error: 'Open a thread first' };
   if (tokens === (pane.thread.contextWindow ?? 0)) return OK;
   try {
+    if (isEmptyDraftCleanupPending(pane.threadId)) await settleEmptyDraftCleanup(pane.threadId);
     if (pane.hasDraftPlaceholder) {
       await updatePlaceholderDefaults(pane, { contextWindow: tokens });
       return OK;

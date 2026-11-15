@@ -110,7 +110,7 @@ func TestShownHistoryGuardsRefuseEveryColumn(t *testing.T) {
 }
 
 // TestShownHistoryGuardsAllowWhatNoForkShows: the guards pass a revision
-// touch, a spans write, a move of a row to another thread (a holder taking
+// touch, a spans write, a fill of the derived find text, a move of a row to another thread (a holder taking
 // it), a write that changes nothing, and any write to a row, payload or
 // turn row no fork shows: past the cut, hidden by the fork, or the cut
 // turn's row the fork owns.
@@ -120,6 +120,7 @@ func TestShownHistoryGuardsAllowWhatNoForkShows(t *testing.T) {
 		`UPDATE items SET updated_at = updated_at WHERE thread_id = 'S' AND id = 'u0'`,
 		`UPDATE items SET summary = summary, meta = meta WHERE thread_id = 'S' AND id = 'u0'`,
 		`UPDATE payloads SET spans = '[1]', preview_spans = '[1]' WHERE thread_id = 'S' AND id = 'p'`,
+		`UPDATE items SET find_text = 'derived' WHERE thread_id = 'S' AND id = 'u0'`,
 		`UPDATE items SET summary = 'edited', status = 'errored' WHERE thread_id = 'S' AND id = 'late'`,
 		`UPDATE items SET status = 'completed', summary = 'done' WHERE thread_id = 'S' AND id = 'run'`,
 		`UPDATE turns SET stop_reason = 'error', completed_at = 42 WHERE turn_id = 'S:1'`,

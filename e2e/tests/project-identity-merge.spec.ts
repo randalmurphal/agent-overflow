@@ -9,7 +9,7 @@ import { expect, test } from '@playwright/test';
 import { mkdir, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { launchHarness, type HarnessApp } from '../src/harness.js';
-import { CONNECTED_AFTER_CONFIRM, headlessPairing } from './headless-pairing-helpers.js';
+import { connectedAfterConfirm, headlessPairing } from './headless-pairing-helpers.js';
 import { startTogether } from './launch-helpers.js';
 import { seedForge, expectEveryForgeCallHandled } from './forge-helpers.js';
 import { harnessGit } from './worktree-removal-helpers.js';
@@ -87,7 +87,7 @@ for (const renamed of [false, true]) test(`one repository at different paths mer
     await expect(verification).toBeVisible();
     await pairing.confirm((await verification.textContent())!.trim());
     const computerRow = page.getByTestId('attached-system');
-    await expect(computerRow).toContainText('Connected', CONNECTED_AFTER_CONFIRM);
+    await connectedAfterConfirm({ home, remote }, (wait) => expect(computerRow).toContainText('Connected', wait));
     const [{ id: remoteId }] = await home.rpc<Array<{ id: string }>>('ListBackends');
     await home.rpc('RenameBackend', remoteId, 'Desktop');
     await expect(computerRow).toContainText('Desktop');

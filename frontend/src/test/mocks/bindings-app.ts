@@ -414,6 +414,7 @@ export const SetWSLDistroPreference = dispatch('SetWSLDistroPreference');
 // Launcher GPU vsync preference (Settings → Performance), same wsl.json.
 export const GetWebviewGPUVsyncDisabled = dispatch('GetWebviewGPUVsyncDisabled');
 export const SetWebviewGPUVsyncDisabled = dispatch('SetWebviewGPUVsyncDisabled');
+export const GetObservabilityTracing = dispatch('GetObservabilityTracing');
 // WSLDistro mirrors the generated Distro class from
 // internal/wsllauncher/models — tests pass plain object literals to
 // the mocks, but the class shape is needed so `import type { WSLDistro }`

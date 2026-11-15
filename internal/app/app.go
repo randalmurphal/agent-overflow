@@ -285,6 +285,11 @@ type App struct {
 	uiTraceOnce sync.Once
 	uiTracer    *uitrace.Tracer
 	uiTraceErr  error
+	// Settings that apply on the next start, as this session started with
+	// them (app_launch_setting.go): the launcher's GPU vsync preference
+	// (app_wsl.go) and OTLP tracing (app_observability_launch.go).
+	launchGPUVsync launchValue
+	launchTracing  launchValue
 	// frontendErrors is the always-on JSONL appender for window-level
 	// frontend runtime errors (onerror / unhandledrejection). Same lazy
 	// construction contract as uiTracer.

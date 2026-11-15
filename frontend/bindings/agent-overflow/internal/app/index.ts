@@ -81,6 +81,7 @@ export {
     InterruptAndRevertResult,
     InterruptRevertOptions,
     ItemProjectionSource,
+    LaunchSetting,
     LiveStateActiveTurn,
     LiveStateTodo,
     LiveStateTodoStep,

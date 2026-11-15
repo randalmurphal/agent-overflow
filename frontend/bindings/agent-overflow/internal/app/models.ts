@@ -3440,6 +3440,44 @@ export class ItemProjectionSource {
     }
 }
 
+/**
+ * LaunchSetting is a setting that applies when the app next starts: its
+ * saved value and the value this backend started with. A difference is a
+ * change waiting on a restart, so a page opened at any time, from any client,
+ * can say so.
+ */
+export class LaunchSetting {
+    /**
+     * Value is the saved setting.
+     */
+    "value": boolean;
+
+    /**
+     * Launched is the value this backend started with.
+     */
+    "launched": boolean;
+
+    /** Creates a new LaunchSetting instance. */
+    constructor($$source: Partial<LaunchSetting> = {}) {
+        if (!("value" in $$source)) {
+            this["value"] = false;
+        }
+        if (!("launched" in $$source)) {
+            this["launched"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new LaunchSetting instance from a string or object.
+     */
+    static createFrom($$source: any = {}): LaunchSetting {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new LaunchSetting($$parsedSource as Partial<LaunchSetting>);
+    }
+}
+
 export class LiveStateActiveTurn {
     "threadId": string;
     "turnId": string;

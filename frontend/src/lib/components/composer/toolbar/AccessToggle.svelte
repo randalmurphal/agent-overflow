@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { isEmptyDraftCleanupPending, settleEmptyDraftCleanup } from '../../../stores/emptyDraftCleanup';
   import { threadMachine } from '../../../stores/attachedBackends.svelte';
   // Runtime/access mode selector. Placeholder changes update new-thread
   // defaults; materialized threads persist the selected runtime mode directly.
@@ -167,6 +168,8 @@
       return;
     }
     try {
+      // Applied wherever the emptied draft's in-flight delete leaves the pane.
+      if (isEmptyDraftCleanupPending(pane.threadId)) await settleEmptyDraftCleanup(pane.threadId);
       if (pane.hasDraftPlaceholder) {
         await updatePlaceholderDefaults(pane, { runtimeMode: mode });
       } else {

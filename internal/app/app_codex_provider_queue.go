@@ -202,7 +202,7 @@ func (a *App) sunsetLegacyProviderQueueRows(threadID string, sess *codex.Session
 // purgeCodexProviderQueueForRollback empties the PROVIDER's queue for a thread
 // the user is about to truncate.
 //
-// `clearFlushDispatchForRollback` handles AO's own in-process queue, but a
+// `dropFlushQueue` handles AO's own in-process queue, but a
 // message in `thread/queue/*` is durable in codex's SQLite: it outlives the
 // session stop and the app-server's idle hook dispatches it on the next resume
 // — re-running, against a truncated thread, exactly the message the rollback

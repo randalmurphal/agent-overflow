@@ -35,6 +35,8 @@ export {
     ProposedPlanSourceRef,
     RemoteJob,
     Thread,
+    ThreadFindAnswer,
+    ThreadFindSince,
     ThreadGroup,
     ThreadMessageHit,
     ThreadOrigin,

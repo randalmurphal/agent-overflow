@@ -118,11 +118,14 @@ Draft consumption compares and removes the exact saved snapshot in one store
 operation. Uploads stage outside the thread mutation lock, then reacquire it
 for ownership-checked publication. Durable flush rows are written before the
 in-memory queue, removed only on settlement or an explicit drop, and restored
-to the composer at boot instead of being dispatched without a user present.
-A teardown's drop holds the thread mutation lock that every queue write takes,
-so a message queued during it is dropped with the queue or queued whole after
-it. A caller releases that lock before it tears down; the idle reaper, which
-holds it, uses the HoldingMutations variant. See
+to the composer at boot instead of being dispatched without a user present,
+as is a written message whose row is still unconfirmed.
+A teardown empties the queue under the thread mutation lock that every queue
+write takes, so a message queued during it goes with the queue or is queued
+whole after it. The person's Stop of a session and archive drop the queue; a
+stop nobody asked for (a removed worktree, a reconnect) returns it to the
+composer, as a session death does. A caller releases that lock before it tears
+down; the idle reaper, which holds it, uses the HoldingMutations variant. See
 [turn-lifecycle.md](../../docs/architecture/turn-lifecycle.md).
 
 Agent thread requests settle once. Every state change on a request or receipt

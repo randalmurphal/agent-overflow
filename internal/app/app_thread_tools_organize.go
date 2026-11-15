@@ -130,7 +130,7 @@ func (a *App) applyThreadOrganizePatchLocked(ctx context.Context, threadID strin
 	}
 	// Under the action lock alone, as archiveThreadLocked stops it: the
 	// teardown's queue drop takes the thread's mutation lock
-	// (dropQueueForTeardown), which is not reentrant.
+	// (settleQueueForTeardown), which is not reentrant.
 	if work != nil {
 		a.stopArchivedThreadSession(threadID, requestedAt)
 	}

@@ -179,10 +179,13 @@
   {/snippet}
   {#snippet label()}<span data-testid={`${idPrefix}-label`}>{labelText}</span>{/snippet}
   {#snippet body()}
+    <!-- Expanded, the body is the row's find text; collapsed, it shows
+         a tail whose lines depend on the pane's width. -->
     <TailClampedText
       text={bodyText.text}
       textStart={bodyText.start}
       {expanded}
+      findText={expanded}
       id={bodyDomId}
       testId={`${idPrefix}-body`}
     />

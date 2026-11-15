@@ -14,8 +14,9 @@
 // is a role="button" element, since Firefox starts no drag from a
 // <button>); a drag that leaves the strip over a pane's content, or is
 // cancelled with Escape, takes its preview along and places nothing; a
-// pane, a thread row and a tool held over a pane are over the strip's
-// shield, not the pane, so the browser scrolls no timeline under them, and
+// pane, a thread row and a tool are covered by the strip's shield from the
+// moment their drag starts, so one held at a timeline's edge is over the
+// shield, not the pane, and the browser scrolls no timeline under it, and
 // the panes take the pointer again when the drag ends; none of them, nor a
 // project row, is text a text box takes; text dragged out of one composer
 // lands in another pane's composer.
@@ -355,19 +356,12 @@ test('a pane, a thread row and a tool held over a pane are over the shield, and 
     const from = await center(source);
     await page.mouse.move(from.x, from.y);
     await page.mouse.down();
-    // The shield comes up on the drag's first dragover over the strip. A
-    // real drag delivers one as it crosses in; Chromium delivers none for
-    // some synthetic moves (hoverUntilSlot), and a drag resting at the edge
-    // with no shield yet is scrolled. So bring the shield up mid-pane, away
-    // from every edge, and go to the edge over it.
-    const midY = at.y + at.height / 2;
-    await page.mouse.move(x, midY, { steps: 12 });
-    let nudge = 1;
-    await expect(async () => {
-      nudge = -nudge;
-      await page.mouse.move(x + nudge, midY);
-      await expect(shield, what).toBeVisible({ timeout: 250 });
-    }).toPass();
+    // The shield is up from the drag's start, before the drag reaches the
+    // strip, so a drag that enters right at the timeline's edge (or onto a
+    // browser pane, whose native view would take the drag from the page)
+    // is covered when it arrives.
+    await page.mouse.move(from.x + 12, from.y, { steps: 3 });
+    await expect(shield, what).toBeVisible();
     await shield.evaluate((el) => { el.dataset.held = 'yes'; });
     await page.mouse.move(x, y, { steps: 6 });
     // An uncovered timeline scrolls within the first half second of such a

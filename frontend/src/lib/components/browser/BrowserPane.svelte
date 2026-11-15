@@ -425,13 +425,16 @@
       class="h-7 min-w-0 flex-1 rounded-md border border-border-subtle bg-surface-0 px-2 text-[0.75rem] text-fg outline-none focus:border-accent/60"
       aria-label="Address"
       bind:value={address}
+      disabled={!activePage}
       onfocus={() => (addressFocused = true)}
       onblur={() => (addressFocused = false)}
       onkeydown={(event) => {
-        if (event.key === 'Enter') {
+        // Until the pane knows the page it shows there is none to name, and
+        // a navigation naming none opens a new page.
+        if (event.key === 'Enter' && activePage) {
           event.preventDefault();
           (event.currentTarget as HTMLInputElement).blur();
-          void act('navigate', activePageId, address);
+          void act('navigate', activePage.id, address);
         }
       }}
     />

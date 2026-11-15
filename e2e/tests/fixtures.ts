@@ -31,6 +31,13 @@ interface TestFixtures {
  */
 let currentPageErrors: string[] | undefined;
 
+/**
+ * The worker backend fixture's own timeout. It sits above `launchBudgetMs()`
+ * (src/harness-launch-step.ts), so a launch step that stalls fails naming
+ * itself before Playwright's timeout fires.
+ */
+export const HARNESS_WORKER_TIMEOUT_MS = 90_000;
+
 export const test = base.extend<TestFixtures, WorkerFixtures>({
   harnessWorker: [
     async ({}, use) => {
@@ -38,7 +45,7 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
       await use(app);
       await app.close();
     },
-    { scope: 'worker' },
+    { scope: 'worker', timeout: HARNESS_WORKER_TIMEOUT_MS },
   ],
   // WebKit launches with a HOME of its own keychain (src/webkit-keychain.ts).
   launchOptions: [

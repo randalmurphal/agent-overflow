@@ -1,4 +1,5 @@
 import { CreateThread, DeleteEmptyDraftThread, GetDraft, MoveDraftToThread } from './bindings';
+import { isEmptyDraftCleanupPending, settleEmptyDraftCleanup } from './emptyDraftCleanup';
 import type { Project, Thread } from '../types/models';
 import type { Draft, DraftSnapshot } from '../types/draft';
 import type { ThreadPane } from './thread.svelte';
@@ -35,6 +36,8 @@ export async function moveDraftProject(
   project: Project,
   movePlaceholder: () => Promise<boolean>,
 ): Promise<boolean> {
+  // Move whatever the emptied draft's in-flight delete leaves the pane on.
+  if (isEmptyDraftCleanupPending(pane.threadId)) await settleEmptyDraftCleanup(pane.threadId);
   if (!pane.thread || (!pane.hasDraftPlaceholder && !pane.thread.isDraft)) throw new Error('Only an unsent draft can change projects.');
   if (pane.thread.projectId === project.id) return true;
   if (pane.sendInFlight || isWorktreeIntentApplying(pane.thread.id)) throw new Error('Wait for the draft’s current operation to finish.');

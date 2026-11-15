@@ -1,14 +1,11 @@
 <script lang="ts">
   import { threadMachine } from '../../../stores/attachedBackends.svelte';
   import type { ThreadPane } from '../../../stores/thread.svelte';
-  import type { Thread } from '../../../types/models';
   import type { ModelInfo } from '../../../types/settings';
   import type { ChatBarFavorite } from '../../../stores/bindings';
   import type { DiscussionDefinition } from '../../../types/discussion';
   import {
     ListDiscussionsForThread,
-    StartDiscussionByID,
-    GetThread,
   } from '../../../stores/bindings';
   import {
     ensureChatBarFavorites,
@@ -29,11 +26,10 @@
     getProviderModels,
   } from '../../../stores/providerModels.svelte';
   import ProviderIcon from '../../shared/ProviderIcon.svelte';
-  import { syncThreadReply } from '../../../stores/panes.svelte';
-  import { threadRowFrameMark } from '../../../stores/threadRowFrames';
   import { getSettings } from '../../../stores/settings.svelte';
   import { addErrorToast, addToast } from '../../../stores/toast.svelte';
   import { errString } from '../../../utils/errors';
+  import { startPaneDiscussion } from './startPaneDiscussion';
   import { hiddenModelSlugs } from '../../../utils/hiddenModels';
   import { displayModelLabel } from '../../../utils/modelLabels';
   import MessagesSquare from '@lucide/svelte/icons/messages-square';
@@ -208,25 +204,7 @@
   async function startFavoriteDiscussion(fav: ChatBarFavorite): Promise<void> {
     if (!pane.thread) return;
     closeMenu();
-    try {
-      const threadId = pane.threadId;
-      if (!threadId) {
-        addToast('info', 'Start the thread before adding a discussion.');
-        return;
-      }
-      const mark = threadRowFrameMark();
-      await StartDiscussionByID(threadId, fav.value);
-      try {
-        const refreshed = (await GetThread(threadId)) as Thread;
-        syncThreadReply(refreshed, mark);
-      } catch (refreshErr) {
-        console.error('Failed to refresh thread after StartDiscussionByID:', refreshErr);
-      }
-      addToast('info', `Started discussion "${fav.label}"`);
-    } catch (err) {
-      console.error('StartDiscussionByID failed:', err);
-      addErrorToast(`Failed to start discussion: ${errString(err)}`, err);
-    }
+    await startPaneDiscussion(pane, fav.value, fav.label);
   }
 
   let modelLabel = $derived(

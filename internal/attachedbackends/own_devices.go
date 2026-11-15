@@ -7,10 +7,12 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"time"
 
 	"agent-overflow/internal/computerroute"
 	"agent-overflow/internal/ctxutil"
 	"agent-overflow/internal/deviceclient"
+	"agent-overflow/internal/logging"
 	"agent-overflow/internal/owndevices"
 	"agent-overflow/internal/rpcclient"
 	"agent-overflow/internal/transport"
@@ -47,7 +49,31 @@ func (m *Manager) CallOwnDevice(ctx context.Context, id, method string, result a
 		return err
 	}
 	defer rpc.Close()
-	return rpc.Call(ctx, method, result, params...)
+	return timedPeerCall(ctx, rpc, method, result, params...)
+}
+
+// timedPeerCall makes one membership or device-name call and logs it as a
+// peer_call.<method> step when it ran long. The method is a constant of
+// this package, never a parameter. Agent and thread-tool calls are not
+// timed here: they wait on work by design, so their duration is no stall.
+func timedPeerCall(ctx context.Context, rpc *rpcclient.Client, method string, result any, params ...any) error {
+	started := time.Now()
+	err := rpc.Call(ctx, method, result, params...)
+	logSlowStep(stepPeerCall+"."+method, started, err)
+	return err
+}
+
+// Steps of reaching a paired computer over its socket, as logged.
+const (
+	slowStepComponent = "attachedbackends"
+	stepPeerDial      = "peer_dial"
+	stepPeerHello     = "peer_hello"
+	stepPeerCall      = "peer_call"
+)
+
+// logSlowStep logs a step that outlasted the threshold (logging.LogSlowStep).
+func logSlowStep(step string, started time.Time, err error) {
+	logging.LogSlowStep(slowStepComponent, step, started, logging.ErrorOutcome(err))
 }
 
 func (c *carrier) openRPC(ctx context.Context, capability string) (*rpcclient.Client, error) {
@@ -66,7 +92,13 @@ func (c *carrier) openRPC(ctx context.Context, capability string) (*rpcclient.Cl
 	httpClient := &http.Client{Transport: c.client.RoundTripper(), CheckRedirect: func(*http.Request, []*http.Request) error {
 		return errors.New("computer redirects are refused")
 	}}
+	started := time.Now()
 	conn, response, err := websocket.Dial(ctx, address, &websocket.DialOptions{HTTPClient: httpClient})
+	dialOutcome := logging.ErrorOutcome(err)
+	if err != nil && response != nil {
+		dialOutcome = logging.StatusOutcome(response.StatusCode)
+	}
+	logging.LogSlowStep(slowStepComponent, stepPeerDial, started, dialOutcome)
 	if err != nil {
 		// net/http includes the one-use socket ticket in URL.Error.URL.
 		// Retain the useful network cause without publishing that credential.
@@ -80,7 +112,9 @@ func (c *carrier) openRPC(ctx context.Context, capability string) (*rpcclient.Cl
 		return nil, errors.New("could not connect to the paired computer")
 	}
 	rpc := rpcclient.New(conn)
+	started = time.Now()
 	hello, err := rpc.Hello(ctx)
+	logSlowStep(stepPeerHello, started, err)
 	if err == nil && (hello.BackendID != c.client.Session().BackendID || hello.ProtocolVersion != transport.ProtocolVersion) {
 		err = errors.New("paired computer identity or protocol changed")
 	}
