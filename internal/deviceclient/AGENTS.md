@@ -50,6 +50,11 @@ and refresh generation after the response. A late reply/refusal cannot
 replace/delete a newer generation, rename or re-pairing. Unknown JSON fields
 survive every update. Retired clients never write again.
 
+A credential step (redemption, renewal, ticket, health probe, profile lock
+wait) that outlasts `slowStepThreshold` logs one `deviceclient: slow step=`
+line with its duration and outcome class. The line never carries an endpoint,
+credential, token, verification number or label.
+
 Tests use private profile directories and local fixture servers; never use a
 real device profile or provider home. Cross-process and lost-response tests
 must exercise persisted state, not just two references to one Client.

@@ -1432,7 +1432,12 @@ with `rpc(method, ...params)`, `waitForEvent(channel, predicate?)`
 (scans history first, since a fast backend can't win the race, and
 consumes its match, so two identical waits observe two distinct
 occurrences), `reset()`, and `close()`. `e2e/tests/fixtures.ts` shares one backend per
-Playwright worker and resets between tests. The returned client also exposes
+Playwright worker and resets between tests. Every launch step (data dir,
+process identity and proofs, bootstrap line, connect, watchdog) and the cleanup
+of a failed launch run under their own bounds (`e2e/src/harness-launch-step.ts`),
+so a stall fails as `harness launch: <step> did not finish in <n> s` with the
+pid's state and stderr tail; the worker fixture's timeout sits above
+`launchBudgetMs()` so that error is the one reported. The returned client also exposes
 `stop()` (graceful, preserving the data root), `crash()` (SIGKILL, also
 preserving it), and `close()` (stop plus owned-root cleanup). Restart specs can
 therefore launch a second backend over the first one's durable state and prove
