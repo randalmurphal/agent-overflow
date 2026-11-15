@@ -157,6 +157,16 @@ describe('which management controls show', () => {
     expect(within(section).queryByTestId('review-details-rows')).toBeNull();
   });
 
+  it('says each part of the read the forge would not answer, and nothing when it answered all', async () => {
+    const sentences = ['Team reviewers are not shown: your GitHub token lacks the `read:org` scope.', 'Check runs are not shown: GitHub does not let this fine-grained token read them.'];
+    let view = await mountReviewPanePR(detail(ALL, { unavailable: sentences }));
+    expect(view.getAllByTestId('review-detail-unavailable').map((row) => row.textContent)).toEqual(sentences);
+    view.unmount();
+    resetReviewPanePR();
+    view = await mountReviewPanePR(detail(ALL));
+    expect(view.queryByTestId('review-detail-unavailable')).toBeNull();
+  });
+
   it('offers Dismiss per change request and Bypass on the changes-requested row', async () => {
     const blocked = (can: Partial<PRManageCan>) => detail(can, {
       readiness: {

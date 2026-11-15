@@ -24,8 +24,8 @@ type Member struct {
 }
 
 // Team is a GitHub organization team (Repo.Organization), a reviewer as
-// "<owner>/<slug>". TeamsRefused answers the teams search as a token
-// without read:org does.
+// "<owner>/<slug>". TeamsRefused answers the teams search, and a PR read
+// selecting team reviewers, as a token without read:org does.
 type Team struct {
 	Slug string `json:"slug"`
 	Name string `json:"name,omitempty"`
@@ -92,6 +92,9 @@ func (r *Repo) normalizeManage(ids *idSource) error {
 	}
 	if r.Forge != "gitlab" && len(r.ServerLacks) > 0 {
 		return errors.New("serverLacks names what an older GitLab lacks")
+	}
+	if err := r.normalizeTokenCannotRead(); err != nil {
+		return err
 	}
 	for _, lack := range r.ServerLacks {
 		if lack != lacksRereview && lack != lacksOverride && lack != lacksOperationMode && lack != lacksAwardEmoji {

@@ -34,6 +34,8 @@ type githubForge struct {
 	// ciArtifacts which completed runs keep artifacts (ci_actions_github.go).
 	ciPermissions ciCapabilityCache[CIAction]
 	ciArtifacts   ciCapabilityCache[bool]
+	// readMemory keeps the PR read's shape (github_read_shape.go).
+	readMemory githubReadMemory
 }
 
 // resetCaches forgets what the adapter remembers of each repository
@@ -41,6 +43,7 @@ type githubForge struct {
 func (f *githubForge) resetCaches() {
 	f.ciPermissions.clear()
 	f.ciArtifacts.clear()
+	f.readMemory.clear()
 }
 
 func (f *githubForge) ID() string         { return "github" }

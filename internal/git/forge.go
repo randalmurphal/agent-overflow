@@ -196,6 +196,11 @@ type PRDetail struct {
 	// Manage is the Details section and the management capabilities
 	// (forge_manage.go).
 	Manage PRManage `json:"manage"`
+	// Unavailable is a sentence for each optional part of the read the
+	// forge would not answer (team reviewers, check runs, workflow runs),
+	// saying what is not shown and why. The management part's sentence is
+	// Manage.Unavailable.
+	Unavailable []string `json:"unavailable,omitempty"`
 }
 
 type PRDiffRefs struct {

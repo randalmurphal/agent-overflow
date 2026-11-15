@@ -539,6 +539,9 @@ export interface PRDetail {
   /** The Details section and the management controls (git.PRManage);
    *  absent from an older backend, which offers none of them. */
   manage?: PRManage;
+  /** A sentence for each optional part the forge would not answer (team
+   *  reviewers, check runs, workflow runs). */
+  unavailable?: string[];
 }
 
 /** Mirrors git.PRManage. */

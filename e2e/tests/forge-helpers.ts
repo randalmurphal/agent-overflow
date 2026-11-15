@@ -295,7 +295,7 @@ export interface ForgeRepo {
   eventsHidden?: boolean;
   /** Who can be asked to review and be assigned; `id` is GitLab's user id, generated when omitted. */
   members?: { login: string; name?: string; id?: number }[];
-  /** GitHub: an organization's teams (`organization`), and a token whose teams search is refused. */
+  /** GitHub: an organization's teams (`organization`), and a token without read:org, whose teams search and team reviewers are refused. */
   teams?: { slug: string; name?: string }[];
   organization?: boolean;
   teamsRefused?: boolean;
@@ -303,6 +303,8 @@ export interface ForgeRepo {
   labels?: { name: string; color?: string; id?: string }[];
   /** GitLab: what an older server lacks. */
   serverLacks?: ('rereview' | 'overrideRequestedChanges' | 'operationMode' | 'awardEmoji')[];
+  /** GitHub: what the viewer's fine-grained token cannot read in a PR read. */
+  tokenCannotRead?: ('checks' | 'actions')[];
 }
 
 interface ForgeInvocationCommon {

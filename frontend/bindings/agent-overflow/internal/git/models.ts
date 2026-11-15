@@ -267,7 +267,9 @@ export class CIPipeline {
      * ActionsUnavailable is the sentence saying why some actions are not
      * offered: a read behind their flags (GitHub's repository permission,
      * a run's artifacts) failed, and the flags it would have set are
-     * absent. Empty when every flag was read.
+     * absent. A GitHub PR read that left out check runs or workflow runs
+     * (githubReadParts) leads with their sentences. Empty when every flag
+     * was read.
      */
     "actionsUnavailable"?: string;
 
@@ -1347,6 +1349,14 @@ export class PRDetail {
      */
     "manage": PRManage;
 
+    /**
+     * Unavailable is a sentence for each optional part of the read the
+     * forge would not answer (team reviewers, check runs, workflow runs),
+     * saying what is not shown and why. The management part's sentence is
+     * Manage.Unavailable.
+     */
+    "unavailable"?: string[];
+
     /** Creates a new PRDetail instance. */
     constructor($$source: Partial<PRDetail> = {}) {
         if (!("number" in $$source)) {
@@ -1429,6 +1439,7 @@ export class PRDetail {
         const $$createField21_0 = $$createType29;
         const $$createField22_0 = $$createType30;
         const $$createField26_0 = $$createType31;
+        const $$createField27_0 = $$createType0;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("latestReviews" in $$parsedSource) {
             $$parsedSource["latestReviews"] = $$createField17_0($$parsedSource["latestReviews"]);
@@ -1447,6 +1458,9 @@ export class PRDetail {
         }
         if ("manage" in $$parsedSource) {
             $$parsedSource["manage"] = $$createField26_0($$parsedSource["manage"]);
+        }
+        if ("unavailable" in $$parsedSource) {
+            $$parsedSource["unavailable"] = $$createField27_0($$parsedSource["unavailable"]);
         }
         return new PRDetail($$parsedSource as Partial<PRDetail>);
     }

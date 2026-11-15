@@ -139,6 +139,9 @@ type githubMergeInputs struct {
 	pull     *githubPullRaw
 	repo     githubRepositoryMergeRaw
 	contexts []githubContextRaw
+	// checksUnknown is set when the read left check runs out
+	// (githubPartCheckRuns): the contexts are the status contexts alone.
+	checksUnknown bool
 }
 
 // githubBaseRules is the base branch's merge requirements, protection and
@@ -354,7 +357,9 @@ func (in githubMergeInputs) conditions(status string) (blockers, settled []Merge
 // checksCondition is the required checks' row: a blocker naming the
 // required contexts that failed or have not passed yet (an expected one
 // that has not reported counts as pending), else a settled row. present is
-// false when the head has no checks and none are required.
+// false when the head has no checks and none are required. Without check
+// runs only a failed or pending status context is known, so the row says
+// nothing else.
 func (in githubMergeInputs) checksCondition(rules githubBaseRules) (row MergeBlocker, ok, present bool) {
 	var failed, pending []string
 	var url string
@@ -384,7 +389,7 @@ func (in githubMergeInputs) checksCondition(rules githubBaseRules) (row MergeBlo
 		}
 	}
 	for _, name := range rules.requiredChecks {
-		if !reported[name] && !slices.Contains(pending, name) {
+		if !in.checksUnknown && !reported[name] && !slices.Contains(pending, name) {
 			pending = append(pending, name)
 		}
 	}
@@ -400,7 +405,7 @@ func (in githubMergeInputs) checksCondition(rules githubBaseRules) (row MergeBlo
 		}
 		return MergeBlocker{Kind: BlockerChecks, Text: text, Detail: nameList(append(failed, pending...)), URL: url}, false, true
 	}
-	if len(in.contexts) == 0 {
+	if len(in.contexts) == 0 || in.checksUnknown {
 		return MergeBlocker{}, false, false
 	}
 	row = MergeBlocker{Kind: BlockerChecks, Text: "Checks passed"}

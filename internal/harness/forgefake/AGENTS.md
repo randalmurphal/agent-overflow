@@ -152,10 +152,10 @@ project's path, escaped as one segment (`grp%2Fsub%2Ftool`).
 | ssh | `-G -o CanonicalizeHostname=no -o PermitLocalCommand=no [-l U] H` | local SSH host resolution, from fixture `sshHosts` |
 | GitHub | `gh pr create --title T --body B [--base B] [--draft]` | GitCreatePR |
 | GitLab | `glab mr create --title T --description D --yes --no-editor [--target-branch B] [--draft]` | GitCreatePR |
-| GitHub | GraphQL `PRTick(owner, name, number, wantDetail, wantThreads, wantEvents, wantChecks, wantReactions)` (`gh graphql PRTick`) | ReadPR: detail and viewer with the repository's merge settings and the merge box (readiness, opinions, thread states, base protection, auto-merge), threads and comments (each comment's `reactionGroups` only while `wantReactions`), the newest 100 timeline items, head commit rollup (CI, each check's `isRequired`); `viewerPermission` on every read |
-| GitHub | GraphQL `PRThreadsPage`, `PRCommentsPage(owner, name, number, after, wantReactions)`, `PRThreadStatesPage(owner, name, number, after)` | ReadPR: review threads, comments and thread states past the first 100 |
-| GitHub | GraphQL `PRTimelinePage(owner, name, number, before)` | ReadPR events: older timeline pages, read backwards |
-| GitHub | GraphQL `ThreadCommentsPage(threadID, after, wantReactions)`, `RollupContextsPage(commitID, number, after)` | ReadPR: one thread's comments, the rollup's contexts past 100 |
+| GitHub | GraphQL `PRTick(owner, name, number, wantDetail, wantThreads, wantEvents, wantChecks, wantReactions, pageSize, wantManage, wantTeams, wantCheckRuns, wantWorkflowRuns)` (`gh graphql PRTick`) | ReadPR: detail and viewer with the repository's merge settings and the merge box (readiness, opinions, thread states, base protection, auto-merge) and, while `wantManage`, the management fields, the first `pageSize` threads and comments (each comment's `reactionGroups` only while `wantReactions`), the newest 100 timeline items, head commit rollup (CI, each check's `isRequired`); a check run answers its `__typename` alone without `wantCheckRuns` and no `checkSuite` without `wantWorkflowRuns`, a team reviewer its `__typename` alone without `wantTeams`; `teamsRefused` refuses a read selecting teams with no `data` beside an `INSUFFICIENT_SCOPES` error naming `combinedSlug`, and `tokenCannotRead` (`checks`, `actions`) nulls each check run or its `checkSuite.workflowRun` beside a FORBIDDEN error at its path; `viewerPermission` on every read |
+| GitHub | GraphQL `PRThreadsPage`, `PRCommentsPage(owner, name, number, after, wantReactions, pageSize)`, `PRThreadStatesPage(owner, name, number, after)` | ReadPR: review threads and comments past the first page, `pageSize` per page (a thread's first comments too), and thread states past the first 100 |
+| GitHub | GraphQL `PRTimelinePage(owner, name, number, before, wantTeams)` | ReadPR events: older timeline pages, read backwards, with team reviewers and `teamsRefused` as PRTick |
+| GitHub | GraphQL `ThreadCommentsPage(threadID, after, wantReactions)`, `RollupContextsPage(commitID, number, after, wantCheckRuns, wantWorkflowRuns)` | ReadPR: one thread's comments, the rollup's contexts past 100 with the parts and `tokenCannotRead` as PRTick |
 | GitHub | GraphQL `PRMergeTarget(owner, name, number)`, `ViewerApproval(owner, name, number)` | merge actions: the pull's node id and head; Unapprove: the viewer's standing approval |
 | GitHub | GraphQL `MergePR`, `EnableAutoMerge(pullRequestID, method, expectedHeadOid)` | Merge now (merged, MergedEvent and ClosedEvent, head deleted when the repository does) and Auto-merge (armed, the method's enabled event); a head other than `expectedHeadOid` answers "Head branch was modified. Review and try the merge again." |
 | GitHub | GraphQL `DisableAutoMerge`, `MarkPRReady(pullRequestID)`, `UpdatePRBranch(pullRequestID, expectedHeadOid)`, `DismissReview(reviewID, message)` | Cancel auto-merge, Mark ready, Update branch (the head moves to a new commit), Unapprove (the review reads DISMISSED, a ReviewDismissedEvent) |
@@ -293,7 +293,8 @@ and then drops or truncates the response.
 - The management fixture: a repository's `members` (each with its GitLab
   user id, generated when omitted) are whom reviews can be requested from
   and who can be assigned; `teams`, `organization` and `teamsRefused` are
-  a GitHub organization's; `labels` are the repository's (GitHub ids
+  a GitHub organization's, and a GitHub repository's `tokenCannotRead`
+  (`checks`, `actions`) is what the viewer's fine-grained token cannot read; `labels` are the repository's (GitHub ids
   generated: GitHub `LA_ao<n>`, GitLab `gid://gitlab/ProjectLabel/<n>`;
   a name may hold a comma). A pull's `teamReviewers` ("owner/slug"),
   `assignees` and `labels` name them. A pull's `viewer` overrides what the

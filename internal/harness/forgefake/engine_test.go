@@ -840,11 +840,33 @@ func testDocument(kind, op, decl string) string {
 	return kind + " " + op + decl + " " + selection
 }
 
+type readPartDefault struct {
+	name  string
+	value any
+}
+
+var (
+	pageSizeDefault  = readPartDefault{"pageSize", 100}
+	readPartDefaults = map[string][]readPartDefault{
+		"PRTick":             {pageSizeDefault, {"wantManage", true}, {"wantTeams", true}, {"wantCheckRuns", true}, {"wantWorkflowRuns", true}},
+		"PRThreadsPage":      {pageSizeDefault},
+		"PRCommentsPage":     {pageSizeDefault},
+		"PRTimelinePage":     {{"wantTeams", true}},
+		"RollupContextsPage": {{"wantCheckRuns", true}, {"wantWorkflowRuns", true}},
+	}
+)
+
 // graphQL sends one operation to the GitHub GraphQL mount for host.
 func graphQL(t *testing.T, srv *httptest.Server, host, op string, vars map[string]any) httpAnswer {
 	t.Helper()
 	if _, set := vars["wantReactions"]; !set && slices.Contains([]string{"PRTick", "PRThreadsPage", "PRCommentsPage", "ThreadCommentsPage"}, op) {
 		vars["wantReactions"] = true
+	}
+	// The read's optional parts default to the full read.
+	for _, part := range readPartDefaults[op] {
+		if _, set := vars[part.name]; !set {
+			vars[part.name] = part.value
+		}
 	}
 	return httpRequest(t, srv, "POST", host, "/github/graphql", mustJSON(t, map[string]any{
 		"query": graphQLDocument(t, op), "operationName": op, "variables": vars,
@@ -953,7 +975,7 @@ func TestHTTPMountsAnswerFromTheRouteTables(t *testing.T) {
 		t.Fatalf("PRTick = %+v", tick)
 	}
 	if got := lastInvocation(t, e); got.Path != "graphql" || got.Route != "gh graphql PRTick" || got.Operation != "PRTick" ||
-		string(got.Variables) != `{"name":"widgets","number":7,"owner":"acme","wantChecks":false,"wantDetail":false,"wantEvents":false,"wantReactions":true,"wantThreads":true}` {
+		string(got.Variables) != `{"name":"widgets","number":7,"owner":"acme","pageSize":100,"wantCheckRuns":true,"wantChecks":false,"wantDetail":false,"wantEvents":false,"wantManage":true,"wantReactions":true,"wantTeams":true,"wantThreads":true,"wantWorkflowRuns":true}` {
 		t.Fatalf("PRTick invocation = %+v (variables %s)", got, got.Variables)
 	}
 	missing := prTick(t, srv, "ghe.example:8443", "acme", "widgets", 7, true, true, true)
@@ -1450,7 +1472,8 @@ func TestGraphQLRefusesADriftedOperation(t *testing.T) {
 	t.Parallel()
 	e, _ := seeded(t, Options{})
 	srv := testServer(t, e)
-	tick := map[string]any{"owner": "acme", "name": "widgets", "number": 7, "wantDetail": true, "wantThreads": false, "wantEvents": false, "wantChecks": false}
+	tick := map[string]any{"owner": "acme", "name": "widgets", "number": 7, "wantDetail": true, "wantThreads": false, "wantEvents": false, "wantChecks": false,
+		"wantReactions": true, "pageSize": 100, "wantManage": true, "wantTeams": true, "wantCheckRuns": true, "wantWorkflowRuns": true}
 	send := func(query, op string, vars map[string]any) httpAnswer {
 		return httpRequest(t, srv, "POST", "github.com", "/github/graphql", mustJSON(t, map[string]any{"query": query, "operationName": op, "variables": vars}), nil)
 	}

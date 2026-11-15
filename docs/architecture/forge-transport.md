@@ -223,16 +223,47 @@ GitHub answers a read with one GraphQL request, `PRTick`:
 | Variable | Selects |
 |---|---|
 | `owner`, `name`, `number` | the pull request and the repository's `viewerPermission` (the merge box's and the CI actions' permission); both are always selected |
-| `wantDetail` | `viewer`, the detail fields, `latestReviews(first: 100)`, and what readiness and merge options derive from: the merge state and viewer flags, `autoMergeRequest`, `latestOpinionatedReviews(first: 100)`, `threadStates: reviewThreads(first: 100) { isResolved }`, `baseRef { refUpdateRule rules(first: 100) }`, and the repository's merge methods, `deleteBranchOnMerge`, `autoMergeAllowed`, `viewerDefaultMergeMethod` and `owner { __typename }`, and the management fields (`viewerCanUpdate`, `viewerCanClose`, `viewerCanReopen`, `viewerCanLabel`, `viewerCanAssign`, `reviewRequests`, `assignees` and `labels`, each `first: 100`, and each standing review's `commit { oid }`; see [Managing a PR](#managing-a-pr)) |
-| `wantChecks` | `commits(last: 1)`: the head commit's `id` and `statusCheckRollup.contexts(first: 100)`, each with `isRequired(pullRequestNumber: $number)`; true for `Detail` or `CI`, since the detail's check summary and readiness and the pipeline all come from the rollup |
-| `wantThreads` | `reviewThreads(first: 100)`, each with `comments(first: 100)`, and `comments(first: 100)`, every comment with its `reactionGroups` while `wantReactions`; and the pull's `state` and `viewerCanApplySuggestion` (see [Suggestions and reactions](#suggestions-and-reactions)) |
+| `wantDetail` | `viewer`, the detail fields, `latestReviews(first: 100)`, and what readiness and merge options derive from: the merge state and viewer flags, `autoMergeRequest`, `latestOpinionatedReviews(first: 100)`, `threadStates: reviewThreads(first: 100) { isResolved }`, `baseRef { refUpdateRule rules(first: 100) }`, and the repository's merge methods, `deleteBranchOnMerge`, `autoMergeAllowed`, `viewerDefaultMergeMethod` and `owner { __typename }`, and, while `wantManage`, the management fields (`viewerCanUpdate`, `viewerCanClose`, `viewerCanReopen`, `viewerCanLabel`, `viewerCanAssign`, `reviewRequests`, `assignees` and `labels`, each `first: 100`, and each standing review's `commit { oid }`; see [Managing a PR](#managing-a-pr)) |
+| `wantChecks` | `commits(last: 1)`: the head commit's `id` and `statusCheckRollup.contexts(first: 100)`, each status context with `isRequired(pullRequestNumber: $number)`, and each check run while `wantCheckRuns`, with its `checkSuite.workflowRun` while `wantWorkflowRuns`; true for `Detail` or `CI`, since the detail's check summary and readiness and the pipeline all come from the rollup |
+| `wantThreads` | `reviewThreads(first: $pageSize)`, each with `comments(first: $pageSize)`, and `comments(first: $pageSize)`, every comment with its `reactionGroups` while `wantReactions`; and the pull's `state` and `viewerCanApplySuggestion` (see [Suggestions and reactions](#suggestions-and-reactions)) |
 | `wantEvents` | `timelineItems(last: 100, itemTypes: [...])`: the review, merge, close, reopen, draft, auto-merge, force-push, base-change and review-request items `ReviewEvent` maps |
+| `wantTeams` | a team reviewer's `combinedSlug` (and `name`), in the review requests and the review-request events |
 
 The document is the same every tick; the parts are `@include` directives
-on those variables. A connection longer than one page continues with its
-own operation from the page's `endCursor`: `PRThreadsPage` and
-`PRCommentsPage(owner, name, number, after)`, `ThreadCommentsPage(threadID,
-after)` and `RollupContextsPage(commitID, number, after)` through `node(id:)`.
+on those variables. `wantManage`, `wantTeams`, `wantCheckRuns` and
+`wantWorkflowRuns` are the read's optional parts and `pageSize` its
+threads' and comments' page (`github_read_shape.go`). A read whose
+GraphQL errors all lie in optional parts, by their path or, for a
+document refused before it ran (no data), by the field the message
+names, is sent again without them; a FORBIDDEN or INSUFFICIENT_SCOPES
+answer without a path leaves out every optional part still selected.
+Each part left out puts one sentence in `PRDetail.Unavailable` saying
+what is not shown and why (the scope a classic token lacks, a
+fine-grained token, a field the server lacks), the management part's in
+`PRManage.Unavailable` with every control hidden, and check runs and
+workflow runs also lead `CIPipeline.ActionsUnavailable`. Without check
+runs the readiness has no checks row but a failed or pending status
+context, since a required check that did not report is unknown. A refusal
+of the token (FORBIDDEN, INSUFFICIENT_SCOPES, a document refused before
+it ran) is remembered for the repository and login for 10 minutes
+(`githubReadShapeTTL`), so later ticks send the smaller document at
+once; another error under a part leaves it out of that read alone. A
+single sign-on refusal, an error outside the optional parts, or one with
+no path on an answer that has data fails the read.
+
+A threads read too large to answer steps down `githubReadLevels`: a body
+past its bound, a 502 or 504, or a GraphQL error saying GitHub stopped
+the query at its 10 second limit sends it again without reactions
+(`PRRead.ReactionsUnavailable`), then with `pageSize` 25; the level that
+fit is remembered for the PR for 10 minutes. A connection still reads
+at most `githubReadMaxPages` pages' worth of 100 nodes. A read without
+threads is not stepped.
+
+A connection longer than one page continues with its own operation from
+the page's `endCursor`: `PRThreadsPage` and `PRCommentsPage(owner, name,
+number, after, pageSize)`, `ThreadCommentsPage(threadID, after)` and
+`RollupContextsPage(commitID, number, after)` through `node(id:)`, each
+with the part variables its selections use.
 `PRThreadStatesPage(owner, name, number, after)` continues the thread
 states only when readiness needs them (the base requires conversation
 resolution and the first page has no unresolved thread);
@@ -270,7 +301,9 @@ pipeline recovers once the read succeeds.
 | Tick | GitHub requests |
 |---|---|
 | Pump, a PR within one page per connection | 1 (`PRTick`) |
-| Pump, threads past the body bound only with their reactions | 2 (`PRTick` with reactions, then without) |
+| Pump, threads too large only with their reactions | 2 (`PRTick` with reactions, then without); 1 on later ticks for 10 minutes |
+| Pump, threads that fit only 25 to a page | 3 `PRTick` + the 25-node pages; 1 `PRTick` + the pages on later ticks for 10 minutes |
+| Pump, a part the token may not read | 1 more `PRTick` per refused part; none on later ticks for 10 minutes |
 | CI phase, no followed job | 1 (`PRTick`); + 1 artifacts page per completed run per attempt per 10 minutes |
 | CI phase, a followed running job | 1 (`PRTick`) + 1 jobs-list page per run |
 | CI phase, a followed running job's log | 1 logs request (a 302, then the blob's 404 until it exists, in practice until the job completed) |
@@ -746,9 +779,11 @@ same review: the standing approval or change request when one stands,
 else the latest review. A failed management read never fails or hides
 the PR: `PRManage.Unavailable` says so in one sentence, every flag is
 false and the lists are empty. On GitLab that is the `PRManage` read or
-its probe; on GitHub, a PRTick answer whose every error lies under the
-management selections (the viewer flags, `reviewRequests`, `assignees`,
-`labels`) with the rest decoded; an error anywhere else fails the read. The changes-requested blocker carries
+its probe; on GitHub, a PRTick refused under the management selections
+(the viewer flags, `reviewRequests`, `assignees`, `labels`), which is
+sent again without `wantManage` (see [Reads per tick](#reads-per-tick));
+a team reviewer refused alone leaves out only `wantTeams`, and team
+reviewers are then not offered (`ReviewerTeams`). The changes-requested blocker carries
 the reviews a dismissal needs (`MergeBlocker.ChangeRequests`) and whether
 a GitLab bypass is offered (`Bypassable`); a GitLab bypass that stands is
 a settled row (`Bypassed`).
@@ -921,12 +956,11 @@ been taken" on an add and its 404 on a delete count as that. GitHub's
 groups ride every comment of the threads read (`reactionGroups { content
 viewerHasReacted reactors { totalCount } }` under `@include(if:
 $wantReactions)`), with no request of their own and no names. GitHub
-answers all eight groups of every comment, so a threads read that passes
-its body bound with them runs once more, whole, without them, and says
-"Reactions are not shown: this pull request has too many comments to
-read them."; a read too large without them fails as any read does.
-Nothing remembers that outcome, so each tick may cost the failed
-request again. GitLab's discussions read has no awards, so the read
+answers all eight groups of every comment, so a threads read too large
+with them runs once more, whole, without them, and says "Reactions are
+not shown: this pull request has too many comments to read them."; the
+PR's later reads start there for 10 minutes, and a read still too large
+reads 25 to a page ([Reads per tick](#reads-per-tick)). GitLab's discussions read has no awards, so the read
 adds `MRNoteReactions(fullPath, iid, after)`: the merge request's notes,
 100 per page with each note's first 100 `awardEmoji` (name and
 username), at most 10 pages. It is sent only when the note ids changed,

@@ -393,7 +393,8 @@ func TestReadPRRequestsOnlyTheWantedParts(t *testing.T) {
 		}
 		vars := sent[0].Vars
 		if vars["owner"] != "o" || vars["name"] != "r" || vars["number"] != float64(14571) ||
-			vars["wantDetail"] != tc.detail || vars["wantThreads"] != tc.threads || vars["wantEvents"] != tc.events || vars["wantChecks"] != tc.checks {
+			vars["wantDetail"] != tc.detail || vars["wantThreads"] != tc.threads || vars["wantEvents"] != tc.events || vars["wantChecks"] != tc.checks ||
+			vars["pageSize"] != float64(100) || vars["wantManage"] != true || vars["wantTeams"] != true || vars["wantCheckRuns"] != true || vars["wantWorkflowRuns"] != true {
 			t.Fatalf("%+v: variables = %v", tc.want, vars)
 		}
 		if query != "" && sent[0].Query != query {
@@ -408,8 +409,12 @@ func TestReadPRRequestsOnlyTheWantedParts(t *testing.T) {
 		"viewer @include(if: $wantDetail)",
 		"... @include(if: $wantDetail)",
 		"commits(last: 1) @include(if: $wantChecks)",
-		"reviewThreads(first: 100) @include(if: $wantThreads)",
-		"comments(first: 100) @include(if: $wantThreads)",
+		"reviewThreads(first: $pageSize) @include(if: $wantThreads)",
+		"comments(first: $pageSize) @include(if: $wantThreads)",
+		"... @include(if: $wantManage)",
+		"... on Team @include(if: $wantTeams)",
+		"... on CheckRun @include(if: $wantCheckRuns)",
+		"checkSuite @include(if: $wantWorkflowRuns)",
 		"]) @include(if: $wantEvents)",
 	} {
 		if !strings.Contains(query, gate) {

@@ -71,6 +71,11 @@ type Repo struct {
 	Organization bool     `json:"organization,omitempty"`
 	Labels       []Label  `json:"labels,omitempty"`
 	ServerLacks  []string `json:"serverLacks,omitempty"`
+	// TokenCannotRead is what the viewer's fine-grained GitHub token may
+	// not read: "checks" (check runs) and "actions" (their workflow runs).
+	// A PR read selecting one answers it null with a FORBIDDEN error
+	// (github_read_parts.go).
+	TokenCannotRead []string `json:"tokenCannotRead,omitempty"`
 }
 
 // RepoMerge is a project's merge settings (GitHub repository settings,
