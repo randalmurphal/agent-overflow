@@ -111,7 +111,9 @@ import (
 // included, so the segment's Past list pages a caller's settled rows newest
 // first through it (ListThreadPastAgentRequests).
 // idx_thread_requests_nested_open holds the settled remote spawns
-// with open work there, in the order the sweep pages through them.
+// with open work there, in the order the sweep pages through them, and
+// idx_thread_requests_remote_rest the others, which it pages through at a
+// slower pace to find a thread there that left rest.
 // idx_thread_requests_spawn_target serves the lineage reads by spawned
 // thread. idx_thread_requests_age and idx_thread_request_receipts_age index
 // the age of the rows the retention floor can remove, and
@@ -228,6 +230,9 @@ CREATE INDEX idx_thread_requests_spawn_target
 CREATE INDEX idx_thread_requests_nested_open ON thread_requests(settled_at, token)
   WHERE nested_open = 1 AND settled_at IS NOT NULL AND kind = 'spawn'
     AND target_computer_id <> '' AND lineage_only = 0;
+CREATE INDEX idx_thread_requests_remote_rest ON thread_requests(settled_at, token)
+  WHERE nested_open = 0 AND settled_at IS NOT NULL AND kind = 'spawn'
+    AND target_computer_id <> '' AND target_thread_id <> '' AND lineage_only = 0;
 CREATE INDEX idx_thread_requests_caller_settled
     ON thread_requests(caller_thread_id, settled_at, token);
 CREATE INDEX idx_thread_requests_nested_caller

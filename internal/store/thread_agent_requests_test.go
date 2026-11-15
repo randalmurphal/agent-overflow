@@ -360,6 +360,47 @@ func TestListNestedOpenRemoteSpawnsPagesFromTheLastRow(t *testing.T) {
 	}
 }
 
+// The sweep's slower pass pages through the settled remote spawns at rest
+// the same way, on their own partial index: an open one, one with open
+// work recorded there, a local spawn and a lineage row are none of them.
+func TestListRestingRemoteSpawnsPagesFromTheLastRow(t *testing.T) {
+	t.Parallel()
+	s := newTestStore(t)
+	mustCreateThread(t, s, "lead")
+	mustCreateThread(t, s, "local")
+	for i, token := range []string{"a", "b", "c", "open-there", "unsettled"} {
+		if err := s.InsertThreadRequest(ThreadRequest{Token: token, CallerThreadID: "lead", Kind: ThreadRequestSpawn,
+			TargetThreadID: "there-" + token, TargetComputerID: "peer-1", State: ThreadRequestRunning, CreatedAt: 100, UpdatedAt: 100}); err != nil {
+			t.Fatal(err)
+		}
+		if token != "unsettled" {
+			settleAgentRequest(t, s, token, int64(200+i/2))
+		}
+	}
+	if _, err := s.SetThreadRequestNestedOpen("open-there", true); err != nil {
+		t.Fatal(err)
+	}
+	seedAgentRequest(t, s, "l-local", "lead", ThreadRequestSpawn, "local", false, 100)
+	settleAgentRequest(t, s, "l-local", 199)
+	page := func(at int64, after string) []string {
+		rows, err := s.ListRestingRemoteSpawns(at, after, 2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return agentRequestTokens(rows)
+	}
+	if got := page(0, ""); !slices.Equal(got, []string{"a", "b"}) {
+		t.Fatalf("first page %v", got)
+	}
+	if got := page(200, "b"); !slices.Equal(got, []string{"c"}) {
+		t.Fatalf("page after b %v", got)
+	}
+	plan := queryPlanText(t, s.db, "EXPLAIN QUERY PLAN "+restingRemoteSpawnsSQL(2), int64(0), "")
+	if !strings.Contains(plan, "idx_thread_requests_remote_rest") || strings.Contains(plan, "TEMP B-TREE") {
+		t.Fatalf("the page reads %s", plan)
+	}
+}
+
 // A local spawn may not reach its caller or a thread within four spawns
 // above it: the marks count a path once only while no spawn repeats on it.
 // Each back edge goes to the root of a chain k spawns long, which no spawn

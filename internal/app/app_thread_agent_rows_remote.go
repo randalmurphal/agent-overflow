@@ -23,7 +23,12 @@ import (
 // (`nested_open`), which keeps a settled remote spawn listed while it does;
 // the poller asks again at its own pace while a row says so. The poll that
 // collects a remote spawn's answer asks for its rows too, so a thread that
-// keeps working after it answered is recorded as it settles.
+// keeps working after it answered is recorded as it settles. Nothing there
+// tells this computer when a thread that rested is continued, so the sweep
+// also asks about the settled remote spawns at rest, one page a
+// threadAgentRestPassEvery from a cursor, each once a cycle: an answer that
+// finds one still at rest is kept nowhere and frames nothing, and one that
+// finds it working records it as any answer does.
 //
 // The asking is bounded whatever the number of spawns or computers: one
 // queue of spawns waiting to be asked, each once, at most
@@ -83,6 +88,14 @@ type threadAgentPeerCache struct {
 	// sweepAfter is the last spawn the sweep asked about; the next sweep
 	// starts after it, and from the start once a page comes back short.
 	sweepAfter store.ThreadRequest
+	// restAfter is sweepAfter for the spawns at rest, restPassAt when that
+	// pass last read a page, and restPending whether it found any.
+	restAfter   store.ThreadRequest
+	restPassAt  time.Time
+	restPending bool
+	// probes are the queued or running spawns only the rest pass asked
+	// about: an answer for one that finds it still at rest is not kept.
+	probes map[string]bool
 }
 
 type threadAgentPeerEntry struct {
@@ -158,11 +171,46 @@ func (a *App) refreshPairedPeerAgentRows(spawn store.ThreadRequest, minAge time.
 	if entry, ok := c.entries[spawn.Token]; ok && time.Since(entry.at) < minAge {
 		return
 	}
+	// A read that wants the answer kept is no probe.
+	delete(c.probes, spawn.Token)
 	if c.running[spawn.Token] {
 		c.again[spawn.Token] = spawn
 		return
 	}
 	a.queuePeerAgentRowsLocked(spawn)
+}
+
+// probePairedPeerAgentRows queues a spawn the rest pass found at rest, for
+// a computer the caller found paired, unless it is already queued or being
+// asked about. One with an answer kept, which a pane or the poll asked for,
+// is refreshed as they refresh it.
+func (a *App) probePairedPeerAgentRows(spawn store.ThreadRequest) {
+	c := &a.threadAgentPeers
+	c.mu.Lock()
+	_, kept := c.entries[spawn.Token]
+	busy := c.queued[spawn.Token] || c.running[spawn.Token]
+	c.mu.Unlock()
+	if busy {
+		return
+	}
+	if kept {
+		a.refreshPairedPeerAgentRows(spawn, a.threadAgentRestPassEvery())
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if a.lifeCtx().Err() != nil || c.queued[spawn.Token] || c.running[spawn.Token] {
+		return
+	}
+	if c.probes == nil {
+		c.probes = map[string]bool{}
+	}
+	c.probes[spawn.Token] = true
+	a.queuePeerAgentRowsLocked(spawn)
+	if !c.queued[spawn.Token] && !c.running[spawn.Token] {
+		// Not queued: its computer is backing off, or the app is closing.
+		delete(c.probes, spawn.Token)
+	}
 }
 
 // queuePeerAgentRowsLocked queues one spawn and starts what there is room
@@ -181,7 +229,10 @@ func (a *App) queuePeerAgentRowsLocked(spawn store.ThreadRequest) {
 		dropped := c.waiting[0]
 		c.waiting = append(c.waiting[:0], c.waiting[1:]...)
 		delete(c.queued, dropped.Token)
-		if len(c.rereadCallers) < threadAgentPeerCacheLimit {
+		if c.probes[dropped.Token] {
+			// No pane is waiting on a probe: the next cycle asks again.
+			delete(c.probes, dropped.Token)
+		} else if len(c.rereadCallers) < threadAgentPeerCacheLimit {
 			c.rereadCallers[dropped.CallerThreadID] = struct{}{}
 		}
 	}
@@ -209,6 +260,7 @@ func (a *App) startPeerAgentRowsLocked() {
 		switch {
 		case c.backingOffLocked(computer):
 			delete(c.queued, spawn.Token)
+			delete(c.probes, spawn.Token)
 		case c.inFlight >= threadAgentPeerListsInFlight || c.perComputer[computer] >= threadAgentPeerListsPerComputer:
 			kept = append(kept, spawn)
 		default:
@@ -233,8 +285,14 @@ func (a *App) askPeerAgentRows(spawn store.ThreadRequest) {
 	shutdown := errors.Is(err, context.Canceled) && a.lifeCtx().Err() != nil
 	c := &a.threadAgentPeers
 	c.recording.Lock()
+	c.mu.Lock()
+	// A probe that finds the thread still at rest, or gets no answer, has
+	// nothing to record: the spawn's row already says it is at rest.
+	probe := c.probes[spawn.Token] && (err != nil || !peerListingOpen(listing))
+	delete(c.probes, spawn.Token)
+	c.mu.Unlock()
 	record := !shutdown && a.peerStillPaired(spawn.TargetComputerID)
-	if record {
+	if record && !probe {
 		a.recordPeerOpenWork(spawn, listing, err)
 	}
 	c.mu.Lock()
@@ -246,7 +304,10 @@ func (a *App) askPeerAgentRows(spawn store.ThreadRequest) {
 	again, askAgain := c.again[spawn.Token]
 	delete(c.again, spawn.Token)
 	changed := false
-	if record {
+	switch {
+	case record && probe:
+		c.noteBackoffLocked(spawn.TargetComputerID, err)
+	case record:
 		changed = c.noteAnswerLocked(spawn, listing, err)
 	}
 	var reread []string
@@ -328,13 +389,19 @@ func (a *App) recordPeerOpenWork(spawn store.ThreadRequest, listing ThreadAgentR
 	if err != nil {
 		return
 	}
+	if _, setErr := a.store.SetThreadRequestNestedOpen(spawn.Token, peerListingOpen(listing)); setErr != nil {
+		log.Printf("agent rows: record open work under %s: %v", spawn.Token, setErr)
+	}
+}
+
+// peerListingOpen reports whether an agent_rows answer lists open work or
+// says the spawn's thread is not at rest.
+func peerListingOpen(listing ThreadAgentRows) bool {
 	open := listing.Worker != ""
 	for _, row := range listing.Rows {
 		open = open || row.SettledAt == 0 || row.Worker != ""
 	}
-	if _, setErr := a.store.SetThreadRequestNestedOpen(spawn.Token, open); setErr != nil {
-		log.Printf("agent rows: record open work under %s: %v", spawn.Token, setErr)
-	}
+	return open
 }
 
 // threadAgentPeerRefused reports whether an agent_rows call was refused as
@@ -353,24 +420,7 @@ func (c *threadAgentPeerCache) noteAnswerLocked(spawn store.ThreadRequest, listi
 	if c.entries == nil {
 		c.entries = map[string]*threadAgentPeerEntry{}
 	}
-	if c.backoff == nil {
-		c.backoff = map[string]threadAgentPeerBackoff{}
-	}
-	computer := spawn.TargetComputerID
-	switch {
-	case err == nil:
-		delete(c.backoff, computer)
-	case errors.Is(err, errThreadAgentPeerTimedOut) && !c.backingOffLocked(computer):
-		// Calls that were in flight together time out together: one
-		// outage lengthens the backoff once.
-		backoff := c.backoff[computer]
-		if backoff.next == 0 {
-			backoff.next = threadAgentPeerBackoffFirst
-		}
-		backoff.until = time.Now().Add(backoff.next)
-		backoff.next = min(2*backoff.next, threadAgentPeerBackoffMax)
-		c.backoff[computer] = backoff
-	}
+	c.noteBackoffLocked(spawn.TargetComputerID, err)
 	entry, ok := c.entries[spawn.Token]
 	if !ok {
 		entry = &threadAgentPeerEntry{}
@@ -399,6 +449,27 @@ func (c *threadAgentPeerCache) noteAnswerLocked(spawn store.ThreadRequest, listi
 	return changed
 }
 
+// noteBackoffLocked moves a computer's backoff for one call's outcome.
+func (c *threadAgentPeerCache) noteBackoffLocked(computer string, err error) {
+	if c.backoff == nil {
+		c.backoff = map[string]threadAgentPeerBackoff{}
+	}
+	switch {
+	case err == nil:
+		delete(c.backoff, computer)
+	case errors.Is(err, errThreadAgentPeerTimedOut) && !c.backingOffLocked(computer):
+		// Calls that were in flight together time out together: one
+		// outage lengthens the backoff once.
+		backoff := c.backoff[computer]
+		if backoff.next == 0 {
+			backoff.next = threadAgentPeerBackoffFirst
+		}
+		backoff.until = time.Now().Add(backoff.next)
+		backoff.next = min(2*backoff.next, threadAgentPeerBackoffMax)
+		c.backoff[computer] = backoff
+	}
+}
+
 func errorText(err error) string {
 	if err == nil {
 		return ""
@@ -424,6 +495,7 @@ func (a *App) forgetPeerAgentRows(computerID string) {
 	for _, spawn := range c.waiting {
 		if spawn.TargetComputerID == computerID {
 			delete(c.queued, spawn.Token)
+			delete(c.probes, spawn.Token)
 			continue
 		}
 		kept = append(kept, spawn)
@@ -476,11 +548,14 @@ func (a *App) forgetUnpairedPeerAgentRows() {
 
 // refreshNestedOpenRemoteSpawns asks again about every settled remote spawn
 // whose computer last listed open work, at the poll's pace, until it lists
-// none. A spawn whose computer is no longer paired is forgotten instead.
+// none, then about the ones at rest at the rest pass's
+// (probeRestingRemoteSpawns). A spawn whose computer is no longer paired is
+// forgotten instead.
 func (a *App) refreshNestedOpenRemoteSpawns() {
 	if a.backends == nil {
 		return
 	}
+	defer a.probeRestingRemoteSpawns()
 	c := &a.threadAgentPeers
 	c.mu.Lock()
 	after := c.sweepAfter
@@ -515,4 +590,68 @@ func (a *App) refreshNestedOpenRemoteSpawns() {
 			a.refreshPairedPeerAgentRows(row, a.threadPollNormal())
 		}
 	}
+}
+
+// threadAgentRestPassEvery is the rest pass's pace: one page of the remote
+// spawns at rest every six poll intervals, 30 s at the normal poll.
+func (a *App) threadAgentRestPassEvery() time.Duration {
+	return 6 * a.threadPollNormal()
+}
+
+// probeRestingRemoteSpawns asks, once threadAgentRestPassEvery has passed
+// since its last page, about the next page of settled remote spawns whose
+// computer last listed nothing open there, from where the last page ended
+// and from the start once a page comes back short. Its cost is one indexed
+// page read a pass (idx_thread_requests_remote_rest) and at most
+// threadRequestPollBatch agent_rows calls, through the same queue and
+// bounds as every other: with n spawns at rest each is asked once every
+// ceil(n/threadRequestPollBatch) passes. A computer that runs an older
+// version answers that it cannot list, which records nothing.
+func (a *App) probeRestingRemoteSpawns() {
+	c := &a.threadAgentPeers
+	c.mu.Lock()
+	if time.Since(c.restPassAt) < a.threadAgentRestPassEvery() {
+		c.mu.Unlock()
+		return
+	}
+	c.restPassAt = time.Now()
+	after := c.restAfter
+	c.mu.Unlock()
+	rows, err := a.store.ListRestingRemoteSpawns(after.SettledAt, after.Token, threadRequestPollBatch)
+	if err != nil {
+		logThreadRequestSweep("read remote spawns at rest", err)
+		return
+	}
+	next := store.ThreadRequest{}
+	if len(rows) == threadRequestPollBatch {
+		next = rows[len(rows)-1]
+	}
+	c.mu.Lock()
+	c.restAfter = store.ThreadRequest{SettledAt: next.SettledAt, Token: next.Token}
+	c.restPending = len(rows) > 0 || after.Token != ""
+	c.mu.Unlock()
+	paired := map[string]bool{}
+	for _, row := range rows {
+		known, seen := paired[row.TargetComputerID]
+		if !seen {
+			_, found, err := a.backends.Lookup(row.TargetComputerID)
+			if err != nil {
+				logThreadRequestSweep("look up a remote spawn's computer", err)
+				continue
+			}
+			known, paired[row.TargetComputerID] = found, found
+		}
+		if known {
+			a.probePairedPeerAgentRows(row)
+		}
+	}
+}
+
+// nextRestPass is when the rest pass reads its next page, and whether it
+// has any to read.
+func (a *App) nextRestPass() (time.Time, bool) {
+	c := &a.threadAgentPeers
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.restPassAt.Add(a.threadAgentRestPassEvery()), c.restPending
 }

@@ -695,6 +695,32 @@ func nestedOpenRemoteSpawnsSQL(limit int) string {
 	  ORDER BY settled_at ASC, token ASC LIMIT ` + strconv.Itoa(limit)
 }
 
+// ListRestingRemoteSpawns returns the settled spawns on other computers
+// whose last agent_rows answer listed no open work, after the one settled
+// at afterSettledAt with afterToken, in settled order: the rows the poller
+// asks about at its slower pace, so a thread there continued after it
+// rested is found. A page is one range of idx_thread_requests_remote_rest.
+func (s *Store) ListRestingRemoteSpawns(afterSettledAt int64, afterToken string, limit int) ([]ThreadRequest, error) {
+	if limit < 1 {
+		return nil, fmt.Errorf("store: list resting remote spawns: limit %d", limit)
+	}
+	rows, err := s.reader().Query(restingRemoteSpawnsSQL(limit), afterSettledAt, afterToken)
+	if err != nil {
+		return nil, fmt.Errorf("store: list resting remote spawns: %w", err)
+	}
+	return collectThreadRequests(rows, "store: list resting remote spawns")
+}
+
+// restingRemoteSpawnsSQL reads one page of idx_thread_requests_remote_rest,
+// whose predicate it states.
+func restingRemoteSpawnsSQL(limit int) string {
+	return `SELECT ` + threadRequestColumns + ` FROM thread_requests
+	  WHERE nested_open = 0 AND settled_at IS NOT NULL AND kind = 'spawn'
+	    AND target_computer_id <> '' AND target_thread_id <> '' AND lineage_only = 0
+	    AND (settled_at, token) > (?, ?)
+	  ORDER BY settled_at ASC, token ASC LIMIT ` + strconv.Itoa(limit)
+}
+
 // DisarmThreadRequestWakesForCaller turns `notify` off on every request one
 // thread made. Archiving, deleting or moving the caller uses it so no wake
 // lands on a thread that cannot receive it. It covers a request whose first

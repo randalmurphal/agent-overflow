@@ -769,6 +769,18 @@ Ruling 36, as built:
   counted and out of Past; with no answer remembered, as after a
   restart, its recorded open work keeps it open, waiting. Only an answer
   closes it: rest there, or a refusal of the thread as not the spawn's.
+  Nothing on that computer tells this one when a thread that rested is
+  continued there, so the sweep also asks about the settled remote
+  spawns at rest, one page of 32 every six poll intervals (30 s) from a
+  cursor (`idx_thread_requests_remote_rest`), each once a cycle, through
+  the same in-flight, per-computer and backoff bounds: with n spawns at
+  rest each is asked every ceil(n/32) × 30 s, and the pass makes at most
+  about one call a second however many there are. An answer that finds
+  one still at rest, or none, is kept nowhere and frames nothing; one
+  that finds it working records it, and its row reopens. A computer that
+  runs an older version answers that it cannot list, which records
+  nothing. A remote spawn the retention floor removed here is no longer
+  asked about.
 
 ### At rest
 
