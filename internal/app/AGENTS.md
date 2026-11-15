@@ -201,8 +201,9 @@ that ended with it unconfirmed, a cleared queue), and every open prompt
 routed to a thread a handoff, an archive or a delete takes away
 (`reroutePromptsFrom`), moves through `triage.ReroutePrompts` to where the
 worker's prompts route now, or to the user; it is never left routed to
-nobody. A token answers only the prompt of the worker session that asked it
-(`triage.PromptRef`).
+nobody. A token names one prompt occurrence (`triage.PromptRef`): it
+answers, settles and releases only that prompt, written only to the session
+that asked it, never a later prompt under the same request id.
 
 Project and thread service writes return the current row plus whether durable
 state changed. Emit updates only for changes, while still returning the row to

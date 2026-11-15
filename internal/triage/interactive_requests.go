@@ -124,10 +124,29 @@ func (r *Router) PendingInteractiveRequests(threadID string) provider.PendingInt
 	return snapshot
 }
 
-// PromptRef names one prompt. A request id names a prompt only within the
-// session that asked it (provider.ApprovalRequest.SessionToken): a
-// replacement session can ask again under the same id.
-type PromptRef struct{ ThreadID, RequestID, SessionToken string }
+// PromptRef names one prompt. A request id does not: a session can ask
+// again under an id it resolved, and a replacement session under its
+// predecessor's. The occurrence does (provider.ApprovalRequest.Occurrence).
+type PromptRef struct {
+	ThreadID, RequestID string
+	Occurrence          uint64
+}
+
+// openPromptLocked finds the prompt open under threadID and requestID: its
+// route, occurrence and the session that asked. Caller holds r.mu.
+func (r *Router) openPromptLocked(threadID, requestID string) (route *provider.PromptRoute, occurrence uint64, session string, open bool) {
+	st := r.threadStateIfPresent(threadID)
+	if st == nil {
+		return nil, 0, "", false
+	}
+	if pending, ok := st.pendingApprovals[requestID]; ok {
+		return pending.Request.RoutedTo, pending.Request.Occurrence, pending.Request.SessionToken, true
+	}
+	if request, ok := st.pendingUserInputs[requestID]; ok {
+		return request.RoutedTo, request.Occurrence, request.SessionToken, true
+	}
+	return nil, 0, "", false
+}
 
 // PromptRoute reports whether the prompt ref names is still waiting for an
 // answer, and the thread it is routed to: nil when it is the user's. A
@@ -148,20 +167,11 @@ func (r *Router) PromptRoute(ref PromptRef) (*provider.PromptRoute, bool) {
 
 // promptRouteLocked is PromptRoute under r.mu, returning the held route.
 func (r *Router) promptRouteLocked(ref PromptRef) (*provider.PromptRoute, bool) {
-	if r.frameRetiredLocked(ref.ThreadID, ref.SessionToken) {
+	route, occurrence, session, open := r.openPromptLocked(ref.ThreadID, ref.RequestID)
+	if !open || occurrence != ref.Occurrence || r.frameRetiredLocked(ref.ThreadID, session) {
 		return nil, false
 	}
-	st := r.threadStateIfPresent(ref.ThreadID)
-	if st == nil {
-		return nil, false
-	}
-	if pending, ok := st.pendingApprovals[ref.RequestID]; ok && pending.Request.SessionToken == ref.SessionToken {
-		return pending.Request.RoutedTo, true
-	}
-	if request, ok := st.pendingUserInputs[ref.RequestID]; ok && request.SessionToken == ref.SessionToken {
-		return request.RoutedTo, true
-	}
-	return nil, false
+	return route, true
 }
 
 // ReroutePrompts moves open prompts routed to from, which can no longer
@@ -188,12 +198,12 @@ func (r *Router) ReroutePrompts(from string, refs ...PromptRef) int {
 		for threadID, st := range r.threads {
 			for requestID, pending := range st.pendingApprovals {
 				if routedFrom(pending.Request.RoutedTo) {
-					moving = append(moving, PromptRef{ThreadID: threadID, RequestID: requestID, SessionToken: pending.Request.SessionToken})
+					moving = append(moving, PromptRef{ThreadID: threadID, RequestID: requestID, Occurrence: pending.Request.Occurrence})
 				}
 			}
 			for requestID, request := range st.pendingUserInputs {
 				if routedFrom(request.RoutedTo) {
-					moving = append(moving, PromptRef{ThreadID: threadID, RequestID: requestID, SessionToken: request.SessionToken})
+					moving = append(moving, PromptRef{ThreadID: threadID, RequestID: requestID, Occurrence: request.Occurrence})
 				}
 			}
 		}

@@ -10,6 +10,7 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"agent-overflow/internal/eventchan"
@@ -66,6 +67,9 @@ type Router struct {
 	// the app (SetPromptRouter); nil until then. Leaf lock.
 	promptRouterMu sync.Mutex
 	promptRouter   func(threadID string) *provider.PromptRoute
+	// promptOccurrences numbers every prompt this router registers
+	// (provider.ApprovalRequest.Occurrence), increasing, never reused.
+	promptOccurrences atomic.Uint64
 	// quietTurn names the top-level turns nobody needs to read
 	// (SetQuietTurnClassifier), or is nil. Leaf lock.
 	quietTurnMu sync.Mutex

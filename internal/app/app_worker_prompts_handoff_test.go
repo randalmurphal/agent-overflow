@@ -32,11 +32,11 @@ func TestAWorkerPromptsCurrentRegistrationIsTheOneSettled(t *testing.T) {
 	open := func(triage.PromptRef) bool { return true }
 	for i := range 64 {
 		var prompts workerPrompts
-		old, _ := prompts.add(workerPrompt{workerID: "worker", requestID: "approval-1", agentID: "a"}, open)
+		old, _ := prompts.add(workerPrompt{workerID: "worker", requestID: "approval-1", agentID: "a", occurrence: 1}, open)
 		if _, settled := prompts.settleToken(old.token); !settled {
 			t.Fatal("the first registration was not settled")
 		}
-		next, replaced := prompts.add(workerPrompt{workerID: "worker", requestID: "approval-1", agentID: "b"}, open)
+		next, replaced := prompts.add(workerPrompt{workerID: "worker", requestID: "approval-1", agentID: "b", occurrence: 2}, open)
 		if replaced == nil || replaced.token != old.token || replaced.state != workerPromptSettled {
 			t.Fatalf("replaced = %+v, want the settled first registration", replaced)
 		}
@@ -44,7 +44,11 @@ func TestAWorkerPromptsCurrentRegistrationIsTheOneSettled(t *testing.T) {
 			t.Fatal("a settled registration was settled again")
 		}
 		if i%2 == 0 {
-			prompt, settled := prompts.settle("worker", "approval-1")
+			// The first prompt's resolution is not the current one's.
+			if _, settled := prompts.settle("worker", "approval-1", old.occurrence); settled {
+				t.Fatal("an earlier prompt's resolution settled the later registration")
+			}
+			prompt, settled := prompts.settle("worker", "approval-1", next.occurrence)
 			if !settled || prompt.token != next.token {
 				t.Fatalf("resolution settled %+v (%v), want the current registration %s", prompt, settled, next.token)
 			}
@@ -61,8 +65,8 @@ func TestALaterRegistrationRetiresTheEarlierOne(t *testing.T) {
 	t.Parallel()
 	open := func(triage.PromptRef) bool { return true }
 	var prompts workerPrompts
-	first, _ := prompts.add(workerPrompt{workerID: "worker", requestID: "approval-1", agentID: "a", sessionToken: "s1"}, open)
-	second, replaced := prompts.add(workerPrompt{workerID: "worker", requestID: "approval-1", agentID: "b", sessionToken: "s2"}, open)
+	first, _ := prompts.add(workerPrompt{workerID: "worker", requestID: "approval-1", agentID: "a", occurrence: 1}, open)
+	second, replaced := prompts.add(workerPrompt{workerID: "worker", requestID: "approval-1", agentID: "b", occurrence: 2}, open)
 	if replaced == nil || replaced.token != first.token || replaced.agentID != "a" {
 		t.Fatalf("replaced = %+v, want the first registration", replaced)
 	}
@@ -72,7 +76,7 @@ func TestALaterRegistrationRetiresTheEarlierOne(t *testing.T) {
 	if err := prompts.beginAnswer(second.token, "allow"); err != nil {
 		t.Fatal(err)
 	}
-	third, replaced := prompts.add(workerPrompt{workerID: "worker", requestID: "approval-1", agentID: "c", sessionToken: "s2"}, open)
+	third, replaced := prompts.add(workerPrompt{workerID: "worker", requestID: "approval-1", agentID: "c", occurrence: 2}, open)
 	if replaced == nil || replaced.token != second.token || replaced.state != workerPromptAnswering {
 		t.Fatalf("replaced = %+v, want the registration being answered, left to its answer", replaced)
 	}
@@ -85,16 +89,15 @@ func TestALaterRegistrationRetiresTheEarlierOne(t *testing.T) {
 	}
 }
 
-// The registry closes a routed registration whose prompt is no longer open
-// in the session that asked it.
-func TestAWorkerPromptOfAnEndedSessionIsClosed(t *testing.T) {
+// The registry closes a routed registration whose prompt is no longer open.
+func TestAWorkerPromptNoLongerOpenIsClosed(t *testing.T) {
 	t.Parallel()
 	var prompts workerPrompts
-	ended := map[string]bool{}
-	open := func(ref triage.PromptRef) bool { return !ended[ref.SessionToken] }
-	first, _ := prompts.add(workerPrompt{workerID: "worker", requestID: "approval-1", agentID: "a", sessionToken: "s1"}, open)
-	ended["s1"] = true
-	prompts.add(workerPrompt{workerID: "other", requestID: "approval-9", agentID: "a", sessionToken: "s9"}, open)
+	ended := map[uint64]bool{}
+	open := func(ref triage.PromptRef) bool { return !ended[ref.Occurrence] }
+	first, _ := prompts.add(workerPrompt{workerID: "worker", requestID: "approval-1", agentID: "a", occurrence: 1}, open)
+	ended[1] = true
+	prompts.add(workerPrompt{workerID: "other", requestID: "approval-9", agentID: "a", occurrence: 9}, open)
 	if promptRouted(&prompts, first.token) {
 		t.Fatal("a prompt of an ended session is still routed")
 	}
@@ -257,7 +260,7 @@ func TestAWorkerPromptStampedBeforeAHandoffBelongsToTheSuccessor(t *testing.T) {
 	if !promptRouted(&f.app.workerPrompts, token) {
 		t.Fatal("the prompt is no longer routed after a reply that did not reach the worker")
 	}
-	f.app.settleWorkerPrompt(f.worker.ID, f.request.RequestID)
+	f.app.settleWorkerPrompt(f.worker.ID, f.request.RequestID, openPromptRef(t, f.app.triage, f.worker.ID, f.request.RequestID).Occurrence)
 	if durable, _ := queuedSendIDs(t, f.app, next.ID); slices.Contains(durable, sendID) {
 		t.Fatalf("the successor still holds the wake of a prompt the user answered: %q", durable)
 	}

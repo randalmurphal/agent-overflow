@@ -356,6 +356,11 @@ type ProviderEvent struct {
 	// thread's (triage.Router.MarkThreadActive). Host-originated events
 	// carry none.
 	SessionToken string `json:"-"`
+	// PromptOccurrence names the prompt a host-written approval or
+	// user-input resolution answered (ApprovalRequest.Occurrence), so it
+	// resolves that prompt and no later one asked under the same request
+	// id. Provider frames carry none.
+	PromptOccurrence uint64 `json:"-"`
 }
 
 // MetaTranscriptMirroredKey marks a subagent launch whose sidechain is

@@ -136,9 +136,9 @@ user changes it.
     worker whose spawner is archived, or that was spawned from another
     computer, asks the user, and a prompt left open when its spawner is
     archived or deleted goes back to the user, whether or not the
-    spawner had read it. A prompt's token answers only the prompt the
-    worker's session asked; a later session of the worker asking under
-    the same provider id gets a new token. This supersedes the thread tools non-goal
+    spawner had read it. A prompt's token answers only that prompt; the
+    worker asking again under the same provider id, in the same session
+    or a later one, gets a new token. This supersedes the thread tools non-goal
     of not relaying approval requests, for spawned threads only.
 20. **Other threads' work is an Agents segment, not Background.** The
     requests a thread is owed (spawns, and sends and asks it waits on or

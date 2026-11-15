@@ -17,7 +17,6 @@ import (
 	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/threadtools"
 	"agent-overflow/internal/transport"
-	"agent-overflow/internal/triage"
 )
 
 // workerPromptTokens is the token of each worker prompt wake threadID's
@@ -146,7 +145,7 @@ func TestAnOrdinarySpawnersReplyAfterTheUserAnsweredIsRefused(t *testing.T) {
 	f.drain(t)
 	sendID := f.queuedPrompt(t, f.assistant.ID)
 	token := strings.TrimPrefix(sendID, workerPromptSendIDRoot)
-	f.app.settleWorkerPrompt(f.worker.ID, f.request.RequestID)
+	f.app.settleWorkerPrompt(f.worker.ID, f.request.RequestID, openPromptRef(t, f.app.triage, f.worker.ID, f.request.RequestID).Occurrence)
 	if durable, _ := queuedSendIDs(t, f.app, f.assistant.ID); slices.Contains(durable, sendID) {
 		t.Fatalf("the spawner still holds the wake of a prompt the user answered: %q", durable)
 	}
@@ -362,7 +361,7 @@ func TestAnOldPromptTokenCannotAnswerAReplacementSessionsPrompt(t *testing.T) {
 	stillOpen("the old token's reply")
 	// An answer bound to the ended session is refused at the provider
 	// write, whatever holds the request id now.
-	if err := app.respondToApproval(t.Context(), worker.ID, ended.sessionToken, provider.ApprovalResponse{RequestID: ended.requestID, Decision: "accept"}); !errors.Is(err, transport.ErrAlreadyHandled) {
+	if err := app.respondToApproval(t.Context(), worker.ID, ended.occurrence, provider.ApprovalResponse{RequestID: ended.requestID, Decision: "accept"}); !errors.Is(err, transport.ErrAlreadyHandled) {
 		t.Fatalf("an answer for the ended session: %v, want already handled", err)
 	}
 	stillOpen("an answer for the ended session")
@@ -467,7 +466,7 @@ func TestARemoteRowSaysWhenItsTargetsPromptWentToAThreadThere(t *testing.T) {
 	framed("it became blocked")
 	want(there.assistant.Title, 0)
 
-	if there.app.triage.ReroutePrompts(there.assistant.ID, triage.PromptRef{ThreadID: there.worker.ID, RequestID: there.request.RequestID}) != 1 {
+	if there.app.triage.ReroutePrompts(there.assistant.ID, openPromptRef(t, there.app.triage, there.worker.ID, there.request.RequestID)) != 1 {
 		t.Fatal("the prompt did not go back to the user there")
 	}
 	// Still blocked, now on the person: the row changes all the same.

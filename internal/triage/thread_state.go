@@ -273,13 +273,14 @@ type threadState struct {
 	pendingApprovalItems  map[string]approvalDecision
 	pendingUserInputs     map[string]provider.UserInputRequest
 	pendingUserInputOrder []string
-	// answeredRequests holds the request ids this router has forwarded an
-	// answer for. Several clients render the same prompt, so two of them
+	// answeredRequests holds, by request id, the prompt occurrence this
+	// router has forwarded an answer for (zero for a request it held no
+	// prompt for). Several clients render the same prompt, so two of them
 	// can answer it; this is what makes the second one a loser rather than
 	// a duplicate write to the provider. Bounded like its siblings: an
 	// answered prompt's record is swept at the turn boundary, an open
 	// one's goes with its prompt. See interactive_claim.go.
-	answeredRequests map[string]struct{}
+	answeredRequests map[string]uint64
 
 	// toolCalls caches the placement (parent, turn) of tool_call rows the
 	// session persisted or asked about, so parent validation and scope

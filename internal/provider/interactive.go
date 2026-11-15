@@ -53,9 +53,12 @@ type ApprovalRequest struct {
 	// spawned this thread instead of to the user. Triage stamps it; a
 	// provider never does.
 	RoutedTo *PromptRoute `json:"routedTo,omitempty"`
-	// SessionToken names the host session that asked. A request id names a
-	// prompt only within its session: a replacement session can ask again
-	// under the same id. Triage stamps it; it never leaves the process.
+	// Occurrence names this one prompt. A request id does not: a session
+	// can ask again under an id it resolved, and a replacement session
+	// under its predecessor's. SessionToken is the host session that asked,
+	// the only one an answer may be written to. Triage stamps both; they
+	// never leave the process.
+	Occurrence   uint64 `json:"-"`
 	SessionToken string `json:"-"`
 }
 
@@ -97,6 +100,10 @@ type ApprovalEvent struct {
 	// independently, and suppressing on the device id would put the losing
 	// tab's error on the other one.
 	ConnectionID string `json:"connectionId,omitempty"`
+	// Occurrence names the prompt a resolve settled
+	// (ApprovalRequest.Occurrence); zero when triage held no prompt for it
+	// and the resolution named none.
+	Occurrence uint64 `json:"-"`
 }
 
 // UserInputRequest is sent when a provider needs structured user input.
@@ -121,7 +128,8 @@ type UserInputRequest struct {
 	Questions       []UserInputQuestion `json:"questions"`
 	// RoutedTo is ApprovalRequest.RoutedTo's twin.
 	RoutedTo *PromptRoute `json:"routedTo,omitempty"`
-	// SessionToken is ApprovalRequest.SessionToken's twin.
+	// Occurrence and SessionToken are ApprovalRequest's twins.
+	Occurrence   uint64 `json:"-"`
 	SessionToken string `json:"-"`
 }
 
@@ -142,6 +150,8 @@ type UserInputEvent struct {
 	// reason and with the same rules: set only for action="fail", naming
 	// the page load whose submit failed.
 	ConnectionID string `json:"connectionId,omitempty"`
+	// Occurrence is ApprovalEvent.Occurrence's twin.
+	Occurrence uint64 `json:"-"`
 }
 
 // PendingInteractiveRequests is the app-runtime snapshot of still-open

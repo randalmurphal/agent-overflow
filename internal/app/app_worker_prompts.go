@@ -40,9 +40,10 @@ import (
 // where the worker's prompts route now: the assistant's next thread, or the
 // user.
 //
-// A registration names one prompt of one session of the worker
-// (triage.PromptRef): a later session can ask under the same request id,
-// and an earlier session's token answers nothing of it.
+// A registration names one prompt occurrence (triage.PromptRef): a session
+// can ask again under a request id it resolved, and a replacement session
+// under its predecessor's, and an earlier occurrence's token answers,
+// settles and releases nothing of a later one.
 //
 // The record of a routed prompt lives in memory only: a provider prompt
 // lives no longer than the worker's session, and none survives a restart.
@@ -77,11 +78,11 @@ type workerPrompt struct {
 	workerID  string
 	agentID   string
 	requestID string
-	// sessionToken is the worker's session that asked.
-	sessionToken string
-	approval     *provider.ApprovalRequest
-	question     *provider.UserInputRequest
-	state        workerPromptState
+	// occurrence is the prompt's (provider.ApprovalRequest.Occurrence).
+	occurrence uint64
+	approval   *provider.ApprovalRequest
+	question   *provider.UserInputRequest
+	state      workerPromptState
 	// answer is what the agent sent, so a retry of the same answer is
 	// recognized.
 	answer   string
@@ -91,7 +92,7 @@ type workerPrompt struct {
 func (p *workerPrompt) sendID() string { return workerPromptSendIDRoot + p.token }
 
 func (p *workerPrompt) ref() triage.PromptRef {
-	return triage.PromptRef{ThreadID: p.workerID, RequestID: p.requestID, SessionToken: p.sessionToken}
+	return triage.PromptRef{ThreadID: p.workerID, RequestID: p.requestID, Occurrence: p.occurrence}
 }
 
 // workerPromptKey names one prompt of one worker.
@@ -140,22 +141,22 @@ func (a *App) tapWorkerPrompt(name eventchan.Channel, data any) {
 		if !ok {
 			return
 		}
-		action, prompt = event.Action, workerPrompt{workerID: event.ThreadID, requestID: event.RequestID}
+		action, prompt = event.Action, workerPrompt{workerID: event.ThreadID, requestID: event.RequestID, occurrence: event.Occurrence}
 		if request := event.Request; request != nil {
 			copied := *request
 			route, prompt.approval = copied.RoutedTo, &copied
-			prompt.workerID, prompt.requestID, prompt.sessionToken = copied.ThreadID, copied.RequestID, copied.SessionToken
+			prompt.workerID, prompt.requestID, prompt.occurrence = copied.ThreadID, copied.RequestID, copied.Occurrence
 		}
 	case eventchan.ProviderUserInput:
 		event, ok := data.(provider.UserInputEvent)
 		if !ok {
 			return
 		}
-		action, prompt = event.Action, workerPrompt{workerID: event.ThreadID, requestID: event.RequestID}
+		action, prompt = event.Action, workerPrompt{workerID: event.ThreadID, requestID: event.RequestID, occurrence: event.Occurrence}
 		if request := event.Request; request != nil {
 			copied := *request
 			route, prompt.question = copied.RoutedTo, &copied
-			prompt.workerID, prompt.requestID, prompt.sessionToken = copied.ThreadID, copied.RequestID, copied.SessionToken
+			prompt.workerID, prompt.requestID, prompt.occurrence = copied.ThreadID, copied.RequestID, copied.Occurrence
 		}
 	default:
 		return
@@ -165,7 +166,7 @@ func (a *App) tapWorkerPrompt(name eventchan.Channel, data any) {
 		to := *route
 		a.workerPrompts.queue.Go(func() { a.deliverWorkerPrompt(to, prompt) })
 	case action == "request" && (prompt.approval != nil || prompt.question != nil), action == "resolve":
-		a.workerPrompts.queue.Go(func() { a.settleWorkerPrompt(prompt.workerID, prompt.requestID) })
+		a.workerPrompts.queue.Go(func() { a.settleWorkerPrompt(prompt.workerID, prompt.requestID, prompt.occurrence) })
 	}
 }
 
@@ -253,12 +254,12 @@ func (a *App) workerPromptOpenTo(prompt workerPrompt) bool {
 	return open && route != nil && route.ThreadID == prompt.agentID
 }
 
-// settleWorkerPrompt records that a routed prompt was resolved, or was
-// announced as the user's. Unless the agent's own answer resolved it, the
-// user answered it in the worker, the worker stopped waiting or the prompt
-// went to the user, and a wake still queued is withdrawn.
-func (a *App) settleWorkerPrompt(workerID, requestID string) {
-	prompt, settled := a.workerPrompts.settle(workerID, requestID)
+// settleWorkerPrompt records that the prompt occurrence names was resolved,
+// or was announced as the user's. Unless the agent's own answer resolved
+// it, the user answered it in the worker, the worker stopped waiting or the
+// prompt went to the user, and a wake still queued is withdrawn.
+func (a *App) settleWorkerPrompt(workerID, requestID string, occurrence uint64) {
+	prompt, settled := a.workerPrompts.settle(workerID, requestID, occurrence)
 	if !settled {
 		return
 	}
@@ -345,9 +346,9 @@ func (a *App) answerWorkerPrompt(ctx context.Context, caller threadtools.Caller,
 	}
 	// The answer goes to the session that asked, or nowhere.
 	if approval != nil {
-		err = a.respondToApproval(ctx, prompt.workerID, prompt.sessionToken, *approval)
+		err = a.respondToApproval(ctx, prompt.workerID, prompt.occurrence, *approval)
 	} else {
-		err = a.respondToUserInput(ctx, prompt.workerID, prompt.sessionToken, *question)
+		err = a.respondToUserInput(ctx, prompt.workerID, prompt.occurrence, *question)
 	}
 	if err != nil {
 		if errors.Is(err, transport.ErrAlreadyHandled) {
@@ -537,17 +538,20 @@ func (w *workerPrompts) get(token string) (workerPrompt, bool) {
 }
 
 // settle closes the current registration of a worker's prompt, for a
-// resolution in the worker. Settled is false when it is not routed,
-// including when the agent is answering or answered it: that answer is what
-// resolved it.
-func (w *workerPrompts) settle(workerID, requestID string) (workerPrompt, bool) {
+// resolution in the worker of occurrence upTo. Occurrences only grow, so a
+// registration of a later prompt under the same request id is not upTo's
+// to close, and zero, a resolution that named no prompt, closes nothing.
+// Settled is false when it is not routed, including when the agent is
+// answering or answered it: that answer is what resolved it.
+func (w *workerPrompts) settle(workerID, requestID string, upTo uint64) (workerPrompt, bool) {
 	w.mu.Lock()
-	token := w.current[workerPromptKey{workerID: workerID, requestID: requestID}]
-	w.mu.Unlock()
-	if token == "" {
+	defer w.mu.Unlock()
+	prompt := w.byToken[w.current[workerPromptKey{workerID: workerID, requestID: requestID}]]
+	if prompt == nil || prompt.occurrence > upTo || prompt.state != workerPromptRouted {
 		return workerPrompt{}, false
 	}
-	return w.settleToken(token)
+	prompt.state, prompt.closedAt = workerPromptSettled, time.Now()
+	return *prompt, true
 }
 
 // settleToken closes the registration under token when it is routed.

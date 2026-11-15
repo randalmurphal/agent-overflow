@@ -1,6 +1,7 @@
 package triage
 
 import (
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -102,25 +103,50 @@ func (f *promptRouteFixture) wantRoute(t *testing.T, ref PromptRef, open bool, t
 	}
 }
 
-// A request id names a prompt only within the session that asked it: a
-// session a replacement took the thread from, with or without a cleanup,
-// has no open prompt, whatever the replacement asked under the same id.
-func TestAPromptIsOpenOnlyInTheSessionThatAskedIt(t *testing.T) {
+// open names the prompt open on threadID under requestID.
+func (f *promptRouteFixture) open(t *testing.T, threadID, requestID string) PromptRef {
+	t.Helper()
+	f.router.mu.Lock()
+	defer f.router.mu.Unlock()
+	_, occurrence, _, open := f.router.openPromptLocked(threadID, requestID)
+	if !open {
+		t.Fatalf("no prompt open on %s under %s", threadID, requestID)
+	}
+	return PromptRef{ThreadID: threadID, RequestID: requestID, Occurrence: occurrence}
+}
+
+// A request id does not name a prompt: a session can ask again under an id
+// it resolved, and a replacement session under its predecessor's. Each
+// prompt is its own occurrence, and one of a session that no longer holds
+// the thread is not open, whatever was asked under the same id since.
+func TestAPromptIsOpenOnlyAsTheOccurrenceThatAskedIt(t *testing.T) {
 	t.Parallel()
 	f := newPromptRouteFixture(t)
 	f.route("worker", "lead")
 	f.router.MarkThreadActive("worker", "s1")
 	f.approval(t, "worker", "req", "s1")
-	first := PromptRef{ThreadID: "worker", RequestID: "req", SessionToken: "s1"}
+	first := f.open(t, "worker", "req")
 	f.wantRoute(t, first, true, "lead")
+
+	// The same session resolves it and asks again under the same id.
+	if err := f.router.Handle(provider.ProviderEvent{
+		Kind: provider.EventApprovalResolved, ThreadID: "worker", ItemID: "req", SessionToken: "s1",
+		Meta: mustMarshalJSON(t, map[string]any{"requestId": "req", "decision": "approved"}), Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	f.approval(t, "worker", "req", "s1")
+	again := f.open(t, "worker", "req")
+	f.wantRoute(t, first, false, "")
+	f.wantRoute(t, again, true, "lead")
 
 	// A start that replaces the live session keeps the thread's state, and
 	// the first session's prompt with it.
 	f.router.MarkThreadActive("worker", "s2")
-	f.wantRoute(t, first, false, "")
+	f.wantRoute(t, again, false, "")
 	f.approval(t, "worker", "req", "s2")
-	second := PromptRef{ThreadID: "worker", RequestID: "req", SessionToken: "s2"}
-	f.wantRoute(t, first, false, "")
+	second := f.open(t, "worker", "req")
+	f.wantRoute(t, again, false, "")
 	f.wantRoute(t, second, true, "lead")
 
 	f.router.CleanupThread("worker")
@@ -128,7 +154,7 @@ func TestAPromptIsOpenOnlyInTheSessionThatAskedIt(t *testing.T) {
 	f.router.MarkThreadActive("worker", "s3")
 	f.question(t, "worker", "req", "s3")
 	f.wantRoute(t, second, false, "")
-	f.wantRoute(t, PromptRef{ThreadID: "worker", RequestID: "req", SessionToken: "s3"}, true, "lead")
+	f.wantRoute(t, f.open(t, "worker", "req"), true, "lead")
 }
 
 // ReroutePrompts moves every open prompt routed to a thread to where the
@@ -145,12 +171,12 @@ func TestReroutePromptsMovesThePromptsOfOneRecipient(t *testing.T) {
 	f.approval(t, "handed", "approve", "s-handed")
 	f.question(t, "orphan", "ask", "s-orphan")
 	f.approval(t, "other", "approve-other", "s-other")
-	handed := PromptRef{ThreadID: "handed", RequestID: "approve", SessionToken: "s-handed"}
-	orphan := PromptRef{ThreadID: "orphan", RequestID: "ask", SessionToken: "s-orphan"}
-	other := PromptRef{ThreadID: "other", RequestID: "approve-other", SessionToken: "s-other"}
+	handed, orphan, other := f.open(t, "handed", "approve"), f.open(t, "orphan", "ask"), f.open(t, "other", "approve-other")
 
-	// Narrowed to a prompt of a session that did not ask it, nothing moves.
-	if moved := f.router.ReroutePrompts("lead", PromptRef{ThreadID: "handed", RequestID: "approve", SessionToken: "s-old"}); moved != 0 {
+	// Narrowed to an earlier prompt under the same id, nothing moves.
+	stale := handed
+	stale.Occurrence--
+	if moved := f.router.ReroutePrompts("lead", stale); moved != 0 {
 		t.Fatalf("a stale ref moved %d prompts", moved)
 	}
 	f.route("handed", "next")
@@ -166,7 +192,7 @@ func TestReroutePromptsMovesThePromptsOfOneRecipient(t *testing.T) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for requestID, want := range map[string][]string{"approve": {"lead", "next"}, "ask": {"lead", ""}, "approve-other": {"elsewhere"}} {
-		if got := f.announced[requestID]; len(got) != len(want) || got[len(got)-1] != want[len(want)-1] {
+		if got := f.announced[requestID]; !slices.Equal(got, want) {
 			t.Errorf("%s announced with routes %q, want %q", requestID, got, want)
 		}
 	}
