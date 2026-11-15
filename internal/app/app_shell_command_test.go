@@ -449,7 +449,7 @@ func TestACommandDoesNotNameTheWorktreeBranch(t *testing.T) {
 	}
 	// The same thread shape names its branch from a prompt.
 	prompted := temporaryWorktreeThread("thread-prompt-branch")
-	if err := app.SendMessage(prompted.ID, "add the settings page", nil); err != nil {
+	if err := app.SendMessage(context.Background(), prompted.ID, "add the settings page", nil); err != nil {
 		t.Fatal(err)
 	}
 	if len(named) != 1 || named[0] != "add the settings page" {
@@ -604,7 +604,7 @@ func TestResendingACommandMessageSendsTheSameBlock(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The bound composer entry point, which opts into command expansion.
-	if err := app.SendMessage(thread.ID, "!ls /workflow", []string{record.ID}); err != nil {
+	if err := app.SendMessage(context.Background(), thread.ID, "!ls /workflow", []string{record.ID}); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 	texts := waitForCapturedUserMessages(t, capturePath, 1)

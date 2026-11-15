@@ -58,12 +58,13 @@ type CodexReviewStarted struct {
 // The review is a real, billed turn and it is not steerable, so callers should
 // offer it only on an idle thread.
 //
-// LocalOnly: it drives the thread's live provider subprocess.
-//
 //ao:scope threads:operate
 func (a *App) StartCodexReview(ctx context.Context, threadID string, target CodexReviewTarget) (CodexReviewStarted, error) {
 	if a.shuttingDown.Load() {
 		return CodexReviewStarted{}, ErrShuttingDown
+	}
+	if err := a.requireAutonomyForThread(ctx, threadID, ""); err != nil {
+		return CodexReviewStarted{}, err
 	}
 	thread, err := a.store.GetThread(strings.TrimSpace(threadID))
 	if err != nil {

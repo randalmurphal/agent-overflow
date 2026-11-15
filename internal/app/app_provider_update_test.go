@@ -369,7 +369,7 @@ func TestProviderUpdateRunReconcilesStaleSessions(t *testing.T) {
 	if err := app.StartSession(thread.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := app.SendMessage(thread.ID, "hi", nil); err != nil {
+	if err := app.SendMessage(context.Background(), thread.ID, "hi", nil); err != nil {
 		t.Fatal(err)
 	}
 	bus.nextProviderEventOfKind(t, provider.EventInit, 5*time.Second)

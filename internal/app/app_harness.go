@@ -373,7 +373,7 @@ func (h *harnessHost) PublishStoreIdentity(identity store.Identity) {
 }
 
 func (h *harnessHost) SendMessage(threadID, message string) error {
-	return h.app.SendMessage(threadID, message, nil)
+	return h.app.SendMessage(context.Background(), threadID, message, nil)
 }
 
 var _ harnessrpc.Host = (*harnessHost)(nil)

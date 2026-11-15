@@ -267,11 +267,11 @@ func TestSendMessageExpandsComposerCommandOnTheWireOnly(t *testing.T) {
 	const plainText = "and then tell me what happened"
 	// The bound wire method, not the internal helper: expansion is an
 	// explicit opt-in that only the composer-facing entry points set.
-	if err := app.SendMessage(thread.ID, commandText, nil); err != nil {
+	if err := app.SendMessage(context.Background(), thread.ID, commandText, nil); err != nil {
 		t.Fatalf("send command message: %v", err)
 	}
 	acknowledgeMockClaudeSend(t, app, thread.ID)
-	if err := app.SendMessage(thread.ID, plainText, nil); err != nil {
+	if err := app.SendMessage(context.Background(), thread.ID, plainText, nil); err != nil {
 		t.Fatalf("send plain message: %v", err)
 	}
 	_ = sess.Close()

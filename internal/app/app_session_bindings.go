@@ -49,9 +49,12 @@ func (a *App) StopSession(threadID string) error {
 // content. The options-aware path below owns newer composer controls.
 //
 //ao:scope threads:operate
-func (a *App) SendMessage(threadID string, content string, attachmentIDs []string) error {
+func (a *App) SendMessage(ctx context.Context, threadID string, content string, attachmentIDs []string) error {
 	if a.shuttingDown.Load() {
 		return ErrShuttingDown
+	}
+	if err := a.requireAutonomyForThread(ctx, threadID, ""); err != nil {
+		return err
 	}
 	_, err := a.sendMessageWithOptions(context.Background(), threadID, content, sendMessageOptions{
 		AttachmentIDs: attachmentIDs,

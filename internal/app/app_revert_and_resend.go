@@ -102,6 +102,9 @@ func (a *App) RevertConversationAndResendMessage(
 	if a.shuttingDown.Load() {
 		return result, ErrShuttingDown
 	}
+	if err := a.requireAutonomyForThread(ctx, threadID, ""); err != nil {
+		return result, err
+	}
 	if strings.TrimSpace(threadID) == "" {
 		return result, errors.New("revert and resend: thread id is required")
 	}
