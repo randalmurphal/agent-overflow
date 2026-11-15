@@ -107,7 +107,9 @@ made it: never commit it, attach it to a run, or publish it.
    corpus root is copied in). A read-only census records the schema version,
    project, thread, archived, pinned, group, turn, item and payload counts,
    payload bytes, every thread's top-level item count, and every table's row
-   count.
+   count. Threads are counted as the listings return them (`owned_threads`,
+   hidden modes out of the archived count), so a holder, the retired source
+   a pointer fork still reads, is not a thread.
 2. The candidate's gated headless boot, started as the Windows launcher
    starts it (`--refuse-pending-migrations`), answers `/bootstrap.json` with
    the `migrations-pending` refusal naming the database's version, and runs
@@ -122,22 +124,31 @@ made it: never commit it, attach it to a run, or publish it.
    ceilings in `upgrade-corpus-config.ts`, pinned to the Go constants by
    `internal/wsllauncher/release_upgrade_mirror_test.go`). The gated boots
    are held to the launcher's probe deadline the same way.
-4. The migrated store is compared with the launcher's snapshot, table by
-   table, on the columns both schemas share: every pre-migration row must
+4. The store the trial left is compared with the launcher's snapshot,
+   table by table, on the columns both schemas share
+   (`e2e/tests/upgrade-corpus-fingerprint.ts`): every pre-migration row must
    still be present unchanged (`EXCEPT` over the snapshot attached
-   read-only), every table must still exist, and no table may shrink. A
-   migration that intentionally rewrites, moves or drops old rows declares
-   it in `migrationExceptions` with the migration version and the reason;
-   the entry applies only while its version lies in the span a run
-   migrates, and an entry at or below a lineage corpus's version fails the
-   run as stale, so the list empties itself as releases pass. A real data
-   root (`--corpus`) can sit at any version and skips that rule. Progress tables
-   that delete their rows as a boot finishes their work are listed in
+   read-only), every table must still exist, and no table may shrink. The
+   trial both migrates and boots, so when any row changed the snapshot is
+   copied and migrated alone (`TestMigrateHarnessDatabase` in
+   `bin/ao-store-test`, the store's open and nothing else): a row that copy
+   changed is the migrations' doing, a row it kept and the trial changed
+   is the boot's. A migration that intentionally rewrites, moves or drops
+   old rows declares it in `migrationExceptions` with the migration
+   version and the reason; the entry applies only while its version lies
+   in the span a run migrates, and an entry at or below a lineage corpus's
+   version fails the run as stale, so the list empties itself as releases
+   pass. A real data root (`--corpus`) can sit at any version and skips
+   that rule. A boot may change only rows the previous process left live,
+   as a `recoveryRules` entry declares (below). Derived columns no read
+   serves are listed in `fingerprintIgnoredColumns`; progress tables that
+   delete their rows as a boot finishes their work are listed in
    `countIgnoredTables`.
 5. A candidate harness boot on the same root reports the build's schema
    through `HarnessStoreStatus`, and `ListProjects`,
    `HarnessListThreadRows`, `ListArchivedThreads` and `ListThreadGroups`
-   return the counts the previous release wrote.
+   return the counts the previous release wrote, less the threads the
+   trial's boot removed under a recovery rule.
 6. A real browser page shows every project, shows thread rows, and opens the
    largest thread through the sidebar search until its first timeline row
    paints. No uncaught page error, and the frontend error log stays empty;
@@ -149,8 +160,10 @@ made it: never commit it, attach it to a run, or publish it.
    the migration: projects, threads, archived, pinned and groups are
    exactly what the previous release wrote; turns, items, payloads and
    payload bytes never shrink, in total or in any thread; every table
-   still exists and none shrank, with the same exceptions as step 4. A
-   repair may add rows (a carrier, a fork's own copy of shown history);
+   still exists and none shrank, with the same exceptions as step 4. The
+   rows the trial's boot removed under a recovery rule (the fingerprint's
+   `recoveryRemoved`) are the only allowed shrink: by table, by thread, and
+   the entities of the threads removed whole. A repair may add rows (a carrier, a fork's own copy of shown history);
    the report carries every count's delta, tables included, so an
    addition is visible.
 9. `__update-discard` commits the update, as the launcher does.
@@ -167,10 +180,63 @@ fingerprint, the reads, the UI timings, the final deferred status, the
 census deltas and the empty tables. The report is attached to the
 Playwright result; `RELEASE_UPGRADE_REPORT=<file>` writes it elsewhere.
 
-`e2e/tests/upgrade-corpus-config.ts` is the one file a migration author
-touches: the mirrored launcher limits, `migrationExceptions`,
-`fingerprintIgnoredTables` and `countIgnoredTables`. Every failure message
-names the entry to add.
+`e2e/tests/upgrade-corpus-config.ts` is the one file a migration or boot
+writer author touches: the mirrored launcher limits, `migrationExceptions`,
+`recoveryRules`, `fingerprintIgnoredTables`, `fingerprintIgnoredColumns`
+and `countIgnoredTables`. Every failure message names the entry to add.
+
+## What a real data root compares
+
+A clone of a database whose app was running carries that app's work in
+flight: open turns, running tool calls and agents, background launches no
+session will report, queued messages, open agent requests, running workflow
+runs. The update trial's boot settles them before the fingerprint reads the
+store, exactly as the source's own next boot would, so a real root's
+fingerprint always shows boot changes. A lineage corpus was written by a
+process that stopped cleanly and normally shows none.
+
+Each `recoveryRules` entry names one boot writer (the Go function), the
+table it writes, the snapshot rows it selects (an SQL condition over the
+snapshot row `s`, mirroring the writer's own selection), the columns or
+`meta` keys it may change, a condition the booted row `b` must meet, and
+whether it deletes rows. A writer that deletes whole threads (terminal
+threads, interrupted forks) has a `table: '*'` entry whose `rows` selects
+the thread ids; it explains every removed row of theirs in a table with a
+`thread_id`. Stamps follow writes, never stand alone: a row's
+`rev`, the thread's `history_rev` and `history_epoch`, and a subagent card
+may move only in a thread whose `items` rows the boot changed, removed or
+added (`rows: 'thread-write'`). A boot change no entry explains fails the
+run, and so does any removed or changed row of settled history: nothing
+selects a settled row.
+
+`ao-harness clone` carries the database (a consistent `VACUUM INTO` of the
+running app's store, live rows included) and attachments, with session
+handles scrubbed, `ui_state` emptied and workspaces relocated to throwaway
+repositories. It carries no runtime files: no
+locks, control or port files, shell-run records, review diff snapshots,
+remote-job logs or update records. The rows the source's next boot would
+settle are all in the database, so the clone's boot settles the same rows.
+
+## Reading a recovery report
+
+The report's `fingerprint` carries `changedRows` (every compared table's
+old rows the trial left missing or changed), `migrationChangedRows` (the
+same against the snapshot migrated alone; present once any row changed),
+`recovery` (each rule that explained a change, with its writer, table and
+row count), `bootUnexplained` (the boot's changes no rule explains, by key
+and changed columns, at most 50 per table), `stampsOfUnexplained` (the
+stamps those writes moved in their threads), `recoveryRemoved` (the rows the
+rules removed, which the census allows) and `failures`. A rule's count
+says how much the dead process left live: a clone taken with two agents
+running shows their launches, their running rows, their cards and the
+stamps those writes moved. `upgrade-corpus-recovery.spec.ts` in `make e2e`
+kills a harness with an open turn, a running background agent, a finished
+one, a queued message, a terminal thread and a holder, runs the launcher's
+snapshot and trial on its root, and holds the report and the census to the
+rules it must show; it also proves that an altered settled row, a deleted
+settled user row and a stamp moved in an unwritten thread fail as the
+boot's doing, and a change the migrated copy also carries fails as the
+migrations'.
 
 ## Where it runs
 
@@ -213,7 +279,9 @@ and verified against the release's `SHASUMS256`, so the check runs on
 Linux (a developer's WSL or a CI runner). The migration and store code is
 platform-neutral; the macOS and Windows release legs are covered by their
 own smokes. The sandbox is replaced on every run and needs roughly three
-times the corpus size while the launcher's snapshot exists.
+times the corpus size while the launcher's snapshot exists, and a fourth
+while the fingerprint holds the snapshot migrated alone, which it makes
+only when a row changed (on a real root, always).
 `AO_RELEASE_UPGRADE_KEEP=1` keeps it; the Playwright annotation names the
 path. The candidate is `bin/agent-overflow` from `make harness-build`, or
 `AO_HARNESS_BIN`: the release workflow points it at the release's own
@@ -233,10 +301,18 @@ headless binary.
   launcher would have killed this migration on a user's machine. Report
   progress more often or make the migration cheaper; the limit is the
   product's, not the check's.
-- The fingerprint names a table with missing or changed pre-migration
-  rows: a migration in the span altered old data. If that is the
-  migration's intent, declare it in `migrationExceptions`; otherwise the
-  migration lost or altered user data.
+- The fingerprint names a migration (`migration vN left ... rows missing
+  or changed in T`): the snapshot migrated alone shows the change, so a
+  migration in the span altered old data. If that is the migration's
+  intent, declare it in `migrationExceptions`; otherwise the migration
+  lost or altered user data.
+- The fingerprint names the boot (`the candidate's boot, after the
+  migrations, removed or changed rows ...`): the migrated copy kept those
+  rows and the trial's boot changed them, and no `recoveryRules` entry
+  selects them. The message lists each row by key with its changed
+  columns, and the stamps those writes moved. A row of settled history is
+  a boot defect. A row that was live when the root was cloned, settled by
+  a boot writer no entry covers, needs an entry naming that writer.
 - A count differs after the migration: a migration dropped or duplicated
   rows. The census compares per thread, so the failing diff names the
   thread; a shrunken table names the `countIgnoredTables` or

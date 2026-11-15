@@ -115,8 +115,11 @@ type QueueDraftRestore struct {
 
 // QueueDraftRestored is what a restore wrote.
 type QueueDraftRestored struct {
-	// DraftChanged reports whether the composer row changed.
-	DraftChanged bool
+	// Draft is the composer write: whether it changed the row and whether
+	// it listed the thread. The rows the restore retires cannot unlist a
+	// thread the draft's content lists, so the listing holds for the whole
+	// transaction.
+	Draft DraftWrite
 	// Returned are the review comments the retired rows claimed, now drafts
 	// again.
 	Returned []DiffReviewReturnedComments
@@ -154,7 +157,7 @@ func (s *Store) RestoreFlushQueueToDraft(r QueueDraftRestore) (QueueDraftRestore
 			return fmt.Errorf("composer changed during queue restoration; queue retained")
 		}
 		if r.Merged != r.Expected {
-			if out.DraftChanged, err = upsertThreadDraft(tx, r.Merged); err != nil {
+			if out.Draft, err = upsertThreadDraft(tx, r.Merged); err != nil {
 				return err
 			}
 		}

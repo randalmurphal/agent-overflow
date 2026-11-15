@@ -41,11 +41,11 @@ func TestRestoreFlushQueueToDraftRetiresRowsInTheSameTransaction(t *testing.T) {
 	}
 	merged := expected
 	merged.Content = "unconfirmed\n\nqueued"
-	restore := func() (bool, []DiffReviewReturnedComments, error) {
+	restore := func() (DraftWrite, []DiffReviewReturnedComments, error) {
 		written, err := s.RestoreFlushQueueToDraft(QueueDraftRestore{
 			Expected: expected, Merged: merged, QueueItemIDs: []string{"queue"}, RetireItemIDs: []string{"user:1:flush:1"},
 		})
-		return written.DraftChanged, written.Returned, err
+		return written.Draft, written.Returned, err
 	}
 	state := func() string {
 		t.Helper()
@@ -82,9 +82,11 @@ func TestRestoreFlushQueueToDraftRetiresRowsInTheSameTransaction(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	changed, returned, err := restore()
-	if err != nil || !changed {
-		t.Fatalf("RestoreFlushQueueToDraft = %v, %v", changed, err)
+	// The thread was listed by its unconfirmed row and stays listed by the
+	// draft, so the restore lists nothing.
+	write, returned, err := restore()
+	if err != nil || write != (DraftWrite{Changed: true}) {
+		t.Fatalf("RestoreFlushQueueToDraft = %+v, %v; want changed only", write, err)
 	}
 	if got, want := state(), `draft="unconfirmed\n\nqueued" row=false queued=0 comment=draft`; got != want {
 		t.Fatalf("after the restore %s, want %s", got, want)

@@ -1802,9 +1802,18 @@ var listThreadsQuery = `SELECT ` + threadColumns + ` FROM owned_threads AS threa
 // ALL, the one shape where SQLite can decline to push the term into the
 // arms and scan `items` once per sidebar row (see importedItemRevExpr).
 func listThreadsWithItemsQuery() (string, []any) {
-	hiddenClause, hiddenArgs := hiddenThreadModesClause("mode")
+	listed, args := sidebarListedClause()
 	return `SELECT ` + threadColumns + ` FROM owned_threads AS threads
-		 WHERE archived = 0 AND ` + hiddenClause + `
+		 WHERE ` + listed + `
+		 ORDER BY updated_at DESC`, args
+}
+
+// sidebarListedClause is the condition, on a row of owned_threads aliased
+// `threads`, for the thread to be listed in the sidebar
+// (ListThreadsWithItems).
+func sidebarListedClause() (string, []any) {
+	hiddenClause, hiddenArgs := hiddenThreadModesClause("threads.mode")
+	return `threads.archived = 0 AND ` + hiddenClause + `
 		   AND (
 		       threads.fork_preparing = 1
 		    OR threads.mode = 'terminal'
@@ -1815,6 +1824,17 @@ func listThreadsWithItemsQuery() (string, []any) {
 		          WHERE thread_drafts.thread_id = threads.id
 		            AND thread_drafts.has_content = 1
 		       )
-		   )
-		 ORDER BY updated_at DESC`, hiddenArgs
+		   )`, hiddenArgs
+}
+
+// threadListed reports whether ListThreadsWithItems lists the thread.
+func threadListed(q sqlQueryer, threadID string) (bool, error) {
+	listed, args := sidebarListedClause()
+	var yes bool
+	err := q.QueryRow(`SELECT EXISTS (SELECT 1 FROM owned_threads AS threads WHERE threads.id = ? AND `+listed+`)`,
+		append([]any{threadID}, args...)...).Scan(&yes)
+	if err != nil {
+		return false, fmt.Errorf("store: thread %s listed: %w", threadID, err)
+	}
+	return yes, nil
 }

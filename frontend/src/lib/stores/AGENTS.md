@@ -221,7 +221,9 @@ Change thread, project and group rows through the catalog writer's `mutate`,
 a pure transform that `computerCatalogReads.ts` records for the reads of that
 computer in flight and replays over their answers. A pushed or local change
 must never drop an answer: nothing would re-read a catalog that has not
-loaded.
+loaded. The transform carries the change's whole meaning over any answer: a
+`listed` frame upserts its row (`listThread`, `listProjectLocal`), since the
+answer it replays over may lack a row the client already held.
 
 Frontend preferences and appearance libraries remain local to the frontend and
 survive host removal. Mirror only generated `FRONTEND_DEVICE_SETTINGS_KEYS` to

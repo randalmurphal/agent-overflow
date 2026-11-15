@@ -42,6 +42,7 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 		EventLogRedactor: newCodexProviderEventLogRedactor(),
 		ThreadID:         threadID,
 		Provider:         string(provider.Codex),
+		Reaper:           cfg.Reaper,
 	})
 	if err != nil {
 		cancel()

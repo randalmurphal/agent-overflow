@@ -16,6 +16,8 @@ import (
 	"errors"
 	"syscall"
 	"time"
+
+	"agent-overflow/internal/procutil"
 )
 
 // errWindows is the sentinel returned by every method on the Windows
@@ -32,12 +34,13 @@ const (
 // ProcessConfig mirrors the POSIX type so callers can still construct
 // the value at compile time.
 type ProcessConfig struct {
-	Shell string
-	Args  []string
-	Cwd   string
-	Env   []string
-	Rows  uint16
-	Cols  uint16
+	Shell  string
+	Args   []string
+	Cwd    string
+	Env    []string
+	Rows   uint16
+	Cols   uint16
+	Reaper procutil.Reaper
 }
 
 // ExitStatus mirrors the POSIX type. The Signal field has no meaning

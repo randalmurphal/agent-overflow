@@ -12,7 +12,8 @@ import type { ProjectWithCounts, Thread, ThreadGroup } from '../types/models';
 import { __catalogRetryCountForTest, catalogLoadState, resetCatalogLoadForTest, retryCatalogLoad } from './catalogLoad.svelte';
 import { openCatalogReadsForTest } from './computerCatalogReads';
 import { COMPUTER_READ_DEADLINE_MS } from './computerRows';
-import { refreshSidebarProjections } from './eventsThreadRows';
+import { applyProjectUpdated } from './eventsProjectRows';
+import { applyThreadUpdated, refreshSidebarProjections } from './eventsThreadRows';
 import {
   addProjectLocal, getProjects, refreshProjects, removeProjectLocal, resetProjectsForTest, updateProjectLocal,
 } from './projects.svelte';
@@ -208,6 +209,23 @@ describe('a thread catalog read', () => {
     expect(getThreads().map((t) => t.title)).toEqual(['pushed']);
     expect(catalogLoadState(HOME_BACKEND, 'threads')).toEqual(LOADED);
   });
+
+  // A new thread is announced as listed when it is created, and again by the
+  // draft save that makes the catalog list it. A read between the two
+  // answers without it, and the second announcement, landing while that read
+  // is out, is what keeps it.
+  it('keeps a held thread announced as listed while a read that lacks it was out', async () => {
+    noteThread('new', HOME_BACKEND);
+    applyThreadUpdated({ action: 'listed', thread: makeThread({ id: 'new' }) });
+    const list = deferred<Thread[]>();
+    setBindingMock('ListThreads', () => list.promise);
+    const boot = loadThreads();
+    applyThreadUpdated({ action: 'listed', thread: makeThread({ id: 'new', title: 'listed again' }) });
+    list.resolve(threads('old'));
+    await boot;
+
+    expect(getThreads().map((t) => [t.id, t.title])).toEqual([['new', 'listed again'], ['old', 'Test thread']]);
+  });
 });
 
 describe('a project catalog read', () => {
@@ -250,6 +268,18 @@ describe('a project catalog read', () => {
     list.resolve([project('p1')]);
     await refresh;
     expect(getProjects().map((p) => p.project.id)).toEqual(['p1']);
+  });
+
+  it('keeps a held project announced as listed while a read that lacks it was out', async () => {
+    addProjectLocal(project('held').project);
+    const list = deferred<ProjectWithCounts[]>();
+    setBindingMock('ListProjects', () => list.promise);
+    const refresh = refreshProjects();
+    applyProjectUpdated({ action: 'listed', project: project('held', 'listed again').project });
+    list.resolve([project('old')]);
+    await refresh;
+
+    expect(getProjects().map((p) => [p.project.id, p.project.name])).toEqual([['held', 'listed again'], ['old', 'old']]);
   });
 });
 

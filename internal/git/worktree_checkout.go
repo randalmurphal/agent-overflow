@@ -173,7 +173,8 @@ func (c *Core) checkoutWorktree(cwd, path string, ref Ref, ownedBranch string) e
 		target = ref.revision()
 	}
 	args = append(args, "--", path, target)
-	_, stderr, err := c.Execute(cwd, args...)
+	// The checkout's post-checkout hook runs inside the add.
+	_, stderr, err := c.executeWithHooks(cwd, args...)
 	if err != nil {
 		failure := fmt.Errorf("git worktree add failed: %s", firstNonEmpty(strings.TrimSpace(stderr), err.Error()))
 		return c.undoCheckout(cwd, ownedBranch, reason, failure)

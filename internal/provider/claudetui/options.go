@@ -2,6 +2,7 @@ package claudetui
 
 import (
 	"agent-overflow/internal/logging"
+	"agent-overflow/internal/procutil"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 )
@@ -23,6 +24,10 @@ type Config struct {
 	// headless provider uses (NewProviderEventLogger, nil unless
 	// AGENT_OVERFLOW_DEBUG opts in), so a production session pays nothing.
 	EventLogger *logging.Logger
+	// Reaper ends the interactive claude's process group if the backend dies
+	// first. It is handed the group as the pty starts and released when the
+	// process exits.
+	Reaper procutil.Reaper
 	// Model is the resolved model id (incl. the [1m] suffix when extended
 	// context is requested), reusing the headless model resolution.
 	Model string

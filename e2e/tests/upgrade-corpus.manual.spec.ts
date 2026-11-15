@@ -20,7 +20,9 @@
 //     the boot, the reads and the deferred phases.
 // Either way: the candidate's gated headless boot must refuse with
 // migrations-pending (or report ready when nothing is pending);
-// __update-snapshot and __update-trial-run must reach `prepared`; the next
+// __update-snapshot and __update-trial-run must reach `prepared`; every old
+// row the trial changed must be one a migration exception or a recovery
+// rule of its boot explains (upgrade-corpus-fingerprint.ts); the next
 // gated boot must be ready; a candidate harness boot on the same root must
 // report the build's schema through HarnessStoreStatus, answer the
 // project, thread, archived and group reads with the counts the previous
@@ -49,13 +51,14 @@ import {
   awaitDeferredSettled,
   census,
   compareCensus,
-  fingerprint,
   largestThread,
   openThreadByTitle,
+  recoveryGrowth,
   type Census,
-  type Fingerprint,
+  type CensusGrowth,
   type StoreStatus,
 } from './upgrade-corpus-helpers.js';
+import { fingerprint, migrateAlone, type Fingerprint } from './upgrade-corpus-fingerprint.js';
 import {
   assertCadence,
   cliCalls,
@@ -106,7 +109,7 @@ interface Report {
   deferred: StoreStatus;
   /** Report cadence of the launcher's commands against their stall rules. */
   cadence: { snapshot: Cadence; trial?: Cadence };
-  /** The migration's effect on the snapshot's rows, table by table. */
+  /** The trial's effect on the snapshot's rows: by table, by cause, and by recovery rule. */
   fingerprint: Fingerprint;
   /** Every census count after the run minus before it, tables included. */
   censusDeltas: Record<string, number>;
@@ -207,6 +210,8 @@ test('the candidate migrates a large previous-release database and boots on it',
     await stopHeadless(gated);
     report.gate = { status: gate.value.status };
     const updateID = newUpdateID();
+    // What the trial's boot removed under recovery rules, which the census allows for.
+    let recovered: CensusGrowth = {};
     if (gate.value.status === 409) {
       const pending = JSON.parse(gate.value.body) as PendingRefusal;
       report.gate.pending = pending;
@@ -236,15 +241,19 @@ test('the candidate migrates a large previous-release database and boots on it',
         TRIAL_STALL_WINDOW_MS, TRIAL_CEILING_MS);
       expect(await cliCalls(rig)).toEqual([]);
 
-      // The migration's own effect on the rows it was handed: every row of
-      // the launcher's snapshot must still be in the migrated store, byte
-      // for byte on the columns both schemas share, before any boot
-      // serves it.
+      // The trial's effect on the rows it was handed: every row of the
+      // launcher's snapshot must still be in the store, byte for byte on
+      // the columns both schemas share, unless a migration exception or a
+      // recovery rule of the trial's boot explains the change.
       const snapshotDB = path.join(rig.dataRoot, 'agent-overflow', 'runtime', 'app-update', 'snapshot', 'agent-overflow.db');
       await stat(snapshotDB);
-      const compared = await timed(() => fingerprint(rig.dbPath, snapshotDB, before.schemaVersion, pending.build));
+      const alone = path.join(rig.root, 'migrated-alone');
+      const compared = await timed(() => fingerprint(rig.dbPath, snapshotDB, before.schemaVersion, pending.build,
+        () => migrateAlone(snapshotDB, alone)).finally(() => rm(alone, { recursive: true, force: true })));
       durations.fingerprintMs = compared.ms;
       report.fingerprint = compared.value;
+      if (compared.value.failures.length > 0) throw new Error(compared.value.failures.join('\n'));
+      recovered = await recoveryGrowth(snapshotDB, compared.value.recoveryRemoved);
 
       // 4. The next gated boot finds nothing pending.
       const ready = await startHeadless(rig, 10 * MINUTE);
@@ -289,10 +298,10 @@ test('the candidate migrates a large previous-release database and boots on it',
     report.reads = reads.value;
     expect(reads.value).toEqual({
       projects: before.projects,
-      threads: before.threads,
-      archived: before.archived,
+      threads: before.threads + (recovered.exact?.threads ?? 0),
+      archived: before.archived + (recovered.exact?.archived ?? 0),
       groups: before.groups,
-      pinned: before.pinned,
+      pinned: before.pinned + (recovered.exact?.pinned ?? 0),
     });
 
     // 6. The page: every project in the sidebar, rows, the largest thread.
@@ -340,7 +349,7 @@ test('the candidate migrates a large previous-release database and boots on it',
     // 8. Nothing the previous release wrote is gone.
     const after = await census(rig.dbPath);
     expect(after.schemaVersion).toBe(atBoot.schemaVersion);
-    report.censusDeltas = compareCensus(before, after, before.schemaVersion, after.schemaVersion);
+    report.censusDeltas = compareCensus(before, after, before.schemaVersion, after.schemaVersion, recovered);
     report.emptyTables = Object.entries(after.tables).filter(([, n]) => n === 0).map(([name]) => name);
 
     // 9. The launcher commits by discarding the snapshot.
