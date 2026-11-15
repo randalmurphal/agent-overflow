@@ -490,13 +490,22 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 		return nil
 	}
 
+	// A Stop held for this turn (stop_waiting_send.go) is resolved in the
+	// same step that claims the settlement: owed means the turn was cut and
+	// the stop row is written below.
+	_, softClose := evt.TurnComplete.(*provider.SoftRoundCloseMeta)
+	cut := canonicalStopReason(meta) == "interrupted"
+	var heldStop waitingStop
+	var stopOwed bool
 	if err == nil {
 		// claimTurnSettlement is sticky on partial failure (same trade-off
 		// as markTurnCaptured): once the FIRST handleTurnComplete reaches
 		// here, subsequent invocations for the same (thread, turn) skip
 		// lifecycle settlement. Late usage on a duplicate is still folded
 		// into the existing turn row below so accounting is not lost.
-		if !r.claimTurnSettlement(evt.ThreadID, turnIndex) {
+		var claimed bool
+		claimed, heldStop, stopOwed = r.claimTurnSettlement(evt.ThreadID, turnIndex, cut, softClose)
+		if !claimed {
 			// Late-fold path: a second activity-counting complete for an
 			// already-settled logical turn (handleError's synthetic
 			// complete, then the real result). persistLateTurnPayload folds
@@ -516,8 +525,17 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 			// from colliding with the turn's earlier rows. Settle failures are returned (the wire
 			// pump logs a returned error and keeps reading) so they surface
 			// the same way the full path's persistErr does.
+			//
+			// A soft close kept a Stop held for this turn; its result
+			// resolves it here.
+			lateStop, lateStopOwed := r.settleWaitingStop(evt.ThreadID, turnIndex, cut, softClose)
 			lateStatus := settledTurnStatus(meta)
 			agentScopes, lateErr := r.agentOwnedOpenScopes(evt.ThreadID)
+			if lateStopOwed {
+				if _, err := r.writeTurnStop(evt.ThreadID, turnIndex, lateStop.summary); err != nil {
+					lateErr = errors.Join(lateErr, fmt.Errorf("write held stop of %s/%d: %w", evt.ThreadID, turnIndex, err))
+				}
+			}
 			lateErr = errors.Join(lateErr, r.settleTurnStreaming(evt.ThreadID, turnIndex, lateStatus, agentScopes))
 			lateErr = errors.Join(lateErr, r.forceCloseOrphanToolCalls(evt.ThreadID, turnIndex, now))
 			// A round of its own announced this completion time, which a
@@ -534,7 +552,9 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 		}
 	}
 	var persistErr error
-	truncated := turnCompleteIsTruncated(meta)
+	// A held Stop the turn's end proves was delivered settles the turn as
+	// stopped: its rows flip errored with the " — stopped" suffix.
+	truncated := turnCompleteIsTruncated(meta) || stopOwed
 	if truncated {
 		flushQueueAtBoundary = false
 	}
@@ -560,12 +580,20 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 			}
 		}
 		if persistErr == nil {
-			if err := r.settleTurnStreaming(evt.ThreadID, turnIndex, settledTurnStatus(meta), agentScopes); err != nil {
+			status := settledTurnStatus(meta)
+			if stopOwed {
+				status = statusErrored
+			}
+			if err := r.settleTurnStreaming(evt.ThreadID, turnIndex, status, agentScopes); err != nil {
 				persistErr = err
 			}
 		}
 		if persistErr == nil && truncated {
-			if err := r.markTurnItemsErrored(evt.ThreadID, turnIndex, now); err != nil {
+			summary := interruptedSummary
+			if stopOwed {
+				summary = stoppedSummary
+			}
+			if err := r.flipTurnItemsErrored(evt.ThreadID, turnIndex, now, summary); err != nil {
 				persistErr = err
 			}
 		}
@@ -613,7 +641,16 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 	// Anchor recording does NOT happen here. Message anchors are
 	// recorded by app_send.go before provider stdin/RPC dispatch so
 	// the anchor maps directly to "before this user message".
-	persistErr = errors.Join(persistErr, r.settleTurnRow(evt, turnIndex, now, meta, persistErr), scopeErr)
+	//
+	// A held Stop's row is written first, so a reader that finds the turn
+	// complete finds how it was stopped.
+	var stopErr error
+	if stopOwed {
+		if _, err := r.persistTurnError(evt.ThreadID, turnIndex, heldStop.summary, now); err != nil {
+			stopErr = fmt.Errorf("write held stop of %s/%d: %w", evt.ThreadID, turnIndex, err)
+		}
+	}
+	persistErr = errors.Join(persistErr, r.settleTurnRow(evt, turnIndex, now, meta, persistErr), scopeErr, stopErr)
 
 	r.clearOpenTurn(evt.ThreadID, agentScopes)
 	r.finishTurnSpan(evt.ThreadID, completedTurnOutcome(meta, persistErr))
@@ -1360,7 +1397,8 @@ func (r *Router) predecessorStopReason(threadID string, open, interruptedTurnInd
 // this index into persistLateTurnPayload instead of the orphan-error
 // path.
 func (r *Router) settleQueuedEchoPredecessor(threadID string, turnIndex int, completedAt int64, stopReason string) {
-	if !r.claimTurnSettlement(threadID, turnIndex) {
+	claimed, heldStop, stopOwed := r.claimTurnSettlement(threadID, turnIndex, stopReason == "interrupted", false)
+	if !claimed {
 		return
 	}
 	var persistErr error
@@ -1388,6 +1426,12 @@ func (r *Router) settleQueuedEchoPredecessor(threadID string, turnIndex int, com
 		log.Printf("triage: settle queued-echo predecessor streaming %s/%d: %v", threadID, turnIndex, err)
 		persistErr = errors.Join(persistErr, err)
 	}
+	if stopOwed {
+		if _, err := r.persistTurnError(threadID, turnIndex, heldStop.summary, completedAt); err != nil {
+			log.Printf("triage: write held stop of queued-echo predecessor %s/%d: %v", threadID, turnIndex, err)
+			persistErr = errors.Join(persistErr, err)
+		}
+	}
 	turnID := r.persistedTurnID(provider.ProviderEvent{ThreadID: threadID}, turnIndex)
 	if err := r.store.UpdateTurnCompleted(turnID, completedAt, stopReason, "", "", ""); err != nil {
 		log.Printf("triage: settle queued-echo predecessor turn %s: %v", turnID, err)
@@ -1401,18 +1445,22 @@ func (r *Router) settleQueuedEchoPredecessor(threadID string, turnIndex int, com
 // claimTurnSettlement records that handleTurnComplete has begun logical-turn
 // settlement for (threadID, turnIndex). It returns true only for the first
 // claimant; later callers should take the duplicate/late-payload path.
-func (r *Router) claimTurnSettlement(threadID string, turnIndex int) bool {
+// cut and soft are how the settlement ends: in the same step it resolves a
+// Stop held for the turn (settleWaitingStopLocked), returned with owed set
+// when the settlement writes its stop row.
+func (r *Router) claimTurnSettlement(threadID string, turnIndex int, cut, soft bool) (claimed bool, stop waitingStop, owed bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	st := r.state(threadID)
 	if st.settledTurns[turnIndex] {
-		return false
+		return false, waitingStop{}, false
 	}
 	if st.settledTurns == nil {
 		st.settledTurns = make(map[int]bool)
 	}
 	st.settledTurns[turnIndex] = true
-	return true
+	stop, owed = st.settleWaitingStopLocked(turnIndex, cut, soft)
+	return true, stop, owed
 }
 
 // isTurnSettled reports whether logical-turn settlement has already run
@@ -1745,10 +1793,12 @@ const StoppedByUser = "Stopped by user"
 // "current turn" read would land the stopped flips and the error row on
 // that new turn, which drains naturally (round-11, C11-1). A sample with
 // no open turn and no waiting send is a no-op — nothing was cut
-// (round-12, CT12-1). A sample whose cut turn is a waiting send's writes
-// the stop row on that turn whether or not it has opened yet: the row's
-// id is reserved against the store, so nothing the turn writes later
-// replaces it. The flip is idempotent against the echo path's own
+// (round-12, CT12-1). A sample whose cut turn is a waiting send's holds
+// the stop until that turn settles (stop_waiting_send.go): the provider
+// may abort the turn, run it to a normal end, or retire the send unrun,
+// and only the first is a stopped turn. A Stop of the open turn writes at
+// once and withdraws a stop held for it. The flip is idempotent against
+// the echo path's own
 // interrupted-predecessor flip (R10-4): rows it already moved out of
 // streaming/running are skipped. tok fences the whole call against
 // session replacement, like the rest of the post-ack block (round-11,
@@ -1756,7 +1806,8 @@ const StoppedByUser = "Stopped by user"
 //
 // Returns the error id that was persisted so the caller can surface
 // diagnostics or correlate with downstream emissions; empty string
-// when no turn could be resolved or the session was replaced.
+// when no turn could be resolved, the stop is held for its turn, or the
+// session was replaced.
 func (r *Router) MarkInterrupt(threadID string, sample InterruptSample, tok FlushStampToken, summary string) (string, error) {
 	if summary == "" {
 		return "", fmt.Errorf("triage: mark interrupt of %s: no stop summary", threadID)
@@ -1775,6 +1826,28 @@ func (r *Router) MarkInterrupt(threadID string, sample InterruptSample, tok Flus
 		// "Stopped by user" (round-12, CT12-1).
 		return "", nil
 	}
+	if sample.Turn < 0 {
+		switch r.holdWaitingStop(threadID, turnIndex, summary) {
+		case stopHeld, stopCutNothing:
+			return "", nil
+		case stopSettledEarlier:
+			cut, err := r.settledTurnWasCut(threadID, turnIndex)
+			if err != nil {
+				return "", fmt.Errorf("triage: mark interrupt of %s: read settled turn %d: %w", threadID, turnIndex, err)
+			}
+			if !cut {
+				return "", nil
+			}
+		}
+	} else {
+		r.dropWaitingStop(threadID, turnIndex)
+	}
+	return r.writeTurnStop(threadID, turnIndex, summary)
+}
+
+// writeTurnStop flips the turn's unsettled rows to errored with the
+// " — stopped" suffix and writes its stop row reading summary.
+func (r *Router) writeTurnStop(threadID string, turnIndex int, summary string) (string, error) {
 	now := time.Now().UnixMilli()
 	if err := r.flipTurnItemsErrored(threadID, turnIndex, now, stoppedSummary); err != nil {
 		return "", err
@@ -2131,6 +2204,9 @@ func (r *Router) MarkThreadActive(threadID string) {
 		// (see the doc comment above).
 		st.settledTurns = nil
 		st.softClosedTurnSet = false
+		// A Stop held for a turn of the previous process names an index
+		// the replacement reuses.
+		st.waitingStopSet, st.lastSettledSet = false, false
 		// The previous session consumed these and started no turn for
 		// them; a turn of this session does not answer them.
 		st.boundarySends = nil

@@ -40,6 +40,13 @@ type threadState struct {
 	// (reopenSoftClosedTurn); the result and every turn start clear it.
 	softClosedTurn    int
 	softClosedTurnSet bool
+	// waitingStop is a Stop of a send whose turn had not opened, held until
+	// that turn settles (stop_waiting_send.go). lastSettled is how the
+	// latest turn settlement ended, for a Stop marked after it.
+	waitingStop    waitingStop
+	waitingStopSet bool
+	lastSettled    settledTurnOutcome
+	lastSettledSet bool
 	// turnStarting is non-nil while handleTurnStart runs, from before it
 	// writes the turns row until the open turn is set, and is closed
 	// when it returns. SampleInterrupt waits on it so an interrupt
