@@ -624,6 +624,7 @@ export function reviewManageFlow({ compact }: ManageSurface): void {
     await (compact ? details.locator('button[aria-expanded]').first().tap() : details.locator('button[aria-expanded]').first().click());
     await expect(details.getByTestId('review-details-rows')).toBeVisible();
     await expect(details.locator('[data-testid="review-details-reviewer"][data-login="alee"]')).toBeVisible();
+    await expandReviewSection(page, 'review-pr-merge');
     for (const id of ['review-title-edit', 'review-description-edit', 'review-pr-state-menu', 'review-details-edit-reviewers', 'review-details-edit-assignees', 'review-details-edit-labels', 'review-merge-row-bypass']) {
       await expect(page.getByTestId(id).first(), id).toBeAttached();
     }
