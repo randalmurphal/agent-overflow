@@ -291,6 +291,10 @@ scope, on both surfaces and both forges:
   reactions read failed (`reactionsUnavailable`), one muted line at the
   top of the Conversation says so, the chips stay as last read and Add
   reaction is not offered.
+- Bounded read. A PR with more threads or comments than one read takes
+  (ten pages of 100 on either forge) shows its first ones and a muted
+  line at the top of the Conversation saying the rest are on the forge
+  (`threadsTruncated`).
 - Copy link copies the comment's `url` through the shared clipboard
   helper; a refused copy is reported and toasted.
 - A sent comment's hover actions read Add reaction, Copy link, Edit,

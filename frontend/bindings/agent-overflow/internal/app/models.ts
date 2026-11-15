@@ -4674,9 +4674,11 @@ export class PRUpdateSubscriptionResult {
 
     /**
      * ReactionsUnavailable is the sentence saying the threads carry no
-     * reactions because their read failed (gitops.PRRead).
+     * reactions because their read failed, and ThreadsTruncated the one
+     * saying the threads are the first of more (gitops.PRRead).
      */
     "reactionsUnavailable"?: string;
+    "threadsTruncated"?: string;
     "headSHA": string;
     "error": string;
     "errorKind": string;
@@ -4757,7 +4759,7 @@ export class PRUpdateSubscriptionResult {
         const $$createField2_0 = $$createType73;
         const $$createField3_0 = $$createType75;
         const $$createField4_0 = $$createType77;
-        const $$createField12_0 = $$createType79;
+        const $$createField13_0 = $$createType79;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("detail" in $$parsedSource) {
             $$parsedSource["detail"] = $$createField2_0($$parsedSource["detail"]);
@@ -4769,7 +4771,7 @@ export class PRUpdateSubscriptionResult {
             $$parsedSource["events"] = $$createField4_0($$parsedSource["events"]);
         }
         if ("ci" in $$parsedSource) {
-            $$parsedSource["ci"] = $$createField12_0($$parsedSource["ci"]);
+            $$parsedSource["ci"] = $$createField13_0($$parsedSource["ci"]);
         }
         return new PRUpdateSubscriptionResult($$parsedSource as Partial<PRUpdateSubscriptionResult>);
     }

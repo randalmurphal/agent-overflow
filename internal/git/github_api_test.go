@@ -504,8 +504,8 @@ func TestReadPRPagesEveryConnection(t *testing.T) {
 	if ops := withoutCIExtras(calls.ops()); fmt.Sprint(ops) != "[PRTick RollupContextsPage PRThreadsPage ThreadCommentsPage PRCommentsPage]" {
 		t.Fatalf("requests = %v", ops)
 	}
-	if len(got.Threads) != 2+150 {
-		t.Fatalf("threads = %d, want 2 review threads and 150 conversation comments", len(got.Threads))
+	if len(got.Threads) != 2+150 || got.ThreadsTruncated != "" {
+		t.Fatalf("threads = %d (truncated %q), want 2 review threads and 150 conversation comments", len(got.Threads), got.ThreadsTruncated)
 	}
 	if first := got.Threads[0]; len(first.Comments) != 130 || first.Comments[129].Body != "b129" || first.Comments[129].ReplyTo == nil {
 		t.Fatalf("thread T1 has %d comments, want 130 in order", len(first.Comments))
@@ -519,31 +519,48 @@ func TestReadPRPagesEveryConnection(t *testing.T) {
 }
 
 // A connection that never ends is read for githubReadMaxPages pages and
-// no more.
+// no more, and the read says its threads are the first of more: the
+// review threads, one thread's comments or the conversation comments.
 func TestReadPRStopsAtThePageCap(t *testing.T) {
 	t.Parallel()
-	page := 0
-	var mu sync.Mutex
-	core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
-		mu.Lock()
-		page++
-		n := page
-		mu.Unlock()
-		thread := githubThreadJSON("T"+strconv.Itoa(n), githubCommentsJSON("c", 0, 1, false), false)
-		switch call.Op {
-		case "PRTick":
-			return githubData(`{"repository":{"pullRequest":{"number":5,"reviewThreads":{"pageInfo":{"hasNextPage":true,"endCursor":"p"},"nodes":[` + thread + `]},"comments":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}`)
-		case "PRThreadsPage":
-			return githubData(`{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":true,"endCursor":"p"},"nodes":[` + thread + `]}}}}`)
-		}
-		return forgeUnexpected(t, call)
-	})
-	got, err := core.ReadPR(t.Context(), githubTestRef(5), PRReadParts{Threads: true}, nil, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if n := len(calls.all()); n != githubReadMaxPages || len(got.Threads) != githubReadMaxPages {
-		t.Fatalf("requests = %d, threads = %d, want %d of each", n, len(got.Threads), githubReadMaxPages)
+	const notice = "Only the first 1000 threads and comments of this conversation are shown; the rest are on forge.example."
+	for _, endless := range []string{"PRThreadsPage", "ThreadCommentsPage", "PRCommentsPage"} {
+		t.Run(endless, func(t *testing.T) {
+			t.Parallel()
+			page := 0
+			var mu sync.Mutex
+			core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
+				mu.Lock()
+				page++
+				n := page
+				mu.Unlock()
+				comment := githubCommentsJSON("c"+strconv.Itoa(n)+"-", 0, 1, false)
+				thread := githubThreadJSON("T"+strconv.Itoa(n), comment, endless == "ThreadCommentsPage")
+				switch call.Op {
+				case "PRTick":
+					return githubData(`{"repository":{"pullRequest":{"number":5,` +
+						`"reviewThreads":{"pageInfo":{"hasNextPage":` + strconv.FormatBool(endless == "PRThreadsPage") + `,"endCursor":"p"},"nodes":[` + thread + `]},` +
+						`"comments":{"pageInfo":{"hasNextPage":` + strconv.FormatBool(endless == "PRCommentsPage") + `,"endCursor":"p"},"nodes":[` + comment[0] + `]}}}}`)
+				case "PRThreadsPage":
+					return githubData(`{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":true,"endCursor":"p"},"nodes":[` + thread + `]}}}}`)
+				case "ThreadCommentsPage":
+					return githubData(`{"node":{"comments":{"pageInfo":{"hasNextPage":true,"endCursor":"p"},"nodes":[` + comment[0] + `]}}}`)
+				case "PRCommentsPage":
+					return githubData(`{"repository":{"pullRequest":{"comments":{"pageInfo":{"hasNextPage":true,"endCursor":"p"},"nodes":[` + comment[0] + `]}}}}`)
+				}
+				return forgeUnexpected(t, call)
+			})
+			got, err := core.ReadPR(t.Context(), githubTestRef(5), PRReadParts{Threads: true}, nil, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if n := len(calls.all()); n != githubReadMaxPages {
+				t.Fatalf("requests = %d, want %d", n, githubReadMaxPages)
+			}
+			if got.ThreadsTruncated != notice {
+				t.Fatalf("ThreadsTruncated = %q", got.ThreadsTruncated)
+			}
+		})
 	}
 }
 

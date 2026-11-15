@@ -24,8 +24,9 @@ const githubReadPageSize = 100
 // review threads, conversation comments, one thread's comments and the
 // rollup's check contexts each stop after this many pages
 // (githubReadMaxPages * githubReadPageSize nodes). A PR past it shows the
-// first nodes in the forge's order.
-const githubReadMaxPages = 10
+// first nodes in the forge's order, and a threads read past it says so
+// (PRRead.ThreadsTruncated).
+const githubReadMaxPages = prReadMaxPages
 
 const (
 	githubPageInfoFields = `pageInfo { hasNextPage endCursor }`
@@ -471,8 +472,12 @@ func (f *githubForge) readPR(ctx context.Context, ref PRReference, want PRReadPa
 		}
 	}
 	if want.Threads {
-		if out.Threads, err = f.readThreads(ctx, client, ref, pull, reactions); err != nil {
+		var truncated bool
+		if out.Threads, truncated, err = f.readThreads(ctx, client, ref, pull, reactions); err != nil {
 			return PRRead{}, err
+		}
+		if truncated {
+			out.ThreadsTruncated = threadsTruncatedSentence(ref)
 		}
 	}
 	if want.CI {
@@ -523,13 +528,14 @@ func (f *githubForge) readRollupContexts(ctx context.Context, client *forgeapi.C
 
 // readThreads returns the review threads, each with all its comments, then
 // the conversation comments as path-less single-comment threads, paging
-// every connection past its first page. GitHub keeps PR conversation
+// every connection past its first page up to githubReadMaxPages;
+// truncated says a connection had more. GitHub keeps PR conversation
 // comments (issue comments) flat, outside review threads; the review pane
 // lists them with the threads.
-func (f *githubForge) readThreads(ctx context.Context, client *forgeapi.Client, ref PRReference, pull *githubPullRaw, reactions bool) ([]ReviewThread, error) {
+func (f *githubForge) readThreads(ctx context.Context, client *forgeapi.Client, ref PRReference, pull *githubPullRaw, reactions bool) (_ []ReviewThread, truncated bool, _ error) {
 	vars, err := githubPullVars(ref)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	vars["wantReactions"] = reactions
 	threads := pull.ReviewThreads.Nodes
@@ -537,19 +543,21 @@ func (f *githubForge) readThreads(ctx context.Context, client *forgeapi.Client, 
 	for pages := 1; page.HasNextPage && pages < githubReadMaxPages; pages++ {
 		var raw githubTickRaw
 		if _, err := client.GraphQL(ctx, "PRThreadsPage", githubPRThreadsPageQuery, withAfter(vars, page.EndCursor), &raw); err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		next, err := raw.pull(ref)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		threads = append(threads, next.ReviewThreads.Nodes...)
 		page = next.ReviewThreads.PageInfo
 	}
+	truncated = page.HasNextPage
 	for i := range threads {
 		if err := f.readThreadComments(ctx, client, &threads[i], reactions); err != nil {
-			return nil, err
+			return nil, false, err
 		}
+		truncated = truncated || threads[i].Comments.PageInfo.HasNextPage
 	}
 
 	comments := pull.Comments.Nodes
@@ -557,18 +565,19 @@ func (f *githubForge) readThreads(ctx context.Context, client *forgeapi.Client, 
 	for pages := 1; page.HasNextPage && pages < githubReadMaxPages; pages++ {
 		var raw githubTickRaw
 		if _, err := client.GraphQL(ctx, "PRCommentsPage", githubPRCommentsPageQuery, withAfter(vars, page.EndCursor), &raw); err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		next, err := raw.pull(ref)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		comments = append(comments, next.Comments.Nodes...)
 		page = next.Comments.PageInfo
 	}
 	out := githubReviewThreads(threads)
 	githubMarkSuggestions(out, pull)
-	return append(out, githubConversationThreads(comments)...), nil
+	truncated = truncated || page.HasNextPage
+	return append(out, githubConversationThreads(comments)...), truncated, nil
 }
 
 // readThreadComments completes one thread's comments past their first
@@ -593,6 +602,7 @@ func (f *githubForge) readThreadComments(ctx context.Context, client *forgeapi.C
 		thread.Comments.Nodes = append(thread.Comments.Nodes, raw.Node.Comments.Nodes...)
 		page = raw.Node.Comments.PageInfo
 	}
+	thread.Comments.PageInfo = page
 	return nil
 }
 

@@ -61,8 +61,10 @@ type PRUpdateSubscriptionResult struct {
 	Threads []gitops.ReviewThread `json:"threads"`
 	Events  []gitops.ReviewEvent  `json:"events"`
 	// ReactionsUnavailable is the sentence saying the threads carry no
-	// reactions because their read failed (gitops.PRRead).
+	// reactions because their read failed, and ThreadsTruncated the one
+	// saying the threads are the first of more (gitops.PRRead).
 	ReactionsUnavailable string `json:"reactionsUnavailable,omitempty"`
+	ThreadsTruncated     string `json:"threadsTruncated,omitempty"`
 	HeadSHA              string `json:"headSHA"`
 	Error                string `json:"error"`
 	ErrorKind            string `json:"errorKind"`
@@ -105,8 +107,10 @@ type PRUpdatedEvent struct {
 	Detail  gitops.PRDetail       `json:"detail"`
 	Threads []gitops.ReviewThread `json:"threads"`
 	Events  []gitops.ReviewEvent  `json:"events"`
-	// ReactionsUnavailable is as on PRUpdateSubscriptionResult.
+	// ReactionsUnavailable and ThreadsTruncated are as on
+	// PRUpdateSubscriptionResult.
 	ReactionsUnavailable string `json:"reactionsUnavailable,omitempty"`
+	ThreadsTruncated     string `json:"threadsTruncated,omitempty"`
 	HeadSHA              string `json:"headSHA"`
 	Error                string `json:"error,omitempty"`
 	ErrorKind            string `json:"errorKind,omitempty"`
@@ -120,6 +124,7 @@ type prUpdateSnapshot struct {
 	Threads              []gitops.ReviewThread `json:"threads"`
 	Events               []gitops.ReviewEvent  `json:"events"`
 	ReactionsUnavailable string                `json:"reactionsUnavailable,omitempty"`
+	ThreadsTruncated     string                `json:"threadsTruncated,omitempty"`
 }
 
 // prUpdatePump is the App's per-PR poller: one ticker, one
@@ -529,6 +534,7 @@ func (a *App) SubscribePRUpdates(ctx context.Context, pr gitops.PRReference) (PR
 		Threads:              ref.snapshot.Threads,
 		Events:               ref.snapshot.Events,
 		ReactionsUnavailable: ref.snapshot.ReactionsUnavailable,
+		ThreadsTruncated:     ref.snapshot.ThreadsTruncated,
 		HeadSHA:              ref.snapshot.Detail.HeadSHA,
 		Error:                ref.fail.wire,
 		ErrorKind:            ref.fail.kind,
@@ -874,6 +880,7 @@ func (a *App) pollPRUpdate(ctx context.Context, pump *prUpdatePump) (PRUpdatedEv
 				Threads:              snapshot.Threads,
 				Events:               snapshot.Events,
 				ReactionsUnavailable: snapshot.ReactionsUnavailable,
+				ThreadsTruncated:     snapshot.ThreadsTruncated,
 				HeadSHA:              snapshot.Detail.HeadSHA,
 				Seq:                  seq,
 			}, true
@@ -1047,7 +1054,7 @@ func (a *App) fetchPRUpdateSnapshot(ctx context.Context, pr gitops.PRReference) 
 	if err != nil {
 		return prUpdateSnapshot{}, err
 	}
-	return prUpdateSnapshot{Detail: read.Detail, Threads: read.Threads, Events: read.Events, ReactionsUnavailable: read.ReactionsUnavailable}, nil
+	return prUpdateSnapshot{Detail: read.Detail, Threads: read.Threads, Events: read.Events, ReactionsUnavailable: read.ReactionsUnavailable, ThreadsTruncated: read.ThreadsTruncated}, nil
 }
 
 func (a *App) prUpdatePollInterval() time.Duration {

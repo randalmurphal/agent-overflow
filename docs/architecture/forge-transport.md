@@ -237,7 +237,9 @@ resolution and the first page has no unresolved thread);
 page and nil otherwise, and
 `PRTimelinePage(owner, name, number, before)` reads the timeline backwards
 from the tick's newest page. Each connection reads at most
-`githubReadMaxPages` (10) pages of 100. A
+`githubReadMaxPages` (10) pages of 100; threads or comments left past
+that bound set `PRRead.ThreadsTruncated`, the sentence the Conversation
+shows. A
 CI read adds REST requests only for what the rollup lacks: the jobs list
 of a run (`repos/O/R/actions/runs/ID/jobs?per_page=100`, paged by `Link`)
 while a job in `stepsFor` has steps that are not settled in `prev`, and a
@@ -309,7 +311,9 @@ per login and project for 10 minutes, then revalidated through the ETag
 store: a `W/` ETag answered 304) and the viewer's login (`user`, cached
 per login and host for 10 minutes; the author may cancel an auto-merge, and a refused read
 is cached as an unknown viewer), `Threads` and `Events` its discussions
-(`per_page=100`, paged by `X-Next-Page`, positions normalized against
+(`per_page=100`, paged by `X-Next-Page`, at most `prReadMaxPages` (10)
+pages, past which `PRRead.ThreadsTruncated` says so and a submit with held
+replies is refused before any write, positions normalized against
 `diff_refs.head_sha`; one read serves both, system notes are the events),
 `Events` also the resource state events (`resource_state_events?per_page=100`,
 at most 3 requests: every page while they fit; past them page 1 and the

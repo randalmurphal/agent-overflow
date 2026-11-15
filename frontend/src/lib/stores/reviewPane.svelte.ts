@@ -309,6 +309,9 @@ export interface ReviewPaneState extends ReviewCommentActionsState, ReviewCommen
   readonly prThreads: readonly ReviewThread[];
   /** The forge's activity rows for the PR (approvals, merges, …). */
   readonly prEvents: readonly ReviewEvent[];
+  /** That the PR's threads are the first of more, one sentence; null
+   * when they are all, or off the PR. */
+  readonly prThreadsTruncated: string | null;
   // ------------------------------------------------------------------
   // The Merge section: readiness and the merge actions, the one home for
   // approve, merge and auto-merge on every surface (docs/specs/pull-requests.md).
@@ -3661,6 +3664,7 @@ export function createReviewPaneState(
     get prDetail() { return prSnapshot?.detail ?? null; },
     get prThreads() { return prThreads; },
     get prEvents() { return prEvents; },
+    get prThreadsTruncated() { return scope === 'pr' && prRef !== null ? prSnapshot?.threadsTruncated ?? null : null; },
     get mergeOpen() { return mergeOpen; },
     setMergeOpen(open: boolean): void { mergeOpen = open; },
     get mergeAction() { return mergeActionShown; },

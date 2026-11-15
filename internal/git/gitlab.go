@@ -288,13 +288,17 @@ func (f *gitlabForge) ReadPR(ctx context.Context, ref PRReference, want PRReadPa
 	var threads []ReviewThread
 	if want.Threads || want.Events {
 		var system []gitlabNoteRaw
-		threads, system, err = readGitLabDiscussions(ctx, client, ref, gitlabThreadContext{headSHA: mr.headSHA(), webURL: mr.WebURL})
+		var truncated bool
+		threads, system, truncated, err = readGitLabDiscussions(ctx, client, ref, gitlabThreadContext{headSHA: mr.headSHA(), webURL: mr.WebURL})
 		if err != nil {
 			return PRRead{}, err
 		}
 		notes = system
 		if want.Threads {
 			out.Threads = threads
+			if truncated {
+				out.ThreadsTruncated = threadsTruncatedSentence(ref)
+			}
 		}
 	}
 	if want.Events {
@@ -559,11 +563,12 @@ func markGitLabViewerNotes(threads []ReviewThread, viewer string, access int) {
 	}
 }
 
-// readGitLabDiscussions reads every page of the merge request's
-// discussions: the human notes as threads normalized against the MR's
-// current head commit, and the system notes in GitLab's order, which are
-// the events' source (gitlabEvents).
-func readGitLabDiscussions(ctx context.Context, client *forgeapi.Client, ref PRReference, at gitlabThreadContext) ([]ReviewThread, []gitlabNoteRaw, error) {
+// readGitLabDiscussions reads the merge request's discussions, at most
+// prReadMaxPages pages (truncated says there were more): the human notes
+// as threads normalized against the MR's current head commit, and the
+// system notes in GitLab's order, which are the events' source
+// (gitlabEvents).
+func readGitLabDiscussions(ctx context.Context, client *forgeapi.Client, ref PRReference, at gitlabThreadContext) (_ []ReviewThread, _ []gitlabNoteRaw, truncated bool, _ error) {
 	request := forgeapi.Request{
 		Path:         gitlabMRPath(ref) + "/discussions",
 		Query:        url.Values{"per_page": {strconv.Itoa(gitlabPageSize)}},
@@ -571,8 +576,9 @@ func readGitLabDiscussions(ctx context.Context, client *forgeapi.Client, ref PRR
 	}
 	var threads []ReviewThread
 	var system []gitlabNoteRaw
-	page := 1
+	page, pages := 1, 0
 	err := client.Pages(ctx, request, func(resp *forgeapi.Response) (bool, error) {
+		pages++
 		var discussions []gitlabDiscussionRaw
 		if err := json.Unmarshal(resp.Body, &discussions); err != nil {
 			return false, fmt.Errorf("GitLab merge request discussions: decode response: %w", err)
@@ -585,12 +591,14 @@ func readGitLabDiscussions(ctx context.Context, client *forgeapi.Client, ref PRR
 				}
 			}
 		}
-		return advanceGitLabPage(resp, &page), nil
+		more := advanceGitLabPage(resp, &page)
+		truncated = more && pages >= prReadMaxPages
+		return more && !truncated, nil
 	})
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, false, err
 	}
-	return threads, system, nil
+	return threads, system, truncated, nil
 }
 
 func gitlabReviewThreads(discussions []gitlabDiscussionRaw, at gitlabThreadContext) []ReviewThread {

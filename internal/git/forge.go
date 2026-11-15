@@ -122,6 +122,8 @@ func (p PRReadParts) none() bool { return !p.Detail && !p.Threads && !p.CI && !p
 // ReactionsUnavailable is the sentence saying the threads carry no
 // reactions because the read that has them failed (GitLab's award emoji
 // read, which is apart from its discussions); the threads stand.
+// ThreadsTruncated is the sentence saying the threads are the first the
+// read's page bound takes, not all of them (threadsTruncatedSentence).
 type PRRead struct {
 	Detail               PRDetail
 	Threads              []ReviewThread
@@ -129,6 +131,17 @@ type PRRead struct {
 	CI                   CIPipeline
 	HasCI                bool
 	ReactionsUnavailable string
+	ThreadsTruncated     string
+}
+
+// prReadMaxPages bounds the pages of one list a PR read follows: GitHub's
+// review threads, conversation comments and one thread's comments, and
+// GitLab's discussions, each at most prReadMaxPages * 100.
+const prReadMaxPages = 10
+
+// threadsTruncatedSentence is PRRead.ThreadsTruncated for ref.
+func threadsTruncatedSentence(ref PRReference) string {
+	return fmt.Sprintf("Only the first %d threads and comments of this conversation are shown; the rest are on %s.", prReadMaxPages*100, forgeLabels(ref.Forge).host(ref.Host))
 }
 
 // MergedPRHead is one merged PR/MR's head coordinates as returned by
