@@ -291,6 +291,7 @@ func TestBootRedeliversASettledRequestsLostWake(t *testing.T) {
 
 	after := f.restart(t)
 	after.app.sweepThreadRequestsAtBoot()
+	after.app.finishThreadRequestSweepAtBoot()
 
 	var wake store.FlushQueueItem
 	waitUntil(t, 10*time.Second, func() bool {

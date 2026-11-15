@@ -143,6 +143,9 @@ func (s *Store) DeleteFlushQueueItemsForThread(threadID string) error {
       (SELECT send_id FROM flush_queue_items WHERE thread_id=? AND send_id<>'')`, threadID, threadID); err != nil {
 		return err
 	}
+	if err := retractDroppedThreadWakesTx(tx, threadID); err != nil {
+		return err
+	}
 	if _, err := tx.Exec(`DELETE FROM flush_queue_items WHERE thread_id = ?`, threadID); err != nil {
 		return fmt.Errorf("store: delete flush queue items for thread %s: %w", threadID, err)
 	}
