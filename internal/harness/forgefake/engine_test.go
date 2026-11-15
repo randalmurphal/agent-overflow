@@ -853,6 +853,7 @@ var (
 		"PRCommentsPage":     {pageSizeDefault},
 		"PRTimelinePage":     {{"wantTeams", true}},
 		"RollupContextsPage": {{"wantCheckRuns", true}, {"wantWorkflowRuns", true}},
+		"PullsSearch":        {{"wantChecks", true}},
 	}
 )
 

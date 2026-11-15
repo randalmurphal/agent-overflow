@@ -139,12 +139,18 @@ func repoRefreshErrorMessage(correlationID string) string {
 
 // newForgeFailure classifies err with summary as the correlation sentence
 // and explain as the sentence of a setup or forbidden failure; read names
-// the read in the failure's detail.
+// the read in the failure's detail. A list read whose detail errors are
+// all notices (git.PRListNotices) carries their sentences, which name
+// what the rows leave out.
 func (a *App) newForgeFailure(err error, read string, summary func(correlationID string) string, explain func(error) error) prForgeFailure {
 	kind, reserve, until := classifyForgeFailure(err)
 	f := prForgeFailure{key: err.Error(), kind: kind, correlationID: uuid.NewString()}
 	f.wire = summary(f.correlationID)
 	f.detail = &ForgeErrorDetail{Ref: f.correlationID, Method: read, At: time.Now().UnixMilli(), Chain: errorsx.Chain(err)}
+	if notices, ok := gitops.PRListNotices(err); ok {
+		f.wire = notices
+		return f
+	}
 	switch kind {
 	case forgeFailureSetup, forgeFailureForbidden:
 		f.wire = explain(err).Error()

@@ -213,9 +213,14 @@ func githubPartOf(problem forgeapi.GraphQLProblem) []githubReadPart {
 
 // githubPartSentence says what a left-out part does not show and why.
 func githubPartSentence(part githubReadPart, ref PRReference, err error) string {
-	what := githubPartWhat[part]
-	labels := forgeLabels(ref.Forge)
-	host := labels.host(ref.Host)
+	return githubRefusedSentence(githubPartWhat[part], ref.Forge, ref.Host, err)
+}
+
+// githubRefusedSentence says that what is not shown, refused as err
+// says, on forge's host.
+func githubRefusedSentence(what, forge, hostName string, err error) string {
+	labels := forgeLabels(forge)
+	host := labels.host(hostName)
 	gql, _ := errors.AsType[*forgeapi.GraphQLError](err)
 	message := ""
 	if gql != nil && len(gql.Problems) > 0 {

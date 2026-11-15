@@ -4,8 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
+
+	"agent-overflow/internal/forgeapi"
 )
 
 // PRListRow is one open PR/MR of a project as the project read answers
@@ -125,6 +128,33 @@ func (e *PRListDetailError) Error() string {
 
 func (e *PRListDetailError) Unwrap() []error { return e.Errs }
 
+// PRListNotice is a part of a project read the forge did not answer, in
+// one sentence for the list: the rows stand and leave it out. It rides a
+// PRListDetailError.
+type PRListNotice struct {
+	Sentence string
+}
+
+func (e *PRListNotice) Error() string { return e.Sentence }
+
+// PRListNotices is the sentences of err's PRListDetailError, one string,
+// when every error it carries is a PRListNotice.
+func PRListNotices(err error) (string, bool) {
+	detail, ok := errors.AsType[*PRListDetailError](err)
+	if !ok || len(detail.Errs) == 0 {
+		return "", false
+	}
+	sentences := make([]string, 0, len(detail.Errs))
+	for _, err := range detail.Errs {
+		notice, ok := err.(*PRListNotice)
+		if !ok {
+			return "", false
+		}
+		sentences = append(sentences, notice.Sentence)
+	}
+	return strings.Join(sentences, " "), true
+}
+
 // detailError is the PRListDetailError of errs, nil when none failed.
 func detailError(errs ...error) error {
 	var failed []error
@@ -190,7 +220,9 @@ const githubListActivityDepth = "10"
 // (a reply in a review thread is a review of its own). The required
 // approvals come from the base's protection and rulesets as the detail
 // read takes them (refUpdateRule, readable without admin, and rules).
-const githubPullsSearchQuery = `query PullsSearch($query: String!, $after: String) {
+// $wantChecks gates the head's check state, an optional part a token may
+// be refused (githubReadParts).
+const githubPullsSearchQuery = `query PullsSearch($query: String!, $after: String, $wantChecks: Boolean!) {
   viewer { login }
   search(type: ISSUE, query: $query, first: 100, after: $after) {
     ` + githubPageInfoFields + `
@@ -204,7 +236,7 @@ const githubPullsSearchQuery = `query PullsSearch($query: String!, $after: Strin
         viewerLatestReview { state submittedAt }
         reviewThreads(first: 100) { pageInfo { hasNextPage } nodes { isResolved } }
         baseRef { refUpdateRule { requiredApprovingReviewCount } rules(first: 100) { nodes { type parameters { __typename ... on PullRequestParameters { requiredApprovingReviewCount } } } } }
-        commits(last: 1) { totalCount nodes { commit { committedDate statusCheckRollup { state } } } }
+        commits(last: 1) { totalCount nodes { commit { committedDate statusCheckRollup @include(if: $wantChecks) { state } } } }
         comments(last: ` + githubListActivityDepth + `) { nodes { author { login } createdAt } }
         reviews(last: ` + githubListActivityDepth + `) { nodes { author { login } submittedAt } }
       }
@@ -282,8 +314,16 @@ type githubSearchPullRaw struct {
 	} `json:"reviews"`
 }
 
+// githubListChecksWhat opens the sentence of a list read without check
+// states.
+const githubListChecksWhat = "Check states are"
+
 // ListProjectPRs reads the repository's open pull requests through
-// search, 100 per request, at most prListMaxPages requests.
+// search, 100 per request, at most prListMaxPages requests. A read
+// refused only in the rows' check states is read again without them,
+// answering the rows with a PRListNotice saying so; a refusal of the
+// token is remembered for the repository and login as the PR read's
+// parts are (githubReadShapeTTL).
 func (f *githubForge) ListProjectPRs(ctx context.Context, repo RepoReference) ([]PRListRow, error) {
 	owner, name, err := splitGitHubProject(repo.Project())
 	if err != nil {
@@ -293,6 +333,12 @@ func (f *githubForge) ListProjectPRs(ctx context.Context, repo RepoReference) ([
 	if err != nil {
 		return nil, err
 	}
+	fingerprint, err := client.CredentialFingerprint(ctx)
+	if err != nil {
+		return nil, err
+	}
+	partsKey := "list\x00" + repo.Key() + "\x00" + fingerprint
+	shape := f.readMemory.shape(partsKey, "", false, f.core.nowFn())
 	query := "is:pr is:open repo:" + owner + "/" + name
 	rows := []PRListRow{}
 	var after any
@@ -306,8 +352,18 @@ func (f *githubForge) ListProjectPRs(ctx context.Context, repo RepoReference) ([
 				Nodes    []githubSearchPullRaw `json:"nodes"`
 			} `json:"search"`
 		}
-		if _, err := client.GraphQL(ctx, "PullsSearch", githubPullsSearchQuery, map[string]any{"query": query, "after": after}, &raw); err != nil {
-			return nil, err
+		vars := map[string]any{"query": query, "after": after, "wantChecks": shape.has(githubPartCheckRuns)}
+		if _, err := client.GraphQL(ctx, "PullsSearch", githubPullsSearchQuery, vars, &raw); err != nil {
+			gql, refused := githubListChecksRefused(err)
+			if !refused || !shape.has(githubPartCheckRuns) {
+				return nil, err
+			}
+			shape.excluded = map[githubReadPart]string{githubPartCheckRuns: githubRefusedSentence(githubListChecksWhat, repo.Forge, repo.Host, err)}
+			if gql.Forbidden() {
+				f.readMemory.parts.put(partsKey, shape.excluded, f.core.nowFn().Add(githubReadShapeTTL))
+			}
+			rows, after, pages = rows[:0], nil, -1
+			continue
 		}
 		if raw.Search == nil {
 			return nil, fmt.Errorf("GitHub answered no search for %s on %s", repo.Project(), repo.Host)
@@ -329,7 +385,26 @@ func (f *githubForge) ListProjectPRs(ctx context.Context, repo RepoReference) ([
 		}
 		after = page.EndCursor
 	}
+	if sentence, left := shape.excluded[githubPartCheckRuns]; left {
+		return rows, detailError(&PRListNotice{Sentence: sentence})
+	}
 	return rows, nil
+}
+
+// githubListChecksRefused reports a PullsSearch answer whose every
+// problem lies under a row's statusCheckRollup, with its GraphQL error.
+// A single sign-on refusal is the login's, not the part's.
+func githubListChecksRefused(err error) (*forgeapi.GraphQLError, bool) {
+	gql, ok := errors.AsType[*forgeapi.GraphQLError](err)
+	if !ok || gql.SSO || len(gql.Problems) == 0 {
+		return nil, false
+	}
+	for _, problem := range gql.Problems {
+		if !slices.Contains(problem.Path, any("statusCheckRollup")) {
+			return nil, false
+		}
+	}
+	return gql, true
 }
 
 func githubPRListRow(repo RepoReference, node githubSearchPullRaw, viewer string) PRListRow {

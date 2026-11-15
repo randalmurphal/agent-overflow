@@ -10,6 +10,27 @@ import (
 	"agent-overflow/internal/harness/forgefake"
 )
 
+// A token that cannot read check runs lists the repository's PRs without
+// their check states, saying so, through the app's forge code.
+func TestGitHubListLeavesOutCheckStatesTheTokenCannotRead(t *testing.T) {
+	r := newRig(t, forgefake.Fixture{Viewer: "alice", Repos: []forgefake.Repo{{
+		Forge: "github", Project: "acme/listparts", TokenCannotRead: []string{"checks"},
+		Pulls: []forgefake.Pull{{
+			Number: 1, Title: "Parts", Author: "octo", HeadRef: "parts", HeadSHA: strings.Repeat("1", 40),
+			CI: &forgefake.Pipeline{ID: 901, Jobs: []forgefake.Job{{ID: 9011, Name: "unit", Status: "success"}}},
+		}},
+	}}})
+	repo := gitops.RepoReference{Forge: "github", Host: "github.com", Namespace: "acme", Repo: "listparts"}
+	rows, err := r.core.ListProjectPRs(t.Context(), repo)
+	notice, ok := gitops.PRListNotices(err)
+	if !ok || notice != "Check states are not shown: GitHub does not let this fine-grained token read them." || len(rows) != 1 || rows[0].ChecksState != "" {
+		t.Fatalf("ListProjectPRs = %+v, %v", rows, err)
+	}
+	if got := routeCount(r, 0, "gh graphql PullsSearch"); got != 2 {
+		t.Fatalf("PullsSearch requests = %d, want the list and the list without check states", got)
+	}
+}
+
 // A token that cannot read team reviewers (no read:org) or check runs
 // (a fine-grained token) leaves those parts out of the PR read through
 // the app's forge code: the PR publishes, the detail and the pipeline

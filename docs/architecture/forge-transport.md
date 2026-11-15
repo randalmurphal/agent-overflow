@@ -466,7 +466,7 @@ read. Another failed request leaves its fields unknown (nil or empty) and
 comes back as a `*PRListDetailError` beside the rows, which the page shows
 as the project's `DetailError`.
 
-GitHub lists open PRs with one GraphQL `PullsSearch(query, after)`:
+GitHub lists open PRs with one GraphQL `PullsSearch(query, after, wantChecks)`:
 `search(type: ISSUE, query: "is:pr is:open repo:O/R", first: 100)`
 beside `viewer { login }`. Each node selects its review state
 (`reviewDecision`, `reviewRequests(first: 20)`,
@@ -482,7 +482,14 @@ with the head commit's time and rollup `state` (the CI status), and
 from which the row takes the PR author's latest reply
 (`AuthorActivityAt`; a review thread reply is a review of its own) and
 the count of the author's replies after the viewer's latest review. The
-viewer's activity is `viewerLatestReview.submittedAt`.
+viewer's activity is `viewerLatestReview.submittedAt`. The rollup `state`
+is an optional part (`$wantChecks`): a list whose every GraphQL error
+lies under a row's `statusCheckRollup` is read again without it, the
+rows' CI status unknown, and answers a `*PRListNotice` ("Check states are
+not shown: ...") in its `*PRListDetailError`, which the page shows as the
+project's `DetailError` in place of the failed-refresh sentence. A
+refusal of the token is remembered for the repository and login for 10
+minutes, as the PR read's parts are.
 
 GitLab reads, per repository, the viewer first (`user`, cached per login
 and host for 10 minutes; a viewer that cannot be read fails the
