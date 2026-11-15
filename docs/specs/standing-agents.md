@@ -766,8 +766,11 @@ thread id of a thread it spawned
 archive and the Stop share the capture, the session teardown and the
 release (`app_thread_rest.go`); an archive then hides the thread and
 archives its owned workers ([Owned workers](#owned-workers)), and
-leaves the threads it does not own as they are. The Stop, on the
-computer that holds the thread:
+leaves the threads it does not own as they are. Besides hiding, the one
+deliberate difference is that an archive leaves the workflow runs that
+report to the thread running: the next wake of each finds the thread
+archived, clears its binding and reports to the workflows overlay
+instead. The Stop, on the computer that holds the thread:
 
 1. Fences the thread until the Stop ends: an app-written message for it
    is refused (`the thread is being stopped`) and no session is started
