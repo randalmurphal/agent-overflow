@@ -224,9 +224,15 @@ func (a *App) claimThreadWakeRetry(row store.ThreadRequest, owed []bool, now tim
 		return nil, true
 	}
 	attempts := row.WakeAttempts + 1
-	if err := a.store.ScheduleThreadRequestWake(row.Token,
-		now.Add(threadWakeRetryDelay(attempts)).UnixMilli(), attempts); err != nil {
+	booked, err := a.store.ScheduleThreadRequestWake(row.Token,
+		now.Add(threadWakeRetryDelay(attempts)).UnixMilli(), attempts)
+	if err != nil {
 		logThreadRequestSweep("schedule the wake retry for "+row.Token, err)
+		return nil, false
+	}
+	// The pass read the row before a delivery that has landed since, such as
+	// the one a reminder fired in this pass starts.
+	if !booked {
 		return nil, false
 	}
 	for _, late := range stillOwed {
