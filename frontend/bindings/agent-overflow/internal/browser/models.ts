@@ -68,6 +68,14 @@ export class CompanionEvent {
      */
     "find"?: FindState | null;
 
+    /**
+     * Seq rides a Kind "state" event: this process's number for the
+     * snapshot, taken under the manager's lock as the snapshot is read.
+     * Snapshots are published after that lock is released, and calls answer
+     * with one, so a client keeps the highest Seq it has seen for a thread.
+     */
+    "seq"?: number;
+
     /** Creates a new CompanionEvent instance. */
     constructor($$source: Partial<CompanionEvent> = {}) {
         if (!("kind" in $$source)) {

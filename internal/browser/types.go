@@ -54,6 +54,11 @@ type CompanionEvent struct {
 	// A Kind "escape" event names only ThreadID and PageID: a bare Escape
 	// was pressed in that page while a pane showed it, and the page kept it.
 	Find *FindState `json:"find,omitempty"`
+	// Seq rides a Kind "state" event: this process's number for the
+	// snapshot, taken under the manager's lock as the snapshot is read.
+	// Snapshots are published after that lock is released, and calls answer
+	// with one, so a client keeps the highest Seq it has seen for a thread.
+	Seq uint64 `json:"seq,omitempty"`
 }
 
 // The find modes a page reports (pageFind.FindMode).
