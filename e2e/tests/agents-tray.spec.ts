@@ -7,9 +7,10 @@
 // settled row shows its outcome, and its click lands on the wake item that
 // carried its answer; a click opens the target in a pane; a row's Stop
 // cancels the request for the user, keeps the caller's wake armed with the
-// user named, interrupts the spawned child, stops the child's background
-// shell and cascades into the grandchild, whose request is cancelled with
-// its wake disarmed, so the child takes no new turn; the stopped row
+// user named, brings the spawned child to rest (its turn cut, its session
+// ended with its background shell) and the grandchild with it, whose
+// request is cancelled with its wake disarmed, so the child takes no new
+// turn and nothing starts it again, while a later message does; the stopped row
 // lingers and leaves for Past, where the segment stays; the grandchild's
 // approval is routed to the child that spawned it; Stop All cascades;
 // Background's Stop All leaves the rows; the thread's own Stop does not
@@ -18,6 +19,7 @@
 // withdraws it and leaves the answer owed with its wake disarmed. The
 // cross-computer rows are thread-tools-paired.spec.ts's.
 import { test, expect, type SeedResult } from './fixtures.js';
+import type { HarnessApp } from '../src/harness.js';
 import { rename } from 'node:fs/promises';
 import { advanceGate, awaitGate, awaitMockInput, awaitToolAnswer, awaitTurnCompleted, setScenario, threadToolsScenario, type ProviderName } from './thread-tools-helpers.js';
 import { capture } from './wake-rows-helpers.js';
@@ -40,8 +42,14 @@ import {
 
 const USER_STOP = 'The user stopped it from the Agents tray';
 
+/** Whether the thread has a provider session live or starting. */
+async function sessionLive(harness: HarnessApp, threadID: string): Promise<boolean> {
+  const live = await harness.rpc<{ threadId: string; sessionLive?: boolean }[]>('ListThreadLiveActivity');
+  return live.some((row) => row.threadId === threadID && row.sessionLive === true);
+}
+
 for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderName[]) {
-  test(`${provider}: rows list, nest, block, settle and leave; a row's Stop cascades into what the child runs`, async ({ harness, page }) => {
+  test(`${provider}: rows list, nest, block, settle and leave; a row's Stop brings the child to rest`, async ({ harness, page }) => {
     test.setTimeout(300_000);
     const tree = await seedAgentsTree(harness, provider, `agents-${provider}`);
     const approvalSeen = harness.waitForEvent<{ action: string; request?: { requestId: string; threadId: string; toolName: string } }>(
@@ -146,9 +154,19 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     // The segment stays for Past, which holds the send and the stopped child.
     await expect(agentsBody(page).getByTestId('activity-rail-agents-past-count')).toHaveText('2');
     expect(await childWoken, 'the child took a turn for the agent the person stopped').toBe(false);
+    // The child is at rest: its session ended with its shell, and nothing
+    // brought it back. A later message starts it again and is answered.
+    expect(await sessionLive(harness, started.child), 'the stopped child came back').toBe(false);
+    await setScenario(harness, tree.childPath, threadToolsScenario({
+      name: `agents-${provider}-child-again`, provider, echoUserMessage: true, turns: [{ text: 'Back on it.' }],
+    }));
+    const answered = awaitTurnCompleted(harness, started.child);
+    await harness.rpc('SendMessage', started.child, 'one more thing', null);
+    await answered;
+    await expect.poll(() => sessionLive(harness, started.child), { timeout: 30_000 }).toBe(true);
   });
 
-  test(`${provider}: Stop All cascades; Background's Stop All and the thread's own Stop leave the rows`, async ({ harness, page }) => {
+  test(`${provider}: Stop All brings each spawn to rest; Background's Stop All and the thread's own Stop leave the rows`, async ({ harness, page }) => {
     test.setTimeout(300_000);
     const tree = await seedAgentsTree(harness, provider, `agents-all-${provider}`, { leadHolds: true });
     const started = await startTree(harness, tree);
