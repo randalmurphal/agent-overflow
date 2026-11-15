@@ -52,17 +52,17 @@ const MaxTextCharacters = 1000
 var (
 	// ErrUnknown means the section was already fetched, expired, or was
 	// never admitted here. One dropped by RevokeBefore is ErrOff.
-	ErrUnknown = errors.New("this sentence was already read aloud or has expired")
+	ErrUnknown = errors.New("this section was already read aloud or has expired")
 	// ErrBacklog refuses a section while MaxPending wait.
-	ErrBacklog = fmt.Errorf("%d sentences are already waiting to be read aloud; try again shortly", MaxPending)
+	ErrBacklog = fmt.Errorf("%d sections are already waiting to be read aloud; try again shortly", MaxPending)
 	// ErrBusy refuses a synthesis while MaxSpeaking run.
-	ErrBusy = fmt.Errorf("this computer is already reading %d sentences aloud; try again shortly", MaxSpeaking)
+	ErrBusy = fmt.Errorf("this computer is already reading %d sections aloud; try again shortly", MaxSpeaking)
 	// ErrMisread means OpenAI twice spoke something other than the text.
 	ErrMisread = errors.New("OpenAI did not read the text as written")
 	// ErrNoText refuses an empty section.
 	ErrNoText = errors.New("there is no text to read aloud")
 	// ErrTextTooLong refuses a section over MaxTextCharacters.
-	ErrTextTooLong = fmt.Errorf("a sentence to read aloud is at most %d characters", MaxTextCharacters)
+	ErrTextTooLong = fmt.Errorf("a section to read aloud is at most %d characters", MaxTextCharacters)
 )
 
 // OffCode is the wire code of ErrOff, so a client tells the switch from a
