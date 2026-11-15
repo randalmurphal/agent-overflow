@@ -991,6 +991,7 @@ func (a *App) cleanUpMergedPRWorktree(ctx context.Context, pr store.ThreadPullRe
 	_, err = a.removeProjectWorktree(site.projectID, site.project, site.path, worktreeRemovalPolicy{
 		keepsBranch: true,
 		mergedPR:    label,
+		unattended:  true,
 		idle: func(locked []string) error {
 			return a.mergedPRStillDue(pr, site, occupants, locked)
 		},
@@ -1002,11 +1003,17 @@ func (a *App) cleanUpMergedPRWorktree(ctx context.Context, pr store.ThreadPullRe
 	return a.mergedPRRemovalFailed(pr, site, told, err, now)
 }
 
+// mergedPRRemovalAttempts bounds the removals git refuses that the cleanup
+// tries: the first and its retries after 2, 4, 8 and 16 minutes. A refusal
+// that outlasts them is one waiting does not change.
+const mergedPRRemovalAttempts = 5
+
 // mergedPRRemovalFailed is the outcome of a removal of site that returned
 // err: a recheck that found the cleanup no longer applies or the worktree
-// gone, busy threads, uncommitted changes, a removal git completed whose
-// reaction failed, a worktree removed outside the app meanwhile, or a
-// removal git refused, which is told once and retried after a backoff.
+// gone, busy threads, uncommitted changes, a lock a person set, initialized
+// submodules, a removal git completed whose reaction failed, a worktree
+// removed outside the app meanwhile, or a removal git refused, which is told
+// once and retried after a backoff, at most mergedPRRemovalAttempts times.
 func (a *App) mergedPRRemovalFailed(pr store.ThreadPullRequest, site *mergedPRSite, told []string, err error, now time.Time) mergedPROutcome {
 	c := &a.mergedPRs
 	label := prthread.Label(pr.Forge, pr.Number)
@@ -1015,6 +1022,7 @@ func (a *App) mergedPRRemovalFailed(pr store.ThreadPullRequest, site *mergedPRSi
 	var busy *errWorktreeBusy
 	var dirty *errWorktreeDirty
 	var followUp *errWorktreeRemovedFollowUp
+	var locked *gitops.WorktreeLockedError
 	switch {
 	case errors.Is(err, errMergedPRStale):
 		return mergedPRSkipped
@@ -1024,6 +1032,12 @@ func (a *App) mergedPRRemovalFailed(pr store.ThreadPullRequest, site *mergedPRSi
 		return mergedPRWait
 	case errors.As(err, &dirty):
 		a.postMergedPRKept(told, label, name, uncommittedFiles(dirty.count))
+		return mergedPRKept
+	case errors.As(err, &locked):
+		a.postMergedPRKept(told, label, name, "it is locked")
+		return mergedPRKept
+	case errors.Is(err, gitops.ErrWorktreeHasSubmodules):
+		a.postMergedPRKept(told, label, name, "it has submodules")
 		return mergedPRKept
 	case errors.As(err, &followUp):
 		// git removed it; what failed after is reported on the threads
@@ -1046,7 +1060,13 @@ func (a *App) mergedPRRemovalFailed(pr store.ThreadPullRequest, site *mergedPRSi
 	// The removal is tried again later; when it succeeds the threads get
 	// the usual notice.
 	log.Printf("merged PR cleanup: remove %s: %v", site.path, err)
-	backoffFor(&c.removals, removalKey).fail(now, c.tick(), nil)
+	backoff := backoffFor(&c.removals, removalKey)
+	backoff.fail(now, c.tick(), nil)
+	if backoff.failures >= mergedPRRemovalAttempts {
+		// Told at the first failure; the worktree stays.
+		delete(c.removals, removalKey)
+		return mergedPRKept
+	}
 	first, markErr := a.store.MarkThreadPullRequestsRemovalFailed(pr.Forge, pr.Host, pr.Project, pr.Number, now.UnixMilli())
 	if markErr != nil {
 		a.logMergedPR("removal-failed:"+removalKey, fmt.Sprintf("merged PR cleanup: %v", markErr))

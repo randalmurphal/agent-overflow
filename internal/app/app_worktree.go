@@ -370,6 +370,10 @@ type worktreeRemovalPolicy struct {
 	// mergedPR names the merged pull request the removal is for; each moved
 	// thread is told (worktreeRemoval.mergedPR).
 	mergedPR string
+	// unattended marks a removal nobody asked for: a worktree a person
+	// locked is kept (gitops.Core.RemoveWorktreeUnattended). Unattended
+	// removals never force.
+	unattended bool
 	// idle is a further gate run with every occupant's lock held, after the
 	// running-work check (ensureWorkspaceChangeAllowed), so a thread cannot
 	// start work between the caller's check and the removal.
@@ -500,7 +504,11 @@ func (a *App) removeProjectWorktree(projectID, project, worktreePath string, pol
 	// the watcher, when its panes follow their threads to the root; on
 	// failure it ends here and a refresh shows the tree as it stands.
 	resumeStatus := a.gitApplication().SuppressStatus(worktreePath)
-	if err := core.RemoveWorktreeForce(project, worktreePath, force); err != nil {
+	remove := core.RemoveWorktreeForce
+	if policy.unattended {
+		remove = func(cwd, path string, _ bool) error { return core.RemoveWorktreeUnattended(cwd, path) }
+	}
+	if err := remove(project, worktreePath, force); err != nil {
 		resumeStatus()
 		return nil, err
 	}

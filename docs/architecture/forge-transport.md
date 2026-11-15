@@ -973,7 +973,7 @@ A PR the forge no longer has counts as closed.
 | A watched lookup that stops finding the tracked PR | 1 state read |
 | Acting on a merged PR, after the local checks pass | 1 open-PR lookup of the branch (one page unless forks' PRs share the name) |
 | An act-time lookup that fails, or still lists the merged PR as open | the next after 2, 4, 8 ... minutes, capped at 30, per repository |
-| A removal git refuses | no request; the removal retries after 2, 4, 8 ... minutes, capped at 30 |
+| A removal git refuses | the removal retries after 2, 4, 8 and 16 minutes, each retry with its act-time lookup, then the worktree is kept (`mergedPRRemovalAttempts`); a person's lock or initialized submodules keep it at once |
 
 A `*forgeapi.RateLimitedError` waits until its `Until` instead. Two
 goroutines run the cleanup, serialized per pass. The worker handles
