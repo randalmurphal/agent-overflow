@@ -1503,11 +1503,14 @@ closes up their spacing so the row holds at a phone width.
   request. A settled row reports it had already finished, unless it is a
   spawn whose worker, here or on a paired computer, was not at rest or had
   its turn or background work cut by the rest: that Stop reports the
-  worker stopped, and the spawner is told once, by an app-written message
-  attributed to the worker (send id `worker-stopped:<token>`), since no
-  settlement tells it. The settled request and its answer stay as they
-  were; a repeated Stop, a cascade and an agent's own `thread_cancel` tell
-  nobody, and agents of its own stopped below leave the row finished. Each layer's
+  worker stopped, and the spawner is told, by an app-written message
+  attributed to the worker (send id `worker-stopped:<token>:<n>`), since no
+  settlement tells it: once for each time a Stop stopped the worker, so a
+  worker continued and stopped again is told of again, and Stops racing on
+  one stopping of it make one message. The settled request and its answer
+  stay as they were; a Stop that finds the worker at rest, a cascade and an
+  agent's own `thread_cancel` tell nobody, and agents of its own stopped
+  below leave the row finished. Each layer's
   result, what it stopped and what failed, is folded into one toast, and a
   failure in one layer leaves the rest to run. `Stop All`
   (`StopThreadAgentRows`) does the same for every row the ledger held

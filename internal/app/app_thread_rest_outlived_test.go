@@ -41,30 +41,54 @@ func outlivingWorker(t *testing.T, f *requestFixture, lineage bool) threadtools.
 	return ack
 }
 
-// workerStoppedMessages counts the messages queued for threadID that tell it
-// the user stopped the worker of token.
+// workerStoppedMessages counts the messages threadID holds, queued or taken
+// in, that tell it the user stopped the worker of token.
 func workerStoppedMessages(t *testing.T, a *App, threadID, token string) int {
 	t.Helper()
-	rows, err := a.store.ListFlushQueueItems(threadID)
-	if err != nil {
-		t.Fatal(err)
-	}
 	count := 0
-	for _, row := range rows {
-		if row.SendID == workerStoppedSendIDRoot+token {
-			if !strings.Contains(row.Message, "The user stopped thread") {
-				t.Fatalf("the message = %q, want it to say the user stopped the worker", row.Message)
-			}
-			count++
+	ids := []string{workerStoppedSendIDRoot + token}
+	for n := 1; n <= 8; n++ {
+		ids = append(ids, fmt.Sprintf("%s%s:%d", workerStoppedSendIDRoot, token, n))
+	}
+	for _, id := range ids {
+		recorded, found, err := a.findRecordedSend(threadID, id)
+		if err != nil {
+			t.Fatal(err)
 		}
+		if !found {
+			continue
+		}
+		text := recorded.queued.Message
+		if text == "" {
+			text = recorded.item.Summary
+		}
+		if !strings.Contains(text, "The user stopped thread") {
+			t.Fatalf("the message = %q, want it to say the user stopped the worker", text)
+		}
+		count++
 	}
 	return count
+}
+
+// continueWorker has a person send the worker a message and waits for it to
+// work again.
+func continueWorker(t *testing.T, a *App, threadID string) {
+	t.Helper()
+	if err := a.SendMessage(threadID, "keep going", nil); err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+	waitUntil(t, 10*time.Second, func() bool {
+		rest, err := a.workerUnrest(threadID)
+		return err == nil && rest.unrest == workerRunning
+	})
 }
 
 // A person's Stop of a worker that answered its spawn and kept working
 // reports the worker stopped and tells its spawner once; the settled spawn
 // and its answer stay as they were, and a repeated Stop finds the worker at
-// rest and tells nothing more. A spawn reduced to its lineage is the same.
+// rest and tells nothing more. Once the worker is continued, a Stop that
+// stops it again tells the spawner again. A spawn reduced to its lineage is
+// the same.
 func TestAStopOfAWorkerThatOutlivedItsSpawnTellsTheSpawnerOnce(t *testing.T) {
 	t.Parallel()
 	for name, lineage := range map[string]bool{"settled": false, "lineage": true} {
@@ -101,7 +125,45 @@ func TestAStopOfAWorkerThatOutlivedItsSpawnTellsTheSpawnerOnce(t *testing.T) {
 			if got := workerStoppedMessages(t, f.app, f.caller.ID, ack.Token); got != 1 {
 				t.Fatalf("after a repeated Stop the spawner was told %d times, want once", got)
 			}
+			if lineage {
+				return
+			}
+
+			continueWorker(t, f.app, ack.ThreadID)
+			third, err := f.app.StopThreadAgentRow(t.Context(), f.caller.ID, ack.Token)
+			if err != nil || third.Outcome != threadAgentStopped {
+				t.Fatalf("Stop of the continued worker = %+v, %v; want it stopped", third, err)
+			}
+			if got := workerStoppedMessages(t, f.app, f.caller.ID, ack.Token); got != 2 {
+				t.Fatalf("after stopping the continued worker the spawner was told %d times, want twice", got)
+			}
 		})
+	}
+}
+
+// Two Stops that both found the worker working are one stopping of it: the
+// second, made while the first is about to bring the worker to rest, stops
+// it and tells the spawner, and the first then tells nothing more.
+func TestStopsRacingOnOneStoppingOfAWorkerTellTheSpawnerOnce(t *testing.T) {
+	t.Parallel()
+	f := newRequestFixture(t)
+	ack := outlivingWorker(t, f, false)
+	raced := false
+	var second ThreadAgentStop
+	var secondErr error
+	f.app.workerStopObservedForTest = func(token string) {
+		if raced || token != ack.Token {
+			return
+		}
+		raced = true
+		second, secondErr = f.app.StopThreadAgentRow(t.Context(), f.caller.ID, ack.Token)
+	}
+	first, err := f.app.StopThreadAgentRow(t.Context(), f.caller.ID, ack.Token)
+	if err != nil || first.Outcome != threadAgentStopped || secondErr != nil || second.Outcome != threadAgentStopped {
+		t.Fatalf("Stops = %+v, %v and %+v, %v; want both to report the worker stopped", first, err, second, secondErr)
+	}
+	if got := workerStoppedMessages(t, f.app, f.caller.ID, ack.Token); got != 1 {
+		t.Fatalf("the spawner was told %d times, want once", got)
 	}
 }
 
@@ -172,19 +234,23 @@ func TestAStopOfAPairedWorkerThatOutlivedItsSpawnTellsTheSpawnerOnce(t *testing.
 	if err != nil || stop.Outcome != threadAgentStopped || len(stop.Failures) != 0 {
 		t.Fatalf("Stop = %+v, %v; want the worker there stopped", stop, err)
 	}
-	sendID := workerStoppedSendIDRoot + pair.spawn.Token
-	told := func() bool {
-		_, found, err := pair.source.findRecordedSend(pair.caller.ID, sendID)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return found
-	}
-	if !told() {
-		t.Fatal("the spawner here was not told")
+	if got := workerStoppedMessages(t, pair.source, pair.caller.ID, pair.spawn.Token); got != 1 {
+		t.Fatalf("the spawner here was told %d times, want once", got)
 	}
 	again, err := pair.source.StopThreadAgentRow(t.Context(), pair.caller.ID, pair.spawn.Token)
 	if err != nil || again.Outcome != threadAgentEnded {
 		t.Fatalf("repeated Stop = %+v, %v; want the worker there found at rest", again, err)
+	}
+	if got := workerStoppedMessages(t, pair.source, pair.caller.ID, pair.spawn.Token); got != 1 {
+		t.Fatalf("after a repeated Stop the spawner here was told %d times, want once", got)
+	}
+
+	continueWorker(t, pair.dest, pair.child)
+	third, err := pair.source.StopThreadAgentRow(t.Context(), pair.caller.ID, pair.spawn.Token)
+	if err != nil || third.Outcome != threadAgentStopped {
+		t.Fatalf("Stop of the continued worker there = %+v, %v; want it stopped", third, err)
+	}
+	if got := workerStoppedMessages(t, pair.source, pair.caller.ID, pair.spawn.Token); got != 2 {
+		t.Fatalf("after stopping the continued worker the spawner here was told %d times, want twice", got)
 	}
 }

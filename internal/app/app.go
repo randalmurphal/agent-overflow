@@ -753,6 +753,11 @@ type App struct {
 	// destination answered its status call and before the answer is
 	// recorded (checkRemoteWatch), so a test can stop the thread then.
 	remoteStatusReadForTest func(w store.RemoteWatch)
+	// workerStopObservedForTest, when set, runs in a person's Stop of a
+	// worker that outlived its spawn once it read the send id of its message
+	// to the spawner and before it brings the worker to rest
+	// (workerStoppedNotice), so a test can race a second Stop there.
+	workerStopObservedForTest func(token string)
 	// turnEndSettledForTest, when set, runs in a turn-end settlement pass
 	// after it settled its receipts and before it retires the stops it read
 	// (settleReceiptsForEndedTurn), so a test can stop or end a turn then.

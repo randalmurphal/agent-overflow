@@ -577,9 +577,10 @@ func (a *App) stopAgentRequestBy(ctx context.Context, row store.ThreadRequest, v
 	// through here.
 	outlived := pressed && settled && spawned
 	if current.TargetComputerID != "" {
+		notice := a.workerStoppedNotice(current, outlived, &result)
 		a.stopRemoteAgentRequestBy(ctx, current, settled, spawned, by, &result)
-		if outlived && result.Outcome == threadAgentStopped {
-			a.tellSpawnerOfUserStop(current, &result)
+		if result.Outcome == threadAgentStopped {
+			a.tellSpawnerOfUserStop(current, notice, &result)
 		}
 		return result
 	}
@@ -596,15 +597,34 @@ func (a *App) stopAgentRequestBy(ctx context.Context, row store.ThreadRequest, v
 	}
 	visited[current.TargetThreadID] = true
 	working := a.workerNotAtRest(current.TargetThreadID, &result)
+	notice := a.workerStoppedNotice(current, outlived, &result)
 	before := result
 	a.restThreadHere(ctx, current.TargetThreadID, by, visited, &result)
 	if settled && (working || restStoppedWork(before, result)) {
 		result.Outcome = threadAgentStopped
-		if outlived {
-			a.tellSpawnerOfUserStop(current, &result)
-		}
+		a.tellSpawnerOfUserStop(current, notice, &result)
 	}
 	return result
+}
+
+// workerStoppedNotice is the send id of the message a person's Stop of a
+// worker that outlived its spawn tells the spawner with, empty for any other
+// Stop. It is read before the rest, as the Stop finds the worker, so Stops
+// racing on one stopping of it read the same send id (workerStoppedSendID).
+// A read that fails is named in result and tells nothing.
+func (a *App) workerStoppedNotice(spawn store.ThreadRequest, outlived bool, result *ThreadAgentStop) string {
+	if !outlived {
+		return ""
+	}
+	sendID, err := a.workerStoppedSendID(spawn)
+	if err != nil {
+		result.Failures = append(result.Failures, "tell its spawner: "+err.Error())
+		return ""
+	}
+	if hook := a.workerStopObservedForTest; hook != nil {
+		hook(spawn.Token)
+	}
+	return sendID
 }
 
 // workerNotAtRest reports whether threadID is not at rest as a Stop reaches
@@ -627,16 +647,36 @@ func restStoppedWork(before, after ThreadAgentStop) bool {
 
 // workerStoppedSendIDRoot opens the send id of the message that tells a
 // spawner the user stopped a worker that outlived its spawn,
-// `worker-stopped:<token>`: one per spawn, so a repeated Stop tells it
-// nothing more.
+// `worker-stopped:<token>:<n>`, n counting the Stops of the worker that
+// stopped something (workerStoppedSendID).
 const workerStoppedSendIDRoot = "worker-stopped:"
+
+// workerStoppedSendID names a Stop's message to spawn's caller: the first n
+// no message the caller holds or took in carries. The message of a Stop is
+// recorded once its rest is over, the worker then at rest, so a Stop that
+// stops the worker again, after it was continued, reads the next n, and
+// Stops that found it working before the first message was recorded read
+// the same n, which keeps them to one message.
+func (a *App) workerStoppedSendID(spawn store.ThreadRequest) (string, error) {
+	for n := 1; ; n++ {
+		sendID := fmt.Sprintf("%s%s:%d", workerStoppedSendIDRoot, spawn.Token, n)
+		_, found, err := a.findRecordedSend(spawn.CallerThreadID, sendID)
+		if err != nil || !found {
+			return sendID, err
+		}
+	}
+}
 
 // tellSpawnerOfUserStop tells the thread that made spawn that the user
 // stopped the worker it made after the spawn had settled, as an app-written
-// message attributed to the worker, the way the spawn's answer was. The
-// spawn and its answer stay as they are. An archived spawner is told
-// nothing; any other failure is named in the result.
-func (a *App) tellSpawnerOfUserStop(spawn store.ThreadRequest, result *ThreadAgentStop) {
+// message with sendID (workerStoppedNotice) attributed to the worker, the
+// way the spawn's answer was; an empty sendID tells nothing. The spawn and
+// its answer stay as they are. An archived spawner is told nothing; any
+// other failure is named in the result.
+func (a *App) tellSpawnerOfUserStop(spawn store.ThreadRequest, sendID string, result *ThreadAgentStop) {
+	if sendID == "" {
+		return
+	}
 	origin := &usermessage.OriginThread{ThreadID: spawn.TargetThreadID, Token: spawn.Token, Kind: usermessage.OriginKindWake}
 	title := spawn.TargetThreadTitle
 	if spawn.TargetComputerID != "" {
@@ -650,7 +690,7 @@ func (a *App) tellSpawnerOfUserStop(spawn store.ThreadRequest, result *ThreadAge
 		"and the threads it spawned were stopped the same way. Nothing it did was undone. A later message starts it again.", title, spawn.TargetThreadID)
 	err := a.queueAgentNotice(agentNotice{
 		threadID:     spawn.CallerThreadID,
-		sendID:       workerStoppedSendIDRoot + spawn.Token,
+		sendID:       sendID,
 		origin:       usermessage.OriginAgentThread,
 		originThread: origin,
 		prepare:      func() (string, bool, error) { return body, true, nil },
