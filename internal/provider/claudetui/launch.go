@@ -126,12 +126,13 @@ func buildLaunchOptions(cfg Config, systemPromptPath, appendSystemPromptPath, ga
 		return terminal.SessionOptions{}, fmt.Errorf("claudetui: %w", err)
 	}
 	return terminal.SessionOptions{
-		Shell: cfg.Binary,
-		Args:  line.Args(),
-		Cwd:   cfg.WorkDir,
-		Env:   buildEnv(line.UnsetEnv(), cfg, gatewayURL, hookURL, hookToken),
-		Rows:  cfg.rows(),
-		Cols:  cfg.cols(),
+		Shell:  cfg.Binary,
+		Args:   line.Args(),
+		Cwd:    cfg.WorkDir,
+		Env:    buildEnv(line.UnsetEnv(), cfg, gatewayURL, hookURL, hookToken),
+		Rows:   cfg.rows(),
+		Cols:   cfg.cols(),
+		Reaper: cfg.Reaper,
 	}, nil
 }
 

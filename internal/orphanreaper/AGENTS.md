@@ -12,8 +12,8 @@ only a matching process whose current parent is no longer that parent. Under a
 subreaper the orphan's parent is not init.
 
 Do not replace creation-time and parent checks with PID-only or process-name
-matching. Process groups are established by the provider launcher and by
-`procutil.StartGroup`. Registry
+matching. Process groups are established by the provider launcher, the
+terminal's pty and `procutil.StartGroup`. Registry
 writes are atomic. Read errors are surfaced by explicit reads and sweeps; an
 add logs and replaces an unreadable registry so it cannot block a new session.
 

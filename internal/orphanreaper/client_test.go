@@ -8,8 +8,8 @@ import (
 	"testing"
 )
 
-// TestClientNilSafe covers the non-darwin / no-sidecar path: app.go holds
-// a nil *Client there and calls these unconditionally.
+// TestClientNilSafe covers the no-sidecar path (Windows, tests): app.go
+// holds a nil *Client there and calls these unconditionally.
 func TestClientNilSafe(t *testing.T) {
 	var c *Client
 	c.Watch(100)
