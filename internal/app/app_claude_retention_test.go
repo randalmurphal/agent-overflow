@@ -475,7 +475,7 @@ func TestProviderUpdateClaudeCommandsCarryTheRetentionWindow(t *testing.T) {
 func TestRunProviderUpdateGroupDropsUnsetEnv(t *testing.T) {
 	t.Setenv("CLAUDE_CONFIG_DIR", "/alternate")
 	t.Setenv("AO_PROVIDER_UPDATE_KEPT", "kept")
-	out, err := runProviderUpdateGroup(context.Background(), providerupdate.Command{
+	out, err := runProviderUpdateGroup(context.Background(), (&App{}).groupReaper("provider update"), providerupdate.Command{
 		Binary:   "/bin/sh",
 		Args:     []string{"-c", `printf '%s|%s' "${CLAUDE_CONFIG_DIR-unset}" "${AO_PROVIDER_UPDATE_KEPT-unset}"`},
 		UnsetEnv: []string{"CLAUDE_CONFIG_DIR"},

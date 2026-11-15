@@ -4,7 +4,7 @@ import { once } from 'node:events';
 import { createInterface } from 'node:readline';
 import { chmod, mkdtemp, readFile, readlink, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
-import type { AddressInfo } from 'node:net';
+import { createServer as createNetServer, type AddressInfo, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import type { Duplex } from 'node:stream';
@@ -21,6 +21,9 @@ import {
   terminateChildTreeAndWaitVerified,
 } from '../src/harness-process.js';
 import { FALLBACK_MEMORY_LIMIT_BYTES, HarnessWatchdog } from '../src/harness-watchdog.js';
+import { LAUNCH_CLEANUP_MS, LAUNCH_STEP_MS, launchBudgetMs, launchStep } from '../src/harness-launch-step.js';
+import { HARNESS_WORKER_TIMEOUT_MS } from './fixtures.js';
+import { connectedAfterConfirm } from './headless-pairing-helpers.js';
 
 async function fakeBinary(source: string): Promise<{ root: string; binary: string; pidFile: string }> {
   const root = await mkdtemp(path.join(tmpdir(), 'ao-harness-lifecycle-'));
@@ -345,6 +348,57 @@ test('reaps a child when the bootstrap WebSocket cannot connect', async () => {
   }
 });
 
+test('a launch step that never settles fails naming the step inside its bound', async () => {
+  const started = Date.now();
+  await expect(launchStep('connect', 200, () => new Promise<never>(() => undefined), () => 'backend pid 7: alive'))
+    .rejects.toThrow(/^harness launch: connect did not finish in 0\.2 s\nbackend pid 7: alive$/);
+  const elapsed = Date.now() - started;
+  expect(elapsed).toBeGreaterThanOrEqual(200);
+  expect(elapsed).toBeLessThan(2_000);
+  await expect(launchStep('connect', 1_000, async () => 'connected')).resolves.toBe('connected');
+  await expect(launchStep('connect', 1_000, async () => { throw new Error('refused'); })).rejects.toThrow(/^refused$/);
+});
+
+test('every launch step and its cleanup fit inside the worker fixture timeout', () => {
+  expect(launchBudgetMs()).toBeLessThan(HARNESS_WORKER_TIMEOUT_MS);
+});
+
+test('a connect that stalls fails as a labeled launch step, not a fixture timeout', async () => {
+  // Accepts the upgrade's connection and never answers it.
+  const sockets = new Set<Socket>();
+  const stalled = createNetServer((socket) => sockets.add(socket));
+  await new Promise<void>((resolve) => stalled.listen(0, '127.0.0.1', resolve));
+  const { port } = stalled.address() as AddressInfo;
+  const fake = await fakeBinary(`
+    const { writeFileSync } = await import('node:fs');
+    const dataDirIndex = process.argv.indexOf('--data-dir');
+    const dataRoot = dataDirIndex >= 0 ? process.argv[dataDirIndex + 1] : '';
+    writeFileSync(process.env.AO_PID_FILE, String(process.pid));
+    const port = Number(process.env.AO_STALL_PORT);
+    process.stderr.write('fake backend waiting\\n');
+    process.stdout.write('__AO_HARNESS__:' + JSON.stringify({url:'http://127.0.0.1:' + port + '/?token=t',port,token:'t',dataRoot,dataDir:dataRoot+'/agent-overflow',mockProvider:'mock',pid:process.pid,version:'test'}) + '\\n');
+    setInterval(() => {}, 1000);
+  `);
+  try {
+    const started = Date.now();
+    const launch = launchHarness({
+      binary: fake.binary,
+      dataDir: path.join(fake.root, 'data'),
+      env: { AO_PID_FILE: fake.pidFile, AO_STALL_PORT: String(port) },
+    });
+    await expect(launch).rejects.toThrow(
+      new RegExp(`^harness launch: connect did not finish in ${LAUNCH_STEP_MS / 1000} s\\nbackend pid \\d+: alive\\n[^]*fake backend waiting`),
+    );
+    expect(Date.now() - started).toBeLessThan(LAUNCH_STEP_MS + LAUNCH_CLEANUP_MS);
+    const pid = Number(await readFile(fake.pidFile, 'utf8'));
+    await expect.poll(() => processExists(pid), { timeout: 5_000 }).toBe(false);
+  } finally {
+    for (const socket of sockets) socket.destroy();
+    await new Promise<void>((resolve) => stalled.close(() => resolve()));
+    await rm(fake.root, { recursive: true, force: true });
+  }
+});
+
 test('reconciles an owned descendant after the bootstrap process exits', async () => {
   const fake = await fakeBinary(`
     const { spawn } = await import('node:child_process');
@@ -485,6 +539,24 @@ test('stopping a backend inside a test attaches its stderr tail to the test', as
   const attachment = test.info().attachments.find((entry) => entry.name === `backend ${app.bootstrap.pid} stderr`);
   expect(attachment?.contentType).toBe('text/plain');
   expect(attachment?.body?.toString()).toMatch(/store: migration v\d+ applied/);
+});
+
+test('a pairing wait that times out attaches each side and quotes its slow steps', async () => {
+  const slow = '2026/11/15 10:00:00 deviceclient: slow step=renew duration=10.002s outcome=timeout';
+  const served = '2026/11/15 10:00:00 transport: slow step=renew duration=10.001s outcome=ok';
+  const sides = {
+    home: { stderrLines: () => ['transport: listening', slow] },
+    remote: { stderrLines: () => ['transport: listening', served] },
+  };
+  await expect(connectedAfterConfirm(sides, async (wait) => {
+    throw new Error(`Timed out ${wait.timeout}ms waiting for Connected`);
+  })).rejects.toThrow(`Timed out 20000ms waiting for Connected\n\nslow pairing steps:\nhome: ${slow}\nremote: ${served}`);
+  const attached = test.info().attachments.filter((attachment) => attachment.name.endsWith('stderr at pairing timeout'));
+  expect(attached.map((attachment) => [attachment.name, attachment.body?.toString()])).toEqual([
+    ['home stderr at pairing timeout', `transport: listening\n${slow}`],
+    ['remote stderr at pairing timeout', `transport: listening\n${served}`],
+  ]);
+  await expect(connectedAfterConfirm(sides, async () => undefined)).resolves.toBeUndefined();
 });
 
 test('a backend closing the socket on HarnessShutdown is a graceful stop, not a failure', async () => {

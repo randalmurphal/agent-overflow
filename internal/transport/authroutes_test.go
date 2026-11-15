@@ -34,9 +34,12 @@ type stubAuth struct {
 	// beginCount records how many ceremonies were started, so a route that
 	// answered without asking the endpoint is visible.
 	beginCount int
+	// stall is how long a redemption or renewal takes to decide.
+	stall time.Duration
 }
 
 func (s *stubAuth) RedeemPairing(req PairingRedemption) (TokenGrant, string) {
+	time.Sleep(s.stall)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.pairing = append(s.pairing, req)
@@ -44,6 +47,7 @@ func (s *stubAuth) RedeemPairing(req PairingRedemption) (TokenGrant, string) {
 }
 
 func (s *stubAuth) RenewSession(req SessionRenewal) (TokenGrant, string) {
+	time.Sleep(s.stall)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.renewals = append(s.renewals, req)

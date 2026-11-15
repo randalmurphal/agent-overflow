@@ -1068,8 +1068,8 @@ var Routes = []Route{
 		Listener:   "app transport",
 		Credential: CredTransferTicket,
 		Posture:    PostureOpaqueMedia,
-		Why: "One sentence read aloud in an OpenAI voice, as a WAV file. " +
-			"The threads:operate call that admitted the sentence (bounded " +
+		Why: "One section read aloud in an OpenAI voice, as a WAV file. " +
+			"The threads:operate call that admitted the section (bounded " +
 			"in count, length and lifetime by internal/readaloud) mints the " +
 			"ticket, from a book of its own, and the path is compared " +
 			"against its subject. The fetch is what spends the user's key: " +
@@ -1078,7 +1078,7 @@ var Routes = []Route{
 			"fetch cancels the call, as does a write to the switch, and " +
 			"answers audio/wav it built itself around OpenAI's PCM. A " +
 			"failure answers a 4xx or 5xx (403 only for the switch being " +
-			"off or written since the sentence was admitted) with a " +
+			"off or written since the section was admitted) with a " +
 			"short plain-text message this tree wrote, OpenAI's text only " +
 			"after the openai package scrubbed it. nosniff and " +
 			"Cache-Control: no-store as on every ticketed transfer. Not " +

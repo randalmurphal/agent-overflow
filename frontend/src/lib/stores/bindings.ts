@@ -291,6 +291,9 @@ export {
   // same wsl.json; the launcher reads it on its next start.
   GetWebviewGPUVsyncDisabled,
   SetWebviewGPUVsyncDisabled,
+  // OTLP tracing as saved and as this session started with it (Settings →
+  // Observability); tracing is wired once at start.
+  GetObservabilityTracing,
 
   // Host app launchers: editor, browser URL opener, catalog, persistence.
   OpenInEditor,
@@ -346,6 +349,7 @@ export {
   GitRefreshTags,
   GitListWorktrees,
   GitCommit,
+  GetCommitOutcome,
   ListCommitFiles,
   GitPush,
   GitPull,

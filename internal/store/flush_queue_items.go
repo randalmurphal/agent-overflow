@@ -96,47 +96,71 @@ func (s *Store) DeleteDispatchedFlushQueueItem(id string) error {
 	return err
 }
 
-// RestoreFlushQueueToDraft commits a merged composer and retires its queue
-// records together. A failure cannot leave text that a later restore duplicates.
-func (s *Store) RestoreFlushQueueToDraft(expected, merged ThreadDraft, ids []string) (bool, error) {
-	if merged.ThreadID == "" || expected.ThreadID != merged.ThreadID {
-		return false, fmt.Errorf("queue restoration requires matching draft threads")
+// RestoreFlushQueueToDraft puts undelivered messages back in the composer.
+// In one transaction it writes merged over expected (when they differ),
+// deletes the queue rows ids, and takes back each unconfirmed user row in
+// retire as RetireUndeliveredUserRow does, returning the review comments
+// those rows claimed to drafts. Everything is written or nothing is, so no
+// failure or crash leaves a message both in the composer and in a row a
+// later restore takes back again, or in neither. It reports whether the
+// draft changed and the comments it returned.
+func (s *Store) RestoreFlushQueueToDraft(expected, merged ThreadDraft, ids, retire []string) (bool, []DiffReviewReturnedComments, error) {
+	threadID := merged.ThreadID
+	if threadID == "" || expected.ThreadID != threadID {
+		return false, nil, fmt.Errorf("queue restoration requires matching draft threads")
 	}
-	tx, err := s.db.Begin()
-	if err != nil {
-		return false, err
-	}
-	defer tx.Rollback()
-	current, _, err := getThreadDraft(tx, merged.ThreadID)
-	if err != nil {
-		return false, err
-	}
-	if current != expected {
-		return false, fmt.Errorf("composer changed during queue restoration; queue retained")
-	}
-	changed, err := upsertThreadDraft(tx, merged)
-	if err != nil {
-		return false, err
-	}
-	for _, id := range ids {
-		var owner string
-		err := tx.QueryRow(`SELECT thread_id FROM flush_queue_items WHERE id=?`, id).Scan(&owner)
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return false, err
+	for _, itemID := range retire {
+		if strings.TrimSpace(itemID) == "" {
+			return false, nil, fmt.Errorf("store: queue restoration: an unconfirmed row id is empty")
 		}
-		if owner != "" && owner != merged.ThreadID {
-			return false, fmt.Errorf("queue item belongs to another thread")
+	}
+	var changed bool
+	var returned []DiffReviewReturnedComments
+	err := s.writeItems(threadID, nil, "restore queued messages to the draft of "+threadID, func(tx *sql.Tx, w *cardWrite) error {
+		changed, returned = false, nil
+		current, _, err := getThreadDraft(tx, threadID)
+		if err != nil {
+			return err
 		}
-		if _, err := tx.Exec(`UPDATE async_questions SET state='restored',user_item_id=''
+		if current != expected {
+			return fmt.Errorf("composer changed during queue restoration; queue retained")
+		}
+		if merged != expected {
+			if changed, err = upsertThreadDraft(tx, merged); err != nil {
+				return err
+			}
+		}
+		for _, id := range ids {
+			var owner string
+			err := tx.QueryRow(`SELECT thread_id FROM flush_queue_items WHERE id=?`, id).Scan(&owner)
+			if err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return err
+			}
+			if owner != "" && owner != threadID {
+				return fmt.Errorf("queue item belongs to another thread")
+			}
+			if _, err := tx.Exec(`UPDATE async_questions SET state='restored',user_item_id=''
  WHERE state='submitted' AND send_id<>'' AND (thread_id,send_id) IN
  (SELECT thread_id,send_id FROM flush_queue_items WHERE id=?)`, id); err != nil {
-			return false, err
+				return err
+			}
+			if _, err := tx.Exec(`DELETE FROM flush_queue_items WHERE id=?`, id); err != nil {
+				return err
+			}
 		}
-		if _, err := tx.Exec(`DELETE FROM flush_queue_items WHERE id=?`, id); err != nil {
-			return false, err
+		for _, itemID := range retire {
+			comments, err := retireUndeliveredUserRowTx(tx, w, threadID, itemID)
+			if err != nil {
+				return err
+			}
+			returned = append(returned, comments...)
 		}
+		return nil
+	})
+	if err != nil {
+		return false, nil, err
 	}
-	return changed, tx.Commit()
+	return changed, returned, nil
 }
 
 // DeleteFlushQueueItemsForThread drops every queued message of one thread.

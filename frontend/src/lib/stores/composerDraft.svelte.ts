@@ -15,15 +15,18 @@ import {
   forgetDraftSnapshot,
   forgetDraftSnapshotIfMatches,
   getRememberedDraftSnapshotForStore,
+  abandonDraftThreadWrites,
   DraftThreadDeletedError,
   markDraftThreadDeleted,
   rememberDraftSnapshot,
   resetComposerDraftSnapshotStateForTest,
   queueDraftSave,
-  queueDraftThreadDeletion,
+  queueDraftThreadCleanup,
+  unsavedDraftSnapshot,
   waitForActiveDraftSaves,
   type ComposerDraftSnapshot,
 } from './composerDraftSnapshots';
+import { TransportError } from '../transport/wsClient';
 import { addErrorToast } from './toast.svelte';
 import { errString } from '../utils/errors';
 import { ensureImagePlaceholders } from '../utils/imagePlaceholders';
@@ -48,6 +51,19 @@ export interface DraftStoreOptions {
    *   overwrite work the user can see.
    */
   persistence?: 'backend' | 'none';
+}
+
+/** What the empty-draft cleanup did, and where text typed meanwhile went. */
+export interface EmptyThreadCleanup {
+  deleted: boolean;
+  /** Kept because another screen saved a draft into it; this client's text left it. */
+  contested: boolean;
+  /**
+   * Text this client typed into the thread and left there by moving on,
+   * which the caller keeps in a new thread. Text the store still holds is
+   * carried in its buffer instead.
+   */
+  unsaved: ComposerDraftSnapshot | null;
 }
 
 export function resetComposerDraftSnapshotsForTest(): void {
@@ -93,10 +109,12 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
   // by any successful save. The awaited paths (restoreDraftFor) rethrow
   // instead — their callers own the message.
   let saveFailureSurfaced = false;
-  // The deleted thread whose buffer this store kept (releaseDeletedThread).
-  // Its own writes that were waiting behind the delete are carried with the
-  // buffer, so their refusal is not a failure to report.
-  let carriedFromDeletedThread: string | null = null;
+  // The thread whose unsaved text this store handed on (releaseDeletedThread,
+  // yieldContestedThread): carried in the buffer or returned to the caller.
+  // Its own writes that were waiting for that thread went with the text, so
+  // their refusal is not a failure to report.
+  let releasedThreadId: string | null = null;
+  let threadGone: ((id: string) => void) | null = null;
 
   function clearDebounce() {
     if (debounceTimer) {
@@ -200,32 +218,72 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
       clearLocalSnapshotIfCurrent(id, snapshot);
       saveFailureSurfaced = false;
     } catch (err) {
-      if (err instanceof DraftThreadDeletedError && carriedFromDeletedThread === id) return;
+      if (err instanceof DraftThreadDeletedError && releasedThreadId === id) return;
       if (threadId === id && draftSnapshotMatchesPersistedState(buildSnapshot(), snapshot)) {
         hasPendingSave = true;
+      }
+      // The thread was deleted under this composer (another screen erased
+      // it). The handler treats that like the deletion broadcast, which
+      // moves unsaved text to a fresh thread.
+      if (err instanceof TransportError && err.code === 'not_found') {
+        threadGone?.(id);
+        if (releasedThreadId === id) return;
       }
       throw err;
     }
   }
 
-  /**
-   * The empty-draft cleanup deleted `id`: no write for it is sent again. A
-   * store still on it lets go of the id and keeps its buffer, so what was
-   * typed while the delete was in flight goes to the thread the caller
-   * adopts next. Idempotent, for the lost-reply path that learns of the
-   * deletion from the broadcast.
-   */
-  function releaseDeletedThread(id: string): void {
-    if (!persists) return;
-    markDraftThreadDeleted(id);
-    if (threadId !== id) return;
+  /** Let go of `id` while keeping the buffer, for the next adopted thread. */
+  function detachKeepingBuffer(id: string): void {
     clearDebounce();
     pendingSaveGeneration++;
     switchGeneration++;
     threadId = null;
     hasPendingSave = false;
     hydrating = false;
-    carriedFromDeletedThread = id;
+    releasedThreadId = id;
+  }
+
+  /**
+   * The thread `id` was deleted: no write for it is sent again. A store
+   * still on it lets go of the id and keeps its buffer, so what was typed
+   * meanwhile goes to the thread the caller adopts next. A store that has
+   * moved on returns the unsaved text it left there, for the caller to keep
+   * in a new thread. Idempotent: a second call returns null.
+   */
+  function releaseDeletedThread(id: string): ComposerDraftSnapshot | null {
+    if (!persists) return null;
+    const unsaved = markDraftThreadDeleted(id) ?? null;
+    if (threadId === id) {
+      detachKeepingBuffer(id);
+      return null;
+    }
+    if (unsaved) releasedThreadId = id;
+    return unsaved;
+  }
+
+  /**
+   * The cleanup kept `id` because another screen saved a draft into it.
+   * Text this client typed meanwhile must not overwrite that draft, so its
+   * waiting writes are dropped and the text goes to a new thread: carried in
+   * the buffer when the store is still on `id`, returned otherwise.
+   */
+  function yieldContestedThread(id: string): ComposerDraftSnapshot | null {
+    const unsaved = abandonDraftThreadWrites(id) ?? null;
+    if (threadId === id) {
+      detachKeepingBuffer(id);
+      return null;
+    }
+    return unsaved;
+  }
+
+  /** Did another screen leave content in `id`'s stored draft? */
+  async function storedDraftHasContent(id: string): Promise<boolean> {
+    const stored = (await GetDraft(id)) as Draft;
+    return (stored.content ?? '').trim() !== ''
+      || (stored.attachmentIds ?? []).length > 0
+      || (stored.terminalChips ?? []).length > 0
+      || Boolean(stored.sourceProposedPlan);
   }
 
   // The one surfacing point for the paths that swallow saveSnapshot's
@@ -493,16 +551,30 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
     /**
      * Delete the empty thread `id` through `remove` (DeleteEmptyDraftThread),
      * after every write admitted before it. Saves admitted meanwhile wait for
-     * the answer: sent to the kept thread, or never sent when it was deleted.
+     * the answer: sent to the kept thread; never sent when it was deleted, or
+     * when another screen's draft is what kept it.
      */
-    deleteEmptyThread(id: string, remove: () => Promise<boolean>): Promise<boolean> {
-      return queueDraftThreadDeletion(id, async () => {
-        const deleted = await remove();
-        if (deleted) releaseDeletedThread(id);
-        return deleted;
+    deleteEmptyThread(id: string, remove: () => Promise<boolean>): Promise<EmptyThreadCleanup> {
+      return queueDraftThreadCleanup(id, async () => {
+        if (await remove()) return { deleted: true, contested: false, unsaved: releaseDeletedThread(id) };
+        const kept = { deleted: false, contested: false, unsaved: null };
+        // Only this client's typing since the decision can overwrite.
+        if (!persists || !unsavedDraftSnapshot(id)) return kept;
+        try {
+          if (!(await storedDraftHasContent(id))) return kept;
+        } catch (err) {
+          console.error('Could not read the kept draft after an empty-draft cleanup:', err);
+          return kept;
+        }
+        return { deleted: false, contested: true, unsaved: yieldContestedThread(id) };
       });
     },
     releaseDeletedThread,
+    /** Called when a save learns the thread was deleted under this store. */
+    registerThreadGoneHandler(handler: (id: string) => void): () => void {
+      threadGone = handler;
+      return () => { if (threadGone === handler) threadGone = null; };
+    },
 
     /**
      * Admit the captured dirty draft before clearing locally. Older saves

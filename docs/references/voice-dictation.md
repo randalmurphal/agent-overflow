@@ -80,9 +80,9 @@ no `auth.json`, and dictation reads as unavailable there.
 
 A transcription has three minutes from finish (`dictation.TranscribeBudget`),
 every attempt and a refresh included; past it the computer stops it and the
-mic says ChatGPT took too long. `DictationSources` reports the budget, and
-the client waits 15 seconds past it, so the computer's answer always
-arrives first. A finish that fails, or whose answer never comes, cancels
+mic says ChatGPT took too long. `FinishDictation` declares that budget
+([method budgets](../architecture/transport.md#method-budgets)), so the
+client waits past it and the computer's answer always arrives first. A finish that fails, or whose answer never comes, cancels
 the recording on the computer.
 
 ## Live transcription with an API key

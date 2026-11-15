@@ -264,6 +264,7 @@ func (a *App) reconcileIssuedCertificate(
 		Dir:    dir,
 		Domain: cfg.CanonicalDomain,
 		Hook:   cfg.ACMEDNSHook,
+		Reaper: a.groupReaper("dns hook"),
 	})
 	if err != nil {
 		a.recordDomainCertFailure(fmt.Sprintf("%v", err))

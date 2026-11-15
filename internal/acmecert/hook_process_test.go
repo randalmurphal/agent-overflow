@@ -52,7 +52,7 @@ func hookProcessRunning(pid int) bool {
 
 // A hook that traps the stop signal and exits 0 did not do its work in time.
 func TestAHookThatAnswersTheTimeoutWithACleanExitStillTimedOut(t *testing.T) {
-	err := runHook(context.Background(),
+	err := runHook(context.Background(), nopReaper{},
 		[]string{"/bin/sh", "-c", `trap 'exit 0' TERM; while :; do sleep 0.05; done`, "dns-hook"},
 		300*time.Millisecond, hookSet, hookTestName, "the-value")
 	requireNames(t, err, "timed out after 300ms")
@@ -62,7 +62,7 @@ func TestTheTimeoutStopsWhatTheHookStarted(t *testing.T) {
 	pidPath := filepath.Join(t.TempDir(), "pid")
 	done := make(chan error, 1)
 	go func() {
-		done <- runHook(context.Background(),
+		done <- runHook(context.Background(), nopReaper{},
 			[]string{"/bin/sh", "-c", `sleep 300 & echo $! > "` + pidPath + `"; wait`, "dns-hook"},
 			500*time.Millisecond, hookSet, hookTestName, "the-value")
 	}()
@@ -75,7 +75,7 @@ func TestTheTimeoutStopsWhatTheHookStarted(t *testing.T) {
 
 func TestAProcessTheHookLeftRunningIsStoppedWhenTheHookReturns(t *testing.T) {
 	pidPath := filepath.Join(t.TempDir(), "pid")
-	err := runHook(context.Background(),
+	err := runHook(context.Background(), nopReaper{},
 		[]string{"/bin/sh", "-c", `sleep 300 >/dev/null 2>&1 & echo $! > "` + pidPath + `"`, "dns-hook"},
 		time.Minute, hookSet, hookTestName, "the-value")
 	if err != nil {
@@ -92,7 +92,7 @@ func TestACancelledHookReportsTheCancellation(t *testing.T) {
 	pidPath := filepath.Join(t.TempDir(), "pid")
 	done := make(chan error, 1)
 	go func() {
-		done <- runHook(ctx,
+		done <- runHook(ctx, nopReaper{},
 			[]string{"/bin/sh", "-c", `trap 'exit 0' TERM; echo $$ > "` + pidPath + `"; while :; do sleep 0.05; done`, "dns-hook"},
 			time.Minute, hookSet, hookTestName, "the-value")
 	}()
@@ -108,7 +108,7 @@ func TestACancelledHookReportsTheCancellation(t *testing.T) {
 func stubRunGroup(t *testing.T, outcome procutil.GroupOutcome, err error) {
 	t.Helper()
 	original := runGroup
-	runGroup = func(context.Context, procutil.GroupCommand) (procutil.GroupOutcome, error) {
+	runGroup = func(context.Context, procutil.Reaper, procutil.GroupCommand) (procutil.GroupOutcome, error) {
 		return outcome, err
 	}
 	t.Cleanup(func() { runGroup = original })
@@ -116,20 +116,20 @@ func stubRunGroup(t *testing.T, outcome procutil.GroupOutcome, err error) {
 
 func TestAHookThatCannotBeStoppedIsReportedAsStillRunning(t *testing.T) {
 	stubRunGroup(t, procutil.GroupOutcome{ExitCode: -1, Stopped: true}, procutil.ErrGroupSurvived)
-	err := runHook(context.Background(), []string{"dns-hook"}, time.Minute, hookSet, hookTestName, "the-value")
+	err := runHook(context.Background(), nopReaper{}, []string{"dns-hook"}, time.Minute, hookSet, hookTestName, "the-value")
 	requireNames(t, err, "could not be stopped and is still running")
 }
 
 func TestAFailingHookAlsoReportsAnOutputPathFailure(t *testing.T) {
 	stubRunGroup(t, procutil.GroupOutcome{ExitCode: 3, PipeErr: errors.New("the output pipe did not close")}, errors.New("exit status 3"))
-	err := runHook(context.Background(), []string{"dns-hook"}, time.Minute, hookSet, hookTestName, "the-value")
+	err := runHook(context.Background(), nopReaper{}, []string{"dns-hook"}, time.Minute, hookSet, hookTestName, "the-value")
 	requireNames(t, err, "exit status 3")
 	requireNames(t, err, "the output pipe did not close")
 }
 
 func TestAHookThatSucceededIsNotFailedForItsOutputPath(t *testing.T) {
 	stubRunGroup(t, procutil.GroupOutcome{PipeErr: errors.New("the output pipe did not close")}, nil)
-	if err := runHook(context.Background(), []string{"dns-hook"}, time.Minute, hookSet, hookTestName, "the-value"); err != nil {
+	if err := runHook(context.Background(), nopReaper{}, []string{"dns-hook"}, time.Minute, hookSet, hookTestName, "the-value"); err != nil {
 		t.Fatalf("a hook that exited 0: %v", err)
 	}
 }

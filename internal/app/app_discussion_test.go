@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"sort"
@@ -205,7 +206,7 @@ func TestStartDiscussionCreatesChannelChildrenAndParticipantSessions(t *testing.
 		t.Fatalf("CreateDiscussionDef() error = %v", err)
 	}
 
-	if err := app.StartDiscussion(thread.ID, "Architects"); err != nil {
+	if err := app.StartDiscussion(context.Background(), thread.ID, "Architects"); err != nil {
 		t.Fatalf("StartDiscussion() error = %v", err)
 	}
 
@@ -304,7 +305,7 @@ func TestStartDiscussionCleansUpOnParticipantSessionFailure(t *testing.T) {
 	}
 	app.stopSessionFn = func(threadID string) error { return nil }
 
-	if err := app.StartDiscussion(thread.ID, "Architects"); err == nil {
+	if err := app.StartDiscussion(context.Background(), thread.ID, "Architects"); err == nil {
 		t.Fatal("expected StartDiscussion() error on participant session failure")
 	}
 
@@ -393,7 +394,7 @@ func TestStartDiscussionMirrorsEarlyParticipantTurnDuringStartup(t *testing.T) {
 		return nil
 	}
 
-	if err := app.StartDiscussion(thread.ID, "Architects"); err != nil {
+	if err := app.StartDiscussion(context.Background(), thread.ID, "Architects"); err != nil {
 		t.Fatalf("StartDiscussion() error = %v", err)
 	}
 
@@ -443,7 +444,7 @@ func TestPostChannelMessageAndGetChannelMessages(t *testing.T) {
 		t.Fatalf("Create() error = %v", err)
 	}
 
-	if _, err := app.PostChannelMessage(channel.ID, "Human intervention"); err != nil {
+	if _, err := app.PostChannelMessage(context.Background(), channel.ID, "Human intervention"); err != nil {
 		t.Fatalf("PostChannelMessage() error = %v", err)
 	}
 
@@ -484,7 +485,7 @@ func TestDeleteThreadRemovesDiscussionChildrenAndRuntimeState(t *testing.T) {
 	}
 
 	app.startSessionFn = func(threadID string) error { return nil }
-	if err := app.StartDiscussion(thread.ID, "Architects"); err != nil {
+	if err := app.StartDiscussion(context.Background(), thread.ID, "Architects"); err != nil {
 		t.Fatalf("StartDiscussion() error = %v", err)
 	}
 
@@ -725,7 +726,7 @@ func TestSessionEventHandlerMirrorsDiscussionTurnsIntoChannelAndConcludes(t *tes
 		t.Fatalf("payload.Participants = %+v, want both children in roster order", payload.Participants)
 	}
 
-	if _, err := app.PostChannelMessage(parent.DiscussionID, "Can we keep going?"); err == nil {
+	if _, err := app.PostChannelMessage(context.Background(), parent.DiscussionID, "Can we keep going?"); err == nil {
 		t.Fatal("expected posting to concluded discussion channel to fail")
 	}
 }
@@ -774,7 +775,7 @@ func TestStartDiscussionRejectsThreadWithChatHistory(t *testing.T) {
 		t.Fatalf("InsertItem: %v", err)
 	}
 
-	err := app.StartDiscussion(thread.ID, "Architects")
+	err := app.StartDiscussion(context.Background(), thread.ID, "Architects")
 	if err == nil {
 		t.Fatal("StartDiscussion on used chat error = nil, want rejection")
 	}
@@ -824,7 +825,7 @@ func TestStartDiscussionByIDRejectsProjectDefinitionFromAnotherProject(t *testin
 		t.Fatalf("CreateDiscussionDef: %v", err)
 	}
 
-	err = app.StartDiscussionByID(target.ID, def.ID)
+	err = app.StartDiscussionByID(context.Background(), target.ID, def.ID)
 	if err == nil {
 		t.Fatal("StartDiscussionByID cross-project error = nil, want rejection")
 	}
@@ -852,7 +853,7 @@ func TestStartDiscussionRejectsEmptyName(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := app.StartDiscussion(thread.ID, tt.input)
+			err := app.StartDiscussion(context.Background(), thread.ID, tt.input)
 			if err == nil {
 				t.Fatal("StartDiscussion() error = nil, want error for empty name")
 			}
@@ -941,7 +942,7 @@ func TestPostChannelMessageClaimsCurrentSpeakerAndSuppressesWhileAwaiting(t *tes
 	}); err != nil {
 		t.Fatalf("CreateDiscussionDef() error = %v", err)
 	}
-	if err := app.StartDiscussion(thread.ID, "Architects"); err != nil {
+	if err := app.StartDiscussion(context.Background(), thread.ID, "Architects"); err != nil {
 		t.Fatalf("StartDiscussion() error = %v", err)
 	}
 
@@ -957,7 +958,7 @@ func TestPostChannelMessageClaimsCurrentSpeakerAndSuppressesWhileAwaiting(t *tes
 		t.Fatalf("len(children) = %d, want 2", len(children))
 	}
 
-	if _, err := app.PostChannelMessage(parent.DiscussionID, "Let's evaluate the migration boundary."); err != nil {
+	if _, err := app.PostChannelMessage(context.Background(), parent.DiscussionID, "Let's evaluate the migration boundary."); err != nil {
 		t.Fatalf("PostChannelMessage() error = %v", err)
 	}
 
@@ -989,7 +990,7 @@ func TestPostChannelMessageClaimsCurrentSpeakerAndSuppressesWhileAwaiting(t *tes
 
 	// A second human post while the first participant hasn't replied
 	// yet (AwaitingResponse) must not dispatch a second prompt.
-	if _, err := app.PostChannelMessage(parent.DiscussionID, "Any early thoughts?"); err != nil {
+	if _, err := app.PostChannelMessage(context.Background(), parent.DiscussionID, "Any early thoughts?"); err != nil {
 		t.Fatalf("PostChannelMessage() (second) error = %v", err)
 	}
 	assertNoSendCapture(t, sendCh, 200*time.Millisecond)
@@ -1037,7 +1038,7 @@ func TestSyncDiscussionTurnPromptsNextSpeakerWithMessagesSinceOwnLastPost(t *tes
 	}); err != nil {
 		t.Fatalf("CreateDiscussionDef() error = %v", err)
 	}
-	if err := app.StartDiscussion(thread.ID, "Architects"); err != nil {
+	if err := app.StartDiscussion(context.Background(), thread.ID, "Architects"); err != nil {
 		t.Fatalf("StartDiscussion() error = %v", err)
 	}
 
@@ -1055,7 +1056,7 @@ func TestSyncDiscussionTurnPromptsNextSpeakerWithMessagesSinceOwnLastPost(t *tes
 	architect, reviewer := children[0], children[1]
 
 	// Kick off the discussion; architect gets prompted first.
-	if _, err := app.PostChannelMessage(parent.DiscussionID, "Topic: evaluate the migration boundary."); err != nil {
+	if _, err := app.PostChannelMessage(context.Background(), parent.DiscussionID, "Topic: evaluate the migration boundary."); err != nil {
 		t.Fatalf("PostChannelMessage(kickoff) error = %v", err)
 	}
 	awaitSendCapture(t, sendCh)
@@ -1145,7 +1146,7 @@ func TestSyncDiscussionTurnToolOnlyStillAdvancesAndPromptsNextSpeaker(t *testing
 	}); err != nil {
 		t.Fatalf("CreateDiscussionDef() error = %v", err)
 	}
-	if err := app.StartDiscussion(thread.ID, "Architects"); err != nil {
+	if err := app.StartDiscussion(context.Background(), thread.ID, "Architects"); err != nil {
 		t.Fatalf("StartDiscussion() error = %v", err)
 	}
 
@@ -1159,7 +1160,7 @@ func TestSyncDiscussionTurnToolOnlyStillAdvancesAndPromptsNextSpeaker(t *testing
 	}
 	architect, reviewer := children[0], children[1]
 
-	if _, err := app.PostChannelMessage(parent.DiscussionID, "Kick things off."); err != nil {
+	if _, err := app.PostChannelMessage(context.Background(), parent.DiscussionID, "Kick things off."); err != nil {
 		t.Fatalf("PostChannelMessage() error = %v", err)
 	}
 	awaitSendCapture(t, sendCh)
@@ -1533,7 +1534,7 @@ func TestPostChannelMessageSelfHealsWedgedConcludedDeliberation(t *testing.T) {
 	app.discussionService().InstallRuntime(channelID, discussion.RestoreDeliberation(
 		channelID, 2, []string{children[0].ID, children[1].ID}, 2, ""))
 
-	if _, err := app.PostChannelMessage(channelID, "Anyone there?"); err != nil {
+	if _, err := app.PostChannelMessage(context.Background(), channelID, "Anyone there?"); err != nil {
 		t.Fatalf("PostChannelMessage() error = %v", err)
 	}
 
@@ -1624,7 +1625,7 @@ func TestDiscussionPromptDispatchFailureUnclaimsAndAllowsRetry(t *testing.T) {
 	channelID := parent.DiscussionID
 	app.installDeliberation(channelID, []string{children[0].ID, children[1].ID}, 6)
 
-	if _, err := app.PostChannelMessage(channelID, "Kick off."); err != nil {
+	if _, err := app.PostChannelMessage(context.Background(), channelID, "Kick off."); err != nil {
 		t.Fatalf("PostChannelMessage(kickoff) error = %v", err)
 	}
 
@@ -1674,7 +1675,7 @@ func TestDiscussionPromptDispatchFailureUnclaimsAndAllowsRetry(t *testing.T) {
 	}
 
 	// A second human post retries the SAME speaker.
-	if _, err := app.PostChannelMessage(channelID, "Try again."); err != nil {
+	if _, err := app.PostChannelMessage(context.Background(), channelID, "Try again."); err != nil {
 		t.Fatalf("PostChannelMessage(retry) error = %v", err)
 	}
 	retry := awaitSendCapture(t, sendCh)
@@ -1710,7 +1711,7 @@ func TestGetChannelStatePayloadShapeForLiveDiscussion(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("CreateDiscussionDef() error = %v", err)
 	}
-	if err := app.StartDiscussion(thread.ID, "Architects"); err != nil {
+	if err := app.StartDiscussion(context.Background(), thread.ID, "Architects"); err != nil {
 		t.Fatalf("StartDiscussion() error = %v", err)
 	}
 
@@ -2058,7 +2059,7 @@ func TestConcludeDiscussionEndsOpenDiscussionWithModeratorMessage(t *testing.T) 
 		t.Fatal("expected ConcludeDiscussion to remove the FSM from a.deliberations")
 	}
 
-	if _, err := app.PostChannelMessage(channelID, "still talking?"); err == nil {
+	if _, err := app.PostChannelMessage(context.Background(), channelID, "still talking?"); err == nil {
 		t.Fatal("expected PostChannelMessage on a moderator-concluded channel to fail")
 	}
 }

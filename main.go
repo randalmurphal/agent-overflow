@@ -110,7 +110,7 @@ func main() {
 	if err := disclaimHarnessResponsibility(); err != nil {
 		fatalf("isolate macOS harness responsibility: %v", err)
 	}
-	// The orphan-reaper sidecar (macOS) re-execs this binary with the
+	// The orphan-reaper sidecar (macOS, Linux) re-execs this binary with the
 	// __reap subcommand. Short-circuit before any other startup — flag
 	// parsing, shell-env sync, Wails — so the sidecar stays a tiny pipe
 	// reader that owns no GUI or transport. See internal/orphanreaper.

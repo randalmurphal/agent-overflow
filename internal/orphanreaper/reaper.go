@@ -77,5 +77,5 @@ func reap(watched map[int]struct{}, kill func(pgid int, sig syscall.Signal), gra
 	for pgid := range watched {
 		kill(pgid, syscall.SIGKILL)
 	}
-	log.Printf("orphanreaper: parent died; reaped %d provider group(s)", len(watched))
+	log.Printf("orphanreaper: parent died; reaped %d process group(s)", len(watched))
 }

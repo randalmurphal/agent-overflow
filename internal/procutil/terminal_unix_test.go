@@ -55,7 +55,7 @@ echo "answer=$answer"
 	var outcome GroupOutcome
 	go func() {
 		var err error
-		outcome, err = RunGroup(context.Background(), command)
+		outcome, err = RunGroup(context.Background(), &recordingReaper{}, command)
 		done <- err
 	}()
 	waitForOutput(t, written, "ask> ")
@@ -88,7 +88,7 @@ func TestATerminalDoesNotHangUpTheCommandsProcesses(t *testing.T) {
 	command := shellCommand(t, `kill -HUP $$; echo survived-hangup; sleep 60 & echo $! > pid`, &output)
 	command.Terminal = terminal
 	command.TerminateGrace = 200 * time.Millisecond
-	outcome, err := RunGroup(context.Background(), command)
+	outcome, err := RunGroup(context.Background(), &recordingReaper{}, command)
 	pid := recordedPID(t, filepath.Join(command.Dir, "pid"))
 	killAtCleanup(t, pid)
 	if err != nil || outcome.ExitCode != 0 {
@@ -110,7 +110,7 @@ func TestACommandThatDoesNotExistFailsToStartWithATerminal(t *testing.T) {
 	terminal, _, _ := openTestTerminal(t)
 	var output syncBuffer
 	missing := filepath.Join(t.TempDir(), "no-such-shell")
-	outcome, err := RunGroup(context.Background(), GroupCommand{
+	outcome, err := RunGroup(context.Background(), &recordingReaper{}, GroupCommand{
 		Dir: t.TempDir(), Argv: []string{missing, "-c", "true"}, Output: &output, Terminal: terminal,
 	})
 	var exitErr *exec.ExitError
@@ -131,14 +131,14 @@ func TestARelativeCommandIsFoundInTheCommandsDirectoryWithATerminal(t *testing.T
 		t.Fatal(err)
 	}
 	var output syncBuffer
-	outcome, err := RunGroup(context.Background(), GroupCommand{
+	outcome, err := RunGroup(context.Background(), &recordingReaper{}, GroupCommand{
 		Dir: dir, Argv: []string{"./tool"}, Output: &output, Terminal: terminal,
 	})
 	if err != nil || outcome.ExitCode != 0 || output.String() != "ran-in-dir\n" {
 		t.Fatalf("outcome=%+v err=%v output=%q", outcome, err, output.String())
 	}
 	// The same name where no such file is: a start failure.
-	_, err = RunGroup(context.Background(), GroupCommand{
+	_, err = RunGroup(context.Background(), &recordingReaper{}, GroupCommand{
 		Dir: t.TempDir(), Argv: []string{"./tool"}, Output: &output, Terminal: terminal,
 	})
 	var exitErr *exec.ExitError
@@ -157,7 +157,7 @@ func TestCancellationStopsACommandWaitingOnItsTerminal(t *testing.T) {
 	defer cancel()
 	done := make(chan GroupOutcome, 1)
 	go func() {
-		outcome, _ := RunGroup(ctx, command)
+		outcome, _ := RunGroup(ctx, &recordingReaper{}, command)
 		done <- outcome
 	}()
 	waitForOutput(t, written, "password: ")

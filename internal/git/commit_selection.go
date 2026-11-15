@@ -13,14 +13,14 @@ import (
 )
 
 const (
-	// commitTimeout bounds one `git commit`. A pre-commit hook that runs a
+	// CommitTimeout bounds one `git commit`. A pre-commit hook that runs a
 	// project's checks, or a signing prompt waiting for a passphrase, runs
 	// inside it and routinely outlasts defaultTimeout; the bound is there
 	// to end a hook that hangs, not to rush one that works.
-	commitTimeout = 10 * time.Minute
-	// commitStopGrace is how long a stopped commit has to exit after
+	CommitTimeout = 10 * time.Minute
+	// CommitStopGrace is how long a stopped commit has to exit after
 	// SIGTERM, which git and its hooks get together, before it is killed.
-	commitStopGrace = 5 * time.Second
+	CommitStopGrace = 5 * time.Second
 )
 
 // CommitSelection names what a commit covers: every uncommitted change, or
@@ -302,7 +302,7 @@ func (c *Core) hasHead(cwd string) (bool, error) {
 func (c *Core) commit(cwd string, env []string, subject, body string) error {
 	timeout := c.commitTimeout
 	if timeout <= 0 {
-		timeout = commitTimeout
+		timeout = CommitTimeout
 	}
 	_, _, err := c.executeSpec(commandSpec{
 		binary: "git", cwd: cwd, extraEnv: env, timeout: timeout, stopGracefully: true,

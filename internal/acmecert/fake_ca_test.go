@@ -191,6 +191,7 @@ func newIssuance(t *testing.T, dir string, prepare func(*fakeCA)) *issuance {
 		Dir:    dir,
 		Domain: "backend.example",
 		Hook:   []string{"dns-hook", "--zone", "example"},
+		Reaper: nopReaper{},
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)

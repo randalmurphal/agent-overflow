@@ -420,6 +420,7 @@ func (t threadToolsApp) requestState(ctx context.Context, row store.ThreadReques
 		Delivered:  row.DeliveredHow,
 		ExpiresAt:  row.ExpiresAt,
 		DueAt:      row.DueAt,
+		WakeIssue:  row.WakeIssue,
 	}
 	// The newest revision is the answer: a late reply supersedes the final
 	// message the caller was already told about.

@@ -3,11 +3,13 @@
 // Run "go run ./internal/transport/methodgen" to regenerate.
 //
 // Which attached backend each bound method's call belongs to
-// (docs/specs/remote-access.md §10, "Routing an RPC"). The Go half is
-// internal/transport/methods_gen.go's Route column, generated from the
-// same scan in the same run; the thread, project and workspace routes are
-// inferred from the method's first parameter, the rest are authored
-// //ao:route directives.
+// (docs/specs/remote-access.md §10, "Routing an RPC"), and how long its
+// server side may run (docs/architecture/transport.md#method-budgets). The
+// Go half is internal/transport/methods_gen.go's Route and Budget columns,
+// generated from the same scan in the same run; the thread, project and
+// workspace routes are inferred from the method's first parameter, the rest
+// are authored //ao:route directives, and budgets are //ao:budget
+// directives.
 
 export type MethodRoute = 'thread' | 'project' | 'workspace' | 'home' | 'selected' | 'all';
 
@@ -131,6 +133,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1092327307: 'home', // GetClaudeTranscriptRetention
 	1110466608: 'home', // GetCodexAccountUsage
 	1018032480: 'selected', // GetCodexSkills
+	3107819266: 'workspace', // GetCommitOutcome
 	873893084: 'selected', // GetComputerRoutes
 	3416004963: 'home', // GetContextSettings
 	3307838728: 'thread', // GetConversationMutationState
@@ -151,6 +154,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1632984917: 'selected', // GetModelsForProvider
 	652617244: 'home', // GetNativeNetworkConfig
 	1026796858: 'home', // GetNetworkSettings
+	3742557566: 'home', // GetObservabilityTracing
 	1435724188: 'selected', // GetPRCILogLines
 	2443547196: 'selected', // GetPRDetail
 	106351482: 'workspace', // GetPRMergeConflicts
@@ -578,4 +582,38 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	536579134: 'home', // WorkflowUpdateAutomation
 	146795716: 'home', // WriteTerminal
 	1859440887: 'workspace', // WriteWorkspaceFile
+};
+
+/** How long a method that declares no budget may run on the server. */
+export const DEFAULT_METHOD_BUDGET_MS = 45000;
+/** How much longer than its method's budget a client waits for the answer. */
+export const METHOD_ANSWER_MARGIN_MS = 15000;
+
+/** The methods whose server side may run longer than the default, by id. */
+export const METHOD_BUDGETS_MS: Readonly<Record<number, number>> = {
+	2421300190: 1200000, // AgentRemoteFetchArtifact
+	2233479686: 1200000, // AgentRemoteFetchLog
+	2347956003: 60000, // CheckForUpdate
+	987486764: 120000, // CheckProviderUpdates
+	1594348919: 660000, // FetchForgeAttachment
+	2178028847: 180000, // FinishDictation
+	2246569884: 120000, // ForkSideChat
+	4063914461: 120000, // ForkThread
+	3977213964: 120000, // ForkThreadFromMessage
+	1669373286: 420000, // GenerateCommitMessage
+	3107819266: 720000, // GetCommitOutcome
+	4070778679: 600000, // GetPRReviewSubmitOutcome
+	2744542956: 120000, // GetProviderUpdateNotes
+	1971060042: 720000, // GitCommit
+	4106667105: 120000, // GitCreatePR
+	753394581: 90000, // InterruptAndRevertIfClean
+	850013031: 90000, // InterruptTurn
+	1986917811: 1800000, // SaveCIArtifacts
+	2960563266: 660000, // SaveForgeAttachment
+	1537914193: 900000, // SavePRCIJobLog
+	2692607191: 600000, // SubmitPRReview
+	894716875: 120000, // ThreadToolCall
+	2624544009: 60000, // ThreadToolQuery
+	1291217507: 90000, // TriggerMcpAuth
+	417766274: 90000, // TriggerWorkspaceMcpAuth
 };

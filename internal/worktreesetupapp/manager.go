@@ -312,7 +312,7 @@ func (s *Service) launchWorktreeSetup(target worktreeSetupTarget, requireRecipe 
 		// The observer owns every emission for this run, including the
 		// started frame — one emitter, so the frames cannot disagree with the
 		// record they describe.
-		_ = worktreesetup.RunObserved(ctx, run.projectRoot, run.worktreePath, run.config, observer)
+		_ = worktreesetup.RunObserved(ctx, s.reaper, run.projectRoot, run.worktreePath, run.config, observer)
 	}()
 	return nil
 }

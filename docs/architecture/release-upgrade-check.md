@@ -129,8 +129,9 @@ made it: never commit it, attach it to a run, or publish it.
    migration that intentionally rewrites, moves or drops old rows declares
    it in `migrationExceptions` with the migration version and the reason;
    the entry applies only while its version lies in the span a run
-   migrates, and an entry at or below the corpus's version fails the run
-   as stale, so the list empties itself as releases pass. Progress tables
+   migrates, and an entry at or below a lineage corpus's version fails the
+   run as stale, so the list empties itself as releases pass. A real data
+   root (`--corpus`) can sit at any version and skips that rule. Progress tables
    that delete their rows as a boot finishes their work are listed in
    `countIgnoredTables`.
 5. A candidate harness boot on the same root reports the build's schema

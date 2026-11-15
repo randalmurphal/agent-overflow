@@ -163,6 +163,7 @@ func (a *App) ThreadToolResolve(ctx context.Context, resolve ThreadPeerResolve) 
 //
 //ao:scope threads:read
 //ao:route selected
+//ao:budget 1m
 func (a *App) ThreadToolQuery(ctx context.Context, call ThreadPeerCall) (ThreadPeerReply, error) {
 	if _, err := a.remoteCommandOwner(ctx); err != nil {
 		return ThreadPeerReply{}, err
@@ -185,6 +186,7 @@ func (a *App) ThreadToolQuery(ctx context.Context, call ThreadPeerCall) (ThreadP
 //
 //ao:scope terminal:operate
 //ao:route selected
+//ao:budget 2m
 func (a *App) ThreadToolCall(ctx context.Context, call ThreadPeerCall) (ThreadPeerReply, error) {
 	owner, err := a.remoteCommandOwner(ctx)
 	if err != nil {

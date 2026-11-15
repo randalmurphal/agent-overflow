@@ -65,6 +65,30 @@ func TestShouldReap(t *testing.T) {
 			info: fakeProc{running: map[int]bool{15: true}, ppid: map[int]int{15: 500}},
 			want: false,
 		},
+		{
+			name: "reparented to a subreaper -> reap",
+			rec:  Record{PID: 16, PGID: 16, CreateUnix: 100, ParentPID: 500},
+			info: fakeProc{running: map[int]bool{16: true}, createUnix: map[int]int64{16: 100}, ppid: map[int]int{16: 77}},
+			want: true,
+		},
+		{
+			name: "reparented to init with a recorded parent -> reap",
+			rec:  Record{PID: 17, PGID: 17, CreateUnix: 100, ParentPID: 500},
+			info: fakeProc{running: map[int]bool{17: true}, createUnix: map[int]int64{17: 100}, ppid: map[int]int{17: 1}},
+			want: true,
+		},
+		{
+			name: "still the recording parent's child -> skip",
+			rec:  Record{PID: 18, PGID: 18, CreateUnix: 100, ParentPID: 500},
+			info: fakeProc{running: map[int]bool{18: true}, createUnix: map[int]int64{18: 100}, ppid: map[int]int{18: 500}},
+			want: false,
+		},
+		{
+			name: "reparented but start-time mismatch (PID reused) -> skip",
+			rec:  Record{PID: 19, PGID: 19, CreateUnix: 100, ParentPID: 500},
+			info: fakeProc{running: map[int]bool{19: true}, createUnix: map[int]int64{19: 999}, ppid: map[int]int{19: 77}},
+			want: false,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

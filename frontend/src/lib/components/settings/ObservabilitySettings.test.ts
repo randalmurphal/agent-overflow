@@ -1,5 +1,5 @@
-import { describe, expect, it, beforeEach } from 'vitest';
-import { render, fireEvent } from '@testing-library/svelte';
+import { describe, expect, it, beforeEach, afterEach } from 'vitest';
+import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import ObservabilitySettings from './ObservabilitySettings.svelte';
 import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
 import { setBindingMock, getBindingMock } from '../../../test/mocks/bindings-app';
@@ -7,11 +7,22 @@ import type { Settings } from '../../types/settings';
 import { makeSettings } from '../../../test/helpers/settings';
 import { setPageGrantsFromBootstrap } from '../../transport/scopes';
 import { HOST_TIER_REASON } from './settingsComputer';
+import { pairWithScopes, resetToLocalPage } from '../../../test/helpers/scopes';
+import { getToasts, removeToast } from '../../stores/toast.svelte';
 
 const BASE_SETTINGS: Settings = makeSettings();
 
-async function seed(overrides: Partial<Settings> = {}): Promise<void> {
+/**
+ * Seeds the saved settings and the backend's tracing answer. `launched` is
+ * the value this session's tracing started with; it defaults to the saved
+ * one, a session with no change waiting.
+ */
+async function seed(overrides: Partial<Settings> = {}, launched?: boolean): Promise<void> {
   const merged = { ...BASE_SETTINGS, ...overrides };
+  setBindingMock('GetObservabilityTracing', async () => ({
+    value: merged.observabilityTracingEnabled,
+    launched: launched ?? merged.observabilityTracingEnabled,
+  }));
   setBindingMock('GetSettings', async () => merged);
   setBindingMock('UpdateSettings', async (patch: unknown) => {
     const p = (patch as Record<string, unknown>) ?? {};
@@ -103,20 +114,56 @@ describe('<ObservabilitySettings>', () => {
     expect(mock!.mock.calls[0][0]).toEqual({ observabilityEventLogEnabled: true });
   });
 
-  it('shows a restart banner when tracing toggle diverges from initial state', async () => {
-    await seed({ observabilityTracingEnabled: false });
-    const { queryByRole, getAllByRole } = render(ObservabilitySettings);
-    // Initially no banner: the two states agree.
-    expect(queryByRole('status')).toBeNull();
+  const NOTICE = 'Tracing changes take effect on next app restart.';
 
-    // Flip the toggle. The optimistic update should push us to "divergent
-    // from initial" and the banner should appear.
+  it('shows the restart notice while the saved value differs from the launch value', async () => {
+    await seed({ observabilityTracingEnabled: false });
+    const { queryByText, getAllByRole } = render(ObservabilitySettings);
+    await waitFor(() => expect(getBindingMock('GetObservabilityTracing')).toHaveBeenCalled());
+    expect(queryByText(NOTICE)).toBeNull();
+
     const tracingSwitch = getAllByRole('switch')[0];
     await fireEvent.click(tracingSwitch);
+    await waitFor(() => expect(queryByText(NOTICE)).not.toBeNull());
 
-    // The banner appears via $derived after the settings store updates.
-    // Give Svelte microtasks time to settle.
-    await new Promise((resolve) => setTimeout(resolve, 10));
-    expect(queryByRole('status')).not.toBeNull();
+    // Back to what this session runs with: nothing is waiting.
+    await fireEvent.click(tracingSwitch);
+    await waitFor(() => expect(queryByText(NOTICE)).toBeNull());
+  });
+
+  it('keeps the restart notice when Settings is closed and reopened before a restart', async () => {
+    // Saved on, but this session's tracing started off.
+    await seed({ observabilityTracingEnabled: true }, false);
+    const { findByText } = render(ObservabilitySettings);
+    expect(await findByText(NOTICE)).not.toBeNull();
+  });
+
+  it('shows no notice while the launch value is unknown', async () => {
+    await seed({ observabilityTracingEnabled: true });
+    setBindingMock('GetObservabilityTracing', async () => {
+      throw new Error('backend unreachable');
+    });
+    try {
+      const { queryByText, getAllByRole } = render(ObservabilitySettings);
+      await waitFor(() =>
+        expect(getToasts().some((t) => t.message.includes('backend unreachable'))).toBe(true),
+      );
+      await fireEvent.click(getAllByRole('switch')[0]);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(queryByText(NOTICE)).toBeNull();
+    } finally {
+      for (const toast of getToasts()) removeToast(toast.id);
+    }
+  });
+
+  describe('without settings:read', () => {
+    afterEach(() => resetToLocalPage());
+
+    it('asks nothing', async () => {
+      await pairWithScopes(['threads:read']);
+      render(ObservabilitySettings);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(getBindingMock('GetObservabilityTracing')).not.toHaveBeenCalled();
+    });
   });
 });

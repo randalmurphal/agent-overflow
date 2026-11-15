@@ -21,9 +21,9 @@ var providerOrder = []string{ProviderClaude, ProviderCodex}
 
 const (
 	checkInterval = time.Hour
-	// checkTimeout bounds one provider's lookup: `claude doctor` plus one
+	// CheckTimeout bounds one provider's lookup: `claude doctor` plus one
 	// small HTTP answer.
-	checkTimeout = time.Minute
+	CheckTimeout = time.Minute
 )
 
 // Binary is one provider installation's executables.
@@ -202,7 +202,7 @@ func (s *Service) snapshotLocked() []Status {
 }
 
 // Check looks up every provider again, the providers concurrently, and
-// returns the result. Each lookup is bounded by checkTimeout and ends at
+// returns the result. Each lookup is bounded by CheckTimeout and ends at
 // Stop. After Stop it looks nothing up.
 func (s *Service) Check() []Status {
 	var wg sync.WaitGroup
@@ -226,7 +226,7 @@ func (s *Service) checkProvider(providerName string) checked {
 	providerState := s.providers[providerName]
 	providerState.checkMu.Lock()
 	defer providerState.checkMu.Unlock()
-	ctx, cancel := context.WithTimeout(s.life, checkTimeout)
+	ctx, cancel := context.WithTimeout(s.life, CheckTimeout)
 	result := s.lookup(ctx, providerName)
 	cancel()
 	published := false

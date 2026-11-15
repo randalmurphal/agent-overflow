@@ -42,7 +42,7 @@ func TestProviderUpdateCancellationEndsTheUpdatersChildren(t *testing.T) {
 	}
 	done := make(chan result, 1)
 	go func() {
-		out, err := runProviderUpdateGroup(ctx, command)
+		out, err := runProviderUpdateGroup(ctx, (&App{}).groupReaper("provider update"), command)
 		done <- result{out, err}
 	}()
 	pid := readChildPID(t, filepath.Join(command.Dir, "child.pid"))
@@ -72,17 +72,17 @@ func TestProviderUpdateCancellationEndsTheUpdatersChildren(t *testing.T) {
 // output; a command that cannot start is an error.
 func TestProviderUpdateGroupRunnerReportsExitAndStartFailures(t *testing.T) {
 	t.Parallel()
-	out, err := runProviderUpdateGroup(context.Background(),
+	out, err := runProviderUpdateGroup(context.Background(), (&App{}).groupReaper("provider update"),
 		shellUpdateCommand(t, "echo fetching\necho 'EACCES: permission denied' >&2\nexit 3\n"))
 	if err != nil || out.ExitCode != 3 || !strings.Contains(out.Text, "fetching") || !strings.Contains(out.Text, "EACCES") {
 		t.Fatalf("out = %+v, err = %v; want exit 3 with both streams", out, err)
 	}
-	out, err = runProviderUpdateGroup(context.Background(), shellUpdateCommand(t, "echo done\n"))
+	out, err = runProviderUpdateGroup(context.Background(), (&App{}).groupReaper("provider update"), shellUpdateCommand(t, "echo done\n"))
 	if err != nil || out.ExitCode != 0 || strings.TrimSpace(out.Text) != "done" {
 		t.Fatalf("clean run = %+v, %v", out, err)
 	}
 	missing := providerupdate.Command{Binary: filepath.Join(t.TempDir(), "absent"), Args: []string{"update"}, Dir: t.TempDir()}
-	if _, err := runProviderUpdateGroup(context.Background(), missing); err == nil {
+	if _, err := runProviderUpdateGroup(context.Background(), (&App{}).groupReaper("provider update"), missing); err == nil {
 		t.Fatal("a command that cannot start was not an error")
 	}
 }
@@ -97,7 +97,7 @@ func TestProviderUpdateCommandStopsOnceDone(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	started := time.Now()
-	out, err := runProviderUpdateGroup(ctx, command)
+	out, err := runProviderUpdateGroup(ctx, (&App{}).groupReaper("provider update"), command)
 	if err != nil {
 		t.Fatalf("err = %v, want a finished command", err)
 	}

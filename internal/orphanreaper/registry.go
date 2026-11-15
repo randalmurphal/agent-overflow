@@ -10,21 +10,26 @@ import (
 	"sync"
 )
 
-// Record identifies a provider process durably enough to re-find it after
-// a crash despite PID reuse: a PID alone is ambiguous once recycled, but
+// Record identifies a group leader durably enough to re-find it after a
+// crash despite PID reuse: a PID alone is ambiguous once recycled, but
 // PID + start time is not. PGID is the group the sweep kills (== PID,
-// since the provider is its own group leader). CreateUnix is the
-// process start time in milliseconds (gopsutil's CreateTime); 0 means it
-// couldn't be captured, in which case the sweep falls back to the
-// orphaned-parent check alone.
+// since the leader leads its own group). CreateUnix is the process start
+// time in milliseconds (gopsutil's CreateTime); 0 means it couldn't be
+// captured, in which case the sweep falls back to the orphaned-parent check
+// alone. ParentPID is the process that started the leader; a leader whose
+// parent is no longer that process was orphaned, whichever process it was
+// reparented to: init, launchd, or a subreaper such as systemd's user
+// manager. 0 is a record written before ParentPID existed, which counts as
+// orphaned only under init. Owner names what started the group.
 type Record struct {
-	UUID       string `json:"uuid"`
+	Owner      string `json:"owner"`
 	PID        int    `json:"pid"`
 	PGID       int    `json:"pgid"`
 	CreateUnix int64  `json:"create_unix"`
+	ParentPID  int    `json:"parent_pid,omitempty"`
 }
 
-// Registry is a small JSON file tracking live provider processes for the
+// Registry is a small JSON file tracking live process groups for the
 // startup sweep. Writes are atomic (temp + rename) and serialized by a
 // mutex; the volume is a handful of entries, so a full rewrite per change
 // keeps the format trivially correct.

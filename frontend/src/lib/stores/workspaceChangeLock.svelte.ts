@@ -33,8 +33,11 @@
 // The backend answer covers two of the kinds of running work the backend's
 // refusals check (App.GetWorkspaceActivity; runningWorkIn in Go): open turns
 // and live background tasks, across every thread in the directory. The
-// refusals also cover the rest (a composer shell command, for one), so the
-// lock is never stricter than the refusal.
+// pane's own composer shell command, which refuses moving its thread
+// (ensureThreadChangeAllowed), locks the thread view from the shell command
+// store; removing the checkout stops such a command rather than refusing,
+// so it does not lock the directory view. The refusals also cover the rest,
+// so the lock is never stricter than the refusal.
 //
 // EVENT ROUTING: refresh every live key on any activity event, rather than
 // enriching the wire payload with a workspacePath and routing precisely. The
@@ -61,6 +64,7 @@ import { GetWorkspaceActivity, type WorkspaceActivity } from './bindings';
 import { wailsEventOn } from './wailsEvents';
 import { hasScope } from '../transport/scopes';
 import { getActiveTurn } from './threadStatuses.svelte';
+import { isShellRunActive } from './shellCommands.svelte';
 import { createEntityStore } from './entityStore.svelte';
 import { isMethodUnavailableError } from './transportStatus.svelte';
 import { createRefreshScheduler } from '../utils/refreshScheduler';
@@ -81,6 +85,7 @@ const REFRESH_MAX_WAIT_MS = 400;
 
 const TURN_REASON = 'Workspace changes are unavailable while the agent is responding.';
 const TASKS_REASON = 'Workspace changes are unavailable while background tasks are running.';
+const SHELL_REASON = 'Workspace changes are unavailable while a shell command is running.';
 const CHECKING_REASON = 'Checking workspace availability...';
 // A backend that does not register GetWorkspaceActivity at all cannot
 // verify a workspace, and never will on this connection — the refusal is a
@@ -295,6 +300,9 @@ export function createWorkspaceChangeLockState(
   };
   const threadReason = (): string => {
     if (localTurnActive()) return TURN_REASON;
+    // Local state, like the pane's own turn: the shell command store holds
+    // the thread's running command from the moment it is started.
+    if (isShellRunActive(getPane().threadId)) return SHELL_REASON;
     const key = workspaceKey;
     if (!key) return '';
     const unverified = unverifiedReason(key);

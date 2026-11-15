@@ -309,6 +309,35 @@ func TestUndeliverableWakeBacksOffAndIsAbandoned(t *testing.T) {
 	if !strings.Contains(string(row.Answer), "build is green") {
 		t.Fatalf("abandoning the wake lost the answer: %+v", row)
 	}
+	// thread_status returns the answer with the reason it never arrived,
+	// once the last detached delivery has failed.
+	waitUntil(t, 10*time.Second, func() bool {
+		unlock := f.app.threadRequestSettleLock(token)
+		defer unlock()
+		return !f.app.threadWakeInFlight(token, false)
+	})
+	answer, err := f.app.threadToolsServer().Call(t.Context(), f.callerIdentity(), "thread_status",
+		json.RawMessage(`{"tokens":["`+token+`"]}`))
+	if err != nil {
+		t.Fatalf("thread_status: %v", err)
+	}
+	encoded, err := json.Marshal(answer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var status struct {
+		Requests []struct {
+			Answer    string `json:"answer"`
+			WakeIssue string `json:"wake_issue"`
+		} `json:"requests"`
+	}
+	if err := json.Unmarshal(encoded, &status); err != nil {
+		t.Fatalf("decode thread_status reply %s: %v", encoded, err)
+	}
+	if len(status.Requests) != 1 || status.Requests[0].WakeIssue != row.WakeIssue ||
+		!strings.Contains(status.Requests[0].Answer, "build is green") {
+		t.Fatalf("thread_status = %s, want the answer and the wake issue %q", encoded, row.WakeIssue)
+	}
 	// And the row is out of the undelivered set for good.
 	rows, err := f.app.store.UndeliveredThreadRequestWakes(now.Add(30*24*time.Hour).UnixMilli(), 64)
 	if err != nil {

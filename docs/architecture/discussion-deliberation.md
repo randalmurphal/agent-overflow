@@ -30,6 +30,7 @@ Child thread shape (see `BuildParticipantPlans` in
 | `discussion_id` | the deliberation channel ID (set after channel creation). |
 | `workspace_path` / `worktree_path` / `branch` | inherited from the parent. |
 | `provider` / `model` | from the definition, falling back to the parent. |
+| `runtime_mode` | `full-access` (`provider.DefaultRuntimeMode`), whatever the parent runs in. |
 | `title` | `"<parent title> - <FormattedRole>"`. `RoleFromThreadTitle` reverses this to recover the role for channel-message labels. |
 
 Each participant gets a role-specific system prompt injected via
@@ -458,10 +459,16 @@ and `GetChannelState` are: read-only projections of state a session
 granted that scope is already allowed to poll for.
 
 `PostChannelMessage`, however, rides `threads:operate`: unlike a pure
-persistence call, it can now dispatch a live prompt into a
-participant's provider session (`maybePromptNextDiscussionSpeaker` →
-`promptDiscussionSpeakerAsync` → `a.sendMessage`), which puts it in the
-same class as `SendMessage`.
+persistence call, it can dispatch a live prompt into a participant's
+provider session (`maybePromptNext` → `promptSpeakerAsync` →
+`a.sendMessage`), which puts it in the same class as `SendMessage`.
+Because each finished turn prompts the next speaker, a post drives every
+participant, so `Service.Post` asks its `DriveCheck` about each one
+before it writes, and `Service.Start` asks about each planned
+participant before it creates any. The bound methods pass
+`requireAutonomyForThread` on the participant's runtime mode, so a
+session without `threads:autonomy` can neither start nor post into a
+discussion whose participants run in an autonomous mode.
 
 ## Why This Lives in Go
 

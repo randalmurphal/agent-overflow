@@ -106,8 +106,7 @@ func (a *App) initShellCommands(dataDir string) error {
 		Finish:        a.finishShellCommand,
 		Context:       a.lifeCtx,
 		ShutdownError: ErrShuttingDown,
-		Watch:         a.watchProcessGroup,
-		Release:       a.releaseProcessGroup,
+		Reaper:        a.groupReaper("shell command"),
 	})
 	if err != nil {
 		return err
