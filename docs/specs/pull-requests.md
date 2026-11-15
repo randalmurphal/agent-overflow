@@ -636,10 +636,12 @@ permission reads and the refusals are in
   by its own flag). A control the viewer may not use is absent. A detail
   without `manage` (an older backend) shows no Details section and none
   of these controls; that absence is the compatibility gate. A GitLab
-  host decides per control as well: one whose schema lacks a set
-  mutation's `operationMode` offers no Edit on that row, one without
-  re-request or the requested-changes override no Re-request or Bypass,
-  while the other controls stay. A failed management read sets
+  host decides per control as well, by its release: one older than a
+  control needs (Bypass from GitLab 17.9, the row edits and Re-request
+  from 16.0) does not offer it, while the other controls stay and
+  `manage.limited` names the ones taken away and the release each needs
+  under the rows. A GitLab older than the supported floor (16.0) refuses
+  Send with a sentence naming both releases. A failed management read sets
   `manage.unavailable`: every flag is false, the lists are empty, and the
   Details section, collapsed, shows the sentence instead of its rows; the
   rest of the PR loads as usual, and the controls return with the next
@@ -930,8 +932,9 @@ description, and an edited squash message that falls back to Merge
 and then to Rebase as the snapshot drops each method, with the notice
 and a merge that sends no message; on GitLab also a refused
 management read (Details shows the sentence, no control anywhere, the
-controls back once it answers) and a host without `operationMode` (no
-row Edit, the other controls kept). `review-ci-actions.spec.ts` drives the CI actions on a GitLab MR and a
+controls back once it answers) and a GitLab 15.11 that refuses
+introspection (no row Edit or Re-request, the sentence naming the
+release each needs, the other controls kept). `review-ci-actions.spec.ts` drives the CI actions on a GitLab MR and a
 GitHub PR (a refused retry, a retry followed to passed, cancel, a manual
 job, artifacts saved to disk, a refused artifacts read that keeps the
 jobs and says why in the menu), and `ci-actions-flow.ts` the same from

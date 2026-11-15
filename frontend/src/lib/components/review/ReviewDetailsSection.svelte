@@ -46,6 +46,8 @@
   const labels = $derived(data?.labels ?? []);
   // The management read failed: its sentence instead of empty rows.
   const unavailable = $derived(data?.unavailable ?? '');
+  // The controls the forge's server does not support, which are not offered.
+  const limited = $derived(data?.limited ?? '');
   const open = $derived(manage.detailsOpen);
   const pending = $derived(manage.pending);
   const blocked = $derived(manage.blockedReason);
@@ -225,6 +227,9 @@
       {@render editButton('labels')}
     </div>
   </div>
+  {#if limited}
+    <div class="px-3 py-2 text-xs text-fg-muted" data-testid="review-details-limited">{limited}</div>
+  {/if}
   {/if}
 </ReviewCollapsibleSection>
 

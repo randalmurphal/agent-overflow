@@ -255,3 +255,32 @@ func TestGitHubAssigneesStopAtTen(t *testing.T) {
 		t.Fatalf("assignees = %v, want the first ten", answer.Assignees)
 	}
 }
+
+// A GitLab that lacks introspection refuses any document asking for
+// __type or __schema with the field's validation error, whatever its
+// operation; GET metadata answers the host's release, and one older than
+// 16.5 refuses PRManageChecks and answers PRManage.
+func TestGitLabServerLacksIntrospectionAndChecks(t *testing.T) {
+	t.Parallel()
+	e := New(Options{APIToken: testAPIToken})
+	if _, err := seedJSON(e, strings.Replace(manageFixture, `"project": "grp/m", "id": 90,`, `"project": "grp/m", "id": 90, "serverLacks": ["introspection"], "serverVersion": "16.4.2-ee",`, 1)); err != nil {
+		t.Fatal(err)
+	}
+	srv := testServer(t, e)
+	for field, query := range map[string]string{"__type": `query Probe { t: __type(name: "Query") { name } }`, "__schema": `query Probe { __schema { queryType { name } } }`} {
+		got := httpRequest(t, srv, "POST", "gitlab.com", "/gitlab/api/graphql", mustJSON(t, map[string]any{"query": query, "operationName": "Probe"}), http.Header{"Private-Token": {testAPIToken}})
+		if want := `{"errors":[{"message":"Field '` + field + `' doesn't exist on type 'Query'"}]}` + "\n"; got.body != want || lastInvocation(t, e).Route != "glab graphql introspection refused" {
+			t.Fatalf("%s = %s, want %s", field, got.body, want)
+		}
+	}
+	if got := httpRequest(t, srv, "GET", "gitlab.com", "/gitlab/api/v4/metadata", "", http.Header{"Private-Token": {testAPIToken}}); !strings.Contains(got.body, `"version":"16.4.2-ee"`) {
+		t.Fatalf("metadata = %+v", got)
+	}
+	vars := map[string]any{"fullPath": "grp/m", "iid": "1"}
+	if got := mustJSON(t, glabGraphQL(t, srv, "PRManageChecks", "query", vars)); got != `{"errors":[{"message":"Field 'mergeabilityChecks' doesn't exist on type 'MergeRequest'"}]}` {
+		t.Fatalf("PRManageChecks = %s", got)
+	}
+	if got := glabGraphQL(t, srv, "PRManage", "query", vars); got["data"] == nil {
+		t.Fatalf("PRManage = %v", got)
+	}
+}

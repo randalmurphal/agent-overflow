@@ -24,9 +24,10 @@
 // its Merge, Description and Conversation, Details showing only the
 // sentence and no management control anywhere, and the controls return
 // on the next read of the PR (the Conversation's refresh) once the read
-// answers; and a host without the set mutations' operationMode shows no
-// Edit on the reviewers, assignees and labels rows while the title,
-// description and state controls stay. A held Enter on the title bar's
+// answers; and a GitLab 15.11 that refuses introspection shows the rows
+// with no Edit on the reviewers, assignees and labels rows and no
+// Re-request, the sentence naming the release each needs, while the
+// title, description and state controls stay. A held Enter on the title bar's
 // `⋯` opens the menu and activates nothing. Closing the pane with Ctrl+W
 // while a picker holds a change writes that change (desktop). A
 // description save whose answer the fake holds until Back (compact) or
@@ -613,10 +614,10 @@ export function reviewManageFlow({ compact }: ManageSurface): void {
     await expectEveryForgeCallHandled(harness);
   });
 
-  test('gitlab: a host without the set mutations offers no people or label edits, and keeps the rest', async ({ harness, page }, testInfo: TestInfo) => {
+  test('gitlab: a release older than the people and label mutations offers no edits for them, says why, and keeps the rest', async ({ harness, page }, testInfo: TestInfo) => {
     test.setTimeout(180_000);
     const thread = 'Manage older host thread';
-    await seedPullRequest(harness, 'gitlab', thread, (seed) => ({ ...seed, serverLacks: ['operationMode'] }));
+    await seedPullRequest(harness, 'gitlab', thread, (seed) => ({ ...seed, serverVersion: '15.11.3', serverLacks: ['introspection'] }));
     await page.emulateMedia({ colorScheme: 'dark' });
     await harness.open(page);
     const review = await openReview(page, thread, 'gitlab', compact);
@@ -625,11 +626,12 @@ export function reviewManageFlow({ compact }: ManageSurface): void {
     await (compact ? details.locator('button[aria-expanded]').first().tap() : details.locator('button[aria-expanded]').first().click());
     await expect(details.getByTestId('review-details-rows')).toBeVisible();
     await expect(details.locator('[data-testid="review-details-reviewer"][data-login="alee"]')).toBeVisible();
-    for (const id of ['review-title-edit', 'review-description-edit', 'review-pr-state-menu', 'review-details-rerequest']) {
+    await expect(details.getByTestId('review-details-limited')).toContainText('This GitLab server runs 15.11: changing reviewers needs GitLab 16.0');
+    for (const id of ['review-title-edit', 'review-description-edit', 'review-pr-state-menu']) {
       await expect(page.getByTestId(id).first(), id).toBeAttached();
     }
-    for (const row of ['reviewers', 'assignees', 'labels']) {
-      await expect(details.getByTestId(`review-details-edit-${row}`), row).toHaveCount(0);
+    for (const id of ['review-details-edit-reviewers', 'review-details-edit-assignees', 'review-details-edit-labels', 'review-details-rerequest']) {
+      await expect(page.getByTestId(id), id).toHaveCount(0);
     }
     await details.screenshot({ path: testInfo.outputPath(`${testInfo.project.name}-gitlab-details-older-host.png`) });
     await expectEveryForgeCallHandled(harness);

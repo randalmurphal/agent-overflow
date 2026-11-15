@@ -1,7 +1,7 @@
 package git
 
 import (
-	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"slices"
@@ -10,6 +10,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"agent-overflow/internal/forgeapi"
 )
 
 // gitlabManageReadCore is a Core over a GitLab answering one merge
@@ -41,8 +43,7 @@ func gitlabManageReadCore(t *testing.T, manage func(call forgeAPICall) (forgeAPI
 	})
 }
 
-// A management read that fails, at the schema probe or at the read
-// itself, leaves the rest of the PR read standing: the detail says the
+// A management read that fails leaves the rest of the PR read standing: the detail says the
 // controls are not shown, offers none and lists nobody.
 func TestGitLabManageReadFailureHidesOnlyTheControls(t *testing.T) {
 	t.Parallel()
@@ -50,9 +51,9 @@ func TestGitLabManageReadFailureHidesOnlyTheControls(t *testing.T) {
 		name, op string
 		answer   forgeAPIAnswer
 	}{
-		{"schema probe fails", "PRManageSchema", forgeAPIAnswer{Status: http.StatusBadGateway, Body: `{"message":"bad gateway"}`}},
-		{"read refused", "PRManage", forgeAPIAnswer{Body: `{"data":{"project":null},"errors":[{"message":"The resource that you are attempting to access does not exist or you don't have permission to perform this action"}]}`}},
-		{"read answers no merge request", "PRManage", forgeAPIAnswer{Body: `{"data":{"project":{"mergeRequest":null}}}`}},
+		{"read fails", "PRManageChecks", forgeAPIAnswer{Status: http.StatusBadGateway, Body: `{"message":"bad gateway"}`}},
+		{"read refused", "PRManageChecks", forgeAPIAnswer{Body: `{"data":{"project":null},"errors":[{"message":"The resource that you are attempting to access does not exist or you don't have permission to perform this action"}]}`}},
+		{"read answers no merge request", "PRManageChecks", forgeAPIAnswer{Body: `{"data":{"project":{"mergeRequest":null}}}`}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -234,47 +235,43 @@ func TestGitLabStateEventsFailureIsBackedOff(t *testing.T) {
 	}
 }
 
-// The viewer's controls follow the host's schema and the merge request's
-// own requested-changes check: a host without a set mutation offers no
-// control for it, and the check, not the detailed status, says whether
-// requested changes block and whether they were bypassed.
-func TestGitLabManageControlsFollowSchemaAndCheck(t *testing.T) {
+// gitlabManageAnswer is a PRManageChecks answer (PRManage without the
+// checks) for a viewer who may update and administer the merge request:
+// bob reviewing in reviewState, the label bug, and the requested-changes
+// check in check.
+func gitlabManageAnswer(reviewState, check string) string {
+	checks := ""
+	if check != "" {
+		checks = `,"mergeabilityChecks":[{"identifier":"REQUESTED_CHANGES","status":"` + check + `"}]`
+	}
+	return `{"data":{"project":{"mergeRequest":{"userPermissions":{"updateMergeRequest":true,"adminMergeRequest":true},` +
+		`"reviewers":{"nodes":[{"id":"gid://gitlab/User/5","username":"bob","name":"Bob","mergeRequestInteraction":{"reviewState":"` + reviewState + `"}}]},` +
+		`"assignees":{"nodes":[]},"labels":{"nodes":[{"id":"gid://gitlab/ProjectLabel/3","title":"bug","color":"#ff0000"}]}` + checks + `}}}}`
+}
+
+// gitlabIntrospectionRefused is how a server that refuses introspection
+// answers a document asking for __type.
+const gitlabIntrospectionRefused = `{"errors":[{"message":"Field '__type' doesn't exist on type 'Query'","locations":[{"line":2,"column":3}],"path":["query PRManageSchema","rereview"],"extensions":{"code":"undefinedField","typeName":"Query","fieldName":"__type"}}]}`
+
+// On a current release, the viewer's controls follow their permissions
+// and the merge request's own requested-changes check: the check, not the
+// detailed status, says whether requested changes block and whether they
+// were bypassed.
+func TestGitLabManageControlsFollowTheCheck(t *testing.T) {
 	t.Parallel()
-	// schema is a host with the override and the re-review mutation,
-	// and with operationMode on the given set mutations only.
-	schema := func(reviewers, assignees, labels bool) string {
-		input := func(has bool) string {
-			if has {
-				return `{"inputFields":[{"name":"operationMode"}]}`
-			}
-			return `{"inputFields":[]}`
-		}
-		return `{"data":{"rereview":{"name":"x"},"updateInput":{"inputFields":[{"name":"overrideRequestedChanges"}]},` +
-			`"setReviewers":` + input(reviewers) + `,"setAssignees":` + input(assignees) + `,"setLabels":` + input(labels) + `}}`
-	}
-	manage := func(reviewState, check string) string {
-		return `{"data":{"project":{"mergeRequest":{"userPermissions":{"updateMergeRequest":true,"adminMergeRequest":true},` +
-			`"reviewers":{"nodes":[{"id":"gid://gitlab/User/5","username":"bob","name":"Bob","mergeRequestInteraction":{"reviewState":"` + reviewState + `"}}]},` +
-			`"assignees":{"nodes":[]},"labels":{"nodes":[{"id":"gid://gitlab/ProjectLabel/3","title":"bug","color":"#ff0000"}]},` +
-			`"mergeabilityChecks":[{"identifier":"REQUESTED_CHANGES","status":"` + check + `"}]}}}}`
-	}
 	for _, tc := range []struct {
 		name, review, check string
 		bypass, bypassed    bool
-		sets                [3]bool
 	}{
-		{"check failing", "REQUESTED_CHANGES", "FAILED", true, false, [3]bool{true, false, true}},
-		{"check passing over requested changes", "REQUESTED_CHANGES", "SUCCESS", false, true, [3]bool{true, false, true}},
-		{"check passing, nothing requested", "APPROVED", "SUCCESS", false, false, [3]bool{false, true, false}},
+		{"check failing", "REQUESTED_CHANGES", "FAILED", true, false},
+		{"check passing over requested changes", "REQUESTED_CHANGES", "SUCCESS", false, true},
+		{"check passing, nothing requested", "APPROVED", "SUCCESS", false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			core, calls := gitlabManageReadCore(t, func(call forgeAPICall) (forgeAPIAnswer, bool) {
-				switch call.Op {
-				case "PRManageSchema":
-					return forgeAPIAnswer{Body: schema(tc.sets[0], tc.sets[1], tc.sets[2])}, true
-				case "PRManageChecks":
-					return forgeAPIAnswer{Body: manage(tc.review, tc.check)}, true
+				if call.Op == "PRManageChecks" {
+					return forgeAPIAnswer{Body: gitlabManageAnswer(tc.review, tc.check)}, true
 				}
 				return forgeAPIAnswer{}, false
 			})
@@ -283,9 +280,9 @@ func TestGitLabManageControlsFollowSchemaAndCheck(t *testing.T) {
 				t.Fatal(err)
 			}
 			m := read.Detail.Manage
-			want := PRManageCan{EditTitle: true, EditDescription: true, Reviewers: tc.sets[0], Assignees: tc.sets[1], Labels: tc.sets[2], Close: true, ConvertToDraft: true, Rerequest: true, Bypass: tc.bypass}
-			if m.Can != want {
-				t.Fatalf("can = %+v, want %+v", m.Can, want)
+			want := PRManageCan{EditTitle: true, EditDescription: true, Reviewers: true, Assignees: true, Labels: true, Close: true, ConvertToDraft: true, Rerequest: true, Bypass: tc.bypass}
+			if m.Can != want || m.Limited != "" {
+				t.Fatalf("can = %+v, limited %q; want %+v", m.Can, m.Limited, want)
 			}
 			if len(m.Labels) != 1 || m.Labels[0].ID != "gid://gitlab/ProjectLabel/3" || m.Reviewers[0].ID != "5" {
 				t.Fatalf("labels %+v, reviewers %+v", m.Labels, m.Reviewers)
@@ -295,28 +292,206 @@ func TestGitLabManageControlsFollowSchemaAndCheck(t *testing.T) {
 				t.Fatalf("settled = %+v, want bypassed %v", read.Detail.Readiness.Settled, tc.bypassed)
 			}
 			if ops := calls.ops(); slices.Contains(ops, "PRManage") || !slices.Contains(ops, "PRManageChecks") {
-				t.Fatalf("operations = %q, want the checks read on a host with the override", ops)
+				t.Fatalf("operations = %q, want the checks read alone", ops)
 			}
 		})
 	}
 }
 
-// A harness reset forgets each host's schema answer and each merge
-// request's state events backoff: the next read probes again and reads
-// the state events at once.
-func TestResetForgeCachesForgetsSchemaAndBackoff(t *testing.T) {
+// gitlabMetadata is a GET metadata answer of a server running version.
+func gitlabMetadata(version string) forgeAPIAnswer {
+	return forgeAPIAnswer{Body: `{"version":"` + version + `","revision":"abc","enterprise":true}`}
+}
+
+// The server's release decides the read's document and the controls: the
+// checks from 16.5, bypass from 17.9, the rest from 16.0. A control the
+// viewer could use that the release lacks is not offered and Limited
+// names it with the release it needs; a write of it is refused before
+// it is sent. A server that refuses introspection loses nothing, since
+// nothing introspects, and the release is read once per host.
+func TestGitLabManageFollowsTheServerRelease(t *testing.T) {
+	t.Parallel()
+	full := PRManageCan{EditTitle: true, EditDescription: true, Reviewers: true, Assignees: true, Labels: true, Close: true, ConvertToDraft: true, Rerequest: true, Bypass: true}
+	for _, tc := range []struct {
+		version, op string
+		can         PRManageCan
+		limited     string
+	}{
+		{"19.3.0-ee", "PRManageChecks", full, ""},
+		{"17.9.0", "PRManageChecks", full, ""},
+		{"17.8.2-ee", "PRManageChecks", PRManageCan{EditTitle: true, EditDescription: true, Reviewers: true, Assignees: true, Labels: true, Close: true, ConvertToDraft: true, Rerequest: true},
+			"This GitLab server runs 17.8: bypassing requested changes needs GitLab 17.9."},
+		// Without the checks, the MR's detailed status (mergeable here)
+		// says requested changes do not block, so no bypass is wanted.
+		{"16.4.1", "PRManage", PRManageCan{EditTitle: true, EditDescription: true, Reviewers: true, Assignees: true, Labels: true, Close: true, ConvertToDraft: true, Rerequest: true}, ""},
+		{"15.11.0-ee", "PRManage", PRManageCan{EditTitle: true, EditDescription: true, Close: true, ConvertToDraft: true},
+			"This GitLab server runs 15.11: changing reviewers needs GitLab 16.0, re-requesting a review needs GitLab 16.0, changing assignees needs GitLab 16.0 and changing labels needs GitLab 16.0."},
+	} {
+		t.Run(tc.version, func(t *testing.T) {
+			t.Parallel()
+			core, calls := gitlabManageReadCore(t, func(call forgeAPICall) (forgeAPIAnswer, bool) {
+				switch {
+				case strings.Contains(call.Query, "__type") || strings.Contains(call.Query, "__schema"):
+					return forgeAPIAnswer{Body: gitlabIntrospectionRefused}, true
+				case call.Op == "" && call.Path == "metadata":
+					return gitlabMetadata(tc.version), true
+				case call.Op == "PRManageChecks":
+					return forgeAPIAnswer{Body: gitlabManageAnswer("REQUESTED_CHANGES", "FAILED")}, true
+				case call.Op == "PRManage":
+					return forgeAPIAnswer{Body: gitlabManageAnswer("REQUESTED_CHANGES", "")}, true
+				}
+				return forgeAPIAnswer{}, false
+			})
+			ref := gitlabTestRef(7)
+			for range 2 {
+				read, err := core.ReadPR(t.Context(), ref, PRReadParts{Detail: true}, nil, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if m := read.Detail.Manage; m.Unavailable != "" || len(m.Reviewers) != 1 || len(m.Labels) != 1 || m.Can != tc.can || m.Limited != tc.limited {
+					t.Fatalf("manage = %+v; want can %+v, limited %q", m, tc.can, tc.limited)
+				}
+			}
+			if ops := slices.DeleteFunc(calls.ops(), func(op string) bool { return op != "PRManage" && op != "PRManageChecks" }); !slices.Equal(ops, []string{tc.op, tc.op}) {
+				t.Fatalf("reads = %q, want %s twice", ops, tc.op)
+			}
+			if n := countPrefix(gitlabPaths(calls), "GET metadata"); n != 1 {
+				t.Fatalf("%d release reads, want one per host", n)
+			}
+			// A control the release lacks is refused before it is sent.
+			writes := len(calls.all())
+			for _, w := range []struct {
+				offered bool
+				control string
+				run     func() error
+			}{
+				{tc.can.Bypass, "bypassing requested changes", func() error { return core.BypassPRRequestedChanges(t.Context(), ref) }},
+				{tc.can.Rerequest, "re-requesting a review", func() error { return core.RerequestPRReview(t.Context(), ref, PRPerson{Login: "bob", ID: "5"}) }},
+				{tc.can.Labels, "changing labels", func() error {
+					return core.SetPRLabels(t.Context(), ref, PRLabelChange{Add: []PRLabel{{ID: "gid://gitlab/ProjectLabel/9", Name: "ui"}}})
+				}},
+			} {
+				if w.offered {
+					continue
+				}
+				err := w.run()
+				if explained, ok := errors.AsType[*ForgeActionError](err); !ok || explained.Kind != ForgeErrorRefused || !strings.Contains(explained.Message, w.control+" needs GitLab") {
+					t.Fatalf("%s = %v, want refused naming the release", w.control, err)
+				}
+			}
+			if sent := calls.all()[writes:]; len(sent) != 0 {
+				t.Fatalf("a refused write sent %s %s", sent[0].Op, sent[0].Path)
+			}
+			for _, call := range calls.all() {
+				if strings.Contains(call.Query, "__type") || strings.Contains(call.Query, "__schema") {
+					t.Fatalf("%s introspects the schema", call.Op)
+				}
+			}
+		})
+	}
+}
+
+// A release read that fails shows the rows the base read has and offers
+// no control the release decides, saying why; the next read asks again.
+func TestGitLabManageWithoutTheRelease(t *testing.T) {
 	t.Parallel()
 	var mu sync.Mutex
-	schema, eventsFail, eventReads := gitlabSchemaBare, true, 0
+	fail := true
 	core, calls := gitlabManageReadCore(t, func(call forgeAPICall) (forgeAPIAnswer, bool) {
 		mu.Lock()
 		defer mu.Unlock()
 		switch {
-		case call.Op == "PRManageSchema":
-			return forgeAPIAnswer{Body: schema}, true
+		case call.Op == "" && call.Path == "metadata" && fail:
+			return forgeAPIAnswer{Status: http.StatusBadGateway, Body: `{"message":"502"}`}, true
+		case call.Op == "" && call.Path == "metadata":
+			return gitlabMetadata("19.3.0-ee"), true
+		case call.Op == "PRManage":
+			return forgeAPIAnswer{Body: gitlabManageAnswer("APPROVED", "")}, true
 		case call.Op == "PRManageChecks":
-			return forgeAPIAnswer{Body: `{"data":{"project":{"mergeRequest":{"userPermissions":{"updateMergeRequest":true,"adminMergeRequest":true},` +
-				`"reviewers":{"nodes":[]},"assignees":{"nodes":[]},"labels":{"nodes":[]},"mergeabilityChecks":[]}}}}`}, true
+			return forgeAPIAnswer{Body: gitlabManageAnswer("APPROVED", "SUCCESS")}, true
+		}
+		return forgeAPIAnswer{}, false
+	})
+	read := func() PRManage {
+		t.Helper()
+		got, err := core.ReadPR(t.Context(), gitlabTestRef(7), PRReadParts{Detail: true}, nil, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got.Detail.Manage
+	}
+	m := read()
+	if m.Unavailable != "" || len(m.Reviewers) != 1 || m.Can.Reviewers || m.Can.Rerequest || m.Can.Labels || !m.Can.EditTitle ||
+		m.Limited != "The GitLab server's version could not be read, so changing reviewers, re-requesting a review, changing assignees and changing labels are not offered for now." {
+		t.Fatalf("manage without the release = %+v", m)
+	}
+	if err := core.RerequestPRReview(t.Context(), gitlabTestRef(7), PRPerson{Login: "bob", ID: "5"}); err == nil || countOp(calls, "PRRereview") != 0 {
+		t.Fatalf("re-request without the release = %v, %d sent", err, countOp(calls, "PRRereview"))
+	}
+	mu.Lock()
+	fail = false
+	mu.Unlock()
+	if m := read(); !m.Can.Reviewers || m.Limited != "" || countOp(calls, "PRManageChecks") != 1 {
+		t.Fatalf("after the release answered: %+v", m)
+	}
+}
+
+// The release is parsed from what GET metadata answers.
+func TestParseGitLabVersion(t *testing.T) {
+	t.Parallel()
+	for in, want := range map[string]gitlabVersion{"17.9.2-ee": {17, 9}, "18.0.0-pre": {18, 0}, "16.11.10": {16, 11}, " 19.3.0 ": {19, 3}, "18.10": {18, 10}} {
+		if got, err := parseGitLabVersion(in); err != nil || got != want {
+			t.Errorf("parseGitLabVersion(%q) = %v, %v; want %v", in, got, err, want)
+		}
+	}
+	for _, in := range []string{"", "18", "x.y", "-1.0", "18.x"} {
+		if _, err := parseGitLabVersion(in); err == nil {
+			t.Errorf("parseGitLabVersion(%q) accepted", in)
+		}
+	}
+}
+
+// A refusal of anything but the element asked about, or one beside data,
+// is not a schema gap.
+func TestGitLabSchemaLacksNamesTheElement(t *testing.T) {
+	t.Parallel()
+	gqlErr := func(data, message string) error {
+		return &forgeapi.GraphQLError{Problems: []forgeapi.GraphQLProblem{{Message: message}}, Data: json.RawMessage(data)}
+	}
+	for _, tc := range []struct {
+		err     error
+		element string
+		want    bool
+	}{
+		{gqlErr("", "Field 'mergeabilityChecks' doesn't exist on type 'MergeRequest'"), "mergeabilityChecks", true},
+		{gqlErr("", "InputObject 'MergeRequestSetLabelsInput' doesn't accept argument 'operationMode'"), "operationMode", true},
+		{gqlErr("", "Field 'mergeRequestReviewerRereview' doesn't exist on type 'Mutation'"), "mergeRequestReviewerRereview", true},
+		{gqlErr("", "Field '__type' doesn't exist on type 'Query'"), "mergeabilityChecks", false},
+		{gqlErr("", "Field 'mergeabilityChecksV2' doesn't exist on type 'MergeRequest'"), "mergeabilityChecks", false},
+		{gqlErr(`{"x":1}`, "Field 'mergeabilityChecks' doesn't exist on type 'MergeRequest'"), "mergeabilityChecks", false},
+		{errors.New("Field 'mergeabilityChecks' doesn't exist on type 'MergeRequest'"), "mergeabilityChecks", false},
+	} {
+		if got := gitlabSchemaLacks(tc.err, tc.element); got != tc.want {
+			t.Errorf("gitlabSchemaLacks(%v, %q) = %v, want %v", tc.err, tc.element, got, tc.want)
+		}
+	}
+}
+
+// A harness reset forgets each host's release and each merge request's
+// state events backoff: the next read asks the release again and reads
+// the state events at once.
+func TestResetForgeCachesForgetsTheReleaseAndBackoff(t *testing.T) {
+	t.Parallel()
+	var mu sync.Mutex
+	version, eventsFail, eventReads := "16.4.0", true, 0
+	core, calls := gitlabManageReadCore(t, func(call forgeAPICall) (forgeAPIAnswer, bool) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch {
+		case call.Op == "" && call.Path == "metadata":
+			return gitlabMetadata(version), true
+		case call.Op == "PRManageChecks" || call.Op == "PRManage":
+			return forgeAPIAnswer{Body: gitlabManageAnswer("APPROVED", "")}, true
 		case strings.Contains(call.Path, "/resource_state_events"):
 			eventReads++
 			if eventsFail {
@@ -336,24 +511,24 @@ func TestResetForgeCachesForgetsSchemaAndBackoff(t *testing.T) {
 		}
 		return out
 	}
-	if got := read().Detail.Manage.Can; got.Reviewers || got.Rerequest {
-		t.Fatalf("a bare server's controls = %+v", got)
-	}
 	read()
 	mu.Lock()
-	schema, eventsFail = gitlabSchemaAll, false
+	version, eventsFail = "19.3.0", false
+	mu.Unlock()
+	read()
+	mu.Lock()
 	reads := eventReads
 	mu.Unlock()
-	if probes := countOp(calls, "PRManageSchema"); probes != 1 || reads != 1 {
-		t.Fatalf("warm: %d probes, %d state events reads", probes, reads)
+	if checks, plain := countOp(calls, "PRManageChecks"), countOp(calls, "PRManage"); checks != 0 || plain != 2 || reads != 1 {
+		t.Fatalf("warm: %d checks reads, %d plain reads, %d state events reads", checks, plain, reads)
 	}
 	core.ResetForgeCaches()
 	got := read()
 	mu.Lock()
 	reads = eventReads
 	mu.Unlock()
-	if !got.Detail.Manage.Can.Reviewers || !got.Detail.Manage.Can.Rerequest || countOp(calls, "PRManageSchema") != 2 {
-		t.Fatalf("after the reset: controls %+v, %d probes", got.Detail.Manage.Can, countOp(calls, "PRManageSchema"))
+	if countOp(calls, "PRManageChecks") != 1 || countPrefix(gitlabPaths(calls), "GET metadata") != 2 {
+		t.Fatalf("after the reset: %q", calls.ops())
 	}
 	closed := slices.ContainsFunc(got.Events, func(e ReviewEvent) bool { return e.ID == "state:1" })
 	if reads != 2 || !closed {
@@ -387,7 +562,7 @@ func TestResetForgeCachesReachesEveryAdapterCache(t *testing.T) {
 	gl.viewers.put("k", gitlabViewer{}, now)
 	gl.noApprovalState.put("k", true, now)
 	gl.noCIJobCancelPermission.put("k", true, now)
-	gl.schemas.put("k", gitlabSchema{}, now)
+	gl.versions.put("k", gitlabVersion{19, 3}, now)
 	gl.routes.remember("k")
 	gl.stateEventRetries.failed("k", gitlabStateEventsRetry{failures: 1, due: now.Add(time.Hour)})
 	state, start, _ := gl.pipelineTags.beginListing("k", []int64{1})
@@ -401,7 +576,7 @@ func TestResetForgeCachesReachesEveryAdapterCache(t *testing.T) {
 	_, viewer := gl.viewers.get("k", now)
 	_, approval := gl.noApprovalState.get("k", now)
 	_, cancel := gl.noCIJobCancelPermission.get("k", now)
-	_, schema := gl.schemas.get("k", now)
+	_, schema := gl.versions.get("k", now)
 	due, _ := gl.stateEventRetries.due("k", now)
 	_, _, known := gl.pipelineTags.beginListing("k", []int64{1})
 	_, _, permission := gh.ciPermissions.get("k", now)
@@ -409,261 +584,5 @@ func TestResetForgeCachesReachesEveryAdapterCache(t *testing.T) {
 	if project || viewer || approval || cancel || schema || gl.routes.get("k") || !due || len(known) != 0 || permission || artifacts {
 		t.Fatalf("kept: project %v viewer %v approval %v cancel %v schema %v route %v backoff %v tags %v permission %v artifacts %v",
 			project, viewer, approval, cancel, schema, gl.routes.get("k"), !due, known, permission, artifacts)
-	}
-}
-
-// Two cold reads of one host share one schema probe; a waiter whose
-// context ends gets its own error while the probe answers the other.
-func TestGitLabColdReadsShareOneSchemaProbe(t *testing.T) {
-	t.Parallel()
-	release := make(chan struct{})
-	started := make(chan struct{}, 4)
-	core, calls := gitlabManageReadCore(t, func(call forgeAPICall) (forgeAPIAnswer, bool) {
-		if call.Op == "PRManageSchema" {
-			started <- struct{}{}
-			<-release
-			return forgeAPIAnswer{Body: gitlabSchemaAll}, true
-		}
-		if call.Op == "PRManageChecks" {
-			return forgeAPIAnswer{Body: `{"data":{"project":{"mergeRequest":{"userPermissions":{"updateMergeRequest":true,"adminMergeRequest":true},` +
-				`"reviewers":{"nodes":[]},"assignees":{"nodes":[]},"labels":{"nodes":[]},"mergeabilityChecks":[]}}}}`}, true
-		}
-		return forgeAPIAnswer{}, false
-	})
-	var releaseOnce sync.Once
-	unblock := func() { releaseOnce.Do(func() { close(release) }) }
-	// Runs before the server's own cleanup, which waits for its handlers.
-	t.Cleanup(unblock)
-	f := core.forges["gitlab"].(*gitlabForge)
-	client, err := core.gitlabAPI(testForgeHost)
-	if err != nil {
-		t.Fatal(err)
-	}
-	type answer struct {
-		schema gitlabSchema
-		err    error
-	}
-	first := make(chan answer, 1)
-	go func() {
-		schema, err := f.manageSchema(t.Context(), client, testForgeHost)
-		first <- answer{schema, err}
-	}()
-	<-started
-	ctx, cancel := context.WithCancel(t.Context())
-	second := make(chan answer, 1)
-	go func() {
-		schema, err := f.manageSchema(ctx, client, testForgeHost)
-		second <- answer{schema, err}
-	}()
-	third := make(chan answer, 1)
-	go func() {
-		schema, err := f.manageSchema(t.Context(), client, testForgeHost)
-		third <- answer{schema, err}
-	}()
-	waitFor(t, func() bool { return f.probes.waiters(testForgeHost) >= 3 })
-	cancel()
-	if got := within(t, second); !errors.Is(got.err, context.Canceled) {
-		t.Fatalf("a waiter whose context ended = %+v", got)
-	}
-	unblock()
-	for _, got := range []answer{within(t, first), within(t, third)} {
-		if got.err != nil || !got.schema.setReviewers {
-			t.Fatalf("a waiter = %+v", got)
-		}
-	}
-	if n := countOp(calls, "PRManageSchema"); n != 1 {
-		t.Fatalf("probes = %d, want one for the three", n)
-	}
-}
-
-// The probe outlives the caller that started it: its waiters get the
-// answer when that caller gives up.
-func TestGitLabSchemaProbeOutlivesItsFirstCaller(t *testing.T) {
-	t.Parallel()
-	release := make(chan struct{})
-	started := make(chan struct{}, 2)
-	core, calls := gitlabManageReadCore(t, func(call forgeAPICall) (forgeAPIAnswer, bool) {
-		if call.Op == "PRManageSchema" {
-			started <- struct{}{}
-			<-release
-			return forgeAPIAnswer{Body: gitlabSchemaAll}, true
-		}
-		return forgeAPIAnswer{}, false
-	})
-	var releaseOnce sync.Once
-	unblock := func() { releaseOnce.Do(func() { close(release) }) }
-	// Runs before the server's own cleanup, which waits for its handlers.
-	t.Cleanup(unblock)
-	f := core.forges["gitlab"].(*gitlabForge)
-	client, err := core.gitlabAPI(testForgeHost)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithCancel(t.Context())
-	first := make(chan error, 1)
-	go func() {
-		_, err := f.manageSchema(ctx, client, testForgeHost)
-		first <- err
-	}()
-	<-started
-	second := make(chan error, 1)
-	go func() {
-		_, err := f.manageSchema(t.Context(), client, testForgeHost)
-		second <- err
-	}()
-	waitFor(t, func() bool { return f.probes.waiters(testForgeHost) >= 2 })
-	cancel()
-	if err := within(t, first); !errors.Is(err, context.Canceled) {
-		t.Fatalf("the first caller = %v", err)
-	}
-	unblock()
-	if err := within(t, second); err != nil {
-		t.Fatalf("the waiter after the first gave up = %v", err)
-	}
-	if n := countOp(calls, "PRManageSchema"); n != 1 {
-		t.Fatalf("probes = %d", n)
-	}
-}
-
-// A reset forgets a schema probe still in flight: a read after it probes
-// again rather than joining the old probe, and the old probe's answer,
-// arriving after the reset, is never cached. The old fixture answers the
-// bare schema, the new one every field.
-func TestGitLabResetForgetsASchemaProbeInFlight(t *testing.T) {
-	t.Parallel()
-	for _, readBeforeRelease := range []bool{false, true} {
-		t.Run(map[bool]string{false: "released, then read", true: "read, then released"}[readBeforeRelease], func(t *testing.T) {
-			t.Parallel()
-			release := make(chan struct{})
-			started := make(chan struct{}, 1)
-			var mu sync.Mutex
-			probes := 0
-			core, calls := gitlabManageReadCore(t, func(call forgeAPICall) (forgeAPIAnswer, bool) {
-				if call.Op != "PRManageSchema" {
-					return forgeAPIAnswer{}, false
-				}
-				mu.Lock()
-				probes++
-				first := probes == 1
-				mu.Unlock()
-				if !first {
-					return forgeAPIAnswer{Body: gitlabSchemaAll}, true
-				}
-				started <- struct{}{}
-				<-release
-				return forgeAPIAnswer{Body: gitlabSchemaBare}, true
-			})
-			var releaseOnce sync.Once
-			unblock := func() { releaseOnce.Do(func() { close(release) }) }
-			// Runs before the server's own cleanup, which waits for its handlers.
-			t.Cleanup(unblock)
-			f := core.forges["gitlab"].(*gitlabForge)
-			client, err := core.gitlabAPI(testForgeHost)
-			if err != nil {
-				t.Fatal(err)
-			}
-			ctx, cancel := context.WithCancel(t.Context())
-			first := make(chan error, 1)
-			go func() {
-				_, err := f.manageSchema(ctx, client, testForgeHost)
-				first <- err
-			}()
-			<-started
-			f.probes.mu.Lock()
-			old := f.probes.flights[testForgeHost]
-			f.probes.mu.Unlock()
-			cancel()
-			if err := within(t, first); !errors.Is(err, context.Canceled) {
-				t.Fatalf("the old fixture's caller = %v", err)
-			}
-
-			core.ResetForgeCaches()
-
-			read := func() gitlabSchema {
-				t.Helper()
-				answer := make(chan gitlabSchema, 1)
-				go func() {
-					schema, err := f.manageSchema(t.Context(), client, testForgeHost)
-					if err != nil {
-						t.Error(err)
-					}
-					answer <- schema
-				}()
-				return within(t, answer)
-			}
-			if readBeforeRelease {
-				if got := read(); !got.setReviewers {
-					t.Fatalf("a read after the reset joined the old probe: %+v", got)
-				}
-			}
-			unblock()
-			within(t, (<-chan struct{})(old.done))
-			if got, _ := f.schemas.get(testForgeHost, time.Now()); !got.setReviewers && readBeforeRelease {
-				t.Fatalf("the old probe's answer replaced the new one: %+v", got)
-			}
-			if got := read(); !got.setReviewers {
-				t.Fatalf("the read after the old probe answered = %+v, want the new fixture's", got)
-			}
-			if n := countOp(calls, "PRManageSchema"); n != 2 {
-				t.Fatalf("probes = %d, want the old one and one after the reset", n)
-			}
-		})
-	}
-}
-
-// A caller that missed the cache before a probe finished and joins after
-// it finds no flight and leads one; the leader rechecks the cache and
-// sends no second probe.
-func TestGitLabSchemaProbeLeaderRechecksTheCache(t *testing.T) {
-	t.Parallel()
-	core, calls := gitlabManageReadCore(t, func(call forgeAPICall) (forgeAPIAnswer, bool) {
-		if call.Op == "PRManageSchema" {
-			return forgeAPIAnswer{Body: gitlabSchemaAll}, true
-		}
-		return forgeAPIAnswer{}, false
-	})
-	f := core.forges["gitlab"].(*gitlabForge)
-	client, err := core.gitlabAPI(testForgeHost)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.manageSchema(t.Context(), client, testForgeHost); err != nil {
-		t.Fatal(err)
-	}
-	// The late caller's miss happened before that probe stored; it joins now.
-	cached := func() (gitlabSchema, bool) { return f.schemas.get(testForgeHost, time.Now()) }
-	schema, err := f.probes.join(t.Context(), testForgeHost, cached, func(ctx context.Context) (gitlabSchema, error) {
-		return f.probeSchema(ctx, client)
-	}, func(gitlabSchema) { t.Error("a cached answer was stored again") })
-	if err != nil || !schema.setReviewers {
-		t.Fatalf("the late caller = %+v, %v", schema, err)
-	}
-	if n := countOp(calls, "PRManageSchema"); n != 1 {
-		t.Fatalf("probes = %d, want one", n)
-	}
-}
-
-// waitFor waits up to ten seconds for done.
-func waitFor(t *testing.T, done func() bool) {
-	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for !done() {
-		if time.Now().After(deadline) {
-			t.Fatal("timed out waiting")
-		}
-		time.Sleep(time.Millisecond)
-	}
-}
-
-// within receives from ch, failing after ten seconds.
-func within[V any](t *testing.T, ch <-chan V) V {
-	t.Helper()
-	select {
-	case v := <-ch:
-		return v
-	case <-time.After(10 * time.Second):
-		t.Fatal("timed out waiting for an answer")
-		var zero V
-		return zero
 	}
 }

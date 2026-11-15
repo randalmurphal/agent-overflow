@@ -38,7 +38,7 @@ func TestForgeWritesFinishAfterTheirCallerCancels(t *testing.T) {
 				_, err := core.SubmitReview(ctx, gitlabTestRef(7), review)
 				return err
 			},
-			want: []string{"GET " + mr, "GET " + mr + "/draft_notes?per_page=100", "GET " + mr + "/diffs?per_page=100", "POST " + mr + "/draft_notes", "POST " + mr + "/draft_notes", "POST " + mr + "/draft_notes/bulk_publish", "POST " + mr + "/approve"},
+			want: []string{"GET metadata", "GET " + mr, "GET " + mr + "/draft_notes?per_page=100", "GET " + mr + "/diffs?per_page=100", "POST " + mr + "/draft_notes", "POST " + mr + "/draft_notes", "POST " + mr + "/draft_notes/bulk_publish", "POST " + mr + "/approve"},
 		},
 		"approve": {
 			hold:  "POST " + mr + "/approve",

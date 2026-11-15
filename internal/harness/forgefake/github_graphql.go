@@ -111,6 +111,9 @@ func (e *Engine) graphQL(c *call) response {
 	ops := githubGraphQL
 	if c.cli == "glab" {
 		ops = gitlabGraphQL
+		if refused, ok := e.glabIntrospectionRefused(c, req.Query); ok {
+			return refused
+		}
 	}
 	i := slices.IndexFunc(ops, func(op graphQLOp) bool { return op.name == req.OperationName })
 	if i < 0 {

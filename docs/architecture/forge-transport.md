@@ -302,9 +302,9 @@ how an edit or delete picks the issue comment mutation.
 
 GitLab's `ReadPR` reads the merge request once
 (`projects/P/merge_requests/N`) and derives every part from it: `Detail`
-adds its approvals, the management read (GraphQL `PRManage` or
-`PRManageChecks`, after a `PRManageSchema` probe once per host per 10
-minutes; see [Managing a PR](#managing-a-pr)), the project's merge settings (`projects/P`, cached
+adds its approvals, the server's release (`metadata`, cached per host for
+10 minutes), the management read (GraphQL `PRManageChecks`, or `PRManage`
+before 16.5; see [Managing a PR](#managing-a-pr)), the project's merge settings (`projects/P`, cached
 per login and project for 10 minutes, then revalidated through the ETag
 store: a `W/` ETag answered 304) and the viewer's login (`user`, cached
 per login and host for 10 minutes; the author may cancel an auto-merge, and a refused read
@@ -337,9 +337,9 @@ GitHub external check.
 
 | Tick | GitLab requests |
 |---|---|
-| Pump (`Detail`, `Threads`, `Events`), warm | 1 merge request + 1 discussions page per 100 discussions + 1 state events page per 100 events (at most 3) + 1 approvals + 1 `PRManage` (or `PRManageChecks`) |
+| Pump (`Detail`, `Threads`, `Events`), warm | 1 merge request + 1 discussions page per 100 discussions + 1 state events page per 100 events (at most 3) + 1 approvals + 1 `PRManageChecks` (or `PRManage`) |
 | Pump, the notes changed, the viewer reacted, or the reactions read is 2 minutes old | the warm requests + 1 `MRNoteReactions` per 100 notes (at most 10) |
-| Pump, cold host or project (first read, then every 10 minutes) | the warm requests + 1 `PRManageSchema` per host + 1 `projects/P` per login and project + 1 `user` per login and host |
+| Pump, cold host or project (first read, then every 10 minutes) | the warm requests + 1 `metadata` per host + 1 `projects/P` per login and project + 1 `user` per login and host |
 | CI phase, a head pipeline | 1 merge request + 1 `PipelineJobs` per 100 rows |
 | CI phase, no head pipeline | 1 merge request |
 | Log follow, a followed running job (every 5s) | 1 trace (304 while unchanged) |
@@ -360,7 +360,7 @@ is its decimal id and its URL the merge request's page at `#note_<id>`.
 | `ReplyToThread` | 1 `POST .../discussions/D/notes`; a 404 is `*ReplyThreadGoneError` |
 | `EditComment`, `DeleteComment` | 1 `PUT` (`{body}`) or `DELETE .../discussions/D/notes/N` |
 | `SetThreadResolved` | 1 `PUT .../discussions/D` (`{resolved}`), addressed under the merge request; a failure the forge may have applied is `*UnconfirmedWriteError` |
-| `SubmitReview` | 1 merge request read; a head other than the caller's is `*HeadMovedError` (kind `stale_head`) before any write, and an approval sends the caller's head as `sha`. With anything to publish, 1 `GET .../draft_notes` before any write: a pending draft note of the viewer's (a review started on GitLab, or one an earlier submit could not remove) is `*PendingDraftNotesError` (kind `refused`), since `bulk_publish` would post it too. The diffs read below when a comment is positioned, 1 `POST .../draft_notes` per comment, then `bulk_publish`. With held replies, 1 discussions read before (a discussion that is gone fails the submit with `*ReplyThreadGoneError` before any draft; each reply's draft carries `in_reply_to_discussion_id` and `resolve_discussion` set to its discussion's state, since publishing a reply without it reopens a resolved discussion) and 1 after the publish (GitLab drops a reply whose discussion went in between and answers success, so a reply that is not a new note of its discussion is a `*PartialSubmitError` naming its thread, `UnpostedReplies` its ordinal). A 400 on a reply's draft is the discussion gone when `GET .../discussions/D` answers 404. The publish posts every draft at once, so the result counts every file comment posted whatever becomes of the replies and the approval, and each draft is sent but the replies that check could not find. An approval that fails after that check failed or found a reply missing is reported beside it (`PartialSubmitError.ApproveErr`), not in its place |
+| `SubmitReview` | the server's release (below `gitlabSupportedFloor` the submit is refused, kind `refused`, before any write), 1 merge request read; a head other than the caller's is `*HeadMovedError` (kind `stale_head`) before any write, and an approval sends the caller's head as `sha`. With anything to publish, 1 `GET .../draft_notes` before any write: a pending draft note of the viewer's (a review started on GitLab, or one an earlier submit could not remove) is `*PendingDraftNotesError` (kind `refused`), since `bulk_publish` would post it too. The diffs read below when a comment is positioned, 1 `POST .../draft_notes` per comment, then `bulk_publish`. With held replies, 1 discussions read before (a discussion that is gone fails the submit with `*ReplyThreadGoneError` before any draft; each reply's draft carries `in_reply_to_discussion_id` and `resolve_discussion` set to its discussion's state, since publishing a reply without it reopens a resolved discussion) and 1 after the publish (GitLab drops a reply whose discussion went in between and answers success, so a reply that is not a new note of its discussion is a `*PartialSubmitError` naming its thread, `UnpostedReplies` its ordinal). A 400 on a reply's draft is the discussion gone when `GET .../discussions/D` answers 404. The publish posts every draft at once, so the result counts every file comment posted whatever becomes of the replies and the approval, and each draft is sent but the replies that check could not find. An approval that fails after that check failed or found a reply missing is reported beside it (`PartialSubmitError.ApproveErr`), not in its place |
 
 A position names its file by `old_path` and `new_path` and, in a
 `line_range`, each end by a `line_code` of `sha1(new_path)` and the old
@@ -744,8 +744,8 @@ forge's own answer. A GitHub reviewer's state and staleness come from the
 same review: the standing approval or change request when one stands,
 else the latest review. A failed management read never fails or hides
 the PR: `PRManage.Unavailable` says so in one sentence, every flag is
-false and the lists are empty. On GitLab that is the `PRManage` read or
-its probe; on GitHub, a PRTick answer whose every error lies under the
+false and the lists are empty. On GitLab that is the `PRManageChecks` or
+`PRManage` read; on GitHub, a PRTick answer whose every error lies under the
 management selections (the viewer flags, `reviewRequests`, `assignees`,
 `labels`) with the rest decoded; an error anywhere else fails the read. The changes-requested blocker carries
 the reviews a dismissal needs (`MergeBlocker.ChangeRequests`) and whether
@@ -799,24 +799,44 @@ support. GitLab's: edit, close, reopen, draft and re-request from
 `adminMergeRequest` and the host's set mutation; bypass from the REST
 `user.can_merge` and requested changes blocking the merge.
 
-GitLab's schema decides which controls exist and which document is sent.
-`PRManageSchema` asks for `MergeRequestReviewerRereviewInput` (gates
-re-request), `MergeRequestUpdateInput`'s `overrideRequestedChanges`
-(gates bypass) and `operationMode` on `MergeRequestSetReviewersInput`,
-`MergeRequestSetAssigneesInput` and `MergeRequestSetLabelsInput` (each
-gates its control; a host without it offers none and refuses the write).
-The answer, either way, is cached per host for 10 minutes; a failed probe
-is not cached and makes the read unavailable. Concurrent cold reads of a
-host share one probe, which runs past the caller that started it, each
-waiting bounded by its own context; the probe's leader rechecks the cache
-before sending. A harness reset forgets the answers with the adapters'
-other per-host and per-project memory (`Core.ResetForgeCaches`), and a
-probe in flight across it is never joined after it and never cached. A host with the override is
-read with `PRManageChecks`, which adds `mergeabilityChecks`: the
-`REQUESTED_CHANGES` check failing is what blocks (elsewhere the
-`detailed_merge_status` `requested_changes`), and the check passing while
-a reviewer still requests changes is shown as bypassed. That is an
-inference: GitLab reports no bypass as such.
+GitLab's release decides which controls exist and which document is
+sent, never its schema: GitLab 18.9 and later refuse introspection in an
+ordinary document ("Field '__type' doesn't exist on type 'Query'"). The
+release is `GET metadata`'s `version` (GitLab 15.2 and later), read once
+per host and cached for 10 minutes; a failed read is not cached. Each
+capability is mapped to the first release whose GraphQL reference
+(docs.gitlab.com/VERSION/api/graphql/reference, checked from 16.0 on)
+documents it:
+
+| Capability | First release | Decides |
+|---|---|---|
+| `mergeRequestReviewerRereview` | 16.0 or earlier | Re-request |
+| `operationMode` on `mergeRequestSetReviewers`, `mergeRequestSetAssignees`, `mergeRequestSetLabels` | 16.0 or earlier | each row's Edit |
+| `MergeRequest.mergeabilityChecks` | 16.5 (an experiment there) | `PRManageChecks` instead of `PRManage` |
+| `overrideRequestedChanges` on `mergeRequestUpdate` | 17.9 | Bypass |
+
+A control the viewer could use that the release lacks is not offered,
+and `PRManage.Limited` names it with the release it needs ("This GitLab
+server runs 17.8: bypassing requested changes needs GitLab 17.9."); its
+write is refused before it is sent ("GitLab on HOST runs 17.8; bypassing
+requested changes needs GitLab 17.9.", kind `refused`). A failed release
+read shows the rows `PRManage` reads and offers none of those controls,
+saying the version could not be read; a write needing one fails with the
+read's error. Reviewers, assignees, labels and the permissions are
+`PRManage`'s selection, in the 16.0 reference. `gitlabSupportedFloor`
+(`internal/git/gitlab_version.go`, 16.0) is the oldest release the app
+supports: a review submit to an older server is refused before any write
+("GitLab on HOST runs 15.11; sending a review from here needs GitLab 16.0
+or later. Do it on GitLab."). A harness reset forgets the releases with
+the adapters' other per-host and per-project memory
+(`Core.ResetForgeCaches`). The `mergeabilityChecks` `REQUESTED_CHANGES`
+check failing is what blocks (elsewhere the `detailed_merge_status`
+`requested_changes`), and the check passing while a reviewer still
+requests changes is shown as bypassed. That is an inference: GitLab
+reports no bypass as such. The reactions read (`Note.awardEmoji`), the
+CI read's cancel permissions and the list's `approvalState` instead send
+the newer document and fall back when the server refuses the field
+(`gitlabSchemaLacks`).
 
 The GitLab GraphQL arguments these use: `project.labels` takes
 `searchTerm`, `includeAncestorGroups`, `first` and `after`;

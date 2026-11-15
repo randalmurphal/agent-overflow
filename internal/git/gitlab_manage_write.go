@@ -20,7 +20,9 @@ import (
 // labels are the set mutations with operationMode REMOVE then APPEND, so
 // a change touches only whom or what it names, each checked against the
 // merge request the mutation answers: a person or label it did not apply
-// is a refusal naming it. Re-request and bypass are GraphQL-only.
+// is a refusal naming it. Re-request and bypass are GraphQL-only. A write
+// the server's release lacks (gitlab_version.go) is refused before it is
+// sent, naming the release it needs.
 
 // gitlabPut updates the merge request with body.
 func gitlabPut(ctx context.Context, client *forgeapi.Client, ref PRReference, body map[string]any) error {
@@ -89,11 +91,6 @@ func gitlabMRVars(ref PRReference) map[string]any {
 	return map[string]any{"projectPath": ref.Project(), "iid": strconv.Itoa(ref.Number)}
 }
 
-// gitlabUnsupported refuses a change the host's schema cannot make.
-func gitlabUnsupported(ref PRReference, what string) error {
-	return &ForgeActionError{Kind: ForgeErrorRefused, Message: fmt.Sprintf("GitLab on %s cannot change %s here; change them on GitLab.", ref.Host, what)}
-}
-
 const gitlabSetReviewersMutation = `mutation PRSetReviewers($projectPath: ID!, $iid: String!, $usernames: [String!]!, $mode: MutationOperationMode!) {
   mergeRequestSetReviewers(input: {projectPath: $projectPath, iid: $iid, reviewerUsernames: $usernames, operationMode: $mode}) { errors mergeRequest { reviewers(first: 100) { pageInfo { hasNextPage } nodes { username } } } }
 }`
@@ -121,17 +118,12 @@ func (f *gitlabForge) SetPRPeople(ctx context.Context, ref PRReference, reviewer
 	if err != nil {
 		return err
 	}
-	schema, err := f.manageSchema(ctx, client, ref.Host)
-	if err != nil {
-		return err
-	}
-	op, doc, field, list := "PRSetAssignees", gitlabSetAssigneesMutation, "mergeRequestSetAssignees", "assignees"
-	supported := schema.setAssignees
+	op, doc, field, list, capability := "PRSetAssignees", gitlabSetAssigneesMutation, "mergeRequestSetAssignees", "assignees", gitlabCapSetAssignees
 	if reviewers {
-		op, doc, field, list, supported = "PRSetReviewers", gitlabSetReviewersMutation, "mergeRequestSetReviewers", "reviewers", schema.setReviewers
+		op, doc, field, list, capability = "PRSetReviewers", gitlabSetReviewersMutation, "mergeRequestSetReviewers", "reviewers", gitlabCapSetReviewers
 	}
-	if !supported {
-		return gitlabUnsupported(ref, list)
+	if server := f.server(ctx, client, ref.Host); !server.has(capability) {
+		return server.refuse(ref, capability)
 	}
 	step := func(mode string, people []PRPerson) changeStep {
 		names := logins(people)
@@ -258,12 +250,8 @@ func (f *gitlabForge) SetPRLabels(ctx context.Context, ref PRReference, change P
 	if err != nil {
 		return err
 	}
-	schema, err := f.manageSchema(ctx, client, ref.Host)
-	if err != nil {
-		return err
-	}
-	if !schema.setLabels {
-		return gitlabUnsupported(ref, "labels")
+	if server := f.server(ctx, client, ref.Host); !server.has(gitlabCapSetLabels) {
+		return server.refuse(ref, gitlabCapSetLabels)
 	}
 	step := func(mode string, labels []PRLabel) changeStep {
 		done, next := stepWords(strings.ToLower(mode), labelNames(labels), "labels")
@@ -357,6 +345,9 @@ func (f *gitlabForge) RerequestReview(ctx context.Context, ref PRReference, revi
 	if err != nil {
 		return err
 	}
+	if server := f.server(ctx, client, ref.Host); !server.has(gitlabCapRereview) {
+		return server.refuse(ref, gitlabCapRereview)
+	}
 	id, _ := gitlabUserID(reviewer.ID)
 	vars := gitlabMRVars(ref)
 	vars["userId"] = "gid://gitlab/User/" + strconv.FormatInt(id, 10)
@@ -375,6 +366,9 @@ func (f *gitlabForge) BypassRequestedChanges(ctx context.Context, ref PRReferenc
 	client, err := f.core.gitlabAPI(ref.Host)
 	if err != nil {
 		return err
+	}
+	if server := f.server(ctx, client, ref.Host); !server.has(gitlabCapOverride) {
+		return server.refuse(ref, gitlabCapOverride)
 	}
 	_, err = gitlabMutation(ctx, client, "PRBypassChanges", gitlabBypassMutation, "mergeRequestUpdate", gitlabMRVars(ref), gitlabErrorsOf)
 	return err

@@ -41,11 +41,8 @@ type gitlabForge struct {
 	// pipelineTags remembers which listed pipelines ran on a tag
 	// (ci_gitlab.go).
 	pipelineTags gitlabPipelineTags
-	// schemas is each host's management schema (gitlab_manage.go).
-	schemas gitlabCache[gitlabSchema]
-	// probes is the schema probe in flight per host (gitlab_manage.go);
-	// its reset clears schemas.
-	probes gitlabSchemaProbes
+	// versions is each host's release (gitlab_version.go).
+	versions gitlabCache[gitlabVersion]
 	// stateEventRetries holds the merge requests whose state events read
 	// failed, until it is due again (gitlab_manage.go).
 	stateEventRetries gitlabStateEventRetries
@@ -65,7 +62,7 @@ func (f *gitlabForge) resetCaches() {
 	f.noCIJobCancelPermission.clear()
 	f.routes.clear()
 	f.pipelineTags.forget()
-	f.probes.reset(f.schemas.clear)
+	f.versions.clear()
 	f.stateEventRetries.clear()
 	f.reactions.clear()
 	f.noNoteAwardEmoji.clear()
@@ -768,6 +765,11 @@ func gitlabPointLine(point gitlabLineRangePoint, prefer string) (string, *int) {
 func (f *gitlabForge) SubmitReview(ctx context.Context, ref PRReference, review SubmitReviewRequest) (SubmitReviewResult, error) {
 	client, err := f.core.gitlabAPI(ref.Host)
 	if err != nil {
+		return SubmitReviewResult{}, err
+	}
+	// An older server's draft notes post something other than the pane
+	// shows (a line comment as a general one, a reply refused).
+	if err := f.requireSupported(ctx, client, ref, "sending a review"); err != nil {
 		return SubmitReviewResult{}, err
 	}
 	// The draft notes are positioned on the diff the reviewer loaded, which

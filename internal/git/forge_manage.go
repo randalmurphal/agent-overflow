@@ -30,13 +30,16 @@ const (
 // PRManage is what the review pane's Details section shows and which
 // management controls it offers, read with the detail. Unavailable is
 // the sentence saying the read failed: the lists are then empty and
-// every Can flag false, and the rest of the detail stands.
+// every Can flag false, and the rest of the detail stands. Limited is
+// the sentence naming the controls the forge's server does not support,
+// which are not offered while the rest are.
 type PRManage struct {
 	Reviewers   []PRReviewer `json:"reviewers"`
 	Assignees   []PRPerson   `json:"assignees"`
 	Labels      []PRLabel    `json:"labels"`
 	Can         PRManageCan  `json:"can"`
 	Unavailable string       `json:"unavailable,omitempty"`
+	Limited     string       `json:"limited,omitempty"`
 }
 
 // emptyManage is a PRManage with nothing shown and nothing offered.

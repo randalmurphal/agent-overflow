@@ -118,7 +118,7 @@ func TestGitLabReadPRReadsTheMergeRequestOnce(t *testing.T) {
 	}
 	paths := gitlabPaths(calls)
 	if countPrefix(paths, "GET "+mr) != 1 || len(paths) != 10 {
-		t.Fatalf("requests = %q, want one MR read, the approvals, the project, the viewer, PRManageSchema, PRManage, two discussion pages, one MRNoteReactions page and one PipelineJobs page", paths)
+		t.Fatalf("requests = %q, want one MR read, the approvals, the project, the viewer, the release, PRManageChecks, two discussion pages, one MRNoteReactions page and one PipelineJobs page", paths)
 	}
 	for _, call := range calls.all() {
 		if call.Host != testForgeHost || call.Header.Get("Private-Token") != "test-token" {
@@ -156,9 +156,7 @@ func TestGitLabReadPRRequestsOnlyTheWantedParts(t *testing.T) {
 			return forgeAPIAnswer{Body: `[]`}
 		case call.Op == "PipelineJobs":
 			return gitlabJobs(1, 1)
-		case call.Op == "PRManageSchema":
-			return forgeAPIAnswer{Body: gitlabSchemaBare}
-		case call.Op == "PRManage":
+		case call.Op == "PRManageChecks":
 			return forgeAPIAnswer{Body: gitlabManageEmpty}
 		case call.Op == "MRNoteReactions":
 			return forgeAPIAnswer{Body: gitlabNoReactions}
@@ -176,8 +174,8 @@ func TestGitLabReadPRRequestsOnlyTheWantedParts(t *testing.T) {
 		pipeline int32
 		paths    []string
 	}{
-		{PRReadParts{Detail: true}, 77, []string{"GET " + mr, "GET " + mr + "/approvals", "GET " + gitlabTestProject, "GET user", "GRAPHQL PRManageSchema", "GRAPHQL PRManage"}},
-		{PRReadParts{Detail: true}, 77, []string{"GET " + mr, "GET " + mr + "/approvals", "GRAPHQL PRManage"}},
+		{PRReadParts{Detail: true}, 77, []string{"GET " + mr, "GET " + mr + "/approvals", "GET " + gitlabTestProject, "GET user", "GET metadata", "GRAPHQL PRManageChecks"}},
+		{PRReadParts{Detail: true}, 77, []string{"GET " + mr, "GET " + mr + "/approvals", "GRAPHQL PRManageChecks"}},
 		// The first threads read reads the reactions; the next, with the
 		// same notes, answers them from memory.
 		{PRReadParts{Threads: true}, 77, []string{"GET " + mr, "GET " + mr + "/discussions?per_page=100", "GRAPHQL MRNoteReactions"}},
@@ -309,12 +307,13 @@ func TestGitLabSubmitReview(t *testing.T) {
 	if err != nil || !result.PostedReview {
 		t.Fatalf("SubmitReview = %+v, %v", result, err)
 	}
-	want := []string{"GET " + mr, "GET " + mr + "/draft_notes?per_page=100", "GET " + mr + "/diffs?per_page=100", "POST " + mr + "/draft_notes", "POST " + mr + "/draft_notes", "POST " + mr + "/draft_notes", "POST " + mr + "/draft_notes/bulk_publish", "POST " + mr + "/approve"}
+	want := []string{"GET metadata", "GET " + mr, "GET " + mr + "/draft_notes?per_page=100", "GET " + mr + "/diffs?per_page=100", "POST " + mr + "/draft_notes", "POST " + mr + "/draft_notes", "POST " + mr + "/draft_notes", "POST " + mr + "/draft_notes/bulk_publish", "POST " + mr + "/approve"}
 	if got := gitlabPaths(calls); strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("requests = %q, want %q", got, want)
 	}
-	// Past the pending draft notes read, the writes in order.
-	sent := slices.Delete(calls.all(), 1, 2)
+	// Past the release and pending draft notes reads, the writes in order.
+	sent := slices.Delete(calls.all(), 0, 1)
+	sent = slices.Delete(sent, 1, 2)
 	var summary, right, left struct {
 		Note     string             `json:"note"`
 		Position *gitlabPositionRaw `json:"position"`

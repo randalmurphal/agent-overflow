@@ -9,11 +9,6 @@ import (
 	"testing"
 )
 
-// gitlabSchemaAll is a PRManageSchema answer of a server with every
-// management feature.
-const gitlabSchemaAll = `{"data":{"rereview":{"name":"x"},"updateInput":{"inputFields":[{"name":"overrideRequestedChanges"}]},` +
-	`"setReviewers":{"inputFields":[{"name":"operationMode"}]},"setAssignees":{"inputFields":[{"name":"operationMode"}]},"setLabels":{"inputFields":[{"name":"operationMode"}]}}}`
-
 // gitlabReviewersAnswer is a mergeRequestSetReviewers answer listing
 // usernames as the merge request's reviewers.
 func gitlabReviewersAnswer(usernames ...string) string {
@@ -60,8 +55,6 @@ func TestGitLabPeopleChangeWritesInOrder(t *testing.T) {
 			t.Parallel()
 			core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
 				switch {
-				case call.Op == "PRManageSchema":
-					return forgeAPIAnswer{Body: gitlabSchemaAll}
 				case call.Op == "PRSetReviewers" && call.Vars["mode"] == "REMOVE":
 					return tc.first
 				case call.Op == "PRSetReviewers" && call.Vars["mode"] == "APPEND":
@@ -133,8 +126,6 @@ func TestGitLabSetBatchOutcomes(t *testing.T) {
 			t.Parallel()
 			core, _ := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
 				switch {
-				case call.Op == "PRManageSchema":
-					return forgeAPIAnswer{Body: gitlabSchemaAll}
 				case call.Op == "PRSetReviewers" && call.Vars["mode"] == "REMOVE":
 					return tc.remove
 				case call.Op == "PRSetReviewers":
@@ -160,8 +151,6 @@ func TestGitLabLabelAdditionPastThePage(t *testing.T) {
 	for _, more := range []bool{true, false} {
 		core, _ := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
 			switch call.Op {
-			case "PRManageSchema":
-				return forgeAPIAnswer{Body: gitlabSchemaAll}
 			case "PRSetLabels":
 				return forgeAPIAnswer{Body: fmt.Sprintf(`{"data":{"mergeRequestSetLabels":{"errors":[],"mergeRequest":{"labels":{"pageInfo":{"hasNextPage":%v},"nodes":[{"id":"gid://gitlab/ProjectLabel/9"}]}}}}}`, more)}
 			}
@@ -176,15 +165,13 @@ func TestGitLabLabelAdditionPastThePage(t *testing.T) {
 	}
 }
 
-// Labels are removed, then added, by id; a host without the set
-// mutations' operationMode refuses the change before any write.
+// Labels are removed, then added, by id. A release older than the set
+// mutations' operationMode refuses each change before any write.
 func TestGitLabLabelChangeAndUnsupportedHost(t *testing.T) {
 	t.Parallel()
 	bug, ui := PRLabel{ID: "gid://gitlab/ProjectLabel/1", Name: "bug"}, PRLabel{ID: "gid://gitlab/ProjectLabel/2", Name: "ui,web"}
 	core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
 		switch {
-		case call.Op == "PRManageSchema":
-			return forgeAPIAnswer{Body: gitlabSchemaAll}
 		case call.Op == "PRSetLabels" && call.Vars["mode"] == "REMOVE":
 			return forgeAPIAnswer{Body: `{"data":{"mergeRequestSetLabels":{"errors":[],"mergeRequest":{"labels":{"nodes":[]}}}}}`}
 		case call.Op == "PRSetLabels":
@@ -206,22 +193,25 @@ func TestGitLabLabelChangeAndUnsupportedHost(t *testing.T) {
 	}
 
 	old, oldCalls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
-		if call.Op == "PRManageSchema" {
-			return forgeAPIAnswer{Body: gitlabSchemaBare}
+		if call.Op == "" && call.Path == "metadata" {
+			return gitlabMetadata("15.11.0-ee")
 		}
 		return forgeUnexpected(t, call)
 	})
-	for _, err := range []error{
-		old.SetPRLabels(t.Context(), gitlabTestRef(7), PRLabelChange{Add: []PRLabel{ui}}),
-		old.SetPRPeople(t.Context(), gitlabTestRef(7), true, PRPeopleChange{Add: []PRPerson{{Login: "bob"}}}),
-		old.SetPRPeople(t.Context(), gitlabTestRef(7), false, PRPeopleChange{Add: []PRPerson{{Login: "bob"}}}),
+	for _, tc := range []struct {
+		err  error
+		want string
+	}{
+		{old.SetPRLabels(t.Context(), gitlabTestRef(7), PRLabelChange{Add: []PRLabel{ui}, Remove: []PRLabel{bug}}), "changing labels"},
+		{old.SetPRPeople(t.Context(), gitlabTestRef(7), true, PRPeopleChange{Add: []PRPerson{{Login: "bob"}}}), "changing reviewers"},
+		{old.SetPRPeople(t.Context(), gitlabTestRef(7), false, PRPeopleChange{Add: []PRPerson{{Login: "bob"}}}), "changing assignees"},
 	} {
-		if explained, ok := errors.AsType[*ForgeActionError](err); !ok || explained.Kind != ForgeErrorRefused || !strings.Contains(explained.Message, "change them on GitLab") {
-			t.Fatalf("an older host = %v", err)
+		if explained, ok := errors.AsType[*ForgeActionError](tc.err); !ok || explained.Kind != ForgeErrorRefused || explained.Message != "GitLab on "+testForgeHost+" runs 15.11; "+tc.want+" needs GitLab 16.0." {
+			t.Fatalf("an older host = %v, want %s refused", tc.err, tc.want)
 		}
 	}
-	if ops := oldCalls.ops(); !slices.Equal(ops, []string{"PRManageSchema"}) {
-		t.Fatalf("requests on an older host = %q, want one probe", ops)
+	if ops := oldCalls.ops(); !slices.Equal(ops, []string{"GET metadata"}) {
+		t.Fatalf("requests on an older host = %q, want the release read alone", ops)
 	}
 }
 

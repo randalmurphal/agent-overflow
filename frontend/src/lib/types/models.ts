@@ -550,6 +550,9 @@ export interface PRManage {
   /** One sentence when the management read failed: every flag is false
    *  and the lists are empty. */
   unavailable?: string;
+  /** One sentence naming the controls this forge's server is too old to
+   *  offer, and the release each needs. */
+  limited?: string;
 }
 
 /** Mirrors git.PRManageCan: one flag per control, from the forge's answer. */

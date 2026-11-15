@@ -394,7 +394,7 @@ func TestGitLabReadPREvents(t *testing.T) {
 		t.Fatalf("merged detail = %+v", d)
 	}
 	if n := len(calls.all()); n != 9 {
-		t.Fatalf("requests = %q, want the MR, one discussions page, the state events, the approvals, the project, the viewer, PRManageSchema, PRManage and MRNoteReactions", gitlabPaths(calls))
+		t.Fatalf("requests = %q, want the MR, one discussions page, the state events, the approvals, the project, the viewer, the release, PRManageChecks and MRNoteReactions", gitlabPaths(calls))
 	}
 
 	// A closed merge request's close comes from closed_at, its id from the
@@ -646,6 +646,8 @@ func TestGitLabCachesFollowTheLogin(t *testing.T) {
 			_, _ = io.WriteString(w, `{"approvals_required":0}`)
 		case gitlabTestProject:
 			_, _ = io.WriteString(w, gitlabTestProjectSettings)
+		case "metadata":
+			_, _ = io.WriteString(w, `{"version":"19.3.0-ee"}`)
 		default:
 			t.Errorf("unexpected %s %s", call.Method, call.Path)
 			http.Error(w, "unexpected", http.StatusNotFound)

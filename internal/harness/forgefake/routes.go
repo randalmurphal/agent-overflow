@@ -110,6 +110,7 @@ var gitlabAPI = []apiRoute{
 	{name: "glab api rebase", method: "PUT", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests/(\d+)/rebase$`), flags: []string{"hostname"}, run: glabRebase},
 	{name: "glab api update merge request", method: "PUT", pattern: regexp.MustCompile(`^projects/([^/?]+)/merge_requests/(\d+)$`), flags: []string{"hostname"}, run: glabUpdateMR},
 	{name: "glab api user", method: "GET", pattern: regexp.MustCompile(`^user$`), flags: []string{"hostname"}, run: forgeUser},
+	{name: "glab api metadata", method: "GET", pattern: regexp.MustCompile(`^metadata$`), flags: []string{"hostname"}, run: glabMetadata},
 	{name: "glab api user events", method: "GET", pattern: regexp.MustCompile(`^users/(\d+)/events(?:\?(.*))?$`), flags: []string{"hostname"}, run: glabUserEvents},
 	{name: "glab api project users", method: "GET", pattern: regexp.MustCompile(`^projects/([^/?]+)/users(?:\?(.*))?$`), flags: []string{"hostname"}, run: glabProjectUsers},
 	{name: "glab api apply suggestion", method: "PUT", pattern: regexp.MustCompile(`^suggestions/(\d+)/apply$`), flags: []string{"hostname"}, run: glabApplySuggestion},

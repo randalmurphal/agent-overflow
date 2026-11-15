@@ -3,7 +3,6 @@ package git
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/url"
 	"strconv"
@@ -251,16 +250,7 @@ func (f *gitlabForge) ListProjectPRs(ctx context.Context, repo RepoReference) ([
 // gitlabNoApprovalState reports whether err is GitLab CE's answer to a
 // selection of approvalState: the field does not exist on its schema.
 func gitlabNoApprovalState(err error) bool {
-	var gqlErr *forgeapi.GraphQLError
-	if !errors.As(err, &gqlErr) {
-		return false
-	}
-	for _, problem := range gqlErr.Problems {
-		if strings.Contains(problem.Message, "Field 'approvalState' doesn't exist") {
-			return true
-		}
-	}
-	return false
+	return gitlabSchemaLacks(err, "approvalState")
 }
 
 // readGitLabMRList is the open merge request list.

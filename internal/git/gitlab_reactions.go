@@ -340,16 +340,7 @@ func gitlabCommentReactions(awards []gitlabAward, viewer string) []CommentReacti
 
 // gitlabLacksAwardEmoji is a server whose schema has no Note.awardEmoji.
 func gitlabLacksAwardEmoji(err error) bool {
-	var gql *forgeapi.GraphQLError
-	if !errors.As(err, &gql) {
-		return false
-	}
-	for _, problem := range gql.Problems {
-		if strings.Contains(problem.Message, "awardEmoji") && strings.Contains(problem.Message, "doesn't exist") {
-			return true
-		}
-	}
-	return false
+	return gitlabSchemaLacks(err, "awardEmoji")
 }
 
 // readGitLabNoteReactions reads the notes' awards, at most

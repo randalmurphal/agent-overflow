@@ -168,7 +168,13 @@ func githubData(data string) forgeAPIAnswer {
 	return forgeAPIAnswer{Body: `{"data":` + data + `}`}
 }
 
+// forgeUnexpected fails the test for a request its fake does not answer,
+// except a GitLab release read (GET metadata), which a test about
+// something else gets answered as a current GitLab.
 func forgeUnexpected(t *testing.T, call forgeAPICall) forgeAPIAnswer {
+	if call.Op == "" && call.Method == http.MethodGet && call.Path == "metadata" {
+		return forgeAPIAnswer{Body: `{"version":"19.3.0-ee"}`}
+	}
 	t.Errorf("unexpected forge request %q %s %s", call.Op, call.Method, call.Path)
 	return forgeAPIAnswer{Status: http.StatusNotFound, Body: `{"message":"Not Found"}`}
 }

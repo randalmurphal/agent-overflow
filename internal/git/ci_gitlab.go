@@ -255,16 +255,7 @@ func gitlabCancelPermitted(cancel *bool, update bool) bool {
 // gitlabNoCIJobCancelPermission reports whether err is a GitLab before
 // 16.6 refusing the cancel permission fields its schema lacks.
 func gitlabNoCIJobCancelPermission(err error) bool {
-	gqlErr, ok := errors.AsType[*forgeapi.GraphQLError](err)
-	if !ok {
-		return false
-	}
-	for _, problem := range gqlErr.Problems {
-		if strings.Contains(problem.Message, "Field 'cancelBuild' doesn't exist") || strings.Contains(problem.Message, "Field 'cancelPipeline' doesn't exist") {
-			return true
-		}
-	}
-	return false
+	return gitlabSchemaLacks(err, "cancelBuild") || gitlabSchemaLacks(err, "cancelPipeline")
 }
 
 // gitlabJobActions applies GitLab's own answer to a build: Retry for a
