@@ -286,6 +286,33 @@ not subscribe it to that state.
 first ID is not their execution location. Run `make methodgen` after changing
 methods, vocabulary, receiver specifications, or generator inputs.
 
+### Method budgets
+
+A bound method's server side may run for `DefaultMethodBudget` (45 s, the
+bound of one git, gh or glab command or one forge request) unless it
+declares `//ao:budget <duration>`. `methodgen` writes the budget into
+`MethodMeta.Budget` and the frontend's `METHOD_BUDGETS_MS`, and every client
+waits the method's budget plus `MethodAnswerMargin` (15 s): `rpcWaitMs` in
+`wsClient.ts`, `transport.ClientWait` for Go clients (the `ao` CLI, the
+thread tools' peer calls). The server's answer, a timeout of its own
+included, therefore arrives before any client gives up, and the method's
+own error reaches the user.
+
+A method whose run can pass the default declares a budget that covers it,
+and names the bound in `methodServerBounds`
+(`internal/app/app_method_budget_test.go`), added up from the constants of
+the packages that own each step. A method that repeats a bounded step
+(downloads, resumed fetches, chunks) bounds its whole run by its budget
+with `withinMethodBudget`. A wait for a lock another run holds is not
+covered.
+
+A write whose answer can still be lost (the connection drops while it runs)
+takes a client-minted attempt id and has an outcome method that waits for
+a running attempt: `GitCommit` and `GetCommitOutcome`, `SubmitPRReview` and
+`GetPRReviewSubmitOutcome`. A repeated id is answered from the first
+arrival. Attempts live in process memory, so a restarted backend answers
+`unknown` for every earlier attempt.
+
 ## Event replay and filtering
 
 Each registered channel has one `ChannelPolicy` describing scope, retention,

@@ -22,7 +22,7 @@ import { uploadDictationPiece } from '../transport/attachmentTransfer';
 import { hasScope } from '../transport/scopes';
 import { isPassiveConnectionFailure } from '../transport/passiveReadFailure';
 import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
-import { RPC_TIMEOUT_MS, TransportError, withRpcTimeout } from '../transport/wsClient';
+import { TransportError } from '../transport/wsClient';
 import { bytesToBase64 } from '../utils/base64';
 import type { BackendKey } from '../transport/backendKey';
 import type { DictationRemote, DictationSession, DictationSourceKind } from '../dictation/dictationSession.svelte';
@@ -121,18 +121,8 @@ onBackendDetached(({ backendId }) => {
   generations.delete(backendId);
 });
 
-/** How long a finish waits past the computer's transcription budget, for
- * its answer to cross the network. */
-export const FINISH_GRACE_MS = 15_000;
-
 /** What the mic says when the computer's answer to a finish never came. */
 export const FINISH_UNANSWERED = 'The computer did not answer in time, so the transcription was stopped.';
-
-/** How long a finish on `backend` waits: past the budget the computer
- * reports, so its own answer, a timeout included, arrives first. */
-export function dictationFinishWaitMs(backend: BackendKey): number {
-  return Math.max(RPC_TIMEOUT_MS, (sources.get(backend)?.transcribeWithinMs ?? 0) + FINISH_GRACE_MS);
-}
 
 /** The calls a DictationSession makes, all to `backend`. */
 export function dictationRemote(backend: BackendKey, engine: DictationEngine): DictationRemote {
@@ -141,7 +131,9 @@ export function dictationRemote(backend: BackendKey, engine: DictationEngine): D
     begin: (container) => withBackendTarget(backend, () => BeginDictation(container)),
     upload: (recordingId, seq, piece) => uploadDictationPiece(backend, recordingId, seq, piece),
     finish: (recordingId, pieces) =>
-      withBackendTarget(backend, () => withRpcTimeout(dictationFinishWaitMs(backend), () => FinishDictation(recordingId, pieces)))
+      // The transport waits out FinishDictation's declared budget
+      // (//ao:budget), so a timeout here means the computer never answered.
+      withBackendTarget(backend, () => FinishDictation(recordingId, pieces))
         .catch((err: unknown) => {
           throw err instanceof TransportError && err.code === 'timeout' ? new Error(FINISH_UNANSWERED) : err;
         }),

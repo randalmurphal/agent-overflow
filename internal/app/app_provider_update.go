@@ -31,6 +31,7 @@ func (a *App) GetProviderUpdates() ([]providerupdate.Status, error) {
 //
 //ao:scope access:admin
 //ao:route selected
+//ao:budget 2m
 func (a *App) CheckProviderUpdates() ([]providerupdate.Status, error) {
 	return a.providerUpdateService().Check(), nil
 }
@@ -40,6 +41,7 @@ func (a *App) CheckProviderUpdates() ([]providerupdate.Status, error) {
 //
 //ao:scope access:admin
 //ao:route selected
+//ao:budget 2m
 func (a *App) GetProviderUpdateNotes(ctx context.Context, providerName string) (providerupdate.Notes, error) {
 	return a.providerUpdateService().Notes(ctx, providerName)
 }

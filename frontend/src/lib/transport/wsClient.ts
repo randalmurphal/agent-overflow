@@ -59,6 +59,7 @@ import {
   extractRpcIdFromOversizedFrame,
 } from './frames';
 import { isEntityFilteredChannel } from './entityFilteredChannels';
+import { DEFAULT_METHOD_BUDGET_MS, METHOD_ANSWER_MARGIN_MS, METHOD_BUDGETS_MS } from './methodRoutes';
 import { getConnectionId, getDeviceId } from './clientIdentity';
 import { hasPairedSession, mintDialTicket, renewPairedSessionIfDue } from './deviceSession';
 import { HOME_BACKEND, type BackendKey } from './backendKey';
@@ -99,13 +100,14 @@ function withClientIdentity(wsUrl: string): string {
 // names for the production code paths (clearer at the call site than
 // a member-access) and re-export the values so tests can derive
 // boundaries from the same source rather than hard-coding numerals.
-// Deliberately ABOVE the Go-side subprocess timeout (defaultTimeout in
-// internal/git/core.go, 45s): when a git/gh/glab call hangs, the
-// backend's descriptive error ("gh ... timed out after 45s") must win
-// the race against this opaque client-side timeout. This timer is the
-// last-resort guard for a live-but-stuck server; dead connections are
-// handled by the WS close path rejecting all pending RPCs.
-export const RPC_TIMEOUT_MS = 60_000;
+// RPC_TIMEOUT_MS is the wait for a method that declares no budget: the
+// default server budget (one git, gh or glab subprocess, or one forge
+// request) and the answer margin, so the backend's descriptive error
+// ("gh ... timed out after 45s") wins the race against this opaque one.
+// rpcWaitMs gives a budgeted method its own. The timer is the last-resort
+// guard for a live-but-stuck server; dead connections are handled by the
+// WS close path rejecting all pending RPCs.
+export const RPC_TIMEOUT_MS = DEFAULT_METHOD_BUDGET_MS + METHOD_ANSWER_MARGIN_MS;
 export const RECONNECT_INITIAL_MS = 250;
 // Backoff cap by backend locality (bootstrap `remote` flag). The 30s
 // cap is remote-client sizing — polite to a LAN server that may be
@@ -597,28 +599,18 @@ interface DispatchSpec {
   methodId?: number;
   method?: string;
   params: unknown[];
-  /** How long the call waits for its answer; RPC_TIMEOUT_MS unless
-   * withRpcTimeout armed another wait for it. */
-  timeoutMs?: number;
 }
 
-// The wait withRpcTimeout armed for the next dispatched RPC, and no other.
-let nextRpcTimeoutMs: number | null = null;
-
 /**
- * Gives the one RPC `issue` dispatches synchronously a wait of `ms`
- * instead of RPC_TIMEOUT_MS. For a method whose server bounds its own run
- * by a longer budget it reports: waiting past that budget lets the
- * server's answer, its timeout included, reach the caller. Armed like
- * `withBackendTarget`, and cleared whether or not a call was dispatched.
+ * How long a call to `methodId` waits for its answer: the server budget the
+ * method declares (`//ao:budget`, mirrored into methodRoutes.ts by
+ * methodgen) and the answer margin, so the server's answer, a timeout of its
+ * own included, always arrives first. A method without a budget, or a call
+ * by name (harness methods, which the table does not list), has the default.
  */
-export function withRpcTimeout<T>(ms: number, issue: () => T): T {
-  nextRpcTimeoutMs = ms;
-  try {
-    return issue();
-  } finally {
-    nextRpcTimeoutMs = null;
-  }
+export function rpcWaitMs(methodId: number | undefined): number {
+  const budget = methodId === undefined ? undefined : METHOD_BUDGETS_MS[methodId];
+  return (budget ?? DEFAULT_METHOD_BUDGET_MS) + METHOD_ANSWER_MARGIN_MS;
 }
 
 // Pending tracks an outstanding RPC. The timer is cleared on settle so
@@ -1949,9 +1941,6 @@ export class WSClient {
   // every gated call site, and it is the same window the awaiting caller
   // already holds its own arguments for.
   private dispatchRPC(spec: DispatchSpec): Promise<unknown> {
-    // Taken with the call, so its retry under a proof keeps it.
-    spec.timeoutMs = nextRpcTimeoutMs ?? RPC_TIMEOUT_MS;
-    nextRpcTimeoutMs = null;
     const prover = this.ceremonyInFlight ? null : this.stepUpProver;
     const settled = this.sendRPC(spec);
     if (prover === null) return settled;
@@ -2044,7 +2033,7 @@ export class WSClient {
       );
     }
     const id = generateId();
-    const timeoutMs = spec.timeoutMs ?? RPC_TIMEOUT_MS;
+    const timeoutMs = rpcWaitMs(spec.methodId);
     return new Promise<unknown>((resolve, reject) => {
       const timer = setTimeout(() => {
         if (this.pending.delete(id)) {

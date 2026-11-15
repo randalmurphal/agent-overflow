@@ -340,18 +340,6 @@
     {/snippet}
   </Popover>
 
-  <LazyOverlay
-    load={() => import('./CommitDialog.svelte')}
-    active={showCommit}
-    props={{ pane, open: showCommit, onClose: handleCommitClose }}
-  />
-
-  <LazyOverlay
-    load={() => import('./CreatePRDialog.svelte')}
-    active={showCreatePR}
-    props={{ pane, open: showCreatePR, onClose: handleCreatePRClose }}
-  />
-
   <ConfirmDialog
     open={showRemoveWorktreeConfirm}
     title="Remove worktree"
@@ -368,3 +356,18 @@
     onCancel={closeRemoveWorktreeConfirm}
   />
 {/if}
+
+<!-- An open dialog outlives a failed or missing status (a dropped
+     connection fails the refresh until recovery answers), so its draft and a
+     commit it is waiting on survive; the dialogs read the pane themselves. -->
+<LazyOverlay
+  load={() => import('./CommitDialog.svelte')}
+  active={showCommit}
+  props={{ pane, open: showCommit, onClose: handleCommitClose }}
+/>
+
+<LazyOverlay
+  load={() => import('./CreatePRDialog.svelte')}
+  active={showCreatePR}
+  props={{ pane, open: showCreatePR, onClose: handleCreatePRClose }}
+/>

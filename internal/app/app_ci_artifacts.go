@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/forgeapi"
 	gitops "agent-overflow/internal/git"
 )
@@ -43,10 +44,12 @@ type CIArtifactsSaved struct {
 // job's name, or the pipeline's for a run download, for the file names
 // and sentences. A path is stable per (repository,
 // job or artifact), so a re-save refreshes the same file. A failure after
-// some files were saved names them in its sentence.
+// some files were saved names them in its sentence. The whole save, up to
+// maxCIArtifactsPerSave downloads, runs within its budget.
 //
 //ao:scope git:operate
 //ao:route selected
+//ao:budget 30m
 func (a *App) SaveCIArtifacts(ctx context.Context, repo gitops.RepoReference, req gitops.CIArtifactsRequest, subject string) (CIArtifactsSaved, error) {
 	if a.shuttingDown.Load() {
 		return CIArtifactsSaved{}, ErrShuttingDown
@@ -64,7 +67,8 @@ func (a *App) SaveCIArtifacts(ctx context.Context, repo gitops.RepoReference, re
 	if req.JobID != "" {
 		explained = gitops.CIJobSubject(repo, firstNonEmptyString(subject, req.JobID))
 	}
-	ctx = forgeapi.WithInteractive(ctx)
+	ctx, cancel := withinMethodBudget(forgeapi.WithInteractive(ctx), "SaveCIArtifacts", "Saving the CI artifacts")
+	defer cancel()
 	core := a.gitCore()
 	artifacts, err := core.ListCIArtifacts(ctx, repo, req)
 	if err != nil {
@@ -83,7 +87,7 @@ func (a *App) SaveCIArtifacts(ctx context.Context, repo gitops.RepoReference, re
 		})
 		if err != nil {
 			a.refreshStaleArtifactsFlag(repo, req, err)
-			return saved, a.explainArtifactFailure(repo, explained, artifact, saved, err)
+			return saved, a.explainArtifactFailure(repo, explained, artifact, saved, budgetError(ctx, err))
 		}
 		saved.Paths = append(saved.Paths, path)
 	}
@@ -120,7 +124,9 @@ func (a *App) refreshStaleArtifactsFlag(repo gitops.RepoReference, req gitops.CI
 // already saved.
 func (a *App) explainArtifactFailure(repo gitops.RepoReference, subject string, artifact gitops.CIArtifact, saved CIArtifactsSaved, err error) error {
 	var explained *gitops.ForgeActionError
-	if errors.Is(err, forgeapi.ErrBodyTooLarge) {
+	if code, message, _ := errorsx.PublicDetails(err); code == methodBudgetExceededCode {
+		explained = &gitops.ForgeActionError{Kind: gitops.ForgeErrorRefused, Err: err, Message: message}
+	} else if errors.Is(err, forgeapi.ErrBodyTooLarge) {
 		explained = &gitops.ForgeActionError{Kind: gitops.ForgeErrorRefused, Err: err, Message: fmt.Sprintf(
 			"The artifact %s of %s is larger than the %d MiB the app downloads. Download it from the forge.", artifact.Name, subject, ciArtifactMaxBytes>>20)}
 	} else {

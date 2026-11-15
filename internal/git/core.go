@@ -22,12 +22,12 @@ import (
 )
 
 const (
-	// defaultTimeout bounds every git / gh / glab subprocess. It MUST
-	// stay well below the frontend RPC timeout (RPC_TIMEOUT_MS in
-	// frontend/src/lib/transport/wsClient.ts): when a forge CLI hangs
-	// on a dead network, the descriptive error here ("gh ... timed out
-	// after 45s") must reach the pane before the opaque client-side
-	// "RPC timed out" fires.
+	// defaultTimeout bounds every git / gh / glab subprocess. It fits
+	// transport.DefaultMethodBudget, which a client waits out plus a
+	// margin: when a forge CLI hangs on a dead network, the descriptive
+	// error here ("gh ... timed out after 45s") reaches the pane before
+	// the opaque client-side "RPC timed out". A command bounded longer
+	// belongs to a method that declares a //ao:budget covering it.
 	defaultTimeout        = 45 * time.Second
 	defaultMaxOutputBytes = int64(1_000_000)
 
@@ -85,7 +85,7 @@ type Core struct {
 	repositoryLookups     repositoryLookups
 	repositoryLookupSlots chan struct{}
 	timeout               time.Duration
-	// commitTimeout replaces the constant of that name for a test; zero
+	// commitTimeout replaces CommitTimeout for a test; zero
 	// keeps it.
 	commitTimeout  time.Duration
 	maxOutputBytes int64
@@ -651,7 +651,7 @@ type commandSpec struct {
 	timeout time.Duration
 	// stopGracefully runs the command in its own process group and stops
 	// it, at its timeout or its context's end, with SIGTERM to the group
-	// (then SIGKILL after commitStopGrace), so the children it started stop
+	// (then SIGKILL after CommitStopGrace), so the children it started stop
 	// with it. A commit sets it: its hooks may be running when it stops.
 	stopGracefully bool
 	// maxBytes caps stdout and stderr independently; <= 0 falls back to
@@ -740,7 +740,7 @@ func (c *Core) runSpec(spec commandSpec) (commandResult, error) {
 	if spec.stopGracefully {
 		procutil.ConfigureGroup(cmd)
 		cmd.Cancel = func() error { return procutil.TerminateConfiguredGroup(cmd) }
-		cmd.WaitDelay = commitStopGrace
+		cmd.WaitDelay = CommitStopGrace
 	}
 	// Background-cadence git (`status` every debounce edge) must not
 	// opportunistically rewrite .git/index: the write is a pure cache

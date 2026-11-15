@@ -28,11 +28,11 @@ import (
 // signed query from the URLs it reports but keeps the path, so a GitLab
 // fetch's error has its request elided before the review pane shows it.
 
-// forgeAttachmentTimeout bounds one download. The transport default (45s)
+// ForgeAttachmentTimeout bounds one download. The transport default (45s)
 // is sized for a metadata call; a video at the transport's minimum
 // sustained transfer rate needs minutes, and cutting it at 45s would read
 // as a broken forge rather than a slow one.
-const forgeAttachmentTimeout = 10 * time.Minute
+const ForgeAttachmentTimeout = 10 * time.Minute
 
 // FetchAttachment resolves one attachment reference found in markdown of
 // repo (a PR/MR body or comment) and downloads its bytes through the
@@ -68,7 +68,7 @@ func (f *gitlabForge) FetchAttachment(ctx context.Context, ref RepoReference, ta
 		Path:       target.Request,
 		Attachment: true,
 		Header:     http.Header{"Accept": {"*/*"}},
-		Timeout:    forgeAttachmentTimeout,
+		Timeout:    ForgeAttachmentTimeout,
 	}, &body, maxBytes)
 	if errors.Is(err, forgeapi.ErrBodyTooLarge) {
 		return nil, attachmentTooLargeError(maxBytes)
@@ -97,7 +97,7 @@ func (f *githubForge) FetchAttachment(ctx context.Context, ref RepoReference, ta
 		Path:       target.Request,
 		Attachment: true,
 		Header:     http.Header{"Accept": {"*/*"}},
-		Timeout:    forgeAttachmentTimeout,
+		Timeout:    ForgeAttachmentTimeout,
 	}, &body, maxBytes)
 	if errors.Is(err, forgeapi.ErrBodyTooLarge) {
 		return nil, attachmentTooLargeError(maxBytes)

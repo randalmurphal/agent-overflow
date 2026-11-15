@@ -990,9 +990,9 @@ func TestThreadToolsLostAdmissionAnswerIsUnconfirmedWithItsToken(t *testing.T) {
 
 	// A row still being admitted is fenced out of the poll, and the fence
 	// covers every attempt the admission can make.
-	if threadRequestAdmissionFence < threadPeerCallTimeout*threadPeerAdmissionAttempts {
+	if wait := threadPeerCallWait("ThreadToolCall"); threadRequestAdmissionFence < wait*threadPeerAdmissionAttempts {
 		t.Fatalf("the admission fence %s does not cover %d attempts of %s",
-			threadRequestAdmissionFence, threadPeerAdmissionAttempts, threadPeerCallTimeout)
+			threadRequestAdmissionFence, threadPeerAdmissionAttempts, wait)
 	}
 	inFlight := newThreadRequestToken()
 	if err := pair.source.store.InsertThreadRequest(store.ThreadRequest{

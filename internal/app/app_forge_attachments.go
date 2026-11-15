@@ -52,6 +52,7 @@ type ForgeAttachment struct {
 //
 //ao:scope git:operate
 //ao:route selected
+//ao:budget 11m
 func (a *App) FetchForgeAttachment(ctx context.Context, pr gitops.PRReference, href string, maxWidth int) (ForgeAttachment, error) {
 	original, err := a.resolveForgeAttachment(ctx, pr, href)
 	if err != nil {
@@ -120,6 +121,7 @@ func (a *App) forgeAttachmentAt(original forgeattach.Entry, maxWidth int) (forge
 //
 //ao:scope git:operate
 //ao:route selected
+//ao:budget 11m
 func (a *App) SaveForgeAttachment(ctx context.Context, pr gitops.PRReference, href string) (string, error) {
 	entry, err := a.resolveForgeAttachment(ctx, pr, href)
 	if err != nil {

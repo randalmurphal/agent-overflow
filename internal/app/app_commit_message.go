@@ -45,6 +45,7 @@ type GeneratedCommitMessage struct {
 // actually committing.
 //
 //ao:scope git:operate
+//ao:budget 7m
 func (a *App) GenerateCommitMessage(ws WorkspaceRef, selection CommitSelection) (GeneratedCommitMessage, error) {
 	_, workspace, err := a.gitApplication().ResolveWorkspace(ws)
 	if err != nil {

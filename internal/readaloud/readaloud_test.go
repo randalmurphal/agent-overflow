@@ -138,6 +138,22 @@ func TestAdmitRefusesWhatCannotBeRead(t *testing.T) {
 	}
 }
 
+// The client admits a reply one section at a time (several sentences up to
+// MaxTextCharacters), so a refusal the user reads names a section.
+func TestRefusalsNameTheSectionTheUserAskedFor(t *testing.T) {
+	t.Parallel()
+	for err, want := range map[error]string{
+		ErrUnknown:     "this section was already read aloud or has expired",
+		ErrBacklog:     "8 sections are already waiting to be read aloud; try again shortly",
+		ErrBusy:        "this computer is already reading 4 sections aloud; try again shortly",
+		ErrTextTooLong: "a section to read aloud is at most 1000 characters",
+	} {
+		if err.Error() != want {
+			t.Errorf("refusal = %q, want %q", err, want)
+		}
+	}
+}
+
 func TestAdmissionIsBoundedAndExpires(t *testing.T) {
 	t.Parallel()
 	now := time.Unix(1000, 0)

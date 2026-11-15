@@ -349,6 +349,7 @@ export {
   GitRefreshTags,
   GitListWorktrees,
   GitCommit,
+  GetCommitOutcome,
   ListCommitFiles,
   GitPush,
   GitPull,

@@ -443,7 +443,7 @@ func (a *Service) ListReleases() ([]ReleaseSummary, error) {
 	if a.updater.handle == nil || a.updater.provider == nil {
 		return nil, ErrUpdatesUnsupported
 	}
-	ctx, cancel := context.WithTimeout(a.context(), updaterCheckTimeout)
+	ctx, cancel := context.WithTimeout(a.context(), UpdaterCheckTimeout)
 	defer cancel()
 	rels, err := a.updater.provider.listReleases(ctx)
 	if err != nil {
