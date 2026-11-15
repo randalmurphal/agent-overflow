@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/providertest"
 	"agent-overflow/internal/testutil/mockexec"
 )
 
@@ -72,7 +73,7 @@ func newMCPStatusResponderSession(t *testing.T, mode string, timeout time.Durati
 	scriptPath := scriptDir + "/fake-claude"
 	mockexec.Write(t, scriptPath, mcpStatusResponderScript(mode))
 	ctx, cancel := context.WithCancel(context.Background())
-	proc, err := provider.Spawn(ctx, provider.SpawnConfig{Binary: scriptPath})
+	proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{Binary: scriptPath})
 	if err != nil {
 		t.Fatalf("spawn: %v", err)
 	}
@@ -243,7 +244,7 @@ func newMCPControlResponderSession(t *testing.T, subtype string) (*Session, stri
 	scriptPath := dir + "/fake-claude"
 	mockexec.Write(t, scriptPath, mcpControlResponderScript(subtype, capturePath))
 	ctx, cancel := context.WithCancel(context.Background())
-	proc, err := provider.Spawn(ctx, provider.SpawnConfig{Binary: scriptPath})
+	proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{Binary: scriptPath})
 	if err != nil {
 		t.Fatalf("spawn: %v", err)
 	}

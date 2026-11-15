@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/codexmodels"
+	"agent-overflow/internal/procutil"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 )
@@ -16,7 +17,10 @@ func TestModelControlsTrustExpiredCatalogAndRememberedSelection(t *testing.T) {
 	now := time.Now()
 	calls := 0
 	catalog := provider.ModelsForProvider("codex")
-	app.providerDiscoveryCaches.CodexModels = codexmodels.NewWith(time.Minute, func(context.Context, string) ([]provider.ModelInfo, error) { calls++; return catalog, nil }, func() time.Time { return now })
+	app.providerDiscoveryCaches.CodexModels = codexmodels.NewWith(time.Minute, func(context.Context, string, procutil.Reaper) ([]provider.ModelInfo, error) {
+		calls++
+		return catalog, nil
+	}, func() time.Time { return now })
 	if _, err := app.GetModelsForProvider("codex"); err != nil {
 		t.Fatal(err)
 	}

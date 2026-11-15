@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/testutil/mockexec"
 )
 
@@ -85,7 +86,7 @@ func newLoginFake(t *testing.T) *loginFake {
 
 func (f *loginFake) start(t *testing.T) *LoginSession {
 	t.Helper()
-	session, err := StartLogin(t.Context(), LoginConfig{Binary: f.binary, ConfigDir: f.configDir})
+	session, err := StartLogin(t.Context(), LoginConfig{Reaper: procutiltest.Reaper(), Binary: f.binary, ConfigDir: f.configDir})
 	if err != nil {
 		t.Fatalf("StartLogin: %v", err)
 	}
@@ -154,6 +155,7 @@ func TestStartLoginUsesTheHeadlessControlChannelArgvAndIsolatedHome(t *testing.T
 func TestStartLoginCarriesTheConfiguredEnvironmentUnderTheHomePin(t *testing.T) {
 	fake := newLoginFake(t)
 	session, err := StartLogin(t.Context(), LoginConfig{
+		Reaper:    procutiltest.Reaper(),
 		Binary:    fake.binary,
 		ConfigDir: fake.configDir,
 		Env: map[string]string{
@@ -195,7 +197,7 @@ func TestAuthenticateReturnsBothURLForms(t *testing.T) {
 }
 
 func TestStartLoginRefusesWithoutAnIsolatedConfigDir(t *testing.T) {
-	if _, err := StartLogin(t.Context(), LoginConfig{Binary: "claude"}); err == nil {
+	if _, err := StartLogin(t.Context(), LoginConfig{Reaper: procutiltest.Reaper(), Binary: "claude"}); err == nil {
 		t.Fatal("StartLogin with no config dir returned nil error")
 	}
 }

@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"agent-overflow/internal/procutil/procutiltest"
 )
 
 // The hook's whole contract is its argv, so it is asserted against a real
@@ -23,10 +25,10 @@ func TestTheHookIsInvokedWithTheDocumentedArguments(t *testing.T) {
 	log := filepath.Join(dir, "calls")
 	argv := []string{"/bin/sh", "-c", `printf '%s\n' "$@" >> "` + log + `"`, "dns-hook"}
 
-	if err := runHook(context.Background(), nopReaper{}, argv, time.Minute, hookSet, "_acme-challenge.backend.example", "the-value"); err != nil {
+	if err := runHook(context.Background(), procutiltest.Reaper(), argv, time.Minute, hookSet, "_acme-challenge.backend.example", "the-value"); err != nil {
 		t.Fatalf("set: %v", err)
 	}
-	if err := runHook(context.Background(), nopReaper{}, argv, time.Minute, hookClear, "_acme-challenge.backend.example", "the-value"); err != nil {
+	if err := runHook(context.Background(), procutiltest.Reaper(), argv, time.Minute, hookClear, "_acme-challenge.backend.example", "the-value"); err != nil {
 		t.Fatalf("clear: %v", err)
 	}
 
@@ -48,7 +50,7 @@ func TestTheHookIsInvokedWithTheDocumentedArguments(t *testing.T) {
 // refusing to validate, so the failure carries both what the process did
 // and what it said.
 func TestAFailingHookReportsItsOutput(t *testing.T) {
-	err := runHook(context.Background(), nopReaper{},
+	err := runHook(context.Background(), procutiltest.Reaper(),
 		[]string{"/bin/sh", "-c", "echo 'zone example is read-only' >&2; exit 3", "dns-hook"},
 		time.Minute, hookSet, "_acme-challenge.backend.example", "the-value")
 	requireNames(t, err, "zone example is read-only")
@@ -58,7 +60,7 @@ func TestAFailingHookReportsItsOutput(t *testing.T) {
 // A hook that cannot be started is a settings problem, named as one.
 func TestAHookThatCannotBeStartedReportsTheCommand(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "no-such-hook")
-	err := runHook(context.Background(), nopReaper{}, []string{missing}, time.Minute, hookSet, "_acme-challenge.backend.example", "the-value")
+	err := runHook(context.Background(), procutiltest.Reaper(), []string{missing}, time.Minute, hookSet, "_acme-challenge.backend.example", "the-value")
 	requireNames(t, err, "failed")
 	requireNames(t, err, "no-such-hook")
 	requireNames(t, err, "no such file or directory")
@@ -68,7 +70,7 @@ func TestAHookThatCannotBeStartedReportsTheCommand(t *testing.T) {
 // loop, and the timeout kills its whole process group.
 func TestAHookThatNeverReturnsIsBounded(t *testing.T) {
 	started := time.Now()
-	err := runHook(context.Background(), nopReaper{},
+	err := runHook(context.Background(), procutiltest.Reaper(),
 		[]string{"/bin/sh", "-c", "sleep 30", "dns-hook"},
 		150*time.Millisecond, hookSet, "_acme-challenge.backend.example", "the-value")
 	requireNames(t, err, "timed out")
@@ -81,13 +83,6 @@ func TestAHookThatNeverReturnsIsBounded(t *testing.T) {
 // rather than as an exec failure nobody can act on.
 func TestAnEmptyHookIsRefused(t *testing.T) {
 	requireNames(t,
-		runHook(context.Background(), nopReaper{}, nil, time.Minute, hookSet, "name", "value"),
+		runHook(context.Background(), procutiltest.Reaper(), nil, time.Minute, hookSet, "name", "value"),
 		"no command to run")
 }
-
-// nopReaper watches nothing: no command these tests start outlives the test
-// binary that waits for it.
-type nopReaper struct{}
-
-func (nopReaper) Watch(int)   {}
-func (nopReaper) Release(int) {}

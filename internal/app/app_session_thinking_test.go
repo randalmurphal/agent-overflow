@@ -3,6 +3,7 @@ package app
 import (
 	"testing"
 
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/settings"
@@ -38,6 +39,7 @@ func TestApplySettingsOwnedAxesStampsClaudeThinking(t *testing.T) {
 		t.Fatalf("ClaudeThinking = %+v, want %+v", opts.ClaudeThinking, want)
 	}
 	cfg := claude.ConfigFromOptions(opts)
+	cfg.Reaper = procutiltest.Reaper()
 	if cfg.Thinking.Mode != claude.ThinkingBudget || cfg.Thinking.BudgetTokens != 2048 ||
 		cfg.Thinking.Display != claude.ThinkingDisplayOmitted {
 		t.Fatalf("Config.Thinking = %+v, want the budget axis", cfg.Thinking)

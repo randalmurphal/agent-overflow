@@ -9,7 +9,9 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/providertest"
 	"agent-overflow/internal/testutil/mockexec"
 )
 
@@ -53,6 +55,7 @@ done
 	mockexec.Write(t, scriptPath, script)
 
 	s, err := NewSession(context.Background(), testThread, Config{
+		Reaper:  procutiltest.Reaper(),
 		Binary:  scriptPath,
 		Model:   "test-model",
 		WorkDir: "/tmp",
@@ -102,7 +105,7 @@ done
 func TestSession_CleanBackgroundTerminals_ErrorResponse(t *testing.T) {
 	t.Parallel()
 	procCtx, cancelProc := context.WithCancel(context.Background())
-	proc, err := provider.Spawn(procCtx, provider.SpawnConfig{
+	proc, err := provider.Spawn(procCtx, providertest.Lifetime(), provider.SpawnConfig{
 		Binary: "sh",
 		// No trailing sleep so Close() exits cleanly once stdin closes —
 		// keeps the test under a second rather than parking in
@@ -155,7 +158,7 @@ func TestSession_CleanBackgroundTerminals_ErrorResponse(t *testing.T) {
 // far below the 30s request timeout.
 func TestSession_CleanBackgroundTerminals_ContextCanceled(t *testing.T) {
 	procCtx, cancelProc := context.WithCancel(context.Background())
-	proc, err := provider.Spawn(procCtx, provider.SpawnConfig{
+	proc, err := provider.Spawn(procCtx, providertest.Lifetime(), provider.SpawnConfig{
 		Binary: "sh",
 		// No trailing sleep — as soon as stdin closes the shell exits,
 		// so proc.Close() doesn't stall in shutdownGrace. We only need
@@ -211,7 +214,7 @@ func TestSession_CleanBackgroundTerminals_ContextCanceled(t *testing.T) {
 // timeout instead.
 func TestSession_CleanBackgroundTerminals_MidWaitCancel(t *testing.T) {
 	procCtx, cancelProc := context.WithCancel(context.Background())
-	proc, err := provider.Spawn(procCtx, provider.SpawnConfig{
+	proc, err := provider.Spawn(procCtx, providertest.Lifetime(), provider.SpawnConfig{
 		Binary: "sh",
 		Args:   []string{"-c", "cat > /dev/null"},
 	})

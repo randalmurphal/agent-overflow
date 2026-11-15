@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/entityid"
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/store"
@@ -537,6 +538,7 @@ func TestSettlementReturnsAResponderToItsSwitch(t *testing.T) {
 	}
 	captureDir := t.TempDir()
 	sess, err := claude.NewSession(ctx, thread.ID, claude.Config{
+		Reaper:    procutiltest.Reaper(),
 		Retention: claude.UserHomeRetention(0),
 		Binary:    writeClaudeMcpToggleCaptureBinary(t, captureDir),
 		WorkDir:   thread.WorkspacePath,

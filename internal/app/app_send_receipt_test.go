@@ -1,6 +1,7 @@
 package app
 
 import (
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/testutil/mockexec"
 	"context"
 	"encoding/json"
@@ -31,6 +32,7 @@ func installReceiptCaptureSession(t *testing.T, app *App, thread store.Thread) f
 	script = []byte(strings.Replace(string(script), loop, loop+"    printf '%s\\n' \"$line\" >> "+quotedCapture+"\n", 1))
 	mockexec.Write(t, binary, string(script))
 	sess, err := codex.NewSession(context.Background(), thread.ID, codex.Config{
+		Reaper: procutiltest.Reaper(),
 		Binary: binary, WorkDir: thread.WorkspacePath,
 	}, func(provider.ProviderEvent) {})
 	if err != nil {

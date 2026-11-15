@@ -6,6 +6,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"agent-overflow/internal/procutil/procutiltest"
 )
 
 func TestSessionEmitsOutputAndExit(t *testing.T) {
@@ -27,9 +29,10 @@ func TestSessionEmitsOutputAndExit(t *testing.T) {
 	}
 
 	sess, err := newSession("t1", "thread-a", SessionOptions{
-		Shell: "/bin/sh",
-		Args:  []string{"-c", "echo hello; exit 3"},
-		Cwd:   t.TempDir(),
+		Reaper: procutiltest.Reaper(),
+		Shell:  "/bin/sh",
+		Args:   []string{"-c", "echo hello; exit 3"},
+		Cwd:    t.TempDir(),
 	}, onOutput, onExit)
 	if err != nil {
 		t.Fatalf("newSession: %v", err)
@@ -62,11 +65,12 @@ func TestSessionEmitsOutputAndExit(t *testing.T) {
 
 func TestSessionSummaryFields(t *testing.T) {
 	sess, err := newSession("t-sum", "thread-sum", SessionOptions{
-		Shell: "/bin/sh",
-		Args:  []string{"-c", "sleep 0.2"},
-		Cwd:   t.TempDir(),
-		Rows:  30,
-		Cols:  100,
+		Reaper: procutiltest.Reaper(),
+		Shell:  "/bin/sh",
+		Args:   []string{"-c", "sleep 0.2"},
+		Cwd:    t.TempDir(),
+		Rows:   30,
+		Cols:   100,
 	}, nil, nil)
 	if err != nil {
 		t.Fatalf("newSession: %v", err)
@@ -106,11 +110,12 @@ func TestSessionSummaryFields(t *testing.T) {
 
 func TestSessionResizeUpdatesSummary(t *testing.T) {
 	sess, err := newSession("t-resize", "thread-r", SessionOptions{
-		Shell: "/bin/sh",
-		Args:  []string{"-c", "sleep 1"},
-		Cwd:   t.TempDir(),
-		Rows:  24,
-		Cols:  80,
+		Reaper: procutiltest.Reaper(),
+		Shell:  "/bin/sh",
+		Args:   []string{"-c", "sleep 1"},
+		Cwd:    t.TempDir(),
+		Rows:   24,
+		Cols:   80,
 	}, nil, nil)
 	if err != nil {
 		t.Fatalf("newSession: %v", err)
@@ -132,9 +137,10 @@ func TestSessionReplayBounded(t *testing.T) {
 	// Produce ~512 KiB of output so we exceed maxReplayBytes (256 KiB).
 	script := fmt.Sprintf("for i in $(seq 1 %d); do printf '%%s\\n' AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA; done", 8000)
 	sess, err := newSession("t-big", "thread-big", SessionOptions{
-		Shell: "/bin/sh",
-		Args:  []string{"-c", script},
-		Cwd:   t.TempDir(),
+		Reaper: procutiltest.Reaper(),
+		Shell:  "/bin/sh",
+		Args:   []string{"-c", script},
+		Cwd:    t.TempDir(),
 	}, nil, nil)
 	if err != nil {
 		t.Fatalf("newSession: %v", err)
@@ -175,9 +181,10 @@ func TestSessionReplayStripsQueriesButLiveOutputKeepsThem(t *testing.T) {
 	onExit := func(id string, status ExitStatus) { close(done) }
 
 	sess, err := newSession("t-strip", "thread-strip", SessionOptions{
-		Shell: "/bin/sh",
-		Args:  []string{"-c", `printf 'before\033[6nafter'`},
-		Cwd:   t.TempDir(),
+		Reaper: procutiltest.Reaper(),
+		Shell:  "/bin/sh",
+		Args:   []string{"-c", `printf 'before\033[6nafter'`},
+		Cwd:    t.TempDir(),
 	}, onOutput, onExit)
 	if err != nil {
 		t.Fatalf("newSession: %v", err)

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/providertest"
 )
 
 func TestApprovalResponseResolvesPendingCodex(t *testing.T) {
@@ -330,7 +331,7 @@ func TestCodexDrainWritesTurnTransitionError(t *testing.T) {
 	t.Parallel()
 	capturePath := t.TempDir() + "/wire.jsonl"
 	ctx, cancel := context.WithCancel(context.Background())
-	proc, err := provider.Spawn(ctx, provider.SpawnConfig{
+	proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{
 		Binary: "sh",
 		Args: []string{"-c", `
 			while IFS= read -r line; do

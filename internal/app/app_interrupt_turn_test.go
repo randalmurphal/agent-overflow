@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/eventchan"
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/claudetui"
@@ -275,6 +276,7 @@ func newClaudeTUIInterruptThread(t *testing.T, closed bool) (*App, store.Thread)
 	binary := filepath.Join(dir, "mock-claude-tui")
 	mockexec.Write(t, binary, "#!/bin/sh\nwhile IFS= read -r _; do :; done\n")
 	sess, err := claudetui.NewSession(context.Background(), thread.ID, claudetui.Config{
+		Reaper:    procutiltest.Reaper(),
 		Retention: claude.UserHomeRetention(0),
 		Binary:    binary,
 		WorkDir:   dir,
@@ -530,6 +532,7 @@ func TestInterruptTurnDropsIntentThatWaitedAcrossCodexRevert(t *testing.T) {
 		activeTurnID:     "turn-live",
 	})
 	sess, err := codex.NewSession(context.Background(), thread.ID, codex.Config{
+		Reaper:         procutiltest.Reaper(),
 		Binary:         binary,
 		Model:          "test-model",
 		WorkDir:        workspace,

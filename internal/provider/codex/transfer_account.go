@@ -51,7 +51,7 @@ func readNativeAccount(ctx context.Context, cfg ProbeConfig, label string, refre
 		return nil, err
 	}
 	defer func() { retErr = errors.Join(retErr, cleanup()) }()
-	proc, err := provider.Spawn(ctx, spawnCfg)
+	proc, err := provider.Spawn(ctx, provider.Bounded(cfg.Reaper), spawnCfg)
 	if err != nil {
 		return nil, err
 	}

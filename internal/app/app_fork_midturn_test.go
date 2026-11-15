@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/claude/sessionfork"
@@ -75,6 +76,7 @@ func attachLiveClaudeSession(t *testing.T, app *App, threadID, workspace, sessio
 		context.Background(),
 		threadID,
 		claude.Config{
+			Reaper:    procutiltest.Reaper(),
 			Retention: claude.UserHomeRetention(0),
 			Binary:    writeClaudeControlPassthroughBinary(t),
 			WorkDir:   workspace,

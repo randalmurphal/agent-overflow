@@ -1,6 +1,7 @@
 package app
 
 import (
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/testutil/mockexec"
 	"context"
 	"encoding/json"
@@ -60,6 +61,7 @@ func TestModelSelectionPreservesSessionAndBackgroundWork(t *testing.T) {
 				}
 				if providerName == "claude" {
 					cfg := claude.ConfigFromOptions(opts)
+					cfg.Reaper = procutiltest.Reaper()
 					cfg.Retention = claude.UserHomeRetention(0)
 					cfg.Binary = binary
 					entry.Claude, err = claude.NewSession(context.Background(), thread.ID, cfg, func(provider.ProviderEvent) {})
@@ -69,6 +71,7 @@ func TestModelSelectionPreservesSessionAndBackgroundWork(t *testing.T) {
 					t.Cleanup(func() { _ = entry.Claude.Close() })
 				} else {
 					cfg := codex.ConfigFromOptions(opts)
+					cfg.Reaper = procutiltest.Reaper()
 					cfg.Binary = binary
 					entry.Codex, err = codex.NewSession(context.Background(), thread.ID, cfg, func(provider.ProviderEvent) {})
 					if err != nil {
@@ -213,6 +216,7 @@ func TestDeferredConfigReconnectRechecksWorkAfterLiveApply(t *testing.T) {
 	mockexec.Write(t, binary, string(script))
 	live := newSessionLiveness(time.Now().Add(-time.Minute))
 	cfg := claude.ConfigFromOptions(opts)
+	cfg.Reaper = procutiltest.Reaper()
 	cfg.Retention = claude.UserHomeRetention(0)
 	cfg.Binary = binary
 	sess, err := claude.NewSession(context.Background(), thread.ID, cfg, func(evt provider.ProviderEvent) {

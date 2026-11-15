@@ -31,7 +31,7 @@ func (s *Service) ModelsForProvider(ctx context.Context, providerName string) (p
 
 // CodexModelsForBinary returns the TTL-cached live Codex model catalog.
 func (s *Service) CodexModelsForBinary(ctx context.Context, binary string) ([]provider.ModelInfo, error) {
-	return s.caches.CodexModels.Get(ctx, normalizedCodexBinary(binary))
+	return s.caches.CodexModels.Get(ctx, normalizedCodexBinary(binary), s.deps.Reaper)
 }
 
 // CachedCodexModelsForBinary performs a nonblocking catalog read.

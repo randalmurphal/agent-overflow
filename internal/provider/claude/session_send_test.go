@@ -14,7 +14,9 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/providertest"
 	"agent-overflow/internal/testutil/mockexec"
 )
 
@@ -95,7 +97,7 @@ func TestSession_Interrupt_SuccessRoundTrip(t *testing.T) {
 func TestSession_Interrupt_WireEnvelopeShape(t *testing.T) {
 	capturePath := t.TempDir() + "/interrupt-line.json"
 	ctx, cancel := context.WithCancel(context.Background())
-	proc, err := provider.Spawn(ctx, provider.SpawnConfig{
+	proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{
 		Binary: "sh",
 		Args: []string{"-c", `
 			IFS= read -r line || exit 1
@@ -243,7 +245,7 @@ func TestSession_Interrupt_CtxCancelSurfaces(t *testing.T) {
 func TestInterruptAckFlowsIntoResultClassification(t *testing.T) {
 	events := make(chan provider.ProviderEvent, 16)
 	ctx, cancel := context.WithCancel(context.Background())
-	proc, err := provider.Spawn(ctx, provider.SpawnConfig{
+	proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{
 		Binary: "sh",
 		Args: []string{"-c", `
 			IFS= read -r line || exit 1
@@ -315,7 +317,7 @@ func TestStopTaskAckFollowsTheFramesBeforeIt(t *testing.T) {
 			var kinds []provider.EventKind
 			var acked provider.BackgroundTaskStopAckedMeta
 			ctx, cancel := context.WithCancel(context.Background())
-			proc, err := provider.Spawn(ctx, provider.SpawnConfig{
+			proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{
 				Binary: "sh",
 				Args: []string{"-c", `
 					IFS= read -r line || exit 1
@@ -385,7 +387,7 @@ func TestSessionSend(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	capturePath := filepath.Join(t.TempDir(), "stdin.ndjson")
-	proc, err := provider.Spawn(ctx, provider.SpawnConfig{
+	proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{
 		Binary: "bash",
 		Args:   []string{"-c", `while IFS= read -r line; do printf '%s\n' "$line" >> "$CAPTURE"; exit 0; done`},
 		Env: map[string]string{
@@ -436,7 +438,7 @@ func TestSessionSendStampsUserMessageUUID(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	capturePath := filepath.Join(t.TempDir(), "stdin.ndjson")
-	proc, err := provider.Spawn(ctx, provider.SpawnConfig{
+	proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{
 		Binary: "bash",
 		Args:   []string{"-c", `while IFS= read -r line; do printf '%s\n' "$line" >> "$CAPTURE"; exit 0; done`},
 		Env:    map[string]string{"CAPTURE": capturePath},
@@ -475,7 +477,7 @@ func TestSessionSendOmitsUUIDWhenEmpty(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	capturePath := filepath.Join(t.TempDir(), "stdin.ndjson")
-	proc, err := provider.Spawn(ctx, provider.SpawnConfig{
+	proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{
 		Binary: "bash",
 		Args:   []string{"-c", `while IFS= read -r line; do printf '%s\n' "$line" >> "$CAPTURE"; exit 0; done`},
 		Env:    map[string]string{"CAPTURE": capturePath},
@@ -507,7 +509,7 @@ func TestSessionSendRejectsMalformedUUID(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	capturePath := filepath.Join(t.TempDir(), "stdin.ndjson")
-	proc, err := provider.Spawn(ctx, provider.SpawnConfig{
+	proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{
 		Binary: "bash",
 		Args:   []string{"-c", `while IFS= read -r line; do printf '%s\n' "$line" >> "$CAPTURE"; exit 0; done`},
 		Env:    map[string]string{"CAPTURE": capturePath},
@@ -541,7 +543,7 @@ func TestSessionSendRejectsNonCanonicalUUID(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	capturePath := filepath.Join(t.TempDir(), "stdin.ndjson")
-	proc, err := provider.Spawn(ctx, provider.SpawnConfig{
+	proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{
 		Binary: "bash",
 		Args:   []string{"-c", `while IFS= read -r line; do printf '%s\n' "$line" >> "$CAPTURE"; exit 0; done`},
 		Env:    map[string]string{"CAPTURE": capturePath},
@@ -588,6 +590,7 @@ done
 	mockexec.Write(t, scriptPath, script)
 
 	s, err := NewSession(context.Background(), testThread, Config{
+		Reaper:             procutiltest.Reaper(),
 		Retention:          UserHomeRetention(0),
 		Binary:             scriptPath,
 		BasePermissionMode: "default",
@@ -672,6 +675,7 @@ done
 			mockexec.Write(t, scriptPath, script)
 
 			s, err := NewSession(context.Background(), testThread, Config{
+				Reaper:             procutiltest.Reaper(),
 				Retention:          UserHomeRetention(0),
 				Binary:             scriptPath,
 				BasePermissionMode: baseMode,
@@ -869,7 +873,7 @@ exit 0
 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	proc, err := provider.Spawn(ctx, provider.SpawnConfig{Binary: scriptPath})
+	proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{Binary: scriptPath})
 	if err != nil {
 		t.Fatalf("spawn: %v", err)
 	}
@@ -995,7 +999,7 @@ done
 `
 			mockexec.Write(t, path, script)
 			events := make(chan provider.ProviderEvent, 128)
-			s, err := NewSession(context.Background(), testThread, Config{Retention: UserHomeRetention(0), Binary: path}, func(evt provider.ProviderEvent) { events <- evt })
+			s, err := NewSession(context.Background(), testThread, Config{Reaper: procutiltest.Reaper(), Retention: UserHomeRetention(0), Binary: path}, func(evt provider.ProviderEvent) { events <- evt })
 			if err != nil {
 				t.Fatal(err)
 			}

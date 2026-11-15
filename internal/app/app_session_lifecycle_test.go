@@ -1,6 +1,7 @@
 package app
 
 import (
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/testutil/mockexec"
 	"context"
 	"errors"
@@ -83,6 +84,7 @@ func TestServiceShutdownClosesSessionsWithoutDeadlock(t *testing.T) {
 		context.Background(),
 		thread.ID,
 		claude.Config{
+			Reaper:    procutiltest.Reaper(),
 			Retention: claude.UserHomeRetention(0),
 			Binary:    writeClaudePassthroughBinary(t),
 			WorkDir:   thread.WorkspacePath,
@@ -139,6 +141,7 @@ func TestServiceShutdownTreatsSubprocessExitAsCleanClose(t *testing.T) {
 		context.Background(),
 		thread.ID,
 		claude.Config{
+			Reaper:    procutiltest.Reaper(),
 			Retention: claude.UserHomeRetention(0),
 			Binary:    "false",
 			WorkDir:   thread.WorkspacePath,
@@ -195,6 +198,7 @@ func TestStartSessionProceedsWhenPriorSubprocessExitsNonZero(t *testing.T) {
 		context.Background(),
 		thread.ID,
 		claude.Config{
+			Reaper:    procutiltest.Reaper(),
 			Retention: claude.UserHomeRetention(0),
 			Binary:    writeClaudeFailOnCloseBinary(t),
 			WorkDir:   thread.WorkspacePath,

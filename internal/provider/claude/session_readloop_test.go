@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/providertest"
 )
 
 func TestReadLoopDispatchesTextDelta(t *testing.T) {
@@ -65,7 +66,7 @@ func TestReadLoopContinuesOnParseError(t *testing.T) {
 
 func TestReadLoopEmitsDisconnectedOnExit(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	proc, err := provider.Spawn(ctx, provider.SpawnConfig{Binary: "cat"})
+	proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{Binary: "cat"})
 	if err != nil {
 		t.Fatalf("spawn: %v", err)
 	}
@@ -115,7 +116,7 @@ func TestReadLoopEmitsErrorOnOversizedLine(t *testing.T) {
 	defer cancel()
 
 	script := "perl -e 'print \"x\" x (33 * 1024 * 1024)'; sleep 30"
-	proc, err := provider.Spawn(ctx, provider.SpawnConfig{
+	proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{
 		Binary: "sh",
 		Args:   []string{"-c", script},
 	})
@@ -178,7 +179,7 @@ func TestReadLoopEmitsErrorStatusOnCleanUnexpectedExit(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	proc, err := provider.Spawn(ctx, provider.SpawnConfig{
+	proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{
 		Binary: "sh",
 		Args:   []string{"-c", "sleep 0.05; exit 0"},
 	})
@@ -228,7 +229,7 @@ func TestReadLoopEmitsErrorStatusOnUnexpectedExit(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	proc, err := provider.Spawn(ctx, provider.SpawnConfig{
+	proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{
 		Binary: "sh",
 		Args:   []string{"-c", "sleep 0.05; exit 7"},
 	})

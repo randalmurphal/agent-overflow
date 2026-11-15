@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"agent-overflow/internal/procutil"
 	"agent-overflow/internal/provider"
 )
 
@@ -56,6 +57,8 @@ var errLoginSuperseded = errors.New("claude: sign-in was restarted")
 // LoginConfig configures one sign-in process.
 type LoginConfig struct {
 	Binary string
+	// Reaper ends the process if the backend dies first. Required.
+	Reaper procutil.Reaper
 	// ConfigDir is the isolated CLAUDE_CONFIG_DIR the sign-in writes its
 	// credential into. Required: this flow must never land in the canonical
 	// home, because the adoption epilogue decides which slot it belongs in.
@@ -139,7 +142,7 @@ func StartLogin(ctx context.Context, cfg LoginConfig) (*LoginSession, error) {
 	if err != nil {
 		return nil, err
 	}
-	proc, err := provider.Spawn(ctx, provider.SpawnConfig{
+	proc, err := provider.Spawn(ctx, provider.Watched(cfg.Reaper), provider.SpawnConfig{
 		Binary:   binary,
 		Args:     line.Args(),
 		Env:      line.Env(cfg.Env),

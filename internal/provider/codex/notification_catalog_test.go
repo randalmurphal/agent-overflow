@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/testutil/mockexec"
 )
@@ -360,6 +361,7 @@ done
 	mockexec.Write(t, scriptPath, script)
 
 	s, err := NewSession(context.Background(), testThread, Config{
+		Reaper:  procutiltest.Reaper(),
 		Binary:  scriptPath,
 		Model:   "test-model",
 		WorkDir: "/tmp",

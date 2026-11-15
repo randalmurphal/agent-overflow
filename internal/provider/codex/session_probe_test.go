@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 )
 
@@ -112,6 +113,7 @@ func TestEveryResumeExcludesTranscriptTurns(t *testing.T) {
 		`{\"thread\":{\"id\":\"root-thread\",\"turns\":[]},\"approvalsReviewer\":\"user\"}`,
 	)
 	sess, err := NewSession(context.Background(), "ao-thread", Config{
+		Reaper:         procutiltest.Reaper(),
 		Binary:         binary,
 		ResumeThreadID: "root-thread",
 	}, func(provider.ProviderEvent) {})

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/testutil/mockexec"
 )
@@ -71,6 +72,7 @@ func TestDisabledToolConfigOverridesMergesAndIgnoresUnknownIDs(t *testing.T) {
 func TestBuildThreadParamsCarriesDisabledToolConfigKeys(t *testing.T) {
 	t.Parallel()
 	params := buildThreadParams(Config{
+		Reaper:          procutiltest.Reaper(),
 		DisabledTools:   []string{"update_plan", "collab_agents"},
 		ReasoningEffort: "high",
 	}, "")
@@ -134,6 +136,7 @@ func TestThreadStartAndResumeBothCarryOverrideAxes(t *testing.T) {
 	binary, requestLog := requestLoggingCodex(t)
 
 	cfg := Config{
+		Reaper:        procutiltest.Reaper(),
 		Binary:        binary,
 		Model:         "gpt-5.6-sol",
 		SystemPrompt:  "replacement instructions",
@@ -197,6 +200,7 @@ func TestSessionResumeRepeatsTheThreadScopedOverrides(t *testing.T) {
 	binary, requestLog := requestLoggingCodex(t)
 
 	sess, err := NewSession(context.Background(), "thread-1", Config{
+		Reaper:        procutiltest.Reaper(),
 		Binary:        binary,
 		WorkDir:       filepath.Dir(binary),
 		Model:         "gpt-5.6-sol",

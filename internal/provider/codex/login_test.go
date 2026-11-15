@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/testutil/mockexec"
 )
 
@@ -81,6 +82,7 @@ func newCodexLoginFake(t *testing.T) *codexLoginFake {
 func (f *codexLoginFake) start(t *testing.T) *LoginSession {
 	t.Helper()
 	session, err := StartLogin(t.Context(), LoginConfig{
+		Reaper:  procutiltest.Reaper(),
 		Binary:  f.binary,
 		WorkDir: t.TempDir(),
 		Env:     maps.Clone(f.env),
@@ -131,6 +133,7 @@ func TestStartLoginRefusesWithoutAnIsolatedHome(t *testing.T) {
 	t.Parallel()
 	fake := newCodexLoginFake(t)
 	if _, err := StartLogin(t.Context(), LoginConfig{
+		Reaper: procutiltest.Reaper(),
 		Binary: fake.binary,
 		Env:    map[string]string{"CODEX_API_KEY": "unused"},
 	}); err == nil {

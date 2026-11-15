@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provideraccounts"
 )
@@ -36,7 +37,7 @@ func (s *recordingAccountSink) PublishSignIn(signIn SignIn) {
 // where Claude commits that catalog, so it must land before the emit.
 func TestRunAccountProbeRunsAfterAdoptBeforeTheAccountEmit(t *testing.T) {
 	sink := &recordingAccountSink{}
-	manager := NewManager(Deps{Accounts: sink})
+	manager := NewManager(Deps{Reaper: procutiltest.Reaper(), Accounts: sink})
 
 	_, err := manager.RunAccountProbe(ProbeRequest{
 		ProviderName: string(provider.Claude),

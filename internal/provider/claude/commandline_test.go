@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 )
 
@@ -41,10 +42,10 @@ func TestNewCommandLineRefusesAnUnansweredRetention(t *testing.T) {
 // starts anything.
 func TestClaudeLaunchesRefuseAnUnansweredRetention(t *testing.T) {
 	ctx := context.Background()
-	if _, err := NewSession(ctx, "thread", Config{Binary: "/nonexistent/claude", WorkDir: t.TempDir()}, func(provider.ProviderEvent) {}); !errors.Is(err, errNoRetention) {
+	if _, err := NewSession(ctx, "thread", Config{Reaper: procutiltest.Reaper(), Binary: "/nonexistent/claude", WorkDir: t.TempDir()}, func(provider.ProviderEvent) {}); !errors.Is(err, errNoRetention) {
 		t.Errorf("NewSession error = %v, want errNoRetention", err)
 	}
-	if _, err := ProbeAccount(ctx, ProbeConfig{Binary: "/nonexistent/claude", WorkDir: t.TempDir()}); !errors.Is(err, errNoRetention) {
+	if _, err := ProbeAccount(ctx, ProbeConfig{Reaper: procutiltest.Reaper(), Binary: "/nonexistent/claude", WorkDir: t.TempDir()}); !errors.Is(err, errNoRetention) {
 		t.Errorf("ProbeAccount error = %v, want errNoRetention", err)
 	}
 }

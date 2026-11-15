@@ -15,6 +15,7 @@ import (
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/kerneltest"
 	"agent-overflow/internal/procutil"
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude/sessionfork"
 	"agent-overflow/internal/store"
@@ -269,13 +270,7 @@ func (h *fakeHost) ClaudeProjectsDir() (string, error) {
 	return h.claudeProjectsDir, nil
 }
 
-// nopReaper watches nothing: no test here outlives its own process.
-type nopReaper struct{}
-
-func (nopReaper) Watch(int)   {}
-func (nopReaper) Release(int) {}
-
-func (h *fakeHost) ProcessReaper() procutil.Reaper { return nopReaper{} }
+func (h *fakeHost) ProcessReaper() procutil.Reaper { return procutiltest.Reaper() }
 
 func (h *fakeHost) LifeCtx() context.Context {
 	if h.lifeCtx == nil {

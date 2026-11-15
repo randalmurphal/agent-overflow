@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/testutil/mockexec"
 )
@@ -86,6 +87,7 @@ func TestTurnVerbsStampTheClientUserMessageID(t *testing.T) {
 	t.Parallel()
 	capture := filepath.Join(t.TempDir(), "codex-stdin.log")
 	s, err := NewSession(context.Background(), testThread, Config{
+		Reaper:  procutiltest.Reaper(),
 		Binary:  turnIdentityScript(t, capture, ""),
 		Model:   "test-model",
 		WorkDir: "/tmp",
@@ -128,6 +130,7 @@ func TestTurnVerbsOmitAnAbsentClientUserMessageID(t *testing.T) {
 	t.Parallel()
 	capture := filepath.Join(t.TempDir(), "codex-stdin.log")
 	s, err := NewSession(context.Background(), testThread, Config{
+		Reaper:  procutiltest.Reaper(),
 		Binary:  turnIdentityScript(t, capture, ""),
 		Model:   "test-model",
 		WorkDir: "/tmp",
@@ -250,6 +253,7 @@ func TestSteerNotSteerableReachesTheCallerThroughTheWire(t *testing.T) {
 			`"data":{"message":"cannot steer a review turn",`+
 			`"codexErrorInfo":{"activeTurnNotSteerable":{"turnKind":"review"}}}}`)
 	s, err := NewSession(context.Background(), testThread, Config{
+		Reaper:  procutiltest.Reaper(),
 		Binary:  binary,
 		Model:   "test-model",
 		WorkDir: "/tmp",

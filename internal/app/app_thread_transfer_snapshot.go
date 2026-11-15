@@ -312,7 +312,7 @@ func (a *App) collectTransferNative(ctx context.Context, thread store.Thread, pa
 			return nil, nil, err
 		}
 		cfg := a.codexProbeConfig(a.providerBinaryPath("codex"), nil)
-		snapshot, err := codex.ReadTransferSnapshot(ctx, codex.TransferSnapshotConfig{Binary: cfg.Binary, Home: filepath.Join(home, ".codex"), WorkDir: cfg.WorkDir, Env: cfg.Env}, thread.SessionRef)
+		snapshot, err := codex.ReadTransferSnapshot(ctx, codex.TransferSnapshotConfig{Binary: cfg.Binary, Home: filepath.Join(home, ".codex"), WorkDir: cfg.WorkDir, Env: cfg.Env, Reaper: a.groupReaper("conversation transfer")}, thread.SessionRef)
 		if err != nil {
 			return nil, nil, err
 		}

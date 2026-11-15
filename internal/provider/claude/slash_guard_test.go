@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/providertest"
 )
 
 // captureSentUserLine runs one Send against a throwaway process that echoes
@@ -18,7 +19,7 @@ func captureSentUserLine(t *testing.T, content string, opts provider.SendOptions
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	capturePath := filepath.Join(t.TempDir(), "stdin.ndjson")
-	proc, err := provider.Spawn(ctx, provider.SpawnConfig{
+	proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{
 		Binary: "bash",
 		Args:   []string{"-c", `while IFS= read -r line; do printf '%s\n' "$line" >> "$CAPTURE"; exit 0; done`},
 		Env:    map[string]string{"CAPTURE": capturePath},

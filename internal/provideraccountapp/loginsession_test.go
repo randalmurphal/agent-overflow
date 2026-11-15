@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provideraccounts"
 	"agent-overflow/internal/testutil"
@@ -61,7 +62,7 @@ func registerAwaitingCodeRun(t *testing.T, manager *Manager, url string) *loginR
 // "verifying" over the burned link, with no code box.
 func TestARunsAnswerToAPastedCodeIsNewerThanVerifying(t *testing.T) {
 	sink := &loginFrameSink{}
-	manager := NewManager(Deps{Accounts: sink})
+	manager := NewManager(Deps{Reaper: procutiltest.Reaper(), Accounts: sink})
 	for range 200 {
 		run := registerAwaitingCodeRun(t, manager, "https://example.test/first")
 		seen := make(chan LoginPhase, 1)
@@ -100,7 +101,7 @@ func TestARunsAnswerToAPastedCodeIsNewerThanVerifying(t *testing.T) {
 // Every stored state takes the next Seq, and a call answers with it.
 func TestSignInStatesAreNumberedInTheOrderTheyAreStored(t *testing.T) {
 	sink := &loginFrameSink{}
-	manager := NewManager(Deps{Accounts: sink})
+	manager := NewManager(Deps{Reaper: procutiltest.Reaper(), Accounts: sink})
 	run := registerAwaitingCodeRun(t, manager, "https://example.test/first")
 	awaiting := manager.ProviderLoginState(string(provider.Claude))
 	verifying, err := manager.SubmitProviderLoginCode(string(provider.Claude), "code#state")
