@@ -259,7 +259,7 @@ func TestRemoteCompletionRecoversSavedLogTailAfterDirectStatus(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	for {
 		result, err := source.AgentRemoteStatus(ctx, input.ComputerID, input.Request.ID)
 		if err != nil {
@@ -331,7 +331,7 @@ func TestConversationLifecycleCancelsItsRemoteCommands(t *testing.T) {
 			}
 			// Cancellation is acknowledged before the process group exits;
 			// the receipt settles once it has.
-			deadline := time.Now().Add(3 * time.Second)
+			deadline := time.Now().Add(30 * time.Second)
 			for {
 				destination, err := receiver.store.GetRemoteJob(input.Request.ID)
 				if err != nil {

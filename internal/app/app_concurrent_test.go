@@ -162,16 +162,16 @@ func TestConcurrent_ListItemsDuringActiveSession(t *testing.T) {
 		t.Fatalf("SendMessage: %v", err)
 	}
 
-	done := make(chan struct{})
-	go func() {
-		bus.nextProviderEventOfKind(t, provider.EventTurnComplete, 10*time.Second)
-		close(done)
-	}()
-
 	const readers = 20
 	var wg sync.WaitGroup
 	wg.Add(readers)
 	stop := make(chan struct{})
+	// The readers stop on every exit, including a failed wait below.
+	stopReaders := sync.OnceFunc(func() {
+		close(stop)
+		wg.Wait()
+	})
+	defer stopReaders()
 	for i := 0; i < readers; i++ {
 		go func() {
 			defer wg.Done()
@@ -196,11 +196,13 @@ func TestConcurrent_ListItemsDuringActiveSession(t *testing.T) {
 		}()
 	}
 
-	<-done
-	close(stop)
-	wg.Wait()
-
-	_ = app.StopSession(thread.ID)
+	// On the test goroutine: a failed wait ends the test instead of
+	// leaving it waiting for an event that will not come.
+	bus.nextProviderEventOfKind(t, provider.EventTurnComplete, 60*time.Second)
+	stopReaders()
+	if err := app.StopSession(thread.ID); err != nil {
+		t.Errorf("StopSession: %v", err)
+	}
 }
 
 // TestConcurrent_SettingsUpdateDuringStartup: concurrent UpdateSettings calls

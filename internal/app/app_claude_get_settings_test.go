@@ -78,9 +78,11 @@ func seedClaudeGetSettingsThread(
 	return sess, started
 }
 
+// waitForCondition polls cond until it holds. The bound only ends a test
+// whose condition never comes; a loaded shared runner must not reach it.
 func waitForCondition(t *testing.T, what string, cond func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		if cond() {
 			return
