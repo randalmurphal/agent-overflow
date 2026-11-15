@@ -1386,6 +1386,12 @@ func (a *App) teardownSession(threadID string, sess session, mutationsHeld bool,
 // threw it away. A restore returns them to the composer first, and keeps
 // queued, durably, any message whose restore failed.
 //
+// Either way the triage cleanup finds no send still pending: a session's end
+// is where a message it sent and never confirmed stops being pending, so its
+// row leaves the timeline here with its text, to the composer or with the
+// dropped queue (itemmeta.SetPendingFlush). The sweep would otherwise forget
+// the send and leave its row marked as history.
+//
 // It runs under the thread's mutation lock, which every queue write takes
 // (registerQueueItem), so a message queued during a teardown is either in
 // the queue the teardown empties or queued once the memory cleanup is done,
@@ -1400,7 +1406,7 @@ func (a *App) settleQueueForTeardown(threadID string, mutationsHeld bool, queue 
 	case restoreQueue:
 		requeued = a.restoreUnconfirmedQueueLocked(threadID)
 	default:
-		a.dropFlushQueue(threadID)
+		a.dropUnconfirmedSends(threadID, a.dropFlushQueue(threadID))
 	}
 	a.triage.CleanupThread(threadID)
 	if len(requeued) > 0 {

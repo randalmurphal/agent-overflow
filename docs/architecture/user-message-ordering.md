@@ -149,12 +149,22 @@ returns at once (`queue_restored`, reason `not_delivered`). After `discarded`
 the session is ending: it returns with the rest of the queue in the
 session-end restore, in queue order, or when a replacement session starts, or
 is dropped with the queue by a Stop.
-Otherwise a send stays pending until session teardown repairs or restores it.
+Otherwise a send stays pending until its session ends, and no longer: a row
+carries `pendingFlush` only while its send is in the live registry. Every
+teardown takes the registry's unconfirmed sends before the triage cleanup
+sweeps it (`settleQueueForTeardown`): a death, a removed worktree or a
+reconnect returns them to the composer, and a Stop drops them with the queue,
+deleting their rows (`queue_restored`, reason `dropped`). A send the provider
+did consume is confirmed instead.
 A crash runs no teardown: the boot restore (`restoreDurableFlushQueueAtBoot`)
-retires every main-timeline user row still marked `pendingFlush` and returns
-its text to the composer, once when its queue row survived too. The draft is
-written before the rows are retired, so a crash between the two can repeat
-the text in the composer but cannot lose it.
+takes back each main-timeline user row still marked `pendingFlush` that is
+residue, in its thread's last turn and written by that thread, and returns its
+text to the composer, once when its queue row survived too. A marked row a
+later turn follows is history a later session ran with: the boot leaves it
+and the composer alone, and the store refuses to retire it
+(`RestoreFlushQueueToDraft`). Migration v152 cleared the marks earlier builds
+left on such rows. The draft, the queue rows and the retired rows are written
+in one transaction, so a crash cannot repeat or lose the text.
 
 The first matched confirmation captures placement before fallible cache writes. A stable
 predecessor identifies that boundary; retries must never ask for the current tail.

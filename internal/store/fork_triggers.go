@@ -27,8 +27,9 @@ func IsShownHistoryRefusal(err error) bool {
 }
 
 // fixShownHistoryTx runs fix, a migration's one-time data fix, in tx with
-// the guards of shown payload content stood down: a data fix applies to
-// every copy of the data, a payload a fork shows and a holder's included.
+// the guards of shown payload content and of shown item updates stood down:
+// a data fix applies to every copy of the data, a row or payload a fork
+// shows and a holder's included.
 // The guards stand down while shown_history_fix holds a row. It writes the
 // row before fix and deletes it after, whether fix fails or not, so the row
 // never commits; tx runs on the single writer connection, so no other write
@@ -117,10 +118,10 @@ const turnContentChangedSQL = `(OLD.turn_index IS NOT NEW.turn_index OR OLD.star
       OR OLD.provider_turn_id IS NOT NEW.provider_turn_id)`
 
 // forkTriggersSQL is the latest DDL for the pointer-fork triggers: the set
-// migration v125 installed, with v130's turn guards and v131's payload
-// guards, less the revive trigger v133 dropped. RestoreFrom reinstalls it
-// after the row copy, which runs without these triggers so restored rows
-// are the snapshot's exactly.
+// migration v125 installed, with v130's turn guards, v131's payload guards and
+// v152's item update guard, less the revive trigger v133 dropped.
+// RestoreFrom reinstalls it after the row copy, which runs without these
+// triggers so restored rows are the snapshot's exactly.
 //
 //   - trg_threads_fork_source_delete: a thread forks read is never deleted;
 //     its delete keeps it as a holder (DeleteThreadPaced).
@@ -143,8 +144,8 @@ const turnContentChangedSQL = `(OLD.turn_index IS NOT NEW.turn_index OR OLD.star
 //     trg_turns_shown_update / trg_turns_shown_delete: a row, payload or
 //     turn a fork shows keeps its content. Moving it to another thread
 //     (thread_id) is allowed: that is how a holder takes it. The payload
-//     guards stand down while a migration's data fix runs
-//     (fixShownHistoryTx).
+//     guards and the item update guard stand down while a migration's data
+//     fix runs (fixShownHistoryTx).
 //   - trg_thread_fork_lineage_release: a holder no lineage row names any
 //     more is marked deleting, for the app to delete (ListPendingThreadDeletes).
 var forkTriggersSQL = forkGuardTriggersSQL + forkLineageReleaseTriggerSQL
@@ -225,6 +226,7 @@ CREATE TRIGGER trg_items_shown_update BEFORE UPDATE OF id, summary, status, meta
     payload_id, input_payload_id, parent_id, is_background, completion_of, tool_name, decision,
     created_at, updated_at ON items
 WHEN ` + itemContentChangedSQL + `
+ AND NOT EXISTS (SELECT 1 FROM shown_history_fix)
  AND ` + readerShowsItemSQL("OLD.thread_id", "OLD.id", "OLD.turn_index", "OLD.item_index") + `
 BEGIN
   SELECT RAISE(ABORT, '` + shownHistoryImmutable + `');

@@ -56,7 +56,7 @@ func installIdleProviderSession(t *testing.T, app *App, thread store.Thread) {
 		return
 	}
 	sess, err := claude.NewSession(context.Background(), thread.ID,
-		claude.Config{Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
+		claude.Config{Retention: claude.UserHomeRetention(0), Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
 		func(provider.ProviderEvent) {})
 	if err != nil {
 		t.Fatalf("claude.NewSession: %v", err)

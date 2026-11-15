@@ -134,8 +134,9 @@ func TestShownHistoryGuardsAllowWhatNoForkShows(t *testing.T) {
 }
 
 // TestShownHistoryFixStandsDownThePayloadGuards: inside fixShownHistoryTx
-// a write to payload content F shows goes through, which each payload
-// guard refuses outside it. The guards of rows and turn rows stay up.
+// a write to payload content or a row F shows goes through, which each
+// payload guard and the item update guard refuse outside it. The guards of
+// row deletes and turn rows stay up.
 func TestShownHistoryFixStandsDownThePayloadGuards(t *testing.T) {
 	for _, c := range []struct {
 		write   string
@@ -146,7 +147,8 @@ func TestShownHistoryFixStandsDownThePayloadGuards(t *testing.T) {
 		{`INSERT INTO payload_chunks (thread_id, payload_id, chunk_index, start_offset, data, created_at) VALUES ('S', 'p', 9, 99, x'00', 1)`, true},
 		{`UPDATE payload_chunks SET data = x'00' WHERE thread_id = 'S' AND payload_id = 'p'`, true},
 		{`DELETE FROM payload_chunks WHERE thread_id = 'S' AND payload_id = 'p'`, true},
-		{`UPDATE items SET summary = 'edited' WHERE thread_id = 'S' AND id = 'u0'`, false},
+		{`UPDATE items SET summary = 'edited' WHERE thread_id = 'S' AND id = 'u0'`, true},
+		{`DELETE FROM items WHERE thread_id = 'S' AND id = 'u0'`, false},
 		{`UPDATE turns SET stop_reason = 'error' WHERE turn_id = 'S:0'`, false},
 	} {
 		s := shownHistoryFixture(t)

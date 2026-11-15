@@ -331,6 +331,15 @@ func glabDiscussions(e *Engine, c *call, m []string) response {
 func gitlabDiscussions(p *Pull) []map[string]any {
 	out := make([]map[string]any, 0, len(p.Threads)+len(p.Comments))
 	for _, thread := range p.Threads {
+		// A thread on no file is a general one (glabCreateDiscussion).
+		if thread.Path == "" {
+			notes := make([]map[string]any, 0, len(thread.Comments))
+			for _, comment := range thread.Comments {
+				notes = append(notes, gitlabNote(comment, map[string]any{"type": "DiscussionNote", "resolvable": true, "resolved": thread.Resolved}))
+			}
+			out = append(out, map[string]any{"id": thread.ID, "individual_note": false, "notes": notes})
+			continue
+		}
 		headSHA := p.HeadSHA
 		if thread.Outdated {
 			headSHA = p.BaseSHA
