@@ -306,7 +306,7 @@ func TestGitLabPostLineComment(t *testing.T) {
 	code := fmt.Sprintf("%x", sha1.Sum([]byte("a.go")))
 	want := `{"body":"range","position":{"base_sha":"base","start_sha":"start","head_sha":"abc1234","old_path":"a.go","new_path":"a.go","position_type":"text","new_line":6,` +
 		`"line_range":{"start":{"line_code":"` + code + `_3_4","old_line":3,"new_line":4},"end":{"line_code":"` + code + `_4_6","type":"new","new_line":6}}}}`
-	if sent := calls.all(); len(sent) != 3 || string(sent[2].Body) != want {
+	if sent := calls.all(); len(sent) != 4 || sent[0].Path != "metadata" || string(sent[3].Body) != want {
 		t.Fatalf("requests = %v, body = %s\nwant %s", calls.ops(), sent[len(sent)-1].Body, want)
 	}
 	err = core.PostPRLineComment(t.Context(), gitlabTestRef(7), "abc0000", ReviewLineComment{Path: "a.go", Body: "x", Line: &end, Side: "right"})
@@ -316,7 +316,7 @@ func TestGitLabPostLineComment(t *testing.T) {
 	if explained, _ := errors.AsType[*ForgeActionError](ExplainForgeError(gitlabTestRef(7), ActionComment, err)); explained == nil || explained.Kind != ForgeErrorStaleHead {
 		t.Fatalf("moved head sentence = %+v", explained)
 	}
-	if got := calls.ops(); len(got) != 4 || got[3] != "GET "+mr {
+	if got := calls.ops(); len(got) != 5 || got[4] != "GET "+mr {
 		t.Fatalf("a comment on a moved head was posted: %v", got)
 	}
 	// The created note is named as the read names it: its id.
@@ -349,7 +349,7 @@ func TestGitLabEditAndDeleteComment(t *testing.T) {
 	if err := core.DeletePRComment(t.Context(), gitlabTestRef(7), target); err != nil {
 		t.Fatal(err)
 	}
-	if sent := calls.all(); len(sent) != 2 || string(sent[0].Body) != `{"body":"new"}` {
+	if sent := calls.all(); len(sent) != 3 || sent[0].Path != "metadata" || string(sent[1].Body) != `{"body":"new"}` {
 		t.Fatalf("requests = %v", calls.ops())
 	}
 	answered.Store(41)
@@ -523,6 +523,9 @@ func TestGitLabReadMarksTheViewersNotes(t *testing.T) {
 func TestReplyToAGoneThread(t *testing.T) {
 	t.Parallel()
 	core, _ := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
+		if call.Op == "" && call.Path == "metadata" {
+			return gitlabMetadata("19.6.0-ee")
+		}
 		return forgeAPIAnswer{Status: http.StatusNotFound, Body: `{"message":"Not Found"}`}
 	})
 	for _, ref := range []PRReference{githubTestRef(5), gitlabTestRef(7)} {

@@ -258,12 +258,12 @@ func TestGitHubAssigneesStopAtTen(t *testing.T) {
 
 // A GitLab that lacks introspection refuses any document asking for
 // __type or __schema with the field's validation error, whatever its
-// operation; GET metadata answers the host's release, and one older than
-// 16.5 refuses PRManageChecks and answers PRManage.
-func TestGitLabServerLacksIntrospectionAndChecks(t *testing.T) {
+// operation, and still answers PRManageChecks; GET metadata answers the
+// host's release.
+func TestGitLabServerLacksIntrospection(t *testing.T) {
 	t.Parallel()
 	e := New(Options{APIToken: testAPIToken})
-	if _, err := seedJSON(e, strings.Replace(manageFixture, `"project": "grp/m", "id": 90,`, `"project": "grp/m", "id": 90, "serverLacks": ["introspection"], "serverVersion": "16.4.2-ee",`, 1)); err != nil {
+	if _, err := seedJSON(e, strings.Replace(manageFixture, `"project": "grp/m", "id": 90,`, `"project": "grp/m", "id": 90, "serverLacks": ["introspection"], "serverVersion": "17.11.2-ee",`, 1)); err != nil {
 		t.Fatal(err)
 	}
 	srv := testServer(t, e)
@@ -273,14 +273,11 @@ func TestGitLabServerLacksIntrospectionAndChecks(t *testing.T) {
 			t.Fatalf("%s = %s, want %s", field, got.body, want)
 		}
 	}
-	if got := httpRequest(t, srv, "GET", "gitlab.com", "/gitlab/api/v4/metadata", "", http.Header{"Private-Token": {testAPIToken}}); !strings.Contains(got.body, `"version":"16.4.2-ee"`) {
+	if got := httpRequest(t, srv, "GET", "gitlab.com", "/gitlab/api/v4/metadata", "", http.Header{"Private-Token": {testAPIToken}}); !strings.Contains(got.body, `"version":"17.11.2-ee"`) {
 		t.Fatalf("metadata = %+v", got)
 	}
 	vars := map[string]any{"fullPath": "grp/m", "iid": "1"}
-	if got := mustJSON(t, glabGraphQL(t, srv, "PRManageChecks", "query", vars)); got != `{"errors":[{"message":"Field 'mergeabilityChecks' doesn't exist on type 'MergeRequest'"}]}` {
-		t.Fatalf("PRManageChecks = %s", got)
-	}
-	if got := glabGraphQL(t, srv, "PRManage", "query", vars); got["data"] == nil {
-		t.Fatalf("PRManage = %v", got)
+	if got := glabGraphQL(t, srv, "PRManageChecks", "query", vars); got["data"] == nil {
+		t.Fatalf("PRManageChecks = %v", got)
 	}
 }

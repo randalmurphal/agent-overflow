@@ -216,8 +216,8 @@ project's path, escaped as one segment (`grp%2Fsub%2Ftool`).
 | GitHub | GraphQL `ClosePR`, `ReopenPR`, `ConvertPRToDraft(pullRequestID)` | close, reopen, convert to draft, each with its timeline event; refused for a viewer who may not close, reopen or update respectively, or a pull already in that state |
 | GitHub | GraphQL `SearchAssignable(owner, name, query)`, `SearchTeams(org, query)`, `SearchLabels(owner, name, query)` | pickers: the repository's owner (`__typename`, `login`) and `members`, an `organization`'s `teams`, or `labels`, 20 per page with `hasNextPage`; `teamsRefused` answers the teams search as GitHub does a token without `read:org` (null `data` beside an `INSUFFICIENT_SCOPES` error); a login that is no organization is `NOT_FOUND` |
 | GitHub | GraphQL `PRMergeMessage(owner, name, number, method)`, `MergePRMessage`, `EnableAutoMergeMessage` (as `MergePR`, `EnableAutoMerge` with `commitHeadline`, `commitBody`) | the default commit message (the fake's own wording, after GitHub's defaults), and a merge or auto-merge with an edited one |
-| GitLab | GraphQL `PRManage`, `PRManageChecks(fullPath, iid)` | the Details read: `userPermissions`, reviewers with `reviewState`, assignees, labels with their global ids; `PRManageChecks` adds `mergeabilityChecks` (`REQUESTED_CHANGES` FAILED, SUCCESS once overridden, else INACTIVE) and is refused on a server older than 16.5 |
-| GitLab | REST `GET metadata` | the host's release (`serverVersion`), which decides the management read and controls |
+| GitLab | GraphQL `PRManageChecks(fullPath, iid)` | the Details read: `userPermissions`, reviewers with `reviewState`, assignees, labels with their global ids, and `mergeabilityChecks` (`REQUESTED_CHANGES` FAILED, SUCCESS once overridden, else INACTIVE) |
+| GitLab | REST `GET metadata` | the host's release (`serverVersion`), which the app compares with its supported floor |
 | GitLab | GraphQL `PRSetReviewers`, `PRSetAssignees(projectPath, iid, usernames, mode)`, `PRSetLabels(projectPath, iid, labelIds, mode)`, `PRSetDraft(projectPath, iid, draft)` | the set mutations, `mode` `APPEND` or `REMOVE`, each answering the merge request's list or draft state: as GitLab does, a non-member and an unknown label id are skipped without an error (an added reviewer gets its note); denied (null field beside GitLab's permission message) below developer; refused before execution on a server that lacks `operationMode`. The draft mutation moves the title's prefix, with its note |
 | GitLab | GraphQL `PRRereview(projectPath, iid, userId)`, `PRBypassChanges(projectPath, iid)` | re-request (the reviewer reads unreviewed, their change request cleared, a note) and bypass (`changesOverridden`, so `detailed_merge_status` leaves `requested_changes`); refused on a server that lacks them, re-request for a viewer who may not update or a user who is no reviewer, bypass below developer |
 | GitLab | GraphQL `PRMergeMessage(fullPath, iid)` | the default merge and squash commit messages (GitLab's default templates) |
@@ -303,10 +303,8 @@ and then drops or truncates the response.
   close, reopen and merge events (a seeded closed or merged one without
   one gets one) and `changesOverridden` a standing bypass. A GitLab
   repository's `serverVersion` is its host's release (`GET metadata`,
-  default `19.3.0-ee`): a host older than the release that introduced
-  `mergeabilityChecks` (16.5), `overrideRequestedChanges` (17.9), the
-  re-review mutation or `operationMode` (16.0) refuses it with GitLab's
-  validation error naming it. `serverLacks` `awardEmoji` makes it a
+  default `19.6.0-ee`), which the app compares with its supported floor.
+  `serverLacks` `awardEmoji` makes it a
   server without `Note.awardEmoji`; `introspection` makes its host refuse
   any document asking for `__type` or `__schema` ("Field '__type'
   doesn't exist on type 'Query'", route `glab graphql introspection

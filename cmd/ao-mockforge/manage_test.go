@@ -648,7 +648,7 @@ func TestGitLabManageOnAServerRefusingIntrospectionThroughTheAppsForgeCode(t *te
 	m := mergeRead(t, r, gitlabManageRef()).Detail.Manage
 	want := gitops.PRManageCan{EditTitle: true, EditDescription: true, Reviewers: true, Assignees: true, Labels: true, Close: true,
 		ConvertToDraft: true, Rerequest: true, Bypass: true}
-	if m.Unavailable != "" || m.Limited != "" || m.Can != want || len(m.Reviewers) != 2 || len(m.Labels) != 1 {
+	if m.Unavailable != "" || m.Can != want || len(m.Reviewers) != 2 || len(m.Labels) != 1 {
 		t.Fatalf("manage on a server refusing introspection = %+v", m)
 	}
 	if n := routeCount(r, 0, "glab graphql introspection refused"); n != 0 {
@@ -656,68 +656,57 @@ func TestGitLabManageOnAServerRefusingIntrospectionThroughTheAppsForgeCode(t *te
 	}
 }
 
-// An older GitLab, which also refuses introspection, offers what its
-// release has. 17.8 is read with the checks and offers no bypass, saying
-// it needs 17.9; 15.11, under every management capability and the
-// supported floor, is read without the checks, offers none of them and
-// refuses a review submit. Each refused write sends nothing. A reporter
-// may change nothing.
+// A GitLab older than the supported floor (18.0) is not read for its
+// Details, which say so naming both releases, and every write to its
+// merge request is refused with that sentence, sending nothing; 18.0
+// itself is supported. A reporter may change nothing.
 func TestGitLabManageOnAnOlderServerThroughTheAppsForgeCode(t *testing.T) {
 	fixture := gitlabManageFixture()
-	fixture.Repos[0].ServerVersion = "17.8.0-ee"
+	fixture.Repos[0].ServerVersion = "17.11.4-ee"
 	fixture.Repos[0].ServerLacks = []string{"introspection"}
 	r := newRig(t, fixture)
 	ref := gitlabManageRef()
 	ctx := forgeapi.WithInteractive(t.Context())
-	refused := func(action gitops.ForgeAction, err error, want string) {
+	const sentence = "GitLab on gitlab.com runs 17.11; GitLab 18.0 or later is needed."
+	refused := func(action gitops.ForgeAction, err error) {
 		t.Helper()
-		if got := explained(t, ref, action, err); got.Kind != gitops.ForgeErrorRefused || got.Message != want {
-			t.Fatalf("%s = %+v, want %q", action, got, want)
+		if got := explained(t, ref, action, err); got.Kind != gitops.ForgeErrorRefused || got.Message != sentence {
+			t.Fatalf("%s = %+v, want %q", action, got, sentence)
 		}
 	}
 
 	read := mergeRead(t, r, ref)
 	m := read.Detail.Manage
-	if !m.Can.Rerequest || !m.Can.Reviewers || m.Can.Bypass || m.Limited != "This GitLab server runs 17.8: bypassing requested changes needs GitLab 17.9." {
-		t.Fatalf("17.8: %+v", m)
+	if m.Can != (gitops.PRManageCan{}) || len(m.Reviewers) != 0 || m.Unavailable != "Reviewers, assignees, labels and the PR's edit controls are not shown. "+sentence {
+		t.Fatalf("17.11: %+v", m)
 	}
-	if b, ok := findBlocker(read.Detail.Readiness, "changes_requested"); !ok || b.Bypassable {
-		t.Fatalf("17.8 blocker = %+v (%v)", b, ok)
+	if read.Detail.Title != "Tidy" {
+		t.Fatalf("17.11 detail = %+v", read.Detail)
 	}
-	refused(gitops.ActionBypass, r.core.BypassPRRequestedChanges(ctx, ref), "GitLab on gitlab.com runs 17.8; bypassing requested changes needs GitLab 17.9.")
-	if routeCount(r, 0, "glab graphql PRManageChecks") != 1 || routeCount(r, 0, "glab graphql PRBypassChanges") != 0 {
-		t.Fatalf("17.8 routes = %v", r.engine.Invocations(0).Invocations)
+	before := len(r.engine.Invocations(0).Invocations)
+	title := "Renamed"
+	refused(gitops.ActionEditPR, r.core.EditPR(ctx, ref, gitops.PREdit{Title: &title}))
+	refused(gitops.ActionBypass, r.core.BypassPRRequestedChanges(ctx, ref))
+	refused(gitops.ActionRerequest, r.core.RerequestPRReview(ctx, ref, gitops.PRPerson{Login: "carol", ID: "12"}))
+	refused(gitops.ActionReviewers, r.core.SetPRPeople(ctx, ref, true, gitops.PRPeopleChange{Add: []gitops.PRPerson{{Login: "octo"}}}))
+	refused(gitops.ActionLabels, r.core.SetPRLabels(ctx, ref, gitops.PRLabelChange{Add: []gitops.PRLabel{{ID: "gid://gitlab/ProjectLabel/1", Name: "bug"}}}))
+	_, err := r.core.SubmitReview(ctx, ref, gitops.SubmitReviewRequest{Verdict: gitops.ReviewVerdictComment, HeadSHA: strings.Repeat("2", 40), Body: "Looks fine"})
+	refused(gitops.ActionReview, err)
+	refused(gitops.ActionApprove, r.core.ApprovePR(ctx, ref, strings.Repeat("2", 40)))
+	if sent := r.engine.Invocations(before).Invocations; len(sent) != 0 {
+		t.Fatalf("a refused write sent %+v", sent)
+	}
+	if routeCount(r, 0, "glab graphql PRManageChecks") != 0 || routeCount(r, 0, "glab graphql introspection refused") != 0 {
+		t.Fatalf("17.11 reads = %v", r.engine.Invocations(0).Invocations)
 	}
 
-	fixture.Repos[0].ServerVersion = "15.11.3"
+	fixture.Repos[0].ServerVersion = "18.0.0"
 	if _, err := r.engine.Seed(fixture); err != nil {
 		t.Fatal(err)
 	}
 	r.core.ResetForgeCaches()
-	before := len(r.engine.Invocations(0).Invocations)
-	read = mergeRead(t, r, ref)
-	m = read.Detail.Manage
-	if c := m.Can; c.Rerequest || c.Bypass || c.Reviewers || c.Assignees || c.Labels || !c.EditTitle || len(m.Reviewers) != 2 || len(m.Labels) != 1 {
-		t.Fatalf("15.11: %+v", m)
-	}
-	if m.Limited != "This GitLab server runs 15.11: changing reviewers needs GitLab 16.0, re-requesting a review needs GitLab 16.0, bypassing requested changes needs GitLab 17.9, changing assignees needs GitLab 16.0 and changing labels needs GitLab 16.0." {
-		t.Fatalf("15.11 limited = %q", m.Limited)
-	}
-	refused(gitops.ActionRerequest, r.core.RerequestPRReview(ctx, ref, gitops.PRPerson{Login: "carol", ID: "12"}), "GitLab on gitlab.com runs 15.11; re-requesting a review needs GitLab 16.0.")
-	refused(gitops.ActionReviewers, r.core.SetPRPeople(ctx, ref, true, gitops.PRPeopleChange{Add: []gitops.PRPerson{{Login: "octo"}}}), "GitLab on gitlab.com runs 15.11; changing reviewers needs GitLab 16.0.")
-	refused(gitops.ActionLabels, r.core.SetPRLabels(ctx, ref, gitops.PRLabelChange{Add: []gitops.PRLabel{findLabel(t, m.Labels, "bug")}}), "GitLab on gitlab.com runs 15.11; changing labels needs GitLab 16.0.")
-	_, err := r.core.SubmitReview(ctx, ref, gitops.SubmitReviewRequest{Verdict: gitops.ReviewVerdictComment, HeadSHA: strings.Repeat("2", 40), Body: "Looks fine"})
-	refused(gitops.ActionReview, err, "GitLab on gitlab.com runs 15.11; sending a review from here needs GitLab 16.0 or later. Do it on GitLab.")
-	if routeCount(r, before, "glab graphql PRManage") != 1 || routeCount(r, before, "glab graphql PRManageChecks") != 0 {
-		t.Fatalf("15.11 reads = %v", r.engine.Invocations(before).Invocations)
-	}
-	for _, route := range []string{"glab graphql PRRereview", "glab graphql PRSetReviewers", "glab graphql PRSetLabels", "glab api create draft note", "glab api publish draft notes", "glab api list draft notes"} {
-		if n := routeCount(r, before, route); n != 0 {
-			t.Fatalf("a refused write sent %s", route)
-		}
-	}
-	if n := routeCount(r, 0, "glab graphql introspection refused"); n != 0 {
-		t.Fatalf("the app introspected the schema %d times", n)
+	if m := mergeRead(t, r, ref).Detail.Manage; m.Unavailable != "" || !m.Can.Reviewers || !m.Can.Bypass {
+		t.Fatalf("18.0: %+v", m)
 	}
 
 	fixture.Repos[0].ServerVersion = ""
@@ -731,7 +720,7 @@ func TestGitLabManageOnAnOlderServerThroughTheAppsForgeCode(t *testing.T) {
 	if c := read.Detail.Manage.Can; c != (gitops.PRManageCan{}) {
 		t.Fatalf("a reporter's flags = %+v", c)
 	}
-	title := "Hijack"
+	title = "Hijack"
 	if got := explained(t, ref, gitops.ActionEditPR, r.core.EditPR(ctx, ref, gitops.PREdit{Title: &title})); got.Kind != gitops.ForgeErrorForbidden && got.Kind != gitops.ForgeErrorRefused {
 		t.Fatalf("a reporter's edit = %+v", got)
 	}

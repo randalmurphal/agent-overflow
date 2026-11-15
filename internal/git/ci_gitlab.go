@@ -42,10 +42,11 @@ const gitlabCIJobsMaxPages = 5
 
 // gitlabPipelineJobsQuery reads one page of a pipeline's rows beside its
 // stages in pipeline order. Every field it selects exists from GitLab
-// 16.0 except the cancel permissions (JobPermissions.cancelBuild and
-// PipelinePermissions.cancelPipeline, GitLab 16.6, beside its
-// restrict_pipeline_cancellation_role setting). A server without them
-// fails the whole document, so a host that answers so is read with
+// 18.0, the supported floor (gitlabSupportedFloor). A server older than
+// 16.6 lacks the cancel permissions (JobPermissions.cancelBuild and
+// PipelinePermissions.cancelPipeline, beside the
+// restrict_pipeline_cancellation_role setting) and fails the whole
+// document, so a host that answers so is read with
 // gitlabPipelineJobsQueryNoCancel, where update decides cancel as it did
 // there (gitlabNoCIJobCancelPermission).
 var gitlabPipelineJobsQuery = gitlabPipelineJobsDocument(" cancelPipeline", " cancelBuild")

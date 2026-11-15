@@ -88,17 +88,7 @@ var gitlabLacks = []string{lacksIntrospection, lacksAwardEmoji}
 
 // gitlabDefaultVersion is the release a GitLab host runs unless one of
 // its repositories names another (Repo.ServerVersion).
-const gitlabDefaultVersion = "19.3.0-ee"
-
-// The releases that introduced what the management actions use, as the
-// app's map has them (internal/git/gitlab_version.go): a server older
-// than one refuses its field or argument at validation.
-var (
-	sinceRereview      = [2]int{16, 0}
-	sinceOperationMode = [2]int{16, 0}
-	sinceChecks        = [2]int{16, 5}
-	sinceOverride      = [2]int{17, 9}
-)
+const gitlabDefaultVersion = "19.6.0-ee"
 
 // parseGitLabRelease is a version's major.minor.
 func parseGitLabRelease(s string) ([2]int, error) {
@@ -123,12 +113,6 @@ func (e *Engine) gitlabHostVersion(host string) string {
 		}
 	}
 	return gitlabDefaultVersion
-}
-
-// gitlabBefore reports whether host runs a release older than since.
-func (e *Engine) gitlabBefore(host string, since [2]int) bool {
-	v, err := parseGitLabRelease(e.gitlabHostVersion(host))
-	return err == nil && (v[0] < since[0] || (v[0] == since[0] && v[1] < since[1]))
 }
 
 // githubAssigneesMax is how many assignees GitHub keeps.

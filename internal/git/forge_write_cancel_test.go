@@ -43,21 +43,21 @@ func TestForgeWritesFinishAfterTheirCallerCancels(t *testing.T) {
 		"approve": {
 			hold:  "POST " + mr + "/approve",
 			write: func(ctx context.Context, core *Core) error { return core.ApprovePR(ctx, gitlabTestRef(7), "abc1234") },
-			want:  []string{"POST " + mr + "/approve"},
+			want:  []string{"GET metadata", "POST " + mr + "/approve"},
 		},
 		"reply": {
 			hold: "POST " + discussion + "/notes",
 			write: func(ctx context.Context, core *Core) error {
 				return core.ReplyToThread(ctx, gitlabTestRef(7), "abc", 0, "Thanks")
 			},
-			want: []string{"POST " + discussion + "/notes"},
+			want: []string{"GET metadata", "POST " + discussion + "/notes"},
 		},
 		"resolve": {
 			hold: "PUT " + discussion,
 			write: func(ctx context.Context, core *Core) error {
 				return core.SetThreadResolved(ctx, gitlabTestRef(7), "abc", true)
 			},
-			want: []string{"PUT " + discussion},
+			want: []string{"GET metadata", "PUT " + discussion},
 		},
 	}
 	for name, tc := range cases {

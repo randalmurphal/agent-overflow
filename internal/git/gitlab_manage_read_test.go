@@ -281,8 +281,8 @@ func TestGitLabManageControlsFollowTheCheck(t *testing.T) {
 			}
 			m := read.Detail.Manage
 			want := PRManageCan{EditTitle: true, EditDescription: true, Reviewers: true, Assignees: true, Labels: true, Close: true, ConvertToDraft: true, Rerequest: true, Bypass: tc.bypass}
-			if m.Can != want || m.Limited != "" {
-				t.Fatalf("can = %+v, limited %q; want %+v", m.Can, m.Limited, want)
+			if m.Can != want {
+				t.Fatalf("can = %+v; want %+v", m.Can, want)
 			}
 			if len(m.Labels) != 1 || m.Labels[0].ID != "gid://gitlab/ProjectLabel/3" || m.Reviewers[0].ID != "5" {
 				t.Fatalf("labels %+v, reviewers %+v", m.Labels, m.Reviewers)
@@ -303,29 +303,22 @@ func gitlabMetadata(version string) forgeAPIAnswer {
 	return forgeAPIAnswer{Body: `{"version":"` + version + `","revision":"abc","enterprise":true}`}
 }
 
-// The server's release decides the read's document and the controls: the
-// checks from 16.5, bypass from 17.9, the rest from 16.0. A control the
-// viewer could use that the release lacks is not offered and Limited
-// names it with the release it needs; a write of it is refused before
-// it is sent. A server that refuses introspection loses nothing, since
-// nothing introspects, and the release is read once per host.
-func TestGitLabManageFollowsTheServerRelease(t *testing.T) {
+// A server at or past gitlabSupportedFloor gets every control its viewer
+// may use; an older one is not read: its Details say which release it
+// runs and which it needs, and every merge request write is refused
+// with that sentence before anything is sent. Nothing introspects, so a
+// server refusing introspection loses nothing, and the release is read
+// once per host.
+func TestGitLabManageFollowsTheSupportedFloor(t *testing.T) {
 	t.Parallel()
 	full := PRManageCan{EditTitle: true, EditDescription: true, Reviewers: true, Assignees: true, Labels: true, Close: true, ConvertToDraft: true, Rerequest: true, Bypass: true}
 	for _, tc := range []struct {
-		version, op string
-		can         PRManageCan
-		limited     string
+		version, refused string
 	}{
-		{"19.3.0-ee", "PRManageChecks", full, ""},
-		{"17.9.0", "PRManageChecks", full, ""},
-		{"17.8.2-ee", "PRManageChecks", PRManageCan{EditTitle: true, EditDescription: true, Reviewers: true, Assignees: true, Labels: true, Close: true, ConvertToDraft: true, Rerequest: true},
-			"This GitLab server runs 17.8: bypassing requested changes needs GitLab 17.9."},
-		// Without the checks, the MR's detailed status (mergeable here)
-		// says requested changes do not block, so no bypass is wanted.
-		{"16.4.1", "PRManage", PRManageCan{EditTitle: true, EditDescription: true, Reviewers: true, Assignees: true, Labels: true, Close: true, ConvertToDraft: true, Rerequest: true}, ""},
-		{"15.11.0-ee", "PRManage", PRManageCan{EditTitle: true, EditDescription: true, Close: true, ConvertToDraft: true},
-			"This GitLab server runs 15.11: changing reviewers needs GitLab 16.0, re-requesting a review needs GitLab 16.0, changing assignees needs GitLab 16.0 and changing labels needs GitLab 16.0."},
+		{"19.6.0-ee", ""},
+		{"18.0.1", ""},
+		{"17.11.3-ee", "GitLab on forge.example runs 17.11; GitLab 18.0 or later is needed."},
+		{"15.11.0", "GitLab on forge.example runs 15.11; GitLab 18.0 or later is needed."},
 	} {
 		t.Run(tc.version, func(t *testing.T) {
 			t.Parallel()
@@ -337,8 +330,6 @@ func TestGitLabManageFollowsTheServerRelease(t *testing.T) {
 					return gitlabMetadata(tc.version), true
 				case call.Op == "PRManageChecks":
 					return forgeAPIAnswer{Body: gitlabManageAnswer("REQUESTED_CHANGES", "FAILED")}, true
-				case call.Op == "PRManage":
-					return forgeAPIAnswer{Body: gitlabManageAnswer("REQUESTED_CHANGES", "")}, true
 				}
 				return forgeAPIAnswer{}, false
 			})
@@ -348,51 +339,83 @@ func TestGitLabManageFollowsTheServerRelease(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if m := read.Detail.Manage; m.Unavailable != "" || len(m.Reviewers) != 1 || len(m.Labels) != 1 || m.Can != tc.can || m.Limited != tc.limited {
-					t.Fatalf("manage = %+v; want can %+v, limited %q", m, tc.can, tc.limited)
+				m := read.Detail.Manage
+				if tc.refused == "" && (m.Unavailable != "" || len(m.Reviewers) != 1 || len(m.Labels) != 1 || m.Can != full) {
+					t.Fatalf("manage = %+v; want every control", m)
+				}
+				if tc.refused != "" && (m.Unavailable != "Reviewers, assignees, labels and the PR's edit controls are not shown. "+tc.refused || m.Can != (PRManageCan{}) || len(m.Reviewers) != 0) {
+					t.Fatalf("manage = %+v; want none and %q", m, tc.refused)
 				}
 			}
-			if ops := slices.DeleteFunc(calls.ops(), func(op string) bool { return op != "PRManage" && op != "PRManageChecks" }); !slices.Equal(ops, []string{tc.op, tc.op}) {
-				t.Fatalf("reads = %q, want %s twice", ops, tc.op)
+			if want := map[bool]int{true: 2, false: 0}[tc.refused == ""]; countOp(calls, "PRManageChecks") != want {
+				t.Fatalf("operations = %q, want %d management reads", calls.ops(), want)
 			}
 			if n := countPrefix(gitlabPaths(calls), "GET metadata"); n != 1 {
 				t.Fatalf("%d release reads, want one per host", n)
-			}
-			// A control the release lacks is refused before it is sent.
-			writes := len(calls.all())
-			for _, w := range []struct {
-				offered bool
-				control string
-				run     func() error
-			}{
-				{tc.can.Bypass, "bypassing requested changes", func() error { return core.BypassPRRequestedChanges(t.Context(), ref) }},
-				{tc.can.Rerequest, "re-requesting a review", func() error { return core.RerequestPRReview(t.Context(), ref, PRPerson{Login: "bob", ID: "5"}) }},
-				{tc.can.Labels, "changing labels", func() error {
-					return core.SetPRLabels(t.Context(), ref, PRLabelChange{Add: []PRLabel{{ID: "gid://gitlab/ProjectLabel/9", Name: "ui"}}})
-				}},
-			} {
-				if w.offered {
-					continue
-				}
-				err := w.run()
-				if explained, ok := errors.AsType[*ForgeActionError](err); !ok || explained.Kind != ForgeErrorRefused || !strings.Contains(explained.Message, w.control+" needs GitLab") {
-					t.Fatalf("%s = %v, want refused naming the release", w.control, err)
-				}
-			}
-			if sent := calls.all()[writes:]; len(sent) != 0 {
-				t.Fatalf("a refused write sent %s %s", sent[0].Op, sent[0].Path)
 			}
 			for _, call := range calls.all() {
 				if strings.Contains(call.Query, "__type") || strings.Contains(call.Query, "__schema") {
 					t.Fatalf("%s introspects the schema", call.Op)
 				}
 			}
+			if tc.refused == "" {
+				return
+			}
+			target := CommentTarget{ThreadID: "d1", CommentID: "1"}
+			title := "t"
+			writes := len(calls.all())
+			for name, run := range map[string]func() error{
+				"submit": func() error {
+					_, err := core.SubmitReview(t.Context(), ref, SubmitReviewRequest{Verdict: ReviewVerdictComment, HeadSHA: gitlabTestHead, Body: "b"})
+					return err
+				},
+				"line comment": func() error {
+					return core.PostPRLineComment(t.Context(), ref, gitlabTestHead, ReviewLineComment{Path: "a.go", Line: new(1), Side: "RIGHT", Body: "b"})
+				},
+				"comment":        func() error { _, err := core.PostPRComment(t.Context(), ref, "b"); return err },
+				"edit comment":   func() error { return core.EditPRComment(t.Context(), ref, target, "b") },
+				"delete comment": func() error { return core.DeletePRComment(t.Context(), ref, target) },
+				"reply":          func() error { return core.ReplyToThread(t.Context(), ref, "d1", 0, "b") },
+				"resolve":        func() error { return core.SetThreadResolved(t.Context(), ref, "d1", true) },
+				"reaction":       func() error { return core.SetPRCommentReaction(t.Context(), ref, target, "thumbsup", true) },
+				"suggestion": func() error {
+					return core.ApplyPRSuggestion(t.Context(), ref, SuggestionApply{Target: target, SuggestionID: "1", Digest: strings.Repeat("a", 64), HeadSHA: gitlabTestHead})
+				},
+				"edit": func() error { return core.EditPR(t.Context(), ref, PREdit{Title: &title}) },
+				"reviewers": func() error {
+					return core.SetPRPeople(t.Context(), ref, true, PRPeopleChange{Add: []PRPerson{{Login: "bob", ID: "5"}}})
+				},
+				"labels": func() error {
+					return core.SetPRLabels(t.Context(), ref, PRLabelChange{Add: []PRLabel{{ID: "gid://gitlab/ProjectLabel/9", Name: "ui"}}})
+				},
+				"state":     func() error { return core.SetPRState(t.Context(), ref, PRStateClose) },
+				"rerequest": func() error { return core.RerequestPRReview(t.Context(), ref, PRPerson{Login: "bob", ID: "5"}) },
+				"bypass":    func() error { return core.BypassPRRequestedChanges(t.Context(), ref) },
+				"approve":   func() error { return core.ApprovePR(t.Context(), ref, gitlabTestHead) },
+				"unapprove": func() error { return core.UnapprovePR(t.Context(), ref) },
+				"merge": func() error {
+					_, err := core.MergePR(t.Context(), ref, MergeRequest{Method: "merge", HeadSHA: gitlabTestHead})
+					return err
+				},
+				"cancel auto-merge": func() error { return core.CancelPRAutoMerge(t.Context(), ref) },
+				"update branch":     func() error { return core.UpdatePRBranch(t.Context(), ref, gitlabTestHead) },
+				"ready":             func() error { return core.MarkPRReady(t.Context(), ref) },
+			} {
+				err := run()
+				if explained, ok := errors.AsType[*ForgeActionError](err); !ok || explained.Kind != ForgeErrorRefused || explained.Message != tc.refused || !forgeapi.WriteNotApplied(err) {
+					t.Fatalf("%s = %v, want refused with %q and not applied", name, err, tc.refused)
+				}
+			}
+			if sent := calls.all()[writes:]; len(sent) != 0 {
+				t.Fatalf("a refused write sent %s %s", sent[0].Method, sent[0].Path)
+			}
 		})
 	}
 }
 
-// A release read that fails shows the rows the base read has and offers
-// no control the release decides, saying why; the next read asks again.
+// A release read that fails takes the Details with it, saying why, and
+// a write is not sent and not reported as one GitLab may have applied;
+// the next read asks again.
 func TestGitLabManageWithoutTheRelease(t *testing.T) {
 	t.Parallel()
 	var mu sync.Mutex
@@ -404,9 +427,7 @@ func TestGitLabManageWithoutTheRelease(t *testing.T) {
 		case call.Op == "" && call.Path == "metadata" && fail:
 			return forgeAPIAnswer{Status: http.StatusBadGateway, Body: `{"message":"502"}`}, true
 		case call.Op == "" && call.Path == "metadata":
-			return gitlabMetadata("19.3.0-ee"), true
-		case call.Op == "PRManage":
-			return forgeAPIAnswer{Body: gitlabManageAnswer("APPROVED", "")}, true
+			return gitlabMetadata("19.6.0-ee"), true
 		case call.Op == "PRManageChecks":
 			return forgeAPIAnswer{Body: gitlabManageAnswer("APPROVED", "SUCCESS")}, true
 		}
@@ -420,18 +441,17 @@ func TestGitLabManageWithoutTheRelease(t *testing.T) {
 		}
 		return got.Detail.Manage
 	}
-	m := read()
-	if m.Unavailable != "" || len(m.Reviewers) != 1 || m.Can.Reviewers || m.Can.Rerequest || m.Can.Labels || !m.Can.EditTitle ||
-		m.Limited != "The GitLab server's version could not be read, so changing reviewers, re-requesting a review, changing assignees and changing labels are not offered for now." {
+	if m := read(); m.Unavailable == "" || m.Can != (PRManageCan{}) || countOp(calls, "PRManageChecks") != 0 {
 		t.Fatalf("manage without the release = %+v", m)
 	}
-	if err := core.RerequestPRReview(t.Context(), gitlabTestRef(7), PRPerson{Login: "bob", ID: "5"}); err == nil || countOp(calls, "PRRereview") != 0 {
+	err := core.RerequestPRReview(t.Context(), gitlabTestRef(7), PRPerson{Login: "bob", ID: "5"})
+	if _, unconfirmed := errors.AsType[*UnconfirmedWriteError](err); err == nil || unconfirmed || !forgeapi.WriteNotApplied(err) || countOp(calls, "PRRereview") != 0 {
 		t.Fatalf("re-request without the release = %v, %d sent", err, countOp(calls, "PRRereview"))
 	}
 	mu.Lock()
 	fail = false
 	mu.Unlock()
-	if m := read(); !m.Can.Reviewers || m.Limited != "" || countOp(calls, "PRManageChecks") != 1 {
+	if m := read(); !m.Can.Reviewers || m.Unavailable != "" || countOp(calls, "PRManageChecks") != 1 {
 		t.Fatalf("after the release answered: %+v", m)
 	}
 }
@@ -483,14 +503,14 @@ func TestGitLabSchemaLacksNamesTheElement(t *testing.T) {
 func TestResetForgeCachesForgetsTheReleaseAndBackoff(t *testing.T) {
 	t.Parallel()
 	var mu sync.Mutex
-	version, eventsFail, eventReads := "16.4.0", true, 0
+	version, eventsFail, eventReads := "17.11.0", true, 0
 	core, calls := gitlabManageReadCore(t, func(call forgeAPICall) (forgeAPIAnswer, bool) {
 		mu.Lock()
 		defer mu.Unlock()
 		switch {
 		case call.Op == "" && call.Path == "metadata":
 			return gitlabMetadata(version), true
-		case call.Op == "PRManageChecks" || call.Op == "PRManage":
+		case call.Op == "PRManageChecks":
 			return forgeAPIAnswer{Body: gitlabManageAnswer("APPROVED", "")}, true
 		case strings.Contains(call.Path, "/resource_state_events"):
 			eventReads++
@@ -513,14 +533,14 @@ func TestResetForgeCachesForgetsTheReleaseAndBackoff(t *testing.T) {
 	}
 	read()
 	mu.Lock()
-	version, eventsFail = "19.3.0", false
+	version, eventsFail = "19.6.0", false
 	mu.Unlock()
 	read()
 	mu.Lock()
 	reads := eventReads
 	mu.Unlock()
-	if checks, plain := countOp(calls, "PRManageChecks"), countOp(calls, "PRManage"); checks != 0 || plain != 2 || reads != 1 {
-		t.Fatalf("warm: %d checks reads, %d plain reads, %d state events reads", checks, plain, reads)
+	if checks := countOp(calls, "PRManageChecks"); checks != 0 || reads != 1 {
+		t.Fatalf("warm: %d management reads on a cached unsupported release, %d state events reads", checks, reads)
 	}
 	core.ResetForgeCaches()
 	got := read()

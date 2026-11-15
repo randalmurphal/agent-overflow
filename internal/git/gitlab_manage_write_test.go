@@ -165,9 +165,8 @@ func TestGitLabLabelAdditionPastThePage(t *testing.T) {
 	}
 }
 
-// Labels are removed, then added, by id. A release older than the set
-// mutations' operationMode refuses each change before any write.
-func TestGitLabLabelChangeAndUnsupportedHost(t *testing.T) {
+// Labels are removed, then added, by id.
+func TestGitLabLabelChange(t *testing.T) {
 	t.Parallel()
 	bug, ui := PRLabel{ID: "gid://gitlab/ProjectLabel/1", Name: "bug"}, PRLabel{ID: "gid://gitlab/ProjectLabel/2", Name: "ui,web"}
 	core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
@@ -190,28 +189,6 @@ func TestGitLabLabelChangeAndUnsupportedHost(t *testing.T) {
 	}
 	if want := []string{"REMOVE " + bug.ID, "APPEND " + ui.ID}; !slices.Equal(writes, want) {
 		t.Fatalf("writes = %q, want %q", writes, want)
-	}
-
-	old, oldCalls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
-		if call.Op == "" && call.Path == "metadata" {
-			return gitlabMetadata("15.11.0-ee")
-		}
-		return forgeUnexpected(t, call)
-	})
-	for _, tc := range []struct {
-		err  error
-		want string
-	}{
-		{old.SetPRLabels(t.Context(), gitlabTestRef(7), PRLabelChange{Add: []PRLabel{ui}, Remove: []PRLabel{bug}}), "changing labels"},
-		{old.SetPRPeople(t.Context(), gitlabTestRef(7), true, PRPeopleChange{Add: []PRPerson{{Login: "bob"}}}), "changing reviewers"},
-		{old.SetPRPeople(t.Context(), gitlabTestRef(7), false, PRPeopleChange{Add: []PRPerson{{Login: "bob"}}}), "changing assignees"},
-	} {
-		if explained, ok := errors.AsType[*ForgeActionError](tc.err); !ok || explained.Kind != ForgeErrorRefused || explained.Message != "GitLab on "+testForgeHost+" runs 15.11; "+tc.want+" needs GitLab 16.0." {
-			t.Fatalf("an older host = %v, want %s refused", tc.err, tc.want)
-		}
-	}
-	if ops := oldCalls.ops(); !slices.Equal(ops, []string{"GET metadata"}) {
-		t.Fatalf("requests on an older host = %q, want the release read alone", ops)
 	}
 }
 

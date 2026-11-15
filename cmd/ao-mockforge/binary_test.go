@@ -823,8 +823,9 @@ func TestUnimplementedInvocationSurfacesItsArgvToTheApp(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "unhandled http request") || !strings.Contains(err.Error(), "PUT projects/grp%2Fsub%2Ftool/merge_requests/3/discussions/abc") {
 		t.Fatalf("GitLab SetThreadResolved error = %v, want the fake's unhandled report with the request", err)
 	}
+	// The write first reads the server's release.
 	log := r.engine.Invocations(0).Invocations
-	if len(log) != 1 || !log[0].Unhandled || log[0].Via != forgefake.ViaHTTP || log[0].Method != "PUT" || log[0].Forge != "gitlab" {
+	if len(log) != 2 || log[0].Route != "glab api metadata" || !log[1].Unhandled || log[1].Via != forgefake.ViaHTTP || log[1].Method != "PUT" || log[1].Forge != "gitlab" {
 		t.Fatalf("recorded %+v", log)
 	}
 }

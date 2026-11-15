@@ -54,7 +54,7 @@ func (f *gitlabForge) Approve(ctx context.Context, ref PRReference, headSHA stri
 	if !mergeHeadSHAPattern.MatchString(headSHA) {
 		return errors.New("approve requires the head commit sha the caller saw")
 	}
-	client, err := f.core.gitlabAPI(ref.Host)
+	client, err := f.writeClient(ctx, ref)
 	if err != nil {
 		return err
 	}
@@ -66,7 +66,7 @@ func (f *gitlabForge) Approve(ctx context.Context, ref PRReference, headSHA stri
 // Unapprove withdraws the viewer's approval. GitLab keeps one approval per
 // user, so the viewer's is the one POST .../unapprove removes.
 func (f *gitlabForge) Unapprove(ctx context.Context, ref PRReference) error {
-	client, err := f.core.gitlabAPI(ref.Host)
+	client, err := f.writeClient(ctx, ref)
 	if err != nil {
 		return err
 	}
@@ -97,7 +97,7 @@ func (f *gitlabForge) Merge(ctx context.Context, ref PRReference, req MergeReque
 	if err := req.Validate(); err != nil {
 		return MergeOutcome{}, err
 	}
-	client, err := f.core.gitlabAPI(ref.Host)
+	client, err := f.writeClient(ctx, ref)
 	if err != nil {
 		return MergeOutcome{}, err
 	}
@@ -158,7 +158,7 @@ func (f *gitlabForge) Merge(ctx context.Context, ref PRReference, req MergeReque
 // returned. The older route answers 201 with {"status":"error"} when
 // nothing was armed, which is an error here.
 func (f *gitlabForge) CancelAutoMerge(ctx context.Context, ref PRReference) error {
-	client, err := f.core.gitlabAPI(ref.Host)
+	client, err := f.writeClient(ctx, ref)
 	if err != nil {
 		return err
 	}
@@ -205,7 +205,7 @@ func (f *gitlabForge) cancelLegacy(ctx context.Context, client *forgeapi.Client,
 // (PUT .../rebase, 202). The rebase runs asynchronously; the pump's next
 // poll shows the new head. GitLab's rebase takes no expected head.
 func (f *gitlabForge) UpdateBranch(ctx context.Context, ref PRReference, _ string) error {
-	client, err := f.core.gitlabAPI(ref.Host)
+	client, err := f.writeClient(ctx, ref)
 	if err != nil {
 		return err
 	}
@@ -217,7 +217,7 @@ func (f *gitlabForge) UpdateBranch(ctx context.Context, ref PRReference, _ strin
 // mergeRequestSetDraft, which drops the title's draft prefix on the
 // server, so no title read here is written back.
 func (f *gitlabForge) MarkReady(ctx context.Context, ref PRReference) error {
-	client, err := f.core.gitlabAPI(ref.Host)
+	client, err := f.writeClient(ctx, ref)
 	if err != nil {
 		return err
 	}

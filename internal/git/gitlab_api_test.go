@@ -381,7 +381,7 @@ func TestGitLabReplyAndResolve(t *testing.T) {
 		}
 	}
 	sent := calls.all()
-	if len(sent) != 3 || string(sent[0].Body) != `{"body":"Thanks"}` || string(sent[1].Body) != `{"resolved":true}` || string(sent[2].Body) != `{"resolved":false}` {
+	if len(sent) != 4 || sent[0].Path != "metadata" || string(sent[1].Body) != `{"body":"Thanks"}` || string(sent[2].Body) != `{"resolved":true}` || string(sent[3].Body) != `{"resolved":false}` {
 		t.Fatalf("requests = %q", gitlabPaths(calls))
 	}
 	mu.Lock()
@@ -408,7 +408,7 @@ func TestGitLabReplyAndResolve(t *testing.T) {
 	if err := core.ReplyToThread(t.Context(), ref, "abc", 0, " "); err == nil {
 		t.Fatal("an empty reply was sent")
 	}
-	if n := len(calls.all()); n != 6 {
+	if n := len(calls.all()); n != 7 {
 		t.Fatalf("requests = %d, want the refused input to send nothing", n)
 	}
 }

@@ -157,16 +157,6 @@ describe('which management controls show', () => {
     expect(within(section).queryByTestId('review-details-rows')).toBeNull();
   });
 
-  it('shows the rows with the sentence naming the controls the server does not support', async () => {
-    const limited = 'This GitLab server does not support changing labels from here; do it on GitLab.';
-    const view = await mountReviewPanePR(detail({ ...ALL, labels: false }, {}, { limited }));
-    const section = view.getByTestId('review-pr-details');
-    await fireEvent.click(section.querySelector('button[aria-expanded]')!);
-    expect(within(section).getByTestId('review-details-rows')).toBeInTheDocument();
-    expect(within(section).getByTestId('review-details-limited')).toHaveTextContent(limited);
-    expect(within(section).queryByTestId('review-details-edit-labels')).toBeNull();
-  });
-
   it('offers Dismiss per change request and Bypass on the changes-requested row', async () => {
     const blocked = (can: Partial<PRManageCan>) => detail(can, {
       readiness: {

@@ -24,10 +24,10 @@
 // its Merge, Description and Conversation, Details showing only the
 // sentence and no management control anywhere, and the controls return
 // on the next read of the PR (the Conversation's refresh) once the read
-// answers; and a GitLab 15.11 that refuses introspection shows the rows
-// with no Edit on the reviewers, assignees and labels rows and no
-// Re-request, the sentence naming the release each needs, while the
-// title, description and state controls stay. A held Enter on the title bar's
+// answers; a GitLab 19.6 that refuses introspection offers every
+// control; and a GitLab 17.11, below the supported floor, shows Details
+// as the sentence naming its release and the floor, with no management
+// control anywhere. A held Enter on the title bar's
 // `⋯` opens the menu and activates nothing. Closing the pane with Ctrl+W
 // while a picker holds a change writes that change (desktop). A
 // description save whose answer the fake holds until Back (compact) or
@@ -578,7 +578,6 @@ export function reviewManageFlow({ compact }: ManageSurface): void {
     await seedPullRequest(harness, 'gitlab', thread);
     const refusal = { status: 403, body: { message: '403 Forbidden' } };
     await refuseForgeRoute(harness, { route: 'glab graphql PRManageChecks', ...refusal });
-    await refuseForgeRoute(harness, { route: 'glab graphql PRManage', ...refusal });
     await page.emulateMedia({ colorScheme: 'dark' });
     await harness.open(page);
     const review = await openReview(page, thread, 'gitlab', compact);
@@ -604,7 +603,6 @@ export function reviewManageFlow({ compact }: ManageSurface): void {
     // The read answers again: the controls return with the next read of
     // the PR, which the Conversation's refresh asks for.
     await clearForgeRefusal(harness, 'glab graphql PRManageChecks');
-    await clearForgeRefusal(harness, 'glab graphql PRManage');
     await press(review.getByTestId('review-refresh-comments'));
     await expect(details.getByTestId('review-details-unavailable')).toHaveCount(0, { timeout: 30_000 });
     await expect(details.getByTestId('review-details-rows')).toBeVisible();
@@ -614,10 +612,10 @@ export function reviewManageFlow({ compact }: ManageSurface): void {
     await expectEveryForgeCallHandled(harness);
   });
 
-  test('gitlab: a release older than the people and label mutations offers no edits for them, says why, and keeps the rest', async ({ harness, page }, testInfo: TestInfo) => {
+  test('gitlab: a server that refuses introspection offers every control', async ({ harness, page }) => {
     test.setTimeout(180_000);
-    const thread = 'Manage older host thread';
-    await seedPullRequest(harness, 'gitlab', thread, (seed) => ({ ...seed, serverVersion: '15.11.3', serverLacks: ['introspection'] }));
+    const thread = 'Manage no introspection thread';
+    await seedPullRequest(harness, 'gitlab', thread, (seed) => ({ ...seed, serverVersion: '19.6.1-ee', serverLacks: ['introspection'] }));
     await page.emulateMedia({ colorScheme: 'dark' });
     await harness.open(page);
     const review = await openReview(page, thread, 'gitlab', compact);
@@ -626,13 +624,26 @@ export function reviewManageFlow({ compact }: ManageSurface): void {
     await (compact ? details.locator('button[aria-expanded]').first().tap() : details.locator('button[aria-expanded]').first().click());
     await expect(details.getByTestId('review-details-rows')).toBeVisible();
     await expect(details.locator('[data-testid="review-details-reviewer"][data-login="alee"]')).toBeVisible();
-    await expect(details.getByTestId('review-details-limited')).toContainText('This GitLab server runs 15.11: changing reviewers needs GitLab 16.0');
-    for (const id of ['review-title-edit', 'review-description-edit', 'review-pr-state-menu']) {
+    for (const id of ['review-title-edit', 'review-description-edit', 'review-pr-state-menu', 'review-details-edit-reviewers', 'review-details-edit-assignees', 'review-details-edit-labels', 'review-merge-row-bypass']) {
       await expect(page.getByTestId(id).first(), id).toBeAttached();
     }
-    for (const id of ['review-details-edit-reviewers', 'review-details-edit-assignees', 'review-details-edit-labels', 'review-details-rerequest']) {
-      await expect(page.getByTestId(id), id).toHaveCount(0);
-    }
+    await expectEveryForgeCallHandled(harness);
+  });
+
+  test('gitlab: a server below the supported floor says so in Details and offers no management control', async ({ harness, page }, testInfo: TestInfo) => {
+    test.setTimeout(180_000);
+    const thread = 'Manage older host thread';
+    await seedPullRequest(harness, 'gitlab', thread, (seed) => ({ ...seed, serverVersion: '17.11.3' }));
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await harness.open(page);
+    const review = await openReview(page, thread, 'gitlab', compact);
+    await expect(review.getByTestId('review-pr-title')).toContainText(TITLE, { timeout: 30_000 });
+    await expect(await expandReviewSection(page, 'review-pr-conversation')).toContainText('One question on the backoff.');
+    const details = review.getByTestId('review-pr-details');
+    await (compact ? details.locator('button[aria-expanded]').first().tap() : details.locator('button[aria-expanded]').first().click());
+    await expect(details.getByTestId('review-details-unavailable')).toContainText('runs 17.11; GitLab 18.0 or later is needed.');
+    await expect(details.getByTestId('review-details-rows')).toHaveCount(0);
+    for (const id of MANAGE_CONTROLS) await expect(page.getByTestId(id), id).toHaveCount(0);
     await details.screenshot({ path: testInfo.outputPath(`${testInfo.project.name}-gitlab-details-older-host.png`) });
     await expectEveryForgeCallHandled(harness);
   });

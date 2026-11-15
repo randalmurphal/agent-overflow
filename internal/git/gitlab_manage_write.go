@@ -33,7 +33,7 @@ func gitlabPut(ctx context.Context, client *forgeapi.Client, ref PRReference, bo
 // EditPR reads the merge request, refuses a description edit whose
 // expected description is no longer its own, and PUTs the edit.
 func (f *gitlabForge) EditPR(ctx context.Context, ref PRReference, edit PREdit) error {
-	client, err := f.core.gitlabAPI(ref.Host)
+	client, err := f.writeClient(ctx, ref)
 	if err != nil {
 		return err
 	}
@@ -114,16 +114,13 @@ type gitlabPeoplePayload struct {
 
 // SetPRPeople removes, then adds, by username with the set mutations.
 func (f *gitlabForge) SetPRPeople(ctx context.Context, ref PRReference, reviewers bool, change PRPeopleChange) error {
-	client, err := f.core.gitlabAPI(ref.Host)
+	client, err := f.writeClient(ctx, ref)
 	if err != nil {
 		return err
 	}
-	op, doc, field, list, capability := "PRSetAssignees", gitlabSetAssigneesMutation, "mergeRequestSetAssignees", "assignees", gitlabCapSetAssignees
+	op, doc, field, list := "PRSetAssignees", gitlabSetAssigneesMutation, "mergeRequestSetAssignees", "assignees"
 	if reviewers {
-		op, doc, field, list, capability = "PRSetReviewers", gitlabSetReviewersMutation, "mergeRequestSetReviewers", "reviewers", gitlabCapSetReviewers
-	}
-	if server := f.server(ctx, client, ref.Host); !server.has(capability) {
-		return server.refuse(ref, capability)
+		op, doc, field, list = "PRSetReviewers", gitlabSetReviewersMutation, "mergeRequestSetReviewers", "reviewers"
 	}
 	step := func(mode string, people []PRPerson) changeStep {
 		names := logins(people)
@@ -246,12 +243,9 @@ type gitlabLabelsPayload struct {
 
 // SetPRLabels removes, then adds, by label id with mergeRequestSetLabels.
 func (f *gitlabForge) SetPRLabels(ctx context.Context, ref PRReference, change PRLabelChange) error {
-	client, err := f.core.gitlabAPI(ref.Host)
+	client, err := f.writeClient(ctx, ref)
 	if err != nil {
 		return err
-	}
-	if server := f.server(ctx, client, ref.Host); !server.has(gitlabCapSetLabels) {
-		return server.refuse(ref, gitlabCapSetLabels)
 	}
 	step := func(mode string, labels []PRLabel) changeStep {
 		done, next := stepWords(strings.ToLower(mode), labelNames(labels), "labels")
@@ -320,7 +314,7 @@ func gitlabSetDraft(ctx context.Context, client *forgeapi.Client, ref PRReferenc
 // SetPRState closes or reopens with state_event, and converts to a draft
 // with mergeRequestSetDraft.
 func (f *gitlabForge) SetPRState(ctx context.Context, ref PRReference, state string) error {
-	client, err := f.core.gitlabAPI(ref.Host)
+	client, err := f.writeClient(ctx, ref)
 	if err != nil {
 		return err
 	}
@@ -341,12 +335,9 @@ const gitlabBypassMutation = `mutation PRBypassChanges($projectPath: ID!, $iid: 
 // RerequestReview asks reviewer, one of the merge request's reviewers
 // (GitLab refuses anyone else), for a new review, by user id.
 func (f *gitlabForge) RerequestReview(ctx context.Context, ref PRReference, reviewer PRPerson) error {
-	client, err := f.core.gitlabAPI(ref.Host)
+	client, err := f.writeClient(ctx, ref)
 	if err != nil {
 		return err
-	}
-	if server := f.server(ctx, client, ref.Host); !server.has(gitlabCapRereview) {
-		return server.refuse(ref, gitlabCapRereview)
 	}
 	id, _ := gitlabUserID(reviewer.ID)
 	vars := gitlabMRVars(ref)
@@ -363,12 +354,9 @@ func (f *gitlabForge) DismissReview(context.Context, PRReference, string, string
 // BypassRequestedChanges overrides the merge request's requested changes;
 // GitLab takes it only from a user who may merge.
 func (f *gitlabForge) BypassRequestedChanges(ctx context.Context, ref PRReference) error {
-	client, err := f.core.gitlabAPI(ref.Host)
+	client, err := f.writeClient(ctx, ref)
 	if err != nil {
 		return err
-	}
-	if server := f.server(ctx, client, ref.Host); !server.has(gitlabCapOverride) {
-		return server.refuse(ref, gitlabCapOverride)
 	}
 	_, err = gitlabMutation(ctx, client, "PRBypassChanges", gitlabBypassMutation, "mergeRequestUpdate", gitlabMRVars(ref), gitlabErrorsOf)
 	return err

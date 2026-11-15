@@ -17,30 +17,18 @@ import (
 // GitLab's management Details read and the state events. The read is
 // one GraphQL request beside the detail read: reviewers with their review
 // state, assignees, labels with their ids and colors, and the viewer's
-// userPermissions (PRManage, every supported GitLab), with the
-// mergeability checks on a server that has them (PRManageChecks). The
-// server's release decides that and which controls exist
-// (gitlab_version.go); a control the viewer could use that the release
-// lacks is not offered, and PRManage.Limited says which and why. The
-// writes are gitlab_manage_write.go.
-
-const gitlabManageSelection = `userPermissions { updateMergeRequest adminMergeRequest }
-      reviewers(first: 100) { nodes { id username name mergeRequestInteraction { reviewState } } }
-      assignees(first: 100) { nodes { id username name } }
-      labels(first: 100) { nodes { id title color } }`
-
-const gitlabManageQuery = `query PRManage($fullPath: ID!, $iid: String!) {
-  project(fullPath: $fullPath) {
-    mergeRequest(iid: $iid) {
-      ` + gitlabManageSelection + `
-    }
-  }
-}`
+// userPermissions and the merge request's mergeability checks
+// (PRManageChecks). A server older than gitlabSupportedFloor is not read:
+// its Details say so (gitlab_version.go). The writes are
+// gitlab_manage_write.go.
 
 const gitlabManageChecksQuery = `query PRManageChecks($fullPath: ID!, $iid: String!) {
   project(fullPath: $fullPath) {
     mergeRequest(iid: $iid) {
-      ` + gitlabManageSelection + `
+      userPermissions { updateMergeRequest adminMergeRequest }
+      reviewers(first: 100) { nodes { id username name mergeRequestInteraction { reviewState } } }
+      assignees(first: 100) { nodes { id username name } }
+      labels(first: 100) { nodes { id title color } }
       mergeabilityChecks { identifier status }
     }
   }
@@ -105,17 +93,12 @@ type gitlabManage struct {
 
 // readManage is the Details read of mr (see the file comment).
 func (f *gitlabForge) readManage(ctx context.Context, client *forgeapi.Client, ref PRReference, mr gitlabMRRaw) (gitlabManage, error) {
-	server := f.server(ctx, client, ref.Host)
-	if server.err != nil && ctx.Err() != nil {
-		return gitlabManage{}, ctx.Err()
-	}
-	op, doc := "PRManage", gitlabManageQuery
-	if server.has(gitlabCapChecks) {
-		op, doc = "PRManageChecks", gitlabManageChecksQuery
+	if err := f.server(ctx, client, ref.Host).supported(ref); err != nil {
+		return gitlabManage{}, err
 	}
 	var raw gitlabManageRaw
 	vars := map[string]any{"fullPath": ref.Project(), "iid": strconv.Itoa(ref.Number)}
-	if _, err := client.GraphQL(ctx, op, doc, vars, &raw); err != nil {
+	if _, err := client.GraphQL(ctx, "PRManageChecks", gitlabManageChecksQuery, vars, &raw); err != nil {
 		return gitlabManage{}, err
 	}
 	if raw.Project == nil || raw.Project.MergeRequest == nil {
@@ -146,8 +129,8 @@ func (f *gitlabForge) readManage(ctx context.Context, client *forgeapi.Client, r
 	}
 	state := NormalizePRState(mr.State)
 	open, update, admin := state == "open", node.UserPermissions.UpdateMergeRequest, node.UserPermissions.AdminMergeRequest
-	// Where the host has the mergeability checks, the requested-changes
-	// check says whether they block; elsewhere the detailed status.
+	// The requested-changes check says whether they block; without it,
+	// the detailed status.
 	blocked := strings.EqualFold(mr.DetailedMergeStatus, "requested_changes")
 	out := gitlabManage{}
 	for _, check := range node.MergeabilityChecks {
@@ -157,27 +140,18 @@ func (f *gitlabForge) readManage(ctx context.Context, client *forgeapi.Client, r
 		blocked = check.Status == "FAILED"
 		out.bypassed = check.Status == "SUCCESS" && changes && open
 	}
-	// Each control the viewer could use, offered where the server has it.
-	var lacking []gitlabCapability
-	offer := func(could bool, c gitlabCapability) bool {
-		if could && !server.has(c) {
-			lacking = append(lacking, c)
-		}
-		return could && server.has(c)
-	}
 	manage.Can = PRManageCan{
 		EditTitle:       update,
 		EditDescription: update,
-		Reviewers:       offer(open && admin, gitlabCapSetReviewers),
-		Rerequest:       offer(open && update, gitlabCapRereview),
-		Bypass:          offer(open && blocked && mr.User.CanMerge, gitlabCapOverride),
-		Assignees:       offer(admin, gitlabCapSetAssignees),
-		Labels:          offer(admin, gitlabCapSetLabels),
+		Reviewers:       open && admin,
+		Rerequest:       open && update,
+		Bypass:          open && blocked && mr.User.CanMerge,
+		Assignees:       admin,
+		Labels:          admin,
 		Close:           open && update,
 		Reopen:          state == "closed" && update,
 		ConvertToDraft:  open && update && !mr.Draft && !mr.WorkInProgress,
 	}
-	manage.Limited = server.lacking(lacking)
 	out.manage = manage
 	return out, nil
 }

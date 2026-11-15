@@ -30,16 +30,13 @@ const (
 // PRManage is what the review pane's Details section shows and which
 // management controls it offers, read with the detail. Unavailable is
 // the sentence saying the read failed: the lists are then empty and
-// every Can flag false, and the rest of the detail stands. Limited is
-// the sentence naming the controls the forge's server does not support,
-// which are not offered while the rest are.
+// every Can flag false, and the rest of the detail stands.
 type PRManage struct {
 	Reviewers   []PRReviewer `json:"reviewers"`
 	Assignees   []PRPerson   `json:"assignees"`
 	Labels      []PRLabel    `json:"labels"`
 	Can         PRManageCan  `json:"can"`
 	Unavailable string       `json:"unavailable,omitempty"`
-	Limited     string       `json:"limited,omitempty"`
 }
 
 // emptyManage is a PRManage with nothing shown and nothing offered.
@@ -602,6 +599,11 @@ func manageUnavailableSentence(ref PRReference, err error) string {
 	labels := forgeLabels(ref.Forge)
 	if forbidden, ok := errors.AsType[*forgeapi.ForbiddenError](err); ok && forbidden.Scope != "" {
 		return fmt.Sprintf("%s not shown: your %s token lacks the `%s` scope. Create a token with that scope and log %s in with it.", what, labels.host(ref.Host), forbidden.Scope, labels.binary)
+	}
+	// A refusal (a GitLab older than the supported floor) is not a
+	// passing failure.
+	if refused, ok := errors.AsType[*ForgeActionError](err); ok && refused.Kind == ForgeErrorRefused {
+		return what + " not shown. " + refused.Message
 	}
 	explained, _ := ExplainForgeError(ref, ActionRead, err).(*ForgeActionError)
 	return what + " not shown for now. " + explained.Message

@@ -771,13 +771,8 @@ func gitlabPointLine(point gitlabLineRangePoint, prefer string) (string, *int) {
 }
 
 func (f *gitlabForge) SubmitReview(ctx context.Context, ref PRReference, review SubmitReviewRequest) (SubmitReviewResult, error) {
-	client, err := f.core.gitlabAPI(ref.Host)
+	client, err := f.writeClient(ctx, ref)
 	if err != nil {
-		return SubmitReviewResult{}, err
-	}
-	// An older server's draft notes post something other than the pane
-	// shows (a line comment as a general one, a reply refused).
-	if err := f.requireSupported(ctx, client, ref, "sending a review"); err != nil {
 		return SubmitReviewResult{}, err
 	}
 	// The draft notes are positioned on the diff the reviewer loaded, which
@@ -1186,7 +1181,7 @@ func (f *gitlabForge) ReplyToThread(ctx context.Context, ref PRReference, thread
 	if strings.TrimSpace(body) == "" {
 		return errors.New("reply body is required")
 	}
-	client, err := f.core.gitlabAPI(ref.Host)
+	client, err := f.writeClient(ctx, ref)
 	if err != nil {
 		return err
 	}
@@ -1207,7 +1202,7 @@ func (f *gitlabForge) SetThreadResolved(ctx context.Context, ref PRReference, th
 	if strings.TrimSpace(threadID) == "" {
 		return errors.New("GitLab thread resolution requires a discussion id")
 	}
-	client, err := f.core.gitlabAPI(ref.Host)
+	client, err := f.writeClient(ctx, ref)
 	if err != nil {
 		return err
 	}

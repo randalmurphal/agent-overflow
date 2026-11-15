@@ -443,7 +443,7 @@ func (f *gitlabForge) SetCommentReaction(ctx context.Context, ref PRReference, t
 	if err != nil || noteID <= 0 {
 		return fmt.Errorf("GitLab note id %q is not a note id", target.CommentID)
 	}
-	client, err := f.core.gitlabAPI(ref.Host)
+	client, err := f.writeClient(ctx, ref)
 	if err != nil {
 		return err
 	}

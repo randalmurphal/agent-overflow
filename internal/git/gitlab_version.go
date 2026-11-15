@@ -10,13 +10,13 @@ import (
 	"agent-overflow/internal/forgeapi"
 )
 
-// What a GitLab server supports is decided by its release, read from
-// GET /metadata (GitLab 15.2 and later) once per host per gitlabCacheTTL,
-// and the release GitLab's GraphQL reference first documents each
-// capability in (docs.gitlab.com/<version>/api/graphql/reference). No
-// decision reads the schema: GitLab 18.9 and later refuse introspection
-// in an ordinary document ("Field '__type' doesn't exist on type
-// 'Query'").
+// The oldest GitLab release the app supports is gitlabSupportedFloor,
+// read from GET /metadata (GitLab 15.2 and later) once per host per
+// gitlabCacheTTL. Everything the app uses is in that release, so a server
+// at or past it has it all and an older one is refused with one sentence
+// naming both releases. No decision reads the schema: GitLab 18.9 and
+// later refuse introspection in an ordinary document ("Field '__type'
+// doesn't exist on type 'Query'").
 
 // gitlabVersion is a GitLab release, major.minor.
 type gitlabVersion struct{ major, minor int }
@@ -43,32 +43,8 @@ func parseGitLabVersion(s string) (gitlabVersion, error) {
 	return gitlabVersion{major, minor}, nil
 }
 
-// gitlabSupportedFloor is the oldest GitLab release the app supports. A
-// review submit to an older server is refused before any write, since
-// its draft notes post something other than what the pane shows.
-var gitlabSupportedFloor = gitlabVersion{16, 0}
-
-// gitlabCapability is a GitLab feature the app uses, the release that
-// introduced it, and the control it decides (empty for one that only
-// picks a document).
-type gitlabCapability struct {
-	control string
-	since   gitlabVersion
-}
-
-// The management capabilities, each first documented in the GraphQL
-// reference of since. The re-review mutation and the set mutations'
-// operationMode are in the 16.0 reference, the oldest one read.
-var (
-	gitlabCapRereview     = gitlabCapability{control: "re-requesting a review", since: gitlabVersion{16, 0}}
-	gitlabCapSetReviewers = gitlabCapability{control: "changing reviewers", since: gitlabVersion{16, 0}}
-	gitlabCapSetAssignees = gitlabCapability{control: "changing assignees", since: gitlabVersion{16, 0}}
-	gitlabCapSetLabels    = gitlabCapability{control: "changing labels", since: gitlabVersion{16, 0}}
-	// gitlabCapChecks is MergeRequest.mergeabilityChecks (PRManageChecks).
-	gitlabCapChecks = gitlabCapability{since: gitlabVersion{16, 5}}
-	// gitlabCapOverride is mergeRequestUpdate's overrideRequestedChanges.
-	gitlabCapOverride = gitlabCapability{control: "bypassing requested changes", since: gitlabVersion{17, 9}}
-)
+// gitlabSupportedFloor is the oldest GitLab release the app supports.
+var gitlabSupportedFloor = gitlabVersion{18, 0}
 
 // gitlabServer is what a Details read or a write knows of the host's
 // release: the version, or why it could not be read.
@@ -77,38 +53,17 @@ type gitlabServer struct {
 	err     error
 }
 
-// has reports whether the server is known to support c.
-func (s gitlabServer) has(c gitlabCapability) bool {
-	return s.err == nil && s.version.atLeast(c.since)
-}
-
-// lacking is the sentence for the controls the server does not support
-// (or whose support is unknown), or empty for none.
-func (s gitlabServer) lacking(controls []gitlabCapability) string {
-	if len(controls) == 0 {
-		return ""
-	}
+// supported is nil for a server at or past gitlabSupportedFloor; an
+// older one is refused, naming its release and the floor, and a failed
+// version read is its error.
+func (s gitlabServer) supported(ref PRReference) error {
 	if s.err != nil {
-		names := make([]string, 0, len(controls))
-		for _, c := range controls {
-			names = append(names, c.control)
-		}
-		return fmt.Sprintf("The GitLab server's version could not be read, so %s %s not offered for now.", joinClauses(names), map[bool]string{true: "is", false: "are"}[len(names) == 1])
+		return fmt.Errorf("read the GitLab server's version: %w", s.err)
 	}
-	needs := make([]string, 0, len(controls))
-	for _, c := range controls {
-		needs = append(needs, fmt.Sprintf("%s needs GitLab %s", c.control, c.since))
+	if !s.version.atLeast(gitlabSupportedFloor) {
+		return &ForgeActionError{Kind: ForgeErrorRefused, Message: fmt.Sprintf("GitLab on %s runs %s; GitLab %s or later is needed.", ref.Host, s.version, gitlabSupportedFloor)}
 	}
-	return fmt.Sprintf("This GitLab server runs %s: %s.", s.version, joinClauses(needs))
-}
-
-// refuse is the write of c on a server without it: refused before it is
-// sent, naming the release it needs, or the version read's failure.
-func (s gitlabServer) refuse(ref PRReference, c gitlabCapability) error {
-	if s.err != nil {
-		return s.err
-	}
-	return &ForgeActionError{Kind: ForgeErrorRefused, Message: fmt.Sprintf("GitLab on %s runs %s; %s needs GitLab %s.", ref.Host, s.version, c.control, c.since)}
+	return nil
 }
 
 // server is host's release: cached for gitlabCacheTTL, else read from
@@ -132,17 +87,19 @@ func (f *gitlabForge) server(ctx context.Context, client *forgeapi.Client, host 
 	return gitlabServer{version: version}
 }
 
-// requireSupported refuses a server older than gitlabSupportedFloor,
-// naming its release, and returns a failed version read as it is.
-func (f *gitlabForge) requireSupported(ctx context.Context, client *forgeapi.Client, ref PRReference, what string) error {
-	s := f.server(ctx, client, ref.Host)
-	if s.err != nil {
-		return s.err
+// writeClient is the client for a write to ref, refused before anything
+// is sent unless the host's server is supported (gitlabServer.supported).
+// A failed version read is a write not sent, so its caller never reports
+// it as one the forge may have applied.
+func (f *gitlabForge) writeClient(ctx context.Context, ref PRReference) (*forgeapi.Client, error) {
+	client, err := f.core.gitlabAPI(ref.Host)
+	if err != nil {
+		return nil, err
 	}
-	if !s.version.atLeast(gitlabSupportedFloor) {
-		return &ForgeActionError{Kind: ForgeErrorRefused, Message: fmt.Sprintf("GitLab on %s runs %s; %s from here needs GitLab %s or later. Do it on GitLab.", ref.Host, s.version, what, gitlabSupportedFloor)}
+	if err := f.server(ctx, client, ref.Host).supported(ref); err != nil {
+		return nil, &forgeapi.NotSentError{Err: err}
 	}
-	return nil
+	return client, nil
 }
 
 // gitlabSchemaLacks reports whether err is GitLab refusing a document at
