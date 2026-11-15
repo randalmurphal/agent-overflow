@@ -28,8 +28,12 @@ import (
 // the sidebar's own grouping uses, so the group is created in the NEW
 // thread's project: a fork's source project, or the destination's. The
 // spawn's placement wins over the group a fork inherits from its source:
-// a fork spawned owned or standalone leaves that group (standalone), and
-// the naming write then makes an owned one owned.
+// an owned fork is made in no group and the naming write owns it, and a
+// standalone one leaves the group here.
+//
+// Nothing here announces a fresh thread or an owned fork: the spawn's
+// request names and places the thread first, and acceptRequest announces
+// it then, so a thread that will be owned is never listed in a sidebar.
 func (t threadToolsApp) createSpawnedThread(
 	ctx context.Context, call threadtools.SpawnCall, create spawnOptions,
 ) (store.Thread, error) {
@@ -65,6 +69,9 @@ func (t threadToolsApp) createSpawnedThread(
 type spawnOptions struct {
 	CreateThreadOptions
 	worktree *threadapp.WorktreeCut
+	// owned says the naming write will own the thread: a local spawn
+	// placed owned. A paired computer's spawn has no spawn row here.
+	owned bool
 }
 
 func (t threadToolsApp) createSpawned(
@@ -72,7 +79,14 @@ func (t threadToolsApp) createSpawned(
 ) (store.Thread, error) {
 	create := spawn.CreateThreadOptions
 	if call.FromThread == "" {
-		thread, _, err := t.app.createThreadCutting(ctx, create, spawn.worktree, false)
+		// createThreadCutting without its broadcast: acceptRequest announces
+		// the row once its request has placed it.
+		endWork, err := t.app.workAdmission.begin(ctx)
+		if err != nil {
+			return store.Thread{}, err
+		}
+		defer endWork()
+		thread, _, err := t.app.createThreadRowCutting(ctx, create, spawn.worktree, false)
 		return thread, err
 	}
 	// A fork runs in its source's project and workspace with its source's
@@ -91,6 +105,7 @@ func (t threadToolsApp) createSpawned(
 		Title:       create.Title,
 		Model:       create.Model,
 		Effort:      create.ReasoningEffort,
+		Owned:       spawn.owned,
 	})
 }
 

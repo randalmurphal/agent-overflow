@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"strconv"
@@ -241,6 +242,9 @@ func (t threadToolsApp) acceptSpawn(ctx context.Context, origin threadRequestOri
 	if err != nil {
 		return "", t.failRequest(token, err)
 	}
+	// A paired computer's spawn has no spawn row here to own it, so its
+	// thread is standalone, or grouped by its group.
+	create.owned = call.Placement == threadtools.PlacementOwned && !origin.foreign
 	ctx = acceptedRequestContext(ctx)
 	target, fresh, err := t.acceptRequest(origin, store.ThreadRequest{
 		Token:          token,
@@ -249,10 +253,7 @@ func (t threadToolsApp) acceptSpawn(ctx context.Context, origin threadRequestOri
 		Notify:         call.Notify,
 	}, func() (store.Thread, error) {
 		return t.createSpawnedThread(ctx, call, create)
-		// The naming write makes an owned spawn's thread owned. A paired
-		// computer's spawn has no spawn row here to own it, so its thread
-		// is standalone, or grouped by its group.
-	}, call.Placement == threadtools.PlacementOwned)
+	}, create.owned)
 	if err != nil {
 		return "", t.failRequest(token, err)
 	}
@@ -498,6 +499,7 @@ func (t threadToolsApp) acceptRequest(
 		return "", false, err
 	}
 	target = receipt.TargetThreadID
+	made := false
 	if target == "" && create != nil {
 		if !created {
 			// The receipt exists with no thread: the attempt that accepted
@@ -521,30 +523,47 @@ func (t threadToolsApp) acceptRequest(
 		}
 		target = thread.ID
 		if origin.foreign {
-			if _, err := t.app.store.SetThreadReceiptTarget(token, target); err != nil {
-				return "", false, err
-			}
-		} else if err := t.app.store.NameLocalThreadRequestTarget(token, target, own); err != nil {
+			_, err = t.app.store.SetThreadReceiptTarget(token, target)
+		} else {
 			// One write names the thread on both rows and accepts the source
 			// row; a request a settlement already moved keeps its state.
-			return "", false, err
+			err = t.app.store.NameLocalThreadRequestTarget(token, target, own)
 		}
+		if err != nil {
+			return "", false, t.discardUnnamedThread(target, err)
+		}
+		made = true
 	}
 	if target == "" {
 		return "", false, fmt.Errorf("thread tools: request %s has no target thread", token)
 	}
-	if !origin.foreign {
-		if kind == store.ThreadRequestSpawn {
-			// The row went out at creation without a spawner; now the
-			// request names it, and an owned row leaves the sidebar.
-			t.app.announceThread(triage.ThreadActionFull, target)
-		}
-	} else {
+	if kind == store.ThreadRequestSpawn && (made || !origin.foreign) {
+		// A spawn's thread was created without a frame (createSpawnedThread)
+		// and goes out now that its request names and places it, so an owned
+		// one is never listed. An assistant's thread, made before its
+		// request, goes out again naming its spawner.
+		t.app.announcePlaced(target)
+	}
+	if origin.foreign {
 		// This thread now answers a paired computer's request, so it serves
 		// the thread tools whether or not this computer's own switch is on.
 		t.app.refreshThreadToolsAdmission(target)
 	}
 	return target, created, nil
+}
+
+// discardUnnamedThread takes back a thread its request could not name, and
+// returns the refusal. Nothing names it: no receipt, no request and no
+// owner, and its message was never sent, so it would be work the caller
+// cannot reach and will make again.
+func (t threadToolsApp) discardUnnamedThread(threadID string, cause error) error {
+	if err := t.app.DeleteThread(threadID); err != nil {
+		log.Printf("thread tools: delete thread %s after its request could not name it: %v", threadID, err)
+		return errorsx.Public(threadtools.CodeInvalidRequest, fmt.Sprintf(
+			"Thread %s was created but its request could not record it (%v), and removing it failed too. It is on this computer.",
+			threadID, cause), errors.Join(cause, err))
+	}
+	return cause
 }
 
 // threadReceiptFor is the receipt origin's request token is accepted

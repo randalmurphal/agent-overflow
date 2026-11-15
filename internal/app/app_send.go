@@ -819,7 +819,8 @@ func (a *App) sendMessageLocked(
 		// send the user did not make from this screen (an agent's spawn, a
 		// queued dispatch, a workflow) would otherwise keep the draft icon in
 		// every sidebar, or never reach one that had not listed the draft.
-		a.announceThread(triage.ThreadActionListed, threadID)
+		// An owned worker's row goes out `full`: it has no sidebar row.
+		a.announcePlaced(threadID)
 	}
 	if !opts.PreserveDraft {
 		// Attributed to the screen that sent: it has already cleared its

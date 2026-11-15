@@ -672,6 +672,11 @@ Ruling 36, as built:
   in the same transaction unless the spawn asked for `standalone` or a
   `group` (`threadtools.ResolveSpawnPlacement`). A remote spawn has no
   local spawner on its destination, so its thread is standalone there.
+  A spawn's fresh thread, and a fork it will own, are created without a
+  frame; the spawn announces the thread once that write has named and
+  placed it (`AnnouncePlaced`), so a thread that will be owned is never
+  listed. An owned fork is created in no group. A naming write that fails
+  deletes the thread it would have named.
 - `SetThreadGroup` makes a row grouped and an ungroup makes a grouped
   row standalone. `SetThreadPlacement` (the user's Show in Sidebar and
   Remove from Sidebar) and `thread_update` `placement` write owned or

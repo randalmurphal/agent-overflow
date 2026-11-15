@@ -71,6 +71,11 @@ type forkOptions struct {
 	// because the pair is one catalog choice and the threads table checks
 	// them together. Empty inherits.
 	Effort string
+	// Owned is a thread_spawn's fork that its request will own. It leaves
+	// its source's group, as an owned thread is in none, and no frame goes
+	// out for it here: the spawn announces it once the naming write owns it
+	// (acceptRequest), so no client lists it first.
+	Owned bool
 }
 
 // forkThreadTail forks a thread at its tail with the given overrides. It is
@@ -244,6 +249,9 @@ func (a *App) forkThreadAt(ctx context.Context, sourceThreadID string, atTurnInd
 	if opts.Effort != "" {
 		fork.ReasoningEffort = opts.Effort
 	}
+	if opts.Owned {
+		fork.GroupID = ""
+	}
 	// Observed now, not copied from the source: a fork shares the source's
 	// workspace, and that workspace has kept moving since the source thread
 	// was created. The fork's creation coordinates are where the workspace
@@ -265,7 +273,9 @@ func (a *App) forkThreadAt(ctx context.Context, sourceThreadID string, atTurnInd
 		return store.Thread{}, forkRefusal(fmt.Errorf("fork thread: create fork thread: %w", err))
 	}
 	cleanups.Add(func() error { return a.cleanupForkThread(fork.ID) })
-	a.announceThread(triage.ThreadActionListed, fork.ID)
+	if !opts.Owned {
+		a.announceThread(triage.ThreadActionListed, fork.ID)
+	}
 
 	if err := ctx.Err(); err != nil {
 		return store.Thread{}, errors.Join(err, cleanups.Run())
@@ -303,7 +313,9 @@ func (a *App) forkThreadAt(ctx context.Context, sourceThreadID string, atTurnInd
 	if err != nil {
 		return store.Thread{}, errors.Join(err, cleanups.Run())
 	}
-	a.announceThread(triage.ThreadActionListed, ready.ID)
+	if !opts.Owned {
+		a.announceThread(triage.ThreadActionListed, ready.ID)
+	}
 	return ready, nil
 }
 
