@@ -1,6 +1,7 @@
 package app
 
 import (
+	"agent-overflow/internal/procutil/procutiltest"
 	projectpkg "agent-overflow/internal/project"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
@@ -782,6 +783,7 @@ reliability:
 				t.Fatalf("SessionOptions.RuntimeMode = %q, want %q", opts.RuntimeMode, tc.wantRuntimeMode)
 			}
 			cfg := claude.ConfigFromOptions(opts)
+			cfg.Reaper = procutiltest.Reaper()
 			if cfg.BasePermissionMode != tc.wantPermissionMode {
 				t.Fatalf("claude BasePermissionMode = %q, want %q", cfg.BasePermissionMode, tc.wantPermissionMode)
 			}

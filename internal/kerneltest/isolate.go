@@ -251,7 +251,7 @@ func ProviderBinarySettings(poison string) map[string]any {
 func DisabledCodexModelCatalog() *codexmodels.Cache {
 	return codexmodels.NewWith(
 		time.Minute,
-		func(context.Context, string) ([]provider.ModelInfo, error) {
+		func(context.Context, string, procutil.Reaper) ([]provider.ModelInfo, error) {
 			return nil, errors.New("live Codex catalog disabled in App tests")
 		},
 		time.Now,

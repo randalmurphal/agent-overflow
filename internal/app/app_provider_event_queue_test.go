@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/testutil"
@@ -672,7 +673,7 @@ func TestStopSessionHandlesTheSessionsFinalEvents(t *testing.T) {
 	sess, err := claude.NewSession(
 		context.Background(),
 		thread.ID,
-		claude.Config{Retention: claude.UserHomeRetention(0), Binary: writeSilentClaudeBinary(t), WorkDir: thread.WorkspacePath},
+		claude.Config{Reaper: procutiltest.Reaper(), Retention: claude.UserHomeRetention(0), Binary: writeSilentClaudeBinary(t), WorkDir: thread.WorkspacePath},
 		app.sessionEventHandler(thread.ID, token, string(provider.Claude)),
 	)
 	if err != nil {
@@ -812,7 +813,7 @@ func TestClaudeInterruptAnswersWhileEventHandlingIsBlocked(t *testing.T) {
 	sess, err := claude.NewSession(
 		context.Background(),
 		thread.ID,
-		claude.Config{Retention: claude.UserHomeRetention(0), Binary: writeSilentClaudeBinary(t), WorkDir: thread.WorkspacePath},
+		claude.Config{Reaper: procutiltest.Reaper(), Retention: claude.UserHomeRetention(0), Binary: writeSilentClaudeBinary(t), WorkDir: thread.WorkspacePath},
 		app.sessionEventHandler(thread.ID, "blocked-handler-token", string(provider.Claude)),
 	)
 	if err != nil {

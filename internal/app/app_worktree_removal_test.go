@@ -15,6 +15,7 @@ import (
 	"agent-overflow/internal/forgeapi"
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/harness/forgefake"
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/terminal"
@@ -185,7 +186,7 @@ func TestWorktreeRemovalClosesTerminalsOpenedInIt(t *testing.T) {
 	}
 	open := func(owner, cwd string) terminal.SessionSummary {
 		t.Helper()
-		summary, err := f.app.terminals.Open(owner, terminal.SessionOptions{Shell: "/bin/sh", Args: []string{"-c", "sleep 30"}, Cwd: cwd})
+		summary, err := f.app.terminals.Open(owner, terminal.SessionOptions{Reaper: procutiltest.Reaper(), Shell: "/bin/sh", Args: []string{"-c", "sleep 30"}, Cwd: cwd})
 		if err != nil {
 			t.Fatalf("open terminal in %s: %v", cwd, err)
 		}
@@ -217,7 +218,7 @@ func TestExternalWorktreeRemovalClosesTerminalsOpenedInIt(t *testing.T) {
 	f := newRemovalFixture(t, "feature-external-terminals")
 	f.app.terminals = terminal.NewManager(nil, nil)
 	t.Cleanup(func() { _ = f.app.terminals.Shutdown() })
-	if _, err := f.app.terminals.Open("draft:placeholder", terminal.SessionOptions{Shell: "/bin/sh", Args: []string{"-c", "sleep 30"}, Cwd: f.worktree}); err != nil {
+	if _, err := f.app.terminals.Open("draft:placeholder", terminal.SessionOptions{Reaper: procutiltest.Reaper(), Shell: "/bin/sh", Args: []string{"-c", "sleep 30"}, Cwd: f.worktree}); err != nil {
 		t.Fatalf("open terminal: %v", err)
 	}
 

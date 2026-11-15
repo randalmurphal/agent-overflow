@@ -1,6 +1,7 @@
 package app
 
 import (
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/testutil/mockexec"
 	"context"
 	"encoding/base64"
@@ -32,6 +33,7 @@ func newTakeControlFixture(t *testing.T) (*App, string) {
 
 	const threadID = "thread-take-control"
 	sess, err := claudetui.NewSession(context.Background(), threadID, claudetui.Config{
+		Reaper:    procutiltest.Reaper(),
 		Retention: claude.UserHomeRetention(0),
 		Binary:    binary,
 		WorkDir:   dir,

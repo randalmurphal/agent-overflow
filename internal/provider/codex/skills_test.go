@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"agent-overflow/internal/procutil/procutiltest"
 )
 
 // skillsListWireSample is hand-written from the Rust types at
@@ -286,12 +288,12 @@ func TestSkillsFetcherRejectsMisconfigurationWithoutSpawning(t *testing.T) {
 	// A missing binary must be a caller error, never a spawn attempt: the
 	// repo forbids tests reaching a real provider binary, and production
 	// wants the same specific message rather than an exec failure.
-	fetcher := &SkillsFetcher{}
+	fetcher := &SkillsFetcher{Reaper: procutiltest.Reaper()}
 	if _, err := fetcher.Fetch(context.Background(), []string{"/repo"}, false); err == nil ||
 		!strings.Contains(err.Error(), "binary path required") {
 		t.Fatalf("Fetch without a binary = %v, want a binary-required error", err)
 	}
-	fetcher = &SkillsFetcher{Binary: "/definitely/not/a/real/codex"}
+	fetcher = &SkillsFetcher{Reaper: procutiltest.Reaper(), Binary: "/definitely/not/a/real/codex"}
 	if _, err := fetcher.Fetch(context.Background(), nil, false); err == nil ||
 		!strings.Contains(err.Error(), "at least one cwd") {
 		t.Fatalf("Fetch without cwds = %v, want a cwd-required error", err)
@@ -301,7 +303,7 @@ func TestSkillsFetcherRejectsMisconfigurationWithoutSpawning(t *testing.T) {
 func TestSkillsFetcherDrivesAFakeAppServer(t *testing.T) {
 	t.Parallel()
 	binary := writeSkillsListFakeCodex(t)
-	fetcher := &SkillsFetcher{Binary: binary, WorkDir: t.TempDir(), Timeout: 10 * time.Second}
+	fetcher := &SkillsFetcher{Reaper: procutiltest.Reaper(), Binary: binary, WorkDir: t.TempDir(), Timeout: 10 * time.Second}
 
 	entries, err := fetcher.Fetch(context.Background(), []string{"/repo"}, true)
 	if err != nil {

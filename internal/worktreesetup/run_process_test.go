@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/procutil"
+	"agent-overflow/internal/procutil/procutiltest"
 )
 
 // recordedPID reads the process id a setup command wrote with `echo $! > pid`.
@@ -63,7 +64,7 @@ func killAtCleanup(t *testing.T, pid int) {
 // nothing but the group signal would find.
 func TestRunTimeoutStopsADescendantThatLeftThePipe(t *testing.T) {
 	worktree := t.TempDir()
-	err := Run(context.Background(), nopReaper{}, t.TempDir(), worktree, Config{
+	err := Run(context.Background(), procutiltest.Reaper(), t.TempDir(), worktree, Config{
 		Run:     [][]string{{"/bin/sh", "-c", "sleep 60 >/dev/null 2>&1 & echo $! > pid; wait"}},
 		Timeout: "300ms",
 	})
@@ -79,7 +80,7 @@ func TestRunTimeoutStopsADescendantThatLeftThePipe(t *testing.T) {
 // the recipe did not succeed, and a deadline reads as a timeout.
 func TestRunFailsACommandThatExitsCleanlyWhenStopped(t *testing.T) {
 	script := `trap 'exit 0' TERM; echo ready; while :; do sleep 0.05; done`
-	err := Run(context.Background(), nopReaper{}, t.TempDir(), t.TempDir(), Config{
+	err := Run(context.Background(), procutiltest.Reaper(), t.TempDir(), t.TempDir(), Config{
 		Run: [][]string{{"/bin/sh", "-c", script}}, Timeout: "300ms",
 	})
 	if err == nil || !strings.Contains(err.Error(), "timed out after 300ms") || !strings.Contains(err.Error(), "ready") {
@@ -91,7 +92,7 @@ func TestRunFailsACommandThatExitsCleanlyWhenStopped(t *testing.T) {
 	observer := &outputSignal{seen: make(chan struct{})}
 	done := make(chan error, 1)
 	go func() {
-		done <- RunObserved(ctx, nopReaper{}, t.TempDir(), t.TempDir(), Config{Run: [][]string{{"/bin/sh", "-c", script}}}, observer)
+		done <- RunObserved(ctx, procutiltest.Reaper(), t.TempDir(), t.TempDir(), Config{Run: [][]string{{"/bin/sh", "-c", script}}}, observer)
 	}()
 	<-observer.seen
 	cancel()
@@ -115,7 +116,7 @@ func TestRunStartsNoCommandUnderADoneContext(t *testing.T) {
 	worktree := t.TempDir()
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	err := Run(ctx, nopReaper{}, t.TempDir(), worktree, Config{
+	err := Run(ctx, procutiltest.Reaper(), t.TempDir(), worktree, Config{
 		Run: [][]string{{"/bin/sh", "-c", "echo ran > ran.txt"}},
 	})
 	if err == nil || !strings.Contains(err.Error(), "failed: context canceled") {
@@ -131,7 +132,7 @@ func TestRunStartsNoCommandUnderADoneContext(t *testing.T) {
 func TestRunKeepsAProcessACommandLeftRunning(t *testing.T) {
 	worktree := t.TempDir()
 	started := time.Now()
-	err := Run(context.Background(), nopReaper{}, t.TempDir(), worktree, Config{
+	err := Run(context.Background(), procutiltest.Reaper(), t.TempDir(), worktree, Config{
 		Run: [][]string{
 			{"/bin/sh", "-c", "sleep 60 >/dev/null 2>&1 & echo $! > pid"},
 			{"/bin/sh", "-c", "printf ran > second.txt"},
@@ -158,7 +159,7 @@ func TestRunKeepsAProcessACommandLeftRunning(t *testing.T) {
 // command once the drain grace passes, and is left running.
 func TestRunFailsACommandWhoseLeftoverHoldsItsOutput(t *testing.T) {
 	worktree := t.TempDir()
-	err := Run(context.Background(), nopReaper{}, t.TempDir(), worktree, Config{
+	err := Run(context.Background(), procutiltest.Reaper(), t.TempDir(), worktree, Config{
 		Run: [][]string{
 			{"/bin/sh", "-c", "sleep 60 & echo $! > pid; echo leader-done"},
 			{"/bin/sh", "-c", "printf ran > second.txt"},
@@ -179,7 +180,7 @@ func TestRunFailsACommandWhoseLeftoverHoldsItsOutput(t *testing.T) {
 }
 
 func TestRunReportsACommandThatCannotStart(t *testing.T) {
-	err := Run(context.Background(), nopReaper{}, t.TempDir(), t.TempDir(), Config{
+	err := Run(context.Background(), procutiltest.Reaper(), t.TempDir(), t.TempDir(), Config{
 		Run: [][]string{{"/nonexistent/ao-setup-binary"}},
 	})
 	want := `worktree setup command ["/nonexistent/ao-setup-binary"] failed: ` +

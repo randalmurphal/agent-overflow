@@ -1,6 +1,7 @@
 package app
 
 import (
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/testutil/mockexec"
 	"context"
 	"encoding/json"
@@ -156,6 +157,7 @@ func TestForkThreadCodexCutsOutsideTheLiveSession(t *testing.T) {
 
 	liveLog := filepath.Join(t.TempDir(), "live-requests.jsonl")
 	session, err := codex.NewSession(context.Background(), source.ID, codex.Config{
+		Reaper:         procutiltest.Reaper(),
 		Binary:         writeCodexForkBinary(t, "resume-provider-thread", "fork-from-active-session", liveLog),
 		WorkDir:        source.WorkspacePath,
 		ResumeThreadID: source.SessionRef,

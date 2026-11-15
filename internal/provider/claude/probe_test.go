@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/testutil/mockexec"
 )
@@ -75,6 +76,7 @@ func TestProbeAccountExtractsSubscriptionType(t *testing.T) {
 		"success", "")
 
 	info, err := ProbeAccount(context.Background(), ProbeConfig{
+		Reaper:    procutiltest.Reaper(),
 		Retention: UserHomeRetention(0),
 		WorkDir:   probeWorkDir,
 		Binary:    binary})
@@ -127,6 +129,7 @@ func TestProbeAccountExtractsSparseAccountShapes(t *testing.T) {
 			binary := writeMockClaudeInitScript(t, t.TempDir(), tc.accountJSON, "success", "")
 
 			info, err := ProbeAccount(context.Background(), ProbeConfig{
+				Reaper:    procutiltest.Reaper(),
 				Retention: UserHomeRetention(0),
 				WorkDir:   probeWorkDir,
 				Binary:    binary})
@@ -149,6 +152,7 @@ func TestProbeAccountSkipsHookNoiseBeforeResponse(t *testing.T) {
 		"success", "")
 
 	info, err := ProbeAccount(context.Background(), ProbeConfig{
+		Reaper:    procutiltest.Reaper(),
 		Retention: UserHomeRetention(0),
 		WorkDir:   probeWorkDir,
 		Binary:    binary})
@@ -168,6 +172,7 @@ func TestProbeAccountMissingAccountReturnsZero(t *testing.T) {
 	binary := writeMockClaudeInitScript(t, t.TempDir(), "", "success", "")
 
 	info, err := ProbeAccount(context.Background(), ProbeConfig{
+		Reaper:    procutiltest.Reaper(),
 		Retention: UserHomeRetention(0),
 		WorkDir:   probeWorkDir,
 		Binary:    binary})
@@ -189,6 +194,7 @@ func TestProbeAccountSurfacesErrorSubtype(t *testing.T) {
 	binary := writeMockClaudeInitScript(t, t.TempDir(), "", "error", "auth expired")
 
 	_, err := ProbeAccount(context.Background(), ProbeConfig{
+		Reaper:    procutiltest.Reaper(),
 		Retention: UserHomeRetention(0),
 		WorkDir:   probeWorkDir,
 		Binary:    binary})
@@ -204,7 +210,7 @@ func TestProbeAccountBuildsMaxTurnsZeroArgs(t *testing.T) {
 	// Zero-token guarantee depends on --max-turns 0 being passed to the
 	// CLI even though the probe never sends a user turn — defense in
 	// depth in case the process linger past our control_request reply.
-	line, err := probeCommandLine(ProbeConfig{Retention: UserHomeRetention(0)})
+	line, err := probeCommandLine(ProbeConfig{Reaper: procutiltest.Reaper(), Retention: UserHomeRetention(0)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -240,6 +246,7 @@ func TestProbeAccountBuildsMaxTurnsZeroArgs(t *testing.T) {
 
 func TestProbeAccountReturnsErrorOnSpawnFailure(t *testing.T) {
 	info, err := ProbeAccount(context.Background(), ProbeConfig{
+		Reaper:    procutiltest.Reaper(),
 		Retention: UserHomeRetention(0),
 		WorkDir:   probeWorkDir,
 		Binary:    "/nonexistent/path/to/claude-12345"})
@@ -263,6 +270,7 @@ func TestProbeAccountReturnsErrorWhenResponseMissing(t *testing.T) {
 	const probeTimeout = 3 * time.Second
 	start := time.Now()
 	_, err := ProbeAccount(context.Background(), ProbeConfig{
+		Reaper:    procutiltest.Reaper(),
 		Retention: UserHomeRetention(0),
 		WorkDir:   probeWorkDir,
 
@@ -296,6 +304,7 @@ func TestProbeAccountRespectsConfigTimeout(t *testing.T) {
 
 	start := time.Now()
 	_, err := ProbeAccount(context.Background(), ProbeConfig{
+		Reaper:    procutiltest.Reaper(),
 		Retention: UserHomeRetention(0),
 		WorkDir:   probeWorkDir,
 
@@ -427,13 +436,13 @@ func TestExtractAccountInfoFromInitResponseFailsLoudOnUnreadablePayload(t *testi
 // probe itself, not by caller discipline: a perfectly good binary that would
 // answer the handshake is still refused when the caller did not say which
 // directory it is asking about. Before this, every production caller passed
-// ProbeConfig{Retention: UserHomeRetention(0), Binary: binary} and silently inherited the app's launch cwd.
+// ProbeConfig{Reaper: procutiltest.Reaper(), Retention: UserHomeRetention(0), Binary: binary} and silently inherited the app's launch cwd.
 func TestProbeAccountRequiresWorkDir(t *testing.T) {
 	binary := writeMockClaudeInitScript(t, t.TempDir(),
 		`{"subscriptionType":"Claude Max"}`, "success", "")
 
 	for _, workDir := range []string{"", "relative/dir"} {
-		info, err := ProbeAccount(context.Background(), ProbeConfig{Retention: UserHomeRetention(0), Binary: binary, WorkDir: workDir})
+		info, err := ProbeAccount(context.Background(), ProbeConfig{Reaper: procutiltest.Reaper(), Retention: UserHomeRetention(0), Binary: binary, WorkDir: workDir})
 		if err == nil {
 			t.Fatalf("WorkDir %q: expected refusal, got %+v", workDir, info)
 		}

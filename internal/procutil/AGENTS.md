@@ -62,6 +62,10 @@ This package owns six utilities:
   waits, so hold it only across the write, and not for an executable another
   process runs.
 
+Tests whose subject refuses to start without a reaper pass
+`procutiltest.Reaper()`, which watches nothing, or a `procutiltest.Recorder`
+to assert what is watched. Production code must not import `procutiltest`.
+
 Call `ConfigureGroup` before starting the command and pass the same command to
 `KillConfiguredGroup`. These APIs do not verify process identity or establish
 general descendant ownership; callers that act after PID reuse is possible need

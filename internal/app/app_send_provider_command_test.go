@@ -1,6 +1,7 @@
 package app
 
 import (
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/testutil/mockexec"
 	"encoding/json"
 	"os"
@@ -106,7 +107,7 @@ func installCapturingClaudeSession(t *testing.T, app *App, thread store.Thread, 
 	sess, err := claude.NewSession(
 		context.Background(),
 		thread.ID,
-		claude.Config{Retention: claude.UserHomeRetention(0), Binary: writeStdinCapturingClaudeBinary(t, capturePath), WorkDir: thread.WorkspacePath},
+		claude.Config{Reaper: procutiltest.Reaper(), Retention: claude.UserHomeRetention(0), Binary: writeStdinCapturingClaudeBinary(t, capturePath), WorkDir: thread.WorkspacePath},
 		func(provider.ProviderEvent) {},
 	)
 	if err != nil {

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/providertest"
 )
 
 func TestCodexApprovalWaitsForUserResponseWithoutTimeout(t *testing.T) {
@@ -556,7 +557,7 @@ func TestCodexMcpElicitationWaitsForUserResponseWithoutTimeout(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	capturePath := filepath.Join(t.TempDir(), "stdin.ndjson")
-	proc, err := provider.Spawn(ctx, provider.SpawnConfig{
+	proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{
 		Binary: "bash",
 		Args:   []string{"-c", `printf '%s\n' '{"jsonrpc":"2.0","id":5,"method":"mcpServer/elicitation/request","params":{"serverName":"my-mcp","message":"Authorize"}}'; while IFS= read -r line; do printf '%s\n' "$line" >> "$CAPTURE"; done`},
 		Env: map[string]string{

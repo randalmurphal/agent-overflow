@@ -11,6 +11,7 @@ import (
 
 	"agent-overflow/internal/claudecatalog"
 	"agent-overflow/internal/codexmodels"
+	"agent-overflow/internal/procutil"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/providerstatus"
@@ -272,7 +273,7 @@ func TestProviderBinaryUpgradeRefreshesTheCodexCatalogBeforeCommitting(t *testin
 		t.Fatalf("set codex binary: %v", err)
 	}
 	lists := 0
-	app.providerDiscoveryCaches.CodexModels = codexmodels.NewWith(time.Minute, func(context.Context, string) ([]provider.ModelInfo, error) {
+	app.providerDiscoveryCaches.CodexModels = codexmodels.NewWith(time.Minute, func(context.Context, string, procutil.Reaper) ([]provider.ModelInfo, error) {
 		lists++
 		return []provider.ModelInfo{{Slug: "gpt-5", Provider: string(provider.Codex)}}, nil
 	}, time.Now)

@@ -10,6 +10,7 @@ import (
 
 	"strings"
 
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/testutil/mockexec"
 )
@@ -65,6 +66,7 @@ func bashJSON(literal string) string {
 func newThreadUsageSession(t *testing.T, binary string) *Session {
 	t.Helper()
 	s, err := NewSession(context.Background(), testThread, Config{
+		Reaper:  procutiltest.Reaper(),
 		Binary:  binary,
 		Model:   "test-model",
 		WorkDir: "/tmp",

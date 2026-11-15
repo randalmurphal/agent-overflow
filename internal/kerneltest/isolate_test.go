@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/textgen"
 )
 
@@ -194,7 +195,7 @@ func TestProviderBinarySettingsCoversBothProviders(t *testing.T) {
 }
 
 func TestDisabledCodexModelCatalogNeverSpawns(t *testing.T) {
-	models, err := DisabledCodexModelCatalog().Get(context.Background(), "codex")
+	models, err := DisabledCodexModelCatalog().Get(context.Background(), "codex", procutiltest.Reaper())
 	if err == nil {
 		t.Fatalf("Get() error = nil, want the disabled-catalog error (models=%v)", models)
 	}
