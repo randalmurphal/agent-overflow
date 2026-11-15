@@ -13,7 +13,7 @@
 
   import { onDestroy, onMount, untrack } from 'svelte';
   import { paneWorkspacePath, type ThreadPane } from '../../stores/thread.svelte';
-  import type { ComposerDraftStore } from '../../stores/composerDraft.svelte';
+  import type { ComposerDraftStore, EmptyThreadCleanup } from '../../stores/composerDraft.svelte';
   import ComposerInputSurface from './ComposerInputSurface.svelte';
   import type {
     ComposerInputSurfaceHandle,
@@ -52,7 +52,9 @@
   import { deriveComposerSendState } from './composerSendState';
   import { dispatchSend } from './composerSend';
   import { runInterrupt } from '../../stores/threadInterrupt.svelte';
-  import { withEmptyDraftCleanup } from '../../stores/emptyDraftCleanup';
+  import { isEmptyDraftCleanupPending, settleEmptyDraftCleanup, withEmptyDraftCleanup } from '../../stores/emptyDraftCleanup';
+  import { keepDraftInNewThread } from '../../stores/deletedDraftThread';
+  import { applyThreadDeleted } from '../../stores/eventsThreadRows';
   import {
     DeleteEmptyDraftThread,
     GetThreadUserMessageHistory,
@@ -100,7 +102,7 @@
   import { getShellRun, isShellRunActive, runShellCommand } from '../../stores/shellCommands.svelte';
   import { isTransportClassError } from '../../stores/transportStatus.svelte';
   import { pathBasename } from '../../utils/pathDisplay';
-  import type { DiffReviewComment, ProposedPlanComment, SourceDiffReview, SourceProposedPlan } from '../../types/models';
+  import type { DiffReviewComment, ProposedPlanComment, SourceDiffReview, SourceProposedPlan, Thread } from '../../types/models';
 
   interface Props {
     pane: ThreadPane;
@@ -404,35 +406,49 @@
     );
   }
 
-  // The empty-draft delete in flight for the pane's thread. Uploads and sends
-  // started meanwhile wait for it, then use the thread the pane shows: the
-  // kept thread, or the replacement that carries what was typed.
-  let emptyDraftCleanupInFlight: { threadId: string; settled: Promise<void> } | null = null;
-
-  async function settleEmptyDraftCleanup(): Promise<void> {
-    const cleanup = emptyDraftCleanupInFlight;
-    if (cleanup && cleanup.threadId === pane.threadId) await cleanup.settled;
-  }
-
+  // While the emptied draft's delete is in flight, uploads and sends (and
+  // the toolbar's row writers, stores/emptyDraftCleanup.ts) wait for it, then
+  // use the thread the pane shows: the kept thread, or the replacement that
+  // carries what was typed.
   function threadIdForUpload(): string | null {
     const threadId = pane.threadId;
-    if (threadId && emptyDraftCleanupInFlight?.threadId === threadId) return null;
+    if (isEmptyDraftCleanupPending(threadId)) return null;
     return threadId;
   }
 
   async function ensureThreadIdForUpload(): Promise<string | null> {
-    await settleEmptyDraftCleanup();
+    if (isEmptyDraftCleanupPending(pane.threadId)) await settleEmptyDraftCleanup(pane.threadId);
     return pane.ensureMaterializedThread();
   }
 
   async function handleEmptyDraftCleanupResult(
     cleanupDraft: ComposerDraftStore,
     threadId: string,
+    settings: Thread,
     deleted: boolean,
+    answer: EmptyThreadCleanup | null,
   ): Promise<void> {
     // Also reached when only the deletion broadcast proved the delete.
-    if (deleted) cleanupDraft.releaseDeletedThread(threadId);
-    if (pane.threadId !== threadId) return;
+    const unsaved = (deleted ? cleanupDraft.releaseDeletedThread(threadId) : null) ?? answer?.unsaved ?? null;
+    const contested = answer?.contested === true;
+    if (pane.threadId !== threadId) {
+      // Typed into the thread, then moved on: the text is kept in a new
+      // draft thread, as a new thread left with text in it is.
+      if (unsaved) await keepDraftInNewThread(settings, unsaved, cleanupDraft);
+      return;
+    }
+    if (contested) {
+      // Another screen's draft kept the thread. It stays theirs, listed;
+      // what this screen typed meanwhile goes to a new thread.
+      emptyDraftCleanupKey = null;
+      const kept = pane.thread;
+      if (pane.dematerializeEmptyDraftThread()) {
+        if (kept) prependThread(kept);
+        const replacementId = await pane.ensureMaterializedThread();
+        if (replacementId) resetTextareaHeight();
+      }
+      return;
+    }
     if (emptyDraftCleanupHasActiveWork() || draftHasContentOrSourceNow()) {
       emptyDraftCleanupKey = null;
       if (deleted && pane.dematerializeEmptyDraftThread()) {
@@ -477,24 +493,26 @@
       }
       if (hasPendingSave) return;
       if (emptyDraftCleanupKey === threadId) return;
+      const settings = pane.thread;
+      if (!settings) return;
       emptyDraftCleanupKey = threadId;
       // The draft store orders the delete with this thread's saves, so text
       // typed while it is in flight is never saved to a deleted thread.
       const cleanupDraft = draft;
-      const cleanup = { threadId, settled: Promise.resolve() };
-      emptyDraftCleanupInFlight = cleanup;
-      cleanup.settled = (async () => {
+      let answer: EmptyThreadCleanup | null = null;
+      void (async () => {
         try {
           await withEmptyDraftCleanup(
             threadId,
-            () => cleanupDraft.deleteEmptyThread(threadId, () => DeleteEmptyDraftThread(threadId)),
-            (deleted) => handleEmptyDraftCleanupResult(cleanupDraft, threadId, deleted),
+            async () => {
+              answer = await cleanupDraft.deleteEmptyThread(threadId, () => DeleteEmptyDraftThread(threadId));
+              return answer.deleted;
+            },
+            (deleted) => handleEmptyDraftCleanupResult(cleanupDraft, threadId, settings, deleted, answer),
           );
         } catch (err) {
           emptyDraftCleanupKey = null;
           pane.setGeneralError(`Failed to clean up empty draft thread: ${errString(err)}`, err);
-        } finally {
-          if (emptyDraftCleanupInFlight === cleanup) emptyDraftCleanupInFlight = null;
         }
       })();
     });
@@ -626,8 +644,8 @@
       // A send pressed while the emptied draft's delete is in flight belongs
       // to the thread the composer shows once that settles. Guarded so an
       // ordinary send keeps its synchronous path to the draft clear.
-      if (emptyDraftCleanupInFlight) {
-        await settleEmptyDraftCleanup();
+      if (isEmptyDraftCleanupPending(pane.threadId)) {
+        await settleEmptyDraftCleanup(pane.threadId);
         if (disposed || sendAdmission !== owner || !sendState.canSend) return;
       }
       const sendPane = pane;
@@ -1083,6 +1101,7 @@
 
   let releaseDraftRegistration: (() => void) | null = null;
   let releaseUploadWaiter: (() => void) | null = null;
+  let releaseThreadGone: (() => void) | null = null;
 
   onMount(() => {
     releasePlanEvents = retainProposedPlanEventListener(() => pane.threadId);
@@ -1096,6 +1115,8 @@
     // path) has a working registration.
     releaseDraftRegistration = registerComposerDraft(pane.paneId, draft);
     releaseUploadWaiter = draft.registerUploadWaiter(() => surface?.waitForUploads() ?? Promise.resolve());
+    // A save answering not_found is the deletion broadcast arriving early.
+    releaseThreadGone = draft.registerThreadGoneHandler(applyThreadDeleted);
     releaseActivityRail = activityRail.mount();
   });
 
@@ -1106,6 +1127,8 @@
     releaseDraftRegistration = null;
     releaseUploadWaiter?.();
     releaseUploadWaiter = null;
+    releaseThreadGone?.();
+    releaseThreadGone = null;
     releaseActivityRail?.();
     releaseActivityRail = null;
   });

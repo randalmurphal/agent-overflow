@@ -10,6 +10,7 @@
 // Registry shape mirrors composerPickerRegistry: a plain Map keyed by paneId,
 // no `$state`, because callers invoke it imperatively and never subscribe.
 
+import { isEmptyDraftCleanupPending, settleEmptyDraftCleanup } from './emptyDraftCleanup';
 import { GetThread, RenameThread } from './bindings';
 import { syncThreadReply } from './panes.svelte';
 import { threadRowFrameMark } from './threadRowFrames';
@@ -67,6 +68,8 @@ export async function renameThreadTitle(
   const next = title.trim();
   if (next === '' || next === currentTitle) return { ok: true };
   try {
+    // An emptied draft whose delete was in flight has no title left to set.
+    if (isEmptyDraftCleanupPending(threadId) && await settleEmptyDraftCleanup(threadId)) return { ok: true };
     const mark = threadRowFrameMark();
     await RenameThread(threadId, next);
     const updated = (await GetThread(threadId)) as Thread;

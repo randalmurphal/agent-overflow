@@ -16,6 +16,7 @@ import {
   resetProviderModelsForTest,
 } from '../../../stores/providerModels.svelte';
 import type { ModelInfo } from '../../../types/settings';
+import { withEmptyDraftCleanup } from '../../../stores/emptyDraftCleanup';
 
 function makeThread(runtimeMode: RuntimeMode): Thread {
   return {
@@ -78,6 +79,28 @@ describe('<AccessToggle>', () => {
       );
     });
     expect(pane.thread?.runtimeMode).toBe('auto-accept-edits');
+  });
+
+  it('applies a mode picked during an empty-draft delete to the placeholder it leaves', async () => {
+    const pane = await buildRegisteredPane({ ...makeThread('approval-required'), id: 'emptied', isDraft: true, projectId: 'project-1' });
+    const update = setBindingMock('UpdateThreadRuntimeMode', async () => makeThread('auto-accept-edits'));
+    const defaults = setBindingMock('UpdateNewThreadDefaults', async (input: Record<string, unknown>) => ({ ...input }));
+    let answer!: () => void;
+    const answered = new Promise<void>((resolve) => { answer = resolve; });
+    const cleanup = withEmptyDraftCleanup('emptied', async () => { await answered; return true; }, async () => {
+      pane.dematerializeEmptyDraftThread();
+    });
+    const { getByRole, getByTestId } = render(AccessToggle, { props: { pane } });
+
+    await fireEvent.click(getByTestId('composer-access-toggle'));
+    await fireEvent.click(getByRole('menuitem', { name: /Auto-accept edits/ }));
+    expect(update).not.toHaveBeenCalled();
+    answer();
+    await cleanup;
+
+    await waitFor(() => expect(defaults).toHaveBeenCalledWith(expect.objectContaining({ runtimeMode: 'auto-accept-edits' })));
+    expect(update).not.toHaveBeenCalled();
+    expect(pane.hasDraftPlaceholder).toBe(true);
   });
 
   it('updates new-thread defaults on a placeholder', async () => {
