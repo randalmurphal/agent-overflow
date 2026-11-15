@@ -1044,7 +1044,7 @@ describe('activity run — collapsing an expanded body keeps the tail pinned', (
     await waitFor(() => clip.clientHeight <= capBefore + DRIFT_PX, 'cap to retract on collapse');
     // The strand is stable, not transient: without the re-pin the gap stays
     // a whole body tall forever, so a generous settle window cannot mask it.
-    await waitFor(() => bottomGap() <= DRIFT_PX, 'collapse to keep the newest row', 240);
+    await waitFor(() => bottomGap() <= DRIFT_PX, 'collapse to keep the newest row');
     expect(bottomGap()).toBeLessThanOrEqual(DRIFT_PX);
   });
 
@@ -1068,7 +1068,7 @@ describe('activity run — collapsing an expanded body keeps the tail pinned', (
     expect(bottomGap()).toBeLessThanOrEqual(DRIFT_PX);
 
     clip.style.maxHeight = `${clip.clientHeight - 80}px`;
-    await waitFor(() => bottomGap() <= DRIFT_PX, 'viewport shrink to re-pin the bottom', 240);
+    await waitFor(() => bottomGap() <= DRIFT_PX, 'viewport shrink to re-pin the bottom');
     expect(bottomGap()).toBeLessThanOrEqual(DRIFT_PX);
   });
 });

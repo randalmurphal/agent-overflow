@@ -12,7 +12,7 @@ import { describe, expect, it } from 'vitest';
 import '../../../app.css';
 import { tick } from 'svelte';
 import { makeItem } from '../../../test/helpers/chat';
-import { raf, wait, waitFor } from '../../../test/helpers/browserFrames';
+import { raf, wait, waitFor, withinFrames } from '../../../test/helpers/browserFrames';
 import {
   distanceToBottom,
   mountTimeline,
@@ -425,9 +425,9 @@ describe('narration promotion in the timeline', () => {
     );
 
     await streamNarration(pane, threadId, 1, [bash(QUEUED_ID, 2, threadId, 'running')]);
-    await waitFor(() => !pane.isItemSmoothing(NARRATION_ID), 'the reveal to drain', 600);
+    await waitFor(() => !pane.isItemSmoothing(NARRATION_ID), 'the reveal to drain');
     // Nothing on screen to present: no wait for the presentation ceiling.
-    await waitFor(() => pane.getItemById(NARRATION_ID)?.kind === 'assistant_text', 'the install', 10);
+    await withinFrames(() => pane.getItemById(NARRATION_ID)?.kind === 'assistant_text', 'the install', 10);
     expect(pane.revealBoundary).toBeNull();
   });
 
@@ -441,19 +441,18 @@ describe('narration promotion in the timeline', () => {
     await waitFor(
       () => scrollEl.querySelector('[data-testid="row-promotion-stage"]') !== null,
       'the stage to mount',
-      600,
     );
     // The reader leaves for the top: the virtualizer unmounts the tail row
     // and its stage with the promotion a few frames in.
     void userScrollTo(scrollEl, 0, 3);
-    await waitFor(
+    await withinFrames(
       () => scrollEl.querySelector(`[data-item-id="${NARRATION_ID}"]`) === null,
       'the tail row to unmount',
       60,
     );
     expect(scrollEl.querySelector('[data-testid="row-promotion-stage"]')).toBeNull();
     // Well inside the presentation ceiling: the unmount ended the hold.
-    await waitFor(() => pane.getItemById(NARRATION_ID)?.kind === 'assistant_text', 'the install', 20);
+    await withinFrames(() => pane.getItemById(NARRATION_ID)?.kind === 'assistant_text', 'the install', 20);
     expect(pane.presentingRowPromotions).toEqual([]);
     expect(pane.revealBoundary).toBeNull();
   });
@@ -468,7 +467,6 @@ describe('narration promotion in the timeline', () => {
     await waitFor(
       () => scrollEl.querySelector('[data-testid="row-promotion-stage"]') !== null,
       'the stage to mount',
-      600,
     );
     expect(pane.getItemById(NARRATION_ID)?.kind).toBe('thinking');
 

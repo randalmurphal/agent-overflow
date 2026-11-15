@@ -29,12 +29,10 @@ describe('subagent body clip', () => {
     await waitFor(
       () => clip.scrollHeight > clip.clientHeight && clip.clientHeight > 0,
       'subagent digest to become scrollable',
-      240,
     );
     await waitFor(
       () => Math.abs(distanceFromBottom(clip)) <= 2,
       'subagent digest initial bottom',
-      360,
     );
 
     expect(clip.clientHeight).toBeLessThanOrEqual(Math.min(window.innerHeight / 2, 320) + 1);
@@ -45,7 +43,6 @@ describe('subagent body clip', () => {
     await waitFor(
       () => Math.abs(distanceFromBottom(clip)) <= 2,
       'subagent digest appended bottom',
-      360,
     );
     expect(container.textContent).toContain('Read row 180');
     expect(resizeObserverErrors.messages).toEqual([]);
@@ -63,7 +60,6 @@ describe('subagent body clip', () => {
         Math.abs(distanceFromBottom(clip)) <= 2 &&
         getByTestId('overlay-scrollbar').dataset.visible === 'true',
       'scrollable bottom-following digest',
-      360,
     );
     for (let i = 0; i < 4; i += 1) await raf();
 
@@ -74,7 +70,7 @@ describe('subagent body clip', () => {
       pointerId: 1,
     });
     await raf();
-    await waitFor(() => distanceFromBottom(clip) > 200, 'reader scroll escape', 120);
+    await waitFor(() => distanceFromBottom(clip) > 200, 'reader scroll escape');
     await raf();
     await raf();
     const readingRow = firstVisibleRow(clip);
@@ -90,12 +86,11 @@ describe('subagent body clip', () => {
     expect(distanceFromBottom(clip)).toBeGreaterThan(200);
 
     await fireEvent.wheel(bar, { deltaY: 9_000, deltaMode: 0 });
-    await waitFor(() => Math.abs(distanceFromBottom(clip)) <= 2, 'bottom re-arm', 120);
+    await waitFor(() => Math.abs(distanceFromBottom(clip)) <= 2, 'bottom re-arm');
     await fireEvent.click(getByTestId('append-row'));
     await waitFor(
       () => Math.abs(distanceFromBottom(clip)) <= 2,
       'bottom follow after reader returns',
-      360,
     );
     expect(holder.controller?.visibleTimelineItemIds?.()).toBeNull();
     expect(holder.controller?.canPreserveTimelineWindow?.(() => false)).toBe(true);
