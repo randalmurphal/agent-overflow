@@ -28,7 +28,7 @@ import { applyQueueStateChanged } from './eventsQueue';
 import { getQueueRevisionForThread } from './sendQueue.svelte';
 import { refreshSidebarProjections, syncThreadRow } from './eventsThreadRows';
 import { clearLiveUsageSnapshot } from './threadContextWindow';
-import { fetchDiscussionChannelSnapshot } from './eventsDiscussion';
+import { readDiscussionChannel } from './eventsDiscussion';
 import { hydrateProviderAccounts } from './eventsProvider';
 import { hydrateRateLimitsSnapshots } from './eventsRateLimits';
 import { resyncWorktreeSetups } from './eventsWorktreeSetup';
@@ -546,7 +546,7 @@ function applySettledTransportGap(gap: TransportGap, origin?: EventOrigin): void
         const channelId = pane.thread?.discussionId;
         if (!channelId || seenChannelIds.has(channelId)) continue;
         seenChannelIds.add(channelId);
-        const refresh = fetchDiscussionChannelSnapshot(channelId).then(({ state, messages }) => {
+        const refresh = readDiscussionChannel(channelId, -1, ({ state, messages }) => {
           for (const p of ingestPanes()) {
             if (p.thread?.discussionId !== channelId) continue;
             p.applyChannelState(state);

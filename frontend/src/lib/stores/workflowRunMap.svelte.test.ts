@@ -732,6 +732,67 @@ describe('workflowRunMap — events during an outstanding fetch', () => {
     expect(peekWorkflowRunMap(ROOT)!.runs[1]!.softStop).toBe(true);
   });
 
+  // The first answer indexes the tree, so before it lands no frame can be
+  // routed to the key. The transport writes frames queued for this
+  // connection ahead of a reply, so a transition the read predates can land
+  // first; it folds over the answer once the tree is indexed.
+  it('folds a frame that overtook the first answer, once that answer indexes its run', async () => {
+    const mock = deferredMock();
+    const attachment = attachWorkflowRunMap(ROOT);
+    holds.push(attachment);
+    await flush();
+    expect(mock.pending).toBe(1);
+
+    applyWorkflowRunMapItemState(itemEvent({ to: 'needs-human', reason: 'gate' }));
+    applyWorkflowRunMapSoftStop({ itemId: WAVE_2, armed: true });
+    mock.resolve(campaign());
+    await flush();
+    expect(peekWorkflowRunMap(ROOT)!.runs[1]!.state).toBe('needs-human');
+    expect(peekWorkflowRunMap(ROOT)!.runs[1]!.softStop).toBe(true);
+  });
+
+  it('patches a frame that follows the first answer', async () => {
+    const mock = deferredMock();
+    holds.push(attachWorkflowRunMap(ROOT));
+    await flush();
+    mock.resolve(campaign());
+    await flush();
+    applyWorkflowRunMapSoftStop({ itemId: WAVE_2, armed: true });
+    expect(peekWorkflowRunMap(ROOT)!.runs[1]!.softStop).toBe(true);
+  });
+
+  it('leaves a frame of another tree that overtook the first answer unrouted', async () => {
+    const mock = deferredMock();
+    holds.push(attachWorkflowRunMap(ROOT));
+    await flush();
+    applyWorkflowRunMapItemState(itemEvent({ itemId: 'elsewhere', to: 'needs-human' }));
+    mock.resolve(campaign());
+    await flush();
+    await settleInvalidate();
+    expect(getBindingMock('WorkflowGetRunMap')).toHaveBeenCalledTimes(1);
+    expect(peekWorkflowRunMap(ROOT)!.runs[1]!.state).toBe('running');
+  });
+
+  it('re-asks a second key on the same tree whose first answer a live patch overtook', async () => {
+    await attached(ROOT);
+    const mock = deferredMock();
+    holds.push(attachWorkflowRunMap(WAVE_2));
+    await flush();
+    expect(mock.pending).toBe(1);
+    // Routed live to ROOT, which has the tree indexed; WAVE_2's answer may
+    // predate it.
+    applyWorkflowRunMapSoftStop({ itemId: WAVE_2, armed: true });
+    mock.resolve(campaign());
+    await flush();
+    setBindingMock('WorkflowGetRunMap', async () => {
+      const healed = campaign();
+      healed.runs[1]!.softStop = true;
+      return healed;
+    });
+    await settleInvalidate();
+    expect(peekWorkflowRunMap(WAVE_2)!.runs[1]!.softStop).toBe(true);
+  });
+
   it('does not re-source for a fetch nothing raced', async () => {
     await attached();
     // deferredMock installs a fresh spy, so the count below is the re-source

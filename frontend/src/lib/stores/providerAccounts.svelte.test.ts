@@ -48,6 +48,15 @@ import type { ProviderAccountAutoSwitchEvent } from '../types/events';
 import { account, deferred } from '../../test/helpers/providerAccounts';
 import type { ManagedProviderAccount } from './bindings';
 import { ProviderLoginMethod, ProviderLoginPhase, ProviderLoginState } from './bindings';
+import { __setTransportHelloForTest } from './transportStatus.svelte';
+import type { TransportHello } from '../transport/wsClient';
+
+function hello(launchId: string): TransportHello {
+  return {
+    protocolVersion: 1, capabilities: [], backendId: '', backendName: '', serverTimeMs: 0, clockSkewMs: 0,
+    bundleId: '', bundleVersion: '', minShellBuild: 0, launchId,
+  } as TransportHello;
+}
 
 function toastMessages(): string[] {
   return getToasts().map((toast) => toast.message);
@@ -62,6 +71,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  __setTransportHelloForTest(null);
   resetProviderAccounts();
   resetAccountInfo();
   resetRateLimits();
@@ -468,6 +478,22 @@ describe('startProviderLogin', () => {
     expect(isProviderCredentialOpInFlight('claude')).toBe(true);
   });
 
+  it('keeps the newer frames that arrived before the start reply', async () => {
+    setBindingMock('ListProviderAccounts', async () => []);
+    setBindingMock('StartProviderLogin', async () => {
+      applyProviderLogin(new ProviderLoginState({ provider: 'claude', phase: ProviderLoginPhase.LoginPhaseStarting, seq: 1 }));
+      applyProviderLogin(new ProviderLoginState({ provider: 'claude', phase: ProviderLoginPhase.LoginPhaseAwaitingCode, seq: 2, authorizeUrl: 'https://claude.ai/a' }));
+      applyProviderLogin(new ProviderLoginState({ provider: 'claude', phase: ProviderLoginPhase.LoginPhaseFailed, seq: 3, error: 'ended' }));
+      return new ProviderLoginState({ provider: 'claude', phase: ProviderLoginPhase.LoginPhaseAwaitingCode, seq: 2, authorizeUrl: 'https://claude.ai/a' });
+    });
+    await loadProviderAccounts();
+
+    await startProviderLogin('claude');
+
+    expect(getProviderLogin('claude')).toMatchObject({ phase: ProviderLoginPhase.LoginPhaseFailed, error: 'ended' });
+    expect(isProviderCredentialOpInFlight('claude')).toBe(false);
+  });
+
   it('reports a start that never produced a link, and leaves the button usable', async () => {
     setBindingMock('ListProviderAccounts', async () => []);
     setBindingMock('StartProviderLogin', async () => {
@@ -549,6 +575,55 @@ describe('submitProviderLoginCode', () => {
 
     expect(submitMock).toHaveBeenCalledWith('claude', 'code#state');
     expect(getProviderLogin('claude').phase).toBe(ProviderLoginPhase.LoginPhaseVerifying);
+  });
+
+  // The transport can write a frame the backend published after the call
+  // returned ahead of the reply, so the reply is ordered by its Seq.
+  it('keeps a newer frame that arrived before the reply', async () => {
+    setBindingMock('SubmitProviderLoginCode', async () => {
+      applyProviderLogin(new ProviderLoginState({
+        provider: 'claude', phase: ProviderLoginPhase.LoginPhaseVerifying, seq: 4,
+        authorizeUrl: 'https://claude.ai/first',
+      }));
+      applyProviderLogin(new ProviderLoginState({
+        provider: 'claude', phase: ProviderLoginPhase.LoginPhaseAwaitingCode, seq: 5,
+        authorizeUrl: 'https://claude.ai/second', error: 'That link stopped working, so here is a new one.',
+      }));
+      return new ProviderLoginState({
+        provider: 'claude', phase: ProviderLoginPhase.LoginPhaseVerifying, seq: 4,
+        authorizeUrl: 'https://claude.ai/first',
+      });
+    });
+
+    await submitProviderLoginCode('claude', 'wrong#state');
+
+    expect(getProviderLogin('claude')).toMatchObject({
+      phase: ProviderLoginPhase.LoginPhaseAwaitingCode,
+      authorizeUrl: 'https://claude.ai/second',
+    });
+  });
+
+  it('applies the reply and then a newer frame that follows it', async () => {
+    setBindingMock('SubmitProviderLoginCode', async () => new ProviderLoginState({
+      provider: 'claude', phase: ProviderLoginPhase.LoginPhaseVerifying, seq: 4,
+    }));
+    await submitProviderLoginCode('claude', 'wrong#state');
+    expect(getProviderLogin('claude').phase).toBe(ProviderLoginPhase.LoginPhaseVerifying);
+    // An older frame that is late changes nothing.
+    applyProviderLogin(new ProviderLoginState({ provider: 'claude', phase: ProviderLoginPhase.LoginPhaseAwaitingCode, seq: 3 }));
+    expect(getProviderLogin('claude').phase).toBe(ProviderLoginPhase.LoginPhaseVerifying);
+    applyProviderLogin(new ProviderLoginState({
+      provider: 'claude', phase: ProviderLoginPhase.LoginPhaseAwaitingCode, seq: 5, authorizeUrl: 'https://claude.ai/second',
+    }));
+    expect(getProviderLogin('claude').authorizeUrl).toBe('https://claude.ai/second');
+  });
+
+  it('orders a restarted backend from scratch', async () => {
+    __setTransportHelloForTest(hello('launch-1'));
+    applyProviderLogin(new ProviderLoginState({ provider: 'claude', phase: ProviderLoginPhase.LoginPhaseAwaitingCode, seq: 40 }));
+    __setTransportHelloForTest(hello('launch-2'));
+    applyProviderLogin(new ProviderLoginState({ provider: 'claude', phase: ProviderLoginPhase.LoginPhaseFailed, seq: 2, error: 'gone' }));
+    expect(getProviderLogin('claude').phase).toBe(ProviderLoginPhase.LoginPhaseFailed);
   });
 
   it('puts a refused code in the flow rather than in a toast over it', async () => {

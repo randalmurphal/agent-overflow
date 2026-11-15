@@ -314,3 +314,99 @@ describe('reset', () => {
     expect(calls).toEqual([`frame ${KEY} 1`, `frame k2 1`]);
   });
 });
+
+describe('claims', () => {
+  it('holds every key while a claim of every key is in flight, and replays over its answer', async () => {
+    const pending = deferred<{ key: string; text: string }>();
+    const claimed = stream.claim(null, () => pending.promise, (answer) => {
+      calls.push(`answer ${answer.key}`);
+      states.set(answer.key, { text: answer.text, seq: 0, finished: false });
+    });
+    // The answer's key is not known until it lands; its frames arrive first.
+    stream.push('minted', { seq: 1, chunk: 'b' });
+    stream.push('other', { seq: 1, chunk: 'x' });
+    expect(calls).toEqual([]);
+
+    pending.resolve({ key: 'minted', text: 'a' });
+    await expect(claimed).resolves.toEqual({ key: 'minted', text: 'a' });
+    expect(calls).toEqual(['answer minted', 'frame minted 1', 'frame other 1']);
+    expect(text('minted')).toBe('ab');
+    expect(text('other')).toBe('x');
+  });
+
+  it('folds frames live when the answer lands first', async () => {
+    await stream.claim(null, async () => 'minted', (key) => {
+      states.set(key, { text: 'a', seq: 0, finished: false });
+    });
+    stream.push('minted', { seq: 1, chunk: 'b' });
+    expect(text('minted')).toBe('ab');
+  });
+
+  it('holds only its own key when it names one', async () => {
+    const pending = deferred<string>();
+    const claimed = stream.claim(KEY, () => pending.promise, () => calls.push('answer'));
+    stream.push('k2', { seq: 1, chunk: 'x' });
+    stream.push(KEY, { seq: 1, chunk: 'a' });
+    expect(calls).toEqual(['frame k2 1']);
+    pending.resolve('done');
+    await claimed;
+    expect(calls).toEqual(['frame k2 1', 'answer', `frame ${KEY} 1`]);
+  });
+
+  it('applies every overlapping answer and replays once the last settles', async () => {
+    const first = deferred<string>();
+    const second = deferred<string>();
+    const a = stream.claim(null, () => first.promise, (answer) => calls.push(`answer ${answer}`));
+    const b = stream.claim(null, () => second.promise, (answer) => calls.push(`answer ${answer}`));
+    stream.push(KEY, { seq: 1, chunk: 'a' });
+    first.resolve('one');
+    await a;
+    expect(calls).toEqual(['answer one']);
+    second.resolve('two');
+    await b;
+    expect(calls).toEqual(['answer one', 'answer two', `frame ${KEY} 1`]);
+  });
+
+  it('replays the buffer and rejects when the call fails', async () => {
+    const pending = deferred<string>();
+    const apply = vi.fn();
+    const claimed = stream.claim(null, () => pending.promise, apply);
+    stream.push(KEY, { seq: 1, chunk: 'a' });
+    pending.reject(new Error('refused'));
+    await expect(claimed).rejects.toThrow('refused');
+    expect(apply).not.toHaveBeenCalled();
+    expect(text()).toBe('a');
+    stream.push(KEY, { seq: 2, chunk: 'b' });
+    expect(text()).toBe('ab');
+  });
+
+  it('keeps one key in arrival order across a claim and a read that overlap', async () => {
+    const claimAnswer = deferred<string>();
+    const snapshot = deferred<Snapshot>();
+    read.mockReturnValue(snapshot.promise);
+    const claimed = stream.claim(null, () => claimAnswer.promise, () => undefined);
+    stream.push(KEY, { seq: 2, chunk: 'b' });
+    const hydration = stream.hydrate(KEY);
+    stream.push(KEY, { seq: 3, chunk: 'c' });
+    snapshot.resolve({ text: 'a', seq: 1 });
+    await hydration;
+    // The claim still holds every key.
+    expect(calls).toEqual([`snapshot ${KEY} 1`]);
+    claimAnswer.resolve('done');
+    await claimed;
+    expect(calls).toEqual([`snapshot ${KEY} 1`, `frame ${KEY} 2`, `frame ${KEY} 3`]);
+    expect(text()).toBe('abc');
+  });
+
+  it('drops the buffer on reset and still applies the answer', async () => {
+    const pending = deferred<string>();
+    const claimed = stream.claim(null, () => pending.promise, (answer) => calls.push(`answer ${answer}`));
+    stream.push(KEY, { seq: 1, chunk: 'a' });
+    stream.reset();
+    stream.push(KEY, { seq: 1, chunk: 'live' });
+    pending.resolve('late');
+    await claimed;
+    expect(calls).toEqual([`frame ${KEY} 1`, 'answer late']);
+    expect(text()).toBe('live');
+  });
+});

@@ -103,6 +103,8 @@ type Manager struct {
 	loginMu     sync.Mutex
 	logins      map[string]*loginRun
 	loginStates map[string]LoginState
+	// loginSeq numbers every stored sign-in state (LoginState.Seq).
+	loginSeq uint64
 }
 
 // NewManager constructs an unattached manager. Attach installs the two stores

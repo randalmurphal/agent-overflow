@@ -439,6 +439,58 @@ describe('starting a run', () => {
     expect(start).toHaveBeenCalledTimes(1);
   });
 
+  // The backend starts the run before it answers, and the transport writes
+  // the frames queued for this connection ahead of the reply.
+  it('folds the frames that arrive before the ImportSessions reply', async () => {
+    installBindings({
+      start: async () => {
+        applyImportProgress(frame({ completed: 1, total: 2, id: 'claude:a', status: 'imported', threadIds: ['t1'] }));
+        applyImportProgress(frame({ completed: 2, total: 2, id: 'codex:b', status: 'imported', threadIds: ['t2'] }));
+        applyImportProgress(frame({ completed: 2, total: 2, done: true }));
+        return { importId: 'run-1', total: 2 };
+      },
+    });
+    openSessionImport();
+    await startImport(['claude:a', 'codex:b']);
+
+    expect(getSessionImportRun()).toBeNull();
+    expect(isSessionImportOpen()).toBe(false);
+    expect(toastMessages()).toEqual(['Imported 2 sessions (2 threads).']);
+  });
+
+  it('folds frames that arrive after the ImportSessions reply', async () => {
+    installBindings();
+    openSessionImport();
+    await startImport(['claude:a', 'codex:b']);
+    applyImportProgress(frame({ completed: 1, id: 'claude:a', status: 'failed', error: 'boom' }));
+    applyImportProgress(frame({ completed: 2, done: true }));
+
+    expect(getSessionImportRun()).toMatchObject({ completed: 2, active: false, terminal: true });
+    expect(getImportRowResult('claude:a')).toMatchObject({ status: 'failed' });
+  });
+
+  it('marks a run lost by a gap that arrives before its reply', async () => {
+    installBindings({
+      start: async () => {
+        markImportConnectionLost();
+        return { importId: 'run-1', total: 2 };
+      },
+    });
+    await startImport(['claude:a', 'codex:b']);
+    expect(getSessionImportRun()).toMatchObject({ active: false, terminal: false, connectionLost: true });
+  });
+
+  it('drops frames of another run that arrive before the reply', async () => {
+    installBindings({
+      start: async () => {
+        applyImportProgress({ importId: 'run-0', completed: 2, total: 2, done: true });
+        return { importId: 'run-1', total: 2 };
+      },
+    });
+    await startImport(['claude:a', 'codex:b']);
+    expect(getSessionImportRun()).toMatchObject({ importId: 'run-1', completed: 0, active: true });
+  });
+
   it('surfaces a refused run and leaves no run behind', async () => {
     installBindings({
       start: async () => {

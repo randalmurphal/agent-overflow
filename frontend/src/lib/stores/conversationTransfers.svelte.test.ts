@@ -90,6 +90,44 @@ it('merges events arriving during a status read without losing other recovered o
   expect(computerTransfers('tower').rows.find((value) => value.id === 'op-1')?.phase).toBe('complete');
 });
 
+// The transport writes events queued for this connection ahead of a reply,
+// so the transfer's next phase, written in the same millisecond, can land
+// before the Bind answer that predates it.
+it('keeps a phase that arrived before the Bind reply in the same millisecond', async () => {
+  stop = initConversationTransfers(); await tick(); setupBindings();
+  setBindingMock('CreateThreadTransferOffer', async () => ({}));
+  setBindingMock('BindThreadTransferDestination', async () => {
+    takePinnedBackend();
+    const id = pendingConversationTransfer()!.operationID;
+    emitWailsEvent('thread:transfer', row({ id, needsDestination: false, phase: 'sending', updatedAt: 5 }), SOURCE);
+    return row({ id, needsDestination: false, phase: 'preparing', updatedAt: 5 });
+  });
+  openConversationTransfer(thread);
+  await submitConversationTransfer('laptop', 'project-target', 'copy', true);
+  expect(computerTransfers('tower').rows[0]?.phase).toBe('sending');
+});
+
+it('applies a phase that follows the Bind reply', async () => {
+  stop = initConversationTransfers(); await tick(); setupBindings();
+  setBindingMock('CreateThreadTransferOffer', async () => ({}));
+  openConversationTransfer(thread);
+  const id = pendingConversationTransfer()!.operationID;
+  await submitConversationTransfer('laptop', 'project-target', 'copy', true);
+  expect(computerTransfers('tower').rows[0]?.phase).toBe('preparing');
+  emitWailsEvent('thread:transfer', row({ id, needsDestination: false, phase: 'sending', updatedAt: 1 }), SOURCE);
+  expect(computerTransfers('tower').rows[0]?.phase).toBe('sending');
+});
+
+it('keeps the status read over an older event that arrived during it', async () => {
+  stop = initConversationTransfers(); await tick();
+  let resolve!: (rows: ConversationTransfer[]) => void;
+  setBindingMock('GetThreadTransfers', () => new Promise<ConversationTransfer[]>((done) => { resolve = done; }));
+  const read = refreshComputerTransfers('tower');
+  emitWailsEvent('thread:transfer', row({ phase: 'preparing', updatedAt: 2 }), SOURCE);
+  resolve([row({ phase: 'sending', updatedAt: 4 })]); await read;
+  expect(computerTransfers('tower').rows.find((value) => value.id === 'op-1')?.phase).toBe('sending');
+});
+
 it('allows another copy once the previous operation completed', async () => {
   stop = initConversationTransfers(); await tick(); setupBindings();
   setBindingMock('CreateThreadTransferOffer', async () => ({}));

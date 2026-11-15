@@ -31,6 +31,8 @@ import { userFacingError } from '../utils/userFacingError';
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
 import { withBackendTarget } from '../transport/backends';
 import { providerAccountName, providerLabel } from './providerAccountLabels';
+import { createSequenceGate } from './snapshotStream';
+import { getTransportHelloFor } from './transportStatus.svelte';
 
 export interface ProviderAccountActions {
   loggingIn: boolean;
@@ -511,6 +513,10 @@ export class ComputerAccounts {
   }
 
   private logins = $state<Record<ProviderID, ProviderLoginState>>(this.seedLogins());
+  // States reach this client as frames and as call answers, and the
+  // transport can write a frame published after a call returned ahead of
+  // its reply, so the backend's Seq orders them, not arrival.
+  private readonly loginOrder = createSequenceGate();
 
   /** One provider's sign-in, idle when nothing is running. */
   getProviderLogin(provider: ProviderID): ProviderLoginState {
@@ -547,7 +553,7 @@ export class ComputerAccounts {
   /**
    * Apply one pushed transition. The backend is the only author of this state:
    * a client that missed a frame and one that polled see the same thing, so
-   * nothing here merges.
+   * nothing here merges; the newest by the backend's Seq wins.
    */
   applyProviderLogin(state: ProviderLoginState | null | undefined): void {
     const provider = state?.provider as ProviderID | undefined;
@@ -557,6 +563,7 @@ export class ComputerAccounts {
 
   private adoptProviderLogin(provider: ProviderID, state: ProviderLoginState): void {
     if (this.disposed) return;
+    if (!this.loginOrder.admit(provider, state.seq, getTransportHelloFor(this.backend)?.launchId ?? '')) return;
     this.logins[provider] = state;
     this.actions[provider].loggingIn = this.isProviderLoginActive(provider);
     if (state.phase === ProviderLoginPhase.LoginPhaseSucceeded) {

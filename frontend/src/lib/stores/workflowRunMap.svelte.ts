@@ -39,6 +39,7 @@ import { workflowItemBackend } from '../transport/entityIndex';
 
 import { WorkflowGetRunMap } from './bindings';
 import { createEntityStore, type EntityAttachment } from './entityStore.svelte';
+import { createSnapshotStream } from './snapshotStream';
 import {
   isTerminalRunState,
   patchItemState,
@@ -217,6 +218,37 @@ function markRacedFetch(key: string): void {
   if (fetchesInFlight.has(key)) racedDuringFetch.add(key);
 }
 
+// Keys whose FIRST answer is in the air: nothing is indexed for them, so no
+// frame can be routed to them, and a patch another key of the same tree
+// takes may be one that answer predates.
+const firstLoads = new Set<string>();
+
+/** A live patch reached `patched`; a first load of another key may predate it. */
+function markRacedFirstLoads(patched: readonly string[]): void {
+  for (const key of firstLoads) {
+    if (!patched.includes(key)) racedDuringFetch.add(key);
+  }
+}
+
+// Frames that named no indexed run. A first answer is what indexes a tree,
+// and the transport writes frames queued for this connection ahead of a
+// reply, so a transition of a run the answer will contain can land before
+// it. A first load holds this stream (every key: the tree is the answer),
+// and its frames are routed again once the answer is indexed.
+type UnroutedFrame =
+  | { kind: 'item-state'; event: WorkflowItemStateEvent }
+  | { kind: 'phase-state'; event: WorkflowPhaseStateEvent }
+  | { kind: 'soft-stop'; event: WorkflowSoftStopEvent };
+
+const unrouted = createSnapshotStream<UnroutedFrame>({
+  name: 'workflowRunMap',
+  applyFrame: (_itemId, frame) => {
+    if (frame.kind === 'item-state') routeItemState(frame.event);
+    else if (frame.kind === 'phase-state') routePhaseState(frame.event);
+    else routeSoftStop(frame.event);
+  },
+});
+
 /**
  * Consumed by the apply that lands: it is the one that may have buried it.
  *
@@ -256,18 +288,34 @@ const store = createEntityStore<WorkflowRunMapView, void>({
   rawValue: true,
   source: async ({ key, apply, signal }) => {
     const epoch = beginFetch(key);
-    let view: WorkflowRunMapView;
-    try {
-      view = (await WorkflowGetRunMap(key)) as WorkflowRunMapView;
-    } finally {
-      endFetch(key, epoch);
-    }
+    const fetch = async (): Promise<WorkflowRunMapView> => {
+      try {
+        return (await WorkflowGetRunMap(key)) as WorkflowRunMapView;
+      } finally {
+        endFetch(key, epoch);
+      }
+    };
     // A superseded run applies nothing (the primitive drops it) and must not
     // consume the race mark either — the replacement fetch is still in the air,
     // and the mark belongs to whichever answer actually lands.
-    if (signal.aborted) return NOTHING_ACQUIRED;
-    apply(view);
-    reconcileRacedFetch(key);
+    const land = (view: WorkflowRunMapView): void => {
+      if (signal.aborted) return;
+      apply(view);
+      reconcileRacedFetch(key);
+    };
+    if (membersByKey.has(key)) {
+      land(await fetch());
+      return NOTHING_ACQUIRED;
+    }
+    firstLoads.add(key);
+    try {
+      await unrouted.claim(null, fetch, (view) => {
+        firstLoads.delete(key);
+        land(view);
+      });
+    } finally {
+      firstLoads.delete(key);
+    }
     return NOTHING_ACQUIRED;
   },
   onApply: (key, value) => {
@@ -320,7 +368,9 @@ function patchWatchers(
   patch: (view: WorkflowRunMapView) => PatchResult,
   reconcile: (changed: boolean) => boolean = () => false,
 ): void {
-  for (const key of keysWatching(itemId)) {
+  const watchers = keysWatching(itemId);
+  markRacedFirstLoads(watchers);
+  for (const key of watchers) {
     // Null while the store is suspended (disconnect blanks values but keeps
     // attachments). The reconnect resetAll re-sources every key, so there is
     // nothing here worth invalidating for.
@@ -361,6 +411,14 @@ function isRefused(key: string): boolean {
  */
 export function applyWorkflowRunMapPhaseState(event: WorkflowPhaseStateEvent): void {
   if (!event || typeof event.itemId !== 'string' || event.itemId === '') return;
+  if (keysWatching(event.itemId).length === 0) {
+    unrouted.push(event.itemId, { kind: 'phase-state', event });
+    return;
+  }
+  routePhaseState(event);
+}
+
+function routePhaseState(event: WorkflowPhaseStateEvent): void {
   const running = event.status === 'running';
   patchWatchers(event.itemId, (view) => patchPhaseState(view, event), () => running);
 }
@@ -381,6 +439,14 @@ export function applyWorkflowRunMapPhaseState(event: WorkflowPhaseStateEvent): v
  */
 export function applyWorkflowRunMapItemState(event: WorkflowItemStateEvent): void {
   if (!event || typeof event.itemId !== 'string' || event.itemId === '') return;
+  if (keysWatching(event.itemId).length === 0) {
+    unrouted.push(event.itemId, { kind: 'item-state', event });
+    return;
+  }
+  routeItemState(event);
+}
+
+function routeItemState(event: WorkflowItemStateEvent): void {
   const watchers = keysWatching(event.itemId);
   if (watchers.length === 0) {
     // `from` is typed as a state, but birth is the one frame that carries none.
@@ -415,6 +481,14 @@ export function applyWorkflowRunMapItemState(event: WorkflowItemStateEvent): voi
 export function applyWorkflowRunMapSoftStop(event: WorkflowSoftStopEvent): void {
   if (!event || typeof event.itemId !== 'string' || event.itemId === '') return;
   if (typeof event.armed !== 'boolean') return;
+  if (keysWatching(event.itemId).length === 0) {
+    unrouted.push(event.itemId, { kind: 'soft-stop', event });
+    return;
+  }
+  routeSoftStop(event);
+}
+
+function routeSoftStop(event: WorkflowSoftStopEvent): void {
   patchWatchers(event.itemId, (view) => patchSoftStop(view, event));
 }
 
@@ -490,6 +564,8 @@ export function __resetWorkflowRunMapStoreForTest(): void {
   fetchEpoch += 1;
   fetchesInFlight.clear();
   racedDuringFetch.clear();
+  firstLoads.clear();
+  unrouted.reset();
   store.suspend();
   store.resetAll();
 }
