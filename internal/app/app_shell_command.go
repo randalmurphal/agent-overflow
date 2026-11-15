@@ -162,6 +162,15 @@ func (a *App) RunThreadShellCommand(ctx context.Context, threadID string, reques
 		return ShellCommandRun{}, err
 	}
 	defer endAdmission()
+	// A workspace switch and a worktree removal hold the action lock from
+	// their running-work check until the thread has moved, so a command
+	// starts in the workspace the thread runs in after them, never in the
+	// one they are taking it out of.
+	unlockAction, err := a.threadLocks().LockCtx(ctx, threadID)
+	if err != nil {
+		return ShellCommandRun{}, err
+	}
+	defer unlockAction()
 	// A thread delete drops the row under this lock and stops whatever the
 	// thread is running first, so a command registered here is either
 	// stopped by that delete or refused because the thread is gone.

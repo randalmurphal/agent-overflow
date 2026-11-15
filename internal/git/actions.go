@@ -22,7 +22,7 @@ func (c *Core) Commit(cwd, subject, body string) (string, error) {
 		return "", fmt.Errorf("git commit subject is required")
 	}
 
-	if _, _, err := c.Execute(cwd, commitArgs(subject, body)...); err != nil {
+	if err := c.commit(cwd, nil, subject, body); err != nil {
 		return "", err
 	}
 

@@ -2543,13 +2543,11 @@ export function GetWebviewGPUVsyncDisabled(): $CancellablePromise<boolean> {
  * BusyThreads lets the same fetch gate the thread-scoped ones (moving a
  * thread to another checkout) on that thread alone, matching the backend's own ensureThreadChangeAllowed(threadID).
  * 
- * It is deliberately the same computation the removal gate performs while
- * holding the thread locks (removeProjectWorktree →
- * threadActivityBlockReason): the same thread-set resolution
- * (workspaceRefMatches, symlink-canonical, both path columns) and the same
- * per-thread activity reads. An affordance derived from a second, similar
- * predicate is an affordance that eventually disagrees with the refusal, and
- * the direction it disagrees in is a live button over a running agent.
+ * It answers two of the kinds of running work the backend's refusals check
+ * (runningWorkIn): open turns and background tasks, with the same thread-set
+ * resolution (workspaceRefMatches, symlink-canonical, both path columns).
+ * The refusals also cover the kinds this does not show, so the affordance is
+ * never stricter than the refusal.
  * 
  * The candidate set is narrowed by "which threads are busy" BEFORE any path
  * work: the busy set is a handful of rows even on a large history, so this

@@ -473,8 +473,15 @@ func (c *Core) CountWorkingTreeChanges(cwd string) (int, error) {
 // preview must show the real filename. Rename and copy entries carry a second
 // NUL-terminated field (the original path) which is consumed as part of the
 // same change rather than counted twice.
+//
+// Callers weigh what a removal or discard would lose, so the flags override
+// config that hides work from porcelain status: status.showUntrackedFiles
+// (an untracked directory still counts once, as git's default shows it) and
+// diff.ignoreSubmodules or submodule.<name>.ignore. Ignored files are not
+// counted. Files the index marks assume-unchanged or skip-worktree are not
+// either; that is index state, not config.
 func (c *Core) WorkingTreeChanges(cwd string, limit int) (paths []string, total int, err error) {
-	stdout, _, err := c.Execute(cwd, "status", "--porcelain", "-z")
+	stdout, _, err := c.Execute(cwd, "status", "--porcelain", "-z", "--untracked-files=normal", "--ignore-submodules=none")
 	if err != nil {
 		return nil, 0, err
 	}
