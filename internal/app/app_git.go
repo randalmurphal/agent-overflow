@@ -138,15 +138,14 @@ func (a *App) GitSyncBranch(ws WorkspaceRef, branch string) ([]gitops.GitBranch,
 //ao:scope git:operate
 func (a *App) GitCommit(ws WorkspaceRef, subject, body string, selection CommitSelection) (gitops.GitActionResult, error) {
 	const action = "commit"
-	workspace, err := a.reviewWorkspace(action, ws)
-	if err != nil {
+	if _, err := a.reviewWorkspace(action, ws); err != nil {
 		return gitops.GitActionResult{}, err
 	}
-	listed, err := a.listedCommitSelection(a.lifeCtx(), workspace, selection)
+	covered, err := a.commitSelection(selection)
 	if err != nil {
 		return gitops.GitActionResult{}, fmt.Errorf("%s: %w", action, err)
 	}
-	return a.gitApplication().Commit(ws, subject, body, listed)
+	return a.gitApplication().Commit(ws, subject, body, covered)
 }
 
 // GitPush pushes the workspace's current branch.

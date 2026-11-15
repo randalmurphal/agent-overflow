@@ -85,7 +85,10 @@ type Core struct {
 	repositoryLookups     repositoryLookups
 	repositoryLookupSlots chan struct{}
 	timeout               time.Duration
-	maxOutputBytes        int64
+	// commitTimeout replaces the constant of that name for a test; zero
+	// keeps it.
+	commitTimeout  time.Duration
+	maxOutputBytes int64
 
 	// prCache memoizes lookupOpenPR results so a refresh storm (gitwatch
 	// firing every fs-event-debounce) doesn't translate into a `gh pr
@@ -646,6 +649,11 @@ type commandSpec struct {
 	outputLimit int64
 	// timeout overrides the interactive default for app-lifetime transfer jobs.
 	timeout time.Duration
+	// stopGracefully runs the command in its own process group and stops
+	// it, at its timeout or its context's end, with SIGTERM to the group
+	// (then SIGKILL after commitStopGrace), so the children it started stop
+	// with it. A commit sets it: its hooks may be running when it stops.
+	stopGracefully bool
 	// maxBytes caps stdout and stderr independently; <= 0 falls back to
 	// the Core's configured cap, then the package default.
 	maxBytes int64
@@ -729,6 +737,11 @@ func (c *Core) runSpec(spec commandSpec) (commandResult, error) {
 	}
 	cmd := exec.CommandContext(ctx, target.path, spec.args...)
 	cmd.Args[0] = target.argv0
+	if spec.stopGracefully {
+		procutil.ConfigureGroup(cmd)
+		cmd.Cancel = func() error { return procutil.TerminateConfiguredGroup(cmd) }
+		cmd.WaitDelay = commitStopGrace
+	}
 	// Background-cadence git (`status` every debounce edge) must not
 	// opportunistically rewrite .git/index: the write is a pure cache
 	// optimization for git, but it fires an fs event under the watched

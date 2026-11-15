@@ -50,17 +50,14 @@ func (s CommitSelection) validate() error {
 
 // ErrCommitFilesChanged is returned by GitCommit when a selected file is no
 // longer the change ListCommitFiles listed.
-var ErrCommitFilesChanged = errors.New("the selected files changed since they were listed")
+var ErrCommitFilesChanged = gitops.ErrCommitFilesChanged
 
-// maxNamedChangedFiles bounds the paths an ErrCommitFilesChanged names.
-const maxNamedChangedFiles = 3
-
-// listedCommitSelection turns a selection into the paths git commits, after
-// checking that each selected file is still the change the caller listed:
-// the same paths, status and working-tree content. A file edited since (an
-// agent is free to write while the dialog is open) fails the commit, so
-// nothing is recorded that the dialog did not show.
-func (a *App) listedCommitSelection(ctx context.Context, workspace string, selection CommitSelection) (gitops.CommitSelection, error) {
+// commitSelection turns a selection into what the commit takes. Each
+// selected file must still be the change the caller listed (the same paths,
+// status and working-tree content) when the commit reads it, and the commit
+// records the content it checked, so nothing is recorded that the dialog did
+// not show even while an agent writes (gitops.Core.CommitSelected).
+func (a *App) commitSelection(selection CommitSelection) (gitops.CommitSelection, error) {
 	if err := selection.validate(); err != nil {
 		return gitops.CommitSelection{}, err
 	}
@@ -71,35 +68,7 @@ func (a *App) listedCommitSelection(ctx context.Context, workspace string, selec
 	if err != nil {
 		return gitops.CommitSelection{}, err
 	}
-	files, err := gitdiff.WorktreeChanges(ctx, workspace, tempRoot)
-	if err != nil {
-		return gitops.CommitSelection{}, err
-	}
-	current := make(map[string]CommitFile, len(files))
-	for _, file := range files {
-		current[file.Path] = file
-	}
-	paths := make([]string, 0, len(selection.Files))
-	var changed []string
-	for _, file := range selection.Files {
-		now, listed := current[file.Path]
-		if !listed || now.OldPath != file.OldPath || now.Status != file.Status || now.Version != file.Version {
-			changed = append(changed, file.Path)
-			continue
-		}
-		if file.OldPath != "" {
-			paths = append(paths, file.OldPath)
-		}
-		paths = append(paths, file.Path)
-	}
-	if len(changed) > 0 {
-		named := strings.Join(changed[:min(len(changed), maxNamedChangedFiles)], ", ")
-		if more := len(changed) - maxNamedChangedFiles; more > 0 {
-			named = fmt.Sprintf("%s and %d more", named, more)
-		}
-		return gitops.CommitSelection{}, fmt.Errorf("%w (%s); review them and commit again", ErrCommitFilesChanged, named)
-	}
-	return gitops.CommitSelection{Paths: paths}, nil
+	return gitops.CommitSelection{Files: selection.Files, SnapshotRoot: tempRoot}, nil
 }
 
 // maxCommitFiles bounds the file list one ListCommitFiles answer carries.

@@ -714,7 +714,10 @@ and anti-changes that live only here:
   closes after the commit that leaves nothing. Generate describes the
   selection. Neither touches what the user staged outside the selection.
   A selected file that changed after it was listed fails the commit, so
-  nothing is recorded that the dialog did not show. During a merge,
+  nothing is recorded that the dialog did not show. A commit, hooks and
+  signing included, gets 10 minutes, long enough for a project's checks in
+  a pre-commit hook; one stopped there ends its hooks and leaves the index
+  unlocked. During a merge,
   cherry-pick or revert a commit takes every change, so every file is
   selected and locked. Not built: hunk staging, discard, amend, push
   after commit.

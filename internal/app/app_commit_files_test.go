@@ -323,7 +323,7 @@ func TestGitCommit_RefusesFilesChangedSinceTheyWereListed(t *testing.T) {
 
 	// More changed files than the error names.
 	var many []string
-	for i := range maxNamedChangedFiles + 2 {
+	for i := range 5 { // two more than the error names
 		name := fmt.Sprintf("m%d.txt", i)
 		writeWorkspaceFile(t, workspace, name, "v1\n")
 		many = append(many, name)
@@ -345,6 +345,64 @@ func TestGitCommit_RefusesFilesChangedSinceTheyWereListed(t *testing.T) {
 	}
 	if got := gitText(t, workspace, "show", "HEAD:README.txt"); got != "hello\nother\n" {
 		t.Fatalf("committed README = %q", got)
+	}
+}
+
+// A file an agent keeps rewriting while the dialog commits it: whenever the
+// commit goes ahead, it records the content the check accepted, never a
+// rewrite that landed between the check and git's read.
+func TestGitCommit_RecordsTheContentItChecked(t *testing.T) {
+	t.Parallel()
+	app, ref, workspace, _ := gitActionTestSetup(t)
+	path := filepath.Join(workspace, "busy.txt")
+	writeWorkspaceFile(t, workspace, "busy.txt", "version A\n")
+	stop := make(chan struct{})
+	writing := make(chan struct{})
+	go func() {
+		defer close(writing)
+		contents := [][]byte{[]byte("version A\n"), []byte("version B\n")}
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			// Replaced whole, so every read sees one version or the
+			// other. The temporary file sits in .git, out of the listing.
+			temp := filepath.Join(workspace, ".git", "busy.tmp")
+			if os.WriteFile(temp, contents[i%2], 0o644) == nil {
+				_ = os.Rename(temp, path)
+			}
+		}
+	}()
+	defer func() { close(stop); <-writing }()
+
+	for commits := 0; commits < 8; {
+		listed, err := app.ListCommitFiles(context.Background(), ref)
+		if err != nil {
+			t.Fatalf("ListCommitFiles: %v", err)
+		}
+		var file *CommitFile
+		for i := range listed.Files {
+			if listed.Files[i].Path == "busy.txt" {
+				file = &listed.Files[i]
+			}
+		}
+		if file == nil {
+			continue // Listed while it matched HEAD.
+		}
+		_, err = app.GitCommit(ref, "busy", "", CommitSelection{Files: []CommitFile{*file}})
+		if errors.Is(err, ErrCommitFilesChanged) {
+			continue
+		}
+		if err != nil {
+			t.Fatalf("GitCommit: %v", err)
+		}
+		commits++
+		_, listedBlob, _ := strings.Cut(file.Version, ":")
+		if committed := gitText(t, workspace, "rev-parse", "HEAD:busy.txt"); strings.TrimSpace(committed) != listedBlob {
+			t.Fatalf("commit %d recorded %s, the check accepted %s", commits, strings.TrimSpace(committed), listedBlob)
+		}
 	}
 }
 
