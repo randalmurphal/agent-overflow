@@ -190,6 +190,17 @@ export function prependThread(thread: Thread): void {
 }
 
 /**
+ * The row belongs in the sidebar (a `listed` frame): replaced where it is,
+ * prepended when absent. One transform for both, because a catalog read in
+ * flight replays it over an answer that may lack the row.
+ */
+export function listThread(thread: Thread): void {
+  catalogWriter.mutate(threadBackend(thread.id), (rows) => rows.some((t) => t.id === thread.id)
+    ? rows.map((t) => t.id === thread.id ? thread : t)
+    : [thread, ...rows]);
+}
+
+/**
  * `prependThread` for a row an RPC returned, from a call started at `mark`
  * (threadRowFrameMark): a thread:updated frame that arrived during the call
  * (the new row's `listed` echo, a later write) is kept over the reply

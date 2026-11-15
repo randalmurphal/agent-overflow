@@ -283,7 +283,9 @@ func (a *App) GetThreadDefaults(opts CreateThreadOptions) (ThreadDefaults, error
 
 // ListThreads backs the frontend sidebar. It deliberately excludes
 // "draft" threads (newly created but never sent) so the sidebar stays
-// clean: a thread only becomes visible once its first item lands.
+// clean: a thread becomes visible once its draft has content or its first
+// item lands (store.ListThreadsWithItems), and the write that does it
+// announces the row as listed.
 // Internal callers that need every thread (tests, fork inspection,
 // discussion runtime) go through a.store.ListThreads directly: an answer
 // here is a client's catalog read, which releases heavy post-boot work.

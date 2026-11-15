@@ -106,21 +106,24 @@ func (s *Store) DeleteDispatchedFlushQueueItem(id string) error {
 // marked pendingFlush that the residue rule calls history
 // (unconfirmedUserRowResidueSQL) refuses the whole restore: its message was
 // shown as sent and a later session ran, so neither the row nor its text may
-// move. It reports whether the draft changed and the comments it returned.
-func (s *Store) RestoreFlushQueueToDraft(expected, merged ThreadDraft, ids, retire []string) (bool, []DiffReviewReturnedComments, error) {
+// move. It reports the draft's write (whether it changed and whether it
+// listed the thread) and the comments it returned. The rows it retires
+// cannot unlist a thread the draft's content lists, so the write's listing
+// holds for the whole transaction.
+func (s *Store) RestoreFlushQueueToDraft(expected, merged ThreadDraft, ids, retire []string) (DraftWrite, []DiffReviewReturnedComments, error) {
 	threadID := merged.ThreadID
 	if threadID == "" || expected.ThreadID != threadID {
-		return false, nil, fmt.Errorf("queue restoration requires matching draft threads")
+		return DraftWrite{}, nil, fmt.Errorf("queue restoration requires matching draft threads")
 	}
 	for _, itemID := range retire {
 		if strings.TrimSpace(itemID) == "" {
-			return false, nil, fmt.Errorf("store: queue restoration: an unconfirmed row id is empty")
+			return DraftWrite{}, nil, fmt.Errorf("store: queue restoration: an unconfirmed row id is empty")
 		}
 	}
-	var changed bool
+	var write DraftWrite
 	var returned []DiffReviewReturnedComments
 	err := s.writeItems(threadID, nil, "restore queued messages to the draft of "+threadID, func(tx *sql.Tx, w *cardWrite) error {
-		changed, returned = false, nil
+		write, returned = DraftWrite{}, nil
 		current, _, err := getThreadDraft(tx, threadID)
 		if err != nil {
 			return err
@@ -129,7 +132,7 @@ func (s *Store) RestoreFlushQueueToDraft(expected, merged ThreadDraft, ids, reti
 			return fmt.Errorf("composer changed during queue restoration; queue retained")
 		}
 		if merged != expected {
-			if changed, err = upsertThreadDraft(tx, merged); err != nil {
+			if write, err = upsertThreadDraft(tx, merged); err != nil {
 				return err
 			}
 		}
@@ -161,9 +164,9 @@ func (s *Store) RestoreFlushQueueToDraft(expected, merged ThreadDraft, ids, reti
 		return nil
 	})
 	if err != nil {
-		return false, nil, err
+		return DraftWrite{}, nil, err
 	}
-	return changed, returned, nil
+	return write, returned, nil
 }
 
 // DeleteFlushQueueItemsForThread drops every queued message of one thread.

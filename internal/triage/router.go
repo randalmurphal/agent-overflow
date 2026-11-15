@@ -1309,7 +1309,8 @@ func (r *Router) handleSubagentStatus(evt provider.ProviderEvent) error {
 //     not have the row ignores it.
 //   - "patch"    changed fields only, keyed by ID.
 //   - "listed"   the row belongs in the active sidebar now — insert it if
-//     absent (creation, fork, terminal start, unarchive).
+//     absent (creation, fork, terminal start, unarchive, and the
+//     first item or draft content of a never-sent thread).
 //   - "unlisted" the row has left the active sidebar but still exists
 //     (archive). Carries the row so open panes converge too.
 //   - "deleted"  the row is gone from SQLite. ID only; one per row of a
