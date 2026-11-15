@@ -14,14 +14,14 @@ import { replaceQueueForThread, resetForTest as resetSendQueue, type QueueItem }
 const navigate = vi.hoisted(() => vi.fn(async () => {}));
 vi.mock('../../stores/threadItemNavigation', () => ({ navigateToThreadItem: navigate }));
 const opened = vi.hoisted(() => vi.fn());
-// Both tray openers hand the resolved thread to `place`, which is the pane's
-// agent thread companion.
-type Place = (thread: { id: string }) => Promise<unknown>;
+// Both tray openers make their placer on the click and hand it the resolved
+// thread: the pane's agent thread companion.
+type Place = () => (thread: { id: string }) => Promise<unknown>;
 vi.mock('../chat/agentThreadOrigin', async (importOriginal) => {
   const original = await importOriginal<typeof import('../chat/agentThreadOrigin')>();
   const open = (origin: { threadId: string }, place?: Place) => () => {
     opened(origin.threadId);
-    void place?.({ id: origin.threadId });
+    void place?.()({ id: origin.threadId });
   };
   return {
     ...original,
@@ -29,8 +29,10 @@ vi.mock('../chat/agentThreadOrigin', async (importOriginal) => {
     agentThreadOpener: (origin: { threadId: string }, _viewer: unknown, place?: Place) => ({ computer: '', open: open(origin, place) }),
   };
 });
-const companion = vi.hoisted(() => vi.fn(async () => {}));
-vi.mock('../../stores/agentThreadCompanion', () => ({ openAgentThreadCompanion: companion }));
+const companion = vi.hoisted(() => vi.fn(async (_source: unknown, _thread: unknown) => {}));
+vi.mock('../../stores/agentThreadCompanion', () => ({
+  agentThreadCompanionPlacer: (source: unknown) => (thread: unknown) => companion(source, thread),
+}));
 
 function row(token: string, over: Partial<ThreadAgentRow> = {}): ThreadAgentRow {
   return {

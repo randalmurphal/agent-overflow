@@ -13,9 +13,8 @@
     userMessageOriginThread,
     userMessageOriginWake,
   } from '../../utils/userMessageMeta';
-  import { agentThreadOriginChip } from '../chat/agentThreadOrigin';
+  import { agentThreadOriginChip, type PlaceThread } from '../chat/agentThreadOrigin';
   import type { IncomingAgentMessage } from './activityRailAgents.svelte';
-  import type { Thread } from '../../types/models';
   import Icon from '../primitives/Icon.svelte';
   import Inbox from '@lucide/svelte/icons/inbox';
 
@@ -27,8 +26,8 @@
     now: number;
     isStopping: boolean;
     onStop: (message: IncomingAgentMessage) => void;
-    /** Where the sending thread opens. */
-    place: (thread: Thread) => Promise<unknown>;
+    /** Where the sending thread opens, made on each click. */
+    place: PlaceThread;
   }
 
   let { message, viewer, now, isStopping, onStop, place }: Props = $props();

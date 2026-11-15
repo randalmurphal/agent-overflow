@@ -27,7 +27,7 @@
   import { isSettledAgentRow } from '../../utils/agentTray';
   import { agentStopReport, agentStopAllReport } from '../../utils/agentTrayStops';
   import { agentThreadOpener } from '../chat/agentThreadOrigin';
-  import { openAgentThreadCompanion } from '../../stores/agentThreadCompanion';
+  import { agentThreadCompanionPlacer } from '../../stores/agentThreadCompanion';
   import AgentTrayRow from './AgentTrayRow.svelte';
   import AgentIncomingTrayRow from './AgentIncomingTrayRow.svelte';
   import Icon from '../primitives/Icon.svelte';
@@ -99,7 +99,9 @@
   const onToggleExpanded = (row: ThreadAgentRow) => toggleExpanded(row.token);
   const onTogglePastExpanded = (row: ThreadAgentRow) => toggleExpanded(pastKey(row));
 
-  const placeInCompanion = (thread: Thread) => openAgentThreadCompanion(pane, thread);
+  // Made on each click, so a thread read after the pane moved on opens
+  // nowhere rather than beside another thread.
+  const placeInCompanion = () => agentThreadCompanionPlacer(pane);
 
   // An open row opens the thread it went to in this pane's agent thread
   // companion. A settled one leaves the tray and shows where its answer

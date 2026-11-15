@@ -15,6 +15,8 @@ import {
   getPane,
   mountThreadInPane,
   openThreadInNewPane,
+  PANE_MOVED_ON,
+  paneUnchanged,
   revealPane,
 } from './panes.svelte';
 import { addErrorToast } from './toast.svelte';
@@ -38,7 +40,7 @@ export async function openAgentThreadCompanion(source: ThreadPane, thread: Threa
   }
   const existing = companionForSource(source.paneId, AGENT_THREAD_COMPANION_KIND);
   const companion = existing ?? openCompanion(source.paneId, AGENT_THREAD_COMPANION_KIND);
-  if (!companion) throw new Error('The pane moved on before the thread opened.');
+  if (!companion) throw new Error(PANE_MOVED_ON);
   const pane = getPane(companion.paneId) ?? createPane(companion.paneId);
   try {
     await mountThreadInPane(thread, pane, 'committed', { inPlace: true });
@@ -48,6 +50,20 @@ export async function openAgentThreadCompanion(source: ThreadPane, thread: Threa
     if (!existing && getPane(companion.paneId) === pane) closeCompanion(companion.paneId);
     throw err;
   }
+}
+
+/**
+ * Where an Agents row's click opens its thread: `source`'s companion, as
+ * `source` is when the person clicks. The thread may need a read first; a
+ * placement after `source` left the layout or moved to another thread is
+ * refused, so a thread never opens beside one the click was not made from.
+ */
+export function agentThreadCompanionPlacer(source: ThreadPane): (thread: Thread) => Promise<void> {
+  const unchanged = paneUnchanged(source);
+  return async (thread) => {
+    if (!unchanged()) throw new Error(PANE_MOVED_ON);
+    await openAgentThreadCompanion(source, thread);
+  };
 }
 
 /**

@@ -12,7 +12,16 @@
 
 import { getAttachedBackends, attachedBackendEntry, backendDisplayName, backendReachable } from '../../stores/attachedBackends.svelte';
 import { getThreadById } from '../../stores/threads.svelte';
-import { openThreadInPane, findPaneShowingThread, focusPane, revealPane, syncThreadReply } from '../../stores/panes.svelte';
+import {
+  findPaneShowingThread,
+  focusPane,
+  getFocusedPaneOrNull,
+  openThreadInPane,
+  PANE_MOVED_ON,
+  paneUnchanged,
+  revealPane,
+  syncThreadReply,
+} from '../../stores/panes.svelte';
 import { threadFramedSince, threadRowFrameMark } from '../../stores/threadRowFrames';
 import { GetThread } from '../../stores/bindings';
 import { withBackendTarget } from '../../transport/backends';
@@ -56,7 +65,7 @@ function originBackend(computerId: string) {
 export function agentThreadOriginChip(
   origin: UserMessageOriginThread,
   viewer: BackendKey,
-  place?: (thread: Thread) => Promise<unknown>,
+  place?: PlaceThread,
 ): AgentThreadOriginChip {
   const title = origin.title || 'another thread';
   const { computer, open } = agentThreadOpener(origin, viewer, place);
@@ -70,6 +79,31 @@ export interface AgentThreadOpener {
   open: (() => void) | null;
 }
 
+/** Puts a thread the person opened on screen. */
+export type ThreadPlacer = (thread: Thread) => Promise<unknown>;
+
+/**
+ * Where an open puts its thread, made when the person clicks: the thread
+ * may need a read first, and the placer refuses a pane that moved on
+ * during it.
+ */
+export type PlaceThread = () => ThreadPlacer;
+
+/**
+ * The focused pane, as it is now. The placement is refused when focus has
+ * moved to another pane, or that pane to another thread, by the time the
+ * thread is placed; with no thread pane focused now, it lands where an
+ * open with no pane named does.
+ */
+function focusedPanePlacer(): ThreadPlacer {
+  const source = getFocusedPaneOrNull();
+  const unchanged = source ? paneUnchanged(source) : null;
+  return async (thread) => {
+    if (source && unchanged && (getFocusedPaneOrNull() !== source || !unchanged())) throw new Error(PANE_MOVED_ON);
+    return openThreadInPane(thread);
+  };
+}
+
 /**
  * How a row shown by `viewer` reaches a thread another agent named: the
  * computer to name beside it, and the open action when that computer is
@@ -79,7 +113,7 @@ export interface AgentThreadOpener {
 export function agentThreadOpener(
   origin: UserMessageOriginThread,
   viewer: BackendKey,
-  place?: (thread: Thread) => Promise<unknown>,
+  place?: PlaceThread,
 ): AgentThreadOpener {
   const entry = originBackend(origin.computerId);
   const elsewhere = origin.computerId !== '' && entry?.id !== viewer;
@@ -87,12 +121,13 @@ export function agentThreadOpener(
   if (!entry && origin.computerId !== '') return { computer, open: null };
   const backend = entry?.id ?? viewer;
   if (!backendReachable(backend)) return { computer, open: null };
-  return { computer, open: () => { void openAgentThreadOrigin(origin, backend, place); } };
+  return { computer, open: () => { void openAgentThreadOrigin(origin, backend, place?.()); } };
 }
 
 /**
  * Open the source thread in a pane, by default the focused one, otherwise
- * where `place` puts it. The row is read from its own computer
+ * where `place` puts it; either is fixed when this is called, before any
+ * read, and refuses a pane that moved on. The row is read from its own computer
  * when this client does not already hold it, and the read teaches the RPC
  * router which computer owns the id, so the pane's own calls route there.
  * A thread:updated frame for that row which lands during the read, a whole
@@ -104,7 +139,7 @@ export function agentThreadOpener(
 export async function openAgentThreadOrigin(
   origin: UserMessageOriginThread,
   backend: BackendKey,
-  place: (thread: Thread) => Promise<unknown> = openThreadInPane,
+  place: ThreadPlacer = focusedPanePlacer(),
 ): Promise<void> {
   try {
     const open = findPaneShowingThread(origin.threadId);

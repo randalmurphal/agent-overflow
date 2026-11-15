@@ -1,16 +1,20 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { agentThreadOriginChip, openAgentThreadOrigin } from './agentThreadOrigin';
+import { agentThreadOpener, agentThreadOriginChip, openAgentThreadOrigin } from './agentThreadOrigin';
 import { REVEAL_PANE_EVENT } from '../../stores/eventNames';
 import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from '../../stores/paneLayout.svelte';
 import {
   createPane,
+  findPaneShowingThread,
+  focusPane,
   getFocusedPaneId,
   getPane,
   openThreadInNewPane,
   openThreadInPane,
   resetPanesForTest,
 } from '../../stores/panes.svelte';
+import { AGENT_THREAD_COMPANION_KIND, agentThreadCompanionPlacer } from '../../stores/agentThreadCompanion';
+import { companionForSource } from '../../stores/companionPanes.svelte';
 import { replaceAllThreads } from '../../stores/threads.svelte';
 import { applyThreadUpdated } from '../../stores/eventsThreadRows';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
@@ -181,6 +185,73 @@ describe('openAgentThreadOrigin', () => {
     const messages = getToasts().map((toast) => toast.message);
     expect(messages.some((message) => message.startsWith('Opened Auth rewrite, but could not refresh it'))).toBe(true);
     expect(messages.some((message) => message.startsWith('Could not open'))).toBe(false);
+  });
+
+  // The read can outlast what the click was made from: the pane moves to
+  // another thread, or focus to another pane. The thread then opens nowhere
+  // rather than beside, or in place of, a thread the click never saw.
+  function deferredRead(thread: ReturnType<typeof makeThread>) {
+    let resolve!: () => void;
+    setBindingMock('GetThread', () => new Promise((done) => { resolve = () => done(thread); }));
+    return () => resolve();
+  }
+
+  it('opens a worker beside nothing when its source pane moved to another thread during the read', async () => {
+    const a = makeThread({ id: 'thread-a', title: 'A' });
+    const b = makeThread({ id: 'thread-b', title: 'B' });
+    const worker = makeThread({ id: 'thread-9', title: 'Auth rewrite' });
+    replaceAllThreads([a, b]);
+    setBindingMock('SwitchThread', async (id: string) => [a, b, worker].find((t) => t.id === id));
+    await openThreadInPane(a, 'main');
+    const release = deferredRead(worker);
+    const source = getPane('main')!;
+    agentThreadOpener(origin(), HOME_BACKEND, () => agentThreadCompanionPlacer(source)).open!();
+    await openThreadInPane(b, 'main');
+    release();
+    await vi.waitFor(() => expect(getToasts().map((toast) => toast.message)).toContain(
+      'Could not open Auth rewrite: The pane moved on before the thread opened.',
+    ));
+    expect(companionForSource('main', AGENT_THREAD_COMPANION_KIND)).toBeNull();
+    expect(findPaneShowingThread('thread-9')).toBeNull();
+    expect(getPane('main')?.threadId).toBe('thread-b');
+  });
+
+  it('opens nothing in the focused pane when focus moved to another pane during the read', async () => {
+    const a = makeThread({ id: 'thread-a', title: 'A' });
+    const c = makeThread({ id: 'thread-c', title: 'C' });
+    const worker = makeThread({ id: 'thread-9', title: 'Auth rewrite' });
+    replaceAllThreads([a, c]);
+    setBindingMock('SwitchThread', async (id: string) => [a, c, worker].find((t) => t.id === id));
+    setPaneLayoutItemsForTest([
+      { id: 'main', paneId: 'main', kind: 'thread', widthPx: 600 },
+      { id: 'side', paneId: 'side', kind: 'thread', widthPx: 600 },
+    ]);
+    createPane('side');
+    await openThreadInPane(c, 'side');
+    await openThreadInPane(a, 'main');
+    focusPane('main');
+    const release = deferredRead(worker);
+    agentThreadOriginChip(origin(), HOME_BACKEND).open!();
+    focusPane('side');
+    release();
+    await vi.waitFor(() => expect(getToasts().map((toast) => toast.message)).toContain(
+      'Could not open Auth rewrite: The pane moved on before the thread opened.',
+    ));
+    expect(getPane('side')?.threadId).toBe('thread-c');
+    expect(getPane('main')?.threadId).toBe('thread-a');
+  });
+
+  it('opens in the pane it was clicked from when nothing moved during the read', async () => {
+    const a = makeThread({ id: 'thread-a', title: 'A' });
+    const worker = makeThread({ id: 'thread-9', title: 'Auth rewrite' });
+    replaceAllThreads([a]);
+    setBindingMock('SwitchThread', async (id: string) => [a, worker].find((t) => t.id === id));
+    await openThreadInPane(a, 'main');
+    focusPane('main');
+    const release = deferredRead(worker);
+    agentThreadOriginChip(origin(), HOME_BACKEND).open!();
+    release();
+    await vi.waitFor(() => expect(getPane('main')?.threadId).toBe('thread-9'));
   });
 
   it('reads a row once when no frame lands during the read', async () => {
