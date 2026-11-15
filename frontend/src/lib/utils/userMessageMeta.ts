@@ -44,8 +44,9 @@ export interface UserMessageMeta {
    * - `agent-thread` — an agent in another Agent Overflow thread, on this
    *   computer or on a paired one, wrote this row through the thread tools:
    *   a spawn's first message, a `thread_send`, a `thread_ask`, or the wake
-   *   carrying an answer back. `originThread` names the source thread. It
-   *   renders as an agent-message row, not the user bubble
+   *   carrying answers back. `originThread` names the source thread; a wake
+   *   that lists several threads names the first and its text names them
+   *   all. It renders as an agent-message row, not the user bubble
    *   (`docs/specs/agent-thread-tools.md`, How agent messages appear).
    * - `scheduled` — the prompt of a turn the provider started on its own
    *   schedule: a Claude cron job's fire or ScheduleWakeup wake. The model

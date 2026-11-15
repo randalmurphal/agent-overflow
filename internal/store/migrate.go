@@ -198,7 +198,7 @@ CREATE INDEX idx_payload_chunks_payload_start
 	{
 		Version: 12,
 		Name:    "channel_max_turns",
-		// v149 drops channels.
+		// v150 drops channels.
 		SQL: `ALTER TABLE channels ADD COLUMN max_turns INTEGER NOT NULL DEFAULT 8;`,
 	},
 	{
@@ -399,7 +399,7 @@ DELETE FROM diff_review_comments WHERE scope IN ('turn', 'session');`,
 	{
 		Version: 26,
 		Name:    "workflow_persistence",
-		// v149 drops automations and automation_cursors.
+		// v150 drops automations and automation_cursors.
 		SQL: `CREATE TABLE work_items (
     id             TEXT    PRIMARY KEY,
     project_id     TEXT    NOT NULL,
@@ -635,7 +635,7 @@ CREATE INDEX idx_work_item_units_worktree
 		// else entirely (an agent proposal id, a call site) and none of them are
 		// ever queried this way.
 		//
-		// v149 drops automations and this index.
+		// v150 drops automations and this index.
 		SQL: `ALTER TABLE automations ADD COLUMN last_fired_at INTEGER NOT NULL DEFAULT 0;
 
 ALTER TABLE automations ADD COLUMN last_run_item_id TEXT NOT NULL DEFAULT '';
@@ -1737,8 +1737,9 @@ CREATE INDEX idx_import_history_items_joined_send_ids
 	{Version: prListSnapshotMigrationVersion, Name: "pr_list_snapshot", SQL: prListSnapshotV146SQL},
 	{Version: attachmentShellMigrationVersion, Name: "attachment_shell", SQL: attachmentShellV147SQL},
 	{Version: reviewRangesRepliesMigrationVersion, Name: "review_ranges_replies", SQL: reviewRangesRepliesV148SQL, Rebuild: true},
-	{Version: retireFeaturesMigrationVersion, Name: "retire_features", SQL: retireFeaturesV149SQL, Rebuild: true},
-	{Version: assistantsMigrationVersion, Name: "assistants", SQL: assistantsV150SQL, Fix: fillAssistantLedger},
+	{Version: threadWakeCarrierMigrationVersion, Name: "thread_wake_carrier", SQL: threadWakeCarrierV149SQL},
+	{Version: retireFeaturesMigrationVersion, Name: "retire_features", SQL: retireFeaturesV150SQL, Rebuild: true},
+	{Version: assistantsMigrationVersion, Name: "assistants", SQL: assistantsV151SQL, Fix: fillAssistantLedger},
 }
 
 // MigrationStep describes one pending migration as it begins, or a

@@ -222,7 +222,7 @@ func TestListThreadAgentTreeReadsTheAnswerHead(t *testing.T) {
 			t.Fatalf("settle %s: %v %v", token, ok, err)
 		}
 	}
-	if ok, err := s.StoreThreadRequestLateReply("late", []byte(strings.Repeat("b", 64)), 21_000, nil); err != nil || !ok {
+	if ok, err := s.StoreThreadRequestLateReply("late", []byte(strings.Repeat("b", 64)), 21_000, nil, false); err != nil || !ok {
 		t.Fatalf("late reply: %v %v", ok, err)
 	}
 	rows, _, err := s.ListThreadAgentTree(agentTreeRead("lead", 1))
@@ -321,7 +321,7 @@ func TestConfirmedWakesNameTheirRow(t *testing.T) {
 	if err := s.InsertFlushQueueItem(FlushQueueItem{ID: "queue:tok", ThreadID: "lead", SendID: "thread-wake:tok", Message: "the answer", EnqueuedAt: 330}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.WithdrawThreadWake("tok", false, "queue:tok", WithdrawQueued); err != nil {
+	if _, err := s.WithdrawThreadWake("tok", false, "queue:tok", WithdrawQueued); err != nil {
 		t.Fatalf("withdraw: %v", err)
 	}
 	var cleared int

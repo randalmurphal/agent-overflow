@@ -9,7 +9,7 @@ import (
 	"unicode"
 )
 
-// TestMigrationV149RetireFeatures applies v149 over a v148 store holding what
+// TestMigrationV150RetireFeatures applies v150 over a v149 store holding what
 // the discussion feature and the workflow scheduler wrote, beside spawns,
 // groups and remote watches:
 //
@@ -33,7 +33,7 @@ import (
 // and indexes are gone, the rebuilt tables restate every other declaration,
 // the CHECKs refuse the retired values and enforce placement, and the view,
 // trigger and foreign keys that name threads still work.
-func TestMigrationV149RetireFeatures(t *testing.T) {
+func TestMigrationV150RetireFeatures(t *testing.T) {
 	db := migrateThrough(t, retireFeaturesMigrationVersion-1)
 	mustExec(t, db, `INSERT INTO projects(id,path,name,created_at,updated_at) VALUES('p','/p','p',1,1)`)
 	mustExec(t, db, `INSERT INTO thread_groups(id,project_id,name,created_at,updated_at) VALUES('g','p','Group',1,1)`)
@@ -123,11 +123,11 @@ func TestMigrationV149RetireFeatures(t *testing.T) {
 	}
 	for _, column := range removedColumns {
 		if !slices.Contains(columnsBefore, column) {
-			t.Fatalf("threads lacks %s before v149; the fixture does not exercise its drop", column)
+			t.Fatalf("threads lacks %s before v150; the fixture does not exercise its drop", column)
 		}
 	}
 	kept := slices.DeleteFunc(slices.Clone(columnsBefore), func(c string) bool { return slices.Contains(removedColumns, c) })
-	// The rows v149 must produce: every kept value as it was, with
+	// The rows v150 must produce: every kept value as it was, with
 	// discussion mode read as chat.
 	wantRows := renderThreadRows(t, db, kept, map[string]string{
 		"mode": "CASE mode WHEN 'discussion' THEN 'chat' ELSE mode END",
@@ -163,7 +163,7 @@ func TestMigrationV149RetireFeatures(t *testing.T) {
 	schemaBefore := migrationSchema(t, db)
 	for _, name := range slices.Concat(removedTables, removedIndexes) {
 		if _, ok := schemaBefore[name]; !ok {
-			t.Fatalf("%s is missing before v149; the fixture does not exercise its drop", name)
+			t.Fatalf("%s is missing before v150; the fixture does not exercise its drop", name)
 		}
 	}
 	// A removed object is a removed table, one of its indexes (declared or
@@ -185,14 +185,14 @@ func TestMigrationV149RetireFeatures(t *testing.T) {
 	migrateFromThrough(t, db, retireFeaturesMigrationVersion-1, retireFeaturesMigrationVersion)
 
 	if got := renderThreadRows(t, db, kept, nil); !slices.Equal(got, wantRows) {
-		t.Errorf("thread rows after v149:\n got %q\nwant %q", got, wantRows)
+		t.Errorf("thread rows after v150:\n got %q\nwant %q", got, wantRows)
 	}
 	modes, err := queryIDs(db, `SELECT id || '=' || mode FROM threads WHERE id IN ('disc-parent','grp-parent') ORDER BY id`)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if want := []string{"disc-parent=chat", "grp-parent=chat"}; !slices.Equal(modes, want) {
-		t.Errorf("discussion thread modes after v149 = %v, want %v", modes, want)
+		t.Errorf("discussion thread modes after v150 = %v, want %v", modes, want)
 	}
 	placements, err := queryIDs(db, `SELECT id || '=' || placement || '|' || attention_kind || '|' || attention_reason || '|' || COALESCE(attention_at, 'NULL')
 		FROM threads ORDER BY id`)
@@ -203,27 +203,27 @@ func TestMigrationV149RetireFeatures(t *testing.T) {
 		"disc-child-a=standalone|||NULL", "disc-child-b=standalone|||NULL", "disc-parent=standalone|||NULL", "fork=standalone|||NULL",
 		"grp-child=grouped|||NULL", "grp-parent=grouped|||NULL", "scratch=standalone|||NULL",
 	}; !slices.Equal(placements, want) {
-		t.Errorf("placements after v149:\n got %q\nwant %q", placements, want)
+		t.Errorf("placements after v150:\n got %q\nwant %q", placements, want)
 	}
 	scratch, err := queryIDs(db, `SELECT thread_id || '|' || source_thread_id || '|' || return_mode || '|' || created_at || '|' || request_token FROM scratch_threads`)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if want := []string{"scratch|disc-parent|chat|3|tok"}; !slices.Equal(scratch, want) {
-		t.Errorf("scratch_threads after v149 = %v, want %v", scratch, want)
+		t.Errorf("scratch_threads after v150 = %v, want %v", scratch, want)
 	}
 	favorites, err := queryIDs(db, `SELECT kind || '|' || provider || '|' || value || '|' || label || '|' || created_at FROM chat_bar_favorites`)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if want := []string{"model|claude|opus|Opus|2"}; !slices.Equal(favorites, want) {
-		t.Errorf("chat_bar_favorites after v149 = %v, want %v", favorites, want)
+		t.Errorf("chat_bar_favorites after v150 = %v, want %v", favorites, want)
 	}
 	if got := renderWork(); !slices.Equal(got, wantWork) {
-		t.Errorf("work_items rows after v149:\n got %q\nwant %q", got, wantWork)
+		t.Errorf("work_items rows after v150:\n got %q\nwant %q", got, wantWork)
 	}
 	if got := renderWatches(); !slices.Equal(got, wantWatches) {
-		t.Errorf("remote_watches rows after v149:\n got %q\nwant %q", got, wantWatches)
+		t.Errorf("remote_watches rows after v150:\n got %q\nwant %q", got, wantWatches)
 	}
 	watches, err := queryIDs(db, `SELECT request_id || '|' || COALESCE(confirmed_at, 'NULL') || '|' || wake_attempts || '|' || wake_issue || '|' || launched_in_thread_id
 		FROM remote_watches ORDER BY request_id`)
@@ -231,7 +231,7 @@ func TestMigrationV149RetireFeatures(t *testing.T) {
 		t.Fatal(err)
 	}
 	if want := []string{"dismissed|NULL|0||fork", "pending|NULL|0||fork", "queued|6|0||disc-child-a"}; !slices.Equal(watches, want) {
-		t.Errorf("remote_watches new columns after v149 = %q, want %q", watches, want)
+		t.Errorf("remote_watches new columns after v150 = %q, want %q", watches, want)
 	}
 
 	// The retired objects are gone and nothing else is: every schema object
@@ -242,7 +242,7 @@ func TestMigrationV149RetireFeatures(t *testing.T) {
 	for name, sqlText := range schemaBefore {
 		if removed(name) {
 			if _, ok := schemaAfter[name]; ok {
-				t.Errorf("%s survived v149", name)
+				t.Errorf("%s survived v150", name)
 			}
 			continue
 		}
@@ -261,13 +261,13 @@ func TestMigrationV149RetireFeatures(t *testing.T) {
 	}
 	slices.Sort(added)
 	if !slices.Equal(added, addedObjects) {
-		t.Errorf("v149 added %v, want %v", added, addedObjects)
+		t.Errorf("v150 added %v, want %v", added, addedObjects)
 	}
 	if got := readIndexSQL(t, db, "idx_remote_watches_done"); !strings.Contains(got, "notification = 'dismissed' OR (notification = 'queued' AND confirmed_at IS NOT NULL)") {
 		t.Errorf("idx_remote_watches_done = %q", got)
 	}
 
-	// Each rebuilt table restates v148's declarations less the retired
+	// Each rebuilt table restates v149's declarations less the retired
 	// parts: the removed columns and their foreign keys, 'discussion' and
 	// 'automation' in each IN list, the composite favorites CHECK, whose
 	// model arm becomes a provider CHECK, and provider's DEFAULT '', which
@@ -289,7 +289,7 @@ func TestMigrationV149RetireFeatures(t *testing.T) {
 		}
 		wantColumns = append(wantColumns, addedColumns[table]...)
 		if !slices.Equal(after.columns, wantColumns) {
-			t.Errorf("%s columns after v149:\n got %+v\nwant %+v", table, after.columns, wantColumns)
+			t.Errorf("%s columns after v150:\n got %+v\nwant %+v", table, after.columns, wantColumns)
 		}
 
 		wantChecks := make([]string, 0, len(before.checks))
@@ -300,12 +300,12 @@ func TestMigrationV149RetireFeatures(t *testing.T) {
 			wantChecks = append(wantChecks, retired.Replace(check))
 		}
 		if table != "remote_watches" && slices.Equal(wantChecks, before.checks) {
-			t.Fatalf("%s CHECKs before v149 never name a retired value; the fixture does not exercise the change: %q", table, before.checks)
+			t.Fatalf("%s CHECKs before v150 never name a retired value; the fixture does not exercise the change: %q", table, before.checks)
 		}
 		wantChecks = append(wantChecks, addedChecks[table]...)
 		slices.Sort(wantChecks)
 		if !slices.Equal(after.checks, wantChecks) {
-			t.Errorf("%s CHECKs after v149:\n got %q\nwant %q", table, after.checks, wantChecks)
+			t.Errorf("%s CHECKs after v150:\n got %q\nwant %q", table, after.checks, wantChecks)
 		}
 
 		wantFKs := slices.DeleteFunc(slices.Clone(before.fks), func(fk string) bool {
@@ -316,12 +316,12 @@ func TestMigrationV149RetireFeatures(t *testing.T) {
 		wantFKs = append(wantFKs, addedFKs[table]...)
 		slices.Sort(wantFKs)
 		if !slices.Equal(after.fks, wantFKs) {
-			t.Errorf("%s foreign keys after v149 = %q, want %q", table, after.fks, wantFKs)
+			t.Errorf("%s foreign keys after v150 = %q, want %q", table, after.fks, wantFKs)
 		}
 	}
 
 	// Each CHECK that named a retired value refuses it now. The fixture's
-	// own inserts show each accepted it at v148.
+	// own inserts show each accepted it at v149.
 	for _, refused := range []struct{ name, query string }{
 		{"threads.mode", `UPDATE threads SET mode = 'discussion' WHERE id = 'disc-child-a'`},
 		{"scratch_threads.return_mode", `UPDATE scratch_threads SET return_mode = 'discussion' WHERE thread_id = 'scratch'`},
@@ -336,7 +336,7 @@ func TestMigrationV149RetireFeatures(t *testing.T) {
 		{"a half-linked call", `UPDATE work_items SET parent_phase_id = '' WHERE id = 'run-call'`},
 	} {
 		if _, err := db.Exec(refused.query); err == nil || !strings.Contains(err.Error(), "CHECK constraint failed") {
-			t.Errorf("%s after v149: err = %v, want a CHECK violation", refused.name, err)
+			t.Errorf("%s after v150: err = %v, want a CHECK violation", refused.name, err)
 		}
 	}
 	mustExec(t, db, `UPDATE threads SET mode = 'plan' WHERE id = 'disc-child-a'`)
@@ -349,7 +349,7 @@ func TestMigrationV149RetireFeatures(t *testing.T) {
 	mustExec(t, db, `UPDATE threads SET group_id = NULL, placement = 'standalone' WHERE id = 'fork'`)
 	mustExec(t, db, `UPDATE work_items SET source = 'agent', source_ref = 'item/phase/other' WHERE id = 'run-auto'`)
 	if _, err := db.Exec(`UPDATE work_items SET source_ref = 'item/phase/key' WHERE id = 'run-auto'`); err == nil || !strings.Contains(err.Error(), "UNIQUE constraint failed") {
-		t.Errorf("a duplicate agent source_ref after v149: err = %v, want the unique index to refuse it", err)
+		t.Errorf("a duplicate agent source_ref after v150: err = %v, want the unique index to refuse it", err)
 	}
 	var pinnedAt, pinGroup sql.NullInt64
 	if err := db.QueryRow(`SELECT pinned_at, pin_group FROM threads WHERE id = 'grp-child'`).Scan(&pinnedAt, &pinGroup); err != nil {
@@ -359,18 +359,18 @@ func TestMigrationV149RetireFeatures(t *testing.T) {
 		t.Errorf("a grouped member's pin = %v/%v, want it kept", pinnedAt, pinGroup)
 	}
 
-	// Foreign keys into threads: the same set less the two v149 removed and
+	// Foreign keys into threads: the same set less the two v150 removed and
 	// with the watches' owner, clean, and enforced on the rebuilt tables.
 	wantFKs := slices.DeleteFunc(slices.Clone(fksBefore), func(fk string) bool {
 		return fk == "channels.thread_id" || fk == "threads.parent_thread_id"
 	})
 	if len(wantFKs) != len(fksBefore)-2 {
-		t.Fatalf("foreign keys into threads before v149 = %v, want channels.thread_id and threads.parent_thread_id among them", fksBefore)
+		t.Fatalf("foreign keys into threads before v150 = %v, want channels.thread_id and threads.parent_thread_id among them", fksBefore)
 	}
 	wantFKs = append(wantFKs, "remote_watches.thread_id")
 	slices.Sort(wantFKs)
 	if got := foreignKeysInto(t, db, "threads"); !slices.Equal(got, wantFKs) {
-		t.Errorf("foreign keys into threads after v149 = %v, want %v", got, wantFKs)
+		t.Errorf("foreign keys into threads after v150 = %v, want %v", got, wantFKs)
 	}
 	tx, err := db.Begin()
 	if err != nil {
@@ -406,7 +406,7 @@ func TestMigrationV149RetireFeatures(t *testing.T) {
 
 	var owned int
 	if err := db.QueryRow(`SELECT COUNT(*) FROM owned_threads`).Scan(&owned); err != nil {
-		t.Fatalf("read owned_threads after v149: %v", err)
+		t.Fatalf("read owned_threads after v150: %v", err)
 	}
 	if want := len(wantRows) - 2; owned != want {
 		t.Errorf("owned_threads = %d rows, want %d", owned, want)

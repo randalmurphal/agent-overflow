@@ -6,7 +6,7 @@ import (
 	"fmt"
 )
 
-// Where the sidebar shows a thread (migration v149,
+// Where the sidebar shows a thread (migration v150,
 // docs/specs/standing-agents.md, "Owned workers"). The schema makes a row
 // grouped exactly when it has a group, so a group move is the one writer of
 // grouped (SetThreadGroup) and this file writes the other two. An owned
@@ -16,7 +16,7 @@ import (
 // assistant's own, past or helper thread) takes no placement: a helper is
 // owned from its spawn and stays so. A row is inserted standalone or
 // grouped, the write that names a local spawn's thread makes it owned, and
-// the trigger of v150 returns an owned row of a project to standalone when
+// the trigger of v151 returns an owned row of a project to standalone when
 // its last link is deleted.
 
 const (

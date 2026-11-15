@@ -200,6 +200,45 @@ describe('<AgentMessageRow> through TimelineLeaf', () => {
     expect(wrote.getByTestId('agent-message-row').textContent).not.toContain('What it had written by then');
   });
 
+  it('shows one card for a message answering several requests, naming every token', async () => {
+    const pane = await buildPane();
+    const several = render(TimelineLeaf, {
+      props: {
+        pane,
+        item: agentRow(text('one turn answering several requests'), {
+          origin: 'agent-thread', originThread: { threadId: 't-work', title: 'Worker', token: 'tok', kind: 'wake' },
+        }),
+      },
+    });
+    await fireEvent.click(several.getByTestId('agent-message-toggle'));
+    await tick();
+    expect(several.getAllByTestId('agent-message-part')).toHaveLength(1);
+    expect(several.getByTestId('agent-message-sender').textContent).toBe('Worker');
+    expect(several.container.querySelector('[data-fact="Tokens"]')?.textContent)
+      .toBe('0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d, tok-2, tok-3');
+    expect(several.container.querySelector('[data-fact="Token"]')).toBeNull();
+    several.unmount();
+
+    const digest = render(TimelineLeaf, {
+      props: {
+        pane,
+        item: agentRow(text('digest: the same reply, a standing agent and an age'), {
+          origin: 'agent-thread', originThread: { threadId: 't-work', title: 'Worker', token: 'tok', kind: 'wake' },
+        }, { id: 'msg-2' }),
+      },
+    });
+    expect(digest.getByTestId('agent-message-sender').textContent).toBe('2 threads');
+    expect(digest.getByTestId('agent-message-sender').tagName).not.toBe('BUTTON');
+    await fireEvent.click(digest.getByTestId('agent-message-toggle'));
+    await tick();
+    expect(digest.getAllByTestId('agent-message-part')).toHaveLength(1);
+    expect(digest.getByTestId('agent-message-text').textContent).toBe('Done.\nSecond line.');
+    expect(digest.container.querySelector('[data-fact="Threads"]')?.textContent).toBe(
+      'Worker, standing agent: Runs the builds., token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d; Lexer "two" (on desk, answered 3h ago), tokens tok-2, tok-3',
+    );
+    expect(digest.getByTestId('agent-message-row').textContent).not.toContain('threads sent the same reply');
+  });
+
   it('renders a loop wake decoded and a provider agent\'s message as agent rows', async () => {
     const pane = await buildPane();
     const loop = render(TimelineLeaf, {

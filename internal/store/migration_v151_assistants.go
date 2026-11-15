@@ -6,7 +6,7 @@ import (
 	"fmt"
 )
 
-// Migration v150 adds the assistants (standing agents), their wakes and the
+// Migration v151 adds the assistants (standing agents), their wakes and the
 // request ledger's agent records (docs/specs/standing-agents.md).
 //
 // `agents` is the assistant: its own id, its current thread, its home and
@@ -60,7 +60,8 @@ import (
 //   - `wake_item_id` and `late_wake_item_id`: the caller's timeline row that
 //     carried a queued answer and late reply. recordConfirmedWakeItems fills
 //     them for the deliveries confirmed here from the send ids the wakes
-//     carried.
+//     carried, and a request that rode with another's wake gets its
+//     carrier's.
 //   - `open_below_0` to `open_below_3` on a local spawn, and on a receipt
 //     `own_turn`, whether the turn its message was delivered into opened
 //     for it (a cancel interrupts only such a turn).
@@ -116,9 +117,9 @@ import (
 // idx_agent_past_threads_agent orders an assistant's past threads newest
 // superseded first, ties by thread id, the page order of
 // ListAssistantPastThreads.
-const assistantsMigrationVersion = 150
+const assistantsMigrationVersion = 151
 
-const assistantsV150SQL = `
+const assistantsV151SQL = `
 CREATE TABLE agents (
     id               TEXT PRIMARY KEY,
     thread_id        TEXT NOT NULL UNIQUE REFERENCES threads(id) ON DELETE CASCADE,
@@ -508,6 +509,15 @@ func recordConfirmedWakeItems(tx *sql.Tx) error {
 		if err := recordJoinedWakeItems(tx, wake.column, prefix, confirmed); err != nil {
 			return err
 		}
+	}
+	// A request that rode with another's first wake (delivered_with, v149)
+	// has no send id of its own: its row is its carrier's. The read of the
+	// riders is idx_thread_requests_delivered_with's.
+	if _, err := tx.Exec(`UPDATE thread_requests AS r SET wake_item_id = COALESCE((
+		SELECT c.wake_item_id FROM thread_requests c
+		 WHERE c.token = r.delivered_with AND c.caller_thread_id = r.caller_thread_id), '')
+		WHERE r.delivered_with <> '' AND r.lineage_only = 0 AND r.delivered_how = 'queued' AND r.confirmed_at IS NOT NULL`); err != nil {
+		return fmt.Errorf("record the rows of the confirmed wakes' riders: %w", err)
 	}
 	return nil
 }

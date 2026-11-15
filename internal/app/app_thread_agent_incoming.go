@@ -72,7 +72,8 @@ func (a *App) withdrawIncomingAgentMessage(ctx context.Context, threadID, sendID
 	}
 	if token, late, ok := threadWakeFromSendID(sendID); ok {
 		deleteRow = func(row store.FlushQueueItem) error {
-			return a.store.WithdrawThreadWake(token, late, row.ID, store.WithdrawQueued)
+			_, err := a.store.WithdrawThreadWake(token, late, row.ID, store.WithdrawQueued)
+			return err
 		}
 	}
 	computerID, requestID, isCompletion := remoteCompletionFromSendID(sendID)

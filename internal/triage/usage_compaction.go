@@ -81,11 +81,7 @@ func (r *Router) handleCompaction(evt provider.ProviderEvent) error {
 	if err != nil {
 		return fmt.Errorf("compaction turn index: %w", err)
 	}
-	item, payload, err := r.compactionRow(evt, turnIndex, "")
-	if err != nil {
-		return err
-	}
-	if err := r.persistItem(item, payload); err != nil {
+	if err := r.persistCompactionRow(evt, turnIndex, ""); err != nil {
 		return err
 	}
 	r.resetUsageEmitThrottle(evt.ThreadID)
@@ -116,19 +112,16 @@ func (r *Router) persistSubagentCompaction(evt provider.ProviderEvent, scope str
 	if err != nil {
 		return fmt.Errorf("subagent compaction turn index: %w", err)
 	}
-	item, payload, err := r.compactionRow(evt, turnIndex, scope)
-	if err != nil {
-		return err
-	}
-	return r.persistItem(item, payload)
+	return r.persistCompactionRow(evt, turnIndex, scope)
 }
 
-// compactionRow builds a boundary's timeline row and, when the meta
+// persistCompactionRow writes a boundary's timeline row and, when the meta
 // committed a summary, the on-demand payload it routes to.
-func (r *Router) compactionRow(evt provider.ProviderEvent, turnIndex int, scope string) (store.Item, *store.Payload, error) {
-	itemID, err := r.compactionItemID(evt, turnIndex)
+func (r *Router) persistCompactionRow(evt provider.ProviderEvent, turnIndex int, scope string) error {
+	itemID, release, err := r.compactionItemID(evt, turnIndex)
+	defer release()
 	if err != nil {
-		return store.Item{}, nil, err
+		return err
 	}
 
 	// Claudetui commits the summarizer's summary onto the live boundary;
@@ -157,19 +150,18 @@ func (r *Router) compactionRow(evt provider.ProviderEvent, turnIndex int, scope 
 	if payload != nil {
 		item.PayloadID = payload.ID
 	}
-	return item, payload, nil
+	return r.persistItem(item, payload)
 }
 
-func (r *Router) compactionItemID(evt provider.ProviderEvent, turnIndex int) (string, error) {
+// compactionItemID is the boundary's row id: the provider's when it gave
+// one, else a reserved sequence id the caller releases after the write
+// (reserveItemID).
+func (r *Router) compactionItemID(evt provider.ProviderEvent, turnIndex int) (id string, release func(), err error) {
 	if NormalizeProviderCompactionID(evt.ItemID) != "" {
-		return CompactionItemID(turnIndex, evt.ItemID, 0), nil
+		return CompactionItemID(turnIndex, evt.ItemID, 0), func() {}, nil
 	}
-	return r.nextAvailableSequencedCompactionID(evt.ThreadID, turnIndex)
-}
-
-func (r *Router) nextAvailableSequencedCompactionID(threadID string, turnIndex int) (string, error) {
-	return r.nextUnusedItemID(threadID, func() string {
-		return CompactionItemID(turnIndex, "", r.nextCompactionSequence(threadID, turnIndex))
+	return r.reserveItemID(evt.ThreadID, func() string {
+		return CompactionItemID(turnIndex, "", r.nextCompactionSequence(evt.ThreadID, turnIndex))
 	})
 }
 

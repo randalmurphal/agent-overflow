@@ -266,7 +266,8 @@ func (s *Supervisor) warnIfSelfIsUnselected(state State) {
 
 // stageSelf copies the running supervisor into its own version directory.
 // Idempotent: an existing directory for this version is the same bytes by
-// definition, because a version names one build.
+// definition, because a version names one build. The copy is written with
+// forks held off (procutil.HoldForks), because this process spawns it next.
 func (s *Supervisor) stageSelf() error {
 	binary, err := s.layout.VersionBinary(s.config.SelfVersion)
 	if err != nil {
@@ -277,6 +278,8 @@ func (s *Supervisor) stageSelf() error {
 	} else if !errors.Is(statErr, os.ErrNotExist) {
 		return fmt.Errorf("supervise: stat %s: %w", binary, statErr)
 	}
+	release := procutil.HoldForks()
+	defer release()
 	return StageBinary(s.layout, s.config.SelfVersion, s.config.SelfExecutable)
 }
 

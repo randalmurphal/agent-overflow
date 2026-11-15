@@ -1045,10 +1045,12 @@ func (a *App) giveBackToOwners(threadID string, messages []ownedMessage) {
 			continue
 		}
 		if token, late, ok := threadWakeFromSendID(m.sendID); ok {
-			err := a.store.WithdrawThreadWake(token, late, m.rowID, m.withdrawal())
-			logThreadRequestSweep("return "+m.sendID+" to its request", err)
+			// The message's requests go back together: its carrier and
+			// every request that rode with it.
+			returned, err := a.store.WithdrawThreadWake(token, late, m.rowID, m.withdrawal())
+			logThreadRequestSweep("return "+m.sendID+" to its requests", err)
 			if err == nil {
-				a.redeliverHandedOffWake(threadID, token, late)
+				a.redeliverHandedOffWakes(threadID, returned, late)
 			}
 			continue
 		}
@@ -1114,9 +1116,13 @@ func (a *App) giveBackUnconfirmedAtBoot() {
 	byThread := make(map[string][]ownedMessage)
 	requests, err := a.store.UnconfirmedThreadWakes()
 	logThreadRequestSweep("list the unconfirmed thread wakes at boot", err)
+	firsts := make(map[string]bool)
 	for _, r := range requests {
-		if r.DeliveredAt != 0 && r.ConfirmedAt == 0 {
-			byThread[r.CallerThreadID] = append(byThread[r.CallerThreadID], ownedMessage{sendID: threadWakeSendID(r.Token), unconfirmed: true})
+		// A request that rode with another's first wake was the carrier's
+		// message, given back once by the carrier's send id.
+		if first := threadWakeSendID(r.WakeCarrier()); r.DeliveredAt != 0 && r.ConfirmedAt == 0 && !firsts[first] {
+			firsts[first] = true
+			byThread[r.CallerThreadID] = append(byThread[r.CallerThreadID], ownedMessage{sendID: first, unconfirmed: true})
 		}
 		if r.LateDeliveredAt != 0 && r.LateConfirmedAt == 0 {
 			byThread[r.CallerThreadID] = append(byThread[r.CallerThreadID], ownedMessage{sendID: threadWakeLateSendID(r.Token), unconfirmed: true})

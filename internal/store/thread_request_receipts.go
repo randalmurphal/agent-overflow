@@ -485,6 +485,9 @@ func settleThreadReceiptRow(q sqlQueryer, token string, from []string, settlemen
 	if err := settlement.validate(action, threadReceiptStates); err != nil {
 		return ThreadRequestReceipt{}, false, err
 	}
+	if settlement.ArmWake {
+		return ThreadRequestReceipt{}, false, fmt.Errorf("%s: a receipt has no wake to arm", action)
+	}
 	clause, args, err := stateInClause(action, from, threadReceiptStates)
 	if err != nil {
 		return ThreadRequestReceipt{}, false, err
@@ -560,6 +563,9 @@ func (s *Store) SettleLocalThreadRequest(token string, from []string, settlement
 		return LocalSettlement{}, fmt.Errorf("%s: begin: %w", action, err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	// The wake is the source row's; the receipt has none.
+	armWake := settlement.ArmWake
+	settlement.ArmWake = false
 	receipt, settled, err := settleThreadReceiptRow(tx, token, from, settlement)
 	if err != nil || !settled {
 		return LocalSettlement{}, err
@@ -586,18 +592,23 @@ func (s *Store) SettleLocalThreadRequest(token string, from []string, settlement
 	default:
 		agent, role := answerAgentColumns(receipt.AnswerAgent)
 		now := nowMillis()
-		result, err := tx.Exec(
+		// RETURNING reads the wake as the settlement left it: a reply arms
+		// it in this statement (threadRequestArmSQL).
+		err := tx.QueryRow(
 			`UPDATE thread_requests
 			    SET state = ?, answer = ?, answer_kind = ?, revision = revision + 1,
-			        settled_at = ?, expires_at = ?, answer_agent = ?, answer_agent_role = ?, updated_at = ?
-			  WHERE token = ? AND `+openClause,
+			        settled_at = ?, expires_at = ?, answer_agent = ?, answer_agent_role = ?,
+			        notify = `+threadRequestArmSQL+`, updated_at = ?
+			  WHERE token = ? AND `+openClause+`
+			  RETURNING notify`,
 			append([]any{sourceState, nilIfEmptyBytes(receipt.Answer), receipt.AnswerKind, receipt.SettledAt,
-				nilIfZero(receipt.ExpiresAt), agent, role, now, token}, openArgs...)...)
-		if err != nil {
+				nilIfZero(receipt.ExpiresAt), agent, role, boolToInt(armWake), now, token}, openArgs...)...).Scan(&notify)
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+		case err != nil:
 			return LocalSettlement{}, fmt.Errorf("%s: settle the source row: %w", action, err)
-		}
-		if out.Collected, err = rowsChanged(result, action); err != nil {
-			return LocalSettlement{}, err
+		default:
+			out.Collected = true
 		}
 		if out.Collected {
 			// The source has the answer durably; the receipt may drop its copy.

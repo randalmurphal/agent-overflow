@@ -1121,24 +1121,10 @@ func (a *App) dispatchFlushToProvider(sess session, content string, opts provide
 }
 
 // persistFlushDispatchError persists a system `error` row sibling to
-// the failed user_text. Rows allocate ids via the same per-turn error
-// counter the EventError handler uses (NextErrorSequence) so a later
-// provider error on the same turn doesn't collide on `error:<turn>:0`.
+// the failed user_text.
 func (a *App) persistFlushDispatchError(threadID string, turnIndex int, dispatchErr error) {
-	seq := a.triage.NextErrorSequence(threadID, turnIndex, "")
-	now := time.Now().UnixMilli()
-	errorItem := store.Item{
-		ID:        triage.NewErrorID(turnIndex, "", seq),
-		ThreadID:  threadID,
-		TurnIndex: turnIndex,
-		Kind:      triage.ItemKindError,
-		Role:      "system",
-		Status:    "completed",
-		Summary:   fmt.Sprintf("Failed to deliver queued message: %v", dispatchErr),
-		CreatedAt: now,
-		UpdatedAt: now,
-	}
-	if err := a.triage.PersistItem(errorItem, nil); err != nil {
+	summary := fmt.Sprintf("Failed to deliver queued message: %v", dispatchErr)
+	if err := a.triage.PersistTurnError(threadID, turnIndex, summary); err != nil {
 		log.Printf("flush dispatch: persist error row: %v", err)
 	}
 }

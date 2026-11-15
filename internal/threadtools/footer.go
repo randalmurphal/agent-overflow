@@ -41,7 +41,7 @@ type Footer struct {
 	Token    string
 	// AnswerRequested is true when the sender waited or asked to be
 	// notified. The token and thread_reply are given either way, since a
-	// reply always reaches the request record.
+	// reply always reaches the sender as a message.
 	AnswerRequested bool
 	// SenderReachable is true when the receiver's computer holds a
 	// credential for the sender's.
@@ -151,9 +151,9 @@ func (f Footer) String() string {
 		}
 		lines = append(lines, body)
 	} else {
-		body := fmt.Sprintf("It is not waiting. No answer notification was requested. To reply anyway, call thread_reply with token %s, once.", f.Token)
+		body := fmt.Sprintf("It is not waiting for an answer. If it should hear something back, call thread_reply with token %s, once: the reply reaches it as a message, and it sees only your reply text.", f.Token)
 		if f.SenderReachable {
-			body += " To answer it, use thread_send with its id."
+			body += " To read the sender's thread, use thread_show with its id."
 		}
 		lines = append(lines, body)
 	}
@@ -177,26 +177,38 @@ const (
 	WakeReminder = "reminder"
 )
 
-// Wake is the status line and body of a message delivered to the thread
-// that made a request.
-type Wake struct {
-	Kind string
-	// Title, ThreadID and Computer name the thread that answered.
-	// Computer is empty when it is the caller's own.
+// WakeSource is one thread a wake speaks for, with the requests of it the
+// wake answers.
+type WakeSource struct {
+	// Title, ThreadID and Computer name the thread that answered. Computer
+	// is empty when it is the caller's own. All three are empty for a
+	// reminder, which no thread answers.
 	Title    string
 	ThreadID string
 	Computer string
-	Token    string
+	// Tokens are the requests this wake answers, oldest first. One turn can
+	// answer several: it consumed several of the caller's messages.
+	Tokens []string
 	// Age is how long ago the answer was written. Stated only past
 	// AgeFloor.
 	Age time.Duration
+	// Agent is set when this thread is a standing agent.
+	Agent *SenderAgent
+}
+
+// Wake is the status line and body of a message delivered to the thread
+// that made a request. It has one source unless several threads gave the
+// caller the same outcome at once (a restart that interrupted them all), in
+// which case one message lists them instead of one message each.
+type Wake struct {
+	Kind    string
+	Sources []WakeSource
 	// Text is the answer, the final message, the error or the note. It is
 	// clipped to WakePreviewBytes with a pointer to thread_status.
 	Text string
-	// Agent is set when the answering thread is a standing agent.
-	Agent *SenderAgent
-	// MadeIn is the assistant's past thread the request was made in, set
-	// when the wake goes to a later thread of the same assistant, Now.
+	// MadeIn is the assistant's past thread the requests were made in, set
+	// when the wake goes to a later thread of the same assistant, Now. One
+	// wake carries only requests made in the same thread.
 	MadeIn string
 	Now    string
 }
@@ -205,9 +217,12 @@ type Wake struct {
 // says so on the line after the status line, and a request made in an
 // assistant's past thread names it on the line after that.
 func (w Wake) String() string {
+	if len(w.Sources) > 1 {
+		return w.digest()
+	}
 	var lines []string
-	if w.Agent != nil && w.Kind != WakeReminder {
-		lines = append(lines, w.Agent.sentence("That thread"))
+	if agent := w.source().Agent; agent != nil && w.Kind != WakeReminder {
+		lines = append(lines, agent.sentence("That thread"))
 	}
 	if w.MadeIn != "" {
 		lines = append(lines, WakeMadeIn(w.MadeIn, w.Now))
@@ -229,18 +244,28 @@ func WakeMadeIn(madeIn, now string) string {
 	return fmt.Sprintf("Made in thread %s, before New Thread, Same Assistant; now %s.", madeIn, now)
 }
 
-func (w Wake) status() string {
-	who := fmt.Sprintf("%q (%s%s%s)", w.Title, w.ThreadID, onComputer(w.Computer), w.answered())
-	token := ""
-	if w.Token != "" {
-		token = fmt.Sprintf(" [token %s]", w.Token)
+// source is the one thread a single-source wake speaks for; a reminder has
+// none.
+func (w Wake) source() WakeSource {
+	if len(w.Sources) == 1 {
+		return w.Sources[0]
 	}
+	return WakeSource{}
+}
+
+func (w Wake) status() string {
+	source := w.source()
+	who := source.who()
+	token := tokenLabel(source.Tokens)
 	switch w.Kind {
 	case WakeReply:
 		return fmt.Sprintf("Reply from %s%s:\n%s", who, token, w.body())
 	case WakeFinished:
 		return fmt.Sprintf("%s%s finished its turn without calling thread_reply. Its final message:\n%s", who, token, w.body())
 	case WakeErrored:
+		if w.Text == "" {
+			return fmt.Sprintf("%s%s errored.", who, token)
+		}
 		return fmt.Sprintf("%s%s errored: %s", who, token, w.body())
 	case WakeCancelled:
 		if w.Text != "" {
@@ -253,14 +278,14 @@ func (w Wake) status() string {
 		// workflow, the user). A restart names the computer that restarted.
 		switch w.Text {
 		case InterruptRestart:
-			return fmt.Sprintf("%s%s was interrupted by a restart of %s.", who, token, restartedComputer(w.Computer))
+			return fmt.Sprintf("%s%s was interrupted by a restart of %s.", who, token, restartedComputer(source.Computer))
 		case "":
 			return fmt.Sprintf("%s%s: %s", who, token, InterruptTurn)
 		}
 		// What a turn its session ended had written is an answer, clipped
 		// as one.
 		if written, ok := strings.CutPrefix(w.Text, InterruptSessionEndedMidTurn+SessionEndedWrittenSoFar); ok {
-			return fmt.Sprintf("%s%s: %s%s%s", who, token, InterruptSessionEndedMidTurn, SessionEndedWrittenSoFar, WakeBody(written, w.Token))
+			return fmt.Sprintf("%s%s: %s%s%s", who, token, InterruptSessionEndedMidTurn, SessionEndedWrittenSoFar, WakeBody(written, w.firstToken()))
 		}
 		return fmt.Sprintf("%s%s: %s", who, token, w.Text)
 	case WakeStopped:
@@ -347,7 +372,109 @@ func InterruptMoved(destination string) string {
 	return "The thread was moved to " + destination + " before it answered."
 }
 
-func (w Wake) body() string { return WakeBody(w.Text, w.Token) }
+// digest renders a wake that speaks for several threads: what happened to
+// each of them, one line naming each with its tokens (and, under it, that it
+// is a standing agent when it is one), then the text they share. The text is
+// last so a long one does not bury the list, and the first line says it is
+// the same for each thread, so a cause written about one thread reads as it
+// was written.
+func (w Wake) digest() string {
+	count := len(w.Sources)
+	var head string
+	shared := w.Text != ""
+	switch w.Kind {
+	case WakeReply:
+		head, shared = fmt.Sprintf("%d threads sent the same reply:", count), true
+	case WakeFinished:
+		head, shared = fmt.Sprintf("%d threads finished their turns without calling thread_reply, each with the same final message:", count), true
+	case WakeErrored:
+		head = fmt.Sprintf("%d threads errored.", count)
+		if shared {
+			head = fmt.Sprintf("%d threads errored, each with the same error:", count)
+		}
+	case WakeCancelled:
+		head = fmt.Sprintf("%d threads were cancelled.", count)
+		if shared {
+			head = fmt.Sprintf("%d threads were cancelled, each for the same reason:", count)
+		}
+	case WakeInterrupted:
+		switch w.Text {
+		case InterruptRestart:
+			head, shared = fmt.Sprintf("%d threads were interrupted by a restart of %s.", count, w.restartedComputers()), false
+		case "":
+			head = fmt.Sprintf("%d threads were interrupted.", count)
+		default:
+			head = fmt.Sprintf("%d threads were interrupted, each for the same reason:", count)
+		}
+	case WakeStopped:
+		head = fmt.Sprintf("%d threads: %s", count, WakeDigestPersonStopped)
+		if shared {
+			head = fmt.Sprintf("%d threads: %s Each one's last message:", count, WakeDigestPersonStopped)
+		}
+	case WakeExpired:
+		head, shared = fmt.Sprintf("%d threads did not answer within a day.", count), false
+	default:
+		head, shared = fmt.Sprintf("%d threads settled.", count), false
+	}
+	lines := make([]string, 0, 2*count+3)
+	lines = append(lines, head)
+	for _, source := range w.Sources {
+		lines = append(lines, "- "+source.who()+tokenLabel(source.Tokens))
+		if source.Agent != nil {
+			lines = append(lines, "  "+source.Agent.sentence("That thread"))
+		}
+	}
+	if w.MadeIn != "" {
+		lines = append(lines, WakeMadeIn(w.MadeIn, w.Now))
+	}
+	if shared {
+		lines = append(lines, w.body())
+	}
+	return strings.Join(lines, "\n")
+}
+
+// WakeDigestPersonStopped follows the count on a digest of requests whose
+// turns a person's Stop cut, the plural of WakePersonStopped.
+const WakeDigestPersonStopped = "The user stopped their turns before they answered."
+
+// restartedComputers names the computer a restart stopped a digest's
+// requests on: the one they share, or each one's when they differ.
+func (w Wake) restartedComputers() string {
+	for _, source := range w.Sources[1:] {
+		if source.Computer != w.Sources[0].Computer {
+			return "the computer each ran on"
+		}
+	}
+	return restartedComputer(w.Sources[0].Computer)
+}
+
+func (s WakeSource) who() string {
+	return fmt.Sprintf("%q (%s%s%s)", s.Title, s.ThreadID, onComputer(s.Computer), answered(s.Age))
+}
+
+// tokenLabel names the requests a wake answers for one thread.
+func tokenLabel(tokens []string) string {
+	switch len(tokens) {
+	case 0:
+		return ""
+	case 1:
+		return fmt.Sprintf(" [token %s]", tokens[0])
+	default:
+		return fmt.Sprintf(" [tokens %s]", strings.Join(tokens, ", "))
+	}
+}
+
+// firstToken is the request a clipped body points thread_status at.
+func (w Wake) firstToken() string {
+	for _, source := range w.Sources {
+		if len(source.Tokens) > 0 {
+			return source.Tokens[0]
+		}
+	}
+	return ""
+}
+
+func (w Wake) body() string { return WakeBody(w.Text, w.firstToken()) }
 
 // WakeBody clips a wake body to the preview budget and points at the whole
 // answer. A body inside the budget is returned unchanged.
@@ -363,11 +490,11 @@ func WakePreviewPointer(token string) string {
 	return fmt.Sprintf("[preview; thread_status %s for the whole answer]", token)
 }
 
-func (w Wake) answered() string {
-	if w.Age < AgeFloor {
+func answered(age time.Duration) string {
+	if age < AgeFloor {
 		return ""
 	}
-	return ", answered " + Age(w.Age) + " ago"
+	return ", answered " + Age(age) + " ago"
 }
 
 func onComputer(name string) string {

@@ -299,7 +299,7 @@ func TestThreadRequestChangesAreReported(t *testing.T) {
 		t.Fatal(err)
 	}
 	expect("settle", ThreadRequestChange{Token: "tok"})
-	if _, err := s.StoreThreadRequestLateReply("tok", []byte("late"), 0, nil); err != nil {
+	if _, err := s.StoreThreadRequestLateReply("tok", []byte("late"), 0, nil, false); err != nil {
 		t.Fatal(err)
 	}
 	expect("late reply", ThreadRequestChange{Token: "tok"})
@@ -313,7 +313,7 @@ func TestThreadRequestChangesAreReported(t *testing.T) {
 		t.Fatal(err)
 	}
 	expect("arm", ThreadRequestChange{Token: "armed"})
-	if _, err := s.SetThreadRequestsNotifyForCaller("lead", false); err != nil {
+	if _, err := s.DisarmThreadRequestWakesForCaller("lead"); err != nil {
 		t.Fatal(err)
 	}
 	expect("caller-wide disarm", ThreadRequestChange{CallerThreadID: "lead"})

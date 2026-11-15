@@ -98,7 +98,7 @@ func waitProperties(properties map[string]any, defaultWait int, what string) {
 	properties["notify"] = map[string]any{
 		"type":        "boolean",
 		"default":     false,
-		"description": "Deliver the answer as a message in this thread if this call did not carry it. Any positive wait that ends unsettled turns this on by itself; set it with wait_seconds 0 for fire-and-forget work whose answer you still want.",
+		"description": "Deliver the outcome as a message in this thread if this call did not carry it, including the other thread's last message when it ends its turn without replying. A thread_reply is delivered whether or not this is set. Any positive wait that ends unsettled turns this on by itself; set it with wait_seconds 0 for fire-and-forget work whose outcome you still want.",
 	}
 }
 

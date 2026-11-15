@@ -58,6 +58,13 @@ func agentMessageHead(text string, meta usermessage.Meta) (sender, head string) 
 		origin = *meta.OriginThread
 	}
 	if origin.Kind == "wake" || origin.Kind == "" && strings.HasPrefix(meta.SendID, "thread-wake") {
+		if titles, body, ok := readThreadWakeDigest(text); ok {
+			// A digest speaks for several threads; no one of them sends it.
+			if head = firstLineOf(body); head == "" {
+				head = strings.Join(titles, ", ")
+			}
+			return strconv.Itoa(len(titles)) + " threads", head
+		}
 		if title, body, reminder, ok := readThreadWake(text); ok {
 			if reminder {
 				return "This thread", firstLineOf(body)
@@ -111,9 +118,21 @@ func readThreadWake(text string) (title, body string, reminder, ok bool) {
 	if line, next, _ := strings.Cut(after, "\n"); strings.HasPrefix(line, "That thread "+threadtools.AgentSentence) {
 		after = next
 	}
+	if reply {
+		if rest != ":" {
+			return "", "", false, false
+		}
+		return title, after, false, true
+	}
+	body, ok = wakeStatusBody(rest, after)
+	return title, body, false, ok
+}
+
+// wakeStatusBody is the body of a wake whose status line goes on with rest
+// after the thread and its tokens: the answer, the error, the cause or what
+// the turn had written.
+func wakeStatusBody(rest, after string) (body string, ok bool) {
 	switch {
-	case reply && rest == ":":
-		body = after
 	case strings.HasPrefix(rest, " errored: "), strings.HasPrefix(rest, " was cancelled: "):
 		_, inline, _ := strings.Cut(rest, ": ")
 		body = inline + "\n" + after
@@ -133,22 +152,68 @@ func readThreadWake(text string) (title, body string, reminder, ok bool) {
 	case strings.HasPrefix(rest, ": ") && after == "":
 		// Who stopped the turn, worded by the stop (app_turn_stop.go).
 		body = rest[len(": "):]
+	case strings.HasPrefix(rest, " errored."):
 	default:
-		return "", "", false, false
+		return "", false
 	}
-	return title, body, false, true
+	return body, true
 }
 
-// cutWakeToken takes a status line's ` [token X]` off the front of rest.
-func cutWakeToken(rest string) (token, after string) {
-	if !strings.HasPrefix(rest, " [token ") {
-		return "", rest
+// readThreadWakeDigest reads a wake that speaks for several threads
+// (threadtools.Wake digest): the titles it lists and the text after the
+// list, read as a single wake's would be. ok is false when text is not one.
+func readThreadWakeDigest(text string) (titles []string, body string, ok bool) {
+	lines := strings.Split(text, "\n")
+	count, opening, found := strings.Cut(lines[0], " threads")
+	want, err := strconv.Atoi(count)
+	if !found || err != nil || want < 2 {
+		return nil, "", false
+	}
+	at := 1
+	for ; at < len(lines) && strings.HasPrefix(lines[at], "- "); at++ {
+		naming := lines[at][len("- "):]
+		quoted, err := strconv.QuotedPrefix(naming)
+		if err != nil || !strings.HasPrefix(naming[len(quoted):], " (") {
+			return nil, "", false
+		}
+		title, _ := strconv.Unquote(quoted)
+		if title == "" {
+			if close := strings.Index(naming[len(quoted)+2:], ")"); close >= 0 {
+				title, _, _ = strings.Cut(naming[len(quoted)+2:len(quoted)+2+close], ",")
+			}
+		}
+		titles = append(titles, title)
+		if at+1 < len(lines) && strings.HasPrefix(lines[at+1], "  That thread "+threadtools.AgentSentence) {
+			at++
+		}
+	}
+	if len(titles) != want {
+		return nil, "", false
+	}
+	body = strings.Join(lines[at:], "\n")
+	if opening == " were interrupted, each for the same reason:" {
+		sentence, after, _ := strings.Cut(body, "\n")
+		if reason, known := wakeStatusBody(": "+sentence, after); known {
+			body = reason
+		}
+	}
+	return titles, body, true
+}
+
+// cutWakeToken takes a status line's ` [token X]` or ` [tokens X, Y]` off
+// the front of rest.
+func cutWakeToken(rest string) (tokens, after string) {
+	label := " [token "
+	if !strings.HasPrefix(rest, label) {
+		if label = " [tokens "; !strings.HasPrefix(rest, label) {
+			return "", rest
+		}
 	}
 	end := strings.Index(rest, "]")
 	if end < 0 {
 		return "", rest
 	}
-	return rest[len(" [token "):end], rest[end+1:]
+	return rest[len(label):end], rest[end+1:]
 }
 
 // agentWakeHead is the sender and first line of a loop's, a watch's, a

@@ -41,7 +41,10 @@ calling thread on its own computer and refuse a forwarded call.
   refusal prose.
 - Model-visible refusals go through `errorsx.Public`. `publicMessage`
   turns anything else into a fixed refusal and logs the cause; a raw error
-  may name a path, a query or an id the model has no business reading.
+  may name a path, a query or an id the model has no business reading. The
+  one exception is a spawn, send or ask that could not be started: the app
+  returns its cause as public prose (`threadRequestRefusal`), withholding
+  only a database failure, because the caller chose what failed.
 - A cursor is opaque and carries what it continues: the thread, the item,
   the window and the search filters. A cursor that does not match the call
   is refused, never silently spent on another set of rows.

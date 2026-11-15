@@ -87,53 +87,63 @@ func agentMessageLabelCases(t *testing.T) []agentMessageLabelCase {
 	text, meta = joined([]string{first, second}, []string{firstMeta, secondMeta})
 	add("two requests joined", text, meta)
 
-	text, meta = answer(threadtools.Wake{Kind: threadtools.WakeReply, Title: worker, ThreadID: "t-worker", Token: "tok-1", Text: "All green.\nSecond line."}, from("wake", worker))
+	text, meta = answer(threadtools.Wake{Kind: threadtools.WakeReply, Sources: []threadtools.WakeSource{{Title: worker, ThreadID: "t-worker", Tokens: []string{"tok-1"}}}, Text: "All green.\nSecond line."}, from("wake", worker))
 	add("a reply", text, meta)
-	text, meta = answer(threadtools.Wake{Kind: threadtools.WakeReply, Title: worker, ThreadID: "t-worker", Token: "tok-1", Text: "Done.", Agent: &threadtools.SenderAgent{Role: "Runs the builds."}}, from("wake", worker))
+	text, meta = answer(threadtools.Wake{Kind: threadtools.WakeReply, Sources: []threadtools.WakeSource{{Title: worker, ThreadID: "t-worker", Tokens: []string{"tok-1"}, Agent: &threadtools.SenderAgent{Role: "Runs the builds."}}}, Text: "Done."}, from("wake", worker))
 	add("a standing agent's reply", text, meta)
-	text, meta = answer(threadtools.Wake{Kind: threadtools.WakeFinished, Title: worker, ThreadID: "t-worker", Token: "tok-1", Text: "Final words."}, from("wake", worker))
+	text, meta = answer(threadtools.Wake{Kind: threadtools.WakeFinished, Sources: []threadtools.WakeSource{{Title: worker, ThreadID: "t-worker", Tokens: []string{"tok-1"}}}, Text: "Final words."}, from("wake", worker))
 	add("a final message", text, meta)
-	text, meta = answer(threadtools.Wake{Kind: threadtools.WakeErrored, Title: worker, ThreadID: "t-worker", Token: "tok-1", Text: "boom\nstack"}, from("wake", worker))
+	text, meta = answer(threadtools.Wake{Kind: threadtools.WakeErrored, Sources: []threadtools.WakeSource{{Title: worker, ThreadID: "t-worker", Tokens: []string{"tok-1"}}}, Text: "boom\nstack"}, from("wake", worker))
 	add("an error", text, meta)
-	text, meta = answer(threadtools.Wake{Kind: threadtools.WakeStopped, Title: worker, ThreadID: "t-worker", Token: "tok-1", Text: "Half done."}, from("wake", worker))
+	text, meta = answer(threadtools.Wake{Kind: threadtools.WakeStopped, Sources: []threadtools.WakeSource{{Title: worker, ThreadID: "t-worker", Tokens: []string{"tok-1"}}}, Text: "Half done."}, from("wake", worker))
 	add("a person's Stop with its last message", text, meta)
-	text, meta = answer(threadtools.Wake{Kind: threadtools.WakeStopped, Title: worker, ThreadID: "t-worker", Token: "tok-1"}, from("wake", worker))
+	text, meta = answer(threadtools.Wake{Kind: threadtools.WakeStopped, Sources: []threadtools.WakeSource{{Title: worker, ThreadID: "t-worker", Tokens: []string{"tok-1"}}}}, from("wake", worker))
 	add("a person's Stop before anything was said", text, meta)
-	text, meta = answer(threadtools.Wake{Kind: threadtools.WakeInterrupted, Title: worker, ThreadID: "t-worker", Token: "tok-1", Text: threadtools.InterruptRestart}, from("wake", worker))
+	text, meta = answer(threadtools.Wake{Kind: threadtools.WakeInterrupted, Sources: []threadtools.WakeSource{{Title: worker, ThreadID: "t-worker", Tokens: []string{"tok-1"}}}, Text: threadtools.InterruptRestart}, from("wake", worker))
 	add("a restart", text, meta)
-	text, meta = answer(threadtools.Wake{Kind: threadtools.WakeInterrupted, Title: worker, ThreadID: "t-worker", Token: "tok-1", Text: stopByWorkflow().cause}, from("wake", worker))
+	text, meta = answer(threadtools.Wake{Kind: threadtools.WakeInterrupted, Sources: []threadtools.WakeSource{{Title: worker, ThreadID: "t-worker", Tokens: []string{"tok-1"}}}, Text: stopByWorkflow().cause}, from("wake", worker))
 	add("a stop with its recorded cause", text, meta)
 	for _, reason := range threadtools.InterruptSessionEndedReasons {
-		text, meta = answer(threadtools.Wake{Kind: threadtools.WakeInterrupted, Title: worker, ThreadID: "t-worker", Token: "tok-1", Text: reason}, from("wake", worker))
+		text, meta = answer(threadtools.Wake{Kind: threadtools.WakeInterrupted, Sources: []threadtools.WakeSource{{Title: worker, ThreadID: "t-worker", Tokens: []string{"tok-1"}}}, Text: reason}, from("wake", worker))
 		add("a session that ended: "+reason, text, meta)
 	}
-	text, meta = answer(threadtools.Wake{
-		Kind: threadtools.WakeInterrupted, Title: worker, ThreadID: "t-worker", Token: "tok-1",
-		Text: threadtools.InterruptSessionEndedMidTurn + threadtools.SessionEndedWrittenSoFar + "Half done.",
-	}, from("wake", worker))
+	text, meta = answer(threadtools.Wake{Kind: threadtools.WakeInterrupted, Sources: []threadtools.WakeSource{{Title: worker, ThreadID: "t-worker", Tokens: []string{"tok-1"}}}, Text: threadtools.InterruptSessionEndedMidTurn + threadtools.SessionEndedWrittenSoFar + "Half done."}, from("wake", worker))
 	add("a session that ended during the turn, with what it wrote", text, meta)
 	for _, reason := range []string{threadtools.InterruptNotTakenIn, threadtools.InterruptNotTakenInToComposer} {
-		text, meta = answer(threadtools.Wake{Kind: threadtools.WakeInterrupted, Title: worker, ThreadID: "t-worker", Token: "tok-1", Text: reason}, from("wake", worker))
+		text, meta = answer(threadtools.Wake{Kind: threadtools.WakeInterrupted, Sources: []threadtools.WakeSource{{Title: worker, ThreadID: "t-worker", Tokens: []string{"tok-1"}}}, Text: reason}, from("wake", worker))
 		add("a message the thread did not take in: "+reason, text, meta)
 	}
-	text, meta = answer(threadtools.Wake{Kind: threadtools.WakeInterrupted, Title: worker, ThreadID: "t-worker", Token: "tok-1", Text: threadtools.InterruptMoved("Desk")}, from("wake", worker))
+	text, meta = answer(threadtools.Wake{Kind: threadtools.WakeInterrupted, Sources: []threadtools.WakeSource{{Title: worker, ThreadID: "t-worker", Tokens: []string{"tok-1"}}}, Text: threadtools.InterruptMoved("Desk")}, from("wake", worker))
 	add("a move", text, meta)
-	text, meta = answer(threadtools.Wake{Kind: threadtools.WakeInterrupted, Title: worker, ThreadID: "t-worker", Token: "tok-1", Text: threadtools.InterruptNeverStarted}, from("wake", worker))
+	text, meta = answer(threadtools.Wake{Kind: threadtools.WakeInterrupted, Sources: []threadtools.WakeSource{{Title: worker, ThreadID: "t-worker", Tokens: []string{"tok-1"}}}, Text: threadtools.InterruptNeverStarted}, from("wake", worker))
 	add("a request whose thread was never created", text, meta)
-	text, meta = answer(threadtools.Wake{Kind: threadtools.WakeReminder, Token: "tok-1", Text: "Check the build."}, from("wake", "Self"))
+	text, meta = answer(threadtools.Wake{Kind: threadtools.WakeReminder, Sources: []threadtools.WakeSource{{Tokens: []string{"tok-1"}}}, Text: "Check the build."}, from("wake", "Self"))
 	add("a reminder", text, meta)
-	text, meta = answer(threadtools.Wake{Kind: threadtools.WakeReply, Title: worker, ThreadID: "t-worker", Token: "tok-1", Text: "Untitled reply."}, nil)
+	text, meta = answer(threadtools.Wake{Kind: threadtools.WakeErrored, Sources: []threadtools.WakeSource{{Title: worker, ThreadID: "t-worker", Tokens: []string{"tok-1"}}}}, from("wake", worker))
+	add("an error with no text", text, meta)
+	text, meta = answer(threadtools.Wake{Kind: threadtools.WakeFinished, Sources: []threadtools.WakeSource{{Title: worker, ThreadID: "t-worker", Tokens: []string{"tok-1", "tok-2"}}}, Text: "Did both."}, from("wake", worker))
+	add("one turn answering two requests", text, meta)
+	digest := []threadtools.WakeSource{
+		{Title: worker, ThreadID: "t-worker", Tokens: []string{"tok-1"}, Agent: &threadtools.SenderAgent{Role: "Runs the builds."}},
+		{Title: "Lexer", ThreadID: "t-lexer", Computer: "desk", Tokens: []string{"tok-2", "tok-3"}},
+	}
+	text, meta = answer(threadtools.Wake{Kind: threadtools.WakeReply, Sources: digest, Text: "Same answer."}, from("wake", worker))
+	add("a digest of the same reply", text, meta)
+	text, meta = answer(threadtools.Wake{Kind: threadtools.WakeExpired, Sources: digest}, from("wake", worker))
+	add("a digest with no text", text, meta)
+	text, meta = answer(threadtools.Wake{Kind: threadtools.WakeInterrupted, Sources: digest, Text: threadtools.InterruptSessionEndedMidTurn + threadtools.SessionEndedWrittenSoFar + "Half done."}, from("wake", worker))
+	add("a digest of sessions that ended during the turn", text, meta)
+	text, meta = answer(threadtools.Wake{Kind: threadtools.WakeInterrupted, Sources: digest, Text: stopByWorkflow().cause}, from("wake", worker))
+	add("a digest of stops with their recorded cause", text, meta)
+	text, meta = answer(threadtools.Wake{Kind: threadtools.WakeReply, Sources: []threadtools.WakeSource{{Title: worker, ThreadID: "t-worker", Tokens: []string{"tok-1"}}}, Text: "Untitled reply."}, nil)
 	add("a reply whose attribution names no thread", text, meta)
-	firstWake, firstWakeMeta := answer(threadtools.Wake{Kind: threadtools.WakeInterrupted, Title: "A", ThreadID: "t-a", Token: "tok-1"}, from("wake", "A"))
-	secondWake, secondWakeMeta := answer(threadtools.Wake{Kind: threadtools.WakeReply, Title: "B", ThreadID: "t-b", Token: "tok-2", Text: "two"}, from("wake", "B"))
+	firstWake, firstWakeMeta := answer(threadtools.Wake{Kind: threadtools.WakeInterrupted, Sources: []threadtools.WakeSource{{Title: "A", ThreadID: "t-a", Tokens: []string{"tok-1"}}}}, from("wake", "A"))
+	secondWake, secondWakeMeta := answer(threadtools.Wake{Kind: threadtools.WakeReply, Sources: []threadtools.WakeSource{{Title: "B", ThreadID: "t-b", Tokens: []string{"tok-2"}}}, Text: "two"}, from("wake", "B"))
 	text, meta = joined([]string{firstWake, secondWake}, []string{firstWakeMeta, secondWakeMeta})
 	add("two wakes joined, the first saying nothing", text, meta)
 	// The first answer quotes a whole wake after a rule; only the recorded
 	// lengths tell it from the next member.
-	quoting, quotingMeta := answer(threadtools.Wake{
-		Kind: threadtools.WakeReply, Title: "A", ThreadID: "t-a", Token: "tok-1",
-		Text: "Example:" + usermessage.JoinSeparator + "Reply from \"B\" (t-b) [token tok-2]:\nnot B's answer",
-	}, from("wake", "A"))
+	quoting, quotingMeta := answer(threadtools.Wake{Kind: threadtools.WakeReply, Sources: []threadtools.WakeSource{{Title: "A", ThreadID: "t-a", Tokens: []string{"tok-1"}}}, Text: "Example:" + usermessage.JoinSeparator + "Reply from \"B\" (t-b) [token tok-2]:\nnot B's answer"}, from("wake", "A"))
 	text, meta = joined([]string{quoting, secondWake}, []string{quotingMeta, secondWakeMeta})
 	add("two wakes joined, the first answer quoting a wake", text, meta)
 	// A loop's wake joined ahead of an answer heads the row as a loop.

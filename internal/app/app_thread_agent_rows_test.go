@@ -618,7 +618,7 @@ func TestALateReplyCollectedInlineKeepsTheFirstAnswersWake(t *testing.T) {
 		t.Fatalf("echo: %v", err)
 	}
 	wake := f.wakeRow(t, token)
-	if stored, err := f.app.store.StoreThreadRequestLateReply(token, []byte("one more thing"), time.Now().UnixMilli(), nil); err != nil || !stored {
+	if stored, err := f.app.store.StoreThreadRequestLateReply(token, []byte("one more thing"), time.Now().UnixMilli(), nil, false); err != nil || !stored {
 		t.Fatalf("StoreThreadRequestLateReply: stored=%v err=%v", stored, err)
 	}
 
@@ -654,7 +654,7 @@ func TestALateReplyByAWakeAfterAnInlineAnswerNamesItsWake(t *testing.T) {
 		t.Fatalf("RequestStates = %+v, %v; want the answer carried inline", report, err)
 	}
 	pending.run(true)
-	if stored, err := f.app.store.StoreThreadRequestLateReply(token, []byte("one more thing"), time.Now().UnixMilli(), nil); err != nil || !stored {
+	if stored, err := f.app.store.StoreThreadRequestLateReply(token, []byte("one more thing"), time.Now().UnixMilli(), nil, false); err != nil || !stored {
 		t.Fatalf("StoreThreadRequestLateReply: stored=%v err=%v", stored, err)
 	}
 	f.app.deliverThreadWake(token, true)

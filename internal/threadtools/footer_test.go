@@ -27,13 +27,13 @@ func TestWaitingFooter(t *testing.T) {
 }
 
 // TestNotWaitingFooter: the token and thread_reply are given either way,
-// since a reply always reaches the request record.
+// since a reply always reaches the sender as a message.
 func TestNotWaitingFooter(t *testing.T) {
 	got := Footer{Title: "Nightly", ThreadID: "91bb", Token: "tok-2", SenderReachable: true}.String()
 	want := strings.Join([]string{
 		"---",
 		`Agent request from thread "Nightly" (91bb).`,
-		"It is not waiting. No answer notification was requested. To reply anyway, call thread_reply with token tok-2, once. To answer it, use thread_send with its id.",
+		"It is not waiting for an answer. If it should hear something back, call thread_reply with token tok-2, once: the reply reaches it as a message, and it sees only your reply text. To read the sender's thread, use thread_show with its id.",
 	}, "\n")
 	if got != want {
 		t.Fatalf("footer:\n%s\nwant:\n%s", got, want)
@@ -89,97 +89,102 @@ func TestWakeTemplates(t *testing.T) {
 	}{
 		{
 			name: "reply from another computer with an age",
-			wake: Wake{Kind: WakeReply, Title: "Parser", ThreadID: "7f3a", Computer: "Studio", Token: "tok", Age: 3 * time.Hour, Text: "done"},
+			wake: Wake{Kind: WakeReply, Sources: []WakeSource{{Title: "Parser", ThreadID: "7f3a", Computer: "Studio", Tokens: []string{"tok"}, Age: 3 * time.Hour}}, Text: "done"},
 			want: "Reply from \"Parser\" (7f3a, on Studio, answered 3h ago) [token tok]:\ndone",
 		},
 		{
 			name: "a request made in an assistant's past thread names it",
-			wake: Wake{Kind: WakeReply, Title: "Parser", ThreadID: "7f3a", Token: "tok", Text: "done", MadeIn: "old1", Now: "new2"},
+			wake: Wake{Kind: WakeReply, Sources: []WakeSource{{Title: "Parser", ThreadID: "7f3a", Tokens: []string{"tok"}}}, Text: "done", MadeIn: "old1", Now: "new2"},
 			want: "Reply from \"Parser\" (7f3a) [token tok]:\nMade in thread old1, before New Thread, Same Assistant; now new2.\ndone",
 		},
 		{
 			name: "fresh local reply states no computer and no age",
-			wake: Wake{Kind: WakeReply, Title: "Parser", ThreadID: "7f3a", Token: "tok", Age: 2 * time.Second, Text: "done"},
+			wake: Wake{Kind: WakeReply, Sources: []WakeSource{{Title: "Parser", ThreadID: "7f3a", Tokens: []string{"tok"}, Age: 2 * time.Second}}, Text: "done"},
 			want: "Reply from \"Parser\" (7f3a) [token tok]:\ndone",
 		},
 		{
 			name: "finished without replying",
-			wake: Wake{Kind: WakeFinished, Title: "Parser", ThreadID: "7f3a", Token: "tok", Text: "I started the tests"},
+			wake: Wake{Kind: WakeFinished, Sources: []WakeSource{{Title: "Parser", ThreadID: "7f3a", Tokens: []string{"tok"}}}, Text: "I started the tests"},
 			want: "\"Parser\" (7f3a) [token tok] finished its turn without calling thread_reply. Its final message:\nI started the tests",
 		},
 		{
 			name: "errored",
-			wake: Wake{Kind: WakeErrored, Title: "Parser", ThreadID: "7f3a", Token: "tok", Text: "the provider refused"},
+			wake: Wake{Kind: WakeErrored, Sources: []WakeSource{{Title: "Parser", ThreadID: "7f3a", Tokens: []string{"tok"}}}, Text: "the provider refused"},
 			want: "\"Parser\" (7f3a) [token tok] errored: the provider refused",
 		},
 		{
+			name: "errored with no error text",
+			wake: Wake{Kind: WakeErrored, Sources: []WakeSource{{Title: "Parser", ThreadID: "7f3a", Tokens: []string{"tok"}}}},
+			want: "\"Parser\" (7f3a) [token tok] errored.",
+		},
+		{
 			name: "cancelled",
-			wake: Wake{Kind: WakeCancelled, Title: "Parser", ThreadID: "7f3a", Token: "tok"},
+			wake: Wake{Kind: WakeCancelled, Sources: []WakeSource{{Title: "Parser", ThreadID: "7f3a", Tokens: []string{"tok"}}}},
 			want: "\"Parser\" (7f3a) [token tok] was cancelled.",
 		},
 		{
 			name: "cancelled for the agent says by whom",
-			wake: Wake{Kind: WakeCancelled, Title: "Parser", ThreadID: "7f3a", Token: "tok", Text: "The user stopped it."},
+			wake: Wake{Kind: WakeCancelled, Sources: []WakeSource{{Title: "Parser", ThreadID: "7f3a", Tokens: []string{"tok"}}}, Text: "The user stopped it."},
 			want: "\"Parser\" (7f3a) [token tok] was cancelled: The user stopped it.",
 		},
 		{
 			name: "interrupted states the recorded cause",
-			wake: Wake{Kind: WakeInterrupted, Title: "Parser", ThreadID: "7f3a", Token: "tok", Text: "Its workflow stopped the turn before it answered."},
+			wake: Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Parser", ThreadID: "7f3a", Tokens: []string{"tok"}}}, Text: "Its workflow stopped the turn before it answered."},
 			want: "\"Parser\" (7f3a) [token tok]: Its workflow stopped the turn before it answered.",
 		},
 		{
 			name: "interrupted by a restart of another computer",
-			wake: Wake{Kind: WakeInterrupted, Title: "Parser", ThreadID: "7f3a", Computer: "Studio", Token: "tok", Text: InterruptRestart},
+			wake: Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Parser", ThreadID: "7f3a", Computer: "Studio", Tokens: []string{"tok"}}}, Text: InterruptRestart},
 			want: "\"Parser\" (7f3a, on Studio) [token tok] was interrupted by a restart of Studio.",
 		},
 		{
 			name: "interrupted locally names this computer",
-			wake: Wake{Kind: WakeInterrupted, Title: "Parser", ThreadID: "7f3a", Token: "tok", Text: InterruptRestart},
+			wake: Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Parser", ThreadID: "7f3a", Tokens: []string{"tok"}}}, Text: InterruptRestart},
 			want: "\"Parser\" (7f3a) [token tok] was interrupted by a restart of this computer.",
 		},
 		{
 			name: "interrupted by its session ending before it read the request",
-			wake: Wake{Kind: WakeInterrupted, Title: "Parser", ThreadID: "7f3a", Token: "tok", Text: InterruptSessionEndedUnread},
+			wake: Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Parser", ThreadID: "7f3a", Tokens: []string{"tok"}}}, Text: InterruptSessionEndedUnread},
 			want: "\"Parser\" (7f3a) [token tok]: The thread's session ended before it read the request.",
 		},
 		{
 			name: "interrupted by its session ending during the turn, with what it wrote",
-			wake: Wake{Kind: WakeInterrupted, Title: "Parser", ThreadID: "7f3a", Token: "tok", Text: InterruptSessionEndedMidTurn + SessionEndedWrittenSoFar + "Half done."},
+			wake: Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Parser", ThreadID: "7f3a", Tokens: []string{"tok"}}}, Text: InterruptSessionEndedMidTurn + SessionEndedWrittenSoFar + "Half done."},
 			want: "\"Parser\" (7f3a) [token tok]: The thread's session ended during the turn that read the request. What it had written by then:\n\nHalf done.",
 		},
 		{
 			name: "interrupted by a move",
-			wake: Wake{Kind: WakeInterrupted, Title: "Parser", ThreadID: "7f3a", Token: "tok", Text: InterruptMoved("Desk")},
+			wake: Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Parser", ThreadID: "7f3a", Tokens: []string{"tok"}}}, Text: InterruptMoved("Desk")},
 			want: "\"Parser\" (7f3a) [token tok]: The thread was moved to Desk before it answered.",
 		},
 		{
 			name: "interrupted by something other than a person",
-			wake: Wake{Kind: WakeInterrupted, Title: "Parser", ThreadID: "7f3a", Token: "tok", Text: InterruptTurn},
+			wake: Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Parser", ThreadID: "7f3a", Tokens: []string{"tok"}}}, Text: InterruptTurn},
 			want: "\"Parser\" (7f3a) [token tok]: The turn was interrupted before it answered.",
 		},
 		{
 			name: "interrupted with no reason recorded never claims a restart",
-			wake: Wake{Kind: WakeInterrupted, Title: "Parser", ThreadID: "7f3a", Token: "tok"},
+			wake: Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Parser", ThreadID: "7f3a", Tokens: []string{"tok"}}}},
 			want: "\"Parser\" (7f3a) [token tok]: The turn was interrupted before it answered.",
 		},
 		{
 			name: "stopped by the person, with its last message",
-			wake: Wake{Kind: WakeStopped, Title: "Parser", ThreadID: "7f3a", Token: "tok", Text: "Half done."},
+			wake: Wake{Kind: WakeStopped, Sources: []WakeSource{{Title: "Parser", ThreadID: "7f3a", Tokens: []string{"tok"}}}, Text: "Half done."},
 			want: "\"Parser\" (7f3a) [token tok]: The user stopped this turn before it answered. Its last message:\nHalf done.",
 		},
 		{
 			name: "stopped by the person before it said anything",
-			wake: Wake{Kind: WakeStopped, Title: "Parser", ThreadID: "7f3a", Token: "tok"},
+			wake: Wake{Kind: WakeStopped, Sources: []WakeSource{{Title: "Parser", ThreadID: "7f3a", Tokens: []string{"tok"}}}},
 			want: "\"Parser\" (7f3a) [token tok]: The user stopped this turn before it answered.",
 		},
 		{
 			name: "expired",
-			wake: Wake{Kind: WakeExpired, Title: "Parser", ThreadID: "7f3a", Computer: "Studio", Token: "tok"},
+			wake: Wake{Kind: WakeExpired, Sources: []WakeSource{{Title: "Parser", ThreadID: "7f3a", Computer: "Studio", Tokens: []string{"tok"}}}},
 			want: "\"Parser\" (7f3a, on Studio) [token tok] did not answer within a day.",
 		},
 		{
 			name: "reminder",
-			wake: Wake{Kind: WakeReminder, Token: "tok", Text: "check the deploy"},
+			wake: Wake{Kind: WakeReminder, Sources: []WakeSource{{Tokens: []string{"tok"}}}, Text: "check the deploy"},
 			want: "Reminder you set [token tok]:\ncheck the deploy",
 		},
 	}
@@ -307,7 +312,7 @@ func TestSpawnerFooter(t *testing.T) {
 		"---",
 		`Agent request from thread "Lead" (a1).`,
 		"The sender spawned this thread, so your questions and approval requests go to it, not to the user.",
-		"It is not waiting. No answer notification was requested. To reply anyway, call thread_reply with token tok, once. To answer it, use thread_send with its id.",
+		"It is not waiting for an answer. If it should hear something back, call thread_reply with token tok, once: the reply reaches it as a message, and it sees only your reply text. To read the sender's thread, use thread_show with its id.",
 	}, "\n")
 	if got != want {
 		t.Fatalf("footer:\n%s\nwant:\n%s", got, want)
@@ -318,16 +323,16 @@ func TestSpawnerFooter(t *testing.T) {
 // leaves a reminder alone.
 func TestWakeFromAStandingAgent(t *testing.T) {
 	agent := &SenderAgent{Role: "Reviewer of the parser."}
-	got := Wake{Kind: WakeReply, Title: "Parser", ThreadID: "7f3a", Token: "tok", Text: "done", Agent: agent}.String()
+	got := Wake{Kind: WakeReply, Sources: []WakeSource{{Title: "Parser", ThreadID: "7f3a", Tokens: []string{"tok"}, Agent: agent}}, Text: "done"}.String()
 	want := "Reply from \"Parser\" (7f3a) [token tok]:\nThat thread is a standing agent. Its role, in its own words: \"Reviewer of the parser.\"\ndone"
 	if got != want {
 		t.Fatalf("wake:\n%s\nwant:\n%s", got, want)
 	}
-	cancelled := Wake{Kind: WakeCancelled, Title: "Parser", ThreadID: "7f3a", Token: "tok", Agent: agent}.String()
+	cancelled := Wake{Kind: WakeCancelled, Sources: []WakeSource{{Title: "Parser", ThreadID: "7f3a", Tokens: []string{"tok"}, Agent: agent}}}.String()
 	if cancelled != "\"Parser\" (7f3a) [token tok] was cancelled.\nThat thread is a standing agent. Its role, in its own words: \"Reviewer of the parser.\"" {
 		t.Fatalf("cancelled wake:\n%s", cancelled)
 	}
-	if reminder := (Wake{Kind: WakeReminder, Token: "tok", Text: "x", Agent: agent}).String(); strings.Contains(reminder, "standing agent") {
+	if reminder := (Wake{Kind: WakeReminder, Sources: []WakeSource{{Tokens: []string{"tok"}, Agent: agent}}, Text: "x"}).String(); strings.Contains(reminder, "standing agent") {
 		t.Fatalf("reminder:\n%s", reminder)
 	}
 }
@@ -339,5 +344,168 @@ func TestFooterStartOpensTheFooter(t *testing.T) {
 	message := body + "\n\n" + Footer{Title: "T", ThreadID: "id", Token: "tok"}.String()
 	if got := strings.Index(message, FooterStart); got != len(body)+1 {
 		t.Fatalf("FooterStart at %d in %q; want %d", got, message, len(body)+1)
+	}
+}
+
+// TestWakeNamesEveryRequestItAnswers: one thread that answered several of
+// the caller's requests is named once with all of their tokens, oldest
+// first, and a clipped body points at the first.
+func TestWakeNamesEveryRequestItAnswers(t *testing.T) {
+	source := WakeSource{Title: "Parser", ThreadID: "7f3a", Tokens: []string{"tok-a", "tok-b"}}
+	got := Wake{Kind: WakeFinished, Sources: []WakeSource{source}, Text: "both done"}.String()
+	want := "\"Parser\" (7f3a) [tokens tok-a, tok-b] finished its turn without calling thread_reply. Its final message:\nboth done"
+	if got != want {
+		t.Fatalf("wake:\n%s\nwant:\n%s", got, want)
+	}
+	long := Wake{Kind: WakeFinished, Sources: []WakeSource{source}, Text: strings.Repeat("a", WakePreviewBytes+1)}.String()
+	if !strings.HasSuffix(long, WakePreviewPointer("tok-a")) {
+		t.Errorf("a clipped wake for two requests does not point at the first: %q", long[len(long)-80:])
+	}
+}
+
+// TestWakeDigestNamesEveryThread pins the message that speaks for several
+// threads: what happened to each of them once, a line per thread with its
+// tokens, and what they share last so the list is not buried under it.
+func TestWakeDigestNamesEveryThread(t *testing.T) {
+	sources := []WakeSource{
+		{Title: "Parser", ThreadID: "7f3a", Tokens: []string{"tok-a"}},
+		{Title: "Lexer", ThreadID: "91bb", Computer: "Studio", Tokens: []string{"tok-b", "tok-c"}, Age: 3 * time.Hour},
+	}
+	cases := []struct {
+		name string
+		wake Wake
+		head string
+		tail string
+	}{
+		{
+			name: "interrupted with one cause",
+			wake: Wake{Kind: WakeInterrupted, Sources: sources, Text: InterruptSessionEndedUnread},
+			head: "2 threads were interrupted, each for the same reason:",
+			tail: InterruptSessionEndedUnread,
+		},
+		{
+			name: "interrupted by restarts of the computers they ran on",
+			wake: Wake{Kind: WakeInterrupted, Sources: sources, Text: InterruptRestart},
+			head: "2 threads were interrupted by a restart of the computer each ran on.",
+		},
+		{
+			name: "stopped by the user",
+			wake: Wake{Kind: WakeStopped, Sources: sources},
+			head: "2 threads: The user stopped their turns before they answered.",
+		},
+		{
+			name: "stopped by the user with the same last message",
+			wake: Wake{Kind: WakeStopped, Sources: sources, Text: "Half done."},
+			head: "2 threads: The user stopped their turns before they answered. Each one's last message:",
+			tail: "Half done.",
+		},
+		{
+			name: "cancelled for the agent",
+			wake: Wake{Kind: WakeCancelled, Sources: sources, Text: "The user stopped it."},
+			head: "2 threads were cancelled, each for the same reason:",
+			tail: "The user stopped it.",
+		},
+		{
+			name: "interrupted with no cause",
+			wake: Wake{Kind: WakeInterrupted, Sources: sources},
+			head: "2 threads were interrupted.",
+		},
+		{
+			name: "errored",
+			wake: Wake{Kind: WakeErrored, Sources: sources, Text: "The thread was deleted before it answered."},
+			head: "2 threads errored, each with the same error:",
+			tail: "The thread was deleted before it answered.",
+		},
+		{
+			name: "errored with no error text",
+			wake: Wake{Kind: WakeErrored, Sources: sources},
+			head: "2 threads errored.",
+		},
+		{
+			name: "cancelled",
+			wake: Wake{Kind: WakeCancelled, Sources: sources},
+			head: "2 threads were cancelled.",
+		},
+		{
+			name: "expired",
+			wake: Wake{Kind: WakeExpired, Sources: sources},
+			head: "2 threads did not answer within a day.",
+		},
+		{
+			name: "the same reply",
+			wake: Wake{Kind: WakeReply, Sources: sources, Text: "done"},
+			head: "2 threads sent the same reply:",
+			tail: "done",
+		},
+		{
+			name: "the same final message",
+			wake: Wake{Kind: WakeFinished, Sources: sources, Text: "ok"},
+			head: "2 threads finished their turns without calling thread_reply, each with the same final message:",
+			tail: "ok",
+		},
+	}
+	named := []string{
+		`- "Parser" (7f3a) [token tok-a]`,
+		`- "Lexer" (91bb, on Studio, answered 3h ago) [tokens tok-b, tok-c]`,
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			lines := append([]string{tc.head}, named...)
+			if tc.tail != "" {
+				lines = append(lines, tc.tail)
+			}
+			if got, want := tc.wake.String(), strings.Join(lines, "\n"); got != want {
+				t.Fatalf("wake:\n%s\nwant:\n%s", got, want)
+			}
+		})
+	}
+}
+
+// A shared text over the preview budget is clipped after the list and points
+// at the first request's whole answer.
+func TestWakeDigestClipsALongSharedText(t *testing.T) {
+	got := Wake{Kind: WakeErrored, Sources: []WakeSource{
+		{Title: "Parser", ThreadID: "7f3a", Tokens: []string{"tok-a"}},
+		{Title: "Lexer", ThreadID: "91bb", Tokens: []string{"tok-b"}},
+	}, Text: strings.Repeat("e", WakePreviewBytes+1)}.String()
+	list := strings.Index(got, `- "Lexer" (91bb) [token tok-b]`)
+	if list < 0 || list > 200 {
+		t.Fatalf("the thread list is not at the top of the message (at %d)", list)
+	}
+	if !strings.HasSuffix(got, WakePreviewPointer("tok-a")) {
+		t.Errorf("a clipped digest does not point at the first request: %q", got[len(got)-80:])
+	}
+}
+
+// TestWakeDigestOnOneComputerNamesIt: a restart that interrupted threads on
+// one computer names that computer, as a single wake does.
+func TestWakeDigestOnOneComputerNamesIt(t *testing.T) {
+	got := Wake{Kind: WakeInterrupted, Text: InterruptRestart, Sources: []WakeSource{
+		{Title: "Parser", ThreadID: "7f3a", Tokens: []string{"tok-a"}},
+		{Title: "Lexer", ThreadID: "91bb", Tokens: []string{"tok-b"}},
+	}}.String()
+	if head, _, _ := strings.Cut(got, "\n"); head != "2 threads were interrupted by a restart of this computer." {
+		t.Fatalf("digest head: %q", head)
+	}
+}
+
+// TestWakeDigestNamesStandingAgentsAndThePastThread: a standing agent in a
+// digest is named under its own line, and the past thread the requests were
+// made in follows the list, before the shared text.
+func TestWakeDigestNamesStandingAgentsAndThePastThread(t *testing.T) {
+	got := Wake{Kind: WakeReply, Text: "done", MadeIn: "old1", Now: "new2", Sources: []WakeSource{
+		{Title: "Parser", ThreadID: "7f3a", Tokens: []string{"tok-a"}, Agent: &SenderAgent{Role: "Reviewer."}},
+		{Title: "Lexer", ThreadID: "91bb", Tokens: []string{"tok-b"}},
+	}}.String()
+	want := strings.Join([]string{
+		"2 threads sent the same reply:",
+		`- "Parser" (7f3a) [token tok-a]`,
+		`  That thread is a standing agent. Its role, in its own words: "Reviewer."`,
+		`- "Lexer" (91bb) [token tok-b]`,
+		"Made in thread old1, before New Thread, Same Assistant; now new2.",
+		"done",
+	}, "\n")
+	if got != want {
+		t.Fatalf("wake:\n%s\nwant:\n%s", got, want)
 	}
 }

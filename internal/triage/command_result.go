@@ -143,7 +143,8 @@ func (r *Router) handleCommandResult(evt provider.ProviderEvent) error {
 	}
 
 	turnIndex := r.timelineNotificationTurnIndex(evt)
-	itemID, err := commandResultItemID(evt, turnIndex, r)
+	itemID, release, err := commandResultItemID(evt, turnIndex, r)
+	defer release()
 	if err != nil {
 		return err
 	}
@@ -244,17 +245,18 @@ func sanitizeCommandAgentResult(source *provider.CommandAgentResultMeta) *provid
 // same envelope is ever replayed. The fallback exists only for an envelope that
 // carried none: it allocates from the same per-(thread, turn) counter the
 // timeline-notification rows use, under its own scope label, so ids stay
-// distinct across kinds and get swept by the same CleanupThread pass.
-func commandResultItemID(evt provider.ProviderEvent, turnIndex int, r *Router) (string, error) {
+// distinct across kinds and get swept by the same CleanupThread pass. The
+// caller writes the row before calling release (reserveItemID).
+func commandResultItemID(evt provider.ProviderEvent, turnIndex int, r *Router) (id string, release func(), err error) {
 	if id := strings.TrimSpace(eventItemID(evt)); id != "" {
-		return CommandResultItemID(turnIndex, id, 0), nil
+		return CommandResultItemID(turnIndex, id, 0), func() {}, nil
 	}
-	id, err := r.nextUnusedItemID(evt.ThreadID, func() string {
+	id, release, err = r.reserveItemID(evt.ThreadID, func() string {
 		return CommandResultItemID(turnIndex, "", r.nextScopeSequence(evt.ThreadID, turnIndex, itemKindCommandResult))
 	})
 	if err != nil {
-		return "", err
+		return "", release, fmt.Errorf("command result id: %w", err)
 	}
 	log.Printf("triage: command_result on %s carried no provider id; allocated %s", evt.ThreadID, id)
-	return id, nil
+	return id, release, nil
 }

@@ -156,3 +156,52 @@ func TestThreadsWithOpenAgentRows(t *testing.T) {
 		t.Errorf("bounded to 2 = %q, %v", got, err)
 	}
 }
+
+// A reply arms its request's wake in the statement that stores it, whether
+// or not the caller asked to be told, so a send made without notify that
+// was replied to is owed as a message and listed as a sender's agent row:
+// in the Agents segment's recent rows and in its Past. One that ended
+// without a reply stays a quiet send, owed nothing and listed nowhere.
+func TestAReplyToAQuietSendIsListedAsItsWakeIsArmed(t *testing.T) {
+	t.Parallel()
+	s := newTestStore(t)
+	for _, id := range []string{"lead", "peer"} {
+		mustCreateThread(t, s, id)
+	}
+	for _, token := range []string{"send-replied", "send-finished"} {
+		seedAgentRequest(t, s, token, "lead", ThreadRequestSend, "peer", false, 60)
+	}
+	for token, settlement := range map[string]ThreadRequestSettlement{
+		"send-replied":  {State: ThreadRequestReplied, Answer: []byte("done"), AnswerKind: ThreadAnswerReply, SettledAt: 200, ArmWake: true},
+		"send-finished": {State: ThreadRequestFinished, Answer: []byte("done"), AnswerKind: ThreadAnswerFinal, SettledAt: 200},
+	} {
+		if settled, err := s.SettleThreadRequest(token, ThreadRequestOpenStates(), settlement); err != nil || !settled {
+			t.Fatalf("settle %s: settled=%v err=%v", token, settled, err)
+		}
+	}
+	if got := undeliveredTokens(t, s); !slices.Equal(got, []string{"send-replied"}) {
+		t.Fatalf("owed wakes = %v, want the reply alone", got)
+	}
+	page, err := s.ListThreadPastAgentRequests("lead", PastAgentRowsCursor{}, 10, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var past []string
+	for _, row := range page.Requests {
+		past = append(past, row.Token)
+	}
+	if !slices.Equal(past, []string{"send-replied"}) || page.Total != 1 {
+		t.Fatalf("past = %v (total %d), want the replied send alone", past, page.Total)
+	}
+	rows, _, err := s.ListThreadAgentTree(ThreadAgentTreeRead{Root: "lead", SettledSince: 100, Depth: 1, Limit: 10, AnswerHead: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var recent []string
+	for _, row := range rows {
+		recent = append(recent, row.Token)
+	}
+	if !slices.Equal(recent, []string{"send-replied"}) {
+		t.Fatalf("recent agent rows = %v, want the replied send alone", recent)
+	}
+}

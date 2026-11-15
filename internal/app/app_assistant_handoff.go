@@ -590,6 +590,7 @@ func (a *App) settleReadRequestsForHandOff(oldThreadID string) []string {
 		return nil
 	}
 	var settled []string
+	var works []threadSettlementWork
 	why := threadtools.InterruptHandedOff(oldThreadID)
 	for _, receipt := range receipts {
 		if receipt.State != store.ThreadReceiptRunning {
@@ -606,7 +607,7 @@ func (a *App) settleReadRequestsForHandOff(oldThreadID string) []string {
 				continue
 			}
 		}
-		applied, err := a.settleThreadReceiptNoScratch(receipt.Token, []string{store.ThreadReceiptRunning}, store.ThreadRequestSettlement{
+		work, applied, err := a.settleThreadReceiptNoScratch(receipt.Token, []string{store.ThreadReceiptRunning}, store.ThreadRequestSettlement{
 			State:      store.ThreadReceiptInterrupted,
 			Answer:     []byte(why),
 			AnswerKind: store.ThreadAnswerError,
@@ -615,10 +616,14 @@ func (a *App) settleReadRequestsForHandOff(oldThreadID string) []string {
 			log.Printf("assistants: hand off %s: settle request %s: %v", oldThreadID, receipt.Token, err)
 			continue
 		}
+		works = append(works, work)
 		if applied {
 			settled = append(settled, receipt.Token)
 		}
 	}
+	// Together, so a caller with several requests the old thread read is
+	// told once.
+	a.runThreadSettlementWorksDetached(works)
 	return settled
 }
 

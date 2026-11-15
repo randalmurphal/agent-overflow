@@ -664,7 +664,7 @@ func TestBackgroundedAckSaysWhetherAnythingWillWakeTheThread(t *testing.T) {
 	}
 
 	unattended := call(t, server, localCaller(), "thread_spawn", `{"prompt":"go"}`)
-	if note := unattended["note"].(string); note != "Still working, and nothing will wake this thread when it finishes: no wait and no notify were asked for. Read the answer with thread_status token tok-1, or ask again with notify or wait_seconds to have it delivered." {
+	if note := unattended["note"].(string); note != "Still working. With no wait and no notify, this thread hears back only if that thread calls thread_reply; its last message is not delivered when its turn ends. To have the outcome delivered either way, call thread_status with token tok-1 and wait_seconds: a wait that ends first arms the message." {
 		t.Errorf("unattended note = %q", note)
 	}
 }

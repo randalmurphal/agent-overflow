@@ -26,6 +26,9 @@ import (
 // because the only caller that can hit one is an operator restaging the same
 // version after a partial install; a version names one build, so the bytes are
 // the same bytes.
+//
+// StageBinary takes no fork lock. A caller that runs the staged binary from
+// this same process holds procutil.HoldForks around the call.
 func StageBinary(layout Layout, version, source string) error {
 	dir, err := layout.VersionDir(version)
 	if err != nil {

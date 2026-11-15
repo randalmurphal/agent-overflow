@@ -132,8 +132,20 @@
       if (wake.agentRole !== null) facts.push({ label: 'Role', value: wake.agentRole || 'Standing agent' });
       if (wake.age) facts.push({ label: 'Answered', value: `${wake.age} ago` });
       if (wake.stoppedBy) facts.push({ label: 'Stopped by', value: wake.stoppedBy });
+      // A digest names each thread it speaks for, with its tokens.
+      if (wake.threads.length > 0) {
+        facts.push({
+          label: 'Threads',
+          value: wake.threads.map((thread) => {
+            const where = [thread.computer && `on ${thread.computer}`, thread.age && `answered ${thread.age} ago`].filter(Boolean);
+            const role = thread.agentRole === null ? '' : `, standing agent${thread.agentRole ? `: ${thread.agentRole}` : ''}`;
+            return `${thread.title || thread.threadId}${where.length > 0 ? ` (${where.join(', ')})` : ''}${role}, ${thread.tokens.length > 1 ? 'tokens' : 'token'} ${thread.tokens.join(', ')}`;
+          }).join('; '),
+        });
+      }
       if (wake.clipped) facts.push({ label: 'Preview', value: `thread_status ${wake.token} returns the whole answer` });
-      if (wake.token) facts.push({ label: 'Token', value: wake.token });
+      if (wake.threads.length === 0 && wake.tokens.length > 1) facts.push({ label: 'Tokens', value: wake.tokens.join(', ') });
+      else if (wake.threads.length === 0 && wake.token) facts.push({ label: 'Token', value: wake.token });
     }
     return facts;
   }

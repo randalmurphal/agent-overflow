@@ -18,7 +18,7 @@ func interruptedWake(t *testing.T, app *App, threadID, token string) string {
 	if receipt.State != store.ThreadReceiptInterrupted {
 		t.Fatalf("receipt %s settled %q, want interrupted", token, receipt.State)
 	}
-	body, err := app.threadWakeBody(store.ThreadRequest{
+	body, err := wakeBodyOf(app, store.ThreadRequest{
 		Token: token, TargetThreadID: threadID, State: store.ThreadRequestInterrupted,
 		Answer: receipt.Answer, AnswerKind: receipt.AnswerKind,
 	}, false)

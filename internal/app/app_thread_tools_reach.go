@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"strings"
 	"time"
 
@@ -198,9 +197,9 @@ func threadErrorDetails(action string, err error) (code, message string, uncerta
 // threadRequestNeverSent reports whether a dispatch failure happened
 // before the destination could see the request. These are the refusals
 // attachedbackends raises while addressing the call, loading the pairing or
-// opening the RPC, so the source row is settled `refused`
-// (settleUnconfirmedRequest) instead of left unconfirmed for a poller that
-// would only collect the same answer.
+// opening the RPC, so a first attempt that ends this way settles the source
+// row `refused` (classifyThreadPeerFailure) instead of leaving it
+// unconfirmed for a poller that would only collect the same answer.
 //
 // threadtools.CodeUnreachable is deliberately NOT in the set, close as it
 // reads: it is also what this computer raises for a destination that DID
@@ -280,7 +279,7 @@ func (t threadToolsApp) startRemoteRequest(
 	if err := t.app.store.InsertThreadRequest(row); err != nil {
 		return threadtools.RequestAck{}, err
 	}
-	reply, uncertain, err := t.app.callThreadPeerRequest(ctx, peer.Computer(), ThreadPeerCall{
+	reply, failure, err := t.app.callThreadPeerRequest(ctx, peer.Computer(), ThreadPeerCall{
 		Tool:        tool,
 		Args:        args,
 		Token:       row.Token,
@@ -294,10 +293,19 @@ func (t threadToolsApp) startRemoteRequest(
 		_, issue, _ = threadErrorDetails(tool, err)
 	}
 	t.app.rescheduleThreadRequest(row, t.app.threadPollNormal(), issue)
-	if err != nil {
-		if !uncertain {
-			return threadtools.RequestAck{}, t.settleUnconfirmedRequest(row.Token, err)
-		}
+	switch failure {
+	case threadPeerRefused:
+		// The error this returns is the delivery, as it is for a request
+		// this computer refused itself (failRequest), and the record keeps
+		// the same text: it names the computer that refused.
+		_, refusal, _ := errorsx.PublicDetails(err)
+		t.refuseRequest(row.Token, refusal, nil)
+		return threadtools.RequestAck{}, err
+	case threadPeerUnsettled:
+		// The row stays `unconfirmed` for the poller, which reads the
+		// destination's own record of the token.
+		return threadtools.RequestAck{}, err
+	case threadPeerUncertain:
 		// Every attempt ended without an answer, so the destination may be
 		// running this request. The model is given the token and told to
 		// check it rather than an error it would answer by starting the
@@ -321,56 +329,78 @@ const threadPeerAdmissionAttempts = 3
 // poller for as long as the attempts can take, plus the normal poll delay.
 const threadRequestAdmissionFence = threadPeerCallTimeout*threadPeerAdmissionAttempts + threadPollNormalDelay
 
+// threadPeerFailure is what a request-minting call that did not return an
+// acceptance established about the request.
+type threadPeerFailure int
+
+const (
+	// threadPeerAccepted: the call returned the destination's receipt.
+	threadPeerAccepted threadPeerFailure = iota
+	// threadPeerRefused: nothing runs under the token. The destination was
+	// asked once and answered with a refusal of its own, or the call could
+	// not reach it at all. The caller's error is the whole answer.
+	threadPeerRefused
+	// threadPeerUnsettled: the call failed with a known error, but the
+	// destination may hold the request: an earlier attempt's reply was
+	// lost, or it answered without a usable result. Its own record decides.
+	threadPeerUnsettled
+	// threadPeerUncertain: every attempt ended without an answer.
+	threadPeerUncertain
+)
+
 // callThreadPeerRequest forwards one request-minting call and returns the
 // receipt the destination reports.
 //
 // A failure that leaves the acceptance unknown is retried with the same
-// token, because what was lost is the reply and not the work. `uncertain`
-// is true when every attempt ended that way: the destination may be running
-// the request, so the row stays open for the poller rather than being
-// refused here.
-func (a *App) callThreadPeerRequest(ctx context.Context, computer threadtools.Computer, call ThreadPeerCall) (ThreadPeerRequest, bool, error) {
+// token, because what was lost is the reply and not the work. A refusal
+// settles the request only when it answers the first attempt: after a lost
+// reply the destination may have accepted the request already, and a refusal
+// of the retry (a switch turned off in between, a pairing that ended) says
+// nothing about the work the first attempt started.
+func (a *App) callThreadPeerRequest(ctx context.Context, computer threadtools.Computer, call ThreadPeerCall) (ThreadPeerRequest, threadPeerFailure, error) {
 	for attempt := 1; ; attempt++ {
 		rpc, cancel := context.WithTimeout(ctx, threadPeerCallTimeout)
 		var reply ThreadPeerReply
 		err := a.backends.CallThreadPeer(rpc, computer.ID, "ThreadToolCall", &reply, call)
 		cancel()
 		if err != nil {
-			code, _, uncertain := threadErrorDetails(call.Tool, err)
-			if uncertain && !threadRequestNeverSent(code) && attempt < threadPeerAdmissionAttempts {
+			failure, retry := classifyThreadPeerFailure(call.Tool, attempt, err)
+			if retry {
 				continue
 			}
-			return ThreadPeerRequest{}, uncertain, a.threadOperationError(call.Tool, computer.ID, "", err)
+			return ThreadPeerRequest{}, failure, a.threadOperationError(call.Tool, computer.ID, "", err)
 		}
 		if reply.Request == nil {
-			return ThreadPeerRequest{}, false, errorsx.Public(threadtools.CodeUnreachable,
+			return ThreadPeerRequest{}, threadPeerUnsettled, errorsx.Public(threadtools.CodeUnreachable,
 				fmt.Sprintf("%s accepted %s without reporting the request.", threadtools.NameOfComputer(computer), call.Tool), nil)
 		}
-		return *reply.Request, false, nil
+		return *reply.Request, threadPeerAccepted, nil
 	}
 }
 
-// settleUnconfirmedRequest ends a remote request whose call failed with an
-// answer the destination gave, and returns the original error.
-//
-// A refusal raised before the destination could see the call is `refused`:
-// nothing ran there, and the row would otherwise be polled forever against
-// a computer that already said why. A refusal the destination itself wrote
-// is left `unconfirmed` for the poller, which reads that computer's own
-// record of the token rather than trusting one failed call. A call whose
-// answer never came back does not reach here at all: it is unconfirmed to
-// the model, with the token.
-func (t threadToolsApp) settleUnconfirmedRequest(token string, cause error) error {
-	code, message, _ := threadErrorDetails("request", cause)
-	if !threadRequestNeverSent(code) {
-		return cause
+// classifyThreadPeerFailure decides what the attempt-th failure of one
+// request-minting call established, and whether to send the token again.
+func classifyThreadPeerFailure(tool string, attempt int, err error) (failure threadPeerFailure, retry bool) {
+	code, _, uncertain := threadErrorDetails(tool, err)
+	neverSent := threadRequestNeverSent(code)
+	switch {
+	case uncertain && !neverSent && attempt < threadPeerAdmissionAttempts:
+		return threadPeerUncertain, true
+	case attempt == 1 && (neverSent || threadPeerWroteRefusal(err)):
+		return threadPeerRefused, false
+	case uncertain && !neverSent:
+		return threadPeerUncertain, false
 	}
-	if _, err := t.app.store.SettleThreadRequest(token, store.ThreadRequestOpenStates(), store.ThreadRequestSettlement{
-		State:      store.ThreadRequestRefused,
-		Answer:     []byte(message),
-		AnswerKind: store.ThreadAnswerError,
-	}); err != nil {
-		log.Printf("thread tools: settle unsent request %s: %v", token, err)
-	}
-	return cause
+	return threadPeerUnsettled, false
+}
+
+// threadPeerWroteRefusal reports whether a failed call carries an answer the
+// destination itself gave: its transport refused the pairing's credentials
+// or scope, or its handler returned a thread tools refusal, which it does
+// only for a request it did not start (a validation refusal before
+// acceptance, or failRequest after it). A destination error this computer
+// cannot read is uncertain and is retried before this is asked.
+func threadPeerWroteRefusal(err error) bool {
+	var remote *rpcclient.Error
+	return errors.As(err, &remote)
 }

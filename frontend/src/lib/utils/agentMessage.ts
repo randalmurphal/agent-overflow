@@ -60,7 +60,24 @@ export type WakeKind =
   | 'reminder'
   | 'settled';
 
-/** The status line of an answer delivered back to the thread that asked. */
+/** One thread a digest wake lists (threadtools Wake.digest). */
+export interface WakeThreadFacts {
+  title: string;
+  threadId: string;
+  computer: string;
+  age: string;
+  /** The requests of this thread the message answers, oldest first. */
+  tokens: string[];
+  agentRole: string | null;
+}
+
+/**
+ * The status line of an answer delivered back to the thread that asked. One
+ * message can answer several requests: one thread's turn that took in
+ * several of them names every token, and a digest of several threads that
+ * gave the same outcome lists each thread in `threads` and leaves the
+ * single-thread fields empty.
+ */
 export interface WakeFacts {
   kind: WakeKind;
   title: string;
@@ -68,7 +85,10 @@ export interface WakeFacts {
   computer: string;
   /** How long ago the answer was written, when the status line says. */
   age: string;
+  /** The first of `tokens`: the one a clipped answer points thread_status at. */
   token: string;
+  /** Every request the message answers, oldest first. */
+  tokens: string[];
   agentRole: string | null;
   /**
    * What stopped an `interrupted` request: a computer's restart, the person,
@@ -77,6 +97,8 @@ export interface WakeFacts {
   stoppedBy: string;
   /** The answer was cut to the wake's preview; thread_status has the rest. */
   clipped: boolean;
+  /** A digest's threads, two or more; empty for a wake from one thread. */
+  threads: WakeThreadFacts[];
 }
 
 /** One message of a row. A joined row holds several. */
@@ -132,7 +154,7 @@ const ROUTES_SENTENCE = ' It spawned this thread, so your questions and approval
 /** The routing line of a sender that is not a standing agent (threadtools Footer). */
 const ROUTES_LINE = 'The sender spawned this thread, so your questions and approval requests go to it, not to the user.';
 const WAITING_PREFIX = 'It is waiting for your answer. When you are done, call thread_reply with token ';
-const NOT_WAITING_PREFIX = 'It is not waiting. No answer notification was requested. To reply anyway, call thread_reply with token ';
+const NOT_WAITING_PREFIX = 'It is not waiting for an answer. If it should hear something back, call thread_reply with token ';
 const USER_MESSAGE_PREFIX = "The user's latest message in that thread: ";
 const PREVIEW_POINTER = /\n\[preview; thread_status \S+ for the whole answer\]$/;
 
@@ -253,7 +275,7 @@ function readFooter(lines: string[], at: number): { facts: RequestFooterFacts; n
   const answer = lines[i] ?? '';
   const prefix = answer.startsWith(WAITING_PREFIX) ? WAITING_PREFIX : answer.startsWith(NOT_WAITING_PREFIX) ? NOT_WAITING_PREFIX : '';
   if (prefix === '') return null;
-  const token = /^(\S+), once\./.exec(answer.slice(prefix.length));
+  const token = /^(\S+), once[.:]/.exec(answer.slice(prefix.length));
   if (!token) return null;
   facts.waiting = prefix === WAITING_PREFIX;
   facts.token = token[1];
@@ -361,6 +383,7 @@ function interruptReason(sentence: string, after: string): { stoppedBy: string; 
 const WAKE_TAILS: ReadonlyArray<{ kind: WakeKind; opening: string; body: 'line' | 'next' | 'none' }> = [
   { kind: 'finished', opening: ' finished its turn without calling thread_reply. Its final message:', body: 'next' },
   { kind: 'errored', opening: ' errored: ', body: 'line' },
+  { kind: 'errored', opening: ' errored.', body: 'none' },
   { kind: 'cancelled', opening: ' was cancelled: ', body: 'line' },
   { kind: 'cancelled', opening: ' was cancelled.', body: 'none' },
   { kind: 'interrupted', opening: ' was interrupted by a restart of ', body: 'none' },
@@ -369,35 +392,125 @@ const WAKE_TAILS: ReadonlyArray<{ kind: WakeKind; opening: string; body: 'line' 
   { kind: 'settled', opening: ' settled.', body: 'none' },
 ];
 
-/** ` [token X]` at the start of `text`. */
-function readToken(text: string): { token: string; rest: string } {
-  const match = /^ \[token ([^\]\s]+)\]/.exec(text);
-  return match ? { token: match[1], rest: text.slice(match[0].length) } : { token: '', rest: text };
+/** ` [token X]` or ` [tokens X, Y]` at the start of `text`. */
+function readTokens(text: string): { tokens: string[]; rest: string } {
+  const one = /^ \[token ([^\]\s]+)\]/.exec(text);
+  if (one) return { tokens: [one[1]], rest: text.slice(one[0].length) };
+  const several = /^ \[tokens ([^\]\s,]+(?:, [^\]\s,]+)+)\]/.exec(text);
+  if (several) return { tokens: several[1].split(', '), rest: text.slice(several[0].length) };
+  return { tokens: [], rest: text };
+}
+
+/**
+ * A digest's opening after its count (threadtools Wake.digest): its kind,
+ * whether the text after the list is what the threads share, and for an
+ * interrupt what stopped them. `reason` reads the shared text as an
+ * interrupt's reason, as a single wake's status line states it.
+ */
+const DIGEST_HEADS: ReadonlyArray<{ kind: WakeKind; opening: string; shared: 'text' | 'reason' | 'none'; stoppedBy?: string }> = [
+  { kind: 'reply', opening: ' sent the same reply:', shared: 'text' },
+  { kind: 'finished', opening: ' finished their turns without calling thread_reply, each with the same final message:', shared: 'text' },
+  { kind: 'errored', opening: ' errored, each with the same error:', shared: 'text' },
+  { kind: 'errored', opening: ' errored.', shared: 'none' },
+  { kind: 'cancelled', opening: ' were cancelled, each for the same reason:', shared: 'text' },
+  { kind: 'cancelled', opening: ' were cancelled.', shared: 'none' },
+  { kind: 'interrupted', opening: ' were interrupted, each for the same reason:', shared: 'reason' },
+  { kind: 'interrupted', opening: ' were interrupted.', shared: 'none', stoppedBy: 'an interrupt' },
+  { kind: 'interrupted', opening: ": The user stopped their turns before they answered. Each one's last message:", shared: 'text', stoppedBy: 'the user' },
+  { kind: 'interrupted', opening: ': The user stopped their turns before they answered.', shared: 'none', stoppedBy: 'the user' },
+  { kind: 'expired', opening: ' did not answer within a day.', shared: 'none' },
+  { kind: 'settled', opening: ' settled.', shared: 'none' },
+];
+const DIGEST_RESTART = ' were interrupted by a restart of ';
+
+/**
+ * Parse a wake that speaks for several threads: the outcome they share, a
+ * line per thread with its tokens and, under it, its standing-agent line,
+ * then the text they share. null when the text is not one.
+ */
+function parseDigest(text: string): AgentMessagePart | null {
+  const lines = text.split('\n');
+  const count = /^(\d+) threads/.exec(lines[0]);
+  if (!count) return null;
+  const threadCount = Number(count[1]);
+  const opening = lines[0].slice(count[0].length);
+  const facts: WakeFacts = {
+    kind: 'settled', title: '', threadId: '', computer: '', age: '', token: '', tokens: [],
+    agentRole: null, stoppedBy: '', clipped: false, threads: [],
+  };
+  let shared: 'text' | 'reason' | 'none' = 'none';
+  if (opening.startsWith(DIGEST_RESTART) && opening.endsWith('.')) {
+    facts.kind = 'interrupted';
+    facts.stoppedBy = `a restart of ${opening.slice(DIGEST_RESTART.length, -1)}`;
+  } else {
+    const head = DIGEST_HEADS.find((candidate) => candidate.opening === opening);
+    if (!head) return null;
+    facts.kind = head.kind;
+    facts.stoppedBy = head.stoppedBy ?? '';
+    shared = head.shared;
+  }
+  let i = 1;
+  while (lines[i]?.startsWith('- ')) {
+    const naming = readThreadNaming(lines[i].slice(2));
+    if (!naming) return null;
+    const { tokens, rest } = readTokens(naming.rest);
+    if (rest !== '') return null;
+    const thread: WakeThreadFacts = {
+      title: naming.title, threadId: naming.threadId, computer: naming.computer, age: naming.age, tokens, agentRole: null,
+    };
+    i++;
+    const agent = lines[i]?.startsWith('  ') ? readAgentSentence(lines[i].slice(2), 'That thread') : null;
+    if (agent && agent.rest === '') {
+      thread.agentRole = agent.role;
+      i++;
+    }
+    facts.threads.push(thread);
+    facts.tokens.push(...tokens);
+  }
+  if (facts.threads.length !== threadCount || threadCount < 2) return null;
+  facts.token = facts.tokens[0] ?? '';
+  let body = lines.slice(i).join('\n');
+  if (shared === 'reason') {
+    const newline = body.indexOf('\n');
+    const reason = interruptReason(newline < 0 ? body : body.slice(0, newline), newline < 0 ? '' : body.slice(newline + 1));
+    if (reason) {
+      facts.stoppedBy = reason.stoppedBy;
+      body = reason.body;
+    }
+  }
+  if (PREVIEW_POINTER.test(body)) {
+    facts.clipped = true;
+    body = body.replace(PREVIEW_POINTER, '');
+  }
+  return { body, footer: null, wake: facts };
 }
 
 /** Parse one wake: its status line, the standing-agent line, its answer. */
 export function parseWakeText(text: string): AgentMessagePart | null {
+  if (/^\d+ threads[ :]/.test(text)) return parseDigest(text);
   const newline = text.indexOf('\n');
   const head = newline < 0 ? text : text.slice(0, newline);
   let after = newline < 0 ? '' : text.slice(newline + 1);
   const facts: WakeFacts = {
-    kind: 'settled', title: '', threadId: '', computer: '', age: '', token: '',
-    agentRole: null, stoppedBy: '', clipped: false,
+    kind: 'settled', title: '', threadId: '', computer: '', age: '', token: '', tokens: [],
+    agentRole: null, stoppedBy: '', clipped: false, threads: [],
   };
   let body = '';
   if (head.startsWith('Reminder you set')) {
-    const { token, rest } = readToken(head.slice('Reminder you set'.length));
+    const { tokens, rest } = readTokens(head.slice('Reminder you set'.length));
     if (rest !== ':') return null;
     facts.kind = 'reminder';
-    facts.token = token;
+    facts.tokens = tokens;
+    facts.token = tokens[0] ?? '';
     body = after;
   } else {
     const reply = head.startsWith('Reply from ');
     const naming = readThreadNaming(reply ? head.slice('Reply from '.length) : head);
     if (!naming) return null;
     Object.assign(facts, { title: naming.title, threadId: naming.threadId, computer: naming.computer, age: naming.age });
-    const { token, rest } = readToken(naming.rest);
-    facts.token = token;
+    const { tokens, rest } = readTokens(naming.rest);
+    facts.tokens = tokens;
+    facts.token = tokens[0] ?? '';
     // The standing-agent line follows the status line's first line.
     const agentNewline = after.indexOf('\n');
     const agentLine = agentNewline < 0 ? after : after.slice(0, agentNewline);
@@ -512,6 +625,17 @@ function fromThread(text: string, meta: UserMessageMeta): AgentMessage {
   if (lead.wake) kind = lead.wake.kind;
   const role = lead.footer?.agentRole ?? lead.wake?.agentRole ?? '';
   const { label, title } = labels(kind);
+  // A digest speaks for several threads, which it lists; no one of them is
+  // its sender.
+  const threads = lead.wake?.threads ?? [];
+  if (threads.length > 0) {
+    return {
+      kind, kindLabel: label, kindTitle: title,
+      sender: `${threads.length} threads`, senderThread: null, senderRole: '',
+      firstLine: firstLineOf(lead.body) || threads.map((thread) => thread.title || thread.threadId).join(', '),
+      parts,
+    };
+  }
   return {
     kind,
     kindLabel: label,

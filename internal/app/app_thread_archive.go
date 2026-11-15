@@ -222,6 +222,12 @@ func (a *App) commitArchive(id string) (archivedThreadWork, bool, error) {
 func (a *App) UnarchiveThread(id string) (store.Thread, error) {
 	unlock := a.threadLocks().Lock(id)
 	defer unlock()
+	return a.unarchiveThreadLocked(id)
+}
+
+// unarchiveThreadLocked is UnarchiveThread for a caller that holds the
+// thread's action lock.
+func (a *App) unarchiveThreadLocked(id string) (store.Thread, error) {
 	if err := a.threadApplication().CheckMutable(id); err != nil {
 		return store.Thread{}, err
 	}

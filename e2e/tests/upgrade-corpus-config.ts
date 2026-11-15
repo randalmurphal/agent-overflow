@@ -41,16 +41,16 @@ export interface MigrationException {
 
 export const migrationExceptions: MigrationException[] = [
   { version: 146, table: 'pr_views', dropped: true, reason: 'the Pull requests page no longer records which PRs the app opened; attention comes from the forge' },
-  { version: 149, table: 'channels', dropped: true, reason: 'v149 removes discussions and their channels' },
-  { version: 149, table: 'channel_messages', dropped: true, reason: 'v149 removes discussions and their channel messages' },
-  { version: 149, table: 'discussion_definitions', dropped: true, reason: 'v149 removes discussion definitions' },
-  { version: 149, table: 'threads', columns: ['mode'], reason: 'v149 turns a former discussion thread into a chat thread' },
-  { version: 149, table: 'scratch_threads', columns: ['return_mode'], reason: 'v149 returns a side chat opened from a discussion to chat mode' },
-  { version: 149, table: 'chat_bar_favorites', rowsMayShrink: true, reason: 'v149 keeps only model favorites; discussion favorites are removed' },
-  { version: 149, table: 'automations', dropped: true, reason: 'v149 removes the workflow scheduler and drops its automations' },
-  { version: 149, table: 'automation_cursors', dropped: true, reason: "v149 drops the scheduler's per-source cursors with its automations" },
-  { version: 149, table: 'work_items', columns: ['source', 'source_ref'], reason: 'v149 rewrites a run an automation started as a manual run with an empty source_ref, which named a dropped automation' },
-  { version: 149, table: 'remote_watches', rowsMayShrink: true, reason: 'v149 rebuilds remote_watches to cascade from its thread and deletes the watches whose thread is already gone' },
+  { version: 150, table: 'channels', dropped: true, reason: 'v150 removes discussions and their channels' },
+  { version: 150, table: 'channel_messages', dropped: true, reason: 'v150 removes discussions and their channel messages' },
+  { version: 150, table: 'discussion_definitions', dropped: true, reason: 'v150 removes discussion definitions' },
+  { version: 150, table: 'threads', columns: ['mode'], reason: 'v150 turns a former discussion thread into a chat thread' },
+  { version: 150, table: 'scratch_threads', columns: ['return_mode'], reason: 'v150 returns a side chat opened from a discussion to chat mode' },
+  { version: 150, table: 'chat_bar_favorites', rowsMayShrink: true, reason: 'v150 keeps only model favorites; discussion favorites are removed' },
+  { version: 150, table: 'automations', dropped: true, reason: 'v150 removes the workflow scheduler and drops its automations' },
+  { version: 150, table: 'automation_cursors', dropped: true, reason: "v150 drops the scheduler's per-source cursors with its automations" },
+  { version: 150, table: 'work_items', columns: ['source', 'source_ref'], reason: 'v150 rewrites a run an automation started as a manual run with an empty source_ref, which named a dropped automation' },
+  { version: 150, table: 'remote_watches', rowsMayShrink: true, reason: 'v150 rebuilds remote_watches to cascade from its thread and deletes the watches whose thread is already gone' },
 ];
 
 /**

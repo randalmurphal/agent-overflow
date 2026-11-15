@@ -7,6 +7,8 @@
 // 38k-item thread windowed, paged and exported and a multi-megabyte tool
 // output read in ranges; spawn with
 // its origin chip, footer and wake, without changing user defaults; send, reply, late reply and status;
+// a reply reaching a sender that asked for no wait and no notify; a spawn
+// git refuses answered by its own result and by no message afterwards;
 // ask on a hidden read-only fork that is deleted once it answers; cancel
 // by token and by thread; reminders; organizing threads and groups,
 // including archiving a thread whose session is live; and the refusals
@@ -3626,4 +3628,186 @@ test('cancelling a request blocked on an approval clears the prompt in the sideb
     target,
   );
   expect(live.interactive?.approvals ?? []).toHaveLength(0);
+});
+
+test('a thread_reply reaches a sender that asked for no wait and no notification', async ({
+  harness,
+}) => {
+  const seed = await harness.rpc<SeedResult>('HarnessSeed', {
+    projects: [
+      { name: 'tt-quiet-caller', repo: {}, threads: [{ title: 'Quiet caller', provider: 'claude' }] },
+      { name: 'tt-quiet-target', repo: {}, threads: [{ title: 'Quiet target', provider: 'claude' }] },
+    ],
+  });
+  const caller = seed.projects[0].threadIds[0];
+  const callerPath = seed.projects[0].path;
+  const target = seed.projects[1].threadIds[0];
+  const targetPath = seed.projects[1].path;
+
+  // The reply is held until the send has returned, so the answer cannot
+  // ride back in the send's own result: a message is the only way it can
+  // reach the sender.
+  await setScenario(
+    harness,
+    targetPath,
+    threadToolsScenario({
+      name: 'tt-quiet-target-script',
+      provider: 'claude',
+      turns: [
+        {
+          steps: [
+            { capture: { var: 'TOKEN', from: '${USER_INPUT}', pattern: FOOTER_TOKEN_PATTERN } },
+            { gate: 'hold-reply' },
+            {
+              call: {
+                tool: 'thread_reply',
+                args: { token: '${TOKEN}', text: 'The stall is in the watchdog.' },
+              },
+            },
+          ],
+          text: 'Answered the caller.',
+        },
+      ],
+    }),
+  );
+  await setScenario(
+    harness,
+    callerPath,
+    threadToolsScenario({
+      name: 'tt-quiet-caller-script',
+      provider: 'claude',
+      turns: [
+        {
+          steps: [
+            {
+              call: {
+                tool: 'thread_send',
+                args: { thread_id: target, message: 'Where does the stall come from?', wait_seconds: 0 },
+              },
+            },
+          ],
+          text: 'Sent, and moving on.',
+        },
+        { text: 'Read the reply.' },
+      ],
+    }),
+  );
+
+  await harness.rpc('StartSession', target);
+  await harness.rpc('StartSession', caller);
+  await harness.rpc('SendMessage', caller, 'ask the other thread about the stall', null);
+
+  interface SendAnswer {
+    token: string;
+    outcome: string;
+    notify: boolean;
+    note?: string;
+  }
+  const send = await awaitToolAnswer<SendAnswer>(harness, { tool: 'thread_send' });
+  expect(send.isError).toBe(false);
+  expect(send.value!.outcome).toBe('backgrounded');
+  expect(send.value!.notify).toBe(false);
+  // The sender is told what it will and will not hear.
+  expect(send.text).toContain('hears back only if that thread calls thread_reply');
+
+  const delivered = await harness.waitForEvent<HarnessMockEvent>(
+    'harness:mock',
+    (ev) => ev.report.kind === 'user_input' && ev.cwd === targetPath,
+  );
+  expect(delivered.report.input).toContain('It is not waiting for an answer.');
+  expect(delivered.report.input).toContain(`thread_reply with token ${send.value!.token}, once`);
+
+  const held = await awaitGate(harness, 'hold-reply', targetPath);
+  const wake = harness.waitForEvent<HarnessMockEvent>(
+    'harness:mock',
+    (ev) =>
+      ev.report.kind === 'user_input' &&
+      ev.cwd === callerPath &&
+      (ev.report.input ?? '').includes(send.value!.token),
+    30_000,
+  );
+  await advanceGate(harness, held.mockId, 'hold-reply');
+  const woke = await wake;
+  expect(woke.report.input).toContain('Reply from "Quiet target"');
+  expect(woke.report.input).toContain('The stall is in the watchdog.');
+});
+
+test('a spawn git refuses says why in its own result and sends no message afterwards', async ({
+  harness,
+}) => {
+  const seed = await harness.rpc<SeedResult>('HarnessSeed', {
+    projects: [
+      {
+        name: 'tt-refused-spawn',
+        // git cannot create `review/new` while a branch named `review`
+        // exists: the two would share a ref path.
+        repo: { branches: ['review'] },
+        threads: [{ title: 'Refused spawn caller', provider: 'claude' }],
+      },
+    ],
+  });
+  const caller = seed.projects[0].threadIds[0];
+  const callerPath = seed.projects[0].path;
+
+  await setScenario(
+    harness,
+    callerPath,
+    threadToolsScenario({
+      name: 'tt-refused-spawn-script',
+      provider: 'claude',
+      turns: [
+        {
+          steps: [
+            {
+              call: {
+                tool: 'thread_spawn',
+                args: {
+                  prompt: 'Review the branch.',
+                  title: 'Never started',
+                  worktree: 'review/new',
+                  base_local: true,
+                  notify: true,
+                },
+              },
+            },
+            // The request is the caller's only one, so the listing is the
+            // record of what happened to it.
+            { call: { tool: 'thread_status', args: {} } },
+          ],
+          text: 'The spawn was refused.',
+        },
+      ],
+    }),
+  );
+
+  await harness.rpc('StartSession', caller);
+  await harness.rpc('SendMessage', caller, 'open a review thread on a branch', null);
+
+  const spawn = await awaitToolAnswer(harness, { tool: 'thread_spawn' });
+  expect(spawn.isError).toBe(true);
+  expect(spawn.text).toContain('That request could not be started: ');
+  // git's own reason, not a guess at it: the name collides with a branch.
+  expect(spawn.text).toContain("'refs/heads/review' exists");
+  expect(spawn.text).not.toContain('Thread tools could not complete that call');
+
+  interface StatusAnswer {
+    requests: Array<{ state: string; delivered?: string }>;
+  }
+  const status = await awaitToolAnswer<StatusAnswer>(harness, { tool: 'thread_status' });
+  expect(status.isError).toBe(false);
+  expect(status.value!.requests).toHaveLength(1);
+  expect(status.value!.requests[0].state).toBe('refused');
+  expect(status.value!.requests[0].delivered).toBe('inline');
+
+  await awaitTurnCompleted(harness, caller);
+  // Nothing is owed: no message is queued for the caller, its only input was
+  // the user's message, and no thread was left behind.
+  expect((await harness.rpc<unknown[] | null>('GetQueueState', caller)) ?? []).toEqual([]);
+  expect(
+    harness.countEvents<HarnessMockEvent>(
+      'harness:mock',
+      (ev) => ev.report.kind === 'user_input' && ev.cwd === callerPath,
+    ),
+  ).toBe(1);
+  expect((await threadRows(harness)).map((row) => row.title)).not.toContain('Never started');
 });

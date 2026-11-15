@@ -215,6 +215,10 @@ func TestNonPositiveLimitReadsTheDefaultPage(t *testing.T) {
 				_, err := s.DueThreadRequestPolls(now, limit)
 				return err
 			}},
+			{"OpenThreadRequestPollsOn", "LIMIT 32", func() error {
+				_, err := s.OpenThreadRequestPollsOn("c", []string{"t"}, limit)
+				return err
+			}},
 			{"UndeliveredThreadRequestWakes", "LIMIT 32", func() error {
 				_, err := s.UndeliveredThreadRequestWakes(now, limit)
 				return err

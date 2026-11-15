@@ -17,6 +17,7 @@ import (
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/testutil/mockexec"
+	"agent-overflow/internal/threadtools"
 	"agent-overflow/internal/transport"
 	"agent-overflow/internal/triage"
 	"agent-overflow/internal/workflowhost"
@@ -89,7 +90,7 @@ func claudeTUINotices(t *testing.T, st *store.Store, threadID string) int {
 // openTurnIndex is the turn an interrupt would stop now.
 func openTurnIndex(t *testing.T, app *App, threadID string) int {
 	t.Helper()
-	turn := app.triage.InterruptTurnIndex(threadID)
+	turn := app.triage.SampleInterrupt(threadID).Turn
 	if turn < 0 {
 		t.Fatal("no open turn")
 	}
@@ -373,6 +374,127 @@ func TestInterruptTurnClaudeTUIWithNoOpenTurnNoticesOnlyAPendingSend(t *testing.
 				t.Fatalf("notices = %d, want %d", got, tc.want)
 			}
 		})
+	}
+}
+
+// A Stop after a send reached the provider, before its turn start reached
+// the router, cuts the turn that send opens: the turn gets the stop row
+// once it opens, and an open request answered by it reads the user's stop.
+func TestInterruptTurnStopsTheTurnOfASendWaitingForIt(t *testing.T) {
+	t.Parallel()
+	f := newClaudeAgentKillFixture(t)
+	f.app.triage = triage.NewRouter(f.app.store, func(eventchan.Channel, any) {})
+	insertUserItem(t, f.app.store, f.thread.ID, "u:1", 1, "just sent")
+	f.app.triage.RegisterPendingSendWithExpectation(f.thread.ID, "u:1", 1, triage.PendingSendExpectation{})
+	f.app.noteReceiptRunning(f.thread.ID, "tok")
+	t.Cleanup(func() { f.app.forgetReceiptRunning(f.thread.ID, "tok") })
+
+	if err := f.app.InterruptTurn(f.thread.ID, nil); err != nil {
+		t.Fatalf("InterruptTurn: %v", err)
+	}
+	if got := f.interrupts(t); got != 1 {
+		t.Fatalf("interrupts = %d, want 1", got)
+	}
+	if got, want := f.app.turnStopCause(f.thread.ID, 1), stopByUser(nil).cause; got != want {
+		t.Fatalf("cause of turn 1 = %q, want %q", got, want)
+	}
+	requireOneStopRowOnTurn(t, f.app.store, f.thread.ID, 1)
+	f.handle(t, provider.ProviderEvent{Kind: provider.EventInit}, nil)
+	requireOneStopRowOnTurn(t, f.app.store, f.thread.ID, 1)
+}
+
+// requireOneStopRowOnTurn asserts the thread has exactly one "Stopped by
+// user" row, on turnIndex.
+func requireOneStopRowOnTurn(t *testing.T, st *store.Store, threadID string, turnIndex int) {
+	t.Helper()
+	items, err := st.ListItems(threadID)
+	if err != nil {
+		t.Fatalf("ListItems: %v", err)
+	}
+	var stopped []store.Item
+	for _, item := range items {
+		if item.Kind == triage.ItemKindError && item.Summary == triage.StoppedByUser {
+			stopped = append(stopped, item)
+		}
+	}
+	if len(stopped) != 1 || stopped[0].TurnIndex != turnIndex {
+		t.Fatalf("stop rows = %+v, want one on turn %d", stopped, turnIndex)
+	}
+}
+
+// An interrupt fenced on one turn leaves a send waiting to open another
+// turn alone, and stops the waiting send whose turn it names.
+func TestInterruptTurnAtIndexFencesOnTheTurnOfASendWaitingForIt(t *testing.T) {
+	t.Parallel()
+	f := newClaudeAgentKillFixture(t)
+	f.app.triage = triage.NewRouter(f.app.store, func(eventchan.Channel, any) {})
+	insertUserItem(t, f.app.store, f.thread.ID, "u:2", 2, "someone else's send")
+	f.app.triage.RegisterPendingSendWithExpectation(f.thread.ID, "u:2", 2, triage.PendingSendExpectation{})
+
+	stop := stopByThread("caller", "caller-id", "")
+	interrupted, err := f.app.interruptTurnAtIndex(context.Background(), f.thread.ID, 1, stop)
+	if err != nil || interrupted {
+		t.Fatalf("interrupt fenced on turn 1 = %v, %v; want it refused", interrupted, err)
+	}
+	if got := f.interrupts(t); got != 0 {
+		t.Fatalf("interrupts = %d, want 0", got)
+	}
+	if got := f.app.turnStopCause(f.thread.ID, 2); got != turnStoppedUnknown {
+		t.Fatalf("cause of turn 2 = %q, want none recorded", got)
+	}
+
+	interrupted, err = f.app.interruptTurnAtIndex(context.Background(), f.thread.ID, 2, stop)
+	if err != nil || !interrupted {
+		t.Fatalf("interrupt fenced on turn 2 = %v, %v; want it sent", interrupted, err)
+	}
+	if got := f.interrupts(t); got != 1 {
+		t.Fatalf("interrupts = %d, want 1", got)
+	}
+}
+
+// thread_cancel by thread id stops that same turn instead of reporting
+// nothing to stop.
+func TestThreadCancelStopsTheTurnOfASendWaitingForIt(t *testing.T) {
+	t.Parallel()
+	f := newClaudeAgentKillFixture(t)
+	f.app.triage = triage.NewRouter(f.app.store, func(eventchan.Channel, any) {})
+	insertUserItem(t, f.app.store, f.thread.ID, "u:1", 1, "just sent")
+	f.app.triage.RegisterPendingSendWithExpectation(f.thread.ID, "u:1", 1, triage.PendingSendExpectation{})
+	f.app.noteReceiptRunning(f.thread.ID, "tok")
+	t.Cleanup(func() { f.app.forgetReceiptRunning(f.thread.ID, "tok") })
+
+	stop := stopByThread("caller", "caller-id", "")
+	effect, err := f.app.threadTools().interruptRunningThread(context.Background(), f.thread.ID, stop)
+	if err != nil {
+		t.Fatalf("interruptRunningThread: %v", err)
+	}
+	if effect != threadtools.EffectInterrupted {
+		t.Fatalf("effect = %q, want %q", effect, threadtools.EffectInterrupted)
+	}
+	if got := f.interrupts(t); got != 1 {
+		t.Fatalf("interrupts = %d, want 1", got)
+	}
+	if got := f.app.turnStopCause(f.thread.ID, 1); got != stop.cause {
+		t.Fatalf("cause of turn 1 = %q, want %q", got, stop.cause)
+	}
+}
+
+// thread_cancel by thread id on a thread with no turn and no waiting send
+// reports nothing to stop and sends no interrupt.
+func TestThreadCancelOnAnIdleThreadStopsNothing(t *testing.T) {
+	t.Parallel()
+	f := newClaudeAgentKillFixture(t)
+	f.app.triage = triage.NewRouter(f.app.store, func(eventchan.Channel, any) {})
+
+	effect, err := f.app.threadTools().interruptRunningThread(context.Background(), f.thread.ID, stopByThread("caller", "caller-id", ""))
+	if err != nil {
+		t.Fatalf("interruptRunningThread: %v", err)
+	}
+	if effect != threadtools.EffectNothing {
+		t.Fatalf("effect = %q, want %q", effect, threadtools.EffectNothing)
+	}
+	if got := f.interrupts(t); got != 0 {
+		t.Fatalf("interrupts = %d, want 0", got)
 	}
 }
 

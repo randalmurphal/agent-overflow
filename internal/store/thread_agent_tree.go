@@ -19,7 +19,7 @@ import (
 
 // agentOpenDepth is how many spawns below a settled local spawn's target
 // open work keeps it listed, the depth its marks count
-// (open_below_0 to open_below_3, migration v150).
+// (open_below_0 to open_below_3, migration v151).
 const agentOpenDepth = 4
 
 // agentRootSQL and agentWindowSQL are the tree reads' root (?1) and settled
@@ -276,7 +276,7 @@ func agentOpenBelowSQL(alias string) string {
 // agentOpenWorkSQL matches a request that is open work under a spawn: an
 // open request the listing counts (openAgentRequestSQL), or a spawn on
 // another computer that last reported open work there. The marks count
-// these (migration v150).
+// these (migration v151).
 func agentOpenWorkSQL(alias string) string {
 	a := alias + "."
 	return `(` + a + `lineage_only = 0 AND ((` + a + `settled_at IS NULL AND (` + a + `kind = 'spawn' OR (` + a + `kind IN ('send','ask') AND ` + a + `notify = 1)))
@@ -469,7 +469,7 @@ func pastAgentRowsSQL(limit int) string {
 const threadAgentRequestColumns = `r.token, r.caller_thread_id, r.kind, COALESCE(r.due_at, 0),
     r.target_computer_id, r.target_thread_id, r.target_thread_title, r.origin_thread_id, r.notify, r.state,
     substr(COALESCE(r.late_reply, r.answer), 1, ?5), r.answer_kind, r.late_reply IS NOT NULL, COALESCE(r.late_reply_at, 0), r.revision,
-    COALESCE(r.settled_at, 0), COALESCE(r.delivered_at, 0), r.delivered_how,
+    COALESCE(r.settled_at, 0), COALESCE(r.delivered_at, 0), r.delivered_how, r.delivered_with,
     COALESCE(r.late_delivered_at, 0), COALESCE(r.expires_at, 0),
     r.polling, r.next_check, r.attempts, r.issue,
     r.wake_attempts, r.wake_next_check, r.wake_issue, r.lineage_only, r.created_at, r.updated_at,

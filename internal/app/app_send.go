@@ -1065,23 +1065,7 @@ func (a *App) recordSendFailureAndCompleteTurn(threadID string, turnIndex int, s
 			canCompleteTurn = true
 		}
 	}
-	// Allocate an error id from the same per-turn counter the EventError
-	// handler uses so a subsequent provider error on the same turn doesn't
-	// collide on "error:<turn>:0".
-	errSeq := a.triage.NextErrorSequence(threadID, turnIndex, "")
-	errNow := time.Now().UnixMilli()
-	errorItem := store.Item{
-		ID:        triage.NewErrorID(turnIndex, "", errSeq),
-		ThreadID:  threadID,
-		TurnIndex: turnIndex,
-		Kind:      triage.ItemKindError,
-		Role:      "system",
-		Status:    "completed",
-		Summary:   fmt.Sprintf("Failed to send: %v", sendErr),
-		CreatedAt: errNow,
-		UpdatedAt: errNow,
-	}
-	if persistErr := a.triage.PersistItem(errorItem, nil); persistErr != nil {
+	if persistErr := a.triage.PersistTurnError(threadID, turnIndex, fmt.Sprintf("Failed to send: %v", sendErr)); persistErr != nil {
 		log.Printf("send message: persist send-failure error: %v", persistErr)
 	}
 	// HandleSynthetic, not Handle: a send can fail precisely because the

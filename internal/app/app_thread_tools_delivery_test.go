@@ -443,7 +443,7 @@ func TestTheObserverKeepsTheGateOfAnUndeliveredReceipt(t *testing.T) {
 	}
 	f.adapter().markRequestDispatched(token, target.ID, target.ID+":u0")
 
-	if _, err := f.app.settleReceiptOnTurnEnd(target.ID, token); err != nil {
+	if _, _, err := f.app.settleReceiptOnTurnEnd(target.ID, token); err != nil {
 		t.Fatalf("settleReceiptOnTurnEnd: %v", err)
 	}
 	if receipt := f.receipt(t, token); receipt.State != store.ThreadReceiptRunning {

@@ -77,7 +77,7 @@ func turnStartEvent(threadID string, turnIndex int) provider.ProviderEvent {
 }
 
 // runThroughHeldStart runs interrupt on its own goroutine, releases the
-// held start only once interrupt is waiting on it in InterruptTurnIndex
+// held start only once interrupt is waiting on it in SampleInterrupt
 // (SetInterruptWaitHook), and returns interrupt's result and the start's
 // Handle outcome. An interrupt that finishes without waiting sampled the
 // start's gap and fails the test.
@@ -183,8 +183,8 @@ func requireInterruptWritesNothing(t *testing.T, router *Router, st *store.Store
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := router.InterruptTurnIndex(threadID); got != -1 {
-		t.Fatalf("InterruptTurnIndex = %d, want -1", got)
+	if got := router.SampleInterrupt(threadID).Turn; got != -1 {
+		t.Fatalf("SampleInterrupt = %d, want -1", got)
 	}
 	if errID, err := markUserInterruptForTest(router, threadID); err != nil || errID != "" {
 		t.Fatalf("MarkInterrupt = %q, %v; want no row", errID, err)
@@ -201,7 +201,7 @@ func requireInterruptWritesNothing(t *testing.T, router *Router, st *store.Store
 // An interrupt sampled after handleTurnStart wrote the active turns row
 // (what workflow takeover's GetActiveTurn gate sees) but before the open
 // turn is set waits for the start and records the stop on that turn.
-func TestInterruptTurnIndex_WaitsOutTurnStartGap(t *testing.T) {
+func TestSampleInterrupt_WaitsOutTurnStartGap(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
 	held := holdTurnStart(t, router, turnStartEvent("t1", 1), false)
@@ -223,7 +223,7 @@ func TestInterruptTurnIndex_WaitsOutTurnStartGap(t *testing.T) {
 // A live revert (Codex thread/revert) keeps the session and its router
 // state, deletes the cut turn's row, and the next turn reuses the index.
 // That turn's start gap is cut like any other.
-func TestInterruptTurnIndex_LiveRevertReusedIndexIsCut(t *testing.T) {
+func TestSampleInterrupt_LiveRevertReusedIndexIsCut(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
 	if err := router.Handle(provider.ProviderEvent{
@@ -251,11 +251,10 @@ func TestInterruptTurnIndex_LiveRevertReusedIndexIsCut(t *testing.T) {
 }
 
 // A queued echo can open turn N before the provider's start for N
-// arrives. The turn is already open while that start is held, but the
-// start's setOpenTurn will still reset the turn's error sequence, so
-// the interrupt waits for it too and its marker survives the turn's
-// next error.
-func TestInterruptTurnIndex_WaitsOutStartOfEchoOpenedTurn(t *testing.T) {
+// arrives. The turn is already open while that start is held; the
+// interrupt waits for it too, and its marker survives the turn's next
+// error.
+func TestSampleInterrupt_WaitsOutStartOfEchoOpenedTurn(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
 	router.openQueuedEchoTurn("t1", 1, time.Now().UnixMilli(), -1, "")
@@ -278,7 +277,7 @@ func TestInterruptTurnIndex_WaitsOutStartOfEchoOpenedTurn(t *testing.T) {
 // externally queued N+1 before an interrupt waiting on N resumes. The
 // woken interrupt re-reads the state, waits on N+1's start too, and
 // records the stop on N+1.
-func TestInterruptTurnIndex_WaitsOutNextStartBegunBeforeWaiterResumes(t *testing.T) {
+func TestSampleInterrupt_WaitsOutNextStartBegunBeforeWaiterResumes(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
 
@@ -369,18 +368,18 @@ func TestInterruptTurnIndex_WaitsOutNextStartBegunBeforeWaiterResumes(t *testing
 // A turn start that unwinds before setting the open turn still releases
 // a waiting interrupt, which then finds no turn, and leaves no start
 // marker behind.
-func TestInterruptTurnIndex_AbortedStartReleasesWaiter(t *testing.T) {
+func TestSampleInterrupt_AbortedStartReleasesWaiter(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
 	held := holdTurnStart(t, router, turnStartEvent("t1", 1), true)
 	got, startErr := runThroughHeldStart(t, router, "t1", held, func() int {
-		return router.InterruptTurnIndex("t1")
+		return router.SampleInterrupt("t1").Turn
 	})
 	if startErr != errAbortedStart {
 		t.Fatalf("turn start = %v, want the aborted start", startErr)
 	}
 	if got != -1 {
-		t.Fatalf("InterruptTurnIndex after the aborted start = %d, want -1", got)
+		t.Fatalf("SampleInterrupt after the aborted start = %d, want -1", got)
 	}
 	router.mu.Lock()
 	marker := router.threadStateIfPresent("t1").turnStarting
@@ -393,7 +392,7 @@ func TestInterruptTurnIndex_AbortedStartReleasesWaiter(t *testing.T) {
 // A turn that completed leaves its router state with no open turn and
 // no start in progress: the interrupt cuts nothing and completed
 // history is not relabelled "Stopped by user" (CT12-1).
-func TestInterruptTurnIndex_CompletedTurnIsNotCut(t *testing.T) {
+func TestSampleInterrupt_CompletedTurnIsNotCut(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
 	if err := router.Handle(provider.ProviderEvent{
@@ -431,7 +430,7 @@ func handleFatalTurnError(t *testing.T, router *Router, threadID string) {
 
 // A fatal error closes the turn while its row stays active; an interrupt
 // then (workflow cleanup) is not a user stop.
-func TestInterruptTurnIndex_FatallyClosedTurnIsNotCut(t *testing.T) {
+func TestSampleInterrupt_FatallyClosedTurnIsNotCut(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
 	if err := router.Handle(provider.ProviderEvent{
@@ -449,7 +448,7 @@ func TestInterruptTurnIndex_FatallyClosedTurnIsNotCut(t *testing.T) {
 // When cleanup's settlement of a fatally closed turn fails, the row
 // stays active after CleanupThread dropped the router state. A later
 // session's interrupt must not read that dead row as the turn it cut.
-func TestInterruptTurnIndex_DeadActiveRowAfterFailedSettleIsNotCut(t *testing.T) {
+func TestSampleInterrupt_DeadActiveRowAfterFailedSettleIsNotCut(t *testing.T) {
 	path := storetest.ClonePath(t)
 	st, err := store.New(path)
 	if err != nil {
@@ -491,7 +490,7 @@ func TestInterruptTurnIndex_DeadActiveRowAfterFailedSettleIsNotCut(t *testing.T)
 	// Positive control: the store still takes the marker when given the
 	// turn, so the -1 sample alone kept it out.
 	tok := router.MarkFlushSendsInterrupted("t1", 1)
-	errID, err := router.MarkInterrupt("t1", 1, tok, StoppedByUser)
+	errID, err := router.MarkInterrupt("t1", InterruptSample{Turn: 1}, tok, StoppedByUser)
 	if err != nil {
 		t.Fatalf("MarkInterrupt control: %v", err)
 	}
@@ -500,7 +499,7 @@ func TestInterruptTurnIndex_DeadActiveRowAfterFailedSettleIsNotCut(t *testing.T)
 
 // The router's open turn is the turn being cut, whatever the store's
 // latest row says.
-func TestInterruptTurnIndex_OpenTurnWinsOverRow(t *testing.T) {
+func TestSampleInterrupt_OpenTurnWinsOverRow(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
 	if err := router.Handle(provider.ProviderEvent{
@@ -511,8 +510,8 @@ func TestInterruptTurnIndex_OpenTurnWinsOverRow(t *testing.T) {
 	if err := st.InsertTurn(store.Turn{TurnID: "t1:2", ThreadID: "t1", TurnIndex: 2, StartedAt: time.Now().UnixMilli()}); err != nil {
 		t.Fatal(err)
 	}
-	if got := router.InterruptTurnIndex("t1"); got != 1 {
-		t.Fatalf("InterruptTurnIndex = %d, want open turn 1", got)
+	if got := router.SampleInterrupt("t1").Turn; got != 1 {
+		t.Fatalf("SampleInterrupt = %d, want open turn 1", got)
 	}
 	errID, err := markUserInterruptForTest(router, "t1")
 	if err != nil {
@@ -532,10 +531,10 @@ func TestMarkInterruptWritesTheNamedStopAndRefusesNone(t *testing.T) {
 		t.Fatalf("turn start: %v", err)
 	}
 	tok := router.MarkFlushSendsInterrupted("t1", 1)
-	if _, err := router.MarkInterrupt("t1", 1, tok, ""); err == nil {
+	if _, err := router.MarkInterrupt("t1", InterruptSample{Turn: 1}, tok, ""); err == nil {
 		t.Fatal("an interrupt with no stop summary was marked")
 	}
-	errID, err := router.MarkInterrupt("t1", 1, tok, `Stopped by thread "Lead"`)
+	errID, err := router.MarkInterrupt("t1", InterruptSample{Turn: 1}, tok, `Stopped by thread "Lead"`)
 	if err != nil {
 		t.Fatalf("MarkInterrupt: %v", err)
 	}

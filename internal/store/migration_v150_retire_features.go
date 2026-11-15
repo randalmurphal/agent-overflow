@@ -1,6 +1,6 @@
 package store
 
-// Migration v149 removes the discussion feature and the workflow scheduler
+// Migration v150 removes the discussion feature and the workflow scheduler
 // (docs/decisions.md, discussions removed; docs/specs/standing-agents.md,
 // ruling 13: the wake supervisor is the app's only clock) and rebuilds the
 // tables whose declarations that and the standing agents change.
@@ -34,9 +34,9 @@ package store
 //     is the watch's own thread for every existing watch.
 //     idx_remote_watches_done serves the sweep that deletes finished watches
 //     past the retention floor.
-const retireFeaturesMigrationVersion = 149
+const retireFeaturesMigrationVersion = 150
 
-const retireFeaturesV149SQL = `DROP TABLE channel_messages;
+const retireFeaturesV150SQL = `DROP TABLE channel_messages;
 
 DROP VIEW owned_threads;
 

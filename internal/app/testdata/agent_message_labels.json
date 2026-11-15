@@ -138,6 +138,42 @@
     "label": "This thread: Check the build."
   },
   {
+    "name": "an error with no text",
+    "text": "\"Worker\" (t-worker) [token tok-1] errored.",
+    "meta": "{\"sendId\":\"thread-wake:tok-1\",\"origin\":\"agent-thread\",\"originThread\":{\"threadId\":\"t-worker\",\"title\":\"Worker\",\"token\":\"tok-1\",\"kind\":\"wake\"}}",
+    "label": "Worker"
+  },
+  {
+    "name": "one turn answering two requests",
+    "text": "\"Worker\" (t-worker) [tokens tok-1, tok-2] finished its turn without calling thread_reply. Its final message:\nDid both.",
+    "meta": "{\"sendId\":\"thread-wake:tok-1\",\"origin\":\"agent-thread\",\"originThread\":{\"threadId\":\"t-worker\",\"title\":\"Worker\",\"token\":\"tok-1\",\"kind\":\"wake\"}}",
+    "label": "Worker: Did both."
+  },
+  {
+    "name": "a digest of the same reply",
+    "text": "2 threads sent the same reply:\n- \"Worker\" (t-worker) [token tok-1]\n  That thread is a standing agent. Its role, in its own words: \"Runs the builds.\"\n- \"Lexer\" (t-lexer, on desk) [tokens tok-2, tok-3]\nSame answer.",
+    "meta": "{\"sendId\":\"thread-wake:tok-1\",\"origin\":\"agent-thread\",\"originThread\":{\"threadId\":\"t-worker\",\"title\":\"Worker\",\"token\":\"tok-1\",\"kind\":\"wake\"}}",
+    "label": "2 threads: Same answer."
+  },
+  {
+    "name": "a digest with no text",
+    "text": "2 threads did not answer within a day.\n- \"Worker\" (t-worker) [token tok-1]\n  That thread is a standing agent. Its role, in its own words: \"Runs the builds.\"\n- \"Lexer\" (t-lexer, on desk) [tokens tok-2, tok-3]",
+    "meta": "{\"sendId\":\"thread-wake:tok-1\",\"origin\":\"agent-thread\",\"originThread\":{\"threadId\":\"t-worker\",\"title\":\"Worker\",\"token\":\"tok-1\",\"kind\":\"wake\"}}",
+    "label": "2 threads: Worker, Lexer"
+  },
+  {
+    "name": "a digest of sessions that ended during the turn",
+    "text": "2 threads were interrupted, each for the same reason:\n- \"Worker\" (t-worker) [token tok-1]\n  That thread is a standing agent. Its role, in its own words: \"Runs the builds.\"\n- \"Lexer\" (t-lexer, on desk) [tokens tok-2, tok-3]\nThe thread's session ended during the turn that read the request. What it had written by then:\n\nHalf done.",
+    "meta": "{\"sendId\":\"thread-wake:tok-1\",\"origin\":\"agent-thread\",\"originThread\":{\"threadId\":\"t-worker\",\"title\":\"Worker\",\"token\":\"tok-1\",\"kind\":\"wake\"}}",
+    "label": "2 threads: Half done."
+  },
+  {
+    "name": "a digest of stops with their recorded cause",
+    "text": "2 threads were interrupted, each for the same reason:\n- \"Worker\" (t-worker) [token tok-1]\n  That thread is a standing agent. Its role, in its own words: \"Runs the builds.\"\n- \"Lexer\" (t-lexer, on desk) [tokens tok-2, tok-3]\nIts workflow stopped the turn before it answered.",
+    "meta": "{\"sendId\":\"thread-wake:tok-1\",\"origin\":\"agent-thread\",\"originThread\":{\"threadId\":\"t-worker\",\"title\":\"Worker\",\"token\":\"tok-1\",\"kind\":\"wake\"}}",
+    "label": "2 threads: Its workflow stopped the turn before it answered."
+  },
+  {
     "name": "a reply whose attribution names no thread",
     "text": "Reply from \"Worker\" (t-worker) [token tok-1]:\nUntitled reply.",
     "meta": "{\"sendId\":\"thread-wake:tok-1\",\"origin\":\"agent-thread\"}",

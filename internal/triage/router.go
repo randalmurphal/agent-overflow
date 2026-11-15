@@ -79,11 +79,11 @@ type Router struct {
 	deferredPersistGate func()
 	// turnRowWrittenGate is a test-only hook (SetTurnRowWrittenGate)
 	// called in handleTurnStart AFTER the turns row is written and
-	// BEFORE the open turn is set — the window InterruptTurnIndex waits
+	// BEFORE the open turn is set — the window SampleInterrupt waits
 	// out. Read under mu. Nil in production.
 	turnRowWrittenGate func(threadID string)
 	// interruptWaitHook is a test-only hook (SetInterruptWaitHook) called
-	// by InterruptTurnIndex right before it waits on a turn start in
+	// by SampleInterrupt right before it waits on a turn start in
 	// progress (woke false) and right after that start ends, before the
 	// state is read again (woke true). Read under mu. Nil in production.
 	interruptWaitHook func(threadID string, woke bool)
@@ -473,7 +473,7 @@ func (r *Router) SetTurnRowWrittenGate(gate func(threadID string)) {
 	r.mu.Unlock()
 }
 
-// SetInterruptWaitHook installs a test-only hook that InterruptTurnIndex
+// SetInterruptWaitHook installs a test-only hook that SampleInterrupt
 // calls right before it waits on a turn start in progress (woke false)
 // and right after that start ends, before it reads the state again
 // (woke true). A test can release a held start only once the interrupt
@@ -1164,8 +1164,10 @@ func (r *Router) persistProviderErrorItem(threadID string, turnIndex int, summar
 	if r.hasMatchingErrorItem(threadID, turnIndex, itemKind, summary, parentID) {
 		return nil
 	}
+	itemID, release, idErr := r.reserveErrorItemID(threadID, turnIndex, scope)
+	defer release()
 	errorItem := store.Item{
-		ID:        ErrorItemID(turnIndex, scope, r.nextErrorSequence(threadID, turnIndex, scope)),
+		ID:        itemID,
 		ThreadID:  threadID,
 		TurnIndex: turnIndex,
 		Kind:      itemKind,
@@ -1176,6 +1178,10 @@ func (r *Router) persistProviderErrorItem(threadID string, turnIndex int, summar
 		ParentID:  parentID,
 		CreatedAt: now,
 		UpdatedAt: now,
+	}
+	if idErr != nil {
+		r.reportUnsavedRow(errorItem, idErr)
+		return idErr
 	}
 	return r.persistItem(errorItem, nil)
 }
@@ -1690,19 +1696,37 @@ func (r *Router) PersistItemQuiet(item store.Item, payload *store.Payload) error
 	return r.persistItemQuiet(item, payload)
 }
 
-// NextErrorSequence returns the next per-turn error sequence number for
-// the given thread + turn + scope. Exposed so app-layer callers (e.g.
-// send-failure persistence) can build error IDs via the same counter
-// EventError uses, preventing collisions when a provider error lands on
-// the same turn as a user-visible send failure.
-func (r *Router) NextErrorSequence(threadID string, turnIndex int, scope string) int {
-	return r.nextErrorSequence(threadID, turnIndex, scope)
+// PersistTurnError writes an error row on turnIndex for a failure the
+// provider did not report (a send, steer or queued dispatch that failed),
+// under the turn's next free error id.
+func (r *Router) PersistTurnError(threadID string, turnIndex int, summary string) error {
+	_, err := r.persistTurnError(threadID, turnIndex, summary, time.Now().UnixMilli())
+	return err
 }
 
-// NewErrorID builds a deterministic error:<turnIndex>[:<scope>]:<seq>
-// id. Exposed alongside NextErrorSequence so callers outside triage can
-// build rows that slot in next to provider-sourced errors without
-// reimplementing the id format.
-func NewErrorID(turnIndex int, scope string, seq int) string {
-	return ErrorItemID(turnIndex, scope, seq)
+// persistTurnError writes a thread-level error row on turnIndex and returns
+// its id. A row whose id could not be checked is not written; it reaches
+// the unsaved row observer with the lookup error.
+func (r *Router) persistTurnError(threadID string, turnIndex int, summary string, now int64) (string, error) {
+	id, release, err := r.reserveErrorItemID(threadID, turnIndex, "")
+	defer release()
+	item := store.Item{
+		ID:        id,
+		ThreadID:  threadID,
+		TurnIndex: turnIndex,
+		Kind:      ItemKindError,
+		Role:      "system",
+		Status:    statusCompleted,
+		Summary:   summary,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err != nil {
+		r.reportUnsavedRow(item, err)
+		return "", err
+	}
+	if err := r.persistItem(item, nil); err != nil {
+		return "", err
+	}
+	return id, nil
 }

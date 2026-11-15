@@ -1,7 +1,6 @@
 package app
 
 import (
-	"database/sql"
 	"errors"
 	"fmt"
 	"log"
@@ -9,8 +8,6 @@ import (
 	"time"
 
 	"agent-overflow/internal/store"
-	"agent-overflow/internal/threadtools"
-	"agent-overflow/internal/usermessage"
 )
 
 // The wake: how a settled answer reaches the thread that asked for it as a
@@ -31,7 +28,9 @@ func threadWakeSendIDFor(token string, late bool) string {
 	return threadWakeSendID(token)
 }
 
-// threadWakeFromSendID reads a wake's request token back out of its send id.
+// threadWakeFromSendID reads a wake's request token back out of its send id:
+// the carrier of every request its message answers (store.ThreadRequest
+// WakeCarrier).
 func threadWakeFromSendID(sendID string) (token string, late, ok bool) {
 	if token, ok := strings.CutPrefix(sendID, "thread-wake-late:"); ok {
 		return token, true, token != ""
@@ -47,6 +46,7 @@ func threadWakeFromSendID(sendID string) (token string, late, ok bool) {
 // still returns each answer, and a wake re-armed by a later wait or
 // thread_status delivers it and unarchives the thread. A wake the dispatch
 // already took stays delivered. match picks the queued messages by send id.
+// A message that answered several requests gives every one of them back.
 func (a *App) withdrawHeldThreadWakes(threadID string, match func(sendID string) bool) error {
 	rows, err := a.store.ListFlushQueueItems(threadID)
 	if err != nil {
@@ -58,37 +58,55 @@ func (a *App) withdrawHeldThreadWakes(threadID string, match func(sendID string)
 		if !ok || !match(row.SendID) {
 			continue
 		}
+		var returned []string
 		removal, err := a.removeQueuedItemWith(a.lifeCtx(), threadID, row.SendID, func(row store.FlushQueueItem) error {
-			return a.store.WithdrawThreadWake(token, late, row.ID, store.WithdrawQueued)
+			var err error
+			returned, err = a.store.WithdrawThreadWake(token, late, row.ID, store.WithdrawQueued)
+			return err
 		})
 		if err != nil {
 			errs = append(errs, fmt.Errorf("withdraw %s from %s: %w", row.SendID, threadID, err))
 			continue
 		}
 		if removal == queueRemovalRemoved {
-			a.redeliverHandedOffWake(threadID, token, late)
+			a.redeliverHandedOffWakes(threadID, returned, late)
 		}
 	}
 	return errors.Join(errs...)
 }
 
-// redeliverHandedOffWake sends an answer or reminder a thread New Thread,
-// Same Assistant superseded gave back on to the assistant's current thread,
-// which the handoff made its request's caller: armed again, since nothing
-// about the answer changed but where it goes. Any other thread's give-back
-// stays disarmed.
-func (a *App) redeliverHandedOffWake(threadID, token string, late bool) {
+// redeliverHandedOffWakes sends the answers or reminders a thread New
+// Thread, Same Assistant superseded gave back (tokens, one message's) on to
+// the assistant's current thread, which the handoff made their requests'
+// caller: armed again, since nothing about the answers changed but where
+// they go, and delivered together so they fold as they did. Any other
+// thread's give-back stays disarmed.
+func (a *App) redeliverHandedOffWakes(threadID string, tokens []string, late bool) {
+	if len(tokens) == 0 {
+		return
+	}
 	if _, ok := a.assistantCurrentThread(threadID); !ok {
 		return
 	}
-	if _, err := a.store.SetThreadRequestNotify(token, true); err != nil {
-		logThreadRequestSweep("arm the handed-off wake of "+token, err)
-		return
+	refs := make([]threadWakeRef, 0, len(tokens))
+	for _, token := range tokens {
+		if _, err := a.store.SetThreadRequestNotify(token, true); err != nil {
+			logThreadRequestSweep("arm the handed-off wake of "+token, err)
+			continue
+		}
+		refs = append(refs, threadWakeRef{token: token, late: late})
 	}
-	a.goThreadRequestSettling(func() { a.deliverThreadWake(token, late) })
+	a.goThreadRequestSettling(func() { a.deliverThreadWakes(refs) })
 }
 
-// deliverThreadWake puts the answer in the caller's message queue, as the
+// threadWakeRef names one of a request's two wakes: its first answer, or the
+// late reply that followed it.
+type threadWakeRef struct {
+	token string
+	late  bool
+}
+
+// deliverThreadWake puts one answer in the caller's message queue, as the
 // message it would have received had it been waiting.
 //
 // Queued rather than sent: the caller is usually mid-turn, and a message that
@@ -96,94 +114,35 @@ func (a *App) redeliverHandedOffWake(threadID, token string, late bool) {
 // it asked to be told about later. The queue delivers it at the next turn
 // boundary, which is exactly what the ack promised.
 func (a *App) deliverThreadWake(token string, late bool) {
-	if !a.claimThreadWake(token, late) {
-		return
-	}
-	a.deliverClaimedThreadWake(token, late)
+	a.deliverThreadWakes([]threadWakeRef{{token: token, late: late}})
 }
 
-// deliverClaimedThreadWake hands over a wake whose claim its caller already
-// holds, and ends the claim. The retry pass claims under the same settle lock
-// it books the attempt under (claimThreadWakeRetry).
-func (a *App) deliverClaimedThreadWake(token string, late bool) {
-	defer a.endThreadWake(token, late)
-	row, found, err := a.store.GetThreadRequest(token)
-	if err != nil || !found {
-		if err != nil {
-			a.failThreadWake(token, "read the request", err)
-		}
-		return
-	}
-	if late && row.LateDeliveredAt != 0 {
-		return
-	}
-	if !late && row.DeliveredAt != 0 {
-		return
-	}
-	callerID := row.CallerThreadID
-	if current, ok := a.assistantCurrentThread(callerID); ok {
-		// A handoff that raced this read moved the request; the answer is
-		// the assistant's current thread's, and its old thread stays
-		// archived.
-		callerID = current
-	}
-	thread, err := a.store.GetThread(callerID)
-	if errors.Is(err, sql.ErrNoRows) {
-		// The thread is gone. The request row is cascading away with it;
-		// marking it keeps a concurrent reader from waiting on a wake that
-		// will never be written.
-		log.Printf("thread tools: request %s has no caller thread; nothing delivered", token)
-		if _, markErr := a.store.MarkThreadRequestDelivered(token, store.ThreadWakeInline, 0, late); markErr != nil {
-			log.Printf("thread tools: mark request %s undeliverable: %v", token, markErr)
-		}
-		return
-	}
-	if err != nil {
-		// A read that failed says nothing about whether the thread exists.
-		// The wake stays owed and the retry pass comes back to it.
-		a.failThreadWake(token, "read the caller thread", err)
-		return
-	}
-	if thread.Archived {
-		// The answer the thread asked for arriving is exactly the reason to
-		// bring it back; a wake queued on an archived thread would sit unread
-		// behind a row the sidebar does not show.
-		if _, err := a.UnarchiveThread(thread.ID); err != nil {
-			a.failThreadWake(token, "unarchive the caller thread", err)
-			return
+// deliverThreadWakes hands over the wakes one event decided together: the
+// end of a turn that answered several requests, a restart that interrupted
+// every open one, a retry pass. Wakes owed to one thread that say the same
+// thing become one message naming every request it answers
+// (threadWakeMessages), so a thread that sent three messages into one turn
+// is told once that the turn ended, not three times in the same words.
+func (a *App) deliverThreadWakes(refs []threadWakeRef) {
+	claimed := make([]threadWakeRef, 0, len(refs))
+	for _, ref := range refs {
+		if a.claimThreadWake(ref.token, ref.late) {
+			claimed = append(claimed, ref)
 		}
 	}
-	if err := a.store.CheckThreadExecutionAccess(thread); err != nil {
-		a.failThreadWake(token, "deliver to "+thread.ID, err)
-		return
-	}
-	body, err := a.threadWakeBody(row, late)
-	if err != nil {
-		a.failThreadWake(token, "render the wake", err)
-		return
-	}
-	if err := a.queueAgentNotice(agentNotice{
-		threadID: thread.ID,
-		sendID:   threadWakeSendIDFor(token, late),
-		// The wake is a message the app wrote on the answering thread's
-		// behalf, and it is attributed to that thread for the same reason
-		// the request itself is attributed to the sender: a person reading
-		// the timeline can see where it came from.
-		origin:       string(usermessage.OriginAgentThread),
-		originThread: a.threadWakeOrigin(row),
-		prepare:      func() (string, bool, error) { return body, true, nil },
-		// One transaction writes the durable queue row and the delivery
-		// mark, so a second observation of the same settlement cannot queue
-		// the answer twice and a crash cannot lose it.
-		persist: func(item store.FlushQueueItem) error {
-			return a.store.QueueThreadWake(token, late, item)
-		},
-		startFailed: func(err error) string {
-			return "A thread request answered, its message is queued, but the agent could not start: " + err.Error()
-		},
-	}); err != nil {
-		a.failThreadWake(token, "queue the wake", err)
-	}
+	a.deliverClaimedThreadWakes(claimed)
+}
+
+// deliverClaimedThreadWakes hands over wakes whose claims its caller already
+// holds, and ends the claims. The retry pass claims under the same settle
+// lock it books the attempt under (claimThreadWakeRetry).
+func (a *App) deliverClaimedThreadWakes(refs []threadWakeRef) {
+	defer func() {
+		for _, ref := range refs {
+			a.endThreadWake(ref.token, ref.late)
+		}
+	}()
+	a.deliverThreadWakeMessages(a.threadWakeMessages(refs))
 }
 
 // claimThreadWake marks one wake in flight under the token's settle lock, or
@@ -270,6 +229,8 @@ func (a *App) retryUndeliveredThreadWakes(now time.Time) {
 		logThreadRequestSweep("read undelivered wakes", err)
 		return
 	}
+	callers := make([]string, 0, len(rows))
+	byCaller := make(map[string][]threadWakeRef, len(rows))
 	for _, row := range rows {
 		owed := undeliveredThreadWakes(row)
 		if len(owed) == 0 {
@@ -280,9 +241,21 @@ func (a *App) retryUndeliveredThreadWakes(now time.Time) {
 			a.abandonThreadWake(row)
 			continue
 		}
-		for _, late := range claimed {
-			a.deliverClaimedThreadWakeDetached(row.Token, late)
+		if len(claimed) == 0 {
+			continue
 		}
+		if _, seen := byCaller[row.CallerThreadID]; !seen {
+			callers = append(callers, row.CallerThreadID)
+		}
+		for _, late := range claimed {
+			byCaller[row.CallerThreadID] = append(byCaller[row.CallerThreadID], threadWakeRef{token: row.Token, late: late})
+		}
+	}
+	// One delivery per caller thread: its wakes fold into as few messages as
+	// they can, and a caller whose lock is held does not keep the others
+	// waiting behind it.
+	for _, caller := range callers {
+		a.deliverClaimedThreadWakesDetached(byCaller[caller])
 	}
 }
 
@@ -355,11 +328,10 @@ func (a *App) abandonThreadWake(row store.ThreadRequest) {
 // undeliveredThreadWakes names which of one row's two wakes are still owed.
 func undeliveredThreadWakes(row store.ThreadRequest) []bool {
 	owed := make([]bool, 0, 2)
-	if row.SettledAt != 0 && row.DeliveredAt == 0 {
-		owed = append(owed, false)
-	}
-	if len(row.LateReply) > 0 && row.LateDeliveredAt == 0 {
-		owed = append(owed, true)
+	for _, late := range []bool{false, true} {
+		if row.WakeOwed(late) {
+			owed = append(owed, late)
+		}
 	}
 	return owed
 }
@@ -387,94 +359,3 @@ const (
 	threadWakeRetryAttempts     = 8
 	threadRequestWakeRetryBatch = 32
 )
-
-// threadWakeOrigin attributes a wake to the thread that answered, from the
-// same two sources threadWakeBody reads: a thread on this computer has a
-// row here, and a thread on another computer is named by what its own
-// computer reported when the request's target was recorded.
-func (a *App) threadWakeOrigin(row store.ThreadRequest) *usermessage.OriginThread {
-	origin := &usermessage.OriginThread{ThreadID: row.TargetThreadID, Token: row.Token, Kind: usermessage.OriginKindWake}
-	if row.TargetComputerID != "" {
-		origin.Title = row.TargetThreadTitle
-		origin.ComputerName, origin.ComputerID = a.threadTools().threadToolsBackendName(row.TargetComputerID)
-		return origin
-	}
-	if row.TargetThreadID != "" {
-		if thread, err := a.store.GetThread(row.TargetThreadID); err == nil {
-			origin.Title = thread.Title
-		}
-	}
-	return origin
-}
-
-// threadWakeBody renders one wake from the fixed template. The kind is what
-// the settled state means to the caller, which is not always what it means to
-// the destination: a reminder is `finished` on both sides and reads as
-// neither a reply nor a thread's last message.
-func (a *App) threadWakeBody(row store.ThreadRequest, late bool) (string, error) {
-	wake := threadtools.Wake{
-		Token:    row.Token,
-		ThreadID: row.TargetThreadID,
-	}
-	if row.SettledAt > 0 {
-		wake.Age = time.Duration(time.Now().UnixMilli()-row.SettledAt) * time.Millisecond
-	}
-	// A handoff made the assistant's current thread the caller and kept the
-	// thread that asked; the wake says which one that was.
-	if madeIn := row.MadeIn(); madeIn != row.CallerThreadID {
-		wake.MadeIn, wake.Now = madeIn, row.CallerThreadID
-		if current, ok := a.assistantCurrentThread(row.CallerThreadID); ok {
-			wake.Now = current
-		}
-	}
-	// A standing agent that answered is named as one, from what the answer
-	// this wake carries recorded, so a thread on either computer reads the
-	// same.
-	answerAgent := row.AnswerAgent
-	if late {
-		answerAgent = row.LateReplyAgent
-	}
-	if answerAgent != nil {
-		wake.Agent = &threadtools.SenderAgent{Role: answerAgent.Role}
-	}
-	if row.TargetComputerID != "" {
-		// A thread on another computer has no row here: its title is what
-		// that computer reported, kept on the request so a wake rendered
-		// after a restart still names it, and the computer is named the way
-		// every other row names it.
-		wake.Title = row.TargetThreadTitle
-		wake.Computer, _ = a.threadTools().threadToolsBackendName(row.TargetComputerID)
-	} else if row.TargetThreadID != "" {
-		if thread, err := a.store.GetThread(row.TargetThreadID); err == nil {
-			wake.Title = thread.Title
-		}
-	}
-	switch {
-	case late:
-		wake.Kind, wake.Text = threadtools.WakeReply, string(row.LateReply)
-		wake.Age = time.Duration(time.Now().UnixMilli()-row.LateReplyAt) * time.Millisecond
-	case row.Kind == store.ThreadRequestRemind:
-		wake.Kind, wake.Text = threadtools.WakeReminder, string(row.Answer)
-	case row.State == store.ThreadRequestReplied:
-		wake.Kind, wake.Text = threadtools.WakeReply, string(row.Answer)
-	case row.State == store.ThreadRequestFinished:
-		wake.Kind, wake.Text = threadtools.WakeFinished, string(row.Answer)
-	case row.State == store.ThreadRequestErrored, row.State == store.ThreadRequestRefused:
-		wake.Kind, wake.Text = threadtools.WakeErrored, string(row.Answer)
-	case row.State == store.ThreadRequestCancelled:
-		// A cancel the agent made itself disarms the wake; one that still
-		// owes it was made for the agent, and the answer says by whom.
-		wake.Kind, wake.Text = threadtools.WakeCancelled, string(row.Answer)
-	case row.State == store.ThreadRequestInterrupted && row.AnswerKind == store.ThreadAnswerFinal:
-		// A person's Stop: the answer is what the turn said before it
-		// (turnSettlement).
-		wake.Kind, wake.Text = threadtools.WakeStopped, string(row.Answer)
-	case row.State == store.ThreadRequestInterrupted:
-		wake.Kind, wake.Text = threadtools.WakeInterrupted, string(row.Answer)
-	case row.State == store.ThreadRequestExpired:
-		wake.Kind = threadtools.WakeExpired
-	default:
-		return "", fmt.Errorf("request %s is %s, which owes no wake", row.Token, row.State)
-	}
-	return wake.String(), nil
-}

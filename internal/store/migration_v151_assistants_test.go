@@ -30,13 +30,13 @@ func applyAssistantsMigration(t *testing.T, db *sql.DB) {
 	}
 }
 
-// v150 over a populated database: every existing row and every schema
+// v151 over a populated database: every existing row and every schema
 // object but the two ledger tables is unchanged; the new tables have exactly
 // their columns, constraints and indexes and cascade as the spec says; the
 // ledger gains its columns at the end, its indexes and its triggers; and the
 // placement trigger ends ownership with the last link, except for a thread
 // outside every project, an assistant's helper.
-func TestMigrationV150Schema(t *testing.T) {
+func TestMigrationV151Schema(t *testing.T) {
 	db, _ := openFileDBThrough(t, assistantsMigrationVersion-1)
 	mustExec(t, db, `INSERT INTO projects (id, path, name, created_at, updated_at) VALUES ('p', '/p', 'p', 1, 1)`)
 	mustExec(t, db, `INSERT INTO threads (id, project_id, title, provider, workspace_path, model, created_at, updated_at, archived) VALUES
@@ -236,14 +236,14 @@ func TestMigrationV150Schema(t *testing.T) {
 	}
 }
 
-// v150 over a populated ledger: every answer and late reply delivered
+// v151 over a populated ledger: every answer and late reply delivered
 // before it, by any route, reads confirmed at its delivery time; a late
 // reply delivered before it carries the route its delivery wrote; every
 // request and receipt reads as answered by no agent, made by its caller,
 // with nothing open under a remote target of unknown provider, and every
 // receipt as delivered into a turn it did not open; no existing column
 // changes.
-func TestMigrationV150Deliveries(t *testing.T) {
+func TestMigrationV151Deliveries(t *testing.T) {
 	db, _ := openFileDBThrough(t, assistantsMigrationVersion-1)
 	mustExec(t, db, `INSERT INTO projects (id, path, name, created_at, updated_at) VALUES ('p', '/p', 'p', 1, 1)`)
 	mustExec(t, db, `INSERT INTO threads (id, project_id, title, provider, workspace_path, model, created_at, updated_at, archived) VALUES
@@ -318,10 +318,11 @@ func TestMigrationV150Deliveries(t *testing.T) {
 	}
 }
 
-// v150 over a populated database: a confirmed queued answer or late reply
-// gets the row the send-id lookup finds, a joined row included; an
-// undelivered, inline or row-less one gets none.
-func TestMigrationV150WakeItems(t *testing.T) {
+// v151 over a populated database: a confirmed queued answer or late reply
+// gets the row the send-id lookup finds, a joined row included, and a
+// request that rode with it gets the same row; an undelivered, inline or
+// row-less one gets none.
+func TestMigrationV151WakeItems(t *testing.T) {
 	db, _ := openFileDBThrough(t, assistantsMigrationVersion-1)
 	mustExec(t, db, `INSERT INTO projects (id, path, name, created_at, updated_at) VALUES ('p', '/p', 'p', 1, 1)`)
 	mustExec(t, db, `INSERT INTO threads (id, project_id, title, provider, workspace_path, model, created_at, updated_at, archived) VALUES
@@ -346,6 +347,14 @@ func TestMigrationV150WakeItems(t *testing.T) {
 		('inline', 'caller', 'send', '', 't', '', 'finished', 'a', 10, 20, 'inline', NULL, NULL, 1, 1),
 		('reverted', 'caller', 'send', '', 't', '', 'finished', 'a', 10, 20, 'queued', NULL, NULL, 1, 1),
 		('open', 'caller', 'ask', '', '', '', 'running', NULL, NULL, NULL, '', NULL, NULL, 1, 1)`)
+	// Requests that rode with another's first wake (v149's delivered_with)
+	// have no send id of their own: each takes its carrier's row, confirmed
+	// with it, and one whose carrier's row was not found takes none.
+	mustExec(t, db, `INSERT INTO thread_requests (token, caller_thread_id, kind, target_computer_id, target_thread_id, target_thread_title, state, answer,
+		settled_at, delivered_at, delivered_how, delivered_with, created_at, updated_at) VALUES
+		('rider', 'caller', 'send', '', 't2', '', 'finished', 'a', 10, 20, 'queued', 'first', 2, 2),
+		('rider-joined', 'caller', 'send', '', 't2', '', 'finished', 'a', 10, 20, 'queued', 'joined', 2, 2),
+		('rider-reverted', 'caller', 'send', '', 't2', '', 'finished', 'a', 10, 20, 'queued', 'reverted', 2, 2)`)
 	seedConfirmedWakes(t, db, []string{"bulk"}, 3000)
 
 	applyAssistantsMigration(t, db)
@@ -355,9 +364,18 @@ func TestMigrationV150WakeItems(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"first|row-first|", "inline||", "joined|row-joined|", "late|row-late-first|row-late", "open||", "reverted||", "undelivered||"}
+	want := []string{"first|row-first|", "inline||", "joined|row-joined|", "late|row-late-first|row-late", "open||", "reverted||",
+		"rider|row-first|", "rider-joined|row-joined|", "rider-reverted||", "undelivered||"}
 	if !slices.Equal(got, want) {
 		t.Errorf("wake rows = %q, want %q", got, want)
+	}
+	riders, err := queryIDs(db, `SELECT token || '|' || COALESCE(confirmed_at, 'NULL') || '|' || delivered_with FROM thread_requests
+		WHERE delivered_with <> '' ORDER BY token`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"rider|20|first", "rider-joined|20|joined", "rider-reverted|20|reverted"}; !slices.Equal(riders, want) {
+		t.Errorf("riders = %q, want each confirmed with its carrier recorded", riders)
 	}
 	var missing int
 	if err := db.QueryRow(`SELECT COUNT(*) FROM thread_requests WHERE caller_thread_id = 'bulk' AND wake_item_id <> 'row-' || token`).Scan(&missing); err != nil || missing != 0 {
@@ -365,7 +383,7 @@ func TestMigrationV150WakeItems(t *testing.T) {
 	}
 }
 
-// seedConfirmedWakes writes n queued answers delivered before v150 spread
+// seedConfirmedWakes writes n queued answers delivered before v151 spread
 // over callers, each with the user row its wake left, every tenth joined
 // with another message.
 func seedConfirmedWakes(t *testing.T, db *sql.DB, callers []string, n int) {
@@ -392,12 +410,12 @@ func seedConfirmedWakes(t *testing.T, db *sql.DB, callers []string, n int) {
 	mustExec(t, db, `COMMIT`)
 }
 
-// v150's wake-row fill is one statement per column and a keyed write per
+// v151's wake-row fill is one statement per column and a keyed write per
 // joined wake, so it runs at open: the whole migration over 50,000
 // delivered answers (30 days of retention at 1,700 wakes a day) measured
 // about 1.4 s alone, and each lookup probes its index by the caller's key,
 // so a fill that scanned per request would exceed the bound many times over.
-func TestMigrationV150WakeItemsAtScale(t *testing.T) {
+func TestMigrationV151WakeItemsAtScale(t *testing.T) {
 	if testing.Short() {
 		t.Skip("seeds 50,000 requests")
 	}
@@ -432,11 +450,11 @@ func TestMigrationV150WakeItemsAtScale(t *testing.T) {
 	}
 }
 
-// v150 over a populated ledger: the older of two local spawns of one thread
+// v151 over a populated ledger: the older of two local spawns of one thread
 // becomes a lineage row and the index refuses a second; every spawn's marks
 // are filled from the open work below it, four threads down and no further;
 // and the triggers keep them from there.
-func TestMigrationV150AgentTreeMarks(t *testing.T) {
+func TestMigrationV151AgentTreeMarks(t *testing.T) {
 	db, _ := openFileDBThrough(t, assistantsMigrationVersion-1)
 	mustExec(t, db, `INSERT INTO projects (id, path, name, created_at, updated_at) VALUES ('p', '/p', 'p', 1, 1)`)
 	chain := []string{"t0", "t1", "t2", "t3", "t4", "t5"}

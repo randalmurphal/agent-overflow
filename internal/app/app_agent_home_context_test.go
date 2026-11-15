@@ -236,7 +236,7 @@ func TestWakeFromAStandingAgentNamesIt(t *testing.T) {
 		t.Fatalf("recorded answer agent = %+v", row.AnswerAgent)
 	}
 	writeHomeFile(t, agent.Home, agenthome.InstructionsFile, "Rewritten after the answer.\n")
-	body, err := f.app.threadWakeBody(f.request(t, ack.Token), false)
+	body, err := wakeBodyOf(f.app, f.request(t, ack.Token), false)
 	if err != nil {
 		t.Fatalf("threadWakeBody: %v", err)
 	}
@@ -255,7 +255,7 @@ func TestWakeFromAStandingAgentNamesIt(t *testing.T) {
 		row.LateReplyAgent == nil || row.LateReplyAgent.Role != "Second role." {
 		t.Fatalf("agents after the late reply = answer %+v late reply %+v", row.AnswerAgent, row.LateReplyAgent)
 	}
-	body, err = f.app.threadWakeBody(row, true)
+	body, err = wakeBodyOf(f.app, row, true)
 	if err != nil {
 		t.Fatalf("threadWakeBody(late): %v", err)
 	}
@@ -264,7 +264,7 @@ func TestWakeFromAStandingAgentNamesIt(t *testing.T) {
 	}
 	// A first answer's wake rendered after the late reply, as a delayed
 	// delivery renders it, keeps the role the answer was written under.
-	body, err = f.app.threadWakeBody(row, false)
+	body, err = wakeBodyOf(f.app, row, false)
 	if err != nil {
 		t.Fatalf("threadWakeBody(first, after the late reply): %v", err)
 	}
@@ -290,7 +290,7 @@ func TestWakeFromAnOrdinaryThreadNamesNoAgent(t *testing.T) {
 	if row.AnswerAgent != nil {
 		t.Fatalf("recorded answer agent = %+v, want none", row.AnswerAgent)
 	}
-	if body, _ := f.app.threadWakeBody(row, false); strings.Contains(body, "standing agent") {
+	if body, _ := wakeBodyOf(f.app, row, false); strings.Contains(body, "standing agent") {
 		t.Fatalf("an ordinary thread's wake names an agent:\n%s", body)
 	}
 }
@@ -347,7 +347,7 @@ func TestWakeFromARemoteStandingAgentNamesItAsALocalOneDoes(t *testing.T) {
 		t.Helper()
 		token := caller.seedRemoteRequest(t, computer)
 		answer.Token = token
-		if _, err := caller.app.collectRemoteThreadRequest(caller.request(t, token), answer); err != nil {
+		if _, _, err := caller.app.collectRemoteThreadRequest(caller.request(t, token), answer); err != nil {
 			t.Fatalf("collectRemoteThreadRequest: %v", err)
 		}
 		return caller.request(t, token)
@@ -356,7 +356,7 @@ func TestWakeFromARemoteStandingAgentNamesItAsALocalOneDoes(t *testing.T) {
 	if row.AnswerAgent == nil || row.AnswerAgent.Role != "Reviewer of the parser." {
 		t.Fatalf("recorded answer agent = %+v", row.AnswerAgent)
 	}
-	body, err := caller.app.threadWakeBody(row, false)
+	body, err := wakeBodyOf(caller.app, row, false)
 	if err != nil {
 		t.Fatalf("threadWakeBody: %v", err)
 	}
@@ -379,7 +379,7 @@ func TestWakeFromARemoteStandingAgentNamesItAsALocalOneDoes(t *testing.T) {
 	late.LateReplyAgent = &ThreadPeerAgent{Role: "Second role."}
 	row = collect(state)
 	late.Token = row.Token
-	if _, err := caller.app.collectRemoteThreadRequest(row, late); err != nil {
+	if _, _, err := caller.app.collectRemoteThreadRequest(row, late); err != nil {
 		t.Fatalf("collect late reply: %v", err)
 	}
 	both := func(row store.ThreadRequest, what string) {
@@ -388,7 +388,7 @@ func TestWakeFromARemoteStandingAgentNamesItAsALocalOneDoes(t *testing.T) {
 			row.LateReplyAgent == nil || row.LateReplyAgent.Role != "Second role." || string(row.LateReply) != "on reflection" {
 			t.Fatalf("%s: answer agent %+v late reply agent %+v late reply %q", what, row.AnswerAgent, row.LateReplyAgent, row.LateReply)
 		}
-		if body, err := caller.app.threadWakeBody(row, false); err != nil || wakeAgentLine(t, body) != reviewerAgentLine {
+		if body, err := wakeBodyOf(caller.app, row, false); err != nil || wakeAgentLine(t, body) != reviewerAgentLine {
 			t.Fatalf("%s: first wake = %v\n%s", what, err, body)
 		}
 	}
@@ -408,7 +408,7 @@ func TestWakeFromARemoteStandingAgentNamesItAsALocalOneDoes(t *testing.T) {
 	if row.AnswerAgent != nil {
 		t.Fatalf("recorded answer agent from an older computer = %+v", row.AnswerAgent)
 	}
-	if body, _ := caller.app.threadWakeBody(row, false); strings.Contains(body, "standing agent") {
+	if body, _ := wakeBodyOf(caller.app, row, false); strings.Contains(body, "standing agent") {
 		t.Fatalf("a wake from an older computer names an agent:\n%s", body)
 	}
 }
@@ -554,7 +554,7 @@ func TestWakeOfARowThatRecordedNoAgentNamesNone(t *testing.T) {
 	if row.AnswerAgent != nil {
 		t.Fatalf("row agent = %+v, want none recorded", row.AnswerAgent)
 	}
-	body, err := f.app.threadWakeBody(row, false)
+	body, err := wakeBodyOf(f.app, row, false)
 	if err != nil {
 		t.Fatalf("threadWakeBody: %v", err)
 	}

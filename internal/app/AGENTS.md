@@ -135,8 +135,10 @@ delivery and echo once, so a binding or an owner's confirmation whose write
 fails is kept and written again, every reader of a receipt's turn reads a
 kept binding as that turn (`deliveredReceiptLocked`), and an echoed message
 is never given back meanwhile (`app_thread_tools_bookkeeping.go`). A cancel
-arms its wait for a delivery only inside the settlement it wins. A wake (`app_thread_tools_wake.go`) writes its durable queue row and its
-delivery mark in one store transaction. Every message the app writes into
+arms its wait for a delivery only inside the settlement it wins. A wake
+(`app_thread_tools_wake.go`, `app_thread_tools_wake_message.go`) writes its
+durable queue row and the delivery mark of every request it answers in one
+store transaction. Every message the app writes into
 a thread for someone else goes through `queueAgentNotice`
 (`app_agent_notice.go`): it is accepted once queued, without the action
 lock, and the session start it needs runs afterwards on joined notice

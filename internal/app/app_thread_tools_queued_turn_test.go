@@ -19,6 +19,9 @@ import (
 type queuedRequests struct {
 	f      *requestFixture
 	target store.Thread
+	// notify makes the requests queued from here on ask for their answer as
+	// a message.
+	notify bool
 }
 
 // queuedRequest is one of them.
@@ -70,7 +73,7 @@ func (q *queuedRequests) queueDuring(t *testing.T, rowTurn, n, responseTurn int)
 	}
 	if err := q.f.app.store.InsertThreadRequest(store.ThreadRequest{
 		Token: r.token, CallerThreadID: q.f.caller.ID, Kind: store.ThreadRequestSend,
-		TargetThreadID: q.target.ID, State: store.ThreadRequestAccepted,
+		TargetThreadID: q.target.ID, State: store.ThreadRequestAccepted, Notify: q.notify,
 	}); err != nil {
 		t.Fatalf("InsertThreadRequest: %v", err)
 	}
@@ -136,9 +139,11 @@ func (r *queuedRequest) bind(t *testing.T) {
 
 func (r *queuedRequest) observeTurnEnd(t *testing.T) {
 	t.Helper()
-	if _, err := r.q.f.app.settleReceiptOnTurnEnd(r.q.target.ID, r.token); err != nil {
+	work, _, err := r.q.f.app.settleReceiptOnTurnEnd(r.q.target.ID, r.token)
+	if err != nil {
 		t.Fatalf("settleReceiptOnTurnEnd: %v", err)
 	}
+	r.q.f.app.runThreadSettlementWork(work)
 }
 
 func (r *queuedRequest) wantRunning(t *testing.T, when string) store.ThreadRequestReceipt {

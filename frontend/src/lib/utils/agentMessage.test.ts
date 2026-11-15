@@ -83,8 +83,8 @@ describe('parseWakeText', () => {
       body: 'the user stopped it',
       footer: null,
       wake: {
-        kind: 'cancelled', title: 'W', threadId: 't-w', computer: '', age: '', token: 'k',
-        agentRole: null, stoppedBy: '', clipped: false,
+        kind: 'cancelled', title: 'W', threadId: 't-w', computer: '', age: '', token: 'k', tokens: ['k'],
+        agentRole: null, stoppedBy: '', clipped: false, threads: [],
       },
     });
   });
@@ -92,6 +92,11 @@ describe('parseWakeText', () => {
   it('refuses text that is not a status line', () => {
     expect(parseWakeText('Reply from nobody')).toBeNull();
     expect(parseWakeText('"W" (t-w) did something else')).toBeNull();
+  });
+
+  it('refuses a digest whose list does not match its count', () => {
+    expect(parseWakeText('3 threads did not answer within a day.\n- "A" (t-a) [token a]\n- "B" (t-b) [token b]')).toBeNull();
+    expect(parseWakeText('2 threads did something else.\n- "A" (t-a) [token a]\n- "B" (t-b) [token b]')).toBeNull();
   });
 });
 
@@ -154,6 +159,22 @@ describe('agentMessageFromItem', () => {
         senderRole: 'Runs the builds.', firstLine: 'Done.',
       });
     }
+  });
+
+  it('names a digest by its thread count and opens none of them', () => {
+    const digest = cases.find((c) => c.name === 'digest: the same reply, a standing agent and an age')!;
+    const message = agentMessageFromItem(row(digest.text, {
+      origin: 'agent-thread',
+      originThread: { threadId: 't-work', title: 'Worker', token: digest.parts[0].wake!.token, kind: 'wake' },
+    }))!;
+    expect(message.kind).toBe('reply');
+    expect(message.sender).toBe('2 threads');
+    expect(message.senderThread).toBeNull();
+    expect(message.firstLine).toBe('Done.');
+    expect(message.parts).toHaveLength(1);
+    const silent = cases.find((c) => c.name === 'digest: expired')!;
+    expect(agentMessageFromItem(row(silent.text, { origin: 'agent-thread', originThread: { threadId: 't-work', kind: 'wake' } }))?.firstLine)
+      .toBe('Worker, Lexer');
   });
 
   it('opens no thread for a reminder: the thread reminded itself', () => {

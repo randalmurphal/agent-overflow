@@ -1803,7 +1803,7 @@ export class Thread {
     "groupId"?: string;
 
     /**
-     * Placement is where the sidebar shows the row (migration v149):
+     * Placement is where the sidebar shows the row (migration v150):
      * PlacementOwned nowhere, as a worker of the thread that spawned it
      * (SpawnedByThreadID); PlacementGrouped in GroupID's group;
      * PlacementStandalone as a plain row of its project. The schema makes

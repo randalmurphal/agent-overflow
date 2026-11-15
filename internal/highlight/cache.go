@@ -50,7 +50,7 @@ type cacheEntry struct {
 func NewCache() *Cache {
 	return &Cache{
 		sem:      make(chan struct{}, computeConcurrency),
-		heap:     heapRelease{release: releaseFreedMemory},
+		heap:     heapRelease{release: releaseFreedMemory, maxDelay: releaseMaxDelay},
 		entries:  map[[32]byte]*list.Element{},
 		lru:      list.New(),
 		maxBytes: defaultCacheBytes,

@@ -1,12 +1,14 @@
 package app
 
 import (
+	"context"
 	"sync"
 	"testing"
 	"time"
 
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/threadtools"
 	"agent-overflow/internal/triage"
 )
 
@@ -59,7 +61,7 @@ func interruptInTurnStartGap(t *testing.T, name string, interrupt func(app *App,
 	}
 
 	// The start is released only once the interrupt is waiting on it in
-	// InterruptTurnIndex; an interrupt that finishes first sampled the gap.
+	// SampleInterrupt; an interrupt that finishes first sampled the gap.
 	waiting := make(chan struct{})
 	var waitOnce sync.Once
 	app.triage.SetInterruptWaitHook(func(_ string, woke bool) {
@@ -127,6 +129,24 @@ func TestInterruptTurnRecordsStopInTurnStartGap(t *testing.T) {
 	requireStopAndLaterError(t, interruptInTurnStartGap(t, "interrupt-start-gap", func(app *App, threadID string) error {
 		return app.InterruptTurn(threadID, nil)
 	}))
+}
+
+// thread_cancel by thread id, from this computer or another, stops a turn
+// whose start is still in progress instead of reporting nothing to stop.
+func TestThreadCancelRecordsStopInTurnStartGap(t *testing.T) {
+	t.Parallel()
+	var effect string
+	errors := interruptInTurnStartGap(t, "thread-cancel-start-gap", func(app *App, threadID string) error {
+		var err error
+		effect, err = app.threadTools().interruptRunningThread(context.Background(), threadID, stopByThread("caller", "caller-id", ""))
+		return err
+	})
+	if effect != threadtools.EffectInterrupted {
+		t.Fatalf("effect = %q, want %q", effect, threadtools.EffectInterrupted)
+	}
+	if len(errors) != 2 || errors[0] != `Stopped by thread "caller"` || errors[1] != "later error" {
+		t.Fatalf("error rows = %q, want [Stopped by thread \"caller\", later error]", errors)
+	}
 }
 
 // An older client's InterruptAndRevertIfClean is the same interrupt.

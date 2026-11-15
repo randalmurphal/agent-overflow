@@ -1052,21 +1052,28 @@ func (a *App) interruptTurnAtIndex(ctx context.Context, threadID string, expectT
 	// by an earlier interrupt still carries that interrupt's valid
 	// stamp.
 	pendingTUISendTurn := a.claudeTUIPendingSendTurn(threadID, sess)
-	interruptedTurn := anyOpenTurn
+	sample := triage.InterruptSample{Turn: anyOpenTurn}
+	if a.triage != nil {
+		sample = a.triage.SampleInterrupt(threadID)
+	}
+	// interruptedTurn is the open turn. cutTurn is the turn this stop
+	// cuts: the open one, or the turn of a send the provider holds whose
+	// turn has not opened yet.
+	interruptedTurn, cutTurn := sample.Turn, sample.CutTurn()
+	if expectTurnIndex != anyOpenTurn && cutTurn != anyOpenTurn && cutTurn != expectTurnIndex {
+		// The thread has moved on to a turn this caller does not own, open
+		// or about to open. Stopping it would take work away from whoever
+		// started it.
+		return false, nil
+	}
 	var stampToken triage.FlushStampToken
 	if a.triage != nil {
-		interruptedTurn = a.triage.InterruptTurnIndex(threadID)
-		if expectTurnIndex != anyOpenTurn && interruptedTurn != anyOpenTurn && interruptedTurn != expectTurnIndex {
-			// The thread has moved on to a turn this caller does not own.
-			// Stopping it would take work away from whoever started it.
-			return false, nil
-		}
 		stampToken = a.triage.MarkFlushSendsInterrupted(threadID, interruptedTurn)
 	}
 	discardsMessage := a.claudeTUIStopDiscardsMessage(threadID, sess, interruptedTurn, pendingTUISendTurn)
-	a.recordTurnStop(threadID, interruptedTurn, stop)
+	a.recordTurnStop(threadID, cutTurn, stop)
 	if consent != nil {
-		a.notePersonStop(threadID, interruptedTurn)
+		a.notePersonStop(threadID, cutTurn)
 	}
 	if expectTurnIndex != anyOpenTurn {
 		cancelParked()
@@ -1079,30 +1086,30 @@ func (a *App) interruptTurnAtIndex(ctx context.Context, threadID string, expectT
 		interruptErr = providerSess.Interrupt(context.Background())
 	}
 	if interruptErr != nil {
-		a.dropTurnStop(threadID, interruptedTurn)
+		a.dropTurnStop(threadID, cutTurn)
 		if a.triage != nil {
 			a.triage.RestoreFlushSendsInterrupted(threadID, stampToken)
 		}
-		a.forgetPersonStop(threadID, interruptedTurn)
+		a.forgetPersonStop(threadID, cutTurn)
 		return false, interruptErr
 	}
 	if !interruptSent {
-		a.dropTurnStop(threadID, interruptedTurn)
+		a.dropTurnStop(threadID, cutTurn)
 		// The intent entered before a same-session revert and therefore names
 		// the history that operation already discarded. Do not synthesize a
 		// second user interrupt in triage for the reloaded thread.
 		if a.triage != nil {
 			a.triage.RestoreFlushSendsInterrupted(threadID, stampToken)
 		}
-		a.forgetPersonStop(threadID, interruptedTurn)
+		a.forgetPersonStop(threadID, cutTurn)
 		return false, nil
 	}
 	if a.triage != nil {
-		// The pre-ack sampled turn, not a fresh resolution: a queued echo
+		// The pre-ack sample, not a fresh resolution: a queued echo
 		// consumed during the ack wait may have opened its own turn, and
 		// the stopped bookkeeping belongs on the turn the user cut
 		// (round-11, C11-1).
-		if _, err := a.triage.MarkInterrupt(threadID, interruptedTurn, stampToken, stop.label); err != nil {
+		if _, err := a.triage.MarkInterrupt(threadID, sample, stampToken, stop.label); err != nil {
 			// The provider stopped; the thread's record of the stop did
 			// not land, so its rows can still read as running.
 			log.Printf("app: interrupt turn: mark interrupt: %v", err)

@@ -78,7 +78,9 @@ existing row through that id rather than sending a second copy. These sends
 preserve the thread's draft and stamp `usermessage.Meta.Origin` =
 `agent-thread` with the sending thread's identity, on the immediate row and on
 the queued payload alike, so a message the app wrote on an agent's behalf is
-never mistaken for one a person typed.
+never mistaken for one a person typed. One wake can answer several requests;
+it is admitted under the oldest request's id and attributed to that request's
+thread, and when it speaks for several threads its text names them all.
 
 ## Confirmation and placement
 

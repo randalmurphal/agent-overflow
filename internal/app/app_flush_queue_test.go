@@ -1653,7 +1653,7 @@ func TestDispatchFlush_Claude_InterruptPromotesAfterStoppedByUser(t *testing.T) 
 	})
 	interruptedTurn := app.triage.OpenTurnIndex(thread.ID)
 	stampToken := app.triage.MarkFlushSendsInterrupted(thread.ID, interruptedTurn)
-	stoppedID, err := app.triage.MarkInterrupt(thread.ID, interruptedTurn, stampToken, triage.StoppedByUser)
+	stoppedID, err := app.triage.MarkInterrupt(thread.ID, triage.InterruptSample{Turn: interruptedTurn}, stampToken, triage.StoppedByUser)
 	if err != nil {
 		t.Fatalf("MarkInterrupt: %v", err)
 	}

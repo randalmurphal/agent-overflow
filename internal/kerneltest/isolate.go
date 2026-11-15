@@ -6,11 +6,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"syscall"
 	"testing"
 	"time"
 
 	"agent-overflow/internal/codexmodels"
+	"agent-overflow/internal/procutil"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/textgen"
 )
@@ -223,14 +223,13 @@ func PoisonProviderBinary(t testing.TB) (poison, sentinel string) {
 	return poison, sentinel
 }
 
-// writeExecutable writes an executable with syscall.ForkLock held for
-// reading, as supervise's artifact writer does. A child forked by a parallel
-// test while the file is open for writing keeps the descriptor until its own
-// exec, and the kernel refuses to run a file with a writer (ETXTBSY), so the
-// poisoned binary would fail to start and write no sentinel.
+// writeExecutable writes an executable with forks held off
+// (procutil.HoldForks). A child forked by a parallel test while the file is
+// open for writing would keep the poisoned binary from starting, and it
+// would write no sentinel.
 func writeExecutable(name string, data []byte) error {
-	syscall.ForkLock.RLock()
-	defer syscall.ForkLock.RUnlock()
+	release := procutil.HoldForks()
+	defer release()
 	return os.WriteFile(name, data, 0o755)
 }
 

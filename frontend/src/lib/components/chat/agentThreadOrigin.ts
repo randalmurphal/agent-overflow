@@ -3,11 +3,12 @@
 // `meta.origin = "agent-thread"` with `meta.originThread` is what the thread
 // tools stamp on a spawn's first message, on every thread_send, and on every
 // wake carrying an answer back (docs/specs/agent-thread-tools.md,
-// Attribution). The chip says "from <title>", adds "on <computer>" when the
-// source is a different computer than the one showing the row, and opens
-// that thread when this client is attached to its computer and that socket
-// is up. Offline, unpaired or unknown, it reads the same and does nothing:
-// a dead link is worse than a label.
+// Attribution); a wake that lists several threads shows no chip
+// (utils/agentMessage.ts). The chip says "from <title>", adds "on
+// <computer>" when the source is a different computer than the one showing
+// the row, and opens that thread when this client is attached to its
+// computer and that socket is up. Offline, unpaired or unknown, it reads
+// the same and does nothing: a dead link is worse than a label.
 
 import { getAttachedBackends, attachedBackendEntry, backendDisplayName, backendReachable } from '../../stores/attachedBackends.svelte';
 import { getThreadById } from '../../stores/threads.svelte';
