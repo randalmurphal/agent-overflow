@@ -175,11 +175,15 @@ export function installHarnessBridge(): () => void {
     // tooling.
     if (!hasScope('host')) return;
     publishPageIdentity();
+    // Subscribed before the page registers: the backend can query a page the
+    // moment it is registered, and the transport writes that event ahead of
+    // the registration reply. An answer waits for the registration itself.
+    subscribe();
     stopTransportStatus = onTransportStatusChange((status) => {
       if (!active) return;
       if (status.status === 'connected') {
         pageRegistration = null;
-        void registerPage().then(subscribe).catch((err) => {
+        void registerPage().catch((err) => {
           console.error('harness bridge: page registration failed:', err);
         });
       } else {
@@ -188,7 +192,7 @@ export function installHarnessBridge(): () => void {
     });
     // The initial transport may already be usable even when the status
     // mirror has not observed its first connected edge yet.
-    void registerPage().then(subscribe).catch((err) => {
+    void registerPage().catch((err) => {
       console.error('harness bridge: page registration failed:', err);
     });
   });
