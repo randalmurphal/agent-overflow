@@ -713,15 +713,15 @@ func (e *Engine) githubThreadCommentNodes(r *Repo, p *Pull, thread *Thread) []ma
 		var replyTo any
 		if i > 0 {
 			root := thread.Comments[0]
-			replyTo = map[string]any{"id": githubCommentNodeID("PRRC", root.ID), "databaseId": root.ID}
+			replyTo = map[string]any{"id": githubCommentNodeID("PRRC", root.ID), "fullDatabaseId": strconv.FormatInt(root.ID, 10)}
 		}
 		node := map[string]any{
-			"id":         githubCommentNodeID("PRRC", comment.ID),
-			"databaseId": comment.ID,
-			"author":     githubActor(comment.Author, comment.AuthorName),
-			"body":       comment.Body,
-			"createdAt":  comment.CreatedAt,
-			"replyTo":    replyTo,
+			"id":             githubCommentNodeID("PRRC", comment.ID),
+			"fullDatabaseId": strconv.FormatInt(comment.ID, 10),
+			"author":         githubActor(comment.Author, comment.AuthorName),
+			"body":           comment.Body,
+			"createdAt":      comment.CreatedAt,
+			"replyTo":        replyTo,
 		}
 		maps.Copy(node, e.githubCommentViewerFields(r, comment, fmt.Sprintf("%s#discussion_r%d", githubPullURL(r, p), comment.ID)))
 		node["reactionGroups"] = e.githubReactionGroups(comment)
@@ -734,12 +734,12 @@ func (e *Engine) githubCommentNodes(r *Repo, p *Pull) []map[string]any {
 	out := make([]map[string]any, 0, len(p.Comments))
 	for _, comment := range p.Comments {
 		node := map[string]any{
-			"id":          githubCommentNodeID("IC", comment.ID),
-			"databaseId":  comment.ID,
-			"author":      githubActor(comment.Author, comment.AuthorName),
-			"body":        comment.Body,
-			"createdAt":   comment.CreatedAt,
-			"isMinimized": false,
+			"id":             githubCommentNodeID("IC", comment.ID),
+			"fullDatabaseId": strconv.FormatInt(comment.ID, 10),
+			"author":         githubActor(comment.Author, comment.AuthorName),
+			"body":           comment.Body,
+			"createdAt":      comment.CreatedAt,
+			"isMinimized":    false,
 		}
 		maps.Copy(node, e.githubCommentViewerFields(r, comment, fmt.Sprintf("%s#issuecomment-%d", githubPullURL(r, p), comment.ID)))
 		node["reactionGroups"] = e.githubReactionGroups(comment)

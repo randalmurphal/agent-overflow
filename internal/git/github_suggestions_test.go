@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -444,7 +445,7 @@ func TestGitHubReactionsNeverShrinkTheThreadsRead(t *testing.T) {
 		}
 		nodes := []map[string]any{}
 		for i := range 100 {
-			node := map[string]any{"id": fmt.Sprintf("IC_%d", i), "databaseId": i + 1, "author": map[string]any{"login": "octo"},
+			node := map[string]any{"id": fmt.Sprintf("IC_%d", i), "fullDatabaseId": strconv.Itoa(i + 1), "author": map[string]any{"login": "octo"},
 				"body": strings.Repeat("x", bodyBytes), "createdAt": "2026-01-01T00:00:00Z", "lastEditedAt": nil, "url": "u",
 				"viewerCanUpdate": false, "viewerCanDelete": false, "isMinimized": false}
 			if reactions {

@@ -2,8 +2,10 @@ package git
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"agent-overflow/internal/forgeapi"
@@ -41,10 +43,10 @@ const (
 	// the names would cost a connection per comment).
 	githubReactionFields      = `reactionGroups ` + githubReactionGroupFields
 	githubReactionGroupFields = `{ content viewerHasReacted reactors { totalCount } }`
-	githubThreadCommentFields = `id databaseId ` + githubActor + ` body createdAt ` + githubViewerCommentFields + ` replyTo { id databaseId }`
+	githubThreadCommentFields = `id fullDatabaseId ` + githubActor + ` body createdAt ` + githubViewerCommentFields + ` replyTo { id fullDatabaseId }`
 	githubThreadFields        = `id isResolved isOutdated path line startLine originalLine originalStartLine diffSide startDiffSide subjectType ` +
 		`comments(first: 100) { ` + githubPageInfoFields + ` nodes { ` + githubThreadCommentFields + ` } }`
-	githubCommentFields = `id databaseId ` + githubActor + ` body createdAt ` + githubViewerCommentFields + ` isMinimized`
+	githubCommentFields = `id fullDatabaseId ` + githubActor + ` body createdAt ` + githubViewerCommentFields + ` isMinimized`
 	// isRequired is the forge's own answer to whether the PR's base
 	// requires the context, branch protection and rulesets alike, so it
 	// needs the PR's $number in every document that selects contexts.
@@ -181,6 +183,27 @@ type githubPageInfo struct {
 	EndCursor   string `json:"endCursor"`
 }
 
+// githubBigInt is a GraphQL BigInt (a comment's fullDatabaseId, its REST
+// id), which GitHub encodes as a string; null is zero.
+type githubBigInt int64
+
+func (b *githubBigInt) UnmarshalJSON(data []byte) error {
+	if string(data) == "null" {
+		*b = 0
+		return nil
+	}
+	var text string
+	if err := json.Unmarshal(data, &text); err != nil {
+		return fmt.Errorf("GitHub BigInt %s is not a string: %w", data, err)
+	}
+	n, err := strconv.ParseInt(text, 10, 64)
+	if err != nil {
+		return fmt.Errorf("GitHub BigInt %q: %w", text, err)
+	}
+	*b = githubBigInt(n)
+	return nil
+}
+
 // githubActorRaw is a GraphQL Actor selected as
 // `author { login ... on User { name } }`. A Bot or Mannequin has no name
 // key and a User without a display name answers null or ""; all decode
@@ -211,14 +234,14 @@ type githubReactionGroupRaw struct {
 
 type githubThreadCommentRaw struct {
 	ID         string         `json:"id"`
-	DatabaseID int64          `json:"databaseId"`
+	DatabaseID githubBigInt   `json:"fullDatabaseId"`
 	Body       string         `json:"body"`
 	CreatedAt  string         `json:"createdAt"`
 	Author     githubActorRaw `json:"author"`
 	githubViewerCommentRaw
 	ReplyTo *struct {
-		ID         string `json:"id"`
-		DatabaseID int64  `json:"databaseId"`
+		ID         string       `json:"id"`
+		DatabaseID githubBigInt `json:"fullDatabaseId"`
 	} `json:"replyTo"`
 }
 
@@ -249,7 +272,7 @@ type githubThreadsRaw struct {
 
 type githubCommentRaw struct {
 	ID          string         `json:"id"`
-	DatabaseID  int64          `json:"databaseId"`
+	DatabaseID  githubBigInt   `json:"fullDatabaseId"`
 	Body        string         `json:"body"`
 	CreatedAt   string         `json:"createdAt"`
 	IsMinimized bool           `json:"isMinimized"`
@@ -836,11 +859,11 @@ func githubReviewThreads(nodes []githubThreadRaw) []ReviewThread {
 				AuthorName:  comment.Author.Name,
 				Body:        comment.Body,
 				CreatedAt:   comment.CreatedAt,
-				DatabaseID:  comment.DatabaseID,
+				DatabaseID:  int64(comment.DatabaseID),
 			}
 			comment.fill(&out)
 			if comment.ReplyTo != nil {
-				out.ReplyTo = &ReviewReplyTo{ID: comment.ReplyTo.ID, DatabaseID: comment.ReplyTo.DatabaseID}
+				out.ReplyTo = &ReviewReplyTo{ID: comment.ReplyTo.ID, DatabaseID: int64(comment.ReplyTo.DatabaseID)}
 			}
 			thread.Comments = append(thread.Comments, out)
 		}
@@ -863,7 +886,7 @@ func githubConversationThreads(nodes []githubCommentRaw) []ReviewThread {
 			AuthorName:  node.Author.Name,
 			Body:        node.Body,
 			CreatedAt:   node.CreatedAt,
-			DatabaseID:  node.DatabaseID,
+			DatabaseID:  int64(node.DatabaseID),
 		}
 		node.fill(&comment)
 		// The thread is named by its one comment (CommentTarget).

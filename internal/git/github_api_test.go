@@ -310,17 +310,17 @@ func TestReadPRActorShapes(t *testing.T) {
 		"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[
 			{"id":"T1","isResolved":false,"isOutdated":false,"path":"a.go","line":3,"startLine":null,"originalLine":3,"originalStartLine":null,"diffSide":"RIGHT","startDiffSide":null,"subjectType":"LINE",
 			 "comments":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[
-				{"id":"c1","databaseId":11,"author":{"login":"github-actions"},"body":"bot","createdAt":"2026-01-01T00:00:00Z","replyTo":null},
-				{"id":"c2","databaseId":12,"author":null,"body":"ghost","createdAt":"2026-01-01T00:00:01Z","replyTo":{"id":"c1","databaseId":11}}
+				{"id":"c1","fullDatabaseId":"11","author":{"login":"github-actions"},"body":"bot","createdAt":"2026-01-01T00:00:00Z","replyTo":null},
+				{"id":"c2","fullDatabaseId":"12","author":null,"body":"ghost","createdAt":"2026-01-01T00:00:01Z","replyTo":{"id":"c1","fullDatabaseId":"11"}}
 			 ]}},
 			{"id":"T2","isResolved":false,"isOutdated":true,"path":"a.go","line":null,"startLine":null,"originalLine":5,"originalStartLine":4,"diffSide":"RIGHT","startDiffSide":null,"subjectType":"LINE",
 			 "comments":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[
-				{"id":"c3","databaseId":13,"author":{"login":"plain"},"body":"old","createdAt":"2026-01-01T00:00:02Z","replyTo":null}
+				{"id":"c3","fullDatabaseId":"13","author":{"login":"plain"},"body":"old","createdAt":"2026-01-01T00:00:02Z","replyTo":null}
 			 ]}}
 		]},
 		"comments":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[
-			{"id":"k1","databaseId":21,"author":{"login":"plain","name":null},"body":"shown","createdAt":"2026-01-01T00:00:00Z","isMinimized":false},
-			{"id":"k2","databaseId":22,"author":{"login":"spammer","name":"S"},"body":"hidden","createdAt":"2026-01-01T00:00:01Z","isMinimized":true}
+			{"id":"k1","fullDatabaseId":"21","author":{"login":"plain","name":null},"body":"shown","createdAt":"2026-01-01T00:00:00Z","isMinimized":false},
+			{"id":"k2","fullDatabaseId":"22","author":{"login":"spammer","name":"S"},"body":"hidden","createdAt":"2026-01-01T00:00:01Z","isMinimized":true}
 		]}
 	}}}}`
 	core, _ := newForgeAPICore(t, func(forgeAPICall) forgeAPIAnswer { return forgeAPIAnswer{Body: answer} })
@@ -431,9 +431,9 @@ func githubCommentsJSON(prefix string, from, n int, reply bool) []string {
 	for i := from; i < from+n; i++ {
 		replyTo := "null"
 		if reply {
-			replyTo = `{"id":"root","databaseId":1}`
+			replyTo = `{"id":"root","fullDatabaseId":"1"}`
 		}
-		out = append(out, fmt.Sprintf(`{"id":"%s%d","databaseId":%d,"author":{"login":"u"},"body":"b%d","createdAt":"2026-01-01T00:00:00Z","replyTo":%s,"isMinimized":false}`, prefix, i, i+1, i, replyTo))
+		out = append(out, fmt.Sprintf(`{"id":"%s%d","fullDatabaseId":"%d","author":{"login":"u"},"body":"b%d","createdAt":"2026-01-01T00:00:00Z","replyTo":%s,"isMinimized":false}`, prefix, i, i+1, i, replyTo))
 	}
 	return out
 }
