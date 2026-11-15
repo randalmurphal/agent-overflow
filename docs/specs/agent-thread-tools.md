@@ -591,12 +591,18 @@ that has already settled stops nothing, even when the turn that answered
 it is still running. By `label`: stops the
 caller's loop or watch with that label, and the run it has in flight.
 By `thread_id`:
-interrupts that thread's running turn when the caller spawned, sent
-to, or asked it (lineage from `thread_requests`, which is kept for
-every request the caller ever made to that thread, settled or not),
-on whichever computer it runs. Interrupt only, never a revert; a turn
-that some other request or the user started is never interrupted
-through a token. Refused for any other thread with the reason.
+a thread the caller spawned is brought to rest
+([at rest](standing-agents.md#at-rest)) on whichever computer it runs,
+with the caller's spawn wakes disarmed, and the effect is
+`thread_stopped`; a step that fails refuses the call with the failures
+while the other steps run. A thread the caller only sent to or asked has
+its running turn interrupted (lineage from `thread_requests`, which is
+kept for every request the caller ever made to that thread, settled or
+not). Never a revert; a turn that some other request or the user
+started is never interrupted through a token. Refused for any other
+thread with the reason. A destination that predates the rest interrupts
+the turn, and the caller keeps its spawn wakes armed; a caller that
+predates it reads `thread_stopped` as an interruption.
 Cancelling a request the caller made disarms its `notify`, because the
 report already says what happened, but only once the cancel has been
 accepted: a cancel that never reached the destination leaves the wake
@@ -882,9 +888,10 @@ The text, maintained beside the tool schemas in `internal/threadtools`:
 >
 > Stopping. `thread_cancel` with a `token` cancels that request: a
 > message still queued is removed, a turn it started is interrupted.
-> With a `thread_id` it interrupts a thread you spawned, sent to or
-> asked. With a `label` it stops your loop or watch. None of them
-> undoes anything.
+> With a `thread_id` it stops a thread you spawned, its session and
+> everything it was waiting on or had started, and interrupts the turn
+> of a thread you only sent to or asked. With a `label` it stops your
+> loop or watch. None of them undoes anything.
 >
 > Organizing. `thread_update` renames, archives, pins to the front or
 > back burner, groups or places threads, many at once; `thread_group`
@@ -1641,8 +1648,9 @@ collects that settlement like any other.
   transport's existing per-conversation MCP toggle. A thread answering
   another computer's request has the server on regardless. All tools
   inside scratch threads (Q28).
-- `thread_cancel` interrupts, never reverts, and is scoped to threads
-  the caller spawned, sent to, or asked (Q19).
+- `thread_cancel` never reverts and is scoped to threads the caller
+  spawned, sent to, or asked; a spawned thread is brought to rest, any
+  other is interrupted (Q19).
 - After the Codex comparison (2026-09-19): waits return on a target
   blocked by a person; `thread_status` waits on up to eight tokens;
   thread content is framed as data in every read tool and the footer

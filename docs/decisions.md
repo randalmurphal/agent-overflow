@@ -463,12 +463,15 @@ Mechanism in
 - In an assistant's thread, Stop is two actions: Interrupt (stop the
   turn, keep the session) and End Session (end the process and its
   background items); a workflow run's Pause keeps its members' sessions
-  and Pause and End Sessions ends them (ruling 2026-10-15,
+  and Pause and End Sessions ends them; the Agents row's Stop on a
+  spawned thread is a rest, not one of these (ruling 2026-10-15,
   [interrupt and end session](specs/standing-agents.md#interrupt-and-end-session)).
 - Requests to other threads and agent messages queued for a thread list
   in the activity rail's Agents segment, apart from Background, with a
-  user Stop that keeps the caller's wake armed and cascades into what a
-  spawned thread runs on any computer; settled ones page under Past;
+  user Stop that keeps the caller's wake armed and brings a spawned
+  thread to rest on any computer: its session and everything it waits on
+  or started end, and it stays where it was
+  ([at rest](specs/standing-agents.md#at-rest)); settled ones page under Past;
   incoming agent messages list there instead of the composer's queue
   (standing agents
   rulings 20 and 21,

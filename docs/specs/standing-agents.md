@@ -137,8 +137,9 @@ user changes it.
     computer, asks the user, and a prompt left open when its spawner is
     archived or deleted goes back to the user, whether or not the
     spawner had read it; one whose spawner was unarchived again before
-    that cleanup ran stays with it. A prompt's token answers only that
-    prompt; the worker asking again under the same provider id, in the
+    that cleanup ran stays with it. A prompt open when the worker's
+    session ends closes, and its wake leaves the spawner. A prompt's
+    token answers only that prompt; the worker asking again under the same provider id, in the
     same session or a later one, gets a new token. This supersedes the thread tools non-goal
     of not relaying approval requests, for spawned threads only.
 20. **Other threads' work is an Agents segment, not Background.** The
@@ -150,13 +151,12 @@ user changes it.
     Background row because it is a click target, then leaves for the
     segment's Past list, which pages every settled row. Stop
     cancels for the user with the caller's wake kept armed and worded as
-    the user's stop; for a thread the caller spawned it cascades into
-    that thread's background work, turn and own rows, on any computer,
-    with the wakes inside that lineage disarmed, and a send to someone
-    else's thread cancels only the request. An older paired computer
-    degrades to the request and the turn, said on the row and in the
-    toast. Background's Stop All and the thread's own Stop do not touch
-    the requests ([Agents segment](#agents-segment)).
+    the user's stop; a thread the caller spawned is brought to rest, on
+    any computer, with the wakes inside that lineage disarmed
+    ([At rest](#at-rest)), and a send to someone else's thread cancels
+    only the request. An older paired computer degrades to the request
+    and the turn, said on the row and in the toast. Background's Stop
+    All and the thread's own Stop do not touch the requests ([Agents segment](#agents-segment)).
 21. **Agent messages are not the user's.** A message another agent, a
     wake or a worker queued for a thread lists in its Agents segment as
     incoming until delivered, and its Stop withdraws it back to its owner
@@ -738,6 +738,59 @@ Ruling 36, as built:
   otherwise. A paired computer's `agent_rows` answer carries whether the
   spawn's thread there is not at rest, and the sweep keeps asking while
   it is (`thread_requests.nested_open`).
+
+### At rest
+
+A thread is at rest when it has no turn, no queued message, no open
+prompt, no background work, no armed loop, watch or reminder, and no
+open work below it. A Stop of a thread a thread spawned brings it to
+rest: the Agents row's Stop of a spawn and Stop All
+([Agents segment](#agents-segment)), and an agent's `thread_cancel` by
+thread id of a thread it spawned
+([agent-thread-tools.md](agent-thread-tools.md#thread_cancel-q19)). An
+archive and the Stop share the capture, the session teardown and the
+release (`app_thread_rest.go`); an archive then hides the thread and
+archives its owned workers ([Owned workers](#owned-workers)), and
+leaves the threads it does not own as they are. The Stop, on the
+computer that holds the thread:
+
+1. Fences the thread until the Stop ends: an app-written message for it
+   is refused (`the thread is being stopped`) and no session is started
+   for one, as for an archived thread. A person's message is taken.
+2. Under its action and mutation locks, ends its parked calls, disarms
+   the wakes of its requests, cancels its loops and watches with the
+   outcome `cancelled: the user stopped the thread` (an agent's stop:
+   `cancelled: thread "<title>" stopped the thread`) and dismisses the
+   remote completions its agent has not taken in, queued or not.
+3. Settles every open request on it, from any thread on any computer,
+   cancelled as the user's Stop (`The user stopped it from the Agents
+   tray; you did not cancel it.`) or the agent's: its message is taken
+   back, a turn it started is cut, and its sender is woken as it asked.
+   None is queued again.
+4. Under the action lock every send and start takes, cuts its turn with
+   the stop row (`Stopped by user`, or `Stopped by thread "<title>"`)
+   and ends its session as End Session does, a thread with no session
+   included: the provider process and everything it runs (background
+   shells, subagents, terminals and provider timers) end, its background
+   items read as ended, its open prompts close and their wakes routed to
+   its spawner are withdrawn, and the messages the person queued in its
+   composer are dropped with the queue. A loop or watch the turn
+   registered meanwhile is cancelled before the lock is released.
+5. Withdraws what the app queued for it and cancels its asks and the
+   commands it started on paired computers, as an archive does.
+6. Stops every request it made: a reminder is dropped, a send or ask is
+   cancelled with its wake disarmed and only the turn it started cut,
+   and a spawn's thread, in any placement and settled or not, is
+   brought to rest by this rule, here or through `agent_stop` on its
+   computer, to any depth the ledger holds, a cycle ended by the
+   threads already reached.
+7. Sends a prompt routed to it from a worker it left running to the
+   user.
+
+The thread is not archived, moved or regrouped and keeps its history; a
+later message from anyone starts a session that resumes it. A step that
+fails is named in the Stop's failures, and the others still run. A
+repeated Stop finds the thread at rest.
 
 ### Sidebar
 
@@ -1344,11 +1397,10 @@ closes up their spacing so the row holds at a phone width.
 - **Stop** (`StopThreadAgentRow`) cancels the request as `thread_cancel`
   does, with the caller's notify left armed: its agent is woken with the
   request cancelled by the user, not by itself. An agent's own
-  `thread_cancel` still disarms it. For a thread the caller spawned the
-  Stop cascades as a provider subagent's does: that thread's Backgrounded
-  items, its running turn, and its own Agents rows, down the lineage. A
-  request inside the lineage is cancelled with its wake disarmed: the
-  thread that made it was stopped too, and a wake would start it again.
+  `thread_cancel` still disarms it. A thread the caller spawned is
+  brought to rest ([At rest](#at-rest)), down the lineage. A request
+  inside the lineage is cancelled with its wake disarmed: the thread
+  that made it was stopped too, and a wake would start it again.
   A Stop of a row on this computer works from the ledger, without reading
   the listing. A send to a thread the caller does not own cancels only the
   request. A settled row reports it had already finished. Each layer's
@@ -1357,8 +1409,9 @@ closes up their spacing so the row holds at a phone width.
   (`StopThreadAgentRows`) does the same for every row the ledger held
   when it was pressed, past the listing's 128 rows too, less a send or
   ask already settled, and withdraws the incoming messages listed then;
-  a cascade reads a spawned thread's rows the same way when it reaches
-  it. A request made after that read is not stopped. The Stops of rows
+  a rest reads every request a spawned thread made, every spawn of it
+  settled or not, once its session has ended. A request made after that
+  read is not stopped. The Stops of rows
   here start at once, beside those that wait on a paired computer.
   Background's `Stop All` and Stop background work leave Agents rows
   alone. The thread's own Interrupt leaves its requests and its queue,
@@ -1367,8 +1420,8 @@ closes up their spacing so the row holds at a phone width.
 - **Other computers.** A spawn on a paired computer lists and stops as a
   local one: the forwarded `agent_rows` and `agent_stop` calls
   ([reaching another computer](agent-thread-tools.md#reaching-another-computer)) nest that
-  thread's rows under the spawn, named by their computer, and run the
-  cascade there. A read never waits on another computer: it nests the
+  thread's rows under the spawn, named by their computer, and bring it
+  to rest there. A read never waits on another computer: it nests the
   last answer for each remote spawn and asks again in the background, and
   an answer that changes the rows sends a `thread:agent_rows_changed`
   frame. The asking is bounded: at most 256 spawns wait to be asked, each
@@ -1389,7 +1442,9 @@ closes up their spacing so the row holds at a phone width.
   (`<computer> did not answer; its agents are not shown`). A computer
   that predates the calls has the request cancelled and the turn
   interrupted, and the row and the Stop's toast say its own work was not
-  shown or stopped.
+  shown or stopped. One that answers `agent_stop` but predates the rest
+  stops the thread's Backgrounded items, its turn and its own rows, and
+  leaves its session up.
 - **Live updates.** The backend sends `thread:agent_rows_changed` after
   every change to a request, to the target a running request works in,
   to a wait parked on one, and to a worker not at rest, through its spawn
@@ -1510,8 +1565,8 @@ Clicking another row swaps the thread in the same pane; a source pane
 has at most one. A companion that fails to open its first thread closes
 with a toast. The pane is an ordinary thread view of that thread: its
 own timeline, its own composer and its own Stop, which interrupts only
-that thread, while the row's Stop keeps its cascade. Its header shows
-the thread's title, or the assistant's name with the clash suffix for an
+that thread, while the row's Stop brings a spawned thread to rest. Its
+header shows the thread's title, or the assistant's name with the clash suffix for an
 assistant's thread, and an Open as Pane action that turns it into a
 normal pane in the same slot, which keeps it. It lasts the session: it
 is stashed and reopened with its source thread like a side chat
@@ -1542,7 +1597,8 @@ session live or starting (`provider:session_live`, capability
 Session stays enabled. A workflow run's Pause is Interrupt for its
 members (it keeps their sessions, as it did); Pause and End Sessions
 also ends the session of every member it paused, and Resume starts them
-again on the same provider threads. The Agents row's Stop is unchanged.
+again on the same provider threads. The Agents row's Stop on a spawned
+thread brings it to rest ([At rest](#at-rest)), which ends its session.
 
 ### Workflows to MCP
 
@@ -1635,7 +1691,7 @@ ticket keys.
 | 7 | Workflows to MCP | 5 | No workflow verb in `aocli`; every workflow e2e spec passes through the MCP tool; starters and docs name the tool | Workflow e2e suite run; a screenshot of a run started and watched from a thread through the tool. No mock speaks claude-tui, so the claude-tui leg is proven at the argv level and at the app level through the real threadmcp transport, and the only unproven step is the real Claude TUI binary reading --mcp-config and --allowedTools, which the manual provider smoke covers. |
 | 8 | MR lead migration | 2, 3b, 5, 6, 14 | An assistant created for the lead read the old lead thread with `thread_show`, keeps the lead's notes in its home, set its own loop and watches, and ran a week | The user |
 | 9 | Agent home contents | 5, 6 | A standing agent's sessions on Claude, claude-tui and Codex carry the same block whatever the home files hold; footers and wakes name a standing agent with its role line and tell a worker its questions go to its agent; `home_files` attaches files on spawn and send and is refused for a non-agent, an escaping path, a missing file and a total past 32 KiB; thread rows carry `standing_agent` and `spawned_by`. Home file delivery moved to slice 15 | `standing-agent-home-contents.spec.ts` on both mock providers (the session block, a worker's first message carrying `home_files`, the footer role line between an agent and an ordinary thread); app tests reading the claude-tui argv and append file, since no mock speaks claude-tui |
-| 10 | Agents segment | 3b, 9 | The Agents segment lists a thread's spawns and owed sends and asks with title, provider, state, elapsed and what blocks them, nested by spawn to four levels and across paired computers; settled rows linger 8 s and leave for Past, which counts them and pages them 8 and then 20 at a time, a click opens the target or the answer, Open in Agent Pane opens any row's thread beside and Show in Sidebar gives an owned worker its row; Stop cancels the request for the user with the caller's wake armed and cascades into a spawned thread's background work, turn and own rows, here or on a paired computer, and Stop All does the same; incoming agent messages list until delivered and withdraw; Background's Stop All and the thread's own Stop leave the rows; the segment fits every rail density | `agents-tray.spec.ts`, `agents-tray-past.spec.ts` and `compact-agents-tray.spec.ts` on both mock providers (Past, its paging and an ask in it, Open in Agent Pane on a past and an archived worker, Show in Sidebar, a worker's prompt routed to an ordinary spawner, rows, nesting, a blocked approval, settle and linger, click, per-row Stop cascade with the caller's user-cancelled wake and the nested wakes disarmed, Stop All, Background's Stop All and the thread's own Stop leaving the rows); the cascade across computers in `thread-tools-paired.spec.ts`; screenshots of running, blocked, nested and settled rows and the digest, desktop and compact |
+| 10 | Agents segment | 3b, 9 | The Agents segment lists a thread's spawns and owed sends and asks with title, provider, state, elapsed and what blocks them, nested by spawn to four levels and across paired computers; settled rows linger 8 s and leave for Past, which counts them and pages them 8 and then 20 at a time, a click opens the target or the answer, Open in Agent Pane opens any row's thread beside and Show in Sidebar gives an owned worker its row; Stop cancels the request for the user with the caller's wake armed and brings a spawned thread to rest, here or on a paired computer, and Stop All does the same; incoming agent messages list until delivered and withdraw; Background's Stop All and the thread's own Stop leave the rows; the segment fits every rail density | `agents-tray.spec.ts`, `agents-tray-past.spec.ts` and `compact-agents-tray.spec.ts` on both mock providers (Past, its paging and an ask in it, Open in Agent Pane on a past and an archived worker, Show in Sidebar, a worker's prompt routed to an ordinary spawner, rows, nesting, a blocked approval, settle and linger, click, per-row Stop cascade with the caller's user-cancelled wake and the nested wakes disarmed, Stop All, Background's Stop All and the thread's own Stop leaving the rows); the cascade across computers in `thread-tools-paired.spec.ts`; screenshots of running, blocked, nested and settled rows and the digest, desktop and compact |
 | 14 | Assistant identity and creation | 9, 10, 13 | Standing agents are records (`agents`, `agent_past_threads`, v151); promotion and demotion are gone from the app, the bindings and the docs; New Assistant (desktop and compact, sidebar and project menu) creates the record, the home and a thread whose app-written opening starts the role discussion; the name is the title, unique per computer, a clash across paired computers shows `<name>-<computer>`; New Thread, Same Assistant moves loops, watches, reminders, requests and workers to the successor and opens it with the handoff block; app-written messages to a past thread reach the current one; `thread_search` `agents` and name addressing; `thread_new_assistant` for assistants only; Agents rows open in the `agent-thread` companion pane; Interrupt and End Session are separate for assistant threads and workflow pauses | `assistant-creation.spec.ts`, `assistant-handoff.spec.ts`, `assistant-companion.spec.ts` and their compact twins on both mock providers; the name clash and name addressing in `thread-tools-paired.spec.ts`; `thread_new_assistant` in `thread-tools.spec.ts`; regression on the standing-agent, agents-tray, thread-tools and upgrade-corpus specs; screenshots of the dialog, the opening discussion, the handoff, the companion pane and the Stop menu, desktop and compact |
 | 15 | Memory and assistants above projects | 9, 14 | No built-in skills or Skills page; memory scopes, facts, the built index, a whole delivery per start and compaction with the write rules, what changed at each prompt, nothing cut past the size limit, and maintenance warnings for assistants only ([memory](memory.md)); shared memory and the provider memory settings on Claude, claude-tui and Codex; assistants with projects and no project of their own, running in their home, helpers under the assistant and project work under its row in the project, delete and project removal as ruled (rulings 37 to 40); the Assistants and Projects sidebar sections | Unit tests named in [memory](memory.md#verification); `standing-agent-home-contents.spec.ts`, the standing-agent sidebar and spawn-placement specs and the assistant specs on both mock providers, desktop and compact; screenshots of the Assistants section, an assistant's row in a project and the Projects checklist |
 
