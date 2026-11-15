@@ -1001,14 +1001,17 @@ timeline, until its confirmation proves consumption
 (`docs/architecture/user-message-ordering.md` § Confirmation). The review
 comments a queued message carries are delivered by that confirmation, not
 by the quiet row. A restore that takes the message back returns them to
-drafts with its row (`RetireUndeliveredUserRow`) and gives the composer
-the text before them (`usermessage.Meta.TextBeforeReviewComments`), never
-both. A requeue rebuilt from the row sends the row's summary as it is,
-since it renders what only the first dispatch had (a PR's hunk excerpts,
-every joined member's comments of every source), and claims again the
-comments the row's retire returned, with the bodies the summary renders: a
-comment edited meanwhile stays a draft. A stale row the restore could not
-delete is retired by the resend, which claims what it returns.
+drafts with its row and gives the composer the text before them
+(`usermessage.Meta.TextBeforeReviewComments`), never both, in the one
+transaction that writes the composer and removes the row
+(`RestoreFlushQueueToDraft`): a failure or crash leaves the message where it
+was, never in the composer and its row at once, or in neither. A restore
+whose write fails requeues the message naming its row. The resend retires
+that row and sends the row's summary as it is, since it renders what only
+the first dispatch had (a PR's hunk excerpts, every joined member's
+comments of every source), and claims again the comments the retire
+returned, with the bodies the summary renders: a comment edited meanwhile
+stays a draft.
 
 **The frontend mirror** (`frontend/src/lib/stores/sendQueue.svelte.ts`) has
 two zones, both per-thread and both surviving thread switches:

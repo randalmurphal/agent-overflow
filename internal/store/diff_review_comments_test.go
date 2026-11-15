@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -123,6 +124,7 @@ func TestNormalizeDiffReviewScopeAcceptsLocalScopes(t *testing.T) {
 		{"workspace", string(DiffReviewScopeWorkspace)},
 		{"branch", string(DiffReviewScopeBranch)},
 		{"pr", string(DiffReviewScopePR)},
+		{"edits", string(DiffReviewScopeEdits)},
 		{" branch ", string(DiffReviewScopeBranch)},
 	}
 	for _, tt := range tests {
@@ -147,13 +149,7 @@ func TestDiffReviewCommentsAcceptAllLocalScopes(t *testing.T) {
 		t.Fatalf("CreateThread: %v", err)
 	}
 
-	for _, scope := range []DiffReviewScope{
-		DiffReviewScopeTurn,
-		DiffReviewScopeSession,
-		DiffReviewScopeWorkspace,
-		DiffReviewScopeBranch,
-		DiffReviewScopePR,
-	} {
+	for _, scope := range diffReviewScopes {
 		t.Run(string(scope), func(t *testing.T) {
 			created, err := s.CreateDiffReviewComment(DiffReviewComment{
 				ID:        "comment-" + string(scope),
@@ -174,6 +170,32 @@ func TestDiffReviewCommentsAcceptAllLocalScopes(t *testing.T) {
 				t.Fatalf("created.Scope = %q, want %q", created.Scope, scope)
 			}
 		})
+	}
+}
+
+// The table's scope CHECK admits exactly the scopes the validator accepts
+// (diffReviewScopes), so neither refuses a scope the other passes.
+func TestDiffReviewScopeValidatorMatchesTableCheck(t *testing.T) {
+	s := newTestStore(t)
+	var table string
+	if err := s.db.QueryRow(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'diff_review_comments'`).Scan(&table); err != nil {
+		t.Fatal(err)
+	}
+	check := regexp.MustCompile(`\bscope\s+TEXT\s+NOT NULL\s+CHECK\s*\(\s*scope\s+IN\s*\(([^)]*)\)\s*\)`).FindStringSubmatch(table)
+	if check == nil {
+		t.Fatalf("diff_review_comments has no scope CHECK:\n%s", table)
+	}
+	var admitted, accepted []string
+	for _, value := range strings.Split(check[1], ",") {
+		admitted = append(admitted, strings.Trim(strings.TrimSpace(value), "'"))
+	}
+	for _, scope := range diffReviewScopes {
+		accepted = append(accepted, string(scope))
+	}
+	sort.Strings(admitted)
+	sort.Strings(accepted)
+	if !reflect.DeepEqual(admitted, accepted) {
+		t.Fatalf("the scope CHECK admits %v; NormalizeDiffReviewScope accepts %v", admitted, accepted)
 	}
 }
 
