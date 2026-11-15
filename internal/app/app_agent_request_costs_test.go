@@ -37,15 +37,19 @@ func TestALocalSendAndItsSettlementTakeOneTransactionEach(t *testing.T) {
 	h := newHeldRequestTarget(t, f)
 
 	// A turn end with no request on it, for the settlement's measure.
-	// Each measured turn end starts with its text written and the Agents
-	// rows' drain idle: the stream buffers flush on a timer, and the drain
-	// reassesses the thread's rest off the emit path, and either landing
-	// inside one window and not the other would count as the settlement's.
+	// Each measured turn end starts with its text written and what the send
+	// queued reported: the stream buffers flush on a timer, and the
+	// sends-pending observer reports the target's queue change on its own
+	// goroutine, whose Agents rows drain then looks up the target's spawn
+	// link and frames its row. Either landing inside one window and not the
+	// other would count as the settlement's. The observer goes first: it is
+	// what queues the drain.
 	flushText := func() {
 		t.Helper()
 		if err := f.app.triage.FlushThread(h.thread.ID); err != nil {
 			t.Fatal(err)
 		}
+		f.app.sendsPending.wg.Wait()
 		f.app.threadRequestsWG.Wait()
 	}
 	h.text(t, "a-plain", "warming up")
