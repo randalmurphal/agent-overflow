@@ -17,12 +17,12 @@ type Outcome = procutil.GroupOutcome
 type Run func(context.Context, string, []string, io.Writer) (Outcome, error)
 
 // ProcessRunner runs each command through procutil.RunGroup, which owns the
-// process group and the output pipe. Environment belongs to the destination; a
-// requesting frontend or agent never supplies credentials or environment
-// overrides.
-func ProcessRunner(environment func() []string) Run {
+// process group and the output pipe, with reaper ending the group should the
+// destination die. Environment belongs to the destination; a requesting
+// frontend or agent never supplies credentials or environment overrides.
+func ProcessRunner(reaper procutil.Reaper, environment func() []string) Run {
 	return func(ctx context.Context, cwd string, argv []string, output io.Writer) (Outcome, error) {
-		outcome, err := procutil.RunGroup(ctx, procutil.GroupCommand{
+		outcome, err := procutil.RunGroup(ctx, reaper, procutil.GroupCommand{
 			Dir: cwd, Env: environment(), Argv: argv, Output: output,
 		})
 		return outcome, errors.Join(err, outcome.PipeErr)

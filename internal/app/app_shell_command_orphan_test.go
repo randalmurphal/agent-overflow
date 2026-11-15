@@ -10,7 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -20,12 +20,12 @@ import (
 	"agent-overflow/internal/procutil"
 
 	"github.com/google/uuid"
+	"github.com/shirou/gopsutil/v4/process"
 )
 
-// A composer shell command ends with the backend, by the rule provider
-// processes follow: on Linux its leader gets SIGTERM when the backend dies,
-// and on macOS its group is recorded for the orphan reaper, whose sidecar
-// kills it when the backend dies and whose registry the next launch sweeps.
+// A composer shell command ends with the backend: its group is recorded for
+// the orphan reaper, whose sidecar kills the group when the backend dies and
+// whose registry the next launch sweeps.
 
 // waitShellOutput waits for the thread's running command to print marker.
 func waitShellOutput(t *testing.T, app *App, threadID, marker string) {
@@ -90,7 +90,7 @@ func TestAShellCommandIsRecordedForTheOrphanReaperWhileItRuns(t *testing.T) {
 		if stop {
 			waitShellOutput(t, app, thread.ID, "started")
 			record := waitOrphanRecord(t, registry)
-			if record.UUID != runID || record.PGID != record.PID || !groupRunning(record.PGID) {
+			if record.Owner != "shell command" || record.PGID != record.PID || record.ParentPID != os.Getpid() || !groupRunning(record.PGID) {
 				t.Fatalf("record %+v, want the running group of run %s", record, runID)
 			}
 			if record.CreateUnix == 0 || record.CreateUnix != orphanreaper.CaptureCreateUnix(record.PID) {
@@ -108,21 +108,25 @@ func TestAShellCommandIsRecordedForTheOrphanReaperWhileItRuns(t *testing.T) {
 }
 
 // The environment that makes TestShellCommandBackendHelper the backend that
-// dies: the registry it records into and the command it runs.
+// dies: the data directory its orphan reaper keeps the registry in, and the
+// command it runs, which prints "started".
 const (
-	shellBackendRegistryEnv = "SHELL_ORPHAN_TEST_REGISTRY"
-	shellBackendCommandEnv  = "SHELL_ORPHAN_TEST_COMMAND"
+	shellBackendDataEnv    = "SHELL_ORPHAN_TEST_DATA"
+	shellBackendCommandEnv = "SHELL_ORPHAN_TEST_COMMAND"
 )
 
 // TestShellCommandBackendHelper is not a test of its own: the test below runs
-// this binary as a backend that starts a command and is then killed.
+// this binary as a backend that starts a command and is then killed. It
+// starts the orphan reaper as Startup does.
 func TestShellCommandBackendHelper(t *testing.T) {
-	registryPath := os.Getenv(shellBackendRegistryEnv)
-	if registryPath == "" {
+	dataDir := os.Getenv(shellBackendDataEnv)
+	if dataDir == "" {
 		t.Skip("runs only as the backend TestABackendsDeathEndsItsShellCommand kills")
 	}
 	app, _ := newShellCommandApp(t)
-	app.orphanRegistry = orphanreaper.NewRegistry(registryPath)
+	if err := app.startOrphanReaper(dataDir); err != nil {
+		t.Fatal(err)
+	}
 	thread, _ := newMixedTurnThread(t, app, "thread-shell-dying-backend")
 	if _, err := app.RunThreadShellCommand(context.Background(), thread.ID, ShellCommandRequest{
 		RunID: uuid.NewString(), Command: os.Getenv(shellBackendCommandEnv),
@@ -130,48 +134,58 @@ func TestShellCommandBackendHelper(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitShellOutput(t, app, thread.ID, "started")
-	waitOrphanRecord(t, app.orphanRegistry)
-	fmt.Println("ready")
+	// The sidecar is told of the group before the record is written.
+	record := waitOrphanRecord(t, app.orphanRegistry)
+	fmt.Printf("ready %d\n", record.PGID)
 	select {}
 }
 
-// orphanedProcInfo is the production process table, with the parent of a
-// process whose backend is gone read as init. macOS reparents an orphan to
-// launchd, which the sweep checks for; Linux reparents it to the nearest
-// subreaper, which the test cannot predict.
-type orphanedProcInfo struct {
-	orphanreaper.ProcInfo
-	deadBackend int
-}
-
-func (info orphanedProcInfo) PPID(pid int) (int, bool) {
-	ppid, ok := info.ProcInfo.PPID(pid)
-	if ok && ppid != info.deadBackend {
-		return 1, true
+// sidecarOf returns the orphan reaper sidecar the backend started.
+func sidecarOf(t *testing.T, backend int) int {
+	t.Helper()
+	parent, err := process.NewProcess(int32(backend))
+	if err != nil {
+		t.Fatal(err)
 	}
-	return ppid, ok
+	children, err := parent.Children()
+	if err != nil {
+		t.Fatalf("list the backend's children: %v", err)
+	}
+	for _, child := range children {
+		if args, err := child.CmdlineSlice(); err == nil && len(args) > 1 && args[1] == orphanreaper.Subcommand() {
+			// A signal to the backend's group must not end the sidecar.
+			if pgid, err := syscall.Getpgid(int(child.Pid)); err != nil || pgid != int(child.Pid) {
+				t.Fatalf("the sidecar is in group %d %v, want its own", pgid, err)
+			}
+			return int(child.Pid)
+		}
+	}
+	t.Fatal("the backend started no orphan reaper sidecar")
+	return 0
 }
 
 // A backend killed while its command runs leaves the command no way to be
-// stopped from inside. On Linux the command's leader ends with the backend.
-// A group whose leader survives that, as every group does on macOS, is
-// reaped by the next boot's sweep from the record the backend left.
+// stopped from inside. Every process of the command's group ends with the
+// backend, including one its shell started: a signal to the shell alone
+// would leave `sleep` running. A group whose sidecar died with the backend is
+// reaped by the next boot's sweep from the record the backend left, under
+// whatever process the orphan was reparented to.
 func TestABackendsDeathEndsItsShellCommand(t *testing.T) {
 	for _, c := range []struct {
-		name    string
-		command string
-		// endsWithBackend: the leader takes the parent-death signal.
-		endsWithBackend bool
+		name        string
+		command     string
+		sidecarDies bool
 	}{
-		{"leader ends with the backend", "echo started; exec sleep 600", runtime.GOOS == "linux"},
-		{"next boot reaps the group", "trap '' TERM; echo started; sleep 600", false},
+		{"the whole group ends with the backend", `echo started; sleep 600; echo after`, false},
+		{"a group that ignores SIGTERM ends with the backend", `trap '' TERM; echo started; sleep 600; echo after`, false},
+		{"the next boot reaps the group", `echo started; sleep 600; echo after`, true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			registryPath := filepath.Join(t.TempDir(), "orphan-registry.json")
+			dataDir := t.TempDir()
 			backend := exec.Command(os.Args[0], "-test.run=^TestShellCommandBackendHelper$")
 			// The backend's temporary files land where this test removes them.
 			backend.Env = append(os.Environ(),
-				shellBackendRegistryEnv+"="+registryPath, shellBackendCommandEnv+"="+c.command,
+				shellBackendDataEnv+"="+dataDir, shellBackendCommandEnv+"="+c.command,
 				"TMPDIR="+t.TempDir())
 			stdout, err := backend.StdoutPipe()
 			if err != nil {
@@ -180,55 +194,50 @@ func TestABackendsDeathEndsItsShellCommand(t *testing.T) {
 			if err := backend.Start(); err != nil {
 				t.Fatal(err)
 			}
-			ready := false
+			pgid := 0
 			scanner := bufio.NewScanner(stdout)
-			for !ready && scanner.Scan() {
-				ready = scanner.Text() == "ready"
+			for pgid == 0 && scanner.Scan() {
+				if rest, ok := strings.CutPrefix(scanner.Text(), "ready "); ok {
+					pgid, _ = strconv.Atoi(rest)
+				}
 			}
-			if !ready {
+			if pgid == 0 {
 				_ = backend.Process.Kill()
 				_ = backend.Wait()
 				t.Fatalf("the backend never started its command: %v", scanner.Err())
 			}
-			registry := orphanreaper.NewRegistry(registryPath)
-			records, err := registry.Load()
-			if err != nil || len(records) != 1 {
-				_ = backend.Process.Kill()
-				t.Fatalf("the backend recorded %+v %v, want its command's group", records, err)
-			}
-			pgid := records[0].PGID
 			t.Cleanup(func() { _ = procutil.SignalGroup(pgid, syscall.SIGKILL) })
+			if c.sidecarDies {
+				sidecar := sidecarOf(t, backend.Process.Pid)
+				if err := syscall.Kill(sidecar, syscall.SIGKILL); err != nil {
+					t.Fatal(err)
+				}
+			}
 			if err := backend.Process.Kill(); err != nil {
 				t.Fatal(err)
 			}
 			_ = backend.Wait()
 
-			if c.endsWithBackend {
-				deadline := time.Now().Add(10 * time.Second)
-				for groupRunning(pgid) && time.Now().Before(deadline) {
-					time.Sleep(20 * time.Millisecond)
+			registry := orphanreaper.NewRegistry(filepath.Join(dataDir, "orphan-registry.json"))
+			if c.sidecarDies {
+				if !groupRunning(pgid) {
+					t.Fatal("the group ended with the backend; this case needs one that survives it")
 				}
-				if groupRunning(pgid) {
-					t.Fatal("the command outlived the backend")
+				if err := orphanreaper.Sweep(registry, orphanreaper.GopsutilProcInfo(), 100*time.Millisecond); err != nil {
+					t.Fatal(err)
 				}
-				return
-			}
-			if !groupRunning(pgid) {
-				t.Fatal("the group ended with the backend; this case needs one that survives it")
-			}
-			info := orphanedProcInfo{ProcInfo: orphanreaper.GopsutilProcInfo(), deadBackend: backend.Process.Pid}
-			if err := orphanreaper.Sweep(registry, info, 100*time.Millisecond); err != nil {
-				t.Fatal(err)
 			}
 			deadline := time.Now().Add(10 * time.Second)
 			for groupRunning(pgid) && time.Now().Before(deadline) {
 				time.Sleep(20 * time.Millisecond)
 			}
 			if groupRunning(pgid) {
-				t.Fatal("the sweep left the command's group running")
+				t.Fatal("the command's group outlived the backend")
 			}
-			if records, err := registry.Load(); err != nil || len(records) != 0 {
-				t.Fatalf("the sweep left %+v %v in the registry", records, err)
+			if c.sidecarDies {
+				if records, err := registry.Load(); err != nil || len(records) != 0 {
+					t.Fatalf("the sweep left %+v %v in the registry", records, err)
+				}
 			}
 		})
 	}

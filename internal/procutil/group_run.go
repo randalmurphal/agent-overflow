@@ -40,15 +40,6 @@ type GroupCommand struct {
 	// Terminal, when set, is the command's controlling terminal. Stdin and
 	// Output are unchanged. The caller closes it after Wait returns.
 	Terminal *Terminal
-	// EndWithParent ends the command when this process dies without
-	// stopping it, the way a provider process ends: on Linux the kernel
-	// sends its leader SIGTERM (Pdeathsig). Other platforms have no such
-	// signal, and the caller records the group for the app's orphan reaper
-	// from Started.
-	EndWithParent bool
-	// Started, when set, receives the command's pid, which is also its
-	// process group id, once the command runs and before StartGroup returns.
-	Started func(pid int)
 	// kill replaces KillConfiguredGroup in a test that needs a group no
 	// signal ends.
 	kill func(*exec.Cmd) error
@@ -90,6 +81,21 @@ func (o GroupOutcome) OutputErr() error {
 	return o.PipeErr
 }
 
+// Reaper ends the process groups it watches when this process dies without
+// stopping them: the app's orphan reaper. A signal to the leader alone, such
+// as Linux's parent-death signal, would leave running what a shell started.
+// StartGroup has it watch every group, by the leader's pid, before StartGroup
+// returns, and Wait releases the group once it has ended or only leftovers
+// KeepLeftovers keeps remain. A group the kill could not end stays watched.
+type Reaper interface {
+	Watch(pgid int)
+	Release(pgid int)
+}
+
+// ErrNoReaper is StartGroup's error for a command given no Reaper: no group
+// starts without one to end it with this process.
+var ErrNoReaper = errors.New("procutil: run group: no reaper watches the group")
+
 // ErrGroupSurvived is returned when cancellation could not end the command:
 // its leader ignored SIGKILL, which means it runs as another user (sudo).
 // The command is abandoned still running, with its output pipe closed.
@@ -100,6 +106,7 @@ var ErrGroupSurvived = errors.New("procutil: the command could not be stopped an
 type Group struct {
 	ctx           context.Context
 	cmd           *exec.Cmd
+	reaper        Reaper
 	grace         time.Duration
 	keepLeftovers bool
 	kill          func(*exec.Cmd) error
@@ -116,14 +123,18 @@ type Group struct {
 	err     error
 }
 
-// StartGroup starts a command as the leader of its own process group and
-// returns once it runs. A ctx that is already done starts nothing and its
-// error is returned; otherwise the error is the start failure.
+// StartGroup starts a command as the leader of its own process group,
+// watched by reaper, and returns once it runs. A ctx that is already done
+// starts nothing and its error is returned; otherwise the error is the start
+// failure.
 //
 // The output pipe belongs to the Group, not to os/exec: a child the command
 // left behind keeps writing into Output, which is drained from the moment the
 // command starts.
-func StartGroup(ctx context.Context, command GroupCommand) (*Group, error) {
+func StartGroup(ctx context.Context, reaper Reaper, command GroupCommand) (*Group, error) {
+	if reaper == nil {
+		return nil, ErrNoReaper
+	}
 	if len(command.Argv) == 0 {
 		return nil, errors.New("procutil: run group: empty argv")
 	}
@@ -131,7 +142,7 @@ func StartGroup(ctx context.Context, command GroupCommand) (*Group, error) {
 		return nil, err
 	}
 	group := &Group{
-		ctx: ctx, grace: command.TerminateGrace, keepLeftovers: command.KeepLeftovers,
+		ctx: ctx, reaper: reaper, grace: command.TerminateGrace, keepLeftovers: command.KeepLeftovers,
 		kill: command.kill, drained: make(chan struct{}),
 	}
 	if group.grace <= 0 {
@@ -157,9 +168,6 @@ func StartGroup(ctx context.Context, command GroupCommand) (*Group, error) {
 	if command.Terminal != nil {
 		command.Terminal.attach(cmd)
 	}
-	if command.EndWithParent {
-		endWithParent(cmd)
-	}
 	reader, writer, err := os.Pipe()
 	if err != nil {
 		return nil, err
@@ -181,9 +189,7 @@ func StartGroup(ctx context.Context, command GroupCommand) (*Group, error) {
 			_, _ = io.Copy(io.Discard, reader)
 		}
 	}()
-	if command.Started != nil {
-		command.Started(cmd.Process.Pid)
-	}
+	reaper.Watch(cmd.Process.Pid)
 	return group, nil
 }
 
@@ -215,8 +221,12 @@ func (g *Group) supervise() (GroupOutcome, error) {
 		}
 	}
 	leftovers := ConfiguredGroupAlive(g.cmd)
+	ending := true
 	if leftovers && !g.keepLeftovers {
-		stopGroup(g.cmd, g.grace, g.kill)
+		ending = stopGroup(g.cmd, g.grace, g.kill)
+	}
+	if ending {
+		g.reaper.Release(g.cmd.Process.Pid)
 	}
 	held := false
 	select {
@@ -243,21 +253,22 @@ func (g *Group) settle() error {
 
 // RunGroup starts a command with StartGroup and waits for it. ExitCode is -1
 // when the command did not start.
-func RunGroup(ctx context.Context, command GroupCommand) (GroupOutcome, error) {
-	group, err := StartGroup(ctx, command)
+func RunGroup(ctx context.Context, reaper Reaper, command GroupCommand) (GroupOutcome, error) {
+	group, err := StartGroup(ctx, reaper, command)
 	if err != nil {
 		return GroupOutcome{ExitCode: -1}, err
 	}
 	return group.Wait()
 }
 
-// stopGroup terminates the group politely, then kills whatever ignored it.
+// stopGroup terminates the group politely, then kills whatever ignored it,
+// and reports whether the group is ending: it was gone, or took SIGKILL.
 // The grace runs on group emptiness, not on the leader: a shell wrapper
 // exits at once on SIGTERM while the server it started still needs its
 // moment to shut down.
-func stopGroup(cmd *exec.Cmd, grace time.Duration, kill func(*exec.Cmd) error) {
+func stopGroup(cmd *exec.Cmd, grace time.Duration, kill func(*exec.Cmd) error) bool {
 	if err := TerminateConfiguredGroup(cmd); errors.Is(err, os.ErrProcessDone) {
-		return
+		return true
 	}
 	deadline := time.NewTimer(grace)
 	defer deadline.Stop()
@@ -266,13 +277,13 @@ func stopGroup(cmd *exec.Cmd, grace time.Duration, kill func(*exec.Cmd) error) {
 	for {
 		select {
 		case <-deadline.C:
-			// A refused kill shows as a group that is still alive, which
-			// every caller checks next.
-			_ = kill(cmd)
-			return
+			// On cancellation a refused kill also shows as a leader that
+			// does not exit, which Wait reports as ErrGroupSurvived.
+			err := kill(cmd)
+			return err == nil || errors.Is(err, os.ErrProcessDone)
 		case <-poll.C:
 			if !ConfiguredGroupAlive(cmd) {
-				return
+				return true
 			}
 		}
 	}

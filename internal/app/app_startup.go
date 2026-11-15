@@ -111,9 +111,9 @@ func (a *App) Start(ctx context.Context) (startErr error) {
 	endPhase = a.bootPhase("app.start_background_work", "Starting background work")
 	defer endPhase()
 
-	// Guard against provider subprocesses outliving an ungraceful app
-	// death (macOS only — Linux has Pdeathsig, Windows a Job Object).
-	// Runs after subsystems so the data dir is ready; before the probe
+	// Guard against the process groups the app starts outliving an
+	// ungraceful app death (every platform but Windows, whose backend runs
+	// in WSL). Runs after subsystems so the data dir is ready; before the probe
 	// goroutines and any session RPC so the startup sweep can't race a
 	// fresh registry Add. See app_orphan_reaper.go.
 	if err := a.startOrphanReaper(dbDir); err != nil {

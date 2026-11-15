@@ -101,7 +101,7 @@ func TestRunObservedReportsEveryStepInOrder(t *testing.T) {
 		t.Fatal(err)
 	}
 	observer := newRecordingObserver()
-	err := RunObserved(context.Background(), project, worktree, Config{
+	err := RunObserved(context.Background(), nopReaper{}, project, worktree, Config{
 		Copy:    []string{".env"},
 		Run:     [][]string{{"/bin/sh", "-c", "echo first"}, {"/bin/sh", "-c", "echo second >&2"}},
 		Timeout: "30s",
@@ -134,7 +134,7 @@ func TestRunObservedReportsEveryStepInOrder(t *testing.T) {
 // the panel highlights the failed step by index either way.
 func TestRunObservedReportsCopyFailureAsStepZero(t *testing.T) {
 	observer := newRecordingObserver()
-	err := RunObserved(context.Background(), t.TempDir(), t.TempDir(), Config{
+	err := RunObserved(context.Background(), nopReaper{}, t.TempDir(), t.TempDir(), Config{
 		Copy: []string{"missing-everywhere"},
 		Run:  [][]string{{"/bin/sh", "-c", "true"}},
 	}, observer)
@@ -149,7 +149,7 @@ func TestRunObservedReportsCopyFailureAsStepZero(t *testing.T) {
 
 func TestRunObservedStopsAtTheFirstFailedCommand(t *testing.T) {
 	observer := newRecordingObserver()
-	err := RunObserved(context.Background(), t.TempDir(), t.TempDir(), Config{
+	err := RunObserved(context.Background(), nopReaper{}, t.TempDir(), t.TempDir(), Config{
 		Run: [][]string{
 			{"/bin/sh", "-c", "echo boom >&2; exit 2"},
 			{"/bin/sh", "-c", "echo unreachable"},
@@ -168,7 +168,7 @@ func TestRunObservedStopsAtTheFirstFailedCommand(t *testing.T) {
 // observer is a SECOND writer, not a replacement for the buffer the message
 // reads.
 func TestRunObservedKeepsTheFailureTail(t *testing.T) {
-	err := RunObserved(context.Background(), t.TempDir(), t.TempDir(), Config{
+	err := RunObserved(context.Background(), nopReaper{}, t.TempDir(), t.TempDir(), Config{
 		Run: [][]string{{"/bin/sh", "-c", "echo diagnosis >&2; exit 3"}},
 	}, newRecordingObserver())
 	if err == nil || !strings.Contains(err.Error(), "diagnosis") {
@@ -180,7 +180,7 @@ func TestRunObservedKeepsTheFailureTail(t *testing.T) {
 // the pre-observer ordering, pinned because the workflow caller depends on it.
 func TestRunObservedRefusesAnUnparseableTimeoutWithoutCommands(t *testing.T) {
 	observer := newRecordingObserver()
-	err := RunObserved(context.Background(), t.TempDir(), t.TempDir(), Config{Timeout: "later"}, observer)
+	err := RunObserved(context.Background(), nopReaper{}, t.TempDir(), t.TempDir(), Config{Timeout: "later"}, observer)
 	if err == nil || !strings.Contains(err.Error(), "invalid worktree setup timeout") {
 		t.Fatalf("bad timeout error = %v", err)
 	}
@@ -191,7 +191,7 @@ func TestRunObservedRefusesAnUnparseableTimeoutWithoutCommands(t *testing.T) {
 }
 
 func TestRunObservedWithNilObserverIsRun(t *testing.T) {
-	if err := RunObserved(context.Background(), t.TempDir(), t.TempDir(), Config{}, nil); err != nil {
+	if err := RunObserved(context.Background(), nopReaper{}, t.TempDir(), t.TempDir(), Config{}, nil); err != nil {
 		t.Fatalf("nil observer = %v", err)
 	}
 }

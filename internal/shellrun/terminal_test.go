@@ -212,9 +212,9 @@ func TestACommandIsNotRunWhenItsTerminalCannotBeOpened(t *testing.T) {
 			return nil, errors.New("out of ptys")
 		}
 		run := procutil.RunGroup
-		config.Run = func(ctx context.Context, command procutil.GroupCommand) (procutil.GroupOutcome, error) {
+		config.Run = func(ctx context.Context, reaper procutil.Reaper, command procutil.GroupCommand) (procutil.GroupOutcome, error) {
 			ran = true
-			return run(ctx, command)
+			return run(ctx, reaper, command)
 		}
 	})
 	if _, err := service.Start(shellRequest(t, "run-1", "echo hi")); err != nil {
