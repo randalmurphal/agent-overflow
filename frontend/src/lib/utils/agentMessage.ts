@@ -129,6 +129,8 @@ const FOOTER_MARKER = 'Agent request from thread ';
 const AGENT_SENTENCE = 'is a standing agent.';
 const ROLE_PREFIX = ' Its role, in its own words: ';
 const ROUTES_SENTENCE = ' It spawned this thread, so your questions and approval requests go to it, not to the user.';
+/** The routing line of a sender that is not a standing agent (threadtools Footer). */
+const ROUTES_LINE = 'The sender spawned this thread, so your questions and approval requests go to it, not to the user.';
 const WAITING_PREFIX = 'It is waiting for your answer. When you are done, call thread_reply with token ';
 const NOT_WAITING_PREFIX = 'It is not waiting. No answer notification was requested. To reply anyway, call thread_reply with token ';
 const USER_MESSAGE_PREFIX = "The user's latest message in that thread: ";
@@ -243,6 +245,9 @@ function readFooter(lines: string[], at: number): { facts: RequestFooterFacts; n
   if (agent && (agent.rest === '' || agent.rest === ROUTES_SENTENCE)) {
     facts.agentRole = agent.role;
     facts.routesPrompts = agent.rest === ROUTES_SENTENCE;
+    i++;
+  } else if (lines[i] === ROUTES_LINE) {
+    facts.routesPrompts = true;
     i++;
   }
   const answer = lines[i] ?? '';
