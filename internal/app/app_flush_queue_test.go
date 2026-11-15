@@ -2613,11 +2613,11 @@ func TestCodexResendAfterInterrupt_FailedSendRestoresDraft(t *testing.T) {
 }
 
 // TestCodexResendAfterInterrupt_DraftMergeFailureRequeues pins the
-// fallback inside restoreEagerPersistedFlushesToDraft: when the draft
-// write fails after the eager rows are already deleted, the messages
-// must keep a delivery vehicle — requeued with their queue identity —
-// and the row removal must still reach the frontend so no ghost
-// timeline row outlives its deleted store row.
+// fallback inside restoreEagerPersistedFlushesToDraft: the draft write and
+// the eager rows' removal are one write, so when it fails the rows stay and
+// the messages keep a delivery vehicle, requeued with their queue identity
+// and naming their rows for the redispatch to retire. Nothing tells the
+// frontend to drop a row the store still has.
 func TestCodexResendAfterInterrupt_DraftMergeFailureRequeues(t *testing.T) {
 	t.Parallel()
 	app, rec := newAppForFlushQueueRPC(t)
@@ -2661,11 +2661,11 @@ func TestCodexResendAfterInterrupt_DraftMergeFailureRequeues(t *testing.T) {
 
 	app.eagerPersistFlushSendsOnInterrupt(thread.ID, appSess, -1, tok)
 
-	// The row deletion happened before the draft write failed...
+	// The failed write removed nothing...
 	if _, found, err := app.store.GetThreadItem(thread.ID, "user:1:flush:1"); err != nil {
 		t.Fatalf("GetThreadItem: %v", err)
-	} else if found {
-		t.Error("eager row survived — cleanup runs before the draft write")
+	} else if !found {
+		t.Error("eager row deleted by a restore whose draft write failed")
 	}
 	// ...so the message falls back to the queue with its identity intact...
 	requeued := app.triage.QueuedFlushItems(thread.ID)
@@ -2677,27 +2677,20 @@ func TestCodexResendAfterInterrupt_DraftMergeFailureRequeues(t *testing.T) {
 		t.Errorf("requeued identity = %+v, want queue:q1/resend me/enqueued 10", got)
 	}
 	if got.StaleUserItemID != "user:1:flush:1" {
-		// The marker resolves as already-cleaned at redispatch (the row
-		// is gone); carrying it is what makes a partial delete retry-safe.
+		// The redispatch retires the row before it persists a fresh one.
 		t.Errorf("requeued StaleUserItemID = %q, want user:1:flush:1", got.StaleUserItemID)
 	}
-	// ...and the frontend still learns the row is gone.
-	restored := emittedQueueRestored(rec)
-	if len(restored) != 1 {
-		t.Fatalf("queue restored events = %+v, want one", restored)
-	}
-	if restored[0].Reason != "resend_failed" {
-		t.Errorf("restore reason = %q, want resend_failed", restored[0].Reason)
-	}
-	if strings.Join(restored[0].UserItemIDs, ",") != "user:1:flush:1" {
-		t.Errorf("restored user ids = %+v, want [user:1:flush:1]", restored[0].UserItemIDs)
+	// ...and the frontend keeps the row the store still has.
+	if restored := emittedQueueRestored(rec); len(restored) != 0 {
+		t.Fatalf("queue restored events = %+v, want none", restored)
 	}
 }
 
-// An eager row whose resend failed and whose draft write fails is requeued
-// as the row renders it: its summary with the review comments, which the
-// row's retire returned with their bodies for the resend to claim again,
-// and the text before them for a later restore to the composer.
+// An eager row whose resend failed and whose draft write fails is left as
+// it was, with its review comments claimed: the composer write and the
+// row's retire are one write. The message is requeued as the row renders
+// it, naming the row, so the resend retires it and claims the comments
+// again, and with the text before them for a later restore to the composer.
 func TestResendFailureRequeuesTheRenderedReviewComments(t *testing.T) {
 	t.Parallel()
 	app, _ := newAppForFlushQueueRPC(t)
@@ -2734,8 +2727,8 @@ func TestResendFailureRequeuesTheRenderedReviewComments(t *testing.T) {
 	}})
 
 	requeued := app.triage.QueuedFlushItems(thread.ID)
-	if len(requeued) != 1 || requeued[0].Message != resolved.content {
-		t.Fatalf("requeued = %+v, want the row's summary %q", requeued, resolved.content)
+	if len(requeued) != 1 || requeued[0].Message != resolved.content || requeued[0].StaleUserItemID != rowID {
+		t.Fatalf("requeued = %+v, want the row's summary %q naming row %s", requeued, resolved.content, rowID)
 	}
 	var payload flushQueuePayload
 	if err := json.Unmarshal(requeued[0].Payload, &payload); err != nil {
@@ -2744,14 +2737,12 @@ func TestResendFailureRequeuesTheRenderedReviewComments(t *testing.T) {
 	if payload.TextBeforeReviewComments == nil || *payload.TextBeforeReviewComments != "Resend me." {
 		t.Errorf("payload text before the review comments = %v, want the message's own text", payload.TextBeforeReviewComments)
 	}
-	want := []flushqueue.RenderedReviewComments{{
-		Source:   store.DiffReviewSourceRef{ThreadID: thread.ID, Scope: draft.Scope, SourceKey: draft.SourceKey},
-		Comments: []store.DiffReviewCommentSnapshot{{ID: draft.ID, Body: draft.Body}},
-	}}
-	if !reflect.DeepEqual(payload.RenderedReviewComments, want) {
-		t.Errorf("rendered review comments = %+v, want %+v", payload.RenderedReviewComments, want)
+	if _, found, err := app.store.GetThreadItem(thread.ID, rowID); err != nil || !found {
+		t.Fatalf("row after the failed restore: found=%v err=%v, want it kept", found, err)
 	}
-	wantReviewDraft(t, app, store.ThreadReviewOwner(thread.ID), draft.ID, "after the requeue")
+	if got, err := app.store.GetDiffReviewComment(store.ThreadReviewOwner(thread.ID), draft.ID); err != nil || got.Status != "sent" {
+		t.Fatalf("comment after the failed restore = %+v, %v; want it still claimed by the row", got, err)
+	}
 }
 
 // TestStartSession_FlushesRequeuedItems pins R12-2 (round 12): a
