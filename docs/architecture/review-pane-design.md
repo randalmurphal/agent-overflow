@@ -272,7 +272,10 @@ polling.
   forge refused it in full with a 4xx (`forgeapi.WriteNotApplied`).
   Anything else is unconfirmed: the drafts stay drafts and the pane says
   the review may already be on the PR. A GitLab publish whose answer was
-  lost is settled by reading the pending draft notes. A review that was
+  lost is settled by reading the pending draft notes. A submit runs to
+  its outcome whatever the client does, inside its method budget: near
+  the budget it starts no further forge request, and a part it never
+  started is reported as not posted. A review that was
   not posted, or is unconfirmed, keeps its summary and verdict in the
   send strip, which stays while either is set. The pane is keyed by
   thread and workspace while its PR follows git status, so whether the

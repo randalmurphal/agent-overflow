@@ -63,6 +63,11 @@ import (
 //     GetPRReviewSubmitOutcome answers it after a lost answer, and a
 //     request repeating the id gets the recorded outcome and posts
 //     nothing.
+//   - A submit runs to its outcome whatever its caller does, within its
+//     budget (withinMethodBudgetFinishing): reviewSubmitFinish before the
+//     budget it starts no forge request, finishes and settles the one
+//     under way, and answers what posted. A part it never started is reported as not
+//     posted, never as one that may have.
 //
 // What this does not cover: the process ending between the forge's answer
 // and the mark leaves posted drafts listed as unsent, with no record that
@@ -122,7 +127,23 @@ type SubmitPRReviewDrafts struct {
 //ao:scope git:operate
 //ao:route selected
 //ao:budget 10m
-func (a *App) SubmitPRReview(ctx context.Context, pr gitops.PRReference, review SubmitPRReviewRequest) (result SubmitPRReviewResult, err error) {
+func (a *App) SubmitPRReview(ctx context.Context, pr gitops.PRReference, review SubmitPRReviewRequest) (SubmitPRReviewResult, error) {
+	run, cancel := withinMethodBudgetFinishing(context.WithoutCancel(ctx), "SubmitPRReview", "Posting the review", reviewSubmitFinish)
+	defer cancel()
+	return a.submitPRReview(run, pr, review)
+}
+
+// reviewSubmitFinish is how long a review submit may still run once its
+// context ends: the forge request under way, the read or cleanup that
+// settles it (gitops.SubmitSettleTimeout), and the PR's refresh
+// (reviewRefreshWait).
+const reviewSubmitFinish = transport.DefaultMethodBudget + gitops.SubmitSettleTimeout + reviewRefreshWait
+
+// reviewRefreshWait bounds the wait for the PR's refresh after a submit.
+const reviewRefreshWait = transport.DefaultMethodBudget
+
+// submitPRReview is SubmitPRReview on run, the context its budget ends.
+func (a *App) submitPRReview(ctx context.Context, pr gitops.PRReference, review SubmitPRReviewRequest) (result SubmitPRReviewResult, err error) {
 	if a.shuttingDown.Load() {
 		return SubmitPRReviewResult{}, ErrShuttingDown
 	}
@@ -151,7 +172,7 @@ func (a *App) SubmitPRReview(ctx context.Context, pr gitops.PRReference, review 
 		result, err := a.gitCore().SubmitReview(forgeapi.WithInteractive(ctx), pr, gitops.SubmitReviewRequest{Verdict: review.Verdict, Body: review.Body, HeadSHA: review.HeadSHA, Comments: review.Comments})
 		mapped, err := mapSubmitPRReviewResult(pr, gitops.ActionReview, result, err)
 		a.refreshAfterSubmit(ctx, pr, err)
-		return mapped, gitops.ExplainForgeError(pr, gitops.ActionReview, err)
+		return mapped, explainSubmitError(ctx, pr, err)
 	}
 	mapped, err := a.submitPRReviewDrafts(ctx, pr, review)
 	a.refreshAfterSubmit(ctx, pr, err)
@@ -165,8 +186,26 @@ func (a *App) SubmitPRReview(ctx context.Context, pr gitops.PRReference, review 
 // merge blockers, never the verdict the request asked for.
 func (a *App) refreshAfterSubmit(ctx context.Context, pr gitops.PRReference, err error) {
 	if _, unconfirmed := errors.AsType[*gitops.UnconfirmedSubmitError](err); err == nil || unconfirmed {
+		// After the budget's cutoff too: what posted shows.
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), reviewRefreshWait)
+		defer cancel()
 		a.refreshPRSnapshot(ctx, pr)
 	}
+}
+
+// explainSubmitError is a submit's not-posted error as the person reads
+// it. A submit its budget stopped, before a write it never started or in a
+// read the cutoff cut, says so; an error that says more (drafts it could
+// not remove, a write that may have applied) keeps its own sentence.
+func explainSubmitError(run context.Context, pr gitops.PRReference, err error) error {
+	_, stoppedStep := errors.AsType[budgetExceeded](err)
+	cutRead := run.Err() != nil && errors.Is(err, context.Canceled)
+	_, left := errors.AsType[*gitops.DraftsLeftError](err)
+	_, unconfirmed := errors.AsType[*gitops.UnconfirmedSubmitError](err)
+	if (stoppedStep || cutRead) && !left && !unconfirmed {
+		return budgetError(run, err)
+	}
+	return gitops.ExplainForgeError(pr, gitops.ActionReview, err)
 }
 
 // submitPRReviewDrafts is SubmitPRReview with Drafts, under the PR's lock.
@@ -208,7 +247,7 @@ func (a *App) submitPRReviewDrafts(ctx context.Context, pr gitops.PRReference, r
 	}
 	mapped, err := mapSubmitPRReviewResult(pr, gitops.ActionReview, result, err)
 	if err != nil {
-		return SubmitPRReviewResult{}, gitops.ExplainForgeError(pr, gitops.ActionReview, err)
+		return SubmitPRReviewResult{}, explainSubmitError(ctx, pr, err)
 	}
 	// The one place a draft submit says it posted.
 	mapped.Posted = mapped.PostedReview || mapped.PostedFileComments > 0 || mapped.PostedReplies > 0

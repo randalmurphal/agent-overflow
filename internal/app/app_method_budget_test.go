@@ -95,9 +95,8 @@ var methodServerBounds = map[string]time.Duration{
 	// A spawn may fork (the Codex cut), resolve its worktree's name against
 	// origin and add the worktree.
 	"ThreadToolCall": codexForkTimeout + hooked + 2*transport.DefaultMethodBudget,
-	// Three reads and one request per comment, each a forge request, with
-	// no cap on the comments: the budget is a declaration the forge
-	// package does not enforce yet (see the method).
+	// withinMethodBudgetFinishing: the run starts no forge request
+	// reviewSubmitFinish before its budget.
 	"SubmitPRReview":           transport.MethodBudget("SubmitPRReview"),
 	"GetPRReviewSubmitOutcome": transport.MethodBudget("SubmitPRReview"),
 }
