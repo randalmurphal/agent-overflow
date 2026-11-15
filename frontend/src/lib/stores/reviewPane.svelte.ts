@@ -9,6 +9,7 @@ import {
   createPRDiffReviewComment,
   deletePRDiffReviewComment,
   getPRDiffReviewComments,
+  holdPRDiffReviewComments,
   markPRDiffReviewCommentsSent,
   prDraftsKey,
   refreshPRDiffReviewComments,
@@ -50,6 +51,7 @@ import {
   createDiffReviewComment,
   deleteDiffReviewComment,
   getDiffReviewComments,
+  holdDiffReviewComments,
   refreshDiffReviewComments,
   setActiveDiffReviewSource,
   updateDiffReviewComment,
@@ -1676,6 +1678,13 @@ export function createReviewPaneState(
   const disposePRRefWatch = $effect.root(() => {
     // The screen moving (compact navigation) takes or releases the permit.
     $effect(() => syncConflictPermit());
+    $effect(() => {
+      // The drafts cache never evicts the comment source the pane shows.
+      const source = sourceKey;
+      if (!source) return;
+      if (pinnedDraftKey !== null) return holdPRDiffReviewComments(pinnedDraftKey, scope, source);
+      if (threadId !== null) return holdDiffReviewComments(threadId, scope, source);
+    });
     $effect(() => {
       // A threads read's failure belongs to the PR it read, in PR scope.
       if (threadsError !== null && threadsError.key !== prEntityKey) threadsError = null;

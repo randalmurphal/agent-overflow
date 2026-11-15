@@ -74,6 +74,7 @@
     activeDiffReviewSourceForThread,
     getActiveDraftDiffReviewComments,
     refreshDiffReviewComments,
+    holdDiffReviewComments,
   } from '../../stores/diffReviewComments.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import { ignoringAlreadyHandled } from '../../transport/alreadyHandled';
@@ -552,6 +553,8 @@
         console.warn('Failed to refresh diff review comments:', err);
       });
     });
+    // The drafts a send carries stay cached while this composer offers them.
+    return holdDiffReviewComments(source.threadId, source.scope, source.sourceKey);
   });
 
   /**

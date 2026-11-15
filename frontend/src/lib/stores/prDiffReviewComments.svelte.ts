@@ -7,7 +7,7 @@
 // restart, and posts as a PR review or is sent to a thread. Writes from
 // another client raise no event; this client sees them on its next read.
 
-import { SvelteMap } from 'svelte/reactivity';
+import { createDraftSourceCache } from './draftSourceCache.svelte';
 import {
   CreatePRDiffReviewComment,
   DeletePRDiffReviewComment,
@@ -39,10 +39,10 @@ export type SendPRDiffReviewCommentsInput = Parameters<typeof SendPRDiffReviewCo
 
 const MAX_CACHED_PR_DRAFT_SOURCES = 16;
 const EMPTY: readonly DiffReviewComment[] = Object.freeze([]);
-const commentsBySource = new SvelteMap<string, readonly DiffReviewComment[]>();
 // Plain, as diffReviewComments' seq map: a read's bookkeeping must not
 // read or write the reactive cache it is about to fill.
 const fetchSeqBySource = new Map<string, number>();
+const commentsBySource = createDraftSourceCache(MAX_CACHED_PR_DRAFT_SOURCES, (key) => fetchSeqBySource.delete(key));
 
 /** The computer PR key a target's drafts are held under. */
 export function prDraftsKey(target: PRDraftsTarget): string {
@@ -77,9 +77,14 @@ export async function refreshPRDiffReviewComments(
   const wire = prReferenceWire(target.pr);
   const comments = normalizeComments(await withBackendTarget(target.backend, () => ListPRDiffReviewComments(wire, scope, sourceKey)));
   if (fetchSeqBySource.get(key) !== seq) return commentsBySource.get(key) ?? EMPTY;
-  commentsBySource.set(key, comments);
-  evictOldSources();
+  commentsBySource.put(key, comments);
   return comments;
+}
+
+/** Keeps one set in the cache while the pinned review shows it. Answers
+ * its release. */
+export function holdPRDiffReviewComments(key: string, scope: DiffReviewScope, sourceKey: string): () => void {
+  return commentsBySource.hold(cacheKey(key, scope, sourceKey));
 }
 
 export async function createPRDiffReviewComment(target: PRDraftsTarget, input: DiffReviewCommentInput): Promise<DiffReviewComment> {
@@ -141,15 +146,6 @@ export async function sendPRDiffReviewComments(
     SendPRDiffReviewComments(wire, threadId, scope, sourceKey, [...commentIds], input));
   await refreshPRDiffReviewComments(target, scope, sourceKey);
   return thread as Thread;
-}
-
-function evictOldSources(): void {
-  while (commentsBySource.size > MAX_CACHED_PR_DRAFT_SOURCES) {
-    const first = commentsBySource.keys().next().value;
-    if (first === undefined) return;
-    commentsBySource.delete(first);
-    fetchSeqBySource.delete(first);
-  }
 }
 
 export function resetPRDiffReviewCommentsForTest(): void {

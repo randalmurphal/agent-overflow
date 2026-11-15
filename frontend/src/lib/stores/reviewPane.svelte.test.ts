@@ -4,6 +4,8 @@ import { getToasts } from './toast.svelte';
 import { appStorageGet, appStorageSet, resetAppStorageForTest } from './appStorage';
 import {
   activeDiffReviewSourceForThread,
+  getDiffReviewComments,
+  refreshDiffReviewComments,
   replaceDiffReviewCommentsForTest,
 } from './diffReviewComments.svelte';
 import { projectTurnStarted } from './threadStatuses.svelte';
@@ -5141,6 +5143,18 @@ describe('reviewPane store — open new-comment editors', () => {
     expect(rows.map((row) => row.body)).toEqual(['Body']);
     expect(state.editorSaving(id)).toBe(false);
     expect(state.openEditors).toEqual([]);
+  });
+
+  it('keeps showing its drafts while other sources fill the drafts cache', async () => {
+    const { state } = await workspaceWith(() => patchFor('src/app.ts', 1));
+    const id = state.openDraftEditor({ filePath: 'src/app.ts', side: 'new', newLine: 1, selectedText: 'line 1' })!;
+    await state.createComment(id, 'Kept.');
+    for (let index = 0; index < 40; index += 1) await refreshDiffReviewComments('thread-2', 'workspace', `other-${index}`);
+    expect(state.drafts.map((comment) => comment.body)).toEqual(['Kept.']);
+    // Closed, the pane no longer holds its source.
+    disposeReviewStateForPane('pane-1', state);
+    for (let index = 0; index < 40; index += 1) await refreshDiffReviewComments('thread-2', 'workspace', `again-${index}`);
+    expect(getDiffReviewComments('thread-1', 'workspace', state.sourceKey)).toEqual([]);
   });
 
   it('saves again after a failed save', async () => {

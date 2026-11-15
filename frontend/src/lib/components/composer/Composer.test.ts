@@ -20,6 +20,11 @@ import {
   upsertProposedPlanForTests,
 } from '../../stores/proposedPlans.svelte';
 import {
+  refreshDiffReviewComments,
+  resetDiffReviewCommentsForTest,
+  setActiveDiffReviewSource,
+} from '../../stores/diffReviewComments.svelte';
+import {
   getQueueForThread,
   replaceQueueForThread,
   resetForTest as resetSendQueueForTest,
@@ -1342,6 +1347,26 @@ describe('<Composer>', () => {
         }),
       );
     });
+  });
+
+  it('keeps offering a review\'s drafts while other sources fill the drafts cache', async () => {
+    const pane = await buildPane(makeTestThread(), []);
+    const draft = await buildDraft();
+    setBindingMock('ListDiffReviewComments', async (threadId: string, _scope: string, sourceKey: string) =>
+      (threadId === 'thread-1' && sourceKey === 'src-1'
+        ? [{ id: 'd-1', threadId, scope: 'workspace', sourceKey, filePath: 'a.go', status: 'draft', side: 'new', newLine: 1, selectedText: '', body: 'Fix this.', createdAt: 1, updatedAt: 1 }]
+        : []));
+    setActiveDiffReviewSource('thread-1', 'workspace', 'src-1');
+    try {
+      const { getByLabelText, findByText, queryByText } = render(Composer, { props: { pane, draft } });
+      await fireEvent.input(getByLabelText('Message Input'), { target: { value: 'Please address these.' } });
+      await findByText('Send comments');
+      for (let index = 0; index < 40; index += 1) await refreshDiffReviewComments('thread-2', 'workspace', `other-${index}`);
+      await tick();
+      expect(queryByText('Send comments')).toBeTruthy();
+    } finally {
+      resetDiffReviewCommentsForTest();
+    }
   });
 
   it('can send a typed plan refinement without draft comments from the send menu', async () => {
