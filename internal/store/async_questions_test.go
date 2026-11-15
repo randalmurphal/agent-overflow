@@ -199,7 +199,7 @@ func TestRestoredAsyncAnswerSettlesAtomicallyWithQueueRemoval(t *testing.T) {
 	if _, err := s.db.Exec(`CREATE TRIGGER reject_queue_removal BEFORE DELETE ON flush_queue_items BEGIN SELECT RAISE(ABORT,'test deletion failure'); END`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.RestoreFlushQueueToDraft(expected, merged, []string{"queue"}); err == nil {
+	if _, err := s.RestoreFlushQueueToDraft(expected, merged, []string{"queue"}, nil); err == nil {
 		t.Fatal("expected deletion failure")
 	}
 	if draft, _, err := s.GetThreadDraft("q"); err != nil || draft != expected {
@@ -212,7 +212,7 @@ func TestRestoredAsyncAnswerSettlesAtomicallyWithQueueRemoval(t *testing.T) {
 	if _, err := s.db.Exec(`DROP TRIGGER reject_queue_removal`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.RestoreFlushQueueToDraft(expected, merged, []string{"queue"}); err != nil {
+	if _, err := s.RestoreFlushQueueToDraft(expected, merged, []string{"queue"}, nil); err != nil {
 		t.Fatal(err)
 	}
 	rows, err = s.ListAsyncQuestions("q", item.ID)

@@ -217,10 +217,11 @@ func TestQueueThreadWakeDeliversItsRidersWithTheCarrier(t *testing.T) {
 		t.Fatalf("queued rows = %+v err=%v, want the one message", rows, err)
 	}
 
-	// The boot correction follows the message: the carrier and the rider it
-	// delivered are in the composer now, and the inline delivery is not.
-	if corrected, err := s.MarkThreadRequestDeliveredAsDraft("tok-carrier", false); err != nil || !corrected {
-		t.Fatalf("MarkThreadRequestDeliveredAsDraft: corrected=%v err=%v", corrected, err)
+	// A restore to the composer follows the message: the carrier and the
+	// rider it delivered are in the composer now, and the inline delivery is
+	// not.
+	if err := restoreQueueToDraft(t, s, "t-caller", []string{"queue:carrier"}, []string{item.SendID}); err != nil {
+		t.Fatalf("RestoreFlushQueueToDraft: %v", err)
 	}
 	for token, want := range map[string]string{
 		"tok-carrier": ThreadWakeDraft, "tok-rider": ThreadWakeDraft, "tok-read": ThreadWakeInline,

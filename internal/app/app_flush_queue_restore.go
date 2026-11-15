@@ -196,15 +196,17 @@ func (a *App) restoreFlushItemsToDraftLocked(threadID string, drained []triage.U
 
 	parts := make([]composerdraft.Part, 0, len(restorable))
 	settlements := make([]*triage.FlushSettlement, 0, len(restorable))
+	var sendIDs []string
 	for _, item := range restorable {
 		part := a.restoredFlushDraftPart(threadID, item)
 		if strings.TrimSpace(part.Content) != "" || len(part.AttachmentIDs) > 0 || part.SourceProposedPlan != nil {
 			parts = append(parts, part)
 			settlements = append(settlements, item.Settlement)
+			sendIDs = append(sendIDs, unconfirmedFlushSendIDs(item)...)
 		}
 	}
 	if len(parts) > 0 {
-		if err := a.restoreQueuedDraft(threadID, parts, queueItemIDs); err != nil {
+		if err := a.restoreQueuedDraft(threadID, parts, queueItemIDs, sendIDs); err != nil {
 			log.Printf("flush queue: restore draft (%s) for %s: %v", reason, threadID, err)
 			a.emitWireErrorToThread(threadID, "Could not restore queued messages: "+err.Error())
 			// The quiet rows behind these items are already deleted, so
@@ -338,18 +340,21 @@ func (a *App) restoreEagerPersistedFlushesForReason(
 	queueItemIDs := make([]string, 0, len(restorable))
 	userItemIDs := make([]string, 0, len(restorable))
 	parts := make([]composerdraft.Part, 0, len(restorable))
+	var sendIDs []string
 	for _, p := range restorable {
 		if p.QueueItemID != "" {
 			queueItemIDs = append(queueItemIDs, p.QueueItemID)
 		}
 		userItemIDs = append(userItemIDs, p.UserItemID)
-		part := draftPartFromUserItem(store.Item{ThreadID: threadID, ID: p.UserItemID, Summary: p.Content, Meta: p.Meta})
+		row := store.Item{ThreadID: threadID, ID: p.UserItemID, Summary: p.Content, Meta: p.Meta}
+		part := draftPartFromUserItem(row)
 		if strings.TrimSpace(part.Content) != "" || len(part.AttachmentIDs) > 0 || part.SourceProposedPlan != nil {
 			parts = append(parts, part)
+			sendIDs = append(sendIDs, userRowSendIDs(row)...)
 		}
 	}
 	if len(parts) > 0 {
-		if _, err := a.mergeAndUpsertThreadDraft(threadID, parts); err != nil {
+		if err := a.restoreQueuedDraft(threadID, parts, nil, sendIDs); err != nil {
 			log.Printf("flush queue: restore draft after failed resend for %s: %v", threadID, err)
 			// The rows are already deleted — emit the removal so the
 			// frontend drops them, then requeue so the messages keep a
@@ -869,7 +874,7 @@ func (a *App) restoreThreadQueueAtBoot(threadID string, unconfirmedIDs []string)
 		return nil
 	}
 	if len(parts) > 0 || len(ids) > 0 {
-		if err := a.restoreQueuedDraft(threadID, parts, ids); err != nil {
+		if err := a.restoreQueuedDraft(threadID, parts, ids, restoredSends); err != nil {
 			// Leave the rows alone: the next boot tries again, which is
 			// the whole point of the message being durable.
 			return fmt.Errorf("restore into the draft: %w", err)
@@ -881,12 +886,33 @@ func (a *App) restoreThreadQueueAtBoot(threadID string, unconfirmedIDs []string)
 			errs = append(errs, fmt.Errorf("retire unconfirmed message %s: %w", id, err))
 		}
 	}
-	for _, sendID := range restoredSends {
-		noteThreadWakeRestoredToDraft(a, sendID)
-	}
 	a.emit(eventchan.ProviderAsyncQuestionsChanged, map[string]string{"threadId": threadID})
 	log.Printf("app: restored %d queued message(s) into the composer for thread %s", len(parts), threadID)
 	return errors.Join(errs...)
+}
+
+// unconfirmedFlushSendIDs is every send id a message drained from the queue
+// answers for, read from its row when it has one and from its queue payload
+// otherwise. A payload that no longer decodes names none; its text is still
+// restored.
+func unconfirmedFlushSendIDs(item triage.UnconfirmedFlushItem) []string {
+	switch {
+	case item.DeferredItem != nil:
+		return userRowSendIDs(*item.DeferredItem)
+	case item.QuietItem != nil:
+		return userRowSendIDs(*item.QuietItem)
+	}
+	var payload flushQueuePayload
+	if len(item.Payload) == 0 || json.Unmarshal(item.Payload, &payload) != nil {
+		return nil
+	}
+	if len(payload.JoinedSendIDs) > 0 {
+		return payload.JoinedSendIDs
+	}
+	if payload.SendID != "" {
+		return []string{payload.SendID}
+	}
+	return nil
 }
 
 // userRowSendIDs is every send id a user row answers for: a joined row's
@@ -928,33 +954,4 @@ func draftPartFromQueueRow(row store.FlushQueueItem) composerdraft.Part {
 		AttachmentIDs:      payload.AttachmentIDs,
 		SourceProposedPlan: payload.SourceProposedPlan,
 	}
-}
-
-// noteThreadWakeRestoredToDraft corrects a thread request whose wake this
-// restore put in the composer instead of sending. The request was marked
-// delivered when the message was queued, which was true then and is still
-// true now: the answer reached the thread. Only the route changed, and a
-// reader that cannot tell a queued wake from one sitting in a draft would
-// report an answer as on its way when it is waiting on the person.
-func noteThreadWakeRestoredToDraft(a *App, sendID string) {
-	token, late, ok := threadWakeTokenFromSendID(sendID)
-	if !ok {
-		return
-	}
-	if _, err := a.store.MarkThreadRequestDeliveredAsDraft(token, late); err != nil {
-		log.Printf("thread tools: mark request %s restored to draft: %v", token, err)
-	}
-}
-
-// threadWakeTokenFromSendID recovers the request a queued wake belongs to.
-// The two prefixes are disjoint, so either order reads the same send id; what
-// the token check rejects is a bare prefix, which names no request.
-func threadWakeTokenFromSendID(sendID string) (token string, late bool, ok bool) {
-	if rest, found := strings.CutPrefix(sendID, threadWakeLateSendID("")); found {
-		return rest, true, rest != ""
-	}
-	if rest, found := strings.CutPrefix(sendID, threadWakeSendID("")); found {
-		return rest, false, rest != ""
-	}
-	return "", false, false
 }

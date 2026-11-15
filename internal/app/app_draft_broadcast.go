@@ -150,8 +150,8 @@ func (a *App) writeRecoveredThreadDraft(who transport.ClientIdentity, recovery s
 	return true, nil
 }
 
-func (a *App) writeRestoredQueueDraft(expected, merged store.ThreadDraft, queueIDs []string) error {
-	changed, err := a.store.RestoreFlushQueueToDraft(expected, merged, queueIDs)
+func (a *App) writeRestoredQueueDraft(expected, merged store.ThreadDraft, queueIDs, sendIDs []string) error {
+	changed, err := a.store.RestoreFlushQueueToDraft(expected, merged, queueIDs, sendIDs)
 	if err != nil {
 		return err
 	}

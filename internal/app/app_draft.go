@@ -12,7 +12,6 @@ import (
 	"agent-overflow/internal/composerdraft"
 	"agent-overflow/internal/slicesx"
 	"agent-overflow/internal/store"
-	"agent-overflow/internal/transport"
 	"agent-overflow/internal/usermessage"
 )
 
@@ -255,50 +254,6 @@ func (a *App) DeleteEmptyDraftThread(threadID string) (bool, error) {
 	a.forgetUnsavedThreadRows(threadID)
 	a.broadcastThreadDeleted(threadID)
 	return true, closeErr
-}
-
-// stagedThreadDraft is the before/after pair one merge-and-upsert wrote.
-// A caller parking transient saga state in the draft row
-// (RevertConversationAndResendMessage) needs both: prior to put the
-// user's untouched work-in-progress back afterwards, and merged to
-// prove the row it is about to overwrite is still its own staged copy
-// and not a composer save that landed while the saga ran.
-type stagedThreadDraft struct {
-	merged store.ThreadDraft
-	// prior is the row as it was BEFORE the merge; priorExisted
-	// distinguishes an empty composer from a persisted empty draft, which
-	// settle back differently (delete vs restore).
-	prior        store.ThreadDraft
-	priorExisted bool
-}
-
-// mergeAndUpsertThreadDraft merges parts AHEAD of the thread's current
-// composer draft and persists the result. The order is chronological —
-// the parts were typed before whatever is sitting in the composer now —
-// and composerdraft.MergeParts carries the current row's terminal chips
-// and pending-plan link through untouched, so a merge round-trip never
-// costs the user composer context.
-//
-// Callers that only ever ADD to the draft (the flush-queue restore
-// paths) discard the result.
-//
-// The write is attributed to nobody: every caller is a backend saga (a revert
-// parking the user's work, a flush-queue restore putting an undelivered
-// message back), so there is no screen to credit and every client applies the
-// frame.
-func (a *App) mergeAndUpsertThreadDraft(threadID string, parts []composerdraft.Part) (stagedThreadDraft, error) {
-	current, existed, err := a.store.GetThreadDraft(threadID)
-	if err != nil {
-		return stagedThreadDraft{}, err
-	}
-	merged, err := composerdraft.MergeParts(threadID, current, parts, time.Now().UnixMilli())
-	if err != nil {
-		return stagedThreadDraft{}, err
-	}
-	if err := a.writeThreadDraft(transport.ClientIdentity{}, merged); err != nil {
-		return stagedThreadDraft{}, err
-	}
-	return stagedThreadDraft{merged: merged, prior: current, priorExisted: existed}, nil
 }
 
 func (a *App) composerDraftFromUserItemWithClonedAttachments(threadID string, userItem store.Item, updatedAt int64) (store.ThreadDraft, error) {

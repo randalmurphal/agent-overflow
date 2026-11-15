@@ -98,7 +98,10 @@ func (s *Store) DeleteDispatchedFlushQueueItem(id string) error {
 
 // RestoreFlushQueueToDraft commits a merged composer and retires its queue
 // records together. A failure cannot leave text that a later restore duplicates.
-func (s *Store) RestoreFlushQueueToDraft(expected, merged ThreadDraft, ids []string) (bool, error) {
+// sendIDs are the send ids of every message the draft takes; a thread
+// request whose wake is among them is marked delivered as a draft in the
+// same transaction (markThreadWakesRestoredToDraftTx).
+func (s *Store) RestoreFlushQueueToDraft(expected, merged ThreadDraft, ids, sendIDs []string) (bool, error) {
 	if merged.ThreadID == "" || expected.ThreadID != merged.ThreadID {
 		return false, fmt.Errorf("queue restoration requires matching draft threads")
 	}
@@ -135,6 +138,9 @@ func (s *Store) RestoreFlushQueueToDraft(expected, merged ThreadDraft, ids []str
 		if _, err := tx.Exec(`DELETE FROM flush_queue_items WHERE id=?`, id); err != nil {
 			return false, err
 		}
+	}
+	if err := markThreadWakesRestoredToDraftTx(tx, sendIDs); err != nil {
+		return false, err
 	}
 	return changed, tx.Commit()
 }
