@@ -503,7 +503,9 @@ computer with an agent peer, network bind /
 exposure changes, provider custom-env writes, MCP config writes, WSL
 distro preference, worktree-setup recipe writes (stored argv that runs
 unattended with the user's environment on every worktree cut — the
-same class as an MCP config write), and remote update triggering (§7).
+same class as an MCP config write), remote update triggering (§7), and
+running a provider CLI's update command (`RunProviderUpdate`), which
+replaces the provider binary the host runs.
 These calls require step-up because they change credentials, prompt
 routing, or commands the host will execute.
 

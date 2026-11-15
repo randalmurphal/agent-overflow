@@ -123,6 +123,7 @@ describe('setupEventListeners', () => {
   it('registers and unregisters the unified listener set', () => {
     expect(wailsListenerCount('provider:approval')).toBe(1);
     expect(wailsListenerCount('provider:usage')).toBe(1);
+    expect(wailsListenerCount('provider:updates')).toBe(1);
     expect(wailsListenerCount('provider:model_fallback')).toBe(1);
     expect(wailsListenerCount('provider:status')).toBe(1);
     expect(wailsListenerCount('provider:session_account')).toBe(1);
@@ -146,6 +147,7 @@ describe('setupEventListeners', () => {
 
     expect(wailsListenerCount('provider:approval')).toBe(0);
     expect(wailsListenerCount('provider:usage')).toBe(0);
+    expect(wailsListenerCount('provider:updates')).toBe(0);
     expect(wailsListenerCount('provider:model_fallback')).toBe(0);
     expect(wailsListenerCount('provider:status')).toBe(0);
     expect(wailsListenerCount('provider:session_account')).toBe(0);

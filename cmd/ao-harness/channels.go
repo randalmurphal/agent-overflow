@@ -91,6 +91,7 @@ func eventChannelConstants() []eventchan.Channel {
 		eventchan.ProviderTodoUpdate,
 		eventchan.ProviderTurnCompleted,
 		eventchan.ProviderTurnStarted,
+		eventchan.ProviderUpdates,
 		eventchan.ProviderUsage,
 		eventchan.ProviderUserInput,
 		eventchan.ReviewCommentsChanged,

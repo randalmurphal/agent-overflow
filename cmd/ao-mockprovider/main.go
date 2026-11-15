@@ -32,7 +32,15 @@ func main() {
 
 	args := os.Args[1:]
 	if slices.Contains(args, "--version") {
-		fmt.Println(versionString)
+		fmt.Println(versionLine(installedVersion()))
+		return
+	}
+	if isDoctorInvocation(args) {
+		runDoctor()
+		return
+	}
+	if isUpdateInvocation(args) {
+		runUpdate()
 		return
 	}
 

@@ -212,6 +212,7 @@ func TestMockedBootModesShareOneIsolationHelper(t *testing.T) {
 		"forgeCLIs",
 		"scanScope",
 		"rateLimitProbeClientOverride",
+		"providerUpdateClientOverride",
 	}
 	assignment := make([]*regexp.Regexp, len(pins))
 	for i, pin := range pins {

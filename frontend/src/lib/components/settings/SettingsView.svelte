@@ -123,6 +123,7 @@
     <div class={compact && !railOpen ? 'hidden' : 'contents'}>
       <SettingsRail
         {activeSection}
+        {computer}
         onSelectSection={openSection}
         onSelectHit={(hit) => void selectHit(hit)}
       />

@@ -180,6 +180,7 @@ const (
 	ProviderTodoUpdate             Channel = "provider:todo_update"
 	ProviderTurnCompleted          Channel = "provider:turn_completed"
 	ProviderTurnStarted            Channel = "provider:turn_started"
+	ProviderUpdates                Channel = "provider:updates"
 	ProviderUsage                  Channel = "provider:usage"
 	ProviderAsyncQuestionsChanged  Channel = "provider:async_questions_changed"
 	ProviderUserInput              Channel = "provider:user_input"

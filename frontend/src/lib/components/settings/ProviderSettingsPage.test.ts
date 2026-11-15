@@ -21,6 +21,13 @@ import { resetProviderModelsForTest } from "../../stores/providerModels.svelte";
 import { OBSERVE_SCOPES, pairWithScopes, resetToLocalPage } from "../../../test/helpers/scopes";
 import { setPageGrantsFromBootstrap } from "../../transport/scopes";
 import { HOST_TIER_REASON } from "./settingsComputer";
+import { providerUpdateNotes } from "../../stores/providerUpdates.svelte";
+import { listenProviderUpdates } from "../../../test/helpers/providerUpdates";
+import { emitWailsEvent } from "../../../test/mocks/wailsio-runtime";
+import { TransportError } from "../../transport/wsClient";
+import { STEP_UP_REFUSAL } from "../../transport/scopeRefusal";
+
+const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
 const BASE_SETTINGS: Settings = makeSettings();
 
@@ -41,6 +48,7 @@ async function seed(overrides: Partial<Settings> = {}): Promise<Settings> {
     return { ...merged, ...p };
   });
   setBindingMock("GetProviderStatuses", async () => []);
+  setBindingMock("CheckProviderUpdates", async () => []);
   setBindingMock("GetModelsForProvider", async () => modelCatalog([], "shipped"));
   setBindingMock("ListProviderAccounts", async () => []);
   await loadSettings();
@@ -578,7 +586,7 @@ describe("provider page: auto-switch settings", () => {
 });
 
 describe("provider page: resolved binary", () => {
-  it("names the native binary and the npm wrapper it was resolved from", async () => {
+  it("names the native binary and the npm wrapper it was resolved from in the pill's title", async () => {
     await seed();
     setBindingMock("GetProviderStatuses", async () => [
       {
@@ -591,11 +599,16 @@ describe("provider page: resolved binary", () => {
         message: "",
       },
     ]);
-    const { findByTestId } = render(CodexSettings);
+    const { getByTestId, container } = render(CodexSettings);
 
-    const note = await findByTestId("settings-provider-binary-resolved");
-    expect(note.textContent).toContain("/vendor/x86_64-unknown-linux-musl/bin/codex");
-    expect(note.textContent).toContain("/@openai/codex/bin/codex.js");
+    const pill = getByTestId("settings-provider-status-pill");
+    await waitFor(() => expect(pill.getAttribute("data-status")).toBe("ready"));
+    expect(pill.title).toBe(
+      "Runs /opt/node/lib/node_modules/@openai/codex/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/bin/codex, " +
+        "the native binary the npm wrapper /opt/node/lib/node_modules/@openai/codex/bin/codex.js starts, so threads skip its Node process.",
+    );
+    // The sentence lives only in the title: nothing on the page pops in below the header.
+    expect(container.textContent).not.toContain("so threads skip its Node process");
   });
 
   it("says nothing extra when the binary runs as configured", async () => {
@@ -615,6 +628,187 @@ describe("provider page: resolved binary", () => {
     await waitFor(async () =>
       expect((await findByTestId("settings-provider-status-pill")).getAttribute("data-status")).toBe("ready"),
     );
-    expect(queryByTestId("settings-provider-binary-resolved")).toBeNull();
+    expect(queryByTestId("settings-provider-status-pill")!.title).toBe("codex-cli 0.162.1");
+    expect(document.body.textContent).not.toContain("the native binary the npm wrapper");
+  });
+
+  it("shows the status as soon as it is read, without waiting on the model refresh", async () => {
+    await seed();
+    setBindingMock("GetProviderStatuses", async () => [
+      { provider: "claude", installed: true, version: "2.1.321 (Claude Code)", binaryPath: "/usr/bin/claude", status: "ready", message: "" },
+    ]);
+    // The catalog refresh never settles.
+    setBindingMock("GetModelsForProvider", () => new Promise(() => {}));
+    const { getByTestId } = render(ClaudeSettings);
+    await waitFor(() => expect(getByTestId("settings-provider-status-pill").getAttribute("data-status")).toBe("ready"));
+    expect(getByTestId("settings-provider-status-pill").textContent).toContain("2.1.321 (Claude Code)");
+  });
+});
+
+describe("provider page: CLI updates", () => {
+  function updateStatus(provider: string, overrides: Record<string, unknown> = {}) {
+    return {
+      provider,
+      installedVersion: "2.1.321",
+      latestVersion: "2.1.325",
+      available: true,
+      checkedAt: 1,
+      run: { phase: "idle" },
+      ...overrides,
+    };
+  }
+
+  beforeEach(() => {
+    listenProviderUpdates();
+  });
+
+  it("checks on mount and offers the update and its notes only when one is available", async () => {
+    await seed();
+    const check = setBindingMock("CheckProviderUpdates", async () => [
+      updateStatus("claude", { latestVersion: "2.1.321", available: false }),
+      updateStatus("codex", { installedVersion: "0.163.0", latestVersion: "0.169.0" }),
+    ]);
+    const claude = render(ClaudeSettings);
+    await waitFor(() => expect(check).toHaveBeenCalled());
+    await tick();
+    expect(claude.queryByTestId("settings-provider-update-button")).toBeNull();
+    expect(claude.queryByTestId("settings-provider-update-notes-button")).toBeNull();
+    claude.unmount();
+
+    const codex = render(CodexSettings);
+    const button = await codex.findByTestId("settings-provider-update-button");
+    expect(button.textContent?.trim()).toBe("Update to 0.169.0");
+    expect(codex.getByTestId("settings-provider-update-notes-button").textContent?.trim()).toBe("What's new");
+  });
+
+  it("offers nothing and checks nothing without access:admin", async () => {
+    await seed();
+    const check = setBindingMock("CheckProviderUpdates", async () => [updateStatus("claude")]);
+    emitWailsEvent("provider:updates", [updateStatus("claude")]);
+    await pairWithScopes([...OBSERVE_SCOPES, "threads:operate"]);
+    try {
+      const { queryByTestId } = render(ClaudeSettings);
+      await tick();
+      expect(check).not.toHaveBeenCalled();
+      expect(queryByTestId("settings-provider-update-button")).toBeNull();
+      expect(queryByTestId("settings-provider-update-notes-button")).toBeNull();
+    } finally {
+      resetToLocalPage();
+    }
+  });
+
+  it("runs the update, shows it running, and re-reads the version when it lands", async () => {
+    await seed();
+    setBindingMock("CheckProviderUpdates", async () => [updateStatus("claude")]);
+    let version = "2.1.321 (Claude Code)";
+    const statuses = setBindingMock("GetProviderStatuses", async () => [
+      { provider: "claude", installed: true, version, binaryPath: "/usr/bin/claude", status: "ready", message: "" },
+    ]);
+    // The backend publishes the running frame before it answers the call.
+    const run = setBindingMock("RunProviderUpdate", async () => {
+      emitWailsEvent("provider:updates", [updateStatus("claude", { run: { phase: "running", fromVersion: "2.1.321" } })]);
+    });
+    const { findByTestId, getByTestId, queryByTestId } = render(ClaudeSettings);
+    await fireEvent.click(await findByTestId("settings-provider-update-button"));
+    expect(run).toHaveBeenCalledWith("claude");
+    await tick();
+    const busy = getByTestId("settings-provider-update-button") as HTMLButtonElement;
+    expect(busy.disabled).toBe(true);
+    expect(busy.textContent?.trim()).toBe("Updating…");
+    const readsBefore = statuses.mock.calls.length;
+
+    version = "2.1.325 (Claude Code)";
+    emitWailsEvent("provider:updates", [
+      updateStatus("claude", { installedVersion: "2.1.325", available: false, run: { phase: "succeeded", toVersion: "2.1.325" } }),
+    ]);
+    await waitFor(() => expect(getByTestId("settings-provider-status-pill").textContent).toContain("2.1.325 (Claude Code)"));
+    expect(statuses.mock.calls.length).toBe(readsBefore + 1);
+    expect(queryByTestId("settings-provider-update-button")).toBeNull();
+    expect(getToasts().some((t) => t.message === "Claude updated to 2.1.325")).toBe(true);
+  });
+
+  it("keeps a failed run's error and output beside the control", async () => {
+    await seed();
+    setBindingMock("CheckProviderUpdates", async () => [
+      updateStatus("codex", { run: { phase: "failed", error: "The command finished but the installed version is still 2.1.321.", output: "npm ERR! EACCES" } }),
+    ]);
+    const { findByTestId } = render(CodexSettings);
+    const callout = await findByTestId("settings-provider-update-error");
+    expect(callout.textContent).toContain("The command finished but the installed version is still 2.1.321.");
+    expect(callout.querySelector("pre")?.textContent).toBe("npm ERR! EACCES");
+    expect(await findByTestId("settings-provider-update-button")).toBeTruthy();
+  });
+
+  it("drops a failed run's error once that update is no longer on offer", async () => {
+    await seed();
+    const failed = { phase: "failed", error: "the update command exited with status 1", output: "npm ERR! EACCES" };
+    setBindingMock("CheckProviderUpdates", async () => [updateStatus("codex", { run: failed })]);
+    const { findByTestId, queryByTestId } = render(CodexSettings);
+    await findByTestId("settings-provider-update-error");
+    // Installed some other way: the next check finds nothing newer.
+    emitWailsEvent("provider:updates", [
+      updateStatus("codex", { installedVersion: "2.1.325", available: false, run: failed }),
+    ]);
+    await waitFor(() => expect(queryByTestId("settings-provider-update-error")).toBeNull());
+  });
+
+  it("keeps a failed run's error when the check after it could not answer", async () => {
+    await seed();
+    const failed = { phase: "failed", error: "the update command exited with status 1", output: "npm ERR! EACCES" };
+    setBindingMock("CheckProviderUpdates", async () => [
+      updateStatus("codex", { latestVersion: "", available: false, checkError: "registry unreachable", run: failed }),
+    ]);
+    const { findByTestId, queryByTestId } = render(CodexSettings);
+    const callout = await findByTestId("settings-provider-update-error");
+    expect(callout.textContent).toContain("the update command exited with status 1");
+    expect(queryByTestId("settings-provider-update-button")).toBeNull();
+  });
+
+  it("stays busy through a check that fails while the update runs", async () => {
+    await seed();
+    setBindingMock("CheckProviderUpdates", async () => [updateStatus("claude", { run: { phase: "running" } })]);
+    const { findByTestId, getByTestId, queryByTestId } = render(ClaudeSettings);
+    await findByTestId("settings-provider-update-button");
+    emitWailsEvent("provider:updates", [
+      updateStatus("claude", { latestVersion: "", available: false, checkError: "release host unreachable", run: { phase: "running" } }),
+    ]);
+    await findByTestId("settings-provider-update-check-error");
+    const busy = getByTestId("settings-provider-update-button") as HTMLButtonElement;
+    expect(busy.disabled).toBe(true);
+    expect(busy.textContent?.trim()).toBe("Updating…");
+    expect(queryByTestId("settings-provider-update-notes-button")).toBeNull();
+  });
+
+  it("shows a step-up refusal beside the control", async () => {
+    await seed();
+    setBindingMock("CheckProviderUpdates", async () => [updateStatus("claude")]);
+    setBindingMock("RunProviderUpdate", async () => {
+      throw new TransportError("step_up_required", "step-up required");
+    });
+    const { findByTestId } = render(ClaudeSettings);
+    await fireEvent.click(await findByTestId("settings-provider-update-button"));
+    const callout = await findByTestId("settings-provider-update-error");
+    expect(callout.textContent).toContain(STEP_UP_REFUSAL.title);
+    expect(getToasts().some((t) => t.type === "error" && t.message.includes(STEP_UP_REFUSAL.title))).toBe(true);
+  });
+
+  it("says when the check could not answer", async () => {
+    await seed();
+    setBindingMock("CheckProviderUpdates", async () => [
+      updateStatus("claude", { latestVersion: "", available: false, checkError: "could not read the installed version" }),
+    ]);
+    const { findByTestId } = render(ClaudeSettings);
+    const failure = await findByTestId("settings-provider-update-check-error");
+    expect(failure.title).toBe("could not read the installed version");
+  });
+
+  it("opens the notes for this page's provider", async () => {
+    await seed();
+    setBindingMock("CheckProviderUpdates", async () => [updateStatus("codex")]);
+    const load = setBindingMock("GetProviderUpdateNotes", async () => ({ provider: "codex", fromVersion: "", toVersion: "", releases: [], omitted: 0, url: "" }));
+    const { findByTestId } = render(CodexSettings);
+    await fireEvent.click(await findByTestId("settings-provider-update-notes-button"));
+    expect(load).toHaveBeenCalledWith("codex");
+    expect(providerUpdateNotes()?.provider).toBe("codex");
   });
 });

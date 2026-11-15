@@ -11,7 +11,7 @@ wire all returned seams into the subject:
 - redirect `HOME` and `USERPROFILE` to an empty temporary home;
 - point both provider settings at the failing test binary;
 - install `DisabledCodexModelCatalog()`;
-- install `StubTextGenerationExecutor()`; and
+- install `StubTextGenerationExecutor()` and `StubProviderUpdateRunner()`; and
 - retain the unexpected-start cleanup check.
 
 A test that intentionally exercises a session replaces the failing binary with

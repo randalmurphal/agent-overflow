@@ -215,6 +215,7 @@ func TestStepUpMethodsAreTheSpecSet(t *testing.T) {
 		"BeginPasskeyRegistration":      "registering a credential that admits a future caller, on the same argument as minting a pairing link",
 		"RequestServiceUpdate": "replacing the code this machine runs: §7's remote update trigger, " +
 			"which the spec admits precisely on the condition that it rides step-up",
+		"RunProviderUpdate":         "replacing the provider CLI this machine runs, the same class of act as RequestServiceUpdate",
 		"SetPushSenderCredential":   "installing the service-account key this backend wakes phones with",
 		"ClearPushSenderCredential": "withdrawing it, which stops every registered phone being woken",
 	}

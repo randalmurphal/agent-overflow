@@ -13,9 +13,19 @@
   // SettingsView renders the page title and description from `sections.ts`,
   // so nothing here repeats the provider's name at the top.
 
+  import { untrack } from 'svelte';
   import { GetProviderStatuses } from '../../stores/bindings';
   import { HOST_TIER_REASON, settingsComputer } from './settingsComputer';
-  const { getSettings, updateSetting, call, backend, hostTierWritable } = settingsComputer();
+  const { getSettings, updateSetting, call, backend, hostTierWritable, hasScope } = settingsComputer();
+  import {
+    checkProviderUpdates,
+    openProviderUpdateNotes,
+    providerUpdate,
+    providerUpdatesLoadError,
+  } from '../../stores/providerUpdates.svelte';
+  import Button from '../primitives/Button.svelte';
+  import ProviderUpdateButton from './ProviderUpdateButton.svelte';
+  import ProviderUpdateFailure from './ProviderUpdateFailure.svelte';
   import { addErrorToast } from '../../stores/toast.svelte';
   import type { ProviderStatus } from '../../types/settings';
   import {
@@ -69,7 +79,8 @@
   let models = $derived(offeredModels(getProviderModels(provider, backend)));
   let dependents = $derived(dependentProviders(provider));
   let status = $state<ProviderStatus | undefined>(undefined);
-  let loadGeneration = 0;
+  let statusGeneration = 0;
+  let modelGeneration = 0;
 
   // The binary path as a $derived primitive: the settings object is replaced
   // wholesale on EVERY save (optimistic patch + server merge), so an effect
@@ -79,31 +90,69 @@
   // only propagates when the path actually changes.
   let binaryPath = $derived(settings[definition.settings.pathKey]);
 
-  $effect(() => {
-    void binaryPath;
-
-    const generation = ++loadGeneration;
+  // The status and the model catalog load independently, so the pill and
+  // the Setup description never wait on the slower catalog refresh.
+  function readStatus(): void {
+    const generation = ++statusGeneration;
     void (async () => {
-      const [statusResult, modelResult] = await Promise.allSettled([
-        call(() => GetProviderStatuses()),
-        refreshProviderModels(provider, backend),
-      ]);
-      if (generation !== loadGeneration) return;
-
-      if (statusResult.status === 'fulfilled') {
-        const all = (statusResult.value ?? []) as ProviderStatus[];
+      try {
+        const all = ((await call(() => GetProviderStatuses())) ?? []) as ProviderStatus[];
+        if (generation !== statusGeneration) return;
         status = all.find((s) => s.provider === provider);
-      } else {
-        console.error('Failed to load provider statuses:', statusResult.reason);
-        addErrorToast('Failed to load provider statuses.', statusResult.reason);
-      }
-
-      if (modelResult.status === 'rejected') {
-        console.error(`Failed to load ${definition.label} models:`, modelResult.reason);
-        addErrorToast(`Failed to load ${definition.label} models.`, modelResult.reason);
+      } catch (err) {
+        if (generation !== statusGeneration) return;
+        console.error('Failed to load provider statuses:', err);
+        addErrorToast('Failed to load provider statuses.', err);
       }
     })();
+  }
+
+  $effect(() => {
+    void binaryPath;
+    readStatus();
   });
+
+  $effect(() => {
+    void binaryPath;
+    const generation = ++modelGeneration;
+    refreshProviderModels(provider, backend).catch((err: unknown) => {
+      if (generation !== modelGeneration) return;
+      console.error(`Failed to load ${definition.label} models:`, err);
+      addErrorToast(`Failed to load ${definition.label} models.`, err);
+    });
+  });
+
+  // Provider CLI updates (stores/providerUpdates.svelte.ts). Every update
+  // RPC is `access:admin`, so without it the page offers none of this.
+  let admin = $derived(hasScope('access:admin'));
+  let update = $derived(admin ? providerUpdate(provider, backend) : null);
+  let notesOffered = $derived(update !== null && update.available && update.latestVersion !== '');
+  let checkFailure = $derived(admin ? update?.checkError || providerUpdatesLoadError(backend) : '');
+
+  // A fresh check whenever the page is shown with the grant.
+  $effect(() => {
+    if (admin) untrack(() => void checkProviderUpdates(backend));
+  });
+
+  // A finished update changes the installed version, and the pill re-reads
+  // it. The first version seen is the one the pill already loaded.
+  let installedVersion = $derived(update?.installedVersion ?? '');
+  let seenInstalledVersion = '';
+  $effect(() => {
+    const version = installedVersion;
+    if (version === '') return;
+    const previous = seenInstalledVersion;
+    seenInstalledVersion = version;
+    if (previous !== '' && previous !== version) untrack(readStatus);
+  });
+
+  // Auto-detect found the npm wrapper; the backend runs the native binary it
+  // would spawn (internal/app/app_codex_binary.go).
+  let pillTitle = $derived(
+    status?.wrapperPath
+      ? `Runs ${status.binaryPath}, the native binary the npm wrapper ${status.wrapperPath} starts, so threads skip its Node process.`
+      : status?.version || undefined,
+  );
 
   function statusDotColor(state: string): string {
     switch (state) {
@@ -138,23 +187,56 @@
         `Whether ${definition.label} is offered to new threads, and which binary and models it runs with.`}
     >
       {#snippet badge()}
-        <span
-          class="inline-flex items-center gap-1.5 rounded-full border border-border-subtle bg-surface-0 px-2.5 py-0.5 text-[0.6875rem] text-fg-muted"
-          data-testid="settings-provider-status-pill"
-          data-status={status?.status ?? 'checking'}
-        >
+        <!-- As tall as the xs buttons from the start, so the update controls
+             appearing beside the pill move nothing below. Where the row is
+             too narrow for them they wrap under the pill. -->
+        <span class="flex min-h-6 min-w-0 flex-wrap items-center justify-end gap-1.5 compact:min-h-9">
           <span
-            class="h-1.5 w-1.5 rounded-full {statusDotColor(status?.status ?? 'unknown')}"
-            aria-hidden="true"
-          ></span>
-          <span class="whitespace-nowrap">{status?.status ?? 'checking'}</span>
-          {#if status?.version}
-            <span class="text-fg-hint">·</span>
-            <span class="font-mono text-[0.65625rem] text-fg-muted">{status.version}</span>
+            class="inline-flex min-w-0 items-center gap-1.5 rounded-full border border-border-subtle bg-surface-0 px-2.5 py-0.5 text-[0.6875rem] text-fg-muted"
+            data-testid="settings-provider-status-pill"
+            data-status={status?.status ?? 'checking'}
+            title={pillTitle}
+          >
+            <span
+              class="h-1.5 w-1.5 shrink-0 rounded-full {statusDotColor(status?.status ?? 'unknown')}"
+              aria-hidden="true"
+            ></span>
+            <span class="whitespace-nowrap">{status?.status ?? 'checking'}</span>
+            {#if status?.version}
+              <span class="text-fg-hint">·</span>
+              <span class="min-w-0 max-w-[14rem] truncate font-mono text-[0.65625rem] text-fg-muted">{status.version}</span>
+            {/if}
+          </span>
+          {#if checkFailure}
+            <span
+              class="shrink-0 whitespace-nowrap text-[0.6875rem] text-warning"
+              title={checkFailure}
+              data-testid="settings-provider-update-check-error"
+            >Update check failed</span>
+          {/if}
+          <ProviderUpdateButton
+            {provider}
+            {backend}
+            variant="tinted"
+            size="xs"
+            testId="settings-provider-update-button"
+          />
+          {#if notesOffered}
+            <Button
+              variant="ghost"
+              size="xs"
+              class="shrink-0"
+              testId="settings-provider-update-notes-button"
+              onclick={() => openProviderUpdateNotes(provider, backend)}
+            >
+              {#snippet children()}What's new{/snippet}
+            </Button>
           {/if}
         </span>
       {/snippet}
     </SettingsHeader>
+
+    <ProviderUpdateFailure {provider} {backend} class="mb-3" testId="settings-provider-update-error" />
 
     <div class="flex flex-col gap-1">
       <SettingsField
@@ -216,19 +298,6 @@
           class="{INPUT_CLASS} max-w-[16rem]"
         />
       </SettingsField>
-      {#if status?.wrapperPath}
-        <!-- Auto-detect found the npm wrapper; the backend runs the native
-             binary it would spawn (internal/app/app_codex_binary.go). -->
-        <p
-          class="text-[0.71875rem] leading-snug text-fg-muted"
-          data-testid="settings-provider-binary-resolved"
-        >
-          Runs <span class="font-mono break-all text-fg">{status.binaryPath}</span>, the native
-          binary the npm wrapper <span class="font-mono break-all">{status.wrapperPath}</span> starts,
-          so threads skip its Node process.
-        </p>
-      {/if}
-
       <SettingsField
         id={providerFieldId(provider, 'models')}
         label="Available models"

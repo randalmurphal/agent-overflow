@@ -3,6 +3,7 @@ import { invalidateClaudeProbeCommands } from './providerCommands.svelte';
 import { applyDictationSourcesChanged } from './dictation.svelte';
 import { applyReadAloudSourceChanged } from './readAloudSource.svelte';
 import { installComputerHydration } from './computerHydration';
+import { applyProviderUpdatesEvent, type ProviderUpdateStatus } from './providerUpdates.svelte';
 // Composition root for backend event wiring. `setupEventListeners()` is the
 // single place that subscribes to every Wails channel and fans events out
 // into the domain modules that actually own the reaction:
@@ -278,6 +279,7 @@ export function setupEventListeners(): () => void {
   if (attachedBackends().some((entry) => entry.home)) void hydrateRateLimitsSnapshots().catch((error) => {
     console.warn('events: hydrate rate-limit snapshots failed', error);
   });
+  const cancelProviderUpdates = wailsEventOn<ProviderUpdateStatus[] | null>('provider:updates', applyProviderUpdatesEvent);
   const cancelModelFallback = wailsEventOn<ModelFallbackEvent>(
     'provider:model_fallback',
     applyModelFallback,
@@ -865,6 +867,7 @@ export function setupEventListeners(): () => void {
     cancelUserInput();
     cancelAsyncQuestions();
     cancelUsage();
+    cancelProviderUpdates();
     cancelModelFallback();
     cancelProviderStatus();
     cancelProviderAccount();

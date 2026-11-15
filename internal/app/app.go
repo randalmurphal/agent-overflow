@@ -41,6 +41,8 @@ import (
 	"agent-overflow/internal/provideraccountapp"
 	"agent-overflow/internal/providerdiscoveryapp"
 	"agent-overflow/internal/providerlifecycleapp"
+	"agent-overflow/internal/providerupdate"
+	"agent-overflow/internal/providerupdate/updatefake"
 	"agent-overflow/internal/readaloud"
 	"agent-overflow/internal/remotejobs"
 	"agent-overflow/internal/reviewimage"
@@ -416,6 +418,22 @@ type App struct {
 	// updater owns the complete in-app update state machine. This shell retains
 	// only the stable App-bound wire adapters in app_updater.go.
 	updater *appupdate.Service
+	// providerUpdates owns provider CLI update checks, release notes and
+	// update runs. Built on first use by providerUpdateService; the
+	// App-bound adapters are in app_provider_update.go.
+	providerUpdates     *providerupdate.Service
+	providerUpdatesOnce sync.Once
+	// providerUpdateRunner replaces the provider update service's command
+	// runner. Production leaves it nil and runs textgen.ExecCLI; a test
+	// binary is refused without one (providerUpdateCommand).
+	providerUpdateRunner providerupdate.Runner
+	// providerUpdateClientOverride answers the provider release hosts.
+	// ConfigureIsolation sets one that providerUpdateFeed answers in
+	// process; nil uses the default client outside a test binary.
+	providerUpdateClientOverride *http.Client
+	// providerUpdateFeed is the isolated boot's fake release hosts
+	// (HarnessSetProviderUpdateFeed). Nil outside isolation.
+	providerUpdateFeed *updatefake.Feed
 	// webviewTrimLastUnixNano stamps the last accepted webview:trim request,
 	// the backend-side floor between forced renderer GCs
 	// (app_webview_trim.go). Atomic: read-CAS on the RPC path, no lock.
