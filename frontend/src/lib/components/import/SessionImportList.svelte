@@ -89,12 +89,14 @@
     disabled ? 'pointer-events-none opacity-60' : '',
   ].join(' ')}
 >
+  <!-- The cursor's row stays mounted, so `aria-activedescendant` names an element. -->
   <VirtualList
     items={rows}
     rowHeight={ROW_HEIGHT}
     overscan={8}
     role="presentation"
     class="max-h-[60vh]"
+    keepIndex={activeIndex}
     bind:viewportRef={viewport}
   >
     {#snippet children(row, index)}

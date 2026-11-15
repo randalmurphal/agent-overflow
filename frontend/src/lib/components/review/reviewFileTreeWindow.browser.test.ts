@@ -1,14 +1,16 @@
 import { mount, unmount } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { userEvent } from 'vitest/browser';
 import '../../../app.css';
 import ReviewFileTree from './ReviewFileTree.svelte';
 import type { PatchFile } from '../../utils/patchFiles';
-import { waitFor } from '../../../test/helpers/browserFrames';
+import { raf, waitFor } from '../../../test/helpers/browserFrames';
 
 // The file tree mounts only the rows in view. In real Chromium: a diff of
 // thousands of files mounts a window of rows, each as tall as an `h-7` row
 // and laid edge to edge, the scroll range covers every row, the last file
-// is reached by scrolling and opens, and rows follow the root font size.
+// is reached by scrolling and opens, rows follow the root font size, and a
+// focused row scrolled away keeps its place in the tab order.
 
 const FILE_COUNT = 3000;
 // One directory row above the files.
@@ -105,6 +107,24 @@ describe('<ReviewFileTree> windowing in a real browser', () => {
     expect(viewport(root).scrollHeight).toBe(ROW_COUNT * 35 + 10);
   });
 
+  it('keeps the row height while the rail is hidden', async () => {
+    const root = mountTree();
+    await waitFor(() => rows(root).length > 16, 'the viewport height to reach the list');
+    document.documentElement.style.setProperty('font-size', '20px');
+    await waitFor(() => rows(root)[0].getBoundingClientRect().height === 35, 'rows to take the new height');
+
+    // Hidden, the row probe measures 0.
+    root.style.display = 'none';
+    await raf();
+    await raf();
+    expect(root.querySelector<HTMLElement>('[data-testid="virtual-list-spacer"]')!.style.height).toBe(`${ROW_COUNT * 35}px`);
+    expect(rows(root)[0].style.height).toBe('35px');
+
+    root.style.display = 'flex';
+    await raf();
+    expectTiled(root, 35);
+  });
+
   it('shows a filter typed while scrolled to the end', async () => {
     const root = mountTree();
     await waitFor(() => rows(root).length > 16, 'the viewport height to reach the list');
@@ -116,7 +136,7 @@ describe('<ReviewFileTree> windowing in a real browser', () => {
     search.value = 'mod001';
     search.dispatchEvent(new Event('input', { bubbles: true }));
     await waitFor(() => filePaths(root).length === 10, 'the ten matches to mount');
-    expect(filePaths(root)[0]).toBe('src/mod0010.ts');
+    expect(filePaths(root)).toEqual(Array.from({ length: 10 }, (_, index) => `src/mod001${index}.ts`));
     expect(list.scrollTop).toBe(0);
     expectTiled(root, 28);
   });
@@ -148,6 +168,31 @@ describe('<ReviewFileTree> windowing in a real browser', () => {
     await waitFor(() => filePaths(root).at(-1) === FILES[FILE_COUNT - 1].path, 'the last file to mount');
     root.querySelector<HTMLInputElement>('[data-testid="review-tree-search"]')!.focus();
     await waitFor(() => !filePaths(root).includes(path), 'the unfocused row to unmount');
+  });
+
+  it('moves Tab and Shift+Tab to the neighbors of a focused row scrolled out of the window', async () => {
+    const root = mountTree();
+    await waitFor(() => rows(root).length > 16, 'the viewport height to reach the list');
+    const list = viewport(root);
+    const scrollToEnd = async () => {
+      list.scrollTop = list.scrollHeight;
+      await waitFor(() => filePaths(root).at(-1) === FILES[FILE_COUNT - 1].path, 'the last file to mount');
+    };
+    const focusedPath = () => (document.activeElement as HTMLElement | null)?.dataset.filePath;
+    root.querySelector<HTMLElement>(`[data-file-path="${FILES[2].path}"]`)!.focus();
+
+    await scrollToEnd();
+    await userEvent.keyboard('{Shift>}{Tab}{/Shift}');
+    expect(focusedPath()).toBe(FILES[1].path);
+
+    await scrollToEnd();
+    await userEvent.keyboard('{Tab}');
+    expect(focusedPath()).toBe(FILES[2].path);
+
+    // The kept rows are the focused row and its two neighbors.
+    await scrollToEnd();
+    const kept = rows(root).filter((row) => row.style.position === 'absolute');
+    expect(kept.map((row) => row.dataset.rowIndex)).toEqual(['2', '3', '4']);
   });
 
   it('positions rows without a transform and names the whole list to a screen reader', async () => {

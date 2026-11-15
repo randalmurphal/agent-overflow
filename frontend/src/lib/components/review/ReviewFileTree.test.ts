@@ -1,6 +1,5 @@
 import { fireEvent, render } from '@testing-library/svelte';
-import { tick } from 'svelte';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import ReviewFileTree from './ReviewFileTree.svelte';
 import ReviewRail from './ReviewRail.svelte';
 import { appStorageGet, appStorageSet, resetAppStorageForTest } from '../../stores/appStorage';
@@ -55,6 +54,20 @@ describe('<ReviewFileTree>', () => {
       target: { value: 'no-such-file' },
     });
     expect(view.getByTestId('review-tree-empty')).toBeInTheDocument();
+  });
+
+  it('says no file matches without an empty list beside it', async () => {
+    const view = render(ReviewFileTree, { files: FILES, onSelectFile: () => {} });
+    const search = view.getByTestId('review-tree-search');
+
+    await fireEvent.input(search, { target: { value: 'no-such-file' } });
+    expect(view.getByTestId('review-tree-empty')).toBeInTheDocument();
+    expect(view.queryByRole('list')).toBeNull();
+
+    await fireEvent.input(search, { target: { value: '' } });
+    expect(view.queryByTestId('review-tree-empty')).toBeNull();
+    expect(view.getByRole('list')).toBeInTheDocument();
+    expect(view.getAllByTestId('review-tree-file')).toHaveLength(5);
   });
 
   it('filters by file type through the dropdown with full-set counts', async () => {
@@ -394,107 +407,5 @@ describe('<ReviewFileTree> folder collapse under filters', () => {
     expect(dir(view, 'docs').getAttribute('aria-expanded')).toBe('false');
     expect(dir(view, 'internal/git').getAttribute('aria-expanded')).toBe('true');
     expect(filePaths(view)).toEqual(['internal/git/forge_test.go', 'internal/git/forge.go', 'src/app.test.ts', 'src/app.ts']);
-  });
-});
-
-describe('<ReviewFileTree> with thousands of files', () => {
-  // Reports a fixed height per element: the row probe and the list viewport.
-  let probeHeight = 28;
-  const VIEWPORT_HEIGHT = 560;
-  let observers: { callback: ResizeObserverCallback; targets: Element[] }[] = [];
-  function report(): void {
-    for (const observer of observers) {
-      const entries = observer.targets.map((target) => ({
-        target,
-        contentRect: {
-          height: target.getAttribute('data-testid') === 'review-tree-row-probe' ? probeHeight : VIEWPORT_HEIGHT,
-        },
-      }));
-      if (entries.length > 0) observer.callback(entries as unknown as ResizeObserverEntry[], {} as ResizeObserver);
-    }
-  }
-  class SizedResizeObserver {
-    private readonly record: { callback: ResizeObserverCallback; targets: Element[] };
-    constructor(callback: ResizeObserverCallback) {
-      this.record = { callback, targets: [] };
-      observers.push(this.record);
-    }
-    observe(target: Element): void {
-      this.record.targets.push(target);
-      report();
-    }
-    unobserve(): void {}
-    disconnect(): void {
-      observers = observers.filter((observer) => observer !== this.record);
-    }
-  }
-
-  beforeEach(() => {
-    probeHeight = 28;
-    observers = [];
-    vi.stubGlobal('ResizeObserver', SizedResizeObserver);
-  });
-  afterEach(() => {
-    vi.unstubAllGlobals();
-  });
-
-  const MANY = Array.from({ length: 3000 }, (_, index) => file(`src/mod${String(index).padStart(4, '0')}.ts`));
-  const mounted = (view: { queryAllByTestId(id: string): HTMLElement[] }) =>
-    view.queryAllByTestId('review-tree-file').map((node) => node.getAttribute('data-file-path'));
-
-  it('mounts the rows in view, not one per file', async () => {
-    const view = render(ReviewFileTree, { files: MANY, onSelectFile: () => {} });
-    await tick();
-
-    // 560px of 28px rows is 20 in view, plus 8 rows of overscan below.
-    expect(mounted(view).length).toBeLessThanOrEqual(36);
-    expect(mounted(view)[0]).toBe('src/mod0000.ts');
-    expect(view.getByTestId('virtual-list-spacer').style.height).toBe(`${3001 * 28}px`);
-  });
-
-  it('reaches the last file by scrolling and selects it', async () => {
-    const onSelectFile = vi.fn();
-    const view = render(ReviewFileTree, { files: MANY, onSelectFile });
-    await tick();
-    expect(mounted(view)).not.toContain('src/mod2999.ts');
-
-    const viewport = view.getByTestId('virtual-list-viewport');
-    viewport.scrollTop = 3001 * 28 - VIEWPORT_HEIGHT;
-    await fireEvent.scroll(viewport);
-
-    expect(mounted(view).at(-1)).toBe('src/mod2999.ts');
-    expect(mounted(view)).not.toContain('src/mod0000.ts');
-    await fireEvent.click(view.getByText('mod2999.ts'));
-    expect(onSelectFile).toHaveBeenCalledWith('src/mod2999.ts');
-  });
-
-  it('sizes rows from the measured row height, so they follow the font size', async () => {
-    const view = render(ReviewFileTree, { files: MANY, onSelectFile: () => {} });
-    await tick();
-    const row = () => view.getAllByTestId('virtual-list-row')[0];
-    expect(row().style.height).toBe('28px');
-
-    probeHeight = 35;
-    report();
-    await tick();
-    expect(row().style.height).toBe('35px');
-    expect(view.getByTestId('virtual-list-spacer').style.height).toBe(`${3001 * 35}px`);
-
-    // A hidden rail measures 0: the last real height stays.
-    probeHeight = 0;
-    report();
-    await tick();
-    expect(row().style.height).toBe('35px');
-  });
-
-  it('shows the matches of a filter typed while scrolled to the end', async () => {
-    const view = render(ReviewFileTree, { files: MANY, onSelectFile: () => {} });
-    await tick();
-    const viewport = view.getByTestId('virtual-list-viewport');
-    viewport.scrollTop = 3001 * 28 - VIEWPORT_HEIGHT;
-    await fireEvent.scroll(viewport);
-
-    await fireEvent.input(view.getByTestId('review-tree-search'), { target: { value: 'mod001' } });
-    expect(mounted(view)).toEqual(Array.from({ length: 10 }, (_, index) => `src/mod001${index}.ts`));
   });
 });

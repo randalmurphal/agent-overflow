@@ -1,22 +1,14 @@
 <script lang="ts" generics="T">
-  // Fixed-height row virtualization. Renders only the rows visible in the
-  // current viewport plus a small overscan buffer; everything else is
-  // reserved by a spacer div so scrolling still behaves correctly. This
-  // is the simplest form of virtualization — it trades flexibility (all
-  // rows must agree on a height) for predictability.
+  // Fixed-height row virtualization. Mounts the rows in the viewport plus
+  // `overscan` on each side; a spacer holds the scroll height of every row.
+  // All rows share `rowHeight`, and a row fills its wrapper (`h-full`).
+  // Rows are keyed by `key`, else by the item's `id`, else by index.
   //
-  // Usage:
-  //
-  //   <VirtualList items={rows} rowHeight={48}>
-  //     {#snippet children(item, index)}
-  //       <ThreadRow {thread} />
-  //     {/snippet}
-  //   </VirtualList>
-  //
-  // A row fills its `rowHeight` wrapper (`h-full`). Rows are keyed by
-  // `key`, else by the item's `id`, else by index. The row holding
-  // keyboard focus stays mounted when it scrolls out of the window, so
-  // focus is never dropped by scrolling.
+  // Some rows stay mounted outside the window, each at its own offset:
+  // the row holding keyboard focus and its two neighbors, so scrolling
+  // never drops focus and Tab and Shift+Tab from it reach the rows beside
+  // it, and the `keepIndex` row, for a caller that names a row by id
+  // (`aria-activedescendant`).
 
   import type { Snippet } from 'svelte';
 
@@ -29,6 +21,7 @@
     class: extraClass = '',
     children,
     key,
+    keepIndex,
     viewportRef = $bindable(undefined),
   }: {
     items: T[];
@@ -39,6 +32,8 @@
     class?: string;
     children?: Snippet<[T, number]>;
     key?: (item: T, index: number) => string | number;
+    /** Index of an item that stays mounted outside the window. */
+    keepIndex?: number;
     viewportRef?: HTMLDivElement | undefined;
   } = $props();
 
@@ -78,18 +73,24 @@
     if (focusedKey !== undefined && focusedIndex < 0) focusedKey = undefined;
   });
 
-  // The window's rows in index order, with the focused row before or
-  // after them when it is outside the window.
+  // Every mounted row in index order, so the document's tab order is the
+  // list's: the kept rows above the window, the window, the kept rows
+  // below it.
   let rows = $derived.by(() => {
-    const out: { item: T; index: number; pinned: boolean }[] = [];
-    if (focusedIndex >= 0 && focusedIndex < startIndex) {
-      out.push({ item: items[focusedIndex], index: focusedIndex, pinned: true });
+    const wanted = focusedIndex >= 0 ? [focusedIndex - 1, focusedIndex, focusedIndex + 1] : [];
+    if (keepIndex !== undefined) wanted.push(keepIndex);
+    const outside = [...new Set(wanted)]
+      .filter((index) => index >= 0 && index < items.length && (index < startIndex || index >= endIndex))
+      .sort((a, b) => a - b);
+    const out: { item: T; index: number; kept: boolean }[] = [];
+    for (const index of outside) {
+      if (index < startIndex) out.push({ item: items[index], index, kept: true });
     }
     for (let index = startIndex; index < endIndex; index += 1) {
-      out.push({ item: items[index], index, pinned: false });
+      out.push({ item: items[index], index, kept: false });
     }
-    if (focusedIndex >= endIndex) {
-      out.push({ item: items[focusedIndex], index: focusedIndex, pinned: true });
+    for (const index of outside) {
+      if (index >= endIndex) out.push({ item: items[index], index, kept: true });
     }
     return out;
   });
@@ -147,11 +148,11 @@
     onfocusout={handleFocusOut}
   >
     <!-- The window's rows are in flow under a pad of the rows above them.
-         A pinned row is out of flow at its own offset. -->
+         A kept row is out of flow at its own offset. -->
     <div style={`height: ${offsetY}px;`} aria-hidden="true"></div>
     {#each rows as row (rowKey(row.item, row.index))}
       <div
-        style={row.pinned
+        style={row.kept
           ? `position: absolute; top: ${row.index * rowHeight}px; left: 0; right: 0; height: ${rowHeight}px;`
           : `height: ${rowHeight}px;`}
         role={role === 'list' ? 'listitem' : undefined}
@@ -167,11 +168,8 @@
 </div>
 
 <script lang="ts" module>
-  // Build a stable key for each row. We look for an `id` field on the
-  // item first (the common Thread/Item/Message shape), falling back to
-  // the absolute index when no id exists. The outer `startIndex +
-  // windowIdx` ensures index-based keys stay unique even as the visible
-  // window slides.
+  // A row's key without a `key` prop: the item's `id` when it has one,
+  // else its absolute index in `items`.
   function keyOf(item: unknown, index: number): string | number {
     if (item && typeof item === 'object' && 'id' in item) {
       const id = (item as { id: unknown }).id;

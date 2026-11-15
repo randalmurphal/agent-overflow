@@ -36,8 +36,7 @@
     files: readonly DiffFileSummary[];
     activeFileIndex?: number;
     onSelectFile: (filePath: string) => void;
-    /** Per-file comment/draft counts for the badge pills. */
-    /** Comments per file; the badge tints warning while any is unresolved. */
+    /** Comments and drafts per file; the badge tints warning while any is unresolved. */
     commentCounts?: ReadonlyMap<string, CommentFileCounts>;
     /** Hides the tree; the button renders only when a handler is
      * provided (the rail's strip shows it again). */
@@ -286,68 +285,69 @@
       <div class="px-3 py-2 text-xs text-fg-muted" data-testid="review-tree-empty">
         No matching files.
       </div>
+    {:else}
+      <VirtualList
+        items={visibleNodes}
+        {rowHeight}
+        overscan={8}
+        class="min-h-0 flex-1 pb-2"
+        key={(entry) => entry.node.path}
+      >
+        {#snippet children(entry)}
+          {@const node = entry.node}
+          {#if node.kind === 'directory'}
+            <button
+              type="button"
+              class="flex h-full w-full min-w-0 items-center pr-2 text-left text-xs text-fg-muted hover:bg-surface-2/50 hover:text-fg"
+              aria-expanded={!collapsedInEffect.has(node.path)}
+              onclick={() => toggleDirectory(node.path)}
+              data-testid="review-tree-dir"
+            >
+              {@render indentGuides(entry.depth)}
+              <span class="flex min-w-0 items-center gap-1 pl-0.5">
+                <Icon
+                  icon={ChevronRight}
+                  size={12}
+                  class={collapsedInEffect.has(node.path) ? 'shrink-0' : 'shrink-0 rotate-90'}
+                />
+                <Icon icon={Folder} size={12} class="shrink-0 opacity-80" />
+                <span class="min-w-0 truncate">{node.name}</span>
+              </span>
+            </button>
+          {:else}
+            {@const commentCount = commentCounts?.get(node.path)?.total ?? 0}
+            {@const openCount = commentCounts?.get(node.path)?.unresolved ?? 0}
+            <button
+              type="button"
+              class="flex h-full w-full min-w-0 items-center pr-2 text-left text-xs hover:bg-surface-2/50 {isActive(node) ? 'bg-accent/15 text-fg' : 'text-fg-muted hover:text-fg'}"
+              onclick={() => onSelectFile(node.path)}
+              data-testid="review-tree-file"
+              data-file-path={node.path}
+              aria-current={isActive(node) ? 'true' : undefined}
+            >
+              {@render indentGuides(entry.depth)}
+              <span class="flex min-w-0 flex-1 items-center gap-1.5 pl-0.5">
+                <Icon icon={FileText} size={12} class="shrink-0 opacity-75" />
+                <span class="min-w-0 flex-1 truncate {fileNameClass(node.fileKind)}">{node.name}</span>
+                {#if commentCount > 0}
+                  <span
+                    class="shrink-0 rounded-full px-1.5 text-[0.625rem] tabular-nums {openCount > 0 ? 'bg-warning/12 text-warning' : 'bg-surface-2 text-fg-muted'}"
+                    title="{commentCount} comment{commentCount === 1 ? '' : 's'}{openCount > 0 ? `, ${openCount} unresolved` : ''}"
+                    data-open-count={openCount}
+                    data-testid="review-tree-comment-count"
+                  >{commentCount}</span>
+                {/if}
+                {#if node.additions > 0}
+                  <span class="shrink-0 text-[0.6875rem] tabular-nums text-success">+{node.additions}</span>
+                {/if}
+                {#if node.deletions > 0}
+                  <span class="shrink-0 text-[0.6875rem] tabular-nums text-error">-{node.deletions}</span>
+                {/if}
+              </span>
+            </button>
+          {/if}
+        {/snippet}
+      </VirtualList>
     {/if}
-    <VirtualList
-      items={visibleNodes}
-      {rowHeight}
-      overscan={8}
-      class="min-h-0 flex-1 pb-2"
-      key={(entry) => entry.node.path}
-    >
-      {#snippet children(entry)}
-        {@const node = entry.node}
-        {#if node.kind === 'directory'}
-          <button
-            type="button"
-            class="flex h-full w-full min-w-0 items-center pr-2 text-left text-xs text-fg-muted hover:bg-surface-2/50 hover:text-fg"
-            aria-expanded={!collapsedInEffect.has(node.path)}
-            onclick={() => toggleDirectory(node.path)}
-            data-testid="review-tree-dir"
-          >
-            {@render indentGuides(entry.depth)}
-            <span class="flex min-w-0 items-center gap-1 pl-0.5">
-              <Icon
-                icon={ChevronRight}
-                size={12}
-                class={collapsedInEffect.has(node.path) ? 'shrink-0' : 'shrink-0 rotate-90'}
-              />
-              <Icon icon={Folder} size={12} class="shrink-0 opacity-80" />
-              <span class="min-w-0 truncate">{node.name}</span>
-            </span>
-          </button>
-        {:else}
-          {@const commentCount = commentCounts?.get(node.path)?.total ?? 0}
-          {@const openCount = commentCounts?.get(node.path)?.unresolved ?? 0}
-          <button
-            type="button"
-            class="flex h-full w-full min-w-0 items-center pr-2 text-left text-xs hover:bg-surface-2/50 {isActive(node) ? 'bg-accent/15 text-fg' : 'text-fg-muted hover:text-fg'}"
-            onclick={() => onSelectFile(node.path)}
-            data-testid="review-tree-file"
-            data-file-path={node.path}
-            aria-current={isActive(node) ? 'true' : undefined}
-          >
-            {@render indentGuides(entry.depth)}
-            <span class="flex min-w-0 flex-1 items-center gap-1.5 pl-0.5">
-              <Icon icon={FileText} size={12} class="shrink-0 opacity-75" />
-              <span class="min-w-0 flex-1 truncate {fileNameClass(node.fileKind)}">{node.name}</span>
-              {#if commentCount > 0}
-                <span
-                  class="shrink-0 rounded-full px-1.5 text-[0.625rem] tabular-nums {openCount > 0 ? 'bg-warning/12 text-warning' : 'bg-surface-2 text-fg-muted'}"
-                  title="{commentCount} comment{commentCount === 1 ? '' : 's'}{openCount > 0 ? `, ${openCount} unresolved` : ''}"
-                  data-open-count={openCount}
-                  data-testid="review-tree-comment-count"
-                >{commentCount}</span>
-              {/if}
-              {#if node.additions > 0}
-                <span class="shrink-0 text-[0.6875rem] tabular-nums text-success">+{node.additions}</span>
-              {/if}
-              {#if node.deletions > 0}
-                <span class="shrink-0 text-[0.6875rem] tabular-nums text-error">-{node.deletions}</span>
-              {/if}
-            </span>
-          </button>
-        {/if}
-      {/snippet}
-    </VirtualList>
   </nav>
 </div>
