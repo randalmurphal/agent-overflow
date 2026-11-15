@@ -686,3 +686,37 @@ func TestStartedMarkersKeepOnlyTheNewest(t *testing.T) {
 		t.Fatalf("after two more starts: %q", got)
 	}
 }
+
+// The marker is on disk, whole and under its own name, before the command's
+// process exists: a crash after the process started must find it.
+func TestTheStartIsRecordedBeforeTheCommandRuns(t *testing.T) {
+	t.Parallel()
+	dir := filepath.Join(t.TempDir(), "captures")
+	markers := filepath.Join(dir, startedMarkersDir)
+	recorded := make(chan string, 1)
+	rec := &recorder{}
+	service := newService(t, rec, func(config *Config) {
+		config.Dir = dir
+		config.Run = func(ctx context.Context, command procutil.GroupCommand) (procutil.GroupOutcome, error) {
+			entries, err := os.ReadDir(markers)
+			if err != nil {
+				return procutil.GroupOutcome{ExitCode: -1}, err
+			}
+			names := make([]string, 0, len(entries))
+			for _, entry := range entries {
+				names = append(names, entry.Name())
+			}
+			recorded <- strings.Join(names, " ")
+			return procutil.RunGroup(ctx, command)
+		}
+	})
+	if _, err := service.Start(shellRequest(t, "run-1", "true")); err != nil {
+		t.Fatal(err)
+	}
+	if got := <-recorded; got != "run-1" {
+		t.Fatalf("the markers directory held %q when the command started, want the run's marker alone", got)
+	}
+	if terminal := rec.terminal(t); terminal.State != StateSent {
+		t.Fatalf("terminal frame: %+v", terminal)
+	}
+}

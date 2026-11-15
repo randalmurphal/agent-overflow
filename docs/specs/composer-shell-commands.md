@@ -40,7 +40,8 @@ the bound methods and what a result becomes.
   whose start reply was lost asks again with the same run id.
 - A command that did not become a message leaves no record a later process
   could answer from, so the service writes an empty marker file per started
-  command (`shell-runs/started/`, newest 256) before the process exists. A
+  command (`shell-runs/started/`, newest 256) and syncs it and its directory
+  before the process exists. A
   start repeated after a restart with such an id is refused with
   `shellrun.ErrStartedBeforeRestart` and the composer restores the text; the
   next Run mints a new id.
