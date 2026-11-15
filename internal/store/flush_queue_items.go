@@ -98,45 +98,45 @@ func (s *Store) DeleteDispatchedFlushQueueItem(id string) error {
 
 // RestoreFlushQueueToDraft commits a merged composer and retires its queue
 // records together. A failure cannot leave text that a later restore duplicates.
-func (s *Store) RestoreFlushQueueToDraft(expected, merged ThreadDraft, ids []string) (bool, error) {
+func (s *Store) RestoreFlushQueueToDraft(expected, merged ThreadDraft, ids []string) (DraftWrite, error) {
 	if merged.ThreadID == "" || expected.ThreadID != merged.ThreadID {
-		return false, fmt.Errorf("queue restoration requires matching draft threads")
+		return DraftWrite{}, fmt.Errorf("queue restoration requires matching draft threads")
 	}
 	tx, err := s.db.Begin()
 	if err != nil {
-		return false, err
+		return DraftWrite{}, err
 	}
 	defer tx.Rollback()
 	current, _, err := getThreadDraft(tx, merged.ThreadID)
 	if err != nil {
-		return false, err
+		return DraftWrite{}, err
 	}
 	if current != expected {
-		return false, fmt.Errorf("composer changed during queue restoration; queue retained")
+		return DraftWrite{}, fmt.Errorf("composer changed during queue restoration; queue retained")
 	}
-	changed, err := upsertThreadDraft(tx, merged)
+	write, err := upsertThreadDraft(tx, merged)
 	if err != nil {
-		return false, err
+		return DraftWrite{}, err
 	}
 	for _, id := range ids {
 		var owner string
 		err := tx.QueryRow(`SELECT thread_id FROM flush_queue_items WHERE id=?`, id).Scan(&owner)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return false, err
+			return DraftWrite{}, err
 		}
 		if owner != "" && owner != merged.ThreadID {
-			return false, fmt.Errorf("queue item belongs to another thread")
+			return DraftWrite{}, fmt.Errorf("queue item belongs to another thread")
 		}
 		if _, err := tx.Exec(`UPDATE async_questions SET state='restored',user_item_id=''
  WHERE state='submitted' AND send_id<>'' AND (thread_id,send_id) IN
  (SELECT thread_id,send_id FROM flush_queue_items WHERE id=?)`, id); err != nil {
-			return false, err
+			return DraftWrite{}, err
 		}
 		if _, err := tx.Exec(`DELETE FROM flush_queue_items WHERE id=?`, id); err != nil {
-			return false, err
+			return DraftWrite{}, err
 		}
 	}
-	return changed, tx.Commit()
+	return write, tx.Commit()
 }
 
 // DeleteFlushQueueItemsForThread drops every queued message of one thread.

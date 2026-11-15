@@ -87,27 +87,37 @@ func clientOf(ctx context.Context) transport.ClientIdentity {
 
 // writeThreadDraft persists a draft and announces it if it moved.
 func (a *App) writeThreadDraft(who transport.ClientIdentity, draft store.ThreadDraft) error {
-	changed, err := a.store.UpsertThreadDraft(draft)
+	write, err := a.store.UpsertThreadDraft(draft)
 	if err != nil {
 		return err
 	}
-	if !changed {
-		return nil
-	}
-	a.broadcastDraft(who, DraftUpdatedEvent{
-		ThreadID:  draft.ThreadID,
-		UpdatedAt: draft.UpdatedAt,
-	})
+	a.announceDraftWrite(who, draft.ThreadID, draft.UpdatedAt, write)
 	return nil
 }
 
 func (a *App) writeMovedThreadDraft(who transport.ClientIdentity, source, destination store.ThreadDraft) error {
-	if err := a.store.MoveThreadDraft(source, destination); err != nil {
+	write, err := a.store.MoveThreadDraft(source, destination)
+	if err != nil {
 		return err
 	}
-	a.broadcastDraft(who, DraftUpdatedEvent{ThreadID: destination.ThreadID, UpdatedAt: destination.UpdatedAt})
+	a.announceDraftWrite(who, destination.ThreadID, destination.UpdatedAt, write)
 	a.broadcastDraft(who, DraftUpdatedEvent{ThreadID: source.ThreadID, UpdatedAt: destination.UpdatedAt})
 	return nil
+}
+
+// announceDraftWrite announces a draft write that moved the row: its
+// `draft:updated` frame and, when the write listed the thread, `listed`.
+// ListThreads lists a never-sent thread only once its draft has content, so
+// a screen whose catalog read came between the thread's creation and this
+// write learns of the thread only from that frame.
+func (a *App) announceDraftWrite(who transport.ClientIdentity, threadID string, updatedAt int64, write store.DraftWrite) {
+	if !write.Changed {
+		return
+	}
+	if write.Listed {
+		a.announceThread(triage.ThreadActionListed, threadID)
+	}
+	a.broadcastDraft(who, DraftUpdatedEvent{ThreadID: threadID, UpdatedAt: updatedAt})
 }
 
 // removeThreadDraft deletes and announces only the consumed snapshot. A nil
@@ -142,21 +152,19 @@ func (a *App) broadcastDraft(who transport.ClientIdentity, evt DraftUpdatedEvent
 
 // writeRecoveredThreadDraft atomically consumes a recovery row with its draft write.
 func (a *App) writeRecoveredThreadDraft(who transport.ClientIdentity, recovery store.ThreadDraftRecovery, expected, merged store.ThreadDraft) (bool, error) {
-	committed, changed, err := a.store.CommitThreadDraftRecovery(recovery, expected, merged)
-	if err != nil || !committed || !changed {
+	committed, write, err := a.store.CommitThreadDraftRecovery(recovery, expected, merged)
+	if err != nil || !committed {
 		return committed, err
 	}
-	a.broadcastDraft(who, DraftUpdatedEvent{ThreadID: recovery.ThreadID, UpdatedAt: merged.UpdatedAt})
+	a.announceDraftWrite(who, recovery.ThreadID, merged.UpdatedAt, write)
 	return true, nil
 }
 
 func (a *App) writeRestoredQueueDraft(expected, merged store.ThreadDraft, queueIDs []string) error {
-	changed, err := a.store.RestoreFlushQueueToDraft(expected, merged, queueIDs)
+	write, err := a.store.RestoreFlushQueueToDraft(expected, merged, queueIDs)
 	if err != nil {
 		return err
 	}
-	if changed {
-		a.broadcastDraft(transport.ClientIdentity{}, DraftUpdatedEvent{ThreadID: merged.ThreadID, UpdatedAt: merged.UpdatedAt})
-	}
+	a.announceDraftWrite(transport.ClientIdentity{}, merged.ThreadID, merged.UpdatedAt, write)
 	return nil
 }
