@@ -1063,8 +1063,11 @@ func (c *Client) CredentialFingerprint(ctx context.Context) (string, error) // s
   restart. A JSON body is re-encoded for
   the retry after a 401 refresh; a one-shot `io.Reader` body refreshes the
   token and fails with `*TransientError` instead.
-- `Pages` follows GitHub `Link: rel="next"` and GitLab `X-Next-Page` /
-  `Link`; the caller's `visit` returning false is the page cap.
+- `Pages` follows GitLab's `X-Next-Page` on the client's own base first (GitLab
+  builds `Link` from its configured host, port and the scheme Rails saw,
+  which can differ from glab's `api_host`), then `Link: rel="next"`
+  (GitHub), refusing one off the base; the caller's `visit` returning
+  false is the page cap.
 - An absolute `Path` is accepted only when `Request.Attachment` is set; the
   attachment fetchers set it, nothing else does. An isolated boot rewrites an
   absolute URL onto the fake's base and records the original absolute URL,

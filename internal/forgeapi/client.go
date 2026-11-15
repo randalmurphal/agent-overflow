@@ -184,10 +184,14 @@ func (c *Client) CredentialFingerprint(ctx context.Context) (string, error) {
 	return c.fp, nil
 }
 
-// Pages sends r and follows the next page, GitHub's Link rel="next" first,
-// then GitLab's X-Next-Page, for as long as visit answers more. The page
-// cap is visit's: it returns false once the caller has the pages it wants.
-// A next link off the host's REST base is refused.
+// Pages sends r and follows the next page, GitLab's X-Next-Page first,
+// then a Link rel="next" (GitHub's, and GitLab's keyset pagination), for
+// as long as visit answers more. The page cap is visit's: it returns
+// false once the caller has the pages it wants. A next link off the
+// host's REST base is refused. GitLab builds its Link from the
+// instance's configured host and port and the scheme Rails saw, which
+// can differ from the base glab names, so its page number is followed
+// on the client's own base.
 func (c *Client) Pages(ctx context.Context, r Request, visit func(*Response) (more bool, err error)) error {
 	next := r
 	for {
@@ -208,6 +212,15 @@ func (c *Client) Pages(ctx context.Context, r Request, visit func(*Response) (mo
 }
 
 func (c *Client) nextPage(resp *Response, r Request) (Request, bool, error) {
+	if page := strings.TrimSpace(resp.Header.Get("X-Next-Page")); page != "" {
+		query := url.Values{}
+		for k, v := range r.Query {
+			query[k] = v
+		}
+		query.Set("page", page)
+		r.Query = query
+		return r, true, nil
+	}
 	if link := nextLink(resp.Header.Values("Link")); link != "" {
 		target, err := url.Parse(link)
 		if err != nil {
@@ -222,15 +235,6 @@ func (c *Client) nextPage(resp *Response, r Request) (Request, bool, error) {
 		}
 		r.Path = strings.TrimPrefix(target.String(), prefix)
 		r.Query = nil
-		return r, true, nil
-	}
-	if page := strings.TrimSpace(resp.Header.Get("X-Next-Page")); page != "" {
-		query := url.Values{}
-		for k, v := range r.Query {
-			query[k] = v
-		}
-		query.Set("page", page)
-		r.Query = query
 		return r, true, nil
 	}
 	return Request{}, false, nil
