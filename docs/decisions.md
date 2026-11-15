@@ -470,7 +470,8 @@ Mechanism in
   in the activity rail's Agents segment, apart from Background, with a
   user Stop that keeps the caller's wake armed and brings a spawned
   thread to rest on any computer: its session and everything it waits on
-  or started end, and it stays where it was
+  or started end, a workflow run it started is paused with its members'
+  sessions ended and stays resumable, and it stays where it was
   ([at rest](specs/standing-agents.md#at-rest)); settled ones page under Past;
   incoming agent messages list there instead of the composer's queue
   (standing agents

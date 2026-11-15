@@ -742,8 +742,8 @@ Ruling 36, as built:
 ### At rest
 
 A thread is at rest when it has no turn, no queued message, no open
-prompt, no background work, no armed loop, watch or reminder, and no
-open work below it. A Stop of a thread a thread spawned brings it to
+prompt, no background work, no armed loop, watch or reminder, no running
+workflow run it started, and no open work below it. A Stop of a thread a thread spawned brings it to
 rest: the Agents row's Stop of a spawn and Stop All
 ([Agents segment](#agents-segment)), and an agent's `thread_cancel` by
 thread id of a thread it spawned
@@ -762,12 +762,21 @@ computer that holds the thread:
    outcome `cancelled: the user stopped the thread` (an agent's stop:
    `cancelled: thread "<title>" stopped the thread`) and dismisses the
    remote completions its agent has not taken in, queued or not.
-3. Settles every open request on it, from any thread on any computer,
+3. Pauses every workflow run it started that is running, with Pause and
+   End Sessions ([Interrupt and end session](#interrupt-and-end-session)):
+   the run reads paused, its members' sessions end, and it stays bound
+   to the thread and resumable from the workflows view. The rest the
+   pause makes does not wake the thread, whenever it arrives; a rest
+   after somebody resumes the run does. A run already paused, parked or
+   finished is left as it is; a run's running descendants under a parked
+   root are paused. A run a person bound to the thread is not the
+   thread's and is left running.
+4. Settles every open request on it, from any thread on any computer,
    cancelled as the user's Stop (`The user stopped it from the Agents
    tray; you did not cancel it.`) or the agent's: its message is taken
    back, a turn it started is cut, and its sender is woken as it asked.
    None is queued again.
-4. Under the action lock every send and start takes, cuts its turn with
+5. Under the action lock every send and start takes, cuts its turn with
    the stop row (`Stopped by user`, or `Stopped by thread "<title>"`)
    and ends its session as End Session does, a thread with no session
    included: the provider process and everything it runs (background
@@ -776,21 +785,28 @@ computer that holds the thread:
    its spawner are withdrawn, and the messages the person queued in its
    composer are dropped with the queue. A loop or watch the turn
    registered meanwhile is cancelled before the lock is released.
-5. Withdraws what the app queued for it and cancels its asks and the
+6. Withdraws what the app queued for it and cancels its asks and the
    commands it started on paired computers, as an archive does.
-6. Stops every request it made: a reminder is dropped, a send or ask is
+7. Stops every request it made: a reminder is dropped, a send or ask is
    cancelled with its wake disarmed and only the turn it started cut,
    and a spawn's thread, in any placement and settled or not, is
    brought to rest by this rule, here or through `agent_stop` on its
    computer, to any depth the ledger holds, a cycle ended by the
    threads already reached.
-7. Sends a prompt routed to it from a worker it left running to the
+8. Sends a prompt routed to it from a worker it left running to the
    user.
+
+A thread a running workflow run works in, as a phase or a fan-out unit, is
+that run's, and a Stop leaves it and the run as they are and names the run
+(`it works in workflow run <id>, which it did not start; pause that run from
+the workflows view`). The runner makes every member thread, so a spawn
+reaches one only through a ledger row nothing writes.
 
 The thread is not archived, moved or regrouped and keeps its history and
 its browser pages; a later message from anyone starts a session that
-resumes it. A step that
-fails is named in the Stop's failures, and the others still run. A
+resumes it. A step that fails is named in the Stop's failures (a run it
+could not pause: `pause its workflow run <id>: <error>`), and the others
+still run. A
 repeated Stop finds the thread at rest.
 
 ### Sidebar
@@ -1598,7 +1614,8 @@ session live or starting (`provider:session_live`, capability
 Session stays enabled. A workflow run's Pause is Interrupt for its
 members (it keeps their sessions, as it did); Pause and End Sessions
 also ends the session of every member it paused, and Resume starts them
-again on the same provider threads. The Agents row's Stop on a spawned
+again on the same provider threads. A Stop that brings a thread to rest
+makes the same Pause and End Sessions of the runs it started. The Agents row's Stop on a spawned
 thread brings it to rest ([At rest](#at-rest)), which ends its session.
 
 ### Workflows to MCP
