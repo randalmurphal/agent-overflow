@@ -138,7 +138,10 @@ func projectShellCommandRun(state shellrun.RunState) ShellCommandRun {
 // command runs with the person's own environment and no sandbox, whatever the
 // thread's runtime mode: the mode governs the agent, not the person.
 //
-// LocalOnly: this executes an arbitrary command. RCE-equivalent.
+// It executes an arbitrary command on this machine. Any session granted
+// terminal:operate reaches it, a paired phone or a connected browser
+// included; the method also requires threads:operate, because it sends to
+// the thread, and the autonomy check a send makes.
 //
 //ao:scope terminal:operate
 func (a *App) RunThreadShellCommand(ctx context.Context, threadID string, request ShellCommandRequest) (ShellCommandRun, error) {
@@ -220,7 +223,8 @@ func (a *App) StopThreadShellCommand(threadID, runID string) error {
 // password). The line reaches the command only: it is not output, it is not
 // sent to the agent, and it is not logged.
 //
-// LocalOnly: this is input to an arbitrary local command.
+// It is input to an arbitrary command on this machine, so it takes the same
+// grant as typing into a terminal: any session granted terminal:operate.
 //
 //ao:scope terminal:operate
 func (a *App) AnswerThreadShellCommand(threadID string, answer ShellCommandAnswer) error {
@@ -234,8 +238,9 @@ func (a *App) AnswerThreadShellCommand(threadID string, answer ShellCommandAnswe
 // the output it has produced so far. It is the reconnect companion of the
 // `shell:command` stream.
 //
-// LocalOnly: the payload is the output of a local command, the same data
-// class as GetTerminalReplay.
+// The payload is the output of a command on this machine, the same data
+// class as GetTerminalReplay, so any session granted terminal:operate reads
+// it.
 //
 //ao:scope terminal:operate
 func (a *App) GetThreadShellCommands(threadID string) ([]ShellCommandRun, error) {
