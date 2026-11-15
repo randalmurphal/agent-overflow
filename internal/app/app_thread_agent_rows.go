@@ -680,6 +680,11 @@ func (v threadAgentView) row(request store.ThreadAgentRequest, names map[string]
 			out.Placement, out.Archived = name.Placement, name.Archived
 		}
 	}
+	if asked, ok := names[row.OriginThreadID]; ok && local && row.Kind == store.ThreadRequestAsk {
+		// An ask's row is the thread asked, while its copy runs and once
+		// the copy is deleted; its kind says it was an ask.
+		out.Title, out.Provider = asked.Title, asked.Provider
+	}
 	switch {
 	case settled:
 	case row.TargetComputerID != "":

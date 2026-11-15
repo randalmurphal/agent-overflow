@@ -170,6 +170,58 @@ func TestAgentRowsGiveNoPlacementToAThreadThatTakesNone(t *testing.T) {
 	}
 }
 
+// An ask's row presents the thread that was asked, its title and its
+// provider, while its copy runs and after the copy is deleted; the row's
+// kind says it was an ask.
+func TestAgentRowsPresentAnAskAsTheThreadAsked(t *testing.T) {
+	t.Parallel()
+	a, _ := newAppForFlushQueueRPC(t)
+	lead := noticeTestThread(t, a, "ask-lead")
+	asked := testThread("ask-asked")
+	asked.Title, asked.Provider, asked.WorkspacePath = "Release notes", string(provider.Claude), t.TempDir()
+	if err := a.store.CreateThread(asked); err != nil {
+		t.Fatal(err)
+	}
+	copyRow := testThread("ask-copy")
+	copyRow.Title, copyRow.Provider, copyRow.WorkspacePath = "Ask: Release notes", string(provider.Claude), t.TempDir()
+	if err := a.store.CreateThread(copyRow); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.store.InsertThreadRequest(store.ThreadRequest{
+		Token: "ask-open", CallerThreadID: lead.ID, Kind: store.ThreadRequestAsk, TargetThreadID: copyRow.ID,
+		OriginThreadID: asked.ID, Notify: true, State: store.ThreadRequestRunning, CreatedAt: 10,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	seedSettledAgentRow(t, a, store.ThreadRequest{
+		Token: "ask-past", CallerThreadID: lead.ID, Kind: store.ThreadRequestAsk, TargetThreadID: "deleted-copy",
+		OriginThreadID: asked.ID, Notify: true, CreatedAt: 10,
+	}, 20, "yes")
+	listing, err := a.ListThreadAgentRows(t.Context(), lead.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err := a.ListThreadPastAgentRows(lead.ID, store.PastAgentRowsCursor{}, 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rows []ThreadAgentRow
+	rows = append(rows, listing.Rows...)
+	rows = append(rows, page.Rows...)
+	if got := agentRowTokens(rows); !slices.Contains(got, "ask-open") || !slices.Contains(got, "ask-past") {
+		t.Fatalf("rows %q, want the open and the past ask", got)
+	}
+	for _, row := range rows {
+		if row.Kind != store.ThreadRequestAsk {
+			continue
+		}
+		if row.Title != asked.Title || row.Provider != asked.Provider || row.OpenThreadID != asked.ID {
+			t.Errorf("ask row %s = title %q provider %q opens %q, want the thread asked (%q, %q, %q)",
+				row.Token, row.Title, row.Provider, row.OpenThreadID, asked.Title, asked.Provider, asked.ID)
+		}
+	}
+}
+
 // approvalOn opens an approval prompt in threadID, as its provider would.
 func approvalOn(t *testing.T, a *App, threadID, requestID string) {
 	t.Helper()
