@@ -20,6 +20,11 @@ deduplicate without dropping trigger-bearing roots, and never recursively
 follow repository symlink trees. Root changes and ignore/config/index changes
 must rebuild the installed watch set.
 
+A status is read only while watches are installed: a new watcher installs
+them before its initial read and recomputes its roots before its first
+wait, and a reinstall is followed by a refresh. A change made after a read
+then raises an event or is covered by that refresh.
+
 Filesystem delivery is an invalidation signal. Coalesce bursts, recompute
 status, and use bounded subscriber channels so a slow client cannot block the
 watch loop. If watcher installation or reinstallation fails, keep status fresh

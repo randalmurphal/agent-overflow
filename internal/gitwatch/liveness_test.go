@@ -9,10 +9,13 @@ package gitwatch
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/rjeczalik/notify"
 
 	gitops "agent-overflow/internal/git"
 )
@@ -49,11 +52,12 @@ func newLivenessHarness(t *testing.T, configure func(w *workspaceWatcher)) *live
 		h.fastCalls.Add(1)
 		return inner(ctx, cwd)
 	}
-	h.w = newWorkspaceWatcher(h.ws, h.stub.fn(), fastFn, gitops.GitStatus{Branch: "main"}, roots, rootsFn)
+	h.w = newWorkspaceWatcher(h.ws, h.stub.fn(), fastFn, roots, rootsFn)
 	if configure != nil {
 		configure(h.w)
 	}
-	h.w.start(h.installs.fn())
+	h.w.install(h.installs.fn())
+	h.w.start(gitops.GitStatus{Branch: "main"})
 	t.Cleanup(h.w.stop)
 	return h
 }
@@ -101,6 +105,99 @@ func TestRequestRefreshMissDetectionReinstalls(t *testing.T) {
 	}
 	waitFor(t, 3*time.Second, func() bool { return h.installs.count() >= 2 },
 		"forced reinstall after miss detection")
+}
+
+// A change made while miss detection has the watches out raises no event:
+// the watcher refreshes again once they are back.
+func TestRequestRefreshSeesAChangeMadeDuringTheReinstall(t *testing.T) {
+	t.Parallel()
+	ws := makeRepoDir(t)
+	stub := newStubStatus(gitops.GitStatus{Branch: "main"})
+	roots := []gitops.WatchRoot{subtreeRoot(ws)}
+	rootsFn := func() ([]gitops.WatchRoot, error) { return roots, nil }
+	w := newWorkspaceWatcher(ws, stub.fn(), nil, roots, rootsFn)
+	w.livenessQuiet = 0 // every refresh-observed change counts as a miss
+	var installs atomic.Int32
+	w.install(func([]gitops.WatchRoot, chan<- notify.EventInfo) error {
+		if installs.Add(1) == 2 {
+			stub.setStatus(gitops.GitStatus{Branch: "main", HasChanges: true, Insertions: 9})
+		}
+		return nil
+	})
+	sub := w.addSubscriber(gitops.GitStatus{Branch: "main"})
+	w.start(gitops.GitStatus{Branch: "main"})
+	t.Cleanup(w.stop)
+
+	stub.setStatus(gitops.GitStatus{Branch: "main", HasChanges: true, Insertions: 5})
+	w.requestRefresh()
+
+	// A subscriber holds only the latest status, so the first may be
+	// superseded before it is read.
+	for {
+		status := recvWithin(t, sub, 3*time.Second)
+		if status.Insertions == 9 {
+			return
+		}
+		if status.Insertions != 5 {
+			t.Fatalf("broadcast = %+v, want the missed status, then the one changed during the reinstall", status)
+		}
+	}
+}
+
+// Miss detection that could not take the watches out (the roots could not
+// be recomputed) has no gap to cover, so it reads the status once.
+func TestRequestRefreshReadsOnceWhenTheWatchesStay(t *testing.T) {
+	t.Parallel()
+	ws := makeRepoDir(t)
+	stub := newStubStatus(gitops.GitStatus{Branch: "main"})
+	roots := []gitops.WatchRoot{subtreeRoot(ws)}
+	rootsFn := func() ([]gitops.WatchRoot, error) { return nil, errors.New("roots unavailable") }
+	w := newWorkspaceWatcher(ws, stub.fn(), nil, roots, rootsFn)
+	w.livenessQuiet = 0 // every refresh-observed change counts as a miss
+	w.install(func([]gitops.WatchRoot, chan<- notify.EventInfo) error { return nil })
+	sub := w.addSubscriber(gitops.GitStatus{Branch: "main"})
+	w.start(gitops.GitStatus{Branch: "main"})
+	t.Cleanup(w.stop)
+
+	stub.setStatus(gitops.GitStatus{Branch: "main", HasChanges: true, Insertions: 5})
+	w.requestRefresh()
+	if status := recvWithin(t, sub, 3*time.Second); status.Insertions != 5 {
+		t.Fatalf("broadcast = %+v, want the missed status", status)
+	}
+	expectNoUpdate(t, sub, 200*time.Millisecond)
+	if calls := stub.callCount(); calls != 1 {
+		t.Fatalf("status read %d times, want 1", calls)
+	}
+}
+
+// A directory created between computing a new watcher's roots and
+// installing them is in neither: the run loop recomputes the roots before
+// any event, reinstalls, and refreshes for what changed meanwhile.
+func TestNewWatcherRevalidatesItsRootsBeforeAnyEvent(t *testing.T) {
+	t.Parallel()
+	ws := makeRepoDir(t)
+	stub := newStubStatus(gitops.GitStatus{Branch: "main"})
+	installed := []gitops.WatchRoot{subtreeRoot(ws)}
+	current := []gitops.WatchRoot{subtreeRoot(ws), subtreeRoot(filepath.Join(ws, "created"))}
+	rootsFn := func() ([]gitops.WatchRoot, error) { return current, nil }
+	w := newWorkspaceWatcher(ws, stub.fn(), nil, installed, rootsFn)
+	var installs atomic.Int32
+	w.install(func([]gitops.WatchRoot, chan<- notify.EventInfo) error {
+		if installs.Add(1) == 2 {
+			stub.setStatus(gitops.GitStatus{Branch: "main", HasChanges: true, Insertions: 3})
+		}
+		return nil
+	})
+	sub := w.addSubscriber(gitops.GitStatus{Branch: "main"})
+	w.start(gitops.GitStatus{Branch: "main"})
+	t.Cleanup(w.stop)
+
+	if status := recvWithin(t, sub, 3*time.Second); status.Insertions != 3 {
+		t.Fatalf("broadcast = %+v, want the status changed during the reinstall", status)
+	}
+	if got := w.currentWatchRoots(); len(got) != 2 {
+		t.Fatalf("watch roots = %v, want the recomputed set", got)
+	}
 }
 
 // A refresh whose only delta is the PR fields (the attach hook's cache
