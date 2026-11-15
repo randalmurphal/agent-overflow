@@ -764,7 +764,11 @@ Ruling 36, as built:
   spawn's thread there is not at rest, and the sweep keeps asking while
   it is (`thread_requests.nested_open`); a remote spawn at the listing's
   last level reads that answer for its own state and nests none of its
-  rows.
+  rows. A failed call is no news of rest: the row keeps the state the
+  last answer gave, says that computer did not answer, and stays open,
+  counted and out of Past; with no answer remembered, as after a
+  restart, its recorded open work keeps it open, waiting. Only an answer
+  closes it: rest there, or a refusal of the thread as not the spawn's.
 
 ### At rest
 

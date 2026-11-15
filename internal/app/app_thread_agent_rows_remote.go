@@ -322,7 +322,7 @@ func (a *App) peerPaired(computerID string) (bool, error) {
 // (its thread, or its receipt past the retention floor, is gone there) will
 // never list it again, so it records none.
 func (a *App) recordPeerOpenWork(spawn store.ThreadRequest, listing ThreadAgentRows, err error) {
-	if code, _, ok := errorsx.PublicDetails(err); ok && code == threadtools.CodeNotYours {
+	if threadAgentPeerRefused(err) {
 		err, listing = nil, ThreadAgentRows{}
 	}
 	if err != nil {
@@ -335,6 +335,14 @@ func (a *App) recordPeerOpenWork(spawn store.ThreadRequest, listing ThreadAgentR
 	if _, setErr := a.store.SetThreadRequestNestedOpen(spawn.Token, open); setErr != nil {
 		log.Printf("agent rows: record open work under %s: %v", spawn.Token, setErr)
 	}
+}
+
+// threadAgentPeerRefused reports whether an agent_rows call was refused as
+// asking about a thread that is not the spawn's there: that computer's
+// answer that it holds nothing of it, never a failure to answer.
+func threadAgentPeerRefused(err error) bool {
+	code, _, ok := errorsx.PublicDetails(err)
+	return ok && code == threadtools.CodeNotYours
 }
 
 // noteAnswerLocked caches one answer, keeps the cache to its bound by
@@ -370,9 +378,14 @@ func (c *threadAgentPeerCache) noteAnswerLocked(spawn store.ThreadRequest, listi
 	}
 	changed := !ok || errorText(entry.err) != errorText(err) ||
 		(err == nil && !reflect.DeepEqual(entry.listing, listing))
+	// A failed call keeps the last answer, which the row still shows; a
+	// refusal of the thread as not this spawn's is an answer, and leaves
+	// nothing of it.
 	entry.spawn, entry.at, entry.err = spawn, time.Now(), err
 	if err == nil {
 		entry.listing = listing
+	} else if threadAgentPeerRefused(err) {
+		entry.listing = ThreadAgentRows{}
 	}
 	for len(c.entries) > threadAgentPeerCacheLimit {
 		oldest := ""

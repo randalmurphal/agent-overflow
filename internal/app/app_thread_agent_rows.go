@@ -592,24 +592,26 @@ func (a *App) remoteAgentAnswers(ctx context.Context, remote []threadAgentRemote
 // nestPeerAgentRows renders a paired computer's answer as the rows nested
 // under its spawn's row, named by that computer, deeper than the bound left
 // out with their parent marked. A computer that did not answer leaves the
-// reason on the spawn's row.
+// reason on the spawn's row, and the state its last answer gave.
 func (a *App) nestPeerAgentRows(parent *ThreadAgentRow, slot threadAgentRemoteSlot, answer threadAgentPeerAnswer, maxDepth int) ([]ThreadAgentRow, []threadAgentEntry) {
+	// That computer says why the thread is not at rest; one with only open
+	// work below it there answers none, and its row waits on it
+	// (nested_open). A failed call is no news of rest: the last answer
+	// stands, which a refusal clears (noteAnswerLocked). A spawn whose
+	// request settled waits on a person there when it is blocked, as
+	// nothing routes a remote worker's prompts.
+	if answer.listing.Worker != "" {
+		parent.Worker = answer.listing.Worker
+	}
+	if parent.SettledAt != 0 && parent.Worker == workerBlocked {
+		parent.BlockedOn = "person"
+	}
 	if answer.err != nil {
 		parent.NestedUnavailable = threadAgentPeerUnavailable(parent.Computer, answer.err)
 		return nil, nil
 	}
 	if parent.Provider == "" {
 		parent.Provider = answer.listing.ThreadProvider
-	}
-	// That computer says why the thread is not at rest; one with only open
-	// work below it there answers none, and its row waits on it
-	// (nested_open). A spawn whose request settled waits on a person there
-	// when it is blocked, as nothing routes a remote worker's prompts.
-	if answer.listing.Worker != "" {
-		parent.Worker = answer.listing.Worker
-	}
-	if parent.SettledAt != 0 && parent.Worker == workerBlocked {
-		parent.BlockedOn = "person"
 	}
 	self, _ := a.backendIdentity()
 	rows := make([]ThreadAgentRow, 0, len(answer.listing.Rows))

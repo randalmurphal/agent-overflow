@@ -25,7 +25,7 @@
 // Spec: docs/specs/agent-thread-tools.md.
 import { readFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
-import { test, expect } from '@playwright/test';
+import { test, expect, devices, type Page } from '@playwright/test';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -1232,6 +1232,100 @@ test('the Agents segment nests a spawn on the other computer and its Stop cascad
     .filter((item) => item.status === 'running').length).toBe(0);
   await expect(childRow.getByTestId('agent-tray-row-state')).toHaveText('stopped', { timeout: 60_000 });
   expect(await childWoken, 'the child took a turn for the agent the person stopped').toBe(false);
+});
+
+// A worker there replied and keeps working, then its computer stops
+// answering: the row keeps its last known state and Stop, says why its own
+// work is not shown, stays out of Past, and drops the warning once that
+// computer answers again (docs/specs/standing-agents.md, "Owned workers").
+test('a worker on the other computer keeps its running row while that computer does not answer', async ({ page, browser }) => {
+  test.setTimeout(300_000);
+  page.setDefaultTimeout(30_000);
+  const caller = await seed(home, 'agents-outage-caller', ['Agents outage caller']);
+  const child = await seed(remote, 'agents-outage-child', []);
+  await remote.rpc('UpdateNewThreadDefaults', {
+    projectId: child.projectId, provider: 'claude', model: 'claude-opus-4-7', runtimeMode: 'full-access',
+  });
+  await setScenario(home, caller.path, threadToolsScenario({
+    name: 'agents-outage-caller-script', provider: 'claude',
+    turns: [
+      { steps: [{ call: {
+        tool: 'thread_spawn',
+        args: { prompt: 'Run the soak test over there.', title: 'Soak runner', computer_id: remoteID, project_id: child.projectId, notify: true },
+        timeoutMs: 120_000,
+      } }], text: 'Started it over there.' },
+      { text: 'Noted.' },
+    ],
+    afterTurns: 'repeatLast',
+  }));
+  // The worker replies at once and keeps its turn open.
+  await setScenario(remote, child.path, threadToolsScenario({
+    name: 'agents-outage-child-script', provider: 'claude',
+    turns: [
+      { steps: [
+        { capture: { var: 'TOKEN', from: '${USER_INPUT}', pattern: FOOTER_TOKEN_PATTERN } },
+        { call: { tool: 'thread_reply', args: { token: '${TOKEN}', text: 'The soak test is running.' } } },
+        { gate: 'outage-child-hold' },
+      ], text: 'Soaked.' },
+      { text: 'Noted.' },
+    ],
+    afterTurns: 'repeatLast',
+  }));
+
+  await home.rpc('StartSession', caller.threadIds[0]);
+  await home.rpc('SendMessage', caller.threadIds[0], 'run the soak test on the GPU computer', null);
+  const spawn = await awaitToolAnswer<{ token: string; thread_id: string }>(home, { tool: 'thread_spawn', cwd: caller.path, timeoutMs: 120_000 });
+  expect(spawn.isError, spawn.text).toBe(false);
+  const held = await awaitGate(remote, 'outage-child-hold', child.path);
+
+  const phoneContext = await browser.newContext({ ...devices['Pixel 7'] });
+  try {
+    const phone = await phoneContext.newPage();
+    const views = [{ view: page, layout: 'desktop' }, { view: phone, layout: 'compact' }] as const;
+    for (const { view } of views) {
+      await home.open(view);
+      await view.getByTestId('thread-row-title').getByText('Agents outage caller', { exact: true }).click();
+      await view.getByTestId('activity-rail-agents-toggle').filter({ visible: true }).click();
+    }
+    const rowIn = (view: Page) => view.getByTestId('activity-rail-agents-body').filter({ visible: true })
+      .locator(`[data-testid="agent-tray-row"][data-token="${spawn.value!.token}"]`);
+    for (const { view } of views) {
+      const row = rowIn(view);
+      await expect(row).toHaveAttribute('data-state', 'replied', { timeout: 120_000 });
+      await expect(row.getByTestId('agent-tray-row-state')).toHaveText('running', { timeout: 60_000 });
+      await expect(row.getByTestId('agent-tray-row-degraded')).toHaveCount(0);
+    }
+
+    // The computer there stops answering: its backend is frozen, so every
+    // call to it waits out its timeout.
+    const pid = remote.bootstrap.pid;
+    expect(pid).toBeGreaterThan(0);
+    process.kill(pid, 'SIGSTOP');
+    try {
+      for (const { view, layout } of views) {
+        const row = rowIn(view);
+        await expect(row.getByTestId('agent-tray-row-degraded'))
+          .toContainText('Its own agents and background work are not shown: GPU computer', { timeout: 150_000 });
+        await expect(row.getByTestId('agent-tray-row-state'), 'the failed read turned the running worker into a finished row').toHaveText('running');
+        await expect(row).not.toHaveAttribute('data-settled');
+        await expect(row.getByTestId('agent-tray-row-stop')).toBeVisible();
+        await expect(view.getByTestId('activity-rail-agents-body').filter({ visible: true })
+          .getByTestId('activity-rail-agents-past-count')).toHaveCount(0);
+        if (layout === 'desktop') await view.mouse.move(800, 400);
+        await capture(view, `agents-remote-outage-${layout}.png`, row);
+      }
+    } finally {
+      process.kill(pid, 'SIGCONT');
+    }
+    for (const { view } of views) {
+      await expect(rowIn(view).getByTestId('agent-tray-row-degraded')).toHaveCount(0, { timeout: 150_000 });
+      await expect(rowIn(view).getByTestId('agent-tray-row-state')).toHaveText('running');
+    }
+  } finally {
+    await phoneContext.close();
+  }
+  await advanceGate(remote, held.mockId, 'outage-child-hold');
+  await awaitTurnCompleted(remote, spawn.value!.thread_id);
 });
 
 test('a nested row on the other computer names the wake row its answer reached there', async () => {
