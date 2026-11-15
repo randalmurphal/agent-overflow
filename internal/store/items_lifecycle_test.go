@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"slices"
 	"strings"
@@ -1057,6 +1058,15 @@ func TestPayloadChunkReadsSpanBaseAndAppendedChunks(t *testing.T) {
 	if total != 12 || !complete {
 		t.Fatalf("tail result total=%d complete=%v, want total=12 complete=true", total, complete)
 	}
+
+	// A window that overflows when added to the offset reads to the end.
+	rest, total, complete, err := s.GetPayloadChunk("t", "p", 2, math.MaxInt)
+	if err != nil {
+		t.Fatalf("rest chunk: %v", err)
+	}
+	if string(rest) != "cdefghijkl" || total != 12 || !complete {
+		t.Fatalf("rest = %q total=%d complete=%v, want cdefghijkl, 12, true", rest, total, complete)
+	}
 }
 
 func TestAppendPayloadDataErrorsOnMissingPayload(t *testing.T) {
@@ -1110,10 +1120,10 @@ func TestReplacePayloadDataReplacesInPlace(t *testing.T) {
 	}
 }
 
-// TestGetPayloadPreviewSliceInsideSQLite covers the new substr-based
-// preview path. Large payloads must never cross into Go memory past
-// the requested head size.
-func TestGetPayloadPreviewSliceInsideSQLite(t *testing.T) {
+// TestGetPayloadChunkPrefixSliceInsideSQLite covers the substr-based read
+// of a payload's head. Large payloads must never cross into Go memory
+// past the requested head size.
+func TestGetPayloadChunkPrefixSliceInsideSQLite(t *testing.T) {
 	s := newTestStore(t)
 	mustCreateThread(t, s, "t")
 	// 64 KiB payload; preview should only pull the first 4 KiB.
@@ -1130,7 +1140,7 @@ func TestGetPayloadPreviewSliceInsideSQLite(t *testing.T) {
 		t.Fatalf("insert: %v", err)
 	}
 
-	head, totalSize, complete, err := s.GetPayloadPreview("t", "p-big", maxBytes)
+	head, totalSize, complete, err := s.GetPayloadChunk("t", "p-big", 0, maxBytes)
 	if err != nil {
 		t.Fatalf("preview: %v", err)
 	}
@@ -1150,7 +1160,7 @@ func TestGetPayloadPreviewSliceInsideSQLite(t *testing.T) {
 	}
 
 	// Fully-contained request returns the whole blob and complete=true.
-	head2, total2, complete2, err := s.GetPayloadPreview("t", "p-big", total*2)
+	head2, total2, complete2, err := s.GetPayloadChunk("t", "p-big", 0, total*2)
 	if err != nil {
 		t.Fatalf("preview2: %v", err)
 	}

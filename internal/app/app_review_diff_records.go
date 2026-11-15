@@ -98,15 +98,21 @@ type reviewDiffRecords struct {
 	pathBytes int
 	// pins counts pin goroutines; shutdown joins them.
 	pins sync.WaitGroup
+	// closed refuses new records once shutdown has removed them all
+	// (close).
+	closed bool
 }
 
 // reserve makes a pending record; the caller starts its pin, which must
 // close done. evicted are the records it pushed out, still to be stopped
-// outside the lock.
+// outside the lock. The record is nil once the records are closed.
 func (r *reviewDiffRecords) reserve(workspace string, owner *transport.ConnState, scope transport.Scope, cancel context.CancelFunc) (record *reviewDiffRecord, evicted []*reviewDiffRecord) {
-	record = &reviewDiffRecord{id: uuid.NewString(), workspace: workspace, owner: owner, scope: scope, cancel: cancel, done: make(chan struct{})}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.closed {
+		return nil, nil
+	}
+	record = &reviewDiffRecord{id: uuid.NewString(), workspace: workspace, owner: owner, scope: scope, cancel: cancel, done: make(chan struct{})}
 	if r.byID == nil {
 		r.byID = map[string]*reviewDiffRecord{}
 		r.lru = list.New()
@@ -199,10 +205,22 @@ func (r *reviewDiffRecords) remove(id string) *reviewDiffRecord {
 	return r.removeLocked(record)
 }
 
+// close is removeAll that refuses new records from then on.
+func (r *reviewDiffRecords) close() []*reviewDiffRecord {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.closed = true
+	return r.removeAllLocked()
+}
+
 // removeAll takes every record out; the caller stops them.
 func (r *reviewDiffRecords) removeAll() []*reviewDiffRecord {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	return r.removeAllLocked()
+}
+
+func (r *reviewDiffRecords) removeAllLocked() []*reviewDiffRecord {
 	var removed []*reviewDiffRecord
 	for r.lru != nil && r.lru.Len() > 0 {
 		removed = append(removed, r.removeLocked(r.lru.Back().Value.(*reviewDiffRecord)))
@@ -244,9 +262,16 @@ func (a *App) dropReviewDiffRecord(id string) {
 	stopReviewDiffRecords(a.reviewDiffFiles.remove(id))
 }
 
-// dropReviewDiffRecords removes and stops every record: the harness reset
-// and shutdown.
+// dropReviewDiffRecords removes and stops every record: the harness reset.
 func (a *App) dropReviewDiffRecords() {
 	stopReviewDiffRecords(a.reviewDiffFiles.removeAll()...)
+	a.reviewDiffFiles.pins.Wait()
+}
+
+// closeReviewDiffRecords removes and stops every record and refuses new
+// ones: shutdown. A removed record's pin has started by the time its stop
+// returns, and none is reserved afterwards, so the wait covers every pin.
+func (a *App) closeReviewDiffRecords() {
+	stopReviewDiffRecords(a.reviewDiffFiles.close()...)
 	a.reviewDiffFiles.pins.Wait()
 }

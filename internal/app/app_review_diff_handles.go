@@ -112,10 +112,17 @@ type reviewDiffReader interface {
 }
 
 // appReviewDiffState holds the review diffs clients have open. Each belongs
-// to the connection that opened it and is closed when that connection ends.
+// to the connection that opened it and is closed when that connection
+// ends; shutdown closes the rest and joins every close (closeReviewDiffs).
 type appReviewDiffState struct {
 	mu    sync.Mutex
 	diffs map[string]*openReviewDiff
+	// closed refuses new handles once shutdown has closed the held ones.
+	closed bool
+	// closing counts the closes in progress. A close is added under mu
+	// while its diff is still in diffs, so none starts after shutdown has
+	// emptied the map.
+	closing sync.WaitGroup
 }
 
 type openReviewDiff struct {
@@ -202,6 +209,10 @@ func (a *App) openReviewDiff(ctx context.Context, action string, scope transport
 	owner := transport.ConnStateFromContext(ctx)
 	pinCtx, cancelPin := context.WithTimeout(context.Background(), a.reviewDiffPinWait())
 	record, evicted := a.reviewDiffFiles.reserve(sides.Workspace(), owner, scope, cancelPin)
+	if record == nil {
+		cancelPin()
+		return ReviewDiffOpened{}, fmt.Errorf("%s: %w", action, errors.Join(ErrShuttingDown, diff.Close(), releasePin()))
+	}
 	a.startReviewDiffPin(pinCtx, record, sides, releasePin)
 	stopReviewDiffRecords(evicted...)
 	if owner != nil && !owner.BindCleanup(reviewDiffFilesCleanupKey(record.id), func() { a.dropReviewDiffRecord(record.id) }) {
@@ -245,6 +256,10 @@ func (a *App) holdReviewDiff(open *openReviewDiff) (string, error) {
 	owner := open.owner
 	id := uuid.NewString()
 	state.mu.Lock()
+	if state.closed {
+		state.mu.Unlock()
+		return "", errors.Join(ErrShuttingDown, open.diff.Close())
+	}
 	if len(state.diffs) >= maxReviewDiffHandles {
 		state.mu.Unlock()
 		return "", errors.Join(ErrTooManyReviewDiffs, open.diff.Close())
@@ -382,12 +397,34 @@ func (a *App) dropReviewDiff(id string) error {
 	state := &a.reviewDiffs
 	state.mu.Lock()
 	open, ok := state.diffs[id]
-	delete(state.diffs, id)
-	state.mu.Unlock()
 	if !ok {
+		state.mu.Unlock()
 		return nil
 	}
+	delete(state.diffs, id)
+	state.closing.Add(1)
+	state.mu.Unlock()
+	defer state.closing.Done()
 	return open.diff.Close()
+}
+
+// closeReviewDiffs closes every held review diff, waits for the closes
+// their connections started, and refuses handles from then on: shutdown.
+// It returns what the closes it ran reported; a connection's close logs
+// its own.
+func (a *App) closeReviewDiffs() error {
+	state := &a.reviewDiffs
+	state.mu.Lock()
+	state.closed = true
+	held := state.diffs
+	state.diffs = nil
+	state.mu.Unlock()
+	var errs []error
+	for _, open := range held {
+		errs = append(errs, open.diff.Close())
+	}
+	state.closing.Wait()
+	return errors.Join(errs...)
 }
 
 func reviewDiffCleanupKey(id string) string { return "review-diff:" + id }

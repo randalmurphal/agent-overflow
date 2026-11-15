@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"unicode/utf8"
 
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/stringsx"
 )
 
 type PayloadPreview struct {
@@ -37,8 +39,28 @@ type PayloadContent struct {
 	PatchSpans []PatchSpanSeed `json:"patchSpans,omitempty"`
 }
 
-// GetPayloadPreview serves a payload's leading bytes, with the payload's
-// persisted highlight spans attached for diff kinds.
+// payloadText reads up to maxBytes of a payload's text from byte offset,
+// which is 0 or the end of an earlier read, and reports the payload's size
+// and whether the read reached its end. A read that stops before the end
+// stops between characters: a character the window would split is left
+// for the next read, so the text a JSON client receives for consecutive
+// reads, where each invalid byte is one U+FFFD, is the payload's. A
+// window of 1 to utf8.UTFMax-1 bytes is read as utf8.UTFMax, so every
+// read of a window short of the end returns at least one byte. A window
+// of 0 reads nothing and reports the size.
+func (a *App) payloadText(threadID, payloadID string, offset, maxBytes int) (data []byte, total int, complete bool, err error) {
+	if maxBytes > 0 {
+		maxBytes = max(maxBytes, utf8.UTFMax)
+	}
+	data, total, complete, err = a.store.GetPayloadChunk(threadID, payloadID, offset, maxBytes)
+	if err != nil || complete {
+		return data, total, complete, err
+	}
+	return data[:stringsx.CompleteRunePrefix(data)], total, false, nil
+}
+
+// GetPayloadPreview serves a payload's leading text (payloadText), with
+// the payload's persisted highlight spans attached for diff kinds.
 //
 //ao:scope threads:read
 func (a *App) GetPayloadPreview(threadID string, payloadID string, maxBytes int) (PayloadPreview, error) {
@@ -49,7 +71,7 @@ func (a *App) GetPayloadPreview(threadID string, payloadID string, maxBytes int)
 	if err != nil {
 		return PayloadPreview{}, err
 	}
-	data, totalSize, isComplete, err := a.store.GetPayloadPreview(threadID, payloadID, maxBytes)
+	data, totalSize, isComplete, err := a.payloadText(threadID, payloadID, 0, maxBytes)
 	if err != nil {
 		return PayloadPreview{}, err
 	}
@@ -62,6 +84,9 @@ func (a *App) GetPayloadPreview(threadID string, payloadID string, maxBytes int)
 	}, nil
 }
 
+// GetPayloadChunk serves a payload's text from byte offset (payloadText):
+// 0, or the NextOffset of the preview or of an earlier chunk.
+//
 //ao:scope threads:read
 func (a *App) GetPayloadChunk(threadID string, payloadID string, offset int, maxBytes int) (PayloadChunk, error) {
 	if err := a.readyThreadHistory(threadID); err != nil {
@@ -70,7 +95,8 @@ func (a *App) GetPayloadChunk(threadID string, payloadID string, offset int, max
 	if _, err := a.getThreadPayloadMeta(threadID, payloadID); err != nil {
 		return PayloadChunk{}, err
 	}
-	data, totalSize, isComplete, err := a.store.GetPayloadChunk(threadID, payloadID, offset, maxBytes)
+	offset = max(offset, 0)
+	data, totalSize, isComplete, err := a.payloadText(threadID, payloadID, offset, maxBytes)
 	if err != nil {
 		return PayloadChunk{}, err
 	}
