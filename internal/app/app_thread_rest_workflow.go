@@ -15,7 +15,9 @@ import (
 // delivered to the thread, which the Stop already tells, so it does not wake
 // the thread however late it arrives; a rest after somebody resumes the run
 // wakes it as usual. A run already paused, parked or finished is left as it
-// is. Each run that could not be paused is named in the result.
+// is, with the resumes scheduled in its tree cancelled. Each run that could
+// not be paused, or whose scheduled resumes could not be cancelled, is named
+// in the result.
 func (a *App) pauseRunsOfRestingThread(threadID string, result *ThreadAgentStop) {
 	runs, err := a.store.ListThreadStartedWorkItems(threadID, workflowSourceAgent)
 	if err != nil {
@@ -23,6 +25,11 @@ func (a *App) pauseRunsOfRestingThread(threadID string, result *ThreadAgentStop)
 		return
 	}
 	for _, run := range runs {
+		// First, so no scheduled resume of the tree fires into the pause or
+		// after it, the boot sweep's included.
+		if err := a.workflowApplication().DisarmTreeAutoResumes(run.ID); err != nil {
+			result.Failures = append(result.Failures, fmt.Sprintf("cancel the scheduled resumes of its workflow run %s: %v", run.ID, err))
+		}
 		// Only a running root rests on the pause; a parked one keeps its own
 		// rest, and only its running descendants are paused.
 		var hold *workflowapp.WakeHold

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/threadtools"
 	"agent-overflow/internal/workflow/engine"
+	"agent-overflow/internal/workflowapp"
 )
 
 // restRunFixture is a spawned worker thread with workflow runs on a live
@@ -305,4 +307,59 @@ func TestAnAgentsCancelPausesTheRunsOfEveryThreadBelow(t *testing.T) {
 			t.Fatalf("a wake reached %s after the cancel (%v)", id, err)
 		}
 	}
+}
+
+// A Stop cancels the resume scheduled on a parked run the thread started:
+// neither its timer, firing anyway, nor the boot sweep resumes the run, and
+// Resume from the workflows view still does.
+func TestAStopCancelsTheScheduledResumeOfAParkedRun(t *testing.T) {
+	t.Parallel()
+	f := newRestRunFixture(t)
+	var mu sync.Mutex
+	var timers []*armedWorkflowTimer
+	f.app.workflowApplication().ConfigureAutoResumeTimer(func(delay time.Duration, fire func()) workflowapp.Timer {
+		mu.Lock()
+		defer mu.Unlock()
+		timer := &armedWorkflowTimer{callback: fire, delay: delay}
+		timers = append(timers, timer)
+		return timer
+	})
+	item, _ := f.startRun(t, "parked")
+	if err := f.app.WorkflowPauseItem(context.Background(), item.ID); err != nil {
+		t.Fatal(err)
+	}
+	waitForWorkflowItem(t, f.app, item.ID, engine.StateNeedsHuman, engine.ReasonPaused)
+	if _, err := f.app.WorkflowScheduleResume(context.Background(), item.ID, "+1h"); err != nil {
+		t.Fatal(err)
+	}
+	f.settle()
+
+	if stop := f.stop(t); len(stop.Failures) != 0 {
+		t.Fatalf("the Stop failed: %q", stop.Failures)
+	}
+	if at, err := f.app.store.WorkItemAutoResumeAt(item.ID); err != nil || at != 0 {
+		t.Fatalf("the run's schedule after the Stop = %d, %v; want it cleared", at, err)
+	}
+	mu.Lock()
+	armed := slices.Clone(timers)
+	mu.Unlock()
+	for _, timer := range armed {
+		timer.callback()
+	}
+	f.app.workflowApplication().SweepAutoResumes()
+	if count := f.app.workflowApplication().AutoResumeTimerCount(); count != 0 {
+		t.Fatalf("%d resumes armed after the Stop and a boot sweep, want none", count)
+	}
+	f.settle()
+	if row, err := f.app.store.GetWorkItem(item.ID); err != nil || row.State != string(engine.StateNeedsHuman) || row.Reason != string(engine.ReasonPaused) {
+		t.Fatalf("the run after its timer fired = %s(%s), %v; want it still paused", row.State, row.Reason, err)
+	}
+	if _, live := f.app.sessionManager().get(f.worker.ID); live {
+		t.Fatal("the stopped worker started again")
+	}
+
+	if err := f.app.WorkflowResumeItem(context.Background(), item.ID, "", false); err != nil {
+		t.Fatal(err)
+	}
+	waitForWorkflowItem(t, f.app, item.ID, engine.StateRunning, "")
 }

@@ -792,7 +792,10 @@ computer that holds the thread:
    pause makes does not wake the thread, whenever it arrives; a rest
    after somebody resumes the run does. A run already paused, parked or
    finished is left as it is; a run's running descendants under a parked
-   root are paused. A run a person bound to the thread is not the
+   root are paused. A resume scheduled on any run in the tree is
+   cancelled first, after one already firing has finished, so neither its
+   timer nor the next boot resumes the run; Resume from the workflows
+   view still does. A run a person bound to the thread is not the
    thread's and is left running.
 4. Settles every open request on it, from any thread on any computer,
    cancelled as the user's Stop (`The user stopped it from the Agents

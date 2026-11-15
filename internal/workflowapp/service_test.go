@@ -530,3 +530,93 @@ func TestAutoResumeSweepAppliesBootDelayToElapsedSchedules(t *testing.T) {
 		t.Fatalf("elapsed schedule timer = %+v", installed)
 	}
 }
+
+// A tree disarm cancels the scheduled resume of the root and of every run it
+// called, the timer and the schedule both, and leaves another run's alone.
+func TestDisarmTreeAutoResumesCancelsEveryRunInTheTree(t *testing.T) {
+	f := newServiceFixture(t)
+	root := f.run("root", string(engine.StateRunning), "")
+	child := store.WorkItem{
+		ID: "child", ProjectID: f.project.ID, WorkflowID: "campaign", WorkflowScope: "shared",
+		Goal: "called", State: string(engine.StateNeedsHuman), Reason: string(engine.ReasonPaused),
+		Source: "call", SourceRef: root.ID + "/work", CreatedAt: 3,
+		ParentItemID: root.ID, ParentPhaseID: "work", ParentAttempt: 1, CallDepth: 1,
+	}
+	if err := f.store.CreateWorkItem(child); err != nil {
+		t.Fatal(err)
+	}
+	other := f.run("other", string(engine.StateNeedsHuman), string(engine.ReasonPaused))
+	timers := map[string]*testAutoResumeTimer{}
+	var arming string
+	f.service.ConfigureAutoResumeTimer(func(delay time.Duration, fire func()) Timer {
+		timers[arming] = &testAutoResumeTimer{delay: delay, fire: fire}
+		return timers[arming]
+	})
+	for _, id := range []string{root.ID, child.ID, other.ID} {
+		arming = id
+		if err := f.service.SetAutoResume(id, f.service.Now().Add(time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := f.service.DisarmTreeAutoResumes(root.ID); err != nil {
+		t.Fatal(err)
+	}
+	for id, disarmed := range map[string]bool{root.ID: true, child.ID: true, other.ID: false} {
+		at, err := f.store.WorkItemAutoResumeAt(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if (at == 0) != disarmed || timers[id].stopped != disarmed || f.service.AutoResumeRegistered(id) == disarmed {
+			t.Errorf("run %s: schedule %d, timer stopped %v, registered %v; want disarmed %v",
+				id, at, timers[id].stopped, f.service.AutoResumeRegistered(id), disarmed)
+		}
+	}
+}
+
+// A disarm waits out a fire of the run already under way, and a fire or a
+// boot sweep that comes after it resumes nothing.
+func TestDisarmTreeAutoResumesIsFencedAgainstAFireAndTheSweep(t *testing.T) {
+	f := newServiceFixture(t)
+	item := f.run("run-fenced", string(engine.StateNeedsHuman), string(engine.ReasonPaused))
+	entered, release := make(chan struct{}), make(chan struct{})
+	resumes := 0
+	f.service.deps.ResumeRun = func(context.Context, string) error {
+		resumes++
+		if resumes == 1 {
+			close(entered)
+			<-release
+		}
+		return nil
+	}
+	var installed []*testAutoResumeTimer
+	f.service.ConfigureAutoResumeTimer(func(delay time.Duration, fire func()) Timer {
+		timer := &testAutoResumeTimer{delay: delay, fire: fire}
+		installed = append(installed, timer)
+		return timer
+	})
+	if err := f.service.SetAutoResume(item.ID, f.service.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	fired := make(chan struct{})
+	go func() { installed[0].fire(); close(fired) }()
+	<-entered
+	disarmed := make(chan error, 1)
+	go func() { disarmed <- f.service.DisarmTreeAutoResumes(item.ID) }()
+	select {
+	case err := <-disarmed:
+		t.Fatalf("the disarm returned during a fire: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(release)
+	<-fired
+	if err := <-disarmed; err != nil {
+		t.Fatal(err)
+	}
+	installed[0].fire()
+	f.service.SweepAutoResumes()
+	// A sweep that listed the schedule before the disarm cleared it.
+	f.service.armSweptAutoResume(item.ID, AutoResumeBootDelay)
+	if resumes != 1 || len(installed) != 1 || f.service.AutoResumeTimerCount() != 0 {
+		t.Fatalf("after the disarm: %d resumes, %d timers armed, %d registered; want the one fire alone", resumes, len(installed), f.service.AutoResumeTimerCount())
+	}
+}
