@@ -96,8 +96,8 @@ func TestGitLabListProjectPRsParsesTheReads(t *testing.T) {
 		}
 		ops[key] = call
 	}
-	if len(ops) != 9 || len(calls.all()) != 10 {
-		t.Fatalf("requests = %v %v, want user, the list, six GraphQL reads once each and the two events feeds", calls.ops(), calls.all())
+	if len(ops) != 10 || len(calls.all()) != 11 {
+		t.Fatalf("requests = %v %v, want user, the release, the list, six GraphQL reads once each and the two events feeds", calls.ops(), calls.all())
 	}
 	for _, op := range []string{"PullsReviewing", "PullsAuthored", "PullsReviewingActivity", "PullsAuthoredActivity", "PullsReviewingApprovals", "PullsAuthoredApprovals"} {
 		vars := ops[op].Vars
@@ -459,30 +459,26 @@ func TestGitLabListProjectPRsPagesTheReads(t *testing.T) {
 	}
 }
 
-// GitLab CE has no approvalState: its answer that the field does not
-// exist is not a failure but a host with no required approvals, the
-// covered rows requiring none, and the approval reads are not sent again
-// for gitlabCacheTTL.
-func TestGitLabWithoutApprovalStateRequiresNoApprovals(t *testing.T) {
+// GitLab CE has no approvalState and no approval rules: a host whose
+// release read answers enterprise false is not sent the approval reads,
+// and the rows the review reads cover require none. Nothing is learned
+// from a refused document.
+func TestGitLabCommunityEditionRequiresNoApprovals(t *testing.T) {
 	t.Parallel()
 	var mu sync.Mutex
 	approvalReads := 0
 	core, _ := newForgeAPICore(t, gitlabListAnswers(t, func(call forgeAPICall) (forgeAPIAnswer, bool) {
-		if !strings.HasSuffix(call.Op, "Approvals") {
-			return forgeAPIAnswer{}, false
+		switch {
+		case call.Path == "metadata":
+			return forgeAPIAnswer{Body: `{"version":"18.4.1","enterprise":false}`}, true
+		case strings.HasSuffix(call.Op, "Approvals"):
+			mu.Lock()
+			approvalReads++
+			mu.Unlock()
+			return forgeAPIAnswer{Body: `{"errors":[{"message":"Field 'approvalState' doesn't exist on type 'MergeRequest'"}]}`}, true
 		}
-		mu.Lock()
-		approvalReads++
-		mu.Unlock()
-		return forgeAPIAnswer{Body: `{"errors":[{"message":"Field 'approvalState' doesn't exist on type 'MergeRequest'","locations":[{"line":5,"column":19}],"path":["query PullsReviewingApprovals","project","mergeRequests","nodes","approvalState"],"extensions":{"code":"undefinedField","typeName":"MergeRequest","fieldName":"approvalState"}}]}`}, true
+		return forgeAPIAnswer{}, false
 	}))
-	now := time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC)
-	core.nowFn = func() time.Time { return now }
-	reads := func() int {
-		mu.Lock()
-		defer mu.Unlock()
-		return approvalReads
-	}
 	for i := range 2 {
 		rows, err := core.ListProjectPRs(t.Context(), gitlabTestRepo())
 		if err != nil {
@@ -493,11 +489,52 @@ func TestGitLabWithoutApprovalStateRequiresNoApprovals(t *testing.T) {
 			t.Fatalf("read %d: required own %v fork %v other %v; want 0, 0 and unknown", i, own.ApprovalsRequired, fork.ApprovalsRequired, other.ApprovalsRequired)
 		}
 	}
-	if got := reads(); got != 2 {
-		t.Fatalf("approval reads = %d, want the first read's two only", got)
+	mu.Lock()
+	defer mu.Unlock()
+	if approvalReads != 0 {
+		t.Fatalf("approval reads = %d, want none on CE", approvalReads)
 	}
-	now = now.Add(gitlabCacheTTL)
-	if _, err := core.ListProjectPRs(t.Context(), gitlabTestRepo()); err != nil || reads() != 4 {
-		t.Fatalf("after the TTL: err %v, approval reads %d, want them sent again", err, reads())
+}
+
+// An EE host whose approval read is refused fails that detail beside the
+// rows, as any detail read does; the refusal does not turn the host into
+// one without approvals.
+func TestGitLabRefusedApprovalReadIsADetailFailure(t *testing.T) {
+	t.Parallel()
+	core, _ := newForgeAPICore(t, gitlabListAnswers(t, func(call forgeAPICall) (forgeAPIAnswer, bool) {
+		if strings.HasSuffix(call.Op, "Approvals") {
+			return forgeAPIAnswer{Body: `{"errors":[{"message":"Field 'approvalState' doesn't exist on type 'MergeRequest'"}]}`}, true
+		}
+		return forgeAPIAnswer{}, false
+	}))
+	rows, err := core.ListProjectPRs(t.Context(), gitlabTestRepo())
+	if detail, ok := errors.AsType[*PRListDetailError](err); !ok || len(detail.Errs) != 2 {
+		t.Fatalf("ListProjectPRs = %v, want the two approval reads' failures beside the rows", err)
+	}
+	if len(rows) != 3 || rows[0].ApprovalsRequired != nil {
+		t.Fatalf("rows = %+v", rows)
+	}
+}
+
+// A GitLab below the supported floor lacks the activity counts
+// (resolvableDiscussionsCount, 17.7) among others: its list is refused
+// with the floor sentence before any list or detail read.
+func TestGitLabListBelowTheFloorIsRefused(t *testing.T) {
+	t.Parallel()
+	core, calls := newForgeAPICore(t, gitlabListAnswers(t, func(call forgeAPICall) (forgeAPIAnswer, bool) {
+		if call.Path == "metadata" {
+			return forgeAPIAnswer{Body: `{"version":"17.6.2-ee","enterprise":true}`}, true
+		}
+		return forgeAPIAnswer{}, false
+	}))
+	_, err := core.ListProjectPRs(t.Context(), gitlabTestRepo())
+	want := "GitLab on " + testForgeHost + " runs 17.6; GitLab 18.0 or later is needed."
+	if refused, ok := errors.AsType[*ForgeActionError](err); !ok || refused.Message != want {
+		t.Fatalf("ListProjectPRs below the floor = %v, want %q", err, want)
+	}
+	for _, op := range calls.ops() {
+		if op != "GET user" && op != "GET metadata" {
+			t.Errorf("sent %s to a server below the floor", op)
+		}
 	}
 }

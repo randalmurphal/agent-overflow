@@ -150,6 +150,12 @@ func (a *App) newForgeFailure(err error, read string, summary func(correlationID
 		f.resumeAt = until.UTC().Format(time.RFC3339)
 		f.key = fmt.Sprintf("%s\x00%t\x00%s", kind, reserve, f.resumeAt)
 		f.release = until.Add(a.prUpdateStagger())
+	default:
+		// A read the forge adapter refused in its own words (a GitLab below
+		// the supported floor) says that sentence.
+		if refused, ok := errors.AsType[*gitops.ForgeActionError](err); ok && refused.Kind == gitops.ForgeErrorRefused {
+			f.wire = refused.Message
+		}
 	}
 	return f
 }

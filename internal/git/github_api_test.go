@@ -173,7 +173,7 @@ func githubData(data string) forgeAPIAnswer {
 // something else gets answered as a current GitLab.
 func forgeUnexpected(t *testing.T, call forgeAPICall) forgeAPIAnswer {
 	if call.Op == "" && call.Method == http.MethodGet && call.Path == "metadata" {
-		return forgeAPIAnswer{Body: `{"version":"19.3.0-ee"}`}
+		return forgeAPIAnswer{Body: `{"version":"19.3.0-ee","enterprise":true}`}
 	}
 	t.Errorf("unexpected forge request %q %s %s", call.Op, call.Method, call.Path)
 	return forgeAPIAnswer{Status: http.StatusNotFound, Body: `{"message":"Not Found"}`}

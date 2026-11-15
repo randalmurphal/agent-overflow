@@ -2,7 +2,6 @@ package git
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -46,11 +45,15 @@ func parseGitLabVersion(s string) (gitlabVersion, error) {
 // gitlabSupportedFloor is the oldest GitLab release the app supports.
 var gitlabSupportedFloor = gitlabVersion{18, 0}
 
-// gitlabServer is what a Details read or a write knows of the host's
-// release: the version, or why it could not be read.
+// gitlabServer is what a read or a write knows of the host: its release
+// and edition (GET /metadata's version and enterprise, "Indicates whether
+// GitLab instance is Enterprise Edition"), or why they could not be read.
 type gitlabServer struct {
 	version gitlabVersion
-	err     error
+	// enterprise is GitLab EE, licensed or not; CE lacks the EE schema
+	// (MergeRequest.approvalState) and its approval rules.
+	enterprise bool
+	err        error
 }
 
 // supported is nil for a server at or past gitlabSupportedFloor; an
@@ -66,15 +69,16 @@ func (s gitlabServer) supported(host string) error {
 	return nil
 }
 
-// server is host's release: cached for gitlabCacheTTL, else read from
-// GET /metadata. A failed read is not cached.
+// server is host's release and edition: cached for gitlabCacheTTL, else
+// read from GET /metadata. A failed read is not cached.
 func (f *gitlabForge) server(ctx context.Context, client *forgeapi.Client, host string) gitlabServer {
 	key := strings.ToLower(host)
-	if version, ok := f.versions.get(key, f.core.nowFn()); ok {
-		return gitlabServer{version: version}
+	if server, ok := f.servers.get(key, f.core.nowFn()); ok {
+		return server
 	}
 	var raw struct {
-		Version string `json:"version"`
+		Version    string `json:"version"`
+		Enterprise bool   `json:"enterprise"`
 	}
 	if _, err := client.JSON(ctx, forgeapi.Request{Path: "metadata"}, &raw); err != nil {
 		return gitlabServer{err: err}
@@ -83,8 +87,9 @@ func (f *gitlabForge) server(ctx context.Context, client *forgeapi.Client, host 
 	if err != nil {
 		return gitlabServer{err: err}
 	}
-	f.versions.put(key, version, f.core.nowFn())
-	return gitlabServer{version: version}
+	server := gitlabServer{version: version, enterprise: raw.Enterprise}
+	f.servers.put(key, server, f.core.nowFn())
+	return server
 }
 
 // writeClient is the client for a write to ref, refused before anything
@@ -108,24 +113,4 @@ func (f *gitlabForge) writeServer(ctx context.Context, ref PRReference) (*forgea
 		return nil, gitlabVersion{}, &forgeapi.NotSentError{Err: err}
 	}
 	return client, server.version, nil
-}
-
-// gitlabSchemaLacks reports whether err is GitLab refusing a document at
-// validation for naming element, a field ("Field 'x' doesn't exist on
-// type 'T'") or an argument or input field ("... doesn't accept argument
-// 'x'"), that its schema does not have. A GraphQL server validates the
-// whole document before running any of it, so a refused document did
-// nothing.
-func gitlabSchemaLacks(err error, element string) bool {
-	gql, ok := errors.AsType[*forgeapi.GraphQLError](err)
-	if !ok || gql.ProducedData() {
-		return false
-	}
-	quoted := "'" + element + "'"
-	for _, problem := range gql.Problems {
-		if strings.Contains(problem.Message, "Field "+quoted+" doesn't exist on type") || strings.Contains(problem.Message, "doesn't accept argument "+quoted) {
-			return true
-		}
-	}
-	return false
 }

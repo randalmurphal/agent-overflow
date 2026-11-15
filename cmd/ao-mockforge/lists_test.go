@@ -144,8 +144,8 @@ func TestProjectPRListsThroughTheAppsForgeCode(t *testing.T) {
 		}
 		return n
 	}
-	if count("gh graphql PullsSearch") != 1 || len(routes) != 11 || count("glab api user events") != 2 {
-		t.Fatalf("routes = %v, want one PullsSearch for GitHub and GitLab's ten reads, the two events feeds among them", routes)
+	if count("gh graphql PullsSearch") != 1 || len(routes) != 12 || count("glab api user events") != 2 || count("glab api metadata") != 1 {
+		t.Fatalf("routes = %v, want one PullsSearch for GitHub and GitLab's eleven reads, the release and the two events feeds among them", routes)
 	}
 	for _, route := range []string{"glab api user", "glab api merge request list", "glab graphql PullsReviewing", "glab graphql PullsAuthored",
 		"glab graphql PullsReviewingActivity", "glab graphql PullsAuthoredActivity", "glab graphql PullsReviewingApprovals",

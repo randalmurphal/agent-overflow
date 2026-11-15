@@ -303,6 +303,17 @@ func TestPRUpdateSetupFailureCarriesItsMessage(t *testing.T) {
 	}
 }
 
+// A read the forge adapter refused in its own words (a GitLab below the
+// supported floor) carries that sentence, not the correlation summary.
+func TestPRUpdateRefusedReadCarriesItsSentence(t *testing.T) {
+	t.Parallel()
+	refused := fmt.Errorf("read: %w", &gitops.ForgeActionError{Kind: gitops.ForgeErrorRefused, Message: "GitLab on gitlab.example runs 17.6; GitLab 18.0 or later is needed."})
+	_, _, _, sub := newScriptedPump(t, fails(refused), ok)
+	if sub.ErrorKind != forgeFailureForge || sub.Error != "GitLab on gitlab.example runs 17.6; GitLab 18.0 or later is needed." {
+		t.Fatalf("subscribe = %+v", sub)
+	}
+}
+
 // A re-sent follow revalidates the cached log with the ETag the last
 // download returned: the forge's 304 keeps the version and sends no frame.
 func TestPRCILogFollowRevalidatesWithItsETag(t *testing.T) {

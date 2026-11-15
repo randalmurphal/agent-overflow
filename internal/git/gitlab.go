@@ -24,18 +24,14 @@ type gitlabForge struct {
 	// viewers each login's account on a host (gitlab_merge_read.go).
 	projects gitlabCache[gitlabProjectSettings]
 	viewers  gitlabCache[gitlabViewer]
-	// noApprovalState marks a host whose GraphQL has no
-	// MergeRequest.approvalState (GitLab CE), for gitlabCacheTTL
-	// (pr_list_gitlab.go).
-	noApprovalState gitlabCache[bool]
 	// activity is each host's viewer activity, read once per list round
 	// (pr_list_gitlab.go).
 	activity gitlabActivityRounds
 	// pipelineTags remembers which listed pipelines ran on a tag
 	// (ci_gitlab.go).
 	pipelineTags gitlabPipelineTags
-	// versions is each host's release (gitlab_version.go).
-	versions gitlabCache[gitlabVersion]
+	// servers is each host's release and edition (gitlab_version.go).
+	servers gitlabCache[gitlabServer]
 	// stateEventRetries holds the merge requests whose state events read
 	// failed, until it is due again (gitlab_manage.go).
 	stateEventRetries gitlabStateEventRetries
@@ -49,9 +45,8 @@ type gitlabForge struct {
 func (f *gitlabForge) resetCaches() {
 	f.projects.clear()
 	f.viewers.clear()
-	f.noApprovalState.clear()
 	f.pipelineTags.forget()
-	f.versions.clear()
+	f.servers.clear()
 	f.stateEventRetries.clear()
 	f.reactions.clear()
 }

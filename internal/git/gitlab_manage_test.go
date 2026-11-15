@@ -22,7 +22,7 @@ func gitlabManageExtras(call forgeAPICall) (forgeAPIAnswer, bool) {
 	path, _, _ := strings.Cut(call.Path, "?")
 	switch {
 	case call.Op == "" && call.Method == http.MethodGet && path == "metadata":
-		return forgeAPIAnswer{Body: `{"version":"19.3.0-ee"}`}, true
+		return forgeAPIAnswer{Body: `{"version":"19.3.0-ee","enterprise":true}`}, true
 	case call.Op == "PRManageChecks":
 		return forgeAPIAnswer{Body: gitlabManageEmpty}, true
 	case call.Op == "MRNoteReactions":

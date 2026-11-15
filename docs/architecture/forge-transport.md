@@ -459,7 +459,11 @@ viewer's activity is `viewerLatestReview.submittedAt`.
 
 GitLab reads, per repository, the viewer first (`user`, cached per login
 and host for 10 minutes; a viewer that cannot be read fails the
-project), then concurrently:
+project) and the server's release and edition (`metadata`, cached per
+host for 10 minutes; a server below the supported floor fails the
+project with the floor's sentence, since the reads select fields of the
+supported releases, `resolvableDiscussionsCount` from 17.7), then
+concurrently:
 
 - `projects/P/merge_requests?state=opened&order_by=updated_at&sort=desc&per_page=100`,
   the rows, whose basic view carries no pipeline.
@@ -474,10 +478,10 @@ project), then concurrently:
 - `PullsReviewingApprovals` and `PullsAuthoredApprovals`, the same
   filters selecting `approvalState { rules { type approvalsRequired } }`:
   the merge request's own rules, its target branch and any override
-  applied. `approvalState` is an EE field: GitLab CE answers that it
-  does not exist, which marks the host as having no required approvals
-  for 10 minutes (the covered rows require none, and the two reads are
-  not sent). The required count is the larger of the any-approver rule's
+  applied. `approvalState` is an EE field: on a server whose `metadata`
+  answers `enterprise: false` (GitLab CE, which has no approval rules)
+  the two reads are not sent and the covered rows require none. The
+  required count is the larger of the any-approver rule's
   and the other rules' sum (an approval from a rule's member also counts
   toward any approver), which matched `approvalsRequired` on all 56 merge
   requests measured. The review, the discussion and commit, and the
@@ -818,17 +822,19 @@ GitLab on HOST runs 17.11; GitLab 18.0 or later is needed.", and every
 merge request write (`gitlabForge.writeClient`: comments, replies,
 resolve, reactions, suggestions, submit, the management actions,
 approve, merge, auto-merge, update branch and ready) is refused with
-that sentence (kind `refused`) before anything is sent. A failed release
-read makes the Details read fail and a write fail unsent with the read's
-error. A harness reset forgets the releases with the adapters' other
-per-host and per-project memory (`Core.ResetForgeCaches`). The `mergeabilityChecks` `REQUESTED_CHANGES`
+that sentence (kind `refused`) before anything is sent; so are the CI
+rows read and the project list read, whose failure shows that sentence.
+A failed release read makes the Details read fail and a write fail
+unsent with the read's error. The same read's `enterprise` says whether
+the server is EE (the list's `approvalState`), and a route a later
+release added is chosen by the release (`cancel_auto_merge`, 19.5); no
+capability is learned from a refused request. A harness reset forgets
+the releases with the adapters' other per-host and per-project memory
+(`Core.ResetForgeCaches`). The `mergeabilityChecks` `REQUESTED_CHANGES`
 check failing is what blocks (elsewhere the `detailed_merge_status`
 `requested_changes`), and the check passing while a reviewer still
 requests changes is shown as bypassed. That is an inference: GitLab
-reports no bypass as such. The reactions read (`Note.awardEmoji`), the
-CI read's cancel permissions and the list's `approvalState` instead send
-the newer document and fall back when the server refuses the field
-(`gitlabSchemaLacks`).
+reports no bypass as such.
 
 The GitLab GraphQL arguments these use: `project.labels` takes
 `searchTerm`, `includeAncestorGroups`, `first` and `after`;
