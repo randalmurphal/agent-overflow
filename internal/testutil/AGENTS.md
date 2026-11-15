@@ -18,7 +18,8 @@ packages. Test-specific setup stays beside the test that owns it.
   `TestEveryTestBinaryThatCanStartAProviderInstallsThePoison` fails one that
   does not. Standard library only, like `mockexec/`.
 - `git.go` creates local repositories and local bare origins. No helper here
-  reaches a network.
+  reaches a network, and its git commands do not read the user's global
+  config: a fixture that commits sets its own identity.
 - `store.go` inserts the project row required by thread foreign keys.
 - `logcapture.go` captures logs for assertions.
 

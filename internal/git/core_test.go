@@ -208,7 +208,7 @@ func TestRevParseKeepsANewlineInTheRepositoryPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	testutil.RunGit(t, repo, "init", "-q")
-	testutil.RunGit(t, repo, "commit", "-q", "--allow-empty", "-m", "base")
+	testutil.RunGit(t, repo, "-c", "user.email=t@t", "-c", "user.name=Tester", "commit", "-q", "--allow-empty", "-m", "base")
 	if err := os.Symlink(repo, filepath.Join(parent, "repo")); err != nil {
 		t.Fatal(err)
 	}
