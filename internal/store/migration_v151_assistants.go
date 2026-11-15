@@ -104,7 +104,10 @@ import (
 // idx_thread_requests_caller_settled for rows settled inside the window,
 // idx_thread_requests_open_below for the local spawns kept for open work
 // under them, idx_thread_requests_nested_caller for remote spawns with open
-// work. idx_thread_requests_caller_settled holds every row, lineage rows
+// work. idx_thread_requests_open_deep holds the local spawns with open work
+// three spawns below their target, from which the reads climb to the spawns
+// above that no mark reaches. idx_thread_requests_caller_settled holds
+// every row, lineage rows
 // included, so the segment's Past list pages a caller's settled rows newest
 // first through it (ListThreadPastAgentRequests).
 // idx_thread_requests_nested_open holds the settled remote spawns
@@ -246,6 +249,10 @@ CREATE INDEX idx_thread_requests_open_below
     ON thread_requests(caller_thread_id)
  WHERE kind = 'spawn' AND target_computer_id = '' AND superseded = 0 AND target_thread_id <> ''
    AND (open_below_0 + open_below_1 + open_below_2 + open_below_3) > 0;
+CREATE INDEX idx_thread_requests_open_deep
+    ON thread_requests(caller_thread_id)
+ WHERE kind = 'spawn' AND target_computer_id = '' AND superseded = 0 AND target_thread_id <> ''
+   AND open_below_3 > 0;
 CREATE INDEX idx_thread_requests_open_created
     ON thread_requests(caller_thread_id, created_at, token)
  WHERE lineage_only = 0 AND settled_at IS NULL;

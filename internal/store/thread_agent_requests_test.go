@@ -123,9 +123,10 @@ func TestListThreadAgentTreeOwnRowsKeepsSpawnsWithOpenDescendants(t *testing.T) 
 	}
 }
 
-// A settled spawn chain keeps its rows while work below it is open: open
-// work three spawns down still lists the whole chain at the root, and work
-// four spawns below a spawn's target does not keep it.
+// A settled spawn chain keeps its rows while work below it is open, however
+// deep: open work three spawns down lists the whole chain at the root
+// through the marks, and work deeper than they count still does, by the
+// climb from the deepest marked spawn.
 func TestListThreadAgentTreeOwnRowsKeepsADeepSettledChain(t *testing.T) {
 	t.Parallel()
 	s := newTestStore(t)
@@ -148,7 +149,7 @@ func TestListThreadAgentTreeOwnRowsKeepsADeepSettledChain(t *testing.T) {
 			t.Errorf("%s lists %v with gg-open open; want %v", caller, got, want)
 		}
 	}
-	// Open work four spawns below a spawn's target does not keep it: with
+	// Open work four spawns below a spawn's target keeps it too: with
 	// gg-open settled and its thread's own spawn holding the open work, the
 	// lead's spawn is four levels above it and the child's three.
 	settleAgentRequest(t, s, "gg-open", 300)
@@ -156,7 +157,7 @@ func TestListThreadAgentTreeOwnRowsKeepsADeepSettledChain(t *testing.T) {
 	seedAgentRequest(t, s, "gg-far", "ggreat", ThreadRequestSpawn, "far", false, 140)
 	settleAgentRequest(t, s, "gg-far", 310)
 	seedAgentRequest(t, s, "far-open", "far", ThreadRequestSend, "lead", true, 150)
-	for caller, want := range map[string][]string{"lead": nil, "child": {"c-g"}} {
+	for caller, want := range map[string][]string{"lead": {"l-c"}, "child": {"c-g"}} {
 		rows, _, err := listAgentRequests(s, caller, nil, 10_000, 64)
 		if err != nil {
 			t.Fatal(err)

@@ -109,10 +109,11 @@ type ThreadAgentRow struct {
 	State string `json:"state"`
 	// Worker is why the thread a spawn made is not at rest, whatever State
 	// says: blocked, running, queued, or waiting on what it started
-	// (background work, a loop, watch or reminder, a provider timer); empty
-	// while it is at rest, and for
-	// every other kind. A spawn whose worker is not at rest is open: one
-	// that replied and keeps working shows its reply and this.
+	// (background work, a loop, watch or reminder, a provider timer) or on
+	// its own workers, open work at any depth below it; empty while it is
+	// at rest, and for every other kind. A spawn whose worker is not at
+	// rest is open: one that replied and keeps working shows its reply and
+	// this.
 	Worker string `json:"worker,omitempty"`
 	// BlockedOn is approval or question for a local target waiting on a
 	// prompt, person for a paired computer's target that reports it is
@@ -325,7 +326,7 @@ type PastAgentRows struct {
 // ListThreadPastAgentRows lists one page of the requests the thread made
 // that its Agents segment lists under Past: every spawn and ask it made and
 // its sends with their wake armed, once settled and, for a spawn, once the
-// thread it made is at rest (liveSpawnTokens), newest settled first, from
+// thread it made is at rest, as the listing reads it, newest settled first, from
 // after the cursor, at most limit (1 to store.MaxPastAgentRowsPage) rows.
 // Each row carries what an open row carries, derived the same way; a spawn
 // the retention floor reduced to its lineage shows no answer.
@@ -335,11 +336,12 @@ func (a *App) ListThreadPastAgentRows(threadID string, after store.PastAgentRows
 	if _, err := a.store.GetThread(threadID); err != nil {
 		return PastAgentRows{}, fmt.Errorf("read the thread: %w", err)
 	}
-	page, err := a.store.ListThreadPastAgentRequests(threadID, after, limit, threadAgentAnswerHead, a.liveSpawnTokens())
+	view := newThreadAgentView(a)
+	page, err := a.store.ListThreadPastAgentRequests(threadID, after, limit, threadAgentAnswerHead, view.waiting, view.live)
 	if err != nil {
 		return PastAgentRows{}, fmt.Errorf("read past agent rows: %w", err)
 	}
-	rows, err := newThreadAgentView(a).rows(page.Requests)
+	rows, err := view.rows(page.Requests)
 	if err != nil {
 		return PastAgentRows{}, fmt.Errorf("read past agent rows: %w", err)
 	}
@@ -520,7 +522,9 @@ func (a *App) threadAgentTreeDepth(ctx context.Context, view threadAgentView, th
 		request := &requests[index].ThreadRequest
 		entries = append(entries, threadAgentEntry{request: request})
 		depth := requests[index].Depth
-		if request.Kind == store.ThreadRequestSpawn && request.TargetThreadID != "" && request.TargetComputerID != "" && depth+1 < maxDepth {
+		// A remote spawn at the last level still reads its answer, for its
+		// own state; it nests none of the rows.
+		if request.Kind == store.ThreadRequestSpawn && request.TargetThreadID != "" && request.TargetComputerID != "" {
 			remote = append(remote, threadAgentRemoteSlot{index: index, depth: depth + 1, spawn: *request})
 		}
 	}
@@ -568,8 +572,9 @@ func (a *App) remoteAgentAnswers(ctx context.Context, remote []threadAgentRemote
 			i := ask[n]
 			call, cancel := context.WithTimeout(ctx, threadAgentPeerServeTimeout)
 			defer cancel()
+			// One level at the bound: the answer's own state, no rows to nest.
 			listing, err := a.peerThreadAgentRows(call, remote[i].spawn.TargetComputerID, remote[i].spawn.MadeIn(),
-				remote[i].spawn.TargetThreadID, maxDepth-remote[i].depth)
+				remote[i].spawn.TargetThreadID, max(1, maxDepth-remote[i].depth))
 			a.notePeerAgentRows(remote[i].spawn, listing, err)
 			answers[i] = threadAgentPeerAnswer{listing: listing, err: err}
 		})
@@ -596,10 +601,13 @@ func (a *App) nestPeerAgentRows(parent *ThreadAgentRow, slot threadAgentRemoteSl
 	if parent.Provider == "" {
 		parent.Provider = answer.listing.ThreadProvider
 	}
-	// That computer says whether the thread is at rest; a spawn whose
-	// request settled waits on a person there when it is blocked, as
-	// nothing routes a remote worker's prompts.
-	parent.Worker = answer.listing.Worker
+	// That computer says why the thread is not at rest; one with only open
+	// work below it there answers none, and its row waits on it
+	// (nested_open). A spawn whose request settled waits on a person there
+	// when it is blocked, as nothing routes a remote worker's prompts.
+	if answer.listing.Worker != "" {
+		parent.Worker = answer.listing.Worker
+	}
 	if parent.SettledAt != 0 && parent.Worker == workerBlocked {
 		parent.BlockedOn = "person"
 	}
@@ -609,6 +617,9 @@ func (a *App) nestPeerAgentRows(parent *ThreadAgentRow, slot threadAgentRemoteSl
 	for _, row := range answer.listing.Rows {
 		row.Depth += slot.depth
 		if row.Depth >= maxDepth {
+			if row.Depth == slot.depth {
+				parent.NestedHidden = true
+			}
 			for i := len(rows) - 1; i >= 0; i-- {
 				if rows[i].Depth == row.Depth-1 {
 					rows[i].NestedHidden = true
@@ -725,10 +736,15 @@ func (v threadAgentView) row(request store.ThreadAgentRequest, names map[string]
 	settled := threadRequestSettled(row)
 	local := row.TargetComputerID == "" && row.TargetThreadID != ""
 	// A spawn's worker is read whatever its request's state: one that
-	// settled is open while the thread it made is not at rest.
+	// settled is open while the thread it made is not at rest, by its own
+	// state or, waiting on them, by its workers'. A remote spawn's own
+	// state is its computer's answer (nestPeerAgentRows).
 	var rest workerRest
 	if local && row.Kind == store.ThreadRequestSpawn {
 		rest = v.app.liveWorkerUnrest(row)
+	}
+	if rest.unrest == "" && request.TargetOpen {
+		rest.unrest = workerWaiting
 	}
 	worker := rest.unrest
 	live := !settled || worker != ""

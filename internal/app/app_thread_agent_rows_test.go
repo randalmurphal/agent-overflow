@@ -597,9 +597,9 @@ func TestThreadAgentRowsStopAllReachesDeepOpenWork(t *testing.T) {
 }
 
 // A worker reused after the retention floor cleared its spawn still belongs
-// to its owner: the new work it opens lists under the expired spawn, counts
-// in the owner's summary, and Stop of that row, or Stop All, reaches it.
-// The expired spawn shows no answer.
+// to its owner: the new work it opens lists under the expired spawn, which
+// waits on it, both count in the owner's summary, and Stop of that row, or
+// Stop All, reaches it. The expired spawn shows no answer.
 func TestAnExpiredSpawnsNewWorkListsAndStopsUnderItsOwner(t *testing.T) {
 	t.Parallel()
 	for _, all := range []bool{false, true} {
@@ -628,11 +628,11 @@ func TestAnExpiredSpawnsNewWorkListsAndStopsUnderItsOwner(t *testing.T) {
 		if got, want := agentRowTokens(rows), []string{"lead-worker", open.Token}; !slices.Equal(got, want) {
 			t.Fatalf("rows %v; want the worker's new spawn under the expired one %v", got, want)
 		}
-		if rows[0].Answer != "" {
-			t.Fatalf("the expired spawn shows answer %q", rows[0].Answer)
+		if rows[0].Answer != "" || rows[0].Worker != workerWaiting {
+			t.Fatalf("the expired spawn %+v; want no answer, waiting on its worker's spawn", rows[0])
 		}
-		if summary, err := f.app.GetThreadWorkerSummary(t.Context(), f.caller.ID); err != nil || summary.Open != 1 {
-			t.Fatalf("summary %+v, %v; want the worker's open spawn counted", summary, err)
+		if summary, err := f.app.GetThreadWorkerSummary(t.Context(), f.caller.ID); err != nil || summary.Open != 2 {
+			t.Fatalf("summary %+v, %v; want the worker and its open spawn counted", summary, err)
 		}
 		var stop ThreadAgentStop
 		if all {
@@ -653,8 +653,9 @@ func TestAnExpiredSpawnsNewWorkListsAndStopsUnderItsOwner(t *testing.T) {
 
 // A worker's quiet send it waits on is open work under its owner, as the
 // worker's own listing shows it: the owner's listing nests it under the
-// worker's settled spawn and its summary counts it while the call waits,
-// and once the wait ends with the send open its wake is armed and it stays.
+// worker's settled spawn, which waits on it, and its summary counts both
+// while the call waits, and once the wait ends with the send open its wake
+// is armed and it stays.
 func TestAWorkersParkedQuietSendListsUnderItsOwner(t *testing.T) {
 	t.Parallel()
 	f := newRequestFixture(t)
@@ -695,8 +696,8 @@ func TestAWorkersParkedQuietSendListsUnderItsOwner(t *testing.T) {
 	if got, want := agentRowTokens(f.agentRows(t, f.caller.ID).Rows), []string{"lead-worker", token}; !slices.Equal(got, want) {
 		t.Fatalf("the owner's rows while the worker waits %v; want %v", got, want)
 	}
-	if summary, err := f.app.GetThreadWorkerSummary(t.Context(), f.caller.ID); err != nil || summary.Open != 1 {
-		t.Fatalf("the owner's summary while the worker waits %+v, %v; want the send counted", summary, err)
+	if summary, err := f.app.GetThreadWorkerSummary(t.Context(), f.caller.ID); err != nil || summary.Open != 2 {
+		t.Fatalf("the owner's summary while the worker waits %+v, %v; want the worker and the send counted", summary, err)
 	}
 	result := <-done
 	if result.err != nil || result.ack.Token != token {

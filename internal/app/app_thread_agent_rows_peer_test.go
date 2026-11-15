@@ -467,9 +467,36 @@ func TestThreadAgentRowsKeepASettledRemoteSpawnWhileItsWorkRuns(t *testing.T) {
 	}
 
 	settle(pair.dest, pair.grand)
-	// The child's own turn there still runs, which keeps the spawn open.
+	// The child's own turn there still runs, and the grandchild's, which
+	// keeps the spawn open until both rest.
+	grand, _, err := pair.dest.store.GetThreadRequest(pair.grand)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The pair's provider events reach no emit tap: the grandchild's turn
+	// is reported as the tap reports it.
+	waitUntil(t, 10*time.Second, func() bool {
+		pair.dest.noteWorkerLiveness(grand.TargetThreadID)
+		pair.dest.threadRequestsWG.Wait()
+		return pair.dest.liveWorker(grand.TargetThreadID)
+	})
 	pair.askAgainUntil(t, func(row store.ThreadRequest) bool { return row.NestedOpen })
 	if err := pair.dest.StopSession(pair.child); err != nil {
+		t.Fatalf("StopSession: %v", err)
+	}
+	// The child rests with its worker there still running: the spawn here
+	// is open, waiting on it.
+	waitUntil(t, 10*time.Second, func() bool {
+		cache := &pair.source.threadAgentPeers
+		cache.mu.Lock()
+		cache.entries[pair.spawn.Token].at = time.Time{}
+		cache.mu.Unlock()
+		pair.source.refreshNestedOpenRemoteSpawns()
+		pair.source.threadRequestsWG.Wait()
+		row, ok := agentRowByToken(pair.listRows(t).Rows, pair.spawn.Token)
+		return ok && row.open() && row.Worker == workerWaiting
+	})
+	if err := pair.dest.StopSession(grand.TargetThreadID); err != nil {
 		t.Fatalf("StopSession: %v", err)
 	}
 	waitUntil(t, 10*time.Second, func() bool {

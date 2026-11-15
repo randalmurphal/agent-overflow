@@ -303,7 +303,7 @@ func TestALiveThreadKeepsItsSpawnAndTheSpawnsAboveIt(t *testing.T) {
 	}
 	past := func(root string, live []string) []string {
 		t.Helper()
-		page, err := s.ListThreadPastAgentRequests(root, PastAgentRowsCursor{}, 8, 0, live)
+		page, err := s.ListThreadPastAgentRequests(root, PastAgentRowsCursor{}, 8, 0, nil, live)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -343,9 +343,12 @@ func TestALiveThreadKeepsItsSpawnAndTheSpawnsAboveIt(t *testing.T) {
 	if got, want := stops("child", live), []string{"c-g"}; !slices.Equal(got, want) {
 		t.Fatalf("grand live, child's Stop All rows %v; want %v", got, want)
 	}
-	// Past leaves out the live spawns it is given, by token.
-	if got, want := past("lead", []string{"l-c"}), []string{"l-p"}; !slices.Equal(got, want) {
-		t.Fatalf("past with l-c live %v; want %v", got, want)
+	// Past leaves out a spawn whose thread is live or has a live worker
+	// below it.
+	for _, live := range [][]string{{"child"}, {"grand"}} {
+		if got, want := past("lead", live), []string{"l-p"}; !slices.Equal(got, want) {
+			t.Fatalf("past with %v live %v; want %v", live, got, want)
+		}
 	}
 	if got, want := past("lead", nil), []string{"l-p", "l-c"}; !slices.Equal(got, want) {
 		t.Fatalf("past at rest %v; want %v", got, want)
@@ -575,8 +578,10 @@ func TestConfirmedWakesNameTheirRow(t *testing.T) {
 
 // A change frame names the caller of each changed request, of each open
 // request this computer made of a changed target and of the target's spawn
-// link, and each changed caller; each frame goes again to every thread up
-// the local spawns above its caller within the depth, and no further.
+// link, and each changed caller; every link above those up to the root is
+// framed for its caller, as its thread's rest follows the work below it;
+// and each frame goes again to every thread up the local spawns above its
+// caller within the depth, and no further.
 func TestThreadAgentRowFramesNameCallersAndTheThreadsAboveThem(t *testing.T) {
 	t.Parallel()
 	s := newTestStore(t)
@@ -607,7 +612,11 @@ func TestThreadAgentRowFramesNameCallersAndTheThreadsAboveThem(t *testing.T) {
 	want := []ThreadAgentRowFrame{
 		{"", "out"}, {"", "peer"}, {"", "z0"}, {"", "z1"},
 		{"direct", "lead"}, {"direct", "z0"}, {"direct", "z1"}, {"direct", "z2"},
+		// The links above lead and z1, each for its caller and up.
+		{"out-z0", "out"},
 		{"running", "peer"},
+		{"z0-z1", "out"}, {"z0-z1", "z0"},
+		{"z1-z2", "out"}, {"z1-z2", "z0"}, {"z1-z2", "z1"},
 		// lead's link, whose row shows lead's rest, for z2 and up.
 		{"z2-lead", "out"}, {"z2-lead", "z0"}, {"z2-lead", "z1"}, {"z2-lead", "z2"},
 	}

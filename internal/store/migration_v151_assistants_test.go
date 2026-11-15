@@ -86,7 +86,7 @@ func TestMigrationV151Schema(t *testing.T) {
 		"agent_helpers", "agent_past_threads", "agent_projects", "agent_wakes", "agents",
 		"idx_agent_helpers_agent", "idx_agent_past_threads_agent", "idx_agent_projects_project", "idx_agent_wakes_due", "idx_agent_wakes_thread",
 		"idx_thread_request_receipts_age", "idx_thread_requests_age", "idx_thread_requests_caller_settled", "idx_thread_requests_lineage",
-		"idx_thread_requests_nested_caller", "idx_thread_requests_nested_open", "idx_thread_requests_open_below", "idx_thread_requests_open_created",
+		"idx_thread_requests_nested_caller", "idx_thread_requests_nested_open", "idx_thread_requests_open_below", "idx_thread_requests_open_created", "idx_thread_requests_open_deep",
 		"idx_thread_requests_spawn_link", "idx_thread_requests_spawn_target",
 		"session_start_failures",
 		"sqlite_autoindex_agent_helpers_1", "sqlite_autoindex_agent_past_threads_1",

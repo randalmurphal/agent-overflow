@@ -343,9 +343,9 @@ func TestRequestsToOneWorkerCountOnce(t *testing.T) {
 // A worker whose spawn settled long ago blocks on an approval with no
 // request running: the row its spawner lists shows it blocked, framed, and
 // the summary counts it as waiting on the user once it is handed back.
-// Nested one spawn further down, it keeps the top spawner's row listed as
-// open work below and counts in the top's summary, as a parked request
-// does. Answered, it rests, and the rows settle into Past.
+// Nested one spawn further down, it keeps its own spawner from rest: the
+// top row is open, waiting on its worker, counted, offers Stop and stays
+// out of Past. Answered, it rests, and both rows settle into Past.
 func TestAWorkerBlockedWithNoRequestRunning(t *testing.T) {
 	t.Parallel()
 	f := newRequestFixture(t)
@@ -365,20 +365,23 @@ func TestAWorkerBlockedWithNoRequestRunning(t *testing.T) {
 	if got, want := agentRowTokens(rows), []string{"lead-child", "child-grand"}; !slices.Equal(got, want) {
 		t.Fatalf("rows %v; want %v", got, want)
 	}
-	if rows[0].open() || rows[0].Worker != "" || row.Depth != 1 || row.BlockedOn != "approval" || row.BlockedRoutedTo != child.Title {
-		t.Fatalf("rows %+v; want the top row settled over its blocked nested worker", rows)
+	if !rows[0].open() || rows[0].Worker != workerWaiting || row.Depth != 1 || row.BlockedOn != "approval" || row.BlockedRoutedTo != child.Title {
+		t.Fatalf("rows %+v; want the top row waiting on its blocked nested worker", rows)
 	}
 	if f.callerAgentFrames(t, f.caller.ID) <= leadFrames || f.callerAgentFrames(t, child.ID) <= childFrames {
 		t.Fatal("no frame reached the spawners of the blocked worker")
 	}
-	if got := f.workerSummary(t, f.caller.ID); got.Open != 1 || got.NeedYou != 0 {
-		t.Fatalf("lead's summary %+v; want the nested worker counted, its prompt routed", got)
+	if got := f.workerSummary(t, f.caller.ID); got.Open != 2 || got.NeedYou != 0 {
+		t.Fatalf("lead's summary %+v; want both workers counted, the prompt routed", got)
+	}
+	if past := f.pastTokens(t, f.caller.ID); len(past) != 0 {
+		t.Fatalf("lead's past %v; want its waiting worker kept out", past)
 	}
 	if !f.app.triage.RejectPrompt(child.ID, openPromptRef(t, f.app.triage, grand.ID, "grand-approval")) {
 		t.Fatal("the prompt did not go back to the user")
 	}
 	waitUntil(t, 10*time.Second, func() bool { return f.workerSummary(t, child.ID).NeedYou == 1 })
-	if got := f.workerSummary(t, f.caller.ID); got.Open != 1 || got.NeedYou != 1 {
+	if got := f.workerSummary(t, f.caller.ID); got.Open != 2 || got.NeedYou != 1 {
 		t.Fatalf("lead's summary %+v; want the nested worker waiting on the user", got)
 	}
 	if past := f.pastTokens(t, child.ID); len(past) != 0 {
@@ -395,6 +398,9 @@ func TestAWorkerBlockedWithNoRequestRunning(t *testing.T) {
 	}
 	if past := f.pastTokens(t, child.ID); !slices.Equal(past, []string{"child-grand"}) {
 		t.Fatalf("child's past %v; want its worker back", past)
+	}
+	if past := f.pastTokens(t, f.caller.ID); !slices.Equal(past, []string{"lead-child"}) {
+		t.Fatalf("lead's past %v; want its worker back", past)
 	}
 }
 

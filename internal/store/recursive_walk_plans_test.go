@@ -16,12 +16,15 @@ import (
 // its plans are the ones every user database gets.
 
 // walkPlan is what one walk's plan must hold: lines inside its recursive
-// steps, lines anywhere, and the indexes it may search by a thread or chunk
-// prefix alone because their partial predicate bounds them to live rows.
+// steps, lines anywhere, the indexes it may search by a thread or chunk
+// prefix alone because their partial predicate bounds them to live rows,
+// and the indexes a seed may read whole outside every step because their
+// partial predicate holds only the walk's own seeds.
 type walkPlan struct {
 	step     []string
 	want     []string
 	prefixed []string
+	seeds    []string
 }
 
 var (
@@ -31,8 +34,9 @@ var (
 
 // assertWalkProbesTheQueuedKey fails a plan that has no recursive step,
 // scans anything but a CTE, view or json_each (whose own reads are nodes of
-// the plan), builds an automatic index, searches an index by a thread or
-// chunk prefix alone outside w.prefixed, or lacks a line of w.
+// the plan) or, outside its recursive steps, an index of w.seeds, builds an
+// automatic index, searches an index by a thread or chunk prefix alone
+// outside w.prefixed, or lacks a line of w.
 func assertWalkProbesTheQueuedKey(t *testing.T, s *Store, name string, w walkPlan, query string, args ...any) {
 	t.Helper()
 	plan := explainPlan(t, s, query, args...)
@@ -59,12 +63,20 @@ func assertWalkProbesTheQueuedKey(t *testing.T, s *Store, name string, w walkPla
 	for _, index := range w.prefixed {
 		prefixed[index] = true
 	}
+	seeds := map[string]bool{}
+	for _, index := range w.seeds {
+		seeds[index] = true
+	}
+	seedScan := func(r planRow) bool {
+		fields := strings.Fields(r.detail)
+		return len(fields) == 5 && fields[2] == "USING" && fields[3] == "INDEX" && seeds[fields[4]] && !inStep(r)
+	}
 	steps := 0
 	for _, r := range plan {
 		switch {
 		case r.detail == "RECURSIVE STEP":
 			steps++
-		case strings.HasPrefix(r.detail, "SCAN ") && !scans[strings.Fields(r.detail)[1]]:
+		case strings.HasPrefix(r.detail, "SCAN ") && !scans[strings.Fields(r.detail)[1]] && !seedScan(r):
 			t.Errorf("%s scans a stored table: %q\n%s", name, r.detail, text)
 		case strings.Contains(r.detail, "AUTOMATIC"):
 			t.Errorf("%s builds an automatic index: %q\n%s", name, r.detail, text)
@@ -127,15 +139,20 @@ func TestRecursiveWalksProbeTheQueuedKey(t *testing.T) {
 				"SEARCH a USING INDEX idx_thread_requests_nested_caller (caller_thread_id=?)",
 				"SEARCH ps USING INDEX idx_thread_requests_spawn_link (target_thread_id=?)",
 			},
+			seeds: []string{"idx_thread_requests_open_deep"},
 		}, threadAgentTreeSQL(129), "lead", `{"waiting":["g-x"]}`, int64(0), 4, 160)
 		assertWalkProbesTheQueuedKey(t, s, "threadAgentNamedRowsSQL", walkPlan{
 			step: []string{
 				"SEARCH sp USING INDEX idx_thread_requests_spawn_link (target_thread_id=?)",
 				"SEARCH ps USING INDEX idx_thread_requests_spawn_link (target_thread_id=?)",
 			},
+			seeds: []string{"idx_thread_requests_open_deep"},
 		}, threadAgentNamedRowsSQL, "lead", `{"waiting":["g-x"]}`, int64(0), 4, 160, `["c-g"]`)
 		assertWalkProbesTheQueuedKey(t, s, "threadAgentRowFramesSQL", walkPlan{
-			step: []string{"SEARCH sp USING INDEX idx_thread_requests_spawn_link (target_thread_id=?)"},
+			step: []string{
+				"SEARCH link USING INDEX idx_thread_requests_spawn_link (target_thread_id=?)",
+				"SEARCH sp USING INDEX idx_thread_requests_spawn_link (target_thread_id=?)",
+			},
 		}, threadAgentRowFramesSQL, `["c-g"]`, "[]", "local", `["grand"]`, 4)
 	})
 

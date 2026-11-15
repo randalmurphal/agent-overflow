@@ -724,8 +724,14 @@ Ruling 36, as built:
   Codex subagents and terminals, remote commands), no armed loop or watch
   (`agent_wakes`), no reminder that has not fired, and no provider timer
   the idle reaper keeps a session for (`PendingWakeupAt`: a scheduled
-  wakeup or an armed cron job); open work below it keeps its spawn listed
-  through the listing's nesting. One place answers it (`workerUnrest`).
+  wakeup or an armed cron job), and no open work below it at any depth:
+  a thread whose own work is done is not at rest while a worker below it
+  is not, so every spawn above a live worker is open up to the root,
+  whatever the listing has room to show. One place answers a thread's own
+  state (`workerUnrest`), and one the work below it: the listing's reads
+  (`ThreadAgentRequest.TargetOpen`, `agentTargetOpenSQL`), whose answer
+  the row's state, the listing's membership, Past and the summaries all
+  take.
   The app keeps the spawned threads not at rest in memory (`liveWorkers`),
   each with its spawn link and what its durable sources last said, and
   re-evaluates a thread only on the events that change a source: its turn,
@@ -741,18 +747,24 @@ Ruling 36, as built:
 - An open row whose request settled shows its worker's state (`blocked`,
   `running`, `queued`, then `waiting`, in that order;
   `ThreadAgentRow.worker`), its blocked or activity line and Stop, and
-  keeps its answer in its digest. A waiting row's activity line is what it
+  keeps its answer in its digest. A worker with nothing of its own that
+  waits on its own workers shows `waiting` with no activity line: the
+  open rows nested under it, or at the depth bound its "nest deeper"
+  line, say what it waits on, and its Stop reaches them. A waiting row's activity line is what it
   waits on when the worker shows no activity of its own: the background
   work's summary, or the loop, watch or reminder's label; a timer adds no
   line. A waiting worker never needs the user. It is counted once
   per worker however many requests went to that thread, on the toggle and
   in the worker summaries, kept past the linger and the settled window,
   left out of Past, and framed to its spawner and the threads above it
-  when it changes. Once the worker rests the row is in Past: at once when
+  when it changes, every spawn above it framed for its own caller up to
+  the root. Once the worker rests the row is in Past: at once when
   its request settled outside the settled window, after the linger
   otherwise. A paired computer's `agent_rows` answer carries whether the
   spawn's thread there is not at rest, and the sweep keeps asking while
-  it is (`thread_requests.nested_open`).
+  it is (`thread_requests.nested_open`); a remote spawn at the listing's
+  last level reads that answer for its own state and nests none of its
+  rows.
 
 ### At rest
 
@@ -1542,14 +1554,19 @@ closes up their spacing so the row holds at a phone width.
   the tree, whatever statistics the database holds. A local spawn is kept
   for open work by counts it carries of the open work up to four spawns
   below its target, which the ledger keeps in the transaction of every
-  write to a request. Open work is what a thread's own listing shows
+  write to a request; for work deeper than that, each read climbs from
+  the spawns whose counts hold work three spawns down
+  (`idx_thread_requests_open_deep`, which holds only those) to the root. Open work is what a thread's own listing shows
   open: a spawn, and a send or ask with its wake armed or a call parked
   on it. A parked call lives in memory and arms its wake only when its
   wait ends, so the counts hold the armed part and each read climbs the
   spawns above the parked requests it is given, a spawn a step: a worker's
   quiet wait lists, and counts, under its owner as under itself. The
   workers not at rest are memory too, and each read climbs from their
-  spawn links the same way. A thread is reached by at most one local spawn, so
+  spawn links the same way. Each climb goes to the root, and a link
+  enters it once however many seeds lie below it: a read pays one search
+  per parked call, worker not at rest and deep spawn, and one per
+  distinct spawn above them. A thread is reached by at most one local spawn, so
   a read of named rows climbs from each row to the listed thread, one
   spawn a step, and gives each row the listing's place, wherever it falls
   against the row limit; the rows and their targets are read for those
@@ -1599,7 +1616,8 @@ closes up their spacing so the row holds at a phone width.
   cursor (settled time and token) through
   `idx_thread_requests_caller_settled` in index order, never offset or
   sorted; the total counts the caller's settled rows, which the
-  retention floor bounds, less the spawn links of workers not at rest. A spawn past the floor is listed as its lineage
+  retention floor bounds, less the spawns whose threads are not at rest,
+  by the listing's own answer. A spawn past the floor is listed as its lineage
   row, with no answer.
 - **Worker summaries.** `GetThreadWorkerSummary` counts the workers the
   open rows of the thread's listing go to, nested ones included, read as

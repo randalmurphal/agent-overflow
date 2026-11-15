@@ -13,12 +13,16 @@ import (
 // A spawn's Agents row is open while the thread it made is not at rest
 // (docs/specs/standing-agents.md, "Owned workers"), whatever its request's
 // state. A thread is at rest when it has no turn, no queued message, no
-// open prompt, no running background work, no provider timer, and no armed
-// loop, watch or reminder; open work below it keeps its spawn listed
-// through the listing's own nesting. liveWorkers is the one record of the
-// spawned threads not at rest. It is memory, so the boot seeds it from the
-// durable sources (seedLiveWorkers); the memory sources report themselves
-// once a turn starts or a message is queued.
+// open prompt, no running background work, no provider timer, no armed
+// loop, watch or reminder, and no open work below it at any depth.
+// liveWorkers is the one record of why the spawned threads are not at rest
+// by their own state. It is memory, so the boot seeds it from the durable
+// sources (seedLiveWorkers); the memory sources report themselves once a
+// turn starts or a message is queued. The work below a thread is the
+// listing's reads' to answer: they climb from each live worker and each
+// piece of open work to every spawn above it, up to the root
+// (store.ThreadAgentRequest.TargetOpen), and the row of a spawn whose
+// thread has nothing of its own shows it waiting.
 //
 // The record has one writer, reassessWorker, which reads why a thread is
 // not at rest and stores it. Two calls ask for that, each from the events
@@ -329,38 +333,6 @@ func (a *App) liveWorkerThreads() []string {
 	for id, worker := range w.threads {
 		if worker.link != "" {
 			out = append(out, id)
-		}
-	}
-	return out
-}
-
-// liveWorkerLinks lists the spawn links of the workers not at rest, by
-// token.
-func (a *App) liveWorkerLinks() []string {
-	w := &a.liveWorkers
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	out := make([]string, 0, len(w.threads))
-	for _, worker := range w.threads {
-		if worker.link != "" {
-			out = append(out, worker.link)
-		}
-	}
-	return out
-}
-
-// liveSpawnTokens lists the spawns, by token, whose thread is not at rest:
-// each local worker's link, and each spawn on a paired computer whose last
-// agent_rows answer said its thread is not. Past leaves them out: each is
-// still open.
-func (a *App) liveSpawnTokens() []string {
-	out := a.liveWorkerLinks()
-	c := &a.threadAgentPeers
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	for token, entry := range c.entries {
-		if entry.listing.Worker != "" {
-			out = append(out, token)
 		}
 	}
 	return out
