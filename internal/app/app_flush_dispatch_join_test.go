@@ -910,19 +910,24 @@ func (d reviewDispatch) wantStatus(t *testing.T, app *App, status, when string) 
 	}
 }
 
-// A session death whose composer write fails requeues the message it took
-// back. Its row is gone and its comments are drafts again; the requeue sends
-// the text the row rendered and claims the comments again: the provider sees
+// A session death whose composer write fails changes nothing: the composer
+// write, the row's removal and the return of its comments are one write. The
+// message is requeued naming its row, which still holds its comments; the
+// resend retires the row and claims the comments again: the provider sees
 // the text once, with each comment once.
 func TestRequeueAfterAFailedDraftWriteSendsTheReviewCommentsOnce(t *testing.T) {
 	t.Parallel()
 	d := startReviewDispatch(t, "requeue-failed-draft-write")
 	execOnStore(t, d.dbPath, `CREATE TRIGGER refuse_draft_insert BEFORE INSERT ON thread_drafts BEGIN SELECT RAISE(ABORT, 'injected draft failure'); END`)
 	execOnStore(t, d.dbPath, `CREATE TRIGGER refuse_draft_update BEFORE UPDATE ON thread_drafts BEGIN SELECT RAISE(ABORT, 'injected draft failure'); END`)
-	if requeued := d.app.restoreUnconfirmedQueueOnSessionDeath(d.thread.ID); len(requeued) != 1 {
-		t.Fatalf("requeued = %+v, want the message back on the queue", requeued)
+	requeued := d.app.restoreUnconfirmedQueueOnSessionDeath(d.thread.ID)
+	if len(requeued) != 1 || requeued[0].StaleUserItemID != d.row.ID {
+		t.Fatalf("requeued = %+v, want the message back on the queue naming its row", requeued)
 	}
-	d.wantStatus(t, d.app, "draft", "after the restore")
+	if _, found, err := d.app.store.GetThreadItem(d.thread.ID, d.row.ID); err != nil || !found {
+		t.Fatalf("row after the failed restore: found=%v err=%v, want it kept", found, err)
+	}
+	d.wantStatus(t, d.app, "sent", "while the row holds them")
 	execOnStore(t, d.dbPath, `DROP TRIGGER refuse_draft_insert`)
 	execOnStore(t, d.dbPath, `DROP TRIGGER refuse_draft_update`)
 

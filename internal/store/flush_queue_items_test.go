@@ -2,9 +2,93 @@ package store
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 )
+
+// A restore writes the composer, deletes the queue rows and retires the
+// unconfirmed rows with the review comments they claimed in one
+// transaction: a failure in any part leaves all of them as they were.
+func TestRestoreFlushQueueToDraftRetiresRowsInTheSameTransaction(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThread(t, s, "restore")
+	owner := ThreadReviewOwner("restore")
+	if _, err := s.CreateDiffReviewComment(DiffReviewComment{
+		ID: "c", ThreadID: "restore", Scope: string(DiffReviewScopeWorkspace), SourceKey: "diff",
+		FilePath: "a.go", NewLine: 1, Side: "new", Body: "Rename it.", CreatedAt: 1, UpdatedAt: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ClaimDiffReviewCommentsSent(owner, string(DiffReviewScopeWorkspace), "diff",
+		[]DiffReviewCommentSnapshot{{ID: "c", Body: "Rename it."}},
+		DiffReviewDelivery{SentAt: 2, TurnID: "restore:1", ThreadID: "restore", ItemID: "user:1:flush:1", Queued: true}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AppendItem(Item{
+		ID: "user:1:flush:1", ThreadID: "restore", TurnIndex: 1, Kind: "user_text", Role: "user",
+		Status: "completed", Summary: "unconfirmed", Meta: `{"pendingFlush":true}`, CreatedAt: 1, UpdatedAt: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.InsertFlushQueueItem(FlushQueueItem{ID: "queue", ThreadID: "restore", Message: "queued", EnqueuedAt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	expected, _, err := s.GetThreadDraft("restore")
+	if err != nil {
+		t.Fatal(err)
+	}
+	merged := expected
+	merged.Content = "unconfirmed\n\nqueued"
+	restore := func() (bool, []DiffReviewReturnedComments, error) {
+		return s.RestoreFlushQueueToDraft(expected, merged, []string{"queue"}, []string{"user:1:flush:1"})
+	}
+	state := func() string {
+		t.Helper()
+		draft, _, err := s.GetThreadDraft("restore")
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, row, err := s.GetThreadItem("restore", "user:1:flush:1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		queued, err := s.ListFlushQueueItems("restore")
+		if err != nil {
+			t.Fatal(err)
+		}
+		comment, err := s.GetDiffReviewComment(owner, "c")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return fmt.Sprintf("draft=%q row=%v queued=%d comment=%s", draft.Content, row, len(queued), comment.Status)
+	}
+	before := state()
+
+	if _, err := s.db.Exec(`CREATE TRIGGER refuse_row_delete BEFORE DELETE ON items WHEN OLD.id = 'user:1:flush:1' BEGIN SELECT RAISE(ABORT, 'injected delete failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := restore(); err == nil {
+		t.Fatal("RestoreFlushQueueToDraft succeeded with its retire refused")
+	}
+	if after := state(); after != before {
+		t.Fatalf("a failed restore wrote part of itself:\nbefore %s\nafter  %s", before, after)
+	}
+	if _, err := s.db.Exec(`DROP TRIGGER refuse_row_delete`); err != nil {
+		t.Fatal(err)
+	}
+
+	changed, returned, err := restore()
+	if err != nil || !changed {
+		t.Fatalf("RestoreFlushQueueToDraft = %v, %v", changed, err)
+	}
+	if got, want := state(), `draft="unconfirmed\n\nqueued" row=false queued=0 comment=draft`; got != want {
+		t.Fatalf("after the restore %s, want %s", got, want)
+	}
+	if len(returned) != 1 || len(returned[0].Comments) != 1 || returned[0].Comments[0] != (DiffReviewCommentSnapshot{ID: "c", Body: "Rename it."}) {
+		t.Fatalf("returned = %+v, want comment c", returned)
+	}
+}
 
 func TestFindQueuedSendUsesItsThreadAndSparseIndex(t *testing.T) {
 	s := newTestStore(t)
