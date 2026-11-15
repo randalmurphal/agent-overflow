@@ -359,7 +359,11 @@ func TestATakenInWorkerPromptGoesBackWhenItsSpawnerLeaves(t *testing.T) {
 			question := f.takeIn(t, f.assistant.ID)
 			var err error
 			if leave == "archive" {
-				err = f.app.ArchiveThread(f.assistant.ID)
+				var archived ArchiveThreadResult
+				archived, err = f.app.ArchiveThread(f.assistant.ID)
+				if len(archived.WorkersNotArchived) != 0 || archived.CleanupError != "" {
+					t.Fatalf("archive the spawner left work behind: %+v", archived)
+				}
 			} else {
 				err = f.app.DeleteThread(f.assistant.ID)
 			}
