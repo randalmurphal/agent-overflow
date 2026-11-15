@@ -177,10 +177,11 @@ export async function removeThreadsFromGroupAction(
 }
 
 /**
- * Nest threads under the standing agent that spawned them, or make them
- * plain rows of their project, out of any group they were in
- * (docs/specs/standing-agents.md ruling 36). Grouped is a group move. A row
- * whose placement changes comes back unpinned.
+ * Hand threads back to the thread that spawned them (owned: no sidebar
+ * row), or make them plain rows of their project, out of any group they
+ * were in (docs/specs/standing-agents.md ruling 36). Grouped is a group
+ * move. A row whose placement changes comes back unpinned. The reply's row
+ * moves the sidebar: an owned row leaves it and a pane showing it stays.
  */
 export async function setThreadPlacementAction(
   threadIds: readonly string[],
@@ -197,7 +198,7 @@ export async function setThreadPlacementAction(
     updateThreadGroupState(rows, mark);
     return true;
   } catch (err) {
-    reportGroupFailure(placement === 'nested' ? 'nest thread under its assistant' : 'make thread standalone', err);
+    reportGroupFailure(placement === 'owned' ? 'remove thread from the sidebar' : 'show thread in the sidebar', err);
     return false;
   }
 }

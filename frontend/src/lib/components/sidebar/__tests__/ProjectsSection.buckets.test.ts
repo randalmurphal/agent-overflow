@@ -62,25 +62,24 @@ it('rebuilds the tree of the project whose thread changed and of no other', asyn
   expect(built()).not.toContain('b1,b2');
 });
 
-it('rebuilds neither the Assistants section nor a project holding an agent row for another project\'s change', async () => {
+it('rebuilds neither the Assistants section nor a project with a placed worker for another project\'s change', async () => {
   setBindingMock('ListThreads', async () => [
     { ...thread('ag', ''), agentId: 'agent-1' },
-    { ...thread('h1', ''), helperOfAgentId: 'agent-1' },
     thread('a1', 'alpha'),
-    { ...thread('a3', 'alpha'), spawnedByThreadId: 'ag', placement: 'nested' },
+    { ...thread('a3', 'alpha'), spawnedByThreadId: 'ag', placement: 'standalone' },
     thread('b1', 'beta'),
     thread('b2', 'beta'),
   ] as Thread[]);
   await refreshThreads();
   const view = render(ProjectsSection, { props: { pane: createThreadPane() } });
   await tick();
-  const built = () => vi.mocked(buildSidebarThreadTree).mock.calls.map(([input]) => `${input.scope}:${input.threads.map((row) => row.id).join(',')}`);
-  expect(built()).toEqual(expect.arrayContaining([':h1', 'alpha:a1,a3', 'beta:b1,b2']));
+  const built = () => vi.mocked(buildSidebarThreadTree).mock.calls.map(([input]) => input.threads.map((row) => row.id).join(','));
+  expect(built()).toEqual(expect.arrayContaining(['ag', 'a1,a3', 'b1,b2']));
   vi.mocked(buildSidebarThreadTree).mockClear();
 
   updateThreadTitle('b1', 'Renamed');
   await tick();
   expect(view.getByText('Renamed')).toBeInTheDocument();
-  expect(built()).toContain('beta:b1,b2');
-  expect(built().filter((call) => !call.startsWith('beta:'))).toEqual([]);
+  expect(built()).toContain('b1,b2');
+  expect(built().filter((call) => call !== 'b1,b2')).toEqual([]);
 });

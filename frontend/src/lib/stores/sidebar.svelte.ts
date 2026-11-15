@@ -30,7 +30,6 @@
 
 import type { ProjectSortMode } from '../types/settings';
 import { THREAD_PREVIEW_LIMIT, THREAD_REVEAL_INCREMENT } from '../utils/sidebarThreadLimits';
-import { isAgentRowKey } from '../utils/sidebarTree';
 import {
   appStorageAdoptLegacyKey,
   appStorageDelete,
@@ -50,10 +49,6 @@ const THREAD_LIST_VISIBLE_LIMITS_KEY = 'sidebar:threadListVisibleLimits';
 // a group the user has never touched must show its members. No legacy
 // key: the feature never existed before appStorage.
 const COLLAPSED_GROUPS_KEY = 'sidebar:collapsedGroups';
-// An agent row's fold persists the same way, keyed by its container key
-// (agentContainerKey): the assistant's id for its card, with `@<entry>` for
-// its row in a project.
-const COLLAPSED_AGENTS_KEY = 'sidebar:collapsedAgents';
 // The Assistants and Projects sections, each folded whole from its header.
 const COLLAPSED_SECTIONS_KEY = 'sidebar:collapsedSections';
 
@@ -196,19 +191,12 @@ function removeLocalStorageKey(key: string): void {
 
 let collapsedProjects: Set<string> = $state(readCollapsed());
 let collapsedGroups: Set<string> = $state(stringSetFromStorage(COLLAPSED_GROUPS_KEY));
-let collapsedAgents: Set<string> = $state(stringSetFromStorage(COLLAPSED_AGENTS_KEY));
 let collapsedSections: Set<string> = $state(stringSetFromStorage(COLLAPSED_SECTIONS_KEY));
-// An agent's open done footer and its paging are for this page load only:
-// a list of finished work is something the user opens to look at, not a
-// layout to come back to.
-let expandedDoneAgents: Set<string> = $state(new Set());
-let doneVisibleLimits: Record<string, number> = $state({});
-// How many unpinned members each group (by id) or agent row (by container
-// key) shows before its show-more footer. Page-load state, like the done
-// paging.
+// How many unpinned members each group (by id) shows before its show-more
+// footer. Page-load state.
 let containerVisibleLimits: Record<string, number> = $state({});
 // How many top-level rows each list shows: a project's by its entry id,
-// and the Assistants section's cards by ASSISTANTS_LIST_KEY.
+// and the Assistants section's rows by ASSISTANTS_LIST_KEY.
 let threadListVisibleLimits: Record<string, number> = $state(readThreadListVisibleLimits());
 let projectSortMode: ProjectSortMode = $state(readProjectSortMode());
 
@@ -291,12 +279,6 @@ export function syncSidebarFromAppStorage(): void {
   if (!setsEqual(groups, collapsedGroups)) {
     collapsedGroups = groups;
   }
-  const agents = new Set(
-    parseStringArray(appStorageGet(COLLAPSED_AGENTS_KEY) ?? '[]') ?? [],
-  );
-  if (!setsEqual(agents, collapsedAgents)) {
-    collapsedAgents = agents;
-  }
   const sections = new Set(
     parseStringArray(appStorageGet(COLLAPSED_SECTIONS_KEY) ?? '[]') ?? [],
   );
@@ -367,47 +349,7 @@ export function toggleSidebarSection(section: SidebarSectionId): void {
   setSidebarSectionExpanded(section, !isSidebarSectionExpanded(section));
 }
 
-/**
- * Agent-row fold state, by the row's container key. Expanded until the
- * user folds it, like a group.
- */
-export function isAgentExpanded(containerKey: string): boolean {
-  return !collapsedAgents.has(containerKey);
-}
-
-export function getCollapsedAgents(): ReadonlySet<string> {
-  return collapsedAgents;
-}
-
-export function setAgentExpanded(containerKey: string, expanded: boolean): void {
-  if (collapsedAgents.has(containerKey) === !expanded) return;
-  const next = new Set(collapsedAgents);
-  if (expanded) next.delete(containerKey);
-  else next.add(containerKey);
-  collapsedAgents = next;
-  writeStringSet(COLLAPSED_AGENTS_KEY, next);
-}
-
-export function toggleAgent(containerKey: string): void {
-  setAgentExpanded(containerKey, !isAgentExpanded(containerKey));
-}
-
-/**
- * Drop everything the sidebar keeps for an assistant once it is gone here
- * (archived, deleted, or listed without the mark): the fold, the done
- * footer, its paging and the member bound of its card and of each of its
- * project rows. An assistant listed again starts with fresh rows. The
- * threads store calls this from its one write path, so no caller has to
- * remember it.
- */
-export function forgetAgentSidebarState(agentKey: string): void {
-  const rows = (keys: Iterable<string>) => [...keys].filter((key) => isAgentRowKey(key, agentKey));
-  for (const key of rows(collapsedAgents)) setAgentExpanded(key, true);
-  for (const key of rows(expandedDoneAgents)) closeAgentDone(key);
-  for (const key of rows(Object.keys(containerVisibleLimits))) forgetContainerVisibleLimit(key);
-}
-
-/** How many unpinned members a group or an agent row shows; grows by reveals. */
+/** How many unpinned members a group shows; grows by reveals. */
 export function getContainerVisibleLimit(containerKey: string): number {
   return containerVisibleLimits[containerKey] ?? THREAD_PREVIEW_LIMIT;
 }
@@ -417,63 +359,15 @@ export function setContainerVisibleLimit(containerKey: string, limit: number): v
   containerVisibleLimits = { ...containerVisibleLimits, [containerKey]: limit };
 }
 
-/** Drops a container's paging: a deleted group, or an agent that left the list. */
+/** Drops a group's paging when the group is deleted. */
 export function forgetContainerVisibleLimit(containerKey: string): void {
   if (!(containerKey in containerVisibleLimits)) return;
   const { [containerKey]: _dropped, ...rest } = containerVisibleLimits;
   containerVisibleLimits = rest;
 }
 
-/** The agents whose `N done` footer is open, listing their archived children. */
-export function getExpandedDoneAgents(): ReadonlySet<string> {
-  return expandedDoneAgents;
-}
-
-export function isAgentDoneExpanded(containerKey: string): boolean {
-  return expandedDoneAgents.has(containerKey);
-}
-
-export function toggleAgentDone(containerKey: string): void {
-  if (expandedDoneAgents.has(containerKey)) {
-    closeAgentDone(containerKey);
-    return;
-  }
-  const next = new Set(expandedDoneAgents);
-  next.add(containerKey);
-  expandedDoneAgents = next;
-}
-
 /**
- * Shuts an agent's done footer and forgets its paging, so it reopens at the
- * preview size. The list calls this when the footer leaves (the last
- * archived child was unarchived or deleted): a footer that returns later
- * starts closed.
- */
-export function closeAgentDone(containerKey: string): void {
-  if (!expandedDoneAgents.has(containerKey)) return;
-  const next = new Set(expandedDoneAgents);
-  next.delete(containerKey);
-  expandedDoneAgents = next;
-  if (containerKey in doneVisibleLimits) {
-    const { [containerKey]: _dropped, ...rest } = doneVisibleLimits;
-    doneVisibleLimits = rest;
-  }
-}
-
-/** How many archived rows an open done footer lists; grows by reveals. */
-export function getAgentDoneVisibleLimit(containerKey: string): number {
-  return doneVisibleLimits[containerKey] ?? THREAD_PREVIEW_LIMIT;
-}
-
-export function revealMoreAgentDone(containerKey: string): void {
-  doneVisibleLimits = {
-    ...doneVisibleLimits,
-    [containerKey]: getAgentDoneVisibleLimit(containerKey) + THREAD_REVEAL_INCREMENT,
-  };
-}
-
-/**
- * The key the Assistants section's cards page under in the per-list
+ * The key the Assistants section's rows page under in the per-list
  * preview sizes below. A project's list pages under its entry id, a UUID,
  * so the two never meet.
  */
@@ -533,10 +427,7 @@ export function resetSidebarForTest(): void {
   showProviderIcons = false;
   collapsedProjects = new Set();
   collapsedGroups = new Set();
-  collapsedAgents = new Set();
   collapsedSections = new Set();
-  expandedDoneAgents = new Set();
-  doneVisibleLimits = {};
   containerVisibleLimits = {};
   threadListVisibleLimits = {};
   projectSortMode = DEFAULT_PROJECT_SORT_MODE;

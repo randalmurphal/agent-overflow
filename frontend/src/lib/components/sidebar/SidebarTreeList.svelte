@@ -2,15 +2,12 @@
   /**
    * The drop targets a project's list puts on its rows (ProjectThreadList).
    * A group, its member rows and its show-more take a thread into the
-   * group; an agent row, its members and its footers take nothing and
-   * swallow the drop so the list behind them never ungroups it.
+   * group.
    */
   export interface SidebarTreeDrops {
     memberDragOver(e: DragEvent, groupId: string): void;
     memberDragLeave(e: DragEvent, groupId: string): void;
     memberDrop(e: DragEvent, groupId: string): void;
-    agentDragOver(e: DragEvent): void;
-    agentDrop(e: DragEvent): void;
     /** Whether the group row lights as taking the thread dragged over it. */
     groupLit(groupId: string): boolean;
     /** The group row reports a drag entering or leaving it. */
@@ -20,55 +17,38 @@
 
 <script lang="ts">
   // The rows of one sidebar tree: a project's list, or the Assistants
-  // section's cards and what they hold. Builds the sorted rows once per
-  // render, with each container's member status and activity bubbled into
-  // its row, then truncates to the list's visible limit (with open threads
-  // always floated in if they would otherwise sit below the fold), and
-  // finally flattens to one list honoring each container's collapse state.
-  // Every thread renders flat: at the top level, as a group member, or
-  // under an agent row (ThreadRow's `indent` comes from the node's depth).
+  // section's rows. Builds the sorted rows once per render, with each
+  // group's member status and activity bubbled into its row, then truncates
+  // to the list's visible limit (with open threads always floated in if
+  // they would otherwise sit below the fold), and finally flattens to one
+  // list honoring each group's collapse state. Every thread renders flat:
+  // at the top level or as a group member (ThreadRow's `indent` comes from
+  // the node's depth).
   // We deliberately do NOT virtualize: at 50 threads the flat render is
   // 60fps and the sort already pushes off-screen rows below the fold.
   //
   // The caller owns the list element these rows render in, and what only
   // its list has: a project's empty state, pending forks and drop targets.
-  import { onDestroy } from 'svelte';
   import type { Thread, ThreadGroup } from '../../types/models';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import {
     collapseThreadList,
-    getAgentDoneVisibleLimit,
-    getCollapsedAgents,
     getContainerVisibleLimit,
     getCollapsedGroups,
-    closeAgentDone,
-    getExpandedDoneAgents,
     getThreadListVisibleLimit,
-    isAgentDoneExpanded,
-    isAgentExpanded,
     isGroupExpanded,
     isThreadListExpanded,
     setContainerVisibleLimit,
     setThreadListVisibleLimit,
   } from '../../stores/sidebar.svelte';
-  import {
-    archivedChildrenKey,
-    getArchivedChildren,
-    holdArchivedChildren,
-    releaseArchivedChildren,
-    type ArchivedChildrenWant,
-  } from '../../stores/agentArchivedChildren.svelte';
   import { isThreadSelected, toggleThreadSelection } from '../../stores/threadFilter.svelte';
   import { getEffectiveThreadStatus, getThreadWaitingOn } from '../../stores/threadStatuses.svelte';
   import { unreachableThreadMachineName } from '../../stores/attachedBackends.svelte';
   import { getThreadLiveActivityAt } from '../../stores/threads.svelte';
   import { openThreadIds } from '../../stores/panes.svelte';
-  import { entryIdFor } from '../../stores/projects.svelte';
   import { sidebarFlip, sidebarEnter, sidebarExit } from '../../utils/sidebarAnimate';
-  import { agentContainerKey, buildSidebarThreadTree } from '../../utils/sidebarTree';
+  import { buildSidebarThreadTree } from '../../utils/sidebarTree';
   import {
-    agentDoneCount,
-    agentLiveChildCount,
     flattenSidebarThreadTree,
     nextContainerRevealLimit,
     nextSidebarThreadRevealLimit,
@@ -76,14 +56,12 @@
     rollupDisplayStatus,
     sameSidebarVisibleNodes,
     sameThreadStatusPill,
-    sidebarChildFolds,
     sidebarVisibleNodeId,
     type SidebarContainerMoreNode,
     type SidebarTreeVisibleNode,
   } from '../../utils/sidebarTreeView';
   import { THREAD_PREVIEW_LIMIT, THREAD_REVEAL_INCREMENT } from '../../utils/sidebarThreadLimits';
   import { GROUP_RAIL_LEFT_PX } from '../../utils/sidebarRowMetrics';
-  import AgentDoneFooter from './AgentDoneFooter.svelte';
   import ContainerShowMore from './ContainerShowMore.svelte';
   import ThreadGroupRow from './ThreadGroupRow.svelte';
   import ThreadRow from './ThreadRow.svelte';
@@ -93,23 +71,16 @@
     threads: readonly Thread[];
     /** The project's groups, already search-filtered by ProjectsSection. */
     groups?: readonly ThreadGroup[];
-    /**
-     * The agent rows: the assistants' cards in the Assistants section, or
-     * the assistants with a thread in this project (sidebarBuckets).
-     */
-    agents: readonly Thread[];
-    /** The container the list is (buildSidebarThreadTree): '' for the cards, else the project's entry. */
-    scope: string;
     /** The key the list's show-more paging persists under (stores/sidebar.svelte.ts). */
     listKey: string;
     pane: ThreadPane | null;
-    /** An agent row's third line, the projects its assistant serves; none when absent. */
+    /** An assistant row's third line, the projects its assistant serves; none when absent. */
     agentProjects?: (agent: Thread) => string;
     /** The project list's drop targets; without them a row takes no drop. */
     drops?: SidebarTreeDrops;
   }
 
-  let { threads, groups = [], agents, scope, listKey, pane, agentProjects, drops }: Props = $props();
+  let { threads, groups = [], listKey, pane, agentProjects, drops }: Props = $props();
 
   // Tree is built per-render: cheap (small N) and lets us reactively
   // pick up effective live-status changes from the status store and
@@ -121,8 +92,6 @@
     buildSidebarThreadTree({
       threads: threads.filter((thread) => !thread.forkPreparing),
       groups,
-      agents,
-      scope,
       statusOf: (thread) => getEffectiveThreadStatus(thread),
       waitingOnOf: getThreadWaitingOn,
       unreachableMachineOf: (thread) => unreachableThreadMachineName(thread.id, thread.projectId),
@@ -177,12 +146,7 @@
     const next = flattenSidebarThreadTree({
       nodes: preview.visibleNodes,
       collapsedGroupIds: getCollapsedGroups(),
-      collapsedAgentIds: getCollapsedAgents(),
       activeThreadId: pane?.threadId ?? null,
-      expandedDoneAgentIds: getExpandedDoneAgents(),
-      archivedChildrenOf: (node) => getArchivedChildren(archivedChildrenKey(node.thread.id, agentContainerKey(node))),
-      entryOf: entryIdFor,
-      doneLimitOf: getAgentDoneVisibleLimit,
       openThreadIds: openIds,
       memberLimitOf: getContainerVisibleLimit,
     });
@@ -191,67 +155,12 @@
     return next;
   });
 
-  // An open done footer reads its container's archived children as far as
-  // it shows them, and reads them again when the container's count moves
-  // (a child archived, unarchived or deleted on any client); this list
-  // holds them while the footer is open. A footer whose count, settled idle
-  // children and archived ones together, reaches zero leaves the list, and
-  // its open state goes with it.
-  const archivedHolder = {};
-  $effect(() => {
-    const wanted = new Map<string, ArchivedChildrenWant>();
-    for (const node of visibleNodes) {
-      if (node.kind !== 'agent-done' || node.archivedWant === null) continue;
-      wanted.set(archivedChildrenKey(node.agent.id, node.containerKey), { agentThreadId: node.agent.id, ...node.archivedWant });
-    }
-    holdArchivedChildren(archivedHolder, wanted);
-  });
-  onDestroy(() => releaseArchivedChildren(archivedHolder));
-
-  // The zero is checked again after a settle window before the footer
-  // closes: archiving a folded child removes its row (locally, or by its
-  // `unlisted` frame) before the agent row's count says it was archived,
-  // and that passing zero must not shut a footer the user has open.
-  const DONE_CLOSE_SETTLE_MS = 750;
-  const pendingDoneCloses = new Map<string, ReturnType<typeof setTimeout>>();
-  function doneCountOf(key: string): number {
-    for (const node of tree) {
-      if (node.kind === 'agent' && agentContainerKey(node) === key) {
-        return agentDoneCount(node, openIds, pane?.threadId ?? null, entryIdFor);
-      }
-    }
-    return 0;
-  }
-  $effect(() => {
-    for (const node of tree) {
-      const key = node.kind === 'agent' ? agentContainerKey(node) : '';
-      if (node.kind !== 'agent' || !isAgentDoneExpanded(key)) continue;
-      if (agentDoneCount(node, openIds, pane?.threadId ?? null, entryIdFor) === 0) {
-        if (!pendingDoneCloses.has(key)) {
-          pendingDoneCloses.set(key, setTimeout(() => {
-            pendingDoneCloses.delete(key);
-            if (doneCountOf(key) === 0) closeAgentDone(key);
-          }, DONE_CLOSE_SETTLE_MS));
-        }
-      }
-    }
-  });
-  onDestroy(() => {
-    for (const timer of pendingDoneCloses.values()) clearTimeout(timer);
-    pendingDoneCloses.clear();
-  });
-
-  // A container's show-more: the members its bound cuts are the group's,
-  // or the agent's children that are not folded into its done footer.
+  // A group's show-more: the members its bound cuts.
   function handleContainerReveal(more: SidebarContainerMoreNode): void {
     for (const node of tree) {
-      if (node.kind === 'thread') continue;
-      const key = node.kind === 'group' ? node.group.id : agentContainerKey(node);
-      if (key !== more.containerKey) continue;
-      const members = node.kind === 'group'
-        ? node.children
-        : node.children.filter((child) => !sidebarChildFolds(child, openIds, pane?.threadId ?? null));
-      setContainerVisibleLimit(key, nextContainerRevealLimit(members, openIds, getContainerVisibleLimit(key)));
+      if (node.kind !== 'group' || node.group.id !== more.containerKey) continue;
+      const key = node.group.id;
+      setContainerVisibleLimit(key, nextContainerRevealLimit(node.children, openIds, getContainerVisibleLimit(key)));
       return;
     }
   }
@@ -290,12 +199,9 @@
     return false;
   }
 
-  // A row's wrapper hands a drag to the target it renders inside: its
-  // group, or the agent row it belongs to (or is).
+  // A row's wrapper hands a drag to the group it renders inside.
   function dragOver(e: DragEvent, node: SidebarTreeVisibleNode): void {
-    if (!drops) return;
-    if (node.ownerGroupId) drops.memberDragOver(e, node.ownerGroupId);
-    else if (node.kind === 'agent' || node.ownerAgentId) drops.agentDragOver(e);
+    if (drops && node.ownerGroupId) drops.memberDragOver(e, node.ownerGroupId);
   }
 
   function dragLeave(e: DragEvent, node: SidebarTreeVisibleNode): void {
@@ -303,9 +209,7 @@
   }
 
   function drop(e: DragEvent, node: SidebarTreeVisibleNode): void {
-    if (!drops) return;
-    if (node.ownerGroupId) drops.memberDrop(e, node.ownerGroupId);
-    else if (node.kind === 'agent' || node.ownerAgentId) drops.agentDrop(e);
+    if (drops && node.ownerGroupId) drops.memberDrop(e, node.ownerGroupId);
   }
 </script>
 
@@ -321,23 +225,18 @@
         class="mx-2 my-1 border-t border-border-subtle/60"
       ></div>
     {/if}
-    {#if node.kind === 'container-more' || node.kind === 'agent-done'}
+    {#if node.kind === 'container-more'}
       <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
       <div
         role="listitem"
         class="border-l border-border-subtle/60 pb-px -mb-px"
         style:margin-left="{GROUP_RAIL_LEFT_PX}px"
-        data-group-member={node.ownerGroupId ? '' : null}
-        data-agent-member={node.ownerAgentId ? '' : null}
+        data-group-member=""
         ondragover={(e) => dragOver(e, node)}
         ondragleave={(e) => dragLeave(e, node)}
         ondrop={(e) => drop(e, node)}
       >
-        {#if node.kind === 'container-more'}
-          <ContainerShowMore {node} onReveal={() => handleContainerReveal(node)} />
-        {:else}
-          <AgentDoneFooter {node} />
-        {/if}
+        <ContainerShowMore {node} onReveal={() => handleContainerReveal(node)} />
       </div>
     {:else if node.kind === 'group'}
       <div role="listitem">
@@ -361,16 +260,12 @@
         1px pad-and-pull-back carries the border across the list's
         gap-px so the segments join into one line.
       -->
-      <!-- An agent's children sit behind the same rail as a group's
-           members. Neither they nor the agent row take a drop. -->
       <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
       <div
         role="listitem"
-        class={node.ownerGroupId || node.ownerAgentId ? 'border-l border-border-subtle/60 pb-px -mb-px' : ''}
-        style:margin-left={node.ownerGroupId || node.ownerAgentId ? `${GROUP_RAIL_LEFT_PX}px` : null}
+        class={node.ownerGroupId ? 'border-l border-border-subtle/60 pb-px -mb-px' : ''}
+        style:margin-left={node.ownerGroupId ? `${GROUP_RAIL_LEFT_PX}px` : null}
         data-group-member={node.ownerGroupId ? '' : null}
-        data-agent-member={node.ownerAgentId ? '' : null}
-        data-agent-done-row={node.kind === 'thread' && (node.archived || node.folded) ? '' : null}
         ondragover={(e) => dragOver(e, node)}
         ondragleave={(e) => dragLeave(e, node)}
         ondrop={(e) => drop(e, node)}
@@ -379,16 +274,8 @@
           thread={node.thread}
           {pane}
           indent={node.depth + 1}
-          inGroup={node.ownerGroupId !== null || node.ownerAgentId !== null}
-          agent={node.kind === 'agent' ? {
-            containerKey: agentContainerKey(node),
-            expanded: isAgentExpanded(agentContainerKey(node)),
-            childCount: agentLiveChildCount(node, openIds, pane?.threadId ?? null),
-            rolledUp: node.displayStatus === null ? null : { liveStatus: node.displayLiveStatus, pill: node.displayStatus },
-            projects: agentProjects?.(node.thread) ?? null,
-          } : null}
-          agentChildren={node.kind === 'agent' ? node.children.map((child) => child.thread) : []}
-          archivedChild={node.kind === 'thread' && node.archived === true}
+          inGroup={node.ownerGroupId !== null}
+          agentProjects={node.thread.agentId ? (agentProjects?.(node.thread) ?? null) : null}
           selected={isThreadSelected(node.thread.id)}
           onSelectClick={(modifier) => handleSelectClick(node.thread.id, modifier)}
         />

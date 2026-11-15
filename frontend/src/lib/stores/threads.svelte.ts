@@ -20,8 +20,6 @@ import { invalidateReplicaCatalog } from '../replica/session';
 import { clearLiveUsageSnapshot } from './threadContextWindow';
 import { clearThreadStatus } from './threadStatuses.svelte';
 import { addErrorToast } from './toast.svelte';
-import { forgetAgentSidebarState } from './sidebar.svelte';
-import { forgetArchivedChildren } from './agentArchivedChildren.svelte';
 import { notifyStandingAgentEnded } from './standingAgentEnded';
 import { releaseThreadTerminalState } from '../components/terminal/terminalStore.svelte';
 import { createKeyedSignalRegistry } from './keyedSignalRegistry.svelte';
@@ -60,10 +58,8 @@ function storeThreads(rows: readonly Thread[]): void {
 // Every write to the list passes here except dropThreadsForDetachedBackend,
 // so a thread that stops being an assistant's current thread in this list
 // (handed off, archived, deleted, or replaced by a row without the mark)
-// takes its agent-only state with it, and an assistant with no current
-// thread left in the list takes its sidebar state (keyed by the assistant,
-// so a handoff keeps it). A computer detaching keeps that state: its
-// assistants are still assistants, and the persisted fold must survive.
+// takes its agent-only state with it. A computer detaching keeps that
+// state: its assistants are still assistants.
 function setThreads(rows: readonly Thread[]): void {
   const before = threads;
   storeThreads(oneCurrentThreadPerAssistant(before, rows));
@@ -71,12 +67,9 @@ function setThreads(rows: readonly Thread[]): void {
   for (const row of before) {
     if (!row.agentId) continue;
     currentThreadOf ??= new Map(threads.flatMap((t) => (t.agentId ? [[t.agentId, t.id] as const] : [])));
-    const current = currentThreadOf.get(row.agentId);
-    if (current === row.id) continue;
-    forgetArchivedChildren(row.id);
+    if (currentThreadOf.get(row.agentId) === row.id) continue;
     // The wakes store reads this one, so it listens rather than being called.
     notifyStandingAgentEnded(row.id);
-    if (current === undefined) forgetAgentSidebarState(row.agentId);
   }
 }
 const catalogWriter = computerCatalogWriter('threads', () => threads as Thread[], setThreads, (row) => threadBackend(row.id), { rowsAreValues: true });
@@ -85,8 +78,7 @@ const catalogWriter = computerCatalogWriter('threads', () => threads as Thread[]
  * An assistant has one current thread. A handoff lists the new thread
  * before the old one leaves, so a write that holds two current threads of
  * one assistant keeps the one that was not current before (the newest when
- * both are new) and holds the other as the past thread it now is: nested
- * under the agent row unless it is in a group, as the handoff placed it.
+ * both are new) and holds the other as the past thread it now is.
  */
 function oneCurrentThreadPerAssistant(before: readonly Thread[], rows: readonly Thread[]): readonly Thread[] {
   let current: Map<string, Thread> | null = null;
@@ -106,7 +98,7 @@ function oneCurrentThreadPerAssistant(before: readonly Thread[], rows: readonly 
   }
   if (!duplicated) return rows;
   return rows.map((row) => (row.agentId && current!.get(row.agentId) !== row
-    ? { ...row, agentId: undefined, pastAgentId: row.agentId, placement: row.groupId ? row.placement : 'nested' }
+    ? { ...row, agentId: undefined, pastAgentId: row.agentId }
     : row));
 }
 // Ownership changes before the destination's row is applied. Fence the

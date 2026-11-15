@@ -15,7 +15,7 @@ export type RuntimeMode =
   | "full-access";
 
 /** Where the sidebar shows a thread (`Thread.placement`). */
-export type ThreadPlacement = 'nested' | 'grouped' | 'standalone';
+export type ThreadPlacement = 'owned' | 'grouped' | 'standalone';
 
 /** The kinds of attention an agent can flag (store.AttentionDecision and the rest). */
 export type AttentionKind = 'decision' | 'review' | 'problem';
@@ -118,25 +118,13 @@ export interface Thread {
   /** The local thread whose thread_spawn made this one; absent when the user started it. */
   spawnedByThreadId?: string;
   /**
-   * True when the spawner is a standing agent, archived or not, so the row
-   * offers its placement items even when the agent's own row is not in the
-   * list.
-   */
-  spawnedByAgent?: boolean;
-  /**
    * Where the sidebar shows the row (docs/specs/standing-agents.md ruling
-   * 36): nested under the agent that spawned it, grouped in `groupId`'s
-   * group, or standalone. A row from a backend older than placement has
-   * none; read it through `threadPlacement`.
+   * 36): nowhere while it is owned by the thread that spawned it, in
+   * `groupId`'s group, or as a plain row of its project. A row from a
+   * backend older than placement has none, and lists as standalone or
+   * grouped by its `groupId`.
    */
   placement?: ThreadPlacement | '';
-  /**
-   * The archived threads that live under the assistant whose current
-   * thread this is, counted by container: '' for its card (helpers and
-   * past threads), a project id for its row in that project. Set only on
-   * an assistant's current thread.
-   */
-  archivedChildCounts?: Record<string, number>;
   /**
    * Unix-ms timestamp of when the user last viewed the thread. New rows
    * start with a creation-time baseline; undefined means "never tracked"

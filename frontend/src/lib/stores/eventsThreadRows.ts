@@ -12,6 +12,7 @@ import { closePanesShowingThread, findPaneShowingThread, iterPanes, moveAssistan
 import { refreshProjects, touchProjectActivity } from './projects.svelte';
 import { refreshThreadGroups } from './threadGroups.svelte';
 import { refreshAgentWakes } from './threadWakes.svelte';
+import { refreshThreadWorkerSummaries } from './threadWorkerSummaries.svelte';
 import { followAssistantHandOffInStash, followAssistantHandOffsInStash } from './companionStash';
 import { addErrorToast, addToast } from './toast.svelte';
 import { getThreadById, getThreadLiveActivityAt, getThreads, loadThreads, prependThread, removeThread, replaceAllThreads, replaceThread, touchThreadActivity } from './threads.svelte';
@@ -264,6 +265,7 @@ export function refreshSidebarProjections(): void {
     // Groups have no local row merge, so the ordinary list load recovers them.
     void refreshThreadGroups();
     void refreshAgentWakes();
+    void refreshThreadWorkerSummaries();
   });
 }
 

@@ -94,8 +94,9 @@ describe('ProjectsSection import trigger', () => {
 // and a search shows its matches through a fold.
 describe('ProjectsSection assistants and projects', () => {
   const agent = makeThread({ id: 'agent', title: 'Ops', projectId: '', agentId: 'ops', agentProjectIds: ['p1'] });
-  const helper = makeThread({ id: 'helper', title: 'Research notes', projectId: '', helperOfAgentId: 'ops', spawnedByThreadId: 'agent', pinnedAt: 1 });
-  const work = makeThread({ id: 'work', title: 'Fix the build', projectId: 'p1', spawnedByThreadId: 'agent', pinnedAt: 1 });
+  const helper = makeThread({ id: 'helper', title: 'Research notes', projectId: '', helperOfAgentId: 'ops', spawnedByThreadId: 'agent', placement: 'owned' });
+  const worker = makeThread({ id: 'worker', title: 'Fix the tests', projectId: 'p1', spawnedByThreadId: 'agent', placement: 'owned' });
+  const work = makeThread({ id: 'work', title: 'Fix the build', projectId: 'p1', spawnedByThreadId: 'agent', placement: 'standalone', pinnedAt: 1 });
   const plain = makeThread({ id: 'plain', title: 'Plain thread', projectId: 'p1', pinnedAt: 1 });
 
   beforeEach(async () => {
@@ -109,7 +110,7 @@ describe('ProjectsSection assistants and projects', () => {
       { project: { id: 'p1', path: '/repo/p1', name: 'Alpha', sortPosition: 0, createdAt: 0, updatedAt: 0, archived: false }, threadCount: 2 },
     ]);
     await refreshProjects();
-    replaceAllThreads([agent, helper, work, plain]);
+    replaceAllThreads([agent, helper, worker, work, plain]);
   });
 
   afterEach(() => {
@@ -120,12 +121,10 @@ describe('ProjectsSection assistants and projects', () => {
   const idsIn = (el: Element | null) =>
     Array.from(el?.querySelectorAll<HTMLElement>('[data-sidebar-thread-id]') ?? [], (row) => row.dataset.sidebarThreadId);
 
-  it('lists the card with its helper above the projects, and the project work under the assistant\'s row in its project', () => {
+  it('lists the assistant once above the projects, a placed worker in its project, and no owned thread', () => {
     const view = render(ProjectsSection, { props: { pane: null } });
-    expect(idsIn(view.getByTestId('sidebar-assistants-section'))).toEqual(['agent', 'helper']);
-    expect(idsIn(view.getByTestId('sidebar-projects-section'))).toEqual(['agent', 'work', 'plain']);
-    const projectRow = view.getByTestId('sidebar-projects-section').querySelector('[data-sidebar-thread-id="agent"]');
-    expect(projectRow?.querySelector('[data-testid="thread-row-agent-projects"]')).toBeNull();
+    expect(idsIn(view.getByTestId('sidebar-assistants-section'))).toEqual(['agent']);
+    expect(idsIn(view.getByTestId('sidebar-projects-section'))).toEqual(['work', 'plain']);
     expect(view.getByTestId('sidebar-assistants-section').querySelector('[data-testid="thread-row-agent-projects"]')?.textContent?.trim()).toBe('Alpha');
   });
 
@@ -133,24 +132,28 @@ describe('ProjectsSection assistants and projects', () => {
     const view = render(ProjectsSection, { props: { pane: null } });
     await fireEvent.click(view.getByTestId('sidebar-section-toggle-assistants'));
     expect(idsIn(view.getByTestId('sidebar-assistants-section'))).toEqual([]);
-    expect(idsIn(view.getByTestId('sidebar-projects-section'))).toEqual(['agent', 'work', 'plain']);
+    expect(idsIn(view.getByTestId('sidebar-projects-section'))).toEqual(['work', 'plain']);
     await fireEvent.click(view.getByTestId('sidebar-section-toggle-projects'));
     expect(idsIn(view.getByTestId('sidebar-projects-section'))).toEqual([]);
     expect(view.getByTestId('sidebar-section-toggle-projects')).toHaveAttribute('aria-expanded', 'false');
 
+    setThreadFilterQuery('ops');
+    await tick();
+    expect(idsIn(view.getByTestId('sidebar-assistants-section'))).toEqual(['agent']);
+    // An owned thread's title finds nothing in the sidebar.
     setThreadFilterQuery('research');
     await tick();
-    expect(idsIn(view.getByTestId('sidebar-assistants-section'))).toEqual(['agent', 'helper']);
-    setThreadFilterQuery('build');
+    expect(idsIn(view.getByTestId('sidebar-assistants-section'))).toEqual([]);
+    setThreadFilterQuery('fix the');
     await tick();
     expect(idsIn(view.getByTestId('sidebar-assistants-section'))).toEqual([]);
-    expect(idsIn(view.getByTestId('sidebar-projects-section'))).toEqual(['agent', 'work']);
+    expect(idsIn(view.getByTestId('sidebar-projects-section'))).toEqual(['work']);
 
     setThreadFilterQuery('');
     await tick();
     expect(idsIn(view.getByTestId('sidebar-projects-section'))).toEqual([]);
     await fireEvent.click(view.getByTestId('sidebar-section-toggle-assistants'));
-    expect(idsIn(view.getByTestId('sidebar-assistants-section'))).toEqual(['agent', 'helper']);
+    expect(idsIn(view.getByTestId('sidebar-assistants-section'))).toEqual(['agent']);
   });
 
   it('marks a folded section\'s chevron expanded while a search shows its matches', async () => {

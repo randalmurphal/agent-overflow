@@ -86,7 +86,7 @@ export {
 
   // Thread groups (sidebar grouping rows; docs/specs/sidebar-thread-groups.md)
   ListThreadGroups,
-  ListArchivedSpawnedThreads,
+  ListAssistantPastThreads,
   CreateAssistant,
   SetAssistantProjects,
   StartNextAssistantThread,
@@ -639,6 +639,8 @@ export {
   ListLiveBackgroundTasks,
   ListThreadWakes,
   ListStandingAgentWakes,
+  ListThreadWorkerSummaries,
+  GetThreadWorkerSummary,
   GetThreadWakeDetail,
   WakeThreadWakeNow,
   CancelThreadWake,
@@ -759,7 +761,7 @@ export {
 } from '../../../bindings/agent-overflow/internal/provider/models.js';
 
 // Structured response types surfaced to components.
-export type { ArchivedChildrenCursor, ArchivedChildrenPage } from '../../../bindings/agent-overflow/internal/store/models.js';
+export type { PastThreadsCursor, PastThreadsPage } from '../../../bindings/agent-overflow/internal/store/models.js';
 export {
   ChatBarFavorite,
   ThreadMessageHit,
@@ -807,6 +809,7 @@ export {
   ThreadAgentStop,
   StandingAgentWakes,
   ThreadWakeDetail,
+  ThreadWorkerSummary,
 } from '../../../bindings/agent-overflow/internal/app/models.js';
 export {
   CompanionEvent as BrowserCompanionEvent,

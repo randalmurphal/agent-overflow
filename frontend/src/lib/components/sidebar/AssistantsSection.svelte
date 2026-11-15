@@ -1,40 +1,36 @@
 <script lang="ts">
   // The Assistants section above the projects (docs/specs/standing-agents.md,
-  // "Sidebar"): a card per assistant on every attached computer, holding
-  // its helpers and past threads, under a header that folds the section
-  // and carries New Assistant. ProjectsSection buckets what it shows. The
-  // cards take no drop and hold no groups.
+  // "Sidebar"): one row per assistant on every attached computer, under a
+  // header that folds the section and carries New Assistant.
+  // ProjectsSection buckets what it shows. The rows take no drop and hold
+  // no groups.
   import UserRoundPlus from '@lucide/svelte/icons/user-round-plus';
   import type { Thread } from '../../types/models';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { ASSISTANTS_LIST_KEY, isSidebarSectionShown, toggleSidebarSection } from '../../stores/sidebar.svelte';
   import { openNewAssistantDialog } from '../../stores/newAssistant.svelte';
-  import { pendingForks } from '../../stores/forkPreparation.svelte';
   import { getProjectLabelText } from '../../stores/projects.svelte';
   import { selectedBackend } from '../../stores/selectedBackend.svelte';
   import { hasScope } from '../../transport/scopes';
   import IconButton from '../primitives/IconButton.svelte';
   import Icon from '../primitives/Icon.svelte';
-  import ForkPendingRow from './ForkPendingRow.svelte';
   import SidebarSectionToggle from './SidebarSectionToggle.svelte';
   import SidebarTreeList from './SidebarTreeList.svelte';
   import { shouldOpenProjectThreadInNewPane } from './projectNewThread';
 
   interface Props {
-    /** The cards: assistants' current threads, already search-filtered. */
+    /** The assistants' current threads, already search-filtered. */
     assistants: readonly Thread[];
-    /** What the cards hold: their helpers and past threads. */
-    held: Thread[];
     pane: ThreadPane | null;
     /** A search is active: the section shows its matches even when folded. */
     searching: boolean;
   }
 
-  let { assistants, held, pane, searching }: Props = $props();
+  let { assistants, pane, searching }: Props = $props();
   let shown = $derived(isSidebarSectionShown('assistants', searching));
   let createUngranted = $derived(!hasScope('threads:autonomy', selectedBackend()));
 
-  // A card's third line: the projects its assistant serves.
+  // A row's third line: the projects its assistant serves.
   function servedProjectsLabel(agent: Thread): string {
     if (agent.agentAllProjects) return 'All projects';
     const names = (agent.agentProjectIds ?? []).map((id) => getProjectLabelText(id)).filter((name) => name !== '');
@@ -70,15 +66,8 @@
   </header>
   {#if shown && assistants.length > 0}
     <div class="px-2 pb-1">
-      <!-- A fork of an assistant's thread or helper lands on its card. -->
-      {#each held.filter((thread) => thread.forkPreparing) as thread (thread.id)}
-        <ForkPendingRow title={thread.title} />
-      {/each}
-      {#each pendingForks('').filter((source) => !held.some((thread) => thread.forkPreparing && thread.forkedFromThreadId === source.id)) as source (source.id)}
-        <ForkPendingRow title={`${source.title} (fork)`} />
-      {/each}
       <div class="flex flex-col gap-px rounded-[var(--radius-field)]" role="list" aria-label="Assistants" data-testid="assistant-card-list">
-        <SidebarTreeList threads={held} agents={assistants} scope="" listKey={ASSISTANTS_LIST_KEY} {pane} agentProjects={servedProjectsLabel} />
+        <SidebarTreeList threads={assistants} listKey={ASSISTANTS_LIST_KEY} {pane} agentProjects={servedProjectsLabel} />
       </div>
     </div>
   {/if}

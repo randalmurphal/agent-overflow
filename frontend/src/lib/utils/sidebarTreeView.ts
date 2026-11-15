@@ -7,13 +7,10 @@
 // Pure logic, no Svelte / DOM imports — table-drivable from unit tests.
 
 import type { ThreadLiveStatus } from '../stores/threadStatuses.svelte';
-import type { Thread } from '../types/models';
 import type { ThreadStatusPill } from './threadStatusPill';
 import {
-  agentContainerKey,
   sidebarNodeSection,
   displayRank,
-  type SidebarAgentTreeNode,
   type SidebarThreadTreeNode,
   type SidebarTreeNode,
 } from './sidebarTree';
@@ -33,46 +30,15 @@ interface SidebarVisibleNodePlacement {
    * `groupId` field is unverified against what is actually on screen.
    */
   ownerGroupId: string | null;
-  /** The agent row this row renders under, by its container key, or null. */
-  ownerAgentId: string | null;
 }
 
 /**
- * The `N done` footer under an agent's children: its settled idle children
- * (sidebarChildFolds) and its archived spawned threads, counted together
- * and listed inline when expanded, settled idle first.
- */
-export interface SidebarAgentDoneNode extends SidebarVisibleNodePlacement {
-  kind: 'agent-done';
-  /** The agent whose finished children this footer counts. */
-  agent: Thread;
-  /** The agent row's container key (agentContainerKey): the footer's state key. */
-  containerKey: string;
-  /** One deeper than the agent row, like its children. */
-  depth: number;
-  /** Settled idle children plus the row's archived ones (agentArchivedCount). */
-  count: number;
-  expanded: boolean;
-  /** True while the archived rows are expanded but not loaded yet. */
-  loading: boolean;
-  /** Done rows past the footer's own preview limit while expanded. */
-  hiddenCount: number;
-  /**
-   * What the expanded footer reads of its archived threads
-   * (agentArchivedChildren.svelte.ts): the scopes its container files
-   * them under, the container's count, and how many it needs loaded to
-   * fill its limit. Null while closed or holding none.
-   */
-  archivedWant: { scopes: readonly string[]; count: number; needed: number } | null;
-}
-
-/**
- * The show-more footer under a group's members or an agent's live
- * children once they pass the container bound (boundContainerMembers).
+ * The show-more footer under a group's members once they pass the
+ * container bound (boundContainerMembers).
  */
 export interface SidebarContainerMoreNode extends SidebarVisibleNodePlacement {
   kind: 'container-more';
-  /** The group id or the agent's assistant key: the paging's key. */
+  /** The group id: the paging's key. */
   containerKey: string;
   /** One deeper than the container row, like its members. */
   depth: number;
@@ -83,19 +49,7 @@ export interface SidebarContainerMoreNode extends SidebarVisibleNodePlacement {
 }
 
 export type SidebarTreeVisibleNode =
-  | (SidebarTreeNode & SidebarVisibleNodePlacement & {
-    /**
-     * True for an archived spawned thread listed under an agent's done
-     * footer: the row renders muted, and it is not in the live list.
-     */
-    archived?: boolean;
-    /**
-     * True for a settled idle child listed under an agent's open done
-     * footer: a live row, shown in the done list rather than the live rows.
-     */
-    folded?: boolean;
-  })
-  | SidebarAgentDoneNode
+  | (SidebarTreeNode & SidebarVisibleNodePlacement)
   | SidebarContainerMoreNode;
 
 export interface FlattenSidebarThreadTreeInput {
@@ -105,132 +59,15 @@ export interface FlattenSidebarThreadTreeInput {
    * collapsed: a group the user just made must show what is in it.
    */
   collapsedGroupIds?: ReadonlySet<string>;
-  /** Agent rows default to EXPANDED too; the container keys the user folded. */
-  collapsedAgentIds?: ReadonlySet<string>;
-  /** A collapsed group or agent shows only this member directly beneath it. */
+  /** A collapsed group shows only this member directly beneath it. */
   activeThreadId?: string | null;
-  /** Agent rows, by container key, whose done footer the user opened. */
-  expandedDoneAgentIds?: ReadonlySet<string>;
-  /**
-   * The archived threads read so far for an agent row's done footer, its
-   * own container's, newest first, and whether more follow; null while the
-   * first page is still loading. Read only for an expanded footer that
-   * shows archived rows.
-   */
-  archivedChildrenOf?: (node: SidebarAgentTreeNode) => { threads: readonly Thread[]; more: boolean } | null;
-  /** The sidebar entry of a project id (stores/projects.svelte.ts entryIdFor). */
-  entryOf: (projectId: string) => string;
-  /** How many done rows an expanded footer shows, by container key; THREAD_PREVIEW_LIMIT by default. */
-  doneLimitOf?: (containerKey: string) => number;
-  /**
-   * Threads mounted in any pane. A child open in a pane never folds into
-   * the done footer, and no member open in a pane hides behind a bound.
-   */
+  /** Threads mounted in any pane: no member open in a pane hides behind a bound. */
   openThreadIds?: ReadonlySet<string>;
   /**
-   * How many unpinned members a group (by id) or an agent row (by container
-   * key) shows before its show-more footer; THREAD_PREVIEW_LIMIT by default.
+   * How many unpinned members a group (by id) shows before its show-more
+   * footer; THREAD_PREVIEW_LIMIT by default.
    */
   memberLimitOf?: (containerKey: string) => number;
-}
-
-/**
- * Whether an agent's child folds into the done footer
- * (docs/specs/standing-agents.md ruling 5): effective status idle with no
- * pill (so read, and no Failed, Interrupted, Plan Ready or Setup Failed),
- * not pinned, and not open in a pane or focused.
- */
-export function sidebarChildFolds(
-  child: SidebarThreadTreeNode,
-  openThreadIds: ReadonlySet<string> | undefined,
-  activeThreadId: string | null | undefined,
-): boolean {
-  if (child.ownLiveStatus !== 'idle' || child.ownStatus !== null) return false;
-  if (child.thread.pinnedAt != null) return false;
-  if (child.thread.id === activeThreadId) return false;
-  return openThreadIds?.has(child.thread.id) !== true;
-}
-
-function foldedChildCount(
-  node: SidebarAgentTreeNode,
-  openThreadIds: ReadonlySet<string> | undefined,
-  activeThreadId: string | null | undefined,
-): number {
-  let folded = 0;
-  for (const child of node.children) {
-    if (sidebarChildFolds(child, openThreadIds, activeThreadId)) folded += 1;
-  }
-  return folded;
-}
-
-/** How many archived threads live under the assistant, over every container. */
-export function agentArchivedTotal(agent: Pick<Thread, 'archivedChildCounts'>): number {
-  let total = 0;
-  for (const count of Object.values(agent.archivedChildCounts ?? {})) total += count;
-  return total;
-}
-
-/**
- * The scopes an agent row's done footer reads its archived threads by
- * (ListArchivedSpawnedThreads), as the backend files them
- * (archivedAgentChildrenSQL): '' for the card, which holds its helpers and
- * past threads, else every project id whose sidebar entry is the row's.
- */
-export function archivedChildScopes(
-  node: Pick<SidebarAgentTreeNode, 'thread' | 'scope'>,
-  entryOf: (projectId: string) => string,
-): string[] {
-  if (node.scope === '') return [''];
-  return Object.keys(node.thread.archivedChildCounts ?? {})
-    .filter((projectId) => projectId !== '' && entryOf(projectId) === node.scope)
-    .sort();
-}
-
-/**
- * The assistant's archived threads counted by the agent row whose done
- * footer holds them: '' for its card, a project's sidebar entry for its row
- * there. `archivedChildCounts` is keyed by project id, '' for the card, so
- * an entry that merges several projects adds theirs. Only rows holding
- * some are present.
- */
-export function archivedCountsByContainer(
-  agent: Pick<Thread, 'archivedChildCounts'>,
-  entryOf: (projectId: string) => string,
-): Map<string, number> {
-  const counts = new Map<string, number>();
-  for (const [projectId, n] of Object.entries(agent.archivedChildCounts ?? {})) {
-    if (n <= 0) continue;
-    const scope = projectId === '' ? '' : entryOf(projectId);
-    counts.set(scope, (counts.get(scope) ?? 0) + n);
-  }
-  return counts;
-}
-
-/** How many archived threads this agent row's done footer holds. */
-export function agentArchivedCount(
-  node: Pick<SidebarAgentTreeNode, 'thread' | 'scope'>,
-  entryOf: (projectId: string) => string,
-): number {
-  return archivedCountsByContainer(node.thread, entryOf).get(node.scope) ?? 0;
-}
-
-/** An agent row's done footer count: its settled idle children plus its archived ones. */
-export function agentDoneCount(
-  node: SidebarAgentTreeNode,
-  openThreadIds: ReadonlySet<string> | undefined,
-  activeThreadId: string | null | undefined,
-  entryOf: (projectId: string) => string,
-): number {
-  return foldedChildCount(node, openThreadIds, activeThreadId) + agentArchivedCount(node, entryOf);
-}
-
-/** The count a collapsed agent row shows: its live children, not the done ones. */
-export function agentLiveChildCount(
-  node: SidebarAgentTreeNode,
-  openThreadIds: ReadonlySet<string> | undefined,
-  activeThreadId: string | null | undefined,
-): number {
-  return node.children.length - foldedChildCount(node, openThreadIds, activeThreadId);
 }
 
 export interface BoundContainerResult {
@@ -241,10 +78,10 @@ export interface BoundContainerResult {
 }
 
 /**
- * The one container bound, for a group's members and an agent's live
- * children (ruling 32): pinned members always show and take no slot, the
- * first `limit` unpinned members show, and a member open in a pane past
- * the cut shows too. Members arrive sorted, so pinned ones lead.
+ * The container bound of a group's members (ruling 32): pinned members
+ * always show and take no slot, the first `limit` unpinned members show,
+ * and a member open in a pane past the cut shows too. Members arrive
+ * sorted, so pinned ones lead.
  */
 export function boundContainerMembers(
   members: readonly SidebarThreadTreeNode[],
@@ -283,38 +120,17 @@ export function nextContainerRevealLimit(
   return next;
 }
 
-/** A row for an archived spawned thread: no live status, never a sort input. */
-function archivedChildNode(thread: Thread): SidebarThreadTreeNode {
-  return {
-    kind: 'thread',
-    thread,
-    depth: 1,
-    ownLiveStatus: 'idle',
-    ownStatus: null,
-    displayLiveStatus: 'idle',
-    displayStatus: null,
-    sortGroup: 'idle',
-    normalSortGroup: 'idle',
-    latestActivityAt: thread.updatedAt ?? 0,
-  };
-}
-
 /**
  * flattenSidebarThreadTree — emit each top-level row, followed by a group's
- * or agent's members when it is expanded, or only its focused member when
- * collapsed. An expanded container shows its members up to its bound, then
- * a show-more footer for the rest. An expanded agent's settled idle
- * children leave its live rows for its done footer, which ends the agent's
- * rows with its archived children; while the footer is open the done rows,
- * settled idle first, precede it.
+ * members when it is expanded, or only its focused member when collapsed.
+ * An expanded group shows its members up to its bound, then a show-more
+ * footer for the rest.
  */
 export function flattenSidebarThreadTree(
   input: FlattenSidebarThreadTreeInput,
 ): SidebarTreeVisibleNode[] {
   const visibleNodes: SidebarTreeVisibleNode[] = [];
-  let listed: Set<string> | null = null;
   const collapsedGroupIds = input.collapsedGroupIds;
-  const collapsedAgentIds = input.collapsedAgentIds;
 
   // The top level arrives sorted, so each section is one contiguous run.
   // Drafts sit above every section and never open one.
@@ -323,102 +139,20 @@ export function flattenSidebarThreadTree(
     const section = sidebarNodeSection(node);
     const startsSection = section !== null && previousSection !== null && section !== previousSection;
     if (section !== null) previousSection = section;
-    visibleNodes.push({ ...node, startsSection, ownerGroupId: null, ownerAgentId: null });
+    visibleNodes.push({ ...node, startsSection, ownerGroupId: null });
     if (node.kind === 'thread') continue;
-    if (node.kind === 'group') {
-      const groupId = node.group.id;
-      const collapsed = collapsedGroupIds !== undefined && collapsedGroupIds.has(groupId);
-      if (collapsed) {
-        for (const member of node.children) {
-          if (member.thread.id !== input.activeThreadId) continue;
-          visibleNodes.push({ ...member, startsSection: false, ownerGroupId: groupId, ownerAgentId: null });
-        }
-        continue;
-      }
-      pushBounded(visibleNodes, input, node.children, groupId, node.depth + 1, { ownerGroupId: groupId, ownerAgentId: null });
-      continue;
-    }
-    const agentId = agentContainerKey(node);
-    const collapsed = collapsedAgentIds !== undefined && collapsedAgentIds.has(agentId);
-    const placement = { ownerGroupId: null, ownerAgentId: agentId };
+    const groupId = node.group.id;
+    const collapsed = collapsedGroupIds !== undefined && collapsedGroupIds.has(groupId);
     if (collapsed) {
-      for (const child of node.children) {
-        if (child.thread.id !== input.activeThreadId) continue;
-        visibleNodes.push({ ...child, startsSection: false, ...placement });
+      for (const member of node.children) {
+        if (member.thread.id !== input.activeThreadId) continue;
+        visibleNodes.push({ ...member, startsSection: false, ownerGroupId: groupId });
       }
       continue;
     }
-    const live: SidebarThreadTreeNode[] = [];
-    const folded: SidebarThreadTreeNode[] = [];
-    for (const child of node.children) {
-      if (sidebarChildFolds(child, input.openThreadIds, input.activeThreadId)) folded.push(child);
-      else live.push(child);
-    }
-    pushBounded(visibleNodes, input, live, agentId, node.depth + 1, placement);
-    const archivedCount = agentArchivedCount(node, input.entryOf);
-    const count = folded.length + archivedCount;
-    if (count === 0) continue;
-    const expanded = input.expandedDoneAgentIds?.has(agentId) === true;
-    let loading = false;
-    let hiddenCount = 0;
-    let archivedWant: SidebarAgentDoneNode['archivedWant'] = null;
-    if (expanded) {
-      // Settled idle first, newest first; then the archived ones, read a
-      // page at a time newest first, only as far as the limit reaches. An
-      // archived page can name a thread still listed live, such as one a
-      // handoff just superseded before its row leaves; it shows once, as
-      // the live row, and the footer reads one more in its place.
-      const limit = input.doneLimitOf?.(agentId) ?? THREAD_PREVIEW_LIMIT;
-      const shown: Array<{ row: SidebarThreadTreeNode; archived: boolean }> = [...folded]
-        .sort((a, b) => b.latestActivityAt - a.latestActivityAt
-          || (a.thread.id < b.thread.id ? 1 : a.thread.id > b.thread.id ? -1 : 0))
-        .slice(0, limit)
-        .map((row) => ({ row, archived: false }));
-      // Archived rows read that show live instead.
-      let listedLive = 0;
-      if (archivedCount > 0) {
-        let needed = limit - shown.length;
-        if (needed > 0) {
-          const loaded = input.archivedChildrenOf?.(node) ?? null;
-          if (loaded === null) {
-            loading = true;
-          } else {
-            listed ??= listedThreadIds(input.nodes);
-            for (const thread of loaded.threads) {
-              if (shown.length >= limit) break;
-              if (listed.has(thread.id)) {
-                listedLive += 1;
-                needed += 1;
-                continue;
-              }
-              shown.push({ row: archivedChildNode(thread), archived: true });
-            }
-            if (shown.length < limit && loaded.more) loading = true;
-          }
-        }
-        archivedWant = { scopes: archivedChildScopes(node, input.entryOf), count: archivedCount, needed: Math.min(archivedCount, needed) };
-      }
-      hiddenCount = Math.max(0, folded.length + archivedCount - listedLive - limit);
-      for (const { row, archived } of shown) {
-        visibleNodes.push({ ...row, startsSection: false, ...placement, ...(archived ? { archived: true } : { folded: true }) });
-      }
-    }
-    visibleNodes.push({
-      kind: 'agent-done', agent: node.thread, containerKey: agentId, depth: node.depth + 1, count, expanded, loading, hiddenCount,
-      archivedWant, startsSection: false, ...placement,
-    });
+    pushBounded(visibleNodes, input, node.children, groupId, node.depth + 1);
   }
   return visibleNodes;
-}
-
-/** The id of every thread the nodes hold, top-level rows and members alike. */
-function listedThreadIds(nodes: readonly SidebarTreeNode[]): Set<string> {
-  const ids = new Set<string>();
-  for (const node of nodes) {
-    if (node.kind !== 'group') ids.add(node.thread.id);
-    if (node.kind !== 'thread') for (const child of node.children) ids.add(child.thread.id);
-  }
-  return ids;
 }
 
 /** Emit a container's members up to its bound, then its show-more footer. */
@@ -428,23 +162,20 @@ function pushBounded(
   members: readonly SidebarThreadTreeNode[],
   containerKey: string,
   depth: number,
-  placement: { ownerGroupId: string | null; ownerAgentId: string | null },
 ): void {
   const limit = input.memberLimitOf?.(containerKey) ?? THREAD_PREVIEW_LIMIT;
   const { shown, hidden } = boundContainerMembers(members, limit, input.openThreadIds);
-  for (const member of shown) visibleNodes.push({ ...member, startsSection: false, ...placement });
+  for (const member of shown) visibleNodes.push({ ...member, startsSection: false, ownerGroupId: containerKey });
   if (hidden.length === 0) return;
   visibleNodes.push({
     kind: 'container-more', containerKey, depth, hiddenCount: hidden.length,
-    hiddenStatus: rollupDisplayStatus(hidden), startsSection: false, ...placement,
+    hiddenStatus: rollupDisplayStatus(hidden), startsSection: false, ownerGroupId: containerKey,
   });
 }
 
-/** The each-block key of a visible row; a done footer keys on its agent. */
+/** The each-block key of a visible row. */
 export function sidebarVisibleNodeId(node: SidebarTreeVisibleNode): string {
-  if (node.kind === 'agent-done') return `agent:${node.containerKey}:done`;
   if (node.kind === 'container-more') return `more:${node.containerKey}`;
-  if (node.kind === 'agent') return `agent:${agentContainerKey(node)}`;
   return node.kind === 'group' ? node.group.id : node.thread.id;
 }
 
@@ -488,7 +219,6 @@ export function sameSidebarVisibleNodes(
     if (x.kind !== y.kind) return false;
     if (x.startsSection !== y.startsSection) return false;
     if (x.ownerGroupId !== y.ownerGroupId) return false;
-    if (x.ownerAgentId !== y.ownerAgentId) return false;
     if (x.kind === 'container-more' || y.kind === 'container-more') {
       if (x.kind !== 'container-more' || y.kind !== 'container-more') return false;
       if (x.containerKey !== y.containerKey || x.hiddenCount !== y.hiddenCount || x.depth !== y.depth) return false;
@@ -497,20 +227,8 @@ export function sameSidebarVisibleNodes(
         || !sameThreadStatusPill(x.hiddenStatus.pill, y.hiddenStatus.pill))) return false;
       continue;
     }
-    if (x.kind === 'agent-done' || y.kind === 'agent-done') {
-      if (x.kind !== 'agent-done' || y.kind !== 'agent-done') return false;
-      if (x.agent !== y.agent || x.containerKey !== y.containerKey || x.count !== y.count || x.expanded !== y.expanded
-        || x.loading !== y.loading || x.hiddenCount !== y.hiddenCount) return false;
-      // Not rendered, but the footer's reads follow it.
-      const a = x.archivedWant;
-      const b = y.archivedWant;
-      if ((a === null) !== (b === null)) return false;
-      if (a !== null && b !== null && (a.count !== b.count || a.needed !== b.needed
-        || a.scopes.length !== b.scopes.length || a.scopes.some((scope, i) => scope !== b.scopes[i]))) return false;
-      continue;
-    }
     if (x.kind === 'thread' && y.kind === 'thread') {
-      if (x.thread !== y.thread || x.archived !== y.archived || x.folded !== y.folded) return false;
+      if (x.thread !== y.thread) return false;
     }
     if (x.kind === 'group' && y.kind === 'group') {
       if (x.group !== y.group) return false;
@@ -518,11 +236,6 @@ export function sameSidebarVisibleNodes(
       // not in this array to be compared — so the count is render input
       // here even though a thread node's child count is not.
       if (x.children.length !== y.children.length) return false;
-    }
-    if (x.kind === 'agent' && y.kind === 'agent') {
-      // The agent row renders its thread (name, state, done count) and,
-      // collapsed, its child count.
-      if (x.thread !== y.thread || x.scope !== y.scope || x.children.length !== y.children.length) return false;
     }
     if (x.depth !== y.depth) return false;
     if (x.ownLiveStatus !== y.ownLiveStatus || x.displayLiveStatus !== y.displayLiveStatus) return false;
@@ -532,13 +245,12 @@ export function sameSidebarVisibleNodes(
   return true;
 }
 
-/** An open thread, or a group or agent holding one, stays above the preview cut. */
+/** An open thread, or a group holding one, stays above the preview cut. */
 function nodeHoldsOpenThread(
   node: SidebarTreeNode,
   openThreadIds: ReadonlySet<string>,
 ): boolean {
   if (node.kind === 'thread') return openThreadIds.has(node.thread.id);
-  if (node.kind === 'agent' && openThreadIds.has(node.thread.id)) return true;
   return node.children.some((member) => openThreadIds.has(member.thread.id));
 }
 
@@ -550,12 +262,12 @@ export interface PreviewThreadsResult {
 /**
  * Slice a sorted top-level node list into a preview window. A thread that
  * is open in a pane never hides behind the cut: any that land in the tail
- * float back into view after the head, in tail order. Groups, agents and
+ * float back into view after the head, in tail order. Groups and
  * pinned rows from both burners sort above the unpinned section, count
  * toward the limit and always stay visible, even when their count exceeds
  * it. Drafts stay visible outside the limit.
  *
- * A group or agent takes one slot. Its members take none.
+ * A group takes one slot. Its members take none.
  */
 export function previewSidebarThreads(input: {
   nodes: readonly SidebarTreeNode[];
@@ -630,8 +342,8 @@ export function nextSidebarThreadRevealLimit(input: {
 /**
  * Roll up the most important display status across a list of nodes, ranked
  * as a container row ranks its members (displayRank), so an unread hidden
- * row shows its dot: the "Show more" hidden-status dot of a project, group
- * or agent, and the per-project status dot when the project is collapsed.
+ * row shows its dot: the "Show more" hidden-status dot of a project or
+ * group, and the per-project status dot when the project is collapsed.
  */
 export function rollupDisplayStatus(
   nodes: readonly SidebarTreeNode[],

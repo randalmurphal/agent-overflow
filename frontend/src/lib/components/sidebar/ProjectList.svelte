@@ -18,8 +18,6 @@
     threadsByProject: Map<string, Thread[]>;
     /** Map of project id -> visible thread groups for that project. */
     groupsByProject?: Map<string, ThreadGroup[]>;
-    /** Map of project id -> the assistants whose row there holds a thread. */
-    agentsByProject?: Map<string, Thread[]>;
     pane: ThreadPane | null;
     onNewThread?: ProjectNewThreadHandler;
     onNewTerminal?: ProjectNewTerminalHandler;
@@ -33,17 +31,15 @@
     emptyMessage = 'No projects yet. Click + to add one.',
     threadsByProject,
     groupsByProject,
-    agentsByProject,
     pane,
     onNewThread,
     onNewTerminal,
     onReorder,
   }: Props = $props();
 
-  // One array for every project with no threads (or no assistants), so
-  // its list is not handed a new empty one on each render.
+  // One array for every project with no threads, so its list is not
+  // handed a new empty one on each render.
   const NO_THREADS: Thread[] = [];
-  const NO_AGENTS: readonly Thread[] = [];
 
   let orderedIds = $derived(projects.map((p) => p.project.id));
   let labels = $derived(disambiguatedPathLabels(projects.map((p) => p.project)));
@@ -71,7 +67,6 @@
         displayLabel={labels.get(project.project.id)}
         threads={threadsByProject.get(project.project.id) ?? NO_THREADS}
         groups={groupsByProject?.get(project.project.id) ?? NO_GROUPS}
-        agents={agentsByProject?.get(project.project.id) ?? NO_AGENTS}
         {pane}
         {onNewThread}
         {onNewTerminal}

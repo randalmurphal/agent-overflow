@@ -87,6 +87,7 @@
   import ThreadActionConfirmationHost from './lib/components/palette/ThreadActionConfirmationHost.svelte';
   import NewAssistantDialog from './lib/components/sidebar/NewAssistantDialog.svelte';
   import AssistantProjectsDialog from './lib/components/sidebar/AssistantProjectsDialog.svelte';
+  import PreviousThreadsDialog from './lib/components/sidebar/PreviousThreadsDialog.svelte';
   import ConversationTransferHost from './lib/components/transfers/ConversationTransferHost.svelte';
   import { initConversationTransfers } from './lib/stores/conversationTransfers.svelte';
   import UnsentMessageConfirmationHost from './lib/components/composer/UnsentMessageConfirmationHost.svelte';
@@ -698,6 +699,7 @@ import BackgroundKillConfirmationHost from './lib/components/composer/Background
 <ThreadActionConfirmationHost />
 <NewAssistantDialog />
 <AssistantProjectsDialog />
+<PreviousThreadsDialog />
 <ConversationTransferHost />
 
 <UnsentMessageConfirmationHost />

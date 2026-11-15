@@ -7,9 +7,7 @@ import type { ThreadLiveStatus } from '../stores/threadStatuses.svelte';
 import type { Thread, ThreadGroup } from '../types/models';
 import {
   buildSidebarThreadTree,
-  sidebarNodeSection,
   sidebarTreeNodeId,
-  type SidebarAgentTreeNode,
   type SidebarGroupTreeNode,
   type SidebarTreeNode,
 } from './sidebarTree';
@@ -46,11 +44,6 @@ const nodeIds = (nodes: readonly SidebarTreeNode[]): string[] => nodes.map(sideb
 
 function groupNode(node: SidebarTreeNode): SidebarGroupTreeNode {
   if (node.kind !== 'group') throw new Error(`${sidebarTreeNodeId(node)} is not a group`);
-  return node;
-}
-
-function agentNode(node: SidebarTreeNode): SidebarAgentTreeNode {
-  if (node.kind !== 'agent') throw new Error(`${sidebarTreeNodeId(node)} is not an agent`);
   return node;
 }
 
@@ -459,140 +452,5 @@ describe('buildSidebarThreadTree with groups', () => {
       liveStatusOf: liveStatusMap({ member: 'error' }),
     });
     expect(nodeIds(tree)).toEqual(['draft', 'g1']);
-  });
-});
-
-describe('buildSidebarThreadTree with standing agents', () => {
-  const agent = mkThread('agent', { agentId: 'agent', updatedAt: 100 });
-
-  it('nests the live threads an agent spawned under it, sorted, and leaves the rest alone', () => {
-    const tree = buildSidebarThreadTree({
-      threads: [
-        agent,
-        mkThread('child-idle', { spawnedByThreadId: 'agent', updatedAt: 500 }),
-        mkThread('child-running', { spawnedByThreadId: 'agent', updatedAt: 200 }),
-        mkThread('stranger', { updatedAt: 900 }),
-        mkThread('orphan', { spawnedByThreadId: 'not-here', updatedAt: 950 }),
-      ],
-      liveStatusOf: liveStatusMap({ 'child-running': 'running' }),
-    });
-    expect(nodeIds(tree)).toEqual(['agent', 'orphan', 'stranger']);
-    const node = agentNode(tree[0]);
-    expect(nodeIds(node.children)).toEqual(['child-running', 'child-idle']);
-    expect(node.children.every((child) => child.depth === 1)).toBe(true);
-    expect(sidebarNodeSection(node)).toBe('groups');
-  });
-
-  it('bubbles the most important status of the agent and its children, and the newest activity', () => {
-    const tree = buildSidebarThreadTree({
-      threads: [
-        agent,
-        mkThread('child', { spawnedByThreadId: 'agent', updatedAt: 5000, hasIncompleteTurn: true }),
-      ],
-      liveStatusOf: liveStatusMap({ agent: 'running' }),
-    });
-    const node = agentNode(tree[0]);
-    expect(node.ownLiveStatus).toBe('running');
-    expect(node.displayLiveStatus).toBe('interrupted');
-    expect(node.sortGroup).toBe('needs-attention');
-    expect(node.latestActivityAt).toBe(5000);
-  });
-
-  it('shows the agent\'s own status when its children are quiet', () => {
-    const tree = buildSidebarThreadTree({
-      threads: [agent, mkThread('child', { spawnedByThreadId: 'agent' })],
-      liveStatusOf: liveStatusMap({ agent: 'running' }),
-    });
-    expect(agentNode(tree[0]).displayLiveStatus).toBe('running');
-  });
-
-  it('sorts agents among groups in the groups section, by bubbled status then activity', () => {
-    const tree = buildSidebarThreadTree({
-      threads: [
-        agent,
-        mkThread('quiet-agent', { agentId: 'quiet-agent', updatedAt: 9000 }),
-        mkThread('member', { groupId: 'g1', updatedAt: 8000 }),
-        mkThread('pinned', { pinnedAt: 1, updatedAt: 9999 }),
-        mkThread('child', { spawnedByThreadId: 'agent', updatedAt: 10 }),
-      ],
-      groups: [mkGroup('g1')],
-      liveStatusOf: liveStatusMap({ child: 'running' }),
-    });
-    expect(nodeIds(tree)).toEqual(['agent', 'quiet-agent', 'g1', 'pinned']);
-  });
-
-  it('makes a promoted spawned thread an agent row of its own', () => {
-    const tree = buildSidebarThreadTree({
-      threads: [
-        agent,
-        mkThread('promoted-child', { spawnedByThreadId: 'agent', agentId: 'promoted-child' }),
-        mkThread('grandchild', { spawnedByThreadId: 'promoted-child' }),
-      ],
-    });
-    expect(nodeIds(tree).sort()).toEqual(['agent', 'promoted-child']);
-    const byId = new Map(tree.map((node) => [nodeId(node), agentNode(node)] as const));
-    expect(byId.get('promoted-child')?.children.map(nodeId)).toEqual(['grandchild']);
-    expect(byId.get('agent')?.children).toEqual([]);
-  });
-
-  it('ignores a group or pin left on an agent row, and nests a spawned row with no placement (an older backend) before its group', () => {
-    const tree = buildSidebarThreadTree({
-      threads: [
-        mkThread('agent', { agentId: 'agent', groupId: 'g1', pinnedAt: 5 }),
-        mkThread('child', { spawnedByThreadId: 'agent', groupId: 'g1' }),
-      ],
-      groups: [mkGroup('g1')],
-    });
-    expect(nodeIds(tree).sort()).toEqual(['agent', 'g1']);
-    const agentRow = tree.find((node) => node.kind === 'agent');
-    const groupRow = tree.find((node) => node.kind === 'group');
-    if (!agentRow || !groupRow) throw new Error('missing rows');
-    expect(agentNode(agentRow).children.map(nodeId)).toEqual(['child']);
-    expect(groupNode(groupRow).children).toEqual([]);
-  });
-
-  it('nests nothing under an agent whose row is not in the list', () => {
-    const tree = buildSidebarThreadTree({
-      threads: [mkThread('child', { spawnedByThreadId: 'agent' })],
-    });
-    expect(tree.map((node) => node.kind)).toEqual(['thread']);
-  });
-
-  // docs/specs/standing-agents.md ruling 36: a spawned thread renders where
-  // its placement puts it, and only a nested one is the agent's child.
-  it('places each spawned thread by its placement', () => {
-    const tree = buildSidebarThreadTree({
-      threads: [
-        agent,
-        mkThread('nested', { spawnedByThreadId: 'agent', placement: 'nested', updatedAt: 10 }),
-        mkThread('grouped', { spawnedByThreadId: 'agent', placement: 'grouped', groupId: 'g1', updatedAt: 20 }),
-        mkThread('standalone', { spawnedByThreadId: 'agent', placement: 'standalone', updatedAt: 30 }),
-        // Outside every project a past thread or a helper has no other
-        // place: it nests whatever its placement says.
-        mkThread('past-home', { pastAgentId: 'agent', projectId: '', placement: 'standalone', updatedAt: 50 }),
-        mkThread('helper', { helperOfAgentId: 'agent', projectId: '', spawnedByThreadId: 'other', placement: 'standalone', updatedAt: 60 }),
-      ],
-      groups: [mkGroup('g1')],
-    });
-    const byId = new Map(tree.map((node) => [nodeId(node), node] as const));
-    expect(agentNode(byId.get('agent')!).children.map(nodeId).sort()).toEqual(['helper', 'nested', 'past-home']);
-    expect(groupNode(byId.get('g1')!).children.map(nodeId)).toEqual(['grouped']);
-    expect(byId.get('standalone')?.kind).toBe('thread');
-    expect(byId.get('standalone')?.depth).toBe(0);
-  });
-
-  it('bubbles only nested children into the agent row', () => {
-    const tree = buildSidebarThreadTree({
-      threads: [
-        agent,
-        mkThread('nested', { spawnedByThreadId: 'agent', placement: 'nested', updatedAt: 10 }),
-        mkThread('standalone', { spawnedByThreadId: 'agent', placement: 'standalone', updatedAt: 9000, hasIncompleteTurn: true }),
-      ],
-      liveStatusOf: liveStatusMap({}),
-    });
-    const node = agentNode(tree.find((n) => n.kind === 'agent')!);
-    expect(node.children.map(nodeId)).toEqual(['nested']);
-    expect(node.displayLiveStatus).toBe('idle');
-    expect(node.latestActivityAt).toBe(100);
   });
 });

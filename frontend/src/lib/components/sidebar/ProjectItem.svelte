@@ -72,8 +72,6 @@
     threads: Thread[];
     /** The project's groups, already search-filtered by ProjectsSection. */
     groups?: readonly ThreadGroup[];
-    /** The assistants whose row here holds a thread of this project. */
-    agents?: readonly Thread[];
     pane: ThreadPane | null;
     /** Called with the project id when the user clicks the new-thread button
      * (or otherwise signals "create a new thread in this project"). */
@@ -98,7 +96,6 @@
     displayLabel,
     threads,
     groups = [],
-    agents = [],
     pane,
     onNewThread,
     onNewTerminal,
@@ -142,8 +139,6 @@
     if (expanded) return null;
     const tree = buildSidebarThreadTree({
       threads,
-      agents,
-      scope: project.project.id,
       statusOf: (thread) => getEffectiveThreadStatus(thread),
       waitingOnOf: getThreadWaitingOn,
       unreachableMachineOf: (thread) => unreachableThreadMachineName(thread.id, thread.projectId),
@@ -510,7 +505,7 @@
   </div>
 
   {#if expanded}
-    <ProjectThreadList projectId={project.project.id} {threads} {groups} {agents} {pane} {onNewThread} />
+    <ProjectThreadList projectId={project.project.id} {threads} {groups} {pane} {onNewThread} />
   {:else if activeWhenCollapsed}
     <!--
       Active-thread pin: the user is reading this thread but the project

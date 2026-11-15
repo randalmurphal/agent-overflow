@@ -1,12 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
   collapseProject,
-  forgetAgentSidebarState,
-  getCollapsedAgents,
-  getExpandedDoneAgents,
   isSidebarSectionExpanded,
-  setAgentExpanded,
-  toggleAgentDone,
   toggleSidebarSection,
   getContainerVisibleLimit,
   setContainerVisibleLimit,
@@ -46,28 +41,12 @@ describe('sidebar store', () => {
     resetSidebarForTest();
   });
 
-  it('forgets a group\'s and an agent row\'s paging when the container goes', () => {
+  it('forgets a group\'s paging when the group goes', () => {
     setContainerVisibleLimit('group-1', THREAD_PREVIEW_LIMIT + THREAD_REVEAL_INCREMENT);
-    setContainerVisibleLimit('agent-1', THREAD_PREVIEW_LIMIT + THREAD_REVEAL_INCREMENT);
     setContainerVisibleLimit('other', THREAD_PREVIEW_LIMIT + THREAD_REVEAL_INCREMENT);
     removeThreadGroup('group-1');
-    forgetAgentSidebarState('agent-1');
     expect(getContainerVisibleLimit('group-1')).toBe(THREAD_PREVIEW_LIMIT);
-    expect(getContainerVisibleLimit('agent-1')).toBe(THREAD_PREVIEW_LIMIT);
     expect(getContainerVisibleLimit('other')).toBe(THREAD_PREVIEW_LIMIT + THREAD_REVEAL_INCREMENT);
-  });
-
-  it('forgets an assistant\'s card and every row of it in a project, and no other assistant\'s', () => {
-    for (const key of ['agent-1', 'agent-1@p1', 'agent-1@p2', 'agent-10', 'agent-10@p1']) {
-      setAgentExpanded(key, false);
-      setContainerVisibleLimit(key, THREAD_PREVIEW_LIMIT + THREAD_REVEAL_INCREMENT);
-      toggleAgentDone(key);
-    }
-    forgetAgentSidebarState('agent-1');
-    expect([...getCollapsedAgents()]).toEqual(['agent-10', 'agent-10@p1']);
-    expect([...getExpandedDoneAgents()]).toEqual(['agent-10', 'agent-10@p1']);
-    for (const key of ['agent-1', 'agent-1@p1', 'agent-1@p2']) expect(getContainerVisibleLimit(key)).toBe(THREAD_PREVIEW_LIMIT);
-    expect(getContainerVisibleLimit('agent-10@p1')).toBe(THREAD_PREVIEW_LIMIT + THREAD_REVEAL_INCREMENT);
   });
 
   describe('sections', () => {

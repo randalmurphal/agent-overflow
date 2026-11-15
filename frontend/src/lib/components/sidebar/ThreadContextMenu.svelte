@@ -21,30 +21,27 @@
   import type { PopoverCloseReason } from '../../utils/popoverOwnership';
   import Menu from '../primitives/Menu.svelte';
   import { openAssistantProjectsDialog } from '../../stores/newAssistant.svelte';
+  import { openPreviousThreadsDialog } from '../../stores/assistantPastThreads.svelte';
   import MenuItem from '../primitives/MenuItem.svelte';
   import MenuDivider from '../primitives/MenuDivider.svelte';
   import MenuSubmenuItem from '../primitives/MenuSubmenuItem.svelte';
   import {
-    archiveDoneChildrenAction,
     archiveThreadAction,
     copyThreadIdAction,
     copyThreadPathAction,
     deleteThreadAction,
     forkThreadAction,
     transferThreadAction,
-    markAllReadAction,
     markThreadUnreadAction,
     PIN_GROUP_BACK,
     PIN_GROUP_FRONT,
     nextAssistantThreadAction,
     pinThreadAction,
     setThreadPinGroupAction,
-    unarchiveThreadAction,
     unpinThreadAction,
     type ThreadActionCtx,
   } from './threadRowActions';
-  import { cardOwnerAgentId, isStandingAgent, threadPlacement } from '../../utils/sidebarTree';
-  import { getEffectiveThreadStatus } from '../../stores/threadStatuses.svelte';
+  import { isStandingAgent } from '../../utils/sidebarTree';
   import {
     applyThreadImportUpdatesAction,
     checkThreadImportUpdatesAction,
@@ -62,8 +59,6 @@
     withTerminalsNote,
   } from '../../stores/worktreeRemoval.svelte';
   import { getThreadGroupsForProject } from '../../stores/threadGroups.svelte';
-  import { sidebarThreadVisible } from '../../stores/sidebarDevices.svelte';
-  import { sidebarAgentRowShown } from './sidebarBuckets';
   import { expandProject } from '../../stores/sidebar.svelte';
   import {
     createThreadGroupAndMoveAction,
@@ -100,14 +95,6 @@
     isActive: boolean;
     /** A standing agent's own row: no group items. */
     agentBound?: boolean;
-    /** An agent's live spawned threads, for Archive Done Children. */
-    agentChildren?: readonly Thread[];
-    /**
-     * An archived thread listed by an agent's done footer: it can be
-     * unarchived, copied and deleted, and nothing else (no pin, no group,
-     * no archive of what is already archived).
-     */
-    archivedChild?: boolean;
   }
 
   let {
@@ -119,25 +106,19 @@
     onRename,
     isActive,
     agentBound = false,
-    agentChildren = [],
-    archivedChild = false,
   }: Props = $props();
 
   let showDeleteConfirm = $state(false);
   let showArchiveConfirm = $state(false);
   let showBulkDeleteConfirm = $state(false);
-  let showArchiveDoneConfirm = $state(false);
 
   // ── Assistant ────────────────────────────────────────────────────────────
   //
   // An assistant's current thread offers New Thread, Same Assistant, its
-  // projects, its loops and watches and the children's archive; its delete
-  // is always confirmed and the confirm names its home folder and what is
+  // projects, its previous threads and its loops and watches; its delete is
+  // always confirmed and the confirm names its home folder and what is
   // removed with it.
   let isAgent = $derived(isStandingAgent(thread));
-  // Done: a spawned thread with nothing running and nothing waiting on
-  // the user. Archiving it is what the agent's `N done` footer counts.
-  let doneChildren = $derived(agentChildren.filter((child) => getEffectiveThreadStatus(child) === 'idle'));
 
   async function openLoopsAndWatches(): Promise<void> {
     onClose();
@@ -213,7 +194,7 @@
     Boolean(pendingUpdate?.restoresModelProfile) && (pendingUpdate?.newItems ?? 0) === 0,
   );
 
-  let canArchive = $derived(thread.mode !== 'terminal' && !archivedChild);
+  let canArchive = $derived(thread.mode !== 'terminal');
   let isPinned = $derived(thread.pinnedAt != null);
   let isBackBurner = $derived(isPinned && thread.pinGroup === PIN_GROUP_BACK);
   let selectedThreads = $derived.by(() => {
@@ -363,7 +344,7 @@
   // holding one has no group move either.
   let bulkAgentBound = $derived(inBulkContext && selectedThreads.some((t) => isStandingAgent(t)));
   let canMoveToGroup = $derived(
-    Boolean(groupProjectId) && moveTargetIds.length > 0 && !archivedChild
+    Boolean(groupProjectId) && moveTargetIds.length > 0
       && !(inBulkContext ? bulkAgentBound : agentBound),
   );
   let currentGroupId = $derived(inBulkContext ? '' : (thread.groupId ?? ''));
@@ -378,23 +359,14 @@
 
   // ── Placement ────────────────────────────────────────────────────────────
   //
-  // A thread an assistant spawned into a project sits under the agent's
-  // row there, in a group or as a plain row (docs/specs/standing-agents.md
-  // ruling 36). Move to Group and Remove from Group above cover grouped; these two
-  // cover the rest. They exist only while the agent's row is in the
-  // sidebar (sidebarAgentRowShown): a child of an archived or hidden
-  // assistant, or of a thread that is no assistant, is the plain row it
-  // renders as. The agent is named by that row's title. A thread on its
-  // assistant's card (a helper or past thread, cardOwnerAgentId) lives
-  // outside every project and takes neither.
-  let placementAgent = $derived.by(() => {
-    if (inBulkContext || archivedChild || isAgent || cardOwnerAgentId(thread)) return undefined;
-    const agent = thread.spawnedByThreadId ? getThreadById(thread.spawnedByThreadId) : undefined;
-    return agent && sidebarAgentRowShown(agent, sidebarThreadVisible) ? agent : undefined;
-  });
-  let currentPlacement = $derived(threadPlacement(thread));
-  let canMakeStandalone = $derived(Boolean(placementAgent) && currentPlacement === 'nested');
-  let canNest = $derived(Boolean(placementAgent) && currentPlacement !== 'nested');
+  // A thread another thread on this computer spawned into a project is that
+  // thread's worker; it has a row here because it was placed standalone or
+  // in a group (docs/specs/standing-agents.md ruling 36). Remove from
+  // Sidebar makes it owned again, out of any group. The backend refuses a
+  // thread no local thread spawned and one outside every project.
+  let canRemoveFromSidebar = $derived(
+    !isAgent && Boolean(thread.spawnedByThreadId) && Boolean(thread.projectId),
+  );
 
   // The project is expanded first for the same reason the project header
   // does it: the new group's row opens inline rename, and a row inside a
@@ -538,40 +510,18 @@
               }}
             />
             <MenuItem
+              label="Previous Threads…"
+              onSelect={() => {
+                onClose();
+                openPreviousThreadsDialog(thread, pane);
+              }}
+            />
+            <MenuItem
               label="Loops and Watches"
               onSelect={() => void openLoopsAndWatches()}
             />
-            <MenuItem
-              label="Mark All Read"
-              disabled={operateUngranted}
-              title={ungrantedTitle}
-              onSelect={() => {
-                onClose();
-                void markAllReadAction([thread, ...agentChildren]);
-              }}
-            />
-            <MenuItem
-              label={doneChildren.length > 0 ? `Archive Done Children (${doneChildren.length})` : 'Archive Done Children'}
-              disabled={operateUngranted || doneChildren.length === 0}
-              title={operateUngranted ? ungrantedTitle : doneChildren.length === 0 ? 'No spawned thread is done' : undefined}
-              onSelect={() => {
-                onClose();
-                showArchiveDoneConfirm = true;
-              }}
-            />
           {/if}
-          {#if archivedChild}
-            <MenuItem
-              label="Unarchive Thread"
-              disabled={operateUngranted}
-              title={ungrantedTitle}
-              onSelect={() => {
-                onClose();
-                void unarchiveThreadAction(ctx());
-              }}
-            />
-          {/if}
-          {#if canFork && !archivedChild}
+          {#if canFork}
             <MenuItem
               label="Fork Thread"
               disabled={operateUngranted}
@@ -582,14 +532,14 @@
               }}
             />
           {/if}
-          {#if canOfferConversationTransfer(thread) && !archivedChild}
+          {#if canOfferConversationTransfer(thread)}
             <MenuItem
               label="Move or copy to computer…"
               disabled={!hasScope('threads:operate', threadMachine(thread.id, thread.projectId))}
               onSelect={() => { onClose(); transferThreadAction(ctx()); }}
             />
           {/if}
-          {#if canCheckImportUpdates && !archivedChild}
+          {#if canCheckImportUpdates}
             <MenuItem
               label={checkingUpdates ? 'Checking for Provider Updates…' : 'Check for Provider Updates'}
               disabled={checkingUpdates || operateUngranted}
@@ -597,17 +547,15 @@
               onSelect={() => void handleCheckImportUpdates()}
             />
           {/if}
-          {#if !archivedChild}
-            <MenuItem
-              label="Mark Unread"
-              disabled={operateUngranted}
-              title={ungrantedTitle}
-              onSelect={() => {
-                onClose();
-                void markThreadUnreadAction(ctx());
-              }}
-            />
-          {/if}
+          <MenuItem
+            label="Mark Unread"
+            disabled={operateUngranted}
+            title={ungrantedTitle}
+            onSelect={() => {
+              onClose();
+              void markThreadUnreadAction(ctx());
+            }}
+          />
           {#if canMoveToGroup}
             <MenuSubmenuItem label="Move to Group" disabled={operateUngranted}>
               {@render groupTargets()}
@@ -624,31 +572,19 @@
               }}
             />
           {/if}
-          {#if canMakeStandalone}
+          {#if canRemoveFromSidebar}
             <MenuItem
-              label="Make Standalone"
+              label="Remove from Sidebar"
               disabled={operateUngranted}
               title={ungrantedTitle}
               onSelect={() => {
                 onClose();
-                void setThreadPlacementAction([thread.id], 'standalone');
+                void setThreadPlacementAction([thread.id], 'owned');
               }}
             />
           {/if}
-          {#if canNest}
-            <MenuItem
-              label={`Nest Under ${placementAgent?.title ?? ''}`}
-              disabled={operateUngranted}
-              title={ungrantedTitle}
-              onSelect={() => {
-                onClose();
-                void setThreadPlacementAction([thread.id], 'nested');
-              }}
-            />
-          {/if}
-          {#if isAgent || archivedChild}
-            <!-- An agent row sits in the groups section, and an archived
-                 child in its done footer: neither pins. -->
+          {#if isAgent}
+            <!-- An assistant's row ignores its thread's pin. -->
           {:else if isPinned}
             <MenuItem
               label={isBackBurner ? 'Move to Front Burner' : 'Move to Back Burner'}
@@ -769,20 +705,6 @@
   }}
   onCancel={() => {
     pendingUpdate = null;
-  }}
-/>
-
-<ConfirmDialog
-  open={showArchiveDoneConfirm}
-  title="Archive Done Children"
-  description={`This will archive ${countNoun(doneChildren.length, 'spawned thread')} with nothing running and nothing waiting on you. They stay under the agent's done count.`}
-  confirmLabel="Archive"
-  onConfirm={() => {
-    showArchiveDoneConfirm = false;
-    void archiveDoneChildrenAction(ctx(), doneChildren);
-  }}
-  onCancel={() => {
-    showArchiveDoneConfirm = false;
   }}
 />
 

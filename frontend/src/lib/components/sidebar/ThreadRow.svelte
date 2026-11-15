@@ -7,7 +7,8 @@
   import { chordHintForCommand } from '../../stores/keybindings.svelte';
   import { isStandingAgent, sidebarPinGroup } from '../../utils/sidebarTree';
   import { assistantDisplayName } from '../../stores/assistants.svelte';
-  import { getShowProviderIcons, setAgentExpanded, toggleAgent } from '../../stores/sidebar.svelte';
+  import { getShowProviderIcons } from '../../stores/sidebar.svelte';
+  import { getThreadWorkerCounts } from '../../stores/threadWorkerSummaries.svelte';
   import { asProviderID, providerLabel } from '../../providers/catalog';
   import ProviderIcon from '../shared/ProviderIcon.svelte';
   import { getSettings } from '../../stores/settings.svelte';
@@ -28,14 +29,12 @@
   import { addErrorToast } from '../../stores/toast.svelte';
   import { getEffectiveThreadStatus, getThreadWaitingOn } from '../../stores/threadStatuses.svelte';
   import type { Thread } from '../../types/models';
-  import type { ThreadLiveStatus } from '../../stores/threadStatuses.svelte';
-  import type { ThreadStatusPill } from '../../utils/threadStatusPill';
-  import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import FileText from '@lucide/svelte/icons/file-text';
   import Terminal from '@lucide/svelte/icons/terminal';
   import UserRound from '@lucide/svelte/icons/user-round';
   import SquarePen from '@lucide/svelte/icons/square-pen';
   import Icon from '../primitives/Icon.svelte';
+  import CountBadge from '../primitives/CountBadge.svelte';
   import ConfirmDialog from '../shared/ConfirmDialog.svelte';
   import AgentStateLine from './AgentStateLine.svelte';
   import ThreadRowActions from './ThreadRowActions.svelte';
@@ -71,6 +70,7 @@
     resolveThreadStatusPill,
   } from '../../utils/threadStatusPill';
   import { isImeComposingEvent } from '../../utils/imeComposition';
+  import { countNoun } from '../../utils/format';
   import {
     beginThreadRowDrag,
     encodeThreadDragPayload,
@@ -79,9 +79,7 @@
     type ThreadDragPayload,
   } from '../../utils/threadDragPayload';
   import {
-    GROUP_GLYPH_LEFT_PX,
     GROUP_MEMBER_PIN_SLOT_LEFT_PX,
-    GROUP_ROW_PADDING_LEFT_PX,
     sidebarGroupMemberPaddingLeftPx,
     sidebarRowPaddingLeftPx,
     sidebarTimeLabel,
@@ -97,9 +95,7 @@
     onSelectClick,
     indent = 0,
     inGroup = false,
-    agent = null,
-    agentChildren = [],
-    archivedChild = false,
+    agentProjects = null,
   }: {
     thread: Thread;
     pane: ThreadPane | null;
@@ -114,34 +110,13 @@
     onSelectClick?: (modifier: 'toggle' | 'range' | 'single' | null) => boolean;
     /** Visual indent level. 0 = top, 1 = group member. */
     indent?: number;
-    /** Rendered inside a group's or an agent's rail. Such a row is never a jump target. */
+    /** Rendered inside a group's rail. Such a row is never a jump target. */
     inGroup?: boolean;
     /**
-     * The standing-agent variant (docs/specs/standing-agents.md, "Sidebar"):
-     * a chevron folds the threads the agent spawned, a person glyph marks
-     * it, and a state line names its soonest loop or watch. Null for an
-     * ordinary thread row.
+     * On an assistant's row (docs/specs/standing-agents.md, "Sidebar"), the
+     * projects it serves, the line under its state line; null when absent.
      */
-    agent?: {
-      /** The row's fold key (agentContainerKey): its card's, or its row's in one project. */
-      containerKey: string;
-      expanded: boolean;
-      childCount: number;
-      /**
-       * The bubbled status of the agent's own thread and its children,
-       * which the row shows while it is collapsed (ruling 33).
-       */
-      rolledUp?: { liveStatus: ThreadLiveStatus; pill: ThreadStatusPill } | null;
-      /**
-       * On the assistant's card, the projects it serves, under its state
-       * line; null on its row in a project, which shows neither.
-       */
-      projects?: string | null;
-    } | null;
-    /** The agent's live spawned threads, for the menu's Archive Done Children. */
-    agentChildren?: readonly Thread[];
-    /** An archived spawned thread listed under an agent's done footer. */
-    archivedChild?: boolean;
+    agentProjects?: string | null;
   } = $props();
 
   // isActive: this thread is what the FOCUSED pane shows (the sidebar's
@@ -303,9 +278,10 @@
     }
   }
 
-  // A standing agent sits in the groups section whatever pin its thread
-  // holds, so no row of it offers a pin, the collapsed project's preview
-  // of it included.
+  // An assistant's row ignores any pin its thread holds (sidebarPinGroup),
+  // so it offers none, the collapsed section's preview of it included. A
+  // person glyph takes the pin's place, and a state line names its soonest
+  // loop or watch.
   let isAgent = $derived(isStandingAgent(thread));
   // An assistant's name carries its computer while another attached
   // computer has an assistant of the same name.
@@ -325,11 +301,9 @@
   // groups like any other (docs/specs/standing-agents.md ruling 36).
   let agentBound = $derived(isAgent);
 
-  function handleAgentChevronClick(e: MouseEvent): void {
-    e.stopPropagation();
-    if (editing) return;
-    if (agent !== null) toggleAgent(agent.containerKey);
-  }
+  // The thread's open workers and how many of them wait on the user, as its
+  // Agents list counts them (docs/specs/standing-agents.md, "Sidebar").
+  let workers = $derived(getThreadWorkerCounts(thread.id));
 
   function handleRowKeydown(e: KeyboardEvent): void {
     if (editing) return;
@@ -337,12 +311,6 @@
     if (e.key === 'F2') {
       e.preventDefault();
       startRename();
-      return;
-    }
-    if (agent === null || e.target !== e.currentTarget) return;
-    if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
-      e.preventDefault();
-      setAgentExpanded(agent.containerKey, e.key === 'ArrowRight');
     }
   }
 
@@ -371,9 +339,6 @@
     // reads as home, which is what every row meant before a second
     // machine could be attached.
     const backend = threadBackend(thread.id) ?? HOME_BACKEND;
-    // An assistant's past thread in its done list says when a handoff
-    // replaced it (docs/specs/standing-agents.md, "Sidebar").
-    if (archivedChild && thread.agentSupersededAt) return `superseded ${sidebarTimeLabel(thread.agentSupersededAt, backend)}`;
     return sidebarTimeLabel(getThreadLiveActivityAt(thread), backend);
   });
 
@@ -424,13 +389,9 @@
   }
 
   // Indent + pin gutter come from utils/sidebarRowMetrics so a group row and
-  // the member rows under it line up to the pixel. An agent row takes the
-  // group row's geometry: its chevron centres on the pin column and its
-  // children's titles line up with its name.
+  // the member rows under it line up to the pixel.
   let rowPaddingLeftPx = $derived(
-    agent !== null
-      ? GROUP_ROW_PADDING_LEFT_PX
-      : inGroup ? sidebarGroupMemberPaddingLeftPx(indent) : sidebarRowPaddingLeftPx(indent),
+    inGroup ? sidebarGroupMemberPaddingLeftPx(indent) : sidebarRowPaddingLeftPx(indent),
   );
   // Inside a group the pin centres under the group's folder glyph.
   let pinSlotLeftPx = $derived(inGroup ? GROUP_MEMBER_PIN_SLOT_LEFT_PX : 0);
@@ -442,15 +403,9 @@
   // A status from an unreachable computer is its last report: shown, but
   // still, and labelled as such.
   let unreachableMachine = $derived(unreachableThreadMachineName(thread.id, thread.projectId));
-  let ownRowPill = $derived(
+  let pill = $derived(
     unreachableMachine !== null ? lastKnownThreadStatusPill(ownPill, unreachableMachine) : ownPill,
   );
-  // A collapsed agent row carries its children's dot; expanded, each row
-  // shows its own (ruling 33). The bubbled pill already went through the
-  // unreachable-computer treatment in the tree.
-  let rolledUp = $derived(agent !== null && !agent.expanded ? (agent.rolledUp ?? null) : undefined);
-  let pill = $derived(rolledUp !== undefined ? (rolledUp?.pill ?? null) : ownRowPill);
-  let dotStatus = $derived(rolledUp ? rolledUp.liveStatus : liveStatus);
   const WORKTREE_META_OFFSET_PX = 14;
   let worktreeIndentPx = $derived(rowPaddingLeftPx + WORKTREE_META_OFFSET_PX);
 </script>
@@ -492,8 +447,8 @@
     {selected ? 'bg-accent/15' : isActive ? 'bg-accent/20' : 'hover:bg-surface-2/30'}
     {isOpen ? 'after:absolute after:left-0 after:inset-y-1 after:w-0.5 after:rounded-full after:bg-accent' : ''}
     {isOpen && !isActive ? 'after:opacity-70' : ''}
-    {isCursorTarget ? 'ring-1 ring-accent/70 ring-inset' : (ownRowPill?.ringClass ?? '')}
-    {ownRowPill?.glowClass ?? ''}"
+    {isCursorTarget ? 'ring-1 ring-accent/70 ring-inset' : (pill?.ringClass ?? '')}
+    {pill?.glowClass ?? ''}"
   data-testid="thread-row-shell"
   data-open={isOpen || null}
   data-focused={isActive || null}
@@ -508,17 +463,14 @@
     role="button"
     tabindex={0}
     aria-pressed={selected}
-    aria-expanded={agent !== null ? agent.expanded : undefined}
     class="group/thread-row relative flex items-center gap-1.5 h-6 pr-1 compact:h-9 compact:select-none rounded-[var(--radius-field)] cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40
       {selected || isOpen ? 'text-fg' : 'text-fg-muted group-hover/thread-item:text-fg'}
-      {machineUnreachable || archivedChild ? 'opacity-50' : ''}"
+      {machineUnreachable ? 'opacity-50' : ''}"
     style="padding-left: {rowPaddingLeftPx}px"
     data-testid="thread-row"
     data-sidebar-thread-id={thread.id}
     data-sidebar-jump-target={isJumpTarget ? '' : undefined}
-    data-sidebar-agent={agent !== null ? '' : undefined}
-    data-expanded={agent !== null ? agent.expanded : undefined}
-    data-archived-child={archivedChild || undefined}
+    data-sidebar-agent={isAgent ? '' : undefined}
     data-effective-status={liveStatus}
     data-machine-unreachable={machineUnreachable || undefined}
   >
@@ -529,36 +481,19 @@
     contributing a flex gap of its own. The wrapper is non-interactive;
     the button inside opts back in to pointer events when visible.
   -->
-  {#if agent !== null}
-    <!-- The chevron is the only fold target: name, dot and state line open
-         the thread. Always rendered, as a group's is, so the row reads as
-         a container even with nothing under it. -->
-    <button
-      type="button"
-      onclick={handleAgentChevronClick}
-      ondblclick={(e) => e.stopPropagation()}
-      data-testid="thread-row-agent-expand"
-      aria-label={agent.expanded ? 'Collapse agent' : 'Expand agent'}
-      aria-expanded={agent.expanded}
-      class="flex items-center justify-center w-4 h-4 rounded text-fg-subtle hover:text-fg hover:bg-surface-2/30 shrink-0 cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
-    >
-      <Icon
-        icon={ChevronRight}
-        size={11}
-        strokeWidth={2.5}
-        class={'opacity-80 transition-transform ' + (agent.expanded ? 'rotate-90' : '')}
-      />
-    </button>
-    <span
-      class="inline-flex items-center shrink-0 text-accent"
-      aria-label="Standing agent"
-      title="Standing agent"
-      role="img"
-      data-testid="thread-row-agent-icon"
-    >
-      <Icon icon={UserRound} size={11} strokeWidth={1.75} />
-    </span>
-  {:else if !isAgent && !archivedChild}
+  {#if isAgent}
+    <div class="absolute inset-y-0 flex items-center justify-center w-6 pointer-events-none" style="left: {pinSlotLeftPx}px">
+      <span
+        class="inline-flex items-center text-accent"
+        aria-label="Standing agent"
+        title="Standing agent"
+        role="img"
+        data-testid="thread-row-agent-icon"
+      >
+        <Icon icon={UserRound} size={11} strokeWidth={1.75} />
+      </span>
+    </div>
+  {:else}
     <div class="absolute inset-y-0 flex items-center justify-center w-6 pointer-events-none" style="left: {pinSlotLeftPx}px">
       <ThreadRowPinButton
         {isPinned}
@@ -580,8 +515,7 @@
       aria-label={pill.label}
       title={pill.label}
       data-testid="thread-row-status-dot"
-      data-status={dotStatus}
-      data-rolled-up={rolledUp ? '' : undefined}
+      data-status={liveStatus}
     ></span>
   {/if}
 
@@ -634,22 +568,29 @@
     {/if}
     <span
       data-testid="thread-row-title"
-      class="text-xs truncate flex-1 min-w-0 {unread ? 'font-semibold text-fg' : agent !== null ? 'font-medium' : ''}"
+      class="text-xs truncate flex-1 min-w-0 {unread ? 'font-semibold text-fg' : isAgent ? 'font-medium' : ''}"
       title={rowTitle}
     >
       {rowTitle}
     </span>
-    {#if agent !== null && !agent.expanded && agent.childCount > 0}
+    <CountBadge
+      count={workers.needYou}
+      tone="warning"
+      title={`${countNoun(workers.needYou, 'worker')} waiting on you`}
+      testId="thread-row-workers-need-you"
+    />
+    {#if workers.open > 0}
       <span
-        class="-ml-0.5 mr-1 shrink-0 min-w-5 text-right text-[0.625rem] tabular-nums text-fg-hint"
-        data-testid="thread-row-agent-count"
+        class="-ml-0.5 shrink-0 min-w-5 text-right text-[0.625rem] tabular-nums text-fg-hint"
+        title={countNoun(workers.open, 'open worker')}
+        data-testid="thread-row-workers"
       >
-        {agent.childCount}
+        {workers.open}
       </span>
     {/if}
 
     <div class="flex items-center gap-1 shrink-0 -ml-0.5" data-testid="thread-row-trailing">
-      {#if agent !== null}
+      {#if isAgent}
         <!-- New Thread, Same Assistant: on hover, and at rest under the
              compact layout, which has no hover. -->
         <button
@@ -717,7 +658,7 @@
             class="absolute inset-y-0 right-0 flex items-center opacity-0 pointer-events-none transition-opacity duration-150 group-hover/thread-item:opacity-100 group-hover/thread-item:pointer-events-auto group-has-[:focus-visible]/thread-row:opacity-100 group-has-[:focus-visible]/thread-row:pointer-events-auto"
           >
             <ThreadRowActions
-              onArchive={isTerminal || archivedChild ? undefined : handleArchive}
+              onArchive={isTerminal ? undefined : handleArchive}
               onDelete={isTerminal ? handleDelete : undefined}
               disabled={operateUngranted}
             />
@@ -737,18 +678,20 @@
          any of them may be absent. -->
     <div class="[&>*+*]:-mt-0.5 [&>*:first-child]:-mt-1.5" data-testid="thread-row-lines">
       {#if attention && !editing}
-        <ThreadAttentionLine {attention} indentPx={agent !== null ? GROUP_GLYPH_LEFT_PX : worktreeIndentPx} />
+        <ThreadAttentionLine {attention} indentPx={worktreeIndentPx} />
       {/if}
-      {#if agent !== null}
-        {#if agent.projects != null}
-          <AgentStateLine threadId={thread.id} indentPx={GROUP_GLYPH_LEFT_PX} />
+      {#if isAgent}
+        <!-- An assistant's lines start under its title: its glyph sits in
+             the pin column, so nothing stands before the title to clear. -->
+        <AgentStateLine threadId={thread.id} indentPx={rowPaddingLeftPx} />
+        {#if agentProjects != null}
           <div
             class="relative flex h-3.5 items-center pr-1 text-[0.625rem] leading-none text-fg-hint"
-            style="padding-left: {GROUP_GLYPH_LEFT_PX}px"
-            title={agent.projects}
+            style="padding-left: {rowPaddingLeftPx}px"
+            title={agentProjects}
             data-testid="thread-row-agent-projects"
           >
-            <span class="min-w-0 truncate">{agent.projects}</span>
+            <span class="min-w-0 truncate">{agentProjects}</span>
           </div>
         {/if}
       {:else if !editing}
@@ -767,8 +710,6 @@
   onRename={startRename}
   {isActive}
   {agentBound}
-  {agentChildren}
-  {archivedChild}
 />
 
 <ConfirmDialog

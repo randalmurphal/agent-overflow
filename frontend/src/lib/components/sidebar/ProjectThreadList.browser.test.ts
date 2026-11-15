@@ -7,14 +7,13 @@ import ProjectThreadList from './ProjectThreadList.svelte';
 import AssistantsSection from './AssistantsSection.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
 import { registerPaneForTest } from '../../stores/panes.svelte';
-import { getCollapsedAgents, getCollapsedGroups, resetSidebarForTest } from '../../stores/sidebar.svelte';
+import { getCollapsedGroups, resetSidebarForTest } from '../../stores/sidebar.svelte';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
 import { replaceAllThreads, touchThreadActivity } from '../../stores/threads.svelte';
 import { refreshProjects, resetProjectsForTest } from '../../stores/projects.svelte';
 import { resetThreadWakesForTest } from '../../stores/threadWakes.svelte';
-import { resetArchivedChildrenForTest } from '../../stores/agentArchivedChildren.svelte';
+import { refreshThreadWorkerSummaries, resetThreadWorkerSummariesForTest } from '../../stores/threadWorkerSummaries.svelte';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
-import { THREAD_PREVIEW_LIMIT } from '../../utils/sidebarThreadLimits';
 import { projectTurnStarted } from '../../stores/threadStatuses.svelte';
 import { appStorageGet, resetAppStorageForTest } from '../../stores/appStorage';
 import type { Thread, ThreadGroup } from '../../types/models';
@@ -170,193 +169,30 @@ it('aligns the group chevron with top-level pins and member pins with the folder
   expect(Math.abs(titleLeft('member') - groupName.left)).toBeLessThanOrEqual(1);
 });
 
-// A standing agent's row holds the threads it spawned behind the group
-// rail (docs/specs/standing-agents.md, "Sidebar"): same geometry as a
-// group, a fold on the chevron, and a `N done` footer for the archived ones.
-describe('standing agent rows', () => {
+// An assistant is one row (docs/specs/standing-agents.md, "Sidebar"): its
+// glyph in the pin's column, its title where any title starts, and its state
+// and projects lines under the title.
+describe('assistant rows', () => {
   beforeEach(() => {
     resetThreadWakesForTest();
-    resetArchivedChildrenForTest();
     resetProjectsForTest();
     setBindingMock('ListThreadWakes', async () => ({ rows: [], moreReminders: false }));
   });
 
-  // The list's props as the sidebar hands them in: the assistant apart
-  // from the threads its row in this project holds.
-  function agentListProps(threads: Thread[], pane: ReturnType<typeof createThreadPane>) {
-    return {
-      projectId: 'project', groups: [], pane,
-      threads: threads.filter((t) => !t.agentId),
-      agents: threads.filter((t) => Boolean(t.agentId)),
-    };
-  }
+  const centre = (el: Element) => { const r = el.getBoundingClientRect(); return r.left + r.width / 2; };
+  const fromRow = (container: HTMLElement, id: string, x: number) => x - row(container, id).getBoundingClientRect().left;
 
-  function agentThreads(): Thread[] {
-    const threads = [
-      thread('agent', { agentId: 'agent', archivedChildCounts: { project: 2 }, updatedAt: 5 }),
-      // Pinned, so neither folds into the done footer (a settled idle
-      // worker would) and neither shows a status dot.
-      thread('worker-a', { spawnedByThreadId: 'agent', updatedAt: 4, pinnedAt: 1 }),
-      thread('worker-b', { spawnedByThreadId: 'agent', updatedAt: 3, pinnedAt: 1 }),
-      thread('loose', { pinnedAt: 1 }),
-    ];
-    replaceAllThreads(threads);
-    return threads;
-  }
-
-  it('nests the spawned threads under the agent with a group\'s geometry and folds them on the chevron', async () => {
-    const threads = agentThreads();
-    const view = render(ProjectThreadList, agentListProps(threads, createThreadPane()));
-    view.container.style.width = '360px';
-    await settled(view.container);
-
-    const agent = row(view.container, 'agent');
-    expect(agent.dataset.sidebarAgent).toBe('');
-    expect(agent.dataset.expanded).toBe('true');
-    // The state and projects lines are the card's, not a project row's.
-    expect(view.queryByTestId('thread-row-agent-state')).toBeNull();
-    expect(view.queryByTestId('thread-row-agent-projects')).toBeNull();
-    expect(agent.querySelector('[data-testid="thread-row-pin"]')).toBeNull();
-    expect(agent.querySelector('[data-testid="thread-row-agent-icon"]')).not.toBeNull();
-    const members = view.container.querySelectorAll('[data-agent-member] [data-sidebar-thread-id]');
-    expect(Array.from(members, (el) => (el as HTMLElement).dataset.sidebarThreadId)).toEqual(['worker-a', 'worker-b']);
-    // The loose pinned thread follows the agent block.
-    const order = Array.from(view.container.querySelectorAll<HTMLElement>('[data-sidebar-thread-id]'), (el) => el.dataset.sidebarThreadId);
-    expect(order).toEqual(['agent', 'worker-a', 'worker-b', 'loose']);
-
-    const centre = (el: Element) => { const r = el.getBoundingClientRect(); return r.left + r.width / 2; };
-    const chevron = agent.querySelector('[data-testid="thread-row-agent-expand"]')!;
-    const pinOf = (id: string) => row(view.container, id).querySelector('[data-testid="thread-row-pin"]')!;
-    // The agent chevron sits on the top-level pin column, like a group's.
-    expect(Math.abs(centre(chevron) - centre(pinOf('loose')))).toBeLessThanOrEqual(1);
-    // The rail drops from the chevron's centre.
-    const railX = view.container.querySelector<HTMLElement>('[data-agent-member]')!.getBoundingClientRect().left;
-    expect(Math.abs(railX - centre(chevron))).toBeLessThanOrEqual(1);
-    // A worker's title lines up with the agent's name.
-    const titleLeft = (id: string) => row(view.container, id).querySelector('[data-testid="thread-row-title"]')!.getBoundingClientRect().left;
-    expect(Math.abs(titleLeft('worker-a') - titleLeft('agent'))).toBeLessThanOrEqual(1);
-    // The footer's label starts where a worker's title does.
-    const footer = view.getByTestId('thread-row-agent-done');
-    expect(footer.textContent).toContain('2 done');
-    expect(footer.dataset.expanded).toBe('false');
-    const footerLabel = view.getByTestId('thread-row-agent-done-label').getBoundingClientRect();
-    expect(Math.abs(footerLabel.left - titleLeft('worker-a'))).toBeLessThanOrEqual(1);
-    // Its chevron centres on the workers' pin column.
-    const footerChevron = view.getByTestId('thread-row-agent-done-toggle').querySelector('.lucide-icon')!;
-    expect(Math.abs(centre(footerChevron) - centre(pinOf('worker-a')))).toBeLessThanOrEqual(1);
-
-    (chevron as HTMLElement).click();
-    await settled(view.container);
-    expect(agent.dataset.expanded).toBe('false');
-    expect(view.container.querySelectorAll('[data-agent-member]')).toHaveLength(0);
-    expect(agent.querySelector('[data-testid="thread-row-agent-count"]')!.textContent?.trim()).toBe('2');
-    // The row folds as the assistant's row in this project, not its card.
-    expect([...getCollapsedAgents()]).toEqual(['agent@project']);
-    expect(JSON.parse(appStorageGet('sidebar:collapsedAgents')!)).toEqual(['agent@project']);
-
-    // Keyboard: Right unfolds, Left folds, on the row itself.
-    agent.focus();
-    agent.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
-    await settled(view.container);
-    expect(agent.dataset.expanded).toBe('true');
-    expect(view.container.querySelectorAll('[data-agent-member] [data-sidebar-thread-id]')).toHaveLength(2);
-    agent.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }));
-    await settled(view.container);
-    expect(agent.dataset.expanded).toBe('false');
-  });
-
-  it('previews the focused worker beneath a collapsed agent', async () => {
-    const threads = agentThreads();
-    const pane = createThreadPane();
-    registerPaneForTest('main', pane);
-    pane.replaceThread(threads[2]);
-    const view = render(ProjectThreadList, agentListProps(threads, pane));
-    view.container.style.width = '360px';
-    await settled(view.container);
-    row(view.container, 'agent').querySelector<HTMLElement>('[data-testid="thread-row-agent-expand"]')!.click();
-    await settled(view.container);
-    const members = view.container.querySelectorAll<HTMLElement>('[data-agent-member] [data-sidebar-thread-id]');
-    expect(Array.from(members, (el) => el.dataset.sidebarThreadId)).toEqual(['worker-b']);
-  });
-
-  it('opens the done footer to the archived workers, newest first, and reloads when the count moves', async () => {
-    const threads = agentThreads();
-    const archived = [
-      thread('done-new', { spawnedByThreadId: 'agent', archived: true, updatedAt: 9 }),
-      thread('done-old', { spawnedByThreadId: 'agent', archived: true, updatedAt: 8 }),
-    ];
-    const list = setBindingMock('ListArchivedSpawnedThreads', async () => ({ threads: archived, more: false }));
-    const view = render(ProjectThreadList, agentListProps(threads, createThreadPane()));
-    view.container.style.width = '360px';
-    await settled(view.container);
-
-    view.getByTestId('thread-row-agent-done-toggle').click();
-    await waitFor(() => expect(view.container.querySelectorAll('[data-archived-child]')).toHaveLength(2));
-    expect(list).toHaveBeenCalledWith('agent', ['project'], { updatedAt: 0, id: '' }, 20);
-    const rows = Array.from(view.container.querySelectorAll<HTMLElement>('[data-sidebar-thread-id]'), (el) => el.dataset.sidebarThreadId);
-    expect(rows).toEqual(['agent', 'worker-a', 'worker-b', 'done-new', 'done-old', 'loose']);
-    expect(view.getByTestId('thread-row-agent-done').dataset.expanded).toBe('true');
-    expect(view.queryByTestId('thread-row-agent-done-more')).toBeNull();
-    // The archived rows sit behind the agent's rail, dimmed.
-    for (const id of ['done-new', 'done-old']) {
-      expect(row(view.container, id).closest('[data-agent-member]')).not.toBeNull();
-      expect(Number(getComputedStyle(row(view.container, id)).opacity)).toBeLessThan(1);
-    }
-
-    // A third child archived: the row's count moves and the list is read again.
-    list.mockImplementation(async () => ({ threads: [thread('done-newest', { spawnedByThreadId: 'agent', archived: true, updatedAt: 11 }), ...archived], more: false }));
-    await view.rerender(agentListProps(
-      threads.map((t) => t.id === 'agent' ? { ...t, archivedChildCounts: { project: 3 } } : t),
-      createThreadPane(),
-    ));
-    await waitFor(() => expect(view.container.querySelectorAll('[data-archived-child]')).toHaveLength(3));
-    expect(list).toHaveBeenCalledTimes(2);
-    expect(view.getByTestId('thread-row-agent-done').textContent).toContain('3 done');
-
-    // Closing the footer drops the rows and the count stands alone again.
-    view.getByTestId('thread-row-agent-done-toggle').click();
-    await settled(view.container);
-    expect(view.container.querySelectorAll('[data-archived-child]')).toHaveLength(0);
-    expect(view.getByTestId('thread-row-agent-done').dataset.expanded).toBe('false');
-  });
-
-  it('pages a long done list by the preview limit, reading each page as it is shown', async () => {
-    const threads = agentThreads().map((t) => t.id === 'agent' ? { ...t, archivedChildCounts: { project: THREAD_PREVIEW_LIMIT + 25 } } : t);
-    replaceAllThreads(threads);
-    const archived = Array.from({ length: THREAD_PREVIEW_LIMIT + 25 }, (_, i) =>
-      thread(`done-${i}`, { spawnedByThreadId: 'agent', archived: true, updatedAt: 100 - i }));
-    // The computer answers a page at a time, as many as the footer asks for.
-    const list = setBindingMock('ListArchivedSpawnedThreads', async (_id: string, _scopes: string[], after: { id: string }, limit: number) => {
-      const from = after.id === '' ? 0 : archived.findIndex((t) => t.id === after.id) + 1;
-      return { threads: archived.slice(from, from + limit), more: from + limit < archived.length };
-    });
-    const view = render(ProjectThreadList, agentListProps(threads, createThreadPane()));
-    view.container.style.width = '360px';
-    await settled(view.container);
-    view.getByTestId('thread-row-agent-done-toggle').click();
-    await waitFor(() => expect(view.container.querySelectorAll('[data-archived-child]')).toHaveLength(THREAD_PREVIEW_LIMIT));
-    const more = view.getByTestId('thread-row-agent-done-more');
-    // One page read, not the whole archive.
-    expect(list).toHaveBeenCalledTimes(1);
-    expect(more.textContent?.trim()).toBe('Show 20 More (25)');
-    more.click();
-    await waitFor(() => expect(view.container.querySelectorAll('[data-archived-child]')).toHaveLength(THREAD_PREVIEW_LIMIT + 20));
-    expect(list).toHaveBeenCalledTimes(2);
-    view.getByTestId('thread-row-agent-done-more').click();
-    await waitFor(() => expect(view.container.querySelectorAll('[data-archived-child]')).toHaveLength(THREAD_PREVIEW_LIMIT + 25));
-    expect(view.queryByTestId('thread-row-agent-done-more')).toBeNull();
-    expect(list).toHaveBeenCalledTimes(2);
-  });
-
-  it('shows the card\'s soonest loop and served projects under its name, and keeps them off plain rows', async () => {
+  it.each([false, true])('puts the glyph in the pin column and the lines under the title (compact=%s)', async (compact) => {
+    await page.viewport(compact ? 390 : 800, 700);
+    setCompactLayoutForTest(compact);
     setBindingMock('ListProjects', async () => [
       { project: { id: 'p-a', path: '/repo/a', name: 'Alpha', sortPosition: 0, createdAt: 0, updatedAt: 0, archived: false }, threadCount: 0 },
       { project: { id: 'p-b', path: '/repo/b', name: 'Beta', sortPosition: 1, createdAt: 0, updatedAt: 0, archived: false }, threadCount: 0 },
     ]);
     await refreshProjects();
     const agent = thread('agent', { agentId: 'agent', projectId: '', agentProjectIds: ['p-a', 'p-b'], updatedAt: 5 });
-    const helper = thread('helper', { projectId: '', helperOfAgentId: 'agent', spawnedByThreadId: 'agent', pinnedAt: 1, updatedAt: 4 });
-    replaceAllThreads([agent, helper]);
+    const loose = thread('loose', { pinnedAt: 1 });
+    replaceAllThreads([agent, loose]);
     setBindingMock('ListThreadWakes', async (threadId: unknown) => ({
       moreReminders: false,
       rows: threadId === 'agent' ? [{
@@ -364,29 +200,72 @@ describe('standing agent rows', () => {
         intervalSeconds: 900, nextAt: Date.now() + 12 * 60_000, missed: 1,
       }] : [],
     }));
-    const card = (assistant: Thread) => ({ assistants: [assistant], held: [helper], pane: createThreadPane(), searching: false });
-    const view = render(AssistantsSection, card(agent));
+    const props = (assistant: Thread) => ({ assistants: [assistant], pane: createThreadPane(), searching: false });
+    const view = render(AssistantsSection, props(agent));
     view.container.style.width = '360px';
+    const plain = render(ProjectThreadList, { projectId: 'project', threads: [loose], groups: [], pane: createThreadPane() });
+    plain.container.style.width = '360px';
     await waitFor(() => expect(view.queryByTestId('thread-row-agent-state')).not.toBeNull());
-    expect(view.getByTestId('assistant-card-list')).toBeInTheDocument();
+    await settled(view.container);
+
+    const assistantRow = row(view.container, 'agent');
+    expect(view.container.querySelectorAll('[data-sidebar-thread-id]')).toHaveLength(1);
+    expect(assistantRow.querySelector('[data-testid="thread-row-pin"]')).toBeNull();
+    const glyph = assistantRow.querySelector('[data-testid="thread-row-agent-icon"]')!;
+    const pin = row(plain.container, 'loose').querySelector('[data-testid="thread-row-pin"]')!;
+    expect(Math.abs(fromRow(view.container, 'agent', centre(glyph)) - fromRow(plain.container, 'loose', centre(pin)))).toBeLessThanOrEqual(1);
+    const titleLeft = (container: HTMLElement, id: string) =>
+      row(container, id).querySelector('[data-testid="thread-row-title"]')!.getBoundingClientRect().left;
+    expect(Math.abs(fromRow(view.container, 'agent', titleLeft(view.container, 'agent')) - fromRow(plain.container, 'loose', titleLeft(plain.container, 'loose')))).toBeLessThanOrEqual(1);
+
     const line = view.getByTestId('thread-row-agent-state');
     expect(line.textContent?.trim()).toBe('loop board check · next 12m · 1 missed');
-    // The lines start under the person glyph, as the mockup draws them.
-    const glyphLeft = row(view.container, 'agent').querySelector('[data-testid="thread-row-agent-icon"]')!.getBoundingClientRect().left;
-    expect(Math.abs(line.querySelector('span')!.getBoundingClientRect().left - glyphLeft)).toBeLessThanOrEqual(1);
     const projects = view.getByTestId('thread-row-agent-projects');
     expect(projects.textContent?.trim()).toBe('Alpha, Beta');
-    expect(Math.abs(projects.querySelector('span')!.getBoundingClientRect().left - glyphLeft)).toBeLessThanOrEqual(1);
-    expect(view.container.querySelectorAll('[data-testid="thread-row-agent-state"]')).toHaveLength(1);
-    expect(view.container.querySelectorAll('[data-testid="thread-row-agent-projects"]')).toHaveLength(1);
-    // The helper nests on the card.
-    expect(row(view.container, 'helper').closest('[data-agent-member]')).not.toBeNull();
+    for (const el of [line, projects]) {
+      expect(Math.abs(el.querySelector('span')!.getBoundingClientRect().left - titleLeft(view.container, 'agent'))).toBeLessThanOrEqual(1);
+    }
+    plain.unmount();
 
-    await view.rerender(card({ ...agent, agentAllProjects: true, agentProjectIds: [] }));
+    await view.rerender(props({ ...agent, agentAllProjects: true, agentProjectIds: [] }));
     await settled(view.container);
     expect(view.getByTestId('thread-row-agent-projects').textContent?.trim()).toBe('All projects');
-    await view.rerender(card({ ...agent, agentProjectIds: [] }));
+    await view.rerender(props({ ...agent, agentProjectIds: [] }));
     await settled(view.container);
     expect(view.getByTestId('thread-row-agent-projects').textContent?.trim()).toBe('No projects');
+  });
+});
+
+// A row's worker count and needs-you badge sit between its title and its
+// time, on the title's line, at every density.
+describe('worker counts', () => {
+  beforeEach(() => {
+    resetThreadWorkerSummariesForTest();
+    setBindingMock('ListThreadWakes', async () => ({ rows: [], moreReminders: false }));
+  });
+
+  it.each([false, true])('fit between the title and the time without overlapping either (compact=%s)', async (compact) => {
+    await page.viewport(compact ? 390 : 800, 700);
+    setCompactLayoutForTest(compact);
+    const spawner = thread('spawner', { title: 'A spawner with a title long enough to be cut short', updatedAt: 5 });
+    replaceAllThreads([spawner]);
+    setBindingMock('ListThreadWorkerSummaries', async () => [{ threadId: 'spawner', open: 12, needYou: 3 }]);
+    await refreshThreadWorkerSummaries();
+    const view = render(ProjectThreadList, { projectId: 'project', threads: [spawner], groups: [], pane: createThreadPane() });
+    view.container.style.width = '300px';
+    await settled(view.container);
+
+    const rowRect = row(view.container, 'spawner').getBoundingClientRect();
+    const title = view.getByTestId('thread-row-title').getBoundingClientRect();
+    const badge = view.getByTestId('thread-row-workers-need-you').getBoundingClientRect();
+    const count = view.getByTestId('thread-row-workers').getBoundingClientRect();
+    const time = view.getByTestId('thread-row-time').getBoundingClientRect();
+    expect(title.right).toBeLessThanOrEqual(badge.left);
+    expect(badge.right).toBeLessThanOrEqual(count.left);
+    expect(count.right).toBeLessThanOrEqual(time.left);
+    expect(time.right).toBeLessThanOrEqual(rowRect.right);
+    // One line: each sits on the title's centre line.
+    const middle = (r: DOMRect) => r.top + r.height / 2;
+    for (const r of [badge, count]) expect(Math.abs(middle(r) - middle(title))).toBeLessThanOrEqual(1);
   });
 });

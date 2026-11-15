@@ -1,7 +1,6 @@
 import { describe, expect, it, beforeEach, vi } from 'vitest';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import {
-  archiveDoneChildrenAction,
   deleteThreadAction,
   forkThreadAction,
   nextAssistantThreadAction,
@@ -346,20 +345,6 @@ describe('standing agent actions', () => {
       dispose();
       await draft.setThread(null);
     }
-  });
-
-  it('archives the done children in order, drops their rows, and reports how many failed', async () => {
-    const children: Thread[] = ['c1', 'c2', 'c3'].map((id) => makeBaseThread({ id, title: id, spawnedByThreadId: 'thread-1' }));
-    for (const child of children) prependThread(child);
-    const archive = setBindingMock('ArchiveThread', async (id: unknown) => {
-      if (id === 'c2') throw new Error('locked');
-    });
-    const ctx = makeCtx({});
-    await archiveDoneChildrenAction(ctx, children);
-    expect(archive.mock.calls.map((call) => call[0])).toEqual(['c1', 'c2', 'c3']);
-    expect(getThreads().map((t) => t.id).sort()).toEqual(['c2']);
-    expect(ctx.reportError).toHaveBeenCalledTimes(1);
-    expect((ctx.reportError as ReturnType<typeof vi.fn>).mock.calls[0][0]).toMatch(/^2\/3 archived: /);
   });
 });
 

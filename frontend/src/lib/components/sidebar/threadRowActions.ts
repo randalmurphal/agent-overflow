@@ -22,7 +22,6 @@ import {
   SetThreadPinGroup,
   StartNextAssistantThread,
   StopSession,
-  UnarchiveThread,
   UnpinThread,
 } from '../../stores/bindings';
 import {
@@ -156,45 +155,6 @@ async function saveComposerForHandOff(threadId: string): Promise<void> {
   await draft.prepareForSend();
 }
 
-/**
- * Archive the agent's spawned threads that are done: sequentially, as the
- * bulk menu does, so writes never race the store. Failures count and the
- * last one is reported; the rows that archived stay archived.
- */
-export async function archiveDoneChildrenAction(ctx: ThreadActionCtx, children: readonly Thread[]): Promise<void> {
-  let failures = 0;
-  let lastError: unknown;
-  for (const child of children) {
-    try {
-      await ArchiveThread(child.id);
-      removeThread(child.id);
-      closePanesShowingThread(child.id);
-    } catch (err) {
-      failures += 1;
-      lastError = err;
-    }
-  }
-  if (failures > 0) {
-    console.error('Failed to archive spawned threads:', lastError);
-    ctx.reportError(`${children.length - failures}/${children.length} archived: ${userFacingError(lastError)}`, lastError);
-  }
-}
-
-/**
- * Unarchive a row the agent's done footer lists. The thread comes back as
- * cold as any other unarchived thread; its row returns to the fold through
- * the backend's `thread:updated` frames (the child listed, the spawner's
- * done count changed), so nothing is written to the list here.
- */
-export async function unarchiveThreadAction(ctx: ThreadActionCtx): Promise<void> {
-  try {
-    await UnarchiveThread(ctx.thread.id);
-  } catch (err) {
-    console.error('Failed to unarchive thread:', err);
-    ctx.reportError(userFacingError(err), err);
-  }
-}
-
 export async function archiveThreadAction(ctx: ThreadActionCtx): Promise<void> {
   try {
     // No StopSession here: ArchiveThread closes the thread's provider
@@ -261,8 +221,8 @@ export async function markThreadUnreadAction(ctx: ThreadActionCtx): Promise<void
 }
 
 /**
- * Mark All Read on an agent row (its thread and live children) or a group
- * (its members), in one call (docs/specs/standing-agents.md ruling 31).
+ * Mark All Read on a group: its members, in one call
+ * (docs/specs/standing-agents.md ruling 31).
  */
 export async function markAllReadAction(threads: readonly Thread[]): Promise<void> {
   try {

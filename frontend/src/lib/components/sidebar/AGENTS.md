@@ -10,28 +10,23 @@ which adds the project's empty state and drop targets.
 
 ## Rows and actions
 
-- A thread renders flat under its project or group, except a standing
-  agent's spawned threads whose `placement` is nested, which nest under
-  the agent row by spawn lineage. Keep one row grammar for normal, grouped and nested entries. Shared controls such as
+- A thread renders flat under its project or group. Keep one row grammar
+  for normal and grouped entries. Shared controls such as
   `ThreadRowPinButton` receive callbacks; they do not own entities.
 - Groups are not pinnable. A group's members pin like top-level threads, but
   never as numbered jump targets.
-- An assistant's card and its row in each project are `ThreadRow`'s agent
-  variant, not components of their own: they use the group row's geometry,
-  fold what they hold on their chevron (`sidebar:collapsedAgents`, keyed
-  by `agentContainerKey`), and offer no pin or group item. The card's
-  state line reads `stores/threadWakes.svelte.ts`; each row's `N done` footer
-  (`AgentDoneFooter.svelte`) counts the settled idle children the view folds
-  (`utils/sidebarTreeView.ts`) and reads the archived ones, only as far
-  as it shows them, from `stores/agentArchivedChildren.svelte.ts`, held
-  by the list while the footer is open. Groups and agent rows share one
-  member bound (`boundContainerMembers`, `ContainerShowMore.svelte`).
+- An assistant is one row in the Assistants section, `ThreadRow`'s agent
+  variant: its glyph in the pin column, its state line
+  (`stores/threadWakes.svelte.ts`) and projects line under the title, and
+  no pin or group item. Its past threads open from Previous Threads…
+  (`PreviousThreadsDialog.svelte`, `stores/assistantPastThreads.svelte.ts`).
   Rules: [standing agents](../../../../../docs/specs/standing-agents.md#sidebar).
-- `sidebarBuckets.ts` decides where each thread lists: an assistant's
-  helpers and past threads on its card (`cardOwnerAgentId`), everything
-  else in its own project, nested under the assistant's row there when
-  its placement is nested. The tree builder runs per card list and per
-  project with the assistants it is handed.
+- `sidebarListsThread` in `sidebarBuckets.ts` is the one place that
+  decides a thread has a row: never archived, never `placement` owned.
+  The buckets put an assistant in the Assistants section and every other
+  listed thread in its project.
+- A row's worker count and needs-you badge read
+  `stores/threadWorkerSummaries.svelte.ts`.
 - `threadRowActions.ts` and `threadGroupActions.ts` own mutations from this
   directory. Reconcile rows from each RPC response.
 - Inline rename stays in the owning row. Context menus delegate through the
@@ -52,8 +47,8 @@ makes every text field a drop target for the row.
 Clear the record on every drop target as well as `dragend`; the source row may
 unmount before `dragend`. Groups accept same-project threads not already in the
 group, never one whose payload is `agentBound` (a standing agent's own row),
-and stop propagation. An agent row and its member rows are not drop
-targets. The list background accepts grouped threads for
+and stop propagation. An assistant row is not a drop target. The list
+background accepts grouped threads for
 ungrouping. Keep hover ownership in `ProjectThreadList` so child rows illuminate
 their group and rejected group targets clear the background affordance.
 

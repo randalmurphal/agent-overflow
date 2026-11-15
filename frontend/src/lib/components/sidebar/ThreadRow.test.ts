@@ -3,7 +3,6 @@ import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import { render, fireEvent } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import ThreadRow from './ThreadRow.svelte';
-import { sidebarTimeLabel } from '../../utils/sidebarRowMetrics';
 import { createThreadPane } from '../../stores/thread.svelte';
 import { registerPaneForTest, resetPanesForTest } from '../../stores/panes.svelte';
 import { resetPaneLayoutForTest } from '../../stores/paneLayout.svelte';
@@ -43,7 +42,8 @@ import { __resetEntityIndexForTest, noteProject, noteThread } from '../../transp
 import { refreshProjects, resetProjectsForTest } from '../../stores/projects.svelte';
 import { __resetBackendIdentityForTest, setBackendIdentityFromBootstrap } from '../../transport/backendIdentity';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
-import { isAgentExpanded, resetSidebarForTest, setAgentExpanded, setShowProviderIcons } from '../../stores/sidebar.svelte';
+import { resetSidebarForTest, setShowProviderIcons } from '../../stores/sidebar.svelte';
+import { refreshThreadWorkerSummaries, resetThreadWorkerSummariesForTest } from '../../stores/threadWorkerSummaries.svelte';
 import { OBSERVE_SCOPES, pairViewOnly, pairWithScopes, resetToLocalPage } from '../../../test/helpers/scopes';
 
 function makeThread(overrides: Partial<Thread> = {}): Thread {
@@ -260,12 +260,12 @@ describe('<ThreadRow> inline actions without threads:operate', () => {
     setBindingMock('ListThreadWakes', async () => []);
     await pairWithScopes([...OBSERVE_SCOPES, 'threads:operate']);
     const thread = makeThread({ agentId: 'agent-1' });
-    const inert = render(ThreadRow, { props: { thread, pane: createThreadPane(), agent: { containerKey: 'agent-1', expanded: false, childCount: 0 } } });
+    const inert = render(ThreadRow, { props: { thread, pane: createThreadPane() } });
     expect((inert.getByTestId('thread-row-next-thread') as HTMLButtonElement).disabled).toBe(true);
     inert.unmount();
 
     await pairWithScopes([...OBSERVE_SCOPES, 'threads:operate', 'threads:autonomy']);
-    const granted = render(ThreadRow, { props: { thread, pane: createThreadPane(), agent: { containerKey: 'agent-1', expanded: false, childCount: 0 } } });
+    const granted = render(ThreadRow, { props: { thread, pane: createThreadPane() } });
     expect((granted.getByTestId('thread-row-next-thread') as HTMLButtonElement).disabled).toBe(false);
   });
 
@@ -406,6 +406,7 @@ describe('<ThreadRow> drag source', () => {
     resetPanesForTest();
     resetPaneLayoutForTest();
     await primeSettings();
+    setBindingMock('ListThreadWakes', async () => ({ rows: [], moreReminders: false }));
   });
 
   it('publishes a sidebar-thread drag payload', async () => {
@@ -439,10 +440,10 @@ describe('<ThreadRow> drag source', () => {
   it.each([
     ['a standing agent', { agentId: 'agent-1' }, true],
     // A thread an agent spawned joins groups (ruling 36): its payload is
-    // not agent-bound, nested, grouped or with its agent archived.
-    ['a nested thread a standing agent spawned', { spawnedByThreadId: 'agent-1', spawnedByAgent: true, placement: 'nested' as const }, false],
-    ['a grouped thread a standing agent spawned', { spawnedByThreadId: 'agent-1', spawnedByAgent: true, placement: 'grouped' as const, groupId: 'g1' }, false],
-    ['a thread an archived standing agent spawned', { spawnedByThreadId: 'archived-agent', spawnedByAgent: true }, false],
+    // not agent-bound, standalone, grouped or with its agent archived.
+    ['a standalone thread a standing agent spawned', { spawnedByThreadId: 'agent-1', placement: 'standalone' as const }, false],
+    ['a grouped thread a standing agent spawned', { spawnedByThreadId: 'agent-1', placement: 'grouped' as const, groupId: 'g1' }, false],
+    ['a thread an archived standing agent spawned', { spawnedByThreadId: 'archived-agent' }, false],
   ])('marks the payload of %s agent-bound only when it is the agent', async (_, overrides, bound) => {
     setBindingMock('ListThreads', async () => [makeThread({ id: 'agent-1', agentId: 'agent-1' })]);
     await refreshThreads();
@@ -1803,78 +1804,81 @@ describe('<ThreadRow> standing agent variant', () => {
     expect(rendered.getByTestId('thread-row').hasAttribute('data-sidebar-jump-target')).toBe(false);
   });
 
-  it('renders the chevron, glyph and collapsed count, and folds only from the chevron', async () => {
+  it('is one row: the glyph in the pin\'s place, no fold, its state and projects lines under it', () => {
     const thread = makeThread({ agentId: 'agent-1' });
-    const rendered = render(ThreadRow, { props: { thread, pane: createThreadPane(), agent: { containerKey: 'agent-1', expanded: false, childCount: 3 } } });
+    const rendered = render(ThreadRow, { props: { thread, pane: createThreadPane(), agentProjects: 'Alpha, Beta' } });
     const row = rendered.getByTestId('thread-row');
     expect(row.getAttribute('data-sidebar-agent')).toBe('');
-    expect(row.getAttribute('aria-expanded')).toBe('false');
+    expect(row.hasAttribute('aria-expanded')).toBe(false);
     expect(rendered.getByTestId('thread-row-agent-icon')).toBeTruthy();
-    expect(rendered.getByTestId('thread-row-agent-count').textContent?.trim()).toBe('3');
     expect(rendered.queryByTestId('thread-row-pin')).toBeNull();
-    const chevron = rendered.getByTestId('thread-row-agent-expand');
-    expect(chevron.getAttribute('aria-expanded')).toBe('false');
-    // The row renders what the list passes; the chevron writes the store,
-    // keyed by the row's container key, the assistant's for a card, so a
-    // handoff keeps the fold.
-    setAgentExpanded('agent-1', false);
-    await fireEvent.click(chevron);
-    expect(isAgentExpanded('agent-1')).toBe(true);
-    await fireEvent.click(chevron);
-    expect(isAgentExpanded('agent-1')).toBe(false);
-    expect(isAgentExpanded('thread-1')).toBe(true);
+    expect(rendered.queryByTestId('thread-row-agent-expand')).toBeNull();
+    expect(rendered.getByTestId('thread-row-agent-projects').textContent?.trim()).toBe('Alpha, Beta');
+    // An ordinary row has neither line.
+    const plain = render(ThreadRow, { props: { thread: makeThread({ id: 'plain' }), pane: createThreadPane(), agentProjects: 'ignored' } });
+    expect(plain.container.querySelector('[data-testid="thread-row-agent-projects"]')).toBeNull();
+    expect(plain.container.querySelector('[data-testid="thread-row-agent-icon"]')).toBeNull();
   });
 
-  it('shows its children\'s bubbled dot while collapsed and its own once expanded', () => {
-    const rolledUp = { liveStatus: 'idle' as const, pill: { label: 'Completed', dotClass: 'bg-accent', pulse: false } };
+  it('opens its thread from Enter, and takes no arrow-key fold', async () => {
     const thread = makeThread({ agentId: 'agent-1' });
-    const collapsed = render(ThreadRow, { props: { thread, pane: createThreadPane(), agent: { containerKey: 'agent-1', expanded: false, childCount: 2, rolledUp } } });
-    const dot = collapsed.getByTestId('thread-row-status-dot');
-    expect(dot.getAttribute('aria-label')).toBe('Completed');
-    expect(dot.hasAttribute('data-rolled-up')).toBe(true);
-    collapsed.unmount();
-    // Expanded, the row is its own thread again: read, so no dot.
-    const expanded = render(ThreadRow, { props: { thread, pane: createThreadPane(), agent: { containerKey: 'agent-1', expanded: true, childCount: 2, rolledUp } } });
-    expect(expanded.queryByTestId('thread-row-status-dot')).toBeNull();
-    expanded.unmount();
-    // Collapsed with every child read: dark.
-    const dark = render(ThreadRow, { props: { thread, pane: createThreadPane(), agent: { containerKey: 'agent-1', expanded: false, childCount: 2, rolledUp: null } } });
-    expect(dark.queryByTestId('thread-row-status-dot')).toBeNull();
-  });
-
-  it('hides the count once expanded and when there is nothing under the agent', () => {
-    const open = render(ThreadRow, { props: { thread: makeThread({ agentId: 'agent-1' }), pane: createThreadPane(), agent: { containerKey: 'agent-1', expanded: true, childCount: 3 } } });
-    expect(open.queryByTestId('thread-row-agent-count')).toBeNull();
-    const empty = render(ThreadRow, { props: { thread: makeThread({ id: 'thread-2', agentId: 'thread-2' }), pane: createThreadPane(), agent: { containerKey: 'agent-1', expanded: false, childCount: 0 } } });
-    expect(empty.container.querySelector('[data-testid="thread-row-agent-count"]')).toBeNull();
-    expect(empty.container.querySelector('[data-testid="thread-row-agent-expand"]')).not.toBeNull();
-  });
-
-  it('folds and unfolds from the keyboard on the row itself, not from a child control', async () => {
-    const rendered = render(ThreadRow, { props: { thread: makeThread({ agentId: 'agent-1' }), pane: createThreadPane(), agent: { containerKey: 'agent-1', expanded: true, childCount: 1 } } });
+    const rendered = render(ThreadRow, { props: { thread, pane: createThreadPane() } });
     const row = rendered.getByTestId('thread-row');
     await fireEvent.keyDown(row, { key: 'ArrowLeft' });
-    expect(isAgentExpanded('agent-1')).toBe(false);
-    await fireEvent.keyDown(row, { key: 'ArrowRight' });
-    expect(isAgentExpanded('agent-1')).toBe(true);
-    await fireEvent.keyDown(rendered.getByTestId('thread-row-agent-expand'), { key: 'ArrowLeft' });
-    expect(isAgentExpanded('agent-1')).toBe(true);
+    expect(row.hasAttribute('aria-expanded')).toBe(false);
+  });
+});
+// A row says its thread has workers (docs/specs/standing-agents.md,
+// "Sidebar"): the open count in the count slot, and a warning badge for
+// those waiting on the user, each saying what it counts.
+describe('<ThreadRow> worker counts', () => {
+  beforeEach(async () => {
+    resetPanesForTest();
+    resetSidebarForTest();
+    resetThreadWorkerSummariesForTest();
+    await primeSettings();
+    setBindingMock('ListThreadWakes', async () => ({ rows: [], moreReminders: false }));
+  });
+  afterEach(() => setCompactLayoutForTest(false));
+
+  async function summaries(rows: { threadId: string; open: number; needYou: number }[]): Promise<void> {
+    setBindingMock('ListThreadWorkerSummaries', async () => rows);
+    await refreshThreadWorkerSummaries();
+    await tick();
+  }
+
+  it.each([
+    ['an ordinary thread', {}],
+    ['an assistant', { agentId: 'agent-1' }],
+  ])('shows the open workers and those waiting on the user on %s, and clears them', async (_, overrides) => {
+    const rendered = render(ThreadRow, { props: { thread: makeThread(overrides), pane: createThreadPane() } });
+    expect(rendered.queryByTestId('thread-row-workers')).toBeNull();
+    expect(rendered.queryByTestId('thread-row-workers-need-you')).toBeNull();
+
+    await summaries([{ threadId: 'thread-1', open: 3, needYou: 1 }, { threadId: 'other', open: 5, needYou: 5 }]);
+    const count = rendered.getByTestId('thread-row-workers');
+    expect(count.textContent?.trim()).toBe('3');
+    expect(count.getAttribute('title')).toBe('3 open workers');
+    const badge = rendered.getByTestId('thread-row-workers-need-you');
+    expect(badge.textContent?.trim()).toBe('1');
+    expect(badge.getAttribute('title')).toBe('1 worker waiting on you');
+    expect(badge.dataset.tone).toBe('warning');
+
+    // Nobody waiting: the badge goes, the count stays.
+    await summaries([{ threadId: 'thread-1', open: 2, needYou: 0 }]);
+    expect(rendered.getByTestId('thread-row-workers').textContent?.trim()).toBe('2');
+    expect(rendered.queryByTestId('thread-row-workers-need-you')).toBeNull();
+
+    // The computer lists the thread no more: it has no open worker.
+    await summaries([]);
+    expect(rendered.queryByTestId('thread-row-workers')).toBeNull();
   });
 
-  it('dims an archived child row', () => {
-    const rendered = render(ThreadRow, { props: { thread: makeThread({ archived: true, spawnedByThreadId: 'agent-1' }), pane: createThreadPane(), inGroup: true, archivedChild: true } });
-    const row = rendered.getByTestId('thread-row');
-    expect(row.getAttribute('data-archived-child')).toBe('true');
-    expect(row.className).toContain('opacity-50');
-  });
-
-  it("says when a handoff superseded an assistant's past thread in the done list", () => {
-    const supersededAt = Date.now() - 3 * 60 * 60 * 1000;
-    const past = makeThread({ title: 'Ops', archived: true, pastAgentId: 'agent-1', agentSupersededAt: supersededAt, updatedAt: Date.now() });
-    const rendered = render(ThreadRow, { props: { thread: past, pane: createThreadPane(), inGroup: true, archivedChild: true } });
-    expect(rendered.getByTestId('thread-row-time').textContent?.trim()).toBe(`superseded ${sidebarTimeLabel(supersededAt)}`);
-
-    const ordinary = render(ThreadRow, { props: { thread: makeThread({ id: 'child', archived: true, updatedAt: supersededAt }), pane: createThreadPane(), inGroup: true, archivedChild: true } });
-    expect(ordinary.getAllByTestId('thread-row-time').at(-1)?.textContent).not.toContain('superseded');
+  it('shows them under the compact layout too', async () => {
+    setCompactLayoutForTest(true);
+    const rendered = render(ThreadRow, { props: { thread: makeThread(), pane: createThreadPane() } });
+    await summaries([{ threadId: 'thread-1', open: 2, needYou: 2 }]);
+    expect(rendered.getByTestId('thread-row-workers').textContent?.trim()).toBe('2');
+    expect(rendered.getByTestId('thread-row-workers-need-you').getAttribute('title')).toBe('2 workers waiting on you');
   });
 });

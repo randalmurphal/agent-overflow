@@ -32,14 +32,12 @@
     threads: Thread[];
     /** The project's groups, already search-filtered by ProjectsSection. */
     groups?: readonly ThreadGroup[];
-    /** The assistants with a row in this project (sidebarBuckets). */
-    agents?: readonly Thread[];
     pane: ThreadPane | null;
     /** Click handler for the empty-state "+ New Thread" button. */
     onNewThread?: ProjectNewThreadHandler;
   }
 
-  let { projectId, threads, groups = [], agents = [], pane, onNewThread }: Props = $props();
+  let { projectId, threads, groups = [], pane, onNewThread }: Props = $props();
   let lastNewThreadContextMenuAt = 0;
   // Creating a thread rides `threads:operate`. The empty-state control is
   // the whole content of an empty project, so it stays and goes inert.
@@ -130,32 +128,10 @@
     void moveThreadsToGroupAction([payload.threadId], groupId);
   }
 
-  // An agent row, its member rows and its done footer: a drop here moves
-  // nothing (an agent adopts only what it spawned), with the same
-  // affordance as a drop on another project. Swallowed so the container
-  // never reads it as an ungroup.
-  function agentDragOver(e: DragEvent): void {
-    if (!e.dataTransfer || !threadDragPayloadForEvent(e)) return;
-    e.stopPropagation();
-    e.preventDefault();
-    e.dataTransfer.dropEffect = 'none';
-    clearDropState();
-  }
-
-  function agentDrop(e: DragEvent): void {
-    if (!threadDragPayloadForEvent(e)) return;
-    e.stopPropagation();
-    e.preventDefault();
-    endThreadRowDrag();
-    clearDropState();
-  }
-
   const drops: SidebarTreeDrops = {
     memberDragOver,
     memberDragLeave,
     memberDrop,
-    agentDragOver,
-    agentDrop,
     groupLit: (groupId) => dropTargetGroupId === groupId && dropTargetAccepts,
     groupTargetChange: setGroupDropTarget,
   };
@@ -204,7 +180,7 @@
   <ForkPendingRow title={`${source.title} (fork)`} />
 {/each}
 
-{#if threads.length === 0 && groups.length === 0 && agents.length === 0}
+{#if threads.length === 0 && groups.length === 0}
   <div class="ml-4 flex flex-wrap items-center">
   <button
     type="button"
@@ -233,6 +209,6 @@
     ondrop={handleContainerDrop}
     ondragend={clearDropState}
   >
-    <SidebarTreeList {threads} {groups} {agents} scope={projectId} listKey={projectId} {pane} {drops} />
+    <SidebarTreeList {threads} {groups} listKey={projectId} {pane} {drops} />
   </div>
 {/if}

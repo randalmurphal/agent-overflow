@@ -13,7 +13,10 @@ import { clearThreadSelection, setThreadSelection } from '../../stores/threadFil
 import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
 import { getThreadById, replaceAllThreads } from '../../stores/threads.svelte';
 import { closeAssistantProjectsDialog, getAssistantProjectsAgentId } from '../../stores/newAssistant.svelte';
-import { setThreadStatus } from '../../stores/threadStatuses.svelte';
+import { getPreviousThreads, resetPreviousThreadsForTest } from '../../stores/assistantPastThreads.svelte';
+import { getToasts } from '../../stores/toast.svelte';
+import { noteThread } from '../../transport/entityIndex';
+import { HOME_BACKEND } from '../../transport/backendKey';
 import {
   consumePendingGroupRename,
   resetThreadGroupsForTest,
@@ -786,9 +789,9 @@ describe('<ThreadContextMenu> group items', () => {
 });
 
 // An assistant's row (docs/specs/standing-agents.md, "Sidebar") adds New
-// Thread, Same Assistant, Loops and Watches and Archive Done Children, and
-// drops the pin and group items; a thread it spawned drops the group items.
-// No thread offers promotion.
+// Thread, Same Assistant, Projects, Previous Threads and Loops and Watches,
+// and drops the pin and group items. A thread another local thread spawned
+// into a project offers Remove from Sidebar. No thread offers promotion.
 
 describe('<ThreadContextMenu> standing agent', () => {
   beforeEach(() => {
@@ -796,6 +799,7 @@ describe('<ThreadContextMenu> standing agent', () => {
     clearThreadSelection();
     resetSidebarForTest();
     resetThreadGroupsForTest();
+    resetPreviousThreadsForTest();
     upsertThreadGroup({ id: 'g-alpha', projectId: 'project-1', name: 'Alpha', createdAt: 0, updatedAt: 0 });
   });
 
@@ -810,7 +814,7 @@ describe('<ThreadContextMenu> standing agent', () => {
     return node as HTMLElement;
   }
 
-  function renderAgentMenu(thread: Thread, extra: { agentBound?: boolean; agentChildren?: Thread[]; archivedChild?: boolean } = {}) {
+  function renderAgentMenu(thread: Thread, extra: { agentBound?: boolean } = {}) {
     setBindingMock('SwitchThread', async () => {});
     setBindingMock('ListItems', async () => []);
     const pane = createThreadPane();
@@ -834,9 +838,8 @@ describe('<ThreadContextMenu> standing agent', () => {
       'Rename Thread',
       'New Thread, Same Assistant',
       'Projects…',
+      'Previous Threads…',
       'Loops and Watches',
-      'Mark All Read',
-      'Archive Done Children',
       'Fork Thread',
       'Mark Unread',
       'Copy Path',
@@ -844,100 +847,78 @@ describe('<ThreadContextMenu> standing agent', () => {
       'Archive Thread',
       'Delete',
     ]);
-    expect(item(baseElement, 'Archive Done Children').getAttribute('aria-disabled')).toBe('true');
-    expect(item(baseElement, 'Archive Done Children').getAttribute('title')).toBe('No spawned thread is done');
   });
 
-  // A thread an assistant spawned moves between its three placements from
-  // its menu (docs/specs/standing-agents.md ruling 36).
+  // docs/specs/standing-agents.md ruling 36: a placed worker's row takes it
+  // back out of the sidebar; its group items stay as they are.
   it.each([
-    ['nested', { placement: 'nested' as const }, ['Move to Group', 'Make Standalone'], ['Remove from Group', 'Nest Under Release agent']],
-    ['standalone', { placement: 'standalone' as const }, ['Move to Group', 'Nest Under Release agent'], ['Remove from Group', 'Make Standalone']],
-    ['grouped', { placement: 'grouped' as const, groupId: 'g1' }, ['Move to Group', 'Remove from Group', 'Nest Under Release agent'], ['Make Standalone']],
-    // A row from a backend older than placement nests as it always did.
-    ['without a placement', {}, ['Move to Group', 'Make Standalone'], ['Nest Under Release agent']],
-  ])('offers a %s child its placement moves and keeps its pin items', (_, overrides, present, absent) => {
-    replaceAllThreads([makeThread({ id: 'agent-1', projectId: 'project-1', title: 'Release agent', agentId: 'agent-1' })]);
-    const { baseElement } = renderAgentMenu(
-      makeThread({ projectId: 'project-1', spawnedByThreadId: 'agent-1', spawnedByAgent: true, ...overrides }),
-    );
+    ['standalone', { placement: 'standalone' as const }, ['Move to Group', 'Remove from Sidebar'], ['Remove from Group']],
+    ['grouped', { placement: 'grouped' as const, groupId: 'g1' }, ['Move to Group', 'Remove from Group', 'Remove from Sidebar'], []],
+  ])('offers a %s thread a local thread spawned Remove from Sidebar and keeps its pin items', (_, overrides, present, absent) => {
+    const { baseElement } = renderAgentMenu(makeThread({ projectId: 'project-1', spawnedByThreadId: 'spawner', ...overrides }));
     const labels = labelsOf(baseElement);
     expect(labels).toContain('Pin Thread');
     expect(labels).not.toContain('New Thread, Same Assistant');
     for (const label of present) expect(labels).toContain(label);
     for (const label of absent) expect(labels).not.toContain(label);
-  });
-
-  it('offers no placement moves on a plain thread', () => {
-    const plain = renderAgentMenu(makeThread({ projectId: 'project-1', placement: 'standalone' }));
-    const labels = labelsOf(plain.baseElement);
-    expect(labels).toContain('Move to Group');
-    expect(labels.some((label) => label.startsWith('Nest Under') || label === 'Make Standalone')).toBe(false);
-  });
-
-  // The placement items exist only while the agent's row is in the
-  // sidebar: a child of an archived assistant renders as a plain row and
-  // gets none, and they return when the assistant is unarchived.
-  it.each(['nested', 'standalone'] as const)('offers a %s child of an archived assistant no placement items', (placement) => {
-    const placementItem = (label: string) => label.startsWith('Nest Under') || label === 'Make Standalone';
-    const child = makeThread({ projectId: 'project-1', spawnedByThreadId: 'agent-1', spawnedByAgent: true, placement });
-    replaceAllThreads([makeThread({ id: 'agent-1', projectId: 'project-1', title: 'Release agent', agentId: 'agent-1', archived: true })]);
-    const archived = renderAgentMenu(child);
-    const labels = labelsOf(archived.baseElement);
-    expect(labels).toContain('Move to Group');
-    expect(labels.some(placementItem)).toBe(false);
-    archived.unmount();
-
-    replaceAllThreads([makeThread({ id: 'agent-1', projectId: 'project-1', title: 'Release agent', agentId: 'agent-1' })]);
-    const shown = renderAgentMenu(child);
-    expect(labelsOf(shown.baseElement).filter(placementItem)).toEqual([
-      placement === 'nested' ? 'Make Standalone' : 'Nest Under Release agent',
-    ]);
-  });
-
-  it('offers a helper or a past thread outside every project no placement items', () => {
-    replaceAllThreads([makeThread({ id: 'agent-1', projectId: '', title: 'Ops', agentId: 'agent-1' })]);
-    for (const thread of [
-      makeThread({ projectId: '', helperOfAgentId: 'agent-1', spawnedByThreadId: 'agent-1', spawnedByAgent: true, placement: 'nested' }),
-      makeThread({ projectId: '', pastAgentId: 'agent-1', placement: 'nested' }),
-    ]) {
-      const view = renderAgentMenu(thread);
-      expect(labelsOf(view.baseElement).some((label) => label.startsWith('Nest Under') || label === 'Make Standalone')).toBe(false);
-      view.unmount();
-    }
-  });
-
-  it('offers no placement items to a child of a thread that is no assistant', () => {
-    replaceAllThreads([makeThread({ id: 'spawner', projectId: 'project-1', title: 'Plain spawner' })]);
-    const { baseElement } = renderAgentMenu(
-      makeThread({ projectId: 'project-1', spawnedByThreadId: 'spawner', spawnedByAgent: false, placement: 'nested' }),
-    );
-    const labels = labelsOf(baseElement);
-    expect(labels).toContain('Move to Group');
-    expect(labels.some((label) => label.startsWith('Nest Under') || label === 'Make Standalone')).toBe(false);
+    for (const label of ['Make Standalone', 'Previous Threads…']) expect(labels).not.toContain(label);
+    expect(labels.some((label) => label.startsWith('Nest Under'))).toBe(false);
   });
 
   it.each([
-    ['Make Standalone', 'nested', 'standalone'],
-    ['Nest Under Release agent', 'standalone', 'nested'],
-  ] as const)('%s writes the placement through the binding and reconciles the row', async (label, from, to) => {
+    ['a thread nobody spawned', makeThread({ projectId: 'project-1', placement: 'standalone' })],
+    ['a thread outside every project', makeThread({ projectId: '', spawnedByThreadId: 'spawner', placement: 'standalone' })],
+    ['an assistant', makeThread({ projectId: 'project-1', agentId: 'agent-1', spawnedByThreadId: 'creator' })],
+  ])('offers %s no Remove from Sidebar', (_, thread) => {
+    const view = renderAgentMenu(thread, { agentBound: Boolean(thread.agentId) });
+    expect(labelsOf(view.baseElement)).not.toContain('Remove from Sidebar');
+  });
+
+  it('offers no Remove from Sidebar in a bulk menu', () => {
     replaceAllThreads([
-      makeThread({ id: 'agent-1', projectId: 'project-1', title: 'Release agent', agentId: 'agent-1' }),
-      makeThread({ id: 'child', projectId: 'project-1', spawnedByThreadId: 'agent-1', spawnedByAgent: true, placement: from, pinnedAt: 5 }),
+      makeThread({ id: 'a', projectId: 'project-1', spawnedByThreadId: 'spawner' }),
+      makeThread({ id: 'b', projectId: 'project-1', spawnedByThreadId: 'spawner' }),
+    ]);
+    setThreadSelection(['a', 'b']);
+    const { baseElement } = renderAgentMenu(makeThread({ id: 'a', projectId: 'project-1', spawnedByThreadId: 'spawner' }));
+    expect(labelsOf(baseElement)).not.toContain('Remove from Sidebar');
+  });
+
+  it('Remove from Sidebar makes the thread owned through the binding, and the row leaves the sidebar unpinned', async () => {
+    replaceAllThreads([
+      makeThread({ id: 'child', projectId: 'project-1', spawnedByThreadId: 'spawner', placement: 'grouped', groupId: 'g-alpha', pinnedAt: 5 }),
     ]);
     const place = setBindingMock('SetThreadPlacement', vi.fn(async (ids: string[], placement: string) => [
-      makeThread({ id: ids[0], projectId: 'project-1', spawnedByThreadId: 'agent-1', spawnedByAgent: true, placement: placement as 'nested' }),
+      makeThread({ id: ids[0], projectId: 'project-1', spawnedByThreadId: 'spawner', placement: placement as 'owned' }),
     ]));
-    const { baseElement } = renderAgentMenu(
-      makeThread({ id: 'child', projectId: 'project-1', spawnedByThreadId: 'agent-1', spawnedByAgent: true, placement: from }),
-    );
-    await fireEvent.click(item(baseElement, label));
-    await waitFor(() => expect(place).toHaveBeenCalledWith(['child'], to));
+    const { baseElement } = renderAgentMenu(getThreadById('child')!);
+    await fireEvent.click(item(baseElement, 'Remove from Sidebar'));
+    await waitFor(() => expect(place).toHaveBeenCalledWith(['child'], 'owned'));
     await waitFor(() => {
       const row = getThreadById('child');
-      expect(row?.placement).toBe(to);
+      expect(row?.placement).toBe('owned');
+      expect(row?.groupId ?? '').toBe('');
       expect(row?.pinnedAt ?? null).toBeNull();
     });
+  });
+
+  it('shows a refused Remove from Sidebar to the user and leaves the row', async () => {
+    replaceAllThreads([makeThread({ id: 'child', projectId: 'project-1', spawnedByThreadId: 'spawner', placement: 'standalone' })]);
+    setBindingMock('SetThreadPlacement', async () => {
+      throw new Error('store: the thread was not spawned by a thread on this computer');
+    });
+    const { baseElement } = renderAgentMenu(getThreadById('child')!);
+    await fireEvent.click(item(baseElement, 'Remove from Sidebar'));
+    await waitFor(() => expect(getToasts().some((toast) => toast.type === 'error')).toBe(true));
+    expect(getThreadById('child')?.placement).toBe('standalone');
+  });
+
+  it('Previous Threads… opens the assistant\'s dialog from its computer, held by the pane that asked', async () => {
+    noteThread('thread-1', HOME_BACKEND);
+    setBindingMock('ListAssistantPastThreads', async () => ({ threads: [] }));
+    const { baseElement, pane } = renderAgentMenu(makeThread({ projectId: '', agentId: 'agent-1' }), { agentBound: true });
+    await fireEvent.click(item(baseElement, 'Previous Threads…'));
+    expect(getPreviousThreads()?.opening).toMatchObject({ agentId: 'agent-1', backend: HOME_BACKEND, targetPane: pane });
   });
 
   it('New Thread, Same Assistant starts the next thread through the binding', async () => {
@@ -1024,7 +1005,7 @@ describe('<ThreadContextMenu> standing agent', () => {
   it('hides the group items in bulk when the selection holds an agent, and keeps them for a spawned thread', () => {
     replaceAllThreads([
       makeThread({ id: 'a', projectId: 'project-1' }),
-      makeThread({ id: 'b', projectId: 'project-1', spawnedByThreadId: 'agent-1', spawnedByAgent: true }),
+      makeThread({ id: 'b', projectId: 'project-1', spawnedByThreadId: 'agent-1' }),
       makeThread({ id: 'c', projectId: 'project-1', agentId: 'agent-c' }),
     ]);
     setThreadSelection(['a', 'b']);
@@ -1039,32 +1020,6 @@ describe('<ThreadContextMenu> standing agent', () => {
     expect(labels).not.toContain('Remove from Group');
   });
 
-  it('offers an archived child Unarchive, Copy and Delete, and no pin, group or archive', () => {
-    const { baseElement } = renderAgentMenu(
-      makeThread({ projectId: 'project-1', spawnedByThreadId: 'agent-1', archived: true }),
-      { agentBound: true, archivedChild: true },
-    );
-    expect(labelsOf(baseElement)).toEqual([
-      'Open in New Pane',
-      'Rename Thread',
-      'Unarchive Thread',
-      'Copy Path',
-      'Copy Thread ID',
-      'Delete',
-    ]);
-  });
-
-  it('unarchives an archived child through the binding', async () => {
-    const unarchive = setBindingMock('UnarchiveThread', async () => makeThread());
-    const { baseElement } = renderAgentMenu(
-      makeThread({ projectId: 'project-1', spawnedByThreadId: 'agent-1', archived: true }),
-      { agentBound: true, archivedChild: true },
-    );
-    await fireEvent.click(item(baseElement, 'Unarchive Thread'));
-    await tick();
-    expect(unarchive).toHaveBeenCalledWith('thread-1');
-  });
-
   it('Loops and Watches opens the thread with its background rail open', async () => {
     setBindingMock('GetThread', async () => makeThread({ agentId: 'agent-1' }));
     setBindingMock('GetThreadDisplayState', async () => null);
@@ -1074,29 +1029,5 @@ describe('<ThreadContextMenu> standing agent', () => {
     // has read the thread's own rail preferences.
     await waitFor(() => expect(pane.activityRailBackgroundOpen).toBe(true));
     expect(pane.threadId).toBe('thread-1');
-  });
-
-  it('Archive Done Children counts the idle children, confirms, then archives only those', async () => {
-    const archive = setBindingMock('ArchiveThread', async () => {});
-    const idle = makeThread({ id: 'child-idle', spawnedByThreadId: 'thread-1' });
-    const idle2 = makeThread({ id: 'child-idle-2', spawnedByThreadId: 'thread-1' });
-    const busy = makeThread({ id: 'child-busy', spawnedByThreadId: 'thread-1' });
-    setThreadStatus('child-busy', 'awaiting-input');
-    const { baseElement } = renderAgentMenu(
-      makeThread({ agentId: 'agent-1' }),
-      { agentChildren: [idle, busy, idle2] },
-    );
-    const row = item(baseElement, 'Archive Done Children (2)');
-    expect(row.getAttribute('aria-disabled')).not.toBe('true');
-    await fireEvent.click(row);
-    await tick();
-    const dialog = baseElement.querySelector('[role="dialog"], [role="alertdialog"]');
-    expect(dialog?.textContent).toContain('2 spawned threads');
-    expect(archive).not.toHaveBeenCalled();
-    const confirm = Array.from(baseElement.querySelectorAll('button')).find((b) => b.textContent?.trim() === 'Archive');
-    if (!confirm) throw new Error('confirm button not rendered');
-    await fireEvent.click(confirm);
-    await waitFor(() => expect(archive).toHaveBeenCalledTimes(2));
-    expect(archive.mock.calls.map((call) => call[0])).toEqual(['child-idle', 'child-idle-2']);
   });
 });
