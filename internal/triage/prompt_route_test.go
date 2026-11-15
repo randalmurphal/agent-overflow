@@ -157,43 +157,72 @@ func TestAPromptIsOpenOnlyAsTheOccurrenceThatAskedIt(t *testing.T) {
 	f.wantRoute(t, f.open(t, "worker", "req"), true, "lead")
 }
 
-// ReroutePrompts moves every open prompt routed to a thread to where the
-// prompt router routes its worker now, to the user when that is the same
-// thread, announces each once, and leaves alone the prompts routed
-// elsewhere, the ones refs does not name and the ones already moved.
-func TestReroutePromptsMovesThePromptsOfOneRecipient(t *testing.T) {
+// ReroutePrompts reconciles every open prompt routed to a thread with where
+// the prompt router routes its worker now: one that still routes there is
+// kept, the others move, to the user when they route nowhere, each
+// announced once, and the prompts routed elsewhere are left alone.
+func TestReroutePromptsKeepsARouteThatStillHolds(t *testing.T) {
 	t.Parallel()
 	f := newPromptRouteFixture(t)
-	for worker, to := range map[string]string{"handed": "lead", "orphan": "lead", "other": "elsewhere"} {
+	for worker, to := range map[string]string{"handed": "lead", "orphan": "lead", "kept": "lead", "other": "elsewhere"} {
 		f.route(worker, to)
 		f.router.MarkThreadActive(worker, "s-"+worker)
 	}
 	f.approval(t, "handed", "approve", "s-handed")
 	f.question(t, "orphan", "ask", "s-orphan")
+	f.approval(t, "kept", "approve-kept", "s-kept")
 	f.approval(t, "other", "approve-other", "s-other")
-	handed, orphan, other := f.open(t, "handed", "approve"), f.open(t, "orphan", "ask"), f.open(t, "other", "approve-other")
+	handed, orphan := f.open(t, "handed", "approve"), f.open(t, "orphan", "ask")
+	kept, other := f.open(t, "kept", "approve-kept"), f.open(t, "other", "approve-other")
 
-	// Narrowed to an earlier prompt under the same id, nothing moves.
-	stale := handed
-	stale.Occurrence--
-	if moved := f.router.ReroutePrompts("lead", stale); moved != 0 {
-		t.Fatalf("a stale ref moved %d prompts", moved)
-	}
 	f.route("handed", "next")
+	f.route("orphan", "")
 	if moved := f.router.ReroutePrompts("lead"); moved != 2 {
 		t.Fatalf("moved %d prompts, want 2", moved)
 	}
 	f.wantRoute(t, handed, true, "next")
 	f.wantRoute(t, orphan, true, "")
+	f.wantRoute(t, kept, true, "lead")
 	f.wantRoute(t, other, true, "elsewhere")
 	if moved := f.router.ReroutePrompts("lead"); moved != 0 {
 		t.Fatalf("a second call moved %d prompts", moved)
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	for requestID, want := range map[string][]string{"approve": {"lead", "next"}, "ask": {"lead", ""}, "approve-other": {"elsewhere"}} {
+	for requestID, want := range map[string][]string{"approve": {"lead", "next"}, "ask": {"lead", ""}, "approve-kept": {"lead"}, "approve-other": {"elsewhere"}} {
 		if got := f.announced[requestID]; !slices.Equal(got, want) {
 			t.Errorf("%s announced with routes %q, want %q", requestID, got, want)
 		}
+	}
+}
+
+// RejectPrompt moves the one prompt a recipient could not take: to where its
+// worker's prompts route now, or to the user when that is the same
+// recipient. A ref to an earlier prompt under the same id moves nothing.
+func TestRejectPromptMovesOnlyThatPromptOffItsRecipient(t *testing.T) {
+	t.Parallel()
+	f := newPromptRouteFixture(t)
+	f.route("worker", "lead")
+	f.route("sibling", "lead")
+	f.router.MarkThreadActive("worker", "s1")
+	f.router.MarkThreadActive("sibling", "s1")
+	f.approval(t, "worker", "req", "s1")
+	stale := f.open(t, "worker", "req")
+	f.router.MarkThreadActive("worker", "s2")
+	f.approval(t, "worker", "req", "s2")
+	f.question(t, "sibling", "ask", "s1")
+	current, sibling := f.open(t, "worker", "req"), f.open(t, "sibling", "ask")
+
+	if f.router.RejectPrompt("lead", stale) {
+		t.Fatal("a ref to an earlier prompt under the same id moved the open one")
+	}
+	f.wantRoute(t, current, true, "lead")
+	if !f.router.RejectPrompt("lead", current) {
+		t.Fatal("the rejected prompt did not move")
+	}
+	f.wantRoute(t, current, true, "")
+	f.wantRoute(t, sibling, true, "lead")
+	if f.router.RejectPrompt("lead", current) {
+		t.Fatal("a second rejection moved the prompt again")
 	}
 }

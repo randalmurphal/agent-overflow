@@ -783,12 +783,30 @@ func TestAnArchiveCascadeActsOnlyOnWhatItsArchiveOwned(t *testing.T) {
 		}
 		after := f.thread(t, "after")
 		recordSpawn(t, f.app, "tok-after", owner.ID, after.ID)
+		// The new worker asks its reopened owner an approval and a question.
+		prompts := newWorkerPromptsOn(t, f.app)
+		prompts.ask(t, after.ID, "approval-after", "question-after")
+		tokens := workerPromptTokens(t, f.app, owner.ID)
+		if len(tokens) != 2 {
+			t.Fatalf("the reopened owner holds prompt wakes %q, want the approval's and the question's", tokens)
+		}
 		if outcome := f.app.finishArchive(work); outcome.cleanup != nil || len(outcome.workers) > 0 {
 			t.Fatalf("cleanup = %+v", outcome)
 		}
+		prompts.drain(t)
 		for _, id := range []string{before.ID, after.ID} {
 			if f.reload(t, id).Archived {
 				t.Errorf("%s was archived by an archive its reopened owner undid", id)
+			}
+		}
+		// The late cleanup leaves the prompts with the owner they still
+		// route to, under the tokens it holds.
+		if routes := prompts.routes(t, after.ID); routes["approval-after"] != owner.ID || routes["question-after"] != owner.ID {
+			t.Fatalf("the new worker's prompts are routed %q after the late cleanup, want both to the owner %s", routes, owner.ID)
+		}
+		for _, token := range tokens {
+			if !promptRouted(&f.app.workerPrompts, token) {
+				t.Errorf("the late cleanup retired the owner's token %s", token)
 			}
 		}
 	})

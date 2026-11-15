@@ -33,12 +33,13 @@ import (
 // registry follows its announcements: a prompt announced routed is
 // registered under a fresh token and its wake queued, which retires the
 // prompt's earlier registration and withdraws that wake; one announced as
-// the user's retires it. Every change of route is triage.ReroutePrompts: a
-// prompt its agent could not take (its wake never reached the session, or
-// its queue was cleared), and every open prompt routed to a thread a
-// handoff, an archive or a delete took away (reroutePromptsFrom), goes
-// where the worker's prompts route now: the assistant's next thread, or the
-// user.
+// the user's retires it. A prompt its agent could not take (its wake never
+// reached the session, or its queue was cleared) is rejected
+// (triage.RejectPrompt): it goes where the worker's prompts route now, or
+// to the user when that is the same agent. A handoff, an archive or a
+// delete reconciles the prompts routed to the thread it changed
+// (reroutePromptsFrom, triage.ReroutePrompts): a route that still holds is
+// kept, and the others go to the assistant's next thread, or the user.
 //
 // A registration names one prompt occurrence (triage.PromptRef): a session
 // can ask again under a request id it resolved, and a replacement session
@@ -285,15 +286,17 @@ func (a *App) handBackWorkerPrompt(token string) {
 	if !settled || a.triage == nil {
 		return
 	}
-	if a.triage.ReroutePrompts(prompt.agentID, prompt.ref()) > 0 {
+	if a.triage.RejectPrompt(prompt.agentID, prompt.ref()) {
 		log.Printf("worker prompts: %s of %s moved on: %s could not take it", prompt.requestID, prompt.workerID, prompt.agentID)
 	}
 }
 
-// reroutePromptsFrom moves every open prompt routed to threadID, which a
-// handoff, an archive or a delete took away, whatever became of its wake:
-// to the assistant's next thread, or to the user when the worker's prompts
-// route to nobody now.
+// reroutePromptsFrom reconciles every open prompt routed to threadID, which
+// a handoff, an archive or a delete changed, whatever became of its wake: a
+// prompt the worker's prompts still route to threadID stays, as one does
+// when an unarchive reopened it before a delayed archive cleanup ran, and
+// the others go to the assistant's next thread, or to the user when the
+// worker's prompts route to nobody now.
 func (a *App) reroutePromptsFrom(threadID string) {
 	if a.triage == nil {
 		return

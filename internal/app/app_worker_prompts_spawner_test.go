@@ -466,7 +466,7 @@ func TestARemoteRowSaysWhenItsTargetsPromptWentToAThreadThere(t *testing.T) {
 	framed("it became blocked")
 	want(there.assistant.Title, 0)
 
-	if there.app.triage.ReroutePrompts(there.assistant.ID, openPromptRef(t, there.app.triage, there.worker.ID, there.request.RequestID)) != 1 {
+	if !there.app.triage.RejectPrompt(there.assistant.ID, openPromptRef(t, there.app.triage, there.worker.ID, there.request.RequestID)) {
 		t.Fatal("the prompt did not go back to the user there")
 	}
 	// Still blocked, now on the person: the row changes all the same.

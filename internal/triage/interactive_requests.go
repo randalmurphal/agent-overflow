@@ -174,14 +174,29 @@ func (r *Router) promptRouteLocked(ref PromptRef) (*provider.PromptRoute, bool) 
 	return route, true
 }
 
-// ReroutePrompts moves open prompts routed to from, which can no longer
-// take them, to where the prompt router routes their threads now; one it
-// would route to from again goes to the user. refs narrows it to those
-// prompts, and none means every prompt routed to from. Each prompt that
-// moved is announced again with its new route, so every client and the
-// app's delivery follow it, and one handed to the user raises its
-// notification. It returns how many moved.
-func (r *Router) ReroutePrompts(from string, refs ...PromptRef) int {
+// ReroutePrompts reconciles the open prompts routed to from, a thread a
+// handoff, an archive or a delete changed, with where the prompt router
+// routes their threads now: a route that still resolves to from is kept,
+// and every other prompt moves, to the user when the router routes it
+// nowhere. It returns how many moved.
+func (r *Router) ReroutePrompts(from string) int {
+	return r.reroutePrompts(from, nil, false)
+}
+
+// RejectPrompt moves the one prompt ref names off from, which could not
+// take it, to where the prompt router routes its thread now, or to the
+// user when that is from again. It reports whether the prompt moved.
+func (r *Router) RejectPrompt(from string, ref PromptRef) bool {
+	return r.reroutePrompts(from, []PromptRef{ref}, true) > 0
+}
+
+// reroutePrompts moves the prompts routed to from, those refs names or
+// every one when refs is empty. reject says from cannot take them, so a
+// route back to it goes to the user; otherwise such a prompt keeps its
+// route. Each prompt that moved is announced again with its new route, so
+// every client and the app's delivery follow it, and one handed to the user
+// raises its notification.
+func (r *Router) reroutePrompts(from string, refs []PromptRef, reject bool) int {
 	if r == nil || from == "" {
 		return 0
 	}
@@ -220,7 +235,7 @@ func (r *Router) ReroutePrompts(from string, refs ...PromptRef) int {
 			continue
 		}
 		route := r.routePrompt(ref.ThreadID)
-		if routedFrom(route) {
+		if reject && routedFrom(route) {
 			route = nil
 		}
 		routes[ref.ThreadID] = route
@@ -230,11 +245,16 @@ func (r *Router) ReroutePrompts(from string, refs ...PromptRef) int {
 	now := time.Now().UnixMilli()
 	r.mu.Lock()
 	for _, ref := range moving {
+		to := routes[ref.ThreadID]
+		if routedFrom(to) {
+			// Still the prompt's recipient: nothing changed for it.
+			continue
+		}
 		if route, open := r.promptRouteLocked(ref); !open || !routedFrom(route) {
 			continue
 		}
 		var route *provider.PromptRoute
-		if to := routes[ref.ThreadID]; to != nil {
+		if to != nil {
 			copied := *to
 			route = &copied
 		}

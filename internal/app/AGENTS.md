@@ -197,10 +197,12 @@ by triage (`SetPromptRouter`) and delivered, answered and settled in
 resolution never overtakes its delivery. Triage's `RoutedTo` is the one
 record of a prompt's route, and the registry follows its announcements. A
 prompt whose wake cannot reach the spawner (a failed delivery, a session
-that ended with it unconfirmed, a cleared queue), and every open prompt
-routed to a thread a handoff, an archive or a delete takes away
-(`reroutePromptsFrom`), moves through `triage.ReroutePrompts` to where the
-worker's prompts route now, or to the user; it is never left routed to
+that ended with it unconfirmed, a cleared queue) is rejected
+(`triage.RejectPrompt`): it moves to where the worker's prompts route now,
+or to the user when that is the same spawner. A handoff, an archive or a
+delete reconciles the prompts routed to the thread it changed
+(`reroutePromptsFrom`, `triage.ReroutePrompts`): a route that still holds
+is kept, and the others move on or go to the user; none is left routed to
 nobody. A token names one prompt occurrence (`triage.PromptRef`): it
 answers, settles and releases only that prompt, written only to the session
 that asked it, never a later prompt under the same request id.
