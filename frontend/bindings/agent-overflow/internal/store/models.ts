@@ -1894,6 +1894,14 @@ export class Thread {
     "spawnedByThreadId"?: string;
 
     /**
+     * AskCopy marks the hidden copy a thread_ask runs in (a scratch thread
+     * its request owns, scratch_threads.request_token): it takes no
+     * message from a person and cannot be kept, and it is deleted once it
+     * answers. Derived; false for a side chat and every other thread.
+     */
+    "askCopy"?: boolean;
+
+    /**
      * HasActionableProposedPlan is derived for sidebar boot state. It is
      * true when the latest assistant proposed plan is completed and has
      * not been implemented yet. It is not a persisted threads column.

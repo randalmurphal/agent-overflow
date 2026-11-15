@@ -30,5 +30,6 @@ export {
 } from "./models.js";
 
 export type {
+    PromptOccurrence,
     UserInputAnswer
 } from "./models.js";

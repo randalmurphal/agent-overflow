@@ -7928,15 +7928,22 @@ export class ThreadAgentRow {
     "kind": string;
 
     /**
-     * ThreadID is the target; for an ask, the hidden fork that answers it.
+     * ThreadID is the target; for an ask, the hidden copy that answers it.
      */
     "threadId"?: string;
 
     /**
-     * OpenThreadID is the thread a click opens: the target, or for an ask
-     * the thread it asked about.
+     * OpenThreadID is the thread the row opens: the target, and for an ask
+     * its copy only while the ask is open and the copy is there (a local
+     * copy is deleted once it answers); empty for an ask after that.
      */
     "openThreadId"?: string;
+
+    /**
+     * AskedThreadID is the thread an ask asked about, which the row's title
+     * and provider name; empty for every other kind.
+     */
+    "askedThreadId"?: string;
 
     /**
      * ComputerID and Computer name a target on a paired computer; both are

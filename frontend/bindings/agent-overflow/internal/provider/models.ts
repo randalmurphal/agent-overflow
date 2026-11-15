@@ -138,6 +138,16 @@ export class ApprovalRequest {
      */
     "routedTo"?: PromptRoute | null;
 
+    /**
+     * Occurrence names this one prompt. A request id does not: a session
+     * can ask again under an id it resolved, and a replacement session
+     * under its predecessor's. A client answering the prompt sends it back
+     * (ApprovalResponse.Occurrence). SessionToken is the host session that
+     * asked, the only one an answer may be written to. Triage stamps both;
+     * the session token never leaves the process.
+     */
+    "occurrence"?: PromptOccurrence;
+
     /** Creates a new ApprovalRequest instance. */
     constructor($$source: Partial<ApprovalRequest> = {}) {
         if (!("requestId" in $$source)) {
@@ -192,6 +202,15 @@ export class ApprovalRequest {
  */
 export class ApprovalResponse {
     "requestId": string;
+
+    /**
+     * Occurrence is the prompt this answers (ApprovalRequest.Occurrence),
+     * echoed from the prompt the client showed. An answer naming a prompt
+     * that is no longer open is refused, whatever was asked since under
+     * the same request id. Zero, from a client that predates it, answers
+     * the prompt open under the request id.
+     */
+    "occurrence"?: PromptOccurrence;
 
     /**
      * Codex-native: "accept", "acceptForSession", "decline", "cancel"
@@ -250,14 +269,14 @@ export class ApprovalResponse {
      * Creates a new ApprovalResponse instance from a string or object.
      */
     static createFrom($$source: any = {}): ApprovalResponse {
-        const $$createField3_0 = $$createType1;
-        const $$createField5_0 = $$createType9;
+        const $$createField4_0 = $$createType1;
+        const $$createField6_0 = $$createType9;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("permissions" in $$parsedSource) {
-            $$parsedSource["permissions"] = $$createField3_0($$parsedSource["permissions"]);
+            $$parsedSource["permissions"] = $$createField4_0($$parsedSource["permissions"]);
         }
         if ("elicitation" in $$parsedSource) {
-            $$parsedSource["elicitation"] = $$createField5_0($$parsedSource["elicitation"]);
+            $$parsedSource["elicitation"] = $$createField6_0($$parsedSource["elicitation"]);
         }
         return new ApprovalResponse($$parsedSource as Partial<ApprovalResponse>);
     }
@@ -679,6 +698,13 @@ export class PermissionProfile {
         return new PermissionProfile($$parsedSource as Partial<PermissionProfile>);
     }
 }
+
+/**
+ * PromptOccurrence names one prompt (ApprovalRequest.Occurrence). It is
+ * opaque to a client, which only echoes it, and travels as a decimal string
+ * so no JSON number limit applies.
+ */
+export type PromptOccurrence = string;
 
 /**
  * PromptRoute names the spawner a worker's prompt was delivered to.
@@ -1120,6 +1146,11 @@ export class UserInputRequest {
      */
     "routedTo"?: PromptRoute | null;
 
+    /**
+     * Occurrence and SessionToken are ApprovalRequest's twins.
+     */
+    "occurrence"?: PromptOccurrence;
+
     /** Creates a new UserInputRequest instance. */
     constructor($$source: Partial<UserInputRequest> = {}) {
         if (!("requestId" in $$source)) {
@@ -1166,6 +1197,11 @@ export class UserInputResponse {
     "requestId": string;
 
     /**
+     * Occurrence is ApprovalResponse.Occurrence's twin.
+     */
+    "occurrence"?: PromptOccurrence;
+
+    /**
      * accept; empty is treated as accept
      */
     "decision": string;
@@ -1187,10 +1223,10 @@ export class UserInputResponse {
      * Creates a new UserInputResponse instance from a string or object.
      */
     static createFrom($$source: any = {}): UserInputResponse {
-        const $$createField2_0 = $$createType33;
+        const $$createField3_0 = $$createType33;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("answers" in $$parsedSource) {
-            $$parsedSource["answers"] = $$createField2_0($$parsedSource["answers"]);
+            $$parsedSource["answers"] = $$createField3_0($$parsedSource["answers"]);
         }
         return new UserInputResponse($$parsedSource as Partial<UserInputResponse>);
     }

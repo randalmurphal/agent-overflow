@@ -2477,7 +2477,7 @@ export function GetThreadWakeDetail(threadID: string, wakeID: string): $Cancella
 
 /**
  * GetThreadWorkerSummary summarizes the thread's Agents listing as it stands
- * now: zero counts when it shows no open row.
+ * now: zero counts when it shows no open row, or the thread is gone.
  */
 export function GetThreadWorkerSummary(threadID: string): $CancellablePromise<app$0.ThreadWorkerSummary> {
     return $Call.ByID(2442730827, threadID).then(($result: any) => {
@@ -5093,6 +5093,14 @@ export function ResizeTerminal(terminalID: string, rows: number, cols: number): 
  * banner they raise lands on that screen and not on every other one. The
  * generated TS bindings strip a leading ctx, so the wire signature is
  * unchanged.
+ * 
+ * The answer is for the prompt response.Occurrence names, the one the
+ * client showed (triage.PromptRef), and is written only to the session
+ * that asked it: a prompt of a session that no longer holds the thread was
+ * handled by that session's end, and a later prompt under the same request
+ * id, in that session or a replacement, is not the one answered. Zero, from
+ * a client that predates the occurrence, answers the prompt open under
+ * response.RequestID.
  */
 export function RespondToApproval(threadID: string, response: provider$0.ApprovalResponse): $CancellablePromise<void> {
     return $Call.ByID(1919237704, threadID, response);
@@ -6237,8 +6245,10 @@ export function StopThreadAgentRow(threadID: string, token: string): $Cancellabl
  * StopThreadAgentRow stops one, and reports each top-level row with what
  * its cascade stopped beneath it, then withdraws the incoming messages
  * queued for the thread as StopThreadAgentIncoming does, each reported.
- * The rows come from the ledger; the Stops of rows here start at once,
- * beside those that wait on a paired computer.
+ * The rows are every one of the thread's own that a Stop acts on, read
+ * from the ledger when it is pressed (threadAgentStopRows), however many
+ * the tray lists; the Stops of rows here start at once, beside those that
+ * wait on a paired computer.
  */
 export function StopThreadAgentRows(threadID: string): $CancellablePromise<app$0.ThreadAgentStop[]> {
     return $Call.ByID(3580127735, threadID).then(($result: any) => {
