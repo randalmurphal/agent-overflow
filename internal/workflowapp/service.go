@@ -89,6 +89,16 @@ func (s *Service) HandleEngineEvent(name eventchan.Channel, payload any, emit fu
 
 func (s *Service) WaitWake() { s.wake.Wait() }
 
+// BlockWakeQueueForTesting holds the wake queue until the returned release
+// runs: every wake job queued meanwhile runs after it, as one does behind a
+// slow delivery.
+func (s *Service) BlockWakeQueueForTesting() (release func()) {
+	gate := make(chan struct{})
+	s.wake.Go(func() { <-gate })
+	var once sync.Once
+	return func() { once.Do(func() { close(gate) }) }
+}
+
 func New(deps Deps) *Service {
 	if deps.Now == nil {
 		deps.Now = time.Now

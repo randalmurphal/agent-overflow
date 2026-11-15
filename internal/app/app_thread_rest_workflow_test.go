@@ -101,6 +101,22 @@ func (f *restRunFixture) settle() {
 	f.app.workflowApplication().WaitWake()
 }
 
+// workerMessages counts the messages written to the worker's timeline.
+func (f *restRunFixture) workerMessages(t *testing.T) int {
+	t.Helper()
+	items, err := f.app.store.ListItems(f.worker.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	count := 0
+	for _, item := range items {
+		if item.Kind == string(provider.ItemUserText) {
+			count++
+		}
+	}
+	return count
+}
+
 // assertAtRest checks that no wake reached the worker once the wakes have
 // settled: a wake is written to its timeline or queue before it starts a
 // session, so the check does not race the start.
@@ -360,6 +376,74 @@ func TestAStopCancelsTheScheduledResumeOfAParkedRun(t *testing.T) {
 	f.settle()
 	if row, err := f.app.store.GetWorkItem(item.ID); err != nil || row.State != string(engine.StateNeedsHuman) || row.Reason != string(engine.ReasonPaused) {
 		t.Fatalf("the run after its timer fired = %s(%s), %v; want it still paused", row.State, row.Reason, err)
+	}
+	if _, live := f.app.sessionManager().get(f.worker.ID); live {
+		t.Fatal("the stopped worker started again")
+	}
+
+	if err := f.app.WorkflowResumeItem(context.Background(), item.ID, "", false); err != nil {
+		t.Fatal(err)
+	}
+	waitForWorkflowItem(t, f.app, item.ID, engine.StateRunning, "")
+}
+
+// A scheduled resume that fires after the Stop listed its parked run, before
+// the Stop disarms it, leaves the run running for the Stop's pause; the rest
+// that pause makes wakes nobody, however late the wake queue gets to it, and
+// a later deliberate resume still works.
+func TestAStopHoldsTheWakeOfARunAScheduledResumeSetRunning(t *testing.T) {
+	t.Parallel()
+	f := newRestRunFixture(t)
+	var mu sync.Mutex
+	var timers []*armedWorkflowTimer
+	f.app.workflowApplication().ConfigureAutoResumeTimer(func(delay time.Duration, fire func()) workflowapp.Timer {
+		mu.Lock()
+		defer mu.Unlock()
+		timer := &armedWorkflowTimer{callback: fire, delay: delay}
+		timers = append(timers, timer)
+		return timer
+	})
+	item, _ := f.startRun(t, "parked")
+	if err := f.app.WorkflowPauseItem(context.Background(), item.ID); err != nil {
+		t.Fatal(err)
+	}
+	waitForWorkflowItem(t, f.app, item.ID, engine.StateNeedsHuman, engine.ReasonPaused)
+	if _, err := f.app.WorkflowScheduleResume(context.Background(), item.ID, "+1h"); err != nil {
+		t.Fatal(err)
+	}
+	f.settle()
+
+	fired := false
+	f.app.restRunsListedForTest = func(runs []store.WorkItem) {
+		if fired || len(runs) != 1 || runs[0].ID != item.ID || runs[0].State != string(engine.StateNeedsHuman) {
+			return
+		}
+		fired = true
+		mu.Lock()
+		armed := slices.Clone(timers)
+		mu.Unlock()
+		for _, timer := range armed {
+			timer.callback()
+		}
+		waitForWorkflowItem(t, f.app, item.ID, engine.StateRunning, "")
+	}
+	release := f.app.workflowApplication().BlockWakeQueueForTesting()
+	defer release()
+	if stop := f.stop(t); len(stop.Failures) != 0 {
+		t.Fatalf("the Stop failed: %q", stop.Failures)
+	}
+	if !fired {
+		t.Fatal("the scheduled resume never fired between the listing and the pause")
+	}
+	waitForWorkflowItem(t, f.app, item.ID, engine.StateNeedsHuman, engine.ReasonPaused)
+	before := f.workerMessages(t)
+	release()
+	f.settle()
+	if after := f.workerMessages(t); after != before {
+		t.Fatalf("the stopped worker took %d messages after the Stop, want none", after-before)
+	}
+	if queued, err := f.app.store.ListFlushQueueItems(f.worker.ID); err != nil || len(queued) != 0 {
+		t.Fatalf("the stopped worker's queue = %+v, %v; want it empty", queued, err)
 	}
 	if _, live := f.app.sessionManager().get(f.worker.ID); live {
 		t.Fatal("the stopped worker started again")

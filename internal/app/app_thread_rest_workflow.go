@@ -2,9 +2,6 @@ package app
 
 import (
 	"fmt"
-
-	"agent-overflow/internal/workflow/engine"
-	"agent-overflow/internal/workflowapp"
 )
 
 // pauseRunsOfRestingThread pauses every workflow run that reports to the
@@ -24,22 +21,23 @@ func (a *App) pauseRunsOfRestingThread(threadID string, result *ThreadAgentStop)
 		result.Failures = append(result.Failures, "list its workflow runs: "+err.Error())
 		return
 	}
+	if hook := a.restRunsListedForTest; hook != nil {
+		hook(runs)
+	}
 	for _, run := range runs {
-		// First, so no scheduled resume of the tree fires into the pause or
+		// The run's wakes to the thread are held before anything below can
+		// move it, whatever state it was listed in: a scheduled resume
+		// already firing leaves it running for the pause, whose rest must
+		// not wake the thread. The hold is released with the rest the pause
+		// left, a parked run's own included, taken as delivered.
+		hold := a.workflowApplication().HoldRestWake(run.ID, threadID)
+		// Then, so no scheduled resume of the tree fires into the pause or
 		// after it, the boot sweep's included.
 		if err := a.workflowApplication().DisarmTreeAutoResumes(run.ID); err != nil {
 			result.Failures = append(result.Failures, fmt.Sprintf("cancel the scheduled resumes of its workflow run %s: %v", run.ID, err))
 		}
-		// Only a running root rests on the pause; a parked one keeps its own
-		// rest, and only its running descendants are paused.
-		var hold *workflowapp.WakeHold
-		if engine.State(run.State) == engine.StateRunning {
-			hold = a.workflowApplication().HoldRestWake(run.ID, threadID)
-		}
 		err := a.pauseWorkflowRunAndEndSessions(run.ID)
-		if hold != nil {
-			hold.ReleaseCurrentRest()
-		}
+		hold.ReleaseCurrentRest()
 		if err != nil {
 			result.Failures = append(result.Failures, fmt.Sprintf("pause its workflow run %s: %v", run.ID, err))
 		}

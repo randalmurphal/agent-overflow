@@ -829,12 +829,14 @@ thread:
 3. Pauses every workflow run that reports to it (bound to it, whoever
    started the run and whatever its source), with Pause and End Sessions ([Interrupt and end session](#interrupt-and-end-session)):
    the run reads paused, its members' sessions end, and it stays bound
-   to the thread and resumable from the workflows view. The rest the
-   pause makes does not wake the thread, whenever it arrives; a rest
-   after somebody resumes the run does. A run already paused or parked
-   keeps its state and reason and has its members' sessions ended too; a
-   finished run is left as it is; a run's running descendants under a
-   parked root are paused. A resume scheduled on any run in the tree is
+   to the thread and resumable from the workflows view. The run's wakes
+   to the thread are held from before anything moves it, so the rest the
+   pause leaves, or a parked run's own, does not wake the thread,
+   whenever it arrives, even when a scheduled resume set the run running
+   after the Stop read it parked; a rest after somebody resumes the run
+   does. A run already paused or parked keeps its state and reason and
+   has its members' sessions ended too; a finished run is left as it is;
+   a running run beneath a parked one is paused. A resume scheduled on any run in the tree is
    cancelled first, after one already firing has finished, so neither its
    timer nor the next boot resumes the run; Resume from the workflows
    view still does. A run the thread started that is bound to another
