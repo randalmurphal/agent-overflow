@@ -9,11 +9,11 @@ import { refreshProjects } from './projects.svelte';
 import { refreshThreadGroups } from './threadGroups.svelte';
 import { loadSettings } from './settings.svelte';
 import { getKeybindingRules, loadKeybindings, resyncKeybindings, saveKeybindings, setKeybindingsForTest } from './keybindings.svelte';
-import { getToasts, removeToast } from './toast.svelte';
+import { getToasts, resetToastsForTest } from './toast.svelte';
 import { checkProviderUpdates, loadProviderUpdates, providerUpdatesLoadError } from './providerUpdates.svelte';
 import { HOME_BACKEND } from '../transport/backendKey';
 
-beforeEach(() => { resetStagedBackends(); for (const toast of [...getToasts()]) removeToast(toast.id); });
+beforeEach(() => { resetStagedBackends(); resetToastsForTest(); });
 afterEach(() => { resetStagedBackends(); vi.useRealTimers(); });
 
 it.each([
