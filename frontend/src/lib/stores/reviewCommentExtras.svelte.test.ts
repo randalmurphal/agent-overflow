@@ -146,6 +146,17 @@ describe('a reaction chip', () => {
     expect(reactions.error(THREAD, COMMENT)).toBe('GitHub refused the reaction.');
   });
 
+  it('writes nothing to a comment the forge does not let the viewer react to, and says why', async () => {
+    const call = setBindingMock('SetPRCommentReaction', async () => ({ seq: 3 }));
+    const { reactions } = extras.state;
+    const locked = { ...COMMENT, cannotReactReason: 'GitHub does not let you react to this comment.' };
+    expect(reactions.refused(locked)).toBe('GitHub does not let you react to this comment.');
+    expect(reactions.refused(COMMENT)).toBeNull();
+    await reactions.toggle(THREAD, locked, 'thumbsup', true);
+    expect(call).not.toHaveBeenCalled();
+    expect(reactions.pending(THREAD, locked, 'thumbsup')).toBe(false);
+  });
+
   it('reads an unconfirmed write as not confirmed', async () => {
     setBindingMock('SetPRCommentReaction', async () => { throw new TransportError('forge_unconfirmed', 'GitHub did not confirm the request.'); });
     const { reactions } = extras.state;

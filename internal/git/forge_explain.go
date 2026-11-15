@@ -165,7 +165,10 @@ func explainForgeError(ref RepoReference, name string, action ForgeAction, err e
 	var threadElsewhere *ThreadNotOnPRError
 	var notApplied *SuggestionNotAppliedError
 	var changed *SuggestionChangedError
+	var cannot *ViewerCannotError
 	switch {
+	case errors.As(err, &cannot):
+		return wrap(ForgeErrorForbidden, cannot.Reason)
 	case errors.As(err, &changed):
 		return wrap(ForgeErrorSuggestionChanged, "The suggestion changed since it was loaded. Reload the pull request.")
 	case errors.As(err, &notApplied):

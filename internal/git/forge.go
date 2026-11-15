@@ -317,6 +317,10 @@ type ReviewComment struct {
 	URL             string              `json:"url,omitempty"`
 	Suggestions     []CommentSuggestion `json:"suggestions,omitempty"`
 	Reactions       []CommentReaction   `json:"reactions,omitempty"`
+	// CannotReactReason is why the viewer may not add or remove a
+	// reaction here (GitHub's viewerCanReact); empty is allowed or
+	// unknown (GitLab's notes carry no permission).
+	CannotReactReason string `json:"cannotReactReason,omitempty"`
 }
 
 type ReviewReplyTo struct {

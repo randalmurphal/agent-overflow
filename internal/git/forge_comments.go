@@ -78,6 +78,15 @@ func (e *ThreadNotOnPRError) Error() string {
 	return fmt.Sprintf("review thread %s is not on this pull request", e.ThreadID)
 }
 
+// ViewerCannotError is a write refused before it reached the forge because
+// the forge says the viewer may not make it (GitHub's viewerCanReact);
+// Reason is the sentence the read gave the control.
+type ViewerCannotError struct {
+	Reason string
+}
+
+func (e *ViewerCannotError) Error() string { return e.Reason }
+
 // HeadMovedError is a write refused before it reached the forge because the
 // PR's head is no longer the one the caller's diff shows.
 type HeadMovedError struct {

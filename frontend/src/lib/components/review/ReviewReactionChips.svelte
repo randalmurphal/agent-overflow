@@ -24,7 +24,9 @@
 
   const present = $derived(reactions.reactionsOf(comment));
   const error = $derived(reactions.error(thread, comment));
-  const withheld = $derived(reactions.withheld);
+  // The forge's refusal is the comment's own; the now writes' reason is
+  // the pane's.
+  const withheld = $derived(reactions.refused(comment) ?? reactions.withheld);
 
   function title(reaction: CommentReaction, pending: boolean): string {
     if (pending) return 'Waiting for the forge…';

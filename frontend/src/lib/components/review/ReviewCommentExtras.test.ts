@@ -32,6 +32,7 @@ const THREAD: ReviewThread = { id: 't1', path: 'a.ts', line: 1, side: 'right', i
 function reactionsStub(over: Partial<ReviewReactions> = {}): ReviewReactions {
   return {
     available: true, canAdd: true, withheld: null,
+    refused: (comment) => comment.cannotReactReason || null,
     reactionsOf: (comment) => comment.reactions ?? [],
     pending: () => false,
     error: () => null,
@@ -85,6 +86,19 @@ describe('reaction chips', () => {
     expect(chips[0].title).toMatch(/Waiting/);
     expect(chips[1].title).toBe('The pane is offline.');
   });
+
+  it('are disabled with the forge\'s reason on a comment the viewer may not react to', async () => {
+    const reactions = reactionsStub();
+    const locked = { ...COMMENT, cannotReactReason: 'GitHub does not let you react to this comment.' };
+    const { container } = render(ReviewReactionChips, { reactions, thread: THREAD, comment: locked });
+    const chips = [...container.querySelectorAll<HTMLButtonElement>('[data-testid="review-reaction-chip"]')];
+    expect(chips.map((chip) => [chip.disabled, chip.title])).toEqual([
+      [true, 'GitHub does not let you react to this comment.'],
+      [true, 'GitHub does not let you react to this comment.'],
+    ]);
+    await fireEvent.click(chips[0]);
+    expect(reactions.toggle).not.toHaveBeenCalled();
+  });
 });
 
 describe('the Add reaction popover', () => {
@@ -123,6 +137,23 @@ describe('a sent comment\'s hover actions', () => {
     const { container } = render(ReviewSentCommentActions, { review, thread: THREAD, comment: COMMENT, first: true });
     const labels = [...container.querySelectorAll('[data-testid="review-comment-actions"] button')].map((button) => button.getAttribute('aria-label'));
     expect(labels).toEqual(['Add reaction', 'Copy link', 'Edit', 'Delete']);
+  });
+
+  it('disable Add reaction with the forge\'s reason on a comment the viewer may not react to', () => {
+    const review = {
+      sentComments: {
+        editBodyFor: () => null, confirmingDelete: () => false, setConfirmDelete: () => {}, pending: () => false,
+        setEditBody: () => {}, deleteComment: async () => {},
+      },
+      sentCommentActions: true,
+      nowWithheldReason: null,
+      reactions: reactionsStub(),
+    } as never;
+    const locked = { ...COMMENT, cannotReactReason: 'GitHub does not let you react to this comment.' };
+    const { container } = render(ReviewSentCommentActions, { review, thread: THREAD, comment: locked, first: true });
+    const react = container.querySelector<HTMLButtonElement>('[data-testid="review-comment-react"]')!;
+    expect(react.disabled || react.getAttribute('aria-disabled') === 'true').toBe(true);
+    expect(react.title).toBe('GitHub does not let you react to this comment.');
   });
 
   function actionsReview(withheld: string | null = null) {

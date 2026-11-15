@@ -2201,6 +2201,13 @@ export class ReviewComment {
     "suggestions"?: CommentSuggestion[];
     "reactions"?: CommentReaction[];
 
+    /**
+     * CannotReactReason is why the viewer may not add or remove a
+     * reaction here (GitHub's viewerCanReact); empty is allowed or
+     * unknown (GitLab's notes carry no permission).
+     */
+    "cannotReactReason"?: string;
+
     /** Creates a new ReviewComment instance. */
     constructor($$source: Partial<ReviewComment> = {}) {
         if (!("id" in $$source)) {

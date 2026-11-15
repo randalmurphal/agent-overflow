@@ -306,7 +306,10 @@ scope, on both surfaces and both forges:
   `:name:`. No row for a comment without reactions. When the forge's
   reactions read failed (`reactionsUnavailable`), one muted line at the
   top of the Conversation says so, the chips stay as last read and Add
-  reaction is not offered.
+  reaction is not offered. A GitHub comment whose `viewerCanReact` is
+  false (a locked conversation, an archived repository) disables its
+  chips and Add reaction, the reason as their hover text, and the write
+  is refused before it reaches GitHub.
 - Bounded read. A PR with more threads or comments than one read takes
   (ten pages of 100 on either forge) shows its first ones and a muted
   line at the top of the Conversation saying the rest are on the forge

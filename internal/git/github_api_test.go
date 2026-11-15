@@ -434,7 +434,7 @@ func TestReadPRRequestsOnlyTheWantedParts(t *testing.T) {
 		}
 	}
 	// What the viewer may do is GitHub's answer, read with the parts.
-	for _, field := range []string{" viewerCanUpdateBranch maintainerCanModify ", " viewerCanResolve viewerCanUnresolve viewerCanReply "} {
+	for _, field := range []string{" viewerCanUpdateBranch maintainerCanModify ", " viewerCanResolve viewerCanUnresolve viewerCanReply ", " viewerCanDelete viewerCanReact "} {
 		if !strings.Contains(query, field) {
 			t.Fatalf("PRTick lacks %q", field)
 		}
@@ -447,6 +447,20 @@ func TestReadPRRequestsOnlyTheWantedParts(t *testing.T) {
 func githubThreadJSON(id string, comments []string, hasNext bool) string {
 	return fmt.Sprintf(`{"id":%q,"isResolved":false,"isOutdated":false,"path":"a.go","line":1,"startLine":null,"originalLine":1,"originalStartLine":null,"diffSide":"RIGHT","startDiffSide":null,"subjectType":"LINE","viewerCanResolve":true,"viewerCanUnresolve":true,"viewerCanReply":true,"comments":{"pageInfo":{"hasNextPage":%t,"endCursor":"c-%s"},"nodes":[%s]}}`,
 		id, hasNext, id, strings.Join(comments, ","))
+}
+
+// A comment GitHub says the viewer may not react to (a locked
+// conversation, an archived repository) says why; one it may says
+// nothing.
+func TestGitHubCommentReactionsFollowGitHub(t *testing.T) {
+	t.Parallel()
+	for _, may := range []bool{true, false} {
+		var out ReviewComment
+		githubViewerCommentRaw{ViewerCanReact: may}.fill(&out)
+		if (out.CannotReactReason == "") != may {
+			t.Fatalf("viewerCanReact %v: reason %q", may, out.CannotReactReason)
+		}
+	}
 }
 
 // A thread says why its Resolve or Reply is unavailable from GitHub's

@@ -123,7 +123,7 @@ export interface ForgePull {
   /** Names of the repository's `labels`. */
   labels?: string[];
   /** What the viewer may do here, each derived from the role and authorship when omitted. */
-  viewer?: { update?: boolean; label?: boolean; triage?: boolean; admin?: boolean; push?: boolean; updateBranch?: boolean; resolve?: boolean; reply?: boolean };
+  viewer?: { update?: boolean; label?: boolean; triage?: boolean; admin?: boolean; push?: boolean; updateBranch?: boolean; resolve?: boolean; reply?: boolean; react?: boolean };
   /** The head's files by path, which a suggestion's apply rewrites. */
   files?: Record<string, string>;
   /** GitLab: close, reopen and merge events (resource state events). */

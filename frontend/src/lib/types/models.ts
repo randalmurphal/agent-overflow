@@ -908,6 +908,9 @@ export interface ReviewComment {
   suggestions?: CommentSuggestion[];
   /** One entry per reaction present, by GitLab award name. */
   reactions?: CommentReaction[];
+  /** Why the forge does not let the viewer react here (GitHub's
+   * viewerCanReact), absent when it does or does not say. */
+  cannotReactReason?: string;
 }
 
 /** One suggestion block of a comment (gitops.CommentSuggestion). `from`

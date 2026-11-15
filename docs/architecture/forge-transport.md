@@ -324,7 +324,7 @@ id.
 | `CancelAutoMerge`, `UpdateBranch`, `MarkReady` | `PRMergeTarget` + `DisableAutoMerge`, `UpdatePRBranch` (`expectedHeadOid`) or `MarkPRReady` |
 
 Each comment action is one request; GitHub decides who may edit or delete
-and the read carries its answer (`viewerCanUpdate`, `viewerCanDelete`,
+and the read carries its answer (`viewerCanUpdate`, `viewerCanDelete`, `viewerCanReact`,
 `lastEditedAt`, `url` on every comment, no extra request). A conversation
 comment is a thread whose ID is its comment's (`CommentTarget`), which is
 how an edit or delete picks the issue comment mutation.
@@ -953,7 +953,7 @@ side, not outdated and not resolved.
 | Action | GitHub requests | GitLab requests |
 |---|---|---|
 | Apply a suggestion | `SuggestionTarget(threadID, commentID)` (the viewer, the thread with its anchor and pull, its comment ids, the comment's body and author), `ThreadCommentsPage` past 100 comments, `SuggestionFile(owner, name, oid, path)` (the head commit's `file(path:)` tree entry: `mode`, `type`, `oid`, the blob's `byteSize` and `isBinary`), REST `GET repos/HEAD_REPO/git/blobs/OID` with `Accept: application/vnd.github.raw+json` (at most 1 MiB), `SuggestionCommit` (`createCommitOnBranch` with `expectedHeadOid` and one file addition), then `SetThreadResolved` | 1 merge request read, `GET .../discussions/D` (the suggestion must be one of its notes'), then `PUT suggestions/:id/apply` |
-| Add or remove a reaction | `ReactionTarget(id)` (the node's type, pull and `reactionGroups`), then `AddReaction` or `RemoveReaction` | `user` (cached), `GET .../notes/N/award_emoji?per_page=100` (paged), then `POST .../notes/N/award_emoji` with `{name}` or `DELETE .../award_emoji/ID` |
+| Add or remove a reaction | `ReactionTarget(id)` (the node's type, pull, `viewerCanReact` and `reactionGroups`; `viewerCanReact` false is `*ViewerCannotError`, kind `forbidden`, with no write), then `AddReaction` or `RemoveReaction` | `user` (cached), `GET .../notes/N/award_emoji?per_page=100` (paged), then `POST .../notes/N/award_emoji` with `{name}` or `DELETE .../award_emoji/ID` |
 
 Every write checks inside the adapter that the comment is on the PR it
 names; one that is not is `*CommentNotOnPRError` (kind `not_found`)

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -89,4 +90,41 @@ func TestGitLabThreadResolveFollowsTheRole(t *testing.T) {
 	if threads := mergeRead(t, r, ref(2)).Threads; len(threads) != 1 || threads[0].CannotResolveReason != "" {
 		t.Fatalf("the author's threads = %+v", threads)
 	}
+}
+
+// A GitHub comment the viewer may not react to (a locked conversation)
+// says why through the app's forge code, and a reaction to it is refused
+// before any write; a comment the viewer may react to says nothing.
+func TestGitHubReactionsFollowTheForge(t *testing.T) {
+	no := false
+	thread := func(id int64) []forgefake.Thread {
+		return []forgefake.Thread{{Path: "a.go", Line: intPtr(1), Comments: []forgefake.Comment{{ID: id, Author: "octo", Body: "why?"}}}}
+	}
+	r := newRig(t, forgefake.Fixture{Viewer: "alice", Repos: []forgefake.Repo{{
+		Forge: "github", Project: "acme/react",
+		Pulls: []forgefake.Pull{
+			{Number: 1, Title: "Locked", Author: "octo", HeadRef: "locked", HeadSHA: strings.Repeat("1", 40), Threads: thread(31), Viewer: &forgefake.ViewerCan{React: &no}},
+			{Number: 2, Title: "Open", Author: "octo", HeadRef: "open", HeadSHA: strings.Repeat("2", 40), Threads: thread(32)},
+		},
+	}}})
+	ctx := forgeapi.WithInteractive(t.Context())
+	ref := func(n int) gitops.PRReference {
+		return gitops.PRReference{Forge: "github", Host: "github.com", Namespace: "acme", Repo: "react", Number: n}
+	}
+	locked := mergeRead(t, r, ref(1)).Threads
+	if len(locked) != 1 || locked[0].Comments[0].CannotReactReason != "GitHub does not let you react to this comment." {
+		t.Fatalf("locked threads = %+v", locked)
+	}
+	err := r.core.SetPRCommentReaction(ctx, ref(1), targetOf(&locked[0], 0), gitops.ReactionHeart, true)
+	if _, ok := errors.AsType[*gitops.ViewerCannotError](err); !ok || routeCount(r, 0, "gh graphql AddReaction") != 0 {
+		t.Fatalf("reaction on a locked comment = %v, %d AddReaction sent", err, routeCount(r, 0, "gh graphql AddReaction"))
+	}
+	open := mergeRead(t, r, ref(2)).Threads
+	if len(open) != 1 || open[0].Comments[0].CannotReactReason != "" {
+		t.Fatalf("open threads = %+v", open)
+	}
+	if err := r.core.SetPRCommentReaction(ctx, ref(2), targetOf(&open[0], 0), gitops.ReactionHeart, true); err != nil {
+		t.Fatalf("reaction = %v", err)
+	}
+	expectAllHandled(t, r)
 }

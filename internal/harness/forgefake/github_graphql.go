@@ -756,6 +756,7 @@ func (e *Engine) githubThreadCommentNodes(r *Repo, p *Pull, thread *Thread) []ma
 			"replyTo":        replyTo,
 		}
 		maps.Copy(node, e.githubCommentViewerFields(r, comment, fmt.Sprintf("%s#discussion_r%d", githubPullURL(r, p), comment.ID)))
+		node["viewerCanReact"] = p.mayReact()
 		node["reactionGroups"] = e.githubReactionGroups(comment)
 		out = append(out, node)
 	}
@@ -774,6 +775,7 @@ func (e *Engine) githubCommentNodes(r *Repo, p *Pull) []map[string]any {
 			"isMinimized":    false,
 		}
 		maps.Copy(node, e.githubCommentViewerFields(r, comment, fmt.Sprintf("%s#issuecomment-%d", githubPullURL(r, p), comment.ID)))
+		node["viewerCanReact"] = p.mayReact()
 		node["reactionGroups"] = e.githubReactionGroups(comment)
 		out = append(out, node)
 	}

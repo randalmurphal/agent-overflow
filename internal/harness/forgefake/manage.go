@@ -54,12 +54,14 @@ type Label struct {
 // on a head in the repository itself or on a fork's that allows
 // maintainer edits), resolve (GitHub viewerCanResolve and
 // viewerCanUnresolve: WRITE or the author), reply (GitHub
-// viewerCanReply: anyone). Each write refuses as its forge does when its
+// viewerCanReply: anyone), react (GitHub viewerCanReact on every comment:
+// anyone). Each write refuses as its forge does when its
 // flag is false.
 type ViewerCan struct {
 	UpdateBranch *bool `json:"updateBranch,omitempty"`
 	Resolve      *bool `json:"resolve,omitempty"`
 	Reply        *bool `json:"reply,omitempty"`
+	React        *bool `json:"react,omitempty"`
 	Update       *bool `json:"update,omitempty"`
 	Close        *bool `json:"close,omitempty"`
 	Reopen       *bool `json:"reopen,omitempty"`
@@ -336,6 +338,11 @@ func (e *Engine) mayUpdateBranch(r *Repo, p *Pull) bool {
 // mayResolve is GitHub's viewerCanResolve and viewerCanUnresolve.
 func (e *Engine) mayResolve(r *Repo, p *Pull) bool {
 	return viewerMay(p.viewer().Resolve, e.githubWriter(r, p))
+}
+
+// mayReact is GitHub's viewerCanReact on the pull's comments.
+func (p *Pull) mayReact() bool {
+	return viewerMay(p.viewer().React, true)
 }
 
 // mayReply is GitHub's viewerCanReply.

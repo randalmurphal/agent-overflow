@@ -39,7 +39,7 @@ const (
 	// read from a comment of either kind, with its reaction groups while
 	// the read's $wantReactions is set: every document that selects it
 	// declares and sends that variable.
-	githubViewerCommentFields = `lastEditedAt url viewerCanUpdate viewerCanDelete reactionGroups @include(if: $wantReactions) ` + githubReactionGroupFields
+	githubViewerCommentFields = `lastEditedAt url viewerCanUpdate viewerCanDelete viewerCanReact reactionGroups @include(if: $wantReactions) ` + githubReactionGroupFields
 	// githubReactionFields is a comment's reaction groups: GitHub answers
 	// every content, so the count is the reactors' totalCount (no nodes:
 	// the names would cost a connection per comment).
@@ -228,6 +228,7 @@ type githubViewerCommentRaw struct {
 	URL             string                   `json:"url"`
 	ViewerCanUpdate bool                     `json:"viewerCanUpdate"`
 	ViewerCanDelete bool                     `json:"viewerCanDelete"`
+	ViewerCanReact  bool                     `json:"viewerCanReact"`
 	ReactionGroups  []githubReactionGroupRaw `json:"reactionGroups"`
 }
 
@@ -994,5 +995,13 @@ func (raw githubViewerCommentRaw) fill(out *ReviewComment) {
 	out.URL = raw.URL
 	out.ViewerCanEdit = raw.ViewerCanUpdate
 	out.ViewerCanDelete = raw.ViewerCanDelete
+	if !raw.ViewerCanReact {
+		out.CannotReactReason = githubCannotReactReason
+	}
 	out.Reactions = githubReactions(raw.ReactionGroups)
 }
+
+// githubCannotReactReason is why a comment takes no reaction from the
+// viewer: GitHub's viewerCanReact is false on a locked conversation and
+// in an archived repository.
+const githubCannotReactReason = "GitHub does not let you react to this comment."
