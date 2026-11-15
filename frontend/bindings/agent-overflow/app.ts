@@ -4063,11 +4063,8 @@ export function PinThread(id: string): $CancellablePromise<store$0.Thread> {
  * next-turn context automatically (see promptDiscussionSpeaker's
  * unseen-messages window).
  * 
- * PostChannelMessage has a side-effecting path (it can dispatch a
- * prompt into a participant's live provider session via
- * promptDiscussionSpeakerAsync → sendMessage), so it carries
- * threads:operate rather than a read scope — the same annotation
- * SendMessage does, for the same reason.
+ * A post drives every participant in turn, so it is judged as a send into
+ * each of them (participantDriveCheck), the same as SendMessage.
  */
 export function PostChannelMessage(channelID: string, content: string): $CancellablePromise<store$0.ChannelMessage> {
     return $Call.ByID(1315440605, channelID, content).then(($result: any) => {
@@ -5896,6 +5893,9 @@ export function StartDiscussion(threadID: string, discussionName: string): $Canc
     return $Call.ByID(3188309099, threadID, discussionName);
 }
 
+/**
+ * StartDiscussionByID is StartDiscussion for a definition named by id.
+ */
 export function StartDiscussionByID(threadID: string, discussionID: string): $CancellablePromise<void> {
     return $Call.ByID(2336869067, threadID, discussionID);
 }
