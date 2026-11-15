@@ -133,7 +133,6 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1092327307: 'home', // GetClaudeTranscriptRetention
 	1110466608: 'home', // GetCodexAccountUsage
 	1018032480: 'selected', // GetCodexSkills
-	3107819266: 'workspace', // GetCommitOutcome
 	873893084: 'selected', // GetComputerRoutes
 	3416004963: 'home', // GetContextSettings
 	3307838728: 'thread', // GetConversationMutationState
@@ -146,6 +145,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	711021853: 'thread', // GetEditDiffImage
 	1655853383: 'selected', // GetEditorSettings
 	1581952506: 'home', // GetErrorLogLines
+	2541596437: 'workspace', // GetGitActionOutcome
 	4123560639: 'workspace', // GetGitStatus
 	3015840904: 'home', // GetKeybindings
 	1709188995: 'selected', // GetLocalImage
@@ -603,7 +603,7 @@ export const METHOD_BUDGETS_MS: Readonly<Record<number, number>> = {
 	4063914461: 120000, // ForkThread
 	3977213964: 120000, // ForkThreadFromMessage
 	1669373286: 420000, // GenerateCommitMessage
-	3107819266: 720000, // GetCommitOutcome
+	2541596437: 720000, // GetGitActionOutcome
 	4070778679: 600000, // GetPRReviewSubmitOutcome
 	2744542956: 120000, // GetProviderUpdateNotes
 	1598126927: 720000, // GitCheckout

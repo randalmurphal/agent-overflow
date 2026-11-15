@@ -44,8 +44,9 @@ var methodServerBounds = map[string]time.Duration{
 	// Away from the current ref: a checkout of the base, then of the new
 	// branch, each with its post-checkout hook.
 	"GitCreateBranchFrom": 2*hooked + transport.DefaultMethodBudget,
-	// Waits for the commit it reports.
-	"GetCommitOutcome": transport.MethodBudget("GitCommit"),
+	// Waits for the git write it reports.
+	"GetGitActionOutcome": max(transport.MethodBudget("GitCommit"), transport.MethodBudget("GitPush"),
+		transport.MethodBudget("GitPull"), transport.MethodBudget("GitCreatePR")),
 	// A worktree add, whose post-checkout hook runs inside it, between the
 	// reads and the branch and lock steps around it.
 	"AttachThreadWorktree":  hooked + transport.DefaultMethodBudget,

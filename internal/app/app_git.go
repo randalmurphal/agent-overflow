@@ -140,95 +140,47 @@ func (a *App) GitSyncBranch(ws WorkspaceRef, branch string) ([]gitops.GitBranch,
 // commit with ErrCommitFilesChanged.
 //
 // attemptID, fresh for each press of Commit, records the commit's outcome
-// (commitAttempts): GetCommitOutcome answers it after a lost answer, and a
-// request repeating the id gets the recorded outcome and commits nothing.
-// The budget covers the commit's hooks (gitops.HookTimeout) and the
-// snapshot and index steps around them.
+// (attemptGitAction). The budget covers the commit's hooks
+// (gitops.HookTimeout) and the snapshot and index steps around them.
 //
 //ao:scope git:operate
 //ao:budget 12m
-func (a *App) GitCommit(ws WorkspaceRef, subject, body string, selection CommitSelection, attemptID string) (result gitops.GitActionResult, err error) {
-	if attemptID != "" {
-		attempt, repeated := a.commitAttempts.begin(attemptID, commitAttemptKey(ws))
-		if repeated {
-			if attempt.key != commitAttemptKey(ws) {
-				return gitops.GitActionResult{}, fmt.Errorf("commit: attempt %s was a commit in another workspace", attemptID)
-			}
-			if attempt.forgotten {
-				return gitops.GitActionResult{}, errCommitAttemptForgotten
-			}
-			return attempt.wait(a.lifeCtx())
+func (a *App) GitCommit(ws WorkspaceRef, subject, body string, selection CommitSelection, attemptID string) (gitops.GitActionResult, error) {
+	return a.attemptGitAction(gitActionCommit, ws, attemptID, func() (gitops.GitActionResult, error) {
+		const action = "commit"
+		if _, err := a.reviewWorkspace(action, ws); err != nil {
+			return gitops.GitActionResult{}, err
 		}
-		defer func() { a.commitAttempts.finish(attempt, result, err) }()
-	}
-	const action = "commit"
-	if _, err := a.reviewWorkspace(action, ws); err != nil {
-		return gitops.GitActionResult{}, err
-	}
-	covered, err := a.commitSelection(selection)
-	if err != nil {
-		return gitops.GitActionResult{}, fmt.Errorf("%s: %w", action, err)
-	}
-	return a.gitApplication().Commit(ws, subject, body, covered)
+		covered, err := a.commitSelection(selection)
+		if err != nil {
+			return gitops.GitActionResult{}, fmt.Errorf("%s: %w", action, err)
+		}
+		return a.gitApplication().Commit(ws, subject, body, covered)
+	})
 }
 
-// errCommitAttemptForgotten answers a repeated commit attempt whose outcome
-// this process no longer keeps.
-var errCommitAttemptForgotten = errors.New("commit: this attempt ran before and its outcome is no longer kept; check the changed files before committing again")
-
-// commitAttemptKey names the workspace a commit attempt wrote to.
-func commitAttemptKey(ws WorkspaceRef) string { return ws.ProjectID + "\x00" + ws.WorkspacePath }
-
-// CommitOutcome is what a commit attempt did: "committed" (Result),
-// "failed" (Message: it committed nothing), "unknown" (this process never
-// received it), or "forgotten" (it may have received it and no longer
-// keeps the outcome).
-type CommitOutcome struct {
-	State   string                  `json:"state"`
-	Result  *gitops.GitActionResult `json:"result,omitempty"`
-	Message string                  `json:"message,omitempty"`
-}
-
-// GetCommitOutcome answers what the commit attempt attemptID in ws did,
-// waiting for one still running; its budget is GitCommit's for that reason.
-//
-//ao:scope git:operate
-//ao:callerbound
-//ao:budget 12m
-func (a *App) GetCommitOutcome(ctx context.Context, ws WorkspaceRef, attemptID string) (CommitOutcome, error) {
-	attempt, forgotten := a.commitAttempts.find(attemptID, commitAttemptKey(ws))
-	if forgotten {
-		return CommitOutcome{State: "forgotten"}, nil
-	}
-	if attempt == nil {
-		return CommitOutcome{State: "unknown"}, nil
-	}
-	result, err := attempt.wait(ctx)
-	if ctx.Err() != nil {
-		return CommitOutcome{}, ctx.Err()
-	}
-	if err != nil {
-		return CommitOutcome{State: "failed", Message: err.Error()}, nil
-	}
-	return CommitOutcome{State: "committed", Result: &result}, nil
-}
-
-// GitPush pushes the workspace's current branch. The budget covers its
-// pre-push hook and transfer (gitops.HookTimeout).
+// GitPush pushes the workspace's current branch. attemptID records the
+// push's outcome (attemptGitAction); the budget covers its pre-push hook and
+// transfer (gitops.HookTimeout).
 //
 //ao:scope git:operate
 //ao:budget 12m
-func (a *App) GitPush(ws WorkspaceRef) (gitops.GitActionResult, error) {
-	return a.gitApplication().Push(ws)
+func (a *App) GitPush(ws WorkspaceRef, attemptID string) (gitops.GitActionResult, error) {
+	return a.attemptGitAction(gitActionPush, ws, attemptID, func() (gitops.GitActionResult, error) {
+		return a.gitApplication().Push(ws)
+	})
 }
 
-// GitPull fast-forwards the workspace's current branch. The budget covers
-// its transfer and post-merge hook (gitops.HookTimeout).
+// GitPull fast-forwards the workspace's current branch. attemptID records
+// the pull's outcome (attemptGitAction); the budget covers its transfer and
+// post-merge hook (gitops.HookTimeout).
 //
 //ao:scope git:operate
 //ao:budget 12m
-func (a *App) GitPull(ws WorkspaceRef) (gitops.GitActionResult, error) {
-	return a.gitApplication().Pull(ws)
+func (a *App) GitPull(ws WorkspaceRef, attemptID string) (gitops.GitActionResult, error) {
+	return a.attemptGitAction(gitActionPull, ws, attemptID, func() (gitops.GitActionResult, error) {
+		return a.gitApplication().Pull(ws)
+	})
 }
 
 // GitCheckout switches the workspace to an existing branch, or to a tag
@@ -472,13 +424,16 @@ func (a *App) createBranchInWorkspace(workspace, name string, resolvedBase gitop
 
 // GitCreatePR opens a pull request for the workspace's current branch. When
 // draft is true the PR is opened as a GitHub draft (gh pr create --draft).
-// The budget covers the forge CLI, which pushes the branch and runs its
-// pre-push hook (gitops.HookTimeout), and the open-PR lookup after it.
+// attemptID records the creation's outcome (attemptGitAction); the budget
+// covers the forge CLI, which pushes the branch and runs its pre-push hook
+// (gitops.HookTimeout), and the open-PR lookup after it.
 //
 //ao:scope git:operate
 //ao:budget 12m
-func (a *App) GitCreatePR(ctx context.Context, ws WorkspaceRef, title, body string, draft bool) (gitops.GitActionResult, error) {
-	return a.gitApplication().CreatePR(forgeapi.WithInteractive(ctx), ws, title, body, draft)
+func (a *App) GitCreatePR(ctx context.Context, ws WorkspaceRef, title, body string, draft bool, attemptID string) (gitops.GitActionResult, error) {
+	return a.attemptGitAction(gitActionPR, ws, attemptID, func() (gitops.GitActionResult, error) {
+		return a.gitApplication().CreatePR(forgeapi.WithInteractive(ctx), ws, title, body, draft)
+	})
 }
 
 // restoreStashOnError best-effort applies a previously-pushed stash back

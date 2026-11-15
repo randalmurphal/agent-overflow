@@ -58,11 +58,10 @@ import {
   terminalStateKeyForPane,
 } from '../components/terminal/terminalStore.svelte';
 import { runTerminalToggle } from '../components/terminal/terminalToggle';
+import { gitAttemptFailure, pullWorkspace, pushWorkspace } from '../components/git/gitActions';
 import {
   ApprovalResponse,
   CloseTerminal,
-  GitPull,
-  GitPush,
   OpenTerminal,
   RefreshTerminal,
   RespondToApproval,
@@ -1138,8 +1137,10 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     run: (ctx) =>
       withWorkspace(ctx, async (workspace) => {
         try {
-          await GitPush(workspace);
-          addToast('success', 'Pushed.');
+          const answer = await pushWorkspace(workspace);
+          const failure = gitAttemptFailure('push', answer);
+          if (!failure) addToast('success', 'Pushed.');
+          else addErrorToast(answer.kind === 'failed' && answer.error ? userFacingError(answer.error) : failure.message, failure.error);
         } catch (err) {
           addErrorToast(userFacingError(err), err);
         }
@@ -1154,8 +1155,10 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     run: (ctx) =>
       withWorkspace(ctx, async (workspace) => {
         try {
-          await GitPull(workspace);
-          addToast('success', 'Pulled.');
+          const answer = await pullWorkspace(workspace);
+          const failure = gitAttemptFailure('pull', answer);
+          if (!failure) addToast('success', 'Pulled.');
+          else addErrorToast(answer.kind === 'failed' && answer.error ? userFacingError(answer.error) : failure.message, failure.error);
         } catch (err) {
           addErrorToast(userFacingError(err), err);
         }

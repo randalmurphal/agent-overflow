@@ -312,8 +312,8 @@ covered.
 
 A write whose answer can still be lost (the connection drops while it runs)
 takes a client-minted attempt id and has an outcome method that waits for
-a running attempt: `GitCommit` and `GetCommitOutcome`, `SubmitPRReview` and
-`GetPRReviewSubmitOutcome`. A repeated id is answered from the first
+a running attempt: `GitCommit`, `GitPush`, `GitPull` and `GitCreatePR` with
+`GetGitActionOutcome`, `SubmitPRReview` with `GetPRReviewSubmitOutcome`. A repeated id is answered from the first
 arrival. Attempts live in process memory, so a restarted backend answers
 `unknown` for every earlier attempt.
 

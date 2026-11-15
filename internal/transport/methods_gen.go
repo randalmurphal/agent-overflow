@@ -185,7 +185,6 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "GetClaudeTranscriptRetention", ID: 1092327307, Scope: "settings:read", Route: "home"},                                            // main.App.GetClaudeTranscriptRetention
 	{Name: "GetCodexAccountUsage", ID: 1110466608, Scope: "access:admin", Route: "home"},                                                     // main.App.GetCodexAccountUsage
 	{Name: "GetCodexSkills", ID: 1018032480, Scope: "threads:operate", Route: "selected"},                                                    // main.App.GetCodexSkills
-	{Name: "GetCommitOutcome", ID: 3107819266, Scope: "git:operate", Route: "workspace", CallerBound: true, Budget: 12 * time.Minute},        // main.App.GetCommitOutcome
 	{Name: "GetComputerRoutes", ID: 873893084, Scope: "session", Route: "selected"},                                                          // main.App.GetComputerRoutes
 	{Name: "GetContextSettings", ID: 3416004963, Scope: "settings:read", Route: "home"},                                                      // main.App.GetContextSettings
 	{Name: "GetConversationMutationState", ID: 3307838728, Scope: "threads:operate", Route: "thread"},                                        // main.App.GetConversationMutationState
@@ -198,6 +197,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "GetEditDiffImage", ID: 711021853, Scope: "files:read", Route: "thread"},                                                          // main.App.GetEditDiffImage
 	{Name: "GetEditorSettings", ID: 1655853383, Scope: "settings:read", Route: "selected"},                                                   // main.App.GetEditorSettings
 	{Name: "GetErrorLogLines", ID: 1581952506, Scope: "threads:operate", Route: "home"},                                                      // main.App.GetErrorLogLines
+	{Name: "GetGitActionOutcome", ID: 2541596437, Scope: "git:operate", Route: "workspace", CallerBound: true, Budget: 12 * time.Minute},     // main.App.GetGitActionOutcome
 	{Name: "GetGitStatus", ID: 4123560639, Scope: "git:operate", Route: "workspace"},                                                         // main.App.GetGitStatus
 	{Name: "GetKeybindings", ID: 3015840904, Scope: "settings:read", Route: "home"},                                                          // main.App.GetKeybindings
 	{Name: "GetLocalImage", ID: 1709188995, Scope: "files:read", Route: "selected"},                                                          // main.App.GetLocalImage
