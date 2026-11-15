@@ -203,11 +203,11 @@ func (a *App) SavePRCIJobLog(ctx context.Context, repo gitops.RepoReference, job
 	name := ciLogFileName(jobID, jobName)
 	// Each resumed download has its own bound and the resumes have none,
 	// so the save as a whole runs within its budget.
-	ctx, cancel := withinMethodBudget(forgeapi.WithInteractive(ctx), "SavePRCIJobLog", "Downloading the job's log")
+	ctx, cancel := withinMethodBudget(ctx, "SavePRCIJobLog", "Downloading the job's log")
 	defer cancel()
 	for attempt := 0; ; attempt++ {
 		if !store.Has(key) {
-			if err := a.downloadCILog(ctx, store, repo, jobID); err != nil {
+			if err := a.downloadCILog(forgeapi.WithInteractive(ctx), store, repo, jobID); err != nil {
 				return "", budgetError(ctx, err)
 			}
 		}
