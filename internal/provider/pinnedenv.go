@@ -15,12 +15,10 @@ import "strings"
 //	PATH                — assembled by the app's sessionProcessEnv (the
 //	                      bundled `agent-overflow` CLI directory is prepended)
 //	                      and merged additively by BuildEnvironment.
-//	CLAUDE_CONFIG_DIR   — cleared, with the name below, wherever a launch
-//	                      uses claude.ConfigHomeUnsetEnv: claude.NewSession,
-//	                      claude.ProbeAccount, the MCP status fetcher, the
-//	                      interactive TUI (claudetui buildEnv) and
-//	                      textgen.RunClaude; set to a temporary home by
-//	                      claude.StartLogin and the inactive-account probes.
+//	CLAUDE_CONFIG_DIR   — cleared, with the name below, by every Claude
+//	                      command line (claude.NewCommandLine); set to a
+//	                      temporary home by claude.StartLogin and the
+//	                      inactive-account probes.
 //	CLAUDE_SECURESTORAGE_CONFIG_DIR
 //	                    — cleared everywhere CLAUDE_CONFIG_DIR is. Claude
 //	                      ≥2.1.220 keys its secure-storage (Keychain service)
@@ -112,9 +110,12 @@ import "strings"
 //	                      value would key every thread's list to one
 //	                      directory, and AO's persisted todo list would
 //	                      then describe tasks a different thread owns.
+//	                      Every other Claude command line clears it, as it
+//	                      clears the two cross-session names.
 //	CODEX_HOME          — cleared by codex.NewSession (session.go),
 //	                      ProbeAccount / ProbeIdentity, the model catalog
-//	                      fetcher, and the MCP status fetcher; set to a
+//	                      fetcher, the MCP status fetcher and
+//	                      textgen.RunCodex; set to a
 //	                      temporary home by codex.StartLogin and the
 //	                      inactive-account probes.
 //

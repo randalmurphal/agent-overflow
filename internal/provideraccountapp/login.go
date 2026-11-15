@@ -164,7 +164,7 @@ func (m *Manager) adoptLogin(attempt *loginAttempt) (_ ManagedAccount, retErr er
 		accountLocked = false
 		reconcileMu.Unlock()
 		reconcileLocked = false
-		m.emitProviderAccountsChanged()
+		m.emitProviderAccountsChanged(providerName)
 		m.emitSignIn(SignIn{Provider: providerName, Account: account, Added: !found, Renewed: found})
 		if err := m.RefreshProviderAccountUsage(providerName, account.ID); err != nil {
 			m.publishUsageError(providerName, account.ID, err)
@@ -268,8 +268,8 @@ func (m *Manager) adoptLogin(attempt *loginAttempt) (_ ManagedAccount, retErr er
 	m.invalidateProviderAccountProbe(providerName, binary)
 	m.emitProviderAccount(providerName, account, info, generation)
 	// A sign-in adds a card, which no per-account frame can express.
-	m.emitProviderAccountsChanged()
-	m.applySelection(providerName, generation, account.ID)
+	m.emitProviderAccountsChanged(providerName)
+	m.applySelection(providerName, generation, currentID, account.ID)
 	m.emitSignIn(SignIn{
 		Provider: providerName, Account: account, Added: !found, Renewed: found, Active: true,
 	})

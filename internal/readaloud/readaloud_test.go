@@ -89,7 +89,7 @@ func TestAnAdmittedSentenceIsTakenOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	taken, err := sentences.Take(id)
-	if err != nil || taken != (Sentence{Request: openai.SpeechRequest{Text: text, Voice: "coral"}, Admitted: 7}) {
+	if err != nil || taken != (Sentence{ID: id, Request: openai.SpeechRequest{Text: text, Voice: "coral"}, Admitted: 7}) {
 		t.Fatalf("Take = %+v, %v; want the trimmed text in its voice at its revision", taken, err)
 	}
 	if _, err := sentences.Take(id); !errors.Is(err, ErrUnknown) {
@@ -135,6 +135,22 @@ func TestAdmitRefusesWhatCannotBeRead(t *testing.T) {
 	}
 	if n := sentences.Pending(); n != 1 {
 		t.Fatalf("pending = %d after refusals, want 1", n)
+	}
+}
+
+// The client admits a reply one section at a time (several sentences up to
+// MaxTextCharacters), so a refusal the user reads names a section.
+func TestRefusalsNameTheSectionTheUserAskedFor(t *testing.T) {
+	t.Parallel()
+	for err, want := range map[error]string{
+		ErrUnknown:     "this section was already read aloud or has expired",
+		ErrBacklog:     "8 sections are already waiting to be read aloud; try again shortly",
+		ErrBusy:        "this computer is already reading 4 sections aloud; try again shortly",
+		ErrTextTooLong: "a section to read aloud is at most 1000 characters",
+	} {
+		if err.Error() != want {
+			t.Errorf("refusal = %q, want %q", err, want)
+		}
 	}
 }
 
@@ -314,6 +330,84 @@ func TestAClipHoldsItsSlotUntilClosed(t *testing.T) {
 		if err := clip.Close(); err != nil {
 			t.Fatal(err)
 		}
+	}
+	everySlotIsFree(t, sentences, 0)
+}
+
+// stubborn holds every request until release closes, whatever its context
+// says: a synthesis that has not yet noticed its fetch went away.
+type stubborn struct {
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (b stubborn) speak(_ context.Context, request openai.SpeechRequest) (openai.Speech, error) {
+	b.entered <- struct{}{}
+	<-b.release
+	return openai.Speech{Transcript: request.Text}, nil
+}
+
+// Release drops a section still waiting, and ends a synthesis of one and
+// gives its slot back before it returns, before the synthesis has noticed:
+// with every slot taken, a reader's next synthesis is not refused for the
+// one it gave up.
+func TestReleaseFreesWhatItsReaderGaveUp(t *testing.T) {
+	t.Parallel()
+	sentences := New(time.Minute)
+	waiting, err := sentences.Admit(text, "marin", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sentences.Release(waiting)
+	if _, err := sentences.Take(waiting); !errors.Is(err, ErrUnknown) || sentences.Pending() != 0 {
+		t.Fatalf("a released section was still waiting: %v", err)
+	}
+
+	held := stubborn{entered: make(chan struct{}), release: make(chan struct{})}
+	ids := make([]string, MaxSpeaking)
+	done := make(chan error, MaxSpeaking)
+	for i := range MaxSpeaking {
+		id, err := sentences.Admit(text, "marin", 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids[i] = id
+		sentence, err := sentences.Take(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		go func() {
+			clip, err := sentences.Synthesize(context.Background(), sentence, held.speak)
+			if err == nil {
+				err = clip.Close()
+			}
+			done <- err
+		}()
+		<-held.entered
+	}
+	refusedAtOnce(t, sentences, ErrBusy)
+	sentences.Release(ids[0])
+	clip, err := sentences.Synthesize(context.Background(), sentenceAt(0), echo)
+	if err != nil {
+		t.Fatalf("a synthesis after a release: %v", err)
+	}
+	refusedAtOnce(t, sentences, ErrBusy)
+	if err := clip.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	close(held.release)
+	released := 0
+	for range MaxSpeaking {
+		switch err := <-done; {
+		case errors.Is(err, ErrUnknown):
+			released++
+		case err != nil:
+			t.Fatal(err)
+		}
+	}
+	if released != 1 {
+		t.Fatalf("released syntheses answered ErrUnknown %d times, want 1", released)
 	}
 	everySlotIsFree(t, sentences, 0)
 }

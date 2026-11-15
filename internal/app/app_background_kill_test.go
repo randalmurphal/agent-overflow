@@ -49,7 +49,7 @@ func newAgentKillFixture(t *testing.T, providerName, model string) *agentKillFix
 	// A Claude session stands in for every provider: the gate must decide
 	// by the thread, and the recorder is what proves an interrupt was sent.
 	sess, err := claude.NewSession(context.Background(), thread.ID,
-		claude.Config{Binary: writeClaudeInterruptRecorderBinary(t, f.interruptLog), WorkDir: t.TempDir()},
+		claude.Config{Retention: claude.UserHomeRetention(0), Binary: writeClaudeInterruptRecorderBinary(t, f.interruptLog), WorkDir: t.TempDir()},
 		func(provider.ProviderEvent) {})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)

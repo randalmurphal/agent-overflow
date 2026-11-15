@@ -42,6 +42,8 @@ func (l *SelectionLease) Release() {
 
 // SessionGateway projects an activated provider-wide selection onto the live
 // session runtime without giving account code access to App or its session map.
+// The Manager calls it after every change of the selected account, by any
+// route, with the account selected before it ("" for none).
 type SessionGateway interface {
-	ApplySelection(providerName string, selection Selection)
+	ApplySelection(providerName, previousAccountID string, selection Selection)
 }

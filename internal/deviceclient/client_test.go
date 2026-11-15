@@ -43,6 +43,9 @@ type backend struct {
 	tickets       atomic.Int32
 	rotations     atomic.Int32
 	failureStatus atomic.Int32
+	// stall is how long, in nanoseconds, every request waits before it is
+	// answered, so a test can drive a credential step past a threshold.
+	stall atomic.Int64
 	// proofs is every X-AO-Device-Key value this backend was presented,
 	// so a test can see that a proof was minted per request.
 	proofs []string
@@ -57,6 +60,13 @@ func newBackend(t *testing.T) *backend {
 }
 
 func (b *backend) route(w http.ResponseWriter, r *http.Request) {
+	if stall := time.Duration(b.stall.Load()); stall > 0 {
+		select {
+		case <-time.After(stall):
+		case <-r.Context().Done():
+			return
+		}
+	}
 	if status := b.failureStatus.Load(); status != 0 {
 		http.Error(w, "temporary test failure", int(status))
 		return

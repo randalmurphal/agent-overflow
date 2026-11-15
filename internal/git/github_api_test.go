@@ -168,10 +168,22 @@ func githubData(data string) forgeAPIAnswer {
 	return forgeAPIAnswer{Body: `{"data":` + data + `}`}
 }
 
+// forgeUnexpected fails the test for a request its fake does not answer,
+// except a GitLab release read (GET metadata), which a test about
+// something else gets answered as a current GitLab.
 func forgeUnexpected(t *testing.T, call forgeAPICall) forgeAPIAnswer {
+	if call.Op == "" && call.Method == http.MethodGet && call.Path == "metadata" {
+		return forgeAPIAnswer{Body: `{"version":"19.3.0-ee"}`}
+	}
 	t.Errorf("unexpected forge request %q %s %s", call.Op, call.Method, call.Path)
 	return forgeAPIAnswer{Status: http.StatusNotFound, Body: `{"message":"Not Found"}`}
 }
+
+// githubNoViewerReviews answers ViewerReviews for a PR with no reviews.
+const githubNoViewerReviews = `{"repository":{"pullRequest":{"reviews":{"nodes":[]}}}}`
+
+// githubTestPinnedHead is the head a test's review was written against.
+const githubTestPinnedHead = "abc1234"
 
 func githubTestRef(number int) PRReference {
 	return PRReference{Forge: "github", Host: testForgeHost, Namespace: "o", Repo: "r", Number: number}
@@ -528,8 +540,8 @@ func TestReadPRPagesEveryConnection(t *testing.T) {
 	if ops := withoutCIExtras(calls.ops()); fmt.Sprint(ops) != "[PRTick RollupContextsPage PRThreadsPage ThreadCommentsPage PRCommentsPage]" {
 		t.Fatalf("requests = %v", ops)
 	}
-	if len(got.Threads) != 2+150 {
-		t.Fatalf("threads = %d, want 2 review threads and 150 conversation comments", len(got.Threads))
+	if len(got.Threads) != 2+150 || got.ThreadsTruncated != "" {
+		t.Fatalf("threads = %d (truncated %q), want 2 review threads and 150 conversation comments", len(got.Threads), got.ThreadsTruncated)
 	}
 	if first := got.Threads[0]; len(first.Comments) != 130 || first.Comments[129].Body != "b129" || first.Comments[129].ReplyTo == nil {
 		t.Fatalf("thread T1 has %d comments, want 130 in order", len(first.Comments))
@@ -543,31 +555,48 @@ func TestReadPRPagesEveryConnection(t *testing.T) {
 }
 
 // A connection that never ends is read for githubReadMaxPages pages and
-// no more.
+// no more, and the read says its threads are the first of more: the
+// review threads, one thread's comments or the conversation comments.
 func TestReadPRStopsAtThePageCap(t *testing.T) {
 	t.Parallel()
-	page := 0
-	var mu sync.Mutex
-	core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
-		mu.Lock()
-		page++
-		n := page
-		mu.Unlock()
-		thread := githubThreadJSON("T"+strconv.Itoa(n), githubCommentsJSON("c", 0, 1, false), false)
-		switch call.Op {
-		case "PRTick":
-			return githubData(`{"repository":{"pullRequest":{"number":5,"reviewThreads":{"pageInfo":{"hasNextPage":true,"endCursor":"p"},"nodes":[` + thread + `]},"comments":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}`)
-		case "PRThreadsPage":
-			return githubData(`{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":true,"endCursor":"p"},"nodes":[` + thread + `]}}}}`)
-		}
-		return forgeUnexpected(t, call)
-	})
-	got, err := core.ReadPR(t.Context(), githubTestRef(5), PRReadParts{Threads: true}, nil, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if n := len(calls.all()); n != githubReadMaxPages || len(got.Threads) != githubReadMaxPages {
-		t.Fatalf("requests = %d, threads = %d, want %d of each", n, len(got.Threads), githubReadMaxPages)
+	const notice = "Only the first 1000 threads and comments of this conversation are shown; the rest are on forge.example."
+	for _, endless := range []string{"PRThreadsPage", "ThreadCommentsPage", "PRCommentsPage"} {
+		t.Run(endless, func(t *testing.T) {
+			t.Parallel()
+			page := 0
+			var mu sync.Mutex
+			core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
+				mu.Lock()
+				page++
+				n := page
+				mu.Unlock()
+				comment := githubCommentsJSON("c"+strconv.Itoa(n)+"-", 0, 1, false)
+				thread := githubThreadJSON("T"+strconv.Itoa(n), comment, endless == "ThreadCommentsPage")
+				switch call.Op {
+				case "PRTick":
+					return githubData(`{"repository":{"pullRequest":{"number":5,` +
+						`"reviewThreads":{"pageInfo":{"hasNextPage":` + strconv.FormatBool(endless == "PRThreadsPage") + `,"endCursor":"p"},"nodes":[` + thread + `]},` +
+						`"comments":{"pageInfo":{"hasNextPage":` + strconv.FormatBool(endless == "PRCommentsPage") + `,"endCursor":"p"},"nodes":[` + comment[0] + `]}}}}`)
+				case "PRThreadsPage":
+					return githubData(`{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":true,"endCursor":"p"},"nodes":[` + thread + `]}}}}`)
+				case "ThreadCommentsPage":
+					return githubData(`{"node":{"comments":{"pageInfo":{"hasNextPage":true,"endCursor":"p"},"nodes":[` + comment[0] + `]}}}`)
+				case "PRCommentsPage":
+					return githubData(`{"repository":{"pullRequest":{"comments":{"pageInfo":{"hasNextPage":true,"endCursor":"p"},"nodes":[` + comment[0] + `]}}}}`)
+				}
+				return forgeUnexpected(t, call)
+			})
+			got, err := core.ReadPR(t.Context(), githubTestRef(5), PRReadParts{Threads: true}, nil, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if n := len(calls.all()); n != githubReadMaxPages {
+				t.Fatalf("requests = %d, want %d", n, githubReadMaxPages)
+			}
+			if got.ThreadsTruncated != notice {
+				t.Fatalf("ThreadsTruncated = %q", got.ThreadsTruncated)
+			}
+		})
 	}
 }
 
@@ -918,8 +947,8 @@ func TestGitHubJobLog(t *testing.T) {
 }
 
 // A review is one REST POST; each file-level comment is another, against
-// the head commit the PR read reports. A failed file comment after the
-// review landed is a partial submit.
+// the head the review names. A failed file comment after the review landed
+// is a partial submit.
 func TestGitHubSubmitReview(t *testing.T) {
 	t.Parallel()
 	line := 7
@@ -928,6 +957,8 @@ func TestGitHubSubmitReview(t *testing.T) {
 		switch {
 		case call.Op == "PRTick":
 			return githubData(`{"viewer":{"login":"v"},"repository":{"pullRequest":{"number":5,"headRefOid":"abc123","author":{"login":"a"},"latestReviews":{"nodes":[]},"commits":{"nodes":[]}}}}`)
+		case call.Op == "ViewerReviews":
+			return githubData(githubNoViewerReviews)
 		case call.Method == http.MethodPost && call.Path == "repos/o/r/pulls/5/reviews":
 			return forgeAPIAnswer{Body: `{"id":1}`}
 		case call.Method == http.MethodPost && call.Path == "repos/o/r/pulls/5/comments":
@@ -938,7 +969,7 @@ func TestGitHubSubmitReview(t *testing.T) {
 		}
 		return forgeUnexpected(t, call)
 	})
-	review := SubmitReviewRequest{Verdict: ReviewVerdictRequestChanges, Body: "please fix", Comments: []ReviewLineComment{
+	review := SubmitReviewRequest{Verdict: ReviewVerdictRequestChanges, HeadSHA: githubTestPinnedHead, Body: "please fix", Comments: []ReviewLineComment{
 		{Path: "a.go", Body: "here", Line: &line, Side: "right"},
 		{Path: "b.go", Body: "whole file", Side: "file"},
 	}}
@@ -946,8 +977,8 @@ func TestGitHubSubmitReview(t *testing.T) {
 	if err != nil || !result.PostedReview || result.PostedFileComments != 1 {
 		t.Fatalf("SubmitReview = %+v, %v", result, err)
 	}
-	sent := calls.all()
-	if len(sent) != 3 || sent[0].Op != "PRTick" {
+	sent := slices.DeleteFunc(calls.all(), func(call forgeAPICall) bool { return call.Op == "ViewerReviews" })
+	if len(sent) != 2 {
 		t.Fatalf("requests = %v", calls.ops())
 	}
 	var reviewBody struct {
@@ -955,13 +986,13 @@ func TestGitHubSubmitReview(t *testing.T) {
 		Body     string
 		Comments []map[string]any
 	}
-	if err := json.Unmarshal(sent[1].Body, &reviewBody); err != nil || reviewBody.Event != "REQUEST_CHANGES" || reviewBody.Body != "please fix" ||
+	if err := json.Unmarshal(sent[0].Body, &reviewBody); err != nil || reviewBody.Event != "REQUEST_CHANGES" || reviewBody.Body != "please fix" ||
 		len(reviewBody.Comments) != 1 || reviewBody.Comments[0]["path"] != "a.go" || reviewBody.Comments[0]["side"] != "RIGHT" || reviewBody.Comments[0]["line"] != float64(7) {
-		t.Fatalf("review body = %s (%v)", sent[1].Body, err)
+		t.Fatalf("review body = %s (%v)", sent[0].Body, err)
 	}
 	var fileBody map[string]string
-	if err := json.Unmarshal(sent[2].Body, &fileBody); err != nil || fileBody["commit_id"] != "abc123" || fileBody["subject_type"] != "file" || fileBody["path"] != "b.go" {
-		t.Fatalf("file comment body = %s (%v)", sent[2].Body, err)
+	if err := json.Unmarshal(sent[1].Body, &fileBody); err != nil || fileBody["commit_id"] != githubTestPinnedHead || fileBody["subject_type"] != "file" || fileBody["path"] != "b.go" {
+		t.Fatalf("file comment body = %s (%v)", sent[1].Body, err)
 	}
 
 	failComments.Store(true)
@@ -995,19 +1026,26 @@ func TestGitHubReplyToThread(t *testing.T) {
 }
 
 // Resolve and unresolve are one mutation document, the thread and the
-// wanted state as variables; the answer is read back.
+// wanted state as variables; the answer is read back. The thread is read
+// as the named PR's before the mutation.
 func TestGitHubSetThreadResolved(t *testing.T) {
 	t.Parallel()
 	var answer string
 	var mu sync.Mutex
-	core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
+	core, all := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
 		mu.Lock()
 		defer mu.Unlock()
-		if call.Op != "SetThreadResolved" {
-			return forgeUnexpected(t, call)
+		switch call.Op {
+		case "ThreadOwner":
+			return githubData(`{"node":{"__typename":"PullRequestReviewThread","pullRequest":{"number":5,"repository":{"nameWithOwner":"o/r"}}}}`)
+		case "SetThreadResolved":
+			return forgeAPIAnswer{Body: answer}
 		}
-		return forgeAPIAnswer{Body: answer}
+		return forgeUnexpected(t, call)
 	})
+	mutations := func() []forgeAPICall {
+		return slices.DeleteFunc(all.all(), func(call forgeAPICall) bool { return call.Op != "SetThreadResolved" })
+	}
 	set := func(body string) {
 		mu.Lock()
 		answer = body
@@ -1021,7 +1059,7 @@ func TestGitHubSetThreadResolved(t *testing.T) {
 	if err := core.SetThreadResolved(t.Context(), githubTestRef(5), "PRRT_x", false); err != nil {
 		t.Fatal(err)
 	}
-	sent := calls.all()
+	sent := mutations()
 	if len(sent) != 2 || sent[0].Vars["threadID"] != "PRRT_x" || sent[0].Vars["resolved"] != true || sent[1].Vars["resolved"] != false ||
 		sent[0].Query != sent[1].Query || strings.Contains(sent[0].Query, "PRRT_x") {
 		t.Fatalf("mutations = %+v", sent)
@@ -1040,8 +1078,44 @@ func TestGitHubSetThreadResolved(t *testing.T) {
 	if _, ok := errors.AsType[*forgeapi.GraphQLError](err); !ok || !strings.Contains(err.Error(), "Resource not accessible") {
 		t.Fatalf("GraphQL failure = %v", err)
 	}
+	// A 200 whose body does not decode: the mutation may have run.
+	set("")
+	if err := core.SetThreadResolved(t.Context(), githubTestRef(5), "PRRT_x", true); !errors.As(err, new(*UnconfirmedWriteError)) {
+		t.Fatalf("an unreadable answer = %v, want unconfirmed", err)
+	}
 	if err := core.SetThreadResolved(t.Context(), githubTestRef(5), " ", true); err == nil {
 		t.Fatal("a resolve without a thread id was sent")
+	}
+}
+
+// A thread node id names nothing about its PR, so a resolve of a thread
+// that is not the named PR's (another number, another repository, a
+// comment's id, an id the login cannot see) is refused before the mutation.
+func TestGitHubSetThreadResolvedRefusesAThreadOfAnotherPR(t *testing.T) {
+	t.Parallel()
+	owners := map[string]string{
+		"PRRT_other_number": `{"data":{"node":{"__typename":"PullRequestReviewThread","pullRequest":{"number":6,"repository":{"nameWithOwner":"o/r"}}}}}`,
+		"PRRT_other_repo":   `{"data":{"node":{"__typename":"PullRequestReviewThread","pullRequest":{"number":5,"repository":{"nameWithOwner":"o/fork"}}}}}`,
+		"PRRC_comment":      `{"data":{"node":{"__typename":"PullRequestReviewComment"}}}`,
+		"PRRT_unknown":      `{"data":{"node":null},"errors":[{"type":"NOT_FOUND","path":["node"],"message":"Could not resolve to a node with the global id of 'PRRT_unknown'"}]}`,
+	}
+	core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
+		if call.Op == "ThreadOwner" {
+			return forgeAPIAnswer{Body: owners[call.Vars["id"].(string)]}
+		}
+		return forgeUnexpected(t, call)
+	})
+	for id := range owners {
+		err := core.SetThreadResolved(t.Context(), githubTestRef(5), id, true)
+		if !errors.As(err, new(*ThreadNotOnPRError)) {
+			t.Fatalf("%s: SetThreadResolved = %v, want ThreadNotOnPRError", id, err)
+		}
+		if explained, ok := errors.AsType[*ForgeActionError](ExplainForgeError(githubTestRef(5), ActionResolve, err)); !ok || explained.Kind != ForgeErrorNotFound {
+			t.Fatalf("%s: explained = %v", id, explained)
+		}
+	}
+	if ops := calls.ops(); slices.Contains(ops, "SetThreadResolved") {
+		t.Fatalf("requests = %v, want no mutation", ops)
 	}
 }
 

@@ -2,7 +2,7 @@ import { unpackText } from './packedText';
 import { PatchChunks, type PatchTextLost, type PatchTextSource } from './patchChunks';
 
 // Compact storage for the review pane's patches. A patch of any size
-// arrives in chunks (`ReadReviewDiff`) and is held as those chunk
+// arrives in chunks (`reviewDiffStream.ts`) and is held as those chunk
 // strings (`patchChunks.ts`) plus typed-array indexes: one Uint32 line
 // start per line, and one kind byte per line. Nothing allocates per line.
 // Rows, line objects and line strings are materialized only for the rows
@@ -401,6 +401,19 @@ export class PatchStore {
     if (end <= start) return () => {};
     const first = this.chunkOf(start);
     return this.chunks.pin(first, this.lastChunk(first, start, end));
+  }
+
+  /** The end of the lines whose text lies in the chunks that hold lines
+   * [start, end), at least `end`: what a pin of [start, end) holds
+   * anyway, since a pin holds whole chunks. */
+  pinnedEnd(start: number, end: number): number {
+    if (end <= start) return end;
+    const last = this.lastChunk(this.chunkOf(start), start, end);
+    if (last === this.firstLines.length - 1) return Math.max(end, this.lines);
+    // The last line starting in the chunk continues past it unless the
+    // chunk ends with a newline.
+    const after = this.firstLines[last] + this.counts[last];
+    return Math.max(end, this.newlineEnds[last] ? after : after - 1);
   }
 
   /** Makes the text held so far and appended from now on evictable: it

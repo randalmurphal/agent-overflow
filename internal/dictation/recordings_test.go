@@ -12,8 +12,8 @@ import (
 )
 
 func TestRecordingJoinsItsPiecesInOrder(t *testing.T) {
-	recordings := New(0)
-	id, err := recordings.Begin("audio/webm")
+	recordings := New(0, 0)
+	id, err := recordings.Begin("audio/webm", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -40,11 +40,11 @@ func TestRecordingJoinsItsPiecesInOrder(t *testing.T) {
 }
 
 func TestRecordingRefusesWhatWouldCorruptIt(t *testing.T) {
-	recordings := New(0)
-	if _, err := recordings.Begin("audio/wav"); err == nil {
+	recordings := New(0, 0)
+	if _, err := recordings.Begin("audio/wav", 0); err == nil {
 		t.Fatal("a container MediaRecorder does not produce was accepted")
 	}
-	id, err := recordings.Begin("audio/mp4")
+	id, err := recordings.Begin("audio/mp4", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,20 +75,20 @@ func TestRecordingRefusesWhatWouldCorruptIt(t *testing.T) {
 }
 
 func TestRecordingsAreBounded(t *testing.T) {
-	recordings := New(0)
+	recordings := New(0, 0)
 	var ids []string
 	for range MaxOpenRecordings {
-		id, err := recordings.Begin("audio/webm")
+		id, err := recordings.Begin("audio/webm", 0)
 		if err != nil {
 			t.Fatal(err)
 		}
 		ids = append(ids, id)
 	}
-	if _, err := recordings.Begin("audio/webm"); err == nil {
+	if _, err := recordings.Begin("audio/webm", 0); err == nil {
 		t.Fatal("a recording past the open cap was begun")
 	}
 	recordings.Cancel(ids[0])
-	if _, err := recordings.Begin("audio/webm"); err != nil {
+	if _, err := recordings.Begin("audio/webm", 0); err != nil {
 		t.Fatalf("a cancelled recording still counts: %v", err)
 	}
 }
@@ -106,8 +106,8 @@ func (b *blockedBody) Read(p []byte) (int, error) {
 
 // No declared size, however large, wraps a cap's sum into admission.
 func TestNoPieceSizeOverflowsTheCaps(t *testing.T) {
-	recordings := New(0)
-	id, _ := recordings.Begin("audio/webm")
+	recordings := New(0, 0)
+	id, _ := recordings.Begin("audio/webm", 0)
 	if err := recordings.Append(id, 0, 1, strings.NewReader("a")); err != nil {
 		t.Fatal(err)
 	}
@@ -142,8 +142,8 @@ func TestARecordingSaysWhenItIsReleased(t *testing.T) {
 		{"finished short of its pieces", func(_ *testing.T, r *Recordings, id string) { _, _ = r.Finish(context.Background(), id, 2) }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			recordings := New(0)
-			id, _ := recordings.Begin("audio/webm")
+			recordings := New(0, 0)
+			id, _ := recordings.Begin("audio/webm", 0)
 			if err := recordings.Append(id, 0, 3, strings.NewReader("abc")); err != nil {
 				t.Fatal(err)
 			}
@@ -157,8 +157,8 @@ func TestARecordingSaysWhenItIsReleased(t *testing.T) {
 	}
 
 	t.Run("finished again while transcribing", func(t *testing.T) {
-		recordings := New(0)
-		id, _ := recordings.Begin("audio/webm")
+		recordings := New(0, 0)
+		id, _ := recordings.Begin("audio/webm", 0)
 		if err := recordings.Append(id, 0, 3, strings.NewReader("abc")); err != nil {
 			t.Fatal(err)
 		}
@@ -181,8 +181,8 @@ func TestARecordingSaysWhenItIsReleased(t *testing.T) {
 	})
 
 	t.Run("finished while a piece is read", func(t *testing.T) {
-		recordings := New(0)
-		id, _ := recordings.Begin("audio/webm")
+		recordings := New(0, 0)
+		id, _ := recordings.Begin("audio/webm", 0)
 		released := 0
 		recordings.OnRelease(id, func() { released++ })
 		body := &blockedBody{release: make(chan struct{}), data: strings.NewReader("abcd")}
@@ -206,8 +206,8 @@ func TestARecordingSaysWhenItIsReleased(t *testing.T) {
 // once cannot pass the caps: a recording reads one piece at a time, and
 // every reservation counts against the bytes held across recordings.
 func TestPiecesInFlightCountAgainstTheCaps(t *testing.T) {
-	recordings := New(0)
-	id, err := recordings.Begin("audio/webm")
+	recordings := New(0, 0)
+	id, err := recordings.Begin("audio/webm", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -229,7 +229,7 @@ func TestPiecesInFlightCountAgainstTheCaps(t *testing.T) {
 	// The budget across recordings counts the piece in flight.
 	var others []string
 	for held := int64(4); held+MaxRecordingBytes <= MaxHeldBytes; held += MaxRecordingBytes {
-		other, err := recordings.Begin("audio/webm")
+		other, err := recordings.Begin("audio/webm", 0)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -238,7 +238,7 @@ func TestPiecesInFlightCountAgainstTheCaps(t *testing.T) {
 		}
 		others = append(others, other)
 	}
-	last, err := recordings.Begin("audio/webm")
+	last, err := recordings.Begin("audio/webm", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -261,8 +261,8 @@ func TestPiecesInFlightCountAgainstTheCaps(t *testing.T) {
 // A recording dropped while its piece is read keeps that piece's
 // reservation until the read ends, and the piece is not stored.
 func TestADroppedRecordingReleasesItsPieceWhenTheReadEnds(t *testing.T) {
-	recordings := New(0)
-	id, _ := recordings.Begin("audio/webm")
+	recordings := New(0, 0)
+	id, _ := recordings.Begin("audio/webm", 0)
 	body := &blockedBody{release: make(chan struct{}), data: strings.NewReader("abcd")}
 	done := make(chan error, 1)
 	go func() { done <- recordings.Append(id, 0, 4, body) }()
@@ -284,8 +284,8 @@ func TestADroppedRecordingReleasesItsPieceWhenTheReadEnds(t *testing.T) {
 // A transcribing recording keeps its place and bytes until Done; Cancel
 // ends its context instead of dropping it out from under the job.
 func TestATranscriptionStaysOwnedUntilDone(t *testing.T) {
-	recordings := New(0)
-	id, _ := recordings.Begin("audio/webm")
+	recordings := New(0, 0)
+	id, _ := recordings.Begin("audio/webm", 0)
 	if err := recordings.Append(id, 0, 3, strings.NewReader("abc")); err != nil {
 		t.Fatal(err)
 	}
@@ -312,8 +312,8 @@ func TestATranscriptionStaysOwnedUntilDone(t *testing.T) {
 // An abandoned recording expires on its own timer, with no other activity
 // on the backend, and says so to whoever owns its cleanup.
 func TestAnIdleRecordingExpiresOnItsOwn(t *testing.T) {
-	recordings := New(20 * time.Millisecond)
-	id, _ := recordings.Begin("audio/webm")
+	recordings := New(20*time.Millisecond, 0)
+	id, _ := recordings.Begin("audio/webm", 0)
 	if err := recordings.Append(id, 0, 3, strings.NewReader("abc")); err != nil {
 		t.Fatal(err)
 	}
@@ -336,8 +336,8 @@ func TestAnIdleRecordingExpiresOnItsOwn(t *testing.T) {
 
 // Neither a piece being read nor a transcription expires.
 func TestWorkInProgressDoesNotExpire(t *testing.T) {
-	recordings := New(20 * time.Millisecond)
-	id, _ := recordings.Begin("audio/webm")
+	recordings := New(20*time.Millisecond, 0)
+	id, _ := recordings.Begin("audio/webm", 0)
 	body := &blockedBody{release: make(chan struct{}), data: strings.NewReader("abc")}
 	done := make(chan error, 1)
 	go func() { done <- recordings.Append(id, 0, 3, body) }()
@@ -355,6 +355,92 @@ func TestWorkInProgressDoesNotExpire(t *testing.T) {
 		t.Fatal("a transcription expired")
 	}
 	job.Done()
+}
+
+// A transcription's context ends at the budget, with a cause that says so.
+func TestATranscriptionEndsAtItsBudget(t *testing.T) {
+	recordings := New(0, 20*time.Millisecond)
+	if New(0, 0).budget != TranscribeBudget {
+		t.Fatal("a zero budget is not TranscribeBudget")
+	}
+	id, _ := recordings.Begin("audio/webm", 0)
+	if err := recordings.Append(id, 0, 3, strings.NewReader("abc")); err != nil {
+		t.Fatal(err)
+	}
+	job, err := recordings.Finish(context.Background(), id, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer job.Done()
+	<-job.Context.Done()
+	if cause := context.Cause(job.Context); !errors.Is(cause, ErrTranscribeBudget) {
+		t.Fatalf("cause = %v, want ErrTranscribeBudget", cause)
+	}
+}
+
+// A write to the switch ends every recording admitted before it: a
+// transcription's context ends with ErrSwitchedOff, an open recording drops
+// its audio at once and answers its client's next call with ErrSwitchedOff,
+// and nothing admitted before the write opens after it. A recording
+// admitted at or after the write is untouched.
+func TestRevokeBeforeEndsRecordingsAdmittedBeforeTheWrite(t *testing.T) {
+	recordings := New(0, 0)
+	transcribing, _ := recordings.Begin("audio/webm", 4)
+	open, _ := recordings.Begin("audio/webm", 4)
+	later, _ := recordings.Begin("audio/webm", 5)
+	for _, id := range []string{transcribing, open, later} {
+		if err := recordings.Append(id, 0, 3, strings.NewReader("abc")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	job, err := recordings.Finish(context.Background(), transcribing, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	recordings.RevokeBefore(5)
+	<-job.Context.Done()
+	if cause := context.Cause(job.Context); !errors.Is(cause, ErrSwitchedOff) {
+		t.Fatalf("transcription cause = %v, want ErrSwitchedOff", cause)
+	}
+	job.Done()
+	if held := recordings.Held(); held != 3 {
+		t.Fatalf("bytes held after the revocation = %d, want only the later recording's 3", held)
+	}
+	if err := recordings.Admits(open, 1, 3); !errors.Is(err, ErrSwitchedOff) {
+		t.Fatalf("Admits on a revoked recording = %v, want ErrSwitchedOff", err)
+	}
+	if err := recordings.Admits(open, 1, 3); !errors.Is(err, ErrUnknownRecording) {
+		t.Fatalf("a revoked recording stayed after its client heard why: %v", err)
+	}
+	if _, err := recordings.Begin("audio/webm", 4); !errors.Is(err, ErrSwitchedOff) {
+		t.Fatalf("Begin admitted before the write = %v, want ErrSwitchedOff", err)
+	}
+	if recordings.Open() != 1 {
+		t.Fatalf("open recordings = %d, want the later one", recordings.Open())
+	}
+	if _, err := recordings.Finish(context.Background(), later, 1); err != nil {
+		t.Fatalf("a recording admitted at the write was ended: %v", err)
+	}
+}
+
+// A revoked recording whose piece was being read answers that upload, and
+// a Finish, with ErrSwitchedOff.
+func TestRevokeBeforeReachesAPieceBeingRead(t *testing.T) {
+	recordings := New(0, 0)
+	id, _ := recordings.Begin("audio/webm", 1)
+	body := &blockedBody{release: make(chan struct{}), data: strings.NewReader("abc")}
+	done := make(chan error, 1)
+	go func() { done <- recordings.Append(id, 0, 3, body) }()
+	waitFor(t, func() bool { return recordings.Held() == 3 })
+	recordings.RevokeBefore(2)
+	close(body.release)
+	if err := <-done; !errors.Is(err, ErrSwitchedOff) {
+		t.Fatalf("Append = %v, want ErrSwitchedOff", err)
+	}
+	if recordings.Open() != 0 || recordings.Held() != 0 {
+		t.Fatalf("open %d, held %d after the revoked upload", recordings.Open(), recordings.Held())
+	}
 }
 
 // A WebKit recorder sends its one piece only when it stops, up to the

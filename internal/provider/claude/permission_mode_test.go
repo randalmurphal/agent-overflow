@@ -104,7 +104,7 @@ func newPermissionModeSessionReporting(t *testing.T, base, echoOrder, unsolicite
 			"UNSOLICITED":  unsolicited,
 		},
 	}
-	s, err := NewSession(context.Background(), testThread, cfg, func(evt provider.ProviderEvent) {
+	s, err := NewSession(context.Background(), testThread, withTestRetention(cfg), func(evt provider.ProviderEvent) {
 		if evt.Kind == provider.EventPermissionModeChanged {
 			events <- evt
 		}

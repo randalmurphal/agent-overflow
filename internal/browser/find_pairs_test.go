@@ -277,7 +277,7 @@ func (p *findProvider) stopIssued() {
 }
 
 func (p *findProvider) retryStop(intent findIntent) {
-	if intent.attempt+1 >= findPortStopAttempts {
+	if p.disposed || intent.attempt+1 >= findPortStopAttempts {
 		return
 	}
 	p.retries = append(p.retries, intent)
@@ -528,6 +528,7 @@ func (p *findProvider) dispose(t *testing.T) {
 		p.cleanup = false
 	}
 	p.disposed = true
+	p.retries = nil
 }
 
 func newFindTableEnv(t *testing.T, base string) *findTableEnv {

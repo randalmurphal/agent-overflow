@@ -9,6 +9,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"agent-overflow/internal/provider/claude"
 )
 
 // hostRoutes is an httptest server standing in for every release host. The
@@ -117,8 +119,19 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
 
-// fakeRunner answers commands by "<binary> <first argument>", else by
-// their first argument.
+// verb is a command's first argument after a leading `--settings` block.
+func verb(command Command) string {
+	args := command.Args
+	if len(args) >= 2 && args[0] == "--settings" {
+		args = args[2:]
+	}
+	if len(args) == 0 {
+		return ""
+	}
+	return args[0]
+}
+
+// fakeRunner answers commands by "<binary> <verb>", else by their verb.
 type fakeRunner struct {
 	mu       sync.Mutex
 	commands []Command
@@ -128,9 +141,9 @@ type fakeRunner struct {
 func (f *fakeRunner) run(ctx context.Context, command Command) (Output, error) {
 	f.mu.Lock()
 	f.commands = append(f.commands, command)
-	answer := f.answer[command.Binary+" "+command.Args[0]]
+	answer := f.answer[command.Binary+" "+verb(command)]
 	if answer == nil {
-		answer = f.answer[command.Args[0]]
+		answer = f.answer[verb(command)]
 	}
 	f.mu.Unlock()
 	if answer == nil {
@@ -152,7 +165,7 @@ func (f *fakeRunner) ran(arg string) int {
 	defer f.mu.Unlock()
 	n := 0
 	for _, command := range f.commands {
-		if command.Args[0] == arg {
+		if verb(command) == arg {
 			n++
 		}
 	}
@@ -163,7 +176,7 @@ func (f *fakeRunner) lastOf(arg string) Command {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for i := len(f.commands) - 1; i >= 0; i-- {
-		if f.commands[i].Args[0] == arg {
+		if verb(f.commands[i]) == arg {
 			return f.commands[i]
 		}
 	}
@@ -209,10 +222,17 @@ type rig struct {
 	installed map[string]string
 	binaries  map[string]Binary
 	// env replaces a provider's default {"PROXY_FOR": name}.
-	env       map[string]map[string]string
-	frames    [][]Status
-	afterRuns int
-	notify    chan struct{}
+	env map[string]map[string]string
+	// retention answers ClaudeRetention; retentionDirs are the work
+	// directories it was asked about.
+	retention     claude.Retention
+	retentionDirs []string
+	// loginExpired and loginErr answer ClaudeLoginExpired.
+	loginExpired bool
+	loginErr     error
+	frames       [][]Status
+	afterRuns    int
+	notify       chan struct{}
 }
 
 func newRig(t *testing.T) *rig {
@@ -227,7 +247,8 @@ func newRig(t *testing.T) *rig {
 			ProviderClaude: {Path: "/opt/claude", ResolvedPath: "/home/u/.local/share/claude/versions/2.1.300"},
 			ProviderCodex:  npmCodex,
 		},
-		notify: make(chan struct{}, 1),
+		notify:    make(chan struct{}, 1),
+		retention: claude.UserHomeRetention(0),
 	}
 	r.svc = New(Deps{
 		Binary: func(name string) Binary {
@@ -245,7 +266,18 @@ func newRig(t *testing.T) *rig {
 			return map[string]string{"PROXY_FOR": name}
 		},
 		WorkDir: func() (string, error) { return "/home/u", nil },
-		Runner:  r.runner.run,
+		ClaudeRetention: func(workDir string) claude.Retention {
+			r.mu.Lock()
+			defer r.mu.Unlock()
+			r.retentionDirs = append(r.retentionDirs, workDir)
+			return r.retention
+		},
+		ClaudeLoginExpired: func() (bool, error) {
+			r.mu.Lock()
+			defer r.mu.Unlock()
+			return r.loginExpired, r.loginErr
+		},
+		Runner: r.runner.run,
 		AfterRun: func() {
 			r.mu.Lock()
 			r.afterRuns++

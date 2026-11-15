@@ -70,9 +70,14 @@ func (a *App) claudeTranscriptRetention(retention settings.RetentionSettings, wo
 	return state, nil
 }
 
+// claudeRetention is the answer every Claude launch against the user's home
+// gives the transcript sweep, for a process started now in workDir.
+func (a *App) claudeRetention(workDir string) claude.Retention {
+	return claude.UserHomeRetention(a.claudeCleanupPeriodDays(workDir))
+}
+
 // claudeCleanupPeriodDays is the `cleanupPeriodDays` a Claude process started
-// now in workDir carries, or 0 for none. Every Claude launch against the
-// user's home takes its value from here.
+// now in workDir carries, or 0 for none.
 //
 // A failure sends none, because a value sent without knowing the period the
 // process resolves itself could shorten it. It is logged when it starts or

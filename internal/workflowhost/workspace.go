@@ -310,7 +310,7 @@ func (r *Runner) provisionWorkspace(
 	if err != nil {
 		return PreparedWorkspace{}, rollback(err)
 	}
-	if err := worktreesetup.Run(ctx, project.Path, worktreePath, setup); err != nil {
+	if err := worktreesetup.Run(ctx, r.host.ProcessReaper(), project.Path, worktreePath, setup); err != nil {
 		return PreparedWorkspace{}, rollback(err)
 	}
 	if err := r.store.UpdateWorkItemWorkspace(item.ID, worktreePath, branch, baseBranch); err != nil {
@@ -426,7 +426,7 @@ func (r *Runner) provisionUnitWorktree(
 	}
 	// A sub-worktree is a fresh checkout: without the project's setup hooks it
 	// lacks exactly the installed state the item's own worktree was given.
-	if err := worktreesetup.Run(ctx, primary.Project.Path, worktreePath, setup); err != nil {
+	if err := worktreesetup.Run(ctx, r.host.ProcessReaper(), primary.Project.Path, worktreePath, setup); err != nil {
 		return PreparedWorkspace{}, rollback(err)
 	}
 	return PreparedWorkspace{

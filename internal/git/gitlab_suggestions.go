@@ -76,7 +76,7 @@ func gateGitLabSuggestions(threads []ReviewThread, access int) {
 // suggestion id is global on the host), then applies it. An answer that
 // does not report it applied is unconfirmed.
 func (f *gitlabForge) ApplySuggestion(ctx context.Context, ref PRReference, req SuggestionApply) error {
-	client, err := f.core.gitlabAPI(ref.Host)
+	client, err := f.writeClient(ctx, ref)
 	if err != nil {
 		return err
 	}

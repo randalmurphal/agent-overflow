@@ -417,7 +417,7 @@ func TestStaleBinaryFlagsTheLiveThreadAndHydrates(t *testing.T) {
 	if err := app.StartSession(thread.ID); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
-	if err := app.SendMessage(thread.ID, "hi", nil); err != nil {
+	if err := app.SendMessage(context.Background(), thread.ID, "hi", nil); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 	bus.nextProviderEventOfKind(t, provider.EventInit, 5*time.Second)
@@ -501,7 +501,7 @@ func TestStaleBinaryFlagsTheLiveThreadAndHydrates(t *testing.T) {
 	if err := app.StartSession(thread.ID); err != nil {
 		t.Fatalf("StartSession again: %v", err)
 	}
-	if err := app.SendMessage(thread.ID, "hi again", nil); err != nil {
+	if err := app.SendMessage(context.Background(), thread.ID, "hi again", nil); err != nil {
 		t.Fatalf("SendMessage again: %v", err)
 	}
 	bus.nextProviderEventOfKind(t, provider.EventInit, 5*time.Second)

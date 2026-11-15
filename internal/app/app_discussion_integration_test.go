@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"fmt"
 	"testing"
 	"time"
@@ -154,7 +155,7 @@ func TestDisc_StartDiscussionCreatesThreadWithDiscussionMode(t *testing.T) {
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}
-	if err := app.StartDiscussion(thread.ID, "Architects"); err != nil {
+	if err := app.StartDiscussion(context.Background(), thread.ID, "Architects"); err != nil {
 		t.Fatalf("StartDiscussion: %v", err)
 	}
 
@@ -196,12 +197,12 @@ func TestDisc_PostChannelMessageAppearsInGetChannelMessages(t *testing.T) {
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}
-	if err := app.StartDiscussion(thread.ID, "Architects"); err != nil {
+	if err := app.StartDiscussion(context.Background(), thread.ID, "Architects"); err != nil {
 		t.Fatalf("StartDiscussion: %v", err)
 	}
 	parent, _ := app.store.GetThread(thread.ID)
 
-	if _, err := app.PostChannelMessage(parent.DiscussionID, "hello from human"); err != nil {
+	if _, err := app.PostChannelMessage(context.Background(), parent.DiscussionID, "hello from human"); err != nil {
 		t.Fatalf("PostChannelMessage: %v", err)
 	}
 	messages, err := app.GetChannelMessages(parent.DiscussionID, -1, 10)
@@ -231,13 +232,13 @@ func TestDisc_GetChannelMessagesOrdersBySeq(t *testing.T) {
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}
-	if err := app.StartDiscussion(thread.ID, "Architects"); err != nil {
+	if err := app.StartDiscussion(context.Background(), thread.ID, "Architects"); err != nil {
 		t.Fatalf("StartDiscussion: %v", err)
 	}
 	parent, _ := app.store.GetThread(thread.ID)
 
 	for _, content := range []string{"first", "second", "third"} {
-		if _, err := app.PostChannelMessage(parent.DiscussionID, content); err != nil {
+		if _, err := app.PostChannelMessage(context.Background(), parent.DiscussionID, content); err != nil {
 			t.Fatalf("PostChannelMessage(%s): %v", content, err)
 		}
 	}
@@ -309,12 +310,12 @@ func TestDisc_DeleteDiscussionCascadesChannelMessages(t *testing.T) {
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}
-	if err := app.StartDiscussion(thread.ID, "Architects"); err != nil {
+	if err := app.StartDiscussion(context.Background(), thread.ID, "Architects"); err != nil {
 		t.Fatalf("StartDiscussion: %v", err)
 	}
 	parent, _ := app.store.GetThread(thread.ID)
 
-	if _, err := app.PostChannelMessage(parent.DiscussionID, "msg-1"); err != nil {
+	if _, err := app.PostChannelMessage(context.Background(), parent.DiscussionID, "msg-1"); err != nil {
 		t.Fatalf("PostChannelMessage: %v", err)
 	}
 
@@ -353,7 +354,7 @@ func TestDisc_DeleteThreadPairedWithDiscussionPreservesDiscussion(t *testing.T) 
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}
-	if err := app.StartDiscussion(thread.ID, "Architects"); err != nil {
+	if err := app.StartDiscussion(context.Background(), thread.ID, "Architects"); err != nil {
 		t.Fatalf("StartDiscussion: %v", err)
 	}
 	parent, _ := app.store.GetThread(thread.ID)
@@ -387,7 +388,7 @@ func TestDisc_ParticipantRoutingRespected(t *testing.T) {
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}
-	if err := app.StartDiscussion(thread.ID, "Architects"); err != nil {
+	if err := app.StartDiscussion(context.Background(), thread.ID, "Architects"); err != nil {
 		t.Fatalf("StartDiscussion: %v", err)
 	}
 	parent, _ := app.store.GetThread(thread.ID)
@@ -450,15 +451,15 @@ func TestDisc_ChannelMessageSeqDedup(t *testing.T) {
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}
-	if err := app.StartDiscussion(thread.ID, "Architects"); err != nil {
+	if err := app.StartDiscussion(context.Background(), thread.ID, "Architects"); err != nil {
 		t.Fatalf("StartDiscussion: %v", err)
 	}
 	parent, _ := app.store.GetThread(thread.ID)
 
-	if _, err := app.PostChannelMessage(parent.DiscussionID, "same content"); err != nil {
+	if _, err := app.PostChannelMessage(context.Background(), parent.DiscussionID, "same content"); err != nil {
 		t.Fatalf("PostChannelMessage #1: %v", err)
 	}
-	if _, err := app.PostChannelMessage(parent.DiscussionID, "same content"); err != nil {
+	if _, err := app.PostChannelMessage(context.Background(), parent.DiscussionID, "same content"); err != nil {
 		t.Fatalf("PostChannelMessage #2: %v", err)
 	}
 
@@ -539,7 +540,7 @@ func TestDisc_StartDiscussionFailsOnMissingParticipants(t *testing.T) {
 		t.Fatalf("CreateThread: %v", err)
 	}
 
-	err := app.StartDiscussion(parent.ID, "DoesNotExist")
+	err := app.StartDiscussion(context.Background(), parent.ID, "DoesNotExist")
 	if err == nil {
 		t.Fatal("StartDiscussion: expected error for missing definition")
 	}
@@ -571,14 +572,14 @@ func TestDisc_LargeChannelMessageList(t *testing.T) {
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}
-	if err := app.StartDiscussion(thread.ID, "Architects"); err != nil {
+	if err := app.StartDiscussion(context.Background(), thread.ID, "Architects"); err != nil {
 		t.Fatalf("StartDiscussion: %v", err)
 	}
 	parent, _ := app.store.GetThread(thread.ID)
 
 	const N = 500
 	for i := 0; i < N; i++ {
-		if _, err := app.PostChannelMessage(parent.DiscussionID, formatLargeContent(i)); err != nil {
+		if _, err := app.PostChannelMessage(context.Background(), parent.DiscussionID, formatLargeContent(i)); err != nil {
 			t.Fatalf("PostChannelMessage #%d: %v", i, err)
 		}
 	}

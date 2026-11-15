@@ -160,7 +160,7 @@ func snapshotRowsTx(tx *sql.Tx, keeper string, rows []inheritedRow) error {
 	const copyColumns = `SELECT items.id, ?, items.turn_index, items.item_index, items.kind, items.role,
 				       items.status, items.summary, items.payload_id, items.input_payload_id,
 				       items.parent_id, items.is_background, items.completion_of, items.tool_name,
-				       items.decision, items.meta, items.created_at, items.updated_at`
+				       items.decision, items.meta, items.created_at, items.updated_at, items.find_text`
 	for _, owner := range owners {
 		group := groups[owner]
 		for start := 0; start < len(group); start += forkCopyBatch {

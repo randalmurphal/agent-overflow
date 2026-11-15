@@ -351,7 +351,8 @@ func TestThreadToolsSwitchReachesLiveSessions(t *testing.T) {
 			capture := t.TempDir()
 			if name == string(provider.Claude) {
 				sess, err := claude.NewSession(ctx, thread.ID, claude.Config{
-					Binary: writeClaudeMcpToggleCaptureBinary(t, capture), WorkDir: thread.WorkspacePath,
+					Retention: claude.UserHomeRetention(0),
+					Binary:    writeClaudeMcpToggleCaptureBinary(t, capture), WorkDir: thread.WorkspacePath,
 				}, func(provider.ProviderEvent) {})
 				if err != nil {
 					t.Fatal(err)

@@ -397,6 +397,65 @@ func TestSwitchingReadAloudOffEndsWhatWasAdmitted(t *testing.T) {
 	}
 }
 
+// A reader that skips gives back what it no longer wants: sections given
+// back leave the backlog room at once, their tickets answer nothing, and a
+// synthesis given back while its fetch is still open ends and leaves its
+// slot free.
+func TestReleasedReadAloudSectionsFreeTheirPlaces(t *testing.T) {
+	t.Parallel()
+	const key = "sk-proj-read-aloud-released"
+	app, base := newReadAloudTestApp(t, key)
+	var released string
+	for range readaloud.MaxPending + 1 {
+		url, err := app.MintReadAloudTicket(context.Background(), "Skipped.", "marin")
+		if err != nil {
+			t.Fatalf("a section after ones given back: %v", err)
+		}
+		if err := app.ReleaseReadAloudTicket(url); err != nil {
+			t.Fatal(err)
+		}
+		released = url
+	}
+	if pending := app.readAloudSentences().Pending(); pending != 0 {
+		t.Fatalf("sections waiting after all were given back = %d", pending)
+	}
+	if status, _, _ := fetchSpeech(t, context.Background(), base+released); status != http.StatusNotFound {
+		t.Fatalf("a given-back ticket answered %d, want 404", status)
+	}
+
+	urls := make([]string, readaloud.MaxSpeaking)
+	fetched := make(chan int, readaloud.MaxSpeaking)
+	for i := range urls {
+		url, err := app.MintReadAloudTicket(context.Background(), "Wait "+openaifake.SpeechStalls, "marin")
+		if err != nil {
+			t.Fatal(err)
+		}
+		urls[i] = url
+		go func() {
+			status, _, _ := fetchSpeech(t, context.Background(), base+url)
+			fetched <- status
+		}()
+	}
+	waitFor(t, "every slot stalled", func() bool { return openaifake.OpenSpeechSessions(key) == readaloud.MaxSpeaking })
+	for _, url := range urls {
+		if err := app.ReleaseReadAloudTicket(url); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if status, body, _ := mintAndFetch(t, app, base, "Hello there.", "marin"); status != http.StatusOK {
+		t.Fatalf("a fetch after the stalled ones were given back = %d %q", status, body)
+	}
+	for range urls {
+		if status := <-fetched; status != http.StatusNotFound {
+			t.Fatalf("a given-back synthesis answered %d, want 404", status)
+		}
+	}
+	waitFor(t, "the OpenAI calls to close", func() bool { return openaifake.OpenSpeechSessions(key) == 0 })
+	if err := app.ReleaseReadAloudTicket("/attachments/other/x"); err == nil {
+		t.Fatal("a URL that is no speech ticket was taken back")
+	}
+}
+
 // Each served clip gives its synthesis slot back, so more sentences than
 // the cap can be read one after another.
 func TestAServedReadAloudClipFreesItsSlot(t *testing.T) {

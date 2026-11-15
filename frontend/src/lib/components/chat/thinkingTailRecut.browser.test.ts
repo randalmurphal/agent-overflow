@@ -265,7 +265,7 @@ describe.each(CASES)('streaming thinking tail through a live window recut ($name
     await waitFor(() => {
       const window = pane.liveThinkingWindowForItem(THINKING_ID);
       return window !== null && window.start + window.text.length === end;
-    }, 'the reveal to catch up', 600);
+    }, 'the reveal to catch up');
     await wait(300);
     stop = true;
     await sampler;

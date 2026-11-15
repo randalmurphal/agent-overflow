@@ -14,6 +14,7 @@ import (
 	"agent-overflow/internal/rpcclient"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadtools"
+	"agent-overflow/internal/transport"
 )
 
 // Cross-computer reach for the agent thread tools: the paired computers
@@ -24,10 +25,13 @@ import (
 // destination; nothing here runs one, and the destination authorizes every
 // call itself against the authenticated device.
 
-// threadPeerCallTimeout bounds one forwarded call. A read of a long thread
-// renders a page on the destination and a write starts a turn there, so it
-// sits well above a round trip and well below the tool call ceiling.
-const threadPeerCallTimeout = 60 * time.Second
+// threadPeerCallWait bounds one forwarded call: the destination method's
+// declared budget and the answer margin (transport.ClientWait), so the
+// destination's answer, a timeout of its own included, arrives first. A
+// forwarded wait sits inside ThreadToolQuery's budget
+// (threadtools.MaxForwardedWaitSeconds), and a spawn may fork and cut a
+// worktree inside ThreadToolCall's.
+func threadPeerCallWait(method string) time.Duration { return transport.ClientWait(method) }
 
 // PairedComputers lists the computers this one is paired with, never
 // including this computer. An empty list is the single-computer shape, in
@@ -107,7 +111,7 @@ type threadPeerClient struct {
 func (p threadPeerClient) Computer() threadtools.Computer { return p.computer }
 
 func (p threadPeerClient) Resolve(ctx context.Context, ref string) (threadtools.Resolution, error) {
-	call, cancel := context.WithTimeout(ctx, threadPeerCallTimeout)
+	call, cancel := context.WithTimeout(ctx, threadPeerCallWait("ThreadToolResolve"))
 	defer cancel()
 	var answer threadtools.Resolution
 	if err := p.app.backends.CallThreadPeer(call, p.computer.ID, "ThreadToolResolve", &answer,
@@ -126,7 +130,7 @@ func (p threadPeerClient) Invoke(ctx context.Context, name string, args json.Raw
 }
 
 func (p threadPeerClient) forward(ctx context.Context, method, name string, args json.RawMessage) (json.RawMessage, error) {
-	call, cancel := context.WithTimeout(ctx, threadPeerCallTimeout)
+	call, cancel := context.WithTimeout(ctx, threadPeerCallWait(method))
 	defer cancel()
 	var reply ThreadPeerReply
 	err := p.app.backends.CallThreadPeer(call, p.computer.ID, method, &reply,
@@ -317,7 +321,7 @@ const threadPeerAdmissionAttempts = 3
 
 // threadRequestAdmissionFence keeps a freshly written source row out of the
 // poller for as long as the attempts can take, plus the normal poll delay.
-const threadRequestAdmissionFence = threadPeerCallTimeout*threadPeerAdmissionAttempts + threadPollNormalDelay
+var threadRequestAdmissionFence = threadPeerCallWait("ThreadToolCall")*threadPeerAdmissionAttempts + threadPollNormalDelay
 
 // threadPeerFailure is what a request-minting call that did not return an
 // acceptance established about the request.
@@ -349,7 +353,7 @@ const (
 // nothing about the work the first attempt started.
 func (a *App) callThreadPeerRequest(ctx context.Context, computer threadtools.Computer, call ThreadPeerCall) (ThreadPeerRequest, threadPeerFailure, error) {
 	for attempt := 1; ; attempt++ {
-		rpc, cancel := context.WithTimeout(ctx, threadPeerCallTimeout)
+		rpc, cancel := context.WithTimeout(ctx, threadPeerCallWait("ThreadToolCall"))
 		var reply ThreadPeerReply
 		err := a.backends.CallThreadPeer(rpc, computer.ID, "ThreadToolCall", &reply, call)
 		cancel()

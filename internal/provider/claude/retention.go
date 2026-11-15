@@ -21,18 +21,24 @@ import (
 // deletes every old transcript under the home using that process's own
 // resolved value. The shortest value among the processes that sweep is
 // therefore the home's effective retention, so every process Agent Overflow
-// starts against the user's home carries an answer: a session and an MCP
-// sign-in (Config.CleanupPeriodDays), an account probe
-// (ProbeConfig.CleanupPeriodDays), the interactive TUI
-// (claudetui.Config.CleanupPeriodDays) and a text-generation run
-// (textgen.Config.ClaudeCleanupPeriodDays). `--no-session-persistence` does
-// not stop the sweep. `claude mcp list` and `--version` never start it, and
-// a sign-in runs in its own empty home.
+// starts from the Claude binary gives an answer, a Retention, and its
+// command line is built by NewCommandLine, which refuses a launch without
+// one. UserHomeRetention carries the period: a session and an MCP sign-in,
+// an account probe, the interactive TUI, a text-generation run, and the
+// update check's `claude doctor` and the `claude update` run, which carry it
+// although a run without credentials was seen to exit before the sweep
+// (claude-wire.md, "Transcript cleanup"). `--no-session-persistence` does
+// not stop the sweep. NoSweepRetention is for `claude mcp list`, which never
+// starts it, and IsolatedHomeRetention for a sign-in, which runs in its own
+// empty home. `--version` never starts it either and is the one launch
+// outside NewCommandLine: provider.DetectProvider runs it for both providers
+// and cannot import this package.
 //
-// Each of those launches clears ConfigHomeUnsetEnv, so the config home it
+// Every command line clears ConfigHomeUnsetEnv, so the config home a launch
 // sweeps is `.claude` under the HOME it runs with, and the caller passes
-// that home to ReadCleanupPeriod. The exception is a probe pinned to an
-// isolated home, which holds no transcripts.
+// that home to ReadCleanupPeriod. A probe pinned to an isolated home sets
+// CLAUDE_CONFIG_DIR again through its environment; that home holds no
+// transcripts.
 //
 // The value travels in the `--settings` block, whose flagSettings source
 // outranks the user, project and local settings files. CleanupPeriodOverride
@@ -167,15 +173,4 @@ func CleanupPeriodOverride(keepDays int, resolved CleanupPeriod) int {
 		return 0
 	}
 	return keepDays
-}
-
-// CleanupPeriodArgs returns the `--settings` argv pair that carries days,
-// for a launch that sends no other settings key. It is nil when days is not
-// positive.
-func CleanupPeriodArgs(days int) []string {
-	settingsJSON, ok := inlineSettingsForCLI(Config{CleanupPeriodDays: days})
-	if !ok {
-		return nil
-	}
-	return []string{"--settings", settingsJSON}
 }

@@ -22,12 +22,12 @@ import (
 )
 
 const (
-	// defaultTimeout bounds every git / gh / glab subprocess. It MUST
-	// stay well below the frontend RPC timeout (RPC_TIMEOUT_MS in
-	// frontend/src/lib/transport/wsClient.ts): when a forge CLI hangs
-	// on a dead network, the descriptive error here ("gh ... timed out
-	// after 45s") must reach the pane before the opaque client-side
-	// "RPC timed out" fires.
+	// defaultTimeout bounds every git / gh / glab subprocess. It fits
+	// transport.DefaultMethodBudget, which a client waits out plus a
+	// margin: when a forge CLI hangs on a dead network, the descriptive
+	// error here ("gh ... timed out after 45s") reaches the pane before
+	// the opaque client-side "RPC timed out". A command bounded longer
+	// belongs to a method that declares a //ao:budget covering it.
 	defaultTimeout        = 45 * time.Second
 	defaultMaxOutputBytes = int64(1_000_000)
 
@@ -85,7 +85,10 @@ type Core struct {
 	repositoryLookups     repositoryLookups
 	repositoryLookupSlots chan struct{}
 	timeout               time.Duration
-	maxOutputBytes        int64
+	// commitTimeout replaces CommitTimeout for a test; zero
+	// keeps it.
+	commitTimeout  time.Duration
+	maxOutputBytes int64
 
 	// prCache memoizes lookupOpenPR results so a refresh storm (gitwatch
 	// firing every fs-event-debounce) doesn't translate into a `gh pr
@@ -423,22 +426,64 @@ func (c *Core) RemoveWorktree(cwd, path string) error {
 }
 
 // RemoveWorktreeForce removes a worktree from a repository, optionally using
-// git's force flag for app-owned cleanup paths.
+// git's force flag for app-owned cleanup paths. It lifts any lock first: the
+// removal is one a person, or the app on behalf of the worktree's owner,
+// decided on.
 func (c *Core) RemoveWorktreeForce(cwd, path string, force bool) error {
+	return c.removeWorktree(cwd, path, force, func(string) bool { return true })
+}
+
+// RemoveWorktreeUnattended removes a worktree for a removal nobody asked for
+// (the merged-PR cleanup), without git's force flag. It lifts only a lock
+// with no reason (Claude Code's `EnterWorktree`) or one Agent Overflow wrote;
+// a lock with any other reason is a person's, and the removal is refused
+// with *WorktreeLockedError.
+func (c *Core) RemoveWorktreeUnattended(cwd, path string) error {
+	return c.removeWorktree(cwd, path, false, func(reason string) bool {
+		return reason == "" || isAppLockReason(reason)
+	})
+}
+
+// WorktreeLockedError is an unattended removal refused because a person
+// locked the worktree: its lock carries a reason Agent Overflow did not
+// write.
+type WorktreeLockedError struct {
+	Path   string
+	Reason string
+}
+
+func (e *WorktreeLockedError) Error() string {
+	return fmt.Sprintf("worktree %s is locked: %s", e.Path, e.Reason)
+}
+
+// ErrWorktreeHasSubmodules is git refusing to remove a worktree with
+// initialized submodules without --force. Waiting does not change it.
+var ErrWorktreeHasSubmodules = errors.New("the worktree has initialized submodules")
+
+// isAppLockReason reports a lock reason Agent Overflow writes: a checkout's
+// (checkoutLockReason) or a transfer preparation's (transferWorktreeReason).
+func isAppLockReason(reason string) bool {
+	return strings.HasPrefix(reason, checkoutLockReason) || strings.HasPrefix(reason, transferWorktreeReasonPrefix)
+}
+
+// removeWorktree removes the worktree at path, lifting its lock first when
+// lift accepts the lock's reason (empty for a lock without one). Claude Code
+// locks the worktrees it enters so `git worktree prune` leaves them alone,
+// and git refuses to remove a locked worktree with one --force; lifting the
+// lock rather than double-forcing keeps the dirty-tree guard the caller
+// chose.
+func (c *Core) removeWorktree(cwd, path string, force bool, lift func(reason string) bool) error {
 	if strings.TrimSpace(path) == "" {
 		return errors.New("git worktree path is required")
 	}
-
-	// Claude Code locks the worktrees it enters (`EnterWorktree`) so
-	// `git worktree prune` leaves them alone, and git refuses to remove a
-	// locked worktree with one --force. Removal here is deliberate, so lift
-	// the lock first rather than double-forcing, which would also override
-	// the dirty-tree guard the caller chose.
-	locked, err := c.worktreeLocked(cwd, path)
+	entry, listed, err := c.worktreeEntry(cwd, path)
 	if err != nil {
 		return err
 	}
-	if locked {
+	if listed && entry.locked {
+		if !lift(entry.lockReason) {
+			return &WorktreeLockedError{Path: path, Reason: entry.lockReason}
+		}
 		if _, stderr, err := c.Execute(cwd, "worktree", "unlock", "--", path); err != nil {
 			return fmt.Errorf("git worktree unlock failed: %s", firstNonEmpty(strings.TrimSpace(stderr), err.Error()))
 		}
@@ -451,11 +496,15 @@ func (c *Core) RemoveWorktreeForce(cwd, path string, force bool) error {
 	// "--" so a flag-shaped path can never parse as a git option — this is
 	// the one worktree argv that can carry a wire-supplied path.
 	args = append(args, "--", path)
-	_, stderr, err := c.Execute(cwd, args...)
+	// C locale: the submodule refusal is recognized by its message.
+	_, stderr, err := c.executeLocaleC(cwd, args...)
 	if err != nil {
 		message := strings.TrimSpace(stderr)
 		if message == "" {
 			message = err.Error()
+		}
+		if strings.Contains(message, "working trees containing submodules cannot be moved or removed") {
+			return fmt.Errorf("git worktree remove failed: %s: %w", message, ErrWorktreeHasSubmodules)
 		}
 		return fmt.Errorf("git worktree remove failed: %s", message)
 	}
@@ -600,6 +649,11 @@ type commandSpec struct {
 	outputLimit int64
 	// timeout overrides the interactive default for app-lifetime transfer jobs.
 	timeout time.Duration
+	// stopGracefully runs the command in its own process group and stops
+	// it, at its timeout or its context's end, with SIGTERM to the group
+	// (then SIGKILL after CommitStopGrace), so the children it started stop
+	// with it. A commit sets it: its hooks may be running when it stops.
+	stopGracefully bool
 	// maxBytes caps stdout and stderr independently; <= 0 falls back to
 	// the Core's configured cap, then the package default.
 	maxBytes int64
@@ -683,6 +737,11 @@ func (c *Core) runSpec(spec commandSpec) (commandResult, error) {
 	}
 	cmd := exec.CommandContext(ctx, target.path, spec.args...)
 	cmd.Args[0] = target.argv0
+	if spec.stopGracefully {
+		procutil.ConfigureGroup(cmd)
+		cmd.Cancel = func() error { return procutil.TerminateConfiguredGroup(cmd) }
+		cmd.WaitDelay = CommitStopGrace
+	}
 	// Background-cadence git (`status` every debounce edge) must not
 	// opportunistically rewrite .git/index: the write is a pure cache
 	// optimization for git, but it fires an fs event under the watched
@@ -823,20 +882,20 @@ type worktreeEntry struct {
 	lockReason string
 }
 
-// worktreeLocked reports whether path is a locked worktree of the repository
-// at cwd. A path git does not list is not locked; the caller's own git
-// command reports it as unknown.
-func (c *Core) worktreeLocked(cwd, path string) (bool, error) {
+// worktreeEntry returns path's record among the repository's worktrees at
+// cwd, and whether git lists it. A path git does not list is not locked; the
+// caller's own git command reports it as unknown.
+func (c *Core) worktreeEntry(cwd, path string) (worktreeEntry, bool, error) {
 	entries, err := c.listWorktreeEntries(cwd)
 	if err != nil {
-		return false, err
+		return worktreeEntry{}, false, err
 	}
 	for _, entry := range entries {
 		if SameFilesystemPath(entry.Path, path) {
-			return entry.locked, nil
+			return entry, true, nil
 		}
 	}
-	return false, nil
+	return worktreeEntry{}, false, nil
 }
 
 // listWorktreeEntries is every worktree record of the repository at cwd,

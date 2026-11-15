@@ -12,7 +12,12 @@ import (
 	"testing"
 	"time"
 	"unicode/utf8"
+
+	"agent-overflow/internal/provider/claude"
 )
+
+// userHome answers the transcript sweep for a test run with no period.
+func userHome(string) claude.Retention { return claude.UserHomeRetention(0) }
 
 func TestLimitPromptSection_NoopBelowBudget(t *testing.T) {
 	in := "short diff"
@@ -56,8 +61,9 @@ func TestLimitPromptSection_CutsOnARuneBoundary(t *testing.T) {
 func TestRunClaude_IsolatesFromWorkspaceCustomizations(t *testing.T) {
 	var got CLISpec
 	cfg := Config{
-		Binary: "claude",
-		Model:  "claude-haiku-4-5",
+		Binary:          "claude",
+		Model:           "claude-haiku-4-5",
+		ClaudeRetention: userHome,
 		Exec: func(_ context.Context, spec CLISpec) (CLIResult, error) {
 			got = spec
 			return CLIResult{Stdout: `{"structured_output":{}}`}, nil
@@ -513,9 +519,10 @@ func TestRunClaude_RendersEffortFromConfig(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var got CLISpec
 			cfg := Config{
-				Binary: "claude",
-				Model:  "claude-sonnet-4-6",
-				Effort: tc.effort,
+				Binary:          "claude",
+				Model:           "claude-sonnet-4-6",
+				Effort:          tc.effort,
+				ClaudeRetention: userHome,
 				Exec: func(_ context.Context, spec CLISpec) (CLIResult, error) {
 					got = spec
 					return CLIResult{Stdout: `{"structured_output":{}}`}, nil
@@ -537,28 +544,27 @@ func TestRunClaude_RendersEffortFromConfig(t *testing.T) {
 // so the home it sweeps is the one the period was resolved against.
 func TestRunClaude_CarriesCleanupPeriodDays(t *testing.T) {
 	// Answers only for the workspace the run is in.
-	forWorkspace := func(days int) func(string) int {
-		return func(workspace string) int {
+	forWorkspace := func(days int) func(string) claude.Retention {
+		return func(workspace string) claude.Retention {
 			if workspace != "/workspace" {
-				return 0
+				return claude.UserHomeRetention(0)
 			}
-			return days
+			return claude.UserHomeRetention(days)
 		}
 	}
 	for _, tc := range []struct {
 		name string
-		days func(string) int
+		days func(string) claude.Retention
 		want []string
 	}{
 		{name: "configured", days: forWorkspace(90), want: []string{"--settings", `{"cleanupPeriodDays":90}`}},
 		{name: "none for this workspace", days: forWorkspace(0), want: nil},
-		{name: "no resolver", days: nil, want: nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var got CLISpec
 			cfg := Config{
-				Binary:                  "claude",
-				ClaudeCleanupPeriodDays: tc.days,
+				Binary:          "claude",
+				ClaudeRetention: tc.days,
 				Exec: func(_ context.Context, spec CLISpec) (CLIResult, error) {
 					got = spec
 					return CLIResult{Stdout: `{"structured_output":{}}`}, nil
@@ -576,6 +582,39 @@ func TestRunClaude_CarriesCleanupPeriodDays(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// A Claude run with no retention answer starts nothing.
+func TestRunClaude_RefusesAnUnansweredRetention(t *testing.T) {
+	cfg := Config{
+		Binary: "claude",
+		Exec: func(context.Context, CLISpec) (CLIResult, error) {
+			t.Fatal("a run with no retention answer started the CLI")
+			return CLIResult{}, nil
+		},
+	}
+	if _, err := RunClaude(context.Background(), cfg, "/workspace", `{"type":"object"}`, nil, "prompt", time.Minute); err == nil {
+		t.Fatal("RunClaude accepted a Config with no ClaudeRetention")
+	}
+}
+
+// A Codex run authenticates from the home every other Codex launch uses.
+func TestRunCodex_DropsAnInheritedCodexHome(t *testing.T) {
+	var got CLISpec
+	cfg := Config{
+		Binary: "codex",
+		Model:  "gpt-5",
+		Exec: func(_ context.Context, spec CLISpec) (CLIResult, error) {
+			got = spec
+			return CLIResult{}, nil
+		},
+	}
+	if _, err := RunCodex(context.Background(), cfg, t.TempDir(), `{"type":"object"}`, nil, "prompt", time.Minute); err != nil {
+		t.Fatalf("RunCodex: %v", err)
+	}
+	if !slices.Contains(got.UnsetEnv, "CODEX_HOME") {
+		t.Fatalf("UnsetEnv = %v, want it to drop CODEX_HOME", got.UnsetEnv)
 	}
 }
 

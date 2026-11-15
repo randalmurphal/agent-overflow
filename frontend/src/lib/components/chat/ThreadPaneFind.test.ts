@@ -26,11 +26,9 @@ function hello(capabilities: string[]) {
   });
 }
 
-function wireHit(itemId: string) {
-  return {
-    ownershipEpoch: 0, threadId: 'thread-1', threadTitle: 'T', provider: 'claude', itemId,
-    turnIndex: 1, itemIndex: 0, itemKind: 'assistant_text', itemRole: 'assistant', summary: 's', matchType: 'item',
-  };
+/** A full answer of the store holding these candidate rows. */
+function answer(...items: ReturnType<typeof makeItem>[]) {
+  return { since: null, incremental: false, items, changed: [], capped: false };
 }
 
 function mount(pane: ThreadPane) {
@@ -68,14 +66,14 @@ it('re-reads the open find when a row text changes without a structural change',
   hello(['timeline.scopes.v1', 'thread-find.v1']);
   const row = makeItem({ id: 'a', threadId: 'thread-1', turnIndex: 1, kind: 'assistant_text', role: 'assistant', summary: 'plain' });
   const pane = await buildPane(makeThread({ id: 'thread-1' }), [row]);
-  const search = setBindingMock('SearchThreadItems', async () => []);
+  const search = setBindingMock('SearchThreadItems', async () => answer());
   mount(pane);
   openPaneFind('main');
   setPaneFindQuery('main', 'needle');
   await waitFor(() => expect(search).toHaveBeenCalledTimes(1));
   const structural = pane.timelineRevision;
 
-  search.mockImplementation(async () => [wireHit('a')]);
+  search.mockImplementation(async () => answer({ ...row, summary: 'plain with needle' }));
   pane.upsertItem({ ...row, summary: 'plain with needle', updatedAt: row.updatedAt + 1 });
   expect(pane.timelineRevision).toBe(structural);
   await waitFor(() => expect(search).toHaveBeenCalledTimes(2), { timeout: 3000 });
@@ -86,7 +84,7 @@ it('re-reads the open find for a row the window refuses, and counts nothing once
   hello(['timeline.scopes.v1', 'thread-find.v1']);
   const loaded = makeItem({ id: 'loaded', threadId: 'thread-1', turnIndex: 5 });
   const pane = await buildPane(makeThread({ id: 'thread-1' }), [loaded]);
-  const search = setBindingMock('SearchThreadItems', async () => []);
+  const search = setBindingMock('SearchThreadItems', async () => answer());
   mount(pane);
   openPaneFind('main');
   setPaneFindQuery('main', 'needle');
@@ -109,13 +107,13 @@ it('a same-thread reload drops the hits and searches again', async () => {
   hello(['timeline.scopes.v1', 'thread-find.v1']);
   const thread = makeThread({ id: 'thread-1' });
   const pane = await buildPane(thread);
-  const search = setBindingMock('SearchThreadItems', async () => [wireHit('a')]);
+  const search = setBindingMock('SearchThreadItems', async () => answer(makeItem({ id: 'a', threadId: 'thread-1', turnIndex: 1, kind: 'assistant_text', role: 'assistant', summary: 'a needle' })));
   mount(pane);
   openPaneFind('main');
   setPaneFindQuery('main', 'needle');
   await waitFor(() => expect(getPaneFindProvider('main')?.result.count).toBe(1));
   let finish!: () => void;
-  search.mockImplementation(() => new Promise((resolve) => { finish = () => resolve([]); }));
+  search.mockImplementation(() => new Promise((resolve) => { finish = () => resolve(answer()); }));
   await pane.switchThread(thread);
   flushSync();
   expect(getPaneFindProvider('main')?.result).toMatchObject({ count: 0, pending: true });

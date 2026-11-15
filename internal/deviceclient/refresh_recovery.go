@@ -20,7 +20,7 @@ func (c *Client) refreshRecoverySupport(ctx context.Context, held Session) (bool
 	if held.RefreshRecovery != nil {
 		return *held.RefreshRecovery, nil
 	}
-	status, header, body, err := healthProbe(ctx, c.http, c.base)
+	status, header, body, err := healthProbe(ctx, stepRenewalSupport, c.http, c.base)
 	if err != nil {
 		return false, fmt.Errorf("deviceclient: check renewal support: %w", err)
 	}

@@ -68,7 +68,7 @@ done
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	flow, result, err := StartMCPAuth(ctx, MCPAuthConfig{
-		Config:         Config{Binary: binary, WorkDir: dir},
+		Config:         Config{Binary: binary, WorkDir: dir, Retention: UserHomeRetention(0)},
 		ReadCredential: func() ([]byte, error) { return nil, fs.ErrNotExist },
 		RequestTimeout: 5 * time.Second,
 	}, "srv")

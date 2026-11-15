@@ -5,6 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 )
 
 // ThreadDraft is the composer draft state for a single thread. Attachments
@@ -25,6 +28,11 @@ type ThreadDraft struct {
 	PendingPlanImplementation string `json:"pendingPlanImplementation,omitempty"`
 	UpdatedAt                 int64  `json:"updatedAt"`
 }
+
+// ErrDraftThreadMissing is a draft write for a thread row that no longer
+// exists, such as an empty draft thread another request cleaned up. It wraps
+// sql.ErrNoRows, which the transport answers as not_found.
+var ErrDraftThreadMissing = fmt.Errorf("store: the draft's thread no longer exists: %w", sql.ErrNoRows)
 
 // GetThreadDraft returns the draft for a thread, or (empty, false, nil) if no
 // draft row exists yet.
@@ -116,6 +124,11 @@ func upsertThreadDraft(q sqlQueryer, d ThreadDraft) (bool, error) {
 		// The row already held exactly this draft. A normal outcome, not an
 		// error: the composer autosaves whether or not anything was typed.
 		return false, nil
+	}
+	var engine *sqlite.Error
+	if errors.As(err, &engine) && engine.Code() == sqlite3.SQLITE_CONSTRAINT_FOREIGNKEY {
+		// thread_id is the table's only foreign key.
+		return false, fmt.Errorf("store: upsert thread draft %s: %w", d.ThreadID, ErrDraftThreadMissing)
 	}
 	if err != nil {
 		return false, fmt.Errorf("store: upsert thread draft %s: %w", d.ThreadID, err)

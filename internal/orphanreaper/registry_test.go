@@ -14,8 +14,8 @@ func newTestRegistry(t *testing.T) (*Registry, string) {
 
 func TestRegistryAddLoadRoundTrip(t *testing.T) {
 	reg, _ := newTestRegistry(t)
-	a := Record{UUID: "a", PID: 100, PGID: 100, CreateUnix: 111}
-	b := Record{UUID: "b", PID: 200, PGID: 200, CreateUnix: 222}
+	a := Record{Owner: "a", PID: 100, PGID: 100, CreateUnix: 111}
+	b := Record{Owner: "b", PID: 200, PGID: 200, CreateUnix: 222}
 	if err := reg.Add(a); err != nil {
 		t.Fatal(err)
 	}
@@ -38,14 +38,14 @@ func TestRegistryAddLoadRoundTrip(t *testing.T) {
 
 func TestRegistryAddReplacesSamePGID(t *testing.T) {
 	reg, _ := newTestRegistry(t)
-	_ = reg.Add(Record{UUID: "old", PID: 100, PGID: 100, CreateUnix: 111})
-	_ = reg.Add(Record{UUID: "new", PID: 100, PGID: 100, CreateUnix: 999})
+	_ = reg.Add(Record{Owner: "old", PID: 100, PGID: 100, CreateUnix: 111})
+	_ = reg.Add(Record{Owner: "new", PID: 100, PGID: 100, CreateUnix: 999})
 
 	got, _ := reg.Load()
 	if len(got) != 1 {
 		t.Fatalf("len = %d, want 1 (dedup by pgid)", len(got))
 	}
-	if got[0].UUID != "new" || got[0].CreateUnix != 999 {
+	if got[0].Owner != "new" || got[0].CreateUnix != 999 {
 		t.Errorf("record = %+v, want the replacement", got[0])
 	}
 }

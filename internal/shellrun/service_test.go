@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -70,7 +71,9 @@ func (r *recorder) terminal(t *testing.T) Event {
 
 func newService(t *testing.T, rec *recorder, mutate func(*Config)) *Service {
 	t.Helper()
-	config := Config{Dir: filepath.Join(t.TempDir(), "captures"), Emit: rec.emit, Finish: rec.finished}
+	config := Config{
+		Dir: filepath.Join(t.TempDir(), "captures"), Emit: rec.emit, Finish: rec.finished, Reaper: &groupWatch{},
+	}
 	if mutate != nil {
 		mutate(&config)
 	}
@@ -305,7 +308,7 @@ func TestCaptureCapKeepsHeadMarkerAndTail(t *testing.T) {
 	line := []byte(strings.Repeat("é", 511) + "\n")
 	total := 0
 	service := newService(t, rec, func(config *Config) {
-		config.Run = func(_ context.Context, command procutil.GroupCommand) (procutil.GroupOutcome, error) {
+		config.Run = func(_ context.Context, _ procutil.Reaper, command procutil.GroupCommand) (procutil.GroupOutcome, error) {
 			_, _ = command.Output.Write([]byte("HEAD-MARK\n"))
 			for total < CaptureLimitBytes+(1<<20) {
 				// Split each line mid-rune to prove frames re-join them.
@@ -354,7 +357,7 @@ func TestNewClearsStaleCaptures(t *testing.T) {
 	if err := os.WriteFile(stale, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	service, err := New(Config{Dir: dir, Finish: func(context.Context, Result) error { return nil }})
+	service, err := New(Config{Dir: dir, Finish: func(context.Context, Result) error { return nil }, Reaper: &groupWatch{}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -466,11 +469,17 @@ func TestCancelDirStopsOnlyCommandsInsideTheDirectory(t *testing.T) {
 	}
 	start("thread-inside", "run-inside", inside)
 	start("thread-sibling", "run-sibling", sibling)
+	if !service.HasActiveIn(filepath.Join(root, "tree")) || service.HasActiveIn(filepath.Join(root, "elsewhere")) {
+		t.Fatal("HasActiveIn does not name exactly the directories CancelDir stops")
+	}
 	service.CancelDir(filepath.Join(root, "tree"))
 	// CancelDir returns when the process group is gone. The run leaves the
 	// registry when it settles, which the terminal frame follows.
 	if final := rec.terminal(t); final.RunID != "run-inside" || final.State != StateStopped {
 		t.Fatalf("terminal frame: %+v", final)
+	}
+	if service.HasActiveIn(filepath.Join(root, "tree")) {
+		t.Fatal("HasActiveIn still reports the stopped command")
 	}
 	if service.ActiveRunID("thread-inside") != "" {
 		t.Fatal("the command inside the directory is still registered as running")
@@ -486,7 +495,7 @@ func TestACommandThatSurvivesTheKillIsReported(t *testing.T) {
 	t.Parallel()
 	rec := &recorder{}
 	service := newService(t, rec, func(config *Config) {
-		config.Run = func(ctx context.Context, _ procutil.GroupCommand) (procutil.GroupOutcome, error) {
+		config.Run = func(ctx context.Context, _ procutil.Reaper, _ procutil.GroupCommand) (procutil.GroupOutcome, error) {
 			<-ctx.Done()
 			return procutil.GroupOutcome{ExitCode: -1}, procutil.ErrGroupSurvived
 		}
@@ -499,6 +508,80 @@ func TestACommandThatSurvivesTheKillIsReported(t *testing.T) {
 	}
 	if final := rec.terminal(t); final.State != StateFailed || !strings.Contains(final.Error, "still running") {
 		t.Fatalf("terminal frame: %+v", final)
+	}
+}
+
+// groupWatch is a procutil.Reaper that records the groups it watched and
+// released.
+type groupWatch struct {
+	mu       sync.Mutex
+	watched  []int
+	released []int
+}
+
+func (w *groupWatch) Watch(pgid int) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.watched = append(w.watched, pgid)
+}
+
+func (w *groupWatch) Release(pgid int) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.released = append(w.released, pgid)
+}
+
+func (w *groupWatch) snapshot() ([]int, []int) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return append([]int(nil), w.watched...), append([]int(nil), w.released...)
+}
+
+// A run's process group is handed to the host's orphan reaper while the
+// command runs and taken back once the group is gone, whether the command
+// exits or is stopped.
+func TestARunsGroupIsWatchedWhileItRuns(t *testing.T) {
+	t.Parallel()
+	for _, stop := range []bool{false, true} {
+		watch := &groupWatch{}
+		rec := &recorder{}
+		service := newService(t, rec, func(config *Config) {
+			config.Reaper = watch
+		})
+		command := "echo started"
+		if stop {
+			command = "echo started; sleep 60"
+		}
+		if _, err := service.Start(shellRequest(t, "run-1", command)); err != nil {
+			t.Fatal(err)
+		}
+		if stop {
+			waitActiveOutput(t, service, "started")
+			watched, released := watch.snapshot()
+			if len(watched) != 1 || len(released) != 0 {
+				t.Fatalf("while running: watched %v, released %v", watched, released)
+			}
+			if group, err := syscall.Getpgid(watched[0]); err != nil || group != watched[0] {
+				t.Fatalf("watched %d: group %d %v, want the running command's own group", watched[0], group, err)
+			}
+			if err := service.StopRun("thread-1", "run-1"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		rec.terminal(t)
+		watched, released := watch.snapshot()
+		if len(watched) != 1 || len(released) != 1 || released[0] != watched[0] {
+			t.Fatalf("stop=%v: watched %v, released %v, want the one group watched and released", stop, watched, released)
+		}
+	}
+}
+
+// A service is not built without a reaper to end its commands with the host.
+func TestANewServiceRequiresAReaper(t *testing.T) {
+	t.Parallel()
+	_, err := New(Config{Dir: t.TempDir(), Finish: func(context.Context, Result) error { return nil }})
+	if err == nil || !strings.Contains(err.Error(), "reaper") {
+		t.Fatalf("New without a reaper: %v", err)
 	}
 }
 
@@ -684,5 +767,39 @@ func TestStartedMarkersKeepOnlyTheNewest(t *testing.T) {
 	}
 	if got := present(); got != ".hidden a-directory d f g" {
 		t.Fatalf("after two more starts: %q", got)
+	}
+}
+
+// The marker is on disk, whole and under its own name, before the command's
+// process exists: a crash after the process started must find it.
+func TestTheStartIsRecordedBeforeTheCommandRuns(t *testing.T) {
+	t.Parallel()
+	dir := filepath.Join(t.TempDir(), "captures")
+	markers := filepath.Join(dir, startedMarkersDir)
+	recorded := make(chan string, 1)
+	rec := &recorder{}
+	service := newService(t, rec, func(config *Config) {
+		config.Dir = dir
+		config.Run = func(ctx context.Context, reaper procutil.Reaper, command procutil.GroupCommand) (procutil.GroupOutcome, error) {
+			entries, err := os.ReadDir(markers)
+			if err != nil {
+				return procutil.GroupOutcome{ExitCode: -1}, err
+			}
+			names := make([]string, 0, len(entries))
+			for _, entry := range entries {
+				names = append(names, entry.Name())
+			}
+			recorded <- strings.Join(names, " ")
+			return procutil.RunGroup(ctx, reaper, command)
+		}
+	})
+	if _, err := service.Start(shellRequest(t, "run-1", "true")); err != nil {
+		t.Fatal(err)
+	}
+	if got := <-recorded; got != "run-1" {
+		t.Fatalf("the markers directory held %q when the command started, want the run's marker alone", got)
+	}
+	if terminal := rec.terminal(t); terminal.State != StateSent {
+		t.Fatalf("terminal frame: %+v", terminal)
 	}
 }

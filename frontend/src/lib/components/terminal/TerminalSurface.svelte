@@ -32,7 +32,7 @@
   import { TERMINAL_FIND_OVERLAY_CLASS, terminalFindKey } from './terminalFind.svelte';
   import PaneFindBar from '../panes/PaneFindBar.svelte';
   import { paneFindSurface } from '../panes/paneFindRegion';
-  import { dropPaneFind, hasPaneFindProvider, isPaneFindOpen, openPaneFind } from '../../stores/paneFind.svelte';
+  import { hasPaneFindProvider, isPaneFindOpen, openPaneFind } from '../../stores/paneFind.svelte';
   import { isCompactLayout } from '../../stores/layoutMode.svelte';
 
   interface Props {
@@ -221,16 +221,6 @@
   const stripCovered = $derived.by(() => {
     const key = activeFindKey();
     return isCompactLayout() && key !== null && isPaneFindOpen(key);
-  });
-
-  // A closed tab's find state goes with it.
-  let listedTerminals = new Set(handle.tabs.map((t) => t.terminalID));
-  $effect(() => {
-    const now = new Set(handle.tabs.map((t) => t.terminalID));
-    for (const terminalID of listedTerminals) {
-      if (!now.has(terminalID)) dropPaneFind(terminalFindKey(surface.paneId, terminalID));
-    }
-    listedTerminals = now;
   });
 
   let previousTabCount = handle.tabs.length;

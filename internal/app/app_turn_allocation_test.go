@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 	"time"
@@ -18,7 +19,7 @@ import (
 func TestDirectSendAfterProviderTurnTakesTheNextIndex(t *testing.T) {
 	t.Parallel()
 	app, bus, thread := startTwoTurnClaudeThread(t)
-	if err := app.SendMessage(thread.ID, "first", nil); err != nil {
+	if err := app.SendMessage(context.Background(), thread.ID, "first", nil); err != nil {
 		t.Fatalf("SendMessage 1: %v", err)
 	}
 	bus.nextProviderEventOfKind(t, provider.EventTurnComplete, 5*time.Second)
@@ -35,7 +36,7 @@ func TestDirectSendAfterProviderTurnTakesTheNextIndex(t *testing.T) {
 			t.Errorf("insert wake turn: %v", err)
 		}
 	}
-	if err := app.SendMessage(thread.ID, "second", nil); err != nil {
+	if err := app.SendMessage(context.Background(), thread.ID, "second", nil); err != nil {
 		t.Fatalf("SendMessage 2: %v", err)
 	}
 	bus.nextProviderEventOfKind(t, provider.EventTurnComplete, 5*time.Second)
@@ -60,7 +61,7 @@ func TestDirectSendAfterProviderTurnTakesTheNextIndex(t *testing.T) {
 func TestWakeAfterDirectSendPersistTakesItsTurn(t *testing.T) {
 	t.Parallel()
 	app, bus, thread := startTwoTurnClaudeThread(t)
-	if err := app.SendMessage(thread.ID, "first", nil); err != nil {
+	if err := app.SendMessage(context.Background(), thread.ID, "first", nil); err != nil {
 		t.Fatalf("SendMessage 1: %v", err)
 	}
 	bus.nextProviderEventOfKind(t, provider.EventTurnComplete, 5*time.Second)
@@ -77,7 +78,7 @@ func TestWakeAfterDirectSendPersistTakesItsTurn(t *testing.T) {
 			t.Errorf("wake opened turn %d, want the send's turn 1", got)
 		}
 	}
-	if err := app.SendMessage(thread.ID, "second", nil); err != nil {
+	if err := app.SendMessage(context.Background(), thread.ID, "second", nil); err != nil {
 		t.Fatalf("SendMessage 2: %v", err)
 	}
 	bus.nextProviderEventOfKind(t, provider.EventTurnComplete, 5*time.Second)
@@ -94,7 +95,7 @@ func TestWakeAfterDirectSendPersistTakesItsTurn(t *testing.T) {
 func TestSendRegistersAgainAfterSessionReplacedBeforeDispatch(t *testing.T) {
 	t.Parallel()
 	app, bus, thread := startTwoTurnClaudeThread(t)
-	if err := app.SendMessage(thread.ID, "first", nil); err != nil {
+	if err := app.SendMessage(context.Background(), thread.ID, "first", nil); err != nil {
 		t.Fatalf("SendMessage 1: %v", err)
 	}
 	bus.nextProviderEventOfKind(t, provider.EventTurnComplete, 5*time.Second)
@@ -107,7 +108,7 @@ func TestSendRegistersAgainAfterSessionReplacedBeforeDispatch(t *testing.T) {
 		app.triage.CleanupThread(threadID)
 		app.triage.MarkThreadActive(threadID)
 	}
-	if err := app.SendMessage(thread.ID, "second", nil); err != nil {
+	if err := app.SendMessage(context.Background(), thread.ID, "second", nil); err != nil {
 		t.Fatalf("SendMessage 2: %v", err)
 	}
 	bus.nextProviderEventOfKind(t, provider.EventTurnComplete, 5*time.Second)

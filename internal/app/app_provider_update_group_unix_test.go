@@ -42,7 +42,7 @@ func TestProviderUpdateCancellationEndsTheUpdatersChildren(t *testing.T) {
 	}
 	done := make(chan result, 1)
 	go func() {
-		out, err := runProviderUpdateGroup(ctx, command)
+		out, err := runProviderUpdateGroup(ctx, (&App{}).groupReaper("provider update"), command)
 		done <- result{out, err}
 	}()
 	pid := readChildPID(t, filepath.Join(command.Dir, "child.pid"))
@@ -72,18 +72,40 @@ func TestProviderUpdateCancellationEndsTheUpdatersChildren(t *testing.T) {
 // output; a command that cannot start is an error.
 func TestProviderUpdateGroupRunnerReportsExitAndStartFailures(t *testing.T) {
 	t.Parallel()
-	out, err := runProviderUpdateGroup(context.Background(),
+	out, err := runProviderUpdateGroup(context.Background(), (&App{}).groupReaper("provider update"),
 		shellUpdateCommand(t, "echo fetching\necho 'EACCES: permission denied' >&2\nexit 3\n"))
 	if err != nil || out.ExitCode != 3 || !strings.Contains(out.Text, "fetching") || !strings.Contains(out.Text, "EACCES") {
 		t.Fatalf("out = %+v, err = %v; want exit 3 with both streams", out, err)
 	}
-	out, err = runProviderUpdateGroup(context.Background(), shellUpdateCommand(t, "echo done\n"))
+	out, err = runProviderUpdateGroup(context.Background(), (&App{}).groupReaper("provider update"), shellUpdateCommand(t, "echo done\n"))
 	if err != nil || out.ExitCode != 0 || strings.TrimSpace(out.Text) != "done" {
 		t.Fatalf("clean run = %+v, %v", out, err)
 	}
 	missing := providerupdate.Command{Binary: filepath.Join(t.TempDir(), "absent"), Args: []string{"update"}, Dir: t.TempDir()}
-	if _, err := runProviderUpdateGroup(context.Background(), missing); err == nil {
+	if _, err := runProviderUpdateGroup(context.Background(), (&App{}).groupReaper("provider update"), missing); err == nil {
 		t.Fatal("a command that cannot start was not an error")
+	}
+}
+
+// A command whose Done answers true is stopped there and succeeds with the
+// output so far: a `claude doctor` that lingers after naming its channel
+// holds no process until its deadline.
+func TestProviderUpdateCommandStopsOnceDone(t *testing.T) {
+	t.Parallel()
+	command := shellUpdateCommand(t, "echo 'Auto-update channel: latest'\nsleep 300\n")
+	command.Done = func(output string) bool { return strings.Contains(output, "channel: latest\n") }
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	started := time.Now()
+	out, err := runProviderUpdateGroup(ctx, (&App{}).groupReaper("provider update"), command)
+	if err != nil {
+		t.Fatalf("err = %v, want a finished command", err)
+	}
+	if !strings.Contains(out.Text, "Auto-update channel: latest") {
+		t.Errorf("output = %q", out.Text)
+	}
+	if elapsed := time.Since(started); elapsed > 10*time.Second {
+		t.Errorf("took %s; the command was not stopped when done", elapsed)
 	}
 }
 

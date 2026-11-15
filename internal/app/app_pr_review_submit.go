@@ -31,11 +31,18 @@ import (
 //     note of the viewer, an unlocked submit could publish the notes a
 //     locked one is still creating, which that one's cleanup would then
 //     read as removed. Nothing else creates draft notes (replies and
-//     thread actions post notes directly), so nothing else takes it.
+//     thread actions post notes directly), so nothing else takes it. A
+//     GitLab submit that finds pending draft notes before creating its own
+//     (a review started on GitLab, notes an earlier submit could not
+//     remove) is refused (gitops.PendingDraftNotesError), so it publishes
+//     only what it created.
 //   - A result means this submit reached the forge: Posted says the forge
 //     took a review from it, Unconfirmed that the forge's answer did not
 //     say (gitops.UnconfirmedSubmitError: its drafts stay drafts and are
-//     not held, since nothing proves they posted). An error means it
+//     not held, since nothing proves they posted). Each forge first settles
+//     a lost answer by reading what landed (GitLab's pending draft notes,
+//     GitHub's reviews by the viewer), so Unconfirmed is what that read
+//     could not decide. An error means it
 //     posted nothing. A draft that is not a draft any more (sent by an earlier
 //     submit, another tab or device, or a message) is refused with
 //     ReviewDraftsNotDraftsCode, and one an earlier review posted that is
@@ -63,7 +70,8 @@ import (
 // backend by its hello's launchId and says the review may be on the PR.
 // The lock is this backend's: two computers holding the same PR's drafts
 // do not share it, and on GitLab two computers submitting the same MR at
-// once can publish each other's notes.
+// once can publish each other's notes when one creates its notes between
+// the other's pending check and its publish.
 //
 // A request without Drafts is the caller's comments, posted as given; the
 // caller marks its drafts with MarkDiffReviewCommentsSent or
@@ -84,10 +92,14 @@ const reviewUnmarkedKind = "unmarked"
 
 // SubmitPRReviewRequest is one review submit: a verdict, a summary and the
 // comments, either built by the caller (Comments) or, with Drafts, read
-// from the stored drafts it names.
+// from the stored drafts it names. HeadSHA is the PR head the caller's
+// diff was loaded at, required (gitops.SubmitReviewRequest): a head that
+// moved since is refused as kind stale_head on GitLab and pins the review
+// to it on GitHub; a thread's sent drafts record it (`pr:<head>`).
 type SubmitPRReviewRequest struct {
 	Verdict  string                     `json:"verdict"`
 	Body     string                     `json:"body"`
+	HeadSHA  string                     `json:"headSha"`
 	Comments []gitops.ReviewLineComment `json:"comments"`
 	// Drafts names the stored pr-scope drafts the review carries; Comments
 	// is then ignored. Absent from a client older than pr-review-drafts.v1.
@@ -102,9 +114,6 @@ type SubmitPRReviewRequest struct {
 type SubmitPRReviewDrafts struct {
 	ThreadID string   `json:"threadId,omitempty"`
 	IDs      []string `json:"ids"`
-	// HeadSHA is the PR head the drafts were written against; a thread's
-	// sent drafts record it (`pr:<head>`).
-	HeadSHA string `json:"headSha,omitempty"`
 }
 
 // SubmitPRReview posts a review of pr. With review.Drafts it posts the
@@ -112,6 +121,7 @@ type SubmitPRReviewDrafts struct {
 //
 //ao:scope git:operate
 //ao:route selected
+//ao:budget 10m
 func (a *App) SubmitPRReview(ctx context.Context, pr gitops.PRReference, review SubmitPRReviewRequest) (result SubmitPRReviewResult, err error) {
 	if a.shuttingDown.Load() {
 		return SubmitPRReviewResult{}, ErrShuttingDown
@@ -138,7 +148,7 @@ func (a *App) SubmitPRReview(ctx context.Context, pr gitops.PRReference, review 
 	}
 	defer unlock()
 	if review.Drafts == nil {
-		result, err := a.gitCore().SubmitReview(forgeapi.WithInteractive(ctx), pr, gitops.SubmitReviewRequest{Verdict: review.Verdict, Body: review.Body, Comments: review.Comments})
+		result, err := a.gitCore().SubmitReview(forgeapi.WithInteractive(ctx), pr, gitops.SubmitReviewRequest{Verdict: review.Verdict, Body: review.Body, HeadSHA: review.HeadSHA, Comments: review.Comments})
 		mapped, err := mapSubmitPRReviewResult(pr, gitops.ActionReview, result, err)
 		return mapped, gitops.ExplainForgeError(pr, gitops.ActionReview, err)
 	}
@@ -154,7 +164,7 @@ func (a *App) submitPRReviewDrafts(ctx context.Context, pr gitops.PRReference, r
 			return SubmitPRReviewResult{}, err
 		}
 		owner = store.ThreadReviewOwner(threadID)
-		sentTurnID = "pr:" + review.Drafts.HeadSHA
+		sentTurnID = "pr:" + review.HeadSHA
 	}
 	source := prDraftSource(pr)
 	if err := a.reconcilePostedReviewDrafts(owner); err != nil {
@@ -167,7 +177,7 @@ func (a *App) submitPRReviewDrafts(ctx context.Context, pr gitops.PRReference, r
 	if err != nil {
 		return SubmitPRReviewResult{}, fmt.Errorf("submit PR review: %w", err)
 	}
-	request := gitops.SubmitReviewRequest{Verdict: review.Verdict, Body: review.Body, Comments: make([]gitops.ReviewLineComment, 0, len(drafts))}
+	request := gitops.SubmitReviewRequest{Verdict: review.Verdict, Body: review.Body, HeadSHA: review.HeadSHA, Comments: make([]gitops.ReviewLineComment, 0, len(drafts))}
 	for _, draft := range drafts {
 		if comment, ok := reviewLineCommentForDraft(draft); ok {
 			request.Comments = append(request.Comments, comment)
@@ -233,6 +243,7 @@ type PRReviewSubmitOutcome struct {
 //ao:scope git:operate
 //ao:route selected
 //ao:callerbound
+//ao:budget 10m
 func (a *App) GetPRReviewSubmitOutcome(ctx context.Context, pr gitops.PRReference, attemptID string) (PRReviewSubmitOutcome, error) {
 	if err := pr.Validate(); err != nil {
 		return PRReviewSubmitOutcome{}, err

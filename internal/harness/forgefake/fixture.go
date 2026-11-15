@@ -63,14 +63,15 @@ type Repo struct {
 	// into a page and drops them from it after, so a page comes back
 	// short and still names its next page, as GitLab's does.
 	EventsHidden bool `json:"eventsHidden,omitempty"`
-	// Members, Teams, Labels, Organization and ServerLacks are what the
-	// management actions search and check (manage.go).
-	Members      []Member `json:"members,omitempty"`
-	Teams        []Team   `json:"teams,omitempty"`
-	TeamsRefused bool     `json:"teamsRefused,omitempty"`
-	Organization bool     `json:"organization,omitempty"`
-	Labels       []Label  `json:"labels,omitempty"`
-	ServerLacks  []string `json:"serverLacks,omitempty"`
+	// Members, Teams, Labels, Organization, ServerVersion and ServerLacks
+	// are what the management actions search and check (manage.go).
+	Members       []Member `json:"members,omitempty"`
+	Teams         []Team   `json:"teams,omitempty"`
+	TeamsRefused  bool     `json:"teamsRefused,omitempty"`
+	Organization  bool     `json:"organization,omitempty"`
+	Labels        []Label  `json:"labels,omitempty"`
+	ServerVersion string   `json:"serverVersion,omitempty"`
+	ServerLacks   []string `json:"serverLacks,omitempty"`
 	// Parent is the project this repository is a fork of, seeded on the
 	// same host: a checkout of the fork opens its pull requests there
 	// (GitHub's parent, GitLab's forked_from_project), and a pull there

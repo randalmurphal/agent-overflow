@@ -145,7 +145,11 @@ func (c *Core) PrepareTransferWorktree(ctx context.Context, request TransferWork
 	return plan, err
 }
 
-func transferWorktreeReason(id string) string { return "Agent Overflow transfer " + id }
+// transferWorktreeReasonPrefix starts every transfer preparation's lock
+// reason; the operation id follows it.
+const transferWorktreeReasonPrefix = "Agent Overflow transfer "
+
+func transferWorktreeReason(id string) string { return transferWorktreeReasonPrefix + id }
 
 // DiscardTransferPreparation is only for an unactivated or canceled operation.
 // It refuses published workspaces and verifies operation ownership before

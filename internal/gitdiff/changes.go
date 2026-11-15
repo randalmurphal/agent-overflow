@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -52,6 +53,12 @@ func CaptureWorktree(ctx context.Context, workspace, tempRoot string) (*Worktree
 		return nil, errors.Join(err, tree.release())
 	}
 	return &WorktreeSnapshot{workspace: workspace, tree: tree, oldSide: oldSide}, nil
+}
+
+// ObjectEnv is the environment under which git reads the snapshot's
+// objects, the blobs its Changes name included. Valid until Close.
+func (s *WorktreeSnapshot) ObjectEnv() []string {
+	return slices.Clone(s.tree.env)
 }
 
 // Close removes the snapshot's temporary objects.

@@ -1100,6 +1100,34 @@ func TestMarkThreadRequestDeliveredAsDraftCorrectsAQueuedWake(t *testing.T) {
 	}
 }
 
+// A retry pass reads a row as owed and books its attempt later; a delivery
+// that lands in between has cleared the schedule, and the booking must not
+// put it back on a row that owes nothing.
+func TestScheduleThreadRequestWakeBooksOnlyAnOwedWake(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThread(t, s, "t-caller")
+	seedSettledThreadRequest(t, s, "tok-owed", "t-caller", ThreadRequestSend, 100, "done")
+	if _, err := s.SetThreadRequestNotify("tok-owed", true); err != nil {
+		t.Fatalf("arm notify: %v", err)
+	}
+	if booked, err := s.ScheduleThreadRequestWake("tok-owed", 9000, 1); err != nil || !booked {
+		t.Fatalf("schedule an owed wake: booked=%v err=%v", booked, err)
+	}
+	if _, err := s.MarkThreadRequestDelivered("tok-owed", ThreadWakeInline, 800, false); err != nil {
+		t.Fatalf("MarkThreadRequestDelivered: %v", err)
+	}
+	if booked, err := s.ScheduleThreadRequestWake("tok-owed", 12000, 2); err != nil || booked {
+		t.Fatalf("schedule a delivered wake: booked=%v err=%v, want nothing booked", booked, err)
+	}
+	row, _, err := s.GetThreadRequest("tok-owed")
+	if err != nil {
+		t.Fatalf("GetThreadRequest: %v", err)
+	}
+	if row.WakeAttempts != 0 || row.WakeNextCheck != 0 {
+		t.Fatalf("delivered row keeps a retry: attempts=%d next=%d", row.WakeAttempts, row.WakeNextCheck)
+	}
+}
+
 func TestNextThreadRequestWorkReportsEachPassApart(t *testing.T) {
 	s := newTestStore(t)
 	mustCreateThread(t, s, "t-caller")
@@ -1136,8 +1164,8 @@ func TestNextThreadRequestWorkReportsEachPassApart(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("settle: %v", err)
 	}
-	if err := s.ScheduleThreadRequestWake("tok-wake", 9000, 1); err != nil {
-		t.Fatalf("schedule wake: %v", err)
+	if booked, err := s.ScheduleThreadRequestWake("tok-wake", 9000, 1); err != nil || !booked {
+		t.Fatalf("schedule wake: booked=%v err=%v", booked, err)
 	}
 
 	schedule, err = s.NextThreadRequestWork()

@@ -150,6 +150,50 @@ describe('PatchStore', () => {
     expect(() => store.hunkOldStart(1)).toThrow('not a hunk header');
   });
 
+  // A pin holds whole chunks: pinnedEnd extends a range through the
+  // lines that end in the chunk its last line ends in, and no further.
+  it('answers the lines a pin holds anyway, lines spanning chunks included', () => {
+    const lengths = [5, 40, 3, 3, 90, 7, 2, 2, 2, 150, 4, 60, 1];
+    const lines = ['diff --git a/x b/x', '--- a/x', '+++ b/x', `@@ -0,0 +1,${lengths.length} @@`, ...lengths.map((n, i) => `+${String.fromCharCode(97 + i).repeat(n)}`)];
+    const patch = lines.join('\n') + '\n';
+    // Chunks as the backend cuts them, which end after a newline when they
+    // hold one, and cut every `n` characters, which need not.
+    const cuts: [string, { offset: number; nextOffset: number; data: string }[], PatchParser][] = [];
+    for (const window of [16, 25, 64]) {
+      const chunks = patchChunks(patch, window);
+      cuts.push([`window ${window}`, chunks, streamed(chunks)]);
+    }
+    for (const every of [7, 11, 30]) {
+      const parser = new PatchParser();
+      disposers.push(() => parser.store.dispose());
+      const chunks = [];
+      for (let offset = 0; offset < patch.length; offset += every) {
+        const data = patch.slice(offset, offset + every);
+        chunks.push({ offset, nextOffset: offset + data.length, data });
+        parser.append(data);
+      }
+      parser.end();
+      cuts.push([`every ${every}`, chunks, parser]);
+    }
+    for (const [label, chunks, parser] of cuts) {
+      const store = parser.store;
+      // The chunk each line's newline is in.
+      const ends: number[] = [];
+      for (let line = 0, at = 0; line < lines.length; line += 1) {
+        at += lines[line].length;
+        ends.push(chunks.findIndex((chunk) => chunk.offset <= at && at < chunk.nextOffset));
+        at += 1;
+      }
+      for (let start = 0; start < lines.length; start += 1) {
+        for (let end = start + 1; end <= lines.length; end += 1) {
+          let want = end;
+          while (want < lines.length && ends[want] <= ends[end - 1]) want += 1;
+          expect(store.pinnedEnd(start, end), `${label}: ${start}..${end}`).toBe(want);
+        }
+      }
+    }
+  });
+
   it('answers its line count and size read-only', () => {
     const store = PatchStore.fromLines([{ content: '+a', kind: LINE_ADD }]);
     // @ts-expect-error lineCount is read-only.

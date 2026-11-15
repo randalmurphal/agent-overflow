@@ -1,13 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { conflictPatchFile } from './conflictFile';
 import { applyContextExpansion } from './diffContextExpansion';
-import { findNeedle } from './findMatch';
-import { setPatchTextBudgetForTest } from './patchMemory.svelte';
+import { findNeedle, LONG_TEXT } from './findMatch';
+import { patchTextHeldBytes, patchTextPinnedBytes, patchTextReadAheadBytes, setPatchTextBudgetForTest } from './patchMemory.svelte';
 import { parseReviewFiles, reviewFileFromPatchFile, type ReviewFile } from './patchParser';
 import { PatchStore } from './patchStore';
 import type { ReviewFindFileSpot, ReviewFindHit } from './reviewFindIdentity';
 import { forgetReviewFindSpotsForTest, placeReviewFindHit, resolveReviewFindHit } from './reviewFindRows';
-import { BLOCK_LINES, LOAD_LINES, scanReviewFind, type ReviewFindContent } from './reviewFindScan';
+import { scanReviewFind, type ReviewFindContent } from './reviewFindScan';
 import { createMarkdownFindTextCache } from '../components/chat/markdown/markdownFindText';
 import { collectScan, findContent, findDraft as draft, findThread as thread } from '../../test/helpers/reviewFindContent';
 import { shownOf } from '../../test/helpers/reviewFindOracle';
@@ -358,9 +358,7 @@ describe('scanReviewFind over evicted text', () => {
       source.read.mockClear();
       const { hits } = await collectScan(content({ files: evicted }), query, 100_000);
       expect(hits, query).toHaveLength(query === 'line' ? 2000 : 0);
-      // A chunk two ranges share is read once for each.
-      const ranges = Math.ceil(2000 / Math.min(BLOCK_LINES, LOAD_LINES));
-      expect(source.read.mock.calls.length, query).toBeLessThanOrEqual(spans.length + ranges);
+      expect(source.read.mock.calls.length, query).toBeLessThanOrEqual(spans.length);
       // Nothing stays pinned once the scan ends.
       expect(pins.held(), query).toBe(0);
     }
@@ -436,6 +434,44 @@ describe('scanReviewFind over evicted text', () => {
     expect(reads).toBeGreaterThan(0);
     // Only the range that was out was read, never the ranges after it.
     expect(source.read.mock.calls.length).toBeLessThan(spans.length / 2);
+  });
+
+  // Lines longer than a filter block are read whole, each one flagged
+  // unread. What the scan reads back and holds for them is bounded by
+  // size, so lines of any length keep the held text near the budget.
+  it('holds a bounded size of long lines it reads back, whatever their count', async () => {
+    const budget = 1 << 20;
+    setPatchTextBudgetForTest(budget);
+    const count = 300;
+    const lines = Array.from({ length: count }, (_, i) => `+${String(i).padStart(4, '0')} ${'x'.repeat(20_000)} needle`);
+    const patch = ['diff --git a/min.js b/min.js', '--- a/min.js', '+++ b/min.js', `@@ -0,0 +1,${count} @@`, ...lines, ''].join('\n');
+    const window = 64 * 1024;
+    const out = streamPatch(patch, window);
+    disposers.push(() => out.parser.store.dispose());
+    const body = out.files[0].body;
+    expect(body.resident()).toBe(false);
+    expect(body.lineSize(10)).toBeGreaterThan(LONG_TEXT);
+
+    const base = patchTextHeldBytes();
+    let peakPinned = 0;
+    let peakHeld = 0;
+    let hits = 0;
+    const sample = () => {
+      hits += 1;
+      peakPinned = Math.max(peakPinned, patchTextPinnedBytes());
+      peakHeld = Math.max(peakHeld, patchTextHeldBytes() - base);
+    };
+    await collectScan(content({ files: out.files }), 'needle', 100_000, { emit: sample });
+    expect(hits).toBe(count);
+    // A pin holds whole chunks: the read-ahead and the chunks at its ends.
+    const bound = patchTextReadAheadBytes() + 2 * window;
+    expect(bound).toBeLessThan(budget / 2);
+    expect(peakPinned).toBeGreaterThan(0);
+    expect(peakPinned).toBeLessThanOrEqual(bound);
+    expect(peakHeld).toBeLessThanOrEqual(budget + bound);
+    expect(patchTextPinnedBytes()).toBe(0);
+    // Each chunk is read back once.
+    expect(out.source.read.mock.calls.length).toBeLessThanOrEqual(out.spans.length);
   });
 
   it('a read that fails rejects the scan', async () => {

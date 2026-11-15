@@ -66,8 +66,11 @@
 			</span>
 		</Slot>
 	{:else}
+		<!-- The placeholder is chrome, not the message's text: find neither
+		     counts nor paints it. -->
 		<span
 			data-streamdown-image-blocked={id}
+			data-find-skip
 			class="inline-block rounded bg-surface-2 px-3 py-1 text-sm text-secondary"
 			title={unavailableTitle}
 		>

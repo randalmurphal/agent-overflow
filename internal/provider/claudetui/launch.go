@@ -51,7 +51,6 @@ func buildLaunchOptions(cfg Config, systemPromptPath, appendSystemPromptPath, ga
 	args := []string{
 		"--permission-mode", "bypassPermissions",
 		"--allow-dangerously-skip-permissions",
-		"--settings", settings,
 		// Opt thinking text onto the wire. Opus 4.7+ (including the opus-4-8 the
 		// interactive TUI runs) default the API `thinking.display` to `omitted`:
 		// the thinking block is still emitted with a signature, but its `thinking`
@@ -119,11 +118,18 @@ func buildLaunchOptions(cfg Config, systemPromptPath, appendSystemPromptPath, ga
 		args = append(args, "--disallowedTools", tool)
 	}
 
+	// The hook block and cfg.Retention's cleanupPeriodDays share the one
+	// `--settings` flag; the transcript sweep covers the whole config home,
+	// whichever surface runs it (claude/retention.go).
+	line, err := claude.NewCommandLine(cfg.Retention, settings, args...)
+	if err != nil {
+		return terminal.SessionOptions{}, fmt.Errorf("claudetui: %w", err)
+	}
 	return terminal.SessionOptions{
 		Shell: cfg.Binary,
-		Args:  args,
+		Args:  line.Args(),
 		Cwd:   cfg.WorkDir,
-		Env:   buildEnv(cfg, gatewayURL, hookURL, hookToken),
+		Env:   buildEnv(line.UnsetEnv(), cfg, gatewayURL, hookURL, hookToken),
 		Rows:  cfg.rows(),
 		Cols:  cfg.cols(),
 	}, nil
@@ -151,9 +157,6 @@ var observeHookEvents = []string{
 // GrowthBook flags live, auto-delivers a peer's message as a user turn in a
 // session whose user never opted in. "Off means off" is not a headless-only
 // property, so the refusal is stated on this surface too.
-//
-// cleanupPeriodDays is here because the transcript sweep covers the whole
-// config home, whichever surface runs it (claude/retention.go).
 //
 // The REST of the headless block (fastMode, outputStyle, the env map) is
 // deliberately not mirrored: those axes are spawn options the app resolves for
@@ -183,9 +186,6 @@ func hookSettingsJSON(cfg Config) (string, error) {
 	block := map[string]any{"hooks": hooks}
 	if inbound := strings.TrimSpace(cfg.CrossSessionInbound); inbound != "" {
 		block["crossSessionInbound"] = inbound
-	}
-	if cfg.CleanupPeriodDays > 0 {
-		block[claude.CleanupPeriodDaysSetting] = cfg.CleanupPeriodDays
 	}
 
 	data, err := json.Marshal(block)
@@ -237,8 +237,9 @@ const todoReminderModeEnvVar = "CLAUDE_CODE_TODO_REMINDER_MODE"
 // buildEnv layers the per-session gateway + relay env onto cfg.Env,
 // stripping any inherited values for the keys we own so a dirty parent env
 // can't redirect Claude away from our gateway, and fills in the todo-tools
-// defaults the base carries no value of its own for.
-func buildEnv(cfg Config, gatewayURL, hookURL, hookToken string) []string {
+// defaults the base carries no value of its own for. unset is the command
+// line's UnsetEnv, which the TUI owns as well.
+func buildEnv(unset []string, cfg Config, gatewayURL, hookURL, hookToken string) []string {
 	base := cfg.Env
 	if len(base) == 0 {
 		// Honor the documented "empty means inherit" Config.Env contract for an
@@ -250,23 +251,17 @@ func buildEnv(cfg Config, gatewayURL, hookURL, hookToken string) []string {
 		envHookURL:   {},
 		envHookToken: {},
 	}
-	// The peer-inbox gate and the peer-visible name are OWNED here, not
-	// inherited: CLAUDE_CODE_HARBOR_KITE is a parsed boolean the CLI reads
-	// before any settings layer, so a value in AO's own environment would
-	// make the TUI join the machine-wide registry while the setting says off
-	// — and refusing INBOUND messages does not undo being discoverable. Same
-	// list the headless spawn unsets (claude.CrossSessionUnsetEnv).
-	for _, key := range claude.CrossSessionUnsetEnv() {
+	// The command line's unset list is OWNED here, not inherited: the config
+	// home every Claude launch uses; the peer-inbox gate and peer-visible name
+	// (CLAUDE_CODE_HARBOR_KITE is a parsed boolean the CLI reads before any
+	// settings layer, so a value in AO's own environment would make the TUI
+	// join the machine-wide registry while the setting says off, and refusing
+	// INBOUND messages does not undo being discoverable); and the task-list
+	// key, the thread's identity (Config.TaskListID), dropped even when cfg
+	// carries none to state.
+	for _, key := range unset {
 		owned[key] = struct{}{}
 	}
-	// The TUI runs in the config home every other Claude launch uses, so an
-	// inherited override of it is dropped as the headless spawn drops it.
-	for _, key := range claude.ConfigHomeUnsetEnv() {
-		owned[key] = struct{}{}
-	}
-	// The task-list key is the thread's identity (Config.TaskListID), so an
-	// inherited value is dropped even when cfg carries none to state.
-	owned[claude.TaskListIDEnv] = struct{}{}
 	out := make([]string, 0, len(base))
 	haveTodoOptIn := false
 	haveReminderMode := false

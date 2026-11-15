@@ -600,6 +600,11 @@ func manageUnavailableSentence(ref PRReference, err error) string {
 	if forbidden, ok := errors.AsType[*forgeapi.ForbiddenError](err); ok && forbidden.Scope != "" {
 		return fmt.Sprintf("%s not shown: your %s token lacks the `%s` scope. Create a token with that scope and log %s in with it.", what, labels.host(ref.Host), forbidden.Scope, labels.binary)
 	}
+	// A refusal (a GitLab older than the supported floor) is not a
+	// passing failure.
+	if refused, ok := errors.AsType[*ForgeActionError](err); ok && refused.Kind == ForgeErrorRefused {
+		return what + " not shown. " + refused.Message
+	}
 	explained, _ := ExplainForgeError(ref, ActionRead, err).(*ForgeActionError)
 	return what + " not shown for now. " + explained.Message
 }

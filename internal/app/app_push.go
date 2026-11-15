@@ -164,8 +164,13 @@ func (a *App) pushFanout(send notify.Send) {
 	a.push.queue.Go(func() { a.deliverPush(sender, backendID, name, send) })
 }
 
-// deliverPush is the fan-out body, on the push queue.
+// deliverPush is the fan-out body, on the push queue. It waits for the
+// boot's steps before clients, which on a trial follow the commit, because a
+// push reaches the network and a rolled-back trial cannot take one back.
 func (a *App) deliverPush(sender push.Sender, backendID, backendName string, send notify.Send) {
+	if err := a.waitForBootSteps(a.lifeCtx()); err != nil {
+		return
+	}
 	tokens, err := a.store.LivePushTokens()
 	if err != nil {
 		a.recordPushFailure(send.Kind, fmt.Errorf("read push registrations: %w", err))

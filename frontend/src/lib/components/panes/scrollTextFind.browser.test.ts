@@ -1,6 +1,12 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { createScrollTextFind, type ScrollTextFind } from './scrollTextFind.svelte';
 import { findHighlightName } from '../../utils/findHighlights';
+import {
+  openPaneFind,
+  registerPaneFindProvider,
+  resetPaneFindForTest,
+  setPaneFindQuery,
+} from '../../stores/paneFind.svelte';
 
 // Real Chromium: stepping is judged by real scroll geometry.
 
@@ -35,6 +41,7 @@ function visible(root: HTMLElement, index: number): boolean {
 }
 
 afterEach(() => {
+  resetPaneFindForTest();
   for (const f of finds.splice(0)) f.clear();
   for (const root of roots.splice(0)) root.remove();
 });
@@ -86,5 +93,26 @@ describe('scroll text find', () => {
     f.clear();
     expect(f.result).toMatchObject({ count: 0, current: -1 });
     expect(CSS.highlights.has(findHighlightName('plan-pane'))).toBe(false);
+  });
+
+  it('a body that replaces another for the pane shows only its own matches', async () => {
+    const olderRoot = mount(['older needle']);
+    const newerRoot = mount(['newer needle', 'needle again']);
+    registerPaneFindProvider('plan-pane', find(olderRoot));
+    openPaneFind('plan-pane');
+    setPaneFindQuery('plan-pane', 'needle');
+    const newer = find(newerRoot);
+    registerPaneFindProvider('plan-pane', newer);
+    expect(newer.result.count).toBe(2);
+
+    // The older body's content moves while it is still mounted.
+    olderRoot.insertAdjacentHTML('beforeend', '<p>older needle too</p>');
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    const painted = [
+      ...(CSS.highlights.get(findHighlightName('plan-pane')) ?? []),
+      ...(CSS.highlights.get(`${findHighlightName('plan-pane')}-current`) ?? []),
+    ];
+    expect(painted).toHaveLength(2);
+    for (const range of painted) expect(newerRoot.contains(range.startContainer)).toBe(true);
   });
 });

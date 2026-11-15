@@ -21,6 +21,7 @@ import (
 	"agent-overflow/internal/buildvariant"
 	"agent-overflow/internal/bundle"
 	"agent-overflow/internal/computerroute"
+	"agent-overflow/internal/logging"
 	"agent-overflow/internal/loopback"
 	"agent-overflow/internal/pagehost"
 	"agent-overflow/internal/platform"
@@ -275,7 +276,7 @@ type Config struct {
 	// DictationTransfer receives the pieces of a recording uploaded for
 	// dictation (dictationroutes.go). Nil answers that route 404.
 	DictationTransfer DictationTransfer
-	// SpeechTransfer reads admitted sentences aloud (speechroutes.go). Nil
+	// SpeechTransfer reads admitted sections aloud (speechroutes.go). Nil
 	// answers that route 404.
 	SpeechTransfer SpeechTransfer
 
@@ -639,7 +640,7 @@ type Server struct {
 	// dictationTickets is a fifth: a recording piece is not an attachment,
 	// and its ticket is minted by a `threads:operate` call.
 	dictationTickets *ticketBook
-	// speechTickets is a sixth: a sentence to read aloud is none of the
+	// speechTickets is a sixth: a section to read aloud is none of the
 	// above, and its ticket is minted by a `threads:operate` call.
 	speechTickets *ticketBook
 }
@@ -1037,12 +1038,12 @@ func (s *Server) buildHTTPServer() *http.Server {
 	// fail in a way nothing on the page could explain. The /ws upgrade is
 	// deliberately absent — a WebSocket handshake is not subject to CORS,
 	// and `OriginAllowed` is what admits the shell there.
-	mux.HandleFunc(BootstrapPath, withShellCORS(http.MethodGet,
-		rateLimited(s.bootstrapLimit, s.loopbackHostGuard(s.handleBootstrap))))
+	mux.HandleFunc(BootstrapPath, timedRoute(stepBootstrap, withShellCORS(http.MethodGet,
+		rateLimited(s.bootstrapLimit, s.loopbackHostGuard(s.handleBootstrap)))))
 	mux.HandleFunc(WSPath, s.loopbackHostGuard(s.handleWS))
 	mux.HandleFunc(PageURLPath,
 		rateLimited(s.pageURLLimit, s.loopbackHostGuard(s.handlePageURL)))
-	mux.HandleFunc(HealthPath, s.loopbackHostGuard(s.handleHealthz))
+	mux.HandleFunc(HealthPath, timedRoute(stepHealth, s.loopbackHostGuard(s.handleHealthz)))
 	if s.cfg.ScopedTokens != nil {
 		mux.HandleFunc(ScopedRPCPath,
 			rateLimited(s.scopedRPCLimit, s.loopbackHostGuard(s.handleScopedRPC)))
@@ -1054,12 +1055,12 @@ func (s *Server) buildHTTPServer() *http.Server {
 	if s.cfg.AuthEndpoints != nil {
 		mux.HandleFunc(NearbyPairPath, withShellCORS(http.MethodPost,
 			rateLimited(s.authLimit, s.loopbackHostGuard(s.handleNearbyPair))))
-		mux.HandleFunc(AuthPairPath, withShellCORS(http.MethodPost,
-			rateLimited(s.authLimit, s.loopbackHostGuard(s.handleAuthPair))))
-		mux.HandleFunc(AuthTokenRecoverPath, withShellCORS(http.MethodPost,
-			rateLimited(s.authLimit, s.loopbackHostGuard(s.handleAuthToken))))
-		mux.HandleFunc(AuthTokenPath, withShellCORS(http.MethodPost,
-			rateLimited(s.authLimit, s.loopbackHostGuard(s.handleAuthToken))))
+		mux.HandleFunc(AuthPairPath, timedRoute(stepPairRoute, withShellCORS(http.MethodPost,
+			rateLimited(s.authLimit, s.loopbackHostGuard(s.handleAuthPair)))))
+		mux.HandleFunc(AuthTokenRecoverPath, timedRoute(stepRenewRoute, withShellCORS(http.MethodPost,
+			rateLimited(s.authLimit, s.loopbackHostGuard(s.handleAuthToken)))))
+		mux.HandleFunc(AuthTokenPath, timedRoute(stepRenewRoute, withShellCORS(http.MethodPost,
+			rateLimited(s.authLimit, s.loopbackHostGuard(s.handleAuthToken)))))
 		// Registered whenever the identity seam exists, not whenever a
 		// passkey could be used: availability depends on a setting the owner
 		// edits while the process runs, and a route that appeared and
@@ -1137,8 +1138,8 @@ func (s *Server) buildHTTPServer() *http.Server {
 	// the caller already holds — so it is registered whenever a session
 	// can be resolved at all.
 	if s.cfg.Sessions != nil {
-		mux.HandleFunc(AuthTicketPath, withShellCORS(http.MethodPost,
-			rateLimited(s.authLimit, s.loopbackHostGuard(s.handleAuthTicket))))
+		mux.HandleFunc(AuthTicketPath, timedRoute(stepTicketRoute, withShellCORS(http.MethodPost,
+			rateLimited(s.authLimit, s.loopbackHostGuard(s.handleAuthTicket)))))
 	}
 	if s.cfg.CDPTunnel != nil {
 		mux.HandleFunc(CDPTunnelPath, s.loopbackHostGuard(s.handleCDPTunnel))
@@ -2193,6 +2194,13 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	// Track BEFORE upgrade so a slow handshake also blocks Shutdown.
 	s.wg.Add(1)
 	defer s.wg.Done()
+	// The ws_accept slow step runs to the hello written (runConnHandler),
+	// or to the refusal here.
+	acceptStarted := time.Now()
+	refuse := func() {
+		http.NotFound(w, r)
+		logging.LogSlowStep(slowStepComponent, stepWSAccept, acceptStarted, logging.StatusOutcome(http.StatusNotFound))
+	}
 
 	// Capture the peer's loopback-ness BEFORE upgrade — the WebSocket
 	// connection wraps the underlying net.Conn and websocket.Conn doesn't
@@ -2224,7 +2232,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		subject, spent := s.wsTickets.consume(ticket)
 		if !spent || !s.sessionStillLive(subject) ||
 			!s.sessionAdmitsPeer(subject, r.RemoteAddr) {
-			http.NotFound(w, r)
+			refuse()
 			return
 		}
 		sessionID = subject
@@ -2238,7 +2246,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	} else {
 		id, ok := s.resolveSession(r)
 		if !ok {
-			http.NotFound(w, r)
+			refuse()
 			return
 		}
 		sessionID = id
@@ -2264,7 +2272,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	// credential and a missing route both get: a LAN scanner learns
 	// nothing from which of the three refused it.
 	if !isLoopback && sessionID == "" {
-		http.NotFound(w, r)
+		refuse()
 		return
 	}
 
@@ -2275,6 +2283,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	conn, err := upgrade(w, r, s.cred, s.currentOriginPatterns(), !isLoopback, ticketProven)
 	if err != nil {
 		// upgrade has already written the HTTP error code.
+		logging.LogSlowStep(slowStepComponent, stepWSAccept, acceptStarted, "refused")
 		return
 	}
 
@@ -2328,6 +2337,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	// Use the server's root context so Shutdown can cancel us promptly,
 	// not r.Context() which net/http only cancels on connection close.
 	runConnHandler(s.rootCtx, conn, s.cfg.Dispatcher, s.cfg.EventBus, connSettings{
+		acceptStarted:     acceptStarted,
 		readLimit:         s.cfg.ReadLimit,
 		maxConcurrentRPCs: s.cfg.MaxConcurrentRPCs,
 		keepaliveInterval: s.cfg.KeepaliveInterval,

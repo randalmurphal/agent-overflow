@@ -91,6 +91,9 @@ func New(config Config) (*Service, error) {
 	if config.Finish == nil {
 		return nil, errors.New("shellrun: finish hook is required")
 	}
+	if config.Reaper == nil {
+		return nil, errors.New("shellrun: reaper is required")
+	}
 	if config.Emit == nil {
 		config.Emit = func(Event) {}
 	}
@@ -257,20 +260,37 @@ func (s *Service) CancelThread(threadID string) {
 	}
 }
 
+// HasActiveIn reports whether a command is running in dir or below it,
+// whichever thread started it: the commands CancelDir would stop.
+func (s *Service) HasActiveIn(dir string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.runsInLocked(dir)) != 0
+}
+
+// runsInLocked returns the runs whose directory is dir or below it. Caller
+// holds s.mu.
+func (s *Service) runsInLocked(dir string) []*run {
+	dir = filepath.Clean(dir)
+	var inside []*run
+	for _, current := range s.runs {
+		rel, err := filepath.Rel(dir, filepath.Clean(current.request.Dir))
+		if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			inside = append(inside, current)
+		}
+	}
+	return inside
+}
+
 // CancelDir stops every command running in dir or below it, for a teardown
 // that removes the directory, and returns once their process groups are gone.
 // A thread can have moved to another workspace since its command started, so
 // the directory is the authority, not the thread.
 func (s *Service) CancelDir(dir string) {
-	dir = filepath.Clean(dir)
 	s.mu.Lock()
-	var inside []*run
-	for _, current := range s.runs {
-		rel, err := filepath.Rel(dir, filepath.Clean(current.request.Dir))
-		if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-			current.stopped = true
-			inside = append(inside, current)
-		}
+	inside := s.runsInLocked(dir)
+	for _, current := range inside {
+		current.stopped = true
 	}
 	s.mu.Unlock()
 	for _, current := range inside {
@@ -364,7 +384,9 @@ func (s *Service) execute(ctx context.Context, current *run) {
 		settle(StateFailed, "Could not give the command a terminal: "+errors.Join(err, closeErr).Error(), -1)
 		return
 	}
-	outcome, runErr := s.config.Run(ctx, procutil.GroupCommand{
+	// The command's group ends with this process: the host's orphan reaper
+	// watches it while it runs.
+	outcome, runErr := s.config.Run(ctx, s.config.Reaper, procutil.GroupCommand{
 		Dir: request.Dir, Env: request.Env,
 		Argv: []string{request.Shell, "-c", request.Command}, Output: capture,
 		Terminal: terminal.device,

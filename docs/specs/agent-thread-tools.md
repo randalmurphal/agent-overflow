@@ -748,7 +748,12 @@ target computer, target thread, kind, notify, wait, state, created,
 settled-at, delivered-at). The token is minted by the source and doubles
 as the idempotency key; the model never chooses or types request ids.
 Locally the row is lineage for `thread_cancel`, the handle for
-`thread_status`, and the wake binding.
+`thread_status`, and the wake binding. A request between two threads of
+one computer has its receipt on the same computer, and every settlement
+or late reply writes both rows in one transaction. A boot settles every
+such request still open once the last run's receipts are settled:
+from its receipt when that settled without it, otherwise as
+`interrupted` by the restart.
 
 Across computers the destination stores its own row for the request
 (token, owning device, source computer, source thread, target thread,
@@ -812,7 +817,11 @@ first: dropped. A restart of the caller's computer before a queued wake
 reached the provider restores it into the composer draft, as every
 queued message is; the request then reads `delivered: draft`, distinct
 from `delivered: inline` and `delivered: queued`, and `thread_status`
-still returns the answer.
+still returns the answer. A Stop, archive or revert that clears the
+caller's queue drops a queued wake with it; every request that message
+answered then reads as not delivered, with `notify` off so nothing
+queues it again, and `thread_status` delivers the answer when it reads
+it.
 
 A wake the settlement could not hand over (a caller thread whose lock
 never came free, a fenced thread, a crash between the two
@@ -821,7 +830,7 @@ towards a ten-minute ceiling for eight attempts. What stops a wake is
 the caller thread's own state, which no number of retries changes, so
 the retry ends rather than running for the life of the row: the request
 keeps its answer and records why the message never arrived, and
-`thread_status` returns both. A pass that finds a call holding the token
+`thread_status` returns both, the reason as `wake_issue`. A pass that finds a call holding the token
 books no attempt, so when that call's reply does not carry the answer,
 the wake is due again the moment the call lets go.
 

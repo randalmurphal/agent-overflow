@@ -22,7 +22,12 @@ This package owns six utilities:
   error.
 - `StartGroup` starts argv as the leader of its own process group and
   returns a `Group`; `Group.Wait` supervises it to the end, and `RunGroup` is
-  the two together. This is the one implementation of pipe ownership,
+  the two together. Both take the `Reaper` that ends the group if this
+  process dies, and refuse a nil one (`ErrNoReaper`): the group is watched
+  before `StartGroup` returns and released once `Wait` has seen it end, or
+  leave only kept leftovers. A group the kill could not end stays watched.
+  Which spawners use it, and what ends the others, is in
+  [process lifetime](../../docs/architecture/process-lifetime.md). This is the one implementation of pipe ownership,
   cancellation, the leftover sweep and the drain: do not build another from
   `ConfigureGroup`. A done context starts nothing. The `Group` owns the
   output pipe, so output from grandchildren is captured, from the start and

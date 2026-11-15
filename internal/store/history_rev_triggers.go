@@ -170,7 +170,8 @@ func stampedRowIDsWithCarrierKey(threadExpr, idExpr, parentExpr, carrierKey, sib
 const stampRowsSQL = `UPDATE items SET rev = (SELECT history_rev FROM threads WHERE id = items.thread_id)`
 
 // itemRevUpdateColumns are the columns whose write fires
-// trg_items_rev_update: every items column but rev, in table order.
+// trg_items_rev_update: every items column but rev and the find filter's
+// derived find_text, which no read returns, in table order.
 // Migration v121 installs the trigger with this list; a migration that
 // adds a column to items must reinstall the trigger with it
 // (TestItemRevUpdateTriggerListsEveryColumnButRev).

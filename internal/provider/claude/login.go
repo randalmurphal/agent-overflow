@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"maps"
 	"strconv"
 	"strings"
 	"sync"
@@ -136,14 +135,15 @@ func StartLogin(ctx context.Context, cfg LoginConfig) (*LoginSession, error) {
 	// directory, so a kill mid-exchange abandons a brand-new grant. It cannot
 	// brick a saved account the way killing an account PROBE can, which is
 	// what GracefulCancel exists for.
-	env := make(map[string]string, len(cfg.Env)+1)
-	maps.Copy(env, cfg.Env)
-	env["CLAUDE_CONFIG_DIR"] = cfg.ConfigDir
+	line, err := NewCommandLine(IsolatedHomeRetention(cfg.ConfigDir), "", loginArgs()...)
+	if err != nil {
+		return nil, err
+	}
 	proc, err := provider.Spawn(ctx, provider.SpawnConfig{
 		Binary:   binary,
-		Args:     loginArgs(),
-		Env:      env,
-		UnsetEnv: []string{"CLAUDE_SECURESTORAGE_CONFIG_DIR"},
+		Args:     line.Args(),
+		Env:      line.Env(cfg.Env),
+		UnsetEnv: line.UnsetEnv(),
 		Provider: "claude",
 	})
 	if err != nil {

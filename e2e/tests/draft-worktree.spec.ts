@@ -3,12 +3,15 @@
 // thread-scoped worktree operation creates and binds the checkout atomically.
 // Empty-draft cleanup ignores staged and attached worktree drafts, so it
 // cannot delete the owner while the operation is in flight or after it lands.
-// The final test keeps the inverse transition pinned: an ordinary text-only
-// draft still dematerializes when its text is erased.
+// The final tests keep the inverse transition pinned: an ordinary text-only
+// draft still dematerializes when its text is erased, and text typed while
+// that delete's reply is held (a slow connection) or on another screen is
+// never saved to the deleted row and ends up in a thread of its own.
 import type { Page } from '@playwright/test';
 import { realpath } from 'node:fs/promises';
 import { test, expect, type HarnessMockEvent, type SeedResult } from './fixtures.js';
 import type { HarnessApp } from '../src/harness.js';
+import { methodIdByName } from './offhost-helpers.js';
 
 const PROJECT = 'draft-worktree-app';
 /** Committed by the fixture and left unchecked-out, so a worktree can attach it. */
@@ -276,5 +279,171 @@ test('erasing a text draft removes it live from another client and leaves the co
     await expect(errorToasts(phone)).toHaveCount(0);
   } finally {
     await observer.close();
+  }
+});
+
+/**
+ * Records the page's draft saves and holds the first empty-draft delete's
+ * reply. The delete reaches the backend at once; its reply waits, as a slow
+ * round trip holds it on a connected browser or phone.
+ */
+async function holdDeleteReply(page: Page) {
+  const deleteMethod = methodIdByName('DeleteEmptyDraftThread');
+  const saveMethod = methodIdByName('SaveDraft');
+  const saves: Array<[string, string]> = [];
+  let deleteCallId = '';
+  let release: (() => void) | undefined;
+  await page.routeWebSocket(/\/ws(?:\?|$)/, (socket) => {
+    const server = socket.connectToServer();
+    socket.onMessage((message) => {
+      const frame = JSON.parse(String(message)) as { type?: string; id?: string; methodId?: number; params?: unknown[] };
+      if (frame.type === 'rpc' && frame.methodId === saveMethod) saves.push([String(frame.params?.[0]), String(frame.params?.[1])]);
+      if (frame.type === 'rpc' && frame.methodId === deleteMethod && !deleteCallId) deleteCallId = String(frame.id);
+      server.send(message);
+    });
+    server.onMessage((message) => {
+      const frame = JSON.parse(String(message)) as { type?: string; id?: string };
+      if (frame.type === 'rpc' && deleteCallId && String(frame.id) === deleteCallId && !release) {
+        release = () => socket.send(message);
+        return;
+      }
+      socket.send(message);
+    });
+  });
+  return {
+    held: () => Boolean(release),
+    release: () => release!(),
+    savesAfterErase: (threadId: string) =>
+      saves.filter(([id, content]) => id === threadId && content !== '' && content !== 'half a thought'),
+  };
+}
+
+/** Materialize a draft with text, erase it, and wait until its delete has landed with the reply held. */
+async function eraseWithDeleteHeld(harness: HarnessApp, page: Page, hold: Awaited<ReturnType<typeof holdDeleteReply>>) {
+  await openFreshDraft(harness, page);
+  const input = page.getByLabel('Message Input');
+  await input.fill('half a thought');
+  await expect.poll(async () => (await threadRows(harness)).length).toBe(1);
+  const [original] = await threadRows(harness);
+  await input.fill('');
+  await expect.poll(hold.held, { message: 'the delete never replied' }).toBe(true);
+  expect((await threadRows(harness)).map((row) => row.id)).not.toContain(original.id);
+  return { input, original };
+}
+
+test('typing again while the erased draft is being deleted keeps every character in the replacement thread', async ({
+  harness,
+  page,
+}) => {
+  await seedProject(harness);
+  const hold = await holdDeleteReply(page);
+  const { input, original } = await eraseWithDeleteHeld(harness, page, hold);
+
+  await input.pressSequentially('typed again');
+  // The hold outlasts the composer's save debounce, so the new text's save
+  // falls due while the reply is outstanding.
+  await page.waitForTimeout(1500);
+  hold.release();
+
+  await expect.poll(async () => (await threadRows(harness)).length).toBe(1);
+  const [replacement] = await threadRows(harness);
+  expect(replacement.id).not.toBe(original.id);
+  await expect(input).toHaveValue('typed again');
+  await expect.poll(async () => (await harness.rpc<{ content: string }>('GetDraft', replacement.id)).content).toBe('typed again');
+  expect(hold.savesAfterErase(original.id)).toEqual([]);
+  await expect(errorToasts(page)).toHaveCount(0);
+});
+
+// Leaving a new thread with text in it keeps that text as a draft thread in
+// the sidebar; leaving during the erased draft's delete keeps it the same way.
+test('text typed during the erased draft’s delete and left by opening another thread stays as a draft thread', async ({
+  harness,
+  page,
+}) => {
+  await seedProject(harness);
+  const hold = await holdDeleteReply(page);
+  const { input, original } = await eraseWithDeleteHeld(harness, page, hold);
+
+  await input.pressSequentially('typed then left');
+  await page.getByTestId('project-item-new-thread').first().click();
+  await expect(input).toHaveValue('');
+  hold.release();
+
+  await expect(page.getByTestId('thread-row')).toHaveCount(1);
+  await expect.poll(async () => (await threadRows(harness)).length).toBe(1);
+  const [kept] = await threadRows(harness);
+  expect(kept.id).not.toBe(original.id);
+  await expect.poll(async () => (await harness.rpc<{ content: string }>('GetDraft', kept.id)).content).toBe('typed then left');
+  expect(hold.savesAfterErase(original.id)).toEqual([]);
+  await expect(errorToasts(page)).toHaveCount(0);
+  await page.getByTestId('thread-row').click();
+  await expect(input).toHaveValue('typed then left');
+});
+
+/** A page whose draft saves for one thread reach the server only when released. */
+async function holdDraftSaves(page: Page, threadId: () => string) {
+  const saveMethod = methodIdByName('SaveDraft');
+  const held: Array<() => void> = [];
+  await page.routeWebSocket(/\/ws(?:\?|$)/, (socket) => {
+    const server = socket.connectToServer();
+    socket.onMessage((message) => {
+      const frame = JSON.parse(String(message)) as { type?: string; methodId?: number; params?: unknown[] };
+      if (frame.type === 'rpc' && frame.methodId === saveMethod && threadId() && frame.params?.[0] === threadId()) {
+        held.push(() => server.send(message));
+        return;
+      }
+      server.send(message);
+    });
+    server.onMessage((message) => socket.send(message));
+  });
+  return { count: () => held.length, release: () => held.splice(0).forEach((send) => send()) };
+}
+
+// Other screens on the same new thread keep typing while this one erases it.
+// Their saves reach the backend only after the delete, so each learns of the
+// deletion holding text the thread never received.
+test('text typed on other screens into a new thread this screen erases ends in a thread of its own on each', async ({
+  harness, page, browser,
+}) => {
+  await seedProject(harness);
+  let shared = '';
+  const others = await Promise.all([browser.newContext(), browser.newContext()]);
+  try {
+    const screens = await Promise.all(others.map(async (context) => {
+      const other = await context.newPage();
+      return { page: other, saves: await holdDraftSaves(other, () => shared) };
+    }));
+    await openFreshDraft(harness, page);
+    for (const screen of screens) await harness.open(screen.page);
+    await page.getByLabel('Message Input').fill('half a thought');
+    await expect.poll(async () => (await threadRows(harness)).length).toBe(1);
+    shared = (await threadRows(harness))[0].id;
+    const texts = ['typed on the second screen', 'typed on the third screen'];
+    for (const [i, screen] of screens.entries()) {
+      await screen.page.getByTestId('thread-row').click();
+      const input = screen.page.getByLabel('Message Input');
+      await expect(input).toHaveValue('half a thought');
+      await input.fill(texts[i]);
+      await expect.poll(screen.saves.count, { message: 'the save never fell due' }).toBeGreaterThan(0);
+    }
+
+    await page.getByLabel('Message Input').fill('');
+    await expect.poll(async () => (await threadRows(harness)).length).toBe(2);
+    for (const screen of screens) screen.saves.release();
+
+    const rows = await threadRows(harness);
+    expect(rows.map((row) => row.id)).not.toContain(shared);
+    await expect.poll(async () => (await Promise.all(rows.map(async (row) =>
+      (await harness.rpc<{ content: string }>('GetDraft', row.id)).content))).sort()).toEqual([...texts].sort());
+    for (const [i, screen] of screens.entries()) {
+      await expect(screen.page.getByLabel('Message Input')).toHaveValue(texts[i]);
+      await expect(errorToasts(screen.page)).toHaveCount(0);
+    }
+    await expect(page.getByLabel('Message Input')).toHaveValue('');
+    await expect(errorToasts(page)).toHaveCount(0);
+    await page.waitForTimeout(500);
+    expect((await threadRows(harness)).length).toBe(2);
+  } finally {
+    await Promise.all(others.map((context) => context.close()));
   }
 });

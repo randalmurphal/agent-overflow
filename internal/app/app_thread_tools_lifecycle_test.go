@@ -291,6 +291,7 @@ func TestBootRedeliversASettledRequestsLostWake(t *testing.T) {
 
 	after := f.restart(t)
 	after.app.sweepThreadRequestsAtBoot()
+	after.app.finishThreadRequestSweepAtBoot()
 
 	var wake store.FlushQueueItem
 	waitUntil(t, 10*time.Second, func() bool {
@@ -536,8 +537,9 @@ func TestSettlementReturnsAResponderToItsSwitch(t *testing.T) {
 	}
 	captureDir := t.TempDir()
 	sess, err := claude.NewSession(ctx, thread.ID, claude.Config{
-		Binary:  writeClaudeMcpToggleCaptureBinary(t, captureDir),
-		WorkDir: thread.WorkspacePath,
+		Retention: claude.UserHomeRetention(0),
+		Binary:    writeClaudeMcpToggleCaptureBinary(t, captureDir),
+		WorkDir:   thread.WorkspacePath,
 	}, func(provider.ProviderEvent) {})
 	if err != nil {
 		t.Fatalf("claude.NewSession: %v", err)

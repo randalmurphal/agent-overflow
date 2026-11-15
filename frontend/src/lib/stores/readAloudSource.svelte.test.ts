@@ -188,29 +188,74 @@ describe('readAloudClipFetcher', () => {
 
   it('fails with the route’s own reason, and with the computer’s refusal of the sentence', async () => {
     setBindingMock('MintReadAloudTicket', async () => '/attachments/speech/s1?ticket=t1');
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('OpenAI took longer than 45 seconds to read the sentence aloud', { status: 504 })));
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('OpenAI took longer than 45 seconds to read the section aloud', { status: 504 })));
     const fetchClip = readAloudClipFetcher('laptop');
     await expect(fetchClip('One.', 'marin', new AbortController().signal))
-      .rejects.toThrow(/^OpenAI took longer than 45 seconds to read the sentence aloud$/);
+      .rejects.toThrow(/^OpenAI took longer than 45 seconds to read the section aloud$/);
 
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('this sentence was already read aloud or has expired', { status: 404 })));
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('this section was already read aloud or has expired', { status: 404 })));
     await expect(fetchClip('One.', 'marin', new AbortController().signal))
-      .rejects.toThrow(/^this sentence was already read aloud or has expired$/);
+      .rejects.toThrow(/^this section was already read aloud or has expired$/);
 
-    const refusal = new Error('a sentence to read aloud is at most 1000 characters');
+    const refusal = new Error('a section to read aloud is at most 1000 characters');
     setBindingMock('MintReadAloudTicket', async () => { throw refusal; });
     await expect(fetchClip('One.', 'marin', new AbortController().signal)).rejects.toBe(refusal);
   });
 
-  it('spends no ticket for a reading stopped while the sentence was admitted', async () => {
+  it('spends no ticket for a reading stopped while the section was admitted, and gives it back', async () => {
     const controller = new AbortController();
     setBindingMock('MintReadAloudTicket', async () => {
       controller.abort();
       return '/attachments/speech/s1?ticket=t1';
     });
+    const targets: Array<string | null> = [];
+    const release = setBindingMock('ReleaseReadAloudTicket', async () => { targets.push(getPinnedBackend()); });
     const fetch = vi.fn();
     vi.stubGlobal('fetch', fetch);
     await expect(readAloudClipFetcher('laptop')('One.', 'marin', controller.signal)).rejects.toThrow();
     expect(fetch).not.toHaveBeenCalled();
+    expect(release).toHaveBeenCalledWith('/attachments/speech/s1?ticket=t1');
+    expect(targets).toEqual(['laptop']);
+  });
+
+  it('gives back a section skipped while its audio was fetched, and the next fetch waits until the computer has it', async () => {
+    let minted = 0;
+    setBindingMock('MintReadAloudTicket', async () => `/attachments/speech/s${++minted}?ticket=t${minted}`);
+    let answerRelease!: () => void;
+    const release = setBindingMock('ReleaseReadAloudTicket', () => new Promise<void>((resolve) => { answerRelease = resolve; }));
+    const fetched: string[] = [];
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      fetched.push(new URL(String(input), 'http://x').pathname);
+      if (fetched.length > 1) return Promise.resolve(new Response('RIFF clip', { status: 200 }));
+      return new Promise<Response>((_, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(init.signal!.reason));
+      });
+    }));
+    const fetchClip = readAloudClipFetcher('laptop');
+    const skipped = new AbortController();
+    const first = fetchClip('One.', 'marin', skipped.signal).catch((err) => err);
+    await vi.waitFor(() => expect(fetched).toHaveLength(1));
+    skipped.abort();
+    expect(release).toHaveBeenCalledWith('/attachments/speech/s1?ticket=t1');
+    await first;
+
+    const next = fetchClip('Two.', 'marin', new AbortController().signal);
+    await vi.waitFor(() => expect(minted).toBe(2));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(fetched).toHaveLength(1);
+    answerRelease();
+    expect(await (await next).text()).toBe('RIFF clip');
+    expect(fetched.map((path) => path.replace(/^.*\/attachments\//, '/attachments/'))).toEqual(['/attachments/speech/s1', '/attachments/speech/s2']);
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it('gives nothing back once the audio has arrived', async () => {
+    setBindingMock('MintReadAloudTicket', async () => '/attachments/speech/s1?ticket=t1');
+    const release = setBindingMock('ReleaseReadAloudTicket', async () => {});
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('RIFF clip', { status: 200 })));
+    const controller = new AbortController();
+    await readAloudClipFetcher('laptop')('One.', 'marin', controller.signal);
+    controller.abort();
+    expect(release).not.toHaveBeenCalled();
   });
 });

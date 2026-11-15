@@ -53,7 +53,8 @@ var armingVocabulary = []string{
 // is not per connection, and a wrong one is exactly the leak this guard exists
 // to catch.
 var connStateExemptMethods = map[string]string{
-	"AttachThreadWorktree": "attaches a git worktree to a thread row; the resource is a directory on disk that outlives every connection, and detaching it is a deliberate act, not a teardown",
+	"AttachThreadWorktree":   "attaches a git worktree to a thread row; the resource is a directory on disk that outlives every connection, and detaching it is a deliberate act, not a teardown",
+	"ReleaseReadAloudTicket": "gives back a read-aloud section, which MintReadAloudTicket binds to no connection: an unspent one expires with its 30 s ticket, and its synthesis ends with the fetch request that runs it",
 }
 
 func TestArmingMethodsAreTiedToTheirConnection(t *testing.T) {

@@ -575,7 +575,7 @@ func TestWorkflowTakeoverSteersSchemaLessThenCompletesThroughGate(t *testing.T) 
 			}
 		}
 	})
-	if err := app.SendMessage(threadID, "I fixed the workspace; prepare to finalize.", nil); err != nil {
+	if err := app.SendMessage(context.Background(), threadID, "I fixed the workspace; prepare to finalize.", nil); err != nil {
 		unsubscribe()
 		t.Fatal(err)
 	}
@@ -660,7 +660,7 @@ func TestWorkflowTakeoverInterruptsLiveTurnBeforeSteering(t *testing.T) {
 			}
 		}
 	})
-	if err := app.SendMessage(threadID, "Steer after the interrupt.", nil); err != nil {
+	if err := app.SendMessage(context.Background(), threadID, "Steer after the interrupt.", nil); err != nil {
 		unsubscribe()
 		t.Fatal(err)
 	}

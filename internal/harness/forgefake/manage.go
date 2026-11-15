@@ -81,15 +81,47 @@ type StateEvent struct {
 	At    string `json:"at,omitempty"`
 }
 
-// The GitLab features an older server lacks (Repo.ServerLacks):
-// operationMode is the set mutations' (reviewers, assignees, labels).
+// The GitLab features a server lacks whatever its release
+// (Repo.ServerLacks): introspection is the __type and __schema fields,
+// which GitLab 18.9 and later refuse in an ordinary document, for every
+// document on the repository's host.
 const (
-	lacksRereview      = "rereview"
-	lacksOverride      = "overrideRequestedChanges"
-	lacksOperationMode = "operationMode"
+	lacksIntrospection = "introspection"
 	// lacksAwardEmoji is GraphQL's Note.awardEmoji (reactions.go).
 	lacksAwardEmoji = "awardEmoji"
 )
+
+// gitlabLacks are the features ServerLacks may name.
+var gitlabLacks = []string{lacksIntrospection, lacksAwardEmoji}
+
+// gitlabDefaultVersion is the release a GitLab host runs unless one of
+// its repositories names another (Repo.ServerVersion).
+const gitlabDefaultVersion = "19.6.0-ee"
+
+// parseGitLabRelease is a version's major.minor.
+func parseGitLabRelease(s string) ([2]int, error) {
+	parts := strings.SplitN(s, ".", 3)
+	if len(parts) < 2 {
+		return [2]int{}, fmt.Errorf("serverVersion %q is not major.minor.patch", s)
+	}
+	major, err1 := strconv.Atoi(parts[0])
+	minor, err2 := strconv.Atoi(parts[1])
+	if err1 != nil || err2 != nil {
+		return [2]int{}, fmt.Errorf("serverVersion %q is not major.minor.patch", s)
+	}
+	return [2]int{major, minor}, nil
+}
+
+// gitlabHostVersion is the release host answers: the first of its GitLab
+// repositories (by key) that names one, else gitlabDefaultVersion.
+func (e *Engine) gitlabHostVersion(host string) string {
+	for _, key := range sortedKeys(e.repos) {
+		if r := e.repos[key]; r.Forge == "gitlab" && strings.EqualFold(r.Host, host) && r.ServerVersion != "" {
+			return r.ServerVersion
+		}
+	}
+	return gitlabDefaultVersion
+}
 
 // githubAssigneesMax is how many assignees GitHub keeps.
 const githubAssigneesMax = 10
@@ -98,15 +130,20 @@ func (r *Repo) normalizeManage(ids *idSource) error {
 	if r.Forge != "github" && (len(r.Teams) > 0 || r.TeamsRefused || r.Organization) {
 		return errors.New("teams, teamsRefused and organization are a GitHub organization's")
 	}
-	if r.Forge != "gitlab" && len(r.ServerLacks) > 0 {
-		return errors.New("serverLacks names what an older GitLab lacks")
+	if r.Forge != "gitlab" && (len(r.ServerLacks) > 0 || r.ServerVersion != "") {
+		return errors.New("serverLacks and serverVersion are a GitLab server's")
+	}
+	if r.ServerVersion != "" {
+		if _, err := parseGitLabRelease(r.ServerVersion); err != nil {
+			return err
+		}
 	}
 	if err := r.normalizeTokenCannotRead(); err != nil {
 		return err
 	}
 	for _, lack := range r.ServerLacks {
-		if lack != lacksRereview && lack != lacksOverride && lack != lacksOperationMode && lack != lacksAwardEmoji {
-			return fmt.Errorf("serverLacks %q is not %s, %s, %s or %s", lack, lacksRereview, lacksOverride, lacksOperationMode, lacksAwardEmoji)
+		if !slices.Contains(gitlabLacks, lack) {
+			return fmt.Errorf("serverLacks %q is not one of %s", lack, strings.Join(gitlabLacks, ", "))
 		}
 	}
 	for i := range r.Members {

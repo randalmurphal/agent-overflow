@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -30,6 +31,7 @@ func (a *App) GetProviderUpdates() ([]providerupdate.Status, error) {
 //
 //ao:scope access:admin
 //ao:route selected
+//ao:budget 2m
 func (a *App) CheckProviderUpdates() ([]providerupdate.Status, error) {
 	return a.providerUpdateService().Check(), nil
 }
@@ -39,6 +41,7 @@ func (a *App) CheckProviderUpdates() ([]providerupdate.Status, error) {
 //
 //ao:scope access:admin
 //ao:route selected
+//ao:budget 2m
 func (a *App) GetProviderUpdateNotes(ctx context.Context, providerName string) (providerupdate.Notes, error) {
 	return a.providerUpdateService().Notes(ctx, providerName)
 }
@@ -57,6 +60,14 @@ func (a *App) RunProviderUpdate(ctx context.Context, providerName string) error 
 	if err := a.requireStepUp(ctx, "updating a provider CLI on this computer"); err != nil {
 		return err
 	}
+	// Held only while the run is claimed. A running update is named by
+	// updateWorkReason, so a restart to update waits for it, and one cannot
+	// start after that wait found the computer idle.
+	endAdmission, err := a.workAdmission.begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer endAdmission()
 	return a.providerUpdateService().Run(providerName)
 }
 
@@ -69,7 +80,15 @@ func (a *App) providerUpdateService() *providerupdate.Service {
 			Installed: a.providerUpdateInstalledVersion,
 			Env:       a.providerCustomEnv,
 			WorkDir:   os.UserHomeDir,
-			Runner:    a.providerUpdateCommand,
+			// doctor and update start the Claude CLI against the user's
+			// home like every other Claude launch.
+			ClaudeRetention: a.claudeRetention,
+			// The rule every Claude start follows: none on a login past its
+			// refresh deadline.
+			ClaudeLoginExpired: func() (bool, error) {
+				return a.ensureProviderAccountManager().CanonicalLoginExpired(string(provider.Claude))
+			},
+			Runner: a.providerUpdateCommand,
 			// The sweep records the new binary, refreshes its model catalog
 			// and flags sessions still running the old build, now rather
 			// than at the next watch tick.
@@ -124,7 +143,7 @@ func (a *App) providerUpdateCommand(ctx context.Context, command providerupdate.
 			"tests must not run a real provider CLI for provider updates; assign app.providerUpdateRunner a fake",
 		)
 	}
-	return runProviderUpdateGroup(ctx, command)
+	return runProviderUpdateGroup(ctx, a.groupReaper("provider update"), command)
 }
 
 // providerUpdateOutputTail bounds what a command's output keeps: its end,
@@ -133,14 +152,18 @@ const providerUpdateOutputTail = 64 << 10
 
 // runProviderUpdateGroup runs command as its own process group, so ending
 // ctx stops the package manager an updater starts (npm, brew) and not just
-// the updater, and nothing it started outlives the run.
-func runProviderUpdateGroup(ctx context.Context, command providerupdate.Command) (providerupdate.Output, error) {
+// the updater, and nothing it started outlives the run or the app. A command
+// whose Done answers true is stopped there and reported finished.
+func runProviderUpdateGroup(ctx context.Context, reaper procutil.Reaper, command providerupdate.Command) (providerupdate.Output, error) {
 	tail := procutil.NewTailBuffer(providerUpdateOutputTail)
-	outcome, err := procutil.RunGroup(ctx, procutil.GroupCommand{
+	runCtx, stop := context.WithCancel(ctx)
+	defer stop()
+	output := &providerUpdateOutput{tail: tail, done: command.Done, stop: stop}
+	outcome, err := procutil.RunGroup(runCtx, reaper, procutil.GroupCommand{
 		Dir:    command.Dir,
-		Env:    provider.BuildEnvironment(command.Env),
+		Env:    provider.BuildEnvironment(command.Env, command.UnsetEnv...),
 		Argv:   append([]string{command.Binary}, command.Args...),
-		Output: tail,
+		Output: output,
 	})
 	text := tail.String()
 	// Neither changes what the user does next, so they are noted in the
@@ -154,7 +177,9 @@ func runProviderUpdateGroup(ctx context.Context, command providerupdate.Command)
 	out := providerupdate.Output{Text: text, ExitCode: outcome.ExitCode}
 	switch {
 	case errors.Is(err, procutil.ErrGroupSurvived):
-		return out, errors.Join(providerupdate.ErrCommandSurvived, ctx.Err())
+		return out, errors.Join(providerupdate.ErrCommandSurvived, runCtx.Err())
+	case outcome.Stopped && output.finished.Load() && ctx.Err() == nil:
+		return out, nil
 	case outcome.Stopped:
 		return out, ctx.Err()
 	case err == nil:
@@ -164,6 +189,24 @@ func runProviderUpdateGroup(ctx context.Context, command providerupdate.Command)
 		return out, nil
 	}
 	return out, err
+}
+
+// providerUpdateOutput keeps a command's output tail and stops the command
+// once its Done answers true. procutil writes it from one goroutine.
+type providerUpdateOutput struct {
+	tail     *procutil.TailBuffer
+	done     func(output string) bool
+	stop     context.CancelFunc
+	finished atomic.Bool
+}
+
+func (o *providerUpdateOutput) Write(p []byte) (int, error) {
+	n, err := o.tail.Write(p)
+	if o.done != nil && !o.finished.Load() && o.done(o.tail.String()) {
+		o.finished.Store(true)
+		o.stop()
+	}
+	return n, err
 }
 
 // errProviderUpdateNetwork refuses a release host request from a test

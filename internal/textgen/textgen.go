@@ -107,13 +107,12 @@ type Config struct {
 	// silently kept talking to the vendor default. Applied over the process
 	// environment by ExecCLI.
 	Env map[string]string
-	// ClaudeCleanupPeriodDays answers the `cleanupPeriodDays` a Claude run
-	// in workspace carries, from claude.CleanupPeriodOverride. Nil or zero
-	// sends none. A run outlives the few seconds the CLI waits before its
-	// transcript sweep, so it carries what a session in that workspace
-	// does (claude/retention.go).
-	ClaudeCleanupPeriodDays func(workspace string) int
-	Exec                    CLIExecutor
+	// ClaudeRetention answers the transcript sweep for a Claude run in
+	// workspace. A run outlives the few seconds the CLI waits before its
+	// sweep, so it carries what a session in that workspace does
+	// (claude/retention.go). A Claude run refuses to start without it.
+	ClaudeRetention func(workspace string) claude.Retention
+	Exec            CLIExecutor
 }
 
 // CLIExecutor is the seam tests use to stub out Codex/Claude CLI
@@ -409,6 +408,9 @@ func RunCodex(
 		Cwd:    workspace,
 		Stdin:  stdin,
 		Env:    cfg.Env,
+		// AO owns Codex's home: the run authenticates from the one every
+		// other Codex launch uses.
+		UnsetEnv: []string{"CODEX_HOME"},
 	})
 	if err != nil {
 		return nil, TranslateCLINotFound("codex", timeout, err)
@@ -453,20 +455,25 @@ func RunClaude(
 	if cfg.Effort != "" {
 		args = append(args, "--effort", cfg.Effort)
 	}
-	if cfg.ClaudeCleanupPeriodDays != nil {
-		args = append(args, claude.CleanupPeriodArgs(cfg.ClaudeCleanupPeriodDays(workspace))...)
-	}
 	args = append(args, extraArgs...)
+	var retention claude.Retention
+	if cfg.ClaudeRetention != nil {
+		retention = cfg.ClaudeRetention(workspace)
+	}
+	line, err := claude.NewCommandLine(retention, "", args...)
+	if err != nil {
+		return nil, err
+	}
 
 	result, err := cfg.Exec(ctx, CLISpec{
 		Binary: cfg.Binary,
-		Args:   args,
+		Args:   line.Args(),
 		Cwd:    workspace,
 		Stdin:  stdin,
-		Env:    cfg.Env,
+		Env:    line.Env(cfg.Env),
 		// The run uses the config home every other Claude launch uses, the
 		// one its retention period was resolved against.
-		UnsetEnv: claude.ConfigHomeUnsetEnv(),
+		UnsetEnv: line.UnsetEnv(),
 	})
 	if err != nil {
 		return nil, TranslateCLINotFound("claude", timeout, err)

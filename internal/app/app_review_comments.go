@@ -154,7 +154,10 @@ func (a *App) DeleteProposedPlanComment(threadID, commentID string) error {
 // avoids stuffing the full plan text into the prompt.
 //
 //ao:scope threads:operate
-func (a *App) SendPlanRevisionComments(threadID, planItemID string, commentIDs []string) (store.Thread, error) {
+func (a *App) SendPlanRevisionComments(ctx context.Context, threadID, planItemID string, commentIDs []string) (store.Thread, error) {
+	if err := a.requireAutonomyForThread(ctx, threadID, ""); err != nil {
+		return store.Thread{}, err
+	}
 	if len(store.UniqueNonEmptyStringsForApp(commentIDs)) > store.MaxProposedPlanRevisionCommentIDs {
 		return store.Thread{}, fmt.Errorf("send plan revision comments: too many comments selected")
 	}
@@ -364,7 +367,10 @@ type SendDiffReviewCommentsInput struct {
 }
 
 //ao:scope threads:operate
-func (a *App) SendDiffReviewComments(threadID, scope, sourceKey string, commentIDs []string, input SendDiffReviewCommentsInput) (store.Thread, error) {
+func (a *App) SendDiffReviewComments(ctx context.Context, threadID, scope, sourceKey string, commentIDs []string, input SendDiffReviewCommentsInput) (store.Thread, error) {
+	if err := a.requireAutonomyForThread(ctx, threadID, ""); err != nil {
+		return store.Thread{}, err
+	}
 	scope, err := store.NormalizeDiffReviewScope(scope)
 	if err != nil {
 		return store.Thread{}, err

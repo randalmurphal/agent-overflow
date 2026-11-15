@@ -37,7 +37,8 @@ const nativeBrowserSmokeEnv = "AO_NATIVE_BROWSER_SMOKE"
 // the gate is set.
 var nativeSmokeWindow atomic.Pointer[application.WebviewWindow]
 
-func TestMain(m *testing.M) {
+// runTests is TestMain's run (main_test.go) where the native engines build.
+func runTests(m *testing.M) {
 	if os.Getenv(nativeBrowserSmokeEnv) != "1" {
 		os.Exit(m.Run())
 	}

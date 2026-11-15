@@ -105,6 +105,7 @@ func TestNewSessionWritesAndRemovesBothPromptFiles(t *testing.T) {
 
 	dir := t.TempDir()
 	s, err := NewSession(context.Background(), testThread, Config{
+		Retention:          UserHomeRetention(0),
 		Binary:             binary,
 		SystemPrompt:       "REPLACEMENT",
 		AppendSystemPrompt: "APPENDED GUIDE",
@@ -152,6 +153,7 @@ func TestNewSessionRemovesBothPromptFilesWhenTheSpawnFails(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	_, err := NewSession(context.Background(), testThread, Config{
+		Retention:          UserHomeRetention(0),
 		Binary:             t.TempDir() + "/does-not-exist",
 		SystemPrompt:       "REPLACEMENT",
 		AppendSystemPrompt: "APPENDED GUIDE",
@@ -174,6 +176,7 @@ func TestKilledSessionLeavesItsPromptFilesOnlyInTheSystemPromptDir(t *testing.T)
 	dir := t.TempDir()
 	binary := writeArgvRecordingClaude(t, t.TempDir()+"/argv.txt")
 	s, err := NewSession(context.Background(), testThread, Config{
+		Retention:          UserHomeRetention(0),
 		Binary:             binary,
 		SystemPrompt:       "REPLACEMENT",
 		AppendSystemPrompt: "APPENDED GUIDE",
@@ -226,6 +229,7 @@ func TestNewSessionPassesTheSnapshotOptOutToTheProcess(t *testing.T) {
 	}{{"", false}, {"2.1.266", false}, {"2.1.284 (Claude Code)", true}} {
 		argvPath := t.TempDir() + "/argv.txt"
 		s, err := NewSession(context.Background(), testThread, Config{
+			Retention:           UserHomeRetention(0),
 			Binary:              writeArgvRecordingClaude(t, argvPath),
 			InstalledCLIVersion: tc.version,
 		}, func(provider.ProviderEvent) {})

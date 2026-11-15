@@ -301,9 +301,12 @@ func githubMergedPRHeads(ctx context.Context, client *forgeapi.Client, owner, na
 // SubmitReview posts the review with its line and range comments, then
 // each file comment and each reply on its own after it: GitHub's review
 // takes neither, so they are follow-ups under the partial-submit contract.
-// A request with nothing for the review itself (a comment verdict with no
-// body and no line comment) posts no review, which GitHub would refuse,
-// and its first follow-up's error decides whether anything posted.
+// The review and every file comment are pinned to review.HeadSHA, so a
+// push since the reviewer loaded the diff moves none of them and approves
+// nothing the reviewer did not see. A request with nothing for the review
+// itself (a comment verdict with no body and no line comment) posts no
+// review, which GitHub would refuse, and its first follow-up's error
+// decides whether anything posted.
 func (f *githubForge) SubmitReview(ctx context.Context, ref PRReference, review SubmitReviewRequest) (SubmitReviewResult, error) {
 	number := ref.Number
 	if _, _, err := splitGitHubProject(ref.Project()); err != nil {
@@ -312,7 +315,6 @@ func (f *githubForge) SubmitReview(ctx context.Context, ref PRReference, review 
 	if number <= 0 {
 		return SubmitReviewResult{}, fmt.Errorf("PR number must be positive, got %d", number)
 	}
-	headSHA := ""
 	fileComments := make([]ReviewLineComment, 0)
 	replies := make([]ReviewLineComment, 0)
 	lineComments := make([]ReviewLineComment, 0, len(review.Comments))
@@ -333,13 +335,6 @@ func (f *githubForge) SubmitReview(ctx context.Context, ref PRReference, review 
 	if err != nil {
 		return SubmitReviewResult{}, err
 	}
-	if len(fileComments) > 0 {
-		read, err := f.ReadPR(ctx, ref, PRReadParts{Detail: true}, nil, nil)
-		if err != nil {
-			return SubmitReviewResult{}, err
-		}
-		headSHA = read.Detail.HeadSHA
-	}
 	pulls := githubPullPath(ref)
 	body, err := githubReviewRequestBody(review, lineComments)
 	if err != nil {
@@ -347,7 +342,7 @@ func (f *githubForge) SubmitReview(ctx context.Context, ref PRReference, review 
 	}
 	fileBodies := make([]githubFileCommentIn, 0, len(fileComments))
 	for _, comment := range fileComments {
-		in, err := githubFileCommentRequestBody(comment, headSHA)
+		in, err := githubFileCommentRequestBody(comment, review.HeadSHA)
 		if err != nil {
 			return SubmitReviewResult{}, err
 		}
@@ -357,10 +352,19 @@ func (f *githubForge) SubmitReview(ctx context.Context, ref PRReference, review 
 	followUps := len(fileComments) + len(replies)
 	emptyReview := body.Event == "COMMENT" && strings.TrimSpace(body.Body) == "" && len(body.Comments) == 0
 	if !emptyReview || followUps == 0 {
-		// The only write before the review exists: its error decides
-		// whether the review may have posted.
+		// The only write before the review exists: its error, or after a
+		// lost answer the viewer's reviews, decide whether it posted.
+		before, err := readGitHubViewerReviews(ctx, client, ref)
+		if err != nil {
+			return SubmitReviewResult{}, err
+		}
 		if err := postGitHubReview(ctx, client, ref, body); err != nil {
-			return SubmitReviewResult{}, submitWriteError(err)
+			if forgeapi.WriteNotApplied(err) {
+				return SubmitReviewResult{}, err
+			}
+			if err := settleGitHubReview(ctx, client, ref, body, before, err); err != nil {
+				return SubmitReviewResult{}, err
+			}
 		}
 		out.PostedReview = true
 	}
@@ -416,8 +420,9 @@ type githubReviewIn struct {
 
 func githubReviewRequestBody(review SubmitReviewRequest, comments []ReviewLineComment) (githubReviewIn, error) {
 	payload := githubReviewIn{
-		Event: githubReviewEvent(review.Verdict),
-		Body:  review.Body,
+		Event:    githubReviewEvent(review.Verdict),
+		Body:     review.Body,
+		CommitID: review.HeadSHA,
 	}
 	for _, comment := range comments {
 		in, err := githubReviewCommentBody(comment)
@@ -539,14 +544,19 @@ const githubSetThreadResolvedMutation = `mutation SetThreadResolved($threadID: I
   unresolve: unresolveReviewThread(input: {threadId: $threadID}) @skip(if: $resolved) { thread { isResolved } }
 }`
 
-// SetThreadResolved flips one review thread's resolved state. The thread
-// NODE id is unique on its host, so only the reference's host is used
-// here, the mirror of ReplyToThread, which needs the REST coordinates and
-// ignores the node id.
-//
-// The mutation's answer is read back rather than trusted: a 200 that
-// resolved nothing would otherwise reach the user as a success and leave
-// the pane showing a state the forge does not have.
+// githubThreadOwnerQuery reads which pull request a review thread's node
+// id belongs to: the id is global on its host, so the mutation alone names
+// nothing about the PR the caller named.
+const githubThreadOwnerQuery = `query ThreadOwner($id: ID!) {
+  node(id: $id) {
+    __typename
+    ... on PullRequestReviewThread { pullRequest { number repository { nameWithOwner } } }
+  }
+}`
+
+// SetThreadResolved flips one review thread's resolved state, after
+// reading that the thread is one of ref's pull request and refusing,
+// before any write, one that is not (*ThreadNotOnPRError).
 func (f *githubForge) SetThreadResolved(ctx context.Context, ref PRReference, threadID string, resolved bool) error {
 	if strings.TrimSpace(threadID) == "" {
 		return errors.New("GitHub thread resolution requires a review thread id")
@@ -555,6 +565,41 @@ func (f *githubForge) SetThreadResolved(ctx context.Context, ref PRReference, th
 	if err != nil {
 		return err
 	}
+	var raw struct {
+		Node *struct {
+			Typename    string `json:"__typename"`
+			PullRequest *struct {
+				Number     int `json:"number"`
+				Repository struct {
+					NameWithOwner string `json:"nameWithOwner"`
+				} `json:"repository"`
+			} `json:"pullRequest"`
+		} `json:"node"`
+	}
+	if _, err := client.GraphQL(ctx, "ThreadOwner", githubThreadOwnerQuery, map[string]any{"id": threadID}, &raw); err != nil && !graphQLNotFoundError(err) {
+		return err
+	}
+	node := raw.Node
+	if node == nil || node.Typename != "PullRequestReviewThread" || node.PullRequest == nil || node.PullRequest.Number != ref.Number ||
+		!strings.EqualFold(node.PullRequest.Repository.NameWithOwner, ref.Namespace+"/"+ref.Repo) {
+		return &ThreadNotOnPRError{ThreadID: threadID}
+	}
+	return setGitHubThreadResolved(ctx, client, threadID, resolved)
+}
+
+// graphQLNotFoundError reports a GraphQL answer whose only problem is an
+// id that resolves to nothing for this login.
+func graphQLNotFoundError(err error) bool {
+	graphQL, ok := errors.AsType[*forgeapi.GraphQLError](err)
+	return ok && graphQLNotFound(graphQL)
+}
+
+// setGitHubThreadResolved runs the mutation on a thread the caller knows
+// is the PR's. The mutation's answer is read back rather than trusted: a
+// 200 that resolved nothing would otherwise reach the user as a success
+// and leave the pane showing a state the forge does not have. A failure
+// the forge may have applied is an *UnconfirmedWriteError.
+func setGitHubThreadResolved(ctx context.Context, client *forgeapi.Client, threadID string, resolved bool) error {
 	type payload struct {
 		Thread *struct {
 			IsResolved bool `json:"isResolved"`
@@ -565,7 +610,7 @@ func (f *githubForge) SetThreadResolved(ctx context.Context, ref PRReference, th
 		Unresolve *payload `json:"unresolve"`
 	}
 	if _, err := client.GraphQL(ctx, "SetThreadResolved", githubSetThreadResolvedMutation, map[string]any{"threadID": threadID, "resolved": resolved}, &raw); err != nil {
-		return err
+		return writeOutcome(err)
 	}
 	answer := raw.Unresolve
 	if resolved {

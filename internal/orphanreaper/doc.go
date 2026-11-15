@@ -1,6 +1,6 @@
-// Package orphanreaper guarantees that provider subprocess groups don't
-// outlive the app on macOS, where there's no Pdeathsig (Linux) or Job
-// Object (Windows) to lean on.
+// Package orphanreaper guarantees that the process groups the app watches
+// don't outlive it on macOS and Linux. A parent-death signal reaches only a
+// group's leader, so it cannot end what a shell leader started.
 //
 // Two layers:
 //
@@ -14,11 +14,12 @@
 //
 //   - A startup sweep reaps anything the sidecar missed (e.g. both app and
 //     sidecar were SIGKILLed, or the machine lost power): a durable
-//     registry records {pid, pgid, start-time} per spawn, and on the next
-//     launch any recorded group still alive, start-time-matched (PID-reuse
-//     safe), and reparented to init is killed.
+//     registry records {pid, pgid, start-time, parent} per spawn, and on the
+//     next launch any recorded group still alive, start-time-matched
+//     (PID-reuse safe), and no longer the recording parent's child is killed.
 //
-// Process groups come from the provider package's Setpgid; killing a
+// Process groups come from the provider package's Setpgid and from
+// procutil.StartGroup's Setsid; killing a
 // negative pgid needs only same-uid permission, so neither layer has to
 // be the provider's parent.
 package orphanreaper

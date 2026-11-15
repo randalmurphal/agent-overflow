@@ -1740,6 +1740,18 @@ CREATE INDEX idx_import_history_items_joined_send_ids
 	{Version: attachmentShellMigrationVersion, Name: "attachment_shell", SQL: attachmentShellV147SQL},
 	{Version: reviewRangesRepliesMigrationVersion, Name: "review_ranges_replies", SQL: reviewRangesRepliesV148SQL, Rebuild: true},
 	{Version: threadWakeCarrierMigrationVersion, Name: "thread_wake_carrier", SQL: threadWakeCarrierV149SQL},
+	{
+		Version: findTextMigrationVersion,
+		Name:    "find_text",
+		SQL:     findTextV150SQL,
+		Deferred: &DeferredMigration{
+			Title: "Find index",
+			Steps: []DeferredStep{
+				{Name: "fill_find_text", Run: backfillFindText},
+			},
+		},
+	},
+	{Version: reviewEditsScopeMigrationVersion, Name: "review_edits_scope", SQL: reviewEditsScopeV151SQL, Rebuild: true},
 }
 
 // MigrationStep describes one pending migration as it begins, or a

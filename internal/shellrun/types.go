@@ -126,7 +126,7 @@ type Event struct {
 }
 
 // Runner executes one supervised command. procutil.RunGroup is the default.
-type Runner func(context.Context, procutil.GroupCommand) (procutil.GroupOutcome, error)
+type Runner func(context.Context, procutil.Reaper, procutil.GroupCommand) (procutil.GroupOutcome, error)
 
 type Config struct {
 	// Dir holds capture files for the life of a run and the markers of the
@@ -147,4 +147,8 @@ type Config struct {
 	// procutil.OpenTerminal is the default.
 	OpenTerminal func() (*procutil.Terminal, error)
 	Now          func() time.Time
+	// Reaper is the host's orphan reaper, which watches every run's process
+	// group so a command does not outlive a host that dies without stopping
+	// it. Required.
+	Reaper procutil.Reaper
 }

@@ -285,6 +285,7 @@ func TestARestartTellsASenderOnceAboutEveryInterruptedRequest(t *testing.T) {
 
 	after := f.restart(t)
 	after.app.sweepThreadRequestsAtBoot()
+	after.app.finishThreadRequestSweepAtBoot()
 
 	wakes := after.wakesQueuedFor(t, first.Token, second.Token)
 	if len(wakes) != 1 {

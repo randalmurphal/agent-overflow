@@ -48,6 +48,7 @@ var githubGraphQL = []graphQLOp{
 	{kind: "query", name: "ThreadCommentsPage", required: []string{"threadID", "after", "wantReactions"}, run: withReactionGroups(ghThreadCommentsPage)},
 	{kind: "query", name: "RollupContextsPage", required: []string{"commitID", "number", "after", "wantCheckRuns", "wantWorkflowRuns"}, run: ghRollupContextsPage},
 	{kind: "query", name: "CommentOwner", required: []string{"id"}, run: ghCommentOwner},
+	{kind: "query", name: "ThreadOwner", required: []string{"id"}, run: ghThreadOwner},
 	{kind: "mutation", name: "SetThreadResolved", required: []string{"threadID", "resolved"}, run: ghSetThreadResolved},
 	{kind: "query", name: "PullsSearch", required: []string{"query", "wantChecks"}, optional: []string{"after"}, run: ghPullsSearch},
 	{kind: "query", name: "OpenPRsByHead", required: []string{"owner", "name", "head"}, optional: []string{"after"}, run: ghOpenPRsByHead},
@@ -55,6 +56,7 @@ var githubGraphQL = []graphQLOp{
 	{kind: "query", name: "PRStates", required: []string{"ids"}, run: ghPRStates},
 	{kind: "query", name: "PRMergeTarget", required: []string{"owner", "name", "number"}, run: ghPRMergeTarget},
 	{kind: "query", name: "ViewerApproval", required: []string{"owner", "name", "number"}, run: ghViewerApproval},
+	{kind: "query", name: "ViewerReviews", required: []string{"owner", "name", "number"}, run: ghViewerReviews},
 	{kind: "mutation", name: "MergePR", required: []string{"pullRequestID", "method", "expectedHeadOid"}, run: ghMergePR},
 	{kind: "mutation", name: "EnableAutoMerge", required: []string{"pullRequestID", "method", "expectedHeadOid"}, run: ghEnableAutoMerge},
 	{kind: "mutation", name: "DisableAutoMerge", required: []string{"pullRequestID"}, run: ghDisableAutoMerge},
@@ -109,6 +111,9 @@ func (e *Engine) graphQL(c *call) response {
 	ops := githubGraphQL
 	if c.cli == "glab" {
 		ops = gitlabGraphQL
+		if refused, ok := e.glabIntrospectionRefused(c, req.Query); ok {
+			return refused
+		}
 	}
 	i := slices.IndexFunc(ops, func(op graphQLOp) bool { return op.name == req.OperationName })
 	if i < 0 {
@@ -918,6 +923,24 @@ func ghSetThreadResolved(e *Engine, c *call, v graphQLVars) response {
 	return graphQLData(map[string]any{alias: map[string]any{"thread": map[string]any{"isResolved": thread.Resolved}}})
 }
 
+// ghThreadOwner answers `node(id)` for a review thread: its type and the
+// pull request and repository it is on. An id no repository on the host
+// has a thread for is a NOT_FOUND.
+func ghThreadOwner(e *Engine, c *call, v graphQLVars) response {
+	id, err := v.str("id")
+	if err != nil {
+		return unhandled("ThreadOwner: %v", err)
+	}
+	r, p, thread := e.githubThread(c, id)
+	if thread == nil {
+		return graphQLNotFound(map[string]any{"node": nil}, []string{"node"}, fmt.Sprintf("Could not resolve to a node with the global id of '%s'", id))
+	}
+	return graphQLData(map[string]any{"node": map[string]any{
+		"__typename":  "PullRequestReviewThread",
+		"pullRequest": map[string]any{"number": p.Number, "repository": map[string]any{"nameWithOwner": r.Project}},
+	}})
+}
+
 // ghOpenPRsByHead answers the open pull requests of a head branch name, a
 // fork's included, as headRefName does, a page of 100 from after.
 func ghOpenPRsByHead(e *Engine, c *call, v graphQLVars) response {
@@ -1212,6 +1235,30 @@ func ghViewerApproval(e *Engine, c *call, v graphQLVars) response {
 	}
 	return graphQLData(map[string]any{"repository": map[string]any{"pullRequest": map[string]any{
 		"latestOpinionatedReviews": map[string]any{"nodes": githubOpinionNodes(r, p, e.viewer, false)},
+	}}})
+}
+
+// ghViewerReviews answers the pull's newest 100 reviews, oldest first, each
+// with its id, whether the viewer wrote it, its state, body and commit.
+func ghViewerReviews(e *Engine, c *call, v graphQLVars) response {
+	project, number, err := v.pullVars()
+	if err != nil {
+		return unhandled("ViewerReviews: %v", err)
+	}
+	_, p, fail, ok := e.ghGraphQLPull(c, project, number, map[string]any{})
+	if !ok {
+		return fail
+	}
+	reviews := p.Reviews[max(0, len(p.Reviews)-100):]
+	nodes := make([]map[string]any, 0, len(reviews))
+	for _, review := range reviews {
+		nodes = append(nodes, map[string]any{
+			"databaseId": review.ID, "viewerDidAuthor": strings.EqualFold(review.Author, e.viewer),
+			"state": review.State, "body": review.Body, "commit": map[string]any{"oid": review.CommitSHA},
+		})
+	}
+	return graphQLData(map[string]any{"repository": map[string]any{"pullRequest": map[string]any{
+		"reviews": map[string]any{"nodes": nodes},
 	}}})
 }
 

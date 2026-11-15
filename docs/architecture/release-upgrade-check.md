@@ -63,10 +63,17 @@ file edits with persisted diffs, Claude and Codex subagents, usage limits, a
 session death, a Codex revert), then forks, a side chat, a draft with image
 and file attachments, pins, a group, an archive, a rename, a favorite,
 threads at every chat-bar setting, a worktree, project settings and an
-archived project, and workflow runs (finished, gated, questioned, cancelled,
-fired by an automation). Those rows are written by the candidate's own code
+archived project, workflow runs (finished, gated, questioned, cancelled,
+fired by an automation), review drafts in every side, scope and status (one
+claimed by the message that sent it, some owned by a pull request with no
+thread), agent `thread_send` and `thread_remind` requests (one wake carrying
+two answers), and the open pull request a worktree thread tracks
+(`upgrade-corpus-topup-records.ts`). Those rows are written by the candidate's own code
 paths at its own schema, which is what a corpus handed to the next release
-needs: rows of every feature that existed when they were written.
+needs: rows of every feature that existed when they were written. Because
+they are written after the candidate's migrations ran, a top-up step proves
+the next release's migrations of its tables, not the candidate's; a table
+the previous corpus left empty is proved for this release only by a clone.
 
 The coverage gate, `e2e/tests/upgrade-corpus-coverage.spec.ts` in `make e2e`,
 holds the seed and the top-up to the schema on every pull request: it
@@ -82,7 +89,8 @@ scenario that is neither a top-up turn nor excluded with a reason. A
 schema or scenario change therefore lands with the top-up step or the
 config entry that keeps the corpus representative; the failure names which.
 
-Forge state, transfers, imports and paired devices stay allowlisted; a real
+Merged pull request cleanup, requests to connected computers, transfers,
+imports and paired devices stay allowlisted; a real
 database covers those, locally:
 
 ```sh
@@ -121,8 +129,9 @@ made it: never commit it, attach it to a run, or publish it.
    migration that intentionally rewrites, moves or drops old rows declares
    it in `migrationExceptions` with the migration version and the reason;
    the entry applies only while its version lies in the span a run
-   migrates, and an entry at or below the corpus's version fails the run
-   as stale, so the list empties itself as releases pass. Progress tables
+   migrates, and an entry at or below a lineage corpus's version fails the
+   run as stale, so the list empties itself as releases pass. A real data
+   root (`--corpus`) can sit at any version and skips that rule. Progress tables
    that delete their rows as a boot finishes their work are listed in
    `countIgnoredTables`.
 5. A candidate harness boot on the same root reports the build's schema

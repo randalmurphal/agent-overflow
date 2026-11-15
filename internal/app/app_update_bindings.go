@@ -35,6 +35,7 @@ type ReleaseSummary = appupdate.ReleaseSummary
 //
 //ao:scope host
 //ao:route home
+//ao:budget 1m
 func (a *App) CheckForUpdate() (UpdateAvailability, error) {
 	if a.updater == nil {
 		return UpdateAvailability{CurrentVersion: a.version}, nil

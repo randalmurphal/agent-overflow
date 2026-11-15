@@ -229,9 +229,9 @@ func insertImportHistoryChunkRowsTx(tx *sql.Tx, chunk importHistoryChunk) error 
 		`INSERT INTO import_history_items (
 		    chunk_id, id, turn_index, item_index, kind, role, status, summary,
 		    payload_id, input_payload_id, parent_id, is_background, completion_of,
-		    tool_name, decision, meta, created_at, updated_at
+		    tool_name, decision, meta, created_at, updated_at, find_text
 		)`,
-		`(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		chunk.rows,
 		func(row ImportRow) []any {
 			item := row.Item
@@ -239,7 +239,7 @@ func insertImportHistoryChunkRowsTx(tx *sql.Tx, chunk importHistoryChunk) error 
 				chunk.id, item.ID, item.TurnIndex, item.ItemIndex, item.Kind, item.Role,
 				item.Status, item.Summary, nilIfEmpty(item.PayloadID), nilIfEmpty(item.InputPayloadID),
 				item.ParentID, boolToInt(item.IsBackground), item.CompletionOf, item.ToolName,
-				item.Decision, item.Meta, item.CreatedAt, item.UpdatedAt,
+				item.Decision, item.Meta, item.CreatedAt, item.UpdatedAt, importFindText(row),
 			}
 		},
 		func(row ImportRow) string { return row.Item.ID },
@@ -263,4 +263,20 @@ func verifyImportHistoryChunkTx(tx *sql.Tx, chunk importHistoryChunk) error {
 		)
 	}
 	return nil
+}
+
+// importFindText is an imported row's candidate text (find_candidate.go),
+// with its payload's part: a reasoning row's content, a tool row's meta.
+func importFindText(row ImportRow) string {
+	item := row.Item
+	var payload *string
+	switch {
+	case row.Payload == nil:
+	case findReasoningKind(item.Kind):
+		text := string(row.Payload.Data)
+		payload = &text
+	case findToolKind(item.Kind):
+		payload = &row.Payload.Meta
+	}
+	return findCandidateText(item.Kind, item.Summary, item.Meta, item.ToolName, payload)
 }
