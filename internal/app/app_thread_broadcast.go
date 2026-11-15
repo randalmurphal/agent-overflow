@@ -1,6 +1,8 @@
 package app
 
 import (
+	"log"
+
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/triage"
 )
@@ -51,6 +53,69 @@ func (a *App) threadAnnouncer() *triage.ThreadAnnouncer {
 // lacks is dropped.
 func (a *App) announceThread(action, threadID string) {
 	a.threadAnnouncer().Announce(a.emitEvent, action, threadID)
+}
+
+// announceListing announces a write that moved the thread across the
+// sidebar listing rule (store.ListingChange): `listed` when it put the
+// thread on the list, `emptied` when it took a never-sent thread off. A
+// screen whose catalog read came before the write learns of it only here.
+// Reports whether it announced.
+func (a *App) announceListing(threadID string, listing store.ListingChange) bool {
+	switch listing {
+	case store.ListingListed:
+		a.announceThread(triage.ThreadActionListed, threadID)
+	case store.ListingUnlisted:
+		a.announceThread(triage.ThreadActionEmptied, threadID)
+	default:
+		return false
+	}
+	return true
+}
+
+// listedAction is the frame for a write that may have put threadID on the
+// sidebar (creation, unarchive): `listed` when the row now meets the
+// listing rule (store.ThreadListed), `full` when it is a never-sent thread
+// with nothing that makes it real, which the write that does will list. A
+// failed read answers `listed`: a row shown early is corrected by the next
+// catalog read, a real one hidden is not.
+func (a *App) listedAction(threadID string) string {
+	listed, err := a.store.ThreadListed(threadID)
+	if err != nil {
+		log.Printf("thread %s: read its listing: %v", threadID, err)
+		return triage.ThreadActionListed
+	}
+	if listed {
+		return triage.ThreadActionListed
+	}
+	return triage.ThreadActionFull
+}
+
+// writeAppRow runs write, which persists a row the app posts on its own (a
+// notice, an error) and may be a never-sent thread's first item, and
+// announces `listed` when it put the thread on the list. The send path
+// announces the first item it writes itself. A failed write is checked too:
+// a refused one can leave an error row behind.
+func (a *App) writeAppRow(threadID string, write func() error) error {
+	if a.store == nil {
+		return write()
+	}
+	before, err := a.store.ThreadListed(threadID)
+	if err != nil {
+		log.Printf("thread %s: read its listing: %v", threadID, err)
+	}
+	writeErr := write()
+	if err == nil && before {
+		return writeErr
+	}
+	after, err := a.store.ThreadListed(threadID)
+	if err != nil {
+		log.Printf("thread %s: read its listing: %v", threadID, err)
+		return writeErr
+	}
+	if after {
+		a.announceThread(triage.ThreadActionListed, threadID)
+	}
+	return writeErr
 }
 
 // announceThreadIfChanged is the guard every mutation binding routes

@@ -103,14 +103,22 @@ func TestThreadMutationsBroadcastTheChangedRow(t *testing.T) {
 		broadcasts.expectSilence("repeating empty draft cleanup")
 	})
 
-	t.Run("create is listed", func(t *testing.T) {
+	t.Run("create is silent until the thread is real", func(t *testing.T) {
 		app := newTestAppWithStore(t)
 		broadcasts := captureThreadBroadcasts(t, app)
 		thread, err := createTestThread(t, app, "claude", t.TempDir(), "claude-sonnet-4-6", "")
 		if err != nil {
 			t.Fatalf("createTestThread: %v", err)
 		}
-		broadcasts.expectRow(triage.ThreadActionListed, thread.ID)
+		// No draft text, worktree or item: the catalog does not list it, so
+		// no other screen is told to.
+		broadcasts.expectSilence("creating a thread nothing makes real")
+		if err := app.SaveDraft(t.Context(), thread.ID, "typed", nil, nil, nil); err != nil {
+			t.Fatal(err)
+		}
+		if len(broadcasts.events) != 1 || broadcasts.events[0].Action != triage.ThreadActionListed {
+			t.Fatalf("first draft text broadcast %+v, want one listed frame", broadcasts.events)
+		}
 	})
 
 	t.Run("archive is unlisted, re-archive is silent", func(t *testing.T) {
@@ -133,9 +141,58 @@ func TestThreadMutationsBroadcastTheChangedRow(t *testing.T) {
 		broadcasts.expectSilence("re-archiving an archived thread")
 	})
 
+	t.Run("an app row that is a never-sent thread's first item lists it", func(t *testing.T) {
+		for name, post := range map[string]func(app *App, id string){
+			"error":  func(app *App, id string) { app.emitErrorToThread(id, "it failed") },
+			"notice": func(app *App, id string) { _ = app.emitNoticeToThread(id, noticeKindWarning, "heads up") },
+		} {
+			t.Run(name, func(t *testing.T) {
+				app := newTestAppWithStore(t)
+				app.triage = triage.NewRouter(app.store, app.emit)
+				thread := mustCreateBroadcastThread(t, app)
+				broadcasts := captureThreadBroadcasts(t, app)
+				post(app, thread.ID)
+				var actions []string
+				for _, evt := range broadcasts.events {
+					if evt.Thread != nil && evt.Thread.ID == thread.ID && evt.Action == triage.ThreadActionListed {
+						actions = append(actions, evt.Action)
+					}
+				}
+				if len(actions) != 1 {
+					t.Fatalf("listed frames = %d (%+v), want 1", len(actions), broadcasts.events)
+				}
+				broadcasts.reset()
+				post(app, thread.ID)
+				for _, evt := range broadcasts.events {
+					if evt.Action == triage.ThreadActionListed {
+						t.Fatalf("a second row re-listed the thread: %+v", evt)
+					}
+				}
+			})
+		}
+	})
+
+	t.Run("unarchiving a never-sent thread nothing makes real is full", func(t *testing.T) {
+		app := newTestAppWithStore(t)
+		thread := mustCreateBroadcastThread(t, app)
+		if err := app.ArchiveThread(thread.ID); err != nil {
+			t.Fatalf("ArchiveThread: %v", err)
+		}
+		broadcasts := captureThreadBroadcasts(t, app)
+		if _, err := app.UnarchiveThread(thread.ID); err != nil {
+			t.Fatalf("UnarchiveThread: %v", err)
+		}
+		// The catalog does not list it, so a listed frame would show a row
+		// a fresh screen does not.
+		broadcasts.expectRow(triage.ThreadActionFull, thread.ID)
+	})
+
 	t.Run("unarchive is listed, re-unarchive is silent", func(t *testing.T) {
 		app := newTestAppWithStore(t)
 		thread := mustCreateBroadcastThread(t, app)
+		if err := app.store.InsertItem(store.Item{ID: thread.ID + "-sent", ThreadID: thread.ID, Kind: "user_text", Role: "user", Status: "completed", Summary: "sent"}); err != nil {
+			t.Fatalf("InsertItem: %v", err)
+		}
 		if err := app.ArchiveThread(thread.ID); err != nil {
 			t.Fatalf("ArchiveThread: %v", err)
 		}

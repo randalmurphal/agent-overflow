@@ -24,7 +24,16 @@ func (a *App) announceTransferredDraft(row store.ThreadTransfer) error {
 	}
 	if source.DraftToConsume != nil {
 		a.broadcastDraft(transport.ClientIdentity{}, DraftUpdatedEvent{ThreadID: row.ThreadID, UpdatedAt: row.UpdatedAt})
-		a.announceThread(triage.ThreadActionFull, row.ThreadID)
+		// The consumed draft may have been all that listed the source.
+		listed, err := a.store.ThreadListed(row.ThreadID)
+		if err != nil {
+			return err
+		}
+		action := triage.ThreadActionFull
+		if !listed {
+			action = triage.ThreadActionEmptied
+		}
+		a.announceThread(action, row.ThreadID)
 	}
 	return nil
 }
@@ -96,27 +105,25 @@ func (a *App) writeThreadDraft(who transport.ClientIdentity, draft store.ThreadD
 }
 
 func (a *App) writeMovedThreadDraft(who transport.ClientIdentity, source, destination store.ThreadDraft) error {
-	write, err := a.store.MoveThreadDraft(source, destination)
+	move, err := a.store.MoveThreadDraft(source, destination)
 	if err != nil {
 		return err
 	}
-	a.announceDraftWrite(who, destination.ThreadID, destination.UpdatedAt, write)
-	a.broadcastDraft(who, DraftUpdatedEvent{ThreadID: source.ThreadID, UpdatedAt: destination.UpdatedAt})
+	a.announceDraftWrite(who, destination.ThreadID, destination.UpdatedAt, move.Destination)
+	a.announceDraftWrite(who, source.ThreadID, destination.UpdatedAt, move.Source)
 	return nil
 }
 
 // announceDraftWrite announces a draft write that moved the row: its
-// `draft:updated` frame and, when the write listed the thread, `listed`.
-// ListThreads lists a never-sent thread only once its draft has content, so
-// a screen whose catalog read came between the thread's creation and this
-// write learns of the thread only from that frame.
+// listing change (announceListing), then its `draft:updated` frame.
+// Draft content is one of the things that lists a never-sent thread
+// (store.sidebarListedClause), so a screen whose catalog read came before
+// this write learns of the change only from that frame.
 func (a *App) announceDraftWrite(who transport.ClientIdentity, threadID string, updatedAt int64, write store.DraftWrite) {
 	if !write.Changed {
 		return
 	}
-	if write.Listed {
-		a.announceThread(triage.ThreadActionListed, threadID)
-	}
+	a.announceListing(threadID, write.Listing)
 	a.broadcastDraft(who, DraftUpdatedEvent{ThreadID: threadID, UpdatedAt: updatedAt})
 }
 
@@ -131,16 +138,13 @@ func (a *App) removeThreadDraft(who transport.ClientIdentity, threadID string, s
 		}
 		expected = &draft
 	}
-	deleted, err := a.store.DeleteThreadDraft(threadID, expected)
+	write, err := a.store.DeleteThreadDraft(threadID, expected)
 	if err != nil {
 		return err
 	}
-	if !deleted {
-		return nil
-	}
 	// The row is gone and its stored timestamp went with it, so the frame
 	// carries the moment of the delete.
-	a.broadcastDraft(who, DraftUpdatedEvent{ThreadID: threadID, UpdatedAt: time.Now().UnixMilli()})
+	a.announceDraftWrite(who, threadID, time.Now().UnixMilli(), write)
 	return nil
 }
 

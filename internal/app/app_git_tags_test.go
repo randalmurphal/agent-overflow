@@ -310,7 +310,7 @@ func TestPrepareThreadWorktreeEmptyBaseUsesTheRowBranchWhenTheWorkspaceIsGone(t 
 	if err := os.RemoveAll(gone); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := f.app.store.UpdateThreadCheckout(f.thread.ID, gone, gone, "dup"); err != nil {
+	if _, err := f.app.store.UpdateThreadCheckout(f.thread.ID, gone, gone, "dup"); err != nil {
 		t.Fatal(err)
 	}
 
