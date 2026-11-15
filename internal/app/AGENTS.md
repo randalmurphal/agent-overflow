@@ -55,9 +55,13 @@ rather than only the literal argument. Use the transport's resolved step-up
 answer because checking a single-use proof twice consumes it incorrectly.
 In-process and launch-credential calls have no session principal and remain
 valid unless the operation explicitly requires one. A bound method that sends
-to an existing thread or runs something in it takes a leading context and
-calls `requireAutonomyForThread`; `TestEveryThreadDrivingMethodIsListed`
-finds those methods in the code and fails until each is in its table.
+to an existing thread or runs something in it, directly or through a
+service, takes a leading context and reaches `requireAutonomyForThread`
+for every thread it drives; a service that drives threads it resolves
+itself takes a check from the caller (`discussionapp.DriveCheck`).
+`TestEveryThreadDrivingMethodIsListed` finds those methods on a typed call
+graph of every linked module package and fails until each is in its
+table; its boundary list names the paths it deliberately does not follow.
 
 A leading `context.Context` gives a bound method access to the connection
 principal and is omitted from generated TypeScript signatures. Regenerate both
