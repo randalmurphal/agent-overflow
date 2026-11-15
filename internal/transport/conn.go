@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+
+	"agent-overflow/internal/logging"
 )
 
 // DefaultReadLimit caps a single inbound message size. A long thread's
@@ -140,6 +142,10 @@ type connProfile struct {
 // connSettings carries the server-config knobs runConnHandler needs.
 // Zero values take the package defaults.
 type connSettings struct {
+	// acceptStarted is when the upgrade request reached handleWS. The
+	// ws_accept slow step runs from it to the hello written.
+	acceptStarted time.Time
+
 	readLimit         int64
 	maxConcurrentRPCs int
 	keepaliveInterval time.Duration
@@ -395,6 +401,7 @@ func runConnHandler(ctx context.Context, ws *websocket.Conn, d *Dispatcher, bus 
 	// Close instead: a client's reconnect re-reads the grants, and a
 	// session that really ended is refused at the next upgrade.
 	if scopeRefusal != "" {
+		logging.LogSlowStep(slowStepComponent, stepWSAccept, settings.acceptStarted, "error")
 		log.Printf("transport: ws %s session %s grants unreadable at upgrade (%s); closing",
 			profile.remoteAddr, profile.sessionID, scopeRefusal)
 		h.closeWithCause(closeCauseScopesUnreadable, cancel)()
@@ -419,7 +426,9 @@ func runConnHandler(ctx context.Context, ws *websocket.Conn, d *Dispatcher, bus 
 	}
 	hello := settings.hello
 	hello.ReplayBaseline = replayBaseline
-	if err := h.writeHello(connCtx, hello); err != nil {
+	err := h.writeHello(connCtx, hello)
+	logging.LogSlowStep(slowStepComponent, stepWSAccept, settings.acceptStarted, logging.ErrorOutcome(err))
+	if err != nil {
 		log.Printf("transport: ws %s hello write failed: %s", profile.remoteAddr, closeReason(err))
 		return
 	}

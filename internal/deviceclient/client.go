@@ -104,6 +104,10 @@ type Refusal struct {
 	Reason string
 }
 
+// Refused marks this as a verdict rather than a failure to reach one, for
+// the outcome of a slow-step line (logging.ErrorOutcome).
+func (r *Refusal) Refused() bool { return true }
+
 func (r *Refusal) Error() string {
 	if r.Reason == "" {
 		return fmt.Sprintf("deviceclient: the backend refused this credential (HTTP %d)", r.Status)
@@ -497,7 +501,8 @@ func (c *Client) Retire() {
 }
 
 // mintTicket performs one /auth/ticket exchange with a fresh proof.
-func (c *Client) mintTicket(ctx context.Context) (string, error) {
+func (c *Client) mintTicket(ctx context.Context) (_ string, err error) {
+	defer func(started time.Time) { logSlowStep(stepTicket, started, err) }(time.Now())
 	req, err := c.request(ctx, http.MethodPost, authTicketPath, nil)
 	if err != nil {
 		return "", err
@@ -634,7 +639,12 @@ const maxResponseBytes = 64 << 10
 // secret in the body and its proof in the header. Neither ever puts a
 // proof in the body — a proof a caller may write into the same document it
 // is proving something about is not a proof.
-func (c *Client) exchange(ctx context.Context, path string, body []byte, held *Session) (grant, error) {
+func (c *Client) exchange(ctx context.Context, path string, body []byte, held *Session) (_ grant, err error) {
+	step := stepRenew
+	if path == authPairPath {
+		step = stepPair
+	}
+	defer func(started time.Time) { logSlowStep(step, started, err) }(time.Now())
 	req, err := c.request(ctx, http.MethodPost, path, body)
 	if err != nil {
 		return grant{}, err

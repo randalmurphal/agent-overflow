@@ -550,6 +550,11 @@ export class HarnessApp {
     return result;
   }
 
+  /** The backend's last stderr lines, oldest first. */
+  stderrLines(): readonly string[] {
+    return [...this.stderrTail];
+  }
+
   /** Attach the backend's stderr tail to a test, so a failure carries the backend's side. */
   async attachStderr(info: TestInfo): Promise<void> {
     const name = `backend ${this.bootstrap.pid} stderr`;
