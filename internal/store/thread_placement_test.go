@@ -530,8 +530,9 @@ func TestArchiveOwnedWorkerIsFencedByItsOwnersArchive(t *testing.T) {
 	spawnLocal(t, s, "tok-owned", "owner", "owned", true)
 	spawnLocal(t, s, "tok-placed", "owner", "placed", false)
 	spawnLocal(t, s, "tok-moved", "owner", "moved", true)
-	if _, err := s.db.Exec(`INSERT INTO thread_requests (token, caller_thread_id, kind, target_computer_id, target_thread_id, state, lineage_only, created_at, updated_at)
-		VALUES ('tok-moved-later', 'other', 'spawn', '', 'moved', 'finished', 1, ?1, ?1)`, nowMillis()+60_000); err != nil {
+	// The spawn that reaches moved now names another caller, as a handoff
+	// leaves it.
+	if _, err := s.db.Exec(`UPDATE thread_requests SET caller_thread_id = 'other' WHERE token = 'tok-moved'`); err != nil {
 		t.Fatal(err)
 	}
 	archived := func(id string) bool {
