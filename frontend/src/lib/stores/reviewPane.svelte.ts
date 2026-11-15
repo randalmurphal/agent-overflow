@@ -314,6 +314,9 @@ export interface ReviewPaneState extends ReviewCommentActionsState, ReviewCommen
   readonly prThreads: readonly ReviewThread[];
   /** The forge's activity rows for the PR (approvals, merges, …). */
   readonly prEvents: readonly ReviewEvent[];
+  /** That the PR's threads are the first of more, one sentence; null
+   * when they are all, or off the PR. */
+  readonly prThreadsTruncated: string | null;
   // ------------------------------------------------------------------
   // The Merge section: readiness and the merge actions, the one home for
   // approve, merge and auto-merge on every surface (docs/specs/pull-requests.md).
@@ -866,6 +869,8 @@ interface SubmitAttempt {
   ids: readonly string[];
   body: string;
   verdict: 'comment' | 'approve' | 'request-changes';
+  /** The head the pane's diff was loaded at, which the review is of. */
+  headSha: string;
 }
 
 // What the pane holds for one PR (reviewPRIdentity.svelte.ts keeps one per
@@ -913,6 +918,9 @@ function notPostedMessage(code: string | undefined, message: string): string {
   return message;
 }
 
+// The backend's sentence for a head that moved (git.ForgeErrorStaleHead),
+// said before Send when the pane already knows.
+const REVIEW_HEAD_MOVED = 'The branch moved after you loaded this. Reload and try again.';
 const REVIEW_NEVER_ARRIVED = 'The connection dropped before the review reached the computer, so nothing was posted.';
 const REVIEW_ANSWER_LOST = 'The connection dropped before the forge answered, so the review may already be on the PR. Check the PR before you submit again.';
 const REVIEW_UNCONFIRMED = 'The forge did not confirm the review, so it may already be on the PR. Check the PR before you submit again.';
@@ -2975,8 +2983,14 @@ export function createReviewPaneState(
     }
     // From a head-ending run, the drafts the whole diff has no row for
     // (agent-only ones) stay out, as orphans do from All commits.
-    if (headRange && prLineIndex.state !== 'ready') {
+    if ((headRange && prLineIndex.state !== 'ready') || loadedPRHeadSHA === '') {
       reviews.set(on, { submitError: 'The pull request\'s diff is still loading. Send the review once it has loaded.' });
+      return;
+    }
+    // The review is of the diff on screen; a head the pane knows moved
+    // would be refused (GitLab) or pinned to commits it no longer shows.
+    if (prStale) {
+      reviews.set(on, { submitError: REVIEW_HEAD_MOVED });
       return;
     }
     const orphaned = headRange ? rangePROrphans(prLineIndex, drafts) : orphanedDraftIds();
@@ -2998,6 +3012,7 @@ export function createReviewPaneState(
       ids: submitDrafts.map((comment) => comment.id),
       body: summaryBody.trim(),
       verdict,
+      headSha: loadedPRHeadSHA,
     };
     reviews.set(on, { submitting: true, submitError: null });
     let failure: unknown = null;
@@ -3014,6 +3029,9 @@ export function createReviewPaneState(
       } else {
         const code = err instanceof TransportError ? err.code : undefined;
         await settleSubmit(attempt, { kind: 'not-posted', message: notPostedMessage(code, userFacingError(err)) });
+        // A head that moved under the submit raises the stale banner and
+        // its Reload; the drafts, summary and verdict stay.
+        if (code === 'forge_stale_head' && prRef === attempt.ref) void refreshPRThreads();
       }
     } finally {
       reviews.set(on, { submitting: false });
@@ -3027,8 +3045,9 @@ export function createReviewPaneState(
     return (await withBackendTarget(backend, () => SubmitPRReview(prReferenceWire(attempt.ref), {
       verdict: attempt.verdict,
       body: attempt.body,
+      headSha: attempt.headSha,
       comments: [],
-      drafts: { threadId: attempt.threadId ?? undefined, ids: [...attempt.ids], headSha: loadedPRHeadSHA },
+      drafts: { threadId: attempt.threadId ?? undefined, ids: [...attempt.ids] },
       attemptId: attempt.id,
     }))) as SubmitPRReviewResult;
   }
@@ -3041,6 +3060,7 @@ export function createReviewPaneState(
     const result = (await withBackendTarget(backend, () => SubmitPRReview(prReferenceWire(attempt.ref), {
       verdict: attempt.verdict,
       body: attempt.body,
+      headSha: attempt.headSha,
       comments: submitDrafts.map(reviewLineCommentForDraft).filter((comment) => comment !== null),
     }))) as SubmitPRReviewResult;
     let sent = submitDrafts;
@@ -3057,7 +3077,7 @@ export function createReviewPaneState(
       const ids = sent.map((comment) => comment.id);
       try {
         if (pinnedDrafts !== null) await markPRDiffReviewCommentsSent(pinnedDrafts, attempt.scope, attempt.source, ids);
-        else if (attempt.threadId !== null) await MarkDiffReviewCommentsSent(attempt.threadId, attempt.scope, attempt.source, ids, `pr:${loadedPRHeadSHA}`);
+        else if (attempt.threadId !== null) await MarkDiffReviewCommentsSent(attempt.threadId, attempt.scope, attempt.source, ids, `pr:${attempt.headSha}`);
       } catch (err) {
         const unmarked = `Its comments were not marked sent and still show as drafts; delete them instead of sending them again. ${userFacingError(err)}`;
         return {
@@ -3707,6 +3727,7 @@ export function createReviewPaneState(
     get prDetail() { return prSnapshot?.detail ?? null; },
     get prThreads() { return prThreads; },
     get prEvents() { return prEvents; },
+    get prThreadsTruncated() { return scope === 'pr' && prRef !== null ? prSnapshot?.threadsTruncated ?? null : null; },
     get mergeOpen() { return mergeOpen; },
     setMergeOpen(open: boolean): void { mergeOpen = open; },
     get mergeAction() { return mergeActionShown; },

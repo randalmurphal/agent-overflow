@@ -68,6 +68,16 @@ func (e *CommentNotOnPRError) Error() string {
 	return fmt.Sprintf("comment %s is not on this pull request", e.CommentID)
 }
 
+// ThreadNotOnPRError is a resolve refused before it reached the forge
+// because the thread it names is not on the PR the caller named.
+type ThreadNotOnPRError struct {
+	ThreadID string
+}
+
+func (e *ThreadNotOnPRError) Error() string {
+	return fmt.Sprintf("review thread %s is not on this pull request", e.ThreadID)
+}
+
 // HeadMovedError is a write refused before it reached the forge because the
 // PR's head is no longer the one the caller's diff shows.
 type HeadMovedError struct {

@@ -122,6 +122,8 @@ func (p PRReadParts) none() bool { return !p.Detail && !p.Threads && !p.CI && !p
 // ReactionsUnavailable is the sentence saying the threads carry no
 // reactions because the read that has them failed (GitLab's award emoji
 // read, which is apart from its discussions); the threads stand.
+// ThreadsTruncated is the sentence saying the threads are the first the
+// read's page bound takes, not all of them (threadsTruncatedSentence).
 type PRRead struct {
 	Detail               PRDetail
 	Threads              []ReviewThread
@@ -129,6 +131,17 @@ type PRRead struct {
 	CI                   CIPipeline
 	HasCI                bool
 	ReactionsUnavailable string
+	ThreadsTruncated     string
+}
+
+// prReadMaxPages bounds the pages of one list a PR read follows: GitHub's
+// review threads, conversation comments and one thread's comments, and
+// GitLab's discussions, each at most prReadMaxPages * 100.
+const prReadMaxPages = 10
+
+// threadsTruncatedSentence is PRRead.ThreadsTruncated for ref.
+func threadsTruncatedSentence(ref PRReference) string {
+	return fmt.Sprintf("Only the first %d threads and comments of this conversation are shown; the rest are on %s.", prReadMaxPages*100, forgeLabels(ref.Forge).host(ref.Host))
 }
 
 // MergedPRHead is one merged PR/MR's head coordinates as returned by
@@ -297,9 +310,15 @@ type ReviewReplyTo struct {
 	DatabaseID int64  `json:"databaseID"`
 }
 
+// SubmitReviewRequest is one review. HeadSHA is the head the reviewer's
+// diff was loaded at, and every comment's lines are of that diff: GitHub
+// pins the review and its file comments to it (commit_id), as Approve and
+// PostLineComment do; GitLab refuses with *HeadMovedError before any write
+// when the merge request's head is another, and approves only that head.
 type SubmitReviewRequest struct {
 	Verdict  string              `json:"verdict"`
 	Body     string              `json:"body"`
+	HeadSHA  string              `json:"headSha"`
 	Comments []ReviewLineComment `json:"comments"`
 }
 
@@ -698,10 +717,17 @@ func (c *Core) ListReviewThreads(ctx context.Context, ref PRReference) ([]Review
 	return read.Threads, err
 }
 
+// SubmitReview posts review (see SubmitReviewRequest); a request without
+// the head it was written against is refused before any request.
 func (c *Core) SubmitReview(ctx context.Context, ref PRReference, review SubmitReviewRequest) (SubmitReviewResult, error) {
 	if err := ref.Validate(); err != nil {
 		return SubmitReviewResult{}, err
 	}
+	head, err := validMergeHead(review.HeadSHA)
+	if err != nil {
+		return SubmitReviewResult{}, err
+	}
+	review.HeadSHA = head
 	return c.ForgeByID(ref.Forge).SubmitReview(forgeWrite(ctx), ref, review)
 }
 

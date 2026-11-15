@@ -24,7 +24,7 @@ func TestForgeWritesFinishAfterTheirCallerCancels(t *testing.T) {
 	mr := gitlabTestProject + "/merge_requests/7"
 	discussion := mr + "/discussions/abc"
 	line := 3
-	review := SubmitReviewRequest{Verdict: ReviewVerdictApprove, Body: "Looks good", Comments: []ReviewLineComment{
+	review := SubmitReviewRequest{Verdict: ReviewVerdictApprove, HeadSHA: gitlabTestHead, Body: "Looks good", Comments: []ReviewLineComment{
 		{Path: "a.go", Body: "nit", Line: &line, Side: "right"},
 	}}
 	cases := map[string]struct {
@@ -38,26 +38,26 @@ func TestForgeWritesFinishAfterTheirCallerCancels(t *testing.T) {
 				_, err := core.SubmitReview(ctx, gitlabTestRef(7), review)
 				return err
 			},
-			want: []string{"GET " + mr, "GET " + mr + "/diffs?per_page=100", "POST " + mr + "/draft_notes", "POST " + mr + "/draft_notes", "POST " + mr + "/draft_notes/bulk_publish", "POST " + mr + "/approve"},
+			want: []string{"GET metadata", "GET " + mr, "GET " + mr + "/draft_notes?per_page=100", "GET " + mr + "/diffs?per_page=100", "POST " + mr + "/draft_notes", "POST " + mr + "/draft_notes", "POST " + mr + "/draft_notes/bulk_publish", "POST " + mr + "/approve"},
 		},
 		"approve": {
 			hold:  "POST " + mr + "/approve",
 			write: func(ctx context.Context, core *Core) error { return core.ApprovePR(ctx, gitlabTestRef(7), "abc1234") },
-			want:  []string{"POST " + mr + "/approve"},
+			want:  []string{"GET metadata", "POST " + mr + "/approve"},
 		},
 		"reply": {
 			hold: "POST " + discussion + "/notes",
 			write: func(ctx context.Context, core *Core) error {
 				return core.ReplyToThread(ctx, gitlabTestRef(7), "abc", 0, "Thanks")
 			},
-			want: []string{"POST " + discussion + "/notes"},
+			want: []string{"GET metadata", "POST " + discussion + "/notes"},
 		},
 		"resolve": {
 			hold: "PUT " + discussion,
 			write: func(ctx context.Context, core *Core) error {
 				return core.SetThreadResolved(ctx, gitlabTestRef(7), "abc", true)
 			},
-			want: []string{"PUT " + discussion},
+			want: []string{"GET metadata", "PUT " + discussion},
 		},
 	}
 	for name, tc := range cases {
@@ -76,6 +76,8 @@ func TestForgeWritesFinishAfterTheirCallerCancels(t *testing.T) {
 				switch {
 				case key == "GET "+mr:
 					return forgeAPIAnswer{Body: gitlabTestMR(7, 0)}
+				case key == "GET "+mr+"/draft_notes?per_page=100":
+					return forgeAPIAnswer{Body: `[]`}
 				case key == "GET "+mr+"/diffs?per_page=100":
 					return gitlabTestDiffsAnswer()
 				case key == "POST "+mr+"/draft_notes":

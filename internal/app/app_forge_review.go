@@ -61,8 +61,10 @@ type PRUpdateSubscriptionResult struct {
 	Threads []gitops.ReviewThread `json:"threads"`
 	Events  []gitops.ReviewEvent  `json:"events"`
 	// ReactionsUnavailable is the sentence saying the threads carry no
-	// reactions because their read failed (gitops.PRRead).
+	// reactions because their read failed, and ThreadsTruncated the one
+	// saying the threads are the first of more (gitops.PRRead).
 	ReactionsUnavailable string `json:"reactionsUnavailable,omitempty"`
+	ThreadsTruncated     string `json:"threadsTruncated,omitempty"`
 	HeadSHA              string `json:"headSHA"`
 	Error                string `json:"error"`
 	ErrorKind            string `json:"errorKind"`
@@ -105,8 +107,10 @@ type PRUpdatedEvent struct {
 	Detail  gitops.PRDetail       `json:"detail"`
 	Threads []gitops.ReviewThread `json:"threads"`
 	Events  []gitops.ReviewEvent  `json:"events"`
-	// ReactionsUnavailable is as on PRUpdateSubscriptionResult.
+	// ReactionsUnavailable and ThreadsTruncated are as on
+	// PRUpdateSubscriptionResult.
 	ReactionsUnavailable string `json:"reactionsUnavailable,omitempty"`
+	ThreadsTruncated     string `json:"threadsTruncated,omitempty"`
 	HeadSHA              string `json:"headSHA"`
 	Error                string `json:"error,omitempty"`
 	ErrorKind            string `json:"errorKind,omitempty"`
@@ -120,6 +124,7 @@ type prUpdateSnapshot struct {
 	Threads              []gitops.ReviewThread `json:"threads"`
 	Events               []gitops.ReviewEvent  `json:"events"`
 	ReactionsUnavailable string                `json:"reactionsUnavailable,omitempty"`
+	ThreadsTruncated     string                `json:"threadsTruncated,omitempty"`
 }
 
 // prUpdatePump is the App's per-PR poller: one ticker, one
@@ -419,25 +424,27 @@ func mapSubmitPRReviewResult(pr gitops.PRReference, action gitops.ForgeAction, r
 
 // SetPRThreadResolved resolves (or reopens) one review thread on the
 // forge. threadID is the id ListPRReviewThreads reported for it — a
-// GitHub review thread node id, a GitLab discussion id.
+// GitHub review thread node id, a GitLab discussion id — and must be a
+// thread of pr's. It runs as every PR write does (app_forge_merge.go):
+// admitted, then settled with the PR's pump polling at once, a write the
+// forge may have applied refreshing too.
 //
-// The answer is the forge's, not a local flag: the next poll of
-// SubscribePRUpdates re-reads the thread and the pane follows it, so a
-// failure here leaves the badge showing what the forge actually holds.
+// The answer is the forge's, not a local flag: the pump's poll re-reads
+// the thread and the pane follows it, so a failure here leaves the badge
+// showing what the forge actually holds.
 //
 //ao:scope git:operate
 //ao:route selected
-func (a *App) SetPRThreadResolved(ctx context.Context, pr gitops.PRReference, threadID string, resolved bool) error {
-	if a.shuttingDown.Load() {
-		return ErrShuttingDown
+func (a *App) SetPRThreadResolved(ctx context.Context, pr gitops.PRReference, threadID string, resolved bool) (PRActionResult, error) {
+	if err := a.admitPRAction(pr); err != nil {
+		return PRActionResult{}, err
 	}
-	if err := pr.Validate(); err != nil {
-		return err
+	threadID = strings.TrimSpace(threadID)
+	if threadID == "" {
+		return PRActionResult{}, errors.New("review thread id is required")
 	}
-	if strings.TrimSpace(threadID) == "" {
-		return errors.New("review thread id is required")
-	}
-	return gitops.ExplainForgeError(pr, gitops.ActionResolve, a.gitCore().SetThreadResolved(forgeapi.WithInteractive(ctx), pr, threadID, resolved))
+	err := a.gitCore().SetThreadResolved(forgeapi.WithInteractive(ctx), pr, threadID, resolved)
+	return a.settlePRAction(ctx, pr, gitops.ActionResolve, err)
 }
 
 // SubscribePRUpdates begins polling a pull request for detail/review-thread
@@ -527,6 +534,7 @@ func (a *App) SubscribePRUpdates(ctx context.Context, pr gitops.PRReference) (PR
 		Threads:              ref.snapshot.Threads,
 		Events:               ref.snapshot.Events,
 		ReactionsUnavailable: ref.snapshot.ReactionsUnavailable,
+		ThreadsTruncated:     ref.snapshot.ThreadsTruncated,
 		HeadSHA:              ref.snapshot.Detail.HeadSHA,
 		Error:                ref.fail.wire,
 		ErrorKind:            ref.fail.kind,
@@ -872,6 +880,7 @@ func (a *App) pollPRUpdate(ctx context.Context, pump *prUpdatePump) (PRUpdatedEv
 				Threads:              snapshot.Threads,
 				Events:               snapshot.Events,
 				ReactionsUnavailable: snapshot.ReactionsUnavailable,
+				ThreadsTruncated:     snapshot.ThreadsTruncated,
 				HeadSHA:              snapshot.Detail.HeadSHA,
 				Seq:                  seq,
 			}, true
@@ -1045,7 +1054,7 @@ func (a *App) fetchPRUpdateSnapshot(ctx context.Context, pr gitops.PRReference) 
 	if err != nil {
 		return prUpdateSnapshot{}, err
 	}
-	return prUpdateSnapshot{Detail: read.Detail, Threads: read.Threads, Events: read.Events, ReactionsUnavailable: read.ReactionsUnavailable}, nil
+	return prUpdateSnapshot{Detail: read.Detail, Threads: read.Threads, Events: read.Events, ReactionsUnavailable: read.ReactionsUnavailable, ThreadsTruncated: read.ThreadsTruncated}, nil
 }
 
 func (a *App) prUpdatePollInterval() time.Duration {

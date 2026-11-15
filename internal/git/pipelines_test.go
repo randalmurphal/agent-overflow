@@ -732,14 +732,14 @@ func TestPRCIReadNamesTheRefAndCommit(t *testing.T) {
 	gl, _ := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
 		switch {
 		case call.Path == "projects/grp%2Fsub%2Fapp/merge_requests/3":
-			return forgeAPIAnswer{Body: `{"iid":3,"sha":"head2","head_pipeline":{"id":77,"status":"running","ref":"refs/merge-requests/3/head","sha":"head2","web_url":"https://gitlab.example/p/77"}}`}
+			return forgeAPIAnswer{Body: `{"iid":3,"sha":"ab12cd34","head_pipeline":{"id":77,"status":"running","ref":"refs/merge-requests/3/head","sha":"ab12cd34","web_url":"https://gitlab.example/p/77"}}`}
 		case call.Op == "PipelineJobs":
 			return gitlabJobsPage([]string{"test"}, "", gitlabJobNode("Ci::Build", 1, "unit", "test", "RUNNING", `"startedAt":"2026-10-20T10:00:00Z"`))
 		}
 		return forgeUnexpected(t, call)
 	})
 	ci, err := gl.ListPRCIJobs(t.Context(), gitlabTestRef(3), nil, nil)
-	if err != nil || ci.ID != "77" || ci.Ref != "refs/merge-requests/3/head" || ci.SHA != "head2" {
+	if err != nil || ci.ID != "77" || ci.Ref != "refs/merge-requests/3/head" || ci.SHA != "ab12cd34" {
 		t.Fatalf("GitLab PR CI = %+v, %v", ci, err)
 	}
 	gh, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {

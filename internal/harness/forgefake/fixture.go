@@ -63,14 +63,15 @@ type Repo struct {
 	// into a page and drops them from it after, so a page comes back
 	// short and still names its next page, as GitLab's does.
 	EventsHidden bool `json:"eventsHidden,omitempty"`
-	// Members, Teams, Labels, Organization and ServerLacks are what the
-	// management actions search and check (manage.go).
-	Members      []Member `json:"members,omitempty"`
-	Teams        []Team   `json:"teams,omitempty"`
-	TeamsRefused bool     `json:"teamsRefused,omitempty"`
-	Organization bool     `json:"organization,omitempty"`
-	Labels       []Label  `json:"labels,omitempty"`
-	ServerLacks  []string `json:"serverLacks,omitempty"`
+	// Members, Teams, Labels, Organization, ServerVersion and ServerLacks
+	// are what the management actions search and check (manage.go).
+	Members       []Member `json:"members,omitempty"`
+	Teams         []Team   `json:"teams,omitempty"`
+	TeamsRefused  bool     `json:"teamsRefused,omitempty"`
+	Organization  bool     `json:"organization,omitempty"`
+	Labels        []Label  `json:"labels,omitempty"`
+	ServerVersion string   `json:"serverVersion,omitempty"`
+	ServerLacks   []string `json:"serverLacks,omitempty"`
 }
 
 // RepoMerge is a project's merge settings (GitHub repository settings,
