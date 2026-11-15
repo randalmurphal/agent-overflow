@@ -805,6 +805,10 @@ type App struct {
 	// rollback could not undo. The zero value is OPEN: every boot except a
 	// supervisor trial never touches it. See app_activation.go.
 	activation activation
+	// workflowStartsHeldForBoot is true while the workflow engine runs paused
+	// only so its rebuild starts nothing before startBeforeClients. Written by
+	// Start before the gate's goroutine exists and cleared by that step.
+	workflowStartsHeldForBoot bool
 	// serviceUpdate holds this backend's ability to replace itself: the call
 	// that asks its supervisor to run an already-staged version, and the
 	// release source, layout and live flow the remote trigger drives. Both

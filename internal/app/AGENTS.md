@@ -167,6 +167,10 @@ the window opens during it, `SetStartDone` receives the result, and
 `ServiceShutdown` cancels and joins it. Code the window or shell reaches
 during that time must not assume `Start` finished; check the state it needs,
 as `persistWindowGeometry` does.
+A boot step that deletes a file, starts a process or reaches the network runs
+in `startBeforeClients` or `startUnattendedWork`, never earlier in `Start`,
+and a port that acts on what the boot rebuilt waits in `waitForBootSteps`: a
+supervisor trial runs them only after its commit (`app_activation.go`).
 Unattended work that scans the database waits for `awaitFirstReadsSettled`
 so it does not compete with the first client's catalog reads.
 
