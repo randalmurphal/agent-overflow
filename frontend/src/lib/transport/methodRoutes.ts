@@ -192,6 +192,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	3340938325: 'thread', // GetThreadUserMessageHistory
 	556088547: 'thread', // GetThreadUserMessageTicks
 	3375683118: 'thread', // GetThreadWakeDetail
+	2442730827: 'thread', // GetThreadWorkerSummary
 	49371251: 'thread', // GetThreadWorktreeSetup
 	3815301456: 'thread', // GetTimelineUserMessageTicks
 	1009213933: 'home', // GetUIRenderTracePath
@@ -234,8 +235,8 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2789068977: 'home', // IsWSL
 	1602023272: 'thread', // ListActivityRunMembers
 	2526318276: 'selected', // ListAgentComputers
-	1323325584: 'thread', // ListArchivedSpawnedThreads
 	2451527188: 'all', // ListArchivedThreads
+	727823420: 'home', // ListAssistantPastThreads
 	3128666716: 'thread', // ListAsyncQuestions
 	1730798413: 'thread', // ListAttachments
 	2556802234: 'selected', // ListAvailableEditors
@@ -274,11 +275,13 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2176447381: 'all', // ListThreadGroups
 	2177219062: 'all', // ListThreadLiveActivity
 	245278513: 'thread', // ListThreadMcpServers
+	1683641211: 'thread', // ListThreadPastAgentRows
 	2485050629: 'thread', // ListThreadProposedPlans
 	3375390768: 'thread', // ListThreadRecurringJobs
 	1165681857: 'thread', // ListThreadRemoteCommands
 	4176102096: 'thread', // ListThreadSliceAround
 	1646300658: 'thread', // ListThreadWakes
+	3558464261: 'all', // ListThreadWorkerSummaries
 	1090132042: 'all', // ListThreads
 	1924357569: 'selected', // ListThreadsOnPR
 	3507874115: 'all', // ListUnsettledFlushes

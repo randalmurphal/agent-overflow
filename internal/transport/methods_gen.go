@@ -231,6 +231,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "GetThreadUserMessageHistory", ID: 3340938325, Scope: "threads:read", Route: "thread"},                             // main.App.GetThreadUserMessageHistory
 	{Name: "GetThreadUserMessageTicks", ID: 556088547, Scope: "threads:read", Route: "thread"},                                // main.App.GetThreadUserMessageTicks
 	{Name: "GetThreadWakeDetail", ID: 3375683118, Scope: "threads:read", Route: "thread"},                                     // main.App.GetThreadWakeDetail
+	{Name: "GetThreadWorkerSummary", ID: 2442730827, Scope: "threads:read", Route: "thread"},                                  // main.App.GetThreadWorkerSummary
 	{Name: "GetThreadWorktreeSetup", ID: 49371251, Scope: "terminal:operate", Route: "thread"},                                // main.App.GetThreadWorktreeSetup
 	{Name: "GetTimelineUserMessageTicks", ID: 3815301456, Scope: "threads:read", Route: "thread"},                             // main.App.GetTimelineUserMessageTicks
 	{Name: "GetUIRenderTracePath", ID: 1009213933, Scope: "host", Route: "home"},                                              // main.App.GetUIRenderTracePath
@@ -273,8 +274,8 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "IsWSL", ID: 2789068977, Scope: "threads:read", Route: "home"},                                                     // main.App.IsWSL
 	{Name: "ListActivityRunMembers", ID: 1602023272, Scope: "threads:read", Route: "thread", CallerBound: true},               // main.App.ListActivityRunMembers
 	{Name: "ListAgentComputers", ID: 2526318276, Scope: "terminal:operate", Route: "selected"},                                // main.App.ListAgentComputers
-	{Name: "ListArchivedSpawnedThreads", ID: 1323325584, Scope: "threads:read", Route: "thread"},                              // main.App.ListArchivedSpawnedThreads
 	{Name: "ListArchivedThreads", ID: 2451527188, Scope: "threads:read", Route: "all"},                                        // main.App.ListArchivedThreads
+	{Name: "ListAssistantPastThreads", ID: 727823420, Scope: "threads:read", Route: "home"},                                   // main.App.ListAssistantPastThreads
 	{Name: "ListAsyncQuestions", ID: 3128666716, Scope: "threads:read", Route: "thread"},                                      // main.App.ListAsyncQuestions
 	{Name: "ListAttachments", ID: 1730798413, Scope: "threads:read", Route: "thread"},                                         // main.App.ListAttachments
 	{Name: "ListAvailableEditors", ID: 2556802234, Scope: "settings:read", Route: "selected"},                                 // main.App.ListAvailableEditors
@@ -313,11 +314,13 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "ListThreadGroups", ID: 2176447381, Scope: "threads:read", Route: "all"},                                           // main.App.ListThreadGroups
 	{Name: "ListThreadLiveActivity", ID: 2177219062, Scope: "threads:read", Route: "all"},                                     // main.App.ListThreadLiveActivity
 	{Name: "ListThreadMcpServers", ID: 245278513, Scope: "settings:write", Route: "thread"},                                   // main.App.ListThreadMcpServers
+	{Name: "ListThreadPastAgentRows", ID: 1683641211, Scope: "threads:read", Route: "thread"},                                 // main.App.ListThreadPastAgentRows
 	{Name: "ListThreadProposedPlans", ID: 2485050629, Scope: "threads:read", Route: "thread"},                                 // main.App.ListThreadProposedPlans
 	{Name: "ListThreadRecurringJobs", ID: 3375390768, Scope: "threads:read", Route: "thread"},                                 // main.App.ListThreadRecurringJobs
 	{Name: "ListThreadRemoteCommands", ID: 1165681857, Scope: "threads:read", Route: "thread"},                                // main.App.ListThreadRemoteCommands
 	{Name: "ListThreadSliceAround", ID: 4176102096, Scope: "threads:read", Route: "thread", CallerBound: true},                // main.App.ListThreadSliceAround
 	{Name: "ListThreadWakes", ID: 1646300658, Scope: "threads:read", Route: "thread"},                                         // main.App.ListThreadWakes
+	{Name: "ListThreadWorkerSummaries", ID: 3558464261, Scope: "threads:read", Route: "all"},                                  // main.App.ListThreadWorkerSummaries
 	{Name: "ListThreads", ID: 1090132042, Scope: "threads:read", Route: "all"},                                                // main.App.ListThreads
 	{Name: "ListThreadsOnPR", ID: 1924357569, Scope: "git:operate", Route: "selected", CallerBound: true},                     // main.App.ListThreadsOnPR
 	{Name: "ListUnsettledFlushes", ID: 3507874115, Scope: "threads:operate", Route: "all"},                                    // main.App.ListUnsettledFlushes

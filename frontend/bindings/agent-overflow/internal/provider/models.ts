@@ -132,7 +132,7 @@ export class ApprovalRequest {
     "permissionSuggestions"?: json$0.RawMessage;
 
     /**
-     * RoutedTo is set when the prompt goes to the standing agent that
+     * RoutedTo is set when the prompt goes to the thread that
      * spawned this thread instead of to the user. Triage stamps it; a
      * provider never does.
      */
@@ -681,7 +681,7 @@ export class PermissionProfile {
 }
 
 /**
- * PromptRoute names the standing agent a worker's prompt was delivered to.
+ * PromptRoute names the spawner a worker's prompt was delivered to.
  * The prompt stays open in the worker, where the user can still answer it.
  */
 export class PromptRoute {
