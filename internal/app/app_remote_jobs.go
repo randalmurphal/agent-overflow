@@ -347,7 +347,7 @@ func (a *App) AgentRemoteStart(ctx context.Context, input AgentRemoteRequest) (R
 	// Admitted from the watch to the destination's answer, so a rest of the
 	// thread cancels a command the destination has, never one it is still
 	// being asked to start.
-	done, err := a.admitWork(scope.ThreadID)
+	done, err := a.admitWork(scope.ThreadID, scope.Session)
 	if err != nil {
 		return RemoteCommand{}, err
 	}

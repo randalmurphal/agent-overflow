@@ -118,7 +118,11 @@ func (a *App) callWorkflowMCP(w http.ResponseWriter, ctx context.Context, req th
 		threadmcp.WriteError(w, req.ID, http.StatusOK, -32602, "invalid tools/call params")
 		return
 	}
-	ctx = transport.WithCallerScope(ctx, access.Scope)
+	// The work the call starts is the session's that authenticated it
+	// (admitWork), however long the call takes to get there.
+	scope := access.Scope
+	scope.Session = access.SessionToken
+	ctx = transport.WithCallerScope(ctx, scope)
 	result, err := a.workflowToolsServer().Call(ctx, access.Caller, call.Name, call.Arguments)
 	if err != nil {
 		if _, _, public := errorsx.PublicDetails(err); !public {
@@ -290,7 +294,7 @@ func (w workflowToolsAdapter) admitCallerWork(ctx context.Context) (func(), erro
 	if err != nil {
 		return func() {}, nil
 	}
-	return w.a.admitWork(scope.ThreadID)
+	return w.a.admitWork(scope.ThreadID, scope.Session)
 }
 
 type noWakeHold struct{}

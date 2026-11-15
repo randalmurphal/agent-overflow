@@ -117,7 +117,7 @@ func TestAStopRefusesWorkItsTurnStartsDuringIt(t *testing.T) {
 		_, loopErr = f.app.registerAgentWake(store.AgentWake{
 			ThreadID: ack.ThreadID, Kind: store.AgentWakeLoop, Label: "late", Note: "n",
 			IntervalSeconds: 3600, NextAt: time.Now().Add(time.Hour).UnixMilli(),
-		})
+		}, "")
 		_, spawnErr = f.adapter().Spawn(t.Context(), worker, threadtools.SpawnCall{Prompt: "more"})
 	}
 

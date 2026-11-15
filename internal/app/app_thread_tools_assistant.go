@@ -51,7 +51,7 @@ func (t threadToolsApp) NewAssistant(ctx context.Context, caller threadtools.Cal
 	if err != nil {
 		return threadtools.NewAssistantAck{}, err
 	}
-	done, err := t.app.admitWork(caller.ThreadID)
+	done, err := t.app.admitWork(caller.ThreadID, caller.Session)
 	if err != nil {
 		return threadtools.NewAssistantAck{}, err
 	}

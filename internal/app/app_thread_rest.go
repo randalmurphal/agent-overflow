@@ -159,6 +159,10 @@ func (a *App) stopRestingThreadWork(work restingThreadWork) error {
 // a worker's prompt goes to the user, an outside send is refused.
 var errThreadResting = errors.New("the thread is being stopped")
 
+// errSessionEnded refuses work a call starts once the session it
+// authenticated as has ended.
+var errSessionEnded = errors.New("the calling session has ended")
+
 // threadRestFence holds the threads being brought to rest. While a Stop
 // holds a thread (hold), from the start of the rest to the end of its
 // cascade, the thread takes no app-written message (registerQueueItem) and
@@ -232,14 +236,21 @@ func (f *threadRestFence) close(threadID string) func() {
 }
 
 // admit admits one piece of work threadID starts, refused with
-// errThreadResting while its admission is closed. done runs once the work
+// errThreadResting while its admission is closed, and with
+// errSessionEnded when current, the check that the session the work
+// belongs to is still the thread's, says it is not. current runs under the
+// fence, so a rest, which ends the session only while admission is closed,
+// either waits for the admission or is seen by it. done runs once the work
 // is recorded where a rest reads it.
-func (f *threadRestFence) admit(threadID string) (done func(), err error) {
+func (f *threadRestFence) admit(threadID string, current func() bool) (done func(), err error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.init()
 	if f.closed[threadID] > 0 {
 		return nil, errThreadResting
+	}
+	if current != nil && !current() {
+		return nil, errSessionEnded
 	}
 	f.admitting[threadID]++
 	var once sync.Once
@@ -256,9 +267,29 @@ func (f *threadRestFence) admit(threadID string) (done func(), err error) {
 }
 
 // admitWork is threadRestFence.admit with the refusal an agent reads.
-func (a *App) admitWork(threadID string) (func(), error) {
-	done, err := a.resting.admit(threadID)
-	if err != nil {
+// session is the token of the provider session the call authenticated as
+// (threadtools.Caller.Session, transport.CallerScope.Session), empty for a
+// call no session made, such as a person's: work a session starts is
+// admitted only while that session is still threadID's, so a call that
+// passed authentication before a rest ended its session starts nothing
+// however late it gets here, and one from a session started since does.
+func (a *App) admitWork(threadID, session string) (func(), error) {
+	if hook := a.admitWorkForTest; hook != nil {
+		hook(threadID)
+	}
+	var current func() bool
+	if session != "" {
+		current = func() bool {
+			live, ok := a.sessionManager().get(threadID)
+			return ok && live.Token == session
+		}
+	}
+	done, err := a.resting.admit(threadID, current)
+	switch {
+	case errors.Is(err, errSessionEnded):
+		return nil, errorsx.Public(threadtools.CodeInvalidRequest,
+			"The agent session that made this call has ended, so it cannot start new work.", err)
+	case err != nil:
 		return nil, errorsx.Public(threadtools.CodeInvalidRequest,
 			"This thread is being stopped and cannot start new work now.", err)
 	}

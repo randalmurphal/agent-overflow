@@ -67,7 +67,7 @@ func (a *App) remoteMCPConfigForThread(thread store.Thread, sessionToken string)
 }
 
 func (a *App) remoteMCPTools(access remoteMCPAccess) []map[string]any {
-	if _, err := a.remoteMCPContext(context.Background(), access.ThreadID); err != nil {
+	if _, err := a.remoteMCPContext(context.Background(), access); err != nil {
 		return nil
 	}
 	enabled, err := a.remoteMCPEnabled()
@@ -96,8 +96,11 @@ func (a *App) remoteMCPEnabled() (bool, error) {
 	return false, nil
 }
 
-func (a *App) remoteMCPContext(ctx context.Context, threadID string) (context.Context, error) {
-	thread, err := a.store.GetThread(threadID)
+// remoteMCPContext carries the calling session's scope, naming the session
+// (CallerScope.Session), so the work the call starts is that session's
+// alone (admitWork).
+func (a *App) remoteMCPContext(ctx context.Context, access remoteMCPAccess) (context.Context, error) {
+	thread, err := a.store.GetThread(access.ThreadID)
 	if err != nil {
 		return nil, err
 	}
@@ -111,6 +114,7 @@ func (a *App) remoteMCPContext(ctx context.Context, threadID string) (context.Co
 	if !ok || (scope.IsPhase() && !scope.HasGrant("remote-commands")) {
 		return nil, errorsx.Public("remote_permission_required", "This conversation does not have permission to use remote commands. Check its workflow grants and enable ao-remote-tools in the MCP menu.", nil)
 	}
+	scope.Session = access.SessionToken
 	return transport.WithCallerScope(ctx, scope), nil
 }
 
@@ -170,7 +174,7 @@ func (a *App) callRemoteMCP(w http.ResponseWriter, ctx context.Context, req thre
 		threadmcp.WriteToolError(w, req.ID, a.remoteOperationError("authorize", "", "", errorsx.Public("remote_session_inactive", "The agent session is no longer active. Resume the conversation before using remote tools. Accepted remote jobs keep running.", nil)))
 		return
 	}
-	ctx, err := a.remoteMCPContext(ctx, access.ThreadID)
+	ctx, err := a.remoteMCPContext(ctx, access)
 	if err != nil {
 		threadmcp.WriteToolError(w, req.ID, a.remoteOperationError("authorize", "", "", err))
 		return

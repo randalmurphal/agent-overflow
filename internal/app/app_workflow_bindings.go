@@ -72,7 +72,7 @@ func (a *App) WorkflowBindThread(itemID, threadID string) (store.WorkItem, error
 	}
 	// A run bound to a thread being brought to rest would report to it after
 	// the rest paused the runs that do.
-	done, err := a.resting.admit(thread.ID)
+	done, err := a.resting.admit(thread.ID, nil)
 	if err != nil {
 		return store.WorkItem{}, fmt.Errorf("bind workflow run %s: %w", item.ID, err)
 	}

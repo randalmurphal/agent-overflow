@@ -45,7 +45,7 @@ func TestAThreadBeingStoppedStartsNoThreadWork(t *testing.T) {
 			_, err := f.app.registerAgentWake(store.AgentWake{
 				ThreadID: f.caller.ID, Kind: store.AgentWakeLoop, Label: "board", Note: "n",
 				IntervalSeconds: 3600, NextAt: time.Now().Add(time.Hour).UnixMilli(),
-			})
+			}, "")
 			return err
 		},
 	} {
@@ -176,7 +176,7 @@ func TestAThreadBeingStoppedStartsNoWorkflowRun(t *testing.T) {
 func TestClosingAdmissionWaitsForTheAdmissionsUnderWay(t *testing.T) {
 	t.Parallel()
 	var fence threadRestFence
-	done, err := fence.admit("t")
+	done, err := fence.admit("t", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -189,14 +189,14 @@ func TestClosingAdmissionWaitsForTheAdmissionsUnderWay(t *testing.T) {
 	}
 	done()
 	release := <-closed
-	if _, err := fence.admit("t"); !errors.Is(err, errThreadResting) {
+	if _, err := fence.admit("t", nil); !errors.Is(err, errThreadResting) {
 		t.Fatalf("admission while closed = %v, want refused", err)
 	}
-	if _, err := fence.admit("u"); err != nil {
+	if _, err := fence.admit("u", nil); err != nil {
 		t.Fatalf("another thread's admission = %v", err)
 	}
 	release()
-	if done, err := fence.admit("t"); err != nil {
+	if done, err := fence.admit("t", nil); err != nil {
 		t.Fatalf("admission after the release = %v", err)
 	} else {
 		done()
@@ -231,7 +231,7 @@ func TestAnArchivedThreadStartsNoWorkWhileItsSessionStops(t *testing.T) {
 					return
 				}
 				tried = true
-				done, err := f.app.resting.admit(ack.ThreadID)
+				done, err := f.app.resting.admit(ack.ThreadID, nil)
 				if err == nil {
 					done()
 				}
@@ -243,7 +243,7 @@ func TestAnArchivedThreadStartsNoWorkWhileItsSessionStops(t *testing.T) {
 			if !tried || !errors.Is(admitErr, errThreadResting) {
 				t.Fatalf("an admission while the session stopped: tried %v, %v; want it refused", tried, admitErr)
 			}
-			done, err := f.app.resting.admit(ack.ThreadID)
+			done, err := f.app.resting.admit(ack.ThreadID, nil)
 			if err != nil {
 				t.Fatalf("an admission after the archive: %v", err)
 			}

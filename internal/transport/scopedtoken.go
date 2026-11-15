@@ -51,6 +51,10 @@ type CallerScope struct {
 	// Access is the frozen access of the phase, or of the fan-out unit the
 	// session runs (phase kind only): `write` or `read-only`.
 	Access string `json:"access,omitempty"`
+	// Session is the token of the provider session the caller authenticated
+	// as, set where the call was authenticated. Work the call starts is that
+	// session's alone: it is refused once the session has ended.
+	Session string `json:"-"`
 }
 
 // HasGrant reports whether the scope carries one named grant.

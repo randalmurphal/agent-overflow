@@ -264,6 +264,9 @@ func (a *App) callThreadMCP(w http.ResponseWriter, ctx context.Context, req thre
 		threadmcp.WriteToolError(w, req.ID, err)
 		return
 	}
+	// The work the call starts is the session's that authenticated it
+	// (admitWork), however long the call takes to get there.
+	caller.Session = access.SessionToken
 	// Work a call defers until its answer is written: the inline delivery
 	// marks, and the deletion of a scratch thread whose own agent is still
 	// inside this call.

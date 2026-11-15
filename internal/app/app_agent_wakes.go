@@ -100,7 +100,7 @@ func (t threadToolsApp) Loop(_ context.Context, caller threadtools.Caller, call 
 	row, err := t.app.registerAgentWake(store.AgentWake{
 		ThreadID: caller.ThreadID, Kind: store.AgentWakeLoop, Label: call.Label, Note: call.Note,
 		IntervalSeconds: int64(call.EverySeconds), NextAt: time.Now().Add(interval).UnixMilli(),
-	})
+	}, caller.Session)
 	if err != nil {
 		return threadtools.WakeState{}, err
 	}
@@ -142,7 +142,7 @@ func (t threadToolsApp) Watch(_ context.Context, caller threadtools.Caller, call
 		// it never lands inside the turn that registered it.
 		row.IntervalSeconds, row.NextAt = int64(call.EverySeconds), time.Now().Add(interval).UnixMilli()
 	}
-	stored, err := t.app.registerAgentWake(row)
+	stored, err := t.app.registerAgentWake(row, caller.Session)
 	if err != nil {
 		return threadtools.WakeState{}, err
 	}
@@ -211,8 +211,10 @@ func (a *App) checkAgentWakeInterval(seconds int) (time.Duration, error) {
 // command, a row that stopped being one has its process stopped, and the
 // sweep is woken for an interval row whose first fire may be sooner than its
 // sleep.
-func (a *App) registerAgentWake(row store.AgentWake) (store.AgentWake, error) {
-	done, err := a.admitWork(row.ThreadID)
+//
+// session is the calling session's token (admitWork).
+func (a *App) registerAgentWake(row store.AgentWake, session string) (store.AgentWake, error) {
+	done, err := a.admitWork(row.ThreadID, session)
 	if err != nil {
 		return store.AgentWake{}, err
 	}

@@ -814,7 +814,13 @@ thread:
    now.`). The Stop first waits for the ones already being admitted, so
    the steps below reach everything the thread started. An archive
    closes the thread to new work the same way, from before its capture
-   until its session is stopped.
+   until its session is stopped. Work an agent's call starts belongs to
+   the session the call authenticated as (thread, workflow and remote
+   tools, and the `agent-overflow remote` credential): once that session
+   has ended, a call that was already past authentication starts nothing,
+   however late it reaches admission (`The agent session that made this
+   call has ended, so it cannot start new work.`), and a call from the
+   session started afterwards is admitted.
 2. Under its action and mutation locks, ends its parked calls, disarms
    the wakes of its requests, cancels its loops and watches with the
    outcome `cancelled: the user stopped the thread` (an agent's stop:

@@ -741,6 +741,10 @@ type App struct {
 	// stopRequestsOfRestingThread), so a test can make a request at that
 	// moment.
 	agentStopCapturedForTest func(threadID string)
+	// admitWorkForTest, when set, runs as a call reaches admitWork, after
+	// its authentication and before its admission, so a test can hold it
+	// there while the thread is brought to rest.
+	admitWorkForTest func(threadID string)
 	// turnEndSettledForTest, when set, runs in a turn-end settlement pass
 	// after it settled its receipts and before it retires the stops it read
 	// (settleReceiptsForEndedTurn), so a test can stop or end a turn then.

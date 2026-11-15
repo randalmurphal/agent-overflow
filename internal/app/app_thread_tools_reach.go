@@ -278,7 +278,7 @@ func (t threadToolsApp) startRemoteRequest(
 	row.NextCheck = time.Now().Add(threadRequestAdmissionFence).UnixMilli()
 	// Admitted from the row to the destination's answer, so a rest of the
 	// caller stops a request the destination has settled or holds.
-	done, err := t.app.admitWork(caller.ThreadID)
+	done, err := t.app.admitWork(caller.ThreadID, caller.Session)
 	if err != nil {
 		return threadtools.RequestAck{}, err
 	}

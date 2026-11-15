@@ -218,7 +218,7 @@ func (t threadToolsApp) Spawn(ctx context.Context, caller threadtools.Caller, ca
 	if _, err := t.spawnThreadOptions(ctx, origin, call); err != nil {
 		return threadtools.RequestAck{}, err
 	}
-	done, err := t.app.admitWork(caller.ThreadID)
+	done, err := t.app.admitWork(caller.ThreadID, caller.Session)
 	if err != nil {
 		return threadtools.RequestAck{}, err
 	}
@@ -307,7 +307,7 @@ func (t threadToolsApp) Send(ctx context.Context, caller threadtools.Caller, cal
 	if err := t.refuseSelf(caller, call.ThreadID, "send to"); err != nil {
 		return threadtools.RequestAck{}, err
 	}
-	done, err := t.app.admitWork(caller.ThreadID)
+	done, err := t.app.admitWork(caller.ThreadID, caller.Session)
 	if err != nil {
 		return threadtools.RequestAck{}, err
 	}
@@ -409,7 +409,7 @@ func (t threadToolsApp) Ask(ctx context.Context, caller threadtools.Caller, call
 	if _, err := t.localThread(call.ThreadID); err != nil {
 		return threadtools.RequestAck{}, err
 	}
-	done, err := t.app.admitWork(caller.ThreadID)
+	done, err := t.app.admitWork(caller.ThreadID, caller.Session)
 	if err != nil {
 		return threadtools.RequestAck{}, err
 	}

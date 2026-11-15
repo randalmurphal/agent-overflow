@@ -196,9 +196,13 @@ func (m *Manager) remove(threadID string, entry Entry) {
 	m.purgeClaudeLiveConfigState(entry.Token)
 }
 
+// registerAOToken resolves the session's credential to its scope, naming
+// the session it belongs to (CallerScope.Session).
 func (m *Manager) registerAOToken(entry Entry) {
 	if entry.AOToken != "" {
-		m.aoTokens[entry.AOToken] = entry.AOScope
+		scope := entry.AOScope
+		scope.Session = entry.Token
+		m.aoTokens[entry.AOToken] = scope
 	}
 }
 

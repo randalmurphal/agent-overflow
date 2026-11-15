@@ -32,7 +32,7 @@ func wakeRowsChanged(rec *emitRecorder, threadID string) int {
 
 func registerTestWake(t *testing.T, a *App, row store.AgentWake) store.AgentWake {
 	t.Helper()
-	stored, err := a.registerAgentWake(row)
+	stored, err := a.registerAgentWake(row, "")
 	if err != nil {
 		t.Fatalf("register %s %q: %v", row.Kind, row.Label, err)
 	}

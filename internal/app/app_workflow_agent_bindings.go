@@ -1215,7 +1215,7 @@ func (a *App) workflowAgentStartRun(ctx context.Context, input WorkflowAgentStar
 
 	// Admitted from the start to the binding, so a rest of the thread finds
 	// the run reporting to it.
-	done, err := a.admitWork(scope.ThreadID)
+	done, err := a.admitWork(scope.ThreadID, scope.Session)
 	if err != nil {
 		return WorkflowAgentStartResult{}, err
 	}

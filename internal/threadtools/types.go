@@ -45,6 +45,11 @@ type Caller struct {
 	ComputerID   string
 	ComputerName string
 	Title        string
+	// Session is the token of the provider session on this computer the
+	// call authenticated as, empty for a call no session here made. Work
+	// the call starts is that session's alone: it is refused once the
+	// session has ended. It never leaves this computer.
+	Session string `json:"-"`
 }
 
 // Thread is the App's row for one thread, including the derived columns
