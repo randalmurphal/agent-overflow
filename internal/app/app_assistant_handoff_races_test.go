@@ -284,7 +284,7 @@ func TestAHandOffOfAnAssistantArchivedWhileItRunsIsRefused(t *testing.T) {
 	var made string
 	f.app.handOffSuccessorMadeForTest = func(old, successor string) {
 		made = successor
-		if err := f.app.ArchiveThread(old); err != nil {
+		if err := archiveThread(f.app, old); err != nil {
 			t.Error(err)
 		}
 	}

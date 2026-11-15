@@ -250,8 +250,17 @@ func (h *harnessHost) CreateThread(options harnessrpc.ThreadOptions) (store.Thre
 	}, false)
 }
 
+// ArchiveThread archives a seeded thread; a seed whose archive left any
+// part undone fails.
 func (h *harnessHost) ArchiveThread(threadID string) error {
-	return h.app.ArchiveThread(threadID)
+	result, err := h.app.ArchiveThread(threadID)
+	if err != nil {
+		return err
+	}
+	if len(result.WorkersNotArchived) > 0 || result.CleanupError != "" {
+		return fmt.Errorf("archive %s left work undone: %+v", threadID, result)
+	}
+	return nil
 }
 
 func (h *harnessHost) MakeAssistant(threadID string) (store.StandingAgent, error) {

@@ -254,7 +254,7 @@ describe('<ThreadGroupContextMenu>', () => {
     await primeSettings({ confirmArchive: false });
     setBindingMock('StopSession', async () => {});
     const archived: string[] = [];
-    setBindingMock('ArchiveThread', async (id: string) => { archived.push(id); });
+    setBindingMock('ArchiveThread', async (id: string) => { archived.push(id); return {}; });
     const { getByRole } = renderMenu();
 
     await fireEvent.click(getByRole('menuitem', { name: 'Archive Threads (2)' }));
@@ -268,7 +268,7 @@ describe('<ThreadGroupContextMenu>', () => {
     await primeSettings({ confirmArchive: true });
     setBindingMock('StopSession', async () => {});
     const archived: string[] = [];
-    setBindingMock('ArchiveThread', async (id: string) => { archived.push(id); });
+    setBindingMock('ArchiveThread', async (id: string) => { archived.push(id); return {}; });
     const { getByRole } = renderMenu();
 
     await fireEvent.click(getByRole('menuitem', { name: 'Archive Threads (2)' }));

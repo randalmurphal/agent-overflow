@@ -2212,7 +2212,7 @@ func TestADisarmedReminderIsNotDeliveredAndLeavesTheThreadArchived(t *testing.T)
 		t.Fatalf("Remind: %v", err)
 	}
 	// Archiving the caller disarms every wake it is owed.
-	if err := f.app.ArchiveThread(f.caller.ID); err != nil {
+	if err := archiveThread(f.app, f.caller.ID); err != nil {
 		t.Fatalf("ArchiveThread: %v", err)
 	}
 	if row := f.request(t, ack.Token); row.Notify {
@@ -2331,7 +2331,7 @@ func TestAWakeQueuedJustBeforeAnArchiveGoesBackToItsRequest(t *testing.T) {
 					})
 				}
 				archived := make(chan error, 1)
-				go func() { archived <- f.app.ArchiveThread(f.caller.ID) }()
+				go func() { archived <- archiveThread(f.app, f.caller.ID) }()
 				waitUntil(t, 10*time.Second, func() bool { return f.app.threadLocks().Refs(f.caller.ID) == 2 })
 				f.app.deliverThreadWake(token, tc.late)
 				if row := f.request(t, token); !threadRequestDelivered(row, tc.late) || row.DeliveryRoute(tc.late) != store.ThreadWakeQueued {
@@ -2694,7 +2694,7 @@ func TestThreadRequestsStopWhenTheCallerIsArchived(t *testing.T) {
 	f.mockClaudeHoldingTheTurn(t, "working")
 	ask := f.runningRequest(t, "how big is the index?")
 
-	if err := f.app.ArchiveThread(f.caller.ID); err != nil {
+	if err := archiveThread(f.app, f.caller.ID); err != nil {
 		t.Fatalf("ArchiveThread: %v", err)
 	}
 	row := f.request(t, ask.Token)

@@ -685,7 +685,7 @@ func TestArchiveThreadClosesItsBrowserPages(t *testing.T) {
 		name    string
 		archive func(*App, string) error
 	}{
-		{"archive binding", (*App).ArchiveThread},
+		{"archive binding", archiveThread},
 		{"thread_update", func(app *App, threadID string) error {
 			_, err := app.applyThreadOrganizePatch(context.Background(), threadID, threadapp.OrganizePatch{Archived: &archived})
 			return err
@@ -726,7 +726,7 @@ func TestArchiveThreadClosesItsBrowserPages(t *testing.T) {
 		app.sessionManager().put(thread.ID, session{
 			Provider: string(provider.Codex), Token: "tok", Liveness: newSessionLiveness(time.Now()),
 		})
-		if err := app.ArchiveThread(thread.ID); err != nil {
+		if err := archiveThread(app, thread.ID); err != nil {
 			t.Fatalf("ArchiveThread: %v", err)
 		}
 		if pages := browserPageStates(manager, access); len(pages) != 1 || pages[0].Suspended {

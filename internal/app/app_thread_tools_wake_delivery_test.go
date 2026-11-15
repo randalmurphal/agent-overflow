@@ -102,7 +102,7 @@ func TestAWakeOnItsWayWhenTheSenderIsArchivedIsNotDelivered(t *testing.T) {
 	if len(built) != 1 {
 		t.Fatalf("messages = %+v, want the one owed", built)
 	}
-	if err := f.app.ArchiveThread(f.caller.ID); err != nil {
+	if err := archiveThread(f.app, f.caller.ID); err != nil {
 		t.Fatalf("ArchiveThread: %v", err)
 	}
 

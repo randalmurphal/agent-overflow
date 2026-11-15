@@ -715,7 +715,7 @@ func TestArchivingAStoppedThreadWithdrawsWhatTheAppQueued(t *testing.T) {
 		t.Fatalf("held before the archive: %q, want the wake, the send and the person's message", durable)
 	}
 
-	if err := a.ArchiveThread(thread.ID); err != nil {
+	if err := archiveThread(a, thread.ID); err != nil {
 		t.Fatalf("ArchiveThread: %v", err)
 	}
 	a.waitAgentNoticeWork()

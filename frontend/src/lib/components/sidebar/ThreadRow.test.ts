@@ -240,7 +240,7 @@ describe('<ThreadRow> inline actions without threads:operate', () => {
   });
 
   it('disables pin and archive on a chat thread with the reason', async () => {
-    const archive = setBindingMock('ArchiveThread', vi.fn(async () => {}));
+    const archive = setBindingMock('ArchiveThread', vi.fn(async () => ({})));
     const pin = setBindingMock('PinThread', vi.fn(async () => {}));
     const { getByTestId } = render(ThreadRow, { props: { thread: makeThread(), pane: createThreadPane() } });
     const pinBtn = getByTestId('thread-row-pin') as HTMLButtonElement;

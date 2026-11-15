@@ -39,7 +39,7 @@ func TestThreadTransferFencesUserMutationsUntilCopySeals(t *testing.T) {
 		"draft clear":        func() error { return a.ClearDraft(ctx, thread.ID) },
 		"delete":             func() error { return a.DeleteThread(thread.ID) },
 		"empty draft delete": func() error { return mustErr(a.DeleteEmptyDraftThread(thread.ID)) },
-		"archive":            func() error { return a.ArchiveThread(thread.ID) },
+		"archive":            func() error { return archiveThread(a, thread.ID) },
 		"unarchive":          func() error { return mustErr(a.UnarchiveThread(thread.ID)) },
 		"rename":             func() error { return a.RenameThread(thread.ID, "changed") },
 		"model":              func() error { return mustErr(a.UpdateThreadModel(thread.ID, "changed")) },

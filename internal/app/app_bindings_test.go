@@ -1080,7 +1080,7 @@ func TestUnarchiveThreadRestoresThread(t *testing.T) {
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
-	if err := app.ArchiveThread(thread.ID); err != nil {
+	if err := archiveThread(app, thread.ID); err != nil {
 		t.Fatalf("ArchiveThread() error = %v", err)
 	}
 

@@ -1,6 +1,7 @@
 import { describe, expect, it, beforeEach, vi } from 'vitest';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import {
+  archiveThreadAction,
   deleteThreadAction,
   forkThreadAction,
   nextAssistantThreadAction,
@@ -142,6 +143,43 @@ describe('forkThreadAction', () => {
     expect((ctx.reportError as ReturnType<typeof vi.fn>).mock.calls[0][0]).toMatch(/missing a session/);
     expect((ctx.reportError as ReturnType<typeof vi.fn>).mock.calls[0][1]).toBe(failure);
     expect(ctx.switchPane).not.toHaveBeenCalled();
+  });
+});
+
+describe('archiveThreadAction', () => {
+  beforeEach(() => {
+    resetBindingMocks();
+    clearThreadsForTest();
+    for (const toast of getToasts()) removeToast(toast.id);
+  });
+
+  it('treats an archive that left a worker open as archived, names the worker and archives it again', async () => {
+    const archive = vi.fn(async (id: string) => (id === 'thread-1'
+      ? { workersNotArchived: [{ threadId: 'worker-1', title: 'Parser review', error: 'thread is preparing a fork' }] }
+      : {}));
+    setBindingMock('ArchiveThread', archive);
+    prependThread(makeCtx({}).thread);
+    const ctx = makeCtx({});
+    await archiveThreadAction(ctx);
+    expect(ctx.reportError).not.toHaveBeenCalled();
+    expect(getThreadById('thread-1')).toBeUndefined();
+    const [toast] = getToasts();
+    expect(toast.type).toBe('warning');
+    expect(toast.message).toBe('Archived "Source thread", but its worker "Parser review" is still open: Thread is preparing a fork.');
+    expect(toast.action?.label).toBe('Archive again');
+    toast.action?.run();
+    await vi.waitFor(() => expect(archive).toHaveBeenCalledWith('worker-1'));
+    expect(getToasts()).toHaveLength(1);
+  });
+
+  it('says what the archive could not stop', async () => {
+    setBindingMock('ArchiveThread', vi.fn(async () => ({ cleanupError: 'cancel remote command: peer unreachable' })));
+    const ctx = makeCtx({});
+    await archiveThreadAction(ctx);
+    expect(ctx.reportError).not.toHaveBeenCalled();
+    expect(getToasts().map((toast) => toast.message)).toEqual([
+      'Archived "Source thread", but some of its work could not be stopped: Peer unreachable.',
+    ]);
   });
 });
 

@@ -317,7 +317,7 @@ func TestConversationLifecycleCancelsItsRemoteCommands(t *testing.T) {
 			case "delete":
 				err = source.DeleteThread(threadID)
 			case "archive":
-				err = source.ArchiveThread(threadID)
+				err = archiveThread(source, threadID)
 			case "move":
 				source.configDir = t.TempDir()
 				if err := source.startThreadTransfers(); err != nil {

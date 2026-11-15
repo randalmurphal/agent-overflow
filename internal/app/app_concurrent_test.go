@@ -288,7 +288,7 @@ func TestConcurrent_ThreadArchiveAndListRace(t *testing.T) {
 			}
 			id := ids[i%len(ids)]
 			if i%2 == 0 {
-				_ = app.ArchiveThread(id)
+				_ = archiveThread(app, id)
 			} else {
 				_, _ = app.UnarchiveThread(id)
 			}

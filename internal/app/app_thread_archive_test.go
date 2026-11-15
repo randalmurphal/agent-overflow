@@ -3,6 +3,7 @@ package app
 import (
 	"agent-overflow/internal/testutil/mockexec"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,6 +14,23 @@ import (
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadtools"
 )
+
+// archiveThread is the ArchiveThread binding as one error: its refusal, or
+// what its result left undone.
+func archiveThread(a *App, id string) error {
+	result, err := a.ArchiveThread(id)
+	if err != nil {
+		return err
+	}
+	var errs []error
+	if result.CleanupError != "" {
+		errs = append(errs, errors.New(result.CleanupError))
+	}
+	for _, worker := range result.WorkersNotArchived {
+		errs = append(errs, fmt.Errorf("worker %s: %s", worker.ThreadID, worker.Error))
+	}
+	return errors.Join(errs...)
+}
 
 // writeExitMarkerClaudeScript writes a mock Claude CLI that answers the
 // first stdin line with init + result and writes a marker file on exit.
@@ -115,7 +133,7 @@ func TestArchiveThreadClosesLiveProviderSession(t *testing.T) {
 		t.Fatalf("seed running background row: %v", err)
 	}
 
-	if err := app.ArchiveThread(thread.ID); err != nil {
+	if err := archiveThread(app, thread.ID); err != nil {
 		t.Fatalf("ArchiveThread: %v", err)
 	}
 
@@ -142,7 +160,7 @@ func TestArchiveThreadClosesLiveProviderSession(t *testing.T) {
 func TestArchivingALiveThreadReturnsThroughEitherDoor(t *testing.T) {
 	t.Parallel()
 	doors := map[string]func(app *App, threadID string) error{
-		"binding": func(app *App, threadID string) error { return app.ArchiveThread(threadID) },
+		"binding": func(app *App, threadID string) error { return archiveThread(app, threadID) },
 		"thread_update": func(app *App, threadID string) error {
 			archived := true
 			report, err := threadToolsApp{app: app}.UpdateThreads(context.Background(), threadtools.Caller{ThreadID: "another-thread"},
@@ -233,7 +251,7 @@ func TestArchiveThreadMidTurnSettlesTheOpenTurn(t *testing.T) {
 		Liveness: newSessionLiveness(time.Now()),
 	})
 
-	if err := app.ArchiveThread(thread.ID); err != nil {
+	if err := archiveThread(app, thread.ID); err != nil {
 		t.Fatalf("ArchiveThread: %v", err)
 	}
 
@@ -283,7 +301,7 @@ func TestArchiveThreadKeepsSessionWhenATurnStartedAfterTheRequest(t *testing.T) 
 		Liveness: newSessionLiveness(time.Now()),
 	})
 
-	if err := app.ArchiveThread(thread.ID); err != nil {
+	if err := archiveThread(app, thread.ID); err != nil {
 		t.Fatalf("ArchiveThread: %v", err)
 	}
 
@@ -326,7 +344,7 @@ func TestArchiveThreadStopsSessionWhoseTurnStartedBeforeTheRequest(t *testing.T)
 		Liveness: newSessionLiveness(time.Now()),
 	})
 
-	if err := app.ArchiveThread(thread.ID); err != nil {
+	if err := archiveThread(app, thread.ID); err != nil {
 		t.Fatalf("ArchiveThread: %v", err)
 	}
 	if _, live := app.sessionManager().get(thread.ID); live {
@@ -345,7 +363,7 @@ func TestArchiveThreadWithoutSessionStaysARowFlip(t *testing.T) {
 		t.Fatalf("CreateThread: %v", err)
 	}
 
-	if err := app.ArchiveThread(thread.ID); err != nil {
+	if err := archiveThread(app, thread.ID); err != nil {
 		t.Fatalf("ArchiveThread: %v", err)
 	}
 
@@ -378,7 +396,7 @@ func TestUnarchiveThreadDoesNotResurrectTheSession(t *testing.T) {
 		Liveness: newSessionLiveness(time.Now()),
 	})
 
-	if err := app.ArchiveThread(thread.ID); err != nil {
+	if err := archiveThread(app, thread.ID); err != nil {
 		t.Fatalf("ArchiveThread: %v", err)
 	}
 	if _, live := app.sessionManager().get(thread.ID); live {
@@ -417,7 +435,7 @@ func TestSendAfterArchiveStartsAColdSession(t *testing.T) {
 		t.Fatal("expected a live session before archiving")
 	}
 
-	if err := app.ArchiveThread(thread.ID); err != nil {
+	if err := archiveThread(app, thread.ID); err != nil {
 		t.Fatalf("ArchiveThread: %v", err)
 	}
 	if _, stillLive := app.sessionManager().get(thread.ID); stillLive {

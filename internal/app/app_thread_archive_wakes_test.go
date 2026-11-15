@@ -22,7 +22,7 @@ func TestAnArchiveLeavesSchedulesRegisteredAfterTheThreadCameBack(t *testing.T) 
 		archive func(t *testing.T, a *App, threadID string) archivedThreadWork
 	}{
 		{"binding", func(t *testing.T, a *App, threadID string) archivedThreadWork {
-			work, err := a.archiveThreadLocked(threadID)
+			work, err := a.archiveThreadLocked(threadID, "")
 			if err != nil {
 				t.Fatalf("archiveThreadLocked: %v", err)
 			}
@@ -98,7 +98,7 @@ func TestACancelDuringAFiresAdmissionStopsItsRun(t *testing.T) {
 		name   string
 		cancel func(a *App, row store.AgentWake) error
 	}{
-		{"archive", func(a *App, row store.AgentWake) error { return a.ArchiveThread(row.ThreadID) }},
+		{"archive", func(a *App, row store.AgentWake) error { return archiveThread(a, row.ThreadID) }},
 		{"thread_cancel", func(a *App, row store.AgentWake) error {
 			_, _, err := a.cancelAgentWake(row.ThreadID, row.Label, row.Kind)
 			return err
@@ -175,7 +175,7 @@ func TestAnArchiveReportsSchedulesItCouldNotCancel(t *testing.T) {
 	execOnStore(t, dbPath, `CREATE TRIGGER refuse_wake_cancel BEFORE UPDATE OF state ON agent_wakes
 		WHEN NEW.state = 'cancelled' BEGIN SELECT RAISE(ABORT, 'cancel refused'); END`)
 
-	err := a.ArchiveThread(thread.ID)
+	err := archiveThread(a, thread.ID)
 	if err == nil || !strings.Contains(err.Error(), "cancel the loops and watches of "+thread.ID) {
 		t.Fatalf("ArchiveThread: %v, want the failed cancel reported", err)
 	}

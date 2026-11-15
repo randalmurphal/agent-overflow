@@ -90,6 +90,7 @@ func (c *session) update(ctx context.Context, raw json.RawMessage) (any, error) 
 				continue
 			}
 			results[slot].Updated, results[slot].Error, results[slot].ErrorCode = row.Updated, row.Error, row.ErrorCode
+			results[slot].WorkersNotArchived, results[slot].Warning = row.WorkersNotArchived, row.Warning
 			if row.Title != "" {
 				results[slot].Title = row.Title
 			}
@@ -97,12 +98,20 @@ func (c *session) update(ctx context.Context, raw json.RawMessage) (any, error) 
 	}
 
 	result := updateResult{Results: results}
+	var notes []string
 	for _, row := range results {
 		if row.Error != "" {
-			result.Note = "One or more threads were refused and left untouched; each says why. The others were updated."
+			notes = append(notes, "One or more threads were refused and left untouched; each says why. The others were updated.")
 			break
 		}
 	}
+	for _, row := range results {
+		if len(row.WorkersNotArchived) > 0 {
+			notes = append(notes, "Some archived threads have workers that could not be archived and are still open; workers_not_archived names them and why. Archive them again once the reason is gone.")
+			break
+		}
+	}
+	result.Note = strings.Join(notes, " ")
 	return result, nil
 }
 

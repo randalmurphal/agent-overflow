@@ -153,7 +153,7 @@ func TestAsyncAnswersReachAnArchivedThread(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := a.ArchiveThread(thread.ID); err != nil {
+	if err := archiveThread(a, thread.ID); err != nil {
 		t.Fatalf("ArchiveThread: %v", err)
 	}
 	if err := a.SubmitAsyncAnswers(context.Background(), thread.ID, "answers", []store.AsyncQuestionAnswer{{ItemID: item.ID, Index: 0, Answer: "One"}}); err != nil {

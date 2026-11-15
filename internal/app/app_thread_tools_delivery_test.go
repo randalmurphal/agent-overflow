@@ -947,7 +947,7 @@ func TestARequestAnArchivedThreadCannotTakeBackSettlesUnread(t *testing.T) {
 			token := tokens[0]
 			h.lifecycle(t, uuid, provider.CommandQueued)
 			if end == "archive" {
-				if err := f.app.ArchiveThread(h.thread.ID); err != nil {
+				if err := archiveThread(f.app, h.thread.ID); err != nil {
 					t.Fatalf("ArchiveThread: %v", err)
 				}
 				h.frame(t, provider.ProviderEvent{Kind: provider.EventSessionStatus, Content: "disconnected"})

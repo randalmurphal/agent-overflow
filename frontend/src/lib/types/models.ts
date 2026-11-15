@@ -3,9 +3,13 @@ import type { ReasoningEffort } from './settings';
 
 // Wire shapes re-exported so feature code does not import from the
 // generated bindings tree: what an assistant's delete removes
-// (GetAssistantDependents), and whether Claude's and Codex's own memory is
-// on (GetNativeMemoryStatus).
-export type { AssistantDependents, NativeMemoryStatus } from '../../../bindings/agent-overflow/internal/app/models';
+// (GetAssistantDependents), whether Claude's and Codex's own memory is on
+// (GetNativeMemoryStatus), and what an archive left undone (ArchiveThread).
+export type {
+  ArchiveThreadResult,
+  AssistantDependents,
+  NativeMemoryStatus,
+} from '../../../bindings/agent-overflow/internal/app/models';
 
 export type RuntimeMode =
   | "read-only"

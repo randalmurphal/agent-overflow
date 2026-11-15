@@ -47,7 +47,7 @@ func TestAWakeForAnArchivedCallerDecidesUnderItsLock(t *testing.T) {
 	f := newRequestFixture(t)
 	f.app.startSessionFn = func(string) error { return nil }
 	token := owedWakeSeeds()[0].seed(t, f)
-	if err := f.app.ArchiveThread(f.caller.ID); err != nil {
+	if err := archiveThread(f.app, f.caller.ID); err != nil {
 		t.Fatalf("ArchiveThread: %v", err)
 	}
 	if _, err := f.app.store.SetThreadRequestNotify(token, true); err != nil {

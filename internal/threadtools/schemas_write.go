@@ -227,7 +227,7 @@ func updateSchema(shape Shape) map[string]any {
 		},
 		"placement": placementProperty("Whether the user sees a thread in the sidebar: standalone as a plain row in its own project or grouped (with group, unless it is in a group already) gives it a row, and owned takes it out, back to the thread that spawned it. owned is refused for a thread no thread on this computer spawned and for an assistant's own thread. Changing it unpins the thread."),
 	}
-	description := "Organize threads the way the sidebar does: rename, archive, pin to the front or back burner, group them, or place them, many at once. Set at least one of title, archived, pin, group or placement. The whole patch is checked against each thread before anything is touched, so a thread is either fully updated or untouched with a reason."
+	description := "Organize threads the way the sidebar does: rename, archive, pin to the front or back burner, group them, or place them, many at once. Set at least one of title, archived, pin, group or placement. The whole patch is checked against each thread before anything is touched, so a thread is either fully updated or untouched with a reason. An archive also archives the thread's workers; one it could not archive is named in workers_not_archived on the thread's row, still open."
 	if shape.Paired() {
 		description += " Threads on other computers are grouped by computer and applied there; one unreachable computer fails only its own ids."
 	}

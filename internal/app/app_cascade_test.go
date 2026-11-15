@@ -401,7 +401,7 @@ func TestCascade_UnarchiveRestoresToSidebar(t *testing.T) {
 		t.Fatalf("InsertItem: %v", err)
 	}
 
-	if err := app.ArchiveThread(thread.ID); err != nil {
+	if err := archiveThread(app, thread.ID); err != nil {
 		t.Fatalf("ArchiveThread: %v", err)
 	}
 	active, err := app.ListThreads()

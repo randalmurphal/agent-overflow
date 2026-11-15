@@ -613,7 +613,7 @@ func TestAStopOrArchiveGivesBackWhatTheProviderNeverConfirmed(t *testing.T) {
 					if err := f.app.StopSession(f.caller.ID); err != nil {
 						t.Fatalf("StopSession: %v", err)
 					}
-				} else if err := f.app.ArchiveThread(f.caller.ID); err != nil {
+				} else if err := archiveThread(f.app, f.caller.ID); err != nil {
 					t.Fatalf("ArchiveThread: %v", err)
 				}
 

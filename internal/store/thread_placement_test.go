@@ -1,6 +1,7 @@
 package store
 
 import (
+	"database/sql"
 	"errors"
 	"slices"
 	"testing"
@@ -516,5 +517,50 @@ func TestListOwnedWorkerIDs(t *testing.T) {
 	}
 	if got, err := s.ListOwnedWorkerIDs("other"); err != nil || !slices.Equal(got, []string{"moved"}) {
 		t.Errorf("the later spawner's workers = %v, %v; want [moved]", got, err)
+	}
+}
+
+// ArchiveOwnedWorker archives a worker only while its owner is archived and
+// still owns it, and reports any other worker unchanged.
+func TestArchiveOwnedWorkerIsFencedByItsOwnersArchive(t *testing.T) {
+	s := newTestStore(t)
+	for _, id := range []string{"owner", "other", "owned", "placed", "moved"} {
+		mustCreateThread(t, s, id)
+	}
+	spawnLocal(t, s, "tok-owned", "owner", "owned", true)
+	spawnLocal(t, s, "tok-placed", "owner", "placed", false)
+	spawnLocal(t, s, "tok-moved", "owner", "moved", true)
+	if _, err := s.db.Exec(`INSERT INTO thread_requests (token, caller_thread_id, kind, target_computer_id, target_thread_id, state, lineage_only, created_at, updated_at)
+		VALUES ('tok-moved-later', 'other', 'spawn', '', 'moved', 'finished', 1, ?1, ?1)`, nowMillis()+60_000); err != nil {
+		t.Fatal(err)
+	}
+	archived := func(id string) bool {
+		t.Helper()
+		row, err := s.GetThread(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return row.Archived
+	}
+	if _, changed, err := s.ArchiveOwnedWorker("owned", "owner"); err != nil || changed || archived("owned") {
+		t.Fatalf("worker of an unarchived owner = changed %v, %v; want left alone", changed, err)
+	}
+	if _, _, err := s.ArchiveThread("owner"); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"placed", "moved"} {
+		if _, changed, err := s.ArchiveOwnedWorker(id, "owner"); err != nil || changed || archived(id) {
+			t.Errorf("%s, not the owner's = changed %v, %v; want left alone", id, changed, err)
+		}
+	}
+	row, changed, err := s.ArchiveOwnedWorker("owned", "owner")
+	if err != nil || !changed || !row.Archived {
+		t.Fatalf("the owner's worker = %+v changed %v, %v; want archived", row, changed, err)
+	}
+	if _, changed, err := s.ArchiveOwnedWorker("owned", "owner"); err != nil || changed {
+		t.Errorf("again = changed %v, %v; want unchanged", changed, err)
+	}
+	if _, _, err := s.ArchiveOwnedWorker("missing", "owner"); !errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("a missing worker = %v, want sql.ErrNoRows", err)
 	}
 }

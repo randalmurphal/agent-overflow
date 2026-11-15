@@ -625,7 +625,12 @@ any other; joining or leaving a group, or any other placement change,
 clears the thread's pin, and a pin in the same call
 applies after the move, so it lands inside the new place. Refusals
 mirror the store: the calling thread cannot archive itself, and a
-title is trimmed and refused when empty. Works on another computer's threads;
+title is trimmed and refused when empty. An archive that applied
+archives the thread's workers too; its row is `updated` and names each
+worker it could not archive in `workers_not_archived` with the reason,
+and carries a `warning` when work the threads were waiting on could not
+be stopped. Archiving the worker, or the thread again, retries it.
+Works on another computer's threads;
 a thread joins groups only on its own computer. Used only when the user
 asks, or on threads the caller spawned once it is done with them.
 

@@ -47,6 +47,16 @@ func (s *Service) Archive(threadID string) (store.Thread, bool, error) {
 	return database.ArchiveThread(threadID)
 }
 
+// ArchiveWorker archives threadID for ownerID's archive, only while that
+// archive stands (store.ArchiveOwnedWorker).
+func (s *Service) ArchiveWorker(threadID, ownerID string) (store.Thread, bool, error) {
+	database, err := s.database("archive worker")
+	if err != nil {
+		return store.Thread{}, false, err
+	}
+	return database.ArchiveOwnedWorker(threadID, ownerID)
+}
+
 func (s *Service) Unarchive(threadID string) (store.Thread, bool, error) {
 	database, err := s.database("unarchive thread")
 	if err != nil {

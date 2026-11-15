@@ -431,7 +431,7 @@ func TestRemoteOnlyWorkRemainsVisibleUntilLifecycleCancelsIt(t *testing.T) {
 	// Archiving cancels the job and drops the watch; the computer is not
 	// reachable here, so the cancel is logged and the destination's owner
 	// grace ends the job.
-	if err := a.ArchiveThread(thread.ID); err != nil {
+	if err := archiveThread(a, thread.ID); err != nil {
 		t.Fatal(err)
 	}
 	inventory, err = a.ListRunningBackgroundWork()
@@ -566,7 +566,7 @@ func TestArchiveReturnsAHeldRemoteCompletionToItsWatch(t *testing.T) {
 	if got := queued(); !slices.Equal(got, []string{remoteCompletionSendID(w)}) || notification() != "queued" {
 		t.Fatalf("held behind the failed start: queue %q, watch %q", got, notification())
 	}
-	if err := a.ArchiveThread(thread.ID); err != nil {
+	if err := archiveThread(a, thread.ID); err != nil {
 		t.Fatalf("ArchiveThread: %v", err)
 	}
 	if got := queued(); len(got) != 0 || notification() != "pending" {
@@ -654,10 +654,10 @@ func TestARemoteCompletionQueuedAfterAnArchiveIsHeld(t *testing.T) {
 			}
 			var work archivedThreadWork
 			if tc.wholeArchive {
-				if err := a.ArchiveThread(thread.ID); err != nil {
+				if err := archiveThread(a, thread.ID); err != nil {
 					t.Fatalf("ArchiveThread: %v", err)
 				}
-			} else if work, err = a.archiveThreadLocked(thread.ID); err != nil {
+			} else if work, err = a.archiveThreadLocked(thread.ID, ""); err != nil {
 				t.Fatalf("archiveThreadLocked: %v", err)
 			}
 			notice.prepare = func() (string, bool, error) { return body, true, nil }
@@ -707,7 +707,7 @@ func TestAnArchiveDuringARemoteCompletionsQueueWriteTakesItBack(t *testing.T) {
 		t.Fatal("the queue write never began")
 	}
 	archived := make(chan error, 1)
-	go func() { archived <- a.ArchiveThread(thread.ID) }()
+	go func() { archived <- archiveThread(a, thread.ID) }()
 	// The archive waits for the write's lock. Were it not to, it would
 	// finish first, and the write would land after it took back what was
 	// queued.
@@ -746,7 +746,7 @@ func TestAnArchiveTearingDownASessionReturnsItsQueuedRemoteCompletion(t *testing
 		Liveness: newSessionLiveness(time.Now()),
 	})
 	archived := make(chan error, 1)
-	go func() { archived <- a.ArchiveThread(thread.ID) }()
+	go func() { archived <- archiveThread(a, thread.ID) }()
 	waitUntil(t, 10*time.Second, func() bool { return a.threadLocks().Refs(thread.ID) == 2 })
 	if err := a.queueAgentNotice(a.remoteCompletionNotice(w, remoteCompletionOutput{Tail: "done"})); err != nil {
 		unlock()
@@ -1019,7 +1019,7 @@ func TestArchiveKeepsAJobThatFinishedBeforeTheNextCheck(t *testing.T) {
 		t.Fatalf("the source already saw the finish (%q); the case needs a finish it has not checked", state)
 	}
 
-	if err := source.ArchiveThread(thread.ID); err != nil {
+	if err := archiveThread(source, thread.ID); err != nil {
 		t.Fatalf("ArchiveThread: %v", err)
 	}
 	if w := saved(done); w.Notification != "pending" || w.Receipt.State != "succeeded" {
@@ -1090,7 +1090,7 @@ func TestForgettingAComputerDiscardsTheCompletionsHeldForArchivedThreads(t *test
 		t.Fatal(err)
 	}
 	held := watch(archived, "succeeded")
-	if err := source.ArchiveThread(archived.ID); err != nil {
+	if err := archiveThread(source, archived.ID); err != nil {
 		t.Fatalf("ArchiveThread: %v", err)
 	}
 	if notification(held) != "pending" {

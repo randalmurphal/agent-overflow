@@ -354,7 +354,7 @@ func TestWakeUnarchivesTheCallerItIsFor(t *testing.T) {
 	token := f.seedRemoteRequest(t, uuid.NewString())
 	now := time.Now()
 	f.settleRemote(t, token, now, now.Add(threadLateReplyWindow))
-	if err := f.app.ArchiveThread(f.caller.ID); err != nil {
+	if err := archiveThread(f.app, f.caller.ID); err != nil {
 		t.Fatalf("archive the caller: %v", err)
 	}
 	// The archive disarmed the request. A later wait or thread_status on it

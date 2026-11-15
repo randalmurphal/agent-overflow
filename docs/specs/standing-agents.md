@@ -690,8 +690,17 @@ Ruling 36, as built:
 - Archiving a thread, through `ArchiveThread` or `thread_update`, then
   archives each unarchived owned thread whose newest local spawn names
   it as caller (`ListOwnedWorkerIDs`), through the same archive, so the
-  cascade runs down the lineage. A worker that cannot be archived is
-  named in the error and the others are still archived.
+  cascade runs down the lineage. The workers are read under the
+  owner's action lock once its archive committed and its session
+  stopped, and each worker's flip holds only while the owner is still
+  archived and still owns it (`ArchiveOwnedWorker`), so a cleanup that
+  runs late leaves alone a worker moved since and every worker of an
+  owner reopened since. The owner's archive succeeds once committed: a
+  worker that cannot be archived is named beside it
+  (`ArchiveThreadResult.WorkersNotArchived`, `workers_not_archived`),
+  the others are still archived, and archiving the worker or the
+  owner again retries it without repeating the owner's own cleanup.
+  The sidebar's archive says so in a toast that archives them again.
 
 ### Sidebar
 

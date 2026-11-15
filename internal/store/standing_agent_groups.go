@@ -50,17 +50,35 @@ func (s *Store) ListSpawnedThreadIDs(spawnerID string) ([]string, error) {
 // them (docs/specs/standing-agents.md, "Owned workers").
 func (s *Store) ListOwnedWorkerIDs(ownerID string) ([]string, error) {
 	ids, err := queryIDs(s.reader(), `SELECT id FROM owned_threads AS threads
-		WHERE archived = 0 AND placement = 'owned' AND id IN (
+		WHERE archived = 0 AND id IN (
 		  SELECT target_thread_id FROM thread_requests
-		   WHERE caller_thread_id = ?1 AND kind = 'spawn' AND target_computer_id = '')
-		  AND (SELECT caller_thread_id FROM thread_requests
-		        WHERE kind = 'spawn' AND target_computer_id = '' AND target_thread_id = threads.id
-		        ORDER BY created_at DESC LIMIT 1) = ?1
-		ORDER BY id`, ownerID)
+		   WHERE caller_thread_id = ? AND kind = 'spawn' AND target_computer_id = '')
+		  AND `+ownedBySQL+`
+		ORDER BY id`, ownerID, ownerID)
 	if err != nil {
 		return nil, fmt.Errorf("store: list the workers %s owns: %w", ownerID, err)
 	}
 	return ids, nil
+}
+
+// ownedBySQL holds for the threads row its one parameter owns: owned, with
+// its newest local spawn naming that thread as caller.
+const ownedBySQL = `threads.placement = 'owned'
+		  AND (SELECT caller_thread_id FROM thread_requests
+		        WHERE kind = 'spawn' AND target_computer_id = '' AND target_thread_id = threads.id
+		        ORDER BY created_at DESC LIMIT 1) = ?`
+
+// ArchiveOwnedWorker archives workerID for its owner's archive, and only
+// while that archive stands: ownerID still archived and still the worker's
+// owner (ListOwnedWorkerIDs). A worker the fence excludes, or one already
+// archived, is left as it is and reported unchanged; a missing one is
+// sql.ErrNoRows.
+func (s *Store) ArchiveOwnedWorker(workerID, ownerID string) (Thread, bool, error) {
+	write := threadArchivedWrite(workerID, true)
+	write.Change += ` AND ` + ownedBySQL + `
+		  AND EXISTS (SELECT 1 FROM threads AS owner WHERE owner.id = ? AND owner.archived = 1)`
+	write.ChangeArgs = []any{ownerID, ownerID}
+	return s.applyThreadRowWrite(write)
 }
 
 // MaxPastThreadsPage bounds one page of an assistant's past threads.

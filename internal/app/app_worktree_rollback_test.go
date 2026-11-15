@@ -83,7 +83,7 @@ func TestRemoveWorktreeOfArchivedThreadInArchivedProject(t *testing.T) {
 	if err != nil {
 		t.Fatalf("attach: %v", err)
 	}
-	if err := app.ArchiveThread(thread.ID); err != nil {
+	if err := archiveThread(app, thread.ID); err != nil {
 		t.Fatalf("archive thread: %v", err)
 	}
 	if err := app.ArchiveProject(project.ID); err != nil {

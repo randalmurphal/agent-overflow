@@ -120,7 +120,7 @@ func TestThreadMutationsBroadcastTheChangedRow(t *testing.T) {
 		thread := mustCreateBroadcastThread(t, app)
 		broadcasts := captureThreadBroadcasts(t, app)
 
-		if err := app.ArchiveThread(thread.ID); err != nil {
+		if err := archiveThread(app, thread.ID); err != nil {
 			t.Fatalf("ArchiveThread: %v", err)
 		}
 		row := broadcasts.expectRow(triage.ThreadActionUnlisted, thread.ID)
@@ -129,7 +129,7 @@ func TestThreadMutationsBroadcastTheChangedRow(t *testing.T) {
 		}
 
 		broadcasts.reset()
-		if err := app.ArchiveThread(thread.ID); err != nil {
+		if err := archiveThread(app, thread.ID); err != nil {
 			t.Fatalf("ArchiveThread(repeat): %v", err)
 		}
 		broadcasts.expectSilence("re-archiving an archived thread")
@@ -138,7 +138,7 @@ func TestThreadMutationsBroadcastTheChangedRow(t *testing.T) {
 	t.Run("unarchive is listed, re-unarchive is silent", func(t *testing.T) {
 		app := newTestAppWithStore(t)
 		thread := mustCreateBroadcastThread(t, app)
-		if err := app.ArchiveThread(thread.ID); err != nil {
+		if err := archiveThread(app, thread.ID); err != nil {
 			t.Fatalf("ArchiveThread: %v", err)
 		}
 		broadcasts := captureThreadBroadcasts(t, app)

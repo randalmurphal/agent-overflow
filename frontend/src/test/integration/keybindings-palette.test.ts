@@ -140,7 +140,7 @@ describe('App integration — keybindings + palette', () => {
 
   it('Enter executes the highlighted command', async () => {
     const thread = makeThread({ title: 'To Be Archived' });
-    const archiveMock = setBindingMock('ArchiveThread', async () => {});
+    const archiveMock = setBindingMock('ArchiveThread', async () => ({}));
     setBindingMock('StopSession', async () => {});
     const rendered = await mountBareApp([thread]);
     // Activate the thread so `hasActiveThread` when-gate lets thread.archive

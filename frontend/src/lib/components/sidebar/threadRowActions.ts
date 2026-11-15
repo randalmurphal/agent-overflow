@@ -41,7 +41,9 @@ import { addErrorToast, addToast } from '../../stores/toast.svelte';
 import { copyToClipboard } from '../../utils/clipboard';
 import { userFacingError } from '../../utils/userFacingError';
 import { isAssistantNameTaken } from '../../stores/assistants.svelte';
-import type { Thread } from '../../types/models';
+import type { ArchiveThreadResult, Thread } from '../../types/models';
+
+type ArchiveWorkerFailure = NonNullable<ArchiveThreadResult['workersNotArchived']>[number];
 import { autoPinNewThread } from '../../stores/threadAutoPin';
 import { openConversationTransfer } from '../../stores/conversationTransfers.svelte';
 
@@ -162,12 +164,45 @@ export async function archiveThreadAction(ctx: ThreadActionCtx): Promise<void> {
     // process is released for every client rather than only the one
     // that remembers to ask first — and, unlike a client-side stop, it
     // re-checks that the thread was not re-engaged in the gap.
-    await ArchiveThread(ctx.thread.id);
+    const result = await ArchiveThread(ctx.thread.id);
     removeThread(ctx.thread.id);
     closePanesShowingThread(ctx.thread.id);
+    reportArchiveLeftovers(ctx.thread.title, result);
   } catch (err) {
     console.error('Failed to archive thread:', err);
     ctx.reportError(userFacingError(err), err);
+  }
+}
+
+/**
+ * An archive that committed can still leave work undone: workers it owns
+ * whose archive was refused stay open, and the toast archives them again;
+ * work it could not stop is said once.
+ */
+function reportArchiveLeftovers(title: string, result: ArchiveThreadResult): void {
+  const workers = result.workersNotArchived ?? [];
+  if (workers.length > 0) {
+    const names = workers.map((worker) => `"${worker.title || worker.threadId}"`).join(', ');
+    const which = workers.length === 1 ? `its worker ${names} is` : `its workers ${names} are`;
+    addToast('warning', `Archived "${title}", but ${which} still open: ${userFacingError(workers[0].error)}`, 10000, {
+      label: 'Archive again',
+      run: () => void archiveWorkersAgain(workers),
+    });
+  }
+  if (result.cleanupError) {
+    addToast('warning', `Archived "${title}", but some of its work could not be stopped: ${userFacingError(result.cleanupError)}`);
+  }
+}
+
+async function archiveWorkersAgain(workers: ArchiveWorkerFailure[]): Promise<void> {
+  for (const worker of workers) {
+    const title = worker.title || worker.threadId;
+    try {
+      reportArchiveLeftovers(title, await ArchiveThread(worker.threadId));
+    } catch (err) {
+      console.error('Failed to archive worker:', err);
+      addErrorToast(`Could not archive "${title}": ${userFacingError(err)}`, err);
+    }
   }
 }
 

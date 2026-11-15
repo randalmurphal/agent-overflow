@@ -327,6 +327,20 @@ type ThreadUpdateResult struct {
 	Updated    bool   `json:"updated"`
 	Error      string `json:"error,omitempty"`
 	ErrorCode  string `json:"error_code,omitempty"`
+	// WorkersNotArchived names each worker an archive of this thread could
+	// not archive, at any depth. It stays open; archiving it, or this
+	// thread again, retries it.
+	WorkersNotArchived []WorkerNotArchived `json:"workers_not_archived,omitempty"`
+	// Warning says what an archive that applied could not stop of the
+	// work its threads were waiting on.
+	Warning string `json:"warning,omitempty"`
+}
+
+// WorkerNotArchived is one worker an archive could not archive, and why.
+type WorkerNotArchived struct {
+	ThreadID  string `json:"thread_id"`
+	Error     string `json:"error"`
+	ErrorCode string `json:"error_code,omitempty"`
 }
 
 // GroupReport is what thread_group returns.

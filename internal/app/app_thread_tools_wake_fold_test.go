@@ -131,7 +131,7 @@ func TestAReplyDoesNotWakeAnArchivedSender(t *testing.T) {
 	if _, err := f.app.store.SetThreadPlacement([]string{ack.ThreadID}, store.PlacementStandalone); err != nil {
 		t.Fatalf("SetThreadPlacement: %v", err)
 	}
-	if err := f.app.ArchiveThread(f.caller.ID); err != nil {
+	if err := archiveThread(f.app, f.caller.ID); err != nil {
 		t.Fatalf("ArchiveThread: %v", err)
 	}
 

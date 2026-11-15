@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"sync"
@@ -303,15 +304,15 @@ func TestGroupMovesRefuseAStandingAgentButPlaceItsSpawnedThreads(t *testing.T) {
 func TestArchivingAnOwnerArchivesItsWorkers(t *testing.T) {
 	t.Parallel()
 	doors := map[string]func(app *App, threadID string) error{
-		"binding": func(app *App, threadID string) error { return app.ArchiveThread(threadID) },
+		"binding": func(app *App, threadID string) error { return archiveThread(app, threadID) },
 		"thread_update": func(app *App, threadID string) error {
 			report, err := threadToolsApp{app: app}.UpdateThreads(context.Background(), caller("someone"),
 				threadtools.UpdateCall{ThreadIDs: []string{threadID}, Archived: boolPtr(true)})
 			if err != nil {
 				return err
 			}
-			if row := report.Results[0]; !row.Updated {
-				return errors.New(row.Error)
+			if row := report.Results[0]; !row.Updated || len(row.WorkersNotArchived) > 0 || row.Warning != "" {
+				return fmt.Errorf("%+v", row)
 			}
 			return nil
 		},
@@ -385,24 +386,84 @@ func TestArchivingAnOwnerArchivesItsWorkers(t *testing.T) {
 	}
 }
 
-// One worker whose archive is refused is named in the owner's archive
-// error; the owner and its other workers are archived.
+// A worker whose archive is refused is named beside the owner's archive,
+// which still succeeds, through either door; the owner and its other
+// workers are archived. Archiving the owner again archives the worker once
+// it can be, and replays nothing of the owner's own archive.
 func TestAWorkerThatCannotBeArchivedIsReported(t *testing.T) {
 	t.Parallel()
-	f := newOrganizeFixture(t)
-	owner := f.thread(t, "owner")
-	stuck := f.thread(t, "stuck", func(row *store.Thread) { row.ForkPreparing = true })
-	sibling := f.thread(t, "sibling")
-	recordSpawn(t, f.app, "tok-stuck", owner.ID, stuck.ID)
-	recordSpawn(t, f.app, "tok-sibling", owner.ID, sibling.ID)
-	err := f.app.ArchiveThread(owner.ID)
-	if err == nil || !strings.Contains(err.Error(), "worker "+stuck.ID) {
-		t.Fatalf("archive the owner = %v, want the stuck worker named", err)
+	// Each door archives and returns the workers it reports not archived.
+	doors := map[string]func(t *testing.T, app *App, threadID string) []string{
+		"binding": func(t *testing.T, app *App, threadID string) []string {
+			result, err := app.ArchiveThread(threadID)
+			if err != nil {
+				t.Fatalf("ArchiveThread: %v", err)
+			}
+			if result.CleanupError != "" {
+				t.Errorf("cleanup error = %q", result.CleanupError)
+			}
+			var ids []string
+			for _, worker := range result.WorkersNotArchived {
+				if worker.Error == "" || worker.Title == "" {
+					t.Errorf("worker failure = %+v, want its title and reason", worker)
+				}
+				ids = append(ids, worker.ThreadID)
+			}
+			return ids
+		},
+		"thread_update": func(t *testing.T, app *App, threadID string) []string {
+			report, err := threadToolsApp{app: app}.UpdateThreads(t.Context(), caller("someone"),
+				threadtools.UpdateCall{ThreadIDs: []string{threadID}, Archived: boolPtr(true)})
+			if err != nil {
+				t.Fatalf("UpdateThreads: %v", err)
+			}
+			row := report.Results[0]
+			if !row.Updated || row.Error != "" || row.Warning != "" {
+				t.Errorf("owner's row = %+v, want updated", row)
+			}
+			var ids []string
+			for _, worker := range row.WorkersNotArchived {
+				if worker.Error == "" {
+					t.Errorf("worker failure = %+v, want its reason", worker)
+				}
+				ids = append(ids, worker.ThreadID)
+			}
+			return ids
+		},
 	}
-	for id, want := range map[string]bool{owner.ID: true, sibling.ID: true, stuck.ID: false} {
-		if got := f.reload(t, id).Archived; got != want {
-			t.Errorf("%s archived = %v, want %v", id, got, want)
-		}
+	for name, archive := range doors {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			f := newOrganizeFixture(t)
+			owner := f.thread(t, "owner")
+			stuck := f.thread(t, "stuck", func(row *store.Thread) { row.ForkPreparing = true })
+			sibling := f.thread(t, "sibling")
+			recordSpawn(t, f.app, "tok-stuck", owner.ID, stuck.ID)
+			recordSpawn(t, f.app, "tok-sibling", owner.ID, sibling.ID)
+			if got := archive(t, f.app, owner.ID); !slices.Equal(got, []string{stuck.ID}) {
+				t.Fatalf("workers not archived = %v, want [%s]", got, stuck.ID)
+			}
+			for id, want := range map[string]bool{owner.ID: true, sibling.ID: true, stuck.ID: false} {
+				if got := f.reload(t, id).Archived; got != want {
+					t.Errorf("%s archived = %v, want %v", id, got, want)
+				}
+			}
+
+			if _, err := f.app.store.FinishForkPreparation(stuck.ID); err != nil {
+				t.Fatal(err)
+			}
+			f.events.reset()
+			if got := archive(t, f.app, owner.ID); len(got) != 0 {
+				t.Fatalf("workers not archived on the retry = %v, want none", got)
+			}
+			if !f.reload(t, stuck.ID).Archived {
+				t.Fatal("the retry left the worker unarchived")
+			}
+			frames := f.threadFrames(t)
+			if len(frames) != 1 || frames[0].Thread.ID != stuck.ID || frames[0].Action != triage.ThreadActionUnlisted {
+				t.Errorf("frames on the retry = %+v, want only the worker's unlisted frame", frames)
+			}
+		})
 	}
 }
 
@@ -661,4 +722,97 @@ func TestAHandOffAnnouncedAfterAnUnarchiveKeepsTheOldThreadListed(t *testing.T) 
 	if last == nil || last.Action != triage.ThreadActionFull || last.Thread.Archived || last.HandOffTo != successor.ID {
 		t.Fatalf("old thread's last frame = %+v, want a full unarchived row naming %s", last, successor.ID)
 	}
+}
+
+// An archive's cascade acts on the workers its owner owned when the
+// archive committed, and on each only while that still holds: a worker
+// spawned after the owner was reopened, one moved to the sidebar, and every
+// worker of an owner reopened before the cascade reached it are left alone.
+func TestAnArchiveCascadeActsOnlyOnWhatItsArchiveOwned(t *testing.T) {
+	t.Parallel()
+	t.Run("owner reopened", func(t *testing.T) {
+		t.Parallel()
+		f := newOrganizeFixture(t)
+		owner := f.thread(t, "owner")
+		before := f.thread(t, "before")
+		recordSpawn(t, f.app, "tok-before", owner.ID, before.ID)
+		work, err := f.app.archiveThreadLocked(owner.ID, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The owner is reopened and spawns again while the archive's cleanup
+		// is still on its way.
+		if _, err := f.app.UnarchiveThread(owner.ID); err != nil {
+			t.Fatal(err)
+		}
+		after := f.thread(t, "after")
+		recordSpawn(t, f.app, "tok-after", owner.ID, after.ID)
+		if outcome := f.app.finishArchive(work); outcome.cleanup != nil || len(outcome.workers) > 0 {
+			t.Fatalf("cleanup = %+v", outcome)
+		}
+		for _, id := range []string{before.ID, after.ID} {
+			if f.reload(t, id).Archived {
+				t.Errorf("%s was archived by an archive its reopened owner undid", id)
+			}
+		}
+	})
+	t.Run("owner reopened and archived again", func(t *testing.T) {
+		t.Parallel()
+		f := newOrganizeFixture(t)
+		owner := f.thread(t, "owner")
+		before := f.thread(t, "before")
+		recordSpawn(t, f.app, "tok-before", owner.ID, before.ID)
+		stale, err := f.app.archiveThreadLocked(owner.ID, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.app.UnarchiveThread(owner.ID); err != nil {
+			t.Fatal(err)
+		}
+		after := f.thread(t, "after")
+		recordSpawn(t, f.app, "tok-after", owner.ID, after.ID)
+		current, err := f.app.archiveThreadLocked(owner.ID, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The first archive's cleanup reaches only what that archive owned.
+		if outcome := f.app.finishArchive(stale); outcome.cleanup != nil || len(outcome.workers) > 0 {
+			t.Fatalf("stale cleanup = %+v", outcome)
+		}
+		if !f.reload(t, before.ID).Archived || f.reload(t, after.ID).Archived {
+			t.Fatalf("after the first archive's cleanup: before archived %v, after archived %v; want only before",
+				f.reload(t, before.ID).Archived, f.reload(t, after.ID).Archived)
+		}
+		if outcome := f.app.finishArchive(current); outcome.cleanup != nil || len(outcome.workers) > 0 {
+			t.Fatalf("current cleanup = %+v", outcome)
+		}
+		if !f.reload(t, after.ID).Archived {
+			t.Errorf("the second archive left its worker unarchived")
+		}
+	})
+	t.Run("worker moved", func(t *testing.T) {
+		t.Parallel()
+		f := newOrganizeFixture(t)
+		owner := f.thread(t, "owner")
+		moved := f.thread(t, "moved")
+		kept := f.thread(t, "kept")
+		recordSpawn(t, f.app, "tok-moved", owner.ID, moved.ID)
+		recordSpawn(t, f.app, "tok-kept", owner.ID, kept.ID)
+		work, err := f.app.archiveThreadLocked(owner.ID, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.app.SetThreadPlacement([]string{moved.ID}, store.PlacementStandalone); err != nil {
+			t.Fatal(err)
+		}
+		if outcome := f.app.finishArchive(work); outcome.cleanup != nil || len(outcome.workers) > 0 {
+			t.Fatalf("cleanup = %+v", outcome)
+		}
+		if f.reload(t, moved.ID).Archived {
+			t.Errorf("a worker moved to the sidebar was archived with its former owner")
+		}
+		if !f.reload(t, kept.ID).Archived {
+			t.Errorf("a worker the owner still owns was left unarchived")
+		}
+	})
 }

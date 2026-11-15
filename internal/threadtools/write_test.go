@@ -515,6 +515,35 @@ func TestUpdateGroupsIdsByTheComputerThatHoldsThem(t *testing.T) {
 	}
 }
 
+// TestUpdateReportsWorkersAnArchiveLeftOpen on this computer and on
+// another: the owner's row is updated and names each worker and why.
+func TestUpdateReportsWorkersAnArchiveLeftOpen(t *testing.T) {
+	p := newPair(t)
+	p.local.addThread(Thread{ID: localThreadID, Title: "Local"})
+	p.remote.addThread(Thread{ID: remoteThreadID, Title: "Remote"})
+	left := []WorkerNotArchived{{ThreadID: "worker", Error: "That change could not be applied on this computer, and nothing was changed."}}
+	p.local.updated = []ThreadUpdateResult{{ThreadID: localThreadID, Updated: true, WorkersNotArchived: left}}
+	p.remote.updated = []ThreadUpdateResult{{ThreadID: remoteThreadID, Updated: true, WorkersNotArchived: left, Warning: "Archived, but"}}
+
+	result := call(t, p.server, localCaller(), "thread_update", `{"thread_ids":["`+localThreadID+`","`+remoteThreadID+`"],"archived":true}`)
+	list := rows(t, result["results"])
+	if len(list) != 2 {
+		t.Fatalf("results = %v", result["results"])
+	}
+	for _, row := range list {
+		workers, _ := row.(map[string]any)["workers_not_archived"].([]any)
+		if field(t, row, "updated") != true || len(workers) != 1 || field(t, workers[0], "thread_id") != "worker" {
+			t.Errorf("row = %v, want updated and naming the worker", row)
+		}
+	}
+	if field(t, list[1], "warning") != "Archived, but" {
+		t.Errorf("the forwarded warning was dropped: %v", list[1])
+	}
+	if note, _ := result["note"].(string); !strings.Contains(note, "workers_not_archived") || strings.Contains(note, "left untouched") {
+		t.Errorf("note = %q", note)
+	}
+}
+
 // TestGroupNamesOneGroupAndDoesOneThingToIt.
 func TestGroupNamesOneGroupAndDoesOneThingToIt(t *testing.T) {
 	app := newFakeApp("Laptop")

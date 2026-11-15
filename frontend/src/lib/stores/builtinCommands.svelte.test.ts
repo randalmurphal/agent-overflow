@@ -620,7 +620,7 @@ describe('thread archive/delete command safety', () => {
 
   it('routes thread.archive through the confirmation flow before archiving', () => {
     const pane = readyPane();
-    const archiveMock = setBindingMock('ArchiveThread', async () => {});
+    const archiveMock = setBindingMock('ArchiveThread', async () => ({}));
     registerFixtureCommands(pane);
 
     runCommand('thread.archive', makeCommandContext(pane, {}));

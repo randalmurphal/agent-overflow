@@ -83,7 +83,7 @@ func TestArchiveStopsOnlyTheCommandsItCaptured(t *testing.T) {
 	remotetest.Require(t)
 	archived := true
 	for name, archive := range map[string]func(*App, context.Context, string) error{
-		"ArchiveThread": func(a *App, _ context.Context, id string) error { return a.ArchiveThread(id) },
+		"ArchiveThread": func(a *App, _ context.Context, id string) error { return archiveThread(a, id) },
 		"thread_update": func(a *App, ctx context.Context, id string) error {
 			_, err := a.applyThreadOrganizePatch(ctx, id, threadapp.OrganizePatch{Archived: &archived})
 			return err

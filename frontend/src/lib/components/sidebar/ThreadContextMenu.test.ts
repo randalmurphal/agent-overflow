@@ -167,7 +167,7 @@ describe('<ThreadContextMenu> Archive Thread', () => {
 
   it('archives immediately and closes the menu when confirmArchive is off', async () => {
     await primeSettings({ confirmArchive: false });
-    const archive = setBindingMock('ArchiveThread', vi.fn(async () => {}));
+    const archive = setBindingMock('ArchiveThread', vi.fn(async () => ({})));
     const onClose = vi.fn();
     setBindingMock('SwitchThread', async () => {});
     setBindingMock('ListItems', async () => []);
@@ -194,7 +194,7 @@ describe('<ThreadContextMenu> Archive Thread', () => {
 
   it('confirms first when confirmArchive is on, archiving only after confirm', async () => {
     await primeSettings({ confirmArchive: true });
-    const archive = setBindingMock('ArchiveThread', vi.fn(async () => {}));
+    const archive = setBindingMock('ArchiveThread', vi.fn(async () => ({})));
     const { getByRole } = renderMenu(makeThread({ id: 'arch-on' }));
     await fireEvent.click(getByRole('menuitem', { name: 'Archive Thread' }));
     await tick();
@@ -261,7 +261,7 @@ describe('<ThreadContextMenu> without threads:operate', () => {
   });
 
   it('does not run the archive action from an inert row', async () => {
-    const archive = setBindingMock('ArchiveThread', vi.fn(async () => {}));
+    const archive = setBindingMock('ArchiveThread', vi.fn(async () => ({})));
     const { baseElement } = render(ThreadContextMenu, {
       props: {
         thread: makeThread(),
