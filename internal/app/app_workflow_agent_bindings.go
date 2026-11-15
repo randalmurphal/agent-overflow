@@ -1213,6 +1213,13 @@ func (a *App) workflowAgentStartRun(ctx context.Context, input WorkflowAgentStar
 		}, nil
 	}
 
+	// Admitted from the start to the binding, so a rest of the thread finds
+	// the run reporting to it.
+	done, err := a.admitWork(scope.ThreadID)
+	if err != nil {
+		return WorkflowAgentStartResult{}, err
+	}
+	defer done()
 	sourceRef := ""
 	if scope.IsPhase() {
 		sourceRef = phaseSourceRef(scope, hash)

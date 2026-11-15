@@ -771,7 +771,15 @@ computer that holds the thread:
 
 1. Fences the thread until the Stop ends: an app-written message for it
    is refused (`the thread is being stopped`) and no session is started
-   for one, as for an archived thread. A person's message is taken.
+   for one, as for an archived thread. A person's message is taken. The
+   thread starts no work of its own either: a spawn, send, ask or
+   reminder, a new assistant, a loop or watch, a remote command, and a
+   workflow run's start, binding, resume, rerun, retry or answer are
+   refused (`This thread is being stopped and cannot start new work
+   now.`). The Stop first waits for the ones already being admitted, so
+   the steps below reach everything the thread started. An archive
+   closes the thread to new work the same way, from before its capture
+   until its session is stopped.
 2. Under its action and mutation locks, ends its parked calls, disarms
    the wakes of its requests, cancels its loops and watches with the
    outcome `cancelled: the user stopped the thread` (an agent's stop:
@@ -798,8 +806,7 @@ computer that holds the thread:
    shells, subagents, terminals and provider timers) end, its background
    items read as ended, its open prompts close and their wakes routed to
    its spawner are withdrawn, and the messages the person queued in its
-   composer are dropped with the queue. A loop or watch the turn
-   registered meanwhile is cancelled before the lock is released.
+   composer are dropped with the queue.
 6. Withdraws what the app queued for it and cancels its asks and the
    commands it started on paired computers, as an archive does.
 7. Stops every request it made: a reminder is dropped, a send or ask is

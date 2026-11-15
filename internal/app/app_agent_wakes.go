@@ -212,6 +212,11 @@ func (a *App) checkAgentWakeInterval(seconds int) (time.Duration, error) {
 // sweep is woken for an interval row whose first fire may be sooner than its
 // sleep.
 func (a *App) registerAgentWake(row store.AgentWake) (store.AgentWake, error) {
+	done, err := a.admitWork(row.ThreadID)
+	if err != nil {
+		return store.AgentWake{}, err
+	}
+	defer done()
 	row.ID = newAgentWakeID()
 	stored, err := a.store.RegisterAgentWake(row)
 	switch {

@@ -51,6 +51,11 @@ func (t threadToolsApp) NewAssistant(ctx context.Context, caller threadtools.Cal
 	if err != nil {
 		return threadtools.NewAssistantAck{}, err
 	}
+	done, err := t.app.admitWork(caller.ThreadID)
+	if err != nil {
+		return threadtools.NewAssistantAck{}, err
+	}
+	defer done()
 	thread, agent, err := t.app.createAssistant(ctx, assistantSpec{
 		name: call.Name, provider: settings.Provider, model: settings.Model, effort: settings.ReasoningEffort,
 		runtimeMode: settings.RuntimeMode, projects: projects, creatorAgentID: creator.ID,
@@ -74,6 +79,7 @@ func (t threadToolsApp) NewAssistant(ctx context.Context, caller threadtools.Cal
 	if err != nil {
 		err = t.failRequest(token, err)
 	} else {
+		done()
 		ack, err = t.ackRequest(ctx, caller, token, 0)
 	}
 	if err != nil {

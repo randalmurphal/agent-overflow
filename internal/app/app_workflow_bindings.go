@@ -70,6 +70,13 @@ func (a *App) WorkflowBindThread(itemID, threadID string) (store.WorkItem, error
 	if err := workflowapp.ValidateBindingThread(item, thread); err != nil {
 		return store.WorkItem{}, fmt.Errorf("bind workflow run %s: %w", item.ID, err)
 	}
+	// A run bound to a thread being brought to rest would report to it after
+	// the rest paused the runs that do.
+	done, err := a.resting.admit(thread.ID)
+	if err != nil {
+		return store.WorkItem{}, fmt.Errorf("bind workflow run %s: %w", item.ID, err)
+	}
+	defer done()
 	if err := a.store.UpdateWorkItemOriginThread(item.ID, thread.ID); err != nil {
 		return store.WorkItem{}, err
 	}

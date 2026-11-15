@@ -276,6 +276,13 @@ func (t threadToolsApp) startRemoteRequest(
 	// sequence and is cut to the normal delay the moment the call returns,
 	// which is what makes "no retry is in flight" durable.
 	row.NextCheck = time.Now().Add(threadRequestAdmissionFence).UnixMilli()
+	// Admitted from the row to the destination's answer, so a rest of the
+	// caller stops a request the destination has settled or holds.
+	done, err := t.app.admitWork(caller.ThreadID)
+	if err != nil {
+		return threadtools.RequestAck{}, err
+	}
+	defer done()
 	if err := t.app.store.InsertThreadRequest(row); err != nil {
 		return threadtools.RequestAck{}, err
 	}
@@ -310,11 +317,13 @@ func (t threadToolsApp) startRemoteRequest(
 		// running this request. The model is given the token and told to
 		// check it rather than an error it would answer by starting the
 		// same work again; the poller reconciles the row either way.
+		done()
 		return t.ackRequest(ctx, caller, row.Token, waitSeconds)
 	}
 	if err := t.app.collectThreadPeerReply(row.Token, computerID, reply); err != nil {
 		return threadtools.RequestAck{}, err
 	}
+	done()
 	return t.ackRequest(ctx, caller, row.Token, waitSeconds)
 }
 

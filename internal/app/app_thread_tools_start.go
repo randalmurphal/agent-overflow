@@ -218,8 +218,14 @@ func (t threadToolsApp) Spawn(ctx context.Context, caller threadtools.Caller, ca
 	if _, err := t.spawnThreadOptions(ctx, origin, call); err != nil {
 		return threadtools.RequestAck{}, err
 	}
+	done, err := t.app.admitWork(caller.ThreadID)
+	if err != nil {
+		return threadtools.RequestAck{}, err
+	}
 	token := newThreadRequestToken()
-	if _, err := t.acceptSpawn(ctx, origin, token, call); err != nil {
+	_, err = t.acceptSpawn(ctx, origin, token, call)
+	done()
+	if err != nil {
 		return threadtools.RequestAck{}, err
 	}
 	return t.ackRequest(ctx, caller, token, call.WaitSeconds)
@@ -301,6 +307,11 @@ func (t threadToolsApp) Send(ctx context.Context, caller threadtools.Caller, cal
 	if err := t.refuseSelf(caller, call.ThreadID, "send to"); err != nil {
 		return threadtools.RequestAck{}, err
 	}
+	done, err := t.app.admitWork(caller.ThreadID)
+	if err != nil {
+		return threadtools.RequestAck{}, err
+	}
+	defer done()
 	// The target is a thread here that already exists, so the request and
 	// its acceptance are one write: the source row, already accepted, and
 	// the receipt. A paired computer's send is accepted by acceptSend.
@@ -318,6 +329,7 @@ func (t threadToolsApp) Send(ctx context.Context, caller threadtools.Caller, cal
 	if err := t.dispatchRequest(ctx, origin, token, store.ThreadRequestSend, target.ID, call.Message, answerRequested(call.WaitSeconds, call.Notify)); err != nil {
 		return threadtools.RequestAck{}, t.failRequest(token, err)
 	}
+	done()
 	return t.ackRequest(ctx, caller, token, call.WaitSeconds)
 }
 
@@ -397,8 +409,14 @@ func (t threadToolsApp) Ask(ctx context.Context, caller threadtools.Caller, call
 	if _, err := t.localThread(call.ThreadID); err != nil {
 		return threadtools.RequestAck{}, err
 	}
+	done, err := t.app.admitWork(caller.ThreadID)
+	if err != nil {
+		return threadtools.RequestAck{}, err
+	}
 	token := newThreadRequestToken()
-	if _, err := t.acceptAsk(ctx, origin, token, call); err != nil {
+	_, err = t.acceptAsk(ctx, origin, token, call)
+	done()
+	if err != nil {
 		return threadtools.RequestAck{}, err
 	}
 	return t.ackRequest(ctx, caller, token, call.WaitSeconds)

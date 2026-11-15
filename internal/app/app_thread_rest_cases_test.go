@@ -86,10 +86,11 @@ func TestStopAllBringsEverySpawnedThreadToRest(t *testing.T) {
 	}
 }
 
-// A loop the stopped thread's turn registers after the Stop cancelled its
-// loops, before the turn is cut, is cancelled too: it would start the thread
-// again.
-func TestAStopCancelsALoopItsTurnRegisteredDuringIt(t *testing.T) {
+// Work the stopped thread's turn starts after the Stop cancelled its loops,
+// before the turn is cut, is refused: a loop would start the thread again
+// and a spawn would outlive the Stop. Once the Stop is over the thread may
+// start work again.
+func TestAStopRefusesWorkItsTurnStartsDuringIt(t *testing.T) {
 	t.Parallel()
 	f := newRequestFixture(t)
 	f.mockClaudeHoldingTheTurn(t, "working")
@@ -105,29 +106,36 @@ func TestAStopCancelsALoopItsTurnRegisteredDuringIt(t *testing.T) {
 		t.Fatalf("the other thread's send: %v", err)
 	}
 	// The hook runs on the Stop's goroutine, which the test waits on.
-	var late string
-	var lateErr error
+	worker := f.targetIdentity(t, ack.ThreadID)
+	var loopErr, spawnErr error
+	tried := false
 	f.app.cancelReadForTest = func(string) {
-		if !f.app.resting.holds(ack.ThreadID) || late != "" || lateErr != nil {
+		if !f.app.resting.holds(ack.ThreadID) || tried {
 			return
 		}
-		row, err := f.app.registerAgentWake(store.AgentWake{
+		tried = true
+		_, loopErr = f.app.registerAgentWake(store.AgentWake{
 			ThreadID: ack.ThreadID, Kind: store.AgentWakeLoop, Label: "late", Note: "n",
 			IntervalSeconds: 3600, NextAt: time.Now().Add(time.Hour).UnixMilli(),
 		})
-		late, lateErr = row.ID, err
+		_, spawnErr = f.adapter().Spawn(t.Context(), worker, threadtools.SpawnCall{Prompt: "more"})
 	}
 
 	stop, err := f.app.StopThreadAgentRow(t.Context(), f.caller.ID, ack.Token)
 	if err != nil || len(stop.Failures) != 0 {
 		t.Fatalf("StopThreadAgentRow = %+v, %v", stop, err)
 	}
-	if lateErr != nil || late == "" {
-		t.Fatalf("the late loop was not registered: %v", lateErr)
+	if !tried || !errors.Is(loopErr, errThreadResting) || !errors.Is(spawnErr, errThreadResting) {
+		t.Fatalf("during the Stop: tried %v, loop %v, spawn %v; want both refused", tried, loopErr, spawnErr)
 	}
-	row, found, err := f.app.store.GetAgentWake(late)
-	if err != nil || !found || row.State != store.AgentWakeCancelled || row.LastOutcome != "cancelled: the user stopped the thread" {
-		t.Fatalf("the late loop = %+v found %v, %v; want it cancelled by the user's stop", row, found, err)
+	if wakes, err := f.app.store.ListAgentWakes(ack.ThreadID); err != nil || len(wakes) != 0 {
+		t.Fatalf("loops after the Stop = %+v, %v; want none", wakes, err)
+	}
+	if rows, err := f.app.store.ListThreadRequestsByCaller(ack.ThreadID, 10, 0); err != nil || len(rows) != 0 {
+		t.Fatalf("requests the worker made = %+v, %v; want none", rows, err)
+	}
+	if _, err := f.adapter().Remind(t.Context(), worker, threadtools.RemindCall{DueAtUnixMs: time.Now().Add(time.Hour).UnixMilli(), Note: "n"}); err != nil {
+		t.Fatalf("a reminder after the Stop: %v", err)
 	}
 }
 

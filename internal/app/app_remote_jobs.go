@@ -344,6 +344,14 @@ func (a *App) AgentRemoteStart(ctx context.Context, input AgentRemoteRequest) (R
 	}
 	// Serialize identical network attempts, not threads: a refused attempt must
 	// settle before a retry can become uncertain or accepted under the same ID.
+	// Admitted from the watch to the destination's answer, so a rest of the
+	// thread cancels a command the destination has, never one it is still
+	// being asked to start.
+	done, err := a.admitWork(scope.ThreadID)
+	if err != nil {
+		return RemoteCommand{}, err
+	}
+	defer done()
 	unlock, err := a.remoteStartLocks().LockCtx(ctx, input.ComputerID+":"+input.Request.ID)
 	if err != nil {
 		return RemoteCommand{}, err

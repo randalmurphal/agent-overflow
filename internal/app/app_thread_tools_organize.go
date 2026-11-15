@@ -142,6 +142,9 @@ func (a *App) applyThreadOrganizePatchLocked(ctx context.Context, threadID strin
 	// this instant.
 	requestedAt := time.Now().UnixMilli()
 	if archiving {
+		// As ArchiveThread closes it (archiveThreadLocked).
+		reopen := a.resting.close(threadID)
+		defer reopen()
 		unlockAction := a.threadLocks().Lock(threadID)
 		defer unlockAction()
 	}

@@ -114,8 +114,8 @@ type App struct {
 	// workerPrompts routes the prompts of a spawned thread to its spawner
 	// (app_worker_prompts.go).
 	workerPrompts workerPrompts
-	// resting holds the threads a Stop is bringing to rest, which take no
-	// app-written message meanwhile (app_thread_rest.go).
+	// resting holds the threads being brought to rest, which take no
+	// app-written message and start no work meanwhile (app_thread_rest.go).
 	resting threadRestFence
 	// push is the PHONE half of the same path: its own ordered queue, the
 	// sender this backend wakes phones through, and the standing fault the

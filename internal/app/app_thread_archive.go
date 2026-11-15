@@ -148,6 +148,10 @@ func (a *App) archiveThreadLocked(id, ownerID string) (restingThreadWork, error)
 	// holding it can dispatch a whole turn before this call gets its
 	// turn. stopArchivedThreadSession re-checks against this instant.
 	requestedAt := time.Now().UnixMilli()
+	// The thread starts no work from before its capture until its session
+	// is stopped, so the capture holds all it started (threadRestFence).
+	reopen := a.resting.close(id)
+	defer reopen()
 	unlock := a.threadLocks().Lock(id)
 	defer unlock()
 	work, changed, err := a.commitArchive(id, ownerID)

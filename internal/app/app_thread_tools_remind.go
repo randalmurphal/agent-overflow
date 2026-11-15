@@ -26,6 +26,11 @@ func (t threadToolsApp) Remind(_ context.Context, caller threadtools.Caller, cal
 		return threadtools.RequestAck{}, errorsx.Public(threadtools.CodeInvalidRequest,
 			"A reminder needs a time in the future.", nil)
 	}
+	done, err := t.app.admitWork(caller.ThreadID)
+	if err != nil {
+		return threadtools.RequestAck{}, err
+	}
+	defer done()
 	token := newThreadRequestToken()
 	if err := t.app.store.InsertThreadRequest(store.ThreadRequest{
 		Token:          token,

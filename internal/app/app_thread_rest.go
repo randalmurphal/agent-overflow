@@ -8,6 +8,7 @@ import (
 	"slices"
 	"sync"
 
+	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadtools"
 )
@@ -79,13 +80,13 @@ func (w restingThreadWork) held(sendID string) bool {
 // A later wait or thread_status re-arms the wakes; for an archive, delivering
 // one unarchives the thread.
 //
-// Nothing keeps new work from starting on the thread afterwards: a wake
-// unarchives an archived thread, a remote command is admitted to it whatever
-// its archive state, a person or another thread may send to it, and a loop
-// or watch registered later reuses its label's row. So the schedule is
-// cancelled here rather than after the locks are released, and the stop acts
-// on these identities alone, never on what the thread is running or holds
-// queued by the time it gets there.
+// Its caller has closed the thread's admission (threadRestFence), so this is
+// all the thread started. Once the rest reopens it, work may start again: a
+// wake unarchives an archived thread, a person or another thread may send to
+// it, and a loop or watch registered later reuses its label's row. So the
+// schedule is cancelled here rather than after the locks are released, and
+// the stop acts on these identities alone, never on what the thread is
+// running or holds queued by the time it gets there.
 func (a *App) captureRestingThreadWork(id string, cause restCause) restingThreadWork {
 	work := restingThreadWork{threadID: id, cause: cause, captured: true}
 	asks, askErr := a.disarmThreadRequests(id)
@@ -157,23 +158,44 @@ func (a *App) stopRestingThreadWork(work restingThreadWork) error {
 // a worker's prompt goes to the user, an outside send is refused.
 var errThreadResting = errors.New("the thread is being stopped")
 
-// threadRestFence holds the threads a Stop is bringing to rest. From its
-// capture to the end of its cascade a thread takes no app-written message
-// (registerQueueItem) and starts no session for one (startAgentNoticeSession),
-// so a worker's prompt, an answer or a completion arriving meanwhile does not
-// start it again. A person's own message is not held.
+// threadRestFence holds the threads being brought to rest. While a Stop
+// holds a thread (hold), from the start of the rest to the end of its
+// cascade, the thread takes no app-written message (registerQueueItem) and
+// starts no session for one (startAgentNoticeSession), so a worker's prompt,
+// an answer or a completion arriving meanwhile does not start it again; a
+// person's own message is not held. While a Stop or an archive has closed a
+// thread's admission (close), it starts no work of its own: every API that
+// admits work a thread starts (a spawn, send, ask or reminder, an assistant,
+// a loop or watch, a remote command, a workflow run's start, binding or
+// resumption) admits it through admit, and close waits out the admissions
+// already under way, so what the rest reads after close is everything the
+// thread started.
 type threadRestFence struct {
 	mu      sync.Mutex
+	changed *sync.Cond
+	// threads counts, by thread, the holds on its app-written messages.
 	threads map[string]int
+	// closed counts, by thread, the closures of its admission.
+	closed map[string]int
+	// admitting counts, by thread, the admissions under way.
+	admitting map[string]int
 }
 
-// hold fences threadID until the returned release runs. Holds nest.
+func (f *threadRestFence) init() {
+	if f.changed == nil {
+		f.threads = make(map[string]int)
+		f.closed = make(map[string]int)
+		f.admitting = make(map[string]int)
+		f.changed = sync.NewCond(&f.mu)
+	}
+}
+
+// hold fences threadID's app-written messages until the returned release
+// runs. Holds nest.
 func (f *threadRestFence) hold(threadID string) func() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.threads == nil {
-		f.threads = make(map[string]int)
-	}
+	f.init()
 	f.threads[threadID]++
 	return func() {
 		f.mu.Lock()
@@ -182,6 +204,64 @@ func (f *threadRestFence) hold(threadID string) func() {
 			delete(f.threads, threadID)
 		}
 	}
+}
+
+// close closes threadID's admission until the returned reopen runs, and
+// returns once every admission already under way for it has finished.
+// Closures nest. An admission may wait on any lock, so close must not be
+// called with one held.
+func (f *threadRestFence) close(threadID string) func() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.init()
+	f.closed[threadID]++
+	for f.admitting[threadID] > 0 {
+		f.changed.Wait()
+	}
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			if f.closed[threadID]--; f.closed[threadID] <= 0 {
+				delete(f.closed, threadID)
+			}
+		})
+	}
+}
+
+// admit admits one piece of work threadID starts, refused with
+// errThreadResting while its admission is closed. done runs once the work
+// is recorded where a rest reads it.
+func (f *threadRestFence) admit(threadID string) (done func(), err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.init()
+	if f.closed[threadID] > 0 {
+		return nil, errThreadResting
+	}
+	f.admitting[threadID]++
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			if f.admitting[threadID]--; f.admitting[threadID] <= 0 {
+				delete(f.admitting, threadID)
+			}
+			f.changed.Broadcast()
+		})
+	}, nil
+}
+
+// admitWork is threadRestFence.admit with the refusal an agent reads.
+func (a *App) admitWork(threadID string) (func(), error) {
+	done, err := a.resting.admit(threadID)
+	if err != nil {
+		return nil, errorsx.Public(threadtools.CodeInvalidRequest,
+			"This thread is being stopped and cannot start new work now.", err)
+	}
+	return done, nil
 }
 
 // holds reports whether threadID is being brought to rest.
@@ -259,11 +339,17 @@ func (a *App) restThreadHere(ctx context.Context, threadID string, by restStop, 
 			"it works in workflow run %s, which it did not start; pause that run from the workflows view", run))
 		return
 	}
-	work, release, gone, err := a.captureThreadRest(threadID, by.cause)
+	// From here to the end of the rest the thread takes no app-written
+	// message and starts nothing, and what it had started is recorded where
+	// the steps below read it.
+	release := a.resting.hold(threadID)
+	defer release()
+	reopen := a.resting.close(threadID)
+	defer reopen()
+	work, gone, err := a.captureThreadRest(threadID, by.cause)
 	if gone {
 		return
 	}
-	defer release()
 	fail("stop the thread", err)
 	if err != nil {
 		// Without the capture nothing is known to be stopped; the requests it
@@ -288,25 +374,22 @@ func (a *App) restThreadHere(ctx context.Context, threadID string, by restStop, 
 	a.reroutePromptsFrom(threadID)
 }
 
-// captureThreadRest fences the thread and captures its work under its action
-// and mutation locks; release lifts the fence. The action lock waits out a
-// session start in progress, and the mutation lock is the one every queue
-// write checks the fence under. Gone reports a thread that no longer exists
-// here.
-func (a *App) captureThreadRest(threadID string, cause restCause) (work restingThreadWork, release func(), gone bool, err error) {
+// captureThreadRest captures the work of a thread its rest has fenced, under
+// its action and mutation locks. The action lock waits out a session start in
+// progress, and the mutation lock is the one every queue write checks the
+// fence under. Gone reports a thread that no longer exists here.
+func (a *App) captureThreadRest(threadID string, cause restCause) (work restingThreadWork, gone bool, err error) {
 	unlock := a.threadLocks().Lock(threadID)
 	defer unlock()
-	release = a.resting.hold(threadID)
 	unlockMutations, err := a.threadApplication().LockMutable(a.lifeCtx(), threadID)
 	if errors.Is(err, sql.ErrNoRows) || errors.Is(err, store.ErrThreadGone) {
-		release()
-		return restingThreadWork{}, nil, true, nil
+		return restingThreadWork{}, true, nil
 	}
 	if err != nil {
-		return restingThreadWork{}, release, false, err
+		return restingThreadWork{}, false, err
 	}
 	defer unlockMutations()
-	return a.captureRestingThreadWork(threadID, cause), release, false, nil
+	return a.captureRestingThreadWork(threadID, cause), false, nil
 }
 
 // stopRequestsOnRestingThread settles every open request on the thread, from
@@ -336,10 +419,9 @@ func (a *App) stopRequestsOnRestingThread(ctx context.Context, threadID string, 
 // ends its session, the provider process and everything it runs with it,
 // under the action lock every send and session start takes, so no turn
 // opens between the two. A thread with no session still has its queue
-// dropped, as End Session drops it. A loop or watch the turn registered
-// after the capture is cancelled once the session is gone, before the lock
-// lets a new one start. Its browser pages stay open, as End Session leaves
-// them. It reports the background tasks the session end stopped.
+// dropped, as End Session drops it. Its browser pages stay open, as End
+// Session leaves them. It reports the background tasks the session end
+// stopped.
 func (a *App) endRestingThreadSession(threadID string, by restStop, result *ThreadAgentStop) (int, error) {
 	unlock := a.threadLocks().Lock(threadID)
 	defer unlock()
@@ -363,11 +445,6 @@ func (a *App) endRestingThreadSession(threadID string, by restStop, result *Thre
 	sess, _ = a.sessionManager().take(threadID)
 	if err := a.teardownAndCloseSession(threadID, sess); err != nil {
 		errs = append(errs, err)
-	}
-	if live {
-		if err := a.cancelAgentWakesForThread(threadID, by.cause.outcome); err != nil {
-			errs = append(errs, err)
-		}
 	}
 	return background, errors.Join(errs...)
 }

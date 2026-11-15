@@ -281,6 +281,18 @@ func (h responseWakeHold) Release(returned *workflowtools.Rest) {
 	})
 }
 
+// admitCallerWork admits a control that sets a run going again for the
+// calling session's thread (admitWork), so a rest of the thread does not
+// have its runs resumed under it. A caller with no readable scope is
+// refused by the control itself.
+func (w workflowToolsAdapter) admitCallerWork(ctx context.Context) (func(), error) {
+	scope, err := requireCallerScope(ctx)
+	if err != nil {
+		return func() {}, nil
+	}
+	return w.a.admitWork(scope.ThreadID)
+}
+
 type noWakeHold struct{}
 
 func (noWakeHold) Release(*workflowtools.Rest) {}
@@ -331,6 +343,15 @@ func (w workflowToolsAdapter) ListRuns(ctx context.Context, activeOnly bool) (an
 }
 
 func (w workflowToolsAdapter) ControlRun(ctx context.Context, input workflowtools.ControlInput) (workflowtools.ControlDone, error) {
+	switch input.Action {
+	case "pause", "cancel", "soft_stop":
+	default:
+		done, err := w.admitCallerWork(ctx)
+		if err != nil {
+			return workflowtools.ControlDone{}, err
+		}
+		defer done()
+	}
 	var err error
 	switch input.Action {
 	case "pause":
@@ -366,6 +387,11 @@ func (w workflowToolsAdapter) GuideRun(ctx context.Context, runID, text string) 
 }
 
 func (w workflowToolsAdapter) ResolveRun(ctx context.Context, input workflowtools.ResolveInput) error {
+	done, err := w.admitCallerWork(ctx)
+	if err != nil {
+		return err
+	}
+	defer done()
 	switch input.Decision {
 	case "approve", "reject":
 		return w.a.WorkflowResolveGate(ctx, input.RunID, input.Decision, input.Note)

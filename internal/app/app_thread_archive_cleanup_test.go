@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"io"
 	"sync"
 	"testing"
@@ -73,8 +74,8 @@ func TestOrganizeArchiveCutAfterTheArchiveStillCancelsRemoteCommands(t *testing.
 }
 
 // An archive stops the commands the thread had started when it committed,
-// and no other: one admitted after the commit, while the archive is still
-// finishing, keeps running, and a repeated archive of the archived thread
+// and no other: one admitted once the archive has stopped the session,
+// while the archive is still finishing, keeps running, and a repeated archive of the archived thread
 // stops nothing. Both doors that archive run the same capture. The test
 // holds the stop before it cancels anything, so the later command is
 // always running when the stop decides what to cancel.
@@ -141,9 +142,17 @@ func TestArchiveStopsOnlyTheCommandsItCaptured(t *testing.T) {
 				releaseStop()
 				t.Fatal("the archive never committed")
 			}
-			// The archive has committed and captured its work; this command
-			// is admitted after that and before the held stop cancels.
-			started, err := source.AgentRemoteStart(ctx, later)
+			// The archive has committed and captured its work. The thread
+			// starts nothing until its session is stopped; this command is
+			// admitted after that and before the held stop cancels.
+			var started RemoteCommand
+			for deadline := time.Now().Add(10 * time.Second); ; {
+				started, err = source.AgentRemoteStart(ctx, later)
+				if !errors.Is(err, errThreadResting) || time.Now().After(deadline) {
+					break
+				}
+				time.Sleep(5 * time.Millisecond)
+			}
 			releaseStop()
 			if err != nil || started.State != "running" {
 				t.Fatalf("starting a command after the commit: %+v, %v", started, err)
