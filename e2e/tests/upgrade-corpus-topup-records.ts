@@ -41,6 +41,8 @@ export async function writeReviewDrafts(harness: HarnessApp, threadId: string, v
   await harness.rpc('MarkDiffReviewCommentsSent', threadId, 'workspace', source, [resolved.id], `topup-turn-${nonce}`);
   await harness.rpc('DeleteDiffReviewComment', threadId, resolved.id);
   await create({ scope: 'branch', filePath: 'README.md', side: 'file', body: body('a file comment') });
+  // The Edits view shows an edit's new side only.
+  await create({ scope: 'edits', filePath: 'src/app.txt', side: 'new', newLine: 2, body: body("a comment on an agent's edit") });
   await create({ scope: 'pr', filePath: 'README.md', side: 'reply', replyThreadId: `PRRT_topup_${nonce}`, replyRootId: 4242, body: body('a held reply') });
 
   // The Pull requests page's drafts on a PR it opened with no thread.
