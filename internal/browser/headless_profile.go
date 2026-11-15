@@ -271,7 +271,7 @@ func (p *headlessProfile) ensureBrowser() (context.Context, error) {
 // connects to it, both bounded by launchCtx. A failed launch returns only
 // after its process is reaped.
 func (p *headlessProfile) launch(launchCtx context.Context) (*launchedBrowser, error) {
-	process, wsURL, err := startChromium(launchCtx, p.engine.binary, chromiumArgs(p.userDataDir), chromiumEnv(p.userDataDir))
+	process, wsURL, err := startChromium(launchCtx, p.engine.reaper, p.engine.binary, chromiumArgs(p.userDataDir), chromiumEnv(p.userDataDir))
 	if err != nil {
 		return nil, p.launchFailed(err)
 	}

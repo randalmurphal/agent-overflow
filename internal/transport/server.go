@@ -276,7 +276,7 @@ type Config struct {
 	// DictationTransfer receives the pieces of a recording uploaded for
 	// dictation (dictationroutes.go). Nil answers that route 404.
 	DictationTransfer DictationTransfer
-	// SpeechTransfer reads admitted sentences aloud (speechroutes.go). Nil
+	// SpeechTransfer reads admitted sections aloud (speechroutes.go). Nil
 	// answers that route 404.
 	SpeechTransfer SpeechTransfer
 
@@ -640,7 +640,7 @@ type Server struct {
 	// dictationTickets is a fifth: a recording piece is not an attachment,
 	// and its ticket is minted by a `threads:operate` call.
 	dictationTickets *ticketBook
-	// speechTickets is a sixth: a sentence to read aloud is none of the
+	// speechTickets is a sixth: a section to read aloud is none of the
 	// above, and its ticket is minted by a `threads:operate` call.
 	speechTickets *ticketBook
 }

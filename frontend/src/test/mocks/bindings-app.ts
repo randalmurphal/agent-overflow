@@ -565,6 +565,7 @@ export const GitListTags = dispatch('GitListTags');
 export const GitRefreshTags = dispatch('GitRefreshTags');
 export const GitListWorktrees = dispatch('GitListWorktrees');
 export const GitCommit = dispatch('GitCommit');
+export const GetCommitOutcome = dispatch('GetCommitOutcome');
 export const GitPush = dispatch('GitPush');
 export const GitPull = dispatch('GitPull');
 export const GitCheckout = dispatch('GitCheckout');

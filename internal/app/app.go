@@ -252,6 +252,9 @@ type App struct {
 	reviewSubmits      *keyedlock.Registry
 	postedReviewDrafts postedReviewDrafts
 	reviewAttempts     reviewAttempts
+	// commitAttempts are GitCommit's attempts' outcomes (app_git.go). Zero
+	// value ready.
+	commitAttempts writeAttempts[gitops.GitActionResult]
 	// providerTerminals is the per-connection take-control bookkeeping for
 	// claude-tui PTYs: which caller armed which attachment, so a dead socket
 	// releases exactly its own claim and its input lease. Zero value ready.
@@ -498,12 +501,11 @@ type App struct {
 	// construction keeps focused bare-App tests valid.
 	sessionRuntimeOnce sync.Once
 	sessionRuntime     *sessionruntime.Manager
-	// orphanReaper is the macOS sidecar process that kills provider and
-	// shell command process groups if this app dies ungracefully; orphanRegistry is the
-	// durable backstop the next launch sweeps. Both stay nil on
-	// Linux/Windows (which rely on Pdeathsig / a Job Object) and in tests
-	// — the watch/release helpers and Client methods are nil-safe. See
-	// app_orphan_reaper.go.
+	// orphanReaper is the sidecar process that kills the watched process
+	// groups if this app dies ungracefully; orphanRegistry is the durable
+	// backstop the next launch sweeps. Both stay nil on Windows and in tests
+	// that do not start them; the watch/release helpers and Client methods
+	// are nil-safe. See app_orphan_reaper.go.
 	orphanReaper   *orphanreaper.Client
 	orphanRegistry *orphanreaper.Registry
 	// threadApp owns store-backed thread application policy and the keyed
@@ -810,6 +812,10 @@ type App struct {
 	// rollback could not undo. The zero value is OPEN: every boot except a
 	// supervisor trial never touches it. See app_activation.go.
 	activation activation
+	// workflowStartsHeldForBoot is true while the workflow engine runs paused
+	// only so its rebuild starts nothing before startBeforeClients. Written by
+	// Start before the gate's goroutine exists and cleared by that step.
+	workflowStartsHeldForBoot bool
 	// serviceUpdate holds this backend's ability to replace itself: the call
 	// that asks its supervisor to run an already-staged version, and the
 	// release source, layout and live flow the remote trigger drives. Both

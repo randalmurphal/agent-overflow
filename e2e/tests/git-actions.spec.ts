@@ -9,9 +9,12 @@
 //   the active file's diff, commits only the selected files (leaving
 //   another file's staged change in the index), stays open on the rest,
 //   and closes after the commit that leaves nothing.
+// - A commit whose answer a dropped connection lost, behind a pre-commit
+//   hook still running, ends with the dialog showing the commit once the
+//   hook lets it land (GetCommitOutcome), and the commit runs once.
 // - Push is enabled for a branch with no upstream, pushes it to origin,
 //   sets the upstream, and is disabled once nothing is ahead.
-import { mkdir, rename, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { Page } from '@playwright/test';
 
@@ -188,6 +191,61 @@ test('the Commit dialog commits the selected files and stays open until nothing 
   expect(harnessGit(harness, root, 'rev-parse', 'HEAD~1')).toBe(firstHead);
   expect(harnessGit(harness, root, 'status', '--porcelain')).toBe('');
   await expect(errorToasts(page)).toHaveCount(0);
+});
+
+// GitCommit, as frontend/src/lib/transport/methodRoutes.ts lists it.
+const GIT_COMMIT_METHOD_ID = 1_971_060_042;
+
+test('a commit whose answer the connection lost shows as committed once its slow hook lets it land', async ({ harness, page }) => {
+  const { root, title } = await seedThread(harness, 'git-commit-lost-answer');
+  const hooks = path.resolve(root, harnessGit(harness, root, 'rev-parse', '--git-path', 'hooks'));
+  const gate = path.join(harness.bootstrap.dataRoot, 'commit-lost-answer.release');
+  const ran = path.join(harness.bootstrap.dataRoot, 'commit-lost-answer.ran');
+  await mkdir(hooks, { recursive: true });
+  // Holds the commit open as a pre-commit hook running a project's checks
+  // would, past the moment the connection drops.
+  await writeFile(path.join(hooks, 'pre-commit'),
+    `#!/bin/sh\necho run >> '${ran}'\nwhile [ ! -f '${gate}' ]; do sleep 0.05; done\n`, { mode: 0o755 });
+
+  // The socket carrying the commit closes as soon as the commit is sent, so
+  // its answer is lost; the reconnected socket passes everything through.
+  let dropped = false;
+  await page.routeWebSocket(/\/ws(?:\?|$)/, (socket) => {
+    const server = socket.connectToServer();
+    socket.onMessage((message) => {
+      server.send(message);
+      const frame = JSON.parse(String(message)) as { type?: string; methodId?: number };
+      if (!dropped && frame.type === 'rpc' && frame.methodId === GIT_COMMIT_METHOD_ID) {
+        dropped = true;
+        socket.close();
+      }
+    });
+    server.onMessage((message) => socket.send(message));
+  });
+
+  await harness.open(page);
+  await openThread(page, title);
+  await writeFile(path.join(root, 'notes.md'), 'base\nheld by the hook\n');
+  const startHead = harnessGit(harness, root, 'rev-parse', 'HEAD');
+
+  const dialog = await openCommitDialog(page);
+  await dialog.getByRole('option', { name: 'notes.md', exact: true }).getByTestId('commit-file-check').click();
+  await dialog.getByLabel('Subject').fill('Commit behind a slow hook');
+  await dialog.getByRole('button', { name: 'Commit', exact: true }).click();
+  await expect.poll(() => dropped).toBe(true);
+  // The hook is still running; the dialog waits on the computer's record.
+  await expect.poll(async () => (await readFile(ran, 'utf8').catch(() => '')).length > 0).toBe(true);
+  await expect(dialog.getByRole('button', { name: 'Committing…' })).toBeVisible();
+  expect(harnessGit(harness, root, 'rev-parse', 'HEAD')).toBe(startHead);
+
+  await writeFile(gate, '');
+  await expect(dialog).toHaveCount(0);
+  const head = harnessGit(harness, root, 'rev-parse', 'HEAD');
+  expect(harnessGit(harness, root, 'rev-parse', 'HEAD~1')).toBe(startHead);
+  expect(harnessGit(harness, root, 'log', '-1', '--format=%s')).toBe('Commit behind a slow hook');
+  await expect(page.getByRole('alert').filter({ hasText: `Committed ${head.slice(0, 7)}` })).toBeVisible();
+  await expect(errorToasts(page)).toHaveCount(0);
+  expect((await readFile(ran, 'utf8')).trim().split('\n')).toHaveLength(1);
 });
 
 test('Push on a branch with no upstream publishes it to origin and sets the upstream', async ({ harness, page }) => {

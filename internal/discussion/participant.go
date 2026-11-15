@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/stringsx"
 
@@ -44,16 +45,19 @@ func BuildParticipantPlans(parent store.Thread, def store.DiscussionDefinition, 
 		}
 
 		child := store.Thread{
-			ID:             uuid.NewString(),
-			ProjectID:      parent.ProjectID,
-			ProjectPath:    parent.ProjectPath,
-			Title:          fmt.Sprintf("%s - %s", parent.Title, FormatRole(role)),
-			Provider:       providerName,
-			WorkspacePath:  parent.WorkspacePath,
-			Model:          model,
-			WorktreePath:   parent.WorktreePath,
-			Branch:         parent.Branch,
-			Mode:           "discussion",
+			ID:            uuid.NewString(),
+			ProjectID:     parent.ProjectID,
+			ProjectPath:   parent.ProjectPath,
+			Title:         fmt.Sprintf("%s - %s", parent.Title, FormatRole(role)),
+			Provider:      providerName,
+			WorkspacePath: parent.WorkspacePath,
+			Model:         model,
+			WorktreePath:  parent.WorktreePath,
+			Branch:        parent.Branch,
+			Mode:          "discussion",
+			// Named here rather than left to the store's default so the
+			// mode a start is authorized against is the mode the row gets.
+			RuntimeMode:    string(provider.DefaultRuntimeMode),
 			ParentThreadID: parent.ID,
 			CreatedAt:      nowMillis,
 			UpdatedAt:      nowMillis,

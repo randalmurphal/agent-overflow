@@ -6,6 +6,7 @@ import (
 
 	"agent-overflow/internal/eventchan"
 	gitops "agent-overflow/internal/git"
+	"agent-overflow/internal/procutil"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/workflow/def"
@@ -108,10 +109,12 @@ type EngineSource interface {
 	RequireWorkflowEngine() (*engine.Engine, error)
 }
 
-// ProcessLifetime is the process-lifetime context a tool phase's child process
-// group is bounded by, so a spawned command dies with the app.
+// ProcessLifetime is what a spawned command's process group is bounded by, so
+// it dies with the app: the lifetime context a shutdown cancels, and the
+// orphan reaper that ends the group when the app dies without stopping it.
 type ProcessLifetime interface {
 	LifeCtx() context.Context
+	ProcessReaper() procutil.Reaper
 }
 
 // ProviderHomeSource answers where the process's provider state lives. It is a

@@ -17,7 +17,7 @@ import (
 const (
 	notesMaxReleases  = 12
 	notesFetchWorkers = 4
-	notesTimeout      = 60 * time.Second
+	NotesTimeout      = 60 * time.Second
 )
 
 // releaseRepo is where a provider publishes its release notes on GitHub.
@@ -84,7 +84,7 @@ func (s *Service) Notes(ctx context.Context, providerName string) (Notes, error)
 		return cached.notes, nil
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, notesTimeout)
+	ctx, cancel := context.WithTimeout(ctx, NotesTimeout)
 	defer cancel()
 	stop := context.AfterFunc(s.life, cancel)
 	defer stop()

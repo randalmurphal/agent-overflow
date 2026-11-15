@@ -91,9 +91,10 @@ import {
   STALE_CHECK_INTERVAL_MS,
   TransportError,
   transportGapChannel,
-  withRpcTimeout,
+  rpcWaitMs,
   type TransportStatusSnapshot,
 } from './wsClient';
+import { DEFAULT_METHOD_BUDGET_MS, METHOD_ANSWER_MARGIN_MS, METHOD_BUDGETS_MS } from './methodRoutes';
 import { __resetRunModeForTest } from './runMode';
 import { grantedScopes, hasScope } from './scopes';
 import { getConnectionId, getDeviceId } from './clientIdentity';
@@ -2423,11 +2424,18 @@ describe('WSClient', () => {
     client.close();
   });
 
-  it('gives the one call withRpcTimeout dispatches its wait, and no later call', async () => {
+  it('waits out the budget a method declares, and the default for the rest', async () => {
+    const [budgeted, budgetMs] = Object.entries(METHOD_BUDGETS_MS).map(([id, ms]) => [Number(id), ms] as const)[0]!;
+    expect(budgetMs).toBeGreaterThan(DEFAULT_METHOD_BUDGET_MS);
+    expect(rpcWaitMs(budgeted)).toBe(budgetMs + METHOD_ANSWER_MARGIN_MS);
+    expect(rpcWaitMs(1)).toBe(RPC_TIMEOUT_MS);
+    expect(rpcWaitMs(undefined)).toBe(RPC_TIMEOUT_MS);
+    expect(RPC_TIMEOUT_MS).toBe(DEFAULT_METHOD_BUDGET_MS + METHOD_ANSWER_MARGIN_MS);
+
     vi.useFakeTimers();
     const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
-    const long = withRpcTimeout(RPC_TIMEOUT_MS * 3, () => client.callByID(1, [])).catch((err) => err);
-    const ordinary = client.callByID(2, []).catch((err) => err);
+    const long = client.callByID(budgeted, []).catch((err) => err);
+    const ordinary = client.callByID(1, []).catch((err) => err);
     await vi.advanceTimersByTimeAsync(0);
     const ws = MockWebSocket.instances[0]!;
     ws.acceptOpen();
@@ -2440,10 +2448,12 @@ describe('WSClient', () => {
     expect(((await ordinary) as TransportError).code).toBe('timeout');
     expect(longSettled).toBe(false);
 
-    await vi.advanceTimersByTimeAsync(RPC_TIMEOUT_MS * 2);
+    await vi.advanceTimersByTimeAsync(rpcWaitMs(budgeted) - RPC_TIMEOUT_MS - 2);
+    expect(longSettled).toBe(false);
+    await vi.advanceTimersByTimeAsync(2);
     const caught = (await long) as TransportError;
     expect(caught.code).toBe('timeout');
-    expect(caught.message).toContain(`${RPC_TIMEOUT_MS * 3}ms`);
+    expect(caught.message).toContain(`${rpcWaitMs(budgeted)}ms`);
     client.close();
   });
 

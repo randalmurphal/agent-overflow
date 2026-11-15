@@ -103,9 +103,9 @@ func (a *Service) emit(name eventchan.Channel, data any) {
 // DownloadUpdate and RestartToUpdate are each driven by a distinct button.
 
 const (
-	// updaterCheckTimeout bounds a single CheckForUpdate round trip to the
+	// UpdaterCheckTimeout bounds a single CheckForUpdate round trip to the
 	// release feed.
-	updaterCheckTimeout = 30 * time.Second
+	UpdaterCheckTimeout = 30 * time.Second
 	// updaterDownloadTimeout bounds the whole download+verify+stage flow. The
 	// release binary is tens of MB; this leaves generous headroom for slow
 	// links while still failing a genuinely stuck transfer.
@@ -315,7 +315,7 @@ func (a *Service) CheckForUpdate() (UpdateAvailability, error) {
 		a.updater.provider.SetTarget("")
 	}
 
-	ctx, cancel := context.WithTimeout(a.context(), updaterCheckTimeout)
+	ctx, cancel := context.WithTimeout(a.context(), UpdaterCheckTimeout)
 	defer cancel()
 
 	rel, err := a.updater.handle.Check(ctx)
@@ -475,7 +475,7 @@ func (a *Service) DownloadUpdate(tag string) error {
 			// the resolve by the short check timeout — not the download timeout
 			// — so the lock (which a concurrent check may wait on) is held only
 			// for the metadata round trip, never the multi-minute download.
-			rctx, rcancel := context.WithTimeout(a.context(), updaterCheckTimeout)
+			rctx, rcancel := context.WithTimeout(a.context(), UpdaterCheckTimeout)
 			a.updater.mu.Lock()
 			if a.updater.provider != nil {
 				a.updater.provider.SetTarget(tag)

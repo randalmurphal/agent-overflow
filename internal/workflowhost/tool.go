@@ -187,7 +187,7 @@ func (r *Runner) startToolRun(ctx context.Context, run workflowToolRun, complete
 
 	// A process the command left running in its group is kept: a command may
 	// start a service a later phase uses.
-	group, err := procutil.StartGroup(processCtx, procutil.GroupCommand{
+	group, err := procutil.StartGroup(processCtx, r.host.ProcessReaper(), procutil.GroupCommand{
 		Dir:           run.workspace,
 		Env:           append(append(os.Environ(), run.secrets.Environ()...), "AO_ENVELOPE="+run.envelopePath),
 		Argv:          run.argv,

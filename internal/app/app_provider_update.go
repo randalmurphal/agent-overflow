@@ -31,6 +31,7 @@ func (a *App) GetProviderUpdates() ([]providerupdate.Status, error) {
 //
 //ao:scope access:admin
 //ao:route selected
+//ao:budget 2m
 func (a *App) CheckProviderUpdates() ([]providerupdate.Status, error) {
 	return a.providerUpdateService().Check(), nil
 }
@@ -40,6 +41,7 @@ func (a *App) CheckProviderUpdates() ([]providerupdate.Status, error) {
 //
 //ao:scope access:admin
 //ao:route selected
+//ao:budget 2m
 func (a *App) GetProviderUpdateNotes(ctx context.Context, providerName string) (providerupdate.Notes, error) {
 	return a.providerUpdateService().Notes(ctx, providerName)
 }
@@ -141,7 +143,7 @@ func (a *App) providerUpdateCommand(ctx context.Context, command providerupdate.
 			"tests must not run a real provider CLI for provider updates; assign app.providerUpdateRunner a fake",
 		)
 	}
-	return runProviderUpdateGroup(ctx, command)
+	return runProviderUpdateGroup(ctx, a.groupReaper("provider update"), command)
 }
 
 // providerUpdateOutputTail bounds what a command's output keeps: its end,
@@ -150,14 +152,14 @@ const providerUpdateOutputTail = 64 << 10
 
 // runProviderUpdateGroup runs command as its own process group, so ending
 // ctx stops the package manager an updater starts (npm, brew) and not just
-// the updater, and nothing it started outlives the run. A command whose
-// Done answers true is stopped there and reported finished.
-func runProviderUpdateGroup(ctx context.Context, command providerupdate.Command) (providerupdate.Output, error) {
+// the updater, and nothing it started outlives the run or the app. A command
+// whose Done answers true is stopped there and reported finished.
+func runProviderUpdateGroup(ctx context.Context, reaper procutil.Reaper, command providerupdate.Command) (providerupdate.Output, error) {
 	tail := procutil.NewTailBuffer(providerUpdateOutputTail)
 	runCtx, stop := context.WithCancel(ctx)
 	defer stop()
 	output := &providerUpdateOutput{tail: tail, done: command.Done, stop: stop}
-	outcome, err := procutil.RunGroup(runCtx, procutil.GroupCommand{
+	outcome, err := procutil.RunGroup(runCtx, reaper, procutil.GroupCommand{
 		Dir:    command.Dir,
 		Env:    provider.BuildEnvironment(command.Env, command.UnsetEnv...),
 		Argv:   append([]string{command.Binary}, command.Args...),

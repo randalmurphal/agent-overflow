@@ -20,20 +20,32 @@ func TestTheZeroActivationGateRunsWorkInlineAndPropagatesItsError(t *testing.T) 
 		t.Fatal("the zero value is parked, so every ordinary boot would defer its startup work")
 	}
 
-	ran := false
-	if err := gate.Run(context.Background(), func() error { ran = true; return nil }); err != nil {
+	var order []string
+	step := func(name string) func() error {
+		return func() error { order = append(order, name); return nil }
+	}
+	if err := gate.Run(context.Background(), step("before clients"), step("work"), noReport(t)); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if !ran {
-		t.Fatal("Run did not execute the work")
+	if strings.Join(order, ", ") != "before clients, work" {
+		t.Fatalf("Run ran %v, want both halves in order", order)
 	}
 
 	// Inline means the caller sees the failure. A boot whose scheduler will not
-	// start must still fail the boot.
+	// start must still fail the boot, and a failed first half stops the second.
 	want := errors.New("the scheduler would not start")
-	if got := gate.Run(context.Background(), func() error { return want }); !errors.Is(got, want) {
+	if got := gate.Run(context.Background(), step("before clients"), func() error { return want }, noReport(t)); !errors.Is(got, want) {
 		t.Fatalf("Run returned %v, want the work's own error", got)
 	}
+	order = nil
+	if got := gate.Run(context.Background(), func() error { return want }, step("work"), noReport(t)); !errors.Is(got, want) || len(order) != 0 {
+		t.Fatalf("Run returned %v and ran %v, want the first half's error and no work", got, order)
+	}
+}
+
+// noReport fails a test whose Run reports an error.
+func noReport(t *testing.T) func(error) {
+	return func(err error) { t.Errorf("Run reported %v", err) }
 }
 
 // Parked: the work is deferred, not skipped, and nothing runs until the commit
@@ -48,7 +60,7 @@ func TestAParkedGateDefersWorkUntilItOpens(t *testing.T) {
 	}
 
 	started := make(chan struct{})
-	if err := gate.Run(context.Background(), func() error { close(started); return nil }); err != nil {
+	if err := gate.Run(context.Background(), func() error { return nil }, func() error { close(started); return nil }, noReport(t)); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	select {
@@ -79,15 +91,57 @@ func TestAParkedGateReleasesItsWaiterOnShutdownWithoutRunningTheWork(t *testing.
 	gate.Park()
 	ctx, cancel := context.WithCancel(context.Background())
 
-	ran := make(chan struct{})
-	if err := gate.Run(ctx, func() error { close(ran); return nil }); err != nil {
+	ran := make(chan struct{}, 2)
+	step := func() error { ran <- struct{}{}; return nil }
+	if err := gate.Run(ctx, step, step, noReport(t)); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	cancel()
 	select {
 	case <-ran:
-		t.Fatal("a cancelled trial still ran its unattended work")
+		t.Fatal("a cancelled trial still ran its deferred boot steps")
 	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+// After a commit, clients enter only once the boot's first half has finished,
+// and the unattended half runs only after them. A first half that fails is
+// reported, not swallowed, and still admits clients: the trial is committed
+// and refusing every request would not undo the failure.
+func TestACommittedTrialAdmitsClientsAfterTheStepsThatPrecedeThem(t *testing.T) {
+	t.Parallel()
+	app := &App{}
+	ParkUnattendedWork(app)
+	release := make(chan struct{})
+	beforeStarted, workRan := make(chan struct{}), make(chan struct{})
+	reported := make(chan error, 2)
+	failed := errors.New("a sweep failed")
+	if err := app.activation.Run(context.Background(), func() error {
+		close(beforeStarted)
+		<-release
+		return failed
+	}, func() error { close(workRan); return nil }, func(err error) { reported <- err }); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	admitted := make(chan error, 1)
+	go func() { admitted <- WaitForActivation(app, context.Background()) }()
+	ActivateUnattendedWork(app, ServiceUpdateOutcome{})
+	<-beforeStarted
+	select {
+	case err := <-admitted:
+		t.Fatalf("a client was admitted (%v) before the steps that precede clients finished", err)
+	case <-workRan:
+		t.Fatal("the unattended work ran before clients were admitted")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(release)
+	if err := <-admitted; err != nil {
+		t.Fatalf("WaitForActivation after the commit: %v", err)
+	}
+	<-workRan
+	if err := <-reported; !errors.Is(err, failed) {
+		t.Fatalf("reported %v, want the first half's failure", err)
 	}
 }
 

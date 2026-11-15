@@ -302,10 +302,10 @@ func (a *App) startSessionNow(threadID string) error {
 
 	// Register the freshly-spawned process group with the orphan reaper so
 	// it's torn down if the app dies before the session closes cleanly
-	// (macOS only; no-op elsewhere). Paired with the release in
+	// (macOS only, providerGroupsReaped). Paired with the release in
 	// closeProviderSession.
 	if ps := newSess.ProviderSession(); ps != nil {
-		a.watchProcessGroup(ps.PID(), sessionToken)
+		a.watchProviderGroup(ps.PID(), sessionToken)
 	}
 
 	// A session-death restore can requeue messages instead of restoring

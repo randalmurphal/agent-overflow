@@ -121,6 +121,7 @@ type SubmitPRReviewDrafts struct {
 //
 //ao:scope git:operate
 //ao:route selected
+//ao:budget 10m
 func (a *App) SubmitPRReview(ctx context.Context, pr gitops.PRReference, review SubmitPRReviewRequest) (result SubmitPRReviewResult, err error) {
 	if a.shuttingDown.Load() {
 		return SubmitPRReviewResult{}, ErrShuttingDown
@@ -242,6 +243,7 @@ type PRReviewSubmitOutcome struct {
 //ao:scope git:operate
 //ao:route selected
 //ao:callerbound
+//ao:budget 10m
 func (a *App) GetPRReviewSubmitOutcome(ctx context.Context, pr gitops.PRReference, attemptID string) (PRReviewSubmitOutcome, error) {
 	if err := pr.Validate(); err != nil {
 		return PRReviewSubmitOutcome{}, err

@@ -188,16 +188,16 @@ describe('readAloudClipFetcher', () => {
 
   it('fails with the route’s own reason, and with the computer’s refusal of the sentence', async () => {
     setBindingMock('MintReadAloudTicket', async () => '/attachments/speech/s1?ticket=t1');
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('OpenAI took longer than 45 seconds to read the sentence aloud', { status: 504 })));
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('OpenAI took longer than 45 seconds to read the section aloud', { status: 504 })));
     const fetchClip = readAloudClipFetcher('laptop');
     await expect(fetchClip('One.', 'marin', new AbortController().signal))
-      .rejects.toThrow(/^OpenAI took longer than 45 seconds to read the sentence aloud$/);
+      .rejects.toThrow(/^OpenAI took longer than 45 seconds to read the section aloud$/);
 
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('this sentence was already read aloud or has expired', { status: 404 })));
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('this section was already read aloud or has expired', { status: 404 })));
     await expect(fetchClip('One.', 'marin', new AbortController().signal))
-      .rejects.toThrow(/^this sentence was already read aloud or has expired$/);
+      .rejects.toThrow(/^this section was already read aloud or has expired$/);
 
-    const refusal = new Error('a sentence to read aloud is at most 1000 characters');
+    const refusal = new Error('a section to read aloud is at most 1000 characters');
     setBindingMock('MintReadAloudTicket', async () => { throw refusal; });
     await expect(fetchClip('One.', 'marin', new AbortController().signal)).rejects.toBe(refusal);
   });

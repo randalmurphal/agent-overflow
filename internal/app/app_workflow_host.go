@@ -4,6 +4,7 @@ import (
 	"agent-overflow/internal/aocli"
 	"agent-overflow/internal/eventchan"
 	gitops "agent-overflow/internal/git"
+	"agent-overflow/internal/procutil"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/textgen"
@@ -115,6 +116,10 @@ func (h workflowHostAdapter) RequireWorkflowEngine() (*engine.Engine, error) {
 }
 
 func (h workflowHostAdapter) LifeCtx() context.Context { return h.app.lifeCtx() }
+
+func (h workflowHostAdapter) ProcessReaper() procutil.Reaper {
+	return h.app.groupReaper("workflow command")
+}
 
 func (h workflowHostAdapter) ClaudeProjectsDir() (string, error) {
 	return h.app.claudeProjectsDir()
@@ -419,6 +424,9 @@ func workflowReasonText(reason engine.Reason) string {
 }
 
 func (a *App) generateWorkflowDigest(item store.WorkItem, template WorkflowDigest) (WorkflowDigest, error) {
+	if err := a.waitForBootSteps(a.lifeCtx()); err != nil {
+		return WorkflowDigest{}, err
+	}
 	primary := a.resolveTextGenerationConfig()
 	return runTextGenWithFallback(a, primary, workflowDigestTimeout, func(cfg textgen.Config, deadline time.Time) (WorkflowDigest, error) {
 		return a.runWorkflowDigestOnce(cfg, item, template, deadline)

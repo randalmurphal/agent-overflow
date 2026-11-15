@@ -889,7 +889,14 @@ func (a *App) workflowProjectProfile(projectID string) (*profile.Profile, error)
 	return source.Profile(a.lifeCtx(), projectID)
 }
 
+// autoDisposeWorkflowItem waits for the boot's steps before clients: a run a
+// trial's rebuild finished would otherwise merge, push or open a pull request
+// before the commit.
 func (a *App) autoDisposeWorkflowItem(itemID string) {
+	if err := a.waitForBootSteps(a.lifeCtx()); err != nil {
+		log.Printf("workflow auto-disposition %s: %v", itemID, err)
+		return
+	}
 	if err := a.workflowApplication().AutoDispose(itemID); err != nil {
 		log.Printf("workflow auto-disposition %s: %v", itemID, err)
 		a.emit(eventchan.WorkflowError, engine.ErrorEvent{

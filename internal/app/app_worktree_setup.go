@@ -56,6 +56,7 @@ func (a *App) worktreeSetupService() *worktreesetupapp.Service {
 		a.worktreeSetupApp = worktreesetupapp.New(worktreesetupapp.Config{
 			Store:         setupStore,
 			Events:        appWorktreeSetupEvents{app: a},
+			Reaper:        a.groupReaper("worktree setup"),
 			Context:       a.lifeCtx,
 			BeginWork:     a.workAdmission.begin,
 			ShutdownError: ErrShuttingDown,
