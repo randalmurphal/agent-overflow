@@ -12,6 +12,7 @@ import ReviewLineBlockRow from './ReviewLineBlockRow.svelte';
 import ReviewPaneBanners from './ReviewPaneBanners.svelte';
 import type { ReviewPaneState } from '../../stores/reviewPane.svelte';
 import { createCommentWrites } from '../../stores/reviewCommentWrites.svelte';
+import { createReviewPRIdentity } from '../../stores/reviewPRIdentity.svelte';
 import { createReviewCommentExtras } from '../../stores/reviewCommentExtras.svelte';
 import { __setTransportHelloForTest } from '../../stores/transportStatus.svelte';
 import { HOME_BACKEND } from '../../transport/backendKey';
@@ -61,8 +62,10 @@ function textBoxes(): { left: number; right: number; top: number }[] {
 
 describe('a sent comment\'s header actions', () => {
   it('never move the header text, revealed or confirming', async () => {
+    const prIdentity = createReviewPRIdentity(() => 'k');
     const writes = createCommentWrites({
       backend: HOME_BACKEND,
+      prIdentity,
       ref: () => ({ forge: 'github', host: 'github.com', namespace: 'o', repo: 'r', number: 1 }),
       entityKey: () => 'k',
       launch: () => 'l',
@@ -75,7 +78,7 @@ describe('a sent comment\'s header actions', () => {
     const extras = createReviewCommentExtras({
       backend: HOME_BACKEND,
       ref: () => ({ forge: 'github', host: 'github.com', namespace: 'o', repo: 'r', number: 1 }),
-      identity: () => 'k',
+      prIdentity,
       appliedSeq: () => 0,
       launch: () => 'l',
       updateFailing: () => false,

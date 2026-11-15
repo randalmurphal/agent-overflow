@@ -154,11 +154,11 @@ func copyPath(ctx context.Context, projectRoot, worktreeRoot, relative string) e
 			return fmt.Errorf("source %q is not a regular file", source)
 		}
 		mode := info.Mode().Perm()
+		copyFile := func() error { return safecopy.File(projectRoot, suffix, worktreeRoot, suffix, mode) }
 		if mode&0o111 != 0 {
 			// A setup command can run this file next.
-			release := procutil.HoldForks()
-			defer release()
+			return procutil.WriteExecutable(copyFile)
 		}
-		return safecopy.File(projectRoot, suffix, worktreeRoot, suffix, mode)
+		return copyFile()
 	})
 }

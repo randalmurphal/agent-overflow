@@ -341,8 +341,9 @@ func TestComposer_SendMessageWithAttachmentPersistsOnItem(t *testing.T) {
 		context.Background(),
 		thread.ID,
 		claude.Config{
-			Binary:  writeClaudePassthroughBinary(t),
-			WorkDir: thread.WorkspacePath,
+			Retention: claude.UserHomeRetention(0),
+			Binary:    writeClaudePassthroughBinary(t),
+			WorkDir:   thread.WorkspacePath,
 		},
 		func(provider.ProviderEvent) {},
 	)
@@ -357,7 +358,7 @@ func TestComposer_SendMessageWithAttachmentPersistsOnItem(t *testing.T) {
 	})
 
 	msg := "please review this image"
-	if err := app.SendMessage(thread.ID, msg, []string{record.ID}); err != nil {
+	if err := app.SendMessage(context.Background(), thread.ID, msg, []string{record.ID}); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 
@@ -406,7 +407,7 @@ func TestComposer_SendMessageRejectsAttachmentFromDifferentThread(t *testing.T) 
 
 	record := uploadTestAttachment(t, app, sourceThread.ID, "cover.png", "image/png", tinyPNG())
 
-	err := app.SendMessage(targetThread.ID, "please review this image", []string{record.ID})
+	err := app.SendMessage(context.Background(), targetThread.ID, "please review this image", []string{record.ID})
 	if err == nil {
 		t.Fatal("SendMessage error = nil, want cross-thread attachment rejection")
 	}
@@ -446,8 +447,9 @@ func TestComposer_SendMessageWithTerminalChipFormatsAsFencedCodeBlock(t *testing
 		context.Background(),
 		thread.ID,
 		claude.Config{
-			Binary:  binary,
-			WorkDir: thread.WorkspacePath,
+			Retention: claude.UserHomeRetention(0),
+			Binary:    binary,
+			WorkDir:   thread.WorkspacePath,
 		},
 		func(provider.ProviderEvent) {},
 	)
@@ -462,7 +464,7 @@ func TestComposer_SendMessageWithTerminalChipFormatsAsFencedCodeBlock(t *testing
 	})
 
 	outgoing := "initial question\n\n```terminal shell\n$ ls\nREADME.md\n```"
-	if err := app.SendMessage(thread.ID, outgoing, []string{record.ID}); err != nil {
+	if err := app.SendMessage(context.Background(), thread.ID, outgoing, []string{record.ID}); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 
@@ -622,8 +624,9 @@ func TestComposer_SendMessageClearsDraft(t *testing.T) {
 		context.Background(),
 		thread.ID,
 		claude.Config{
-			Binary:  writeClaudePassthroughBinary(t),
-			WorkDir: thread.WorkspacePath,
+			Retention: claude.UserHomeRetention(0),
+			Binary:    writeClaudePassthroughBinary(t),
+			WorkDir:   thread.WorkspacePath,
 		},
 		func(provider.ProviderEvent) {},
 	)
@@ -637,7 +640,7 @@ func TestComposer_SendMessageClearsDraft(t *testing.T) {
 		Claude:   sess,
 	})
 
-	if err := app.SendMessage(thread.ID, "Actual message", nil); err != nil {
+	if err := app.SendMessage(context.Background(), thread.ID, "Actual message", nil); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 

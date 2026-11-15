@@ -327,12 +327,14 @@ describe('threadTimelineWindow', () => {
         hasMore: false,
       }));
       await pane.switchThread(makeThread({ id: 't' }));
-      vi.spyOn(pane.activityRuns, 'noteWholesaleReplace').mockImplementation(() => {
+      const bookkeeping = vi.spyOn(pane.activityRuns, 'noteWholesaleReplace').mockImplementation(() => {
         throw new Error('activity replacement bookkeeping failed');
       });
       const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
 
       const result = await pane.loadOlder();
+      // The pane is cleared at teardown, which replaces its rows again.
+      bookkeeping.mockRestore();
 
       expect(result.status).toBe('error');
       expect(pane.items.map((item) => item.id)).toEqual(['t3', 't4', 't5']);

@@ -7,7 +7,7 @@ import {
 } from '../types/attachment';
 import type { Item, SourceProposedPlan } from '../types/models';
 import { commandWordRanges, type CommandWordRange } from './commandWords';
-import type { ShellOutputMeta } from './shellInvocation';
+import { textWithoutShellInvocations, type ShellOutputMeta } from './shellInvocation';
 
 export interface AttachmentPreviewSource {
   id: string;
@@ -183,6 +183,16 @@ export function isReaderAuthoredUserText(item: Item): boolean {
  */
 export function stripAttachmentImages(summary: string): string {
   return summary.replace(/\n\n!\[[^\]]*]\(attachment:\/\/[^\s)]+\)/g, '');
+}
+
+/**
+ * The text a user message's bubble shows (UserMessageBody), its find
+ * region: the summary without its image blocks and without the typed
+ * `!command` of each shell output, which the output's own block shows.
+ */
+export function userMessageVisibleText(summary: string, attachments: readonly AttachmentPreviewSource[]): string {
+  const shells = attachments.flatMap((attachment) => (attachment.kind === 'file' && attachment.shell ? [attachment.shell] : []));
+  return textWithoutShellInvocations(stripAttachmentImages(summary).trimEnd(), shells);
 }
 
 /**

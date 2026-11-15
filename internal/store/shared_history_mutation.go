@@ -98,13 +98,13 @@ func localizeImportedItemTx(tx *sql.Tx, threadID, itemID, label string) (bool, e
 		`INSERT INTO items (
 		    id, thread_id, turn_index, item_index, kind, role, status, summary,
 		    payload_id, input_payload_id, parent_id, is_background, completion_of,
-		    tool_name, decision, meta, created_at, updated_at
+		    tool_name, decision, meta, created_at, updated_at, find_text
 		 )
 		 SELECT imported.id, ?, imported.turn_index, imported.item_index,
 		        imported.kind, imported.role, imported.status, imported.summary,
 		        imported.payload_id, imported.input_payload_id, imported.parent_id,
 		        imported.is_background, imported.completion_of, imported.tool_name,
-		        imported.decision, imported.meta, imported.created_at, imported.updated_at
+		        imported.decision, imported.meta, imported.created_at, imported.updated_at, imported.find_text
 		   FROM import_history_items imported
 		   CROSS JOIN thread_import_chunks refs ON refs.chunk_id = imported.chunk_id
 		  WHERE imported.id = ? AND refs.thread_id = ?`,

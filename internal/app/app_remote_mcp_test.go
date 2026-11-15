@@ -383,7 +383,7 @@ func TestRemoteMCPRefreshesLiveProvidersAndKeepsThreadDisable(t *testing.T) {
 				script := []byte(mockScript(t, binary))
 				script = []byte(strings.ReplaceAll(string(script), `"subtype":"mcp_toggle"`, `"subtype":"mcp_reconnect"`))
 				mockexec.Write(t, binary, string(script))
-				ps, err := claude.NewSession(ctx, thread.ID, claude.Config{Binary: binary, WorkDir: thread.WorkspacePath}, func(provider.ProviderEvent) {})
+				ps, err := claude.NewSession(ctx, thread.ID, claude.Config{Retention: claude.UserHomeRetention(0), Binary: binary, WorkDir: thread.WorkspacePath}, func(provider.ProviderEvent) {})
 				if err != nil {
 					t.Fatal(err)
 				}

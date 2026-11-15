@@ -658,12 +658,7 @@ export function setupEventListeners(): () => void {
   // `applyBackendAttach`).
   const cancelBackendAttach = wailsEventOn<BackendAttachEvent>(
     'backend:attach',
-    (evt, origin) => {
-      const outcome = applyBackendAttach(evt, backendKeyForOrigin(origin.backendId));
-      if (outcome === null) return;
-      if (outcome.error) addToast('error', `Could not attach ${outcome.name}: ${outcome.error}`);
-      else addToast('success', `Attached ${outcome.name}`);
-    },
+    (evt, origin) => applyBackendAttach(evt, backendKeyForOrigin(origin.backendId)),
   );
 
   // backend:set-changed — a removal or a rename of an attached machine, made

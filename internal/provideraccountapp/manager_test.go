@@ -6,6 +6,7 @@ import (
 
 	"agent-overflow/internal/kerneltest"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provideraccounts"
 	"agent-overflow/internal/settings"
 )
@@ -21,7 +22,10 @@ func newTestManager(t *testing.T) (*Manager, *provideraccounts.Store, *providera
 	if err != nil {
 		t.Fatal(err)
 	}
-	manager := NewManager(Deps{ProviderBinary: func(string) string { return isolation.PoisonedBinary }})
+	manager := NewManager(Deps{
+		ProviderBinary:  func(string) string { return isolation.PoisonedBinary },
+		ClaudeRetention: func(string) claude.Retention { return claude.UserHomeRetention(0) },
+	})
 	if err := manager.Attach(store, credentials, ""); err != nil {
 		t.Fatal(err)
 	}

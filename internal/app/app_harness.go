@@ -290,6 +290,17 @@ func (h *harnessHost) ClearUIState() error {
 
 func (h *harnessHost) ResetForgeCaches() { h.app.gitCore().ResetForgeCaches() }
 
+func (h *harnessHost) ResetProviderUsage() { h.app.providerLifecycleService().Reset() }
+
+func (h *harnessHost) CancelProviderLogins() {
+	if h.app.providerAccounts == nil {
+		return
+	}
+	for _, name := range []string{string(provider.Claude), string(provider.Codex)} {
+		h.app.providerAccounts.CancelProviderLogin(name)
+	}
+}
+
 func (h *harnessHost) ResetSessionImporter() {
 	h.app.sessionImporter().Reset()
 }
@@ -373,7 +384,7 @@ func (h *harnessHost) PublishStoreIdentity(identity store.Identity) {
 }
 
 func (h *harnessHost) SendMessage(threadID, message string) error {
-	return h.app.SendMessage(threadID, message, nil)
+	return h.app.SendMessage(context.Background(), threadID, message, nil)
 }
 
 var _ harnessrpc.Host = (*harnessHost)(nil)

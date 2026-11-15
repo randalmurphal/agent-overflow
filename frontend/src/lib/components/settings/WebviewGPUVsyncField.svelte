@@ -27,11 +27,10 @@
   const clientMode = isClientMode();
   let localOnly = $derived(clientMode || !hasScope('host'));
 
-  // The launcher started with the value it read at launch, which is the
-  // value this page finds on mount; a saved value that differs from it is
-  // waiting on a restart. Nothing on the wire reports the launcher's own
-  // flags, so the mount value is the witness (the same reasoning as the
-  // tracing toggle in ObservabilitySettings).
+  // A saved value that differs from the one this session's launcher started
+  // with is waiting on a restart. The backend reports both
+  // (GetWebviewGPUVsyncDisabled), so a page opened after a save still
+  // shows the change waiting.
   let supported = $state(false);
   let launchedWith = $state(false);
   let saved = $state(false);
@@ -41,9 +40,9 @@
   async function load(): Promise<void> {
     try {
       if (!(await call(() => IsWSL()))) return;
-      const value = !!(await call(() => GetWebviewGPUVsyncDisabled()));
-      launchedWith = value;
-      saved = value;
+      const answer = await call(() => GetWebviewGPUVsyncDisabled());
+      launchedWith = answer.launched;
+      saved = answer.disabled;
       supported = true;
     } catch (err) {
       addErrorToast(`Failed to read the GPU vsync preference: ${errString(err)}`, err);
@@ -55,7 +54,9 @@
     saving = true;
     try {
       // Reconciled from the write's answer, never assumed.
-      saved = !!(await call(() => SetWebviewGPUVsyncDisabled(value)));
+      const answer = await call(() => SetWebviewGPUVsyncDisabled(value));
+      launchedWith = answer.launched;
+      saved = answer.disabled;
     } catch (err) {
       addErrorToast(`Failed to save the GPU vsync preference: ${errString(err)}`, err);
     } finally {

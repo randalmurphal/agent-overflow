@@ -125,7 +125,7 @@ func TestHarnessCapabilitiesCatalogIsVersionedAndDefensive(t *testing.T) {
 			t.Errorf("actions omit %q: %v", name, caps.Actions)
 		}
 	}
-	for _, name := range []string{"viewport", "element", "globals", "monitor", "perf", "open", "reload"} {
+	for _, name := range []string{"viewport", "element", "globals", "monitor", "perf", "open", "reload", "review-diff-memory"} {
 		if !slices.Contains(caps.Queries, name) {
 			t.Errorf("queries omit %q: %v", name, caps.Queries)
 		}

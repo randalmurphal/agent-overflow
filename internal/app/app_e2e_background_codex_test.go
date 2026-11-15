@@ -706,7 +706,7 @@ func TestE2E_InterruptDoesNotKillBackground(t *testing.T) {
 			sess, err := claude.NewSession(
 				context.Background(),
 				thread.ID,
-				claude.Config{Binary: passthroughBinary, WorkDir: workspace},
+				claude.Config{Retention: claude.UserHomeRetention(0), Binary: passthroughBinary, WorkDir: workspace},
 				func(provider.ProviderEvent) {},
 			)
 			if err != nil {

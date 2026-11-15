@@ -75,10 +75,11 @@ func attachLiveClaudeSession(t *testing.T, app *App, threadID, workspace, sessio
 		context.Background(),
 		threadID,
 		claude.Config{
-			Binary:   writeClaudeControlPassthroughBinary(t),
-			WorkDir:  workspace,
-			Resume:   sessionID,
-			ResumeAt: leaf,
+			Retention: claude.UserHomeRetention(0),
+			Binary:    writeClaudeControlPassthroughBinary(t),
+			WorkDir:   workspace,
+			Resume:    sessionID,
+			ResumeAt:  leaf,
 		},
 		func(provider.ProviderEvent) {},
 	)

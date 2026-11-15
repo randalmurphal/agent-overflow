@@ -18,7 +18,8 @@
 //     launch any recorded group still alive, start-time-matched (PID-reuse
 //     safe), and reparented to init is killed.
 //
-// Process groups come from the provider package's Setpgid; killing a
+// Process groups come from the provider package's Setpgid and, for composer
+// shell commands, from procutil's Setsid; killing a
 // negative pgid needs only same-uid permission, so neither layer has to
 // be the provider's parent.
 package orphanreaper

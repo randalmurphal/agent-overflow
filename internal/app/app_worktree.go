@@ -370,9 +370,13 @@ type worktreeRemovalPolicy struct {
 	// mergedPR names the merged pull request the removal is for; each moved
 	// thread is told (worktreeRemoval.mergedPR).
 	mergedPR string
+	// unattended marks a removal nobody asked for: a worktree a person
+	// locked is kept (gitops.Core.RemoveWorktreeUnattended). Unattended
+	// removals never force.
+	unattended bool
 	// idle is a further gate run with every occupant's lock held, after the
-	// running-turn and background-task check, so a thread cannot start
-	// work between the caller's check and the removal.
+	// running-work check (ensureWorkspaceChangeAllowed), so a thread cannot
+	// start work between the caller's check and the removal.
 	idle func(occupants []string) error
 }
 
@@ -471,7 +475,7 @@ func (a *App) removeProjectWorktree(projectID, project, worktreePath string, pol
 		return nil, &errWorktreeBusy{reason: err}
 	}
 
-	if err := a.ensureWorkspaceChangeAllowed("remove this worktree", worktreePath); err != nil {
+	if err := a.ensureWorkspaceChangeAllowed("remove this worktree", worktreePath, attached, workspaceRemovalHandles...); err != nil {
 		return nil, &errWorktreeBusy{reason: err}
 	}
 	if policy.idle != nil {
@@ -500,7 +504,11 @@ func (a *App) removeProjectWorktree(projectID, project, worktreePath string, pol
 	// the watcher, when its panes follow their threads to the root; on
 	// failure it ends here and a refresh shows the tree as it stands.
 	resumeStatus := a.gitApplication().SuppressStatus(worktreePath)
-	if err := core.RemoveWorktreeForce(project, worktreePath, force); err != nil {
+	remove := core.RemoveWorktreeForce
+	if policy.unattended {
+		remove = func(cwd, path string, _ bool) error { return core.RemoveWorktreeUnattended(cwd, path) }
+	}
+	if err := remove(project, worktreePath, force); err != nil {
 		resumeStatus()
 		return nil, err
 	}
@@ -731,8 +739,11 @@ func pathWithin(path, root string) bool {
 // So the session is stopped, never restarted; the next send starts it from
 // the row's new workspace. A running turn ends interrupted, as it does when
 // any session is stopped, and the thread's background tasks show as died.
-// Messages queued behind the turn go back to the composer, as they do when a
-// session dies, rather than being dropped by a stop nobody asked for.
+// The stop hands the messages queued behind the turn back to the composer,
+// as a session death does, rather than dropping them: nobody asked for it
+// (teardownAndCloseSessionRestoringQueue). It empties the queue under the
+// lock every queue write takes, so a message queued before the stop goes
+// to the composer with the rest and one queued after it stays queued.
 //
 // Detaching first is what lets the caller move the row before the process
 // exits, which can take seconds: a detached session's late events cannot
@@ -746,23 +757,13 @@ func (a *App) detachSessionForRemovedWorkspace(threadID string) func() error {
 	if !a.hasActiveSession(threadID) {
 		return nil
 	}
-	requeued := a.restoreUnconfirmedQueueLocked(threadID)
 	sess, _ := a.sessionManager().take(threadID)
 	a.drainProviderEvents(threadID, "detach session from removed worktree")
 	return func() error {
-		var err error
 		if a.stopSessionFn != nil {
-			err = a.stopSessionFn(threadID)
-		} else {
-			err = a.teardownAndCloseSession(threadID, sess)
+			return a.stopSessionFn(threadID)
 		}
-		if len(requeued) > 0 {
-			// The stop wiped the queue these re-entered; register them again
-			// so the next start's flush still finds them.
-			a.requeueUnconfirmedFlushItems(threadID, requeued)
-			a.emitQueueStateChanged(threadID)
-		}
-		return err
+		return a.teardownAndCloseSessionRestoringQueue(threadID, sess)
 	}
 }
 

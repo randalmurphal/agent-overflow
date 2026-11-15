@@ -1,7 +1,7 @@
 # macOS orphan process cleanup
 
-This package prevents provider process groups from surviving an abnormal app
-exit on macOS.
+This package prevents provider and composer shell command process groups from
+surviving an abnormal app exit on macOS.
 
 The live sidecar receives `watch <pgid>` and `release <pgid>` over a control
 pipe. EOF means its parent is gone, so it terminates every still-watched group.
@@ -10,7 +10,8 @@ PID, process group, and process creation time, then reaps only a matching
 process whose current parent is init.
 
 Do not replace creation-time and parent checks with PID-only or process-name
-matching. Process groups are established by the provider launcher. Registry
+matching. Process groups are established by the provider launcher and by
+`procutil.StartGroup`. Registry
 writes are atomic. Read errors are surfaced by explicit reads and sweeps; an
 add logs and replaces an unreadable registry so it cannot block a new session.
 

@@ -694,14 +694,9 @@ func (t threadToolsApp) cancelRequest(ctx context.Context, caller threadtools.Ca
 	}
 
 	// The caller is cancelling its own request, and the report it is about
-	// to read says what happened. Clearing the notify flag first is what
-	// keeps the cancellation from also arriving later as an unread message
-	// about work the caller stopped on purpose.
-	if row.Notify {
-		if _, err := t.app.store.SetThreadRequestNotify(token, false); err != nil {
-			return threadtools.CancelReport{}, err
-		}
-	}
+	// to read says what happened. The cancel's settlement disarms the wake
+	// (stopThreadRequestWork), so the cancellation does not also arrive later
+	// as an unread message, and a cancel that fails leaves it armed.
 	effect, err := t.app.stopThreadRequestWork(ctx, token)
 	if err != nil {
 		return threadtools.CancelReport{}, err

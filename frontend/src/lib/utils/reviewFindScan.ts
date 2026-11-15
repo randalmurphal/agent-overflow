@@ -35,9 +35,15 @@
 // Text the patch memory budget evicted is pinned, read back
 // (`PatchBody.load`) and held until the walk leaves it, so a budget smaller
 // than what one read brings back cannot evict it before its lines are
-// read and make each of them another read.
+// read and make each of them another read. What is held is bounded by
+// size: the lines from the evicted one through `patchTextReadAheadBytes`
+// stored characters, at least that one line, and the rest of the chunks
+// they lie in (`PatchBody.pinnedEnd`), which the pin holds anyway. The
+// next range is pinned before the last is released, so a chunk the two
+// share is read once.
 
 import type { DiffReviewComment, ReviewThread } from '../types/models';
+import { patchTextReadAheadBytes } from './patchMemory.svelte';
 import { findFilterPattern, findMatchChunk, findNeedle, flagFilterLines, LONG_TEXT } from './findMatch';
 import type { FindRun } from './findHighlights';
 import { RowWalker } from './patchRows';
@@ -83,8 +89,6 @@ export interface ReviewFindScanOptions {
   now?(): number;
 }
 
-/** Lines read back together when the scan meets an evicted line. */
-export const LOAD_LINES = 512;
 /** Most lines one filter block reads. */
 export const BLOCK_LINES = 512;
 /** Units of work between clock reads. */
@@ -99,18 +103,23 @@ const DEFAULT_SLICE_MS = 8;
 
 class StopScan extends Error {}
 
-// The end of the filter block from line `start`: lines of one segment, at
-// most BLOCK_LINES and BLOCK_SIZE stored characters, and at least one.
-function blockEndOf(body: PatchBody, start: number): number {
+// The end of the lines of one segment from line `start`, at most `lines`
+// of them and `size` stored characters, and at least one.
+function linesEndOf(body: PatchBody, start: number, lines: number, size: number): number {
   const base = body.storedLineStart(start);
   let low = start + 1;
-  let high = Math.min(body.segmentEnd(start), start + BLOCK_LINES);
+  let high = Math.min(body.segmentEnd(start), start + lines);
   while (low < high) {
     const mid = (low + high + 1) >> 1;
-    if (body.storedLineEnd(mid - 1) - base <= BLOCK_SIZE) low = mid;
+    if (body.storedLineEnd(mid - 1) - base <= size) low = mid;
     else high = mid - 1;
   }
   return low;
+}
+
+// The end of the filter block from line `start`.
+function blockEndOf(body: PatchBody, start: number): number {
+  return linesEndOf(body, start, BLOCK_LINES, BLOCK_SIZE);
 }
 
 function lineSpot(path: string, lineIndex: number): ReviewFindFileSpot {
@@ -192,13 +201,15 @@ export async function scanReviewFind(content: ReviewFindContent, query: string, 
   }
 
   // `read` run over lines [start, end) of `body` read back, which stay
-  // held; a scan that stopped being live while the read was out goes no
-  // further.
+  // held with the rest of their chunks; a scan that stopped being live
+  // while the read was out goes no further.
   async function readBack<T>(body: PatchBody, start: number, end: number, read: () => T): Promise<T> {
+    const holdEnd = body.pinnedEnd(start, end);
+    const release = body.pin(start, holdEnd);
     dropHeld();
-    releaseHeld = body.pin(start, end);
-    heldEnd = end;
-    const loading = body.load(start, end);
+    releaseHeld = release;
+    heldEnd = holdEnd;
+    const loading = body.load(start, holdEnd);
     if (loading !== null) await loading;
     if (!options.live()) throw new StopScan();
     return read();
@@ -207,7 +218,8 @@ export async function scanReviewFind(content: ReviewFindContent, query: string, 
   // A line's text, read back with the lines after it when evicted.
   async function lineText(body: PatchBody, lineIndex: number): Promise<string> {
     if (body.resident(lineIndex, lineIndex + 1)) return body.text(lineIndex);
-    return await readBack(body, lineIndex, Math.min(body.lineCount, lineIndex + LOAD_LINES), () => body.text(lineIndex));
+    const end = linesEndOf(body, lineIndex, Infinity, patchTextReadAheadBytes());
+    return await readBack(body, lineIndex, end, () => body.text(lineIndex));
   }
 
   // One file's filter: whether the rule must read line `lineIndex`, asked

@@ -367,9 +367,10 @@ func TestSettingsSaveReachesTheWireOfASessionThatWasStillStarting(t *testing.T) 
 	initSeen := make(chan struct{})
 	var once sync.Once
 	sess, err := claude.NewSession(context.Background(), threadID, claude.Config{
-		Binary:  binary,
-		Model:   "claude-opus-5",
-		WorkDir: workspace,
+		Retention: claude.UserHomeRetention(0),
+		Binary:    binary,
+		Model:     "claude-opus-5",
+		WorkDir:   workspace,
 	}, func(evt provider.ProviderEvent) {
 		if evt.Kind == provider.EventInit {
 			once.Do(func() { close(initSeen) })

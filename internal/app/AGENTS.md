@@ -54,7 +54,10 @@ Method scopes are the authorization floor. Argument-dependent checks remain in
 rather than only the literal argument. Use the transport's resolved step-up
 answer because checking a single-use proof twice consumes it incorrectly.
 In-process and launch-credential calls have no session principal and remain
-valid unless the operation explicitly requires one.
+valid unless the operation explicitly requires one. A bound method that sends
+to an existing thread or runs something in it takes a leading context and
+calls `requireAutonomyForThread`; `TestEveryThreadDrivingMethodIsListed`
+finds those methods in the code and fails until each is in its table.
 
 A leading `context.Context` gives a bound method access to the connection
 principal and is omitted from generated TypeScript signatures. Regenerate both
@@ -112,11 +115,14 @@ Draft consumption compares and removes the exact saved snapshot in one store
 operation. Uploads stage outside the thread mutation lock, then reacquire it
 for ownership-checked publication. Durable flush rows are written before the
 in-memory queue, removed only on settlement or an explicit drop, and restored
-to the composer at boot instead of being dispatched without a user present.
-A teardown's drop holds the thread mutation lock that every queue write takes,
-so a message queued during it is dropped with the queue or queued whole after
-it. A caller releases that lock before it tears down; the idle reaper, which
-holds it, uses the HoldingMutations variant. See
+to the composer at boot instead of being dispatched without a user present,
+as is a written message whose row is still unconfirmed.
+A teardown empties the queue under the thread mutation lock that every queue
+write takes, so a message queued during it goes with the queue or is queued
+whole after it. The person's Stop of a session and archive drop the queue; a
+stop nobody asked for (a removed worktree, a reconnect) returns it to the
+composer, as a session death does. A caller releases that lock before it tears
+down; the idle reaper, which holds it, uses the HoldingMutations variant. See
 [turn-lifecycle.md](../../docs/architecture/turn-lifecycle.md).
 
 Agent thread requests settle once. Every state change on a request or receipt
@@ -124,7 +130,8 @@ is conditional on the state it expects to find, and a change that does not
 apply is a lost race rather than an error. A settlement takes the token's
 settle lock before it writes, releases it before queue or provider work, and
 is handed to the caller by the same door
-(`app_thread_tools_settle.go`). A wake (`app_thread_tools_wake.go`,
+(`app_thread_tools_settle.go`). A request between two threads of this
+computer settles its receipt and its request in one store transaction. A wake (`app_thread_tools_wake.go`,
 `app_thread_tools_wake_message.go`) writes its durable queue row and the
 delivery mark of every request it answers in one store transaction. Settling runs off the provider event
 worker because it can stop or start a session, and a stop drains that

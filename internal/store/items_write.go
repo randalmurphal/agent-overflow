@@ -185,6 +185,15 @@ func (s *Store) AppendItemSummary(threadID, id, delta string, updatedAt int64) (
 	return s.AppendItemSummaryAndPayloadData(threadID, id, delta, "", nil, updatedAt)
 }
 
+// appendItemSummarySQL appends to a streaming row's summary. The candidate
+// text is written with the text it is of, so the update trigger has no
+// second write to make; one that reads a payload is left to the triggers.
+const appendItemSummarySQL = `UPDATE items SET summary = summary || ?1, updated_at = ?2,
+        find_text = CASE WHEN payload_id IS NOT NULL
+                          AND kind IN ('thinking', 'compaction_reasoning', 'tool_call', 'tool_completion') THEN find_text
+                         ELSE find_candidate(kind, summary || ?1, meta, tool_name, NULL) END
+  WHERE thread_id = ?3 AND id = ?4 AND status = 'streaming'`
+
 // AppendItemSummaryAndPayloadData is AppendItemSummary plus the payload
 // chunk append the streaming flush window issues right after it, run in one
 // transaction instead of two. An empty payloadID skips the payload half
@@ -198,10 +207,7 @@ func (s *Store) AppendItemSummaryAndPayloadData(threadID, id, delta, payloadID s
 		"append item summary",
 		"re-read appended item",
 		func(tx *sql.Tx) (sql.Result, error) {
-			return tx.Exec(
-				`UPDATE items SET summary = summary || ?, updated_at = ? WHERE thread_id = ? AND id = ? AND status = 'streaming'`,
-				delta, updatedAt, threadID, id,
-			)
+			return tx.Exec(appendItemSummarySQL, delta, updatedAt, threadID, id)
 		},
 		payloadID,
 		payloadDelta,
@@ -435,7 +441,8 @@ const itemUpdateSQL = `UPDATE items
 		     payload_id = ?,
 		     input_payload_id = COALESCE(NULLIF(?, ''), input_payload_id),
 		     parent_id = ?, is_background = ?, completion_of = ?,
-		     tool_name = ?, decision = ?, meta = ?, updated_at = ?
+		     tool_name = ?, decision = ?, meta = ?, updated_at = ?,
+		     find_text = COALESCE(?, find_text)
 		 WHERE thread_id = ? AND id = ?`
 
 // updateExistingItem writes every mutable column on the existing row,
@@ -458,7 +465,7 @@ func updateExistingItem(tx *sql.Tx, w *cardWrite, item Item, old subagentRow) er
 		item.TurnIndex, item.Kind, item.Role, item.Status, item.Summary,
 		nilIfEmpty(item.PayloadID), item.InputPayloadID,
 		item.ParentID, boolToInt(item.IsBackground), item.CompletionOf,
-		item.ToolName, item.Decision, item.Meta, item.UpdatedAt, item.ThreadID, item.ID,
+		item.ToolName, item.Decision, item.Meta, item.UpdatedAt, insertFindText(item), item.ThreadID, item.ID,
 	); err != nil {
 		return fmt.Errorf("store: update item %s: %w", item.ID, err)
 	}

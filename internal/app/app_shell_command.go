@@ -106,6 +106,8 @@ func (a *App) initShellCommands(dataDir string) error {
 		Finish:        a.finishShellCommand,
 		Context:       a.lifeCtx,
 		ShutdownError: ErrShuttingDown,
+		Watch:         a.watchProcessGroup,
+		Release:       a.releaseProcessGroup,
 	})
 	if err != nil {
 		return err
@@ -138,7 +140,10 @@ func projectShellCommandRun(state shellrun.RunState) ShellCommandRun {
 // command runs with the person's own environment and no sandbox, whatever the
 // thread's runtime mode: the mode governs the agent, not the person.
 //
-// LocalOnly: this executes an arbitrary command. RCE-equivalent.
+// It executes an arbitrary command on this machine. Any session granted
+// terminal:operate reaches it, a paired phone or a connected browser
+// included; the method also requires threads:operate, because it sends to
+// the thread, and the autonomy check a send makes.
 //
 //ao:scope terminal:operate
 func (a *App) RunThreadShellCommand(ctx context.Context, threadID string, request ShellCommandRequest) (ShellCommandRun, error) {
@@ -162,9 +167,21 @@ func (a *App) RunThreadShellCommand(ctx context.Context, threadID string, reques
 		return ShellCommandRun{}, err
 	}
 	defer endAdmission()
+	// A workspace switch and a worktree removal hold the action lock from
+	// their running-work check until the thread has moved, so a command
+	// starts in the workspace the thread runs in after them, never in the
+	// one they are taking it out of.
+	unlockAction, err := a.threadLocks().LockCtx(ctx, threadID)
+	if err != nil {
+		return ShellCommandRun{}, err
+	}
+	defer unlockAction()
 	// A thread delete drops the row under this lock and stops whatever the
 	// thread is running first, so a command registered here is either
-	// stopped by that delete or refused because the thread is gone.
+	// stopped by that delete or refused because the thread is gone. The lock
+	// also refuses a thread the app may not run in
+	// (store.CheckThreadExecutionAccess): a fork still being prepared, a
+	// thread moved to another computer.
 	unlockMutation, err := a.threadApplication().LockMutable(ctx, threadID)
 	if err != nil {
 		return ShellCommandRun{}, err
@@ -173,9 +190,6 @@ func (a *App) RunThreadShellCommand(ctx context.Context, threadID string, reques
 	thread, err := a.store.GetThread(threadID)
 	if err != nil {
 		return ShellCommandRun{}, fmt.Errorf("run shell command: load thread: %w", err)
-	}
-	if err := a.store.CheckThreadExecutionAccess(thread); err != nil {
-		return ShellCommandRun{}, err
 	}
 	if thread.Mode == threadmode.ModeTerminal {
 		return ShellCommandRun{}, errors.New("run shell command: a terminal thread has no agent to send output to")
@@ -220,7 +234,8 @@ func (a *App) StopThreadShellCommand(threadID, runID string) error {
 // password). The line reaches the command only: it is not output, it is not
 // sent to the agent, and it is not logged.
 //
-// LocalOnly: this is input to an arbitrary local command.
+// It is input to an arbitrary command on this machine, so it takes the same
+// grant as typing into a terminal: any session granted terminal:operate.
 //
 //ao:scope terminal:operate
 func (a *App) AnswerThreadShellCommand(threadID string, answer ShellCommandAnswer) error {
@@ -234,8 +249,9 @@ func (a *App) AnswerThreadShellCommand(threadID string, answer ShellCommandAnswe
 // the output it has produced so far. It is the reconnect companion of the
 // `shell:command` stream.
 //
-// LocalOnly: the payload is the output of a local command, the same data
-// class as GetTerminalReplay.
+// The payload is the output of a command on this machine, the same data
+// class as GetTerminalReplay, so any session granted terminal:operate reads
+// it.
 //
 //ao:scope terminal:operate
 func (a *App) GetThreadShellCommands(threadID string) ([]ShellCommandRun, error) {

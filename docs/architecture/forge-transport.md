@@ -988,7 +988,7 @@ A PR the forge no longer has counts as closed.
 | A watched lookup that stops finding the tracked PR | 1 state read |
 | Acting on a merged PR, after the local checks pass | 1 open-PR lookup of the branch (one page unless forks' PRs share the name) |
 | An act-time lookup that fails, or still lists the merged PR as open | the next after 2, 4, 8 ... minutes, capped at 30, per repository |
-| A removal git refuses | no request; the removal retries after 2, 4, 8 ... minutes, capped at 30 |
+| A removal git refuses | the removal retries after 2, 4, 8 and 16 minutes, each retry with its act-time lookup, then the worktree is kept (`mergedPRRemovalAttempts`); a person's lock or initialized submodules keep it at once |
 
 A `*forgeapi.RateLimitedError` waits until its `Until` instead. Two
 goroutines run the cleanup, serialized per pass. The worker handles
@@ -1000,10 +1000,12 @@ off the cleanup sends no request of its own; a merged PR waiting for a
 retry is tried again at the next act pass a turn end or a merge found by
 a lookup starts, and the worker's start arms that turn-end pass when a
 previous run left one (`armMergedPRWaiting`, a store read). Both wait for the first client's reads like other unattended
-work. An act pass that finds a
-thread busy marks itself waiting and runs again when a turn completes;
-each pass first skips what is backing off, so a busy or failing worktree
-costs no forge request per pass. `AO_HARNESS_TIMING` `merged-pr-poll`
+work. An act pass that finds work
+running in the worktree (`runningWorkIn`: a thread's turn, queue or
+background task, or a shell command, terminal or setup recipe in the
+directory) marks itself waiting and runs again when a turn completes or at
+the poll's next tick; each pass first skips what is backing off, so a busy
+or failing worktree costs no forge request per pass. `AO_HARNESS_TIMING` `merged-pr-poll`
 shortens the poll, and with it the one-minute tick these retries start
 from, for specs.
 

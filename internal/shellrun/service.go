@@ -257,20 +257,37 @@ func (s *Service) CancelThread(threadID string) {
 	}
 }
 
+// HasActiveIn reports whether a command is running in dir or below it,
+// whichever thread started it: the commands CancelDir would stop.
+func (s *Service) HasActiveIn(dir string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.runsInLocked(dir)) != 0
+}
+
+// runsInLocked returns the runs whose directory is dir or below it. Caller
+// holds s.mu.
+func (s *Service) runsInLocked(dir string) []*run {
+	dir = filepath.Clean(dir)
+	var inside []*run
+	for _, current := range s.runs {
+		rel, err := filepath.Rel(dir, filepath.Clean(current.request.Dir))
+		if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			inside = append(inside, current)
+		}
+	}
+	return inside
+}
+
 // CancelDir stops every command running in dir or below it, for a teardown
 // that removes the directory, and returns once their process groups are gone.
 // A thread can have moved to another workspace since its command started, so
 // the directory is the authority, not the thread.
 func (s *Service) CancelDir(dir string) {
-	dir = filepath.Clean(dir)
 	s.mu.Lock()
-	var inside []*run
-	for _, current := range s.runs {
-		rel, err := filepath.Rel(dir, filepath.Clean(current.request.Dir))
-		if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-			current.stopped = true
-			inside = append(inside, current)
-		}
+	inside := s.runsInLocked(dir)
+	for _, current := range inside {
+		current.stopped = true
 	}
 	s.mu.Unlock()
 	for _, current := range inside {
@@ -364,11 +381,24 @@ func (s *Service) execute(ctx context.Context, current *run) {
 		settle(StateFailed, "Could not give the command a terminal: "+errors.Join(err, closeErr).Error(), -1)
 		return
 	}
+	// The command ends with this process, as a provider does: Linux signals
+	// its leader, and elsewhere the host's orphan reaper watches its group.
+	pgid := 0
 	outcome, runErr := s.config.Run(ctx, procutil.GroupCommand{
 		Dir: request.Dir, Env: request.Env,
 		Argv: []string{request.Shell, "-c", request.Command}, Output: capture,
-		Terminal: terminal.device,
+		Terminal: terminal.device, EndWithParent: true,
+		Started: func(pid int) {
+			pgid = pid
+			if s.config.Watch != nil {
+				s.config.Watch(pid, request.RunID)
+			}
+		},
 	})
+	// A group the kill could not end still runs, and stays watched.
+	if pgid != 0 && s.config.Release != nil && !errors.Is(runErr, procutil.ErrGroupSurvived) {
+		s.config.Release(pgid)
+	}
 	terminal.close(request.RunID)
 	close(current.exited)
 	if outcome.Leftovers {

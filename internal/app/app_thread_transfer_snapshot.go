@@ -82,7 +82,13 @@ func (a *App) snapshotThreadTransfer(ctx context.Context, row store.ThreadTransf
 		return completed, errors.New("The transfer source configuration changed.")
 	}
 	if details.IncludeWorkspace {
-		if err := a.ensureWorkspaceChangeAllowed("copy workspace changes", thread.WorkspacePath); err != nil {
+		threads, err := a.threadsReferencingWorkspace(thread.WorkspacePath)
+		if err != nil {
+			return completed, err
+		}
+		// An open terminal does not say whether it writes, a queued message
+		// writes nothing, and a remote command runs elsewhere.
+		if err := a.ensureWorkspaceChangeAllowed("copy workspace changes", thread.WorkspacePath, threads, workTerminal, workQueuedMessages, workRemoteWatch); err != nil {
 			return completed, err
 		}
 	}

@@ -95,7 +95,7 @@ function stubBindings() {
     isWSL: setBindingMock('IsWSL', async () => true),
     distros: setBindingMock('ListWSLDistros', async () => [{ name: 'Ubuntu', default: true }]),
     distroPref: setBindingMock('GetWSLDistroPreference', async () => 'Ubuntu'),
-    gpuVsync: setBindingMock('GetWebviewGPUVsyncDisabled', async () => false),
+    gpuVsync: setBindingMock('GetWebviewGPUVsyncDisabled', async () => ({ disabled: false, launched: false })),
     systems: setBindingMock('ListBackends', async () => []),
     // The phone-push block reads and writes with `access:admin` (the writes
     // step-up gated on top). Both are stubbed so the sweep can assert that

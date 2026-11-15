@@ -214,6 +214,30 @@ func (s *Service) Forget(providerName, accountID string) {
 	}
 }
 
+// Reset forgets every cached reading, the turn activity that paces polling
+// and every server hold, as a fresh process would start, and publishes each
+// reading's removal after the cache mutation. The harness reset is its
+// caller: one spec's readings must not be the next spec's.
+func (s *Service) Reset() {
+	s.cacheMu.Lock()
+	cleared := make([]provider.RateLimitsSnapshot, 0, len(s.cache))
+	for _, snapshot := range s.cache {
+		cleared = append(cleared, provider.RateLimitsSnapshot{Provider: snapshot.Provider, AccountID: snapshot.AccountID})
+	}
+	clear(s.cache)
+	s.cacheMu.Unlock()
+	s.activityMu.Lock()
+	clear(s.activity)
+	s.activityMu.Unlock()
+	s.backoff.Clear()
+	if s.deps.Emit == nil {
+		return
+	}
+	for i := range cleared {
+		s.deps.Emit(eventchan.ProviderUsage, provider.UsageEvent{Action: "rate_limits_removed", RateLimits: &cleared[i]})
+	}
+}
+
 // Snapshot returns a copy of the cached snapshot for one account.
 func (s *Service) Snapshot(providerName, accountID string) (provider.RateLimitsSnapshot, bool) {
 	providerName = provider.UsageProviderFamily(providerName)

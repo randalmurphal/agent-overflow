@@ -644,6 +644,7 @@ export const OpenAIKeyFile = dispatch('OpenAIKeyFile');
 export const EditOpenAIKeyFile = dispatch('EditOpenAIKeyFile');
 export const ReadAloudSource = dispatch('ReadAloudSource');
 export const MintReadAloudTicket = dispatch('MintReadAloudTicket');
+export const ReleaseReadAloudTicket = dispatch('ReleaseReadAloudTicket');
 export const SearchWorkspaceFiles = dispatch('SearchWorkspaceFiles');
 export const ListChatBarFavorites = dispatch('ListChatBarFavorites');
 export const SetChatBarFavorite = dispatch('SetChatBarFavorite');

@@ -74,6 +74,7 @@
     activeDiffReviewSourceForThread,
     getActiveDraftDiffReviewComments,
     refreshDiffReviewComments,
+    holdDiffReviewComments,
   } from '../../stores/diffReviewComments.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import { ignoringAlreadyHandled } from '../../transport/alreadyHandled';
@@ -403,24 +404,34 @@
     );
   }
 
+  // The empty-draft delete in flight for the pane's thread. Uploads and sends
+  // started meanwhile wait for it, then use the thread the pane shows: the
+  // kept thread, or the replacement that carries what was typed.
+  let emptyDraftCleanupInFlight: { threadId: string; settled: Promise<void> } | null = null;
+
+  async function settleEmptyDraftCleanup(): Promise<void> {
+    const cleanup = emptyDraftCleanupInFlight;
+    if (cleanup && cleanup.threadId === pane.threadId) await cleanup.settled;
+  }
+
   function threadIdForUpload(): string | null {
     const threadId = pane.threadId;
-    if (threadId && emptyDraftCleanupKey === threadId) return null;
+    if (threadId && emptyDraftCleanupInFlight?.threadId === threadId) return null;
     return threadId;
   }
 
   async function ensureThreadIdForUpload(): Promise<string | null> {
-    const threadId = pane.threadId;
-    if (threadId && emptyDraftCleanupKey === threadId) {
-      emptyDraftCleanupKey = null;
-      if (pane.dematerializeEmptyDraftThread()) {
-        resetTextareaHeight();
-      }
-    }
+    await settleEmptyDraftCleanup();
     return pane.ensureMaterializedThread();
   }
 
-  async function handleEmptyDraftCleanupResult(threadId: string, deleted: boolean): Promise<void> {
+  async function handleEmptyDraftCleanupResult(
+    cleanupDraft: ComposerDraftStore,
+    threadId: string,
+    deleted: boolean,
+  ): Promise<void> {
+    // Also reached when only the deletion broadcast proved the delete.
+    if (deleted) cleanupDraft.releaseDeletedThread(threadId);
     if (pane.threadId !== threadId) return;
     if (emptyDraftCleanupHasActiveWork() || draftHasContentOrSourceNow()) {
       emptyDraftCleanupKey = null;
@@ -467,16 +478,23 @@
       if (hasPendingSave) return;
       if (emptyDraftCleanupKey === threadId) return;
       emptyDraftCleanupKey = threadId;
-      void (async () => {
+      // The draft store orders the delete with this thread's saves, so text
+      // typed while it is in flight is never saved to a deleted thread.
+      const cleanupDraft = draft;
+      const cleanup = { threadId, settled: Promise.resolve() };
+      emptyDraftCleanupInFlight = cleanup;
+      cleanup.settled = (async () => {
         try {
           await withEmptyDraftCleanup(
             threadId,
-            () => DeleteEmptyDraftThread(threadId),
-            (deleted) => handleEmptyDraftCleanupResult(threadId, deleted),
+            () => cleanupDraft.deleteEmptyThread(threadId, () => DeleteEmptyDraftThread(threadId)),
+            (deleted) => handleEmptyDraftCleanupResult(cleanupDraft, threadId, deleted),
           );
         } catch (err) {
           emptyDraftCleanupKey = null;
           pane.setGeneralError(`Failed to clean up empty draft thread: ${errString(err)}`, err);
+        } finally {
+          if (emptyDraftCleanupInFlight === cleanup) emptyDraftCleanupInFlight = null;
         }
       })();
     });
@@ -552,6 +570,8 @@
         console.warn('Failed to refresh diff review comments:', err);
       });
     });
+    // The drafts a send carries stay cached while this composer offers them.
+    return holdDiffReviewComments(source.threadId, source.scope, source.sourceKey);
   });
 
   /**
@@ -594,16 +614,6 @@
     sendAdmission = owner;
     sending = true;
     preparingSend = true;
-    const sendPane = pane;
-    const sendDraft = draft;
-    const contextKey = draft.contextKey;
-    const initialThreadId = pane.threadId;
-    const placeholderId = pane.draftPlaceholder?.id;
-    const isCurrent = () => !disposed && sendAdmission === owner && pane === sendPane && draft === sendDraft
-      && draft.contextKey === contextKey
-      && (initialThreadId === null || pane.threadId === initialThreadId)
-      && (!pane.hasDraftPlaceholder || pane.draftPlaceholder?.id === placeholderId)
-      && pane.threadId === draft.threadId;
     const release = () => {
       if (sendAdmission !== owner) return;
       sendAdmission = null;
@@ -612,8 +622,25 @@
       preparingSend = false;
       preparingWorktree = false;
     };
-    cancelStaleSend = () => { if (!isCurrent()) release(); };
     try {
+      // A send pressed while the emptied draft's delete is in flight belongs
+      // to the thread the composer shows once that settles. Guarded so an
+      // ordinary send keeps its synchronous path to the draft clear.
+      if (emptyDraftCleanupInFlight) {
+        await settleEmptyDraftCleanup();
+        if (disposed || sendAdmission !== owner || !sendState.canSend) return;
+      }
+      const sendPane = pane;
+      const sendDraft = draft;
+      const contextKey = draft.contextKey;
+      const initialThreadId = pane.threadId;
+      const placeholderId = pane.draftPlaceholder?.id;
+      const isCurrent = () => !disposed && sendAdmission === owner && pane === sendPane && draft === sendDraft
+        && draft.contextKey === contextKey
+        && (initialThreadId === null || pane.threadId === initialThreadId)
+        && (!pane.hasDraftPlaceholder || pane.draftPlaceholder?.id === placeholderId)
+        && pane.threadId === draft.threadId;
+      cancelStaleSend = () => { if (!isCurrent()) release(); };
       await sendAdmitted(sendPane, sendDraft, includeReviewComments, isCurrent, release);
     } finally {
       release();

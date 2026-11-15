@@ -46,8 +46,9 @@ func TestSetThreadMcpServerEnabled_Claude_LiveSession_FiresToggleRPC(t *testing.
 		context.Background(),
 		thread.ID,
 		claude.Config{
-			Binary:  binary,
-			WorkDir: workspace,
+			Retention: claude.UserHomeRetention(0),
+			Binary:    binary,
+			WorkDir:   workspace,
 		},
 		func(provider.ProviderEvent) {},
 	)
@@ -184,8 +185,9 @@ func TestListThreadMcpServers_Claude_LiveSession_UsesSessionTruth(t *testing.T) 
 		context.Background(),
 		thread.ID,
 		claude.Config{
-			Binary:  binary,
-			WorkDir: workspace,
+			Retention: claude.UserHomeRetention(0),
+			Binary:    binary,
+			WorkDir:   workspace,
 		},
 		func(provider.ProviderEvent) {},
 	)

@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -877,17 +878,34 @@ const threadAnswerExportPrefix = "answer-"
 // names which one.
 const threadReceiptRestarted = "The computer running it restarted before the request finished."
 
+// bootThreadRequestSweep is what the boot sweep's settlements owe, held from
+// the sweep to the activation gate: the wakes to deliver and the scratch
+// threads the last run left.
+type bootThreadRequestSweep struct {
+	works   []threadSettlementWork
+	scratch []store.ScratchThread
+}
+
 // sweepThreadRequestsAtBoot settles what the last run left open.
 //
 // A receipt in `accepted` or `running` describes work that was either queued
 // and never sent, or running in a process that is gone. Neither can settle
-// itself any more, so both settle here as `interrupted` and their callers are
-// told. The scratch threads go too: an ask's fork exists only to answer one
-// request, and every request it could answer has just been settled.
+// itself any more, so both settle here as `interrupted`, with the request
+// each one answers on this computer. A request this computer made of its own
+// thread that is still open after that has nothing left to settle it, and
+// settles here too.
+//
+// It writes rows only, which restoring the database undoes, so it runs before
+// the activation gate and before any session can start. What the settlements
+// owe waits for the gate (finishThreadRequestSweepAtBoot): a wake can start
+// the caller's session, and deleting a scratch thread deletes files.
 func (a *App) sweepThreadRequestsAtBoot() {
+	endPhase := a.bootPhase("app.sweep_thread_requests", "Settling agent requests from the last run")
+	defer endPhase()
+	var errs []error
 	receipts, err := a.store.ListOpenThreadRequestReceipts()
 	if err != nil {
-		logThreadRequestSweep("list open receipts at boot", err)
+		errs = append(errs, err)
 	}
 	works := make([]threadSettlementWork, 0, len(receipts))
 	for _, receipt := range receipts {
@@ -897,30 +915,127 @@ func (a *App) sweepThreadRequestsAtBoot() {
 			AnswerKind: store.ThreadAnswerError,
 		}, dropScratchThread)
 		if err != nil {
-			logThreadRequestSweep("settle interrupted receipt "+receipt.Token, err)
+			errs = append(errs, fmt.Errorf("settle interrupted receipt %s: %w", receipt.Token, err))
 			continue
 		}
 		works = append(works, work)
 	}
+	requests, err := a.store.ListOpenLocalThreadRequests()
+	if err != nil {
+		errs = append(errs, err)
+	}
+	for _, row := range requests {
+		work, err := a.settleOrphanedThreadRequest(row)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("settle orphaned request %s: %w", row.Token, err))
+		}
+		works = append(works, work)
+	}
+	// Read after the settlements, which every request a scratch thread could
+	// answer is now part of.
+	scratch, err := a.store.ListScratchThreads()
+	if err != nil {
+		errs = append(errs, err)
+	}
+	a.threadRequests.mu.Lock()
+	a.threadRequests.boot = bootThreadRequestSweep{works: works, scratch: scratch}
+	a.threadRequests.mu.Unlock()
+	if err := errors.Join(errs...); err != nil {
+		a.bootPhaseFailed(fmt.Errorf("thread requests: %w", err))
+	}
+}
+
+// settleOrphanedThreadRequest settles, at boot, a request this computer made
+// of its own thread that nothing else can settle: its receipt was settled
+// without it by an older build, or was never written because the process
+// died first. A settled receipt is the answer; no receipt is a restart.
+func (a *App) settleOrphanedThreadRequest(row store.ThreadRequest) (threadSettlementWork, error) {
+	unlock := a.threadRequestSettleLock(row.Token)
+	defer unlock()
+	receipt, found, err := a.store.GetThreadRequestReceipt(row.Token)
+	if err != nil {
+		return threadSettlementWork{}, err
+	}
+	if found && slices.Contains(store.ThreadReceiptOpenStates(), receipt.State) {
+		// The receipt sweep could not settle it and reported why. Its own
+		// settlement collects this row.
+		return threadSettlementWork{}, nil
+	}
+	settlement := store.ThreadRequestSettlement{
+		State:      store.ThreadRequestInterrupted,
+		Answer:     []byte(threadReceiptRestarted),
+		AnswerKind: store.ThreadAnswerError,
+	}
+	if found {
+		settlement = store.ThreadRequestSettlement{
+			State:      threadRequestStateForReceipt(receipt.State),
+			Answer:     receipt.Answer,
+			AnswerKind: receipt.AnswerKind,
+			SettledAt:  receipt.SettledAt,
+			ExpiresAt:  receipt.ExpiresAt,
+			ArmWake:    receipt.AnswerKind == store.ThreadAnswerReply && a.replyArmsWake(row),
+		}
+	}
+	settled, err := a.store.SettleThreadRequest(row.Token, store.ThreadRequestOpenStates(), settlement)
+	if err != nil || !settled {
+		return threadSettlementWork{}, err
+	}
+	work := threadSettlementWork{
+		token:        row.Token,
+		targetThread: row.TargetThreadID,
+		wake:         a.finishThreadRequestCollection(row.Token, false),
+	}
+	if found {
+		// The request holds the answer now. A failed acknowledgement costs
+		// only the receipt's copy, which expires as uncollected.
+		if _, err := a.store.AckThreadRequestReceipt(row.Token, receipt.Revision, 0); err != nil {
+			return work, err
+		}
+	}
+	return work, nil
+}
+
+// finishThreadRequestSweepAtBoot does what the boot sweep's settlements owe,
+// once the activation gate is open: it delivers their wakes, and any the last
+// run settled but never handed over, then deletes the scratch threads the
+// last run left. An ask's fork exists only to answer one request, and every
+// request it could answer is settled. The wakes go first, so a wake about an
+// ask can still name the fork.
+//
+// The scratch threads are the ones the sweep listed, so a fork a new ask made
+// since the gate opened is not among them.
+func (a *App) finishThreadRequestSweepAtBoot() {
+	a.threadRequests.mu.Lock()
+	boot := a.threadRequests.boot
+	a.threadRequests.boot = bootThreadRequestSweep{}
+	a.threadRequests.mu.Unlock()
+	endPhase := a.bootPhase("app.finish_thread_request_sweep", "Delivering agent request answers from the last run")
+	defer endPhase()
 	// Together, so a thread with many requests open across the restart is
 	// told in one message which of them it interrupted.
-	a.runThreadSettlementWorks(works)
+	a.runThreadSettlementWorks(boot.works)
 	// A wake the last run settled but never handed over is owed from the
 	// moment this one starts, not at the first retry tick.
 	a.retryUndeliveredThreadWakes(time.Now())
-	rows, err := a.store.ListScratchThreads()
-	if err != nil {
-		logThreadRequestSweep("list scratch threads at boot", err)
-		return
-	}
-	for _, row := range rows {
+	var errs []error
+	for _, row := range boot.scratch {
+		// The settlement's own work may have deleted it already.
+		if _, found, err := a.store.GetScratchThread(row.ThreadID); err != nil {
+			errs = append(errs, err)
+			continue
+		} else if !found {
+			continue
+		}
 		if err := a.DeleteThread(row.ThreadID); err != nil {
-			logThreadRequestSweep("delete scratch thread "+row.ThreadID, err)
+			errs = append(errs, fmt.Errorf("delete scratch thread %s: %w", row.ThreadID, err))
 			continue
 		}
 		if _, err := a.store.DeleteScratchThread(row.ThreadID); err != nil {
-			logThreadRequestSweep("delete scratch row "+row.ThreadID, err)
+			errs = append(errs, fmt.Errorf("delete scratch row %s: %w", row.ThreadID, err))
 		}
+	}
+	if err := errors.Join(errs...); err != nil {
+		a.bootPhaseFailed(fmt.Errorf("thread requests: %w", err))
 	}
 }
 

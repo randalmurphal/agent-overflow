@@ -213,6 +213,12 @@
               title={checkFailure}
               data-testid="settings-provider-update-check-error"
             >Update check failed</span>
+          {:else if admin && update?.signInRequired}
+            <span
+              class="shrink-0 whitespace-nowrap text-[0.6875rem] text-warning"
+              title="The {definition.label} login has expired. Checking for an update would start {definition.label}, which signs out an expired login, so no check runs until you sign in again."
+              data-testid="settings-provider-update-sign-in"
+            >Sign in to check for updates</span>
           {/if}
           <ProviderUpdateButton
             {provider}

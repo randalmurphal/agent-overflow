@@ -867,6 +867,39 @@ func TestCountWorkingTreeChangesCountsStagedUnstagedAndUntracked(t *testing.T) {
 	}
 }
 
+// The count guards a removal, so the user's git config cannot hide work
+// from it: untracked files hidden by status.showUntrackedFiles=no, and a
+// submodule's new commit or edits hidden by diff.ignoreSubmodules or
+// submodule.<name>.ignore, all still count.
+func TestCountWorkingTreeChangesIgnoresConfigThatHidesWork(t *testing.T) {
+	t.Parallel()
+	sub := initGitRepo(t)
+	repo := initGitRepo(t)
+	testutil.RunGit(t, repo, "-c", "protocol.file.allow=always", "submodule", "--quiet", "add", "--", sub, "vendored")
+	testutil.RunGit(t, repo, "commit", "-q", "-m", "add submodule")
+	for _, setting := range [][]string{
+		{"status.showUntrackedFiles", "no"},
+		{"diff.ignoreSubmodules", "all"},
+		{"submodule.vendored.ignore", "all"},
+	} {
+		testutil.RunGit(t, repo, "config", setting[0], setting[1])
+	}
+	core := NewCore()
+	if count, err := core.CountWorkingTreeChanges(repo); err != nil || count != 0 {
+		t.Fatalf("clean count = %d (%v), want 0", count, err)
+	}
+
+	if err := os.WriteFile(filepath.Join(repo, "untracked.txt"), []byte("new\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "vendored", "edited.txt"), []byte("inside the submodule\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if count, err := core.CountWorkingTreeChanges(repo); err != nil || count != 2 {
+		t.Fatalf("count = %d (%v), want 2 (the untracked file and the edited submodule)", count, err)
+	}
+}
+
 func TestCountUnpushedCommitsReportsNoUpstreamWhenUnconfigured(t *testing.T) {
 	t.Parallel()
 	repo := initGitRepo(t)

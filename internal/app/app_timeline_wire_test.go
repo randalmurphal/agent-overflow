@@ -69,19 +69,26 @@ func TestTimelinePagingPreservesLegacyWireAndSelectsScopedRows(t *testing.T) {
 	invoke("GetThreadUserMessageTicks", thread.ID)
 	invoke("GetTimelineUserMessageTicks", thread.ID, map[string]any{"scopeRootId": "agent"})
 
-	// Find keeps its three-argument main read and selects scoped rows
-	// through the selection-taking method.
-	var mainHits, scopedHits []store.ThreadMessageHit
-	if err := json.Unmarshal(invoke("SearchThreadItems", thread.ID, "transcript", 10), &mainHits); err != nil {
+	// Find reads the main transcript without a selection and scoped rows
+	// through the selection-taking method; a refresh passes the answer's
+	// state back and reads only what changed.
+	var mainHits, scopedHits, refreshed store.ThreadFindAnswer
+	if err := json.Unmarshal(invoke("SearchThreadItems", thread.ID, "transcript", 10, nil), &mainHits); err != nil {
 		t.Fatal(err)
 	}
-	if len(mainHits) != 0 {
-		t.Fatalf("main find leaked child rows: %+v", mainHits)
+	if len(mainHits.Items) != 0 {
+		t.Fatalf("main find leaked child rows: %+v", mainHits.Items)
 	}
-	if err := json.Unmarshal(invoke("SearchTimelineItems", thread.ID, "transcript", map[string]any{"scopeRootId": "agent"}, 10), &scopedHits); err != nil {
+	if err := json.Unmarshal(invoke("SearchTimelineItems", thread.ID, "transcript", map[string]any{"scopeRootId": "agent"}, 10, nil), &scopedHits); err != nil {
 		t.Fatal(err)
 	}
-	if len(scopedHits) != 1 || scopedHits[0].ItemID != "child" || scopedHits[0].TurnIndex != 2 || scopedHits[0].ItemIndex != 1 {
-		t.Fatalf("scoped find = %+v", scopedHits)
+	if len(scopedHits.Items) != 1 || scopedHits.Items[0].ID != "child" || scopedHits.Items[0].TurnIndex != 2 || scopedHits.Items[0].ItemIndex != 1 {
+		t.Fatalf("scoped find = %+v", scopedHits.Items)
+	}
+	if err := json.Unmarshal(invoke("SearchTimelineItems", thread.ID, "transcript", map[string]any{"scopeRootId": "agent"}, 10, scopedHits.Since), &refreshed); err != nil {
+		t.Fatal(err)
+	}
+	if !refreshed.Incremental {
+		t.Fatalf("refresh with the answer's state read in full: %+v", refreshed)
 	}
 }

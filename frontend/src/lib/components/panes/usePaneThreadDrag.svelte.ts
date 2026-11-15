@@ -13,11 +13,24 @@
 // whatever element it is over. The indicator is a bar on that seam plus
 // the half that chose it.
 //
-// While one of these drags is over the strip it is `shielding`: PaneHost
-// covers the panes with an element outside the strip's scroller, so the
-// drag is never over pane content. The browser scrolls a scrollable
-// element a drag is held near the edge of, and a pane's own drop handlers
-// would see the drag; neither can happen through the shield.
+// While one of these drags is in flight it is `shielding`: PaneHost covers
+// the panes with an element outside the strip's scroller, so the drag is
+// never over pane content. The browser scrolls a scrollable element a drag
+// is held near the edge of, and a pane's own drop handlers would see the
+// drag; neither can happen through the shield. The shield is an airspace
+// surface, so every native browser view in the strip is hidden while it is
+// up (utils/paneAirspace.svelte.ts) and the drag stays the app's.
+//
+// A drag this document starts is shielded from its dragstart until it ends,
+// wherever the pointer is. A native view paints above the page and takes
+// the drag itself, so a drag that goes straight from the sidebar onto one
+// delivers the strip no event, and nothing later than the dragstart can be
+// relied on to raise the shield. A drag that started in another window is
+// shielded while it is over the strip. The drag ended when the document
+// hears its dragend or a drop; when neither comes (its source unmounted mid
+// drag), a dragover of a drag that places nothing ends it, and so does a
+// pointer event anywhere once the drag session has delivered an event,
+// since no running drag delivers one.
 //
 // The DataTransfer answers nothing during dragover, so the payloads come
 // from `threadDragPayloadForEvent` / `toolDragPayloadForEvent`, which fall
@@ -49,6 +62,10 @@ import { edgeAutoScrollVelocity } from './edgeAutoScroll';
 
 /** Width of the seam bar. */
 export const PANE_DROP_SEAM_PX = 4;
+
+/** Events only a running drag session delivers. */
+const SESSION_EVENTS = ['drag', 'dragenter', 'dragover', 'dragleave'] as const;
+const POINTER_EVENTS = ['pointerdown', 'pointermove'] as const;
 
 export interface PaneThreadDragOptions {
   /** The strip's root: the scroller and the shield are inside it. */
@@ -83,7 +100,14 @@ export function createPaneThreadDrag(options: PaneThreadDragOptions) {
   let duplicateDropPaneId = $state<string | null>(null);
   let dropTarget = $state<PaneDropTarget | null>(null);
   let dropIndicator = $state.raw<PaneDropIndicator | null>(null);
-  let shielding = $state(false);
+  // A placing drag this document started is in flight.
+  let started = $state(false);
+  // A placing drag another window started is over the strip.
+  let overStrip = $state(false);
+  // Whether the events that end an unheard drag are listened for.
+  let watching = false;
+  // Whether the drag session delivered an event since the drag started.
+  let sessionSeen = true;
 
   let autoScrollFrame: number | null = null;
   let autoScrollVelocity = 0;
@@ -129,19 +153,70 @@ export function createPaneThreadDrag(options: PaneThreadDragOptions) {
     return resolveDrop(event)?.target ?? null;
   }
 
-  // Every sidebar drag ends here, wherever it ends: a dragend at its source
-  // (a drop, Escape, a drop outside the window) or a drop that bubbles to
-  // the document. A source that unmounted mid-drag gets no dragend; leaving
-  // the strip clears the preview then, and the next pointer event over the
-  // strip (onShieldPointer) ends the drag.
-  function onDocumentDragEnd(): void {
+  // Every placing drag ends here, wherever it ends: a dragend at its source
+  // (a drop, Escape, a drop outside the window), a drop that bubbles to the
+  // document, or a drop on the strip. A source that unmounted mid-drag gets
+  // no dragend; the watch below ends the drag then.
+  function endDrag(): void {
     draggingPaneId = null;
-    clearDropState();
+    clearDropPreview();
+    setShield(false, false);
     endThreadRowDrag();
     endToolPaneDrag();
   }
-  document.addEventListener('dragend', onDocumentDragEnd, true);
-  document.addEventListener('drop', onDocumentDragEnd);
+  document.addEventListener('dragstart', onDocumentDragStart);
+  document.addEventListener('dragend', endDrag, true);
+  document.addEventListener('drop', endDrag);
+
+  // Bubbling, so the source's own handler has set the drag's type. A drag
+  // that places nothing starting means any placing drag before it is over.
+  function onDocumentDragStart(event: DragEvent): void {
+    if (event.defaultPrevented) return;
+    if (isPlacingDrag(event)) {
+      sessionSeen = false;
+      setShield(true, overStrip);
+    } else {
+      endDrag();
+    }
+  }
+
+  function setShield(nextStarted: boolean, nextOverStrip: boolean): void {
+    if (started !== nextStarted) started = nextStarted;
+    if (overStrip !== nextOverStrip) overStrip = nextOverStrip;
+    watchForUnheardEnd(started || overStrip);
+  }
+
+  // While the shield is up, a dragover of a drag that places nothing, or a
+  // pointer event anywhere once the drag session delivered an event of its
+  // own, says the drag the shield is for ended unheard. The engine may start
+  // the OS drag after the dragstart, so a pointer event before the session's
+  // first event says nothing; once the session runs, no drag in flight
+  // delivers one.
+  function watchForUnheardEnd(on: boolean): void {
+    if (on === watching) return;
+    watching = on;
+    for (const type of SESSION_EVENTS) {
+      if (on) document.addEventListener(type, onSessionEvent, true);
+      else document.removeEventListener(type, onSessionEvent, true);
+    }
+    for (const type of POINTER_EVENTS) {
+      if (on) document.addEventListener(type, onStrayPointer, true);
+      else document.removeEventListener(type, onStrayPointer, true);
+    }
+  }
+
+  function onSessionEvent(event: DragEvent): void {
+    sessionSeen = true;
+    if (event.type === 'dragover' && !isPlacingDrag(event)) endDrag();
+  }
+
+  function onStrayPointer(): void {
+    if (sessionSeen) endDrag();
+  }
+
+  function isPlacingDrag(event: DragEvent): boolean {
+    return isThreadDrag(event) || isToolDrag(event) || isPaneDrag(event);
+  }
 
   function isThreadDrag(event: DragEvent): boolean {
     return event.dataTransfer?.types.includes(THREAD_ROW_DRAG_MIME) ?? false;
@@ -255,9 +330,8 @@ export function createPaneThreadDrag(options: PaneThreadDragOptions) {
     autoScrollFrame = window.requestAnimationFrame(tick);
   }
 
-  function clearDropState(): void {
+  function clearDropPreview(): void {
     duplicateDropPaneId = null;
-    shielding = false;
     showDrop(null);
     stopDragAutoScroll();
   }
@@ -266,10 +340,9 @@ export function createPaneThreadDrag(options: PaneThreadDragOptions) {
     event.preventDefault();
     const threadId = threadDragPayloadForEvent(event)?.threadId;
     const target = dropSlot(event);
-    clearDropState();
-    // The sidebar's in-flight record: no dragend is guaranteed when the
-    // source row unmounted mid-drag, so every drop target clears it.
-    endThreadRowDrag();
+    // The sidebar's in-flight record goes too: no dragend is guaranteed
+    // when the source row unmounted mid-drag, so every drop target clears it.
+    endDrag();
     if (!threadId) return;
     const existing = findPaneShowingThread(threadId);
     if (existing) {
@@ -287,8 +360,7 @@ export function createPaneThreadDrag(options: PaneThreadDragOptions) {
     event.preventDefault();
     const kind = toolDragPayloadForEvent(event)?.kind;
     const target = dropSlot(event);
-    clearDropState();
-    endToolPaneDrag();
+    endDrag();
     if (!kind || !target) return;
     openTool(kind, { insertIndex: target.insertIndex });
   }
@@ -299,10 +371,12 @@ export function createPaneThreadDrag(options: PaneThreadDragOptions) {
     if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move';
   }
 
+  // A drag over the strip that this document did not start (another
+  // window's) is shielded while it is over the strip.
   function onHostDragOver(event: DragEvent): void {
     if (isThreadDrag(event)) {
       event.preventDefault();
-      shielding = true;
+      setShield(started, true);
       if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
       updateThreadDropTarget(event);
       updateDragAutoScroll(event.clientX);
@@ -310,7 +384,7 @@ export function createPaneThreadDrag(options: PaneThreadDragOptions) {
     }
     if (isToolDrag(event)) {
       event.preventDefault();
-      shielding = true;
+      setShield(started, true);
       if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
       updateToolDropTarget(event);
       updateDragAutoScroll(event.clientX);
@@ -320,7 +394,7 @@ export function createPaneThreadDrag(options: PaneThreadDragOptions) {
     // drag that ended unheard must not claim the next drag.
     if (draggingPaneId && isPaneDrag(event)) {
       event.preventDefault();
-      shielding = true;
+      setShield(started, true);
       if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
       updateReorderDropTarget(event, draggingPaneId);
       updateDragAutoScroll(event.clientX);
@@ -330,18 +404,12 @@ export function createPaneThreadDrag(options: PaneThreadDragOptions) {
   function handleReorderDrop(event: DragEvent, paneId: string): void {
     event.preventDefault();
     const target = dropSlot(event);
-    draggingPaneId = null;
-    clearDropState();
+    endDrag();
     if (!target || !reorderMoves(paneId, target.insertIndex)) return;
     // The index is one of the layout without the moved pane; its
     // companions follow it there.
     const from = options.getLayoutItems().findIndex((item) => item.paneId === paneId);
     movePaneLayoutItemToIndex(paneId, from < target.insertIndex ? target.insertIndex - 1 : target.insertIndex);
-  }
-
-  function onPaneDragEnd(): void {
-    draggingPaneId = null;
-    clearDropState();
   }
 
   function onHostDrop(event: DragEvent): void {
@@ -358,30 +426,30 @@ export function createPaneThreadDrag(options: PaneThreadDragOptions) {
   // A dragleave bubbles from every element the pointer leaves, the pane
   // content the shield has just covered included. The drag left the strip
   // when the pointer is outside the strip's box; `relatedTarget` cannot
-  // say, since WebKit leaves it null.
+  // say, since WebKit leaves it null. The drag goes on.
   function onHostDragLeave(event: DragEvent): void {
     const box = options.getStripEl()?.getBoundingClientRect();
     if (box && event.clientX >= box.left && event.clientX < box.right && event.clientY >= box.top && event.clientY < box.bottom) return;
-    clearDropState();
+    leaveStrip();
   }
 
   // The shield covers the strip, so a drag that leaves it left the strip,
   // for the window or for a surface above the strip. The drag goes on.
   function onShieldDragLeave(): void {
-    clearDropState();
+    leaveStrip();
   }
 
-  // A pointer event reaches the shield only when no drag is in flight: the
-  // drag ended with no dragend or drop the document heard, as when its
-  // source unmounted mid-drag.
-  function onShieldPointer(): void {
-    onDocumentDragEnd();
+  function leaveStrip(): void {
+    clearDropPreview();
+    setShield(started, false);
   }
 
   function destroy(): void {
     stopDragAutoScroll();
-    document.removeEventListener('dragend', onDocumentDragEnd, true);
-    document.removeEventListener('drop', onDocumentDragEnd);
+    watchForUnheardEnd(false);
+    document.removeEventListener('dragstart', onDocumentDragStart);
+    document.removeEventListener('dragend', endDrag, true);
+    document.removeEventListener('drop', endDrag);
   }
 
   return {
@@ -398,15 +466,13 @@ export function createPaneThreadDrag(options: PaneThreadDragOptions) {
       return dropIndicator;
     },
     get shielding() {
-      return shielding;
+      return started || overStrip;
     },
     onPaneDragStart,
     onHostDragOver,
-    onPaneDragEnd,
     onHostDrop,
     onHostDragLeave,
     onShieldDragLeave,
-    onShieldPointer,
     destroy,
   };
 }

@@ -91,6 +91,7 @@ import {
   STALE_CHECK_INTERVAL_MS,
   TransportError,
   transportGapChannel,
+  withRpcTimeout,
   type TransportStatusSnapshot,
 } from './wsClient';
 import { __resetRunModeForTest } from './runMode';
@@ -2419,6 +2420,30 @@ describe('WSClient', () => {
     const caught = await settled;
     expect(caught).toBeInstanceOf(TransportError);
     expect((caught as TransportError).code).toBe('timeout');
+    client.close();
+  });
+
+  it('gives the one call withRpcTimeout dispatches its wait, and no later call', async () => {
+    vi.useFakeTimers();
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+    const long = withRpcTimeout(RPC_TIMEOUT_MS * 3, () => client.callByID(1, [])).catch((err) => err);
+    const ordinary = client.callByID(2, []).catch((err) => err);
+    await vi.advanceTimersByTimeAsync(0);
+    const ws = MockWebSocket.instances[0]!;
+    ws.acceptOpen();
+    ws.pushFrame({ type: 'replay' });
+    await vi.advanceTimersByTimeAsync(0);
+
+    let longSettled = false;
+    void long.then(() => { longSettled = true; });
+    await vi.advanceTimersByTimeAsync(RPC_TIMEOUT_MS + 1);
+    expect(((await ordinary) as TransportError).code).toBe('timeout');
+    expect(longSettled).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(RPC_TIMEOUT_MS * 2);
+    const caught = (await long) as TransportError;
+    expect(caught.code).toBe('timeout');
+    expect(caught.message).toContain(`${RPC_TIMEOUT_MS * 3}ms`);
     client.close();
   });
 

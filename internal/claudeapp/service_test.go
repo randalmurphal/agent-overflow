@@ -49,7 +49,7 @@ done
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	session, err := claude.NewSession(ctx, "thread", claude.Config{Binary: scriptPath}, func(provider.ProviderEvent) {})
+	session, err := claude.NewSession(ctx, "thread", claude.Config{Binary: scriptPath, Retention: claude.UserHomeRetention(0)}, func(provider.ProviderEvent) {})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}

@@ -15,11 +15,22 @@ import (
 // updatefake.MockInstall under the home directory.
 
 func isDoctorInvocation(args []string) bool {
+	args = withoutSettingsBlock(args)
 	return len(args) == 1 && args[0] == "doctor"
 }
 
 func isUpdateInvocation(args []string) bool {
+	args = withoutSettingsBlock(args)
 	return len(args) == 1 && args[0] == "update"
+}
+
+// withoutSettingsBlock drops the leading `--settings <json>` a Claude
+// command line puts ahead of its subcommand (claude.NewCommandLine).
+func withoutSettingsBlock(args []string) []string {
+	if len(args) >= 2 && args[0] == "--settings" {
+		return args[2:]
+	}
+	return args
 }
 
 // mockInstall is the install this process simulates.

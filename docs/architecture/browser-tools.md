@@ -302,7 +302,8 @@ store's alone; the backend holds only what the engine holds.
   pane shows a find cleanup error, in its own entry apart from browser
   action errors, until a stop through it or further is answered or the
   pane unmounts. It is sent again on the provider's own timer, at most
-  three times in all, until it or a later stop through it is answered. A
+  three times in all, until it or a later stop through it is answered or
+  the pane unmounts, whose mount detach ends the search. A
   stop that never succeeds leaves the page's highlights until the next
   start, a navigation, a page switch or the pane unmounting, each of which
   ends the engine's search. The Go find tables run each sequence against a

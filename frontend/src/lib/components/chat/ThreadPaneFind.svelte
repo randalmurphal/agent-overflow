@@ -4,13 +4,15 @@
   // mounted and the thread's owner serves the find contract, and renders
   // that pane's find bar. The host mounts it directly under the pane header.
   // DOM work lives here: the reading position, the on-screen test and the
-  // highlights over the timeline's mounted rows.
+  // highlights over the find text of the timeline's mounted rows, and
+  // the projection of a row's find text for the count (threadFindText.ts).
   import { untrack } from 'svelte';
   import PaneFindBar from '../panes/PaneFindBar.svelte';
   import { getPaneFind, registerPaneFindProvider } from '../../stores/paneFind.svelte';
   import { createThreadFind, threadFindScopeKey, type ThreadFindScope } from '../../stores/threadFind.svelte';
   import { threadFindBackend } from '../../stores/timelineSelectionSupport';
-  import type { ThreadPane } from '../../stores/thread.svelte';
+  import { paneWorkspacePath, type ThreadPane } from '../../stores/thread.svelte';
+  import { FIND_TEXT_SELECTOR, rowFindFollowsExpansion, rowFindRuns } from './threadFindText';
   import { getThreadScrollSnapshot } from '../../utils/threadScrollSnapshots';
   import { createFindHighlighter, findHighlightName, type FindHighlighter } from '../../utils/findHighlights';
 
@@ -83,6 +85,14 @@
       const rect = row.getBoundingClientRect();
       return rect.height > 0 && rect.bottom > view.top && rect.top < view.bottom;
     },
+    findRuns: (item) => rowFindRuns(item, {
+      provider: timeline?.thread?.provider,
+      workspacePath: timeline ? paneWorkspacePath(timeline) : '',
+      expandedItemData: (itemId, stateKey) => timeline?.expandedItemData(itemId, stateKey),
+      liveReasoningText: (itemId) => timeline?.liveThinkingTailForItem(itemId) ?? null,
+      isItemSmoothing: (itemId) => timeline?.isItemSmoothing(itemId) ?? false,
+    }),
+    findRunsLive: rowFindFollowsExpansion,
     paint: (query, currentItemId) => {
       if (!query) {
         releaseHighlighter();
@@ -92,11 +102,16 @@
       if (!container) return;
       if (highlighterRoot !== container) {
         releaseHighlighter();
+        // Only the rows' find text is painted, the text the count
+        // reads; a repaint is when find text may have changed without a
+        // read (a body expanded or loaded), so the hits are re-decided.
         highlighter = createFindHighlighter({
           root: container,
           name: findHighlightName(paneId),
           rowSelector: ROW_SELECTOR,
           rowKeyAttribute: 'data-item-id',
+          textSelector: FIND_TEXT_SELECTOR,
+          onMatches: () => find.reevaluate(),
         });
         highlighterRoot = container;
       }

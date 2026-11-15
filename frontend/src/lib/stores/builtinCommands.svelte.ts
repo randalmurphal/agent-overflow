@@ -12,6 +12,7 @@ import { SIDEBAR_JUMP_LIMIT } from './sidebarThreadOrder';
 import type { ThreadPane } from './thread.svelte';
 import type { Thread } from '../types/models';
 import type { TerminalHandle } from '../types/terminal';
+import { startTerminal } from './eventsTerminal';
 import type { WorkspaceRef } from '../types/git';
 import { registerCommand, type CommandContext, type CommandFlags } from './commandRegistry.svelte';
 import { providerSupports } from '../providers/catalog';
@@ -1026,15 +1027,18 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
         terminalStateKeyForPane(threadId, pane.paneId),
       );
       if (!state) return;
-      OpenTerminal(threadId, new TerminalOpenOptions({ cwd: pane.thread?.workspacePath }))
-        .then((th) => {
-          const handle = th as TerminalHandle;
-          if (handle?.summary) {
-            state.addTab(handle.summary);
-            // addTab makes the new tab active → the surface remounts
-            // TerminalBody; request focus so the cursor lands in the new tab.
-            pane.requestTerminalFocus();
-          }
+      startTerminal(
+        async () => (await OpenTerminal(threadId, new TerminalOpenOptions({ cwd: pane.thread?.workspacePath }))) as TerminalHandle,
+        (handle) => {
+          if (handle?.summary) state.addTab(handle.summary);
+        },
+      )
+        .then((handle) => {
+          const terminalID = handle?.summary?.terminalID;
+          // addTab makes the new tab active → the surface remounts
+          // TerminalBody; request focus so the cursor lands in the new tab,
+          // unless its exit overtook the answer and the tab is gone.
+          if (terminalID && state.tabs.some((tab) => tab.terminalID === terminalID)) pane.requestTerminalFocus();
         })
         .catch((err) => {
           console.error('terminal: OpenTerminal (newTab) failed', err);

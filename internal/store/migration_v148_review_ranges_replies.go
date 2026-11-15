@@ -8,8 +8,9 @@ package store
 //     line.
 //   - reply_thread_id names the forge thread a held reply answers, and
 //     reply_root_id that thread's first comment (GitHub posts a reply under
-//     it). A reply is side 'reply', with no line, in pr scope; at most one
-//     draft reply per thread for each owner and source.
+//     it). A reply is side 'reply', with no line, in pr scope. The table
+//     does not limit a thread to one draft reply; the create call does
+//     (CreateDiffReviewComment).
 //
 // The side CHECK cannot widen in place, so the table is rebuilt with every
 // column, index and the claim trigger as v144 and v145 left them. The

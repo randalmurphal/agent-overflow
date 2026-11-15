@@ -52,7 +52,7 @@ async function settle(box: HTMLElement): Promise<void> {
     stable = now === last ? stable + 1 : 0;
     last = now;
     return stable >= 3;
-  }, 'stable box', 600);
+  }, 'stable box');
 }
 
 describe('an expanded gate diff file', () => {

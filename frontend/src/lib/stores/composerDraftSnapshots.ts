@@ -16,7 +16,11 @@ export interface ComposerDraftSnapshot {
 // removed once their snapshot is durably saved, explicitly cleared, or evicted
 // from the bounded LRU. Writes share one per-thread tail so saves cannot overtake each other and
 // send/replacement operations can fence the writes admitted before them.
+// The empty-draft cleanup joins the same tail: once it deletes the thread,
+// no write for that id is sent again.
 const localDraftSnapshots = new Map<string, ComposerDraftSnapshot>();
+const MAX_DELETED_THREADS = 100;
+const deletedDraftThreads = new Set<string>();
 interface DraftWrite {
   write: () => Promise<unknown>;
   replaceable: boolean;
@@ -147,12 +151,28 @@ function startDraftWrite(threadId: string, owner: DraftWriter, operation: DraftW
   );
 }
 
-/** Autosaves coalesce; captured send writes are ordering boundaries. */
+/** A draft write for a thread the empty-draft cleanup deleted. Never sent. */
+export class DraftThreadDeletedError extends Error {
+  constructor(readonly threadId: string) {
+    super('This new thread was removed before the text typed into it was saved.');
+    this.name = 'DraftThreadDeletedError';
+  }
+}
+
+/**
+ * Autosaves coalesce; captured send writes and the empty-draft cleanup are
+ * ordering boundaries. Rejects with DraftThreadDeletedError, without calling
+ * `write`, once the cleanup has deleted the thread.
+ */
 export function queueDraftSave(
   threadId: string,
   write: () => Promise<unknown>,
-  kind: 'autosave' | 'send' = 'autosave',
+  kind: 'autosave' | 'send' | 'cleanup' = 'autosave',
 ): Promise<boolean> {
+  if (deletedDraftThreads.has(threadId)) {
+    localDraftSnapshots.delete(threadId);
+    return Promise.reject(new DraftThreadDeletedError(threadId));
+  }
   let resolve!: DraftWrite['resolve'];
   let reject!: DraftWrite['reject'];
   const promise = new Promise<boolean>((done, fail) => { resolve = done; reject = fail; });
@@ -170,6 +190,37 @@ export function queueDraftSave(
   return promise;
 }
 
+/**
+ * Run the empty-draft cleanup behind every write admitted before it. Writes
+ * admitted after it wait for its answer; `remove` must call
+ * markDraftThreadDeleted before it returns true.
+ */
+export async function queueDraftThreadDeletion(
+  threadId: string,
+  remove: () => Promise<boolean>,
+): Promise<boolean> {
+  let deleted = false;
+  await queueDraftSave(threadId, async () => { deleted = await remove(); }, 'cleanup');
+  return deleted;
+}
+
+/**
+ * The thread is gone: reject the writes waiting behind its cleanup and every
+ * later one. Ids are never reused, so the bounded record only has to outlive
+ * the composers that held the thread.
+ */
+export function markDraftThreadDeleted(threadId: string): void {
+  deletedDraftThreads.add(threadId);
+  if (deletedDraftThreads.size > MAX_DELETED_THREADS) {
+    deletedDraftThreads.delete(deletedDraftThreads.values().next().value as string);
+  }
+  localDraftSnapshots.delete(threadId);
+  const owner = draftWriters.get(threadId);
+  if (!owner) return;
+  for (const pending of owner.pending.splice(0)) pending.reject(new DraftThreadDeletedError(threadId));
+  if (!owner.active) draftWriters.delete(threadId);
+}
+
 /** A finite fence over writes already admitted, never extended by later typing. */
 export async function waitForActiveDraftSaves(threadId: string): Promise<void> {
   const owner = draftWriters.get(threadId);
@@ -181,4 +232,5 @@ export async function waitForActiveDraftSaves(threadId: string): Promise<void> {
 export function resetComposerDraftSnapshotStateForTest(): void {
   localDraftSnapshots.clear();
   draftWriters.clear();
+  deletedDraftThreads.clear();
 }

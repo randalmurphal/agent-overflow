@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"reflect"
@@ -475,7 +476,9 @@ func TestDispatchFlush_NoSession_DoesNotPersistUserRow(t *testing.T) {
 		t.Fatalf("CreateThread: %v", err)
 	}
 
-	// No app.sessions entry — this simulates the torn-down case.
+	// No app.sessions entry — this simulates the torn-down case, whose
+	// replacement session fails to start.
+	app.startSessionFn = func(string) error { return errors.New("the session cannot start") }
 	app.dispatchFlush(thread.ID, []triage.QueuedFlushItem{
 		{ID: "queue:0", Message: "x"},
 	})
@@ -846,7 +849,7 @@ func TestDispatchFlush_StaleGenerationAfterRollbackDropsBatch(t *testing.T) {
 	}
 
 	staleGeneration := app.currentFlushDispatchGeneration(thread.ID)
-	app.clearFlushDispatchForRollback(thread.ID)
+	app.dropFlushQueue(thread.ID)
 
 	app.dispatchFlushWithGeneration(thread.ID, []triage.QueuedFlushItem{
 		{ID: "queue:stale", Message: "stale queued prompt"},
@@ -1294,7 +1297,7 @@ func TestDispatchFlush_Claude_EagerPersistAtActiveTurn(t *testing.T) {
 
 	sess, err := claude.NewSession(
 		context.Background(), thread.ID,
-		claude.Config{Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
+		claude.Config{Retention: claude.UserHomeRetention(0), Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
 		func(provider.ProviderEvent) {},
 	)
 	if err != nil {
@@ -1464,7 +1467,7 @@ func TestDispatchFlush_Claude_EagerPersist_RepositionsAfterContentBeforeEcho(t *
 
 	sess, err := claude.NewSession(
 		context.Background(), thread.ID,
-		claude.Config{Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
+		claude.Config{Retention: claude.UserHomeRetention(0), Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
 		func(provider.ProviderEvent) {},
 	)
 	if err != nil {
@@ -1604,7 +1607,7 @@ func TestDispatchFlush_Claude_InterruptPromotesAfterStoppedByUser(t *testing.T) 
 
 	sess, err := claude.NewSession(
 		context.Background(), thread.ID,
-		claude.Config{Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
+		claude.Config{Retention: claude.UserHomeRetention(0), Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
 		func(provider.ProviderEvent) {},
 	)
 	if err != nil {
@@ -1733,7 +1736,7 @@ func TestDispatchFlush_Claude_NoActiveTurn_DefersLikeCodex(t *testing.T) {
 
 	sess, err := claude.NewSession(
 		context.Background(), thread.ID,
-		claude.Config{Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
+		claude.Config{Retention: claude.UserHomeRetention(0), Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
 		func(provider.ProviderEvent) {},
 	)
 	if err != nil {
@@ -2040,9 +2043,15 @@ func TestSessionDeathDraftFailureRequeuesWithoutSettling(t *testing.T) {
 	if len(requeued) != 1 || requeued[0].Settlement != settlement {
 		t.Fatalf("requeued recovery = %+v, want the original pending settlement", requeued)
 	}
+	// The live requeue carries the original settlement, joined with the
+	// retirement of the durable row the requeue gives it.
 	queued := app.triage.QueuedFlushItems(thread.ID)
-	if len(queued) != 1 || queued[0].Settlement != settlement {
-		t.Fatalf("live requeue = %+v, want the original pending settlement", queued)
+	if len(queued) != 1 {
+		t.Fatalf("live requeue = %+v, want the message queued once", queued)
+	}
+	queued[0].Settlement.Settle()
+	if settled != 1 {
+		t.Fatalf("settling the live requeue ran the original settlement %d times, want 1", settled)
 	}
 }
 
@@ -2257,7 +2266,7 @@ func TestDispatchFlush_StaleRowCleanupBeforePersist(t *testing.T) {
 
 	sess, err := claude.NewSession(
 		context.Background(), thread.ID,
-		claude.Config{Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
+		claude.Config{Retention: claude.UserHomeRetention(0), Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
 		func(provider.ProviderEvent) {},
 	)
 	if err != nil {
@@ -2308,7 +2317,7 @@ func TestDispatchFlush_FailedDispatchKeepsStaleRow(t *testing.T) {
 	app, _ := newAppForFlushQueueRPC(t)
 
 	thread := testThread("flush-stale-keep")
-	thread.Provider = string(provider.Claude)
+	thread.Provider = string(provider.Codex)
 	thread.WorkspacePath = t.TempDir()
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread: %v", err)
@@ -2322,9 +2331,13 @@ func TestDispatchFlush_FailedDispatchKeepsStaleRow(t *testing.T) {
 		t.Fatalf("seed stale row: %v", err)
 	}
 
-	// No session registered: dispatch fails at session resolution.
+	sess := installSteerTestSession(t, app, thread, "ok")
+	app.sessionManager().put(thread.ID, session{Provider: string(provider.Codex), Token: "flush-token", Codex: sess})
+
+	// An attachment that no longer resolves fails the dispatch before the
+	// stale row's cleanup.
 	app.dispatchFlush(thread.ID, []triage.QueuedFlushItem{{
-		ID: "queue:keep", Message: "keep me", Payload: json.RawMessage(`{}`),
+		ID: "queue:keep", Message: "keep me", Payload: json.RawMessage(`{"attachmentIds":["gone"]}`),
 		StaleUserItemID: "user:0:flush:1",
 	}})
 
@@ -2334,8 +2347,8 @@ func TestDispatchFlush_FailedDispatchKeepsStaleRow(t *testing.T) {
 		t.Error("failed dispatch deleted the stale flush row — the message's only durable copy is gone")
 	}
 	// The failing item requeues with its stale marker intact (round-13,
-	// CT13-1): the session-lookup failure happened BEFORE the cleanup
-	// ran, so the retry obligation must survive for the next dispatch.
+	// CT13-1): the failure happened BEFORE the cleanup ran, so the retry
+	// obligation must survive for the next dispatch.
 	requeued := app.triage.QueuedFlushItems(thread.ID)
 	if len(requeued) != 1 {
 		t.Fatalf("requeued items: got %d, want 1 (the failing item)", len(requeued))
@@ -2381,7 +2394,7 @@ func TestDispatchFlush_PostPersistFailureRequeuesWithFreshRowMarker(t *testing.T
 	// resolution and the quiet persist succeed, the stdin write fails.
 	sess, err := claude.NewSession(
 		context.Background(), thread.ID,
-		claude.Config{Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
+		claude.Config{Retention: claude.UserHomeRetention(0), Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
 		func(provider.ProviderEvent) {},
 	)
 	if err != nil {
@@ -2451,7 +2464,7 @@ func TestDispatchFlush_RequeueAfterQueueFlushedRepublishesTheQueueID(t *testing.
 	// allocation and the quiet persist all succeed, the stdin write fails.
 	sess, err := claude.NewSession(
 		context.Background(), thread.ID,
-		claude.Config{Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
+		claude.Config{Retention: claude.UserHomeRetention(0), Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
 		func(provider.ProviderEvent) {},
 	)
 	if err != nil {
@@ -3068,6 +3081,7 @@ func TestQueueSnapshot_CoversItemMidDispatch(t *testing.T) {
 		t.Fatalf("CreateThread: %v", err)
 	}
 
+	holdFlushQueue(app)
 	first, err := app.RegisterQueueItem(context.Background(), thread.ID, "mid dispatch", SendMessageOptions{})
 	if err != nil {
 		t.Fatalf("RegisterQueueItem: %v", err)
@@ -3095,7 +3109,9 @@ func TestQueueSnapshot_CoversItemMidDispatch(t *testing.T) {
 	}
 
 	// The emit path reads the same chain, so the concurrent register in
-	// this window keeps the in-flight message and appends its own.
+	// this window keeps the in-flight message and appends its own, which
+	// stays queued behind it.
+	holdFlushQueue(app)
 	rec.reset()
 	second, err := app.RegisterQueueItem(context.Background(), thread.ID, "queued behind", SendMessageOptions{})
 	if err != nil {
@@ -3139,6 +3155,7 @@ func TestGetThreadLiveState_ReturnsServerSideSnapshot(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("turn start: %v", err)
 	}
+	holdFlushQueue(app)
 	queued, err := app.RegisterQueueItem(context.Background(), thread.ID, "queued text", SendMessageOptions{
 		AttachmentIDs: []string{"att-1"},
 	})
@@ -3618,14 +3635,19 @@ func TestDispatchFlush_SettlesOnlyAfterTheProviderWrite(t *testing.T) {
 		app, _ := newAppForFlushQueueRPC(t)
 
 		thread := testThread("flush-ondispatched-fail")
-		thread.Provider = string(provider.Claude)
+		thread.Provider = string(provider.Codex)
 		thread.WorkspacePath = t.TempDir()
 		if err := app.store.CreateThread(thread); err != nil {
 			t.Fatalf("CreateThread: %v", err)
 		}
+		// A closed session fails the provider write.
+		sess := installSteerTestSession(t, app, thread, "no-active-turn")
+		if err := sess.Close(); err != nil {
+			t.Fatalf("close session: %v", err)
+		}
+		app.sessionManager().put(thread.ID, session{Provider: string(provider.Codex), Token: "flush-token", Codex: sess})
 
 		fired := 0
-		// No session registered: dispatch fails at session resolution.
 		app.dispatchFlush(thread.ID, []triage.QueuedFlushItem{{
 			ID: "queue:fail", Message: "wake", Payload: json.RawMessage(`{}`),
 			Settlement: triage.NewFlushSettlement(func() { fired++ }),
@@ -3925,7 +3947,7 @@ func TestDispatchFlush_QuietRowDoesNotDeliverItsReviewDrafts(t *testing.T) {
 			}
 			sess, err := claude.NewSession(
 				context.Background(), thread.ID,
-				claude.Config{Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
+				claude.Config{Retention: claude.UserHomeRetention(0), Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
 				func(provider.ProviderEvent) {},
 			)
 			if err != nil {

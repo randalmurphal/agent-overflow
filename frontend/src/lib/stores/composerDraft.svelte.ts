@@ -15,9 +15,12 @@ import {
   forgetDraftSnapshot,
   forgetDraftSnapshotIfMatches,
   getRememberedDraftSnapshotForStore,
+  DraftThreadDeletedError,
+  markDraftThreadDeleted,
   rememberDraftSnapshot,
   resetComposerDraftSnapshotStateForTest,
   queueDraftSave,
+  queueDraftThreadDeletion,
   waitForActiveDraftSaves,
   type ComposerDraftSnapshot,
 } from './composerDraftSnapshots';
@@ -90,6 +93,10 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
   // by any successful save. The awaited paths (restoreDraftFor) rethrow
   // instead — their callers own the message.
   let saveFailureSurfaced = false;
+  // The deleted thread whose buffer this store kept (releaseDeletedThread).
+  // Its own writes that were waiting behind the delete are carried with the
+  // buffer, so their refusal is not a failure to report.
+  let carriedFromDeletedThread: string | null = null;
 
   function clearDebounce() {
     if (debounceTimer) {
@@ -193,11 +200,32 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
       clearLocalSnapshotIfCurrent(id, snapshot);
       saveFailureSurfaced = false;
     } catch (err) {
+      if (err instanceof DraftThreadDeletedError && carriedFromDeletedThread === id) return;
       if (threadId === id && draftSnapshotMatchesPersistedState(buildSnapshot(), snapshot)) {
         hasPendingSave = true;
       }
       throw err;
     }
+  }
+
+  /**
+   * The empty-draft cleanup deleted `id`: no write for it is sent again. A
+   * store still on it lets go of the id and keeps its buffer, so what was
+   * typed while the delete was in flight goes to the thread the caller
+   * adopts next. Idempotent, for the lost-reply path that learns of the
+   * deletion from the broadcast.
+   */
+  function releaseDeletedThread(id: string): void {
+    if (!persists) return;
+    markDraftThreadDeleted(id);
+    if (threadId !== id) return;
+    clearDebounce();
+    pendingSaveGeneration++;
+    switchGeneration++;
+    threadId = null;
+    hasPendingSave = false;
+    hydrating = false;
+    carriedFromDeletedThread = id;
   }
 
   // The one surfacing point for the paths that swallow saveSnapshot's
@@ -461,6 +489,20 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
     prepareForExternalDraftReplace,
     flush,
     flushPending,
+
+    /**
+     * Delete the empty thread `id` through `remove` (DeleteEmptyDraftThread),
+     * after every write admitted before it. Saves admitted meanwhile wait for
+     * the answer: sent to the kept thread, or never sent when it was deleted.
+     */
+    deleteEmptyThread(id: string, remove: () => Promise<boolean>): Promise<boolean> {
+      return queueDraftThreadDeletion(id, async () => {
+        const deleted = await remove();
+        if (deleted) releaseDeletedThread(id);
+        return deleted;
+      });
+    },
+    releaseDeletedThread,
 
     /**
      * Admit the captured dirty draft before clearing locally. Older saves

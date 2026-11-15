@@ -85,6 +85,12 @@ type LoginState struct {
 	// life and elsewhere is our budget.
 	StartedAt int64 `json:"startedAt,omitempty"`
 	ExpiresAt int64 `json:"expiresAt,omitempty"`
+	// Seq orders the states of this process: every stored state takes the
+	// next number, across providers. Frames are published after the
+	// registry lock is released and a call answers with the state it
+	// stored, so a client keeps the highest Seq it has seen and drops the
+	// rest. Zero is a state nothing stored (an idle default or a refusal).
+	Seq uint64 `json:"seq,omitempty"`
 }
 
 // IdleLoginState is what a provider with no sign-in reports. Callers build it
@@ -303,18 +309,25 @@ func (m *Manager) SubmitProviderLoginCode(providerName, pasted string) (LoginSta
 		return m.ProviderLoginState(providerName), err
 	}
 
+	// Verifying is stored in the same critical section that hands the code
+	// over: the run's next state, which can be a rejection a moment later,
+	// needs this lock to be stored, so it can never be overtaken by this one.
 	m.loginMu.Lock()
 	run := m.logins[providerName]
-	m.loginMu.Unlock()
 	if run == nil {
+		m.loginMu.Unlock()
 		return m.ProviderLoginState(providerName), errNoLoginInProgress
 	}
 	select {
 	case run.pastes <- loginPaste{code: code, state: state}:
 	default:
+		m.loginMu.Unlock()
 		return m.ProviderLoginState(providerName), errLoginCodeBusy
 	}
-	return m.publishLoginPhase(run, LoginPhaseVerifying, ""), nil
+	verifying := m.storeLoginStateLocked(run.stateLocked(LoginPhaseVerifying, ""))
+	m.loginMu.Unlock()
+	m.publishLoginState(verifying)
+	return verifying, nil
 }
 
 // CancelProviderLogin ends whatever is running for this provider and leaves
@@ -335,8 +348,7 @@ func (m *Manager) CancelProviderLogin(providerName string) LoginState {
 	// finished sign-in is telling us the retained outcome has been read, and
 	// leaving it would put a stale success or failure in front of whoever
 	// opens the surface next.
-	idle := IdleLoginState(providerName)
-	m.storeLoginState(idle)
+	idle := m.storeLoginState(IdleLoginState(providerName))
 	m.publishLoginState(idle)
 	return idle
 }
@@ -674,8 +686,7 @@ func (m *Manager) publishLoginFlow(run *loginRun, flow loginFlow, notice string)
 		return state
 	}
 	run.flow = flow
-	state := run.stateLocked(flow.phase, notice)
-	m.storeLoginStateLocked(state)
+	state := m.storeLoginStateLocked(run.stateLocked(flow.phase, notice))
 	m.loginMu.Unlock()
 	m.publishLoginState(state)
 	return state
@@ -688,8 +699,7 @@ func (m *Manager) publishLoginPhase(run *loginRun, phase LoginPhase, notice stri
 		m.loginMu.Unlock()
 		return state
 	}
-	state := run.stateLocked(phase, notice)
-	m.storeLoginStateLocked(state)
+	state := m.storeLoginStateLocked(run.stateLocked(phase, notice))
 	m.loginMu.Unlock()
 	m.publishLoginState(state)
 	return state
@@ -705,8 +715,7 @@ func (m *Manager) settleLoginRun(run *loginRun, phase LoginPhase, notice string)
 		return
 	}
 	delete(m.logins, run.provider)
-	state := run.stateLocked(phase, notice)
-	m.storeLoginStateLocked(state)
+	state := m.storeLoginStateLocked(run.stateLocked(phase, notice))
 	m.loginMu.Unlock()
 	m.publishLoginState(state)
 }
@@ -720,7 +729,7 @@ func (m *Manager) publishTerminalLogin(providerName string, method LoginMethod, 
 		Method:   method,
 		Error:    loginProse(err),
 	}
-	m.storeLoginState(state)
+	state = m.storeLoginState(state)
 	m.publishLoginState(state)
 	return state
 }
@@ -747,17 +756,22 @@ func (r *loginRun) stateLocked(phase LoginPhase, notice string) LoginState {
 	return state
 }
 
-func (m *Manager) storeLoginState(state LoginState) {
+func (m *Manager) storeLoginState(state LoginState) LoginState {
 	m.loginMu.Lock()
 	defer m.loginMu.Unlock()
-	m.storeLoginStateLocked(state)
+	return m.storeLoginStateLocked(state)
 }
 
-func (m *Manager) storeLoginStateLocked(state LoginState) {
+// storeLoginStateLocked retains the state under the next Seq and returns it
+// as stored, which is the value to publish and to answer with.
+func (m *Manager) storeLoginStateLocked(state LoginState) LoginState {
 	if m.loginStates == nil {
 		m.loginStates = make(map[string]LoginState, 2)
 	}
+	m.loginSeq++
+	state.Seq = m.loginSeq
 	m.loginStates[state.Provider] = state
+	return state
 }
 
 func (m *Manager) publishLoginState(state LoginState) {

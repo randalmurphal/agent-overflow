@@ -105,12 +105,14 @@ export function previewAllowVisible(preview: PreviewLinkRender): boolean {
   return preview.state === 'not-shared' && preview.canAllow;
 }
 
-/** The attributes of that control. Its click is handled by the delegate. */
+/** The attributes of that control. Its click is handled by the delegate;
+ * its label is chrome, which find neither counts nor paints. */
 export function previewAllowAttributes(
   preview: PreviewLinkRender,
 ): Record<string, string> {
   return {
     'data-preview-allow': String(preview.port),
     'data-preview-backend': preview.backend,
+    'data-find-skip': '',
   };
 }

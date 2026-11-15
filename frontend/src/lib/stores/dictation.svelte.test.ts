@@ -2,9 +2,14 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 import { hasScope } from '../transport/scopes';
 import { __attachBackendForTest, __resetBackendsForTest, detachBackend } from '../transport/backends';
+import { RPC_TIMEOUT_MS, TransportError, withRpcTimeout } from '../transport/wsClient';
 import {
+  FINISH_GRACE_MS,
+  FINISH_UNANSWERED,
   applyDictationSourcesChanged,
+  dictationFinishWaitMs,
   dictationLiveReady,
+  dictationRemote,
   dictationSubscriptionReady,
   dictationSource,
   installDictationSourcesRefresh,
@@ -15,6 +20,10 @@ import {
 import type { DictationSession } from '../dictation/dictationSession.svelte';
 
 vi.mock('../transport/scopes', async (original) => ({ ...await original<object>(), hasScope: vi.fn(() => true) }));
+vi.mock('../transport/wsClient', async (original) => {
+  const actual = await original<typeof import('../transport/wsClient')>();
+  return { ...actual, withRpcTimeout: vi.fn(actual.withRpcTimeout) };
+});
 
 afterEach(() => {
   vi.mocked(hasScope).mockReset().mockReturnValue(true);
@@ -152,6 +161,36 @@ describe('dictation availability', () => {
     window.dispatchEvent(new Event('focus'));
     document.dispatchEvent(new Event('visibilitychange'));
     expect(read).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('dictation finish', () => {
+  const recordingEngine = { records: true, streamsPcm: false };
+
+  it('waits past the transcription budget the computer reports', async () => {
+    attachLaptop();
+    setBindingMock('DictationSources', async () => ({ subscription: true, transcribeWithinMs: 180_000 }));
+    await refreshDictationSources('laptop');
+    setBindingMock('FinishDictation', async () => 'hello');
+    vi.mocked(withRpcTimeout).mockClear();
+    await expect(dictationRemote('laptop', recordingEngine).finish('rec-1', 2)).resolves.toBe('hello');
+    expect(dictationFinishWaitMs('laptop')).toBe(180_000 + FINISH_GRACE_MS);
+    expect(withRpcTimeout).toHaveBeenCalledWith(180_000 + FINISH_GRACE_MS, expect.any(Function));
+  });
+
+  it('waits no less than any call for a computer that reports no budget', async () => {
+    attachLaptop();
+    setBindingMock('DictationSources', async () => ({ subscription: true }));
+    await refreshDictationSources('laptop');
+    expect(dictationFinishWaitMs('laptop')).toBe(RPC_TIMEOUT_MS);
+  });
+
+  it('says the computer never answered rather than quoting the transport', async () => {
+    attachLaptop();
+    setBindingMock('FinishDictation', async () => {
+      throw new TransportError('timeout', 'RPC 1 timed out after 195000ms');
+    });
+    await expect(dictationRemote('laptop', recordingEngine).finish('rec-1', 2)).rejects.toThrow(FINISH_UNANSWERED);
   });
 });
 

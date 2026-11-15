@@ -35,9 +35,24 @@ func (s *Store) InsertFlushQueueItem(item FlushQueueItem) error {
 	return insertFlushQueueItem(s.db, item)
 }
 
+// EnsureFlushQueueItem persists a queued message that the app is putting
+// back on the queue, unless its row is still there. A message taken back from
+// a session it had already reached lost its row at that write; the requeue
+// gives it one again before the in-memory register, as InsertFlushQueueItem
+// does for a new message.
+func (s *Store) EnsureFlushQueueItem(item FlushQueueItem) error {
+	return writeFlushQueueItem(s.db, item, ` ON CONFLICT(id) DO NOTHING`)
+}
+
 func insertFlushQueueItem(db interface {
 	Exec(string, ...any) (sql.Result, error)
 }, item FlushQueueItem) error {
+	return writeFlushQueueItem(db, item, "")
+}
+
+func writeFlushQueueItem(db interface {
+	Exec(string, ...any) (sql.Result, error)
+}, item FlushQueueItem, conflict string) error {
 	if strings.TrimSpace(item.ID) == "" {
 		return fmt.Errorf("store: insert flush queue item: id is required")
 	}
@@ -50,7 +65,7 @@ func insertFlushQueueItem(db interface {
 	}
 	if _, err := db.Exec(
 		`INSERT INTO flush_queue_items (id, thread_id, send_id, message, payload, enqueued_at)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?)`+conflict,
 		item.ID, item.ThreadID, item.SendID, item.Message, payload, item.EnqueuedAt,
 	); err != nil {
 		return fmt.Errorf("store: insert flush queue item %s: %w", item.ID, err)
@@ -143,6 +158,9 @@ func (s *Store) DeleteFlushQueueItemsForThread(threadID string) error {
       (SELECT send_id FROM flush_queue_items WHERE thread_id=? AND send_id<>'')`, threadID, threadID); err != nil {
 		return err
 	}
+	if err := retractDroppedThreadWakesTx(tx, threadID); err != nil {
+		return err
+	}
 	if _, err := tx.Exec(`DELETE FROM flush_queue_items WHERE thread_id = ?`, threadID); err != nil {
 		return fmt.Errorf("store: delete flush queue items for thread %s: %w", threadID, err)
 	}
@@ -230,4 +248,43 @@ func (s *Store) ListThreadsWithFlushQueueItems() ([]string, error) {
 		return nil, fmt.Errorf("store: list threads with flush queue items: %w", err)
 	}
 	return threadIDs, nil
+}
+
+const listUnconfirmedUserRowsSQL = `SELECT thread_id, id FROM items
+  WHERE kind = 'user_text' AND parent_id = ''
+    AND instr(meta, '"pendingFlush"') > 0 AND json_valid(meta)
+    AND json_extract(meta, '$.pendingFlush') = 1
+  ORDER BY thread_id, turn_index, item_index`
+
+// UnconfirmedUserRow names a user row the app reserved for a queued message
+// and never saw confirmed: its meta still carries `pendingFlush`
+// (itemmeta.SetPendingFlush).
+type UnconfirmedUserRow struct {
+	ThreadID string
+	ItemID   string
+}
+
+// ListUnconfirmedUserRows returns every main-timeline user row still marked
+// pendingFlush, by thread in timeline order. Confirmation and interrupt
+// promotion clear the mark in the write that places the row, so at boot each
+// one is residue of a process that died with the message unconfirmed. The
+// predicate starts with idx_items_user_text's, so the scan is of user rows.
+func (s *Store) ListUnconfirmedUserRows() ([]UnconfirmedUserRow, error) {
+	rows, err := s.reader().Query(listUnconfirmedUserRowsSQL)
+	if err != nil {
+		return nil, fmt.Errorf("store: list unconfirmed user rows: %w", err)
+	}
+	defer rows.Close()
+	var out []UnconfirmedUserRow
+	for rows.Next() {
+		var row UnconfirmedUserRow
+		if err := rows.Scan(&row.ThreadID, &row.ItemID); err != nil {
+			return nil, fmt.Errorf("store: scan unconfirmed user row: %w", err)
+		}
+		out = append(out, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: list unconfirmed user rows: %w", err)
+	}
+	return out, nil
 }

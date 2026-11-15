@@ -44,6 +44,7 @@ import { purgeClientState } from '../transport/clientPurge';
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
 import { addErrorToast, addToast } from './toast.svelte';
 import { errString } from '../utils/errors';
+import { createSnapshotStream } from './snapshotStream';
 import {
   descriptorForAttachedId,
   publishAttachedBackend,
@@ -170,15 +171,17 @@ function publishSystems(rows: readonly AttachedBackend[]): void {
  * outcome arrives later on `backend:attach`.
  */
 export async function addSystem(pairingLink: string): Promise<PendingAttachment> {
-  const attachment = await AddBackend(pairingLink);
-  revision++;
-  const row: PendingAttachment = {
-    id: attachment.id,
-    name: attachment.name,
-    endpoint: attachment.endpoint,
-    verificationNumber: attachment.verificationNumber,
-  };
-  pending = [...pending.filter((p) => p.id !== row.id), row];
+  let row!: PendingAttachment;
+  await attachOutcomes.claim(null, () => AddBackend(pairingLink), (attachment) => {
+    revision++;
+    row = {
+      id: attachment.id,
+      name: attachment.name,
+      endpoint: attachment.endpoint,
+      verificationNumber: attachment.verificationNumber,
+    };
+    pending = [...pending.filter((p) => p.id !== row.id), row];
+  });
   return row;
 }
 
@@ -283,10 +286,21 @@ function removedSystemLabel(id: string): string {
   return entry?.nickname || entry?.name || id;
 }
 
+// The host starts a pairing's confirmation wait before AddBackend answers,
+// and the transport writes events queued for this connection ahead of the
+// reply, so a wait that ends at once reports before the pending row exists.
+// A pairing's start holds the outcomes (every id: the id is the answer) and
+// they settle after the row is added.
+const attachOutcomes = createSnapshotStream<BackendAttachEvent>({
+  name: 'systems',
+  applyFrame: (_id, evt) => settleAttachment(evt),
+});
+
 /**
  * `backend:attach` — how one pairing ended. Called by events.ts. Retires
- * the pending row either way; on success the transport learns the door now
- * and the list is re-read so the new row carries what pairing wrote.
+ * the pending row either way and says how it went; on success the
+ * transport learns the door now and the list is re-read so the new row
+ * carries what pairing wrote.
  *
  * **Only home's frame counts, and `origin` is how that is decided here
  * rather than trusted upstream.** The event hub subscribes every attached
@@ -297,14 +311,14 @@ function removedSystemLabel(id: string): string {
  * itself on this box, and the descriptor built below names THIS machine's
  * proxy path (`/ws/backend/<id>`), so another backend's frame would
  * register a door home does not serve and leave a socket that can never
- * open. Answers null when the frame is not home's, which the caller reads
- * as "say nothing".
+ * open.
  */
-export function applyBackendAttach(
-  evt: BackendAttachEvent,
-  origin: BackendKey = HOME_BACKEND,
-): { name: string; error: string } | null {
-  if (origin !== HOME_BACKEND) return null;
+export function applyBackendAttach(evt: BackendAttachEvent, origin: BackendKey = HOME_BACKEND): void {
+  if (origin !== HOME_BACKEND) return;
+  attachOutcomes.push(evt.id, evt);
+}
+
+function settleAttachment(evt: BackendAttachEvent): void {
   const row = pending.find((p) => p.id === evt.id);
   pending = pending.filter((p) => p.id !== evt.id);
   const name = row?.name ?? evt.id;
@@ -315,19 +329,21 @@ export function applyBackendAttach(
     // is the link's backend id), so the entry answers to it at once.
     if (row) publishAttachedBackend(descriptorForAttachedId(evt.id, name, '', '', evt.id));
     if (hasScope('host')) void loadSystems().catch((err) => addErrorToast(errString(err), err));
-    return { name, error: '' };
+    addToast('success', `Attached ${name}`);
+    return;
   }
   // A failure for a row this page no longer holds is not this page's to
   // report: it cancelled the pairing (RemoveBackend ends the wait, which
   // arrives here as a refusal), or another window started it and will hear
   // the answer itself.
-  if (!row) return null;
-  return { name, error: evt.error || 'the pairing was not confirmed' };
+  if (!row) return;
+  addToast('error', `Could not attach ${name}: ${evt.error || 'the pairing was not confirmed'}`);
 }
 
 /** Test seam. */
 export function __resetSystemsForTest(): void {
   revision++;
+  attachOutcomes.reset();
   statuses = new Map();
   loaded = false;
   pending = [];

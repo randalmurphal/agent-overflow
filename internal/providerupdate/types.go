@@ -29,7 +29,12 @@ type Status struct {
 	CheckedAt int64 `json:"checkedAt"`
 	// CheckError is why the last check could not answer, "" when it did.
 	CheckError string `json:"checkError,omitempty"`
-	Run        Run    `json:"run"`
+	// SignInRequired reports that the last check asked nothing because the
+	// provider's login has expired: `claude doctor` would renew the token,
+	// and a renewal past the login's refresh deadline blanks the saved
+	// credential. Nothing is offered until a check after a sign-in answers.
+	SignInRequired bool `json:"signInRequired,omitempty"`
+	Run            Run  `json:"run"`
 }
 
 // Run is the most recent run of a provider's update command.

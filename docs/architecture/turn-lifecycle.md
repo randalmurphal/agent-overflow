@@ -980,9 +980,14 @@ and nothing else.
 **Drain.** Triage drains at provider boundaries it already classifies —
 turn, tool and background-task completion — through
 `maybeFlushQueueAtBoundary`, which refuses while queue-blocking work is
-running, and immediately from `RegisterQueueItem` when a session exists.
+running, and immediately from `RegisterQueueItem`.
 `tryFlushQueue` hands the batch to the App dispatcher outside `r.mu`; the
-App worker serializes dispatch per thread behind the thread lock. Per item,
+App worker serializes dispatch per thread behind the thread lock. A thread
+with no session gets one started by the worker
+(`ensureSessionForFlushLocked`), as a direct send does; when the start
+fails, the batch returns to the composer with the reason on the thread.
+While a queued message is undispatched, a composer send queues behind it
+rather than overtaking it. Per item,
 `dispatchFlushItem` resolves placement, allocates the row identity, registers
 the pending send, and writes to the provider. An interrupt with messages
 queued is not special-cased: the interrupt settles the turn, and the next

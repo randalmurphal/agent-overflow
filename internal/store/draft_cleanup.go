@@ -7,7 +7,8 @@ import (
 // emptyDraftThreadSQL is true for a materialized chat/plan draft that has
 // not gained durable conversation state. A worktree counts as durable
 // state: deleting the thread row would orphan a checkout the user
-// deliberately created.
+// deliberately created. So does a queued message, an accepted send whose
+// row would cascade with the thread.
 const emptyDraftThreadSQL = `SELECT EXISTS (SELECT 1
 		   FROM threads
 		  WHERE id = ?
@@ -23,6 +24,7 @@ const emptyDraftThreadSQL = `SELECT EXISTS (SELECT 1
 		    	SELECT 1 FROM turns WHERE turns.thread_id = threads.id
 		    )
 		    AND NOT EXISTS (SELECT 1 FROM thread_draft_recoveries WHERE thread_id = threads.id)
+		    AND NOT EXISTS (SELECT 1 FROM flush_queue_items WHERE flush_queue_items.thread_id = threads.id)
 		    AND NOT EXISTS (
 		    	SELECT 1 FROM thread_drafts
 		    	 WHERE thread_drafts.thread_id = threads.id

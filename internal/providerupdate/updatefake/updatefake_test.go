@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/providerupdate"
 	"agent-overflow/internal/providerupdate/updatefake"
 )
@@ -40,9 +41,11 @@ func newService(t *testing.T, feed *updatefake.Feed, codex providerupdate.Binary
 			}
 			return providerupdate.Binary{Path: "/mock/" + name}
 		},
-		Installed: func(string) string { return updatefake.Baseline },
-		Env:       func(string) map[string]string { return nil },
-		WorkDir:   func() (string, error) { return "/home/mock", nil },
+		Installed:          func(string) string { return updatefake.Baseline },
+		Env:                func(string) map[string]string { return nil },
+		WorkDir:            func() (string, error) { return "/home/mock", nil },
+		ClaudeRetention:    func(string) claude.Retention { return claude.UserHomeRetention(0) },
+		ClaudeLoginExpired: func() (bool, error) { return false, nil },
 		Runner: func(_ context.Context, command providerupdate.Command) (providerupdate.Output, error) {
 			if slices.Equal(command.Args, []string{"doctor"}) {
 				return providerupdate.Output{Text: "Auto-update channel: latest\n"}, nil

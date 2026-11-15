@@ -101,6 +101,7 @@ import {
 } from './paneTitleRename';
 import type { Project, Thread } from '../types/models';
 import type { TerminalSessionSummary } from '../types/terminal';
+import { applyTerminalExit } from './eventsTerminal';
 
 // builtinCommands imports openTerminalThread directly (like runTerminalToggle);
 // stub it so terminal.newPane's wiring can be asserted without standing up the
@@ -814,6 +815,36 @@ describe('terminal tab management commands', () => {
     expect(handle.tabs.map((t) => t.terminalID)).toEqual(['term-existing', 'term-new']);
     // The new tab is now active → focus is requested so the cursor lands in it.
     expect(pane.consumeTerminalFocusRequest()).toBe(true);
+  });
+
+  it('terminal.newTab adds no tab for a shell whose exit overtook the OpenTerminal reply', async () => {
+    const pane = readyPane({ workspacePath: '/ws/9' });
+    registerFixtureCommands(pane);
+    const handle = handleForPane(pane);
+    handle.addTab(termSummary('term-existing'));
+    setBindingMock('OpenTerminal', async () => {
+      applyTerminalExit({ terminalID: 'term-new', threadID: pane.threadId!, code: 1 } as never);
+      return { terminalID: 'term-new', summary: termSummary('term-new') };
+    });
+
+    runCommand('terminal.newTab', makeCommandContext(pane, { terminalFocus: true }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(handle.tabs.map((t) => t.terminalID)).toEqual(['term-existing']);
+    expect(handle.activeTerminalID).toBe('term-existing');
+    expect(pane.consumeTerminalFocusRequest()).toBe(false);
+  });
+
+  it('terminal.newTab removes the tab when the exit follows the reply', async () => {
+    const pane = readyPane({ workspacePath: '/ws/9' });
+    registerFixtureCommands(pane);
+    const handle = handleForPane(pane);
+    handle.addTab(termSummary('term-existing'));
+    setBindingMock('OpenTerminal', async () => ({ terminalID: 'term-new', summary: termSummary('term-new') }));
+
+    runCommand('terminal.newTab', makeCommandContext(pane, { terminalFocus: true }));
+    await vi.waitFor(() => expect(handle.tabs.map((t) => t.terminalID)).toEqual(['term-existing', 'term-new']));
+    applyTerminalExit({ terminalID: 'term-new', threadID: pane.threadId!, code: 0 } as never);
+    expect(handle.tabs.map((t) => t.terminalID)).toEqual(['term-existing']);
   });
 
   it('terminal.closeTab closes the active tab and removes it from the surface', () => {
@@ -2211,6 +2242,8 @@ describe('thread-bound commands on placeholders', () => {
 
   it('terminal.toggle on a placeholder opens without creating a thread', () => {
     const pane = placeholderPane('term-toggle-draft');
+    // The shared teardown closes the placeholder, which closes the terminal it opened.
+    setBindingMock('CloseThreadTerminals', async () => undefined);
     const create = setBindingMock('CreateThread', async () => {
       throw new Error('CreateThread must not be called for terminal.toggle on a placeholder');
     });
@@ -2231,6 +2264,8 @@ describe('thread-bound commands on placeholders', () => {
 
   it('terminal.new on a placeholder opens without creating a thread', () => {
     const pane = placeholderPane('term-new-draft');
+    // The shared teardown closes the placeholder, which closes the terminal it opened.
+    setBindingMock('CloseThreadTerminals', async () => undefined);
     const create = setBindingMock('CreateThread', async () => {
       throw new Error('CreateThread must not be called for terminal.new on a placeholder');
     });

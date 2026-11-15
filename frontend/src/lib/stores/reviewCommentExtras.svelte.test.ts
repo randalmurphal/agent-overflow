@@ -9,6 +9,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { flushSync } from 'svelte';
 import { createReviewCommentExtras, type ReviewCommentExtras } from './reviewCommentExtras.svelte';
+import { createReviewPRIdentity } from './reviewPRIdentity.svelte';
 import { getToasts, resetToastsForTest } from './toast.svelte';
 import { __setTransportHelloForTest } from './transportStatus.svelte';
 import { HOME_BACKEND } from '../transport/backendKey';
@@ -63,7 +64,7 @@ beforeEach(() => {
     extras = createReviewCommentExtras({
       backend: HOME_BACKEND,
       ref: () => host.ref,
-      identity: () => (host.ref ? `home:${host.ref.number}` : null),
+      prIdentity: createReviewPRIdentity(() => (host.ref ? `home:${host.ref.number}` : null)),
       appliedSeq: () => host.appliedSeq,
       launch: () => host.launch,
       updateFailing: () => host.failing,

@@ -24,6 +24,7 @@ import {
 import type { ThreadPane } from './thread.svelte';
 import type { BackendKey } from '../transport/backendKey';
 import { threadMachine } from './attachedBackends.svelte';
+import { createSnapshotStream } from './snapshotStream';
 
 // Deliberately NOT ThreadPaneIngest (see threadPaneRoles.ts): the two
 // members this module touches are a focus request, not event ingest.
@@ -53,10 +54,41 @@ function terminalFocusPanes(threadID: string): TerminalFocusPane[] {
  * with no active tab adopts it, since there is nothing to pull away from.
  */
 export function applyTerminalOpened(payload: TerminalHandle): void {
-  const threadID = payload?.threadID;
-  const summary = payload?.summary;
-  if (!threadID || !summary?.terminalID) return;
-  getExistingThreadTerminalState(threadID)?.addTab(summary, { activate: false });
+  const terminalID = payload?.summary?.terminalID;
+  if (!payload?.threadID || !terminalID) return;
+  lifecycle.push(terminalID, { kind: 'opened', payload });
+}
+
+// A terminal's open and exit, ordered against the calls that start one.
+// OpenTerminal starts the shell before it answers, and the transport writes
+// the frames queued for this connection ahead of the reply, so a shell that
+// ends at once announces its exit before the answer that names it. A start
+// holds every terminal (its id is the answer), and the frames fold after the
+// caller adds the tab, so the exit removes it.
+type TerminalLifecycleFrame =
+  | { kind: 'opened'; payload: TerminalHandle }
+  | { kind: 'exit'; payload: TerminalExitEventPayload };
+
+const lifecycle = createSnapshotStream<TerminalLifecycleFrame>({
+  name: 'terminal',
+  applyFrame: (_terminalID, frame) => {
+    if (frame.kind === 'exit') {
+      const { threadID, terminalID } = frame.payload;
+      endTerminalTab(getThreadTerminalStateForTerminalEvent(threadID, terminalID), threadID, terminalID);
+      return;
+    }
+    const { threadID, summary } = frame.payload;
+    getExistingThreadTerminalState(threadID)?.addTab(summary, { activate: false });
+  },
+});
+
+/**
+ * Runs a call that starts a terminal and answers with its handle
+ * (OpenTerminal), adding the tab with `adopt` before the open and exit
+ * frames that overtook the answer fold. Resolves with the answer.
+ */
+export function startTerminal<R>(call: () => Promise<R>, adopt: (answer: R) => void): Promise<R> {
+  return lifecycle.claim(null, call, adopt);
 }
 
 /**
@@ -128,9 +160,5 @@ export function applyTerminalEndFailed(payload: TerminalEndFailedEventPayload): 
 
 export function applyTerminalExit(payload: TerminalExitEventPayload): void {
   if (!payload?.threadID || !payload.terminalID) return;
-  endTerminalTab(
-    getThreadTerminalStateForTerminalEvent(payload.threadID, payload.terminalID),
-    payload.threadID,
-    payload.terminalID,
-  );
+  lifecycle.push(payload.terminalID, { kind: 'exit', payload });
 }

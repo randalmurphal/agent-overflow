@@ -154,6 +154,7 @@ func TestRequeuedQueueItemKeepsItsDurableRow(t *testing.T) {
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}
+	holdFlushQueue(app)
 	queued, err := app.RegisterQueueItem(context.Background(), thread.ID, "keep me", SendMessageOptions{})
 	if err != nil {
 		t.Fatalf("RegisterQueueItem: %v", err)
@@ -195,13 +196,14 @@ func TestSessionTeardownDropsDurableQueueRows(t *testing.T) {
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}
+	holdFlushQueue(app)
 	if _, err := app.RegisterQueueItem(context.Background(), thread.ID, "thrown away", SendMessageOptions{}); err != nil {
 		t.Fatalf("RegisterQueueItem: %v", err)
 	}
 
 	sess, err := claude.NewSession(
 		context.Background(), thread.ID,
-		claude.Config{Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
+		claude.Config{Retention: claude.UserHomeRetention(0), Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
 		func(provider.ProviderEvent) {},
 	)
 	if err != nil {
@@ -254,7 +256,8 @@ func TestAMessageQueuedDuringAStopsDropLandsAfterIt(t *testing.T) {
 		})
 	}
 
-	// No dispatcher is configured, so triage keeps what is queued.
+	// With no dispatcher, triage keeps what is queued.
+	holdFlushQueue(app)
 	unlock := app.threadLocks().Lock(thread.ID)
 	app.sessionManager().put(thread.ID, session{
 		Provider: string(provider.Codex),
@@ -440,6 +443,7 @@ func TestRegisterQueueItemAnswersARepeatedSendFromItsRow(t *testing.T) {
 		t.Fatalf("CreateThread: %v", err)
 	}
 
+	holdFlushQueue(app)
 	first, err := app.RegisterQueueItem(context.Background(), thread.ID, "only once", SendMessageOptions{
 		SendID: "send-repeat",
 	})
@@ -494,7 +498,7 @@ func TestSendMessageAnswersARepeatedSendFromItsItem(t *testing.T) {
 			}
 			sess, err := claude.NewSession(
 				context.Background(), thread.ID,
-				claude.Config{Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
+				claude.Config{Retention: claude.UserHomeRetention(0), Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
 				func(provider.ProviderEvent) {},
 			)
 			if err != nil {
@@ -665,6 +669,7 @@ func TestDurableRowDeletionComposesWithTheInjectorSettlement(t *testing.T) {
 		t.Fatalf("CreateThread: %v", err)
 	}
 	settled := 0
+	holdFlushQueue(app)
 	if _, err := app.registerQueueItem(thread.ID, "injected", SendMessageOptions{}, injectedQueueOptions{
 		preserveDraft: true,
 		onDurable:     func() { settled++ },

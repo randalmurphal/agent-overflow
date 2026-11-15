@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/commitmsg"
+	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/textgen"
 	"agent-overflow/internal/threadtitle"
 )
@@ -43,9 +44,10 @@ const workflowDigestSchema = `{
 
 func textGenConfig() textgen.Config {
 	return textgen.Config{
-		Binary: mockBin,
-		Model:  "mock-model",
-		Exec:   textgen.ExecCLI,
+		Binary:          mockBin,
+		Model:           "mock-model",
+		ClaudeRetention: func(string) claude.Retention { return claude.UserHomeRetention(90) },
+		Exec:            textgen.ExecCLI,
 	}
 }
 

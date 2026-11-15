@@ -69,7 +69,7 @@ func newClaudeStopFixtureEmitting(t *testing.T, refused string, emit func(eventc
 	f.handle(t, provider.ProviderEvent{Kind: provider.EventTurnStart, TurnID: thread.ID + ":turn"}, nil)
 	stopLog := filepath.Join(t.TempDir(), "stops.log")
 	sess, err := claude.NewSession(context.Background(), thread.ID,
-		claude.Config{Binary: writeClaudeStopRecorderBinary(t, stopLog, refused), WorkDir: t.TempDir()},
+		claude.Config{Retention: claude.UserHomeRetention(0), Binary: writeClaudeStopRecorderBinary(t, stopLog, refused), WorkDir: t.TempDir()},
 		func(provider.ProviderEvent) {})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)

@@ -133,9 +133,23 @@ export const patchMemory = {
   },
 };
 
+/** Stored characters of text a reader walking a patch may read back and
+ * hold pinned at once: an eighth of the budget, so what a walk holds past
+ * the budget stays a fraction of it. A single line longer than this is
+ * still held whole while it is read. */
+export function patchTextReadAheadBytes(): number {
+  return Math.floor(budget() / 8);
+}
+
 /** Held text in bytes: what tests read to see the budget kept. */
 export function patchTextHeldBytes(): number {
   return heldBytes;
+}
+
+/** Held and pinned text in bytes, which the budget leaves out: what tests
+ * read to see a reader's pins stay bounded. */
+export function patchTextPinnedBytes(): number {
+  return pinnedBytes;
 }
 
 /** Chunks the budget can still reach: what tests read to see a store let

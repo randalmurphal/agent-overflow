@@ -18,24 +18,26 @@ import (
 	"agent-overflow/internal/provider"
 )
 
-// TranscribeURL is ChatGPT's speech-to-text endpoint, the one the Codex
-// desktop app's dictation uses. It takes the recording as one multipart
-// `file` part and answers `{"text": ...}`, authorized by a ChatGPT sign-in's
-// access token and workspace like every other ChatGPT backend call. OpenAI
-// keeps the uploaded recording for 30 days.
+// TranscribeURL is ChatGPT's speech-to-text endpoint, which the Codex TUI's
+// dictation used (docs/references/voice-dictation.md). It takes the
+// recording as one multipart `file` part and answers `{"text": ...}`,
+// authorized by a ChatGPT sign-in's access token; the workspace header goes
+// with it as on every ChatGPT backend call, though the endpoint does not
+// enforce it. OpenAI keeps the uploaded recording for 30 days.
 const TranscribeURL = "https://chatgpt.com/backend-api/transcribe"
-
-// transcribeTimeout bounds one transcription: the upload and the model's
-// pass over at most a few minutes of speech.
-const transcribeTimeout = 90 * time.Second
 
 // maxTranscriptBytes bounds the response read. A transcript of the longest
 // recording AO sends is tens of kilobytes.
 const maxTranscriptBytes = 1 << 20
 
-// ErrTranscribeUnauthorized means ChatGPT refused the sign-in's access
+// ErrTranscribeUnauthorized is a 401: ChatGPT refused the sign-in's access
 // token. A token refresh may fix it.
 var ErrTranscribeUnauthorized = errors.New("codex: ChatGPT refused the sign-in for transcription")
+
+// ErrTranscribeForbidden is a 403: the endpoint refused the request itself
+// (a challenge, an entitlement, a retirement). No token condition produced
+// one, so a token refresh would not fix it.
+var ErrTranscribeForbidden = errors.New("codex: ChatGPT refused the transcription request (HTTP 403)")
 
 // ErrNoChatGPTLogin means the credential is not a ChatGPT sign-in (an API
 // key, another auth mode, or no tokens), so it cannot authorize ChatGPT's
@@ -92,7 +94,8 @@ type TranscribeRequest struct {
 	UserAgent string
 }
 
-// Transcribe sends one recording to ChatGPT and returns its text.
+// Transcribe sends one recording to ChatGPT and returns its text. ctx bounds
+// the upload and the answer; the caller owns the time limit.
 func Transcribe(ctx context.Context, client *http.Client, request TranscribeRequest) (string, error) {
 	accessToken, accountID, ok := chatGPTRequestAuth(request.Credential)
 	if !ok {
@@ -121,8 +124,6 @@ func Transcribe(ctx context.Context, client *http.Client, request TranscribeRequ
 		return io.MultiReader(bytes.NewReader(head), bytes.NewReader(request.Audio), bytes.NewReader(tail))
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, transcribeTimeout)
-	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, request.Endpoint, newBody())
 	if err != nil {
 		return "", fmt.Errorf("codex: build transcription request: %w", err)
@@ -147,8 +148,10 @@ func Transcribe(ctx context.Context, client *http.Client, request TranscribeRequ
 		return "", fmt.Errorf("codex: read transcription response: %w", err)
 	}
 	switch {
-	case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
+	case resp.StatusCode == http.StatusUnauthorized:
 		return "", ErrTranscribeUnauthorized
+	case resp.StatusCode == http.StatusForbidden:
+		return "", ErrTranscribeForbidden
 	case resp.StatusCode == http.StatusTooManyRequests:
 		return "", &TranscribeRateLimitedError{RetryAfter: retryAfter(resp.Header.Get("Retry-After"))}
 	case resp.StatusCode < 200 || resp.StatusCode > 299:

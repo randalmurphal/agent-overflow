@@ -114,6 +114,13 @@ export interface ThreadRowUiState {
    * them.
    */
   hasUserExpansionWithin(itemIds: Iterable<string>): boolean;
+  /**
+   * The payload text of an item's body the reader expanded, under the state
+   * key its row kind uses: undefined when no such body is expanded, null
+   * while it loads. Non-creating. Thread find reads it to count what an
+   * expanded body shows (threadFindText.ts).
+   */
+  expandedItemData(itemId: string, stateKey: string): string | null | undefined;
   attachmentCacheFor(itemId: string): AttachmentPreviewCache;
   disposeItems(items: Iterable<Item>): void;
   pruneRowUiState(retention: RowUiStateRetention): void;
@@ -813,6 +820,14 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
     return false;
   }
 
+  function expandedItemData(itemId: string, stateKey: string): string | null | undefined {
+    for (const key of itemExpansionKeysByState.get(itemId)?.get(stateKey) ?? []) {
+      const entry = expansionStates.get(key) ?? leasedPrunedExpansionStates.get(key);
+      if (entry?.handle.expanded) return entry.handle.displayData;
+    }
+    return undefined;
+  }
+
   // An `autoExpands` entry's expanded bit is `loadOnMount`'s doing (see the
   // field's declaration), so only a manual-mode entry can witness a reader.
   function userExpandedEntry(key: string): boolean {
@@ -835,6 +850,7 @@ export function createThreadRowUiState(options: ThreadRowUiStateOptions): Thread
     setDiffCardExpanded,
     expansionSignature,
     hasUserExpansionWithin,
+    expandedItemData,
     attachmentCacheFor: messageUi.attachmentCacheFor,
     disposeItems,
     pruneRowUiState,

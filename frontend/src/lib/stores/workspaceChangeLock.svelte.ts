@@ -30,12 +30,11 @@
 // code logged the failure and resolved to zero running tasks, which reads as
 // "safe to delete".
 //
-// The backend answer is deliberately the same computation the removal gate
-// performs while holding the thread locks (App.GetWorkspaceActivity and
-// removeProjectWorktree share threadsReferencingWorkspace's path matching and
-// threadActivityBlockReason's activity reads), so the affordance and the
-// refusal cannot disagree. It covers BOTH legs of "busy" — open turns and
-// live background tasks — across every thread in the directory.
+// The backend answer covers two of the kinds of running work the backend's
+// refusals check (App.GetWorkspaceActivity; runningWorkIn in Go): open turns
+// and live background tasks, across every thread in the directory. The
+// refusals also cover the rest (a composer shell command, for one), so the
+// lock is never stricter than the refusal.
 //
 // EVENT ROUTING: refresh every live key on any activity event, rather than
 // enriching the wire payload with a workspacePath and routing precisely. The
