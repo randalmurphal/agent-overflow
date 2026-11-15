@@ -268,6 +268,34 @@ describe('<ChatView>', () => {
     }
   });
 
+  for (const provider of ['claude', 'codex'] as const) {
+    it(`offers an ask copy (${provider}) only what it can do: no message edit or fork, no pickers, no attach`, async () => {
+      // The copy takes no message from a person (Thread.askCopy): it is
+      // watched and stopped, never written to or configured.
+      const userItem = (thread: Thread) => makeItem({
+        id: 'user:1', threadId: thread.id, turnIndex: 1, itemIndex: 0,
+        kind: 'user_text', role: 'user', summary: 'Is the changelog current?',
+      });
+      const controls = ['composer-model-menu-trigger', 'composer-effort-trigger', 'composer-access-toggle', 'composer-mcp-trigger', 'composer-attach'];
+      const plain: Thread = { ...seedThread(), provider };
+      const shown = render(ChatView, { props: { pane: await buildPane(plain, [userItem(plain)]) } });
+      await tick();
+      expect(shown.queryByLabelText('Fork from this message')).not.toBeNull();
+      expect(shown.queryByLabelText('Edit message and resend from here')).not.toBeNull();
+      for (const id of controls) expect(shown.queryByTestId(id), id).not.toBeNull();
+      shown.unmount();
+
+      const copy: Thread = { ...seedThread(), provider, askCopy: true };
+      const view = render(ChatView, { props: { pane: await buildPane(copy, [userItem(copy)]) } });
+      await tick();
+      expect(view.queryByLabelText('Fork from this message')).toBeNull();
+      expect(view.queryByLabelText('Edit message and resend from here')).toBeNull();
+      for (const id of controls) expect(view.queryByTestId(id), id).toBeNull();
+      expect(view.container.querySelector('[data-ui-surface="chat"]')?.hasAttribute('data-shell-runnable')).toBe(false);
+      expect(view.getByTestId('composer-root').querySelector('textarea')?.disabled).toBe(true);
+    });
+  }
+
   it('forks from a user-message action through the chat-level handler', async () => {
     const thread = seedThread();
     const userItem = makeItem({

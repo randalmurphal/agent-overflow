@@ -8,7 +8,8 @@
 // way with touch-sized Open in Agent Pane and Show in Sidebar. Failed reads
 // of the list and of Past fit with touch-sized Retry, which reads them; an
 // ask's Past row is the thread asked with its provider; a running ask's tap
-// opens its copy with a composer that takes no message and no Keep, and
+// opens its copy with a composer that takes no message, no pickers, no
+// attach, no edit or fork on its messages and no Keep, and
 // once answered the copy's pane goes, its Past row's digest carries the
 // answer and its icon offers the thread asked; and an assistant's helper row, open and past, has Open in
 // Agent Pane and no Show in Sidebar.
@@ -27,6 +28,7 @@ import {
   agentsBody,
   approvalTool,
   companionPane,
+  expectAskCopyReadOnly,
   failAgentReads,
   ledgerRow,
   mockInterrupt,
@@ -161,6 +163,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     await expect(input).toBeDisabled();
     await expect(input).toHaveAttribute('placeholder', "An agent's question runs in this copy. It takes no messages.");
     await expect(copyPane.getByTestId('side-chat-keep')).toHaveCount(0);
+    await expectAskCopyReadOnly(copyPane);
     await capture(page, `agents-${provider}-compact-ask-copy.png`, copyPane);
 
     // Answered: the copy and its pane go, and Past's row shows the answer

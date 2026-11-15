@@ -273,6 +273,20 @@ export function companionPane(page: Page): Locator {
   return page.locator('section[data-pane-kind="agent-thread"]');
 }
 
+/**
+ * An ask's copy offers only what it can do: its message has no edit or
+ * fork, and its composer no pickers and no attach; Stop stays.
+ */
+export async function expectAskCopyReadOnly(copyPane: Locator): Promise<void> {
+  await expect(copyPane.getByTestId('user-message-bubble').first()).toBeVisible({ timeout: 30_000 });
+  await expect(copyPane.getByLabel('Fork from this message')).toHaveCount(0);
+  await expect(copyPane.getByLabel('Edit message and resend from here')).toHaveCount(0);
+  for (const id of ['composer-model-menu-trigger', 'composer-effort-trigger', 'composer-access-toggle', 'composer-mcp-trigger', 'composer-attach']) {
+    await expect(copyPane.getByTestId(id), id).toHaveCount(0);
+  }
+  await expect(copyPane.getByTestId('composer-interrupt')).toBeVisible();
+}
+
 export interface LedgerRequest {
   token: string;
   kind: string;

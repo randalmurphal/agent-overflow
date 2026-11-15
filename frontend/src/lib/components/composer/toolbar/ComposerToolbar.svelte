@@ -151,8 +151,9 @@
   // placeholder. The pane carries a synthetic thread object in both
   // cases so the pickers can read its mode/provider/etc.; placeholder
   // actions update local state or new-thread defaults without creating
-  // a row.
-  let hasComposableSurface = $derived(pane.canCompose);
+  // a row. An ask's copy (Thread.askCopy) is watched and stopped, never
+  // configured: it shows no pickers, as an agent pane does not.
+  let hasComposableSurface = $derived(pane.canCompose && !pane.thread?.askCopy);
   let toolbarEl: HTMLDivElement | undefined = $state(undefined);
   let toolbarDensity = $state<ComposerToolbarDensity>('compact');
 

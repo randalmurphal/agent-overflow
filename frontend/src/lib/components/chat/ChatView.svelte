@@ -86,15 +86,21 @@
   //
   // Both also WRITE the thread (ForkThreadFromMessage, the edit's revert
   // and resend) under `threads:operate`, so a session without it is
-  // offered neither: the gate lands here, on the same single point.
+  // offered neither: the gate lands here, on the same single point. An
+  // ask's copy (Thread.askCopy) takes no message from a person, so it is
+  // offered neither, as an agent pane, which passes no actions, is not.
+  const askCopy = $derived(Boolean(pane.thread?.askCopy));
   const supportsMessageAnchorActions = $derived(
-    providerSupports(pane.thread?.provider, 'fork')
+    !askCopy
+      && providerSupports(pane.thread?.provider, 'fork')
       && threadHasScope('threads:operate', pane.threadId, pane.thread?.projectId),
   );
   // Run on a shell code block runs a command here and sends its output to the
-  // thread, so it is offered only to a session granted both.
+  // thread, so it is offered only to a session granted both, and never in an
+  // ask's copy, which takes no message.
   const canRunShell = $derived(
-    threadHasScope('terminal:operate', pane.threadId, pane.thread?.projectId)
+    !askCopy
+      && threadHasScope('terminal:operate', pane.threadId, pane.thread?.projectId)
       && threadHasScope('threads:operate', pane.threadId, pane.thread?.projectId),
   );
   // On a phone the edit happens in the composer's slot, where the keyboard

@@ -40,6 +40,7 @@ import {
   PEER,
   agentsBody,
   companionPane,
+  expectAskCopyReadOnly,
   failAgentReads,
   ledgerRequests,
   openAgentRow,
@@ -144,6 +145,7 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     await expect(copyInput).toBeDisabled();
     await expect(copyInput).toHaveAttribute('placeholder', "An agent's question runs in this copy. It takes no messages.");
     await expect(copyPane.getByTestId('side-chat-keep')).toHaveCount(0);
+    await expectAskCopyReadOnly(copyPane);
     expect((await harness.rpc<{ askCopy?: boolean }>('GetThread', ask.targetThreadId)).askCopy).toBe(true);
     await capture(page, `agents-past-${provider}-ask-copy.png`, copyPane, askRow);
 
