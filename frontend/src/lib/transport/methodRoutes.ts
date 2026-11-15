@@ -359,6 +359,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	111779378: 'home', // RegisterOwnDevice
 	2641306153: 'home', // RegisterPushToken
 	1034543696: 'thread', // RegisterQueueItem
+	3381314677: 'selected', // ReleaseReadAloudTicket
 	504085501: 'home', // ReleaseReviewDiff
 	3940492954: 'selected', // RemoteCommandArtifact
 	235246962: 'selected', // RemoteCommandCancel

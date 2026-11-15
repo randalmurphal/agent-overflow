@@ -398,6 +398,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "RegisterOwnDevice", ID: 111779378, Scope: "session", Route: "home", Remote: true},                                 // main.App.RegisterOwnDevice
 	{Name: "RegisterPushToken", ID: 2641306153, Scope: "session", Route: "home", Remote: true},                                // main.App.RegisterPushToken
 	{Name: "RegisterQueueItem", ID: 1034543696, Scope: "threads:operate", Route: "thread"},                                    // main.App.RegisterQueueItem
+	{Name: "ReleaseReadAloudTicket", ID: 3381314677, Scope: "threads:operate", Route: "selected"},                             // main.App.ReleaseReadAloudTicket
 	{Name: "ReleaseReviewDiff", ID: 504085501, Scope: "session", Route: "home"},                                               // main.App.ReleaseReviewDiff
 	{Name: "RemoteCommandArtifact", ID: 3940492954, Scope: "terminal:operate", Route: "selected", CallerBound: true},          // main.App.RemoteCommandArtifact
 	{Name: "RemoteCommandCancel", ID: 235246962, Scope: "terminal:operate", Route: "selected"},                                // main.App.RemoteCommandCancel

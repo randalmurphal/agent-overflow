@@ -251,7 +251,11 @@ section was waiting or being read (the RPC says the same with code
   synthesis is refused, not queued. A clip keeps its synthesis slot until
   its response is written, and a fetch is cut off after two minutes, so
   the audio held for slow readers is bounded too. An aborted fetch cancels
-  the call.
+  the call. A section that a skip or a stop abandons before its clip
+  arrives is given back (`ReleaseReadAloudTicket`): one waiting is dropped
+  with its ticket, and a synthesis ends and frees its slot before the call
+  returns. The client's next fetch from that computer waits for those
+  answers, so quick skips never meet the caps.
 - A write to the switch drops every section admitted before it and ends
   their syntheses, as it does live recordings; switching off and on again
   does not spare them. A section's id leads with its admission revision,

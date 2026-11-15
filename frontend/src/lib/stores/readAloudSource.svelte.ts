@@ -8,7 +8,7 @@
 // coming back into view, because the key file changes outside the app.
 
 import { SvelteMap } from 'svelte/reactivity';
-import { MintReadAloudTicket, ReadAloudSource, type ReadAloudSourceStatus, type ReadAloudVoice } from './bindings';
+import { MintReadAloudTicket, ReadAloudSource, ReleaseReadAloudTicket, type ReadAloudSourceStatus, type ReadAloudVoice } from './bindings';
 import { onBackendDetached, withBackendTarget } from '../transport/backends';
 import { fetchTicketedBytes, TransferRefusedError } from '../transport/attachmentTransfer';
 import { TransportError } from '../transport/wsClient';
@@ -101,16 +101,53 @@ export function installReadAloudSourceRefresh(): () => void {
 onBackendDetached(({ backendId }) => {
   sources.delete(backendId);
   generations.delete(backendId);
+  releasing.delete(backendId);
 });
 
+// Sections given back to each computer whose release has not been answered
+// yet. A fetch there waits for them, so the computer has freed what a skip
+// abandoned before the fetch asks for a synthesis slot.
+const releasing = new Map<BackendKey, Set<Promise<void>>>();
+
+function giveBack(backend: BackendKey, url: string): void {
+  const sent = (async () => {
+    try {
+      await withBackendTarget(backend, () => ReleaseReadAloudTicket(url));
+    } catch (err) {
+      if (!isPassiveConnectionFailure(err)) {
+        reportFrontendDiagnostic('read aloud: could not give back a section this reading skipped', err instanceof Error ? err.message : '');
+      }
+    }
+  })();
+  let pending = releasing.get(backend);
+  if (!pending) releasing.set(backend, (pending = new Set()));
+  pending.add(sent);
+  void sent.then(() => {
+    pending.delete(sent);
+    if (pending.size === 0 && releasing.get(backend) === pending) releasing.delete(backend);
+  });
+}
+
 /** Fetches one section's audio from `backend`: the text is admitted
- * there, then its ticketed URL is spent once. A failure's message is the
+ * there, then its ticketed URL is spent once. A section abandoned before
+ * its audio arrives is given back, so a quick skip frees its place and its
+ * synthesis slot on the computer at once. A failure's message is the
  * computer's reason; `isReadAloudSwitchedOff` tells its switch apart. */
 export function readAloudClipFetcher(backend: BackendKey): FetchClip {
   return async (text, voice, signal) => {
     const url = await withBackendTarget(backend, () => MintReadAloudTicket(text, voice));
+    const abandon = (): void => giveBack(backend, url);
+    if (signal.aborted) abandon();
     signal.throwIfAborted();
-    return fetchTicketedBytes(backend, url, null, signal);
+    signal.addEventListener('abort', abandon, { once: true });
+    try {
+      const pending = releasing.get(backend);
+      if (pending) await Promise.all(pending);
+      signal.throwIfAborted();
+      return await fetchTicketedBytes(backend, url, null, signal);
+    } finally {
+      signal.removeEventListener('abort', abandon);
+    }
   };
 }
 
@@ -118,4 +155,5 @@ export function readAloudClipFetcher(backend: BackendKey): FetchClip {
 export function resetReadAloudSourcesForTest(): void {
   sources.clear();
   generations.clear();
+  releasing.clear();
 }

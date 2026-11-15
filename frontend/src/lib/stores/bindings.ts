@@ -424,10 +424,12 @@ export {
   // The OpenAI API key file Settings > Voice describes and opens.
   OpenAIKeyFile,
   EditOpenAIKeyFile,
-  // Read aloud in OpenAI voices: a sentence admitted on the reply's
-  // computer, its WAV fetched over HTTP under a single-use ticket.
+  // Read aloud in OpenAI voices: a section admitted on the reply's
+  // computer, its WAV fetched over HTTP under a single-use ticket, and
+  // given back when a skip or a stop abandons it.
   ReadAloudSource,
   MintReadAloudTicket,
+  ReleaseReadAloudTicket,
   // Writes an image attachment into the owning computer's Downloads folder,
   // for a client that cannot run a browser download (utils/fileSaveAction.ts).
   SaveAttachment,
