@@ -1627,9 +1627,7 @@ export class PRListReview {
  * PRManage is what the review pane's Details section shows and which
  * management controls it offers, read with the detail. Unavailable is
  * the sentence saying the read failed: the lists are then empty and
- * every Can flag false, and the rest of the detail stands. Limited is
- * the sentence naming the controls the forge's server does not support,
- * which are not offered while the rest are.
+ * every Can flag false, and the rest of the detail stands.
  */
 export class PRManage {
     "reviewers": PRReviewer[];
@@ -1637,7 +1635,6 @@ export class PRManage {
     "labels": PRLabel[];
     "can": PRManageCan;
     "unavailable"?: string;
-    "limited"?: string;
 
     /** Creates a new PRManage instance. */
     constructor($$source: Partial<PRManage> = {}) {
