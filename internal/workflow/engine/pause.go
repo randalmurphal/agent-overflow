@@ -102,9 +102,16 @@ func (e *Engine) pauseItem(itemID string) ([]string, error) {
 }
 
 // restingMemberThreads names the threads of the tree's members that have not
-// ended: for each, the attempts it is running or parked in and their units.
-// A member that ended holds no attempt the run continues.
+// ended (walkPauseTree): for each, the attempts it is running or parked in
+// and their units. A member that ended holds no attempt the run continues.
 func (e *Engine) restingMemberThreads(rootID string) ([]string, error) {
+	root, err := e.store.GetWorkItem(rootID)
+	if err != nil {
+		return nil, fmt.Errorf("pause item %q: %w", rootID, err)
+	}
+	if !pauseTreeMember(root) {
+		return nil, nil
+	}
 	var threads []string
 	seen := map[string]bool{}
 	add := func(threadID string) {
@@ -113,50 +120,27 @@ func (e *Engine) restingMemberThreads(rootID string) ([]string, error) {
 			threads = append(threads, threadID)
 		}
 	}
-	var walk func(itemID string, depth int) error
-	walk = func(itemID string, depth int) error {
-		if depth > MaxCallDepth {
-			return fmt.Errorf("pause item %q: tree is deeper than %d", rootID, MaxCallDepth)
-		}
-		phases, err := e.store.ListWorkItemPhases(itemID)
+	err = e.walkPauseTree(root, 0, func(item store.WorkItem) error {
+		phases, err := e.store.ListWorkItemPhases(item.ID)
 		if err != nil {
-			return fmt.Errorf("pause item %q: list phases of %s: %w", rootID, itemID, err)
+			return fmt.Errorf("pause item %q: list phases of %s: %w", rootID, item.ID, err)
 		}
 		for _, phase := range phases {
 			if phase.Status != "running" && phase.Status != "parked" {
 				continue
 			}
 			add(phase.ThreadID)
-			units, err := e.store.ListWorkItemPhaseUnits(itemID, phase.PhaseID, phase.Attempt)
+			units, err := e.store.ListWorkItemPhaseUnits(item.ID, phase.PhaseID, phase.Attempt)
 			if err != nil {
-				return fmt.Errorf("pause item %q: list units of %s: %w", rootID, itemID, err)
+				return fmt.Errorf("pause item %q: list units of %s: %w", rootID, item.ID, err)
 			}
 			for _, unit := range units {
 				add(unit.ThreadID)
 			}
 		}
-		children, err := e.store.ListWorkItemChildren(itemID)
-		if err != nil {
-			return fmt.Errorf("pause item %q: list children of %s: %w", rootID, itemID, err)
-		}
-		for _, child := range children {
-			if state := State(child.State); state != StateRunning && state != StateNeedsHuman {
-				continue
-			}
-			if err := walk(child.ID, depth+1); err != nil {
-				return err
-			}
-		}
 		return nil
-	}
-	root, err := e.store.GetWorkItem(rootID)
-	if err != nil {
-		return nil, fmt.Errorf("pause item %q: %w", rootID, err)
-	}
-	if state := State(root.State); state != StateRunning && state != StateNeedsHuman {
-		return nil, nil
-	}
-	return threads, walk(rootID, 0)
+	})
+	return threads, err
 }
 
 func (e *Engine) pauseAllActive() error {
@@ -165,13 +149,20 @@ func (e *Engine) pauseAllActive() error {
 		return fmt.Errorf("pause all active runs: %w", err)
 	}
 	var errs []error
+	paused := map[string]bool{}
 	for _, item := range active {
-		if item.ParentItemID != "" {
-			// A descendant comes down with its root; pausing it separately would
-			// walk the same subtree twice.
+		// A descendant comes down with its root, which may itself be parked:
+		// each tree is paused once, from its root.
+		root, err := TreeRoot(e.store, item)
+		if err != nil {
+			errs = append(errs, err)
 			continue
 		}
-		if err := e.pauseSubtree(item, 0); err != nil {
+		if paused[root.ID] {
+			continue
+		}
+		paused[root.ID] = true
+		if err := e.pauseSubtree(root, 0); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -179,11 +170,19 @@ func (e *Engine) pauseAllActive() error {
 	return errors.Join(errs...)
 }
 
-// pauseSubtree pauses a run and everything below it, deepest first. Depth order
-// is load-bearing: a call parent's teardown retains its children, so those
-// children must already be parked when it runs, or the tree would rest with a
-// paused parent above a still-running child.
-func (e *Engine) pauseSubtree(item store.WorkItem, depth int) error {
+// pauseTreeMember reports whether a run is a member of the tree a pause acts
+// on: one that has not ended, running or parked.
+func pauseTreeMember(item store.WorkItem) bool {
+	state := State(item.State)
+	return state == StateRunning || state == StateNeedsHuman
+}
+
+// walkPauseTree visits item and every member below it that has not ended
+// (pauseTreeMember), deepest first: each child's subtree before its parent.
+// It is the one definition of the tree a pause acts on, used to pause it and
+// to name its members' sessions. A parked member is crossed, so a running
+// run beneath it is reached; a member that ended ends the walk below it.
+func (e *Engine) walkPauseTree(item store.WorkItem, depth int, visit func(store.WorkItem) error) error {
 	if depth > MaxCallDepth {
 		return fmt.Errorf("pause item %q: tree is deeper than %d", item.ID, MaxCallDepth)
 	}
@@ -193,13 +192,22 @@ func (e *Engine) pauseSubtree(item store.WorkItem, depth int) error {
 	}
 	var errs []error
 	for _, child := range children {
-		if State(child.State) != StateRunning {
+		if !pauseTreeMember(child) {
 			continue
 		}
-		errs = append(errs, e.pauseSubtree(child, depth+1))
+		errs = append(errs, e.walkPauseTree(child, depth+1, visit))
 	}
-	errs = append(errs, e.pauseMember(item))
+	errs = append(errs, visit(item))
 	return errors.Join(errs...)
+}
+
+// pauseSubtree pauses a run and every running member below it
+// (walkPauseTree), deepest first. Depth order is load-bearing: a call
+// parent's teardown retains its children, so those children must already be
+// parked when it runs, or the tree would rest with a paused parent above a
+// still-running child.
+func (e *Engine) pauseSubtree(item store.WorkItem, depth int) error {
+	return e.walkPauseTree(item, depth, e.pauseMember)
 }
 
 // pauseMember parks one live run. A member that is not running holds nothing

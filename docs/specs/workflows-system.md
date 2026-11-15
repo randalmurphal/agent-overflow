@@ -860,7 +860,10 @@ pause. If that provider context has disappeared, the unsent continuation is
 superseded and the same parked round is reconstructed on a new thread with its
 complete original prompt, delivered guidance, route override, amended inputs,
 and an explicit context-loss note. Pausing a run with active fan-out units interrupts every in-flight
-unit; each unit resumes on its own thread.
+unit; each unit resumes on its own thread. A pause acts on every member of
+the tree that has not ended, crossing a parked member to reach a running run
+beneath it (a descendant resumed on its own, a tool phase's process
+included); a parked member keeps the reason it parked under.
 
 **Stopping after this wave is the deferred half of pause (§12, D36).** Where
 pause stops the run *now*, `Stop after this wave` asks the tree to stop at its
@@ -1411,7 +1414,7 @@ never leave a grandchild running or a sub-worktree stranded.
   checkpointing, no turn-replay.)
 
 - **Pause (human or shutdown).** The §7 pause action, and the **graceful-quit
-  path**: quitting the app pauses every active run (interrupt in-flight turns
+  path**: quitting the app pauses every active run, from its tree's root (interrupt in-flight turns
   → teardown → park `needs-human(paused)`) before exit. Same resume as
   `interrupted`; the distinct reason tells you whether it stopped on purpose.
 
