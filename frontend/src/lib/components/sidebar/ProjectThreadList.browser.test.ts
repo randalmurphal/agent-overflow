@@ -249,7 +249,7 @@ describe('worker counts', () => {
     setCompactLayoutForTest(compact);
     const spawner = thread('spawner', { title: 'A spawner with a title long enough to be cut short', updatedAt: 5 });
     replaceAllThreads([spawner]);
-    setBindingMock('ListThreadWorkerSummaries', async () => [{ threadId: 'spawner', open: 12, needYou: 3 }]);
+    setBindingMock('ListThreadWorkerSummaries', async () => ({ summaries: [{ threadId: 'spawner', open: 12, needYou: 3 }], next: '' }));
     await refreshThreadWorkerSummaries();
     const view = render(ProjectThreadList, { projectId: 'project', threads: [spawner], groups: [], pane: createThreadPane() });
     view.container.style.width = '300px';

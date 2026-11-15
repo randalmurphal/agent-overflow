@@ -177,7 +177,7 @@ func TestAnExpiredSpawnStillNestsItsThreadsNewWork(t *testing.T) {
 	if got, want := agentTreeEntries(rows), []string{"l-c@0", "c-p@1"}; !slices.Equal(got, want) {
 		t.Fatalf("the named rows %v; want %v", got, want)
 	}
-	if ids, err := s.ThreadsWithOpenAgentRows(nil, 10); err != nil || !slices.Contains(ids, "lead") {
+	if ids, _, err := s.ThreadsWithOpenAgentRows(nil, "", 10); err != nil || !slices.Contains(ids, "lead") {
 		t.Fatalf("summary candidates %v, %v; want lead among them", ids, err)
 	}
 	frames, err := s.ThreadAgentRowFrames([]string{"c-p"}, nil, nil, "local", 4)
@@ -240,7 +240,7 @@ func TestAParkedQuietRequestKeepsTheSpawnsAboveIt(t *testing.T) {
 	if got, want := read(parked, 2, nil), []string{"l-c@0", "c-g@1+hidden"}; !slices.Equal(got, want) {
 		t.Fatalf("the two-level tree %v; want %v", got, want)
 	}
-	if ids, err := s.ThreadsWithOpenAgentRows(parked, 10); err != nil || !slices.Equal(ids, []string{"child", "grand", "lead"}) {
+	if ids, _, err := s.ThreadsWithOpenAgentRows(parked, "", 10); err != nil || !slices.Equal(ids, []string{"child", "grand", "lead"}) {
 		t.Fatalf("summary candidates %v, %v; want every thread up the chain", ids, err)
 	}
 	if got := read(nil, 4, nil); len(got) != 0 {
@@ -249,7 +249,7 @@ func TestAParkedQuietRequestKeepsTheSpawnsAboveIt(t *testing.T) {
 	if got := read(nil, 4, []string{"g-p", "c-g"}); len(got) != 0 {
 		t.Fatalf("with no call parked the named rows %v; want none", got)
 	}
-	if ids, err := s.ThreadsWithOpenAgentRows(nil, 10); err != nil || len(ids) != 0 {
+	if ids, _, err := s.ThreadsWithOpenAgentRows(nil, "", 10); err != nil || len(ids) != 0 {
 		t.Fatalf("with no call parked the candidates %v, %v; want none", ids, err)
 	}
 	// An armed wake below is counted once: the parked spawn is the marks'.

@@ -812,6 +812,7 @@ export {
   StandingAgentWakes,
   ThreadWakeDetail,
   ThreadWorkerSummary,
+  ThreadWorkerSummaryPage,
 } from '../../../bindings/agent-overflow/internal/app/models.js';
 export {
   CompanionEvent as BrowserCompanionEvent,

@@ -162,7 +162,7 @@ func (a *App) serveThreadAgentPeer(ctx context.Context, owner string, call Threa
 		if depth <= 0 || depth > threadAgentRowDepth {
 			depth = threadAgentRowDepth
 		}
-		listing, _, err := a.threadAgentTreeDepth(ctx, args.ThreadID, depth, threadAgentPeersLive)
+		listing, _, err := a.threadAgentTreeDepth(ctx, newThreadAgentView(a), args.ThreadID, depth, threadAgentPeersLive)
 		if err != nil {
 			return ThreadPeerReply{}, err
 		}

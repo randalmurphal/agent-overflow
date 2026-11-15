@@ -816,16 +816,18 @@ Mechanics, as built:
   when that computer answers, however late, with the frames that computer
   sent meanwhile replayed over its answer; a newer read of the computer
   supersedes it.
-- Worker counts: `ListThreadWorkerSummaries` (route all) and
-  `GetThreadWorkerSummary` (route thread) answer `{threadId, open,
-  needYou}`, counted as the Agents list counts its open rows, and feed
-  `stores/threadWorkerSummaries.svelte.ts`, one key per thread. A bulk
-  read per computer at boot and on resync lists only threads with an
-  open worker, so one it leaves out has none. Each
-  `thread:agent_rows_changed` frame reads the thread it names again,
-  coalesced through one scheduler; a gap reads that computer in bulk. A
-  read lands on a thread only when no read that started later has
-  landed there. A detached computer's counts are dropped.
+- Worker counts: `ListThreadWorkerSummaries` (route all, one page of
+  `{summaries, next}` after a thread id) and `GetThreadWorkerSummary`
+  (route thread) answer `{threadId, open, needYou}`, counted as the
+  Agents list counts its open rows, and feed
+  `stores/threadWorkerSummaries.svelte.ts`, one key per thread. A bulk read per computer at boot and on resync reads every
+  page; the pages together list only threads with an open worker, so
+  once the last has answered, one they leave out has none, and not
+  before. Each `thread:agent_rows_changed` frame reads the thread it
+  names again, coalesced through one scheduler; a gap reads that
+  computer in bulk. A read lands on a thread only when no read that
+  started later has landed there. A detached computer's counts are
+  dropped.
 - `ListAssistantPastThreads(agentID, after, limit)` (route home, sent to
   the assistant's computer) pages `agent_past_threads` newest superseded
   first by the `{supersededAt, threadId}` cursor and feeds
@@ -1411,12 +1413,17 @@ closes up their spacing so the row holds at a phone width.
   row, with no answer.
 - **Worker summaries.** `GetThreadWorkerSummary` counts the open rows of
   the thread's listing, nested ones included, read as a pane reads it,
-  and those blocked on a prompt not routed to an agent.
-  `ListThreadWorkerSummaries` lists the summaries of the threads whose
-  listing holds an open row, at most 128, found from the open work only:
-  callers of open requests the listing shows, local spawns whose counts
-  hold open work below them or that sit above a parked call, and remote
-  spawns that last reported open work. A frame naming a thread is the cue to read its summary again.
+  and those whose blocked fields say they wait on the user: the row's
+  own open and needs-you rule (`ThreadAgentRow.open`, `needsYou`). The
+  count reads each row's state and what it is blocked on, and none of
+  the text a row shows: no answer head, target names or last messages.
+  `ListThreadWorkerSummaries` summarizes one page of 64 of the threads
+  whose listing may hold an open row, in id order after a cursor, found
+  from the open work only: callers of open requests the listing shows,
+  local spawns whose counts hold open work below them or that sit above
+  a parked call, and remote spawns that last reported open work. Its
+  `next` is the page's last thread, empty on the last page. A frame
+  naming a thread is the cue to read its summary again.
 
 #### Agent thread companion
 

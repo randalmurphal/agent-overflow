@@ -4,7 +4,8 @@
 // list shows (ThreadWorkerSummary); nothing is derived here.
 //
 // One bulk read per computer at boot and on resync (ListThreadWorkerSummaries,
-// which lists only threads with an open worker), and one
+// read page by page until its last, which together list only threads with
+// an open worker), and one
 // GetThreadWorkerSummary for each thread a `thread:agent_rows_changed` frame
 // names, which the backend sends for the caller of every changed request
 // and for the threads above it. A burst of frames is one read per thread,
@@ -69,6 +70,23 @@ function land(threadId: string, backend: BackendKey, seq: number, open: number, 
 }
 
 /**
+ * Every page of one computer's ListThreadWorkerSummaries, each asked of
+ * that computer: only the pages together say which threads have none.
+ */
+async function readPages(backend: BackendKey): Promise<ThreadWorkerSummary[]> {
+  const rows: ThreadWorkerSummary[] = [];
+  let after = '';
+  for (;;) {
+    const page = await withBackendTarget(backend, () => ListThreadWorkerSummaries(after));
+    rows.push(...(page?.summaries ?? []));
+    const next = page?.next ?? '';
+    if (next === '') return rows;
+    if (next === after) throw new Error(`the worker summaries after ${after} repeat their cursor`);
+    after = next;
+  }
+}
+
+/**
  * Boot-time and resync load: every attached computer, or `only`. Each
  * computer's read stands alone and settles when that computer answers,
  * however late. Errors reach the console only: the counts are decoration
@@ -83,7 +101,7 @@ async function readComputer(backend: BackendKey): Promise<void> {
   const seq = ++sequence;
   try {
     await readComputerRows<ThreadWorkerSummary>(
-      async () => await ListThreadWorkerSummaries(),
+      async () => await readPages(backend),
       () => {},
       (result) => {
         if (!result.answered.has(backend)) return;

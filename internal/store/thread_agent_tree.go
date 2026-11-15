@@ -341,61 +341,65 @@ func agentRowListedSQL(alias string) string {
          OR (` + agentSpawnLinkSQL(alias) + ` AND (` + agentOpenBelowSQL(alias) + ` OR ` + a + `token IN (SELECT token FROM parked))))`
 }
 
-// ThreadsWithOpenAgentRows lists, by id, at most limit threads whose Agents
-// listing may hold an open row: a thread that made an open request the
-// listing shows (a spawn, or a send or ask with its wake armed or one of
-// waiting parked on it), or one with a local spawn whose marks count open
-// work below it, or a spawn on another computer that last reported open
-// work. Each arm reads a partial index that holds only open work
-// (idx_thread_requests_open_created, idx_thread_requests_open_below,
-// idx_thread_requests_nested_caller), so the read follows the open work on
-// this computer, not the ledger's history.
-func (s *Store) ThreadsWithOpenAgentRows(waiting []string, limit int) (_ []string, err error) {
+// ThreadsWithOpenAgentRows lists, by id, the threads after `after` in id
+// order whose Agents listing may hold an open row, at most limit of them,
+// and whether more follow: a thread that made an open request the listing
+// shows (a spawn, or a send or ask with its wake armed or one of waiting
+// parked on it), one with a local spawn whose marks count open work below
+// it or that sits above a parked request (`parked`), or a spawn on another
+// computer that last reported open work. Each arm reads a partial index
+// that holds only open work (idx_thread_requests_open_created,
+// idx_thread_requests_open_below, idx_thread_requests_nested_caller) from
+// the cursor on, so a page follows the open work on this computer, not the
+// ledger's settled rows.
+func (s *Store) ThreadsWithOpenAgentRows(waiting []string, after string, limit int) (_ []string, more bool, err error) {
 	action := "store: list the threads with open agent rows"
 	if limit < 1 {
-		return nil, fmt.Errorf("%s: limit %d", action, limit)
+		return nil, false, fmt.Errorf("%s: limit %d", action, limit)
 	}
 	if waiting == nil {
 		waiting = []string{}
 	}
 	tokens, err := json.Marshal(waiting)
 	if err != nil {
-		return nil, fmt.Errorf("%s: encode waiting tokens: %w", action, err)
+		return nil, false, fmt.Errorf("%s: encode waiting tokens: %w", action, err)
 	}
-	// ?1 is unused: agentRowKindSQL reads the waiting tokens as ?2.
-	rows, err := s.reader().Query(threadsWithOpenAgentRowsSQL(limit), nil, string(tokens))
+	rows, err := s.reader().Query(threadsWithOpenAgentRowsSQL(limit+1), after, string(tokens))
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", action, err)
+		return nil, false, fmt.Errorf("%s: %w", action, err)
 	}
 	defer func() { err = errors.Join(err, rows.Close()) }()
 	out := []string{}
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("%s: scan: %w", action, err)
+			return nil, false, fmt.Errorf("%s: scan: %w", action, err)
 		}
 		out = append(out, id)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("%s: iterate: %w", action, err)
+		return nil, false, fmt.Errorf("%s: iterate: %w", action, err)
 	}
-	return out, nil
+	if len(out) > limit {
+		return out[:limit], true, nil
+	}
+	return out, false, nil
 }
 
 // threadsWithOpenAgentRowsSQL is ThreadsWithOpenAgentRows' read of its first
-// limit threads: ?2 is the waiting tokens.
+// limit threads: ?1 is the cursor, ?2 the waiting tokens.
 func threadsWithOpenAgentRowsSQL(limit int) string {
 	return `WITH RECURSIVE ` + agentParkedSQL + `
 		SELECT a.caller_thread_id FROM thread_requests a INDEXED BY idx_thread_requests_open_created
-		 WHERE a.lineage_only = 0 AND a.settled_at IS NULL AND ` + agentRowKindSQL("a") + `
+		 WHERE a.caller_thread_id > ?1 AND a.lineage_only = 0 AND a.settled_at IS NULL AND ` + agentRowKindSQL("a") + `
 		UNION
-		SELECT thread FROM parked
+		SELECT thread FROM parked WHERE thread > ?1
 		UNION
 		SELECT a.caller_thread_id FROM thread_requests a INDEXED BY idx_thread_requests_open_below
-		 WHERE ` + agentSpawnLinkSQL("a") + ` AND ` + agentOpenBelowSQL("a") + `
+		 WHERE a.caller_thread_id > ?1 AND ` + agentSpawnLinkSQL("a") + ` AND ` + agentOpenBelowSQL("a") + `
 		UNION
 		SELECT a.caller_thread_id FROM thread_requests a INDEXED BY idx_thread_requests_nested_caller
-		 WHERE ` + nestedRemoteSpawnSQL("a") + `
+		 WHERE a.caller_thread_id > ?1 AND ` + nestedRemoteSpawnSQL("a") + `
 		ORDER BY 1 LIMIT ` + strconv.Itoa(limit)
 }
 

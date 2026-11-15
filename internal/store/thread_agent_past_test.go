@@ -118,8 +118,9 @@ func TestListThreadPastAgentRequestsReadsItsIndexInOrder(t *testing.T) {
 // The threads whose listing holds an open row are the callers of open
 // requests the listing shows, a parked quiet send included, and the
 // threads above open work through a spawn's marks or a remote spawn's last
-// report; a thread whose rows all settled is not one. Each arm searches
-// its own index.
+// report; a thread whose rows all settled is not one. Pages from a cursor
+// read the same threads, and each arm searches its own index from the
+// cursor.
 func TestThreadsWithOpenAgentRows(t *testing.T) {
 	t.Parallel()
 	s := newTestStore(t)
@@ -145,16 +146,35 @@ func TestThreadsWithOpenAgentRows(t *testing.T) {
 	if _, err := s.db.Exec(`UPDATE thread_requests SET nested_open = 1 WHERE token = 'remote-far'`); err != nil {
 		t.Fatal(err)
 	}
-	got, err := s.ThreadsWithOpenAgentRows([]string{"parked-peer"}, 64)
-	if err != nil {
-		t.Fatal(err)
+	waiting := []string{"parked-peer"}
+	got, more, err := s.ThreadsWithOpenAgentRows(waiting, "", 64)
+	if err != nil || more {
+		t.Fatalf("one page: more %v, %v", more, err)
 	}
-	if want := []string{"leaf", "mid", "parked", "remote", "root"}; !slices.Equal(got, want) {
+	want := []string{"leaf", "mid", "parked", "remote", "root"}
+	if !slices.Equal(got, want) {
 		t.Errorf("threads with open rows = %q, want %q", got, want)
 	}
-	if got, err := s.ThreadsWithOpenAgentRows(nil, 2); err != nil || len(got) != 2 {
-		t.Errorf("bounded to 2 = %q, %v", got, err)
+	// Paged two at a time from each page's last thread, the pages are the
+	// one read's threads, each once, and the last says nothing follows.
+	var paged []string
+	for after, pages := "", 0; ; pages++ {
+		page, more, err := s.ThreadsWithOpenAgentRows(waiting, after, 2)
+		if err != nil || len(page) == 0 || len(page) > 2 || pages > 3 {
+			t.Fatalf("page after %q = %q, %v", after, page, err)
+		}
+		paged = append(paged, page...)
+		if !more {
+			break
+		}
+		after = page[len(page)-1]
 	}
+	if !slices.Equal(paged, want) {
+		t.Errorf("paged threads = %q, want %q", paged, want)
+	}
+	assertPlanSearches(t, s, "ThreadsWithOpenAgentRows", "a", []string{
+		"idx_thread_requests_open_created", "idx_thread_requests_open_below", "idx_thread_requests_nested_caller",
+	}, threadsWithOpenAgentRowsSQL(3), "mid", `["parked-peer"]`)
 }
 
 // A reply arms its request's wake in the statement that stores it, whether

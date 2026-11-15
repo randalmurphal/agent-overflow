@@ -196,7 +196,7 @@ func (a *App) ListThreadAgentRows(ctx context.Context, threadID string) (ThreadA
 	if _, err := a.store.GetThread(threadID); err != nil {
 		return ThreadAgentRows{}, fmt.Errorf("read the thread: %w", err)
 	}
-	listing, _, err := a.threadAgentTreeDepth(ctx, threadID, threadAgentRowDepth, threadAgentPeersCached)
+	listing, _, err := a.threadAgentTreeDepth(ctx, newThreadAgentView(a), threadID, threadAgentRowDepth, threadAgentPeersCached)
 	return listing, err
 }
 
@@ -339,32 +339,47 @@ type ThreadWorkerSummary struct {
 	NeedYou  int    `json:"needYou"`
 }
 
-// maxThreadWorkerSummaries bounds one ListThreadWorkerSummaries read: each
-// summary reads its thread's listing.
-const maxThreadWorkerSummaries = 128
+// threadWorkerSummaryPage bounds one page of ListThreadWorkerSummaries:
+// each summary reads its thread's listing.
+const threadWorkerSummaryPage = 64
 
-// ListThreadWorkerSummaries summarizes every thread whose Agents listing
-// shows an open row, at most maxThreadWorkerSummaries of them, by thread
-// id. A thread with none is left out.
+// ThreadWorkerSummaryPage is one page of the threads whose Agents listing
+// may show an open row, in thread id order. Summaries holds those that
+// show one. Next continues after the last thread the page read; it is
+// empty on the last page, and only the pages read up to it together say
+// which threads have no open row.
+type ThreadWorkerSummaryPage struct {
+	Summaries []ThreadWorkerSummary `json:"summaries"`
+	Next      string                `json:"next,omitempty"`
+}
+
+// ListThreadWorkerSummaries summarizes one page of the threads whose
+// Agents listing shows an open row, after the thread id `after` (empty for
+// the first page), by thread id. A thread with none is left out.
 //
 //ao:scope threads:read
 //ao:route all
-func (a *App) ListThreadWorkerSummaries(ctx context.Context) ([]ThreadWorkerSummary, error) {
-	ids, err := a.store.ThreadsWithOpenAgentRows(a.parkedRequestTokens(), maxThreadWorkerSummaries)
+func (a *App) ListThreadWorkerSummaries(ctx context.Context, after string) (ThreadWorkerSummaryPage, error) {
+	view := newThreadAgentView(a)
+	view.counts = true
+	ids, more, err := a.store.ThreadsWithOpenAgentRows(view.waiting, after, threadWorkerSummaryPage)
 	if err != nil {
-		return nil, fmt.Errorf("list worker summaries: %w", err)
+		return ThreadWorkerSummaryPage{}, fmt.Errorf("list worker summaries: %w", err)
 	}
-	out := make([]ThreadWorkerSummary, 0, len(ids))
+	page := ThreadWorkerSummaryPage{Summaries: make([]ThreadWorkerSummary, 0, len(ids))}
 	for _, id := range ids {
-		summary, err := a.threadWorkerSummary(ctx, id)
+		summary, err := a.threadWorkerSummary(ctx, view, id)
 		if err != nil {
-			return nil, fmt.Errorf("list worker summaries: %w", err)
+			return ThreadWorkerSummaryPage{}, fmt.Errorf("list worker summaries: %w", err)
 		}
 		if summary.Open > 0 {
-			out = append(out, summary)
+			page.Summaries = append(page.Summaries, summary)
 		}
 	}
-	return out, nil
+	if more {
+		page.Next = ids[len(ids)-1]
+	}
+	return page, nil
 }
 
 // GetThreadWorkerSummary summarizes the thread's Agents listing as it stands
@@ -375,38 +390,46 @@ func (a *App) GetThreadWorkerSummary(ctx context.Context, threadID string) (Thre
 	if _, err := a.store.GetThread(threadID); err != nil {
 		return ThreadWorkerSummary{}, fmt.Errorf("read the thread: %w", err)
 	}
-	return a.threadWorkerSummary(ctx, threadID)
+	view := newThreadAgentView(a)
+	view.counts = true
+	return a.threadWorkerSummary(ctx, view, threadID)
 }
 
 // threadWorkerSummary counts the open rows of the thread's listing, read
-// as a pane reads it, so the counts are the rows the pane shows.
-func (a *App) threadWorkerSummary(ctx context.Context, threadID string) (ThreadWorkerSummary, error) {
-	listing, _, err := a.threadAgentTreeDepth(ctx, threadID, threadAgentRowDepth, threadAgentPeersCached)
+// as a pane reads it, through view, so the counts are the rows the pane
+// shows.
+func (a *App) threadWorkerSummary(ctx context.Context, view threadAgentView, threadID string) (ThreadWorkerSummary, error) {
+	listing, _, err := a.threadAgentTreeDepth(ctx, view, threadID, threadAgentRowDepth, threadAgentPeersCached)
 	if err != nil {
 		return ThreadWorkerSummary{}, err
 	}
 	summary := ThreadWorkerSummary{ThreadID: threadID}
 	for _, row := range listing.Rows {
-		if !threadAgentRowOpen(row.State) {
+		if !row.open() {
 			continue
 		}
 		summary.Open++
-		if row.BlockedOn != "" && row.BlockedRoutedTo == "" {
+		if row.needsYou() {
 			summary.NeedYou++
 		}
 	}
 	return summary, nil
 }
 
-// threadAgentRowOpen reports whether a row's state is one before the
-// request settled.
-func threadAgentRowOpen(state string) bool {
-	switch state {
+// open reports whether the row's state is one before the request settled.
+func (row ThreadAgentRow) open() bool {
+	switch row.State {
 	case threadtools.RequestUnconfirmed, threadtools.RequestAccepted, threadtools.RequestRunning, threadtools.RequestBlocked:
 		return true
 	default:
 		return false
 	}
+}
+
+// needsYou reports whether the row waits on the user, as its blocked
+// fields say: blocked on a prompt no agent was given.
+func (row ThreadAgentRow) needsYou() bool {
+	return row.BlockedOn != "" && row.BlockedRoutedTo == ""
 }
 
 // threadAgentPeerMode is how a listing reads a spawn's rows on a paired
@@ -442,11 +465,10 @@ type threadAgentRemoteSlot struct {
 	spawn store.ThreadRequest
 }
 
-// threadAgentTreeDepth reads a listing nested at most maxDepth levels, and
-// what stops each row: a paired computer listing for a caller's nested row
-// has fewer left.
-func (a *App) threadAgentTreeDepth(ctx context.Context, threadID string, maxDepth int, peers threadAgentPeerMode) (ThreadAgentRows, []threadAgentEntry, error) {
-	view := newThreadAgentView(a)
+// threadAgentTreeDepth reads a listing through view nested at most maxDepth
+// levels, and what stops each row: a paired computer listing for a
+// caller's nested row has fewer left.
+func (a *App) threadAgentTreeDepth(ctx context.Context, view threadAgentView, threadID string, maxDepth int, peers threadAgentPeerMode) (ThreadAgentRows, []threadAgentEntry, error) {
 	requests, more, err := view.tree(threadID, maxDepth, nil, threadAgentRowLimit)
 	if err != nil {
 		return ThreadAgentRows{}, nil, err
@@ -591,11 +613,15 @@ func threadAgentPeerUnavailable(computer string, err error) string {
 }
 
 // threadAgentView renders request rows for one read: the parked waits and
-// the settled window are read once for the whole listing.
+// the settled window are read once for the whole listing. A view for
+// counts renders each row's state and what it is blocked on, and reads
+// none of the text a row shows: no answer head, no target names, no last
+// messages.
 type threadAgentView struct {
 	app     *App
 	waiting []string
 	since   int64
+	counts  bool
 }
 
 func newThreadAgentView(a *App) threadAgentView {
@@ -608,15 +634,26 @@ func newThreadAgentView(a *App) threadAgentView {
 // tree reads root's requests nested at most depth levels, or only those
 // of them tokens names.
 func (v threadAgentView) tree(root string, depth int, tokens []string, limit int) ([]store.ThreadAgentRequest, bool, error) {
+	head := threadAgentAnswerHead
+	if v.counts {
+		head = 0
+	}
 	return v.app.store.ListThreadAgentTree(store.ThreadAgentTreeRead{
 		Root: root, Waiting: v.waiting, SettledSince: v.since, Depth: depth,
-		Limit: limit, AnswerHead: threadAgentAnswerHead, Tokens: tokens,
+		Limit: limit, AnswerHead: head, Tokens: tokens,
 	})
 }
 
 // rows renders requests as their rows, with the threads they went to read
 // once for them all.
 func (v threadAgentView) rows(requests []store.ThreadAgentRequest) ([]ThreadAgentRow, error) {
+	if v.counts {
+		out := make([]ThreadAgentRow, 0, len(requests))
+		for _, request := range requests {
+			out = append(out, v.row(request, nil))
+		}
+		return out, nil
+	}
 	ids := make([]string, 0, len(requests))
 	for _, request := range requests {
 		if request.TargetComputerID == "" && request.TargetThreadID != "" {

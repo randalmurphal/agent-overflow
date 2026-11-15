@@ -3,6 +3,7 @@ package app
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"testing"
 	"time"
@@ -87,7 +88,7 @@ func TestPastAgentRowsPageTheSettledRowsNewestFirst(t *testing.T) {
 	byToken := map[string]ThreadAgentRow{}
 	for _, row := range rows {
 		byToken[row.Token] = row
-		if row.Depth != 0 || threadAgentRowOpen(row.State) || row.SettledAt == 0 {
+		if row.Depth != 0 || row.open() || row.SettledAt == 0 {
 			t.Errorf("past row %+v is not a flat settled row", row)
 		}
 	}
@@ -292,10 +293,7 @@ func TestWorkerSummariesCountOpenRowsAndThoseWaitingOnTheUser(t *testing.T) {
 	want(lead.ID, 2, 1)
 	want(worker.ID, 1, 1)
 
-	all, err := a.ListThreadWorkerSummaries(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
+	all := allWorkerSummaries(t, a)
 	if want := []ThreadWorkerSummary{{ThreadID: lead.ID, Open: 2, NeedYou: 1}, {ThreadID: worker.ID, Open: 1, NeedYou: 1}}; !slices.Equal(all, want) {
 		t.Errorf("summaries = %+v, want %+v", all, want)
 	}
@@ -320,12 +318,123 @@ func TestWorkerSummariesCountOpenRowsAndThoseWaitingOnTheUser(t *testing.T) {
 	}
 	want(worker.ID, 0, 0)
 	want(lead.ID, 1, 0)
-	all, err = a.ListThreadWorkerSummaries(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
+	all = allWorkerSummaries(t, a)
 	if want := []ThreadWorkerSummary{{ThreadID: lead.ID, Open: 1}}; !slices.Equal(all, want) {
 		t.Errorf("summaries after the grand worker settled = %+v, want %+v", all, want)
+	}
+}
+
+// allWorkerSummaries reads every page of ListThreadWorkerSummaries, as the
+// sidebar's bulk read does.
+func allWorkerSummaries(t *testing.T, a *App) []ThreadWorkerSummary {
+	t.Helper()
+	out := []ThreadWorkerSummary{}
+	for after, pages := "", 0; ; pages++ {
+		if pages > 100 {
+			t.Fatal("the summary pages never end")
+		}
+		page, err := a.ListThreadWorkerSummaries(t.Context(), after)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, page.Summaries...)
+		if page.Next == "" {
+			return out
+		}
+		if page.Next <= after {
+			t.Fatalf("page after %q continues at %q", after, page.Next)
+		}
+		after = page.Next
+	}
+}
+
+// More callers than a page holds are summarized across pages, each once,
+// in id order, an owned worker with its own workers among them, and a
+// count waiting on the user on the last page arrives with it.
+func TestWorkerSummariesPageEveryCaller(t *testing.T) {
+	t.Parallel()
+	a, _ := newAppForFlushQueueRPC(t)
+	a.triage.SetPromptRouter(a.routeWorkerPrompt)
+	callers := 2*threadWorkerSummaryPage + 10
+	spawn := func(token, caller, target string) {
+		t.Helper()
+		if err := a.store.InsertThreadRequest(store.ThreadRequest{
+			Token: token, CallerThreadID: caller, TargetThreadID: target,
+			Kind: store.ThreadRequestSpawn, State: store.ThreadRequestRunning,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var want []ThreadWorkerSummary
+	for i := range callers {
+		caller, worker := fmt.Sprintf("page-%03d", i), fmt.Sprintf("page-%03d-worker", i)
+		noticeTestThread(t, a, caller)
+		noticeTestThread(t, a, worker)
+		spawn(caller+"-spawn", caller, worker)
+		want = append(want, ThreadWorkerSummary{ThreadID: caller, Open: 1})
+	}
+	last := want[len(want)-1].ThreadID
+	noticeTestThread(t, a, last+"-grand")
+	spawn(last+"-worker-spawn", last+"-worker", last+"-grand")
+	approvalOn(t, a, last+"-grand", "grand-approval")
+	if !a.triage.UnroutePrompt(last+"-grand", "grand-approval") {
+		t.Fatal("the prompt did not go back to the user")
+	}
+	want[len(want)-1] = ThreadWorkerSummary{ThreadID: last, Open: 2, NeedYou: 1}
+	want = append(want, ThreadWorkerSummary{ThreadID: last + "-worker", Open: 1, NeedYou: 1})
+	if got := allWorkerSummaries(t, a); !slices.Equal(got, want) {
+		t.Fatalf("summaries (%d) = %+v\nwant (%d) %+v", len(got), got, len(want), want)
+	}
+	first, err := a.ListThreadWorkerSummaries(t.Context(), "")
+	if err != nil || len(first.Summaries) != threadWorkerSummaryPage || first.Next != want[threadWorkerSummaryPage-1].ThreadID {
+		t.Fatalf("first page = %d summaries, next %q, %v", len(first.Summaries), first.Next, err)
+	}
+}
+
+// A summary is counted from the rows' states and what they are blocked on
+// alone: the counting view reads no answer head, no target names and no
+// last messages, which the pane's listing of the same rows shows.
+func TestWorkerSummariesReadNoRowText(t *testing.T) {
+	t.Parallel()
+	a, _ := newAppForFlushQueueRPC(t)
+	lead := noticeTestThread(t, a, "text-lead")
+	worker := noticeTestThread(t, a, "text-worker")
+	done := noticeTestThread(t, a, "text-done")
+	if err := a.store.InsertThreadRequest(store.ThreadRequest{
+		Token: "lead-worker", CallerThreadID: lead.ID, TargetThreadID: worker.ID,
+		Kind: store.ThreadRequestSpawn, State: store.ThreadRequestRunning,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	seedSettledAgentRow(t, a, store.ThreadRequest{Token: "lead-done", CallerThreadID: lead.ID, Kind: store.ThreadRequestSpawn, TargetThreadID: done.ID}, time.Now().UnixMilli(), "the answer")
+	if err := a.store.InsertTurn(store.Turn{TurnID: "turn", ThreadID: worker.ID, TurnIndex: 0, StartedAt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.store.InsertItem(store.Item{ID: "said", ThreadID: worker.ID, Kind: "assistant_text", Role: "assistant",
+		Status: "completed", Summary: "the last word", CreatedAt: 1, UpdatedAt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	read := func(counts bool) []ThreadAgentRow {
+		t.Helper()
+		view := newThreadAgentView(a)
+		view.counts = counts
+		listing, _, err := a.threadAgentTreeDepth(t.Context(), view, lead.ID, threadAgentRowDepth, threadAgentPeersCached)
+		if err != nil || len(listing.Rows) != 2 {
+			t.Fatalf("listing (counts %v) = %+v, %v", counts, listing.Rows, err)
+		}
+		return listing.Rows
+	}
+	shown := read(false)
+	if shown[0].Title == "" || shown[0].LastMessage == "" || shown[1].Answer == "" {
+		t.Fatalf("the pane's rows carry no text: %+v", shown)
+	}
+	for _, row := range read(true) {
+		if row.Title != "" || row.LastMessage != "" || row.Answer != "" || row.Provider != "" {
+			t.Fatalf("a counted row carries text: %+v", row)
+		}
+	}
+	if summary, err := a.GetThreadWorkerSummary(t.Context(), lead.ID); err != nil || summary != (ThreadWorkerSummary{ThreadID: lead.ID, Open: 1}) {
+		t.Fatalf("summary %+v, %v", summary, err)
 	}
 }
 

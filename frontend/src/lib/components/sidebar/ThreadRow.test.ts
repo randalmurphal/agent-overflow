@@ -1842,7 +1842,7 @@ describe('<ThreadRow> worker counts', () => {
   afterEach(() => setCompactLayoutForTest(false));
 
   async function summaries(rows: { threadId: string; open: number; needYou: number }[]): Promise<void> {
-    setBindingMock('ListThreadWorkerSummaries', async () => rows);
+    setBindingMock('ListThreadWorkerSummaries', async () => ({ summaries: rows, next: '' }));
     await refreshThreadWorkerSummaries();
     await tick();
   }
