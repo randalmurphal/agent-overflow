@@ -76,6 +76,24 @@ describe('<ComposerWorkspaceStrip>', () => {
     ]);
   });
 
+  it('offers no machine, branch or worktree picker on an ask copy', async () => {
+    // An ask's copy (Thread.askCopy) is watched and stopped, never steered:
+    // a checkout or a move would act on the workspace it shares.
+    stageBackend();
+    noteThread('thread-1', '');
+    try {
+      const pane = await buildPane(makeThread({ askCopy: true }));
+      const { getByTestId, queryByTestId } = render(ComposerWorkspaceStrip, { props: { pane } });
+      await tick();
+      expect(getByTestId('composer-workspace-strip')).toBeInTheDocument();
+      for (const id of ['machine-picker-trigger', 'branch-picker-trigger', 'env-picker-trigger', 'new-branch-toggle']) {
+        expect(queryByTestId(id), id).toBeNull();
+      }
+    } finally {
+      resetStagedBackends();
+    }
+  });
+
   it('mounts no machine picker on a single-backend page', async () => {
     const pane = await buildPane(makeThread());
     const { queryByTestId } = render(ComposerWorkspaceStrip, { props: { pane } });

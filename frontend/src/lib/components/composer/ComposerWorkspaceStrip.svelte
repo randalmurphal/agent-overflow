@@ -45,6 +45,10 @@
 
   let { pane, readonly = false, usageLabel = '' }: Props = $props();
   let workspaceLock = createWorkspaceChangeLockState(() => pane);
+  // An ask's copy (Thread.askCopy) is watched and stopped, never steered:
+  // the pickers would move it or check out the workspace it shares, so only
+  // its usage shows.
+  let askCopy = $derived(Boolean(pane.thread?.askCopy));
 </script>
 
 {#if pane.thread && !isCompactLayout()}
@@ -54,7 +58,7 @@
     inert={readonly || undefined}
   >
     <div class="flex min-w-0 flex-1 items-center gap-2">
-      {#if hasMultipleBackends()}
+      {#if hasMultipleBackends() && !askCopy}
         <!--
           Machine leads the cluster because it is the outermost "where":
           machine, then branch, then the checkout. Absent on a
@@ -63,7 +67,7 @@
         -->
         <MachinePicker {pane} />
       {/if}
-      {#if pane.workspace}
+      {#if pane.workspace && !askCopy}
         <!-- A thread outside every project, such as an assistant's, has no
              checkout: no branch or worktree to show or change. -->
         <BranchPicker {pane} />

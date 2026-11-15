@@ -44,13 +44,17 @@
 
   // Machine mounts only with a second backend attached, the same rule as
   // the desktop strip: a single-computer app never names its computer.
-  let showMachine = $derived(hasMultipleBackends());
+  // An ask's copy (Thread.askCopy) is watched and stopped, never steered:
+  // its machine, branch and worktree segments would move it or check out
+  // the workspace it shares, so only its project shows.
+  let askCopy = $derived(Boolean(pane.thread?.askCopy));
+  let showMachine = $derived(hasMultipleBackends() && !askCopy);
   let machineLabel = $derived(machinePicker?.label() ?? 'Computer');
   let machinePickable = $derived(machinePicker?.canPick() ?? false);
   let hasProject = $derived(Boolean(pane.thread?.projectId));
   // A thread outside every project, such as an assistant's, has no
   // checkout: no branch or worktree segment.
-  let hasCheckout = $derived(pane.workspace !== null);
+  let hasCheckout = $derived(pane.workspace !== null && !askCopy);
   // The picker names the segment once mounted; until then, the checkout.
   let checkoutNamed = $derived(checkoutDisplay(paneCheckout(pane)));
   let branchLabel = $derived(branchPicker?.label() ?? checkoutNamed.label);

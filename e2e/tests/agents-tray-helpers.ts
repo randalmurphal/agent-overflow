@@ -284,6 +284,10 @@ export async function expectAskCopyReadOnly(copyPane: Locator): Promise<void> {
   for (const id of ['composer-model-menu-trigger', 'composer-effort-trigger', 'composer-access-toggle', 'composer-mcp-trigger', 'composer-attach']) {
     await expect(copyPane.getByTestId(id), id).toHaveCount(0);
   }
+  // No branch or worktree picker, the desktop strip's or the compact header's:
+  // either acts on the workspace the copy shares.
+  await expect(copyPane.locator(['branch-picker-trigger', 'env-picker-trigger', 'chat-header-branch', 'chat-header-worktree']
+    .map((id) => `[data-testid="${id}"]`).join(', '))).toHaveCount(0);
   await expect(copyPane.getByTestId('composer-interrupt')).toBeVisible();
 }
 

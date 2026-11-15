@@ -1396,7 +1396,9 @@ closes up their spacing so the row holds at a phone width.
   companion pane below, settled or archived alike. An ask's worker is its
   hidden copy: while the ask runs its row, click and icon alike, opens
   the copy (`ThreadAgentRow.openThreadId`), whose composer takes no
-  message and shows no pickers or attach, whose messages offer no edit
+  message and shows no pickers or attach, whose workspace strip and
+  compact header show no machine, branch or worktree picker (they would
+  move the copy or check out the workspace it shares), whose messages offer no edit
   or fork, and which offers no Keep, only Stop (`Thread.askCopy`; the
   backend refuses a person's message and Keep there too). The copy is deleted
   once it answers, its pane with it; then the icon opens the thread
