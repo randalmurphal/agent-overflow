@@ -131,6 +131,7 @@ func (m *Manager) reconcileExternalProviderAccountWithMutexHeld(
 		return fmt.Errorf("%s credentials changed before account activation; retry", providerName)
 	}
 
+	previous, _ := m.store.Active(providerName, time.Now())
 	account, signIn, changed, err := m.reconcileObservedAccountLocked(providerName, info, current)
 	if err == nil {
 		if m.fingerprints == nil {
@@ -154,10 +155,9 @@ func (m *Manager) reconcileExternalProviderAccountWithMutexHeld(
 	// Claude processes intentionally follow the canonical native credential
 	// store, so every live Claude session adopts the observed account without
 	// a restart. Codex app-servers cache auth and remain attributed to their
-	// old account until the existing reconnect-on-next-send gate runs.
-	if providerName == string(provider.Claude) {
-		m.applySelection(providerName, generation, account.ID)
-	}
+	// old account until the existing reconnect-on-next-send gate runs; the
+	// gateway leaves their sessions alone.
+	m.applySelection(providerName, generation, previous.ID, account.ID)
 	return nil
 }
 
@@ -340,7 +340,7 @@ func (m *Manager) reconcileObservedAccountLocked(
 // can express.
 func (m *Manager) emitReconciledSignIn(signIn SignIn) {
 	if signIn.Added || signIn.Switched {
-		m.emitProviderAccountsChanged()
+		m.emitProviderAccountsChanged(signIn.Provider)
 	}
 	m.emitSignIn(signIn)
 }

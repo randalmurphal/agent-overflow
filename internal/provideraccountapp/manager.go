@@ -39,14 +39,13 @@ type UsageBackoff interface {
 type AccountSink interface {
 	PublishAccount(providerName string, account provideraccounts.Account, info provider.AccountInfo, generation uint64)
 	PublishCleared(providerName string, generation uint64)
-	// PublishAccountsChanged says the SET of saved accounts for a provider
+	// PublishAccountsChanged says the SET of saved accounts for providerName
 	// moved — one was added, removed, or made active. It is deliberately
 	// separate from PublishAccount, which reports one card's contents and
 	// fires on every usage probe: a receiver that re-listed on those would
 	// spend an RPC per probe, and one that never re-lists (the state before
-	// this existed) misses a removal entirely. It names no provider: the one
-	// read behind it, ListProviderAccounts, answers for every provider at once.
-	PublishAccountsChanged()
+	// this existed) misses a removal entirely.
+	PublishAccountsChanged(providerName string)
 	PublishUsageError(providerName, accountID string, err error)
 	PublishLogin(state LoginState)
 	// PublishSignIn names the account a login landed on and what it did to
@@ -306,7 +305,10 @@ func (m *Manager) ClaudeCatalog(accountID string) (provideraccounts.ClaudeCatalo
 	return m.store.ClaudeCatalog(accountID)
 }
 
-func (m *Manager) applySelection(providerName string, generation uint64, accountID string) {
+// applySelection reports that the selection moved from previousAccountID to
+// accountID. Every route that changes the selected account calls it once the
+// change is committed and mu is released.
+func (m *Manager) applySelection(providerName string, generation uint64, previousAccountID, accountID string) {
 	if m.deps.Sessions == nil {
 		return
 	}
@@ -316,7 +318,7 @@ func (m *Manager) applySelection(providerName string, generation uint64, account
 			selection.Account = AccountInfo(account)
 		}
 	}
-	m.deps.Sessions.ApplySelection(providerName, selection)
+	m.deps.Sessions.ApplySelection(providerName, previousAccountID, selection)
 }
 
 func (m *Manager) publishRateLimits(snapshot provider.RateLimitsSnapshot) {

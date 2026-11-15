@@ -97,10 +97,14 @@ type providerAccountSessionGateway struct {
 
 var _ provideraccountapp.SessionGateway = providerAccountSessionGateway{}
 
+// ApplySelection runs after every change of the selected account. The
+// auto-switch coordinator hears of it first, so a refusal of a request a
+// running turn sent on the previous account is not charged to the new one.
 func (g providerAccountSessionGateway) ApplySelection(
-	providerName string,
+	providerName, previousAccountID string,
 	selection provideraccountapp.Selection,
 ) {
+	g.app.accountSwitch().SelectionMoved(provider.UsageProviderFamily(providerName), previousAccountID, selection.AccountID)
 	g.app.applyProviderAccountSelectionToSessions(
 		providerName,
 		selection.Generation,
@@ -153,11 +157,11 @@ func (s providerAccountEventSink) PublishCleared(providerName string, generation
 // PublishAccountsChanged is a payload-less refetch nudge: the listing carries
 // per-account quota snapshots and a `needsLogin` verdict that only
 // ListProviderAccounts can compute, so a frame trying to carry the set would
-// be a second, divergent projection of it.
-func (s providerAccountEventSink) PublishAccountsChanged() {
+// be a second, divergent projection of it. Auto-switch forgets only the
+// changed provider's sign-in results.
+func (s providerAccountEventSink) PublishAccountsChanged(providerName string) {
 	s.app.emit(eventchan.ProviderAccountsChanged, nil)
-	s.app.accountSwitch().AccountsChanged(string(provider.Claude))
-	s.app.accountSwitch().AccountsChanged(string(provider.Codex))
+	s.app.accountSwitch().AccountsChanged(provider.UsageProviderFamily(providerName))
 }
 
 func (s providerAccountEventSink) PublishSignIn(signIn provideraccountapp.SignIn) {
