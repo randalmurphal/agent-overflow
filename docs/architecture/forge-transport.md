@@ -108,10 +108,19 @@ Three kinds of forge method, two sources of the host:
 | Host | REST base | GraphQL |
 |---|---|---|
 | `github.com` | `https://api.github.com/` | `https://api.github.com/graphql` |
-| GitHub Enterprise `H` | `https://H/api/v3/` | `https://H/api/graphql` |
 | GitLab `H` | `api_protocol://api_host/api/v4/` from glab's per-host config, default `https://H/api/v4/` | `api_protocol://api_host/api/graphql`, default `https://H/api/graphql`; one quota pool with REST |
 
 Base URLs are resolved once per host and kept with the host's client.
+
+GitHub Enterprise Server and GHE.com are not supported: an origin on
+such a host (`SUBDOMAIN.ghe.com`, or the conventional `github.EXAMPLE`
+and `ghe.EXAMPLE` Server names) classifies as no forge, so nothing is
+sent to it and git status, diff, commit and push work as for any other
+remote. `GitStatus.ForgeUnsupported` carries the one sentence the Create
+PR menu item shows in its place, and a forge operation on the checkout
+fails with an `*OriginUnknownError` saying the same
+(`unsupportedForgeReason`, `internal/git/forge_detect.go`). Another
+Server name reads as any unsupported host.
 
 ## Credentials
 
@@ -132,8 +141,8 @@ func (Token) MarshalJSON() ([]byte, error)
 func (Token) MarshalText() ([]byte, error)
 ```
 
-- Source: `gh auth token --hostname H` for GitHub (honors `GH_TOKEN`,
-  `GH_ENTERPRISE_TOKEN` and the hosts file). For GitLab,
+- Source: `gh auth token --hostname H` for GitHub (honors `GH_TOKEN`
+  and the hosts file). For GitLab,
   `glab config get token --host H`, then `glab auth status --hostname H -t`
   when that is empty (keyring). A glab login with `is_oauth2` true runs
   `glab api --hostname H version` before every read so glab refreshes an
@@ -861,8 +870,7 @@ access or the viewer's authorship of the PR (`viewerDidAuthor`; GitHub's
 review requests reference: "Pull request authors and repository owners
 and collaborators can request a pull request review"), and dismissing
 write access, which have no viewer field; team
-reviewers need an organization owner. GHES before 3.10 is outside
-support. GitLab's: edit, close, reopen, draft and re-request from
+reviewers need an organization owner. GitLab's: edit, close, reopen, draft and re-request from
 `userPermissions.updateMergeRequest`; reviewers, assignees and labels from
 `adminMergeRequest`; bypass from the REST
 `user.can_merge` and requested changes blocking the merge.

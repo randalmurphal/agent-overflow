@@ -40,6 +40,10 @@ export interface GitStatus {
    * Values: "github" | "gitlab" | "" (unknown / no origin).
    */
   forge?: string;
+  /** Why the PR features are unavailable when forge is empty because the
+   * origin is on a host this release does not support (GitHub
+   * Enterprise); the sentence shows in their place. */
+  forgeUnsupported?: string;
   openPrUrl?: string;
   openPrNumber?: number;
   /**

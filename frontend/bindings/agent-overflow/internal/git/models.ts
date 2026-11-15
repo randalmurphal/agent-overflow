@@ -799,6 +799,13 @@ export class GitStatus {
      * the "Create PR" action.
      */
     "forge"?: string;
+
+    /**
+     * ForgeUnsupported is the sentence the PR features show in their
+     * place when Forge is empty because the origin is on a forge host
+     * this release does not support (GitHub Enterprise); "" otherwise.
+     */
+    "forgeUnsupported"?: string;
     "openPrUrl"?: string;
     "openPrNumber"?: number;
 

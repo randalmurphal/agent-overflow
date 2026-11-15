@@ -677,6 +677,20 @@ describe('<GitActionsControl> forge labels', () => {
     const item = getByText('Create PR').closest('[role="menuitem"]');
     expect(item?.getAttribute('aria-disabled')).toBe('true');
   });
+
+  it('says why in place of Create PR when the origin is on GitHub Enterprise, and keeps the git actions', async () => {
+    const pane = await buildPane();
+    const sentence = 'Pull requests on GitHub Enterprise (github.acme.corp) are not supported yet.';
+    __seedGitStatusForTest(WORKSPACE, status({ forge: '', forgeUnsupported: sentence, branch: 'feature', isDefaultBranch: false, aheadCount: 1 }));
+    const { findByLabelText, getByText, getAllByText } = render(GitActionsControl, { props: { pane } });
+    await fireEvent.click(await findByLabelText('More git actions'));
+    await flush();
+    const item = getByText('Create PR').closest('[role="menuitem"]');
+    expect(item?.getAttribute('aria-disabled')).toBe('true');
+    expect(item).toHaveTextContent(sentence);
+    const push = getAllByText('Push').map((el) => el.closest('[role="menuitem"]')).find((el) => el !== null);
+    expect(push?.getAttribute('aria-disabled')).toBeNull();
+  });
 });
 
 describe('<GitActionsControl> header action controls are height-locked', () => {
