@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { installDiagnosticsCapture } from '../../test/helpers/diagnostics';
 import {
   getThreadWorkerCounts,
   refreshThreadWorkerSummaries,
@@ -7,6 +8,7 @@ import {
   threadWorkerSummaryRetentionForTest,
 } from './threadWorkerSummaries.svelte';
 import { applyThreadAgentRowsChanged, applyThreadAgentRowsGap } from './eventsThreadAgentRows';
+import { DisconnectedError } from '../transport/wsClient';
 import type { ThreadWorkerSummary, ThreadWorkerSummaryPage } from './bindings';
 import { HOME_BACKEND } from '../transport/backendKey';
 import { detachBackend, takePinnedBackend } from '../transport/backends';
@@ -28,7 +30,7 @@ function held<T>(): { promise: Promise<T>; answer: (value: T) => void } {
   return { promise, answer };
 }
 
-const EMPTY_RETENTION = { counts: 0, owners: 0, landed: 0, snapshots: 0 };
+const EMPTY_RETENTION = { counts: 0, owners: 0, landed: 0, snapshots: 0, failed: 0 };
 
 describe('thread worker summaries', () => {
   beforeEach(() => {
@@ -41,6 +43,9 @@ describe('thread worker summaries', () => {
     vi.useRealTimers();
     vi.restoreAllMocks();
   });
+  // After the reset above, which would drop its binding mock.
+  const diagnostics = installDiagnosticsCapture();
+  const reported = async () => (await diagnostics.all()).filter((record) => record.message === 'threadWorkerSummaries: read failed');
 
   it('reads every computer in bulk and files each count under the computer that answered', async () => {
     stageBackend({ id: 'gpu' });
@@ -83,7 +88,6 @@ describe('thread worker summaries', () => {
   });
 
   it('keeps the counts a computer had when a later page of its bulk read fails', async () => {
-    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
     setBindingMock('ListThreadWorkerSummaries', async () => page([summary('a', 1), summary('z', 4)]));
     await refreshThreadWorkerSummaries();
     setBindingMock('ListThreadWorkerSummaries', async (after: string) => {
@@ -93,7 +97,7 @@ describe('thread worker summaries', () => {
     await refreshThreadWorkerSummaries();
     expect(getThreadWorkerCounts('a')).toEqual({ open: 1, needYou: 0 });
     expect(getThreadWorkerCounts('z')).toEqual({ open: 4, needYou: 0 });
-    expect(error).toHaveBeenCalledTimes(1);
+    expect(await reported()).toHaveLength(1);
   });
 
   it('reads a framed thread once for a burst, from the computer that sent the frames', async () => {
@@ -202,7 +206,7 @@ describe('thread worker summaries', () => {
     setBindingMock('ListThreadWorkerSummaries', async () =>
       page(Array.from({ length: 50 }, (_, i) => summary(`t${i}`, 1 + (i % 3)))));
     await refreshThreadWorkerSummaries();
-    expect(threadWorkerSummaryRetentionForTest()).toEqual({ counts: 50, owners: 50, landed: 0, snapshots: 1 });
+    expect(threadWorkerSummaryRetentionForTest()).toEqual({ ...EMPTY_RETENTION, counts: 50, owners: 50, snapshots: 1 });
     // Each thread's work closes and a frame reads it again.
     setBindingMock('GetThreadWorkerSummary', async (threadId: string) => summary(threadId, 0));
     for (let i = 0; i < 50; i++) applyThreadAgentRowsChanged({ threadId: `t${i}` }, HOME_BACKEND);
@@ -245,7 +249,7 @@ describe('thread worker summaries', () => {
     expect(getThreadWorkerCounts('local')).toEqual({ open: 1, needYou: 0 });
   });
 
-  it('keeps the last counts when a read fails, and reports it', async () => {
+  it('keeps the last counts when a read fails, and reports it to the diagnostics log', async () => {
     const error = vi.spyOn(console, 'error').mockImplementation(() => {});
     setBindingMock('ListThreadWorkerSummaries', async () => page([summary('spawner', 2, 1)]));
     await refreshThreadWorkerSummaries();
@@ -255,6 +259,98 @@ describe('thread worker summaries', () => {
     setBindingMock('ListThreadWorkerSummaries', async () => { throw new Error('database is locked'); });
     await refreshThreadWorkerSummaries();
     expect(getThreadWorkerCounts('spawner')).toEqual({ open: 2, needYou: 1 });
-    expect(error).toHaveBeenCalledTimes(2);
+    expect(await reported()).toHaveLength(2);
+    expect((await reported())[0]!.detail).toContain('database is locked');
+    expect(diagnostics.warnings().filter((line) => line.includes('database is locked'))).toHaveLength(2);
+    expect(error).not.toHaveBeenCalled();
+  });
+
+  it('reads a computer whose first bulk read failed again on a growing backoff until one answers', async () => {
+    let fail = 2;
+    const list = setBindingMock('ListThreadWorkerSummaries', async () => {
+      if (fail-- > 0) throw new Error('database is locked');
+      return page([summary('spawner', 3, 1)]);
+    });
+    await refreshThreadWorkerSummaries();
+    expect(list).toHaveBeenCalledTimes(1);
+    // Until a read answers the row shows no badge, as for no workers.
+    expect(getThreadWorkerCounts('spawner')).toEqual({ open: 0, needYou: 0 });
+    await vi.advanceTimersByTimeAsync(2_999);
+    expect(list).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(list).toHaveBeenCalledTimes(2);
+    expect(getThreadWorkerCounts('spawner')).toEqual({ open: 0, needYou: 0 });
+    // The second retry waits twice as long.
+    await vi.advanceTimersByTimeAsync(5_999);
+    expect(list).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(list).toHaveBeenCalledTimes(3);
+    expect(getThreadWorkerCounts('spawner')).toEqual({ open: 3, needYou: 1 });
+    expect(await reported()).toHaveLength(2);
+    // Once it answered nothing reads it again.
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(list).toHaveBeenCalledTimes(3);
+    expect(threadWorkerSummaryRetentionForTest().failed).toBe(0);
+  });
+
+  it('reads a thread whose read failed again after a backoff, keeping its last counts meanwhile', async () => {
+    setBindingMock('ListThreadWorkerSummaries', async () => page([summary('spawner', 2, 1)]));
+    await refreshThreadWorkerSummaries();
+    let fail = 2;
+    const get = setBindingMock('GetThreadWorkerSummary', async (threadId: string) => {
+      if (fail-- > 0) throw new Error('database is locked');
+      return summary(threadId, 4, 0);
+    });
+    applyThreadAgentRowsChanged({ threadId: 'spawner' }, HOME_BACKEND);
+    await vi.advanceTimersByTimeAsync(500);
+    expect(get).toHaveBeenCalledTimes(1);
+    expect(getThreadWorkerCounts('spawner')).toEqual({ open: 2, needYou: 1 });
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(get).toHaveBeenCalledTimes(2);
+    expect(getThreadWorkerCounts('spawner')).toEqual({ open: 2, needYou: 1 });
+    await vi.advanceTimersByTimeAsync(6_000);
+    expect(get).toHaveBeenCalledTimes(3);
+    expect(getThreadWorkerCounts('spawner')).toEqual({ open: 4, needYou: 0 });
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(get).toHaveBeenCalledTimes(3);
+    expect(threadWorkerSummaryRetentionForTest().failed).toBe(0);
+
+    // The answer reset the curve: the next failure waits the first step again.
+    fail = 1;
+    applyThreadAgentRowsChanged({ threadId: 'spawner' }, HOME_BACKEND);
+    await vi.advanceTimersByTimeAsync(500);
+    expect(get).toHaveBeenCalledTimes(4);
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(get).toHaveBeenCalledTimes(5);
+  });
+
+  it('retries no read a newer one answered for', async () => {
+    setBindingMock('ListThreadWorkerSummaries', async () => page([summary('spawner', 2)]));
+    await refreshThreadWorkerSummaries();
+    const one = held<ThreadWorkerSummary>();
+    const get = setBindingMock('GetThreadWorkerSummary', () => one.promise);
+    applyThreadAgentRowsChanged({ threadId: 'spawner' }, HOME_BACKEND);
+    await vi.advanceTimersByTimeAsync(500);
+    setBindingMock('ListThreadWorkerSummaries', async () => page([summary('spawner', 5)]));
+    await refreshThreadWorkerSummaries();
+    one.answer(Promise.reject(new Error('database is locked')) as unknown as ThreadWorkerSummary);
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(get).toHaveBeenCalledTimes(1);
+    expect(getThreadWorkerCounts('spawner')).toEqual({ open: 5, needYou: 0 });
+  });
+
+  it('leaves a read the connection dropped to the reconnect, which reads the computer again', async () => {
+    setBindingMock('ListThreadWorkerSummaries', async () => { throw new DisconnectedError(); });
+    const get = setBindingMock('GetThreadWorkerSummary', async () => { throw new DisconnectedError(); });
+    await refreshThreadWorkerSummaries();
+    applyThreadAgentRowsChanged({ threadId: 'spawner' }, HOME_BACKEND);
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(get).toHaveBeenCalledTimes(1);
+    expect(await reported()).toHaveLength(0);
+    const list = setBindingMock('ListThreadWorkerSummaries', async () => page([summary('spawner', 1, 1)]));
+    // The reconnect's resync.
+    await refreshThreadWorkerSummaries();
+    expect(list).toHaveBeenCalledTimes(1);
+    expect(getThreadWorkerCounts('spawner')).toEqual({ open: 1, needYou: 1 });
   });
 });

@@ -835,8 +835,14 @@ Mechanics, as built:
   is that computer's watermark: no answer from a read of it that
   started earlier lands after it, absence included. An answer lands
   only while the computer that gave it is the one attached when its
-  read started. A thread whose count reaches zero, and a detached
-  computer's counts, are dropped.
+  read started. A read that fails is read again, through the same
+  scheduler, on a backoff that grows from 3 to 30 seconds, until one
+  answers or a newer read covers it; meanwhile the row keeps what it
+  showed, no badge before the first answer, and carries no error mark.
+  The failure goes to the diagnostics log. A read the connection
+  dropped is left to the reconnect, whose resync reads the computer
+  again. A thread whose count reaches zero, and a detached computer's
+  counts, are dropped.
 - `ListAssistantPastThreads(agentID, after, limit)` (route home, sent to
   the assistant's computer) pages `agent_past_threads` newest superseded
   first by the `{supersededAt, threadId}` cursor and feeds
