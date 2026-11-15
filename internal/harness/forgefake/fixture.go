@@ -72,6 +72,16 @@ type Repo struct {
 	Labels        []Label  `json:"labels,omitempty"`
 	ServerVersion string   `json:"serverVersion,omitempty"`
 	ServerLacks   []string `json:"serverLacks,omitempty"`
+	// Parent is the project this repository is a fork of, seeded on the
+	// same host: a checkout of the fork opens its pull requests there
+	// (GitHub's parent, GitLab's forked_from_project), and a pull there
+	// whose headRepo names this repository has it as its head repository.
+	Parent string `json:"parent,omitempty"`
+	// TokenCannotRead is what the viewer's fine-grained GitHub token may
+	// not read: "checks" (check runs) and "actions" (their workflow runs).
+	// A PR read selecting one answers it null with a FORBIDDEN error
+	// (github_read_parts.go).
+	TokenCannotRead []string `json:"tokenCannotRead,omitempty"`
 	// NoChangeRequests is a GitLab tier without Request changes (Free):
 	// bulk_publish's reviewer_state requested_changes sets reviewed.
 	NoChangeRequests bool `json:"noChangeRequests,omitempty"`
@@ -94,6 +104,9 @@ type RepoMerge struct {
 	Methods          []string `json:"methods"`
 	DefaultMethod    string   `json:"defaultMethod,omitempty"`
 	AutoMergeAllowed bool     `json:"autoMergeAllowed,omitempty"`
+	// MergeQueue is a GitHub base that merges only through its merge
+	// queue (a ruleset's Require merge queue); see merge_queue.go.
+	MergeQueue bool `json:"mergeQueue,omitempty"`
 	// DeleteBranchOnMerge is GitHub's deleteBranchOnMerge and GitLab's
 	// remove_source_branch_after_merge (a merge request's
 	// force_remove_source_branch default).
@@ -145,6 +158,9 @@ type Pull struct {
 	// isCrossRepository (GitHub) and a source_project_id of its own
 	// (GitLab).
 	HeadRepo string `json:"headRepo,omitempty"`
+	// MaintainerCanModify is a fork's pull letting people with write
+	// access to the base push to its head (GitHub maintainerCanModify).
+	MaintainerCanModify bool `json:"maintainerCanModify,omitempty"`
 	// headRepoID is the fork's generated project id.
 	headRepoID int64
 	// Reviewers are the logins a review is requested from (GitHub
@@ -207,6 +223,9 @@ type Pull struct {
 	// conflicts reads as ready on both forges, as on an unprotected
 	// branch.
 	Readiness *Readiness `json:"readiness,omitempty"`
+	// Queued is an open GitHub pull's place in its base's merge queue
+	// (merge.mergeQueue).
+	Queued *QueueEntry `json:"queued,omitempty"`
 	// MergedBy is who merged a merged pull; defaults to its author.
 	// MergeCommitSHA is the merge commit, generated for a merged pull.
 	MergedBy       string `json:"mergedBy,omitempty"`
@@ -686,6 +705,9 @@ func (r *Repo) normalize(ids *idSource) error {
 			pull.headRepoID = ids.next()
 		}
 	}
+	if r.Parent != "" && (!strings.Contains(r.Parent, "/") || strings.EqualFold(r.Parent, r.Project)) {
+		return fmt.Errorf("parent %q is not another repository's path", r.Parent)
+	}
 	if err := r.normalizePipelines(ids); err != nil {
 		return err
 	}
@@ -726,8 +748,8 @@ func (m *RepoMerge) normalize(forge string) error {
 		}
 		return nil
 	}
-	if m.Methods != nil || m.DefaultMethod != "" || m.AutoMergeAllowed {
-		return errors.New("methods, defaultMethod and autoMergeAllowed are GitHub repository settings")
+	if m.Methods != nil || m.DefaultMethod != "" || m.AutoMergeAllowed || m.MergeQueue {
+		return errors.New("methods, defaultMethod, autoMergeAllowed and mergeQueue are GitHub repository settings")
 	}
 	m.Permission = defaultString(m.Permission, "developer")
 	if gitlabRoles[m.Permission] == 0 {
@@ -943,6 +965,14 @@ func (p *Pull) normalizeMerge(r *Repo, ids *idSource) error {
 	}
 	if err := p.Readiness.normalize(forge, p); err != nil {
 		return fmt.Errorf("readiness: %w", err)
+	}
+	if p.Queued != nil {
+		if !r.Merge.MergeQueue || p.State != "open" {
+			return errors.New("queued is an open pull's on a merge.mergeQueue base")
+		}
+		if err := p.Queued.normalize(p.Author); err != nil {
+			return err
+		}
 	}
 	if forge == "gitlab" && p.Readiness.Behind && r.Merge.MergeMethod == "merge" {
 		return errors.New("readiness: behind is GitLab's need_rebase, which a merge-commit project never reports; set merge.mergeMethod to ff or rebase_merge")

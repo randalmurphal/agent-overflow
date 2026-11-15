@@ -2,8 +2,11 @@ package git
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
+	"strconv"
 	"strings"
 
 	"agent-overflow/internal/forgeapi"
@@ -36,21 +39,24 @@ const (
 	// read from a comment of either kind, with its reaction groups while
 	// the read's $wantReactions is set: every document that selects it
 	// declares and sends that variable.
-	githubViewerCommentFields = `lastEditedAt url viewerCanUpdate viewerCanDelete reactionGroups @include(if: $wantReactions) ` + githubReactionGroupFields
+	githubViewerCommentFields = `lastEditedAt url viewerCanUpdate viewerCanDelete viewerCanReact reactionGroups @include(if: $wantReactions) ` + githubReactionGroupFields
 	// githubReactionFields is a comment's reaction groups: GitHub answers
 	// every content, so the count is the reactors' totalCount (no nodes:
 	// the names would cost a connection per comment).
 	githubReactionFields      = `reactionGroups ` + githubReactionGroupFields
 	githubReactionGroupFields = `{ content viewerHasReacted reactors { totalCount } }`
-	githubThreadCommentFields = `id databaseId ` + githubActor + ` body createdAt ` + githubViewerCommentFields + ` replyTo { id databaseId }`
+	githubThreadCommentFields = `id fullDatabaseId ` + githubActor + ` body createdAt ` + githubViewerCommentFields + ` replyTo { id fullDatabaseId }`
 	githubThreadFields        = `id isResolved isOutdated path line startLine originalLine originalStartLine diffSide startDiffSide subjectType ` +
-		`comments(first: 100) { ` + githubPageInfoFields + ` nodes { ` + githubThreadCommentFields + ` } }`
-	githubCommentFields = `id databaseId ` + githubActor + ` body createdAt ` + githubViewerCommentFields + ` isMinimized`
+		`viewerCanResolve viewerCanUnresolve viewerCanReply ` +
+		`comments(first: $pageSize) { ` + githubPageInfoFields + ` nodes { ` + githubThreadCommentFields + ` } }`
+	githubCommentFields = `id fullDatabaseId ` + githubActor + ` body createdAt ` + githubViewerCommentFields + ` isMinimized`
 	// isRequired is the forge's own answer to whether the PR's base
 	// requires the context, branch protection and rulesets alike, so it
-	// needs the PR's $number in every document that selects contexts.
+	// needs the PR's $number in every document that selects contexts. A
+	// check run and its workflow run are optional parts of the read
+	// ($wantCheckRuns, $wantWorkflowRuns: githubReadParts).
 	githubContextFields = `__typename ` +
-		`... on CheckRun { databaseId name status conclusion startedAt completedAt detailsUrl isRequired(pullRequestNumber: $number) checkSuite { workflowRun { databaseId url workflow { name } } } } ` +
+		`... on CheckRun @include(if: $wantCheckRuns) { databaseId name status conclusion startedAt completedAt detailsUrl isRequired(pullRequestNumber: $number) checkSuite @include(if: $wantWorkflowRuns) { workflowRun { databaseId url workflow { name } } } } ` +
 		`... on StatusContext { context state targetUrl createdAt description isRequired(pullRequestNumber: $number) }`
 	githubActorAs = `login ... on User { name }`
 	// githubDetailFields is the PR half of the detail. The merge fields
@@ -63,7 +69,8 @@ const (
 	githubDetailFields = `title body state isDraft baseRefName baseRefOid headRefName headRefOid url ` +
 		`additions deletions changedFiles mergeable mergeStateStatus reviewDecision ` + githubActor + ` ` +
 		`latestReviews(first: 100) { nodes { ` + githubActor + ` body submittedAt state commit { oid } } } ` +
-		`merged mergedAt mergedBy { ` + githubActorAs + ` } closedAt viewerDidAuthor isCrossRepository ` +
+		`merged mergedAt mergedBy { ` + githubActorAs + ` } closedAt viewerDidAuthor isCrossRepository viewerCanUpdateBranch maintainerCanModify ` +
+		`isMergeQueueEnabled isInMergeQueue mergeQueueEntry { position enqueuedAt enqueuer { ` + githubActorAs + ` } } mergeQueue { entries { totalCount } } ` +
 		`viewerCanEnableAutoMerge viewerCanDisableAutoMerge ` +
 		`autoMergeRequest { enabledAt mergeMethod enabledBy { ` + githubActorAs + ` } } ` +
 		`latestOpinionatedReviews(first: 100) { nodes { id state viewerDidAuthor authorCanPushToRepository commit { oid } ` + githubActor + ` } } ` +
@@ -99,7 +106,7 @@ const (
 		`... on AutoMergeDisabledEvent { id createdAt ` + githubTimelineActor + ` reason } ` +
 		`... on HeadRefForcePushedEvent { id createdAt ` + githubTimelineActor + ` afterCommit { oid } } ` +
 		`... on BaseRefChangedEvent { id createdAt ` + githubTimelineActor + ` currentRefName } ` +
-		`... on ReviewRequestedEvent { id createdAt ` + githubTimelineActor + ` requestedReviewer { __typename ... on User { login } ... on Bot { login } ... on Mannequin { login } ... on Team { combinedSlug } } }`
+		`... on ReviewRequestedEvent { id createdAt ` + githubTimelineActor + ` requestedReviewer { __typename ... on User { login } ... on Bot { login } ... on Mannequin { login } ... on Team @include(if: $wantTeams) { combinedSlug } } }`
 	githubTimelinePageInfoFields = `pageInfo { hasPreviousPage startCursor }`
 )
 
@@ -110,7 +117,10 @@ const (
 // and the repository's merge settings, $wantThreads the threads and comments, $wantEvents the newest
 // page of timeline items, and $wantChecks the rollup, which both the
 // detail's check summary and readiness and the CI pipeline are built from.
-const githubPRTickQuery = `query PRTick($owner: String!, $name: String!, $number: Int!, $wantDetail: Boolean!, $wantThreads: Boolean!, $wantEvents: Boolean!, $wantChecks: Boolean!, $wantReactions: Boolean!) {
+// $pageSize is the threads' and comments' page (githubReadLevels), and
+// $wantManage, $wantTeams, $wantCheckRuns and $wantWorkflowRuns the
+// optional parts (githubReadParts).
+const githubPRTickQuery = `query PRTick($owner: String!, $name: String!, $number: Int!, $wantDetail: Boolean!, $wantThreads: Boolean!, $wantEvents: Boolean!, $wantChecks: Boolean!, $wantReactions: Boolean!, $pageSize: Int!, $wantManage: Boolean!, $wantTeams: Boolean!, $wantCheckRuns: Boolean!, $wantWorkflowRuns: Boolean!) {
   viewer @include(if: $wantDetail) { login }
   repository(owner: $owner, name: $name) {
     viewerPermission
@@ -120,25 +130,25 @@ const githubPRTickQuery = `query PRTick($owner: String!, $name: String!, $number
       ... @include(if: $wantDetail) { ` + githubDetailFields + ` }
       commits(last: 1) @include(if: $wantChecks) { nodes { commit { id oid statusCheckRollup { contexts(first: 100) { ` + githubPageInfoFields + ` nodes { ` + githubContextFields + ` } } } } } }
       ... @include(if: $wantThreads) { state viewerCanApplySuggestion }
-      reviewThreads(first: 100) @include(if: $wantThreads) { ` + githubPageInfoFields + ` nodes { ` + githubThreadFields + ` } }
-      comments(first: 100) @include(if: $wantThreads) { ` + githubPageInfoFields + ` nodes { ` + githubCommentFields + ` } }
+      reviewThreads(first: $pageSize) @include(if: $wantThreads) { ` + githubPageInfoFields + ` nodes { ` + githubThreadFields + ` } }
+      comments(first: $pageSize) @include(if: $wantThreads) { ` + githubPageInfoFields + ` nodes { ` + githubCommentFields + ` } }
       timelineItems(last: 100, itemTypes: [` + githubTimelineItemTypes + `]) @include(if: $wantEvents) { ` + githubTimelinePageInfoFields + ` nodes { ` + githubTimelineFields + ` } }
     }
   }
 }`
 
-const githubPRThreadsPageQuery = `query PRThreadsPage($owner: String!, $name: String!, $number: Int!, $after: String!, $wantReactions: Boolean!) {
+const githubPRThreadsPageQuery = `query PRThreadsPage($owner: String!, $name: String!, $number: Int!, $after: String!, $wantReactions: Boolean!, $pageSize: Int!) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
-      reviewThreads(first: 100, after: $after) { ` + githubPageInfoFields + ` nodes { ` + githubThreadFields + ` } }
+      reviewThreads(first: $pageSize, after: $after) { ` + githubPageInfoFields + ` nodes { ` + githubThreadFields + ` } }
     }
   }
 }`
 
-const githubPRCommentsPageQuery = `query PRCommentsPage($owner: String!, $name: String!, $number: Int!, $after: String!, $wantReactions: Boolean!) {
+const githubPRCommentsPageQuery = `query PRCommentsPage($owner: String!, $name: String!, $number: Int!, $after: String!, $wantReactions: Boolean!, $pageSize: Int!) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
-      comments(first: 100, after: $after) { ` + githubPageInfoFields + ` nodes { ` + githubCommentFields + ` } }
+      comments(first: $pageSize, after: $after) { ` + githubPageInfoFields + ` nodes { ` + githubCommentFields + ` } }
     }
   }
 }`
@@ -161,7 +171,7 @@ const githubThreadStatesPageQuery = `query PRThreadStatesPage($owner: String!, $
 
 // githubPRTimelinePageQuery reads the timeline page before $before: the
 // tick reads the newest items, so older pages are read backwards.
-const githubPRTimelinePageQuery = `query PRTimelinePage($owner: String!, $name: String!, $number: Int!, $before: String!) {
+const githubPRTimelinePageQuery = `query PRTimelinePage($owner: String!, $name: String!, $number: Int!, $before: String!, $wantTeams: Boolean!) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
       timelineItems(last: 100, before: $before, itemTypes: [` + githubTimelineItemTypes + `]) { ` + githubTimelinePageInfoFields + ` nodes { ` + githubTimelineFields + ` } }
@@ -169,7 +179,7 @@ const githubPRTimelinePageQuery = `query PRTimelinePage($owner: String!, $name: 
   }
 }`
 
-const githubRollupContextsPageQuery = `query RollupContextsPage($commitID: ID!, $number: Int!, $after: String!) {
+const githubRollupContextsPageQuery = `query RollupContextsPage($commitID: ID!, $number: Int!, $after: String!, $wantCheckRuns: Boolean!, $wantWorkflowRuns: Boolean!) {
   node(id: $commitID) {
     ... on Commit {
       statusCheckRollup { contexts(first: 100, after: $after) { ` + githubPageInfoFields + ` nodes { ` + githubContextFields + ` } } }
@@ -180,6 +190,27 @@ const githubRollupContextsPageQuery = `query RollupContextsPage($commitID: ID!, 
 type githubPageInfo struct {
 	HasNextPage bool   `json:"hasNextPage"`
 	EndCursor   string `json:"endCursor"`
+}
+
+// githubBigInt is a GraphQL BigInt (a comment's fullDatabaseId, its REST
+// id), which GitHub encodes as a string; null is zero.
+type githubBigInt int64
+
+func (b *githubBigInt) UnmarshalJSON(data []byte) error {
+	if string(data) == "null" {
+		*b = 0
+		return nil
+	}
+	var text string
+	if err := json.Unmarshal(data, &text); err != nil {
+		return fmt.Errorf("GitHub BigInt %s is not a string: %w", data, err)
+	}
+	n, err := strconv.ParseInt(text, 10, 64)
+	if err != nil {
+		return fmt.Errorf("GitHub BigInt %q: %w", text, err)
+	}
+	*b = githubBigInt(n)
+	return nil
 }
 
 // githubActorRaw is a GraphQL Actor selected as
@@ -198,6 +229,7 @@ type githubViewerCommentRaw struct {
 	URL             string                   `json:"url"`
 	ViewerCanUpdate bool                     `json:"viewerCanUpdate"`
 	ViewerCanDelete bool                     `json:"viewerCanDelete"`
+	ViewerCanReact  bool                     `json:"viewerCanReact"`
 	ReactionGroups  []githubReactionGroupRaw `json:"reactionGroups"`
 }
 
@@ -212,14 +244,14 @@ type githubReactionGroupRaw struct {
 
 type githubThreadCommentRaw struct {
 	ID         string         `json:"id"`
-	DatabaseID int64          `json:"databaseId"`
+	DatabaseID githubBigInt   `json:"fullDatabaseId"`
 	Body       string         `json:"body"`
 	CreatedAt  string         `json:"createdAt"`
 	Author     githubActorRaw `json:"author"`
 	githubViewerCommentRaw
 	ReplyTo *struct {
-		ID         string `json:"id"`
-		DatabaseID int64  `json:"databaseId"`
+		ID         string       `json:"id"`
+		DatabaseID githubBigInt `json:"fullDatabaseId"`
 	} `json:"replyTo"`
 }
 
@@ -229,18 +261,21 @@ type githubThreadCommentsRaw struct {
 }
 
 type githubThreadRaw struct {
-	ID                string                  `json:"id"`
-	IsResolved        bool                    `json:"isResolved"`
-	IsOutdated        bool                    `json:"isOutdated"`
-	Path              string                  `json:"path"`
-	Line              *int                    `json:"line"`
-	StartLine         *int                    `json:"startLine"`
-	OriginalLine      *int                    `json:"originalLine"`
-	OriginalStartLine *int                    `json:"originalStartLine"`
-	DiffSide          string                  `json:"diffSide"`
-	StartDiffSide     string                  `json:"startDiffSide"`
-	SubjectType       string                  `json:"subjectType"`
-	Comments          githubThreadCommentsRaw `json:"comments"`
+	ID                 string                  `json:"id"`
+	IsResolved         bool                    `json:"isResolved"`
+	IsOutdated         bool                    `json:"isOutdated"`
+	Path               string                  `json:"path"`
+	Line               *int                    `json:"line"`
+	StartLine          *int                    `json:"startLine"`
+	OriginalLine       *int                    `json:"originalLine"`
+	OriginalStartLine  *int                    `json:"originalStartLine"`
+	DiffSide           string                  `json:"diffSide"`
+	StartDiffSide      string                  `json:"startDiffSide"`
+	SubjectType        string                  `json:"subjectType"`
+	ViewerCanResolve   bool                    `json:"viewerCanResolve"`
+	ViewerCanUnresolve bool                    `json:"viewerCanUnresolve"`
+	ViewerCanReply     bool                    `json:"viewerCanReply"`
+	Comments           githubThreadCommentsRaw `json:"comments"`
 }
 
 type githubThreadsRaw struct {
@@ -250,7 +285,7 @@ type githubThreadsRaw struct {
 
 type githubCommentRaw struct {
 	ID          string         `json:"id"`
-	DatabaseID  int64          `json:"databaseId"`
+	DatabaseID  githubBigInt   `json:"fullDatabaseId"`
 	Body        string         `json:"body"`
 	CreatedAt   string         `json:"createdAt"`
 	IsMinimized bool           `json:"isMinimized"`
@@ -385,26 +420,58 @@ const githubReactionsTooLarge = "Reactions are not shown: this pull request has 
 
 // ReadPR answers the parts want names from one PRTick request, plus a
 // page request for each connection past its first page and, for CI, the
-// REST jobs lists the steps of stepsFor jobs need. GitHub answers every
-// reaction group of every comment, so reactions can take a threads read
-// past its body bound: then the whole read runs once more without them
-// and says so (githubReactionsTooLarge); reactions never shrink what the
-// read can load. Nothing remembers that outcome.
+// REST jobs lists the steps of stepsFor jobs need, in the shape the
+// repository's and the PR's earlier reads left (github_read_shape.go). A
+// read refused for an optional part runs again without it, and the
+// detail says what is not shown; a threads read too large to answer runs
+// again one level smaller (without reactions, saying so as
+// githubReactionsTooLarge, then in smaller pages). Each step is
+// remembered for githubReadShapeTTL, so later ticks start from it.
 func (f *githubForge) ReadPR(ctx context.Context, ref PRReference, want PRReadParts, prev *CIPipeline, stepsFor []string) (PRRead, error) {
-	out, err := f.readPR(ctx, ref, want, prev, stepsFor, want.Threads)
-	if want.Threads && errors.Is(err, forgeapi.ErrBodyTooLarge) {
-		if out, err = f.readPR(ctx, ref, want, prev, stepsFor, false); err == nil {
-			out.ReactionsUnavailable = githubReactionsTooLarge
-		}
-	}
-	return out, err
-}
-
-func (f *githubForge) readPR(ctx context.Context, ref PRReference, want PRReadParts, prev *CIPipeline, stepsFor []string, reactions bool) (PRRead, error) {
 	client, err := f.core.githubAPI(ref.Host)
 	if err != nil {
 		return PRRead{}, err
 	}
+	fingerprint, err := client.CredentialFingerprint(ctx)
+	if err != nil {
+		return PRRead{}, err
+	}
+	partsKey := ref.Repository().Key() + "\x00" + fingerprint
+	levelKey := ref.Key()
+	now := f.core.nowFn()
+	shape := f.readMemory.shape(partsKey, levelKey, want.Threads, now)
+	remembered := maps.Clone(shape.excluded)
+	for {
+		out, err := f.readPR(ctx, client, ref, want, prev, stepsFor, shape)
+		if err == nil {
+			if want.Threads && shape.level > 0 {
+				f.readMemory.levels.put(levelKey, shape.level, f.core.nowFn().Add(githubReadShapeTTL))
+			}
+			return out, nil
+		}
+		if parts, remember, ok := githubPartsOf(err, want, shape); ok {
+			shape.excluded = maps.Clone(shape.excluded)
+			for _, part := range parts {
+				sentence := githubPartSentence(part, ref, err)
+				shape.excluded[part] = sentence
+				if remember {
+					remembered[part] = sentence
+				}
+			}
+			if remember {
+				f.readMemory.parts.put(partsKey, maps.Clone(remembered), f.core.nowFn().Add(githubReadShapeTTL))
+			}
+			continue
+		}
+		if want.Threads && shape.level+1 < len(githubReadLevels) && githubTooLarge(err) {
+			shape.level++
+			continue
+		}
+		return PRRead{}, err
+	}
+}
+
+func (f *githubForge) readPR(ctx context.Context, client *forgeapi.Client, ref PRReference, want PRReadParts, prev *CIPipeline, stepsFor []string, shape githubReadShape) (PRRead, error) {
 	vars, err := githubPullVars(ref)
 	if err != nil {
 		return PRRead{}, err
@@ -413,25 +480,21 @@ func (f *githubForge) readPR(ctx context.Context, ref PRReference, want PRReadPa
 	vars["wantThreads"] = want.Threads
 	vars["wantEvents"] = want.Events
 	vars["wantChecks"] = want.Detail || want.CI
-	vars["wantReactions"] = reactions
+	vars["wantReactions"] = want.Threads && shape.reactions()
+	vars["pageSize"] = shape.pageSize()
+	shape.setVars(vars, githubReadParts...)
 	var raw githubTickRaw
-	// An error confined to the management selections leaves the rest of
-	// the read standing; the detail says the controls are unavailable.
-	var manageErr error
 	if _, err := client.GraphQL(ctx, "PRTick", githubPRTickQuery, vars, &raw); err != nil {
-		if !want.Detail || !githubManageOnly(err) {
-			return PRRead{}, err
-		}
-		manageErr = err
+		return PRRead{}, err
 	}
 	pull, err := raw.pull(ref)
 	if err != nil {
-		return PRRead{}, errors.Join(manageErr, err)
+		return PRRead{}, err
 	}
 	var checks []CheckStatus
 	var contexts []githubContextRaw
 	if want.Detail || want.CI {
-		if contexts, err = f.readRollupContexts(ctx, client, ref, pull); err != nil {
+		if contexts, err = f.readRollupContexts(ctx, client, ref, pull, shape); err != nil {
 			return PRRead{}, err
 		}
 		checks = githubCheckStatuses(contexts)
@@ -449,13 +512,19 @@ func (f *githubForge) readPR(ctx context.Context, ref PRReference, want PRReadPa
 				return PRRead{}, err
 			}
 		}
+		merge.checksUnknown = !shape.has(githubPartCheckRuns)
+		merge.manageUnknown = !shape.has(githubPartManage)
 		out.Detail.Readiness = merge.readiness()
 		out.Detail.Merge = merge.options(out.Detail.Readiness)
 		out.Detail.Manage = merge.manage()
-		if manageErr != nil {
+		if sentence, left := shape.excluded[githubPartManage]; left {
 			out.Detail.Manage = emptyManage()
-			out.Detail.Manage.Unavailable = manageUnavailableSentence(ref, manageErr)
+			out.Detail.Manage.Unavailable = sentence
 		}
+		if !shape.has(githubPartTeams) {
+			out.Detail.Manage.Can.ReviewerTeams = false
+		}
+		out.Detail.Unavailable = shape.unavailable()
 		if pull.Merged || strings.EqualFold(pull.State, "MERGED") {
 			out.Detail.MergedAt = pull.MergedAt
 			if pull.MergedBy != nil {
@@ -467,14 +536,17 @@ func (f *githubForge) readPR(ctx context.Context, ref PRReference, want PRReadPa
 		}
 	}
 	if want.Events {
-		if out.Events, err = f.readEvents(ctx, client, ref, pull); err != nil {
+		if out.Events, err = f.readEvents(ctx, client, ref, pull, shape); err != nil {
 			return PRRead{}, err
 		}
 	}
 	if want.Threads {
 		var truncated bool
-		if out.Threads, truncated, err = f.readThreads(ctx, client, ref, pull, reactions); err != nil {
+		if out.Threads, truncated, err = f.readThreads(ctx, client, ref, pull, shape); err != nil {
 			return PRRead{}, err
+		}
+		if !shape.reactions() {
+			out.ReactionsUnavailable = githubReactionsTooLarge
 		}
 		if truncated {
 			out.ThreadsTruncated = threadsTruncatedSentence(ref)
@@ -483,6 +555,9 @@ func (f *githubForge) readPR(ctx context.Context, ref PRReference, want PRReadPa
 	if want.CI {
 		if out.CI, err = f.githubPipeline(ctx, client, ref.Repository(), checks, githubCIPermission(raw.Repository.ViewerPermission), prev, stepsFor); err != nil {
 			return PRRead{}, err
+		}
+		if notes := shape.ciUnavailable(); notes != "" {
+			out.CI.ActionsUnavailable = strings.TrimSpace(notes + " " + out.CI.ActionsUnavailable)
 		}
 		if len(out.CI.Stages) > 0 {
 			out.CI.Ref = pull.HeadRefName
@@ -497,7 +572,7 @@ func (f *githubForge) readPR(ctx context.Context, ref PRReference, want PRReadPa
 
 // readRollupContexts returns the head commit's check contexts, paging
 // past the first page. A PR whose head has no checks answers none.
-func (f *githubForge) readRollupContexts(ctx context.Context, client *forgeapi.Client, ref PRReference, pull *githubPullRaw) ([]githubContextRaw, error) {
+func (f *githubForge) readRollupContexts(ctx context.Context, client *forgeapi.Client, ref PRReference, pull *githubPullRaw, shape githubReadShape) ([]githubContextRaw, error) {
 	if len(pull.Commits.Nodes) == 0 || pull.Commits.Nodes[0].Commit.StatusCheckRollup == nil {
 		return nil, nil
 	}
@@ -514,7 +589,9 @@ func (f *githubForge) readRollupContexts(ctx context.Context, client *forgeapi.C
 				StatusCheckRollup *githubRollupRaw `json:"statusCheckRollup"`
 			} `json:"node"`
 		}
-		if _, err := client.GraphQL(ctx, "RollupContextsPage", githubRollupContextsPageQuery, map[string]any{"commitID": commit.ID, "number": ref.Number, "after": page.EndCursor}, &raw); err != nil {
+		vars := map[string]any{"commitID": commit.ID, "number": ref.Number, "after": page.EndCursor}
+		shape.setVars(vars, githubPartCheckRuns, githubPartWorkflowRuns)
+		if _, err := client.GraphQL(ctx, "RollupContextsPage", githubRollupContextsPageQuery, vars, &raw); err != nil {
 			return nil, err
 		}
 		if raw.Node == nil || raw.Node.StatusCheckRollup == nil {
@@ -531,16 +608,21 @@ func (f *githubForge) readRollupContexts(ctx context.Context, client *forgeapi.C
 // every connection past its first page up to githubReadMaxPages;
 // truncated says a connection had more. GitHub keeps PR conversation
 // comments (issue comments) flat, outside review threads; the review pane
-// lists them with the threads.
-func (f *githubForge) readThreads(ctx context.Context, client *forgeapi.Client, ref PRReference, pull *githubPullRaw, reactions bool) (_ []ReviewThread, truncated bool, _ error) {
+// lists them with the threads. Each connection reads at most
+// githubReadMaxPages pages of githubReadPageSize nodes, whatever the
+// shape's page size; truncated says one had more.
+func (f *githubForge) readThreads(ctx context.Context, client *forgeapi.Client, ref PRReference, pull *githubPullRaw, shape githubReadShape) (_ []ReviewThread, truncated bool, _ error) {
 	vars, err := githubPullVars(ref)
 	if err != nil {
 		return nil, false, err
 	}
+	reactions := shape.reactions()
 	vars["wantReactions"] = reactions
+	vars["pageSize"] = shape.pageSize()
+	maxPages := githubReadMaxPages * githubReadPageSize / shape.pageSize()
 	threads := pull.ReviewThreads.Nodes
 	page := pull.ReviewThreads.PageInfo
-	for pages := 1; page.HasNextPage && pages < githubReadMaxPages; pages++ {
+	for pages := 1; page.HasNextPage && pages < maxPages; pages++ {
 		var raw githubTickRaw
 		if _, err := client.GraphQL(ctx, "PRThreadsPage", githubPRThreadsPageQuery, withAfter(vars, page.EndCursor), &raw); err != nil {
 			return nil, false, err
@@ -562,7 +644,7 @@ func (f *githubForge) readThreads(ctx context.Context, client *forgeapi.Client, 
 
 	comments := pull.Comments.Nodes
 	page = pull.Comments.PageInfo
-	for pages := 1; page.HasNextPage && pages < githubReadMaxPages; pages++ {
+	for pages := 1; page.HasNextPage && pages < maxPages; pages++ {
 		var raw githubTickRaw
 		if _, err := client.GraphQL(ctx, "PRCommentsPage", githubPRCommentsPageQuery, withAfter(vars, page.EndCursor), &raw); err != nil {
 			return nil, false, err
@@ -581,10 +663,12 @@ func (f *githubForge) readThreads(ctx context.Context, client *forgeapi.Client, 
 }
 
 // readThreadComments completes one thread's comments past their first
-// page, with their reaction groups when reactions is set.
+// page, with their reaction groups when reactions is set, up to
+// githubReadMaxPages pages and githubReadMaxPages*githubReadPageSize
+// comments (the first page is the shape's size, the rest 100).
 func (f *githubForge) readThreadComments(ctx context.Context, client *forgeapi.Client, thread *githubThreadRaw, reactions bool) error {
 	page := thread.Comments.PageInfo
-	for pages := 1; page.HasNextPage && pages < githubReadMaxPages; pages++ {
+	for pages := 1; page.HasNextPage && pages < githubReadMaxPages && len(thread.Comments.Nodes) < githubReadMaxPages*githubReadPageSize; pages++ {
 		if page.EndCursor == "" {
 			return fmt.Errorf("GitHub review thread %s has another page of comments but no cursor", thread.ID)
 		}
@@ -641,21 +725,19 @@ func (f *githubForge) readThreadStates(ctx context.Context, client *forgeapi.Cli
 // readEvents returns the PR's forge events oldest first: the tick's
 // newest timeline page, then older pages read backwards, at most
 // githubReadMaxPages pages (the newest items when the timeline is longer).
-func (f *githubForge) readEvents(ctx context.Context, client *forgeapi.Client, ref PRReference, pull *githubPullRaw) ([]ReviewEvent, error) {
+func (f *githubForge) readEvents(ctx context.Context, client *forgeapi.Client, ref PRReference, pull *githubPullRaw, shape githubReadShape) ([]ReviewEvent, error) {
 	vars, err := githubPullVars(ref)
 	if err != nil {
 		return nil, err
 	}
+	shape.setVars(vars, githubPartTeams)
 	pages := [][]githubTimelineItemRaw{pull.TimelineItems.Nodes}
 	page := pull.TimelineItems.PageInfo
 	for n := 1; page.HasPreviousPage && n < githubReadMaxPages; n++ {
 		if page.StartCursor == "" {
 			return nil, errors.New("GitHub timeline has an earlier page but no cursor to read it by")
 		}
-		before := make(map[string]any, len(vars)+1)
-		for k, v := range vars {
-			before[k] = v
-		}
+		before := maps.Clone(vars)
 		before["before"] = page.StartCursor
 		var raw githubTickRaw
 		if _, err := client.GraphQL(ctx, "PRTimelinePage", githubPRTimelinePageQuery, before, &raw); err != nil {
@@ -749,6 +831,11 @@ func githubCheckStatus(item githubContextRaw) (CheckStatus, bool) {
 	check := CheckStatus{Kind: item.Typename}
 	switch item.Typename {
 	case "CheckRun":
+		if item.Name == "" {
+			// A read without check runs ($wantCheckRuns) answers only
+			// their __typename.
+			return CheckStatus{}, false
+		}
 		check.Name = item.Name
 		if suite := item.CheckSuite; suite != nil && suite.WorkflowRun != nil && suite.WorkflowRun.Workflow != nil {
 			check.Workflow = suite.WorkflowRun.Workflow.Name
@@ -818,6 +905,14 @@ func normalizeGitHubMergeability(mergeable, mergeStateStatus string) string {
 	}
 }
 
+// Why a thread's Resolve and Reply are unavailable. GitHub lets the pull
+// request's author and people with write access resolve; a reply is
+// refused on a locked conversation or without read access.
+const (
+	githubCannotResolveReason = "Only the pull request's author and people with write access can resolve or reopen conversations."
+	githubCannotReplyReason   = "GitHub does not let you reply to this conversation."
+)
+
 func githubReviewThreads(nodes []githubThreadRaw) []ReviewThread {
 	threads := make([]ReviewThread, 0, len(nodes))
 	for _, node := range nodes {
@@ -839,6 +934,18 @@ func githubReviewThreads(nodes []githubThreadRaw) []ReviewThread {
 			IsOutdated:        node.IsOutdated,
 			Comments:          make([]ReviewComment, 0, len(node.Comments.Nodes)),
 		}
+		// GitHub answers both directions; the one shown is the one the
+		// thread's state offers.
+		may := node.ViewerCanResolve
+		if node.IsResolved {
+			may = node.ViewerCanUnresolve
+		}
+		if !may {
+			thread.CannotResolveReason = githubCannotResolveReason
+		}
+		if !node.ViewerCanReply {
+			thread.CannotReplyReason = githubCannotReplyReason
+		}
 		for _, comment := range node.Comments.Nodes {
 			out := ReviewComment{
 				ID:          comment.ID,
@@ -846,11 +953,11 @@ func githubReviewThreads(nodes []githubThreadRaw) []ReviewThread {
 				AuthorName:  comment.Author.Name,
 				Body:        comment.Body,
 				CreatedAt:   comment.CreatedAt,
-				DatabaseID:  comment.DatabaseID,
+				DatabaseID:  int64(comment.DatabaseID),
 			}
 			comment.fill(&out)
 			if comment.ReplyTo != nil {
-				out.ReplyTo = &ReviewReplyTo{ID: comment.ReplyTo.ID, DatabaseID: comment.ReplyTo.DatabaseID}
+				out.ReplyTo = &ReviewReplyTo{ID: comment.ReplyTo.ID, DatabaseID: int64(comment.ReplyTo.DatabaseID)}
 			}
 			thread.Comments = append(thread.Comments, out)
 		}
@@ -873,7 +980,7 @@ func githubConversationThreads(nodes []githubCommentRaw) []ReviewThread {
 			AuthorName:  node.Author.Name,
 			Body:        node.Body,
 			CreatedAt:   node.CreatedAt,
-			DatabaseID:  node.DatabaseID,
+			DatabaseID:  int64(node.DatabaseID),
 		}
 		node.fill(&comment)
 		// The thread is named by its one comment (CommentTarget).
@@ -889,5 +996,13 @@ func (raw githubViewerCommentRaw) fill(out *ReviewComment) {
 	out.URL = raw.URL
 	out.ViewerCanEdit = raw.ViewerCanUpdate
 	out.ViewerCanDelete = raw.ViewerCanDelete
+	if !raw.ViewerCanReact {
+		out.CannotReactReason = githubCannotReactReason
+	}
 	out.Reactions = githubReactions(raw.ReactionGroups)
 }
+
+// githubCannotReactReason is why a comment takes no reaction from the
+// viewer: GitHub's viewerCanReact is false on a locked conversation and
+// in an archived repository.
+const githubCannotReactReason = "GitHub does not let you react to this comment."

@@ -17,8 +17,8 @@ import (
 const githubReactionTargetQuery = `query ReactionTarget($id: ID!) {
   node(id: $id) {
     __typename
-    ... on PullRequestReviewComment { pullRequest { number repository { nameWithOwner } } ` + githubReactionFields + ` }
-    ... on IssueComment { pullRequest { number repository { nameWithOwner } } ` + githubReactionFields + ` }
+    ... on PullRequestReviewComment { pullRequest { number repository { nameWithOwner } } viewerCanReact ` + githubReactionFields + ` }
+    ... on IssueComment { pullRequest { number repository { nameWithOwner } } viewerCanReact ` + githubReactionFields + ` }
   }
 }`
 
@@ -32,8 +32,9 @@ const (
 )
 
 // SetCommentReaction refuses a comment that is not of the kind target
-// names on ref's pull request (*CommentNotOnPRError) before any write,
-// and answers a reaction already as asked without one.
+// names on ref's pull request (*CommentNotOnPRError) or that GitHub says
+// the viewer may not react to (*ViewerCannotError) before any write, and
+// answers a reaction already as asked without one.
 func (f *githubForge) SetCommentReaction(ctx context.Context, ref PRReference, target CommentTarget, name string, reacted bool) error {
 	content := githubReactionContent[name]
 	client, err := f.core.githubAPI(ref.Host)
@@ -49,6 +50,7 @@ func (f *githubForge) SetCommentReaction(ctx context.Context, ref PRReference, t
 					NameWithOwner string `json:"nameWithOwner"`
 				} `json:"repository"`
 			} `json:"pullRequest"`
+			ViewerCanReact bool                     `json:"viewerCanReact"`
 			ReactionGroups []githubReactionGroupRaw `json:"reactionGroups"`
 		} `json:"node"`
 	}
@@ -67,6 +69,9 @@ func (f *githubForge) SetCommentReaction(ctx context.Context, ref PRReference, t
 	if node == nil || node.Typename != kind || node.PullRequest == nil || node.PullRequest.Number != ref.Number ||
 		!strings.EqualFold(node.PullRequest.Repository.NameWithOwner, ref.Namespace+"/"+ref.Repo) {
 		return &CommentNotOnPRError{CommentID: target.CommentID}
+	}
+	if !node.ViewerCanReact {
+		return &ViewerCannotError{Reason: githubCannotReactReason}
 	}
 	for _, group := range node.ReactionGroups {
 		if group.Content == content && group.ViewerHasReacted == reacted {

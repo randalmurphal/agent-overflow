@@ -14,12 +14,16 @@
 //   hook lets it land (GetGitActionOutcome), and the commit runs once.
 // - Push is enabled for a branch with no upstream, pushes it to origin,
 //   sets the upstream, and is disabled once nothing is ahead.
+// - An origin on GitHub Enterprise: Create PR is disabled with the one
+//   sentence saying it is not supported, Push still pushes, and nothing
+//   reaches the forge.
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { Page } from '@playwright/test';
 
 import type { HarnessApp } from '../src/harness.js';
 import { expect, test, type SeedResult } from './fixtures.js';
+import { forgeInvocations } from './forge-helpers.js';
 import { errorToasts, harnessGit, openThread } from './worktree-removal-helpers.js';
 
 const MERGE_NOTICE = 'A merge is in progress. Committing completes the merge.';
@@ -289,5 +293,40 @@ test('Push on a branch with no upstream publishes it to origin and sets the upst
       await page.keyboard.press('Escape');
     }
   }).toPass({ timeout: 30_000 });
+  await expect(errorToasts(page)).toHaveCount(0);
+});
+
+test('an origin on GitHub Enterprise says Create PR is unsupported, and Push still pushes', async ({ harness, page }) => {
+  const { root, title } = await seedThread(harness, 'git-ghes-origin');
+  const bare = path.join(harness.bootstrap.dataRoot, 'push-remote', 'git-ghes-origin.git');
+  await mkdir(bare, { recursive: true });
+  harnessGit(harness, bare, 'init', '--bare', '--quiet');
+  // The origin names the Enterprise host; pushes go to the local bare repo.
+  harnessGit(harness, root, 'remote', 'add', 'origin', 'https://github.acme.corp/corp/widgets.git');
+  harnessGit(harness, root, 'config', 'remote.origin.pushurl', bare);
+  harnessGit(harness, root, 'push', '--quiet', '--set-upstream', 'origin', 'main');
+  harnessGit(harness, root, 'checkout', '--quiet', '-b', 'topic');
+  await commitFile(harness, root, 'topic.md', 'topic\n', 'topic work');
+
+  await harness.open(page);
+  await openThread(page, title);
+  await expect(async () => {
+    await openGitMenu(page);
+    try {
+      await expect(gitMenuItem(page, 'Push')).toBeEnabled({ timeout: 1_000 });
+    } catch (err) {
+      await page.keyboard.press('Escape');
+      throw err;
+    }
+  }).toPass({ timeout: 30_000 });
+  const createPR = page.getByRole('menu', { name: 'Git actions' }).getByRole('menuitem', { name: /^Create PR/ });
+  await expect(createPR).toBeDisabled();
+  await expect(createPR).toContainText('Pull requests on GitHub Enterprise (github.acme.corp) are not supported yet.');
+  await gitMenuItem(page, 'Push').click();
+  await expect(page.getByRole('alert').filter({ hasText: 'Pushed successfully' })).toBeVisible();
+  expect(harnessGit(harness, root, 'rev-parse', '--abbrev-ref', '@{u}')).toBe('origin/topic');
+
+  const calls = await forgeInvocations(harness);
+  expect(calls.filter((call) => (call.via === 'http' ? call.host : call.args.join(' ')).includes('acme.corp'))).toEqual([]);
   await expect(errorToasts(page)).toHaveCount(0);
 });

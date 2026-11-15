@@ -127,6 +127,7 @@ func ghReactionTarget(e *Engine, c *call, v graphQLVars) response {
 	return graphQLData(map[string]any{"node": map[string]any{
 		"__typename":     typename,
 		"pullRequest":    map[string]any{"number": p.Number, "repository": map[string]any{"nameWithOwner": r.Project}},
+		"viewerCanReact": p.mayReact(),
 		"reactionGroups": e.githubReactionGroups(comment[at]),
 	}})
 }
@@ -152,6 +153,9 @@ func ghReaction(add bool) func(e *Engine, c *call, v graphQLVars) response {
 		_, p, thread, at, ok := e.githubCommentByNode(c, id)
 		if !ok {
 			return graphQLMutationError(field, "NOT_FOUND", fmt.Sprintf("Could not resolve to a node with the global id of '%s'", id))
+		}
+		if !p.mayReact() {
+			return graphQLMutationError(field, "FORBIDDEN", fmt.Sprintf("%s does not have the correct permissions to execute `%s`", e.viewer, map[bool]string{true: "AddReaction", false: "RemoveReaction"}[add]))
 		}
 		comments := p.Comments
 		if thread >= 0 {

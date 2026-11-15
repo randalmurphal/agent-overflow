@@ -124,6 +124,38 @@ type MergeOptions struct {
 	// CannotMergeReason explains a greyed Merge now ("You do not have
 	// merge access to this project").
 	CannotMergeReason string `json:"cannotMergeReason,omitempty"`
+	// ViewerCanUpdateBranch is whether the forge would update the head
+	// branch from the base for this login (GitHub viewerCanUpdateBranch,
+	// GitLab can_merge); ViewerCanUnapprove whether it would withdraw the
+	// login's standing approval (GitHub dismisses it, which needs write
+	// access); ViewerCanMarkReady whether it would mark the draft ready
+	// (GitHub viewerCanUpdate). Each Cannot*Reason says why not, where
+	// the control would show.
+	ViewerCanUpdateBranch    bool   `json:"viewerCanUpdateBranch"`
+	CannotUpdateBranchReason string `json:"cannotUpdateBranchReason,omitempty"`
+	ViewerCanUnapprove       bool   `json:"viewerCanUnapprove"`
+	CannotUnapproveReason    string `json:"cannotUnapproveReason,omitempty"`
+	ViewerCanMarkReady       bool   `json:"viewerCanMarkReady"`
+	CannotMarkReadyReason    string `json:"cannotMarkReadyReason,omitempty"`
+	// Queue is the merge queue the target branch merges through (a
+	// GitLab merge train), nil when it has none.
+	Queue *MergeQueue `json:"queue,omitempty"`
+}
+
+// MergeQueue is a target branch's merge queue as one pull request sees
+// it. Required: every merge goes through the queue, so Merge now adds the
+// pull request to it and auto-merge adds it once its checks pass; the
+// forge merges it when its turn comes. Queued: it is in the queue now,
+// Position its 1-based place and Size the queue's length, each 0 when
+// unknown. An armed AutoMerge that is not Queued waits to join.
+// CanRemove: the viewer may take it out, which cancelling the auto-merge
+// does.
+type MergeQueue struct {
+	Required  bool `json:"required"`
+	Queued    bool `json:"queued"`
+	Position  int  `json:"position,omitempty"`
+	Size      int  `json:"size,omitempty"`
+	CanRemove bool `json:"canRemove"`
 }
 
 // AutoMergeRequest is an armed merge-when-ready: who set it, when, with
@@ -174,7 +206,8 @@ type ReviewEvent struct {
 }
 
 // MergeRequest is one merge action. Method must be one of the PR's
-// MergeOptions.Methods; HeadSHA is the head the caller saw and the forge
+// MergeOptions.Methods, or empty when a required Queue offers none (its
+// own method applies); HeadSHA is the head the caller saw and the forge
 // refuses the merge when the branch moved past it. AutoMerge arms the
 // merge for when the checks pass instead of merging now.
 type MergeRequest struct {
@@ -192,7 +225,7 @@ type MergeRequest struct {
 // the forge.
 func (r MergeRequest) Validate() error {
 	switch r.Method {
-	case MergeMethodMerge, MergeMethodSquash, MergeMethodRebase:
+	case "", MergeMethodMerge, MergeMethodSquash, MergeMethodRebase:
 	default:
 		return fmt.Errorf("unsupported merge method %q", r.Method)
 	}
@@ -235,9 +268,12 @@ type ForgeMerger interface {
 	// named by the caller), GitLab unapproves. Nothing of another login's
 	// can be withdrawn through it.
 	Unapprove(ctx context.Context, ref PRReference) error
-	// Merge merges now, or arms auto-merge when req.AutoMerge.
+	// Merge merges now, or arms auto-merge when req.AutoMerge. Where a
+	// MergeQueue is Required it never merges around the queue: it joins
+	// it now or once ready and answers AutoMerge.
 	Merge(ctx context.Context, ref PRReference, req MergeRequest) (MergeOutcome, error)
-	// CancelAutoMerge disarms an armed auto-merge.
+	// CancelAutoMerge disarms an armed auto-merge, which takes a queued PR
+	// out of its queue.
 	CancelAutoMerge(ctx context.Context, ref PRReference) error
 	// UpdateBranch brings the head up to date with the base: GitLab
 	// rebases, GitHub merges the base in or rebases per the repository.

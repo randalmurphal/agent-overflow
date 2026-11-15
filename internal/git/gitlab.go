@@ -113,21 +113,25 @@ func (f *gitlabForge) CreatePR(ctx context.Context, cwd, title, body, base strin
 	return url, nil
 }
 
-// gitlabOriginProject is the GitLab project cwd's origin names, as an
-// API path, and the API client of its host.
-func (f *gitlabForge) gitlabOriginProject(cwd string) (*forgeapi.Client, string, error) {
+// gitlabOriginProject is the GitLab project cwd's origin names and the
+// API client of its host.
+func (f *gitlabForge) gitlabOriginProject(cwd string) (*forgeapi.Client, RepoReference, error) {
 	forge, host, project, err := f.core.originCoordinates(cwd)
 	if err != nil {
-		return nil, "", err
+		return nil, RepoReference{}, err
 	}
 	if forge != "gitlab" {
-		return nil, "", &OriginUnknownError{Cwd: cwd, Reason: "the origin is not a GitLab repository"}
+		return nil, RepoReference{}, &OriginUnknownError{Cwd: cwd, Reason: "the origin is not a GitLab repository"}
+	}
+	namespace, name, err := SplitProjectForForge(forge, project)
+	if err != nil {
+		return nil, RepoReference{}, &OriginUnknownError{Cwd: cwd, Reason: "the origin URL does not name a gitlab repository"}
 	}
 	client, err := f.core.gitlabAPI(host)
 	if err != nil {
-		return nil, "", err
+		return nil, RepoReference{}, err
 	}
-	return client, gitlabProjectPath(project), nil
+	return client, RepoReference{Forge: forge, Host: host, Namespace: namespace, Repo: name}, nil
 }
 
 // gitlabOpenMRsMaxPages bounds the pages one open merge request lookup
@@ -135,21 +139,41 @@ func (f *gitlabForge) gitlabOriginProject(cwd string) (*forgeapi.Client, string,
 const gitlabOpenMRsMaxPages = 5
 
 // ListOpenPRs returns the open merge request whose source is the given
-// branch of cwd's origin project itself. The source_branch filter also
-// matches a fork's branch of the same name, which is someone else's work:
-// a merge request counts only when its source project is the target
-// project. GitLab keeps one open merge request per source branch, so the
-// read stops at it. The full view is read because the simple one carries
-// no source_project_id.
+// branch of cwd's origin project itself: one opened in the origin from
+// its own branch, else, when the origin is a fork, one opened in the
+// project it was forked from (projectSettings, cached) from the fork's
+// branch. The source_branch filter also matches another fork's branch of
+// the same name, which is someone else's work: a merge request counts
+// only when its source project is the origin. GitLab keeps one open merge
+// request per source branch and target, so each read stops at it. The
+// full view is read because the simple one carries no source_project_id.
 func (f *gitlabForge) ListOpenPRs(ctx context.Context, cwd, head string) ([]GitPR, error) {
 	sourceBranch := strings.TrimSpace(head)
 	if sourceBranch == "" {
 		return nil, errors.New("merge request source branch is required")
 	}
-	client, project, err := f.gitlabOriginProject(cwd)
+	client, origin, err := f.gitlabOriginProject(cwd)
 	if err != nil {
 		return nil, err
 	}
+	pulls, err := gitlabOpenMRsFrom(ctx, client, gitlabProjectPath(origin.Project()), sourceBranch, func(source, target int64) bool { return source == target })
+	if err != nil || len(pulls) > 0 {
+		return pulls, err
+	}
+	settings, err := f.projectSettings(ctx, client, origin)
+	if err != nil {
+		return nil, err
+	}
+	if settings.ForkedFrom == nil || settings.ForkedFrom.ID == 0 || settings.ID == 0 {
+		return pulls, nil
+	}
+	return gitlabOpenMRsFrom(ctx, client, gitlabProjectPath(strconv.FormatInt(settings.ForkedFrom.ID, 10)), sourceBranch, func(source, _ int64) bool { return source == settings.ID })
+}
+
+// gitlabOpenMRsFrom reads project's open merge requests from a source
+// branch named sourceBranch until keep accepts one by its source and
+// target project ids, at most gitlabOpenMRsMaxPages pages.
+func gitlabOpenMRsFrom(ctx context.Context, client *forgeapi.Client, project, sourceBranch string, keep func(source, target int64) bool) ([]GitPR, error) {
 	request := forgeapi.Request{
 		Path:         project + "/merge_requests",
 		Query:        url.Values{"state": {"opened"}, "source_branch": {sourceBranch}, "per_page": {strconv.Itoa(gitlabPageSize)}},
@@ -157,7 +181,7 @@ func (f *gitlabForge) ListOpenPRs(ctx context.Context, cwd, head string) ([]GitP
 	}
 	pulls := []GitPR{}
 	page, pages := 1, 0
-	err = client.Pages(ctx, request, func(resp *forgeapi.Response) (bool, error) {
+	err := client.Pages(ctx, request, func(resp *forgeapi.Response) (bool, error) {
 		var raw []struct {
 			WebURL          string `json:"web_url"`
 			IID             int    `json:"iid"`
@@ -171,7 +195,7 @@ func (f *gitlabForge) ListOpenPRs(ctx context.Context, cwd, head string) ([]GitP
 			return false, fmt.Errorf("GitLab open merge requests: decode response: %w", err)
 		}
 		for _, r := range raw {
-			if r.SourceProjectID != r.ProjectID {
+			if !keep(r.SourceProjectID, r.ProjectID) {
 				continue
 			}
 			pulls = append(pulls, GitPR{URL: r.WebURL, Number: r.IID, Title: r.Title, State: NormalizePRState(r.State), BaseBranch: r.TargetBranch})
@@ -190,16 +214,39 @@ func (f *gitlabForge) ListOpenPRs(ctx context.Context, cwd, head string) ([]GitP
 const gitlabPageSize = 100
 
 // ListMergedPRHeads fetches up to limit recently merged MRs' source-branch
-// heads, most recently updated first. `sha` is the source branch's last
-// commit before merge, exactly the pre-squash tip prune needs.
+// heads, most recently updated first: the origin's, and when the origin
+// is a fork, those among its source project's latest limit whose source
+// was the fork. `sha` is the source branch's last commit before merge,
+// exactly the pre-squash tip prune needs.
 func (f *gitlabForge) ListMergedPRHeads(ctx context.Context, cwd string, limit int) ([]MergedPRHead, error) {
 	if limit <= 0 {
 		return nil, errors.New("merged MR list limit must be positive")
 	}
-	client, project, err := f.gitlabOriginProject(cwd)
+	client, origin, err := f.gitlabOriginProject(cwd)
 	if err != nil {
 		return nil, err
 	}
+	heads, err := gitlabMergedHeads(ctx, client, gitlabProjectPath(origin.Project()), limit, func(int64) bool { return true })
+	if err != nil {
+		return nil, err
+	}
+	settings, err := f.projectSettings(ctx, client, origin)
+	if err != nil {
+		return heads, err
+	}
+	if settings.ForkedFrom == nil || settings.ForkedFrom.ID == 0 || settings.ID == 0 {
+		return heads, nil
+	}
+	upstream, err := gitlabMergedHeads(ctx, client, gitlabProjectPath(strconv.FormatInt(settings.ForkedFrom.ID, 10)), limit, func(source int64) bool { return source == settings.ID })
+	if err != nil {
+		return heads, err
+	}
+	return append(heads, upstream...), nil
+}
+
+// gitlabMergedHeads reads project's latest limit merged merge requests,
+// keeping those keep accepts by their source project id.
+func gitlabMergedHeads(ctx context.Context, client *forgeapi.Client, project string, limit int, keep func(source int64) bool) ([]MergedPRHead, error) {
 	perPage := min(limit, gitlabPageSize)
 	request := forgeapi.Request{
 		Path: project + "/merge_requests",
@@ -210,23 +257,27 @@ func (f *gitlabForge) ListMergedPRHeads(ctx context.Context, cwd string, limit i
 		MaxBodyBytes: gitlabMRListMaxBody,
 	}
 	heads := make([]MergedPRHead, 0, perPage)
-	page := 1
-	err = client.Pages(ctx, request, func(resp *forgeapi.Response) (bool, error) {
+	page, read := 1, 0
+	err := client.Pages(ctx, request, func(resp *forgeapi.Response) (bool, error) {
 		var raw []struct {
-			SourceBranch string `json:"source_branch"`
-			SHA          string `json:"sha"`
-			WebURL       string `json:"web_url"`
+			SourceBranch    string `json:"source_branch"`
+			SHA             string `json:"sha"`
+			WebURL          string `json:"web_url"`
+			SourceProjectID int64  `json:"source_project_id"`
 		}
 		if err := json.Unmarshal(resp.Body, &raw); err != nil {
 			return false, fmt.Errorf("GitLab merged merge requests: decode response: %w", err)
 		}
 		for _, r := range raw {
-			if len(heads) == limit {
+			if read == limit {
 				break
 			}
-			heads = append(heads, MergedPRHead{HeadRefName: r.SourceBranch, HeadOid: r.SHA, URL: r.WebURL})
+			read++
+			if keep(r.SourceProjectID) {
+				heads = append(heads, MergedPRHead{HeadRefName: r.SourceBranch, HeadOid: r.SHA, URL: r.WebURL})
+			}
 		}
-		return len(heads) < limit && len(raw) == perPage && advanceGitLabPage(resp, &page), nil
+		return read < limit && len(raw) == perPage && advanceGitLabPage(resp, &page), nil
 	})
 	if err != nil {
 		return nil, err
@@ -341,7 +392,9 @@ func (f *gitlabForge) ReadPR(ctx context.Context, ref PRReference, want PRReadPa
 		if err != nil {
 			return PRRead{}, err
 		}
-		markGitLabViewerNotes(out.Threads, f.viewerLogin(ctx, client, ref.Host), settings.accessLevel())
+		viewer := f.viewerLogin(ctx, client, ref.Host)
+		markGitLabViewerNotes(out.Threads, viewer, settings.accessLevel())
+		gateGitLabThreadResolve(out.Threads, viewer != "" && strings.EqualFold(viewer, mr.Author.Username), settings.accessLevel())
 		gateGitLabSuggestions(out.Threads, settings.accessLevel())
 		out.ReactionsUnavailable = f.fillReactions(ctx, client, ref, out.Threads)
 	}
@@ -561,6 +614,23 @@ func markGitLabViewerNotes(threads []ReviewThread, viewer string, access int) {
 		}
 	}
 }
+
+// gateGitLabThreadResolve says on each resolvable thread that the viewer
+// cannot resolve it: GitLab lets the merge request's author and the
+// developer role and above resolve threads, and its discussions carry no
+// permission. An unknown role (0) gates nothing; the forge refuses.
+func gateGitLabThreadResolve(threads []ReviewThread, author bool, access int) {
+	if author || access == 0 || access >= gitlabDeveloperAccess {
+		return
+	}
+	for i := range threads {
+		if threads[i].IsResolvable {
+			threads[i].CannotResolveReason = gitlabCannotResolveReason
+		}
+	}
+}
+
+const gitlabCannotResolveReason = "Only the merge request's author and people with the Developer role or above can resolve threads."
 
 // readGitLabDiscussions reads the merge request's discussions, at most
 // prReadMaxPages pages (truncated says there were more): the human notes

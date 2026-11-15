@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"slices"
 	"strings"
 	"testing"
 
@@ -279,9 +278,9 @@ func TestGitHubApplySuggestionOutcomes(t *testing.T) {
 }
 
 // githubReactionTarget answers ReactionTarget for comment IC_1 (an issue
-// comment) of o/r#5 with the viewer's heart.
+// comment) of o/r#5 with the viewer's heart, which the viewer may react to.
 func githubReactionTarget(typename string, number int) forgeAPIAnswer {
-	return githubData(fmt.Sprintf(`{"node":{"__typename":%q,"pullRequest":{"number":%d,"repository":{"nameWithOwner":"o/r"}},
+	return githubData(fmt.Sprintf(`{"node":{"__typename":%q,"pullRequest":{"number":%d,"repository":{"nameWithOwner":"o/r"}},"viewerCanReact":true,
 		"reactionGroups":[{"content":"THUMBS_UP","viewerHasReacted":false,"reactors":{"totalCount":1}},{"content":"HEART","viewerHasReacted":true,"reactors":{"totalCount":1}}]}}`, typename, number))
 }
 
@@ -306,6 +305,9 @@ func TestGitHubReactionWrites(t *testing.T) {
 		{"review comment", review, githubReactionTarget("PullRequestReviewComment", 5), "rocket", true, githubTestRef(5), "ReactionTarget,AddReaction", nil},
 		{"another PR's comment", issue, githubReactionTarget("IssueComment", 6), "rocket", true, githubTestRef(5), "ReactionTarget", notOnPR},
 		{"a review comment named as an issue comment", issue, githubReactionTarget("PullRequestReviewComment", 5), "rocket", true, githubTestRef(5), "ReactionTarget", notOnPR},
+		// GitHub says no (a locked conversation): refused before any write.
+		{"the viewer may not react", issue, githubData(`{"node":{"__typename":"IssueComment","pullRequest":{"number":5,"repository":{"nameWithOwner":"o/r"}},"viewerCanReact":false,"reactionGroups":[]}}`), "rocket", true, githubTestRef(5), "ReactionTarget",
+			func(err error) bool { _, ok := errors.AsType[*ViewerCannotError](err); return ok }},
 		{"unknown id", issue, forgeAPIAnswer{Body: `{"data":{"node":null},"errors":[{"type":"NOT_FOUND","message":"x"}]}`}, "rocket", true, githubTestRef(5), "ReactionTarget", notOnPR},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -428,84 +430,6 @@ func TestGitBlobID(t *testing.T) {
 	}
 	if got := gitBlobID(nil); got != "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391" {
 		t.Fatalf("empty = %s", got)
-	}
-}
-
-// GitHub answers every reaction group of every comment, which can take
-// the threads read past its body bound: the read then runs once more
-// without reactions and says so. A read too large without them fails as
-// before; a read that fits sends one request.
-func TestGitHubReactionsNeverShrinkTheThreadsRead(t *testing.T) {
-	t.Parallel()
-	tick := func(bodyBytes int, reactions bool) string {
-		groups := []map[string]any{}
-		for _, content := range []string{"THUMBS_UP", "THUMBS_DOWN", "LAUGH", "HOORAY", "CONFUSED", "HEART", "ROCKET", "EYES"} {
-			groups = append(groups, map[string]any{"content": content, "viewerHasReacted": false, "reactors": map[string]any{"totalCount": 0}})
-		}
-		nodes := []map[string]any{}
-		for i := range 100 {
-			node := map[string]any{"id": fmt.Sprintf("IC_%d", i), "databaseId": i + 1, "author": map[string]any{"login": "octo"},
-				"body": strings.Repeat("x", bodyBytes), "createdAt": "2026-01-01T00:00:00Z", "lastEditedAt": nil, "url": "u",
-				"viewerCanUpdate": false, "viewerCanDelete": false, "isMinimized": false}
-			if reactions {
-				node["reactionGroups"] = groups
-			}
-			nodes = append(nodes, node)
-		}
-		return mustJSON(map[string]any{"data": map[string]any{"repository": map[string]any{"viewerPermission": "WRITE", "pullRequest": map[string]any{
-			"number": 5, "headRefName": "f", "state": "OPEN", "viewerCanApplySuggestion": true,
-			"reviewThreads": map[string]any{"pageInfo": map[string]any{"hasNextPage": false}, "nodes": []any{}},
-			"comments":      map[string]any{"pageInfo": map[string]any{"hasNextPage": false}, "nodes": nodes},
-		}}}})
-	}
-	// Each comment's eight groups add some 700 bytes: a body size that
-	// fits without them and not with them, and one that fits neither way.
-	without := len(tick(0, false))
-	with := len(tick(0, true))
-	fits := (forgeAPIDefaultBound - without - (with-without)/2) / 100
-	if len(tick(fits, false)) > forgeAPIDefaultBound || len(tick(fits, true)) <= forgeAPIDefaultBound {
-		t.Fatalf("fixture sizes %d and %d do not straddle the bound", len(tick(fits, false)), len(tick(fits, true)))
-	}
-	for _, tc := range []struct {
-		name      string
-		bodyBytes int
-		requests  []bool // wantReactions of each PRTick
-		fails     bool
-		sentence  string
-	}{
-		{"fits with reactions", 10, []bool{true}, false, ""},
-		{"fits only without reactions", fits, []bool{true, false}, false, githubReactionsTooLarge},
-		{"fits neither way", forgeAPIDefaultBound / 100, []bool{true, false}, true, ""},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
-				if call.Op != "PRTick" {
-					return forgeUnexpected(t, call)
-				}
-				return forgeAPIAnswer{Body: tick(tc.bodyBytes, call.Vars["wantReactions"] == true)}
-			})
-			read, err := core.ReadPR(t.Context(), githubTestRef(5), PRReadParts{Threads: true}, nil, nil)
-			if (err != nil) != tc.fails {
-				t.Fatalf("err = %v", err)
-			}
-			if tc.fails && !errors.Is(err, forgeapi.ErrBodyTooLarge) {
-				t.Fatalf("err = %v, want the body bound", err)
-			}
-			got := []bool{}
-			for _, call := range calls.all() {
-				got = append(got, call.Vars["wantReactions"] == true)
-			}
-			if !slices.Equal(got, tc.requests) {
-				t.Fatalf("PRTick wantReactions = %v, want %v", got, tc.requests)
-			}
-			if read.ReactionsUnavailable != tc.sentence {
-				t.Fatalf("ReactionsUnavailable = %q", read.ReactionsUnavailable)
-			}
-			if !tc.fails && len(read.Threads) != 100 {
-				t.Fatalf("threads = %d", len(read.Threads))
-			}
-		})
 	}
 }
 

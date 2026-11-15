@@ -172,3 +172,57 @@ func TestExplainForgeErrorGitHubLabels(t *testing.T) {
 		t.Fatalf("sentence = %q\nwant       %q", err.Error(), want)
 	}
 }
+
+// The token refusals GitHub documents name the token as the cause, on a
+// read and on a write alike, as kind forbidden: a token not authorized
+// for an organization's single sign-on (with the URL that authorizes it
+// when GitHub gave one), a fine-grained token without the permission or
+// on a repository it may not write to, an organization's token policy,
+// and a GraphQL FORBIDDEN or INSUFFICIENT_SCOPES answer, which used to
+// read as a failed refresh retried every tick.
+func TestExplainForgeErrorGitHubTokenRefusals(t *testing.T) {
+	t.Parallel()
+	ref := PRReference{Forge: "github", Host: "github.com", Namespace: "acme", Repo: "app", Number: 9}
+	const authorize = "https://github.com/orgs/acme/sso?authorization_request=A1"
+	samlMessage := "Resource protected by organization SAML enforcement. You must grant your Personal Access token access to this organization."
+	status := &forgeapi.StatusError{Status: http.StatusForbidden}
+	cases := []struct {
+		name     string
+		action   ForgeAction
+		err      error
+		contains []string
+	}{
+		{"REST SSO with its URL", ActionRead, &forgeapi.ForbiddenError{Status: status, SSO: true, SSOURL: authorize, Message: samlMessage},
+			[]string{"not authorized for the single sign-on of the organization that owns acme/app", "Authorize it at " + authorize}},
+		{"REST SSO without a URL", ActionApprove, &forgeapi.ForbiddenError{Status: status, SSO: true, Message: samlMessage},
+			[]string{"not authorized for the single sign-on", "in your GitHub settings"}},
+		{"GraphQL SSO", ActionRead, &forgeapi.GraphQLError{SSO: true, SSOURL: authorize, Problems: []forgeapi.GraphQLProblem{{Type: "FORBIDDEN", Message: samlMessage}}},
+			[]string{"single sign-on", authorize}},
+		{"GraphQL SAML message without the header", ActionRead, &forgeapi.GraphQLError{Problems: []forgeapi.GraphQLProblem{{Type: "FORBIDDEN", Message: samlMessage}}},
+			[]string{"single sign-on"}},
+		{"fine-grained write", ActionReview, &forgeapi.ForbiddenError{Status: status, Message: "Resource not accessible by personal access token", Permissions: "pull_requests=write"},
+			[]string{"fine-grained", "cannot review acme/app#9", "pull_requests=write", "outside collaborator"}},
+		{"fine-grained GraphQL write", ActionMerge, &forgeapi.GraphQLError{Problems: []forgeapi.GraphQLProblem{{Type: "FORBIDDEN", Message: "Resource not accessible by personal access token"}}},
+			[]string{"fine-grained", "cannot merge acme/app#9"}},
+		{"organization policy", ActionRead, &forgeapi.ForbiddenError{Status: status, Message: "The 'acme' organization forbids access via a personal access tokens (classic)."},
+			[]string{"The organization that owns acme/app does not accept this token", "forbids access via", "Log gh in"}},
+		{"GraphQL FORBIDDEN read", ActionRead, &forgeapi.GraphQLError{Problems: []forgeapi.GraphQLProblem{{Type: "FORBIDDEN", Message: "Resource not accessible by integration"}}},
+			[]string{"No access to acme/app on GitHub with this login."}},
+		{"GraphQL scopes", ActionRead, &forgeapi.GraphQLError{Problems: []forgeapi.GraphQLProblem{{Type: "INSUFFICIENT_SCOPES", Message: "Your token has not been granted the required scopes to execute this query. The 'login' field requires one of the following scopes: ['read:org'], but your token has only been granted the: ['repo'] scopes."}}},
+			[]string{"lacks the `read:org` scope"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var explained *ForgeActionError
+			if !errors.As(ExplainForgeError(ref, tc.action, tc.err), &explained) || explained.Kind != ForgeErrorForbidden {
+				t.Fatalf("explained = %+v, want kind %q", explained, ForgeErrorForbidden)
+			}
+			for _, want := range tc.contains {
+				if !strings.Contains(explained.Message, want) {
+					t.Errorf("message %q does not contain %q", explained.Message, want)
+				}
+			}
+		})
+	}
+}

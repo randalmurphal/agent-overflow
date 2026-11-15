@@ -468,6 +468,90 @@ func TestGitHubMergeOptions(t *testing.T) {
 	})
 }
 
+// Update branch, Unapprove and Mark ready follow what GitHub says the
+// viewer may do, each with why not where it would show: a fork whose
+// author turned maintainer edits off is the author's to update, an
+// approval is withdrawn by dismissing it (write access), and a draft is
+// marked ready by whoever may update the pull request.
+func TestGitHubViewerControlsFollowGitHub(t *testing.T) {
+	t.Parallel()
+	read := func(repo, pull map[string]any) MergeOptions {
+		return readGitHubDetail(t, githubMergeRepo(repo), githubMergePull(pull)).Merge
+	}
+	approved := map[string]any{"nodes": []any{githubOpinion("PRR_mine", "viewer", "", "APPROVED", true, true)}}
+	t.Run("update branch", func(t *testing.T) {
+		t.Parallel()
+		if m := read(nil, map[string]any{"viewerCanUpdateBranch": true}); !m.ViewerCanUpdateBranch || m.CannotUpdateBranchReason != "" {
+			t.Fatalf("may update = %+v", m)
+		}
+		// Write access does not reach a fork that refuses maintainer edits.
+		locked := read(nil, map[string]any{"viewerCanUpdateBranch": false, "isCrossRepository": true, "maintainerCanModify": false})
+		if locked.ViewerCanUpdateBranch || locked.CannotUpdateBranchReason != "The author's fork does not allow edits from maintainers, so only the author can update this branch." {
+			t.Fatalf("locked fork = %+v", locked)
+		}
+		other := read(map[string]any{"viewerPermission": "READ"}, map[string]any{"viewerCanUpdateBranch": false})
+		if other.ViewerCanUpdateBranch || other.CannotUpdateBranchReason != "GitHub does not let you update this branch." {
+			t.Fatalf("refused = %+v", other)
+		}
+		if m := read(nil, map[string]any{"viewerCanUpdateBranch": true, "state": "CLOSED"}); m.ViewerCanUpdateBranch || m.CannotUpdateBranchReason != "" {
+			t.Fatalf("closed = %+v", m)
+		}
+	})
+	t.Run("unapprove", func(t *testing.T) {
+		t.Parallel()
+		for perm, can := range map[string]bool{"READ": false, "TRIAGE": false, "WRITE": true, "ADMIN": true} {
+			m := read(map[string]any{"viewerPermission": perm}, map[string]any{"latestOpinionatedReviews": approved})
+			if !m.ViewerApproved || m.ViewerCanUnapprove != can || (m.CannotUnapproveReason == "") != can {
+				t.Fatalf("%s: %+v", perm, m)
+			}
+		}
+		if m := read(map[string]any{"viewerPermission": nil}, map[string]any{"latestOpinionatedReviews": approved}); !m.ViewerCanUnapprove {
+			t.Fatalf("an unreported permission hides Unapprove: %+v", m)
+		}
+		if m := read(map[string]any{"viewerPermission": "READ"}, nil); m.ViewerCanUnapprove || m.CannotUnapproveReason != "" {
+			t.Fatalf("no approval to withdraw = %+v", m)
+		}
+	})
+	t.Run("mark ready", func(t *testing.T) {
+		t.Parallel()
+		if m := read(map[string]any{"viewerPermission": "READ"}, map[string]any{"isDraft": true, "viewerCanUpdate": true}); !m.ViewerCanMarkReady || m.CannotMarkReadyReason != "" {
+			t.Fatalf("may update = %+v", m)
+		}
+		if m := read(nil, map[string]any{"isDraft": true, "viewerCanUpdate": false}); m.ViewerCanMarkReady || m.CannotMarkReadyReason == "" {
+			t.Fatalf("may not update = %+v", m)
+		}
+		if m := read(nil, map[string]any{"viewerCanUpdate": true}); m.ViewerCanMarkReady || m.CannotMarkReadyReason != "" {
+			t.Fatalf("not a draft = %+v", m)
+		}
+	})
+	// A read that left the management fields (viewerCanUpdate) out offers
+	// Mark ready to the author and to those who may merge.
+	t.Run("mark ready without the management fields", func(t *testing.T) {
+		t.Parallel()
+		for _, tc := range []struct {
+			perm   string
+			author bool
+			can    bool
+		}{{"WRITE", false, true}, {"READ", true, true}, {"READ", false, false}} {
+			core, _ := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
+				pull := githubMergePull(map[string]any{"isDraft": true, "viewerDidAuthor": tc.author})
+				body := githubTickJSON(t, githubMergeRepo(map[string]any{"viewerPermission": tc.perm}), pull)
+				if call.Vars["wantManage"] == true {
+					body = body[:len(body)-1] + `,"errors":[{"type":"FORBIDDEN","message":"Resource not accessible by integration","path":["repository","pullRequest","labels"]}]}`
+				}
+				return forgeAPIAnswer{Body: body}
+			})
+			read, err := core.ReadPR(t.Context(), githubTestRef(7), PRReadParts{Detail: true}, nil, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if m := read.Detail.Merge; m.ViewerCanMarkReady != tc.can || (m.CannotMarkReadyReason == "") != tc.can {
+				t.Fatalf("%s, author %v: %+v", tc.perm, tc.author, m)
+			}
+		}
+	})
+}
+
 // The viewer's standing approval is its latest opinionated review: a later
 // comment, which latestReviews would show instead, does not withdraw it.
 func TestGitHubViewerApproval(t *testing.T) {
@@ -1007,12 +1091,11 @@ func TestGitHubPRStateMutations(t *testing.T) {
 			t.Fatalf("the fine-grained token's 403 = %#v, want a ForbiddenError naming no scope", refused)
 		}
 		// A fine-grained token lacks a permission, not a classic scope: the
-		// action shows GitHub's text, a read the project.
-		if got := ExplainForgeError(githubTestRef(5), ActionReady, refused).Error(); got != "GitHub blocks this: Resource not accessible by personal access token" {
-			t.Fatalf("action sentence = %q", got)
-		}
-		if got := ExplainForgeError(githubTestRef(5), ActionRead, refused).Error(); !strings.HasPrefix(got, "No access to o/r on ") {
-			t.Fatalf("read sentence = %q", got)
+		// action and a read both name the token as the cause.
+		for _, action := range []ForgeAction{ActionReady, ActionRead} {
+			if got := ExplainForgeError(githubTestRef(5), action, refused).Error(); !strings.Contains(got, "is a fine-grained token that cannot "+string(action)+" o/r#5") {
+				t.Fatalf("%s sentence = %q", action, got)
+			}
 		}
 	})
 }

@@ -32,6 +32,13 @@ const gitlabCacheMax = 256
 
 // gitlabProjectSettings is the subset of projects/P the merge options read.
 type gitlabProjectSettings struct {
+	// ID and ForkedFrom are the project's id and, for a fork, the project
+	// it was forked from, where a fork checkout's merge requests open
+	// (ListOpenPRs).
+	ID         int64 `json:"id"`
+	ForkedFrom *struct {
+		ID int64 `json:"id"`
+	} `json:"forked_from_project"`
 	MergeMethod                               string `json:"merge_method"`
 	SquashOption                              string `json:"squash_option"`
 	RemoveSourceBranchAfterMerge              bool   `json:"remove_source_branch_after_merge"`
@@ -465,6 +472,12 @@ func gitlabMergeOptions(mr gitlabMRRaw, approvals gitlabApprovalsRaw, settings g
 		ViewerCanMerge:   mr.User.CanMerge,
 		ViewerCanApprove: approvals.UserCanApprove,
 		ViewerApproved:   approvals.UserHasApproved,
+		// GitLab answers no rebase or draft permission of its own: a rebase
+		// is offered with merge rights, the draft toggle to them and the
+		// author, and an approver may always withdraw their approval.
+		ViewerCanUpdateBranch: open && mr.User.CanMerge,
+		ViewerCanUnapprove:    open && approvals.UserHasApproved,
+		ViewerCanMarkReady:    open && (mr.User.CanMerge || author),
 	}
 	if !open {
 		return out
@@ -487,6 +500,10 @@ func gitlabMergeOptions(mr gitlabMRRaw, approvals gitlabApprovalsRaw, settings g
 			out.CannotMergeReason = "Your role in this project cannot merge."
 		} else {
 			out.CannotMergeReason = fmt.Sprintf("You do not have merge access to %s.", mr.TargetBranch)
+		}
+		out.CannotUpdateBranchReason = "Rebasing this branch needs merge access to this project."
+		if !author {
+			out.CannotMarkReadyReason = "Only the author and people with merge access can mark this merge request ready."
 		}
 	}
 	if !approvals.UserCanApprove && !approvals.UserHasApproved {

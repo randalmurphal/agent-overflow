@@ -407,9 +407,22 @@ func TestGitLabListProjectPRsWithoutAViewerFails(t *testing.T) {
 }
 
 // The list follows X-Next-Page for full pages and stops at
-// prListMaxPages; a GraphQL read follows its endCursor to the same bound.
+// prListMaxPages, saying it was cut and, with X-Total, of how many; a
+// GraphQL read follows its endCursor to the same bound.
 func TestGitLabListProjectPRsPagesTheReads(t *testing.T) {
 	t.Parallel()
+	for _, tc := range []struct{ total, notice string }{
+		{"", "Showing the 1000 most recently updated open merge requests: the list reads at most 1000."},
+		{"2500", "Showing 1000 of 2500 open merge requests: the list reads at most 1000."},
+	} {
+		t.Run("X-Total "+tc.total, func(t *testing.T) {
+			t.Parallel()
+			gitlabListPagesTheReads(t, tc.total, tc.notice)
+		})
+	}
+}
+
+func gitlabListPagesTheReads(t *testing.T, total, notice string) {
 	var mu sync.Mutex
 	graphQLPages := map[string]int{}
 	core, calls := newForgeAPICore(t, gitlabListAnswers(t, func(call forgeAPICall) (forgeAPIAnswer, bool) {
@@ -437,11 +450,15 @@ func TestGitLabListProjectPRsPagesTheReads(t *testing.T) {
 		for i := range mrs {
 			mrs[i] = fmt.Sprintf(`{"iid":%d,"project_id":1,"source_project_id":1,"blocking_discussions_resolved":true}`, (page-1)*100+i+1)
 		}
-		return forgeAPIAnswer{Header: http.Header{"X-Next-Page": {fmt.Sprint(page + 1)}}, Body: "[" + strings.Join(mrs, ",") + "]"}, true
+		header := http.Header{"X-Next-Page": {fmt.Sprint(page + 1)}}
+		if total != "" {
+			header.Set("X-Total", total)
+		}
+		return forgeAPIAnswer{Header: header, Body: "[" + strings.Join(mrs, ",") + "]"}, true
 	}))
 	rows, err := core.ListProjectPRs(t.Context(), gitlabTestRepo())
-	if err != nil {
-		t.Fatalf("ListProjectPRs: %v", err)
+	if got, ok := PRListNotices(err); !ok || got != notice {
+		t.Fatalf("ListProjectPRs: %v, want the notice %q", err, notice)
 	}
 	lists := 0
 	for _, call := range calls.all() {

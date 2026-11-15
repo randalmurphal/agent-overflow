@@ -183,7 +183,8 @@ func (f *gitlabForge) ListProjectPRs(ctx context.Context, repo RepoReference) ([
 		activity  gitlabActivity
 		eventsErr error
 	)
-	wg.Go(func() { raw, listErr = readGitLabMRList(ctx, client, repo) })
+	var truncated *PRListNotice
+	wg.Go(func() { raw, truncated, listErr = readGitLabMRList(ctx, client, repo) })
 	_, noApprovals := f.noApprovalState.get(repo.Host, f.core.nowFn())
 	for i, read := range gitlabPullsReads {
 		if read.selection == gitlabPullsApprovals && noApprovals {
@@ -244,7 +245,11 @@ func (f *gitlabForge) ListProjectPRs(ctx context.Context, repo RepoReference) ([
 			}
 		}
 	}
-	return rows, detailError(append(nodeErrs, eventsErr)...)
+	errs := append(nodeErrs, eventsErr)
+	if truncated != nil {
+		errs = append(errs, truncated)
+	}
+	return rows, detailError(errs...)
 }
 
 // gitlabNoApprovalState reports whether err is GitLab CE's answer to a
@@ -253,8 +258,10 @@ func gitlabNoApprovalState(err error) bool {
 	return gitlabSchemaLacks(err, "approvalState")
 }
 
-// readGitLabMRList is the open merge request list.
-func readGitLabMRList(ctx context.Context, client *forgeapi.Client, repo RepoReference) ([]gitlabListMRRaw, error) {
+// readGitLabMRList is the open merge request list, with the notice of
+// one cut at prListMaxPages pages (its total from X-Total, which GitLab
+// leaves out past 10,000 rows).
+func readGitLabMRList(ctx context.Context, client *forgeapi.Client, repo RepoReference) ([]gitlabListMRRaw, *PRListNotice, error) {
 	request := forgeapi.Request{
 		Path: gitlabProjectPath(repo.Project()) + "/merge_requests",
 		Query: url.Values{
@@ -264,6 +271,7 @@ func readGitLabMRList(ctx context.Context, client *forgeapi.Client, repo RepoRef
 		MaxBodyBytes: gitlabMRListMaxBody,
 	}
 	var raw []gitlabListMRRaw
+	var truncated *PRListNotice
 	page, pages := 1, 0
 	err := client.Pages(ctx, request, func(resp *forgeapi.Response) (bool, error) {
 		var pageMRs []gitlabListMRRaw
@@ -272,12 +280,18 @@ func readGitLabMRList(ctx context.Context, client *forgeapi.Client, repo RepoRef
 		}
 		raw = append(raw, pageMRs...)
 		pages++
-		return len(pageMRs) == gitlabPageSize && pages < prListMaxPages && advanceGitLabPage(resp, &page), nil
+		more := len(pageMRs) == gitlabPageSize && advanceGitLabPage(resp, &page)
+		if more && pages >= prListMaxPages {
+			total, _ := strconv.Atoi(strings.TrimSpace(resp.Header.Get("X-Total")))
+			truncated = prListTruncated(repo.Forge, len(raw), total)
+			return false, nil
+		}
+		return more, nil
 	})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return raw, nil
+	return raw, truncated, nil
 }
 
 // readGitLabPulls reads one GraphQL selection's pages, at most

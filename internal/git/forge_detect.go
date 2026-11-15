@@ -234,6 +234,32 @@ func classifyOriginURL(remoteURL string, gitlabHosts []string) string {
 	return ""
 }
 
+// unsupportedForgeReason is the sentence a PR feature shows in place of
+// itself for a checkout whose origin is on a forge host this release does
+// not support, and "" for every other origin. GitHub Enterprise Server
+// and GHE.com are such hosts: their API differs from github.com's, so
+// their origins classify as no forge and nothing is sent to them. A GHE.com
+// host is SUBDOMAIN.ghe.com; a GitHub Enterprise Server host is any name,
+// so the one recognized is the conventional github.EXAMPLE or ghe.EXAMPLE.
+// A host the user listed as GitLab is GitLab's.
+func unsupportedForgeReason(remoteURL string, gitlabHosts []string) string {
+	host := extractRemoteHost(remoteURL)
+	if host == "" || classifyOriginURL(remoteURL, gitlabHosts) != "" || !githubEnterpriseHost(host) {
+		return ""
+	}
+	return "Pull requests on GitHub Enterprise (" + host + ") are not supported yet."
+}
+
+// githubEnterpriseHost reports whether host names a GHE.com tenant or
+// looks like a GitHub Enterprise Server (see unsupportedForgeReason).
+func githubEnterpriseHost(host string) bool {
+	if strings.HasSuffix(host, ".ghe.com") && len(host) > len(".ghe.com") {
+		return true
+	}
+	first, rest, ok := strings.Cut(host, ".")
+	return ok && strings.Contains(rest, ".") && (first == "github" || first == "ghe")
+}
+
 // extractRemoteHost reduces a git remote URL to its canonical lowercase
 // host. Returns "" for empty or malformed inputs.
 //
@@ -332,9 +358,14 @@ func (c *Core) originCoordinates(cwd string) (forge, host, project string, err e
 		return "", "", "", &OriginUnknownError{Cwd: cwd, Reason: "the origin URL does not name a network repository"}
 	}
 	host, escaped, _ := strings.Cut(locator, "/")
-	forge = classifyOriginURL("https://"+locator, c.gitLabHostsSnapshot())
+	gitlabHosts := c.gitLabHostsSnapshot()
+	forge = classifyOriginURL("https://"+locator, gitlabHosts)
 	if forge == "" {
-		return "", "", "", &OriginUnknownError{Cwd: cwd, Reason: "the origin host " + host + " is not a supported forge"}
+		reason := "the origin host " + host + " is not a supported forge"
+		if unsupportedForgeReason("https://"+locator, gitlabHosts) != "" {
+			reason = "the origin host " + host + " is GitHub Enterprise, which this release does not support"
+		}
+		return "", "", "", &OriginUnknownError{Cwd: cwd, Reason: reason}
 	}
 	project, err = url.PathUnescape(escaped)
 	if err == nil {

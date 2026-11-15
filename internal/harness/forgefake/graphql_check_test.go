@@ -115,7 +115,8 @@ func TestGraphQLValidation(t *testing.T) {
 	t.Parallel()
 	e, _ := seeded(t, Options{})
 	srv := testServer(t, e)
-	tick := map[string]any{"owner": "acme", "name": "widgets", "number": 7, "wantDetail": true, "wantThreads": false, "wantEvents": false, "wantChecks": false, "wantReactions": false}
+	tick := map[string]any{"owner": "acme", "name": "widgets", "number": 7, "wantDetail": true, "wantThreads": false, "wantEvents": false, "wantChecks": false, "wantReactions": false,
+		"pageSize": 100, "wantManage": true, "wantTeams": true, "wantCheckRuns": true, "wantWorkflowRuns": true}
 	doc := graphQLDocument(t, "PRTick")
 	send := func(path, query, op string, vars map[string]any) httpAnswer {
 		return httpRequest(t, srv, "POST", "github.com", path, mustJSON(t, map[string]any{"query": query, "operationName": op, "variables": vars}), nil)

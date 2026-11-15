@@ -187,8 +187,8 @@ func (c *Core) lookupRepository(ctx context.Context, forge, host, project string
 
 // lookupFailure is the result of a forge identity read that failed: a
 // caller-safe problem, retryable unless the forge's CLI, whose login the
-// transport borrows, is missing (it stays missing until someone installs
-// it). detail goes to the local log
+// transport borrows, is missing or too old (forgeapi.SetupOutdated).
+// detail goes to the local log
 // only, redacted and bounded; it never carries a response body.
 func lookupFailure(ctx context.Context, binary, host string, err error, detail string) repositoryLookupResult {
 	problem := fmt.Sprintf("Could not verify repository identity with %s on %s. Check its login and network connection, then retry.", binary, host)
@@ -199,9 +199,12 @@ func lookupFailure(ctx context.Context, binary, host string, err error, detail s
 	if !errors.Is(ctx.Err(), context.Canceled) {
 		log.Printf("repository identity: lookup with the %s login on %s failed: %s", binary, host, boundLookupDetail(detail))
 	}
-	setup, isSetup := errors.AsType[*forgeapi.SetupError](err)
-	missing := isSetup && setup.Kind == forgeapi.SetupMissing
-	return repositoryLookupResult{problem: problem, retryable: !missing}
+	// A CLI that is missing or too old for the login handoff stays so until
+	// someone installs or updates it; its own sentence says how.
+	if setup, ok := errors.AsType[*forgeapi.SetupError](err); ok && (setup.Kind == forgeapi.SetupMissing || setup.Kind == forgeapi.SetupOutdated) {
+		return repositoryLookupResult{problem: setup.Message + "."}
+	}
+	return repositoryLookupResult{problem: problem, retryable: true}
 }
 
 // forgeAPIFailureDetail is a transport error for the local log: a status

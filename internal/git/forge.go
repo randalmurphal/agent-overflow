@@ -39,9 +39,11 @@ type Forge interface {
 	// ListOpenPRs returns open PRs/MRs for the given head/source branch.
 	ListOpenPRs(ctx context.Context, cwd, head string) ([]GitPR, error)
 	// ListMergedPRHeads returns the head branch name + head SHA of up to
-	// `limit` recently merged PRs/MRs. One bulk read backing the prune
-	// preview's squash-merge detection: a gone local branch whose tip
-	// matches a merged PR head was fully pushed before the merge.
+	// `limit` recently merged PRs/MRs, and of a fork's merged into its
+	// parent. One bulk read backing the prune preview's squash-merge
+	// detection: a gone local branch whose tip matches a merged PR head
+	// was fully pushed before the merge. A failed read of the parent
+	// answers the origin's heads beside its error.
 	ListMergedPRHeads(ctx context.Context, cwd string, limit int) ([]MergedPRHead, error)
 	// ReadPRStates reads the state and merge time of every PR in prs, all
 	// of repo's repository, in one request per 100 PRs. A PR the forge does
@@ -214,6 +216,11 @@ type PRDetail struct {
 	// Manage is the Details section and the management capabilities
 	// (forge_manage.go).
 	Manage PRManage `json:"manage"`
+	// Unavailable is a sentence for each optional part of the read the
+	// forge would not answer (team reviewers, check runs, workflow runs),
+	// saying what is not shown and why. The management part's sentence is
+	// Manage.Unavailable.
+	Unavailable []string `json:"unavailable,omitempty"`
 }
 
 type PRDiffRefs struct {
@@ -279,6 +286,13 @@ type ReviewThread struct {
 	IsResolved   bool            `json:"isResolved"`
 	IsOutdated   bool            `json:"isOutdated"`
 	Comments     []ReviewComment `json:"comments"`
+	// CannotResolveReason, set on a resolvable thread, is why the viewer
+	// may not resolve it (or reopen it, once resolved): GitHub's
+	// viewerCanResolve and viewerCanUnresolve, GitLab's role and
+	// authorship. CannotReplyReason is why the viewer may not reply
+	// (GitHub's viewerCanReply). Empty is allowed or unknown.
+	CannotResolveReason string `json:"cannotResolveReason,omitempty"`
+	CannotReplyReason   string `json:"cannotReplyReason,omitempty"`
 }
 
 // ReviewComment is one comment of a thread. ID is what an edit or a
@@ -308,6 +322,10 @@ type ReviewComment struct {
 	URL             string              `json:"url,omitempty"`
 	Suggestions     []CommentSuggestion `json:"suggestions,omitempty"`
 	Reactions       []CommentReaction   `json:"reactions,omitempty"`
+	// CannotReactReason is why the viewer may not add or remove a
+	// reaction here (GitHub's viewerCanReact); empty is allowed or
+	// unknown (GitLab's notes carry no permission).
+	CannotReactReason string `json:"cannotReactReason,omitempty"`
 }
 
 type ReviewReplyTo struct {

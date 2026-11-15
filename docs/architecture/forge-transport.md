@@ -46,7 +46,7 @@ signature. The context's deadline is the request deadline when it is
 shorter than `Request.Timeout`.
 
 `forgeapi.SetupError{Forge, Binary, Kind, Message, Err}` is the one setup
-error type (`Kind` is `missing` or `unauthenticated`); `git` re-exports
+error type (`Kind` is `missing`, `unauthenticated` or `outdated`); `git` re-exports
 nothing, and `appupdate`'s release feed restates it with the host's
 `glab auth login --hostname HOST` step. The type lives in `forgeapi` because `git` imports
 `forgeapi`, so the token source must not return a `git` type.
@@ -108,10 +108,19 @@ Three kinds of forge method, two sources of the host:
 | Host | REST base | GraphQL |
 |---|---|---|
 | `github.com` | `https://api.github.com/` | `https://api.github.com/graphql` |
-| GitHub Enterprise `H` | `https://H/api/v3/` | `https://H/api/graphql` |
 | GitLab `H` | `api_protocol://api_host/api/v4/` from glab's per-host config, default `https://H/api/v4/` | `api_protocol://api_host/api/graphql`, default `https://H/api/graphql`; one quota pool with REST |
 
 Base URLs are resolved once per host and kept with the host's client.
+
+GitHub Enterprise Server and GHE.com are not supported: an origin on
+such a host (`SUBDOMAIN.ghe.com`, or the conventional `github.EXAMPLE`
+and `ghe.EXAMPLE` Server names) classifies as no forge, so nothing is
+sent to it and git status, diff, commit and push work as for any other
+remote. `GitStatus.ForgeUnsupported` carries the one sentence the Create
+PR menu item shows in its place, and a forge operation on the checkout
+fails with an `*OriginUnknownError` saying the same
+(`unsupportedForgeReason`, `internal/git/forge_detect.go`). Another
+Server name reads as any unsupported host.
 
 ## Credentials
 
@@ -132,8 +141,8 @@ func (Token) MarshalJSON() ([]byte, error)
 func (Token) MarshalText() ([]byte, error)
 ```
 
-- Source: `gh auth token --hostname H` for GitHub (honors `GH_TOKEN`,
-  `GH_ENTERPRISE_TOKEN` and the hosts file). For GitLab,
+- Source: `gh auth token --hostname H` for GitHub (honors `GH_TOKEN`
+  and the hosts file). For GitLab,
   `glab config get token --host H`, then `glab auth status --hostname H -t`
   when that is empty (keyring). A glab login with `is_oauth2` true runs
   `glab api --hostname H version` before every read so glab refreshes an
@@ -168,7 +177,10 @@ func (Token) MarshalText() ([]byte, error)
   to disk, settings or the SQLite store.
 - The handoff process runs with a 10s deadline and
   `GH_PROMPT_DISABLED=1`, `GH_DEBUG=`, `GLAB_CHECK_UPDATE=false`,
-  `GLAB_DEBUG_HTTP=false`. A missing binary is `Kind: "missing"`; a
+  `GLAB_DEBUG_HTTP=false`. A missing binary is `Kind: "missing"`; a gh
+  older than 2.17.0, which answers `unknown command "token" for "gh auth"`
+  (`gh auth token` arrived in 2.17.0), is `Kind: "outdated"`, whose message
+  names the version needed; a
   non-zero exit whose stderr names the login (`gh auth login`, `not logged
   in`, `no token`) is `Kind: "unauthenticated"`; any other failure (locked
   keyring, timeout) is a `*TransientError` carrying the exit status, never
@@ -220,16 +232,47 @@ GitHub answers a read with one GraphQL request, `PRTick`:
 | Variable | Selects |
 |---|---|
 | `owner`, `name`, `number` | the pull request and the repository's `viewerPermission` (the merge box's and the CI actions' permission); both are always selected |
-| `wantDetail` | `viewer`, the detail fields, `latestReviews(first: 100)`, and what readiness and merge options derive from: the merge state and viewer flags, `autoMergeRequest`, `latestOpinionatedReviews(first: 100)`, `threadStates: reviewThreads(first: 100) { isResolved }`, `baseRef { refUpdateRule rules(first: 100) }`, and the repository's merge methods, `deleteBranchOnMerge`, `autoMergeAllowed`, `viewerDefaultMergeMethod` and `owner { __typename }`, and the management fields (`viewerCanUpdate`, `viewerCanClose`, `viewerCanReopen`, `viewerCanLabel`, `viewerCanAssign`, `reviewRequests`, `assignees` and `labels`, each `first: 100`, and each standing review's `commit { oid }`; see [Managing a PR](#managing-a-pr)) |
-| `wantChecks` | `commits(last: 1)`: the head commit's `id` and `statusCheckRollup.contexts(first: 100)`, each with `isRequired(pullRequestNumber: $number)`; true for `Detail` or `CI`, since the detail's check summary and readiness and the pipeline all come from the rollup |
-| `wantThreads` | `reviewThreads(first: 100)`, each with `comments(first: 100)`, and `comments(first: 100)`, every comment with its `reactionGroups` while `wantReactions`; and the pull's `state` and `viewerCanApplySuggestion` (see [Suggestions and reactions](#suggestions-and-reactions)) |
+| `wantDetail` | `viewer`, the detail fields, `latestReviews(first: 100)`, and what readiness and merge options derive from: the merge state and viewer flags (`viewerCanUpdateBranch` and `maintainerCanModify` among them, for Update branch), `autoMergeRequest`, the merge queue's `isMergeQueueEnabled`, `isInMergeQueue`, `mergeQueueEntry { position enqueuedAt enqueuer }` and `mergeQueue { entries { totalCount } }`, `latestOpinionatedReviews(first: 100)`, `threadStates: reviewThreads(first: 100) { isResolved }`, `baseRef { refUpdateRule rules(first: 100) }`, and the repository's merge methods, `deleteBranchOnMerge`, `autoMergeAllowed`, `viewerDefaultMergeMethod` and `owner { __typename }`, and, while `wantManage`, the management fields (`viewerCanUpdate`, `viewerCanClose`, `viewerCanReopen`, `viewerCanLabel`, `viewerCanAssign`, `reviewRequests`, `assignees` and `labels`, each `first: 100`, and each standing review's `commit { oid }`; see [Managing a PR](#managing-a-pr)) |
+| `wantChecks` | `commits(last: 1)`: the head commit's `id` and `statusCheckRollup.contexts(first: 100)`, each status context with `isRequired(pullRequestNumber: $number)`, and each check run while `wantCheckRuns`, with its `checkSuite.workflowRun` while `wantWorkflowRuns`; true for `Detail` or `CI`, since the detail's check summary and readiness and the pipeline all come from the rollup |
+| `wantThreads` | `reviewThreads(first: $pageSize)`, each with `viewerCanResolve`, `viewerCanUnresolve`, `viewerCanReply` and `comments(first: $pageSize)`, and `comments(first: $pageSize)`, every comment with its `reactionGroups` while `wantReactions`; and the pull's `state` and `viewerCanApplySuggestion` (see [Suggestions and reactions](#suggestions-and-reactions)) |
 | `wantEvents` | `timelineItems(last: 100, itemTypes: [...])`: the review, merge, close, reopen, draft, auto-merge, force-push, base-change and review-request items `ReviewEvent` maps |
+| `wantTeams` | a team reviewer's `combinedSlug` (and `name`), in the review requests and the review-request events |
 
 The document is the same every tick; the parts are `@include` directives
-on those variables. A connection longer than one page continues with its
-own operation from the page's `endCursor`: `PRThreadsPage` and
-`PRCommentsPage(owner, name, number, after)`, `ThreadCommentsPage(threadID,
-after)` and `RollupContextsPage(commitID, number, after)` through `node(id:)`.
+on those variables. `wantManage`, `wantTeams`, `wantCheckRuns` and
+`wantWorkflowRuns` are the read's optional parts and `pageSize` its
+threads' and comments' page (`github_read_shape.go`). A read whose
+GraphQL errors all lie in optional parts, by their path or, for a
+document refused before it ran (no data), by the field the message
+names, is sent again without them; a FORBIDDEN or INSUFFICIENT_SCOPES
+answer without a path leaves out every optional part still selected.
+Each part left out puts one sentence in `PRDetail.Unavailable` saying
+what is not shown and why (the scope a classic token lacks, a
+fine-grained token, a field the server lacks), the management part's in
+`PRManage.Unavailable` with every control hidden, and check runs and
+workflow runs also lead `CIPipeline.ActionsUnavailable`. Without check
+runs the readiness has no checks row but a failed or pending status
+context, since a required check that did not report is unknown. A refusal
+of the token (FORBIDDEN, INSUFFICIENT_SCOPES, a document refused before
+it ran) is remembered for the repository and login for 10 minutes
+(`githubReadShapeTTL`), so later ticks send the smaller document at
+once; another error under a part leaves it out of that read alone. A
+single sign-on refusal, an error outside the optional parts, or one with
+no path on an answer that has data fails the read.
+
+A threads read too large to answer steps down `githubReadLevels`: a body
+past its bound, a 502 or 504, or a GraphQL error saying GitHub stopped
+the query at its 10 second limit sends it again without reactions
+(`PRRead.ReactionsUnavailable`), then with `pageSize` 25; the level that
+fit is remembered for the PR for 10 minutes. A connection still reads
+at most `githubReadMaxPages` pages' worth of 100 nodes. A read without
+threads is not stepped.
+
+A connection longer than one page continues with its own operation from
+the page's `endCursor`: `PRThreadsPage` and `PRCommentsPage(owner, name,
+number, after, pageSize)`, `ThreadCommentsPage(threadID, after)` and
+`RollupContextsPage(commitID, number, after)` through `node(id:)`, each
+with the part variables its selections use.
 `PRThreadStatesPage(owner, name, number, after)` continues the thread
 states only when readiness needs them (the base requires conversation
 resolution and the first page has no unresolved thread);
@@ -269,7 +312,9 @@ pipeline recovers once the read succeeds.
 | Tick | GitHub requests |
 |---|---|
 | Pump, a PR within one page per connection | 1 (`PRTick`) |
-| Pump, threads past the body bound only with their reactions | 2 (`PRTick` with reactions, then without) |
+| Pump, threads too large only with their reactions | 2 (`PRTick` with reactions, then without); 1 on later ticks for 10 minutes |
+| Pump, threads that fit only 25 to a page | 3 `PRTick` + the 25-node pages; 1 `PRTick` + the pages on later ticks for 10 minutes |
+| Pump, a part the token may not read | 1 more `PRTick` per refused part; none on later ticks for 10 minutes |
 | CI phase, no followed job | 1 (`PRTick`); + 1 artifacts page per completed run per attempt per 10 minutes |
 | CI phase, a followed running job | 1 (`PRTick`) + 1 jobs-list page per run |
 | CI phase, a followed running job's log | 1 logs request (a 302, then the blob's 404 until it exists, in practice until the job completed) |
@@ -285,10 +330,11 @@ id.
 | `Unapprove` | 1 `DismissReview` (`dismissPullRequestReview`), after 1 `ViewerApproval(owner, name, number)` (`latestOpinionatedReviews`) when the caller has no review id |
 | `Merge` | `PRMergeTarget` + `MergePR` (`mergePullRequest`, `expectedHeadOid`), + 1 REST `DELETE repos/O/R/git/refs/heads/B` when asked and the repository does not delete merged branches |
 | `Merge` with `AutoMerge` | `PRMergeTarget` + `EnableAutoMerge` (`enablePullRequestAutoMerge`, `expectedHeadOid`) |
-| `CancelAutoMerge`, `UpdateBranch`, `MarkReady` | `PRMergeTarget` + `DisableAutoMerge`, `UpdatePRBranch` (`expectedHeadOid`) or `MarkPRReady` |
+| `CancelAutoMerge`, `UpdateBranch`, `MarkReady` | `PRMergeTarget` + `DisableAutoMerge`, `UpdatePRBranch` (`expectedHeadOid`) or `MarkPRReady`; `CancelAutoMerge` on a PR in its merge queue (`isInMergeQueue`) is `DequeuePR` (`dequeuePullRequest`) instead |
+| `Merge` on a merge queue's base (`isMergeQueueEnabled`) | `PRMergeTarget` + `EnqueuePR` (`enqueuePullRequest`, `expectedHeadOid`), or with `AutoMerge` `EnableQueuedAutoMerge` (`enablePullRequestAutoMerge` with no `mergeMethod`, whose `isInMergeQueue` answer says whether it queued at once, as gh relies on, or armed); none when `isInMergeQueue`. Each answers `AutoMerge`. No method or branch delete is sent, an edited message is refused before the write, and `mergePullRequest` never is |
 
 Each comment action is one request; GitHub decides who may edit or delete
-and the read carries its answer (`viewerCanUpdate`, `viewerCanDelete`,
+and the read carries its answer (`viewerCanUpdate`, `viewerCanDelete`, `viewerCanReact`,
 `lastEditedAt`, `url` on every comment, no extra request). A conversation
 comment is a thread whose ID is its comment's (`CommentTarget`), which is
 how an edit or delete picks the issue comment mutation.
@@ -400,7 +446,17 @@ only PRs whose head is the origin repository: GitHub
 `githubReadMaxPages` pages of 100), GitLab merge requests whose
 `source_project_id` is their `project_id` (the full view, since the simple
 one lacks it; paged by 100 until one is found, at most
-`gitlabOpenMRsMaxPages` pages). A branch with no
+`gitlabOpenMRsMaxPages` pages). An origin that is a fork opens its PRs in
+its parent, so the lookup also reads the parent's: GitHub's
+`OpenPRsByHead` answer names the origin's `id` and `parent`, and the
+parent's nodes count when their `headRepository.id` is the origin's;
+GitLab reads the parent only when the origin has no merge request of its
+own, from `projects/P`'s `id` and `forked_from_project` (the merge
+settings read, cached per login for `gitlabCacheTTL`), keeping merge
+requests whose `source_project_id` is the origin's. `ListMergedPRHeads`
+adds, the same way, the parent's latest `limit` merges whose head was
+the origin; a failed parent read answers the origin's heads beside the
+error. A branch with no
 `refs/remotes/origin/<branch>` has no PR, so it is answered without a
 forge request. An answer is cached for `prLookupTTL` (30s), a "no open PR"
 included and never longer. A failed lookup is retried after 20s, doubling
@@ -438,10 +494,15 @@ leaves zero, are documented on `PRListRow` and `PipelineSummary`.
 on its own. Its requests run concurrently; only a failed list fails the
 read. Another failed request leaves its fields unknown (nil or empty) and
 comes back as a `*PRListDetailError` beside the rows, which the page shows
-as the project's `DetailError`.
+as the project's `DetailError`. A list cut at `prListMaxPages` pages of
+100 says so with a `*PRListNotice` there ("Showing 1000 of 1500 open
+pull requests: the list reads at most 1000."): on GitHub when a next
+page remains or the search's `issueCount` passes the rows read (search
+answers at most 1000 results), on GitLab when the last page read names
+a next one, with its `X-Total` when GitLab sends it.
 
-GitHub lists open PRs with one GraphQL `PullsSearch(query, after)`:
-`search(type: ISSUE, query: "is:pr is:open repo:O/R", first: 100)`
+GitHub lists open PRs with one GraphQL `PullsSearch(query, after, wantChecks)`:
+`search(type: ISSUE, query: "is:pr is:open repo:O/R", first: 100) { issueCount }`
 beside `viewer { login }`. Each node selects its review state
 (`reviewDecision`, `reviewRequests(first: 20)`,
 `latestOpinionatedReviews(first: 100) { state viewerDidAuthor }`, whose
@@ -456,7 +517,14 @@ with the head commit's time and rollup `state` (the CI status), and
 from which the row takes the PR author's latest reply
 (`AuthorActivityAt`; a review thread reply is a review of its own) and
 the count of the author's replies after the viewer's latest review. The
-viewer's activity is `viewerLatestReview.submittedAt`.
+viewer's activity is `viewerLatestReview.submittedAt`. The rollup `state`
+is an optional part (`$wantChecks`): a list whose every GraphQL error
+lies under a row's `statusCheckRollup` is read again without it, the
+rows' CI status unknown, and answers a `*PRListNotice` ("Check states are
+not shown: ...") in its `*PRListDetailError`, which the page shows as the
+project's `DetailError` in place of the failed-refresh sentence. A
+refusal of the token is remembered for the repository and login for 10
+minutes, as the PR read's parts are.
 
 GitLab reads, per repository, the viewer first (`user`, cached per login
 and host for 10 minutes; a viewer that cannot be read fails the
@@ -753,9 +821,11 @@ same review: the standing approval or change request when one stands,
 else the latest review. A failed management read never fails or hides
 the PR: `PRManage.Unavailable` says so in one sentence, every flag is
 false and the lists are empty. On GitLab that is the `PRManageChecks`
-read or its release read; on GitHub, a PRTick answer whose every error lies under the
-management selections (the viewer flags, `reviewRequests`, `assignees`,
-`labels`) with the rest decoded; an error anywhere else fails the read. The changes-requested blocker carries
+read or its release read; on GitHub, a PRTick refused under the management selections
+(the viewer flags, `reviewRequests`, `assignees`, `labels`), which is
+sent again without `wantManage` (see [Reads per tick](#reads-per-tick));
+a team reviewer refused alone leaves out only `wantTeams`, and team
+reviewers are then not offered (`ReviewerTeams`). The changes-requested blocker carries
 the reviews a dismissal needs (`MergeBlocker.ChangeRequests`) and whether
 a GitLab bypass is offered (`Bypassable`); a GitLab bypass that stands is
 a settled row (`Bypassed`).
@@ -801,8 +871,7 @@ access or the viewer's authorship of the PR (`viewerDidAuthor`; GitHub's
 review requests reference: "Pull request authors and repository owners
 and collaborators can request a pull request review"), and dismissing
 write access, which have no viewer field; team
-reviewers need an organization owner. GHES before 3.10 is outside
-support. GitLab's: edit, close, reopen, draft and re-request from
+reviewers need an organization owner. GitLab's: edit, close, reopen, draft and re-request from
 `userPermissions.updateMergeRequest`; reviewers, assignees and labels from
 `adminMergeRequest`; bypass from the REST
 `user.can_merge` and requested changes blocking the merge.
@@ -893,7 +962,7 @@ side, not outdated and not resolved.
 | Action | GitHub requests | GitLab requests |
 |---|---|---|
 | Apply a suggestion | `SuggestionTarget(threadID, commentID)` (the viewer, the thread with its anchor and pull, its comment ids, the comment's body and author), `ThreadCommentsPage` past 100 comments, `SuggestionFile(owner, name, oid, path)` (the head commit's `file(path:)` tree entry: `mode`, `type`, `oid`, the blob's `byteSize` and `isBinary`), REST `GET repos/HEAD_REPO/git/blobs/OID` with `Accept: application/vnd.github.raw+json` (at most 1 MiB), `SuggestionCommit` (`createCommitOnBranch` with `expectedHeadOid` and one file addition), then `SetThreadResolved` | 1 merge request read, `GET .../discussions/D` (the suggestion must be one of its notes'), then `PUT suggestions/:id/apply` |
-| Add or remove a reaction | `ReactionTarget(id)` (the node's type, pull and `reactionGroups`), then `AddReaction` or `RemoveReaction` | `user` (cached), `GET .../notes/N/award_emoji?per_page=100` (paged), then `POST .../notes/N/award_emoji` with `{name}` or `DELETE .../award_emoji/ID` |
+| Add or remove a reaction | `ReactionTarget(id)` (the node's type, pull, `viewerCanReact` and `reactionGroups`; `viewerCanReact` false is `*ViewerCannotError`, kind `forbidden`, with no write), then `AddReaction` or `RemoveReaction` | `user` (cached), `GET .../notes/N/award_emoji?per_page=100` (paged), then `POST .../notes/N/award_emoji` with `{name}` or `DELETE .../award_emoji/ID` |
 
 Every write checks inside the adapter that the comment is on the PR it
 names; one that is not is `*CommentNotOnPRError` (kind `not_found`)
@@ -933,12 +1002,11 @@ been taken" on an add and its 404 on a delete count as that. GitHub's
 groups ride every comment of the threads read (`reactionGroups { content
 viewerHasReacted reactors { totalCount } }` under `@include(if:
 $wantReactions)`), with no request of their own and no names. GitHub
-answers all eight groups of every comment, so a threads read that passes
-its body bound with them runs once more, whole, without them, and says
-"Reactions are not shown: this pull request has too many comments to
-read them."; a read too large without them fails as any read does.
-Nothing remembers that outcome, so each tick may cost the failed
-request again. GitLab's discussions read has no awards, so the read
+answers all eight groups of every comment, so a threads read too large
+with them runs once more, whole, without them, and says "Reactions are
+not shown: this pull request has too many comments to read them."; the
+PR's later reads start there for 10 minutes, and a read still too large
+reads 25 to a page ([Reads per tick](#reads-per-tick)). GitLab's discussions read has no awards, so the read
 adds `MRNoteReactions(fullPath, iid, after)`: the merge request's notes,
 100 per page with each note's first 100 `awardEmoji` (name and
 username), at most 10 pages. It is sent only when the note ids changed,
@@ -1083,9 +1151,13 @@ func (c *Client) CredentialFingerprint(ctx context.Context) (string, error) // s
 A response is classified in this order: rate limited, 401, 404, GraphQL
 errors, success. Rate limited means 429; 403 with `X-RateLimit-Remaining:
 0`, a `Retry-After` header or a body matching `rate limit`; or a 200
-GraphQL envelope with a `RATE_LIMITED` error or errors beside
-`X-RateLimit-Remaining: 0`. Any other 403 (SSO enforcement, a missing
-scope or permission) is a `*ForbiddenError`, never "unauthenticated".
+GraphQL envelope with a `RATE_LIMITED` error, an error whose message
+names a rate limit, or errors beside `X-RateLimit-Remaining: 0` or a
+`Retry-After` header (GitHub answers a GraphQL secondary limit "200 or
+403" with a message saying so and documents no error type for it). Any
+other 403 (SSO enforcement, a missing scope or permission, an
+organization's token policy), and a 404 beside `X-GitHub-SSO: required`,
+is a `*ForbiddenError`, never "unauthenticated".
 
 | Observation | Error | Caller behavior |
 |---|---|---|
@@ -1096,11 +1168,10 @@ scope or permission) is a `*ForbiddenError`, never "unauthenticated".
 | 401 after one token refresh on a mutation whose `user` probe fails otherwise (rate limited, 5xx, unreachable, timeout, cancelled) | `*RefusalError{Refusal, Step: "probe", Err}`: the mutation's 401 and the probe's own error, which `errors.As` finds first | Retry; never "log in again"; `git.ExplainForgeError`: the action was refused, nothing changed, try again |
 | 401 on a mutation whose token re-read then fails | `*RefusalError{Refusal, Step: "credential", Err}`: the 401 and the re-read's error, found first; on a read, the re-read's error alone | `git.ExplainForgeError`: a setup error's sentence, else the token was refused and the re-read failed, check the login |
 | A mutation's 4xx whose body is cut short | the status's error, with the body that arrived; on a read, `*TransientError` | As the status |
-
-A complete refusal is a fact about the write that a later step cannot
-erase: `WriteNotApplied` reports a write the forge refused in full, or
-never received, as not applied, whatever failed after it.
-| 403 without rate-limit headers | `*ForbiddenError{Status, Scope, Message}`: `Scope` only with evidence the token lacks it, GitLab's `insufficient_scope` body or GitHub's `X-Accepted-OAuth-Scopes` beside an `X-OAuth-Scopes` granting none of them (the first accepted one); a fine-grained token's "Resource not accessible by personal access token" is a permission, no `Scope`; `Message` the body's | `git.ExplainForgeError` names the scope; else an action shows the forge's message and a read the project |
+| gh without `gh auth token` (older than 2.17.0) | `*SetupError{Kind: "outdated"}` | Setup banner naming the version needed |
+| 403 without rate-limit headers | `*ForbiddenError{Status, Scope, Message, Permissions}`: `Scope` only with evidence the token lacks it, GitLab's `insufficient_scope` body or GitHub's `X-Accepted-OAuth-Scopes` beside an `X-OAuth-Scopes` granting none of them (the first accepted one); a fine-grained token's "Resource not accessible by personal access token" is a permission, no `Scope` (`FineGrained()`), with `Permissions` from `X-Accepted-GitHub-Permissions`; an organization's "forbids access via" is `Policy()`; `Message` the body's | `git.ExplainForgeError` names the scope, the fine-grained token and the permission, or the organization's policy, on a read and an action alike; else an action shows the forge's message and a read the project |
+| 403 or 404 with `X-GitHub-SSO: required; url=URL` (a token not authorized for an organization's SAML single sign-on; GitHub's authentication reference: "you may receive a `404 Not Found` or a `403 Forbidden`") | `*ForbiddenError{SSO, SSOURL}`; the 404 does not match `ErrNotFound` | Kind `forbidden`: the sentence names the single sign-on and the URL that authorizes the token |
+| GraphQL `errors` with a `FORBIDDEN` or `INSUFFICIENT_SCOPES` problem, or beside `X-GitHub-SSO: required` | `*GraphQLError{Problems, Data, SSO, SSOURL}`, `Forbidden()` | The PR pump and the list read report kind `forbidden` (the setup banner, no "Retrying"); `git.ExplainForgeError` words single sign-on, a fine-grained token, the scope the message names, or on a read the project |
 | Rate limited (rules above), or refused for the reserve | `*RateLimitedError{Host, Pool, Until, Reserve}` | Pollers wait for `Until`; see below |
 | 404 on a PR-, job- or thread-scoped path | `*StatusError` matching `errors.Is(err, ErrNotFound)` | `ErrCIJobLogNotFound`, PR gone, log not published yet |
 | 404 on a repository- or project-scoped path | `*StatusError` | Reaches the user: wrong project or no access, never an empty list |
@@ -1108,6 +1179,10 @@ never received, as not applied, whatever failed after it.
 | Dial, DNS, TLS, timeout | `*TransientError` wrapping the cause | Retry on the next tick |
 | GraphQL `errors` | `*GraphQLError{Problems, Data}` | Caller decides on partial data |
 | GraphQL `errors` with a `NOT_FOUND` problem | `*GraphQLError{Problems, Data}` | `git.ExplainForgeError`: kind `not_found`, the REST 404 sentence |
+
+A complete refusal is a fact about the write that a later step cannot
+erase: `WriteNotApplied` reports a write the forge refused in full, or
+never received, as not applied, whatever failed after it.
 
 `StatusError.Error()` carries the method, the redacted URL, the status and a
 bounded body (4 KiB). No forge error is classified from CLI stderr.
@@ -1190,7 +1265,8 @@ method's rate-limited failure (`forge_rate_limited`) carries the same
   fix and carries no forge text; the pane shows it in its own banner
   (`review-pr-setup`) with no "Retrying" prefix.
 - `forbidden`: `Error` is the `git.ExplainForgeError` sentence naming the
-  missing scope or the project the login cannot see, no forge text; the
+  missing scope, the single sign-on to authorize, the token or policy that
+  refused it, or the project the login cannot see; the
   pane shows it in the setup banner.
 - `transient` and `forge`: "Retrying: failed to refresh pull request
   (id: ...)", the correlation id that finds the raw error in the server
