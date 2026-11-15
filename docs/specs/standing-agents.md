@@ -820,14 +820,19 @@ Mechanics, as built:
   `{summaries, next}` after a thread id) and `GetThreadWorkerSummary`
   (route thread) answer `{threadId, open, needYou}`, counted as the
   Agents list counts its open rows, and feed
-  `stores/threadWorkerSummaries.svelte.ts`, one key per thread. A bulk read per computer at boot and on resync reads every
+  `stores/threadWorkerSummaries.svelte.ts`, one key per thread with open
+  workers. A bulk read per computer at boot and on resync reads every
   page; the pages together list only threads with an open worker, so
   once the last has answered, one they leave out has none, and not
   before. Each `thread:agent_rows_changed` frame reads the thread it
   names again, coalesced through one scheduler; a gap reads that
   computer in bulk. A read lands on a thread only when no read that
-  started later has landed there. A detached computer's counts are
-  dropped.
+  started later has landed there, and a computer's completed bulk read
+  is that computer's watermark: no answer from a read of it that
+  started earlier lands after it, absence included. An answer lands
+  only while the computer that gave it is the one attached when its
+  read started. A thread whose count reaches zero, and a detached
+  computer's counts, are dropped.
 - `ListAssistantPastThreads(agentID, after, limit)` (route home, sent to
   the assistant's computer) pages `agent_past_threads` newest superseded
   first by the `{supersededAt, threadId}` cursor and feeds
