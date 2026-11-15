@@ -75,9 +75,10 @@ inspection go through the harness wire with no fixture files.
   forge's own refusal and changes nothing.
 - A refusal (`SetRefusal`, `HarnessForgeRefuse`) makes one route answer
   a given status, headers and JSON body in place of its handler, for
-  `times` requests or until cleared (status 0): 401, 403, 405, 409 or
-  422 on any route, or 200 with an `errors` body on a GraphQL operation,
-  which is how GitHub refuses a mutation. The route is a REST route's
+  `times` requests or until cleared (status 0): 401, 403, 404, 405, 409,
+  422, 502 or 504 on any route, or 200 with an `errors` body on a GraphQL
+  operation, which is how GitHub refuses a mutation (and answers a
+  secondary rate limit). The route is a REST route's
   name (`glab api approve`), `gh graphql <operation>` or
   `glab graphql <operation>`. It is answered
   after the route matched and before its handler runs, so nothing

@@ -1072,8 +1072,10 @@ errors, success. Rate limited means 429; 403 with `X-RateLimit-Remaining:
 GraphQL envelope with a `RATE_LIMITED` error, an error whose message
 names a rate limit, or errors beside `X-RateLimit-Remaining: 0` or a
 `Retry-After` header (GitHub answers a GraphQL secondary limit "200 or
-403" with a message saying so and documents no error type for it). Any other 403 (SSO enforcement, a missing
-scope or permission) is a `*ForbiddenError`, never "unauthenticated".
+403" with a message saying so and documents no error type for it). Any
+other 403 (SSO enforcement, a missing scope or permission, an
+organization's token policy), and a 404 beside `X-GitHub-SSO: required`,
+is a `*ForbiddenError`, never "unauthenticated".
 
 | Observation | Error | Caller behavior |
 |---|---|---|
@@ -1084,11 +1086,10 @@ scope or permission) is a `*ForbiddenError`, never "unauthenticated".
 | 401 after one token refresh on a mutation whose `user` probe fails otherwise (rate limited, 5xx, unreachable, timeout, cancelled) | `*RefusalError{Refusal, Step: "probe", Err}`: the mutation's 401 and the probe's own error, which `errors.As` finds first | Retry; never "log in again"; `git.ExplainForgeError`: the action was refused, nothing changed, try again |
 | 401 on a mutation whose token re-read then fails | `*RefusalError{Refusal, Step: "credential", Err}`: the 401 and the re-read's error, found first; on a read, the re-read's error alone | `git.ExplainForgeError`: a setup error's sentence, else the token was refused and the re-read failed, check the login |
 | A mutation's 4xx whose body is cut short | the status's error, with the body that arrived; on a read, `*TransientError` | As the status |
-
-A complete refusal is a fact about the write that a later step cannot
-erase: `WriteNotApplied` reports a write the forge refused in full, or
-never received, as not applied, whatever failed after it.
-| 403 without rate-limit headers | `*ForbiddenError{Status, Scope, Message}`: `Scope` only with evidence the token lacks it, GitLab's `insufficient_scope` body or GitHub's `X-Accepted-OAuth-Scopes` beside an `X-OAuth-Scopes` granting none of them (the first accepted one); a fine-grained token's "Resource not accessible by personal access token" is a permission, no `Scope`; `Message` the body's | `git.ExplainForgeError` names the scope; else an action shows the forge's message and a read the project |
+| gh without `gh auth token` (older than 2.17.0) | `*SetupError{Kind: "outdated"}` | Setup banner naming the version needed |
+| 403 without rate-limit headers | `*ForbiddenError{Status, Scope, Message, Permissions}`: `Scope` only with evidence the token lacks it, GitLab's `insufficient_scope` body or GitHub's `X-Accepted-OAuth-Scopes` beside an `X-OAuth-Scopes` granting none of them (the first accepted one); a fine-grained token's "Resource not accessible by personal access token" is a permission, no `Scope` (`FineGrained()`), with `Permissions` from `X-Accepted-GitHub-Permissions`; an organization's "forbids access via" is `Policy()`; `Message` the body's | `git.ExplainForgeError` names the scope, the fine-grained token and the permission, or the organization's policy, on a read and an action alike; else an action shows the forge's message and a read the project |
+| 403 or 404 with `X-GitHub-SSO: required; url=URL` (a token not authorized for an organization's SAML single sign-on; GitHub's authentication reference: "you may receive a `404 Not Found` or a `403 Forbidden`") | `*ForbiddenError{SSO, SSOURL}`; the 404 does not match `ErrNotFound` | Kind `forbidden`: the sentence names the single sign-on and the URL that authorizes the token |
+| GraphQL `errors` with a `FORBIDDEN` or `INSUFFICIENT_SCOPES` problem, or beside `X-GitHub-SSO: required` | `*GraphQLError{Problems, Data, SSO, SSOURL}`, `Forbidden()` | The PR pump and the list read report kind `forbidden` (the setup banner, no "Retrying"); `git.ExplainForgeError` words single sign-on, a fine-grained token, the scope the message names, or on a read the project |
 | Rate limited (rules above), or refused for the reserve | `*RateLimitedError{Host, Pool, Until, Reserve}` | Pollers wait for `Until`; see below |
 | 404 on a PR-, job- or thread-scoped path | `*StatusError` matching `errors.Is(err, ErrNotFound)` | `ErrCIJobLogNotFound`, PR gone, log not published yet |
 | 404 on a repository- or project-scoped path | `*StatusError` | Reaches the user: wrong project or no access, never an empty list |
@@ -1096,6 +1097,10 @@ never received, as not applied, whatever failed after it.
 | Dial, DNS, TLS, timeout | `*TransientError` wrapping the cause | Retry on the next tick |
 | GraphQL `errors` | `*GraphQLError{Problems, Data}` | Caller decides on partial data |
 | GraphQL `errors` with a `NOT_FOUND` problem | `*GraphQLError{Problems, Data}` | `git.ExplainForgeError`: kind `not_found`, the REST 404 sentence |
+
+A complete refusal is a fact about the write that a later step cannot
+erase: `WriteNotApplied` reports a write the forge refused in full, or
+never received, as not applied, whatever failed after it.
 
 `StatusError.Error()` carries the method, the redacted URL, the status and a
 bounded body (4 KiB). No forge error is classified from CLI stderr.
@@ -1178,7 +1183,8 @@ method's rate-limited failure (`forge_rate_limited`) carries the same
   fix and carries no forge text; the pane shows it in its own banner
   (`review-pr-setup`) with no "Retrying" prefix.
 - `forbidden`: `Error` is the `git.ExplainForgeError` sentence naming the
-  missing scope or the project the login cannot see, no forge text; the
+  missing scope, the single sign-on to authorize, the token or policy that
+  refused it, or the project the login cannot see; the
   pane shows it in the setup banner.
 - `transient` and `forge`: "Retrying: failed to refresh pull request
   (id: ...)", the correlation id that finds the raw error in the server

@@ -192,3 +192,62 @@ func TestForbiddenErrorScopeNeedsEvidence(t *testing.T) {
 		})
 	}
 }
+
+// GitHub refuses a token not authorized for an organization's SAML single
+// sign-on with 403 or 404; the 403's X-GitHub-SSO carries the URL that
+// authorizes it (GitHub's REST authentication documentation). Either
+// status with the header is a refusal of the login, never a resource
+// that is gone; a GraphQL answer with the header carries the URL too.
+func TestSSORefusalsCarryTheAuthorizeURL(t *testing.T) {
+	t.Parallel()
+	const url = "https://github.com/orgs/acme/sso?authorization_request=A1B2"
+	sso := http.Header{}
+	sso.Set("X-GitHub-SSO", "required; url="+url)
+	for _, status := range []int{http.StatusForbidden, http.StatusNotFound} {
+		got := classify(answer{method: "GET", url: "https://api.github.com/repos/acme/app", status: status, header: sso, body: []byte(`{"message":"Resource protected by organization SAML enforcement. You must grant your Personal Access token access to this organization."}`)})
+		forbidden, ok := got.err.(*ForbiddenError)
+		if !ok || !forbidden.SSO || forbidden.SSOURL != url {
+			t.Fatalf("HTTP %d with X-GitHub-SSO = %#v, want a ForbiddenError with the URL", status, got.err)
+		}
+		if errors.Is(got.err, ErrNotFound) {
+			t.Fatalf("HTTP %d SSO refusal matched ErrNotFound", status)
+		}
+	}
+	partial := http.Header{}
+	partial.Set("X-GitHub-SSO", "partial-results; organizations=21955855,20582480")
+	if got := classify(answer{method: "GET", url: "u", status: http.StatusNotFound, header: partial}); !errors.Is(got.err, ErrNotFound) {
+		t.Fatalf("a 404 whose header only reports partial results = %#v, want not found", got.err)
+	}
+	got := classify(answer{method: "POST", url: "https://api.github.com/graphql", graphQL: true, status: 200, header: sso,
+		body: []byte(`{"data":{"repository":null},"errors":[{"type":"FORBIDDEN","path":["repository"],"message":"Resource protected by organization SAML enforcement. You must grant your Personal Access token access to this organization."}]}`)})
+	gql, ok := got.err.(*GraphQLError)
+	if !ok || !gql.SSO || gql.SSOURL != url || !gql.Forbidden() {
+		t.Fatalf("GraphQL SSO refusal = %#v", got.err)
+	}
+}
+
+// A 403 a fine-grained token gets for a permission it lacks names the
+// permissions the endpoint accepts (X-Accepted-GitHub-Permissions), and
+// an organization's token policy is told from other refusals.
+func TestForbiddenErrorNamesTheTokenCause(t *testing.T) {
+	t.Parallel()
+	header := http.Header{}
+	header.Set("X-Accepted-GitHub-Permissions", "pull_requests=write")
+	got := classify(answer{method: "POST", url: "u", status: http.StatusForbidden, header: header, body: []byte(`{"message":"Resource not accessible by personal access token"}`)})
+	forbidden, ok := got.err.(*ForbiddenError)
+	if !ok || !forbidden.FineGrained() || forbidden.Permissions != "pull_requests=write" || forbidden.Policy() {
+		t.Fatalf("fine-grained refusal = %#v", got.err)
+	}
+	got = classify(answer{method: "GET", url: "u", status: http.StatusForbidden, header: http.Header{}, body: []byte(`{"message":"The 'acme' organization forbids access via a personal access tokens (classic). Please use a GitHub App, OAuth App, or a personal access token with fine-grained permissions."}`)})
+	if forbidden, ok = got.err.(*ForbiddenError); !ok || !forbidden.Policy() || forbidden.FineGrained() {
+		t.Fatalf("policy refusal = %#v", got.err)
+	}
+	gql := &GraphQLError{Problems: []GraphQLProblem{{Type: "NOT_FOUND", Message: "x"}}}
+	if gql.Forbidden() {
+		t.Fatal("NOT_FOUND read as forbidden")
+	}
+	gql = &GraphQLError{Problems: []GraphQLProblem{{Type: "INSUFFICIENT_SCOPES", Message: "Your token has not been granted the required scopes to execute this query. The 'combinedSlug' field requires one of the following scopes: ['read:org'], but your token has only been granted the: ['repo'] scopes."}}}
+	if !gql.Forbidden() || gql.MissingScope() != "read:org" {
+		t.Fatalf("INSUFFICIENT_SCOPES = forbidden %v, scope %q", gql.Forbidden(), gql.MissingScope())
+	}
+}

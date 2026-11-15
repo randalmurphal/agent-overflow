@@ -1452,6 +1452,49 @@ func TestRefusalsReachTheAppsExplanations(t *testing.T) {
 	}
 }
 
+// GitHub's refusals of the token itself reach the app's sentences as
+// kind forbidden, naming the cause: a PR read refused for single sign-on
+// with the authorize URL, an approval answered 404 beside X-GitHub-SSO
+// (not "not found"), and a fine-grained token's 403 on a write naming the
+// permission it needs.
+func TestGitHubTokenRefusalsReachTheAppsExplanations(t *testing.T) {
+	ctx := forgeapi.WithInteractive(t.Context())
+	r := newRig(t, githubMergeFixture("running"))
+	ref := gitops.PRReference{Forge: "github", Host: "github.com", Namespace: "acme", Repo: "merge", Number: 9}
+	const authorize = "https://github.com/orgs/acme/sso?authorization_request=A1B2"
+	saml := `"Resource protected by organization SAML enforcement. You must grant your Personal Access token access to this organization."`
+	sso := map[string]string{"X-GitHub-SSO": "required; url=" + authorize}
+	if err := r.engine.SetRefusal(forgefake.Refusal{Route: "gh graphql PRTick", Status: 200, Times: 1, Header: sso,
+		Body: []byte(`{"data":{"repository":null},"errors":[{"type":"FORBIDDEN","path":["repository"],"message":` + saml + `}]}`)}); err != nil {
+		t.Fatal(err)
+	}
+	_, err := r.core.ReadPR(ctx, ref, gitops.PRReadParts{Detail: true}, nil, nil)
+	if got := explained(t, ref, gitops.ActionRead, err); got.Kind != gitops.ForgeErrorForbidden || !strings.Contains(got.Message, "Authorize it at "+authorize) {
+		t.Fatalf("a read refused for single sign-on = %+v", got)
+	}
+	if err := r.engine.SetRefusal(forgefake.Refusal{Route: "gh api pull reviews", Status: 404, Times: 1, Header: sso, Body: []byte(`{"message":"Not Found"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	if got := explained(t, ref, gitops.ActionApprove, r.core.ApprovePR(ctx, ref, strings.Repeat("9", 40))); got.Kind != gitops.ForgeErrorForbidden || !strings.Contains(got.Message, "single sign-on") {
+		t.Fatalf("an approval answered 404 for single sign-on = %+v", got)
+	}
+	if err := r.engine.SetRefusal(forgefake.Refusal{Route: "gh api pull reviews", Status: 403, Times: 1, Header: map[string]string{"X-Accepted-GitHub-Permissions": "pull_requests=write"},
+		Body: []byte(`{"message":"Resource not accessible by personal access token"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	if got := explained(t, ref, gitops.ActionApprove, r.core.ApprovePR(ctx, ref, strings.Repeat("9", 40))); got.Kind != gitops.ForgeErrorForbidden || !strings.Contains(got.Message, "fine-grained token that cannot approve acme/merge#9 (it needs pull_requests=write)") {
+		t.Fatalf("a fine-grained token's refused approval = %+v", got)
+	}
+	if mergeRead(t, r, ref).Detail.Merge.ViewerApproved {
+		t.Fatal("a refused approval approved")
+	}
+	for _, inv := range r.engine.Invocations(0).Invocations {
+		if inv.Unhandled {
+			t.Errorf("unhandled %s %s: %s", inv.Method, inv.Path, inv.Detail)
+		}
+	}
+}
+
 // The detail's thread states and the timeline past their first page
 // (PRThreadStatesPage, PRTimelinePage): a base requiring conversation
 // resolution with the one unresolved thread past the first 100, and 150

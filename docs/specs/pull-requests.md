@@ -386,10 +386,14 @@ and correlation id stay behind "Details". The sentences:
 | Case | Sentence |
 |---|---|
 | CLI missing | existing `SetupError` text |
+| gh too old | "GitHub CLI (`gh`) is too old: the app reads its login with `gh auth token`, which needs gh 2.17.0 or later. Update gh from https://cli.github.com and try again" (`SetupError` kind `outdated`) |
 | Not logged in | "Your `glab` login for HOST has no token. Run `glab auth login --hostname HOST`." |
 | Token expired | "Your GitLab token for HOST expired on DATE. Run `glab auth login --hostname HOST`." (the expiry is learned while the token works: GitLab `GET personal_access_tokens/self` once per personal token, GitHub the `GitHub-Authentication-Token-Expiration` header; see forge transport "Credentials") |
-| Token lacks scope | "Your HOST token lacks the `api` scope, so NAME cannot ACTION." (GitLab `insufficient_scope`; GitHub `X-Accepted-OAuth-Scopes` none of which `X-OAuth-Scopes` grants. A fine-grained token's "Resource not accessible by personal access token" reads "GitHub blocks this: REASON" on an action and "No access" on a read) |
-| No access | "No access to PROJECT with this login." |
+| Token lacks scope | "Your HOST token lacks the `api` scope, so NAME cannot ACTION." (GitLab `insufficient_scope`; GitHub `X-Accepted-OAuth-Scopes` none of which `X-OAuth-Scopes` grants, or a GraphQL `INSUFFICIENT_SCOPES` naming the scope) |
+| Not authorized for SSO | "Your HOST token is not authorized for the single sign-on of the organization that owns PROJECT, so the app cannot ACTION NAME. Authorize it at URL (the link expires after an hour), then try again." (GitHub 403 or 404 with `X-GitHub-SSO: required; url=URL`, a GraphQL answer with that header, or the "SAML enforcement" message; without a URL the fix is the token's settings; kind `forbidden`, read or write) |
+| Fine-grained token refused | "Your HOST token is a fine-grained token that cannot ACTION NAME (it needs PERMISSIONS). ..." (GitHub "Resource not accessible by personal access token", REST or GraphQL, with `X-Accepted-GitHub-Permissions` when sent; such a token cannot write where the user is an outside collaborator or not a member; kind `forbidden`) |
+| Token policy | "The organization that owns PROJECT does not accept this token: REASON. Log gh in with a token it allows." (GitHub 403 "... forbids access via ...") |
+| No access | "No access to PROJECT with this login." (a 403 on a read, a GitHub GraphQL `FORBIDDEN` read) |
 | Project or PR gone | "PROJECT!N was not found on HOST, or this login cannot see it." (REST 404, GitHub GraphQL `NOT_FOUND`) |
 | Head moved | "The branch moved after you loaded this MR. Reload and try again." (409) |
 | Not mergeable | "FORGE refused the merge: REASON." (GitLab 405/422 body, GitHub 405/422 message) |

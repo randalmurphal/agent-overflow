@@ -28,8 +28,10 @@ const (
 	// is missing or has no token for the host.
 	forgeFailureSetup = "setup"
 	// forgeFailureForbidden is a forge that refused the login: a token
-	// without the scope, or no access to the project. The wire carries the
-	// sentence naming which (git.ExplainForgeError).
+	// without the scope, not authorized for single sign-on or refused by
+	// an organization's policy, a GitHub GraphQL FORBIDDEN or
+	// INSUFFICIENT_SCOPES answer, or no access to the project. The wire
+	// carries the sentence naming which (git.ExplainForgeError).
 	forgeFailureForbidden = "forbidden"
 	// forgeFailureForge is every other forge answer: a status, a GraphQL
 	// error, a body the app could not read.
@@ -50,12 +52,13 @@ func classifyForgeFailure(err error) (kind string, reserve bool, until time.Time
 	var transient *forgeapi.TransientError
 	var setup *forgeapi.SetupError
 	var forbidden *forgeapi.ForbiddenError
+	var graphQL *forgeapi.GraphQLError
 	switch {
 	case errors.As(err, &limited):
 		return forgeFailureRateLimited, limited.Reserve, limited.Until
 	case errors.As(err, &setup):
 		return forgeFailureSetup, false, time.Time{}
-	case errors.As(err, &forbidden):
+	case errors.As(err, &forbidden), errors.As(err, &graphQL) && graphQL.Forbidden():
 		return forgeFailureForbidden, false, time.Time{}
 	case errors.As(err, &transient), errors.Is(err, context.DeadlineExceeded):
 		return forgeFailureTransient, false, time.Time{}

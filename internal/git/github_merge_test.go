@@ -1007,12 +1007,11 @@ func TestGitHubPRStateMutations(t *testing.T) {
 			t.Fatalf("the fine-grained token's 403 = %#v, want a ForbiddenError naming no scope", refused)
 		}
 		// A fine-grained token lacks a permission, not a classic scope: the
-		// action shows GitHub's text, a read the project.
-		if got := ExplainForgeError(githubTestRef(5), ActionReady, refused).Error(); got != "GitHub blocks this: Resource not accessible by personal access token" {
-			t.Fatalf("action sentence = %q", got)
-		}
-		if got := ExplainForgeError(githubTestRef(5), ActionRead, refused).Error(); !strings.HasPrefix(got, "No access to o/r on ") {
-			t.Fatalf("read sentence = %q", got)
+		// action and a read both name the token as the cause.
+		for _, action := range []ForgeAction{ActionReady, ActionRead} {
+			if got := ExplainForgeError(githubTestRef(5), action, refused).Error(); !strings.Contains(got, "is a fine-grained token that cannot "+string(action)+" o/r#5") {
+				t.Fatalf("%s sentence = %q", action, got)
+			}
 		}
 	})
 }
