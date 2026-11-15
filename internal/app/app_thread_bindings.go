@@ -110,8 +110,12 @@ type ThreadTitleGenerationEvent struct {
 // it in its sidebar without a refresh, matching what the creating client does
 // with the return value.
 //
+// The budget covers cutting a worktree, whose post-checkout hook runs
+// inside its add (gitops.HookTimeout).
+//
 //ao:scope threads:operate
 //ao:route selected
+//ao:budget 12m
 func (a *App) CreateThread(ctx context.Context, opts CreateThreadOptions) (store.Thread, error) {
 	return a.createThread(ctx, opts, true)
 }

@@ -1479,39 +1479,6 @@ export class CommitFiles {
 }
 
 /**
- * CommitOutcome is what a commit attempt did: "committed" (Result),
- * "failed" (Message: it committed nothing), "unknown" (this process never
- * received it), or "forgotten" (it may have received it and no longer
- * keeps the outcome).
- */
-export class CommitOutcome {
-    "state": string;
-    "result"?: git$0.GitActionResult | null;
-    "message"?: string;
-
-    /** Creates a new CommitOutcome instance. */
-    constructor($$source: Partial<CommitOutcome> = {}) {
-        if (!("state" in $$source)) {
-            this["state"] = "";
-        }
-
-        Object.assign(this, $$source);
-    }
-
-    /**
-     * Creates a new CommitOutcome instance from a string or object.
-     */
-    static createFrom($$source: any = {}): CommitOutcome {
-        const $$createField1_0 = $$createType31;
-        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
-        if ("result" in $$parsedSource) {
-            $$parsedSource["result"] = $$createField1_0($$parsedSource["result"]);
-        }
-        return new CommitOutcome($$parsedSource as Partial<CommitOutcome>);
-    }
-}
-
-/**
  * CommitSelection names what GitCommit commits and GenerateCommitMessage
  * describes: every uncommitted change, or exactly the given files. One of
  * the two is set, so a caller that lost its selection gets an error, not a
@@ -1667,7 +1634,7 @@ export class ContextSettingsProfile {
      * Creates a new ContextSettingsProfile instance from a string or object.
      */
     static createFrom($$source: any = {}): ContextSettingsProfile {
-        const $$createField2_0 = $$createType33;
+        const $$createField2_0 = $$createType31;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("contextWindows" in $$parsedSource) {
             $$parsedSource["contextWindows"] = $$createField2_0($$parsedSource["contextWindows"]);
@@ -2141,8 +2108,8 @@ export class Draft {
      */
     static createFrom($$source: any = {}): Draft {
         const $$createField2_0 = $$createType8;
-        const $$createField3_0 = $$createType35;
-        const $$createField4_0 = $$createType37;
+        const $$createField3_0 = $$createType33;
+        const $$createField4_0 = $$createType35;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("attachmentIds" in $$parsedSource) {
             $$parsedSource["attachmentIds"] = $$createField2_0($$parsedSource["attachmentIds"]);
@@ -2188,8 +2155,8 @@ export class DraftSnapshot {
      */
     static createFrom($$source: any = {}): DraftSnapshot {
         const $$createField1_0 = $$createType8;
-        const $$createField2_0 = $$createType35;
-        const $$createField3_0 = $$createType37;
+        const $$createField2_0 = $$createType33;
+        const $$createField3_0 = $$createType35;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("attachmentIds" in $$parsedSource) {
             $$parsedSource["attachmentIds"] = $$createField1_0($$parsedSource["attachmentIds"]);
@@ -2313,8 +2280,8 @@ export class EditDiffList {
      * Creates a new EditDiffList instance from a string or object.
      */
     static createFrom($$source: any = {}): EditDiffList {
-        const $$createField0_0 = $$createType39;
-        const $$createField1_0 = $$createType41;
+        const $$createField0_0 = $$createType37;
+        const $$createField1_0 = $$createType39;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("entries" in $$parsedSource) {
             $$parsedSource["entries"] = $$createField0_0($$parsedSource["entries"]);
@@ -2663,7 +2630,7 @@ export class ForgeProject {
      * Creates a new ForgeProject instance from a string or object.
      */
     static createFrom($$source: any = {}): ForgeProject {
-        const $$createField3_0 = $$createType42;
+        const $$createField3_0 = $$createType40;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("repo" in $$parsedSource) {
             $$parsedSource["repo"] = $$createField3_0($$parsedSource["repo"]);
@@ -2699,6 +2666,39 @@ export class GeneratedCommitMessage {
     static createFrom($$source: any = {}): GeneratedCommitMessage {
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         return new GeneratedCommitMessage($$parsedSource as Partial<GeneratedCommitMessage>);
+    }
+}
+
+/**
+ * GitActionOutcome is what a git attempt did: "succeeded" (Result),
+ * "failed" (Message: it wrote nothing it reports), "unknown" (this process
+ * never received it), or "forgotten" (it may have received it and no longer
+ * keeps the outcome).
+ */
+export class GitActionOutcome {
+    "state": string;
+    "result"?: git$0.GitActionResult | null;
+    "message"?: string;
+
+    /** Creates a new GitActionOutcome instance. */
+    constructor($$source: Partial<GitActionOutcome> = {}) {
+        if (!("state" in $$source)) {
+            this["state"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new GitActionOutcome instance from a string or object.
+     */
+    static createFrom($$source: any = {}): GitActionOutcome {
+        const $$createField1_0 = $$createType42;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("result" in $$parsedSource) {
+            $$parsedSource["result"] = $$createField1_0($$parsedSource["result"]);
+        }
+        return new GitActionOutcome($$parsedSource as Partial<GitActionOutcome>);
     }
 }
 
@@ -5701,7 +5701,7 @@ export class ProjectPRList {
      * Creates a new ProjectPRList instance from a string or object.
      */
     static createFrom($$source: any = {}): ProjectPRList {
-        const $$createField2_0 = $$createType42;
+        const $$createField2_0 = $$createType40;
         const $$createField3_0 = $$createType95;
         const $$createField7_0 = $$createType97;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
@@ -6020,8 +6020,8 @@ export class RegisteredQueueItem {
      */
     static createFrom($$source: any = {}): RegisteredQueueItem {
         const $$createField4_0 = $$createType8;
-        const $$createField5_0 = $$createType37;
-        const $$createField6_0 = $$createType37;
+        const $$createField5_0 = $$createType35;
+        const $$createField6_0 = $$createType35;
         const $$createField7_0 = $$createType8;
         const $$createField8_0 = $$createType103;
         const $$createField9_0 = $$createType8;
@@ -6984,8 +6984,8 @@ export class SendMessageOptions {
     static createFrom($$source: any = {}): SendMessageOptions {
         const $$createField0_0 = $$createType119;
         const $$createField1_0 = $$createType8;
-        const $$createField3_0 = $$createType37;
-        const $$createField4_0 = $$createType37;
+        const $$createField3_0 = $$createType35;
+        const $$createField4_0 = $$createType35;
         const $$createField5_0 = $$createType8;
         const $$createField6_0 = $$createType103;
         const $$createField7_0 = $$createType8;
@@ -12415,19 +12415,19 @@ const $$createType26 = CodexAccountUsageBucket.createFrom;
 const $$createType27 = $Create.Array($$createType26);
 const $$createType28 = gitdiff$0.ChangedFile.createFrom;
 const $$createType29 = $Create.Array($$createType28);
-const $$createType30 = git$0.GitActionResult.createFrom;
-const $$createType31 = $Create.Nullable($$createType30);
-const $$createType32 = provider$0.ContextWindowOption.createFrom;
+const $$createType30 = provider$0.ContextWindowOption.createFrom;
+const $$createType31 = $Create.Array($$createType30);
+const $$createType32 = TerminalChip.createFrom;
 const $$createType33 = $Create.Array($$createType32);
-const $$createType34 = TerminalChip.createFrom;
-const $$createType35 = $Create.Array($$createType34);
-const $$createType36 = store$0.ProposedPlanSourceRef.createFrom;
-const $$createType37 = $Create.Nullable($$createType36);
-const $$createType38 = EditDiffEntry.createFrom;
+const $$createType34 = store$0.ProposedPlanSourceRef.createFrom;
+const $$createType35 = $Create.Nullable($$createType34);
+const $$createType36 = EditDiffEntry.createFrom;
+const $$createType37 = $Create.Array($$createType36);
+const $$createType38 = EditDiffTurnLabel.createFrom;
 const $$createType39 = $Create.Array($$createType38);
-const $$createType40 = EditDiffTurnLabel.createFrom;
-const $$createType41 = $Create.Array($$createType40);
-const $$createType42 = git$0.RepoReference.createFrom;
+const $$createType40 = git$0.RepoReference.createFrom;
+const $$createType41 = git$0.GitActionResult.createFrom;
+const $$createType42 = $Create.Nullable($$createType41);
 const $$createType43 = git$0.GitStatus.createFrom;
 const $$createType44 = $Create.Nullable($$createType43);
 const $$createType45 = git$0.LeftBehind.createFrom;

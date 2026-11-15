@@ -1,10 +1,10 @@
-import type { CommitFile, CommitOutcome, CommitSelection, GitActionResult, WorkspaceRef } from '../../types/git';
-import { GenerateCommitMessage, GetCommitOutcome, GitCommit, ListCommitFiles } from '../../stores/bindings';
+import type { CommitFile, CommitSelection, WorkspaceRef } from '../../types/git';
+import { GenerateCommitMessage, GitCommit, ListCommitFiles } from '../../stores/bindings';
 import { createRefreshScheduler, type RefreshToken } from '../../utils/refreshScheduler';
-import { randomId } from '../../utils/randomId';
 import { userFacingError } from '../../utils/userFacingError';
-import { isMethodUnavailableError, isTransportClassError } from '../../stores/transportStatus.svelte';
+import { isMethodUnavailableError } from '../../stores/transportStatus.svelte';
 import { carryActive, carrySelection, commitSelection, toggleAll, toggleOne } from './commitFiles';
+import { askGitAttempt, runGitAttempt, type GitAttemptAnswer } from './gitAttempt';
 
 // The state of one opening of the commit dialog on one checkout: the file
 // list as the backend last answered it, which rows are selected, which row
@@ -16,10 +16,8 @@ import { carryActive, carrySelection, commitSelection, toggleAll, toggleOne } fr
 // picked, and a file that appears while the dialog is open arrives
 // unselected.
 //
-// Each press of Commit carries a fresh attempt id. A commit whose answer
-// was lost (the connection dropped, or the wait ran out) is settled by
-// asking the computer what that attempt did (GetCommitOutcome), which waits
-// for one still running: a commit that landed reads as landed. While the
+// Each press of Commit is one attempt (gitAttempt.ts): a commit whose answer
+// was lost reads as landed once the computer says it did. While the
 // computer cannot be asked, the attempt stays open and the next press asks
 // again rather than committing a second time.
 
@@ -115,31 +113,25 @@ export function createCommitDialogState(workspace: WorkspaceRef, onEmptied: () =
     }
   }
 
-  // A commit's answer, from the call or from its recorded outcome.
-  function landed(result: GitActionResult): string | null {
-    if (result.error) {
-      commitError = result.error;
-      return null;
+  // Settles one attempt's answer: the new commit's SHA, or null with
+  // `commitError` saying why nothing is known to have been committed.
+  function settle(answer: GitAttemptAnswer): string | null {
+    lostAttempt = answer.kind === 'lost' ? answer.attemptId : null;
+    switch (answer.kind) {
+      case 'done':
+        selected = new Set();
+        committedHere = true;
+        return answer.result.commitSha ?? '';
+      case 'failed':
+        commitError = answer.message;
+        return null;
+      case 'lost':
+        commitError = `${COMMIT_ANSWER_LOST} ${answer.message}`;
+        return null;
+      case 'unknown':
+        commitError = COMMIT_OUTCOME_UNKNOWN;
+        return null;
     }
-    selected = new Set();
-    committedHere = true;
-    return result.commitSha ?? '';
-  }
-
-  // Settles an attempt whose answer was lost by asking what it did.
-  async function settleLost(attemptId: string): Promise<string | null> {
-    let outcome: CommitOutcome;
-    try {
-      outcome = await GetCommitOutcome(workspace, attemptId) as CommitOutcome;
-    } catch (err) {
-      lostAttempt = attemptId;
-      commitError = `${COMMIT_ANSWER_LOST} ${userFacingError(err)}`;
-      return null;
-    }
-    lostAttempt = null;
-    if (outcome.state === 'committed' && outcome.result) return landed(outcome.result);
-    commitError = outcome.state === 'failed' ? outcome.message || 'The commit failed.' : COMMIT_OUTCOME_UNKNOWN;
-    return null;
   }
 
   function refresh(immediate = false): void {
@@ -178,17 +170,10 @@ export function createCommitDialogState(workspace: WorkspaceRef, onEmptied: () =
       committing = true;
       commitError = null;
       try {
-        if (lost !== null) return await settleLost(lost);
-        const attemptId = randomId();
-        let result: GitActionResult;
-        try {
-          result = await GitCommit(workspace, subject.trim(), body.trim(), covered!, attemptId) as GitActionResult;
-        } catch (err) {
-          if (isTransportClassError(err)) return await settleLost(attemptId);
-          commitError = err instanceof Error ? err.message : String(err);
-          return null;
-        }
-        return landed(result);
+        return settle(lost !== null
+          ? await askGitAttempt(workspace, 'commit', lost)
+          : await runGitAttempt(workspace, 'commit', (attemptId) =>
+            GitCommit(workspace, subject.trim(), body.trim(), covered!, attemptId)));
       } finally {
         committing = false;
         // The commit, or its refusal, changed what there is to list.

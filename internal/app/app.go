@@ -252,9 +252,10 @@ type App struct {
 	reviewSubmits      *keyedlock.Registry
 	postedReviewDrafts postedReviewDrafts
 	reviewAttempts     reviewAttempts
-	// commitAttempts are GitCommit's attempts' outcomes (app_git.go). Zero
-	// value ready.
-	commitAttempts writeAttempts[gitops.GitActionResult]
+	// gitActionAttempts are the outcomes of the git writes a client can
+	// lose the answer of: commit, push, pull, create PR (app_git_attempts.go).
+	// Zero value is ready.
+	gitActionAttempts writeAttempts[gitops.GitActionResult]
 	// providerTerminals is the per-connection take-control bookkeeping for
 	// claude-tui PTYs: which caller armed which attachment, so a dead socket
 	// releases exactly its own claim and its input lease. Zero value ready.

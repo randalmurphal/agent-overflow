@@ -3,9 +3,10 @@ import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import CreatePRDialog from './CreatePRDialog.svelte';
 import { resetPanesForTest } from '../../stores/panes.svelte';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
-import { __seedGitStatusForTest } from '../../stores/gitStatusStore.svelte';
+import { __resetGitStatusStoreForTest, __seedGitStatusForTest } from '../../stores/gitStatusStore.svelte';
 import { getToasts, removeToast } from '../../stores/toast.svelte';
-import type { GitActionResult, GitStatus } from '../../types/git';
+import type { GitActionOutcome, GitActionResult, GitStatus } from '../../types/git';
+import { DisconnectedError, TransportError } from '../../transport/wsClient';
 import { buildPane, makeThread } from '../../../test/helpers/chat';
 
 // Partial mock: only the snapshot is pinned (see CommitDialog.test.ts).
@@ -92,7 +93,7 @@ describe('<CreatePRDialog>', () => {
     await fireEvent.click(getByTestId('create-pr-submit'));
 
     await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
-    expect(create).toHaveBeenCalledWith(pane.workspace, 'Add login', 'Supports SSO.', true);
+    expect(create).toHaveBeenCalledWith(pane.workspace, 'Add login', 'Supports SSO.', true, expect.any(String));
     const toast = getToasts().at(-1);
     expect(toast?.type).toBe('success');
     expect(toast?.message).toBe('PR created: https://github.com/o/r/pull/7');
@@ -125,6 +126,71 @@ describe('<CreatePRDialog>', () => {
     const alert = await findByRole('alert');
     expect(alert.textContent).toContain('glab is not installed');
     expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('shows a pull request whose answer was lost as created once the computer says so', async () => {
+    const create = setBindingMock('GitCreatePR', async () => {
+      throw new TransportError('timeout', 'RPC 9 timed out after 735000ms');
+    });
+    const outcome = setBindingMock('GetGitActionOutcome', async () => ({
+      state: 'succeeded',
+      result: { action: 'pr', prUrl: 'https://github.com/o/r/pull/9' },
+    } as GitActionOutcome));
+    const { pane, onClose, getByTestId } = await mount();
+    await fireEvent.input(fields().title, { target: { value: 'Add login' } });
+    await fireEvent.click(getByTestId('create-pr-submit'));
+
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    expect(outcome).toHaveBeenCalledWith(pane.workspace, 'pr', create.mock.calls[0]![4]);
+    expect(getToasts().at(-1)?.message).toBe('PR created: https://github.com/o/r/pull/9');
+  });
+
+  it('asks again on the next press while a lost pull request cannot be asked about, and never creates twice', async () => {
+    const create = setBindingMock('GitCreatePR', async () => {
+      throw new DisconnectedError('socket closed');
+    });
+    let asks = 0;
+    const outcome = setBindingMock('GetGitActionOutcome', async () => {
+      asks += 1;
+      if (asks === 1) throw new DisconnectedError('socket closed');
+      return { state: 'succeeded', result: { action: 'pr', prUrl: 'https://github.com/o/r/pull/10' } } as GitActionOutcome;
+    });
+    const { onClose, getByTestId, findByRole } = await mount();
+    await fireEvent.input(fields().title, { target: { value: 'Add login' } });
+    await fireEvent.click(getByTestId('create-pr-submit'));
+    expect((await findByRole('alert')).textContent).toContain('may have landed');
+    expect(onClose).not.toHaveBeenCalled();
+
+    await waitFor(() => expect((getByTestId('create-pr-submit') as HTMLButtonElement).disabled).toBe(false));
+    await fireEvent.click(getByTestId('create-pr-submit'));
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(outcome.mock.calls[1]![2]).toBe(create.mock.calls[0]![4]);
+  });
+
+  it('says so when the computer has no record of a lost pull request', async () => {
+    setBindingMock('GitCreatePR', async () => {
+      throw new DisconnectedError('socket closed');
+    });
+    setBindingMock('GetGitActionOutcome', async () => ({ state: 'unknown' } as GitActionOutcome));
+    const { onClose, getByTestId, findByRole } = await mount();
+    await fireEvent.input(fields().title, { target: { value: 'Add login' } });
+    await fireEvent.click(getByTestId('create-pr-submit'));
+    expect((await findByRole('alert')).textContent).toContain('no record of this PR');
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('keeps naming the forge while the status is read again', async () => {
+    setBindingMock('GitCreatePR', async () => {
+      // The connection drops and the status is read again from nothing.
+      __resetGitStatusStoreForTest();
+      return { action: 'pr', prUrl: 'https://gitlab.com/o/r/-/merge_requests/3' } as GitActionResult;
+    });
+    const { onClose, getByTestId } = await mount(status({ forge: 'gitlab' }));
+    await fireEvent.input(fields().title, { target: { value: 'Add login' } });
+    await fireEvent.click(getByTestId('create-pr-submit'));
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    expect(getToasts().at(-1)?.message).toBe('MR created: https://gitlab.com/o/r/-/merge_requests/3');
   });
 
   it('ignores a second submit while the first is in flight', async () => {
