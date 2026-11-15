@@ -5119,6 +5119,45 @@ describe('reviewPane store — open new-comment editors', () => {
     expect(state.error).toBe('create failed');
   });
 
+  it('saves an editor\'s draft once however often it is pressed while saving', async () => {
+    const { state, rows } = await workspaceWith(() => patchFor('src/app.ts', 1));
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const create = getBindingMock('CreateDiffReviewComment')!;
+    const saveOne = create.getMockImplementation()!;
+    create.mockImplementation(async (...args: unknown[]) => {
+      await gate;
+      return saveOne(...args);
+    });
+    const id = state.openDraftEditor({ filePath: 'src/app.ts', side: 'new', newLine: 1, selectedText: 'line 1' })!;
+    const first = state.createComment(id, 'Body');
+    expect(state.editorSaving(id)).toBe(true);
+    // Its row remounting (scrolled out and back) keeps nothing of its own:
+    // the presses that follow reach the store.
+    const again = [state.createComment(id, 'Body'), state.createComment(id, 'Body', 'now')];
+    release();
+    await Promise.allSettled([first, ...again]);
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(rows.map((row) => row.body)).toEqual(['Body']);
+    expect(state.editorSaving(id)).toBe(false);
+    expect(state.openEditors).toEqual([]);
+  });
+
+  it('saves again after a failed save', async () => {
+    const { state, create } = await workspaceWith(() => patchFor('src/app.ts', 1));
+    const saveOne = create.getMockImplementation()!;
+    create.mockImplementationOnce(async () => {
+      throw new Error('create failed');
+    });
+    const id = state.openDraftEditor({ filePath: 'src/app.ts', side: 'new', newLine: 1, selectedText: 'line 1' })!;
+    await expect(state.createComment(id, 'Body')).rejects.toThrow('create failed');
+    expect(state.editorSaving(id)).toBe(false);
+    create.mockImplementation(saveOne);
+    await state.createComment(id, 'Body');
+    expect(create).toHaveBeenCalledTimes(2);
+    expect(state.openEditors).toEqual([]);
+  });
+
   it('opens no editor on a line the diff does not have, and refuses a quote longer than a comment may hold', async () => {
     const { state, create } = await workspaceWith(() => patchFor('src/app.ts', 1));
     expect(state.openDraftEditor({ filePath: 'src/app.ts', side: 'new', newLine: 9, selectedText: 'x' })).toBeNull();

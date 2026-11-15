@@ -469,6 +469,9 @@ export interface ReviewPaneState extends ReviewCommentActionsState, ReviewCommen
    * answer is on screen). Rejects with ReviewCommentRefused when nothing
    * proves its line is the one it was opened on. */
   createComment(editorId: string, body: string, mode?: 'draft' | 'now'): Promise<void>;
+  /** The editor's comment is being saved as a draft: a press saves
+   * nothing more until that save ends. */
+  editorSaving(editorId: string): boolean;
   /** Shift+click on a line: spans the last-opened editor of the same file
    * from its line to `anchor`. Opens an editor on `anchor` when none is. */
   extendEditorRange(anchor: EditorAnchor, generation?: number): string | null;
@@ -2794,10 +2797,17 @@ export function createReviewPaneState(
     return editor.anchor;
   }
 
+  // Editors whose draft is being saved: one save per editor at a time,
+  // held here because the row that pressed it unmounts and remounts.
+  const savingEditors = new SvelteSet<string>();
+
   async function createComment(editorId: string, body: string, mode: 'draft' | 'now' = 'draft'): Promise<void> {
     const trimmed = body.trim();
     const bundle = shown;
     if (!bundle?.sourceKey || !trimmed) return;
+    // A press while this editor's comment is out (a draft being saved, or
+    // posted now and waiting for its answer) saves nothing more.
+    if (savingEditors.has(editorId) || commentActions.writes.pending(commentWriteKey.editor(editorId))) return;
     const editor = openEditors.find((candidate) => candidate.id === editorId) ?? null;
     const start = editor?.rangeStart ?? null;
     try {
@@ -2815,10 +2825,15 @@ export function createReviewPaneState(
       if (mode === 'now') return await commentActions.postLineComment(editorId, anchor, start, trimmed, () => closeDraftEditor(editorId));
       if (pinnedDrafts !== null && !canDraftComments) throw new Error('Comment on the whole pull request: pick All commits.');
       const { filePath, oldLine, newLine, side } = anchor;
-      await saveDraft({
-        scope: bundle.scope, sourceKey: bundle.sourceKey, commitSha: bundle.commitSha, filePath, oldLine, newLine, side,
-        startOldLine: start?.oldLine, startNewLine: start?.newLine, selectedText: editor?.selectedText ?? '', body: trimmed,
-      });
+      savingEditors.add(editorId);
+      try {
+        await saveDraft({
+          scope: bundle.scope, sourceKey: bundle.sourceKey, commitSha: bundle.commitSha, filePath, oldLine, newLine, side,
+          startOldLine: start?.oldLine, startNewLine: start?.newLine, selectedText: editor?.selectedText ?? '', body: trimmed,
+        });
+      } finally {
+        savingEditors.delete(editorId);
+      }
       closeDraftEditor(editorId);
       error = null;
     } catch (err) {
@@ -3786,6 +3801,7 @@ export function createReviewPaneState(
       return true;
     },
     createComment,
+    editorSaving: (editorId: string) => savingEditors.has(editorId),
     draftEditBodyFor(commentId: string): string | null {
       return draftEditBodies.get(commentId)?.body ?? null;
     },
