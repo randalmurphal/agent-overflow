@@ -59,7 +59,8 @@ import (
 //     result (PartialFailureKind "unmarked"). The next submit for the
 //     owner retries the marking before it reads anything, and refuses to
 //     post while it fails; so does the next list of the owner's drafts.
-//   - A request with an AttemptID records its outcome (reviewAttempts):
+//   - A request with an AttemptID records its outcome (reviewAttempts, a
+//     writeAttempts):
 //     GetPRReviewSubmitOutcome answers it after a lost answer, and a
 //     request repeating the id gets the recorded outcome and posts
 //     nothing.
@@ -143,23 +144,25 @@ const reviewSubmitFinish = transport.DefaultMethodBudget + gitops.SubmitSettleTi
 const reviewRefreshWait = transport.DefaultMethodBudget
 
 // submitPRReview is SubmitPRReview on run, the context its budget ends.
-func (a *App) submitPRReview(ctx context.Context, pr gitops.PRReference, review SubmitPRReviewRequest) (result SubmitPRReviewResult, err error) {
+func (a *App) submitPRReview(ctx context.Context, pr gitops.PRReference, review SubmitPRReviewRequest) (SubmitPRReviewResult, error) {
 	if a.shuttingDown.Load() {
 		return SubmitPRReviewResult{}, ErrShuttingDown
 	}
 	if err := pr.Validate(); err != nil {
 		return SubmitPRReviewResult{}, err
 	}
-	if review.AttemptID != "" {
-		attempt, repeated := a.reviewAttempts.begin(review.AttemptID, pr.Identity())
-		if repeated && attempt.prKey != pr.Identity() {
-			return SubmitPRReviewResult{}, fmt.Errorf("submit PR review: attempt %s was a submit to another PR", review.AttemptID)
-		}
-		if repeated {
-			return attempt.wait(ctx)
-		}
-		defer func() { a.reviewAttempts.finish(attempt, result, err) }()
+	if review.AttemptID == "" {
+		return a.submitPRReviewLocked(ctx, pr, review)
 	}
+	return a.reviewAttempts.run(ctx, review.AttemptID, pr.Identity(), attemptRefusals{
+		other:     fmt.Errorf("submit PR review: attempt %s was a submit to another PR", review.AttemptID),
+		forgotten: errors.New("submit PR review: this attempt ran before and its outcome is no longer kept"),
+		panicked:  errors.New("submit PR review: failed unexpectedly"),
+	}, func() (SubmitPRReviewResult, error) { return a.submitPRReviewLocked(ctx, pr, review) })
+}
+
+// submitPRReviewLocked is submitPRReview under the PR's submit lock.
+func (a *App) submitPRReviewLocked(ctx context.Context, pr gitops.PRReference, review SubmitPRReviewRequest) (SubmitPRReviewResult, error) {
 	// Every submit to the PR holds its lock, whatever the request's shape:
 	// on GitLab one submit's publish takes the draft notes another is
 	// still creating.
@@ -308,128 +311,21 @@ func (a *App) GetPRReviewSubmitOutcome(ctx context.Context, pr gitops.PRReferenc
 	if attempt == nil {
 		return PRReviewSubmitOutcome{State: "unknown"}, nil
 	}
-	select {
-	case <-attempt.done:
-	case <-ctx.Done():
+	result, err := attempt.wait(ctx)
+	if ctx.Err() != nil {
 		return PRReviewSubmitOutcome{}, ctx.Err()
 	}
-	return attempt.outcome, nil
-}
-
-// reviewAttemptsKept bounds the finished attempts whose outcome a process
-// keeps; reviewAttemptIDsKept the ones after those whose id it keeps.
-const (
-	reviewAttemptsKept   = 256
-	reviewAttemptIDsKept = 4096
-)
-
-// reviewAttempts holds the submit attempts this process received: every
-// running one and the outcomes of the last reviewAttemptsKept finished,
-// then the ids alone of the reviewAttemptIDsKept before those
-// (forgotten). Once an id leaves that too (overflowed), an id it does not
-// hold may be one it received, so it can no longer say an attempt never
-// arrived.
-type reviewAttempts struct {
-	mu         sync.Mutex
-	byID       map[string]*reviewAttempt
-	finished   []string
-	forgotten  map[string]string // id to PR key
-	forgetting []string
-	overflowed bool
-}
-
-type reviewAttempt struct {
-	id      string
-	prKey   string
-	done    chan struct{}
-	outcome PRReviewSubmitOutcome
-	result  SubmitPRReviewResult
-	err     error
-}
-
-// begin records attempt id, or returns the one already recorded under it.
-// An id whose outcome was dropped returns a finished attempt that says so,
-// so a repeat posts nothing.
-func (r *reviewAttempts) begin(id, prKey string) (*reviewAttempt, bool) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if prior, ok := r.byID[id]; ok {
-		return prior, true
-	}
-	if forgottenPR, ok := r.forgotten[id]; ok {
-		attempt := &reviewAttempt{id: id, prKey: forgottenPR, done: make(chan struct{}), err: errors.New("submit PR review: this attempt ran before and its outcome is no longer kept")}
-		close(attempt.done)
-		return attempt, true
-	}
-	if r.byID == nil {
-		r.byID = make(map[string]*reviewAttempt)
-	}
-	attempt := &reviewAttempt{id: id, prKey: prKey, done: make(chan struct{})}
-	r.byID[id] = attempt
-	return attempt, false
-}
-
-func (r *reviewAttempts) finish(attempt *reviewAttempt, result SubmitPRReviewResult, err error) {
-	attempt.result, attempt.err = result, err
 	switch {
 	case err == nil && result.Unconfirmed:
-		attempt.outcome = PRReviewSubmitOutcome{State: "unconfirmed", Result: &result}
+		return PRReviewSubmitOutcome{State: "unconfirmed", Result: &result}, nil
 	case err == nil:
-		attempt.outcome = PRReviewSubmitOutcome{State: "posted", Result: &result}
-	default:
-		code, message, ok := errorsx.PublicDetails(err)
-		if !ok {
-			message = "The review was not posted."
-		}
-		attempt.outcome = PRReviewSubmitOutcome{State: "failed", Code: code, Message: message}
+		return PRReviewSubmitOutcome{State: "posted", Result: &result}, nil
 	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.finished = append(r.finished, attempt.id)
-	for len(r.finished) > reviewAttemptsKept {
-		dropped := r.finished[0]
-		if r.forgotten == nil {
-			r.forgotten = make(map[string]string)
-		}
-		r.forgotten[dropped] = r.byID[dropped].prKey
-		r.forgetting = append(r.forgetting, dropped)
-		delete(r.byID, dropped)
-		r.finished = r.finished[1:]
+	code, message, ok := errorsx.PublicDetails(err)
+	if !ok {
+		message = "The review was not posted."
 	}
-	for len(r.forgetting) > reviewAttemptIDsKept {
-		delete(r.forgotten, r.forgetting[0])
-		r.forgetting = r.forgetting[1:]
-		r.overflowed = true
-	}
-	close(attempt.done)
-}
-
-// find returns attempt id to prKey, or reports it forgotten: received and
-// its outcome dropped, or not held once ids have overflowed, so it may
-// have been received.
-func (r *reviewAttempts) find(id, prKey string) (attempt *reviewAttempt, forgotten bool) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if attempt, ok := r.byID[id]; ok {
-		if attempt.prKey == prKey {
-			return attempt, false
-		}
-		return nil, false
-	}
-	if forgottenPR, ok := r.forgotten[id]; ok {
-		return nil, forgottenPR == prKey
-	}
-	return nil, r.overflowed
-}
-
-// wait answers a repeated attempt with the first one's outcome.
-func (attempt *reviewAttempt) wait(ctx context.Context) (SubmitPRReviewResult, error) {
-	select {
-	case <-attempt.done:
-		return attempt.result, attempt.err
-	case <-ctx.Done():
-		return SubmitPRReviewResult{}, ctx.Err()
-	}
+	return PRReviewSubmitOutcome{State: "failed", Code: code, Message: message}, nil
 }
 
 // prDraftSource is the comment source of pr's pr-scope drafts; the

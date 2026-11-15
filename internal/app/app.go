@@ -251,7 +251,7 @@ type App struct {
 	reviewSubmitsOnce  sync.Once
 	reviewSubmits      *keyedlock.Registry
 	postedReviewDrafts postedReviewDrafts
-	reviewAttempts     reviewAttempts
+	reviewAttempts     writeAttempts[SubmitPRReviewResult]
 	// gitActionAttempts are the outcomes of the git writes a client can
 	// lose the answer of: commit, push, pull, create PR (app_git_attempts.go).
 	// Zero value is ready.

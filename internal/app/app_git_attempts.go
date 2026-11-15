@@ -30,36 +30,15 @@ func gitAttemptKey(action string, ws WorkspaceRef) string {
 // A repeated id waits for and answers with the first arrival's outcome.
 func (a *App) attemptGitAction(
 	action string, ws WorkspaceRef, attemptID string, write func() (gitops.GitActionResult, error),
-) (result gitops.GitActionResult, err error) {
+) (gitops.GitActionResult, error) {
 	if attemptID == "" {
 		return write()
 	}
-	key := gitAttemptKey(action, ws)
-	attempt, repeated := a.gitActionAttempts.begin(attemptID, key)
-	if repeated {
-		if attempt.key != key {
-			return gitops.GitActionResult{}, fmt.Errorf("%s: attempt %s was another git action or in another workspace", action, attemptID)
-		}
-		if attempt.forgotten {
-			return gitops.GitActionResult{}, gitAttemptForgotten(action)
-		}
-		return attempt.wait(a.lifeCtx())
-	}
-	defer func() {
-		// A panic still settles the attempt, so nothing waits on it forever.
-		if recovered := recover(); recovered != nil {
-			a.gitActionAttempts.finish(attempt, gitops.GitActionResult{}, fmt.Errorf("%s: failed unexpectedly", action))
-			panic(recovered)
-		}
-		a.gitActionAttempts.finish(attempt, result, err)
-	}()
-	return write()
-}
-
-// gitAttemptForgotten answers a repeated attempt whose outcome this process
-// no longer keeps.
-func gitAttemptForgotten(action string) error {
-	return fmt.Errorf("%s: this attempt ran before and its outcome is no longer kept; check the workspace before trying again", action)
+	return a.gitActionAttempts.run(a.lifeCtx(), attemptID, gitAttemptKey(action, ws), attemptRefusals{
+		other:     fmt.Errorf("%s: attempt %s was another git action or in another workspace", action, attemptID),
+		forgotten: fmt.Errorf("%s: this attempt ran before and its outcome is no longer kept; check the workspace before trying again", action),
+		panicked:  fmt.Errorf("%s: failed unexpectedly", action),
+	}, write)
 }
 
 // GitActionOutcome is what a git attempt did: "succeeded" (Result),
