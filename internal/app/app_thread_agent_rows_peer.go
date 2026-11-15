@@ -204,10 +204,10 @@ func (a *App) stopThreadAgentWorkHere(ctx context.Context, threadID, token strin
 	if token != "" {
 		return a.stopThreadAgentRowIn(ctx, threadID, token)
 	}
-	unrest := a.workerUnrest(threadID)
 	stop := ThreadAgentStop{Outcome: threadAgentStopped}
+	working := a.workerNotAtRest(threadID, &stop)
 	a.stopThreadAgentTarget(ctx, threadID, map[string]bool{threadID: true}, &stop)
-	if unrest == "" && !restStoppedWork(ThreadAgentStop{}, stop) {
+	if !working && !restStoppedWork(ThreadAgentStop{}, stop) {
 		stop.Outcome = threadAgentEnded
 	}
 	return stop, nil

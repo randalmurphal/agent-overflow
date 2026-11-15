@@ -30,7 +30,10 @@ func outlivingWorker(t *testing.T, f *requestFixture, lineage bool) threadtools.
 		execOnBusyStore(t, f.dbPath, fmt.Sprintf(`UPDATE thread_requests
 			SET settled_at = 1, lineage_only = 1, notify = 0, answer = NULL WHERE token = '%s'`, ack.Token))
 	}
-	waitUntil(t, 10*time.Second, func() bool { return f.app.workerUnrest(ack.ThreadID) == workerRunning })
+	waitUntil(t, 10*time.Second, func() bool {
+		rest, err := f.app.workerUnrest(ack.ThreadID)
+		return err == nil && rest.unrest == workerRunning
+	})
 	// The pane lists the settled spawn once the live set has its worker.
 	waitUntil(t, 10*time.Second, func() bool {
 		return slices.Contains(agentRowTokens(f.agentRows(t, f.caller.ID).Rows), ack.Token)
@@ -160,7 +163,10 @@ func TestAStopOfAPairedWorkerThatOutlivedItsSpawnTellsTheSpawnerOnce(t *testing.
 		row, found, err := pair.source.store.GetThreadRequest(pair.spawn.Token)
 		return err == nil && found && row.State == store.ThreadRequestReplied
 	})
-	waitUntil(t, 10*time.Second, func() bool { return pair.dest.workerUnrest(pair.child) == workerRunning })
+	waitUntil(t, 10*time.Second, func() bool {
+		rest, err := pair.dest.workerUnrest(pair.child)
+		return err == nil && rest.unrest == workerRunning
+	})
 
 	stop, err := pair.source.StopThreadAgentRow(t.Context(), pair.caller.ID, pair.spawn.Token)
 	if err != nil || stop.Outcome != threadAgentStopped || len(stop.Failures) != 0 {

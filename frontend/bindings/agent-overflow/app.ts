@@ -6226,14 +6226,16 @@ export function StopThreadAgentIncoming(threadID: string, sendID: string): $Canc
  * StopThreadAgentRow stops one Agents row of the thread: it cancels the
  * request, as thread_cancel does, with the caller's wake left armed so its
  * agent learns a person stopped it. When the row's caller spawned the target,
- * the Stop cascades into it as stopping a provider subagent does: its
- * Backgrounded items, its running turn, and its own Agents rows, on
- * whichever computer it runs (agent_stop). A request inside that lineage is
- * cancelled with its wake disarmed: the thread that made it was stopped
- * too, and a wake would start it again. A computer that predates agent_stop
- * has its request cancelled and its turn interrupted, and the result names
- * it in Failures. A nested row a paired computer listed is stopped through
- * that computer. A row that had already settled reports ended.
+ * the Stop brings that thread to rest on whichever computer holds it
+ * (restThreadHere, or agent_stop on a paired computer; docs/specs/
+ * standing-agents.md, "At rest"). A request inside that lineage is cancelled
+ * with its wake disarmed: the thread that made it was stopped too, and a wake
+ * would start it again. A computer that predates agent_stop has its request
+ * cancelled and its turn interrupted, and the result names it in Failures. A
+ * nested row a paired computer listed is stopped through that computer. A
+ * row that had already settled reports ended, unless it is a spawn whose
+ * worker the Stop found not at rest or cut: it reports stopped and its
+ * spawner is told (tellSpawnerOfUserStop).
  */
 export function StopThreadAgentRow(threadID: string, token: string): $CancellablePromise<app$0.ThreadAgentStop> {
     return $Call.ByID(2507523326, threadID, token).then(($result: any) => {

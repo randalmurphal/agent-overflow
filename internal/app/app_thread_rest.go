@@ -564,16 +564,28 @@ func (a *App) stopAgentRequestBy(ctx context.Context, row store.ThreadRequest, v
 		return result
 	}
 	visited[current.TargetThreadID] = true
-	unrest := a.workerUnrest(current.TargetThreadID)
+	working := a.workerNotAtRest(current.TargetThreadID, &result)
 	before := result
 	a.restThreadHere(ctx, current.TargetThreadID, by, visited, &result)
-	if settled && (unrest != "" || restStoppedWork(before, result)) {
+	if settled && (working || restStoppedWork(before, result)) {
 		result.Outcome = threadAgentStopped
 		if outlived {
 			a.tellSpawnerOfUserStop(current, &result)
 		}
 	}
 	return result
+}
+
+// workerNotAtRest reports whether threadID is not at rest as a Stop reaches
+// it (workerUnrest). A read that fails is named in result.Failures and counts
+// as not at rest, so a Stop that may have stopped work says so.
+func (a *App) workerNotAtRest(threadID string, result *ThreadAgentStop) bool {
+	rest, err := a.workerUnrest(threadID)
+	if err != nil {
+		result.Failures = append(result.Failures, "read what it was doing: "+err.Error())
+		return true
+	}
+	return rest.unrest != ""
 }
 
 // restStoppedWork reports whether a rest added to after, over before, a cut
