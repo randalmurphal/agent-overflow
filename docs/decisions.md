@@ -287,12 +287,13 @@ Mechanism in
   marks it read unless it is pinned; archive is the only done state
   (the done fold went with nesting, ruling 2026-11-14); a group shows
   the project's preview limit of members, pinned members exempt; a
-  collapsed agent row or group shows its members' bubbled dot, replacing
-  the 2026-09-02 rule that a collapsed group renders none of it; every
-  show-more footer (project, group, agent) and a collapsed project's dot
-  rank their hidden rows the same way, so an unread one lights it; running
-  sorts above unread inside a container. Mark All Read on either marks
-  every member in one call.
+  collapsed group shows its members' bubbled dot, replacing the
+  2026-09-02 rule that a collapsed group renders none of it; every
+  show-more footer (project, group) and a collapsed project's dot rank
+  their hidden rows the same way, so an unread one lights it; running
+  sorts above unread inside a container. Mark All Read on a group marks
+  every member in one call. An assistant is one row holding nothing
+  (ruling 2026-11-14).
 - Owned workers (ruling 2026-11-14, amending 2026-10-17,
   [standing agents](specs/standing-agents.md) ruling 36): a thread any
   thread spawns is owned by its spawner, with no sidebar row and no
@@ -300,8 +301,8 @@ Mechanism in
   group; the spawner or the user moves it either way later. Archiving a
   thread archives its owned workers; deleting it leaves them as
   standalone rows. Placement is organization only: the spawn record, the
-  reply path and the read mark on an answer do not change. An agent row
-  never joins a group.
+  reply path and the read mark on an answer do not change. An assistant
+  row never joins a group.
 - Thread content search matches title and workspace path only. Searching
   message text server-side (t3-code does) is undecided, not rejected.
 - A fork is a snapshot of its source at the cut. Nothing the source does

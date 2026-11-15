@@ -207,23 +207,21 @@ Rulings of 2026-10-16 (sidebar hierarchy):
     the answer is handed to that caller, the spawned thread is marked
     read through that turn's completion. An errored or interrupted turn
     whose answer reached the spawner counts the same: the spawner has
-    it, so the child is marked read and folds. A child whose session
-    never started has no turn that answered: it keeps its Failed pill
-    and stays live. A pinned child is exempt: the pin says the user
+    it, so the child is marked read. A child whose session never started
+    has no turn that answered: it keeps its Failed pill. A pinned child is exempt: the pin says the user
     wants to look at it, so its dot stays. A later turn the user caused
     still shows as unread.
-31. **Mark All Read.** The context menu of an agent row and of a group
-    marks every member read in one call: the agent's own thread and its
-    live children, or the group's members.
-32. **Containers are bounded.** A group and an agent row each show the
+31. **Mark All Read.** The context menu of a group marks every member
+    read in one call.
+32. **Containers are bounded.** A group shows the
     project's preview limit of member rows, then a show-more footer that
     reveals the project's increment. Pinned members always show and do
     not count toward the limit; a member open in a pane is never hidden
     by it. The footer's dot rolls up the hidden rows, an unread one
     included, as a collapsed container's does (ruling 33); the project's
     own show-more footer does the same.
-33. **A collapsed container carries its members' dot.** A collapsed agent
-    row or group shows the bubbled status of its members (one dot, gone
+33. **A collapsed container carries its members' dot.** A collapsed
+    group shows the bubbled status of its members (one dot, gone
     once every member is read and idle); expanded, each row shows its
     own.
 34. **Order inside a container.** Needs-you, then running, then unread,
@@ -701,118 +699,58 @@ area, each under a header that collapses the whole section (persisted
 per client in `sidebar:collapsedSections`). A search shows its matches
 in a collapsed section. The Assistants header carries New Assistant.
 
-**Assistant card.** Each assistant on every attached computer is a card
-in the Assistants section, ordered as a container's members are
-(ruling 34). The card is compact: the first line is the chevron, the
-person glyph, the name, the live-children count and the dot; the second
-is the state line; the third names its projects (`All projects` for a
-chief of staff), truncating from the right. Expanded, its helpers and
-past threads list under it as children.
+**Assistant row.** Each assistant on every attached computer is one
+row in the Assistants section (ruling 4), ordered by the top-level
+comparator. The first line is the person glyph in the pin column, the
+name, the worker count and badge, and the dot; the second is the state
+line; the third names its projects (`All projects` for a chief of
+staff), truncating from the right. Both lines start under the name. The
+row holds nothing: no chevron, no children, no done fold. It is the
+agent variant of `ThreadRow`. Differences from an ordinary thread row:
 
-**Assistant row in a project.** In each project where an assistant has
-nested work, one row headed by the assistant's glyph and name holds it:
-the threads its current or past threads spawned into that project whose
-placement is nested. Its name opens the assistant's current thread. It
-shows while it has a nested child there, live or done.
-
-Both are the agent variant of `ThreadRow`, and "agent row" below means
-either. An agent row's identity is the assistant's id, with the
-project's sidebar entry for a row in a project, so a handoff keeps each
-row, its fold and its footer in place under the successor, and the card
-and each project row fold on their own.
-Differences from an ordinary thread row:
-
-- Leading person glyph after the chevron. The chevron is the only fold
-  target; name, dot and state line open the thread. Keyboard: Enter
-  opens, Right and Left fold and unfold (project rows have no arrow
-  keys; the agent row is the one foldable thread row).
 - The name is the title. When an assistant on another attached computer
   has the same name (compared as the store compares), both rows show
   `<name>-<computer>`, using each computer's display name, until one is
   renamed; the suffix is never written to a title.
-- A state line under the name on the card, 10px, one line, truncating from the
-  right: `until 10:30 · watching 4 MRs · 2 need you`,
+- The state line, 10px, one line, truncating from the right:
+  `until 10:30 · watching 4 MRs · 2 need you`,
   `loop board check · next 12m · 1 missed`, or nothing when the agent
   is idle with no loop or watch. The text comes from the supervisor
   (next fire, missed count) and from the agent's own registered labels
   (what a watch is called). The dot keeps the live status; the state
   line never repeats it.
-- Children: on the card, the threads that live under the assistant
-  other than its current thread: its helpers and past threads. In a project, the threads in that project the assistant
-  spawned whose placement is nested, derived from `thread_requests`
-  rows of kind spawn whose `caller_thread_id` is its current thread (a
-  handoff moves its predecessors' rows there), joined to the resulting
-  thread id. A thread the assistant did not spawn never nests under it.
-  A grouped child renders in its group and a standalone child as a plain
-  row of its project, both like any thread there (ruling 36). An
-  assistant another assistant created has its own card, never a child.
-  While the assistant is not in the sidebar (archived, or its computer
-  filtered out) its project children list as plain rows of their
-  project and its helpers are not shown. A thread's activity moves its
-  own project in the project order, never another's.
-- Children sort by the normal comparator inside a container: pinned
-  first, then needs-you, then running, then unread, then idle by last
-  activity (ruling 34). The live children show the project's preview
-  limit (8), then a show-more footer revealing 20 more per click,
-  styled as the project's own, its dot lit by any unread hidden child
-  or outranked by a working or needs-you one; pinned children always show above the
-  bound and take no slot, and a child open in a pane is never hidden by
-  it (ruling 32). A group bounds its members the same way.
-- Done fold (ruling 5): a child that is settled idle (effective status
-  idle with no pill, so idle and read; not pinned; not open in any pane)
-  and the row's archived children count in one footer row `N done`, styled as
-  the show-more footer. It expands to list the settled idle children
-  first, then the archived ones, newest first within each, paged 8 then
-  20 more per click. A past thread in the list carries the name and
-  `superseded <time>`. New activity or a pin returns the child to the
-  live rows, and opening it shows it live while it is focused.
-  Unarchiving a settled idle child moves it from the archived part of
-  the list to the settled part; the footer's count does not change.
-- Collapsed: the row shows the state line, a count of its live
-  children (the done ones are not counted), and bubbles status for sort
-  exactly as a group does, and its dot is the bubbled status of its own
-  thread and every child, so one unread child lights it and it goes
-  dark once all are read (ruling 33). Expanded, the row shows its own
-  status and each child its own. The focused child is previewed beneath
-  a collapsed agent, as a group does.
-- Drag: a thread dropped on an agent row is not adopted (ruling 3 and
-  the spawn-record source). The drop is a no-op with the same affordance
-  as dropping on another project. Dragging an agent row onto a group is
-  refused the same way. A child dragged onto a group of its own project
-  joins it and becomes grouped.
-- Groups: an assistant's row in a project renders in the project's
-  groups section, above the pin blocks, sorted among groups by the same
-  bubbled status. It cannot join a group. A child is a group member only
-  while its placement is grouped. Helpers and past threads have no
-  project and so no group or placement items, and `SetThreadPlacement`
-  refuses a thread outside every project (`ErrPlacementOutsideProjects`).
-- Placement items on a child's menu (a thread an assistant spawned into
-  a project): a nested child offers Move to Group and Make
-  Standalone; a standalone child offers Move to Group and
-  `Nest Under <agent>`; a grouped child offers Move to Group, Remove
-  from Group (which makes it standalone) and `Nest Under <agent>`, the
-  agent named by its row's title. Make Standalone and Nest Under exist
-  only while the agent's row is in the sidebar: a child of an archived
-  assistant, or of one the device filter hides, is the plain row it
-  renders as and offers neither. A placement change unpins the row, as
-  a group move does.
+- Drag: an assistant row cannot join a group and takes no drop.
 - New Thread, Same Assistant: an icon-only hover action on the row
   (`aria-label` "New Thread, Same Assistant"), shown at rest under the
   compact layout, and the same item in its menu
   ([Next thread](#next-thread)). Without `threads:autonomy`, which the
   call needs, the action, the menu item and the header button are
   disabled with the reason.
-- Context menu: Open, Rename, New Thread Same Assistant, Loops and
-  Watches (opens the thread with its background tray open), Archive Done
-  Children (the nested spawned and past threads whose effective status
-  is idle, behind a confirm), Mark All Read (the agent's thread and
-  every live child, folded ones included, in one call; ruling 31),
-  Archive and Delete (the confirm described under
-  [Standing agent](#standing-agent)). An archived child listed by
-  the done footer offers Open, Rename, Unarchive, Copy and Delete: no
-  pin, group or archive item. No pin item: an agent row sits in the
-  groups section whatever pin its thread holds, and its pin is left
-  alone.
+- Context menu: Open, Rename, New Thread Same Assistant, Projects…,
+  Previous Threads…, Loops and Watches (opens the thread with its
+  background tray open), Fork, Mark Unread, Copy, Archive and Delete (the
+  confirm described under [Standing agent](#standing-agent)). No pin
+  item: an assistant row ignores its thread's pin.
+
+**Previous Threads.** Previous Threads… on an assistant's menu opens a
+dialog listing the threads its handoffs superseded, newest first, each
+with `Superseded <time>`, 20 a page with Show more…, and No previous
+threads. when it has none. Picking one opens that thread in the pane the
+menu came from and closes the dialog. A page that answers after the
+dialog closed or opened again is dropped, and the dialog closes when its
+assistant leaves the list.
+
+**Workers on a row.** Any thread row with open workers shows how many in
+its count slot, and a warning `CountBadge` with how many are waiting on
+the user, each titled with what it counts, at every density. A row
+whose thread has no open worker shows neither.
+
+**Placed workers.** An owned thread has no row (ruling 36). A standalone
+or grouped thread a local thread spawned into a project is a plain or
+grouped row there, and its menu adds Remove from Sidebar, which makes it
+owned again; its panes stay open. A placement change unpins the row, as
+a group move does. Helpers and past threads have no project, so no row
+and no placement item.
 
 New Assistant is on the Assistants header (a person-plus icon,
 `aria-label` "New Assistant") and in each project's context menu under
@@ -823,9 +761,9 @@ name and a project are chosen. A name in use is refused inline with the
 assistant that holds it. Create opens the new thread in the pane the
 action came from, or a new pane under the same modifier a new thread
 takes; from the Assistants header it creates on the computer selected
-when the dialog opened. The card's menu adds Projects, which opens the
+when the dialog opened. The assistant row's menu adds Projects, which opens the
 same checklist for that assistant. A Create or Save that answers after
-Cancel still lands (the assistant is listed, the card updated), but
+Cancel still lands (the assistant is listed, its row updated), but
 only the opening that started it closes, shows its error or opens the
 new thread.
 
@@ -851,8 +789,8 @@ Mechanics, as built:
   token as unknown; the lineage reads, and a worker's prompt routing
   (`SpawnerOf`), still find the row.
 - `SetThreadGroup` refuses an assistant's thread
-  (`ErrStandingAgentGrouped`). The drag payload marks only agent rows
-  `agentBound`, so a group target accepts a child.
+  (`ErrStandingAgentGrouped`). The drag payload marks only assistant
+  rows `agentBound`, so a group target accepts a placed worker.
 - `ListStandingAgentWakes` (route all) and `thread:wakes_changed` feed
   `stores/threadWakes.svelte.ts`, one key per thread, so a frame reruns
   only the row of the thread it names; the state line
@@ -862,25 +800,21 @@ Mechanics, as built:
   when that computer answers, however late, with the frames that computer
   sent meanwhile replayed over its answer; a newer read of the computer
   supersedes it.
-- The fold state lives in `sidebar:collapsedAgents`, keyed by
-  assistant id for the card and `<id>@<entry>` for a project row; an
-  open done footer and its paging are session state, and both reset
-  when the count reaches zero, so a footer that returns starts closed.
-  An assistant that leaves the list (archived, deleted) drops its fold,
-  footer and cached list.
-- The fold is derived in `utils/sidebarTreeView.ts` from what the row
-  already carries: the fold key is effective status `idle` with no pill
-  (so read, with no Failed, Interrupted, Plan Ready or Setup Failed
-  pill), no pin, and no pane showing the thread. A request to the child
-  starts its turn, which makes it running and unfolds it; a request
-  whose session start failed writes the thread's error row, so the
-  child shows Failed and stays in the live rows. The footer's count is
-  the folded children, and its open state
-  resets when that sum stays at zero past a short settle window: an
-  archived folded child leaves the live rows before the agent row's
-  count includes it, and that passing zero keeps the footer open. One bound (`boundContainerMembers`)
-  cuts both a group's members and an agent's live children; its paging
-  is session state per container, like the footer's.
+- Worker counts: `ListThreadWorkerSummaries` (route all) and
+  `GetThreadWorkerSummary` (route thread) answer `{threadId, open,
+  needYou}`, counted as the Agents list counts its open rows, and feed
+  `stores/threadWorkerSummaries.svelte.ts`, one key per thread. A bulk
+  read per computer at boot and on resync lists only threads with an
+  open worker, so one it leaves out has none. Each
+  `thread:agent_rows_changed` frame reads the thread it names again,
+  coalesced through one scheduler; a gap reads that computer in bulk. A
+  read lands on a thread only when no read that started later has
+  landed there. A detached computer's counts are dropped.
+- `ListAssistantPastThreads(agentID, after, limit)` (route home, sent to
+  the assistant's computer) pages `agent_past_threads` newest superseded
+  first by the `{supersededAt, threadId}` cursor and feeds
+  `stores/assistantPastThreads.svelte.ts`, which notes each row's
+  computer so the pane it opens in routes there.
 - The read mark on an answer: a settlement the caller on this computer
   collected, whose target's `spawnedByThreadId` is that caller (read in
   the settlement's own transaction, `LocalSettlement.AnsweredBySpawned`)
@@ -906,21 +840,15 @@ Mechanics, as built:
   provider session's native transfer governs execution, not read state,
   and refuses none of them. A refusal is `store.ErrThreadReadRefused`;
   a focus stamp treats it as a no-op.
-- Bucketing (`sidebarBuckets.ts`): an assistant's current thread is its
-  card; its helpers and past threads go on the card
-  (`cardOwnerAgentId`); every other thread goes to
-  its own project, where the tree builder nests it under its assistant's
-  row when it is nested. A card shows while its name matches a search or
-  it holds a matching thread; a project row shows while it holds a
-  matching thread.
+- Bucketing (`sidebarBuckets.ts`): `sidebarListsThread` is the one rule
+  for which threads have a row: unarchived and not owned. An
+  assistant's current thread goes to the Assistants section while its
+  name matches a search; every other listed thread goes to its own
+  project, and a thread outside every project has no row.
 - The harness seeds lineage with `HarnessSeedThread.spawnedBy`, the
   title of a thread seeded earlier in the same project, or
   `spawnedById`, the id of one seeded before in any project, and an
   assistant with `HarnessSeedThread.assistant`.
-
-Discussions are removed first (slice 1), and the tree code that nests
-on `parent_thread_id` goes with them. The agent tree is new code in
-`sidebarTree.ts` with its own tests against spawn records.
 
 ### Wake supervisor
 
@@ -1221,7 +1149,7 @@ call's own stamp, so the settled row reads the same on any later day.
   watches and its 64 soonest reminders that have not fired; the tray
   says how many more there are. `ListStandingAgentWakes` returns the live
   loops and watches of every standing agent on a computer, for the
-  sidebar's agent rows. `GetThreadWakeDetail` reads an expanded
+  sidebar's assistant rows. `GetThreadWakeDetail` reads an expanded
   watch on demand. A watch keeps the last 8 KiB of its last run's stderr
   (`agent_wakes.last_stderr`); a long-running watch keeps its latest
   non-empty batch.

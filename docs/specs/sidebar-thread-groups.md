@@ -66,8 +66,7 @@ the row. Collapsed, it carries its members' bubbled dot.
   replacing the rule that only a working or needs-you status lit them).
   Pinned members
   always show and take no slot; a member open in a pane is never hidden
-  by the bound. The paging is session state per group. The same bound
-  cuts a standing agent's live children (ruling 2026-10-16).
+  by the bound. The paging is session state per group.
 - **No nesting.** No groups inside groups, and threads do not nest under
   threads. Render depth inside a group is two (group, member).
 - **One project.** A group belongs to one project and cannot span
@@ -299,11 +298,9 @@ Names are trimmed and non-empty; a blank rename is rejected.
   container outside any group, the container shows a subtle inset
   dashed outline so the ungroup target is visible. Drops from another
   project set `dropEffect = 'none'`.
-- A standing agent is a third container beside a group: `ThreadRow`'s
-  agent variant takes the group row's geometry, its nested spawned
-  threads render as members behind the same rail, and the agent cannot
-  be grouped. A spawned thread moved into a group is an ordinary member
-  there ([standing agents](standing-agents.md#sidebar) ruling 36).
+- A standing agent's row cannot be grouped. A spawned thread moved into
+  a group is an ordinary member there
+  ([standing agents](standing-agents.md#sidebar) ruling 36).
 - `ThreadRow` keeps the pin affordance and pin menu items on grouped
   rows; `ThreadGroupRow` has none. `ThreadContextMenu` adds the "Move to Group"
   submenu (`MenuSubmenuItem`) and "Remove from Group";
