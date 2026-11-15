@@ -6,8 +6,10 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -489,4 +491,60 @@ func extractChildPID(t *testing.T, ch <-chan []byte, timeout time.Duration) int 
 func processAlive(pid int) bool {
 	err := syscall.Kill(pid, 0)
 	return err == nil
+}
+
+// recordingReaper records the groups a process has watched and released.
+type recordingReaper struct {
+	mu       sync.Mutex
+	watched  []int
+	released []int
+}
+
+func (r *recordingReaper) Watch(pgid int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.watched = append(r.watched, pgid)
+}
+
+func (r *recordingReaper) Release(pgid int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.released = append(r.released, pgid)
+}
+
+func (r *recordingReaper) calls() (watched, released []int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.watched), slices.Clone(r.released)
+}
+
+// A process given a reaper is watched before Start returns and released once
+// by the time it is known to have exited, closed or not.
+func TestAReapedProcessIsWatchedFromItsStartUntilItExits(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		args []string
+		end  func(*Process)
+	}{
+		{"closed", []string{"-c", "sleep 60"}, func(p *Process) { _ = p.Close() }},
+		{"exited on its own", []string{"-c", "exit 0"}, func(p *Process) { <-p.Done() }},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			reaper := &recordingReaper{}
+			p, err := Start(ProcessConfig{Shell: "/bin/sh", Args: c.args, Cwd: t.TempDir(), Reaper: reaper})
+			if err != nil {
+				t.Fatalf("Start: %v", err)
+			}
+			t.Cleanup(func() { _ = p.Kill() })
+			pid := p.PID()
+			if watched, _ := reaper.calls(); !slices.Equal(watched, []int{pid}) {
+				t.Fatalf("watched %v when Start returned, want [%d]", watched, pid)
+			}
+			c.end(p)
+			watched, released := reaper.calls()
+			if !slices.Equal(watched, []int{pid}) || !slices.Equal(released, []int{pid}) {
+				t.Fatalf("watched %v released %v once the process was gone, want [%d] each", watched, released, pid)
+			}
+		})
+	}
 }

@@ -29,6 +29,24 @@ func TestSessionLeafScannerIgnoresOrphanAdvisorAndDuplicateReplay(t *testing.T) 
 	}
 }
 
+// A provider killed while appending leaves its last row cut mid-JSON with no
+// newline. Cold resume must still find the last complete row.
+func TestSessionLeafScannerResumesPastARowCutMidWrite(t *testing.T) {
+	transcript := strings.Join([]string{
+		`{"type":"user","uuid":"u1","message":{"role":"user","content":"start"}}`,
+		`{"type":"assistant","uuid":"a1","parentUuid":"u1","message":{"id":"msg-1","role":"assistant","content":[{"type":"text","text":"done"}]}}`,
+		`{"type":"user","uuid":"u2","parentUuid":"a1","message":{"role":"user","con`,
+	}, "\n")
+
+	state, err := scanSessionLeafReader(strings.NewReader(transcript))
+	if err != nil {
+		t.Fatalf("scanSessionLeafReader over a cut last row: %v", err)
+	}
+	if state.CanonicalLeafUUID != "a1" {
+		t.Fatalf("CanonicalLeafUUID = %q, want a1", state.CanonicalLeafUUID)
+	}
+}
+
 func TestSessionLeafScannerHealthyAdvisorResolves(t *testing.T) {
 	transcript := strings.Join([]string{
 		`{"type":"user","uuid":"u1","message":{"role":"user","content":"advise"}}`,

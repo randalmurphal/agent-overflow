@@ -300,14 +300,6 @@ func (a *App) startSessionNow(threadID string) error {
 	// prompt change flag; a save that landed while it spawned flags it.
 	a.reconcileStalePromptSession(threadID)
 
-	// Register the freshly-spawned process group with the orphan reaper so
-	// it's torn down if the app dies before the session closes cleanly
-	// (macOS only, providerGroupsReaped). Paired with the release in
-	// closeProviderSession.
-	if ps := newSess.ProviderSession(); ps != nil {
-		a.watchProviderGroup(ps.PID(), sessionToken)
-	}
-
 	// A session-death restore can requeue messages instead of restoring
 	// them to the draft (failed stale-row cleanup, R11-1). Every other
 	// drain trigger needs a live session (RegisterQueueItem) or wire
@@ -546,6 +538,7 @@ func (a *App) spawnProviderSession(
 			cfg.AllowedTools = append(cfg.AllowedTools, ThreadToolsAllowedTool)
 		}
 		cfg.EventLogger = a.logger
+		cfg.Reaper = a.groupReaper("claude session")
 		cfg.MCPServers = mcpServers
 		cfg.AdditionalDirs = a.claudeAdditionalDirs()
 		applyClaudeSessionAxes(&cfg, a.settings.Get().ClaudeSessionAxesForProvider(t.Provider))
@@ -584,6 +577,7 @@ func (a *App) spawnProviderSession(
 		cfg.Binary = a.providerBinaryPath(t.Provider)
 		cfg.Env = a.sessionProcessEnv(t.Provider, cfg.Env, credential)
 		cfg.EventLogger = a.logger
+		cfg.Reaper = a.groupReaper("codex session")
 		cfg.MCPServers = mcpServers
 		// Codex never shows a server's instructions to the model, so the
 		// app guide and the on servers' guides ride developer instructions
@@ -778,6 +772,7 @@ func (a *App) claudeTUISessionConfig(
 	cfg.Retention = a.claudeRetention(cfg.WorkDir)
 	cfg.Upstream = a.claudetuiUpstream()
 	cfg.EventLogger = a.logger
+	cfg.Reaper = a.groupReaper("claude terminal session")
 	var err error
 	cfg.SystemPromptDir, err = a.claudePromptFileDir()
 	if err != nil {

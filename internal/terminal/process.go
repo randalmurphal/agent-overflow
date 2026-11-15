@@ -66,6 +66,8 @@ type ProcessConfig struct {
 	Env   []string // if nil, inherit os.Environ(); terminal capabilities are normalized
 	Rows  uint16
 	Cols  uint16
+	// Reaper is SessionOptions.Reaper.
+	Reaper procutil.Reaper
 }
 
 // ExitStatus captures the result of a process exit.
@@ -81,6 +83,9 @@ type ExitStatus struct {
 type Process struct {
 	cmd *exec.Cmd
 	pty *osFilePty
+	// reaper is released once Wait has seen the process exit; nil when the
+	// process is not watched.
+	reaper procutil.Reaper
 	// raw reads the master without blocking a thread (readOutput).
 	raw syscall.RawConn
 	// readMaster is the master's read system call. Tests replace it to
@@ -144,9 +149,14 @@ func startWithRead(cfg ProcessConfig, readMaster func(fd int, buf []byte) (int, 
 		_ = cmd.Wait()
 		return nil, fmt.Errorf("terminal: pty master: %w", err)
 	}
+	// The pty child leads its own session, so its pid is its group.
+	if cfg.Reaper != nil {
+		cfg.Reaper.Watch(cmd.Process.Pid)
+	}
 
 	p := &Process{
 		cmd:        cmd,
+		reaper:     cfg.Reaper,
 		pty:        &osFilePty{File: master},
 		raw:        raw,
 		readMaster: readMaster,
@@ -423,6 +433,9 @@ func (p *Process) awaitExit() {
 		_ = p.pty.SetReadDeadline(time.Now())
 	}()
 	err := p.cmd.Wait()
+	if p.reaper != nil {
+		p.reaper.Release(p.cmd.Process.Pid)
+	}
 	status := ExitStatus{}
 	if err == nil {
 		status.Code = 0

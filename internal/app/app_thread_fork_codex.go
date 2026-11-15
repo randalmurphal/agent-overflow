@@ -165,6 +165,7 @@ func (a *App) withCodexThreadSessionPreparedBy(
 		// agent takes a turn in.
 		Env:         a.sessionProcessEnv(source.Provider, nil, aoSessionCredential{}),
 		EventLogger: a.logger,
+		Reaper:      a.groupReaper("codex fork session"),
 	}, func(provider.ProviderEvent) {})
 	if err != nil {
 		return fmt.Errorf("resume source thread: %w", err)

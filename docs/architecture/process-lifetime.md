@@ -20,8 +20,9 @@ the recording backend's child. A start time that differs means the pid was
 reused, and that process is left alone. The registry is the backstop for a
 sidecar that died with the backend.
 
-The group is watched from just after the leader forks. A backend that dies
-before the sidecar hears of the group leaves it to the next launch.
+The sidecar hears of a group just after its leader forks, and the registry
+records it after that. A backend that dies in between leaves the group to the
+sidecar; one that dies before the sidecar hears leaves it running.
 
 Signalling only a group's leader is not enough: Linux's parent-death signal
 reaches the leader, and a shell leader exits while what it started (`npm run
@@ -45,7 +46,11 @@ one, so every supervised command group is watched for its whole run and
 released once Wait has seen it end. The headless browser's launch follows the
 same rule: `startChromium` takes the reaper and refuses a nil one, the engine
 is not built without one (`HeadlessChromiumOptions.Reaper`), and the group is
-released once `stop` has killed it. Processes a command leaves running under
+released once `stop` has killed it. A provider spawn given a reaper
+(`provider.SpawnConfig.Reaper`, and `terminal.SessionOptions.Reaper` for the
+Claude TUI's pty) is watched the same way and released once Wait has seen its
+leader exit. The app gives one to every provider session and to the temporary
+Codex app-server a fork starts. Processes a command leaves running under
 `KeepLeftovers` are released with it and outlive the backend, as they outlive
 the command. A group the kill could not end stays watched.
 
@@ -57,8 +62,9 @@ the command. A group the kill could not end stays watched.
 | Remote jobs (`remotejobs`) | Ends with the backend | Reaper |
 | Provider update and doctor runs (`app_provider_update.go`) | Ends with the backend | Reaper |
 | ACME DNS hooks (`acmecert`) | Ends with the backend | Reaper |
-| Provider sessions (`provider/process*.go`) | Ends with the backend | Linux: SIGTERM to the leader (Pdeathsig). macOS: reaper |
-| Claude TUI sessions (`claudetui`) | Ends with the backend | Linux: pty hangup. macOS: reaper |
+| Claude and Codex sessions, and a fork's temporary Codex app-server (`provider/process.go`) | Ends with the backend | Reaper |
+| Claude TUI sessions (`claudetui`) | Ends with the backend | Reaper. The pty hangup reaches it too: the kernel sends it when the master closes |
+| Provider probes, logins, account reads and one-shot app-servers (`provider.Spawn` without a reaper) | Ends with the backend on Linux | Linux: SIGTERM to the leader (Pdeathsig). macOS: nothing; their timeouts end with the backend |
 | Terminal panes (`terminal`) | Ends with the backend | The pty master closes, and the kernel hangs up the session |
 | Headless Chromium (`browser/headless_process*.go`) | Ends with the backend | Reaper. Its renderer, GPU, network and storage processes are in its group and write into the profile until they die |
 | `caffeinate` (`power`, macOS) | Ends with the backend | `-w <backend pid>` |
@@ -71,6 +77,14 @@ Not backend children: the desktop supervisor's backend child and preflight
 harness CLI's backend launch (`harnessclient`), and the test network helper
 (`netisolate`).
 
-Provider sessions keep their Linux rule because the reaper would add a group
-SIGTERM and a SIGKILL two seconds later to every provider a dying backend
-leaves (`providerGroupsReaped` in `internal/app/app_orphan_reaper.go`).
+A watched provider gets no parent-death signal. It would end the leader at
+the backend's death, and a sweep that finds the leader gone cannot tell the
+group from a later one with the same id, so the MCP servers in it would
+outlive a sidecar that died with the backend.
+
+The two seconds between the sidecar's SIGTERM and SIGKILL are the grace
+`provider.Process.Close` gives a provider after its own SIGTERM, so a dying
+backend shortens only the stdin wait before it. A provider killed while it
+appends to its JSONL session file loses at most the line it was writing:
+Claude's resume leaf scan, the Claude importer and fork, and the Codex
+rollout reader each skip a cut last line and keep the rest.

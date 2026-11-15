@@ -392,8 +392,8 @@ func (a *App) Shutdown(ctx context.Context) error {
 	// queued (app_provider_event_queue.go).
 	record("drain provider events", a.providerEvents.drainAll())
 
-	// Step 4b: stop the orphan-reaper sidecar (macOS). Sessions that closed
-	// cleanly above each released their group; any whose Close was abandoned
+	// Step 4b: stop the orphan-reaper sidecar. Sessions whose process exited
+	// above each released their group; any whose Close was abandoned
 	// on the parallel timeout stay watched and get reaped as we close the
 	// control pipe here — exactly what we want for a still-alive straggler.
 	// Placed after Step 4 so the sidecar stays armed for the whole
