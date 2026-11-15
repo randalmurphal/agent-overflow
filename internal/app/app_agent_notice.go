@@ -32,7 +32,7 @@ import (
 // An archived thread takes no notice and starts no session for one. A
 // notice that reaches the queue after an archive is refused, and its caller
 // keeps it (errThreadArchived); one queued before the archive waits without
-// a start for the archive to take it back (stopArchivedThreadWork). A
+// a start for the archive to take it back (stopRestingThreadWork). A
 // person's own answers are the exception: a person can write to an archived
 // thread they opened, and their answers are theirs the same way.
 //
@@ -168,7 +168,7 @@ func (a *App) goAgentNoticeWork(threadID string, fn func()) bool {
 // after the notice was queued is seen here and is not started. The notice
 // stays queued for the archive to take back: a remote job's completion goes
 // to its watch, a thread request's answer or reminder to its request, and
-// every other app message is withdrawn (stopArchivedThreadWork).
+// every other app message is withdrawn (stopRestingThreadWork).
 //
 // A retry is a later fire trying the start again for a wake an earlier
 // failed start left queued. It runs only once the thread's last failed
@@ -202,7 +202,10 @@ func (a *App) startAgentNoticeSession(notice agentNotice, retry bool) bool {
 			}
 		}()
 		if !notice.fromPerson {
+			// A thread a Stop is bringing to rest starts nothing either; the
+			// rest takes the notice back out of the queue.
 			held, checkErr = a.threadArchivedNow(notice.threadID)
+			held = held || a.resting.holds(notice.threadID)
 		}
 		if checkErr == nil && !held && notice.keep != nil {
 			kept, checkErr = notice.keep()

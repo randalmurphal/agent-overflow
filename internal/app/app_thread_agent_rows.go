@@ -1059,128 +1059,18 @@ func (a *App) StopThreadAgentRows(ctx context.Context, threadID string) ([]Threa
 }
 
 // stopThreadAgentRequest stops one request for a person and, for a spawn,
-// what the spawned thread is running, wherever it runs. pressed is the row
-// the person stopped, whose caller's wake stays armed; a request reached
-// through the cascade has its wake disarmed first. visited holds the
-// threads this Stop already reached here, so a spawn cycle ends.
+// brings the spawned thread to rest, wherever it runs (stopAgentRequestBy).
+// pressed is the row the person stopped, whose caller's wake stays armed; a
+// request reached through the cascade has its wake disarmed first. visited
+// holds the threads this Stop already reached here, so a spawn cycle ends.
 func (a *App) stopThreadAgentRequest(ctx context.Context, row store.ThreadRequest, visited map[string]bool, pressed bool) ThreadAgentStop {
-	result := ThreadAgentStop{Token: row.Token, Outcome: threadAgentStopped}
-	current, found, err := a.store.GetThreadRequest(row.Token)
-	if err != nil {
-		result.Outcome = threadAgentFailed
-		result.Failures = append(result.Failures, "read the request: "+err.Error())
-		return result
-	}
-	if !found {
-		result.Outcome = threadAgentEnded
-		if !row.LineageOnly {
-			return result
-		}
-		// Past the retention floor a spawn's token is unknown, and its row
-		// still links the thread it made: the Stop reaches into that thread.
-		current = row
-	}
-	settled := threadRequestSettled(current)
-	if settled {
-		result.Outcome = threadAgentEnded
-	} else if !pressed && current.Notify {
-		if _, err := a.store.SetThreadRequestNotify(current.Token, false); err != nil {
-			result.Failures = append(result.Failures, "disarm its wake: "+err.Error())
-		}
-	}
-	spawned := current.Kind == store.ThreadRequestSpawn && current.TargetThreadID != ""
-	if current.TargetComputerID != "" {
-		a.stopRemoteAgentRequest(ctx, current, settled, spawned, &result)
-		return result
-	}
-	if !settled {
-		effect, err := a.stopThreadRequestWorkFor(ctx, current.Token, threadRequestUserStop)
-		if err != nil {
-			result.Outcome = threadAgentFailed
-			result.Failures = append(result.Failures, "cancel the request: "+err.Error())
-		}
-		result.Interrupted = effect == threadtools.EffectInterrupted
-	}
-	// Only the caller's own spawn: a thread it sent to belongs to someone
-	// else, and the cancel above already stopped the turn the request
-	// started there.
-	if !spawned || visited[current.TargetThreadID] {
-		return result
-	}
-	visited[current.TargetThreadID] = true
-	a.stopThreadAgentTarget(ctx, current.TargetThreadID, visited, &result)
-	return result
+	return a.stopAgentRequestBy(ctx, row, visited, pressed, userRestStop())
 }
 
-// stopRemoteAgentRequest is stopThreadAgentRequest for a target on a paired
-// computer: the request and the turn through thread_cancel, and for a
-// spawn the cascade there through agent_stop.
-func (a *App) stopRemoteAgentRequest(ctx context.Context, current store.ThreadRequest, settled, spawned bool, result *ThreadAgentStop) {
-	tools := a.threadTools()
-	// The destination's receipts name the thread that made the request,
-	// which New Thread, Same Assistant may since have replaced.
-	caller := a.threadAgentCaller(current.MadeIn())
-	if !settled {
-		report, err := tools.cancelRemoteRequest(ctx, caller, current, true)
-		if err != nil {
-			result.Outcome = threadAgentFailed
-			result.Failures = append(result.Failures, "cancel the request: "+err.Error())
-		}
-		result.Interrupted = report.Effect == threadtools.EffectInterrupted
-	}
-	if !spawned {
-		return
-	}
-	if !settled {
-		report, err := tools.cancelRemoteThread(ctx, caller, threadtools.CancelCall{
-			ThreadID: current.TargetThreadID, ComputerID: current.TargetComputerID,
-		}, true)
-		if err != nil {
-			result.Failures = append(result.Failures, "interrupt its turn: "+err.Error())
-		} else if report.Effect == threadtools.EffectInterrupted {
-			result.Interrupted = true
-		}
-	}
-	remote, err := a.peerThreadAgentStop(ctx, current.TargetComputerID, current.MadeIn(), current.TargetThreadID, "")
-	if err != nil {
-		result.Failures = append(result.Failures, "stop its work: "+err.Error())
-		return
-	}
-	result.Interrupted = result.Interrupted || remote.Interrupted
-	result.Background += remote.Background
-	result.Nested += remote.Nested
-	result.Failures = append(result.Failures, remote.Failures...)
-}
-
-// stopThreadAgentTarget stops what a spawned thread on this computer is
-// running: its Backgrounded items, as a provider subagent's Stop stops the
-// tasks it owns, then its turn, then the threads it is waiting on, each by
-// the row rule with its wake disarmed.
+// stopThreadAgentTarget brings a spawned thread on this computer to rest for
+// a person's Stop (restThreadHere).
 func (a *App) stopThreadAgentTarget(ctx context.Context, target string, visited map[string]bool, result *ThreadAgentStop) {
-	stopped, err := a.StopThreadBackgroundWork(ctx, target)
-	result.Background += stopped
-	if err != nil {
-		result.Failures = append(result.Failures, "stop its background work: "+err.Error())
-	}
-	if effect, err := a.threadTools().interruptRunningThread(ctx, target, stopFromAgentsTray()); err != nil {
-		result.Failures = append(result.Failures, "interrupt its turn: "+err.Error())
-	} else if effect == threadtools.EffectInterrupted {
-		result.Interrupted = true
-	}
-	nested, err := a.threadAgentStopRows(target)
-	if err != nil {
-		result.Failures = append(result.Failures, "list its agents: "+err.Error())
-		return
-	}
-	for _, child := range nested {
-		stop := a.stopThreadAgentRequest(ctx, child, visited, false)
-		if stop.Outcome == threadAgentStopped {
-			result.Nested++
-		}
-		result.Nested += stop.Nested
-		result.Background += stop.Background
-		result.Failures = append(result.Failures, stop.Failures...)
-	}
+	a.restThreadHere(ctx, target, userRestStop(), visited, result)
 }
 
 // threadAgentStopRows reads what a Stop of every Agents row of threadID

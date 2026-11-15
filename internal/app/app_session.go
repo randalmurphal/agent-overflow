@@ -981,30 +981,15 @@ func (a *App) interruptTurnAtIndex(ctx context.Context, threadID string, expectT
 	// interrupt of whatever is running ends them before it waits for the
 	// lock; a fenced one only once it knows the turn is the one it names,
 	// because the calls belong to whatever turn the thread is running.
-	cancelParked := func() {
-		a.cancelRemoteWaits(threadID)
-		a.cancelThreadRequestWaits(threadID)
-	}
 	if expectTurnIndex == anyOpenTurn {
-		cancelParked()
+		a.cancelParkedTurnCalls(threadID)
 	}
 	// Capture before waiting on the app-level thread lock. A Codex revert holds
 	// that lock across its provider and SQLite halves; an interrupt that entered
 	// before or during the cut must not wake afterward and hit the reloaded
 	// thread. The provider fence also covers direct Session callers that do not
 	// know about this lock.
-	observedSessionToken := ""
-	observedSession := false
-	var fencedCodex *codex.Session
-	var interruptFence codex.InterruptFence
-	if current, ok := a.sessionManager().get(threadID); ok {
-		observedSession = true
-		observedSessionToken = current.Token
-		if current.Codex != nil {
-			fencedCodex = current.Codex
-			interruptFence = current.Codex.CaptureInterruptFence()
-		}
-	}
+	observed := a.observeInterruptTarget(threadID)
 	// The whole interrupt — session capture, pre-ack Mark, ack wait,
 	// and the post-ack bookkeeping/promote/eager block — runs under the
 	// thread action lock: the same lock the session-start funnel holds
@@ -1022,16 +1007,59 @@ func (a *App) interruptTurnAtIndex(ctx context.Context, threadID string, expectT
 		return false, fmt.Errorf("interrupt turn %s: thread action lock: %w", threadID, err)
 	}
 	defer unlock()
+	return a.interruptTurnHoldingLock(threadID, expectTurnIndex, stop, observed)
+}
+
+// cancelParkedTurnCalls ends the tool calls a thread's turn has parked on a
+// remote command or on another thread's request.
+func (a *App) cancelParkedTurnCalls(threadID string) {
+	a.cancelRemoteWaits(threadID)
+	a.cancelThreadRequestWaits(threadID)
+}
+
+// interruptTarget is the session an interrupt saw before it took the thread
+// action lock, which fences it against a revert or a replacement that ran
+// while it waited.
+type interruptTarget struct {
+	seen  bool
+	token string
+	codex *codex.Session
+	fence codex.InterruptFence
+}
+
+func (a *App) observeInterruptTarget(threadID string) interruptTarget {
+	current, ok := a.sessionManager().get(threadID)
+	if !ok {
+		return interruptTarget{}
+	}
+	observed := interruptTarget{seen: true, token: current.Token}
+	if current.Codex != nil {
+		observed.codex = current.Codex
+		observed.fence = current.Codex.CaptureInterruptFence()
+	}
+	return observed
+}
+
+// interruptTurnHoldingLock is interruptTurnAtIndex past its lock: the
+// caller holds the thread action lock, and observed is the session it saw
+// before taking it, or under it. An interrupt of whatever is running has
+// ended the turn's parked calls already.
+func (a *App) interruptTurnHoldingLock(threadID string, expectTurnIndex int, stop turnStop, observed interruptTarget) (bool, error) {
+	if !stop.valid() {
+		return false, fmt.Errorf("interrupt turn %s: no stop cause", threadID)
+	}
+	consent := stop.consent
 	sess, ok := a.sessionManager().get(threadID)
 	if !ok {
 		return false, nil
 	}
-	if observedSession && sess.Token != observedSessionToken {
+	if observed.seen && sess.Token != observed.token {
 		// The work visible when the interrupt entered is gone. A replacement
 		// session may already be processing a later send, so the stale intent
 		// must not be retargeted onto it.
 		return false, nil
 	}
+	fencedCodex, interruptFence := observed.codex, observed.fence
 
 	providerSess := sess.ProviderSession()
 	if providerSess == nil {
@@ -1073,7 +1101,7 @@ func (a *App) interruptTurnAtIndex(ctx context.Context, threadID string, expectT
 	discardsMessage := a.claudeTUIStopDiscardsMessage(threadID, sess, interruptedTurn, pendingTUISendTurn)
 	a.recordTurnStop(threadID, a.stoppedTurnOf(threadID, sess.Token, cutTurn, interruptedTurn), stop)
 	if expectTurnIndex != anyOpenTurn {
-		cancelParked()
+		a.cancelParkedTurnCalls(threadID)
 	}
 	var interruptErr error
 	interruptSent := true

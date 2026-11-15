@@ -134,7 +134,7 @@ type organizeApplied struct {
 	archive archiveOutcome
 }
 
-func (a *App) applyThreadOrganizePatchLocked(ctx context.Context, threadID string, patch threadapp.OrganizePatch) (threadapp.OrganizeResult, *archivedThreadWork, error) {
+func (a *App) applyThreadOrganizePatchLocked(ctx context.Context, threadID string, patch threadapp.OrganizePatch) (threadapp.OrganizeResult, *restingThreadWork, error) {
 	archiving := patch.Archived != nil && *patch.Archived
 	// Stamped before the locks, for the same reason ArchiveThread stamps it
 	// there: waiting for the lock is exactly the window in which this
@@ -154,7 +154,7 @@ func (a *App) applyThreadOrganizePatchLocked(ctx context.Context, threadID strin
 	// queue write after the flip refuses the archived thread. The workers
 	// to archive are read after it, under the action lock.
 	if work != nil {
-		if work.archived {
+		if work.captured {
 			a.stopArchivedThreadSession(threadID, requestedAt)
 		}
 		a.readArchivedWorkers(work)
@@ -165,9 +165,9 @@ func (a *App) applyThreadOrganizePatchLocked(ctx context.Context, threadID strin
 // applyThreadOrganizePatchMutable writes the patch and announces it under
 // the thread's mutation lock. A patch that archives the thread captures, in
 // the same critical section, the work that archive stops
-// (captureArchivedThreadWork); a repeated archive captures nothing of the
+// (captureRestingThreadWork); a repeated archive captures nothing of the
 // thread's own, and still goes on to its workers.
-func (a *App) applyThreadOrganizePatchMutable(ctx context.Context, threadID string, patch threadapp.OrganizePatch) (threadapp.OrganizeResult, *archivedThreadWork, error) {
+func (a *App) applyThreadOrganizePatchMutable(ctx context.Context, threadID string, patch threadapp.OrganizePatch) (threadapp.OrganizeResult, *restingThreadWork, error) {
 	unlock, err := a.threadApplication().LockMutable(ctx, threadID)
 	if err != nil {
 		return threadapp.OrganizeResult{}, nil, err
@@ -178,13 +178,13 @@ func (a *App) applyThreadOrganizePatchMutable(ctx context.Context, threadID stri
 	if err != nil {
 		return threadapp.OrganizeResult{}, nil, err
 	}
-	var work *archivedThreadWork
+	var work *restingThreadWork
 	switch {
 	case result.ArchivedChanged && result.Thread.Archived:
-		captured := a.captureArchivedThreadWork(threadID)
+		captured := a.captureRestingThreadWork(threadID, archiveRest)
 		work = &captured
 	case patch.Archived != nil && *patch.Archived && result.Thread.Archived:
-		work = &archivedThreadWork{threadID: threadID}
+		work = &restingThreadWork{threadID: threadID}
 	}
 	// The group frame goes first: a client that receives the thread's new
 	// groupId before it has the group row has nowhere to render the thread.

@@ -652,7 +652,7 @@ func TestARemoteCompletionQueuedAfterAnArchiveIsHeld(t *testing.T) {
 			if err != nil || !proceed {
 				t.Fatalf("prepare: proceed %v, %v", proceed, err)
 			}
-			var work archivedThreadWork
+			var work restingThreadWork
 			if tc.wholeArchive {
 				if err := archiveThread(a, thread.ID); err != nil {
 					t.Fatalf("ArchiveThread: %v", err)
@@ -667,8 +667,8 @@ func TestARemoteCompletionQueuedAfterAnArchiveIsHeld(t *testing.T) {
 			a.waitAgentNoticeWork()
 			startsBeforeTheRest := starts.Load()
 			if !tc.wholeArchive {
-				if err := a.stopArchivedThreadWork(work); err != nil {
-					t.Fatalf("stopArchivedThreadWork: %v", err)
+				if err := a.stopRestingThreadWork(work); err != nil {
+					t.Fatalf("stopRestingThreadWork: %v", err)
 				}
 			}
 			requireRemoteCompletionHeld(t, a, thread.ID, w, startsBeforeTheRest)

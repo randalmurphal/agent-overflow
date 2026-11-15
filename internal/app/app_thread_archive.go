@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"slices"
 	"time"
 
 	"agent-overflow/internal/store"
@@ -111,94 +110,6 @@ func (o archiveOutcome) result(a *App) ArchiveThreadResult {
 	return result
 }
 
-// archivedThreadWork is what a thread was waiting on at the moment its
-// archive committed: the asks it owns and the remote commands it started,
-// and the workers it owned then.
-type archivedThreadWork struct {
-	threadID string
-	// archived is set when this archive changed the row; a repeated one
-	// captures and stops nothing of the thread's own.
-	archived bool
-	asks     []store.ThreadRequest
-	commands []store.RemoteWatch
-	// queued are the send ids of the messages in the thread's queue.
-	queued []string
-	// workers are the unarchived threads it owned, at any depth through
-	// archived workers, once its archive stood and its session was stopped
-	// (readArchivedWorkers), each with the owner that fences its flip. A
-	// repeated archive reads them too, so a worker an earlier one could not
-	// archive is tried again however deep it is.
-	workers []store.OwnedWorker
-	err     error
-}
-
-// held reports whether sendID was in the thread's queue when it was
-// archived.
-func (w archivedThreadWork) held(sendID string) bool {
-	return slices.Contains(w.queued, sendID)
-}
-
-// captureArchivedThreadWork runs in the critical section that commits the
-// archive, under the thread's action and mutation locks, which unarchive,
-// remote command admission and every queue write also take. It ends the
-// thread's parked calls, disarms its wakes, cancels its loops and watches
-// and stops their runs, and names the work open and the messages queued at
-// that moment. A later wait or thread_status re-arms the wakes, and
-// delivering one unarchives the thread.
-//
-// Nothing keeps new work from starting on an archived thread afterwards: a
-// wake unarchives it, a remote command is admitted to it whatever its
-// archive state, and a loop or watch registered after an unarchive reuses
-// its label's row. So only the archive that changes the row captures, the
-// schedule is cancelled here rather than after the locks are released, and
-// the stop acts on these identities alone, never on what the thread is
-// running or holds queued by the time it gets there.
-func (a *App) captureArchivedThreadWork(id string) archivedThreadWork {
-	work := archivedThreadWork{threadID: id, archived: true}
-	asks, askErr := a.disarmThreadRequests(id)
-	commands, commandErr := a.disarmRemoteCommands(id)
-	if askErr != nil {
-		log.Printf("thread tools: archive %s: cancel requests: %v", id, askErr)
-	}
-	wakesErr := a.cancelAgentWakesForThread(id, "cancelled: the thread was archived")
-	rows, queueErr := a.store.ListFlushQueueItems(id)
-	if queueErr != nil {
-		queueErr = fmt.Errorf("archive %s: read its queue: %w", id, queueErr)
-	}
-	for _, row := range rows {
-		work.queued = append(work.queued, row.SendID)
-	}
-	work.asks, work.commands, work.err = asks, commands, errors.Join(commandErr, wakesErr, queueErr)
-	return work
-}
-
-// stopArchivedThreadWork stops exactly the work its archive captured. Both
-// doors that archive (the binding and the agents' thread_update patch) run
-// it through finishArchive, so a thread archived from either one is left in
-// the same state. It runs on the app's lifetime, not its caller's, because
-// the archive is already durable, and outside the locks because reaching
-// the other computer may take a while.
-func (a *App) stopArchivedThreadWork(work archivedThreadWork) error {
-	if !work.archived {
-		return work.err
-	}
-	ctx, id := a.lifeCtx(), work.threadID
-	// What the app had queued for the thread goes, live session or not, so
-	// nothing of it reaches the agent when the thread is next started. Its
-	// loops and watches were cancelled with the capture.
-	withdrawErr := a.withdrawQueuedAgentMessages(id, work.held, "the thread was archived before the agent took it in")
-	// A request's answer or reminder goes back to its request, disarmed
-	// with it, so the retry cannot bring the thread back.
-	wakesErr := a.withdrawHeldThreadWakes(id, work.held)
-	a.cancelOwnedAsks(ctx, id, work.asks)
-	remoteErr := a.cancelRemoteCommands(ctx, id, work.commands, true)
-	// A finished job's completion is kept for the thread: the cancel keeps
-	// its watch, and one already held in the queue goes back to its watch
-	// after the cancel has run. It arrives once the thread is unarchived.
-	completionsErr := a.withdrawHeldRemoteCompletions(id, work.held)
-	return errors.Join(work.err, withdrawErr, wakesErr, remoteErr, completionsErr)
-}
-
 // finishArchive stops the work an archive captured, then archives the
 // workers the thread owned when it committed
 // (docs/specs/standing-agents.md, "Owned workers"), each through the
@@ -208,8 +119,8 @@ func (a *App) stopArchivedThreadWork(work archivedThreadWork) error {
 // a cleanup that runs late leaves alone a worker moved since, and every
 // worker of an owner reopened since. A worker whose archive is refused is
 // reported, and the others are still archived.
-func (a *App) finishArchive(work archivedThreadWork) archiveOutcome {
-	outcome := archiveOutcome{cleanup: a.stopArchivedThreadWork(work)}
+func (a *App) finishArchive(work restingThreadWork) archiveOutcome {
+	outcome := archiveOutcome{cleanup: a.stopRestingThreadWork(work)}
 	for _, worker := range work.workers {
 		child, err := a.archiveThreadLocked(worker.ThreadID, worker.OwnerID)
 		switch {
@@ -217,7 +128,7 @@ func (a *App) finishArchive(work archivedThreadWork) archiveOutcome {
 			// Deleted since: there is nothing left to archive.
 		case err != nil:
 			outcome.workers = append(outcome.workers, workerArchiveFailure{threadID: worker.ThreadID, err: err})
-		case child.archived:
+		case child.captured:
 			outcome.add(a.finishArchive(child))
 		}
 	}
@@ -231,7 +142,7 @@ func (a *App) finishArchive(work archivedThreadWork) archiveOutcome {
 // owner whose archive this one carries out and fences the flip by it
 // (commitArchive); an archive the fence excludes changes nothing and stops
 // nothing, because the thread is no longer that archive's to stop.
-func (a *App) archiveThreadLocked(id, ownerID string) (archivedThreadWork, error) {
+func (a *App) archiveThreadLocked(id, ownerID string) (restingThreadWork, error) {
 	// Stamped BEFORE the lock, because waiting for the lock is exactly
 	// the window in which this archive can go stale: a send already
 	// holding it can dispatch a whole turn before this call gets its
@@ -241,7 +152,7 @@ func (a *App) archiveThreadLocked(id, ownerID string) (archivedThreadWork, error
 	defer unlock()
 	work, changed, err := a.commitArchive(id, ownerID)
 	if err != nil {
-		return archivedThreadWork{}, err
+		return restingThreadWork{}, err
 	}
 	// Broadcast as `unlisted` so a second attached client drops the row
 	// from its sidebar too; re-archiving an already-archived thread
@@ -261,7 +172,7 @@ func (a *App) archiveThreadLocked(id, ownerID string) (archivedThreadWork, error
 // thread's action lock, which unarchive takes, after the archive committed
 // and the session stopped, so a thread the owner spawns once reopened is
 // never among them.
-func (a *App) readArchivedWorkers(work *archivedThreadWork) {
+func (a *App) readArchivedWorkers(work *restingThreadWork) {
 	workers, err := a.store.ListOwnedWorkersToArchive(work.threadID)
 	if err != nil {
 		work.err = errors.Join(work.err, fmt.Errorf("archive the workers of %s: %w", work.threadID, err))
@@ -278,10 +189,10 @@ func (a *App) readArchivedWorkers(work *archivedThreadWork) {
 // before the session stops: the teardown's queue drop takes it, and it is
 // not reentrant. A worker's archive, ownerID set, flips the row only while
 // its owner is archived and still owns it (store.ArchiveOwnedWorker).
-func (a *App) commitArchive(id, ownerID string) (archivedThreadWork, bool, error) {
+func (a *App) commitArchive(id, ownerID string) (restingThreadWork, bool, error) {
 	unlock, err := a.threadApplication().LockMutable(a.lifeCtx(), id)
 	if err != nil {
-		return archivedThreadWork{}, false, err
+		return restingThreadWork{}, false, err
 	}
 	defer unlock()
 	var changed bool
@@ -291,9 +202,9 @@ func (a *App) commitArchive(id, ownerID string) (archivedThreadWork, bool, error
 		_, changed, err = a.threadApplication().ArchiveWorker(id, ownerID)
 	}
 	if err != nil || !changed {
-		return archivedThreadWork{threadID: id}, changed, err
+		return restingThreadWork{threadID: id}, changed, err
 	}
-	return a.captureArchivedThreadWork(id), true, nil
+	return a.captureRestingThreadWork(id, archiveRest), true, nil
 }
 
 // UnarchiveThread flips archived back to false so the thread reappears in the

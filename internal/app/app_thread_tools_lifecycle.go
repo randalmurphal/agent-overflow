@@ -61,6 +61,15 @@ func (a *App) requestCancelStop(receipt store.ThreadRequestReceipt, answer strin
 // stopThreadRequestWorkFor is stopThreadRequestWork with the answer the
 // cancelled receipt settles with.
 func (a *App) stopThreadRequestWorkFor(ctx context.Context, token, answer string) (string, error) {
+	return a.stopThreadRequestWorkBy(ctx, token, answer, func(receipt store.ThreadRequestReceipt) turnStop {
+		return a.requestCancelStop(receipt, answer)
+	})
+}
+
+// stopThreadRequestWorkBy is stopThreadRequestWorkFor with who stops the
+// request's turn named by stopOf, for a stop of a whole thread that settles
+// requests other threads made of it.
+func (a *App) stopThreadRequestWorkBy(ctx context.Context, token, answer string, stopOf func(store.ThreadRequestReceipt) turnStop) (string, error) {
 	receipt, found, err := a.store.GetThreadRequestReceipt(token)
 	if err != nil {
 		return "", err
@@ -73,7 +82,7 @@ func (a *App) stopThreadRequestWorkFor(ctx context.Context, token, answer string
 		hook(token)
 	}
 	repeated := false
-	stop := a.requestCancelStop(receipt, answer)
+	stop := stopOf(receipt)
 	switch {
 	case slices.Contains(store.ThreadReceiptOpenStates(), state):
 		settled, err := a.cancelOpenReceipt(token, answer, stop, &receipt)

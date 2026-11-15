@@ -214,6 +214,11 @@ const (
 	EffectLeftUnread      = "message_left_unread"
 	EffectReminderDropped = "reminder_dropped"
 	EffectWakeCancelled   = "loop_or_watch_cancelled"
+	// EffectThreadStopped: a thread_cancel by thread id of a thread the
+	// caller spawned brought it to rest: its session ended and its queue,
+	// loops, watches, reminders and requests, and the threads it spawned,
+	// were stopped.
+	EffectThreadStopped = "thread_stopped"
 )
 
 // RequestAck is what a spawn, send, ask or remind returns: the request's

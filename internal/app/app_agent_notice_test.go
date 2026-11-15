@@ -240,8 +240,8 @@ func TestAThreadSendArchivedBeforeItsSessionStartsIsWithdrawn(t *testing.T) {
 	if n := starts.Load(); n != 0 {
 		t.Fatalf("started %d sessions for an archived thread", n)
 	}
-	if err := a.stopArchivedThreadWork(a.captureArchivedThreadWork(thread.ID)); err != nil {
-		t.Fatalf("stopArchivedThreadWork: %v", err)
+	if err := a.stopRestingThreadWork(a.captureRestingThreadWork(thread.ID, archiveRest)); err != nil {
+		t.Fatalf("stopRestingThreadWork: %v", err)
 	}
 
 	if rows := durableQueueRows(t, a, thread.ID); len(rows) != 0 {
@@ -267,7 +267,7 @@ func TestAnArchiveLeavesAMessageQueuedAfterTheThreadCameBack(t *testing.T) {
 		unlock()
 		t.Fatalf("Archive: %v", err)
 	}
-	work := a.captureArchivedThreadWork(thread.ID)
+	work := a.captureRestingThreadWork(thread.ID, archiveRest)
 	unlock()
 	a.waitAgentNoticeWork()
 
@@ -276,8 +276,8 @@ func TestAnArchiveLeavesAMessageQueuedAfterTheThreadCameBack(t *testing.T) {
 	}
 	later := sendWithin(t, a, thread.ID, "deploy 5 is done", 5*time.Second)
 	a.waitAgentNoticeWork()
-	if err := a.stopArchivedThreadWork(work); err != nil {
-		t.Fatalf("stopArchivedThreadWork: %v", err)
+	if err := a.stopRestingThreadWork(work); err != nil {
+		t.Fatalf("stopRestingThreadWork: %v", err)
 	}
 
 	rows := durableQueueRows(t, a, thread.ID)
@@ -807,8 +807,8 @@ func TestAWithdrawalThatFailsIsReported(t *testing.T) {
 		!strings.Contains(err.Error(), `the loop "board" is cancelled, but its wake already queued could not be taken back`) {
 		t.Fatalf("CancelWake: %v, want the wake left queued reported", err)
 	}
-	if err := a.stopArchivedThreadWork(a.captureArchivedThreadWork(thread.ID)); err == nil || !strings.Contains(err.Error(), "withdraw agent-wake:wake-board:1") {
-		t.Fatalf("stopArchivedThreadWork: %v, want the wakes left queued reported", err)
+	if err := a.stopRestingThreadWork(a.captureRestingThreadWork(thread.ID, archiveRest)); err == nil || !strings.Contains(err.Error(), "withdraw agent-wake:wake-board:1") {
+		t.Fatalf("stopRestingThreadWork: %v, want the wakes left queued reported", err)
 	}
 }
 

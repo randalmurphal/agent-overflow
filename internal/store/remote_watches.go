@@ -190,6 +190,20 @@ func (s *Store) DismissUnfinishedRemoteWatch(computerID, requestID string) error
 	return err
 }
 
+// DismissUndeliveredRemoteWatches drops every notification of threadID's
+// remote commands that the agent has not taken in: a pending one, and one
+// queued that the provider has not confirmed, which a withdrawal or a session
+// teardown would otherwise give back to its watch for the watcher to deliver
+// again. It reports how many it dropped.
+func (s *Store) DismissUndeliveredRemoteWatches(threadID string) (int64, error) {
+	r, err := s.db.Exec(`UPDATE remote_watches SET notification='dismissed'
+ WHERE thread_id=? AND (notification='pending' OR (notification='queued' AND confirmed_at IS NULL))`, threadID)
+	if err != nil {
+		return 0, fmt.Errorf("store: dismiss the undelivered remote commands of %s: %w", threadID, err)
+	}
+	return r.RowsAffected()
+}
+
 // A definite refusal releases only this still-unaccepted watch. A concurrent
 // status response proving acceptance always wins over refusal cleanup.
 func (s *Store) RefuseRemoteWatch(computerID, requestID, issue string) error {

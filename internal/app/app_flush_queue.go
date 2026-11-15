@@ -1326,6 +1326,10 @@ func (a *App) registerQueueItem(
 	if injected.heldWhileArchived && thread.Archived {
 		return QueuedItem{}, errThreadArchived
 	}
+	// A Stop's rest fences the thread under this lock the same way.
+	if injected.heldWhileArchived && a.resting.holds(threadID) {
+		return QueuedItem{}, errThreadResting
+	}
 	if injected.expandComposerCommands && thread.Provider == string(provider.Codex) {
 		_, isReview, parseErr := codexReviewCommandTarget(message)
 		if parseErr != nil {

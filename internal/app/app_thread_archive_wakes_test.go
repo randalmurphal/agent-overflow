@@ -19,16 +19,16 @@ func TestAnArchiveLeavesSchedulesRegisteredAfterTheThreadCameBack(t *testing.T) 
 	t.Parallel()
 	for _, door := range []struct {
 		name    string
-		archive func(t *testing.T, a *App, threadID string) archivedThreadWork
+		archive func(t *testing.T, a *App, threadID string) restingThreadWork
 	}{
-		{"binding", func(t *testing.T, a *App, threadID string) archivedThreadWork {
+		{"binding", func(t *testing.T, a *App, threadID string) restingThreadWork {
 			work, err := a.archiveThreadLocked(threadID, "")
 			if err != nil {
 				t.Fatalf("archiveThreadLocked: %v", err)
 			}
 			return work
 		}},
-		{"thread_update", func(t *testing.T, a *App, threadID string) archivedThreadWork {
+		{"thread_update", func(t *testing.T, a *App, threadID string) restingThreadWork {
 			archived := true
 			_, work, err := a.applyThreadOrganizePatchLocked(context.Background(), threadID, threadapp.OrganizePatch{Archived: &archived})
 			if err != nil || work == nil {
@@ -62,8 +62,8 @@ func TestAnArchiveLeavesSchedulesRegisteredAfterTheThreadCameBack(t *testing.T) 
 				t.Fatal("the re-registered watch has no process")
 			}
 
-			if err := a.stopArchivedThreadWork(work); err != nil {
-				t.Fatalf("stopArchivedThreadWork: %v", err)
+			if err := a.stopRestingThreadWork(work); err != nil {
+				t.Fatalf("stopRestingThreadWork: %v", err)
 			}
 
 			for _, want := range []struct {
