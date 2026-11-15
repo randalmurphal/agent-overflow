@@ -91,6 +91,8 @@ type ThreadAgentRow struct {
 	Title      string `json:"title"`
 	// Placement and Archived are the stored placement and archive state of
 	// the thread a local spawn made; empty and false for every other row.
+	// Placement is empty too for a thread that takes none (an assistant's
+	// helper, outside every project), so no sidebar row is offered for it.
 	Placement string `json:"placement,omitempty"`
 	Archived  bool   `json:"archived,omitempty"`
 	// Provider is the target's provider: a local target's row, or what a

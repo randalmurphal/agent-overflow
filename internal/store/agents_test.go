@@ -726,6 +726,16 @@ func TestHelpersLiveUnderTheirAssistant(t *testing.T) {
 	if helper.HelperOfAgentID != agent.ID || helper.AgentID != "" || helper.AgentProjectIDs != nil {
 		t.Fatalf("helper row = helperOf %q agent %q projects %q", helper.HelperOfAgentID, helper.AgentID, helper.AgentProjectIDs)
 	}
+	// Neither takes a placement, so a row naming either offers none.
+	names, err := s.ThreadNames([]string{"ops", "helper"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"ops", "helper"} {
+		if name, ok := names[id]; !ok || name.Placement != "" {
+			t.Errorf("ThreadNames[%s] = %+v, %v, want no placement", id, name, ok)
+		}
+	}
 	if err := s.CreateThread(Thread{ID: "stray", Provider: "claude", Model: "m", WorkspacePath: "/h", HelperOfAgentID: "nobody"}); err == nil {
 		t.Fatal("a helper of no assistant was created")
 	}

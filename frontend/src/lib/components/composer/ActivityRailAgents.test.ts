@@ -329,11 +329,14 @@ describe('the Agents segment', () => {
       row('archived', { callerThreadId: caller, placement: 'owned', archived: true }),
       row('remote', { callerThreadId: caller, placement: 'owned', computerId: 'peer', computer: 'Laptop' }),
       row('send', { callerThreadId: caller, kind: 'send', placement: 'owned' }),
+      // An assistant's helper is outside every project: no placement to give.
+      row('helper', { callerThreadId: caller }),
     ]);
     const place = setBindingMock('SetThreadPlacement', vi.fn(async (ids: string[], placement: string) => ids.map((id) => ({ id, placement }))));
     await fireEvent.click(toggle);
     const rows = await view.findAllByTestId('agent-tray-row');
-    expect(rows.map((r) => Boolean(within(r).queryByTestId('agent-tray-row-show-in-sidebar')))).toEqual([true, false, false, false, false]);
+    expect(rows.map((r) => Boolean(within(r).queryByTestId('agent-tray-row-show-in-sidebar')))).toEqual([true, false, false, false, false, false]);
+    expect(within(rows[5]).getByTestId('agent-tray-row-open-pane')).toBeTruthy();
     const show = within(rows[0]).getByTestId('agent-tray-row-show-in-sidebar');
     expect(show.getAttribute('title')).toBe('Show in sidebar');
     expect(show.getAttribute('aria-label')).toBe('Show in Sidebar');

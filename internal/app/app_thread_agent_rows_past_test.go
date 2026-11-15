@@ -2,6 +2,7 @@ package app
 
 import (
 	"encoding/json"
+	"errors"
 	"slices"
 	"testing"
 	"time"
@@ -121,6 +122,51 @@ func TestPastAgentRowsPageTheSettledRowsNewestFirst(t *testing.T) {
 	}
 	if len(listing.Rows) != 1 || listing.Rows[0].Token != "open" || listing.Rows[0].Placement != stored(open.ID) || listing.Rows[0].Archived {
 		t.Errorf("open rows = %+v", listing.Rows)
+	}
+}
+
+// A spawn row's placement is what the sidebar can do with its thread: an
+// assistant's helper, outside every project, has none, open or past, so
+// its row offers no sidebar row the backend would refuse.
+func TestAgentRowsGiveNoPlacementToAThreadThatTakesNone(t *testing.T) {
+	t.Parallel()
+	a, _ := newAppForFlushQueueRPC(t)
+	lead := noticeTestThread(t, a, "helper-lead")
+	testAssistant(t, a, lead.ID)
+	helper := testThread("helper-worker")
+	helper.ProjectID, helper.WorkspacePath, helper.HelperOfAgentID = "", t.TempDir(), lead.ID
+	if err := a.store.CreateThread(helper); err != nil {
+		t.Fatal(err)
+	}
+	done := testThread("helper-done")
+	done.ProjectID, done.WorkspacePath, done.HelperOfAgentID = "", t.TempDir(), lead.ID
+	if err := a.store.CreateThread(done); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.store.InsertThreadRequest(store.ThreadRequest{
+		Token: "helper-open", CallerThreadID: lead.ID, Kind: store.ThreadRequestSpawn, TargetThreadID: helper.ID, State: store.ThreadRequestRunning, CreatedAt: 10,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	seedSettledAgentRow(t, a, store.ThreadRequest{Token: "helper-past", CallerThreadID: lead.ID, Kind: store.ThreadRequestSpawn, TargetThreadID: done.ID, CreatedAt: 10}, 20, "done")
+	for _, id := range []string{helper.ID, done.ID} {
+		if _, err := a.SetThreadPlacement([]string{id}, store.PlacementStandalone); !errors.Is(err, store.ErrPlacementOutsideProjects) {
+			t.Fatalf("Show in Sidebar on helper %s = %v, want it refused", id, err)
+		}
+	}
+	listing, err := a.ListThreadAgentRows(t.Context(), lead.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listing.Rows) != 1 || listing.Rows[0].Token != "helper-open" || listing.Rows[0].Placement != "" {
+		t.Errorf("open helper rows = %+v, want no placement", listing.Rows)
+	}
+	page, err := a.ListThreadPastAgentRows(lead.ID, store.PastAgentRowsCursor{}, 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Rows) != 1 || page.Rows[0].Token != "helper-past" || page.Rows[0].Placement != "" {
+		t.Errorf("past helper rows = %+v, want no placement", page.Rows)
 	}
 }
 

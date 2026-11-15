@@ -90,6 +90,20 @@ func (s *Store) SetThreadPlacement(threadIDs []string, placement string) ([]Thre
 	return rows, nil
 }
 
+// standingAgentThreadSQL and outsideProjectsSQL are the threads alias a
+// that take no placement: a standing agent's own thread, and one outside
+// every project (an assistant's helper). setThreadPlacementTx refuses
+// both, and ThreadNames reads no placement for them.
+func standingAgentThreadSQL(a string) string {
+	return `EXISTS(SELECT 1 FROM agents WHERE thread_id = ` + a + `.id)`
+}
+
+func outsideProjectsSQL(a string) string { return a + `.project_id IS NULL` }
+
+func unplaceableThreadSQL(a string) string {
+	return `(` + standingAgentThreadSQL(a) + ` OR ` + outsideProjectsSQL(a) + `)`
+}
+
 // setThreadPlacementTx writes one thread's owned or standalone placement
 // in the caller's transaction and reports whether the row changed.
 func setThreadPlacementTx(tx *sql.Tx, threadID, placement string) (bool, error) {
@@ -104,7 +118,7 @@ func setThreadPlacementTx(tx *sql.Tx, threadID, placement string) (bool, error) 
 		return false, err
 	}
 	var agent, outside, linked bool
-	err := tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM agents WHERE thread_id = ?1), project_id IS NULL, `+spawnLinkSQL+`
+	err := tx.QueryRow(`SELECT `+standingAgentThreadSQL("threads")+`, `+outsideProjectsSQL("threads")+`, `+spawnLinkSQL+`
 		FROM threads WHERE id = ?1`, threadID).Scan(&agent, &outside, &linked)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, ErrThreadGone

@@ -270,8 +270,11 @@ func (s *Store) ListThreadLastMessages(threadIDs []string, cutAt string) (map[st
 type ThreadName struct {
 	Title    string
 	Provider string
-	// Placement is the thread's stored placement, Archived whether it is
-	// archived: what an Agents row offers for the thread its spawn made.
+	// Placement is the thread's stored placement, empty for a thread no
+	// placement can be given (setThreadPlacementTx refuses a standing
+	// agent's thread and one outside every project, an assistant's
+	// helper); Archived is whether it is archived. Together they are what
+	// an Agents row offers for the thread its spawn made.
 	Placement string
 	Archived  bool
 }
@@ -287,7 +290,9 @@ func (s *Store) ThreadNames(ids []string) (_ map[string]ThreadName, err error) {
 	if err != nil {
 		return nil, fmt.Errorf("store: encode thread ids for their names: %w", err)
 	}
-	rows, err := s.reader().Query(`SELECT t.id, t.title, t.provider, t.placement, t.archived FROM json_each(?) j CROSS JOIN threads t WHERE t.id = j.value`, string(encoded))
+	rows, err := s.reader().Query(`SELECT t.id, t.title, t.provider,
+	       CASE WHEN `+unplaceableThreadSQL("t")+` THEN '' ELSE t.placement END, t.archived
+	  FROM json_each(?) j CROSS JOIN threads t WHERE t.id = j.value`, string(encoded))
 	if err != nil {
 		return nil, fmt.Errorf("store: read thread names: %w", err)
 	}
