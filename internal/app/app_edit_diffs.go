@@ -12,6 +12,7 @@ import (
 	"sync"
 
 	"agent-overflow/internal/gitdiff"
+	"agent-overflow/internal/jstext"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/textgen"
 	"agent-overflow/internal/transport"
@@ -228,9 +229,9 @@ type editsDiff struct {
 	// served holds the hash of every chunk a read returned, keyed by its
 	// byte range, so a re-read proves it serves the same bytes.
 	served map[[2]int64]uint64
-	// starts holds the offsets a read may start at: 0 and every offset a
-	// chunk ended at.
-	starts map[int64]bool
+	// starts holds the offsets a read may start at, 0 and every offset a
+	// chunk ended at, each with the key of the patch text before it.
+	starts map[int64]jstext.Key
 }
 
 // editsDiffPart is one payload in an editsDiff. Its bytes [0, length)
@@ -250,7 +251,7 @@ func newEditsDiff(ctx context.Context, st *store.Store, threadID string, payload
 		threadID: threadID,
 		seed:     maphash.MakeSeed(),
 		served:   map[[2]int64]uint64{},
-		starts:   map[int64]bool{0: true},
+		starts:   map[int64]jstext.Key{0: jstext.EmptyKey},
 	}
 	for _, payloadID := range payloadIDs {
 		if err := ctx.Err(); err != nil {
@@ -309,11 +310,12 @@ func (d *editsDiff) Read(ctx context.Context, offset int64, maxBytes int) (gitdi
 	maxBytes = min(max(maxBytes, gitdiff.MinChunkBytes), gitdiff.MaxChunkBytes)
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if !d.starts[offset] {
+	start, ok := d.starts[offset]
+	if !ok {
 		return gitdiff.Chunk{}, fmt.Errorf("edits diff: offset %d is not a chunk boundary", offset)
 	}
 	if offset == d.size {
-		return gitdiff.Chunk{Offset: offset, NextOffset: offset, EOF: true}, nil
+		return gitdiff.Chunk{Offset: offset, NextOffset: offset, EOF: true, Key: start}, nil
 	}
 	// One byte past the window tells a full window at the end of the
 	// patch apart from one with more to come.
@@ -331,9 +333,15 @@ func (d *editsDiff) Read(ctx context.Context, offset int64, maxBytes int) (gitdi
 	if prev, ok := d.served[span]; ok && prev != sum {
 		return gitdiff.Chunk{}, errEditsDiffChanged
 	}
+	data := string(window)
+	key := start.Extend(data)
+	// Another span may have ended here first, over other bytes.
+	if prev, ok := d.starts[next]; ok && prev != key {
+		return gitdiff.Chunk{}, errEditsDiffChanged
+	}
 	d.served[span] = sum
-	d.starts[next] = true
-	return gitdiff.Chunk{Data: string(window), Offset: offset, NextOffset: next, EOF: eof}, nil
+	d.starts[next] = key
+	return gitdiff.Chunk{Data: data, Offset: offset, NextOffset: next, EOF: eof, Key: key}, nil
 }
 
 // bytes returns the patch's bytes [from, to).

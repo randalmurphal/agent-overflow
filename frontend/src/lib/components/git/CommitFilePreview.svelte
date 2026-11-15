@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
   import PatchLines from '../shared/PatchLines.svelte';
-  import type { ReviewFile } from '../../utils/patchStore';
+  import type { ReviewFile } from '../../utils/patchParser';
   import type { BackendKey } from '../../transport/backendKey';
   import { OpenCommitFileDiff } from '../../stores/bindings';
   import { ReviewDiffSource, type ReviewDiffRead } from '../../stores/reviewDiffStream';

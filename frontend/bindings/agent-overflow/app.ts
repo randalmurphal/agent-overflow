@@ -1942,6 +1942,10 @@ export function GetPRReviewSubmitOutcome(pr: git$0.PRReference, attemptID: strin
     });
 }
 
+/**
+ * GetPayloadChunk serves a payload's text from byte offset (payloadText):
+ * 0, or the NextOffset of the preview or of an earlier chunk.
+ */
 export function GetPayloadChunk(threadID: string, payloadID: string, offset: number, maxBytes: number): $CancellablePromise<app$0.PayloadChunk> {
     return $Call.ByID(73280836, threadID, payloadID, offset, maxBytes).then(($result: any) => {
         return $$createType71($result);
@@ -1972,8 +1976,8 @@ export function GetPayloadPatchSpans(threadID: string, payloadID: string): $Canc
 }
 
 /**
- * GetPayloadPreview serves a payload's leading bytes, with the payload's
- * persisted highlight spans attached for diff kinds.
+ * GetPayloadPreview serves a payload's leading text (payloadText), with
+ * the payload's persisted highlight spans attached for diff kinds.
  */
 export function GetPayloadPreview(threadID: string, payloadID: string, maxBytes: number): $CancellablePromise<app$0.PayloadPreview> {
     return $Call.ByID(4070214921, threadID, payloadID, maxBytes).then(($result: any) => {
@@ -4342,6 +4346,20 @@ export function ReadPipelineStages(repo: git$0.RepoReference, ids: string[], int
  */
 export function ReadReviewDiff(id: string, offset: number, maxBytes: number): $CancellablePromise<app$0.ReviewDiffChunk> {
     return $Call.ByID(2473150982, id, offset, maxBytes).then(($result: any) => {
+        return $$createType198($result);
+    });
+}
+
+/**
+ * ReadReviewDiffPacked is ReadReviewDiff with the chunk's text packed
+ * where that is its cheaper form for the client (jstext.PackText): the
+ * same chunk, key, handle, owner and scope rules. The form depends on the
+ * chunk's bytes alone, so a chunk read again has the form it had. A
+ * client calls it only on a backend that advertises
+ * transport.CapabilityReviewDiffPacked.
+ */
+export function ReadReviewDiffPacked(id: string, offset: number, maxBytes: number): $CancellablePromise<app$0.ReviewDiffChunk> {
+    return $Call.ByID(4058838878, id, offset, maxBytes).then(($result: any) => {
         return $$createType198($result);
     });
 }
@@ -7528,7 +7546,7 @@ const $$createType194 = app$0.ProviderTerminalHandle.createFrom;
 const $$createType195 = app$0.ReadAloudSourceStatus.createFrom;
 const $$createType196 = app$0.PipelineStages.createFrom;
 const $$createType197 = $Create.Map($Create.Any, $$createType196);
-const $$createType198 = gitdiff$0.Chunk.createFrom;
+const $$createType198 = app$0.ReviewDiffChunk.createFrom;
 const $$createType199 = app$0.ShellOutputPage.createFrom;
 const $$createType200 = remotejobs$0.LogChunk.createFrom;
 const $$createType201 = app$0.RegisteredQueueItem.createFrom;

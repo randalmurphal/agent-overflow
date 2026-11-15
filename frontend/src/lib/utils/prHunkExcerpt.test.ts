@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { setPatchTextBudgetForTest } from './patchMemory.svelte';
-import { parseReviewFiles } from './patchStore';
+import { parseReviewFiles } from './patchParser';
 import { hunkExcerptForComment } from './prHunkExcerpt';
 import { streamPatch } from '../../test/helpers/streamedPatch';
 

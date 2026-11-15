@@ -90,6 +90,7 @@ export const ROUTE_BY_ID_FAMILY: Readonly<Record<number, IdFamily | { family: Id
   2888550814: 'subscription', // UnsubscribePRUpdates
   3263989430: 'subscription', // GitStatusUnsubscribe
   2473150982: 'subscription', // ReadReviewDiff
+  4058838878: 'subscription', // ReadReviewDiffPacked
   504085501: 'subscription', // ReleaseReviewDiff
 
   // A thread group is a sidebar row of ONE project on one backend; its id

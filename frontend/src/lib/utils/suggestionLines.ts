@@ -1,5 +1,5 @@
 import { RowWalker } from './patchRows';
-import type { ReviewFile } from './patchStore';
+import type { ReviewFile } from './patchParser';
 import type { EditorRow } from './reviewRows';
 import type { DiffReviewComment } from '../types/models';
 

@@ -56,6 +56,20 @@ describe('<ReviewFileTree>', () => {
     expect(view.getByTestId('review-tree-empty')).toBeInTheDocument();
   });
 
+  it('says no file matches without an empty list beside it', async () => {
+    const view = render(ReviewFileTree, { files: FILES, onSelectFile: () => {} });
+    const search = view.getByTestId('review-tree-search');
+
+    await fireEvent.input(search, { target: { value: 'no-such-file' } });
+    expect(view.getByTestId('review-tree-empty')).toBeInTheDocument();
+    expect(view.queryByRole('list')).toBeNull();
+
+    await fireEvent.input(search, { target: { value: '' } });
+    expect(view.queryByTestId('review-tree-empty')).toBeNull();
+    expect(view.getByRole('list')).toBeInTheDocument();
+    expect(view.getAllByTestId('review-tree-file')).toHaveLength(5);
+  });
+
   it('filters by file type through the dropdown with full-set counts', async () => {
     const view = render(ReviewFileTree, { files: FILES, onSelectFile: () => {} });
 

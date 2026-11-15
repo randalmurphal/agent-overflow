@@ -29,6 +29,7 @@
 
 import { getContext, setContext } from 'svelte';
 import { SvelteMap } from 'svelte/reactivity';
+import { FNV_OFFSET_BASIS_32 } from '../../../utils/fnv1a';
 import type { EncodedLine } from '../../../utils/syntaxSpans';
 import type { BackendKey } from '../../../transport/backendKey';
 import { ResyncLiveCode } from '../../../stores/bindings';
@@ -284,7 +285,6 @@ export class TextLineChain {
   }
 }
 
-const FNV_OFFSET_BASIS_32 = 0x811c9dc5;
 const FNV_PRIME_32 = 0x01000193;
 
 /** Which of a fence's lines paint a host's text. */

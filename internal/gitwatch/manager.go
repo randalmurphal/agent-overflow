@@ -96,10 +96,10 @@ func NewManager(config ManagerConfig) *Manager {
 // Subscribe still asks the watcher for an async full refresh so remote
 // PR/MR creation can become visible without a local filesystem event.
 //
-// Slow path: when there's no existing watcher, the initial fetch runs
-// BEFORE the watcher is installed so a bad path / non-repo / git binary
-// error fails fast without leaving a stray watcher behind. ctx bounds that
-// initial fetch only; the watcher lives until its last subscriber leaves.
+// Slow path: when there's no existing watcher, the watches are installed
+// before the initial fetch runs, so no change after the fetch goes
+// unreported; a failed fetch removes them again. ctx bounds that initial
+// fetch only; the watcher lives until its last subscriber leaves.
 func (m *Manager) Subscribe(ctx context.Context, cwd string) (*Subscription, error) {
 	if cwd == "" {
 		return nil, errors.New("gitwatch: empty cwd")
@@ -129,9 +129,25 @@ func (m *Manager) Subscribe(ctx context.Context, cwd string) (*Subscription, err
 	}
 	m.mu.Unlock()
 
-	// Slow path: fetch initial outside the lock (statusFn shells out
-	// to git and can take tens of milliseconds; holding m.mu here
-	// would serialise unrelated Subscribe / Close calls behind it).
+	// Slow path, outside the lock: installing watches and statusFn
+	// (which shells out to git) can take tens of milliseconds, and
+	// holding m.mu here would serialise unrelated Subscribe / Close
+	// calls behind them.
+	watchRoots, err := m.watchRoots(canon)
+	if err != nil {
+		return nil, err
+	}
+	// The rebuild closure re-runs the full compute+normalize pipeline so
+	// a boundary change (.gitignore edit, new directory beside a pruned
+	// subtree) yields roots in exactly the shape the initial install used.
+	rootsFn := func() ([]gitops.WatchRoot, error) { return m.watchRoots(canon) }
+	w := newWorkspaceWatcher(canon, m.statusFn, m.fastStatusFn, watchRoots, rootsFn)
+	if m.pollInterval > 0 {
+		w.pollInterval = m.pollInterval
+	}
+	// The watches go in before the initial status is read
+	// (workspaceWatcher.install).
+	w.install(m.installFn)
 	// Use fastStatusFn when available — it skips the network PR lookup
 	// so the RPC returns immediately on cold cache.
 	initialFn := m.fastStatusFn
@@ -140,41 +156,34 @@ func (m *Manager) Subscribe(ctx context.Context, cwd string) (*Subscription, err
 	}
 	initial, err := initialFn(ctx, canon)
 	if err != nil {
-		return nil, err
-	}
-	watchRoots, err := m.watchRoots(canon)
-	if err != nil {
+		w.discard()
 		return nil, err
 	}
 
 	m.mu.Lock()
 	if m.closed {
 		m.mu.Unlock()
+		w.discard()
 		return nil, errors.New("gitwatch: manager closed")
 	}
 	// Race recheck: a concurrent Subscribe may have created the
 	// watcher while we were fetching. If so, prefer its lastStatus
 	// (the freshest broadcast) over our own fetch.
-	if w, ok := m.watchers[canon]; ok {
-		sub, initial := w.addSubscriberFromSnapshot()
+	if existing, ok := m.watchers[canon]; ok {
+		sub, initial := existing.addSubscriberFromSnapshot()
 		m.mu.Unlock()
+		w.discard()
 		sub.closer = func() { m.releaseSubscriber(canon, sub) }
 		if m.shouldRefreshMissingPR(initial) {
-			w.requestRefresh()
+			existing.requestRefresh()
 		}
 		return sub, nil
 	}
-	// The rebuild closure re-runs the full compute+normalize pipeline so
-	// a boundary change (.gitignore edit, new directory beside a pruned
-	// subtree) yields roots in exactly the shape the initial install used.
-	rootsFn := func() ([]gitops.WatchRoot, error) { return m.watchRoots(canon) }
-	w := newWorkspaceWatcher(canon, m.statusFn, m.fastStatusFn, initial, watchRoots, rootsFn)
-	if m.pollInterval > 0 {
-		w.pollInterval = m.pollInterval
-	}
-	w.start(m.installFn)
-	m.watchers[canon] = w
+	// The subscriber is registered before the run loop starts, so the
+	// loop's first broadcast reaches it.
 	sub := w.addSubscriber(initial)
+	w.start(initial)
+	m.watchers[canon] = w
 	m.mu.Unlock()
 	sub.closer = func() { m.releaseSubscriber(canon, sub) }
 

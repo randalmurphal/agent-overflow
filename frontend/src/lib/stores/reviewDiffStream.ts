@@ -1,8 +1,10 @@
-import { ReadReviewDiff, ReleaseReviewDiff } from './bindings';
+import { ReadReviewDiff, ReadReviewDiffPacked, ReleaseReviewDiff, type ReviewDiffChunk, type ReviewDiffOpened } from './bindings';
+import { getTransportHelloFor } from './transportStatus.svelte';
 import { withBackendTarget } from '../transport/backends';
 import type { BackendKey } from '../transport/backendKey';
 import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
-import { PatchParser, type PatchTextLost, type PatchTextSource } from '../utils/patchStore';
+import { PatchParser } from '../utils/patchParser';
+import type { PatchTextLost, PatchTextSource } from '../utils/patchChunks';
 
 // A review diff read from the backend in chunks. An Open*Diff call returns
 // the first chunk and, when the patch continues, a handle that only the
@@ -11,26 +13,21 @@ import { PatchParser, type PatchTextLost, type PatchTextSource } from '../utils/
 // end of the patch when all of its text fit the memory budget; otherwise
 // the read's store keeps it to read evicted text again until the read is
 // disposed.
+//
+// A backend that advertises REVIEW_DIFF_PACKED serves the chunks after
+// the open's through ReadReviewDiffPacked, which packs a chunk
+// (utils/packedText.ts) where characters past ASCII are sparse in it: the
+// page then holds it at its UTF-8 size. An evicted chunk is read again in
+// the form it arrived in.
 
 /** Bytes asked of each ReadReviewDiff (the backend clamps to its bounds). */
 export const REVIEW_DIFF_READ_BYTES = 2 * 1024 * 1024;
 
-export interface ReviewDiffChunk {
-  data: string;
-  offset: number;
-  nextOffset: number;
-  eof: boolean;
-}
+// The backend serves ReadReviewDiffPacked (internal/transport/frame.go).
+const REVIEW_DIFF_PACKED = 'review-diff.packed.v1';
 
-/** The answer of an Open*Diff call. */
-export interface ReviewDiffOpened {
-  id: string;
-  chunk: ReviewDiffChunk;
-  /** Edits diffs: the payloads joined, in patch order. */
-  payloadIds?: string[];
-  /** A git diff's handle for its file reads (every git-backed open
-   * answers one; an edits diff none). */
-  filesHandle?: string;
+function isPacked(chunk: ReviewDiffChunk): boolean {
+  return (chunk.wide?.length ?? 0) > 0;
 }
 
 export interface ReviewDiffRead {
@@ -105,6 +102,9 @@ export class ReviewDiffSource {
     this.first = null;
     const opened = await pending;
     const id = opened.id;
+    // Decided once the open answered, over the connection the handle
+    // belongs to.
+    const packed = this.servesPacked();
     const parser = new PatchParser();
     const store = parser.store;
     // The store owns the handle from here: it releases it on dispose.
@@ -119,12 +119,10 @@ export class ReviewDiffSource {
         if (chunk.eof) break;
         if (!id) throw new Error('review diff: the backend returned no handle for an unfinished diff');
         onProgress?.(parser);
-        const offset = chunk.nextOffset;
-        chunk = await withBackendTarget(this.backend, () => ReadReviewDiff(id, offset, REVIEW_DIFF_READ_BYTES));
+        chunk = await this.readChunk(id, chunk.nextOffset, REVIEW_DIFF_READ_BYTES, packed);
       }
+      // Releases the handle when all of the text stayed resident.
       parser.end();
-      // All of the text is resident: nothing needs the handle again.
-      if (!store.evictedAny) store.detachSource()?.release();
       read = {
         parser,
         onLost: (listener) => store.whenLost(listener),
@@ -150,9 +148,23 @@ export class ReviewDiffSource {
   // than the first read's cut the same chunk (gitdiff.ChunkCut).
   private textSource(id: string): PatchTextSource {
     return {
-      read: (offset, nextOffset) => withBackendTarget(this.backend, () => ReadReviewDiff(id, offset, nextOffset - offset)),
+      // A chunk that arrived as text reads the same from either method.
+      read: async (offset, nextOffset, packed) => {
+        const chunk = await this.readChunk(id, offset, nextOffset - offset, packed);
+        return { data: chunk.data, nextOffset: chunk.nextOffset, packed: isPacked(chunk) };
+      },
       release: () => this.release(id),
     };
+  }
+
+  private servesPacked(): boolean {
+    return getTransportHelloFor(this.backend)?.capabilities.includes(REVIEW_DIFF_PACKED) ?? false;
+  }
+
+  // `packed` asks ReadReviewDiffPacked, which answers each chunk in the
+  // form that is cheaper to hold.
+  private readChunk(id: string, offset: number, maxBytes: number, packed: boolean): Promise<ReviewDiffChunk> {
+    return withBackendTarget(this.backend, () => (packed ? ReadReviewDiffPacked(id, offset, maxBytes) : ReadReviewDiff(id, offset, maxBytes)));
   }
 
   private open(): Promise<ReviewDiffOpened> {

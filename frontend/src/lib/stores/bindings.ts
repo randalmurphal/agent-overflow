@@ -480,6 +480,7 @@ export {
   OpenBranchBaseDiff,
   OpenCommitDiff,
   ReadReviewDiff,
+  ReadReviewDiffPacked,
   ReleaseReviewDiff,
   ListBranchCommits,
   ListRecentCommits,
@@ -818,6 +819,7 @@ export type { BackgroundTaskStop } from '../../../bindings/agent-overflow/intern
 export type { DictationSources as DictationSourceSet } from '../../../bindings/agent-overflow/internal/app/models.js';
 export type { OpenAIKeyFile as OpenAIKeyFileStatus } from '../../../bindings/agent-overflow/internal/app/models.js';
 export type { ReadAloudSourceStatus, ReadAloudVoice } from '../../../bindings/agent-overflow/internal/app/models.js';
+export type { ReviewDiffChunk, ReviewDiffOpened } from '../../../bindings/agent-overflow/internal/app/models.js';
 export type {
   ForgeProject,
   OpenPRThreadRequest,

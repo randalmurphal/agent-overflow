@@ -15,43 +15,60 @@ import (
 	"agent-overflow/internal/unidiff"
 )
 
-func TestParseStatusOutput(t *testing.T) {
+func TestParsePorcelainStatus(t *testing.T) {
 	t.Parallel()
-	// headNumstat is the combined `git diff HEAD --numstat` output (worktree
-	// vs HEAD), so staged and unstaged churn arrive as one stream.
-	status := parseStatusOutput(
-		`# branch.oid abcdef
-# branch.head feature/demo
-# branch.upstream origin/feature/demo
-# branch.ab +2 -1
-1 .M N... 100644 100644 100644 abcdef abcdef tracked.txt
-? untracked.txt`,
-		"3\t1\ttracked.txt\n1\t0\tstaged.txt\n",
-	)
+	status := parsePorcelainStatus(strings.Join([]string{
+		"# branch.oid abcdef",
+		"# branch.head feature/demo",
+		"# branch.upstream origin/feature/demo",
+		"# branch.ab +2 -1",
+		"1 .M N... 100644 100644 100644 aaaa bbbb dir with space/tracked.txt",
+		"1 A. N... 000000 100644 100644 0000 cccc added\nline.txt",
+		"2 R. N... 100644 100644 100644 dddd dddd R100 new name.txt", "old name.txt",
+		"u UU N... 100644 100644 100644 100644 eeee ffff gggg conflicted.txt",
+		"1 M. S.M. 160000 160000 160000 hhhh iiii module",
+		"? untracked.txt",
+		"1 .M",
+		"",
+	}, "\x00"))
 
-	if status.Branch != "feature/demo" {
-		t.Fatalf("Branch = %q, want feature/demo", status.Branch)
+	if status.branch != "feature/demo" || status.oid != "abcdef" || status.detached {
+		t.Fatalf("branch = %q oid = %q detached = %v", status.branch, status.oid, status.detached)
 	}
-	if !status.HasUpstream {
-		t.Fatal("expected HasUpstream=true")
+	if !status.hasUpstream || status.ahead != 2 || status.behind != 1 {
+		t.Fatalf("upstream = %v ahead/behind = %d/%d, want true 2/1", status.hasUpstream, status.ahead, status.behind)
 	}
-	if status.AheadCount != 2 || status.BehindCount != 1 {
-		t.Fatalf("ahead/behind = %d/%d, want 2/1", status.AheadCount, status.BehindCount)
+	if !status.hasChanges {
+		t.Fatal("expected hasChanges")
 	}
-	if !status.HasChanges {
-		t.Fatal("expected HasChanges=true")
+	// Untracked records and the record git did not print whole are not entries.
+	type row struct {
+		kind               byte
+		xy, path, origPath string
+		regular, submodule bool
 	}
-	// FileCount here counts only tracked/staged paths (tracked.txt, staged.txt);
-	// the untracked '?' entry is excluded — baseStatus counts untracked files
-	// individually via ls-files (git status collapses untracked dirs).
-	if status.FileCount != 2 {
-		t.Fatalf("FileCount = %d, want 2 (tracked+staged only, untracked excluded)", status.FileCount)
+	var got []row
+	for _, e := range status.entries {
+		got = append(got, row{e.kind, e.xy, e.path, e.origPath, e.regular, e.submodule})
 	}
-	if status.Insertions != 4 {
-		t.Fatalf("Insertions = %d, want 4", status.Insertions)
+	want := []row{
+		{'1', ".M", "dir with space/tracked.txt", "", true, false},
+		{'1', "A.", "added\nline.txt", "", false, false},
+		{'2', "R.", "new name.txt", "old name.txt", false, false},
+		{'u', "UU", "conflicted.txt", "", false, false},
+		{'1', "M.", "module", "", false, true},
 	}
-	if status.Deletions != 1 {
-		t.Fatalf("Deletions = %d, want 1", status.Deletions)
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("entries = %v\nwant      %v", got, want)
+	}
+	if e := status.entries[0]; e.head != "aaaa" || e.index != "bbbb" {
+		t.Fatalf("blob ids = %q %q, want aaaa bbbb", e.head, e.index)
+	}
+	if !status.hasCommit() {
+		t.Fatal("a status naming a commit reports none")
+	}
+	if initial := parsePorcelainStatus("# branch.oid (initial)\x00# branch.head main\x00"); initial.hasCommit() {
+		t.Fatal("a status before the first commit reports one")
 	}
 }
 
@@ -680,43 +697,28 @@ func TestParseAheadBehindMalformed(t *testing.T) {
 	}
 }
 
-func TestParseNumstatCountMalformed(t *testing.T) {
+func TestParsePorcelainStatusDetachedHead(t *testing.T) {
 	t.Parallel()
-	if got := parseNumstatCount("abc"); got != 0 {
-		t.Fatalf("parseNumstatCount(abc) = %d, want 0", got)
+	status := parsePorcelainStatus("# branch.oid abcdef\x00# branch.head (detached)\x00")
+	if status.branch != "" || !status.detached || status.hasChanges {
+		t.Fatalf("branch = %q detached = %v hasChanges = %v, want empty true false", status.branch, status.detached, status.hasChanges)
 	}
 }
 
-func TestParsePorcelainPathIgnoredPrefix(t *testing.T) {
+func TestNumstatRecords(t *testing.T) {
 	t.Parallel()
-	if got := parsePorcelainPath("! ignored.txt"); got != "ignored.txt" {
-		t.Fatalf("parsePorcelainPath for ignored = %q, want ignored.txt", got)
+	var got []numstatRecord
+	for record := range numstatRecords("3\t1\ta b.txt\x00-\t-\timage.png\x002\t0\t\x00old.txt\x00new.txt\x00incomplete\ttwo\x000\t5\tlast.txt\x00") {
+		got = append(got, record)
 	}
-}
-
-func TestParsePorcelainPathEmptyFields(t *testing.T) {
-	t.Parallel()
-	if got := parsePorcelainPath(""); got != "" {
-		t.Fatalf("parsePorcelainPath for empty = %q, want empty", got)
+	want := []numstatRecord{
+		{insertions: 3, deletions: 1, path: "a b.txt"},
+		{path: "image.png"},
+		{insertions: 2, path: "new.txt", oldPath: "old.txt"},
+		{deletions: 5, path: "last.txt"},
 	}
-}
-
-func TestParseStatusOutputDetachedHead(t *testing.T) {
-	t.Parallel()
-	status := parseStatusOutput(
-		"# branch.oid abcdef\n# branch.head (HEAD detached)\n",
-		"",
-	)
-	if status.Branch != "" {
-		t.Fatalf("Branch = %q, want empty for detached HEAD", status.Branch)
-	}
-}
-
-func TestParseNumstatSkipsShortLines(t *testing.T) {
-	t.Parallel()
-	entries := parseNumstat("incomplete\ttwo\n")
-	if len(entries) != 0 {
-		t.Fatalf("expected no entries for incomplete numstat line, got %d", len(entries))
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("records = %v\nwant      %v", got, want)
 	}
 }
 
@@ -825,20 +827,8 @@ func TestStatusNonRepoLeavesNoForgeCacheEntry(t *testing.T) {
 
 func TestHelperFunctions(t *testing.T) {
 	t.Parallel()
-	if got := normalizeNumstatPath("old/name.txt => new/name.txt"); got != "new/name.txt" {
-		t.Fatalf("normalizeNumstatPath returned %q", got)
-	}
-	if got := parsePorcelainPath("? notes.txt"); got != "notes.txt" {
-		t.Fatalf("parsePorcelainPath for untracked returned %q", got)
-	}
-	if got := parsePorcelainPath("2 R. N... 100644 100644 100644 abc abc R100\tnew.txt\told.txt"); got != "new.txt" {
-		t.Fatalf("parsePorcelainPath for rename returned %q", got)
-	}
 	if got := combineDiffs("one", "two"); got != "one\ntwo" {
 		t.Fatalf("combineDiffs returned %q", got)
-	}
-	if got := parseNumstatCount("-"); got != 0 {
-		t.Fatalf("parseNumstatCount('-') = %d, want 0", got)
 	}
 	if !isDefaultBranchName("origin/main", "") {
 		t.Fatal("expected origin/main to be treated as default when origin HEAD is unavailable")
@@ -1115,10 +1105,15 @@ func gitStdout(t *testing.T, repo string, args ...string) string {
 	return string(out)
 }
 
+// numstatTotals sums line-oriented `git diff --numstat` output.
 func numstatTotals(numstat string) (insertions, deletions int) {
-	for _, e := range parseNumstat(numstat) {
-		insertions += e.Insertions
-		deletions += e.Deletions
+	for _, line := range strings.Split(numstat, "\n") {
+		fields := strings.SplitN(line, "\t", 3)
+		if len(fields) != 3 {
+			continue
+		}
+		insertions += numstatCount(fields[0])
+		deletions += numstatCount(fields[1])
 	}
 	return insertions, deletions
 }

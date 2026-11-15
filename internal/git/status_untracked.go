@@ -3,10 +3,10 @@ package git
 import (
 	"bytes"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 )
 
 // maxUntrackedScanBytes caps how much untracked-file content untrackedStats
@@ -23,40 +23,13 @@ import (
 // matches.
 const maxUntrackedScanBytes = 64 * 1024 * 1024
 
-// untrackedCacheTTL bounds how long a workspace's line cache survives
-// without a scan touching it. Closed workspaces stop scanning, so their
-// entries age out on the next store's sweep instead of pinning one map
-// per historical cwd for the process lifetime.
-const untrackedCacheTTL = 30 * time.Minute
-
-// untrackedRacyWindow is the mtime margin inside which a file is too
-// recently written to memoize: a same-size rewrite landing in the same
-// mtime tick as the read would replay a stale count forever on a
-// coarse-granularity filesystem. Git's index has the identical problem
-// and solves it the same way ("racily clean" smudging); 2s covers the
-// coarsest common granularity (FAT, some network filesystems). Files
-// written within the window are simply re-read each scan until they
-// quiesce — which is also when caching them starts paying off.
-const untrackedRacyWindow = 2 * time.Second
-
 // untrackedLineEntry memoizes one regular file's added-line count keyed
-// to its (size, mtime) at read time - the same stat-based change
-// detection git's own index uses. Only fully-read files are cached: a
-// budget-truncated read carries a partial tally that must not be
-// replayed as if complete.
+// to its stat at read time - the same stat-based change detection git's
+// own index uses. Only fully-read files are cached: a budget-truncated
+// read carries a partial tally that must not be replayed as if complete.
 type untrackedLineEntry struct {
-	size    int64
-	mtimeNs int64
-	lines   int
-}
-
-// untrackedLineCache is one workspace's rel-path → entry map plus the
-// recency stamp the TTL sweep reads. The files map is immutable after
-// store: every scan builds a fresh map and replaces it wholesale, so a
-// snapshot returned to a concurrent scan is always safe to read.
-type untrackedLineCache struct {
-	lastUsed time.Time
-	files    map[string]untrackedLineEntry
+	stat  worktreeStat
+	lines int
 }
 
 // untrackedStats returns the insertions and file count the diff panel
@@ -66,7 +39,7 @@ type untrackedLineCache struct {
 // can hold hundreds of untracked files - one subprocess each would swamp the
 // watcher.
 //
-// The per-file tallies are memoized against (size, mtime): a refresh in a
+// The per-file tallies are memoized against the file's stat: a refresh in a
 // workspace whose untracked files did not change costs one stat per file and
 // zero content reads, instead of re-reading every file's bytes on every
 // refresh (which profiled at GBs of read churn per hour under agent
@@ -91,7 +64,7 @@ func (c *Core) untrackedStats(cwd string, budget int) (insertions, files int) {
 		return 0, 0
 	}
 
-	prev := c.untrackedLineCacheSnapshot(cwd)
+	prev, _ := c.untrackedLines.snapshot(cwd)
 	next := make(map[string]untrackedLineEntry, len(prev))
 	scanStart := c.nowFn()
 
@@ -101,16 +74,16 @@ func (c *Core) untrackedStats(cwd string, budget int) (insertions, files int) {
 		}
 		files++
 		path := filepath.Join(cwd, rel)
-		info, err := os.Lstat(path)
-		if err != nil {
+		stat, missing, err := statPath(path, false)
+		if missing || err != nil {
 			continue // vanished mid-scan - routine while an agent is writing
 		}
 		// Cache hits replay before the budget gate: they cost no I/O, and
 		// gating them would let one large uncached file early in listing
 		// order evict every later file's entry each scan — permanently
-		// re-reading the exact content the memo exists to skip.
-		if entry, ok := prev[rel]; ok && info.Mode().IsRegular() &&
-			entry.size == info.Size() && entry.mtimeNs == info.ModTime().UnixNano() {
+		// re-reading the exact content the memo exists to skip. Only
+		// regular files are stored, so an equal stat is a regular file.
+		if entry, ok := prev[rel]; ok && entry.stat == stat {
 			next[rel] = entry
 			insertions += entry.lines
 			continue
@@ -118,60 +91,27 @@ func (c *Core) untrackedStats(cwd string, budget int) (insertions, files int) {
 		if budget <= 0 {
 			continue // keep counting files; just stop tallying lines
 		}
-		ins, read := countUntrackedFileLines(info, path, budget)
+		ins, read := countUntrackedFileLines(stat.mode, path, budget)
 		insertions += ins
 		budget -= read
-		// Cache only complete reads of regular files whose mtime has
-		// quiesced. read < size means the budget truncated the tally; a
-		// too-recent mtime means a same-size same-tick rewrite could
-		// make the entry replay stale content (see untrackedRacyWindow).
-		if info.Mode().IsRegular() && int64(read) == info.Size() &&
-			info.ModTime().Add(untrackedRacyWindow).Before(scanStart) {
-			next[rel] = untrackedLineEntry{
-				size:    info.Size(),
-				mtimeNs: info.ModTime().UnixNano(),
-				lines:   ins,
-			}
+		// Cache only complete reads of regular files left alone since
+		// before the scan. read < size means the budget truncated the
+		// tally; a recent write means a same-size same-tick rewrite could
+		// make the entry replay stale content (see statRacyWindow).
+		if stat.mode.IsRegular() && int64(read) == stat.size && stat.settledBefore(scanStart) {
+			next[rel] = untrackedLineEntry{stat: stat, lines: ins}
 		}
 	}
-	c.storeUntrackedLineCache(cwd, next)
+	// Entries for files no longer untracked are not in the new map, so
+	// the memo cleans itself each scan.
+	c.untrackedLines.store(cwd, next, c.nowFn())
 	return insertions, files
 }
 
-// untrackedLineCacheSnapshot returns cwd's current entry map (nil when
-// absent). The map is replace-only (see untrackedLineCache), so reading
-// it outside the lock is safe.
-func (c *Core) untrackedLineCacheSnapshot(cwd string) map[string]untrackedLineEntry {
-	c.untrackedMu.Lock()
-	defer c.untrackedMu.Unlock()
-	if cache, ok := c.untrackedLines[cwd]; ok {
-		return cache.files
-	}
-	return nil
-}
-
-// storeUntrackedLineCache replaces cwd's entry map wholesale - entries
-// for files no longer untracked simply aren't in the new map, so the
-// cache self-cleans per scan - and sweeps workspaces whose last scan is
-// past untrackedCacheTTL. Concurrent scans of the same cwd (a watcher
-// refresh racing an RPC Status call) both store complete maps; last
-// writer wins and neither map is ever mutated after store.
-func (c *Core) storeUntrackedLineCache(cwd string, files map[string]untrackedLineEntry) {
-	now := c.nowFn()
-	c.untrackedMu.Lock()
-	defer c.untrackedMu.Unlock()
-	c.untrackedLines[cwd] = &untrackedLineCache{lastUsed: now, files: files}
-	for key, cache := range c.untrackedLines {
-		if now.Sub(cache.lastUsed) > untrackedCacheTTL {
-			delete(c.untrackedLines, key)
-		}
-	}
-}
-
 // countUntrackedFileLines returns the added-line count git's numstat would
-// report for the untracked entry described by info at path, plus the bytes
+// report for the untracked entry of the given mode at path, plus the bytes
 // read (so the caller can debit its scan budget). The caller has already
-// Lstat'ed the path; this function matches git's accounting without following
+// lstat'ed the path; this function matches git's accounting without following
 // links or opening special files - either of which would let the gitwatch hot
 // path read outside the workspace or block forever on a FIFO/device:
 //   - a symlink is counted as its target *text* (one line), exactly as git's
@@ -188,9 +128,8 @@ func (c *Core) storeUntrackedLineCache(cwd string, files map[string]untrackedLin
 // deliberate robustness tradeoff: the hot path must never follow a link off the
 // workspace or hang on a device. (A symlink to a regular file matches the panel:
 // both count the one-line link text, since git --no-index does not follow it.)
-func countUntrackedFileLines(info os.FileInfo, path string, budget int) (insertions, bytesRead int) {
-	mode := info.Mode()
-	if mode&os.ModeSymlink != 0 {
+func countUntrackedFileLines(mode fs.FileMode, path string, budget int) (insertions, bytesRead int) {
+	if mode&fs.ModeSymlink != 0 {
 		target, err := os.Readlink(path)
 		if err != nil {
 			return 0, 0

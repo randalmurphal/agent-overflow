@@ -865,9 +865,12 @@ releases. No client cache.
 
 **Stage 1: Peek** (cheap, automatic on expand):
 - Binding: `GetPayloadPreview(threadId, payloadId, maxBytes) -> {data, nextOffset, totalSize, isComplete}`
-- Default `maxBytes = 32KB`. Fetches from the head of the payload.
-- `isComplete=true` if totalSize ≤ maxBytes. That's the whole payload
-  and stage 2 is skipped.
+- Default `maxBytes = 32KB`. Fetches from the head of the payload. A read
+  that stops before the payload's end stops between characters, so it
+  can hold up to three bytes fewer than `maxBytes`; a `maxBytes` of 1 to
+  3 is read as 4. The next read starts at `nextOffset`.
+- `isComplete=true` when the read reaches the payload's end. That's the
+  whole payload and stage 2 is skipped.
 - Rendered as raw text through the client-side payload renderer
   (`AnsiText` for terminal-style output).
 
@@ -1391,10 +1394,11 @@ Add `UpsertItem(item Item, payload *Payload) (Item, error)`:
 - If payload non-nil, upsert payload in same transaction.
 - Returns the canonical persisted Item (with assigned item_index).
 
-Add `GetPayloadPreview(threadID string, payloadID string, maxBytes int) (data []byte, totalSize int, err error)`:
-- Reads the full payload blob but returns only the head up to maxBytes
-  (accepting the 4MB-cap as the worst case). Also returns total size
-  so the frontend can render the "show full (N KB)" button.
+`GetPayloadChunk(threadID, payloadID string, offset, maxBytes int) (data []byte, totalSize int, complete bool, err error)`:
+- Returns up to maxBytes of the payload from a byte offset, sliced inside
+  SQLite, with the total size so the frontend can render the "show full
+  (N KB)" button. The bound methods cut what they serve between
+  characters (`payloadText`).
 
 The single-writer connection pool (`SetMaxOpenConns(1)`) keeps the
 upsert race-free.

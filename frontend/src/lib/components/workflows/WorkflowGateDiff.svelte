@@ -14,7 +14,7 @@
 
   import { onDestroy } from 'svelte';
   import WorkflowDiff from './WorkflowDiff.svelte';
-  import type { ReviewFile } from '../../utils/patchStore';
+  import type { ReviewFile } from '../../utils/patchParser';
   import { threadMachine } from '../../stores/attachedBackends.svelte';
   import { OpenBranchBaseDiff } from '../../stores/bindings';
   import { ReviewDiffSource, type ReviewDiffRead } from '../../stores/reviewDiffStream';

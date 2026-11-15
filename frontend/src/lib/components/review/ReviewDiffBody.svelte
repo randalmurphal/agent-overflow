@@ -13,14 +13,14 @@
   import type { ExpandDirection } from '../../utils/diffContextExpansion';
   import type { PaintedSpans, PatchScopeContext } from '../../utils/diffSpanCache.svelte';
   import type { DiffGap } from '../../utils/patchFiles';
-  import type { ReviewFile } from '../../utils/patchStore';
+  import type { ReviewFile } from '../../utils/patchParser';
   import {
     captureReadingAnchor,
     resolveReadingAnchor,
     type ReadingAnchor,
   } from '../../utils/reviewAnchor';
   import { REVIEW_JUMP_PULSE_MS } from '../../utils/reviewJumpPulse';
-  import { findLineKeyIndex, findLineKeyPath, type ReviewFindPlace } from '../../utils/reviewFindScan';
+  import { findLineKeyIndex, findLineKeyPath, type ReviewFindPlace } from '../../utils/reviewFindIdentity';
   import { findHitRow, findRowPosition } from '../../utils/reviewFindRows';
   import { reviewDiffKeydown, type ReviewDiffKeysHost } from './reviewDiffKeys';
   import { elementAtEdge } from '../../utils/findReadingEdge';

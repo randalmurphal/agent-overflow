@@ -119,7 +119,7 @@ func newRebuildHarness(t *testing.T, initialRoots []gitops.WatchRoot, configure 
 		}
 		return inner(ctx, cwd)
 	}
-	h.w = newWorkspaceWatcher(h.ws, statusFn, nil, gitops.GitStatus{Branch: "main"}, initialRoots, rootsFn)
+	h.w = newWorkspaceWatcher(h.ws, statusFn, nil, initialRoots, rootsFn)
 	for _, fn := range configure {
 		fn(h.w)
 	}
@@ -130,13 +130,14 @@ func newRebuildHarness(t *testing.T, initialRoots []gitops.WatchRoot, configure 
 		h.lastStopSeq = h.seq
 		h.mu.Unlock()
 	}
-	h.w.start(install)
+	h.w.install(install)
+	h.w.start(gitops.GitStatus{Branch: "main"})
 	t.Cleanup(h.w.stop)
 
 	h.w.eventsCh <- writeEvent(filepath.Join(h.ws, ".startup-sync"))
-	// Wait past the whole startup edge — recompute AND its refresh —
-	// so a test arming statusGate can't accidentally gate the startup
-	// refresh, and completedCallCount baselines start settled.
+	// Wait past the run loop's startup recompute and the refresh this
+	// event causes, so a test arming statusGate can't accidentally gate
+	// that refresh, and completedCallCount baselines start settled.
 	waitFor(t, 3*time.Second, func() bool { return h.rootsCalls() == 1 },
 		"startup recompute to settle")
 	waitFor(t, 3*time.Second, func() bool { return h.stub.completedCallCount() >= 1 },

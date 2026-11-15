@@ -11,7 +11,8 @@ import {
   type RelocationOutcome,
   type RelocationTarget,
 } from './editorPlacement';
-import { keptText, parseReviewFiles, reviewFileFromPatchFile, type ReviewFile } from './patchStore';
+import { parseReviewFiles, reviewFileFromPatchFile, type ReviewFile } from './patchParser';
+import { keptText } from './patchStore';
 import { mergePatchFilesByPath, parsePatchFiles } from './patchFiles';
 import type { CommentAnchor } from './reviewRows';
 

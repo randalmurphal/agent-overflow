@@ -45,7 +45,7 @@ func (a *App) OpenWorkspaceDiff(ctx context.Context, ws WorkspaceRef, ignoreWhit
 		return ReviewDiffOpened{}, err
 	}
 	if !gitdiff.IsGitRepository(ctx, workspace) {
-		return ReviewDiffOpened{Chunk: ReviewDiffChunk{EOF: true}}, nil
+		return emptyReviewDiffOpened(), nil
 	}
 	return a.openReviewDiff(ctx, action, transport.ScopeFilesRead, gitdiff.Options{IgnoreWhitespace: ignoreWhitespace}, func(tempRoot string) (*gitdiff.Sides, error) {
 		return gitdiff.WorktreeSides(ctx, workspace, tempRoot)
@@ -71,7 +71,7 @@ func (a *App) OpenBranchBaseDiff(ctx context.Context, ws WorkspaceRef, baseBranc
 		return ReviewDiffOpened{}, err
 	}
 	if !gitdiff.IsGitRepository(ctx, workspace) {
-		return ReviewDiffOpened{Chunk: ReviewDiffChunk{EOF: true}}, nil
+		return emptyReviewDiffOpened(), nil
 	}
 	return a.openReviewDiff(ctx, action, transport.ScopeFilesRead, gitdiff.Options{IgnoreWhitespace: ignoreWhitespace}, func(tempRoot string) (*gitdiff.Sides, error) {
 		return gitdiff.BranchBaseSides(ctx, workspace, tempRoot, baseBranch)

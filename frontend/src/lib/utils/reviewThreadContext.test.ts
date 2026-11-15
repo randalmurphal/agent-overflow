@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { ReviewThread } from '../types/models';
-import { parseReviewFiles, type ReviewFile } from './patchStore';
+import { parseReviewFiles, type ReviewFile } from './patchParser';
 import { THREAD_CONTEXT_ROWS, threadAnchorRow, threadContextRows } from './reviewThreadContext';
 
 // Display rows (old, new):

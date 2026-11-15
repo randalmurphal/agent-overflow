@@ -1,6 +1,6 @@
 import type { PatchDisplayRow } from './patchFiles';
 import { nearestLineRow } from './patchRows';
-import type { ReviewFile } from './patchStore';
+import type { ReviewFile } from './patchParser';
 import { comparePathsTreeOrder } from './reviewTree';
 import {
   REVIEW_LINE_HEIGHT_PX,

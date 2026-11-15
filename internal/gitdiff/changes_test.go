@@ -2,6 +2,7 @@ package gitdiff
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -244,6 +245,61 @@ func TestWorktreeSnapshotListAndPatchesDescribeOneState(t *testing.T) {
 	}
 	if left, _ := os.ReadDir(root); len(left) != 0 {
 		t.Fatalf("snapshot directory not released: %v", left)
+	}
+}
+
+// churnText is count lines drawn from three, a text whose diff against
+// another seed's git's default search gives up on before it is minimal.
+func churnText(seed uint32, count int) string {
+	var b strings.Builder
+	for range count {
+		seed = (seed*1103515245 + 12345) & 0x7FFFFFFF
+		fmt.Fprintf(&b, "line %d\n", seed%3)
+	}
+	return b.String()
+}
+
+// A file's counts in the changes list are the '+' and '-' lines of the
+// patch the same snapshot opens, where git's default diff would count
+// more than the patch's minimal one.
+func TestWorktreeChangesCountTheLinesOfThePatch(t *testing.T) {
+	t.Parallel()
+	repo := testutil.InitGitRepo(t)
+	commitFile(t, repo, "churn.txt", churnText(1, 1600), "churn")
+	writeFile(t, repo, "churn.txt", churnText(2, 1600))
+	if gitOutput(t, repo, "diff", "--numstat", "HEAD", "--") == gitOutput(t, repo, "diff", "--numstat", "--minimal", "HEAD", "--") {
+		t.Fatal("the fixture no longer separates git's default diff from --minimal; build one that does")
+	}
+	ctx := context.Background()
+	snapshot, err := CaptureWorktree(ctx, repo, t.TempDir())
+	if err != nil {
+		t.Fatalf("CaptureWorktree: %v", err)
+	}
+	defer func() {
+		if err := snapshot.Close(); err != nil {
+			t.Errorf("Close: %v", err)
+		}
+	}()
+	files, err := snapshot.Changes(ctx)
+	if err != nil || len(files) != 1 {
+		t.Fatalf("Changes = %+v, %v", files, err)
+	}
+	patch, err := openAndRead(t, snapshot.Diff(Options{}), nil)
+	if err != nil {
+		t.Fatalf("Diff: %v", err)
+	}
+	additions, deletions := 0, 0
+	for _, line := range strings.Split(patch, "\n") {
+		switch {
+		case strings.HasPrefix(line, "+++"), strings.HasPrefix(line, "---"):
+		case strings.HasPrefix(line, "+"):
+			additions++
+		case strings.HasPrefix(line, "-"):
+			deletions++
+		}
+	}
+	if files[0].Additions != additions || files[0].Deletions != deletions {
+		t.Fatalf("the list counts +%d -%d, the patch +%d -%d", files[0].Additions, files[0].Deletions, additions, deletions)
 	}
 }
 

@@ -9,7 +9,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { userEvent } from 'vitest/browser';
 import '../../../app.css';
 import ReviewCommentEditorShell from './ReviewCommentEditorShell.svelte';
-import { parseReviewFiles } from '../../utils/patchStore';
+import { parseReviewFiles } from '../../utils/patchParser';
 import { readNewSideLines } from '../../utils/suggestionLines';
 
 const CRLF_PATCH = [

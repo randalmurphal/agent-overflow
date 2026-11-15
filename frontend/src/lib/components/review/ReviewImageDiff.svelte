@@ -2,7 +2,7 @@
   import { untrack } from 'svelte';
   import type { ImageHandle, ImageSideName, ReviewDiffMedia } from '../../stores/reviewDiffMedia.svelte';
   import type { DiffFileSizes } from '../../stores/reviewDiffFiles';
-  import type { ReviewFile } from '../../utils/patchStore';
+  import type { ReviewFile } from '../../utils/patchParser';
   import {
     formatBytes,
     imageSides,

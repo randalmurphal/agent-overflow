@@ -5,7 +5,7 @@
   import type { ReviewPaneState } from '../../stores/reviewPane.svelte';
   import { relativeTime } from '../../utils/format';
   import { visibleBody } from '../../utils/reviewComments';
-  import { findThreadCommentKey, reviewCommentKey } from '../../utils/reviewFindScan';
+  import { findThreadCommentKey, reviewCommentKey } from '../../utils/reviewFindIdentity';
   import { authorDisplayName, isBotLogin } from '../../utils/reviewIdentity';
   import { CONFIRM_HIDES } from '../../utils/reviewThreadStyle';
   import type { ReviewThread } from '../../types/models';
@@ -30,7 +30,7 @@
     skipFirst?: boolean;
     /** Avatar diameter for the comment rows. */
     avatarSize?: number;
-    /** Mark each body for the diff's find (utils/reviewFindScan.ts). */
+    /** Mark each body for the diff's find (utils/reviewFindIdentity.ts). */
     findKeys?: boolean;
     /** The review whose comment actions these comments offer. */
     review?: Pick<ReviewPaneState, 'sentComments' | 'sentCommentActions' | 'nowWithheldReason' | 'reactions' | 'suggestions' | 'editorPreviews'> | null;

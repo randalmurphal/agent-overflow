@@ -88,6 +88,10 @@ func RunGit(t *testing.T, cwd string, args ...string) {
 // processes it spawns from a linked worktree (hooks, aliases, `git bisect
 // run`), and a test repo initialised under it would reinitialise that
 // worktree and write into its shared config instead.
+//
+// It also hides the user's global git config, so a fixture that needs an
+// identity or a setting carries its own and behaves the same on a machine
+// that has neither.
 func isolatedGitEnv() []string {
 	env := os.Environ()
 	kept := env[:0]
@@ -96,7 +100,7 @@ func isolatedGitEnv() []string {
 			kept = append(kept, kv)
 		}
 	}
-	return kept
+	return append(kept, "GIT_CONFIG_GLOBAL="+os.DevNull)
 }
 
 // RunGitAllowError executes a git command, returning any error instead of

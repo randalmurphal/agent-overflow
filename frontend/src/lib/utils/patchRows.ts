@@ -1,15 +1,14 @@
 import { intralineRanges } from './intralineDiff';
 import { stripPatchLinePrefix, type DiffGap, type PatchDisplayRow, type PatchLine } from './patchFiles';
+import { lineTypeOf, type PatchBody } from './patchBody';
+import type { ReviewFile } from './patchParser';
 import {
   LINE_ADD,
   LINE_DEL,
   LINE_HUNK,
   LINE_MARKER,
   LINE_META,
-  lineTypeOf,
   ownText,
-  type PatchBody,
-  type ReviewFile,
 } from './patchStore';
 
 // Display rows of a review file, computed from its compact body the way
@@ -299,7 +298,7 @@ export function materializeRows(file: ReviewFile, start: Readonly<RowStart>, cou
   const textOf = (index: number): string | null => {
     let text = texts.get(index);
     if (text === undefined) {
-      text = body.residentLine(index) ? ownText(body.text(index)) : null;
+      text = body.resident(index, index + 1) ? ownText(body.text(index)) : null;
       texts.set(index, text);
       if (text === null) complete = false;
       lines.start = Math.min(lines.start, index);

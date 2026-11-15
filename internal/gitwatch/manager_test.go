@@ -740,6 +740,142 @@ func TestSubscribeSurfacesInitialFetchFailureWithoutLeak(t *testing.T) {
 	}
 }
 
+// A change made right after the initial status is read, before Subscribe
+// returns, reaches the subscriber: the watches are installed before the
+// read, so the change raises an event.
+func TestChangeAfterTheInitialReadReachesTheSubscriber(t *testing.T) {
+	t.Parallel()
+	dir := makeRepoDir(t)
+	var reads atomic.Int32
+	statusFn := func(context.Context, string) (gitops.GitStatus, error) {
+		if reads.Add(1) > 1 {
+			return gitops.GitStatus{IsRepo: true, Branch: "main", HasChanges: true, FileCount: 1}, nil
+		}
+		// The initial read: the tree changes once it has been taken.
+		if err := os.WriteFile(filepath.Join(dir, "file.txt"), []byte("hi"), 0o644); err != nil {
+			return gitops.GitStatus{}, err
+		}
+		return gitops.GitStatus{IsRepo: true, Branch: "main"}, nil
+	}
+	mgr := NewManager(ManagerConfig{StatusFn: statusFn})
+	t.Cleanup(mgr.Close)
+
+	sub, err := mgr.Subscribe(t.Context(), dir)
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	defer sub.Close()
+	if sub.Initial().HasChanges {
+		t.Fatalf("initial = %+v, want the status read before the change", sub.Initial())
+	}
+	if got := recvWithin(t, sub, 5*time.Second); !got.HasChanges {
+		t.Fatalf("update = %+v, want the change made after the initial read", got)
+	}
+}
+
+// watchedChannels records the channel of every watch install, so a test
+// can see whether a channel still receives events (len works on a
+// send-only channel).
+type watchedChannels struct {
+	mu       sync.Mutex
+	channels []chan<- notify.EventInfo
+}
+
+func (c *watchedChannels) install(roots []gitops.WatchRoot, ch chan<- notify.EventInfo) error {
+	c.mu.Lock()
+	c.channels = append(c.channels, ch)
+	c.mu.Unlock()
+	return installNotifyWatcher(roots, ch)
+}
+
+// queued reports how many events wait on the installed channels.
+func (c *watchedChannels) queued() (channels, events int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, ch := range c.channels {
+		events += len(ch)
+	}
+	return len(c.channels), events
+}
+
+// A Subscribe whose initial fetch fails removes the watches it installed.
+func TestFailedInitialFetchRemovesItsWatches(t *testing.T) {
+	t.Parallel()
+	stub := newStubStatus(gitops.GitStatus{})
+	stub.failNext.Store(true)
+	mgr := NewManager(ManagerConfig{StatusFn: stub.fn()})
+	var watched watchedChannels
+	mgr.installFn = watched.install
+	t.Cleanup(mgr.Close)
+
+	dir := makeRepoDir(t)
+	if _, err := mgr.Subscribe(t.Context(), dir); err == nil {
+		t.Fatalf("expected initial fetch error to propagate")
+	}
+	if err := os.WriteFile(filepath.Join(dir, "file.txt"), []byte("hi"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	time.Sleep(300 * time.Millisecond)
+	if channels, events := watched.queued(); channels != 1 || events != 0 {
+		t.Fatalf("%d installs hold %d events after a failed Subscribe, want 1 install and no event", channels, events)
+	}
+}
+
+// Two Subscribes that race to create one workspace's watcher share the
+// winner's; the loser's watches are removed.
+func TestRacingSubscribesKeepOneSetOfWatches(t *testing.T) {
+	t.Parallel()
+	dir := makeRepoDir(t)
+	var entered sync.WaitGroup
+	entered.Add(2)
+	release := make(chan struct{})
+	var reads atomic.Int32
+	statusFn := func(context.Context, string) (gitops.GitStatus, error) {
+		// Both initial reads are in flight, each after its own install.
+		if reads.Add(1) <= 2 {
+			entered.Done()
+			<-release
+		}
+		return gitops.GitStatus{IsRepo: true, Branch: "main"}, nil
+	}
+	mgr := NewManager(ManagerConfig{StatusFn: statusFn})
+	var watched watchedChannels
+	mgr.installFn = watched.install
+
+	subs := make(chan *Subscription, 2)
+	for range 2 {
+		go func() {
+			sub, err := mgr.Subscribe(context.Background(), dir)
+			if err != nil {
+				t.Errorf("subscribe: %v", err)
+			}
+			subs <- sub
+		}()
+	}
+	entered.Wait()
+	close(release)
+	for range 2 {
+		if sub := <-subs; sub != nil {
+			defer sub.Close()
+		}
+	}
+	mgr.mu.Lock()
+	count := len(mgr.watchers)
+	mgr.mu.Unlock()
+	if count != 1 {
+		t.Fatalf("%d watchers, want 1", count)
+	}
+	// With the winner stopped too, no channel may still be watched.
+	mgr.Close()
+	if err := os.WriteFile(filepath.Join(dir, "file.txt"), []byte("hi"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	time.Sleep(300 * time.Millisecond)
+	if channels, events := watched.queued(); channels != 2 || events != 0 {
+		t.Fatalf("%d installs hold %d events after both watchers ended, want 2 installs and no event", channels, events)
+	}
+}
+
 // TestSharedCwdReusesFreshLastStatus pins the perf optimisation that
 // a second Subscribe to the same cwd does NOT re-run statusFn, because
 // the existing watcher's lastStatus is already fresh.

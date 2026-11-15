@@ -660,6 +660,7 @@ export const ListCommitFiles = dispatch('ListCommitFiles');
 export const OpenBranchBaseDiff = dispatch('OpenBranchBaseDiff');
 export const OpenCommitDiff = dispatch('OpenCommitDiff');
 export const ReadReviewDiff = dispatch('ReadReviewDiff');
+export const ReadReviewDiffPacked = dispatch('ReadReviewDiffPacked');
 export const ReleaseReviewDiff = dispatch('ReleaseReviewDiff');
 export const ListBranchCommits = dispatch('ListBranchCommits');
 export const ListRecentCommits = dispatch('ListRecentCommits');

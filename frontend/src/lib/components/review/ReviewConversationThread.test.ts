@@ -2,7 +2,7 @@ import { fireEvent, render } from '@testing-library/svelte';
 import { describe, expect, it, vi } from 'vitest';
 import { SvelteSet } from 'svelte/reactivity';
 import ReviewConversationThread from './ReviewConversationThread.svelte';
-import { parseReviewFiles } from '../../utils/patchStore';
+import { parseReviewFiles } from '../../utils/patchParser';
 import type { ReviewPaneState } from '../../stores/reviewPane.svelte';
 import { createEditorPreviews } from '../../stores/reviewEditorPreview.svelte';
 import { HOME_BACKEND } from '../../transport/backendKey';

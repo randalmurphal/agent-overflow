@@ -141,7 +141,7 @@ func TestCredentialPromptsBlockedUnlessUserInitiated(t *testing.T) {
 
 	// Background / automatic: no prompt channel survives.
 	blocked := []string{
-		"status --porcelain=v2 --branch",
+		"status --porcelain=v2 --branch -z",
 		"fetch --all",
 		"fetch --quiet origin",
 		"push",

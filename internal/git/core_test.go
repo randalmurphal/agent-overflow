@@ -193,6 +193,41 @@ func TestListWorktreesReportsAnOddPathExactly(t *testing.T) {
 	}
 }
 
+// A repository whose path holds a newline resolves to that path. Asked for
+// its root and index together, git's lines cannot say where the root ends,
+// so the scan does not take the cwd for the root even when the path cut at
+// the newline names the same directory.
+func TestRevParseKeepsANewlineInTheRepositoryPath(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("newlines are not valid in Windows paths")
+	}
+	parent := CanonicalPath(t.TempDir())
+	repo := filepath.Join(parent, "repo\nname")
+	if err := os.Mkdir(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	testutil.RunGit(t, repo, "init", "-q")
+	testutil.RunGit(t, repo, "-c", "user.email=t@t", "-c", "user.name=Tester", "commit", "-q", "--allow-empty", "-m", "base")
+	if err := os.Symlink(repo, filepath.Join(parent, "repo")); err != nil {
+		t.Fatal(err)
+	}
+	// From a linked worktree git names the common dir by its absolute path.
+	worktree := filepath.Join(parent, "linked")
+	testutil.RunGit(t, repo, "worktree", "add", "-q", "--detach", worktree)
+	core := NewCore()
+	want := filepath.Join(repo, ".git")
+	if got, err := core.CommonDir(worktree); err != nil || got != want {
+		t.Fatalf("CommonDir = %q, %v, want %q", got, err, want)
+	}
+	if got, ok, err := core.revParsePath(repo, "--absolute-git-dir"); err != nil || !ok || got != want {
+		t.Fatalf("revParsePath(--absolute-git-dir) = %q, %v, %v, want %q", got, ok, err, want)
+	}
+	if proof := core.worktreeRoot(repo, worktreeRootProof{}); proof.isRoot || proof.indexPath != "" {
+		t.Fatalf("worktreeRoot = %+v, want not the root", proof)
+	}
+}
+
 func TestCreateListAndRemoveWorktree(t *testing.T) {
 	t.Parallel()
 	repo := initGitRepo(t)

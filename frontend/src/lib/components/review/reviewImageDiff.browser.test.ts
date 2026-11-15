@@ -6,7 +6,7 @@ import ReviewDiffBody from './ReviewDiffBody.svelte';
 import { createReviewDiffMedia, type ImageHandle, type ImageRowState, type ImageSideName, type ReviewDiffMedia, type ReviewMediaHost } from '../../stores/reviewDiffMedia.svelte';
 import { DiffFilesHandle } from '../../stores/reviewDiffFiles';
 import type { DiffReviewComment } from '../../types/models';
-import { parseReviewFiles, type ReviewFile } from '../../utils/patchStore';
+import { parseReviewFiles, type ReviewFile } from '../../utils/patchParser';
 import { imageRowHeight } from '../../utils/reviewImageRows';
 import { waitFor } from '../../../test/helpers/browserFrames';
 import { rawProps } from '../../../test/helpers/rawProps.svelte';

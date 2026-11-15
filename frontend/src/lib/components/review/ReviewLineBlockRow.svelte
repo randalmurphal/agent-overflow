@@ -7,9 +7,9 @@
   import { gutterTintClass, lineTintClass } from '../../utils/diffLineTint';
   import { diffSpanCacheGeneration, getSpansForReviewLine, requestReviewFileSpans, type PaintedSpans, type PatchScopeContext } from '../../utils/diffSpanCache.svelte';
   import { stripPatchLinePrefix, type DiffGap, type PatchDisplayRow, type SplitDisplayRow } from '../../utils/patchFiles';
-  import type { ReviewFile } from '../../utils/patchStore';
+  import type { ReviewFile } from '../../utils/patchParser';
   import { REVIEW_LINE_HEIGHT_PX } from '../../utils/reviewRows';
-  import { findLineKey } from '../../utils/reviewFindScan';
+  import { findLineKey } from '../../utils/reviewFindIdentity';
   import { seenActivation } from '../../utils/seenActivation';
   import { rowInRange, type LineRange } from '../../utils/reviewRange';
   import type { LineCommentGate } from '../../stores/reviewRangeComments';
@@ -159,7 +159,7 @@
     };
   }
 
-  // The find's key for the row's code text (utils/reviewFindScan.ts).
+  // The find's key for the row's code text (utils/reviewFindIdentity.ts).
   function findKey(row: PatchDisplayRow): string | undefined {
     return row.lineIndex === undefined ? undefined : findLineKey(path, row.lineIndex);
   }

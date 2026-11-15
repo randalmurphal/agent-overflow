@@ -2,7 +2,7 @@
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import { stripPatchLinePrefix, type PatchDisplayRow } from '../../utils/patchFiles';
   import { gutterTintClass, lineTintClass, type LineTintType } from '../../utils/diffLineTint';
-  import type { ReviewFile } from '../../utils/patchStore';
+  import type { ReviewFile } from '../../utils/patchParser';
   import { threadContextRows } from '../../utils/reviewThreadContext';
   import Icon from '../primitives/Icon.svelte';
   import type { ReviewThread } from '../../types/models';

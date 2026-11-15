@@ -130,7 +130,7 @@ beforeEach(() => {
 
 function count(runs: readonly string[], query: string): number {
   const needle = findNeedle(query);
-  return runs.reduce((total, run) => total + countFindMatches(foldFindText(run), needle), 0);
+  return runs.reduce((total, run) => total + countFindMatches(run, needle), 0);
 }
 
 async function mounted(source: string, forge: ForgeAttachmentSource = FORGE): Promise<Element> {

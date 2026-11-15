@@ -1,15 +1,18 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { conflictPatchFile } from './conflictFile';
 import { applyContextExpansion } from './diffContextExpansion';
-import { setPatchTextBudgetForTest } from './patchMemory.svelte';
-import { parseReviewFiles, reviewFileFromPatchFile, type ReviewFile } from './patchStore';
-import { createMarkdownFindTextCache } from '../components/chat/markdown/markdownFindText';
-import { streamPatch } from '../../test/helpers/streamedPatch';
-import { scanReviewFind, type ReviewFindContent, type ReviewFindFileSpot, type ReviewFindHit } from './reviewFindScan';
-import { forgetReviewFindSpotsForTest, placeReviewFindHit, resolveReviewFindHit } from './reviewFindRows';
 import { findNeedle } from './findMatch';
+import { setPatchTextBudgetForTest } from './patchMemory.svelte';
+import { parseReviewFiles, reviewFileFromPatchFile, type ReviewFile } from './patchParser';
+import { PatchStore } from './patchStore';
+import type { ReviewFindFileSpot, ReviewFindHit } from './reviewFindIdentity';
+import { forgetReviewFindSpotsForTest, placeReviewFindHit, resolveReviewFindHit } from './reviewFindRows';
+import { BLOCK_LINES, LOAD_LINES, scanReviewFind, type ReviewFindContent } from './reviewFindScan';
+import { createMarkdownFindTextCache } from '../components/chat/markdown/markdownFindText';
+import { collectScan, findContent, findDraft as draft, findThread as thread } from '../../test/helpers/reviewFindContent';
 import { shownOf } from '../../test/helpers/reviewFindOracle';
-import type { DiffReviewComment, ReviewThread } from '../types/models';
+import { streamPatch } from '../../test/helpers/streamedPatch';
+import type { DiffReviewComment } from '../types/models';
 
 const PATCH = [
   'diff --git a/src/needle.ts b/src/needle.ts',
@@ -36,7 +39,7 @@ function files(patch = PATCH): ReviewFile[] {
 }
 
 function content(over: Partial<ReviewFindContent> = {}): ReviewFindContent {
-  return { files: files(), drafts: [], prThreads: [], commentText: (body) => [{ text: body, shown: true }], ...over };
+  return findContent(files(), over);
 }
 
 type Scanned = ReviewFindHit & ReviewFindFileSpot & { fileIndex: number };
@@ -69,20 +72,6 @@ async function scan(source: ReviewFindContent, query: string, limit = 1000): Pro
     expect(resolved, hit.identity).toEqual({ kind: 'present', at: { fileIndex: hit.fileIndex, rowKey: hit.rowKey, ordinal, place: hit.place } });
   }
   return { hits, capped, pauses };
-}
-
-function draft(id: string, newLine: number, body: string): DiffReviewComment {
-  return {
-    id, threadId: 't', scope: 'workspace', sourceKey: 'k', filePath: 'src/needle.ts', status: 'draft',
-    newLine, side: 'new', selectedText: '', body, createdAt: 0, updatedAt: 0,
-  };
-}
-
-function thread(id: string, line: number | null, bodies: string[], resolved = false): ReviewThread {
-  return {
-    id, path: 'src/needle.ts', line, side: 'right', isResolvable: true, isResolved: resolved, isOutdated: false,
-    comments: bodies.map((body, index) => ({ authorLogin: 'a', body, createdAt: '', databaseID: index + 1, id: `n${index + 1}`, viewerCanEdit: false, viewerCanDelete: false })),
-  };
 }
 
 describe('scanReviewFind', () => {
@@ -304,14 +293,45 @@ describe('scanReviewFind over evicted text', () => {
     setPatchTextBudgetForTest(null);
   });
 
-  function bigPatch(count = 400): string {
+  function bigPatch(count = 400, path = 'big.ts'): string {
     const lines = Array.from({ length: count }, (_, i) => `+line ${i}${i % 50 === 7 ? ' needle' : ''}`);
-    return ['diff --git a/big.ts b/big.ts', '--- a/big.ts', '+++ b/big.ts', `@@ -0,0 +1,${lines.length} @@`, ...lines, ''].join('\n');
+    return [`diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, `@@ -0,0 +1,${lines.length} @@`, ...lines, ''].join('\n');
   }
 
-  function streamed(count = 400) {
+  // Files of `counts` lines each, one patch.
+  function filesPatch(counts: readonly number[]): string {
+    return counts.map((count, index) => bigPatch(count, `f${index}.ts`).slice(0, -1)).join('\n') + '\n';
+  }
+
+  // Pins of store text the scan holds, counted through the store's pin.
+  const pins = (() => {
+    let held = 0;
+    const real = PatchStore.prototype.pin;
+    let spy: { mockRestore(): void } | null = null;
+    return {
+      held: () => held,
+      track() {
+        held = 0;
+        spy = vi.spyOn(PatchStore.prototype, 'pin').mockImplementation(function (this: PatchStore, start: number, end: number) {
+          const release = real.call(this, start, end);
+          held += 1;
+          let released = false;
+          return () => {
+            if (!released) held -= 1;
+            released = true;
+            release();
+          };
+        });
+      },
+      restore: () => spy?.mockRestore(),
+    };
+  })();
+  beforeEach(() => pins.track());
+  afterEach(() => pins.restore());
+
+  function streamed(count: number | string = 400) {
     setPatchTextBudgetForTest(300);
-    const out = streamPatch(bigPatch(count), 200);
+    const out = streamPatch(typeof count === 'number' ? bigPatch(count) : count, 200);
     disposers.push(() => out.parser.store.dispose());
     expect(out.files[0].body.resident()).toBe(false);
     return out;
@@ -328,14 +348,71 @@ describe('scanReviewFind over evicted text', () => {
     expect(source.read).toHaveBeenCalled();
   });
 
+  // The budget (300) is smaller than one block or one read-back range:
+  // released, the text would be evicted again before its lines are read.
+  it('reads each chunk back once, holding what it read until the walk leaves it', async () => {
+    // 'line' flags every line (the filter's blocks); 'line\ufffd' cannot
+    // be spelled, so every row is read (the rule's ranges).
+    for (const query of ['line', 'line\ufffd']) {
+      const { files: evicted, source, spans } = streamed(2000);
+      source.read.mockClear();
+      const { hits } = await collectScan(content({ files: evicted }), query, 100_000);
+      expect(hits, query).toHaveLength(query === 'line' ? 2000 : 0);
+      // A chunk two ranges share is read once for each.
+      const ranges = Math.ceil(2000 / Math.min(BLOCK_LINES, LOAD_LINES));
+      expect(source.read.mock.calls.length, query).toBeLessThanOrEqual(spans.length + ranges);
+      // Nothing stays pinned once the scan ends.
+      expect(pins.held(), query).toBe(0);
+    }
+  });
+
+  it('releases what it read back once the walk leaves it, and when it stops early', async () => {
+    const { files: evicted } = streamed(2000);
+    // Lines past the first block stay resident from here; the first block
+    // is read back.
+    setPatchTextBudgetForTest(1 << 30);
+    const body = evicted[0].body;
+    await body.whenResident(() => undefined, 1000, body.lineCount);
+    expect(body.resident(0, 100)).toBe(false);
+    const pinned = pins.held;
+    const pinnedAt: number[] = [];
+    await collectScan(content({ files: evicted }), 'line', 100_000, {
+      emit: (_hit, _file, spot) => { if (spot.line === 10 || spot.line === 1500) pinnedAt.push(pinned()); },
+    });
+    expect(pinnedAt[0]).toBeGreaterThan(0);
+    expect(pinnedAt[1]).toBe(0);
+    // Stopped by the limit inside a range it read back.
+    setPatchTextBudgetForTest(300);
+    const fresh = streamed(2000);
+    expect((await collectScan(content({ files: fresh.files }), 'line', 5)).capped).toBe(true);
+    expect(pins.held()).toBe(0);
+  });
+
+  it('releases what it read back at the end of its file', async () => {
+    const { files: evicted } = streamed(filesPatch([600, 20, 600]));
+    // The second and third files stay resident from here; the first is
+    // read back.
+    setPatchTextBudgetForTest(1 << 30);
+    await evicted[1].body.whenResident(() => undefined);
+    await evicted[2].body.whenResident(() => undefined);
+    expect(evicted[0].body.resident(550, 600)).toBe(false);
+    const pinnedIn = new Map<number, number>();
+    await collectScan(content({ files: evicted }), 'line', 100_000, {
+      emit: (_hit, file, spot) => { if (spot.line >= 0) pinnedIn.set(evicted.indexOf(file), pins.held()); },
+    });
+    expect(pinnedIn.get(0)).toBeGreaterThan(0);
+    expect(pinnedIn.get(1)).toBe(0);
+    expect(pins.held()).toBe(0);
+  });
+
   it('a scan replaced while a read is out goes no further once it lands', async () => {
     // Four read-back ranges of text: the scan stops within the first.
     const { files: evicted, source, spans } = streamed(2000);
     const gates: (() => void)[] = [];
     const real = source.read.getMockImplementation()!;
-    source.read.mockImplementation(async (offset, next) => {
+    source.read.mockImplementation(async (offset, next, packed) => {
       await new Promise<void>((resolve) => gates.push(resolve));
-      return real(offset, next);
+      return real(offset, next, packed);
     });
     let live = true;
     const hits: ReviewFindHit[] = [];
@@ -354,6 +431,7 @@ describe('scanReviewFind over evicted text', () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
     }
     await expect(done).resolves.toBe(false);
+    expect(pins.held()).toBe(0);
     expect(hits.length).toBe(emitted);
     expect(reads).toBeGreaterThan(0);
     // Only the range that was out was read, never the ranges after it.
@@ -364,5 +442,36 @@ describe('scanReviewFind over evicted text', () => {
     const { files: evicted, source } = streamed();
     source.read.mockRejectedValue(new Error('backend gone'));
     await expect(scan(content({ files: evicted }), 'needle')).rejects.toThrow();
+    expect(pins.held()).toBe(0);
+  });
+
+  it('a scan replaced while a block read is out emits nothing more and resolves false', async () => {
+    const { files: evicted, source } = streamed(2000);
+    // A budget that holds the block once it is read back.
+    setPatchTextBudgetForTest(1 << 30);
+    const gates: (() => void)[] = [];
+    const real = source.read.getMockImplementation()!;
+    source.read.mockImplementation(async (offset, next, packed) => {
+      await new Promise<void>((resolve) => gates.push(resolve));
+      return real(offset, next, packed);
+    });
+    let live = true;
+    let emitted = 0;
+    // Every line matches; the path does not.
+    const done = scanReviewFind(content({ files: evicted }), 'line', {
+      limit: 100_000, live: () => live, emit: () => { emitted += 1; }, pause: async () => {},
+    });
+    await expect.poll(() => gates.length).toBeGreaterThan(0);
+    expect(emitted).toBe(0);
+    live = false;
+    let settled = false;
+    void done.finally(() => { settled = true; });
+    while (!settled) {
+      gates.shift()?.();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    await expect(done).resolves.toBe(false);
+    expect(pins.held()).toBe(0);
+    expect(emitted).toBe(0);
   });
 });

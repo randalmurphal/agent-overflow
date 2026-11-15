@@ -1,6 +1,14 @@
 <script lang="ts" module>
   /** What the pane shows; `none` while it shows nothing searchable. */
   export type ReviewFindView = 'diff' | 'conflicts' | 'log' | 'none';
+
+  /** The clock the pane's find slices its diff scan by and the turn it
+   * gives the event loop between slices (scanReviewFind's `now` and
+   * `pause`). An object so a browser test can hold a scan at a pause. */
+  export const reviewFindTurn = {
+    now: (): number => performance.now(),
+    pause: (): Promise<void> => new Promise<void>((resolve) => setTimeout(resolve, 0)),
+  };
 </script>
 
 <script lang="ts">
@@ -37,13 +45,14 @@
   import { ciLogAnswerHits, resolveCILogHit, type CILogFindHit, type CILogFindShown, type CILogResolution } from '../../utils/ciLogFind';
   import { findNeedle } from '../../utils/findMatch';
   import { createFindHighlighter, findHighlightName, type FindCurrent, type FindHighlighter } from '../../utils/findHighlights';
-  import type { ReviewFile } from '../../utils/patchStore';
+  import type { ReviewFile } from '../../utils/patchParser';
   import { createRefreshScheduler } from '../../utils/refreshScheduler';
   import { createMarkdownFindTextCache, type MarkdownFindText } from '../chat/markdown/markdownFindText';
   import { FORGE_ATTACHMENT_SOURCE_CONTEXT, type ForgeAttachmentSourceReader } from '../chat/markdown/forgeAttachmentContext';
   import { findableBody, isSuggestionMark } from '../../utils/suggestionMarks';
   import { readCommentDetails, sameCommentDetails, sameKeys, type MountedCommentDetails } from '../../utils/reviewFindDetails';
-  import { findDraftKey, findThreadCommentKey, findThreadCommentOfKey, reviewCommentKey, scanReviewFind, type ReviewFindHit, type ReviewFindPlace } from '../../utils/reviewFindScan';
+  import { findDraftKey, findThreadCommentKey, findThreadCommentOfKey, reviewCommentKey, type ReviewFindHit, type ReviewFindPlace } from '../../utils/reviewFindIdentity';
+  import { scanReviewFind } from '../../utils/reviewFindScan';
   import {
     findHitAtOrBelow,
     placeReviewFindHit,
@@ -89,7 +98,6 @@
   let { findKey, title, review, view, files, root, diff, log }: Props = $props();
 
   const isLogHit = (hit: Hit): hit is CILogFindHit => !('at' in hit);
-  const pause = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
   function scroller(): HTMLElement | null {
     return root?.querySelector<HTMLElement>('[data-testid="review-scroll"], [data-testid="review-ci-log-scroll"]') ?? null;
@@ -453,7 +461,8 @@
           seedReviewFindSpot(file, hit, spot);
           context.emit(hit);
         },
-        pause,
+        now: () => reviewFindTurn.now(),
+        pause: () => reviewFindTurn.pause(),
       });
     },
   };

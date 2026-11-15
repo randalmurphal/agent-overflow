@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseReviewFiles } from './patchStore';
+import { parseReviewFiles } from './patchParser';
 import { newSideLineIndexes, readNewSideLines } from './suggestionLines';
 
 const PATCH = [

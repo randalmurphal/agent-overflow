@@ -23,6 +23,41 @@ a UTF-8 boundary (`gitdiff.ChunkCut`). Reading the same offset with a window
 no larger than the first read's returns the same chunk, which is how evicted
 text is read again.
 
+Every chunk, the open's included, carries `key`: `{hash, units}`, the
+32-bit FNV-1a hash of the patch text from offset 0 to the chunk's end over
+its UTF-16 code units, and how many units that is (`internal/jstext`). The
+text is what a JSON client receives for the bytes, each invalid UTF-8 byte
+one U+FFFD; since no cut falls inside a valid UTF-8 sequence, the text of
+the chunks in order is the whole patch's. The reader owns the key: it
+records the key at each boundary beside what verifies the bytes before
+it, and extends the start boundary's key with the chunk's text
+(`gitdiff.Diff.Read`, `editsDiff.Read`), so a re-read answers the key it
+answered first. An edits diff that reaches a boundary again with another
+key has changed since it was opened. A packed chunk carries the plain
+chunk's key.
+
+`ReadReviewDiffPacked` reads the same chunk under the same rules, for a
+backend that advertises `review-diff.packed.v1`, and answers it packed
+where `jstext.PackText` packs it; the opens' first chunks stay plain. All
+three answer one shape, `ReviewDiffChunk`. A browser stores a string at
+two bytes per character once any character in it is past U+00FF, so one
+such character doubles a chunk. Packed `data` holds the chunk's UTF-8
+bytes one per character (U+0000..U+00FF), which a browser stores at one
+byte each, and decoding those bytes gives exactly the text the plain read
+delivers: each invalid UTF-8 byte becomes U+FFFD first, as JSON encoding
+does. `wide` lists, for each line of `data` holding a byte past ASCII, the
+index of the first such byte, so only those lines are decoded, each time
+one is read. Packing needs a byte past ASCII, so a chunk is packed
+exactly when `wide` is non-empty, and a plain chunk omits it. A chunk is
+packed only when it holds a character past U+00FF and its lines with a
+byte past ASCII are at most 1/16 of its bytes; any other chunk is
+answered as the plain read answers it. The form depends on the chunk's
+bytes alone. Offsets stay raw patch positions, so packed `data`'s length
+differs from `nextOffset - offset` when the chunk held invalid bytes. A
+packed chunk is at most seven JSON bytes per raw byte (`jstext.PackText`),
+which keeps an 8 MiB chunk under the transport's read limit
+(`gitdiff.MaxChunkBytes`).
+
 There is no size limit on any diff source.
 
 A diff's two sides are resolved once, by `gitdiff.Sides`, for the patch and
@@ -134,22 +169,54 @@ does not edit this file."); the file on disk is never read.
 
 `ReviewDiffSource` (`frontend/src/lib/stores/reviewDiffStream.ts`) reads the
 whole patch into a `PatchParser`. The store (`utils/patchStore.ts`) keeps
-the chunk strings plus typed-array indexes: line starts, one kind byte per
-line and the hunk table. Files are published as they complete, so a pane
-with nothing on screen shows the diff as it arrives.
+typed-array indexes over the chunk strings: line starts, one kind byte per
+line and the hunk table. The strings, their residency and their reads
+again are `utils/patchChunks.ts`'s, addressed by chunk number. Files are
+published as they complete, so a pane with nothing on screen shows the
+diff as it arrives.
+
+After the open's chunk, `ReviewDiffSource` reads with `ReadReviewDiffPacked`
+when the diff's backend advertises `review-diff.packed.v1`, else with
+`ReadReviewDiff`, so a store holds a chunk in one of two forms: plain (the
+text) or packed (its UTF-8 bytes), as each answer's `wide` marks say. A wide line is a line of packed text
+holding a byte past ASCII; the store keeps one bit per line for it, set from
+the chunk's `wide` marks as the chunk is indexed. Every other line reads as
+it is stored. A wide line's pieces are joined, each packed piece decoded
+on its own (`utils/packedText.ts`): no chunk ends inside a character. The
+parser checks each chunk's span once before storing any of it: a packed
+chunk has marks at bytes past ASCII and its key, and starts and ends
+between characters, or the read fails. The comment source key is the backend's: each chunk carries `key`,
+the FNV-1a hash and UTF-16 length of the patch text through its end, and
+the parser takes it without reading the text. A chunk without a key (a
+backend older than it) is hashed as it arrives, continuing from the key
+before it; a packed chunk without one fails the read, and a key that is
+not an unsigned 32-bit hash with a count the chunk can have fails it too:
+for a plain chunk the count so far plus its length, for a packed chunk no
+less than the count so far and no more than that plus its bytes.
+The highlight key hashes one file's decoded text. Neither depends on how
+the chunks arrived. Positions and sizes the
+store keeps (`PatchBody.textSize`, `lineSize`) count stored characters: at
+least the text's UTF-16 length and at most its UTF-8 length, used only as
+size bounds.
 
 Patch text read from a diff counts against one budget shared by every
 surface (`utils/patchMemory.svelte.ts`): 256 MiB, or 64 MiB in compact
-layout. Past it, chunk text is evicted; line indexes, kinds and hunks stay,
+layout. The budget counts what the engine holds: a packed chunk its length,
+a plain chunk two bytes per character when any character in it is past
+Latin-1 and one otherwise. Past it, chunk text is evicted; line indexes, kinds and hunks stay,
 so file lists, row counts, line numbers and anchors never wait for text.
 Eviction takes text nobody has read first, the latest to arrive first, so a
 large diff keeps its beginning. Read text goes after, least recently read
 first. Pinned text (a line still arriving, a range a reader holds) is not
-evicted and does not count.
+evicted and does not count while it is held; a chunk pinned twice counts
+once, and pinned text that is evicted, waiting to be read again, counts
+nothing.
 
-A read whose text all fit releases its handle at the end. A read that
+The store releases the handle when the patch ends with all of its text
+held. A read that
 evicted anything keeps the handle, and the store reads evicted chunks
-through it, one at a time in the order asked. The owner of the read (the
+through it, one at a time in the order asked, each in the form it first
+arrived in; a chunk read again in another form or length is lost. The owner of the read (the
 pane, the gate diff) disposes it when its files go, which releases the
 handle and the budget. When evicted text can no longer be read (the handle
 closed with its connection, or the diff changed), the store reports it lost

@@ -160,7 +160,7 @@ type workspaceWatcher struct {
 	suppressed int
 }
 
-func newWorkspaceWatcher(cwd string, statusFn, fastStatusFn StatusFn, initial gitops.GitStatus, watchRoots []gitops.WatchRoot, rootsFn func() ([]gitops.WatchRoot, error)) *workspaceWatcher {
+func newWorkspaceWatcher(cwd string, statusFn, fastStatusFn StatusFn, watchRoots []gitops.WatchRoot, rootsFn func() ([]gitops.WatchRoot, error)) *workspaceWatcher {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &workspaceWatcher{
 		cwd:              cwd,
@@ -174,25 +174,28 @@ func newWorkspaceWatcher(cwd string, statusFn, fastStatusFn StatusFn, initial gi
 		eventsCh:         make(chan notify.EventInfo, notifyChannelSize),
 		refreshCh:        make(chan struct{}, 1),
 		done:             make(chan struct{}),
-		lastStatus:       initial,
 		watchRoots:       append([]gitops.WatchRoot(nil), watchRoots...),
 		rootsFn:          rootsFn,
 		stopFn:           func(ch chan<- notify.EventInfo) { notify.Stop(ch) },
 		// The initial roots were computed before notify was installed;
 		// a directory created inside that window is invisible to both.
-		// Starting flagged makes the first refresh edge revalidate —
-		// equality-gated, so the common case is one cheap recompute and
-		// no reinstall.
+		// Starting flagged makes the run loop revalidate before its
+		// first wait: equality-gated, so the common case is one cheap
+		// recompute and no reinstall.
 		needsRebuild: true,
 	}
 }
 
-// start installs the fs watcher and spawns the run loop. Falls back
-// transparently to polling on installation failure (the most common
-// cause is the user's inotify watch limit being exhausted on Linux).
-// The fallback uses the same Updates() channel, so callers see a
-// uniform interface.
-func (w *workspaceWatcher) start(installFn func(roots []gitops.WatchRoot, ch chan<- notify.EventInfo) error) {
+// install installs the fs watches. Falls back transparently to polling
+// on installation failure (the most common cause is the user's inotify
+// watch limit being exhausted on Linux). The fallback uses the same
+// Updates() channel, so callers see a uniform interface.
+//
+// The caller reads the watcher's initial status after install returns
+// and passes it to start: a change made after that read raises an event
+// the installed watches queue for the run loop. A status read before
+// install would leave a change between the two unreported.
+func (w *workspaceWatcher) install(installFn func(roots []gitops.WatchRoot, ch chan<- notify.EventInfo) error) {
 	if installFn == nil {
 		installFn = installNotifyWatcher
 	}
@@ -202,7 +205,19 @@ func (w *workspaceWatcher) start(installFn func(roots []gitops.WatchRoot, ch cha
 			w.cwd, w.watchRoots, err, w.pollInterval)
 		w.fallbackPolling = true
 	}
+}
+
+// start spawns the run loop of an installed watcher whose subscribers
+// hold `initial`, the status read after install.
+func (w *workspaceWatcher) start(initial gitops.GitStatus) {
+	w.lastStatus = initial
 	go w.run()
+}
+
+// discard releases an installed watcher that was never started.
+func (w *workspaceWatcher) discard() {
+	w.cancel()
+	w.stopFn(w.eventsCh)
 }
 
 // currentWatchRoots returns the live roots slice. Callers must treat it
@@ -313,13 +328,15 @@ func (w *workspaceWatcher) run() {
 	// leaves the watcher blind, so it escalates to polling; a later
 	// reinstall that succeeds proves the watches are live again, so the
 	// now-redundant ticker stops.
-	applyRebuild := func() {
-		switch w.maybeRebuildWatches() {
+	applyRebuild := func() rebuildOutcome {
+		outcome := w.maybeRebuildWatches()
+		switch outcome {
 		case rebuildLostWatches:
 			startPolling()
 		case rebuildReinstalled:
 			stopPolling()
 		}
+		return outcome
 	}
 	// retry re-runs a refresh whose status fetch failed. Without it a
 	// transient failure leaves subscribers on a stale status until the
@@ -384,6 +401,14 @@ func (w *workspaceWatcher) run() {
 		applyRebuild()
 		refresh()
 	}
+	// rebuildThenRefresh is for a rebuild no refresh follows on its own:
+	// a change made while the watches were out raised no event, so a
+	// rebuild that took them out is followed by a refresh.
+	rebuildThenRefresh := func() {
+		if applyRebuild() != rebuildNone {
+			refresh()
+		}
+	}
 
 	// lastEventAt is when the fs event stream last proved itself alive.
 	// The liveness probe and the requestRefresh miss-detection both key
@@ -395,6 +420,10 @@ func (w *workspaceWatcher) run() {
 
 	liveness := time.NewTicker(w.livenessInterval)
 	defer liveness.Stop()
+
+	// The roots installed at start are revalidated now that events flow
+	// (needsRebuild starts set).
+	rebuildThenRefresh()
 
 	for {
 		select {
@@ -461,7 +490,7 @@ func (w *workspaceWatcher) run() {
 			if refresh() && time.Since(lastEventAt) >= w.livenessQuiet {
 				log.Printf("gitwatch: refresh observed changes the fs watches never reported for %s; reinstalling watches", w.cwd)
 				w.needsRebuild, w.forceReinstall = true, true
-				applyRebuild()
+				rebuildThenRefresh()
 			}
 		case <-liveness.C:
 			// Silent-death safety net. Skip while fallback polling owns

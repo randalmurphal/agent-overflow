@@ -1,5 +1,5 @@
 import type { ReviewThread } from '../types/models';
-import type { ReviewFile } from './patchStore';
+import type { ReviewFile } from './patchParser';
 import { anchorRow, materializeRows, rowStartAt, type MaterializedRows } from './patchRows';
 
 // The lines a review thread was written against, read from the diff the

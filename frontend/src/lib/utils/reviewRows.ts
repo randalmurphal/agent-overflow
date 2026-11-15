@@ -16,7 +16,8 @@ import {
 import { reportFrontendDiagnostic } from './frontendErrorCapture';
 import type { LineRange } from './reviewRange';
 import { patchMemory, patchTextVersion } from './patchMemory.svelte';
-import { PatchTextLost, type ReviewFile } from './patchStore';
+import type { ReviewFile } from './patchParser';
+import { PatchTextLost } from './patchChunks';
 import type { RowEstimate } from './virtual/types';
 import { imageRowHeight, imageSides, isImagePath, REVIEW_BINARY_ROW_PX } from './reviewImageRows';
 

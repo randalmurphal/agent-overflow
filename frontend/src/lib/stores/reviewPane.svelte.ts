@@ -149,7 +149,10 @@ import {
 import type { DiffGap } from '../utils/patchFiles';
 import { createReviewDiffMedia, type ReviewMediaHost } from './reviewDiffMedia.svelte';
 import { DiffFilesHandle, type DiffFilesTarget } from './reviewDiffFiles';
-import { keptText, PatchTextLost, reviewFileFromPatchFile, whenResident, type PatchParser, type ReviewFile } from '../utils/patchStore';
+import { whenResident } from '../utils/patchBody';
+import { reviewFileFromPatchFile, type PatchParser, type ReviewFile } from '../utils/patchParser';
+import { PatchTextLost } from '../utils/patchChunks';
+import { keptText } from '../utils/patchStore';
 import { anchorRow, anchorRows, completeAnchor, namesOneRow } from '../utils/patchRows';
 import { anchorKey, type CommentAnchor, type EditorRow, type EditorState } from '../utils/reviewRows';
 import {
@@ -2406,10 +2409,10 @@ export function createReviewPaneState(
     // and within the files the backend verifies per call.
     for (let start = 0; start < candidates.length;) {
       let end = start + 1;
-      let chars = candidates[start].body.textLength;
+      let chars = candidates[start].body.textSize;
       while (end < candidates.length && end - start < VERIFY_BATCH_FILES
-        && chars + candidates[end].body.textLength <= VERIFY_BATCH_CHARS) {
-        chars += candidates[end].body.textLength;
+        && chars + candidates[end].body.textSize <= VERIFY_BATCH_CHARS) {
+        chars += candidates[end].body.textSize;
         end += 1;
       }
       const batch = candidates.slice(start, end);

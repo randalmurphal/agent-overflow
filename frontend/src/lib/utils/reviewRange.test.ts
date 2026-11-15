@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseReviewFiles } from './patchStore';
+import { parseReviewFiles } from './patchParser';
 import { draftRange, rangeLabel, rangesByFile, rangeSpan, rowInRange, sharedHalf, spanRange, threadRange } from './reviewRange';
 import type { ReviewThread } from '../types/models';
 import type { CommentAnchor } from './reviewRows';

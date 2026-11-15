@@ -4,7 +4,7 @@ import { createReviewReactions, type ReviewReactions } from './reviewReactions.s
 import { createReviewSuggestions, type ReviewSuggestions } from './reviewSuggestions.svelte';
 import { getTransportHelloFor } from './transportStatus.svelte';
 import { threadOfWriteKey } from './reviewCommentWrites.svelte';
-import type { ReviewFile } from '../utils/patchStore';
+import type { ReviewFile } from '../utils/patchParser';
 
 // A review pane's suggested changes, reactions and editor previews
 // (docs/specs/pull-requests.md, "Suggestions, reactions and preview"),

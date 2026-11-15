@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"unicode/utf8"
+
+	"agent-overflow/internal/jstext"
 )
 
 // Vectors generated from the frontend implementation
@@ -66,7 +68,7 @@ func TestFrontendLineHashesArePrefixHashes(t *testing.T) {
 		t.Fatalf("got %d hashes, want %d", len(hashes), len(prefixes))
 	}
 	for i, prefix := range prefixes {
-		h, _ := jsHashUnits(jsFNVOffsetBasis, prefix)
+		h, _ := jstext.FoldUTF16(jstext.OffsetBasis, prefix)
 		if hashes[i] != h {
 			t.Errorf("hashes[%d] = %d, want prefix hash %d of %q", i, hashes[i], h, prefix)
 		}
@@ -93,6 +95,13 @@ func TestLineHashChainMatchesFrontendLineHashes(t *testing.T) {
 				want := FrontendLineHashes(string(prefix))
 				if !reflect.DeepEqual(got[:len(got)-1], want[from:len(want)-1]) {
 					t.Fatalf("%q from %d: complete lines %v, want %v", prefix, from, got, want[from:])
+				}
+				whole := len(prefix)
+				for !utf8.Valid(prefix[:whole]) {
+					whole--
+				}
+				if complete := FrontendLineHashes(string(prefix[:whole])); got[len(got)-1] != complete[len(complete)-1] {
+					t.Fatalf("%q from %d: last entry %d, want %d, the hash without the cut character", prefix, from, got[len(got)-1], complete[len(complete)-1])
 				}
 				continue
 			}

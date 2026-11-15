@@ -3,7 +3,6 @@
 
 export {
     ChangedFile,
-    Chunk,
     Commit,
     CommitList
 } from "./models.js";
