@@ -191,6 +191,10 @@ func TestThreadToolsUpdateRefusesArchivingTheCaller(t *testing.T) {
 	f := newOrganizeFixture(t)
 	self := f.thread(t, "caller-thread")
 	other := f.thread(t, "other-thread")
+	// Sent, so the sidebar lists it once unarchived.
+	if err := f.app.store.InsertItem(store.Item{ID: "other-thread-sent", ThreadID: other.ID, Kind: "user_text", Role: "user", Status: "completed", Summary: "sent"}); err != nil {
+		t.Fatalf("InsertItem: %v", err)
+	}
 
 	report, err := f.adapter.UpdateThreads(t.Context(), caller(self.ID), threadtools.UpdateCall{
 		ThreadIDs: []string{self.ID, other.ID},
@@ -239,6 +243,21 @@ func TestThreadToolsUpdateRefusesArchivingTheCaller(t *testing.T) {
 	}
 	if frames := f.threadFrames(t); len(frames) != 0 {
 		t.Fatalf("a write that changed nothing emitted %+v", frames)
+	}
+
+	// A never-sent thread with nothing that makes it real is not listed by
+	// its unarchive: the frame is a plain row update.
+	blank := f.thread(t, "blank-thread")
+	for _, archived := range []bool{true, false} {
+		f.events.reset()
+		if _, err := f.adapter.UpdateThreads(t.Context(), caller(self.ID), threadtools.UpdateCall{
+			ThreadIDs: []string{blank.ID}, Archived: boolPtr(archived),
+		}); err != nil {
+			t.Fatalf("UpdateThreads blank archived=%v: %v", archived, err)
+		}
+	}
+	if frames := f.threadFrames(t); len(frames) != 1 || frames[0].Action != triage.ThreadActionFull {
+		t.Fatalf("never-sent unarchive frames = %+v, want one full frame", frames)
 	}
 }
 

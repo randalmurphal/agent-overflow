@@ -12,7 +12,7 @@ import { closePanesShowingThread, findPaneShowingThread, followDeletedThread, it
 import { refreshProjects, touchProjectActivity } from './projects.svelte';
 import { refreshThreadGroups } from './threadGroups.svelte';
 import { addErrorToast, addToast } from './toast.svelte';
-import { getThreadById, getThreadLiveActivityAt, getThreads, listThread, loadThreads, removeThread, replaceAllThreads, replaceThread, touchThreadActivity } from './threads.svelte';
+import { getThreadById, getThreadLiveActivityAt, getThreads, listThread, loadThreads, removeThread, replaceAllThreads, replaceThread, touchThreadActivity, unlistThread } from './threads.svelte';
 import { projectReaderMessageSent, projectThreadError } from './threadStatuses.svelte';
 import type { ThreadPaneIngest } from './threadPaneRoles';
 import { pendingLocalReadMarker } from './threadReadWrites';
@@ -366,7 +366,7 @@ function patchMatchesThread(
  * frame that arrived after the call started.
  */
 export interface ThreadUpdateEvent {
-  /** 'full' | 'patch' | 'listed' | 'unlisted' | 'deleted' */
+  /** 'full' | 'patch' | 'listed' | 'unlisted' | 'emptied' | 'deleted' */
   action: string;
   thread?: Thread;
   id?: string;
@@ -463,9 +463,20 @@ export function applyThreadUpdated(evt: ThreadUpdateEvent): void {
       closePanesShowingThread(id);
       return;
     }
+    case 'emptied': {
+      // A never-sent thread lost what listed it (its draft text, its
+      // worktree): off the sidebar, but it still exists, so a pane showing
+      // it stays and keeps its state.
+      const id = evt.thread?.id ?? evt.id;
+      if (!id) return;
+      if (evt.thread) syncThreadRow(evt.thread);
+      unlistThread(id);
+      return;
+    }
     case 'listed': {
-      // Created, forked, unarchived, or listed by its first draft content
-      // or item: the row belongs in the active sidebar now. Insert it if
+      // Created, forked, unarchived, or made real by its first draft
+      // content, item or worktree (store.sidebarListedClause): the row
+      // belongs in the active sidebar now. Insert it if
       // this client does not have it — the initiating client's own prepend
       // is the same step, so an echo of its own creation is idempotent.
       if (!evt.thread?.id) return;

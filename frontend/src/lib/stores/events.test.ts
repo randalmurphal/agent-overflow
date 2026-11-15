@@ -12,7 +12,7 @@ import {
 } from './threadStatuses.svelte';
 import { resetForTest as resetSendQueue, markItemsFlushed, getFlushedForThread, registerQueueItem } from './sendQueue.svelte';
 import { resetLiveUsageSnapshotsForTest } from './threadContextWindow';
-import { getThreads, getThreadLiveActivityAt, refreshThreads } from './threads.svelte';
+import { addThreadRemovedObserver, getThreads, getThreadLiveActivityAt, refreshThreads } from './threads.svelte';
 import { claimLocalReadMarker, resetLocalReadMarkersForTest } from './threadReadWrites';
 import { withEmptyDraftCleanup } from './emptyDraftCleanup';
 import { getToasts } from './toast.svelte';
@@ -2053,6 +2053,27 @@ describe('setupEventListeners', () => {
       emitWailsEvent('thread:updated', { action: 'deleted', id: 'thread-1' });
 
       expect(findPaneShowingThread('thread-1')).toBeNull();
+    });
+
+    it('takes an emptied thread off the sidebar and keeps the pane showing it', async () => {
+      const thread = makeThread({ id: 'thread-1', isDraft: true });
+      setBindingMock('ListThreads', async () => [thread, makeThread({ id: 'thread-2' })]);
+      await refreshThreads();
+      const pane = await buildPane(thread);
+      const removed: string[] = [];
+      const stopObserving = addThreadRemovedObserver((id) => removed.push(id));
+
+      emitWailsEvent('thread:updated', { action: 'emptied', thread: { ...thread, title: 'Renamed' } });
+
+      expect(getThreads().map((t) => t.id)).toEqual(['thread-2']);
+      expect(findPaneShowingThread('thread-1')).toBe(pane);
+      expect(pane.thread?.title).toBe('Renamed');
+      // The thread still exists, so its per-thread state stays.
+      expect(removed).toEqual([]);
+
+      emitWailsEvent('thread:updated', { action: 'listed', thread: { ...thread, title: 'Renamed' } });
+      expect(getThreads().map((t) => t.id)).toEqual(['thread-1', 'thread-2']);
+      stopObserving();
     });
 
     it('evicts an empty draft during local cleanup but lets its composer restage, releasing on failure', async () => {

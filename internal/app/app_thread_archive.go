@@ -171,8 +171,9 @@ func (a *App) unarchiveThreadLocked(id string) (store.Thread, error) {
 		return store.Thread{}, err
 	}
 	// Broadcast as `listed` so every other attached client puts the row
-	// back in its sidebar.
-	a.announceThreadIfChanged(triage.ThreadActionListed, row.ID, changed)
+	// back in its sidebar, unless it is a never-sent thread the list does
+	// not count yet.
+	a.announceThreadIfChanged(a.listedAction(row.ID), row.ID, changed)
 	return row, nil
 }
 

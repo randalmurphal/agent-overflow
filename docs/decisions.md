@@ -143,6 +143,17 @@ Mechanism in
   computer clears the source-plan acceptance link; the prompt remains intact
   and the original plan stays unaccepted.
 
+- The sidebar lists a never-sent thread only while it is real: it has draft
+  content, a bound worktree or an item (an app notice or error counts), or
+  is a terminal or a fork being prepared (owner ruling 2026-11-15). A screen
+  opened later and a screen already open list the same threads. A staged
+  workspace choice is that screen's own state and lists nothing until the
+  worktree is bound. The screen typing into a new thread lists it as soon as
+  it holds text. A never-sent thread that loses what made it real leaves
+  every sidebar and stays in the panes showing it, and empty-draft cleanup
+  never deletes a thread the sidebar lists. The rule is `threadRealClause`
+  in `internal/store/threads.go`.
+
 - Multi-computer ownership and UI follow [Connected computers](specs/connected-computers.md): frontend-local preferences, selectable host configuration, portable conversations, optional peer tools, and machine names in the existing metadata row. No additional sidebar attention feed or artifact dashboard.
 
 - Message nav rail: one position claim at all times (one current tick, the
