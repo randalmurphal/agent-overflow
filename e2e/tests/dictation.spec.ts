@@ -179,7 +179,7 @@ test('a recording stops as soon as a piece fails to upload', async ({ harness, p
   await seedThreads(harness, ['Dictate here']);
   await setUpDictation(harness);
   await openThread(harness, page, 'Dictate here');
-  await page.route('**/attachments/dictation/**', (route) =>
+  await page.route((url) => url.pathname.endsWith('/attachments/dictation'), (route) =>
     route.request().method() === 'PUT' ? route.fulfill({ status: 400, body: 'recording piece rejected' }) : route.fallback());
 
   await input(page).fill('Please');
