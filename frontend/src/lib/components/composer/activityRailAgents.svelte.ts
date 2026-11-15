@@ -25,9 +25,10 @@
 // thread's settled rows from the ledger. This controller says when it may
 // have changed: on the reads above, a frame naming the thread and no row the
 // list holds open or settled, a row of the thread's own that the list shows
-// settling, and a frame about a settled row the next read did not supply.
-// A settled row of the thread's own that a read supplies is patched into
-// Past, and while Past lists it the open rows leave it out. The segment
+// settling or reopening, and a frame about a settled row the next read did
+// not supply. A row of the thread's own that a read supplies is patched into
+// Past, settled, or out of it, open again; while Past lists a row the open
+// rows leave it out, so no row shows in both. The segment
 // shows while Past holds any row, so it stays reachable.
 //
 // A failed list read keeps the last list and is the controller's `error`
@@ -192,10 +193,10 @@ export function createAgentController(
 
   /**
    * Puts a read's rows in place. `read` is the rows the read itself
-   * supplied (all of `next` for a list read): Past takes its settled rows
-   * of this thread's own from them, ordered by `at`, the read's start, and
-   * reads again for a settled row a frame named (`named`) that the read did
-   * not supply.
+   * supplied (all of `next` for a list read): Past takes its rows of this
+   * thread's own from them, ordered by `at`, the read's start, and reads
+   * again when one of them closed or opened again since the list held it, or
+   * for a settled row a frame named (`named`) that the read did not supply.
    */
   function replace(
     forThreadId: string | null,
@@ -218,13 +219,18 @@ export function createAgentController(
       seen.set(row.token, settledSeen.get(row.token) ?? now);
     }
     const tokens = new Set(next.map((row) => row.token));
-    // A row of this thread's own that is no longer open is Past's newest.
-    // One the list never held came with a frame that already said so.
-    const wasOpen = new Set(listed.filter(isOpenAgentRow).map((row) => row.token));
-    const own = read.filter((row) => row.callerThreadId === forThreadId && !isOpenAgentRow(row));
+    // A row of this thread's own that is no longer open is Past's newest,
+    // and one open again leaves it. One the list never held came with a
+    // frame that already said so.
+    const wasOpen = new Map(listed.map((row) => [row.token, isOpenAgentRow(row)]));
+    const own = read.filter((row) => row.callerThreadId === forThreadId);
     past.patch(own, at);
     const supplied = new Set(read.map((row) => row.token));
-    if (own.some((row) => wasOpen.has(row.token)) || named.some((token) => !supplied.has(token))) past.due();
+    const turned = own.some((row) => {
+      const before = wasOpen.get(row.token);
+      return before !== undefined && before !== isOpenAgentRow(row);
+    });
+    if (turned || named.some((token) => !supplied.has(token))) past.due();
     settledSeen = seen;
     dismissed = new Set([...dismissed].filter((token) => tokens.has(token)));
     listed = next;

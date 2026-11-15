@@ -1612,15 +1612,19 @@ closes up their spacing so the row holds at a phone width.
   elapsed time. Collapsed, the pane holds only the count, read as a page
   of one row when the thread opens; it reads again after a reconnect or
   a lost frame, on a frame naming the thread and no row the list holds,
-  when a row of the thread's own the list shows settles, so a row that
-  settles or whose worker rests is counted and first in Past without a
-  reload, and on a frame about a settled row the list holds that the open
-  list's next read does not supply. A settled row of the thread's own that an open-list read
-  supplies (a late reply while it lingers) is taken into Past from that
-  read. Reads and Show in Sidebar are ordered by when each started: a
-  page read never shows a row older than an open-list row or a placement
-  that arrived while it was out, the first page included, and an
-  open-list read never undoes a placement made while it was out.
+  when a row of the thread's own the list shows settles or opens again,
+  so a row that settles or whose worker rests is counted and first in
+  Past without a reload, and one whose worker is continued leaves it, and
+  on a frame about a settled row the list holds that the open list's next
+  read does not supply. A row of the thread's own that an open-list read
+  supplies is taken into Past from that read when settled (a late reply
+  while it lingers), and out of it, with the count, when open again, so
+  no row shows in both lists. Reads and Show in Sidebar are ordered by
+  when each started: a page read never shows a row older than an
+  open-list row or a placement that arrived while it was out, the first
+  page included, nor a row an open-list read found open while it was
+  out, and an open-list read never undoes a placement made while it was
+  out.
   Expanded, those cues read every row shown again, from the newest
   through cursor pages down to the oldest row shown, so rows that
   settled since go first and none shown is dropped. The rows are held

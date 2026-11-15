@@ -11,7 +11,9 @@
 // rows settled. A due read reads the total collapsed; expanded it reads
 // every row shown again, from the newest through cursor pages down to the
 // oldest row shown, so rows that settled since go first and every row shown
-// stays. A row the open list's read supplies is taken from it (`patch`).
+// stays. A row the open list's read supplies is taken from it (`patch`):
+// settled, as it reads now; open again, because its worker was continued,
+// out of Past.
 // Reads run through one refresh scheduler, so a newer read supersedes an
 // older one and a `due` during a read reads again after it. Each expansion
 // is its own lifetime: a read that answers after Past collapsed, or after
@@ -25,7 +27,8 @@
 // until the pane shows another thread, and a read lands each held input
 // newer than itself over its own row (`placedSince` for the open list's),
 // so no read installs a row older than what arrived while it was out,
-// before the first page included.
+// before the first page included, and none puts back a row the open list
+// has since read open.
 
 import type { ThreadAgentRow } from '../../stores/bindings';
 import { ListThreadPastAgentRows } from '../../stores/bindings';
@@ -34,7 +37,7 @@ import { threadBackend } from '../../transport/entityIndex';
 import { createRefreshScheduler } from '../../utils/refreshScheduler';
 import { errString } from '../../utils/errors';
 import { reportFrontendDiagnostic } from '../../utils/frontendErrorCapture';
-import { sameAgentRow } from '../../utils/agentTray';
+import { isOpenAgentRow, sameAgentRow } from '../../utils/agentTray';
 
 /** Rows Past shows when it opens. */
 export const PAST_FIRST_PAGE = 8;
@@ -81,7 +84,10 @@ export interface PastAgentRowsHost extends PastAgentRows {
   due(options?: { immediate?: boolean }): void;
   /** A read of the open list starts: its tick, which its patch passes back. */
   readStarted(): number;
-  /** Rows an authoritative read of the open list, started at `at`, supplied. */
+  /**
+   * Rows of the thread's own an authoritative read of the open list,
+   * started at `at`, supplied: a settled one as it reads, an open one out.
+   */
   patch(rows: readonly ThreadAgentRow[], at: number): void;
   /** `row` from a read started at `at`, with any placement made since. */
   placedSince(row: ThreadAgentRow, at: number): ThreadAgentRow;
@@ -134,14 +140,20 @@ export function createPastAgentRows(getThreadId: () => string | null): PastAgent
     return placed && placed.at > at && row.placement !== placed.placement ? { ...row, placement: placed.placement } : row;
   }
 
-  /** A page read started at `at`, with every held input newer than it. */
+  /**
+   * A page read started at `at`, with every held input newer than it: a row
+   * the open list read open since is left out.
+   */
   function admit(page: readonly ThreadAgentRow[], at: number, into: Map<string, number>): ThreadAgentRow[] {
-    return page.map((row) => {
+    const out: ThreadAgentRow[] = [];
+    for (const row of page) {
       const held = heldRows.get(row.token);
       const stamp = held && held.at > at ? held.at : at;
+      if (stamp !== at && isOpenAgentRow(held!.row)) continue;
       into.set(row.token, stamp);
-      return placedOver(stamp === at ? row : flat(held!.row, row), stamp);
-    });
+      out.push(placedOver(stamp === at ? row : flat(held!.row, row), stamp));
+    }
+    return out;
   }
 
   // A Past read that started at `at` has finished: a row held from before
@@ -225,7 +237,8 @@ export function createPastAgentRows(getThreadId: () => string | null): PastAgent
             rows = admit(shown.rows, at, shownStamps);
             stamps = shownStamps;
             next = shown.next;
-            total = shown.total;
+            // The page counted the rows admit left out.
+            total = Math.max(0, shown.total - (shown.rows.length - rows.length));
           }
           loaded = true;
           error = '';
@@ -236,8 +249,9 @@ export function createPastAgentRows(getThreadId: () => string | null): PastAgent
           if (!forExpansion()) return;
           const shown = new Set(rows.map((row) => row.token));
           const added = (page?.rows ?? []).filter((row: ThreadAgentRow) => !shown.has(row.token));
-          rows = [...rows, ...admit(added, moreAt, stamps)];
-          total = page?.total ?? total;
+          const admitted = admit(added, moreAt, stamps);
+          rows = [...rows, ...admitted];
+          total = page ? Math.max(0, page.total - (added.length - admitted.length)) : total;
           next = page?.next ?? null;
           error = '';
         }
@@ -324,17 +338,29 @@ export function createPastAgentRows(getThreadId: () => string | null): PastAgent
         if (!held || held.at < at) heldRows.set(row.token, { row, at });
       }
       let changed = false;
+      let reopened = 0;
       // A settled row's settled time never changes, so it keeps its place.
-      const out = rows.map((row) => {
+      // One read open again is in the open list alone.
+      const out: ThreadAgentRow[] = [];
+      for (const row of rows) {
         const fresh = byToken.get(row.token);
-        if (!fresh || (stamps.get(row.token) ?? 0) >= at) return row;
+        if (!fresh || (stamps.get(row.token) ?? 0) >= at) {
+          out.push(row);
+          continue;
+        }
+        if (isOpenAgentRow(fresh)) {
+          stamps.delete(row.token);
+          reopened++;
+          changed = true;
+          continue;
+        }
         stamps.set(row.token, at);
         const updated = placedOver(flat(fresh, row), at);
-        if (sameAgentRow(row, updated)) return row;
-        changed = true;
-        return updated;
-      });
+        if (!sameAgentRow(row, updated)) changed = true;
+        out.push(sameAgentRow(row, updated) ? row : updated);
+      }
       if (changed) rows = out;
+      if (reopened > 0) total = Math.max(0, total - reopened);
     },
 
     due(options?: { immediate?: boolean }): void {
