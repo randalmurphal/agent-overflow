@@ -38,7 +38,11 @@ func newUpdateFixture(t *testing.T) updateFixture {
 	if err != nil {
 		t.Fatalf("open mock binary: %v", err)
 	}
-	defer src.Close()
+	defer func() {
+		if err := src.Close(); err != nil {
+			t.Errorf("close mock binary: %v", err)
+		}
+	}()
 	dst, err := os.OpenFile(bin, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0o755)
 	if err != nil {
 		t.Fatalf("create mock copy: %v", err)
