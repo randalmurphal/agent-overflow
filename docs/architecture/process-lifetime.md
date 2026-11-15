@@ -27,11 +27,25 @@ Signalling only a group's leader is not enough: Linux's parent-death signal
 reaches the leader, and a shell leader exits while what it started (`npm run
 dev` under `cd web && ...`) keeps running.
 
+After the backend dies the sidecar execs nothing and opens nothing: it
+signals the groups, sleeps, logs to the stderr it inherited and exits
+(`orphanreaper/reaper.go`). Its code is still read from its executable on
+first use, because the kernel loads an executable's pages when they first
+run, and the kill path first runs after the backend died. Under an AppImage
+that executable is in the squashfs mount the AppImage runtime unmounts when
+the backend exits (`internal/appimage`), so the sidecar can fail to load its
+kill path there and leave the groups to the next launch's sweep. The update
+helper avoids the same mount by running the `.AppImage` file itself
+(`desktopInstall` in `main_update_apply.go`); the sidecar does not yet.
+
 ## Which spawners end with the backend
 
 `procutil.StartGroup` and `RunGroup` take a `procutil.Reaper` and refuse a nil
 one, so every supervised command group is watched for its whole run and
-released once Wait has seen it end. Processes a command leaves running under
+released once Wait has seen it end. The headless browser's launch follows the
+same rule: `startChromium` takes the reaper and refuses a nil one, the engine
+is not built without one (`HeadlessChromiumOptions.Reaper`), and the group is
+released once `stop` has killed it. Processes a command leaves running under
 `KeepLeftovers` are released with it and outlive the backend, as they outlive
 the command. A group the kill could not end stays watched.
 
@@ -46,7 +60,7 @@ the command. A group the kill could not end stays watched.
 | Provider sessions (`provider/process*.go`) | Ends with the backend | Linux: SIGTERM to the leader (Pdeathsig). macOS: reaper |
 | Claude TUI sessions (`claudetui`) | Ends with the backend | Linux: pty hangup. macOS: reaper |
 | Terminal panes (`terminal`) | Ends with the backend | The pty master closes, and the kernel hangs up the session |
-| Headless Chromium (`browser/headless_process*.go`) | Ends with the backend | Linux: SIGKILL to the leader (Pdeathsig). macOS: none |
+| Headless Chromium (`browser/headless_process*.go`) | Ends with the backend | Reaper. Its renderer, GPU, network and storage processes are in its group and write into the profile until they die |
 | `caffeinate` (`power`, macOS) | Ends with the backend | `-w <backend pid>` |
 | Bounded one-shots: git, `gh`/`glab` token reads, version and MCP status probes, the login-shell probe, `ssh` setup, `security`, `lsof`, `systemctl`/`launchctl`, `wslpath` | Finishes on its own | Each runs under a timeout or ends at EOF; none is watched |
 | Text generation (`textgen`) | Finishes on its own | Deliberately not killed abruptly: the CLI may be writing a refreshed OAuth token |

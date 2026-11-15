@@ -14,6 +14,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"agent-overflow/internal/procutil"
 )
 
 // The headless Chromium engine: the SERVE-mode implementation of the
@@ -67,6 +69,9 @@ type HeadlessChromiumOptions struct {
 	// It is the whole of what this engine takes from settings; everything
 	// else about a profile is the Manager's own profileOptions.
 	Binary string
+	// Reaper ends every browser's process group when the backend dies
+	// without stopping it. Required: without one there is no engine.
+	Reaper procutil.Reaper
 }
 
 type headlessEngine struct {
@@ -74,6 +79,7 @@ type headlessEngine struct {
 	// binary is resolved ONCE, at selection: a boot that found no browser
 	// has no engine at all, so every profile below shares one answer.
 	binary string
+	reaper procutil.Reaper
 	events engineEvents
 	logf   func(string, ...any)
 	// closeTimeout is chromiumCloseTimeout, shorter in a unit test.
@@ -98,6 +104,9 @@ type headlessEngine struct {
 // not. The error is what selectEngine logs before falling back to no
 // engine at all; nothing here starts a process.
 func newHeadlessChromiumEngine(configDir string, opts HeadlessChromiumOptions, events engineEvents) (*headlessEngine, error) {
+	if opts.Reaper == nil {
+		return nil, procutil.ErrNoReaper
+	}
 	binary, err := findChromium(opts.Binary, exec.LookPath, runtime.GOOS)
 	if err != nil {
 		return nil, err
@@ -106,6 +115,7 @@ func newHeadlessChromiumEngine(configDir string, opts HeadlessChromiumOptions, e
 		configDir:    configDir,
 		tempRoot:     os.TempDir(),
 		binary:       binary,
+		reaper:       opts.Reaper,
 		events:       events,
 		logf:         log.Printf,
 		closeTimeout: chromiumCloseTimeout,
