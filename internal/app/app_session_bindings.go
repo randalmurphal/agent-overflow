@@ -310,7 +310,7 @@ func (a *App) ReconnectSession(threadID string) error {
 	defer a.releaseReconnect(threadID)
 	unlock := a.threadLocks().Lock(threadID)
 	defer unlock()
-	if err := a.stopSession(threadID); err != nil {
+	if err := a.stopSessionForRestart(threadID); err != nil {
 		return err
 	}
 	return a.startSession(context.Background(), threadID)
@@ -331,7 +331,7 @@ func (a *App) reconnectSessionLocked(ctx context.Context, threadID string) error
 	defer a.releaseReconnect(threadID)
 	// The stop half stays uncancellable on purpose: it is provider IO, and it
 	// has already run by the time the start half's join could be abandoned.
-	if err := a.stopSession(threadID); err != nil {
+	if err := a.stopSessionForRestart(threadID); err != nil {
 		return err
 	}
 	return a.startSession(ctx, threadID)
@@ -367,4 +367,16 @@ func (a *App) stopSession(threadID string) error {
 		return a.stopSessionFn(threadID)
 	}
 	return a.StopSession(threadID)
+}
+
+// stopSessionForRestart is the stop half of a reconnect. Nobody asked for
+// the thread's queue to go, so it returns to the composer, as it does when
+// a session dies (teardownAndCloseSessionRestoringQueue). Caller holds the
+// thread action lock.
+func (a *App) stopSessionForRestart(threadID string) error {
+	if a.stopSessionFn != nil {
+		return a.stopSessionFn(threadID)
+	}
+	sess, _ := a.sessionManager().take(threadID)
+	return a.teardownAndCloseSessionRestoringQueue(threadID, sess)
 }

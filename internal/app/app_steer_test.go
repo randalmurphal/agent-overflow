@@ -88,7 +88,13 @@ done
 // caller can Close() it via t.Cleanup.
 func installSteerTestSession(t *testing.T, app *App, thread store.Thread, steerOutcome string) *codex.Session {
 	t.Helper()
-	binary := writeCodexSteerBinary(t, thread.ID+"-codex", steerOutcome)
+	return installCodexTestSessionWithBinary(t, app, thread, writeCodexSteerBinary(t, thread.ID+"-codex", steerOutcome))
+}
+
+// installCodexTestSessionWithBinary is installSteerTestSession over a fake
+// app-server of the caller's own.
+func installCodexTestSessionWithBinary(t *testing.T, app *App, thread store.Thread, binary string) *codex.Session {
+	t.Helper()
 	sess, err := codex.NewSession(
 		context.Background(),
 		thread.ID,

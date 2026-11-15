@@ -109,9 +109,11 @@ Codex and claude-tui keep one message per queued item. See
 A quiet row is persisted without a `provider:item_event`, so a connected
 client keeps showing the message above its composer until the echo emits one.
 That marker is live state, not an inference: `LiveStateSnapshotForThread`
-publishes every unconsumed queued send as a pending flush item, and each
-pending send appears in exactly one of the snapshot's two lists: the
-composer marker or the deferred timeline rows a SQLite slice is blind to.
+lists every unconsumed queued send, deferred or quiet, in `FlushedItems`; a
+send anchored at an interrupt is already a timeline row and is not listed.
+`GetThreadLiveState` lists a message in exactly one place: in `QueueItems`
+while the queue or the dispatch worker still holds it, in `FlushedItems`
+once its dispatch hands it over.
 A client renders a flushed message in exactly one place at a time and hands
 it from the marker to the timeline when the row actually renders
 (`docs/architecture/turn-lifecycle.md` § Per-thread send queue). Quiet rows
@@ -148,6 +150,11 @@ the session is ending: it returns with the rest of the queue in the
 session-end restore, in queue order, or when a replacement session starts, or
 is dropped with the queue by a Stop.
 Otherwise a send stays pending until session teardown repairs or restores it.
+A crash runs no teardown: the boot restore (`restoreDurableFlushQueueAtBoot`)
+retires every main-timeline user row still marked `pendingFlush` and returns
+its text to the composer, once when its queue row survived too. The draft is
+written before the rows are retired, so a crash between the two can repeat
+the text in the composer but cannot lose it.
 
 The first matched confirmation captures placement before fallible cache writes. A stable
 predecessor identifies that boundary; retries must never ask for the current tail.
