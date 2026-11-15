@@ -51,6 +51,13 @@ describe('an open row', () => {
     expect(agentRowStateLabel(live('replied', 'running'))).toBe('running');
     expect(agentRowStateLabel(live('finished', 'blocked'))).toBe('blocked');
     expect(agentRowStateLabel(live('replied', 'queued'))).toBe('queued');
+    // A worker waiting on its background work, a loop, a reminder or a
+    // timer is open, reads as waiting, and is no running worker.
+    const waiting = live('replied', 'waiting');
+    expect(isOpenAgentRow(waiting)).toBe(true);
+    expect(agentRowShownState(waiting)).toBe('waiting');
+    expect(agentRowStateLabel(waiting)).toBe('waiting');
+    expect(agentWorkerCount([waiting], (r) => agentRowShownState(r) === 'running')).toBe(0);
     expect(agentRowStateLabel(live('replied', undefined, { lateReply: true }))).toBe('replied late');
     // An open request reads as its own state, whatever its worker does.
     expect(agentRowShownState(live('accepted', 'running'))).toBe('accepted');

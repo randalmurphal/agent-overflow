@@ -108,7 +108,9 @@ type ThreadAgentRow struct {
 	// and the accepted and unconfirmed states before the work starts.
 	State string `json:"state"`
 	// Worker is why the thread a spawn made is not at rest, whatever State
-	// says: blocked, running or queued; empty while it is at rest, and for
+	// says: blocked, running, queued, or waiting on what it started
+	// (background work, a loop, watch or reminder, a provider timer); empty
+	// while it is at rest, and for
 	// every other kind. A spawn whose worker is not at rest is open: one
 	// that replied and keeps working shows its reply and this.
 	Worker string `json:"worker,omitempty"`
@@ -724,10 +726,11 @@ func (v threadAgentView) row(request store.ThreadAgentRequest, names map[string]
 	local := row.TargetComputerID == "" && row.TargetThreadID != ""
 	// A spawn's worker is read whatever its request's state: one that
 	// settled is open while the thread it made is not at rest.
-	worker := ""
+	var rest workerRest
 	if local && row.Kind == store.ThreadRequestSpawn {
-		worker = v.app.liveWorkerUnrest(row)
+		rest = v.app.liveWorkerUnrest(row)
 	}
+	worker := rest.unrest
 	live := !settled || worker != ""
 	blocked := false
 	var remote remoteBlocked
@@ -789,6 +792,10 @@ func (v threadAgentView) row(request store.ThreadAgentRequest, names map[string]
 	case row.TargetThreadID != "":
 		out.BlockedOn, out.BlockedDetail, out.BlockedRoutedTo = threadAgentBlockedOn(snapshot)
 		out.Activity = v.app.threadAgentActivity(row.TargetThreadID)
+		if out.Activity == "" {
+			// A waiting worker's line is what it waits on.
+			out.Activity = rest.detail
+		}
 	}
 	return out
 }
@@ -1110,10 +1117,11 @@ type threadAgentEmits struct {
 	tokens  map[string]struct{}
 	callers map[string]struct{}
 	targets map[string]struct{}
-	// liveness holds the threads whose rest may have changed: each is
-	// reassessed (reassessWorker) and framed as a target when it is or was
-	// a worker, or a request runs on it.
-	liveness map[string]struct{}
+	// liveness holds the threads whose rest may have changed, true where
+	// their durable sources changed too: each is reassessed
+	// (reassessWorker) and framed as a target when it is or was a worker,
+	// or a request runs on it.
+	liveness map[string]bool
 	draining bool
 	// activity is each running target's latest activity line, while it has
 	// a request running or is a worker not at rest; lastActivity and
@@ -1141,17 +1149,53 @@ func (a *App) noteThreadAgentTarget(threadID string) {
 	a.queueThreadAgentEmit(func(e *threadAgentEmits) { e.targets[threadID] = struct{}{} })
 }
 
-// noteWorkerLiveness reports a change that may move a thread into or out
-// of rest, each source workerUnrest reads: its turn, its prompts and its
-// session, from the emit tap (tapThreadAgentRows), and its queue, from
-// triage's sends-pending observer (runSendsPendingWorker), which every
-// queue write reports to. The thread is reassessed off both paths, where
-// the spawn link's lookup runs.
+// noteWorkerLiveness reports a change to a source triage holds that may
+// move a thread into or out of rest: its turn, its prompts and its
+// session's death, from the emit tap (tapThreadAgentRows); its provider
+// timers, from the provider event handler (noteProviderWorkerLiveness) and
+// the process's end (unregisterSession); and its queue, from triage's
+// sends-pending observer (runSendsPendingWorker), which every queue write
+// reports to. The thread is reassessed off these paths, where the spawn
+// link's lookup runs; its durable sources keep what they last said.
 func (a *App) noteWorkerLiveness(threadID string) {
 	if threadID == "" {
 		return
 	}
-	a.queueThreadAgentEmit(func(e *threadAgentEmits) { e.liveness[threadID] = struct{}{} })
+	a.queueThreadAgentEmit(func(e *threadAgentEmits) {
+		if _, queued := e.liveness[threadID]; !queued {
+			e.liveness[threadID] = false
+		}
+	})
+}
+
+// noteWorkerWaiting reports a change to a thread's durable sources, which
+// its reassessment reads again (workerDurableUnrest): its background work,
+// from the background tray's frames, which also report the work a
+// session's end settles; its loops,
+// watches and reminders, from their frames; and every source, at boot.
+func (a *App) noteWorkerWaiting(threadID string) {
+	if threadID == "" {
+		return
+	}
+	a.queueThreadAgentEmit(func(e *threadAgentEmits) { e.liveness[threadID] = true })
+}
+
+// noteBackgroundTrayLiveness reports a background tray frame of a thread
+// to its reassessment, unless it can change nothing: a delta whose named
+// launches all still run, for a thread already waiting on its background
+// work. A delta of a running background agent's latest tool is such a
+// frame, so a working agent costs its worker no reads.
+func (a *App) noteBackgroundTrayLiveness(event triage.BackgroundTrayEvent) {
+	if !event.Refresh && len(event.Rows) == len(event.LaunchIDs) && a.waitsOnBackground(event.ThreadID) {
+		running := true
+		for _, row := range event.Rows {
+			running = running && row.Status == "running"
+		}
+		if running {
+			return
+		}
+	}
+	a.noteWorkerWaiting(event.ThreadID)
 }
 
 // threadAgentFollows reports whether a thread's changes reach an Agents
@@ -1168,7 +1212,7 @@ func (a *App) queueThreadAgentEmit(add func(*threadAgentEmits)) {
 	e.mu.Lock()
 	if e.tokens == nil {
 		e.tokens, e.callers, e.targets = map[string]struct{}{}, map[string]struct{}{}, map[string]struct{}{}
-		e.liveness = map[string]struct{}{}
+		e.liveness = map[string]bool{}
 	}
 	add(e)
 	if e.draining || a.lifeCtx().Err() != nil {
@@ -1195,10 +1239,10 @@ func (a *App) drainThreadAgentEmits() {
 			return
 		}
 		e.tokens, e.callers, e.targets = map[string]struct{}{}, map[string]struct{}{}, map[string]struct{}{}
-		e.liveness = map[string]struct{}{}
+		e.liveness = map[string]bool{}
 		e.mu.Unlock()
-		for threadID := range liveness {
-			worker, err := a.reassessWorker(threadID)
+		for threadID, durable := range liveness {
+			worker, err := a.reassessWorker(threadID, durable)
 			if err != nil {
 				// Framed anyway: a frame that names nothing costs a read.
 				log.Printf("agent rows: reassess thread %s: %v", threadID, err)
@@ -1231,9 +1275,10 @@ func (a *App) drainThreadAgentEmits() {
 }
 
 // tapThreadAgentRows is the emit tap: any thread's turn, prompt or session
-// changed, which may move it into or out of rest (noteWorkerLiveness); a
-// running target's or a live worker's title changed, or it did something
-// new.
+// changed, which may move it into or out of rest (noteWorkerLiveness), or
+// its background work, loops, watches or reminders did
+// (noteWorkerWaiting); a running target's or a live worker's title
+// changed, or it did something new.
 func (a *App) tapThreadAgentRows(name eventchan.Channel, data any) {
 	// A thread row frame is told by its payload, so this reader names no
 	// thread:updated channel: only the announcer emits on it.
@@ -1275,6 +1320,14 @@ func (a *App) tapThreadAgentRows(name eventchan.Channel, data any) {
 		if event, ok := data.(triage.SessionDiedEvent); ok {
 			a.forgetThreadAgentActivity(event.ThreadID)
 			a.noteWorkerLiveness(event.ThreadID)
+		}
+	case eventchan.ProviderBackgroundTray:
+		if event, ok := data.(triage.BackgroundTrayEvent); ok {
+			a.noteBackgroundTrayLiveness(event)
+		}
+	case eventchan.ThreadWakesChanged:
+		if change, ok := data.(ThreadWakeChange); ok {
+			a.noteWorkerWaiting(change.ThreadID)
 		}
 	case eventchan.ProviderItemEvent:
 		if event, ok := data.(triage.ItemStreamEvent); ok && event.Item != nil && event.Item.ParentID == "" {

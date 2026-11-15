@@ -173,7 +173,11 @@ func (a *App) serveThreadAgentPeer(ctx context.Context, owner string, call Threa
 		listing.ThreadProvider = thread.Provider
 		// No spawn here made the thread, so no row here follows its rest:
 		// the computer that asked reads it from this answer.
-		listing.Worker = a.workerUnrest(args.ThreadID)
+		rest, err := a.workerUnrest(args.ThreadID)
+		if err != nil {
+			return ThreadPeerReply{}, fmt.Errorf("read whether thread %s is at rest: %w", args.ThreadID, err)
+		}
+		listing.Worker = rest.unrest
 		result = listing
 	case threadAgentPeerStop:
 		stop, err := a.stopThreadAgentWorkHere(ctx, args.ThreadID, args.Token)

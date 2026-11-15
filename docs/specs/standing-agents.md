@@ -717,19 +717,34 @@ Ruling 36, as built:
   The sidebar's archive says so in a toast that archives them again.
 - A spawn's Agents row follows its worker's lifetime, not only its
   request's: it is open while its request is open or the thread the spawn
-  made is not at rest, whatever its placement. Not at rest is an active
-  turn, queued sends or an open prompt (`triage.LiveStateSnapshotForThread`),
-  answered in one place (`workerUnrest`); a later source, such as running
-  background work or armed wakes, is one more case there. The app keeps
-  the spawned threads not at rest in memory (`liveWorkers`), each with
-  its spawn link, and re-evaluates a thread (`noteWorkerLiveness`) when
-  its turn starts or completes, a prompt opens or resolves, its session
-  dies or its queue changes; a deleted thread is forgotten. After a
-  restart nothing is live until a turn starts or a message is queued. A
+  made is not at rest, whatever its placement. A thread is at rest when it
+  has no turn, no queued message, no open prompt
+  (`triage.LiveStateSnapshotForThread`), no running background work
+  (`runningBackgroundWorkForThread`: Claude tasks and background agents,
+  Codex subagents and terminals, remote commands), no armed loop or watch
+  (`agent_wakes`), no reminder that has not fired, and no provider timer
+  the idle reaper keeps a session for (`PendingWakeupAt`: a scheduled
+  wakeup or an armed cron job); open work below it keeps its spawn listed
+  through the listing's nesting. One place answers it (`workerUnrest`).
+  The app keeps the spawned threads not at rest in memory (`liveWorkers`),
+  each with its spawn link and what its durable sources last said, and
+  re-evaluates a thread only on the events that change a source: its turn,
+  prompts, queue and provider timers (`noteWorkerLiveness`, memory reads),
+  and its background tray and wake frames and its session's end
+  (`noteWorkerWaiting`, which reads the background inventory, its loops
+  and watches, and its reminders again). A session's end settles the
+  background work it owned and ends its timers. At boot one indexed read
+  per durable source (armed loops and watches, unfired reminders, pending
+  remote commands) seeds the threads to re-evaluate; the memory sources
+  report themselves once they change. A deleted thread is forgotten. A
   thread only sent to is no worker: a send's row follows its request.
-- An open row whose request settled shows its worker's state (`running`,
-  `blocked`, `queued`; `ThreadAgentRow.worker`), its activity or blocked
-  line and Stop, and keeps its answer in its digest. It is counted once
+- An open row whose request settled shows its worker's state (`blocked`,
+  `running`, `queued`, then `waiting`, in that order;
+  `ThreadAgentRow.worker`), its blocked or activity line and Stop, and
+  keeps its answer in its digest. A waiting row's activity line is what it
+  waits on when the worker shows no activity of its own: the background
+  work's summary, or the loop, watch or reminder's label; a timer adds no
+  line. A waiting worker never needs the user. It is counted once
   per worker however many requests went to that thread, on the toggle and
   in the worker summaries, kept past the linger and the settled window,
   left out of Past, and framed to its spawner and the threads above it
@@ -1341,7 +1356,8 @@ closes up their spacing so the row holds at a phone width.
   kind, its title, its computer when it is not this
   one (an ask on this computer shows the thread asked, its title and
   provider, while its copy runs and after the copy is deleted), its state (queued, running, blocked, replied, finished, failed,
-  stopped, interrupted, expired, refused, a late reply marked), how long
+  stopped, interrupted, expired, refused, a late reply marked, or a
+  settled spawn's waiting worker), how long
   since the request, and what a blocked row waits on: the approval with
   its tool and detail, or the question, and who it was routed to; a
   paired computer's target reports only that it waits, and on which of

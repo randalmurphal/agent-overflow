@@ -86,6 +86,9 @@ func (a *App) startThreadRequestSweeps() {
 		// and a row a quit left running is recorded before anything claims
 		// it.
 		a.recoverAgentWakesAtBoot()
+		// The workers that wait on what survived the restart, read once the
+		// loops and watches are recovered.
+		a.seedLiveWorkers()
 		a.runThreadRequestSweeps(nudge)
 	})
 }

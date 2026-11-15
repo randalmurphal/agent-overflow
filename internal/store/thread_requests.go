@@ -920,6 +920,18 @@ func (s *Store) DueThreadReminders(now int64, limit int) ([]ThreadRequest, error
 	return collectThreadRequests(rows, "store: list due thread reminders")
 }
 
+// threadsWithOpenRemindersSQL names each thread with a reminder that has not
+// fired, through the partial index idx_thread_requests_due, whose predicate
+// it restates.
+const threadsWithOpenRemindersSQL = `SELECT DISTINCT caller_thread_id FROM thread_requests INDEXED BY idx_thread_requests_due
+	WHERE kind = 'remind' AND state = 'accepted'`
+
+// ThreadsWithOpenReminders names each thread with a reminder that has not
+// fired: one read, for the boot's seed of the threads not at rest.
+func (s *Store) ThreadsWithOpenReminders() ([]string, error) {
+	return s.queryThreadIDs("store: list threads with open reminders", threadsWithOpenRemindersSQL)
+}
+
 // ListOpenThreadReminders returns a thread's reminders that have not fired,
 // soonest first, at most limit of them, and how many it has in all.
 func (s *Store) ListOpenThreadReminders(callerThreadID string, limit int) (_ []ThreadRequest, total int, err error) {

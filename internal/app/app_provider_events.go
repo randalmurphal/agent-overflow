@@ -106,6 +106,7 @@ func (a *App) sessionEventHandler(threadID, sessionToken, providerType string) f
 			a.clearAutoReconnectAttempted(threadID)
 		}
 		a.dispatchTurnObservers(threadID, evt)
+		a.noteProviderWorkerLiveness(threadID, evt)
 		// A compaction runs the memory hook again.
 		if evt.Kind == provider.EventCompactBoundary && strings.TrimSpace(evt.ParentToolUseID) == "" {
 			a.reportMemoryCompactionProblems(threadID)
@@ -486,6 +487,8 @@ func (a *App) unregisterSession(threadID, sessionToken string) {
 	// registered replacement, returned above, keeps its own record.
 	if a.triage != nil {
 		a.triage.ClearProcessSchedule(threadID)
+		// A worker its timers held may rest now (workerTimerUnrest).
+		a.noteWorkerLiveness(threadID)
 	}
 	if !exists {
 		return

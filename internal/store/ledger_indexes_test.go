@@ -418,6 +418,36 @@ func TestAgentWakesSearchByThread(t *testing.T) {
 	}
 }
 
+// The boot's seed of the threads not at rest reads each durable source once,
+// each through an index that holds only its live rows: a search of the
+// live states, or the whole of a partial index whose predicate is the live
+// rows, so no read walks a source's history.
+func TestTheLiveWorkerSeedReadsOnlyLiveRows(t *testing.T) {
+	t.Parallel()
+	s := newTestStore(t)
+	assertPlanSearches(t, s, "the live wakes", "agent_wakes", []string{"idx_agent_wakes_due"}, threadsWithLiveAgentWakesSQL)
+	for _, read := range []struct{ what, table, index, query string }{
+		{"the open reminders", "thread_requests", "idx_thread_requests_due", threadsWithOpenRemindersSQL},
+		{"the pending remote jobs", "remote_watches", "idx_remote_watches_pending", remoteWatchThreadIDsSQL},
+	} {
+		plan := explainPlan(t, s, read.query)
+		reads := 0
+		for _, r := range plan {
+			fields := strings.Fields(r.detail)
+			if len(fields) < 2 || (fields[0] != "SCAN" && fields[0] != "SEARCH") || fields[1] != read.table {
+				continue
+			}
+			reads++
+			if !strings.Contains(r.detail, " INDEX "+read.index) {
+				t.Errorf("%s reads %s through %q, want the partial index %s:\n%s", read.what, read.table, r.detail, read.index, planText(plan))
+			}
+		}
+		if reads == 0 {
+			t.Errorf("%s never reads %s:\n%s", read.what, read.table, planText(plan))
+		}
+	}
+}
+
 // A cancel keeps none of what its wakes carried, and a thread keeps its
 // newest MaxCancelledAgentWakesPerThread cancelled rows, by label or all at
 // once.

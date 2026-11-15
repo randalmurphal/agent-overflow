@@ -211,8 +211,13 @@ func (s *Store) RefuseRemoteWatch(computerID, requestID, issue string) error {
 	return err
 }
 
+// remoteWatchThreadIDsSQL reads through the partial index
+// idx_remote_watches_pending, whose predicate it restates.
+const remoteWatchThreadIDsSQL = `SELECT DISTINCT thread_id FROM remote_watches INDEXED BY idx_remote_watches_pending
+	WHERE notification='pending'`
+
 func (s *Store) RemoteWatchThreadIDs() ([]string, error) {
-	rows, err := s.reader().Query(`SELECT DISTINCT thread_id FROM remote_watches WHERE notification='pending'`)
+	rows, err := s.reader().Query(remoteWatchThreadIDsSQL)
 	if err != nil {
 		return nil, err
 	}

@@ -285,6 +285,38 @@ func (s *Store) ListStandingAgentWakes() ([]AgentWake, error) {
 	return collectAgentWakes(rows, "store: list standing agent wakes")
 }
 
+// threadsWithLiveAgentWakesSQL names each thread with an armed or running
+// row, through idx_agent_wakes_due.
+const threadsWithLiveAgentWakesSQL = `SELECT DISTINCT thread_id FROM agent_wakes INDEXED BY idx_agent_wakes_due
+	WHERE state IN ('armed','running')`
+
+// ThreadsWithLiveAgentWakes names each thread with a loop or watch armed
+// or running: one read, for the boot's seed of the threads not at rest.
+func (s *Store) ThreadsWithLiveAgentWakes() ([]string, error) {
+	return s.queryThreadIDs("store: list threads with live agent wakes", threadsWithLiveAgentWakesSQL)
+}
+
+// queryThreadIDs reads a one-column list of thread ids.
+func (s *Store) queryThreadIDs(action, query string, args ...any) ([]string, error) {
+	rows, err := s.reader().Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", action, err)
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("%s: %w", action, err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("%s: %w", action, err)
+	}
+	return ids, nil
+}
+
 // ListLiveAgentWakes lists every armed or running row: what the supervisor
 // rebuilds at boot.
 func (s *Store) ListLiveAgentWakes() ([]AgentWake, error) {
