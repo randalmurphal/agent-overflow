@@ -15,7 +15,6 @@ import (
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadtools"
-	"agent-overflow/internal/usermessage"
 )
 
 // thread_status and thread_cancel: reading, waiting on and stopping requests
@@ -599,36 +598,21 @@ func threadRequestDelivered(row store.ThreadRequest, late bool) bool {
 // way to the caller, so a reply that also carries it can say so rather than
 // leaving the agent to read the same answer twice without knowing why.
 //
-// It spans both halves of the queued path, because an agent reading this is
-// mid-turn by definition and a live thread's queue hands its message to the
-// provider at once: the durable queue row holds the wake only while the
-// thread has no session to take it, and after that the dispatched user row
-// waits in the provider's own queue until the turn boundary. The echo that
-// stamps provider_item_id on that row is the model reading the message, so an
-// unstamped row is a message that has not arrived yet. Probing the queue row
-// alone answers no for almost the whole window this notice exists for.
+// A queued delivery is on its way from its mark until the provider's echo
+// of the message, which is the model reading it: in the durable queue, and
+// then in the provider's own queue until the turn boundary. The echo
+// confirms the delivery on every request the message answers
+// (store.ConfirmThreadWake); one whose confirmation failed to write is kept
+// until it does (echoed). A give-back clears the mark.
 func (t threadToolsApp) wakeQueued(row store.ThreadRequest, late bool) bool {
 	if !threadRequestDelivered(row, late) || row.DeliveryRoute(late) != store.ThreadWakeQueued {
 		return false
 	}
-	// One message can answer several requests; it is queued under the send
-	// id of the request that carried it.
-	carrier := row.Token
-	if !late && row.DeliveredWith != "" {
-		carrier = row.DeliveredWith
+	confirmed, carrier := row.ConfirmedAt, row.WakeCarrier()
+	if late {
+		confirmed, carrier = row.LateConfirmedAt, row.Token
 	}
-	record, found, err := t.app.findRecordedSend(row.CallerThreadID, threadWakeSendIDFor(carrier, late))
-	if err != nil {
-		log.Printf("thread tools: probe queued wake %s: %v", row.Token, err)
-		return false
-	}
-	if !found {
-		return false
-	}
-	if !record.dispatched {
-		return true
-	}
-	return usermessage.ReadProviderItemID(record.item.Meta) == ""
+	return confirmed == 0 && !t.app.echoed(threadWakeSendIDFor(carrier, late))
 }
 
 // ListRequests lists the caller's own requests, open first then newest first.

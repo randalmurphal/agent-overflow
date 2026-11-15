@@ -3354,9 +3354,12 @@ func TestThreadStatusSaysTheQueuedMessageIsStillComing(t *testing.T) {
 		}
 
 		// Once the provider echoes the message back, the model has read it
-		// and the notice stops: nothing is owed twice.
-		if err := f.app.store.UpdateItemMeta(f.caller.ID, wake.ID, `{"sendId":"`+threadWakeSendID(ack.Token)+`","provider_item_id":"u-taken-up"}`); err != nil {
-			t.Fatalf("UpdateItemMeta: %v", err)
+		// and the notice stops: nothing is owed twice. The echo confirms the
+		// delivery (confirmOwnedDeliveries).
+		if err := f.app.confirmOwnedEcho(threadWakeSendID(ack.Token), ownedEcho{
+			threadID: f.caller.ID, itemID: wake.ID, at: time.Now().UnixMilli(),
+		}); err != nil {
+			t.Fatalf("confirmOwnedEcho: %v", err)
 		}
 		read := readStatus(t, f, ack.Token)
 		if read.Requests[0].WakeQueued || strings.Contains(read.Note, notice) {
