@@ -819,7 +819,12 @@ Mechanics, as built:
   `ListThreadWakes` once on mount. Each computer's bulk read settles
   when that computer answers, however late, with the frames that computer
   sent meanwhile replayed over its answer; a newer read of the computer
-  supersedes it.
+  supersedes it. The bulk read and a thread's own reads, the sidebar's
+  and a tray's, are ordered by when each started: a thread's loops take
+  an answer, and its replayed frames, only from a read no later read has
+  written them after, and its reminders, which the bulk read does not
+  carry, are ordered the same way among its own reads. A thread's own
+  read still out when the bulk answer lands is read again.
 - Worker counts: `ListThreadWorkerSummaries` (route all, one page of
   `{summaries, next}` after a thread id) and `GetThreadWorkerSummary`
   (route thread) answer `{threadId, open, needYou}`, counted as the

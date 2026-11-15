@@ -20,6 +20,17 @@
 // again over that read's answer: a bulk read's, when the frame's computer is
 // the one it reads.
 //
+// Reads are ordered by the sequence number each takes when it starts, the
+// bulk read and a thread's own reads, the sidebar's and a tray's, alike. A
+// thread's loops take a read's answer only when no read that started later
+// has written them, and the frames a read replays only then; a bulk read
+// writes the threads it answers for. Reminders, which only a thread's own
+// read carries, are ordered among those reads the same way, so a tray read
+// whose loops a newer bulk answer settled still lands its reminders. A
+// thread's own read still out when its computer's bulk answer lands may
+// predate it and is asked again. A thread's sequence is kept only while an
+// older read is still out.
+//
 // Each thread is its own key, and a known thread keeps its key with no
 // rows, so a frame reruns only the readers of the thread it names.
 
@@ -98,15 +109,53 @@ interface FrameLog {
 }
 const reads = new Set<FrameLog>();
 
+let sequence = 0;
+/** The start sequences of the reads still out. */
+const outstanding = new Set<number>();
+/** The start sequence of the newest read that wrote each thread's loops, and its reminders, while an older read is out. */
+const loopsAt = new Map<string, number>();
+const remindersAt = new Map<string, number>();
+/** Each tray's read in flight, by thread. */
+const trayReads = new Set<string>();
+
+function beginRead(): number {
+  const seq = ++sequence;
+  outstanding.add(seq);
+  return seq;
+}
+
+/** Ends a read, and forgets each thread's sequence that no read still out could undercut. */
+function endRead(seq: number): void {
+  outstanding.delete(seq);
+  let oldest = Infinity;
+  for (const out of outstanding) oldest = Math.min(oldest, out);
+  for (const at of [loopsAt, remindersAt]) {
+    for (const [threadId, readAt] of at) if (readAt <= oldest) at.delete(threadId);
+  }
+}
+
+/** Whether the read that started at `seq` may write the thread: no read that started later has. */
+function admits(at: Map<string, number>, threadId: string, seq: number): boolean {
+  return seq >= (at.get(threadId) ?? 0);
+}
+
+/** Writes a thread's loops from the read that started at `seq`, unless a later read has. */
+function landLoops(threadId: string, backend: BackendKey, rows: readonly ThreadWakeRow[], seq: number): void {
+  if (!admits(loopsAt, threadId, seq)) return;
+  loopsAt.set(threadId, seq);
+  setLoops(threadId, backend, rows);
+}
+
 function openLog(covers: FrameLog['covers']): FrameLog {
   const log: FrameLog = { covers, changes: new Map() };
   reads.add(log);
   return log;
 }
 
-function replay(log: FrameLog): void {
+/** Applies the frames logged during the read that started at `seq` over its answer. */
+function replay(log: FrameLog, seq: number): void {
   reads.delete(log);
-  for (const { change, backend } of log.changes.values()) applyChange(change, backend);
+  for (const { change, backend } of log.changes.values()) applyChange(change, backend, seq);
 }
 
 /** The agent's live loops and watches; the shared empty array when none. */
@@ -192,11 +241,16 @@ function dropLoopsIfUnshown(threadId: string): void {
   loops.delete(threadId);
 }
 
-/** Writes a ListThreadWakes answer: the loops always, the reminders while a tray retains the thread. */
-function applyListing(threadId: string, backend: BackendKey, wakes: ThreadWakes | null | undefined): void {
+/**
+ * Writes a ListThreadWakes answer from the read that started at `seq`: the
+ * loops, and the reminders while a tray retains the thread, each unless a
+ * later read has written them.
+ */
+function applyListing(threadId: string, backend: BackendKey, wakes: ThreadWakes | null | undefined, seq: number): void {
   const rows = wakes?.rows ?? [];
-  setLoops(threadId, backend, rows.filter(isLoop));
-  if (!retained.has(threadId)) return;
+  landLoops(threadId, backend, rows.filter(isLoop), seq);
+  if (!retained.has(threadId) || !admits(remindersAt, threadId, seq)) return;
+  remindersAt.set(threadId, seq);
   setReminders(threadId, rows.filter((row) => row.kind === 'reminder'), wakes?.moreReminders ?? 0);
 }
 
@@ -218,6 +272,7 @@ async function refreshComputerAgentWakes(backend: BackendKey): Promise<void> {
   // until this answer lands replay over it.
   const ticket = {};
   bulkReads.set(backend, ticket);
+  const seq = beginRead();
   const log = openLog((_threadId, origin) => origin === backend);
   try {
     await readComputerRows<StandingAgentWakes>(
@@ -231,7 +286,7 @@ async function refreshComputerAgentWakes(backend: BackendKey): Promise<void> {
           agents.add(agent.threadId);
           // The row's computer is the one that answered it: the read may
           // land before the thread list has indexed the agent.
-          setLoops(agent.threadId, backend, agent.rows.filter(isLoop));
+          landLoops(agent.threadId, backend, agent.rows.filter(isLoop), seq);
         }
         for (const [threadId, entry] of untrack(() => [...loops])) {
           // A thread only a tray shows is not the bulk read's to answer.
@@ -239,13 +294,13 @@ async function refreshComputerAgentWakes(backend: BackendKey): Promise<void> {
           // An agent the computer answered for without it has no live
           // rows; one on a computer that no longer answers keeps the last
           // it had while that computer stays attached.
-          if (result.answered.has(entry.backend)) setLoops(threadId, entry.backend, NO_ROWS);
+          if (result.answered.has(entry.backend)) landLoops(threadId, entry.backend, NO_ROWS, seq);
           else if (!result.attached.has(entry.backend)) {
             agents.delete(threadId);
             dropLoopsIfUnshown(threadId);
           }
         }
-        replay(log);
+        replay(log, seq);
         askPendingAgain(backend);
       },
       // Wait for the computer itself: the frames this read buffers replay
@@ -258,19 +313,24 @@ async function refreshComputerAgentWakes(backend: BackendKey): Promise<void> {
   } finally {
     reads.delete(log);
     if (bulkReads.get(backend) === ticket) bulkReads.delete(backend);
+    endRead(seq);
   }
 }
 
 /**
  * A thread's own read that is out when its computer's bulk answer lands may
- * predate that answer, so it is dropped: the bulk's rows stand for a thread
- * it listed, and any other thread is asked again.
+ * predate that answer, so it is asked again: the sidebar's is dropped for a
+ * new one, and a tray's is followed by another. The bulk's loops stand
+ * until a newer read answers.
  */
 function askPendingAgain(backend: BackendKey): void {
   for (const [threadId, read] of [...pending]) {
     if (read.backend !== backend) continue;
     pending.delete(threadId);
     ensureAgentWakes(threadId);
+  }
+  for (const threadId of trayReads) {
+    if ((threadBackend(threadId) ?? HOME_BACKEND) === backend) retained.get(threadId)?.refresh.request({ immediate: true });
   }
 }
 
@@ -286,6 +346,7 @@ export function ensureAgentWakes(threadId: string): void {
   const backend = threadBackend(threadId) ?? HOME_BACKEND;
   const ticket = { backend };
   pending.set(threadId, ticket);
+  const seq = beginRead();
   const log = openLog((id) => id === threadId);
   void withBackendTarget(backend, () => ListThreadWakes(threadId)).then((wakes) => {
     // Forgotten while the read was out (the thread stopped being an
@@ -297,13 +358,13 @@ export function ensureAgentWakes(threadId: string): void {
     // Settled before the replay, which may ask for the next read.
     pending.delete(threadId);
     agents.add(threadId);
-    applyListing(threadId, backend, wakes);
-    replay(log);
+    applyListing(threadId, backend, wakes, seq);
+    replay(log, seq);
   }).catch((err: unknown) => {
     reads.delete(log);
     if (pending.get(threadId) === ticket) pending.delete(threadId);
     if (!isPassiveConnectionFailure(err)) console.error(`Failed to load wakes of ${threadId}:`, err);
-  });
+  }).finally(() => endRead(seq));
 }
 
 /**
@@ -353,18 +414,22 @@ function createListingRefresh(threadId: string): RefreshScheduler {
     run: async (token) => {
       const owner = threadBackend(threadId);
       if (owner !== undefined && getTransportStatusFor(owner).status !== 'connected') return;
+      const seq = beginRead();
       const log = openLog((id) => id === threadId);
+      trayReads.add(threadId);
       try {
         const wakes = await ListThreadWakes(threadId);
         if (!token.isCurrent()) return;
-        applyListing(threadId, (owner ?? untrack(() => loops.get(threadId))?.backend ?? HOME_BACKEND) as BackendKey, wakes);
-        replay(log);
+        applyListing(threadId, (owner ?? untrack(() => loops.get(threadId))?.backend ?? HOME_BACKEND) as BackendKey, wakes, seq);
+        replay(log, seq);
       } catch (err) {
         // A failed read says nothing about the schedule. Keep the last
         // listing until a read succeeds or the tray lets go.
         if (token.isCurrent()) console.error('ActivityRail: ListThreadWakes failed:', err);
       } finally {
         reads.delete(log);
+        trayReads.delete(threadId);
+        endRead(seq);
       }
     },
   });
@@ -384,7 +449,11 @@ function readAgain(threadId: string): void {
   ensureAgentWakes(threadId);
 }
 
-function applyChange(change: ThreadWakeChange, backend: string): void {
+/**
+ * Applies a frame as it lands, or, with `replayOf`, as the read that started
+ * then replays it over its answer: only over what that read may still write.
+ */
+function applyChange(change: ThreadWakeChange, backend: string, replayOf?: number): void {
   const { threadId, id, row } = change;
   const entry = untrack(() => loops.get(threadId));
   const listed = untrack(() => reminders.get(threadId));
@@ -394,11 +463,11 @@ function applyChange(change: ThreadWakeChange, backend: string): void {
     return;
   }
   if (row ? isLoop(row) : entry?.rows.some((current) => current.id === id)) {
-    applyLoopChange(threadId, id, row, entry, backend);
+    if (replayOf === undefined || admits(loopsAt, threadId, replayOf)) applyLoopChange(threadId, id, row, entry, backend);
     return;
   }
   // Reminders are the tray's alone.
-  if (listed) applyReminderChange(threadId, id, row, listed);
+  if (listed && (replayOf === undefined || admits(remindersAt, threadId, replayOf))) applyReminderChange(threadId, id, row, listed);
 }
 
 function applyLoopChange(threadId: string, id: string, row: ThreadWakeRow | undefined, entry: LoopEntry | undefined, backend: string): void {
@@ -482,12 +551,22 @@ onBackendDetached(({ threadIds }) => {
   }
 });
 
+/** Test helper: what the read ordering retains, by kind. */
+export function threadWakesRetentionForTest(): { outstanding: number; loopsAt: number; remindersAt: number; trayReads: number } {
+  return { outstanding: outstanding.size, loopsAt: loopsAt.size, remindersAt: remindersAt.size, trayReads: trayReads.size };
+}
+
 /** Test helper. */
 export function resetThreadWakesForTest(): void {
   for (const retention of retained.values()) retention.refresh.dispose();
   retained.clear();
   reads.clear();
   bulkReads.clear();
+  outstanding.clear();
+  loopsAt.clear();
+  remindersAt.clear();
+  trayReads.clear();
+  sequence = 0;
   loops.clear();
   reminders.clear();
   agents.clear();
