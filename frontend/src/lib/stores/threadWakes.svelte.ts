@@ -74,8 +74,8 @@ const reminders = new SvelteMap<string, ReminderEntry>();
  * mounted row's effect on any thread's change.
  */
 const agents = new Set<string>();
-/** Each thread's read in flight, by a ticket only that read holds. */
-const pending = new Map<string, object>();
+/** Each thread's read in flight, by a ticket only that read holds, naming the computer it asked. */
+const pending = new Map<string, { backend: BackendKey }>();
 
 interface Retention {
   count: number;
@@ -246,6 +246,7 @@ async function refreshComputerAgentWakes(backend: BackendKey): Promise<void> {
           }
         }
         replay(log);
+        askPendingAgain(backend);
       },
       // Wait for the computer itself: the frames this read buffers replay
       // only over its own answer.
@@ -261,6 +262,19 @@ async function refreshComputerAgentWakes(backend: BackendKey): Promise<void> {
 }
 
 /**
+ * A thread's own read that is out when its computer's bulk answer lands may
+ * predate that answer, so it is dropped: the bulk's rows stand for a thread
+ * it listed, and any other thread is asked again.
+ */
+function askPendingAgain(backend: BackendKey): void {
+  for (const [threadId, read] of [...pending]) {
+    if (read.backend !== backend) continue;
+    pending.delete(threadId);
+    ensureAgentWakes(threadId);
+  }
+}
+
+/**
  * Fill one agent's rows when the bulk read did not carry them: a thread
  * promoted after boot keeps the loops it registered before, and an idle
  * agent is absent from the bulk read altogether. Asked by the row on
@@ -270,7 +284,7 @@ async function refreshComputerAgentWakes(backend: BackendKey): Promise<void> {
 export function ensureAgentWakes(threadId: string): void {
   if (agents.has(threadId) || pending.has(threadId)) return;
   const backend = threadBackend(threadId) ?? HOME_BACKEND;
-  const ticket = {};
+  const ticket = { backend };
   pending.set(threadId, ticket);
   const log = openLog((id) => id === threadId);
   void withBackendTarget(backend, () => ListThreadWakes(threadId)).then((wakes) => {

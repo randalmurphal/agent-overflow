@@ -195,6 +195,40 @@ describe('thread wakes store', () => {
     expect(getAgentWakeRows('agent').map((r) => r.id)).toEqual(['l1']);
   });
 
+  it("does not let a thread's read that was out before a gap land over the gap's newer answer", async () => {
+    const answers: Array<(wakes: { rows: ThreadWakeRow[]; moreReminders: boolean }) => void> = [];
+    const list = setBindingMock('ListThreadWakes', () => new Promise((resolve) => { answers.push(resolve); }));
+    setBindingMock('ListStandingAgentWakes', async () => [{ threadId: 'agent', rows: [row('new')] }]);
+    ensureAgentWakes('agent');
+    await flush();
+    // A frame was lost: the computer is read again, and answers first.
+    applyThreadWakesGap(HOME_BACKEND);
+    await flush();
+    expect(getAgentWakeRows('agent').map((r) => r.id)).toEqual(['new']);
+    answers[0]({ rows: [row('old')], moreReminders: false });
+    await flush();
+    expect(getAgentWakeRows('agent').map((r) => r.id)).toEqual(['new']);
+    expect(list).toHaveBeenCalledTimes(1);
+  });
+
+  it("asks again for a thread the gap's answer did not list while its read was out", async () => {
+    const answers: Array<(wakes: { rows: ThreadWakeRow[]; moreReminders: boolean }) => void> = [];
+    const list = setBindingMock('ListThreadWakes', () => new Promise((resolve) => { answers.push(resolve); }));
+    setBindingMock('ListStandingAgentWakes', async () => []);
+    ensureAgentWakes('agent');
+    await flush();
+    applyThreadWakesGap(HOME_BACKEND);
+    await flush();
+    // The first read may predate the gap; only the one asked after it lands.
+    expect(list).toHaveBeenCalledTimes(2);
+    answers[0]({ rows: [row('old')], moreReminders: false });
+    await flush();
+    expect(getAgentWakeRows('agent')).toEqual([]);
+    answers[1]({ rows: [row('fresh')], moreReminders: false });
+    await flush();
+    expect(getAgentWakeRows('agent').map((r) => r.id)).toEqual(['fresh']);
+  });
+
   it('re-reads every computer on a gap', async () => {
     const list = setBindingMock('ListStandingAgentWakes', async () => [{ threadId: 'agent', rows: [row('l9')] }]);
     applyThreadWakesGap(HOME_BACKEND);
