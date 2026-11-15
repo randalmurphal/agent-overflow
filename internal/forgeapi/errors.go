@@ -19,7 +19,7 @@ import (
 type SetupError struct {
 	Forge   string // "github" | "gitlab"
 	Binary  string // "gh" | "glab"
-	Kind    string // SetupMissing | SetupUnauthenticated
+	Kind    string // SetupMissing | SetupUnauthenticated | SetupOutdated
 	Message string
 	Err     error
 	// Host is the forge host the login is for, when the error is about one.
@@ -32,10 +32,12 @@ type SetupError struct {
 	ExpiredAt time.Time
 }
 
-// The two SetupError kinds.
+// The SetupError kinds. SetupOutdated is a CLI too old for the handoff
+// command the transport runs.
 const (
 	SetupMissing         = "missing"
 	SetupUnauthenticated = "unauthenticated"
+	SetupOutdated        = "outdated"
 )
 
 func (e *SetupError) Error() string {
@@ -76,6 +78,16 @@ func UnauthenticatedError(forge string, err error) *SetupError {
 		return &SetupError{Forge: ForgeGitHub, Binary: "gh", Kind: SetupUnauthenticated, Err: err,
 			Message: "GitHub CLI (`gh`) is not authenticated. Run 'gh auth login' to continue"}
 	}
+}
+
+// ghAuthTokenVersion is the gh release that added `gh auth token`, the
+// GitHub token handoff.
+const ghAuthTokenVersion = "2.17.0"
+
+// OutdatedCLIError is the SetupError for a gh without `gh auth token`.
+func OutdatedCLIError(err error) *SetupError {
+	return &SetupError{Forge: ForgeGitHub, Binary: "gh", Kind: SetupOutdated, Err: err,
+		Message: "GitHub CLI (`gh`) is too old: the app reads its login with `gh auth token`, which needs gh " + ghAuthTokenVersion + " or later. Update gh from https://cli.github.com and try again"}
 }
 
 // ForbiddenError is a 403 that is not a rate limit: the token can reach

@@ -46,7 +46,7 @@ signature. The context's deadline is the request deadline when it is
 shorter than `Request.Timeout`.
 
 `forgeapi.SetupError{Forge, Binary, Kind, Message, Err}` is the one setup
-error type (`Kind` is `missing` or `unauthenticated`); `git` re-exports
+error type (`Kind` is `missing`, `unauthenticated` or `outdated`); `git` re-exports
 nothing, and `appupdate`'s release feed restates it with the host's
 `glab auth login --hostname HOST` step. The type lives in `forgeapi` because `git` imports
 `forgeapi`, so the token source must not return a `git` type.
@@ -168,7 +168,10 @@ func (Token) MarshalText() ([]byte, error)
   to disk, settings or the SQLite store.
 - The handoff process runs with a 10s deadline and
   `GH_PROMPT_DISABLED=1`, `GH_DEBUG=`, `GLAB_CHECK_UPDATE=false`,
-  `GLAB_DEBUG_HTTP=false`. A missing binary is `Kind: "missing"`; a
+  `GLAB_DEBUG_HTTP=false`. A missing binary is `Kind: "missing"`; a gh
+  older than 2.17.0, which answers `unknown command "token" for "gh auth"`
+  (`gh auth token` arrived in 2.17.0), is `Kind: "outdated"`, whose message
+  names the version needed; a
   non-zero exit whose stderr names the login (`gh auth login`, `not logged
   in`, `no token`) is `Kind: "unauthenticated"`; any other failure (locked
   keyring, timeout) is a `*TransientError` carrying the exit status, never
