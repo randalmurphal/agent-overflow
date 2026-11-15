@@ -127,7 +127,7 @@ export function agentRowBlockedLabel(row: Pick<ThreadAgentRow, 'blockedOn' | 'bl
     case 'question':
       return `Asks${row.blockedDetail ? `: ${row.blockedDetail}` : ' a question'}${routed}`;
     case 'person':
-      return `Waiting on a person${row.computer ? ` on ${row.computer}` : ''}`;
+      return `Waiting on ${row.blockedRoutedTo || 'a person'}${row.computer ? ` on ${row.computer}` : ''}`;
     default:
       return '';
   }

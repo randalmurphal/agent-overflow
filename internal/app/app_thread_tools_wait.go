@@ -91,10 +91,19 @@ type threadRequestState struct {
 	// claimInlineDelivery).
 	wakesInFlight map[string]int
 	// blocked records which remote requests their own computer last
-	// reported as waiting on a person. It is not state: the record is the
-	// source row, this is the live reading beside it, and after a restart
-	// it is empty until the next poll fills it in.
-	blocked map[string]bool
+	// reported as waiting on a prompt, and where that prompt went. It is
+	// not state: the record is the source row, this is the live reading
+	// beside it, and after a restart it is empty until the next poll fills
+	// it in.
+	blocked map[string]remoteBlocked
+}
+
+// remoteBlocked is what a remote request's computer last reported of its
+// target's prompt: whether it is waiting on one, and the thread there the
+// prompt was routed to instead of the person, if any.
+type remoteBlocked struct {
+	blocked  bool
+	routedTo string
 }
 
 // threadRequestWait is one parked tool call.
@@ -454,23 +463,28 @@ func threadRequestSettled(row store.ThreadRequest) bool {
 // A target that has just become blocked ends the waits parked on it, the way
 // a settlement does: the reading changed, and the wait's own clock is slower
 // than the round trip that carried it.
-func (a *App) noteRemoteRequestBlocked(token string, blocked bool) {
+func (a *App) noteRemoteRequestBlocked(token string, reading remoteBlocked) {
 	if token == "" {
 		return
 	}
-	a.threadRequests.mu.Lock()
-	changed := blocked && !a.threadRequests.blocked[token]
-	flipped := a.threadRequests.blocked[token] != blocked
-	if a.threadRequests.blocked == nil {
-		a.threadRequests.blocked = make(map[string]bool)
+	if !reading.blocked {
+		reading.routedTo = ""
 	}
-	a.threadRequests.blocked[token] = blocked
+	a.threadRequests.mu.Lock()
+	previous := a.threadRequests.blocked[token]
+	changed := reading.blocked && !previous.blocked
+	flipped := previous != reading
+	if a.threadRequests.blocked == nil {
+		a.threadRequests.blocked = make(map[string]remoteBlocked)
+	}
+	a.threadRequests.blocked[token] = reading
 	a.threadRequests.mu.Unlock()
 	if changed {
 		a.wakeRequestWaits(token)
 	}
 	if flipped {
-		// The Agents row shows the reading: the request is blocked or not.
+		// The Agents row shows the reading: the request is blocked or not,
+		// and on whom.
 		a.noteThreadRequestChanged(store.ThreadRequestChange{Token: token})
 	}
 }
@@ -481,7 +495,7 @@ func (a *App) forgetRemoteRequestBlocked(token string) {
 	delete(a.threadRequests.blocked, token)
 }
 
-func (a *App) remoteRequestBlocked(token string) bool {
+func (a *App) remoteRequestBlocked(token string) remoteBlocked {
 	a.threadRequests.mu.Lock()
 	defer a.threadRequests.mu.Unlock()
 	return a.threadRequests.blocked[token]
@@ -501,7 +515,7 @@ func (a *App) threadRequestBlocked(row store.ThreadRequest) bool {
 		return false
 	}
 	if row.TargetComputerID != "" {
-		return a.remoteRequestBlocked(row.Token)
+		return a.remoteRequestBlocked(row.Token).blocked
 	}
 	live, err := a.threadToolsAdapter().LiveState(context.Background(), row.TargetThreadID)
 	if err != nil {

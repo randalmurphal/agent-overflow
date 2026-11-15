@@ -639,7 +639,7 @@ func (a *App) applyThreadPeerRequest(token, computerID string, answer ThreadPeer
 		wakes, err := a.settleUnknownRemoteRequest(row)
 		return 0, wakes, err
 	}
-	a.noteRemoteRequestBlocked(token, answer.Blocked)
+	a.noteRemoteRequestBlocked(token, remoteBlocked{blocked: answer.Blocked, routedTo: answer.BlockedRoutedTo})
 	if target := threadPeerTarget(row, answer); target != "" {
 		if _, err := a.store.SetThreadRequestTarget(token, computerID, target, answer.Title, answer.Provider); err != nil {
 			return 0, nil, err

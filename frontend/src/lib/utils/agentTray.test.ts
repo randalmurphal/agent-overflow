@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { agentRowCallers, visibleAgentRows } from './agentTray';
+import { agentRowBlockedLabel, agentRowCallers, visibleAgentRows } from './agentTray';
 import type { ThreadAgentRow } from '../stores/bindings';
 
 function row(token: string, depth: number, state = 'running', over: Partial<ThreadAgentRow> = {}): ThreadAgentRow {
@@ -31,5 +31,13 @@ describe('agentRowCallers', () => {
   it('names the thread and the local threads its spawns made, not a paired computer\'s', () => {
     const rows = [row('local', 0), row('remote', 0, 'running', { computerId: 'peer', threadId: 'far' }), row('send', 0, 'running', { kind: 'send', threadId: 'other' })];
     expect([...agentRowCallers('me', rows)].sort()).toEqual(['c', 'me', 't-local']);
+  });
+});
+
+describe('agentRowBlockedLabel', () => {
+  it('names the thread on a paired computer that a prompt went to, else a person there', () => {
+    expect(agentRowBlockedLabel({ blockedOn: 'person', computer: 'Studio', blockedRoutedTo: 'Lead' })).toBe('Waiting on Lead on Studio');
+    expect(agentRowBlockedLabel({ blockedOn: 'person', computer: 'Studio' })).toBe('Waiting on a person on Studio');
+    expect(agentRowBlockedLabel({ blockedOn: 'approval', blockedDetail: 'Bash', blockedRoutedTo: 'Lead' })).toBe('Needs approval for Bash, waiting on Lead');
   });
 });

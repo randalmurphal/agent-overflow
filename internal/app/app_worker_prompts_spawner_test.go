@@ -10,12 +10,14 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/threadtools"
 	"agent-overflow/internal/transport"
+	"agent-overflow/internal/triage"
 )
 
 // workerPromptTokens is the token of each worker prompt wake threadID's
@@ -374,4 +376,102 @@ func TestAnOldPromptTokenCannotAnswerAReplacementSessionsPrompt(t *testing.T) {
 	if err != nil || !handled || !ack.Accepted {
 		t.Fatalf("the replacement's token: %+v handled %v, %v", ack, handled, err)
 	}
+}
+
+// A paired computer reports where its target's prompt went, and the row on
+// the computer that asked says so: a prompt routed to a thread there is
+// not counted as waiting on the person, and one handed back to the user
+// there is.
+func TestARemoteRowSaysWhenItsTargetsPromptWentToAThreadThere(t *testing.T) {
+	t.Parallel()
+	there := newWorkerPromptFixture(t, "peer-routed", false)
+	there.drain(t)
+	token := "peer-routed-send"
+	if _, _, err := there.app.store.AcceptThreadRequestReceipt(store.ThreadRequestReceipt{
+		Token: token, OwnerDeviceID: "source-device", Kind: store.ThreadRequestSend,
+		TargetThreadID: there.worker.ID, State: store.ThreadReceiptAccepted,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	here := newRequestFixture(t)
+	computer := "peer-routed-computer"
+	if err := here.app.store.InsertThreadRequest(store.ThreadRequest{
+		Token: token, CallerThreadID: here.caller.ID, Kind: store.ThreadRequestSend, State: store.ThreadRequestUnconfirmed,
+		TargetComputerID: computer, TargetThreadID: there.worker.ID, Notify: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// report carries the destination's reading across the wire, as a poll
+	// does.
+	report := func() {
+		t.Helper()
+		state, err := there.app.threadPeerRequestState(t.Context(), "source-device", token)
+		if err != nil {
+			t.Fatal(err)
+		}
+		wire, err := json.Marshal(state)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var answer ThreadPeerRequest
+		if err := json.Unmarshal(wire, &answer); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := here.app.applyThreadPeerRequest(token, computer, answer); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want := func(routedTo string, needYou int) {
+		t.Helper()
+		listing, err := here.app.ListThreadAgentRows(t.Context(), here.caller.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		row, ok := agentRowByToken(listing.Rows, token)
+		if !ok || row.State != threadtools.RequestBlocked || row.BlockedOn != "person" || row.BlockedRoutedTo != routedTo {
+			t.Fatalf("the remote row = %+v (listed %v), want blocked on the person routed to %q", row, ok, routedTo)
+		}
+		summary, err := here.app.GetThreadWorkerSummary(t.Context(), here.caller.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if summary.Open != 1 || summary.NeedYou != needYou {
+			t.Fatalf("summary = %+v, want one open row, %d waiting on the user", summary, needYou)
+		}
+	}
+	frames := make(chan ThreadAgentRowChange, 64)
+	here.app.testEmitHook = func(name string, data any) {
+		if change, ok := data.(ThreadAgentRowChange); ok && name == string(eventchan.ThreadAgentRowsChanged) && change.ID == token {
+			frames <- change
+		}
+	}
+	// framed waits for a frame naming the row, then for the frames already
+	// owed to go out, and empties what came.
+	framed := func(after string) {
+		t.Helper()
+		select {
+		case <-frames:
+		case <-time.After(10 * time.Second):
+			t.Fatalf("no frame for the remote row after %s", after)
+		}
+		waitUntil(t, 10*time.Second, func() bool {
+			here.app.threadAgentEmits.mu.Lock()
+			defer here.app.threadAgentEmits.mu.Unlock()
+			return !here.app.threadAgentEmits.draining
+		})
+		for len(frames) > 0 {
+			<-frames
+		}
+	}
+	report()
+	framed("it became blocked")
+	want(there.assistant.Title, 0)
+
+	if there.app.triage.ReroutePrompts(there.assistant.ID, triage.PromptRef{ThreadID: there.worker.ID, RequestID: there.request.RequestID}) != 1 {
+		t.Fatal("the prompt did not go back to the user there")
+	}
+	// Still blocked, now on the person: the row changes all the same.
+	report()
+	framed("its prompt went back to the user")
+	want("", 1)
 }

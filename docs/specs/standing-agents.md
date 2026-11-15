@@ -1219,7 +1219,10 @@ closes up their spacing so the row holds at a phone width.
   provider, while its copy runs and after the copy is deleted), its state (queued, running, blocked, replied, finished, failed,
   stopped, interrupted, expired, refused, a late reply marked), how long
   since the request, and what a blocked row waits on: the approval with
-  its tool and detail, or the question, and who it was routed to. A
+  its tool and detail, or the question, and who it was routed to; a
+  paired computer's target reports only that it waits, and on which of
+  that computer's threads when its prompt went to one rather than the
+  person. A
   running target's latest activity is a second line; the chevron opens the
   row's digest: the activity, what it is blocked on in full, the last
   message in the thread (a request without the footer the app appended)

@@ -116,6 +116,11 @@ type ThreadPeerRequest struct {
 	// is a live property, never stored, and it is what lets a wait on a
 	// remote request end on blocked the way a local one does.
 	Blocked bool `json:"blocked,omitempty"`
+	// BlockedRoutedTo names the thread on that computer the target's prompt
+	// went to instead of the person (a worker's prompt routed to its
+	// spawner), as the Agents row there names it. Empty when the person
+	// owns the prompt, and from a computer that does not send it.
+	BlockedRoutedTo string `json:"blockedRoutedTo,omitempty"`
 	// AnswerAgent is set on a settled request whose thread was a standing
 	// agent when the answer was written, with the role line its wake quotes.
 	// A computer that does not send it is read as having answered from an
@@ -563,7 +568,7 @@ func peerCancelEffect(effect string) string {
 // A token this device never created is reported unknown rather than
 // refused: the source settles it, and saying which other device holds it
 // would leak that device's work.
-func (a *App) threadPeerRequestState(ctx context.Context, owner, token string) (ThreadPeerRequest, error) {
+func (a *App) threadPeerRequestState(_ context.Context, owner, token string) (ThreadPeerRequest, error) {
 	state := ThreadPeerRequest{Token: token}
 	receipt, found, err := a.store.GetThreadRequestReceipt(token)
 	if err != nil {
@@ -594,9 +599,11 @@ func (a *App) threadPeerRequestState(ctx context.Context, owner, token string) (
 			state.Title = thread.Title
 			state.Provider = thread.Provider
 		}
-		if receipt.State == store.ThreadReceiptAccepted || receipt.State == store.ThreadReceiptRunning {
-			live, err := a.threadToolsAdapter().LiveState(ctx, receipt.TargetThreadID)
-			state.Blocked = err == nil && live.Blocked()
+		if (receipt.State == store.ThreadReceiptAccepted || receipt.State == store.ThreadReceiptRunning) && a.triage != nil {
+			// The same reading this computer's own Agents row makes.
+			snapshot := a.triage.LiveStateSnapshotForThread(receipt.TargetThreadID)
+			state.Blocked = threadToolsLiveState(snapshot).Blocked()
+			_, _, state.BlockedRoutedTo = threadAgentBlockedOn(snapshot)
 		}
 	}
 	return state, nil

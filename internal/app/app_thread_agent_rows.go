@@ -643,11 +643,13 @@ func (v threadAgentView) row(request store.ThreadAgentRequest, names map[string]
 	settled := threadRequestSettled(row)
 	local := row.TargetComputerID == "" && row.TargetThreadID != ""
 	blocked := false
+	var remote remoteBlocked
 	var snapshot triage.LiveStateSnapshot
 	switch {
 	case settled || row.TargetThreadID == "":
 	case !local:
-		blocked = v.app.remoteRequestBlocked(row.Token)
+		remote = v.app.remoteRequestBlocked(row.Token)
+		blocked = remote.blocked
 	case v.app.triage != nil:
 		snapshot = v.app.triage.LiveStateSnapshotForThread(row.TargetThreadID)
 		blocked = threadToolsLiveState(snapshot).Blocked()
@@ -688,8 +690,10 @@ func (v threadAgentView) row(request store.ThreadAgentRequest, names map[string]
 	switch {
 	case settled:
 	case row.TargetComputerID != "":
+		// That computer reads its target's prompts; it says whether one is
+		// routed to a thread there rather than the person.
 		if state.State == threadtools.RequestBlocked {
-			out.BlockedOn = "person"
+			out.BlockedOn, out.BlockedRoutedTo = "person", remote.routedTo
 		}
 	case row.TargetThreadID != "":
 		out.BlockedOn, out.BlockedDetail, out.BlockedRoutedTo = threadAgentBlockedOn(snapshot)
