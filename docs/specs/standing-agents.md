@@ -750,10 +750,11 @@ Ruling 36, as built:
   keeps its answer in its digest. A worker with nothing of its own that
   waits on its own workers shows `waiting` with no activity line: the
   open rows nested under it, or at the depth bound its "nest deeper"
-  line, say what it waits on, and its Stop reaches them. A waiting row's activity line is what it
-  waits on when the worker shows no activity of its own: the background
-  work's summary, or the loop, watch or reminder's label; a timer adds no
-  line. A waiting worker never needs the user. It is counted once
+  line, say what it waits on, and its Stop reaches them. A waiting row's
+  activity line is what it waits on when the worker shows no activity of
+  its own: the background work's summary, or the loop, watch or reminder
+  named as its wake rows name it (`Loop · <label>`, `Watch · <label>`,
+  `Reminder · <note's first line>`); a timer adds no line. A waiting worker never needs the user. It is counted once
   per worker however many requests went to that thread, on the toggle and
   in the worker summaries, kept past the linger and the settled window,
   left out of Past, and framed to its spawner and the threads above it

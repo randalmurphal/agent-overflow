@@ -116,7 +116,8 @@ func (a *App) workerHeldUnrest(threadID string) string {
 // runningBackgroundWorkForThread reports: Claude tasks and background
 // agents, Codex subagents and terminals, remote commands), an armed loop
 // or watch, or a reminder that has not fired. The detail is the background
-// work's summary or the loop, watch or reminder's label; background says
+// work's summary, or the loop, watch or reminder named as its wake rows name
+// it (wakeWaitingLine); background says
 // the wait is background work. It costs the background inventory's reads,
 // then one read of the loops and watches and one of the reminders while
 // nothing earlier answered.
@@ -137,16 +138,37 @@ func (a *App) workerDurableUnrest(threadID string) (workerRest, bool, error) {
 		return workerRest{}, false, err
 	}
 	if len(wakes) > 0 {
-		return workerRest{unrest: workerWaiting, detail: wakes[0].Label}, false, nil
+		return workerRest{unrest: workerWaiting, detail: wakeWaitingLine(wakes[0].Kind, wakes[0].Label)}, false, nil
 	}
 	reminders, _, err := a.store.ListOpenThreadReminders(threadID, 1)
 	if err != nil {
 		return workerRest{}, false, err
 	}
 	if len(reminders) > 0 {
-		return workerRest{unrest: workerWaiting, detail: reminderLabel(string(reminders[0].Answer))}, false, nil
+		return workerRest{unrest: workerWaiting, detail: wakeWaitingLine(threadWakeKindReminder, reminderLabel(string(reminders[0].Answer)))}, false, nil
 	}
 	return workerRest{}, false, nil
+}
+
+// wakeWaitingLine names a loop, watch or reminder a worker waits on as the
+// timeline's wake rows name it (agentWakeOriginLabel in userMessageMeta.ts):
+// "Loop · <label>", or the kind alone with no label.
+func wakeWaitingLine(kind, label string) string {
+	var name string
+	switch kind {
+	case store.AgentWakeLoop:
+		name = "Loop"
+	case store.AgentWakeWatch:
+		name = "Watch"
+	case threadWakeKindReminder:
+		name = "Reminder"
+	default:
+		return label
+	}
+	if label == "" {
+		return name
+	}
+	return name + " · " + label
 }
 
 // workerTimerUnrest is whether threadID's provider process will resume

@@ -67,7 +67,7 @@ export async function runWorkerWaiting(harness: HarnessApp, page: Page, provider
   await harness.open(page);
   await openAgents(page, LEAD);
   const count = page.getByTestId('activity-rail-agents-count').filter({ visible: true });
-  for (const [spawn, line] of [[shellSpawn, /tail -f build\.log|tail the build log/], [loopSpawn, LOOP_LABEL]] as const) {
+  for (const [spawn, line] of [[shellSpawn, /tail -f build\.log|tail the build log/], [loopSpawn, `Loop · ${LOOP_LABEL}`]] as const) {
     const row = openAgentRow(page, spawn.token);
     await expect(row.getByTestId('agent-tray-row-state')).toHaveText('waiting', { timeout: 30_000 });
     await expect(row).not.toHaveAttribute('data-settled');

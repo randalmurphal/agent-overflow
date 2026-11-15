@@ -169,7 +169,8 @@ func TestAWorkerWaitingOnItsBackgroundWorkIsOpen(t *testing.T) {
 	f.expectRested(t, "bg-spawn")
 }
 
-// A worker with an armed loop waits on it: open with the loop's label,
+// A worker with an armed loop waits on it: open with the loop named as its
+// wake rows name it,
 // through a fire that runs a turn and leaves the loop armed, until the
 // loop is cancelled. A reminder holds it the same way until it fires once.
 func TestAWorkerWithAnArmedLoopOrReminderIsOpen(t *testing.T) {
@@ -184,7 +185,7 @@ func TestAWorkerWithAnArmedLoopOrReminderIsOpen(t *testing.T) {
 	if _, err := f.adapter().Loop(t.Context(), caller, threadtools.LoopCall{Label: "deploy check", Note: "check the deploy", EverySeconds: 3600}); err != nil {
 		t.Fatalf("Loop: %v", err)
 	}
-	f.expectWaiting(t, "loop-spawn", "deploy check")
+	f.expectWaiting(t, "loop-spawn", "Loop · deploy check")
 	wakes, err := f.app.store.ListAgentWakes(worker.ID)
 	if err != nil || len(wakes) != 1 {
 		t.Fatalf("wakes %+v, %v", wakes, err)
@@ -198,7 +199,7 @@ func TestAWorkerWithAnArmedLoopOrReminderIsOpen(t *testing.T) {
 	if rows, err := f.app.store.ListAgentWakes(worker.ID); err != nil || len(rows) != 1 || rows[0].LastRunAt < fired || rows[0].State != store.AgentWakeArmed {
 		t.Fatalf("wakes after the fire %+v, %v; want the loop run and still armed", rows, err)
 	}
-	f.expectWaiting(t, "loop-spawn", "deploy check")
+	f.expectWaiting(t, "loop-spawn", "Loop · deploy check")
 	if err := f.app.CancelThreadWake(worker.ID, store.AgentWakeLoop, wakes[0].ID); err != nil {
 		t.Fatalf("CancelThreadWake: %v", err)
 	}
@@ -209,7 +210,7 @@ func TestAWorkerWithAnArmedLoopOrReminderIsOpen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Remind: %v", err)
 	}
-	f.expectWaiting(t, "loop-spawn", "look at the canary")
+	f.expectWaiting(t, "loop-spawn", "Reminder · look at the canary")
 	// Its fire is a turn of the worker's; once that ends, nothing holds it.
 	fired = time.Now().UnixMilli()
 	f.app.fireThreadReminder(f.request(t, ack.Token), time.Now())
@@ -390,5 +391,19 @@ func TestAnAppWithoutAStoreFollowsNoWorker(t *testing.T) {
 	a.threadRequestsWG.Wait()
 	if live := a.liveWorkerThreads(); len(live) != 0 {
 		t.Fatalf("live workers %v; want none", live)
+	}
+}
+
+// A waiting row names its loop, watch or reminder as the wake rows do.
+func TestAWaitingRowNamesItsWakeAsTheWakeRowsDo(t *testing.T) {
+	for _, c := range []struct{ kind, label, want string }{
+		{store.AgentWakeLoop, "board", "Loop · board"},
+		{store.AgentWakeWatch, "CI run", "Watch · CI run"},
+		{threadWakeKindReminder, "look at the canary", "Reminder · look at the canary"},
+		{store.AgentWakeWatch, "", "Watch"},
+	} {
+		if got := wakeWaitingLine(c.kind, c.label); got != c.want {
+			t.Errorf("wakeWaitingLine(%q, %q) = %q, want %q", c.kind, c.label, got, c.want)
+		}
 	}
 }
