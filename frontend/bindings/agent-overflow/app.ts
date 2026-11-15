@@ -5296,7 +5296,8 @@ export function SaveAttachment(threadID: string, attachmentID: string): $Cancell
  * job's name, or the pipeline's for a run download, for the file names
  * and sentences. A path is stable per (repository,
  * job or artifact), so a re-save refreshes the same file. A failure after
- * some files were saved names them in its sentence.
+ * some files were saved names them in its sentence. The whole save, up to
+ * maxCIArtifactsPerSave downloads, runs within its budget.
  */
 export function SaveCIArtifacts(repo: git$0.RepoReference, req: git$0.CIArtifactsRequest, subject: string): $CancellablePromise<app$0.CIArtifactsSaved> {
     return $Call.ByID(1986917811, repo, req, subject).then(($result: any) => {

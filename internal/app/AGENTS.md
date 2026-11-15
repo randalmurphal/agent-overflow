@@ -20,7 +20,10 @@ Every bound method needs an `//ao:scope <name>` annotation and a route.
 `methodgen` infers `thread` or `project` when the first non-context
 parameter is named `threadID` or `projectID`; all other methods need
 `//ao:route home|selected|all`. Add `//ao:stepup` when fresh per-call proof
-is required. The vocabulary and enforcement rules live in
+is required. A method that can run past the default budget (a hook, a
+generation, a download, a wait on a provider or a person) declares
+`//ao:budget` and names its bound in `methodServerBounds`
+(`app_method_budget_test.go`). The vocabulary and enforcement rules live in
 [`internal/transport/AGENTS.md`](../transport/AGENTS.md).
 
 After changing a bound method, regenerate Wails bindings with

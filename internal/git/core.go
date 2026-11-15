@@ -22,12 +22,12 @@ import (
 )
 
 const (
-	// defaultTimeout bounds every git / gh / glab subprocess. It MUST
-	// stay well below the frontend RPC timeout (RPC_TIMEOUT_MS in
-	// frontend/src/lib/transport/wsClient.ts): when a forge CLI hangs
-	// on a dead network, the descriptive error here ("gh ... timed out
-	// after 45s") must reach the pane before the opaque client-side
-	// "RPC timed out" fires.
+	// defaultTimeout bounds every git / gh / glab subprocess. It fits
+	// transport.DefaultMethodBudget, which a client waits out plus a
+	// margin: when a forge CLI hangs on a dead network, the descriptive
+	// error here ("gh ... timed out after 45s") reaches the pane before
+	// the opaque client-side "RPC timed out". A command bounded longer
+	// belongs to a method that declares a //ao:budget covering it.
 	defaultTimeout        = 45 * time.Second
 	defaultMaxOutputBytes = int64(1_000_000)
 

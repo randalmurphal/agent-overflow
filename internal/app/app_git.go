@@ -459,6 +459,7 @@ func (a *App) createBranchInWorkspace(workspace, name string, resolvedBase gitop
 // draft is true the PR is opened as a GitHub draft (gh pr create --draft).
 //
 //ao:scope git:operate
+//ao:budget 2m
 func (a *App) GitCreatePR(ctx context.Context, ws WorkspaceRef, title, body string, draft bool) (gitops.GitActionResult, error) {
 	return a.gitApplication().CreatePR(forgeapi.WithInteractive(ctx), ws, title, body, draft)
 }

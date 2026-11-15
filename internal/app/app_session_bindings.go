@@ -137,6 +137,7 @@ func (a *App) SendMessageWithOptions(ctx context.Context, threadID string, conte
 // live agent instead, before anything is cancelled, interrupted or written.
 //
 //ao:scope threads:operate
+//ao:budget 90s
 func (a *App) InterruptTurn(threadID string, confirmedAgents []string) error {
 	_, err := a.interruptTurnAtIndex(context.Background(), threadID, anyOpenTurn, stopByUser(confirmedAgents))
 	return err
@@ -158,6 +159,7 @@ type InterruptAndRevertResult struct {
 // It never reverts.
 //
 //ao:scope threads:operate
+//ao:budget 90s
 func (a *App) InterruptAndRevertIfClean(threadID string, opts InterruptRevertOptions, confirmedAgents []string) (InterruptAndRevertResult, error) {
 	if err := a.InterruptTurn(threadID, confirmedAgents); err != nil {
 		return InterruptAndRevertResult{}, err

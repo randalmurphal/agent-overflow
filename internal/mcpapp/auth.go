@@ -31,7 +31,7 @@ func (a *Service) triggerMcpAuth(threadID, name string) (MCPAuthInitResult, erro
 	if !ok {
 		return MCPAuthInitResult{}, ErrMCPSessionUnavailable
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), mcpAuthRoundTripTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), AuthRoundTripTimeout)
 	defer cancel()
 	switch thread.Provider {
 	case string(provider.Claude):
