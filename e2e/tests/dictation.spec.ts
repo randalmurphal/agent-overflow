@@ -142,6 +142,55 @@ test('a sound the level meter missed is still transcribed', async ({ harness, pa
   await expect(mic(page)).not.toHaveAttribute('data-error', 'true');
 });
 
+// A microphone unplugged or revoked mid-recording ends its track. The
+// recording stops there, what it holds is transcribed, and the mic says
+// why it stopped.
+test('a microphone that goes away ends the recording and says so', async ({ harness, page }) => {
+  await page.addInitScript(() => {
+    const open = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+    navigator.mediaDevices.getUserMedia = async (constraints) => {
+      const stream = await open(constraints);
+      (window as unknown as { __aoMic: MediaStream }).__aoMic = stream;
+      return stream;
+    };
+  });
+  await seedThreads(harness, ['Dictate here']);
+  await setUpDictation(harness);
+  await openThread(harness, page, 'Dictate here');
+
+  const uploaded = countPieces(page);
+  await input(page).fill('Please');
+  await mic(page).click();
+  await expect(mic(page)).toHaveAttribute('data-phase', 'recording');
+  await expect.poll(uploaded).toBeGreaterThanOrEqual(2);
+  // What the browser fires when the device goes; stop() fires nothing.
+  await page.evaluate(() => {
+    (window as unknown as { __aoMic: MediaStream }).__aoMic.getAudioTracks()[0].dispatchEvent(new Event('ended'));
+  });
+
+  await expect(mic(page)).toHaveAttribute('data-phase', 'idle');
+  await expect(input(page)).toHaveValue(TRANSCRIPT);
+  await expect(mic(page)).toHaveAttribute('title', /^The microphone stopped/);
+});
+
+// A piece the computer refuses ends the recording at once, rather than
+// after the user has talked on into a recording that cannot be sent.
+test('a recording stops as soon as a piece fails to upload', async ({ harness, page }) => {
+  await seedThreads(harness, ['Dictate here']);
+  await setUpDictation(harness);
+  await openThread(harness, page, 'Dictate here');
+  await page.route((url) => url.pathname.endsWith('/attachments/dictation'), (route) =>
+    route.request().method() === 'PUT' ? route.fulfill({ status: 400, body: 'recording piece rejected' }) : route.fallback());
+
+  await input(page).fill('Please');
+  await mic(page).click();
+  await expect(mic(page)).toHaveAttribute('data-phase', 'recording');
+  // Nobody presses stop.
+  await expect(mic(page)).toHaveAttribute('data-phase', 'idle');
+  await expect(mic(page)).toHaveAttribute('data-error', 'true');
+  await expect(input(page)).toHaveValue('Please');
+});
+
 test('the chord starts dictation and Escape abandons it', async ({ harness, page }) => {
   await seedThreads(harness, ['Chord here']);
   await setUpDictation(harness);

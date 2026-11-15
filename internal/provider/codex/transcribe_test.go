@@ -112,9 +112,11 @@ func TestTranscribeAnswers(t *testing.T) {
 				t.Fatalf("err = %v, want ErrTranscribeUnauthorized", err)
 			}
 		}},
-		{name: "workspace forbidden", answer: transcribeAnswer(http.StatusForbidden, `{}`, nil), check: func(t *testing.T, err error) {
-			if !errors.Is(err, ErrTranscribeUnauthorized) {
-				t.Fatalf("err = %v, want ErrTranscribeUnauthorized", err)
+		// A 403 is the endpoint refusing the request, not the token: no token
+		// condition produced one (docs/references/voice-dictation.md).
+		{name: "request refused", answer: transcribeAnswer(http.StatusForbidden, `{}`, nil), check: func(t *testing.T, err error) {
+			if !errors.Is(err, ErrTranscribeForbidden) || errors.Is(err, ErrTranscribeUnauthorized) {
+				t.Fatalf("err = %v, want ErrTranscribeForbidden alone", err)
 			}
 		}},
 		{name: "rate limited", answer: transcribeAnswer(http.StatusTooManyRequests, `{}`, http.Header{"Retry-After": {"7"}}), check: func(t *testing.T, err error) {

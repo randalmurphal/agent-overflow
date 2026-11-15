@@ -8,7 +8,9 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/codex"
@@ -95,6 +97,36 @@ func TestAnAbandonedTranscriptionWaitingForTheLockStartsNoRefresh(t *testing.T) 
 	if err := <-finished; !errors.Is(err, context.Canceled) {
 		t.Fatalf("TranscribeWithCodexLogin err = %v, want context.Canceled", err)
 	}
+}
+
+// A transcription abandoned while it waits for the reconcile lock returns
+// at once, not when the lock frees: whatever holds the lock, the caller's
+// bound on the transcription holds. The refresh it left behind still
+// starts nothing and ends inside its own work admission.
+func TestAnAbandonedTranscriptionDoesNotWaitForTheLock(t *testing.T) {
+	manager, _, refused := refusedDictationManager(t)
+	var work sync.WaitGroup
+	manager.deps.BeginWork = func(ctx context.Context) (func(), error) {
+		work.Add(1)
+		return work.Done, ctx.Err()
+	}
+	lock := manager.reconcileMutex(string(provider.Codex))
+	lock.Lock()
+	ctx, cancel := context.WithCancel(context.Background())
+	finished := transcribeInBackground(ctx, manager)
+	<-refused
+	cancel()
+
+	select {
+	case err := <-finished:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("TranscribeWithCodexLogin err = %v, want context.Canceled", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("an abandoned transcription waited for the reconcile lock")
+	}
+	lock.Unlock()
+	work.Wait()
 }
 
 // A transcription abandoned after the promotion, as late as the refresh's

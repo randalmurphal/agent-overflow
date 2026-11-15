@@ -1255,7 +1255,8 @@ export function FetchForgeAttachment(pr: git$0.PRReference, href: string, maxWid
  * FinishDictation closes a recording the caller uploaded pieces pieces of
  * and returns its transcript. Until the transcription ends the recording
  * still belongs to the caller's connection: CancelDictation or the
- * connection's end stops it, and it counts against the recording caps.
+ * connection's end stops it, and it counts against the recording caps. It
+ * returns within the recordings' budget (DictationSources reports it).
  */
 export function FinishDictation(recordingID: string, pieces: number): $CancellablePromise<string> {
     return $Call.ByID(2178028847, recordingID, pieces);
@@ -3772,8 +3773,8 @@ export function MintPreviewURL(threadID: string, port: number, path: string): $C
 }
 
 /**
- * MintReadAloudTicket admits one sentence to be spoken in voice and returns
- * the relative URL the audio is fetched from once.
+ * MintReadAloudTicket admits one section of a reply to be spoken in voice
+ * and returns the relative URL the audio is fetched from once.
  */
 export function MintReadAloudTicket(text: string, voice: string): $CancellablePromise<string> {
     return $Call.ByID(1195194428, text, voice);
@@ -4646,6 +4647,17 @@ export function RegisterQueueItem(threadID: string, message: string, opts: app$0
     return $Call.ByID(1034543696, threadID, message, opts).then(($result: any) => {
         return $$createType204($result);
     });
+}
+
+/**
+ * ReleaseReadAloudTicket gives back a URL MintReadAloudTicket returned
+ * whose reader no longer wants it, after a skip or a stop: a section still
+ * waiting is dropped with its ticket, and one being synthesized ends and
+ * gives its slot back before this returns, so the reader's next fetch
+ * cannot be refused for it. A section already read or gone is ignored.
+ */
+export function ReleaseReadAloudTicket(ticketURL: string): $CancellablePromise<void> {
+    return $Call.ByID(3381314677, ticketURL);
 }
 
 /**

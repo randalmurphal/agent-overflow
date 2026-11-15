@@ -15,7 +15,11 @@ below before changing the request.
 
 It is off until Settings > Voice turns it on for that computer (host tier
 `dictationSubscriptionEnabled`). With no source on, no composer shows a
-mic and the computer refuses to open or transcribe a recording.
+mic and the computer refuses to open or transcribe a recording. A write to
+the switch ends every recording admitted before it, as it does live
+sessions: a transcription in flight stops, its sign-in retry included, and
+an open recording drops its audio; switching off and on again does not
+spare them.
 
 ## ChatGPT `backend-api/transcribe`
 
@@ -48,6 +52,21 @@ recording is decoded at a time. A recording over a minute is not decoded,
 since decoding holds it as samples several times over; the meter's verdict
 stands for it.
 
+A piece that fails to upload, or a recorder that fails, ends the recording
+at once and the mic shows why. A microphone track that ends from outside
+(unplugged, permission withdrawn) stops a recording of either source there:
+what it holds is transcribed, and the mic says the microphone stopped.
+
+Spike 2026-11-15, half a second of WAV silence per request: no
+`Authorization` header returned 401 `{"detail":"Unauthorized"}`; a malformed
+token returned 401; a real token with a tampered signature returned 401
+with code `invalid_jwt`; a valid token with a random `ChatGPT-Account-Id`
+returned 200, so the account header is not enforced. No token condition
+produced a 403. A genuinely expired token could not be produced, so its
+answer is unobserved. AO therefore treats only a 401 as a token to refresh;
+a 403 is the endpoint refusing the request (a challenge, an entitlement or
+a retirement), refreshes nothing and has its own message.
+
 The access token is read from the canonical Codex `auth.json` for each
 request and never retained. On a 401, AO asks Codex to refresh through
 `account/read {refreshToken: true}` and retries once; AO never refreshes the
@@ -58,6 +77,13 @@ starts no refresh, and a refresh that started runs to its end: one stopped
 after the server rotated the token, before the CLI saved it, would lose the
 sign-in. A Codex configured to keep credentials in the OS keyring has
 no `auth.json`, and dictation reads as unavailable there.
+
+A transcription has three minutes from finish (`dictation.TranscribeBudget`),
+every attempt and a refresh included; past it the computer stops it and the
+mic says ChatGPT took too long. `DictationSources` reports the budget, and
+the client waits 15 seconds past it, so the computer's answer always
+arrives first. A finish that fails, or whose answer never comes, cancels
+the recording on the computer.
 
 ## Live transcription with an API key
 
@@ -225,7 +251,11 @@ section was waiting or being read (the RPC says the same with code
   synthesis is refused, not queued. A clip keeps its synthesis slot until
   its response is written, and a fetch is cut off after two minutes, so
   the audio held for slow readers is bounded too. An aborted fetch cancels
-  the call.
+  the call. A section that a skip or a stop abandons before its clip
+  arrives is given back (`ReleaseReadAloudTicket`): one waiting is dropped
+  with its ticket, and a synthesis ends and frees its slot before the call
+  returns. The client's next fetch from that computer waits for those
+  answers, so quick skips never meet the caps.
 - A write to the switch drops every section admitted before it and ends
   their syntheses, as it does live recordings; switching off and on again
   does not spare them. A section's id leads with its admission revision,

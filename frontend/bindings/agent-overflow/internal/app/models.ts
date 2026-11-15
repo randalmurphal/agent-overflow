@@ -1919,6 +1919,13 @@ export class DictationSources {
      */
     "chatGPTSignIn": boolean;
 
+    /**
+     * TranscribeWithinMs is the most FinishDictation takes here: past it the
+     * transcription ends with an error. A client waits for the answer at
+     * least this long.
+     */
+    "transcribeWithinMs": number;
+
     /** Creates a new DictationSources instance. */
     constructor($$source: Partial<DictationSources> = {}) {
         if (!("subscription" in $$source)) {
@@ -1929,6 +1936,9 @@ export class DictationSources {
         }
         if (!("chatGPTSignIn" in $$source)) {
             this["chatGPTSignIn"] = false;
+        }
+        if (!("transcribeWithinMs" in $$source)) {
+            this["transcribeWithinMs"] = 0;
         }
 
         Object.assign(this, $$source);

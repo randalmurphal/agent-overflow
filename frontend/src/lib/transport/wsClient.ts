@@ -597,6 +597,28 @@ interface DispatchSpec {
   methodId?: number;
   method?: string;
   params: unknown[];
+  /** How long the call waits for its answer; RPC_TIMEOUT_MS unless
+   * withRpcTimeout armed another wait for it. */
+  timeoutMs?: number;
+}
+
+// The wait withRpcTimeout armed for the next dispatched RPC, and no other.
+let nextRpcTimeoutMs: number | null = null;
+
+/**
+ * Gives the one RPC `issue` dispatches synchronously a wait of `ms`
+ * instead of RPC_TIMEOUT_MS. For a method whose server bounds its own run
+ * by a longer budget it reports: waiting past that budget lets the
+ * server's answer, its timeout included, reach the caller. Armed like
+ * `withBackendTarget`, and cleared whether or not a call was dispatched.
+ */
+export function withRpcTimeout<T>(ms: number, issue: () => T): T {
+  nextRpcTimeoutMs = ms;
+  try {
+    return issue();
+  } finally {
+    nextRpcTimeoutMs = null;
+  }
 }
 
 // Pending tracks an outstanding RPC. The timer is cleared on settle so
@@ -1927,6 +1949,9 @@ export class WSClient {
   // every gated call site, and it is the same window the awaiting caller
   // already holds its own arguments for.
   private dispatchRPC(spec: DispatchSpec): Promise<unknown> {
+    // Taken with the call, so its retry under a proof keeps it.
+    spec.timeoutMs = nextRpcTimeoutMs ?? RPC_TIMEOUT_MS;
+    nextRpcTimeoutMs = null;
     const prover = this.ceremonyInFlight ? null : this.stepUpProver;
     const settled = this.sendRPC(spec);
     if (prover === null) return settled;
@@ -2019,12 +2044,13 @@ export class WSClient {
       );
     }
     const id = generateId();
+    const timeoutMs = spec.timeoutMs ?? RPC_TIMEOUT_MS;
     return new Promise<unknown>((resolve, reject) => {
       const timer = setTimeout(() => {
         if (this.pending.delete(id)) {
-          reject(new TransportError('timeout', `RPC ${id} timed out after ${RPC_TIMEOUT_MS}ms`));
+          reject(new TransportError('timeout', `RPC ${id} timed out after ${timeoutMs}ms`));
         }
-      }, RPC_TIMEOUT_MS);
+      }, timeoutMs);
 
       const frame: ClientRPCFrame = {
         type: 'rpc',
