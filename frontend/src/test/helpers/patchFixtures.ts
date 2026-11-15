@@ -116,8 +116,8 @@ export const UNICODE_PATCH = [
   '@@ -1 +1 @@',
   '-a',
   '+ü',
-  // Its path is only in the header line; `à` packs to C3 A0, and A0
-  // is a space to a regex.
+  // Its path is only in the header line; `à` is C3 A0 in UTF-8, and
+  // U+00A0 is a space to a regex.
   'diff --git a/à.png b/à.png',
   'index 5555555..6666666 100644',
   'Binary files a/à.png and b/à.png differ',
@@ -134,29 +134,6 @@ export const UNICODE_PATCH = [
   '+package b',
   ' 😀',
 ].join('\n');
-
-/** `patch` with `copies` ASCII files of 200 bytes before each of its
- * files, so chunks larger than its files hold their wide lines sparsely
- * enough to be packed (jstext.PackText). */
-export function sparselyWide(patch: string, copies: number): string {
-  let pad = 0;
-  const filler = () => Array.from({ length: copies }, () => {
-    pad += 1;
-    return [
-      `diff --git a/pad${pad}.txt b/pad${pad}.txt`,
-      `--- a/pad${pad}.txt`,
-      `+++ b/pad${pad}.txt`,
-      '@@ -1,4 +1,4 @@',
-      ' context line that is ascii',
-      `-removed ${'.'.repeat(40)}`,
-      `+added ${'.'.repeat(42)}`,
-      ' context line that is ascii',
-    ].join('\n');
-  }).join('\n');
-  const parts = patch.split(/(?=^diff --git )/m).map((part) => part.replace(/\n$/, ''));
-  const preamble = parts[0].startsWith('diff --git ') ? [] : [parts.shift()!];
-  return [...preamble, ...parts.map((file) => `${filler()}\n${file}`)].join('\n') + (patch.endsWith('\n') ? '\n' : '');
-}
 
 export function randomPatch(seed: number): string {
   const rand = seededRandom(seed);
@@ -200,15 +177,17 @@ export function randomPatch(seed: number): string {
   return out.join('\n') + (rand(2) === 0 ? '\n' : '');
 }
 
-/** Parses plain text appended in pieces of `sizes(index)` characters,
- * cut anywhere. */
+/** Parses text appended in pieces of `sizes(index)` UTF-16 units, cut
+ * anywhere between characters: a piece that would end inside a pair
+ * takes the whole pair. */
 export function parseInChunks(patch: string, sizes: (index: number) => number): { parser: PatchParser; files: ReviewFile[] } {
   const parser = new PatchParser();
   let pos = 0;
   for (let index = 0; pos < patch.length; index += 1) {
-    const size = Math.max(1, sizes(index));
-    parser.append(patch.slice(pos, pos + size));
-    pos += size;
+    let end = pos + Math.max(1, sizes(index));
+    if ((patch.charCodeAt(end - 1) & 0xfc00) === 0xd800) end += 1;
+    parser.append(patch.slice(pos, end));
+    pos = end;
   }
   parser.end();
   return { parser, files: parser.files };

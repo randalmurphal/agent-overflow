@@ -4412,20 +4412,6 @@ export function ReadReviewDiff(id: string, offset: number, maxBytes: number): $C
 }
 
 /**
- * ReadReviewDiffPacked is ReadReviewDiff with the chunk's text packed
- * where that is its cheaper form for the client (jstext.PackText): the
- * same chunk, key, handle, owner and scope rules. The form depends on the
- * chunk's bytes alone, so a chunk read again has the form it had. A
- * client calls it only on a backend that advertises
- * transport.CapabilityReviewDiffPacked.
- */
-export function ReadReviewDiffPacked(id: string, offset: number, maxBytes: number): $CancellablePromise<app$0.ReviewDiffChunk> {
-    return $Call.ByID(4058838878, id, offset, maxBytes).then(($result: any) => {
-        return $$createType203($result);
-    });
-}
-
-/**
  * ReadShellAttachmentOutput returns one bounded page of the output a shell
  * command's timeline row shows. The output was sent to the agent as part of
  * the conversation, so it reads with the conversation.

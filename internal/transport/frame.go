@@ -130,12 +130,6 @@ const CapabilityPRSuggestionsReactions = "pr-suggestions-reactions.v1"
 // client reading a backend without it offers no tags.
 const CapabilityGitTags = "git-tags.v1"
 
-// CapabilityReviewDiffPacked names ReadReviewDiffPacked: an open review
-// diff's later chunks read packed, one byte per character, with the index
-// of each line that holds a byte past ASCII. A client reading a backend
-// without it reads every chunk with ReadReviewDiff.
-const CapabilityReviewDiffPacked = "review-diff.packed.v1"
-
 var serverCapabilities = []string{
 	CapabilityRemoteNotifications,
 	CapabilityPasskeys,
@@ -156,7 +150,6 @@ var serverCapabilities = []string{
 	CapabilityPRCommentActions,
 	CapabilityPRSuggestionsReactions,
 	CapabilityGitTags,
-	CapabilityReviewDiffPacked,
 }
 
 // serverCapabilitiesWithBrowser is that list plus the one flag whose

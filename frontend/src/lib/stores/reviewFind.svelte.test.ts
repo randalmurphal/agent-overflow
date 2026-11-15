@@ -850,9 +850,9 @@ describe('review find over evicted diff text', () => {
   function gate(source: ReturnType<typeof evictedFiles>['source']): () => void {
     const gates: (() => void)[] = [];
     const real = source.read.getMockImplementation()!;
-    source.read.mockImplementation(async (offset, next, packed) => {
+    source.read.mockImplementation(async (offset, next) => {
       await new Promise<void>((resolve) => gates.push(resolve));
-      return real(offset, next, packed);
+      return real(offset, next);
     });
     return () => {
       source.read.mockImplementation(real);
