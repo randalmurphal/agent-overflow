@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"path"
+	"slices"
 	"strings"
 )
 
@@ -28,6 +29,17 @@ const (
 	DiffReviewScopePR        DiffReviewScope = "pr"
 	DiffReviewScopeEdits     DiffReviewScope = "edits"
 )
+
+// diffReviewScopes is every scope a comment may carry: the values the
+// diff_review_comments scope CHECK admits.
+var diffReviewScopes = []DiffReviewScope{
+	DiffReviewScopeTurn,
+	DiffReviewScopeSession,
+	DiffReviewScopeWorkspace,
+	DiffReviewScopeBranch,
+	DiffReviewScopePR,
+	DiffReviewScopeEdits,
+}
 
 // DiffReviewComment is one review comment on a diff. It belongs to a
 // thread (ThreadID) or, for a PR the Pull requests page reviews with no
@@ -171,22 +183,11 @@ func (o DiffReviewOwner) String() string {
 }
 
 func NormalizeDiffReviewScope(scope string) (string, error) {
-	switch DiffReviewScope(strings.TrimSpace(scope)) {
-	case DiffReviewScopeTurn:
-		return string(DiffReviewScopeTurn), nil
-	case DiffReviewScopeSession:
-		return string(DiffReviewScopeSession), nil
-	case DiffReviewScopeWorkspace:
-		return string(DiffReviewScopeWorkspace), nil
-	case DiffReviewScopeBranch:
-		return string(DiffReviewScopeBranch), nil
-	case DiffReviewScopePR:
-		return string(DiffReviewScopePR), nil
-	case DiffReviewScopeEdits:
-		return string(DiffReviewScopeEdits), nil
-	default:
-		return "", fmt.Errorf("diff review scope must be turn, session, workspace, branch, pr, or edits")
+	normalized := DiffReviewScope(strings.TrimSpace(scope))
+	if slices.Contains(diffReviewScopes, normalized) {
+		return string(normalized), nil
 	}
+	return "", fmt.Errorf("diff review scope must be turn, session, workspace, branch, pr, or edits")
 }
 
 func NormalizeDiffReviewSourceKey(sourceKey string) (string, error) {
