@@ -2211,6 +2211,8 @@ describe('thread-bound commands on placeholders', () => {
 
   it('terminal.toggle on a placeholder opens without creating a thread', () => {
     const pane = placeholderPane('term-toggle-draft');
+    // The shared teardown closes the placeholder, which closes the terminal it opened.
+    setBindingMock('CloseThreadTerminals', async () => undefined);
     const create = setBindingMock('CreateThread', async () => {
       throw new Error('CreateThread must not be called for terminal.toggle on a placeholder');
     });
@@ -2231,6 +2233,8 @@ describe('thread-bound commands on placeholders', () => {
 
   it('terminal.new on a placeholder opens without creating a thread', () => {
     const pane = placeholderPane('term-new-draft');
+    // The shared teardown closes the placeholder, which closes the terminal it opened.
+    setBindingMock('CloseThreadTerminals', async () => undefined);
     const create = setBindingMock('CreateThread', async () => {
       throw new Error('CreateThread must not be called for terminal.new on a placeholder');
     });
