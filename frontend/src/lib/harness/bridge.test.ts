@@ -16,6 +16,8 @@ import {
 } from './bridge';
 import { harnessGlobalNames } from './globals';
 import { PERF_WATCHDOG_MS } from './perf';
+import { setPatchTextBudgetForTest } from '../utils/patchMemory.svelte';
+import { streamPatch } from '../../test/helpers/streamedPatch';
 
 interface ErrorEnvelope {
   error?: string;
@@ -196,7 +198,45 @@ describe('globals query', () => {
   });
 });
 
-// The `open` kind is the only door in this bridge that MUTATES the page. It
+// A spec lowers the review diff text budget through this kind to cross it
+// with a diff of a few megabytes.
+describe('review-diff-memory kind', () => {
+  afterEach(() => setPatchTextBudgetForTest(null));
+
+  interface Memory { heldBytes: number; pinnedBytes: number; evictableChunks: number }
+  const query = async (over: Record<string, unknown> = {}) =>
+    (await answerHarnessQuery({ v: 1, kind: 'review-diff-memory', ...over })) as Memory & ErrorEnvelope;
+
+  it('sets the budget, enforces it at once, and reads what it holds', async () => {
+    const base = await query();
+    const lines = Array.from({ length: 200 }, (_, i) => `+line ${String(i).padStart(4, '0')}`);
+    const patch = ['diff --git a/a b/a', '--- a/a', '+++ b/a', '@@ -0,0 +1,200 @@', ...lines, ''].join('\n');
+    expect((await query({ budgetBytes: 1000 })).error).toBeUndefined();
+    const streamed = streamPatch(patch, 200);
+    try {
+      const held = await query();
+      expect(held.heldBytes - base.heldBytes).toBeGreaterThan(0);
+      expect(held.heldBytes - base.heldBytes).toBeLessThanOrEqual(1000);
+      expect(held.evictableChunks).toBeGreaterThan(base.evictableChunks);
+      const lowered = await query({ budgetBytes: 300 });
+      expect(lowered.heldBytes - base.heldBytes).toBeLessThanOrEqual(300);
+      expect(lowered.heldBytes).toBeLessThan(held.heldBytes);
+      expect(lowered.pinnedBytes).toBe(base.pinnedBytes);
+      expect((await query({ budgetBytes: null })).error).toBeUndefined();
+    } finally {
+      streamed.parser.store.dispose();
+    }
+  });
+
+  it('refuses a budget that is not a positive integer or null', async () => {
+    for (const budgetBytes of [0, -1, 1.5, '1000', Number.NaN, {}]) {
+      expect((await query({ budgetBytes })).error, String(budgetBytes)).toContain('positive integer or null');
+    }
+    expect((await query({ budget: 5 })).error).toContain('unknown field "budget"');
+  });
+});
+
+// The `open` kind is one of the doors in this bridge that MUTATE the page. It
 // exists because `openThreadInNewPane` has no event channel — the plain
 // open rides `notification:activated` and deliberately still does. What is
 // asserted here is the refusal surface; the mounting itself needs a real

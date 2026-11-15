@@ -10,6 +10,7 @@ const QUERY_KEYS: Readonly<Record<string, readonly string[]>> = {
   monitor: ['v', 'kind', 'pageId', 'op', 'runId', 'monitorIds', 'heartbeatTimeoutMs', 'atMs', 'compatibilityLeg', 'withRunId'],
   reload: ['v', 'kind', 'pageId', 'delayMs'],
   open: ['v', 'kind', 'pageId', 'threadId', 'newPane'],
+  'review-diff-memory': ['v', 'kind', 'pageId', 'budgetBytes'],
 };
 
 function fail(message: string): HarnessQueryError {
