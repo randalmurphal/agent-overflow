@@ -324,8 +324,8 @@ func (a *App) stopRequestsOnRestingThread(ctx context.Context, threadID string, 
 // opens between the two. A thread with no session still has its queue
 // dropped, as End Session drops it. A loop or watch the turn registered
 // after the capture is cancelled once the session is gone, before the lock
-// lets a new one start. It reports the background tasks the session end
-// stopped.
+// lets a new one start. Its browser pages stay open, as End Session leaves
+// them. It reports the background tasks the session end stopped.
 func (a *App) endRestingThreadSession(threadID string, by restStop, result *ThreadAgentStop) (int, error) {
 	unlock := a.threadLocks().Lock(threadID)
 	defer unlock()
@@ -354,9 +354,6 @@ func (a *App) endRestingThreadSession(threadID string, by restStop, result *Thre
 		if err := a.cancelAgentWakesForThread(threadID, by.cause.outcome); err != nil {
 			errs = append(errs, err)
 		}
-	}
-	if err := a.closeThreadBrowserPages(threadID); err != nil {
-		errs = append(errs, fmt.Errorf("close its browser pages: %w", err))
 	}
 	return background, errors.Join(errs...)
 }

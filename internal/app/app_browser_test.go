@@ -675,6 +675,38 @@ func TestOnlyTheIdleReaperSuspendsBrowserPages(t *testing.T) {
 	}
 }
 
+// A Stop that brings a spawned thread to rest leaves its browser pages open,
+// for the person to look at what it had open.
+func TestAStopKeepsTheStoppedThreadsBrowserPages(t *testing.T) {
+	t.Parallel()
+	app, manager := newBrowserTestApp(t)
+	caller, _ := browserTestThread(t, app, "thread-browser-spawner")
+	worker, access := browserTestThread(t, app, "thread-browser-worker")
+	if _, err := manager.Open(t.Context(), access, "https://example.test/", appbrowser.OpenOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.store.InsertThreadRequest(store.ThreadRequest{
+		Token: "spawn-browser-worker", CallerThreadID: caller.ID, Kind: store.ThreadRequestSpawn,
+		TargetThreadID: worker.ID, State: store.ThreadRequestAccepted,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	app.sessionManager().put(worker.ID, session{
+		Provider: string(provider.Codex), Token: "worker", Liveness: newSessionLiveness(time.Now()),
+	})
+
+	stop, err := app.StopThreadAgentRow(t.Context(), caller.ID, "spawn-browser-worker")
+	if err != nil || len(stop.Failures) != 0 {
+		t.Fatalf("StopThreadAgentRow = %+v, %v", stop, err)
+	}
+	if _, live := app.sessionManager().get(worker.ID); live {
+		t.Fatal("the stopped worker still has a session")
+	}
+	if pages := browserPageStates(manager, access); len(pages) != 1 || pages[0].Suspended {
+		t.Fatalf("pages of the stopped worker = %#v, want its one page left open", pages)
+	}
+}
+
 // Archiving a thread closes its browser pages, live and suspended, through
 // both doors that archive; a session kept because a turn started after the
 // request keeps its pages too.

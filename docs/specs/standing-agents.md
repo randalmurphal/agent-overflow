@@ -787,8 +787,9 @@ computer that holds the thread:
 7. Sends a prompt routed to it from a worker it left running to the
    user.
 
-The thread is not archived, moved or regrouped and keeps its history; a
-later message from anyone starts a session that resumes it. A step that
+The thread is not archived, moved or regrouped and keeps its history and
+its browser pages; a later message from anyone starts a session that
+resumes it. A step that
 fails is named in the Stop's failures, and the others still run. A
 repeated Stop finds the thread at rest.
 
