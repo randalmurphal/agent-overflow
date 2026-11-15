@@ -53,6 +53,15 @@ func TestClassifyCoversEveryRowOfTheErrorTable(t *testing.T) {
 		{name: "GraphQL 200 errors beside remaining zero", status: 200, graphQL: true,
 			header: hdr("X-RateLimit-Limit", "5000", "X-RateLimit-Remaining", "0", "X-RateLimit-Reset", strconv.FormatInt(reset.Unix(), 10), "X-RateLimit-Resource", "graphql"),
 			body:   `{"errors":[{"message":"something"}]}`, want: outcomeRateLimited, until: reset},
+		// GitHub's GraphQL documentation: a secondary rate limit answers
+		// "200 or 403" with an error message saying so; its type and body
+		// are undocumented, so the message and Retry-After decide.
+		{name: "GraphQL 200 secondary limit with Retry-After", status: 200, graphQL: true, header: hdr("Retry-After", "90"),
+			body: `{"errors":[{"message":"You have exceeded a secondary rate limit. Please wait a few minutes before you try again."}]}`, want: outcomeRateLimited, until: now.Add(90 * time.Second)},
+		{name: "GraphQL 200 secondary limit message alone", status: 200, graphQL: true, header: hdr(),
+			body: `{"data":null,"errors":[{"message":"You have exceeded a secondary rate limit."}]}`, want: outcomeRateLimited},
+		{name: "GraphQL 200 errors beside Retry-After", status: 200, graphQL: true, header: hdr("Retry-After", "30"),
+			body: `{"errors":[{"message":"something"}]}`, want: outcomeRateLimited, until: now.Add(30 * time.Second)},
 		{name: "401", status: 401, header: hdr(), body: `{"message":"Bad credentials"}`, want: outcomeUnauthorized},
 		{name: "404", status: 404, header: hdr(), body: `{"message":"Not Found"}`, want: outcomeNotFound,
 			check: func(t *testing.T, err error) {

@@ -580,6 +580,31 @@ func TestRateLimitsReadThroughTheAppsTransport(t *testing.T) {
 	}
 }
 
+// GitHub answers a GraphQL secondary rate limit with HTTP 200, a message
+// saying so and Retry-After: the read is rate limited until then, and the
+// gate holds the next background read without sending it.
+func TestGitHubSecondaryRateLimitAnsweredWith200(t *testing.T) {
+	r := newRig(t, githubFixture())
+	ref := gitops.PRReference{Forge: "github", Host: "github.com", Namespace: "acme", Repo: "widgets", Number: 7}
+	if err := r.engine.SetRefusal(forgefake.Refusal{Route: "gh graphql PRTick", Status: 200, Times: 1, Header: map[string]string{"Retry-After": "120"},
+		Body: []byte(`{"errors":[{"message":"You have exceeded a secondary rate limit. Please wait a few minutes before you try again."}]}`)}); err != nil {
+		t.Fatal(err)
+	}
+	before := time.Now()
+	_, err := r.core.GetPRDetail(t.Context(), ref)
+	var limited *forgeapi.RateLimitedError
+	if !errors.As(err, &limited) || limited.Until.Before(before.Add(119*time.Second)) || limited.Until.After(time.Now().Add(121*time.Second)) {
+		t.Fatalf("read answered 200 with a secondary limit = %v, want rate limited for Retry-After", err)
+	}
+	sent := len(r.engine.Invocations(0).Invocations)
+	if _, err := r.core.GetPRDetail(t.Context(), ref); !errors.As(err, &limited) {
+		t.Fatalf("background read while the gate is closed = %v", err)
+	}
+	if got := len(r.engine.Invocations(0).Invocations); got != sent {
+		t.Fatalf("the closed gate sent %d more requests", got-sent)
+	}
+}
+
 func TestPRReadsAddressTheReferencesHost(t *testing.T) {
 	github, gitlab := githubFixture(), gitlabFixture()
 	github.Repos[0].Host = "ghe.example:8443"

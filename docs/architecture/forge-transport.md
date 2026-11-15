@@ -1069,8 +1069,10 @@ func (c *Client) CredentialFingerprint(ctx context.Context) (string, error) // s
 A response is classified in this order: rate limited, 401, 404, GraphQL
 errors, success. Rate limited means 429; 403 with `X-RateLimit-Remaining:
 0`, a `Retry-After` header or a body matching `rate limit`; or a 200
-GraphQL envelope with a `RATE_LIMITED` error or errors beside
-`X-RateLimit-Remaining: 0`. Any other 403 (SSO enforcement, a missing
+GraphQL envelope with a `RATE_LIMITED` error, an error whose message
+names a rate limit, or errors beside `X-RateLimit-Remaining: 0` or a
+`Retry-After` header (GitHub answers a GraphQL secondary limit "200 or
+403" with a message saying so and documents no error type for it). Any other 403 (SSO enforcement, a missing
 scope or permission) is a `*ForbiddenError`, never "unauthenticated".
 
 | Observation | Error | Caller behavior |

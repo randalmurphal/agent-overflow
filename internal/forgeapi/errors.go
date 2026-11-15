@@ -438,10 +438,14 @@ func rateLimitedUntil(a answer, rate *RateLimit) (time.Time, bool) {
 		limited = remainingZero(a.header) || a.header.Get("Retry-After") != "" ||
 			bytes.Contains(bytes.ToLower(a.body), []byte("rate limit"))
 	case a.graphQL && a.status >= 200 && a.status <= 299:
+		// GitHub answers a GraphQL secondary rate limit with "200 or 403"
+		// and a message saying so (its GraphQL rate limit documentation);
+		// the error's type is not documented, so the message and a
+		// Retry-After count as well as RATE_LIMITED.
 		if env, ok := parseGraphQLEnvelope(a.body); ok && len(env.Errors) > 0 {
-			limited = remainingZero(a.header)
+			limited = remainingZero(a.header) || a.header.Get("Retry-After") != ""
 			for _, p := range env.Errors {
-				if p.Type == githubRateLimited {
+				if p.Type == githubRateLimited || strings.Contains(strings.ToLower(p.Message), "rate limit") {
 					limited = true
 				}
 			}
