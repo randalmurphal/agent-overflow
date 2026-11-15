@@ -48,6 +48,16 @@ recording is decoded at a time. A recording over a minute is not decoded,
 since decoding holds it as samples several times over; the meter's verdict
 stands for it.
 
+Spike 2026-11-15, half a second of WAV silence per request: no
+`Authorization` header returned 401 `{"detail":"Unauthorized"}`; a malformed
+token returned 401; a real token with a tampered signature returned 401
+with code `invalid_jwt`; a valid token with a random `ChatGPT-Account-Id`
+returned 200, so the account header is not enforced. No token condition
+produced a 403. A genuinely expired token could not be produced, so its
+answer is unobserved. AO therefore treats only a 401 as a token to refresh;
+a 403 is the endpoint refusing the request (a challenge, an entitlement or
+a retirement), refreshes nothing and has its own message.
+
 The access token is read from the canonical Codex `auth.json` for each
 request and never retained. On a 401, AO asks Codex to refresh through
 `account/read {refreshToken: true}` and retries once; AO never refreshes the

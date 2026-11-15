@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"agent-overflow/internal/dictation"
+	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provideraccountapp"
 	"agent-overflow/internal/testutil/mockexec"
@@ -431,5 +432,49 @@ func TestAnAbandonedDictationStartsNoRefresh(t *testing.T) {
 	}
 	if _, err := os.Stat(ran); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("the Codex CLI ran a refresh for an abandoned transcription (stat err = %v)", err)
+	}
+}
+
+// answerTranscription answers every transcription with status.
+type answerTranscription struct{ status int }
+
+func (a answerTranscription) RoundTrip(req *http.Request) (*http.Response, error) {
+	return &http.Response{
+		StatusCode: a.status,
+		Header:     http.Header{"Content-Type": {"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(`{"detail":"Forbidden"}`)),
+		Request:    req,
+	}, nil
+}
+
+// A 403 is ChatGPT refusing the request, not the token: the Codex CLI is
+// never run to refresh the sign-in, and the mic does not ask for a new one.
+func TestARefusedTranscriptionRefreshesNothing(t *testing.T) {
+	t.Parallel()
+	app := newDictationTestApp(t, "fresh")
+	ran := filepath.Join(t.TempDir(), "codex-ran")
+	binary := filepath.Join(t.TempDir(), "mock-codex")
+	mockexec.Write(t, binary, "#!/bin/bash\ntouch '"+ran+"'\nexit 1\n")
+	if _, err := app.settings.Update(map[string]any{"codexBinaryPath": binary}); err != nil {
+		t.Fatal(err)
+	}
+	app.rateLimitProbeClientOverride = &http.Client{Transport: answerTranscription{status: http.StatusForbidden}}
+	ctx, _ := transport.WithConnState(context.Background(), transport.ConnPrincipal{})
+	id, err := app.BeginDictation(ctx, "audio/webm")
+	if err != nil {
+		t.Fatal(err)
+	}
+	uploadDictation(t, app, id, "frames")
+
+	_, err = app.FinishDictation(ctx, id, 1)
+	_, message, public := errorsx.PublicDetails(err)
+	if !public || !strings.Contains(message, "HTTP 403") || strings.Contains(message, "sign in to Codex again") {
+		t.Fatalf("FinishDictation err = %v (public %q), want its own readable 403", err, message)
+	}
+	if errors.Is(err, provideraccountapp.ErrCodexLoginRefused) {
+		t.Fatalf("FinishDictation err = %v, a 403 is not a refused sign-in", err)
+	}
+	if _, err := os.Stat(ran); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the Codex CLI ran a refresh for a 403 (stat err = %v)", err)
 	}
 }

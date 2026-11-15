@@ -33,9 +33,14 @@ const transcribeTimeout = 90 * time.Second
 // recording AO sends is tens of kilobytes.
 const maxTranscriptBytes = 1 << 20
 
-// ErrTranscribeUnauthorized means ChatGPT refused the sign-in's access
+// ErrTranscribeUnauthorized is a 401: ChatGPT refused the sign-in's access
 // token. A token refresh may fix it.
 var ErrTranscribeUnauthorized = errors.New("codex: ChatGPT refused the sign-in for transcription")
+
+// ErrTranscribeForbidden is a 403: the endpoint refused the request itself
+// (a challenge, an entitlement, a retirement). No token condition produced
+// one, so a token refresh would not fix it.
+var ErrTranscribeForbidden = errors.New("codex: ChatGPT refused the transcription request (HTTP 403)")
 
 // ErrNoChatGPTLogin means the credential is not a ChatGPT sign-in (an API
 // key, another auth mode, or no tokens), so it cannot authorize ChatGPT's
@@ -147,8 +152,10 @@ func Transcribe(ctx context.Context, client *http.Client, request TranscribeRequ
 		return "", fmt.Errorf("codex: read transcription response: %w", err)
 	}
 	switch {
-	case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
+	case resp.StatusCode == http.StatusUnauthorized:
 		return "", ErrTranscribeUnauthorized
+	case resp.StatusCode == http.StatusForbidden:
+		return "", ErrTranscribeForbidden
 	case resp.StatusCode == http.StatusTooManyRequests:
 		return "", &TranscribeRateLimitedError{RetryAfter: retryAfter(resp.Header.Get("Retry-After"))}
 	case resp.StatusCode < 200 || resp.StatusCode > 299:

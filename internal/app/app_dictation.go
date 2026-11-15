@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"agent-overflow/internal/dictation"
+	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/provideraccountapp"
@@ -134,9 +135,21 @@ func (a *App) FinishDictation(ctx context.Context, recordingID string, pieces in
 		UserAgent: provider.CodexClientOrigin + "/" + a.version,
 	})
 	if err != nil {
-		return "", fmt.Errorf("transcribe: %w", err)
+		return "", dictationFailure(err)
 	}
 	return text, nil
+}
+
+// dictationTranscriptionRefusedCode is the wire code of a 403 from ChatGPT.
+const dictationTranscriptionRefusedCode = "dictation_transcription_refused"
+
+// dictationFailure is a failed transcription as the mic shows it.
+func dictationFailure(err error) error {
+	if errors.Is(err, codex.ErrTranscribeForbidden) {
+		return errorsx.Public(dictationTranscriptionRefusedCode,
+			"ChatGPT refused to transcribe the recording (HTTP 403). Signing in again will not change that; dictation through ChatGPT may be unavailable for now.", err)
+	}
+	return fmt.Errorf("transcribe: %w", err)
 }
 
 // CancelDictation drops an open recording or stops its transcription.
