@@ -18,10 +18,13 @@ is the drag handle. Open, close and placement belong to
   constructing it reactively remounts the surface on unrelated updates.
 - Wrap each pane body in `shared/RenderBoundary.svelte` so one render failure
   does not stop updates in other panes.
-- A drag that places a pane (thread row, tool, pane title) is over the
-  strip's shield while it is over the strip, so `usePaneThreadDrag` is its
-  only handler and pane bodies never see it. A pane body sees the drags
-  that place nothing: dragged text and files.
+- A drag that places a pane (thread row, tool, pane title) is under the
+  strip's shield from its `dragstart` to its end, wherever the pointer is,
+  so `usePaneThreadDrag` is its only handler, pane bodies never see it, and
+  a native browser view, which would take the drag from the page, is
+  hidden. Do not make the shield wait for a later drag event. A pane body
+  sees the drags that place nothing: dragged text and files. A thread
+  row's DataTransfer carries only its id (`encodeThreadDragPayload`).
 - Desktop owns resizers and multi-pane layout. Compact mode shows one pane at a
   time while keeping the strip mounted; use the shared layout mode rather than
   device or runtime detection.

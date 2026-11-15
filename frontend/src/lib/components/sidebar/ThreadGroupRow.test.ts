@@ -21,6 +21,7 @@ import {
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import {
   beginThreadRowDrag,
+  encodeThreadDragPayload,
   endThreadRowDrag,
   THREAD_ROW_DRAG_MIME,
   threadDragPayloadForEvent,
@@ -71,8 +72,11 @@ function renderRow(props: Record<string, unknown> = {}) {
   });
 }
 
+/** A thread row's drag as the row starts it: its record, and its id on the
+ * DataTransfer. */
 function dragEventInit(payload: ThreadDragPayload) {
-  const raw = JSON.stringify(payload);
+  beginThreadRowDrag(payload);
+  const raw = encodeThreadDragPayload(payload);
   return {
     dataTransfer: {
       types: [THREAD_ROW_DRAG_MIME],
@@ -253,7 +257,7 @@ describe('<ThreadGroupRow>', () => {
 
     await fireEvent.drop(
       getByTestId('thread-group-row-shell'),
-      dragEventInit({ threadId: 'dragged', title: 'Dragged', projectId: 'project-1' }),
+      dragEventInit({ threadId: 'dragged', projectId: 'project-1' }),
     );
     await flush();
 
@@ -266,7 +270,7 @@ describe('<ThreadGroupRow>', () => {
 
     await fireEvent.drop(
       getByTestId('thread-group-row-shell'),
-      dragEventInit({ threadId: 'dragged', title: 'Dragged', projectId: 'other-project' }),
+      dragEventInit({ threadId: 'dragged', projectId: 'other-project' }),
     );
     await flush();
 
@@ -281,7 +285,6 @@ describe('<ThreadGroupRow>', () => {
       getByTestId('thread-group-row-shell'),
       dragEventInit({
         threadId: 'member',
-        title: 'Member',
         projectId: 'project-1',
         groupId: 'group-1',
       }),
@@ -297,7 +300,7 @@ describe('<ThreadGroupRow>', () => {
       onDropTargetChange: (active: boolean, accepts: boolean) => seen.push([active, accepts]),
     });
     const shell = getByTestId('thread-group-row-shell');
-    const init = dragEventInit({ threadId: 'dragged', title: 'Dragged', projectId: 'project-1' });
+    const init = dragEventInit({ threadId: 'dragged', projectId: 'project-1' });
 
     await fireEvent.dragEnter(shell, init);
     await fireEvent.dragOver(shell, init);
@@ -319,7 +322,6 @@ describe('<ThreadGroupRow>', () => {
     const shell = getByTestId('thread-group-row-shell');
     const init = dragEventInit({
       threadId: 'member',
-      title: 'Member',
       projectId: 'project-1',
       groupId: 'group-1',
     });
@@ -337,7 +339,7 @@ describe('<ThreadGroupRow>', () => {
     // project or typing a search mid-drag takes it away, and the record would
     // outlive the drag.
     setBindingMock('SetThreadGroup', vi.fn(async () => []));
-    const payload = { threadId: 'dragged', title: 'Dragged', projectId: 'project-1' };
+    const payload = { threadId: 'dragged', projectId: 'project-1' };
     beginThreadRowDrag(payload);
     const { getByTestId } = renderRow();
 
