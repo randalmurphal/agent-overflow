@@ -33,6 +33,7 @@ import {
   BUILDER,
   FOLLOW_UP,
   INBOX,
+  JOINED_SENDERS,
   LEAD,
   LEAD_ASK,
   OWN_FIRST,
@@ -215,6 +216,14 @@ for (const provider of ['claude', 'codex'] as const) {
     await expect(fact(erroredBody, 'Role')).toHaveText('Standing agent');
     await expect(erroredBody.getByTestId('agent-message-text')).toContainText('stack');
     await keep(page, `${provider}-inbox-expanded.png`, question);
+
+    // A row joined from two threads' requests names each message's sender.
+    const joined = agentRow(page, 'request');
+    const joinedBody = await expand(joined);
+    await expect(joinedBody.getByTestId('agent-message-part-source-sender')).toHaveText(JOINED_SENDERS);
+    await expect(joinedBody.getByTestId('agent-message-text')).toHaveText(['Ship it.', 'Do the task.']);
+    await expect(fact(joinedBody.getByTestId('agent-message-part').nth(1), 'Role')).toHaveText('Keeps the "plan" honest.');
+    await keep(page, `${provider}-joined-senders-expanded.png`, joined);
   });
 }
 

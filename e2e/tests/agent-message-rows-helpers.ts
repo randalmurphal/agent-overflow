@@ -247,6 +247,31 @@ export async function goTemplate(name: string): Promise<string> {
   return found.text;
 }
 
+/** The senders of the row seedInbox joins from two threads' requests. */
+export const JOINED_SENDERS = ['Builder', 'Planner'];
+
+/**
+ * A row a provider joined from two threads' requests, as usermessage.Join
+ * records it: the members' texts with the separator between, and each
+ * member's length and attribution.
+ */
+async function joinedRequests(): Promise<{ text: string; meta: Record<string, unknown> }> {
+  const members = [
+    { text: await goTemplate('request not waiting, reachable'), originThread: { threadId: 't-build', title: 'Builder', token: 'j1', kind: 'send' } },
+    { text: await goTemplate('request from a standing agent that spawned the receiver'), originThread: { threadId: 't-plan', title: 'Planner', token: 'j2', kind: 'send' } },
+  ];
+  const sendIds = members.map((member) => `thread-request:${member.originThread.token}`);
+  return {
+    text: members.map((member) => member.text).join('\n\n---\n\n'),
+    meta: {
+      origin: 'agent-thread', originThread: members[0].originThread, sendId: sendIds[0], joinedSendIds: sendIds,
+      joinedParts: members.map((member, index) => ({
+        sendId: sendIds[index], bytes: Buffer.byteLength(member.text), origin: 'agent-thread', originThread: member.originThread,
+      })),
+    },
+  };
+}
+
 export const INBOX = 'Agent inbox';
 export const OWN_FIRST = 'What is left on the release?';
 export const OWN_LAST = 'Thanks, carry on.';
@@ -276,6 +301,7 @@ export async function seedInbox(harness: HarnessApp, provider: ProviderName, tag
   const answer = (summary: string) => [{ kind: 'assistant_text', summary }];
   const thread = (originThread: Record<string, unknown>, sendId: string) => ({ origin: 'agent-thread', originThread, sendId });
   const wake = (originWake: Record<string, unknown>, sendId: string) => ({ origin: 'agent-wake', originWake, sendId });
+  const joined = await joinedRequests();
   const turns = [
     { userText: OWN_FIRST, items: answer('Two things: the parser and the build.') },
     {
@@ -317,6 +343,7 @@ export async function seedInbox(harness: HarnessApp, provider: ProviderName, tag
       userMeta: thread({ threadId: 't-self', kind: 'wake' }, 'thread-wake:r1'),
       items: answer('Checked the build.'),
     },
+    { userText: joined.text, userMeta: joined.meta, items: answer('Shipped, and on the task.') },
   ];
   const seed = await harness.rpc<SeedResult>('HarnessSeed', {
     projects: [{ name: `${tag}-inbox`, repo: {}, threads: [{ title: INBOX, provider, turns }] }],
@@ -335,6 +362,8 @@ export async function seedInbox(harness: HarnessApp, provider: ProviderName, tag
       { kind: 'workflow', label: 'Run', sender: 'release', firstLine: WORKFLOW_HEADLINE },
       { kind: 'errored', label: 'Error', sender: 'Worker', firstLine: 'boom' },
       { kind: 'reminder', label: 'Alarm', sender: 'This thread', firstLine: 'Check the build.' },
+      // Headed by its first message; each message names its own sender.
+      { kind: 'request', label: 'Send', sender: JOINED_SENDERS[0], firstLine: 'Ship it.' },
     ],
   };
 }

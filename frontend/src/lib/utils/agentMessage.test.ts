@@ -4,10 +4,12 @@ import labels from '../../../../internal/app/testdata/agent_message_labels.json'
 import type { Item } from '../types/models';
 import {
   agentMessageFromItem,
+  digestThreadOrigin,
   parseRequestText,
   parseWakeText,
   readGoQuoted,
   type AgentMessagePart,
+  type AgentMessageRowPart,
 } from './agentMessage';
 
 interface FixtureCase {
@@ -19,6 +21,11 @@ interface FixtureCase {
 }
 
 const cases = fixture as FixtureCase[];
+
+/** What a row's parts say, without who said it. */
+function parsed(parts: AgentMessageRowPart[] | undefined): AgentMessagePart[] | undefined {
+  return parts?.map(({ body, footer, wake }) => ({ body, footer, wake }));
+}
 
 function row(summary: string, meta: Record<string, unknown>): Pick<Item, 'kind' | 'meta' | 'summary'> {
   return { kind: 'user_text', summary, meta: JSON.stringify(meta) };
@@ -47,7 +54,7 @@ describe('the Go templates (internal/threadtools/testdata/agent_messages.json)',
 
   for (const fixtureCase of cases) {
     it(`parses: ${fixtureCase.name}`, () => {
-      expect(agentMessageFromItem(fixtureRow(fixtureCase))?.parts).toEqual(fixtureCase.parts);
+      expect(parsed(agentMessageFromItem(fixtureRow(fixtureCase))?.parts)).toEqual(fixtureCase.parts);
     });
   }
 
@@ -137,7 +144,7 @@ describe('agentMessageFromItem', () => {
         origin: 'agent-wake', originWake: { kind, label: 'Ops' }, sendId: `assistant:${kind}:a1`,
       }))!;
       expect(message).toMatchObject({ kind: expected, sender: 'Agent Overflow', firstLine: 'You are "Ops", a standing agent.' });
-      expect(message.parts).toEqual([{ body: 'You are "Ops", a standing agent.\n\nMore.', footer: null, wake: null }]);
+      expect(parsed(message.parts)).toEqual([{ body: 'You are "Ops", a standing agent.\n\nMore.', footer: null, wake: null }]);
     }
   });
 
@@ -261,6 +268,45 @@ describe('agentMessageFromItem', () => {
       quoting.parts[1].body,
     ]);
     expect(message.parts[2].wake).toEqual(quoting.parts[1].wake);
+    // Each part keeps its own sender and kind; only the answering thread
+    // has one to open.
+    expect(message.parts.map(({ source }) => [source.kind, source.sender, source.senderThread?.threadId ?? null])).toEqual([
+      ['loop', 'nightly', null],
+      ['job', 'build on desk', null],
+      ['finished', 'B', 't-b'],
+    ]);
+  });
+
+  it('keeps each sender of requests joined from different threads', () => {
+    const fixtureCase = cases.find((c) => c.name === 'two requests joined')!;
+    const origins = [
+      { computerId: 'c-desk', computerName: 'desk', threadId: 't-a', title: 'A', token: 'tok-a', kind: 'send' },
+      { threadId: 't-b', title: 'B', token: 'tok-b', kind: 'spawn' },
+    ];
+    const message = agentMessageFromItem(row(fixtureCase.text, {
+      origin: 'agent-thread', originThread: origins[0], sendId: 'thread-request:tok-a',
+      joinedSendIds: ['thread-request:tok-a', 'thread-request:tok-b'],
+      joinedParts: fixtureCase.members.map((bytes, index) => ({
+        sendId: `thread-request:${origins[index].token}`, bytes, origin: 'agent-thread', originThread: origins[index],
+      })),
+    }))!;
+    // The row is headed by its first message.
+    expect(message).toMatchObject({ kind: 'request', sender: 'A' });
+    expect(message.parts.map(({ source }) => ({ kind: source.kind, sender: source.sender, thread: source.senderThread }))).toEqual([
+      { kind: 'request', sender: 'A', thread: { ...origins[0] } },
+      { kind: 'spawn', sender: 'B', thread: { computerId: '', computerName: '', ...origins[1] } },
+    ]);
+    expect(message.parts.map((part) => part.footer?.token)).toEqual(['0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d', 'tok-2']);
+  });
+
+  it('opens only the threads of a digest on the caller\'s own computer', () => {
+    const digest = cases.find((c) => c.name === 'digest: the same reply, a standing agent and an age')!;
+    const threads = digest.parts[0].wake!.threads;
+    expect(threads.map(digestThreadOrigin)).toEqual([
+      { computerId: '', computerName: '', threadId: 't-work', title: 'Worker', token: '0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d', kind: 'wake' },
+      // Named "on desk" in the text: a display name, never a computer's identity.
+      null,
+    ]);
   });
 
   it('reads a joined row whole when its recorded members do not describe its text', () => {
@@ -297,7 +343,7 @@ describe('agentMessageFromItem', () => {
 
   it('shows an unparseable agent row whole rather than as the person\'s', () => {
     const message = agentMessageFromItem(row('free text', { origin: 'agent-thread' }))!;
-    expect(message.parts).toEqual([{ body: 'free text', footer: null, wake: null }]);
+    expect(parsed(message.parts)).toEqual([{ body: 'free text', footer: null, wake: null }]);
     expect(message.senderThread).toBeNull();
   });
 });

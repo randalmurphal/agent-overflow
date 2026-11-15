@@ -1304,11 +1304,16 @@ on an answer, who answered, how long ago, what stopped it,
 where the clipped rest is, and for a request made in an assistant's
 past thread that thread and the current one. An answer to several requests is one row
 listing every token; a wake that lists several threads is one row whose
-sender is the count of threads, opening none of them, with each thread,
-its computer, age, role and tokens as a fact. A joined row shows each member its
+sender is the count of threads; opened, it names each thread as a
+sender, with its age, role and tokens as facts, and opens only a thread
+on the caller's own computer, since the text names another computer by
+display name alone. A joined row shows each member its
 `joinedParts` record, cut by their lengths and read by their own
-attribution, never by finding separators in its text; a row whose parts
-are missing or do not describe its text is read as one message. The
+attribution, never by finding separators in its text; the header names
+the first member's sender, and opened, each member is headed by its own
+kind and sender, which opens its thread when the header's would. A row
+whose parts are missing or do not describe its text is read as one
+message. The
 footer and a wake's status line never render raw; a loop, watch, outside send or worker wake shows its data
 decoded without the line written for the agent. A remote job's
 completion names the job and its computer and leads with its result; a

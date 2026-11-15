@@ -150,8 +150,49 @@ describe('<AgentMessageRow> through TimelineLeaf', () => {
     });
     const view = render(TimelineLeaf, { props: { pane, item } });
     const parts = view.getAllByTestId('agent-message-part');
-    expect(parts[0].querySelector('[data-fact="From"]')).toBeNull();
-    expect(parts[1].querySelector('[data-fact="From"]')?.textContent).toBe('B');
+    const heading = (part: HTMLElement) => part.querySelector('[data-testid="agent-message-part-source"]')?.textContent?.replace(/\s+/g, ' ').trim();
+    expect(parts.map(heading)).toEqual(['Reply A', 'Final message, no reply B']);
+  });
+
+  it('heads each message of a joined row with its own sender and kind, opening only that one', async () => {
+    const pane = await buildPane();
+    pane.setUserMessageExpanded('msg-1', true);
+    const origins = [
+      { threadId: 't-plan', title: 'Planner', token: 'tok-a', kind: 'send' },
+      { threadId: 't-work', title: 'Worker', token: 'tok-b', kind: 'spawn' },
+      { computerId: 'gone', computerName: 'desk', threadId: 't-far', title: 'Far', token: 'tok-c', kind: 'ask' },
+    ];
+    const requests = fixtureCase('two requests joined');
+    // A third member: the first request again, from a thread on a computer this client is not paired with.
+    const first = new TextDecoder().decode(new TextEncoder().encode(requests.text).subarray(0, requests.members[0]));
+    const item = agentRow(`${requests.text}\n\n---\n\n${first}`, {
+      origin: 'agent-thread',
+      originThread: origins[0],
+      sendId: 'thread-request:tok-a',
+      joinedSendIds: origins.map((origin) => `thread-request:${origin.token}`),
+      joinedParts: [...requests.members, requests.members[0]].map((bytes, index) => ({
+        sendId: `thread-request:${origins[index].token}`, bytes, origin: 'agent-thread', originThread: origins[index],
+      })),
+    });
+    const view = render(TimelineLeaf, { props: { pane, item } });
+    // The header names the first message's sender.
+    expect(view.getByTestId('agent-message-sender').textContent).toBe('Planner');
+    const parts = view.getAllByTestId('agent-message-part');
+    expect(parts.map((part) => part.dataset.agentMessageKind)).toEqual(['request', 'spawn', 'question']);
+    const senders = view.getAllByTestId('agent-message-part-source-sender');
+    expect(senders.map((sender) => [sender.textContent, sender.tagName])).toEqual([
+      ['Planner', 'BUTTON'],
+      ['Worker', 'BUTTON'],
+      ['Far on desk', 'SPAN'],
+    ]);
+    expect(parts.map((part) => part.querySelector('[data-fact="Token"]')?.textContent)).toEqual([
+      '0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d', 'tok-2', '0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d',
+    ]);
+    await fireEvent.click(senders[1]);
+    await vi.waitFor(() => expect(openThreadInPane).toHaveBeenCalledTimes(1));
+    expect(openThreadInPane).toHaveBeenCalledWith(expect.objectContaining({ id: 't-work' }));
+    // Opening a sender is not a toggle of the row.
+    expect(pane.isUserMessageExpanded('msg-1')).toBe(true);
   });
 
   it('shows each message of a joined row', async () => {
@@ -260,10 +301,24 @@ describe('<AgentMessageRow> through TimelineLeaf', () => {
     await tick();
     expect(digest.getAllByTestId('agent-message-part')).toHaveLength(1);
     expect(digest.getByTestId('agent-message-text').textContent).toBe('Done.\nSecond line.');
-    expect(digest.container.querySelector('[data-fact="Threads"]')?.textContent).toBe(
-      'Worker, standing agent: Runs the builds., token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d; Lexer "two" (on desk, answered 3h ago), tokens tok-2, tok-3',
-    );
+    // Each thread it speaks for is named the way a joined part's sender is,
+    // with its own facts; only the one on this computer opens.
+    const threads = digest.getAllByTestId('agent-message-thread');
+    const facts = (thread: HTMLElement) =>
+      [...thread.querySelectorAll('[data-fact]')].map((fact) => `${fact.getAttribute('data-fact')}: ${fact.textContent}`);
+    expect(threads.map(facts)).toEqual([
+      ['Role: Runs the builds.', 'Token: 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d'],
+      ['Answered: 3h ago', 'Tokens: tok-2, tok-3'],
+    ]);
+    const senders = digest.getAllByTestId('agent-message-thread-source-sender');
+    expect(senders.map((sender) => [sender.textContent, sender.tagName])).toEqual([
+      ['Worker', 'BUTTON'],
+      ['Lexer "two" on desk', 'SPAN'],
+    ]);
+    expect(digest.container.querySelector('[data-fact="Token"]')?.closest('[data-testid="agent-message-thread"]')).toBe(threads[0]);
     expect(digest.getByTestId('agent-message-row').textContent).not.toContain('threads sent the same reply');
+    await fireEvent.click(senders[0]);
+    await vi.waitFor(() => expect(openThreadInPane).toHaveBeenCalledWith(expect.objectContaining({ id: 't-work' })));
   });
 
   it('renders a loop wake decoded and a provider agent\'s message as agent rows', async () => {

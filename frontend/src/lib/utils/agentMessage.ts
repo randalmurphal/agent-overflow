@@ -108,12 +108,17 @@ export interface WakeFacts {
   now: string;
 }
 
-/** One message of a row. A joined row holds several. */
+/** What one message's text says, parsed. */
 export interface AgentMessagePart {
   /** What the sender wrote, or the answer a wake carries. */
   body: string;
   footer: RequestFooterFacts | null;
   wake: WakeFacts | null;
+}
+
+/** One message of a row with who sent it. A joined row holds several. */
+export interface AgentMessageRowPart extends AgentMessagePart {
+  source: AgentMessageSource;
 }
 
 export type AgentMessageKind =
@@ -134,8 +139,8 @@ export type AgentMessageKind =
   | 'task'
   | 'final-answer';
 
-/** The row's whole reading. */
-export interface AgentMessage {
+/** Who sent a message and what kind of message it is. */
+export interface AgentMessageSource {
   kind: AgentMessageKind;
   /** Short gutter label, like a tool row's tool name. */
   kindLabel: string;
@@ -145,13 +150,38 @@ export interface AgentMessage {
   sender: string;
   /**
    * The sender's thread, when there is one: the row opens it from the
-   * sender and names its computer when that is another one.
+   * sender and names its computer when that is another one. It comes from
+   * the message's attribution, never from a name in its text.
    */
   senderThread: UserMessageOriginThread | null;
   /** The sender's role line when it is a standing agent. */
   senderRole: string;
+}
+
+/**
+ * The row's whole reading. The row is headed by its first message's source;
+ * each part keeps its own, since a joined row's members can come from
+ * different senders and be of different kinds.
+ */
+export interface AgentMessage extends AgentMessageSource {
   firstLine: string;
-  parts: AgentMessagePart[];
+  parts: AgentMessageRowPart[];
+}
+
+
+function sourced(source: AgentMessageSource, firstLine: string, parts: AgentMessagePart[]): AgentMessage {
+  return { ...source, firstLine, parts: parts.map((part) => ({ ...part, source })) };
+}
+
+/**
+ * A thread a digest lists, as its row can open it. Only a thread on the
+ * caller's own computer is reachable, which a digest names with no computer;
+ * one on another computer is named in the text by its display name alone,
+ * which never identifies a computer.
+ */
+export function digestThreadOrigin(thread: WakeThreadFacts): UserMessageOriginThread | null {
+  if (thread.computer !== '' || thread.threadId === '') return null;
+  return { computerId: '', computerName: '', threadId: thread.threadId, title: thread.title, token: thread.tokens[0] ?? '', kind: 'wake' };
 }
 
 const FOOTER_MARKER = 'Agent request from thread ';
@@ -658,14 +688,13 @@ function fromThread(text: string, meta: UserMessageMeta): AgentMessage {
   // its sender.
   const threads = lead.wake?.threads ?? [];
   if (threads.length > 0) {
-    return {
-      kind, kindLabel: label, kindTitle: title,
-      sender: `${threads.length} threads`, senderThread: null, senderRole: '',
-      firstLine: firstLineOf(lead.body) || threads.map((thread) => thread.title || thread.threadId).join(', '),
+    return sourced(
+      { kind, kindLabel: label, kindTitle: title, sender: `${threads.length} threads`, senderThread: null, senderRole: '' },
+      firstLineOf(lead.body) || threads.map((thread) => thread.title || thread.threadId).join(', '),
       parts,
-    };
+    );
   }
-  return {
+  return sourced({
     kind,
     kindLabel: label,
     kindTitle: title,
@@ -673,9 +702,7 @@ function fromThread(text: string, meta: UserMessageMeta): AgentMessage {
     sender: kind === 'reminder' ? 'This thread' : origin.title || lead.footer?.title || lead.wake?.title || 'another thread',
     senderThread: kind === 'reminder' || origin.threadId === '' ? null : origin,
     senderRole: role,
-    firstLine: firstLineOf(lead.body),
-    parts,
-  };
+  }, firstLineOf(lead.body), parts);
 }
 
 const WAKE_ORIGIN_KINDS: Record<string, AgentMessageKind> = {
@@ -762,15 +789,14 @@ function fromWake(text: string, meta: UserMessageMeta): AgentMessage {
   if (kind === 'opening' || kind === 'handoff') {
     // An assistant's opening and handoff blocks: the app's own prose, not
     // quoted data (docs/specs/standing-agents.md, "Standing agent").
-    return {
-      kind, kindLabel: label, kindTitle: title,
-      sender: 'Agent Overflow', senderThread: null, senderRole: '',
-      firstLine: firstLineOf(text),
-      parts: [{ body: text, footer: null, wake: null }],
-    };
+    return sourced(
+      { kind, kindLabel: label, kindTitle: title, sender: 'Agent Overflow', senderThread: null, senderRole: '' },
+      firstLineOf(text),
+      [{ body: text, footer: null, wake: null }],
+    );
   }
   const worker = wake.threadId !== '';
-  return {
+  return sourced({
     kind,
     kindLabel: label,
     kindTitle: title,
@@ -779,9 +805,7 @@ function fromWake(text: string, meta: UserMessageMeta): AgentMessage {
       ? { computerId: '', computerName: '', threadId: wake.threadId, title: wake.label, token: '', kind: '' }
       : null,
     senderRole: '',
-    firstLine: reportFirstLine(kind, text),
-    parts: [{ body: wakeBody(text), footer: null, wake: null }],
-  };
+  }, reportFirstLine(kind, text), [{ body: wakeBody(text), footer: null, wake: null }]);
 }
 
 const CODEX_MESSAGE_KINDS: Record<string, AgentMessageKind> = {
@@ -798,24 +822,32 @@ function fromProvider(text: string, meta: UserMessageMeta & { agent_message?: un
     if (typeof record.sender !== 'string') return null;
     const kind = CODEX_MESSAGE_KINDS[typeof record.messageType === 'string' ? record.messageType : ''] ?? 'message';
     const { label, title } = labels(kind);
-    return {
-      kind, kindLabel: label, kindTitle: title,
-      sender: record.sender === '/root' ? 'Main agent' : record.sender,
-      senderThread: null, senderRole: '',
-      firstLine: firstLineOf(text),
-      parts: [{ body: text, footer: null, wake: null }],
-    };
+    return sourced(
+      {
+        kind, kindLabel: label, kindTitle: title,
+        sender: record.sender === '/root' ? 'Main agent' : record.sender, senderThread: null, senderRole: '',
+      },
+      firstLineOf(text),
+      [{ body: text, footer: null, wake: null }],
+    );
   }
   if (userMessageOrigin(meta) !== 'peer-session' || meta.expandComposerCommands === true) return null;
   const name = typeof meta.cross_session_from_name === 'string' ? meta.cross_session_from_name.trim() : '';
   const { label, title } = labels('message');
-  return {
-    kind: 'message', kindLabel: label, kindTitle: title,
-    sender: name ? `${name} (Claude session)` : 'Another Claude session',
-    senderThread: null, senderRole: '',
-    firstLine: firstLineOf(text),
-    parts: [{ body: text, footer: null, wake: null }],
-  };
+  return sourced(
+    {
+      kind: 'message', kindLabel: label, kindTitle: title,
+      sender: name ? `${name} (Claude session)` : 'Another Claude session', senderThread: null, senderRole: '',
+    },
+    firstLineOf(text),
+    [{ body: text, footer: null, wake: null }],
+  );
+}
+
+/** The source of a joined member that is not an agent's: its sender is not known. */
+function unknownSource(): AgentMessageSource {
+  const { label, title } = labels('message');
+  return { kind: 'message', kindLabel: label, kindTitle: title, sender: 'An unknown sender', senderThread: null, senderRole: '' };
 }
 
 /**
@@ -841,8 +873,8 @@ export function agentMessageFromItem(item: Pick<Item, 'kind' | 'meta' | 'summary
   const text = item.summary ?? '';
   if (!isAgentMessageMeta(meta)) return fromProvider(text, meta);
   // A joined row is cut where its recorded members end, never by reading
-  // its text, and each member is read with its own attribution. A row
-  // whose members are unknown is read whole.
+  // its text, and each member is read with its own attribution, which its
+  // parts keep. A row whose members are unknown is read whole.
   const members = splitJoinedParts(text, meta);
   if (!members || members.length < 2) return fromAgent(text, meta);
   const messages = members.map((member) => fromAgent(member.text, member.meta));
@@ -850,7 +882,8 @@ export function agentMessageFromItem(item: Pick<Item, 'kind' | 'meta' | 'summary
   if (!lead) return fromAgent(text, meta);
   return {
     ...lead,
-    parts: messages.flatMap((message, index) => message?.parts ?? [{ body: members[index].text, footer: null, wake: null }]),
+    parts: messages.flatMap((message, index) =>
+      message?.parts ?? [{ body: members[index].text, footer: null, wake: null, source: unknownSource() }]),
   };
 }
 

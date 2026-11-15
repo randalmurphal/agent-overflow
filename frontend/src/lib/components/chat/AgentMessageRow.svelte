@@ -33,7 +33,14 @@
   import { threadMachine } from '../../stores/attachedBackends.svelte';
   import { chatRowDomId } from '../../utils/chatDomIds';
   import { formatTimeOfDay } from '../../utils/format';
-  import type { AgentMessage, AgentMessageKind, AgentMessagePart } from '../../utils/agentMessage';
+  import {
+    digestThreadOrigin,
+    type AgentMessage,
+    type AgentMessageKind,
+    type AgentMessagePart,
+    type WakeThreadFacts,
+  } from '../../utils/agentMessage';
+  import type { UserMessageOriginThread } from '../../utils/userMessageMeta';
   import Icon from '../primitives/Icon.svelte';
   import { agentThreadOriginChip } from './agentThreadOrigin';
   import { preservePaneScrollAnchor } from './preserveScrollAnchor';
@@ -78,20 +85,8 @@
 
   let expanded = $derived(pane.isUserMessageExpanded(item.id));
   let bodyDomId = $derived(chatRowDomId(pane, 'agent-message-body', item.id));
-  // The origin chip's rules decide both what the sender adds and whether it
-  // opens: " on <computer>" only when the sender is on another computer than
-  // the one showing this row, named as this client names it, and a link
-  // only when this client can reach that thread, so a dead one is never
-  // offered.
-  let chip = $derived(
-    message.senderThread ? agentThreadOriginChip(message.senderThread, threadMachine(item.threadId, null)) : null,
-  );
-  let open = $derived(chip?.open ?? null);
-  let senderLabel = $derived.by(() => {
-    const named = `from ${message.senderThread?.title || 'another thread'}`;
-    const where = chip && chip.label.startsWith(named) ? chip.label.slice(named.length) : '';
-    return message.sender + where;
-  });
+  let viewer = $derived(threadMachine(item.threadId, null));
+  let headerSender = $derived(senderOf(message.sender, message.senderThread));
   let time = $derived(formatTimeOfDay(item.createdAt));
 
   function toggle(event: MouseEvent): void {
@@ -100,10 +95,42 @@
     });
   }
 
+  interface Sender {
+    label: string;
+    open: (() => void) | null;
+  }
+
+  /**
+   * A sender as the row names it. The origin chip's rules decide both what
+   * the name adds and whether it opens: " on <computer>" only when the
+   * sender is on another computer than the one showing this row, named as
+   * this client names it, and a link only when this client can reach that
+   * thread, so a dead one is never offered. A sender with no routable
+   * thread is its name, with `computer` when the text named one.
+   */
+  function senderOf(name: string, thread: UserMessageOriginThread | null, computer = ''): Sender {
+    if (!thread) return { label: computer ? `${name} on ${computer}` : name, open: null };
+    const chip = agentThreadOriginChip(thread, viewer);
+    const named = `from ${thread.title || 'another thread'}`;
+    return { label: name + (chip.label.startsWith(named) ? chip.label.slice(named.length) : ''), open: chip.open };
+  }
 
   interface Fact {
     label: string;
     value: string;
+  }
+
+  /** What a thread that answered adds: its role and how long ago it answered. */
+  function answererFacts(thread: WakeThreadFacts): Fact[] {
+    const facts: Fact[] = [];
+    if (thread.agentRole !== null) facts.push({ label: 'Role', value: thread.agentRole || 'Standing agent' });
+    if (thread.age) facts.push({ label: 'Answered', value: `${thread.age} ago` });
+    return facts;
+  }
+
+  function tokenFacts(tokens: string[]): Fact[] {
+    if (tokens.length > 1) return [{ label: 'Tokens', value: tokens.join(', ') }];
+    return tokens.length === 1 ? [{ label: 'Token', value: tokens[0] }] : [];
   }
 
   function partFacts(part: AgentMessagePart): Fact[] {
@@ -124,35 +151,52 @@
     }
     const wake = part.wake;
     if (wake) {
-      // The header names the sender; a joined part from another thread
-      // names its own.
-      if (wake.title && wake.threadId !== message.senderThread?.threadId) {
-        facts.push({ label: 'From', value: wake.computer ? `${wake.title} on ${wake.computer}` : wake.title });
-      }
-      if (wake.agentRole !== null) facts.push({ label: 'Role', value: wake.agentRole || 'Standing agent' });
-      if (wake.age) facts.push({ label: 'Answered', value: `${wake.age} ago` });
+      // A digest's threads each carry their own (the part's threads below).
+      const digest = wake.threads.length > 0;
+      if (!digest) facts.push(...answererFacts(wake));
       if (wake.stoppedBy) facts.push({ label: 'Stopped by', value: wake.stoppedBy });
       // A request made in an assistant's past thread, answered in its current one.
       if (wake.madeIn) facts.push({ label: 'Made in', value: `${wake.madeIn}, before New Thread, Same Assistant` });
       if (wake.now) facts.push({ label: 'Now in', value: wake.now });
-      // A digest names each thread it speaks for, with its tokens.
-      if (wake.threads.length > 0) {
-        facts.push({
-          label: 'Threads',
-          value: wake.threads.map((thread) => {
-            const where = [thread.computer && `on ${thread.computer}`, thread.age && `answered ${thread.age} ago`].filter(Boolean);
-            const role = thread.agentRole === null ? '' : `, standing agent${thread.agentRole ? `: ${thread.agentRole}` : ''}`;
-            return `${thread.title || thread.threadId}${where.length > 0 ? ` (${where.join(', ')})` : ''}${role}, ${thread.tokens.length > 1 ? 'tokens' : 'token'} ${thread.tokens.join(', ')}`;
-          }).join('; '),
-        });
-      }
       if (wake.clipped) facts.push({ label: 'Preview', value: `thread_status ${wake.token} returns the whole answer` });
-      if (wake.threads.length === 0 && wake.tokens.length > 1) facts.push({ label: 'Tokens', value: wake.tokens.join(', ') });
-      else if (wake.threads.length === 0 && wake.token) facts.push({ label: 'Token', value: wake.token });
+      if (!digest) facts.push(...tokenFacts(wake.tokens));
     }
     return facts;
   }
 </script>
+
+{#snippet senderName(sender: Sender, testId: string, extra: string)}
+  {#if sender.open}
+    <button
+      type="button"
+      class="{extra} font-medium text-fg-muted hover:text-accent focus-visible:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 compact:select-none"
+      data-testid={testId}
+      title={`Open ${sender.label}`}
+      onclick={() => sender.open?.()}
+    >{sender.label}</button>
+  {:else}
+    <span class="{extra} font-medium text-fg-muted" data-testid={testId}>{sender.label}</span>
+  {/if}
+{/snippet}
+
+{#snippet factList(facts: Fact[])}
+  {#if facts.length > 0}
+    <dl class="grid grid-cols-[max-content_minmax(0,1fr)] gap-x-3 gap-y-0.5 text-fg-muted" data-testid="agent-message-facts">
+      {#each facts as fact (fact.label)}
+        <dt class="text-fg-hint">{fact.label}</dt>
+        <dd class="break-words" data-fact={fact.label}>{fact.value}</dd>
+      {/each}
+    </dl>
+  {/if}
+{/snippet}
+
+<!-- A message's source, as the header names it: its kind, when it is not the part's, and its sender, who opens when reachable. -->
+{#snippet sourceHeading(kindTitle: string, sender: Sender, testId: string)}
+  <span class="flex min-w-0 items-baseline gap-1.5" data-testid={testId}>
+    {#if kindTitle}<span class="shrink-0 text-fg-hint">{kindTitle}</span>{/if}
+    {@render senderName(sender, `${testId}-sender`, 'min-w-0 truncate')}
+  </span>
+{/snippet}
 
 <div
   class="group/tool overflow-hidden"
@@ -163,7 +207,7 @@
     {expanded}
     controls={bodyDomId}
     testId="agent-message-toggle"
-    ariaLabel={`${message.kindTitle} from ${senderLabel}`}
+    ariaLabel={`${message.kindTitle} from ${headerSender.label}`}
     interactiveBody
     class="rounded-[var(--radius-control)] px-1 py-1 hover:bg-surface-2/20"
     onToggle={toggle}
@@ -172,17 +216,7 @@
     {#snippet label()}<span data-testid="agent-message-kind" title={message.kindTitle}>{message.kindLabel}</span>{/snippet}
     {#snippet body()}
       <span class="flex min-w-0 flex-1 items-baseline gap-1.5 text-[0.75rem]">
-        {#if open}
-          <button
-            type="button"
-            class="max-w-[45%] shrink-0 truncate font-medium text-fg-muted hover:text-accent focus-visible:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 compact:select-none"
-            data-testid="agent-message-sender"
-            title={`Open ${senderLabel}`}
-            onclick={() => open?.()}
-          >{senderLabel}</button>
-        {:else}
-          <span class="max-w-[45%] shrink-0 truncate font-medium text-fg-muted" data-testid="agent-message-sender">{senderLabel}</span>
-        {/if}
+        {@render senderName(headerSender, 'agent-message-sender', 'max-w-[45%] shrink-0 truncate')}
         {#if message.senderRole}
           <span class="max-w-[30%] shrink truncate text-fg-hint" data-testid="agent-message-role" title={message.senderRole}>{message.senderRole}</span>
         {/if}
@@ -209,22 +243,26 @@
       data-testid="agent-message-body"
     >
       {#each message.parts as part, index (index)}
-        {@const facts = partFacts(part)}
-        <section class="flex flex-col gap-1.5" data-testid="agent-message-part">
+        <section class="flex flex-col gap-1.5" data-testid="agent-message-part" data-agent-message-kind={part.source.kind}>
+          <!-- The header names the first message's sender; each message of a joined row names its own. -->
           {#if message.parts.length > 1}
-            <span class="text-[0.625rem] uppercase tracking-wide text-fg-hint">Message {index + 1} of {message.parts.length}</span>
+            {@render sourceHeading(part.source.kindTitle, senderOf(part.source.sender, part.source.senderThread), 'agent-message-part-source')}
           {/if}
           {#if part.body}
             <p class="whitespace-pre-wrap break-words text-fg" data-testid="agent-message-text">{part.body}</p>
           {/if}
-          {#if facts.length > 0}
-            <dl class="grid grid-cols-[max-content_minmax(0,1fr)] gap-x-3 gap-y-0.5 text-fg-muted" data-testid="agent-message-facts">
-              {#each facts as fact (fact.label)}
-                <dt class="text-fg-hint">{fact.label}</dt>
-                <dd class="break-words" data-fact={fact.label}>{fact.value}</dd>
-              {/each}
-            </dl>
-          {/if}
+          {@render factList(partFacts(part))}
+          <!-- A digest names each thread it speaks for the same way. -->
+          {#each part.wake?.threads ?? [] as thread, threadIndex (threadIndex)}
+            <div class="flex flex-col gap-0.5" data-testid="agent-message-thread">
+              {@render sourceHeading(
+                '',
+                senderOf(thread.title || thread.threadId, digestThreadOrigin(thread), thread.computer),
+                'agent-message-thread-source',
+              )}
+              {@render factList([...answererFacts(thread), ...tokenFacts(thread.tokens)])}
+            </div>
+          {/each}
         </section>
       {/each}
     </div>

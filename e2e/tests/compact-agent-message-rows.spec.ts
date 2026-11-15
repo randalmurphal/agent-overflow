@@ -14,6 +14,7 @@ import {
   BUSY,
   BUSY_TASK,
   INBOX,
+  JOINED_SENDERS,
   LEAD,
   LEAD_ASK,
   REPLY,
@@ -100,5 +101,9 @@ for (const provider of ['claude', 'codex'] as const) {
     await open(page, agentRow(page, 'worker-question'), 'option: Yes');
     await open(page, agentRow(page, 'loop'), 'Check the overnight build.');
     await keep(page, `compact-${provider}-loop-expanded.png`);
+    const joined = agentRow(page, 'request');
+    await open(page, joined, 'Do the task.');
+    await expect(joined.getByTestId('agent-message-part-source-sender')).toHaveText(JOINED_SENDERS);
+    await keep(page, `compact-${provider}-joined-senders-expanded.png`, joined);
   });
 }
