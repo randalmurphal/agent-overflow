@@ -495,7 +495,7 @@ test('a PR the app\'s create action opens is tracked from that create', async ({
   await seedForge(harness, [{ ...fixture.repo, pulls: [] }]);
   await harness.open(page);
   const result = await harness.rpc<{ prUrl?: string; error?: string }>(
-    'GitCreatePR', { projectId: fixture.projectId, workspacePath: fixture.worktreePath }, 'Created here', '', false,
+    'GitCreatePR', { projectId: fixture.projectId, workspacePath: fixture.worktreePath }, 'Created here', '', false, '',
   );
   expect(result.error ?? '').toBe('');
   const number = Number(result.prUrl?.split('/').pop());

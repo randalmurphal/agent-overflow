@@ -3,7 +3,7 @@ import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import CreatePRDialog from './CreatePRDialog.svelte';
 import { resetPanesForTest } from '../../stores/panes.svelte';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
-import { __seedGitStatusForTest } from '../../stores/gitStatusStore.svelte';
+import { __resetGitStatusStoreForTest, __seedGitStatusForTest } from '../../stores/gitStatusStore.svelte';
 import { getToasts, removeToast } from '../../stores/toast.svelte';
 import type { GitActionOutcome, GitActionResult, GitStatus } from '../../types/git';
 import { DisconnectedError, TransportError } from '../../transport/wsClient';
@@ -178,6 +178,19 @@ describe('<CreatePRDialog>', () => {
     await fireEvent.click(getByTestId('create-pr-submit'));
     expect((await findByRole('alert')).textContent).toContain('no record of this PR');
     expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('keeps naming the forge while the status is read again', async () => {
+    setBindingMock('GitCreatePR', async () => {
+      // The connection drops and the status is read again from nothing.
+      __resetGitStatusStoreForTest();
+      return { action: 'pr', prUrl: 'https://gitlab.com/o/r/-/merge_requests/3' } as GitActionResult;
+    });
+    const { onClose, getByTestId } = await mount(status({ forge: 'gitlab' }));
+    await fireEvent.input(fields().title, { target: { value: 'Add login' } });
+    await fireEvent.click(getByTestId('create-pr-submit'));
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    expect(getToasts().at(-1)?.message).toBe('MR created: https://gitlab.com/o/r/-/merge_requests/3');
   });
 
   it('ignores a second submit while the first is in flight', async () => {

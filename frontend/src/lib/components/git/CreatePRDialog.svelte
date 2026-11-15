@@ -34,8 +34,15 @@
   // workspace ref. Null means this pane names no repository; the control
   // that opens this dialog does not render in that case.
   let workspace = $derived(pane.workspace);
-  // Labels follow the forge the status stream detected (PR vs MR).
-  let labels = $derived(forgeLabels(pane.gitStatus.status?.forge));
+  // Labels follow the forge the status stream detected (PR vs MR), and keep
+  // the last one detected while the status is re-read (a dropped connection
+  // re-sources it), so a create in flight keeps its forge's name.
+  let lastForge: string | undefined;
+  let labels = $derived.by(() => {
+    const forge = pane.gitStatus.status?.forge;
+    if (forge) lastForge = forge;
+    return forgeLabels(forge ?? lastForge);
+  });
 
   async function handleCreate() {
     const ws = workspace;
