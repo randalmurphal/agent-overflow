@@ -109,9 +109,11 @@ Codex and claude-tui keep one message per queued item. See
 A quiet row is persisted without a `provider:item_event`, so a connected
 client keeps showing the message above its composer until the echo emits one.
 That marker is live state, not an inference: `LiveStateSnapshotForThread`
-publishes every unconsumed queued send as a pending flush item, and each
-pending send appears in exactly one of the snapshot's two lists: the
-composer marker or the deferred timeline rows a SQLite slice is blind to.
+lists every unconsumed queued send, deferred or quiet, in `FlushedItems`; a
+send anchored at an interrupt is already a timeline row and is not listed.
+`GetThreadLiveState` lists a message in exactly one place: in `QueueItems`
+while the queue or the dispatch worker still holds it, in `FlushedItems`
+once its dispatch hands it over.
 A client renders a flushed message in exactly one place at a time and hands
 it from the marker to the timeline when the row actually renders
 (`docs/architecture/turn-lifecycle.md` § Per-thread send queue). Quiet rows
