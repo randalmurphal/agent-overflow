@@ -1396,7 +1396,11 @@ closes up their spacing so the row holds at a phone width.
   about a settled row the list holds that the open list's next read does
   not supply. A settled row of the thread's own that an open-list read
   supplies (a late reply while it lingers) is taken into Past from that
-  read. Expanded, those cues read every row shown again, from the newest
+  read. Reads and Show in Sidebar are ordered by when each started: a
+  page read never shows a row older than an open-list row or a placement
+  that arrived while it was out, the first page included, and an
+  open-list read never undoes a placement made while it was out.
+  Expanded, those cues read every row shown again, from the newest
   through cursor pages down to the oldest row shown, so rows that
   settled since go first and none shown is dropped. The rows are held
   only while Past is expanded and dropped when it collapses, the

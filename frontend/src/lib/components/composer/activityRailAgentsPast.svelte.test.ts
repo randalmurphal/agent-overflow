@@ -391,4 +391,163 @@ describe('the Agents segment\'s Past', () => {
     expect(controller.rows[0].placement).toBe('standalone');
     expect(controller.past.rows[0].placement).toBe('standalone');
   });
+
+  // Past has two inputs: its own page reads and the rows and placements
+  // that land while one is out. A page read answers for the ledger as it
+  // stood when the read started, so it never installs a row older than a
+  // patch or a placement that arrived after that.
+  describe('a page read held while a newer row or placement arrives', () => {
+    // Holds every Past read until released, answering from `rows` as it
+    // stands when the read started.
+    function holdPages(readPast: ReturnType<typeof setBindingMock>, rows: () => ThreadAgentRow[]) {
+      const held: Array<() => void> = [];
+      readPast.mockImplementation((id: unknown, after: unknown, limit: unknown) => {
+        const answer = pages(() => rows())(id as string, after as Cursor, limit as number);
+        return new Promise((resolve) => { held.push(() => resolve(answer)); });
+      });
+      return held;
+    }
+
+    async function releaseAll(held: Array<() => void>) {
+      while (held.length > 0) {
+        held.shift()!();
+        await vi.advanceTimersByTimeAsync(0);
+      }
+    }
+
+    // A late reply to `row`, read by the open list.
+    function lateReply(done: ThreadAgentRow) {
+      const late = { ...done, lateReply: true, answer: 'late' };
+      setBindingMock('GetThreadAgentRows', async () => [{ token: done.token, row: late, listed: true }]);
+      setBindingMock('ListThreadAgentRows', async () => ({ rows: [late], hidden: false }));
+      emitWailsEvent('thread:agent_rows_changed', { threadId: 'thread-a', id: done.token });
+    }
+
+    it('keeps a late reply that arrives before the first page lands', async () => {
+      const done = row('child', { callerThreadId: 'thread-a', state: 'finished', settledAt: 900, answer: 'first' });
+      let ledgerRows = [done];
+      const { controller, readPast } = await mount({ open: [done], past: () => ledgerRows });
+      const held = holdPages(readPast, () => ledgerRows);
+      controller.past.toggle();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(held).toHaveLength(1);
+      lateReply(done);
+      ledgerRows = [{ ...done, lateReply: true, answer: 'late' }];
+      await vi.advanceTimersByTimeAsync(500);
+      await releaseAll(held);
+      expect(controller.past.rows.map((r) => r.answer), 'the page read before the reply wrote it back').toEqual(['late']);
+      expect(controller.past.rows[0].lateReply).toBe(true);
+    });
+
+    it('keeps a late reply to a row on a loaded second page through a reread of every page', async () => {
+      const rows = ledger(30).map((r) => ({ ...r, answer: 'first' }));
+      const target = rows[20];
+      let ledgerRows = rows;
+      const { controller, readPast } = await mount({ open: [target], past: () => ledgerRows });
+      controller.past.toggle();
+      await vi.advanceTimersByTimeAsync(0);
+      controller.past.showMore();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(controller.past.rows).toHaveLength(28);
+      const held = holdPages(readPast, () => ledgerRows);
+      emitWailsEvent('thread:agent_rows_changed', { threadId: 'thread-a' });
+      await vi.advanceTimersByTimeAsync(500);
+      expect(held.length).toBeGreaterThan(0);
+      lateReply(target);
+      ledgerRows = rows.map((r) => (r.token === target.token ? { ...r, lateReply: true, answer: 'late' } : r));
+      await vi.advanceTimersByTimeAsync(500);
+      await releaseAll(held);
+      expect(controller.past.rows).toHaveLength(28);
+      expect(controller.past.rows[20].answer, 'the reread installed the answer from before the reply').toBe('late');
+    });
+
+    it('keeps a late reply to a row a held Show more brings in', async () => {
+      const rows = ledger(30).map((r) => ({ ...r, answer: 'first' }));
+      const target = rows[12];
+      let ledgerRows = rows;
+      const { controller, readPast } = await mount({ open: [target], past: () => ledgerRows });
+      controller.past.toggle();
+      await vi.advanceTimersByTimeAsync(0);
+      const held = holdPages(readPast, () => ledgerRows);
+      controller.past.showMore();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(held).toHaveLength(1);
+      lateReply(target);
+      ledgerRows = rows.map((r) => (r.token === target.token ? { ...r, lateReply: true, answer: 'late' } : r));
+      await vi.advanceTimersByTimeAsync(500);
+      await releaseAll(held);
+      expect(controller.past.rows).toHaveLength(28);
+      expect(controller.past.rows[12].answer).toBe('late');
+    });
+
+    it('keeps a page read over an open-list read that started before it and lands after it', async () => {
+      const done = row('child', { callerThreadId: 'thread-a', state: 'finished', settledAt: 900, answer: 'first' });
+      let ledgerRows = [done];
+      const { controller, readPast } = await mount({ open: [done], past: () => ledgerRows });
+      controller.past.toggle();
+      await vi.advanceTimersByTimeAsync(0);
+      // The open list's row read starts, and is held, with the old answer.
+      let releaseRows!: () => void;
+      setBindingMock('GetThreadAgentRows', () => new Promise((resolve) => {
+        releaseRows = () => resolve([{ token: 'child', row: done, listed: true }]);
+      }));
+      emitWailsEvent('thread:agent_rows_changed', { threadId: 'thread-a', id: 'child' });
+      await vi.advanceTimersByTimeAsync(500);
+      // Then the reply lands and Past reads it.
+      ledgerRows = [{ ...done, lateReply: true, answer: 'late' }];
+      readPast.mockClear();
+      emitWailsEvent('thread:agent_rows_changed', { threadId: 'thread-a' });
+      await vi.advanceTimersByTimeAsync(500);
+      expect(readPast).toHaveBeenCalled();
+      expect(controller.past.rows[0].answer).toBe('late');
+      releaseRows();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(controller.past.rows[0].answer, 'the older open-list read wrote its answer back').toBe('late');
+    });
+
+    it('keeps a placement over an open-list read that started before it', async () => {
+      const done = row('child', { callerThreadId: 'thread-a', placement: 'owned', state: 'finished', settledAt: 900, answer: 'first' });
+      const { controller } = await mount({ open: [done], past: () => [done] });
+      controller.past.toggle();
+      await vi.advanceTimersByTimeAsync(0);
+      let releaseRows!: () => void;
+      setBindingMock('GetThreadAgentRows', () => new Promise((resolve) => {
+        releaseRows = () => resolve([{ token: 'child', row: { ...done, answer: 'late' }, listed: true }]);
+      }));
+      emitWailsEvent('thread:agent_rows_changed', { threadId: 'thread-a', id: 'child' });
+      await vi.advanceTimersByTimeAsync(500);
+      controller.placed('t-child', 'standalone');
+      releaseRows();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(controller.past.rows[0].answer).toBe('late');
+      expect(controller.past.rows[0].placement, 'the older read undid Show in Sidebar').toBe('standalone');
+    });
+
+    it('keeps a placement made while the first page is out, and while a reread of every page is out', async () => {
+      const spawn = (token: string, settledAt: number) => row(token, { threadId: `t-${token}`, placement: 'owned', state: 'finished', settledAt });
+      const rows = Array.from({ length: 30 }, (_, index) => spawn(`p${String(index).padStart(2, '0')}`, 1_000_000 - index));
+      const { controller, readPast } = await mount({ past: () => rows });
+      let held = holdPages(readPast, () => rows);
+      controller.past.toggle();
+      await vi.advanceTimersByTimeAsync(0);
+      controller.placed('t-p03', 'standalone');
+      await releaseAll(held);
+      expect(controller.past.rows[3].placement, 'the first page undid Show in Sidebar').toBe('standalone');
+
+      readPast.mockImplementation(pages(() => rows) as never);
+      controller.past.showMore();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(controller.past.rows).toHaveLength(28);
+      held = holdPages(readPast, () => rows);
+      emitWailsEvent('thread:agent_rows_changed', { threadId: 'thread-a' });
+      await vi.advanceTimersByTimeAsync(500);
+      expect(held.length).toBeGreaterThan(0);
+      controller.placed('t-p21', 'standalone');
+      await releaseAll(held);
+      expect(controller.past.rows[21].placement, 'the reread undid Show in Sidebar').toBe('standalone');
+      // A read that started after a placement answers for it: the ledger's
+      // word (here, unchanged) stands over the one made before it.
+      expect(controller.past.rows[3].placement).toBe('owned');
+    });
+  });
 });

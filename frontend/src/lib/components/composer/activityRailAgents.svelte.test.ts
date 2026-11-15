@@ -191,6 +191,29 @@ describe('agents controller', () => {
     expect(controller.rows[1].activity).toBe('Reading');
   });
 
+  it('keeps a placement made while a list read is out, and a later read stands', async () => {
+    const { pane, controller } = await mountAgents([row('child', { placement: 'owned' })]);
+    let land = (_rows: ThreadAgentRow[]) => {};
+    setBindingMock('ListThreadAgentRows', () => new Promise((resolve) => {
+      land = (rows) => resolve({ rows, hidden: false });
+    }));
+    emitWailsEvent('thread:agent_rows_changed', { threadId: pane.threadId });
+    await vi.advanceTimersByTimeAsync(500);
+    controller.placed('t-child', 'standalone');
+    // A Past read that starts and finishes meanwhile does not answer for it.
+    controller.past.toggle();
+    await vi.advanceTimersByTimeAsync(0);
+    land([row('child', { placement: 'owned' })]);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(controller.rows[0].placement, 'the older read undid Show in Sidebar').toBe('standalone');
+    // A read started after the placement answers for it.
+    emitWailsEvent('thread:agent_rows_changed', { threadId: pane.threadId });
+    await vi.advanceTimersByTimeAsync(500);
+    land([row('child', { placement: 'owned' })]);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(controller.rows[0].placement).toBe('owned');
+  });
+
   it('reads again for its own thread and a nested caller, not another thread, and after a lost frame', async () => {
     const { pane, read } = await mountAgents([row('child'), row('grand', { callerThreadId: 't-child', depth: 1 })]);
     const readRow = setBindingMock('GetThreadAgentRows', async (_id: string, tokens: string[]) => tokens.map((token) => ({ token, row: row(token), listed: true })));

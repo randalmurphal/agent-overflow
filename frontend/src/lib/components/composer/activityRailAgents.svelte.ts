@@ -188,16 +188,21 @@ export function createAgentController(
   /**
    * Puts a read's rows in place. `read` is the rows the read itself
    * supplied (all of `next` for a list read): Past takes its settled rows
-   * of this thread's own from them, and reads again for a settled row a
-   * frame named (`named`) that the read did not supply.
+   * of this thread's own from them, ordered by `at`, the read's start, and
+   * reads again for a settled row a frame named (`named`) that the read did
+   * not supply.
    */
   function replace(
     forThreadId: string | null,
     next: ThreadAgentRow[],
     more: boolean,
+    at: number,
     read: readonly ThreadAgentRow[] = next,
     named: readonly string[] = [],
   ): void {
+    // A placement made while the read was out stands: no agent rows frame
+    // follows Show in Sidebar.
+    next = next.map((row) => past.placedSince(row, at));
     // The wall clock, not the rail's: the rail's clock stops while nothing
     // it shows needs it, and a stamp from its last tick would end the
     // linger on the first tick after it starts again.
@@ -212,7 +217,7 @@ export function createAgentController(
     // list never held came with a frame that already said so.
     const wasOpen = new Set(listed.filter((row) => !isSettledAgentRow(row)).map((row) => row.token));
     const own = read.filter((row) => row.callerThreadId === forThreadId && isSettledAgentRow(row));
-    past.patch(own);
+    past.patch(own, at);
     const supplied = new Set(read.map((row) => row.token));
     if (own.some((row) => wasOpen.has(row.token)) || named.some((token) => !supplied.has(token))) past.due();
     settledSeen = seen;
@@ -238,6 +243,8 @@ export function createAgentController(
   async function readRows(id: string, tokens: string[], token: RefreshToken, named: readonly string[]): Promise<boolean> {
     if (tokens.length > MAX_ROW_READ) return false;
     let reads;
+    // Past orders this read's rows by when it started (activityRailAgentsPast).
+    const at = past.readStarted();
     try {
       reads = await GetThreadAgentRows(id, tokens);
     } catch (err) {
@@ -259,7 +266,7 @@ export function createAgentController(
         nestedUnavailable: row.nestedUnavailable, ownerComputerId: row.ownerComputerId,
       } : row;
     });
-    replace(id, next, hidden, next.filter((row) => byToken.has(row.token)), named);
+    replace(id, next, hidden, at, next.filter((row) => byToken.has(row.token)), named);
     return true;
   }
 
@@ -270,7 +277,7 @@ export function createAgentController(
     run: async (token) => {
       const id = threadId;
       if (!id) {
-        replace(null, [], false);
+        replace(null, [], false, past.readStarted());
         return;
       }
       const owner = threadBackend(id);
@@ -288,10 +295,11 @@ export function createAgentController(
       const heard = new Set<string>();
       heardDuringList = heard;
       try {
+        const at = past.readStarted();
         const agents = await ListThreadAgentRows(id);
         if (!token.isCurrent() || id !== threadId) return;
         const next = agents?.rows ?? [];
-        replace(id, next, agents?.hidden ?? false, next, named);
+        replace(id, next, agents?.hidden ?? false, at, next, named);
         listError = '';
         listLoaded = true;
         if ([...heard].some((caller) => callers.has(caller))) {
