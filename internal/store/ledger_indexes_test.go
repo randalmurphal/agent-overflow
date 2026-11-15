@@ -108,6 +108,23 @@ func TestThreadAgentTreeSearchesItsArms(t *testing.T) {
 			}
 		}
 	}
+	// A Stop All's page reads each arm through its index from its cursor,
+	// with the same parameters, once the planner has statistics.
+	stopArms := []string{"idx_thread_requests_open_created", "idx_thread_requests_caller_settled",
+		"idx_thread_requests_open_below", "sqlite_autoindex_thread_requests_1", "idx_thread_requests_nested_caller"}
+	stopRows := threadAgentStopRowsSQL(128)
+	stopArgs := []any{chief, "[]", since, nil, 0, int64(100), "recent-000050"}
+	assertPlanSearches(t, s, "threadAgentStopRowsSQL", "a", stopArms, stopRows, stopArgs...)
+	assertPlanSearches(t, s, "threadAgentStopRowsSQL", "r", []string{"sqlite_autoindex_thread_requests_1"}, stopRows, stopArgs...)
+	stopText := planText(explainPlan(t, s, stopRows, stopArgs...))
+	if strings.Contains(stopText, "settled_at<?") {
+		t.Errorf("threadAgentStopRowsSQL reads the settled history:\n%s", stopText)
+	}
+	for _, line := range append(arms, "SEARCH ps USING INDEX idx_thread_requests_spawn_link (target_thread_id=?)") {
+		if !strings.Contains(stopText, strings.TrimSuffix(line, ")")) {
+			t.Errorf("threadAgentStopRowsSQL does not read %q:\n%s", line, stopText)
+		}
+	}
 	assertPlanSearches(t, s, "HasOpenThreadRequests", "thread_requests", []string{"idx_thread_requests_caller_settled"},
 		hasOpenThreadRequestsSQL, "lead")
 }

@@ -95,6 +95,10 @@ type Store struct {
 	threadRequestChanged atomic.Pointer[func(ThreadRequestChange)]
 	// agentRecordDeleted is the function OnAgentRecordDeleted set, or nil.
 	agentRecordDeleted atomic.Pointer[func(home string)]
+	// agentStopPageReadForTest, set only by tests before the store is
+	// shared, runs in ListThreadAgentStopRows after each full page, so a
+	// test can write a request between two of its pages.
+	agentStopPageReadForTest func()
 }
 
 // Options configures NewWithOptions.

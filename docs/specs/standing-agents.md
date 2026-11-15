@@ -1314,9 +1314,12 @@ closes up their spacing so the row holds at a phone width.
   request. A settled row reports it had already finished. Each layer's
   result, what it stopped and what failed, is folded into one toast, and a
   failure in one layer leaves the rest to run. `Stop All`
-  (`StopThreadAgentRows`) does the same for every row and withdraws the
-  incoming messages listed when it was pressed; the Stops of rows here
-  start at once, beside those that wait on a paired computer.
+  (`StopThreadAgentRows`) does the same for every row the ledger held
+  when it was pressed, past the listing's 128 rows too, less a send or
+  ask already settled, and withdraws the incoming messages listed then;
+  a cascade reads a spawned thread's rows the same way when it reaches
+  it. A request made after that read is not stopped. The Stops of rows
+  here start at once, beside those that wait on a paired computer.
   Background's `Stop All` and Stop background work leave Agents rows
   alone. The thread's own Interrupt leaves its requests and its queue,
   the incoming rows with it; End Session clears the incoming rows with

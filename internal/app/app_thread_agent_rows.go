@@ -965,18 +965,16 @@ func (a *App) threadAgentLineageDepth(threadID, caller string) (int, bool, error
 // StopThreadAgentRow stops one, and reports each top-level row with what
 // its cascade stopped beneath it, then withdraws the incoming messages
 // queued for the thread as StopThreadAgentIncoming does, each reported.
-// The rows come from the ledger; the Stops of rows here start at once,
-// beside those that wait on a paired computer.
+// The rows are every one of the thread's own that a Stop acts on, read
+// from the ledger when it is pressed (threadAgentStopRows), however many
+// the tray lists; the Stops of rows here start at once, beside those that
+// wait on a paired computer.
 //
 //ao:scope threads:operate
 func (a *App) StopThreadAgentRows(ctx context.Context, threadID string) ([]ThreadAgentStop, error) {
-	listed, _, err := newThreadAgentView(a).tree(threadID, 1, nil, threadAgentRowLimit)
+	top, err := a.threadAgentStopRows(threadID)
 	if err != nil {
 		return nil, err
-	}
-	top := make([]store.ThreadRequest, 0, len(listed))
-	for _, request := range listed {
-		top = append(top, request.ThreadRequest)
 	}
 	// The incoming rows are the ones shown now: the wakes the Stops below
 	// queue tell the agent what the person stopped, and are not withdrawn.
@@ -1118,16 +1116,12 @@ func (a *App) stopThreadAgentTarget(ctx context.Context, target string, visited 
 	} else if effect == threadtools.EffectInterrupted {
 		result.Interrupted = true
 	}
-	nested, _, err := newThreadAgentView(a).tree(target, 1, nil, threadAgentRowLimit)
+	nested, err := a.threadAgentStopRows(target)
 	if err != nil {
 		result.Failures = append(result.Failures, "list its agents: "+err.Error())
 		return
 	}
-	for _, listed := range nested {
-		child := listed.ThreadRequest
-		if threadRequestSettled(child) && child.Kind != store.ThreadRequestSpawn {
-			continue
-		}
+	for _, child := range nested {
 		stop := a.stopThreadAgentRequest(ctx, child, visited, false)
 		if stop.Outcome == threadAgentStopped {
 			result.Nested++
@@ -1136,6 +1130,25 @@ func (a *App) stopThreadAgentTarget(ctx context.Context, target string, visited 
 		result.Background += stop.Background
 		result.Failures = append(result.Failures, stop.Failures...)
 	}
+}
+
+// threadAgentStopRows reads what a Stop of every Agents row of threadID
+// acts on: each of its own rows but a send or ask that already settled, all
+// of them, as the ledger held them when the read began
+// (ListThreadAgentStopRows). The tray's listing is bounded for display; a
+// Stop is not, and a request made after this read is not one it stops.
+func (a *App) threadAgentStopRows(threadID string) ([]store.ThreadRequest, error) {
+	view := newThreadAgentView(a)
+	rows, err := a.store.ListThreadAgentStopRows(store.ThreadAgentStopRead{
+		Root: threadID, Waiting: view.waiting, SettledSince: view.since, Page: threadAgentRowLimit,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if hook := a.agentStopCapturedForTest; hook != nil {
+		hook(threadID)
+	}
+	return rows, nil
 }
 
 // threadAgentCaller names a local caller thread to a paired computer, as a

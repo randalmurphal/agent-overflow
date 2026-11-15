@@ -2,10 +2,12 @@ package app
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -431,6 +433,128 @@ func TestThreadAgentRowsStopAllCascades(t *testing.T) {
 	}
 	if row := f.awaitRequestState(t, grand.Token, store.ThreadRequestCancelled); row.Notify {
 		t.Fatal("the cascade left the child's wake armed: the child would take a new turn")
+	}
+}
+
+// seedOpenSpawns writes n open spawns caller made, each of a thread of its
+// own with the receipt a Stop settles, created from base on, and returns
+// their tokens and threads in that order.
+func (f *requestFixture) seedOpenSpawns(t *testing.T, caller, prefix string, n int, base int64) (tokens, threads []string) {
+	t.Helper()
+	for index := range n {
+		token, thread := fmt.Sprintf("%s-%03d", prefix, index), fmt.Sprintf("%s-thread-%03d", prefix, index)
+		if err := f.seedOpenSpawn(caller, token, thread, base+int64(index)); err != nil {
+			t.Fatal(err)
+		}
+		tokens, threads = append(tokens, token), append(threads, thread)
+	}
+	return tokens, threads
+}
+
+func (f *requestFixture) seedOpenSpawn(caller, token, thread string, at int64) error {
+	if err := f.app.store.CreateThread(store.Thread{
+		ID: thread, ProjectID: f.caller.ProjectID, Title: thread, Provider: string(provider.Claude),
+		WorkspacePath: f.caller.WorkspacePath, CreatedAt: at, UpdatedAt: at,
+	}); err != nil {
+		return fmt.Errorf("create %s: %w", thread, err)
+	}
+	if err := f.app.store.InsertThreadRequest(store.ThreadRequest{
+		Token: token, CallerThreadID: caller, Kind: store.ThreadRequestSpawn, TargetThreadID: thread,
+		State: store.ThreadRequestAccepted, CreatedAt: at, UpdatedAt: at,
+	}); err != nil {
+		return fmt.Errorf("insert %s: %w", token, err)
+	}
+	if _, _, err := f.app.store.AcceptThreadRequestReceipt(store.ThreadRequestReceipt{
+		Token: token, OwnerDeviceID: threadReceiptLocalOwner, SourceThreadID: caller,
+		Kind: store.ThreadRequestSpawn, TargetThreadID: thread, CreatedAt: at,
+	}); err != nil {
+		return fmt.Errorf("accept %s: %w", token, err)
+	}
+	return nil
+}
+
+// seedSettledSends writes n sends caller was owed answers for that settled
+// just now, created at base on: rows the listing shows that a Stop has
+// nothing to stop in.
+func (f *requestFixture) seedSettledSends(t *testing.T, caller, target, prefix string, n int, base int64) {
+	t.Helper()
+	for index := range n {
+		token, at := fmt.Sprintf("%s-%03d", prefix, index), base+int64(index)
+		if err := f.app.store.InsertThreadRequest(store.ThreadRequest{
+			Token: token, CallerThreadID: caller, Kind: store.ThreadRequestSend, TargetThreadID: target, Notify: true,
+			State: store.ThreadRequestAccepted, CreatedAt: at, UpdatedAt: at,
+		}); err != nil {
+			t.Fatalf("insert %s: %v", token, err)
+		}
+		if settled, err := f.app.store.SettleThreadRequest(token, store.ThreadRequestOpenStates(), store.ThreadRequestSettlement{
+			State: store.ThreadRequestFinished, Answer: []byte("done"), AnswerKind: store.ThreadAnswerFinal, SettledAt: time.Now().UnixMilli(),
+		}); err != nil || !settled {
+			t.Fatalf("settle %s: %v %v", token, settled, err)
+		}
+	}
+}
+
+// Stop All stops every open row however many there are, past the tray's
+// limit at the top and under a nested worker alike, with rows that settled
+// just now ahead of them in the ledger, which it leaves out. What it stops
+// is what was there when it started: a request made while it runs is not
+// stopped.
+func TestThreadAgentRowsStopAllStopsPastTheTraysLimit(t *testing.T) {
+	t.Parallel()
+	f := newRequestFixture(t)
+	n := threadAgentRowLimit + 2
+	base := time.Now().Add(-time.Minute).UnixMilli()
+	f.seedSettledSends(t, f.caller.ID, f.caller.ID, "lead-settled", 5, base)
+	top, _ := f.seedOpenSpawns(t, f.caller.ID, "lead-open", n, base+10)
+	worker, workerThreads := f.seedOpenSpawns(t, f.caller.ID, "lead-worker", 1, base+1_000)
+	f.seedSettledSends(t, workerThreads[0], f.caller.ID, "worker-settled", 5, base+2_000)
+	nested, _ := f.seedOpenSpawns(t, workerThreads[0], "worker-open", n, base+2_010)
+	if listing := f.agentRows(t, f.caller.ID); !listing.Hidden {
+		t.Fatalf("the tray listed all %d rows; the test needs more than its limit", len(listing.Rows))
+	}
+
+	// A request each capture did not see: made once the Stop All read what
+	// to stop, at the top and in the worker's cascade.
+	var late sync.Map
+	f.app.agentStopCapturedForTest = func(threadID string) {
+		if threadID != f.caller.ID && threadID != workerThreads[0] {
+			return
+		}
+		if _, again := late.LoadOrStore(threadID, true); again {
+			return
+		}
+		// Errorf, not Fatal: a nested capture runs off the test's goroutine.
+		if err := f.seedOpenSpawn(threadID, "late-"+threadID, "late-thread-"+threadID, time.Now().UnixMilli()); err != nil {
+			t.Error(err)
+		}
+	}
+	stops, err := f.app.StopThreadAgentRows(t.Context(), f.caller.ID)
+	if err != nil {
+		t.Fatalf("StopThreadAgentRows: %v", err)
+	}
+	got := map[string]ThreadAgentStop{}
+	for _, stop := range stops {
+		got[stop.Token] = stop
+	}
+	if len(stops) != n+1 {
+		t.Fatalf("Stop All reported %d rows; want the %d open ones and none settled before it", len(stops), n+1)
+	}
+	for _, token := range append(slices.Clone(top), worker...) {
+		if stop, ok := got[token]; !ok || stop.Outcome != threadAgentStopped || len(stop.Failures) != 0 {
+			t.Fatalf("stop of %s = %+v (reported %v); want it stopped", token, stop, ok)
+		}
+	}
+	if stop := got[worker[0]]; stop.Nested != n {
+		t.Fatalf("the worker's cascade stopped %d of its own agents; want all %d", stop.Nested, n)
+	}
+	for _, token := range append(append(slices.Clone(top), worker...), nested...) {
+		f.awaitRequestState(t, token, store.ThreadRequestCancelled)
+	}
+	for _, caller := range []string{f.caller.ID, workerThreads[0]} {
+		token := "late-" + caller
+		if row, found, err := f.app.store.GetThreadRequest(token); err != nil || !found || row.State != store.ThreadRequestAccepted {
+			t.Fatalf("the request %s made after the capture reads %+v, found=%v, %v; want it left open", token, row, found, err)
+		}
 	}
 }
 

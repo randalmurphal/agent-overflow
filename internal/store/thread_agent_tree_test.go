@@ -662,3 +662,97 @@ func TestASecondLocalSpawnOfAThreadIsRefused(t *testing.T) {
 	mustExec(t, s.db, `INSERT INTO thread_requests (token, caller_thread_id, kind, target_computer_id, target_thread_id, state, created_at, updated_at)
 		VALUES ('remote', 'other', 'spawn', 'pc', 'child', 'running', 103, 103)`)
 }
+
+// A Stop of every row reads the listing's own level whole, page by page:
+// an open row of each kind the listing shows, a settled spawn inside the
+// window, a long-settled spawn with open work under it (expired to its
+// lineage or not), a parked quiet ask and a remote spawn that reported
+// open work, oldest first, and not a send or ask that settled, a quiet
+// send, a reminder or a settled spawn with nothing open under it. Every
+// page size reads the same rows.
+func TestListThreadAgentStopRowsReadsTheListingsLevelWhole(t *testing.T) {
+	t.Parallel()
+	s := newTestStore(t)
+	for _, id := range []string{"lead", "w-open", "w-recent", "w-busy", "w-done", "w-gone", "busy-grand", "gone-grand", "peer"} {
+		mustCreateThread(t, s, id)
+	}
+	seedAgentRequest(t, s, "settled-send", "lead", ThreadRequestSend, "peer", true, 100)
+	settleAgentRequest(t, s, "settled-send", 20_000)
+	seedAgentRequest(t, s, "open-spawn", "lead", ThreadRequestSpawn, "w-open", false, 101)
+	seedAgentRequest(t, s, "recent-spawn", "lead", ThreadRequestSpawn, "w-recent", false, 102)
+	settleAgentRequest(t, s, "recent-spawn", 20_000)
+	seedAgentRequest(t, s, "busy-spawn", "lead", ThreadRequestSpawn, "w-busy", false, 103)
+	settleAgentRequest(t, s, "busy-spawn", 200)
+	seedAgentRequest(t, s, "busy-under", "w-busy", ThreadRequestSpawn, "busy-grand", false, 104)
+	seedAgentRequest(t, s, "done-spawn", "lead", ThreadRequestSpawn, "w-done", false, 105)
+	settleAgentRequest(t, s, "done-spawn", 200)
+	seedAgentRequest(t, s, "quiet-send", "lead", ThreadRequestSend, "peer", false, 106)
+	seedAgentRequest(t, s, "owed-send", "lead", ThreadRequestSend, "peer", true, 107)
+	seedAgentRequest(t, s, "parked-ask", "lead", ThreadRequestAsk, "peer", false, 108)
+	seedAgentRequest(t, s, "settled-ask", "lead", ThreadRequestAsk, "peer", true, 109)
+	settleAgentRequest(t, s, "settled-ask", 20_000)
+	seedAgentRequest(t, s, "remote-spawn", "lead", ThreadRequestSpawn, "", false, 110)
+	mustExec(t, s.db, `UPDATE thread_requests SET target_computer_id = 'pc', target_thread_id = 'far' WHERE token = 'remote-spawn'`)
+	settleAgentRequest(t, s, "remote-spawn", 200)
+	if _, err := s.SetThreadRequestNestedOpen("remote-spawn", true); err != nil {
+		t.Fatal(err)
+	}
+	seedAgentRequest(t, s, "gone-spawn", "lead", ThreadRequestSpawn, "w-gone", false, 111)
+	settleAgentRequest(t, s, "gone-spawn", 200)
+	if _, err := s.DeleteThreadRequestsBefore(5_000); err != nil {
+		t.Fatal(err)
+	}
+	seedAgentRequest(t, s, "gone-under", "w-gone", ThreadRequestSend, "gone-grand", true, 6_000)
+	seedAgentRequest(t, s, "reminder", "lead", ThreadRequestRemind, "", true, 112)
+
+	want := []string{"open-spawn", "recent-spawn", "busy-spawn", "owed-send", "parked-ask", "remote-spawn", "gone-spawn"}
+	for _, page := range []int{1, 2, 3, len(want), 64} {
+		rows, err := s.ListThreadAgentStopRows(ThreadAgentStopRead{Root: "lead", Waiting: []string{"parked-ask"}, SettledSince: 10_000, Page: page})
+		if err != nil {
+			t.Fatalf("page %d: %v", page, err)
+		}
+		if got := agentRequestTokens(rows); !slices.Equal(got, want) {
+			t.Fatalf("page %d read %v; want %v", page, got, want)
+		}
+		for _, row := range rows {
+			if row.Answer != nil || row.LateReply != nil {
+				t.Fatalf("page %d: %s carries its answer", page, row.Token)
+			}
+		}
+		if gone := rows[len(rows)-1]; !gone.LineageOnly || gone.TargetThreadID != "w-gone" {
+			t.Fatalf("the expired spawn reads %+v; want its lineage with its thread", gone)
+		}
+	}
+	if _, err := s.ListThreadAgentStopRows(ThreadAgentStopRead{Root: "lead", Page: 0}); err == nil {
+		t.Fatal("a page of no rows was read")
+	}
+}
+
+// The pages are one snapshot: a request made between two of them, after
+// every row read so far, is in none of them.
+func TestListThreadAgentStopRowsReadsOneSnapshot(t *testing.T) {
+	t.Parallel()
+	s := newTestStore(t)
+	mustCreateThread(t, s, "lead")
+	mustCreateThread(t, s, "peer")
+	for index := range 3 {
+		seedAgentRequest(t, s, fmt.Sprintf("owed-%d", index), "lead", ThreadRequestSend, "peer", true, int64(100+index))
+	}
+	pages := 0
+	s.agentStopPageReadForTest = func() {
+		pages++
+		if pages == 1 {
+			seedAgentRequest(t, s, "late", "lead", ThreadRequestSend, "peer", true, 1_000)
+		}
+	}
+	rows, err := s.ListThreadAgentStopRows(ThreadAgentStopRead{Root: "lead", SettledSince: 10_000, Page: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := agentRequestTokens(rows), []string{"owed-0", "owed-1", "owed-2"}; !slices.Equal(got, want) {
+		t.Fatalf("read %v; want %v, the ledger as the first page found it", got, want)
+	}
+	if pages < 2 {
+		t.Fatalf("read %d full pages; the test needs the write between two", pages)
+	}
+}
