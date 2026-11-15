@@ -173,6 +173,8 @@ export interface ForgeRepoMerge {
   discussionsMustResolve?: boolean;
   /** GitLab: the least role that may cancel a job or pipeline (default developer). */
   cancelRole?: 'developer' | 'maintainer' | 'no_one';
+  /** GitLab: the role comes through a group share, so REST permissions carry none. */
+  sharedAccess?: boolean;
 }
 
 export interface ForgePipeline {

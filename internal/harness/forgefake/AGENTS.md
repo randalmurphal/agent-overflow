@@ -147,7 +147,8 @@ project's path, escaped as one segment (`grp%2Fsub%2Ftool`).
 | Forge | Invocation (route) | App caller |
 |---|---|---|
 | GitHub | `GET repos/O/R` (`gh repository identity`) | repository identity; ReadPipeline's CI permission (`permissions` from the repository's `merge.permission`) |
-| GitLab | `GET projects/P` (`glab repository identity`, conditional) | repository identity; the merge settings and the viewer's access the Merge section reads |
+| GitLab | `GET projects/P` (`glab repository identity`, conditional) | repository identity; the merge settings the Merge section reads, and `permissions.project_access` from `merge.permission` (null with `merge.sharedAccess`, a role through a group share) |
+| GitLab | GraphQL `ProjectAccess(fullPath)` | `project.maxAccessLevel.integerValue` from `merge.permission`, however granted; a project not on the host is a null `project` |
 | ssh | `-G -o CanonicalizeHostname=no -o PermitLocalCommand=no [-l U] H` | local SSH host resolution, from fixture `sshHosts` |
 | GitHub | `gh pr create --title T --body B [--base B] [--draft]` | GitCreatePR |
 | GitLab | `glab mr create --title T --description D --yes --no-editor [--target-branch B] [--draft]` | GitCreatePR |

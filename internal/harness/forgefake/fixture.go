@@ -111,6 +111,12 @@ type RepoMerge struct {
 	// Retry and play still need developer, so cancel and update can
 	// differ.
 	CancelRole string `json:"cancelRole,omitempty"`
+	// SharedAccess makes a GitLab viewer's role come through a group the
+	// project is shared with. GitLab's REST permissions then carry neither
+	// project_access (a direct membership) nor group_access (the project's
+	// own group and its ancestors, lib/api/entities/project_with_access.rb
+	// at v18.0.0); GraphQL Project.maxAccessLevel still answers the role.
+	SharedAccess bool `json:"sharedAccess,omitempty"`
 }
 
 // Pull is one pull request (GitHub) or merge request (GitLab).
@@ -696,8 +702,8 @@ func (r *Repo) normalize(ids *idSource) error {
 
 func (m *RepoMerge) normalize(forge string) error {
 	if forge == "github" {
-		if m.MergeMethod != "" || m.SquashOption != "" || m.PipelineMustSucceed || m.DiscussionsMustResolve || m.CancelRole != "" {
-			return errors.New("mergeMethod, squashOption, pipelineMustSucceed, discussionsMustResolve and cancelRole are GitLab project settings")
+		if m.MergeMethod != "" || m.SquashOption != "" || m.PipelineMustSucceed || m.DiscussionsMustResolve || m.CancelRole != "" || m.SharedAccess {
+			return errors.New("mergeMethod, squashOption, pipelineMustSucceed, discussionsMustResolve, cancelRole and sharedAccess are GitLab project settings")
 		}
 		m.Permission = defaultString(m.Permission, "WRITE")
 		if githubRoles[m.Permission] == 0 {

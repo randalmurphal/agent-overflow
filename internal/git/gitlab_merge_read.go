@@ -37,31 +37,20 @@ type gitlabProjectSettings struct {
 	RemoveSourceBranchAfterMerge              bool   `json:"remove_source_branch_after_merge"`
 	OnlyAllowMergeIfPipelineSucceeds          bool   `json:"only_allow_merge_if_pipeline_succeeds"`
 	OnlyAllowMergeIfAllDiscussionsAreResolved bool   `json:"only_allow_merge_if_all_discussions_are_resolved"`
-	Permissions                               struct {
-		ProjectAccess *gitlabAccessRaw `json:"project_access"`
-		GroupAccess   *gitlabAccessRaw `json:"group_access"`
-	} `json:"permissions"`
-}
-
-type gitlabAccessRaw struct {
-	AccessLevel int `json:"access_level"`
 }
 
 // gitlabDeveloperAccess is the access level GitLab's default branch
 // protection lets merge.
 const gitlabDeveloperAccess = 30
 
-// accessLevel is the viewer's highest access to the project, 0 when the
-// answer carried none.
-func (s gitlabProjectSettings) accessLevel() int {
-	level := 0
-	for _, access := range []*gitlabAccessRaw{s.Permissions.ProjectAccess, s.Permissions.GroupAccess} {
-		if access != nil {
-			level = max(level, access.AccessLevel)
-		}
-	}
-	return level
-}
+// gitlabProjectAccessQuery reads the viewer's role in a project.
+// maxAccessLevel is "Maximum access level of the current user in the
+// project." (GraphQL reference at 18.0), so it counts a group the project
+// is shared with; REST permissions do not (their group_access is the
+// project's own group and its ancestors).
+const gitlabProjectAccessQuery = `query ProjectAccess($fullPath: ID!) {
+  project(fullPath: $fullPath) { maxAccessLevel { integerValue } }
+}`
 
 // gitlabCache holds values read from GitLab for gitlabCacheTTL, at most
 // gitlabCacheMax of them.
@@ -134,6 +123,37 @@ func (f *gitlabForge) projectSettings(ctx context.Context, client *forgeapi.Clie
 	return settings, nil
 }
 
+// viewerAccess is the current login's access level in repo (10 guest to
+// 50 owner, 0 for none), read with gitlabProjectAccessQuery at most once
+// per login per gitlabCacheTTL and published under the credential that
+// answered, as projectSettings is.
+func (f *gitlabForge) viewerAccess(ctx context.Context, client *forgeapi.Client, ref RepoReference) (int, error) {
+	fp, err := client.CredentialFingerprint(ctx)
+	if err != nil {
+		return 0, err
+	}
+	key := func(fp string) string { return fp + " " + ref.Host + " " + ref.Project() }
+	if access, ok := f.access.get(key(fp), f.core.nowFn()); ok {
+		return access, nil
+	}
+	var raw struct {
+		Project *struct {
+			MaxAccessLevel struct {
+				IntegerValue int `json:"integerValue"`
+			} `json:"maxAccessLevel"`
+		} `json:"project"`
+	}
+	resp, err := client.GraphQL(ctx, "ProjectAccess", gitlabProjectAccessQuery, map[string]any{"fullPath": ref.Project()}, &raw)
+	if err != nil {
+		return 0, err
+	}
+	if raw.Project == nil {
+		return 0, fmt.Errorf("GitLab answered no project %s on %s", ref.Project(), ref.Host)
+	}
+	f.access.put(key(resp.Credential), raw.Project.MaxAccessLevel.IntegerValue, f.core.nowFn())
+	return raw.Project.MaxAccessLevel.IntegerValue, nil
+}
+
 // viewerLogin is the username host's current login reads as (GET user),
 // read at most once per login per gitlabCacheTTL and published under the
 // credential that answered (Response.Credential), as projectSettings is.
@@ -201,12 +221,13 @@ func (f *gitlabForge) readViewer(ctx context.Context, client *forgeapi.Client, h
 // gitlabFillMerge fills the detail's readiness, merge options, end of
 // life and whether viewer (the login's username, empty when unknown)
 // authored it from the merge request, its approvals, the project's
-// settings and the read's events.
-func gitlabFillMerge(detail *PRDetail, mr gitlabMRRaw, approvals gitlabApprovalsRaw, settings gitlabProjectSettings, events []ReviewEvent, viewer string) {
+// settings, the viewer's access level (viewerAccess, needed only when it
+// cannot merge) and the read's events.
+func gitlabFillMerge(detail *PRDetail, mr gitlabMRRaw, approvals gitlabApprovalsRaw, settings gitlabProjectSettings, access int, events []ReviewEvent, viewer string) {
 	detail.ViewerIsAuthor = viewer != "" && strings.EqualFold(viewer, mr.Author.Username)
 	detail.Readiness = gitlabReadiness(mr, approvals, settings)
 	detail.Readiness.Approvals = ApprovalCount{Given: len(approvals.ApprovedBy), Required: approvals.ApprovalsRequired}
-	detail.Merge = gitlabMergeOptions(mr, approvals, settings, detail.Readiness, events, detail.ViewerIsAuthor)
+	detail.Merge = gitlabMergeOptions(mr, approvals, settings, access, detail.Readiness, events, detail.ViewerIsAuthor)
 	switch NormalizePRState(mr.State) {
 	case "merged":
 		detail.MergedAt = mr.MergedAt
@@ -457,7 +478,8 @@ const gitlabAutoMergePrefix = "enabled an automatic merge"
 // author is whether the viewer opened the merge request: GitLab lets the
 // author cancel an auto-merge without merge rights and refuses the
 // author's approval unless the project allows it (user_can_approve).
-func gitlabMergeOptions(mr gitlabMRRaw, approvals gitlabApprovalsRaw, settings gitlabProjectSettings, readiness MergeReadiness, events []ReviewEvent, author bool) MergeOptions {
+// access is the viewer's access level, 0 when unknown.
+func gitlabMergeOptions(mr gitlabMRRaw, approvals gitlabApprovalsRaw, settings gitlabProjectSettings, access int, readiness MergeReadiness, events []ReviewEvent, author bool) MergeOptions {
 	open := NormalizePRState(mr.State) == "open"
 	fork := mr.SourceProjectID != 0 && mr.ProjectID != 0 && mr.SourceProjectID != mr.ProjectID
 	out := MergeOptions{
@@ -483,7 +505,7 @@ func gitlabMergeOptions(mr gitlabMRRaw, approvals gitlabApprovalsRaw, settings g
 		out.AutoMerge = gitlabAutoMerge(mr, out.Methods, events, author)
 	}
 	if !mr.User.CanMerge {
-		if level := settings.accessLevel(); level > 0 && level < gitlabDeveloperAccess {
+		if access > 0 && access < gitlabDeveloperAccess {
 			out.CannotMergeReason = "Your role in this project cannot merge."
 		} else {
 			out.CannotMergeReason = fmt.Sprintf("You do not have merge access to %s.", mr.TargetBranch)

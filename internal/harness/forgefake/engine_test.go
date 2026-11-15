@@ -2094,6 +2094,44 @@ func TestGitLabCancelRoutesFollowTheRelease(t *testing.T) {
 	}
 }
 
+// A role through a group share leaves GitLab's REST permissions empty;
+// GraphQL maxAccessLevel answers it either way, and a project not on the
+// host is a null project.
+func TestGitLabSharedAccessIsReadFromMaxAccessLevel(t *testing.T) {
+	t.Parallel()
+	e, srv := mergeEngine(t)
+	r := e.repoOn("gitlab", "gitlab.com", "grp/merge")
+	r.Merge.Permission = "maintainer"
+	access := func() any {
+		t.Helper()
+		got := glabGraphQL(t, srv, "ProjectAccess", "query", map[string]any{"fullPath": "grp/merge"})
+		return got["data"].(map[string]any)["project"].(map[string]any)["maxAccessLevel"].(map[string]any)["integerValue"]
+	}
+	permissions := func() map[string]any {
+		t.Helper()
+		return glabJSON(t, srv, "projects/grp%2Fmerge")["permissions"].(map[string]any)
+	}
+	if got := permissions()["project_access"]; got.(map[string]any)["access_level"] != float64(40) {
+		t.Fatalf("direct project_access = %v", got)
+	}
+	if got := access(); got != float64(40) {
+		t.Fatalf("direct maxAccessLevel = %v", got)
+	}
+	r.Merge.SharedAccess = true
+	if got := permissions(); got["project_access"] != nil || got["group_access"] != nil {
+		t.Fatalf("shared permissions = %v, want both null", got)
+	}
+	if got := access(); got != float64(40) {
+		t.Fatalf("shared maxAccessLevel = %v", got)
+	}
+	if got := glabGraphQL(t, srv, "ProjectAccess", "query", map[string]any{"fullPath": "grp/none"}); got["data"].(map[string]any)["project"] != nil {
+		t.Fatalf("missing project = %v", got)
+	}
+	if _, err := seedJSON(New(Options{}), `{"repos": [{"forge": "github", "project": "a/b", "merge": {"sharedAccess": true}}]}`); err == nil {
+		t.Fatal("a GitHub repository seeded sharedAccess")
+	}
+}
+
 // GitLab's merge routes transition the merge request and the next read
 // shows it; a wrong sha answers 409 and changes nothing.
 func TestGitLabMergeRoutesTransitionTheMergeRequest(t *testing.T) {

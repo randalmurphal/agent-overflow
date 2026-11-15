@@ -13,11 +13,14 @@ const gitlabManageEmpty = `{"data":{"project":{"mergeRequest":{"userPermissions"
 // gitlabNoReactions is a MRNoteReactions answer with no notes.
 const gitlabNoReactions = `{"data":{"project":{"mergeRequest":{"notes":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}`
 
+// gitlabDeveloperRole is a ProjectAccess answer for a developer.
+const gitlabDeveloperRole = `{"data":{"project":{"maxAccessLevel":{"integerValue":30}}}}`
+
 // gitlabManageExtras answers the reads a GitLab PR read adds for the
 // management actions, for a test about something else: the detail's
-// release (19.3) and PRManageChecks (gitlabManageEmpty), the threads'
-// reactions (none) and the events' state events (none). ok is false for
-// any other request.
+// release (19.3) and PRManageChecks (gitlabManageEmpty), the viewer's
+// role (developer), the threads' reactions (none) and the events' state
+// events (none). ok is false for any other request.
 func gitlabManageExtras(call forgeAPICall) (forgeAPIAnswer, bool) {
 	path, _, _ := strings.Cut(call.Path, "?")
 	switch {
@@ -27,6 +30,8 @@ func gitlabManageExtras(call forgeAPICall) (forgeAPIAnswer, bool) {
 		return forgeAPIAnswer{Body: gitlabManageEmpty}, true
 	case call.Op == "MRNoteReactions":
 		return forgeAPIAnswer{Body: gitlabNoReactions}, true
+	case call.Op == "ProjectAccess":
+		return forgeAPIAnswer{Body: gitlabDeveloperRole}, true
 	case call.Op == "" && call.Method == http.MethodGet && strings.HasSuffix(path, "/resource_state_events"):
 		return forgeAPIAnswer{Body: `[]`}, true
 	}

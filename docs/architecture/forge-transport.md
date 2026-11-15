@@ -308,7 +308,10 @@ adds its approvals, the server's release (`metadata`, cached per host for
 10 minutes), the management read (GraphQL `PRManageChecks`; see
 [Managing a PR](#managing-a-pr)), the project's merge settings (`projects/P`, cached
 per login and project for 10 minutes, then revalidated through the ETag
-store: a `W/` ETag answered 304) and the viewer's login (`user`, cached
+store: a `W/` ETag answered 304), the viewer's role when it cannot merge
+(GraphQL `ProjectAccess`, `project.maxAccessLevel`, cached per login and
+project for 10 minutes; REST `permissions` leave out a role granted
+through a group the project is shared with) and the viewer's login (`user`, cached
 per login and host for 10 minutes; the author may cancel an auto-merge, and a refused read
 is cached as an unknown viewer), `Threads` and `Events` its discussions
 (`per_page=100`, paged by `X-Next-Page`, at most `prReadMaxPages` (10)
@@ -342,7 +345,7 @@ GitHub external check.
 |---|---|
 | Pump (`Detail`, `Threads`, `Events`), warm | 1 merge request + 1 discussions page per 100 discussions + 1 state events page per 100 events (at most 3) + 1 approvals + 1 `PRManageChecks` (none below the supported floor) |
 | Pump, the notes changed, the viewer reacted, or the reactions read is 2 minutes old | the warm requests + 1 `MRNoteReactions` per 100 notes (at most 10) |
-| Pump, cold host or project (first read, then every 10 minutes) | the warm requests + 1 `metadata` per host + 1 `projects/P` per login and project + 1 `user` per login and host |
+| Pump, cold host or project (first read, then every 10 minutes) | the warm requests + 1 `metadata` per host + 1 `projects/P` and 1 `ProjectAccess` per login and project + 1 `user` per login and host |
 | CI phase, a head pipeline | 1 merge request + 1 `PipelineJobs` per 100 rows (+ 1 `metadata` per host per 10 minutes) |
 | CI phase, no head pipeline | 1 merge request |
 | Log follow, a followed running job (every 5s) | 1 trace (304 while unchanged) |
@@ -355,8 +358,8 @@ GitLab's REST notes carry no permission and no edit time: the
 discussions read has `updated_at`, which a resolve also moves, and no
 `last_edited_at`, so GitLab comments report no edit time. A read of
 `Threads` derives who may edit and delete each note from the cached
-viewer login and project role (the same `user` and `projects/P` reads the
-detail makes): the author on its own notes, a maintainer or owner on
+viewer login and project role (the same `user` and `ProjectAccess` reads
+the detail makes): the author on its own notes, a maintainer or owner on
 every note (GitLab's "Edit comments posted by other users"). A note's ID
 is its decimal id and its URL the merge request's page at `#note_<id>`.
 

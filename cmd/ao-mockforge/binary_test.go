@@ -1331,6 +1331,36 @@ func TestGitLabCancelAutoMergeOnAnOlderReleaseThroughTheAppsForgeCode(t *testing
 	}
 }
 
+// A role through a group share, which GitLab's REST permissions leave
+// out, reads as that role through the app's own code: a maintainer may
+// edit another's note, a reporter is told its role cannot merge.
+func TestGitLabSharedRoleThroughTheAppsForgeCode(t *testing.T) {
+	fixture := gitlabMergeFixture("success")
+	fixture.Repos[0].Merge.Permission = "maintainer"
+	fixture.Repos[0].Merge.SharedAccess = true
+	fixture.Repos[0].Pulls[0].Comments = []forgefake.Comment{{Author: "octo", Body: "hello"}}
+	r := newRig(t, fixture)
+	ref := gitops.PRReference{Forge: "gitlab", Host: "gitlab.com", Namespace: "grp", Repo: "merge", Number: 4}
+	threads, err := r.core.ListReviewThreads(t.Context(), ref)
+	if err != nil || len(threads) != 1 || len(threads[0].Comments) != 1 {
+		t.Fatalf("ListReviewThreads = %+v, %v", threads, err)
+	}
+	if c := threads[0].Comments[0]; c.AuthorLogin != "octo" || !c.ViewerCanEdit || !c.ViewerCanDelete {
+		t.Fatalf("another's note as a shared maintainer = %+v", c)
+	}
+
+	fixture.Repos[0].Merge.Permission = "reporter"
+	r = newRig(t, fixture)
+	if merge := mergeRead(t, r, ref).Detail.Merge; merge.ViewerCanMerge || merge.CannotMergeReason != "Your role in this project cannot merge." {
+		t.Fatalf("a shared reporter's merge = %+v", merge)
+	}
+	for _, inv := range r.engine.Invocations(0).Invocations {
+		if inv.Unhandled {
+			t.Errorf("unhandled %s %s: %s", inv.Method, inv.Path, inv.Detail)
+		}
+	}
+}
+
 // A GitLab review submit through the app's own code: the viewer's own
 // pending draft (a review started on GitLab) refuses it before any write,
 // since the publish would post that draft too. One that fails after

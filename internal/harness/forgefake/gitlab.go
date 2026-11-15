@@ -298,6 +298,10 @@ func glabProjectRead(e *Engine, c *call, m []string) response {
 		return fail
 	}
 	settings := r.Merge
+	var direct any
+	if !settings.SharedAccess {
+		direct = map[string]any{"access_level": gitlabRoles[settings.Permission], "notification_level": 3}
+	}
 	return glabOK(jsonResponse(map[string]any{
 		"id":                                    r.ID,
 		"full_name":                             r.Project,
@@ -308,10 +312,28 @@ func glabProjectRead(e *Engine, c *call, m []string) response {
 		"only_allow_merge_if_pipeline_succeeds": settings.PipelineMustSucceed,
 		"only_allow_merge_if_all_discussions_are_resolved": settings.DiscussionsMustResolve,
 		"permissions": map[string]any{
-			"project_access": map[string]any{"access_level": gitlabRoles[settings.Permission], "notification_level": 3},
+			"project_access": direct,
 			"group_access":   nil,
 		},
 	}))
+}
+
+// glabProjectAccess answers ProjectAccess(fullPath): project(fullPath) {
+// maxAccessLevel { integerValue } }, the viewer's role however it was
+// granted ("Maximum access level of the current user in the project.").
+// A project not on the host is a null project.
+func glabProjectAccess(e *Engine, c *call, v graphQLVars) response {
+	fullPath, err := v.str("fullPath")
+	if err != nil {
+		return unhandled("GitLab project access read: %v", err)
+	}
+	r := e.repoOn("gitlab", c.http.host, fullPath)
+	if r == nil {
+		return graphQLData(map[string]any{"project": nil})
+	}
+	return graphQLData(map[string]any{"project": map[string]any{
+		"maxAccessLevel": map[string]any{"integerValue": gitlabRoles[r.Merge.Permission]},
+	}})
 }
 
 func glabDiscussions(e *Engine, c *call, m []string) response {

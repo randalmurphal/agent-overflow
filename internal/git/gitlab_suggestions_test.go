@@ -173,8 +173,8 @@ func gitlabReactionsCoreWith(t *testing.T, reactions func() forgeAPIAnswer, disc
 			return forgeAPIAnswer{Body: gitlabTestMR(7, 0)}
 		case strings.HasPrefix(call.Path, mr+"/discussions?"):
 			return forgeAPIAnswer{Body: discussions.Load().(string)}
-		case call.Path == gitlabTestProject:
-			return forgeAPIAnswer{Body: gitlabTestProjectSettings}
+		case call.Op == "ProjectAccess":
+			return forgeAPIAnswer{Body: gitlabDeveloperRole}
 		case call.Path == "user":
 			return forgeAPIAnswer{Body: `{"id":1,"username":"me"}`}
 		case call.Op == "MRNoteReactions":

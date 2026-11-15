@@ -241,28 +241,27 @@ func TestGitLabMergeOptions(t *testing.T) {
 	settings := decodeGitLabSettings(t, gitlabTestProjectSettings)
 	ready := MergeReadiness{State: MergeStateReady}
 	approvals := gitlabTestApprovals(1, 0)
-	options := gitlabMergeOptions(decodeGitLabMR(t, nil), approvals, settings, ready, nil, false)
+	options := gitlabMergeOptions(decodeGitLabMR(t, nil), approvals, settings, gitlabDeveloperAccess, ready, nil, false)
 	if strings.Join(options.Methods, ",") != "merge,squash" || !options.DeleteBranchOffered || !options.DeleteBranchDefault || !options.ViewerCanMerge ||
 		!options.ViewerCanApprove || options.ViewerApproved || options.AutoMerge != nil || !options.AutoMergeAvailable || options.CannotMergeReason != "" || options.CannotApproveReason != "" {
 		t.Fatalf("options = %+v", options)
 	}
-	if o := gitlabMergeOptions(decodeGitLabMR(t, map[string]any{"force_remove_source_branch": false}), approvals, settings, ready, nil, false); !o.DeleteBranchOffered || o.DeleteBranchDefault {
+	if o := gitlabMergeOptions(decodeGitLabMR(t, map[string]any{"force_remove_source_branch": false}), approvals, settings, gitlabDeveloperAccess, ready, nil, false); !o.DeleteBranchOffered || o.DeleteBranchDefault {
 		t.Fatalf("the merge request's own choice: %+v", o)
 	}
-	if o := gitlabMergeOptions(decodeGitLabMR(t, map[string]any{"source_project_id": 99, "force_remove_source_branch": true}), approvals, settings, ready, nil, false); o.DeleteBranchOffered || o.DeleteBranchDefault {
+	if o := gitlabMergeOptions(decodeGitLabMR(t, map[string]any{"source_project_id": 99, "force_remove_source_branch": true}), approvals, settings, gitlabDeveloperAccess, ready, nil, false); o.DeleteBranchOffered || o.DeleteBranchDefault {
 		t.Fatalf("fork: %+v", o)
 	}
 	denied := gitlabApprovalsRaw{UserCanApprove: false}
-	o := gitlabMergeOptions(decodeGitLabMR(t, map[string]any{"user": map[string]any{"can_merge": false}}), denied, settings, ready, nil, false)
+	o := gitlabMergeOptions(decodeGitLabMR(t, map[string]any{"user": map[string]any{"can_merge": false}}), denied, settings, gitlabDeveloperAccess, ready, nil, false)
 	if o.ViewerCanMerge || o.CannotMergeReason != "You do not have merge access to main." || o.ViewerCanApprove || o.CannotApproveReason != "You are not an eligible approver." {
 		t.Fatalf("no rights: %+v", o)
 	}
-	reporter := decodeGitLabSettings(t, `{"merge_method":"merge","permissions":{"project_access":{"access_level":20}}}`)
-	if o := gitlabMergeOptions(decodeGitLabMR(t, map[string]any{"user": map[string]any{"can_merge": false}}), approvals, reporter, ready, nil, false); o.CannotMergeReason != "Your role in this project cannot merge." {
+	if o := gitlabMergeOptions(decodeGitLabMR(t, map[string]any{"user": map[string]any{"can_merge": false}}), approvals, settings, 20, ready, nil, false); o.CannotMergeReason != "Your role in this project cannot merge." {
 		t.Fatalf("reporter: %+v", o)
 	}
 	// Approved already: no approve, no reason.
-	if o := gitlabMergeOptions(decodeGitLabMR(t, nil), gitlabApprovalsRaw{UserHasApproved: true}, settings, ready, nil, false); !o.ViewerApproved || o.CannotApproveReason != "" {
+	if o := gitlabMergeOptions(decodeGitLabMR(t, nil), gitlabApprovalsRaw{UserHasApproved: true}, settings, gitlabDeveloperAccess, ready, nil, false); !o.ViewerApproved || o.CannotApproveReason != "" {
 		t.Fatalf("approved: %+v", o)
 	}
 	armed := decodeGitLabMR(t, map[string]any{"merge_when_pipeline_succeeds": true, "squash": true, "merge_user": map[string]any{"username": "lead", "name": "Lead"}})
@@ -270,18 +269,18 @@ func TestGitLabMergeOptions(t *testing.T) {
 		{Kind: EventAutoMergeSet, At: "2026-01-01T00:00:00Z", Text: "enabled an automatic merge when all merge checks for 1111111 pass"},
 		{Kind: EventAutoMergeSet, At: "2026-01-02T00:00:00Z", Text: "enabled an automatic merge when all merge checks for abc1234 pass"},
 	}
-	auto := gitlabMergeOptions(armed, approvals, settings, ready, events, false).AutoMerge
+	auto := gitlabMergeOptions(armed, approvals, settings, gitlabDeveloperAccess, ready, events, false).AutoMerge
 	if auto == nil || auto.Method != MergeMethodSquash || auto.ByLogin != "lead" || auto.ByName != "Lead" || auto.At != "2026-01-02T00:00:00Z" ||
 		auto.WaitsFor != "all merge checks for abc1234 pass" || !auto.CanCancel {
 		t.Fatalf("armed auto-merge = %+v", auto)
 	}
-	if auto := gitlabMergeOptions(armed, approvals, settings, ready, nil, false).AutoMerge; auto == nil || auto.At != "" || auto.WaitsFor != "all merge checks pass" {
+	if auto := gitlabMergeOptions(armed, approvals, settings, gitlabDeveloperAccess, ready, nil, false).AutoMerge; auto == nil || auto.At != "" || auto.WaitsFor != "all merge checks pass" {
 		t.Fatalf("armed auto-merge without notes = %+v", auto)
 	}
 	// A merged merge request keeps merge_when_pipeline_succeeds; nothing is
 	// armed and nothing is offered.
 	merged := decodeGitLabMR(t, map[string]any{"state": "merged", "merge_when_pipeline_succeeds": true})
-	if o := gitlabMergeOptions(merged, approvals, settings, MergeReadiness{State: MergeStateMerged}, events, false); o.AutoMerge != nil || o.AutoMergeAvailable || o.DeleteBranchOffered {
+	if o := gitlabMergeOptions(merged, approvals, settings, gitlabDeveloperAccess, MergeReadiness{State: MergeStateMerged}, events, false); o.AutoMerge != nil || o.AutoMergeAvailable || o.DeleteBranchOffered {
 		t.Fatalf("merged: %+v", o)
 	}
 }
@@ -394,8 +393,8 @@ func TestGitLabReadPREvents(t *testing.T) {
 	if d.Readiness.State != MergeStateMerged || d.MergedAt != "2026-01-01T00:00:05.000Z" || d.MergedBy != "lead" || d.ClosedAt != "" || d.Merge.AutoMerge != nil {
 		t.Fatalf("merged detail = %+v", d)
 	}
-	if n := len(calls.all()); n != 9 {
-		t.Fatalf("requests = %q, want the MR, one discussions page, the state events, the approvals, the project, the viewer, the release, PRManageChecks and MRNoteReactions", gitlabPaths(calls))
+	if n := len(calls.all()); n != 10 {
+		t.Fatalf("requests = %q, want the MR, one discussions page, the state events, the approvals, the project, the viewer and its role, the release, PRManageChecks and MRNoteReactions", gitlabPaths(calls))
 	}
 
 	// A closed merge request's close comes from closed_at, its id from the
@@ -543,7 +542,7 @@ func TestGitLabViewerIsAuthor(t *testing.T) {
 	// A project that lets authors approve their own merge requests says
 	// so with user_can_approve: no reason then.
 	settings := decodeGitLabSettings(t, gitlabTestProjectSettings)
-	if o := gitlabMergeOptions(decodeGitLabMR(t, nil), gitlabTestApprovals(1, 1), settings, MergeReadiness{State: MergeStateBlocked}, nil, true); !o.ViewerCanApprove || o.CannotApproveReason != "" {
+	if o := gitlabMergeOptions(decodeGitLabMR(t, nil), gitlabTestApprovals(1, 1), settings, gitlabDeveloperAccess, MergeReadiness{State: MergeStateBlocked}, nil, true); !o.ViewerCanApprove || o.CannotApproveReason != "" {
 		t.Fatalf("self-approval allowed: %+v", o)
 	}
 }

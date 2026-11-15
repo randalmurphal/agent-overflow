@@ -20,9 +20,11 @@ import (
 // Core's forge API transport. Only CreatePR runs glab.
 type gitlabForge struct {
 	core *Core
-	// projects caches each login's merge settings of a project and
-	// viewers each login's account on a host (gitlab_merge_read.go).
+	// projects caches each login's merge settings of a project, access
+	// its access level there and viewers its account on a host
+	// (gitlab_merge_read.go).
 	projects gitlabCache[gitlabProjectSettings]
+	access   gitlabCache[int]
 	viewers  gitlabCache[gitlabViewer]
 	// activity is each host's viewer activity, read once per list round
 	// (pr_list_gitlab.go).
@@ -44,6 +46,7 @@ type gitlabForge struct {
 // project (Core.ResetForgeCaches).
 func (f *gitlabForge) resetCaches() {
 	f.projects.clear()
+	f.access.clear()
 	f.viewers.clear()
 	f.pipelineTags.forget()
 	f.servers.clear()
@@ -302,6 +305,13 @@ func (f *gitlabForge) ReadPR(ctx context.Context, ref PRReference, want PRReadPa
 		if err != nil {
 			return PRRead{}, err
 		}
+		// The role words why the viewer cannot merge.
+		access := 0
+		if !mr.User.CanMerge {
+			if access, err = f.viewerAccess(ctx, client, ref.Repository()); err != nil {
+				return PRRead{}, err
+			}
+		}
 		// The Details read is the detail's own: its failure is said in
 		// the detail and hides nothing else.
 		manage, err := f.readManage(ctx, client, ref, mr)
@@ -313,7 +323,7 @@ func (f *gitlabForge) ReadPR(ctx context.Context, ref PRReference, want PRReadPa
 		}
 		viewer := f.viewerLogin(ctx, client, ref.Host)
 		out.Detail = gitlabPRDetail(mr, gitlabApprovalVerdicts(approvals))
-		gitlabFillMerge(&out.Detail, mr, approvals, settings, events, viewer)
+		gitlabFillMerge(&out.Detail, mr, approvals, settings, access, events, viewer)
 		manage.apply(&out.Detail)
 	}
 	if want.Threads {
@@ -321,12 +331,12 @@ func (f *gitlabForge) ReadPR(ctx context.Context, ref PRReference, want PRReadPa
 		// a maintainer or owner (GitLab's notes carry no permission). The
 		// login and the role are the detail's cached reads, so a tick that
 		// reads both costs no request of its own for them.
-		settings, err := f.projectSettings(ctx, client, ref.Repository())
+		access, err := f.viewerAccess(ctx, client, ref.Repository())
 		if err != nil {
 			return PRRead{}, err
 		}
-		markGitLabViewerNotes(out.Threads, f.viewerLogin(ctx, client, ref.Host), settings.accessLevel())
-		gateGitLabSuggestions(out.Threads, settings.accessLevel())
+		markGitLabViewerNotes(out.Threads, f.viewerLogin(ctx, client, ref.Host), access)
+		gateGitLabSuggestions(out.Threads, access)
 		out.ReactionsUnavailable = f.fillReactions(ctx, client, ref, out.Threads)
 	}
 	if want.CI {

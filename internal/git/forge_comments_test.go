@@ -481,8 +481,10 @@ func TestGitLabSubmitReviewHeldReply(t *testing.T) {
 }
 
 // A developer may edit and delete its own notes and no other; a
-// maintainer or owner every note. Each note links to its anchor on the
-// merge request.
+// maintainer or owner every note, however the role was granted: the role
+// is maxAccessLevel, which counts a group share that leaves the project's
+// REST permissions empty. Each note links to its anchor on the merge
+// request.
 func TestGitLabReadMarksTheViewersNotes(t *testing.T) {
 	t.Parallel()
 	mr := gitlabTestProject + "/merge_requests/7"
@@ -497,7 +499,9 @@ func TestGitLabReadMarksTheViewersNotes(t *testing.T) {
 			case strings.HasPrefix(call.Path, mr+"/discussions?"):
 				return forgeAPIAnswer{Body: `[{"id":"d","notes":[{"id":1,"body":"mine","author":{"username":"Me"}},{"id":2,"body":"theirs","author":{"username":"rev"}}]}]`}
 			case call.Path == gitlabTestProject:
-				return forgeAPIAnswer{Body: fmt.Sprintf(`{"permissions":{"project_access":null,"group_access":{"access_level":%d}}}`, tc.access)}
+				return forgeAPIAnswer{Body: `{"permissions":{"project_access":null,"group_access":null}}`}
+			case call.Op == "ProjectAccess":
+				return forgeAPIAnswer{Body: fmt.Sprintf(`{"data":{"project":{"maxAccessLevel":{"integerValue":%d}}}}`, tc.access)}
 			case call.Path == "user":
 				return forgeAPIAnswer{Body: `{"id":1,"username":"me"}`}
 			case call.Op == "MRNoteReactions":
