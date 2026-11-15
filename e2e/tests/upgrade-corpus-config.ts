@@ -91,25 +91,22 @@ export interface RecoveryRule {
   name: string;
   /** The Go function that makes the change. */
   writer: string;
-  /** The table, or '*' for a writer that deletes whole threads. */
   table: string;
   /**
    * The rows it applies to, as an SQL condition over the snapshot's row
-   * `s` (other snapshot tables are `snap.<table>`); for a '*' rule, a query
-   * of the ids of the threads it deletes, which explains every removed row
-   * of theirs in any table with a `thread_id` (and their `threads` row);
-   * or 'thread-write': the
+   * `s` (other snapshot tables are `snap.<table>`, the booted store's
+   * `main.<table>`), or 'thread-write': the
    * row's thread had a row of `items` changed, removed or added by the
    * boot, or for the `items` and `threads` stamp rules also a changed
    * `subagent_aggregates` row. Stamps move with the writes that cause them,
    * never on their own.
    */
   rows: string | 'thread-write';
-  /** The columns it may change, ['*'] for any. */
+  /** The columns it may change from the row the migrations left (`m`), ['*'] for any. */
   columns?: string[];
   /** Keys of `meta` it may set; the rest of `meta` must be unchanged. */
   metaKeys?: string[];
-  /** A condition over the booted row `b` (and `s`) a changed row must meet. */
+  /** A condition over the booted row `b` (and `s`, `m`) a changed row must meet. */
   to?: string;
   /** It deletes the row. */
   removes?: boolean;
@@ -126,25 +123,29 @@ const orphanedClaudeLaunch = (x: string) => `${x}.kind = 'tool_call' AND ${x}.st
   AND EXISTS (SELECT 1 FROM snap.threads t WHERE t.id = ${x}.thread_id AND t.provider IN ('claude', 'claude-tui'))`;
 /**
  * The user row `x` of a message the previous process wrote to the provider
- * and never saw confirmed: still marked pendingFlush, at the thread's newest
- * turn. A mark on a row a later turn follows outlived its message and is
- * settled history.
+ * and never saw confirmed: still marked pendingFlush, and residue, which
+ * store's markedUserRowSQL and unconfirmedUserRowResidueSQL
+ * (flush_queue_items.go) define: no older than its thread, and no later turn
+ * or top-level row follows it. A mark on any other row is history, which
+ * v152 clears and the boot leaves alone.
  */
 const unconfirmedUserRow = (x: string) => `${x}.kind = 'user_text' AND ${x}.parent_id = '' AND ${meta(x, 'pendingFlush')} = 1
-  AND NOT EXISTS (SELECT 1 FROM snap.turns t WHERE t.thread_id = ${x}.thread_id AND t.turn_index > ${x}.turn_index)`;
+  AND ${x}.created_at >= (SELECT t.created_at FROM snap.threads t WHERE t.id = ${x}.thread_id)
+  AND NOT EXISTS (SELECT 1 FROM snap.turns t WHERE t.thread_id = ${x}.thread_id AND t.turn_index > ${x}.turn_index)
+  AND NOT EXISTS (SELECT 1 FROM snap.items l WHERE l.thread_id = ${x}.thread_id AND l.turn_index > ${x}.turn_index AND l.parent_id = '')`;
+/** The thread request `x` whose wake is still queued: a durable queue row or an unconfirmed user row carries its send id. */
+const queuedWake = (x: string) => `(EXISTS (SELECT 1 FROM snap.flush_queue_items q
+    WHERE q.send_id IN ('thread-wake:' || ${x}.token, 'thread-wake-late:' || ${x}.token))
+  OR EXISTS (SELECT 1 FROM snap.items u WHERE ${unconfirmedUserRow('u')} AND instr(u.meta, ${x}.token) > 0))`;
+/** The pairing link `x` of an approved own-device admission the last run did not finish: store.IncompleteOwnAdmissions' selection. */
+const incompleteOwnAdmission = (x: string) => `${x}.purpose <> '' AND ${x}.confirmed_at IS NOT NULL AND ${x}.canceled_at IS NULL
+  AND ${x}.session_id NOT IN (SELECT session_id FROM snap.own_device_sessions)
+  AND ${x}.session_id IN (SELECT id FROM snap.sessions WHERE revoked_at IS NULL)`;
 /** A credential row PruneCredentials deletes: expired a day before now. */
 const prunedBefore = `(CAST(strftime('%s', 'now') AS INTEGER) * 1000 - 86400000)`;
 const workflowRunLive = `EXISTS (SELECT 1 FROM snap.work_items w WHERE w.id = s.item_id AND w.state IN ('running', 'needs-human'))`;
 
 export const recoveryRules: RecoveryRule[] = [
-  {
-    name: 'terminal-threads', writer: 'app.(*App).endTerminalThreadsAtBoot', table: '*',
-    rows: "SELECT id FROM snap.owned_threads WHERE mode = 'terminal'", removes: true,
-  },
-  {
-    name: 'interrupted-forks', writer: 'app.(*App).cleanupPreparingForks', table: '*',
-    rows: 'SELECT id FROM snap.threads WHERE fork_preparing = 1', removes: true,
-  },
   {
     name: 'crashed-turns', writer: 'store.(*Store).RecoverCrashedTurns', table: 'turns',
     rows: 's.completed_at IS NULL', columns: ['completed_at', 'stop_reason'],
@@ -195,6 +196,16 @@ export const recoveryRules: RecoveryRule[] = [
       AND ${unconfirmedUserRow('i')})`,
   },
   {
+    name: 'payloads-of-removed-items', writer: 'trg_items_gc_payload and trg_items_gc_input_payload (store/migrate_sql_items.go)',
+    table: 'payloads', removes: true,
+    rows: `EXISTS (SELECT 1 FROM snap.items i WHERE i.thread_id = s.thread_id AND (i.payload_id = s.id OR i.input_payload_id = s.id))
+      AND NOT EXISTS (SELECT 1 FROM main.items i WHERE i.thread_id = s.thread_id AND (i.payload_id = s.id OR i.input_payload_id = s.id))`,
+  },
+  {
+    name: 'chunks-of-removed-payloads', writer: 'payload_chunks ON DELETE CASCADE from payloads', table: 'payload_chunks', removes: true,
+    rows: 'NOT EXISTS (SELECT 1 FROM main.payloads p WHERE p.thread_id = s.thread_id AND p.id = s.payload_id)',
+  },
+  {
     name: 'item-stamps', writer: 'trg_items_rev_* and trg_subagent_aggregates_stamp_* (store/history_rev_triggers.go)',
     table: 'items', rows: 'thread-write', columns: ['rev'],
   },
@@ -229,8 +240,9 @@ export const recoveryRules: RecoveryRule[] = [
   {
     name: 'queued-wakes-to-draft', writer: 'app.noteThreadWakeRestoredToDraft (store.MarkThreadRequestDeliveredAsDraft)',
     table: 'thread_requests',
-    rows: `EXISTS (SELECT 1 FROM snap.flush_queue_items q WHERE q.send_id IN ('thread-wake:' || s.token, 'thread-wake-late:' || s.token))
-      OR EXISTS (SELECT 1 FROM snap.items u WHERE ${unconfirmedUserRow('u')} AND instr(u.meta, s.token) > 0)`,
+    // The wake's own request, and the requests that rode with it (delivered_with).
+    rows: `${queuedWake('s')} OR (s.delivered_with <> ''
+      AND EXISTS (SELECT 1 FROM snap.thread_requests w WHERE w.token = s.delivered_with AND ${queuedWake('w')}))`,
     columns: ['delivered_how', 'updated_at'], to: "b.delivered_how = 'draft'",
   },
   {
@@ -283,8 +295,13 @@ export const recoveryRules: RecoveryRule[] = [
     rows: workflowRunLive, columns: ['*'], key: ['item_id', 'phase_id', 'attempt', 'unit_id'],
   },
   {
-    name: 'usage-attention-claims', writer: 'store.(*Store).ReclaimQueuedWorkflowProviderUsageAttention',
-    table: 'workflow_provider_usage_attention', rows: 's.queued_generation > 0', columns: ['queued_token', 'updated_at'],
+    // Reclaim takes the claim; recoverWorkflowUsageAttention then moves it to
+    // a run still affected and delivers it, or releases it when none is.
+    name: 'usage-attention-claims',
+    writer: 'store.(*Store).ReclaimQueuedWorkflowProviderUsageAttention, then workflowapp recoverWorkflowUsageAttention (Reassign, Promote or Release)',
+    table: 'workflow_provider_usage_attention', rows: 's.queued_generation > 0',
+    columns: ['queued_generation', 'queued_token', 'source_item_id', 'delivered_generation', 'updated_at'],
+    to: `b.queued_generation = 0 OR b.queued_token LIKE '%:' || b.scope_id || ':' || b.thread_id`,
     key: ['scope_id', 'thread_id'],
   },
   {
@@ -292,6 +309,17 @@ export const recoveryRules: RecoveryRule[] = [
     rows: `s.binding_class = 'loopback-only' AND s.revoked_at IS NULL
       AND EXISTS (SELECT 1 FROM snap.devices d WHERE d.id = s.device_id AND d.channel = 'local' AND d.revoked_at IS NULL)`,
     columns: ['scopes'],
+  },
+  {
+    name: 'own-admission-members', writer: 'identity.(*Sessions).RecoverOwnAdmissions (store.AdmitOwnPairing)', table: 'own_devices',
+    rows: `EXISTS (SELECT 1 FROM snap.pairing_links l WHERE ${incompleteOwnAdmission('l')}
+      AND l.purpose <> 'own-introduction' AND l.key_thumbprint = s.key_thumbprint)`,
+    columns: ['member', 'generation', 'removed'], to: 'b.removed = 0',
+  },
+  {
+    name: 'own-admission-revocations', writer: 'identity.(*Sessions).RecoverOwnAdmissions (RevokeSession when AdmitOwnPairing refuses)',
+    table: 'sessions', rows: `s.id IN (SELECT l.session_id FROM snap.pairing_links l WHERE ${incompleteOwnAdmission('l')})`,
+    columns: ['revoked_at'], to: 'b.revoked_at IS NOT NULL',
   },
   {
     name: 'expired-sessions', writer: 'identity.(*Sessions).PruneCredentials (store.DeleteSessionsExpiredBefore)', table: 'sessions',
@@ -309,6 +337,94 @@ export const recoveryRules: RecoveryRule[] = [
   {
     name: 'expired-pairing-links', writer: 'identity.(*Sessions).PruneCredentials (store.DeletePairingLinksExpiredBefore)',
     table: 'pairing_links', rows: `s.expires_at < ${prunedBefore} AND s.redeemed_at IS NULL`, removes: true,
+  },
+];
+
+/**
+ * A SweepRule declares threads the first ordinary boot after the trial
+ * deletes, wholly or down to what a fork still reads: the steps a trial
+ * defers to its commit (startBeforeClients) and the unattended work behind
+ * the activation gate. The check reads the threads each rule selects from
+ * the store the trial left, before any later boot, and the census and the
+ * reads then allow exactly the rows and listings those threads lost; every
+ * other thread must keep all of its rows. Each entry names the Go writer and
+ * mirrors its selection, as an SQL query of thread ids over that store.
+ */
+export interface SweepRule {
+  name: string;
+  writer: string;
+  threads: string;
+}
+
+export const sweepRules: SweepRule[] = [
+  {
+    name: 'terminal-threads', writer: 'app.(*App).endTerminalThreadsAtBoot (startBeforeClients)',
+    threads: "SELECT id FROM owned_threads WHERE mode = 'terminal'",
+  },
+  {
+    name: 'interrupted-forks', writer: 'app.(*App).cleanupPreparingForks (startBeforeClients)',
+    threads: 'SELECT id FROM threads WHERE fork_preparing = 1',
+  },
+  {
+    name: 'scratch-threads', writer: 'app.(*App).finishThreadRequestSweepAtBoot (startUnattendedWork)',
+    threads: 'SELECT thread_id FROM scratch_threads',
+  },
+  {
+    name: 'pending-thread-deletes', writer: 'app.(*App).startPendingThreadDeletes (completeThreadDeletes, after the first reads)',
+    threads: 'SELECT id FROM threads WHERE deleting = 1',
+  },
+  {
+    // {swept} is every thread the rules above select: a holder none of the
+    // rest reads is released when they go.
+    name: 'released-holders', writer: 'app.(*App).collectReleasedHolders (store.ListReleasedHolders)',
+    threads: `SELECT h.id FROM threads h WHERE h.mode = 'holder'
+      AND NOT EXISTS (SELECT 1 FROM thread_fork_lineage l WHERE l.ancestor_id = h.id AND l.thread_id NOT IN ({swept}))`,
+  },
+];
+
+/**
+ * What the candidate answers about the root it boots on, which a
+ * RowSweepRule's condition reads: ListForgeProjects, the projects whose
+ * origin names a forge repository (with Error when git could not read it).
+ */
+export interface SweepContext {
+  forgeProjects: Array<{ projectId: string; repo: unknown; error?: string }>;
+}
+
+/**
+ * A RowSweepRule declares rows outside any thread that an ordinary boot
+ * after the trial deletes because nothing on the root names them any more.
+ * A cloned root makes these real: `ao-harness clone` relocates every project
+ * to a throwaway repository with no forge remote. The check reads `read`
+ * for every row of `table` from the store the trial left, and allows the
+ * census to lose a row only when it is gone afterwards and `prunable` holds
+ * for it, given what the candidate answered. `prunable` mirrors the Go
+ * writer's condition.
+ */
+export interface RowSweepRule {
+  name: string;
+  writer: string;
+  table: string;
+  /** SQL select list over the table: `key` (the row's identity) and what `prunable` reads. */
+  read: string;
+  prunable: (row: Record<string, unknown>, live: SweepContext) => boolean;
+}
+
+/** Whether two git.RepoReference values on the wire name one repository. */
+const sameRepo = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+
+export const rowSweepRules: RowSweepRule[] = [
+  {
+    // prefetchPRList and the list pump keep the repositories current
+    // projects' origins name, and an errored origin's stored repository.
+    name: 'unprojected-pr-lists', writer: 'app.(*App).prunePRListStore (store.DeletePRListProjectsExcept)',
+    table: 'pr_list_projects', read: 'repo_key AS key, CAST(project_json AS TEXT) AS list',
+    prunable: (row, live) => {
+      const list = JSON.parse(String(row.list)) as { projectId?: string; repo?: unknown };
+      return !live.forgeProjects.some((project) => project.error
+        ? project.projectId === list.projectId
+        : sameRepo(project.repo, list.repo));
+    },
   },
 ];
 
