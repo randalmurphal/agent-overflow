@@ -377,7 +377,7 @@ func TestWorkerSummariesPageEveryCaller(t *testing.T) {
 	noticeTestThread(t, a, last+"-grand")
 	spawn(last+"-worker-spawn", last+"-worker", last+"-grand")
 	approvalOn(t, a, last+"-grand", "grand-approval")
-	if !a.triage.UnroutePrompt(last+"-grand", "grand-approval") {
+	if a.triage.ReroutePrompts(last+"-worker", triage.PromptRef{ThreadID: last + "-grand", RequestID: "grand-approval"}) != 1 {
 		t.Fatal("the prompt did not go back to the user")
 	}
 	want[len(want)-1] = ThreadWorkerSummary{ThreadID: last, Open: 2, NeedYou: 1}
