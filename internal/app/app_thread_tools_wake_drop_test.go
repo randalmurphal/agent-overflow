@@ -9,6 +9,44 @@ import (
 	"agent-overflow/internal/triage"
 )
 
+// A wake already handed to a live, mid-turn session waits there for the turn
+// boundary. A Stop before the session confirms it takes the message back
+// with the session, and the request must not go on reading as delivered.
+func TestAStopThatTakesBackAnUnconfirmedWakeLeavesItsRequestUndelivered(t *testing.T) {
+	t.Parallel()
+	f := newRequestFixture(t)
+	f.mockClaudeHoldingTheTurn(t, "mid-thought")
+	f.app.configureTriageQueueCallbacks()
+	t.Cleanup(func() { f.app.flushDispatch.wg.Wait() })
+	if err := f.app.SendMessage(t.Context(), f.caller.ID, "look into the backfill", nil); err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+	waitUntil(t, 10*time.Second, func() bool {
+		_, open, err := f.app.store.GetActiveTurn(f.caller.ID)
+		return err == nil && open
+	})
+	token := f.settledNotifyRequest(t, "the backfill touched 412 rows")
+	f.app.deliverThreadWake(token, false)
+	wake := f.wakeRow(t, token)
+	waitUntil(t, 10*time.Second, func() bool { return len(durableQueueRows(t, f.app, f.caller.ID)) == 0 })
+	if row := f.request(t, token); row.DeliveredHow != store.ThreadWakeQueued {
+		t.Fatalf("request delivered %q before the stop, want queued", row.DeliveredHow)
+	}
+
+	if err := f.app.StopSession(f.caller.ID); err != nil {
+		t.Fatalf("StopSession: %v", err)
+	}
+
+	if _, found, err := f.app.store.GetThreadItem(f.caller.ID, wake.ID); err != nil || found {
+		t.Fatalf("wake row after the stop: found=%v err=%v, want it taken back", found, err)
+	}
+	row := f.request(t, token)
+	if row.DeliveredAt != 0 || row.DeliveredHow != "" || row.Notify || row.WakeIssue == "" {
+		t.Fatalf("request after the stop = delivered %q at %d, notify %v, issue %q; want undelivered, disarmed and explained",
+			row.DeliveredHow, row.DeliveredAt, row.Notify, row.WakeIssue)
+	}
+}
+
 // A Stop clears the caller's queue, a queued wake with it. The requests that
 // message answered must not go on reading as delivered: the agent never saw
 // it, and thread_status is then where the answer is read.

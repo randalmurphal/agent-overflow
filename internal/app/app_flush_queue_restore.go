@@ -243,7 +243,9 @@ func unconfirmedRowID(item triage.UnconfirmedFlushItem) string {
 // row leaves the timeline with the review drafts its message claimed, and a
 // connected client drops it (queue_restored, reason dropped). A message the
 // provider did consume is confirmed instead (DrainUnconfirmedFlushItems). A
-// row whose retire fails stays, and the thread shows the error.
+// wake among them was never read, so its requests are retracted with its row
+// (store.RetireDroppedUserRow), as a dropped queue row's are. A row whose
+// retire fails stays, and the thread shows the error.
 func (a *App) dropUnconfirmedSends(threadID string, dispatched []triage.QueuedFlushItem) {
 	if a.triage == nil {
 		return
@@ -251,7 +253,7 @@ func (a *App) dropUnconfirmedSends(threadID string, dispatched []triage.QueuedFl
 	drained := a.triage.DrainUnconfirmedFlushItems(threadID)
 	for _, item := range dispatched {
 		if item.StaleUserItemID != "" {
-			drained = append(drained, triage.UnconfirmedFlushItem{QueueItemID: item.ID, StaleUserItemID: item.StaleUserItemID})
+			drained = append(drained, triage.UnconfirmedFlushItem{QueueItemID: item.ID, Payload: item.Payload, StaleUserItemID: item.StaleUserItemID})
 		}
 	}
 	var queueItemIDs, userItemIDs []string
@@ -261,10 +263,12 @@ func (a *App) dropUnconfirmedSends(threadID string, dispatched []triage.QueuedFl
 		if rowID == "" {
 			continue
 		}
-		if _, err := a.cleanupStaleFlushRow(threadID, rowID); err != nil {
+		returned, err := a.store.RetireDroppedUserRow(threadID, rowID, unconfirmedFlushSendIDs(item))
+		if err != nil {
 			failed = append(failed, fmt.Errorf("%s: %w", rowID, err))
 			continue
 		}
+		a.announceReturnedReviewComments(returned)
 		if item.QuietItem == nil && item.StaleUserItemID == "" {
 			// A deferred message never had a row to remove.
 			continue

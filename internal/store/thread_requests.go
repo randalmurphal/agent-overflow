@@ -1238,31 +1238,83 @@ const threadWakeDroppedIssue = "The message carrying this answer was removed wit
 // The requests that rode with a first wake (`delivered_with`) were in the
 // same message and are corrected with it.
 func retractDroppedThreadWakesTx(tx *sql.Tx, threadID string) error {
-	action := fmt.Sprintf("store: retract dropped thread wakes for %s", threadID)
-	queued := `(SELECT send_id FROM flush_queue_items WHERE thread_id = ? AND send_id <> '')`
-	if _, err := tx.Exec(
-		`UPDATE thread_requests
-		    SET delivered_at = NULL, delivered_how = '', delivered_with = '',
-		        notify = 0, wake_issue = ?, updated_at = ?
-		  WHERE caller_thread_id = ? AND delivered_at IS NOT NULL AND delivered_how = ?
-		    AND late_delivered_at IS NULL
-		    AND ((? || token) IN `+queued+`
-		      OR (delivered_with <> '' AND (? || delivered_with) IN `+queued+`))`,
-		threadWakeDroppedIssue, nowMillis(), threadID, ThreadWakeQueued,
-		threadWakeSendIDPrefix, threadID, threadWakeSendIDPrefix, threadID,
-	); err != nil {
-		return fmt.Errorf("%s: first answers: %w", action, err)
+	rows, err := tx.Query(`SELECT send_id FROM flush_queue_items WHERE thread_id = ? AND send_id <> ''`, threadID)
+	if err != nil {
+		return fmt.Errorf("store: retract dropped thread wakes for %s: read the queue: %w", threadID, err)
 	}
-	if _, err := tx.Exec(
-		`UPDATE thread_requests
-		    SET late_delivered_at = NULL, delivered_how = '',
-		        notify = 0, wake_issue = ?, updated_at = ?
-		  WHERE caller_thread_id = ? AND late_delivered_at IS NOT NULL AND delivered_how = ?
-		    AND (? || token) IN `+queued,
-		threadWakeDroppedIssue, nowMillis(), threadID, ThreadWakeQueued,
-		threadWakeLateSendIDPrefix, threadID,
-	); err != nil {
-		return fmt.Errorf("%s: late replies: %w", action, err)
+	var sendIDs []string
+	for rows.Next() {
+		var sendID string
+		if err := rows.Scan(&sendID); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("store: retract dropped thread wakes for %s: read the queue: %w", threadID, err)
+		}
+		sendIDs = append(sendIDs, sendID)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("store: retract dropped thread wakes for %s: read the queue: %w", threadID, err)
+	}
+	return retractThreadWakeSendsTx(tx, threadID, sendIDs)
+}
+
+// RetireDroppedUserRow is RetireUndeliveredUserRow for a message thrown away
+// with its session rather than restored (a Stop before the session confirmed
+// it): in the same transaction the requests whose wake the message carried,
+// named by sendIDs, are retracted as a dropped queue's are
+// (retractDroppedThreadWakesTx).
+func (s *Store) RetireDroppedUserRow(threadID, itemID string, sendIDs []string) ([]DiffReviewReturnedComments, error) {
+	if strings.TrimSpace(threadID) == "" || strings.TrimSpace(itemID) == "" {
+		return nil, fmt.Errorf("store: retire dropped user row: the thread and the row are required")
+	}
+	var sources []DiffReviewReturnedComments
+	err := s.writeItems(threadID, nil, "retire dropped user row "+threadID+"/"+itemID, func(tx *sql.Tx, w *cardWrite) error {
+		var err error
+		if sources, err = retireUndeliveredUserRowTx(tx, w, threadID, itemID); err != nil {
+			return err
+		}
+		return retractThreadWakeSendsTx(tx, threadID, sendIDs)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return sources, nil
+}
+
+// retractThreadWakeSendsTx retracts the requests of callerThreadID whose
+// wake is one of sendIDs and still reads as queued: undelivered, disarmed and
+// explained. A first wake takes the requests that rode with it
+// (`delivered_with`). A send id that names no wake is ignored.
+func retractThreadWakeSendsTx(tx *sql.Tx, callerThreadID string, sendIDs []string) error {
+	for _, sendID := range sendIDs {
+		token, late, ok := parseThreadWakeSendID(sendID)
+		if !ok {
+			continue
+		}
+		action := fmt.Sprintf("store: retract dropped thread wake %s for %s", sendID, callerThreadID)
+		if late {
+			if _, err := tx.Exec(
+				`UPDATE thread_requests
+				    SET late_delivered_at = NULL, delivered_how = '',
+				        notify = 0, wake_issue = ?, updated_at = ?
+				  WHERE caller_thread_id = ? AND token = ?
+				    AND late_delivered_at IS NOT NULL AND delivered_how = ?`,
+				threadWakeDroppedIssue, nowMillis(), callerThreadID, token, ThreadWakeQueued,
+			); err != nil {
+				return fmt.Errorf("%s: %w", action, err)
+			}
+			continue
+		}
+		if _, err := tx.Exec(
+			`UPDATE thread_requests
+			    SET delivered_at = NULL, delivered_how = '', delivered_with = '',
+			        notify = 0, wake_issue = ?, updated_at = ?
+			  WHERE caller_thread_id = ? AND delivered_at IS NOT NULL AND delivered_how = ?
+			    AND late_delivered_at IS NULL
+			    AND (token = ? OR (delivered_with <> '' AND delivered_with = ?))`,
+			threadWakeDroppedIssue, nowMillis(), callerThreadID, ThreadWakeQueued, token, token,
+		); err != nil {
+			return fmt.Errorf("%s: %w", action, err)
+		}
 	}
 	return nil
 }

@@ -818,8 +818,10 @@ instead of reaching the agent, as every queued message does on a
 restart, a session that ends or cannot start, or a provider that drops
 the message unrun, makes the request read `delivered: draft` in the
 write that restores it, distinct from `delivered: inline` and
-`delivered: queued`, and `thread_status` still returns the answer. A Stop, archive or revert that clears the
-caller's queue drops a queued wake with it; every request that message
+`delivered: queued`, and `thread_status` still returns the answer. A
+Stop, archive or revert that clears the caller's queue drops a queued
+wake with it, and a Stop also drops a wake the session was handed and
+never confirmed; every request that message
 answered then reads as not delivered, with `notify` off so nothing
 queues it again, and `thread_status` delivers the answer when it reads
 it.

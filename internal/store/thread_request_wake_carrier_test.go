@@ -232,6 +232,65 @@ func TestQueueThreadWakeDeliversItsRidersWithTheCarrier(t *testing.T) {
 	}
 }
 
+// A wake handed to a session that is stopped before confirming it is taken
+// back with its row, and every request the message carried is retracted in
+// the same transaction; a failed retire retracts nothing.
+func TestRetireDroppedUserRowRetractsTheWakeItCarried(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThread(t, s, "t-caller")
+	for _, token := range []string{"tok-carrier", "tok-rider", "tok-other"} {
+		seedOwedThreadWake(t, s, token, "t-caller", ThreadRequestSend, 100, "the turn ended")
+	}
+	if err := s.QueueThreadWake("tok-carrier", []string{"tok-rider"}, false, FlushQueueItem{
+		ID: "queue:carrier", ThreadID: "t-caller", SendID: "thread-wake:tok-carrier", Message: "the turn ended", EnqueuedAt: 900,
+	}); err != nil {
+		t.Fatalf("QueueThreadWake: %v", err)
+	}
+	if err := s.QueueThreadWake("tok-other", nil, false, FlushQueueItem{
+		ID: "queue:other", ThreadID: "t-caller", SendID: "thread-wake:tok-other", Message: "the turn ended", EnqueuedAt: 900,
+	}); err != nil {
+		t.Fatalf("QueueThreadWake: %v", err)
+	}
+	// The dispatch wrote the carrier's message and dropped its queue row.
+	if err := s.DeleteFlushQueueItem("queue:carrier"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AppendItem(Item{
+		ID: "user:1:flush:1", ThreadID: "t-caller", TurnIndex: 1, Kind: "user_text", Role: "user", Status: "completed",
+		Summary: "the turn ended", Meta: `{"sendId":"thread-wake:tok-carrier"}`, CreatedAt: 1, UpdatedAt: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := s.db.Exec(`CREATE TRIGGER refuse_row_delete BEFORE DELETE ON items WHEN OLD.id = 'user:1:flush:1'
+		BEGIN SELECT RAISE(ABORT, 'injected delete failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RetireDroppedUserRow("t-caller", "user:1:flush:1", []string{"thread-wake:tok-carrier"}); err == nil || !strings.Contains(err.Error(), "injected delete failure") {
+		t.Fatal("the retire succeeded past the injected failure")
+	}
+	if got := mustGetThreadRequest(t, s, "tok-carrier").DeliveredHow; got != ThreadWakeQueued {
+		t.Fatalf("carrier delivered %q after a failed retire, want queued", got)
+	}
+	if _, err := s.db.Exec(`DROP TRIGGER refuse_row_delete`); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := s.RetireDroppedUserRow("t-caller", "user:1:flush:1", []string{"thread-wake:tok-carrier"}); err != nil {
+		t.Fatalf("RetireDroppedUserRow: %v", err)
+	}
+	for _, token := range []string{"tok-carrier", "tok-rider"} {
+		row := mustGetThreadRequest(t, s, token)
+		if row.DeliveredAt != 0 || row.DeliveredHow != "" || row.DeliveredWith != "" || row.Notify || row.WakeIssue == "" {
+			t.Errorf("%s after the drop = delivered %q at %d with %q, notify %v, issue %q; want undelivered, disarmed and explained",
+				token, row.DeliveredHow, row.DeliveredAt, row.DeliveredWith, row.Notify, row.WakeIssue)
+		}
+	}
+	if got := mustGetThreadRequest(t, s, "tok-other").DeliveredHow; got != ThreadWakeQueued {
+		t.Errorf("a wake the row did not carry reads %q, want it untouched", got)
+	}
+}
+
 // A message is written only if every request it names still owes the wake.
 // One that another route delivered, as carrier or as rider, refuses the whole
 // message and writes nothing, so no answer is named in two messages.
