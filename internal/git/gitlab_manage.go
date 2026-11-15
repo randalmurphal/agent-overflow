@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log"
 	"net/url"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -16,199 +15,24 @@ import (
 )
 
 // GitLab's management Details read and the state events. The read is
-// one GraphQL request beside the detail read (PRManage): reviewers with
-// their review state, assignees, labels with their ids and colors, and
-// the viewer's userPermissions. What the server's schema has decides
-// which controls exist and which document is sent: the re-review
-// mutation, mergeRequestUpdate's overrideRequestedChanges (with the
-// mergeabilityChecks the read then selects, PRManageChecks), and the
-// operationMode of the reviewer, assignee and label mutations. The
-// schema is probed once per host per gitlabCacheTTL in a document of its
-// own (PRManageSchema), its answer cached either way, so a warm read
-// carries no introspection and no document names a field an older
-// server refuses. The writes are gitlab_manage_write.go.
-
-const gitlabManageSelection = `userPermissions { updateMergeRequest adminMergeRequest }
-      reviewers(first: 100) { nodes { id username name mergeRequestInteraction { reviewState } } }
-      assignees(first: 100) { nodes { id username name } }
-      labels(first: 100) { nodes { id title color } }`
-
-const gitlabManageSchemaQuery = `query PRManageSchema {
-  rereview: __type(name: "MergeRequestReviewerRereviewInput") { name }
-  updateInput: __type(name: "MergeRequestUpdateInput") { inputFields { name } }
-  setReviewers: __type(name: "MergeRequestSetReviewersInput") { inputFields { name } }
-  setAssignees: __type(name: "MergeRequestSetAssigneesInput") { inputFields { name } }
-  setLabels: __type(name: "MergeRequestSetLabelsInput") { inputFields { name } }
-}`
-
-const gitlabManageQuery = `query PRManage($fullPath: ID!, $iid: String!) {
-  project(fullPath: $fullPath) {
-    mergeRequest(iid: $iid) {
-      ` + gitlabManageSelection + `
-    }
-  }
-}`
+// one GraphQL request beside the detail read: reviewers with their review
+// state, assignees, labels with their ids and colors, and the viewer's
+// userPermissions and the merge request's mergeability checks
+// (PRManageChecks). A server older than gitlabSupportedFloor is not read:
+// its Details say so (gitlab_version.go). The writes are
+// gitlab_manage_write.go.
 
 const gitlabManageChecksQuery = `query PRManageChecks($fullPath: ID!, $iid: String!) {
   project(fullPath: $fullPath) {
     mergeRequest(iid: $iid) {
-      ` + gitlabManageSelection + `
+      userPermissions { updateMergeRequest adminMergeRequest }
+      reviewers(first: 100) { nodes { id username name mergeRequestInteraction { reviewState } } }
+      assignees(first: 100) { nodes { id username name } }
+      labels(first: 100) { nodes { id title color } }
       mergeabilityChecks { identifier status }
     }
   }
 }`
-
-// gitlabSchema is what a host's GraphQL schema has of the management
-// surface.
-type gitlabSchema struct {
-	// rereview is mergeRequestReviewerRereview; override is
-	// mergeRequestUpdate's overrideRequestedChanges, with which the read
-	// selects mergeabilityChecks.
-	rereview, override bool
-	// setReviewers, setAssignees and setLabels are the set mutations
-	// taking an operationMode, which the people and label writes need.
-	setReviewers, setAssignees, setLabels bool
-}
-
-type gitlabInputField struct {
-	Name string `json:"name"`
-}
-
-type gitlabInputType struct {
-	InputFields []gitlabInputField `json:"inputFields"`
-}
-
-func (t *gitlabInputType) has(field string) bool {
-	return t != nil && slices.Contains(t.InputFields, gitlabInputField{Name: field})
-}
-
-// manageSchema is the host's schema answer: cached, else probed and
-// cached (an answer either way; a failed probe is not cached). Concurrent
-// cold reads of one host share one probe, which runs past the caller that
-// started it; each waits for it bounded by its own context.
-func (f *gitlabForge) manageSchema(ctx context.Context, client *forgeapi.Client, host string) (gitlabSchema, error) {
-	cached := func() (gitlabSchema, bool) { return f.schemas.get(host, f.core.nowFn()) }
-	if known, ok := cached(); ok {
-		return known, nil
-	}
-	return f.probes.join(ctx, host, cached, func(ctx context.Context) (gitlabSchema, error) {
-		return f.probeSchema(ctx, client)
-	}, func(schema gitlabSchema) {
-		f.schemas.put(host, schema, f.core.nowFn())
-	})
-}
-
-// gitlabSchemaProbes is the schema probe in flight per host. A reset
-// advances its epoch: a probe started before it is never joined after it,
-// and its answer is never cached.
-type gitlabSchemaProbes struct {
-	mu      sync.Mutex
-	epoch   uint64
-	flights map[string]*gitlabSchemaProbe
-}
-
-type gitlabSchemaProbe struct {
-	done    chan struct{}
-	epoch   uint64
-	schema  gitlabSchema
-	err     error
-	waiters int
-}
-
-// join answers host's probe: the one in flight, else one probe starts on
-// ctx's values without its cancellation. Its leader rechecks cached first,
-// since a caller can miss the cache before another probe finished and
-// join after; a probe's answer is stored only while its epoch is current.
-// A waiter whose context ends returns its error; the probe goes on for
-// the others.
-func (p *gitlabSchemaProbes) join(ctx context.Context, host string, cached func() (gitlabSchema, bool), probe func(context.Context) (gitlabSchema, error), store func(gitlabSchema)) (gitlabSchema, error) {
-	if err := ctx.Err(); err != nil {
-		return gitlabSchema{}, err
-	}
-	p.mu.Lock()
-	if p.flights == nil {
-		p.flights = map[string]*gitlabSchemaProbe{}
-	}
-	flight := p.flights[host]
-	if flight == nil {
-		flight = &gitlabSchemaProbe{done: make(chan struct{}), epoch: p.epoch}
-		p.flights[host] = flight
-		go func() {
-			schema, known := cached()
-			var err error
-			if !known {
-				schema, err = probe(context.WithoutCancel(ctx))
-			}
-			p.mu.Lock()
-			if !known && err == nil && flight.epoch == p.epoch {
-				store(schema)
-			}
-			flight.schema, flight.err = schema, err
-			if p.flights[host] == flight {
-				delete(p.flights, host)
-			}
-			p.mu.Unlock()
-			close(flight.done)
-		}()
-	}
-	flight.waiters++
-	p.mu.Unlock()
-	defer func() {
-		p.mu.Lock()
-		flight.waiters--
-		p.mu.Unlock()
-	}()
-	select {
-	case <-flight.done:
-		return flight.schema, flight.err
-	case <-ctx.Done():
-		return gitlabSchema{}, ctx.Err()
-	}
-}
-
-// reset forgets the probes in flight and, under the same lock, what
-// forget clears, so no probe of the old epoch stores after it.
-func (p *gitlabSchemaProbes) reset(forget func()) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.epoch++
-	clear(p.flights)
-	forget()
-}
-
-// waiters is how many callers wait on host's probe in flight.
-func (p *gitlabSchemaProbes) waiters(host string) int {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if flight := p.flights[host]; flight != nil {
-		return flight.waiters
-	}
-	return 0
-}
-
-// probeSchema sends the PRManageSchema probe.
-func (f *gitlabForge) probeSchema(ctx context.Context, client *forgeapi.Client) (gitlabSchema, error) {
-	var raw struct {
-		Rereview *struct {
-			Name string `json:"name"`
-		} `json:"rereview"`
-		UpdateInput  *gitlabInputType `json:"updateInput"`
-		SetReviewers *gitlabInputType `json:"setReviewers"`
-		SetAssignees *gitlabInputType `json:"setAssignees"`
-		SetLabels    *gitlabInputType `json:"setLabels"`
-	}
-	if _, err := client.GraphQL(ctx, "PRManageSchema", gitlabManageSchemaQuery, nil, &raw); err != nil {
-		return gitlabSchema{}, err
-	}
-	schema := gitlabSchema{
-		rereview:     raw.Rereview != nil,
-		override:     raw.UpdateInput.has("overrideRequestedChanges"),
-		setReviewers: raw.SetReviewers.has("operationMode"),
-		setAssignees: raw.SetAssignees.has("operationMode"),
-		setLabels:    raw.SetLabels.has("operationMode"),
-	}
-	return schema, nil
-}
 
 type gitlabGraphQLUser struct {
 	ID       string `json:"id"`
@@ -269,17 +93,12 @@ type gitlabManage struct {
 
 // readManage is the Details read of mr (see the file comment).
 func (f *gitlabForge) readManage(ctx context.Context, client *forgeapi.Client, ref PRReference, mr gitlabMRRaw) (gitlabManage, error) {
-	schema, err := f.manageSchema(ctx, client, ref.Host)
-	if err != nil {
+	if err := f.server(ctx, client, ref.Host).supported(ref); err != nil {
 		return gitlabManage{}, err
-	}
-	op, doc := "PRManage", gitlabManageQuery
-	if schema.override {
-		op, doc = "PRManageChecks", gitlabManageChecksQuery
 	}
 	var raw gitlabManageRaw
 	vars := map[string]any{"fullPath": ref.Project(), "iid": strconv.Itoa(ref.Number)}
-	if _, err := client.GraphQL(ctx, op, doc, vars, &raw); err != nil {
+	if _, err := client.GraphQL(ctx, "PRManageChecks", gitlabManageChecksQuery, vars, &raw); err != nil {
 		return gitlabManage{}, err
 	}
 	if raw.Project == nil || raw.Project.MergeRequest == nil {
@@ -310,8 +129,8 @@ func (f *gitlabForge) readManage(ctx context.Context, client *forgeapi.Client, r
 	}
 	state := NormalizePRState(mr.State)
 	open, update, admin := state == "open", node.UserPermissions.UpdateMergeRequest, node.UserPermissions.AdminMergeRequest
-	// Where the host has the mergeability checks, the requested-changes
-	// check says whether they block; elsewhere the detailed status.
+	// The requested-changes check says whether they block; without it,
+	// the detailed status.
 	blocked := strings.EqualFold(mr.DetailedMergeStatus, "requested_changes")
 	out := gitlabManage{}
 	for _, check := range node.MergeabilityChecks {
@@ -324,14 +143,14 @@ func (f *gitlabForge) readManage(ctx context.Context, client *forgeapi.Client, r
 	manage.Can = PRManageCan{
 		EditTitle:       update,
 		EditDescription: update,
-		Reviewers:       open && admin && schema.setReviewers,
-		Assignees:       admin && schema.setAssignees,
-		Labels:          admin && schema.setLabels,
+		Reviewers:       open && admin,
+		Rerequest:       open && update,
+		Bypass:          open && blocked && mr.User.CanMerge,
+		Assignees:       admin,
+		Labels:          admin,
 		Close:           open && update,
 		Reopen:          state == "closed" && update,
 		ConvertToDraft:  open && update && !mr.Draft && !mr.WorkInProgress,
-		Rerequest:       open && update && schema.rereview,
-		Bypass:          open && blocked && schema.override && mr.User.CanMerge,
 	}
 	out.manage = manage
 	return out, nil

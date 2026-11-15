@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"path"
+	"slices"
 	"strings"
 )
 
@@ -28,6 +29,17 @@ const (
 	DiffReviewScopePR        DiffReviewScope = "pr"
 	DiffReviewScopeEdits     DiffReviewScope = "edits"
 )
+
+// diffReviewScopes is every scope a comment may carry: the values the
+// diff_review_comments scope CHECK admits.
+var diffReviewScopes = []DiffReviewScope{
+	DiffReviewScopeTurn,
+	DiffReviewScopeSession,
+	DiffReviewScopeWorkspace,
+	DiffReviewScopeBranch,
+	DiffReviewScopePR,
+	DiffReviewScopeEdits,
+}
 
 // DiffReviewComment is one review comment on a diff. It belongs to a
 // thread (ThreadID) or, for a PR the Pull requests page reviews with no
@@ -171,22 +183,11 @@ func (o DiffReviewOwner) String() string {
 }
 
 func NormalizeDiffReviewScope(scope string) (string, error) {
-	switch DiffReviewScope(strings.TrimSpace(scope)) {
-	case DiffReviewScopeTurn:
-		return string(DiffReviewScopeTurn), nil
-	case DiffReviewScopeSession:
-		return string(DiffReviewScopeSession), nil
-	case DiffReviewScopeWorkspace:
-		return string(DiffReviewScopeWorkspace), nil
-	case DiffReviewScopeBranch:
-		return string(DiffReviewScopeBranch), nil
-	case DiffReviewScopePR:
-		return string(DiffReviewScopePR), nil
-	case DiffReviewScopeEdits:
-		return string(DiffReviewScopeEdits), nil
-	default:
-		return "", fmt.Errorf("diff review scope must be turn, session, workspace, branch, pr, or edits")
+	normalized := DiffReviewScope(strings.TrimSpace(scope))
+	if slices.Contains(diffReviewScopes, normalized) {
+		return string(normalized), nil
 	}
+	return "", fmt.Errorf("diff review scope must be turn, session, workspace, branch, pr, or edits")
 }
 
 func NormalizeDiffReviewSourceKey(sourceKey string) (string, error) {
@@ -816,49 +817,60 @@ func (s *Store) RetireUndeliveredUserRow(threadID, itemID string) ([]DiffReviewR
 	}
 	var sources []DiffReviewReturnedComments
 	err := s.writeItems(threadID, nil, "retire undelivered user row "+threadID+"/"+itemID, func(tx *sql.Tx, w *cardWrite) error {
-		sources = sources[:0]
-		rows, err := tx.Query(
-			`UPDATE diff_review_comments
-			    SET status = CASE WHEN status = 'sent' THEN 'draft' ELSE status END,
-			        sent_at = CASE WHEN status = 'sent' THEN 0 ELSE sent_at END,
-			        sent_turn_id = CASE WHEN status = 'sent' THEN '' ELSE sent_turn_id END,
-			        claim_thread_id = '', claim_item_id = '', claim_settles = ''
-			  WHERE claim_item_id <> '' AND claim_thread_id = `+boundText+` AND claim_item_id = `+boundText+`
-			RETURNING COALESCE(thread_id, ''), COALESCE(pr_key, ''), scope, source_key, id, body`,
-			threadID, itemID,
-		)
-		if err != nil {
-			return fmt.Errorf("store: return the review comments of %s/%s: %w", threadID, itemID, err)
-		}
-		index := map[DiffReviewCommentSource]int{}
-		for rows.Next() {
-			var source DiffReviewCommentSource
-			var comment DiffReviewCommentSnapshot
-			if err := rows.Scan(&source.Owner.ThreadID, &source.Owner.PRKey, &source.Scope, &source.SourceKey, &comment.ID, &comment.Body); err != nil {
-				_ = rows.Close()
-				return fmt.Errorf("store: return the review comments of %s/%s: %w", threadID, itemID, err)
-			}
-			i, seen := index[source]
-			if !seen {
-				i = len(sources)
-				index[source] = i
-				sources = append(sources, DiffReviewReturnedComments{DiffReviewCommentSource: source})
-			}
-			sources[i].Comments = append(sources[i].Comments, comment)
-		}
-		if err := rows.Err(); err != nil {
-			_ = rows.Close()
-			return fmt.Errorf("store: return the review comments of %s/%s: %w", threadID, itemID, err)
-		}
-		if err := rows.Close(); err != nil {
-			return fmt.Errorf("store: return the review comments of %s/%s: %w", threadID, itemID, err)
-		}
-		if err := deleteThreadItemTx(tx, w, threadID, itemID); err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return err
-		}
-		return nil
+		var err error
+		sources, err = retireUndeliveredUserRowTx(tx, w, threadID, itemID)
+		return err
 	})
 	if err != nil {
+		return nil, err
+	}
+	return sources, nil
+}
+
+// retireUndeliveredUserRowTx is RetireUndeliveredUserRow inside the
+// caller's item write.
+func retireUndeliveredUserRowTx(tx *sql.Tx, w *cardWrite, threadID, itemID string) ([]DiffReviewReturnedComments, error) {
+	fail := func(err error) ([]DiffReviewReturnedComments, error) {
+		return nil, fmt.Errorf("store: return the review comments of %s/%s: %w", threadID, itemID, err)
+	}
+	rows, err := tx.Query(
+		`UPDATE diff_review_comments
+		    SET status = CASE WHEN status = 'sent' THEN 'draft' ELSE status END,
+		        sent_at = CASE WHEN status = 'sent' THEN 0 ELSE sent_at END,
+		        sent_turn_id = CASE WHEN status = 'sent' THEN '' ELSE sent_turn_id END,
+		        claim_thread_id = '', claim_item_id = '', claim_settles = ''
+		  WHERE claim_item_id <> '' AND claim_thread_id = `+boundText+` AND claim_item_id = `+boundText+`
+		RETURNING COALESCE(thread_id, ''), COALESCE(pr_key, ''), scope, source_key, id, body`,
+		threadID, itemID,
+	)
+	if err != nil {
+		return fail(err)
+	}
+	var sources []DiffReviewReturnedComments
+	index := map[DiffReviewCommentSource]int{}
+	for rows.Next() {
+		var source DiffReviewCommentSource
+		var comment DiffReviewCommentSnapshot
+		if err := rows.Scan(&source.Owner.ThreadID, &source.Owner.PRKey, &source.Scope, &source.SourceKey, &comment.ID, &comment.Body); err != nil {
+			_ = rows.Close()
+			return fail(err)
+		}
+		i, seen := index[source]
+		if !seen {
+			i = len(sources)
+			index[source] = i
+			sources = append(sources, DiffReviewReturnedComments{DiffReviewCommentSource: source})
+		}
+		sources[i].Comments = append(sources[i].Comments, comment)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return fail(err)
+	}
+	if err := rows.Close(); err != nil {
+		return fail(err)
+	}
+	if err := deleteThreadItemTx(tx, w, threadID, itemID); err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return nil, err
 	}
 	return sources, nil

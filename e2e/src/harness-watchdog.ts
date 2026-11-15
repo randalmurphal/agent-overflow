@@ -57,6 +57,9 @@ export class HarnessWatchdog {
     this.identity = await captureProcessIdentity(this.options.child.pid);
     this.memberProof = await captureProcessGroupMemberProof(this.identity);
     this.treeProof = await captureProcessTreeProof(this.identity);
+    // A launch whose watchdog step ran past its bound has already stopped
+    // the backend; a late start must not leave a sampler behind.
+    if (this.options.isClosed()) return;
     this.timer = setInterval(() => {
       void this.sample(memoryLimitBytes);
     }, WATCHDOG_INTERVAL_MS);

@@ -200,7 +200,7 @@ func readAloudFailure(request context.Context, err error) error {
 		return &transport.SpeechError{Status: http.StatusNotFound, Err: err}
 	case errors.Is(err, context.DeadlineExceeded):
 		return &transport.SpeechError{Status: http.StatusGatewayTimeout,
-			Err: fmt.Errorf("OpenAI took longer than %d seconds to read the sentence aloud", int(readAloudTimeout.Seconds()))}
+			Err: fmt.Errorf("OpenAI took longer than %d seconds to read the section aloud", int(readAloudTimeout.Seconds()))}
 	case errors.Is(err, readaloud.ErrBusy), errors.Is(err, openai.ErrRateLimited):
 		return &transport.SpeechError{Status: http.StatusTooManyRequests, Err: err}
 	}

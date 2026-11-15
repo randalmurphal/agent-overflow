@@ -167,7 +167,11 @@ base's rulesets (`allowedMergeMethods`).
   until this PR's diff is on screen (loading, or a failed load), while
   the diff predates the live head (the stale banner) and while the pump
   is failing; the head-pinned actions send the head the diff was loaded
-  at, never the live one.
+  at, never the live one. A review's Send names that head too: the pane
+  refuses it while the stale banner shows, GitLab refuses a head that
+  moved since (kind `stale_head`, the pane re-reads the PR so the banner
+  and its Reload show), GitHub pins the review and its comments to it,
+  and the drafts, summary and verdict stay for a refused review.
 - Merging from a thread's companion pane is the merge the worktree cleanup
   ruling (2026-10-13) reacts to: the thread moves to Base and the pane
   stays on the merged PR's snapshot until closed.
@@ -287,6 +291,10 @@ scope, on both surfaces and both forges:
   reactions read failed (`reactionsUnavailable`), one muted line at the
   top of the Conversation says so, the chips stay as last read and Add
   reaction is not offered.
+- Bounded read. A PR with more threads or comments than one read takes
+  (ten pages of 100 on either forge) shows its first ones and a muted
+  line at the top of the Conversation saying the rest are on the forge
+  (`threadsTruncated`).
 - Copy link copies the comment's `url` through the shared clipboard
   helper; a refused copy is reported and toasted.
 - A sent comment's hover actions read Add reaction, Copy link, Edit,
@@ -397,6 +405,7 @@ and correlation id stay behind "Details". The sentences:
 | Cannot approve | "You cannot approve your own merge request." / "You are not an eligible approver." |
 | Comment answer lost | "FORGE may have posted this comment. Check the thread before sending it again." (kind `unconfirmed`: a comment or reply posted now whose response did not say; the pane's next frame shows what the forge holds) |
 | Comment elsewhere | "That comment is not on PROJECT#N, so it was not changed." (kind `not_found`: an edit or delete naming a GitHub comment of another PR) |
+| Pending review on GitLab | "You have N pending comments on PROJECT!N that this app did not write, and sending would publish them with this review. Submit or discard them on GitLab, then send again." (kind `refused`: the viewer's draft notes the submit did not create; nothing is written) |
 | Reply thread gone | "The thread this reply answers is no longer on PROJECT!N, so the reply was not posted." (kind `not_found`) |
 | Rate limited, network, 5xx | existing sentences |
 
@@ -631,10 +640,11 @@ permission reads and the refusals are in
   by its own flag). A control the viewer may not use is absent. A detail
   without `manage` (an older backend) shows no Details section and none
   of these controls; that absence is the compatibility gate. A GitLab
-  host decides per control as well: one whose schema lacks a set
-  mutation's `operationMode` offers no Edit on that row, one without
-  re-request or the requested-changes override no Re-request or Bypass,
-  while the other controls stay. A failed management read sets
+  older than the supported floor (18.0) offers none of them: its
+  `manage.unavailable` names its release and the floor, and every write
+  to its merge requests (Send, comments, replies, resolve, reactions,
+  suggestions, approve, merge and these controls) is refused with that
+  sentence before anything is sent. A failed management read sets
   `manage.unavailable`: every flag is false, the lists are empty, and the
   Details section, collapsed, shows the sentence instead of its rows; the
   rest of the PR loads as usual, and the controls return with the next
@@ -935,8 +945,9 @@ description, and an edited squash message that falls back to Merge
 and then to Rebase as the snapshot drops each method, with the notice
 and a merge that sends no message; on GitLab also a refused
 management read (Details shows the sentence, no control anywhere, the
-controls back once it answers) and a host without `operationMode` (no
-row Edit, the other controls kept). `review-ci-actions.spec.ts` drives the CI actions on a GitLab MR and a
+controls back once it answers), a GitLab 19.6 that refuses
+introspection with every control offered, and a GitLab 17.11 below the
+floor (Details shows the sentence naming both releases, no control). `review-ci-actions.spec.ts` drives the CI actions on a GitLab MR and a
 GitHub PR (a refused retry, a retry followed to passed, cancel, a manual
 job, artifacts saved to disk, a refused artifacts read that keeps the
 jobs and says why in the menu), and `ci-actions-flow.ts` the same from

@@ -443,7 +443,7 @@ func (a *App) unregisterSession(threadID, sessionToken string) {
 	// a wrong-group kill if the OS later recycles that PID and the app then
 	// dies. Release is idempotent and pgid<=1 is guarded inside.
 	if ps := removed.ProviderSession(); ps != nil {
-		a.releaseProcessGroup(ps.PID())
+		a.releaseProviderGroup(ps.PID())
 	}
 	if removed.Provider == string(provider.Codex) {
 		if err := a.retireCodexBackgroundRuntime(threadID); err != nil {

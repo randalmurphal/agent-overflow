@@ -93,6 +93,12 @@ func (a *App) workflowApplication() *workflowapp.Service {
 				value := workflowTemplateDigest(item, phaseID, output, check)
 				return workflowapp.Digest{WhatHappened: value.WhatHappened, WhatItNeeds: value.WhatItNeeds}
 			},
+			// The ports that act outside the database (the digest generator,
+			// auto-disposition, notifications and wakes) wait for the boot's
+			// steps before clients: the engine rebuild runs before a trial's
+			// commit, and what its transitions owe are provider turns, forge
+			// writes and banners a rollback cannot take back. Every caller is
+			// off the engine goroutine, which the boot steps call into.
 			GenerateDigest: func(_ context.Context, item store.WorkItem, template workflowapp.Digest) (workflowapp.Digest, error) {
 				generated, err := a.generateWorkflowDigest(item, WorkflowDigest{
 					WhatHappened: template.WhatHappened, WhatItNeeds: template.WhatItNeeds,
@@ -107,6 +113,9 @@ func (a *App) workflowApplication() *workflowapp.Service {
 			},
 			Attention: workflowapp.AttentionPorts{
 				Notify: func(itemID, title, body string) error {
+					if err := a.waitForBootSteps(a.lifeCtx()); err != nil {
+						return err
+					}
 					// Keyed on the item, so a run that rests twice replaces
 					// its own notification instead of stacking a second one
 					// beside a state that is no longer true.
@@ -132,6 +141,9 @@ func (a *App) workflowApplication() *workflowapp.Service {
 					return live
 				},
 				QueueMessage: func(threadID, message string, onDurable func()) error {
+					if err := a.waitForBootSteps(a.lifeCtx()); err != nil {
+						return err
+					}
 					_, err := a.registerQueueItem(
 						threadID, message, SendMessageOptions{},
 						injectedQueueOptions{preserveDraft: true, onDurable: onDurable},
@@ -139,6 +151,9 @@ func (a *App) workflowApplication() *workflowapp.Service {
 					return err
 				},
 				SendMessage: func(threadID, message string) error {
+					if err := a.waitForBootSteps(a.lifeCtx()); err != nil {
+						return err
+					}
 					_, err := a.sendMessageWithOptions(
 						context.Background(), threadID, message, sendMessageOptions{PreserveDraft: true},
 					)

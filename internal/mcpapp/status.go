@@ -33,11 +33,11 @@ const (
 	// absorb a slow first-launch CLI warm-up without leaving the popup
 	// spinning indefinitely if the binary is wedged.
 	mcpEphemeralFetchTimeout = 20 * time.Second
-	// mcpAuthRoundTripTimeout bounds the provider-side MCP OAuth
+	// AuthRoundTripTimeout bounds the provider-side MCP OAuth
 	// handshake. The user is interacting with a browser tab during the
 	// flow, so a longer ceiling is intentional — too short and a
 	// distracted approval re-issues a fresh login.
-	mcpAuthRoundTripTimeout = 60 * time.Second
+	AuthRoundTripTimeout = 60 * time.Second
 	// mcpLiveApplyTimeout bounds the RPCs that apply an MCP change to a
 	// live provider session: Claude `mcp_toggle` / `mcp_reconnect` and
 	// Codex `config/mcpServer/reload`. Enabling or reconnecting makes

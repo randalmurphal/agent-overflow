@@ -77,6 +77,32 @@ func TestDraftWriteListsNothingForThreadsListedOtherwiseOrNever(t *testing.T) {
 	}
 }
 
+// Returning a queued message to the composer of a thread nothing else lists
+// lists it, in the restore's own transaction.
+func TestRestoreFlushQueueToDraftReportsTheThreadListed(t *testing.T) {
+	s := newTestStore(t)
+	thread := createDraftCleanupThread(t, s, "restore-listed", "chat")
+	if err := s.InsertFlushQueueItem(FlushQueueItem{ID: "queue", ThreadID: thread.ID, Message: "queued", EnqueuedAt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	expected, _, err := s.GetThreadDraft(thread.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	merged := expected
+	merged.Content = "queued"
+	got, _, err := s.RestoreFlushQueueToDraft(expected, merged, []string{"queue"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != (DraftWrite{Changed: true, Listed: true}) {
+		t.Fatalf("restore write %+v, want changed and listed", got)
+	}
+	if ids := listedThreadIDs(t, s); !slices.Equal(ids, []string{thread.ID}) {
+		t.Fatalf("listed %v, want the restored thread", ids)
+	}
+}
+
 // Moving a draft to another never-sent thread lists the destination.
 func TestMoveThreadDraftReportsTheDestinationListed(t *testing.T) {
 	s := newTestStore(t)

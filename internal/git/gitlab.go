@@ -41,11 +41,8 @@ type gitlabForge struct {
 	// pipelineTags remembers which listed pipelines ran on a tag
 	// (ci_gitlab.go).
 	pipelineTags gitlabPipelineTags
-	// schemas is each host's management schema (gitlab_manage.go).
-	schemas gitlabCache[gitlabSchema]
-	// probes is the schema probe in flight per host (gitlab_manage.go);
-	// its reset clears schemas.
-	probes gitlabSchemaProbes
+	// versions is each host's release (gitlab_version.go).
+	versions gitlabCache[gitlabVersion]
 	// stateEventRetries holds the merge requests whose state events read
 	// failed, until it is due again (gitlab_manage.go).
 	stateEventRetries gitlabStateEventRetries
@@ -65,7 +62,7 @@ func (f *gitlabForge) resetCaches() {
 	f.noCIJobCancelPermission.clear()
 	f.routes.clear()
 	f.pipelineTags.forget()
-	f.probes.reset(f.schemas.clear)
+	f.versions.clear()
 	f.stateEventRetries.clear()
 	f.reactions.clear()
 	f.noNoteAwardEmoji.clear()
@@ -291,13 +288,17 @@ func (f *gitlabForge) ReadPR(ctx context.Context, ref PRReference, want PRReadPa
 	var threads []ReviewThread
 	if want.Threads || want.Events {
 		var system []gitlabNoteRaw
-		threads, system, err = readGitLabDiscussions(ctx, client, ref, gitlabThreadContext{headSHA: mr.headSHA(), webURL: mr.WebURL})
+		var truncated bool
+		threads, system, truncated, err = readGitLabDiscussions(ctx, client, ref, gitlabThreadContext{headSHA: mr.headSHA(), webURL: mr.WebURL})
 		if err != nil {
 			return PRRead{}, err
 		}
 		notes = system
 		if want.Threads {
 			out.Threads = threads
+			if truncated {
+				out.ThreadsTruncated = threadsTruncatedSentence(ref)
+			}
 		}
 	}
 	if want.Events {
@@ -562,11 +563,12 @@ func markGitLabViewerNotes(threads []ReviewThread, viewer string, access int) {
 	}
 }
 
-// readGitLabDiscussions reads every page of the merge request's
-// discussions: the human notes as threads normalized against the MR's
-// current head commit, and the system notes in GitLab's order, which are
-// the events' source (gitlabEvents).
-func readGitLabDiscussions(ctx context.Context, client *forgeapi.Client, ref PRReference, at gitlabThreadContext) ([]ReviewThread, []gitlabNoteRaw, error) {
+// readGitLabDiscussions reads the merge request's discussions, at most
+// prReadMaxPages pages (truncated says there were more): the human notes
+// as threads normalized against the MR's current head commit, and the
+// system notes in GitLab's order, which are the events' source
+// (gitlabEvents).
+func readGitLabDiscussions(ctx context.Context, client *forgeapi.Client, ref PRReference, at gitlabThreadContext) (_ []ReviewThread, _ []gitlabNoteRaw, truncated bool, _ error) {
 	request := forgeapi.Request{
 		Path:         gitlabMRPath(ref) + "/discussions",
 		Query:        url.Values{"per_page": {strconv.Itoa(gitlabPageSize)}},
@@ -574,8 +576,9 @@ func readGitLabDiscussions(ctx context.Context, client *forgeapi.Client, ref PRR
 	}
 	var threads []ReviewThread
 	var system []gitlabNoteRaw
-	page := 1
+	page, pages := 1, 0
 	err := client.Pages(ctx, request, func(resp *forgeapi.Response) (bool, error) {
+		pages++
 		var discussions []gitlabDiscussionRaw
 		if err := json.Unmarshal(resp.Body, &discussions); err != nil {
 			return false, fmt.Errorf("GitLab merge request discussions: decode response: %w", err)
@@ -588,12 +591,14 @@ func readGitLabDiscussions(ctx context.Context, client *forgeapi.Client, ref PRR
 				}
 			}
 		}
-		return advanceGitLabPage(resp, &page), nil
+		more := advanceGitLabPage(resp, &page)
+		truncated = more && pages >= prReadMaxPages
+		return more && !truncated, nil
 	})
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, false, err
 	}
-	return threads, system, nil
+	return threads, system, truncated, nil
 }
 
 func gitlabReviewThreads(discussions []gitlabDiscussionRaw, at gitlabThreadContext) []ReviewThread {
@@ -766,19 +771,35 @@ func gitlabPointLine(point gitlabLineRangePoint, prefer string) (string, *int) {
 }
 
 func (f *gitlabForge) SubmitReview(ctx context.Context, ref PRReference, review SubmitReviewRequest) (SubmitReviewResult, error) {
-	client, err := f.core.gitlabAPI(ref.Host)
+	client, err := f.writeClient(ctx, ref)
 	if err != nil {
 		return SubmitReviewResult{}, err
 	}
-	// The draft notes are positioned on the MR's current diff, and an
-	// approval names the head it approves; the MR alone carries both.
+	// The draft notes are positioned on the diff the reviewer loaded, which
+	// is the MR's only while its head is the one they loaded; the approval
+	// names that head too, so a push after this read is refused by GitLab.
 	mr, err := readGitLabMR(ctx, client, ref)
 	if err != nil {
 		return SubmitReviewResult{}, err
 	}
+	if have := mr.headSHA(); !strings.EqualFold(have, review.HeadSHA) {
+		return SubmitReviewResult{}, &HeadMovedError{Want: review.HeadSHA, Have: have}
+	}
 	diffRefs := mr.diffRefs()
 	notes := gitlabDraftNotes(review)
 	mrPath := gitlabMRPath(ref)
+	// The publish takes every pending draft note of the viewer's, so one
+	// this submit did not create (a review started on GitLab, or one an
+	// earlier submit could not remove) refuses it before any write.
+	if len(notes) > 0 {
+		pending, err := gitlabPendingDraftIDs(ctx, client, mrPath)
+		if err != nil {
+			return SubmitReviewResult{}, err
+		}
+		if len(pending) > 0 {
+			return SubmitReviewResult{}, &PendingDraftNotesError{Count: len(pending)}
+		}
+	}
 	var replies []gitlabHeldReply
 	for _, note := range notes {
 		if note.InReplyTo != nil {
@@ -864,7 +885,7 @@ func (f *gitlabForge) SubmitReview(ctx context.Context, ref PRReference, review 
 		replyFailure = f.confirmGitLabReplies(ctx, client, ref, mr, before, replies, &out)
 	}
 	if strings.EqualFold(review.Verdict, ReviewVerdictApprove) {
-		approve := forgeapi.Request{Method: http.MethodPost, Path: mrPath + "/approve", Body: map[string]string{"sha": mr.headSHA()}}
+		approve := forgeapi.Request{Method: http.MethodPost, Path: mrPath + "/approve", Body: map[string]string{"sha": review.HeadSHA}}
 		if _, err := client.JSON(ctx, approve, nil); err != nil {
 			if replyFailure == nil {
 				return out, gitlabApproveFailure(out, err)
@@ -1053,6 +1074,17 @@ func removeGitLabDrafts(ctx context.Context, client *forgeapi.Client, mrPath str
 	return &DraftsLeftError{Err: failure, Count: left, Cleanup: errors.Join(errs...)}
 }
 
+// PendingDraftNotesError is a GitLab submit refused before any write
+// because the viewer already has Count pending draft notes on the merge
+// request, which its publish would post with this review.
+type PendingDraftNotesError struct {
+	Count int
+}
+
+func (e *PendingDraftNotesError) Error() string {
+	return fmt.Sprintf("the viewer has %d pending draft notes this review did not create", e.Count)
+}
+
 // DraftsLeftError is a submit that failed after creating draft notes it
 // then could not remove: Count of them may still be pending on the MR.
 type DraftsLeftError struct {
@@ -1149,7 +1181,7 @@ func (f *gitlabForge) ReplyToThread(ctx context.Context, ref PRReference, thread
 	if strings.TrimSpace(body) == "" {
 		return errors.New("reply body is required")
 	}
-	client, err := f.core.gitlabAPI(ref.Host)
+	client, err := f.writeClient(ctx, ref)
 	if err != nil {
 		return err
 	}
@@ -1161,20 +1193,22 @@ func (f *gitlabForge) ReplyToThread(ctx context.Context, ref PRReference, thread
 	return commentWriteError(err)
 }
 
-// SetThreadResolved resolves (or reopens) one MR discussion. A discussion
-// with no resolvable notes answers 400, which surfaces as the forge's
-// error rather than a silent no-op.
+// SetThreadResolved resolves (or reopens) one MR discussion, addressed
+// under the merge request, so a discussion of another is a 404. A
+// discussion with no resolvable notes answers 400, which surfaces as the
+// forge's error rather than a silent no-op; a failure the forge may have
+// applied is an *UnconfirmedWriteError.
 func (f *gitlabForge) SetThreadResolved(ctx context.Context, ref PRReference, threadID string, resolved bool) error {
 	if strings.TrimSpace(threadID) == "" {
 		return errors.New("GitLab thread resolution requires a discussion id")
 	}
-	client, err := f.core.gitlabAPI(ref.Host)
+	client, err := f.writeClient(ctx, ref)
 	if err != nil {
 		return err
 	}
 	request := forgeapi.Request{Method: http.MethodPut, Path: gitlabDiscussionPath(ref, threadID), Body: map[string]bool{"resolved": resolved}}
 	_, err = client.JSON(ctx, request, nil)
-	return err
+	return writeOutcome(err)
 }
 
 // extractMRCreateURL pulls the WebURL from glab's `mr create` stdout.

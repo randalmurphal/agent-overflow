@@ -182,6 +182,7 @@ func (a *App) SearchPRCILog(ctx context.Context, repo gitops.RepoReference, jobI
 //
 //ao:scope git:operate
 //ao:route selected
+//ao:budget 15m
 func (a *App) SavePRCIJobLog(ctx context.Context, repo gitops.RepoReference, jobID, jobName string) (string, error) {
 	if a.shuttingDown.Load() {
 		return "", ErrShuttingDown
@@ -200,10 +201,14 @@ func (a *App) SavePRCIJobLog(ctx context.Context, repo gitops.RepoReference, job
 	store.Pin(key)
 	defer store.Unpin(key)
 	name := ciLogFileName(jobID, jobName)
+	// Each resumed download has its own bound and the resumes have none,
+	// so the save as a whole runs within its budget.
+	ctx, cancel := withinMethodBudget(ctx, "SavePRCIJobLog", "Downloading the job's log")
+	defer cancel()
 	for attempt := 0; ; attempt++ {
 		if !store.Has(key) {
 			if err := a.downloadCILog(forgeapi.WithInteractive(ctx), store, repo, jobID); err != nil {
-				return "", err
+				return "", budgetError(ctx, err)
 			}
 		}
 		path, err := a.writeCILogFile(repo, name, func(w io.Writer) error {

@@ -10,7 +10,7 @@ import (
 	"agent-overflow/internal/store"
 )
 
-func (s *Service) Start(threadID, discussionName string) error {
+func (s *Service) Start(threadID, discussionName string, check DriveCheck) error {
 	st, _, _, err := s.services()
 	if err != nil {
 		return err
@@ -26,10 +26,10 @@ func (s *Service) Start(threadID, discussionName string) error {
 	if err != nil {
 		return err
 	}
-	return s.startWithDefinition(st, parent, def)
+	return s.startWithDefinition(st, parent, def, check)
 }
 
-func (s *Service) StartByID(threadID, discussionID string) error {
+func (s *Service) StartByID(threadID, discussionID string, check DriveCheck) error {
 	st, _, _, err := s.services()
 	if err != nil {
 		return err
@@ -48,12 +48,19 @@ func (s *Service) StartByID(threadID, discussionID string) error {
 	if err := ensureDefinitionInScope(st, parent, def); err != nil {
 		return err
 	}
-	return s.startWithDefinition(st, parent, def)
+	return s.startWithDefinition(st, parent, def, check)
 }
 
-func (s *Service) startWithDefinition(st *store.Store, parent store.Thread, def store.DiscussionDefinition) error {
+func (s *Service) startWithDefinition(st *store.Store, parent store.Thread, def store.DiscussionDefinition, check DriveCheck) error {
 	plans, err := discussion.BuildParticipantPlans(parent, def, time.Now().UnixMilli())
 	if err != nil {
+		return err
+	}
+	participants := make([]store.Thread, 0, len(plans))
+	for _, plan := range plans {
+		participants = append(participants, plan.Thread)
+	}
+	if err := checkParticipants(check, participants); err != nil {
 		return err
 	}
 	_, err = s.createRuntime(st, parent, plans, def.Settings.MaxTurns)

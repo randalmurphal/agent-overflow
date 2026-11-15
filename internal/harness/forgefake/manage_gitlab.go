@@ -175,89 +175,68 @@ func (e *Engine) glabGraphQLMR(c *call, v graphQLVars, pathVar string) (*Repo, *
 	return r, p, response{}, true
 }
 
-// glabManageSchema answers PRManageSchema: the input types a server has,
-// less what the repository's ServerLacks takes away. A server without
-// a type answers null for it, as __type does. It reads no project, so
-// it answers from the first GitLab repository on the host.
-func glabManageSchema(e *Engine, c *call, _ graphQLVars) response {
-	var r *Repo
-	for _, key := range sortedKeys(e.repos) {
-		if candidate := e.repos[key]; candidate.Forge == "gitlab" && strings.EqualFold(candidate.Host, c.http.host) {
-			r = candidate
-			break
-		}
-	}
-	lacks := func(feature string) bool { return r != nil && r.lacks(feature) }
-	fields := func(names ...string) map[string]any {
-		out := []map[string]any{}
-		for _, name := range names {
-			out = append(out, map[string]any{"name": name})
-		}
-		return map[string]any{"inputFields": out}
-	}
-	set := func(list string) any {
-		if lacks(lacksOperationMode) {
-			return fields("projectPath", "iid", list)
-		}
-		return fields("projectPath", "iid", list, "operationMode")
-	}
-	var rereview any = map[string]any{"name": "MergeRequestReviewerRereviewInput"}
-	if lacks(lacksRereview) {
-		rereview = nil
-	}
-	update := fields("projectPath", "iid", "title", "description", "state", "targetBranch", "overrideRequestedChanges")
-	if lacks(lacksOverride) {
-		update = fields("projectPath", "iid", "title", "description", "state", "targetBranch")
-	}
-	return graphQLData(map[string]any{
-		"rereview":     rereview,
-		"updateInput":  update,
-		"setReviewers": set("reviewerUsernames"),
-		"setAssignees": set("assigneeUsernames"),
-		"setLabels":    set("labelIds"),
-	})
+// glabMetadata answers GET metadata: the host's release
+// (gitlabHostVersion).
+func glabMetadata(e *Engine, c *call, _ []string) response {
+	return glabOK(jsonResponse(map[string]any{"version": e.gitlabHostVersion(c.http.host), "revision": "forgefake", "enterprise": true}))
 }
 
-// glabManage answers PRManage (checks false) and PRManageChecks: the
-// viewer's permissions, the reviewers with their reviewState, the
-// assignees and labels (with their ids). PRManageChecks on a server
-// without the override is refused as such a server refuses the field.
-func glabManage(checks bool) func(e *Engine, c *call, v graphQLVars) response {
-	return func(e *Engine, c *call, v graphQLVars) response {
-		r, p, fail, ok := e.glabGraphQLMR(c, v, "fullPath")
-		if !ok {
-			return fail
-		}
-		if checks && r.lacks(lacksOverride) {
-			return glabGraphQLInvalid("Field 'mergeabilityChecks' doesn't exist on type 'MergeRequest'")
-		}
-		reviewers := []map[string]any{}
-		for _, login := range p.Reviewers {
-			reviewers = append(reviewers, map[string]any{"id": e.gitlabGID(r, login), "username": login, "name": e.gitlabName(r, login),
-				"mergeRequestInteraction": map[string]any{"reviewState": strings.ToUpper(gitlabReviewState(p, login))}})
-		}
-		assignees := []map[string]any{}
-		for _, login := range p.Assignees {
-			assignees = append(assignees, map[string]any{"id": e.gitlabGID(r, login), "username": login, "name": e.gitlabName(r, login)})
-		}
-		mr := map[string]any{
-			"userPermissions": map[string]any{"updateMergeRequest": e.mayUpdate(r, p), "adminMergeRequest": e.mayAdmin(r, p)},
-			"reviewers":       map[string]any{"nodes": reviewers},
-			"assignees":       map[string]any{"nodes": assignees},
-			"labels":          map[string]any{"nodes": gitlabLabelNodes(r, p.Labels)},
-		}
-		if checks {
-			status := "INACTIVE"
-			if len(p.ChangeRequests) > 0 {
-				status = "SUCCESS"
-				if !p.ChangesOverridden {
-					status = "FAILED"
-				}
-			}
-			mr["mergeabilityChecks"] = []map[string]any{{"identifier": "REQUESTED_CHANGES", "status": status}}
-		}
-		return graphQLData(map[string]any{"project": map[string]any{"mergeRequest": mr}})
+// glabIntrospectionRefused answers a document that asks for __type or
+// __schema on a host one of whose GitLab repositories lacks
+// introspection, as such a server answers it: a validation error naming
+// the field.
+func (e *Engine) glabIntrospectionRefused(c *call, query string) (response, bool) {
+	field := ""
+	switch {
+	case strings.Contains(query, "__schema"):
+		field = "__schema"
+	case strings.Contains(query, "__type"):
+		field = "__type"
+	default:
+		return response{}, false
 	}
+	for _, r := range e.repos {
+		if r.Forge == "gitlab" && strings.EqualFold(r.Host, c.http.host) && r.lacks(lacksIntrospection) {
+			resp := glabGraphQLInvalid(fmt.Sprintf("Field '%s' doesn't exist on type 'Query'", field))
+			resp.route = "glab graphql introspection refused"
+			return resp, true
+		}
+	}
+	return response{}, false
+}
+
+// glabManage answers PRManageChecks: the viewer's permissions, the
+// reviewers with their reviewState, the assignees and labels (with their
+// ids) and the requested-changes mergeability check.
+func glabManage(e *Engine, c *call, v graphQLVars) response {
+	r, p, fail, ok := e.glabGraphQLMR(c, v, "fullPath")
+	if !ok {
+		return fail
+	}
+	reviewers := []map[string]any{}
+	for _, login := range p.Reviewers {
+		reviewers = append(reviewers, map[string]any{"id": e.gitlabGID(r, login), "username": login, "name": e.gitlabName(r, login),
+			"mergeRequestInteraction": map[string]any{"reviewState": strings.ToUpper(gitlabReviewState(p, login))}})
+	}
+	assignees := []map[string]any{}
+	for _, login := range p.Assignees {
+		assignees = append(assignees, map[string]any{"id": e.gitlabGID(r, login), "username": login, "name": e.gitlabName(r, login)})
+	}
+	mr := map[string]any{
+		"userPermissions": map[string]any{"updateMergeRequest": e.mayUpdate(r, p), "adminMergeRequest": e.mayAdmin(r, p)},
+		"reviewers":       map[string]any{"nodes": reviewers},
+		"assignees":       map[string]any{"nodes": assignees},
+		"labels":          map[string]any{"nodes": gitlabLabelNodes(r, p.Labels)},
+	}
+	status := "INACTIVE"
+	if len(p.ChangeRequests) > 0 {
+		status = "SUCCESS"
+		if !p.ChangesOverridden {
+			status = "FAILED"
+		}
+	}
+	mr["mergeabilityChecks"] = []map[string]any{{"identifier": "REQUESTED_CHANGES", "status": status}}
+	return graphQLData(map[string]any{"project": map[string]any{"mergeRequest": mr}})
 }
 
 func (e *Engine) gitlabGID(r *Repo, login string) string {
@@ -290,8 +269,7 @@ func glabGraphQLDenied(field string) response {
 const glabNoPermission = "The resource that you are attempting to access does not exist or you don't have permission to perform this action"
 
 // glabMutationMR resolves a set mutation's merge request and mode, and
-// refuses a server without operationMode and a viewer without
-// adminMergeRequest.
+// refuses a viewer without adminMergeRequest.
 func (e *Engine) glabMutationMR(c *call, v graphQLVars, field string) (*Repo, *Pull, string, response, bool) {
 	mode, err := v.str("mode")
 	if err != nil || (mode != "APPEND" && mode != "REMOVE") {
@@ -301,12 +279,7 @@ func (e *Engine) glabMutationMR(c *call, v graphQLVars, field string) (*Repo, *P
 	if !ok {
 		return nil, nil, "", fail, false
 	}
-	switch {
-	case r.lacks(lacksOperationMode):
-		return nil, nil, "", glabGraphQLInvalid(fmt.Sprintf("InputObject '%s' doesn't accept argument 'operationMode'", map[string]string{
-			"mergeRequestSetReviewers": "MergeRequestSetReviewersInput", "mergeRequestSetAssignees": "MergeRequestSetAssigneesInput", "mergeRequestSetLabels": "MergeRequestSetLabelsInput",
-		}[field])), false
-	case !e.mayAdmin(r, p):
+	if !e.mayAdmin(r, p) {
 		return nil, nil, "", glabGraphQLDenied(field), false
 	}
 	return r, p, mode, response{}, true
@@ -465,9 +438,6 @@ func glabRereview(e *Engine, c *call, v graphQLVars) response {
 	if !ok {
 		return fail
 	}
-	if r.lacks(lacksRereview) {
-		return glabGraphQLInvalid("Field 'mergeRequestReviewerRereview' doesn't exist on type 'Mutation'")
-	}
 	id, err := strconv.ParseInt(strings.TrimPrefix(userID, "gid://gitlab/User/"), 10, 64)
 	if err != nil || !strings.HasPrefix(userID, "gid://gitlab/User/") {
 		return glabGraphQLInvalid(fmt.Sprintf("%q is not a valid ID for UserID.", userID))
@@ -496,10 +466,7 @@ func glabBypassChanges(e *Engine, c *call, v graphQLVars) response {
 	if !ok {
 		return fail
 	}
-	switch {
-	case r.lacks(lacksOverride):
-		return glabGraphQLInvalid("InputObject 'MergeRequestUpdateInput' doesn't accept argument 'overrideRequestedChanges'")
-	case gitlabRoles[r.Merge.Permission] < gitlabRoles["developer"]:
+	if gitlabRoles[r.Merge.Permission] < gitlabRoles["developer"] {
 		return graphQLData(map[string]any{"mergeRequestUpdate": map[string]any{"errors": []string{"Only users with permission to merge can override requested changes"}}})
 	}
 	p.ChangesOverridden = true

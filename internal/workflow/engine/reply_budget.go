@@ -33,14 +33,11 @@ func settleRunnerStart(start *runnerStartFuture, result response) {
 // runner-start futures its command produced — one deadline across all of them,
 // not one each, because a caller experiences the sum.
 //
-// It exists because the two sides of the RPC disagreed about what "no answer
-// yet" means. `internal/aocli`'s rpcTimeout is 30s (`session.go`), so a reply
-// held longer than that reaches the operator as `context deadline exceeded` for
-// a verb that had already COMMITTED server-side — and their retry then hits an
-// FSM refusal for the state their first call successfully produced. 20s keeps
-// the engine the side that answers first, with room for the client's own hop.
-// The two constants are a pair: neither moves without the other, and this one
-// stays comfortably under it.
+// It keeps the reply inside transport.DefaultMethodBudget, the server budget
+// of every workflow verb the CLI calls: a reply held past the client's wait
+// (transport.ClientWait) reaches the operator as `context deadline exceeded`
+// for a verb that had already COMMITTED server-side, and their retry then
+// hits an FSM refusal for the state their first call successfully produced.
 //
 // Expiry is not an error. The command-loop transition is what the verb asked
 // for and it has already been persisted; the runner start is the run's own next

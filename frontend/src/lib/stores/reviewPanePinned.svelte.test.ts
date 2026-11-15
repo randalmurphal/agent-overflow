@@ -471,7 +471,7 @@ describe('pinned comments and actions', () => {
     await state.submitPRReview();
     expect(submit).toHaveBeenCalledWith(
       { Forge: 'github', Host: 'github.com', Namespace: 'owner', Repo: 'repo', Number: 5 },
-      { verdict: 'comment', body: '', comments: [{ path: 'src/app.ts', body: 'needs two tests', line: 2, side: 'right' }] },
+      { verdict: 'comment', body: '', headSha: 'sha-5', comments: [{ path: 'src/app.ts', body: 'needs two tests', line: 2, side: 'right' }] },
     );
     expect(mark).not.toHaveBeenCalled();
     expect(fake.mark).toHaveBeenCalledWith(
@@ -531,7 +531,7 @@ describe('pinned comments and actions', () => {
 
       await expect(state.submitPRReview()).rejects.toBeInstanceOf(DisconnectedError);
 
-      expect(submit.mock.calls[0]?.[1]).toEqual({ verdict: 'comment', body: 'overall', comments: [], drafts: { threadId: undefined, ids: ['c1'], headSha: 'sha-5' }, attemptId: expect.any(String) });
+      expect(submit.mock.calls[0]?.[1]).toEqual({ verdict: 'comment', body: 'overall', headSha: 'sha-5', comments: [], drafts: { threadId: undefined, ids: ['c1'] }, attemptId: expect.any(String) });
       expect(ask).toHaveBeenCalledWith(expect.anything(), attemptOf(submit, 0));
       expect(fake.mark).not.toHaveBeenCalled();
       expect(state.drafts).toEqual([]);

@@ -302,7 +302,8 @@ export interface ForgeRepo {
   /** The repository's labels; color "#rrggbb". */
   labels?: { name: string; color?: string; id?: string }[];
   /** GitLab: what an older server lacks. */
-  serverLacks?: ('rereview' | 'overrideRequestedChanges' | 'operationMode' | 'awardEmoji')[];
+  serverVersion?: string;
+  serverLacks?: ('introspection' | 'awardEmoji')[];
 }
 
 interface ForgeInvocationCommon {

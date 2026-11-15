@@ -33,6 +33,7 @@ const sideChatNotScratchCode = "thread_not_scratch"
 // would not be the conversation they forked.
 //
 //ao:scope threads:operate
+//ao:budget 2m
 func (a *App) ForkSideChat(ctx context.Context, threadID string) (store.Thread, error) {
 	if a.store == nil {
 		return store.Thread{}, fmt.Errorf("side chat: store unavailable")

@@ -17,12 +17,11 @@ type ProcInfo interface {
 	// CreateUnix returns the process start time (ms since epoch); ok is
 	// false when the process is gone or the value is unavailable.
 	CreateUnix(pid int) (ms int64, ok bool)
-	// PPID returns the current parent pid (1 == reparented to launchd/init
-	// because the original parent died); ok is false if unavailable.
+	// PPID returns the current parent pid; ok is false if unavailable.
 	PPID(pid int) (ppid int, ok bool)
 }
 
-// Sweep reaps provider groups left orphaned by a previous app run, then
+// Sweep reaps process groups left orphaned by a previous app run, then
 // clears the registry. Call it once at startup, before any new session
 // can register, so the load→kill→clear sequence can't race a fresh Add.
 func Sweep(reg *Registry, info ProcInfo, grace time.Duration) error {
@@ -48,21 +47,21 @@ func sweepWith(reg *Registry, info ProcInfo, kill func(pgid int, sig syscall.Sig
 		for _, pgid := range toKill {
 			kill(pgid, syscall.SIGKILL)
 		}
-		log.Printf("orphanreaper: swept %d orphaned provider group(s) from a previous run", len(toKill))
+		log.Printf("orphanreaper: swept %d orphaned process group(s) from a previous run", len(toKill))
 	}
 	// Clear the registry: every recorded entry belongs to a previous run.
-	// Cross-instance safety rests on shouldReap's ppid==1 check, not the
-	// single-instance lock — a still-live sibling instance's providers
-	// aren't reparented to init, so they're skipped rather than killed.
-	// Killed entries are gone; skipped ones are already dead or PID-reused.
+	// Cross-instance safety rests on shouldReap's parent check, not the
+	// single-instance lock: a still-live sibling instance's groups are
+	// still its children, so they're skipped rather than killed. Killed
+	// entries are gone; skipped ones are already dead or PID-reused.
 	return reg.Clear()
 }
 
 // shouldReap kills a recorded group only when the leader process is still
 // alive, its start time matches what we recorded (so a recycled PID is
-// never mistaken for ours), and it has been reparented to init (the app
-// that spawned it is gone). A record with CreateUnix==0 (start time
-// couldn't be captured at spawn) falls back to the orphaned-parent check.
+// never mistaken for ours), and its parent is no longer the app that
+// started it. A record with CreateUnix==0 (start time couldn't be captured
+// at spawn) falls back to the orphaned-parent check.
 func shouldReap(rec Record, info ProcInfo) bool {
 	if !info.Running(rec.PID) {
 		return false
@@ -73,10 +72,13 @@ func shouldReap(rec Record, info ProcInfo) bool {
 		}
 	}
 	ppid, ok := info.PPID(rec.PID)
-	if !ok || ppid != 1 {
+	if !ok {
 		return false
 	}
-	return true
+	if rec.ParentPID > 0 {
+		return ppid != rec.ParentPID
+	}
+	return ppid == 1
 }
 
 // GopsutilProcInfo is the production ProcInfo backed by gopsutil (already

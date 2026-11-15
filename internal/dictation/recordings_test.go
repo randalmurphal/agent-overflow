@@ -360,8 +360,8 @@ func TestWorkInProgressDoesNotExpire(t *testing.T) {
 // A transcription's context ends at the budget, with a cause that says so.
 func TestATranscriptionEndsAtItsBudget(t *testing.T) {
 	recordings := New(0, 20*time.Millisecond)
-	if recordings.Budget() != 20*time.Millisecond || New(0, 0).Budget() != TranscribeBudget {
-		t.Fatal("Budget does not report the budget the set was made with")
+	if New(0, 0).budget != TranscribeBudget {
+		t.Fatal("a zero budget is not TranscribeBudget")
 	}
 	id, _ := recordings.Begin("audio/webm", 0)
 	if err := recordings.Append(id, 0, 3, strings.NewReader("abc")); err != nil {

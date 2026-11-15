@@ -84,6 +84,9 @@ export interface PRSnapshot {
   /** Why the threads carry no reactions (the pump's reactions read
    * failed or is bounded), one sentence; absent when they do. */
   readonly reactionsUnavailable?: string;
+  /** That the threads are the first the read's bound takes, not all of
+   * them, one sentence; absent when they are all. */
+  readonly threadsTruncated?: string;
   /** The PR's LIVE head OID — not the head any pane's diff was loaded at. */
   readonly headSHA: string;
 }
@@ -102,6 +105,7 @@ export interface PRUpdatedEvent {
   threads?: ReviewThread[] | null;
   events?: ReviewEvent[] | null;
   reactionsUnavailable?: string;
+  threadsTruncated?: string;
   headSHA?: string;
   /** A fetch failure on the pump: user-facing state, not a log line. */
   error?: string;
@@ -389,6 +393,7 @@ const store = createEntityStore<PRSnapshot, PRCtx>({
         threads: (result.threads ?? []) as ReviewThread[],
         events: (result.events ?? []) as ReviewEvent[],
         reactionsUnavailable: result.reactionsUnavailable || undefined,
+        threadsTruncated: result.threadsTruncated || undefined,
         headSHA: String(result.headSHA ?? detail?.headSHA ?? ''),
       };
       apply(snapshot);
@@ -682,6 +687,7 @@ function applyPRUpdateToKey(key: string, event: PRUpdatedEvent): void {
     threads: (event.threads ?? []) as ReviewThread[],
     events: (event.events ?? []) as ReviewEvent[],
     reactionsUnavailable: event.reactionsUnavailable || undefined,
+    threadsTruncated: event.threadsTruncated || undefined,
     headSHA: String(event.headSHA || detail?.headSHA || ''),
   });
 }
@@ -748,6 +754,7 @@ export function applyPRSnapshot(key: string, snapshot: Omit<PRSnapshot, 'events'
     threads: keepArrivals(key, snapshot.threads, from),
     events: snapshot.events ?? held?.events ?? EMPTY_PR_EVENTS,
     reactionsUnavailable: 'reactionsUnavailable' in snapshot ? snapshot.reactionsUnavailable : held?.reactionsUnavailable,
+    threadsTruncated: 'threadsTruncated' in snapshot ? snapshot.threadsTruncated : held?.threadsTruncated,
   });
 }
 
@@ -772,6 +779,7 @@ export function applyPRThreads(key: string, threads: readonly ReviewThread[], fr
       threads: keepArrivals(key, threads, from),
       events: current?.events ?? EMPTY_PR_EVENTS,
       reactionsUnavailable: current?.reactionsUnavailable,
+      threadsTruncated: current?.threadsTruncated,
       headSHA: current?.headSHA ?? '',
     },
     { preserveError: true },

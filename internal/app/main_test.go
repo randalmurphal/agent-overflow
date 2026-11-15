@@ -41,6 +41,7 @@ func TestMain(m *testing.M) {
 			panic(err)
 		}
 	}
+	goBuildCache = resolveGoBuildCache()
 	removeHome, err := detachTestProcessHome()
 	if err != nil {
 		panic(err)

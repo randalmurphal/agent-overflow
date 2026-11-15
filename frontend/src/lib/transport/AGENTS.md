@@ -84,6 +84,9 @@ The complete replay, gap, watch, and lease contracts are in
 
 ## Retries and connection state
 
+A call waits its method's generated budget plus the answer margin
+(`rpcWaitMs`); no caller sets a wait of its own
+([method budgets](../../../../docs/architecture/transport.md#method-budgets)).
 Do not replay an RPC merely because its connection closed. The only mutation
 retry list is `RETRY_ON_TRANSIENT_CLOSE`; an entry requires a backend-enforced
 durable request ID and must resend the identical frame. Step-up retry is separate:

@@ -3,6 +3,7 @@ package git
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -22,10 +23,16 @@ import (
 // submit with held replies reads them before creating drafts.
 type gitlabReplyThreads map[string]ReviewThread
 
+// A merge request with more discussions than one read takes cannot tell
+// a discussion that is gone from one past the bound, so its submit with
+// held replies fails before any write.
 func readGitLabReplyThreads(ctx context.Context, client *forgeapi.Client, ref PRReference, mr gitlabMRRaw) (gitlabReplyThreads, error) {
-	threads, _, err := readGitLabDiscussions(ctx, client, ref, gitlabThreadContext{headSHA: mr.headSHA(), webURL: mr.WebURL})
+	threads, _, truncated, err := readGitLabDiscussions(ctx, client, ref, gitlabThreadContext{headSHA: mr.headSHA(), webURL: mr.WebURL})
 	if err != nil {
 		return nil, err
+	}
+	if truncated {
+		return nil, fmt.Errorf("%s!%d has more than %d discussions, too many to check the replies against; reply on GitLab", ref.Project(), ref.Number, prReadMaxPages*gitlabPageSize)
 	}
 	out := make(gitlabReplyThreads, len(threads))
 	for _, thread := range threads {

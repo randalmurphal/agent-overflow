@@ -116,7 +116,7 @@ func TestAStoppedCommitEndsItsHookAndLeavesNoIndexLock(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			deadline := time.Now().Add(commitStopGrace)
+			deadline := time.Now().Add(CommitStopGrace)
 			for hook.Signal(syscall.Signal(0)) == nil {
 				if time.Now().After(deadline) {
 					t.Fatal("the hook outlived the stopped commit")

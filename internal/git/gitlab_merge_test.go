@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -394,7 +395,7 @@ func TestGitLabReadPREvents(t *testing.T) {
 		t.Fatalf("merged detail = %+v", d)
 	}
 	if n := len(calls.all()); n != 9 {
-		t.Fatalf("requests = %q, want the MR, one discussions page, the state events, the approvals, the project, the viewer, PRManageSchema, PRManage and MRNoteReactions", gitlabPaths(calls))
+		t.Fatalf("requests = %q, want the MR, one discussions page, the state events, the approvals, the project, the viewer, the release, PRManageChecks and MRNoteReactions", gitlabPaths(calls))
 	}
 
 	// A closed merge request's close comes from closed_at, its id from the
@@ -646,6 +647,8 @@ func TestGitLabCachesFollowTheLogin(t *testing.T) {
 			_, _ = io.WriteString(w, `{"approvals_required":0}`)
 		case gitlabTestProject:
 			_, _ = io.WriteString(w, gitlabTestProjectSettings)
+		case "metadata":
+			_, _ = io.WriteString(w, `{"version":"19.3.0-ee"}`)
 		default:
 			t.Errorf("unexpected %s %s", call.Method, call.Path)
 			http.Error(w, "unexpected", http.StatusNotFound)
@@ -699,6 +702,13 @@ func TestGitLabCachePublishesUnderTheAnsweringLogin(t *testing.T) {
 	accepted.Store("token-alice")
 	mr := gitlabTestProject + "/merge_requests/7"
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.EscapedPath() == "/api/v4/metadata" {
+			// Answered for either token, so the swap below lands on the
+			// settings read.
+			_, _ = io.WriteString(w, `{"version":"19.6.0-ee"}`)
+			return
+		}
 		token := r.Header.Get("Private-Token")
 		if token != accepted.Load().(string) {
 			http.Error(w, `{"message":"401 Unauthorized"}`, http.StatusUnauthorized)
@@ -817,9 +827,9 @@ func TestGitLabApproveAndUnapprove(t *testing.T) {
 		t.Fatal("an approval without a head sha was sent")
 	}
 	sent := calls.all()
-	if len(sent) != 2 || sent[0].Method != http.MethodPost || sent[0].Path != mr+"/approve" || string(sent[0].Body) != `{"sha":"abc1234"}` ||
-		sent[1].Path != mr+"/unapprove" || len(sent[1].Body) != 0 {
-		t.Fatalf("requests = %q, approve body %s", gitlabPaths(calls), sent[0].Body)
+	if len(sent) != 3 || sent[0].Path != "metadata" || sent[1].Method != http.MethodPost || sent[1].Path != mr+"/approve" || string(sent[1].Body) != `{"sha":"abc1234"}` ||
+		sent[2].Path != mr+"/unapprove" || len(sent[2].Body) != 0 {
+		t.Fatalf("requests = %q, approve body %s", gitlabPaths(calls), sent[1].Body)
 	}
 }
 
@@ -883,8 +893,8 @@ func TestGitLabMergeRefusesAMethodTheProjectDoesNotAllow(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "does not allow the merge merge method") {
 		t.Fatalf("MergePR = %v", err)
 	}
-	if paths := gitlabPaths(calls); len(paths) != 1 {
-		t.Fatalf("requests = %q, want the project read alone", paths)
+	if paths := gitlabPaths(calls); !slices.Equal(paths, []string{"GET metadata", "GET " + gitlabTestProject}) {
+		t.Fatalf("requests = %q, want the release and project reads alone", paths)
 	}
 	// A project answer with no merge settings allows merge alone.
 	core2, _ := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
@@ -1026,6 +1036,7 @@ func TestGitLabCancelAutoMerge(t *testing.T) {
 		t.Fatalf("nothing armed = %v", err)
 	}
 	want := []string{
+		"GET metadata",
 		"POST " + mr + "/cancel_auto_merge", "POST " + mr + "/cancel_merge_when_pipeline_succeeds",
 		"POST " + mr + "/cancel_auto_merge", "POST " + mr + "/cancel_merge_when_pipeline_succeeds",
 		"POST " + mr + "/cancel_merge_when_pipeline_succeeds",
@@ -1041,7 +1052,7 @@ func TestGitLabCancelAutoMerge(t *testing.T) {
 		}
 		return forgeAPIAnswer{}, false
 	})
-	if err := core2.CancelPRAutoMerge(t.Context(), ref); err != nil || len(calls2.all()) != 1 {
+	if err := core2.CancelPRAutoMerge(t.Context(), ref); err != nil || !slices.Equal(gitlabPaths(calls2), []string{"GET metadata", "POST " + mr + "/cancel_auto_merge"}) {
 		t.Fatalf("cancel = %v, requests %q", err, gitlabPaths(calls2))
 	}
 }
@@ -1072,10 +1083,10 @@ func TestGitLabUpdateBranchAndMarkReady(t *testing.T) {
 		t.Fatal(err)
 	}
 	sent := calls.all()
-	if got := gitlabPaths(calls); strings.Join(got, "\n") != "PUT "+mr+"/rebase\nGRAPHQL PRSetDraft" {
+	if got := gitlabPaths(calls); strings.Join(got, "\n") != "GET metadata\nPUT "+mr+"/rebase\nGRAPHQL PRSetDraft" {
 		t.Fatalf("requests = %q", got)
 	}
-	if v := sent[1].Vars; v["projectPath"] != "grp/sub/app" || v["iid"] != "7" || v["draft"] != false {
+	if v := sent[2].Vars; v["projectPath"] != "grp/sub/app" || v["iid"] != "7" || v["draft"] != false {
 		t.Fatalf("set draft variables = %v", v)
 	}
 	answer.Store(`{"data":{"mergeRequestSetDraft":{"errors":[],"mergeRequest":{"draft":true}}}}`)

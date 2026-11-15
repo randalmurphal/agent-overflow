@@ -42,10 +42,11 @@ const gitlabCIJobsMaxPages = 5
 
 // gitlabPipelineJobsQuery reads one page of a pipeline's rows beside its
 // stages in pipeline order. Every field it selects exists from GitLab
-// 16.0 except the cancel permissions (JobPermissions.cancelBuild and
-// PipelinePermissions.cancelPipeline, GitLab 16.6, beside its
-// restrict_pipeline_cancellation_role setting). A server without them
-// fails the whole document, so a host that answers so is read with
+// 18.0, the supported floor (gitlabSupportedFloor). A server older than
+// 16.6 lacks the cancel permissions (JobPermissions.cancelBuild and
+// PipelinePermissions.cancelPipeline, beside the
+// restrict_pipeline_cancellation_role setting) and fails the whole
+// document, so a host that answers so is read with
 // gitlabPipelineJobsQueryNoCancel, where update decides cancel as it did
 // there (gitlabNoCIJobCancelPermission).
 var gitlabPipelineJobsQuery = gitlabPipelineJobsDocument(" cancelPipeline", " cancelBuild")
@@ -255,16 +256,7 @@ func gitlabCancelPermitted(cancel *bool, update bool) bool {
 // gitlabNoCIJobCancelPermission reports whether err is a GitLab before
 // 16.6 refusing the cancel permission fields its schema lacks.
 func gitlabNoCIJobCancelPermission(err error) bool {
-	gqlErr, ok := errors.AsType[*forgeapi.GraphQLError](err)
-	if !ok {
-		return false
-	}
-	for _, problem := range gqlErr.Problems {
-		if strings.Contains(problem.Message, "Field 'cancelBuild' doesn't exist") || strings.Contains(problem.Message, "Field 'cancelPipeline' doesn't exist") {
-			return true
-		}
-	}
-	return false
+	return gitlabSchemaLacks(err, "cancelBuild") || gitlabSchemaLacks(err, "cancelPipeline")
 }
 
 // gitlabJobActions applies GitLab's own answer to a build: Retry for a

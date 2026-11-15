@@ -34,24 +34,25 @@ const (
 )
 
 // Run copies the configured files into worktreeRoot and then executes the
-// configured commands there, in order, under one shared timeout. It blocks
-// until the recipe finishes; the caller owns what a failure means (workflow
-// provisioning rolls the worktree back and parks).
-func Run(ctx context.Context, projectRoot, worktreeRoot string, config Config) error {
-	return RunObserved(ctx, projectRoot, worktreeRoot, config, nil)
+// configured commands there, in order, under one shared timeout, each watched
+// by reaper while it runs. It blocks until the recipe finishes; the caller
+// owns what a failure means (workflow provisioning rolls the worktree back
+// and parks).
+func Run(ctx context.Context, reaper procutil.Reaper, projectRoot, worktreeRoot string, config Config) error {
+	return RunObserved(ctx, reaper, projectRoot, worktreeRoot, config, nil)
 }
 
 // RunObserved is Run with progress reported to observer as it happens. A nil
 // observer makes it Run exactly — the observer is the ONLY difference between
 // the two entry points, so a streaming caller and the workflow's blocking
 // caller cannot drift apart in ordering, bounding, or error text.
-func RunObserved(ctx context.Context, projectRoot, worktreeRoot string, config Config, observer Observer) error {
+func RunObserved(ctx context.Context, reaper procutil.Reaper, projectRoot, worktreeRoot string, config Config, observer Observer) error {
 	if observer == nil {
 		observer = noopObserver{}
 	}
 	steps := ResolveSteps(config)
 	observer.RunStarted(steps)
-	err := runSteps(ctx, projectRoot, worktreeRoot, config, steps, observer)
+	err := runSteps(ctx, reaper, projectRoot, worktreeRoot, config, steps, observer)
 	observer.RunFinished(err)
 	return err
 }
@@ -66,6 +67,7 @@ func RunObserved(ctx context.Context, projectRoot, worktreeRoot string, config C
 // unparseable timeout is refused even by a recipe that runs no commands.
 func runSteps(
 	ctx context.Context,
+	reaper procutil.Reaper,
 	projectRoot, worktreeRoot string,
 	config Config,
 	steps []Step,
@@ -93,7 +95,7 @@ func runSteps(
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	for _, step := range commandSteps {
-		if err := runStepCommand(runCtx, worktreeRoot, commandEnv, timeout, step, observer); err != nil {
+		if err := runStepCommand(runCtx, reaper, worktreeRoot, commandEnv, timeout, step, observer); err != nil {
 			return err
 		}
 	}
@@ -120,6 +122,7 @@ func partitionSteps(steps []Step) (*Step, []Step) {
 // to the observer and returning the caller-facing failure.
 func runStepCommand(
 	runCtx context.Context,
+	reaper procutil.Reaper,
 	worktreeRoot string,
 	commandEnv []string,
 	timeout time.Duration,
@@ -132,7 +135,7 @@ func runStepCommand(
 	// what the failure message quotes, and that must not depend on a
 	// subscriber existing.
 	tail := procutil.NewTailBuffer(OutputTailBytes)
-	err := runCommand(runCtx, worktreeRoot, commandEnv, step.Argv,
+	err := runCommand(runCtx, reaper, worktreeRoot, commandEnv, step.Argv,
 		io.MultiWriter(tail, stepWriter{observer: observer, index: step.Index}))
 	if err == nil {
 		observer.StepFinished(step.Index, nil)
@@ -153,15 +156,16 @@ func runStepCommand(
 // decides how a failure reads, because only the caller knows whether the run
 // context expired.
 //
-// A process the command left running in its group is kept: a recipe may start
-// a service on purpose. One that still holds the command's output after the
+// The command's group ends with this process while the command runs. A process
+// the command left running in its group is kept, and outlives this process: a
+// recipe may start a service on purpose. One that still holds the command's output after the
 // drain grace fails an otherwise successful command. A command stopped by ctx
 // fails with ctx's error even when it answered the signal with a clean exit.
-func runCommand(ctx context.Context, worktreeRoot string, commandEnv, argv []string, output io.Writer) error {
+func runCommand(ctx context.Context, reaper procutil.Reaper, worktreeRoot string, commandEnv, argv []string, output io.Writer) error {
 	if len(argv) == 0 || strings.TrimSpace(argv[0]) == "" {
 		return fmt.Errorf("worktree setup command has no executable")
 	}
-	outcome, err := procutil.RunGroup(ctx, procutil.GroupCommand{
+	outcome, err := procutil.RunGroup(ctx, reaper, procutil.GroupCommand{
 		Dir: worktreeRoot, Env: commandEnv, Argv: argv, Output: output, KeepLeftovers: true,
 	})
 	switch {

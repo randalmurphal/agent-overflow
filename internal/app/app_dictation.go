@@ -30,10 +30,6 @@ type DictationSources struct {
 	// ChatGPTSignIn is true when Codex is signed in with ChatGPT here,
 	// whether or not dictation through it is on.
 	ChatGPTSignIn bool `json:"chatGPTSignIn"`
-	// TranscribeWithinMs is the most FinishDictation takes here: past it the
-	// transcription ends with an error. A client waits for the answer at
-	// least this long.
-	TranscribeWithinMs int64 `json:"transcribeWithinMs"`
 }
 
 // ErrDictationOff refuses a recording while no dictation source is on.
@@ -50,10 +46,9 @@ func (a *App) DictationSources() (DictationSources, error) {
 		return DictationSources{}, fmt.Errorf("read the Codex sign-in: %w", err)
 	}
 	return DictationSources{
-		Subscription:       signedIn && a.dictationSubscriptionOn(),
-		Live:               a.liveDictationAvailable(),
-		ChatGPTSignIn:      signedIn,
-		TranscribeWithinMs: a.dictationRecordings().Budget().Milliseconds(),
+		Subscription:  signedIn && a.dictationSubscriptionOn(),
+		Live:          a.liveDictationAvailable(),
+		ChatGPTSignIn: signedIn,
 	}, nil
 }
 
@@ -123,10 +118,11 @@ func (a *App) MintDictationChunkTicket(ctx context.Context, recordingID string, 
 // and returns its transcript. Until the transcription ends the recording
 // still belongs to the caller's connection: CancelDictation or the
 // connection's end stops it, and it counts against the recording caps. It
-// returns within the recordings' budget (DictationSources reports it).
+// returns within dictation.TranscribeBudget.
 //
 //ao:scope threads:operate
 //ao:route selected
+//ao:budget 3m
 func (a *App) FinishDictation(ctx context.Context, recordingID string, pieces int) (string, error) {
 	if err := ownsConnectionResource(ctx, dictationCleanupKey(recordingID), dictation.ErrUnknownRecording); err != nil {
 		return "", err

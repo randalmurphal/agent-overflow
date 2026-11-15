@@ -438,7 +438,7 @@ describe('read-aloud in OpenAI voices', () => {
       for (const [status, body] of [
         [409, 'the key file is readable by other users; run chmod 600 on it'],
         [502, 'OpenAI did not read the text as written'],
-        [404, 'this sentence was already read aloud or has expired'],
+        [404, 'this section was already read aloud or has expired'],
       ] as const) {
         shown.mockClear();
         const { reads } = wire(() => '/attachments/speech/s1?ticket=t', () => new Response(body, { status }));

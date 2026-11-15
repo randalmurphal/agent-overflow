@@ -91,6 +91,9 @@ func New(config Config) (*Service, error) {
 	if config.Finish == nil {
 		return nil, errors.New("shellrun: finish hook is required")
 	}
+	if config.Reaper == nil {
+		return nil, errors.New("shellrun: reaper is required")
+	}
 	if config.Emit == nil {
 		config.Emit = func(Event) {}
 	}
@@ -381,24 +384,13 @@ func (s *Service) execute(ctx context.Context, current *run) {
 		settle(StateFailed, "Could not give the command a terminal: "+errors.Join(err, closeErr).Error(), -1)
 		return
 	}
-	// The command ends with this process, as a provider does: Linux signals
-	// its leader, and elsewhere the host's orphan reaper watches its group.
-	pgid := 0
-	outcome, runErr := s.config.Run(ctx, procutil.GroupCommand{
+	// The command's group ends with this process: the host's orphan reaper
+	// watches it while it runs.
+	outcome, runErr := s.config.Run(ctx, s.config.Reaper, procutil.GroupCommand{
 		Dir: request.Dir, Env: request.Env,
 		Argv: []string{request.Shell, "-c", request.Command}, Output: capture,
-		Terminal: terminal.device, EndWithParent: true,
-		Started: func(pid int) {
-			pgid = pid
-			if s.config.Watch != nil {
-				s.config.Watch(pid, request.RunID)
-			}
-		},
+		Terminal: terminal.device,
 	})
-	// A group the kill could not end still runs, and stays watched.
-	if pgid != 0 && s.config.Release != nil && !errors.Is(runErr, procutil.ErrGroupSurvived) {
-		s.config.Release(pgid)
-	}
 	terminal.close(request.RunID)
 	close(current.exited)
 	if outcome.Leftovers {

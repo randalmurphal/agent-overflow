@@ -14,6 +14,8 @@ import (
 )
 
 type failingRuntime struct {
+	// failOn is the start that fails, counted from 1; zero never fails.
+	failOn  int
 	starts  []string
 	stops   []string
 	cleared []string
@@ -21,7 +23,7 @@ type failingRuntime struct {
 
 func (r *failingRuntime) StartParticipant(_ context.Context, threadID, _ string) error {
 	r.starts = append(r.starts, threadID)
-	if len(r.starts) == 2 {
+	if len(r.starts) == r.failOn {
 		return errors.New("participant start failed")
 	}
 	return nil
@@ -38,7 +40,10 @@ func (r *failingRuntime) ClearParticipantPrompt(threadID string) {
 
 func (*failingRuntime) SendParticipantMessage(string, string) error { return nil }
 
-func TestStartFailureRollsBackEveryOwnedResource(t *testing.T) {
+// startFixture is a store holding a chat parent thread and a global
+// two-participant definition, served by a Service over runtime.
+func startFixture(t *testing.T, runtime ParticipantRuntime) (*Service, *store.Store, store.Thread, store.DiscussionDefinition) {
+	t.Helper()
 	database, err := store.New(":memory:")
 	if err != nil {
 		t.Fatalf("store.New: %v", err)
@@ -64,13 +69,70 @@ func TestStartFailureRollsBackEveryOwnedResource(t *testing.T) {
 			{Role: "reviewer", System: "Review it"},
 		},
 	}
-	runtime := &failingRuntime{}
 	service := New(Config{Store: func() *store.Store { return database }, Runtime: runtime})
 	if err := service.Create(definition); err != nil {
 		t.Fatalf("Create definition: %v", err)
 	}
+	return service, database, parent, definition
+}
 
-	err = service.Start(parent.ID, definition.Name)
+// TestStartAndPostAskAboutEveryParticipantFirst: a refused check leaves no
+// participant, session, channel or message behind, and a missing check is
+// refused rather than read as consent.
+func TestStartAndPostAskAboutEveryParticipantFirst(t *testing.T) {
+	runtime := &failingRuntime{}
+	service, database, parent, definition := startFixture(t, runtime)
+	refused := errors.New("refused")
+	var asked []string
+	refuse := func(threadID, mode string) error {
+		asked = append(asked, mode)
+		return refused
+	}
+
+	if err := service.Start(parent.ID, definition.Name, refuse); !errors.Is(err, refused) {
+		t.Fatalf("Start() error = %v, want the check's refusal", err)
+	}
+	if len(asked) != 1 || asked[0] != "full-access" {
+		t.Fatalf("the check was asked about %v, want the first participant's full-access mode", asked)
+	}
+	if err := service.Start(parent.ID, definition.Name, nil); err == nil {
+		t.Fatal("Start() with no check was admitted")
+	}
+	if children, err := database.ListChildThreads(parent.ID); err != nil || len(children) != 0 || len(runtime.starts) != 0 {
+		t.Fatalf("a refused start left children %v (%v) and started %v", children, err, runtime.starts)
+	}
+
+	asked = nil
+	if err := service.Start(parent.ID, definition.Name, func(_, mode string) error {
+		asked = append(asked, mode)
+		return nil
+	}); err != nil {
+		t.Fatalf("Start(): %v", err)
+	}
+	if len(asked) != 2 {
+		t.Fatalf("the check was asked about %d participants, want 2", len(asked))
+	}
+	stored, err := database.GetThread(parent.ID)
+	if err != nil {
+		t.Fatalf("GetThread: %v", err)
+	}
+	asked = nil
+	if _, err := service.Post(stored.DiscussionID, "go", refuse); !errors.Is(err, refused) {
+		t.Fatalf("Post() error = %v, want the check's refusal", err)
+	}
+	if _, err := service.Post(stored.DiscussionID, "go", nil); err == nil {
+		t.Fatal("Post() with no check was admitted")
+	}
+	if messages, err := service.GetMessages(stored.DiscussionID, -1, 0); err != nil || len(messages) != 0 {
+		t.Fatalf("a refused post left messages %v (%v)", messages, err)
+	}
+}
+
+func TestStartFailureRollsBackEveryOwnedResource(t *testing.T) {
+	runtime := &failingRuntime{failOn: 2}
+	service, database, parent, definition := startFixture(t, runtime)
+
+	err := service.Start(parent.ID, definition.Name, func(string, string) error { return nil })
 	if err == nil || !strings.Contains(err.Error(), "participant start failed") {
 		t.Fatalf("Start() error = %v, want participant failure", err)
 	}

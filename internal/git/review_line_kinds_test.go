@@ -37,12 +37,14 @@ func TestGitHubSubmitReviewPostsEachKindOfLine(t *testing.T) {
 		switch {
 		case call.Op == "PRTick":
 			return githubData(`{"viewer":{"login":"v"},"repository":{"pullRequest":{"number":5,"headRefOid":"abc123","author":{"login":"a"},"latestReviews":{"nodes":[]},"commits":{"nodes":[]}}}}`)
+		case call.Op == "ViewerReviews":
+			return githubData(githubNoViewerReviews)
 		case call.Method == http.MethodPost && call.Path == "repos/o/r/pulls/5/reviews":
 			return forgeAPIAnswer{Body: `{"id":1}`}
 		}
 		return forgeUnexpected(t, call)
 	})
-	review := SubmitReviewRequest{Verdict: ReviewVerdictComment, Body: "mixed", Comments: reviewLineKinds()}
+	review := SubmitReviewRequest{Verdict: ReviewVerdictComment, HeadSHA: githubTestPinnedHead, Body: "mixed", Comments: reviewLineKinds()}
 	if result, err := core.SubmitReview(t.Context(), githubTestRef(5), review); err != nil || !result.PostedReview {
 		t.Fatalf("SubmitReview = %+v, %v", result, err)
 	}
@@ -85,6 +87,8 @@ func TestGitLabSubmitReviewPostsEachKindOfLine(t *testing.T) {
 		switch call.Method + " " + call.Path {
 		case "GET " + mr:
 			return forgeAPIAnswer{Body: gitlabTestMR(7, 0)}
+		case "GET " + mr + "/draft_notes?per_page=100":
+			return forgeAPIAnswer{Body: `[]`}
 		case "GET " + mr + "/diffs?per_page=100":
 			return gitlabTestDiffsAnswer()
 		case "POST " + mr + "/draft_notes":
@@ -94,11 +98,11 @@ func TestGitLabSubmitReviewPostsEachKindOfLine(t *testing.T) {
 		}
 		return forgeUnexpected(t, call)
 	})
-	review := SubmitReviewRequest{Verdict: ReviewVerdictComment, Comments: reviewLineKinds()}
+	review := SubmitReviewRequest{Verdict: ReviewVerdictComment, HeadSHA: gitlabTestHead, Comments: reviewLineKinds()}
 	if result, err := core.SubmitReview(t.Context(), gitlabTestRef(7), review); err != nil || !result.PostedReview {
 		t.Fatalf("SubmitReview = %+v, %v", result, err)
 	}
-	refs := `"base_sha":"base","start_sha":"start","head_sha":"head2","old_path":"a.go","new_path":"a.go","position_type":"text"`
+	refs := `"base_sha":"base","start_sha":"start","head_sha":"ab12cd34","old_path":"a.go","new_path":"a.go","position_type":"text"`
 	want := []string{
 		`{"note":"added","position":{` + refs + `,"new_line":5}}`,
 		`{"note":"deleted","position":{` + refs + `,"old_line":9}}`,

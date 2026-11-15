@@ -104,7 +104,7 @@ func TestSetPRThreadResolvedValidatesItsArguments(t *testing.T) {
 	}
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
-			if err := app.SetPRThreadResolved(t.Context(), tt.pr, tt.threadID, true); err == nil {
+			if _, err := app.SetPRThreadResolved(t.Context(), tt.pr, tt.threadID, true); err == nil {
 				t.Fatal("SetPRThreadResolved returned nil")
 			}
 		})
@@ -115,7 +115,7 @@ func TestSetPRThreadResolvedRefusedDuringShutdown(t *testing.T) {
 	t.Parallel()
 	app := &App{}
 	app.shuttingDown.Store(true)
-	if err := app.SetPRThreadResolved(t.Context(), testPR, "PRRT_1", true); !errors.Is(err, ErrShuttingDown) {
+	if _, err := app.SetPRThreadResolved(t.Context(), testPR, "PRRT_1", true); !errors.Is(err, ErrShuttingDown) {
 		t.Fatalf("error = %v, want ErrShuttingDown", err)
 	}
 }

@@ -215,7 +215,7 @@ func (a *Service) startWorkspaceMCPAuth(
 		flow, result, err := claude.StartMCPAuth(ctx, claude.MCPAuthConfig{
 			Config:         a.claudeWorkspaceAuthConfig(workspacePath),
 			ReadCredential: a.claudeMCPAuthCredentialReader(),
-			RequestTimeout: mcpAuthRoundTripTimeout,
+			RequestTimeout: AuthRoundTripTimeout,
 		}, serverName)
 		if err != nil {
 			return nil, err
@@ -237,7 +237,7 @@ func (a *Service) startWorkspaceMCPAuth(
 			Binary:         a.providerBinaryPath(providerName),
 			WorkDir:        workspacePath,
 			Env:            a.sessionProcessEnv(providerName),
-			RequestTimeout: mcpAuthRoundTripTimeout,
+			RequestTimeout: AuthRoundTripTimeout,
 		}, serverName)
 		if err != nil {
 			return nil, err

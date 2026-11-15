@@ -43,6 +43,10 @@ func overlappingDescriptionEdits(t *testing.T, firstPR, secondPR gitops.PRRefere
 	puts, readsDuringPut := 0, 0
 	putting := false
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/api/v4/metadata") {
+			_, _ = w.Write([]byte(`{"version":"19.6.0-ee"}`))
+			return
+		}
 		if !strings.HasSuffix(r.URL.Path, "/merge_requests/12") {
 			http.NotFound(w, r)
 			return

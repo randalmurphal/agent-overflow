@@ -42,7 +42,7 @@
       if (!(await call(() => IsWSL()))) return;
       const answer = await call(() => GetWebviewGPUVsyncDisabled());
       launchedWith = answer.launched;
-      saved = answer.disabled;
+      saved = answer.value;
       supported = true;
     } catch (err) {
       addErrorToast(`Failed to read the GPU vsync preference: ${errString(err)}`, err);
@@ -56,7 +56,7 @@
       // Reconciled from the write's answer, never assumed.
       const answer = await call(() => SetWebviewGPUVsyncDisabled(value));
       launchedWith = answer.launched;
-      saved = answer.disabled;
+      saved = answer.value;
     } catch (err) {
       addErrorToast(`Failed to save the GPU vsync preference: ${errString(err)}`, err);
     } finally {

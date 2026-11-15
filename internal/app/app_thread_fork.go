@@ -42,6 +42,7 @@ import (
 //
 //ao:scope threads:operate
 //ao:route thread
+//ao:budget 2m
 func (a *App) ForkThread(ctx context.Context, sourceThreadID string, atTurnIndex *int) (store.Thread, error) {
 	return a.forkThreadAt(ctx, sourceThreadID, atTurnIndex, forkOptions{})
 }
@@ -313,6 +314,7 @@ func (a *App) forkThreadAt(ctx context.Context, sourceThreadID string, atTurnInd
 //
 //ao:scope threads:operate
 //ao:route thread
+//ao:budget 2m
 func (a *App) ForkThreadFromMessage(ctx context.Context, sourceThreadID string, userItemID string) (store.Thread, error) {
 	timing := startForkTiming(sourceThreadID, "message")
 	defer timing.finish()
