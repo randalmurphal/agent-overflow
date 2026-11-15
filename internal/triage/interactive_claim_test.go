@@ -75,9 +75,9 @@ func TestAClaimWithNoRequestIdIsNotArbitrated(t *testing.T) {
 // refused as already handled.
 func TestAReleasedClaimCanBeRetried(t *testing.T) {
 	r, _, _ := newTestRouter(t)
-	r.ClaimPrompt("thr-1", "req-1", 0)
+	claim, _ := r.ClaimPrompt("thr-1", "req-1", 0)
 
-	r.ReleasePrompt(PromptClaim{Ref: PromptRef{ThreadID: "thr-1", RequestID: "req-1"}})
+	r.ReleasePrompt(claim)
 
 	if !claimed(r.ClaimPrompt("thr-1", "req-1", 0)) {
 		t.Fatal("a retry after a failed write was refused")

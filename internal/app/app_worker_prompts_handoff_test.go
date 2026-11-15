@@ -141,10 +141,12 @@ func newWorkerPromptFixture(t *testing.T, id string, standing bool) workerPrompt
 	}); err != nil {
 		t.Fatalf("approval request: %v", err)
 	}
-	if pending := a.triage.PendingInteractiveRequests(worker.ID).Approvals; len(pending) != 1 || pending[0].RoutedTo == nil || pending[0].RoutedTo.ThreadID != assistant.ID {
+	pending := a.triage.PendingInteractiveRequests(worker.ID).Approvals
+	if len(pending) != 1 || pending[0].RoutedTo == nil || pending[0].RoutedTo.ThreadID != assistant.ID {
 		t.Fatalf("the worker's prompt = %+v, want it open and routed to its spawner", pending)
 	}
-	return workerPromptFixture{app: a, assistant: assistant, worker: worker, request: request}
+	// The prompt as triage holds it, stamped with its occurrence.
+	return workerPromptFixture{app: a, assistant: assistant, worker: worker, request: pending[0]}
 }
 
 func (f workerPromptFixture) drain(t *testing.T) {
@@ -231,8 +233,19 @@ func TestAWorkerPromptStampedBeforeAHandoffBelongsToTheSuccessor(t *testing.T) {
 	f.app.handOffCommittedForTest = func(old, successor string) {
 		request := f.request
 		f.app.deliverWorkerPrompt(provider.PromptRoute{ThreadID: old}, workerPrompt{
-			workerID: f.worker.ID, requestID: request.RequestID, approval: &request,
+			workerID: f.worker.ID, requestID: request.RequestID, occurrence: request.Occurrence, approval: &request,
 		})
+		// The delivery took the prompt as still routed to the old thread
+		// and registered it there.
+		f.app.workerPrompts.mu.Lock()
+		var registered workerPrompt
+		if current := f.app.workerPrompts.byToken[f.app.workerPrompts.current[workerPromptKey{workerID: f.worker.ID, requestID: request.RequestID}]]; current != nil {
+			registered = *current
+		}
+		f.app.workerPrompts.mu.Unlock()
+		if registered.agentID != old || registered.occurrence != request.Occurrence {
+			t.Errorf("the delivery registered %+v, want the prompt registered to the old thread", registered)
+		}
 		// Nothing is queued under the old thread's name: the successor
 		// could not answer it.
 		if tokens := workerPromptTokens(t, f.app, successor); len(tokens) != 0 {
