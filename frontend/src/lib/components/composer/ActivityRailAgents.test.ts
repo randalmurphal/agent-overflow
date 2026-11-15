@@ -117,6 +117,41 @@ describe('the Agents segment', () => {
     expect(view.getByTestId('activity-rail-agents-running-label').textContent?.trim()).toBe('1 running');
   });
 
+  for (const compact of [false, true]) {
+    it(`${compact ? 'under compact, ' : ''}shows a row whose worker keeps working after its request settled as open: its state, activity, blocked line and Stop, counted once`, async () => {
+      setCompactLayoutForTest(compact);
+      const { view, toggle } = await openTray((caller) => [
+        row('live', {
+          callerThreadId: caller, state: 'replied', settledAt: Date.now() - 60_000, worker: 'running', openThreadId: 't-live',
+          activity: 'Watching the deploy', answer: 'The deploy started.', answerKind: 'reply',
+        }),
+        row('send', { callerThreadId: caller, kind: 'send', threadId: 't-live' }),
+        row('waits', {
+          callerThreadId: caller, state: 'finished', settledAt: Date.now() - 60_000, worker: 'blocked',
+          blockedOn: 'approval', blockedDetail: 'Bash: deploy', blockedRoutedTo: 'Lead',
+        }),
+      ]);
+      expect(view.getByTestId('activity-rail-agents-count').textContent?.trim()).toBe('2');
+      await fireEvent.click(toggle);
+      const [live, , waits] = await view.findAllByTestId('agent-tray-row');
+      expect(live.dataset.settled).toBeUndefined();
+      expect(within(live).getByTestId('agent-tray-row-state').textContent).toBe('running');
+      expect(within(live).getByTestId('agent-tray-row-activity').textContent).toBe('Watching the deploy');
+      expect(within(live).getByTestId('agent-tray-row-stop')).toBeTruthy();
+      expect(within(waits).getByTestId('agent-tray-row-state').textContent).toBe('blocked');
+      expect(within(waits).getByTestId('agent-tray-row-blocked').textContent).toBe('Needs approval for Bash: deploy, waiting on Lead');
+      expect(within(waits).getByTestId('agent-tray-row-stop')).toBeTruthy();
+      expect(view.getByTestId('activity-rail-agents-running-label').textContent?.trim()).toBe('1 running');
+      // Its reply stays on the row.
+      await fireEvent.click(within(live).getByTestId('agent-tray-row-details'));
+      expect(within(live).getByTestId('agent-tray-row-digest').textContent).toContain('The deploy started.');
+      // Open, its click opens the worker rather than the answer.
+      await fireEvent.click(within(live).getByTestId('agent-tray-row-open'));
+      expect(opened).toHaveBeenCalledWith('t-live');
+      expect(navigate).not.toHaveBeenCalled();
+    });
+  }
+
   it('opens a row\'s digest from its details button, with the controls wired for keyboard and screen readers', async () => {
     const { view, toggle } = await openTray((caller) => [row('child', { callerThreadId: caller, activity: 'Reading the logs', lastMessage: 'On it.', lastMessageRole: 'assistant' })]);
     await fireEvent.click(toggle);

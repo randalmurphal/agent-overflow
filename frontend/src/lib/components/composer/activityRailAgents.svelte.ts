@@ -53,9 +53,12 @@ import { getTransportStatusFor, onBackendStatusChange } from '../../stores/trans
 import { threadBackend } from '../../transport/entityIndex';
 import { createRefreshScheduler, type RefreshToken } from '../../utils/refreshScheduler';
 import {
+  agentRequestSettled,
   agentRowCallers,
+  agentRowShownState,
+  agentWorkerCount,
   createAgentRowMemo,
-  isSettledAgentRow,
+  isOpenAgentRow,
   visibleAgentRows,
 } from '../../utils/agentTray';
 import { AGENT_ROW_SETTLED_LINGER_MS } from './activityRailBackground.svelte';
@@ -110,16 +113,17 @@ export interface AgentController {
   readonly incoming: IncomingAgentMessage[];
   /** Whether the backend left rows out at its bound. */
   readonly hidden: boolean;
-  /** Open rows and incoming messages: the segment's count. */
+  /** The workers open rows go to, each once, and incoming messages: the
+   *  segment's count. */
   readonly count: number;
   /** Rows, incoming messages and the Past row shown at all: whether the
    *  segment renders. */
   readonly shown: number;
   /** The thread's settled rows, under Past. */
   readonly past: PastAgentRows;
-  /** Rows running: the toggle's pulse and the body's `N running`. */
+  /** Workers running, each once: the toggle's pulse and the body's `N running`. */
   readonly runningCount: number;
-  /** A settled row is shown and waits on the clock to leave. */
+  /** A row that is not open is shown and waits on the clock to leave. */
   readonly hasPendingSettled: boolean;
   readonly threadId: string | null;
   /** Whether a list read answered for the thread, and whether the last failed. */
@@ -128,7 +132,7 @@ export interface AgentController {
   readonly error: string;
   /** Read the list again after a failure. */
   retry(): void;
-  /** Take a settled row out now, as its click does. */
+  /** Take a row that is not open out now, as its click does. */
   dismiss(token: string): void;
   /** A row's thread got a new sidebar placement (Show in Sidebar). */
   placed(threadId: string, placement: string): void;
@@ -146,10 +150,11 @@ export function createAgentController(
   // failed, until one succeeds.
   let listLoaded = $state(false);
   let listError = $state('');
-  // Settled rows frames named that a read of the open list answers for:
-  // Past takes each from that read, or reads it when the read does not.
+  // Rows whose requests settled that frames named, which a read of the
+  // open list answers for: Past takes each from that read, or reads it when
+  // the read does not.
   const pastNamed = new Set<string>();
-  // When this pane first saw each settled row, and the settled rows a click
+  // When this pane first saw each row that is not open, and those a click
   // took out. Plain maps rewritten whole, so the rows derivation reruns.
   let settledSeen: ReadonlyMap<string, number> = $state.raw(new Map());
   let dismissed: ReadonlySet<string> = $state.raw(new Set());
@@ -209,14 +214,14 @@ export function createAgentController(
     const now = Date.now();
     const seen = new Map<string, number>();
     for (const row of next) {
-      if (!isSettledAgentRow(row)) continue;
+      if (isOpenAgentRow(row)) continue;
       seen.set(row.token, settledSeen.get(row.token) ?? now);
     }
     const tokens = new Set(next.map((row) => row.token));
-    // A row of this thread's own that settled is Past's newest. One the
-    // list never held came with a frame that already said so.
-    const wasOpen = new Set(listed.filter((row) => !isSettledAgentRow(row)).map((row) => row.token));
-    const own = read.filter((row) => row.callerThreadId === forThreadId && isSettledAgentRow(row));
+    // A row of this thread's own that is no longer open is Past's newest.
+    // One the list never held came with a frame that already said so.
+    const wasOpen = new Set(listed.filter(isOpenAgentRow).map((row) => row.token));
+    const own = read.filter((row) => row.callerThreadId === forThreadId && !isOpenAgentRow(row));
     past.patch(own, at);
     const supplied = new Set(read.map((row) => row.token));
     if (own.some((row) => wasOpen.has(row.token)) || named.some((token) => !supplied.has(token))) past.due();
@@ -368,13 +373,13 @@ export function createAgentController(
     }
     return out;
   });
-  const count = $derived(rows.filter((row) => !isSettledAgentRow(row)).length + incoming.length);
+  const count = $derived(agentWorkerCount(rows) + incoming.length);
   // A failed read is shown, with its Retry, wherever it leaves the segment.
   const shown = $derived(
     rows.length + incoming.length + (listError ? 1 : 0) + (past.total > 0 || past.error ? 1 : 0),
   );
-  const runningCount = $derived(rows.filter((row) => row.state === 'running').length);
-  const hasPendingSettled = $derived(rows.some(isSettledAgentRow));
+  const runningCount = $derived(agentWorkerCount(rows, (row) => agentRowShownState(row) === 'running'));
+  const hasPendingSettled = $derived(rows.some((row) => !isOpenAgentRow(row)));
 
   return {
     get rows() { return rows; },
@@ -419,13 +424,13 @@ export function createAgentController(
           return;
         } else if (change.threadId === threadId) {
           // A request the list holds open changes Past when it settles,
-          // which the read below sees. One it holds settled is in Past too:
-          // the read below supplies it. Any other, or every request (a past
-          // row's late reply, one that settled out of the list), is Past's
-          // to read.
+          // which the read below sees. One it holds settled is in Past, or
+          // goes there when its worker rests: the read below supplies it, or
+          // leaves it out. Any other, or every request (a past row's late
+          // reply, one that settled out of the list), is Past's to read.
           const held = change.id ? listed.find((row) => row.token === change.id) : undefined;
           if (!held) past.due();
-          else if (isSettledAgentRow(held)) pastNamed.add(held.token);
+          else if (agentRequestSettled(held)) pastNamed.add(held.token);
         }
         if (change?.id && !listDue && patchable(change.id)) rowsDue.add(change.id);
         else listDue = true;

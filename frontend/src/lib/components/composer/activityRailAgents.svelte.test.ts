@@ -73,6 +73,31 @@ describe('agents controller', () => {
     expect(controller.hasPendingSettled).toBe(true);
   });
 
+  it('keeps a row whose worker still runs open past the linger, and counts its worker once', async () => {
+    const { controller, clock } = await mountAgents([
+      row('live', { state: 'replied', settledAt: 1, worker: 'running', threadId: 't-worker' }),
+      row('send', { kind: 'send', state: 'running', threadId: 't-worker' }),
+    ]);
+    clock.now = Date.now() + 2 * AGENT_ROW_SETTLED_LINGER_MS;
+    controller.dismiss('live');
+    expect(controller.rows.map((r) => r.token)).toEqual(['live', 'send']);
+    expect(controller.count).toBe(1);
+    expect(controller.runningCount).toBe(1);
+    expect(controller.hasPendingSettled).toBe(false);
+  });
+
+  it('reads Past again once a row it held open for its worker leaves the list', async () => {
+    const { pane, controller } = await mountAgents([row('live', { state: 'replied', settledAt: 1, worker: 'running' })]);
+    const past = setBindingMock('ListThreadPastAgentRows', async () => ({ rows: [row('live', { state: 'replied', settledAt: 1 })], total: 1 }));
+    setBindingMock('GetThreadAgentRows', async () => [{ token: 'live', listed: false }]);
+    setBindingMock('ListThreadAgentRows', async () => ({ rows: [], hidden: false }));
+    emitWailsEvent('thread:agent_rows_changed', { threadId: pane.threadId, id: 'live' });
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(controller.rows).toEqual([]);
+    expect(past).toHaveBeenCalled();
+    expect(controller.past.total).toBe(1);
+  });
+
   it('lingers a settled row from when it first saw it settled, and a click takes it out early', async () => {
     const { pane, controller, clock } = await mountAgents([
       row('done', { state: 'finished', settledAt: 1 }),

@@ -4,13 +4,53 @@
 
 import type { ThreadAgentRow } from '../stores/bindings';
 
-/** Request states that are settled: the row shows its outcome, then leaves. */
+/** Request states that are settled. */
 const SETTLED_STATES: ReadonlySet<string> = new Set([
   'replied', 'finished', 'errored', 'cancelled', 'interrupted', 'expired', 'refused',
 ]);
 
-export function isSettledAgentRow(row: Pick<ThreadAgentRow, 'state'>): boolean {
+/**
+ * Whether a row's request settled. Its row can still be open, while its
+ * worker is not at rest (isOpenAgentRow); Past lists it once it is not.
+ */
+export function agentRequestSettled(row: Pick<ThreadAgentRow, 'state'>): boolean {
   return SETTLED_STATES.has(row.state);
+}
+
+/**
+ * Whether a row is open: its request is open, or the thread it went to is
+ * not at rest (`worker`, docs/specs/standing-agents.md, "Owned workers").
+ * An open row is counted, shown, and offers Stop; a row that is not shows
+ * its outcome, then leaves for Past.
+ */
+export function isOpenAgentRow(row: Pick<ThreadAgentRow, 'state' | 'worker'>): boolean {
+  return !SETTLED_STATES.has(row.state) || Boolean(row.worker);
+}
+
+/**
+ * The state a row shows: its request's while that is open, and once it
+ * settled, its worker's while that is not at rest (running, blocked or
+ * queued, the words of a request's own states).
+ */
+export function agentRowShownState(row: Pick<ThreadAgentRow, 'state' | 'worker'>): string {
+  return SETTLED_STATES.has(row.state) && row.worker ? row.worker : row.state;
+}
+
+/**
+ * How many workers a pane's open rows go to, each once however many of its
+ * requests are open: a thread on its computer, or for a spawn not made yet,
+ * its request. `matches` narrows which rows count.
+ */
+export function agentWorkerCount(
+  rows: readonly ThreadAgentRow[],
+  matches: (row: ThreadAgentRow) => boolean = () => true,
+): number {
+  const workers = new Set<string>();
+  for (const row of rows) {
+    if (!isOpenAgentRow(row) || !matches(row)) continue;
+    workers.add(row.threadId ? `${row.computerId ?? ''}/${row.threadId}` : `request:${row.token}`);
+  }
+  return workers.size;
 }
 
 /**
@@ -20,9 +60,9 @@ export function isSettledAgentRow(row: Pick<ThreadAgentRow, 'state'>): boolean {
 export const AGENT_ROW_MAX_INDENT = 6;
 
 /**
- * The rows a pane shows, in the backend's tree order: every open row, a
- * settled row until `lingerMs` after the pane first saw it settled
- * (`settledSeen`) unless it was dismissed, and any settled row with a shown
+ * The rows a pane shows, in the backend's tree order: every open row
+ * (isOpenAgentRow), any other until `lingerMs` after the pane first saw it
+ * not open (`settledSeen`) unless it was dismissed, and any row with a shown
  * row nested under it, which is what that row nests under.
  */
 export function visibleAgentRows(
@@ -41,7 +81,7 @@ export function visibleAgentRows(
     const depth = Math.max(0, row.depth);
     const hasShownChild = shownBelow.slice(depth + 1).some(Boolean);
     shownBelow.length = Math.min(shownBelow.length, depth + 1);
-    let shown = !isSettledAgentRow(row) || hasShownChild;
+    let shown = isOpenAgentRow(row) || hasShownChild;
     if (!shown && !dismissed.has(row.token)) {
       const seen = settledSeen.get(row.token);
       shown = seen === undefined || now - seen < lingerMs;
@@ -95,11 +135,12 @@ export function sameAgentRow(a: ThreadAgentRow, b: ThreadAgentRow): boolean {
   return true;
 }
 
-/** The word a row's state reads as. */
-export function agentRowStateLabel(row: Pick<ThreadAgentRow, 'state' | 'lateReply'>): string {
-  switch (row.state) {
+/** The word a row's shown state (agentRowShownState) reads as. */
+export function agentRowStateLabel(row: Pick<ThreadAgentRow, 'state' | 'worker' | 'lateReply'>): string {
+  switch (agentRowShownState(row)) {
     case 'unconfirmed':
     case 'accepted':
+    case 'queued':
       return 'queued';
     case 'running':
       return 'running';

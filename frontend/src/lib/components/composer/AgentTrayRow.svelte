@@ -2,8 +2,10 @@
   // One row of the activity rail's Agents body (docs/specs/standing-agents.md,
   // "Agents segment"): a thread this thread is waiting on, or under Past one
   // it waited on, with its provider, title, state, how long since the
-  // request (a past row: when it settled), and what it is blocked on. The
-  // row's main button opens the thread, or for a settled row the answer; the
+  // request (a past row: when it settled), and what it is blocked on. A row
+  // is open while its request is, or its worker is not at rest; once its
+  // request settled it shows its worker's state. The row's main button
+  // opens the thread, or for a row no longer open the answer; the
   // chevron opens the row's digest beneath it; Show in Sidebar gives an
   // owned worker a sidebar row; Open in Agent Pane opens the thread beside;
   // Stop, on an open row, stops the request and, for a spawn, what the
@@ -18,8 +20,9 @@
     agentRowBlockedLabel,
     agentRowHasDigest,
     agentRowOpenTarget,
+    agentRowShownState,
     agentRowStateLabel,
-    isSettledAgentRow,
+    isOpenAgentRow,
   } from '../../utils/agentTray';
   import Icon from '../primitives/Icon.svelte';
   import ProviderIcon from '../shared/ProviderIcon.svelte';
@@ -57,10 +60,11 @@
     onToggleExpanded, onActivate, onOpenPane, onShowInSidebar, onStop,
   }: Props = $props();
 
-  let settled = $derived(isSettledAgentRow(row));
+  let open = $derived(isOpenAgentRow(row));
+  let shownState = $derived(agentRowShownState(row));
   let stateLabel = $derived(agentRowStateLabel(row));
-  let blockedLabel = $derived(row.state === 'blocked' ? agentRowBlockedLabel(row) : '');
-  let elapsed = $derived(formatElapsed(Math.max(0, (settled && row.settledAt ? row.settledAt : now) - row.createdAt)));
+  let blockedLabel = $derived(shownState === 'blocked' ? agentRowBlockedLabel(row) : '');
+  let elapsed = $derived(formatElapsed(Math.max(0, (!open && row.settledAt ? row.settledAt : now) - row.createdAt)));
   // A past row says when it settled; reading `now` keeps the age current.
   let settledAge = $derived.by(() => {
     if (!past || !row.settledAt) return '';
@@ -69,9 +73,9 @@
   });
   // A worker this computer spawned that has no sidebar row.
   let showInSidebar = $derived(row.kind === 'spawn' && row.placement === 'owned' && !row.archived && !row.computerId && Boolean(row.threadId));
-  let activity = $derived(!settled && !blockedLabel ? (row.activity ?? '') : '');
+  let activity = $derived(open && !blockedLabel ? (row.activity ?? '') : '');
   let stateTone = $derived.by(() => {
-    switch (row.state) {
+    switch (shownState) {
       case 'blocked':
         return 'text-warning';
       case 'errored':
@@ -84,7 +88,7 @@
       case 'running':
         return 'text-accent';
       default:
-        return settled ? 'text-success' : 'text-fg-hint';
+        return open ? 'text-fg-hint' : 'text-success';
     }
   });
   let indent = $derived(Math.min(Math.max(0, row.depth), AGENT_ROW_MAX_INDENT) * 0.75);
@@ -96,7 +100,7 @@
   let target = $derived(agentRowOpenTarget(row));
   let asked = $derived(target?.asked === true);
   let openLabel = $derived(
-    settled && (row.wakeItemId || (asked && hasDigest)) ? `Show the answer from ${row.title}`
+    !open && (row.wakeItemId || (asked && hasDigest)) ? `Show the answer from ${row.title}`
       : asked ? `Open ${row.title}, the thread asked`
       : row.kind === 'ask' ? `Open the copy asking ${row.title}`
       : `Open ${row.title}`,
@@ -163,7 +167,7 @@
     >
       <Icon icon={PanelRightOpen} size={12} />
     </button>
-    {#if !settled && !past}
+    {#if open && !past}
       <button
         type="button"
         class={actionClasses}
@@ -186,7 +190,7 @@
   data-kind={row.kind}
   data-state={row.state}
   data-depth={row.depth}
-  data-settled={settled ? 'true' : undefined}
+  data-settled={open ? undefined : 'true'}
   data-past={past ? 'true' : undefined}
 >
   <div class="flex w-full items-center gap-2 compact:gap-1">

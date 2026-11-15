@@ -24,7 +24,7 @@
   import type { ThreadPane } from '../../stores/thread.svelte';
   import type { Thread } from '../../types/models';
   import { errString } from '../../utils/errors';
-  import { agentRowHasDigest, agentRowOpenTarget, isSettledAgentRow } from '../../utils/agentTray';
+  import { agentRowHasDigest, agentRowOpenTarget, isOpenAgentRow } from '../../utils/agentTray';
   import { agentStopReport, agentStopAllReport } from '../../utils/agentTrayStops';
   import { agentThreadOpener } from '../chat/agentThreadOrigin';
   import { agentThreadCompanionPlacer } from '../../stores/agentThreadCompanion';
@@ -104,13 +104,13 @@
   const placeInCompanion = () => agentThreadCompanionPlacer(pane);
 
   // An open row opens the thread it went to in this pane's agent thread
-  // companion, an ask its copy. A settled one shows where its answer
+  // companion, an ask its copy. One no longer open shows where its answer
   // landed: this thread's wake item when the answer came here, leaving the
   // tray; for an ask, whose copy is gone, its digest with the answer;
   // otherwise the thread it went to, in the companion, leaving the tray.
   function activate(row: ThreadAgentRow, key: string): void {
     if (!threadId) return;
-    if (isSettledAgentRow(row)) {
+    if (!isOpenAgentRow(row)) {
       if (row.wakeItemId && row.callerThreadId === threadId) {
         agents.dismiss(row.token);
         void navigateToThreadItem(pane, threadId, row.wakeItemId);
@@ -267,7 +267,7 @@
         <AgentTrayRow
           {row}
           {now}
-          isStopping={stopping.has(row.token) || (stopAllInFlight && !isSettledAgentRow(row))}
+          isStopping={stopping.has(row.token) || (stopAllInFlight && isOpenAgentRow(row))}
           stopError={stopErrors.get(row.token)}
           expanded={expanded.has(row.token)}
           isPlacing={!!row.threadId && placing.has(row.threadId)}
