@@ -150,9 +150,7 @@ func TestAWorkerWaitingOnItsBackgroundWorkIsOpen(t *testing.T) {
 		t.Fatalf("running background work %+v, %v; this test needs the shell running", work, err)
 	}
 	f.expectWaiting(t, "bg-spawn", work[0].Summary)
-	if got := f.callerAgentFrames(t, f.caller.ID); got <= frames {
-		t.Fatalf("frames to the spawner stayed at %d; want the waiting worker framed", got)
-	}
+	f.awaitCallerFrame(t, f.caller.ID, frames)
 	// Its shell ends: the process exits, then the CLI tells the agent.
 	workerEvent(t, f.app, worker.ID, provider.ProviderEvent{Kind: provider.EventBackgroundTaskTerminal, ItemID: "deploy-shell"},
 		map[string]any{"task_id": "task-deploy-shell", "tool_use_id": "deploy-shell", "status": "completed", "source": "task_updated"})

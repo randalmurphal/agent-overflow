@@ -39,6 +39,14 @@ func (f *requestFixture) callerAgentFrames(t *testing.T, threadID string) int {
 	return n
 }
 
+// awaitCallerFrame waits for a frame to threadID past the count before. The
+// listing reads live state directly while the frame comes from the emit
+// drain's goroutine, so a listing that shows a change can precede its frame.
+func (f *requestFixture) awaitCallerFrame(t *testing.T, threadID string, before int) {
+	t.Helper()
+	waitUntil(t, 10*time.Second, func() bool { return f.callerAgentFrames(t, threadID) > before })
+}
+
 // listingAfterWindow reads threadID's listing as it reads once the settled
 // window has passed every row that settled by now.
 func (f *requestFixture) listingAfterWindow(t *testing.T, threadID string) ThreadAgentRows {
@@ -212,9 +220,7 @@ func TestAWorkerThatRepliesAndKeepsWorkingStaysOpen(t *testing.T) {
 	if row.BlockedOn != "approval" || row.BlockedRoutedTo == "" || row.needsYou() {
 		t.Fatalf("row = %+v; want blocked on an approval routed to its spawner", row)
 	}
-	if got := f.callerAgentFrames(t, f.caller.ID); got <= frames {
-		t.Fatalf("frames to the caller stayed at %d; want one for the blocked worker", got)
-	}
+	f.awaitCallerFrame(t, f.caller.ID, frames)
 	// Handed back to the user, it waits on them.
 	if !f.app.triage.RejectPrompt(f.caller.ID, openPromptRef(t, f.app.triage, ack.ThreadID, "after-reply-approval")) {
 		t.Fatal("the prompt did not go back to the user")
@@ -279,9 +285,7 @@ func TestAWorkerContinuedFromItsPaneReopensForItsSpawner(t *testing.T) {
 	if row.State != threadtools.RequestFinished || !row.open() {
 		t.Fatalf("row = %+v; want the finished spawn open while its worker runs", row)
 	}
-	if got := f.callerAgentFrames(t, f.caller.ID); got <= frames {
-		t.Fatalf("frames to the caller stayed at %d; want the worker's new turn framed", got)
-	}
+	f.awaitCallerFrame(t, f.caller.ID, frames)
 	if got := f.workerSummary(t, f.caller.ID); got.Open != 1 {
 		t.Fatalf("summary %+v; want the running worker counted", got)
 	}
@@ -368,9 +372,8 @@ func TestAWorkerBlockedWithNoRequestRunning(t *testing.T) {
 	if !rows[0].open() || rows[0].Worker != workerWaiting || row.Depth != 1 || row.BlockedOn != "approval" || row.BlockedRoutedTo != child.Title {
 		t.Fatalf("rows %+v; want the top row waiting on its blocked nested worker", rows)
 	}
-	if f.callerAgentFrames(t, f.caller.ID) <= leadFrames || f.callerAgentFrames(t, child.ID) <= childFrames {
-		t.Fatal("no frame reached the spawners of the blocked worker")
-	}
+	f.awaitCallerFrame(t, f.caller.ID, leadFrames)
+	f.awaitCallerFrame(t, child.ID, childFrames)
 	if got := f.workerSummary(t, f.caller.ID); got.Open != 2 || got.NeedYou != 0 {
 		t.Fatalf("lead's summary %+v; want both workers counted, the prompt routed", got)
 	}
@@ -646,9 +649,7 @@ func TestAHandOffKeepsALiveWorkersRowUnderTheSuccessor(t *testing.T) {
 	oldFrames, newFrames := f.callerAgentFrames(t, old), f.callerAgentFrames(t, successor.ID)
 	resolveApprovalOn(t, f.app, worker.ID, "handed-approval")
 	f.awaitWorker(t, successor.ID, "handed-spawn", "")
-	if got := f.callerAgentFrames(t, successor.ID); got <= newFrames {
-		t.Fatalf("frames to the successor stayed at %d; want the resting worker framed there", got)
-	}
+	f.awaitCallerFrame(t, successor.ID, newFrames)
 	if got := f.callerAgentFrames(t, old); got != oldFrames {
 		t.Fatalf("frames to the superseded thread went from %d to %d; want none", oldFrames, got)
 	}
