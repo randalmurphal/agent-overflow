@@ -756,8 +756,8 @@ The text, maintained beside the tool schemas in `internal/threadtools`:
 > or diff shows clipped with its item id: use `thread_item` to search
 > inside it with `query` and read the byte range you need.
 >
-> Starting work. `thread_spawn` opens a new thread, your worker, and runs
-> your `prompt` there; `from_thread` gives it an existing thread's
+> Starting work. `thread_spawn` opens a new thread, your worker, with no
+> sidebar row unless you give it one, and runs your `prompt` there; `from_thread` gives it an existing thread's
 > history first, `worktree` runs it on that branch, checked out as it
 > is when the branch exists here or on a remote, detached at the tag when
 > the name is no branch but a tag, and otherwise created from `base` (a
@@ -775,7 +775,9 @@ The text, maintained beside the tool schemas in `internal/threadtools`:
 > three return a `token`. Use your own subagents for pieces of your
 > current task. Use `thread_spawn` when the user asks for a separate
 > thread, when another provider or model should do the work, or when
-> the work should outlive your turn. You
+> the work should outlive your turn. A thread meant for the user to read
+> or continue themselves gets a sidebar row: pass `placement` `standalone`
+> or a `group`. You
 > cannot send to or ask your own thread. An assistant lives outside
 > every project: its `thread_spawn` without `project_id` makes a helper
 > for its own work in its home, and with one names a project it serves;

@@ -164,6 +164,44 @@ func TestReadToolsFrameContentAsData(t *testing.T) {
 	}
 }
 
+// TestSpawnTextSaysASpawnIsAWorkerWithoutASidebarRow: a local spawn or
+// fork is owned and has no sidebar row unless placement or group gives it
+// one. The tool, each of its properties and the guide say that one thing,
+// and none calls the new thread visible in the sidebar.
+func TestSpawnTextSaysASpawnIsAWorkerWithoutASidebarRow(t *testing.T) {
+	const rowRule = "A thread meant for the user to read or continue themselves gets a sidebar row"
+	for _, shape := range []Shape{soloShape(), pairedShape()} {
+		spawn := toolsByName(t, shape)["thread_spawn"]
+		description := spawn["description"].(string)
+		for _, want := range []string{"your worker", "By default it has no sidebar row", rowRule} {
+			if !strings.Contains(description, want) {
+				t.Errorf("paired=%v: thread_spawn description lacks %q: %s", shape.Paired(), want, description)
+			}
+		}
+		texts := map[string]string{"description": description}
+		for name, property := range schemaProperties(t, spawn) {
+			texts[name], _ = property.(map[string]any)["description"].(string)
+		}
+		if fork := texts["from_thread"]; !strings.Contains(fork, "your worker like any spawn, placed by placement and group") {
+			t.Errorf("paired=%v: from_thread does not say a fork is placed like any spawn: %s", shape.Paired(), fork)
+		}
+		if placement := texts["placement"]; !strings.Contains(placement, "owned, the default: it is your worker, with no sidebar row") {
+			t.Errorf("paired=%v: placement does not state the owned default: %s", shape.Paired(), placement)
+		}
+		for name, text := range texts {
+			for _, stale := range []string{"visible", "the user sees it in the sidebar"} {
+				if strings.Contains(text, stale) {
+					t.Errorf("paired=%v: thread_spawn %s still says %q: %s", shape.Paired(), name, stale, text)
+				}
+			}
+		}
+		guide := New(newFakeApp("laptop")).Instructions(shape)
+		if !strings.Contains(guide, "your worker, with no sidebar row unless you give it one") || !strings.Contains(guide, rowRule) {
+			t.Errorf("paired=%v: the guide does not say a spawn is a worker with a row only for the user's threads", shape.Paired())
+		}
+	}
+}
+
 // TestRuntimeModeEnumTracksTheCanonicalList keeps the spawn schema from
 // drifting from provider.AllRuntimeModes.
 func TestRuntimeModeEnumTracksTheCanonicalList(t *testing.T) {

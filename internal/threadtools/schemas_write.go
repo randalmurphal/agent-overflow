@@ -20,11 +20,11 @@ func spawnSchema(shape Shape) map[string]any {
 		"title": map[string]any{
 			"type":        "string",
 			"maxLength":   MaxTitleRunes,
-			"description": "Optional title for the sidebar. Omitted, the app titles the thread itself from its first turn.",
+			"description": "Optional title, shown wherever the thread is listed. Omitted, the app titles the thread itself from its first turn.",
 		},
 		"from_thread": map[string]any{
 			"type":        "string",
-			"description": "Fork this thread's history at its tail first, then send prompt there, for trying a second approach without disturbing the original. The fork is a normal visible thread. It runs on the source thread's computer, in its project and workspace, and keeps that thread's provider, which a fork cannot change; every other setting still defaults to yours. A source mid-turn is forked at its tail with that turn settled as interrupted. A fork runs in its source's workspace, so from_thread cannot be combined with workspace_path, worktree, base or base_local.",
+			"description": "Fork this thread's history at its tail first, then send prompt there, for trying a second approach without disturbing the original. The fork is your worker like any spawn, placed by placement and group, never by its source's group. It runs on the source thread's computer, in its project and workspace, and keeps that thread's provider, which a fork cannot change; every other setting still defaults to yours. A source mid-turn is forked at its tail with that turn settled as interrupted. A fork runs in its source's workspace, so from_thread cannot be combined with workspace_path, worktree, base or base_local.",
 		},
 		"project_id": map[string]any{
 			"type":        "string",
@@ -78,7 +78,7 @@ func spawnSchema(shape Shape) map[string]any {
 	properties["home_files"] = homeFilesProperty("prompt")
 	waitProperties(properties, 0, "the new thread to answer")
 	computerIDProperty(shape, properties, "the project the thread should run in")
-	description := "Open a new visible sidebar thread, send prompt as its first user message, start its turn, and return the thread id and a request token. It inherits your project, workspace, provider, model, effort, mode and runtime mode unless you override them, and joins a sidebar group when group names one. The new thread is an ordinary thread with no special marking: the user sees it in the sidebar and can take it over. Use it when the user asks for a separate thread, when another provider or model should do the work, or when the work should be visible and outlive your turn; use your own subagents for pieces of your current task."
+	description := "Open a new thread, your worker, send prompt as its first user message, start its turn, and return the thread id and a request token. It inherits your project, workspace, provider, model, effort, mode and runtime mode unless you override them. By default it has no sidebar row: the user reaches it from your thread, and its questions and approvals come to you. A thread meant for the user to read or continue themselves gets a sidebar row: pass placement standalone, or group to file it in a group. Use it when the user asks for a separate thread, when another provider or model should do the work, or when the work should outlive your turn; use your own subagents for pieces of your current task."
 	if shape.Paired() {
 		description += " With computer_id the thread is created on that computer, runs on its account, appears in its sidebar, and project_id must name one of its projects."
 	}
