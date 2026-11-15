@@ -336,7 +336,7 @@ func TestStopThreadBackgroundWorkRoutesThroughTheProviderStopRPC(t *testing.T) {
 	if err := app.StartSession(thread.ID); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
-	if err := app.SendMessage(thread.ID, "run a long job in background", nil); err != nil {
+	if err := app.SendMessage(context.Background(), thread.ID, "run a long job in background", nil); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 	bus.nextProviderEventOfKind(t, provider.EventInit, 5*time.Second)

@@ -16,10 +16,11 @@ import (
 // orphans are actually found.
 const orphanReaperSweepGrace = 2 * time.Second
 
-// startOrphanReaper is the macOS-only guard against provider subprocesses
-// outliving an ungraceful app death. Linux relies on Pdeathsig
-// (process_linux.go) and Windows on the launcher's Job Object, so this is
-// a no-op there.
+// startOrphanReaper is the macOS-only guard against the process groups the
+// app starts, provider sessions and composer shell commands, outliving an
+// ungraceful app death. Linux relies on Pdeathsig (provider/process_linux.go,
+// procutil.GroupCommand.EndWithParent) and Windows runs its backend in WSL,
+// so this is a no-op there.
 //
 // Distinct from the idle-session reaper in app_session_reaper.go, which
 // closes live in-process sessions that have gone idle: that one runs
@@ -65,13 +66,14 @@ func (a *App) stopOrphanReaper() {
 	}
 }
 
-// watchSessionProcess registers a freshly-spawned provider process group
-// with the sidecar and the durable registry. pgid is the provider PID
-// (its own group leader via Setpgid). No-op when the reaper is inactive
-// (non-macOS, tests) or the process never started. The registry Add and
-// sidecar Watch are independent backstops, so a failure of one still
+// watchProcessGroup registers a freshly started process group, a provider
+// session's or a composer shell command's, with the sidecar and the durable
+// registry. pgid is the leader's PID (its own group leader). uuid names what
+// started it: the session token or the run id. No-op when the reaper is
+// inactive (non-macOS, tests) or the process never started. The registry Add
+// and sidecar Watch are independent backstops, so a failure of one still
 // leaves the other covering the group.
-func (a *App) watchSessionProcess(pgid int, uuid string) {
+func (a *App) watchProcessGroup(pgid int, uuid string) {
 	if pgid <= 1 {
 		return
 	}
@@ -89,12 +91,13 @@ func (a *App) watchSessionProcess(pgid int, uuid string) {
 	a.orphanReaper.Watch(pgid)
 }
 
-// releaseSessionProcess stops tracking a process group whose session was
-// torn down cleanly. Callers must only invoke this after a *successful*
-// Close — if a Close is abandoned (e.g. shutdown timeout) the subprocess
-// may still be alive, and keeping the watch is what guarantees it's
-// reaped should the app then die. No-op when the reaper is inactive.
-func (a *App) releaseSessionProcess(pgid int) {
+// releaseProcessGroup stops tracking a process group that is gone: a session
+// torn down cleanly, a shell command whose group ended. Callers must only
+// invoke this once the group is known to be gone. If a Close is abandoned
+// (e.g. shutdown timeout) or a kill had no effect, the processes may still be
+// alive, and keeping the watch is what guarantees they are reaped should the
+// app then die. No-op when the reaper is inactive.
+func (a *App) releaseProcessGroup(pgid int) {
 	if pgid <= 1 {
 		return
 	}

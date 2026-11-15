@@ -40,7 +40,8 @@ the bound methods and what a result becomes.
   whose start reply was lost asks again with the same run id.
 - A command that did not become a message leaves no record a later process
   could answer from, so the service writes an empty marker file per started
-  command (`shell-runs/started/`, newest 256) before the process exists. A
+  command (`shell-runs/started/`, newest 256) and syncs it and its directory
+  before the process exists. A
   start repeated after a restart with such an id is refused with
   `shellrun.ErrStartedBeforeRestart` and the composer restores the text; the
   next Run mints a new id.
@@ -54,6 +55,11 @@ the bound methods and what a result becomes.
 - Deleting the thread, removing a worktree (every command running in or
   below it) and shutdown stop the run and join it. A stopped run sends
   nothing.
+- A backend that dies without stopping the run takes it down by the rule
+  provider processes follow (`procutil.GroupCommand.EndWithParent`): on
+  Linux, the backend's platform on Windows too, the run's leader gets
+  SIGTERM; on macOS the run's group is watched by the orphan reaper, whose
+  sidecar kills it at once and whose registry the next launch sweeps.
 - A running command holds back an app update, and keeps an empty draft
   thread from being deleted.
 

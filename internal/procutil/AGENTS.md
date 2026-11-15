@@ -38,7 +38,11 @@ This package owns six utilities:
   reported as `PipeErr` and the rest of the output is discarded.
   `GroupOutcome.OutputErr` folds `PipeErr` and `OutputHeld` (as
   `ErrOutputHeld`) into one error for a caller that fails a command whose
-  output was cut.
+  output was cut. `Started` receives the leader's pid, which is the group
+  id. `EndWithParent` gives a command the provider processes' orphan rule:
+  on Linux its leader gets SIGTERM when this process dies (Pdeathsig);
+  elsewhere the caller records the group for the orphan reaper from
+  `Started`.
 - `Terminal` (`OpenTerminal`, Unix only) is a pty that `GroupCommand.Terminal`
   makes the command's controlling terminal, for programs that prompt on
   `/dev/tty`. Stdin and `Output` are unchanged. The command starts through a

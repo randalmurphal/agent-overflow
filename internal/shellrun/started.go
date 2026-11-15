@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"agent-overflow/internal/atomicfile"
 )
 
 // startedMarkersDir is the directory under Config.Dir that holds the markers.
@@ -33,6 +35,13 @@ type startedMarkers struct {
 func loadStartedMarkers(dir string, kept int) (*startedMarkers, map[string]bool, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, nil, fmt.Errorf("create started markers directory: %w", err)
+	}
+	// The directory may be new, and a marker in it is durable only once its
+	// own entry is.
+	for _, parent := range []string{filepath.Dir(filepath.Dir(dir)), filepath.Dir(dir)} {
+		if err := atomicfile.SyncDir(parent); err != nil {
+			return nil, nil, fmt.Errorf("record started markers directory: %w", err)
+		}
 	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -73,12 +82,14 @@ func loadStartedMarkers(dir string, kept int) (*startedMarkers, map[string]bool,
 	return markers, earlier, nil
 }
 
-// add records that the run is about to start. The command must not start
+// add records that the run is about to start, durably: the file and the
+// directory entry are synced before it returns, so a power loss after the
+// command started cannot take the record with it. The command must not start
 // when it fails: nothing would stop a later process from running it again.
 func (m *startedMarkers) add(runID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if err := os.WriteFile(filepath.Join(m.dir, runID), nil, 0o600); err != nil {
+	if err := atomicfile.Write(filepath.Join(m.dir, runID), nil); err != nil {
 		return err
 	}
 	m.order = append(m.order, runID)

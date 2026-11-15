@@ -232,7 +232,8 @@ export function AllowPreviewPort(port: number): $CancellablePromise<number[]> {
  * password). The line reaches the command only: it is not output, it is not
  * sent to the agent, and it is not logged.
  * 
- * LocalOnly: this is input to an arbitrary local command.
+ * It is input to an arbitrary command on this machine, so it takes the same
+ * grant as typing into a terminal: any session granted terminal:operate.
  */
 export function AnswerThreadShellCommand(threadID: string, answer: app$0.ShellCommandAnswer): $CancellablePromise<void> {
     return $Call.ByID(2190095592, threadID, answer);
@@ -2354,8 +2355,9 @@ export function GetThreadRuntimeMode(threadID: string): $CancellablePromise<stri
  * the output it has produced so far. It is the reconnect companion of the
  * `shell:command` stream.
  * 
- * LocalOnly: the payload is the output of a local command, the same data
- * class as GetTerminalReplay.
+ * The payload is the output of a command on this machine, the same data
+ * class as GetTerminalReplay, so any session granted terminal:operate reads
+ * it.
  */
 export function GetThreadShellCommands(threadID: string): $CancellablePromise<app$0.ShellCommandRun[]> {
     return $Call.ByID(1598034249, threadID).then(($result: any) => {
@@ -5215,7 +5217,10 @@ export function RunProviderUpdate(providerName: string): $CancellablePromise<voi
  * command runs with the person's own environment and no sandbox, whatever the
  * thread's runtime mode: the mode governs the agent, not the person.
  * 
- * LocalOnly: this executes an arbitrary command. RCE-equivalent.
+ * It executes an arbitrary command on this machine. Any session granted
+ * terminal:operate reaches it, a paired phone or a connected browser
+ * included; the method also requires threads:operate, because it sends to
+ * the thread, and the autonomy check a send makes.
  */
 export function RunThreadShellCommand(threadID: string, request: app$0.ShellCommandRequest): $CancellablePromise<app$0.ShellCommandRun> {
     return $Call.ByID(651196145, threadID, request).then(($result: any) => {
@@ -5865,8 +5870,6 @@ export function ShutdownBackend(): $CancellablePromise<void> {
  * 
  * The review is a real, billed turn and it is not steerable, so callers should
  * offer it only on an idle thread.
- * 
- * LocalOnly: it drives the thread's live provider subprocess.
  */
 export function StartCodexReview(threadID: string, target: app$0.CodexReviewTarget): $CancellablePromise<app$0.CodexReviewStarted> {
     return $Call.ByID(1913732562, threadID, target).then(($result: any) => {

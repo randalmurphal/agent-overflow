@@ -2,8 +2,15 @@ package app
 
 import (
 	"context"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
+	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/identity"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
@@ -238,10 +245,61 @@ func TestCreateThreadJudgesTheResolvedMode(t *testing.T) {
 	}
 }
 
-// TestDrivingAnAutonomousThreadNeedsAutonomy. Send, steer and queue select
-// nothing here. Their effective mode is the mode the TARGET already runs
-// in, because sending into a full-access thread commits the agent to
-// acting without approval gates just as surely as selecting it does.
+// threadDrivingCalls is one call of every bound method that sends to an
+// existing thread or runs something in it, each selecting no mode.
+// TestEveryThreadDrivingMethodIsListed keeps it the set the code has.
+func threadDrivingCalls(app *App) map[string]func(ctx context.Context, threadID string) error {
+	return map[string]func(ctx context.Context, threadID string) error{
+		"SendMessage": func(ctx context.Context, id string) error {
+			return app.SendMessage(ctx, id, "hi", nil)
+		},
+		"SendMessageWithOptions": func(ctx context.Context, id string) error {
+			_, err := app.SendMessageWithOptions(ctx, id, "hi", SendMessageOptions{})
+			return err
+		},
+		"SteerMessageWithOptions": func(ctx context.Context, id string) error {
+			_, err := app.SteerMessageWithOptions(ctx, id, "hi", SendMessageOptions{})
+			return err
+		},
+		"RegisterQueueItem": func(ctx context.Context, id string) error {
+			_, err := app.RegisterQueueItem(ctx, id, "hi", SendMessageOptions{})
+			return err
+		},
+		"RevertConversationAndResendMessage": func(ctx context.Context, id string) error {
+			_, err := app.RevertConversationAndResendMessage(ctx, id, "item", RevertAndResendOptions{Content: "hi"})
+			return err
+		},
+		"SubmitAsyncAnswers": func(ctx context.Context, id string) error {
+			return app.SubmitAsyncAnswers(ctx, id, "send", nil)
+		},
+		"StartCodexReview": func(ctx context.Context, id string) error {
+			_, err := app.StartCodexReview(ctx, id, CodexReviewTarget{Kind: "uncommittedChanges"})
+			return err
+		},
+		"SendPlanRevisionComments": func(ctx context.Context, id string) error {
+			_, err := app.SendPlanRevisionComments(ctx, id, "plan", []string{"comment"})
+			return err
+		},
+		"SendDiffReviewComments": func(ctx context.Context, id string) error {
+			_, err := app.SendDiffReviewComments(ctx, id, "", "", []string{"comment"}, SendDiffReviewCommentsInput{})
+			return err
+		},
+		"SendPRDiffReviewComments": func(ctx context.Context, id string) error {
+			_, err := app.SendPRDiffReviewComments(ctx, gitops.PRReference{}, id, "", "", []string{"comment"}, SendDiffReviewCommentsInput{})
+			return err
+		},
+		"RunThreadShellCommand": func(ctx context.Context, id string) error {
+			_, err := app.RunThreadShellCommand(ctx, id, ShellCommandRequest{RunID: "run", Command: "true"})
+			return err
+		},
+	}
+}
+
+// TestDrivingAnAutonomousThreadNeedsAutonomy. These select nothing here.
+// Their effective mode is the mode the TARGET already runs in, because
+// sending into a full-access thread commits the agent to acting without
+// approval gates just as surely as selecting it does, and a command the
+// person runs sends its output to that agent.
 func TestDrivingAnAutonomousThreadNeedsAutonomy(t *testing.T) {
 	t.Parallel()
 	app, _, ungranted := autonomyApp(t)
@@ -249,25 +307,9 @@ func TestDrivingAnAutonomousThreadNeedsAutonomy(t *testing.T) {
 	autonomous := threadInMode(t, app, provider.RuntimeFullAccess)
 	gated := threadInMode(t, app, provider.RuntimeApprovalRequired)
 
-	for _, c := range []struct {
-		name string
-		call func(threadID string) error
-	}{
-		{"SendMessageWithOptions", func(id string) error {
-			_, err := app.SendMessageWithOptions(ctx, id, "hi", SendMessageOptions{})
-			return err
-		}},
-		{"SteerMessageWithOptions", func(id string) error {
-			_, err := app.SteerMessageWithOptions(ctx, id, "hi", SendMessageOptions{})
-			return err
-		}},
-		{"RegisterQueueItem", func(id string) error {
-			_, err := app.RegisterQueueItem(ctx, id, "hi", SendMessageOptions{})
-			return err
-		}},
-	} {
-		t.Run(c.name, func(t *testing.T) {
-			wantScopeRefusal(t, c.call(autonomous.ID), transport.ScopeThreadsAutonomy)
+	for name, call := range threadDrivingCalls(app) {
+		t.Run(name, func(t *testing.T) {
+			wantScopeRefusal(t, call(ctx, autonomous.ID), transport.ScopeThreadsAutonomy)
 		})
 	}
 
@@ -279,6 +321,170 @@ func TestDrivingAnAutonomousThreadNeedsAutonomy(t *testing.T) {
 	if err := app.requireAutonomyForThread(ctx, gated.ID, ""); err != nil {
 		t.Errorf("driving an approval-required thread was refused as autonomy: %v", err)
 	}
+}
+
+// threadDrivePrimitives are the calls that put a message on a thread or run
+// a command in it. shellCommands.Start is matched by its receiver as well.
+var threadDrivePrimitives = map[string]bool{
+	"sendMessageWithOptions":      true,
+	"sendMessageLocked":           true,
+	"steerMessageWithOptions":     true,
+	"registerQueueItem":           true,
+	"queueAgentNotice":            true,
+	"dispatchFlush":               true,
+	"dispatchFlushWithGeneration": true,
+}
+
+// threadDriveDepth is how many calls below a bound method the walk follows.
+// The walk matches callees by name, and past this depth names shared by
+// unrelated receivers (Start, Cancel, Send) join paths that do not exist.
+const threadDriveDepth = 3
+
+// TestEveryThreadDrivingMethodIsListed derives the methods that drive a
+// thread from the code, so a new one cannot skip the autonomy check or its
+// test. A bound method that reaches a drive primitive must pass
+// requireAutonomyForThread on the way, in its own body or in a helper the
+// path goes through, unless its floor is threads:autonomy. Every bound
+// method that calls the check itself must be in threadDrivingCalls, which
+// proves the check refuses.
+//
+// The walk is by name over internal/app, follows calls threadDriveDepth
+// deep, and does not enter function literals below the method itself, where
+// a constructor wires callbacks it does not call. A drive that leaves the
+// package through a service's callback is beyond it.
+func TestEveryThreadDrivingMethodIsListed(t *testing.T) {
+	t.Parallel()
+	entries, err := os.ReadDir("internal/app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	decls := map[string][]*ast.FuncDecl{}
+	var bound []*ast.FuncDecl
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		parsed, err := parser.ParseFile(token.NewFileSet(), filepath.Join("internal/app", name), nil,
+			parser.ParseComments|parser.SkipObjectResolution)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, decl := range parsed.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Body == nil {
+				continue
+			}
+			decls[fn.Name.Name] = append(decls[fn.Name.Name], fn)
+			if isAppMethod(fn) && fn.Name.IsExported() && boundScope(fn) != "" {
+				bound = append(bound, fn)
+			}
+		}
+	}
+
+	// drives reports the path from fn to a primitive that no autonomy check
+	// interrupts, or nil.
+	var drives func(fn *ast.FuncDecl, depth int, visiting map[string]bool) []string
+	drives = func(fn *ast.FuncDecl, depth int, visiting map[string]bool) []string {
+		if callsAutonomyCheck(fn) || visiting[fn.Name.Name] {
+			return nil
+		}
+		visiting[fn.Name.Name] = true
+		defer delete(visiting, fn.Name.Name)
+		var path []string
+		ast.Inspect(fn.Body, func(node ast.Node) bool {
+			if path != nil {
+				return false
+			}
+			if _, literal := node.(*ast.FuncLit); literal && depth > 0 {
+				return false
+			}
+			call, ok := node.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			var callee string
+			switch fun := call.Fun.(type) {
+			case *ast.Ident:
+				callee = fun.Name
+			case *ast.SelectorExpr:
+				callee = fun.Sel.Name
+				if field, ok := fun.X.(*ast.SelectorExpr); ok && field.Sel.Name == "shellCommands" && callee == "Start" {
+					path = []string{"shellCommands.Start"}
+					return false
+				}
+			}
+			if threadDrivePrimitives[callee] {
+				path = []string{callee}
+				return false
+			}
+			if depth == threadDriveDepth {
+				return true
+			}
+			for _, next := range decls[callee] {
+				if below := drives(next, depth+1, visiting); below != nil {
+					path = append([]string{callee}, below...)
+					return false
+				}
+			}
+			return true
+		})
+		return path
+	}
+
+	listed := threadDrivingCalls(nil)
+	checking := map[string]bool{}
+	for _, fn := range bound {
+		name := fn.Name.Name
+		if callsAutonomyCheck(fn) {
+			checking[name] = true
+			if _, ok := listed[name]; !ok {
+				t.Errorf("%s checks autonomy; add it to threadDrivingCalls so a test proves the check refuses", name)
+			}
+			continue
+		}
+		if boundScope(fn) == string(transport.ScopeThreadsAutonomy) {
+			continue
+		}
+		if path := drives(fn, 0, map[string]bool{}); path != nil {
+			t.Errorf("%s drives a thread (%s > %s) without requireAutonomyForThread: a session holding "+
+				"threads:operate but not threads:autonomy could drive a full-access thread through it",
+				name, name, strings.Join(path, " > "))
+		}
+	}
+	for name := range listed {
+		if !checking[name] {
+			t.Errorf("threadDrivingCalls lists %s, which is not a bound method that checks autonomy", name)
+		}
+	}
+}
+
+// boundScope is a method's //ao:scope value, or empty for a method that is
+// not bound.
+func boundScope(fn *ast.FuncDecl) string {
+	if fn.Doc == nil {
+		return ""
+	}
+	for _, comment := range fn.Doc.List {
+		if scope, ok := strings.CutPrefix(comment.Text, "//ao:scope "); ok {
+			return strings.TrimSpace(scope)
+		}
+	}
+	return ""
+}
+
+// callsAutonomyCheck reports whether fn calls requireAutonomyForThread.
+func callsAutonomyCheck(fn *ast.FuncDecl) bool {
+	found := false
+	ast.Inspect(fn.Body, func(node ast.Node) bool {
+		if call, ok := node.(*ast.CallExpr); ok {
+			if selector, ok := call.Fun.(*ast.SelectorExpr); ok && selector.Sel.Name == "requireAutonomyForThread" {
+				found = true
+			}
+		}
+		return !found
+	})
+	return found
 }
 
 // TestSelectingAnAutonomousModeStillNeedsAutonomy is the original
