@@ -220,6 +220,9 @@ type App struct {
 	// threadAgentEmits coalesces the Agents rows' change frames
 	// (app_thread_agent_rows.go).
 	threadAgentEmits threadAgentEmits
+	// liveWorkers is the threads last found not at rest, which keep the
+	// local spawn that made each open (app_thread_agent_live.go).
+	liveWorkers liveWorkers
 	// threadAgentPeers is the last agent_rows answer for each spawn on a
 	// paired computer (app_thread_agent_rows_remote.go).
 	threadAgentPeers threadAgentPeerCache

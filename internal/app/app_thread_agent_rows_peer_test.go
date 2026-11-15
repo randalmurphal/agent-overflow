@@ -440,9 +440,9 @@ func TestThreadAgentRowsReadAgainOnEachPollOfARemoteSpawn(t *testing.T) {
 	}
 }
 
-// A remote spawn that settled while work under it there is still open
-// stays listed past the settled window, and the sweep asks that computer
-// again until it lists none.
+// A remote spawn that settled while work under it there is still open, or
+// its thread there is not at rest, stays listed past the settled window,
+// and the sweep asks that computer again until it lists neither.
 func TestThreadAgentRowsKeepASettledRemoteSpawnWhileItsWorkRuns(t *testing.T) {
 	t.Parallel()
 	pair := newAgentPeerPair(t, func(t *testing.T, app *App) *pairedBackend { return servePairedApp(t, app) })
@@ -467,6 +467,11 @@ func TestThreadAgentRowsKeepASettledRemoteSpawnWhileItsWorkRuns(t *testing.T) {
 	}
 
 	settle(pair.dest, pair.grand)
+	// The child's own turn there still runs, which keeps the spawn open.
+	pair.askAgainUntil(t, func(row store.ThreadRequest) bool { return row.NestedOpen })
+	if err := pair.dest.StopSession(pair.child); err != nil {
+		t.Fatalf("StopSession: %v", err)
+	}
 	waitUntil(t, 10*time.Second, func() bool {
 		// The answer is as old as the sweep's pace allows.
 		cache := &pair.source.threadAgentPeers
@@ -1269,5 +1274,84 @@ func TestRemoteThreadCancelNamesTheUserForATrayStop(t *testing.T) {
 				t.Fatalf("the stopped turn says %q, want the user named: %v", labels, tc.userStop)
 			}
 		})
+	}
+}
+
+// A spawn on a paired computer whose thread replies and keeps working
+// there is open here, as a local one is: the spawn is asked about once it
+// settles, that computer says its thread runs, and the row is open,
+// counted, kept past the settled window and out of Past. Once the thread
+// there rests, the sweep's next answer settles the row into Past.
+func TestARemoteWorkerThatRepliesAndKeepsWorkingStaysOpen(t *testing.T) {
+	t.Parallel()
+	remotetest.Require(t)
+	pair := newReachPair(t)
+	holding := [][]string{{
+		mockClaudeInitLine,
+		`{"type":"assistant","message":{"id":"msg-hold","role":"assistant","content":[{"type":"text","text":"watching the deploy"}]}}`,
+	}}
+	installMockClaudeTurns(t, pair.dest, holding)
+	// The caller here takes the reply as a wake.
+	installMockClaudeTurns(t, pair.source, holding)
+	ack := pair.spawnThere(t, "rerun the deploy, tell me when it starts, then watch it", map[string]any{"notify": true})
+	child := pair.receipt(t, ack.Token).TargetThreadID
+	waitUntil(t, 10*time.Second, func() bool {
+		row, found, err := pair.dest.store.GetThreadRequestReceipt(ack.Token)
+		return err == nil && found && row.State == store.ThreadReceiptRunning
+	})
+	destID, _ := pair.dest.backendIdentity()
+	if _, err := (threadToolsApp{app: pair.dest}).Reply(t.Context(),
+		threadtools.Caller{ThreadID: child, ComputerID: destID, ComputerName: "destination"},
+		threadtools.ReplyCall{Token: ack.Token, Text: "The deploy started; I am watching it."}); err != nil {
+		t.Fatalf("Reply there: %v", err)
+	}
+	waitUntil(t, 10*time.Second, func() bool { return pair.receipt(t, ack.Token).SettledAt != 0 })
+	pair.poll(t)
+	waitUntil(t, 10*time.Second, func() bool {
+		pair.source.threadRequestsWG.Wait()
+		row := pair.request(t, ack.Token)
+		return row.State == store.ThreadRequestReplied && row.NestedOpen
+	})
+	rowOf := func() (ThreadAgentRow, bool) {
+		listing, err := pair.source.ListThreadAgentRows(t.Context(), pair.caller.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return agentRowByToken(listing.Rows, ack.Token)
+	}
+	var row ThreadAgentRow
+	waitUntil(t, 10*time.Second, func() bool {
+		row, _ = rowOf()
+		return row.Worker == workerRunning
+	})
+	if !row.open() || row.State != threadtools.RequestReplied || row.ComputerID != pair.computer {
+		t.Fatalf("row = %+v; want the replied remote spawn open while its thread runs", row)
+	}
+	if got, err := pair.source.GetThreadWorkerSummary(t.Context(), pair.caller.ID); err != nil || got.Open != 1 {
+		t.Fatalf("summary %+v, %v; want the remote worker counted", got, err)
+	}
+	past, err := pair.source.ListThreadPastAgentRows(pair.caller.ID, store.PastAgentRowsCursor{}, 8)
+	if err != nil || past.Total != 0 {
+		t.Fatalf("past = %+v, %v; want the running remote worker kept out", past, err)
+	}
+	view := newThreadAgentView(pair.source)
+	view.since = time.Now().Add(time.Second).UnixMilli()
+	after, _, err := pair.source.threadAgentTreeDepth(t.Context(), view, pair.caller.ID, threadAgentRowDepth, threadAgentPeersCached)
+	if _, kept := agentRowByToken(after.Rows, ack.Token); err != nil || !kept {
+		t.Fatalf("after the window rows %+v, %v; want the remote worker kept", after.Rows, err)
+	}
+
+	// The thread there rests; the sweep's next answer says so.
+	if err := pair.dest.StopSession(child); err != nil {
+		t.Fatalf("StopSession there: %v", err)
+	}
+	agentPair := &agentPeerPair{reachPair: pair, spawn: pair.request(t, ack.Token)}
+	agentPair.askAgainUntil(t, func(row store.ThreadRequest) bool { return !row.NestedOpen })
+	if row, listed := rowOf(); listed && row.open() {
+		t.Fatalf("row = %+v; want the resting remote worker settled", row)
+	}
+	past, err = pair.source.ListThreadPastAgentRows(pair.caller.ID, store.PastAgentRowsCursor{}, 8)
+	if err != nil || past.Total != 1 || past.Rows[0].Token != ack.Token || past.Rows[0].Answer != "The deploy started; I am watching it." {
+		t.Fatalf("past = %+v, %v; want the spawn with its reply", past, err)
 	}
 }

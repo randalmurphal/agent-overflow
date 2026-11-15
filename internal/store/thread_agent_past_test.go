@@ -54,7 +54,7 @@ func TestListThreadPastAgentRequestsPagesNewestSettledFirst(t *testing.T) {
 			if pages > len(want) {
 				t.Fatalf("page size %d: no end after %d pages", size, pages)
 			}
-			page, err := s.ListThreadPastAgentRequests("lead", after, size, 2)
+			page, err := s.ListThreadPastAgentRequests("lead", after, size, 2, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -86,11 +86,11 @@ func TestListThreadPastAgentRequestsPagesNewestSettledFirst(t *testing.T) {
 			t.Errorf("page size %d listed %q, want %q", size, got, want)
 		}
 	}
-	if page, err := s.ListThreadPastAgentRequests("w1", PastAgentRowsCursor{}, 8, 0); err != nil || page.Total != 0 || len(page.Requests) != 0 || page.Next != nil {
+	if page, err := s.ListThreadPastAgentRequests("w1", PastAgentRowsCursor{}, 8, 0, nil); err != nil || page.Total != 0 || len(page.Requests) != 0 || page.Next != nil {
 		t.Errorf("a thread with no past rows = %+v, %v", page, err)
 	}
 	for _, bad := range []int{0, MaxPastAgentRowsPage + 1} {
-		if _, err := s.ListThreadPastAgentRequests("lead", PastAgentRowsCursor{}, bad, 0); !errors.Is(err, ErrPastAgentRowsPage) {
+		if _, err := s.ListThreadPastAgentRequests("lead", PastAgentRowsCursor{}, bad, 0, nil); !errors.Is(err, ErrPastAgentRowsPage) {
 			t.Errorf("page of %d: err = %v, want ErrPastAgentRowsPage", bad, err)
 		}
 	}
@@ -103,9 +103,9 @@ func TestListThreadPastAgentRequestsReadsItsIndexInOrder(t *testing.T) {
 	s := newTestStore(t)
 	mustCreateThread(t, s, "lead")
 	for _, query := range []string{pastAgentRowsSQL(9), `SELECT count(*) FROM thread_requests r WHERE ` + pastAgentRowSQL} {
-		args := []any{"lead"}
+		args := []any{"lead", int64(300), "tok", `["live-spawn"]`}
 		if strings.Contains(query, "?5") {
-			args = append(args, int64(300), "tok", nil, 16)
+			args = append(args, 16)
 		}
 		assertPlanSearches(t, s, "past agent rows", "r", []string{"idx_thread_requests_caller_settled"}, query, args...)
 		text := planText(explainPlan(t, s, query, args...))
@@ -147,7 +147,7 @@ func TestThreadsWithOpenAgentRows(t *testing.T) {
 		t.Fatal(err)
 	}
 	waiting := []string{"parked-peer"}
-	got, more, err := s.ThreadsWithOpenAgentRows(waiting, "", 64)
+	got, more, err := s.ThreadsWithOpenAgentRows(waiting, nil, "", 64)
 	if err != nil || more {
 		t.Fatalf("one page: more %v, %v", more, err)
 	}
@@ -159,7 +159,7 @@ func TestThreadsWithOpenAgentRows(t *testing.T) {
 	// one read's threads, each once, and the last says nothing follows.
 	var paged []string
 	for after, pages := "", 0; ; pages++ {
-		page, more, err := s.ThreadsWithOpenAgentRows(waiting, after, 2)
+		page, more, err := s.ThreadsWithOpenAgentRows(waiting, nil, after, 2)
 		if err != nil || len(page) == 0 || len(page) > 2 || pages > 3 {
 			t.Fatalf("page after %q = %q, %v", after, page, err)
 		}
@@ -174,7 +174,9 @@ func TestThreadsWithOpenAgentRows(t *testing.T) {
 	}
 	assertPlanSearches(t, s, "ThreadsWithOpenAgentRows", "a", []string{
 		"idx_thread_requests_open_created", "idx_thread_requests_open_below", "idx_thread_requests_nested_caller",
-	}, threadsWithOpenAgentRowsSQL(3), "mid", `["parked-peer"]`)
+	}, threadsWithOpenAgentRowsSQL(3), "mid", `{"waiting":["parked-peer"]}`)
+	assertPlanSearches(t, s, "ThreadsWithOpenAgentRows", "ps", []string{"idx_thread_requests_spawn_link"},
+		threadsWithOpenAgentRowsSQL(3), "mid", `{"waiting":["parked-peer"],"live":["leaf"]}`)
 }
 
 // A reply arms its request's wake in the statement that stores it, whether
@@ -202,7 +204,7 @@ func TestAReplyToAQuietSendIsListedAsItsWakeIsArmed(t *testing.T) {
 	if got := undeliveredTokens(t, s); !slices.Equal(got, []string{"send-replied"}) {
 		t.Fatalf("owed wakes = %v, want the reply alone", got)
 	}
-	page, err := s.ListThreadPastAgentRequests("lead", PastAgentRowsCursor{}, 10, 2)
+	page, err := s.ListThreadPastAgentRequests("lead", PastAgentRowsCursor{}, 10, 2, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

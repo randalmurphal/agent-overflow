@@ -107,6 +107,9 @@ func (a *App) runSendsPendingWorker() {
 		for _, threadID := range batch {
 			a.publishSendsPending(threadID)
 			a.publishSessionLive(threadID)
+			// A queue that filled or emptied may move a worker into or out
+			// of rest (app_thread_agent_live.go).
+			a.noteWorkerLiveness(threadID)
 		}
 	}
 }

@@ -310,6 +310,11 @@ func (a *App) threadDeletePorts() threadapp.DeletePorts {
 			// Its workers' prompts go where they route now, the user
 			// unless another local thread spawned them too.
 			a.reroutePromptsFrom(thread.ID)
+			// It is no worker now, and a worker it made that is not at
+			// rest lost its spawn link with it.
+			if err := a.forgetLiveWorker(thread.ID); err != nil {
+				log.Printf("agent rows: look up the spawns of live workers after deleting %s: %v", thread.ID, err)
+			}
 			// Its owned workers are standalone now and join the sidebar.
 			for _, id := range spawned {
 				a.announcePlaced(id)

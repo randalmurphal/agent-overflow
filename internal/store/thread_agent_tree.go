@@ -59,6 +59,9 @@ type ThreadAgentTreeRead struct {
 	Root string
 	// Waiting names the requests a tool call is parked on.
 	Waiting []string
+	// Live names the threads on this computer that are not at rest: a
+	// local spawn that reaches one is open while it is.
+	Live []string
 	// SettledSince keeps a request settled at or after it.
 	SettledSince int64
 	// Depth bounds the nesting: rows at Depth-1 nest nothing further.
@@ -79,8 +82,9 @@ type ThreadAgentTreeRead struct {
 // or is parked waiting on (one of Waiting). Each is open, settled at or
 // after SettledSince, or a spawn something under it is still open in: a
 // local spawn with open work within agentOpenDepth threads below its
-// target (its marks), or a remote spawn whose computer last reported open
-// work (`nested_open`). A thread is reached by at most one local spawn
+// target, its own thread included (its marks, a parked request, or a
+// thread among Live), or a remote spawn whose computer last reported open
+// work or its thread live (`nested_open`). A thread is reached by at most one local spawn
 // (idx_thread_requests_spawn_link), so each request is listed once, under
 // the chain of spawns above its caller. A local spawn at the depth bound
 // nests nothing. At most Limit rows, and whether there were more.
@@ -89,15 +93,11 @@ func (s *Store) ListThreadAgentTree(read ThreadAgentTreeRead) (_ []ThreadAgentRe
 	if read.Limit < 1 || read.Depth < 1 || read.AnswerHead < 0 {
 		return nil, false, fmt.Errorf("%s: limit %d, depth %d and answer head %d", action, read.Limit, read.Depth, read.AnswerHead)
 	}
-	waiting := read.Waiting
-	if waiting == nil {
-		waiting = []string{}
-	}
-	tokens, err := json.Marshal(waiting)
+	held, err := agentHeldParam(read.Waiting, read.Live)
 	if err != nil {
-		return nil, false, fmt.Errorf("%s: encode waiting tokens: %w", action, err)
+		return nil, false, fmt.Errorf("%s: %w", action, err)
 	}
-	query, args := threadAgentTreeSQL(read.Limit+1), []any{read.Root, string(tokens), read.SettledSince, read.Depth, read.AnswerHead}
+	query, args := threadAgentTreeSQL(read.Limit+1), []any{read.Root, held, read.SettledSince, read.Depth, read.AnswerHead}
 	if read.Tokens != nil {
 		named, err := json.Marshal(read.Tokens)
 		if err != nil {
@@ -131,7 +131,7 @@ func (s *Store) ListThreadAgentTree(read ThreadAgentTreeRead) (_ []ThreadAgentRe
 }
 
 // threadAgentTreeSQL is the listing's read of its first limit rows. ?1 is
-// the root, ?2 the waiting tokens, ?3 the settled window, ?4 the depth and
+// the root, ?2 the held work (agentHeldParam), ?3 the settled window, ?4 the depth and
 // ?5 the answer head.
 //
 // `tree` walks the listed rows in tree order, its sort key each level's
@@ -160,7 +160,7 @@ func threadAgentTreeSQL(limit int) string {
        AND r.token IN (`+arm.first(n)+`)`)
 	}
 	return `WITH RECURSIVE
-  ` + agentParkedSQL + `,
+  ` + agentHeldSQL + `,
   tree(t_token, t_depth, t_sort, t_path, t_kind, t_computer, t_target) AS (
     ` + strings.Join(seeds, `
     UNION ALL
@@ -186,7 +186,7 @@ SELECT ` + threadAgentRequestColumns + `, tree.t_depth,
 // listing's sort key: the row is listed when the row and every spawn above
 // it are, within the depth. The cost is the depth per named row.
 var threadAgentNamedRowsSQL = `WITH RECURSIVE
-  ` + agentParkedSQL + `,
+  ` + agentHeldSQL + `,
   up(token, at, depth, sort) AS (
     SELECT r.token, r.caller_thread_id, 0, printf('%020d', r.created_at) || r.token || char(1)
       FROM json_each(?6) CROSS JOIN thread_requests r
@@ -203,10 +203,12 @@ SELECT ` + threadAgentRequestColumns + `, up.depth,
  ORDER BY up.sort`
 
 // ThreadAgentStopRead is one read of what a Stop of every Agents row of
-// Root acts on, with ThreadAgentTreeRead's Root, Waiting and SettledSince.
+// Root acts on, with ThreadAgentTreeRead's Root, Waiting, Live and
+// SettledSince.
 type ThreadAgentStopRead struct {
 	Root         string
 	Waiting      []string
+	Live         []string
 	SettledSince int64
 	// Page bounds the rows each statement reads.
 	Page int
@@ -226,13 +228,9 @@ func (s *Store) ListThreadAgentStopRows(read ThreadAgentStopRead) (out []ThreadR
 	if read.Page < 1 {
 		return nil, fmt.Errorf("%s: page %d", action, read.Page)
 	}
-	waiting := read.Waiting
-	if waiting == nil {
-		waiting = []string{}
-	}
-	tokens, err := json.Marshal(waiting)
+	held, err := agentHeldParam(read.Waiting, read.Live)
 	if err != nil {
-		return nil, fmt.Errorf("%s: encode waiting tokens: %w", action, err)
+		return nil, fmt.Errorf("%s: %w", action, err)
 	}
 	tx, err := s.reader().BeginTx(context.Background(), nil)
 	if err != nil {
@@ -247,7 +245,7 @@ func (s *Store) ListThreadAgentStopRows(read ThreadAgentStopRead) (out []ThreadR
 	out = []ThreadRequest{}
 	afterAt, afterToken := int64(math.MinInt64), ""
 	for {
-		page, err := s.threadAgentStopPage(tx, query, read, string(tokens), afterAt, afterToken)
+		page, err := s.threadAgentStopPage(tx, query, read, held, afterAt, afterToken)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", action, err)
 		}
@@ -263,8 +261,8 @@ func (s *Store) ListThreadAgentStopRows(read ThreadAgentStopRead) (out []ThreadR
 	}
 }
 
-func (s *Store) threadAgentStopPage(tx *sql.Tx, query string, read ThreadAgentStopRead, waiting string, afterAt int64, afterToken string) (_ []ThreadRequest, err error) {
-	rows, err := tx.Query(query, read.Root, waiting, read.SettledSince, nil, 0, afterAt, afterToken)
+func (s *Store) threadAgentStopPage(tx *sql.Tx, query string, read ThreadAgentStopRead, held string, afterAt int64, afterToken string) (_ []ThreadRequest, err error) {
+	rows, err := tx.Query(query, read.Root, held, read.SettledSince, nil, 0, afterAt, afterToken)
 	if err != nil {
 		return nil, err
 	}
@@ -308,7 +306,7 @@ func threadAgentStopRowsSQL(limit int) string {
         ORDER BY a.created_at, a.token LIMIT `+n+`)`)
 	}
 	return `WITH RECURSIVE
-  ` + agentParkedSQL + `
+  ` + agentHeldSQL + `
 SELECT ` + threadAgentRequestColumns + `
   FROM thread_requests r
  WHERE r.token IN (` + strings.Join(arms, `
@@ -348,11 +346,12 @@ func (arm agentArm) first(limit string) string {
 // open (idx_thread_requests_open_created, in tree order); settled inside
 // the window (idx_thread_requests_caller_settled); a local spawn settled
 // before it with open work under it, stored (idx_thread_requests_open_below)
-// or only parked (`parked`, by token); a spawn on another computer that
-// last reported open work (idx_thread_requests_nested_caller). None reads
-// the caller's settled history, and only the open arm can hold many rows.
-// The stored and remote arms are held to their index, and the parked arm's
-// other terms are kept off theirs: otherwise the planner reads them through
+// or only held in memory, a parked request or a live thread (`held`, by
+// token); a spawn on another computer that last reported open work
+// (idx_thread_requests_nested_caller). None reads the caller's settled
+// history, and only the open arm can hold many rows. The stored and remote
+// arms are held to their index, and the held arm's other terms are kept
+// off theirs: otherwise the planner reads them through
 // idx_thread_requests_caller_settled from the history's settled_at range
 // (TestThreadAgentTreeSearchesItsArms).
 func agentRowArms(alias, caller string) []agentArm {
@@ -362,31 +361,56 @@ func agentRowArms(alias, caller string) []agentArm {
 		{"idx_thread_requests_open_created", false, by + a + `lineage_only = 0 AND ` + a + `settled_at IS NULL`},
 		{"idx_thread_requests_caller_settled", false, by + a + `lineage_only = 0 AND ` + a + `settled_at >= ` + agentWindowSQL},
 		{"idx_thread_requests_open_below", true, by + agentSpawnLinkSQL(alias) + ` AND ` + agentOpenBelowSQL(alias) + ` AND ` + a + `settled_at < ` + agentWindowSQL},
-		{"sqlite_autoindex_thread_requests_1", false, a + `token IN (SELECT token FROM parked WHERE thread = ` + caller + `) AND +` + a + `caller_thread_id = ` + caller +
+		{"sqlite_autoindex_thread_requests_1", false, a + `token IN (SELECT token FROM held WHERE thread = ` + caller + `) AND +` + a + `caller_thread_id = ` + caller +
 			` AND NOT ` + agentOpenBelowSQL(alias) + ` AND +` + a + `settled_at < ` + agentWindowSQL},
 		{"idx_thread_requests_nested_caller", true, by + nestedRemoteSpawnSQL(alias) + ` AND ` + a + `settled_at < ` + agentWindowSQL},
 	}
 }
 
-// agentParkedSQL is the `parked` table of the tree reads: each local spawn
-// with a send or ask a call is parked on (?2) open within agentOpenDepth
-// spawns below its target, with the spawn's caller. That is open work the
-// marks do not count, since only an armed wake is stored
-// (agentOpenWorkSQL): a parked call is held in memory, and arms its wake
-// only once its wait ends. `parked` climbs one spawn a step from each
-// parked request's caller, keyed by the queued thread
-// (idx_thread_requests_spawn_link), so its cost is the depth per parked
-// request.
-var agentParkedSQL = `parked(token, thread, depth) AS (
+// agentHeldSQL is the `held` table of the tree reads: each local spawn
+// with open work the app holds in memory (?2, agentHeldParam) within
+// agentOpenDepth spawns below its target, with the spawn's caller. No
+// stored mark counts that work: a send or ask a call is parked on (only an
+// armed wake is stored, agentOpenWorkSQL, and a parked call arms its wake
+// once its wait ends), or a live thread, whose own spawn is its link, the
+// first spawn above it, as a parked request's is the first above its
+// caller. `held` climbs one spawn a step from each, keyed by the queued
+// thread (idx_thread_requests_spawn_link), so its cost is the depth per
+// parked request and live thread.
+var agentHeldSQL = `held(token, thread, depth) AS (
     SELECT ps.token, ps.caller_thread_id, 1
-      FROM json_each(?2) CROSS JOIN thread_requests pr CROSS JOIN thread_requests ps
+      FROM json_each(?2, '$.waiting') CROSS JOIN thread_requests pr CROSS JOIN thread_requests ps
      WHERE pr.token = json_each.value AND pr.kind IN ('send','ask') AND pr.lineage_only = 0 AND pr.settled_at IS NULL
-       AND ps.target_thread_id = pr.caller_thread_id AND ps.kind = 'spawn' AND ps.target_computer_id = '' AND ps.superseded = 0 AND ps.target_thread_id <> ''
+       AND ps.target_thread_id = pr.caller_thread_id AND ` + agentSpawnLinkSQL("ps") + `
     UNION
-    SELECT ps.token, ps.caller_thread_id, parked.depth + 1
-      FROM parked CROSS JOIN thread_requests ps
-     WHERE parked.depth < ` + strconv.Itoa(agentOpenDepth) + ` AND ps.target_thread_id = parked.thread
-       AND ps.kind = 'spawn' AND ps.target_computer_id = '' AND ps.superseded = 0 AND ps.target_thread_id <> '')`
+    SELECT ps.token, ps.caller_thread_id, 1
+      FROM json_each(?2, '$.live') CROSS JOIN thread_requests ps
+     WHERE ps.target_thread_id = json_each.value AND ` + agentSpawnLinkSQL("ps") + `
+    UNION
+    SELECT ps.token, ps.caller_thread_id, held.depth + 1
+      FROM held CROSS JOIN thread_requests ps
+     WHERE held.depth < ` + strconv.Itoa(agentOpenDepth) + ` AND ps.target_thread_id = held.thread
+       AND ` + agentSpawnLinkSQL("ps") + `)`
+
+// agentHeldParam encodes the tree reads' ?2, the open work the app holds in
+// memory: the requests a tool call is parked on, by token, and the threads
+// that are not at rest, by id.
+func agentHeldParam(waiting, live []string) (string, error) {
+	if waiting == nil {
+		waiting = []string{}
+	}
+	if live == nil {
+		live = []string{}
+	}
+	encoded, err := json.Marshal(struct {
+		Waiting []string `json:"waiting"`
+		Live    []string `json:"live"`
+	}{waiting, live})
+	if err != nil {
+		return "", fmt.Errorf("encode the held work: %w", err)
+	}
+	return string(encoded), nil
+}
 
 // agentRowsUnderSQL is whether thread has a row the listing would nest.
 func agentRowsUnderSQL(thread string) string {
@@ -418,6 +442,24 @@ func spawnerOfSQL(target string) string {
 	return `(SELECT link.caller_thread_id FROM thread_requests AS link
 	          WHERE ` + agentSpawnLinkSQL("link") + ` AND link.target_thread_id = ` + target + `)`
 }
+
+// SpawnLinkOf names the local spawn that reaches threadID, its link, by
+// token, in one search of idx_thread_requests_spawn_link. Found is false
+// for a thread no local spawn made. A link the retention floor reduced to
+// its lineage is still found.
+func (s *Store) SpawnLinkOf(threadID string) (token string, found bool, err error) {
+	err = s.reader().QueryRow(spawnLinkOfSQL, threadID).Scan(&token)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("store: read the spawn that made %s: %w", threadID, err)
+	}
+	return token, true, nil
+}
+
+var spawnLinkOfSQL = `SELECT link.token FROM thread_requests AS link
+	WHERE ` + agentSpawnLinkSQL("link") + ` AND link.target_thread_id = ?1`
 
 // agentOpenBelowSQL is whether a local spawn has open work under its
 // target within agentOpenDepth, the term of idx_thread_requests_open_below.
@@ -454,7 +496,7 @@ func agentOpenUnderSQL(thread string) string {
 func agentRowKindSQL(alias string) string {
 	a := alias + "."
 	return a + `kind IN ('spawn','send','ask')
-       AND (` + a + `kind = 'spawn' OR ` + a + `notify = 1 OR ` + a + `token IN (SELECT value FROM json_each(?2)))`
+       AND (` + a + `kind = 'spawn' OR ` + a + `notify = 1 OR ` + a + `token IN (SELECT value FROM json_each(?2, '$.waiting')))`
 }
 
 // agentRowListedSQL is agentRowArms as one predicate, for a row already
@@ -463,7 +505,7 @@ func agentRowListedSQL(alias string) string {
 	a := alias + "."
 	return `((` + a + `lineage_only = 0 AND (` + a + `settled_at IS NULL OR ` + a + `settled_at >= ` + agentWindowSQL + `
          OR (` + a + `kind = 'spawn' AND ` + a + `target_computer_id <> '' AND ` + a + `nested_open = 1)))
-         OR (` + agentSpawnLinkSQL(alias) + ` AND (` + agentOpenBelowSQL(alias) + ` OR ` + a + `token IN (SELECT token FROM parked))))`
+         OR (` + agentSpawnLinkSQL(alias) + ` AND (` + agentOpenBelowSQL(alias) + ` OR ` + a + `token IN (SELECT token FROM held))))`
 }
 
 // ThreadsWithOpenAgentRows lists, by id, the threads after `after` in id
@@ -471,25 +513,23 @@ func agentRowListedSQL(alias string) string {
 // and whether more follow: a thread that made an open request the listing
 // shows (a spawn, or a send or ask with its wake armed or one of waiting
 // parked on it), one with a local spawn whose marks count open work below
-// it or that sits above a parked request (`parked`), or a spawn on another
-// computer that last reported open work. Each arm reads a partial index
-// that holds only open work (idx_thread_requests_open_created,
+// it, or that reaches a live thread (one of live) or sits above a parked
+// request or a live thread (`held`), or a spawn on another computer that
+// last reported open work or its thread live. Each arm reads a partial
+// index that holds only open work (idx_thread_requests_open_created,
 // idx_thread_requests_open_below, idx_thread_requests_nested_caller) from
 // the cursor on, so a page follows the open work on this computer, not the
 // ledger's settled rows.
-func (s *Store) ThreadsWithOpenAgentRows(waiting []string, after string, limit int) (_ []string, more bool, err error) {
+func (s *Store) ThreadsWithOpenAgentRows(waiting, live []string, after string, limit int) (_ []string, more bool, err error) {
 	action := "store: list the threads with open agent rows"
 	if limit < 1 {
 		return nil, false, fmt.Errorf("%s: limit %d", action, limit)
 	}
-	if waiting == nil {
-		waiting = []string{}
-	}
-	tokens, err := json.Marshal(waiting)
+	held, err := agentHeldParam(waiting, live)
 	if err != nil {
-		return nil, false, fmt.Errorf("%s: encode waiting tokens: %w", action, err)
+		return nil, false, fmt.Errorf("%s: %w", action, err)
 	}
-	rows, err := s.reader().Query(threadsWithOpenAgentRowsSQL(limit+1), after, string(tokens))
+	rows, err := s.reader().Query(threadsWithOpenAgentRowsSQL(limit+1), after, held)
 	if err != nil {
 		return nil, false, fmt.Errorf("%s: %w", action, err)
 	}
@@ -512,13 +552,13 @@ func (s *Store) ThreadsWithOpenAgentRows(waiting []string, after string, limit i
 }
 
 // threadsWithOpenAgentRowsSQL is ThreadsWithOpenAgentRows' read of its first
-// limit threads: ?1 is the cursor, ?2 the waiting tokens.
+// limit threads: ?1 is the cursor, ?2 the held work (agentHeldParam).
 func threadsWithOpenAgentRowsSQL(limit int) string {
-	return `WITH RECURSIVE ` + agentParkedSQL + `
+	return `WITH RECURSIVE ` + agentHeldSQL + `
 		SELECT a.caller_thread_id FROM thread_requests a INDEXED BY idx_thread_requests_open_created
 		 WHERE a.caller_thread_id > ?1 AND a.lineage_only = 0 AND a.settled_at IS NULL AND ` + agentRowKindSQL("a") + `
 		UNION
-		SELECT thread FROM parked WHERE thread > ?1
+		SELECT thread FROM held WHERE thread > ?1
 		UNION
 		SELECT a.caller_thread_id FROM thread_requests a INDEXED BY idx_thread_requests_open_below
 		 WHERE a.caller_thread_id > ?1 AND ` + agentSpawnLinkSQL("a") + ` AND ` + agentOpenBelowSQL("a") + `
@@ -551,21 +591,25 @@ type PastAgentRequests struct {
 }
 
 // pastAgentRowSQL is the request kinds a thread's past agent rows hold:
-// every spawn and ask, and a send whose wake was armed. A lineage row the
-// retention sweep kept is one of them, with what the sweep cleared gone.
+// every spawn and ask, and a send whose wake was armed, less the tokens of
+// ?4, the settled spawns whose thread is live. A lineage row the retention
+// sweep kept is one of them, with what the sweep cleared gone.
 const pastAgentRowSQL = `r.caller_thread_id = ?1 AND r.settled_at IS NOT NULL
-	   AND (r.kind IN ('spawn','ask') OR (r.kind = 'send' AND r.notify = 1))`
+	   AND (r.kind IN ('spawn','ask') OR (r.kind = 'send' AND r.notify = 1))
+	   AND r.token NOT IN (SELECT value FROM json_each(?4))`
 
 // ListThreadPastAgentRequests lists one page of the requests callerThreadID
 // made that its Agents segment lists as past: settled, newest settled
 // first, ties by token descending, from after the cursor, at most limit (1
 // to MaxPastAgentRowsPage), with the first answerHead bytes of each answer
-// and the count of them all. The page and the count are one read, through
+// and the count of them all. liveSpawns names, by token, the settled
+// spawns whose thread is not at rest: each is still open, and left out.
+// The page and the count are one read, through
 // idx_thread_requests_caller_settled, so the page's cost follows its rows;
 // the count's follows the caller's settled history, which the retention
 // floor bounds to a month of requests and the lineage of the spawns past
 // it.
-func (s *Store) ListThreadPastAgentRequests(callerThreadID string, after PastAgentRowsCursor, limit, answerHead int) (page PastAgentRequests, err error) {
+func (s *Store) ListThreadPastAgentRequests(callerThreadID string, after PastAgentRowsCursor, limit, answerHead int, liveSpawns []string) (page PastAgentRequests, err error) {
 	if limit < 1 || limit > MaxPastAgentRowsPage {
 		return PastAgentRequests{}, ErrPastAgentRowsPage
 	}
@@ -577,6 +621,13 @@ func (s *Store) ListThreadPastAgentRequests(callerThreadID string, after PastAge
 	if after == (PastAgentRowsCursor{}) {
 		settledBefore = math.MaxInt64
 	}
+	if liveSpawns == nil {
+		liveSpawns = []string{}
+	}
+	open, err := json.Marshal(liveSpawns)
+	if err != nil {
+		return PastAgentRequests{}, fmt.Errorf("%s: encode the live spawns: %w", action, err)
+	}
 	tx, err := s.reader().BeginTx(context.Background(), nil)
 	if err != nil {
 		return PastAgentRequests{}, fmt.Errorf("%s: begin: %w", action, err)
@@ -586,14 +637,14 @@ func (s *Store) ListThreadPastAgentRequests(callerThreadID string, after PastAge
 			err = fmt.Errorf("%s: end the read: %w", action, rollbackErr)
 		}
 	}()
-	if err := tx.QueryRow(`SELECT count(*) FROM thread_requests r WHERE `+pastAgentRowSQL, callerThreadID).Scan(&page.Total); err != nil {
+	if err := tx.QueryRow(`SELECT count(*) FROM thread_requests r WHERE `+pastAgentRowSQL, callerThreadID, nil, nil, string(open)).Scan(&page.Total); err != nil {
 		return PastAgentRequests{}, fmt.Errorf("%s: count: %w", action, err)
 	}
 	page.Requests = []ThreadAgentRequest{}
 	if page.Total == 0 {
 		return page, nil
 	}
-	rows, err := tx.Query(pastAgentRowsSQL(limit+1), callerThreadID, settledBefore, tokenBefore, nil, answerHead)
+	rows, err := tx.Query(pastAgentRowsSQL(limit+1), callerThreadID, settledBefore, tokenBefore, string(open), answerHead)
 	if err != nil {
 		return PastAgentRequests{}, fmt.Errorf("%s: %w", action, err)
 	}
@@ -620,8 +671,8 @@ func (s *Store) ListThreadPastAgentRequests(callerThreadID string, after PastAge
 }
 
 // pastAgentRowsSQL reads a page of past agent rows: ?1 is the caller, ?2
-// and ?3 the cursor's settled time and token, ?5 the answer head (?4 is
-// unused, so the columns read the head where the tree reads put it).
+// and ?3 the cursor's settled time and token, ?4 the live spawns' tokens,
+// ?5 the answer head (where the tree reads put it).
 func pastAgentRowsSQL(limit int) string {
 	return `SELECT ` + threadAgentRequestColumns + `
   FROM thread_requests r INDEXED BY idx_thread_requests_caller_settled
@@ -709,13 +760,16 @@ type ThreadAgentRowFrame struct {
 }
 
 // ThreadAgentRowFrames names the frames a batch of changes sends, in one
-// statement: each request among tokens, and each request this computer's
+// statement: each request among tokens, each request this computer's
 // threads made (the receipts owner names) that is accepted or running in
-// one of targets, framed for its caller; each of callers framed for itself
-// with no token; and each of those frames again for every thread up the
-// local spawns above it (idx_thread_requests_spawn_link) whose listing
-// nests it, fewer than depth spawns up, a thread once per chain. Reminders
-// and requests past the retention floor are left out.
+// one of targets, and the spawn link of each of targets
+// (idx_thread_requests_spawn_link), whose row shows that thread's live
+// state, framed for its caller; each of callers framed for itself with no
+// token; and each of those frames again for every thread up the local
+// spawns above it whose listing nests it, fewer than depth spawns up, a
+// thread once per chain. Reminders and requests past the retention floor
+// are left out; a link the floor reduced to its lineage frames its caller
+// with no token.
 func (s *Store) ThreadAgentRowFrames(tokens, targets, callers []string, owner string, depth int) (_ []ThreadAgentRowFrame, err error) {
 	action := "store: name the frames of changed agent rows"
 	encoded := make([]string, 0, 3)
@@ -760,6 +814,9 @@ var threadAgentRowFramesSQL = `WITH RECURSIVE
                               WHERE rc.target_thread_id = json_each.value AND rc.owner_device_id = ?3
                                 AND rc.state IN ('accepted','running'))
        AND r.lineage_only = 0 AND r.kind <> 'remind'
+    UNION SELECT CASE WHEN link.lineage_only = 0 THEN link.token ELSE '' END, link.caller_thread_id
+      FROM json_each(?2) CROSS JOIN thread_requests link
+     WHERE link.target_thread_id = json_each.value AND ` + agentSpawnLinkSQL("link") + `
     UNION SELECT '', value FROM json_each(?4)),
   up(token, thread, depth, path) AS (
     SELECT token, thread, 0, json_array(thread) FROM named

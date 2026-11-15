@@ -177,7 +177,7 @@ func TestAnExpiredSpawnStillNestsItsThreadsNewWork(t *testing.T) {
 	if got, want := agentTreeEntries(rows), []string{"l-c@0", "c-p@1"}; !slices.Equal(got, want) {
 		t.Fatalf("the named rows %v; want %v", got, want)
 	}
-	if ids, _, err := s.ThreadsWithOpenAgentRows(nil, "", 10); err != nil || !slices.Contains(ids, "lead") {
+	if ids, _, err := s.ThreadsWithOpenAgentRows(nil, nil, "", 10); err != nil || !slices.Contains(ids, "lead") {
 		t.Fatalf("summary candidates %v, %v; want lead among them", ids, err)
 	}
 	frames, err := s.ThreadAgentRowFrames([]string{"c-p"}, nil, nil, "local", 4)
@@ -240,7 +240,7 @@ func TestAParkedQuietRequestKeepsTheSpawnsAboveIt(t *testing.T) {
 	if got, want := read(parked, 2, nil), []string{"l-c@0", "c-g@1+hidden"}; !slices.Equal(got, want) {
 		t.Fatalf("the two-level tree %v; want %v", got, want)
 	}
-	if ids, _, err := s.ThreadsWithOpenAgentRows(parked, "", 10); err != nil || !slices.Equal(ids, []string{"child", "grand", "lead"}) {
+	if ids, _, err := s.ThreadsWithOpenAgentRows(parked, nil, "", 10); err != nil || !slices.Equal(ids, []string{"child", "grand", "lead"}) {
 		t.Fatalf("summary candidates %v, %v; want every thread up the chain", ids, err)
 	}
 	if got := read(nil, 4, nil); len(got) != 0 {
@@ -249,7 +249,7 @@ func TestAParkedQuietRequestKeepsTheSpawnsAboveIt(t *testing.T) {
 	if got := read(nil, 4, []string{"g-p", "c-g"}); len(got) != 0 {
 		t.Fatalf("with no call parked the named rows %v; want none", got)
 	}
-	if ids, _, err := s.ThreadsWithOpenAgentRows(nil, "", 10); err != nil || len(ids) != 0 {
+	if ids, _, err := s.ThreadsWithOpenAgentRows(nil, nil, "", 10); err != nil || len(ids) != 0 {
 		t.Fatalf("with no call parked the candidates %v, %v; want none", ids, err)
 	}
 	// An armed wake below is counted once: the parked spawn is the marks'.
@@ -258,6 +258,120 @@ func TestAParkedQuietRequestKeepsTheSpawnsAboveIt(t *testing.T) {
 	}
 	if got, want := read(parked, 4, nil), []string{"l-c@0", "c-g@1", "g-p@2"}; !slices.Equal(got, want) {
 		t.Fatalf("armed and parked, the owner's tree %v; want %v", got, want)
+	}
+}
+
+// A live thread keeps the spawn that made it, its link, and the spawns
+// above it, settled long before the window, in every read that lists
+// rows: by listing and by name, in the summary candidates and in a Stop
+// All's rows; Past leaves the live spawns it is given out. A live thread
+// only sent to, or never spawned, keeps nothing; a superseded spawn of a
+// live thread is not its link.
+func TestALiveThreadKeepsItsSpawnAndTheSpawnsAboveIt(t *testing.T) {
+	t.Parallel()
+	s := newTestStore(t)
+	for _, id := range []string{"lead", "child", "grand", "peer", "alone"} {
+		mustCreateThread(t, s, id)
+	}
+	seedAgentRequest(t, s, "l-c", "lead", ThreadRequestSpawn, "child", false, 100)
+	settleAgentRequest(t, s, "l-c", 200)
+	seedAgentRequest(t, s, "c-g", "child", ThreadRequestSpawn, "grand", false, 110)
+	settleAgentRequest(t, s, "c-g", 210)
+	seedAgentRequest(t, s, "l-p", "lead", ThreadRequestSend, "peer", true, 120)
+	settleAgentRequest(t, s, "l-p", 220)
+	read := func(live []string, depth int, tokens []string) []string {
+		t.Helper()
+		r := agentTreeRead("lead", depth)
+		r.Live, r.Tokens = live, tokens
+		rows, _, err := s.ListThreadAgentTree(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return agentTreeEntries(rows)
+	}
+	stops := func(root string, live []string) []string {
+		t.Helper()
+		rows, err := s.ListThreadAgentStopRows(ThreadAgentStopRead{Root: root, Live: live, SettledSince: 10_000, Page: 8})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []string
+		for _, row := range rows {
+			out = append(out, row.Token)
+		}
+		return out
+	}
+	past := func(root string, live []string) []string {
+		t.Helper()
+		page, err := s.ListThreadPastAgentRequests(root, PastAgentRowsCursor{}, 8, 0, live)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []string
+		for _, row := range page.Requests {
+			out = append(out, row.Token)
+		}
+		if page.Total != len(out) {
+			t.Fatalf("past of %s total %d, rows %v", root, page.Total, out)
+		}
+		return out
+	}
+	if got := read(nil, 4, nil); len(got) != 0 {
+		t.Fatalf("at rest the tree %v; want none", got)
+	}
+	// The worker child is live: its spawn is listed, and nothing below it.
+	if got, want := read([]string{"child"}, 4, nil), []string{"l-c@0"}; !slices.Equal(got, want) {
+		t.Fatalf("child live, the tree %v; want %v", got, want)
+	}
+	if got, want := stops("lead", []string{"child"}), []string{"l-c"}; !slices.Equal(got, want) {
+		t.Fatalf("child live, Stop All's rows %v; want %v", got, want)
+	}
+	// The nested worker grand is live: both spawns above it are listed.
+	live := []string{"grand"}
+	if got, want := read(live, 4, nil), []string{"l-c@0", "c-g@1"}; !slices.Equal(got, want) {
+		t.Fatalf("grand live, the tree %v; want %v", got, want)
+	}
+	if got, want := read(live, 4, []string{"c-g"}), []string{"c-g@1"}; !slices.Equal(got, want) {
+		t.Fatalf("grand live, the named rows %v; want %v", got, want)
+	}
+	if got, want := read(live, 1, nil), []string{"l-c@0+hidden"}; !slices.Equal(got, want) {
+		t.Fatalf("grand live, the one-level tree %v; want %v", got, want)
+	}
+	if ids, _, err := s.ThreadsWithOpenAgentRows(nil, live, "", 10); err != nil || !slices.Equal(ids, []string{"child", "lead"}) {
+		t.Fatalf("grand live, the summary candidates %v, %v; want every spawner up the chain", ids, err)
+	}
+	if got, want := stops("child", live), []string{"c-g"}; !slices.Equal(got, want) {
+		t.Fatalf("grand live, child's Stop All rows %v; want %v", got, want)
+	}
+	// Past leaves out the live spawns it is given, by token.
+	if got, want := past("lead", []string{"l-c"}), []string{"l-p"}; !slices.Equal(got, want) {
+		t.Fatalf("past with l-c live %v; want %v", got, want)
+	}
+	if got, want := past("lead", nil), []string{"l-p", "l-c"}; !slices.Equal(got, want) {
+		t.Fatalf("past at rest %v; want %v", got, want)
+	}
+	// A live thread the lead only sent to, or one nothing spawned, keeps
+	// nothing.
+	for _, other := range [][]string{{"peer"}, {"alone"}} {
+		if got := read(other, 4, nil); len(got) != 0 {
+			t.Fatalf("%v live, the tree %v; want none", other, got)
+		}
+		if ids, _, err := s.ThreadsWithOpenAgentRows(nil, other, "", 10); err != nil || len(ids) != 0 {
+			t.Fatalf("%v live, the candidates %v, %v; want none", other, ids, err)
+		}
+	}
+	// A superseded spawn of child, as migration v151 leaves an older one,
+	// is lineage, not its link.
+	mustExec(t, s.db, `INSERT INTO thread_requests (token, caller_thread_id, kind, target_thread_id, state, created_at, updated_at, settled_at, superseded, lineage_only)
+		VALUES ('p-c', 'peer', 'spawn', 'child', 'finished', 90, 190, 190, 1, 1)`)
+	if ids, _, err := s.ThreadsWithOpenAgentRows(nil, []string{"child"}, "", 10); err != nil || !slices.Equal(ids, []string{"lead"}) {
+		t.Fatalf("child live, the candidates %v, %v; want its link's caller alone", ids, err)
+	}
+	if link, found, err := s.SpawnLinkOf("child"); err != nil || !found || link != "l-c" {
+		t.Fatalf("child's link %q, %v, %v; want l-c", link, found, err)
+	}
+	if link, found, err := s.SpawnLinkOf("alone"); err != nil || found || link != "" {
+		t.Fatalf("alone's link %q, %v, %v; want none", link, found, err)
 	}
 }
 
@@ -459,10 +573,10 @@ func TestConfirmedWakesNameTheirRow(t *testing.T) {
 	}
 }
 
-// A change frame names the caller of each changed request and of each
-// open request this computer made of a changed target, and each changed
-// caller; each frame goes again to every thread up the local spawns above
-// its caller within the depth, and no further.
+// A change frame names the caller of each changed request, of each open
+// request this computer made of a changed target and of the target's spawn
+// link, and each changed caller; each frame goes again to every thread up
+// the local spawns above its caller within the depth, and no further.
 func TestThreadAgentRowFramesNameCallersAndTheThreadsAboveThem(t *testing.T) {
 	t.Parallel()
 	s := newTestStore(t)
@@ -494,6 +608,8 @@ func TestThreadAgentRowFramesNameCallersAndTheThreadsAboveThem(t *testing.T) {
 		{"", "out"}, {"", "peer"}, {"", "z0"}, {"", "z1"},
 		{"direct", "lead"}, {"direct", "z0"}, {"direct", "z1"}, {"direct", "z2"},
 		{"running", "peer"},
+		// lead's link, whose row shows lead's rest, for z2 and up.
+		{"z2-lead", "out"}, {"z2-lead", "z0"}, {"z2-lead", "z1"}, {"z2-lead", "z2"},
 	}
 	if !slices.Equal(got, want) {
 		t.Fatalf("frames %+v; want %+v", got, want)

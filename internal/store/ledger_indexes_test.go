@@ -92,6 +92,9 @@ func TestThreadAgentTreeSearchesItsArms(t *testing.T) {
 				"idx_thread_requests_open_below", "sqlite_autoindex_thread_requests_1", "idx_thread_requests_nested_caller"}
 			assertPlanSearches(t, s, name, "r", []string{"sqlite_autoindex_thread_requests_1"}, read.query, read.args...)
 			assertPlanSearches(t, s, name, "c", arm, read.query, read.args...)
+			// The held work's spawns, a parked request's and a live
+			// thread's alike, are each a search of the spawn link.
+			assertPlanSearches(t, s, name, "ps", []string{"idx_thread_requests_spawn_link"}, read.query, read.args...)
 			text := planText(explainPlan(t, s, read.query, read.args...))
 			if read.name == "threadAgentTreeSQL" {
 				assertPlanSearches(t, s, name, "a", arm, read.query, read.args...)
@@ -127,6 +130,12 @@ func TestThreadAgentTreeSearchesItsArms(t *testing.T) {
 	}
 	assertPlanSearches(t, s, "HasOpenThreadRequests", "thread_requests", []string{"idx_thread_requests_caller_settled"},
 		hasOpenThreadRequestsSQL, "lead")
+	// A live worker's link costs one search, and a frame names each
+	// target's link through the same index.
+	assertPlanSearches(t, s, "SpawnLinkOf", "link", []string{"idx_thread_requests_spawn_link"}, spawnLinkOfSQL, "child")
+	assertPlanSearches(t, s, "threadAgentRowFramesSQL", "link", []string{"idx_thread_requests_spawn_link"},
+		threadAgentRowFramesSQL, "[]", `["child"]`, "local", "[]", 4)
+	assertPlanSearches(t, s, "threadAgentStopRowsSQL", "ps", []string{"idx_thread_requests_spawn_link"}, stopRows, stopArgs...)
 }
 
 // Neither tree statement compiles again on a rebind once ANALYZE has

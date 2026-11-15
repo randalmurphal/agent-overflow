@@ -19,9 +19,11 @@ import (
 // background, and an answer that changes anything emits
 // `thread:agent_rows_changed` for the spawn's caller, so the pane reads
 // again. Every answer also records on the spawn's row whether that
-// computer listed open work (`nested_open`), which keeps a settled remote
-// spawn listed while it does; the poller asks again at its own pace while
-// a row says so.
+// computer listed open work or said the spawn's thread is not at rest
+// (`nested_open`), which keeps a settled remote spawn listed while it does;
+// the poller asks again at its own pace while a row says so. A remote
+// spawn that settles is asked about once at once, so a thread that keeps
+// working after it answered is recorded before the poller would look.
 //
 // The asking is bounded whatever the number of spawns or computers: one
 // queue of spawns waiting to be asked, each once, at most
@@ -312,9 +314,10 @@ func (a *App) peerPaired(computerID string) (bool, error) {
 	return err == nil && found, err
 }
 
-// recordPeerOpenWork writes whether an answer listed open work on the
-// spawn's row. It runs before the answer is cached, so a read that nests
-// the rows finds the spawn kept for them. A computer that did not answer
+// recordPeerOpenWork writes whether an answer listed open work, or said
+// the spawn's thread is not at rest, on the spawn's row. It runs before
+// the answer is cached, so a read that nests the rows finds the spawn kept
+// for them. A computer that did not answer
 // leaves the last record. One that refused the thread as not this spawn's
 // (its thread, or its receipt past the retention floor, is gone there) will
 // never list it again, so it records none.
@@ -325,9 +328,9 @@ func (a *App) recordPeerOpenWork(spawn store.ThreadRequest, listing ThreadAgentR
 	if err != nil {
 		return
 	}
-	open := false
+	open := listing.Worker != ""
 	for _, row := range listing.Rows {
-		open = open || row.SettledAt == 0
+		open = open || row.SettledAt == 0 || row.Worker != ""
 	}
 	if _, setErr := a.store.SetThreadRequestNestedOpen(spawn.Token, open); setErr != nil {
 		log.Printf("agent rows: record open work under %s: %v", spawn.Token, setErr)

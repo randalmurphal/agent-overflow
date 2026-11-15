@@ -107,6 +107,11 @@ type ThreadAgentRow struct {
 	// replied, finished, errored, cancelled, interrupted, expired, refused,
 	// and the accepted and unconfirmed states before the work starts.
 	State string `json:"state"`
+	// Worker is why the thread a spawn made is not at rest, whatever State
+	// says: blocked, running or queued; empty while it is at rest, and for
+	// every other kind. A spawn whose worker is not at rest is open: one
+	// that replied and keeps working shows its reply and this.
+	Worker string `json:"worker,omitempty"`
 	// BlockedOn is approval or question for a local target waiting on a
 	// prompt, person for a paired computer's target that reports it is
 	// blocked; BlockedDetail says what it asks and BlockedRoutedTo names
@@ -151,6 +156,10 @@ type ThreadAgentRows struct {
 	// ThreadProvider is the listed thread's own provider, answered by
 	// agent_rows so the spawn row on the computer that asked can show it.
 	ThreadProvider string `json:"threadProvider,omitempty"`
+	// Worker is why the listed thread itself is not at rest, answered by
+	// agent_rows so the spawn row on the computer that asked is open while
+	// it is (ThreadAgentRow.Worker).
+	Worker string `json:"worker,omitempty"`
 }
 
 // ThreadAgentRowChange is one `thread:agent_rows_changed` frame: the request
@@ -313,7 +322,8 @@ type PastAgentRows struct {
 
 // ListThreadPastAgentRows lists one page of the requests the thread made
 // that its Agents segment lists under Past: every spawn and ask it made and
-// its sends with their wake armed, once settled, newest settled first, from
+// its sends with their wake armed, once settled and, for a spawn, once the
+// thread it made is at rest (liveSpawnTokens), newest settled first, from
 // after the cursor, at most limit (1 to store.MaxPastAgentRowsPage) rows.
 // Each row carries what an open row carries, derived the same way; a spawn
 // the retention floor reduced to its lineage shows no answer.
@@ -323,7 +333,7 @@ func (a *App) ListThreadPastAgentRows(threadID string, after store.PastAgentRows
 	if _, err := a.store.GetThread(threadID); err != nil {
 		return PastAgentRows{}, fmt.Errorf("read the thread: %w", err)
 	}
-	page, err := a.store.ListThreadPastAgentRequests(threadID, after, limit, threadAgentAnswerHead)
+	page, err := a.store.ListThreadPastAgentRequests(threadID, after, limit, threadAgentAnswerHead, a.liveSpawnTokens())
 	if err != nil {
 		return PastAgentRows{}, fmt.Errorf("read past agent rows: %w", err)
 	}
@@ -335,8 +345,9 @@ func (a *App) ListThreadPastAgentRows(threadID string, after store.PastAgentRows
 }
 
 // ThreadWorkerSummary is what a thread's sidebar row says of its Agents
-// listing: Open counts the open rows it shows, nested rows included, and
-// NeedYou those of them blocked on a prompt no agent was given.
+// listing: Open counts the threads its open rows went to, nested rows
+// included, each once however many requests went to it, and NeedYou those
+// of them blocked on a prompt no agent was given.
 type ThreadWorkerSummary struct {
 	ThreadID string `json:"threadId"`
 	Open     int    `json:"open"`
@@ -366,7 +377,7 @@ type ThreadWorkerSummaryPage struct {
 func (a *App) ListThreadWorkerSummaries(ctx context.Context, after string) (ThreadWorkerSummaryPage, error) {
 	view := newThreadAgentView(a)
 	view.counts = true
-	ids, more, err := a.store.ThreadsWithOpenAgentRows(view.waiting, after, threadWorkerSummaryPage)
+	ids, more, err := a.store.ThreadsWithOpenAgentRows(view.waiting, view.live, after, threadWorkerSummaryPage)
 	if err != nil {
 		return ThreadWorkerSummaryPage{}, fmt.Errorf("list worker summaries: %w", err)
 	}
@@ -402,29 +413,45 @@ func (a *App) GetThreadWorkerSummary(ctx context.Context, threadID string) (Thre
 	return a.threadWorkerSummary(ctx, view, threadID)
 }
 
-// threadWorkerSummary counts the open rows of the thread's listing, read
-// as a pane reads it, through view, so the counts are the rows the pane
-// shows.
+// threadWorkerSummary counts the threads the open rows of the thread's
+// listing went to, read as a pane reads it, through view, so the counts
+// are the rows the pane shows.
 func (a *App) threadWorkerSummary(ctx context.Context, view threadAgentView, threadID string) (ThreadWorkerSummary, error) {
 	listing, _, err := a.threadAgentTreeDepth(ctx, view, threadID, threadAgentRowDepth, threadAgentPeersCached)
 	if err != nil {
 		return ThreadWorkerSummary{}, err
 	}
 	summary := ThreadWorkerSummary{ThreadID: threadID}
+	open, needYou := map[string]bool{}, map[string]bool{}
 	for _, row := range listing.Rows {
 		if !row.open() {
 			continue
 		}
-		summary.Open++
+		open[row.worker()] = true
 		if row.needsYou() {
-			summary.NeedYou++
+			needYou[row.worker()] = true
 		}
 	}
+	summary.Open, summary.NeedYou = len(open), len(needYou)
 	return summary, nil
 }
 
-// open reports whether the row's state is one before the request settled.
+// worker names the thread the row went to, with its computer, so requests
+// to one thread count it once; a row whose thread is not made yet is its
+// own.
+func (row ThreadAgentRow) worker() string {
+	if row.ThreadID == "" {
+		return "request:" + row.Token
+	}
+	return row.ComputerID + "/" + row.ThreadID
+}
+
+// open reports whether the row is open: its request has not settled, or
+// the thread its spawn made is not at rest.
 func (row ThreadAgentRow) open() bool {
+	if row.Worker != "" {
+		return true
+	}
 	switch row.State {
 	case threadtools.RequestUnconfirmed, threadtools.RequestAccepted, threadtools.RequestRunning, threadtools.RequestBlocked:
 		return true
@@ -567,6 +594,13 @@ func (a *App) nestPeerAgentRows(parent *ThreadAgentRow, slot threadAgentRemoteSl
 	if parent.Provider == "" {
 		parent.Provider = answer.listing.ThreadProvider
 	}
+	// That computer says whether the thread is at rest; a spawn whose
+	// request settled waits on a person there when it is blocked, as
+	// nothing routes a remote worker's prompts.
+	parent.Worker = answer.listing.Worker
+	if parent.SettledAt != 0 && parent.Worker == workerBlocked {
+		parent.BlockedOn = "person"
+	}
 	self, _ := a.backendIdentity()
 	rows := make([]ThreadAgentRow, 0, len(answer.listing.Rows))
 	entries := make([]threadAgentEntry, 0, len(answer.listing.Rows))
@@ -619,21 +653,23 @@ func threadAgentPeerUnavailable(computer string, err error) string {
 	return computer + " did not answer; its agents are not shown"
 }
 
-// threadAgentView renders request rows for one read: the parked waits and
-// the settled window are read once for the whole listing. A view for
+// threadAgentView renders request rows for one read: the parked waits, the
+// live workers and the settled window are read once for the whole listing.
+// A view for
 // counts renders each row's state and what it is blocked on, and reads
 // none of the text a row shows: no answer head, no target names, no last
 // messages.
 type threadAgentView struct {
 	app     *App
 	waiting []string
+	live    []string
 	since   int64
 	counts  bool
 }
 
 func newThreadAgentView(a *App) threadAgentView {
 	return threadAgentView{
-		app: a, waiting: a.parkedRequestTokens(),
+		app: a, waiting: a.parkedRequestTokens(), live: a.liveWorkerThreads(),
 		since: time.Now().Add(-threadAgentSettledWindow).UnixMilli(),
 	}
 }
@@ -646,7 +682,7 @@ func (v threadAgentView) tree(root string, depth int, tokens []string, limit int
 		head = 0
 	}
 	return v.app.store.ListThreadAgentTree(store.ThreadAgentTreeRead{
-		Root: root, Waiting: v.waiting, SettledSince: v.since, Depth: depth,
+		Root: root, Waiting: v.waiting, Live: v.live, SettledSince: v.since, Depth: depth,
 		Limit: limit, AnswerHead: head, Tokens: tokens,
 	})
 }
@@ -686,11 +722,18 @@ func (v threadAgentView) row(request store.ThreadAgentRequest, names map[string]
 	row := request.ThreadRequest
 	settled := threadRequestSettled(row)
 	local := row.TargetComputerID == "" && row.TargetThreadID != ""
+	// A spawn's worker is read whatever its request's state: one that
+	// settled is open while the thread it made is not at rest.
+	worker := ""
+	if local && row.Kind == store.ThreadRequestSpawn {
+		worker = v.app.liveWorkerUnrest(row)
+	}
+	live := !settled || worker != ""
 	blocked := false
 	var remote remoteBlocked
 	var snapshot triage.LiveStateSnapshot
 	switch {
-	case settled || row.TargetThreadID == "":
+	case !live || row.TargetThreadID == "":
 	case !local:
 		remote = v.app.remoteRequestBlocked(row.Token)
 		blocked = remote.blocked
@@ -702,7 +745,7 @@ func (v threadAgentView) row(request store.ThreadAgentRequest, names map[string]
 	out := ThreadAgentRow{
 		Token: row.Token, CallerThreadID: row.CallerThreadID, Kind: row.Kind,
 		ThreadID: row.TargetThreadID, OpenThreadID: row.TargetThreadID,
-		ComputerID: row.TargetComputerID, Title: state.Title, State: state.State,
+		ComputerID: row.TargetComputerID, Title: state.Title, State: state.State, Worker: worker,
 		LateReply: request.HasLateReply, CreatedAt: row.CreatedAt, SettledAt: row.SettledAt,
 		Depth: request.Depth, NestedHidden: request.NestedHidden,
 	}
@@ -736,7 +779,7 @@ func (v threadAgentView) row(request store.ThreadAgentRequest, names map[string]
 		out.Title, out.Provider = asked.Title, asked.Provider
 	}
 	switch {
-	case settled:
+	case !live:
 	case row.TargetComputerID != "":
 		// That computer reads its target's prompts; it says whether one is
 		// routed to a thread there rather than the person.
@@ -1148,7 +1191,7 @@ func (a *App) stopThreadAgentTarget(ctx context.Context, target string, visited 
 func (a *App) threadAgentStopRows(threadID string) ([]store.ThreadRequest, error) {
 	view := newThreadAgentView(a)
 	rows, err := a.store.ListThreadAgentStopRows(store.ThreadAgentStopRead{
-		Root: threadID, Waiting: view.waiting, SettledSince: view.since, Page: threadAgentRowLimit,
+		Root: threadID, Waiting: view.waiting, Live: view.live, SettledSince: view.since, Page: threadAgentRowLimit,
 	})
 	if err != nil {
 		return nil, err
@@ -1173,14 +1216,18 @@ func (a *App) threadAgentCaller(threadID string) threadtools.Caller {
 // threadAgentEmits coalesces what changed into frames, off the goroutines
 // that reported it: a store write, an emit, a wait.
 type threadAgentEmits struct {
-	mu       sync.Mutex
-	tokens   map[string]struct{}
-	callers  map[string]struct{}
-	targets  map[string]struct{}
+	mu      sync.Mutex
+	tokens  map[string]struct{}
+	callers map[string]struct{}
+	targets map[string]struct{}
+	// liveness holds the threads whose rest may have changed: each is
+	// reassessed (reassessWorker) and framed as a target when it is or was
+	// a worker, or a request runs on it.
+	liveness map[string]struct{}
 	draining bool
 	// activity is each running target's latest activity line, while it has
-	// a request running; lastActivity and activityDue throttle the frames
-	// activity alone emits.
+	// a request running or is a worker not at rest; lastActivity and
+	// activityDue throttle the frames activity alone emits.
 	activity     map[string]string
 	lastActivity map[string]time.Time
 	activityDue  map[string]bool
@@ -1195,15 +1242,35 @@ func (a *App) noteThreadRequestChanged(change store.ThreadRequestChange) {
 	a.queueThreadAgentEmit(func(e *threadAgentEmits) { e.tokens[change.Token] = struct{}{} })
 }
 
-// noteThreadAgentTarget reports a change to a thread some request runs on.
+// noteThreadAgentTarget reports a change to a thread some request runs on,
+// or a worker not at rest, that leaves its rest as it was: its title.
 func (a *App) noteThreadAgentTarget(threadID string) {
-	if threadID == "" {
-		return
-	}
-	if _, running := a.runningReceiptTokens(threadID); !running {
+	if threadID == "" || !a.threadAgentFollows(threadID) {
 		return
 	}
 	a.queueThreadAgentEmit(func(e *threadAgentEmits) { e.targets[threadID] = struct{}{} })
+}
+
+// noteWorkerLiveness reports a change that may move a thread into or out
+// of rest, each source workerUnrest reads: its turn, its prompts and its
+// session, from the emit tap (tapThreadAgentRows), and its queue, from
+// triage's sends-pending observer (runSendsPendingWorker), which every
+// queue write reports to. The thread is reassessed off both paths, where
+// the spawn link's lookup runs.
+func (a *App) noteWorkerLiveness(threadID string) {
+	if threadID == "" {
+		return
+	}
+	a.queueThreadAgentEmit(func(e *threadAgentEmits) { e.liveness[threadID] = struct{}{} })
+}
+
+// threadAgentFollows reports whether a thread's changes reach an Agents
+// row: a request runs on it, or it is a worker not at rest.
+func (a *App) threadAgentFollows(threadID string) bool {
+	if _, running := a.runningReceiptTokens(threadID); running {
+		return true
+	}
+	return a.liveWorker(threadID)
 }
 
 func (a *App) queueThreadAgentEmit(add func(*threadAgentEmits)) {
@@ -1211,6 +1278,7 @@ func (a *App) queueThreadAgentEmit(add func(*threadAgentEmits)) {
 	e.mu.Lock()
 	if e.tokens == nil {
 		e.tokens, e.callers, e.targets = map[string]struct{}{}, map[string]struct{}{}, map[string]struct{}{}
+		e.liveness = map[string]struct{}{}
 	}
 	add(e)
 	if e.draining || a.lifeCtx().Err() != nil {
@@ -1230,14 +1298,28 @@ func (a *App) drainThreadAgentEmits() {
 	e := &a.threadAgentEmits
 	for {
 		e.mu.Lock()
-		tokens, callers, targets := e.tokens, e.callers, e.targets
-		if len(tokens)+len(callers)+len(targets) == 0 || a.lifeCtx().Err() != nil {
+		tokens, callers, targets, liveness := e.tokens, e.callers, e.targets, e.liveness
+		if len(tokens)+len(callers)+len(targets)+len(liveness) == 0 || a.lifeCtx().Err() != nil {
 			e.draining = false
 			e.mu.Unlock()
 			return
 		}
 		e.tokens, e.callers, e.targets = map[string]struct{}{}, map[string]struct{}{}, map[string]struct{}{}
+		e.liveness = map[string]struct{}{}
 		e.mu.Unlock()
+		for threadID := range liveness {
+			worker, err := a.reassessWorker(threadID)
+			if err != nil {
+				// Framed anyway: a frame that names nothing costs a read.
+				log.Printf("agent rows: reassess thread %s: %v", threadID, err)
+			}
+			if worker || a.threadAgentFollows(threadID) {
+				targets[threadID] = struct{}{}
+			}
+		}
+		if len(tokens)+len(callers)+len(targets) == 0 {
+			continue
+		}
 		// One statement names every frame: each changed request's caller,
 		// and each thread up to the listing's depth above it, whose listing
 		// and worker summary change with it.
@@ -1258,8 +1340,10 @@ func (a *App) drainThreadAgentEmits() {
 	}
 }
 
-// tapThreadAgentRows is the emit tap: a running target's turn, prompt,
-// pending send or title changed, or it did something new.
+// tapThreadAgentRows is the emit tap: any thread's turn, prompt or session
+// changed, which may move it into or out of rest (noteWorkerLiveness); a
+// running target's or a live worker's title changed, or it did something
+// new.
 func (a *App) tapThreadAgentRows(name eventchan.Channel, data any) {
 	// A thread row frame is told by its payload, so this reader names no
 	// thread:updated channel: only the announcer emits on it.
@@ -1274,16 +1358,12 @@ func (a *App) tapThreadAgentRows(name eventchan.Channel, data any) {
 	switch name {
 	case eventchan.ProviderTurnStarted:
 		if event, ok := data.(triage.TurnStartedEvent); ok {
-			a.noteThreadAgentTarget(event.ThreadID)
+			a.noteWorkerLiveness(event.ThreadID)
 		}
 	case eventchan.ProviderTurnCompleted:
 		if event, ok := data.(triage.TurnCompletedEvent); ok {
 			a.forgetThreadAgentActivity(event.ThreadID)
-			a.noteThreadAgentTarget(event.ThreadID)
-		}
-	case eventchan.ProviderSendsPending:
-		if event, ok := data.(SendsPendingEvent); ok {
-			a.noteThreadAgentTarget(event.ThreadID)
+			a.noteWorkerLiveness(event.ThreadID)
 		}
 	case eventchan.ProviderApproval:
 		if event, ok := data.(provider.ApprovalEvent); ok {
@@ -1291,7 +1371,7 @@ func (a *App) tapThreadAgentRows(name eventchan.Channel, data any) {
 			if threadID == "" && event.Request != nil {
 				threadID = event.Request.ThreadID
 			}
-			a.noteThreadAgentTarget(threadID)
+			a.noteWorkerLiveness(threadID)
 		}
 	case eventchan.ProviderUserInput:
 		if event, ok := data.(provider.UserInputEvent); ok {
@@ -1299,12 +1379,12 @@ func (a *App) tapThreadAgentRows(name eventchan.Channel, data any) {
 			if threadID == "" && event.Request != nil {
 				threadID = event.Request.ThreadID
 			}
-			a.noteThreadAgentTarget(threadID)
+			a.noteWorkerLiveness(threadID)
 		}
 	case eventchan.ProviderSessionDied:
 		if event, ok := data.(triage.SessionDiedEvent); ok {
 			a.forgetThreadAgentActivity(event.ThreadID)
-			a.noteThreadAgentTarget(event.ThreadID)
+			a.noteWorkerLiveness(event.ThreadID)
 		}
 	case eventchan.ProviderItemEvent:
 		if event, ok := data.(triage.ItemStreamEvent); ok && event.Item != nil && event.Item.ParentID == "" {
@@ -1325,8 +1405,8 @@ func (a *App) noteThreadAgentActivity(threadID string, item store.Item) {
 		return
 	}
 	// Every top-level row of every thread passes here: only a thread a
-	// request runs on pays for the line.
-	if _, running := a.runningReceiptTokens(threadID); !running {
+	// request runs on, or a worker not at rest, pays for the line.
+	if !a.threadAgentFollows(threadID) {
 		return
 	}
 	line := clipLine(item.Summary)
