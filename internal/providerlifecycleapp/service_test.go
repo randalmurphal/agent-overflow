@@ -3,12 +3,14 @@ package providerlifecycleapp
 import (
 	"context"
 	"encoding/json"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
+	claudeprovider "agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provideraccounts"
 )
 
@@ -185,6 +187,50 @@ func TestRememberEventMergesBeforePersisting(t *testing.T) {
 	}
 	if snapshots := service.Snapshots(); len(snapshots) != 1 || snapshots[0].Limits[0].UsedPercent != 20 {
 		t.Fatalf("cache = %+v", snapshots)
+	}
+}
+
+// Reset forgets every reading, the turn activity that paces polling and the
+// server holds, and tells clients each reading is gone.
+func TestResetForgetsReadingsActivityAndHolds(t *testing.T) {
+	var removed []provider.RateLimitsSnapshot
+	service := New(Deps{Emit: func(channel eventchan.Channel, data any) {
+		if event, ok := data.(provider.UsageEvent); ok && channel == eventchan.ProviderUsage && event.Action == "rate_limits_removed" {
+			removed = append(removed, *event.RateLimits)
+		}
+	}})
+	path := filepath.Join(t.TempDir(), "backoff.json")
+	service.LoadBackoff(path)
+	reading := provider.RateLimitsSnapshot{
+		Provider: string(provider.Codex),
+		Limits:   []provider.RateLimitEntry{{LimitID: "session", WindowMins: 300, UsedPercent: 64, ResetsAt: 1_784_823_600}},
+	}
+	service.RememberEvent(eventchan.ProviderUsage, provider.UsageEvent{Action: "rate_limits", RateLimits: &reading})
+	mark := time.Now().Add(-time.Second)
+	service.NoteTurnActivity(string(provider.Codex))
+	service.Note(string(provider.Claude), "", &claudeprovider.RateLimitedError{RetryAfter: time.Hour})
+	if service.Remaining(string(provider.Claude), "") == 0 {
+		t.Fatal("precondition: a 429 with Retry-After holds the account")
+	}
+
+	service.Reset()
+
+	if snapshots := service.Snapshots(); len(snapshots) != 0 {
+		t.Fatalf("readings survived reset: %+v", snapshots)
+	}
+	if len(removed) != 1 || removed[0].Provider != string(provider.Codex) || removed[0].AccountID != "" {
+		t.Fatalf("removal events = %+v, want the one cleared reading", removed)
+	}
+	if service.TurnCompletedSince(string(provider.Codex), mark) {
+		t.Fatal("turn activity survived reset")
+	}
+	if remaining := service.Remaining(string(provider.Claude), ""); remaining != 0 {
+		t.Fatalf("server hold survived reset: %v", remaining)
+	}
+	reloaded := New(Deps{})
+	reloaded.LoadBackoff(path)
+	if remaining := reloaded.Remaining(string(provider.Claude), ""); remaining != 0 {
+		t.Fatalf("persisted hold survived reset: %v", remaining)
 	}
 }
 
