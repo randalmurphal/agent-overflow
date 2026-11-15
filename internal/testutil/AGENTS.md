@@ -12,7 +12,9 @@ packages. Test-specific setup stays beside the test that owns it.
   use it too.
 - `providerpath/` puts poisoned `claude` and `codex` first on PATH from
   TestMain, so a bare provider name never reaches an installed CLI, and fails
-  the run naming the tests that tried. It also points SHELL at a stand-in
+  the run naming the caller: the poison holds its caller while TestMain
+  captures the goroutines waiting on a child process and the running tests.
+  It also points SHELL at a stand-in
   that skips login startup files, so a shell sync cannot reorder PATH. Every
   test package that links a provider spawn package installs it;
   `TestEveryTestBinaryThatCanStartAProviderInstallsThePoison` fails one that
