@@ -8,8 +8,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
-	"regexp"
-	"strings"
 	"testing"
 	"time"
 
@@ -18,59 +16,21 @@ import (
 	"agent-overflow/internal/testutil"
 )
 
-var slowStepLine = regexp.MustCompile(`deviceclient: slow step=(\S+) duration=(\S+) outcome=(\S+)$`)
-
-type slowStep struct {
-	step     string
-	duration time.Duration
-	outcome  string
-}
-
-// slowSteps parses every slow-step line in logs and fails on any line that
-// carries a value the line must never hold.
-func slowSteps(t *testing.T, logs string, secrets ...string) []slowStep {
+// slowSteps parses the device client's slow-step lines and fails on any
+// that carries a value the line must never hold.
+func slowSteps(t *testing.T, logs string, secrets ...string) []testutil.SlowStep {
 	t.Helper()
-	var steps []slowStep
-	for _, line := range strings.Split(strings.TrimSpace(logs), "\n") {
-		if line == "" {
-			continue
-		}
-		for _, secret := range secrets {
-			if strings.Contains(line, secret) {
-				t.Errorf("log line %q carries %q", line, secret)
-			}
-		}
-		match := slowStepLine.FindStringSubmatch(line)
-		if match == nil {
-			t.Errorf("unexpected log line %q", line)
-			continue
-		}
-		duration, err := time.ParseDuration(match[2])
-		if err != nil {
-			t.Errorf("log line %q: duration: %v", line, err)
-			continue
-		}
-		steps = append(steps, slowStep{step: match[1], duration: duration, outcome: match[3]})
-	}
-	return steps
+	return testutil.CheckedSlowSteps(t, logs, "deviceclient", secrets...)
 }
 
 func lowerSlowStepThreshold(t *testing.T, threshold time.Duration) {
 	t.Helper()
-	previous := slowStepThreshold
-	slowStepThreshold = threshold
-	t.Cleanup(func() { slowStepThreshold = previous })
+	testutil.LowerSlowStepThreshold(t, threshold)
 }
 
-func expectOneSlowStep(t *testing.T, steps []slowStep, step, outcome string, atLeast time.Duration) {
+func expectOneSlowStep(t *testing.T, steps []testutil.SlowStep, step, outcome string, atLeast time.Duration) {
 	t.Helper()
-	if len(steps) != 1 {
-		t.Fatalf("slow steps = %+v, want one %s line", steps, step)
-	}
-	got := steps[0]
-	if got.step != step || got.outcome != outcome || got.duration < atLeast {
-		t.Fatalf("slow step = %+v, want step=%s outcome=%s duration>=%s", got, step, outcome, atLeast)
-	}
+	testutil.ExpectOneSlowStep(t, steps, step, outcome, atLeast)
 }
 
 // A redemption that outlasts the threshold names itself and how long it
@@ -139,11 +99,11 @@ func TestSlowStep_RenewalSupportProbeIsItsOwnStep(t *testing.T) {
 		t.Fatalf("Renew: %v", err)
 	}
 	steps := slowSteps(t, logs.String(), "refresh-", "ao1.")
-	if len(steps) != 2 || steps[0].step != "renewal_support" || steps[1].step != "renew" {
+	if len(steps) != 2 || steps[0].Step != "renewal_support" || steps[1].Step != "renew" {
 		t.Fatalf("slow steps = %+v, want renewal_support then renew", steps)
 	}
 	for _, step := range steps {
-		if step.outcome != "ok" || step.duration < 60*time.Millisecond {
+		if step.Outcome != "ok" || step.Duration < 60*time.Millisecond {
 			t.Fatalf("slow step = %+v, want outcome=ok duration>=60ms", step)
 		}
 	}

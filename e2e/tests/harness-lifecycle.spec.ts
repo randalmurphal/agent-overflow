@@ -541,19 +541,20 @@ test('stopping a backend inside a test attaches its stderr tail to the test', as
   expect(attachment?.body?.toString()).toMatch(/store: migration v\d+ applied/);
 });
 
-test('a pairing wait that times out attaches each side and quotes its slow device-client steps', async () => {
+test('a pairing wait that times out attaches each side and quotes its slow steps', async () => {
   const slow = '2026/11/15 10:00:00 deviceclient: slow step=renew duration=10.002s outcome=timeout';
+  const served = '2026/11/15 10:00:00 transport: slow step=renew duration=10.001s outcome=ok';
   const sides = {
     home: { stderrLines: () => ['transport: listening', slow] },
-    remote: { stderrLines: () => ['transport: listening'] },
+    remote: { stderrLines: () => ['transport: listening', served] },
   };
   await expect(connectedAfterConfirm(sides, async (wait) => {
     throw new Error(`Timed out ${wait.timeout}ms waiting for Connected`);
-  })).rejects.toThrow(`Timed out 20000ms waiting for Connected\n\nslow device-client steps:\nhome: ${slow}`);
+  })).rejects.toThrow(`Timed out 20000ms waiting for Connected\n\nslow pairing steps:\nhome: ${slow}\nremote: ${served}`);
   const attached = test.info().attachments.filter((attachment) => attachment.name.endsWith('stderr at pairing timeout'));
   expect(attached.map((attachment) => [attachment.name, attachment.body?.toString()])).toEqual([
     ['home stderr at pairing timeout', `transport: listening\n${slow}`],
-    ['remote stderr at pairing timeout', 'transport: listening'],
+    ['remote stderr at pairing timeout', `transport: listening\n${served}`],
   ]);
   await expect(connectedAfterConfirm(sides, async () => undefined)).resolves.toBeUndefined();
 });

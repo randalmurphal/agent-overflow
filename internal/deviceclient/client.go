@@ -104,6 +104,10 @@ type Refusal struct {
 	Reason string
 }
 
+// Refused marks this as a verdict rather than a failure to reach one, for
+// the outcome of a slow-step line (logging.ErrorOutcome).
+func (r *Refusal) Refused() bool { return true }
+
 func (r *Refusal) Error() string {
 	if r.Reason == "" {
 		return fmt.Sprintf("deviceclient: the backend refused this credential (HTTP %d)", r.Status)

@@ -18,8 +18,8 @@ import type { PairingInvite } from './offhost-helpers.js';
  */
 const CONNECTED_AFTER_CONFIRM = { timeout: 20_000 };
 
-/** The device client's line for a credential step that ran long (internal/deviceclient/slow_step.go). */
-const SLOW_STEP_MARKER = 'deviceclient: slow step=';
+/** The line any Go step on the pairing path writes when it ran long (internal/logging/slow_step.go). */
+const SLOW_STEP_MARKER = ': slow step=';
 
 /** A process on either side of a pairing whose stderr the spec holds. */
 export interface PairingSide {
@@ -29,7 +29,7 @@ export interface PairingSide {
 /**
  * Runs `assertion` with the CONNECTED_AFTER_CONFIRM wait. When it fails,
  * each side's stderr tail as it stood then is attached under its key, and
- * the slow credential steps the sides logged are quoted in the failure, so
+ * the slow pairing steps the sides logged are quoted in the failure, so
  * a stall names the exchange that held it. A step still in flight logs when
  * it ends, which the tail attached when a backend stops carries.
  */
@@ -48,7 +48,7 @@ export async function connectedAfterConfirm(
       slow.push(...lines.filter((line) => line.includes(SLOW_STEP_MARKER)).map((line) => `${name}: ${line}`));
     }
     throw new Error(
-      `${(error as Error).message}\n\nslow device-client steps:${slow.length > 0 ? `\n${slow.join('\n')}` : ' none logged'}`,
+      `${(error as Error).message}\n\nslow pairing steps:${slow.length > 0 ? `\n${slow.join('\n')}` : ' none logged'}`,
       { cause: error },
     );
   }

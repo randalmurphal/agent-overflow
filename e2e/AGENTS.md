@@ -32,8 +32,8 @@ states its own coverage; do not maintain a duplicate spec catalog here.
 - Shared provider frames, pairing flows, and result narrowing belong in the
   relevant `*-helpers.ts` or `probe-wire.ts`, not inline copies. A wait for
   paired computers to show each other goes through `connectedAfterConfirm`,
-  which attaches both sides' stderr and quotes their slow device-client steps
-  when it times out.
+  which attaches both sides' stderr and quotes their slow-step lines
+  (`internal/logging/slow_step.go`) when it times out.
 - `forge-helpers.ts` seeds the fake `gh`/`glab` and forge API
   (`HarnessForgeSeed`), arms a route's refusal (`HarnessForgeRefuse`,
   optionally held until `HarnessForgeRelease`),
