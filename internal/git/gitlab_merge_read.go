@@ -511,11 +511,17 @@ func gitlabMergeOptions(mr gitlabMRRaw, approvals gitlabApprovalsRaw, settings g
 			out.CannotMergeReason = fmt.Sprintf("You do not have merge access to %s.", mr.TargetBranch)
 		}
 	}
-	if !approvals.UserCanApprove && !approvals.UserHasApproved {
+	switch {
+	case !approvals.UserCanApprove && !approvals.UserHasApproved:
 		out.CannotApproveReason = "You are not an eligible approver."
 		if author {
 			out.CannotApproveReason = "You cannot approve your own merge request."
 		}
+	case approvals.UserCanApprove && approvals.RequirePasswordToApprove:
+		// The approve would need the user's password (approval_password),
+		// which the app does not ask for.
+		out.ViewerCanApprove = false
+		out.CannotApproveReason = "GitLab asks for your password to approve in this project. Approve on GitLab."
 	}
 	return out
 }

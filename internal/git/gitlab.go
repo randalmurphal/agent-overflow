@@ -435,7 +435,13 @@ type gitlabApprovalsRaw struct {
 	ApprovalsLeft     int  `json:"approvals_left"`
 	UserHasApproved   bool `json:"user_has_approved"`
 	UserCanApprove    bool `json:"user_can_approve"`
-	ApprovedBy        []struct {
+	// RequirePasswordToApprove is the project's "Require user
+	// re-authentication to approve" with password sign-in enabled
+	// (Enterprise Edition; ee/lib/ee/api/entities/approval_state.rb at
+	// v18.0.0-ee). The approve endpoint then needs approval_password:
+	// "Required if Require user re-authentication to approve is enabled".
+	RequirePasswordToApprove bool `json:"require_password_to_approve"`
+	ApprovedBy               []struct {
 		ApprovedAt string          `json:"approved_at"`
 		User       gitlabAuthorRaw `json:"user"`
 	} `json:"approved_by"`

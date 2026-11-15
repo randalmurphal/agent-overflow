@@ -124,6 +124,13 @@ type RepoMerge struct {
 	// (UpdateReviewersService and UpdateAssigneesService take .first(1)
 	// at v18.0.0).
 	Free bool `json:"free,omitempty"`
+	// ApprovalPassword is a GitLab project's "Require user
+	// re-authentication to approve" with password sign-in: the merge
+	// request approvals answer require_password_to_approve
+	// (ee/lib/ee/api/entities/approval_state.rb at v18.0.0-ee), and an
+	// approve without approval_password is GitLab's 401, eligibility
+	// (user_can_approve) unchanged.
+	ApprovalPassword bool `json:"approvalPassword,omitempty"`
 }
 
 // Pull is one pull request (GitHub) or merge request (GitLab).
@@ -709,8 +716,8 @@ func (r *Repo) normalize(ids *idSource) error {
 
 func (m *RepoMerge) normalize(forge string) error {
 	if forge == "github" {
-		if m.MergeMethod != "" || m.SquashOption != "" || m.PipelineMustSucceed || m.DiscussionsMustResolve || m.CancelRole != "" || m.SharedAccess || m.Free {
-			return errors.New("mergeMethod, squashOption, pipelineMustSucceed, discussionsMustResolve, cancelRole, sharedAccess and free are GitLab project settings")
+		if m.MergeMethod != "" || m.SquashOption != "" || m.PipelineMustSucceed || m.DiscussionsMustResolve || m.CancelRole != "" || m.SharedAccess || m.Free || m.ApprovalPassword {
+			return errors.New("mergeMethod, squashOption, pipelineMustSucceed, discussionsMustResolve, cancelRole, sharedAccess, free and approvalPassword are GitLab project settings")
 		}
 		m.Permission = defaultString(m.Permission, "WRITE")
 		if githubRoles[m.Permission] == 0 {

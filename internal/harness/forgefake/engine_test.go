@@ -2094,6 +2094,29 @@ func TestGitLabCancelRoutesFollowTheRelease(t *testing.T) {
 	}
 }
 
+// A project that requires the approver's password says so in the
+// approvals answer and refuses an approve without one with GitLab's 401,
+// eligibility unchanged.
+func TestGitLabApprovalPasswordRefusesTheApprove(t *testing.T) {
+	t.Parallel()
+	e, srv := mergeEngine(t)
+	const mrPath = "projects/grp%2Fmerge/merge_requests/2"
+	const head = "3333333333333333333333333333333333333333"
+	if got := glabJSON(t, srv, mrPath+"/approvals"); got["require_password_to_approve"] != false {
+		t.Fatalf("approvals = %v", got)
+	}
+	e.repoOn("gitlab", "gitlab.com", "grp/merge").Merge.ApprovalPassword = true
+	if got := glabJSON(t, srv, mrPath+"/approvals"); got["require_password_to_approve"] != true || got["user_can_approve"] != true {
+		t.Fatalf("approvals with the password required = %v", got)
+	}
+	if got := glabSend(t, srv, "POST", mrPath+"/approve", `{"sha":"`+head+`"}`); got.status != http.StatusUnauthorized {
+		t.Fatalf("approve without a password = %+v", got)
+	}
+	if got := glabJSON(t, srv, mrPath+"/approvals"); got["user_has_approved"] != false {
+		t.Fatalf("after the refused approve: %v", got)
+	}
+}
+
 // A role through a group share leaves GitLab's REST permissions empty;
 // GraphQL maxAccessLevel answers it either way, and a project not on the
 // host is a null project.

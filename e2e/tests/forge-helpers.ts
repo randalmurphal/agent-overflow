@@ -177,6 +177,8 @@ export interface ForgeRepoMerge {
   sharedAccess?: boolean;
   /** GitLab: one reviewer and one assignee per merge request (no Premium). */
   free?: boolean;
+  /** GitLab: "Require user re-authentication to approve" with password sign-in. */
+  approvalPassword?: boolean;
 }
 
 export interface ForgePipeline {

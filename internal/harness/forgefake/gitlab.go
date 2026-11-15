@@ -249,6 +249,9 @@ func (e *Engine) gitlabApprovalsJSON(r *Repo, p *Pull) map[string]any {
 		"approved_by":        approved,
 		"user_has_approved":  gitlabViewerApproved(p, e.viewer),
 		"user_can_approve":   e.gitlabCanApprove(r, p),
+		// The fake's servers are Enterprise Edition (GET metadata), whose
+		// approval state carries it.
+		"require_password_to_approve": r.Merge.ApprovalPassword,
 	}
 }
 
@@ -836,8 +839,10 @@ func glabSHAMismatch(p *Pull) response {
 
 // glabApprove approves the merge request as the viewer: `{sha}` pins the
 // head (409 when it moved). A viewer GitLab does not take an approval
-// from, the merge request's own approver included, is refused with 401.
-// The approval joins approved_by and leaves its system note.
+// from, the merge request's own approver included, is refused with 401,
+// as is any approval on a project that requires the approver's password
+// (merge.approvalPassword; the fake takes no approval_password). The
+// approval joins approved_by and leaves its system note.
 func glabApprove(e *Engine, c *call, m []string) response {
 	var in struct {
 		SHA string `json:"sha"`
@@ -850,7 +855,7 @@ func glabApprove(e *Engine, c *call, m []string) response {
 		return fail
 	}
 	switch {
-	case !e.gitlabCanApprove(r, p):
+	case !e.gitlabCanApprove(r, p), r.Merge.ApprovalPassword:
 		return glabStatus(http.StatusUnauthorized, "401 Unauthorized")
 	case in.SHA != "" && in.SHA != p.HeadSHA:
 		return glabSHAMismatch(p)

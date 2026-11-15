@@ -1361,6 +1361,23 @@ func TestGitLabSharedRoleThroughTheAppsForgeCode(t *testing.T) {
 	}
 }
 
+// A project that requires the approver's password withholds Approve and
+// says why, through the app's own code; an approve sent anyway is
+// GitLab's refusal.
+func TestGitLabApprovalPasswordThroughTheAppsForgeCode(t *testing.T) {
+	fixture := gitlabMergeFixture("success")
+	fixture.Repos[0].Merge.ApprovalPassword = true
+	r := newRig(t, fixture)
+	ref := gitops.PRReference{Forge: "gitlab", Host: "gitlab.com", Namespace: "grp", Repo: "merge", Number: 4}
+	if merge := mergeRead(t, r, ref).Detail.Merge; merge.ViewerCanApprove || merge.CannotApproveReason != "GitLab asks for your password to approve in this project. Approve on GitLab." {
+		t.Fatalf("merge options = %+v", merge)
+	}
+	err := r.core.ApprovePR(forgeapi.WithInteractive(t.Context()), ref, strings.Repeat("4", 40))
+	if got := explained(t, ref, gitops.ActionApprove, err); got.Kind != gitops.ForgeErrorRefused {
+		t.Fatalf("an approve sent anyway = %+v", got)
+	}
+}
+
 // A GitLab review submit through the app's own code: the viewer's own
 // pending draft (a review started on GitLab) refuses it before any write,
 // since the publish would post that draft too. One that fails after

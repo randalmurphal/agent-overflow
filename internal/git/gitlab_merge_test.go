@@ -260,6 +260,18 @@ func TestGitLabMergeOptions(t *testing.T) {
 	if o := gitlabMergeOptions(decodeGitLabMR(t, map[string]any{"user": map[string]any{"can_merge": false}}), approvals, settings, 20, ready, nil, false); o.CannotMergeReason != "Your role in this project cannot merge." {
 		t.Fatalf("reporter: %+v", o)
 	}
+	// A project that asks for the approver's password: GitLab refuses an
+	// approve without approval_password, which the app does not send.
+	password := approvals
+	password.RequirePasswordToApprove = true
+	if o := gitlabMergeOptions(decodeGitLabMR(t, nil), password, settings, gitlabDeveloperAccess, ready, nil, false); o.ViewerCanApprove ||
+		o.CannotApproveReason != "GitLab asks for your password to approve in this project. Approve on GitLab." {
+		t.Fatalf("password required: %+v", o)
+	}
+	password.UserCanApprove = false
+	if o := gitlabMergeOptions(decodeGitLabMR(t, nil), password, settings, gitlabDeveloperAccess, ready, nil, false); o.CannotApproveReason != "You are not an eligible approver." {
+		t.Fatalf("password required, not eligible: %+v", o)
+	}
 	// Approved already: no approve, no reason.
 	if o := gitlabMergeOptions(decodeGitLabMR(t, nil), gitlabApprovalsRaw{UserHasApproved: true}, settings, gitlabDeveloperAccess, ready, nil, false); !o.ViewerApproved || o.CannotApproveReason != "" {
 		t.Fatalf("approved: %+v", o)

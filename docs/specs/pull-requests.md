@@ -101,7 +101,7 @@ Sources. GitLab: `detailed_merge_status` (one blocker per value;
 `mergeable` is ready, `checking`, `unchecked`, `preparing` and
 `approvals_syncing` are checking), `has_conflicts`, the approvals read's
 `approvals_required`, `approvals_left`, `user_has_approved`,
-`user_can_approve`, and the MR's `user.can_merge`,
+`user_can_approve`, `require_password_to_approve`, and the MR's `user.can_merge`,
 `merge_when_pipeline_succeeds`, `blocking_discussions_resolved`. GitHub:
 `mergeStateStatus` (`CLEAN` and `HAS_HOOKS` are ready, `UNKNOWN` is
 checking, `DRAFT` is draft, `DIRTY` conflicts, `BEHIND` rebase, `BLOCKED`
@@ -137,7 +137,9 @@ base's rulesets (`allowedMergeMethods`).
   `latestOpinionatedReviews` (`viewerDidAuthor`) for the pull request
   named: the caller names no review, so nothing of another login's or
   another pull request's can be dismissed. A viewer who cannot approve
-  (GitHub: the author; GitLab: `user_can_approve` false) sees no button,
+  (GitHub: the author; GitLab: `user_can_approve` false, or a project that
+  asks for the approver's password, `require_password_to_approve`, which the
+  app does not send) sees no button,
   and the approvals blocker row says why.
 - Merge now: GitLab `PUT .../merge` with `squash`,
   `should_remove_source_branch` and the head `sha`; GitHub
@@ -402,7 +404,7 @@ and correlation id stay behind "Details". The sentences:
 | Head moved | "The branch moved after you loaded this MR. Reload and try again." (409) |
 | Not mergeable | "FORGE refused the merge: REASON." (GitLab 405/422 body, GitHub 405/422 message) |
 | Rules block | "FORGE blocks this merge: REASON." (GitHub 403 with a protection message, GitLab 401 on merge) |
-| Cannot approve | "You cannot approve your own merge request." / "You are not an eligible approver." |
+| Cannot approve | "You cannot approve your own merge request." / "You are not an eligible approver." / "GitLab asks for your password to approve in this project. Approve on GitLab." |
 | Comment answer lost | "FORGE may have posted this comment. Check the thread before sending it again." (kind `unconfirmed`: a comment or reply posted now whose response did not say; the pane's next frame shows what the forge holds) |
 | Comment elsewhere | "That comment is not on PROJECT#N, so it was not changed." (kind `not_found`: an edit or delete naming a GitHub comment of another PR) |
 | Pending review on GitLab | "You have N pending comments on PROJECT!N that this app did not write, and sending would publish them with this review. Submit or discard them on GitLab, then send again." (kind `refused`: the viewer's draft notes the submit did not create; nothing is written) |
