@@ -371,8 +371,8 @@ type worktreeRemovalPolicy struct {
 	// thread is told (worktreeRemoval.mergedPR).
 	mergedPR string
 	// idle is a further gate run with every occupant's lock held, after the
-	// running-turn and background-task check, so a thread cannot start
-	// work between the caller's check and the removal.
+	// running-work check (ensureWorkspaceChangeAllowed), so a thread cannot
+	// start work between the caller's check and the removal.
 	idle func(occupants []string) error
 }
 
@@ -471,7 +471,7 @@ func (a *App) removeProjectWorktree(projectID, project, worktreePath string, pol
 		return nil, &errWorktreeBusy{reason: err}
 	}
 
-	if err := a.ensureWorkspaceChangeAllowed("remove this worktree", worktreePath); err != nil {
+	if err := a.ensureWorkspaceChangeAllowed("remove this worktree", worktreePath, attached, workspaceRemovalHandles...); err != nil {
 		return nil, &errWorktreeBusy{reason: err}
 	}
 	if policy.idle != nil {

@@ -985,10 +985,12 @@ off the cleanup sends no request of its own; a merged PR waiting for a
 retry is tried again at the next act pass a turn end or a merge found by
 a lookup starts, and the worker's start arms that turn-end pass when a
 previous run left one (`armMergedPRWaiting`, a store read). Both wait for the first client's reads like other unattended
-work. An act pass that finds a
-thread busy marks itself waiting and runs again when a turn completes;
-each pass first skips what is backing off, so a busy or failing worktree
-costs no forge request per pass. `AO_HARNESS_TIMING` `merged-pr-poll`
+work. An act pass that finds work
+running in the worktree (`runningWorkIn`: a thread's turn, queue or
+background task, or a shell command, terminal or setup recipe in the
+directory) marks itself waiting and runs again when a turn completes or at
+the poll's next tick; each pass first skips what is backing off, so a busy
+or failing worktree costs no forge request per pass. `AO_HARNESS_TIMING` `merged-pr-poll`
 shortens the poll, and with it the one-minute tick these retries start
 from, for specs.
 

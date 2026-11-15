@@ -1122,33 +1122,23 @@ func (a *App) postMergedPRKept(threadIDs []string, label, name, reason string) {
 	}
 }
 
-// mergedPRWorktreeBusy says why a worktree's threads are not idle, or nil:
-// a running turn or background task, a pending approval or question, a
-// queued send, a setup recipe running in it, or a transfer deciding where a
-// thread lives.
+// mergedPRWorktreeBusy says why a worktree is not idle, or nil: any work
+// running in it or in one of its threads (runningWorkIn), or a transfer
+// deciding where a thread lives. Unlike a removal the user asks for, the
+// unattended cleanup waits for all of it, a shell command and an open
+// terminal included, rather than stopping it.
 func (a *App) mergedPRWorktreeBusy(path string, threadIDs []string) error {
-	if err := a.ensureWorkspaceChangeAllowed("remove this worktree", path); err != nil {
-		return err
-	}
-	if a.worktreeSetupService().HasRunningPath(path) {
-		return fmt.Errorf("worktree %s is running its setup", path)
-	}
 	for _, id := range threadIDs {
 		if _, err := a.threadApplication().CheckCleanup(id); err != nil {
 			return err
 		}
-		if a.triage == nil {
-			continue
-		}
-		live := a.triage.LiveStateSnapshotForThread(id)
-		switch {
-		case live.ActiveTurn != nil:
-			return fmt.Errorf("thread %s is responding", id)
-		case len(live.QueueItems)+len(live.FlushedItems) > 0:
-			return fmt.Errorf("thread %s has queued messages", id)
-		case len(live.Interactive.Approvals)+len(live.Interactive.UserInputs) > 0:
-			return fmt.Errorf("thread %s is waiting for an answer", id)
-		}
+	}
+	work, err := a.runningWorkIn(workScope{threads: threadIDs, dir: path})
+	if err != nil {
+		return err
+	}
+	if work.running() {
+		return fmt.Errorf("worktree %s is busy: %s", path, work.kind)
 	}
 	return nil
 }

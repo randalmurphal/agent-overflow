@@ -105,7 +105,7 @@ func TestMergedPRWorktreeBusyWaitsForPendingWork(t *testing.T) {
 	if _, err := app.RegisterQueueItem(context.Background(), queued.ID, "after this", SendMessageOptions{}); err != nil {
 		t.Fatalf("RegisterQueueItem: %v", err)
 	}
-	if err := app.mergedPRWorktreeBusy(queuedPath, []string{queued.ID}); err == nil || !strings.Contains(err.Error(), "queued messages") {
+	if err := app.mergedPRWorktreeBusy(queuedPath, []string{queued.ID}); err == nil || !strings.Contains(err.Error(), "messages are queued") {
 		t.Fatalf("a queued send: got %v, want a queued-messages refusal", err)
 	}
 

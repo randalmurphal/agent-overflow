@@ -466,11 +466,17 @@ func TestCancelDirStopsOnlyCommandsInsideTheDirectory(t *testing.T) {
 	}
 	start("thread-inside", "run-inside", inside)
 	start("thread-sibling", "run-sibling", sibling)
+	if !service.HasActiveIn(filepath.Join(root, "tree")) || service.HasActiveIn(filepath.Join(root, "elsewhere")) {
+		t.Fatal("HasActiveIn does not name exactly the directories CancelDir stops")
+	}
 	service.CancelDir(filepath.Join(root, "tree"))
 	// CancelDir returns when the process group is gone. The run leaves the
 	// registry when it settles, which the terminal frame follows.
 	if final := rec.terminal(t); final.RunID != "run-inside" || final.State != StateStopped {
 		t.Fatalf("terminal frame: %+v", final)
+	}
+	if service.HasActiveIn(filepath.Join(root, "tree")) {
+		t.Fatal("HasActiveIn still reports the stopped command")
 	}
 	if service.ActiveRunID("thread-inside") != "" {
 		t.Fatal("the command inside the directory is still registered as running")

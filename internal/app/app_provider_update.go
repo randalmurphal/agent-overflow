@@ -57,6 +57,14 @@ func (a *App) RunProviderUpdate(ctx context.Context, providerName string) error 
 	if err := a.requireStepUp(ctx, "updating a provider CLI on this computer"); err != nil {
 		return err
 	}
+	// Held only while the run is claimed. A running update is named by
+	// updateWorkReason, so a restart to update waits for it, and one cannot
+	// start after that wait found the computer idle.
+	endAdmission, err := a.workAdmission.begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer endAdmission()
 	return a.providerUpdateService().Run(providerName)
 }
 
