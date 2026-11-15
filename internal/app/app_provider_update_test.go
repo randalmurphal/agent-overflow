@@ -3,8 +3,10 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -13,6 +15,7 @@ import (
 
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provideraccounts"
 	"agent-overflow/internal/providerstatus"
 	"agent-overflow/internal/providerupdate"
 	"agent-overflow/internal/providerupdate/updatefake"
@@ -410,5 +413,69 @@ func TestProviderUpdateRunReconcilesStaleSessions(t *testing.T) {
 	defer mu.Unlock()
 	if len(stale) != 1 || stale[0].ThreadID != thread.ID || stale[0].SessionVersion != "99.0.0" || stale[0].InstalledVersion != "99.0.1" {
 		t.Fatalf("stale banners = %+v, want the live thread flagged by the run's sweep", stale)
+	}
+}
+
+// The update check reads the selected Claude login through the account
+// manager: past its refresh deadline it runs no `claude doctor` and reports
+// a sign-in, and a renewed login is checked again.
+func TestProviderUpdateCheckRunsNoDoctorOnAnExpiredClaudeLogin(t *testing.T) {
+	app := newTestAppWithStore(t)
+	accounts, err := provideraccounts.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	attachProviderAccountStoresForTest(t, app, accounts, newTestProviderCredentials(t, t.TempDir()))
+	stubProviderBinaryDetect(t, func(string) string { return updatefake.Baseline })
+	canonical, err := providerCredentialsForTest(t, app).ActiveCredentialPath(string(provider.Claude))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(canonical), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeLogin := func(expiresAt time.Time) {
+		t.Helper()
+		credential := fmt.Sprintf(`{"claudeAiOauth":{"accessToken":"a","refreshToken":"r","expiresAt":%d,"refreshTokenExpiresAt":%d}}`,
+			expiresAt.UnixMilli(), expiresAt.UnixMilli())
+		if err := os.WriteFile(canonical, []byte(credential), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var mu sync.Mutex
+	doctors := 0
+	app.providerUpdateRunner = func(_ context.Context, command providerupdate.Command) (providerupdate.Output, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		doctors++
+		return providerupdate.Output{Text: "Auto-update channel: latest\n"}, nil
+	}
+
+	writeLogin(time.Now().Add(-time.Hour))
+	statuses, err := app.CheckProviderUpdates()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claude := providerUpdateStatus(t, statuses, string(provider.Claude)); !claude.SignInRequired || claude.CheckError != "" {
+		t.Fatalf("claude = %+v, want a sign-in required", claude)
+	}
+	mu.Lock()
+	if doctors != 0 {
+		t.Fatalf("ran %d commands against an expired login", doctors)
+	}
+	mu.Unlock()
+
+	writeLogin(time.Now().Add(30 * 24 * time.Hour))
+	statuses, err = app.CheckProviderUpdates()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claude := providerUpdateStatus(t, statuses, string(provider.Claude)); claude.SignInRequired || claude.CheckError != "" {
+		t.Fatalf("claude after a sign-in = %+v, want a check that answered", claude)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if doctors != 1 {
+		t.Fatalf("ran %d doctors after the sign-in, want 1", doctors)
 	}
 }

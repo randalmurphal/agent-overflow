@@ -196,6 +196,7 @@ func registerLiveClaudeCaptureSession(t *testing.T, app *App, threadID, workspac
 	initSeen := make(chan struct{})
 	var once sync.Once
 	cfg := claude.ConfigFromOptions(launch)
+	cfg.Retention = claude.UserHomeRetention(0)
 	cfg.Binary = binary
 	cfg.WorkDir = workspace
 	cfg.SystemPromptDir = t.TempDir()

@@ -296,7 +296,7 @@ func TestSendMessageWithOptionsImplementSwitchesPlanModeToChat(t *testing.T) {
 	sess, err := claude.NewSession(
 		context.Background(),
 		thread.ID,
-		claude.Config{Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
+		claude.Config{Retention: claude.UserHomeRetention(0), Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
 		func(provider.ProviderEvent) {},
 	)
 	if err != nil {
@@ -463,7 +463,7 @@ func TestSendMessageWithOptionsImplementOnAlreadyImplementedPlanKeepsFirstAttrib
 	sess, err := claude.NewSession(
 		context.Background(),
 		thread.ID,
-		claude.Config{Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
+		claude.Config{Retention: claude.UserHomeRetention(0), Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
 		func(provider.ProviderEvent) {},
 	)
 	if err != nil {
@@ -555,7 +555,7 @@ func TestSendMessageWithOptionsPersistsSourceProposedPlan(t *testing.T) {
 	sess, err := claude.NewSession(
 		context.Background(),
 		thread.ID,
-		claude.Config{Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
+		claude.Config{Retention: claude.UserHomeRetention(0), Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
 		func(provider.ProviderEvent) {},
 	)
 	if err != nil {
@@ -702,7 +702,7 @@ func TestSendMessageWithOptionsPersistsCrossThreadSourceProposedPlan(t *testing.
 	sess, err := claude.NewSession(
 		context.Background(),
 		targetThread.ID,
-		claude.Config{Binary: writeClaudePassthroughBinary(t), WorkDir: targetThread.WorkspacePath},
+		claude.Config{Retention: claude.UserHomeRetention(0), Binary: writeClaudePassthroughBinary(t), WorkDir: targetThread.WorkspacePath},
 		func(provider.ProviderEvent) {},
 	)
 	if err != nil {
@@ -778,8 +778,9 @@ func TestSendMessageIncrementsTurnIndex(t *testing.T) {
 		context.Background(),
 		thread.ID,
 		claude.Config{
-			Binary:  writeClaudePassthroughBinary(t),
-			WorkDir: thread.WorkspacePath,
+			Retention: claude.UserHomeRetention(0),
+			Binary:    writeClaudePassthroughBinary(t),
+			WorkDir:   thread.WorkspacePath,
 		},
 		func(provider.ProviderEvent) {},
 	)
@@ -837,8 +838,9 @@ func TestSendMessageRecordsMessageAnchorForEachUserMessage(t *testing.T) {
 		context.Background(),
 		thread.ID,
 		claude.Config{
-			Binary:  writeClaudePassthroughBinary(t),
-			WorkDir: thread.WorkspacePath,
+			Retention: claude.UserHomeRetention(0),
+			Binary:    writeClaudePassthroughBinary(t),
+			WorkDir:   thread.WorkspacePath,
 		},
 		func(provider.ProviderEvent) {},
 	)
@@ -911,7 +913,7 @@ func TestSendMessageStampsProviderItemIDOnRowAndAnchorBeforeEcho(t *testing.T) {
 	sess, err := claude.NewSession(
 		context.Background(),
 		thread.ID,
-		claude.Config{Binary: writeClaudePassthroughBinary(t), WorkDir: workspace},
+		claude.Config{Retention: claude.UserHomeRetention(0), Binary: writeClaudePassthroughBinary(t), WorkDir: workspace},
 		func(provider.ProviderEvent) {},
 	)
 	if err != nil {
@@ -1036,8 +1038,9 @@ func TestSendMessageGeneratesClaudeThreadTitleOnFirstTurn(t *testing.T) {
 		context.Background(),
 		thread.ID,
 		claude.Config{
-			Binary:  writeClaudePassthroughBinary(t),
-			WorkDir: thread.WorkspacePath,
+			Retention: claude.UserHomeRetention(0),
+			Binary:    writeClaudePassthroughBinary(t),
+			WorkDir:   thread.WorkspacePath,
 		},
 		func(provider.ProviderEvent) {},
 	)
@@ -1123,8 +1126,9 @@ func TestSendMessageDoesNotOverwriteRenamedThreadTitle(t *testing.T) {
 		context.Background(),
 		thread.ID,
 		claude.Config{
-			Binary:  writeClaudePassthroughBinary(t),
-			WorkDir: thread.WorkspacePath,
+			Retention: claude.UserHomeRetention(0),
+			Binary:    writeClaudePassthroughBinary(t),
+			WorkDir:   thread.WorkspacePath,
 		},
 		func(provider.ProviderEvent) {},
 	)
@@ -1214,8 +1218,9 @@ func TestSendMessageRenamesTemporaryWorktreeBranchOnFirstTurn(t *testing.T) {
 		context.Background(),
 		thread.ID,
 		claude.Config{
-			Binary:  writeClaudePassthroughBinary(t),
-			WorkDir: worktreePath,
+			Retention: claude.UserHomeRetention(0),
+			Binary:    writeClaudePassthroughBinary(t),
+			WorkDir:   worktreePath,
 		},
 		func(provider.ProviderEvent) {},
 	)
@@ -1280,8 +1285,9 @@ func TestRespondToApprovalRejectsUntrackedClaudeRequest(t *testing.T) {
 		context.Background(),
 		thread.ID,
 		claude.Config{
-			Binary:  writeClaudePassthroughBinary(t),
-			WorkDir: thread.WorkspacePath,
+			Retention: claude.UserHomeRetention(0),
+			Binary:    writeClaudePassthroughBinary(t),
+			WorkDir:   thread.WorkspacePath,
 		},
 		func(provider.ProviderEvent) {},
 	)
@@ -1366,8 +1372,9 @@ func TestInterruptTurnHappyPathClaude(t *testing.T) {
 		context.Background(),
 		thread.ID,
 		claude.Config{
-			Binary:  writeClaudeInterruptResponderBinary(t),
-			WorkDir: thread.WorkspacePath,
+			Retention: claude.UserHomeRetention(0),
+			Binary:    writeClaudeInterruptResponderBinary(t),
+			WorkDir:   thread.WorkspacePath,
 		},
 		func(provider.ProviderEvent) {},
 	)
@@ -1445,8 +1452,9 @@ func TestInterruptCreatesStoppedSystemError(t *testing.T) {
 		context.Background(),
 		thread.ID,
 		claude.Config{
-			Binary:  writeClaudeInterruptResponderBinary(t),
-			WorkDir: thread.WorkspacePath,
+			Retention: claude.UserHomeRetention(0),
+			Binary:    writeClaudeInterruptResponderBinary(t),
+			WorkDir:   thread.WorkspacePath,
 		},
 		func(provider.ProviderEvent) {},
 	)
@@ -1576,8 +1584,9 @@ func TestInterrupt_LeavesBackgroundTasksRunning(t *testing.T) {
 				context.Background(),
 				thread.ID,
 				claude.Config{
-					Binary:  writeClaudeInterruptResponderBinary(t),
-					WorkDir: thread.WorkspacePath,
+					Retention: claude.UserHomeRetention(0),
+					Binary:    writeClaudeInterruptResponderBinary(t),
+					WorkDir:   thread.WorkspacePath,
 				},
 				func(provider.ProviderEvent) {},
 			)
@@ -1626,8 +1635,9 @@ func TestStopSessionRemovesFromMap(t *testing.T) {
 		context.Background(),
 		thread.ID,
 		claude.Config{
-			Binary:  writeClaudePassthroughBinary(t),
-			WorkDir: thread.WorkspacePath,
+			Retention: claude.UserHomeRetention(0),
+			Binary:    writeClaudePassthroughBinary(t),
+			WorkDir:   thread.WorkspacePath,
 		},
 		func(provider.ProviderEvent) {},
 	)
@@ -1680,8 +1690,9 @@ func TestInternalSendMessageSerialPerThread(t *testing.T) {
 		context.Background(),
 		thread.ID,
 		claude.Config{
-			Binary:  writeClaudePassthroughBinary(t),
-			WorkDir: thread.WorkspacePath,
+			Retention: claude.UserHomeRetention(0),
+			Binary:    writeClaudePassthroughBinary(t),
+			WorkDir:   thread.WorkspacePath,
 		},
 		func(provider.ProviderEvent) {},
 	)
@@ -1765,8 +1776,9 @@ func TestSendMessageParallelDifferentThreads(t *testing.T) {
 		context.Background(),
 		threadA.ID,
 		claude.Config{
-			Binary:  writeClaudePassthroughBinary(t),
-			WorkDir: threadA.WorkspacePath,
+			Retention: claude.UserHomeRetention(0),
+			Binary:    writeClaudePassthroughBinary(t),
+			WorkDir:   threadA.WorkspacePath,
 		},
 		func(provider.ProviderEvent) {},
 	)
@@ -1778,8 +1790,9 @@ func TestSendMessageParallelDifferentThreads(t *testing.T) {
 		context.Background(),
 		threadB.ID,
 		claude.Config{
-			Binary:  writeClaudePassthroughBinary(t),
-			WorkDir: threadB.WorkspacePath,
+			Retention: claude.UserHomeRetention(0),
+			Binary:    writeClaudePassthroughBinary(t),
+			WorkDir:   threadB.WorkspacePath,
 		},
 		func(provider.ProviderEvent) {},
 	)
@@ -1824,8 +1837,9 @@ func TestSendMessagePersistsUserItemAndErrorWhenProviderSendFails(t *testing.T) 
 		context.Background(),
 		thread.ID,
 		claude.Config{
-			Binary:  writeClaudePassthroughBinary(t),
-			WorkDir: thread.WorkspacePath,
+			Retention: claude.UserHomeRetention(0),
+			Binary:    writeClaudePassthroughBinary(t),
+			WorkDir:   thread.WorkspacePath,
 		},
 		func(provider.ProviderEvent) {},
 	)
@@ -1905,8 +1919,9 @@ func TestSendMessageGoesThroughRouter(t *testing.T) {
 		context.Background(),
 		thread.ID,
 		claude.Config{
-			Binary:  writeClaudePassthroughBinary(t),
-			WorkDir: thread.WorkspacePath,
+			Retention: claude.UserHomeRetention(0),
+			Binary:    writeClaudePassthroughBinary(t),
+			WorkDir:   thread.WorkspacePath,
 		},
 		func(provider.ProviderEvent) {},
 	)
@@ -1985,8 +2000,9 @@ func TestSendMessagePersistsUserItemOnSuccess(t *testing.T) {
 		context.Background(),
 		thread.ID,
 		claude.Config{
-			Binary:  writeClaudePassthroughBinary(t),
-			WorkDir: thread.WorkspacePath,
+			Retention: claude.UserHomeRetention(0),
+			Binary:    writeClaudePassthroughBinary(t),
+			WorkDir:   thread.WorkspacePath,
 		},
 		func(provider.ProviderEvent) {},
 	)
@@ -2053,8 +2069,9 @@ func TestSendMessageDoesNotEmitSyntheticTurnStart(t *testing.T) {
 		context.Background(),
 		thread.ID,
 		claude.Config{
-			Binary:  writeClaudePassthroughBinary(t),
-			WorkDir: thread.WorkspacePath,
+			Retention: claude.UserHomeRetention(0),
+			Binary:    writeClaudePassthroughBinary(t),
+			WorkDir:   thread.WorkspacePath,
 		},
 		func(provider.ProviderEvent) {},
 	)
@@ -2102,8 +2119,9 @@ func TestSendMessageRegistersPendingSend(t *testing.T) {
 		context.Background(),
 		thread.ID,
 		claude.Config{
-			Binary:  writeClaudePassthroughBinary(t),
-			WorkDir: thread.WorkspacePath,
+			Retention: claude.UserHomeRetention(0),
+			Binary:    writeClaudePassthroughBinary(t),
+			WorkDir:   thread.WorkspacePath,
 		},
 		func(provider.ProviderEvent) {},
 	)
@@ -2151,8 +2169,9 @@ func TestSendMessageClearsPendingSendOnFailure(t *testing.T) {
 		context.Background(),
 		thread.ID,
 		claude.Config{
-			Binary:  writeClaudePassthroughBinary(t),
-			WorkDir: thread.WorkspacePath,
+			Retention: claude.UserHomeRetention(0),
+			Binary:    writeClaudePassthroughBinary(t),
+			WorkDir:   thread.WorkspacePath,
 		},
 		func(provider.ProviderEvent) {},
 	)
@@ -2232,8 +2251,9 @@ func TestSendMessageBroadcastsListedRowOnFirstItem(t *testing.T) {
 		context.Background(),
 		thread.ID,
 		claude.Config{
-			Binary:  writeClaudePassthroughBinary(t),
-			WorkDir: thread.WorkspacePath,
+			Retention: claude.UserHomeRetention(0),
+			Binary:    writeClaudePassthroughBinary(t),
+			WorkDir:   thread.WorkspacePath,
 		},
 		func(provider.ProviderEvent) {},
 	)
@@ -2277,8 +2297,9 @@ func TestSendMessageBroadcastsListedRowOnFirstItem(t *testing.T) {
 		context.Background(),
 		seeded.ID,
 		claude.Config{
-			Binary:  writeClaudePassthroughBinary(t),
-			WorkDir: seeded.WorkspacePath,
+			Retention: claude.UserHomeRetention(0),
+			Binary:    writeClaudePassthroughBinary(t),
+			WorkDir:   seeded.WorkspacePath,
 		},
 		func(provider.ProviderEvent) {},
 	)

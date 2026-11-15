@@ -2759,7 +2759,7 @@ func TestTwoQueuedRequestsSettleOnTheOneTurnThatConsumedThem(t *testing.T) {
 	// dispatch is the behavior under test, not the provider's answer.
 	stdinLog := filepath.Join(t.TempDir(), "claude-stdin.jsonl")
 	sess, err := claude.NewSession(context.Background(), target.ID,
-		claude.Config{Binary: writeClaudeStdinRecorderBinary(t, stdinLog), WorkDir: workspace},
+		claude.Config{Retention: claude.UserHomeRetention(0), Binary: writeClaudeStdinRecorderBinary(t, stdinLog), WorkDir: workspace},
 		func(provider.ProviderEvent) {})
 	if err != nil {
 		t.Fatalf("claude.NewSession: %v", err)

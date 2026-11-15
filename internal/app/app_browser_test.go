@@ -109,8 +109,9 @@ func TestRefreshLiveBrowserMCPUsesClaudeToggle(t *testing.T) {
 	app, _, _ := newMCPTestApp(t)
 	captureDir := t.TempDir()
 	sess, err := claude.NewSession(context.Background(), "browser-claude", claude.Config{
-		Binary:  writeClaudeMcpToggleCaptureBinary(t, captureDir),
-		WorkDir: t.TempDir(),
+		Retention: claude.UserHomeRetention(0),
+		Binary:    writeClaudeMcpToggleCaptureBinary(t, captureDir),
+		WorkDir:   t.TempDir(),
 	}, func(provider.ProviderEvent) {})
 	if err != nil {
 		t.Fatal(err)
@@ -131,8 +132,9 @@ func TestRefreshLiveBrowserMCPPreservesThreadDisable(t *testing.T) {
 	app.browser.mcp.SetThreadEnabled("browser-claude-disabled", false)
 	captureDir := t.TempDir()
 	sess, err := claude.NewSession(context.Background(), "browser-claude-disabled", claude.Config{
-		Binary:  writeClaudeMcpToggleCaptureBinary(t, captureDir),
-		WorkDir: t.TempDir(),
+		Retention: claude.UserHomeRetention(0),
+		Binary:    writeClaudeMcpToggleCaptureBinary(t, captureDir),
+		WorkDir:   t.TempDir(),
 	}, func(provider.ProviderEvent) {})
 	if err != nil {
 		t.Fatal(err)
@@ -152,8 +154,9 @@ func TestBrowserSettingsCoalescingKeepsSkippedEnableTransition(t *testing.T) {
 	app, _, _ := newMCPTestApp(t)
 	captureDir := t.TempDir()
 	sess, err := claude.NewSession(context.Background(), "browser-coalesced", claude.Config{
-		Binary:  writeClaudeMcpToggleCaptureBinary(t, captureDir),
-		WorkDir: t.TempDir(),
+		Retention: claude.UserHomeRetention(0),
+		Binary:    writeClaudeMcpToggleCaptureBinary(t, captureDir),
+		WorkDir:   t.TempDir(),
 	}, func(provider.ProviderEvent) {})
 	if err != nil {
 		t.Fatal(err)

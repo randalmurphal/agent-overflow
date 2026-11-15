@@ -536,8 +536,9 @@ func TestSettlementReturnsAResponderToItsSwitch(t *testing.T) {
 	}
 	captureDir := t.TempDir()
 	sess, err := claude.NewSession(ctx, thread.ID, claude.Config{
-		Binary:  writeClaudeMcpToggleCaptureBinary(t, captureDir),
-		WorkDir: thread.WorkspacePath,
+		Retention: claude.UserHomeRetention(0),
+		Binary:    writeClaudeMcpToggleCaptureBinary(t, captureDir),
+		WorkDir:   thread.WorkspacePath,
 	}, func(provider.ProviderEvent) {})
 	if err != nil {
 		t.Fatalf("claude.NewSession: %v", err)

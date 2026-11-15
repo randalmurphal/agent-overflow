@@ -221,14 +221,14 @@ func (m *Manager) RemoveProviderAccount(providerName, accountID string) error {
 	// BEFORE the branch, not inside it: removing an account that was not the
 	// active one took every early return below and published nothing at all,
 	// so the card stayed on every other client's Settings screen until reload.
-	m.emitProviderAccountsChanged()
+	m.emitProviderAccountsChanged(providerName)
 
 	if !removingActive {
 		return nil
 	}
 	if replacement.ID == "" {
 		m.emitProviderAccountCleared(providerName, generation)
-		m.applySelection(providerName, generation, "")
+		m.applySelection(providerName, generation, accountID, "")
 		return nil
 	}
 	m.emitProviderAccount(
@@ -237,6 +237,6 @@ func (m *Manager) RemoveProviderAccount(providerName, accountID string) error {
 		AccountInfo(replacement),
 		generation,
 	)
-	m.applySelection(providerName, generation, replacement.ID)
+	m.applySelection(providerName, generation, accountID, replacement.ID)
 	return nil
 }

@@ -23,7 +23,7 @@ func TestBuildLaunchOptionsPassesTheAppendSystemPromptFileAndSnapshotFlag(t *tes
 	t.Cleanup(func() { claude.RemoveSystemPromptFile(path) })
 
 	cfg := Config{Binary: "claude", WorkDir: t.TempDir(), HookCmd: "/tmp/ao-exe", AppendSystemPrompt: guide, InstalledCLIVersion: "2.1.284 (Claude Code)"}
-	opts, err := buildLaunchOptions(cfg, "", path, "http://127.0.0.1:1", "http://127.0.0.1:2/hook", "tok")
+	opts, err := buildLaunchOptions(withTestRetention(cfg), "", path, "http://127.0.0.1:1", "http://127.0.0.1:2/hook", "tok")
 	if err != nil {
 		t.Fatalf("buildLaunchOptions: %v", err)
 	}
@@ -41,7 +41,7 @@ func TestBuildLaunchOptionsPassesTheAppendSystemPromptFileAndSnapshotFlag(t *tes
 	}
 
 	cfg = Config{Binary: "claude", WorkDir: t.TempDir(), HookCmd: "/tmp/ao-exe", InstalledCLIVersion: "2.1.266"}
-	opts, err = buildLaunchOptions(cfg, "", "", "http://127.0.0.1:1", "http://127.0.0.1:2/hook", "tok")
+	opts, err = buildLaunchOptions(withTestRetention(cfg), "", "", "http://127.0.0.1:1", "http://127.0.0.1:2/hook", "tok")
 	if err != nil {
 		t.Fatalf("buildLaunchOptions: %v", err)
 	}

@@ -198,11 +198,11 @@ func (a *Service) finishWorkspaceMCPAuth(
 // claudeWorkspaceAuthConfig is the process a Claude MCP sign-in runs in.
 func (a *Service) claudeWorkspaceAuthConfig(workspacePath string) claude.Config {
 	return claude.Config{
-		Binary:            a.providerBinaryPath(string(provider.Claude)),
-		WorkDir:           workspacePath,
-		Env:               a.sessionProcessEnv(string(provider.Claude)),
-		EventLogger:       a.logger,
-		CleanupPeriodDays: a.claudeCleanupPeriodDays(workspacePath),
+		Binary:      a.providerBinaryPath(string(provider.Claude)),
+		WorkDir:     workspacePath,
+		Env:         a.sessionProcessEnv(string(provider.Claude)),
+		EventLogger: a.logger,
+		Retention:   a.claudeRetention(workspacePath),
 	}
 }
 

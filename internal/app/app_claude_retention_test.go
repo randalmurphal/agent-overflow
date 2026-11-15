@@ -1,13 +1,19 @@
 package app
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
+	"agent-overflow/internal/providerupdate"
+	"agent-overflow/internal/providerupdate/updatefake"
 	"agent-overflow/internal/settings"
 )
 
@@ -319,7 +325,9 @@ func TestStartSession_ClaudeCarriesTheRetentionWindow(t *testing.T) {
 
 // Every other Claude launch against the user's home takes its value from the
 // same resolver, for its own working directory: the interactive TUI, account
-// probes, MCP sign-in and text generation.
+// probes, MCP sign-in and text generation. The update commands are covered
+// by TestProviderUpdateClaudeCommandsCarryTheRetentionWindow. A launch given
+// no answer at all is refused by claude.NewCommandLine.
 func TestEveryClaudeLaunchCarriesTheRetentionWindow(t *testing.T) {
 	t.Parallel()
 	app, _ := setupE2EApp(t)
@@ -342,15 +350,15 @@ func TestEveryClaudeLaunchCarriesTheRetentionWindow(t *testing.T) {
 		if err != nil {
 			t.Fatalf("claudeTUISessionConfig: %v", err)
 		}
-		return cfg.CleanupPeriodDays
+		return cfg.Retention.CleanupPeriodDays()
 	}
 	// A launch that was never given the resolver answers 0, which fails
 	// below with that launch's name.
-	resolve := func(resolver func(string) int, workDir string) int {
+	resolve := func(resolver func(string) claude.Retention, workDir string) int {
 		if resolver == nil {
 			return 0
 		}
-		return resolver(workDir)
+		return resolver(workDir).CleanupPeriodDays()
 	}
 	textgenAlternate, ok := app.resolveTextGenerationConfigFor(string(provider.Claude))
 	if !ok {
@@ -360,16 +368,16 @@ func TestEveryClaudeLaunchCarriesTheRetentionWindow(t *testing.T) {
 	if textgenPreferred.Provider != string(provider.Claude) {
 		t.Fatalf("text generation chose %q, want claude", textgenPreferred.Provider)
 	}
-	mcpSignIn := app.mcpDeps().ClaudeCleanupPeriodDays
+	mcpSignIn := app.mcpDeps().ClaudeRetention
 
 	for name, launch := range map[string]func(workDir string) int{
 		"interactive TUI": tuiDays,
 		"MCP sign-in":     func(workDir string) int { return resolve(mcpSignIn, workDir) },
 		"text generation": func(workDir string) int {
-			return resolve(textgenPreferred.ClaudeCleanupPeriodDays, workDir)
+			return resolve(textgenPreferred.ClaudeRetention, workDir)
 		},
 		"text generation (alternate)": func(workDir string) int {
-			return resolve(textgenAlternate.ClaudeCleanupPeriodDays, workDir)
+			return resolve(textgenAlternate.ClaudeRetention, workDir)
 		},
 	} {
 		if got := launch(plain); got != 90 {
@@ -380,7 +388,103 @@ func TestEveryClaudeLaunchCarriesTheRetentionWindow(t *testing.T) {
 		}
 	}
 	// A probe runs in the home directory, not in a workspace.
-	if got := app.ensureProviderAccountManager().ClaudeProbeConfig(binary, nil).CleanupPeriodDays; got != 90 {
+	if got := app.ensureProviderAccountManager().ClaudeProbeConfig(binary, nil).Retention.CleanupPeriodDays(); got != 90 {
 		t.Errorf("account probe carries cleanupPeriodDays %d, want 90", got)
+	}
+}
+
+// The update check's `claude doctor` and the `claude update` run start the
+// CLI against the user's home like every other launch, so they carry the
+// window ahead of the subcommand and clear the config-home variables.
+func TestProviderUpdateClaudeCommandsCarryTheRetentionWindow(t *testing.T) {
+	resetClaudeProbeCacheForTest(t)
+	app := newTestAppWithStore(t)
+	setTestRetentionDays(t, app, 90)
+	frames := watchProviderUpdates(app)
+	binary := filepath.Join(t.TempDir(), "claude")
+	writeClaudeProbeMockAt(t, binary, "99.0.0")
+	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": binary}); err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	version := updatefake.Baseline
+	stubProviderBinaryDetect(t, func(providerName string) string {
+		if providerName != string(provider.Claude) {
+			return "0.149.0"
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		return version
+	})
+	if err := app.providerUpdateFeed.SetLatest("99.1.0"); err != nil {
+		t.Fatal(err)
+	}
+	commands := map[string]providerupdate.Command{}
+	app.providerUpdateRunner = func(_ context.Context, command providerupdate.Command) (providerupdate.Output, error) {
+		if command.Binary != binary {
+			return providerupdate.Output{}, errors.New("unexpected binary " + command.Binary)
+		}
+		subcommand := command.Args[len(command.Args)-1]
+		mu.Lock()
+		commands[subcommand] = command
+		mu.Unlock()
+		switch subcommand {
+		case "doctor":
+			return providerupdate.Output{Text: "Auto-update channel: latest\n"}, nil
+		case "update":
+			mu.Lock()
+			version = "99.1.0"
+			mu.Unlock()
+			return providerupdate.Output{Text: "Successfully updated"}, nil
+		}
+		return providerupdate.Output{}, errors.New("unexpected command")
+	}
+
+	if _, err := app.CheckProviderUpdates(); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.RunProviderUpdate(callSteppedUp("owner"), string(provider.Claude)); err != nil {
+		t.Fatalf("RunProviderUpdate: %v", err)
+	}
+	frames.wait(t, func(s providerupdate.Status) bool {
+		return s.Run.Phase == providerupdate.PhaseSucceeded || s.Run.Phase == providerupdate.PhaseFailed
+	}, string(provider.Claude))
+
+	mu.Lock()
+	defer mu.Unlock()
+	for _, subcommand := range []string{"doctor", "update"} {
+		command, ran := commands[subcommand]
+		if !ran {
+			t.Errorf("claude %s never ran", subcommand)
+			continue
+		}
+		want := []string{"--settings", `{"cleanupPeriodDays":90}`, subcommand}
+		if !slices.Equal(command.Args, want) {
+			t.Errorf("claude %s args = %q, want %q", subcommand, command.Args, want)
+		}
+		for _, name := range claude.ConfigHomeUnsetEnv() {
+			if !slices.Contains(command.UnsetEnv, name) {
+				t.Errorf("claude %s keeps an inherited %s (unset %q)", subcommand, name, command.UnsetEnv)
+			}
+		}
+	}
+}
+
+// The update runner removes what a command's UnsetEnv names from the
+// environment the command runs with.
+func TestRunProviderUpdateGroupDropsUnsetEnv(t *testing.T) {
+	t.Setenv("CLAUDE_CONFIG_DIR", "/alternate")
+	t.Setenv("AO_PROVIDER_UPDATE_KEPT", "kept")
+	out, err := runProviderUpdateGroup(context.Background(), providerupdate.Command{
+		Binary:   "/bin/sh",
+		Args:     []string{"-c", `printf '%s|%s' "${CLAUDE_CONFIG_DIR-unset}" "${AO_PROVIDER_UPDATE_KEPT-unset}"`},
+		UnsetEnv: []string{"CLAUDE_CONFIG_DIR"},
+		Dir:      t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("runProviderUpdateGroup: %v", err)
+	}
+	if out.Text != "unset|kept" {
+		t.Fatalf("child saw %q, want unset|kept", out.Text)
 	}
 }

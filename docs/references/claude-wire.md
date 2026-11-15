@@ -5210,6 +5210,22 @@ and no `.last-cleanup`, each process held open 20 seconds:
 | `--no-session-persistence`, no period | 60-day deleted (only file seeded) |
 | `claude mcp list`, 30 seconds | 60-day kept (only file seeded), no `.last-cleanup` written |
 
+Spike 2026-11-15 against 2.1.325, same seeding, no credentials, no
+terminal, stdin `/dev/null`:
+
+| Launch | Result |
+|---|---|
+| `claude doctor` | Exits 0 in about 0.5 seconds, prints `Auto-update channel: latest`, both kept, no `.last-cleanup` written; the same in 0.9 seconds with every HTTPS call stalled |
+| `claude --settings '{"cleanupPeriodDays":90}' doctor` | Flag accepted ahead of the subcommand, exits 0, same output |
+| `-p` stream-json held 25 seconds (control) | Both deleted, `.last-cleanup` written |
+| `claude mcp list`, `claude --version` | Both kept |
+
+Without credentials `doctor` exits before the 5-second sweep delay. Its
+output says it fetches managed settings and organization policy when
+credentials exist ("Managed settings (remote): not fetched: no usable
+credentials"), so a signed-in `doctor` on a slow network may live past
+that delay; unobserved. `claude update` was not run.
+
 The period a process resolves follows settings precedence, user below
 project below local, read from the process's working directory only. Same
 home and seeded files, `-p` stream-json with and without `--safe-mode`:
@@ -5240,7 +5256,10 @@ minute. `--bare` skips it. A period set by managed policy outranks the
 home's effective retention, so every Claude process AO starts against the
 user's home carries a `--settings` period, measured against what that
 process resolves from the user, project and local files for its working
-directory. The rule and the list of launches are in
+directory. `doctor` and `update` carry it too, since a signed-in run is
+unobserved. Every Claude command line is built by `claude.NewCommandLine`,
+which refuses a launch with no retention answer; the rule and its two
+exemptions (`mcp list`, `--version`) are in
 `internal/provider/claude/retention.go`.
 
 ## Captured samples

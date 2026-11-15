@@ -87,6 +87,28 @@ func TestProviderUpdateGroupRunnerReportsExitAndStartFailures(t *testing.T) {
 	}
 }
 
+// A command whose Done answers true is stopped there and succeeds with the
+// output so far: a `claude doctor` that lingers after naming its channel
+// holds no process until its deadline.
+func TestProviderUpdateCommandStopsOnceDone(t *testing.T) {
+	t.Parallel()
+	command := shellUpdateCommand(t, "echo 'Auto-update channel: latest'\nsleep 300\n")
+	command.Done = func(output string) bool { return strings.Contains(output, "channel: latest\n") }
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	started := time.Now()
+	out, err := runProviderUpdateGroup(ctx, command)
+	if err != nil {
+		t.Fatalf("err = %v, want a finished command", err)
+	}
+	if !strings.Contains(out.Text, "Auto-update channel: latest") {
+		t.Errorf("output = %q", out.Text)
+	}
+	if elapsed := time.Since(started); elapsed > 10*time.Second {
+		t.Errorf("took %s; the command was not stopped when done", elapsed)
+	}
+}
+
 func readChildPID(t *testing.T, path string) int {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)

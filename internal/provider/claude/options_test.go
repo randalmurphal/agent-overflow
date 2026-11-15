@@ -830,7 +830,7 @@ func TestCrossSessionGateIsNotInheritedWhenDisabled(t *testing.T) {
 	t.Setenv(claudePeerSessionNameEnv, "someone-elses-name")
 
 	cfg := ConfigFromOptions(provider.SessionOptions{Provider: "claude", Model: "claude-opus-4-7"})
-	env := provider.BuildEnvironment(claudeSpawnEnv(cfg), claudeSpawnUnsetEnv()...)
+	env := provider.BuildEnvironment(claudeSpawnEnv(cfg), launchUnsetEnv()...)
 
 	if value, found := envLookup(env, claudeHarborKiteEnv); found {
 		t.Fatalf("%s = %q in the child environment, want it absent — the setting says off", claudeHarborKiteEnv, value)
@@ -852,7 +852,7 @@ func TestTaskListIDIsPinnedToTheThread(t *testing.T) {
 		t.Fatalf("TaskListID = %q, want thread-1", cfg.TaskListID)
 	}
 	cfg.Env = map[string]string{claudeTaskListIDEnvVar: "someone-elses-list", "FOO": "bar"}
-	env := provider.BuildEnvironment(claudeSpawnEnv(cfg), claudeSpawnUnsetEnv()...)
+	env := provider.BuildEnvironment(claudeSpawnEnv(cfg), launchUnsetEnv()...)
 	if value, found := envLookup(env, claudeTaskListIDEnvVar); !found || value != "thread-1" {
 		t.Fatalf("%s = %q (present=%v), want thread-1", claudeTaskListIDEnvVar, value, found)
 	}
@@ -879,7 +879,7 @@ func TestCrossSessionGateIsStatedExplicitlyWhenEnabled(t *testing.T) {
 		Model:              "claude-opus-4-7",
 		ClaudeCrossSession: provider.ClaudeCrossSession{Enabled: true, Inbound: "accept"},
 	})
-	env := provider.BuildEnvironment(claudeSpawnEnv(cfg), claudeSpawnUnsetEnv()...)
+	env := provider.BuildEnvironment(claudeSpawnEnv(cfg), launchUnsetEnv()...)
 
 	if value, found := envLookup(env, claudeHarborKiteEnv); !found || value != "1" {
 		t.Fatalf("%s = %q (present=%v), want \"1\"", claudeHarborKiteEnv, value, found)
@@ -930,13 +930,13 @@ func TestSpawnEnvRaisesTheMCPDescriptionCap(t *testing.T) {
 		t.Fatalf("ClaudeMCPDescriptionLengthLimit = %s, want the CLI's own tool-search cap 16384", want)
 	}
 	cfg := ConfigFromOptions(provider.SessionOptions{Provider: "claude", ThreadID: "thread-1", Model: "claude-opus-4-7"})
-	env := provider.BuildEnvironment(claudeSpawnEnv(cfg), claudeSpawnUnsetEnv()...)
+	env := provider.BuildEnvironment(claudeSpawnEnv(cfg), launchUnsetEnv()...)
 	if value, found := envLookup(env, provider.ClaudeMCPDescriptionLengthEnv); !found || value != want {
 		t.Fatalf("%s = %q (present=%v), want %s", provider.ClaudeMCPDescriptionLengthEnv, value, found, want)
 	}
 
 	cfg.Env = map[string]string{provider.ClaudeMCPDescriptionLengthEnv: "8192"}
-	env = provider.BuildEnvironment(claudeSpawnEnv(cfg), claudeSpawnUnsetEnv()...)
+	env = provider.BuildEnvironment(claudeSpawnEnv(cfg), launchUnsetEnv()...)
 	if value, _ := envLookup(env, provider.ClaudeMCPDescriptionLengthEnv); value != "8192" {
 		t.Fatalf("%s = %q, want the user's 8192 to outrank AO's default", provider.ClaudeMCPDescriptionLengthEnv, value)
 	}
