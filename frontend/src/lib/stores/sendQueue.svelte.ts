@@ -204,6 +204,13 @@ export function getQueueRevisionForThread(threadId: string | null | undefined): 
   return queueRevisionByThread.get(threadId) ?? 0;
 }
 
+/** A queue frame for the thread arrived. It is newer than every snapshot
+ * read in flight, whether or not it changed what this client holds: the
+ * transport writes it ahead of a reply read before it left. */
+export function noteQueueFrame(threadId: string): void {
+  if (threadId) bumpQueueRevision(threadId);
+}
+
 function bumpQueueRevision(threadId: string): void {
   queueRevisionByThread.set(threadId, getQueueRevisionForThread(threadId) + 1);
 }
