@@ -29,8 +29,11 @@ func workspaceRefForThread(thread store.Thread) WorkspaceRef {
 // GitWorkspaceState is the caller's checkout after a mutation that may have
 // moved its branch. WorktreePath is empty when the workspace is the project
 // root; Branch is empty on a detached HEAD. Status, set by a checkout
-// (GitCheckout, GitCreateBranchFrom), is the checkout's git status as it
-// produced it, read without waiting on the forge (gitops.Core.StatusFast).
+// (GitCheckout, GitCreateBranchFrom), is read after it without waiting on
+// the forge (gitapp.Service.CheckoutStatus): the workspace's published
+// status, which is that read or one that began after it, or the read itself
+// while the workspace's status is held off the wire (a worktree removal).
+// After a checkout Branch is Status's branch.
 // LeftBehind is set when the mutation moved a detached HEAD away from
 // commits no ref reaches.
 type GitWorkspaceState struct {
@@ -63,12 +66,9 @@ func newWorkspaceState(project, workspace, branch string) GitWorkspaceState {
 // GetGitStatus returns git status for the referenced workspace.
 //
 // The answer is not the caller's alone: every other client watching this
-// workspace is looking at the same checkout, so the fresh status is also
-// pushed through the workspace's gitwatch stream (a no-op when nobody is
-// subscribed). Doing that AFTER the synchronous fetch means the watcher's
-// refresh runs against a warm PR cache, and it arms gitwatch's
-// missed-event detection — a refresh that observes a change the fs watches
-// never reported is how a silently dead watchpoint gets reinstalled.
+// workspace is looking at the same checkout, so the fresh status is
+// published through the workspace's gitwatch stream, and the answer is
+// what that stream publishes (gitapp.Service.Status).
 //
 //ao:scope git:operate
 func (a *App) GetGitStatus(ctx context.Context, ws WorkspaceRef) (gitops.GitStatus, error) {
@@ -211,17 +211,16 @@ func (a *App) GitCheckout(ws WorkspaceRef, branch string) (GitWorkspaceState, er
 }
 
 // recordWorkspaceCheckout reads the workspace's status after a branch
-// change without waiting on the forge, writes its branch onto every thread
-// row in the directory, and answers with the status and what the change
-// left behind. It asks the workspace's status stream to refresh, so every
-// other client sees the change and the open-PR lookup StatusFast left
-// pending is answered there.
+// change without waiting on the forge (gitapp.Service.CheckoutStatus),
+// writes the answered status's branch onto every thread row in the
+// directory, and answers with that status and what the change left behind.
+// Publishing the read lets every other client see the change and answers
+// the open-PR lookup it left pending there.
 func (a *App) recordWorkspaceCheckout(label, project, workspace string, leftBehind *gitops.LeftBehind) (GitWorkspaceState, error) {
-	status, err := a.gitCore().StatusFast(workspace)
+	status, err := a.gitApplication().CheckoutStatus(workspace)
 	if err != nil {
 		return GitWorkspaceState{}, fmt.Errorf("%s: read status: %w", label, err)
 	}
-	a.gitApplication().RequestRefresh(workspace)
 	if _, err := a.UpdateThreadBranch(workspace, status.Branch); err != nil {
 		return GitWorkspaceState{}, fmt.Errorf("%s: record branch on threads: %w", label, err)
 	}

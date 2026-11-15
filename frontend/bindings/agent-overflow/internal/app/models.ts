@@ -2713,8 +2713,11 @@ export class GitStatusSubscriptionResult {
  * GitWorkspaceState is the caller's checkout after a mutation that may have
  * moved its branch. WorktreePath is empty when the workspace is the project
  * root; Branch is empty on a detached HEAD. Status, set by a checkout
- * (GitCheckout, GitCreateBranchFrom), is the checkout's git status as it
- * produced it, read without waiting on the forge (gitops.Core.StatusFast).
+ * (GitCheckout, GitCreateBranchFrom), is read after it without waiting on
+ * the forge (gitapp.Service.CheckoutStatus): the workspace's published
+ * status, which is that read or one that began after it, or the read itself
+ * while the workspace's status is held off the wire (a worktree removal).
+ * After a checkout Branch is Status's branch.
  * LeftBehind is set when the mutation moved a detached HEAD away from
  * commits no ref reaches.
  */

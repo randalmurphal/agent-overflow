@@ -119,7 +119,7 @@ func newRebuildHarness(t *testing.T, initialRoots []gitops.WatchRoot, configure 
 		}
 		return inner(ctx, cwd)
 	}
-	h.w = newWorkspaceWatcher(h.ws, statusFn, nil, initialRoots, rootsFn)
+	h.w = newWorkspaceWatcher(h.ws, statusFn, nil, initialRoots, rootsFn, new(sequence))
 	for _, fn := range configure {
 		fn(h.w)
 	}

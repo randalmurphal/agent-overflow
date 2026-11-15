@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/rjeczalik/notify"
@@ -47,8 +48,15 @@ type Manager struct {
 	// Must be set before the first Subscribe call.
 	fastStatusFn StatusFn
 
+	// seq orders every status this manager hands out (GitStatus.Seq).
+	seq sequence
+
 	mu       sync.Mutex
 	watchers map[string]*workspaceWatcher // canonical cwd → watcher
+	// creating holds, per canonical cwd, the Subscribes building a watcher
+	// that is not registered yet, and the newest status Publish offered
+	// meanwhile, which the registered watcher starts from.
+	creating map[string]*pendingWatcher
 	closed   bool
 
 	// installFn lets tests force the polling-fallback path without
@@ -80,8 +88,22 @@ func NewManager(config ManagerConfig) *Manager {
 		statusFn:     statusFn,
 		fastStatusFn: config.FastStatusFn,
 		watchers:     make(map[string]*workspaceWatcher),
+		creating:     make(map[string]*pendingWatcher),
 		watchRootsFn: watchRootsFn,
 	}
+}
+
+// sequence hands out GitStatus.Seq positions. A position is taken before
+// the status's reads begin, so a higher one never comes from a read that
+// started earlier, whichever finishes first.
+type sequence struct{ n atomic.Uint64 }
+
+func (s *sequence) next() uint64 { return s.n.Add(1) }
+
+// pendingWatcher is one cwd's entry in Manager.creating.
+type pendingWatcher struct {
+	refs    int
+	offered gitops.GitStatus
 }
 
 // Subscribe begins delivering status updates for cwd. Multiple
@@ -127,7 +149,23 @@ func (m *Manager) Subscribe(ctx context.Context, cwd string) (*Subscription, err
 		}
 		return sub, nil
 	}
+	pending := m.creating[canon]
+	if pending == nil {
+		pending = &pendingWatcher{}
+		m.creating[canon] = pending
+	}
+	pending.refs++
 	m.mu.Unlock()
+	// Registration releases pending in the critical section that registers
+	// the watcher, so a Publish lands either in pending.offered or on the
+	// registered watcher; every earlier exit releases it here.
+	defer func() {
+		if pending != nil {
+			m.mu.Lock()
+			m.endCreatingLocked(canon, pending)
+			m.mu.Unlock()
+		}
+	}()
 
 	// Slow path, outside the lock: installing watches and statusFn
 	// (which shells out to git) can take tens of milliseconds, and
@@ -141,7 +179,7 @@ func (m *Manager) Subscribe(ctx context.Context, cwd string) (*Subscription, err
 	// a boundary change (.gitignore edit, new directory beside a pruned
 	// subtree) yields roots in exactly the shape the initial install used.
 	rootsFn := func() ([]gitops.WatchRoot, error) { return m.watchRoots(canon) }
-	w := newWorkspaceWatcher(canon, m.statusFn, m.fastStatusFn, watchRoots, rootsFn)
+	w := newWorkspaceWatcher(canon, m.statusFn, m.fastStatusFn, watchRoots, rootsFn, &m.seq)
 	if m.pollInterval > 0 {
 		w.pollInterval = m.pollInterval
 	}
@@ -154,13 +192,17 @@ func (m *Manager) Subscribe(ctx context.Context, cwd string) (*Subscription, err
 	if initialFn == nil {
 		initialFn = m.statusFn
 	}
+	seq := m.seq.next()
 	initial, err := initialFn(ctx, canon)
 	if err != nil {
 		w.discard()
 		return nil, err
 	}
+	initial.Seq = seq
 
 	m.mu.Lock()
+	offered := m.endCreatingLocked(canon, pending)
+	pending = nil
 	if m.closed {
 		m.mu.Unlock()
 		w.discard()
@@ -178,6 +220,11 @@ func (m *Manager) Subscribe(ctx context.Context, cwd string) (*Subscription, err
 			existing.requestRefresh()
 		}
 		return sub, nil
+	}
+	// A status Publish offered while no watcher was registered began after
+	// this read did, so it is the one to publish.
+	if offered.Seq > initial.Seq {
+		initial = offered
 	}
 	// The subscriber is registered before the run loop starts, so the
 	// loop's first broadcast reaches it.
@@ -200,13 +247,64 @@ func (m *Manager) Subscribe(ctx context.Context, cwd string) (*Subscription, err
 	return sub, nil
 }
 
+// endCreatingLocked releases one Subscribe's hold on creating[canon] and
+// returns the status Publish offered meanwhile (zero Seq when none).
+// m.mu must be held.
+func (m *Manager) endCreatingLocked(canon string, pending *pendingWatcher) gitops.GitStatus {
+	pending.refs--
+	if pending.refs == 0 && m.creating[canon] == pending {
+		delete(m.creating, canon)
+	}
+	return pending.offered
+}
+
+// Publish hands a client a status of cwd read outside its watcher. It
+// takes a Seq, then runs read, then offers the result to the watcher,
+// which publishes it unless a status whose reads began later is already
+// published, and asks the watcher to refresh. It returns the workspace's
+// published status after the offer, or read's status stamped with its
+// Seq when nothing could publish it: nobody watches cwd, or a Suppress
+// hold is taken. A held offer publishes nothing; the watcher broadcasts
+// its next published status even when equal in content to the last (see
+// publishLocked). A change the offer published counts as observed by that
+// refresh for missed-event detection (see run).
+func (m *Manager) Publish(cwd string, read func() (gitops.GitStatus, error)) (gitops.GitStatus, error) {
+	if cwd == "" {
+		return gitops.GitStatus{}, errors.New("gitwatch: empty cwd")
+	}
+	seq := m.seq.next()
+	status, err := read()
+	if err != nil {
+		return gitops.GitStatus{}, err
+	}
+	status.Seq = seq
+	_, canon, err := canonicalize(cwd)
+	if err != nil {
+		// A path that read but will not canonicalize has no watcher: the
+		// caller's answer stands, and no other client hears of it.
+		log.Printf("gitwatch: publish for %q reached no watcher: %v", cwd, err)
+		return status, nil
+	}
+	// Under m.mu, as Subscribe registers a watcher: the offer lands on the
+	// registered watcher or in creating, never between them. offer does
+	// not block.
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if w := m.watchers[canon]; w != nil {
+		return w.offer(status), nil
+	}
+	if pending := m.creating[canon]; pending != nil && status.Seq > pending.offered.Seq {
+		pending.offered = status
+	}
+	return status, nil
+}
+
 // RequestRefresh asks the watcher for cwd (if one exists) to re-run
-// StatusFn and broadcast the result to every subscriber. Callers that
-// computed a fresh status out-of-band (a post-action RPC) use it so the
-// change reaches every other client instead of only the acting one; it
-// also arms the watcher's missed-event detection, since a refresh that
-// observes a non-PR change the fs watches never reported is evidence of
-// dead watchpoints.
+// StatusFn and broadcast the result to every subscriber, for a change no
+// status read has shown yet (a PR the forge was just asked about). A
+// caller holding a status it read hands it out through Publish instead.
+// A requested refresh that observes a non-PR change the fs watches never
+// reported is evidence of dead watchpoints (see run).
 //
 // No watcher for cwd is a valid state — nobody is subscribed — so it is
 // a silent no-op rather than an error.

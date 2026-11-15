@@ -1771,12 +1771,9 @@ export function GetErrorLogLines(ref: string): $CancellablePromise<app$0.ErrorLo
  * GetGitStatus returns git status for the referenced workspace.
  * 
  * The answer is not the caller's alone: every other client watching this
- * workspace is looking at the same checkout, so the fresh status is also
- * pushed through the workspace's gitwatch stream (a no-op when nobody is
- * subscribed). Doing that AFTER the synchronous fetch means the watcher's
- * refresh runs against a warm PR cache, and it arms gitwatch's
- * missed-event detection — a refresh that observes a change the fs watches
- * never reported is how a silently dead watchpoint gets reinstalled.
+ * workspace is looking at the same checkout, so the fresh status is
+ * published through the workspace's gitwatch stream, and the answer is
+ * what that stream publishes (gitapp.Service.Status).
  */
 export function GetGitStatus(ws: app$0.WorkspaceRef): $CancellablePromise<git$0.GitStatus> {
     return $Call.ByID(4123560639, ws).then(($result: any) => {
