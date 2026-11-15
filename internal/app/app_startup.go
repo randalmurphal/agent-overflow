@@ -671,6 +671,7 @@ func chmodIfModeDiffers(path string, want os.FileMode) error {
 // disabled provider so the rest of the app still boots.
 func (a *App) initObservability(ctx context.Context, dbDir string) error {
 	settingsSnapshot := a.settings.Get()
+	a.launchTracing.record(settingsSnapshot.ObservabilityTracingEnabled)
 	telemetry, err := obsotel.NewProvider(ctx, obsotel.ConfigFromFlags(
 		settingsSnapshot.ObservabilityTracingEnabled,
 		settingsSnapshot.ObservabilityOtlpEndpoint,

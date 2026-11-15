@@ -208,6 +208,24 @@ describe('pane find registry', () => {
     release();
     expect(hasPaneFindProvider('a')).toBe(true);
   });
+
+  it('ends a replaced provider before the newer one searches, and its stale release clears nothing', () => {
+    const order: string[] = [];
+    const older = provider({ clear: vi.fn(() => order.push('older clear')) });
+    const release = registerPaneFindProvider('a', older);
+    openPaneFind('a');
+    setPaneFindQuery('a', 'needle');
+    const newer = provider({
+      search: vi.fn(() => order.push('newer search')),
+      clear: vi.fn(() => order.push('newer clear')),
+    });
+    registerPaneFindProvider('a', newer);
+    // Both paint under the pane's one highlight name, so the older session
+    // ends before the newer one paints.
+    expect(order).toEqual(['older clear', 'newer search']);
+    release();
+    expect(order).toEqual(['older clear', 'newer search']);
+  });
 });
 
 describe('pane find reads', () => {

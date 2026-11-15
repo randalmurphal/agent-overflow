@@ -278,8 +278,16 @@ export function dropPaneFindRegion(region: string): void {
   for (const key of readSlots.keys()) if (key.endsWith(suffix)) readSlots.delete(key);
 }
 
-/** Registers `provider` for the layout pane; returns its release. */
+/**
+ * Registers `provider` for the layout pane; returns its release. A provider
+ * registered while another holds the key replaces it, and the older one's
+ * session ends here, before the newer one paints: both paint under the
+ * pane's one highlight name, so the older one's later release clears
+ * nothing.
+ */
 export function registerPaneFindProvider(paneId: string, provider: PaneFindProvider): () => void {
+  const replaced = providers.get(paneId);
+  if (replaced && replaced !== provider) replaced.clear();
   providers.set(paneId, provider);
   const state = states.get(paneId);
   if (state?.open && state.query) provider.search(state.query);
