@@ -6,6 +6,7 @@ import (
 	"agent-overflow/internal/discussion"
 	"agent-overflow/internal/discussionapp"
 	"agent-overflow/internal/eventchan"
+	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/triage"
 )
@@ -83,8 +84,8 @@ func (a *App) announceDiscussionDefinitionsChanged() {
 // StartDiscussion creates a deliberation channel and marks the thread as operating in discussion mode.
 //
 //ao:scope threads:operate
-func (a *App) StartDiscussion(threadID, discussionName string) error {
-	return a.discussionService().Start(threadID, discussionName)
+func (a *App) StartDiscussion(ctx context.Context, threadID, discussionName string) error {
+	return a.discussionService().Start(threadID, discussionName, a.participantDriveCheck(ctx))
 }
 
 // GetChannelMessages returns ordered messages for a discussion channel.
@@ -121,16 +122,24 @@ func (a *App) GetChannelState(channelID string) (ChannelStatePayload, error) {
 // next-turn context automatically (see promptDiscussionSpeaker's
 // unseen-messages window).
 //
-// PostChannelMessage has a side-effecting path (it can dispatch a
-// prompt into a participant's live provider session via
-// promptDiscussionSpeakerAsync → sendMessage), so it carries
-// threads:operate rather than a read scope — the same annotation
-// SendMessage does, for the same reason.
+// A post drives every participant in turn, so it is judged as a send into
+// each of them (participantDriveCheck), the same as SendMessage.
 //
 //ao:scope threads:operate
 //ao:route selected
-func (a *App) PostChannelMessage(channelID, content string) (store.ChannelMessage, error) {
-	return a.discussionService().Post(channelID, content)
+func (a *App) PostChannelMessage(ctx context.Context, channelID, content string) (store.ChannelMessage, error) {
+	return a.discussionService().Post(channelID, content, a.participantDriveCheck(ctx))
+}
+
+// participantDriveCheck judges a discussion's participants for the caller of
+// a bound method that starts or posts into it, each by the runtime mode it
+// runs in. A participant a start has not created yet is judged by the mode
+// its row will get, which is why an empty mode resolves the way the store
+// resolves it rather than reading a thread that does not exist.
+func (a *App) participantDriveCheck(ctx context.Context) discussionapp.DriveCheck {
+	return func(threadID, runtimeMode string) error {
+		return a.requireAutonomyForThread(ctx, threadID, string(provider.NormalizeRuntimeMode(runtimeMode)))
+	}
 }
 
 // ConcludeDiscussion lets the human moderator end an open discussion

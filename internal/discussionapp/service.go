@@ -28,6 +28,27 @@ type ParticipantRuntime interface {
 	SendParticipantMessage(string, string) error
 }
 
+// DriveCheck approves driving one participant thread in the runtime mode it
+// runs in, or will run in once a start creates it. A discussion drives every
+// participant: a post prompts the next speaker and each finished turn prompts
+// the one after, so Start and Post ask for each participant before anything
+// is written, and a refusal leaves nothing behind. The App judges the mode
+// against the calling session's grants.
+type DriveCheck func(threadID, runtimeMode string) error
+
+// checkParticipants asks check about each participant.
+func checkParticipants(check DriveCheck, participants []store.Thread) error {
+	if check == nil {
+		return errors.New("discussion: no drive check was supplied")
+	}
+	for _, participant := range participants {
+		if err := check(participant.ID, participant.RuntimeMode); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // MessageEvent is emitted after a channel message has committed.
 type MessageEvent struct {
 	ChannelID string
