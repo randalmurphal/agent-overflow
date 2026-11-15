@@ -197,13 +197,19 @@ func (a *App) serveThreadAgentPeer(ctx context.Context, owner string, call Threa
 }
 
 // stopThreadAgentWorkHere is agent_stop on this computer: one row of
-// threadID's listing by token, or the whole work of threadID.
+// threadID's listing by token, or the whole work of threadID, reported
+// stopped when the thread was not at rest or the rest cut its turn or
+// background work, and ended otherwise.
 func (a *App) stopThreadAgentWorkHere(ctx context.Context, threadID, token string) (ThreadAgentStop, error) {
 	if token != "" {
 		return a.stopThreadAgentRowIn(ctx, threadID, token)
 	}
+	unrest := a.workerUnrest(threadID)
 	stop := ThreadAgentStop{Outcome: threadAgentStopped}
 	a.stopThreadAgentTarget(ctx, threadID, map[string]bool{threadID: true}, &stop)
+	if unrest == "" && !restStoppedWork(ThreadAgentStop{}, stop) {
+		stop.Outcome = threadAgentEnded
+	}
 	return stop, nil
 }
 

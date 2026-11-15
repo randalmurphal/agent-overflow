@@ -933,7 +933,9 @@ func (a *App) parkedRequestTokens() []string {
 // would start it again. A computer that predates agent_stop has its request
 // cancelled and its turn interrupted, and the result names it in Failures. A
 // nested row a paired computer listed is stopped through that computer. A
-// row that had already settled reports ended.
+// row that had already settled reports ended, unless it is a spawn whose
+// worker the Stop found not at rest or cut: it reports stopped and its
+// spawner is told (tellSpawnerOfUserStop).
 //
 //ao:scope threads:operate
 func (a *App) StopThreadAgentRow(ctx context.Context, threadID, token string) (ThreadAgentStop, error) {

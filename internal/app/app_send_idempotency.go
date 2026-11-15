@@ -110,7 +110,7 @@ func (a *App) lockClientSendAdmission(ctx context.Context, threadID, sendID stri
 // thread. A new kind of app message adds its root here.
 var appSendIDRoots = []string{
 	agentWakeSendIDRoot, agentSendIDRoot, workerPromptSendIDRoot, assistantSendIDRoot,
-	remoteCompletionSendIDRoot, workflowWakeSendIDRoot, threadRequestSendIDPrefix,
+	remoteCompletionSendIDRoot, workflowWakeSendIDRoot, threadRequestSendIDPrefix, workerStoppedSendIDRoot,
 	threadWakeSendID(""), threadWakeLateSendID(""),
 }
 

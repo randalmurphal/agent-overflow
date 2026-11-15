@@ -11,6 +11,7 @@ import (
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadtools"
+	"agent-overflow/internal/usermessage"
 )
 
 // Bringing a thread to rest (docs/specs/standing-agents.md, "At rest"): it
@@ -536,8 +537,19 @@ func (a *App) stopAgentRequestBy(ctx context.Context, row store.ThreadRequest, v
 		}
 	}
 	spawned := current.Kind == store.ThreadRequestSpawn && current.TargetThreadID != ""
+	// A Stop of a spawn that already settled that finds its worker not at
+	// rest, or cuts its turn or background work, reports it stopped; agents
+	// of its own stopped below it are counted in Nested and leave it ended.
+	// When a person pressed it, the spawner is told too, since no settlement
+	// tells it. A cascade tells nobody: the spawner it reaches is being
+	// brought to rest itself. An agent's own thread_cancel does not come
+	// through here.
+	outlived := pressed && settled && spawned
 	if current.TargetComputerID != "" {
 		a.stopRemoteAgentRequestBy(ctx, current, settled, spawned, by, &result)
+		if outlived && result.Outcome == threadAgentStopped {
+			a.tellSpawnerOfUserStop(current, &result)
+		}
 		return result
 	}
 	if !settled {
@@ -552,8 +564,60 @@ func (a *App) stopAgentRequestBy(ctx context.Context, row store.ThreadRequest, v
 		return result
 	}
 	visited[current.TargetThreadID] = true
+	unrest := a.workerUnrest(current.TargetThreadID)
+	before := result
 	a.restThreadHere(ctx, current.TargetThreadID, by, visited, &result)
+	if settled && (unrest != "" || restStoppedWork(before, result)) {
+		result.Outcome = threadAgentStopped
+		if outlived {
+			a.tellSpawnerOfUserStop(current, &result)
+		}
+	}
 	return result
+}
+
+// restStoppedWork reports whether a rest added to after, over before, a cut
+// turn or stopped background work of the thread itself.
+func restStoppedWork(before, after ThreadAgentStop) bool {
+	return (after.Interrupted && !before.Interrupted) || after.Background > before.Background
+}
+
+// workerStoppedSendIDRoot opens the send id of the message that tells a
+// spawner the user stopped a worker that outlived its spawn,
+// `worker-stopped:<token>`: one per spawn, so a repeated Stop tells it
+// nothing more.
+const workerStoppedSendIDRoot = "worker-stopped:"
+
+// tellSpawnerOfUserStop tells the thread that made spawn that the user
+// stopped the worker it made after the spawn had settled, as an app-written
+// message attributed to the worker, the way the spawn's answer was. The
+// spawn and its answer stay as they are. An archived spawner is told
+// nothing; any other failure is named in the result.
+func (a *App) tellSpawnerOfUserStop(spawn store.ThreadRequest, result *ThreadAgentStop) {
+	origin := &usermessage.OriginThread{ThreadID: spawn.TargetThreadID, Token: spawn.Token, Kind: usermessage.OriginKindWake}
+	title := spawn.TargetThreadTitle
+	if spawn.TargetComputerID != "" {
+		origin.ComputerName, origin.ComputerID = a.threadTools().threadToolsBackendName(spawn.TargetComputerID)
+	} else if thread, err := a.store.GetThread(spawn.TargetThreadID); err == nil {
+		title = thread.Title
+	}
+	origin.Title = title
+	body := fmt.Sprintf("The user stopped thread %q (%s), which you spawned, from the Agents tray after it had answered you; you did not stop it. "+
+		"Its session ended; its queued messages, loops, watches, reminders and requests were cancelled; the workflow runs that report to it were paused; "+
+		"and the threads it spawned were stopped the same way. Nothing it did was undone. A later message starts it again.", title, spawn.TargetThreadID)
+	err := a.queueAgentNotice(agentNotice{
+		threadID:     spawn.CallerThreadID,
+		sendID:       workerStoppedSendIDRoot + spawn.Token,
+		origin:       usermessage.OriginAgentThread,
+		originThread: origin,
+		prepare:      func() (string, bool, error) { return body, true, nil },
+		startFailed: func(err error) string {
+			return "A message that the user stopped a thread this one spawned is queued, but the agent could not start: " + err.Error()
+		},
+	})
+	if err != nil && !errors.Is(err, errThreadArchived) {
+		result.Failures = append(result.Failures, "tell its spawner: "+err.Error())
+	}
 }
 
 // stopRemoteAgentRequestBy is stopAgentRequestBy for a target on a paired
@@ -601,6 +665,12 @@ func (a *App) stopRemoteAgentRequestBy(ctx context.Context, current store.Thread
 		}
 		result.Failures = append(result.Failures, "stop its work: "+err.Error())
 		return
+	}
+	// The destination's outcome says whether its rest stopped a thread not
+	// at rest (stopThreadAgentWorkHere); for a request that settled it is
+	// this Stop's.
+	if settled && remote.Outcome == threadAgentStopped {
+		result.Outcome = threadAgentStopped
 	}
 	result.Interrupted = result.Interrupted || remote.Interrupted
 	result.Background += remote.Background

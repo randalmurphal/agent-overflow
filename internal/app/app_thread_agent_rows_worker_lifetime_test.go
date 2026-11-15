@@ -225,10 +225,11 @@ func TestAWorkerThatRepliesAndKeepsWorkingStaysOpen(t *testing.T) {
 	resolveApprovalOn(t, f.app, ack.ThreadID, "after-reply-approval")
 	f.awaitWorker(t, f.caller.ID, ack.Token, workerRunning)
 
-	// Stop interrupts the worker; its turn ends and the row settles.
+	// Stop interrupts the worker and says it stopped it; its turn ends and
+	// the row settles.
 	stop, err := f.app.StopThreadAgentRow(t.Context(), f.caller.ID, ack.Token)
-	if err != nil || stop.Outcome != threadAgentEnded || !stop.Interrupted {
-		t.Fatalf("Stop = %+v, %v; want ended with the worker interrupted", stop, err)
+	if err != nil || stop.Outcome != threadAgentStopped || !stop.Interrupted {
+		t.Fatalf("Stop = %+v, %v; want the worker stopped mid-turn", stop, err)
 	}
 	waitUntil(t, 10*time.Second, func() bool {
 		return !threadToolsLiveState(f.app.triage.LiveStateSnapshotForThread(ack.ThreadID)).ActiveTurn

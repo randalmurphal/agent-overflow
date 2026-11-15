@@ -588,7 +588,7 @@ func TestThreadAgentRowsStopAllReachesDeepOpenWork(t *testing.T) {
 	}
 
 	stops, err := f.app.StopThreadAgentRows(t.Context(), f.caller.ID)
-	if err != nil || len(stops) != 1 || stops[0].Nested != 1 || len(stops[0].Failures) != 0 {
+	if err != nil || len(stops) != 1 || stops[0].Outcome != threadAgentEnded || stops[0].Nested != 1 || len(stops[0].Failures) != 0 {
 		t.Fatalf("StopThreadAgentRows = %+v, %v; want the chain's one open agent stopped", stops, err)
 	}
 	if row := f.awaitRequestState(t, open.Token, store.ThreadRequestCancelled); row.Notify {
