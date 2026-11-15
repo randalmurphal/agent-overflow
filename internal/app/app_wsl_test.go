@@ -379,18 +379,18 @@ func TestGetWebviewGPUVsyncDisabled_UnreadableIsFalse(t *testing.T) {
 			return "", false
 		},
 	)
-	if got, err := app.GetWebviewGPUVsyncDisabled(); err != nil || got {
-		t.Fatalf("not WSL: got (%v, %v), want (false, nil)", got, err)
+	if got, err := app.GetWebviewGPUVsyncDisabled(); err != nil || got != (WebviewGPUVsync{}) {
+		t.Fatalf("not WSL: got (%+v, %v), want ({}, nil)", got, err)
 	}
 
 	withWSLSeams(t, func() bool { return true }, nil, func() (string, bool) { return "", false })
-	if got, err := app.GetWebviewGPUVsyncDisabled(); err != nil || got {
-		t.Fatalf("no config dir: got (%v, %v), want (false, nil)", got, err)
+	if got, err := app.GetWebviewGPUVsyncDisabled(); err != nil || got != (WebviewGPUVsync{}) {
+		t.Fatalf("no config dir: got (%+v, %v), want ({}, nil)", got, err)
 	}
 
 	withWSLSeams(t, func() bool { return true }, nil, func() (string, bool) { return t.TempDir(), true })
-	if got, err := app.GetWebviewGPUVsyncDisabled(); err != nil || got {
-		t.Fatalf("missing file: got (%v, %v), want (false, nil)", got, err)
+	if got, err := app.GetWebviewGPUVsyncDisabled(); err != nil || got != (WebviewGPUVsync{}) {
+		t.Fatalf("missing file: got (%+v, %v), want ({}, nil)", got, err)
 	}
 }
 
@@ -422,11 +422,11 @@ func TestSetWebviewGPUVsyncDisabled_RoundTripsAndPreservesOtherFields(t *testing
 
 	// off -> on
 	got, err := app.SetWebviewGPUVsyncDisabled(true)
-	if err != nil || !got {
-		t.Fatalf("set on: got (%v, %v)", got, err)
+	if err != nil || !got.Disabled {
+		t.Fatalf("set on: got (%+v, %v)", got, err)
 	}
-	if got, err := app.GetWebviewGPUVsyncDisabled(); err != nil || !got {
-		t.Fatalf("get after on: got (%v, %v)", got, err)
+	if got, err := app.GetWebviewGPUVsyncDisabled(); err != nil || !got.Disabled {
+		t.Fatalf("get after on: got (%+v, %v)", got, err)
 	}
 	cfg, err := wsldistro.Load(dir)
 	if err != nil || cfg == nil {
@@ -438,21 +438,73 @@ func TestSetWebviewGPUVsyncDisabled_RoundTripsAndPreservesOtherFields(t *testing
 	}
 
 	// on -> off
-	if got, err := app.SetWebviewGPUVsyncDisabled(false); err != nil || got {
-		t.Fatalf("set off: got (%v, %v)", got, err)
+	if got, err := app.SetWebviewGPUVsyncDisabled(false); err != nil || got.Disabled {
+		t.Fatalf("set off: got (%+v, %v)", got, err)
 	}
-	if got, err := app.GetWebviewGPUVsyncDisabled(); err != nil || got {
-		t.Fatalf("get after off: got (%v, %v)", got, err)
+	if got, err := app.GetWebviewGPUVsyncDisabled(); err != nil || got.Disabled {
+		t.Fatalf("get after off: got (%+v, %v)", got, err)
 	}
 
 	// A file with no distro yet still takes the preference.
 	empty := t.TempDir()
 	withWSLSeams(t, func() bool { return true }, nil, func() (string, bool) { return empty, true })
-	if got, err := app.SetWebviewGPUVsyncDisabled(true); err != nil || !got {
-		t.Fatalf("set on fresh: got (%v, %v)", got, err)
+	if got, err := (&App{}).SetWebviewGPUVsyncDisabled(true); err != nil || !got.Disabled {
+		t.Fatalf("set on fresh: got (%+v, %v)", got, err)
 	}
 	cfg, err = wsldistro.Load(empty)
 	if err != nil || cfg == nil || !cfg.DisableGPUVsync || cfg.Distro != "" {
 		t.Fatalf("fresh file: %v %+v", err, cfg)
+	}
+}
+
+// The value a session runs with is the launcher's, read before any write of
+// this backend's own, so every later read and write still reports it: a
+// Settings page opened after a save still sees the change waiting.
+func TestWebviewGPUVsync_ReportsTheLaunchValueAcrossWrites(t *testing.T) {
+	for _, first := range []string{"read", "write"} {
+		t.Run("first "+first, func(t *testing.T) {
+			app := &App{}
+			dir := t.TempDir()
+			if err := wsldistro.Save(dir, &wsldistro.Config{DisableGPUVsync: true}); err != nil {
+				t.Fatalf("seed config: %v", err)
+			}
+			withWSLSeams(t, func() bool { return true }, nil, func() (string, bool) { return dir, true })
+			want := WebviewGPUVsync{Disabled: true, Launched: true}
+			if first == "read" {
+				if got, err := app.GetWebviewGPUVsyncDisabled(); err != nil || got != want {
+					t.Fatalf("first read: got (%+v, %v), want %+v", got, err, want)
+				}
+			}
+			want = WebviewGPUVsync{Disabled: false, Launched: true}
+			if got, err := app.SetWebviewGPUVsyncDisabled(false); err != nil || got != want {
+				t.Fatalf("write off: got (%+v, %v), want %+v", got, err, want)
+			}
+			if got, err := app.GetWebviewGPUVsyncDisabled(); err != nil || got != want {
+				t.Fatalf("read after write: got (%+v, %v), want %+v", got, err, want)
+			}
+			want = WebviewGPUVsync{Disabled: true, Launched: true}
+			if got, err := app.SetWebviewGPUVsyncDisabled(true); err != nil || got != want {
+				t.Fatalf("write back on: got (%+v, %v), want %+v", got, err, want)
+			}
+		})
+	}
+}
+
+// A read that fails records nothing: the next one that succeeds is the
+// launcher's value.
+func TestWebviewGPUVsync_FailedReadRecordsNoLaunchValue(t *testing.T) {
+	app := &App{}
+	withWSLSeams(t, func() bool { return true }, nil, func() (string, bool) { return t.TempDir(), true })
+	wslLoadConfig = func(string) (*wsldistro.Config, error) { return nil, errors.New("decode wsl.json") }
+	if _, err := app.GetWebviewGPUVsyncDisabled(); err == nil {
+		t.Fatal("expected the read error")
+	}
+	if _, err := app.SetWebviewGPUVsyncDisabled(false); err == nil {
+		t.Fatal("expected the read error")
+	}
+	wslLoadConfig = func(string) (*wsldistro.Config, error) { return &wsldistro.Config{DisableGPUVsync: true}, nil }
+	want := WebviewGPUVsync{Disabled: true, Launched: true}
+	if got, err := app.GetWebviewGPUVsyncDisabled(); err != nil || got != want {
+		t.Fatalf("read: got (%+v, %v), want %+v", got, err, want)
 	}
 }
