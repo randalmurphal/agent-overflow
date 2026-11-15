@@ -8,17 +8,37 @@ import { PatchStore } from './patchStore';
 import { BLOCK_LINES, CLOCK_ROWS, scanReviewFind, type ReviewFindContent } from './reviewFindScan';
 import { collectScan, findContent, findDraft as draft, findThread as thread } from '../../test/helpers/reviewFindContent';
 import { seededRandom as random } from '../../test/helpers/seededRandom';
-import { fakeDiff, streamPatch, type PatchForm } from '../../test/helpers/streamedPatch';
+import { fakeDiff, streamPatch } from '../../test/helpers/streamedPatch';
 import type { DiffReviewComment, ReviewThread } from '../types/models';
 
 // The scan with the filter off (findFilterPattern answering null, as for a
 // needle it cannot spell) reads every row's text, so it is the oracle the
-// filtered scan must match hit for hit, in order.
-const filter = vi.hoisted(() => ({ off: false }));
+// filtered scan must match hit for hit, in order. `searched` records each
+// text the rule searches, once, while it is set.
+const filter = vi.hoisted(() => ({ off: false, searched: null as string[] | null }));
 vi.mock('./findMatch', async (importOriginal) => {
   const real = await importOriginal<typeof import('./findMatch')>();
-  return { ...real, findFilterPattern: (needle: string) => (filter.off ? null : real.findFilterPattern(needle)) };
+  return {
+    ...real,
+    findFilterPattern: (needle: string) => (filter.off ? null : real.findFilterPattern(needle)),
+    findMatchChunk: (run: string, from: number, needle: string) => {
+      if (from === 0) filter.searched?.push(run);
+      return real.findMatchChunk(run, from, needle);
+    },
+  };
 });
+
+// The rows' texts the rule searches while `scan` runs: those that start
+// with `rowPrefix`, which the header's path does not.
+async function rowsSearched<T>(rowPrefix: string, scan: () => Promise<T>): Promise<{ result: T; searched: string[] }> {
+  filter.searched = [];
+  try {
+    const result = await scan();
+    return { result, searched: filter.searched.filter((run) => run.startsWith(rowPrefix)) };
+  } finally {
+    filter.searched = null;
+  }
+}
 
 async function unfilteredScan(content: ReviewFindContent, query: string, limit: number): ReturnType<typeof collectScan> {
   filter.off = true;
@@ -33,7 +53,7 @@ const content = (over: Partial<ReviewFindContent> & { files: readonly ReviewFile
 
 // Capitals, letters past ASCII with and without a fold, the Kelvin sign,
 // dotted and dotless i, Deseret, regex syntax, the prefix characters, and
-// characters whose plain form is a packed spelling (Ã©).
+// the characters é's UTF-8 bytes read as in Latin-1 (Ã©).
 const SCAN_ALPHABET = [
   'a', 'b', 'x', 'A', 'B', 'k', 'K', '\u212a', 'i', 'I', 'İ', 'ı', 'é', 'É', 'Ã', '©', 'σ', 'Σ', 'ς',
   '中', '\u{10400}', '\u{10428}', '\ufffd', '+', '-', ' ', '.', '[', '\\', '(', 'Needle', 'needle', 'NeedleNeedle',
@@ -67,7 +87,7 @@ function longLine(length: number, word: string): string {
 
 const SCAN_PATHS = ['src/a.ts', 'src/École.ts', 'K/needle.ts', 'c.ts'];
 
-// `sparse`: one row in 20 past ASCII, as a diff the backend packs has.
+// `sparse`: one row in 20 past ASCII, as most code has.
 function randomPatch(next: (n: number) => number, long: boolean, sparse = false): string {
   const out: string[] = [];
   for (const path of SCAN_PATHS.slice(0, 1 + next(SCAN_PATHS.length))) {
@@ -132,7 +152,7 @@ function randomComments(next: (n: number) => number, files: readonly ReviewFile[
   return { drafts, prThreads };
 }
 
-describe('scanReviewFind filtered by the stored text', () => {
+describe('scanReviewFind filtered by blocks of text', () => {
   const disposers: (() => void)[] = [];
   afterEach(() => {
     for (const dispose of disposers.splice(0)) dispose();
@@ -147,8 +167,11 @@ describe('scanReviewFind filtered by the stored text', () => {
       expect((await unfilteredScan(source, 'needle', 1000)).hits).toHaveLength(1);
       expect(text).toHaveBeenCalledTimes(rows.length);
       text.mockClear();
-      expect((await collectScan(source, 'needle', 1000)).hits).toHaveLength(1);
-      expect(text).toHaveBeenCalledTimes(1);
+      const { result, searched } = await rowsSearched('row', () => collectScan(source, 'needle', 1000));
+      expect(result.hits).toHaveLength(1);
+      // The rule searches the one row, read from the filter's block.
+      expect(searched).toEqual(['row 7 needle']);
+      expect(text).not.toHaveBeenCalled();
     } finally {
       text.mockRestore();
     }
@@ -166,24 +189,22 @@ describe('scanReviewFind filtered by the stored text', () => {
     expect(hits.map((hit) => [hit.path, hit.line])).toEqual([['a', 11], ['b', 24]]);
   });
 
-  it('emits what the rule on every row emits, over random diffs in every form', async () => {
-    const forms: (PatchForm | 'resident')[] = ['resident', 'plain', 'packed'];
+  it('emits what the rule on every row emits, over random diffs held and evicted', async () => {
+    // `sparse`: text past ASCII on few rows, in larger chunks.
+    const forms = ['resident', 'streamed', 'sparse'] as const;
     let compared = 0;
     let prefixOnly = 0;
-    let packedChunks = 0;
     for (let round = 0; round < 48; round += 1) {
       const next = random(1000 + round);
       const form = forms[round % forms.length];
-      const patch = randomPatch(next, round % 8 === 0, form === 'packed');
+      const patch = randomPatch(next, round % 8 === 0, form === 'sparse');
       let files: ReviewFile[];
       if (form === 'resident') {
         files = parseReviewFiles(patch);
       } else {
         setPatchTextBudgetForTest(300 + next(600));
-        // A packed chunk needs room for its wide lines to be sparse.
-        const streamed = streamPatch(patch, () => (form === 'packed' ? 400 + next(1600) : 40 + next(300)), form);
+        const streamed = streamPatch(patch, () => (form === 'sparse' ? 400 + next(1600) : 40 + next(300)));
         disposers.push(() => streamed.parser.store.dispose());
-        packedChunks += streamed.spans.filter((span) => span.wide !== undefined).length;
         files = streamed.files;
       }
       const conflict = randomConflict(next);
@@ -223,26 +244,26 @@ describe('scanReviewFind filtered by the stored text', () => {
       }
     }
     expect(compared).toBeGreaterThan(400);
-    expect(packedChunks).toBeGreaterThan(0);
     // The prefix flagged lines the whole needle does not match.
     expect(prefixOnly).toBeGreaterThan(20);
   });
 
-  it('reads no line text for lines that cannot match, and still yields by the clock', async () => {
+  it('reads no row\'s text for lines that cannot match, only the filter\'s blocks, and still yields by the clock', async () => {
     const lines = Array.from({ length: 20_000 }, (_, i) => `+line ${i}${i % 7 === 0 ? ' Ã©' : ''} café`);
     const patch = ['diff --git a/big b/big', '--- a/big', '+++ b/big', `@@ -0,0 +1,${lines.length} @@`, ...lines, ''].join('\n');
     setPatchTextBudgetForTest(64 * 1024);
-    // Every line is wide, so the packed read answers it plain.
-    const streamed = streamPatch(patch, 4096, 'packed');
+    const streamed = streamPatch(patch, 4096);
     disposers.push(() => streamed.parser.store.dispose());
     expect(streamed.files[0].body.resident()).toBe(false);
     for (const files of [parseReviewFiles(patch), streamed.files]) {
       const reads = [
         vi.spyOn(PatchBody.prototype, 'text'),
         vi.spyOn(PatchStore.prototype, 'text'),
-        vi.spyOn(PatchStore.prototype, 'textRange'),
         vi.spyOn(PatchBody.prototype, 'patchText'),
       ];
+      // The filter's blocks are the one range read.
+      const blocks = vi.spyOn(PatchBody.prototype, 'segmentText');
+      const ranges = vi.spyOn(PatchStore.prototype, 'textRange');
       try {
         let clock = 0;
         let pauses = 0;
@@ -253,13 +274,18 @@ describe('scanReviewFind filtered by the stored text', () => {
         // A needle holding a newline matches no line.
         expect((await collectScan(content({ files }), 'café\n+line', 1000)).hits).toHaveLength(0);
         for (const read of reads) expect(read).not.toHaveBeenCalled();
+        expect(ranges.mock.calls.length).toBe(blocks.mock.calls.length);
+        for (const [start, end] of blocks.mock.calls) expect(end - start).toBeLessThanOrEqual(BLOCK_LINES);
         // A clock read per CLOCK_ROWS rows, each past its slice.
         expect(pauses).toBeGreaterThanOrEqual(Math.floor(lines.length / CLOCK_ROWS));
-        // A line that can match is read, once.
-        expect((await collectScan(content({ files }), 'é', 100_000)).hits).toHaveLength(lines.length);
-        expect(reads[0]).toHaveBeenCalledTimes(lines.length);
+        // A line that can match is searched, once, as written, and read
+        // from the filter's block.
+        const { result, searched } = await rowsSearched('line', () => collectScan(content({ files }), 'é', 100_000));
+        expect(result.hits).toHaveLength(lines.length);
+        expect(searched).toEqual(lines.map((line) => line.slice(1)));
+        for (const read of reads) expect(read).not.toHaveBeenCalled();
       } finally {
-        for (const read of reads) read.mockRestore();
+        for (const read of [...reads, blocks, ranges]) read.mockRestore();
       }
     }
   });
@@ -275,14 +301,14 @@ describe('scanReviewFind filtered by the stored text', () => {
     ].join('\n');
     const files = parseReviewFiles(patch);
     expect(files[1].body.segments).toHaveLength(2);
-    const blocks = vi.spyOn(PatchBody.prototype, 'storedRange');
+    const blocks = vi.spyOn(PatchBody.prototype, 'segmentText');
     try {
       await collectScan(content({ files }), 'needle', 1000);
       const read = blocks.mock.results.map((result) => result.value as string);
       expect(read.length).toBeGreaterThan(wide.length + short.length / BLOCK_LINES);
-      for (const stored of read) {
-        expect(stored.length).toBeLessThanOrEqual(LONG_TEXT);
-        expect(stored.split('\n').length).toBeLessThanOrEqual(BLOCK_LINES);
+      for (const block of read) {
+        expect(new TextEncoder().encode(block).length).toBeLessThanOrEqual(LONG_TEXT);
+        expect(block.split('\n').length).toBeLessThanOrEqual(BLOCK_LINES);
       }
       // Each segment of the type change is its own block.
       expect(read.slice(-2)).toEqual(['-gone', '+came']);
@@ -301,10 +327,11 @@ describe('scanReviewFind filtered by the stored text', () => {
     const exec = vi.spyOn(RegExp.prototype, 'exec');
     const text = vi.spyOn(PatchBody.prototype, 'text');
     try {
-      const { hits } = await collectScan(content({ files }), 'needle', 100_000);
+      const { result: { hits }, searched } = await rowsSearched('', () => collectScan(content({ files }), 'needle', 100_000));
       expect(hits).toHaveLength(2100);
-      // Only the lines that match are read.
-      expect(text).toHaveBeenCalledTimes(101);
+      // Only the lines that match are searched, each read from its block.
+      expect(searched).toEqual([lines[0].slice(1), ...lines.slice(101).map((line) => line.slice(1))]);
+      expect(text).not.toHaveBeenCalled();
       const source = findFilterPattern(findNeedle('needle'))!.source;
       const filter = exec.mock.contexts.filter((pattern) => (pattern as RegExp).source === source);
       // One search per matching line, and the one that finds nothing more.
@@ -328,7 +355,7 @@ describe('scanReviewFind filtered by the stored text', () => {
     expect(pauses).toBe(1);
   });
 
-  it('finds U+FFFD where the patch holds an invalid byte, packed', async () => {
+  it('finds U+FFFD where the patch holds an invalid byte', async () => {
     const filler = Array.from({ length: 30 }, (_, index) => `+ascii filler line ${index}`);
     const encoder = new TextEncoder();
     const raw = Uint8Array.from([
@@ -336,9 +363,9 @@ describe('scanReviewFind filtered by the stored text', () => {
       0xff,
       ...encoder.encode([' byte', ...filler, ''].join('\n')),
     ]);
-    // The backend packs it, the invalid byte sent as U+FFFD's bytes.
-    const chunk = fakeDiff(raw).read(0, raw.length, true);
-    expect(chunk.wide).toBeDefined();
+    // The backend sends the invalid byte as U+FFFD.
+    const chunk = fakeDiff(raw).read(0, raw.length);
+    expect(chunk.data).toContain('\ufffd');
     const parser = new PatchParser();
     parser.append(chunk.data, chunk);
     parser.end();
@@ -357,12 +384,12 @@ function repeatedFiles(text: string, count: number): ReviewFile[] {
 describe('scanReviewFind work between clock reads', () => {
   afterEach(() => setPatchTextBudgetForTest(null));
 
-  // Stored characters the body reads between two clock reads, the largest
+  // Characters the body reads between two clock reads, the largest
   // line read whole in each stretch set apart, on a clock that reads every
   // slice as spent.
   async function stretches(files: ReviewFile[], query: string): Promise<{ widest: number; pauses: number }> {
     const realText = PatchBody.prototype.text;
-    const realStored = PatchBody.prototype.storedRange;
+    const realBlock = PatchBody.prototype.segmentText;
     let since = 0;
     let line = 0;
     let widest = 0;
@@ -374,8 +401,8 @@ describe('scanReviewFind work between clock reads', () => {
       line = Math.max(line, size);
       return realText.call(this, index);
     });
-    const stored = vi.spyOn(PatchBody.prototype, 'storedRange').mockImplementation(function (this: PatchBody, start: number, end: number) {
-      const out = realStored.call(this, start, end);
+    const block = vi.spyOn(PatchBody.prototype, 'segmentText').mockImplementation(function (this: PatchBody, start: number, end: number) {
+      const out = realBlock.call(this, start, end);
       since += out.length;
       return out;
     });
@@ -393,7 +420,7 @@ describe('scanReviewFind work between clock reads', () => {
       close();
     } finally {
       text.mockRestore();
-      stored.mockRestore();
+      block.mockRestore();
     }
     return { widest, pauses };
   }
@@ -404,7 +431,6 @@ describe('scanReviewFind work between clock reads', () => {
     const sigma = 'σ'.repeat(5000);
     const cases: [string, ReviewFile[], string][] = [
       // Long lines whose prefix matches everywhere and whole never.
-      // A chunk of such lines is never packed (jstext.PackText).
       ['long é', repeatedFiles(longE, 40), `${'é'.repeat(63)}x`],
       ['σ rows the rule reads', repeatedFiles(sigma, 2000), `${'σ'.repeat(63)}x`],
       // A line over the block size is never searched as a block.
@@ -412,7 +438,7 @@ describe('scanReviewFind work between clock reads', () => {
       // Blocks searched, no row flagged.
       ['σ blocks', repeatedFiles(sigma, 1000), `${'σ'.repeat(11)}x`],
       // Every row read (a needle the filter cannot spell).
-      ['σ rows, every one', repeatedFiles(sigma, 1000), 'σ\ufffd'],
+      ['σ rows, every one', repeatedFiles(sigma, 1000), 'σ\ud800'],
     ];
     for (const [name, files, query] of cases) {
       const { widest, pauses } = await stretches(files, query);
@@ -501,7 +527,6 @@ describe('scanReviewFind pattern work', () => {
     setPatchTextBudgetForTest(1 << 30);
     // The rule on every row reads each row's text, its prefix included.
     const everyRow = 101 * 1000;
-    // Every row is a wide line, so the backend never packs this text.
     const files = repeatedFiles('é'.repeat(100), 1000);
     for (const query of [`${'é'.repeat(63)}x`, `${'é'.repeat(11)}x`, `${'é'.repeat(5)}x`]) {
       expect(await work(files, query), `${query.length}`).toBeLessThanOrEqual(2 * everyRow);

@@ -150,13 +150,17 @@ func (a *App) writeRecoveredThreadDraft(who transport.ClientIdentity, recovery s
 	return true, nil
 }
 
-func (a *App) writeRestoredQueueDraft(expected, merged store.ThreadDraft, queueIDs, sendIDs []string) error {
-	changed, err := a.store.RestoreFlushQueueToDraft(expected, merged, queueIDs, sendIDs)
+// writeRestoredQueueDraft writes one restore to the composer in one store
+// transaction (store.RestoreFlushQueueToDraft), then announces the draft and
+// the review comments the retire returned.
+func (a *App) writeRestoredQueueDraft(restore store.QueueDraftRestore) error {
+	written, err := a.store.RestoreFlushQueueToDraft(restore)
 	if err != nil {
 		return err
 	}
-	if changed {
-		a.broadcastDraft(transport.ClientIdentity{}, DraftUpdatedEvent{ThreadID: merged.ThreadID, UpdatedAt: merged.UpdatedAt})
+	if written.DraftChanged {
+		a.broadcastDraft(transport.ClientIdentity{}, DraftUpdatedEvent{ThreadID: restore.Merged.ThreadID, UpdatedAt: restore.Merged.UpdatedAt})
 	}
+	a.announceReturnedReviewComments(written.Returned)
 	return nil
 }

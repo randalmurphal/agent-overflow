@@ -121,13 +121,13 @@ func TestRestoreFlushQueueCannotOverwriteNewerDraftOrCrossThreads(t *testing.T) 
 	}
 	merged := expected
 	merged.Content = "restored answer"
-	if _, err := s.RestoreFlushQueueToDraft(expected, merged, nil, nil); err == nil {
+	if _, err := s.RestoreFlushQueueToDraft(QueueDraftRestore{Expected: expected, Merged: merged}); err == nil {
 		t.Fatal("overwrote racing composer edit")
 	}
 	if err := s.InsertFlushQueueItem(FlushQueueItem{ID: "other-queue", ThreadID: "other", Message: "other"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.RestoreFlushQueueToDraft(newer, merged, []string{"other-queue"}, nil); err == nil {
+	if _, err := s.RestoreFlushQueueToDraft(QueueDraftRestore{Expected: newer, Merged: merged, QueueItemIDs: []string{"other-queue"}}); err == nil {
 		t.Fatal("retired another thread's queue")
 	}
 	if current, _, err := s.GetThreadDraft("q"); err != nil || current.Content != newer.Content {

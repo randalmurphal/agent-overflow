@@ -1072,7 +1072,7 @@ func restoreQueueToDraft(t *testing.T, s *Store, threadID string, ids, sendIDs [
 	}
 	merged := expected
 	merged.ThreadID, merged.Content, merged.UpdatedAt = threadID, "restored", 1000
-	_, err = s.RestoreFlushQueueToDraft(expected, merged, ids, sendIDs)
+	_, err = s.RestoreFlushQueueToDraft(QueueDraftRestore{Expected: expected, Merged: merged, QueueItemIDs: ids, SendIDs: sendIDs})
 	return err
 }
 

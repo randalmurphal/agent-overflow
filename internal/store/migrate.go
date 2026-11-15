@@ -1751,6 +1751,7 @@ CREATE INDEX idx_import_history_items_joined_send_ids
 			},
 		},
 	},
+	{Version: reviewEditsScopeMigrationVersion, Name: "review_edits_scope", SQL: reviewEditsScopeV151SQL, Rebuild: true},
 }
 
 // MigrationStep describes one pending migration as it begins, or a

@@ -203,6 +203,7 @@ func newTestHeadlessEngine(t *testing.T, binary string) *headlessEngine {
 		// and Start's sweep never reads the machine's real one.
 		tempRoot: t.TempDir(),
 		binary:   binary,
+		reaper:   nopReaper{},
 		events:   engineEvents{},
 		logf:     func(format string, args ...any) { t.Logf(format, args...) },
 		// Long enough that a fake that exits when asked is never killed
@@ -1193,15 +1194,24 @@ func TestHeadlessProfileDisposeReapsALaunchInFlight(t *testing.T) {
 func TestSelectEngineTakesTheHeadlessEngineOnlyWhenAsked(t *testing.T) {
 	browser := writeFakeChromium(t, "chromium")
 	engine := selectEngine(t.TempDir(), ManagerOptions{
-		HeadlessChromium: &HeadlessChromiumOptions{Binary: browser.path},
+		HeadlessChromium: &HeadlessChromiumOptions{Binary: browser.path, Reaper: nopReaper{}},
 	}, engineEvents{})
 	if _, ok := engine.(*headlessEngine); !ok {
 		t.Fatalf("an asked-for headless engine selected %T", engine)
 	}
 
+	// Without a reaper to end its browsers with the backend there is no
+	// engine.
+	unreaped := selectEngine(t.TempDir(), ManagerOptions{
+		HeadlessChromium: &HeadlessChromiumOptions{Binary: browser.path},
+	}, engineEvents{})
+	if _, ok := unreaped.(unavailableEngine); !ok {
+		t.Fatalf("a headless engine with no reaper selected %T, want no engine", unreaped)
+	}
+
 	missing := filepath.Join(t.TempDir(), "chromium")
 	none := selectEngine(t.TempDir(), ManagerOptions{
-		HeadlessChromium: &HeadlessChromiumOptions{Binary: missing},
+		HeadlessChromium: &HeadlessChromiumOptions{Binary: missing, Reaper: nopReaper{}},
 	}, engineEvents{})
 	if _, ok := none.(unavailableEngine); !ok {
 		t.Fatalf("a serve host with no browser selected %T, want no engine", none)
@@ -1235,7 +1245,7 @@ func TestHeadlessChromiumReal(t *testing.T) {
 	// the developer's own.
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	engine, err := newHeadlessChromiumEngine(t.TempDir(), HeadlessChromiumOptions{}, engineEvents{
+	engine, err := newHeadlessChromiumEngine(t.TempDir(), HeadlessChromiumOptions{Reaper: nopReaper{}}, engineEvents{
 		PopupOpened:      func(enginePopup) {},
 		PageClosed:       func(string) {},
 		PageInfoChanged:  func(string, string, string) {},

@@ -486,7 +486,6 @@ export {
   OpenBranchBaseDiff,
   OpenCommitDiff,
   ReadReviewDiff,
-  ReadReviewDiffPacked,
   ReleaseReviewDiff,
   ListBranchCommits,
   ListRecentCommits,

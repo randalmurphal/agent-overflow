@@ -4096,11 +4096,8 @@ export function PinThread(id: string): $CancellablePromise<store$0.Thread> {
  * next-turn context automatically (see promptDiscussionSpeaker's
  * unseen-messages window).
  * 
- * PostChannelMessage has a side-effecting path (it can dispatch a
- * prompt into a participant's live provider session via
- * promptDiscussionSpeakerAsync → sendMessage), so it carries
- * threads:operate rather than a read scope — the same annotation
- * SendMessage does, for the same reason.
+ * A post drives every participant in turn, so it is judged as a send into
+ * each of them (participantDriveCheck), the same as SendMessage.
  */
 export function PostChannelMessage(channelID: string, content: string): $CancellablePromise<store$0.ChannelMessage> {
     return $Call.ByID(1315440605, channelID, content).then(($result: any) => {
@@ -4410,20 +4407,6 @@ export function ReadPipelineStages(repo: git$0.RepoReference, ids: string[], int
  */
 export function ReadReviewDiff(id: string, offset: number, maxBytes: number): $CancellablePromise<app$0.ReviewDiffChunk> {
     return $Call.ByID(2473150982, id, offset, maxBytes).then(($result: any) => {
-        return $$createType203($result);
-    });
-}
-
-/**
- * ReadReviewDiffPacked is ReadReviewDiff with the chunk's text packed
- * where that is its cheaper form for the client (jstext.PackText): the
- * same chunk, key, handle, owner and scope rules. The form depends on the
- * chunk's bytes alone, so a chunk read again has the form it had. A
- * client calls it only on a backend that advertises
- * transport.CapabilityReviewDiffPacked.
- */
-export function ReadReviewDiffPacked(id: string, offset: number, maxBytes: number): $CancellablePromise<app$0.ReviewDiffChunk> {
-    return $Call.ByID(4058838878, id, offset, maxBytes).then(($result: any) => {
         return $$createType203($result);
     });
 }
@@ -5939,6 +5922,9 @@ export function StartDiscussion(threadID: string, discussionName: string): $Canc
     return $Call.ByID(3188309099, threadID, discussionName);
 }
 
+/**
+ * StartDiscussionByID is StartDiscussion for a definition named by id.
+ */
 export function StartDiscussionByID(threadID: string, discussionID: string): $CancellablePromise<void> {
     return $Call.ByID(2336869067, threadID, discussionID);
 }

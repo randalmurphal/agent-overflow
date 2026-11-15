@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"agent-overflow/internal/orphanreaper"
+	"agent-overflow/internal/settings"
 )
 
 // A provider session's group is recorded for the orphan reaper on macOS
@@ -38,5 +39,32 @@ func TestProviderGroupsAreWatchedOnlyOnMacOS(t *testing.T) {
 	a.releaseProviderGroup(leader.Process.Pid)
 	if records, err := registry.Load(); err != nil || len(records) != 0 {
 		t.Fatalf("after release the registry holds %+v %v", records, err)
+	}
+}
+
+// A serve boot's headless browser ends with the backend: its engine gets the
+// app's orphan reaper, which records the browser's group.
+func TestTheHeadlessBrowserIsGivenTheOrphanReaper(t *testing.T) {
+	t.Parallel()
+	leader := exec.Command("sleep", "60")
+	if err := leader.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = leader.Process.Kill()
+		_ = leader.Wait()
+	})
+	a := NewApp()
+	a.browser.headlessChromium = true
+	registry := orphanreaper.NewRegistry(filepath.Join(t.TempDir(), "orphan-registry.json"))
+	a.orphanRegistry = registry
+	opts := a.headlessChromiumOptions(settings.Settings{})
+	if opts == nil || opts.Reaper == nil {
+		t.Fatalf("headless options %+v carry no reaper", opts)
+	}
+	opts.Reaper.Watch(leader.Process.Pid)
+	records, err := registry.Load()
+	if err != nil || len(records) != 1 || records[0].PGID != leader.Process.Pid || records[0].Owner != "headless browser" {
+		t.Fatalf("records %+v %v, want the browser's group", records, err)
 	}
 }

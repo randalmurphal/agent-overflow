@@ -6,6 +6,7 @@ import (
 
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadtools"
+	"agent-overflow/internal/triage"
 )
 
 // A Stop clears the caller's queue, a queued wake with it. The requests that
@@ -40,13 +41,13 @@ func TestAStopThatDropsAQueuedWakeLeavesItsRequestsUndelivered(t *testing.T) {
 			t.Fatalf("request %s delivered %q before the stop, want queued", token, row.DeliveredHow)
 		}
 	}
-	held := f.app.startSessionFn
-	f.app.startSessionFn = func(threadID string) error {
-		if threadID == other.ID {
-			return nil
+	// The other thread's dispatch is held, so its wake stays on its queue.
+	app := f.app
+	app.triage.SetFlushDispatcher(func(threadID string, items []triage.QueuedFlushItem) {
+		if threadID != other.ID {
+			app.enqueueFlushDispatch(threadID, items)
 		}
-		return held(threadID)
-	}
+	})
 	elsewhere := f.settledNotifyRequest(t, "for the other thread")
 	f.execWaiting(t, `UPDATE thread_requests SET caller_thread_id = '`+other.ID+`' WHERE token = '`+elsewhere+`'`)
 	f.app.deliverThreadWake(elsewhere, false)

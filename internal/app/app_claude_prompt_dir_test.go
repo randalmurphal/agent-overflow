@@ -58,18 +58,14 @@ func TestPromptFilesOfAKilledSessionAreRemovedAtTheNextBoot(t *testing.T) {
 		t.Fatal("the killed session's prompt file is gone before any boot; the test no longer covers the leak")
 	}
 
-	next := NewApp()
+	next := newBootTestApp(t)
 	next.dataDirOverride = root
-	_, st, err := next.initStores(context.Background())
-	if err != nil {
-		t.Fatalf("initStores: %v", err)
+	if err := next.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
 	}
 	t.Cleanup(func() {
-		if next.logger != nil {
-			_ = next.logger.Close()
-		}
-		if err := st.Close(); err != nil {
-			t.Errorf("close store: %v", err)
+		if err := next.Shutdown(context.Background()); err != nil {
+			t.Errorf("Shutdown: %v", err)
 		}
 	})
 	if _, err := os.Stat(promptDir); !os.IsNotExist(err) {

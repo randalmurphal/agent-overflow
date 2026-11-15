@@ -197,20 +197,28 @@ func gitObjectPath(ctx context.Context, workspace string) (string, error) {
 	return abs, nil
 }
 
+// beforeWorktreeHash, set only by serial tests, runs after the snapshot has
+// listed and inspected the changed paths and before it reads any of them.
+var beforeWorktreeHash func()
+
 func stageWorktreeNoFilters(ctx context.Context, workspace string, env []string) error {
 	changed, _, _, err := runGit(ctx, workspace, env, false,
 		"ls-files", "-z", "--modified", "--deleted", "--others", "--exclude-standard")
 	if err != nil {
 		return fmt.Errorf("gitdiff: list worktree changes: %w", err)
 	}
-	// Partition once: deletions and symlinks need per-path handling; the
-	// (overwhelmingly common) regular files batch into ONE hash-object
-	// and ONE update-index so a large worktree doesn't fan out O(files)
-	// subprocesses.
+	// Partition once: deletions, repositories and symlinks need per-path
+	// handling; the (overwhelmingly common) regular files batch into ONE
+	// hash-object and ONE update-index so a large worktree doesn't fan out
+	// O(files) subprocesses.
+	//
+	// A path can be removed after git lists it or after it is inspected
+	// here, before git reads it. Such a path is staged as it now is, a
+	// removal (a no-op for an untracked one); any other failure to read a
+	// path fails the snapshot.
 	seen := map[string]struct{}{}
 	var deleted []string // batched `update-index --force-remove --stdin`
-	var regular []string // batched `hash-object --stdin-paths`
-	var regularModes []string
+	var regular, repositories, singles []worktreePath
 	var indexInfo strings.Builder // NUL-terminated `<mode> <oid>\t<path>` records
 	writeIndexInfo := func(mode, oid, path string) {
 		indexInfo.WriteString(mode)
@@ -236,51 +244,58 @@ func stageWorktreeNoFilters(ctx context.Context, workspace string, env []string)
 		if statErr != nil {
 			return fmt.Errorf("gitdiff: inspect %s: %w", p, statErr)
 		}
-		if info.IsDir() {
+		switch {
+		case info.IsDir():
 			// A directory here is a repository of its own: a submodule, or
 			// an untracked nested repository (listed with a trailing
 			// slash). It is recorded as `git add` records it, a gitlink to
 			// the commit it has checked out.
-			name := strings.TrimSuffix(p, "/")
-			oid, err := nestedRepositoryHead(ctx, filepath.Join(workspace, name))
-			if err != nil {
-				return fmt.Errorf("gitdiff: read repository %s: %w", name, err)
-			}
-			if oid != "" {
-				writeIndexInfo("160000", oid, name)
-			}
-			continue
-		}
-		if info.Mode()&os.ModeSymlink != 0 || strings.ContainsRune(p, '\n') {
+			repositories = append(repositories, worktreePath{path: strings.TrimSuffix(p, "/")})
+		case info.Mode()&os.ModeSymlink != 0 || strings.ContainsRune(p, '\n'):
 			// Symlinks hash their target text via stdin, and a path holding
 			// a newline can't ride the LF-separated --stdin-paths batch.
-			oid, err := hashWorktreePathNoFilters(ctx, workspace, p, info.Mode(), env)
-			if err != nil {
-				return fmt.Errorf("gitdiff: hash %s: %w", p, err)
-			}
-			if oid == "" {
-				return fmt.Errorf("gitdiff: hash %s returned empty oid", p)
-			}
-			writeIndexInfo(gitIndexMode(info.Mode()), oid, p)
+			singles = append(singles, worktreePath{path: p, mode: info.Mode()})
+		default:
+			regular = append(regular, worktreePath{path: p, mode: info.Mode()})
+		}
+	}
+	if beforeWorktreeHash != nil {
+		beforeWorktreeHash()
+	}
+	for _, repository := range repositories {
+		oid, err := nestedRepositoryHead(ctx, filepath.Join(workspace, repository.path))
+		if (err != nil || oid == "") && removedFromWorktree(workspace, repository.path) {
+			deleted = append(deleted, repository.path)
 			continue
 		}
-		regular = append(regular, p)
-		regularModes = append(regularModes, gitIndexMode(info.Mode()))
-	}
-	if len(regular) > 0 {
-		stdin := strings.Join(regular, "\n") + "\n"
-		stdout, _, _, err := runGitWithStdin(ctx, workspace, env, []byte(stdin), false,
-			"hash-object", "-w", "--no-filters", "--stdin-paths")
 		if err != nil {
-			return fmt.Errorf("gitdiff: hash worktree files: %w", err)
+			return fmt.Errorf("gitdiff: read repository %s: %w", repository.path, err)
 		}
-		oids := strings.Fields(stdout)
-		if len(oids) != len(regular) {
-			return fmt.Errorf("gitdiff: hash-object returned %d oids for %d paths", len(oids), len(regular))
+		if oid != "" {
+			writeIndexInfo("160000", oid, repository.path)
 		}
-		for i, p := range regular {
-			writeIndexInfo(regularModes[i], oids[i], p)
+	}
+	for _, single := range singles {
+		oid, err := hashWorktreePathNoFilters(ctx, workspace, single.path, single.mode, env)
+		if err != nil && removedFromWorktree(workspace, single.path) {
+			deleted = append(deleted, single.path)
+			continue
 		}
+		if err != nil {
+			return fmt.Errorf("gitdiff: hash %s: %w", single.path, err)
+		}
+		if oid == "" {
+			return fmt.Errorf("gitdiff: hash %s returned empty oid", single.path)
+		}
+		writeIndexInfo(gitIndexMode(single.mode), oid, single.path)
+	}
+	hashed, oids, removed, err := hashWorktreeFiles(ctx, workspace, env, regular)
+	if err != nil {
+		return err
+	}
+	deleted = append(deleted, removed...)
+	for i, file := range hashed {
+		writeIndexInfo(gitIndexMode(file.mode), oids[i], file.path)
 	}
 	if indexInfo.Len() > 0 {
 		if _, _, _, err := runGitWithStdin(ctx, workspace, env, []byte(indexInfo.String()), false,
@@ -296,6 +311,56 @@ func stageWorktreeNoFilters(ctx context.Context, workspace string, env []string)
 		}
 	}
 	return nil
+}
+
+// worktreePath is one listed path and the mode it was inspected with.
+type worktreePath struct {
+	path string
+	mode os.FileMode
+}
+
+// hashWorktreeFiles writes the blobs of the regular files in one
+// `hash-object --stdin-paths` batch and returns the files it hashed with
+// their oids, in order. A file removed before git read it fails the batch;
+// it is returned in removed and the batch runs again without it. A failure
+// with no file removed is an error.
+func hashWorktreeFiles(ctx context.Context, workspace string, env []string, files []worktreePath) (hashed []worktreePath, oids, removed []string, err error) {
+	for len(files) > 0 {
+		var stdin strings.Builder
+		for _, file := range files {
+			stdin.WriteString(file.path)
+			stdin.WriteByte('\n')
+		}
+		stdout, _, _, runErr := runGitWithStdin(ctx, workspace, env, []byte(stdin.String()), false,
+			"hash-object", "-w", "--no-filters", "--stdin-paths")
+		if runErr == nil {
+			oids = strings.Fields(stdout)
+			if len(oids) != len(files) {
+				return nil, nil, nil, fmt.Errorf("gitdiff: hash-object returned %d oids for %d paths", len(oids), len(files))
+			}
+			return files, oids, removed, nil
+		}
+		present := files[:0:0]
+		for _, file := range files {
+			if removedFromWorktree(workspace, file.path) {
+				removed = append(removed, file.path)
+			} else {
+				present = append(present, file)
+			}
+		}
+		if len(present) == len(files) {
+			return nil, nil, nil, fmt.Errorf("gitdiff: hash worktree files: %w", runErr)
+		}
+		files = present
+	}
+	return nil, nil, removed, nil
+}
+
+// removedFromWorktree reports whether the listed path p is gone from the
+// working tree.
+func removedFromWorktree(workspace, p string) bool {
+	_, err := os.Lstat(filepath.Join(workspace, p))
+	return errors.Is(err, os.ErrNotExist)
 }
 
 // nestedRepositoryHead returns the commit the repository at dir has checked

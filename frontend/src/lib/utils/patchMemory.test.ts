@@ -11,7 +11,7 @@ import { whenResident } from './patchBody';
 import { PatchParser, parseReviewFiles, type ReviewFile } from './patchParser';
 import { PatchTextLost, PatchTextNotResident } from './patchChunks';
 import { LINE_ADD, PatchStore } from './patchStore';
-import { packText, streamPatch, textKey, type PatchForm, type StreamedPatch } from '../../test/helpers/streamedPatch';
+import { streamPatch, type StreamedPatch } from '../../test/helpers/streamedPatch';
 
 // Patch text past the memory budget: what is evicted first, how it is read
 // again, and what a reader can rely on while it is not resident.
@@ -38,8 +38,8 @@ function patchOf(files: number, lines: number): string {
   return out.join('\n') + '\n';
 }
 
-function stream(patch: string, size: number | ((index: number) => number), form?: PatchForm): StreamedPatch {
-  const streamed = streamPatch(patch, size, form);
+function stream(patch: string, size: number | ((index: number) => number)): StreamedPatch {
+  const streamed = streamPatch(patch, size);
   disposers.push(() => streamed.parser.store.dispose());
   return streamed;
 }
@@ -84,7 +84,7 @@ describe('patch text past the memory budget', () => {
     const text = await last.body.whenResident(() => last.body.patchText());
     expect(text).toBe(reference[19].body.patchText());
     const lastSpans = spans.filter((span) => span.nextOffset > patch.indexOf('diff --git a/f019.ts'));
-    expect(source.read.mock.calls).toEqual(lastSpans.map((span) => [span.offset, span.nextOffset, false]));
+    expect(source.read.mock.calls).toEqual(lastSpans.map((span) => [span.offset, span.nextOffset]));
     // The text it read counts, and the budget holds once nothing pins it.
     expect(patchTextHeldBytes() - base).toBeLessThanOrEqual(1600 + reference[0].body.segments[0].store.storedSize);
   });
@@ -133,8 +133,8 @@ describe('patch text past the memory budget', () => {
     const { files, source } = stream(patchOf(20, 6), 160);
     const releases: (() => void)[] = [];
     const inner = source.read.getMockImplementation()!;
-    source.read.mockImplementation((offset, nextOffset, packed) =>
-      new Promise((resolve) => { releases.push(() => resolve(inner(offset, nextOffset, packed))); }));
+    source.read.mockImplementation((offset, nextOffset) =>
+      new Promise((resolve) => { releases.push(() => resolve(inner(offset, nextOffset))); }));
 
     const file = files[10];
     const first = load(file);
@@ -218,7 +218,7 @@ describe('patch text past the memory budget', () => {
   it('treats a reread that answers another chunk as lost', async () => {
     setPatchTextBudgetForTest(160);
     const { files, source } = stream(patchOf(20, 6), 160);
-    source.read.mockImplementation(async (_offset: number, nextOffset: number) => ({ data: 'x'.repeat(160), nextOffset: nextOffset + 1, packed: false }));
+    source.read.mockImplementation(async (_offset: number, nextOffset: number) => ({ data: 'x'.repeat(160), nextOffset: nextOffset + 1 }));
     await expect(load(files[19], 1)).rejects.toThrow('the diff no longer serves the same chunk');
   });
 
@@ -366,48 +366,39 @@ describe('patch text past the memory budget', () => {
     for (const file of files) await load(file);
     expect(patchTextHeldBytes() - base).toBeLessThanOrEqual(1600);
   });
-
-  it('counts text past Latin-1 at two bytes a character', () => {
-    const base = patchTextHeldBytes();
-    const parser = new PatchParser();
-    disposers.push(() => parser.store.dispose());
-    parser.append('+✓\n');
-    expect(patchTextHeldBytes() - base).toBe(6);
-    parser.append('+é\n');
-    expect(patchTextHeldBytes() - base).toBe(9);
-  });
 });
 
-
-describe('packed patch text past the memory budget', () => {
+describe('patch text past ASCII past the memory budget', () => {
   // patchOf with a character of every UTF-8 length on every 30th added
-  // line: sparse enough for a 2000-byte chunk to be packed.
+  // line.
   function widePatchOf(files: number, lines: number): string {
     return patchOf(files, lines).replace(/^\+(\d+):(\d+)\./gm, (line, file: string, at: string) => (Number(at) % 30 === 0 ? `+${file}:${at}é✓😀` : line));
   }
   const SIZE = 2000;
   const BUDGET = 2500;
 
-  it('counts a packed chunk at its length', () => {
+  // The budget is what the page holds: the text's UTF-8 bytes, whatever
+  // width an engine holds a string of the same text at.
+  it('counts a chunk at its UTF-8 bytes', () => {
     const base = patchTextHeldBytes();
     const parser = new PatchParser();
     disposers.push(() => parser.store.dispose());
-    const check = packText('+✓\n');
-    parser.append(check, { offset: 0, nextOffset: check.length, wide: [1], key: textKey('+✓\n') });
-    expect(patchTextHeldBytes() - base).toBe(5);
-    const accent = packText('+é\n');
-    parser.append(accent, { offset: 5, nextOffset: 5 + accent.length, wide: [1], key: textKey('+✓\n+é\n') });
-    expect(patchTextHeldBytes() - base).toBe(9);
+    const steps: [string, number][] = [['+ascii\n', 7], ['+é ÿ\n', 7], ['+✓ 日\n', 9], ['+😀\n', 6]];
+    let held = 0;
+    for (const [data, bytes] of steps) {
+      parser.append(data, { offset: held, nextOffset: held + bytes });
+      held += bytes;
+      expect(patchTextHeldBytes() - base, data).toBe(held);
+    }
   });
 
-  it('reads each evicted chunk again in the form it arrived in', async () => {
+  it('reads each evicted chunk again as the text it was', async () => {
     setPatchTextBudgetForTest(BUDGET);
     const patch = widePatchOf(12, 60);
-    const { files, source, spans } = stream(patch, SIZE, 'packed');
+    const { files, source } = stream(patch, SIZE);
     const reference = parsePatchFiles(patch);
     expect(files.map((file) => file.path)).toEqual(reference.map((file) => file.path));
     expect(files.some((file) => !resident(file))).toBe(true);
-    expect(spans.filter((span) => span.wide !== undefined).length).toBeGreaterThan(2);
 
     // Last to first, so the first chunk is evicted and read again too.
     for (let index = files.length - 1; index >= 0; index -= 1) {
@@ -418,24 +409,27 @@ describe('packed patch text past the memory budget', () => {
       const file = files[index];
       expect(await file.body.whenResident(() => file.body.toPatchLines()), `${index}`).toEqual(reference[index].lines);
     }
-    const forms = source.read.mock.calls.map(([offset, , packed]) => [packed, spans.find((span) => span.offset === offset)!.wide !== undefined]);
-    expect(forms.every(([asked, arrived]) => asked === arrived)).toBe(true);
-    expect(new Set(forms.map(([asked]) => asked))).toEqual(new Set([true, false]));
+    expect(source.read.mock.calls.length).toBeGreaterThan(files.length);
+    expect(patchTextHeldBytes()).toBeLessThanOrEqual(BUDGET);
   });
 
-  it('treats a packed reread of another length as lost', async () => {
+  it('treats a reread of another length as lost', async () => {
     setPatchTextBudgetForTest(BUDGET);
-    const { files, source } = stream(widePatchOf(20, 60), SIZE, 'packed');
-    source.read.mockImplementation(async (_offset, nextOffset, packed) => ({ data: 'x', nextOffset, packed }));
+    const { files, source } = stream(widePatchOf(20, 60), SIZE);
+    source.read.mockImplementation(async (_offset, nextOffset) => ({ data: 'x', nextOffset }));
     await expect(load(files[19])).rejects.toThrow('the diff no longer serves the same chunk');
   });
 
-  it('treats a packed chunk read again as text as lost', async () => {
+  // The same number of characters, in more bytes: the line index is in
+  // bytes, so this is not the chunk it indexed.
+  it('treats a reread of the same length in characters but not in bytes as lost', async () => {
     setPatchTextBudgetForTest(BUDGET);
-    const { files, source, spans } = stream(widePatchOf(20, 60), SIZE, 'packed');
-    expect(spans[spans.length - 1].wide).toBeDefined();
+    const { files, source } = stream(widePatchOf(20, 60), SIZE);
     const inner = source.read.getMockImplementation()!;
-    source.read.mockImplementation(async (offset, nextOffset, packed) => ({ ...(await inner(offset, nextOffset, packed)), packed: false }));
+    source.read.mockImplementation(async (offset, nextOffset) => {
+      const answer = await inner(offset, nextOffset);
+      return { ...answer, data: answer.data.replace(/é/g, '✓') };
+    });
     await expect(load(files[19])).rejects.toThrow('the diff no longer serves the same chunk');
   });
 });

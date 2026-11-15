@@ -15,8 +15,8 @@ import (
 	"agent-overflow/internal/procutil"
 )
 
-// configureChromiumProcess puts Chromium in a process group of its own.
-// macOS has no parent-death signal, so Dispose is what stops it.
+// configureChromiumProcess puts Chromium in a process group of its own,
+// which the reaper ends when the backend dies.
 func configureChromiumProcess(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 }

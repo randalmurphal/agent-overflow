@@ -15,17 +15,8 @@ import type { PatchChunkSpan, PatchTextKey } from '../../lib/utils/patchStore';
 //   character (MinChunkBytes); one here takes the whole character.
 // - Text is what a JSON client receives: each byte that does not begin a
 //   valid UTF-8 sequence is one U+FFFD.
-// - The packed read packs a chunk exactly where jstext.PackText does: it
-//   has a character past U+00FF and its wide lines hold at most 1/16 of
-//   its sanitized bytes. A packed chunk carries its marks; a plain one
-//   none.
 // - Every chunk carries the key of the text through its end, unless the
 //   backend predates keys.
-//
-// The form says how a stream reads: `plain` with ReadReviewDiff, `packed`
-// with ReadReviewDiffPacked after the open's chunk, which is plain.
-
-export type PatchForm = 'plain' | 'packed';
 
 export type StreamedChunk = PatchChunkSpan & { data: string; eof: boolean };
 
@@ -36,31 +27,6 @@ export interface StreamedPatch {
   spans: StreamedChunk[];
 }
 
-const PACKED_WIDE_SHARE = 16;
-
-/** UTF-8 bytes of `text`, one character per byte. */
-export function packText(text: string): string {
-  let out = '';
-  for (const byte of new TextEncoder().encode(text)) out += String.fromCharCode(byte);
-  return out;
-}
-
-/** For each line of packed `data` (a run between newlines) holding a byte
- * past ASCII, the index of the first such byte. */
-export function wideMarks(data: string): number[] {
-  const marks: number[] = [];
-  let marked = false;
-  for (let index = 0; index < data.length; index += 1) {
-    const code = data.charCodeAt(index);
-    if (code === 10) marked = false;
-    else if (code >= 0x80 && !marked) {
-      marks.push(index);
-      marked = true;
-    }
-  }
-  return marks;
-}
-
 /** The key the backend answers for `text`, the patch text from offset 0
  * to a chunk's end. */
 export function textKey(text: string): PatchTextKey {
@@ -69,7 +35,6 @@ export function textKey(text: string): PatchTextKey {
 
 /** The chunk as a backend older than the key answers it. */
 export function unkeyed(chunk: StreamedChunk): StreamedChunk {
-  if (chunk.wide !== undefined) throw new Error('a packed chunk always has its key');
   const { key: _key, ...rest } = chunk;
   return rest;
 }
@@ -153,28 +118,13 @@ function jsonText(bytes: Uint8Array, from: number, to: number): string {
   return out + decoder.decode(bytes.subarray(run, to));
 }
 
-/** jstext.PackText over a chunk's text: its packed form and marks when
- * packing pays, else null. */
-function packedForm(text: string): { data: string; wide: number[] } | null {
-  if (!/[\u0100-\uffff]/.test(text)) return null;
-  const data = packText(text);
-  const wide = wideMarks(data);
-  let wideBytes = 0;
-  for (const mark of wide) {
-    const start = data.lastIndexOf('\n', mark) + 1;
-    const newline = data.indexOf('\n', mark);
-    wideBytes += (newline < 0 ? data.length : newline) - start;
-  }
-  return wideBytes * PACKED_WIDE_SHARE <= data.length ? { data, wide } : null;
-}
-
 /** A patch served by byte offset as the backend serves it. */
 export interface FakeDiff {
   /** Its bytes. */
   readonly bytes: Uint8Array;
-  /** ReadReviewDiff (`packed` false) or ReadReviewDiffPacked from
-   * `offset`. `keyed` false is a backend older than the key. */
-  read(offset: number, maxBytes: number, packed: boolean, keyed?: boolean): StreamedChunk;
+  /** ReadReviewDiff from `offset`. `keyed` false is a backend older than
+   * the key. */
+  read(offset: number, maxBytes: number, keyed?: boolean): StreamedChunk;
 }
 
 /** A fake backend serving `patch`, text or raw bytes (which may hold
@@ -185,7 +135,7 @@ export function fakeDiff(patch: string | Uint8Array): FakeDiff {
   const keys = new Map<number, PatchTextKey>([[0, { hash: FNV_OFFSET_BASIS_32, units: 0 }]]);
   return {
     bytes,
-    read(offset, maxBytes, packed, keyed = true) {
+    read(offset, maxBytes, keyed = true) {
       // The backend's window is never shorter than a character; one here
       // is widened to the character at the offset.
       const next = chunkCut(bytes, offset, Math.max(1, maxBytes, sequenceAt(bytes, offset)));
@@ -194,20 +144,18 @@ export function fakeDiff(patch: string | Uint8Array): FakeDiff {
       const key = { hash: appendFNV1a32(before.hash, text), units: before.units + text.length };
       keys.set(next, key);
       const eof = next === bytes.length;
-      const form = packed ? packedForm(text) : null;
-      if (form) return { data: form.data, wide: form.wide, key, offset, nextOffset: next, eof };
       return keyed ? { data: text, key, offset, nextOffset: next, eof } : { data: text, offset, nextOffset: next, eof };
     },
   };
 }
 
-/** The chunks a patch streams as, in `form`, each read with a window of
- * `size` bytes. */
-export function patchChunks(patch: string, size: number | ((index: number) => number), form: PatchForm = 'plain'): StreamedChunk[] {
+/** The chunks a patch streams as, each read with a window of `size`
+ * bytes. */
+export function patchChunks(patch: string, size: number | ((index: number) => number)): StreamedChunk[] {
   const diff = fakeDiff(patch);
   const chunks: StreamedChunk[] = [];
   for (let offset = 0, index = 0; offset < diff.bytes.length; index += 1) {
-    const chunk = diff.read(offset, typeof size === 'number' ? size : size(index), form === 'packed' && index > 0);
+    const chunk = diff.read(offset, typeof size === 'number' ? size : size(index));
     chunks.push(chunk);
     offset = chunk.nextOffset;
   }
@@ -217,15 +165,15 @@ export function patchChunks(patch: string, size: number | ((index: number) => nu
 /** Streams a patch into a parser whose store reads evicted chunks again
  * from the fake backend, as ReviewDiffSource does. Set the budget with
  * setPatchTextBudgetForTest before streaming, and dispose the store. */
-export function streamPatch(patch: string, size: number | ((index: number) => number), form: PatchForm = 'plain'): StreamedPatch {
+export function streamPatch(patch: string, size: number | ((index: number) => number)): StreamedPatch {
   const diff = fakeDiff(patch);
-  const spans = patchChunks(patch, size, form);
+  const spans = patchChunks(patch, size);
   const source = {
     // The same offset and a window no larger than the first read's cut
     // the same chunk.
-    read: vi.fn<PatchTextSource['read']>(async (offset, nextOffset, packed) => {
-      const chunk = diff.read(offset, nextOffset - offset, packed);
-      return { data: chunk.data, nextOffset: chunk.nextOffset, packed: chunk.wide !== undefined };
+    read: vi.fn<PatchTextSource['read']>(async (offset, nextOffset) => {
+      const chunk = diff.read(offset, nextOffset - offset);
+      return { data: chunk.data, nextOffset: chunk.nextOffset };
     }),
     release: vi.fn<PatchTextSource['release']>(),
   };
