@@ -87,7 +87,8 @@ func TestGitHubListProjectPRsParsesTheSearch(t *testing.T) {
 }
 
 // A search past one page is read from the page's endCursor, and the read
-// stops at prListMaxPages pages even when GitHub says there are more.
+// stops at prListMaxPages pages even when GitHub says there are more,
+// saying the list was cut.
 func TestGitHubListProjectPRsPagesTheSearch(t *testing.T) {
 	t.Parallel()
 	core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
@@ -109,8 +110,8 @@ func TestGitHubListProjectPRsPagesTheSearch(t *testing.T) {
 		return githubData(fmt.Sprintf(`{"viewer":{"login":"alice"},"search":{"pageInfo":{"hasNextPage":true,"endCursor":"c%d"},"nodes":[%s]}}`, page+1, strings.Join(nodes, ",")))
 	})
 	rows, err := core.ListProjectPRs(t.Context(), githubTestRepo())
-	if err != nil {
-		t.Fatalf("ListProjectPRs: %v", err)
+	if notice, ok := PRListNotices(err); !ok || notice != "Showing the 1000 most recently updated open pull requests: the list reads at most 1000." {
+		t.Fatalf("ListProjectPRs: %v, want the cut list's notice", err)
 	}
 	if got := len(calls.all()); got != prListMaxPages {
 		t.Fatalf("requests = %d, want %d", got, prListMaxPages)
@@ -120,6 +121,28 @@ func TestGitHubListProjectPRsPagesTheSearch(t *testing.T) {
 	}
 	if after := calls.all()[1].Vars["after"]; after != "c1" {
 		t.Fatalf("second page after = %v, want the first page's endCursor", after)
+	}
+}
+
+// GitHub's search answers at most 1000 results: a count past the rows
+// read says so, with the count; a count the rows cover says nothing.
+func TestGitHubListSaysWhenTheSearchCountsMore(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		count  int
+		notice string
+	}{
+		{1, ""},
+		{1500, "Showing 1 of 1500 open pull requests: the list reads at most 1000."},
+	} {
+		core, _ := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
+			return githubData(fmt.Sprintf(`{"viewer":{"login":"alice"},"search":{"issueCount":%d,"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PR_1","number":1,"author":{"login":"x"},"commits":{"totalCount":1,"nodes":[]}}]}}`, tc.count))
+		})
+		rows, err := core.ListProjectPRs(t.Context(), githubTestRepo())
+		notice, _ := PRListNotices(err)
+		if len(rows) != 1 || notice != tc.notice || (tc.notice == "") != (err == nil) {
+			t.Fatalf("count %d: ListProjectPRs = %d rows, %v; want %q", tc.count, len(rows), err, tc.notice)
+		}
 	}
 }
 

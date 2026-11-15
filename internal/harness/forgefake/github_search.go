@@ -23,7 +23,8 @@ const githubSearchNotVisible = "The listed users and repositories cannot be sear
 
 // ghPullsSearch answers search(type: ISSUE, query: "is:pr is:open
 // repo:O/R", first: 100, after:) with the repository's open pulls, newest
-// first, a page of 100 from after, beside the viewer: each with its
+// first, a page of 100 from after with their issueCount, beside the
+// viewer: each with its
 // opinions, first 100 review threads and the base's required approvals,
 // and its head's check state while $wantChecks, which a repository whose
 // token cannot read checks (tokenCannotRead) answers null beside a
@@ -54,6 +55,7 @@ func ghPullsSearch(e *Engine, c *call, v graphQLVars) response {
 		}
 	}
 	page := graphQLConnection(nodes, offset, githubGraphQLPageSize)
+	page["issueCount"] = len(nodes)
 	var errs []map[string]any
 	if wantChecks && slices.Contains(r.TokenCannotRead, tokenCannotReadChecks) {
 		for i, node := range page["nodes"].([]map[string]any) {

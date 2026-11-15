@@ -461,7 +461,7 @@ func gitlabNote(comment Comment, extra map[string]any) map[string]any {
 // project the path names: the open MRs from a source branch name (a
 // fork's included, as source_branch matches them), recently merged MRs,
 // and named MRs in any state (iids[] with state=all). Items are the full
-// view.
+// view; a state list answers its X-Total.
 func glabMRList(e *Engine, c *call, m []string) response {
 	r, fail, ok := e.glabProject(c, m[1])
 	if !ok {
@@ -499,7 +499,7 @@ func glabMRList(e *Engine, c *call, m []string) response {
 	if items == nil {
 		items = []map[string]any{}
 	}
-	return glabOK(jsonResponse(items), "X-Next-Page: "+next)
+	return glabOK(jsonResponse(items), "X-Next-Page: "+next, "X-Total: "+strconv.Itoa(len(matches)))
 }
 
 // glabMRsByIID answers the merge requests iids names, in any state, newest

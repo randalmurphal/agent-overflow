@@ -112,7 +112,7 @@ func TestForgeListReadsTakeAPageOverTheDefaultBodyBound(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		listed, err := readGitLabMRList(t.Context(), client, gitlabTestRef(1).Repository())
+		listed, _, err := readGitLabMRList(t.Context(), client, gitlabTestRef(1).Repository())
 		if err != nil || len(listed) != 100 {
 			t.Fatalf("readGitLabMRList = %d, %v", len(listed), err)
 		}

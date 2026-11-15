@@ -155,6 +155,20 @@ func PRListNotices(err error) (string, bool) {
 	return strings.Join(sentences, " "), true
 }
 
+// prListTruncated is the notice of a list cut at prListMaxPages pages:
+// shown rows of total, 0 when the forge did not count them. GitHub's
+// search answers at most 1000 results whatever its count.
+func prListTruncated(forge string, shown, total int) *PRListNotice {
+	what := "open pull requests"
+	if forge == "gitlab" {
+		what = "open merge requests"
+	}
+	if total > shown {
+		return &PRListNotice{Sentence: fmt.Sprintf("Showing %d of %d %s: the list reads at most %d.", shown, total, what, prListMaxPages*githubReadPageSize)}
+	}
+	return &PRListNotice{Sentence: fmt.Sprintf("Showing the %d most recently updated %s: the list reads at most %d.", shown, what, prListMaxPages*githubReadPageSize)}
+}
+
 // detailError is the PRListDetailError of errs, nil when none failed.
 func detailError(errs ...error) error {
 	var failed []error
@@ -225,7 +239,7 @@ const githubListActivityDepth = "10"
 const githubPullsSearchQuery = `query PullsSearch($query: String!, $after: String, $wantChecks: Boolean!) {
   viewer { login }
   search(type: ISSUE, query: $query, first: 100, after: $after) {
-    ` + githubPageInfoFields + `
+    issueCount ` + githubPageInfoFields + `
     nodes {
       ... on PullRequest {
         id number url title isDraft createdAt updatedAt headRefOid headRefName baseRefName isCrossRepository
@@ -342,14 +356,17 @@ func (f *githubForge) ListProjectPRs(ctx context.Context, repo RepoReference) ([
 	query := "is:pr is:open repo:" + owner + "/" + name
 	rows := []PRListRow{}
 	var after any
+	// more is a next page past the last read, total the search's count.
+	more, total := false, 0
 	for pages := 0; pages < prListMaxPages; pages++ {
 		var raw struct {
 			Viewer *struct {
 				Login string `json:"login"`
 			} `json:"viewer"`
 			Search *struct {
-				PageInfo githubPageInfo        `json:"pageInfo"`
-				Nodes    []githubSearchPullRaw `json:"nodes"`
+				IssueCount int                   `json:"issueCount"`
+				PageInfo   githubPageInfo        `json:"pageInfo"`
+				Nodes      []githubSearchPullRaw `json:"nodes"`
 			} `json:"search"`
 		}
 		vars := map[string]any{"query": query, "after": after, "wantChecks": shape.has(githubPartCheckRuns)}
@@ -379,16 +396,21 @@ func (f *githubForge) ListProjectPRs(ctx context.Context, repo RepoReference) ([
 			}
 			rows = append(rows, githubPRListRow(repo, node, viewer))
 		}
+		total = raw.Search.IssueCount
 		page := raw.Search.PageInfo
-		if !page.HasNextPage || page.EndCursor == "" {
+		if more = page.HasNextPage && page.EndCursor != ""; !more {
 			break
 		}
 		after = page.EndCursor
 	}
+	var notices []error
 	if sentence, left := shape.excluded[githubPartCheckRuns]; left {
-		return rows, detailError(&PRListNotice{Sentence: sentence})
+		notices = append(notices, &PRListNotice{Sentence: sentence})
 	}
-	return rows, nil
+	if more || total > len(rows) {
+		notices = append(notices, prListTruncated(repo.Forge, len(rows), total))
+	}
+	return rows, detailError(notices...)
 }
 
 // githubListChecksRefused reports a PullsSearch answer whose every

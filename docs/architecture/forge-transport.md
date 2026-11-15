@@ -464,10 +464,15 @@ leaves zero, are documented on `PRListRow` and `PipelineSummary`.
 on its own. Its requests run concurrently; only a failed list fails the
 read. Another failed request leaves its fields unknown (nil or empty) and
 comes back as a `*PRListDetailError` beside the rows, which the page shows
-as the project's `DetailError`.
+as the project's `DetailError`. A list cut at `prListMaxPages` pages of
+100 says so with a `*PRListNotice` there ("Showing 1000 of 1500 open
+pull requests: the list reads at most 1000."): on GitHub when a next
+page remains or the search's `issueCount` passes the rows read (search
+answers at most 1000 results), on GitLab when the last page read names
+a next one, with its `X-Total` when GitLab sends it.
 
 GitHub lists open PRs with one GraphQL `PullsSearch(query, after, wantChecks)`:
-`search(type: ISSUE, query: "is:pr is:open repo:O/R", first: 100)`
+`search(type: ISSUE, query: "is:pr is:open repo:O/R", first: 100) { issueCount }`
 beside `viewer { login }`. Each node selects its review state
 (`reviewDecision`, `reviewRequests(first: 20)`,
 `latestOpinionatedReviews(first: 100) { state viewerDidAuthor }`, whose
