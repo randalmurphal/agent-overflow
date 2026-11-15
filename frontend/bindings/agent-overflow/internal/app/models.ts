@@ -7977,6 +7977,14 @@ export class ThreadAgentRow {
     "state": string;
 
     /**
+     * Worker is why the thread a spawn made is not at rest, whatever State
+     * says: blocked, running or queued; empty while it is at rest, and for
+     * every other kind. A spawn whose worker is not at rest is open: one
+     * that replied and keeps working shows its reply and this.
+     */
+    "worker"?: string;
+
+    /**
      * BlockedOn is approval or question for a local target waiting on a
      * prompt, person for a paired computer's target that reports it is
      * blocked; BlockedDetail says what it asks and BlockedRoutedTo names
@@ -8122,6 +8130,13 @@ export class ThreadAgentRows {
      * agent_rows so the spawn row on the computer that asked can show it.
      */
     "threadProvider"?: string;
+
+    /**
+     * Worker is why the listed thread itself is not at rest, answered by
+     * agent_rows so the spawn row on the computer that asked is open while
+     * it is (ThreadAgentRow.Worker).
+     */
+    "worker"?: string;
 
     /** Creates a new ThreadAgentRows instance. */
     constructor($$source: Partial<ThreadAgentRows> = {}) {
@@ -9334,8 +9349,9 @@ export class ThreadWakes {
 
 /**
  * ThreadWorkerSummary is what a thread's sidebar row says of its Agents
- * listing: Open counts the open rows it shows, nested rows included, and
- * NeedYou those of them blocked on a prompt no agent was given.
+ * listing: Open counts the threads its open rows went to, nested rows
+ * included, each once however many requests went to it, and NeedYou those
+ * of them blocked on a prompt no agent was given.
  */
 export class ThreadWorkerSummary {
     "threadId": string;
