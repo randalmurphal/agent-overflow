@@ -186,7 +186,7 @@ func TestAsyncAnswerDispatchRetainsRecoveryUntilProviderEcho(t *testing.T) {
 	}
 	// A successful steer only queues input inside Codex. The process can still
 	// exit before the model consumes it and echoes its stable message identity.
-	a.flushQueueSettlement(thread.ID, "queue", nil).Settle()
+	a.flushQueueSettlement(thread.ID, "queue", nil).Settle("")
 	if rows := durableQueueRows(t, a, thread.ID); len(rows) != 1 {
 		t.Fatal("provider write discarded the unconfirmed answer's recovery record")
 	}

@@ -53,14 +53,26 @@ type deliveryFixture struct {
 	thread string
 	uuid   string
 	row    store.Item
+	// session stamps the frames handle passes that name none.
+	session string
 }
 
 func newDeliveryFixture(t *testing.T, meta string) *deliveryFixture {
 	t.Helper()
+	return newDeliveryFixtureIn(t, meta, "")
+}
+
+// newDeliveryFixtureIn is newDeliveryFixture with the thread committed to
+// session and its frames stamped with it, empty for host-originated frames.
+func newDeliveryFixtureIn(t *testing.T, meta, session string) *deliveryFixture {
+	t.Helper()
 	r, st, _ := newTestRouter(t)
 	const threadID = "t-delivery"
 	createTestThread(t, st, threadID)
-	f := &deliveryFixture{r: r, st: st, log: &deliveryLog{}, thread: threadID, uuid: "uuid-request-1"}
+	if session != "" {
+		r.MarkThreadActive(threadID, session)
+	}
+	f := &deliveryFixture{r: r, st: st, log: &deliveryLog{}, thread: threadID, uuid: "uuid-request-1", session: session}
 	r.SetSendDeliveredHook(f.log.record)
 	f.turnStart(t)
 	now := time.Now().UnixMilli()
@@ -80,6 +92,9 @@ func (f *deliveryFixture) handle(t *testing.T, evt provider.ProviderEvent) {
 	t.Helper()
 	evt.ThreadID = f.thread
 	evt.Timestamp = time.Now()
+	if evt.SessionToken == "" {
+		evt.SessionToken = f.session
+	}
 	if err := f.r.Handle(evt); err != nil {
 		t.Fatalf("%s: %v", evt.Kind, err)
 	}
@@ -215,6 +230,38 @@ func TestSendDeliveryWaitingForATurnDiesWithItsSession(t *testing.T) {
 	if seen := f.log.snapshot(); len(seen) != 0 {
 		t.Fatalf("a dead session's delivery bound the replacement's turn: %+v", seen)
 	}
+}
+
+// Every delivery names the session whose frame reported it, and a delivery
+// held for its turn keeps that name until the turn opens: the app settles a
+// request at the end of the session it names, which need not be the
+// thread's live one when the report is handled.
+func TestSendDeliveryNamesTheSessionThatReportedIt(t *testing.T) {
+	t.Parallel()
+	t.Run("ready at once", func(t *testing.T) {
+		t.Parallel()
+		f := newDeliveryFixtureIn(t, requestSendMeta, "session-1")
+		f.lifecycle(t, provider.CommandStarted)
+		f.assertDelivered(t, 0, false, "thread-request:tok-1")
+		if got := f.log.snapshot()[0].Session; got != "session-1" {
+			t.Fatalf("delivery session = %q, want session-1", got)
+		}
+	})
+	t.Run("held for its turn", func(t *testing.T) {
+		t.Parallel()
+		f := newDeliveryFixtureIn(t, requestSendMeta, "session-1")
+		f.turnComplete(t)
+		f.lifecycle(t, provider.CommandStarted)
+		awaiting := f.log.awaitingSnapshot()
+		if len(awaiting) != 1 || awaiting[0].Session != "session-1" {
+			t.Fatalf("taken-in reports = %+v, want one naming session-1", awaiting)
+		}
+		f.turnStart(t)
+		f.assertDelivered(t, 1, true, "thread-request:tok-1")
+		if got := f.log.snapshot()[0].Session; got != "session-1" {
+			t.Fatalf("released delivery session = %q, want session-1", got)
+		}
+	})
 }
 
 // A message dispatched before the turn ahead of it opened reserves a turn of

@@ -38,7 +38,16 @@ func runningReceipt(t *testing.T, app *App, threadID, token string, turnIndex in
 	if ok, err := app.store.BindThreadReceiptTurn(token, "u:"+token, threadRequestTurnKey(threadID, turnIndex), true); err != nil || !ok {
 		t.Fatalf("mark %s running: %v %v", token, ok, err)
 	}
-	app.noteReceiptRunning(threadID, token)
+	app.noteReceiptRunning(threadID, token, testSessionToken(app, threadID))
+}
+
+// testSessionToken is the session a test's own gate note or session end
+// names: the thread's live session, or a stand-in for a thread with none.
+func testSessionToken(app *App, threadID string) string {
+	if sess, ok := app.sessionManager().get(threadID); ok && sess.Token != "" {
+		return sess.Token
+	}
+	return "test-session"
 }
 
 // siblingThread is another thread in thread's project.
@@ -68,7 +77,7 @@ func TestEachInterruptionTellsTheSenderWhy(t *testing.T) {
 	if err := app.store.UpdateTurnCompleted("t0", 15, "interrupted", "", "", ""); err != nil {
 		t.Fatal(err)
 	}
-	app.settleReceiptsForEndedSession(thread.ID, "")
+	app.settleReceiptsForEndedSession(thread.ID, testSessionToken(app, thread.ID))
 
 	moved := siblingThread(t, app, thread, "interrupt-reasons-moved")
 	runningReceipt(t, app, moved.ID, "tok-moved", 0)

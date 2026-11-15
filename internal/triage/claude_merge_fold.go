@@ -241,7 +241,7 @@ func (r *Router) settleFoldEmptiedTurns(threadID, sessionToken string, survivor 
 		moved = append(moved, SendDelivery{
 			UserItemID: survivorItemID, SendIDs: sendIDsOf(member.meta), Members: usermessage.MemberSendIDs(member.meta),
 			TurnIndex: survivorTurn, OwnTurn: survivorTurn != survivor.WrittenDuringTurn,
-			Rebind: true, ReboundFrom: member.turnIndex,
+			Rebind: true, ReboundFrom: member.turnIndex, Session: sessionToken,
 		})
 	}
 	r.reportReboundDeliveries(threadID, sessionToken, moved)

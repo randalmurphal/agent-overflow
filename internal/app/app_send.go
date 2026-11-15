@@ -85,8 +85,15 @@ type sendMessageOptions struct {
 	// or been restored into the composer after a session death. It is the
 	// only hook an app-internal injector gets on the queued path, where the
 	// send returns before the message exists as a row. Ignored on the idle
-	// path, whose caller already has the persisted item.
-	onDurable func()
+	// path, whose caller already has the persisted item. session is the
+	// token of the session the message was written to, empty when it was
+	// restored instead.
+	onDurable func(session string)
+	// onSessionDispatch runs on the idle path immediately before the provider
+	// write, with the token of the session the message is written to: the
+	// session the returned item went to, which the thread's live session may
+	// no longer be by the time the send returns.
+	onSessionDispatch func(session string)
 	// onProviderDispatch runs under the provider-account read lock immediately
 	// before the provider write. It exists so an observer can attribute an error
 	// emitted as soon as stdin is written to the exact account generation that
@@ -873,6 +880,9 @@ func (a *App) sendMessageLocked(
 			Provider: sess.Provider, AccountID: sess.CredentialAccountID,
 			CredentialGeneration: sess.CredentialGeneration,
 		})
+	}
+	if opts.onSessionDispatch != nil {
+		opts.onSessionDispatch(sess.Token)
 	}
 	if isCodexReview {
 		if sess.Codex == nil {

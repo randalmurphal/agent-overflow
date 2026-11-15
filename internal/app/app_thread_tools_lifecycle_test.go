@@ -352,7 +352,7 @@ func TestAFinishedTurnSettlesWhenItsReceiptCatchesUp(t *testing.T) {
 		t.Fatalf("AcceptThreadRequestReceipt: %v", err)
 	}
 
-	f.app.bindRequestDelivery(token, target.ID, target.ID+":u0", 0, true)
+	f.app.bindRequestDelivery(token, target.ID, testSessionToken(f.app, target.ID), target.ID+":u0", 0, true)
 
 	receipt := f.receipt(t, token)
 	if receipt.State != store.ThreadReceiptFinished {
@@ -383,7 +383,7 @@ func TestTheObserverKeepsTheGateOfAnAcceptedReceipt(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("AcceptThreadRequestReceipt: %v", err)
 	}
-	f.app.noteReceiptRunning(target.ID, token)
+	f.app.noteReceiptRunning(target.ID, token, testSessionToken(f.app, target.ID))
 
 	work, _, err := f.app.settleReceiptOnTurnEnd(target.ID, token)
 	if err != nil {

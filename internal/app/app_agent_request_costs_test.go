@@ -220,7 +220,7 @@ func TestASessionEndReadsEachReceiptOnce(t *testing.T) {
 	if marked, err := app.store.MarkThreadReceiptDispatched("tok-taken-in", "u:tok-taken-in"); err != nil || !marked {
 		t.Fatalf("mark = %v, %v", marked, err)
 	}
-	app.noteReceiptTakenIn(thread.ID, "tok-taken-in")
+	app.noteReceiptTakenIn(thread.ID, "tok-taken-in", testSessionToken(app, thread.ID))
 
 	// Before this branch they read 9 and 7 times; before the single read,
 	// with the receipt read again by the settlement, 7 and 5.
@@ -232,7 +232,7 @@ func TestASessionEndReadsEachReceiptOnce(t *testing.T) {
 		"tok-taken-in": {threadtools.InterruptSessionEndedUnanswered, 3},
 	} {
 		before := app.store.ReadCount()
-		work, err := app.settleReceiptOnSessionEnd(thread.ID, "", token, map[string]bool{})
+		work, err := app.settleReceiptOnSessionEnd(thread.ID, testSessionToken(app, thread.ID), token, map[string]bool{})
 		if err != nil {
 			t.Fatalf("%s: %v", token, err)
 		}

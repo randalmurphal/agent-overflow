@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"time"
 
@@ -270,43 +271,91 @@ func (a *App) cancelWaits(threadID string, remote bool) {
 }
 
 // receiptGate is what the observer's gate records of one running receipt:
-// session, the session its message was dispatched to or delivered by,
-// empty when the thread had none live then; and takenIn, whether that
-// session took the message in before the turn that reads it opened
-// (SendDelivery.AwaitingTurn). A dispatch to another session, as when a
-// message given back from one that ended is sent again to its replacement,
-// names the new session and forgets what the old one took in. A session's
-// end settles only the receipts it names (settleReceiptOnSessionEnd).
+// session, the token of the session its message was last written to; and
+// takenIn, whether that session took the message in before the turn that
+// reads it opened (SendDelivery.AwaitingTurn). A session's end settles only
+// the receipts whose gate names it (settleReceiptOnSessionEnd).
+//
+// Every note names the session it is about, never the thread's live one: a
+// delivery is reported on the thread's event worker, by which time a
+// replacement can be live. What orders the notes is the write. A message
+// is written only to the thread's live session, under the thread action
+// lock, so each write is to the same session as the one before it or a
+// later one. It reaches a second session only through the queue (a request
+// given back is queued again, requeueRequest), and the queue's dispatch
+// moves the gate to the session just before the write (noteReceiptWriting),
+// so the gate names that session before it can report anything about the
+// message. A dispatch or delivery from the session the gate names applies.
+// One from any other session is about an earlier write, which a write to a
+// later session has overtaken, and changes nothing. A note finding no gate
+// names its session: nothing was written before it to be stale against, or
+// the receipt was settled or gone and the gate forgotten with it.
 type receiptGate struct {
 	session string
 	takenIn bool
 }
 
-// noteReceiptRunning and forgetReceiptRunning maintain the settlement
-// observer's gate. Both are idempotent. The thread's live session is the
-// one the message went to: they run as the message is dispatched to that
-// session or as that session reports its delivery.
-func (a *App) noteReceiptRunning(threadID, token string) {
-	a.noteReceiptGate(threadID, token, false)
-}
-
-// noteReceiptTakenIn records that the provider took the receipt's message in
-// before the turn that reads it opened, so a session that ends before that
-// turn says the request was read and not answered.
-func (a *App) noteReceiptTakenIn(threadID, token string) {
-	a.noteReceiptGate(threadID, token, true)
-}
-
-func (a *App) noteReceiptGate(threadID, token string, takenIn bool) {
-	if threadID == "" || token == "" {
+// noteReceiptWriting moves the gate to session as the receipt's message is
+// about to be written to it. A different session starts the gate afresh: what
+// the earlier one took in is not what this one will.
+func (a *App) noteReceiptWriting(threadID, token, session string) {
+	if threadID == "" || token == "" || session == "" {
 		return
-	}
-	live := ""
-	if sess, ok := a.sessionManager().get(threadID); ok {
-		live = sess.Token
 	}
 	a.threadRequests.mu.Lock()
 	defer a.threadRequests.mu.Unlock()
+	tokens := a.receiptGatesLocked(threadID)
+	if gate := tokens[token]; gate.session != session {
+		tokens[token] = receiptGate{session: session}
+	}
+}
+
+// noteRequestsWriting is noteReceiptWriting for every request among the send
+// ids of one message about to be written to session.
+func (a *App) noteRequestsWriting(threadID, session string, sendIDs []string) {
+	for _, sendID := range sendIDs {
+		if token, ok := strings.CutPrefix(sendID, threadRequestSendIDPrefix); ok && token != "" {
+			a.noteReceiptWriting(threadID, token, session)
+		}
+	}
+}
+
+// noteReceiptRunning and forgetReceiptRunning maintain the settlement
+// observer's gate. Both are idempotent. noteReceiptRunning runs as session
+// reports the message dispatched or delivered, and reports whether the note
+// applied: false for a note from a session the gate does not name, which the
+// caller drops (receiptGate).
+func (a *App) noteReceiptRunning(threadID, token, session string) bool {
+	return a.noteReceiptGate(threadID, token, session, false)
+}
+
+// noteReceiptTakenIn records that session took the receipt's message in
+// before the turn that reads it opened, so that session's end says the
+// request was read and not answered.
+func (a *App) noteReceiptTakenIn(threadID, token, session string) bool {
+	return a.noteReceiptGate(threadID, token, session, true)
+}
+
+func (a *App) noteReceiptGate(threadID, token, session string, takenIn bool) bool {
+	if threadID == "" || token == "" || session == "" {
+		return false
+	}
+	a.threadRequests.mu.Lock()
+	defer a.threadRequests.mu.Unlock()
+	tokens := a.receiptGatesLocked(threadID)
+	gate, found := tokens[token]
+	if found && gate.session != session {
+		return false
+	}
+	gate.session = session
+	gate.takenIn = gate.takenIn || takenIn
+	tokens[token] = gate
+	return true
+}
+
+// receiptGatesLocked is the thread's gates, made on first use. Caller holds
+// threadRequests.mu.
+func (a *App) receiptGatesLocked(threadID string) map[string]receiptGate {
 	if a.threadRequests.running == nil {
 		a.threadRequests.running = make(map[string]map[string]receiptGate)
 	}
@@ -315,15 +364,11 @@ func (a *App) noteReceiptGate(threadID, token string, takenIn bool) {
 		tokens = make(map[string]receiptGate)
 		a.threadRequests.running[threadID] = tokens
 	}
-	gate := tokens[token]
-	if live != "" && live != gate.session {
-		gate = receiptGate{session: live}
-	}
-	gate.takenIn = gate.takenIn || takenIn
-	tokens[token] = gate
+	return tokens
 }
 
-// receiptTakenIn reports what noteReceiptTakenIn recorded.
+// receiptTakenIn reports what noteReceiptTakenIn recorded for the session the
+// gate names.
 func (a *App) receiptTakenIn(threadID, token string) bool {
 	a.threadRequests.mu.Lock()
 	defer a.threadRequests.mu.Unlock()

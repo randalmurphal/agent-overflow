@@ -2000,7 +2000,7 @@ func TestSessionDeathRestoresQueuedFlushItemsToDraft(t *testing.T) {
 		t.Fatalf("turn start: %v", err)
 	}
 	settled := 0
-	settlement := triage.NewFlushSettlement(func() { settled++ })
+	settlement := triage.NewFlushSettlement(func(string) { settled++ })
 	app.triage.RegisterQueueItem(thread.ID, triage.QueuedFlushItem{
 		ID:         "queue:first",
 		Message:    "first queued",
@@ -2041,7 +2041,7 @@ func TestSessionDeathRestoresQueuedFlushItemsToDraft(t *testing.T) {
 	if settled != 1 {
 		t.Fatalf("durable composer recovery settled the injected message %d times, want 1", settled)
 	}
-	settlement.Settle()
+	settlement.Settle("")
 	if settled != 1 {
 		t.Fatalf("settlement fired again after recovery: %d", settled)
 	}
@@ -2058,7 +2058,7 @@ func TestSessionDeathDraftFailureRequeuesWithoutSettling(t *testing.T) {
 		t.Fatalf("CreateThread: %v", err)
 	}
 	settled := 0
-	settlement := triage.NewFlushSettlement(func() { settled++ })
+	settlement := triage.NewFlushSettlement(func(string) { settled++ })
 	app.triage.RegisterQueueItem(thread.ID, triage.QueuedFlushItem{
 		ID: "queue:retry", Message: "still pending", Payload: json.RawMessage(`{}`),
 		EnqueuedAt: 10, Settlement: settlement,
@@ -2965,7 +2965,7 @@ func TestSessionDeathDedupeDispatchCurrentAndPendingFlush(t *testing.T) {
 		t.Fatalf("CreateThread: %v", err)
 	}
 	settled := 0
-	settlement := triage.NewFlushSettlement(func() { settled++ })
+	settlement := triage.NewFlushSettlement(func(string) { settled++ })
 	app.flushDispatch.mu.Lock()
 	app.ensureFlushDispatchMapsLocked()
 	app.flushDispatch.current[thread.ID] = flushDispatchBatch{
@@ -3645,7 +3645,7 @@ func TestDispatchFlush_SettlesOnlyAfterTheProviderWrite(t *testing.T) {
 		fired := 0
 		app.dispatchFlush(thread.ID, []triage.QueuedFlushItem{{
 			ID: "queue:ok", Message: "wake", Payload: json.RawMessage(`{}`),
-			Settlement: triage.NewFlushSettlement(func() { fired++ }),
+			Settlement: triage.NewFlushSettlement(func(string) { fired++ }),
 		}})
 
 		if fired != 1 {
@@ -3667,7 +3667,7 @@ func TestDispatchFlush_SettlesOnlyAfterTheProviderWrite(t *testing.T) {
 		// No session registered: dispatch fails at session resolution.
 		app.dispatchFlush(thread.ID, []triage.QueuedFlushItem{{
 			ID: "queue:fail", Message: "wake", Payload: json.RawMessage(`{}`),
-			Settlement: triage.NewFlushSettlement(func() { fired++ }),
+			Settlement: triage.NewFlushSettlement(func(string) { fired++ }),
 		}})
 
 		if fired != 0 {

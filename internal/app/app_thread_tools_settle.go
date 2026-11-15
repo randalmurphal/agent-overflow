@@ -225,7 +225,7 @@ func (a *App) heldSendIDs(threadID string) (map[string]bool, error) {
 func (a *App) settleReceiptOnSessionEnd(threadID, session, token string, held map[string]bool) (threadSettlementWork, error) {
 	unlock := a.threadRequestSettleLock(token)
 	defer unlock()
-	if went := a.receiptSession(threadID, token); session != "" && went != "" && went != session {
+	if a.receiptSession(threadID, token) != session {
 		return threadSettlementWork{}, nil
 	}
 	receipt, found, err := a.deliveredReceiptLocked(token)

@@ -386,7 +386,7 @@ func TestInterruptTurnStopsTheTurnOfASendWaitingForIt(t *testing.T) {
 	f.app.triage = triage.NewRouter(f.app.store, func(eventchan.Channel, any) {})
 	insertUserItem(t, f.app.store, f.thread.ID, "u:1", 1, "just sent")
 	f.app.triage.RegisterPendingSendWithExpectation(f.thread.ID, "u:1", 1, triage.PendingSendExpectation{})
-	f.app.noteReceiptRunning(f.thread.ID, "tok")
+	f.app.noteReceiptRunning(f.thread.ID, "tok", testSessionToken(f.app, f.thread.ID))
 	t.Cleanup(func() { f.app.forgetReceiptRunning(f.thread.ID, "tok") })
 
 	if err := f.app.InterruptTurn(f.thread.ID, nil); err != nil {
@@ -460,7 +460,7 @@ func TestThreadCancelStopsTheTurnOfASendWaitingForIt(t *testing.T) {
 	f.app.triage = triage.NewRouter(f.app.store, func(eventchan.Channel, any) {})
 	insertUserItem(t, f.app.store, f.thread.ID, "u:1", 1, "just sent")
 	f.app.triage.RegisterPendingSendWithExpectation(f.thread.ID, "u:1", 1, triage.PendingSendExpectation{})
-	f.app.noteReceiptRunning(f.thread.ID, "tok")
+	f.app.noteReceiptRunning(f.thread.ID, "tok", testSessionToken(f.app, f.thread.ID))
 	t.Cleanup(func() { f.app.forgetReceiptRunning(f.thread.ID, "tok") })
 
 	stop := stopByThread("caller", "caller-id", "")

@@ -330,10 +330,14 @@ const workflowWakeSendIDRoot = "workflow-wake:"
 
 // queueWorkflowWake queues a run's wake for the thread's agent.
 func (a *App) queueWorkflowWake(threadID, workflowID, message string, onDurable func()) error {
+	var settled func(string)
+	if onDurable != nil {
+		settled = func(string) { onDurable() }
+	}
 	_, err := a.registerQueueItem(
 		threadID, message, SendMessageOptions{SendID: workflowWakeSendIDRoot + uuid.NewString()},
 		injectedQueueOptions{
-			preserveDraft: true, onDurable: onDurable,
+			preserveDraft: true, onDurable: settled,
 			origin: usermessage.OriginAgentWake, originWake: workflowWakeOrigin(workflowID),
 		},
 	)

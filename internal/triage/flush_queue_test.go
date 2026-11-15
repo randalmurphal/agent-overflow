@@ -465,8 +465,9 @@ func TestTryFlushQueue_BatchStaysCountedAcrossHandoff(t *testing.T) {
 
 func TestFlushSettlementIsExactlyOnceAndCombinationPreservesBoth(t *testing.T) {
 	var leftCount, rightCount atomic.Int32
-	left := NewFlushSettlement(func() { leftCount.Add(1) })
-	right := NewFlushSettlement(func() { rightCount.Add(1) })
+	var leftSession, rightSession atomic.Value
+	left := NewFlushSettlement(func(session string) { leftCount.Add(1); leftSession.Store(session) })
+	right := NewFlushSettlement(func(session string) { rightCount.Add(1); rightSession.Store(session) })
 	combined := CombineFlushSettlements(left, right)
 
 	var callers sync.WaitGroup
@@ -474,7 +475,7 @@ func TestFlushSettlementIsExactlyOnceAndCombinationPreservesBoth(t *testing.T) {
 		callers.Add(1)
 		go func() {
 			defer callers.Done()
-			combined.Settle()
+			combined.Settle("sess-b")
 		}()
 	}
 	callers.Wait()
@@ -484,11 +485,15 @@ func TestFlushSettlementIsExactlyOnceAndCombinationPreservesBoth(t *testing.T) {
 	if got := rightCount.Load(); got != 1 {
 		t.Fatalf("right settlement fired %d times, want 1", got)
 	}
+	// Each member is told the session the joined message was written to.
+	if left, right := leftSession.Load(), rightSession.Load(); left != "sess-b" || right != "sess-b" {
+		t.Fatalf("settled sessions = %v, %v, want sess-b for both", left, right)
+	}
 
 	// Nil and zero values are legitimate for ordinary user-authored queue
 	// items and must remain safe at unconditional settlement call sites.
-	(*FlushSettlement)(nil).Settle()
-	new(FlushSettlement).Settle()
+	(*FlushSettlement)(nil).Settle("")
+	new(FlushSettlement).Settle("")
 }
 
 // TestNextFlushSequence_SerializesWithDeferredEchoPersist pins the

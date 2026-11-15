@@ -34,7 +34,7 @@ func bindRunningReceipt(t *testing.T, app *App, threadID, token string, turnInde
 	if ok, err := app.store.BindThreadReceiptTurn(token, "u:"+token, threadRequestTurnKey(threadID, turnIndex), true); err != nil || !ok {
 		t.Fatalf("mark %s running: %v %v", token, ok, err)
 	}
-	app.noteReceiptRunning(threadID, token)
+	app.noteReceiptRunning(threadID, token, testSessionToken(app, threadID))
 }
 
 // keptTurnStops is how many stops the thread keeps.
@@ -186,7 +186,7 @@ func TestAStopWaitsForADeliveryStillToNameItsTurn(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	f.adapter().markRequestDispatched("tok", threadID, "u:tok")
+	f.adapter().markRequestDispatched("tok", threadID, testSessionToken(f.app, threadID), "u:tok")
 	f.app.recordTurnStop(threadID, stoppedTurn{index: 0, startedAt: 10}, stopByUser(nil))
 	if err := f.app.store.UpdateTurnCompleted("t0", 15, "interrupted", "", "", ""); err != nil {
 		t.Fatal(err)
@@ -195,7 +195,7 @@ func TestAStopWaitsForADeliveryStillToNameItsTurn(t *testing.T) {
 	if !f.app.stoppedByPerson(threadID, store.Turn{TurnIndex: 0, StartedAt: 10}) {
 		t.Fatal("the stop went while a delivery could still name its turn")
 	}
-	f.app.bindRequestDelivery("tok", threadID, "u:tok", 0, true)
+	f.app.bindRequestDelivery("tok", threadID, testSessionToken(f.app, threadID), "u:tok", 0, true)
 	f.app.threadRequestsWG.Wait()
 	if receipt := f.receipt(t, "tok"); receipt.State != store.ThreadReceiptInterrupted ||
 		receipt.AnswerKind != store.ThreadAnswerFinal || string(receipt.Answer) != "halfway there" {
@@ -271,7 +271,7 @@ func TestOwnTurnStopsBehindAQueuedRequestAreNotKept(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	app.noteReceiptRunning(thread.ID, "tok-q")
+	app.noteReceiptRunning(thread.ID, "tok-q", testSessionToken(app, thread.ID))
 	for i := range 50 {
 		id := fmt.Sprintf("t%d", i)
 		insertTurns(t, app, thread.ID, store.Turn{TurnID: id, TurnIndex: i, StartedAt: int64(100*i + 1)})
@@ -414,7 +414,7 @@ func (q *queuedRequests) liveTarget(t *testing.T) {
 		t.Fatalf("NewSession: %v", err)
 	}
 	t.Cleanup(func() { _ = sess.Close() })
-	q.f.app.sessionManager().put(q.target.ID, session{Provider: string(provider.Claude), Token: "stop-target", Claude: sess})
+	q.f.app.sessionManager().put(q.target.ID, session{Provider: string(provider.Claude), Token: q.session, Claude: sess})
 }
 
 // endStoppedTurn is the CLI ending the turn the Stop cut, and the turn

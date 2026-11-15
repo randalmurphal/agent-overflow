@@ -667,7 +667,7 @@ func TestDurableRowDeletionComposesWithTheInjectorSettlement(t *testing.T) {
 	settled := 0
 	if _, err := app.registerQueueItem(thread.ID, "injected", SendMessageOptions{}, injectedQueueOptions{
 		preserveDraft: true,
-		onDurable:     func() { settled++ },
+		onDurable:     func(string) { settled++ },
 	}); err != nil {
 		t.Fatalf("registerQueueItem: %v", err)
 	}
@@ -676,7 +676,7 @@ func TestDurableRowDeletionComposesWithTheInjectorSettlement(t *testing.T) {
 	if len(items) != 1 {
 		t.Fatalf("queued items: got %d, want 1", len(items))
 	}
-	items[0].Settlement.Settle()
+	items[0].Settlement.Settle("")
 
 	if settled != 1 {
 		t.Fatalf("injector settlement ran %d times, want 1", settled)
@@ -685,7 +685,7 @@ func TestDurableRowDeletionComposesWithTheInjectorSettlement(t *testing.T) {
 		t.Fatalf("durable rows after settling: got %+v, want none", rows)
 	}
 	// sync.Once: the two endpoints can race and the delete stays exactly once.
-	items[0].Settlement.Settle()
+	items[0].Settlement.Settle("")
 	if settled != 1 {
 		t.Fatalf("injector settlement ran again: %d", settled)
 	}

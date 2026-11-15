@@ -160,8 +160,8 @@ func TestTurnStopRecordLifecycle(t *testing.T) {
 		t.Fatalf("a thread with no open request kept a stop: %q", got)
 	}
 
-	app.noteReceiptRunning("thread", "tok-a")
-	app.noteReceiptRunning("thread", "tok-b")
+	app.noteReceiptRunning("thread", "tok-a", testSessionToken(app, "thread"))
+	app.noteReceiptRunning("thread", "tok-b", testSessionToken(app, "thread"))
 	app.recordTurnStop("thread", stoppedTurn{index: -1}, stop)
 	if app.holdsTurnStop("thread") {
 		t.Fatal("a stop with no open turn was kept")

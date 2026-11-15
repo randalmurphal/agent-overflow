@@ -125,24 +125,26 @@ type UnconfirmedFlushItem struct {
 // workflow's durable pending records are what re-surface the wake on boot.
 type FlushSettlement struct {
 	once sync.Once
-	fn   func()
+	fn   func(session string)
 }
 
 // NewFlushSettlement binds one injected queue item's durable bookkeeping.
-func NewFlushSettlement(fn func()) *FlushSettlement {
+func NewFlushSettlement(fn func(session string)) *FlushSettlement {
 	if fn == nil {
 		return nil
 	}
 	return &FlushSettlement{fn: fn}
 }
 
-// Settle runs the durable bookkeeping at most once. Nil and zero values are
-// no-ops so ordinary user-authored queue items need no conditional path.
-func (s *FlushSettlement) Settle() {
+// Settle runs the durable bookkeeping at most once. session is the token of
+// the session the message was written to, empty when it was restored
+// instead. Nil and zero values are no-ops so ordinary user-authored queue
+// items need no conditional path.
+func (s *FlushSettlement) Settle(session string) {
 	if s == nil || s.fn == nil {
 		return
 	}
-	s.once.Do(s.fn)
+	s.once.Do(func() { s.fn(session) })
 }
 
 // CombineFlushSettlements preserves every obligation when two in-memory
@@ -156,9 +158,9 @@ func CombineFlushSettlements(left, right *FlushSettlement) *FlushSettlement {
 	case right == nil || left == right:
 		return left
 	default:
-		return NewFlushSettlement(func() {
-			left.Settle()
-			right.Settle()
+		return NewFlushSettlement(func(session string) {
+			left.Settle(session)
+			right.Settle(session)
 		})
 	}
 }

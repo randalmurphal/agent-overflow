@@ -138,7 +138,7 @@ func (h *wakeHarness) dispatchQueued() {
 	h.queuedItems = nil
 	h.mu.Unlock()
 	for _, item := range pending {
-		item.Settlement.Settle()
+		item.Settlement.Settle("")
 	}
 }
 

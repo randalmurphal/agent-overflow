@@ -230,7 +230,7 @@ func (a *App) restoreFlushItemsToDraftLocked(threadID string, drained []triage.U
 		}
 	}
 	for _, settlement := range settlements {
-		settlement.Settle()
+		settlement.Settle("")
 	}
 	a.settleNotTakenIn(threadID, owed)
 	a.emit(eventchan.ProviderAsyncQuestionsChanged, map[string]string{"threadId": threadID})

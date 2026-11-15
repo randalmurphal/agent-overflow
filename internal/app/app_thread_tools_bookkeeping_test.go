@@ -169,14 +169,14 @@ func TestEveryTurnReaderReadsAKeptBinding(t *testing.T) {
 			}); err != nil {
 				t.Fatalf("AcceptThreadRequestReceipt: %v", err)
 			}
-			f.adapter().markRequestDispatched(token, target.ID, target.ID+":u0")
+			f.adapter().markRequestDispatched(token, target.ID, testSessionToken(f.app, target.ID), target.ID+":u0")
 			if err := f.app.store.InsertTurn(store.Turn{
 				TurnID: "target-open", ThreadID: target.ID, TurnIndex: 1, StartedAt: time.Now().UnixMilli(),
 			}); err != nil {
 				t.Fatalf("InsertTurn: %v", err)
 			}
 			execOnStore(t, f.dbPath, `CREATE TRIGGER refuse_bind BEFORE UPDATE OF turn_id ON thread_request_receipts WHEN NEW.turn_id != '' BEGIN SELECT RAISE(ABORT, 'injected bind failure'); END`)
-			f.app.bindRequestDelivery(token, target.ID, target.ID+":u0", 1, true)
+			f.app.bindRequestDelivery(token, target.ID, testSessionToken(f.app, target.ID), target.ID+":u0", 1, true)
 			if receipt := f.receipt(t, token); receipt.TurnID != "" {
 				t.Fatalf("fixture: receipt bound to %q through the refused write", receipt.TurnID)
 			}

@@ -441,7 +441,7 @@ func TestTheObserverKeepsTheGateOfAnUndeliveredReceipt(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("AcceptThreadRequestReceipt: %v", err)
 	}
-	f.adapter().markRequestDispatched(token, target.ID, target.ID+":u0")
+	f.adapter().markRequestDispatched(token, target.ID, testSessionToken(f.app, target.ID), target.ID+":u0")
 
 	if _, _, err := f.app.settleReceiptOnTurnEnd(target.ID, token); err != nil {
 		t.Fatalf("settleReceiptOnTurnEnd: %v", err)
@@ -604,9 +604,9 @@ func TestARequestARestoreTakesBackIsRequeuedOrSettled(t *testing.T) {
 				}); err != nil {
 					t.Fatalf("AcceptThreadRequestReceipt: %v", err)
 				}
-				f.adapter().markRequestDispatched(token, target.ID, "user:1:flush:1")
+				f.adapter().markRequestDispatched(token, target.ID, testSessionToken(f.app, target.ID), "user:1:flush:1")
 			}
-			f.app.bindRequestDelivery(delivered, target.ID, "user:1:flush:1", 1, true)
+			f.app.bindRequestDelivery(delivered, target.ID, testSessionToken(f.app, target.ID), "user:1:flush:1", 1, true)
 
 			ids := []string{threadRequestSendID(undelivered), threadRequestSendID(delivered)}
 			const first, second = "check the changelog", "and the release notes"
@@ -845,6 +845,21 @@ func TestARequestTheSessionDiedHoldingIsDeliveredAtTheNextStart(t *testing.T) {
 	if wakes := f.wakes(t, token); len(wakes) != 0 {
 		t.Fatalf("the sender was woken: %+v", wakes)
 	}
+	// The request is the next session's now: running, named for that
+	// session, and not the dead one's to settle at a late end.
+	next, ok := f.app.sessionManager().get(h.thread.ID)
+	if !ok || next.Token == "held-tok" {
+		t.Fatalf("live session = %+v, want the next start's", next)
+	}
+	waitUntil(t, 10*time.Second, func() bool { return f.receipt(t, token).State == store.ThreadReceiptRunning })
+	if got := f.app.receiptSession(h.thread.ID, token); got != next.Token {
+		t.Fatalf("gate names session %q, want %q, the one the request was written to", got, next.Token)
+	}
+	f.app.settleReceiptsForEndedSession(h.thread.ID, "held-tok")
+	f.app.threadRequestsWG.Wait()
+	if receipt := f.receipt(t, token); receipt.State != store.ThreadReceiptRunning {
+		t.Fatalf("receipt = %q after the dead session's late end, want it still running", receipt.State)
+	}
 }
 
 // The session-end settlement can run before the death's restore reaches the
@@ -859,14 +874,14 @@ func TestTheSessionEndLeavesAHeldRequestToItsRestore(t *testing.T) {
 	token := tokens[0]
 	h.lifecycle(t, uuid, provider.CommandQueued)
 
-	f.app.settleReceiptsForEndedSession(h.thread.ID, "")
+	f.app.settleReceiptsForEndedSession(h.thread.ID, testSessionToken(f.app, h.thread.ID))
 	f.app.threadRequestsWG.Wait()
 	if receipt := f.receipt(t, token); receipt.State != store.ThreadReceiptRunning {
 		t.Fatalf("receipt = %q before the restore, want it left running", receipt.State)
 	}
 	f.app.restoreUnconfirmedQueueOnSessionDeath(h.thread.ID)
 	assertRequestOwedAgain(t, f, h.thread.ID, token)
-	f.app.settleReceiptsForEndedSession(h.thread.ID, "")
+	f.app.settleReceiptsForEndedSession(h.thread.ID, testSessionToken(f.app, h.thread.ID))
 	f.app.threadRequestsWG.Wait()
 	assertRequestOwedAgain(t, f, h.thread.ID, token)
 }
@@ -1289,7 +1304,7 @@ func TestAPeerCancelThatLeavesATurnRunningReportsNothingStopped(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("AcceptThreadRequestReceipt: %v", err)
 	}
-	f.app.bindRequestDelivery(token, h.thread.ID, "user:0:flush:1", 0, false)
+	f.app.bindRequestDelivery(token, h.thread.ID, testSessionToken(f.app, h.thread.ID), "user:0:flush:1", 0, false)
 
 	origin := threadRequestOrigin{caller: threadtools.Caller{ThreadID: "peer-caller", ComputerID: "peer"}, foreign: true, ownerDevice: peerDevice}
 	reply, err := f.app.cancelPeerThreadRequest(t.Context(), origin, token, ThreadPeerCall{Tool: "thread_cancel", Token: token})
@@ -1351,7 +1366,7 @@ func TestAPeerCancelOfASettledRequestLeavesItsTurnRunning(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("AcceptThreadRequestReceipt: %v", err)
 	}
-	f.app.bindRequestDelivery(token, h.thread.ID, h.thread.ID+":u0", 0, true)
+	f.app.bindRequestDelivery(token, h.thread.ID, testSessionToken(f.app, h.thread.ID), h.thread.ID+":u0", 0, true)
 	if _, err := f.app.store.SettleLocalThreadRequest(token, []string{store.ThreadReceiptRunning}, store.ThreadRequestSettlement{
 		State: store.ThreadReceiptReplied, Answer: []byte("The stall is in the watchdog."), AnswerKind: store.ThreadAnswerReply,
 	}, store.ThreadRequestReplied); err != nil {
@@ -1599,7 +1614,7 @@ func TestACancelThatLosesToAReplyLeavesTheTurnRunning(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("AcceptThreadRequestReceipt: %v", err)
 	}
-	f.app.bindRequestDelivery(token, h.thread.ID, h.thread.ID+":u0", 0, true)
+	f.app.bindRequestDelivery(token, h.thread.ID, testSessionToken(f.app, h.thread.ID), h.thread.ID+":u0", 0, true)
 	f.app.cancelReadForTest = func(read string) {
 		if read != token {
 			return

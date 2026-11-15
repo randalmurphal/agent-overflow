@@ -810,17 +810,20 @@ func TestAMergeFoldedMemberIsDeliveredInTheSurvivorsTurn(t *testing.T) {
 // or none, when B's echo opens it. A's echo opens turn 1 for A and delivers
 // it there; turn 2 runs the merged message. The fold leaves turn 1 with no
 // rows, so A's delivery moves to turn 2 and turn 1 is ended, not left open,
-// whether or not the opening of turn 2 already completed it.
+// whether or not the opening of turn 2 already completed it. Every delivery,
+// the move included, names the session that reported it.
 func TestAMergeFoldedMemberEchoedIntoATurnOfItsOwnMovesToTheSurvivorsTurn(t *testing.T) {
 	for _, order := range []string{"init", "no init"} {
 		t.Run(order, func(t *testing.T) {
 			router, st, _ := newTestRouter(t)
 			createTestThread(t, st, "t1")
+			router.MarkThreadActive("t1", "session-1")
 			log := &deliveryLog{}
 			router.SetSendDeliveredHook(log.record)
 			handle := func(evt provider.ProviderEvent) {
 				t.Helper()
 				evt.ThreadID = "t1"
+				evt.SessionToken = "session-1"
 				evt.Timestamp = time.Now()
 				if err := router.Handle(evt); err != nil {
 					t.Fatalf("%s: %v", evt.Kind, err)
@@ -872,6 +875,11 @@ func TestAMergeFoldedMemberEchoedIntoATurnOfItsOwnMovesToTheSurvivorsTurn(t *tes
 			}
 			if moved == nil || moved.ReboundFrom != 1 || moved.TurnIndex != 2 || !moved.OwnTurn || moved.UserItemID != "user:2:flush:2" {
 				t.Fatalf("moved delivery = %+v, want A's moved from turn 1 to 2, its own, under the survivor's row", moved)
+			}
+			for _, delivery := range log.snapshot() {
+				if delivery.Session != "session-1" {
+					t.Fatalf("delivery %+v names session %q, want the session that reported it", delivery, delivery.Session)
+				}
 			}
 			turn, found, err := st.GetTurnByThreadIndex("t1", 1)
 			if err != nil || !found || turn.CompletedAt == nil {

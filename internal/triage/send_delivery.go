@@ -37,6 +37,11 @@ type SendDelivery struct {
 	// the message as part of a later one, in TurnIndex. The binding moves.
 	Rebind      bool
 	ReboundFrom int
+	// Session is the token of the session whose frame reported the
+	// delivery, empty for a host-originated one. A delivery waiting for its
+	// turn is held with the process state of that session and dropped with
+	// it (processBound), so a later release still names it.
+	Session string
 
 	// writtenDuring is the logical turn open when the send was written,
 	// or -1 (pendingSend.WrittenDuringTurn).
@@ -163,7 +168,7 @@ func (r *Router) placeDeliveriesLocked(threadID, sessionToken string, sends []*p
 			members = []string{""}
 		}
 		delivery := SendDelivery{
-			UserItemID: send.AOItemID, SendIDs: ids, Members: members,
+			UserItemID: send.AOItemID, SendIDs: ids, Members: members, Session: sessionToken,
 			writtenDuring: send.WrittenDuringTurn, opensTurn: deliveryFloor(send),
 		}
 		deliveries = append(deliveries, delivery)
