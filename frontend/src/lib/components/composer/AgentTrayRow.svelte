@@ -138,6 +138,9 @@
       >
         <Icon icon={PanelLeftOpen} size={12} />
       </button>
+    {:else}
+      <!-- Holds Show in Sidebar's place, so every row's facts line up. -->
+      <span class="size-4 shrink-0 compact:hidden" aria-hidden="true"></span>
     {/if}
     <button
       type="button"

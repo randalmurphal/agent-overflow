@@ -152,7 +152,8 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
                 {
                   call: {
                     tool: 'thread_spawn',
-                    args: { prompt: 'Ship release 4.2.', title: 'Release worker', project_id: workerP.projectId },
+                    // A sidebar row, so the spec reads the worker's status dot.
+                    args: { prompt: 'Ship release 4.2.', title: 'Release worker', project_id: workerP.projectId, placement: 'standalone' },
                   },
                 },
               ],

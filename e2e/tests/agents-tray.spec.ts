@@ -10,7 +10,8 @@
 // user named, interrupts the spawned child, stops the child's background
 // shell and cascades into the grandchild, whose request is cancelled with
 // its wake disarmed, so the child takes no new turn; the stopped row
-// lingers and leaves; Stop All cascades;
+// lingers and leaves for Past, where the segment stays; the grandchild's
+// approval is routed to the child that spawned it; Stop All cascades;
 // Background's Stop All leaves the rows; the thread's own Stop does not
 // cascade; and an answer held in the caller's queue (its session cannot
 // start) is an incoming row there, named by its sender and kind, whose Stop
@@ -65,6 +66,8 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     await expect(grand.getByTestId('agent-tray-row-title')).toHaveText(GRAND);
     await expect(grand.getByTestId('agent-tray-row-state')).toHaveText('blocked');
     await expect(grand.getByTestId('agent-tray-row-blocked')).toContainText(`Needs approval for ${approvalTool(provider)}`);
+    // The child spawned it, so its approval went to the child, not the user.
+    await expect(grand.getByTestId('agent-tray-row-blocked')).toContainText(`waiting on ${CHILD}`);
     await expect(send.getByTestId('agent-tray-row-title')).toHaveText(PEER);
     await expect(send).toHaveAttribute('data-kind', 'send');
     await capture(page, `agents-${provider}-running-blocked-nested.png`, agentsBody(page));
@@ -140,7 +143,8 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     const settledAt = Date.now();
     await expect(agentsBody(page).getByTestId('agent-tray-row')).toHaveCount(0, { timeout: 30_000 });
     expect(Date.now() - settledAt, 'the settled row lingered').toBeGreaterThan(5_000);
-    await expect(page.getByTestId('activity-rail-agents-toggle')).toHaveCount(0);
+    // The segment stays for Past, which holds the send and the stopped child.
+    await expect(agentsBody(page).getByTestId('activity-rail-agents-past-count')).toHaveText('2');
     expect(await childWoken, 'the child took a turn for the agent the person stopped').toBe(false);
   });
 

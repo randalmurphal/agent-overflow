@@ -3,17 +3,32 @@
 // providers: the toggle sits in the rail beside the other segments within
 // a phone's width; running, blocked and nested rows fit it, the title on
 // its own line above the state, elapsed time and touch-sized actions; a
-// row's digest opens in place; and a tap on Stop cascades as a click does
-// on desktop.
+// row's digest opens in place; a tap on Stop cascades as a click does
+// on desktop; and the stopped row leaves for Past, whose rows fit the same
+// way with touch-sized Open in Agent Pane and Show in Sidebar.
 import type { Locator } from '@playwright/test';
 
 import { test, expect } from './fixtures.js';
 import { awaitGate, type ProviderName } from './thread-tools-helpers.js';
 import { capture } from './wake-rows-helpers.js';
-import { CHILD, LEAD, agentRow, agentsBody, approvalTool, ledgerRow, mockInterrupt, openAgents, seedAgentsTree, startTree } from './agents-tray-helpers.js';
+import {
+  CHILD,
+  LEAD,
+  agentRow,
+  agentsBody,
+  approvalTool,
+  ledgerRow,
+  mockInterrupt,
+  openAgentRow,
+  openAgents,
+  openPast,
+  pastRow,
+  seedAgentsTree,
+  startTree,
+} from './agents-tray-helpers.js';
 
 /** The row stays inside the window, its title above its controls, and its actions are touch-sized. */
-async function expectFits(row: Locator, viewportWidth: number): Promise<void> {
+async function expectFits(row: Locator, viewportWidth: number, buttons = ['agent-tray-row-stop', 'agent-tray-row-details', 'agent-tray-row-open-pane']): Promise<void> {
   const box = (await row.boundingBox())!;
   expect(box.x).toBeGreaterThanOrEqual(0);
   expect(box.x + box.width).toBeLessThanOrEqual(viewportWidth);
@@ -21,7 +36,7 @@ async function expectFits(row: Locator, viewportWidth: number): Promise<void> {
   const title = (await row.getByTestId('agent-tray-row-title').boundingBox())!;
   const controls = (await row.getByTestId('agent-tray-row-controls').boundingBox())!;
   expect(controls.y, 'controls below the title').toBeGreaterThanOrEqual(title.y + title.height - 1);
-  for (const id of ['agent-tray-row-stop', 'agent-tray-row-details']) {
+  for (const id of buttons) {
     const button = (await row.getByTestId(id).boundingBox())!;
     expect(button.height, id).toBeGreaterThanOrEqual(36);
     expect(button.x + button.width, id).toBeLessThanOrEqual(viewportWidth);
@@ -72,5 +87,15 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
     await childInterrupted;
     expect(ledgerRow(harness, started.childToken)!.state).toBe('cancelled');
     expect(ledgerRow(harness, started.grandToken)!.state).toBe('cancelled');
+
+    // The stopped child leaves the open rows for Past.
+    await expect(openAgentRow(page, started.childToken)).toHaveCount(0, { timeout: 30_000 });
+    await expect(agentsBody(page).getByTestId('activity-rail-agents-past-count')).toHaveText('1');
+    await openPast(page);
+    const past = pastRow(page, started.childToken);
+    await expect(past.getByTestId('agent-tray-row-state')).toHaveText('stopped');
+    await expect(past.getByTestId('agent-tray-row-stop')).toHaveCount(0);
+    await expectFits(past, width, ['agent-tray-row-details', 'agent-tray-row-open-pane', 'agent-tray-row-show-in-sidebar']);
+    await capture(page, `agents-${provider}-compact-past.png`, agentsBody(page));
   });
 }

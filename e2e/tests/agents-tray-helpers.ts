@@ -2,7 +2,8 @@
 // and compact-agents-tray.spec.ts): a lead thread that spawns a child and
 // sends to a peer, a child that spawns a grandchild and starts a background
 // shell, a grandchild held on an approval, the row locators, and reads of
-// the request ledger. seedLeadWithWorker is the companion pane specs' one
+// the request ledger, and the Past list's locators (agents-tray-past.spec.ts
+// too). seedLeadWithWorker is the companion pane specs' one
 // assistant with one held worker.
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -233,8 +234,58 @@ export function agentsBody(page: Page): Locator {
   return page.getByTestId('activity-rail-agents-body').filter({ visible: true });
 }
 
+/** A row, open or past. */
 export function agentRow(page: Page, token: string): Locator {
   return agentsBody(page).locator(`[data-testid="agent-tray-row"][data-token="${token}"]`);
+}
+
+/** A row in the open list, not under Past. */
+export function openAgentRow(page: Page, token: string): Locator {
+  return agentsBody(page).locator(`[data-testid="agent-tray-row"][data-token="${token}"]:not([data-past])`);
+}
+
+/** The Past row's toggle and the list it opens. */
+export function pastToggle(page: Page): Locator {
+  return agentsBody(page).getByTestId('activity-rail-agents-past-toggle');
+}
+
+export function pastList(page: Page): Locator {
+  return agentsBody(page).getByTestId('activity-rail-agents-past');
+}
+
+export function pastRow(page: Page, token: string): Locator {
+  return pastList(page).locator(`[data-testid="agent-tray-row"][data-token="${token}"]`);
+}
+
+/** Expands Past and waits for its first page. */
+export async function openPast(page: Page): Promise<Locator> {
+  const toggle = pastToggle(page);
+  if ((await toggle.getAttribute('aria-expanded')) !== 'true') await toggle.click();
+  await expect(pastList(page).getByTestId('agent-tray-row').first()).toBeVisible({ timeout: 30_000 });
+  return pastList(page);
+}
+
+/** The agent thread companion pane. */
+export function companionPane(page: Page): Locator {
+  return page.locator('section[data-pane-kind="agent-thread"]');
+}
+
+export interface LedgerRequest {
+  token: string;
+  kind: string;
+  targetThreadId: string;
+  state: string;
+}
+
+/** The requests a thread made, oldest first, as the ledger holds them. */
+export function ledgerRequests(harness: HarnessApp, caller: string): LedgerRequest[] {
+  const db = new DatabaseSync(join(harness.bootstrap.dataDir, 'agent-overflow.db'), { readOnly: true });
+  try {
+    return db.prepare(`SELECT token, kind, COALESCE(target_thread_id, '') AS targetThreadId, state
+      FROM thread_requests WHERE caller_thread_id = ? ORDER BY created_at, rowid`).all(caller) as unknown as LedgerRequest[];
+  } finally {
+    db.close();
+  }
 }
 
 /** Opens the thread and its Agents segment. */
