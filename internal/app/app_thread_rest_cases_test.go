@@ -84,6 +84,51 @@ func TestStopAllBringsEverySpawnedThreadToRest(t *testing.T) {
 	}
 }
 
+// A loop the stopped thread's turn registers after the Stop cancelled its
+// loops, before the turn is cut, is cancelled too: it would start the thread
+// again.
+func TestAStopCancelsALoopItsTurnRegisteredDuringIt(t *testing.T) {
+	t.Parallel()
+	f := newRequestFixture(t)
+	f.mockClaudeHoldingTheTurn(t, "working")
+	ack, err := f.adapter().Spawn(t.Context(), f.callerIdentity(), threadtools.SpawnCall{Prompt: "work on it", Notify: true})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	f.awaitReceiptRunning(t, ack.Token)
+	// Another thread's send the rest settles once it has cancelled the
+	// loops, which is when the hook registers one.
+	other := f.targetIdentity(t, f.plainThread(t).ID)
+	if _, err := f.adapter().Send(t.Context(), other, threadtools.SendCall{ThreadID: ack.ThreadID, Message: "and this"}); err != nil {
+		t.Fatalf("the other thread's send: %v", err)
+	}
+	// The hook runs on the Stop's goroutine, which the test waits on.
+	var late string
+	var lateErr error
+	f.app.cancelReadForTest = func(string) {
+		if !f.app.resting.holds(ack.ThreadID) || late != "" || lateErr != nil {
+			return
+		}
+		row, err := f.app.registerAgentWake(store.AgentWake{
+			ThreadID: ack.ThreadID, Kind: store.AgentWakeLoop, Label: "late", Note: "n",
+			IntervalSeconds: 3600, NextAt: time.Now().Add(time.Hour).UnixMilli(),
+		})
+		late, lateErr = row.ID, err
+	}
+
+	stop, err := f.app.StopThreadAgentRow(t.Context(), f.caller.ID, ack.Token)
+	if err != nil || len(stop.Failures) != 0 {
+		t.Fatalf("StopThreadAgentRow = %+v, %v", stop, err)
+	}
+	if lateErr != nil || late == "" {
+		t.Fatalf("the late loop was not registered: %v", lateErr)
+	}
+	row, found, err := f.app.store.GetAgentWake(late)
+	if err != nil || !found || row.State != store.AgentWakeCancelled || row.LastOutcome != "cancelled: the user stopped the thread" {
+		t.Fatalf("the late loop = %+v found %v, %v; want it cancelled by the user's stop", row, found, err)
+	}
+}
+
 // A worker's open prompt goes with the Stop, in the worker and in the copy
 // routed to its spawner.
 func TestAStopDismissesTheWorkersPromptWhereverItShows(t *testing.T) {
@@ -224,6 +269,12 @@ func TestAThreadBeingStoppedTakesNoAppMessage(t *testing.T) {
 	if n := starts.Load(); n != 0 {
 		release()
 		t.Fatalf("the refused message started the thread %d times", n)
+	}
+	// A notice queued before the rest began, whose start comes once it has.
+	a.startAgentNoticeSession(agentNotice{threadID: thread.ID, sendID: "wake:queued-before"}, false)
+	if n := starts.Load(); n != 0 {
+		release()
+		t.Fatalf("a notice's start during the rest started the thread %d times", n)
 	}
 	release()
 	if _, err := a.SendExternalThreadMessage(thread.ID, "hello again"); err != nil {
