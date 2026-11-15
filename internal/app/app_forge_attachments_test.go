@@ -35,6 +35,12 @@ func gitlabUploads(t *testing.T, payload func() []byte) (*gitops.Core, *atomic.I
 	var requests atomic.Int32
 	want := "/gitlab/api/v4/projects/group%2Fwidget/uploads/" + testForgeUploadSecret + "/hero.png"
 	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/gitlab/api/v4/metadata" {
+			// The release read every GitLab request needs, not counted.
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"version":"19.3.0-ee","enterprise":true}`))
+			return
+		}
 		requests.Add(1)
 		if r.Method != http.MethodGet || r.URL.EscapedPath() != want || r.Header.Get("Private-Token") != "test-token" {
 			t.Errorf("unexpected forge request %s %s", r.Method, r.URL.EscapedPath())

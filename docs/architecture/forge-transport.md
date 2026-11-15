@@ -823,7 +823,8 @@ merge request write (`gitlabForge.writeClient`: comments, replies,
 resolve, reactions, suggestions, submit, the management actions,
 approve, merge, auto-merge, update branch and ready) is refused with
 that sentence (kind `refused`) before anything is sent; so are the CI
-rows read and the project list read, whose failure shows that sentence.
+rows read, the project list read and an attachment download (the
+uploads route is from 17.4), whose failure shows that sentence.
 A failed release read makes the Details read fail and a write fail
 unsent with the read's error. The same read's `enterprise` says whether
 the server is EE (the list's `approvalState`), and a route a later

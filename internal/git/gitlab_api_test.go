@@ -706,11 +706,33 @@ func TestGitLabFetchAttachment(t *testing.T) {
 		t.Fatalf("FetchAttachment = %q %q %v", data, name, err)
 	}
 	sent := calls.all()
-	if len(sent) != 1 || sent[0].Host != "gitlab.example.com:8443" || sent[0].Header.Get("Accept") != "*/*" || sent[0].Header.Get("Private-Token") != "test-token" {
-		t.Fatalf("attachment request = %+v", sent)
+	if len(sent) != 2 || sent[0].Path != "metadata" || sent[1].Host != "gitlab.example.com:8443" || sent[1].Header.Get("Accept") != "*/*" || sent[1].Header.Get("Private-Token") != "test-token" {
+		t.Fatalf("attachment requests = %+v", sent)
 	}
 	if _, _, err := core.FetchAttachment(t.Context(), ref.Repository(), href, 4); err == nil || err.Error() != "attachment is larger than 4 bytes" {
 		t.Fatalf("over-cap attachment = %v", err)
+	}
+}
+
+// The uploads route a GitLab attachment is fetched from first exists in
+// 17.4: a server below the supported floor is refused with the floor
+// sentence before the upload is asked for.
+func TestGitLabFetchAttachmentBelowTheFloorIsRefused(t *testing.T) {
+	t.Parallel()
+	core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
+		if call.Path == "metadata" {
+			return forgeAPIAnswer{Body: `{"version":"17.3.7-ee","enterprise":true}`}
+		}
+		t.Errorf("sent %s %s to a server below the floor", call.Method, call.Path)
+		return forgeAPIAnswer{Status: http.StatusNotFound, Body: `{"message":"404 Not Found"}`}
+	})
+	ref := PRReference{Forge: "gitlab", Host: "gitlab.com", Namespace: "g", Repo: "r", Number: 1}
+	_, _, err := core.FetchAttachment(t.Context(), ref.Repository(), "/uploads/"+testUploadSecretB+"/a.png", 1<<20)
+	if refused, ok := errors.AsType[*ForgeActionError](err); !ok || refused.Message != "GitLab on gitlab.com runs 17.3; GitLab 18.0 or later is needed." {
+		t.Fatalf("FetchAttachment below the floor = %v", err)
+	}
+	if n := len(calls.all()); n != 1 {
+		t.Fatalf("requests = %d, want the release read alone", n)
 	}
 }
 
@@ -720,7 +742,10 @@ func TestGitLabFetchAttachment(t *testing.T) {
 func TestGitLabFetchAttachmentFailureHidesTheSecret(t *testing.T) {
 	t.Parallel()
 	var mode atomic.Value
-	core, _ := newForgeAPICore(t, func(forgeAPICall) forgeAPIAnswer {
+	core, _ := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
+		if call.Path == "metadata" {
+			return forgeUnexpected(t, call)
+		}
 		switch mode.Load() {
 		case "drop":
 			panic(http.ErrAbortHandler)
