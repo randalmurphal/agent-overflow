@@ -52,6 +52,11 @@ recording is decoded at a time. A recording over a minute is not decoded,
 since decoding holds it as samples several times over; the meter's verdict
 stands for it.
 
+A piece that fails to upload, or a recorder that fails, ends the recording
+at once and the mic shows why. A microphone track that ends from outside
+(unplugged, permission withdrawn) stops a recording of either source there:
+what it holds is transcribed, and the mic says the microphone stopped.
+
 Spike 2026-11-15, half a second of WAV silence per request: no
 `Authorization` header returned 401 `{"detail":"Unauthorized"}`; a malformed
 token returned 401; a real token with a tampered signature returned 401

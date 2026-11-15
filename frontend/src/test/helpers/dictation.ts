@@ -66,6 +66,28 @@ export class FakePcm implements PcmStream {
 
 type Mocked<T> = { [K in keyof T]: ReturnType<typeof vi.fn> };
 
+/** A microphone track: stopped by the session, or ended from outside it
+ * (unplugged, permission withdrawn) by the test. */
+export class FakeTrack {
+  readyState: 'live' | 'ended' = 'live';
+  stop = vi.fn(() => { this.readyState = 'ended'; });
+  private readonly listeners = new Set<() => void>();
+  addEventListener(type: string, listener: () => void): void {
+    if (type === 'ended') this.listeners.add(listener);
+  }
+  removeEventListener(type: string, listener: () => void): void {
+    if (type === 'ended') this.listeners.delete(listener);
+  }
+  /** Ends the track as the browser does; `stop()` fires nothing. */
+  end(): void {
+    this.readyState = 'ended';
+    for (const listener of Array.from(this.listeners)) listener();
+  }
+  listening(): number {
+    return this.listeners.size;
+  }
+}
+
 export interface DictationFixture {
   session: DictationSession;
   env: DictationEnvironment;
@@ -80,7 +102,7 @@ export interface DictationFixture {
   recorder: () => FakeRecorder;
   /** The live capture the session opened last. */
   pcm: () => FakePcm;
-  tracks: { stop: ReturnType<typeof vi.fn> }[];
+  tracks: FakeTrack[];
   inserted: string[];
   level: { value: number; closed: boolean };
   /** The recording itself, as the environment measures it: its loudness,
@@ -109,7 +131,7 @@ export function dictationFixture(options: {
   streamsPcm?: boolean;
   openPcm?: () => Promise<FakePcm>;
 } = {}): DictationFixture {
-  const tracks: { stop: ReturnType<typeof vi.fn> }[] = [];
+  const tracks: FakeTrack[] = [];
   let current: FakeRecorder | null = null;
   let currentPcm: FakePcm | null = null;
   const level = { value: 0.5, closed: false };
@@ -125,7 +147,7 @@ export function dictationFixture(options: {
     blockedMessage: () => 'Microphone access is blocked.',
     quietSpeech: () => { quieted.count += 1; },
     openMicrophone: options.openMicrophone ?? (async () => {
-      const track = { stop: vi.fn() };
+      const track = new FakeTrack();
       tracks.push(track);
       return { getTracks: () => [track] } as unknown as MediaStream;
     }),

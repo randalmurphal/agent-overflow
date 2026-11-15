@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
-import { MAX_LIVE_APPEND_BYTES, MAX_MEASURED_MS, MAX_RECORDING_MS } from './dictationSession.svelte';
-import { FakePcm, METER_STRETCH_SECONDS, SWITCHED_OFF, dictationFixture as fixture } from '../../test/helpers/dictation';
+import { MAX_LIVE_APPEND_BYTES, MAX_MEASURED_MS, MAX_RECORDING_MS, MIC_ENDED } from './dictationSession.svelte';
+import { FakePcm, FakeTrack, METER_STRETCH_SECONDS, SWITCHED_OFF, dictationFixture as fixture } from '../../test/helpers/dictation';
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -74,6 +74,83 @@ describe('DictationSession', () => {
     expect(f.remote.cancel).toHaveBeenCalledWith('rec-1');
     expect(f.session.error).toBe('ticket refused');
     expect(f.inserted).toEqual([]);
+  });
+
+  it('ends the recording as soon as a piece fails to upload', async () => {
+    const f = fixture();
+    f.remote.upload.mockRejectedValueOnce(new Error('this computer is holding too much audio; try again shortly'));
+    await f.session.start();
+    f.recorder().emit('a');
+    await settle();
+    expect(f.session.phase).toBe('idle');
+    expect(f.session.error).toBe('this computer is holding too much audio; try again shortly');
+    expect(f.recorder().state).toBe('inactive');
+    expect(f.tracks[0].stop).toHaveBeenCalled();
+    expect(f.level.closed).toBe(true);
+    expect(f.timers()).toBe(0);
+    expect(f.remote.cancel).toHaveBeenCalledWith('rec-1');
+    expect(f.remote.finish).not.toHaveBeenCalled();
+  });
+
+  it('ends the recording when the recorder fails', async () => {
+    const f = fixture();
+    await f.session.start();
+    f.recorder().onerror?.(new Event('error'));
+    await settle();
+    expect(f.session.phase).toBe('idle');
+    expect(f.session.error).toBe('The recorder stopped unexpectedly.');
+    expect(f.tracks[0].stop).toHaveBeenCalled();
+    expect(f.remote.cancel).toHaveBeenCalledWith('rec-1');
+  });
+
+  it('stops and transcribes what it has when the microphone goes away, and says so', async () => {
+    const f = fixture();
+    await f.session.start();
+    f.recorder().emit('a');
+    f.tick();
+    f.tracks[0].end();
+    await vi.waitFor(() => expect(f.session.phase).toBe('idle'));
+    expect(f.remote.finish).toHaveBeenCalledWith('rec-1', 2);
+    expect(f.inserted).toEqual(['hello world']);
+    expect(f.session.error).toBe(MIC_ENDED);
+    expect(f.tracks[0].listening()).toBe(0);
+    expect(f.timers()).toBe(0);
+
+    const l = live();
+    await l.session.start();
+    await settle();
+    l.pcm().emit(0, 0x40);
+    l.tick();
+    l.tracks[0].end();
+    await vi.waitFor(() => expect(l.session.phase).toBe('idle'));
+    expect(l.remote.live.finish).toHaveBeenCalledWith('live-1');
+    expect(l.inserted).toEqual(['hello live']);
+    expect(l.session.error).toBe(MIC_ENDED);
+    expect(l.tracks[0].listening()).toBe(0);
+  });
+
+  it('says the microphone went away when it left nothing to transcribe', async () => {
+    const f = fixture({ meter: false });
+    await f.session.start();
+    f.recorder().tail = [];
+    f.tracks[0].end();
+    await vi.waitFor(() => expect(f.session.phase).toBe('idle'));
+    expect(f.remote.finish).not.toHaveBeenCalled();
+    expect(f.session.error).toBe(MIC_ENDED);
+  });
+
+  it('stops at once on a microphone that ended before the recording began', async () => {
+    const f = fixture({
+      openMicrophone: async () => {
+        const track = new FakeTrack();
+        f.tracks.push(track);
+        track.end();
+        return { getTracks: () => [track] } as unknown as MediaStream;
+      },
+    });
+    await f.session.start();
+    await vi.waitFor(() => expect(f.session.phase).toBe('idle'));
+    expect(f.session.error).toBe(MIC_ENDED);
   });
 
   it('drops on the computer a transcription whose answer never arrived', async () => {
