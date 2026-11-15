@@ -9,6 +9,7 @@ import { selectedBackend } from './selectedBackend.svelte';
 
 import { tick } from 'svelte';
 import { SIDEBAR_JUMP_LIMIT } from './sidebarThreadOrder';
+import { isEmptyDraftCleanupPending, settleEmptyDraftCleanup } from './emptyDraftCleanup';
 import type { ThreadPane } from './thread.svelte';
 import type { Thread } from '../types/models';
 import type { TerminalHandle } from '../types/terminal';
@@ -538,13 +539,17 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
         // recorded at the fork, and UpdateThreadMode refuses to move it.
         if (t.mode === 'discussion' || isScratchThreadMode(t.mode)) return;
         const next = cycleMode(t.mode);
+        // Applied wherever the emptied draft's in-flight delete leaves the pane.
+        if (isEmptyDraftCleanupPending(pane.threadId)) await settleEmptyDraftCleanup(pane.threadId);
         if (pane.hasDraftPlaceholder) {
           pane.setDraftPlaceholderMode(next);
           return;
         }
+        const threadId = pane.threadId;
+        if (!threadId) return;
         try {
           const mark = threadRowFrameMark();
-          const updated = (await UpdateThreadMode(t.id, next)) as Thread;
+          const updated = (await UpdateThreadMode(threadId, next)) as Thread;
           syncThreadReply(updated, mark);
         } catch (err) {
           addErrorToast(userFacingError(err), err);

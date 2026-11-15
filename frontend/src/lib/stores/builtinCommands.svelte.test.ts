@@ -76,6 +76,7 @@ import {
   terminalStateKeyForPane,
 } from '../components/terminal/terminalStore.svelte';
 import { setBindingMock } from '../../test/mocks/bindings-app';
+import { withEmptyDraftCleanup } from './emptyDraftCleanup';
 import {
   getPendingThreadActionConfirmation,
   resetThreadActionConfirmationsForTest,
@@ -1831,6 +1832,30 @@ describe('mode.cycle command', () => {
     // UpdateThreadMode refuses to move a scratch thread; the command must not
     // reach it and collect a backend error for a chord the user pressed.
     expect(calls.length).toBe(0);
+  });
+
+  it('waits for an empty-draft delete, then sets the mode on the placeholder it leaves', async () => {
+    const pane = createThreadPane();
+    pane.replaceThread({
+      id: 'emptied', title: 'New Thread', provider: 'claude', workspacePath: '/tmp', projectPath: '/tmp',
+      projectId: 'project-1', mode: 'chat', model: 'claude-sonnet-4-6', createdAt: 0, updatedAt: 0, archived: false, isDraft: true,
+    });
+    const update = setBindingMock('UpdateThreadMode', async () => { throw new Error('the deleted thread was written'); });
+    let answer!: () => void;
+    const answered = new Promise<void>((resolve) => { answer = resolve; });
+    const cleanup = withEmptyDraftCleanup('emptied', async () => { await answered; return true; }, async () => {
+      pane.dematerializeEmptyDraftThread();
+    });
+    registerFixtureCommands(pane);
+    runCommand('mode.cycle', makeCommandContext(pane, {}) as CommandContext);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(update).not.toHaveBeenCalled();
+    answer();
+    await cleanup;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(update).not.toHaveBeenCalled();
+    expect(pane.hasDraftPlaceholder).toBe(true);
+    expect(pane.thread?.mode).toBe('plan');
   });
 });
 
