@@ -853,6 +853,17 @@ func (a *App) stopThreadAgentRowIn(ctx context.Context, threadID, token string) 
 	if err != nil {
 		return ThreadAgentStop{}, err
 	}
+	if !found {
+		// A spawn the retention floor reduced to its lineage has no token
+		// in the ledger, and still links its thread into the listing.
+		listed, _, err := newThreadAgentView(a).tree(threadID, threadAgentRowDepth, []string{token}, threadAgentRowLimit)
+		if err != nil {
+			return ThreadAgentStop{}, err
+		}
+		if len(listed) == 1 && listed[0].LineageOnly {
+			row, found = listed[0].ThreadRequest, true
+		}
+	}
 	if found {
 		mine, err := a.threadAgentLineageHolds(threadID, row.CallerThreadID)
 		if err != nil {
@@ -973,7 +984,12 @@ func (a *App) stopThreadAgentRequest(ctx context.Context, row store.ThreadReques
 	}
 	if !found {
 		result.Outcome = threadAgentEnded
-		return result
+		if !row.LineageOnly {
+			return result
+		}
+		// Past the retention floor a spawn's token is unknown, and its row
+		// still links the thread it made: the Stop reaches into that thread.
+		current = row
 	}
 	settled := threadRequestSettled(current)
 	if settled {

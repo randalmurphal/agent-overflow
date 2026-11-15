@@ -181,7 +181,7 @@ export const coverageAllowlist: CoverageAllowance[] = [
     columns: [
       'due_at', 'target_computer_id', 'origin_thread_id', 'notify', 'late_reply', 'late_reply_at', 'delivered_at', 'delivered_how',
       'late_delivered_at', 'next_check', 'attempts', 'issue', 'polling', 'target_thread_title', 'wake_attempts', 'wake_next_check',
-      'wake_issue', 'lineage_only', 'confirmed_at', 'late_confirmed_at', 'answer_agent', 'answer_agent_role', 'nested_open', 'target_provider',
+      'wake_issue', 'lineage_only', 'superseded', 'confirmed_at', 'late_confirmed_at', 'answer_agent', 'answer_agent_role', 'nested_open', 'target_provider',
       'late_delivered_how', 'made_in_thread_id', 'wake_item_id', 'late_wake_item_id', 'open_below_0', 'open_below_1', 'open_below_2',
       'open_below_3', 'late_reply_agent', 'late_reply_agent_role', 'delivered_with',
     ],
@@ -194,6 +194,7 @@ export const coverageAllowlist: CoverageAllowance[] = [
       late_delivered_how: ['inline', 'queued', 'draft'],
       polling: [0],
       lineage_only: [1],
+      superseded: [1],
       answer_agent: [1],
       late_reply_agent: [1],
       nested_open: [1],

@@ -145,7 +145,8 @@ type ThreadRequest struct {
 	WakeIssue     string `json:"wakeIssue,omitempty"`
 	// LineageOnly marks a local spawn row the retention sweep kept past
 	// the floor with its payload cleared: the record of which thread
-	// started its target, and nothing else. The ledger reads skip it.
+	// started its target, and nothing else. The ledger reads skip it; the
+	// Agents tree still nests its target under it.
 	LineageOnly bool  `json:"-"`
 	CreatedAt   int64 `json:"createdAt"`
 	UpdatedAt   int64 `json:"updatedAt"`
@@ -810,7 +811,8 @@ func (s *Store) AbandonThreadRequestWake(token, issue string) (bool, error) {
 // from a read failure, because the two get different answers on the wire.
 // A lineage-only row is no such token: past the retention floor a spawn's
 // token is unknown, as a deleted row's is. The ledger reads below skip it
-// the same way; the lineage reads (spawnLineageSQL, threadColumns) do not.
+// the same way; the lineage reads (spawnLineageSQL, threadColumns) and the
+// Agents tree (agentSpawnLinkSQL) do not.
 func (s *Store) GetThreadRequest(token string) (ThreadRequest, bool, error) {
 	row, err := scanThreadRequest(s.reader().QueryRow(
 		`SELECT `+threadRequestColumns+` FROM thread_requests WHERE token = ? AND lineage_only = 0`, token))
@@ -1138,10 +1140,9 @@ func (s *Store) DeleteThreadRequest(token string) (bool, error) {
 }
 
 // spawnLineageSQL matches a local spawn request whose thread still exists.
-// The row is the only record of which thread started that one: the sidebar
-// nests a spawned thread under its spawner and counts a standing agent's
-// finished children through it, so its lineage lives as long as the thread
-// it made. Past the retention floor the sweep keeps only that lineage
+// The row is the only record of which thread started that one: it names a
+// spawned thread's owner, where its prompts go, and links it into its
+// owner's Agents tree, so its lineage lives as long as the thread it made. Past the retention floor the sweep keeps only that lineage
 // (clearLineagePayloadSQL). ON DELETE CASCADE on the caller takes it when
 // the spawner goes, and a thread deleted on its own leaves a lineage row
 // nothing reads, which the sweep deletes (orphanLineageSQL).
@@ -1170,8 +1171,9 @@ const clearLineagePayloadSQL = `UPDATE thread_requests
 // index: it is still work, and waits for its own settlement. A spawn with
 // open work under it, a local one's marks (agentOpenBelowSQL) or a remote
 // one's nested_open, waits for that work the same way: the Agents segment
-// lists it for that work, and clearing or deleting it would take the open
-// rows below it out of its caller's tree. A spawn's receipt waits while its
+// lists it for that work, with its answer, and deleting a remote one would
+// take the open rows below it out of its caller's tree. A local spawn's
+// lineage stays its target's link once cleared (agentSpawnLinkSQL). A spawn's receipt waits while its
 // target or a thread up to agentOpenDepth spawns below it has open work
 // (agentOpenUnderSQL): it is what lets the computer that made the spawn list
 // and stop that work (peerReachesThread), and that computer keeps its own

@@ -135,6 +135,70 @@ func TestRetentionKeepsSpawnsWithOpenWorkUnderThem(t *testing.T) {
 	}
 }
 
+// A spawn the retention floor reduced to its lineage still links its
+// thread to its caller: a worker reused after the sweep nests the work it
+// opens under its owner's tree, by listing, by name, in the frames, the
+// summary candidates and the marks, as before the sweep. The expired
+// spawn's own token stays unknown and its answer stays gone.
+func TestAnExpiredSpawnStillNestsItsThreadsNewWork(t *testing.T) {
+	t.Parallel()
+	s := newTestStore(t)
+	for _, id := range []string{"lead", "child", "grand", "peer"} {
+		mustCreateThread(t, s, id)
+	}
+	seedAgentRequest(t, s, "l-c", "lead", ThreadRequestSpawn, "child", false, 100)
+	settleAgentRequest(t, s, "l-c", 200)
+	if _, err := s.DeleteThreadRequestsBefore(5_000); err != nil {
+		t.Fatal(err)
+	}
+	if row := rawThreadRequest(t, s, "l-c"); !row.LineageOnly || row.Answer != nil {
+		t.Fatalf("the sweep kept %+v; want a lineage row with no answer", row)
+	}
+	// The reused worker spawns again and sends with its wake armed.
+	seedAgentRequest(t, s, "c-g", "child", ThreadRequestSpawn, "grand", false, 6_000)
+	seedAgentRequest(t, s, "c-p", "child", ThreadRequestSend, "peer", true, 6_001)
+	assertAgentTreeMarks(t, s.db, "after the reuse")
+
+	rows, _, err := s.ListThreadAgentTree(agentTreeRead("lead", 4))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := agentTreeEntries(rows), []string{"l-c@0", "c-g@1", "c-p@1"}; !slices.Equal(got, want) {
+		t.Fatalf("the owner's tree %v; want %v", got, want)
+	}
+	if rows[0].AnswerHead != nil && len(rows[0].AnswerHead) != 0 {
+		t.Fatalf("the expired spawn's row carries answer %q", rows[0].AnswerHead)
+	}
+	named := agentTreeRead("lead", 4)
+	named.Tokens = []string{"c-p", "l-c"}
+	if rows, _, err = s.ListThreadAgentTree(named); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := agentTreeEntries(rows), []string{"l-c@0", "c-p@1"}; !slices.Equal(got, want) {
+		t.Fatalf("the named rows %v; want %v", got, want)
+	}
+	if ids, err := s.ThreadsWithOpenAgentRows(nil, 10); err != nil || !slices.Contains(ids, "lead") {
+		t.Fatalf("summary candidates %v, %v; want lead among them", ids, err)
+	}
+	frames, err := s.ThreadAgentRowFrames([]string{"c-p"}, nil, nil, "local", 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(frames, ThreadAgentRowFrame{Token: "c-p", ThreadID: "lead"}) {
+		t.Fatalf("frames %+v; want one for lead", frames)
+	}
+	if _, found, err := s.GetThreadRequest("l-c"); err != nil || found {
+		t.Fatalf("the expired spawn's token reads found=%v, %v; want unknown", found, err)
+	}
+	// Once the reused work settles, the expired spawn leaves the tree again.
+	settleAgentRequest(t, s, "c-g", 7_000)
+	settleAgentRequest(t, s, "c-p", 7_000)
+	assertAgentTreeMarks(t, s.db, "after the work settled")
+	if rows, _, err = s.ListThreadAgentTree(ThreadAgentTreeRead{Root: "lead", SettledSince: 9_000, Depth: 4, Limit: 64, AnswerHead: 16}); err != nil || len(rows) != 0 {
+		t.Fatalf("the settled tree %v, %v; want none", agentTreeEntries(rows), err)
+	}
+}
+
 // A settled spawn's receipt is what lets the computer that made the spawn
 // list and stop the work under its thread, so the retention floor keeps it
 // while that work is open: an open request its thread made, open work below
@@ -511,7 +575,9 @@ func agentTreeEntries(rows []ThreadAgentRequest) []string {
 }
 
 // A thread is reached by at most one local spawn: the ledger refuses a
-// second, and keeps a lineage row or a remote spawn to the same thread.
+// second, a lineage row included, since a spawn whose payload expired is
+// still its target's link, and keeps a superseded row or a remote spawn to
+// the same thread.
 func TestASecondLocalSpawnOfAThreadIsRefused(t *testing.T) {
 	t.Parallel()
 	s := newTestStore(t)
@@ -519,13 +585,18 @@ func TestASecondLocalSpawnOfAThreadIsRefused(t *testing.T) {
 		mustCreateThread(t, s, id)
 	}
 	seedAgentRequest(t, s, "first", "lead", ThreadRequestSpawn, "child", false, 100)
-	_, err := s.db.Exec(`INSERT INTO thread_requests (token, caller_thread_id, kind, target_thread_id, state, created_at, updated_at)
-		VALUES ('second', 'other', 'spawn', 'child', 'running', 101, 101)`)
-	if err == nil || !strings.Contains(err.Error(), "UNIQUE") {
-		t.Fatalf("a second spawn of child: %v; want a UNIQUE refusal", err)
+	for _, insert := range []string{
+		`INSERT INTO thread_requests (token, caller_thread_id, kind, target_thread_id, state, created_at, updated_at)
+		VALUES ('second', 'other', 'spawn', 'child', 'running', 101, 101)`,
+		`INSERT INTO thread_requests (token, caller_thread_id, kind, target_thread_id, state, lineage_only, created_at, updated_at)
+		VALUES ('lineage', 'other', 'spawn', 'child', 'finished', 1, 101, 101)`,
+	} {
+		if _, err := s.db.Exec(insert); err == nil || !strings.Contains(err.Error(), "UNIQUE") {
+			t.Fatalf("a second spawn of child: %v; want a UNIQUE refusal", err)
+		}
 	}
-	mustExec(t, s.db, `INSERT INTO thread_requests (token, caller_thread_id, kind, target_thread_id, state, lineage_only, created_at, updated_at)
-		VALUES ('lineage', 'other', 'spawn', 'child', 'running', 1, 102, 102)`)
+	mustExec(t, s.db, `INSERT INTO thread_requests (token, caller_thread_id, kind, target_thread_id, state, lineage_only, superseded, created_at, updated_at)
+		VALUES ('superseded', 'other', 'spawn', 'child', 'finished', 1, 1, 102, 102)`)
 	mustExec(t, s.db, `INSERT INTO thread_requests (token, caller_thread_id, kind, target_computer_id, target_thread_id, state, created_at, updated_at)
 		VALUES ('remote', 'other', 'spawn', 'pc', 'child', 'running', 103, 103)`)
 }

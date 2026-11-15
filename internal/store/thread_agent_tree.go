@@ -260,10 +260,13 @@ func agentRowsUnderSQL(thread string) string {
 }
 
 // agentSpawnLinkSQL matches the local spawn that reaches its target, the
-// predicate of idx_thread_requests_spawn_link.
+// predicate of idx_thread_requests_spawn_link: its link into the tree,
+// whether or not the retention floor cleared the spawn's payload
+// (lineage_only), so new work its target opens after the sweep still nests
+// under the spawn's caller.
 func agentSpawnLinkSQL(alias string) string {
 	a := alias + "."
-	return a + `kind = 'spawn' AND ` + a + `target_computer_id = '' AND ` + a + `lineage_only = 0 AND ` + a + `target_thread_id <> ''`
+	return a + `kind = 'spawn' AND ` + a + `target_computer_id = '' AND ` + a + `superseded = 0 AND ` + a + `target_thread_id <> ''`
 }
 
 // agentOpenBelowSQL is whether a local spawn has open work under its
@@ -308,9 +311,9 @@ func agentRowKindSQL(alias string) string {
 // found by its key.
 func agentRowListedSQL(alias string) string {
 	a := alias + "."
-	return `(` + a + `lineage_only = 0 AND (` + a + `settled_at IS NULL OR ` + a + `settled_at >= ` + agentWindowSQL + `
-         OR (` + agentSpawnLinkSQL(alias) + ` AND ` + agentOpenBelowSQL(alias) + `)
-         OR (` + a + `kind = 'spawn' AND ` + a + `target_computer_id <> '' AND ` + a + `nested_open = 1)))`
+	return `((` + a + `lineage_only = 0 AND (` + a + `settled_at IS NULL OR ` + a + `settled_at >= ` + agentWindowSQL + `
+         OR (` + a + `kind = 'spawn' AND ` + a + `target_computer_id <> '' AND ` + a + `nested_open = 1)))
+         OR (` + agentSpawnLinkSQL(alias) + ` AND ` + agentOpenBelowSQL(alias) + `))`
 }
 
 // ThreadsWithOpenAgentRows lists, by id, at most limit threads whose Agents

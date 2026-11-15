@@ -800,8 +800,10 @@ Mechanics, as built:
   a spawn the Agents segment lists for open work below it, local or
   remote, waits for that work to settle, so the floor never takes rows
   out of a tree. The ledger tools treat that
-  token as unknown; the lineage reads, and a worker's prompt routing
-  (`SpawnerOf`), still find the row.
+  token as unknown; the lineage reads, a worker's prompt routing
+  (`SpawnerOf`) and the Agents tree still find the row, so work a
+  reused worker opens after the sweep lists, counts and stops under
+  its owner as before it.
 - `SetThreadGroup` refuses an assistant's thread
   (`ErrStandingAgentGrouped`). The drag payload marks only assistant
   rows `agentBound`, so a group target accepts a placed worker.

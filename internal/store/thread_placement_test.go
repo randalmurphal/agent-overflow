@@ -261,8 +261,8 @@ func TestOwnedThreadLosingItsLinkBecomesStandalone(t *testing.T) {
 	}
 	spawnLocal(t, s, "tok-child", "spawner", "child", true)
 	spawnLocal(t, s, "tok-shared", "spawner", "shared", true)
-	if _, err := s.db.Exec(`INSERT INTO thread_requests (token, caller_thread_id, kind, target_computer_id, target_thread_id, state, lineage_only, created_at, updated_at)
-		VALUES ('tok-shared-old', 'other', 'spawn', '', 'shared', 'finished', 1, 1, 1)`); err != nil {
+	if _, err := s.db.Exec(`INSERT INTO thread_requests (token, caller_thread_id, kind, target_computer_id, target_thread_id, state, lineage_only, superseded, created_at, updated_at)
+		VALUES ('tok-shared-old', 'other', 'spawn', '', 'shared', 'finished', 1, 1, 1, 1)`); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.DeleteThread("spawner"); err != nil {
@@ -502,8 +502,8 @@ func TestListOwnedWorkerIDs(t *testing.T) {
 	spawnLocal(t, s, "tok-placed", "owner", "placed", false)
 	spawnLocal(t, s, "tok-archived", "owner", "archived", true)
 	spawnLocal(t, s, "tok-moved", "owner", "moved", true)
-	if _, err := s.db.Exec(`INSERT INTO thread_requests (token, caller_thread_id, kind, target_computer_id, target_thread_id, state, lineage_only, created_at, updated_at)
-		VALUES ('tok-moved-later', 'other', 'spawn', '', 'moved', 'finished', 1, ?1, ?1)`, nowMillis()+60_000); err != nil {
+	if _, err := s.db.Exec(`INSERT INTO thread_requests (token, caller_thread_id, kind, target_computer_id, target_thread_id, state, lineage_only, superseded, created_at, updated_at)
+		VALUES ('tok-moved-later', 'other', 'spawn', '', 'moved', 'finished', 1, 1, ?1, ?1)`, nowMillis()+60_000); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := s.ArchiveThread("archived"); err != nil {

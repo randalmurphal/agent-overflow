@@ -129,7 +129,7 @@ func TestMigrationV151Schema(t *testing.T) {
 	}
 	addedColumns := map[string][]string{
 		"thread_requests": {
-			"lineage_only|INTEGER|1|0|0", "confirmed_at|INTEGER|0|NULL|0", "late_confirmed_at|INTEGER|0|NULL|0",
+			"lineage_only|INTEGER|1|0|0", "superseded|INTEGER|1|0|0", "confirmed_at|INTEGER|0|NULL|0", "late_confirmed_at|INTEGER|0|NULL|0",
 			"answer_agent|INTEGER|1|0|0", "answer_agent_role|TEXT|1|''|0", "late_reply_agent|INTEGER|1|0|0",
 			"late_reply_agent_role|TEXT|1|''|0", "nested_open|INTEGER|1|0|0", "target_provider|TEXT|1|''|0",
 			"late_delivered_how|TEXT|1|''|0", "made_in_thread_id|TEXT|1|''|0", "wake_item_id|TEXT|1|''|0",
@@ -189,6 +189,7 @@ func TestMigrationV151Schema(t *testing.T) {
 		`INSERT INTO agent_wakes (id, thread_id, kind, label, long_running, state, created_at) VALUES ('x', 'lead', 'watch', 'l', 2, 'armed', 1)`,
 		`INSERT INTO agent_wakes (id, thread_id, kind, label, state, created_at) VALUES ('x', 'missing', 'loop', 'l', 'armed', 1)`,
 		`UPDATE thread_requests SET lineage_only = 2 WHERE token = 'spawn'`,
+		`UPDATE thread_requests SET superseded = 2 WHERE token = 'spawn'`,
 		`UPDATE thread_requests SET answer_agent = NULL WHERE token = 'spawn'`,
 		`UPDATE thread_requests SET late_reply_agent = 2 WHERE token = 'spawn'`,
 		`UPDATE thread_requests SET nested_open = 2 WHERE token = 'spawn'`,
@@ -451,7 +452,7 @@ func TestMigrationV151WakeItemsAtScale(t *testing.T) {
 }
 
 // v151 over a populated ledger: the older of two local spawns of one thread
-// becomes a lineage row and the index refuses a second; every spawn's marks
+// becomes a superseded lineage row and the index refuses a second; every spawn's marks
 // are filled from the open work below it, four threads down and no further;
 // and the triggers keep them from there.
 func TestMigrationV151AgentTreeMarks(t *testing.T) {
@@ -479,9 +480,10 @@ func TestMigrationV151AgentTreeMarks(t *testing.T) {
 
 	applyAssistantsMigration(t, db)
 
-	var lineage int
-	if err := db.QueryRow(`SELECT lineage_only FROM thread_requests WHERE token = 'old-side'`).Scan(&lineage); err != nil || lineage != 1 {
-		t.Fatalf("the older spawn of t3 reads lineage_only %d, %v; want 1", lineage, err)
+	var marks string
+	if err := db.QueryRow(`SELECT group_concat(token || ':' || lineage_only || superseded, ' ') FROM (SELECT token, lineage_only, superseded
+		FROM thread_requests WHERE target_thread_id = 't3' ORDER BY token)`).Scan(&marks); err != nil || marks != "old-side:11 spawn-t3:00" {
+		t.Fatalf("the spawns of t3 read %q, %v; want the older superseded and lineage only, the newer its link", marks, err)
 	}
 	if _, err := db.Exec(`INSERT INTO thread_requests (token, caller_thread_id, kind, target_thread_id, state, created_at, updated_at)
 		VALUES ('again', 'side', 'spawn', 't4', 'running', 40, 40)`); err == nil || !strings.Contains(err.Error(), "UNIQUE") {

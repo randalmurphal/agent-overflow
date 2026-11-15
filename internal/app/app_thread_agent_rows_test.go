@@ -472,6 +472,61 @@ func TestThreadAgentRowsStopAllReachesDeepOpenWork(t *testing.T) {
 	}
 }
 
+// A worker reused after the retention floor cleared its spawn still belongs
+// to its owner: the new work it opens lists under the expired spawn, counts
+// in the owner's summary, and Stop of that row, or Stop All, reaches it.
+// The expired spawn shows no answer.
+func TestAnExpiredSpawnsNewWorkListsAndStopsUnderItsOwner(t *testing.T) {
+	t.Parallel()
+	for _, all := range []bool{false, true} {
+		f := newRequestFixture(t)
+		f.mockClaudeHoldingTheTurn(t, "working")
+		worker := f.plainThread(t)
+		f.seedAgentRow(t, "lead-worker", f.caller.ID, store.ThreadRequestSpawn, worker.ID, false)
+		long := time.Now().Add(-time.Hour).UnixMilli()
+		if settled, err := f.app.store.SettleThreadRequest("lead-worker", store.ThreadRequestOpenStates(), store.ThreadRequestSettlement{
+			State: store.ThreadRequestFinished, Answer: []byte("done"), AnswerKind: store.ThreadAnswerFinal, SettledAt: long,
+		}); err != nil || !settled {
+			t.Fatalf("settle: %v %v", settled, err)
+		}
+		if _, err := f.app.store.DeleteThreadRequestsBefore(time.Now().UnixMilli()); err != nil {
+			t.Fatal(err)
+		}
+		if _, found, err := f.app.store.GetThreadRequest("lead-worker"); err != nil || found {
+			t.Fatalf("the spawn's token past the floor reads found=%v, %v; want unknown", found, err)
+		}
+		open, err := f.adapter().Spawn(t.Context(), f.targetIdentity(t, worker.ID), threadtools.SpawnCall{Prompt: "again", Notify: true})
+		if err != nil {
+			t.Fatalf("Spawn: %v", err)
+		}
+		f.awaitRequestState(t, open.Token, store.ThreadRequestRunning)
+		rows := f.agentRows(t, f.caller.ID).Rows
+		if got, want := agentRowTokens(rows), []string{"lead-worker", open.Token}; !slices.Equal(got, want) {
+			t.Fatalf("rows %v; want the worker's new spawn under the expired one %v", got, want)
+		}
+		if rows[0].Answer != "" {
+			t.Fatalf("the expired spawn shows answer %q", rows[0].Answer)
+		}
+		if summary, err := f.app.GetThreadWorkerSummary(t.Context(), f.caller.ID); err != nil || summary.Open != 1 {
+			t.Fatalf("summary %+v, %v; want the worker's open spawn counted", summary, err)
+		}
+		var stop ThreadAgentStop
+		if all {
+			stops, err := f.app.StopThreadAgentRows(t.Context(), f.caller.ID)
+			if err != nil || len(stops) != 1 {
+				t.Fatalf("StopThreadAgentRows = %+v, %v", stops, err)
+			}
+			stop = stops[0]
+		} else if stop, err = f.app.StopThreadAgentRow(t.Context(), f.caller.ID, "lead-worker"); err != nil {
+			t.Fatalf("StopThreadAgentRow: %v", err)
+		}
+		if stop.Token != "lead-worker" || stop.Outcome != threadAgentEnded || stop.Nested != 1 || len(stop.Failures) != 0 {
+			t.Fatalf("stop (all %v) = %+v; want the expired spawn ended with its worker's one agent stopped", all, stop)
+		}
+		f.awaitRequestState(t, open.Token, store.ThreadRequestCancelled)
+	}
+}
+
 // A settled row whose answer the caller's provider took in names the
 // timeline row that carried it, which the pane opens.
 func TestThreadAgentRowsNameTheWakeThatDeliveredTheAnswer(t *testing.T) {
