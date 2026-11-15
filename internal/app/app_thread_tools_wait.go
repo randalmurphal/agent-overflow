@@ -57,6 +57,9 @@ type threadRequestState struct {
 	// requests those turns answer (app_turn_stop.go). They leave with the
 	// thread's last running receipt.
 	stops map[string][]recordedTurnStop
+	// stopSeq numbers the stops, so a retirement names exactly the records
+	// it read.
+	stopSeq uint64
 	// answeredReads maps a thread to the turns whose answer to its spawner
 	// settled while they ran (a thread_reply), so the turn's end stamps the
 	// read mark the answer earned (holdAnsweredRead). An entry goes at

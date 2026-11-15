@@ -137,6 +137,9 @@ func (s stoppedTurn) matches(turn store.Turn) bool {
 // settle from (turnSettlement), whether a delivery bound them to the turn
 // before the stop, at the turn's end, or not until after it.
 type recordedTurnStop struct {
+	// seq tells this record from any other made for the same turn index,
+	// so a retirement removes only the records it read.
+	seq   uint64
 	turn  stoppedTurn
 	cause string
 	// person is turnStop.person.
@@ -147,10 +150,12 @@ type recordedTurnStop struct {
 // answers. It is recorded before the interrupt is sent because the turn can
 // settle while the interrupt is acknowledged. Only a thread with open
 // requests records one. A thread keeps one per stopped turn, a later stop
-// of the same turn replacing it, until that turn's end has been settled
-// (forgetEndedTurnStops), its session ends (forgetSessionTurnStops) or the
-// thread's last open request goes (forgetReceiptRunning), so they are
-// bounded by the stopped turns whose end has not been settled yet.
+// of the same turn replacing it, until a settlement pass that read it
+// retires it: the end pass of a turn that had ended (endedTurnStops) or of
+// the session it was sent to (sessionTurnStops), when nothing that pass
+// read still needs it. It also goes with the thread's last open request
+// (forgetReceiptRunning), so the records are bounded by the stopped turns
+// whose end a request may still read.
 func (a *App) recordTurnStop(threadID string, turn stoppedTurn, stop turnStop) {
 	if turn.index < 0 {
 		return
@@ -163,7 +168,8 @@ func (a *App) recordTurnStop(threadID string, turn stoppedTurn, stop turnStop) {
 	if a.threadRequests.stops == nil {
 		a.threadRequests.stops = make(map[string][]recordedTurnStop)
 	}
-	recorded := recordedTurnStop{turn: turn, cause: stop.cause, person: stop.person}
+	a.threadRequests.stopSeq++
+	recorded := recordedTurnStop{seq: a.threadRequests.stopSeq, turn: turn, cause: stop.cause, person: stop.person}
 	stops := slices.DeleteFunc(a.threadRequests.stops[threadID], func(kept recordedTurnStop) bool {
 		return kept.turn.index == turn.index
 	})
@@ -220,39 +226,69 @@ func (a *App) turnStopCause(threadID string, turnIndex int) string {
 	return turnStoppedUnknown
 }
 
-// forgetEndedTurnStops drops the stops of the thread's turns that have
-// ended, once that end has settled the requests they answer: the turn row
-// at the stop's index is complete, or is a later turn a revert gave the same
-// index, or is gone after the stop saw it. A stop whose turn has not opened
-// yet, or is still running, stays.
-func (a *App) forgetEndedTurnStops(threadID string) {
+// endedTurnStops is the thread's stops whose turn is over, read before a
+// turn-end pass reads its receipts, which the pass may retire once it has
+// settled them (retireTurnStops): the turn row at the stop's index is
+// complete, or is a later turn a revert gave the same index, or is gone
+// after the stop saw it, or the session the stop was sent to is no longer
+// the thread's. A stop whose turn has not opened yet in a live session, or
+// is still running, is not among them.
+func (a *App) endedTurnStops(threadID string) []recordedTurnStop {
 	a.threadRequests.mu.Lock()
 	stops := slices.Clone(a.threadRequests.stops[threadID])
 	a.threadRequests.mu.Unlock()
-	ended := make(map[int]bool, len(stops))
-	for _, recorded := range stops {
+	if len(stops) == 0 {
+		return nil
+	}
+	live := ""
+	if sess, ok := a.sessionManager().get(threadID); ok {
+		live = sess.Token
+	}
+	return slices.DeleteFunc(stops, func(recorded recordedTurnStop) bool {
+		if recorded.turn.session != "" && recorded.turn.session != live {
+			return false
+		}
 		turn, found, err := a.store.GetTurnByThreadIndex(threadID, recorded.turn.index)
 		if err != nil {
 			log.Printf("thread tools: read the stopped turn %d of %s: %v", recorded.turn.index, threadID, err)
-			continue
+			return true
 		}
 		switch {
 		case !found:
-			ended[recorded.turn.index] = recorded.turn.startedAt != 0
+			return recorded.turn.startedAt == 0
 		case !recorded.turn.matches(turn):
-			ended[recorded.turn.index] = true
+			return false
 		default:
-			ended[recorded.turn.index] = turn.CompletedAt != nil
+			return turn.CompletedAt == nil
 		}
-	}
-	a.forgetTurnStops(threadID, func(recorded recordedTurnStop) bool { return ended[recorded.turn.index] })
+	})
 }
 
-// forgetSessionTurnStops drops the stops whose interrupt went to a session
-// that has ended, once its end has settled the requests they answer.
-func (a *App) forgetSessionTurnStops(threadID, session string) {
+// sessionTurnStops is the thread's stops sent to session, read before its
+// end's pass reads the receipts.
+func (a *App) sessionTurnStops(threadID, session string) []recordedTurnStop {
 	if session == "" {
+		return nil
+	}
+	a.threadRequests.mu.Lock()
+	defer a.threadRequests.mu.Unlock()
+	var stops []recordedTurnStop
+	for _, recorded := range a.threadRequests.stops[threadID] {
+		if recorded.turn.session == session {
+			stops = append(stops, recorded)
+		}
+	}
+	return stops
+}
+
+// retireTurnStops removes the records a settlement pass read and has no
+// further use for, each by its own seq: a stop recorded since, for the same
+// index or any other, stays.
+func (a *App) retireTurnStops(threadID string, read []recordedTurnStop) {
+	if len(read) == 0 {
 		return
 	}
-	a.forgetTurnStops(threadID, func(recorded recordedTurnStop) bool { return recorded.turn.session == session })
+	a.forgetTurnStops(threadID, func(recorded recordedTurnStop) bool {
+		return slices.ContainsFunc(read, func(retired recordedTurnStop) bool { return retired.seq == recorded.seq })
+	})
 }

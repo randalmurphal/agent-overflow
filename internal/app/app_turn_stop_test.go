@@ -90,32 +90,173 @@ func TestTwoThreadsKeepTheirOwnStops(t *testing.T) {
 	}
 }
 
-// A stop goes once its turn's end has settled, and only that turn's: a
-// later stopped turn still running keeps its own.
+// A stop goes once its turn's end has settled, and only that turn's. Turn
+// 0's pass runs while turn 1 is still running; before that pass retires
+// what it read, the person stops turn 1 and it ends. Turn 1's stop stays
+// for turn 1's own pass, whether turn 0's pass read turn 1's request while
+// turn 1 ran or the request reached turn 1 after that pass read which
+// requests run.
 func TestASettledTurnTakesOnlyItsOwnStop(t *testing.T) {
 	t.Parallel()
-	app := newTestApp(t)
-	thread := createAppTestThread(t, app, "stops-settle", "claude", t.TempDir())
-	insertTurns(t, app, thread.ID, store.Turn{TurnID: "t0", TurnIndex: 0, StartedAt: 10}, store.Turn{TurnID: "t1", TurnIndex: 1, StartedAt: 20})
-	bindRunningReceipt(t, app, thread.ID, "tok-0", 0)
-	bindRunningReceipt(t, app, thread.ID, "tok-1", 1)
-	app.recordTurnStop(thread.ID, stoppedTurn{index: 0, startedAt: 10}, stopByUser(nil))
-	app.recordTurnStop(thread.ID, stoppedTurn{index: 1, startedAt: 20}, stopByUser(nil))
+	for name, boundDuringPass := range map[string]bool{"read while turn 1 ran": false, "bound during the pass": true} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			app := newTestApp(t)
+			thread := createAppTestThread(t, app, "stops-settle", "claude", t.TempDir())
+			insertTurns(t, app, thread.ID, store.Turn{TurnID: "t0", TurnIndex: 0, StartedAt: 10}, store.Turn{TurnID: "t1", TurnIndex: 1, StartedAt: 20})
+			bindRunningReceipt(t, app, thread.ID, "tok-0", 0)
+			if !boundDuringPass {
+				bindRunningReceipt(t, app, thread.ID, "tok-1", 1)
+			}
+			appendTurnRow(t, app.store, store.Item{ID: "a:1", ThreadID: thread.ID, TurnIndex: 1, Kind: "assistant_text", Summary: "halfway there"})
+			app.recordTurnStop(thread.ID, stoppedTurn{index: 0, startedAt: 10}, stopByUser(nil))
+			if err := app.store.UpdateTurnCompleted("t0", 15, "interrupted", "", "", ""); err != nil {
+				t.Fatal(err)
+			}
+			once := false
+			app.turnEndSettledForTest = func(string) {
+				if once {
+					return
+				}
+				once = true
+				if boundDuringPass {
+					bindRunningReceipt(t, app, thread.ID, "tok-1", 1)
+				}
+				app.recordTurnStop(thread.ID, stoppedTurn{index: 1, startedAt: 20}, stopByUser(nil))
+				if err := app.store.UpdateTurnCompleted("t1", 25, "interrupted", "", "", ""); err != nil {
+					t.Error(err)
+				}
+			}
+			app.settleReceiptsForEndedTurn(thread.ID)
 
+			if receipt, _, _ := app.store.GetThreadRequestReceipt("tok-0"); receipt.State != store.ThreadReceiptInterrupted || receipt.AnswerKind != store.ThreadAnswerFinal {
+				t.Fatalf("turn 0's request settled %q/%q, want the person's Stop", receipt.State, receipt.AnswerKind)
+			}
+			if app.stoppedByPerson(thread.ID, store.Turn{TurnIndex: 0, StartedAt: 10}) {
+				t.Error("turn 0's stop outlived its settled end")
+			}
+			if !app.stoppedByPerson(thread.ID, store.Turn{TurnIndex: 1, StartedAt: 20}) {
+				t.Error("turn 0's pass took turn 1's stop")
+			}
+
+			// Turn 1's own pass settles its request as the person's Stop.
+			app.settleReceiptsForEndedTurn(thread.ID)
+			if receipt, _, _ := app.store.GetThreadRequestReceipt("tok-1"); receipt.State != store.ThreadReceiptInterrupted ||
+				receipt.AnswerKind != store.ThreadAnswerFinal || string(receipt.Answer) != "halfway there" {
+				t.Fatalf("turn 1's request settled %q/%q %q, want the person's Stop with what it wrote", receipt.State, receipt.AnswerKind, receipt.Answer)
+			}
+		})
+	}
+}
+
+// A revert gives a new turn the stopped turn's index, and the new turn is
+// stopped too, while the old turn's pass runs. The pass retires only the
+// stop it read.
+func TestAPassRetiresOnlyTheStopsItRead(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(t)
+	thread := createAppTestThread(t, app, "stops-replaced", "claude", t.TempDir())
+	insertTurns(t, app, thread.ID, store.Turn{TurnID: "t0", TurnIndex: 0, StartedAt: 10})
+	bindRunningReceipt(t, app, thread.ID, "tok-0", 0)
+	bindRunningReceipt(t, app, thread.ID, "tok-later", 5)
+	app.recordTurnStop(thread.ID, stoppedTurn{index: 0, startedAt: 10}, stopByUser(nil))
 	if err := app.store.UpdateTurnCompleted("t0", 15, "interrupted", "", "", ""); err != nil {
 		t.Fatal(err)
 	}
+	app.turnEndSettledForTest = func(string) {
+		app.recordTurnStop(thread.ID, stoppedTurn{index: 0, startedAt: 99}, stopByThread("Lead", "lead-id", ""))
+	}
 	app.settleReceiptsForEndedTurn(thread.ID)
+	if got, want := app.turnStopCause(thread.ID, 0), stopByThread("Lead", "lead-id", "").cause; got != want {
+		t.Fatalf("cause at index 0 = %q, want the stop recorded during the pass (%q)", got, want)
+	}
+}
 
-	if receipt, _, _ := app.store.GetThreadRequestReceipt("tok-0"); receipt.State != store.ThreadReceiptInterrupted || receipt.AnswerKind != store.ThreadAnswerFinal {
-		t.Fatalf("turn 0's request settled %q/%q, want the person's Stop", receipt.State, receipt.AnswerKind)
+// A request whose message the provider holds, with no turn named for it
+// yet, may still be bound to a stopped turn that has ended. The stop stays
+// until it is, and the late binding settles as the person's Stop.
+func TestAStopWaitsForADeliveryStillToNameItsTurn(t *testing.T) {
+	t.Parallel()
+	f := newRequestFixture(t)
+	threadID := f.caller.ID
+	insertTurns(t, f.app, threadID, store.Turn{TurnID: "t0", TurnIndex: 0, StartedAt: 10})
+	appendTurnRow(t, f.app.store, store.Item{ID: "a:0", ThreadID: threadID, TurnIndex: 0, Kind: "assistant_text", Summary: "halfway there"})
+	if _, _, err := f.app.store.AcceptThreadRequestReceipt(store.ThreadRequestReceipt{
+		Token: "tok", OwnerDeviceID: "d", Kind: "send", TargetThreadID: threadID, State: store.ThreadReceiptAccepted,
+	}); err != nil {
+		t.Fatal(err)
 	}
-	if app.stoppedByPerson(thread.ID, store.Turn{TurnIndex: 0, StartedAt: 10}) {
-		t.Error("turn 0's stop outlived its settled end")
+	f.adapter().markRequestDispatched("tok", threadID, "u:tok")
+	f.app.recordTurnStop(threadID, stoppedTurn{index: 0, startedAt: 10}, stopByUser(nil))
+	if err := f.app.store.UpdateTurnCompleted("t0", 15, "interrupted", "", "", ""); err != nil {
+		t.Fatal(err)
 	}
-	if !app.stoppedByPerson(thread.ID, store.Turn{TurnIndex: 1, StartedAt: 20}) {
-		t.Error("turn 0's settlement took turn 1's stop")
+	f.app.settleReceiptsForEndedTurn(threadID)
+	if !f.app.stoppedByPerson(threadID, store.Turn{TurnIndex: 0, StartedAt: 10}) {
+		t.Fatal("the stop went while a delivery could still name its turn")
 	}
+	f.app.bindRequestDelivery("tok", threadID, "u:tok", 0, true)
+	f.app.threadRequestsWG.Wait()
+	if receipt := f.receipt(t, "tok"); receipt.State != store.ThreadReceiptInterrupted ||
+		receipt.AnswerKind != store.ThreadAnswerFinal || string(receipt.Answer) != "halfway there" {
+		t.Fatalf("receipt = %q/%q %q, want the person's Stop with what the turn wrote", receipt.State, receipt.AnswerKind, receipt.Answer)
+	}
+}
+
+// A stopped turn whose row reads complete while the router still runs it (a
+// soft-closed turn the model continued) has not ended: a request bound to
+// it keeps the stop for that turn's real end.
+func TestAStopWaitsForARequestsTurnStillRunning(t *testing.T) {
+	t.Parallel()
+	q := newQueuedRequests(t)
+	app := q.f.app
+	turn, found, err := app.store.GetTurnByThreadIndex(q.target.ID, 0)
+	if err != nil || !found {
+		t.Fatalf("fixture: turn 0 = %v %v", found, err)
+	}
+	bindRunningReceipt(t, app, q.target.ID, "tok", 0)
+	app.recordTurnStop(q.target.ID, stoppedTurn{index: 0, startedAt: turn.StartedAt}, stopByUser(nil))
+	if err := app.store.UpdateTurnCompleted(turn.TurnID, turn.StartedAt+5, "interrupted", "", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	app.settleReceiptsForEndedTurn(q.target.ID)
+	if !app.stoppedByPerson(q.target.ID, turn) {
+		t.Fatal("the stop went while the request's turn still runs")
+	}
+}
+
+// A session end whose settlement of a stopped request fails keeps the
+// stop, so the settlement that succeeds later still reads the person's.
+func TestAFailedSessionEndSettlementKeepsTheStop(t *testing.T) {
+	t.Parallel()
+	q := newQueuedRequests(t)
+	f := q.f
+	r := q.queue(t, 1, 1)
+	r.bind(t)
+	q.endTurn(t)
+	q.liveTarget(t)
+	q.startPickupTurn(t)
+	r.consumed(t)
+	q.say(t, 1, "halfway there")
+	if err := f.app.InterruptTurn(q.target.ID, nil); err != nil {
+		t.Fatalf("InterruptTurn: %v", err)
+	}
+	q.handle(t, "stopped turn end", provider.ProviderEvent{Kind: provider.EventTurnComplete,
+		TurnComplete: &provider.WireTurnCompleteMeta{StopReason: "interrupted"}})
+
+	execOnStore(t, f.dbPath, `CREATE TRIGGER refuse_settle BEFORE UPDATE OF state ON thread_request_receipts
+		WHEN NEW.state = 'interrupted' BEGIN SELECT RAISE(ABORT, 'injected settlement failure'); END`)
+	f.app.dispatchTurnObservers(q.target.ID, provider.ProviderEvent{
+		Kind: provider.EventSessionStatus, Content: "disconnected", ThreadID: q.target.ID, SessionToken: "stop-target",
+	})
+	f.app.threadRequestsWG.Wait()
+	if receipt := f.receipt(t, r.token); receipt.State != store.ThreadReceiptRunning {
+		t.Fatalf("fixture: receipt %q, want the refused settlement left it running", receipt.State)
+	}
+	execOnStore(t, f.dbPath, `DROP TRIGGER refuse_settle`)
+
+	f.app.settleReceiptsForEndedTurn(q.target.ID)
+	r.wantStoppedWith(t, "halfway there")
 }
 
 // A person stopping their own turns while an agent's request waits queued on
