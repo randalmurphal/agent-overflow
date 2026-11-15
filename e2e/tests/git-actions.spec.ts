@@ -11,7 +11,7 @@
 //   and closes after the commit that leaves nothing.
 // - A commit whose answer a dropped connection lost, behind a pre-commit
 //   hook still running, ends with the dialog showing the commit once the
-//   hook lets it land (GetCommitOutcome), and the commit runs once.
+//   hook lets it land (GetGitActionOutcome), and the commit runs once.
 // - Push is enabled for a branch with no upstream, pushes it to origin,
 //   sets the upstream, and is disabled once nothing is ahead.
 // - An origin on GitHub Enterprise: Create PR is disabled with the one

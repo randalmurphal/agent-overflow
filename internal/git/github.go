@@ -306,8 +306,11 @@ func githubMergedPRHeads(ctx context.Context, client *forgeapi.Client, owner, na
 // nothing the reviewer did not see. A request with nothing for the review
 // itself (a comment verdict with no body and no line comment) posts no
 // review, which GitHub would refuse, and its first follow-up's error
-// decides whether anything posted.
+// decides whether anything posted. Past the caller's deadline it starts
+// no request (writeSteps): the follow-ups it did not start stay unposted.
 func (f *githubForge) SubmitReview(ctx context.Context, ref PRReference, review SubmitReviewRequest) (SubmitReviewResult, error) {
+	steps, done := writeSteps(ctx)
+	defer done()
 	number := ref.Number
 	if _, _, err := splitGitHubProject(ref.Project()); err != nil {
 		return SubmitReviewResult{}, err
@@ -354,8 +357,11 @@ func (f *githubForge) SubmitReview(ctx context.Context, ref PRReference, review 
 	if !emptyReview || followUps == 0 {
 		// The only write before the review exists: its error, or after a
 		// lost answer the viewer's reviews, decide whether it posted.
-		before, err := readGitHubViewerReviews(ctx, client, ref)
+		before, err := readGitHubViewerReviews(steps, client, ref)
 		if err != nil {
+			return SubmitReviewResult{}, err
+		}
+		if err := stopped(steps); err != nil {
 			return SubmitReviewResult{}, err
 		}
 		if err := postGitHubReview(ctx, client, ref, body); err != nil {
@@ -383,12 +389,18 @@ func (f *githubForge) SubmitReview(ctx context.Context, ref PRReference, review 
 		return &PartialSubmitError{PostedReview: out.PostedReview, PostedFileComments: out.PostedFileComments, PostedReplies: out.PostedReplies, FailedPath: path, FailedThreadID: threadID, UnpostedReplies: unposted, Unconfirmed: !forgeapi.WriteNotApplied(err), Err: err}
 	}
 	for i, in := range fileBodies {
+		if err := stopped(steps); err != nil {
+			return out, failed(err, fileComments[i].Path, "")
+		}
 		if _, err := client.JSON(ctx, forgeapi.Request{Method: http.MethodPost, Path: pulls + "/comments", Body: in}, nil); err != nil {
 			return out, failed(err, fileComments[i].Path, "")
 		}
 		out.PostedFileComments++
 	}
 	for _, reply := range replies {
+		if err := stopped(steps); err != nil {
+			return out, failed(err, "", reply.InReplyTo.ThreadID)
+		}
 		if err := postGitHubReply(ctx, client, ref, *reply.InReplyTo, reply.Body); err != nil {
 			return out, failed(err, "", reply.InReplyTo.ThreadID)
 		}

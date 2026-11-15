@@ -142,19 +142,11 @@ func (a *App) restoreFlushItemsToDraftLocked(threadID string, drained []triage.U
 	// the row before persisting a fresh one (round-11, R11-1). Requeued
 	// items caught still-queued by a LATER death re-enter here through
 	// StaleUserItemID.
-	var retire, queueItemIDs, userItemIDs []string
+	var retire, queueItemIDs, userItemIDs, sendIDs []string
 	parts := make([]composerdraft.Part, 0, len(drained))
 	settlements := make([]*triage.FlushSettlement, 0, len(drained))
 	for i, item := range drained {
-		staleID := item.StaleUserItemID
-		if item.QuietItem != nil {
-			staleID = item.QuietItem.ID
-		}
-		if item.DeferredItem != nil && staleID == "" {
-			// A deferred message has no row, but its review drafts were
-			// claimed for the row it would have landed as.
-			staleID = item.DeferredItem.ID
-		}
+		staleID := unconfirmedRowID(item)
 		drained[i].StaleUserItemID = staleID
 		if staleID != "" {
 			retire = append(retire, staleID)
@@ -169,10 +161,13 @@ func (a *App) restoreFlushItemsToDraftLocked(threadID string, drained []triage.U
 		if strings.TrimSpace(part.Content) != "" || len(part.AttachmentIDs) > 0 || part.SourceProposedPlan != nil {
 			parts = append(parts, part)
 			settlements = append(settlements, item.Settlement)
+			sendIDs = append(sendIDs, unconfirmedFlushSendIDs(item)...)
 		}
 	}
 	if len(parts) > 0 || len(retire) > 0 || len(queueItemIDs) > 0 {
-		if err := a.restoreQueuedDraft(threadID, parts, queueItemIDs, retire); err != nil {
+		if err := a.restoreQueuedDraft(threadID, parts, store.QueueDraftRestore{
+			QueueItemIDs: queueItemIDs, RetireItemIDs: retire, SendIDs: sendIDs,
+		}); err != nil {
 			log.Printf("flush queue: restore draft (%s) for %s: %v — requeueing the messages", reason, threadID, err)
 			a.emitWireErrorToThread(threadID, "Could not restore queued messages: "+err.Error())
 			a.requeueUnconfirmedFlushItems(threadID, drained)
@@ -223,6 +218,82 @@ func (a *App) announceReturnedReviewComments(returned []store.DiffReviewReturned
 	}
 }
 
+// unconfirmedRowID is the row a message taken back from the provider has in
+// the store, which its cleanup retires (cleanupStaleFlushRow): its quiet row,
+// the row an earlier failed cleanup left (StaleUserItemID), or, for a
+// deferred message with no row, the id its review drafts were claimed for.
+// Empty for a message with neither.
+func unconfirmedRowID(item triage.UnconfirmedFlushItem) string {
+	if item.QuietItem != nil {
+		return item.QuietItem.ID
+	}
+	if item.StaleUserItemID != "" {
+		return item.StaleUserItemID
+	}
+	if item.DeferredItem != nil {
+		return item.DeferredItem.ID
+	}
+	return ""
+}
+
+// dropUnconfirmedSends is a dropped queue's other half: the messages the
+// session was sent and never confirmed, and the queued ones that still have
+// a row from an earlier dispatch (dispatched, the batches dropFlushQueue took
+// from the worker, and triage's own queue). They go with the queue, so each
+// row leaves the timeline with the review drafts its message claimed, and a
+// connected client drops it (queue_restored, reason dropped). A message the
+// provider did consume is confirmed instead (DrainUnconfirmedFlushItems). A
+// wake among them was never read, so its requests are retracted with its row
+// (store.RetireDroppedUserRow), as a dropped queue row's are. A row whose
+// retire fails stays, and the thread shows the error.
+func (a *App) dropUnconfirmedSends(threadID string, dispatched []triage.QueuedFlushItem) {
+	if a.triage == nil {
+		return
+	}
+	drained := a.triage.DrainUnconfirmedFlushItems(threadID)
+	for _, item := range dispatched {
+		if item.StaleUserItemID != "" {
+			drained = append(drained, triage.UnconfirmedFlushItem{QueueItemID: item.ID, Payload: item.Payload, StaleUserItemID: item.StaleUserItemID})
+		}
+	}
+	var queueItemIDs, userItemIDs []string
+	var failed []error
+	for _, item := range drained {
+		rowID := unconfirmedRowID(item)
+		if rowID == "" {
+			continue
+		}
+		returned, err := a.store.RetireDroppedUserRow(threadID, rowID, unconfirmedFlushSendIDs(item))
+		if err != nil {
+			failed = append(failed, fmt.Errorf("%s: %w", rowID, err))
+			continue
+		}
+		a.announceReturnedReviewComments(returned)
+		if item.QuietItem == nil && item.StaleUserItemID == "" {
+			// A deferred message never had a row to remove.
+			continue
+		}
+		if item.QueueItemID != "" {
+			queueItemIDs = append(queueItemIDs, item.QueueItemID)
+		}
+		userItemIDs = append(userItemIDs, rowID)
+	}
+	if len(failed) > 0 {
+		err := errors.Join(failed...)
+		log.Printf("flush queue: drop unconfirmed sends of %s: %v", threadID, err)
+		a.emitErrorToThread(threadID, "A message the stopped session never confirmed could not be removed from the timeline: "+err.Error())
+	}
+	if len(userItemIDs) == 0 {
+		return
+	}
+	a.emit(eventchan.ProviderQueueRestored, QueueRestoredEvent{
+		ThreadID:     threadID,
+		Reason:       queueRestoredReasonDropped,
+		QueueItemIDs: queueItemIDs,
+		UserItemIDs:  userItemIDs,
+	})
+}
+
 // restoreEagerPersistedFlushesToDraft returns eagerly-persisted
 // interrupt rows to the composer draft after a definite Codex resend
 // failure: the store rows are deleted and
@@ -263,6 +334,9 @@ const (
 	queueRestoredReasonResendFailed       = "resend_failed"
 	queueRestoredReasonNeverQueued        = "provider_queue_never_taken"
 	queueRestoredReasonPurgeAborted       = "provider_queue_purge_aborted"
+	// A Stop dropped the queue: the rows named left the timeline and their
+	// text went nowhere (dropUnconfirmedSends).
+	queueRestoredReasonDropped = "dropped"
 )
 
 // restoreEagerPersistedFlushesForReason is the body, parameterised by the
@@ -276,17 +350,22 @@ func (a *App) restoreEagerPersistedFlushesForReason(
 	queueItemIDs := make([]string, 0, len(persisted))
 	userItemIDs := make([]string, 0, len(persisted))
 	parts := make([]composerdraft.Part, 0, len(persisted))
+	var sendIDs []string
 	for _, p := range persisted {
 		if p.QueueItemID != "" {
 			queueItemIDs = append(queueItemIDs, p.QueueItemID)
 		}
 		userItemIDs = append(userItemIDs, p.UserItemID)
-		part := draftPartFromUserItem(store.Item{ThreadID: threadID, ID: p.UserItemID, Summary: p.Content, Meta: p.Meta})
+		row := store.Item{ThreadID: threadID, ID: p.UserItemID, Summary: p.Content, Meta: p.Meta}
+		part := draftPartFromUserItem(row)
 		if strings.TrimSpace(part.Content) != "" || len(part.AttachmentIDs) > 0 || part.SourceProposedPlan != nil {
 			parts = append(parts, part)
+			sendIDs = append(sendIDs, userRowSendIDs(row)...)
 		}
 	}
-	if err := a.restoreQueuedDraft(threadID, parts, queueItemIDs, userItemIDs); err != nil {
+	if err := a.restoreQueuedDraft(threadID, parts, store.QueueDraftRestore{
+		QueueItemIDs: queueItemIDs, RetireItemIDs: userItemIDs, SendIDs: sendIDs,
+	}); err != nil {
 		// Nothing was written: every row and its review comments are as
 		// they were, so the messages go back on the queue naming their rows.
 		log.Printf("flush queue: restore draft after failed resend for %s: %v — requeueing the messages", threadID, err)
@@ -661,8 +740,10 @@ func (a *App) restoredDraftPartFromQueuedPayload(threadID string, item triage.Un
 // same `draft:updated` event.
 //
 // Runs at boot, after the store is open and before any session can start, so
-// every remaining row is provably residue: nothing else could still be
-// holding one.
+// nothing else could still be holding a queue row. A marked user row is taken
+// back only while it is residue, in its thread's last turn
+// (store.ListUnconfirmedUserRows); one a later turn follows is history and
+// stays where it is, and the store refuses to retire it.
 func (a *App) restoreDurableFlushQueueAtBoot() {
 	threadIDs, err := a.store.ListThreadsWithFlushQueueItems()
 	if err != nil {
@@ -746,16 +827,39 @@ func (a *App) restoreThreadQueueAtBoot(threadID string, unconfirmedIDs []string)
 	if len(parts) == 0 && len(ids) == 0 && len(retire) == 0 {
 		return nil
 	}
-	if err := a.restoreQueuedDraft(threadID, parts, ids, retire); err != nil {
+	if err := a.restoreQueuedDraft(threadID, parts, store.QueueDraftRestore{
+		QueueItemIDs: ids, RetireItemIDs: retire, SendIDs: restoredSends,
+	}); err != nil {
 		// Nothing was written: the next boot tries again, which is the
 		// whole point of the message being durable.
 		return fmt.Errorf("restore into the draft: %w", err)
 	}
-	for _, sendID := range restoredSends {
-		noteThreadWakeRestoredToDraft(a, sendID)
-	}
 	a.emit(eventchan.ProviderAsyncQuestionsChanged, map[string]string{"threadId": threadID})
 	log.Printf("app: restored %d queued message(s) into the composer for thread %s", len(parts), threadID)
+	return nil
+}
+
+// unconfirmedFlushSendIDs is every send id a message drained from the queue
+// answers for, read from its row when it has one and from its queue payload
+// otherwise. A payload that no longer decodes names none; its text is still
+// restored.
+func unconfirmedFlushSendIDs(item triage.UnconfirmedFlushItem) []string {
+	switch {
+	case item.DeferredItem != nil:
+		return userRowSendIDs(*item.DeferredItem)
+	case item.QuietItem != nil:
+		return userRowSendIDs(*item.QuietItem)
+	}
+	var payload flushQueuePayload
+	if len(item.Payload) == 0 || json.Unmarshal(item.Payload, &payload) != nil {
+		return nil
+	}
+	if len(payload.JoinedSendIDs) > 0 {
+		return payload.JoinedSendIDs
+	}
+	if payload.SendID != "" {
+		return []string{payload.SendID}
+	}
 	return nil
 }
 
@@ -798,33 +902,4 @@ func draftPartFromQueueRow(row store.FlushQueueItem) composerdraft.Part {
 		AttachmentIDs:      payload.AttachmentIDs,
 		SourceProposedPlan: payload.SourceProposedPlan,
 	}
-}
-
-// noteThreadWakeRestoredToDraft corrects a thread request whose wake this
-// restore put in the composer instead of sending. The request was marked
-// delivered when the message was queued, which was true then and is still
-// true now: the answer reached the thread. Only the route changed, and a
-// reader that cannot tell a queued wake from one sitting in a draft would
-// report an answer as on its way when it is waiting on the person.
-func noteThreadWakeRestoredToDraft(a *App, sendID string) {
-	token, late, ok := threadWakeTokenFromSendID(sendID)
-	if !ok {
-		return
-	}
-	if _, err := a.store.MarkThreadRequestDeliveredAsDraft(token, late); err != nil {
-		log.Printf("thread tools: mark request %s restored to draft: %v", token, err)
-	}
-}
-
-// threadWakeTokenFromSendID recovers the request a queued wake belongs to.
-// The two prefixes are disjoint, so either order reads the same send id; what
-// the token check rejects is a bare prefix, which names no request.
-func threadWakeTokenFromSendID(sendID string) (token string, late bool, ok bool) {
-	if rest, found := strings.CutPrefix(sendID, threadWakeLateSendID("")); found {
-		return rest, true, rest != ""
-	}
-	if rest, found := strings.CutPrefix(sendID, threadWakeSendID("")); found {
-		return rest, false, rest != ""
-	}
-	return "", false, false
 }

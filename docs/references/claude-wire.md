@@ -952,7 +952,7 @@ months-old source mirror disagreed on the async case, the wire won):
   precedes the ack, so a Stop of 100 agents with 3 shells each acks
   after 1,200 frames; AO's control-request timeout therefore counts
   silence from the CLI, not time since the request
-  (`DefaultControlRequestTimeout`), under a one-minute ceiling on the
+  (`DefaultControlRequestTimeout`), under a 30 s ceiling on the
   whole wait (`DefaultControlRequestCeiling`). AO's Stop sends this
   interrupt (`interruptTurnAtIndex` in `internal/app/app_session.go`).
   While a running or parked agent is live, it refuses with

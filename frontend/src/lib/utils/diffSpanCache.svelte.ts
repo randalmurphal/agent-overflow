@@ -98,9 +98,9 @@ export const INCOMPLETE_RETRY_MS = 30_000;
 
 /** The backend's highlight input cap (`internal/highlight` MaxRequestBytes).
  * A longer patch comes back all plain whatever is sent, so it is never
- * sent: its lines render plain without a request. A patch's UTF-16
- * length and a body's `textSize` are lower bounds on the UTF-8 bytes the
- * backend counts. */
+ * sent: its lines render plain without a request. A body's `textSize` is
+ * the UTF-8 bytes the backend counts; a patch's UTF-16 length is a lower
+ * bound on them. */
 export const HIGHLIGHT_MAX_PATCH_CHARS = 4 * 1024 * 1024;
 
 /** Byte budget for cached span runs. Spans are compact (plain lines

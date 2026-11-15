@@ -46,11 +46,21 @@ func parseGitLabVersion(s string) (gitlabVersion, error) {
 // gitlabSupportedFloor is the oldest GitLab release the app supports.
 var gitlabSupportedFloor = gitlabVersion{18, 0}
 
+// gitlabReviewerStateSince is the first release whose draft notes API
+// documents bulk_publish's reviewer_state (docs.gitlab.com/19.3/api/draft_notes;
+// absent from the 19.2 page). It is the one capability past the floor.
+var gitlabReviewerStateSince = gitlabVersion{19, 3}
+
 // gitlabServer is what a Details read or a write knows of the host's
 // release: the version, or why it could not be read.
 type gitlabServer struct {
 	version gitlabVersion
 	err     error
+}
+
+// has reports whether the server is known to run since or later.
+func (s gitlabServer) has(since gitlabVersion) bool {
+	return s.err == nil && s.version.atLeast(since)
 }
 
 // supported is nil for a server at or past gitlabSupportedFloor; an

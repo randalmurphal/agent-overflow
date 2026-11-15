@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/logging"
+	"agent-overflow/internal/procutil"
 	"agent-overflow/internal/provider"
 )
 
@@ -739,6 +740,9 @@ type Config struct {
 	// to provider spawns through this instead of the process env.
 	Env         map[string]string
 	EventLogger *logging.Logger
+	// Reaper ends the session's process group if the backend dies first
+	// (provider.SpawnConfig.Reaper).
+	Reaper procutil.Reaper
 	// BeforeResume runs on a RESUME only, after the initialize handshake and
 	// BEFORE the `thread/resume` that loads the thread. Never on a fresh
 	// `thread/start` — there is nothing on the other side to reconcile with.

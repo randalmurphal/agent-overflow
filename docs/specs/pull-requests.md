@@ -188,6 +188,16 @@ base's rulesets (`allowedMergeMethods`).
   moved since (kind `stale_head`, the pane re-reads the PR so the banner
   and its Reload show), GitHub pins the review and its comments to it,
   and the drafts, summary and verdict stay for a refused review.
+- Request changes needs a summary on both forges; Send without one is
+  refused with "Request changes needs a summary saying what to change."
+  On GitLab the summary posts as a thread to resolve ("Changes
+  requested:" and the summary), and from GitLab 19.3 the review also
+  sets the viewer's reviewer state, which a tier without Request
+  changes records as reviewed. The pane re-reads the PR after a Send, so
+  Details shows the state the forge recorded, never the verdict asked
+  for; a thread that failed after the rest posted says so and keeps the
+  summary. Removing a change request (GitLab 17.8) has no documented API
+  and is done on GitLab; approving clears it.
 - Merging from a thread's companion pane is the merge the worktree cleanup
   ruling (2026-10-13) reacts to: the thread moves to Base and the pane
   stays on the merged PR's snapshot until closed.

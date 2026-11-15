@@ -4,7 +4,7 @@ import CommitDialog from './CommitDialog.svelte';
 import { resetPanesForTest } from '../../stores/panes.svelte';
 import { resetBindingMocks, setBindingMock, setReviewDiffMock } from '../../../test/mocks/bindings-app';
 import { __seedGitStatusForTest } from '../../stores/gitStatusStore.svelte';
-import type { CommitFile, CommitFiles, CommitOutcome, GitActionResult, GitStatus } from '../../types/git';
+import type { CommitFile, CommitFiles, GitActionOutcome, GitActionResult, GitStatus } from '../../types/git';
 import { DisconnectedError, TransportError } from '../../transport/wsClient';
 import { COMMIT_ANSWER_LOST, COMMIT_OUTCOME_UNKNOWN } from './commitDialogState.svelte';
 import { buildPane, makeThread } from '../../../test/helpers/chat';
@@ -450,10 +450,10 @@ describe('<CommitDialog> — pending operation notice', () => {
       files = [THREE[1], THREE[2]];
       throw new TransportError('timeout', 'RPC 7 timed out after 735000ms');
     });
-    const outcome = setBindingMock('GetCommitOutcome', async () => ({
-      state: 'committed',
+    const outcome = setBindingMock('GetGitActionOutcome', async () => ({
+      state: 'succeeded',
       result: { action: 'commit', commitSha: 'abcdef0123456789' },
-    } as CommitOutcome));
+    } as GitActionOutcome));
     const m = await mount(() => listing(files));
     await waitFor(() => expect(m.rows()).toHaveLength(3));
     await fireEvent.click(m.check('src/a.ts'));
@@ -463,7 +463,7 @@ describe('<CommitDialog> — pending operation notice', () => {
     await waitFor(() => expect(m.rows()).toHaveLength(2));
     const attemptId = commit.mock.calls[0]![4];
     expect(attemptId).toEqual(expect.any(String));
-    expect(outcome).toHaveBeenCalledWith(m.pane.workspace, attemptId);
+    expect(outcome).toHaveBeenCalledWith(m.pane.workspace, 'commit', attemptId);
     expect(m.queryByRole('alert')).toBeNull();
     expect((document.getElementById('commit-subject') as HTMLInputElement).value).toBe('');
   });
@@ -473,10 +473,10 @@ describe('<CommitDialog> — pending operation notice', () => {
       throw new DisconnectedError('socket closed');
     });
     let asks = 0;
-    const outcome = setBindingMock('GetCommitOutcome', async () => {
+    const outcome = setBindingMock('GetGitActionOutcome', async () => {
       asks += 1;
       if (asks === 1) throw new DisconnectedError('socket closed');
-      return { state: 'failed', message: 'git commit: the pre-commit hook refused it' } as CommitOutcome;
+      return { state: 'failed', message: 'git commit: the pre-commit hook refused it' } as GitActionOutcome;
     });
     const m = await mount();
     await waitFor(() => expect(m.rows()).toHaveLength(3));
@@ -490,14 +490,14 @@ describe('<CommitDialog> — pending operation notice', () => {
     await waitFor(() => expect(m.getByRole('alert').textContent).toContain('pre-commit hook refused it'));
     expect(commit).toHaveBeenCalledTimes(1);
     expect(outcome).toHaveBeenCalledTimes(2);
-    expect(outcome.mock.calls[1]![1]).toBe(commit.mock.calls[0]![4]);
+    expect(outcome.mock.calls[1]![2]).toBe(commit.mock.calls[0]![4]);
   });
 
   it('says so when the computer has no record of a lost commit', async () => {
     setBindingMock('GitCommit', async () => {
       throw new DisconnectedError('socket closed');
     });
-    setBindingMock('GetCommitOutcome', async () => ({ state: 'unknown' } as CommitOutcome));
+    setBindingMock('GetGitActionOutcome', async () => ({ state: 'unknown' } as GitActionOutcome));
     const m = await mount();
     await waitFor(() => expect(m.rows()).toHaveLength(3));
     await fireEvent.click(m.check('src/a.ts'));

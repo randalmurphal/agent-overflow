@@ -41,8 +41,9 @@ const (
 	ThreadAnswerNote  = "note"
 )
 
-// Delivery routes for a wake. `draft` is a queued wake that boot recovery
-// restored into the composer instead of dispatching.
+// Delivery routes for a wake. `draft` is a queued wake that a restore put
+// in the composer instead of the agent reading it
+// (markThreadWakesRestoredToDraftTx).
 const (
 	ThreadWakeInline = "inline"
 	ThreadWakeQueued = "queued"
@@ -1178,6 +1179,52 @@ const (
 	threadWakeLateSendIDPrefix = "thread-wake-late:"
 )
 
+// parseThreadWakeSendID recovers the request a wake's send id belongs to.
+// The two prefixes are disjoint, so either order reads the same send id; a
+// bare prefix names no request.
+func parseThreadWakeSendID(sendID string) (token string, late bool, ok bool) {
+	if rest, found := strings.CutPrefix(sendID, threadWakeLateSendIDPrefix); found {
+		return rest, true, rest != ""
+	}
+	if rest, found := strings.CutPrefix(sendID, threadWakeSendIDPrefix); found {
+		return rest, false, rest != ""
+	}
+	return "", false, false
+}
+
+// markThreadWakesRestoredToDraftTx corrects the requests whose wake a restore
+// put in the composer instead of sending, in the transaction that writes the
+// draft. A request was marked delivered when its message was queued, which is
+// still true: the answer reached the thread. Only the route changed, and a
+// reader that cannot tell a queued wake from one in a draft would report an
+// answer as on its way when it is waiting on the person. The requests that
+// rode with a first wake (`delivered_with`) are in the same message and are
+// corrected with it. A send id that names no wake is ignored.
+func markThreadWakesRestoredToDraftTx(tx *sql.Tx, sendIDs []string) error {
+	for _, sendID := range sendIDs {
+		token, late, ok := parseThreadWakeSendID(sendID)
+		if !ok {
+			continue
+		}
+		action := fmt.Sprintf("store: mark thread request %s restored to draft", token)
+		query := `UPDATE thread_requests SET delivered_how = ?, updated_at = ?
+		           WHERE token = ? AND delivered_at IS NOT NULL AND delivered_how = ?`
+		if late {
+			query = `UPDATE thread_requests SET delivered_how = ?, updated_at = ?
+			          WHERE token = ? AND late_delivered_at IS NOT NULL AND delivered_how = ?`
+		}
+		if _, err := tx.Exec(query, ThreadWakeDraft, nowMillis(), token, ThreadWakeQueued); err != nil {
+			return fmt.Errorf("%s: %w", action, err)
+		}
+		if !late {
+			if _, err := tx.Exec(threadWakeRidersToDraftSQL, ThreadWakeDraft, nowMillis(), token, ThreadWakeQueued); err != nil {
+				return fmt.Errorf("%s: riders: %w", action, err)
+			}
+		}
+	}
+	return nil
+}
+
 // threadWakeDroppedIssue is what a request records when the queue holding its
 // wake is thrown away.
 const threadWakeDroppedIssue = "The message carrying this answer was removed with the thread's queue before the agent read it."
@@ -1191,31 +1238,83 @@ const threadWakeDroppedIssue = "The message carrying this answer was removed wit
 // The requests that rode with a first wake (`delivered_with`) were in the
 // same message and are corrected with it.
 func retractDroppedThreadWakesTx(tx *sql.Tx, threadID string) error {
-	action := fmt.Sprintf("store: retract dropped thread wakes for %s", threadID)
-	queued := `(SELECT send_id FROM flush_queue_items WHERE thread_id = ? AND send_id <> '')`
-	if _, err := tx.Exec(
-		`UPDATE thread_requests
-		    SET delivered_at = NULL, delivered_how = '', delivered_with = '',
-		        notify = 0, wake_issue = ?, updated_at = ?
-		  WHERE caller_thread_id = ? AND delivered_at IS NOT NULL AND delivered_how = ?
-		    AND late_delivered_at IS NULL
-		    AND ((? || token) IN `+queued+`
-		      OR (delivered_with <> '' AND (? || delivered_with) IN `+queued+`))`,
-		threadWakeDroppedIssue, nowMillis(), threadID, ThreadWakeQueued,
-		threadWakeSendIDPrefix, threadID, threadWakeSendIDPrefix, threadID,
-	); err != nil {
-		return fmt.Errorf("%s: first answers: %w", action, err)
+	rows, err := tx.Query(`SELECT send_id FROM flush_queue_items WHERE thread_id = ? AND send_id <> ''`, threadID)
+	if err != nil {
+		return fmt.Errorf("store: retract dropped thread wakes for %s: read the queue: %w", threadID, err)
 	}
-	if _, err := tx.Exec(
-		`UPDATE thread_requests
-		    SET late_delivered_at = NULL, delivered_how = '',
-		        notify = 0, wake_issue = ?, updated_at = ?
-		  WHERE caller_thread_id = ? AND late_delivered_at IS NOT NULL AND delivered_how = ?
-		    AND (? || token) IN `+queued,
-		threadWakeDroppedIssue, nowMillis(), threadID, ThreadWakeQueued,
-		threadWakeLateSendIDPrefix, threadID,
-	); err != nil {
-		return fmt.Errorf("%s: late replies: %w", action, err)
+	var sendIDs []string
+	for rows.Next() {
+		var sendID string
+		if err := rows.Scan(&sendID); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("store: retract dropped thread wakes for %s: read the queue: %w", threadID, err)
+		}
+		sendIDs = append(sendIDs, sendID)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("store: retract dropped thread wakes for %s: read the queue: %w", threadID, err)
+	}
+	return retractThreadWakeSendsTx(tx, threadID, sendIDs)
+}
+
+// RetireDroppedUserRow is RetireUndeliveredUserRow for a message thrown away
+// with its session rather than restored (a Stop before the session confirmed
+// it): in the same transaction the requests whose wake the message carried,
+// named by sendIDs, are retracted as a dropped queue's are
+// (retractDroppedThreadWakesTx).
+func (s *Store) RetireDroppedUserRow(threadID, itemID string, sendIDs []string) ([]DiffReviewReturnedComments, error) {
+	if strings.TrimSpace(threadID) == "" || strings.TrimSpace(itemID) == "" {
+		return nil, fmt.Errorf("store: retire dropped user row: the thread and the row are required")
+	}
+	var sources []DiffReviewReturnedComments
+	err := s.writeItems(threadID, nil, "retire dropped user row "+threadID+"/"+itemID, func(tx *sql.Tx, w *cardWrite) error {
+		var err error
+		if sources, err = retireUndeliveredUserRowTx(tx, w, threadID, itemID); err != nil {
+			return err
+		}
+		return retractThreadWakeSendsTx(tx, threadID, sendIDs)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return sources, nil
+}
+
+// retractThreadWakeSendsTx retracts the requests of callerThreadID whose
+// wake is one of sendIDs and still reads as queued: undelivered, disarmed and
+// explained. A first wake takes the requests that rode with it
+// (`delivered_with`). A send id that names no wake is ignored.
+func retractThreadWakeSendsTx(tx *sql.Tx, callerThreadID string, sendIDs []string) error {
+	for _, sendID := range sendIDs {
+		token, late, ok := parseThreadWakeSendID(sendID)
+		if !ok {
+			continue
+		}
+		action := fmt.Sprintf("store: retract dropped thread wake %s for %s", sendID, callerThreadID)
+		if late {
+			if _, err := tx.Exec(
+				`UPDATE thread_requests
+				    SET late_delivered_at = NULL, delivered_how = '',
+				        notify = 0, wake_issue = ?, updated_at = ?
+				  WHERE caller_thread_id = ? AND token = ?
+				    AND late_delivered_at IS NOT NULL AND delivered_how = ?`,
+				threadWakeDroppedIssue, nowMillis(), callerThreadID, token, ThreadWakeQueued,
+			); err != nil {
+				return fmt.Errorf("%s: %w", action, err)
+			}
+			continue
+		}
+		if _, err := tx.Exec(
+			`UPDATE thread_requests
+			    SET delivered_at = NULL, delivered_how = '', delivered_with = '',
+			        notify = 0, wake_issue = ?, updated_at = ?
+			  WHERE caller_thread_id = ? AND delivered_at IS NOT NULL AND delivered_how = ?
+			    AND late_delivered_at IS NULL
+			    AND (token = ? OR (delivered_with <> '' AND delivered_with = ?))`,
+			threadWakeDroppedIssue, nowMillis(), callerThreadID, ThreadWakeQueued, token, token,
+		); err != nil {
+			return fmt.Errorf("%s: %w", action, err)
+		}
 	}
 	return nil
 }
@@ -1225,40 +1324,3 @@ func retractDroppedThreadWakesTx(tx *sql.Tx, threadID string) error {
 const threadWakeRidersToDraftSQL = `UPDATE thread_requests SET delivered_how = ?, updated_at = ?
 			  WHERE delivered_with = ? AND delivered_with <> ''
 			    AND delivered_at IS NOT NULL AND delivered_how = ?`
-
-// MarkThreadRequestDeliveredAsDraft records that boot recovery restored a
-// queued wake into the composer instead of dispatching it. The row is
-// already `queued`; this is the correction, so it applies to a delivered
-// row rather than an undelivered one. The requests that rode with a first
-// wake (`delivered_with`) are in the same message and are corrected with it.
-func (s *Store) MarkThreadRequestDeliveredAsDraft(token string, late bool) (_ bool, err error) {
-	action := fmt.Sprintf("store: mark thread request %s restored to draft", token)
-	tx, err := s.db.Begin()
-	if err != nil {
-		return false, fmt.Errorf("%s: begin: %w", action, err)
-	}
-	defer rollbackTx(tx, action, &err)
-	query := `UPDATE thread_requests SET delivered_how = ?, updated_at = ?
-	           WHERE token = ? AND delivered_at IS NOT NULL AND delivered_how = ?`
-	if late {
-		query = `UPDATE thread_requests SET delivered_how = ?, updated_at = ?
-		          WHERE token = ? AND late_delivered_at IS NOT NULL AND delivered_how = ?`
-	}
-	result, err := tx.Exec(query, ThreadWakeDraft, nowMillis(), token, ThreadWakeQueued)
-	if err != nil {
-		return false, fmt.Errorf("%s: %w", action, err)
-	}
-	changed, err := rowsChanged(result, action)
-	if err != nil {
-		return false, err
-	}
-	if !late {
-		if _, err := tx.Exec(threadWakeRidersToDraftSQL, ThreadWakeDraft, nowMillis(), token, ThreadWakeQueued); err != nil {
-			return false, fmt.Errorf("%s: riders: %w", action, err)
-		}
-	}
-	if err := tx.Commit(); err != nil {
-		return false, fmt.Errorf("%s: commit: %w", action, err)
-	}
-	return changed, nil
-}

@@ -88,6 +88,7 @@ type WorktreeListItem struct {
 // Preserves legacy semantics — no carry-over of local changes.
 //
 //ao:scope git:operate
+//ao:budget 12m
 func (a *App) GitCreateWorktree(threadID, branch string) (string, error) {
 	updated, err := a.PrepareThreadWorktree(threadID, "", branch, false)
 	if err != nil {
@@ -116,7 +117,11 @@ func (a *App) GitCreateWorktree(threadID, branch string) (string, error) {
 // On stash-apply failure the worktree is removed and the stash entry is
 // kept so the user can recover via `git stash list`.
 //
+// The budget covers the worktree's add, whose post-checkout hook runs
+// inside it (gitops.HookTimeout).
+//
 //ao:scope git:operate
+//ao:budget 12m
 func (a *App) PrepareThreadWorktree(threadID, baseBranch, requestedBranch string, carryLocalChanges bool) (store.Thread, error) {
 	endWork, admitErr := a.workAdmission.begin(a.lifeCtx())
 	if admitErr != nil {
@@ -240,7 +245,11 @@ func (a *App) PrepareThreadWorktree(threadID, baseBranch, requestedBranch string
 // flipping to the existing worktree before calling here. Any number of
 // worktrees may sit on one tag; each gets its own directory named after it.
 //
+// The budget covers the worktree's add, whose post-checkout hook runs
+// inside it (gitops.HookTimeout).
+//
 //ao:scope git:operate
+//ao:budget 12m
 func (a *App) AttachThreadWorktree(threadID, branch string) (store.Thread, error) {
 	endWork, admitErr := a.workAdmission.begin(a.lifeCtx())
 	if admitErr != nil {

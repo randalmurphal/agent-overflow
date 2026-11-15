@@ -252,6 +252,13 @@ func (a *codexAdapter) handleRequest(id json.RawMessage, method string, params j
 		// starts no scenario turn of its own. The response template stays the
 		// generic empty result the default branch would have produced.
 		turn, vars := a.e.currentTurn(), a.e.currentVars()
+		if a.refuses(method) {
+			// A scenario whose template answers the steer with an error (a
+			// review or a compaction turn: activeTurnNotSteerable) refuses
+			// it: the input reaches no turn, so nothing reports or echoes it.
+			a.respond(id, method, vars)
+			return
+		}
 		a.e.rep.report(control.Report{
 			Kind: control.ReportUserInput, Turn: turn,
 			Input: codexInputText(params), SessionRef: vars["THREAD_ID"],
@@ -524,6 +531,20 @@ func (a *codexAdapter) respond(id json.RawMessage, method string, vars scenario.
 	sub["REQUEST_ID"] = string(id)
 	sub["HISTORY_MODE"] = a.currentHistoryMode()
 	a.w.writeLine(sub.Substitute(tmpl), 0, 0)
+}
+
+// refuses reports whether the scenario's response template for method is a
+// JSON-RPC error.
+func (a *codexAdapter) refuses(method string) bool {
+	tmpl, ok := a.responses[method]
+	if !ok {
+		return false
+	}
+	var reply struct {
+		Error json.RawMessage `json:"error"`
+	}
+	line := scenario.Vars{"REQUEST_ID": "0"}.Substitute(tmpl)
+	return json.Unmarshal([]byte(line), &reply) == nil && len(reply.Error) > 0
 }
 
 // handleResponse routes an app response (to one of OUR approval

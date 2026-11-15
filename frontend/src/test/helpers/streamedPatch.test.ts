@@ -21,7 +21,7 @@ describe('the fake review diff backend', () => {
   it('reads with the backend\'s cut once the window holds the character at the offset', () => {
     for (const vector of cutVectors) {
       const bytes = rawBytes(vector.rawHex);
-      const read = fakeDiff(bytes).read(vector.offset, vector.window, false);
+      const read = fakeDiff(bytes).read(vector.offset, vector.window);
       // The backend's window is never shorter than the character at its
       // offset (MinChunkBytes).
       if ('shorterThanItsCharacter' in vector) expect(read.nextOffset, vector.name).toBeGreaterThan(vector.cut);
@@ -32,8 +32,8 @@ describe('the fake review diff backend', () => {
   it('widens a window shorter than its character to the character', () => {
     const euro = new TextEncoder().encode('€ab');
     const astral = new TextEncoder().encode('a\u{1F600}b');
-    expect([1, 2, 3].map((window) => fakeDiff(euro).read(0, window, false).nextOffset)).toEqual([3, 3, 3]);
-    expect([1, 2, 3, 4].map((window) => fakeDiff(astral).read(1, window, false).nextOffset)).toEqual([5, 5, 5, 5]);
-    expect(fakeDiff(euro).read(0, 1, false).data).toBe('€');
+    expect([1, 2, 3].map((window) => fakeDiff(euro).read(0, window).nextOffset)).toEqual([3, 3, 3]);
+    expect([1, 2, 3, 4].map((window) => fakeDiff(astral).read(1, window).nextOffset)).toEqual([5, 5, 5, 5]);
+    expect(fakeDiff(euro).read(0, 1).data).toBe('€');
   });
 });

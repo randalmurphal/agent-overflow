@@ -16,8 +16,9 @@ import (
 const controlFD = 3
 
 // killGracePeriod is the SIGTERM→SIGKILL window when tearing down watched
-// groups. SIGTERM first lets a provider try to drop its own subtree
-// cleanly; SIGKILL guarantees it's gone.
+// groups. SIGTERM first lets a provider finish its session file write and
+// drop its own subtree; SIGKILL guarantees it's gone. It matches the grace
+// provider.Process.Close gives a provider after its own SIGTERM.
 const killGracePeriod = 2 * time.Second
 
 // RunChild is the entry point for the `__reap` subcommand. It reads

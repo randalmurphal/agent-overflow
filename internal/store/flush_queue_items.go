@@ -96,41 +96,72 @@ func (s *Store) DeleteDispatchedFlushQueueItem(id string) error {
 	return err
 }
 
+// QueueDraftRestore is one return of undelivered messages to a thread's
+// composer.
+type QueueDraftRestore struct {
+	// Expected is the composer the restore read; Merged is what it writes
+	// over it. Both name the thread.
+	Expected, Merged ThreadDraft
+	// QueueItemIDs are the durable queue rows the draft takes.
+	QueueItemIDs []string
+	// RetireItemIDs are unconfirmed user rows the draft takes, taken back as
+	// RetireUndeliveredUserRow does.
+	RetireItemIDs []string
+	// SendIDs are the send ids of every message the draft takes. A thread
+	// request whose wake is among them is marked delivered as a draft
+	// (markThreadWakesRestoredToDraftTx).
+	SendIDs []string
+}
+
+// QueueDraftRestored is what a restore wrote.
+type QueueDraftRestored struct {
+	// Draft is the composer write: whether it changed the row and whether
+	// it listed the thread. The rows the restore retires cannot unlist a
+	// thread the draft's content lists, so the listing holds for the whole
+	// transaction.
+	Draft DraftWrite
+	// Returned are the review comments the retired rows claimed, now drafts
+	// again.
+	Returned []DiffReviewReturnedComments
+}
+
 // RestoreFlushQueueToDraft puts undelivered messages back in the composer.
-// In one transaction it writes merged over expected (when they differ),
-// deletes the queue rows ids, and takes back each unconfirmed user row in
-// retire as RetireUndeliveredUserRow does, returning the review comments
-// those rows claimed to drafts. Everything is written or nothing is, so no
-// failure or crash leaves a message both in the composer and in a row a
-// later restore takes back again, or in neither. It reports whether the
-// draft changed and the comments it returned.
-func (s *Store) RestoreFlushQueueToDraft(expected, merged ThreadDraft, ids, retire []string) (bool, []DiffReviewReturnedComments, error) {
-	threadID := merged.ThreadID
-	if threadID == "" || expected.ThreadID != threadID {
-		return false, nil, fmt.Errorf("queue restoration requires matching draft threads")
+// In one transaction it writes Merged over Expected (when they differ),
+// deletes the queue rows, takes back the unconfirmed user rows and marks the
+// wakes among the messages delivered as a draft. Everything is written or
+// nothing is, so no failure or crash leaves a message both in the composer
+// and in a row a later restore takes back again, or in neither, and no
+// request reads as queued for a message that is in the composer. A retired
+// row still marked pendingFlush that the residue rule calls history
+// (unconfirmedUserRowResidueSQL) refuses the whole restore: its message was
+// shown as sent and a later session ran, so neither the row nor its text may
+// move.
+func (s *Store) RestoreFlushQueueToDraft(r QueueDraftRestore) (QueueDraftRestored, error) {
+	threadID := r.Merged.ThreadID
+	if threadID == "" || r.Expected.ThreadID != threadID {
+		return QueueDraftRestored{}, fmt.Errorf("queue restoration requires matching draft threads")
 	}
-	for _, itemID := range retire {
+	for _, itemID := range r.RetireItemIDs {
 		if strings.TrimSpace(itemID) == "" {
-			return false, nil, fmt.Errorf("store: queue restoration: an unconfirmed row id is empty")
+			return QueueDraftRestored{}, fmt.Errorf("store: queue restoration: an unconfirmed row id is empty")
 		}
 	}
-	var changed bool
-	var returned []DiffReviewReturnedComments
+	var out QueueDraftRestored
 	err := s.writeItems(threadID, nil, "restore queued messages to the draft of "+threadID, func(tx *sql.Tx, w *cardWrite) error {
-		changed, returned = false, nil
+		out = QueueDraftRestored{}
 		current, _, err := getThreadDraft(tx, threadID)
 		if err != nil {
 			return err
 		}
-		if current != expected {
+		if current != r.Expected {
 			return fmt.Errorf("composer changed during queue restoration; queue retained")
 		}
-		if merged != expected {
-			if changed, err = upsertThreadDraft(tx, merged); err != nil {
+		if r.Merged != r.Expected {
+			if out.Draft, err = upsertThreadDraft(tx, r.Merged); err != nil {
 				return err
 			}
 		}
-		for _, id := range ids {
+		for _, id := range r.QueueItemIDs {
 			var owner string
 			err := tx.QueryRow(`SELECT thread_id FROM flush_queue_items WHERE id=?`, id).Scan(&owner)
 			if err != nil && !errors.Is(err, sql.ErrNoRows) {
@@ -148,19 +179,19 @@ func (s *Store) RestoreFlushQueueToDraft(expected, merged ThreadDraft, ids, reti
 				return err
 			}
 		}
-		for _, itemID := range retire {
+		for _, itemID := range r.RetireItemIDs {
 			comments, err := retireUndeliveredUserRowTx(tx, w, threadID, itemID)
 			if err != nil {
 				return err
 			}
-			returned = append(returned, comments...)
+			out.Returned = append(out.Returned, comments...)
 		}
-		return nil
+		return markThreadWakesRestoredToDraftTx(tx, r.SendIDs)
 	})
 	if err != nil {
-		return false, nil, err
+		return QueueDraftRestored{}, err
 	}
-	return changed, returned, nil
+	return out, nil
 }
 
 // DeleteFlushQueueItemsForThread drops every queued message of one thread.
@@ -274,11 +305,35 @@ func (s *Store) ListThreadsWithFlushQueueItems() ([]string, error) {
 	return threadIDs, nil
 }
 
-const listUnconfirmedUserRowsSQL = `SELECT thread_id, id FROM items
-  WHERE kind = 'user_text' AND parent_id = ''
-    AND instr(meta, '"pendingFlush"') > 0 AND json_valid(meta)
-    AND json_extract(meta, '$.pendingFlush') = 1
-  ORDER BY thread_id, turn_index, item_index`
+// unconfirmedUserRowResidueSQL is true when the marked user row u is residue
+// of the process that wrote it, not history: the thread wrote it itself and
+// nothing of a later turn exists. A quiet row is written in the running turn
+// and keeps its mark only while its send is pending, so a process that died
+// with the message unconfirmed left the row in the thread's last turn. A later
+// turn means a later session ran with the row in its timeline, and a row older
+// than its thread was copied in by a fork, a holder or a transfer; both are
+// history.
+const unconfirmedUserRowResidueSQL = `u.created_at >= (SELECT t.created_at FROM threads t WHERE t.id = u.thread_id)
+    AND NOT EXISTS (SELECT 1 FROM turns later WHERE later.thread_id = u.thread_id AND later.turn_index > u.turn_index)
+    AND NOT EXISTS (SELECT 1 FROM items later
+                     WHERE later.thread_id = u.thread_id AND later.turn_index > u.turn_index AND later.parent_id = '')`
+
+// markedUserRowSQL is true when u is a main-timeline user row still marked
+// pendingFlush. It starts with idx_items_user_text's predicate.
+const markedUserRowSQL = `u.kind = 'user_text' AND u.parent_id = ''
+    AND instr(u.meta, '"pendingFlush"') > 0 AND json_valid(u.meta)
+    AND json_extract(u.meta, '$.pendingFlush') = 1`
+
+const listUnconfirmedUserRowsSQL = `SELECT u.thread_id, u.id FROM items u
+  WHERE ` + markedUserRowSQL + `
+    AND ` + unconfirmedUserRowResidueSQL + `
+  ORDER BY u.thread_id, u.turn_index, u.item_index`
+
+// markedHistoryRowSQL finds the row (thread, id) when it is marked
+// pendingFlush and the residue rule calls it history.
+const markedHistoryRowSQL = `SELECT EXISTS (SELECT 1 FROM items u
+  WHERE u.thread_id = ? AND u.id = ? AND ` + markedUserRowSQL + `
+    AND NOT (` + unconfirmedUserRowResidueSQL + `))`
 
 // UnconfirmedUserRow names a user row the app reserved for a queued message
 // and never saw confirmed: its meta still carries `pendingFlush`
@@ -288,11 +343,12 @@ type UnconfirmedUserRow struct {
 	ItemID   string
 }
 
-// ListUnconfirmedUserRows returns every main-timeline user row still marked
-// pendingFlush, by thread in timeline order. Confirmation and interrupt
-// promotion clear the mark in the write that places the row, so at boot each
-// one is residue of a process that died with the message unconfirmed. The
-// predicate starts with idx_items_user_text's, so the scan is of user rows.
+// ListUnconfirmedUserRows returns the main-timeline user rows still marked
+// pendingFlush that are residue of a process that died with the message
+// unconfirmed (unconfirmedUserRowResidueSQL), by thread in timeline order.
+// The boot restore deletes what this returns, so a marked row the rule calls
+// history is never listed. The predicate starts with idx_items_user_text's,
+// so the scan is of user rows.
 func (s *Store) ListUnconfirmedUserRows() ([]UnconfirmedUserRow, error) {
 	rows, err := s.reader().Query(listUnconfirmedUserRowsSQL)
 	if err != nil {

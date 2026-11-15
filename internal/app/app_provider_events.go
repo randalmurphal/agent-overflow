@@ -436,15 +436,6 @@ func (a *App) unregisterSession(threadID, sessionToken string) {
 	a.reportClaudeLostWrites(threadID, removed)
 	a.emitProviderSessionDisconnected(threadID, removed.Provider)
 
-	// Self-exit teardown bypasses closeProviderSession (the subprocess is
-	// already dead — see attemptAutoReconnect), so release its group from
-	// the orphan reaper here. Without this, a crashed provider's pgid would
-	// linger in the sidecar's watched set with no start-time guard, risking
-	// a wrong-group kill if the OS later recycles that PID and the app then
-	// dies. Release is idempotent and pgid<=1 is guarded inside.
-	if ps := removed.ProviderSession(); ps != nil {
-		a.releaseProviderGroup(ps.PID())
-	}
 	if removed.Provider == string(provider.Codex) {
 		if err := a.retireCodexBackgroundRuntime(threadID); err != nil {
 			log.Printf("app: retire Codex runtime after provider exit on %s: %v", threadID, err)

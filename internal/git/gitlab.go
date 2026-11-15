@@ -11,7 +11,6 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
-	"time"
 
 	"agent-overflow/internal/forgeapi"
 )
@@ -840,15 +839,22 @@ func gitlabPointLine(point gitlabLineRangePoint, prefer string) (string, *int) {
 	return "right", point.NewLine
 }
 
+// SubmitReview creates the review's draft notes, publishes them, and
+// writes the verdict last. Past the caller's deadline it starts no request
+// (writeSteps): before the publish it removes the drafts it created and
+// posts nothing; after it, the verdict it did not start is reported as not
+// posted.
 func (f *gitlabForge) SubmitReview(ctx context.Context, ref PRReference, review SubmitReviewRequest) (SubmitReviewResult, error) {
-	client, err := f.writeClient(ctx, ref)
+	steps, done := writeSteps(ctx)
+	defer done()
+	client, err := f.writeClient(steps, ref)
 	if err != nil {
 		return SubmitReviewResult{}, err
 	}
 	// The draft notes are positioned on the diff the reviewer loaded, which
 	// is the MR's only while its head is the one they loaded; the approval
 	// names that head too, so a push after this read is refused by GitLab.
-	mr, err := readGitLabMR(ctx, client, ref)
+	mr, err := readGitLabMR(steps, client, ref)
 	if err != nil {
 		return SubmitReviewResult{}, err
 	}
@@ -858,11 +864,18 @@ func (f *gitlabForge) SubmitReview(ctx context.Context, ref PRReference, review 
 	diffRefs := mr.diffRefs()
 	notes := gitlabDraftNotes(review)
 	mrPath := gitlabMRPath(ref)
+	// Request changes sets the viewer's reviewer state where the publish
+	// takes it, and always posts its summary as a thread to resolve.
+	requestChanges := strings.EqualFold(review.Verdict, ReviewVerdictRequestChanges)
+	var publish any
+	if requestChanges && f.server(steps, client, ref.Host).has(gitlabReviewerStateSince) {
+		publish = map[string]string{"reviewer_state": "requested_changes"}
+	}
 	// The publish takes every pending draft note of the viewer's, so one
 	// this submit did not create (a review started on GitLab, or one an
 	// earlier submit could not remove) refuses it before any write.
 	if len(notes) > 0 {
-		pending, err := gitlabPendingDraftIDs(ctx, client, mrPath)
+		pending, err := gitlabPendingDraftIDs(steps, client, mrPath)
 		if err != nil {
 			return SubmitReviewResult{}, err
 		}
@@ -880,7 +893,7 @@ func (f *gitlabForge) SubmitReview(ctx context.Context, ref PRReference, review 
 	// draft keeps its discussion resolved or open (gitlab_replies.go).
 	var before gitlabReplyThreads
 	if len(replies) > 0 {
-		if before, err = readGitLabReplyThreads(ctx, client, ref, mr); err != nil {
+		if before, err = readGitLabReplyThreads(steps, client, ref, mr); err != nil {
 			return SubmitReviewResult{}, err
 		}
 		for _, reply := range replies {
@@ -891,7 +904,7 @@ func (f *gitlabForge) SubmitReview(ctx context.Context, ref PRReference, review 
 	}
 	var files map[string]gitlabDiffFile
 	if paths := gitlabPositionedPaths(notes); len(paths) > 0 {
-		if files, err = readGitLabDiffFiles(ctx, client, ref, paths); err != nil {
+		if files, err = readGitLabDiffFiles(steps, client, ref, paths); err != nil {
 			return SubmitReviewResult{}, err
 		}
 	}
@@ -915,8 +928,11 @@ func (f *gitlabForge) SubmitReview(ctx context.Context, ref PRReference, review 
 		var draft struct {
 			ID int64 `json:"id"`
 		}
+		if err := stopped(steps); err != nil {
+			return SubmitReviewResult{}, removeGitLabDrafts(ctx, client, mrPath, created, 0, err)
+		}
 		if _, err := client.JSON(ctx, forgeapi.Request{Method: http.MethodPost, Path: mrPath + "/draft_notes", Body: body}, &draft); err != nil {
-			if body.InReplyToDiscussionID != "" && gitlabReplyRefused(ctx, client, ref, body.InReplyToDiscussionID, err) {
+			if body.InReplyToDiscussionID != "" && gitlabReplyRefused(steps, client, ref, body.InReplyToDiscussionID, err) {
 				err = &ReplyThreadGoneError{ThreadID: body.InReplyToDiscussionID, Err: err}
 			}
 			unknown := 1
@@ -932,8 +948,11 @@ func (f *gitlabForge) SubmitReview(ctx context.Context, ref PRReference, review 
 		created = append(created, draft.ID)
 	}
 	out := SubmitReviewResult{}
-	if len(notes) > 0 {
-		if _, err := client.JSON(ctx, forgeapi.Request{Method: http.MethodPost, Path: mrPath + "/draft_notes/bulk_publish"}, nil); err != nil {
+	if len(notes) > 0 || publish != nil {
+		if err := stopped(steps); err != nil {
+			return SubmitReviewResult{}, removeGitLabDrafts(ctx, client, mrPath, created, 0, err)
+		}
+		if _, err := client.JSON(ctx, forgeapi.Request{Method: http.MethodPost, Path: mrPath + "/draft_notes/bulk_publish", Body: publish}, nil); err != nil {
 			if forgeapi.WriteNotApplied(err) {
 				return SubmitReviewResult{}, removeGitLabDrafts(ctx, client, mrPath, created, 0, err)
 			}
@@ -945,23 +964,36 @@ func (f *gitlabForge) SubmitReview(ctx context.Context, ref PRReference, review 
 		}
 		out.PostedReview = true
 		// The publish published every draft: each file comment is up,
-		// whatever becomes of the replies and the approval.
+		// whatever becomes of the replies and the verdict.
 		out.PostedFileComments = gitlabFileComments(review.Comments)
 	}
 	// A published reply whose discussion went meanwhile was dropped:
 	// GitLab says nothing, so the discussions say.
 	var replyFailure *PartialSubmitError
 	if len(replies) > 0 {
-		replyFailure = f.confirmGitLabReplies(ctx, client, ref, mr, before, replies, &out)
+		replyFailure = f.confirmGitLabReplies(steps, client, ref, mr, before, replies, &out)
 	}
-	if strings.EqualFold(review.Verdict, ReviewVerdictApprove) {
-		approve := forgeapi.Request{Method: http.MethodPost, Path: mrPath + "/approve", Body: map[string]string{"sha": review.HeadSHA}}
-		if _, err := client.JSON(ctx, approve, nil); err != nil {
+	// The verdict's own write comes last: the approval, or the
+	// changes-requested thread.
+	var verdict forgeapi.Request
+	step := ""
+	switch {
+	case strings.EqualFold(review.Verdict, ReviewVerdictApprove):
+		verdict, step = forgeapi.Request{Method: http.MethodPost, Path: mrPath + "/approve", Body: map[string]string{"sha": review.HeadSHA}}, SubmitStepApproval
+	case requestChanges:
+		verdict, step = forgeapi.Request{Method: http.MethodPost, Path: mrPath + "/discussions", Body: map[string]string{"body": gitlabChangesThreadBody(review.Body)}}, SubmitStepChangesThread
+	}
+	if step != "" {
+		err := stopped(steps)
+		if err == nil {
+			_, err = client.JSON(ctx, verdict, nil)
+		}
+		if err != nil {
 			if replyFailure == nil {
-				return out, gitlabApproveFailure(out, err)
+				return out, gitlabVerdictFailure(out, step, err)
 			}
-			// Two outcomes: the replies' and the approval's, both reported.
-			replyFailure.ApproveErr = err
+			// Two outcomes: the replies' and the verdict's, both reported.
+			replyFailure.Verdict, replyFailure.VerdictErr = step, err
 			replyFailure.Unconfirmed = replyFailure.Unconfirmed || !forgeapi.WriteNotApplied(err)
 			return out, replyFailure
 		}
@@ -1014,8 +1046,12 @@ func gitlabReplyRefused(ctx context.Context, client *forgeapi.Client, ref PRRefe
 // means it did not, and they are removed. Anything else, or a failed
 // read, is an UnconfirmedSubmitError around publishErr.
 func resolveGitLabPublish(ctx context.Context, client *forgeapi.Client, mrPath string, created []int64, publishErr error) (bool, error) {
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), gitlabDraftCleanupTimeout)
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), SubmitSettleTimeout)
 	defer cancel()
+	// A publish of the reviewer state alone leaves no draft to tell by.
+	if len(created) == 0 {
+		return false, &UnconfirmedSubmitError{Err: publishErr}
+	}
 	pending, err := gitlabPendingDraftIDs(ctx, client, mrPath)
 	if err != nil {
 		return false, &UnconfirmedSubmitError{Err: errors.Join(publishErr, fmt.Errorf("read the pending draft notes: %w", err))}
@@ -1055,16 +1091,21 @@ func gitlabPendingDraftIDs(ctx context.Context, client *forgeapi.Client, mrPath 
 	return ids, err
 }
 
-// gitlabApproveFailure wraps an approve error after notes were already
-// published. A plain error would read as "nothing posted" and make the
-// caller keep (and later double-post) every comment; the typed partial
-// error carries the posted state instead. An approve alone is the
-// submit's only write, so its error decides as any write's does.
-func gitlabApproveFailure(out SubmitReviewResult, err error) error {
+// gitlabVerdictFailure wraps the verdict write's error (step) after the
+// publish posted. A plain error would read as "nothing posted" and make
+// the caller keep (and later double-post) every comment; the typed
+// partial error carries the posted state instead. A verdict write alone
+// is the submit's only write, so its error decides as any write's does.
+func gitlabVerdictFailure(out SubmitReviewResult, step string, err error) error {
 	if !out.PostedReview {
 		return submitWriteError(err)
 	}
-	return &PartialSubmitError{PostedReview: true, PostedFileComments: out.PostedFileComments, Unconfirmed: !forgeapi.WriteNotApplied(err), Err: err}
+	return &PartialSubmitError{PostedReview: true, PostedFileComments: out.PostedFileComments, Unconfirmed: !forgeapi.WriteNotApplied(err), Verdict: step, Err: err}
+}
+
+// gitlabChangesThreadBody is the changes-requested thread's text.
+func gitlabChangesThreadBody(summary string) string {
+	return "Changes requested:\n\n" + strings.TrimSpace(summary)
 }
 
 // gitlabFileComments counts the file comments among comments.
@@ -1078,17 +1119,11 @@ func gitlabFileComments(comments []ReviewLineComment) int {
 	return n
 }
 
+// gitlabDraftNotes are the review's draft notes: a summary (but Request
+// changes', which is its own thread), then the comments.
 func gitlabDraftNotes(review SubmitReviewRequest) []ReviewLineComment {
 	notes := make([]ReviewLineComment, 0, len(review.Comments)+1)
-	body := review.Body
-	if strings.EqualFold(review.Verdict, ReviewVerdictRequestChanges) {
-		if strings.TrimSpace(body) == "" {
-			body = "Changes requested."
-		} else {
-			body = "Changes requested:\n\n" + body
-		}
-	}
-	if strings.TrimSpace(body) != "" {
+	if body := review.Body; strings.TrimSpace(body) != "" && !strings.EqualFold(review.Verdict, ReviewVerdictRequestChanges) {
 		notes = append(notes, ReviewLineComment{Body: body, Side: "summary"})
 	}
 	notes = append(notes, review.Comments...)
@@ -1107,9 +1142,6 @@ type gitlabDraftNoteIn struct {
 	ResolveDiscussion *bool `json:"resolve_discussion,omitempty"`
 }
 
-// gitlabDraftCleanupTimeout bounds removing a failed submit's drafts.
-const gitlabDraftCleanupTimeout = 30 * time.Second
-
 // removeGitLabDrafts deletes the drafts with ids, the ones a failed submit
 // created, and no other, then returns failure. unknown counts drafts the
 // submit created without learning their ids. A draft it could not remove
@@ -1117,7 +1149,7 @@ const gitlabDraftCleanupTimeout = 30 * time.Second
 // (404) was not removed by this submit: another publish of the viewer's
 // drafts may have posted it, so failure becomes an UnconfirmedSubmitError.
 func removeGitLabDrafts(ctx context.Context, client *forgeapi.Client, mrPath string, ids []int64, unknown int, failure error) error {
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), gitlabDraftCleanupTimeout)
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), SubmitSettleTimeout)
 	defer cancel()
 	left, gone := unknown, 0
 	var errs []error

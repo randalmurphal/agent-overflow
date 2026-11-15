@@ -303,13 +303,15 @@ export interface ForgeRepo {
   teamsRefused?: boolean;
   /** The repository's labels; color "#rrggbb". */
   labels?: { name: string; color?: string; id?: string }[];
-  /** GitLab: what an older server lacks. */
+  /** GitLab: the host's release, and what its server lacks. */
   serverVersion?: string;
   serverLacks?: ('introspection' | 'awardEmoji')[];
   /** The project this one is a fork of, seeded on the same host: a checkout of the fork opens its pull requests there. */
   parent?: string;
   /** GitHub: what the viewer's fine-grained token cannot read in a PR read. */
   tokenCannotRead?: ('checks' | 'actions')[];
+  /** GitLab: a tier without Request changes; a requested state reads reviewed. */
+  noChangeRequests?: boolean;
 }
 
 interface ForgeInvocationCommon {

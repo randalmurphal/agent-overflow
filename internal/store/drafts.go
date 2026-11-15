@@ -61,9 +61,21 @@ func getThreadDraft(q sqlQueryer, threadID string) (ThreadDraft, bool, error) {
 	return d, true, nil
 }
 
+// DraftWrite is what a draft write moved.
+type DraftWrite struct {
+	// Changed reports that the stored draft differs from before.
+	Changed bool
+	// Listed reports that the write admitted the thread to the sidebar list
+	// (ListThreadsWithItems): a thread with nothing else to list it is listed
+	// once its draft has content. A screen whose catalog read came before the
+	// write learns of the thread only from the announcement this calls for.
+	Listed bool
+}
+
 // UpsertThreadDraft writes the draft for a thread, replacing any existing row,
-// and reports whether the write actually moved it. Callers should pre-encode
-// Attachments and TerminalChips as JSON arrays.
+// and reports whether the write actually moved it and whether it listed the
+// thread. Callers should pre-encode Attachments and TerminalChips as JSON
+// arrays.
 //
 // The changed flag exists because every persisted draft write is broadcast on
 // `draft:updated`, and the composer AUTOSAVES: a save fired on a buffer nobody
@@ -73,13 +85,24 @@ func getThreadDraft(q sqlQueryer, threadID string) (ThreadDraft, bool, error) {
 // The consequence is that a no-op save leaves the stored timestamp where it
 // was, which is the honest answer (nothing was edited) and which nothing
 // reads: the draft's updated_at is not rendered anywhere.
-func (s *Store) UpsertThreadDraft(d ThreadDraft) (bool, error) {
-	return upsertThreadDraft(s.db, d)
+func (s *Store) UpsertThreadDraft(d ThreadDraft) (DraftWrite, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return DraftWrite{}, fmt.Errorf("store: upsert thread draft %s: %w", d.ThreadID, err)
+	}
+	defer tx.Rollback()
+	write, err := upsertThreadDraft(tx, d)
+	if err != nil {
+		return DraftWrite{}, err
+	}
+	return write, tx.Commit()
 }
 
-func upsertThreadDraft(q sqlQueryer, d ThreadDraft) (bool, error) {
+// upsertThreadDraft runs inside the caller's transaction, so the listing
+// read before the write and the one after it see no other write between.
+func upsertThreadDraft(q sqlQueryer, d ThreadDraft) (DraftWrite, error) {
 	if d.ThreadID == "" {
-		return false, fmt.Errorf("store: upsert draft: thread id is required")
+		return DraftWrite{}, fmt.Errorf("store: upsert draft: thread id is required")
 	}
 	// Normalise nullable JSON fields so SELECTs always return valid JSON.
 	if d.Attachments == "" {
@@ -98,6 +121,14 @@ func upsertThreadDraft(q sqlQueryer, d ThreadDraft) (bool, error) {
 		(d.TerminalChips != "" && d.TerminalChips != "[]" && d.TerminalChips != "null") ||
 		d.PendingPlanImplementation != "" {
 		hasContent = 1
+	}
+	// Only content can list a thread, so a write without it lists nothing.
+	listedBefore := true
+	if hasContent == 1 {
+		var err error
+		if listedBefore, err = threadListed(q, d.ThreadID); err != nil {
+			return DraftWrite{}, err
+		}
 	}
 	// `IS NOT` rather than `<>` on every term: pending_plan_implementation is
 	// nullable and `NULL <> 'x'` is NULL, which SQLite reads as false — a `<>`
@@ -123,17 +154,23 @@ func upsertThreadDraft(q sqlQueryer, d ThreadDraft) (bool, error) {
 	if errors.Is(err, sql.ErrNoRows) {
 		// The row already held exactly this draft. A normal outcome, not an
 		// error: the composer autosaves whether or not anything was typed.
-		return false, nil
+		return DraftWrite{}, nil
 	}
 	var engine *sqlite.Error
 	if errors.As(err, &engine) && engine.Code() == sqlite3.SQLITE_CONSTRAINT_FOREIGNKEY {
 		// thread_id is the table's only foreign key.
-		return false, fmt.Errorf("store: upsert thread draft %s: %w", d.ThreadID, ErrDraftThreadMissing)
+		return DraftWrite{}, fmt.Errorf("store: upsert thread draft %s: %w", d.ThreadID, ErrDraftThreadMissing)
 	}
 	if err != nil {
-		return false, fmt.Errorf("store: upsert thread draft %s: %w", d.ThreadID, err)
+		return DraftWrite{}, fmt.Errorf("store: upsert thread draft %s: %w", d.ThreadID, err)
 	}
-	return true, nil
+	write := DraftWrite{Changed: true}
+	if !listedBefore {
+		if write.Listed, err = threadListed(q, d.ThreadID); err != nil {
+			return DraftWrite{}, err
+		}
+	}
+	return write, nil
 }
 
 // DeleteThreadDraft removes the draft for a thread and reports whether a row

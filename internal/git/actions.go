@@ -1,6 +1,7 @@
 package git
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"unicode"
@@ -44,8 +45,8 @@ func (c *Core) Push(cwd string) error {
 // PushUnattended is Push for automation running with nobody watching (the
 // workflows engine's disposition step). A credential prompt there is not a
 // question anyone can answer: the dialog would sit behind the app window
-// until our 45s subprocess timeout fires, or forever if a GUI helper owns
-// it. Failing fast turns that into a run error the disposition surfaces.
+// until the push's bound (HookTimeout) ends it, or forever if a GUI helper
+// owns it. Failing fast turns that into a run error the disposition surfaces.
 func (c *Core) PushUnattended(cwd string) error {
 	return c.push(cwd, false)
 }
@@ -58,10 +59,12 @@ func (c *Core) push(cwd string, allowCredentialPrompt bool) error {
 	if err != nil {
 		return err
 	}
+	// The pre-push hook and the transfer run inside it.
 	_, _, err = c.executeSpec(commandSpec{
 		binary:                "git",
 		cwd:                   cwd,
 		allowCredentialPrompt: allowCredentialPrompt,
+		runsHooks:             true,
 		args:                  args,
 	})
 	return err
@@ -91,9 +94,10 @@ func (c *Core) pushArgs(cwd string) ([]string, error) {
 	return []string{"push", "--set-upstream", remote, qualified + ":" + qualified}, nil
 }
 
-// Pull fast-forwards the current branch from its upstream.
+// Pull fast-forwards the current branch from its upstream. Its post-merge
+// hook runs inside it.
 func (c *Core) Pull(cwd string) error {
-	_, _, err := c.executeInteractive(cwd, "pull", "--ff-only")
+	_, _, err := c.executeSpec(commandSpec{binary: "git", cwd: cwd, allowCredentialPrompt: true, runsHooks: true, args: []string{"pull", "--ff-only"}})
 	return err
 }
 
@@ -256,8 +260,10 @@ func (c *Core) Checkout(cwd, branch string) error {
 	return c.CheckoutRef(cwd, BranchRef(branch))
 }
 
+// executeCheckout runs `git checkout`, whose post-checkout hook runs inside
+// it.
 func (c *Core) executeCheckout(cwd string, args ...string) error {
-	_, _, err := c.Execute(cwd, append([]string{"checkout"}, args...)...)
+	_, _, err := c.executeWithHooks(cwd, append([]string{"checkout"}, args...)...)
 	return err
 }
 
@@ -276,7 +282,7 @@ func (c *Core) CheckoutNewBranch(cwd, name string) error {
 	if err := c.ensureBranchDoesNotExist(cwd, name); err != nil {
 		return err
 	}
-	_, stderr, err := c.Execute(cwd, "checkout", "-b", name)
+	_, stderr, err := c.executeWithHooks(cwd, "checkout", "-b", name)
 	return c.branchCreationError(cwd, err, stderr, name)
 }
 
@@ -437,6 +443,11 @@ func (c *Core) branchExistsChecked(cwd, branch string) (bool, error) {
 func (c *Core) branchCreationError(cwd string, err error, stderr, name string) error {
 	if err == nil {
 		return nil
+	}
+	// A checkout stopped in its post-checkout hook made the branch; it
+	// existing says nothing about why the command failed.
+	if _, stopped := errors.AsType[*commandStoppedError](err); stopped {
+		return err
 	}
 	if c.branchAlreadyExistsAfterCreationError(cwd, stderr, name) {
 		return branchAlreadyExistsError(name)

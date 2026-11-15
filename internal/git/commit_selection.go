@@ -7,20 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"agent-overflow/internal/gitdiff"
-)
-
-const (
-	// CommitTimeout bounds one `git commit`. A pre-commit hook that runs a
-	// project's checks, or a signing prompt waiting for a passphrase, runs
-	// inside it and routinely outlasts defaultTimeout; the bound is there
-	// to end a hook that hangs, not to rush one that works.
-	CommitTimeout = 10 * time.Minute
-	// CommitStopGrace is how long a stopped commit has to exit after
-	// SIGTERM, which git and its hooks get together, before it is killed.
-	CommitStopGrace = 5 * time.Second
 )
 
 // CommitSelection names what a commit covers: every uncommitted change, or
@@ -295,17 +283,13 @@ func (c *Core) hasHead(cwd string) (bool, error) {
 }
 
 // commit runs `git commit` over the index env names (the user's when env is
-// nil), with the time a hook or signing prompt needs. It commits the index
-// as it is, which git does not hold locked while hooks run, so a commit
-// stopped at that bound leaves no index lock; the stop reaches its hooks
-// too, so none keeps running after it.
+// nil), with the time a hook or signing prompt needs (HookTimeout). It
+// commits the index as it is, which git does not hold locked while hooks
+// run, so a commit stopped at that bound leaves no index lock; the stop
+// reaches its hooks too, so none keeps running after it.
 func (c *Core) commit(cwd string, env []string, subject, body string) error {
-	timeout := c.commitTimeout
-	if timeout <= 0 {
-		timeout = CommitTimeout
-	}
 	_, _, err := c.executeSpec(commandSpec{
-		binary: "git", cwd: cwd, extraEnv: env, timeout: timeout, stopGracefully: true,
+		binary: "git", cwd: cwd, extraEnv: env, runsHooks: true,
 		args: commitArgs(subject, body),
 	})
 	return err

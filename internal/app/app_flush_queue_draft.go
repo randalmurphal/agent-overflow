@@ -4,13 +4,16 @@ import (
 	"time"
 
 	"agent-overflow/internal/composerdraft"
+	"agent-overflow/internal/store"
 )
 
 // restoreQueuedDraft returns undelivered messages to the composer: parts
-// merged ahead of what it holds, the queue rows queueIDs deleted, and the
-// rows retire the messages already have taken back with the review comments
-// they claimed, all in one store transaction. A failure changes nothing.
-func (a *App) restoreQueuedDraft(threadID string, parts []composerdraft.Part, queueIDs, retire []string) error {
+// merged ahead of what it holds, and everything else restore names (the
+// queue rows to delete, the rows to take back, the send ids whose wakes now
+// read as delivered to the draft) in one store transaction. A failure
+// changes nothing. Every path that returns a queued or in-flight message to
+// the composer goes through here; restore's Expected and Merged are set here.
+func (a *App) restoreQueuedDraft(threadID string, parts []composerdraft.Part, restore store.QueueDraftRestore) error {
 	current, _, err := a.store.GetThreadDraft(threadID)
 	if err != nil {
 		return err
@@ -21,5 +24,6 @@ func (a *App) restoreQueuedDraft(threadID string, parts []composerdraft.Part, qu
 			return err
 		}
 	}
-	return a.writeRestoredQueueDraft(current, merged, queueIDs, retire)
+	restore.Expected, restore.Merged = current, merged
+	return a.writeRestoredQueueDraft(restore)
 }

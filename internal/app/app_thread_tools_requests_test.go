@@ -2128,8 +2128,10 @@ func (f *requestFixture) restart(t *testing.T) *requestFixture {
 	})
 	app.installThreadRequestObserver()
 	after := &requestFixture{app: app, bus: bus, caller: f.caller, dbPath: f.dbPath}
+	// A restarted App has no dispatcher, so its start alone is held.
 	if f.callerHeld {
-		after.holdCallerSession()
+		after.callerHeld = true
+		after.holdCallerStart()
 	}
 	return after
 }
@@ -2147,12 +2149,26 @@ func (f *requestFixture) holdCallerTurn(t *testing.T) {
 	f.holdCallerSession()
 }
 
-// holdCallerSession makes a start of the caller's session spawn nothing.
-// The open turn row alone does not hold a wake: a wake to a caller with no
-// session starts one, and that start dispatches the queue to the provider
-// and deletes the durable row. Other threads start as usual.
+// holdCallerSession keeps a wake to the caller in its durable queue. The open
+// turn row alone does not hold it: a wake to a caller with no session starts
+// one, and the dispatch then sends the queue to the provider, or returns it
+// to the composer when the start left no session. So the caller's session
+// spawns nothing and its queue is never dispatched. Other threads start and
+// dispatch as usual.
 func (f *requestFixture) holdCallerSession() {
 	f.callerHeld = true
+	f.holdCallerStart()
+	app, caller := f.app, f.caller.ID
+	app.triage.SetFlushDispatcher(func(threadID string, items []triage.QueuedFlushItem) {
+		if threadID != caller {
+			app.enqueueFlushDispatch(threadID, items)
+		}
+	})
+}
+
+// holdCallerStart makes a start of the caller's session spawn nothing. Other
+// threads start as usual.
+func (f *requestFixture) holdCallerStart() {
 	app, caller := f.app, f.caller.ID
 	app.startSessionFn = func(threadID string) error {
 		if threadID == caller {

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"agent-overflow/internal/forgeapi"
 	"agent-overflow/internal/forgeattach"
@@ -160,7 +161,10 @@ type MergedPRHead struct {
 const (
 	ReviewVerdictApprove        = "approve"
 	ReviewVerdictRequestChanges = "request-changes"
-	ReviewVerdictComment        = "comment"
+	// ReviewChangesNeedSummary refuses a Request changes review without a
+	// summary, on both forges.
+	ReviewChangesNeedSummary = "Request changes needs a summary saying what to change."
+	ReviewVerdictComment     = "comment"
 
 	MergeabilityConflicts = "conflicts"
 	MergeabilityClean     = "clean"
@@ -404,11 +408,19 @@ type PartialSubmitError struct {
 	UnpostedReplies []int
 	Unconfirmed     bool
 	Err             error
-	// ApproveErr is an approval the forge refused or did not confirm
-	// besides Err (GitLab approves after the publish): a second outcome,
-	// reported with the first.
-	ApproveErr error
+	// Verdict names the verdict's own write after GitLab's publish, the
+	// approval or the changes-requested thread, when it failed: as Err when
+	// it is the only failure, as VerdictErr beside another one (a second
+	// outcome, reported with the first).
+	Verdict    string
+	VerdictErr error
 }
+
+// The verdict writes PartialSubmitError.Verdict names.
+const (
+	SubmitStepApproval      = "approval"
+	SubmitStepChangesThread = "changes-requested thread"
+)
 
 // ReplyThreadGoneError is a held reply the forge refused because its
 // thread no longer exists (deleted, or its only comment deleted).
@@ -454,10 +466,13 @@ func (e *PartialSubmitError) Error() string {
 	}
 	if e.FailedThreadID != "" {
 		msg := fmt.Sprintf("review submitted, but posting the reply to thread %s failed: %v", e.FailedThreadID, e.Err)
-		if e.ApproveErr != nil {
-			msg += fmt.Sprintf("; the approval failed too: %v", e.ApproveErr)
+		if e.VerdictErr != nil {
+			msg += fmt.Sprintf("; the %s failed too: %v", e.Verdict, e.VerdictErr)
 		}
 		return msg
+	}
+	if e.Verdict != "" {
+		return fmt.Sprintf("review submitted, but the %s failed: %v", e.Verdict, e.Err)
 	}
 	return fmt.Sprintf("review submitted, but a follow-up step failed: %v", e.Err)
 }
@@ -706,9 +721,60 @@ func NormalizePRState(s string) string {
 // without its cancellation. A write the forge may already have applied must
 // finish and report, because a caller that stopped waiting cannot tell an
 // applied write from one never sent. Each request keeps its own bound
-// (forgeapi's read timeout, the Core command timeout).
+// (forgeapi's read timeout, the Core command timeout). The caller's
+// deadline still bounds a write of several requests (writeSteps).
 func forgeWrite(ctx context.Context) context.Context {
-	return context.WithoutCancel(ctx)
+	return context.WithValue(context.WithoutCancel(ctx), forgeWriteCallerKey{}, ctx)
+}
+
+type forgeWriteCallerKey struct{}
+
+// SubmitSettleTimeout bounds the read or cleanup that settles one submit
+// write whose answer did not decide it: GitHub's read of the viewer's
+// reviews, GitLab's read of its pending draft notes and its removal of the
+// drafts a stopped submit created.
+const SubmitSettleTimeout = 30 * time.Second
+
+// writeSteps is the context the steps of a write of several requests run
+// under, from a forgeWrite context: it ends when the caller's deadline
+// passes, with the caller's cause, and not when the caller cancels. Its
+// reads run on it, so the deadline cuts them; each write runs on the
+// forgeWrite context and asks stopped first, so the deadline stops the
+// write before it starts and never while it is in flight. A run past the
+// deadline is then one write and what settles it (SubmitSettleTimeout).
+func writeSteps(ctx context.Context) (context.Context, context.CancelFunc) {
+	steps, cancel := context.WithCancelCause(ctx)
+	caller, _ := ctx.Value(forgeWriteCallerKey{}).(context.Context)
+	deadline, bounded := time.Time{}, false
+	if caller != nil {
+		deadline, bounded = caller.Deadline()
+	}
+	if !bounded {
+		return steps, func() { cancel(nil) }
+	}
+	timer := time.AfterFunc(time.Until(deadline), func() {
+		// The caller ends at the same deadline: wait for it, to take its
+		// cause.
+		<-caller.Done()
+		cause := context.Cause(caller)
+		if !errors.Is(caller.Err(), context.DeadlineExceeded) {
+			cause = context.DeadlineExceeded
+		}
+		cancel(cause)
+	})
+	return steps, func() {
+		timer.Stop()
+		cancel(nil)
+	}
+}
+
+// stopped is the error a write of several requests answers instead of
+// starting its next one once steps ended: a request never sent.
+func stopped(steps context.Context) error {
+	if steps.Err() == nil {
+		return nil
+	}
+	return &forgeapi.NotSentError{Err: context.Cause(steps)}
 }
 
 // ReadPR reads the parts of ref want names in one forge read (see
@@ -744,6 +810,11 @@ func (c *Core) SubmitReview(ctx context.Context, ref PRReference, review SubmitR
 	head, err := validMergeHead(review.HeadSHA)
 	if err != nil {
 		return SubmitReviewResult{}, err
+	}
+	// GitHub refuses Request changes without a body, and GitLab's is a
+	// thread to resolve, which needs one: both say what to change.
+	if strings.EqualFold(review.Verdict, ReviewVerdictRequestChanges) && strings.TrimSpace(review.Body) == "" {
+		return SubmitReviewResult{}, &ForgeActionError{Kind: ForgeErrorRefused, Message: ReviewChangesNeedSummary}
 	}
 	review.HeadSHA = head
 	return c.ForgeByID(ref.Forge).SubmitReview(forgeWrite(ctx), ref, review)

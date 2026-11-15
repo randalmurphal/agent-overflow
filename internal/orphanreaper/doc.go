@@ -18,8 +18,8 @@
 //     next launch any recorded group still alive, start-time-matched
 //     (PID-reuse safe), and no longer the recording parent's child is killed.
 //
-// Process groups come from the provider package's Setpgid and from
-// procutil.StartGroup's Setsid; killing a
+// Process groups come from the provider package's Setpgid, the terminal
+// package's pty session and procutil.StartGroup's Setsid; killing a
 // negative pgid needs only same-uid permission, so neither layer has to
 // be the provider's parent.
 package orphanreaper

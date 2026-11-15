@@ -22,8 +22,9 @@ import (
 // run, added up from the constants that bound each step of it, in the
 // packages that own them. A step that is one git, gh or glab command or
 // one forge request counts transport.DefaultMethodBudget, the bound those
-// share. A method that bounds its whole run with withinMethodBudget is its
-// budget by construction.
+// share; one that runs a user's hook counts hooked, the bound
+// gitops.HookTimeout gives it. A method that bounds its whole run with
+// withinMethodBudget is its budget by construction.
 //
 // Not covered: the wait for a lock another run holds (the per-thread action
 // lock, a provider check already running is counted where it is the
@@ -31,9 +32,35 @@ import (
 // constant here names.
 var methodServerBounds = map[string]time.Duration{
 	// The commit's hooks, their stop, and the snapshot and index steps.
-	"GitCommit": gitops.CommitTimeout + gitops.CommitStopGrace + transport.DefaultMethodBudget,
-	// Waits for the commit it reports.
-	"GetCommitOutcome": transport.MethodBudget("GitCommit"),
+	"GitCommit": hooked + transport.DefaultMethodBudget,
+	// The pre-push hook and transfer, after the branch and remote reads.
+	"GitPush": hooked + transport.DefaultMethodBudget,
+	// The transfer and post-merge hook.
+	"GitPull": hooked + transport.DefaultMethodBudget,
+	// A pull of the current branch, or a fetch of another.
+	"GitSyncBranch": hooked + transport.DefaultMethodBudget,
+	// The checkout's post-checkout hook, then the status read.
+	"GitCheckout": hooked + transport.DefaultMethodBudget,
+	// Away from the current ref: a checkout of the base, then of the new
+	// branch, each with its post-checkout hook.
+	"GitCreateBranchFrom": 2*hooked + transport.DefaultMethodBudget,
+	// Waits for the git write it reports.
+	"GetGitActionOutcome": max(transport.MethodBudget("GitCommit"), transport.MethodBudget("GitPush"),
+		transport.MethodBudget("GitPull"), transport.MethodBudget("GitCreatePR")),
+	// A worktree add, whose post-checkout hook runs inside it, between the
+	// reads and the branch and lock steps around it.
+	"AttachThreadWorktree":  hooked + transport.DefaultMethodBudget,
+	"PrepareThreadWorktree": hooked + transport.DefaultMethodBudget,
+	"GitCreateWorktree":     hooked + transport.DefaultMethodBudget,
+	// The merge and its hooks, then the worktree cleanup.
+	"WorkflowMergeItem": hooked + 2*transport.DefaultMethodBudget,
+	// The push's pre-push hook, `gh pr create` or `glab mr create` (whose
+	// own push runs it again), the head read and the open-PR lookup.
+	"WorkflowCreateItemPR": 2*hooked + 2*transport.DefaultMethodBudget,
+	// The worktree name's origin fetch, then its add.
+	"CreateThread": hooked + 2*transport.DefaultMethodBudget,
+	// The pull request's head fetch, then its worktree's add.
+	"OpenPRThread": hooked + 2*transport.DefaultMethodBudget,
 	// The primary provider, then the fallback, after the diff reads.
 	"GenerateCommitMessage": 2*commitmsg.Timeout + transport.DefaultMethodBudget,
 	"FinishDictation":       dictation.TranscribeBudget,
@@ -42,8 +69,9 @@ var methodServerBounds = map[string]time.Duration{
 	"GetProviderUpdateNotes": 2 * providerupdate.NotesTimeout,
 	// A by-tag resolve or another check holds the updater for one check.
 	"CheckForUpdate": 2 * appupdate.UpdaterCheckTimeout,
-	// `gh pr create` or `glab mr create`, then the open-PR lookup.
-	"GitCreatePR": 2 * transport.DefaultMethodBudget,
+	// `gh pr create` or `glab mr create`, which pushes and so runs the
+	// pre-push hook, then the open-PR lookup.
+	"GitCreatePR": hooked + transport.DefaultMethodBudget,
 	// The Codex fork's cut, then the store and checkout steps.
 	"ForkThread":            codexForkTimeout + transport.DefaultMethodBudget,
 	"ForkThreadFromMessage": codexForkTimeout + transport.DefaultMethodBudget,
@@ -64,14 +92,17 @@ var methodServerBounds = map[string]time.Duration{
 	"InterruptAndRevertIfClean": claude.DefaultControlRequestCeiling + transport.DefaultMethodBudget/2,
 	// A forwarded wait, then the page it renders.
 	"ThreadToolQuery": time.Duration(threadtools.MaxForwardedWaitSeconds)*time.Second + 5*time.Second,
-	// A spawn may fork (the Codex cut) and cut a worktree.
-	"ThreadToolCall": codexForkTimeout + transport.DefaultMethodBudget,
-	// Three reads and one request per comment, each a forge request, with
-	// no cap on the comments: the budget is a declaration the forge
-	// package does not enforce yet (see the method).
+	// A spawn may fork (the Codex cut), resolve its worktree's name against
+	// origin and add the worktree.
+	"ThreadToolCall": codexForkTimeout + hooked + 2*transport.DefaultMethodBudget,
+	// withinMethodBudgetFinishing: the run starts no forge request
+	// reviewSubmitFinish before its budget.
 	"SubmitPRReview":           transport.MethodBudget("SubmitPRReview"),
 	"GetPRReviewSubmitOutcome": transport.MethodBudget("SubmitPRReview"),
 }
+
+// hooked is one git or forge CLI command that runs a user's hook, stopped.
+const hooked = gitops.HookTimeout + gitops.HookStopGrace
 
 // The tripwire for method budgets: no bound method's client waits less than
 // its server side may run.
@@ -83,7 +114,9 @@ var methodServerBounds = map[string]time.Duration{
 // and methodgen reads source syntax only. So every budget names its bound
 // in methodServerBounds, and this fails when a constant grows past the
 // declaration, when a budget appears that no bound justifies, or when an
-// unbudgeted method's step outgrows the default.
+// unbudgeted method's step outgrows the default. Which methods reach a
+// long step at all is TestEveryMethodReachingALongStepDeclaresItsBudget's
+// to find.
 func TestMethodBudgetsCoverServerBounds(t *testing.T) {
 	t.Parallel()
 	declared := map[string]bool{}

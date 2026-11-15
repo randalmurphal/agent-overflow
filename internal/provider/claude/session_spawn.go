@@ -9,6 +9,7 @@ import (
 	"strconv"
 
 	"agent-overflow/internal/logging"
+	"agent-overflow/internal/procutil"
 	"agent-overflow/internal/provider"
 )
 
@@ -201,6 +202,9 @@ type Config struct {
 	// should go through AutoCompactPercent's inline settings path instead.
 	Env         map[string]string
 	EventLogger *logging.Logger
+	// Reaper ends the session's process group if the backend dies first
+	// (provider.SpawnConfig.Reaper).
+	Reaper procutil.Reaper
 	// MCPServers carries optional MCP server configs to register for
 	// this session. Threaded through `--mcp-config <json>` and merged with
 	// native user/workspace discovery.

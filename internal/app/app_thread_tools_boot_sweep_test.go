@@ -70,6 +70,7 @@ func TestAParkedTrialSettlesTheLastRunsRequestsButActsOnlyAfterItsCommit(t *test
 
 	var mu sync.Mutex
 	var started []string
+	// A start records itself and leaves no session.
 	a.startSessionFn = func(threadID string) error {
 		mu.Lock()
 		defer mu.Unlock()
@@ -114,15 +115,15 @@ func TestAParkedTrialSettlesTheLastRunsRequestsButActsOnlyAfterItsCommit(t *test
 
 	ActivateUnattendedWork(a, ServiceUpdateOutcome{})
 
+	// The start the wake asks for leaves no session, so the dispatch returns
+	// the wake to the caller's composer, which is where it is read.
 	waitUntil(t, 30*time.Second, func() bool {
 		_, err := a.store.GetThread(scratch)
 		row, _, _ := a.store.GetThreadRequest(token)
-		return errors.Is(err, sql.ErrNoRows) && row.DeliveredAt != 0
+		return errors.Is(err, sql.ErrNoRows) && row.DeliveredHow == store.ThreadWakeDraft
 	})
-	if rows, err := a.store.ListFlushQueueItems(caller); err != nil || len(rows) != 1 || rows[0].SendID != threadWakeSendID(token) {
-		t.Fatalf("queued after the commit = %+v, %v; want the request's wake", rows, err)
-	} else if !strings.Contains(rows[0].Message, threadReceiptRestarted) {
-		t.Errorf("wake = %q, want the restart as its cause", rows[0].Message)
+	if draft, _, err := a.store.GetThreadDraft(caller); err != nil || !strings.Contains(draft.Content, threadReceiptRestarted) {
+		t.Fatalf("caller composer after the commit = %q, %v; want the wake with the restart as its cause", draft.Content, err)
 	}
 	waitUntil(t, 10*time.Second, func() bool {
 		for _, id := range sessionsStarted() {
