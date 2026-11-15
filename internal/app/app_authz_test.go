@@ -425,7 +425,7 @@ var threadDriveBoundaries = map[string]string{
 // code outside the module) counts as called by whoever made it.
 func TestEveryThreadDrivingMethodIsListed(t *testing.T) {
 	t.Parallel()
-	g, err := buildDriveGraph()
+	g, err := sharedDriveGraph()
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -30,8 +30,17 @@ func (e budgetExceeded) Error() string {
 // is its budget by construction and its client, which waits a margin past
 // it, hears how the run ended. doing names the run for that answer.
 func withinMethodBudget(ctx context.Context, method, doing string) (context.Context, context.CancelFunc) {
-	budget := transport.MethodBudget(method)
-	return context.WithTimeoutCause(ctx, budget, budgetExceeded{doing: doing, budget: budget})
+	return withinMethodBudgetFinishing(ctx, method, doing, 0)
+}
+
+// withinMethodBudgetFinishing is withinMethodBudget for a run whose step
+// under way when its context ends runs to its end (a forge write that may
+// have applied): the context ends finish before the budget, the longest
+// that step and what follows it take, so the run still answers within
+// its budget.
+func withinMethodBudgetFinishing(ctx context.Context, method, doing string, finish time.Duration) (context.Context, context.CancelFunc) {
+	cutoff := transport.MethodBudget(method) - finish
+	return context.WithTimeoutCause(ctx, cutoff, budgetExceeded{doing: doing, budget: cutoff})
 }
 
 // budgetError is err, or the budget's own readable error once ctx ended at

@@ -406,6 +406,10 @@ func mapSubmitPRReviewResult(pr gitops.PRReference, action gitops.ForgeAction, r
 		if explained, ok := errors.AsType[*gitops.ForgeActionError](gitops.ExplainForgeError(pr, action, partial.Err)); ok {
 			mapped.PartialFailure, mapped.PartialFailureKind = explained.Message, explained.Kind
 		}
+		// A step the method's budget stopped before it started.
+		if exceeded, ok := errors.AsType[budgetExceeded](partial.Err); ok {
+			mapped.PartialFailure, mapped.PartialFailureKind = exceeded.Error()+" before the rest was sent.", methodBudgetExceededCode
+		}
 		// The changes-requested thread is the review's summary: when it
 		// failed alone, the sentence says so.
 		if partial.Verdict == gitops.SubmitStepChangesThread && partial.VerdictErr == nil {

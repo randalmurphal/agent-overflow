@@ -261,7 +261,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "GitCommit", ID: 1971060042, Scope: "git:operate", Route: "workspace", Budget: 12 * time.Minute},                                  // main.App.GitCommit
 	{Name: "GitCreateBranchFrom", ID: 429779991, Scope: "git:operate", Route: "workspace", Budget: 21 * time.Minute},                         // main.App.GitCreateBranchFrom
 	{Name: "GitCreatePR", ID: 4106667105, Scope: "git:operate", Route: "workspace", Budget: 12 * time.Minute},                                // main.App.GitCreatePR
-	{Name: "GitCreateWorktree", ID: 3327650914, Scope: "git:operate", Route: "thread"},                                                       // main.App.GitCreateWorktree
+	{Name: "GitCreateWorktree", ID: 3327650914, Scope: "git:operate", Route: "thread", Budget: 12 * time.Minute},                             // main.App.GitCreateWorktree
 	{Name: "GitListBranchPruneCandidates", ID: 3795082615, Scope: "git:operate", Route: "workspace"},                                         // main.App.GitListBranchPruneCandidates
 	{Name: "GitListBranches", ID: 2693102179, Scope: "git:operate", Route: "workspace"},                                                      // main.App.GitListBranches
 	{Name: "GitListTags", ID: 3443522126, Scope: "git:operate", Route: "workspace"},                                                          // main.App.GitListTags
@@ -597,7 +597,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "WorkflowCancelItem", ID: 4158962817, Scope: "threads:autonomy", Route: "home"},                                                   // main.App.WorkflowCancelItem
 	{Name: "WorkflowCompleteTakeover", ID: 3393508470, Scope: "threads:autonomy", Route: "home"},                                             // main.App.WorkflowCompleteTakeover
 	{Name: "WorkflowCreateAutomation", ID: 3011758347, Scope: "threads:autonomy", Route: "home"},                                             // main.App.WorkflowCreateAutomation
-	{Name: "WorkflowCreateItemPR", ID: 1792283305, Scope: "threads:autonomy", Route: "home"},                                                 // main.App.WorkflowCreateItemPR
+	{Name: "WorkflowCreateItemPR", ID: 1792283305, Scope: "threads:autonomy", Route: "home", Budget: 22 * time.Minute},                       // main.App.WorkflowCreateItemPR
 	{Name: "WorkflowDeleteAutomation", ID: 1133480652, Scope: "threads:autonomy", Route: "home"},                                             // main.App.WorkflowDeleteAutomation
 	{Name: "WorkflowDiscardItem", ID: 2163033761, Scope: "threads:autonomy", Route: "home"},                                                  // main.App.WorkflowDiscardItem
 	{Name: "WorkflowDiscardPreview", ID: 2659721862, Scope: "git:operate", Route: "home"},                                                    // main.App.WorkflowDiscardPreview
@@ -613,7 +613,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "WorkflowListItemCosts", ID: 1544440599, Scope: "threads:read", Route: "project"},                                                 // main.App.WorkflowListItemCosts
 	{Name: "WorkflowListItems", ID: 3037887964, Scope: "threads:read", Route: "project"},                                                     // main.App.WorkflowListItems
 	{Name: "WorkflowListUnresolvedItems", ID: 3613211765, Scope: "threads:read", Route: "project"},                                           // main.App.WorkflowListUnresolvedItems
-	{Name: "WorkflowMergeItem", ID: 3006532931, Scope: "threads:autonomy", Route: "home"},                                                    // main.App.WorkflowMergeItem
+	{Name: "WorkflowMergeItem", ID: 3006532931, Scope: "threads:autonomy", Route: "home", Budget: 12 * time.Minute},                          // main.App.WorkflowMergeItem
 	{Name: "WorkflowPauseItem", ID: 3764767257, Scope: "threads:autonomy", Route: "home"},                                                    // main.App.WorkflowPauseItem
 	{Name: "WorkflowRequestSoftStop", ID: 2570221545, Scope: "threads:autonomy", Route: "home"},                                              // main.App.WorkflowRequestSoftStop
 	{Name: "WorkflowRerunItem", ID: 1986594501, Scope: "threads:autonomy", Route: "home"},                                                    // main.App.WorkflowRerunItem

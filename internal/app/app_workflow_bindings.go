@@ -847,6 +847,7 @@ const workflowDispositionPR = "pr"
 //
 //ao:scope threads:autonomy
 //ao:route home
+//ao:budget 12m
 func (a *App) WorkflowMergeItem(ctx context.Context, itemID string) (WorkflowDispositionReceipt, error) {
 	receipt, err := a.workflowApplication().MergeItem(ctx, itemID)
 	return projectWorkflowDispositionReceipt(receipt), err
@@ -857,6 +858,7 @@ func (a *App) WorkflowMergeItem(ctx context.Context, itemID string) (WorkflowDis
 //
 //ao:scope threads:autonomy
 //ao:route home
+//ao:budget 22m
 func (a *App) WorkflowCreateItemPR(ctx context.Context, itemID string) (WorkflowDispositionReceipt, error) {
 	receipt, err := a.workflowApplication().CreateItemPR(ctx, itemID)
 	return projectWorkflowDispositionReceipt(receipt), err

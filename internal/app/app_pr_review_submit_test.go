@@ -743,58 +743,13 @@ func TestSubmitPRReviewAttemptOutcomeWaitsForARunningAttempt(t *testing.T) {
 	}
 }
 
-// The attempts a process remembers are bounded, and it never says an
-// attempt it may have received never arrived: an attempt whose outcome
-// was dropped reads forgotten, and so does every id it does not hold once
-// ids have left its window too. A repeat of a forgotten id posts nothing.
-func TestReviewAttemptsForgetTheOldestFinished(t *testing.T) {
-	t.Parallel()
-	var attempts reviewAttempts
-	finish := func(i int) {
-		attempt, _ := attempts.begin(fmt.Sprintf("a%d", i), "pr")
-		attempts.finish(attempt, SubmitPRReviewResult{Posted: true}, nil)
-	}
-	for i := range reviewAttemptsKept + 1 {
-		finish(i)
-	}
-	if kept, _ := attempts.find(fmt.Sprintf("a%d", reviewAttemptsKept), "pr"); kept == nil {
-		t.Fatal("forgot the newest attempt")
-	}
-	if kept, forgotten := attempts.find("a0", "pr"); kept != nil || !forgotten {
-		t.Fatalf("the evicted attempt = %v, forgotten %v; want forgotten", kept, forgotten)
-	}
-	if _, forgotten := attempts.find("never-sent", "pr"); forgotten {
-		t.Fatal("an id never received reads forgotten while every id is kept")
-	}
-	if len(attempts.byID) != reviewAttemptsKept {
-		t.Fatalf("%d outcomes kept, want %d", len(attempts.byID), reviewAttemptsKept)
-	}
-	repeat, repeated := attempts.begin("a0", "pr")
-	if !repeated {
-		t.Fatal("a forgotten id began again")
-	}
-	if _, err := repeat.wait(context.Background()); err == nil {
-		t.Fatal("a repeat of a forgotten id answered without an error")
-	}
-
-	for i := reviewAttemptsKept + 1; i <= reviewAttemptsKept+reviewAttemptIDsKept+1; i++ {
-		finish(i)
-	}
-	if len(attempts.forgotten) != reviewAttemptIDsKept {
-		t.Fatalf("%d ids kept, want %d", len(attempts.forgotten), reviewAttemptIDsKept)
-	}
-	if _, forgotten := attempts.find("never-sent", "pr"); !forgotten {
-		t.Fatal("an id not held reads never received after ids overflowed")
-	}
-}
-
 // The outcome read of an attempt whose outcome was dropped says so, and
 // one of an id the process never received says that.
 func TestGetPRReviewSubmitOutcomeForgottenAndNeverReceived(t *testing.T) {
 	t.Parallel()
 	c := newReviewSubmitCase(t, "github")
-	for i := range reviewAttemptsKept + 1 {
-		attempt, _ := c.app.reviewAttempts.begin(fmt.Sprintf("a%d", i), c.pr.Key())
+	for i := range writeAttemptsKept + 1 {
+		attempt, _ := c.app.reviewAttempts.begin(fmt.Sprintf("a%d", i), c.pr.Identity())
 		c.app.reviewAttempts.finish(attempt, SubmitPRReviewResult{Posted: true}, nil)
 	}
 	if outcome, err := c.app.GetPRReviewSubmitOutcome(context.Background(), c.pr, "a0"); err != nil || outcome.State != "forgotten" {
