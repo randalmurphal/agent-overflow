@@ -452,3 +452,36 @@ func TestAnAgentsCancelOfARemoteSpawnDisarmsItsWakeOnlyForARest(t *testing.T) {
 		})
 	}
 }
+
+// A request open on a thread when it is archived is settled by the session's
+// end, interrupted with what the turn wrote, where a Stop settles it
+// cancelled by the user (docs/specs/standing-agents.md, "At rest").
+func TestAnArchiveSettlesARequestOnTheThreadAsItsSessionEnds(t *testing.T) {
+	t.Parallel()
+	for _, door := range []string{"archive", "stop"} {
+		t.Run(door, func(t *testing.T) {
+			t.Parallel()
+			f := newRequestFixture(t)
+			f.mockClaudeHoldingTheTurn(t, "halfway")
+			ack := f.runningRequest(t, "work on it")
+			var row store.ThreadRequest
+			if door == "archive" {
+				if err := archiveThread(f.app, ack.ThreadID); err != nil {
+					t.Fatal(err)
+				}
+				row = f.awaitRequestState(t, ack.Token, store.ThreadRequestInterrupted)
+				if !strings.HasPrefix(string(row.Answer), threadtools.InterruptSessionEndedMidTurn) {
+					t.Fatalf("answer = %q, want the session's end mid-turn", row.Answer)
+				}
+				return
+			}
+			if _, err := f.app.StopThreadAgentRow(t.Context(), f.caller.ID, ack.Token); err != nil {
+				t.Fatal(err)
+			}
+			row = f.awaitRequestState(t, ack.Token, store.ThreadRequestCancelled)
+			if string(row.Answer) != threadRequestUserStop {
+				t.Fatalf("answer = %q, want the user's stop", row.Answer)
+			}
+		})
+	}
+}

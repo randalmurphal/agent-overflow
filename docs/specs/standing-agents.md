@@ -770,7 +770,10 @@ leaves the threads it does not own as they are. Besides hiding, the one
 deliberate difference is that an archive leaves the workflow runs that
 report to the thread running: the next wake of each finds the thread
 archived, clears its binding and reports to the workflows overlay
-instead. The Stop, on the computer that holds the thread:
+instead. A request open on the thread is not settled by an archive as
+step 4 settles it: the session's end settles it `interrupted`, as it
+does for any session that ends. The Stop, on the computer that holds the
+thread:
 
 1. Fences the thread until the Stop ends: an app-written message for it
    is refused (`the thread is being stopped`) and no session is started
