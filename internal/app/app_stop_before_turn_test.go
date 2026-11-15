@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -126,7 +127,7 @@ func TestStopBeforeAClaudeTurnOpensEndsInOneOutcome(t *testing.T) {
 			t.Cleanup(func() { _ = app.StopSession(thread.ID) })
 
 			const message = "stop me before I start"
-			if err := app.SendMessage(thread.ID, message, nil); err != nil {
+			if err := app.SendMessage(context.Background(), thread.ID, message, nil); err != nil {
 				t.Fatalf("SendMessage: %v", err)
 			}
 			turnIndex := -1
