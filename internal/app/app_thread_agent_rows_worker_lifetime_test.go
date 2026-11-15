@@ -302,9 +302,9 @@ func TestAWorkerContinuedFromItsPaneReopensForItsSpawner(t *testing.T) {
 	resolveApprovalOn(t, f.app, ack.ThreadID, "follow-up-approval")
 	f.awaitWorker(t, f.caller.ID, ack.Token, workerRunning)
 
-	// The Agents row's Stop ends the worker's turn: back to Past.
-	if stop, err := f.app.StopThreadAgentRow(t.Context(), f.caller.ID, ack.Token); err != nil || !stop.Interrupted {
-		t.Fatalf("Stop = %+v, %v; want the worker interrupted", stop, err)
+	// Stop All reaches the open row and ends the worker's turn: back to Past.
+	if stops, err := f.app.StopThreadAgentRows(t.Context(), f.caller.ID); err != nil || len(stops) != 1 || stops[0].Token != ack.Token || !stops[0].Interrupted {
+		t.Fatalf("Stop All = %+v, %v; want the worker's row stopped and the worker interrupted", stops, err)
 	}
 	f.awaitWorker(t, f.caller.ID, ack.Token, "")
 	if got := f.workerSummary(t, f.caller.ID); got.Open != 0 || got.NeedYou != 0 {

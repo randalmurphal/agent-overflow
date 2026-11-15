@@ -15,8 +15,10 @@ import (
 // or a message is queued, and each of those reports itself.
 //
 // The record has one writer, reassessWorker, which reads why a thread is
-// not at rest (workerUnrest) and stores it; the Agents rows' emit tap
-// decides when (tapThreadAgentRows, through noteWorkerLiveness). Every
+// not at rest (workerUnrest) and stores it. noteWorkerLiveness is the one
+// way a source's change asks for that: the Agents rows' emit tap calls it
+// for turns, prompts and session deaths (tapThreadAgentRows), the
+// sends-pending observer for queue changes (runSendsPendingWorker). Every
 // reader, the listing's reads, the row view, the change frames' gates and
 // Past, consumes only what it stored.
 
