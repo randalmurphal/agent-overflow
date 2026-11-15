@@ -197,6 +197,7 @@ export {
     UserMessageRevertedEvent,
     VerifyEditDiffsRequest,
     VerifyEditDiffsResult,
+    WebviewGPUVsync,
     WorkflowAgentAmendSeedsInput,
     WorkflowAgentAmendSeedsResult,
     WorkflowAgentChildRun,

@@ -8951,6 +8951,44 @@ export class VerifyEditDiffsResult {
 }
 
 /**
+ * WebviewGPUVsync is the Windows launcher's GPU vsync preference (Settings
+ * > Performance): the saved value and the value this session runs with. A
+ * difference is a change waiting on the next launch.
+ */
+export class WebviewGPUVsync {
+    /**
+     * Disabled is the saved preference: the launcher starts its WebView2
+     * environments with --disable-gpu-vsync on its next start.
+     */
+    "disabled": boolean;
+
+    /**
+     * Launched is the preference this session's launcher started with.
+     */
+    "launched": boolean;
+
+    /** Creates a new WebviewGPUVsync instance. */
+    constructor($$source: Partial<WebviewGPUVsync> = {}) {
+        if (!("disabled" in $$source)) {
+            this["disabled"] = false;
+        }
+        if (!("launched" in $$source)) {
+            this["launched"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new WebviewGPUVsync instance from a string or object.
+     */
+    static createFrom($$source: any = {}): WebviewGPUVsync {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new WebviewGPUVsync($$parsedSource as Partial<WebviewGPUVsync>);
+    }
+}
+
+/**
  * WorkflowAgentAmendSeedsInput is `run amend`. Seeds is a partial object: only
  * the named keys change, every other seed the run froze is left alone. Clearing
  * a seed is deliberately not expressible — an absent optional input and one

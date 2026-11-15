@@ -10,8 +10,10 @@ import { resetBindingMocks, setBindingMock } from '../../../../test/mocks/bindin
 import { normalizedTextContent } from '../../../../test/helpers/textContent';
 import {
   beginThreadRowDrag,
+  encodeThreadDragPayload,
   endThreadRowDrag,
   THREAD_ROW_DRAG_MIME,
+  type ThreadDragPayload,
   threadDragPayloadForEvent,
 } from '../../../utils/threadDragPayload';
 import { resetSidebarForTest } from '../../../stores/sidebar.svelte';
@@ -374,8 +376,11 @@ describe('<ProjectThreadList> thread groups', () => {
     };
   }
 
-  function dragInit(payload: Record<string, unknown>) {
-    const raw = JSON.stringify(payload);
+  /** A thread row's drag as the row starts it: its record, and its id on
+   * the DataTransfer. */
+  function dragInit(payload: ThreadDragPayload) {
+    beginThreadRowDrag(payload);
+    const raw = encodeThreadDragPayload(payload);
     return {
       dataTransfer: {
         types: [THREAD_ROW_DRAG_MIME],
@@ -450,7 +455,7 @@ describe('<ProjectThreadList> thread groups', () => {
 
     await fireEvent.drop(
       getByTestId('project-thread-list'),
-      dragInit({ threadId: 'm1', title: 'm1', projectId: 'p1', groupId: 'g1' }),
+      dragInit({ threadId: 'm1', projectId: 'p1', groupId: 'g1' }),
     );
     for (let i = 0; i < 5; i += 1) await Promise.resolve();
 
@@ -464,7 +469,7 @@ describe('<ProjectThreadList> thread groups', () => {
 
     await fireEvent.drop(
       getByTestId('project-thread-list'),
-      dragInit({ threadId: 'l1', title: 'l1', projectId: 'p1' }),
+      dragInit({ threadId: 'l1', projectId: 'p1' }),
     );
     for (let i = 0; i < 5; i += 1) await Promise.resolve();
 
@@ -478,12 +483,12 @@ describe('<ProjectThreadList> thread groups', () => {
 
     await fireEvent.dragOver(
       list,
-      dragInit({ threadId: 'm1', title: 'm1', projectId: 'p1', groupId: 'g1' }),
+      dragInit({ threadId: 'm1', projectId: 'p1', groupId: 'g1' }),
     );
     await tick();
     expect(list.getAttribute('data-ungroup-target')).toBe('true');
 
-    await fireEvent.dragLeave(list, dragInit({ threadId: 'm1', title: 'm1', projectId: 'p1', groupId: 'g1' }));
+    await fireEvent.dragLeave(list, dragInit({ threadId: 'm1', projectId: 'p1', groupId: 'g1' }));
     await tick();
     expect(list.getAttribute('data-ungroup-target')).toBeNull();
   });
@@ -496,7 +501,7 @@ describe('<ProjectThreadList> thread groups', () => {
     const memberRow = container.querySelector('[data-sidebar-thread-id="m1"]') as HTMLElement;
     await fireEvent.dragOver(
       memberRow,
-      dragInit({ threadId: 'l1', title: 'l1', projectId: 'p1' }),
+      dragInit({ threadId: 'l1', projectId: 'p1' }),
     );
     await tick();
 
@@ -514,7 +519,7 @@ describe('<ProjectThreadList> thread groups', () => {
     // which would otherwise offer to ungroup — never sees the drop.
     await fireEvent.drop(
       getByTestId('thread-group-row-shell'),
-      dragInit({ threadId: 'm1', title: 'm1', projectId: 'p1', groupId: 'g1' }),
+      dragInit({ threadId: 'm1', projectId: 'p1', groupId: 'g1' }),
     );
     for (let i = 0; i < 5; i += 1) await Promise.resolve();
 
@@ -528,7 +533,7 @@ describe('<ProjectThreadList> thread groups', () => {
     const member = mkThread('m1', { projectId: 'p1', groupId: 'g1' });
     const { getByTestId } = renderList([member], [mkGroup()]);
     const list = getByTestId('project-thread-list');
-    const init = dragInit({ threadId: 'm1', title: 'm1', projectId: 'p1', groupId: 'g1' });
+    const init = dragInit({ threadId: 'm1', projectId: 'p1', groupId: 'g1' });
 
     await fireEvent.dragOver(list, init);
     await tick();
@@ -549,7 +554,7 @@ describe('<ProjectThreadList> thread groups', () => {
     const sibling = mkThread('m2', { projectId: 'p1', groupId: 'g1' });
     const { getByTestId, container } = renderList([member, sibling], [mkGroup()]);
     const list = getByTestId('project-thread-list');
-    const init = dragInit({ threadId: 'm1', title: 'm1', projectId: 'p1', groupId: 'g1' });
+    const init = dragInit({ threadId: 'm1', projectId: 'p1', groupId: 'g1' });
 
     await fireEvent.dragOver(list, init);
     await tick();
@@ -571,14 +576,14 @@ describe('<ProjectThreadList> thread groups', () => {
     const loose = mkThread('l1', { projectId: 'p1' });
     const { getByTestId, container } = renderList([member, loose], [mkGroup()]);
 
-    const loosePayload = { threadId: 'l1', title: 'l1', projectId: 'p1' };
+    const loosePayload = { threadId: 'l1', projectId: 'p1' };
     beginThreadRowDrag(loosePayload);
     const memberRow = container.querySelector('[data-sidebar-thread-id="m1"]') as HTMLElement;
     await fireEvent.drop(memberRow, dragInit(loosePayload));
     for (let i = 0; i < 5; i += 1) await Promise.resolve();
     expect(inFlightPayload()).toBeNull();
 
-    const memberPayload = { threadId: 'm1', title: 'm1', projectId: 'p1', groupId: 'g1' };
+    const memberPayload = { threadId: 'm1', projectId: 'p1', groupId: 'g1' };
     beginThreadRowDrag(memberPayload);
     await fireEvent.drop(getByTestId('project-thread-list'), dragInit(memberPayload));
     for (let i = 0; i < 5; i += 1) await Promise.resolve();
@@ -614,7 +619,7 @@ describe('<ProjectThreadList> thread groups', () => {
     const { container } = renderList([member, loose], [mkGroup()]);
 
     const memberRow = container.querySelector('[data-sidebar-thread-id="m1"]') as HTMLElement;
-    await fireEvent.drop(memberRow, dragInit({ threadId: 'l1', title: 'l1', projectId: 'p1' }));
+    await fireEvent.drop(memberRow, dragInit({ threadId: 'l1', projectId: 'p1' }));
     for (let i = 0; i < 5; i += 1) await Promise.resolve();
 
     expect(setGroup).toHaveBeenCalledWith(['l1'], 'g1');

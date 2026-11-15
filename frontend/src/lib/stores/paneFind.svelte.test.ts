@@ -6,7 +6,7 @@ import {
   closePaneFind,
   declarePaneFindRegions,
   declarePaneFindSurface,
-  dropPaneFind,
+  dropPaneFindRegion,
   focusFirstPaneFindResult,
   getPaneFind,
   hasPaneFindProvider,
@@ -473,17 +473,21 @@ describe('a nested find surface', () => {
     expect(paneFindTarget('a')).toBe('a');
   });
 
-  it('drops one key\'s state and reads, leaving its siblings', async () => {
-    registerPaneFindProvider(tab1, provider());
-    registerPaneFindProvider(tab2, provider());
-    openPaneFind(tab1);
+  it('drops a region\'s state and reads under every pane, leaving its siblings', async () => {
+    const elsewhere = paneFindRegionKey('b', 'terminal:t1');
+    const longer = paneFindRegionKey('a', 'terminal:t11');
+    for (const key of [tab1, tab2, elsewhere, longer]) {
+      registerPaneFindProvider(key, provider());
+      openPaneFind(key);
+    }
     setPaneFindQuery(tab1, 'gone');
-    openPaneFind(tab2);
     const ran: string[] = [];
     paneFindReads(tab1).request(() => new Promise<void>(() => { ran.push('stuck'); }));
-    dropPaneFind(tab1);
+    dropPaneFindRegion('terminal:t1');
     expect(getPaneFind(tab1)).toBeNull();
+    expect(getPaneFind(elsewhere)).toBeNull();
     expect(getPaneFind(tab2)?.open).toBe(true);
+    expect(getPaneFind(longer)?.open).toBe(true);
     paneFindReads(tab1).request(async () => { ran.push('fresh'); });
     expect(ran).toEqual(['stuck', 'fresh']);
   });
