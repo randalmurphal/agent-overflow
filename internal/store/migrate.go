@@ -1740,6 +1740,7 @@ CREATE INDEX idx_import_history_items_joined_send_ids
 	{Version: threadWakeCarrierMigrationVersion, Name: "thread_wake_carrier", SQL: threadWakeCarrierV149SQL},
 	{Version: retireFeaturesMigrationVersion, Name: "retire_features", SQL: retireFeaturesV150SQL, Rebuild: true},
 	{Version: assistantsMigrationVersion, Name: "assistants", SQL: assistantsV151SQL, Fix: fillAssistantLedger},
+	{Version: remoteCancelOwedMigrationVersion, Name: "remote_cancel_owed", SQL: remoteCancelOwedV152SQL},
 }
 
 // MigrationStep describes one pending migration as it begins, or a

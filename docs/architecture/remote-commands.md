@@ -245,7 +245,11 @@ A destination stops a running job that no owner has asked about for an hour,
 which covers a source that quit uncleanly or lost its pairing; the receipt
 says so. A clean source restart resumes polling within that grace. Status and
 cancellation belong to the original source conversation and the paired source
-device. The destination bounds active processes and retained disk output, with
+device. A cancel a Stop or an archive sends that the destination does not take
+is reported by that Stop or archive and owed on the watch
+(`cancel_owed_at`): the source watcher sends it again every 30 seconds until
+the destination takes it or holds no such job, and settles it once the job is
+owed longer than the hour, by which the destination has stopped it. The destination bounds active processes and retained disk output, with
 truncation reported explicitly.
 After a destination restart, unfinished receipts say interrupted and are never
 automatically rerun. A process crash during a log overwrite reports the incomplete log explicitly; the acceptance

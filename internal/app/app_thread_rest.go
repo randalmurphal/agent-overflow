@@ -142,14 +142,14 @@ func (a *App) stopRestingThreadWork(work restingThreadWork) error {
 	// with it, so the retry cannot bring the thread back.
 	wakesErr := a.withdrawHeldThreadWakes(id, work.held)
 	a.cancelOwnedAsks(ctx, id, work.asks)
-	remoteErr := a.cancelRemoteCommands(ctx, id, work.commands, work.cause.keepFinished)
+	undelivered, remoteErr := a.cancelRemoteCommands(ctx, id, work.commands, work.cause.keepFinished)
 	// A finished job's completion an archive keeps is kept for the thread:
 	// the cancel keeps its watch, and one already held in the queue goes back
 	// to its watch after the cancel has run. It arrives once the thread is
 	// unarchived. One the cause does not keep was dismissed with the capture,
 	// so its queued message is only taken out.
 	completionsErr := a.withdrawHeldRemoteCompletions(id, work.held)
-	return errors.Join(work.err, withdrawErr, wakesErr, remoteErr, completionsErr)
+	return errors.Join(work.err, withdrawErr, wakesErr, undelivered, remoteErr, completionsErr)
 }
 
 // errThreadResting refuses an app-written message for a thread a Stop is

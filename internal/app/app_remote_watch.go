@@ -19,6 +19,7 @@ import (
 
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/keyedlock"
+	"agent-overflow/internal/remotejobs"
 	"agent-overflow/internal/rpcclient"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadmode"
@@ -210,6 +211,7 @@ func (a *App) startRemoteWatches() {
 				return
 			case <-ticker.C:
 			}
+			a.retryOwedRemoteCancels(time.Now())
 			rows, err := a.store.ListRemoteWatches("", time.Now().UnixMilli(), 32)
 			if err != nil {
 				log.Printf("remote completion watches: %v", err)
@@ -601,16 +603,17 @@ func (a *App) remoteCommandStatus(ctx context.Context, computerID, requestID str
 // delivers it once the conversation is unarchived. The watcher may not have
 // seen a finish yet; the destination answers the cancel with the receipt as
 // it stood, and a finished one there is recorded and kept. Parked tool calls
-// return at once. Reaching the destination is best effort; a job whose
-// cancel could not be delivered is logged and still ends there once this
-// computer stops polling it, so the caller's operation proceeds. Only store
-// failures are returned.
+// return at once. A job whose cancel could not be delivered is owed it, and
+// the watcher sends it again (retryOwedRemoteCancels) while the watch stays;
+// a delete cascades the watch, leaving it to the destination's owner grace.
+// Only store failures are returned, so the delete or move proceeds.
 func (a *App) cancelThreadRemoteCommands(ctx context.Context, threadID string, keepFinished bool) error {
 	rows, err := a.disarmRemoteCommands(threadID)
 	if err != nil {
 		return err
 	}
-	return a.cancelRemoteCommands(ctx, threadID, rows, keepFinished)
+	_, err = a.cancelRemoteCommands(ctx, threadID, rows, keepFinished)
+	return err
 }
 
 // disarmRemoteCommands ends the thread's parked remote waits and returns the
@@ -626,12 +629,15 @@ func (a *App) disarmRemoteCommands(threadID string) ([]store.RemoteWatch, error)
 
 // cancelRemoteCommands cancels and dismisses exactly the commands named,
 // keeping a finished one's notification when keepFinished is set
-// (cancelThreadRemoteCommands).
-func (a *App) cancelRemoteCommands(ctx context.Context, threadID string, rows []store.RemoteWatch, keepFinished bool) error {
+// (cancelThreadRemoteCommands). A cancel the destination did not take is
+// owed and named in undelivered; the dismissal goes ahead, so the thread is
+// told nothing of the job either way. err is a store failure.
+func (a *App) cancelRemoteCommands(ctx context.Context, threadID string, rows []store.RemoteWatch, keepFinished bool) (undelivered, err error) {
 	dismiss := a.store.DismissRemoteWatch
 	if keepFinished {
 		dismiss = a.store.DismissUnfinishedRemoteWatch
 	}
+	var cancels []error
 	for _, w := range rows {
 		unfinished := w.Receipt.ID == "" || w.Receipt.State == "running"
 		if !unfinished && keepFinished {
@@ -643,24 +649,76 @@ func (a *App) cancelRemoteCommands(ctx context.Context, threadID string, rows []
 			err := a.backends.CallAgentPeer(call, w.ComputerID, "RemoteCommandCancel", &receipt, w.RequestID)
 			cancel()
 			if err != nil {
-				log.Printf("remote command %s on %s: cancel for conversation %s not delivered; the destination stops it after the owner grace: %v", w.RequestID, w.ComputerID, threadID, err)
+				log.Printf("remote command %s on %s: cancel for conversation %s not delivered, sent again until it is: %v", w.RequestID, w.ComputerID, threadID, err)
+				now := time.Now()
+				if oweErr := a.store.OweRemoteCancel(w.ComputerID, w.RequestID, now.UnixMilli(), now.Add(remoteCancelRetryDelay).UnixMilli()); oweErr != nil {
+					return errors.Join(cancels...), oweErr
+				}
+				cancels = append(cancels, fmt.Errorf("cancel remote command %q: %s; it is sent again until the computer takes it",
+					w.Label, remoteErrorText(a.remoteOperationError("cancel", w.ComputerID, w.RequestID, err))))
 			} else if keepFinished && receipt.ID == w.RequestID && receipt.SourceThreadID == w.LaunchedIn && receipt.State != "running" {
 				// The destination snapshots the receipt under the lock that
 				// signals the cancel, so a finished one ended on its own.
 				if err := a.observeRemoteCommand(w.ComputerID, w.RequestID, threadID, receipt); err != nil {
-					return err
+					return errors.Join(cancels...), err
 				}
 				continue
 			}
 		}
 		if err := dismiss(w.ComputerID, w.RequestID); err != nil {
-			return err
+			return errors.Join(cancels...), err
 		}
 	}
 	if len(rows) > 0 {
 		a.emitBackgroundChanged(threadID)
 	}
-	return nil
+	return errors.Join(cancels...), nil
+}
+
+// remoteCancelRetryDelay is how long an owed cancel waits before it is sent
+// again.
+const remoteCancelRetryDelay = 30 * time.Second
+
+// retryOwedRemoteCancels sends again each owed cancel due by now. One the
+// destination takes, or answers holding no such job of this computer's, is
+// settled. One owed longer than the destination's owner grace is settled
+// too: nothing here has polled the job since its cancel was first owed, so
+// the destination has ended it on its own.
+func (a *App) retryOwedRemoteCancels(now time.Time) {
+	rows, err := a.store.ListOwedRemoteCancels(now.UnixMilli(), 32)
+	if err != nil {
+		log.Printf("remote command cancels: %v", err)
+		return
+	}
+	for _, w := range rows {
+		if now.Sub(time.UnixMilli(w.CancelOwedAt)) > remotejobs.DefaultOwnerGrace {
+			log.Printf("remote command %s on %s: owed cancel settled, the destination has ended it after the owner grace", w.RequestID, w.ComputerID)
+			a.settleOwedRemoteCancel(w)
+			continue
+		}
+		call, cancel := context.WithTimeout(a.lifeCtx(), 20*time.Second)
+		var receipt RemoteCommand
+		err := a.backends.CallAgentPeer(call, w.ComputerID, "RemoteCommandCancel", &receipt, w.RequestID)
+		cancel()
+		code := ""
+		if err != nil {
+			code, _, _ = remoteErrorDetails("cancel", err)
+		}
+		if err == nil || code == "remote_job_not_found" || code == "remote_wrong_owner" {
+			a.settleOwedRemoteCancel(w)
+			continue
+		}
+		log.Printf("remote command %s on %s: owed cancel not delivered, sent again later: %v", w.RequestID, w.ComputerID, err)
+		if err := a.store.OweRemoteCancel(w.ComputerID, w.RequestID, w.CancelOwedAt, now.Add(remoteCancelRetryDelay).UnixMilli()); err != nil {
+			log.Printf("remote command %s on %s: reschedule the owed cancel: %v", w.RequestID, w.ComputerID, err)
+		}
+	}
+}
+
+func (a *App) settleOwedRemoteCancel(w store.RemoteWatch) {
+	if err := a.store.SettleRemoteCancel(w.ComputerID, w.RequestID); err != nil {
+		log.Printf("remote command %s on %s: settle the owed cancel: %v", w.RequestID, w.ComputerID, err)
+	}
 }
 
 // remoteTrayToolName is the tray projection's tool name: the remote_run call

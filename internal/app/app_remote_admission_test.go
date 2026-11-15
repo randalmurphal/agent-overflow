@@ -27,6 +27,15 @@ type remoteAdmissionReceiver struct {
 	*App
 	calls, statusCalls atomic.Int32
 	refusal            error
+	// cancelRefusal, when set, refuses every RemoteCommandCancel.
+	cancelRefusal atomic.Pointer[error]
+}
+
+func (r *remoteAdmissionReceiver) RemoteCommandCancel(ctx context.Context, id string) (RemoteCommand, error) {
+	if refusal := r.cancelRefusal.Load(); refusal != nil {
+		return RemoteCommand{}, *refusal
+	}
+	return r.App.RemoteCommandCancel(ctx, id)
 }
 
 func (r *remoteAdmissionReceiver) RemoteCommandStart(ctx context.Context, workspace gitapp.WorkspaceRef, request RemoteCommandRequest) (RemoteCommand, error) {

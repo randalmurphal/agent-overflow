@@ -45,6 +45,9 @@ type RemoteWatch struct {
 	// delivery was given up, the completion kept on the watch.
 	WakeAttempts int64  `json:"-"`
 	WakeIssue    string `json:"wakeIssue,omitempty"`
+	// CancelOwedAt is when a cancel the job is owed was first owed, 0 when
+	// none is (OweRemoteCancel).
+	CancelOwedAt int64 `json:"-"`
 }
 
 // remoteWatchesV91SQL is the table as v91 made it. v150 rebuilt it with
@@ -62,12 +65,12 @@ CREATE INDEX idx_remote_watches_thread ON remote_watches(thread_id,created_at DE
 
 const remoteWatchesCommandV98SQL = `ALTER TABLE remote_watches ADD COLUMN command TEXT NOT NULL DEFAULT '';`
 
-const remoteWatchColumns = `computer_id,request_id,thread_id,launched_in_thread_id,fingerprint,label,command,receipt,error,notification,next_check,created_at,coalesce(confirmed_at,0),wake_attempts,wake_issue`
+const remoteWatchColumns = `computer_id,request_id,thread_id,launched_in_thread_id,fingerprint,label,command,receipt,error,notification,next_check,created_at,coalesce(confirmed_at,0),wake_attempts,wake_issue,cancel_owed_at`
 
 func scanRemoteWatch(row rowScanner) (RemoteWatch, error) {
 	var w RemoteWatch
 	var raw string
-	err := row.Scan(&w.ComputerID, &w.RequestID, &w.ThreadID, &w.LaunchedIn, &w.Fingerprint, &w.Label, &w.Command, &raw, &w.Error, &w.Notification, &w.NextCheck, &w.CreatedAt, &w.ConfirmedAt, &w.WakeAttempts, &w.WakeIssue)
+	err := row.Scan(&w.ComputerID, &w.RequestID, &w.ThreadID, &w.LaunchedIn, &w.Fingerprint, &w.Label, &w.Command, &raw, &w.Error, &w.Notification, &w.NextCheck, &w.CreatedAt, &w.ConfirmedAt, &w.WakeAttempts, &w.WakeIssue, &w.CancelOwedAt)
 	if err == nil {
 		err = json.Unmarshal([]byte(raw), &w.Receipt)
 	}
@@ -441,6 +444,47 @@ func (s *Store) DeleteRemoteWatchesBefore(cutoff int64) (int64, error) {
 		return 0, fmt.Errorf("store: count deleted remote watches: %w", err)
 	}
 	return deleted, nil
+}
+
+// OweRemoteCancel records that the job is owed a cancel the destination did
+// not take, to be sent again at next. The first owing time is kept, so the
+// watcher knows when the destination has ended the job on its own.
+func (s *Store) OweRemoteCancel(computerID, requestID string, now, next int64) error {
+	_, err := s.db.Exec(`UPDATE remote_watches SET
+ cancel_owed_at=CASE WHEN cancel_owed_at=0 THEN ? ELSE cancel_owed_at END, cancel_next_at=?
+ WHERE computer_id=? AND request_id=?`, now, next, computerID, requestID)
+	return err
+}
+
+// owedRemoteCancelsWhere is the watcher's due list of owed cancels, the
+// predicate of idx_remote_watches_cancel_owed.
+const owedRemoteCancelsWhere = `WHERE cancel_owed_at <> 0 AND cancel_next_at <= ? ORDER BY cancel_next_at`
+
+// ListOwedRemoteCancels returns, soonest first, the owed cancels due by due.
+func (s *Store) ListOwedRemoteCancels(due int64, limit int) ([]RemoteWatch, error) {
+	if limit < 1 || limit > 256 {
+		limit = 100
+	}
+	rows, err := s.reader().Query(`SELECT `+remoteWatchColumns+` FROM remote_watches `+owedRemoteCancelsWhere+` LIMIT `+strconv.Itoa(limit), due)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []RemoteWatch{}
+	for rows.Next() {
+		w, e := scanRemoteWatch(rows)
+		if e != nil {
+			return nil, e
+		}
+		out = append(out, w)
+	}
+	return out, rows.Err()
+}
+
+// SettleRemoteCancel records that the job owes no cancel any more.
+func (s *Store) SettleRemoteCancel(computerID, requestID string) error {
+	_, err := s.db.Exec(`UPDATE remote_watches SET cancel_owed_at=0, cancel_next_at=0 WHERE computer_id=? AND request_id=?`, computerID, requestID)
+	return err
 }
 
 func (s *Store) HasUnfinishedRemoteWatches(threadID string) (bool, error) {

@@ -818,7 +818,9 @@ thread:
    its spawner are withdrawn, and the messages the person queued in its
    composer are dropped with the queue.
 6. Withdraws what the app queued for it and cancels its asks and the
-   commands it started on paired computers, as an archive does.
+   commands it started on paired computers, as an archive does. A cancel
+   the computer does not take is named in the failures and sent again
+   until it is ([remote commands](../architecture/remote-commands.md)).
 7. Stops every request it made: a reminder is dropped, a send or ask is
    cancelled with its wake disarmed and only the turn it started cut,
    and a spawn's thread, in any placement and settled or not, is

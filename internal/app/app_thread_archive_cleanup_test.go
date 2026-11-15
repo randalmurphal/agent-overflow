@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/google/uuid"
 
 	"agent-overflow/internal/buildvariant/remotetest"
+	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/remotejobs"
 	"agent-overflow/internal/store"
@@ -188,5 +190,70 @@ func waitRemoteJobState(t *testing.T, receiver *remoteAdmissionReceiver, id stri
 			t.Fatalf("remote command %s stayed %s", id, job.State)
 		}
 		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// A remote command whose cancel the destination does not take is named in
+// what a Stop or an archive reports, and the cancel stays owed: the watcher
+// sends it again until the destination takes it, which stops the command.
+func TestARemoteCancelTheDestinationRefusesIsReportedAndSentAgain(t *testing.T) {
+	t.Parallel()
+	remotetest.Require(t)
+	for name, rest := range map[string]func(*App, string) string{
+		"stop": func(a *App, id string) string {
+			var result ThreadAgentStop
+			a.restThreadHere(context.Background(), id, userRestStop(), map[string]bool{}, &result)
+			return strings.Join(result.Failures, "\n")
+		},
+		"archive": func(a *App, id string) string {
+			result, err := a.ArchiveThread(id)
+			if err != nil {
+				return err.Error()
+			}
+			return result.CleanupError
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			source, receiver, ctx, input := remoteAdmissionFixture(t)
+			receiver.remoteJobs.Close()
+			manager, err := remotejobs.New(ctx, receiver.store, func(ctx context.Context, _ string, _ []string, _ io.Writer) (remotejobs.Outcome, error) {
+				<-ctx.Done()
+				return remotejobs.Outcome{ExitCode: -1}, ctx.Err()
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			receiver.remoteJobs = manager
+			t.Cleanup(manager.Close)
+			started, err := source.AgentRemoteStart(ctx, input)
+			if err != nil || started.State != "running" {
+				t.Fatalf("start: %+v %v", started, err)
+			}
+			refusal := errorsx.Public("remote_not_ready", "Remote commands are not ready on this computer.", nil)
+			receiver.cancelRefusal.Store(&refusal)
+
+			if reported := rest(source, started.SourceThreadID); !strings.Contains(reported, "cancel remote command") || !strings.Contains(reported, "sent again") {
+				t.Fatalf("reported = %q, want the command whose cancel failed named", reported)
+			}
+			watch, err := source.store.GetRemoteWatch(input.ComputerID, input.Request.ID)
+			if err != nil || watch.CancelOwedAt == 0 || watch.Notification != "dismissed" {
+				t.Fatalf("watch = %+v, %v; want its completion dismissed and its cancel owed", watch, err)
+			}
+			if job, err := receiver.store.GetRemoteJob(input.Request.ID); err != nil || job.State != "running" {
+				t.Fatalf("job = %+v, %v; want it still running", job, err)
+			}
+
+			source.retryOwedRemoteCancels(time.Now().Add(time.Minute))
+			if watch, err := source.store.GetRemoteWatch(input.ComputerID, input.Request.ID); err != nil || watch.CancelOwedAt == 0 {
+				t.Fatalf("a refused retry settled the owed cancel: %+v, %v", watch, err)
+			}
+			receiver.cancelRefusal.Store(nil)
+			source.retryOwedRemoteCancels(time.Now().Add(2 * time.Minute))
+			waitRemoteJobState(t, receiver, input.Request.ID, func(state string) bool { return state != "running" })
+			if watch, err := source.store.GetRemoteWatch(input.ComputerID, input.Request.ID); err != nil || watch.CancelOwedAt != 0 {
+				t.Fatalf("watch after the cancel landed = %+v, %v; want nothing owed", watch, err)
+			}
+		})
 	}
 }
