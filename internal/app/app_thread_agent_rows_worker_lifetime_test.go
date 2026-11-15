@@ -600,3 +600,52 @@ func TestLiveWorkersAcrossArchiveDeleteAndPlacement(t *testing.T) {
 		return !slices.Contains(f.app.liveWorkerThreads(), owned.ID)
 	})
 }
+
+// A spawner's handoff moves its spawn to the successor: a worker blocked
+// across the handoff keeps its row open under the successor, counted there
+// and not under the superseded thread, and its later changes frame the
+// successor, never the superseded thread.
+func TestAHandOffKeepsALiveWorkersRowUnderTheSuccessor(t *testing.T) {
+	t.Parallel()
+	f := newAssistantFixture(t)
+	f.watchAgentRows()
+	f.assistantCaller(t)
+	// The handoff starts the successor's session for its opening block.
+	installMockClaudeReplies(t, f.app, "ready")
+	old := f.caller.ID
+	worker := f.settledSpawn(t, "handed-spawn", old)
+	approvalOn(t, f.app, worker.ID, "handed-approval")
+	f.awaitWorker(t, old, "handed-spawn", workerBlocked)
+
+	successor, err := f.app.StartNextAssistantThread(t.Context(), old)
+	if err != nil {
+		t.Fatalf("StartNextAssistantThread: %v", err)
+	}
+	row := f.awaitWorker(t, successor.ID, "handed-spawn", workerBlocked)
+	if !row.open() || row.CallerThreadID != successor.ID {
+		t.Fatalf("row = %+v; want the worker's row open under the successor", row)
+	}
+	if got := f.workerSummary(t, successor.ID); got.Open != 1 {
+		t.Fatalf("successor's summary %+v; want the worker counted", got)
+	}
+	if rows := f.agentRows(t, old).Rows; len(rows) != 0 {
+		t.Fatalf("superseded thread's rows %+v; want none", rows)
+	}
+	if got := f.workerSummary(t, old); got.Open != 0 {
+		t.Fatalf("superseded thread's summary %+v; want none", got)
+	}
+
+	f.app.threadRequestsWG.Wait()
+	oldFrames, newFrames := f.callerAgentFrames(t, old), f.callerAgentFrames(t, successor.ID)
+	resolveApprovalOn(t, f.app, worker.ID, "handed-approval")
+	f.awaitWorker(t, successor.ID, "handed-spawn", "")
+	if got := f.callerAgentFrames(t, successor.ID); got <= newFrames {
+		t.Fatalf("frames to the successor stayed at %d; want the resting worker framed there", got)
+	}
+	if got := f.callerAgentFrames(t, old); got != oldFrames {
+		t.Fatalf("frames to the superseded thread went from %d to %d; want none", oldFrames, got)
+	}
+	if past := f.pastTokens(t, successor.ID); !slices.Equal(past, []string{"handed-spawn"}) {
+		t.Fatalf("successor's past %v; want the spawn", past)
+	}
+}
