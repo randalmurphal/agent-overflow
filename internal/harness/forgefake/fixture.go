@@ -117,6 +117,13 @@ type RepoMerge struct {
 	// own group and its ancestors, lib/api/entities/project_with_access.rb
 	// at v18.0.0); GraphQL Project.maxAccessLevel still answers the role.
 	SharedAccess bool `json:"sharedAccess,omitempty"`
+	// Free is a GitLab project without multiple reviewers and assignees
+	// (Premium): allowsMultipleReviewers and allowsMultipleAssignees are
+	// false, and a set mutation keeps only the first of the list it
+	// would leave, so an APPEND to a list of one drops the addition
+	// (UpdateReviewersService and UpdateAssigneesService take .first(1)
+	// at v18.0.0).
+	Free bool `json:"free,omitempty"`
 }
 
 // Pull is one pull request (GitHub) or merge request (GitLab).
@@ -702,8 +709,8 @@ func (r *Repo) normalize(ids *idSource) error {
 
 func (m *RepoMerge) normalize(forge string) error {
 	if forge == "github" {
-		if m.MergeMethod != "" || m.SquashOption != "" || m.PipelineMustSucceed || m.DiscussionsMustResolve || m.CancelRole != "" || m.SharedAccess {
-			return errors.New("mergeMethod, squashOption, pipelineMustSucceed, discussionsMustResolve, cancelRole and sharedAccess are GitLab project settings")
+		if m.MergeMethod != "" || m.SquashOption != "" || m.PipelineMustSucceed || m.DiscussionsMustResolve || m.CancelRole != "" || m.SharedAccess || m.Free {
+			return errors.New("mergeMethod, squashOption, pipelineMustSucceed, discussionsMustResolve, cancelRole, sharedAccess and free are GitLab project settings")
 		}
 		m.Permission = defaultString(m.Permission, "WRITE")
 		if githubRoles[m.Permission] == 0 {

@@ -593,6 +593,33 @@ func TestGitLabManageMissesAreRefusals(t *testing.T) {
 	}
 }
 
+// On a project that takes one reviewer and one assignee (GitLab Free),
+// a second is dropped without an error; the app says why.
+func TestGitLabFreeProjectSecondPersonThroughTheAppsForgeCode(t *testing.T) {
+	fixture := gitlabManageFixture()
+	fixture.Repos[0].Merge = &forgefake.RepoMerge{Free: true}
+	fixture.Repos[0].Pulls[0].Reviewers, fixture.Repos[0].Pulls[0].ChangeRequests = []string{"bob"}, nil
+	r := newRig(t, fixture)
+	ref := gitlabManageRef()
+	ctx := forgeapi.WithInteractive(t.Context())
+	err := r.core.SetPRPeople(ctx, ref, true, gitops.PRPeopleChange{Add: []gitops.PRPerson{{Login: "carol"}}})
+	if got := explained(t, ref, gitops.ActionReviewers, err); got.Kind != gitops.ForgeErrorRefused ||
+		!strings.Contains(got.Message, "GitLab did not add carol to the reviewers: this project allows one reviewer per merge request; more need GitLab Premium.") {
+		t.Fatalf("a second reviewer = %+v", got)
+	}
+	if err := r.core.SetPRPeople(ctx, ref, false, gitops.PRPeopleChange{Add: []gitops.PRPerson{{Login: "bob"}}}); err != nil {
+		t.Fatalf("a first assignee: %v", err)
+	}
+	err = r.core.SetPRPeople(ctx, ref, false, gitops.PRPeopleChange{Add: []gitops.PRPerson{{Login: "carol"}}})
+	if got := explained(t, ref, gitops.ActionAssignees, err); got.Kind != gitops.ForgeErrorRefused || !strings.Contains(got.Message, "allows one assignee per merge request") {
+		t.Fatalf("a second assignee = %+v", got)
+	}
+	m := mergeRead(t, r, ref).Detail.Manage
+	if got := logins(peopleOf(m.Reviewers)); !slices.Equal(got, []string{"bob"}) || !slices.Equal(logins(m.Assignees), []string{"bob"}) {
+		t.Fatalf("after: reviewers %v, assignees %+v", got, m.Assignees)
+	}
+}
+
 // A batch GitLab applied in part is a partial change naming both halves;
 // an addition the answered list cannot show (it has a next page) may
 // have applied, never a refusal.

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -288,8 +289,9 @@ func (e *Engine) glabMutationMR(c *call, v graphQLVars, field string) (*Repo, *P
 // glabSetPeople answers PRSetReviewers (reviewers) and PRSetAssignees:
 // usernames appended or removed. As GitLab does, a username that is no
 // member of the project (nor already on the list) is skipped, and the
-// answer is the merge request's list as it stands; an added reviewer
-// leaves its note.
+// answer is the merge request's list as it stands, with whether the
+// project allows more than one; an added reviewer leaves its note. A
+// Free project keeps the list's first.
 func glabSetPeople(reviewers bool) func(e *Engine, c *call, v graphQLVars) response {
 	field, list := "mergeRequestSetAssignees", "assignees"
 	if reviewers {
@@ -321,6 +323,10 @@ func glabSetPeople(reviewers bool) func(e *Engine, c *call, v graphQLVars) respo
 				added = append(added, login)
 			}
 		}
+		if r.Merge.Free && len(*current) > 1 {
+			*current = (*current)[:1]
+			added = slices.DeleteFunc(added, func(login string) bool { return !containsFold(*current, login) })
+		}
 		if reviewers && len(added) > 0 {
 			p.Events = append(p.Events, Event{ID: e.ids.next(), Kind: "review_requested", Actor: e.viewer, At: glabNow(), Ref: strings.Join(added, ",")})
 		}
@@ -328,7 +334,9 @@ func glabSetPeople(reviewers bool) func(e *Engine, c *call, v graphQLVars) respo
 		for _, login := range *current {
 			nodes = append(nodes, map[string]any{"username": login})
 		}
-		return graphQLData(map[string]any{field: map[string]any{"errors": []string{}, "mergeRequest": map[string]any{list: glabFirstPage(nodes)}}})
+		return graphQLData(map[string]any{field: map[string]any{"errors": []string{}, "mergeRequest": map[string]any{
+			list: glabFirstPage(nodes), "allowsMultipleReviewers": !r.Merge.Free, "allowsMultipleAssignees": !r.Merge.Free,
+		}}})
 	}
 }
 

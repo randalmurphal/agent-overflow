@@ -175,6 +175,8 @@ export interface ForgeRepoMerge {
   cancelRole?: 'developer' | 'maintainer' | 'no_one';
   /** GitLab: the role comes through a group share, so REST permissions carry none. */
   sharedAccess?: boolean;
+  /** GitLab: one reviewer and one assignee per merge request (no Premium). */
+  free?: boolean;
 }
 
 export interface ForgePipeline {

@@ -793,9 +793,12 @@ ignored) before writing; a mismatch is `git.ErrDescriptionChanged`. A
 removal is sent as asked, even of someone or something the last read did
 not show. GitHub ignores an assignee it cannot assign without an error, so
 the next read is the answer. A GitLab set mutation skips a non-member or
-an unknown label id without an error; the adapter checks the list the
-mutation answers (`first: 100` with `pageInfo { hasNextPage }`). A miss
-from a whole list is a refusal naming who or what was not applied; one
+an unknown label id without an error, and on a project without multiple
+reviewers or assignees (GitLab Free) keeps only the first of the list;
+the adapter checks the list the mutation answers (`first: 100` with
+`pageInfo { hasNextPage }`, and `allowsMultipleReviewers` or
+`allowsMultipleAssignees`). A miss from a whole list is a refusal naming
+who or what was not applied, and why when the project takes one; one
 the list cannot show (it has a next page) may have applied; some applied
 and some not is a partial change naming both, also as the first write.
 
