@@ -39,11 +39,18 @@ function row(token: string, over: Partial<ThreadAgentRow> = {}): ThreadAgentRow 
   } as ThreadAgentRow;
 }
 
-async function openTray(rows: (threadId: string) => ThreadAgentRow[]) {
+async function openTray(rows: (threadId: string) => ThreadAgentRow[], pastRows: (threadId: string) => ThreadAgentRow[] = () => []) {
   noteThread('thread-1', '', 2);
   const pane = await buildPane();
   const listed = rows(pane.threadId!);
+  const past = pastRows(pane.threadId!);
   setBindingMock('ListThreadAgentRows', async () => ({ rows: listed, hidden: false }));
+  setBindingMock('ListThreadPastAgentRows', async (_id: string, after: { token: string }, limit: number) => {
+    const start = after.token ? past.findIndex((r) => r.token === after.token) + 1 : 0;
+    const page = past.slice(start, start + limit);
+    const last = page[page.length - 1];
+    return { rows: page, total: past.length, next: start + limit < past.length && last ? { settledAt: last.settledAt, token: last.token } : undefined };
+  });
   const view = render(ActivityRailHost, { props: { pane } });
   const toggle = await view.findByTestId('activity-rail-agents-toggle');
   return { pane, view, toggle };
@@ -65,6 +72,7 @@ describe('the Agents segment', () => {
     setBindingMock('ListProviderAccounts', async () => []);
     setBindingMock('GetProviderLoginState', async () => null);
     setBindingMock('GetRateLimitsSnapshots', async () => []);
+    setBindingMock('ListThreadPastAgentRows', async () => ({ rows: [], total: 0 }));
     navigate.mockClear();
     opened.mockClear();
     companion.mockClear();
@@ -225,6 +233,121 @@ describe('the Agents segment', () => {
     await waitFor(() => expect(toastTexts()).toEqual([
       'success: Withdrew the incoming request before this thread\'s agent read it.',
     ]));
+  });
+
+  it('lists Past below the open rows, newest first, with no Stop, paged by Show more', async () => {
+    const settledAt = Date.now() - 3 * 60_000;
+    const { view, toggle } = await openTray(
+      (caller) => [row('child', { callerThreadId: caller })],
+      (caller) => Array.from({ length: 30 }, (_, index) => row(`p${index}`, {
+        callerThreadId: caller, state: index === 1 ? 'errored' : 'finished', settledAt: settledAt - index,
+        createdAt: settledAt - index - 65_000, kind: index === 2 ? 'ask' : 'spawn', answer: `Answer ${index}`,
+      })),
+    );
+    await fireEvent.click(toggle);
+    const pastToggle = await view.findByTestId('activity-rail-agents-past-toggle');
+    expect(view.getByTestId('activity-rail-agents-past-count').textContent).toBe('30');
+    expect(pastToggle.getAttribute('aria-expanded')).toBe('false');
+    expect(view.getAllByTestId('agent-tray-row').map((r) => r.dataset.token)).toEqual(['child']);
+    await fireEvent.click(pastToggle);
+    expect(pastToggle.getAttribute('aria-expanded')).toBe('true');
+    const list = await view.findByTestId('activity-rail-agents-past');
+    await waitFor(() => expect(within(list).getAllByTestId('agent-tray-row')).toHaveLength(8));
+    const rows = within(list).getAllByTestId('agent-tray-row');
+    expect(rows.map((r) => r.dataset.token)).toEqual(['p0', 'p1', 'p2', 'p3', 'p4', 'p5', 'p6', 'p7']);
+    for (const r of rows) {
+      expect(r.dataset.past).toBe('true');
+      expect(within(r).queryByTestId('agent-tray-row-stop')).toBeNull();
+      expect(within(r).getByTestId('agent-tray-row-open-pane')).toBeTruthy();
+    }
+    expect(within(rows[0]).getByTestId('agent-tray-row-elapsed').textContent).toBe('3m ago');
+    expect(within(rows[0]).getByTestId('agent-tray-row-elapsed').getAttribute('title')).toBe('Ran 1m 5s');
+    expect(within(rows[1]).getByTestId('agent-tray-row-state').textContent).toBe('failed');
+    expect(within(rows[2]).getByTestId('agent-tray-row-kind').textContent).toBe('ask');
+    await fireEvent.click(within(rows[2]).getByTestId('agent-tray-row-details'));
+    expect(within(rows[2]).getByTestId('agent-tray-row-digest').id).toBe('agent-tray-row-digest-past-p2');
+    const more = view.getByTestId('activity-rail-agents-past-more');
+    expect(more.textContent?.trim()).toBe('Show 20 more…');
+    await fireEvent.click(more);
+    await waitFor(() => expect(within(list).getAllByTestId('agent-tray-row')).toHaveLength(28));
+    expect(view.getByTestId('activity-rail-agents-past-more').textContent?.trim()).toBe('Show 2 more…');
+    await fireEvent.click(pastToggle);
+    expect(view.queryByTestId('activity-rail-agents-past')).toBeNull();
+  });
+
+  it('shows for a thread whose agents are all past, and collapses Past when the body closes', async () => {
+    const { view, toggle } = await openTray(() => [], (caller) => [row('p0', { callerThreadId: caller, state: 'finished', settledAt: Date.now() })]);
+    expect(view.getByTestId('activity-rail-agents-count').textContent?.trim()).toBe('0');
+    await fireEvent.click(toggle);
+    expect(view.getByTestId('activity-rail-agents-running-label').textContent?.trim()).toBe('idle');
+    expect(view.queryByTestId('activity-rail-agents-stop-all')).toBeNull();
+    await fireEvent.click(await view.findByTestId('activity-rail-agents-past-toggle'));
+    await view.findByTestId('activity-rail-agents-past');
+    await fireEvent.click(toggle);
+    await fireEvent.click(toggle);
+    const pastToggle = await view.findByTestId('activity-rail-agents-past-toggle');
+    expect(pastToggle.getAttribute('aria-expanded')).toBe('false');
+    expect(view.queryByTestId('activity-rail-agents-past')).toBeNull();
+  });
+
+  it('opens any row\'s thread beside this one from Open in Agent Pane, an ask\'s the thread asked', async () => {
+    const { pane, view, toggle } = await openTray(
+      (caller) => [
+        row('child', { callerThreadId: caller }),
+        row('done', { callerThreadId: caller, state: 'replied', settledAt: Date.now(), wakeItemId: 'user:wake-1' }),
+      ],
+      (caller) => [row('asked', { callerThreadId: caller, kind: 'ask', threadId: 'scratch-copy', openThreadId: 't-origin', state: 'replied', settledAt: Date.now() })],
+    );
+    await fireEvent.click(toggle);
+    const rows = await view.findAllByTestId('agent-tray-row');
+    const openPane = within(rows[0]).getByTestId('agent-tray-row-open-pane');
+    expect(openPane.getAttribute('title')).toBe('Open in agent pane');
+    expect(openPane.getAttribute('aria-label')).toBe('Open in Agent Pane');
+    await fireEvent.click(openPane);
+    expect(companion).toHaveBeenLastCalledWith(pane, { id: 't-child' });
+    // A settled row's icon opens its thread, not its answer, and keeps the row.
+    await fireEvent.click(within(rows[1]).getByTestId('agent-tray-row-open-pane'));
+    expect(companion).toHaveBeenLastCalledWith(pane, { id: 't-done' });
+    expect(navigate).not.toHaveBeenCalled();
+    expect(view.getAllByTestId('agent-tray-row').map((r) => r.dataset.token)).toEqual(['child', 'done']);
+    await fireEvent.click(await view.findByTestId('activity-rail-agents-past-toggle'));
+    const past = await within(await view.findByTestId('activity-rail-agents-past')).findByTestId('agent-tray-row');
+    await fireEvent.click(within(past).getByTestId('agent-tray-row-open-pane'));
+    expect(companion).toHaveBeenLastCalledWith(pane, { id: 't-origin' });
+    await fireEvent.click(within(past).getByTestId('agent-tray-row-open'));
+    expect(companion).toHaveBeenLastCalledWith(pane, { id: 't-origin' });
+  });
+
+  it('offers Show in Sidebar on an owned worker of this computer only, and drops it once the worker has a row', async () => {
+    const { view, toggle } = await openTray((caller) => [
+      row('owned', { callerThreadId: caller, placement: 'owned' }),
+      row('listed', { callerThreadId: caller, placement: 'standalone' }),
+      row('archived', { callerThreadId: caller, placement: 'owned', archived: true }),
+      row('remote', { callerThreadId: caller, placement: 'owned', computerId: 'peer', computer: 'Laptop' }),
+      row('send', { callerThreadId: caller, kind: 'send', placement: 'owned' }),
+    ]);
+    const place = setBindingMock('SetThreadPlacement', vi.fn(async (ids: string[], placement: string) => ids.map((id) => ({ id, placement }))));
+    await fireEvent.click(toggle);
+    const rows = await view.findAllByTestId('agent-tray-row');
+    expect(rows.map((r) => Boolean(within(r).queryByTestId('agent-tray-row-show-in-sidebar')))).toEqual([true, false, false, false, false]);
+    const show = within(rows[0]).getByTestId('agent-tray-row-show-in-sidebar');
+    expect(show.getAttribute('title')).toBe('Show in sidebar');
+    expect(show.getAttribute('aria-label')).toBe('Show in Sidebar');
+    await fireEvent.click(show);
+    await waitFor(() => expect(place).toHaveBeenCalledWith(['t-owned'], 'standalone'));
+    await waitFor(() => expect(within(rows[0]).queryByTestId('agent-tray-row-show-in-sidebar')).toBeNull());
+    expect(toastTexts()).toEqual([]);
+  });
+
+  it('keeps Show in Sidebar and says why when the placement is refused', async () => {
+    const { view, toggle } = await openTray(() => [], (caller) => [row('w', { callerThreadId: caller, placement: 'owned', state: 'finished', settledAt: Date.now() })]);
+    setBindingMock('SetThreadPlacement', async () => { throw new Error('store: the thread is outside every project'); });
+    await fireEvent.click(toggle);
+    await fireEvent.click(await view.findByTestId('activity-rail-agents-past-toggle'));
+    const past = await within(await view.findByTestId('activity-rail-agents-past')).findByTestId('agent-tray-row');
+    await fireEvent.click(within(past).getByTestId('agent-tray-row-show-in-sidebar'));
+    await waitFor(() => expect(toastTexts()).toEqual(['error: Could not show Agent w in the sidebar: store: the thread is outside every project']));
+    expect(within(past).getByTestId('agent-tray-row-show-in-sidebar').hasAttribute('disabled')).toBe(false);
   });
 
   it('is not shown for a thread waiting on nobody', async () => {

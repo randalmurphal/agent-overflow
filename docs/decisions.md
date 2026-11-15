@@ -468,8 +468,9 @@ Mechanism in
 - Requests to other threads and agent messages queued for a thread list
   in the activity rail's Agents segment, apart from Background, with a
   user Stop that keeps the caller's wake armed and cascades into what a
-  spawned thread runs on any computer; incoming agent messages list
-  there instead of the composer's queue (standing agents
+  spawned thread runs on any computer; settled ones page under Past;
+  incoming agent messages list there instead of the composer's queue
+  (standing agents
   rulings 20 and 21,
   [Agents segment](specs/standing-agents.md#agents-segment)).
 

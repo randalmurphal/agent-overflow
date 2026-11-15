@@ -68,6 +68,9 @@ are the rail's Agents segment (`activityRailAgents.svelte.ts`,
 `ActivityRailAgentsBody.svelte`), apart from Background: Background's Stop
 All never touches it, and its own Stop cascades through the backend
 ([Agents segment](../../../../../docs/specs/standing-agents.md#agents-segment)).
+Its Past list (`activityRailAgentsPast.svelte.ts`) holds only the count
+while collapsed and its pages only while expanded; the agents controller
+owns the cues that read it again.
 
 Use the stepped working indicator. Do not add a continuously animated spinner.
 

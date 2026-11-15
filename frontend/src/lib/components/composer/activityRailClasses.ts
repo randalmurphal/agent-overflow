@@ -22,3 +22,8 @@ export const activityRailRowClasses =
 // segment and the spacer's placeholder chip share these metrics.
 export const activityRailChipClasses =
   'inline-flex items-center gap-1.5 rounded px-1.5 py-0.5 compact:gap-1 compact:px-1 compact:py-1.5 compact:select-none';
+
+// A body's "Show N more…" and "Show less" text button: the Todos body's
+// list and the Agents body's Past list.
+export const activityRailRevealClasses =
+  'mt-0.5 inline-flex rounded px-1 py-0.5 text-[0.6875rem] text-fg-hint/65 transition-colors hover:bg-surface-2/40 hover:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/35';

@@ -1,13 +1,18 @@
 <script lang="ts">
   // One row of the activity rail's Agents body (docs/specs/standing-agents.md,
-  // "Agents segment"): a thread this thread is waiting on, with its provider,
-  // title, state, how long since the request, and what it is blocked on. The
+  // "Agents segment"): a thread this thread is waiting on, or under Past one
+  // it waited on, with its provider, title, state, how long since the
+  // request (a past row: when it settled), and what it is blocked on. The
   // row's main button opens the thread, or for a settled row the answer; the
-  // chevron opens the row's digest beneath it; Stop stops the request and,
-  // for a spawn, what the spawned thread runs. The body owns dispatch.
+  // chevron opens the row's digest beneath it; Show in Sidebar gives an
+  // owned worker a sidebar row; Open in Agent Pane opens the thread beside;
+  // Stop, on an open row, stops the request and, for a spawn, what the
+  // spawned thread runs. The body owns dispatch.
   import type { ThreadAgentRow } from '../../stores/bindings';
   import { isCompactLayout } from '../../stores/layoutMode.svelte';
   import { formatElapsed } from '../../utils/backgroundTray';
+  import { relativeTime } from '../../utils/format';
+  import type { BackendKey } from '../../transport/backendKey';
   import {
     AGENT_ROW_MAX_INDENT,
     agentRowBlockedLabel,
@@ -18,6 +23,8 @@
   import ProviderIcon from '../shared/ProviderIcon.svelte';
   import RowError from '../chat/RowError.svelte';
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
+  import PanelLeftOpen from '@lucide/svelte/icons/panel-left-open';
+  import PanelRightOpen from '@lucide/svelte/icons/panel-right-open';
   import UsersRound from '@lucide/svelte/icons/users-round';
   import AgentTrayRowDigest from './AgentTrayRowDigest.svelte';
 
@@ -29,17 +36,36 @@
     /** Why the last Stop could not stop all of it, until the row settles. */
     stopError?: string;
     expanded: boolean;
+    /** A row under Past: settled, never stopped, dated by when it settled. */
+    past?: boolean;
+    /** The computer listing the row, whose clock dates a past row. */
+    viewer?: BackendKey;
+    /** Show in Sidebar is in flight. */
+    isPlacing?: boolean;
     onToggleExpanded: (row: ThreadAgentRow) => void;
     onActivate: (row: ThreadAgentRow) => void;
+    onOpenPane: (row: ThreadAgentRow) => void;
+    onShowInSidebar: (row: ThreadAgentRow) => void;
     onStop: (row: ThreadAgentRow) => void;
   }
 
-  let { row, now, isStopping, stopError, expanded, onToggleExpanded, onActivate, onStop }: Props = $props();
+  let {
+    row, now, isStopping, stopError, expanded, past = false, viewer, isPlacing = false,
+    onToggleExpanded, onActivate, onOpenPane, onShowInSidebar, onStop,
+  }: Props = $props();
 
   let settled = $derived(isSettledAgentRow(row));
   let stateLabel = $derived(agentRowStateLabel(row));
   let blockedLabel = $derived(row.state === 'blocked' ? agentRowBlockedLabel(row) : '');
   let elapsed = $derived(formatElapsed(Math.max(0, (settled && row.settledAt ? row.settledAt : now) - row.createdAt)));
+  // A past row says when it settled; reading `now` keeps the age current.
+  let settledAge = $derived.by(() => {
+    if (!past || !row.settledAt) return '';
+    void now;
+    return relativeTime(row.settledAt, 'locale', viewer);
+  });
+  // A worker this computer spawned that has no sidebar row.
+  let showInSidebar = $derived(row.kind === 'spawn' && row.placement === 'owned' && !row.archived && !row.computerId && Boolean(row.threadId));
   let activity = $derived(!settled && !blockedLabel ? (row.activity ?? '') : '');
   let stateTone = $derived.by(() => {
     switch (row.state) {
@@ -60,20 +86,28 @@
   });
   let indent = $derived(Math.min(Math.max(0, row.depth), AGENT_ROW_MAX_INDENT) * 0.75);
   let hasDigest = $derived(Boolean(row.activity || row.blockedDetail || row.lastMessage || row.answer || row.nestedUnavailable));
-  let digestId = $derived(`agent-tray-row-digest-${row.token}`);
+  let digestId = $derived(`agent-tray-row-digest-${past ? 'past-' : ''}${row.token}`);
   let openLabel = $derived(settled && row.wakeItemId ? `Show the answer from ${row.title}` : `Open ${row.title}`);
   // A spawn on a computer that cannot list or stop what it runs says so
   // wherever the row is read: here, and in the Stop's toast.
   let degraded = $derived(row.nestedUnavailable ? `Its own agents and background work are not shown: ${row.nestedUnavailable}` : '');
   let compact = $derived(isCompactLayout());
 
+  // BackgroundTaskTrayRow's Open in Agent Pane, with the compact hit target
+  // the row's other icon button carries.
+  const iconActionClasses =
+    'inline-flex shrink-0 rounded p-0.5 text-text-secondary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-50 compact:min-h-9 compact:min-w-9 compact:items-center compact:justify-center';
   const actionClasses =
     'shrink-0 rounded-[var(--radius-field)] border border-border-subtle px-1.5 py-0.5 text-[0.6875rem] font-medium text-text-secondary transition-colors hover:bg-surface-2/40 hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-50 compact:min-h-9 compact:select-none';
 </script>
 
 {#snippet facts()}
   <span class="shrink-0 font-mono text-[0.6875rem] {stateTone}" data-testid="agent-tray-row-state">{stateLabel}</span>
-  <span class="shrink-0 font-mono text-[0.6875rem] tabular-nums text-fg-hint" data-testid="agent-tray-row-elapsed">{elapsed}</span>
+  {#if settledAge}
+    <span class="shrink-0 font-mono text-[0.6875rem] tabular-nums text-fg-hint" title={`Ran ${elapsed}`} data-testid="agent-tray-row-elapsed">{settledAge}</span>
+  {:else}
+    <span class="shrink-0 font-mono text-[0.6875rem] tabular-nums text-fg-hint" data-testid="agent-tray-row-elapsed">{elapsed}</span>
+  {/if}
 {/snippet}
 
 {#snippet actions()}
@@ -92,7 +126,30 @@
         <span class="flex" class:rotate-90={expanded}><Icon icon={ChevronRight} size={12} strokeWidth={2} /></span>
       </button>
     {/if}
-    {#if !settled}
+    {#if showInSidebar}
+      <button
+        type="button"
+        class={iconActionClasses}
+        onclick={() => onShowInSidebar(row)}
+        disabled={isPlacing}
+        title="Show in sidebar"
+        aria-label="Show in Sidebar"
+        data-testid="agent-tray-row-show-in-sidebar"
+      >
+        <Icon icon={PanelLeftOpen} size={12} />
+      </button>
+    {/if}
+    <button
+      type="button"
+      class={iconActionClasses}
+      onclick={() => onOpenPane(row)}
+      title="Open in agent pane"
+      aria-label="Open in Agent Pane"
+      data-testid="agent-tray-row-open-pane"
+    >
+      <Icon icon={PanelRightOpen} size={12} />
+    </button>
+    {#if !settled && !past}
       <button
         type="button"
         class={actionClasses}
@@ -116,6 +173,7 @@
   data-state={row.state}
   data-depth={row.depth}
   data-settled={settled ? 'true' : undefined}
+  data-past={past ? 'true' : undefined}
 >
   <div class="flex w-full items-center gap-2 compact:gap-1">
     <button

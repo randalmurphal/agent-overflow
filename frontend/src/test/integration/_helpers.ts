@@ -271,6 +271,7 @@ export function installThreadViewDefaults(): void {
   setBindingMock('ListLiveBackgroundTasks', async () => []);
   setBindingMock('ListThreadWakes', async () => ({ rows: [], moreReminders: 0 }));
   setBindingMock('ListThreadAgentRows', async () => ({ rows: [], hidden: false }));
+  setBindingMock('ListThreadPastAgentRows', async () => ({ rows: [], total: 0 }));
   setBindingMock('GetWorkspaceActivity', async () => idleWorkspaceActivity());
   setBindingMock('AppendUIRenderTraceBatch', async () => '/tmp/ui-render.jsonl');
 }

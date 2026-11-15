@@ -21,6 +21,12 @@
 // REMEMBERED_THREADS threads the pane showed, so a row that left does not
 // come back when the pane returns to its thread.
 //
+// Below the open rows is Past (activityRailAgentsPast.svelte.ts), the
+// thread's settled rows from the ledger. This controller says when it may
+// have changed: on the reads above, a frame naming the thread and no row the
+// list holds, and a row of the thread's own that the list shows settling.
+// The segment shows while Past holds any row, so it stays reachable.
+//
 // It also lists the incoming messages: what other threads' agents, wakes
 // and workers queued for this thread and still held there, read from the
 // send queue's store: the items the backend marks an agent's
@@ -47,6 +53,7 @@ import {
   visibleAgentRows,
 } from '../../utils/agentTray';
 import { AGENT_ROW_SETTLED_LINGER_MS } from './activityRailBackground.svelte';
+import { createPastAgentRows, type PastAgentRows } from './activityRailAgentsPast.svelte';
 
 const REFRESH_DELAY_MS = 100;
 // The backend's bound on one row read (maxThreadAgentRowReads). A read of
@@ -97,8 +104,11 @@ export interface AgentController {
   readonly hidden: boolean;
   /** Open rows and incoming messages: the segment's count. */
   readonly count: number;
-  /** Rows and incoming messages shown at all: whether the segment renders. */
+  /** Rows, incoming messages and the Past row shown at all: whether the
+   *  segment renders. */
   readonly shown: number;
+  /** The thread's settled rows, under Past. */
+  readonly past: PastAgentRows;
   /** Rows running: the toggle's pulse and the body's `N running`. */
   readonly runningCount: number;
   /** A settled row is shown and waits on the clock to leave. */
@@ -106,6 +116,8 @@ export interface AgentController {
   readonly threadId: string | null;
   /** Take a settled row out now, as its click does. */
   dismiss(token: string): void;
+  /** A row's thread got a new sidebar placement (Show in Sidebar). */
+  placed(threadId: string, placement: string): void;
   /** Subscribe to events; returns a disposer. Call once from onMount. */
   mount(): () => void;
 }
@@ -150,6 +162,8 @@ export function createAgentController(
     return !pane || pane.hasDraftPlaceholder ? null : pane.thread?.id ?? null;
   });
 
+  const past = createPastAgentRows(() => threadId);
+
   function replace(forThreadId: string | null, next: ThreadAgentRow[], more: boolean): void {
     // The wall clock, not the rail's: the rail's clock stops while nothing
     // it shows needs it, and a stamp from its last tick would end the
@@ -161,6 +175,10 @@ export function createAgentController(
       seen.set(row.token, settledSeen.get(row.token) ?? now);
     }
     const tokens = new Set(next.map((row) => row.token));
+    // A row of this thread's own that settled is Past's newest. One the
+    // list never held came with a frame that already said so.
+    const wasOpen = new Set(listed.filter((row) => !isSettledAgentRow(row)).map((row) => row.token));
+    if (next.some((row) => row.callerThreadId === forThreadId && isSettledAgentRow(row) && wasOpen.has(row.token))) past.due();
     settledSeen = seen;
     dismissed = new Set([...dismissed].filter((token) => tokens.has(token)));
     listed = next;
@@ -268,6 +286,7 @@ export function createAgentController(
       heardDuringList = null;
       refresh.reset();
       refresh.request({ immediate: true });
+      past.reset();
     });
   });
 
@@ -286,6 +305,7 @@ export function createAgentController(
     return out;
   });
   const count = $derived(rows.filter((row) => !isSettledAgentRow(row)).length + incoming.length);
+  const shown = $derived(rows.length + incoming.length + (past.total > 0 ? 1 : 0));
   const runningCount = $derived(rows.filter((row) => row.state === 'running').length);
   const hasPendingSettled = $derived(rows.some(isSettledAgentRow));
 
@@ -294,7 +314,8 @@ export function createAgentController(
     get incoming() { return incoming; },
     get hidden() { return hidden; },
     get count() { return count; },
-    get shown() { return rows.length + incoming.length; },
+    get shown() { return shown; },
+    get past() { return past; },
     get runningCount() { return runningCount; },
     get hasPendingSettled() { return hasPendingSettled; },
     get threadId() { return threadId; },
@@ -302,6 +323,12 @@ export function createAgentController(
     dismiss(token: string): void {
       if (dismissed.has(token)) return;
       dismissed = new Set([...dismissed, token]);
+    },
+
+    placed(placedThreadId: string, placement: string): void {
+      past.placed(placedThreadId, placement);
+      if (!listed.some((row) => row.threadId === placedThreadId)) return;
+      listed = listed.map((row) => (row.threadId === placedThreadId ? { ...row, placement } : row));
     },
 
     mount(): () => void {
@@ -312,9 +339,14 @@ export function createAgentController(
         if (!threadId) return;
         if (change === null) {
           if (threadBackend(threadId) !== backend) return;
+          past.due({ immediate: true });
         } else if (!callers.has(change.threadId)) {
           heardDuringList?.add(change.threadId);
           return;
+        } else if (change.threadId === threadId && !(change.id && listed.some((row) => row.token === change.id))) {
+          // A request the list does not hold, or every request: a past
+          // row's late reply, or one that settled out of the list.
+          past.due();
         }
         if (change?.id && !listDue && patchable(change.id)) rowsDue.add(change.id);
         else listDue = true;
@@ -328,12 +360,16 @@ export function createAgentController(
         if (!threadId || threadBackend(threadId) !== backend) return;
         refresh.reset();
         listDue = true;
-        if (status.status === 'connected') refresh.request({ immediate: true });
+        if (status.status === 'connected') {
+          refresh.request({ immediate: true });
+          past.due({ immediate: true });
+        }
       });
       return () => {
         cancelChanged();
         cancelStatus();
         refresh.dispose();
+        past.dispose();
       };
     },
   };

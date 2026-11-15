@@ -2,11 +2,15 @@
   // Expanded body of the activity rail's Agents segment
   // (docs/specs/standing-agents.md, "Agents segment"): the threads this
   // thread is waiting on, nested by spawn, then the messages queued for it
-  // by other agents and wakes. A row's Stop is StopThreadAgentRow, an
-  // incoming row's StopThreadAgentIncoming, and Stop All one
+  // by other agents and wakes, then Past: the thread's settled rows, paged
+  // (activityRailAgentsPast.svelte.ts). A row's Stop is StopThreadAgentRow,
+  // an incoming row's StopThreadAgentIncoming, and Stop All one
   // StopThreadAgentRows call for both. Each Stop's report, every layer of
-  // its cascade folded in, is one toast.
+  // its cascade folded in, is one toast. Show in Sidebar is
+  // SetThreadPlacement standalone on the computer listing the row.
+  import { onDestroy } from 'svelte';
   import {
+    SetThreadPlacement,
     StopThreadAgentIncoming,
     StopThreadAgentRow,
     StopThreadAgentRows,
@@ -15,6 +19,7 @@
   } from '../../stores/bindings';
   import { addErrorToast, addToast } from '../../stores/toast.svelte';
   import { threadMachine } from '../../stores/attachedBackends.svelte';
+  import { withBackendTarget } from '../../transport/backends';
   import { navigateToThreadItem } from '../../stores/threadItemNavigation';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import type { Thread } from '../../types/models';
@@ -25,6 +30,10 @@
   import { openAgentThreadCompanion } from '../../stores/agentThreadCompanion';
   import AgentTrayRow from './AgentTrayRow.svelte';
   import AgentIncomingTrayRow from './AgentIncomingTrayRow.svelte';
+  import Icon from '../primitives/Icon.svelte';
+  import RowError from '../chat/RowError.svelte';
+  import ChevronRight from '@lucide/svelte/icons/chevron-right';
+  import { activityRailRevealClasses } from './activityRailClasses';
   import type { AgentController, IncomingAgentMessage } from './activityRailAgents.svelte';
 
   interface Props {
@@ -39,9 +48,14 @@
   let threadId = $derived(agents.threadId);
   let viewer = $derived(threadMachine(threadId ?? '', pane.thread?.projectId));
 
-  // Rows whose digest is open, rows whose Stop is in flight, and what a
-  // Stop could not stop, each dropped when its row leaves the list.
+  // Rows whose digest is open (a past row's key is `past:` and its token),
+  // rows whose Stop is in flight, and what a Stop could not stop, each
+  // dropped when its row leaves the list; threads whose Show in Sidebar is
+  // in flight.
   let expanded = $state<Set<string>>(new Set());
+  let placing = $state<Set<string>>(new Set());
+  let past = $derived(agents.past);
+  const pastKey = (row: ThreadAgentRow) => `past:${row.token}`;
   let stopping = $state<Set<string>>(new Set());
   let stopErrors = $state<Map<string, string>>(new Map());
   let stopAllInFlight = $state(false);
@@ -49,7 +63,10 @@
   let liveKeys = $derived(new Set([
     ...agents.rows.map((row) => row.token),
     ...agents.incoming.map((message) => message.item.sendId ?? message.item.id),
+    ...past.rows.map(pastKey),
   ]));
+  // Past holds its pages only while it is shown.
+  onDestroy(() => agents.past.collapse());
   $effect(() => {
     const keys = liveKeys;
     if ([...expanded].some((key) => !keys.has(key))) expanded = new Set([...expanded].filter((key) => keys.has(key)));
@@ -73,11 +90,13 @@
     stopErrors = next;
   }
 
-  function onToggleExpanded(row: ThreadAgentRow): void {
+  function toggleExpanded(key: string): void {
     const next = new Set(expanded);
-    if (!next.delete(row.token)) next.add(row.token);
+    if (!next.delete(key)) next.add(key);
     expanded = next;
   }
+  const onToggleExpanded = (row: ThreadAgentRow) => toggleExpanded(row.token);
+  const onTogglePastExpanded = (row: ThreadAgentRow) => toggleExpanded(pastKey(row));
 
   const placeInCompanion = (thread: Thread) => openAgentThreadCompanion(pane, thread);
 
@@ -94,6 +113,12 @@
         return;
       }
     }
+    onOpenPane(row);
+  }
+
+  // Open in Agent Pane: the thread the row went to (for an ask, the thread
+  // asked), beside this one, open or settled, archived included.
+  function onOpenPane(row: ThreadAgentRow): void {
     const target = row.openThreadId || row.threadId;
     if (!target) {
       addToast('info', `${row.title} has no thread yet.`);
@@ -109,6 +134,22 @@
       return;
     }
     opener.open();
+  }
+
+  async function onShowInSidebar(row: ThreadAgentRow): Promise<void> {
+    const id = row.threadId;
+    if (!id || placing.has(id)) return;
+    placing = new Set([...placing, id]);
+    try {
+      const rows = (await withBackendTarget(viewer, () => SetThreadPlacement([id], 'standalone'))) as Thread[] | null;
+      agents.placed(id, rows?.find((thread) => thread.id === id)?.placement ?? 'standalone');
+    } catch (err) {
+      addErrorToast(`Could not show ${row.title} in the sidebar: ${errString(err)}`, err);
+    } finally {
+      const next = new Set(placing);
+      next.delete(id);
+      placing = next;
+    }
   }
 
   function report(title: string, stop: ThreadAgentStop): void {
@@ -187,7 +228,7 @@
       </button>
     {/if}
   </div>
-  <ul class="flex flex-col gap-1 overflow-y-auto {expanded.size > 0 ? 'max-h-[min(70vh,32rem)]' : 'max-h-56'}">
+  <ul class="flex flex-col gap-1 overflow-y-auto {expanded.size > 0 || past.expanded ? 'max-h-[min(70vh,32rem)]' : 'max-h-56'}">
     {#each agents.rows as row (row.token)}
       <li>
         <AgentTrayRow
@@ -196,8 +237,11 @@
           isStopping={stopping.has(row.token) || (stopAllInFlight && !isSettledAgentRow(row))}
           stopError={stopErrors.get(row.token)}
           expanded={expanded.has(row.token)}
+          isPlacing={!!row.threadId && placing.has(row.threadId)}
           {onToggleExpanded}
           {onActivate}
+          {onOpenPane}
+          {onShowInSidebar}
           {onStop}
         />
       </li>
@@ -219,5 +263,61 @@
         />
       </li>
     {/each}
+    {#if past.total > 0}
+      <li>
+        <button
+          type="button"
+          class="flex w-full items-center gap-2 rounded-[var(--radius-control)] px-2 py-1 text-left text-[0.6875rem] text-fg-hint transition-colors hover:bg-surface-2/20 hover:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 compact:min-h-9 compact:select-none"
+          onclick={() => past.toggle()}
+          aria-expanded={past.expanded}
+          aria-controls="activity-rail-agents-past"
+          data-testid="activity-rail-agents-past-toggle"
+        >
+          <span class="flex size-3.5 shrink-0 items-center justify-center" class:rotate-90={past.expanded}><Icon icon={ChevronRight} size={12} strokeWidth={2} /></span>
+          <span class="flex-1">Past</span>
+          <span class="shrink-0 min-w-5 text-right text-[0.625rem] tabular-nums text-fg-hint" data-testid="activity-rail-agents-past-count">{past.total}</span>
+        </button>
+      </li>
+    {/if}
+    {#if past.expanded}
+      <li id="activity-rail-agents-past" data-testid="activity-rail-agents-past">
+        <ul class="flex flex-col gap-1">
+          {#each past.rows as row (row.token)}
+            <li>
+              <AgentTrayRow
+                {row}
+                {now}
+                {viewer}
+                past
+                isStopping={false}
+                expanded={expanded.has(pastKey(row))}
+                isPlacing={!!row.threadId && placing.has(row.threadId)}
+                onToggleExpanded={onTogglePastExpanded}
+                {onActivate}
+                {onOpenPane}
+                {onShowInSidebar}
+                {onStop}
+              />
+            </li>
+          {/each}
+        </ul>
+        {#if past.moreCount > 0}
+          <button
+            type="button"
+            class="ml-6 {activityRailRevealClasses}"
+            onclick={() => past.showMore()}
+            disabled={past.loadingMore}
+            data-testid="activity-rail-agents-past-more"
+          >
+            Show {past.moreCount} more…
+          </button>
+        {/if}
+        {#if past.error}
+          <div class="px-1 pt-0.5" data-testid="activity-rail-agents-past-error">
+            <RowError tone="error" msg={`Could not read past agents: ${past.error}`} />
+          </div>
+        {/if}
+      </li>
+    {/if}
   </ul>
 </div>
