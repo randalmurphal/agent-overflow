@@ -383,11 +383,14 @@ func (a *App) ListThreadWorkerSummaries(ctx context.Context, after string) (Thre
 }
 
 // GetThreadWorkerSummary summarizes the thread's Agents listing as it stands
-// now: zero counts when it shows no open row.
+// now: zero counts when it shows no open row, or the thread is gone.
 //
 //ao:scope threads:read
 func (a *App) GetThreadWorkerSummary(ctx context.Context, threadID string) (ThreadWorkerSummary, error) {
-	if _, err := a.store.GetThread(threadID); err != nil {
+	if _, err := a.store.GetThread(threadID); errors.Is(err, sql.ErrNoRows) {
+		// Deleted since the frame that asked: it has no open worker.
+		return ThreadWorkerSummary{ThreadID: threadID}, nil
+	} else if err != nil {
 		return ThreadWorkerSummary{}, fmt.Errorf("read the thread: %w", err)
 	}
 	view := newThreadAgentView(a)

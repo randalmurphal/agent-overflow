@@ -340,6 +340,50 @@ describe('thread worker summaries', () => {
     expect(getThreadWorkerCounts('spawner')).toEqual({ open: 5, needYou: 0 });
   });
 
+  it('keeps the retry of a failed read when an older bulk read answers after it', async () => {
+    setBindingMock('ListThreadWorkerSummaries', async () => page([summary('spawner', 2)]));
+    await refreshThreadWorkerSummaries();
+    const bulk = held<ThreadWorkerSummaryPage>();
+    setBindingMock('ListThreadWorkerSummaries', () => bulk.promise);
+    const reading = refreshThreadWorkerSummaries();
+    await vi.advanceTimersByTimeAsync(0);
+    // A change after the bulk read began: its own read fails.
+    let fail = true;
+    const get = setBindingMock('GetThreadWorkerSummary', async () => {
+      if (fail) throw new Error('database is locked');
+      return summary('spawner', 3, 1);
+    });
+    applyThreadAgentRowsChanged({ threadId: 'spawner' }, HOME_BACKEND);
+    await vi.advanceTimersByTimeAsync(500);
+    expect(get).toHaveBeenCalledTimes(1);
+    // The older bulk read answers with what it saw before the change.
+    bulk.answer(page([summary('spawner', 2)]));
+    await reading;
+    fail = false;
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(get).toHaveBeenCalledTimes(2);
+    expect(getThreadWorkerCounts('spawner')).toEqual({ open: 3, needYou: 1 });
+  });
+
+  it('keeps the retry of a failed bulk read when an older one answers after it', async () => {
+    const older = held<ThreadWorkerSummaryPage>();
+    let calls = 0;
+    const list = setBindingMock('ListThreadWorkerSummaries', () => {
+      calls += 1;
+      if (calls === 1) return older.promise;
+      if (calls === 2) return Promise.reject(new Error('database is locked'));
+      return Promise.resolve(page([summary('spawner', 4)]));
+    });
+    const first = refreshThreadWorkerSummaries();
+    await vi.advanceTimersByTimeAsync(0);
+    await refreshThreadWorkerSummaries();
+    older.answer(page([summary('spawner', 1)]));
+    await first;
+    await vi.advanceTimersByTimeAsync(3_500);
+    expect(list).toHaveBeenCalledTimes(3);
+    expect(getThreadWorkerCounts('spawner')).toEqual({ open: 4, needYou: 0 });
+  });
+
   it('leaves a read the connection dropped to the reconnect, which reads the computer again', async () => {
     setBindingMock('ListThreadWorkerSummaries', async () => { throw new DisconnectedError(); });
     const get = setBindingMock('GetThreadWorkerSummary', async () => { throw new DisconnectedError(); });

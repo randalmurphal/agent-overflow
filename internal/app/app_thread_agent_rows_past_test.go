@@ -393,6 +393,18 @@ func TestWorkerSummariesPageEveryCaller(t *testing.T) {
 // A summary is counted from the rows' states and what they are blocked on
 // alone: the counting view reads no answer head, no target names and no
 // last messages, which the pane's listing of the same rows shows.
+// A thread that is gone has no open worker: the summary of one deleted
+// since a frame named it answers zero, not an error the client would read
+// again.
+func TestWorkerSummaryOfADeletedThreadIsEmpty(t *testing.T) {
+	t.Parallel()
+	a, _ := newAppForFlushQueueRPC(t)
+	got, err := a.GetThreadWorkerSummary(t.Context(), "gone")
+	if err != nil || got != (ThreadWorkerSummary{ThreadID: "gone"}) {
+		t.Fatalf("summary of a missing thread = %+v, %v; want zero counts", got, err)
+	}
+}
+
 func TestWorkerSummariesReadNoRowText(t *testing.T) {
 	t.Parallel()
 	a, _ := newAppForFlushQueueRPC(t)

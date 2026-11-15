@@ -73,9 +73,14 @@ let sequence = 0;
 const due = new Map<string, BackendKey>();
 /** Computers the next scheduler run reads in bulk. */
 const bulkDue = new Set<BackendKey>();
-/** Threads, with their computer, and computers whose last read failed and that no read has covered since. */
-const failedThreads = new Map<string, BackendKey>();
-const failedComputers = new Set<BackendKey>();
+/**
+ * Threads, with their computer, and computers whose read failed, by that
+ * read's start sequence. A failure stands until a read that started no
+ * earlier answers: an older read's answer predates what the failed one
+ * went to read.
+ */
+const failedThreads = new Map<string, { backend: BackendKey; seq: number }>();
+const failedComputers = new Map<BackendKey, number>();
 let retryDelayMs: number = DEFAULT_RETRY.initialMs;
 let retryTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -127,8 +132,8 @@ function failed(what: string, backend: BackendKey, err: unknown): void {
   if (retryTimer !== null || (failedThreads.size === 0 && failedComputers.size === 0)) return;
   retryTimer = setTimeout(() => {
     retryTimer = null;
-    for (const [threadId, owner] of failedThreads) due.set(threadId, owner);
-    for (const owner of failedComputers) bulkDue.add(owner);
+    for (const [threadId, read] of failedThreads) due.set(threadId, read.backend);
+    for (const owner of failedComputers.keys()) bulkDue.add(owner);
     scheduler.request({ immediate: true });
   }, retryDelayMs);
   retryDelayMs = Math.min(retryDelayMs * 2, DEFAULT_RETRY.maxMs);
@@ -142,11 +147,17 @@ function recovered(): void {
   retryDelayMs = DEFAULT_RETRY.initialMs;
 }
 
+/** Clears the thread's failed read once a read of that computer that started no earlier answered for it. */
+function answeredFor(threadId: string, backend: BackendKey, seq: number): void {
+  const read = failedThreads.get(threadId);
+  if (read && read.backend === backend && read.seq <= seq) failedThreads.delete(threadId);
+}
+
 /** Lands one thread's answer from the read that started at `seq`, unless a later read has. */
 function land(threadId: string, backend: BackendKey, seq: number, open: number, needYou: number): void {
   if (covered(threadId, backend, seq)) return;
   landed.set(threadId, seq);
-  if (failedThreads.get(threadId) === backend) failedThreads.delete(threadId);
+  answeredFor(threadId, backend, seq);
   if (open <= 0) {
     owners.delete(threadId);
     counts.drop(threadId);
@@ -197,12 +208,12 @@ async function readComputer(backend: BackendKey): Promise<void> {
     }
     snapshots.set(backend, seq);
     // The computer's answer stands for every thread of it.
-    failedComputers.delete(backend);
-    for (const [threadId, owner] of [...failedThreads]) if (owner === backend) failedThreads.delete(threadId);
+    if ((failedComputers.get(backend) ?? 0) <= seq) failedComputers.delete(backend);
+    for (const threadId of [...failedThreads.keys()]) answeredFor(threadId, backend, seq);
     recovered();
   } catch (err) {
     if (isPassiveConnectionFailure(err) || !current()) return;
-    if (seq >= (snapshots.get(backend) ?? 0)) failedComputers.add(backend);
+    if (seq >= (snapshots.get(backend) ?? 0)) failedComputers.set(backend, Math.max(seq, failedComputers.get(backend) ?? 0));
     failed('the bulk read', backend, err);
   } finally {
     endRead(seq);
@@ -231,7 +242,7 @@ const scheduler = createRefreshScheduler({
         // what it showed until a read succeeds.
         // Nor does one a newer read covered, a deleted thread's included.
         if (isPassiveConnectionFailure(err) || !token.isCurrent() || !current() || covered(threadId, backend, seq)) return;
-        failedThreads.set(threadId, backend);
+        failedThreads.set(threadId, { backend, seq: Math.max(seq, failedThreads.get(threadId)?.seq ?? 0) });
         failed(`the read of ${threadId}`, backend, err);
       } finally {
         endRead(seq);
@@ -268,7 +279,7 @@ onThreadAgentRowsChanged((change, backend) => {
 
 onBackendDetached(({ backendId }) => {
   for (const [threadId, owner] of [...due]) if (owner === backendId) due.delete(threadId);
-  for (const [threadId, owner] of [...failedThreads]) if (owner === backendId) failedThreads.delete(threadId);
+  for (const [threadId, read] of [...failedThreads]) if (read.backend === backendId) failedThreads.delete(threadId);
   failedComputers.delete(backendId as BackendKey);
   bulkDue.delete(backendId as BackendKey);
   recovered();
