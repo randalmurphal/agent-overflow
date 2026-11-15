@@ -1886,8 +1886,8 @@ export class Thread {
 
     /**
      * SpawnedByThreadID names the local thread whose thread_spawn made this
-     * one, read from the newest spawn request that targets it, or "" when
-     * the user started it; an owned thread's owner. Derived: the spawn request
+     * one, read from its spawn link (spawnerOfSQL), or "" when the user
+     * started it or its spawner is gone; an owned thread's owner. Derived: the spawn request
      * row is the record, and it outlives the retention floor while this
      * thread exists (spawnLineageSQL).
      */
