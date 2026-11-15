@@ -272,7 +272,10 @@ installs every held row at once.
 `composerDraftSnapshots` serializes draft persistence. A prepared send is a fixed
 ordering boundary: admit its snapshot before clearing the composer, enqueue later
 edits behind it, and never dispatch after preparation fails. Only the write that
-ran and still matches may clear pending state. Hydration preserves attachment ID
+ran and still matches may clear pending state. The empty-draft cleanup is a
+boundary in the same order: writes behind it are sent only if it kept the
+thread, nothing is ever sent for a thread it deleted, and the store on that
+thread keeps its buffer for the replacement the composer materializes. Hydration preserves attachment ID
 order and treats a missing attachment record as an error.
 
 `threadModelControls.ts` owns model changes from pickers and commands. Retry a

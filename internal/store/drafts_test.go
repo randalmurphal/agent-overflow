@@ -1,6 +1,9 @@
 package store
 
 import (
+	"database/sql"
+	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -158,6 +161,29 @@ func TestThreadDraftCascadesOnThreadDelete(t *testing.T) {
 	}
 	if ok {
 		t.Fatal("expected draft to cascade on thread delete")
+	}
+}
+
+// A save for a thread that is gone (an empty draft another request cleaned
+// up) is a recognizable condition: the transport answers sql.ErrNoRows as
+// not_found, never as the foreign key text.
+func TestThreadDraftUpsertForMissingThreadIsNotFound(t *testing.T) {
+	s := newTestStore(t)
+	thread := createDraftCleanupThread(t, s, "draft-thread-gone", "chat")
+	deleted, err := s.DeleteEmptyDraftThread(thread.ID)
+	if err != nil || !deleted {
+		t.Fatalf("DeleteEmptyDraftThread = %v, %v", deleted, err)
+	}
+
+	_, err = s.UpsertThreadDraft(ThreadDraft{ThreadID: thread.ID, Content: "typed after the delete", UpdatedAt: 1})
+	if !errors.Is(err, ErrDraftThreadMissing) || !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("UpsertThreadDraft after delete = %v, want ErrDraftThreadMissing", err)
+	}
+	if strings.Contains(err.Error(), "FOREIGN KEY") {
+		t.Fatalf("error carries the constraint text: %v", err)
+	}
+	if _, ok, err := s.GetThreadDraft(thread.ID); err != nil || ok {
+		t.Fatalf("draft row after refused save: ok=%v err=%v", ok, err)
 	}
 }
 
