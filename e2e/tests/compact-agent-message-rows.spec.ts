@@ -72,7 +72,9 @@ for (const provider of ['claude', 'codex'] as const) {
     await open(page, reply, flow.token);
     await keep(page, `compact-${provider}-reply-expanded.png`);
 
-    await openThread(page, AUDIT);
+    // The audit is the lead's worker, so it opens from its answer's row.
+    await agentRow(page, 'finished').getByTestId('agent-message-sender').tap();
+    await expect(page.getByTestId('chat-header-title')).toHaveText(AUDIT);
     const spawn = agentRow(page, 'spawn');
     await expect(spawn.getByTestId('agent-message-first-line')).toHaveText(SPAWN_PROMPT);
     await expect(page.getByTestId('user-message-bubble')).toHaveCount(0);

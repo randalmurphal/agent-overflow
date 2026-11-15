@@ -144,8 +144,12 @@ for (const provider of ['claude', 'codex'] as const) {
     await reply.getByTestId('agent-message-sender').click();
     await expect(page.getByTestId('chat-header-title').filter({ hasText: BUSY })).toBeVisible();
 
-    // The spawned thread has no person message at all.
-    await openThread(page, AUDIT);
+    // The spawned thread is the lead's worker: it has no sidebar row and
+    // opens from the row its answer came back in. It has no person message.
+    await expect(page.getByTestId('thread-row-title').filter({ hasText: AUDIT })).toHaveCount(0);
+    await openThread(page, LEAD);
+    await agentRow(page, 'finished').getByTestId('agent-message-sender').click();
+    await expect(page.getByTestId('chat-header-title').filter({ hasText: AUDIT })).toBeVisible();
     const spawn = agentRow(page, 'spawn');
     await expect(spawn.getByTestId('agent-message-kind')).toHaveText('Spawn');
     await expect(spawn.getByTestId('agent-message-sender')).toHaveText(LEAD);
