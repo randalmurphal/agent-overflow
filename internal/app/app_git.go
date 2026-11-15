@@ -102,7 +102,11 @@ func (a *App) GitMaybeFetchRemotes(ws WorkspaceRef) (bool, error) {
 // concurrent checkout can't flip the path between the check and the
 // operation.
 //
+// The budget covers the pull's transfer and post-merge hook
+// (gitops.HookTimeout).
+//
 //ao:scope git:operate
+//ao:budget 12m
 func (a *App) GitSyncBranch(ws WorkspaceRef, branch string) ([]gitops.GitBranch, error) {
 	project, workspace, err := a.gitApplication().ResolveWorkspace(ws)
 	if err != nil {
@@ -138,7 +142,7 @@ func (a *App) GitSyncBranch(ws WorkspaceRef, branch string) ([]gitops.GitBranch,
 // attemptID, fresh for each press of Commit, records the commit's outcome
 // (commitAttempts): GetCommitOutcome answers it after a lost answer, and a
 // request repeating the id gets the recorded outcome and commits nothing.
-// The budget covers the commit's hooks (gitops.CommitTimeout) and the
+// The budget covers the commit's hooks (gitops.HookTimeout) and the
 // snapshot and index steps around them.
 //
 //ao:scope git:operate
@@ -209,16 +213,20 @@ func (a *App) GetCommitOutcome(ctx context.Context, ws WorkspaceRef, attemptID s
 	return CommitOutcome{State: "committed", Result: &result}, nil
 }
 
-// GitPush pushes the workspace's current branch.
+// GitPush pushes the workspace's current branch. The budget covers its
+// pre-push hook and transfer (gitops.HookTimeout).
 //
 //ao:scope git:operate
+//ao:budget 12m
 func (a *App) GitPush(ws WorkspaceRef) (gitops.GitActionResult, error) {
 	return a.gitApplication().Push(ws)
 }
 
-// GitPull fast-forwards the workspace's current branch.
+// GitPull fast-forwards the workspace's current branch. The budget covers
+// its transfer and post-merge hook (gitops.HookTimeout).
 //
 //ao:scope git:operate
+//ao:budget 12m
 func (a *App) GitPull(ws WorkspaceRef) (gitops.GitActionResult, error) {
 	return a.gitApplication().Pull(ws)
 }
@@ -233,7 +241,10 @@ func (a *App) GitPull(ws WorkspaceRef) (gitops.GitActionResult, error) {
 // so a sibling thread sharing the worktree syncs without the frontend
 // guessing which rows moved. A tag checkout leaves them with no branch.
 //
+// The budget covers the checkout's post-checkout hook (gitops.HookTimeout).
+//
 //ao:scope git:operate
+//ao:budget 12m
 func (a *App) GitCheckout(ws WorkspaceRef, branch string) (GitWorkspaceState, error) {
 	project, workspace, err := a.gitApplication().ResolveWorkspace(ws)
 	if err != nil {
@@ -315,7 +326,11 @@ func (a *App) recordWorkspaceCheckout(label, project, workspace string, leftBehi
 // Thread rows in the workspace are re-branched as for GitCheckout. Does not
 // restart provider sessions because the cwd is unchanged.
 //
+// The budget covers two checkouts, each with its post-checkout hook
+// (gitops.HookTimeout).
+//
 //ao:scope git:operate
+//ao:budget 21m
 func (a *App) GitCreateBranchFrom(ws WorkspaceRef, name, baseBranch string, carryLocalChanges bool) (GitWorkspaceState, error) {
 	project, workspace, err := a.gitApplication().ResolveWorkspace(ws)
 	if err != nil {
@@ -457,9 +472,11 @@ func (a *App) createBranchInWorkspace(workspace, name string, resolvedBase gitop
 
 // GitCreatePR opens a pull request for the workspace's current branch. When
 // draft is true the PR is opened as a GitHub draft (gh pr create --draft).
+// The budget covers the forge CLI, which pushes the branch and runs its
+// pre-push hook (gitops.HookTimeout), and the open-PR lookup after it.
 //
 //ao:scope git:operate
-//ao:budget 2m
+//ao:budget 12m
 func (a *App) GitCreatePR(ctx context.Context, ws WorkspaceRef, title, body string, draft bool) (gitops.GitActionResult, error) {
 	return a.gitApplication().CreatePR(forgeapi.WithInteractive(ctx), ws, title, body, draft)
 }

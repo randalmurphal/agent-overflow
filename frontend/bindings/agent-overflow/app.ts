@@ -306,6 +306,9 @@ export function ArchiveThread(id: string): $CancellablePromise<void> {
  * elsewhere — git's own one-branch-one-worktree invariant. Frontend dedups by
  * flipping to the existing worktree before calling here. Any number of
  * worktrees may sit on one tag; each gets its own directory named after it.
+ * 
+ * The budget covers the worktree's add, whose post-checkout hook runs
+ * inside it (gitops.HookTimeout).
  */
 export function AttachThreadWorktree(threadID: string, branch: string): $CancellablePromise<store$0.Thread> {
     return $Call.ByID(2367642633, threadID, branch).then(($result: any) => {
@@ -912,6 +915,9 @@ export function CreateProposedPlanComment(threadID: string, input: store$0.Propo
  * The created row is broadcast as `listed` so a second attached client puts
  * it in its sidebar without a refresh, matching what the creating client does
  * with the return value.
+ * 
+ * The budget covers cutting a worktree, whose post-checkout hook runs
+ * inside its add (gitops.HookTimeout).
  */
 export function CreateThread(opts: app$0.CreateThreadOptions): $CancellablePromise<store$0.Thread> {
     return $Call.ByID(2579322833, opts).then(($result: any) => {
@@ -2601,6 +2607,8 @@ export function GetWorkspaceActivity(workspacePath: string): $CancellablePromise
  * workspace-keyed write UpdateThreadBranch uses (and broadcast the same way),
  * so a sibling thread sharing the worktree syncs without the frontend
  * guessing which rows moved. A tag checkout leaves them with no branch.
+ * 
+ * The budget covers the checkout's post-checkout hook (gitops.HookTimeout).
  */
 export function GitCheckout(ws: app$0.WorkspaceRef, branch: string): $CancellablePromise<app$0.GitWorkspaceState> {
     return $Call.ByID(1598126927, ws, branch).then(($result: any) => {
@@ -2618,7 +2626,7 @@ export function GitCheckout(ws: app$0.WorkspaceRef, branch: string): $Cancellabl
  * attemptID, fresh for each press of Commit, records the commit's outcome
  * (commitAttempts): GetCommitOutcome answers it after a lost answer, and a
  * request repeating the id gets the recorded outcome and commits nothing.
- * The budget covers the commit's hooks (gitops.CommitTimeout) and the
+ * The budget covers the commit's hooks (gitops.HookTimeout) and the
  * snapshot and index steps around them.
  */
 export function GitCommit(ws: app$0.WorkspaceRef, subject: string, body: string, selection: app$0.CommitSelection, attemptID: string): $CancellablePromise<git$0.GitActionResult> {
@@ -2652,6 +2660,9 @@ export function GitCommit(ws: app$0.WorkspaceRef, subject: string, body: string,
  * 
  * Thread rows in the workspace are re-branched as for GitCheckout. Does not
  * restart provider sessions because the cwd is unchanged.
+ * 
+ * The budget covers two checkouts, each with its post-checkout hook
+ * (gitops.HookTimeout).
  */
 export function GitCreateBranchFrom(ws: app$0.WorkspaceRef, name: string, baseBranch: string, carryLocalChanges: boolean): $CancellablePromise<app$0.GitWorkspaceState> {
     return $Call.ByID(429779991, ws, name, baseBranch, carryLocalChanges).then(($result: any) => {
@@ -2662,6 +2673,8 @@ export function GitCreateBranchFrom(ws: app$0.WorkspaceRef, name: string, baseBr
 /**
  * GitCreatePR opens a pull request for the workspace's current branch. When
  * draft is true the PR is opened as a GitHub draft (gh pr create --draft).
+ * The budget covers the forge CLI, which pushes the branch and runs its
+ * pre-push hook (gitops.HookTimeout), and the open-PR lookup after it.
  */
 export function GitCreatePR(ws: app$0.WorkspaceRef, title: string, body: string, draft: boolean): $CancellablePromise<git$0.GitActionResult> {
     return $Call.ByID(4106667105, ws, title, body, draft).then(($result: any) => {
@@ -2756,7 +2769,8 @@ export function GitPruneBranches(ws: app$0.WorkspaceRef, selections: app$0.Branc
 }
 
 /**
- * GitPull fast-forwards the workspace's current branch.
+ * GitPull fast-forwards the workspace's current branch. The budget covers
+ * its transfer and post-merge hook (gitops.HookTimeout).
  */
 export function GitPull(ws: app$0.WorkspaceRef): $CancellablePromise<git$0.GitActionResult> {
     return $Call.ByID(3933172764, ws).then(($result: any) => {
@@ -2765,7 +2779,8 @@ export function GitPull(ws: app$0.WorkspaceRef): $CancellablePromise<git$0.GitAc
 }
 
 /**
- * GitPush pushes the workspace's current branch.
+ * GitPush pushes the workspace's current branch. The budget covers its
+ * pre-push hook and transfer (gitops.HookTimeout).
  */
 export function GitPush(ws: app$0.WorkspaceRef): $CancellablePromise<git$0.GitActionResult> {
     return $Call.ByID(4036251239, ws).then(($result: any) => {
@@ -2834,6 +2849,9 @@ export function GitStatusUnsubscribe(subscriptionID: string): $CancellablePromis
  * thread in the workspace is locked across the current-branch read so a
  * concurrent checkout can't flip the path between the check and the
  * operation.
+ * 
+ * The budget covers the pull's transfer and post-merge hook
+ * (gitops.HookTimeout).
  */
 export function GitSyncBranch(ws: app$0.WorkspaceRef, branch: string): $CancellablePromise<git$0.GitBranch[]> {
     return $Call.ByID(1057032236, ws, branch).then(($result: any) => {
@@ -4148,6 +4166,9 @@ export function PostPRLineComment(pr: git$0.PRReference, req: app$0.PRLineCommen
  * 
  * On stash-apply failure the worktree is removed and the stash entry is
  * kept so the user can recover via `git stash list`.
+ * 
+ * The budget covers the worktree's add, whose post-checkout hook runs
+ * inside it (gitops.HookTimeout).
  */
 export function PrepareThreadWorktree(threadID: string, baseBranch: string, requestedBranch: string, carryLocalChanges: boolean): $CancellablePromise<store$0.Thread> {
     return $Call.ByID(2870364785, threadID, baseBranch, requestedBranch, carryLocalChanges).then(($result: any) => {
@@ -6315,6 +6336,8 @@ export function TerminateCodexBackgroundTerminal(threadID: string, processID: st
  * ThreadToolCall runs one write tool here. spawn, send, ask and cancel
  * carry the source's token and mint or settle a receipt; thread_update
  * and thread_group are ordinary tool calls with no request behind them.
+ * The budget covers a spawn that forks and cuts a worktree, whose
+ * post-checkout hook runs inside its add (gitops.HookTimeout).
  */
 export function ThreadToolCall(call: app$0.ThreadPeerCall): $CancellablePromise<app$0.ThreadPeerReply> {
     return $Call.ByID(894716875, call).then(($result: any) => {

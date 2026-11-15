@@ -593,8 +593,10 @@ export const METHOD_ANSWER_MARGIN_MS = 15000;
 export const METHOD_BUDGETS_MS: Readonly<Record<number, number>> = {
 	2421300190: 1200000, // AgentRemoteFetchArtifact
 	2233479686: 1200000, // AgentRemoteFetchLog
+	2367642633: 720000, // AttachThreadWorktree
 	2347956003: 60000, // CheckForUpdate
 	987486764: 120000, // CheckProviderUpdates
+	2579322833: 720000, // CreateThread
 	1594348919: 660000, // FetchForgeAttachment
 	2178028847: 180000, // FinishDictation
 	2246569884: 120000, // ForkSideChat
@@ -604,15 +606,22 @@ export const METHOD_BUDGETS_MS: Readonly<Record<number, number>> = {
 	3107819266: 720000, // GetCommitOutcome
 	4070778679: 600000, // GetPRReviewSubmitOutcome
 	2744542956: 120000, // GetProviderUpdateNotes
+	1598126927: 720000, // GitCheckout
 	1971060042: 720000, // GitCommit
-	4106667105: 120000, // GitCreatePR
+	429779991: 1260000, // GitCreateBranchFrom
+	4106667105: 720000, // GitCreatePR
+	3933172764: 720000, // GitPull
+	4036251239: 720000, // GitPush
+	1057032236: 720000, // GitSyncBranch
 	753394581: 90000, // InterruptAndRevertIfClean
 	850013031: 90000, // InterruptTurn
+	2660387675: 720000, // OpenPRThread
+	2870364785: 720000, // PrepareThreadWorktree
 	1986917811: 1800000, // SaveCIArtifacts
 	2960563266: 660000, // SaveForgeAttachment
 	1537914193: 900000, // SavePRCIJobLog
 	2692607191: 600000, // SubmitPRReview
-	894716875: 120000, // ThreadToolCall
+	894716875: 780000, // ThreadToolCall
 	2624544009: 60000, // ThreadToolQuery
 	1291217507: 90000, // TriggerMcpAuth
 	417766274: 90000, // TriggerWorkspaceMcpAuth

@@ -289,8 +289,12 @@ methods, vocabulary, receiver specifications, or generator inputs.
 ### Method budgets
 
 A bound method's server side may run for `DefaultMethodBudget` (45 s, the
-bound of one git, gh or glab command or one forge request) unless it
-declares `//ao:budget <duration>`. `methodgen` writes the budget into
+bound of one git, gh or glab command that runs no hook, or one forge
+request) unless it declares `//ao:budget <duration>`. A command that runs a
+user's hook (commit, push, pull, checkout, branch creation, worktree add,
+merge, and the forge CLIs' create, which pushes) gets `gitops.HookTimeout`
+(10 minutes) and is stopped with its hooks, so every method that reaches
+one declares a budget covering it. `methodgen` writes the budget into
 `MethodMeta.Budget` and the frontend's `METHOD_BUDGETS_MS`, and every client
 waits the method's budget plus `MethodAnswerMargin` (15 s): `rpcWaitMs` in
 `wsClient.ts`, `transport.ClientWait` for Go clients (the `ao` CLI, the
