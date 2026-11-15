@@ -535,8 +535,9 @@ func (p *agentPeerPair) askAgainUntil(t *testing.T, done func(store.ThreadReques
 // spawned thread there still has open work: the sweep on each keeps its
 // half, the spawn here for its nested_open and the receipt there for the
 // open work under its thread, so the forwarded listing and Stop still
-// reach that work. Once it closes, the first sweep there deletes the
-// receipt, the refusal that follows clears nested_open here, and the next
+// reach that work. Once it closes, the first sweep there keeps the receipt
+// only as its thread's lineage, unknown to the ledger, the listing that
+// follows finds no open work and clears nested_open here, and the next
 // sweep here deletes the spawn.
 func TestThreadAgentRetentionKeepsBothSidesOfARemoteSpawnWithOpenWork(t *testing.T) {
 	t.Parallel()

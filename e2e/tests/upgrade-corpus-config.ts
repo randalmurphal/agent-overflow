@@ -203,7 +203,7 @@ export const coverageAllowlist: CoverageAllowance[] = [
   },
   {
     table: 'thread_request_receipts',
-    columns: ['late_reply', 'late_reply_at', 'answer_agent', 'answer_agent_role', 'late_reply_agent', 'late_reply_agent_role'],
+    columns: ['late_reply', 'late_reply_at', 'answer_agent', 'answer_agent_role', 'late_reply_agent', 'late_reply_agent_role', 'lineage_only'],
     values: {
       kind: ['send', 'ask', 'remind'],
       state: ['accepted', 'running', 'replied', 'errored', 'cancelled', 'interrupted', 'expired'],
@@ -211,8 +211,9 @@ export const coverageAllowlist: CoverageAllowance[] = [
       answer_agent: [1],
       late_reply_agent: [1],
       own_turn: [0],
+      lineage_only: [1],
     },
-    reason: "an agent's thread_send, thread_ask or thread_remind request and the answers of one; the top-up's one request is the assistant's helper spawn",
+    reason: "an agent's thread_send, thread_ask or thread_remind request and the answers of one, and a spawn's receipt the retention floor kept as its lineage, a month after it settled; the top-up's one request is the assistant's helper spawn",
   },
   { table: 'async_questions', reason: "an agent's thread_ask question" },
   { table: 'agents', columns: ['creator_agent_id'], reason: "an assistant another assistant made with thread_new_assistant, which is an agent's thread request" },

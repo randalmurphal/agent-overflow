@@ -668,7 +668,7 @@ func (s *Store) AckThreadRequestReceipt(token string, revision, at int64) (bool,
 	result, err := s.db.Exec(
 		`UPDATE thread_request_receipts
 		    SET collected_revision = ?, collected_at = ?, updated_at = ?
-		  WHERE token = ? AND collected_revision < ?`,
+		  WHERE token = ? AND collected_revision < ? AND lineage_only = 0`,
 		revision, at, nowMillis(), token, revision,
 	)
 	if err != nil {
@@ -679,9 +679,10 @@ func (s *Store) AckThreadRequestReceipt(token string, revision, at int64) (bool,
 
 // GetThreadRequestReceipt reads one receipt. The bool separates an unknown
 // token, which is `thread_request_unknown` on the wire, from a read failure.
+// A receipt the retention floor reduced to its lineage is unknown.
 func (s *Store) GetThreadRequestReceipt(token string) (ThreadRequestReceipt, bool, error) {
 	row, err := scanThreadReceipt(s.reader().QueryRow(
-		`SELECT `+threadReceiptColumns+` FROM thread_request_receipts WHERE token = ?`, token))
+		`SELECT `+threadReceiptColumns+` FROM thread_request_receipts WHERE token = ? AND lineage_only = 0`, token))
 	if err == sql.ErrNoRows {
 		return ThreadRequestReceipt{}, false, nil
 	}
@@ -692,7 +693,8 @@ func (s *Store) GetThreadRequestReceipt(token string) (ThreadRequestReceipt, boo
 }
 
 // ListThreadRequestReceiptsForThread returns every receipt against one thread,
-// newest first. The settlement observer and the responder-enable rule read it.
+// newest first, less the lineage the retention floor kept. The settlement
+// observer and the responder-enable rule read it.
 // A receipt whose target is still undecided belongs to no thread yet and is
 // listed by none of them; the boot sweep reaches it through
 // ListOpenThreadRequestReceipts instead.
@@ -700,11 +702,26 @@ func (s *Store) ListThreadRequestReceiptsForThread(threadID string) ([]ThreadReq
 	action := fmt.Sprintf("store: list thread receipts for %s", threadID)
 	rows, err := s.reader().Query(
 		`SELECT `+threadReceiptColumns+` FROM thread_request_receipts
-		  WHERE target_thread_id = ? ORDER BY created_at DESC, token ASC`, threadID)
+		  WHERE target_thread_id = ? AND lineage_only = 0 ORDER BY created_at DESC, token ASC`, threadID)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", action, err)
 	}
 	return collectThreadReceipts(rows, action)
+}
+
+// ThreadSpawnedForSource reports whether threadID is a thread a spawn from
+// sourceThreadID on the computer owner names made here: a spawn receipt
+// naming the three, its lineage past the retention floor included. One
+// search of the receipts by target (idx_thread_request_receipts_target).
+func (s *Store) ThreadSpawnedForSource(threadID, owner, sourceThreadID string) (bool, error) {
+	var found bool
+	err := s.reader().QueryRow(`SELECT EXISTS (SELECT 1 FROM thread_request_receipts
+		 WHERE target_thread_id = ? AND kind = 'spawn' AND owner_device_id = ? AND source_thread_id = ?)`,
+		threadID, owner, sourceThreadID).Scan(&found)
+	if err != nil {
+		return false, fmt.Errorf("store: read whether %s was spawned for %s: %w", threadID, sourceThreadID, err)
+	}
+	return found, nil
 }
 
 // ListOpenThreadRequestReceipts returns every receipt still `accepted` or

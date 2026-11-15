@@ -12,7 +12,6 @@ import (
 	"agent-overflow/internal/entityid"
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/rpcclient"
-	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadtools"
 )
 
@@ -215,20 +214,16 @@ func (a *App) stopThreadAgentWorkHere(ctx context.Context, threadID, token strin
 
 // peerReachesThread reports whether threadID is a thread the source thread
 // of this device spawned here, or one reached from such a thread through
-// this computer's own spawn lineage, within the nesting bound. A false
-// answer is certain, as the caller records it (recordPeerOpenWork): a failed
-// read is an error, not a refusal.
+// this computer's own spawn lineage, within the nesting bound. The spawn's
+// receipt is kept as its lineage while the thread exists, past the
+// retention floor. A false answer is certain, as the caller records it
+// (recordPeerOpenWork): a failed read is an error, not a refusal.
 func (a *App) peerReachesThread(owner, sourceThreadID, threadID string) (bool, error) {
 	current := threadID
 	for range threadAgentRowDepth + 1 {
-		receipts, err := a.store.ListThreadRequestReceiptsForThread(current)
-		if err != nil {
-			return false, err
-		}
-		for _, receipt := range receipts {
-			if receipt.Kind == store.ThreadRequestSpawn && receipt.OwnerDeviceID == owner && receipt.SourceThreadID == sourceThreadID {
-				return true, nil
-			}
+		spawned, err := a.store.ThreadSpawnedForSource(current, owner, sourceThreadID)
+		if err != nil || spawned {
+			return spawned, err
 		}
 		thread, err := a.store.GetThread(current)
 		if errors.Is(err, sql.ErrNoRows) {

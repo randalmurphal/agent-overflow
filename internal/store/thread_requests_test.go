@@ -1024,6 +1024,92 @@ func TestThreadRequestRetentionSweepClearsSettledRowsOnly(t *testing.T) {
 	}
 }
 
+// A spawn's receipt settled before the floor whose thread exists is kept as
+// its lineage: the owner, source and target it names stay, its answers go,
+// its token is unknown and no writer touches it, and it still says which
+// source thread spawned the thread. Another kind's receipt, or a spawn's
+// whose thread is gone, is deleted. A sweep with only lineage left finds
+// nothing due, and the lineage goes once its thread does.
+func TestRetentionKeepsASpawnReceiptAsItsLineage(t *testing.T) {
+	t.Parallel()
+	s := newTestStore(t)
+	mustCreateThread(t, s, "t-child")
+	mustCreateThread(t, s, "t-other")
+	for token, receipt := range map[string]ThreadRequestReceipt{
+		"rc-spawn":      {Kind: ThreadRequestSpawn, TargetThreadID: "t-child"},
+		"rc-send":       {Kind: ThreadRequestSend, TargetThreadID: "t-other"},
+		"rc-spawn-gone": {Kind: ThreadRequestSpawn},
+	} {
+		receipt.Token, receipt.OwnerDeviceID, receipt.SourceThreadID = token, "device-1", "t-source"
+		receipt.CreatedAt, receipt.UpdatedAt = 100, 100
+		if _, _, err := s.AcceptThreadRequestReceipt(receipt); err != nil {
+			t.Fatalf("accept %s: %v", token, err)
+		}
+		result, err := s.SettleLocalThreadRequest(token, ThreadReceiptOpenStates(), ThreadRequestSettlement{
+			State: ThreadReceiptFinished, Answer: []byte("done"), AnswerKind: ThreadAnswerFinal, SettledAt: 200,
+			Agent: &ThreadAnswerAgent{Role: "Reviewer"},
+		}, ThreadRequestFinished)
+		if err != nil || !result.Settled {
+			t.Fatalf("settle %s: %+v %v", token, result, err)
+		}
+	}
+	if swept, err := s.DeleteThreadRequestsBefore(1000); err != nil || swept != 3 {
+		t.Fatalf("sweep = %d, %v; want one lineage kept and two receipts deleted", swept, err)
+	}
+	var lineage, agent int
+	var answer, late []byte
+	var owner, source, target, role string
+	if err := s.db.QueryRow(`SELECT lineage_only, answer, late_reply, answer_agent, answer_agent_role, owner_device_id, source_thread_id, target_thread_id
+		FROM thread_request_receipts WHERE token = 'rc-spawn'`).Scan(&lineage, &answer, &late, &agent, &role, &owner, &source, &target); err != nil {
+		t.Fatalf("read the lineage: %v", err)
+	}
+	if lineage != 1 || answer != nil || late != nil || agent != 0 || role != "" || owner != "device-1" || source != "t-source" || target != "t-child" {
+		t.Fatalf("lineage %d answer %q late %q agent %d %q owner %q source %q target %q; want the names kept and the answers gone",
+			lineage, answer, late, agent, role, owner, source, target)
+	}
+	var left int
+	if err := s.db.QueryRow(`SELECT count(*) FROM thread_request_receipts`).Scan(&left); err != nil || left != 1 {
+		t.Fatalf("%d receipts left, %v; want the lineage alone", left, err)
+	}
+	if _, found, err := s.GetThreadRequestReceipt("rc-spawn"); err != nil || found {
+		t.Fatalf("the lineage's token reads found %v, %v; want unknown", found, err)
+	}
+	if receipts, err := s.ListThreadRequestReceiptsForThread("t-child"); err != nil || len(receipts) != 0 {
+		t.Fatalf("the thread's receipts %+v, %v; want the lineage left out", receipts, err)
+	}
+	if acked, err := s.AckThreadRequestReceipt("rc-spawn", 99, 300); err != nil || acked {
+		t.Fatalf("ack of the lineage = %v, %v; want refused", acked, err)
+	}
+	if stored, err := s.StoreThreadReceiptLateReply("rc-spawn", []byte("later"), 300, nil); err != nil || stored {
+		t.Fatalf("late reply on the lineage = %v, %v; want refused", stored, err)
+	}
+	for _, c := range []struct {
+		owner, source string
+		want          bool
+	}{{"device-1", "t-source", true}, {"device-2", "t-source", false}, {"device-1", "t-else", false}} {
+		if got, err := s.ThreadSpawnedForSource("t-child", c.owner, c.source); err != nil || got != c.want {
+			t.Fatalf("spawned for %s/%s = %v, %v; want %v", c.owner, c.source, got, err, c.want)
+		}
+	}
+	if swept, err := s.DeleteThreadRequestsBefore(1000); err != nil || swept != 0 {
+		t.Fatalf("second sweep = %d, %v; want nothing", swept, err)
+	}
+	// The app detaches a thread's settled receipts before it deletes or
+	// moves the thread: the lineage is left naming no thread.
+	if _, err := s.DetachThreadReceiptsFromThread("t-child"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteThread("t-child"); err != nil {
+		t.Fatal(err)
+	}
+	if swept, err := s.DeleteThreadRequestsBefore(1000); err != nil || swept != 1 {
+		t.Fatalf("sweep once the thread is gone = %d, %v; want the lineage deleted", swept, err)
+	}
+	if err := s.db.QueryRow(`SELECT count(*) FROM thread_request_receipts`).Scan(&left); err != nil || left != 0 {
+		t.Fatalf("%d receipts left once the thread is gone, %v; want none", left, err)
+	}
+}
+
 // Both tables hang off the thread they belong to, so deleting the thread
 // takes its requests and receipts with it.
 func TestThreadRequestRowsFollowTheirThread(t *testing.T) {

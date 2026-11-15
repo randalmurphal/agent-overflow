@@ -41,7 +41,10 @@ import (
 //   - `lineage_only`: a local spawn row the retention sweep kept past the
 //     floor with its payload cleared, as the record of which thread
 //     spawned its target. The ledger reads skip it: its token is unknown
-//     and its answer gone. It still links its target into the tree.
+//     and its answer gone. It still links its target into the tree. On a
+//     receipt it is the same for a spawn's receipt: kept while the thread
+//     it made exists, as the record that the source thread there owns it,
+//     which authorizes that computer's agent_rows and agent_stop.
 //   - `superseded`: a local spawn of a thread that a newer local spawn
 //     also names, which only data from before this migration holds. It is
 //     not its target's link and names no owner: every read of a thread's
@@ -117,8 +120,8 @@ import (
 // idx_thread_requests_spawn_target serves the lineage reads by spawned
 // thread. idx_thread_requests_age and idx_thread_request_receipts_age index
 // the age of the rows the retention floor can remove, and
-// idx_thread_requests_lineage the lineage rows, which the sweep deletes once
-// their spawned thread is gone.
+// idx_thread_requests_lineage and idx_thread_request_receipts_lineage the
+// lineage rows, which the sweep deletes once their spawned thread is gone.
 //
 // trg_thread_placement_spawn_gone makes an owned thread of a project
 // standalone when its link is deleted, as a spawner's delete does, so the
@@ -211,6 +214,7 @@ ALTER TABLE thread_request_receipts ADD COLUMN answer_agent_role TEXT NOT NULL D
 ALTER TABLE thread_request_receipts ADD COLUMN late_reply_agent INTEGER NOT NULL DEFAULT 0 CHECK(late_reply_agent IN (0,1));
 ALTER TABLE thread_request_receipts ADD COLUMN late_reply_agent_role TEXT NOT NULL DEFAULT '';
 ALTER TABLE thread_request_receipts ADD COLUMN own_turn INTEGER NOT NULL DEFAULT 0 CHECK(own_turn IN (0,1));
+ALTER TABLE thread_request_receipts ADD COLUMN lineage_only INTEGER NOT NULL DEFAULT 0 CHECK(lineage_only IN (0,1));
 
 UPDATE thread_requests SET confirmed_at = delivered_at WHERE delivered_at IS NOT NULL;
 UPDATE thread_requests SET late_confirmed_at = late_delivered_at, late_delivered_how = delivered_how
@@ -246,7 +250,10 @@ CREATE INDEX idx_thread_requests_lineage
  WHERE lineage_only = 1;
 CREATE INDEX idx_thread_request_receipts_age
     ON thread_request_receipts(COALESCE(settled_at, created_at))
- WHERE state NOT IN ('accepted','running');
+ WHERE lineage_only = 0 AND state NOT IN ('accepted','running');
+CREATE INDEX idx_thread_request_receipts_lineage
+    ON thread_request_receipts(target_thread_id)
+ WHERE lineage_only = 1;
 CREATE UNIQUE INDEX idx_thread_requests_spawn_link
     ON thread_requests(target_thread_id)
  WHERE kind = 'spawn' AND target_computer_id = '' AND superseded = 0 AND target_thread_id <> '';

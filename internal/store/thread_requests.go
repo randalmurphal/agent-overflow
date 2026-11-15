@@ -1201,21 +1201,24 @@ const clearLineagePayloadSQL = `UPDATE thread_requests
 	    nested_open = 0, target_provider = ''
 	WHERE lineage_only = 0`
 
-// The retention floor's three sets, each stated as the partial predicate of
+// The retention floor's four sets, each stated as the partial predicate of
 // the index that reads it: a source row past the floor
 // (idx_thread_requests_age), a receipt past it
 // (idx_thread_request_receipts_age), and a lineage row whose spawned thread
-// is gone (idx_thread_requests_lineage). An open row is in neither age
+// is gone (idx_thread_requests_lineage, idx_thread_request_receipts_lineage). An open row is in neither age
 // index: it is still work, and waits for its own settlement. A spawn with
 // open work under it, a local one's marks (agentOpenBelowSQL) or a remote
 // one's nested_open, waits for that work the same way: the Agents segment
 // lists it for that work, with its answer, and deleting a remote one would
 // take the open rows below it out of its caller's tree. A local spawn's
-// lineage stays its target's link once cleared (agentSpawnLinkSQL). A spawn's receipt waits while its
-// target or a thread up to agentOpenDepth spawns below it has open work
-// (agentOpenUnderSQL): it is what lets the computer that made the spawn list
-// and stop that work (peerReachesThread), and that computer keeps its own
-// row for the same work through nested_open.
+// lineage stays its target's link once cleared (agentSpawnLinkSQL). A
+// spawn's receipt waits while its target or a thread up to agentOpenDepth
+// spawns below it has open work (agentOpenUnderSQL), and once past the
+// floor is kept the same way while its thread exists, as its lineage
+// (receiptLineageSQL): it is what lets the computer that made the spawn
+// list and stop that thread's work, now or once it is continued
+// (ThreadSpawnedForSource), and that computer keeps its own row for open
+// work there through nested_open.
 //
 // The lineage set is the one the sweep's probe cannot search: "no thread
 // has this id" is an anti-join, so the probe walks every lineage row on
@@ -1229,8 +1232,23 @@ const (
 	    AND NOT EXISTS (SELECT 1 FROM threads WHERE threads.id = thread_requests.target_thread_id)`
 )
 
-var receiptPastFloorSQL = `state NOT IN ('accepted','running') AND COALESCE(settled_at, created_at) < ?
+var receiptPastFloorSQL = `lineage_only = 0 AND state NOT IN ('accepted','running') AND COALESCE(settled_at, created_at) < ?
 	    AND NOT (kind = 'spawn' AND ` + agentOpenUnderSQL("thread_request_receipts.target_thread_id") + `)`
+
+const (
+	// receiptLineageSQL matches a spawn's receipt whose thread still exists.
+	receiptLineageSQL = `kind = 'spawn'
+	    AND EXISTS (SELECT 1 FROM threads WHERE threads.id = thread_request_receipts.target_thread_id)`
+	orphanReceiptLineageSQL = `lineage_only = 1
+	    AND NOT EXISTS (SELECT 1 FROM threads WHERE threads.id = thread_request_receipts.target_thread_id)`
+	// clearReceiptLineageSQL keeps a receipt past the floor as its lineage:
+	// the source and target it names and its state and times, its answers
+	// and their agents gone. The sweep appends its floor.
+	clearReceiptLineageSQL = `UPDATE thread_request_receipts
+	SET lineage_only = 1, answer = NULL, answer_kind = '', late_reply = NULL, late_reply_at = NULL, expires_at = NULL,
+	    answer_agent = 0, answer_agent_role = '', late_reply_agent = 0, late_reply_agent_role = ''
+	WHERE `
+)
 
 // DeleteThreadRequestsBefore removes both sides of every request that has
 // been settled longer than the retention floor, and reports how many rows
@@ -1246,7 +1264,7 @@ var receiptPastFloorSQL = `state NOT IN ('accepted','running') AND COALESCE(sett
 // an answer written yesterday on a request made last year has been readable
 // for a day. A local spawn request whose thread exists keeps its lineage
 // past the floor, marked lineage_only with its payload cleared
-// (spawnLineageSQL).
+// (spawnLineageSQL), and so does a spawn's receipt (receiptLineageSQL).
 //
 // The sweep runs every few minutes and almost never finds anything, so it
 // asks first, on the read pool, through the indexes the three sets have,
@@ -1256,7 +1274,8 @@ func (s *Store) DeleteThreadRequestsBefore(cutoff int64) (int64, error) {
 	if err := s.reader().QueryRow(`SELECT
 	    EXISTS (SELECT 1 FROM thread_requests WHERE `+requestPastFloorSQL+`)
 	    OR EXISTS (SELECT 1 FROM thread_request_receipts WHERE `+receiptPastFloorSQL+`)
-	    OR EXISTS (SELECT 1 FROM thread_requests WHERE `+orphanLineageSQL+`)`,
+	    OR EXISTS (SELECT 1 FROM thread_requests WHERE `+orphanLineageSQL+`)
+	    OR EXISTS (SELECT 1 FROM thread_request_receipts WHERE `+orphanReceiptLineageSQL+`)`,
 		cutoff, cutoff).Scan(&due); err != nil {
 		return 0, fmt.Errorf("store: read whether thread requests are past %d: %w", cutoff, err)
 	}
@@ -1275,7 +1294,10 @@ func (s *Store) DeleteThreadRequestsBefore(cutoff int64) (int64, error) {
 		{"clear kept thread_requests", clearLineagePayloadSQL + ` AND ` + requestPastFloorSQL + ` AND ` + spawnLineageSQL, []any{cutoff}},
 		{"sweep thread_requests", `DELETE FROM thread_requests WHERE ` + requestPastFloorSQL + ` AND NOT (` + spawnLineageSQL + `)`, []any{cutoff}},
 		{"sweep lineage thread_requests", `DELETE FROM thread_requests WHERE ` + orphanLineageSQL, nil},
+		{"clear kept thread_request_receipts", clearReceiptLineageSQL + receiptPastFloorSQL + ` AND ` + receiptLineageSQL, []any{cutoff}},
+		// The step before kept the lineage, which the floor's set leaves out.
 		{"sweep thread_request_receipts", `DELETE FROM thread_request_receipts WHERE ` + receiptPastFloorSQL, []any{cutoff}},
+		{"sweep lineage thread_request_receipts", `DELETE FROM thread_request_receipts WHERE ` + orphanReceiptLineageSQL, nil},
 	}
 	var total int64
 	for _, step := range steps {

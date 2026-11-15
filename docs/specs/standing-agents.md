@@ -968,7 +968,13 @@ Mechanics, as built:
   token as unknown; the lineage reads, a worker's prompt routing
   (`SpawnerOf`) and the Agents tree still find the row, so work a
   reused worker opens after the sweep lists, counts and stops under
-  its owner as before it.
+  its owner as before it. On the computer a remote spawn reached, the
+  same sweep keeps the spawn's receipt as `lineage_only` while the
+  thread it created exists, its answer and late reply cleared: that
+  receipt is what lets the spawner's computer list and stop the
+  thread's work, so a worker continued there after the floor still
+  lists and stops under its owner. Its token is unknown to the ledger
+  there as well.
 - `SetThreadGroup` refuses an assistant's thread
   (`ErrStandingAgentGrouped`). The drag payload marks only assistant
   rows `agentBound`, so a group target accepts a placed worker.
