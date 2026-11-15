@@ -238,8 +238,7 @@ type threadState struct {
 	// until the app returns them to the composer. Bounded by pendingSends,
 	// which feeds it. Lifecycle: drained by DrainUndeliveredSends (after a
 	// cancel, or when a replacement session starts) or the session-end
-	// DrainUnconfirmedFlushItems; swept at cleanup, so a Stop drops them
-	// with the rest of the queue.
+	// DrainUnconfirmedFlushItems, which a Stop's drop runs too.
 	undeliveredSends []UnconfirmedFlushItem
 	// boundarySends are sends the provider consumed with no turn open and
 	// none it had started in: the turn that opens next answers them

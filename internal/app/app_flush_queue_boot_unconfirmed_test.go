@@ -182,6 +182,79 @@ func TestBootThatFailsPartWayRestoresTheUnconfirmedMessageOnce(t *testing.T) {
 	}
 }
 
+// The boot takes back only residue: a marked row in its thread's last turn.
+// A marked row a later turn follows is history the next session ran with,
+// and stays where it is with the composer untouched, whether it is alone in
+// its thread or beside residue; the residue goes to the composer once,
+// however many boots run.
+func TestBootTakesBackOnlyResidueOfTheLastTurn(t *testing.T) {
+	t.Parallel()
+	const history, residue = "shown as sent, a later turn followed", "written as the app died"
+	for _, tc := range []struct {
+		name             string
+		history, residue bool
+		wantDraft        string
+	}{
+		{name: "history", history: true},
+		{name: "residue", residue: true, wantDraft: residue},
+		{name: "both", history: true, residue: true, wantDraft: residue},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			app, _ := newAppForFlushQueueRPC(t)
+			thread := testThread("boot-residue-" + tc.name)
+			thread.Provider = string(provider.Claude)
+			thread.WorkspacePath = t.TempDir()
+			if err := app.store.CreateThread(thread); err != nil {
+				t.Fatalf("CreateThread: %v", err)
+			}
+			now := time.Now().UnixMilli()
+			rows := []store.Item{
+				{ID: "user:9", TurnIndex: 9, Kind: "user_text", Role: "user", Summary: "turn nine", Meta: `{"sendId":"send-9"}`},
+			}
+			if tc.history {
+				rows = append(rows, store.Item{ID: "user:9:flush:1", TurnIndex: 9, Kind: "user_text", Role: "user", Summary: history, Meta: `{"sendId":"send-old","pendingFlush":true}`})
+			}
+			rows = append(rows,
+				store.Item{ID: "assistant:9", TurnIndex: 9, Kind: "assistant_text", Role: "assistant", Summary: "the interrupted answer", Meta: `{}`},
+				store.Item{ID: "user:10", TurnIndex: 10, Kind: "user_text", Role: "user", Summary: "turn ten", Meta: `{"sendId":"send-10"}`},
+				store.Item{ID: "assistant:10", TurnIndex: 10, Kind: "assistant_text", Role: "assistant", Summary: "the next answer", Meta: `{}`},
+			)
+			if tc.residue {
+				rows = append(rows, store.Item{ID: "user:10:flush:1", TurnIndex: 10, Kind: "user_text", Role: "user", Summary: residue, Meta: `{"sendId":"send-new","pendingFlush":true}`})
+			}
+			for _, row := range rows {
+				row.ThreadID, row.Status, row.CreatedAt, row.UpdatedAt = thread.ID, "completed", now, now
+				if _, err := app.store.AppendItem(row); err != nil {
+					t.Fatalf("AppendItem(%s): %v", row.ID, err)
+				}
+			}
+
+			app.restoreDurableFlushQueueAtBoot()
+			app.restoreDurableFlushQueueAtBoot()
+
+			draft, _, err := app.store.GetThreadDraft(thread.ID)
+			if err != nil {
+				t.Fatalf("GetThreadDraft: %v", err)
+			}
+			if draft.Content != tc.wantDraft {
+				t.Fatalf("draft = %q, want %q", draft.Content, tc.wantDraft)
+			}
+			if tc.history {
+				item, found, err := app.store.GetThreadItem(thread.ID, "user:9:flush:1")
+				if err != nil || !found || item.Summary != history {
+					t.Fatalf("history row after boot: %+v found=%v err=%v, want it kept", item, found, err)
+				}
+			}
+			if tc.residue {
+				if _, found, err := app.store.GetThreadItem(thread.ID, "user:10:flush:1"); err != nil || found {
+					t.Fatalf("residue row after boot: found=%v err=%v, want it gone", found, err)
+				}
+			}
+		})
+	}
+}
+
 // A confirmed row is history: the boot leaves it alone.
 func TestBootLeavesAConfirmedQueuedMessageInTheTimeline(t *testing.T) {
 	t.Parallel()
