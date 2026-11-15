@@ -10,8 +10,10 @@ import { cleanup, fireEvent, render } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import TerminalSurface from './TerminalSurface.svelte';
 import {
+  clearThreadTerminalState,
   getTerminalFocused,
   getThreadTerminalState,
+  migrateThreadTerminalState,
   resetThreadTerminalStatesForTest,
   terminalStateKeyForPane,
 } from './terminalStore.svelte';
@@ -197,6 +199,38 @@ describe('TerminalSurface find', () => {
     await settle();
     expect(getPaneFind(key1)).toBeNull();
     expect(getPaneFind(key2)).toMatchObject({ open: true, query: 'two' });
+  });
+
+  // The drawer is closed, so no surface is mounted, when the terminal ends:
+  // its exit, a relist that no longer names it, a close from a command, or
+  // the end of a draft's terminals.
+  it('a terminal that ends off screen takes its find state with it', async () => {
+    const view = mount(paneElement().pane);
+    await tick();
+    await fireEvent.click(view.getByTestId('terminal-find'));
+    await fireEvent.input(view.getByTestId('pane-find-input'), { target: { value: 'one' } });
+    await fireEvent.click(view.getByTestId('terminal-tab-t2'));
+    await settle();
+    await fireEvent.click(view.getByTestId('terminal-find'));
+    view.unmount();
+    expect(getPaneFind(key1)).toMatchObject({ open: true, query: 'one' });
+
+    getThreadTerminalState(terminalStateKeyForPane('thread-A', PANE)).removeTab('t1');
+    expect(getPaneFind(key1)).toBeNull();
+    expect(getPaneFind(key2)).toMatchObject({ open: true });
+
+    clearThreadTerminalState(terminalStateKeyForPane('thread-A', PANE));
+    expect(getPaneFind(key2)).toBeNull();
+  });
+
+  it('a draft\'s terminals moved to its thread keep their find state', async () => {
+    const draft = getThreadTerminalState('draft-1');
+    draft.addTab(terminalSummary('t9'));
+    const key = terminalFindKey(PANE, 't9');
+    registerPaneFindProvider(key, { noun: 'terminal', result: { count: 0, current: -1, pending: false }, search: () => {}, clear: () => {} });
+    openPaneFind(key, { seed: 'kept' });
+    migrateThreadTerminalState('draft-1', 'thread-A');
+    expect(getPaneFind(key)).toMatchObject({ open: true, query: 'kept' });
   });
 
   it('a hidden and reopened drawer shows the open bar on its own terminal and searches it again', async () => {

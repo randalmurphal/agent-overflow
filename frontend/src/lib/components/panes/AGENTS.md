@@ -62,8 +62,10 @@ The thread terminal, in a drawer or a terminal pane, is a nested find
 surface (`declarePaneFindSurface`, attached with `paneFindSurface`): each
 tab has its own provider, bar and state, and the pane's find commands act on
 the active tab's while the pane's last focus or press was inside the
-terminal, or while the pane has no provider of its own. A closed tab's
-state goes with it (`dropPaneFind`). Discussion panes have no provider
+terminal, or while the pane has no provider of its own. A tab's state
+goes when its terminal ends, on screen or not: the terminal store's
+`removeTab` drops its region under every pane (`dropPaneFindRegion`).
+Discussion panes have no provider
 yet, so mod+f falls through there.
 
 A pane whose body holds a list beside a detail declares find regions
