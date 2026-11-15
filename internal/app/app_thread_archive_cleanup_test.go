@@ -257,3 +257,58 @@ func TestARemoteCancelTheDestinationRefusesIsReportedAndSentAgain(t *testing.T) 
 		})
 	}
 }
+
+// An owed cancel the destination does not answer holds up no other job's
+// completion: the watcher sends owed cancels apart from its checks.
+func TestAnOwedRemoteCancelThatHangsHoldsUpNoCompletion(t *testing.T) {
+	t.Parallel()
+	remotetest.Require(t)
+	source, receiver, ctx, input := remoteAdmissionFixture(t)
+	receiver.remoteJobs.Close()
+	manager, err := remotejobs.New(ctx, receiver.store, func(context.Context, string, []string, io.Writer) (remotejobs.Outcome, error) {
+		time.Sleep(300 * time.Millisecond)
+		return remotejobs.Outcome{ExitCode: 0}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	receiver.remoteJobs = manager
+	t.Cleanup(manager.Close)
+	owed := input
+	if _, err := source.AgentRemoteStart(ctx, owed); err != nil {
+		t.Fatalf("start the job whose cancel is owed: %v", err)
+	}
+	if err := source.store.OweRemoteCancel(owed.ComputerID, owed.Request.ID, time.Now().UnixMilli(), 0); err != nil {
+		t.Fatal(err)
+	}
+	other := input
+	other.Request.ID = uuid.NewString()
+	if _, err := source.AgentRemoteStart(ctx, other); err != nil {
+		t.Fatalf("start the other job: %v", err)
+	}
+
+	hold := make(chan struct{})
+	receiver.cancelHold.Store(&hold)
+	read := make(chan struct{}, 1)
+	source.remoteCompletionReadForTest = func(w store.RemoteWatch) {
+		if w.RequestID == other.Request.ID {
+			select {
+			case read <- struct{}{}:
+			default:
+			}
+		}
+	}
+	life, stop := context.WithCancel(context.Background())
+	source.appCtx = life
+	source.startRemoteWatches()
+	t.Cleanup(func() {
+		close(hold)
+		stop()
+		source.remoteWatchWG.Wait()
+	})
+	select {
+	case <-read:
+	case <-time.After(15 * time.Second):
+		t.Fatal("the other job's completion was not read while the owed cancel hung")
+	}
+}

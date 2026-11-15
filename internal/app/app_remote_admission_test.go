@@ -29,9 +29,19 @@ type remoteAdmissionReceiver struct {
 	refusal            error
 	// cancelRefusal, when set, refuses every RemoteCommandCancel.
 	cancelRefusal atomic.Pointer[error]
+	// cancelHold, when set, holds every RemoteCommandCancel until it is
+	// closed or the call's context ends.
+	cancelHold atomic.Pointer[chan struct{}]
 }
 
 func (r *remoteAdmissionReceiver) RemoteCommandCancel(ctx context.Context, id string) (RemoteCommand, error) {
+	if hold := r.cancelHold.Load(); hold != nil {
+		select {
+		case <-*hold:
+		case <-ctx.Done():
+			return RemoteCommand{}, ctx.Err()
+		}
+	}
 	if refusal := r.cancelRefusal.Load(); refusal != nil {
 		return RemoteCommand{}, *refusal
 	}

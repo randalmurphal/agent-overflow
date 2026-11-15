@@ -247,7 +247,8 @@ says so. A clean source restart resumes polling within that grace. Status and
 cancellation belong to the original source conversation and the paired source
 device. A cancel a Stop or an archive sends that the destination does not take
 is reported by that Stop or archive and owed on the watch
-(`cancel_owed_at`): the source watcher sends it again every 30 seconds until
+(`cancel_owed_at`): the source watcher sends it again every 30 seconds, on a
+loop apart from its completion checks so an unanswered cancel delays none, until
 the destination takes it or holds no such job, and settles it once the job is
 owed longer than the hour, by which the destination has stopped it. The destination bounds active processes and retained disk output, with
 truncation reported explicitly.

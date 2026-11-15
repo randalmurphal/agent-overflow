@@ -200,7 +200,9 @@ func (a *App) startRemoteWatches() {
 	if a.backends == nil {
 		return
 	}
-	a.remoteWatchWG.Add(1)
+	a.remoteWatchWG.Add(2)
+	// Owed cancels are sent on their own loop: one the destination does not
+	// answer waits out its timeout without holding up the checks below.
 	go func() {
 		defer a.remoteWatchWG.Done()
 		ticker := time.NewTicker(2 * time.Second)
@@ -212,6 +214,18 @@ func (a *App) startRemoteWatches() {
 			case <-ticker.C:
 			}
 			a.retryOwedRemoteCancels(time.Now())
+		}
+	}()
+	go func() {
+		defer a.remoteWatchWG.Done()
+		ticker := time.NewTicker(2 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-a.lifeCtx().Done():
+				return
+			case <-ticker.C:
+			}
 			rows, err := a.store.ListRemoteWatches("", time.Now().UnixMilli(), 32)
 			if err != nil {
 				log.Printf("remote completion watches: %v", err)
