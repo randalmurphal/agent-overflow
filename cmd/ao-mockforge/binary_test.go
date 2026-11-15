@@ -1302,10 +1302,12 @@ func TestGitHubSubmitReviewLineCommentsThroughTheAppsForgeCode(t *testing.T) {
 	}
 }
 
-// A GitLab review submit through the app's own code: one that fails after
-// creating its drafts deletes exactly those, by the ids GitLab returned,
-// and never the viewer's own pending draft with the same text; a retry
-// then publishes each comment once. A delete that fails too is said.
+// A GitLab review submit through the app's own code: the viewer's own
+// pending draft (a review started on GitLab) refuses it before any write,
+// since the publish would post that draft too. One that fails after
+// creating its drafts deletes exactly those, by the ids GitLab returned; a
+// retry then publishes each comment once. A delete that fails too is said,
+// and the drafts it left refuse the next submit.
 func TestGitLabSubmitReviewDraftsThroughTheAppsForgeCode(t *testing.T) {
 	fixture := gitlabMergeFixture("running")
 	fixture.Repos[0].Pulls[0].DraftNotes = []forgefake.DraftNote{{ID: 9001, Author: "alice", Note: "LGTM"}}
@@ -1332,17 +1334,29 @@ func TestGitLabSubmitReviewDraftsThroughTheAppsForgeCode(t *testing.T) {
 		return created, deleted
 	}
 
+	before := len(r.engine.Invocations(0).Invocations)
+	if _, err := r.core.SubmitReview(ctx, ref, review); !errors.As(err, new(*gitops.PendingDraftNotesError)) {
+		t.Fatalf("SubmitReview over the viewer's pending draft = %v, want refused", err)
+	}
+	if created, _ := routes(before); len(created) != 0 {
+		t.Fatalf("a refused submit created %v", created)
+	}
+	fixture.Repos[0].Pulls[0].DraftNotes = nil
+	if _, err := r.engine.Seed(fixture); err != nil {
+		t.Fatal(err)
+	}
+
 	if err := r.engine.SetRefusal(forgefake.Refusal{Route: "glab api publish draft notes", Status: 422, Times: 1, Body: []byte(`{"message":"refused"}`)}); err != nil {
 		t.Fatal(err)
 	}
-	before := len(r.engine.Invocations(0).Invocations)
+	before = len(r.engine.Invocations(0).Invocations)
 	if _, err := r.core.SubmitReview(ctx, ref, review); err == nil {
 		t.Fatal("SubmitReview succeeded through a refused publish")
 	} else if _, left := errors.AsType[*gitops.DraftsLeftError](err); left {
 		t.Fatalf("SubmitReview = %v, want its drafts removed", err)
 	}
 	created, deleted := routes(before)
-	if len(created) != 2 || len(deleted) != 2 || slices.Contains(deleted, "9001") {
+	if len(created) != 2 || len(deleted) != 2 {
 		t.Fatalf("created %v, deleted %v: want exactly the two created drafts deleted", created, deleted)
 	}
 
@@ -1355,10 +1369,9 @@ func TestGitLabSubmitReviewDraftsThroughTheAppsForgeCode(t *testing.T) {
 			bodies[comment.Body]++
 		}
 	}
-	// The viewer's own pending "LGTM" publishes with the review, as
-	// bulk_publish does on GitLab; nothing the failed submit made remains.
-	if bodies["nit"] != 1 || bodies["LGTM"] != 2 {
-		t.Fatalf("published comments = %v, want nit once and the two LGTMs", bodies)
+	// Nothing the failed submit made remains to publish twice.
+	if bodies["nit"] != 1 || bodies["LGTM"] != 1 {
+		t.Fatalf("published comments = %v, want each once", bodies)
 	}
 
 	for _, route := range []string{"glab api publish draft notes", "glab api delete draft note"} {
@@ -1372,6 +1385,14 @@ func TestGitLabSubmitReviewDraftsThroughTheAppsForgeCode(t *testing.T) {
 	}
 	if got := explained(t, ref, gitops.ActionReview, err); !strings.Contains(got.Message, "2 draft comments") || !strings.Contains(got.Message, "may still be pending") {
 		t.Fatalf("explained = %+v", got)
+	}
+	for _, route := range []string{"glab api publish draft notes", "glab api delete draft note"} {
+		if err := r.engine.SetRefusal(forgefake.Refusal{Route: route}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := r.core.SubmitReview(ctx, ref, review); !errors.As(err, new(*gitops.PendingDraftNotesError)) {
+		t.Fatalf("SubmitReview over the drafts left = %v, want refused", err)
 	}
 }
 

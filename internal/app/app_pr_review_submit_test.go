@@ -79,6 +79,8 @@ type forgeGate struct {
 	deletesGone bool
 	// userFails answers the login probe (GET user) 503.
 	userFails bool
+	// onPublish runs when a publish arrives, before it is served.
+	onPublish func()
 }
 
 // lose makes the next publish lose its answer (see losing).
@@ -111,8 +113,15 @@ func (g *forgeGate) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		losing, g.losing = g.losing, ""
 	}
 	deletesGone := g.deletesGone && r.Method == http.MethodDelete && strings.Contains(r.URL.Path, "/draft_notes/")
+	var onPublish func()
+	if publish {
+		onPublish = g.onPublish
+	}
 	userFails := g.userFails && r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/user")
 	g.mu.Unlock()
+	if onPublish != nil {
+		onPublish()
+	}
 	if held {
 		<-release
 	}
@@ -928,8 +937,11 @@ func TestSubmitPRReviewGitLabLostPublishIsSettledByTheDraftNotes(t *testing.T) {
 			t.Parallel()
 			c := newReviewSubmitCase(t, "gitlab")
 			draft := c.draft(t, true, 3, "Guard this.")
-			if err := c.engine.SetRefusal(forgefake.Refusal{Route: "glab api list draft notes", Status: http.StatusForbidden, Times: 1}); err != nil {
-				t.Fatal(err)
+			// The settle's read fails, not the submit's own check before it.
+			c.gate.onPublish = func() {
+				if err := c.engine.SetRefusal(forgefake.Refusal{Route: "glab api list draft notes", Status: http.StatusForbidden, Times: 1}); err != nil {
+					t.Error(err)
+				}
 			}
 			c.gate.lose(how)
 			result, err := c.submit(c.request(true, draft))
@@ -983,5 +995,34 @@ func TestSubmitPRReviewRefusedLeavesTheDraftsUnsent(t *testing.T) {
 		if bodies := c.postedBodies(t); strings.Count(strings.Join(bodies, "\n"), "Guard this.") != 1 {
 			t.Fatalf("%s: the forge holds %q, want the comment once", forge, bodies)
 		}
+	}
+}
+
+// A GitLab review the viewer started in the web UI is not published by
+// Send: the submit is refused before any write with a sentence naming the
+// pending comments, the app's drafts stay drafts and the web review stays
+// pending.
+func TestSubmitPRReviewGitLabLeavesAReviewStartedOnGitLab(t *testing.T) {
+	t.Parallel()
+	c := newReviewSubmitCase(t, "gitlab")
+	if _, err := c.engine.Seed(forgefake.Fixture{Viewer: "alice", Repos: []forgefake.Repo{{Forge: "gitlab", Project: "acme/widgets", Pulls: []forgefake.Pull{
+		{Number: 9, Title: "Widgets", Author: "octo", HeadRef: "feature", HeadSHA: reviewTestHead, State: "open", Diff: reviewTestDiff,
+			DraftNotes: []forgefake.DraftNote{{ID: 9001, Author: "alice", Note: "started on GitLab"}}},
+	}}}}); err != nil {
+		t.Fatal(err)
+	}
+	draft := c.draft(t, true, 3, "Guard this.")
+	result, err := c.submit(c.request(true, draft))
+	if reviewSubmitCode(err) != "forge_"+gitops.ForgeErrorRefused || result.Posted || !strings.Contains(err.Error(), "1 pending comments") {
+		t.Fatalf("submit = %+v, %v; want refused naming the pending comment", result, err)
+	}
+	if got := c.comment(t, true, draft.ID).Status; got != "draft" {
+		t.Fatalf("draft is %q, want draft", got)
+	}
+	if n := c.published(); n != 0 {
+		t.Fatalf("published %d reviews, want 0", n)
+	}
+	if bodies := c.postedBodies(t); slices.Contains(bodies, "started on GitLab") {
+		t.Fatalf("the web review was published: %q", bodies)
 	}
 }

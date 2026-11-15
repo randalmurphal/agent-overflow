@@ -31,7 +31,11 @@ import (
 //     note of the viewer, an unlocked submit could publish the notes a
 //     locked one is still creating, which that one's cleanup would then
 //     read as removed. Nothing else creates draft notes (replies and
-//     thread actions post notes directly), so nothing else takes it.
+//     thread actions post notes directly), so nothing else takes it. A
+//     GitLab submit that finds pending draft notes before creating its own
+//     (a review started on GitLab, notes an earlier submit could not
+//     remove) is refused (gitops.PendingDraftNotesError), so it publishes
+//     only what it created.
 //   - A result means this submit reached the forge: Posted says the forge
 //     took a review from it, Unconfirmed that the forge's answer did not
 //     say (gitops.UnconfirmedSubmitError: its drafts stay drafts and are
@@ -63,7 +67,8 @@ import (
 // backend by its hello's launchId and says the review may be on the PR.
 // The lock is this backend's: two computers holding the same PR's drafts
 // do not share it, and on GitLab two computers submitting the same MR at
-// once can publish each other's notes.
+// once can publish each other's notes when one creates its notes between
+// the other's pending check and its publish.
 //
 // A request without Drafts is the caller's comments, posted as given; the
 // caller marks its drafts with MarkDiffReviewCommentsSent or

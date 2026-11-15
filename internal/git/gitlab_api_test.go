@@ -284,6 +284,8 @@ func TestGitLabSubmitReview(t *testing.T) {
 		switch call.Method + " " + call.Path {
 		case "GET " + mr:
 			return forgeAPIAnswer{Body: gitlabTestMR(7, 0)}
+		case "GET " + mr + "/draft_notes?per_page=100":
+			return forgeAPIAnswer{Body: `[]`}
 		case "GET " + mr + "/diffs?per_page=100":
 			return gitlabTestDiffsAnswer()
 		case "POST " + mr + "/draft_notes":
@@ -307,11 +309,12 @@ func TestGitLabSubmitReview(t *testing.T) {
 	if err != nil || !result.PostedReview {
 		t.Fatalf("SubmitReview = %+v, %v", result, err)
 	}
-	want := []string{"GET " + mr, "GET " + mr + "/diffs?per_page=100", "POST " + mr + "/draft_notes", "POST " + mr + "/draft_notes", "POST " + mr + "/draft_notes", "POST " + mr + "/draft_notes/bulk_publish", "POST " + mr + "/approve"}
+	want := []string{"GET " + mr, "GET " + mr + "/draft_notes?per_page=100", "GET " + mr + "/diffs?per_page=100", "POST " + mr + "/draft_notes", "POST " + mr + "/draft_notes", "POST " + mr + "/draft_notes", "POST " + mr + "/draft_notes/bulk_publish", "POST " + mr + "/approve"}
 	if got := gitlabPaths(calls); strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("requests = %q, want %q", got, want)
 	}
-	sent := calls.all()
+	// Past the pending draft notes read, the writes in order.
+	sent := slices.Delete(calls.all(), 1, 2)
 	var summary, right, left struct {
 		Note     string             `json:"note"`
 		Position *gitlabPositionRaw `json:"position"`

@@ -783,6 +783,18 @@ func (f *gitlabForge) SubmitReview(ctx context.Context, ref PRReference, review 
 	diffRefs := mr.diffRefs()
 	notes := gitlabDraftNotes(review)
 	mrPath := gitlabMRPath(ref)
+	// The publish takes every pending draft note of the viewer's, so one
+	// this submit did not create (a review started on GitLab, or one an
+	// earlier submit could not remove) refuses it before any write.
+	if len(notes) > 0 {
+		pending, err := gitlabPendingDraftIDs(ctx, client, mrPath)
+		if err != nil {
+			return SubmitReviewResult{}, err
+		}
+		if len(pending) > 0 {
+			return SubmitReviewResult{}, &PendingDraftNotesError{Count: len(pending)}
+		}
+	}
 	var replies []gitlabHeldReply
 	for _, note := range notes {
 		if note.InReplyTo != nil {
@@ -1055,6 +1067,17 @@ func removeGitLabDrafts(ctx context.Context, client *forgeapi.Client, mrPath str
 		errs = append(errs, fmt.Errorf("%d draft notes have no id to delete", unknown))
 	}
 	return &DraftsLeftError{Err: failure, Count: left, Cleanup: errors.Join(errs...)}
+}
+
+// PendingDraftNotesError is a GitLab submit refused before any write
+// because the viewer already has Count pending draft notes on the merge
+// request, which its publish would post with this review.
+type PendingDraftNotesError struct {
+	Count int
+}
+
+func (e *PendingDraftNotesError) Error() string {
+	return fmt.Sprintf("the viewer has %d pending draft notes this review did not create", e.Count)
 }
 
 // DraftsLeftError is a submit that failed after creating draft notes it

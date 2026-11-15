@@ -85,6 +85,8 @@ func TestGitLabSubmitReviewPostsEachKindOfLine(t *testing.T) {
 		switch call.Method + " " + call.Path {
 		case "GET " + mr:
 			return forgeAPIAnswer{Body: gitlabTestMR(7, 0)}
+		case "GET " + mr + "/draft_notes?per_page=100":
+			return forgeAPIAnswer{Body: `[]`}
 		case "GET " + mr + "/diffs?per_page=100":
 			return gitlabTestDiffsAnswer()
 		case "POST " + mr + "/draft_notes":

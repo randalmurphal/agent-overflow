@@ -388,6 +388,8 @@ func TestGitLabSubmitReviewHeldReply(t *testing.T) {
 			return forgeAPIAnswer{Body: gitlabTestMR(7, 0)}
 		case call.Method == http.MethodGet && strings.HasPrefix(call.Path, mr+"/discussions?"):
 			return forgeAPIAnswer{Body: discussions()}
+		case call.Method == http.MethodGet && call.Path == mr+"/draft_notes?per_page=100":
+			return forgeAPIAnswer{Body: `[]`}
 		case call.Method == http.MethodGet && call.Path == mr+"/discussions/d9":
 			if state.Load() == "refused-gone" {
 				return forgeAPIAnswer{Status: http.StatusNotFound, Body: `{"message":"404 Not found"}`}

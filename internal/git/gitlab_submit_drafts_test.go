@@ -17,7 +17,10 @@ import (
 // after creating it with failAtUnconfirmed; publishFails refuses
 // bulk_publish with a 422; publish500 answers it 500, after publishing
 // ("applied") or without ("ignored"); deleteFails answers every delete 500.
+// userDraft is a pending draft of the viewer's that appears with the
+// submit's first create (another tab, the web UI), under id 100.
 type gitlabDraftForge struct {
+	userDraft         string
 	mu                sync.Mutex
 	next              int64
 	pending           map[int64]string
@@ -45,6 +48,9 @@ func (f *gitlabDraftForge) answer(t *testing.T, mr string) func(call forgeAPICal
 			return gitlabTestDiffsAnswer()
 		case key == "POST "+mr+"/draft_notes":
 			f.creates++
+			if f.creates == 1 && f.userDraft != "" {
+				f.pending[100] = f.userDraft
+			}
 			if f.creates == f.failAt && !f.failAtUnconfirmed {
 				return forgeAPIAnswer{Status: http.StatusUnprocessableEntity, Body: gitlabTest422}
 			}
@@ -99,8 +105,8 @@ func (f *gitlabDraftForge) pendingIDs() []int64 {
 }
 
 // A submit whose k-th of n requests fails removes exactly the drafts it
-// created, so nothing it made is left pending and a pending draft the user
-// already had, whatever its text, is untouched.
+// created, so nothing it made is left pending and a pending draft of the
+// user's that appeared meanwhile, whatever its text, is untouched.
 func TestGitLabSubmitReviewFailureRemovesTheDraftsItCreated(t *testing.T) {
 	t.Parallel()
 	mr := gitlabTestProject + "/merge_requests/7"
@@ -118,7 +124,8 @@ func TestGitLabSubmitReviewFailureRemovesTheDraftsItCreated(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			forge.next = 100
-			forge.pending = map[int64]string{100: `{"note":"LGTM"}`}
+			forge.pending = map[int64]string{}
+			forge.userDraft = `{"note":"LGTM"}`
 			core, _ := newForgeAPICore(t, forge.answer(t, mr))
 			_, err := core.SubmitReview(t.Context(), gitlabTestRef(7), review)
 			if err == nil {
@@ -210,4 +217,45 @@ func TestGitLabSubmitReviewPublish500IsSettledByTheDraftNotes(t *testing.T) {
 			t.Fatalf("pending drafts = %v, want them removed", got)
 		}
 	})
+}
+
+// The viewer's pending draft notes this submit did not create (a review
+// started in GitLab's web UI) refuse it before any write, since the publish
+// would post them too; they stay pending and untouched. A bare approval
+// publishes nothing and is not refused.
+func TestGitLabSubmitReviewRefusesPendingDraftNotesItDidNotCreate(t *testing.T) {
+	t.Parallel()
+	mr := gitlabTestProject + "/merge_requests/7"
+	line := 3
+	review := SubmitReviewRequest{Verdict: ReviewVerdictComment, HeadSHA: gitlabTestHead, Body: "Summary", Comments: []ReviewLineComment{
+		{Path: "a.go", Body: "nit", Line: &line, Side: "right"},
+	}}
+	forge := &gitlabDraftForge{next: 100, pending: map[int64]string{41: `{"note":"started on GitLab"}`, 42: `{"note":"also"}`}}
+	core, _ := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
+		if call.Method+" "+call.Path == "POST "+mr+"/approve" {
+			return forgeAPIAnswer{Status: http.StatusCreated, Body: `{}`}
+		}
+		return forge.answer(t, mr)(call)
+	})
+	_, err := core.SubmitReview(t.Context(), gitlabTestRef(7), review)
+	refused, ok := errors.AsType[*PendingDraftNotesError](err)
+	if !ok || refused.Count != 2 {
+		t.Fatalf("SubmitReview = %v, want a PendingDraftNotesError for 2", err)
+	}
+	if forge.creates != 0 || forge.publishes != 0 {
+		t.Fatalf("a refused submit created %d drafts and published %d times", forge.creates, forge.publishes)
+	}
+	if got := forge.pendingIDs(); !slices.Equal(got, []int64{41, 42}) {
+		t.Fatalf("pending drafts = %v, want the user's own untouched", got)
+	}
+	explained, ok := errors.AsType[*ForgeActionError](ExplainForgeError(gitlabTestRef(7), ActionReview, err))
+	if !ok || explained.Kind != ForgeErrorRefused || !strings.Contains(explained.Message, "2 pending comments") {
+		t.Fatalf("explained = %#v", explained)
+	}
+	if _, err := core.SubmitReview(t.Context(), gitlabTestRef(7), SubmitReviewRequest{Verdict: ReviewVerdictApprove, HeadSHA: gitlabTestHead}); err != nil {
+		t.Fatalf("a bare approval = %v, want it approved", err)
+	}
+	if forge.publishes != 0 {
+		t.Fatal("a bare approval published the user's drafts")
+	}
 }

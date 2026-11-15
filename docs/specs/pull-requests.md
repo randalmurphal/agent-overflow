@@ -401,6 +401,7 @@ and correlation id stay behind "Details". The sentences:
 | Cannot approve | "You cannot approve your own merge request." / "You are not an eligible approver." |
 | Comment answer lost | "FORGE may have posted this comment. Check the thread before sending it again." (kind `unconfirmed`: a comment or reply posted now whose response did not say; the pane's next frame shows what the forge holds) |
 | Comment elsewhere | "That comment is not on PROJECT#N, so it was not changed." (kind `not_found`: an edit or delete naming a GitHub comment of another PR) |
+| Pending review on GitLab | "You have N pending comments on PROJECT!N that this app did not write, and sending would publish them with this review. Submit or discard them on GitLab, then send again." (kind `refused`: the viewer's draft notes the submit did not create; nothing is written) |
 | Reply thread gone | "The thread this reply answers is no longer on PROJECT!N, so the reply was not posted." (kind `not_found`) |
 | Rate limited, network, 5xx | existing sentences |
 
