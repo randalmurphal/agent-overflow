@@ -15,6 +15,7 @@ import (
 	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/threadtools"
+	"agent-overflow/internal/transport"
 )
 
 // workerPromptTokens is the token of each worker prompt wake threadID's
@@ -140,7 +141,7 @@ func TestAnOrdinarySpawnersWorkerPromptsWakeItAndItsReplyAnswersThem(t *testing.
 func TestAnOrdinarySpawnersReplyAfterTheUserAnsweredIsRefused(t *testing.T) {
 	t.Parallel()
 	f := newWorkerPromptFixture(t, "user-first", false)
-	f.deliver(t, f.assistant.ID)
+	f.drain(t)
 	sendID := f.queuedPrompt(t, f.assistant.ID)
 	token := strings.TrimPrefix(sendID, workerPromptSendIDRoot)
 	f.app.settleWorkerPrompt(f.worker.ID, f.request.RequestID)
@@ -159,7 +160,7 @@ func TestAnOrdinarySpawnersReplyAfterTheUserAnsweredIsRefused(t *testing.T) {
 func TestAnOrdinarySpawnersWithdrawnWakeHandsThePromptBack(t *testing.T) {
 	t.Parallel()
 	f := newWorkerPromptFixture(t, "withdrawn", false)
-	f.deliver(t, f.assistant.ID)
+	f.drain(t)
 	sendID := f.queuedPrompt(t, f.assistant.ID)
 	stop, err := f.app.StopThreadAgentIncoming(t.Context(), f.assistant.ID, sendID)
 	if err != nil || stop.Outcome != threadAgentStopped {
@@ -254,5 +255,123 @@ func TestAnOrdinarySpawnersFooterSaysItTakesTheWorkersPrompts(t *testing.T) {
 	}
 	if message := f.userRow(t, other.ID, sent.Token).Summary; strings.Contains(message, "spawned this thread") {
 		t.Fatalf("a send to a thread the sender did not spawn routes its prompts:\n%s", message)
+	}
+}
+
+// A prompt token names the prompt one session of the worker asked, not
+// whichever prompt holds its request id: after the worker's session ends
+// unanswered and a new session asks again under the same request id, the
+// old token answers nothing, its wake is gone, and the new token answers the
+// new prompt.
+func TestAnOldPromptTokenCannotAnswerAReplacementSessionsPrompt(t *testing.T) {
+	t.Parallel()
+	app, bus := setupE2EApp(t)
+	app.triage.SetPromptRouter(app.routeWorkerPrompt)
+	bus.mu.Lock()
+	bus.tap = app.tapWorkerPrompt
+	bus.mu.Unlock()
+	spawner, err := createTestThread(t, app, string(provider.Claude), t.TempDir(), "claude-opus-4-7", threadmode.ModeChat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker, err := createTestThread(t, app, string(provider.Claude), t.TempDir(), "claude-opus-4-7", threadmode.ModeChat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.UpdateThreadRuntimeMode(context.Background(), worker.ID, string(provider.RuntimeApprovalRequired)); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.store.InsertThreadRequest(store.ThreadRequest{
+		Token: "spawn-worker", CallerThreadID: spawner.ID, TargetThreadID: worker.ID,
+		Kind: store.ThreadRequestSpawn, State: store.ThreadRequestRunning,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	app.startSessionFn = func(threadID string) error {
+		if threadID == worker.ID {
+			return app.startSessionNow(threadID)
+		}
+		return errors.New("no provider for the spawner in this test")
+	}
+	// Every process the script runs asks the same request id.
+	binary := testutil.WriteMockClaudeScript(t, t.TempDir(), [][]string{{
+		`{"type":"system","subtype":"init","session_id":"sess-worker","model":"claude-opus-4-7","cwd":"/tmp","tools":[],"claude_code_version":"1.0"}`,
+		`{"type":"control_request","request_id":"req-approve","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"make deploy"}}}`,
+	}})
+	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": binary}); err != nil {
+		t.Fatal(err)
+	}
+	start := func(message string) {
+		t.Helper()
+		if err := app.StartSession(worker.ID); err != nil {
+			t.Fatalf("StartSession: %v", err)
+		}
+		if err := app.SendMessage(worker.ID, message, nil); err != nil {
+			t.Fatalf("SendMessage: %v", err)
+		}
+	}
+	queuedOtherThan := func(not string) string {
+		t.Helper()
+		var token string
+		waitUntil(t, 10*time.Second, func() bool {
+			if err := app.drainWorkerPrompts(context.Background(), 5*time.Second); err != nil {
+				t.Fatal(err)
+			}
+			app.waitAgentNoticeWork()
+			for _, queued := range workerPromptTokens(t, app, spawner.ID) {
+				if queued != not {
+					token = queued
+				}
+			}
+			return token != ""
+		})
+		return token
+	}
+	start("go")
+	first := queuedOtherThan("")
+	ended, _ := app.workerPrompts.get(first)
+	if err := app.StopSession(worker.ID); err != nil {
+		t.Fatalf("StopSession: %v", err)
+	}
+	waitUntil(t, 10*time.Second, func() bool {
+		return len(app.triage.PendingInteractiveRequests(worker.ID).Approvals) == 0
+	})
+	// The registry's queue is held, so the replacement's prompt is open in
+	// the worker before it is registered: only the session that asked
+	// tells the two prompts apart.
+	release := make(chan struct{})
+	app.workerPrompts.queue.Go(func() { <-release })
+	start("go again")
+	t.Cleanup(func() { _ = app.StopSession(worker.ID) })
+	waitUntil(t, 10*time.Second, func() bool {
+		return len(app.triage.PendingInteractiveRequests(worker.ID).Approvals) == 1
+	})
+	stillOpen := func(after string) {
+		t.Helper()
+		if pending := app.triage.PendingInteractiveRequests(worker.ID).Approvals; len(pending) != 1 {
+			t.Fatalf("the replacement session's prompt = %+v after %s, want it still open", pending, after)
+		}
+	}
+	caller := threadtools.Caller{ThreadID: spawner.ID}
+	_, handled, err := app.answerWorkerPrompt(t.Context(), caller, threadtools.ReplyCall{Token: first, Decision: threadtools.DecisionAllow, Text: "go ahead"})
+	if !handled || !errors.Is(err, errWorkerPromptClosed) {
+		t.Fatalf("the ended session's token: handled %v, %v; want it closed", handled, err)
+	}
+	stillOpen("the old token's reply")
+	// An answer bound to the ended session is refused at the provider
+	// write, whatever holds the request id now.
+	if err := app.respondToApproval(t.Context(), worker.ID, ended.sessionToken, provider.ApprovalResponse{RequestID: ended.requestID, Decision: "accept"}); !errors.Is(err, transport.ErrAlreadyHandled) {
+		t.Fatalf("an answer for the ended session: %v, want already handled", err)
+	}
+	stillOpen("an answer for the ended session")
+	close(release)
+
+	second := queuedOtherThan(first)
+	if tokens := workerPromptTokens(t, app, spawner.ID); !slices.Equal(tokens, []string{second}) {
+		t.Fatalf("the spawner holds prompt wakes %q, want only the replacement's %s", tokens, second)
+	}
+	ack, handled, err := app.answerWorkerPrompt(t.Context(), caller, threadtools.ReplyCall{Token: second, Decision: threadtools.DecisionAllow, Text: "go ahead"})
+	if err != nil || !handled || !ack.Accepted {
+		t.Fatalf("the replacement's token: %+v handled %v, %v", ack, handled, err)
 	}
 }

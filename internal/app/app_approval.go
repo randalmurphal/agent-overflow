@@ -83,11 +83,25 @@ func (a *App) ListPendingInteractiveRequests(threadID string) (provider.PendingI
 //
 //ao:scope approvals:respond
 func (a *App) RespondToApproval(ctx context.Context, threadID string, response provider.ApprovalResponse) error {
+	return a.respondToApproval(ctx, threadID, "", response)
+}
+
+// respondToApproval is RespondToApproval for the prompt the session
+// sessionToken names asked, or, when it is empty, for the prompt under
+// response.RequestID in whichever session holds the thread. A prompt of a
+// session that no longer holds the thread was handled by that session's
+// end: a replacement can ask under the same request id, and the answer is
+// not its.
+func (a *App) respondToApproval(ctx context.Context, threadID, sessionToken string, response provider.ApprovalResponse) error {
 	who := clientOf(ctx)
 	if a.triage != nil && !a.triage.ClaimApprovalResponse(threadID, response.RequestID) {
 		return fmt.Errorf("approval %s: %w", response.RequestID, transport.ErrAlreadyHandled)
 	}
 	sess, ok := a.sessionManager().get(threadID)
+	if sessionToken != "" && (!ok || sess.Token != sessionToken) {
+		a.releaseInteractiveClaim(threadID, response.RequestID)
+		return fmt.Errorf("approval %s of an ended session: %w", response.RequestID, transport.ErrAlreadyHandled)
+	}
 	if !ok {
 		err := fmt.Errorf("no active session for thread %s", threadID)
 		a.releaseInteractiveClaim(threadID, response.RequestID)
@@ -140,11 +154,20 @@ func (a *App) RespondToApproval(ctx context.Context, threadID string, response p
 //
 //ao:scope approvals:respond
 func (a *App) RespondToUserInput(ctx context.Context, threadID string, response provider.UserInputResponse) error {
+	return a.respondToUserInput(ctx, threadID, "", response)
+}
+
+// respondToUserInput is respondToApproval's twin.
+func (a *App) respondToUserInput(ctx context.Context, threadID, sessionToken string, response provider.UserInputResponse) error {
 	who := clientOf(ctx)
 	if a.triage != nil && !a.triage.ClaimUserInputResponse(threadID, response.RequestID) {
 		return fmt.Errorf("user input %s: %w", response.RequestID, transport.ErrAlreadyHandled)
 	}
 	sess, ok := a.sessionManager().get(threadID)
+	if sessionToken != "" && (!ok || sess.Token != sessionToken) {
+		a.releaseInteractiveClaim(threadID, response.RequestID)
+		return fmt.Errorf("user input %s of an ended session: %w", response.RequestID, transport.ErrAlreadyHandled)
+	}
 	if !ok {
 		err := fmt.Errorf("no active session for thread %s", threadID)
 		a.releaseInteractiveClaim(threadID, response.RequestID)

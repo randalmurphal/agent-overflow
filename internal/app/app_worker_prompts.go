@@ -15,6 +15,7 @@ import (
 	"agent-overflow/internal/serialqueue"
 	"agent-overflow/internal/threadtools"
 	"agent-overflow/internal/transport"
+	"agent-overflow/internal/triage"
 	"agent-overflow/internal/untrustedtext"
 	"agent-overflow/internal/usermessage"
 )
@@ -25,10 +26,23 @@ import (
 // triage stamps each of its approval and user-input prompts with the
 // spawner (routeWorkerPrompt), the emit tap queues the prompt to the
 // spawner as a badged wake, and the spawner's agent answers it with
-// thread_reply on the token the wake carries. The prompt stays open in the worker, so the user can still
-// answer it there, which settles the wake. A prompt the agent cannot take,
-// because the wake never reached its session or its queue was cleared, is
-// handed back to the user.
+// thread_reply on the token the wake carries. The prompt stays open in the
+// worker, so the user can still answer it there, which settles the wake.
+//
+// Triage's RoutedTo is the one record of where an open prompt goes, and the
+// registry follows its announcements: a prompt announced routed is
+// registered under a fresh token and its wake queued, which retires the
+// prompt's earlier registration and withdraws that wake; one announced as
+// the user's retires it. Every change of route is triage.ReroutePrompts: a
+// prompt its agent could not take (its wake never reached the session, or
+// its queue was cleared), and every open prompt routed to a thread a
+// handoff, an archive or a delete took away (reroutePromptsFrom), goes
+// where the worker's prompts route now: the assistant's next thread, or the
+// user.
+//
+// A registration names one prompt of one session of the worker
+// (triage.PromptRef): a later session can ask under the same request id,
+// and an earlier session's token answers nothing of it.
 //
 // The record of a routed prompt lives in memory only: a provider prompt
 // lives no longer than the worker's session, and none survives a restart.
@@ -54,7 +68,7 @@ const (
 	// workerPromptAnswered: the agent answered it.
 	workerPromptAnswered
 	// workerPromptSettled: the user answered it in the worker, the worker
-	// stopped waiting, or it went back to the user.
+	// stopped waiting, or it went to the user or to another thread.
 	workerPromptSettled
 )
 
@@ -63,9 +77,11 @@ type workerPrompt struct {
 	workerID  string
 	agentID   string
 	requestID string
-	approval  *provider.ApprovalRequest
-	question  *provider.UserInputRequest
-	state     workerPromptState
+	// sessionToken is the worker's session that asked.
+	sessionToken string
+	approval     *provider.ApprovalRequest
+	question     *provider.UserInputRequest
+	state        workerPromptState
 	// answer is what the agent sent, so a retry of the same answer is
 	// recognized.
 	answer   string
@@ -73,6 +89,10 @@ type workerPrompt struct {
 }
 
 func (p *workerPrompt) sendID() string { return workerPromptSendIDRoot + p.token }
+
+func (p *workerPrompt) ref() triage.PromptRef {
+	return triage.PromptRef{ThreadID: p.workerID, RequestID: p.requestID, SessionToken: p.sessionToken}
+}
 
 // workerPromptKey names one prompt of one worker.
 type workerPromptKey struct{ workerID, requestID string }
@@ -86,8 +106,9 @@ type workerPrompts struct {
 	mu      sync.Mutex
 	byToken map[string]*workerPrompt
 	// current is the token of each prompt's latest registration. A prompt
-	// handed on to an assistant's next thread is registered again under a
-	// new token; the earlier one is kept only to answer a late reply.
+	// that moved to another thread, or that a later session asked again, is
+	// registered again under a new token; the earlier one is kept only to
+	// answer a late reply.
 	current map[workerPromptKey]string
 	queue   serialqueue.Queue
 }
@@ -106,133 +127,178 @@ func (a *App) routeWorkerPrompt(threadID string) *provider.PromptRoute {
 	return &provider.PromptRoute{ThreadID: agentID, Title: title}
 }
 
-// tapWorkerPrompt is the emit tap: a routed prompt is delivered to its
-// agent, and any resolution settles a routed prompt it names.
+// tapWorkerPrompt is the emit tap: a prompt announced routed is delivered
+// to its agent, and a prompt announced as the user's or resolved settles
+// its routed registration.
 func (a *App) tapWorkerPrompt(name eventchan.Channel, data any) {
+	var prompt workerPrompt
+	var route *provider.PromptRoute
+	var action string
 	switch name {
 	case eventchan.ProviderApproval:
 		event, ok := data.(provider.ApprovalEvent)
 		if !ok {
 			return
 		}
-		switch {
-		case event.Action == "request" && event.Request != nil && event.Request.RoutedTo != nil:
-			request := *event.Request
-			a.workerPrompts.queue.Go(func() {
-				a.deliverWorkerPrompt(*request.RoutedTo, request.ThreadID, request.RequestID, &request, nil)
-			})
-		case event.Action == "resolve":
-			threadID, requestID := event.ThreadID, event.RequestID
-			a.workerPrompts.queue.Go(func() { a.settleWorkerPrompt(threadID, requestID) })
+		action, prompt = event.Action, workerPrompt{workerID: event.ThreadID, requestID: event.RequestID}
+		if request := event.Request; request != nil {
+			copied := *request
+			route, prompt.approval = copied.RoutedTo, &copied
+			prompt.workerID, prompt.requestID, prompt.sessionToken = copied.ThreadID, copied.RequestID, copied.SessionToken
 		}
 	case eventchan.ProviderUserInput:
 		event, ok := data.(provider.UserInputEvent)
 		if !ok {
 			return
 		}
-		switch {
-		case event.Action == "request" && event.Request != nil && event.Request.RoutedTo != nil:
-			request := *event.Request
-			a.workerPrompts.queue.Go(func() {
-				a.deliverWorkerPrompt(*request.RoutedTo, request.ThreadID, request.RequestID, nil, &request)
-			})
-		case event.Action == "resolve":
-			threadID, requestID := event.ThreadID, event.RequestID
-			a.workerPrompts.queue.Go(func() { a.settleWorkerPrompt(threadID, requestID) })
+		action, prompt = event.Action, workerPrompt{workerID: event.ThreadID, requestID: event.RequestID}
+		if request := event.Request; request != nil {
+			copied := *request
+			route, prompt.question = copied.RoutedTo, &copied
+			prompt.workerID, prompt.requestID, prompt.sessionToken = copied.ThreadID, copied.RequestID, copied.SessionToken
 		}
+	default:
+		return
+	}
+	switch {
+	case action == "request" && route != nil:
+		to := *route
+		a.workerPrompts.queue.Go(func() { a.deliverWorkerPrompt(to, prompt) })
+	case action == "request" && (prompt.approval != nil || prompt.question != nil), action == "resolve":
+		a.workerPrompts.queue.Go(func() { a.settleWorkerPrompt(prompt.workerID, prompt.requestID) })
 	}
 }
 
-// deliverWorkerPrompt queues one routed prompt to its agent. A prompt
-// answered before this runs is left alone; one the agent cannot take goes
-// back to the user.
-func (a *App) deliverWorkerPrompt(route provider.PromptRoute, workerID, requestID string, approval *provider.ApprovalRequest, question *provider.UserInputRequest) {
-	if a.triage == nil || !a.triage.PendingPromptOpen(workerID, requestID) {
+// deliverWorkerPrompt registers a prompt announced routed to route and
+// queues its wake there. An announcement a later one overtook (the prompt
+// was answered, or moved again) is left to that one; a prompt the agent
+// cannot take moves on (handBackWorkerPrompt).
+func (a *App) deliverWorkerPrompt(route provider.PromptRoute, prompt workerPrompt) {
+	if a.triage == nil {
 		return
 	}
-	prompt := a.workerPrompts.add(workerPrompt{
-		workerID: workerID, agentID: route.ThreadID, requestID: requestID,
-		approval: approval, question: question,
-	}, a.triage.PendingPromptOpen)
-	worker, err := a.store.GetThread(workerID)
+	if current, open := a.triage.PromptRoute(prompt.ref()); !open || current == nil || current.ThreadID != route.ThreadID {
+		return
+	}
+	prompt.agentID = route.ThreadID
+	registered, replaced := a.workerPrompts.add(prompt, a.workerPromptOpen)
+	if replaced != nil {
+		a.withdrawWorkerPromptWake(*replaced)
+	}
+	worker, err := a.store.GetThread(prompt.workerID)
 	if err != nil {
-		log.Printf("worker prompts: read worker %s: %v", workerID, err)
-		a.handBackWorkerPrompt(prompt.token)
+		log.Printf("worker prompts: read worker %s: %v", prompt.workerID, err)
+		a.handBackWorkerPrompt(registered.token)
 		return
 	}
 	kind := usermessage.OriginWakeKindQuestion
-	if approval != nil {
+	if prompt.approval != nil {
 		kind = usermessage.OriginWakeKindApproval
 	}
-	body := renderWorkerPromptWake(worker.Title, workerID, prompt)
+	body := renderWorkerPromptWake(worker.Title, prompt.workerID, &registered)
+	live := func() bool { return a.workerPromptLive(registered.token) }
+	// A thread New Thread, Same Assistant superseded after triage routed
+	// the prompt there takes nothing, so a wake is queued only where triage
+	// says the prompt is: the handoff moves the prompt on
+	// (reroutePromptsFrom), and that announcement delivers it.
+	moved := false
 	// The user may have answered before the prompt is queued and again
 	// before a session is started for it. An archive of the agent is the
 	// queue's and the start's to hold (queueAgentNotice).
 	err = a.queueAgentNotice(agentNotice{
-		threadID: route.ThreadID,
-		// The prompt is the thread's that its wake is queued in: the
-		// assistant's current thread when New Thread, Same Assistant
-		// superseded the one triage stamped.
-		recipient:  func(threadID string) { a.workerPrompts.setAgent(prompt.token, threadID) },
-		sendID:     prompt.sendID(),
+		threadID:   route.ThreadID,
+		recipient:  func(threadID string) { moved = threadID != route.ThreadID },
+		sendID:     registered.sendID(),
 		origin:     usermessage.OriginAgentWake,
-		originWake: &usermessage.OriginWake{Kind: kind, Label: worker.Title, ThreadID: workerID},
+		originWake: &usermessage.OriginWake{Kind: kind, Label: worker.Title, ThreadID: prompt.workerID},
 		prepare: func() (string, bool, error) {
-			if !a.workerPrompts.isRouted(prompt.token) {
+			if moved || !live() {
 				return "", false, nil
 			}
 			return body, true, nil
 		},
-		keep: func() (bool, error) {
-			return a.workerPrompts.isRouted(prompt.token), nil
-		},
-		withdrawn: func() { a.handBackWorkerPrompt(prompt.token) },
+		keep:      func() (bool, error) { return live(), nil },
+		withdrawn: func() { a.handBackWorkerPrompt(registered.token) },
 		startFailed: func(err error) string {
 			return fmt.Sprintf("Thread %q is waiting on your answer and its prompt is queued here, but this thread's agent could not start: %v", worker.Title, err)
 		},
 	})
 	if err != nil {
-		log.Printf("worker prompts: deliver %s of %s to %s: %v", requestID, workerID, route.ThreadID, err)
-		a.handBackWorkerPrompt(prompt.token)
+		log.Printf("worker prompts: deliver %s of %s to %s: %v", prompt.requestID, prompt.workerID, route.ThreadID, err)
+		a.handBackWorkerPrompt(registered.token)
 	}
 }
 
-// settleWorkerPrompt records that a routed prompt was resolved. Unless the
-// agent's own answer resolved it, the user answered it in the worker or the
-// worker stopped waiting, and a wake still queued is withdrawn.
+// workerPromptOpen reports whether the prompt ref names is still open in
+// the worker's session that asked it.
+func (a *App) workerPromptOpen(ref triage.PromptRef) bool {
+	_, open := a.triage.PromptRoute(ref)
+	return open
+}
+
+// workerPromptLive reports whether the registration under token is routed
+// and its prompt is open and still routed to its agent.
+func (a *App) workerPromptLive(token string) bool {
+	prompt, found := a.workerPrompts.get(token)
+	return found && prompt.state == workerPromptRouted && a.workerPromptOpenTo(prompt)
+}
+
+// workerPromptOpenTo reports whether a registration's prompt is open and
+// still routed to the registration's agent.
+func (a *App) workerPromptOpenTo(prompt workerPrompt) bool {
+	if a.triage == nil {
+		return false
+	}
+	route, open := a.triage.PromptRoute(prompt.ref())
+	return open && route != nil && route.ThreadID == prompt.agentID
+}
+
+// settleWorkerPrompt records that a routed prompt was resolved, or was
+// announced as the user's. Unless the agent's own answer resolved it, the
+// user answered it in the worker, the worker stopped waiting or the prompt
+// went to the user, and a wake still queued is withdrawn.
 func (a *App) settleWorkerPrompt(workerID, requestID string) {
 	prompt, settled := a.workerPrompts.settle(workerID, requestID)
 	if !settled {
 		return
 	}
+	a.withdrawWorkerPromptWake(prompt)
+}
+
+// withdrawWorkerPromptWake takes a closed registration's wake out of its
+// agent's queue, when it is still there.
+func (a *App) withdrawWorkerPromptWake(prompt workerPrompt) {
 	if _, err := a.removeQueuedItem(a.lifeCtx(), prompt.agentID, prompt.sendID()); err != nil {
-		log.Printf("worker prompts: withdraw the wake for %s of %s: %v", requestID, workerID, err)
+		log.Printf("worker prompts: withdraw the wake for %s of %s: %v", prompt.requestID, prompt.workerID, err)
 	}
 }
 
-// handBackWorkerPrompt gives the prompt registered under token, which its
-// agent could not take, to the user, unless the agent's thread is one New
-// Thread, Same Assistant superseded: then the prompt goes on to the
-// assistant's current thread. Only that registration is settled: one that
-// is already closed, or that a later registration of the same prompt
-// replaced, hands back nothing.
+// handBackWorkerPrompt moves on the prompt registered under token, which its
+// agent could not take: to where the worker's prompts route now, the
+// assistant's current thread when New Thread, Same Assistant superseded the
+// agent's, and otherwise the user. Only that registration is settled: one
+// that is already closed, or that a later registration of the same prompt
+// replaced, moves nothing.
 func (a *App) handBackWorkerPrompt(token string) {
 	prompt, settled := a.workerPrompts.settleToken(token)
-	if !settled {
+	if !settled || a.triage == nil {
 		return
 	}
-	if current, ok := a.assistantCurrentThread(prompt.agentID); ok {
-		route := provider.PromptRoute{ThreadID: current}
-		if thread, err := a.store.GetThread(current); err == nil {
-			route.Title = thread.Title
-		}
-		a.workerPrompts.queue.Go(func() {
-			a.deliverWorkerPrompt(route, prompt.workerID, prompt.requestID, prompt.approval, prompt.question)
-		})
+	if a.triage.ReroutePrompts(prompt.agentID, prompt.ref()) > 0 {
+		log.Printf("worker prompts: %s of %s moved on: %s could not take it", prompt.requestID, prompt.workerID, prompt.agentID)
+	}
+}
+
+// reroutePromptsFrom moves every open prompt routed to threadID, which a
+// handoff, an archive or a delete took away, whatever became of its wake:
+// to the assistant's next thread, or to the user when the worker's prompts
+// route to nobody now.
+func (a *App) reroutePromptsFrom(threadID string) {
+	if a.triage == nil {
 		return
 	}
-	if a.triage != nil && a.triage.UnroutePrompt(prompt.workerID, prompt.requestID) {
-		log.Printf("worker prompts: %s of %s went back to the user: %s could not take it", prompt.requestID, prompt.workerID, prompt.agentID)
+	if moved := a.triage.ReroutePrompts(threadID); moved > 0 {
+		log.Printf("worker prompts: %d prompts routed to %s moved on", moved, threadID)
 	}
 }
 
@@ -271,15 +337,17 @@ func (a *App) answerWorkerPrompt(ctx context.Context, caller threadtools.Caller,
 		return ack, true, err
 	}
 	// A worker whose session ended took its prompts with it, without a
-	// resolution to settle them by.
-	if a.triage == nil || !a.triage.PendingPromptOpen(prompt.workerID, prompt.requestID) {
+	// resolution to settle them by, and a prompt that moved is its new
+	// recipient's.
+	if !a.workerPromptOpenTo(prompt) {
 		a.workerPrompts.endAnswer(prompt.token, workerPromptSettled)
 		return ack, true, errWorkerPromptClosed
 	}
+	// The answer goes to the session that asked, or nowhere.
 	if approval != nil {
-		err = a.RespondToApproval(ctx, prompt.workerID, *approval)
+		err = a.respondToApproval(ctx, prompt.workerID, prompt.sessionToken, *approval)
 	} else {
-		err = a.RespondToUserInput(ctx, prompt.workerID, *question)
+		err = a.respondToUserInput(ctx, prompt.workerID, prompt.sessionToken, *question)
 	}
 	if err != nil {
 		if errors.Is(err, transport.ErrAlreadyHandled) {
@@ -412,11 +480,13 @@ func renderWorkerPromptWake(workerTitle, workerID string, prompt *workerPrompt) 
 	return out.String()
 }
 
-// add registers a prompt under a fresh token. It first forgets prompts
-// closed past their retention and marks closed the routed ones whose
-// prompt is gone, so the registry holds no more than the open prompts and a
-// day of closed ones.
-func (w *workerPrompts) add(prompt workerPrompt, open func(threadID, requestID string) bool) *workerPrompt {
+// add registers a prompt under a fresh token as the prompt's current
+// registration, and returns the registration it replaced, closed if it was
+// routed, whose wake its caller withdraws. It first forgets prompts closed
+// past their retention and closes the routed ones whose prompt is gone, so
+// the registry holds no more than the open prompts and a day of closed
+// ones.
+func (w *workerPrompts) add(prompt workerPrompt, open func(triage.PromptRef) bool) (registered workerPrompt, replaced *workerPrompt) {
 	prompt.token = newThreadRequestToken()
 	now := time.Now()
 	w.mu.Lock()
@@ -427,8 +497,15 @@ func (w *workerPrompts) add(prompt workerPrompt, open func(threadID, requestID s
 	if w.current == nil {
 		w.current = make(map[workerPromptKey]string)
 	}
+	if previous := w.byToken[w.current[prompt.key()]]; previous != nil {
+		if previous.state == workerPromptRouted {
+			previous.state, previous.closedAt = workerPromptSettled, now
+		}
+		retired := *previous
+		replaced = &retired
+	}
 	for token, existing := range w.byToken {
-		if existing.state == workerPromptRouted && !open(existing.workerID, existing.requestID) {
+		if existing.state == workerPromptRouted && !open(existing.ref()) {
 			existing.state, existing.closedAt = workerPromptSettled, now
 		}
 		if !existing.closedAt.IsZero() && now.Sub(existing.closedAt) > workerPromptRetention {
@@ -441,7 +518,7 @@ func (w *workerPrompts) add(prompt workerPrompt, open func(threadID, requestID s
 	stored := prompt
 	w.byToken[stored.token] = &stored
 	w.current[stored.key()] = stored.token
-	return &stored
+	return stored, replaced
 }
 
 func (p *workerPrompt) key() workerPromptKey {
@@ -457,22 +534,6 @@ func (w *workerPrompts) get(token string) (workerPrompt, bool) {
 		return workerPrompt{}, false
 	}
 	return *prompt, true
-}
-
-// setAgent records the thread a registration's wake was queued in.
-func (w *workerPrompts) setAgent(token, agentID string) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	if prompt := w.byToken[token]; prompt != nil {
-		prompt.agentID = agentID
-	}
-}
-
-func (w *workerPrompts) isRouted(token string) bool {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	prompt := w.byToken[token]
-	return prompt != nil && prompt.state == workerPromptRouted
 }
 
 // settle closes the current registration of a worker's prompt, for a
@@ -525,13 +586,18 @@ func (w *workerPrompts) beginAnswer(token, answer string) error {
 	}
 }
 
-// endAnswer records how the agent's answer ended.
+// endAnswer records how the agent's answer ended. An answer that did not
+// reach the worker leaves the prompt routed, unless a later registration
+// replaced this one meanwhile: then the prompt is that one's.
 func (w *workerPrompts) endAnswer(token string, state workerPromptState) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	prompt := w.byToken[token]
 	if prompt == nil {
 		return
+	}
+	if state == workerPromptRouted && w.current[prompt.key()] != token {
+		state = workerPromptSettled
 	}
 	prompt.state = state
 	if state == workerPromptRouted {

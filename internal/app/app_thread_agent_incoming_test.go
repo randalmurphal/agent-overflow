@@ -10,6 +10,7 @@ import (
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadtools"
+	"agent-overflow/internal/triage"
 	"agent-overflow/internal/usermessage"
 )
 
@@ -140,9 +141,9 @@ func TestThreadAgentIncomingWakesSendsAndQuestionsWithdrawToTheirOwners(t *testi
 	board := holdAgentWake(t, a, thread, store.AgentWakeLoop, "board")
 	sendID := sendWithin(t, a, thread.ID, "deploy 13 is done", 5*time.Second)
 	a.waitAgentNoticeWork()
-	prompt := a.workerPrompts.add(workerPrompt{
+	prompt, _ := a.workerPrompts.add(workerPrompt{
 		workerID: "worker-thread", agentID: thread.ID, requestID: "question-1",
-	}, func(string, string) bool { return true })
+	}, func(triage.PromptRef) bool { return true })
 	if err := a.queueAgentNotice(agentNotice{
 		threadID: thread.ID, sendID: prompt.sendID(),
 		origin:      usermessage.OriginAgentWake,
@@ -175,7 +176,7 @@ func TestThreadAgentIncomingWakesSendsAndQuestionsWithdrawToTheirOwners(t *testi
 	if rows := noticeRows(t, a, thread.ID, want); len(rows) != 1 {
 		t.Fatalf("notices %q, want one %q", rows, want)
 	}
-	if a.workerPrompts.isRouted(prompt.token) {
+	if promptRouted(&a.workerPrompts, prompt.token) {
 		t.Fatal("the worker's question is still routed to the agent; it should be back with the user")
 	}
 }

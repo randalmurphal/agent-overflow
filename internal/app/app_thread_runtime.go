@@ -307,6 +307,9 @@ func (a *App) threadDeletePorts() threadapp.DeletePorts {
 		},
 		Deleted: func(thread store.Thread, spawned []string) {
 			a.broadcastThreadDeleted(thread.ID)
+			// Its workers' prompts go where they route now, the user
+			// unless another local thread spawned them too.
+			a.reroutePromptsFrom(thread.ID)
 			// Its owned workers are standalone now and join the sidebar.
 			for _, id := range spawned {
 				a.announcePlaced(id)

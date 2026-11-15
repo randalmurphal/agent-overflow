@@ -102,6 +102,7 @@ func (r *Router) handleUserInputRequest(evt provider.ProviderEvent) error {
 	}
 
 	request.RoutedTo = r.routePrompt(evt.ThreadID)
+	request.SessionToken = evt.SessionToken
 	if !r.setPendingUserInput(evt.ThreadID, request, evt.SessionToken) {
 		return nil
 	}

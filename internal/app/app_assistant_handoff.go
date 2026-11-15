@@ -680,6 +680,9 @@ func (a *App) continueAfterHandOff(oldThreadID, newThreadID string, handOff stor
 	if err := a.withdrawHeldRemoteCompletions(oldThreadID, everyQueuedMessage); err != nil {
 		log.Printf("assistants: hand off %s: %v", oldThreadID, err)
 	}
+	// A worker's prompt the old thread took in and left unanswered is the
+	// successor's too, since the spawn rows moved.
+	a.reroutePromptsFrom(oldThreadID)
 	a.restartMovedAgentWakes(oldThreadID, newThreadID, handOff.MovedWakeIDs)
 }
 

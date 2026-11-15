@@ -194,10 +194,15 @@ tap.
 A spawned thread's prompts are stamped with their route to its spawner
 by triage (`SetPromptRouter`) and delivered, answered and settled in
 `app_worker_prompts.go`, off the emit path on one serial queue so a
-resolution never overtakes its delivery. A prompt whose wake cannot reach
-the spawner (a failed delivery, a session that ended with it unconfirmed, a
-cleared queue) goes back to the user through `triage.UnroutePrompt`; it is
-never left routed to nobody.
+resolution never overtakes its delivery. Triage's `RoutedTo` is the one
+record of a prompt's route, and the registry follows its announcements. A
+prompt whose wake cannot reach the spawner (a failed delivery, a session
+that ended with it unconfirmed, a cleared queue), and every open prompt
+routed to a thread a handoff, an archive or a delete takes away
+(`reroutePromptsFrom`), moves through `triage.ReroutePrompts` to where the
+worker's prompts route now, or to the user; it is never left routed to
+nobody. A token answers only the prompt of the worker session that asked it
+(`triage.PromptRef`).
 
 Project and thread service writes return the current row plus whether durable
 state changed. Emit updates only for changes, while still returning the row to

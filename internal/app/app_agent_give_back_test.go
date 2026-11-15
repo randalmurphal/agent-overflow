@@ -391,9 +391,9 @@ func TestARestoreWhoseDraftWriteFailsSettlesNothingItRequeues(t *testing.T) {
 				if marked, err := f.app.store.MarkThreadRequestDelivered(token, store.ThreadWakeQueued, time.Now().UnixMilli(), false); err != nil || !marked {
 					t.Fatalf("MarkThreadRequestDelivered: marked=%v err=%v", marked, err)
 				}
-				prompt := f.app.workerPrompts.add(workerPrompt{
+				prompt, _ := f.app.workerPrompts.add(workerPrompt{
 					workerID: "worker-thread", agentID: f.caller.ID, requestID: "approval-1",
-				}, func(string, string) bool { return true })
+				}, func(triage.PromptRef) bool { return true })
 				// The loop wake never left the queue: its durable row is the
 				// only copy a quit would keep.
 				wakeRow := store.FlushQueueItem{
@@ -449,7 +449,7 @@ func TestARestoreWhoseDraftWriteFailsSettlesNothingItRequeues(t *testing.T) {
 				}
 				durable, memory := queuedSendIDs(t, f.app, f.caller.ID)
 				request := f.request(t, token)
-				routed := f.app.workerPrompts.isRouted(prompt.token)
+				routed := promptRouted(&f.app.workerPrompts, prompt.token)
 				if fails {
 					if len(notices) != 0 {
 						t.Errorf("notices %q for a send queued again", notices)
@@ -523,16 +523,16 @@ func TestAnUnsplittableJoinGoesToTheComposerWhole(t *testing.T) {
 			if marked, err := f.app.store.MarkThreadRequestDelivered(token, store.ThreadWakeQueued, time.Now().UnixMilli(), false); err != nil || !marked {
 				t.Fatalf("MarkThreadRequestDelivered: marked=%v err=%v", marked, err)
 			}
-			prompt := f.app.workerPrompts.add(workerPrompt{
+			prompt, _ := f.app.workerPrompts.add(workerPrompt{
 				workerID: "worker-thread", agentID: f.caller.ID, requestID: "approval-1",
 				approval: &provider.ApprovalRequest{ToolName: "Bash", Description: "run it"},
-			}, func(string, string) bool { return true })
+			}, func(triage.PromptRef) bool { return true })
 			ids := []string{"person-send", agentSendIDRoot + "deploy", agentWakeSendID(wake.ID, 1000), prompt.sendID(), threadWakeSendID(token)}
 			content := strings.Join([]string{
 				"my own words",
 				renderAgentSendWake("deploy 11 is done"),
 				renderAgentLoopWake(wake, agentWakeFire{}),
-				renderWorkerPromptWake("Worker", "worker-thread", prompt),
+				renderWorkerPromptWake("Worker", "worker-thread", &prompt),
 				"the notes are ready",
 			}, usermessage.JoinSeparator)
 			meta, err := usermessage.Marshal(usermessage.Input{SendID: ids[0], JoinedSendIDs: ids})
@@ -566,7 +566,7 @@ func TestAnUnsplittableJoinGoesToTheComposerWhole(t *testing.T) {
 			if saved.Undelivered != outcome {
 				t.Errorf("the wake row records %q, want %q", saved.Undelivered, outcome)
 			}
-			if f.app.workerPrompts.isRouted(prompt.token) {
+			if promptRouted(&f.app.workerPrompts, prompt.token) {
 				t.Errorf("the worker's prompt is still routed to an agent that did not take it")
 			}
 			requireOwedAgain(t, f, token, false)

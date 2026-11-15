@@ -11,6 +11,7 @@ import (
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadtools"
+	"agent-overflow/internal/triage"
 )
 
 // seedSettledAgentRow writes a request and settles it at settledAt.
@@ -285,7 +286,7 @@ func TestWorkerSummariesCountOpenRowsAndThoseWaitingOnTheUser(t *testing.T) {
 	want(lead.ID, 2, 0)
 	want(worker.ID, 1, 0)
 
-	if !a.triage.UnroutePrompt(grand.ID, "grand-approval") {
+	if a.triage.ReroutePrompts(worker.ID, triage.PromptRef{ThreadID: grand.ID, RequestID: "grand-approval"}) != 1 {
 		t.Fatal("the prompt did not go back to the user")
 	}
 	want(lead.ID, 2, 1)

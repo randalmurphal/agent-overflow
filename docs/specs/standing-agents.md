@@ -134,7 +134,11 @@ user changes it.
     user itself, as one question with the context. The user can still
     open the worker and answer directly, which settles the wake. A
     worker whose spawner is archived, or that was spawned from another
-    computer, asks the user. This supersedes the thread tools non-goal
+    computer, asks the user, and a prompt left open when its spawner is
+    archived or deleted goes back to the user, whether or not the
+    spawner had read it. A prompt's token answers only the prompt the
+    worker's session asked; a later session of the worker asking under
+    the same provider id gets a new token. This supersedes the thread tools non-goal
     of not relaying approval requests, for spawned threads only.
 20. **Other threads' work is an Agents segment, not Background.** The
     requests a thread is owed (spawns, and sends and asks it waits on or
@@ -475,11 +479,11 @@ while its own handoff of the assistant runs.
 4. The old session is torn down as an archive tears down. What was queued
    for it goes on: an answer, reminder or remote completion to its owner,
    which delivers it to the successor; a request not taken in to the
-   successor's queue; a worker's prompt to the successor under a new
-   token, since its spawn row moved, the successor answering it and a
-   withdrawal or the user's answer acting on that registration alone (a
-   prompt whose delivery was still queued when the handoff committed goes
-   to the successor the same way); a loop or watch wake, taken back before the queue is
+   successor's queue; every open worker prompt routed to the old thread,
+   its wake queued, still being delivered or already taken in, to the
+   successor under a new token, since its spawn row moved, the successor
+   answering it, the old token answering nothing, and a withdrawal or the
+   user's answer acting on the new registration alone; a loop or watch wake, taken back before the queue is
    dropped, to the successor's queue, keeping the wake's row and a
    watch's `last_output`. A request the old thread had read
    and not answered settles `interrupted` with "The assistant moved to a

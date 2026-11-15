@@ -220,6 +220,9 @@ func (a *App) finishArchive(work archivedThreadWork) archiveOutcome {
 			outcome.add(a.finishArchive(child))
 		}
 	}
+	// A prompt of a worker the archive left running goes back to the user,
+	// delivered or not; the archived workers' prompts ended with them.
+	a.reroutePromptsFrom(work.threadID)
 	return outcome
 }
 

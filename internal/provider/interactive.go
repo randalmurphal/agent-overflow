@@ -53,6 +53,10 @@ type ApprovalRequest struct {
 	// spawned this thread instead of to the user. Triage stamps it; a
 	// provider never does.
 	RoutedTo *PromptRoute `json:"routedTo,omitempty"`
+	// SessionToken names the host session that asked. A request id names a
+	// prompt only within its session: a replacement session can ask again
+	// under the same id. Triage stamps it; it never leaves the process.
+	SessionToken string `json:"-"`
 }
 
 // PromptRoute names the spawner a worker's prompt was delivered to.
@@ -117,6 +121,8 @@ type UserInputRequest struct {
 	Questions       []UserInputQuestion `json:"questions"`
 	// RoutedTo is ApprovalRequest.RoutedTo's twin.
 	RoutedTo *PromptRoute `json:"routedTo,omitempty"`
+	// SessionToken is ApprovalRequest.SessionToken's twin.
+	SessionToken string `json:"-"`
 }
 
 // UserInputEvent is the frontend-facing channel payload for structured

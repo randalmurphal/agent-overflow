@@ -124,64 +124,129 @@ func (r *Router) PendingInteractiveRequests(threadID string) provider.PendingInt
 	return snapshot
 }
 
-// UnroutePrompt hands a routed prompt back to the user: the agent it went to
-// could not take it. The prompt is announced again without RoutedTo, so every
-// client shows it as the user's and the approval notification is raised.
-// False when the prompt is no longer open or was not routed.
-func (r *Router) UnroutePrompt(threadID, requestID string) bool {
-	if r == nil || threadID == "" || requestID == "" {
-		return false
-	}
-	r.mu.Lock()
-	st := r.threadStateIfPresent(threadID)
-	if st == nil {
-		r.mu.Unlock()
-		return false
-	}
-	var approval *provider.ApprovalRequest
-	var question *provider.UserInputRequest
-	if pending, ok := st.pendingApprovals[requestID]; ok && pending.Request.RoutedTo != nil {
-		pending.Request.RoutedTo = nil
-		st.pendingApprovals[requestID] = pending
-		request := pending.Request
-		approval = &request
-	} else if request, ok := st.pendingUserInputs[requestID]; ok && request.RoutedTo != nil {
-		request.RoutedTo = nil
-		st.pendingUserInputs[requestID] = request
-		question = &request
-	}
-	r.mu.Unlock()
+// PromptRef names one prompt. A request id names a prompt only within the
+// session that asked it (provider.ApprovalRequest.SessionToken): a
+// replacement session can ask again under the same id.
+type PromptRef struct{ ThreadID, RequestID, SessionToken string }
 
-	now := time.Now().UnixMilli()
-	switch {
-	case approval != nil:
-		r.emit(eventchan.ProviderApproval, provider.ApprovalEvent{
-			Action: "request", ThreadID: threadID, Request: approval, RequestedAt: now,
-		})
-	case question != nil:
-		r.emit(eventchan.ProviderUserInput, provider.UserInputEvent{
-			Action: "request", ThreadID: threadID, Request: question, RequestedAt: now,
-		})
-	default:
-		return false
-	}
-	return true
-}
-
-// PendingPromptOpen reports whether a prompt is still waiting for an answer.
-func (r *Router) PendingPromptOpen(threadID, requestID string) bool {
+// PromptRoute reports whether the prompt ref names is still waiting for an
+// answer, and the thread it is routed to: nil when it is the user's. A
+// prompt of a session that no longer holds its thread is not open.
+func (r *Router) PromptRoute(ref PromptRef) (*provider.PromptRoute, bool) {
 	if r == nil {
-		return false
+		return nil, false
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	st := r.threadStateIfPresent(threadID)
+	route, open := r.promptRouteLocked(ref)
+	if route == nil {
+		return nil, open
+	}
+	copied := *route
+	return &copied, open
+}
+
+// promptRouteLocked is PromptRoute under r.mu, returning the held route.
+func (r *Router) promptRouteLocked(ref PromptRef) (*provider.PromptRoute, bool) {
+	if r.frameRetiredLocked(ref.ThreadID, ref.SessionToken) {
+		return nil, false
+	}
+	st := r.threadStateIfPresent(ref.ThreadID)
 	if st == nil {
-		return false
+		return nil, false
 	}
-	if _, ok := st.pendingApprovals[requestID]; ok {
-		return true
+	if pending, ok := st.pendingApprovals[ref.RequestID]; ok && pending.Request.SessionToken == ref.SessionToken {
+		return pending.Request.RoutedTo, true
 	}
-	_, ok := st.pendingUserInputs[requestID]
-	return ok
+	if request, ok := st.pendingUserInputs[ref.RequestID]; ok && request.SessionToken == ref.SessionToken {
+		return request.RoutedTo, true
+	}
+	return nil, false
+}
+
+// ReroutePrompts moves open prompts routed to from, which can no longer
+// take them, to where the prompt router routes their threads now; one it
+// would route to from again goes to the user. refs narrows it to those
+// prompts, and none means every prompt routed to from. Each prompt that
+// moved is announced again with its new route, so every client and the
+// app's delivery follow it, and one handed to the user raises its
+// notification. It returns how many moved.
+func (r *Router) ReroutePrompts(from string, refs ...PromptRef) int {
+	if r == nil || from == "" {
+		return 0
+	}
+	routedFrom := func(route *provider.PromptRoute) bool { return route != nil && route.ThreadID == from }
+	var moving []PromptRef
+	r.mu.Lock()
+	if len(refs) > 0 {
+		for _, ref := range refs {
+			if route, open := r.promptRouteLocked(ref); open && routedFrom(route) {
+				moving = append(moving, ref)
+			}
+		}
+	} else {
+		for threadID, st := range r.threads {
+			for requestID, pending := range st.pendingApprovals {
+				if routedFrom(pending.Request.RoutedTo) {
+					moving = append(moving, PromptRef{ThreadID: threadID, RequestID: requestID, SessionToken: pending.Request.SessionToken})
+				}
+			}
+			for requestID, request := range st.pendingUserInputs {
+				if routedFrom(request.RoutedTo) {
+					moving = append(moving, PromptRef{ThreadID: threadID, RequestID: requestID, SessionToken: request.SessionToken})
+				}
+			}
+		}
+	}
+	r.mu.Unlock()
+	if len(moving) == 0 {
+		return 0
+	}
+	// The router reads the store, so it runs outside r.mu. A prompt whose
+	// route changed meanwhile is left to whatever changed it.
+	routes := make(map[string]*provider.PromptRoute, len(moving))
+	for _, ref := range moving {
+		if _, done := routes[ref.ThreadID]; done {
+			continue
+		}
+		route := r.routePrompt(ref.ThreadID)
+		if routedFrom(route) {
+			route = nil
+		}
+		routes[ref.ThreadID] = route
+	}
+	var approvals []provider.ApprovalEvent
+	var questions []provider.UserInputEvent
+	now := time.Now().UnixMilli()
+	r.mu.Lock()
+	for _, ref := range moving {
+		if route, open := r.promptRouteLocked(ref); !open || !routedFrom(route) {
+			continue
+		}
+		var route *provider.PromptRoute
+		if to := routes[ref.ThreadID]; to != nil {
+			copied := *to
+			route = &copied
+		}
+		st := r.threadStateIfPresent(ref.ThreadID)
+		if pending, ok := st.pendingApprovals[ref.RequestID]; ok {
+			pending.Request.RoutedTo = route
+			st.pendingApprovals[ref.RequestID] = pending
+			request := pending.Request
+			approvals = append(approvals, provider.ApprovalEvent{Action: "request", ThreadID: ref.ThreadID, Request: &request, RequestedAt: now})
+			continue
+		}
+		request := st.pendingUserInputs[ref.RequestID]
+		request.RoutedTo = route
+		st.pendingUserInputs[ref.RequestID] = request
+		questions = append(questions, provider.UserInputEvent{Action: "request", ThreadID: ref.ThreadID, Request: &request, RequestedAt: now})
+	}
+	r.mu.Unlock()
+	for _, event := range approvals {
+		r.emit(eventchan.ProviderApproval, event)
+	}
+	for _, event := range questions {
+		r.emit(eventchan.ProviderUserInput, event)
+	}
+	return len(approvals) + len(questions)
 }
