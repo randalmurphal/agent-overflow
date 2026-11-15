@@ -52,7 +52,7 @@ func newLivenessHarness(t *testing.T, configure func(w *workspaceWatcher)) *live
 		h.fastCalls.Add(1)
 		return inner(ctx, cwd)
 	}
-	h.w = newWorkspaceWatcher(h.ws, h.stub.fn(), fastFn, roots, rootsFn)
+	h.w = newWorkspaceWatcher(h.ws, h.stub.fn(), fastFn, roots, rootsFn, new(sequence))
 	if configure != nil {
 		configure(h.w)
 	}
@@ -115,7 +115,7 @@ func TestRequestRefreshSeesAChangeMadeDuringTheReinstall(t *testing.T) {
 	stub := newStubStatus(gitops.GitStatus{Branch: "main"})
 	roots := []gitops.WatchRoot{subtreeRoot(ws)}
 	rootsFn := func() ([]gitops.WatchRoot, error) { return roots, nil }
-	w := newWorkspaceWatcher(ws, stub.fn(), nil, roots, rootsFn)
+	w := newWorkspaceWatcher(ws, stub.fn(), nil, roots, rootsFn, new(sequence))
 	w.livenessQuiet = 0 // every refresh-observed change counts as a miss
 	var installs atomic.Int32
 	w.install(func([]gitops.WatchRoot, chan<- notify.EventInfo) error {
@@ -152,7 +152,7 @@ func TestRequestRefreshReadsOnceWhenTheWatchesStay(t *testing.T) {
 	stub := newStubStatus(gitops.GitStatus{Branch: "main"})
 	roots := []gitops.WatchRoot{subtreeRoot(ws)}
 	rootsFn := func() ([]gitops.WatchRoot, error) { return nil, errors.New("roots unavailable") }
-	w := newWorkspaceWatcher(ws, stub.fn(), nil, roots, rootsFn)
+	w := newWorkspaceWatcher(ws, stub.fn(), nil, roots, rootsFn, new(sequence))
 	w.livenessQuiet = 0 // every refresh-observed change counts as a miss
 	w.install(func([]gitops.WatchRoot, chan<- notify.EventInfo) error { return nil })
 	sub := w.addSubscriber(gitops.GitStatus{Branch: "main"})
@@ -180,7 +180,7 @@ func TestNewWatcherRevalidatesItsRootsBeforeAnyEvent(t *testing.T) {
 	installed := []gitops.WatchRoot{subtreeRoot(ws)}
 	current := []gitops.WatchRoot{subtreeRoot(ws), subtreeRoot(filepath.Join(ws, "created"))}
 	rootsFn := func() ([]gitops.WatchRoot, error) { return current, nil }
-	w := newWorkspaceWatcher(ws, stub.fn(), nil, installed, rootsFn)
+	w := newWorkspaceWatcher(ws, stub.fn(), nil, installed, rootsFn, new(sequence))
 	var installs atomic.Int32
 	w.install(func([]gitops.WatchRoot, chan<- notify.EventInfo) error {
 		if installs.Add(1) == 2 {
@@ -354,5 +354,121 @@ func TestFailedPRLookupIsRecheckedAtItsRecheckTime(t *testing.T) {
 	expectNoUpdate(t, sub, 400*time.Millisecond)
 	if got := h.stub.completedCallCount(); got != calls {
 		t.Fatalf("status was read %d more times after the lookup succeeded, want none", got-calls)
+	}
+}
+
+// startCountedWatcher starts a watcher over a fresh workspace with the
+// given status functions, counting its installs; configure runs before
+// start. The workspace is returned beside the watcher.
+func startCountedWatcher(t *testing.T, statusFn, fastFn StatusFn, configure func(w *workspaceWatcher)) (*workspaceWatcher, *countingInstall, *Subscription, string) {
+	t.Helper()
+	ws := makeRepoDir(t)
+	roots := []gitops.WatchRoot{subtreeRoot(ws)}
+	w := newWorkspaceWatcher(ws, statusFn, fastFn, roots, func() ([]gitops.WatchRoot, error) { return roots, nil }, new(sequence))
+	if configure != nil {
+		configure(w)
+	}
+	installs := &countingInstall{}
+	w.install(installs.fn())
+	sub := w.addSubscriber(gitops.GitStatus{Branch: "main"})
+	w.start(gitops.GitStatus{Branch: "main"})
+	t.Cleanup(w.stop)
+	waitFor(t, 3*time.Second, func() bool { return installs.count() == 1 }, "initial install")
+	return w, installs, sub, ws
+}
+
+// slowChangedRead is a status read that outlasts quiet and finds a
+// working-tree change; during, when set, runs as it begins.
+func slowChangedRead(quiet time.Duration, during func()) StatusFn {
+	return func(context.Context, string) (gitops.GitStatus, error) {
+		if during != nil {
+			during()
+		}
+		time.Sleep(quiet + quiet/2)
+		return gitops.GitStatus{Branch: "main", HasChanges: true, Insertions: 5}, nil
+	}
+}
+
+// A requested refresh whose read outlasts the quiet window, begun just
+// after an event was handled, is explained by that event: the stream was
+// not quiet when it began, so the watches stay.
+func TestSlowRequestedRefreshAfterAnEventDoesNotReinstall(t *testing.T) {
+	t.Parallel()
+	const quiet = 200 * time.Millisecond
+	w, installs, sub, ws := startCountedWatcher(t, slowChangedRead(quiet, nil), nil, func(w *workspaceWatcher) {
+		w.livenessQuiet = quiet
+	})
+
+	w.eventsCh <- writeEvent(filepath.Join(ws, "f.txt"))
+	waitFor(t, 3*time.Second, func() bool { return len(w.eventsCh) == 0 }, "event handled")
+	w.requestRefresh()
+	if got := recvWithin(t, sub, 3*time.Second); got.Insertions != 5 {
+		t.Fatalf("broadcast = %+v, want the change", got)
+	}
+	expectNoUpdate(t, sub, debounceWindow+2*quiet)
+	if got := installs.count(); got != 1 {
+		t.Fatalf("installs = %d, want 1 (an event just before the refresh explains its change)", got)
+	}
+}
+
+// A requested refresh during which an event is delivered is explained by
+// that event, still queued when the refresh ends: the watches stay.
+func TestSlowRequestedRefreshWithAnEventDuringItDoesNotReinstall(t *testing.T) {
+	t.Parallel()
+	const quiet = 200 * time.Millisecond
+	var w *workspaceWatcher
+	var delivered atomic.Bool
+	deliver := func() {
+		if delivered.CompareAndSwap(false, true) {
+			w.eventsCh <- writeEvent(filepath.Join(w.cwd, "f.txt"))
+		}
+	}
+	// w is set before the run loop starts, which is what reads it.
+	_, installs, sub, _ := startCountedWatcher(t, slowChangedRead(quiet, deliver), nil, func(started *workspaceWatcher) {
+		w = started
+		w.livenessQuiet = quiet
+	})
+
+	w.requestRefresh()
+	if got := recvWithin(t, sub, 3*time.Second); got.Insertions != 5 {
+		t.Fatalf("broadcast = %+v, want the change", got)
+	}
+	expectNoUpdate(t, sub, debounceWindow+2*quiet)
+	if !delivered.Load() {
+		t.Fatal("the refresh delivered no event")
+	}
+	if got := installs.count(); got != 1 {
+		t.Fatalf("installs = %d, want 1 (an event during the refresh explains its change)", got)
+	}
+}
+
+// A liveness probe during which an event is delivered is explained by
+// that event: the drift it found is the debounced refresh's to publish.
+func TestLivenessProbeWithAnEventDuringItDoesNotReinstall(t *testing.T) {
+	t.Parallel()
+	drifted := gitops.GitStatus{Branch: "main", HasChanges: true, Insertions: 7}
+	var w *workspaceWatcher
+	var probes atomic.Int32
+	probe := func(context.Context, string) (gitops.GitStatus, error) {
+		if probes.Add(1) == 1 {
+			w.eventsCh <- writeEvent(filepath.Join(w.cwd, "f.txt"))
+		}
+		return drifted, nil
+	}
+	read := func(context.Context, string) (gitops.GitStatus, error) { return drifted, nil }
+	// The interval outlasts the debounce, so the next probe compares
+	// against the refresh the event caused.
+	// w is set before the run loop starts, which is what reads it.
+	_, installs, sub, _ := startCountedWatcher(t, read, probe, func(started *workspaceWatcher) {
+		w = started
+		w.livenessInterval = 400 * time.Millisecond
+	})
+
+	if got := recvWithin(t, sub, 3*time.Second); !got.Equal(drifted) {
+		t.Fatalf("broadcast = %+v, want the drift from the event's refresh", got)
+	}
+	waitFor(t, 3*time.Second, func() bool { return probes.Load() >= 2 }, "a probe after the event's refresh")
+	if got := installs.count(); got != 1 {
+		t.Fatalf("installs = %d, want 1 (an event during the probe explains its drift)", got)
 	}
 }

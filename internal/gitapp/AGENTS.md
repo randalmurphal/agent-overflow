@@ -25,6 +25,13 @@ on live thread/session ordering.
   require the exact confirmed tip.
 - Status streams are keyed by canonical workspace, not caller handle. Multiple
   panes share one upstream subscription and one emitted update.
+- Every workspace status a method answers with is read through
+  `publishStatus` (`gitwatch.Manager.Publish`), so it carries the `Seq` of its
+  read and is what the workspace's stream publishes, or the read itself when
+  nothing could publish it (nobody watches, or a `Suppress` hold). Do not
+  read `Core.Status` or `Core.StatusFast` for a client beside it, and take
+  anything derived from the answer, such as the branch a checkout records,
+  from that status. With no watch manager the answer carries no `Seq`.
 - Keep background fetch non-interactive and origin-only through
   `internal/git`; this package never shells out directly.
 - Workspace-scoped git RPCs take a `WorkspaceRef`, never a thread id. A

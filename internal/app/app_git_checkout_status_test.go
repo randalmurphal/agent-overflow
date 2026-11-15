@@ -50,6 +50,131 @@ func TestCheckoutAnswersWithTheStatusItProduced(t *testing.T) {
 	check("branch from a detached HEAD", state, gitops.GitStatus{Branch: "rescue"})
 }
 
+// GetGitStatus and a checkout answer with the status the workspace's
+// stream publishes: sequenced after the subscribe snapshot, in the order
+// they were read, and broadcast on git:status with the same seq.
+func TestGitStatusAnswersAreTheStreamsPublishedStatus(t *testing.T) {
+	t.Parallel()
+	f := newTagFixture(t, initMainGitRepo(t))
+	core := f.app.gitCore()
+	// The snapshot is not the repository's status, so every answer below
+	// changes the published status and is broadcast.
+	f.app.gitWatch = gitwatch.NewManager(gitwatch.ManagerConfig{
+		StatusFn: core.Status,
+		FastStatusFn: func(context.Context, string) (gitops.GitStatus, error) {
+			return gitops.GitStatus{IsRepo: true, Branch: "elsewhere"}, nil
+		},
+	})
+	t.Cleanup(f.app.gitWatch.Close)
+	events, mu := captureGitStatusEmissions(f.app)
+	res, err := f.app.GitStatusSubscribe(context.Background(), f.ref)
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	defer func() {
+		if err := f.app.GitStatusUnsubscribe(context.Background(), res.ID); err != nil {
+			t.Errorf("unsubscribe: %v", err)
+		}
+	}()
+	broadcast := func(label string, answer gitops.GitStatus) {
+		t.Helper()
+		deadline := time.After(5 * time.Second)
+		for {
+			for _, event := range gitStatusEventsFor(events, mu, res.Cwd) {
+				if event.Status == answer {
+					return
+				}
+			}
+			select {
+			case <-deadline:
+				t.Fatalf("%s: answer %+v was never broadcast", label, answer)
+			case <-time.After(20 * time.Millisecond):
+			}
+		}
+	}
+
+	status, err := f.app.GetGitStatus(t.Context(), f.ref)
+	if err != nil {
+		t.Fatalf("GetGitStatus: %v", err)
+	}
+	if status.Branch != "main" || status.Seq <= res.Status.Seq {
+		t.Fatalf("GetGitStatus = %+v, want branch main at a seq above the snapshot's %d", status, res.Status.Seq)
+	}
+	broadcast("GetGitStatus", status)
+
+	state, err := f.app.GitCheckout(f.ref, "refs/tags/v1")
+	if err != nil {
+		t.Fatalf("GitCheckout(tag): %v", err)
+	}
+	if state.Status == nil || state.Status.Tag != "v1" || state.Status.Seq <= status.Seq {
+		t.Fatalf("GitCheckout status = %+v, want tag v1 at a seq above %d", state.Status, status.Seq)
+	}
+	broadcast("GitCheckout", *state.Status)
+
+	created, err := f.app.GitCreateBranchFrom(f.ref, "rescue", "", false)
+	if err != nil {
+		t.Fatalf("GitCreateBranchFrom: %v", err)
+	}
+	if created.Status == nil || created.Status.Branch != "rescue" || created.Status.Seq <= state.Status.Seq {
+		t.Fatalf("GitCreateBranchFrom status = %+v, want branch rescue at a seq above %d", created.Status, state.Status.Seq)
+	}
+	broadcast("GitCreateBranchFrom", *created.Status)
+}
+
+// A checkout while the workspace's status is held off the wire cannot be
+// published, so it answers with its own read: the branch it checked out,
+// sequenced after the held status, and that branch on the thread rows.
+func TestCheckoutWhileStatusIsHeldAnswersItsOwnRead(t *testing.T) {
+	t.Parallel()
+	f := newTagFixture(t, initMainGitRepo(t))
+	core := f.app.gitCore()
+	f.app.gitWatch = gitwatch.NewManager(gitwatch.ManagerConfig{
+		StatusFn:     core.Status,
+		FastStatusFn: func(_ context.Context, cwd string) (gitops.GitStatus, error) { return core.StatusFast(cwd) },
+	})
+	t.Cleanup(f.app.gitWatch.Close)
+	res, err := f.app.GitStatusSubscribe(context.Background(), f.ref)
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	defer func() {
+		if err := f.app.GitStatusUnsubscribe(context.Background(), res.ID); err != nil {
+			t.Errorf("unsubscribe: %v", err)
+		}
+	}()
+	if res.Status.Branch != "main" {
+		t.Fatalf("snapshot branch = %q, want main", res.Status.Branch)
+	}
+	resume := f.app.gitApplication().SuppressStatus(f.repo)
+	defer resume()
+
+	check := func(label string, state GitWorkspaceState, want string, after uint64) {
+		t.Helper()
+		if state.Status == nil || state.Status.Branch != want || state.Status.Seq <= after {
+			t.Errorf("%s: status %+v, want its own read of %q at a seq above %d", label, state.Status, want, after)
+		}
+		if state.Branch != want {
+			t.Errorf("%s: answered branch %q, want %q", label, state.Branch, want)
+		}
+		if got := f.storedBranch(t, f.thread.ID); got != want {
+			t.Errorf("%s: thread row branch %q, want %q", label, got, want)
+		}
+	}
+	state, err := f.app.GitCheckout(f.ref, "dup")
+	if err != nil {
+		t.Fatalf("GitCheckout: %v", err)
+	}
+	check("GitCheckout", state, "dup", res.Status.Seq)
+	if state.Status == nil {
+		t.FailNow()
+	}
+	created, err := f.app.GitCreateBranchFrom(f.ref, "rescue", "", false)
+	if err != nil {
+		t.Fatalf("GitCreateBranchFrom: %v", err)
+	}
+	check("GitCreateBranchFrom", created, "rescue", state.Status.Seq)
+}
+
 // A checkout pushes the new status to every client watching the workspace.
 func TestCheckoutRefreshesTheWorkspaceStatusStream(t *testing.T) {
 	t.Parallel()

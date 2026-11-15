@@ -55,14 +55,21 @@ type GitStatus struct {
 	// pending. The commit dialog shows it as a notice; git itself decides
 	// whether a commit can be recorded.
 	PendingOperation string `json:"pendingOperation,omitempty"`
+	// Seq orders the statuses handed to clients for one workspace: the
+	// gitwatch.Manager position taken before this status's reads began, so
+	// a higher Seq never comes from a read that started earlier. Zero is
+	// unsequenced. It says when the status was read, not what it says, so
+	// Equal ignores it.
+	Seq uint64 `json:"seq,omitempty"`
 }
 
-// Equal reports whether two GitStatus values are field-by-field
-// identical. Used on hot paths (gitwatch dedup at 250ms cadence) where
-// reflect.DeepEqual would add reflection overhead — and would silently
-// keep working if the struct grew a pointer/map/slice field that the
-// caller forgot to consider. A typed Equal forces every new field to
-// be added here too.
+// Equal reports whether two GitStatus values say the same thing: every
+// field but Seq is identical. Used on hot paths (gitwatch dedup at 250ms
+// cadence) where reflect.DeepEqual would add reflection overhead and
+// would silently keep working if the struct grew a pointer/map/slice
+// field that the caller forgot to consider. A typed Equal forces every
+// new field to be added here too; TestGitStatusEqualComparesEveryField
+// fails until it is.
 func (s GitStatus) Equal(other GitStatus) bool {
 	return s.IsRepo == other.IsRepo &&
 		s.Branch == other.Branch &&

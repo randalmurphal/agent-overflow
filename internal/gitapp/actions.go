@@ -7,21 +7,39 @@ import (
 	"agent-overflow/internal/prthread"
 )
 
-// Status returns a fresh status for the referenced workspace and schedules the
-// same refresh through the shared workspace stream. ctx bounds the forge's
-// open-PR lookup.
+// Status reads the referenced workspace's status, asking the forge for its
+// open PR, and publishes it through the workspace's status stream
+// (publishStatus). ctx bounds the open-PR lookup.
 func (s *Service) Status(ctx context.Context, ref WorkspaceRef) (gitops.GitStatus, error) {
 	_, workspace, err := s.ResolveWorkspace(ref)
 	if err != nil {
 		return gitops.GitStatus{}, err
 	}
 	s.core.InvalidatePRCache(workspace)
-	status, err := s.core.Status(ctx, workspace)
-	if err != nil {
-		return gitops.GitStatus{}, err
+	return s.publishStatus(workspace, func() (gitops.GitStatus, error) { return s.core.Status(ctx, workspace) })
+}
+
+// CheckoutStatus reads the status of workspace, a resolved checkout, after a
+// branch change, from the PR cache instead of the forge, and publishes it
+// through the workspace's status stream (publishStatus), whose refresh asks
+// the forge. It returns the published status, which is this read or one
+// that began after it, or this read itself while a Suppress hold keeps it
+// off the stream.
+func (s *Service) CheckoutStatus(workspace string) (gitops.GitStatus, error) {
+	return s.publishStatus(workspace, func() (gitops.GitStatus, error) { return s.core.StatusFast(workspace) })
+}
+
+// publishStatus is every status this service hands a client for a
+// workspace: gitwatch.Manager.Publish orders it against the workspace's
+// stream and returns what the stream publishes, or the read itself when
+// nothing could publish it (nobody watches, or a Suppress hold). With no
+// manager there is no stream to order against, and the status carries no
+// Seq.
+func (s *Service) publishStatus(workspace string, read func() (gitops.GitStatus, error)) (gitops.GitStatus, error) {
+	if s.watch == nil {
+		return read()
 	}
-	s.RequestRefresh(workspace)
-	return status, nil
+	return s.watch.Publish(workspace, read)
 }
 
 func (s *Service) ListBranches(ref WorkspaceRef) ([]gitops.GitBranch, error) {

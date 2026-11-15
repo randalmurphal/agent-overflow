@@ -101,49 +101,124 @@ function removeAlias(cwdKey: string, key: string, owner: AliasOwner): void {
   if (keys.size === 0) localKeysByCwd.delete(cwdKey);
 }
 
-// The latest status applied to each held key, from any source, as a number
-// no other apply ever has: a key released and reacquired never repeats one.
-// `withCheckoutAnswer` reads it to tell whether a status landed while its
-// mutation was in flight.
+// Unsequenced compatibility only: the latest status applied to each held
+// key, as a number no other apply ever has. `withCheckoutAnswer` reads it to
+// tell whether a status landed while an unsequenced answer was in flight.
 const lastApplyByKey = new Map<string, number>();
 let applySequence = 0;
+
+// A `git:status` frame can overtake the subscribe reply whose alias would
+// route it. While a subscribe is in flight on a backend, its sequenced frames
+// are kept here, newest per `${backendId} ${cwd}`, for the reply to apply.
+// They are dropped when that backend's last in-flight subscribe settles or is
+// aborted; a disconnect aborts every run on the backend, so a kept frame
+// never meets a restarted process.
+const keptFramesByBackend = new Map<BackendKey, Map<string, GitStatus>>();
+const subscribesInFlight = new Map<BackendKey, number>();
+
+function seqOf(status: GitStatus | null | undefined): number {
+  const seq = status?.seq;
+  return typeof seq === 'number' && seq > 0 ? seq : 0;
+}
+
+/**
+ * The only way a status reaches the store, ordered by the seq of the value
+ * the key holds. The entity store drops that value on every transport edge
+ * of the key's backend, so a restarted backend's count starts against
+ * nothing; a re-source on the same connection keeps it.
+ *
+ * A sequenced status below the held seq writes nothing. One equal to it is
+ * the held status (the same publication), so it applies with `keepValue`:
+ * the held value stays and wakes no reader, while the observation still
+ * clears an error and the retry curve, as after a retry whose reply nothing
+ * changed since. `onApply` then sees the incoming status with the held one
+ * as `prev`; they share a branch, so nothing is persisted. An unsequenced
+ * status applies.
+ */
+function applyStatus(key: string, status: GitStatus): void {
+  const seq = seqOf(status);
+  if (seq === 0) {
+    store.apply(key, status);
+    return;
+  }
+  const heldSeq = seqOf(store.snapshot(key));
+  if (seq < heldSeq) return;
+  store.apply(key, status, { keepValue: seq === heldSeq });
+}
+
+function keepFrame(backend: BackendKey, cwdKey: string, status: GitStatus): void {
+  const kept = keptFramesByBackend.get(backend);
+  if (kept && seqOf(status) > seqOf(kept.get(cwdKey))) kept.set(cwdKey, status);
+}
+
+/** Counts a subscribe in flight on `backend`; the returned settle runs once. */
+function trackSubscribe(backend: BackendKey, signal: AbortSignal): () => void {
+  subscribesInFlight.set(backend, (subscribesInFlight.get(backend) ?? 0) + 1);
+  if (!keptFramesByBackend.has(backend)) keptFramesByBackend.set(backend, new Map<string, GitStatus>());
+  let settled = false;
+  const settle = (): void => {
+    if (settled) return;
+    settled = true;
+    signal.removeEventListener('abort', settle);
+    const remaining = (subscribesInFlight.get(backend) ?? 0) - 1;
+    if (remaining > 0) {
+      subscribesInFlight.set(backend, remaining);
+      return;
+    }
+    subscribesInFlight.delete(backend);
+    keptFramesByBackend.delete(backend);
+  };
+  signal.addEventListener('abort', settle);
+  return settle;
+}
 
 const store = createEntityStore<GitStatus, GitStatusCtx>({
   name: 'gitStatus',
   backendForKey: workspaceKeyBackend,
-  source: async ({ key, getCtx, apply, signal }) => {
+  // Every writer replaces the value: all of them go through applyStatus.
+  rawValue: true,
+  source: async ({ key, getCtx, signal }) => {
     const owner: AliasOwner = Symbol(key);
     const backend = workspaceKeyBackend(key);
     const workspace = getCtx().workspace;
     if (workspace === null) {
       throw new Error(`git status: no workspace to subscribe for ${key}`);
     }
-    // Pinned to the KEY's backend rather than routed from the ref: the key
-    // is the entity, and the subscription id the answer carries belongs to
-    // whichever connection minted it, so the two must be one machine.
-    const result = (await withBackendTarget(backend, () =>
-      GitStatusSubscribe(workspace),
-    )) as GitStatusSubscriptionResult;
-    const cwdKey = composeWorkspaceKey(backend, result.cwd);
-    // Only a run that is still the live one may claim the alias; a
-    // superseded run's cleanup then finds an owner that is not its own and
-    // leaves the live routing alone.
-    if (!signal.aborted) addAlias(cwdKey, key, owner);
-    apply(result.status as GitStatus);
-    return async () => {
-      removeAlias(cwdKey, key, owner);
-      try {
-        // A subscription id is meaningful only on the connection that
-        // minted it, and nothing in the id says which that was — hence the
-        // pin rather than a route.
-        await withBackendTarget(backend, () => GitStatusUnsubscribe(result.id));
-      } catch (err) {
-        // A dead wire needs no unsubscribe: the backend releases every
-        // subscription a connection held when it drops. Anything else is a
-        // real failure to release and must be seen.
-        if (!isTransportClassError(err)) throw err;
+    const settle = trackSubscribe(backend, signal);
+    try {
+      // Pinned to the KEY's backend rather than routed from the ref: the key
+      // is the entity, and the subscription id the answer carries belongs to
+      // whichever connection minted it, so the two must be one machine.
+      const result = (await withBackendTarget(backend, () =>
+        GitStatusSubscribe(workspace),
+      )) as GitStatusSubscriptionResult;
+      const cwdKey = composeWorkspaceKey(backend, result.cwd);
+      // Only a run that is still the live one may claim the alias or apply;
+      // a superseded run's cleanup then finds an owner that is not its own
+      // and leaves the live routing alone.
+      if (!signal.aborted) {
+        addAlias(cwdKey, key, owner);
+        applyStatus(key, result.status as GitStatus);
+        const kept = keptFramesByBackend.get(backend)?.get(cwdKey);
+        if (kept) applyStatus(key, kept);
       }
-    };
+      return async () => {
+        removeAlias(cwdKey, key, owner);
+        try {
+          // A subscription id is meaningful only on the connection that
+          // minted it, and nothing in the id says which that was — hence the
+          // pin rather than a route.
+          await withBackendTarget(backend, () => GitStatusUnsubscribe(result.id));
+        } catch (err) {
+          // A dead wire needs no unsubscribe: the backend releases every
+          // subscription a connection held when it drops. Anything else is a
+          // real failure to release and must be seen.
+          if (!isTransportClassError(err)) throw err;
+        }
+      };
+    } finally {
+      settle();
+    }
   },
   onApply: (key, value, prev) => {
     lastApplyByKey.set(key, ++applySequence);
@@ -172,11 +247,12 @@ function installGitStatusEventListener(): void {
     if (!payload?.cwd) return;
     // The frame names a directory; the connection it arrived on names the
     // machine. Neither is enough alone.
-    const keys = localKeysByCwd.get(
-      composeWorkspaceKey(backendKeyForOrigin(origin.backendId), payload.cwd),
-    );
+    const backend = backendKeyForOrigin(origin.backendId);
+    const cwdKey = composeWorkspaceKey(backend, payload.cwd);
+    keepFrame(backend, cwdKey, payload.status);
+    const keys = localKeysByCwd.get(cwdKey);
     if (!keys) return;
-    for (const key of keys.keys()) store.apply(key, payload.status);
+    for (const key of keys.keys()) applyStatus(key, payload.status);
   });
 }
 
@@ -340,7 +416,7 @@ export async function refreshGitStatus(
   try {
     const result = (await GetGitStatus(workspace)) as GitStatus;
     if (currentKey() !== key) return;
-    store.apply(key, result);
+    applyStatus(key, result);
   } catch (err) {
     if (currentKey() !== key) return;
     store.applyError(key, err);
@@ -354,11 +430,12 @@ export async function refreshGitStatus(
  * workspace shows the new checkout and its upstream, counts and default flag
  * at once. Returns the answer.
  *
- * A status that landed during the call stands instead. The backend pushes
- * the checkout's status as well, with the open-PR lookup the answer leaves
- * pending, and the answer can be the older of the two; whatever landed, that
- * push follows it. An answer without a status (an older backend) changes
- * nothing, and neither does one for a workspace no one holds.
+ * The backend pushes the checkout's status as well, with the open-PR lookup
+ * the answer leaves pending, and the answer can be the older of the two, so
+ * its seq decides. An unsequenced answer stands down when any status landed
+ * during the call, since that push follows it. An answer without a status
+ * (an older backend) changes nothing, and neither does one for a workspace
+ * no one holds.
  */
 export async function withCheckoutAnswer<T extends GitWorkspaceState | null>(
   ws: WorkspaceRef,
@@ -368,10 +445,11 @@ export async function withCheckoutAnswer<T extends GitWorkspaceState | null>(
   const before = key === null ? undefined : lastApplyByKey.get(key);
   const state = await mutate();
   const status = state?.status;
-  // `before` is undefined for a workspace that held no status when the call
-  // began; one acquired since has a status newer than the answer.
-  if (status && key !== null && before !== undefined && lastApplyByKey.get(key) === before) {
-    store.apply(key, status);
+  if (!status || key === null) return state;
+  // Unsequenced: `before` is undefined for a workspace that held no status
+  // when the call began; one acquired since has a status newer than the answer.
+  if (seqOf(status) > 0 || (before !== undefined && lastApplyByKey.get(key) === before)) {
+    applyStatus(key, status);
   }
   return state;
 }
@@ -483,7 +561,7 @@ function assertAttachableWhileSeeding(key: string): void {
 export function __seedGitStatusForTest(key: string, status: GitStatus): void {
   const held = seedKey(key);
   ensureTestHold(held);
-  store.apply(held, status);
+  applyStatus(held, { ...status });
 }
 
 export function __seedGitStatusErrorForTest(key: string, message: string): void {
