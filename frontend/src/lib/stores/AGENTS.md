@@ -266,8 +266,14 @@ edits behind it, and never dispatch after preparation fails. Only the write that
 ran and still matches may clear pending state. The empty-draft cleanup is a
 boundary in the same order: writes behind it are sent only if it kept the
 thread, nothing is ever sent for a thread it deleted, and the store on that
-thread keeps its buffer for the replacement the composer materializes. Hydration preserves attachment ID
-order and treats a missing attachment record as an error.
+thread keeps its buffer for the replacement the composer materializes. Text a
+client holds unsaved for a thread that is deleted under it, by its own cleanup
+or another screen's, moves to a new draft thread of its own and is never
+dropped; a delete refused because another screen saved first leaves that
+screen's draft alone. Controls that write a thread row wait for an in-flight
+cleanup with `settleEmptyDraftCleanup` and act on what it leaves.
+Hydration preserves attachment ID order and treats a missing attachment record
+as an error.
 
 `threadModelControls.ts` owns model changes from pickers and commands. Retry a
 fallback with `UpdateThreadModelSelection`; confirmation comes from the effective

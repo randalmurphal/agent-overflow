@@ -45,7 +45,7 @@ import {
   notifyTerminalFocus,
   resetTerminalFocusForTest,
 } from '../terminal/terminalStore.svelte';
-import { focusPane, registerPaneForTest, resetPanesForTest } from '../../stores/panes.svelte';
+import { focusPane, getPane, registerPaneForTest, resetPanesForTest } from '../../stores/panes.svelte';
 import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from '../../stores/paneLayout.svelte';
 import { resetCompanionPanesForTest } from '../../stores/companionPanes.svelte';
 import { idleWorkspaceActivity } from '../../../test/helpers/workspaceLock';
@@ -1151,7 +1151,7 @@ describe('<Composer>', () => {
     run.follow.dispose();
   });
 
-  it('reports, and never sends, text typed into a deleted new thread after the pane moved on', async () => {
+  it('keeps text typed into a deleted new thread after the pane moved on as a draft thread in the sidebar', async () => {
     const run = await startEmptyDraftCleanup('cleanup-switch', async () => true);
     await fireEvent.input(run.textarea, { target: { value: 'typed again' } });
     const other = makeTestThread({ id: 'cleanup-switch-other' });
@@ -1160,12 +1160,104 @@ describe('<Composer>', () => {
     await waitFor(() => expect(run.draft.threadId).toBe(other.id));
     run.deleteGate.resolve();
 
-    await waitFor(() => expect(run.errorToasts()).toEqual([
-      'Failed to save draft: This new thread was removed before the text typed into it was saved.',
-    ]));
+    // The text lands in a new draft thread with the deleted one's settings.
+    await waitFor(() => expect(run.save).toHaveBeenCalledWith(run.replacement.id, 'typed again', [], [], null));
+    expect(run.create).toHaveBeenLastCalledWith(expect.objectContaining({ projectId: run.first.projectId, mode: 'chat' }));
+    expect(getThreadById(run.replacement.id)).toBeDefined();
     expect(run.savedAfterDecision()).toEqual([]);
+    expect(run.errorToasts()).toEqual([]);
     expect(run.pane.threadId).toBe(other.id);
+    expect(run.draft.content).not.toBe('typed again');
     run.follow.dispose();
+  });
+
+  // Another screen saved its draft into the thread first, so the backend
+  // kept it. Text typed here meanwhile must not overwrite theirs.
+  it('moves text typed during the delete to a new thread when another screen’s draft kept the thread', async () => {
+    const run = await startEmptyDraftCleanup('cleanup-contested', async () => false);
+    setBindingMock('GetDraft', async (threadId: string) => ({
+      threadId,
+      content: threadId === run.first.id ? 'their text' : '',
+      attachmentIds: [],
+      terminalChips: [],
+      updatedAt: 1,
+    }));
+    await fireEvent.input(run.textarea, { target: { value: 'my text' } });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    run.deleteGate.resolve();
+
+    await waitFor(() => expect(run.pane.threadId).toBe(run.replacement.id));
+    expect(run.draft.threadId).toBe(run.replacement.id);
+    expect(run.draft.content).toBe('my text');
+    await waitFor(() => expect(run.save).toHaveBeenCalledWith(run.replacement.id, 'my text', [], [], null));
+    expect(run.savedAfterDecision()).toEqual([]);
+    expect(getThreadById(run.first.id)).toBeDefined();
+    expect(run.errorToasts()).toEqual([]);
+    run.follow.dispose();
+  });
+
+  describe('a new thread another screen erases', () => {
+    async function openSharedDraft(name: string) {
+      resetToastsForTest();
+      const row = makeTestThread({ id: `${name}-shared`, isDraft: true, projectId: `project-${name}`, projectPath: '/repo', workspacePath: '/repo', mode: 'chat' });
+      const replacement = makeTestThread({ id: `${name}-own`, isDraft: true, projectId: row.projectId, projectPath: '/repo', workspacePath: '/repo', mode: 'chat' });
+      const pane = await buildPane(row, [], name);
+      const draft = await buildDraft(row.id);
+      const follow = followPaneThread(pane, draft);
+      const create = setBindingMock('CreateThread', async () => replacement);
+      const view = render(Composer, { props: { pane, draft } });
+      const textarea = view.getByLabelText('Message Input') as HTMLTextAreaElement;
+      const errorToasts = () => getToasts().filter((toast) => toast.type === 'error').map((toast) => toast.message);
+      return { row, replacement, pane, draft, follow, create, textarea, errorToasts };
+    }
+
+    it('keeps unsaved text in a fresh thread of its own when the deletion broadcast arrives', async () => {
+      const run = await openSharedDraft('erased-broadcast');
+      const heldSave = deferred<void>();
+      const save = setBindingMock('SaveDraft', async (threadId: string) => {
+        if (threadId === run.row.id) await heldSave.promise;
+      });
+      await fireEvent.input(run.textarea, { target: { value: 'mine' } });
+      await waitFor(() => expect(save).toHaveBeenCalledWith(run.row.id, 'mine', [], [], null));
+      applyThreadUpdated({ action: 'deleted', id: run.row.id });
+      heldSave.reject(new TransportError('not_found', 'The requested item no longer exists.'));
+
+      await waitFor(() => expect(run.pane.threadId).toBe(run.replacement.id));
+      expect(run.draft.content).toBe('mine');
+      await waitFor(() => expect(save).toHaveBeenCalledWith(run.replacement.id, 'mine', [], [], null));
+      expect(getPane(run.pane.paneId)).toBe(run.pane);
+      expect(run.errorToasts()).toEqual([]);
+      run.follow.dispose();
+    });
+
+    it('keeps unsaved text in a fresh thread when its save answers not_found before the broadcast', async () => {
+      const run = await openSharedDraft('erased-not-found');
+      const save = setBindingMock('SaveDraft', async (threadId: string) => {
+        if (threadId === run.row.id) throw new TransportError('not_found', 'The requested item no longer exists.');
+      });
+      await fireEvent.input(run.textarea, { target: { value: 'mine' } });
+
+      await waitFor(() => expect(run.pane.threadId).toBe(run.replacement.id));
+      expect(run.draft.content).toBe('mine');
+      await waitFor(() => expect(save).toHaveBeenCalledWith(run.replacement.id, 'mine', [], [], null));
+      expect(getThreadById(run.row.id)).toBeUndefined();
+      expect(run.errorToasts()).toEqual([]);
+      // The broadcast arriving afterwards changes nothing.
+      applyThreadUpdated({ action: 'deleted', id: run.row.id });
+      await tick();
+      expect(run.pane.threadId).toBe(run.replacement.id);
+      expect(run.create).toHaveBeenCalledTimes(1);
+      run.follow.dispose();
+    });
+
+    it('follows the deletion as before when nothing is unsaved', async () => {
+      const run = await openSharedDraft('erased-idle');
+      applyThreadUpdated({ action: 'deleted', id: run.row.id });
+      await tick();
+      expect(getPane(run.pane.paneId)).toBeUndefined();
+      expect(run.create).not.toHaveBeenCalled();
+      run.follow.dispose();
+    });
   });
 
   it('uploads a dropped pdf as a file chip, with no textarea placeholder', async () => {

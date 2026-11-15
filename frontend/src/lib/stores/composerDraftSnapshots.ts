@@ -192,33 +192,59 @@ export function queueDraftSave(
 
 /**
  * Run the empty-draft cleanup behind every write admitted before it. Writes
- * admitted after it wait for its answer; `remove` must call
- * markDraftThreadDeleted before it returns true.
+ * admitted after it wait for its answer; `run` settles them through
+ * markDraftThreadDeleted or abandonDraftThreadWrites before it returns.
  */
-export async function queueDraftThreadDeletion(
-  threadId: string,
-  remove: () => Promise<boolean>,
-): Promise<boolean> {
-  let deleted = false;
-  await queueDraftSave(threadId, async () => { deleted = await remove(); }, 'cleanup');
-  return deleted;
+export async function queueDraftThreadCleanup<T>(threadId: string, run: () => Promise<T>): Promise<T> {
+  let answer!: T;
+  await queueDraftSave(threadId, async () => { answer = await run(); }, 'cleanup');
+  return answer;
+}
+
+/** Unsaved local edits for the thread with something in them, if any. */
+export function unsavedDraftSnapshot(threadId: string): ComposerDraftSnapshot | undefined {
+  const snapshot = localDraftSnapshots.get(threadId);
+  if (!snapshot) return undefined;
+  const hasContent = snapshot.content.trim() !== '' || snapshot.attachments.length > 0
+    || snapshot.terminalChips.length > 0 || snapshot.sourceProposedPlan !== null;
+  return hasContent ? cloneDraftSnapshot(snapshot) : undefined;
 }
 
 /**
  * The thread is gone: reject the writes waiting behind its cleanup and every
  * later one. Ids are never reused, so the bounded record only has to outlive
- * the composers that held the thread.
+ * the composers that held the thread. Returns the unsaved local edits it
+ * held, for the caller to keep in another thread.
  */
-export function markDraftThreadDeleted(threadId: string): void {
+export function markDraftThreadDeleted(threadId: string): ComposerDraftSnapshot | undefined {
+  const unsaved = unsavedDraftSnapshot(threadId);
   deletedDraftThreads.add(threadId);
   if (deletedDraftThreads.size > MAX_DELETED_THREADS) {
     deletedDraftThreads.delete(deletedDraftThreads.values().next().value as string);
   }
   localDraftSnapshots.delete(threadId);
   const owner = draftWriters.get(threadId);
-  if (!owner) return;
-  for (const pending of owner.pending.splice(0)) pending.reject(new DraftThreadDeletedError(threadId));
-  if (!owner.active) draftWriters.delete(threadId);
+  if (owner) {
+    for (const pending of owner.pending.splice(0)) pending.reject(new DraftThreadDeletedError(threadId));
+    if (!owner.active) draftWriters.delete(threadId);
+  }
+  return unsaved;
+}
+
+/**
+ * The thread stays but now holds another client's draft: drop this client's
+ * waiting writes so they cannot overwrite it, and return the unsaved edits
+ * they carried for the caller to keep in another thread.
+ */
+export function abandonDraftThreadWrites(threadId: string): ComposerDraftSnapshot | undefined {
+  const unsaved = unsavedDraftSnapshot(threadId);
+  localDraftSnapshots.delete(threadId);
+  const owner = draftWriters.get(threadId);
+  if (owner) {
+    for (const pending of owner.pending.splice(0)) pending.resolve(false);
+    if (!owner.active) draftWriters.delete(threadId);
+  }
+  return unsaved;
 }
 
 /** A finite fence over writes already admitted, never extended by later typing. */
