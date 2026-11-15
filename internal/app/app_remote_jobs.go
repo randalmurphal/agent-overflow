@@ -25,7 +25,7 @@ type RemoteCommandRequest = remotejobs.Request
 type RemoteCommand = store.RemoteJob
 
 func (a *App) initRemoteJobs(st *store.Store, dataDir string) error {
-	manager, err := remotejobs.New(a.lifeCtx(), st, remotejobs.ProcessRunner(func() []string {
+	manager, err := remotejobs.New(a.lifeCtx(), st, remotejobs.ProcessRunner(a.groupReaper("remote job"), func() []string {
 		env := os.Environ()
 		out := make([]string, 0, len(env))
 		for _, entry := range env {

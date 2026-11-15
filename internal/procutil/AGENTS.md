@@ -22,7 +22,12 @@ This package owns six utilities:
   error.
 - `StartGroup` starts argv as the leader of its own process group and
   returns a `Group`; `Group.Wait` supervises it to the end, and `RunGroup` is
-  the two together. This is the one implementation of pipe ownership,
+  the two together. Both take the `Reaper` that ends the group if this
+  process dies, and refuse a nil one (`ErrNoReaper`): the group is watched
+  before `StartGroup` returns and released once `Wait` has seen it end, or
+  leave only kept leftovers. A group the kill could not end stays watched.
+  Which spawners use it, and what ends the others, is in
+  [process lifetime](../../docs/architecture/process-lifetime.md). This is the one implementation of pipe ownership,
   cancellation, the leftover sweep and the drain: do not build another from
   `ConfigureGroup`. A done context starts nothing. The `Group` owns the
   output pipe, so output from grandchildren is captured, from the start and
@@ -38,11 +43,7 @@ This package owns six utilities:
   reported as `PipeErr` and the rest of the output is discarded.
   `GroupOutcome.OutputErr` folds `PipeErr` and `OutputHeld` (as
   `ErrOutputHeld`) into one error for a caller that fails a command whose
-  output was cut. `Started` receives the leader's pid, which is the group
-  id. `EndWithParent` gives a command the provider processes' orphan rule:
-  on Linux its leader gets SIGTERM when this process dies (Pdeathsig);
-  elsewhere the caller records the group for the orphan reaper from
-  `Started`.
+  output was cut.
 - `Terminal` (`OpenTerminal`, Unix only) is a pty that `GroupCommand.Terminal`
   makes the command's controlling terminal, for programs that prompt on
   `/dev/tty`. Stdin and `Output` are unchanged. The command starts through a

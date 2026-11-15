@@ -308,7 +308,7 @@ func TestNewRefusesAConfigurationThatCannotOrder(t *testing.T) {
 // The domain is normalized once, at construction, so the challenge name
 // and the certificate's names cannot disagree about its spelling.
 func TestNewNormalizesTheDomain(t *testing.T) {
-	issuer, err := New(Config{Dir: t.TempDir(), Domain: "  Backend.Example  ", Hook: []string{"hook"}})
+	issuer, err := New(Config{Dir: t.TempDir(), Domain: "  Backend.Example  ", Hook: []string{"hook"}, Reaper: nopReaper{}})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
