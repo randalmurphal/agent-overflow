@@ -17,10 +17,19 @@ an allowlist entry when its exception is fixed.
 - Use `keyedSignalRegistry.svelte.ts` for push-fed keyed state with no resource
   lifecycle. `set` is the only box creator. Svelte does not track state created
   inside the reaction currently reading it.
-- Use `snapshotStream.ts` for a keyed stream of sequenced frames that converges
-  with a full-snapshot RPC. It owns the buffer of frames that arrive during a
-  read, newest-read-wins, and the replay over the snapshot; the owning store
-  keeps the state, what a snapshot means, and how a frame folds in.
+- Use `snapshotStream.ts` whenever a call's answer is state the frames of a
+  channel also change. The transport writes events queued for a connection
+  ahead of a reply, including ones published after the method returned, so
+  frames of work a call started can precede its answer, and can name a key
+  only that answer reveals. `hydrate` reads a key's snapshot
+  (newest-read-wins); `claim` runs any other call, holding one key, or
+  every key when the answer names one the client does not know yet. Both
+  buffer the held keys' frames and replay them over the applied answer; the
+  owning store keeps the state, what an answer means, and how a frame folds
+  in. When the producer publishes outside the lock that orders its states,
+  it numbers them (a per-process `Seq`) and the fold keeps the newest per
+  launch through `createSequenceGate`. Never apply an answer over frames
+  without one of these.
 - Entity values use deep `$state` by default. Set `rawValue: true` only when all
   writers replace values wholesale. In-place mutation of a raw value does not
   wake readers.
