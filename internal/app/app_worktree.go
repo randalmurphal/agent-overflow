@@ -88,6 +88,7 @@ type WorktreeListItem struct {
 // Preserves legacy semantics — no carry-over of local changes.
 //
 //ao:scope git:operate
+//ao:budget 12m
 func (a *App) GitCreateWorktree(threadID, branch string) (string, error) {
 	updated, err := a.PrepareThreadWorktree(threadID, "", branch, false)
 	if err != nil {

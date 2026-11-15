@@ -308,7 +308,12 @@ and names the bound in `methodServerBounds`
 the packages that own each step. A method that repeats a bounded step
 (downloads, resumed fetches, chunks) bounds its whole run by its budget
 with `withinMethodBudget`. A wait for a lock another run holds is not
-covered.
+covered. `TestEveryMethodReachingALongStepDeclaresItsBudget`
+(`internal/app/app_budget_reach_test.go`) finds the methods that need a
+budget: it walks the typed call graph from every bound method to the
+functions that apply each long step (a hooked command, the bounds
+`methodServerBounds` adds up) and fails when the method's budget is
+under the longest step it reaches.
 
 A write whose answer can still be lost (the connection drops while it runs)
 takes a client-minted attempt id and has an outcome method that waits for
