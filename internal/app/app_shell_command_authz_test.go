@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"agent-overflow/internal/identity"
+	"agent-overflow/internal/provider"
 	"agent-overflow/internal/shellrun"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadmode"
@@ -57,13 +58,17 @@ func refusedShellCommand(t *testing.T, app *App, ctx context.Context, threadID s
 
 // The output is sent to the thread, so a session that may run commands but
 // not operate threads is refused, and the same call from a session holding
-// both runs.
+// both runs. The thread needs no autonomy, so threads:operate is the only
+// grant between the two.
 func TestRunThreadShellCommandNeedsThreadsOperate(t *testing.T) {
 	app, rec, full := shellSessionApp(t)
 	terminalOnly := pairSessionWithScopes(t, app, "thumb-shell-terminal", []identity.Scope{
 		identity.ScopeThreadsRead, identity.ScopeTerminalOperate,
 	})
 	thread, capturePath := newMixedTurnThread(t, app, "thread-shell-operate")
+	if err := app.store.UpdateRuntimeMode(thread.ID, string(provider.RuntimeApprovalRequired)); err != nil {
+		t.Fatal(err)
+	}
 
 	wantScopeRefusal(t, refusedShellCommand(t, app, callFrom(terminalOnly.ID, false), thread.ID),
 		transport.ScopeThreadsOperate)

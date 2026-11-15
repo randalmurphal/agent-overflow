@@ -167,7 +167,10 @@ func (a *App) RunThreadShellCommand(ctx context.Context, threadID string, reques
 	defer endAdmission()
 	// A thread delete drops the row under this lock and stops whatever the
 	// thread is running first, so a command registered here is either
-	// stopped by that delete or refused because the thread is gone.
+	// stopped by that delete or refused because the thread is gone. The lock
+	// also refuses a thread the app may not run in
+	// (store.CheckThreadExecutionAccess): a fork still being prepared, a
+	// thread moved to another computer.
 	unlockMutation, err := a.threadApplication().LockMutable(ctx, threadID)
 	if err != nil {
 		return ShellCommandRun{}, err
@@ -176,9 +179,6 @@ func (a *App) RunThreadShellCommand(ctx context.Context, threadID string, reques
 	thread, err := a.store.GetThread(threadID)
 	if err != nil {
 		return ShellCommandRun{}, fmt.Errorf("run shell command: load thread: %w", err)
-	}
-	if err := a.store.CheckThreadExecutionAccess(thread); err != nil {
-		return ShellCommandRun{}, err
 	}
 	if thread.Mode == threadmode.ModeTerminal {
 		return ShellCommandRun{}, errors.New("run shell command: a terminal thread has no agent to send output to")
