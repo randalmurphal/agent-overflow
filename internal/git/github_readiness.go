@@ -15,16 +15,28 @@ import (
 
 // githubPullMergeRaw is the merge half of a PR's detail selection.
 type githubPullMergeRaw struct {
-	Merged                    bool            `json:"merged"`
-	MergedAt                  string          `json:"mergedAt"`
-	MergedBy                  *githubActorRaw `json:"mergedBy"`
-	ClosedAt                  string          `json:"closedAt"`
-	ViewerDidAuthor           bool            `json:"viewerDidAuthor"`
-	IsCrossRepository         bool            `json:"isCrossRepository"`
-	ViewerCanUpdateBranch     bool            `json:"viewerCanUpdateBranch"`
-	MaintainerCanModify       bool            `json:"maintainerCanModify"`
-	ViewerCanEnableAutoMerge  bool            `json:"viewerCanEnableAutoMerge"`
-	ViewerCanDisableAutoMerge bool            `json:"viewerCanDisableAutoMerge"`
+	Merged                bool            `json:"merged"`
+	MergedAt              string          `json:"mergedAt"`
+	MergedBy              *githubActorRaw `json:"mergedBy"`
+	ClosedAt              string          `json:"closedAt"`
+	ViewerDidAuthor       bool            `json:"viewerDidAuthor"`
+	IsCrossRepository     bool            `json:"isCrossRepository"`
+	ViewerCanUpdateBranch bool            `json:"viewerCanUpdateBranch"`
+	IsMergeQueueEnabled   bool            `json:"isMergeQueueEnabled"`
+	IsInMergeQueue        bool            `json:"isInMergeQueue"`
+	MergeQueueEntry       *struct {
+		Position   int             `json:"position"`
+		EnqueuedAt string          `json:"enqueuedAt"`
+		Enqueuer   *githubActorRaw `json:"enqueuer"`
+	} `json:"mergeQueueEntry"`
+	MergeQueue *struct {
+		Entries struct {
+			TotalCount int `json:"totalCount"`
+		} `json:"entries"`
+	} `json:"mergeQueue"`
+	MaintainerCanModify       bool `json:"maintainerCanModify"`
+	ViewerCanEnableAutoMerge  bool `json:"viewerCanEnableAutoMerge"`
+	ViewerCanDisableAutoMerge bool `json:"viewerCanDisableAutoMerge"`
 	AutoMergeRequest          *struct {
 		EnabledAt   string          `json:"enabledAt"`
 		MergeMethod string          `json:"mergeMethod"`
@@ -474,6 +486,9 @@ func (in githubMergeInputs) options(readiness MergeReadiness) MergeOptions {
 	if !open {
 		return out
 	}
+	if pull.IsMergeQueueEnabled {
+		in.queue(&out)
+	}
 	// GitHub answers whether the viewer may update the branch (false too
 	// while it is up to date, when no control shows): a fork's PR whose
 	// author turned maintainer edits off is the author's alone.
@@ -507,6 +522,40 @@ func (in githubMergeInputs) options(readiness MergeReadiness) MergeOptions {
 		}
 	}
 	return out
+}
+
+// queue fills the options of a base that merges only through its merge
+// queue: the queue's method applies, so no method is offered; the queue
+// handles the head branch, so no delete is offered; auto-merge (join when
+// ready) is GitHub's own answer, viewerCanEnableAutoMerge, whatever the
+// repository's Allow auto-merge. A queued PR reads its entry's position
+// (GitHub's "position of this entry in the queue") and the queue's
+// length; a PR queued at once has no autoMergeRequest, so its entry's
+// enqueuer and time stand as the armed request, which Cancel auto-merge
+// takes out (dequeuePullRequest). Removal is offered to those who may
+// merge, since GitHub's schema has no viewer field for it.
+func (in githubMergeInputs) queue(out *MergeOptions) {
+	pull := in.pull
+	out.Methods = []string{}
+	out.DeleteBranchOffered = false
+	out.AutoMergeAvailable = pull.ViewerCanEnableAutoMerge || out.AutoMerge != nil
+	out.Queue = &MergeQueue{Required: true}
+	entry := pull.MergeQueueEntry
+	if !pull.IsInMergeQueue || entry == nil {
+		return
+	}
+	out.Queue.Queued, out.Queue.Position, out.Queue.CanRemove = true, entry.Position, out.ViewerCanMerge
+	if q := pull.MergeQueue; q != nil {
+		out.Queue.Size = q.Entries.TotalCount
+	}
+	if out.AutoMerge == nil {
+		armed := &AutoMergeRequest{At: entry.EnqueuedAt}
+		if by := entry.Enqueuer; by != nil {
+			armed.ByLogin, armed.ByName = by.Login, by.Name
+		}
+		out.AutoMerge = armed
+	}
+	out.AutoMerge.CanCancel = out.ViewerCanMerge
 }
 
 func (in githubMergeInputs) methods() []string {

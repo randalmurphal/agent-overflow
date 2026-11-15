@@ -70,6 +70,7 @@ const (
 		`additions deletions changedFiles mergeable mergeStateStatus reviewDecision ` + githubActor + ` ` +
 		`latestReviews(first: 100) { nodes { ` + githubActor + ` body submittedAt state commit { oid } } } ` +
 		`merged mergedAt mergedBy { ` + githubActorAs + ` } closedAt viewerDidAuthor isCrossRepository viewerCanUpdateBranch maintainerCanModify ` +
+		`isMergeQueueEnabled isInMergeQueue mergeQueueEntry { position enqueuedAt enqueuer { ` + githubActorAs + ` } } mergeQueue { entries { totalCount } } ` +
 		`viewerCanEnableAutoMerge viewerCanDisableAutoMerge ` +
 		`autoMergeRequest { enabledAt mergeMethod enabledBy { ` + githubActorAs + ` } } ` +
 		`latestOpinionatedReviews(first: 100) { nodes { id state viewerDidAuthor authorCanPushToRepository commit { oid } ` + githubActor + ` } } ` +

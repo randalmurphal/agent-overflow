@@ -109,7 +109,8 @@ and `UNSTABLE` expand into `reviewDecision`, the failed or pending
 required checks of the rollup, and unresolved threads when the repository
 requires conversation resolution; a remainder is `rules`), `mergeable`,
 `autoMergeRequest`, `viewerCanEnableAutoMerge`, `viewerCanDisableAutoMerge`,
-`viewerCanMergeAsAdmin`, and the repository's `mergeCommitAllowed`,
+`viewerCanMergeAsAdmin`, `isMergeQueueEnabled`, `isInMergeQueue`,
+`mergeQueueEntry`, `mergeQueue`, and the repository's `mergeCommitAllowed`,
 `squashMergeAllowed`, `rebaseMergeAllowed`, `deleteBranchOnMerge`,
 `autoMergeAllowed`, `viewerPermission`.
 
@@ -170,6 +171,21 @@ base's rulesets (`allowedMergeMethods`).
   19.5+), GitHub `disablePullRequestAutoMerge`. An armed auto-merge shows
   as a settled row "Auto-merge set by X · method" with Cancel, and the
   button reads "Auto-merge set".
+- GitHub's merge queue (`MergeOptions.Queue`, when the base's
+  `isMergeQueueEnabled`): nothing merges around it, and the queue's own
+  configuration sets the method, so no method, branch delete or commit
+  message is offered (`Methods` is empty and the request's `Method`
+  empty). Merge now reads "Add to merge queue" (`enqueuePullRequest`,
+  which GitHub takes only from a PR that could merge now), auto-merge
+  "Add to merge queue when ready" (`enablePullRequestAutoMerge` with no
+  method, which joins once ready, or at once when it could merge now),
+  after gh's "will be added to the merge queue ... when ready". Queued
+  (`isInMergeQueue`), the place is the entry's `position` of the queue's
+  `entries.totalCount`; a PR queued at once has no `autoMergeRequest`, so
+  its entry's enqueuer and time stand as the armed request. Remove is
+  Cancel auto-merge, which there is `dequeuePullRequest`. GitHub's schema
+  has no viewer field for removal, so it is offered to those who may
+  merge. Admin bypass is not offered.
 - No optimistic state: a successful action asks the PR's pump to poll at
   once and the pane follows the forge's answer. The action answers with
   the pump's sequence after that poll (`PRActionResult.Seq`); the button
@@ -820,6 +836,7 @@ fake forge on desktop and compact.
 | Checking | `Checking…` grey | actions present, Merge now greyed | "The forge is checking whether this can merge." row |
 | Draft | `Draft` grey | Approve · `Auto-merge when ready ▾` | "Draft" row with Mark ready |
 | Auto-merge armed (e2e) | as blocked or ready | `Auto-merge set` button, menu offers Cancel | "Auto-merge set by X · method" row with Cancel |
+| GitHub merge queue, queued (e2e) | as ready | `In merge queue` button, menu offers Remove from merge queue | "In the merge queue · N of M" row, "Added by X", with Remove |
 | Merged (e2e) | `Merged` accent | no actions | "Merged by X · time" row |
 | Closed | `Closed` red | no actions | "Closed without merging · time" row |
 | Viewer cannot merge | as above | no Merge button | a row with `CannotMergeReason` |
@@ -939,7 +956,9 @@ workspace, branch and edits diffs, offer no link.
 
 ## Non-goals
 
-- Merge queues and merge trains: the forge's own page.
+- Managing a merge queue or train beyond this PR's own place in it
+  (reordering, merging immediately, the queue's page): the forge's own
+  page.
 - Milestones, changing the target branch.
 - Creating MRs from the page (the chat header's create flow stays).
 - A full activity timeline: only the event kinds listed.

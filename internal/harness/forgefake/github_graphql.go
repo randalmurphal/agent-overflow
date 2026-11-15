@@ -60,6 +60,9 @@ var githubGraphQL = []graphQLOp{
 	{kind: "mutation", name: "MergePR", required: []string{"pullRequestID", "method", "expectedHeadOid"}, run: ghMergePR},
 	{kind: "mutation", name: "EnableAutoMerge", required: []string{"pullRequestID", "method", "expectedHeadOid"}, run: ghEnableAutoMerge},
 	{kind: "mutation", name: "DisableAutoMerge", required: []string{"pullRequestID"}, run: ghDisableAutoMerge},
+	{kind: "mutation", name: "EnqueuePR", required: []string{"pullRequestID", "expectedHeadOid"}, run: ghEnqueuePR},
+	{kind: "mutation", name: "DequeuePR", required: []string{"pullRequestID"}, run: ghDequeuePR},
+	{kind: "mutation", name: "EnableQueuedAutoMerge", required: []string{"pullRequestID", "expectedHeadOid"}, run: ghEnableQueuedAutoMerge},
 	{kind: "mutation", name: "DismissReview", required: []string{"reviewID", "message"}, run: ghDismissReview},
 	{kind: "mutation", name: "UpdatePRBranch", required: []string{"pullRequestID", "expectedHeadOid"}, run: ghUpdatePRBranch},
 	{kind: "mutation", name: "MarkPRReady", required: []string{"pullRequestID"}, run: ghMarkPRReady},
@@ -395,6 +398,7 @@ func (e *Engine) githubPullDetail(r *Repo, p *Pull) map[string]any {
 	}
 	write := githubRoles[r.Merge.Permission] >= githubRoles["WRITE"]
 	open := p.State == "open"
+	queue := githubQueueFields(r, p)
 	return map[string]any{
 		"title":                     p.Title,
 		"body":                      p.Body,
@@ -421,12 +425,16 @@ func (e *Engine) githubPullDetail(r *Repo, p *Pull) map[string]any {
 		"isCrossRepository":         p.HeadRepo != "",
 		"viewerCanUpdateBranch":     open && p.Readiness.Behind && e.mayUpdateBranch(r, p),
 		"maintainerCanModify":       p.MaintainerCanModify,
-		"viewerCanEnableAutoMerge":  open && r.Merge.AutoMergeAllowed && write && p.Readiness.AutoMerge == nil,
+		"viewerCanEnableAutoMerge":  open && (r.Merge.AutoMergeAllowed || r.Merge.MergeQueue) && write && p.Readiness.AutoMerge == nil && p.Queued == nil,
 		"viewerCanDisableAutoMerge": open && p.Readiness.AutoMerge != nil && (write || strings.EqualFold(p.Readiness.AutoMerge.By, e.viewer)),
 		"autoMergeRequest":          autoMerge,
 		"latestOpinionatedReviews":  map[string]any{"nodes": githubOpinionNodes(r, p, e.viewer, true)},
 		"threadStates":              graphQLConnection(githubThreadStateNodes(p), 0, githubGraphQLPageSize),
 		"baseRef":                   githubBaseRef(p),
+		"isMergeQueueEnabled":       queue["isMergeQueueEnabled"],
+		"isInMergeQueue":            queue["isInMergeQueue"],
+		"mergeQueueEntry":           queue["mergeQueueEntry"],
+		"mergeQueue":                queue["mergeQueue"],
 	}
 }
 
@@ -1208,8 +1216,9 @@ func ghPRTimelinePage(e *Engine, c *call, v graphQLVars) response {
 }
 
 // ghPRMergeTarget answers what a merge action addresses: the pull's node
-// id, its head branch and whether that is a fork's, and whether the
-// repository deletes merged branches itself.
+// id, its head branch and whether that is a fork's, whether the
+// repository deletes merged branches itself, and whether the base merges
+// through a merge queue and the pull is in it.
 func ghPRMergeTarget(e *Engine, c *call, v graphQLVars) response {
 	project, number, err := v.pullVars()
 	if err != nil {
@@ -1219,9 +1228,12 @@ func ghPRMergeTarget(e *Engine, c *call, v graphQLVars) response {
 	if !ok {
 		return fail
 	}
+	pull := map[string]any{"id": p.NodeID, "headRefName": p.HeadRef, "isCrossRepository": p.HeadRepo != ""}
+	queue := githubQueueFields(r, p)
+	pull["isMergeQueueEnabled"], pull["isInMergeQueue"] = queue["isMergeQueueEnabled"], queue["isInMergeQueue"]
 	return graphQLData(map[string]any{"repository": map[string]any{
 		"deleteBranchOnMerge": r.Merge.DeleteBranchOnMerge,
-		"pullRequest":         map[string]any{"id": p.NodeID, "headRefName": p.HeadRef, "isCrossRepository": p.HeadRepo != ""},
+		"pullRequest":         pull,
 	}})
 }
 
@@ -1305,7 +1317,8 @@ const githubHeadModified = "Head branch was modified. Review and try the merge a
 
 // ghMergeChecks refuses a merge or an auto-merge the forge would refuse:
 // a pull that is not open, a viewer without write access, a method the
-// repository does not allow, or a head other than expectedHeadOid.
+// repository does not allow, a head other than expectedHeadOid, or a
+// method-bearing merge on a merge queue's base.
 func (e *Engine) ghMergeChecks(r *Repo, p *Pull, v graphQLVars, field, mutation string) (string, response, bool) {
 	method, err := v.str("method")
 	head, err1 := v.str("expectedHeadOid")
@@ -1329,6 +1342,12 @@ func (e *Engine) ghMergeChecks(r *Repo, p *Pull, v graphQLVars, field, mutation 
 		}[name]), false
 	case head != p.HeadSHA:
 		return "", graphQLMutationError(field, "UNPROCESSABLE", githubHeadModified), false
+	case r.Merge.MergeQueue && field == "mergePullRequest":
+		return "", graphQLMutationError(field, "UNPROCESSABLE", githubMergeQueueRule), false
+	case r.Merge.MergeQueue:
+		// The queue's method applies; the fake refuses a method asked
+		// on its base, as gh does before asking.
+		return "", graphQLMutationError(field, "UNPROCESSABLE", "The merge method is set by the merge queue"), false
 	}
 	return name, response{}, true
 }

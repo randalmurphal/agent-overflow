@@ -104,6 +104,9 @@ type RepoMerge struct {
 	Methods          []string `json:"methods"`
 	DefaultMethod    string   `json:"defaultMethod,omitempty"`
 	AutoMergeAllowed bool     `json:"autoMergeAllowed,omitempty"`
+	// MergeQueue is a GitHub base that merges only through its merge
+	// queue (a ruleset's Require merge queue); see merge_queue.go.
+	MergeQueue bool `json:"mergeQueue,omitempty"`
 	// DeleteBranchOnMerge is GitHub's deleteBranchOnMerge and GitLab's
 	// remove_source_branch_after_merge (a merge request's
 	// force_remove_source_branch default).
@@ -220,6 +223,9 @@ type Pull struct {
 	// conflicts reads as ready on both forges, as on an unprotected
 	// branch.
 	Readiness *Readiness `json:"readiness,omitempty"`
+	// Queued is an open GitHub pull's place in its base's merge queue
+	// (merge.mergeQueue).
+	Queued *QueueEntry `json:"queued,omitempty"`
 	// MergedBy is who merged a merged pull; defaults to its author.
 	// MergeCommitSHA is the merge commit, generated for a merged pull.
 	MergedBy       string `json:"mergedBy,omitempty"`
@@ -742,8 +748,8 @@ func (m *RepoMerge) normalize(forge string) error {
 		}
 		return nil
 	}
-	if m.Methods != nil || m.DefaultMethod != "" || m.AutoMergeAllowed {
-		return errors.New("methods, defaultMethod and autoMergeAllowed are GitHub repository settings")
+	if m.Methods != nil || m.DefaultMethod != "" || m.AutoMergeAllowed || m.MergeQueue {
+		return errors.New("methods, defaultMethod, autoMergeAllowed and mergeQueue are GitHub repository settings")
 	}
 	m.Permission = defaultString(m.Permission, "developer")
 	if gitlabRoles[m.Permission] == 0 {
@@ -959,6 +965,14 @@ func (p *Pull) normalizeMerge(r *Repo, ids *idSource) error {
 	}
 	if err := p.Readiness.normalize(forge, p); err != nil {
 		return fmt.Errorf("readiness: %w", err)
+	}
+	if p.Queued != nil {
+		if !r.Merge.MergeQueue || p.State != "open" {
+			return errors.New("queued is an open pull's on a merge.mergeQueue base")
+		}
+		if err := p.Queued.normalize(p.Author); err != nil {
+			return err
+		}
 	}
 	if forge == "gitlab" && p.Readiness.Behind && r.Merge.MergeMethod == "merge" {
 		return errors.New("readiness: behind is GitLab's need_rebase, which a merge-commit project never reports; set merge.mergeMethod to ff or rebase_merge")

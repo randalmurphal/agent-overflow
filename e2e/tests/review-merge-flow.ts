@@ -17,7 +17,11 @@
 // action, and Merge now then merges: the pill reads "Merged", the section
 // shows the merged row and no actions. A GitHub viewer GitHub refuses
 // Update branch, a thread's resolve, its reply and its reactions sees each reason in the
-// control's place, and no refused request is sent. Screenshots: the blocked and ready
+// control's place, and no refused request is sent. On a GitHub base with
+// a merge queue, Merge offers no method or branch delete, "Add to merge
+// queue" puts the pull request in the queue (the armed row reads "In the
+// merge queue · 1 of 1"), its Remove takes it out, and no direct merge is
+// sent. Screenshots: the blocked and ready
 // sections on desktop, the wrapped section header on compact.
 
 import { randomBytes } from 'node:crypto';
@@ -368,6 +372,50 @@ export function reviewMergeFlow({ compact }: MergeSurface): void {
     expect(routes).not.toContain('gh graphql UpdatePRBranch');
     expect(routes).not.toContain('gh graphql SetThreadResolved');
     expect(routes).not.toContain('gh graphql AddReaction');
+    await expectEveryForgeCallHandled(harness);
+  });
+
+  test('github: on a merge queue base, Merge adds the pull request to the queue, shows its place, and Remove takes it out', async ({ harness, page }) => {
+    const title = 'Merge thread queue';
+    const base = repo('github');
+    await seedMergeRequest(harness, 'github', title, {
+      ...base,
+      merge: { mergeQueue: true },
+      pulls: [{ ...pull('github', 'success', true), readiness: {} }],
+    });
+    await harness.open(page);
+    const review = await openReview(page, title, 'github', compact);
+    const press = (target: Locator) => (compact ? target.tap() : target.click());
+
+    const pill = review.getByTestId('review-pr-readiness');
+    await expect(pill).toHaveText('Ready to merge', { timeout: 30_000 });
+    await press(pill);
+    const section = review.getByTestId('review-pr-merge');
+    await expect(section).toHaveAttribute('data-open', 'true');
+    const trigger = section.getByTestId('review-merge-trigger');
+    await expect(trigger).toContainText(compact ? 'Add to queue' : 'Add to merge queue');
+
+    // The queue's method applies: the menu offers none, nor a branch delete.
+    await press(trigger);
+    const menu = page.getByTestId('review-merge-menu');
+    await expect(menu).toBeVisible();
+    await expect(menu.locator('[data-testid^="review-merge-method-"]')).toHaveCount(0);
+    await expect(menu.getByTestId('review-merge-delete-branch')).toHaveCount(0);
+    await press(menu.getByTestId('review-merge-now'));
+    const queued = section.locator('[data-testid="review-merge-armed"][data-queued="true"]');
+    await expect(queued).toContainText('In the merge queue · 1 of 1');
+    await expect(queued).toContainText('Added by ao-viewer');
+    await expect(trigger).toContainText(compact ? 'Queued' : 'In merge queue');
+
+    // Remove takes it out; the section offers the queue again.
+    await press(queued.getByTestId('review-merge-row-cancel-auto'));
+    await expect(section.getByTestId('review-merge-armed')).toHaveCount(0);
+    await expect(trigger).toContainText(compact ? 'Add to queue' : 'Add to merge queue');
+
+    const routes = (await forgeInvocations(harness)).map((call) => call.route);
+    expect(routes).toContain('gh graphql EnqueuePR');
+    expect(routes).toContain('gh graphql DequeuePR');
+    expect(routes).not.toContain('gh graphql MergePR');
     await expectEveryForgeCallHandled(harness);
   });
 }

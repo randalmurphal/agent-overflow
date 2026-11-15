@@ -130,6 +130,8 @@ export interface ForgePull {
   stateEvents?: { id?: number; state: 'closed' | 'reopened' | 'merged'; actor?: string; at?: string }[];
   /** GitLab: the requested changes were bypassed. */
   changesOverridden?: boolean;
+  /** GitHub: the pull's place in its base's merge queue (merge.mergeQueue). */
+  queued?: { position?: number; state?: 'QUEUED' | 'AWAITING_CHECKS' | 'MERGEABLE' | 'UNMERGEABLE' | 'LOCKED'; by?: string; at?: string };
 }
 
 /** A pull's merge box (forgefake Readiness). */
@@ -168,6 +170,8 @@ export interface ForgeRepoMerge {
   defaultMethod?: 'merge' | 'squash' | 'rebase';
   autoMergeAllowed?: boolean;
   deleteBranchOnMerge?: boolean;
+  /** GitHub: the base merges only through its merge queue. */
+  mergeQueue?: boolean;
   /** GitLab: merge_method, squash_option, and the merge checks the project requires. */
   mergeMethod?: 'merge' | 'rebase_merge' | 'ff';
   squashOption?: 'default_off' | 'default_on' | 'always' | 'never';
