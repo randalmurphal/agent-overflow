@@ -419,25 +419,27 @@ func mapSubmitPRReviewResult(pr gitops.PRReference, action gitops.ForgeAction, r
 
 // SetPRThreadResolved resolves (or reopens) one review thread on the
 // forge. threadID is the id ListPRReviewThreads reported for it — a
-// GitHub review thread node id, a GitLab discussion id.
+// GitHub review thread node id, a GitLab discussion id — and must be a
+// thread of pr's. It runs as every PR write does (app_forge_merge.go):
+// admitted, then settled with the PR's pump polling at once, a write the
+// forge may have applied refreshing too.
 //
-// The answer is the forge's, not a local flag: the next poll of
-// SubscribePRUpdates re-reads the thread and the pane follows it, so a
-// failure here leaves the badge showing what the forge actually holds.
+// The answer is the forge's, not a local flag: the pump's poll re-reads
+// the thread and the pane follows it, so a failure here leaves the badge
+// showing what the forge actually holds.
 //
 //ao:scope git:operate
 //ao:route selected
-func (a *App) SetPRThreadResolved(ctx context.Context, pr gitops.PRReference, threadID string, resolved bool) error {
-	if a.shuttingDown.Load() {
-		return ErrShuttingDown
+func (a *App) SetPRThreadResolved(ctx context.Context, pr gitops.PRReference, threadID string, resolved bool) (PRActionResult, error) {
+	if err := a.admitPRAction(pr); err != nil {
+		return PRActionResult{}, err
 	}
-	if err := pr.Validate(); err != nil {
-		return err
+	threadID = strings.TrimSpace(threadID)
+	if threadID == "" {
+		return PRActionResult{}, errors.New("review thread id is required")
 	}
-	if strings.TrimSpace(threadID) == "" {
-		return errors.New("review thread id is required")
-	}
-	return gitops.ExplainForgeError(pr, gitops.ActionResolve, a.gitCore().SetThreadResolved(forgeapi.WithInteractive(ctx), pr, threadID, resolved))
+	err := a.gitCore().SetThreadResolved(forgeapi.WithInteractive(ctx), pr, threadID, resolved)
+	return a.settlePRAction(ctx, pr, gitops.ActionResolve, err)
 }
 
 // SubscribePRUpdates begins polling a pull request for detail/review-thread

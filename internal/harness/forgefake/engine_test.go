@@ -1518,6 +1518,12 @@ func TestSetThreadResolvedChangesTheThread(t *testing.T) {
 	if got := graphQL(t, srv, "ghe.example", "SetThreadResolved", map[string]any{"threadID": id, "resolved": true}); !strings.Contains(got.body, "NOT_FOUND") || resolved() {
 		t.Fatalf("a thread on another host = %q", got.body)
 	}
+	if got := graphQL(t, srv, "github.com", "ThreadOwner", map[string]any{"id": id}); got.body != `{"data":{"node":{"__typename":"PullRequestReviewThread","pullRequest":{"number":7,"repository":{"nameWithOwner":"acme/widgets"}}}}}`+"\n" {
+		t.Fatalf("ThreadOwner = %q", got.body)
+	}
+	if got := graphQL(t, srv, "ghe.example", "ThreadOwner", map[string]any{"id": id}); !strings.Contains(got.body, "NOT_FOUND") {
+		t.Fatalf("ThreadOwner on another host = %q", got.body)
+	}
 }
 
 // PRStates answers pulls by node id with their state and merge time; an id

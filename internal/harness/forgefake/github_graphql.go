@@ -48,6 +48,7 @@ var githubGraphQL = []graphQLOp{
 	{kind: "query", name: "ThreadCommentsPage", required: []string{"threadID", "after", "wantReactions"}, run: withReactionGroups(ghThreadCommentsPage)},
 	{kind: "query", name: "RollupContextsPage", required: []string{"commitID", "number", "after"}, run: ghRollupContextsPage},
 	{kind: "query", name: "CommentOwner", required: []string{"id"}, run: ghCommentOwner},
+	{kind: "query", name: "ThreadOwner", required: []string{"id"}, run: ghThreadOwner},
 	{kind: "mutation", name: "SetThreadResolved", required: []string{"threadID", "resolved"}, run: ghSetThreadResolved},
 	{kind: "query", name: "PullsSearch", required: []string{"query"}, optional: []string{"after"}, run: ghPullsSearch},
 	{kind: "query", name: "OpenPRsByHead", required: []string{"owner", "name", "head"}, optional: []string{"after"}, run: ghOpenPRsByHead},
@@ -874,6 +875,24 @@ func ghSetThreadResolved(e *Engine, c *call, v graphQLVars) response {
 	}
 	thread.Resolved = resolved
 	return graphQLData(map[string]any{alias: map[string]any{"thread": map[string]any{"isResolved": thread.Resolved}}})
+}
+
+// ghThreadOwner answers `node(id)` for a review thread: its type and the
+// pull request and repository it is on. An id no repository on the host
+// has a thread for is a NOT_FOUND.
+func ghThreadOwner(e *Engine, c *call, v graphQLVars) response {
+	id, err := v.str("id")
+	if err != nil {
+		return unhandled("ThreadOwner: %v", err)
+	}
+	r, p, thread := e.githubThread(c, id)
+	if thread == nil {
+		return graphQLNotFound(map[string]any{"node": nil}, []string{"node"}, fmt.Sprintf("Could not resolve to a node with the global id of '%s'", id))
+	}
+	return graphQLData(map[string]any{"node": map[string]any{
+		"__typename":  "PullRequestReviewThread",
+		"pullRequest": map[string]any{"number": p.Number, "repository": map[string]any{"nameWithOwner": r.Project}},
+	}})
 }
 
 // ghOpenPRsByHead answers the open pull requests of a head branch name, a

@@ -443,3 +443,36 @@ func TestSubmitPRReviewGitLabHeldRepliesKeepTheirDiscussion(t *testing.T) {
 		t.Fatalf("the dropped reply is %q, want draft", status)
 	}
 }
+
+// A GitHub resolve runs as the other PR writes: a thread named under a
+// pull it is not on is refused as not_found with nothing changed, and one
+// that lands answers with the sequence of the pump's poll that shows it.
+func TestSetPRThreadResolvedChecksThePullAndSettles(t *testing.T) {
+	t.Parallel()
+	c := newReviewSubmitCase(t, "github")
+	c.seedTheirThread(t, false)
+	stubPRCIFetch(c.app)
+	sub, err := c.app.SubscribePRUpdates(context.Background(), c.pr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = c.app.UnsubscribePRUpdates(context.Background(), sub.ID)
+		c.app.prUpdates.wg.Wait()
+	})
+	other := c.pr
+	other.Number = 10
+	if _, err := c.app.SetPRThreadResolved(context.Background(), other, "PRRT_theirs", true); reviewSubmitCode(err) != "forge_"+gitops.ForgeErrorNotFound {
+		t.Fatalf("resolve under another pull = %v, want not_found", err)
+	}
+	if threadWithBody(c.threads(t), "theirs").IsResolved {
+		t.Fatal("a refused resolve changed the thread")
+	}
+	result, err := c.app.SetPRThreadResolved(context.Background(), c.pr, "PRRT_theirs", true)
+	if err != nil || result.Seq <= sub.Seq {
+		t.Fatalf("resolve = %+v, %v; want the seq of the poll after it, past %d", result, err, sub.Seq)
+	}
+	if !threadWithBody(c.threads(t), "theirs").IsResolved {
+		t.Fatal("the resolve did not change the thread")
+	}
+}

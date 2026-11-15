@@ -962,19 +962,26 @@ func TestGitHubReplyToThread(t *testing.T) {
 }
 
 // Resolve and unresolve are one mutation document, the thread and the
-// wanted state as variables; the answer is read back.
+// wanted state as variables; the answer is read back. The thread is read
+// as the named PR's before the mutation.
 func TestGitHubSetThreadResolved(t *testing.T) {
 	t.Parallel()
 	var answer string
 	var mu sync.Mutex
-	core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
+	core, all := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
 		mu.Lock()
 		defer mu.Unlock()
-		if call.Op != "SetThreadResolved" {
-			return forgeUnexpected(t, call)
+		switch call.Op {
+		case "ThreadOwner":
+			return githubData(`{"node":{"__typename":"PullRequestReviewThread","pullRequest":{"number":5,"repository":{"nameWithOwner":"o/r"}}}}`)
+		case "SetThreadResolved":
+			return forgeAPIAnswer{Body: answer}
 		}
-		return forgeAPIAnswer{Body: answer}
+		return forgeUnexpected(t, call)
 	})
+	mutations := func() []forgeAPICall {
+		return slices.DeleteFunc(all.all(), func(call forgeAPICall) bool { return call.Op != "SetThreadResolved" })
+	}
 	set := func(body string) {
 		mu.Lock()
 		answer = body
@@ -988,7 +995,7 @@ func TestGitHubSetThreadResolved(t *testing.T) {
 	if err := core.SetThreadResolved(t.Context(), githubTestRef(5), "PRRT_x", false); err != nil {
 		t.Fatal(err)
 	}
-	sent := calls.all()
+	sent := mutations()
 	if len(sent) != 2 || sent[0].Vars["threadID"] != "PRRT_x" || sent[0].Vars["resolved"] != true || sent[1].Vars["resolved"] != false ||
 		sent[0].Query != sent[1].Query || strings.Contains(sent[0].Query, "PRRT_x") {
 		t.Fatalf("mutations = %+v", sent)
@@ -1007,8 +1014,44 @@ func TestGitHubSetThreadResolved(t *testing.T) {
 	if _, ok := errors.AsType[*forgeapi.GraphQLError](err); !ok || !strings.Contains(err.Error(), "Resource not accessible") {
 		t.Fatalf("GraphQL failure = %v", err)
 	}
+	// A 200 whose body does not decode: the mutation may have run.
+	set("")
+	if err := core.SetThreadResolved(t.Context(), githubTestRef(5), "PRRT_x", true); !errors.As(err, new(*UnconfirmedWriteError)) {
+		t.Fatalf("an unreadable answer = %v, want unconfirmed", err)
+	}
 	if err := core.SetThreadResolved(t.Context(), githubTestRef(5), " ", true); err == nil {
 		t.Fatal("a resolve without a thread id was sent")
+	}
+}
+
+// A thread node id names nothing about its PR, so a resolve of a thread
+// that is not the named PR's (another number, another repository, a
+// comment's id, an id the login cannot see) is refused before the mutation.
+func TestGitHubSetThreadResolvedRefusesAThreadOfAnotherPR(t *testing.T) {
+	t.Parallel()
+	owners := map[string]string{
+		"PRRT_other_number": `{"data":{"node":{"__typename":"PullRequestReviewThread","pullRequest":{"number":6,"repository":{"nameWithOwner":"o/r"}}}}}`,
+		"PRRT_other_repo":   `{"data":{"node":{"__typename":"PullRequestReviewThread","pullRequest":{"number":5,"repository":{"nameWithOwner":"o/fork"}}}}}`,
+		"PRRC_comment":      `{"data":{"node":{"__typename":"PullRequestReviewComment"}}}`,
+		"PRRT_unknown":      `{"data":{"node":null},"errors":[{"type":"NOT_FOUND","path":["node"],"message":"Could not resolve to a node with the global id of 'PRRT_unknown'"}]}`,
+	}
+	core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
+		if call.Op == "ThreadOwner" {
+			return forgeAPIAnswer{Body: owners[call.Vars["id"].(string)]}
+		}
+		return forgeUnexpected(t, call)
+	})
+	for id := range owners {
+		err := core.SetThreadResolved(t.Context(), githubTestRef(5), id, true)
+		if !errors.As(err, new(*ThreadNotOnPRError)) {
+			t.Fatalf("%s: SetThreadResolved = %v, want ThreadNotOnPRError", id, err)
+		}
+		if explained, ok := errors.AsType[*ForgeActionError](ExplainForgeError(githubTestRef(5), ActionResolve, err)); !ok || explained.Kind != ForgeErrorNotFound {
+			t.Fatalf("%s: explained = %v", id, explained)
+		}
+	}
+	if ops := calls.ops(); slices.Contains(ops, "SetThreadResolved") {
+		t.Fatalf("requests = %v, want no mutation", ops)
 	}
 }
 

@@ -1188,9 +1188,11 @@ func (f *gitlabForge) ReplyToThread(ctx context.Context, ref PRReference, thread
 	return commentWriteError(err)
 }
 
-// SetThreadResolved resolves (or reopens) one MR discussion. A discussion
-// with no resolvable notes answers 400, which surfaces as the forge's
-// error rather than a silent no-op.
+// SetThreadResolved resolves (or reopens) one MR discussion, addressed
+// under the merge request, so a discussion of another is a 404. A
+// discussion with no resolvable notes answers 400, which surfaces as the
+// forge's error rather than a silent no-op; a failure the forge may have
+// applied is an *UnconfirmedWriteError.
 func (f *gitlabForge) SetThreadResolved(ctx context.Context, ref PRReference, threadID string, resolved bool) error {
 	if strings.TrimSpace(threadID) == "" {
 		return errors.New("GitLab thread resolution requires a discussion id")
@@ -1201,7 +1203,7 @@ func (f *gitlabForge) SetThreadResolved(ctx context.Context, ref PRReference, th
 	}
 	request := forgeapi.Request{Method: http.MethodPut, Path: gitlabDiscussionPath(ref, threadID), Body: map[string]bool{"resolved": resolved}}
 	_, err = client.JSON(ctx, request, nil)
-	return err
+	return writeOutcome(err)
 }
 
 // extractMRCreateURL pulls the WebURL from glab's `mr create` stdout.

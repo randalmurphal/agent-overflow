@@ -391,13 +391,25 @@ func TestGitLabReplyAndResolve(t *testing.T) {
 	if err := core.SetThreadResolved(t.Context(), ref, "abc/def", true); err == nil || !strings.Contains(err.Error(), "HTTP 400") {
 		t.Fatalf("refused resolve = %v, want the forge's 400", err)
 	}
+	if errors.As(core.SetThreadResolved(t.Context(), ref, "abc/def", true), new(*UnconfirmedWriteError)) {
+		t.Fatal("a refused resolve read as unconfirmed")
+	}
+	mu.Lock()
+	status = http.StatusBadGateway
+	mu.Unlock()
+	if err := core.SetThreadResolved(t.Context(), ref, "abc/def", true); !errors.As(err, new(*UnconfirmedWriteError)) {
+		t.Fatalf("a resolve answered 502 = %v, want unconfirmed", err)
+	}
+	mu.Lock()
+	status = http.StatusOK
+	mu.Unlock()
 	if err := core.ReplyToThread(t.Context(), ref, " ", 0, "x"); err == nil {
 		t.Fatal("a reply without a discussion id was sent")
 	}
 	if err := core.ReplyToThread(t.Context(), ref, "abc", 0, " "); err == nil {
 		t.Fatal("an empty reply was sent")
 	}
-	if n := len(calls.all()); n != 4 {
+	if n := len(calls.all()); n != 6 {
 		t.Fatalf("requests = %d, want the refused input to send nothing", n)
 	}
 }

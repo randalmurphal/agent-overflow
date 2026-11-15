@@ -411,3 +411,28 @@ func TestGitLabRangesReadBackAsPostedThroughTheAppsForgeCode(t *testing.T) {
 		}
 	}
 }
+
+// A GitHub thread resolve through the app's own code reads the thread as
+// the named pull's first: its own thread resolves, and the same thread
+// named under another pull is refused with nothing changed.
+func TestGitHubResolveChecksTheThreadsPullThroughTheAppsForgeCode(t *testing.T) {
+	r := newRig(t, commentFixture(githubMergeFixture("success")))
+	ctx := forgeapi.WithInteractive(t.Context())
+	ref := gitops.PRReference{Forge: "github", Host: "github.com", Namespace: "acme", Repo: "merge", Number: 9}
+	thread := threadByBody(mergeRead(t, r, ref), "theirs")
+	other := ref
+	other.Number = 10
+	if err := r.core.SetThreadResolved(ctx, other, thread.ID, true); !errors.As(err, new(*gitops.ThreadNotOnPRError)) {
+		t.Fatalf("resolve under another pull = %v, want ThreadNotOnPRError", err)
+	}
+	if got := threadByBody(mergeRead(t, r, ref), "theirs"); got.IsResolved {
+		t.Fatal("a refused resolve changed the thread")
+	}
+	if err := r.core.SetThreadResolved(ctx, ref, thread.ID, true); err != nil {
+		t.Fatalf("SetThreadResolved: %v", err)
+	}
+	if got := threadByBody(mergeRead(t, r, ref), "theirs"); !got.IsResolved {
+		t.Fatal("the resolve did not change the thread")
+	}
+	expectAllHandled(t, r)
+}

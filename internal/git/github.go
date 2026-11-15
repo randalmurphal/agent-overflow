@@ -457,14 +457,19 @@ const githubSetThreadResolvedMutation = `mutation SetThreadResolved($threadID: I
   unresolve: unresolveReviewThread(input: {threadId: $threadID}) @skip(if: $resolved) { thread { isResolved } }
 }`
 
-// SetThreadResolved flips one review thread's resolved state. The thread
-// NODE id is unique on its host, so only the reference's host is used
-// here, the mirror of ReplyToThread, which needs the REST coordinates and
-// ignores the node id.
-//
-// The mutation's answer is read back rather than trusted: a 200 that
-// resolved nothing would otherwise reach the user as a success and leave
-// the pane showing a state the forge does not have.
+// githubThreadOwnerQuery reads which pull request a review thread's node
+// id belongs to: the id is global on its host, so the mutation alone names
+// nothing about the PR the caller named.
+const githubThreadOwnerQuery = `query ThreadOwner($id: ID!) {
+  node(id: $id) {
+    __typename
+    ... on PullRequestReviewThread { pullRequest { number repository { nameWithOwner } } }
+  }
+}`
+
+// SetThreadResolved flips one review thread's resolved state, after
+// reading that the thread is one of ref's pull request and refusing,
+// before any write, one that is not (*ThreadNotOnPRError).
 func (f *githubForge) SetThreadResolved(ctx context.Context, ref PRReference, threadID string, resolved bool) error {
 	if strings.TrimSpace(threadID) == "" {
 		return errors.New("GitHub thread resolution requires a review thread id")
@@ -473,6 +478,41 @@ func (f *githubForge) SetThreadResolved(ctx context.Context, ref PRReference, th
 	if err != nil {
 		return err
 	}
+	var raw struct {
+		Node *struct {
+			Typename    string `json:"__typename"`
+			PullRequest *struct {
+				Number     int `json:"number"`
+				Repository struct {
+					NameWithOwner string `json:"nameWithOwner"`
+				} `json:"repository"`
+			} `json:"pullRequest"`
+		} `json:"node"`
+	}
+	if _, err := client.GraphQL(ctx, "ThreadOwner", githubThreadOwnerQuery, map[string]any{"id": threadID}, &raw); err != nil && !graphQLNotFoundError(err) {
+		return err
+	}
+	node := raw.Node
+	if node == nil || node.Typename != "PullRequestReviewThread" || node.PullRequest == nil || node.PullRequest.Number != ref.Number ||
+		!strings.EqualFold(node.PullRequest.Repository.NameWithOwner, ref.Namespace+"/"+ref.Repo) {
+		return &ThreadNotOnPRError{ThreadID: threadID}
+	}
+	return setGitHubThreadResolved(ctx, client, threadID, resolved)
+}
+
+// graphQLNotFoundError reports a GraphQL answer whose only problem is an
+// id that resolves to nothing for this login.
+func graphQLNotFoundError(err error) bool {
+	graphQL, ok := errors.AsType[*forgeapi.GraphQLError](err)
+	return ok && graphQLNotFound(graphQL)
+}
+
+// setGitHubThreadResolved runs the mutation on a thread the caller knows
+// is the PR's. The mutation's answer is read back rather than trusted: a
+// 200 that resolved nothing would otherwise reach the user as a success
+// and leave the pane showing a state the forge does not have. A failure
+// the forge may have applied is an *UnconfirmedWriteError.
+func setGitHubThreadResolved(ctx context.Context, client *forgeapi.Client, threadID string, resolved bool) error {
 	type payload struct {
 		Thread *struct {
 			IsResolved bool `json:"isResolved"`
@@ -483,7 +523,7 @@ func (f *githubForge) SetThreadResolved(ctx context.Context, ref PRReference, th
 		Unresolve *payload `json:"unresolve"`
 	}
 	if _, err := client.GraphQL(ctx, "SetThreadResolved", githubSetThreadResolvedMutation, map[string]any{"threadID": threadID, "resolved": resolved}, &raw); err != nil {
-		return err
+		return writeOutcome(err)
 	}
 	answer := raw.Unresolve
 	if resolved {

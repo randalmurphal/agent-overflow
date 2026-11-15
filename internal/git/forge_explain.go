@@ -162,6 +162,7 @@ func explainForgeError(ref RepoReference, name string, action ForgeAction, err e
 	var pending *PendingDraftNotesError
 	var gone *ReplyThreadGoneError
 	var elsewhere *CommentNotOnPRError
+	var threadElsewhere *ThreadNotOnPRError
 	var notApplied *SuggestionNotAppliedError
 	var changed *SuggestionChangedError
 	switch {
@@ -171,6 +172,8 @@ func explainForgeError(ref RepoReference, name string, action ForgeAction, err e
 		return wrap(ForgeErrorRefused, fmt.Sprintf("The suggestion was not applied: %s.", notApplied.Reason))
 	case errors.As(err, &elsewhere):
 		return wrap(ForgeErrorNotFound, fmt.Sprintf("That comment is not on %s, so it was not changed.", name))
+	case errors.As(err, &threadElsewhere):
+		return wrap(ForgeErrorNotFound, fmt.Sprintf("That thread is not on %s, so it was not changed.", name))
 	case errors.As(err, &moved):
 		return wrap(ForgeErrorStaleHead, "The branch moved after you loaded this. Reload and try again.")
 	case errors.As(err, &pending):

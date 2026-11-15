@@ -5627,14 +5627,19 @@ export function SetPRState(pr: git$0.PRReference, state: string): $CancellablePr
 /**
  * SetPRThreadResolved resolves (or reopens) one review thread on the
  * forge. threadID is the id ListPRReviewThreads reported for it — a
- * GitHub review thread node id, a GitLab discussion id.
+ * GitHub review thread node id, a GitLab discussion id — and must be a
+ * thread of pr's. It runs as every PR write does (app_forge_merge.go):
+ * admitted, then settled with the PR's pump polling at once, a write the
+ * forge may have applied refreshing too.
  * 
- * The answer is the forge's, not a local flag: the next poll of
- * SubscribePRUpdates re-reads the thread and the pane follows it, so a
- * failure here leaves the badge showing what the forge actually holds.
+ * The answer is the forge's, not a local flag: the pump's poll re-reads
+ * the thread and the pane follows it, so a failure here leaves the badge
+ * showing what the forge actually holds.
  */
-export function SetPRThreadResolved(pr: git$0.PRReference, threadID: string, resolved: boolean): $CancellablePromise<void> {
-    return $Call.ByID(2594833485, pr, threadID, resolved);
+export function SetPRThreadResolved(pr: git$0.PRReference, threadID: string, resolved: boolean): $CancellablePromise<app$0.PRActionResult> {
+    return $Call.ByID(2594833485, pr, threadID, resolved).then(($result: any) => {
+        return $$createType7($result);
+    });
 }
 
 /**
