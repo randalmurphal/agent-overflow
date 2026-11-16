@@ -65,6 +65,10 @@ type codexAdapter struct {
 	// thread, so turns it never ran are history rather than nonsense.
 	// See codex_revert.go#anchorIsCuttable.
 	resumedThread bool
+	// approvalsReviewer is the thread's reviewer ("user" / "auto_review"),
+	// which thread/start and thread/resume answer with as upstream's
+	// non-Option response field does. Guarded by mu.
+	approvalsReviewer string
 	// loadedThread records that this connection started or resumed a
 	// thread at all. A connection that did neither is threadless: its
 	// `thread/fork` reads the source out of the store, where every anchor
@@ -141,9 +145,10 @@ func newCodexAdapter(e *engine, w *lineWriter, opts *scenario.CodexOptions) *cod
 		// ${HISTORY_MODE} is bound by respond(), not by a scenario: the
 		// thread's history contract is decided by the thread/start params
 		// (codex_revert.go), and it is what makes `thread/revert` available
-		// or refused.
-		"thread/start":   `{"jsonrpc":"2.0","id":${REQUEST_ID},"result":{"thread":{"id":"${THREAD_ID}","historyMode":"${HISTORY_MODE}"}}}`,
-		"thread/resume":  `{"jsonrpc":"2.0","id":${REQUEST_ID},"result":{"thread":{"id":"${THREAD_ID}","historyMode":"${HISTORY_MODE}"}}}`,
+		// or refused. ${APPROVALS_REVIEWER} is bound the same way, from the
+		// reviewer the start or resume asked for (noteApprovalsReviewer).
+		"thread/start":   `{"jsonrpc":"2.0","id":${REQUEST_ID},"result":{"thread":{"id":"${THREAD_ID}","historyMode":"${HISTORY_MODE}"},"approvalsReviewer":"${APPROVALS_REVIEWER}"}}`,
+		"thread/resume":  `{"jsonrpc":"2.0","id":${REQUEST_ID},"result":{"thread":{"id":"${THREAD_ID}","historyMode":"${HISTORY_MODE}"},"approvalsReviewer":"${APPROVALS_REVIEWER}"}}`,
 		"turn/start":     `{"jsonrpc":"2.0","id":${REQUEST_ID},"result":{"turn":{"id":"${TURN_ID}"}}}`,
 		"turn/interrupt": `{"jsonrpc":"2.0","id":${REQUEST_ID},"result":{}}`,
 		"model/list":     `{"jsonrpc":"2.0","id":${REQUEST_ID},"result":` + mockCodexModelList + `}`,
@@ -215,6 +220,7 @@ func (a *codexAdapter) handleRequest(id json.RawMessage, method string, params j
 		// The history contract is settled here and nowhere else — a resume
 		// can only report what the thread already is.
 		a.noteThreadStart(params)
+		a.noteApprovalsReviewer(params, false)
 		a.noteSessionStartHooks(params, "startup")
 		a.markThreadLoaded()
 		a.respond(id, method, a.e.currentVars())
@@ -240,6 +246,7 @@ func (a *codexAdapter) handleRequest(id json.RawMessage, method string, params j
 			a.reportSessionConfig(params, true)
 		}
 		a.reportResumedHistory(a.e.currentVars()["THREAD_ID"])
+		a.noteApprovalsReviewer(params, true)
 		a.noteSessionStartHooks(params, "resume")
 		a.markThreadLoaded()
 		a.respond(id, method, a.e.currentVars())
@@ -616,7 +623,34 @@ func (a *codexAdapter) responseLine(id json.RawMessage, method string, vars scen
 	}
 	sub["REQUEST_ID"] = string(id)
 	sub["HISTORY_MODE"] = a.currentHistoryMode()
+	sub["APPROVALS_REVIEWER"] = a.currentApprovalsReviewer()
 	return sub.Substitute(tmpl)
+}
+
+// noteApprovalsReviewer takes the reviewer a thread/start or thread/resume
+// asks for. An omitted one is the config default, "user", except on a
+// resume of the thread this connection already loaded, which keeps its
+// reviewer (docs/references/codex-wire.md, approvalsReviewer).
+func (a *codexAdapter) noteApprovalsReviewer(params json.RawMessage, resume bool) {
+	requested := readParamString(params, "approvalsReviewer")
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	switch {
+	case requested != "":
+		a.approvalsReviewer = requested
+	case !resume || !a.loadedThread:
+		a.approvalsReviewer = ""
+	}
+}
+
+// currentApprovalsReviewer is the reviewer the thread runs with.
+func (a *codexAdapter) currentApprovalsReviewer() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.approvalsReviewer == "" {
+		return "user"
+	}
+	return a.approvalsReviewer
 }
 
 // refuses reports whether the scenario's response template for method is a
