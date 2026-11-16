@@ -10,10 +10,10 @@ import (
 	"time"
 )
 
-// ToMarkdown renders doc as Markdown an agent can read and edit. Every
-// node renders as something readable; what Markdown can't express
-// (colors, column widths, status lozenges, macros) is simplified, and
-// Edit keeps the original ADF for blocks whose Markdown is not changed.
+// ToMarkdown renders doc as Markdown a person or an agent can read and
+// edit. Every node renders as something readable; what Markdown can't
+// express (colors, column widths, status lozenges, macros) is simplified,
+// and Edit keeps the original ADF for blocks whose Markdown is not changed.
 // Text is escaped only where Markdown would otherwise misread it. Nil
 // nodes, which Validate rejects, are skipped.
 func ToMarkdown(doc *Node) string {

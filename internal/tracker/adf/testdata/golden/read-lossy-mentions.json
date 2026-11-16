@@ -29,7 +29,7 @@
           "type": "mention",
           "attrs": {
             "id": "acc-2",
-            "text": " Jane  Doe "
+            "text": " User  1 "
           }
         }
       ]
@@ -45,7 +45,7 @@
           "type": "mention",
           "attrs": {
             "id": "acc-3",
-            "text": "@Bob\nSmith"
+            "text": "@User\n2"
           }
         }
       ]

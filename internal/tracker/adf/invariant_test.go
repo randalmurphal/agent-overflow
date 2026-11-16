@@ -19,7 +19,7 @@ func TestCheckKeptNamesUnexplainedLoss(t *testing.T) {
 	orig := Doc(para("Intro"), toc("2"))
 	md := ToMarkdown(orig)
 	ws := checkKept(orig, Doc(para("Intro"), toc("3")), md, nil)
-	if len(ws) != 1 || !ws[0].Flattens || ws[0].Line != 3 ||
+	if len(ws) != 1 || !ws[0].Flattens() || ws[0].Line != 3 ||
 		ws[0].Msg != `the macro "toc" is still in the Markdown, but the edit would lose it` {
 		t.Errorf("changed parameters: %v", ws)
 	}
@@ -51,7 +51,7 @@ func TestCheckKeptCellSettingsFollowText(t *testing.T) {
 	orig := table(cell("Build", "#e3fcef"), cell("pending", "#ffebe6"))
 	md := ToMarkdown(orig)
 	swapped := table(cell("Build", "#ffebe6"), cell("pending", "#e3fcef"))
-	if ws := checkKept(orig, swapped, md, nil); len(ws) != 2 || ws[0].Flattens {
+	if ws := checkKept(orig, swapped, md, nil); len(ws) != 2 || ws[0].Flattens() {
 		t.Errorf("traded colors, dress, warn without refusing: %v", ws)
 	}
 	edited := strings.Replace(md, "pending", "pending review", 1)
@@ -135,7 +135,7 @@ func TestWordMarksStayOffRewrites(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%q to %q: %v", c.text, c.md, err)
 		}
-		refused := slices.ContainsFunc(ws, func(w Warning) bool { return w.Flattens })
+		refused := slices.ContainsFunc(ws, func(w Warning) bool { return w.Flattens() })
 		dropped := slices.ContainsFunc(ws, func(w Warning) bool {
 			return strings.HasPrefix(w.Msg, "dropped the inline comments")
 		})
@@ -173,7 +173,7 @@ func TestCheckKeptStateStaysWithItsText(t *testing.T) {
 	}
 	orig := decisions("DECIDED", "UNDECIDED")
 	if ws := checkKept(orig, decisions("UNDECIDED", "DECIDED"), ToMarkdown(orig), nil); len(ws) == 0 ||
-		!ws[0].Flattens {
+		!ws[0].Flattens() {
 		t.Errorf("decisions that traded states: %v", ws)
 	}
 	red := []Mark{{Type: "textColor", Attrs: map[string]any{"color": "#bf2600"}}}
@@ -183,7 +183,7 @@ func TestCheckKeptStateStaysWithItsText(t *testing.T) {
 	moved := Doc(para("Both agree"), &Node{Type: "paragraph", Content: []*Node{
 		{Type: "text", Text: "B", Marks: red}, {Type: "text", Text: "UG NOTED in the parser"}}})
 	md := "Both agree\n\nBUG NOTED in the parser\n"
-	if ws := checkKept(colored, moved, md, nil); len(ws) != 1 || ws[0].Flattens {
+	if ws := checkKept(colored, moved, md, nil); len(ws) != 1 || ws[0].Flattens() {
 		t.Errorf("a color moved onto a fragment: %v", ws)
 	}
 }
@@ -286,8 +286,8 @@ func TestDressLossWarnsContentLossRefuses(t *testing.T) {
 		{"merged cells", table("", `"colspan":1,"rowspan":2`), table("", ""), true},
 		{"status lozenge", inline(`{"type":"status","attrs":{"text":"DONE","color":"green"}}`),
 			p(text("See [DONE] now", ""), ""), true},
-		{"mention", inline(`{"type":"mention","attrs":{"id":"acc-1","text":"@Ann Lee"}}`),
-			p(text("See @Ann Lee now", ""), ""), true},
+		{"mention", inline(`{"type":"mention","attrs":{"id":"acc-1","text":"@User 5"}}`),
+			p(text("See @User 5 now", ""), ""), true},
 		{"date", inline(`{"type":"date","attrs":{"timestamp":"1790812800000"}}`),
 			p(text("See 2026-10-01 now", ""), ""), true},
 		{"emoji", inline(`{"type":"emoji","attrs":{"shortName":":smile:","text":"😄"}}`),
@@ -320,8 +320,8 @@ func TestDressLossWarnsContentLossRefuses(t *testing.T) {
 			continue
 		}
 		for _, w := range ws {
-			if w.Flattens != c.content || w.Flattens != namesContent(w) {
-				t.Errorf("%s: %v refuses %v; want %v", c.name, w, w.Flattens, c.content)
+			if w.Flattens() != c.content || w.Flattens() != namesContent(w) {
+				t.Errorf("%s: %v refuses %v; want %v", c.name, w, w.Flattens(), c.content)
 			}
 		}
 	}

@@ -1,3 +1,3 @@
-@[Pat Lee] owns this.
+@[User 3] owns this.
 
-Thanks @[Pat Lee] and @[Jane Doe].
+Thanks @[User 3] and @[User 1].

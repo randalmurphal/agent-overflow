@@ -148,6 +148,14 @@ Source for schema facts: the
   ([rate limiting](https://linear.app/developers/rate-limiting)). Pages are
   Relay cursors, 50 by default and 250 at most
   ([pagination](https://linear.app/developers/pagination)).
+- Measured on 2026-11-16 against a blank workspace with a personal API
+  key. Every answer carries `x-complexity` (the cost of that request) and,
+  for each of requests and complexity, `x-ratelimit-<kind>-limit`,
+  `-remaining` and `-reset`, the reset a Unix time in milliseconds. A
+  made-up key and a missing one both answer HTTP 401 with a GraphQL error
+  whose `extensions.code` is `AUTHENTICATION_ERROR`. A valid key sent with a
+  `Bearer` prefix answers HTTP 400 with `extensions.code` `INPUT_ERROR`, so
+  a 400 is not proof that the query is wrong.
 - Webhooks need a public HTTPS URL
   ([webhooks](https://linear.app/developers/webhooks)). Polling filters and
   orders by `updatedAt`. Polling cannot see hard deletes.

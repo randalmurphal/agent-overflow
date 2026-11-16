@@ -20,8 +20,8 @@ var contentRequired = map[string]bool{
 // MarshalJSON writes n in ADF's JSON shape. Content is omitted when empty
 // except on node types that require it, which Jira and Confluence reject
 // without it.
-// Text keeps <, > and & as written, so List<String> reads as itself in
-// dry runs and --json output.
+// Text keeps <, > and & as written, so List<String> reads as itself
+// wherever the JSON is shown.
 func (n *Node) MarshalJSON() ([]byte, error) {
 	type plain Node
 	if !contentRequired[n.Type] || len(n.Content) > 0 {

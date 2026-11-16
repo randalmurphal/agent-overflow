@@ -1,1 +1,1 @@
-Ping @[Jane Doe] and @[Bob Smith], also @[accountid:557058:abcd].
+Ping @[User 1] and @[User 2], also @[accountid:557058:abcd].

@@ -234,7 +234,7 @@ func (c *converter) unbalanced(n *Node, m marker, what string) {
 		msg += " with " + markerText(partner)
 	}
 	c.st.warns = append(c.st.warns, Warning{Line: c.lineFor(n),
-		Msg: msg + "; its container is not kept", Flattens: true})
+		Msg: msg + "; its container is not kept", Loses: markerLoss(m)})
 }
 
 // buildContainer makes the container a balanced marker pair holds. Its
@@ -246,7 +246,7 @@ func (c *converter) buildContainer(open *Node, m marker, closer *Node,
 	line := c.lineFor(open)
 	flat := func(why string) []*Node {
 		c.st.warns = append(c.st.warns, Warning{Line: line,
-			Msg: markerText(m) + " " + why + "; its container is not kept", Flattens: true})
+			Msg: markerText(m) + " " + why + "; its container is not kept", Loses: markerLoss(m)})
 		return append(append([]*Node{open}, unwrapColumns(kids)...), closer)
 	}
 	var n *Node

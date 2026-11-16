@@ -10,8 +10,8 @@ func TestTagShapedTextReadsWithoutBackslashes(t *testing.T) {
 	for text, want := range map[string]string{
 		"Returns List<String> and Map<K, V>": "Returns List<String> and Map<K, V>",
 		"keep <u>this</u> literal":           `keep \<u>this\</u> literal`,
-		"not a link <https://x.example>":     `not a link \<https://x.example>`,
-		"mail <a@b.example>":                 `mail \<a@b.example>`,
+		"not a link <https://example.com/x>": `not a link \<https://example.com/x>`,
+		"mail <a@example.com>":               `mail \<a@example.com>`,
 		"a <!-- comment -->":                 `a \<!-- comment -->`,
 	} {
 		doc := &Node{Type: "doc", Content: []*Node{{Type: "paragraph",

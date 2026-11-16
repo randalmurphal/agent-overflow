@@ -128,8 +128,8 @@ type convState struct {
 
 // lineFeeds is md without a leading byte-order mark, which would make a
 // first "## Heading" text, and with each line ending, CRLF or a lone CR,
-// as LF: a CR left in text would be stored there, and the view shows it
-// as a space.
+// as LF: a CR left in text would be stored there, and a rendered page
+// shows it as a space.
 // Every reading of Markdown takes it, so an original's code block that
 // holds CRLF still reads as md's and stays as it was.
 func lineFeeds(md string) string {

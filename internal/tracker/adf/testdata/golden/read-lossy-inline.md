@@ -14,4 +14,4 @@ macro <!-- macro: status-macro f44a -->
 
 mystery <!-- adf: futureInline -->
 
-@[Jane Doe] and @[accountid:acc-2]
+@[User 1] and @[accountid:acc-2]

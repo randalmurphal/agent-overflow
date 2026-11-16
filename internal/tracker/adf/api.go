@@ -1,13 +1,25 @@
 // Package adf converts between Atlassian Document Format (the JSON tree
-// Jira and Confluence store rich text in) and Markdown.
+// Jira and Confluence store rich text in) and Markdown, and applies an
+// edit made in Markdown to a stored document without losing what Markdown
+// cannot show.
 //
-// Read path: ToMarkdown renders every node as readable Markdown, as
-// faithfully as Markdown allows. Write path: FromMarkdown builds valid ADF
-// from GitHub-flavored Markdown plus a few extensions (alerts, mentions,
-// <details>, media refs). Edit path: Edit converts new Markdown and reuses
-// the original ADF node for every top-level block the edit left unchanged,
-// so content Markdown cannot express (status lozenges, column widths,
-// macros, layouts) survives edits that don't touch it.
+// ToMarkdown renders every node as readable Markdown, as faithfully as
+// Markdown allows. FromMarkdown builds valid ADF from GitHub-flavored
+// Markdown plus a few extensions (alerts, mentions, <details>, media
+// references). Edit applies new Markdown to an original document: it
+// reuses the original node for every block the edit left unchanged and
+// carries what it can into changed ones, so status lozenges, column
+// widths, macros and layouts survive edits that don't touch them. Its
+// warnings name what the edit would lose; CheckLoss turns those that lose
+// content into a *LossError, and a caller writes nothing while it fails.
+//
+// The package keeps no mutable state and does no I/O: mention lookups and
+// uploads go through the caller's Resolver, within the context
+// FromMarkdown or Edit was given. A mistake in the Markdown is a
+// *SyntaxError; a Resolver's error comes back wrapped with its line.
+// ToMarkdown and Edit never change the documents they are given, and
+// conversions are safe for concurrent use. Edit's result shares the nodes
+// it reused with the original document.
 package adf
 
 import (
@@ -59,14 +71,19 @@ type Warning struct {
 	// Line is the 1-based Markdown line, or 0 when not tied to one.
 	Line int
 	Msg  string
-	// Flattens marks an Edit warning that loses content: a changed block
+	// Loses is how the content an Edit warning loses is written, set where
+	// the warning is made from what the lost nodes are: a changed block
 	// that held a column layout, a macro with a body or a custom panel (the
 	// edit rewrites the container as plain Markdown blocks), or a content
 	// node the Markdown still shows (a lozenge, a mention, a header cell).
-	// Callers should refuse such an edit unless the user accepts the loss.
-	// Lost dress (a color, an alignment, a width) warns without it.
-	Flattens bool
+	// It is empty for lost dress (a color, an alignment, a width), which
+	// only warns.
+	Loses LossSet
 }
+
+// Flattens reports whether w loses content, which CheckLoss refuses
+// unless the user accepted the loss.
+func (w Warning) Flattens() bool { return w.Loses != 0 }
 
 // String formats w as "line N: msg", or just msg without a line.
 func (w Warning) String() string {

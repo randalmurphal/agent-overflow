@@ -9,8 +9,8 @@ import (
 // SyntaxError is Markdown that FromMarkdown or Edit can't convert, found at
 // a line: a construct ADF has no place for (a table in a list item), HTML
 // it doesn't take, or a tag or marker left open. The writer fixes the
-// Markdown and runs again; Hint says how. Errors a Resolver returns (a
-// user not found, an upload failing) are never a SyntaxError.
+// Markdown; Hint says how. Errors a Resolver returns (a user not found,
+// an upload failing) are never a SyntaxError.
 type SyntaxError struct {
 	Line int    // 1-based Markdown line, or 0 when not known
 	Msg  string // what is wrong, without the line
@@ -58,9 +58,9 @@ func syntaxError(err error) *SyntaxError {
 		return nil
 	}
 	msg := internalNames.Replace(le.msg)
-	hint := "fix the Markdown at that line and run again"
+	hint := "fix the Markdown at that line and try again"
 	if le.line <= 0 {
-		hint = "fix the Markdown and run again"
+		hint = "fix the Markdown and try again"
 	}
 	for _, h := range syntaxHints {
 		if strings.Contains(msg, h.phrase) {

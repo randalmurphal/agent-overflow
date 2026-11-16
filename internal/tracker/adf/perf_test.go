@@ -11,7 +11,7 @@ import (
 func bigCodePage() *Node {
 	var code strings.Builder
 	for code.Len() < 500_000 {
-		code.WriteString(`if (a[i] < b && c > d) { x = <y> & z; m["k"] = "v!"; } // see <http://e.x>` + "\n")
+		code.WriteString(`if (a[i] < b && c > d) { x = <y> & z; m["k"] = "v!"; } // see <http://example.com>` + "\n")
 	}
 	page := Doc()
 	for i := range 9000 {
@@ -27,7 +27,7 @@ func bigCodePage() *Node {
 func TestLongLookaheadsReadBack(t *testing.T) {
 	long := strings.Repeat("ab ", 3000)
 	for _, s := range []string{
-		"[" + long + "](https://x.y)", "[" + long + "][r]", "<" + long + "x@y.z>",
+		"[" + long + "](https://example.com)", "[" + long + "][r]", "<" + long + "x@example.com>",
 		"<https://" + strings.Repeat("a", 2000) + ">", "&" + long + "amp;", "[a](b) " + long + "[",
 	} {
 		doc := Doc(para(s))

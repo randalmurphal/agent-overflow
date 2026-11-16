@@ -36,7 +36,7 @@
               "content": [
                 {
                   "type": "text",
-                  "text": "Injected the options in the form"
+                  "text": "Passed the options to the parser"
                 },
                 {
                   "type": "hardBreak"
@@ -53,7 +53,7 @@
               "content": [
                 {
                   "type": "text",
-                  "text": "For the extra bug, see below"
+                  "text": "For the second case, see below"
                 },
                 {
                   "type": "hardBreak"

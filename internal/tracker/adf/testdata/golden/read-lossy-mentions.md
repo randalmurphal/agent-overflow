@@ -1,5 +1,5 @@
 blank @[accountid:acc-1]
 
-spaced @[Jane Doe]
+spaced @[User 1]
 
-multiline @[Bob Smith]
+multiline @[User 2]

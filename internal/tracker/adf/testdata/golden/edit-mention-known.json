@@ -9,8 +9,8 @@
           "type": "mention",
           "attrs": {
             "accessLevel": "",
-            "id": "acc-pat",
-            "text": "@Pat Lee"
+            "id": "acc-user3",
+            "text": "@User 3"
           }
         },
         {
@@ -29,8 +29,8 @@
         {
           "type": "mention",
           "attrs": {
-            "id": "acc-pat",
-            "text": "@Pat Lee"
+            "id": "acc-user3",
+            "text": "@User 3"
           }
         },
         {
@@ -40,8 +40,8 @@
         {
           "type": "mention",
           "attrs": {
-            "id": "acc-jane",
-            "text": "@Jane Doe"
+            "id": "acc-user1",
+            "text": "@User 1"
           }
         },
         {

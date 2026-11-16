@@ -165,7 +165,7 @@
           "type": "mention",
           "attrs": {
             "id": "acc-1",
-            "text": "@Jane Doe",
+            "text": "@User 1",
             "accessLevel": ""
           }
         },

@@ -269,3 +269,174 @@ var wordMarks = map[string]bool{"textColor": true, "backgroundColor": true, "ann
 func withoutWordMarks(ms []Mark) []Mark {
 	return slices.DeleteFunc(slices.Clone(ms), func(m Mark) bool { return wordMarks[m.Type] })
 }
+
+// restoreMoved gives the changed paragraphs and headings of doc the word
+// marks their words take from the changed ones of orig they share text
+// with, read in order as one text (see restoreWordMarks): every part of a
+// split paragraph, and the whole of a merged one, keeps its colors, at
+// any level (half of a bullet split out below its list). Blocks connect
+// where they share half the words of the smaller; text that shares less
+// is new and takes nothing. A part takes a block mark (alignment,
+// indentation) its sources agree on; a merge whose sources differ keeps
+// none, and the invariant refuses the loss.
+func restoreMoved(orig, doc *Node) {
+	inOrig, inDoc := treeSet(orig), treeSet(doc)
+	var os, fs []*Node
+	under := map[*Node]string{} // the type of the node holding each
+	// A code block holds no word marks or block marks to restore.
+	movable := func(n *Node) bool { return isInlineParent(n.Type) && n.Type != "codeBlock" }
+	walk(orig, func(n, p *Node) {
+		if movable(n) && !inDoc[n] && p != nil {
+			os, under[n] = append(os, n), p.Type
+		}
+	})
+	walk(doc, func(n, p *Node) {
+		if movable(n) && !inOrig[n] && p != nil {
+			fs, under[n] = append(fs, n), p.Type
+		}
+	})
+	if len(os) == 0 || len(fs) == 0 {
+		return
+	}
+	// An original that reads as another with other state could be either:
+	// identity is never guessed, so neither gives its state. Only those
+	// with the text of a changed one can read as it.
+	texts := map[string]bool{}
+	for _, n := range os {
+		texts[plainText(n)] = true
+	}
+	states := map[string]map[string]bool{}
+	walk(orig, func(n, _ *Node) {
+		if movable(n) && texts[plainText(n)] {
+			k := renderInline(n.Content, ctxPara)
+			if states[k] == nil {
+				states[k] = map[string]bool{}
+			}
+			states[k][hiddenState(n)] = true
+		}
+	})
+	os = slices.DeleteFunc(os, func(n *Node) bool {
+		return len(states[renderInline(n.Content, ctxPara)]) != 1
+	})
+	if len(os) == 0 || len(fs) == 0 || len(os) > alignmentCells/len(fs) {
+		return
+	}
+	bags := func(ns []*Node) ([]map[string]int, []int) {
+		out, size := make([]map[string]int, len(ns)), make([]int, len(ns))
+		for i, n := range ns {
+			out[i] = map[string]int{}
+			for _, w := range wordSpans(runeToks(n.Content, false)) {
+				out[i][w.text]++
+				size[i]++
+			}
+		}
+		return out, size
+	}
+	ob, osz := bags(os)
+	fb, fsz := bags(fs)
+	// Components of the graph of blocks that share text.
+	parent := make([]int, len(os)+len(fs))
+	for i := range parent {
+		parent[i] = i
+	}
+	find := func(x int) int {
+		for parent[x] != x {
+			parent[x] = parent[parent[x]]
+			x = parent[x]
+		}
+		return x
+	}
+	for i := range os {
+		for j := range fs {
+			if c := common(ob[i], fb[j]); c > 0 && c*2 >= min(osz[i], fsz[j]) {
+				parent[find(i)] = find(len(os) + j)
+			}
+		}
+	}
+	groups := map[int][2][]int{}
+	for i := range os {
+		g := groups[find(i)]
+		g[0] = append(g[0], i)
+		groups[find(i)] = g
+	}
+	for j := range fs {
+		g := groups[find(len(os)+j)]
+		g[1] = append(g[1], j)
+		groups[find(len(os)+j)] = g
+	}
+	for _, g := range groups {
+		if len(g[0]) == 0 || len(g[1]) == 0 {
+			continue
+		}
+		var src, dst [][]*Node
+		for _, i := range g[0] {
+			src = append(src, os[i].Content)
+		}
+		for _, j := range g[1] {
+			dst = append(dst, fs[j].Content)
+		}
+		res, from := restoreWordMarks(src, dst)
+		for k, j := range g[1] {
+			f := fs[j]
+			f.Content = res[k]
+			if len(from[k]) == 0 {
+				continue
+			}
+			first := os[g[0][from[k][0]]]
+			if under[first] != under[f] {
+				continue // a block mark belongs where its block was
+			}
+			want := blockMarks(first.Marks)
+			for _, s := range from[k][1:] {
+				if !marksEqual(blockMarks(os[g[0][s]].Marks), want) {
+					want = nil
+				}
+			}
+			f.Marks = append(slices.DeleteFunc(slices.Clone(f.Marks), func(m Mark) bool {
+				return blockMarkTypes[m.Type]
+			}), want...)
+			sortMarks(f.Marks)
+			if len(f.Marks) == 0 {
+				f.Marks = nil
+			}
+		}
+	}
+}
+
+// hiddenState is what of inline parent n md doesn't show: its block marks
+// and its text's word marks, character by character.
+func hiddenState(n *Node) string {
+	var b strings.Builder
+	b.WriteString(jsonText(blockMarks(n.Marks)))
+	for _, t := range runeToks(n.Content, false) {
+		b.WriteString(jsonText(hiddenOf(t.marks)))
+	}
+	return b.String()
+}
+
+// blockMarkTypes are the marks of a paragraph or heading itself.
+var blockMarkTypes = map[string]bool{"alignment": true, "indentation": true}
+
+func blockMarks(ms []Mark) []Mark {
+	var out []Mark
+	for _, m := range ms {
+		if blockMarkTypes[m.Type] {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// plainText is the text of inline parent n, with each other node as it
+// renders alone: a cheap key that two parents rendering alike share.
+func plainText(n *Node) string {
+	var b strings.Builder
+	for _, c := range n.Content {
+		if c.Type == "text" {
+			b.WriteString(c.Text)
+		} else {
+			b.WriteString(renderInline([]*Node{c}, ctxPara))
+		}
+	}
+	return b.String()
+}

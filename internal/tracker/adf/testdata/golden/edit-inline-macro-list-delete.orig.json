@@ -24,7 +24,7 @@
                     "parameters": {
                       "macroParams": {
                         "key": {
-                          "value": "BLITZ-1"
+                          "value": "WEB-1"
                         }
                       }
                     }
@@ -53,7 +53,7 @@
                     "parameters": {
                       "macroParams": {
                         "key": {
-                          "value": "BLITZ-2"
+                          "value": "WEB-2"
                         }
                       }
                     }
@@ -82,7 +82,7 @@
                     "parameters": {
                       "macroParams": {
                         "key": {
-                          "value": "BLITZ-3"
+                          "value": "WEB-3"
                         }
                       }
                     }

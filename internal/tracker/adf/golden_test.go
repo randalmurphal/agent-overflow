@@ -82,7 +82,7 @@ func parseGoldenJSON(t *testing.T, s string) *Node {
 func warnText(ws []Warning) string {
 	var b strings.Builder
 	for _, w := range ws {
-		if w.Flattens {
+		if w.Flattens() {
 			if !namesContent(w) {
 				b.WriteString("refused for dress, a bug: ")
 			}

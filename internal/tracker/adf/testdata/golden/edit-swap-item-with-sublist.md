@@ -1,10 +1,10 @@
 Intro
 
 - During testing:
-  - I was able to receive both notifications.
-  - **BUG NOTED**: the platform did not show the user.
-  - Both users were able to log in.
-    - No work done by user 2 was captured.
-    - Second user submitted the questionnaire.
+  - I was able to open both reports.
+  - **BUG NOTED**: the page did not show the chart.
+  - Both tests were able to run.
+    - No data from test 2 was saved.
+    - Second test wrote the summary.
 
 End

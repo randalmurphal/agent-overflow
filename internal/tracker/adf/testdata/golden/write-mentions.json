@@ -8,8 +8,8 @@
         {
           "type": "mention",
           "attrs": {
-            "id": "acc-jane",
-            "text": "@Jane Doe"
+            "id": "acc-user1",
+            "text": "@User 1"
           }
         },
         {
@@ -30,8 +30,8 @@
         {
           "type": "mention",
           "attrs": {
-            "id": "acc-ann",
-            "text": "@Ann [ops] O'Brien"
+            "id": "acc-user4",
+            "text": "@User 4's [ops] account"
           }
         },
         {

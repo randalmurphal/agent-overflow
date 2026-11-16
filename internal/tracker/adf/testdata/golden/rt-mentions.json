@@ -12,8 +12,8 @@
         {
           "type": "mention",
           "attrs": {
-            "id": "acc-jane",
-            "text": "@Jane Doe"
+            "id": "acc-user1",
+            "text": "@User 1"
           }
         },
         {
@@ -23,8 +23,8 @@
         {
           "type": "mention",
           "attrs": {
-            "id": "acc-bob",
-            "text": "@Bob Smith"
+            "id": "acc-user2",
+            "text": "@User 2"
           }
         },
         {

@@ -26,7 +26,7 @@ func TestSyntaxErrorsNameLineAndFix(t *testing.T) {
 			"as many cells as the header", 3},
 		{"> [!BOGUS]\n> x", "unknown alert type [!BOGUS]", "alert types named", 1},
 		{"@[accountid:]", "accountid: reference needs an ID", "give the ID", 1},
-		{"x\n\n# Title ![logo](https://e.com/x.png)", "images can't go in a heading",
+		{"x\n\n# Title ![logo](https://example.com/x.png)", "images can't go in a heading",
 			"on a line of its own", 3},
 	} {
 		_, _, err := FromMarkdown(t.Context(), tc.md, newFakeResolver())
@@ -47,7 +47,7 @@ func TestSyntaxErrorsNameLineAndFix(t *testing.T) {
 }
 
 // TestResolverErrorIsNotSyntax proves an error the Resolver returns (a user
-// not found) stays itself, for errors.Is and the caller's exit code, and
+// not found) stays itself, for errors.Is and errors.As, and
 // is never taken for a mistake in the Markdown.
 func TestResolverErrorIsNotSyntax(t *testing.T) {
 	_, _, err := FromMarkdown(t.Context(), "Ask @[Nobody Here]", newFakeResolver())
@@ -57,24 +57,5 @@ func TestResolverErrorIsNotSyntax(t *testing.T) {
 	}
 	if _, _, err := FromMarkdown(t.Context(), "@[me]", nil); errors.As(err, &se) {
 		t.Errorf("no resolver: %T %v", err, err)
-	}
-}
-
-// TestLossKinds proves a refusal can tell an expand's loss from one of a
-// container written with comment markers, and sees both in one warning.
-func TestLossKinds(t *testing.T) {
-	for _, tc := range []struct {
-		msg              string
-		markers, details bool
-	}{
-		{"replaced a block that had a custom panel", true, false},
-		{`the expand "T" is still in the Markdown, but the edit would lose it`, false, true},
-		{"replaced a block that had expand nesting and a status lozenge", true, true},
-		{"<!-- /panel --> closes nothing; its container is not kept", true, false},
-	} {
-		m, d := LossKinds([]Warning{{Msg: tc.msg, Flattens: true}, {Msg: "x expand"}})
-		if m != tc.markers || d != tc.details {
-			t.Errorf("%q: markers %v details %v", tc.msg, m, d)
-		}
 	}
 }

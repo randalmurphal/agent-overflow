@@ -121,11 +121,11 @@ type fakeResolver struct {
 
 func newFakeResolver() *fakeResolver {
 	return &fakeResolver{people: map[string][2]string{
-		"me":                {"acc-me", "Me Myself"},
-		"Jane Doe":          {"acc-jane", "Jane Doe"},
-		"jane@example.com":  {"acc-jane", "Jane Doe"},
-		"Bob Smith":         {"acc-bob", "Bob Smith"},
-		"Ann [ops] O'Brien": {"acc-ann", "Ann [ops] O'Brien"},
+		"me":                     {"acc-me", "Me Myself"},
+		"User 1":                 {"acc-user1", "User 1"},
+		"user1@example.com":      {"acc-user1", "User 1"},
+		"User 2":                 {"acc-user2", "User 2"},
+		"User 4's [ops] account": {"acc-user4", "User 4's [ops] account"},
 	}}
 }
 

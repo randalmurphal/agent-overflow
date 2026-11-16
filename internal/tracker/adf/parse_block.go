@@ -120,8 +120,8 @@ func (c *converter) splitImages(inl []*Node, line int) []*Node {
 
 // cellItems gives each line of a cell's inline run that starts as a list
 // item does ("- ", "1. ") one space after its marker: a cell shows a list
-// as such lines, and the spaces after a marker, which the view collapses,
-// are no part of the item's text.
+// as such lines, and the spaces after a marker, which a rendered page
+// collapses, are no part of the item's text.
 func cellItems(ns []*Node) []*Node {
 	out, cloned := ns, false
 	for i, n := range ns {
@@ -144,8 +144,8 @@ func cellItems(ns []*Node) []*Node {
 
 var cellItemRe = regexp.MustCompile(`^([-*+]|\d{1,9}[.)])  +`)
 
-// trimBreaks drops the spaces beside each line break, which the view
-// hides: "a <br> b" is "a", a break, "b".
+// trimBreaks drops the spaces beside each line break, which a rendered
+// page hides: "a <br> b" is "a", a break, "b".
 func trimBreaks(ns []*Node) []*Node {
 	var out []*Node
 	for i, n := range ns {

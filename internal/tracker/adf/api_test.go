@@ -9,14 +9,14 @@ import (
 )
 
 func TestPlainText(t *testing.T) {
-	md := "# Title\n\nHello **bold** @[Jane Doe]\\\nnext\n\n" +
+	md := "# Title\n\nHello **bold** @[User 1]\\\nnext\n\n" +
 		"- one\n- two\n\n| a | b |\n| --- | --- |\n| 1 | 2 |\n\n" +
 		"<details><summary>More</summary>\n\n```\ncode\n```\n\n</details>\n"
 	doc, _, err := FromMarkdown(context.Background(), md, newFakeResolver())
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "Title\nHello bold @Jane Doe\nnext\none\ntwo\na\tb\n1\t2\nMore\ncode"
+	want := "Title\nHello bold @User 1\nnext\none\ntwo\na\tb\n1\t2\nMore\ncode"
 	if got := PlainText(doc); got != want {
 		t.Errorf("got %q\nwant %q", got, want)
 	}
@@ -264,7 +264,7 @@ func TestAnnotationOnInlineNodes(t *testing.T) {
 // TestBrLinesInAnyLayoutAreBreaks proves an HTML block that starts with
 // <br> reads as a paragraph of breaks and text: CRLF endings, <br> lines
 // with no blank line between them, and text after a <br>, without the
-// space the view hides.
+// space a rendered page hides.
 func TestBrLinesInAnyLayoutAreBreaks(t *testing.T) {
 	for md, want := range map[string]string{
 		"<br>\r\n":                "hardBreak",
@@ -302,7 +302,7 @@ func TestBrLinesInAnyLayoutAreBreaks(t *testing.T) {
 // can't upload the file it names; any URL with a scheme is external too.
 func TestExternalImagesNeverUpload(t *testing.T) {
 	for _, url := range []string{"/home/me/.config/app/credentials.json", "pic.png",
-		"ftp://host/a.png", "data:image/png;base64,AAAA", "https://e.com/a.png"} {
+		"ftp://host/a.png", "data:image/png;base64,AAAA", "https://example.com/a.png"} {
 		doc := Doc(&Node{Type: "mediaSingle", Attrs: map[string]any{"layout": "center"},
 			Content: []*Node{{Type: "media", Attrs: map[string]any{"type": "external", "url": url}}}})
 		md := ToMarkdown(doc)
@@ -379,7 +379,7 @@ func TestEditMarksFlattenedContainers(t *testing.T) {
 		}
 		var flat []string
 		for _, w := range ws {
-			if w.Flattens {
+			if w.Flattens() {
 				flat = append(flat, w.String())
 			}
 		}
@@ -433,7 +433,7 @@ func TestEditInsideContainerChangesOnlyThatBlock(t *testing.T) {
 }
 
 // TestCellItemsTakeOneSpace proves the spaces after a list marker at the
-// start of a cell line, which the view collapses, are no part of the
+// start of a cell line, which a rendered page collapses, are no part of the
 // item: "-  a" in a cell reads as "- a" does.
 func TestCellItemsTakeOneSpace(t *testing.T) {
 	cell := func(md string) string {
@@ -454,7 +454,7 @@ func TestCellItemsTakeOneSpace(t *testing.T) {
 }
 
 // TestLoneCRIsALineEnd proves CR and CRLF read as LF, so no CR is stored
-// in text, where the view would show it as a space, and the edit of a
+// in text, where a rendered page would show it as a space, and the edit of a
 // document with CRLF in a code block keeps that block as it was.
 func TestLoneCRIsALineEnd(t *testing.T) {
 	for _, md := range []string{"a\rb\r\rc\r", "a\r\nb\r\n\r\nc\r\n", "a\nb\n\nc\n"} {

@@ -37,7 +37,7 @@
                       "content": [
                         {
                           "type": "text",
-                          "text": "I was able to receive both notifications."
+                          "text": "I was able to open both reports."
                         }
                       ]
                     }
@@ -51,7 +51,7 @@
                       "content": [
                         {
                           "type": "text",
-                          "text": "Both users were able to log in. "
+                          "text": "Both tests were able to run. "
                         }
                       ]
                     }
@@ -80,7 +80,7 @@
                         },
                         {
                           "type": "text",
-                          "text": ": the platform did not show the user."
+                          "text": ": the page did not show the chart."
                         }
                       ]
                     },
@@ -95,7 +95,7 @@
                               "content": [
                                 {
                                   "type": "text",
-                                  "text": "No work done by user 2 was captured."
+                                  "text": "No data from test 2 was saved."
                                 }
                               ]
                             }
@@ -109,7 +109,7 @@
                               "content": [
                                 {
                                   "type": "text",
-                                  "text": "Second user submitted the questionnaire."
+                                  "text": "Second test wrote the summary."
                                 }
                               ]
                             }

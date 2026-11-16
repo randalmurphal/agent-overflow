@@ -16,7 +16,7 @@ func TestLozengeReadsBackAsTyped(t *testing.T) {
 			t.Fatalf("%s: %v %v", typed, err, ws)
 		}
 		if got := ToMarkdown(out); got != md {
-			t.Errorf("%s: the view reads %q", typed, got)
+			t.Errorf("%s: ToMarkdown gives %q", typed, got)
 		}
 		if s := out.Content[0].Content[1]; s.Type != "status" || s.attrStr("color") != "green" {
 			t.Errorf("%s: the lozenge became %s", typed, s.Type)

@@ -63,7 +63,7 @@ func TestInlineDelimiterRegressions(t *testing.T) {
 // text is x, stay what they were at a list item start: goldmark reads
 // "[x]" there as a task box whatever follows it.
 func TestTaskBoxShapesStayText(t *testing.T) {
-	link := Mark{Type: "link", Attrs: map[string]any{"href": "https://e.com"}}
+	link := Mark{Type: "link", Attrs: map[string]any{"href": "https://example.com"}}
 	for _, tc := range []struct {
 		nodes []*Node
 		md    string
@@ -71,8 +71,8 @@ func TestTaskBoxShapesStayText(t *testing.T) {
 		{[]*Node{textNode("[x]foo")}, "- \\[x]foo\n"},
 		{[]*Node{textNode("[ ]foo")}, "- \\[ ]foo\n"},
 		{[]*Node{textNode("[X]")}, "- \\[X]\n"},
-		{[]*Node{textNode("x", link), textNode(" ok")}, "- [&#120;](https://e.com) ok\n"},
-		{[]*Node{textNode("X", link)}, "- [&#88;](https://e.com)\n"},
+		{[]*Node{textNode("x", link), textNode(" ok")}, "- [&#120;](https://example.com) ok\n"},
+		{[]*Node{textNode("X", link)}, "- [&#88;](https://example.com)\n"},
 	} {
 		doc := Doc(&Node{Type: "bulletList", Content: []*Node{{Type: "listItem",
 			Content: []*Node{{Type: "paragraph", Content: tc.nodes}}}}})
@@ -91,7 +91,7 @@ func TestTaskBoxShapesStayText(t *testing.T) {
 // TestMentionWithoutIDRendersAsText proves a mention with an empty ID is
 // written as the text it showed, which parses, and reported as lost.
 func TestMentionWithoutIDRendersAsText(t *testing.T) {
-	for text, want := range map[string]string{"@Ann Lee": "@Ann Lee\n", "": "@\n"} {
+	for text, want := range map[string]string{"@User 5": "@User 5\n", "": "@\n"} {
 		doc := Doc(&Node{Type: "paragraph", Content: []*Node{{Type: "mention",
 			Attrs: map[string]any{"id": "", "text": text}}}})
 		md := ToMarkdown(doc)
