@@ -7,7 +7,7 @@ import type { Settings } from '../../types/settings';
 import { makeSettings } from '../../../test/helpers/settings';
 import { setPageGrantsFromBootstrap } from '../../transport/scopes';
 import { HOST_TIER_REASON } from './settingsComputer';
-import { pairWithScopes, resetToLocalPage } from '../../../test/helpers/scopes';
+import { pairViewOnly, pairWithScopes, resetToLocalPage } from '../../../test/helpers/scopes';
 import { getToasts, removeToast } from '../../stores/toast.svelte';
 
 const BASE_SETTINGS: Settings = makeSettings();
@@ -154,6 +154,28 @@ describe('<ObservabilitySettings>', () => {
     } finally {
       for (const toast of getToasts()) removeToast(toast.id);
     }
+  });
+
+  describe('without access:admin', () => {
+    afterEach(() => resetToLocalPage());
+
+    it('says the endpoint is hidden instead of showing the default', async () => {
+      // The backend sends this caller an empty endpoint whatever is saved.
+      await seed({ observabilityTracingEnabled: true, observabilityOtlpEndpoint: '' });
+      await pairViewOnly();
+      const { getByLabelText, getByText, queryByText } = render(ObservabilitySettings);
+      const input = getByLabelText('OTLP endpoint') as HTMLInputElement;
+      expect(input.placeholder).toBe('Hidden on this connection');
+      expect(getByText(/This connection cannot read the endpoint/)).toBeTruthy();
+      expect(queryByText(/Leave blank to use the OTel default/)).toBeNull();
+    });
+
+    it('shows the default to a connection that can read the endpoint', async () => {
+      await seed({ observabilityTracingEnabled: true });
+      const { getByLabelText, getByText } = render(ObservabilitySettings);
+      expect((getByLabelText('OTLP endpoint') as HTMLInputElement).placeholder).toBe('localhost:4317');
+      expect(getByText(/Leave blank to use the OTel default/)).toBeTruthy();
+    });
   });
 
   describe('without settings:read', () => {

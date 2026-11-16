@@ -15,6 +15,10 @@
   // All three keys are host tier: they configure THIS backend's exporters
   // and its replay log on disk.
   let hostWritable = $derived(hostTierWritable());
+  // The backend leaves the endpoint out of a settings read for a caller
+  // without access:admin (internal/app/app_settings.go settingsForCaller),
+  // so an empty value here does not mean the default is in use.
+  let endpointHidden = $derived(!hasScope('access:admin'));
 
   // Tracing is wired once at start, so a saved value that differs from the
   // one this backend started with waits on a restart. The backend reports
@@ -82,7 +86,9 @@
       <SettingsField
         id="observability.otlp-endpoint"
         label="OTLP endpoint"
-        hint="gRPC host:port. Leave blank to use the OTel default (localhost:4317). Only used when tracing is enabled."
+        hint={endpointHidden
+          ? 'This connection cannot read the endpoint. Connect with full access to see it.'
+          : 'gRPC host:port. Leave blank to use the OTel default (localhost:4317). Only used when tracing is enabled.'}
         htmlFor="otlp-endpoint"
         stacked
       >
@@ -92,7 +98,7 @@
           value={settings.observabilityOtlpEndpoint}
           disabled={!settings.observabilityTracingEnabled || !hostWritable}
           title={hostWritable ? undefined : HOST_TIER_REASON}
-          placeholder="localhost:4317"
+          placeholder={endpointHidden ? 'Hidden on this connection' : 'localhost:4317'}
           onchange={(e) => handleEndpointChange((e.target as HTMLInputElement).value)}
           class="{INPUT_CLASS} max-w-md disabled:opacity-50 disabled:cursor-not-allowed"
         />
