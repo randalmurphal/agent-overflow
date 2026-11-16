@@ -10,9 +10,11 @@
 
   import { onDestroy, onMount, tick } from 'svelte';
   import GripVertical from '@lucide/svelte/icons/grip-vertical';
+  import UserRoundPlus from '@lucide/svelte/icons/user-round-plus';
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
   import Trash2 from '@lucide/svelte/icons/trash-2';
   import Icon from '../primitives/Icon.svelte';
+  import IconButton from '../primitives/IconButton.svelte';
   import ConfirmDialog from '../shared/ConfirmDialog.svelte';
   import ProviderAccountLimits from '../shared/ProviderAccountLimits.svelte';
   import ProviderLoginFlow from '../accounts/ProviderLoginFlow.svelte';
@@ -68,6 +70,18 @@
   let login = $derived(getProviderLogin(provider, backend));
   let showLoginFlow = $derived(
     isProviderLoginActive(provider, backend) || login.phase === 'failed',
+  );
+
+  // The section's sign-in action is the labeled button wherever its one
+  // line fits the column, and an icon button named for the action where it
+  // cannot (a phone at a large text size): buttons never wrap (styles.ts).
+  // No CSS condition compares a text's rendered width with its container,
+  // so both widths are observed; until they are, the label shows.
+  let loginLabel = $derived(actions.loggingIn ? 'Signing in…' : 'Log in to another account');
+  let accountsBox = $state<DOMRectReadOnly | undefined>(undefined);
+  let loginLabelBox = $state<ResizeObserverSize[] | undefined>(undefined);
+  let loginLabelFits = $derived(
+    !accountsBox || !loginLabelBox?.[0] || loginLabelBox[0].inlineSize <= accountsBox.width,
   );
 
   onMount(() => {
@@ -308,23 +322,41 @@
   data-testid="provider-accounts-{provider}"
   data-settings-field={providerFieldId(provider, 'accounts')}
   data-settings-label="Accounts"
+  bind:contentRect={accountsBox}
 >
   <SettingsHeader title="Accounts" description="Saved native logins and their last-known limits.">
     {#snippet badge()}
-      <!-- Its label wraps only where one line is wider than the column (a
-           phone at a large text size); the button then takes the column's
-           width. Anywhere else it is one line beside the title. -->
-      <button
-        type="button"
-        class="{PRIMARY_BUTTON_CLASS} block w-full"
-        disabled={credentialOpInFlight || !admin}
-        title={ungrantedTitle}
-        onclick={() => void startProviderLogin(provider, backend)}
-      >
-        <span class="whitespace-normal">{actions.loggingIn ? 'Signing in…' : 'Log in to another account'}</span>
-      </button>
+      {#if loginLabelFits}
+        <button
+          type="button"
+          class={PRIMARY_BUTTON_CLASS}
+          disabled={credentialOpInFlight || !admin}
+          title={ungrantedTitle}
+          onclick={() => void startProviderLogin(provider, backend)}
+          data-testid="provider-accounts-login-{provider}"
+        >
+          {loginLabel}
+        </button>
+      {:else}
+        <IconButton
+          label={loginLabel}
+          title={ungrantedTitle}
+          disabled={credentialOpInFlight || !admin}
+          onClick={() => void startProviderLogin(provider, backend)}
+          size="sm"
+          variant="subtle"
+          testId="provider-accounts-login-icon-{provider}"
+        >
+          <Icon icon={UserRoundPlus} size={14} strokeWidth={2} />
+        </IconButton>
+      {/if}
     {/snippet}
   </SettingsHeader>
+  <!-- The labeled button's one-line width, measured where nothing sees it
+       (hidden, clipped to no size) so it is known while the icon shows. -->
+  <span class="pointer-events-none invisible absolute h-0 w-0 overflow-hidden" aria-hidden="true">
+    <span class="{PRIMARY_BUTTON_CLASS} absolute" bind:borderBoxSize={loginLabelBox}>{loginLabel}</span>
+  </span>
 
   {#if showLoginFlow}
     <ProviderLoginFlow {backend} {provider} {login} />

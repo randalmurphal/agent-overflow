@@ -41,6 +41,10 @@ test('the Accounts sections fit a 320px phone at the largest text size', async (
     expect(parseFloat(root.fontSize)).toBeCloseTo((20 * 16) / 13, 1);
     expect(root.font).toContain('Hack Nerd Font');
     expect(faults).toEqual([]);
+    // "Log in to another account" is wider than this column on one line,
+    // so the section offers it as an icon button named for the action.
+    await expect(page.getByTestId('provider-accounts-codex').getByRole('button', { name: 'Log in to another account' }))
+      .toHaveAttribute('data-icon-button', '');
   } finally {
     await harness.close();
   }

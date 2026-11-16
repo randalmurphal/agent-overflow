@@ -224,9 +224,8 @@ export async function settingsLayoutFaults(harness: HarnessApp, page: Page, comp
  * Measures the Accounts sections on a phone: the Codex account that has the
  * most to fit (see saveCodexAccountNeedingSignIn), and two Claude accounts,
  * a native login and one signed in through Settings, whose cards carry the
- * reorder grip. The section's sign-in button may wrap its label: it does
- * where one line is wider than the column. Saving accounts is process-wide
- * state, so the caller passes a backend it owns.
+ * reorder grip. Saving accounts is process-wide state, so the caller
+ * passes a backend it owns.
  */
 export async function accountsSectionFaults(harness: HarnessApp, page: Page): Promise<LayoutFault[]> {
   await seedNativeClaudeLogin(harness, 'morgan.alvarez-kowalski@northwind-engineering.test', Date.now() + 20 * 24 * 3600_000);
@@ -235,8 +234,7 @@ export async function accountsSectionFaults(harness: HarnessApp, page: Page): Pr
   await saveCodexAccountNeedingSignIn(harness, page, true);
   const faults: LayoutFault[] = [];
   const measure = async (section: string, provider: string) => {
-    const found = await layoutFaults(page, section, `[data-testid="provider-accounts-${provider}"]`);
-    faults.push(...found.filter((fault) => !(fault.kind === 'control-wraps' && fault.text === 'Log in to another account')));
+    faults.push(...await layoutFaults(page, section, `[data-testid="provider-accounts-${provider}"]`));
   };
   await openSection(page, 'Claude Code');
   await page.getByTestId('provider-accounts-claude').getByRole('button', { name: 'Log in to another account' }).click();

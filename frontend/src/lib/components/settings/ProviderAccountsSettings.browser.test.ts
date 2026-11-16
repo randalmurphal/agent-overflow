@@ -15,6 +15,7 @@ import { resetForTest as resetRateLimitsForTest, setProviderRateLimits } from '.
 import { applyFonts } from '../../utils/fonts';
 import { applyFontScale } from '../../utils/zoom';
 import type { SansFont } from '../../types/settings';
+import { PRIMARY_BUTTON_CLASS } from './styles';
 
 const DAY_MS = 24 * 3600_000;
 const DEFAULT_TEXT_SIZE = 13;
@@ -154,6 +155,8 @@ async function renderAccounts(screenWidth: number, state: AccountState, textSize
     await waitFor(() => expect(view.getByTestId('provider-account-acct-1').querySelector('.animate-spin')).toBeTruthy());
   }
   await document.fonts.ready;
+  // Sizes reach the component through ResizeObserver, a frame after layout.
+  await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
   return view;
 }
 
@@ -185,22 +188,51 @@ function overlapsVertically(a: DOMRect, b: DOMRect): boolean {
   return a.top < b.bottom && a.bottom > b.top;
 }
 
+const LOGIN_LABEL = 'Log in to another account';
+
 /**
- * The page's sign-in button lies inside the accounts column with its label;
- * `wraps` says whether the label may take more than one line.
+ * Whether the labeled sign-in button's one line fits the accounts column:
+ * a box styled as that button, measured apart from the component.
  */
-function expectLoginButtonFits(view: Awaited<ReturnType<typeof renderAccounts>>, provider: string, wraps: boolean): DOMRect {
-  const column = view.getByTestId(`provider-accounts-${provider}`).getBoundingClientRect();
-  const button = view.getByRole('button', { name: 'Log in to another account' });
-  const rect = button.getBoundingClientRect();
-  expect(rect.left, 'sign-in button left').toBeGreaterThanOrEqual(column.left - 0.5);
-  expect(rect.right, 'sign-in button right').toBeLessThanOrEqual(column.right + 0.5);
-  for (const text of textRects(button)) {
-    expect(text.left, 'sign-in label left').toBeGreaterThanOrEqual(rect.left - 0.5);
-    expect(text.right, 'sign-in label right').toBeLessThanOrEqual(rect.right + 0.5);
+function loginLabelFits(column: HTMLElement): boolean {
+  const probe = document.createElement('span');
+  probe.className = `${PRIMARY_BUTTON_CLASS} absolute`;
+  probe.textContent = LOGIN_LABEL;
+  column.append(probe);
+  const width = probe.getBoundingClientRect().width;
+  probe.remove();
+  return width <= column.getBoundingClientRect().width;
+}
+
+/**
+ * The section's sign-in action: the labeled button, on one line, exactly
+ * where that line fits the column, and the icon button named for the action
+ * everywhere else. Either lies inside the column.
+ */
+function expectLoginAction(view: Awaited<ReturnType<typeof renderAccounts>>, provider: string) {
+  const column = view.getByTestId(`provider-accounts-${provider}`);
+  const box = column.getBoundingClientRect();
+  const fits = loginLabelFits(column);
+  const labeled = view.queryByTestId(`provider-accounts-login-${provider}`);
+  const icon = view.queryByTestId(`provider-accounts-login-icon-${provider}`);
+  expect(!!labeled, 'labeled sign-in shown').toBe(fits);
+  expect(!!icon, 'icon sign-in shown').toBe(!fits);
+  expect(view.getAllByRole('button', { name: LOGIN_LABEL })).toHaveLength(1);
+  const shown = (labeled ?? icon)!;
+  const rect = shown.getBoundingClientRect();
+  expect(rect.left, 'sign-in left').toBeGreaterThanOrEqual(box.left - 0.5);
+  expect(rect.right, 'sign-in right').toBeLessThanOrEqual(box.right + 0.5);
+  if (labeled) {
+    for (const text of textRects(labeled)) {
+      expect(text.left, 'sign-in label left').toBeGreaterThanOrEqual(rect.left - 0.5);
+      expect(text.right, 'sign-in label right').toBeLessThanOrEqual(rect.right + 0.5);
+    }
+    expect(new Set(textRects(labeled).map((r) => Math.round(r.top))).size, 'sign-in label lines').toBe(1);
+  } else {
+    expect(icon!.getAttribute('aria-label')).toBe(LOGIN_LABEL);
+    expect(icon!.getAttribute('title')).toBe(LOGIN_LABEL);
   }
-  if (!wraps) expect(new Set(textRects(button).map((r) => Math.round(r.top))).size, 'sign-in label lines').toBe(1);
-  return rect;
+  return { fits, rect };
 }
 
 it.each(
@@ -276,10 +308,33 @@ it.each(
     expect(remove.top).toBeCloseTo(refresh.top, 0);
     expect(card.scrollWidth).toBeLessThanOrEqual(card.clientWidth + 1);
   }
-  // The page's sign-in button stays inside the column; its label wraps only
-  // when one line cannot fit, which never happens at the default size.
+  // The section's sign-in action fits the column in one form or the other;
+  // at the default text size its label always fits.
   const provider = (state.rows[0].provider as string | undefined) ?? 'codex';
-  expectLoginButtonFits(view, provider, size !== DEFAULT_TEXT_SIZE);
+  expect(expectLoginAction(view, provider).fits || size !== DEFAULT_TEXT_SIZE).toBe(true);
+});
+
+// Where the label cannot fit (a 320px phone at the largest text size in the
+// widest font), the icon form is the action; where it fits, the labeled
+// button is. Both start the sign-in and then say it is under way.
+it.each([
+  ['the labeled button', DEFAULT_TEXT_SIZE, 'provider-accounts-login-codex'],
+  ['the icon button', 20, 'provider-accounts-login-icon-codex'],
+] as const)('starts the sign-in from %s at text size %i', async (_form, size, testId) => {
+  let started = 0;
+  setBindingMock('StartProviderLogin', () => {
+    started += 1;
+    return new Promise<never>(() => {});
+  });
+  const view = await renderAccounts(320, { rows: [{ needsLogin: true }] }, size, 'hack-nerd');
+  expectLoginAction(view, 'codex');
+  view.getByTestId(testId).click();
+  await waitFor(() => expect(started).toBe(1));
+  await waitFor(() => {
+    const action = view.getByTestId(testId);
+    expect(action.getAttribute('aria-label') ?? action.textContent?.trim()).toBe('Signing in…');
+    expect((action as HTMLButtonElement).disabled).toBe(true);
+  });
 });
 
 // Desktop keeps one row: the name column on the left, the controls beside it
@@ -301,10 +356,11 @@ it.each(ACCOUNT_STATES.flatMap(([label, state]) => [1024, 1280].map((width) => [
       expect(controls.left).toBeGreaterThanOrEqual(name.right);
       expect(cardBox.right - controls.right).toBeCloseTo(parseFloat(getComputedStyle(card).paddingRight) + 1, 0);
     }
-    // The sign-in button keeps its one-line width beside the section title.
+    // The labeled sign-in button sits on one line beside the section title.
     const provider = (state.rows[0].provider as string | undefined) ?? 'codex';
-    const login = expectLoginButtonFits(view, provider, false);
+    const login = expectLoginAction(view, provider);
+    expect(login.fits).toBe(true);
     const title = view.getByRole('heading', { name: 'Accounts' }).getBoundingClientRect();
-    expect(overlapsVertically(login, title)).toBe(true);
+    expect(overlapsVertically(login.rect, title)).toBe(true);
   },
 );
