@@ -241,7 +241,10 @@ export async function processHoldState(identity: ProcessIdentity): Promise<Proce
       try {
         stat = await readFile(`/proc/${identity.pid}/stat`, 'utf8');
       } catch (statError) {
-        if ((statError as NodeJS.ErrnoException).code === 'ENOENT') return 'released';
+        // ESRCH: the stat file opened, then the process was reaped before
+        // the read.
+        const code = (statError as NodeJS.ErrnoException).code;
+        if (code === 'ENOENT' || code === 'ESRCH') return 'released';
         throw statError;
       }
       const fields = stat.slice(stat.lastIndexOf(')') + 1).trim().split(/\s+/);
