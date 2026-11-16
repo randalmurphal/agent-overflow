@@ -600,6 +600,37 @@ func TestASessionDeathSplitsASpawnerAnswerFromThePersonsText(t *testing.T) {
 	f.requireRoutedAgain(t, sendID)
 }
 
+// A hand-back announced behind the reconcile that closed its question
+// raises nothing: the person answered first, and the question's last
+// notification stays the retraction.
+func TestAHandBackAnnouncedAfterItsQuestionClosedDoesNotNotify(t *testing.T) {
+	t.Parallel()
+	f := newAsyncQuestionFixture(t, "async-late-hand-back", store.PlacementOwned)
+	f.ask(t, "question:ask", `{"delivery":"async","questions":[{"title":"Which scope?"}]}`)
+	token, _ := f.wake(t, f.spawner.ID)
+	release := f.holdPrompts(t)
+	// The person's answer queues the reconcile that closes the question.
+	if err := f.app.SubmitAsyncAnswers(t.Context(), f.worker.ID, "person", []store.AsyncQuestionAnswer{{ItemID: "question:ask", Index: 0, Answer: "One"}}); err != nil {
+		t.Fatal(err)
+	}
+	// Another screen withdraws the spawner's wake before it runs: the hand-back
+	// still reads the question open and queues its announcement after it.
+	if stop, err := f.app.StopThreadAgentIncoming(t.Context(), f.spawner.ID, workerPromptSendIDRoot+token); err != nil || stop.Outcome != threadAgentStopped {
+		t.Fatalf("withdraw = %+v, %v", stop, err)
+	}
+	release()
+	f.drain(t)
+	sends := f.questionSends("question:ask")
+	if len(sends) == 0 || !sends[len(sends)-1].Retract {
+		t.Fatalf("question notifications = %+v, want the last one a retraction", sends)
+	}
+	for _, send := range sends {
+		if !send.Retract {
+			t.Fatalf("a closed question notified: %+v", sends)
+		}
+	}
+}
+
 // holdPrompts holds the prompts' serial queue until the returned release
 // runs, so what is queued behind it waits.
 func (f asyncQuestionFixture) holdPrompts(t *testing.T) (release func()) {

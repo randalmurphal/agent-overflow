@@ -197,11 +197,18 @@ func (a *App) openAsyncQuestions(threadID string) (map[string]asyncQuestionPromp
 
 // announceAsyncQuestion delivers an async question prompt to the thread it
 // is routed to, or says it is the person's. It runs on the prompts' serial
-// queue, as an announcement's delivery does.
+// queue, as an announcement's delivery does. A hand-back's announcement
+// queued behind the reconcile that closed or replaced its occurrence asks
+// nobody, as a delivery overtaken by a later announcement does
+// (deliverWorkerPrompt): only the occurrence still open, and still the
+// person's, notifies.
 func (a *App) announceAsyncQuestion(prompt asyncQuestionPrompt) {
 	request := prompt.request
 	if prompt.route == nil {
-		a.notifyAsyncQuestion(request.ThreadID, request.RequestID, true)
+		ref := triage.PromptRef{ThreadID: request.ThreadID, RequestID: request.RequestID, Occurrence: request.Occurrence}
+		if route, open := a.asyncQuestionRoute(ref); open && route == nil {
+			a.notifyAsyncQuestion(request.ThreadID, request.RequestID, true)
+		}
 		return
 	}
 	a.notifyAsyncQuestion(request.ThreadID, request.RequestID, false)
