@@ -19,6 +19,7 @@ import (
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadtools"
 	"agent-overflow/internal/triage"
+	"agent-overflow/internal/workflow/engine"
 )
 
 // The other threads a thread is waiting on, as its activity rail's Agents
@@ -127,13 +128,23 @@ type ThreadAgentRow struct {
 	// waiting worker's is what it waits on. A paired computer reports its
 	// spawn's.
 	Activity string `json:"activity,omitempty"`
-	// ToolCalls and Tokens are what the thread a spawn made did over its
-	// life: its top-level tool calls and the tokens its turns spent, the
-	// running turn's included (store.ThreadTally), read here or reported
-	// by the paired computer that holds it; zero for every other kind and
-	// from a computer that does not report them.
+	// ToolCalls, Tokens and RuntimeMs are what the thread a spawn made did
+	// over its life (store.ThreadTally, threadAgentTally): each top-level
+	// tool call it executed, once; the tokens its turns and its own native
+	// agents spent; and the time its turns ran, the open one's so far.
+	// TurnOpen says a turn is open, whose time goes on from RuntimeMs as
+	// read. Read here, or reported by the paired computer that holds it;
+	// zero for every other kind and from a computer that does not report
+	// them, and for a paired spawn under Past whose computer has not
+	// answered, NestedUnavailable then saying why when it could not.
 	ToolCalls int64 `json:"toolCalls,omitempty"`
 	Tokens    int64 `json:"tokens,omitempty"`
+	RuntimeMs int64 `json:"runtimeMs,omitempty"`
+	TurnOpen  bool  `json:"turnOpen,omitempty"`
+	// RestUnreported marks a request settled `finished` by a paired
+	// computer whose version settles a spawn when its turn ends and cannot
+	// report whether the thread came to rest (store.ThreadRequest.RestUnreported).
+	RestUnreported bool `json:"restUnreported,omitempty"`
 	// LastMessage is who spoke last in a local target and the end of it.
 	LastMessage     string `json:"lastMessage,omitempty"`
 	LastMessageRole string `json:"lastMessageRole,omitempty"`
@@ -177,12 +188,15 @@ type ThreadAgentRows struct {
 	// for (answerThreadAgentRows). Nil from a computer that predates it,
 	// whose rows say what they can (peerListingOpen).
 	Open *bool `json:"open,omitempty"`
-	// Activity, ToolCalls and Tokens are the listed thread's own, answered
-	// by agent_rows for the spawn row on the computer that asked
-	// (ThreadAgentRow). A computer that predates them sends none.
+	// Activity, ToolCalls, Tokens, RuntimeMs and TurnOpen are the listed
+	// thread's own, answered by agent_rows for the spawn row on the
+	// computer that asked (ThreadAgentRow). A computer that predates them
+	// sends none.
 	Activity  string `json:"activity,omitempty"`
 	ToolCalls int64  `json:"toolCalls,omitempty"`
 	Tokens    int64  `json:"tokens,omitempty"`
+	RuntimeMs int64  `json:"runtimeMs,omitempty"`
+	TurnOpen  bool   `json:"turnOpen,omitempty"`
 }
 
 // ThreadAgentRowChange is one `thread:agent_rows_changed` frame: the request
@@ -365,6 +379,7 @@ func (a *App) ListThreadPastAgentRows(threadID string, after store.PastAgentRows
 	if err != nil {
 		return PastAgentRows{}, fmt.Errorf("read past agent rows: %w", err)
 	}
+	a.pastPeerSpawnCounts(rows, page.Requests)
 	return PastAgentRows{Rows: rows, Total: page.Total, Next: page.Next}, nil
 }
 
@@ -634,8 +649,7 @@ func (a *App) nestPeerAgentRows(parent *ThreadAgentRow, slot threadAgentRemoteSl
 	if parent.SettledAt != 0 && parent.Worker == workerBlocked {
 		parent.BlockedOn = "person"
 	}
-	// What the thread there did, as its last answer reported it.
-	parent.ToolCalls, parent.Tokens = answer.listing.ToolCalls, answer.listing.Tokens
+	peerSpawnCounts(parent, answer)
 	if parent.open() && parent.BlockedOn == "" {
 		parent.Activity = answer.listing.Activity
 	}
@@ -686,6 +700,44 @@ func (a *App) nestPeerAgentRows(parent *ThreadAgentRow, slot threadAgentRemoteSl
 		})
 	}
 	return rows, entries
+}
+
+// peerSpawnCounts sets what a paired computer's spawn did, as that
+// computer's last answer reported it: the one projection of a paired
+// spawn's counts, for its open row and its Past row alike.
+func peerSpawnCounts(row *ThreadAgentRow, answer threadAgentPeerAnswer) {
+	row.ToolCalls, row.Tokens = answer.listing.ToolCalls, answer.listing.Tokens
+	row.RuntimeMs, row.TurnOpen = answer.listing.RuntimeMs, answer.listing.TurnOpen
+}
+
+// pastPeerSpawnCounts sets the counts of the paired spawns on a page of
+// Past rows from each one's last answer, and asks again in the background
+// for any whose answer is missing or old, a page's worth at most; each
+// answer that arrives frames its row. A spawn whose computer did not
+// answer, or is no longer paired, says why (NestedUnavailable).
+func (a *App) pastPeerSpawnCounts(rows []ThreadAgentRow, requests []store.ThreadAgentRequest) {
+	for i := range rows {
+		spawn := requests[i].ThreadRequest
+		if spawn.Kind != store.ThreadRequestSpawn || spawn.TargetComputerID == "" || spawn.TargetThreadID == "" {
+			continue
+		}
+		paired, err := a.peerPaired(spawn.TargetComputerID)
+		if err == nil && !paired {
+			err = errThreadAgentPeerUnpaired
+		}
+		if err != nil {
+			rows[i].NestedUnavailable = threadAgentPeerUnavailable(rows[i].Computer, err)
+			continue
+		}
+		answer, ok := a.cachedPeerAgentRows(spawn)
+		if ok {
+			peerSpawnCounts(&rows[i], answer)
+			if answer.err != nil {
+				rows[i].NestedUnavailable = threadAgentPeerUnavailable(rows[i].Computer, answer.err)
+			}
+		}
+		a.refreshPairedPeerAgentRows(spawn, threadAgentPeerRefreshEvery)
+	}
 }
 
 // threadAgentPeerUnavailable words, for the tray, why a spawn on a paired
@@ -758,7 +810,7 @@ func (v threadAgentView) rows(requests []store.ThreadAgentRequest) ([]ThreadAgen
 			}
 		}
 	}
-	names, err := v.app.store.ThreadNames(ids)
+	names, err := v.app.store.ThreadNames(ids, time.Now())
 	if err != nil {
 		return nil, err
 	}
@@ -793,6 +845,13 @@ func (v threadAgentView) row(request store.ThreadAgentRequest, names map[string]
 			rest.unrest = workerWaiting
 		}
 	}
+	if rest.unrest == "" && !local && !settled && row.TargetThreadID != "" {
+		// So does one a paired computer holds for its thread's rest, as
+		// that computer last reported it.
+		if line := v.app.remoteRequestBlocked(row.Token).waitingOn; line != "" {
+			rest = workerRest{unrest: workerWaiting, detail: line}
+		}
+	}
 	worker := rest.unrest
 	live := !settled || worker != ""
 	blocked := false
@@ -814,6 +873,7 @@ func (v threadAgentView) row(request store.ThreadAgentRequest, names map[string]
 		ComputerID: row.TargetComputerID, Title: state.Title, State: state.State, Worker: worker,
 		LateReply: request.HasLateReply, CreatedAt: row.CreatedAt, SettledAt: row.SettledAt,
 		Depth: request.Depth, NestedHidden: request.NestedHidden,
+		RestUnreported: row.RestUnreported,
 	}
 	if row.Kind == store.ThreadRequestAsk {
 		// The copy that answers an ask is the worker: the row opens it while
@@ -838,7 +898,8 @@ func (v threadAgentView) row(request store.ThreadAgentRequest, names map[string]
 		if row.Kind == store.ThreadRequestSpawn {
 			out.Placement, out.Archived = name.Placement, name.Archived
 			// What the thread it made did, read with its name.
-			out.ToolCalls, out.Tokens = name.Tally.ToolCalls, name.Tally.Tokens
+			tally := v.app.threadAgentTally(row.TargetThreadID, name.Tally)
+			out.ToolCalls, out.Tokens, out.RuntimeMs, out.TurnOpen = tally.ToolCalls, tally.Tokens, tally.RuntimeMs, tally.Running
 		}
 	}
 	if asked, ok := names[row.OriginThreadID]; ok && local && row.Kind == store.ThreadRequestAsk {
@@ -854,6 +915,7 @@ func (v threadAgentView) row(request store.ThreadAgentRequest, names map[string]
 		if state.State == threadtools.RequestBlocked {
 			out.BlockedOn, out.BlockedRoutedTo = "person", remote.routedTo
 		}
+		out.Activity = rest.detail
 	case row.TargetThreadID != "":
 		out.BlockedOn, out.BlockedDetail, out.BlockedRoutedTo = waiting.on, waiting.detail, waiting.routedTo
 		out.Activity = v.app.threadAgentActivity(row.TargetThreadID)
@@ -1187,15 +1249,21 @@ type threadAgentEmits struct {
 	// liveness holds the threads whose rest may have changed, true where
 	// their durable sources changed too: each is reassessed
 	// (reassessWorker) and framed as a target when it is or was a worker,
-	// or a request runs on it.
-	liveness map[string]bool
-	draining bool
+	// or a request runs on it. A changed request's caller is one, since
+	// whether an answer is on its way to it may have changed, and so is the
+	// thread a changed workflow run (workflowRuns) reports to.
+	liveness     map[string]bool
+	workflowRuns map[string]struct{}
+	draining     bool
 	// activity is each running target's latest activity line, while it has
 	// a request running or is a worker not at rest; lastActivity and
 	// activityDue throttle the frames activity alone emits.
 	activity     map[string]string
 	lastActivity map[string]time.Time
 	activityDue  map[string]bool
+	// lastCall is the id of each target's latest tool call, so a new call
+	// frames its counts whatever its line says.
+	lastCall map[string]string
 }
 
 // noteThreadRequestChanged is the store's change hook.
@@ -1271,7 +1339,7 @@ func (a *App) threadAgentFollows(threadID string) bool {
 	if _, running := a.runningReceiptTokens(threadID); running {
 		return true
 	}
-	return a.liveWorker(threadID) || a.restHeldThread(threadID)
+	return a.liveWorker(threadID)
 }
 
 func (a *App) queueThreadAgentEmit(add func(*threadAgentEmits)) {
@@ -1279,7 +1347,7 @@ func (a *App) queueThreadAgentEmit(add func(*threadAgentEmits)) {
 	e.mu.Lock()
 	if e.tokens == nil {
 		e.tokens, e.callers, e.targets = map[string]struct{}{}, map[string]struct{}{}, map[string]struct{}{}
-		e.liveness = map[string]bool{}
+		e.liveness, e.workflowRuns = map[string]bool{}, map[string]struct{}{}
 	}
 	add(e)
 	if e.draining || a.lifeCtx().Err() != nil {
@@ -1299,15 +1367,18 @@ func (a *App) drainThreadAgentEmits() {
 	e := &a.threadAgentEmits
 	for {
 		e.mu.Lock()
-		tokens, callers, targets, liveness := e.tokens, e.callers, e.targets, e.liveness
-		if len(tokens)+len(callers)+len(targets)+len(liveness) == 0 || a.lifeCtx().Err() != nil {
+		tokens, callers, targets, liveness, runs := e.tokens, e.callers, e.targets, e.liveness, e.workflowRuns
+		if len(tokens)+len(callers)+len(targets)+len(liveness)+len(runs) == 0 || a.lifeCtx().Err() != nil {
 			e.draining = false
 			e.mu.Unlock()
 			return
 		}
 		e.tokens, e.callers, e.targets = map[string]struct{}{}, map[string]struct{}{}, map[string]struct{}{}
-		e.liveness = map[string]bool{}
+		e.liveness, e.workflowRuns = map[string]bool{}, map[string]struct{}{}
 		e.mu.Unlock()
+		for _, threadID := range a.durableRestChanges(tokens, callers, runs) {
+			liveness[threadID] = true
+		}
 		for threadID, durable := range liveness {
 			worker, err := a.reassessWorker(threadID, durable)
 			if err != nil {
@@ -1343,6 +1414,33 @@ func (a *App) drainThreadAgentEmits() {
 			a.emit(eventchan.ThreadAgentRowsChanged, ThreadAgentRowChange{ThreadID: frame.ThreadID, ID: frame.Token})
 		}
 	}
+}
+
+// durableRestChanges names the threads whose durable sources of rest the
+// drained changes may have changed: the caller of each changed request and
+// each caller named, whom an answer on its way keeps from rest, and the
+// thread each changed workflow run reports to. A read that fails is
+// logged: its threads keep what they last said until their next change.
+func (a *App) durableRestChanges(tokens, callers, runs map[string]struct{}) []string {
+	out := slices.Collect(maps.Keys(callers))
+	if len(tokens) > 0 {
+		named, err := a.store.ThreadRequestCallers(slices.Collect(maps.Keys(tokens)))
+		if err != nil {
+			log.Printf("agent rows: read the callers of %d changed requests: %v", len(tokens), err)
+		}
+		out = append(out, named...)
+	}
+	for itemID := range runs {
+		origin, err := a.store.WorkItemOriginThread(itemID)
+		if err != nil {
+			log.Printf("agent rows: read the thread workflow run %s reports to: %v", itemID, err)
+			continue
+		}
+		if origin != "" {
+			out = append(out, origin)
+		}
+	}
+	return out
 }
 
 // tapThreadAgentRows is the emit tap: any thread's turn, prompt or session
@@ -1400,17 +1498,38 @@ func (a *App) tapThreadAgentRows(name eventchan.Channel, data any) {
 		if change, ok := data.(ThreadWakeChange); ok {
 			a.noteWorkerWaiting(change.ThreadID)
 		}
+	case eventchan.ProviderAsyncQuestionsChanged:
+		if change, ok := data.(map[string]string); ok {
+			a.noteWorkerWaiting(change["threadId"])
+		}
+	case eventchan.WorkflowItemState:
+		if event, ok := data.(engine.StateEvent); ok && event.ItemID != "" {
+			a.queueThreadAgentEmit(func(e *threadAgentEmits) { e.workflowRuns[event.ItemID] = struct{}{} })
+		}
+	case eventchan.ProviderUsage:
+		if event, ok := data.(provider.UsageEvent); ok && (event.Action == "usage" || event.Action == "progress") {
+			a.noteThreadAgentCounts(event.ThreadID)
+		}
 	case eventchan.ProviderItemEvent:
 		if event, ok := data.(triage.ItemStreamEvent); ok && event.Item != nil && event.Item.ParentID == "" {
 			a.noteThreadAgentActivity(event.ThreadID, *event.Item)
+		}
+	case eventchan.ProviderSubagentProgress:
+		// A Codex agent's spend counts in its thread's tokens once its
+		// completion records it; its progress refreshes the row's counts
+		// until then (noteThreadAgentCounts).
+		if event, ok := data.(triage.SubagentProgressEvent); ok && event.ParentID == "" {
+			a.noteThreadAgentCounts(event.ThreadID)
 		}
 	}
 }
 
 // noteThreadAgentActivity records a running target's latest top-level tool
 // call as its activity line, as a subagent's row shows its latest tool, and
-// emits it at most every threadAgentActivityEvery. Its messages are not
-// activity: its last one is the row's digest.
+// frames it at most every threadAgentActivityEvery. A new call frames the
+// row even when its line reads as the last one did, since its tool count
+// moved; the same call's own updates frame nothing unless its line
+// changes. Its messages are not activity: its last one is the row's digest.
 func (a *App) noteThreadAgentActivity(threadID string, item store.Item) {
 	if item.Kind != "tool_call" || threadID == "" {
 		return
@@ -1421,19 +1540,44 @@ func (a *App) noteThreadAgentActivity(threadID string, item store.Item) {
 		return
 	}
 	line := clipLine(item.Summary)
-	if line == "" {
+	e := &a.threadAgentEmits
+	e.mu.Lock()
+	if e.activity == nil {
+		e.activity, e.lastActivity, e.activityDue = map[string]string{}, map[string]time.Time{}, map[string]bool{}
+		e.lastCall = map[string]string{}
+	}
+	sameCall := e.lastCall[threadID] == item.ID
+	if (line == "" || e.activity[threadID] == line) && sameCall {
+		e.mu.Unlock()
+		return
+	}
+	e.lastCall[threadID] = item.ID
+	if line != "" {
+		e.activity[threadID] = line
+	}
+	a.frameThreadAgentProgressLocked(threadID)
+}
+
+// noteThreadAgentCounts frames a followed thread's row as its spend moves,
+// at most every threadAgentActivityEvery.
+func (a *App) noteThreadAgentCounts(threadID string) {
+	if threadID == "" || !a.threadAgentFollows(threadID) {
 		return
 	}
 	e := &a.threadAgentEmits
 	e.mu.Lock()
 	if e.activity == nil {
 		e.activity, e.lastActivity, e.activityDue = map[string]string{}, map[string]time.Time{}, map[string]bool{}
+		e.lastCall = map[string]string{}
 	}
-	if e.activity[threadID] == line {
-		e.mu.Unlock()
-		return
-	}
-	e.activity[threadID] = line
+	a.frameThreadAgentProgressLocked(threadID)
+}
+
+// frameThreadAgentProgressLocked frames threadID as a target now, or once
+// threadAgentActivityEvery has passed since its last such frame, one frame
+// pending at a time. Caller holds e.mu, which this releases.
+func (a *App) frameThreadAgentProgressLocked(threadID string) {
+	e := &a.threadAgentEmits
 	if e.activityDue[threadID] {
 		e.mu.Unlock()
 		return
@@ -1470,6 +1614,7 @@ func (a *App) forgetThreadAgentActivity(threadID string) {
 	defer e.mu.Unlock()
 	delete(e.activity, threadID)
 	delete(e.lastActivity, threadID)
+	delete(e.lastCall, threadID)
 }
 
 // noteThreadAgentWait reports a call parked on, or leaving, requests: a send

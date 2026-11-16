@@ -87,15 +87,14 @@ func (a *App) startThreadRequestSweeps() {
 		// and a row a quit left running is recorded before anything claims
 		// it.
 		a.recoverAgentWakesAtBoot()
-		// The workers that wait on what survived the restart, read once the
-		// loops and watches are recovered.
-		a.seedLiveWorkers()
-		// The requests held for their threads' rest across the restart:
-		// those at rest now settle.
-		a.noteRestWaitsMayChange()
 		// The async questions a restart left open go to their threads'
 		// spawners again, and their threads read as waiting on them.
 		a.seedAsyncQuestionPrompts()
+		// The workers that wait on what survived the restart, recorded
+		// once the loops and watches are recovered; then the requests held
+		// for their threads' rest across the restart, those at rest now
+		// settling.
+		a.recoverRestAtBoot()
 		a.runThreadRequestSweeps(nudge)
 	})
 }
@@ -796,7 +795,12 @@ func (a *App) collectRemoteThreadRequestLocked(row store.ThreadRequest, answer T
 		return false, false, err
 	}
 	replyArms := (answer.AnswerKind == store.ThreadAnswerReply || answer.LateReply != "") && a.replyArmsWake(current)
+	restUnreported, err := a.remoteRestUnreported(current, answer)
+	if err != nil {
+		return false, false, err
+	}
 	collected, err := a.store.CollectThreadRequest(row.Token, store.ThreadReceiptAnswer{
+		RestUnreported: restUnreported,
 		Revision:       answer.Revision,
 		State:          answer.State,
 		Answer:         []byte(answer.Answer),
@@ -813,6 +817,24 @@ func (a *App) collectRemoteThreadRequestLocked(row store.ThreadRequest, answer T
 	}
 	wake, late = a.collectionWake(row.Token, collected)
 	return wake, late, nil
+}
+
+// remoteRestUnreported reports whether answer settles row `finished` from
+// a computer that cannot report its thread's rest (ThreadPeerRequest.RestRule)
+// for a request that waits for that rest here: a spawn, or a send to a
+// thread its caller spawned there.
+func (a *App) remoteRestUnreported(row store.ThreadRequest, answer ThreadPeerRequest) (bool, error) {
+	if answer.RestRule || answer.State != store.ThreadReceiptFinished || answer.AnswerKind != store.ThreadAnswerFinal {
+		return false, nil
+	}
+	switch row.Kind {
+	case store.ThreadRequestSpawn:
+		return true, nil
+	case store.ThreadRequestSend:
+		return a.store.CallerSpawnedRemote(row.CallerThreadID, row.TargetComputerID, row.TargetThreadID)
+	default:
+		return false, nil
+	}
 }
 
 // remoteAnswerAgent is the standing agent another computer reported as
@@ -950,19 +972,19 @@ func (a *App) sweepThreadRequestsAtBoot() {
 		errs = append(errs, err)
 	}
 	works := make([]threadSettlementWork, 0, len(receipts))
+	// No held request settles at rest before the sweeps recovered what its
+	// thread waits on (recoverRestAtBoot).
+	a.barRestAtBoot()
 	for _, receipt := range receipts {
 		// A request the last run held for its thread's rest is held again:
 		// its turn ended, and the restart does not end what it waits on.
-		if held, err := a.heldReceiptAtBoot(receipt); err != nil {
+		settlement, held, err := a.heldReceiptAtBoot(receipt)
+		if err != nil {
 			errs = append(errs, fmt.Errorf("read whether receipt %s waits for rest: %w", receipt.Token, err))
 		} else if held {
 			continue
 		}
-		work, _, err := a.settleReceiptUnderLock(receipt.Token, store.ThreadReceiptOpenStates(), store.ThreadRequestSettlement{
-			State:      store.ThreadReceiptInterrupted,
-			Answer:     []byte(threadtools.InterruptRestart),
-			AnswerKind: store.ThreadAnswerError,
-		}, dropScratchThread)
+		work, _, err := a.settleReceiptUnderLock(receipt.Token, store.ThreadReceiptOpenStates(), settlement, dropScratchThread)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("settle interrupted receipt %s: %w", receipt.Token, err))
 			continue

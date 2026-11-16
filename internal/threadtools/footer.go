@@ -367,7 +367,7 @@ func (w Wake) status(b *spanBuilder, facts *MessageFacts) {
 		facts.StoppedBy = stoppedBy
 		// What a turn its session ended had written is an answer, clipped
 		// as one; any other reason is a sentence, said whole.
-		if prefix := InterruptSessionEndedMidTurn + SessionEndedWrittenSoFar; strings.HasPrefix(reason, prefix) {
+		if prefix, ok := sessionEndedWritten(reason); ok {
 			b.write(prefix)
 			w.writeAnswer(b, facts, reason[len(prefix):], 0)
 			return
@@ -437,6 +437,12 @@ const (
 	// read the message. Its answer goes on with what the turn had written
 	// by then (SessionEndedWrittenSoFar), when it wrote anything.
 	InterruptSessionEndedMidTurn = "The thread's session ended during the turn that read the request."
+	// InterruptSessionEndedWorking: the turn that read the message ended,
+	// and the request waited for its thread to come to rest (a spawn, or a
+	// send to a thread its caller spawned); the session ended during a later
+	// turn of that thread. Its answer goes on as InterruptSessionEndedMidTurn's
+	// does.
+	InterruptSessionEndedWorking = "The thread's session ended while it was still working on the request."
 	// InterruptTurn: the turn was interrupted and no cause was recorded.
 	InterruptTurn = "The turn was interrupted before it answered."
 	// InterruptNeverStarted: the request was accepted and its thread was
@@ -459,7 +465,18 @@ const SessionEndedWrittenSoFar = " What it had written by then:\n\n"
 // InterruptSessionEndedReasons are the reasons a request reads when its
 // thread's session ended before a turn answered it.
 var InterruptSessionEndedReasons = []string{
-	InterruptSessionEndedUnread, InterruptSessionEndedUnanswered, InterruptSessionEndedMidTurn,
+	InterruptSessionEndedUnread, InterruptSessionEndedUnanswered, InterruptSessionEndedMidTurn, InterruptSessionEndedWorking,
+}
+
+// sessionEndedWritten reads a reason that goes on with what the turn had
+// written when its session ended, and returns the part before that text.
+func sessionEndedWritten(reason string) (string, bool) {
+	for _, opening := range []string{InterruptSessionEndedMidTurn, InterruptSessionEndedWorking} {
+		if prefix := opening + SessionEndedWrittenSoFar; strings.HasPrefix(reason, prefix) {
+			return prefix, true
+		}
+	}
+	return "", false
 }
 
 // InterruptHandedOff is the reason of a request whose thread, an

@@ -227,12 +227,14 @@ func (a *App) answerThreadAgentRows(ctx context.Context, args threadAgentPeerArg
 	}
 	open := rest.unrest != ""
 	listing.Open = &open
-	tallies, err := a.store.ThreadTallies([]string{args.ThreadID})
+	tallies, err := a.store.ThreadTallies([]string{args.ThreadID}, time.Now())
 	if err != nil {
 		return ThreadAgentRows{}, fmt.Errorf("read what thread %s did: %w", args.ThreadID, err)
 	}
-	tally := tallies[args.ThreadID]
+	// As this computer's own row of it reads (threadAgentView.row).
+	tally := a.threadAgentTally(args.ThreadID, tallies[args.ThreadID])
 	listing.ToolCalls, listing.Tokens = tally.ToolCalls, tally.Tokens
+	listing.RuntimeMs, listing.TurnOpen = tally.RuntimeMs, tally.Running
 	if open {
 		// As this computer's own row of it reads (threadAgentView.row).
 		listing.Activity = a.threadAgentActivity(args.ThreadID)

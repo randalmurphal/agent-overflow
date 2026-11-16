@@ -290,6 +290,11 @@ type RequestState struct {
 	// work, a loop, watch or reminder, threads it started, or messages
 	// queued for it. The request settles once the thread is at rest.
 	WaitingOn string `json:"waiting_on,omitempty"`
+	// RestUnreported marks a `finished` answer from a paired computer whose
+	// version settles a spawn, and a send to a thread the caller spawned,
+	// when its turn ends: it cannot report whether the thread came to rest,
+	// so what that thread started may still be running.
+	RestUnreported bool `json:"rest_unreported,omitempty"`
 }
 
 // ThreadState is one watched thread's live state.

@@ -226,9 +226,6 @@ type App struct {
 	// liveWorkers is the threads last found not at rest, which keep the
 	// local spawn that made each open (app_thread_agent_live.go).
 	liveWorkers liveWorkers
-	// restWaits is the spawns whose settlement waits on their worker's rest
-	// (app_thread_tools_rest_settle.go).
-	restWaits restWaits
 	// threadAgentPeers is the last agent_rows answer for each spawn on a
 	// paired computer (app_thread_agent_rows_remote.go).
 	threadAgentPeers threadAgentPeerCache

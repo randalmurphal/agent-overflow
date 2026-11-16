@@ -128,9 +128,13 @@ type ThreadPeerRequest struct {
 	// WaitingOn is what the target still waits on while its request waits
 	// for its rest: a spawn, or a send from the thread that spawned it,
 	// whose turn ended with work of its own left (restSettlement). Live,
-	// never stored. A computer that does not send it settles such a
-	// request when its turn ends.
+	// never stored.
 	WaitingOn string `json:"waitingOn,omitempty"`
+	// RestRule is set by a computer that settles such a request at its
+	// thread's rest. One that does not send it settles it when its turn
+	// ends and cannot report rest: its `finished` answer is collected with
+	// store.ThreadReceiptAnswer.RestUnreported.
+	RestRule bool `json:"restRule,omitempty"`
 	// AnswerAgent is set on a settled request whose thread was a standing
 	// agent when the answer was written, with the role line its wake quotes.
 	// A computer that does not send it is read as having answered from an
@@ -592,6 +596,7 @@ func (a *App) threadPeerRequestState(_ context.Context, owner, token string) (Th
 		return state, nil
 	}
 	state.Known = true
+	state.RestRule = true
 	state.Kind = receipt.Kind
 	state.TargetThreadID = receipt.TargetThreadID
 	state.State = receipt.State

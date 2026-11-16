@@ -226,6 +226,15 @@ func (a *App) heldSendIDs(threadID string) (map[string]bool, error) {
 func (a *App) settleReceiptOnSessionEnd(threadID, session, token string, held map[string]bool) (threadSettlementWork, error) {
 	unlock := a.threadRequestSettleLock(token)
 	defer unlock()
+	if gate, held := a.heldReceiptGate(threadID, token); held {
+		// Its own turn ended: the session's end is one of its thread's,
+		// which cut the turn it ran then, if any.
+		receipt, found, err := a.deliveredReceiptLocked(token)
+		if err != nil || !found || receipt.TargetThreadID != threadID || receipt.State != store.ThreadReceiptRunning {
+			return threadSettlementWork{}, err
+		}
+		return a.settleHeldReceiptLocked(receipt, gate, heldEnd{sessionEnded: true, session: session})
+	}
 	if a.receiptSession(threadID, token) != session {
 		return threadSettlementWork{}, nil
 	}
@@ -434,6 +443,12 @@ func (a *App) settleBoundReceiptOnTurnEnd(threadID, token string) (threadSettlem
 		// Replied, cancelled or settled: nothing here owns it any more.
 		a.forgetReceiptRunning(threadID, token)
 		return threadSettlementWork{}, "", noHold, nil
+	}
+	if gate, held := a.heldReceiptGate(threadID, token); held {
+		// Its own turn ended: the turn that ended now is a later one of its
+		// thread's.
+		work, err := a.settleHeldReceiptLocked(receipt, gate, heldEnd{})
+		return work, "", noHold, err
 	}
 	if receipt.TurnID == "" {
 		// The message is with the provider and no delivery has named its
@@ -780,7 +795,6 @@ func (a *App) settleReadReceiptLocked(
 		return threadSettlementWork{}, false, nil
 	}
 	a.forgetReceiptRunning(receipt.TargetThreadID, token)
-	a.releaseRestHold(receipt.TargetThreadID, token)
 	if result.Outbound {
 		// The row names a request THIS computer sent elsewhere. A receipt
 		// carrying the same token was minted by a paired computer, and

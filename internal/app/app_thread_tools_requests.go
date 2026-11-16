@@ -482,6 +482,9 @@ func requestStateFrom(row store.ThreadRequest, answer []byte, lateReply bool, ti
 		DueAt:      row.DueAt,
 		Answer:     string(answer),
 		WakeIssue:  row.WakeIssue,
+		// Kept as a late reply supersedes it: the computer still could not
+		// say whether the thread came to rest.
+		RestUnreported: row.RestUnreported,
 	}
 	if lateReply {
 		state.AnswerKind = threadtools.AnswerReply

@@ -80,6 +80,8 @@ func (a *App) WorkflowBindThread(itemID, threadID string) (store.WorkItem, error
 	if err := a.store.UpdateWorkItemOriginThread(item.ID, thread.ID); err != nil {
 		return store.WorkItem{}, err
 	}
+	// A running run it reports to keeps the thread from rest.
+	a.noteWorkerWaiting(thread.ID)
 	return a.store.GetWorkItem(item.ID)
 }
 
@@ -98,6 +100,7 @@ func (a *App) WorkflowUnbindThread(itemID string) (store.WorkItem, error) {
 	if err := a.store.UpdateWorkItemOriginThread(item.ID, ""); err != nil {
 		return store.WorkItem{}, err
 	}
+	a.noteWorkerWaiting(item.OriginThreadID)
 	return a.store.GetWorkItem(item.ID)
 }
 

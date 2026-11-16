@@ -102,10 +102,10 @@ func TestASpawnSettlesWhenItsWorkerRests(t *testing.T) {
 
 	ack := f.spawnWorker(t, "watch the deploy")
 	f.awaitRestHold(t, ack)
-	// Held, it leaves the turn-end gate: the worker's later turn ends read
-	// nothing for it.
-	if tokens, _ := f.app.runningReceiptTokens(ack.ThreadID); slices.Contains(tokens, ack.Token) {
-		t.Fatalf("the held request is still in the turn-end gate: %v", tokens)
+	// Held, it stays in the turn-end gate: the worker's later turn ends
+	// and session ends still read it.
+	if tokens, _ := f.app.runningReceiptTokens(ack.ThreadID); !slices.Contains(tokens, ack.Token) {
+		t.Fatalf("the held request left the turn-end gate: %v", tokens)
 	}
 	report := f.statusOf(t, ack.Token, 1)
 	if !report.TimedOut || len(report.Requests) != 1 || report.Requests[0].State != threadtools.RequestRunning ||
@@ -257,7 +257,8 @@ func TestAHeldSpawnAcrossARestart(t *testing.T) {
 	if !after.app.restHeld(looped.ThreadID, looped.Token) {
 		t.Fatal("the boot did not hold the request again")
 	}
-	after.app.settleRestedReceipts()
+	after.app.recoverRestAtBoot()
+	after.app.threadRequestsWG.Wait()
 	if row := after.request(t, looped.Token); row.State != store.ThreadRequestRunning {
 		t.Fatalf("request after the boot %+v; want it running while the loop is armed", row)
 	}
@@ -294,9 +295,9 @@ func TestAHeldSpawnWhoseShellTheRestartEndedSettlesAtBoot(t *testing.T) {
 	if _, err := after.app.triage.RecoverOrphanedBackgroundTasks(); err != nil {
 		t.Fatal(err)
 	}
-	after.app.settleRestedReceipts()
-	row := after.request(t, ack.Token)
-	if row.State != store.ThreadRequestFinished || string(row.Answer) != "Tailing it." {
+	after.app.recoverRestAtBoot()
+	row := after.awaitRequestState(t, ack.Token, store.ThreadRequestFinished)
+	if string(row.Answer) != "Tailing it." {
 		t.Fatalf("request after the boot %+v; want it finished with the worker's last message", row)
 	}
 }

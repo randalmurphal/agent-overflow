@@ -3,6 +3,8 @@ package app
 import (
 	"fmt"
 	"log"
+	"maps"
+	"slices"
 	"sync"
 	"time"
 
@@ -16,9 +18,10 @@ import (
 // open prompt, no running background work, no provider timer, no armed
 // loop, watch or reminder, and no open work below it at any depth.
 // liveWorkers is the one record of why the spawned threads are not at rest
-// by their own state. It is memory, so the boot seeds it from the durable
-// sources (seedLiveWorkers); the memory sources report themselves once a
-// turn starts or a message is queued. The work below a thread is the
+// by their own state. It is memory, so the boot records every thread a
+// recovered source names before any request settles on rest
+// (recoverRestAtBoot); the memory sources report themselves once a turn
+// starts or a message is queued. The work below a thread is the
 // listing's reads' to answer: they climb from each live worker and each
 // piece of open work to every spawn above it, up to the root
 // (store.ThreadAgentRequest.TargetOpen), and the row of a spawn whose
@@ -31,8 +34,10 @@ import (
 // emit tap (tapThreadAgentRows), the provider event handler
 // (noteProviderWorkerLiveness), the process's end (unregisterSession) and
 // the sends-pending observer (runSendsPendingWorker); noteWorkerWaiting for
-// the durable ones (background work, loops, watches and reminders), from
-// the background tray and wake frames and the boot (seedLiveWorkers).
+// the durable ones (background work, loops, watches, reminders, answers
+// on their way, workflow runs and unanswered questions), from the
+// background tray, wake, request, workflow and question frames and the
+// boot (recoverRestAtBoot).
 // Every reader, the listing's reads, the row view, the change frames'
 // gates and Past, consumes only what it stored.
 
@@ -139,13 +144,20 @@ func (rest workerRest) waitingLine() string {
 // workerDurableUnrest the store, workerTimerUnrest the provider's timers;
 // a source added later is one more case in one of them, and the event that
 // changes it one more call of noteWorkerLiveness or noteWorkerWaiting.
+//
+// The store is read before triage, as reassessWorker reads them: an answer
+// on its way stops being one when the turn it starts echoes it, so a read
+// that finds it delivered then finds that turn, or that turn's end.
 func (a *App) workerUnrest(threadID string) (workerRest, error) {
+	waits, _, err := a.workerDurableUnrest(threadID)
+	if err != nil {
+		return workerRest{}, err
+	}
 	if unrest := a.workerHeldUnrest(threadID); unrest != "" {
 		return workerRest{unrest: unrest}, nil
 	}
-	waits, _, err := a.workerDurableUnrest(threadID)
-	if err != nil || waits.unrest != "" {
-		return waits, err
+	if waits.unrest != "" {
+		return waits, nil
 	}
 	return a.workerTimerUnrest(threadID), nil
 }
@@ -166,17 +178,33 @@ func (a *App) workerHeldUnrest(threadID string) string {
 	return ""
 }
 
-// workerDurableUnrest is whether threadID waits on something it started
-// that the store records: running background work (what
-// runningBackgroundWorkForThread reports: Claude tasks and background
-// agents, Codex subagents and terminals, remote commands), an armed loop
-// or watch, or a reminder that has not fired. The detail is the background
-// work's summary, or the loop, watch or reminder named as its wake rows name
-// it (wakeWaitingLine); background says
-// the wait is background work. It costs the background inventory's reads,
-// then one read of the loops and watches and one of the reminders while
-// nothing earlier answered.
+// workerDurableUnrest is whether threadID waits on something the store
+// records that starts a turn there without a person: a question it asked
+// that nobody answered yet (blocked, as its prompt reads); an answer to a
+// request it made on its way to it (queued, store.ThreadAnswerDue); or,
+// waiting, running background work (what runningBackgroundWorkForThread
+// reports: Claude tasks and background agents, Codex subagents and
+// terminals, remote commands), a workflow run reporting to it, an armed
+// loop or watch, or a reminder that has not fired. The detail is the
+// background work's summary, the run's goal, or the loop, watch or
+// reminder named as its wake rows name it (wakeWaitingLine); background
+// says the wait is background work. Each source is one indexed read, taken
+// while nothing earlier answered.
 func (a *App) workerDurableUnrest(threadID string) (workerRest, bool, error) {
+	asking, err := a.store.ThreadHasUnansweredAsyncQuestions(threadID)
+	if err != nil {
+		return workerRest{}, false, err
+	}
+	if asking {
+		return workerRest{unrest: workerBlocked}, false, nil
+	}
+	due, err := a.store.ThreadAnswerDue(threadID)
+	if err != nil {
+		return workerRest{}, false, err
+	}
+	if due {
+		return workerRest{unrest: workerQueued}, false, nil
+	}
 	work, err := a.runningBackgroundWorkForThread(threadID, "")
 	if err != nil {
 		return workerRest{}, false, fmt.Errorf("read the running background work: %w", err)
@@ -187,6 +215,13 @@ func (a *App) workerDurableUnrest(threadID string) (workerRest, bool, error) {
 			detail = work[0].ToolName
 		}
 		return workerRest{unrest: workerWaiting, detail: detail}, true, nil
+	}
+	goal, running, err := a.store.RunningWorkflowRunReportingTo(threadID)
+	if err != nil {
+		return workerRest{}, false, err
+	}
+	if running {
+		return workerRest{unrest: workerWaiting, detail: workflowWaitingLine(goal)}, false, nil
 	}
 	wakes, err := a.store.ListAgentWakes(threadID)
 	if err != nil {
@@ -224,6 +259,14 @@ func wakeWaitingLine(kind, label string) string {
 		return name
 	}
 	return name + " · " + label
+}
+
+// workflowWaitingLine names a workflow run a worker waits on by its goal.
+func workflowWaitingLine(goal string) string {
+	if goal = clipLine(goal); goal == "" {
+		return "Workflow"
+	}
+	return "Workflow · " + goal
 }
 
 // workerTimerUnrest is whether threadID's provider process will resume
@@ -339,31 +382,6 @@ func (a *App) noteProviderWorkerLiveness(threadID string, evt provider.ProviderE
 	}
 }
 
-// seedLiveWorkers asks, at boot, about each thread a durable source says
-// may wait: one with a loop or watch armed, a reminder that has not fired,
-// or a remote command pending. Each source is one read; each thread is then
-// reassessed off the boot's path. A source that cannot be read is logged,
-// and the others still seed.
-func (a *App) seedLiveWorkers() {
-	for _, source := range []struct {
-		what string
-		read func() ([]string, error)
-	}{
-		{"loops and watches", a.store.ThreadsWithLiveAgentWakes},
-		{"reminders", a.store.ThreadsWithOpenReminders},
-		{"remote commands", a.store.RemoteWatchThreadIDs},
-	} {
-		ids, err := source.read()
-		if err != nil {
-			log.Printf("agent rows: seed the workers waiting on %s: %v", source.what, err)
-			continue
-		}
-		for _, id := range ids {
-			a.noteWorkerWaiting(id)
-		}
-	}
-}
-
 // forgetLiveWorker records a thread's delete: the thread is forgotten, and
 // every other recorded worker's spawn link is looked up again, since the
 // delete takes the spawns the thread made with it. Bounded by the threads
@@ -444,4 +462,35 @@ func (a *App) liveWorkerThreads() []string {
 		}
 	}
 	return out
+}
+
+// threadAgentTally is what the thread a spawn made did, as its Agents row
+// shows it (ThreadAgentRow.ToolCalls, Tokens, RuntimeMs): the store's
+// tally (store.ThreadTally), plus what its Codex agents still running
+// spent past what their completions recorded. A Claude agent's spend is in
+// its thread's own turn usage; a Codex agent's never is, so the thread's
+// spend as a unit adds it (provider.SubagentProgressMeta.OutsideParentUsage).
+// A failed read of the recorded spend leaves the live spend out.
+func (a *App) threadAgentTally(threadID string, tally store.ThreadTally) store.ThreadTally {
+	if a.triage == nil {
+		return tally
+	}
+	live := map[string]int64{}
+	for _, entry := range a.triage.LiveSubagentProgress(threadID) {
+		if entry.Progress.OutsideParentUsage && entry.Progress.TotalTokens > 0 {
+			live[entry.ItemID] = entry.Progress.TotalTokens
+		}
+	}
+	if len(live) == 0 {
+		return tally
+	}
+	recorded, err := a.store.AgentCompletionSpend(threadID, slices.Collect(maps.Keys(live)))
+	if err != nil {
+		log.Printf("agent rows: read the recorded spend of %s's agents: %v", threadID, err)
+		return tally
+	}
+	for launch, spent := range live {
+		tally.Tokens += max(0, spent-recorded[launch])
+	}
+	return tally
 }

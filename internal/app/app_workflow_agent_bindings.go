@@ -324,6 +324,8 @@ func (a *App) bindOriginThread(scope transport.CallerScope, item store.WorkItem)
 	if err := a.store.UpdateWorkItemOriginThread(item.ID, thread.ID); err != nil {
 		return fmt.Sprintf("run started unbound: %v", err)
 	}
+	// A running run it reports to keeps the thread from rest.
+	a.noteWorkerWaiting(thread.ID)
 	return ""
 }
 

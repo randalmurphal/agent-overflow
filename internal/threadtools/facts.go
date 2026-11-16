@@ -336,11 +336,12 @@ func (w WorkerStopped) Message() (string, MessageFacts) {
 // to the agent and which a paired computer reports as text, so this lookup
 // over the app's own reason sentences is the one place it is read.
 func interruptStopper(reason string) (stoppedBy string, shownFrom int) {
+	if prefix, ok := sessionEndedWritten(reason); ok {
+		return sessionEndedBy(strings.TrimSuffix(prefix, SessionEndedWrittenSoFar)), len(prefix)
+	}
 	switch {
 	case reason == "" || reason == InterruptTurn:
 		return "an interrupt", -1
-	case strings.HasPrefix(reason, InterruptSessionEndedMidTurn+SessionEndedWrittenSoFar):
-		return sessionEndedBy(InterruptSessionEndedMidTurn), len(InterruptSessionEndedMidTurn + SessionEndedWrittenSoFar)
 	case slices.Contains(InterruptSessionEndedReasons, reason):
 		return sessionEndedBy(reason), -1
 	case reason == InterruptNotTakenIn:

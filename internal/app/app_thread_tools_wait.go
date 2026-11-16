@@ -104,6 +104,9 @@ type threadRequestState struct {
 	// boot is what the boot sweep's settlements owe until the activation
 	// gate opens (finishThreadRequestSweepAtBoot).
 	boot bootThreadRequestSweep
+	// rest schedules the passes over the requests held for their thread's
+	// rest (noteRestWaitsMayChange).
+	rest restPasses
 }
 
 // remoteBlocked is what a remote request's computer last reported of its
@@ -296,9 +299,18 @@ func (a *App) cancelWaits(threadID string, remote bool) {
 // later session has overtaken, and changes nothing. A note finding no gate
 // names its session: nothing was written before it to be stale against, or
 // the receipt was settled or gone and the gate forgotten with it.
+//
+// held marks a request waiting for its thread's rest: its turn ended as it
+// would settle `finished` while the thread was not at rest
+// (app_thread_tools_rest_settle.go). turn is that turn, whose last message
+// on is the answer, and through the last of the thread's turns whose end
+// the request has read.
 type receiptGate struct {
 	session string
 	takenIn bool
+	held    bool
+	turn    int
+	through int
 }
 
 // noteReceiptWriting moves the gate to session as the receipt's message is
