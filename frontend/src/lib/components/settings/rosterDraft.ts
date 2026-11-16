@@ -4,8 +4,9 @@
 // what the person changed.
 //
 // Policy for an entry changed both here and elsewhere: the person's version
-// stays in the draft, marked with the other version, until they save (which
-// replaces the other version) or take the other version. An entry is matched
+// stays in the draft, marked with the other version, and the list is not
+// saved until they keep theirs (keepMine, which a save then writes over the
+// other version) or take the other version. An entry is matched
 // to its saved counterpart by value, then by `counterpart` (a profile's
 // name); a note has no identity, so a note changed both places is kept
 // beside the other version. An entry deleted here but changed elsewhere
@@ -120,6 +121,25 @@ export function markSaved<T extends object>(draft: Draft<T>, entries: readonly D
   draft.removed = [];
 }
 
+/** Whether an entry waits on the person to keep theirs or take the other. */
+export function marked<T extends object>(draft: Draft<T>): boolean {
+  return draft.entries.some((entry) => entry.theirs !== undefined);
+}
+
+/** Whether the draft holds anything the saved list does not. */
+export function unsaved<T extends object>(draft: Draft<T>, trim: (value: T) => T): boolean {
+  return draft.removed.length > 0 || draft.entries.some((entry) => dirty(entry, trim));
+}
+
+/**
+ * The draft with a marked entry's mark cleared: the person's version stays
+ * and is unsaved against the other version, so the next save writes it.
+ */
+export function keepMine<T extends object>(draft: Draft<T>, index: number): void {
+  const entry = draft.entries[index];
+  if (entry) delete entry.theirs;
+}
+
 /**
  * The draft with a marked entry put back as the saved list has it: the
  * other version, or gone when the saved list no longer has one.
@@ -132,4 +152,42 @@ export function takeTheirs<T extends object>(draft: Draft<T>, index: number): vo
     return;
   }
   draft.entries[index] = { value: clone(entry.theirs), origin: clone(entry.theirs) };
+}
+
+/**
+ * The revision of one list's draft, which every save and every replacement
+ * of the draft advances: a save may write only the revision it began with,
+ * so a check still running when the draft is replaced (restored, the other
+ * version taken, a change saved elsewhere applied) or a newer save begins
+ * never writes the draft it checked.
+ */
+export class DraftRevision {
+  #current = 0;
+  #saving = false;
+
+  /** Begins a save of the draft as it is now. */
+  beginSave(): number {
+    this.#current += 1;
+    this.#saving = true;
+    return this.#current;
+  }
+
+  /** Whether the save that began at `revision` may write; ends it if so. */
+  finishSave(revision: number): boolean {
+    if (revision !== this.#current) return false;
+    this.#saving = false;
+    return true;
+  }
+
+  /**
+   * Records a replacement of the draft, which drops any save in progress;
+   * true when one was, so a replacement the person did not make can save
+   * the draft that replaced it.
+   */
+  replace(): boolean {
+    const dropped = this.#saving;
+    this.#current += 1;
+    this.#saving = false;
+    return dropped;
+  }
 }

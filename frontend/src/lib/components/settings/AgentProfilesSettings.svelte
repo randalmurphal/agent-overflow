@@ -5,7 +5,9 @@
   // draft (rosterDraft.ts) and saved whole when a control commits (change,
   // not input), and only when every entry passes the checks the backend
   // makes, so a half-typed name never reaches the agents. An entry that
-  // fails a check keeps what was typed and says why beside it.
+  // fails a check keeps what was typed and says why beside it. While an
+  // entry is marked as changed elsewhere too, its list is not saved until
+  // the person answers the mark with Save mine or the other version.
   import { onMount, untrack } from 'svelte';
   import { settingsComputer } from './settingsComputer';
   import SettingsField from './SettingsField.svelte';
@@ -28,7 +30,17 @@
     trimNote,
     trimProfile,
   } from './agentRoster';
-  import { draftOf, markSaved, reconcile, takeTheirs, type Draft } from './rosterDraft';
+  import {
+    DraftRevision,
+    draftOf,
+    keepMine,
+    markSaved,
+    marked,
+    reconcile,
+    takeTheirs,
+    unsaved,
+    type Draft,
+  } from './rosterDraft';
   import { SETTINGS_DEFAULTS } from '../../generated/settingsDefaults';
   import { CheckAgentProfiles } from '../../stores/bindings';
   import type { AgentNote, AgentNoteWhen, AgentProfile } from '../../types/settings';
@@ -76,19 +88,19 @@
   let notes = $state<Draft<AgentNote>>(draftOf(getSettings().agentNotes));
   let followedProfiles = JSON.stringify(getSettings().agentProfiles);
   let followedNotes = JSON.stringify(getSettings().agentNotes);
-  // Bumped when an outside change replaces a draft, so a save that was
-  // checking the replaced draft does not write it.
-  let profilesGeneration = 0;
-  let notesGeneration = 0;
+  const profilesRevision = new DraftRevision();
+  const notesRevision = new DraftRevision();
   $effect(() => {
     const saved = settings.agentProfiles;
     const key = JSON.stringify(saved);
     if (key === followedProfiles) return;
     followedProfiles = key;
     untrack(() => {
-      profilesGeneration += 1;
+      const dropped = profilesRevision.replace();
       profiles = reconcile($state.snapshot(profiles) as Draft<AgentProfile>, saved, trimProfile, sameProfile);
       void checkProfiles(saved.map(trimProfile));
+      // The save the change dropped writes the reconciled draft instead.
+      if (dropped) void saveProfiles();
     });
   });
   $effect(() => {
@@ -97,7 +109,7 @@
     if (key === followedNotes) return;
     followedNotes = key;
     untrack(() => {
-      notesGeneration += 1;
+      notesRevision.replace();
       notes = reconcile($state.snapshot(notes) as Draft<AgentNote>, saved, trimNote);
     });
   });
@@ -134,37 +146,49 @@
     return results.every((result) => !result?.problem);
   }
 
-  let profileSaves = 0;
+  // A list with an entry marked as changed elsewhere too is not saved: a
+  // field the person leaves keeps its draft, and the save waits for them
+  // to keep theirs or take the other version on every marked entry.
   async function saveProfiles(): Promise<void> {
-    if (profileErrors.size > 0) return;
-    const save = ++profileSaves;
-    const generation = profilesGeneration;
+    if (profileErrors.size > 0 || marked(profiles)) return;
+    const revision = profilesRevision.beginSave();
     const entries = [...profiles.entries];
     const sent = entries.map((entry) => trimProfile($state.snapshot(entry.value) as AgentProfile));
     const runnable = await checkProfiles(sent);
-    if (save !== profileSaves || runnable === false) return;
-    if (generation !== profilesGeneration) {
-      // The list changed elsewhere meanwhile: save the reconciled draft,
-      // unless an entry changed in both places waits on the person.
-      if (!profiles.entries.some((entry) => entry.theirs !== undefined)) void saveProfiles();
-      return;
-    }
+    if (!profilesRevision.finishSave(revision) || runnable === false) return;
     markSaved(profiles, entries, sent);
     void updateSetting('agentProfiles', sent);
   }
   function saveNotes(): void {
-    if (noteErrors.size > 0) return;
+    if (noteErrors.size > 0 || marked(notes)) return;
+    const revision = notesRevision.beginSave();
     const entries = [...notes.entries];
     const sent = entries.map((entry) => trimNote($state.snapshot(entry.value) as AgentNote));
+    if (!notesRevision.finishSave(revision)) return;
     markSaved(notes, entries, sent);
     void updateSetting('agentNotes', sent);
   }
 
-  // Taking the other version also drops a save still checking the draft
-  // it replaces.
+  // The two answers to a mark. Taking the other version replaces the draft,
+  // dropping a save still checking it; either one saves what the list
+  // holds unsaved once nothing marked is left.
+  function keepMineProfile(index: number): void {
+    keepMine(profiles, index);
+    void saveProfiles();
+  }
   function takeTheirsProfile(index: number): void {
-    profileSaves += 1;
+    profilesRevision.replace();
     takeTheirs(profiles, index);
+    if (unsaved(profiles, trimProfile)) void saveProfiles();
+  }
+  function keepMineNote(index: number): void {
+    keepMine(notes, index);
+    saveNotes();
+  }
+  function takeTheirsNote(index: number): void {
+    notesRevision.replace();
+    takeTheirs(notes, index);
+    if (unsaved(notes, trimNote)) saveNotes();
   }
   function addProfile(): void {
     profiles.entries.push({
@@ -188,6 +212,8 @@
   function restore(): void {
     const shippedProfiles = SETTINGS_DEFAULTS.agentProfiles as AgentProfile[];
     const shippedNotes = SETTINGS_DEFAULTS.agentNotes as AgentNote[];
+    profilesRevision.replace();
+    notesRevision.replace();
     profiles = draftOf(shippedProfiles);
     notes = draftOf(shippedNotes);
     void updateSettingsPatch({
@@ -203,23 +229,19 @@
 
 <!--
   An entry changed here while the saved list changed it too: the person's
-  version stays until they save it over the other or take the other.
+  version stays, unsaved, until they save it over the other or take the
+  other. It follows the entry's fields, so the keyboard reaches it after
+  them.
 -->
-{#snippet changedElsewhere(testId: string, replaced: boolean, takeOther: () => void)}
+{#snippet changedElsewhere(testId: string, replaced: boolean, saveMine: () => void, takeOther: () => void)}
   <p class="flex flex-wrap items-baseline gap-x-2 text-[0.71875rem] text-fg-muted" role="status" data-testid={testId}>
     <span>
       {replaced
-        ? 'This was also changed elsewhere. Your version is kept here; saving replaces the other one.'
-        : 'This was changed or removed elsewhere. Your version is kept here; saving adds it back.'}
+        ? 'This was also changed elsewhere. Your version is kept here and not saved until you choose.'
+        : 'This was changed or removed elsewhere. Your version is kept here and not saved until you choose.'}
     </span>
-    <!-- Pressing it leaves the focus in the field, so the press does not
-         commit, and save, the version it replaces. -->
-    <button
-      type="button"
-      class={GHOST_BUTTON_CLASS}
-      onpointerdown={(e) => e.preventDefault()}
-      onclick={takeOther}
-    >
+    <button type="button" class={GHOST_BUTTON_CLASS} onclick={saveMine}>Save mine</button>
+    <button type="button" class={GHOST_BUTTON_CLASS} onclick={takeOther}>
       {replaced ? 'Use the other version' : 'Discard mine'}
     </button>
   </p>
@@ -353,9 +375,6 @@
               {`${check.missing} Threads here are not offered this profile; a paired computer that runs it still offers it.`}
             </p>
           {/if}
-          {#if entry.theirs !== undefined}
-            {@render changedElsewhere('agent-profile-conflict', entry.theirs !== null, () => takeTheirsProfile(index))}
-          {/if}
           <label class="flex flex-col gap-1 text-[0.71875rem] text-fg-muted">
             Use for
             <textarea
@@ -376,6 +395,14 @@
               class="{INPUT_CLASS} resize-y"
             ></textarea>
           </label>
+          {#if entry.theirs !== undefined}
+            {@render changedElsewhere(
+              'agent-profile-conflict',
+              entry.theirs !== null,
+              () => keepMineProfile(index),
+              () => takeTheirsProfile(index),
+            )}
+          {/if}
           {#if error}
             <p class="text-[0.71875rem] text-error" role="alert" data-testid="agent-profile-error">{error}</p>
           {/if}
@@ -439,7 +466,12 @@
             </button>
           </div>
           {#if entry.theirs !== undefined}
-            {@render changedElsewhere('agent-note-conflict', entry.theirs !== null, () => takeTheirs(notes, index))}
+            {@render changedElsewhere(
+              'agent-note-conflict',
+              entry.theirs !== null,
+              () => keepMineNote(index),
+              () => takeTheirsNote(index),
+            )}
           {/if}
           {#if error}
             <p class="text-[0.71875rem] text-error" role="alert">{error}</p>

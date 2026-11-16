@@ -82,8 +82,8 @@ async function editRoster(page: Page, layout: Layout): Promise<void> {
 /**
  * Each roster list keeps its own draft: a note saved elsewhere leaves a
  * profile's unsaved typing alone, and the profile changed elsewhere too is
- * marked, keeping the typing until the person takes the other version.
- * Leaves Scout saved as PROFILE.
+ * marked, keeping the typing unsaved until the person saves theirs or takes
+ * the other version, by pointer or keyboard. Leaves Scout saved as PROFILE.
  */
 async function editWhileSavedElsewhere(harness: HarnessApp, page: Page, layout: Layout): Promise<void> {
   const press = async (target: ReturnType<Page['locator']>) => {
@@ -106,17 +106,57 @@ async function editWhileSavedElsewhere(harness: HarnessApp, page: Page, layout: 
   await harness.rpc('UpdateSettings', { agentProfiles: theirs, agentNotes: saved.agentNotes });
   await expect(page.getByTestId('agent-note')).toHaveCount(saved.agentNotes.length);
   const conflict = card.getByTestId('agent-profile-conflict');
-  await expect(conflict).toContainText('This was also changed elsewhere. Your version is kept here; saving replaces the other one.');
+  await expect(conflict).toContainText('This was also changed elsewhere. Your version is kept here and not saved until you choose.');
   await expect(useFor).toHaveValue('Half typed');
   await press(conflict.getByRole('button', { name: 'Use the other version' }));
   await expect(conflict).toHaveCount(0);
   await expect(useFor).toHaveValue('Changed elsewhere.');
-
-  // The press kept the focus in the field, which still holds the text it
-  // had when focused: a change back to that text commits nothing.
-  await useFor.blur();
   await useFor.fill(PROFILE.useFor);
   await useFor.blur();
+  await savedUseFor(harness, PROFILE.useFor);
+
+  // By keyboard: leaving the marked entry's fields saves nothing, and its
+  // two choices follow them in tab order. Were the field saved on the way,
+  // the mark and its buttons would be gone.
+  const instructions = card.getByLabel('Instructions, appended to the sub-thread\'s system prompt (optional)');
+  const markedElsewhere = async (mine: string, theirs: string) => {
+    await useFor.fill(mine);
+    await savedElsewhere(harness, theirs);
+    await expect(conflict).toBeVisible();
+    await page.keyboard.press('Tab');
+    await expect(instructions).toBeFocused();
+    await page.keyboard.press('Tab');
+    await expect(conflict.getByRole('button', { name: 'Save mine' })).toBeFocused();
+  };
+  await markedElsewhere('Mine, by keyboard.', 'Changed again elsewhere.');
+  await page.keyboard.press('Tab');
+  await expect(conflict.getByRole('button', { name: 'Use the other version' })).toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect(conflict).toHaveCount(0);
+  await expect(useFor).toHaveValue('Changed again elsewhere.');
+  await savedUseFor(harness, 'Changed again elsewhere.');
+
+  await markedElsewhere('Mine, by keyboard.', 'Changed a third time.');
+  await page.keyboard.press('Enter');
+  await expect(conflict).toHaveCount(0);
+  await savedUseFor(harness, 'Mine, by keyboard.');
+
+  await useFor.fill(PROFILE.useFor);
+  await useFor.blur();
+}
+
+/** Saves Scout's use-for line as another window would. */
+async function savedElsewhere(harness: HarnessApp, useFor: string): Promise<void> {
+  const saved = await harness.rpc<RosterSettings>('GetSettings');
+  await harness.rpc('UpdateSettings', {
+    agentProfiles: saved.agentProfiles.map((profile) => (profile.name === PROFILE.name ? { ...profile, useFor } : profile)),
+  });
+}
+
+async function savedUseFor(harness: HarnessApp, useFor: string): Promise<void> {
+  await expect
+    .poll(async () => (await harness.rpc<RosterSettings>('GetSettings')).agentProfiles.find((profile) => profile.name === PROFILE.name)?.useFor)
+    .toBe(useFor);
 }
 
 /** Opens the lead's thread and its spawn row, and returns the row's instructions fact. */

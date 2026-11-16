@@ -179,6 +179,35 @@ describe('<AgentProfilesSettings>', () => {
     expect(view.queryAllByTestId('agent-note')).toHaveLength(0);
   });
 
+  // A save checks the profiles before it writes; Restore replaces the
+  // draft that check is for, even when the saved roster is already the
+  // shipped one and nothing else marks the change.
+  it('keeps the restored roster when a save that was checking returns', async () => {
+    await seed({ agentProfiles: SETTINGS_DEFAULTS.agentProfiles, agentNotes: SETTINGS_DEFAULTS.agentNotes });
+    const view = render(AgentProfilesSettings);
+    await settle();
+    let release: () => void = () => {};
+    setBindingMock('CheckAgentProfiles', (profiles: AgentProfile[]) =>
+      new Promise((resolve) => {
+        release = () => resolve(profiles.map(() => ({})));
+      }),
+    );
+
+    const name = view.getAllByLabelText('Name')[0] as HTMLInputElement;
+    await fireEvent.input(name, { target: { value: 'Discarded' } });
+    await fireEvent.change(name);
+    await fireEvent.click(view.getByTestId('agent-profiles-restore'));
+    release();
+    await settle();
+
+    expect(lastPatch()).toEqual({
+      agentProfiles: SETTINGS_DEFAULTS.agentProfiles,
+      agentNotes: SETTINGS_DEFAULTS.agentNotes,
+    });
+    expect(getBindingMock('UpdateSettings')!.mock.calls).toHaveLength(1);
+    expect((view.getAllByLabelText('Name')[0] as HTMLInputElement).value).toBe(SETTINGS_DEFAULTS.agentProfiles[0].name);
+  });
+
   it('restores the shipped roster in one write', async () => {
     await seed({ agentProfiles: [PROFILE], agentNotes: [] });
     const view = render(AgentProfilesSettings);
@@ -324,7 +353,9 @@ describe('<AgentProfilesSettings>', () => {
       await settle();
       expect(useFor.value).toBe('Mine.');
       const conflict = view.getByTestId('agent-profile-conflict');
-      expect(conflict.textContent).toContain('This was also changed elsewhere. Your version is kept here; saving replaces the other one.');
+      expect(conflict.textContent).toContain(
+        'This was also changed elsewhere. Your version is kept here and not saved until you choose.',
+      );
 
       await fireEvent.click(within(conflict).getByRole('button', { name: 'Use the other version' }));
       expect((view.getByLabelText('Use for') as HTMLTextAreaElement).value).toBe('Theirs.');
@@ -339,33 +370,72 @@ describe('<AgentProfilesSettings>', () => {
       expect(view.queryByTestId('agent-profile-conflict')).toBeNull();
     });
 
-    // Pressing the button can commit the field first (a blur on a phone): the
-    // save that starts is dropped, not written over the version taken.
-    it('takes the other version over a save the press started', async () => {
+    // Leaving a field of a marked entry, by Tab or by pressing one of its
+    // buttons, commits the field; it must not save before the person
+    // chooses, and the two choices come after the entry's fields.
+    it('saves nothing when a marked entry is left, and offers the choices after its fields', async () => {
       await seed({ agentProfiles: [PROFILE], agentNotes: [NOTE] });
       const view = render(AgentProfilesSettings);
       await settle();
+      const check = getBindingMock('CheckAgentProfiles')!;
 
       const useFor = view.getByLabelText('Use for') as HTMLTextAreaElement;
       await fireEvent.input(useFor, { target: { value: 'Mine.' } });
       savedElsewhere({ agentProfiles: [{ ...PROFILE, useFor: 'Theirs.' }] });
       await settle();
-      let release: () => void = () => {};
-      setBindingMock('CheckAgentProfiles', (profiles: AgentProfile[]) =>
-        new Promise((resolve) => {
-          release = () => resolve(profiles.map(() => ({})));
-        }),
-      );
+      const checks = check.mock.calls.length;
       await fireEvent.change(useFor);
-      await fireEvent.click(view.getByRole('button', { name: 'Use the other version' }));
-      release();
+      await fireEvent.change(view.getByLabelText('Effort'), { target: { value: 'medium' } });
       await settle();
-
       expect(getBindingMock('UpdateSettings')!.mock.calls).toHaveLength(0);
-      expect((view.getByLabelText('Use for') as HTMLTextAreaElement).value).toBe('Theirs.');
+      expect(check.mock.calls).toHaveLength(checks);
+      expect(useFor.value).toBe('Mine.');
+
+      const entry = view.getByTestId('agent-profile');
+      // Document order is tab order here: nothing in the entry sets tabindex.
+      const focusable = [...entry.querySelectorAll<HTMLElement>('input, select, textarea, button')];
+      expect(focusable.some((el) => el.hasAttribute('tabindex'))).toBe(false);
+      const order = focusable.map((el) =>
+        el.tagName === 'BUTTON' ? el.textContent?.trim() : (el.closest('label')?.textContent ?? '').trim() || el.title || el.getAttribute('placeholder'),
+      );
+      expect(order).toEqual([
+        'Name',
+        'Provider',
+        'Inherit model',
+        'Effort',
+        'Runtime mode',
+        'Delete',
+        'Use for',
+        'Instructions, appended to the sub-thread\'s system prompt (optional)',
+        'Save mine',
+        'Use the other version',
+      ]);
     });
 
-    it('saves the person\'s version over the other one when they save', async () => {
+    it('takes the other version and saves what waited on the choice', async () => {
+      const other = { ...PROFILE, name: 'Other', useFor: 'Other things.' };
+      await seed({ agentProfiles: [PROFILE, other], agentNotes: [NOTE] });
+      const view = render(AgentProfilesSettings);
+      await settle();
+
+      const [first, second] = view.getAllByTestId('agent-profile');
+      await fireEvent.input(within(first).getByLabelText('Use for'), { target: { value: 'Mine.' } });
+      savedElsewhere({ agentProfiles: [{ ...PROFILE, useFor: 'Theirs.' }, other] });
+      await settle();
+      const otherUseFor = within(second).getByLabelText('Use for');
+      await fireEvent.input(otherUseFor, { target: { value: 'Edited while marked.' } });
+      await fireEvent.change(otherUseFor);
+      await settle();
+      expect(getBindingMock('UpdateSettings')!.mock.calls).toHaveLength(0);
+
+      await fireEvent.click(view.getByRole('button', { name: 'Use the other version' }));
+      await settle();
+      expect(lastPatch()).toEqual({
+        agentProfiles: [{ ...PROFILE, useFor: 'Theirs.' }, { ...other, useFor: 'Edited while marked.' }],
+      });
+    });
+
+    it('saves the person\'s version over the other one when they press Save mine', async () => {
       await seed({ agentProfiles: [PROFILE], agentNotes: [NOTE] });
       const view = render(AgentProfilesSettings);
       await settle();
@@ -374,7 +444,11 @@ describe('<AgentProfilesSettings>', () => {
       await fireEvent.input(useFor, { target: { value: 'Mine.' } });
       savedElsewhere({ agentProfiles: [{ ...PROFILE, useFor: 'Theirs.' }] });
       await settle();
-      await fireEvent.change(view.getByLabelText('Use for'));
+      await fireEvent.change(useFor);
+      await settle();
+      expect(getBindingMock('UpdateSettings')!.mock.calls).toHaveLength(0);
+
+      await fireEvent.click(view.getByRole('button', { name: 'Save mine' }));
       await settle();
       expect(lastPatch()).toEqual({ agentProfiles: [{ ...PROFILE, useFor: 'Mine.' }] });
       expect(view.queryByTestId('agent-profile-conflict')).toBeNull();
@@ -425,10 +499,33 @@ describe('<AgentProfilesSettings>', () => {
       expect(texts).toEqual(['Theirs.', 'Mine.']);
       const [, mine] = view.getAllByTestId('agent-note');
       const conflict = within(mine).getByTestId('agent-note-conflict');
-      expect(conflict.textContent).toContain('This was changed or removed elsewhere. Your version is kept here; saving adds it back.');
+      expect(conflict.textContent).toContain(
+        'This was changed or removed elsewhere. Your version is kept here and not saved until you choose.',
+      );
+      await fireEvent.change(view.getAllByLabelText('Note')[1]);
+      expect(getBindingMock('UpdateSettings')!.mock.calls).toHaveLength(0);
 
       await fireEvent.click(within(conflict).getByRole('button', { name: 'Discard mine' }));
       expect(view.getAllByLabelText('Note').map((el) => (el as HTMLTextAreaElement).value)).toEqual(['Theirs.']);
+      expect(getBindingMock('UpdateSettings')!.mock.calls).toHaveLength(0);
+    });
+
+    it('adds a note changed in both places back when the person saves theirs', async () => {
+      await seed({ agentProfiles: [PROFILE], agentNotes: [NOTE] });
+      const view = render(AgentProfilesSettings);
+      await settle();
+
+      await fireEvent.input(view.getByLabelText('Note'), { target: { value: 'Mine.' } });
+      savedElsewhere({ agentNotes: [{ text: 'Theirs.', when: '' }] });
+      await settle();
+      await fireEvent.click(view.getByRole('button', { name: 'Save mine' }));
+      expect(lastPatch()).toEqual({
+        agentNotes: [
+          { text: 'Theirs.', when: '' },
+          { text: 'Mine.', when: '' },
+        ],
+      });
+      expect(view.queryByTestId('agent-note-conflict')).toBeNull();
     });
   });
 
