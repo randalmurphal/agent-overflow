@@ -411,14 +411,15 @@ func webkitParkView(view unsafe.Pointer, slot int) {
 // clip, and the scale the page is drawn at. The page's own size was set by
 // SetViewport and is not touched here.
 func webkitPresentView(view webkitView, placement PanePlacement) error {
-	rect := placement.Rect
 	return view.do(func(view unsafe.Pointer) {
-		C.ao_wk_host_present(view, C.double(rect.X), C.double(rect.Y),
-			C.double(rect.Width), C.double(rect.Height),
-			C.double(rect.ClipX), C.double(rect.ClipY),
-			C.double(rect.ClipWidth), C.double(rect.ClipHeight),
-			C.double(rect.ViewportWidth), C.double(rect.ViewportHeight),
-			C.double(placement.Scale))
+		var overlayW, overlayH C.int
+		if C.ao_wk_overlay_size(&overlayW, &overlayH) == 0 {
+			return
+		}
+		layout, scale := overlayPaneLayout(placement, int(overlayW), int(overlayH))
+		C.ao_wk_host_present(view, C.int(layout.Clip.Left), C.int(layout.Clip.Top),
+			C.int(layout.Clip.Right), C.int(layout.Clip.Bottom),
+			C.int(layout.OffsetX), C.int(layout.OffsetY), C.double(scale))
 	})
 }
 

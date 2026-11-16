@@ -222,7 +222,24 @@ func TestNativeEngineRealHiddenPageGivesUpFocus(t *testing.T) {
 		if err := manager.SetPaneRect(mount.ID, rect); err != nil {
 			t.Fatalf("place the pane: %v", err)
 		}
-		return shownPage{access: access, id: page.ID, view: view(t, access, page.ID), mount: mount.ID}
+		// The pane's size is the page's new viewport, and a page is shown
+		// only once it lays out at it (viewport.go), a drain pass later.
+		shown := view(t, access, page.ID)
+		deadline := time.Now().Add(10 * time.Second)
+		for {
+			on, err := shown.presented()
+			if err != nil {
+				t.Fatalf("read the presentation: %v", err)
+			}
+			if on {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatal("the page was never presented in its pane")
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		return shownPage{access: access, id: page.ID, view: shown, mount: mount.ID}
 	}
 	// expect checks who holds the window's focus, read through any live view.
 	expect := func(t *testing.T, through *webkitPage, want webkitFocusHolder, state string) {

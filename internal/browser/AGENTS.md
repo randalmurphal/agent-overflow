@@ -29,10 +29,15 @@ mode. Product behavior and authority are defined in
   pixels within the viewport bounds; the last size once the pane is gone;
   1280x720 before any pane) unless `browser_viewport set` pinned one. Pane
   sizes are applied latest-wins per thread in `viewport.go`, never inline in
-  the rect report. The pane is a viewer: `placePage` fits the viewport into
-  the host rect and every engine draws the page at that `PanePlacement`
-  scale without resizing it. Hidden pages must keep producing frames so
-  screenshots and scrolls work with the pane closed.
+  the rect report, and only to the active page; any other page takes the
+  viewport in `resolvePage` before an operation and is never newly shown
+  while it lags (`presentPanes`). The pane is a viewer: `placePage`
+  (`internal/paneplace`, shared with the Windows launcher) fits the viewport
+  into the host rect and every engine draws the page at that
+  `PanePlacement` scale without resizing it. A host that positions in whole
+  pixels snaps edges, never origin and size apart (`paneplace.Layout`). A
+  position-only change does no device-metrics work. Hidden pages must keep
+  producing frames so screenshots and scrolls work with the pane closed.
 - An omitted `page_id` may resolve only when the thread owns at most one page.
   With multiple pages, require an explicit handle. Never infer a caller or use
   MRU selection.

@@ -88,11 +88,17 @@ func (m *Manager) Viewport(_ context.Context, access Access, opts ViewportOption
 }
 
 // viewportSync serializes laying a thread's pages out at its viewport. A pane
-// drag reports a rect per frame and each page takes a round trip to size, so
-// rect reports are applied latest-wins by one drain goroutine per thread
+// drag reports a rect per frame and each layout is an engine round trip, so
+// pane sizes are applied latest-wins by one drain goroutine per thread
 // (busy/dirty, guarded by Manager.mu), and a browser_viewport call applies
 // inline under the same apply lock so the two can never leave pages at each
 // other's size.
+//
+// A pane resize lays out only the thread's active page, the one the pane
+// shows. Every other page lags until it is needed: resolvePage brings a page
+// to the viewport before any operation on it (coordinates and screenshots
+// mean the current viewport), and presentPanes never newly shows a page that
+// lags; it asks the drain to lay the page out first.
 type viewportSync struct {
 	apply sync.Mutex
 	busy  bool
@@ -109,9 +115,9 @@ func (m *Manager) viewportSyncLocked(threadID string) *viewportSync {
 	return st
 }
 
-// scheduleViewport asks for the thread's pages to take the session viewport
-// and returns at once; the newest request while a pass runs is the only one
-// applied after it.
+// scheduleViewport asks for the thread's active page to take the session
+// viewport and returns at once; the newest request while a pass runs is the
+// only one applied after it.
 func (m *Manager) scheduleViewport(threadID string) {
 	m.mu.Lock()
 	st := m.viewportSyncLocked(threadID)
@@ -125,27 +131,48 @@ func (m *Manager) scheduleViewport(threadID string) {
 	go m.drainViewport(threadID, st)
 }
 
+// drainViewport runs passes until no request is left. Each pass lays the
+// active page out and re-presents the thread; the thread's state, which
+// carries the viewport, is pushed once when the drain settles rather than
+// once per pass.
 func (m *Manager) drainViewport(threadID string, st *viewportSync) {
 	for {
 		m.mu.Lock()
 		if !st.dirty {
 			st.busy = false
 			m.mu.Unlock()
+			m.emitThreadState(threadID)
 			return
 		}
 		st.dirty = false
 		m.mu.Unlock()
 		// A page left at the old size while the pane places it at the new
 		// one is visibly wrong, so the failure replaces the pane body.
-		if err := m.applyThreadViewport(threadID); err != nil {
+		if err := m.applyActiveViewport(threadID, st); err != nil {
 			m.emit(CompanionEvent{Kind: "error", ThreadID: threadID, Error: err.Error()})
 		}
-		m.emitThreadState(threadID)
 		m.syncPanePresentation(threadID)
 		if m.viewportApplied != nil {
 			m.viewportApplied(threadID)
 		}
 	}
+}
+
+// applyActiveViewport lays the thread's active page out at the session
+// viewport. A page already at it costs nothing.
+func (m *Manager) applyActiveViewport(threadID string, st *viewportSync) error {
+	m.mu.Lock()
+	active, _ := m.livePageLocked(m.sessionLocked(threadID).ActivePageID)
+	m.mu.Unlock()
+	if active == nil || active.owner != threadID {
+		return nil
+	}
+	st.apply.Lock()
+	defer st.apply.Unlock()
+	if err := m.syncPageViewport(active); err != nil && active.ctx.Err() == nil {
+		return fmt.Errorf("%w (page %s)", err, active.id)
+	}
+	return nil
 }
 
 // applyThreadViewport lays every page the thread owns out at the session
@@ -169,6 +196,35 @@ func (m *Manager) applyThreadViewport(threadID string) error {
 	return firstErr
 }
 
+// syncPageViewport lays a page out at its thread's viewport unless it is
+// already there: the lazy half of a pane resize, run before a page is shown
+// or operated on.
+func (m *Manager) syncPageViewport(p *managedPage) error {
+	if m.pageViewportCurrent(p) {
+		return nil
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if m.pageViewportCurrent(p) {
+		return nil
+	}
+	return m.applyViewportLocked(p)
+}
+
+// pageViewportCurrent reports whether the page lays out at its thread's
+// viewport now.
+func (m *Manager) pageViewportCurrent(p *managedPage) bool {
+	m.mu.Lock()
+	width, height := sessionViewport(m.sessionLocked(p.owner))
+	m.mu.Unlock()
+	return p.viewport.Load() == packViewport(width, height)
+}
+
+// packViewport is a page size as one comparable word; 0 is none.
+func packViewport(width, height int) uint64 {
+	return uint64(uint32(width))<<32 | uint64(uint32(height))
+}
+
 // applyViewport pins a page to its thread's viewport. Every page gets one at
 // creation, so a hidden page lays out and captures at a real size instead of
 // whatever its parked view happens to measure, and the size is the same on
@@ -179,7 +235,8 @@ func (m *Manager) applyViewport(p *managedPage) error {
 	return m.applyViewportLocked(p)
 }
 
-// applyViewportLocked is applyViewport with p.mu held by the caller.
+// applyViewportLocked is applyViewport with p.mu held by the caller. It
+// records the size the page took, or the size it refused.
 func (m *Manager) applyViewportLocked(p *managedPage) error {
 	m.mu.Lock()
 	width, height := sessionViewport(m.sessionLocked(p.owner))
@@ -187,7 +244,10 @@ func (m *Manager) applyViewportLocked(p *managedPage) error {
 	ctx, cancel := operationContext(context.Background(), p.ctx, 5*time.Second)
 	defer cancel()
 	if err := p.driver.SetViewport(ctx, width, height); err != nil {
+		p.viewportFailed.Store(packViewport(width, height))
 		return fmt.Errorf("browser: apply viewport: %w", err)
 	}
+	p.viewport.Store(packViewport(width, height))
+	p.viewportFailed.Store(0)
 	return nil
 }

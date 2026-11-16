@@ -120,7 +120,10 @@ type Manager struct {
 	// presenting holds, per thread, whether a presentation pass runs and
 	// whether another was asked for during it (syncPanePresentation); made
 	// on first use, and an idle thread's entry is removed.
-	presenting     map[string]*presentSync
+	presenting map[string]*presentSync
+	// presented is, per thread, the page the last presentation pass showed
+	// (presentPanes); a thread showing none has no entry. Guarded by mu.
+	presented      map[string]string
 	artifactRoot   string
 	artifactInitMu sync.Mutex
 	artifactReady  bool
@@ -257,6 +260,12 @@ type managedPage struct {
 	// frame committed, stamped on the engine's own thread (find.go).
 	incarnation uint64
 	docEpoch    atomic.Uint64
+	// viewport is the size the page last laid out at (packViewport), and
+	// viewportFailed the size it last refused (viewport.go). A pane resize
+	// lays out only the active page, so a hidden page lags its thread's
+	// viewport until it is about to be shown or operated on.
+	viewport       atomic.Uint64
+	viewportFailed atomic.Uint64
 }
 
 // pageIncarnations numbers every page the process creates or restores.

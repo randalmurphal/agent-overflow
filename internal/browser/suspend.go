@@ -126,7 +126,8 @@ func (m *Manager) livePageLocked(pageID string) (*managedPage, *workspaceScope) 
 }
 
 // resolvePage answers the caller's live page with pageID, restoring it first
-// when it is suspended. Concurrent touches of one suspended page share one
+// when it is suspended and laying it out at its thread's viewport when a pane
+// resize left it behind. Concurrent touches of one suspended page share one
 // restore. skipLoad restores the page blank, for a caller that navigates it
 // next. A page another thread owns is not found.
 func (m *Manager) resolvePage(ctx context.Context, access Access, pageID string, skipLoad bool) (*managedPage, *workspaceScope, error) {
@@ -137,6 +138,11 @@ func (m *Manager) resolvePage(ctx context.Context, access Access, pageID string,
 			m.mu.Unlock()
 			if p.owner != access.ThreadID {
 				return nil, nil, errPageNotFound
+			}
+			// A pane resize lays out only the active page (viewport.go); a
+			// page that lags takes the viewport before anything acts on it.
+			if err := m.syncPageViewport(p); err != nil {
+				return nil, nil, fmt.Errorf("%w (page %s)", err, p.id)
 			}
 			return p, scope, nil
 		}

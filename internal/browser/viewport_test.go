@@ -19,6 +19,8 @@ type paneFollowFixture struct {
 	engine  *recordingPaneHost
 	access  Access
 	pages   []*fakePage
+	// ids are the two pages' ids, in creation order; the second is shown.
+	ids []string
 	// applied receives the thread id after each asynchronous pass that laid
 	// the pages out at the pane size (the Manager's viewportApplied seam).
 	applied chan string
@@ -46,6 +48,7 @@ func newPaneFollowFixture(t *testing.T) *paneFollowFixture {
 			t.Fatal(err)
 		}
 		f.pages = append(f.pages, p.driver.(*fakePage))
+		f.ids = append(f.ids, id)
 	}
 	manager.viewportApplied = func(threadID string) { f.applied <- threadID }
 	manager.SetEventSink(func(event CompanionEvent) {
@@ -75,20 +78,21 @@ func (f *paneFollowFixture) attach(t *testing.T) string {
 	return mount.ID
 }
 
-// awaitPagesAt waits for a drain pass to have laid every page out at w x h,
-// through the seam rather than wall-clock polling.
-func (f *paneFollowFixture) awaitPagesAt(t *testing.T, w, h int) {
+// awaitActiveAt waits for a drain pass to have laid the active page (the
+// second, which the fixture shows) out at w x h, through the seam rather
+// than wall-clock polling. A pane resize lays out only that page.
+func (f *paneFollowFixture) awaitActiveAt(t *testing.T, w, h int) {
 	t.Helper()
 	deadline := time.After(5 * time.Second)
 	for {
-		if f.pagesAt(w, h) {
+		if pw, ph := f.pages[1].lastViewport(); pw == w && ph == h {
 			return
 		}
 		select {
 		case <-f.applied:
 		case <-deadline:
-			pw, ph := f.pages[0].lastViewport()
-			t.Fatalf("pages never reached %dx%d; first page is at %dx%d", w, h, pw, ph)
+			pw, ph := f.pages[1].lastViewport()
+			t.Fatalf("the active page never reached %dx%d; it is at %dx%d", w, h, pw, ph)
 		}
 	}
 }
@@ -166,7 +170,7 @@ func TestPagesFollowThePaneUntilAViewportIsPinned(t *testing.T) {
 	if err := f.manager.SetPaneRect(mount, paneRect(800.7, 600.2)); err != nil {
 		t.Fatalf("set pane rect: %v", err)
 	}
-	f.awaitPagesAt(t, 800, 600)
+	f.awaitActiveAt(t, 800, 600)
 	info := f.session(t)
 	if info.ViewportSet || info.ViewportW != 800 || info.ViewportH != 600 || info.PaneW != 800 || info.PaneH != 600 {
 		t.Fatalf("a following session must report the pane size unpinned: %+v", info)
@@ -233,7 +237,7 @@ func TestPaneBelowTheMinimumLaysOutAtTheMinimumAndScalesDown(t *testing.T) {
 	if err := f.manager.SetPaneRect(mount, paneRect(300, 200)); err != nil {
 		t.Fatalf("set pane rect: %v", err)
 	}
-	f.awaitPagesAt(t, minCompanionWidth, minCompanionHeight)
+	f.awaitActiveAt(t, minCompanionWidth, minCompanionHeight)
 	placement := f.lastPlacement(t)
 	if placement.PageWidth != minCompanionWidth || placement.PageHeight != minCompanionHeight {
 		t.Fatalf("placement page size = %dx%d", placement.PageWidth, placement.PageHeight)
@@ -256,7 +260,7 @@ func TestPaneResizeAppliesTheLatestSize(t *testing.T) {
 			t.Fatalf("set pane rect: %v", err)
 		}
 	}
-	f.awaitPagesAt(t, 1000, 800)
+	f.awaitActiveAt(t, 1000, 800)
 	if info := f.session(t); info.ViewportW != 1000 || info.ViewportH != 800 {
 		t.Fatalf("session = %+v", info)
 	}
@@ -268,9 +272,9 @@ func TestPaneResizeAppliesTheLatestSize(t *testing.T) {
 // goroutine.
 func TestPaneSizeFailureReachesThePane(t *testing.T) {
 	f := newPaneFollowFixture(t)
-	f.pages[0].mu.Lock()
-	f.pages[0].viewportErr = errors.New("engine refused")
-	f.pages[0].mu.Unlock()
+	f.pages[1].mu.Lock()
+	f.pages[1].viewportErr = errors.New("engine refused")
+	f.pages[1].mu.Unlock()
 	mount := f.attach(t)
 	if err := f.manager.SetPaneRect(mount, paneRect(800, 600)); err != nil {
 		t.Fatalf("set pane rect: %v", err)
@@ -319,7 +323,7 @@ func TestDetachingThePresenterHandsPagesToTheRemainingPane(t *testing.T) {
 	if err := f.manager.SetPaneRect(first, paneRect(800, 600)); err != nil {
 		t.Fatalf("set pane rect: %v", err)
 	}
-	f.awaitPagesAt(t, 800, 600)
+	f.awaitActiveAt(t, 800, 600)
 
 	second := f.attach(t)
 	if err := f.manager.SetPaneRect(second, paneRect(900, 700)); err != nil {
@@ -330,7 +334,7 @@ func TestDetachingThePresenterHandsPagesToTheRemainingPane(t *testing.T) {
 	}
 
 	f.manager.DetachPane(first)
-	f.awaitPagesAt(t, 900, 700)
+	f.awaitActiveAt(t, 900, 700)
 	if info := f.session(t); info.PaneW != 900 || info.PaneH != 700 || info.ViewportW != 900 {
 		t.Fatalf("detach must hand the pages the remaining pane's size: %+v", info)
 	}

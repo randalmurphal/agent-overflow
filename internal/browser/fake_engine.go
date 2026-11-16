@@ -158,6 +158,9 @@ type fakePage struct {
 	// viewportErr, when set, makes SetViewport fail so a test can drive the
 	// failure path.
 	viewportErr error
+	// viewportHook, when set, sees every SetViewport after it is recorded,
+	// so a test can hold a layout in flight.
+	viewportHook func(width, height int)
 	// selection answers SelectionText.
 	selection string
 	// findMode answers FindMode; FindModeBar unless a test changes it.
@@ -451,7 +454,11 @@ func (p *fakePage) SetViewport(_ context.Context, width, height int) error {
 	p.mu.Lock()
 	p.viewports = append(p.viewports, [2]int{width, height})
 	err := p.viewportErr
+	hook := p.viewportHook
 	p.mu.Unlock()
+	if hook != nil {
+		hook(width, height)
+	}
 	return err
 }
 

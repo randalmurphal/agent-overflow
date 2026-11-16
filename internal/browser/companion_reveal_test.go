@@ -41,6 +41,8 @@ func TestRevealPageFileResolvesTheDisplayedFileAndRefusesTheRest(t *testing.T) {
 	}
 
 	p := &managedPage{id: "page", owner: "thread", ctx: context.Background()}
+	// Laid out at the thread viewport, as every created page is.
+	p.viewport.Store(packViewport(defaultViewportWidth, defaultViewportHeight))
 	var revealed string
 	m := &Manager{
 		scopes:   map[string]*workspaceScope{"/repo": {pages: map[string]*managedPage{p.id: p}}},
@@ -106,6 +108,8 @@ func TestRevealPageFileResolvesRendererFormURLsThroughTheEngine(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := &managedPage{id: "page", owner: "thread", ctx: context.Background()}
+	// Laid out at the thread viewport, as every created page is.
+	p.viewport.Store(packViewport(defaultViewportWidth, defaultViewportHeight))
 	var revealed string
 	m := &Manager{
 		engine:   rendererFSEngine{base: dir},

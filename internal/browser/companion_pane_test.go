@@ -4,6 +4,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // The pane presentation contract every paneHost engine is built against
@@ -21,6 +22,8 @@ type recordingPaneHost struct {
 	mu       sync.Mutex
 	calls    []string
 	onBounds func(PanePlacement)
+	// onShow, when set, sees every ShowPage after it is recorded.
+	onShow func(handle string)
 }
 
 func (e *recordingPaneHost) record(call string) {
@@ -29,7 +32,15 @@ func (e *recordingPaneHost) record(call string) {
 	e.mu.Unlock()
 }
 
-func (e *recordingPaneHost) ShowPage(handle string) { e.record("show:" + handle) }
+func (e *recordingPaneHost) ShowPage(handle string) {
+	e.record("show:" + handle)
+	e.mu.Lock()
+	onShow := e.onShow
+	e.mu.Unlock()
+	if onShow != nil {
+		onShow(handle)
+	}
+}
 func (e *recordingPaneHost) HidePage(handle string) { e.record("hide:" + handle) }
 func (e *recordingPaneHost) SetPageBounds(handle string, placement PanePlacement) {
 	e.record("bounds:" + handle)
@@ -93,9 +104,18 @@ func TestPanePresentationHidesOthersThenSendsBoundsBeforeShow(t *testing.T) {
 		t.Fatalf("attach pane: %v", err)
 	}
 	engine.take()
+	// The rect resizes the thread viewport, so the active page is laid out at
+	// it before it is shown: the presentation lands after the drain pass.
+	applied := make(chan string, 8)
+	manager.viewportApplied = func(threadID string) { applied <- threadID }
 	rect := PaneRect{X: 10, Y: 20, Width: 800, Height: 600, ViewportWidth: 1920, ViewportHeight: 1080, Visible: true}
 	if err := manager.SetPaneRect(mount.ID, rect); err != nil {
 		t.Fatalf("set pane rect: %v", err)
+	}
+	select {
+	case <-applied:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the pane size was never applied")
 	}
 
 	calls := engine.take()

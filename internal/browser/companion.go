@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"math"
 	"net"
 	"net/url"
 	"os"
@@ -13,6 +12,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/keybindings"
+	"agent-overflow/internal/paneplace"
 
 	"github.com/google/uuid"
 )
@@ -31,9 +31,10 @@ const (
 
 // PaneRect is where a mounted browser pane's host rect sits, in the SPA's own
 // CSS pixels, together with the SPA viewport it was measured in. A host never
-// assumes CSS pixels equal its units: it scales the rect by its own client
-// size over the viewport, which makes the position exact under webview zoom
-// (Ctrl+=) and any DPI without either side knowing the other's scale factor.
+// assumes CSS pixels equal its units: it scales the rect by the SPA's
+// DevicePixelRatio where it positions in device pixels (the Windows
+// launcher), or by its own size over the viewport, which makes the position
+// exact under webview zoom (Ctrl+=) and any DPI.
 // Visible is false while the pane is mounted but must not be painted over: an
 // AO overlay intersects the rect, or the rect is entirely off the pane strip.
 //
@@ -70,44 +71,62 @@ type PaneRect struct {
 // own viewport (PageWidth x PageHeight, the size the agent works against)
 // and the pane shows it scaled by Scale, never resized by the placement. A
 // page following the pane is its size and Scale is 1; a pinned page larger
-// than the pane scales down. Rect is the FITTED rect in the SPA's CSS pixels,
-// the page scaled to fit inside the pane's host rect and centered, with its
-// clip already intersected with the host rect's visible clip. Rect's
-// viewport, background and device pixel ratio are the host rect's own.
+// than the pane scales down. Rect is the FITTED rect in the SPA's CSS pixels
+// (paneplace.Fit), with its clip already intersected with the host rect's
+// visible clip. Rect's viewport, background and device pixel ratio are the
+// host rect's own. Mount is the pane mount whose rect it was placed in, which
+// lets a host that measures the mount itself place the page from its own,
+// newer rect (the Windows launcher).
 type PanePlacement struct {
 	Rect       PaneRect
 	PageWidth  int
 	PageHeight int
 	Scale      float64
+	Mount      string
 }
 
-// placePage fits a page of pageW x pageH CSS pixels inside a host rect: it is
-// scaled down to fit (never up, so text stays sharp) and centered, and the
-// fitted rect is cropped by the host's visible clip. ok is false when nothing
-// of the page would be visible, which the caller treats as hidden.
+// placePage fits a page of pageW x pageH CSS pixels inside a host rect with
+// the shared placement rule (paneplace.Fit). ok is false when nothing of the
+// page would be visible, which the caller treats as hidden.
 func placePage(rect PaneRect, pageW, pageH int) (PanePlacement, bool) {
-	if pageW <= 0 || pageH <= 0 || rect.Width < 1 || rect.Height < 1 {
+	fit, scale, ok := paneplace.Fit(paneplace.Rect{
+		X: rect.X, Y: rect.Y, W: rect.Width, H: rect.Height,
+		ClipX: rect.ClipX, ClipY: rect.ClipY, ClipW: rect.ClipWidth, ClipH: rect.ClipHeight,
+	}, pageW, pageH)
+	if !ok {
 		return PanePlacement{}, false
-	}
-	scale := math.Min(rect.Width/float64(pageW), rect.Height/float64(pageH))
-	if scale > 1 {
-		scale = 1
 	}
 	fitted := rect
-	fitted.Width = float64(pageW) * scale
-	fitted.Height = float64(pageH) * scale
-	fitted.X = rect.X + (rect.Width-fitted.Width)/2
-	fitted.Y = rect.Y + (rect.Height-fitted.Height)/2
-	left := math.Max(fitted.X, rect.ClipX)
-	top := math.Max(fitted.Y, rect.ClipY)
-	right := math.Min(fitted.X+fitted.Width, rect.ClipX+rect.ClipWidth)
-	bottom := math.Min(fitted.Y+fitted.Height, rect.ClipY+rect.ClipHeight)
-	if right-left < 1 || bottom-top < 1 {
-		return PanePlacement{}, false
-	}
-	fitted.ClipX, fitted.ClipY = left, top
-	fitted.ClipWidth, fitted.ClipHeight = right-left, bottom-top
+	fitted.X, fitted.Y, fitted.Width, fitted.Height = fit.X, fit.Y, fit.W, fit.H
+	fitted.ClipX, fitted.ClipY, fitted.ClipWidth, fitted.ClipHeight = fit.ClipX, fit.ClipY, fit.ClipW, fit.ClipH
 	return PanePlacement{Rect: fitted, PageWidth: pageW, PageHeight: pageH, Scale: scale}, true
+}
+
+// overlayPaneLayout resolves a placement for a host that positions in whole
+// pixels of an overlay covering the SPA window (the WebKitGTK pane overlay):
+// the CSS-to-overlay proportion is the overlay's size over the SPA viewport,
+// so it carries DPI and webview zoom without either side knowing them; no
+// viewport means the rect is already in overlay pixels. The edges snap with
+// paneplace.Layout. The answered scale draws the page's CSS pixels at the
+// placement's scale in overlay pixels.
+func overlayPaneLayout(placement PanePlacement, overlayW, overlayH int) (paneplace.HostLayout, float64) {
+	rect := placement.Rect
+	sx, sy := 1.0, 1.0
+	if rect.ViewportWidth > 0 && overlayW > 0 {
+		sx = float64(overlayW) / rect.ViewportWidth
+	}
+	if rect.ViewportHeight > 0 && overlayH > 0 {
+		sy = float64(overlayH) / rect.ViewportHeight
+	}
+	scale := placement.Scale
+	if scale <= 0 {
+		scale = 1
+	}
+	layout := paneplace.Layout(paneplace.Rect{
+		X: rect.X, Y: rect.Y, W: rect.Width, H: rect.Height,
+		ClipX: rect.ClipX, ClipY: rect.ClipY, ClipW: rect.ClipWidth, ClipH: rect.ClipHeight,
+	}, sx, sy)
+	return layout, scale * sx
 }
 
 // paneMount is one mounted pane surface: the frontend's claim that a host rect
@@ -587,12 +606,19 @@ func (m *Manager) syncPanePresentation(threadID string) {
 type presentSync struct{ busy, dirty bool }
 
 // presentPanes is one presentation pass of syncPanePresentation.
+//
+// A page is never newly shown while it lags the thread's viewport (a pane
+// resize lays out only the page shown then, viewport.go): it stays hidden and
+// the drain lays it out and runs another pass. A page already shown stays
+// shown through its own resize, whose drain is under way, and a page that
+// refused the size is shown anyway, under the error that refusal raised.
 func (m *Manager) presentPanes(threadID string) {
 	host, ok := m.engine.(paneHost)
 	m.mu.Lock()
 	session, hasSession := m.sessions[threadID]
-	_, rect, shown := m.presenterLocked(threadID)
+	mount, rect, shown := m.presenterLocked(threadID)
 	visible := hasSession && session.Visible && shown
+	previous := m.presented[threadID]
 	var pages []*managedPage
 	var active *managedPage
 	for _, scope := range m.scopes {
@@ -611,13 +637,21 @@ func (m *Manager) presentPanes(threadID string) {
 	if !ok {
 		return
 	}
+	pageW, pageH := sessionViewport(session)
 	var placement PanePlacement
 	if visible {
 		// The page keeps the session's viewport; the pane shows it scaled to
 		// fit. A pane too small or too occluded to show any of it presents
 		// nothing rather than a sliver.
-		pageW, pageH := sessionViewport(session)
 		placement, visible = placePage(rect, pageW, pageH)
+		placement.Mount = mount
+	}
+	lagging := false
+	if visible && active != nil && active.id != previous {
+		want := packViewport(pageW, pageH)
+		if active.viewport.Load() != want && active.viewportFailed.Load() != want {
+			visible, lagging = false, true
+		}
 	}
 	for _, p := range pages {
 		if p == active && visible {
@@ -628,6 +662,19 @@ func (m *Manager) presentPanes(threadID string) {
 	if visible && active != nil {
 		host.SetPageBounds(active.driver.Handle(), placement)
 		host.ShowPage(active.driver.Handle())
+	}
+	m.mu.Lock()
+	if m.presented == nil {
+		m.presented = make(map[string]string)
+	}
+	if visible && active != nil {
+		m.presented[threadID] = active.id
+	} else {
+		delete(m.presented, threadID)
+	}
+	m.mu.Unlock()
+	if lagging {
+		m.scheduleViewport(threadID)
 	}
 }
 

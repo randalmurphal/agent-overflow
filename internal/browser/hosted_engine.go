@@ -89,9 +89,10 @@ type paneHost interface {
 	HidePage(handle string)
 	// SetPageBounds carries the placement the Manager computed: the page's
 	// own viewport, the scale the pane shows it at, and the fitted rect in
-	// the SPA's CSS pixels. The host scales that rect by its own client
-	// size over the rect's viewport, so no engine ever equates CSS pixels
-	// with its native units. Always sent before a show.
+	// the SPA's CSS pixels. The host converts that rect with the rect's
+	// pixel ratio or its own size over the rect's viewport, so no engine
+	// ever equates CSS pixels with its native units. Always sent before a
+	// show.
 	SetPageBounds(handle string, placement PanePlacement)
 }
 
@@ -158,13 +159,26 @@ type hostedEngine struct {
 	// noFind holds the pages whose runtime has no find API, as the launcher
 	// reported before their created report.
 	noFind map[string]bool
+
+	// readPageRatio reads a page's own devicePixelRatio; a test replaces it
+	// to stand in for the CDP evaluate.
+	readPageRatio func(ctx context.Context, p *cdpPage) (float64, error)
+	// viewScaleAsked is a test seam called whenever a page is asked for a
+	// view scale it was not already asked for. Production leaves it nil.
+	viewScaleAsked func(handle string, want viewScale)
 }
 
 type pageRatio struct{ pane, page float64 }
 
+// viewScale is what a page's device-metrics override is asked to draw at: the
+// placement's scale, and the pane's device pixel ratio the webview zoom is
+// recovered from (paneZoom). A hidden page asks for {1, 0}: no zoom.
+type viewScale struct{ placement, paneRatio float64 }
+
 type viewScaleState struct {
-	want float64
-	busy bool
+	want  viewScale
+	asked bool
+	busy  bool
 }
 
 func newHostedEngine(relay hostRelay, send func(webview2host.Directive), accelerators func() keybindings.AcceleratorSet, events engineEvents) *hostedEngine {
@@ -187,6 +201,8 @@ func newHostedEngine(relay hostRelay, send func(webview2host.Directive), acceler
 		ratios:       make(map[string]pageRatio),
 		scales:       make(map[string]*viewScaleState),
 		noFind:       make(map[string]bool),
+
+		readPageRatio: func(ctx context.Context, p *cdpPage) (float64, error) { return p.devicePixelRatio(ctx) },
 	}
 }
 
@@ -798,10 +814,13 @@ func (e *hostedEngine) HidePage(handle string) {
 
 // SetPageBounds positions the controller at the FITTED rect (the page scaled
 // to fit the pane) and tells the page's device-metrics override the same
-// scale, so the emulated viewport draws exactly into that rect. The launcher
-// scales the rect by its client size over the SPA viewport (OS scale times
-// webview zoom); the override draws at the OS scale alone, so the zoom is
-// recovered from the two device pixel ratios.
+// scale, so the emulated viewport draws exactly into that rect. The override
+// draws at the OS scale alone, so the webview zoom is recovered from the two
+// device pixel ratios.
+//
+// The directive also names the pane mount and the page's viewport: a launcher
+// that measures the mount itself places the page from its own rect with the
+// same rule (paneplace.Fit) and ignores this one's position.
 func (e *hostedEngine) SetPageBounds(handle string, placement PanePlacement) {
 	if !e.setBounds(handle, placement) {
 		return
@@ -812,25 +831,27 @@ func (e *hostedEngine) SetPageBounds(handle string, placement PanePlacement) {
 		X: rect.X, Y: rect.Y, W: rect.Width, H: rect.Height,
 		CX: rect.ClipX, CY: rect.ClipY, CW: rect.ClipWidth, CH: rect.ClipHeight,
 		VW: rect.ViewportWidth, VH: rect.ViewportHeight,
-		Bg: rect.Background,
+		DPR:   rect.DevicePixelRatio,
+		Bg:    rect.Background,
+		Mount: placement.Mount, PageW: placement.PageWidth, PageH: placement.PageHeight,
 	})
 	e.syncViewScale(handle)
 }
 
 // syncViewScale asks the page's override for the scale its presentation
 // state calls for: the placement's scale times the pane zoom while shown,
-// 1 while hidden.
+// 1 while hidden. A placement that only moved asks for what was already
+// asked, which costs nothing.
 func (e *hostedEngine) syncViewScale(handle string) {
 	e.mu.Lock()
 	shown := e.shown[handle]
 	placement, hasBounds := e.bounds[handle]
 	e.mu.Unlock()
 	if !shown || !hasBounds {
-		e.applyViewScale(handle, 1)
+		e.applyViewScale(handle, viewScale{placement: 1})
 		return
 	}
-	rect := placement.Rect
-	e.applyViewScale(handle, placement.Scale*paneZoom(rect.DevicePixelRatio, e.pageDevicePixelRatio(handle, rect.DevicePixelRatio)))
+	e.applyViewScale(handle, viewScale{placement: placement.Scale, paneRatio: max(placement.Rect.DevicePixelRatio, 0)})
 }
 
 // paneZoom is the SPA's webview zoom: its device pixel ratio over the page's
@@ -849,8 +870,9 @@ func (e *hostedEngine) driverFor(handle string) *cdpPage {
 }
 
 // pageDevicePixelRatio answers the page's own devicePixelRatio, read once per
-// pane ratio it is asked under (see ratios) so a drag costs no CDP round trip
-// per frame. 0 means unknown, which paneZoom treats as no zoom.
+// pane ratio it is asked under (see ratios), so only a monitor or zoom change
+// costs a CDP round trip. 0 means unknown, which paneZoom treats as no zoom.
+// It runs in the scale drain, never in a presentation pass.
 func (e *hostedEngine) pageDevicePixelRatio(handle string, paneRatio float64) float64 {
 	e.mu.Lock()
 	cached, ok := e.ratios[handle]
@@ -864,9 +886,11 @@ func (e *hostedEngine) pageDevicePixelRatio(handle string, paneRatio float64) fl
 	}
 	ctx, cancel := context.WithTimeout(p.ctx, 5*time.Second)
 	defer cancel()
-	ratio, err := p.devicePixelRatio(ctx)
+	ratio, err := e.readPageRatio(ctx, p)
 	if err != nil {
-		e.logf("browser: pane page %s device pixel ratio: %v", handle, err)
+		if p.ctx.Err() == nil {
+			e.logf("browser: pane page %s device pixel ratio: %v", handle, err)
+		}
 		return 0
 	}
 	e.mu.Lock()
@@ -878,15 +902,15 @@ func (e *hostedEngine) pageDevicePixelRatio(handle string, paneRatio float64) fl
 }
 
 // applyViewScale asks the page's override for a scale and returns at once.
-// A pane drag reports a rect per frame, and each one is a CDP round trip;
-// applied inline and in order they queued behind one another for seconds
-// after the drag ended, with the controller already at its final rect and the
-// page drawn at every stale scale on the way. So the call is latest-wins:
-// one override in flight per page, and the newest scale asked for while it
-// runs is the only one applied after it. Failures are logged rather than
-// returned: the caller (a pane rect report) has nothing to do with one, and a
-// page that refuses is one that is closing.
-func (e *hostedEngine) applyViewScale(handle string, scale float64) {
+// A pane drag reports a rect per frame, and each override is a CDP round
+// trip; applied inline and in order they queued behind one another for
+// seconds after the drag ended. So the call is latest-wins: one override in
+// flight per page, and the newest scale asked for while it runs is the only
+// one applied after it. Asking for the scale already asked for does nothing,
+// which is what keeps a position-only change free of metrics work. Failures
+// are logged rather than returned: the caller (a pane rect report) has
+// nothing to do with one, and a page that refuses is one that is closing.
+func (e *hostedEngine) applyViewScale(handle string, want viewScale) {
 	e.mu.Lock()
 	if _, known := e.drivers[handle]; !known {
 		e.mu.Unlock()
@@ -897,14 +921,21 @@ func (e *hostedEngine) applyViewScale(handle string, scale float64) {
 		st = &viewScaleState{}
 		e.scales[handle] = st
 	}
-	st.want = scale
-	if st.busy {
+	if st.asked && st.want == want {
 		e.mu.Unlock()
 		return
 	}
+	st.want, st.asked = want, true
+	asked := e.viewScaleAsked
+	start := !st.busy
 	st.busy = true
 	e.mu.Unlock()
-	go e.drainViewScale(handle, st)
+	if asked != nil {
+		asked(handle, want)
+	}
+	if start {
+		go e.drainViewScale(handle, st)
+	}
 }
 
 func (e *hostedEngine) drainViewScale(handle string, st *viewScaleState) {
@@ -919,8 +950,12 @@ func (e *hostedEngine) drainViewScale(handle string, st *viewScaleState) {
 			e.mu.Unlock()
 			return
 		}
+		scale := want.placement
+		if want.paneRatio > 0 {
+			scale *= paneZoom(want.paneRatio, e.pageDevicePixelRatio(handle, want.paneRatio))
+		}
 		ctx, cancel := context.WithTimeout(p.ctx, 5*time.Second)
-		err := p.SetViewScale(ctx, want)
+		err := p.SetViewScale(ctx, scale)
 		cancel()
 		if err != nil && p.ctx.Err() == nil {
 			e.logf("browser: pane page %s view scale: %v", handle, err)

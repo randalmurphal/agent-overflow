@@ -134,7 +134,9 @@ Spike-verified recipes, all load-bearing:
   seconds — nothing gates on `visibilitychange`; the host's own
   visibility signal is authoritative.
 - The visible page's controller is positioned over the pane's FITTED
-  rect (the viewport scaled down to fit, centered). The page's size is
+  rect (the viewport scaled down to fit, centered by whole CSS pixels).
+  CSS pixels convert to client pixels by the report's
+  `devicePixelRatio`. The page's size is
   never the controller's: `Emulation.setDeviceMetricsOverride` pins
   the thread viewport and its `scale` draws it to fit, and screenshots
   divide the clip by the page's `devicePixelRatio` so they stay one
@@ -185,7 +187,21 @@ controllers, profile selection, devtools open) rides the existing
 notification-bridge channel mechanism as a new directive channel;
 launcher → backend acks/events (controller created, engine process
 died) ride the same connection's RPC path, like `updater:install`
-already does.
+already does. The launcher applies one page's directives in the order
+they arrived.
+
+A pane's position does not need the backend: the SPA and the
+controllers share the launcher's UI thread. The SPA posts each geometry
+report to the launcher (`chrome.webview.postMessage`, Wails'
+`RawMessageHandler`) as well as to the backend, numbered per mount, and
+only where the launcher advertised that it takes them. A bounds
+directive names the mount and the page's viewport; with a report for
+that mount the launcher places the page from it with the shared rule
+(`internal/paneplace`) and ignores the directive's position, and shows
+the page only while the backend shows it and the report is visible.
+Without one (an older SPA, backend or launcher on either side) the
+directive's rect stands as before. The backend still receives every
+report: it owns the viewport and which mount presents.
 
 ## 6. macOS / Linux: native driver
 
@@ -251,13 +267,19 @@ positioned over.
   event reports) and reports it over a binding, together with the
   VISIBLE CLIP INTERSECTION and the pane's resolved background color;
   the Manager fits the page's viewport into that rect (`placePage`:
-  scale = min(rect/viewport, 1), centered, clip intersected) and the
+  scale = min(rect/viewport, 1), centered by whole CSS pixels so a page
+  that follows the pane starts at the rect's origin, clip intersected) and the
   platform host positions the native view at the fitted rect, drawn
   at that scale, and crops it to the clip, so a pane half behind the
   sidebar shows its visible half without the page relayouting. The
   rect also carries the SPA's `devicePixelRatio`, which the hosted
   engine folds into the CDP scale so webview zoom and DPI cancel out.
-  Rect updates coalesce per frame. On Linux each page lives in its
+  Rect updates coalesce per frame, and each mount has at most one report
+  in flight with only the newest waiting behind it, so reports land in
+  order; one the backend already accepted is not resent, and a failed
+  one is retried, bounded, then shown in the pane's banner. A host that
+  positions in whole pixels snaps edges, never origin and size apart,
+  with `floor(v + 0.5)`. On Linux each page lives in its
   own `AoViewHost` widget: an overlay child at the clip rect through
   four margins with `ALIGN_FILL`, allocating the view at exactly the
   viewport under a translate+scale `GskTransform` (spike-verified:
@@ -286,7 +308,10 @@ positioned over.
   its viewport and keeps producing frames. By default the viewport is
   the pane's own size (`viewport.go`: the rect's whole pixels within the
   viewport bounds, applied latest-wins per thread), so a presented
-  page is at 1:1 and reflows with the pane. When the agent pinned a
+  page is at 1:1 and reflows with the pane. A resize lays out only the
+  presented page; another page of the thread takes the viewport before
+  it is shown or a tool acts on it, and the thread's state is pushed once
+  the resize settles. Moving the pane does no page-metrics work. When the agent pinned a
   size with `browser_viewport set`, the address row shows
   `1280 × 720 · 62%` style labels so a scaled presentation is visible
   as such. The placement never changes a page's size.
