@@ -320,6 +320,16 @@ export interface Settings {
    * assistants' (docs/specs/memory.md). Read at spawn.
    */
   sharedMemoryEnabled: boolean;
+  /**
+   * The agents a thread chooses among when it opens a sub-thread
+   * (internal/settings/agentroster.go). Seeded once; an edited list is the
+   * person's and never replaced by later seeds.
+   */
+  agentProfiles: AgentProfile[];
+  /** Advice on choosing among the profiles, each shown when its `when` holds. */
+  agentNotes: AgentNote[];
+  /** How many levels of sub-threads may open below a thread the person talks to (1 to 4). */
+  subThreadLevels: number;
   /** Turn Claude Code's own auto memory off in this app's Claude sessions. */
   claudeNativeMemoryDisabled: boolean;
   /** Turn Codex's own memories off in this app's Codex threads. */
@@ -709,6 +719,31 @@ export interface NetworkPersistedSettings {
 export interface RetentionPersistedSettings {
   /** Age threshold in days. 0 disables the sweep. */
   days: number;
+}
+
+/**
+ * One agent a thread can spawn by name (settings.AgentProfile). An empty
+ * provider, model, effort or runtime mode inherits the spawning thread's.
+ */
+export interface AgentProfile {
+  name: string;
+  useFor: string;
+  provider: "" | "claude" | "codex";
+  model: string;
+  effort: "" | ReasoningEffort;
+  runtimeMode: "" | RuntimeMode;
+  instructions: string;
+}
+
+/**
+ * When a note on choosing profiles is shown (settings.AgentNote): always,
+ * when profiles of both providers can run, or when they all run on one.
+ */
+export type AgentNoteWhen = "" | "both_providers" | "one_provider";
+
+export interface AgentNote {
+  text: string;
+  when: AgentNoteWhen;
 }
 
 export interface ProviderStatus {

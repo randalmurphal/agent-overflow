@@ -28,6 +28,8 @@ export function defaultSettings(): Settings {
     codexCustomEnv: [...SETTINGS_DEFAULTS.codexCustomEnv],
     spinnerCustomVerbs: [...SETTINGS_DEFAULTS.spinnerCustomVerbs],
     spinnerDisabledAnimations: [...SETTINGS_DEFAULTS.spinnerDisabledAnimations],
+    agentProfiles: SETTINGS_DEFAULTS.agentProfiles.map((profile) => ({ ...profile })),
+    agentNotes: SETTINGS_DEFAULTS.agentNotes.map((note) => ({ ...note })),
   };
 }
 
@@ -88,5 +90,13 @@ export function mergeSettingsWithDefaults(raw: Partial<Settings>): Settings {
     spinnerDisabledAnimations: result.spinnerDisabledAnimations
       ? [...result.spinnerDisabledAnimations]
       : defaults.spinnerDisabledAnimations,
+    // An emptied roster is the person's (the backend sends [], never
+    // null): only a missing key falls back to the seeds.
+    agentProfiles: result.agentProfiles
+      ? result.agentProfiles.map((profile) => ({ ...profile }))
+      : defaults.agentProfiles,
+    agentNotes: result.agentNotes
+      ? result.agentNotes.map((note) => ({ ...note }))
+      : defaults.agentNotes,
   };
 }

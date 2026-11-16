@@ -549,6 +549,36 @@ const STATIC_FIELDS = [
     keywords: ['ao-thread-tools', 'threads', 'agents', 'mcp'],
   },
 
+  // --- Agent profiles ------------------------------------------------------
+  {
+    id: 'agent-profiles.levels',
+    section: 'agent-profiles',
+    label: 'Sub-thread levels',
+    hint: 'How many levels of sub-threads may open below a thread you talk to. A thread on the last level cannot open threads and has no subagents of its own. Applies to sessions started after a change.',
+    keywords: ['depth', 'nesting', 'workers', 'subagents', 'thread_spawn'],
+  },
+  {
+    id: 'agent-profiles.profiles',
+    section: 'agent-profiles',
+    heading: 'Profiles',
+    label: 'Profiles',
+    keywords: ['roster', 'models', 'agents', 'spawn', 'use for', 'instructions'],
+  },
+  {
+    id: 'agent-profiles.notes',
+    section: 'agent-profiles',
+    heading: 'Choosing notes',
+    label: 'Choosing notes',
+    keywords: ['council', 'effort', 'advice', 'roster'],
+  },
+  {
+    id: 'agent-profiles.restore',
+    section: 'agent-profiles',
+    label: 'Restore the starting roster',
+    hint: 'Replace the profiles and notes with the ones the app ships with. Your edits to them are lost.',
+    keywords: ['reset', 'defaults', 'roster'],
+  },
+
   // --- App guide -----------------------------------------------------------
   {
     id: 'agent-guide.enabled',
