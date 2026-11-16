@@ -638,6 +638,33 @@ describe('tab lifecycle in the browser companion store', () => {
     expect(takeAddressFocus(THREAD, { id: 'n' })).toBe(false);
   });
 
+  // A second new tab replaces the first's request: the first answer, ready
+  // or refused, arriving after it, neither resolves nor withdraws it.
+  for (const firstFails of [false, true]) {
+    it(`leaves the newer tab's focus to its own answer when the older ${firstFails ? 'fails' : 'answers'} late`, async () => {
+      const answers: Array<(pageId: string) => void> = [];
+      setBindingMock('BrowserCompanionDo', vi.fn(() => new Promise((resolve, reject) => {
+        answers.push((pageId) => {
+          if (!pageId) reject(new Error('refused'));
+          else resolve({ kind: 'state', threadId: THREAD, activePageId: pageId, visible: true, pages: [tab(pageId)], pageId });
+        });
+      })));
+      const first = openBrowserTab(THREAD, { focusAddress: true });
+      await vi.waitFor(() => expect(answers).toHaveLength(1));
+      // The user presses New again.
+      window.dispatchEvent(new Event('pointerdown'));
+      const second = openBrowserTab(THREAD, { focusAddress: true });
+      await vi.waitFor(() => expect(answers).toHaveLength(2));
+      answers[0](firstFails ? '' : 'a');
+      await first;
+      expect(addressFocusIntent(THREAD)).toBe('');
+      answers[1]('b');
+      await second;
+      expect(addressFocusIntent(THREAD)).toBe('b');
+      expect(takeAddressFocus(THREAD, { id: 'b' })).toBe(true);
+    });
+  }
+
   it('drops the focus when another tab is shown first', async () => {
     setBindingMock('BrowserCompanionDo', vi.fn(async () => ({
       kind: 'state', threadId: THREAD, activePageId: 'n', visible: true, pages: [tab('n')], pageId: 'n',

@@ -381,12 +381,14 @@ export async function openBrowserTab(
   threadId: string,
   options: { address?: string; focusAddress?: boolean } = {},
 ): Promise<BrowserActionFailure | null> {
-  if (options.focusAddress) armAddressFocus(threadId);
+  const request = options.focusAddress ? armAddressFocus(threadId) : 0;
   const { failure, state } = await runBrowserAction(threadId, { kind: 'new', address: options.address });
   // A refusal with no pane to carry its banner (the thread had no tab, so
   // none opened) goes to a toast.
   if (failure && !browserPaneOpen(threadId)) addErrorToast(failure.error, failure.cause);
-  if (options.focusAddress && addressFocusIntents.get(threadId) === PENDING_TAB) {
+  // Only this request's own answer settles it: a newer new tab replaced
+  // it, and this answer must neither resolve nor withdraw that one.
+  if (request && armedAddressFocus.get(threadId) === request && addressFocusIntents.get(threadId) === PENDING_TAB) {
     // The answer names the tab; none when it failed or was closed, and
     // the failed tab shows why.
     const pageId = failure ? '' : (state?.pageId ?? '');
@@ -400,18 +402,23 @@ export async function openBrowserTab(
 // none, PENDING_TAB until the `new` answer names the tab, then its page id.
 // Any pointer press or key in the window before the pane takes it withdraws
 // every intent (the user moved on), as does the pane finding another tab
-// active.
+// active. Each request is numbered (armedAddressFocus), so only its own
+// answer settles it.
 const PENDING_TAB = '';
 const addressFocusIntents = createKeyedSignalRegistry<string | null>(null);
-const armedAddressFocus = new Set<string>();
+const armedAddressFocus = new Map<string, number>();
+let addressFocusRequests = 0;
 
-function armAddressFocus(threadId: string): void {
+/** Arms a focus request for the thread, replacing any, and answers its number. */
+function armAddressFocus(threadId: string): number {
   if (armedAddressFocus.size === 0 && typeof window !== 'undefined') {
     window.addEventListener('pointerdown', dropAllAddressFocus, true);
     window.addEventListener('keydown', dropAllAddressFocus, true);
   }
-  armedAddressFocus.add(threadId);
+  const request = ++addressFocusRequests;
+  armedAddressFocus.set(threadId, request);
   addressFocusIntents.set(threadId, PENDING_TAB);
+  return request;
 }
 
 function dropAddressFocus(threadId: string): void {
@@ -424,7 +431,7 @@ function dropAddressFocus(threadId: string): void {
 }
 
 function dropAllAddressFocus(): void {
-  for (const threadId of [...armedAddressFocus]) dropAddressFocus(threadId);
+  for (const threadId of [...armedAddressFocus.keys()]) dropAddressFocus(threadId);
 }
 
 /**
