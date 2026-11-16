@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -101,6 +102,11 @@ func TestASpawnSettlesWhenItsWorkerRests(t *testing.T) {
 
 	ack := f.spawnWorker(t, "watch the deploy")
 	f.awaitRestHold(t, ack)
+	// Held, it leaves the turn-end gate: the worker's later turn ends read
+	// nothing for it.
+	if tokens, _ := f.app.runningReceiptTokens(ack.ThreadID); slices.Contains(tokens, ack.Token) {
+		t.Fatalf("the held request is still in the turn-end gate: %v", tokens)
+	}
 	report := f.statusOf(t, ack.Token, 1)
 	if !report.TimedOut || len(report.Requests) != 1 || report.Requests[0].State != threadtools.RequestRunning ||
 		!strings.Contains(report.Requests[0].WaitingOn, "deploy.log") {
@@ -360,6 +366,11 @@ func TestASendWaitsForRestOnlyOnTheCallersOwnWorker(t *testing.T) {
 	}
 	own.ThreadID = spawned.ThreadID
 	f.awaitRestHold(t, own)
+	// Its row reads as its worker waits, on the shell.
+	waitUntil(t, 10*time.Second, func() bool {
+		row, _ := agentRowByToken(f.agentRows(t, f.caller.ID).Rows, own.Token)
+		return row.Worker == workerWaiting && strings.Contains(row.Activity, "deploy.log")
+	})
 
 	installMockClaudeTurns(t, f.app, [][]string{append(restShellLaunch("bg-5", "task-5", "Tailing for you."), mockClaudeResultLine)})
 	other, err := createTestThread(t, f.app, string(provider.Claude), t.TempDir(), "claude-opus-4-7", threadmode.ModeChat)

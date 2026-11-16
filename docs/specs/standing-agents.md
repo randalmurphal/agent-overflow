@@ -850,7 +850,9 @@ Ruling 36, as built:
   remote commands) seeds the threads to re-evaluate; the memory sources
   report themselves once they change. A deleted thread is forgotten. A
   thread only sent to is no worker: a send's row follows its request.
-- An open row whose request settled shows its worker's state (`blocked`,
+- An open row whose request settled, or is held until its thread rests
+  ([agent-thread-tools.md](agent-thread-tools.md#wakes-q7-q8-q15-q25)),
+  shows its worker's state (`blocked`,
   `running`, `queued`, then `waiting`, in that order;
   `ThreadAgentRow.worker`), its blocked or activity line and Stop, and
   keeps its answer in its digest. A worker with nothing of its own that

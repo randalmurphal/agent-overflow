@@ -812,6 +812,14 @@ func (v threadAgentView) row(request store.ThreadAgentRequest, names map[string]
 	if rest.unrest == "" && request.TargetOpen {
 		rest.unrest = workerWaiting
 	}
+	if rest.unrest == "" && local && !settled && v.app.restHeld(row.TargetThreadID, row.Token) {
+		// A request held for its thread's rest, a send to the caller's own
+		// worker among them, reads as that thread waits.
+		rest = v.app.liveThreadRest(row.TargetThreadID)
+		if rest.unrest == "" {
+			rest.unrest = workerWaiting
+		}
+	}
 	worker := rest.unrest
 	live := !settled || worker != ""
 	blocked := false

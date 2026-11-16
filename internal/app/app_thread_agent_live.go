@@ -413,6 +413,15 @@ func (a *App) liveWorkerUnrest(spawn store.ThreadRequest) workerRest {
 	return workerRest{}
 }
 
+// liveThreadRest is why threadID is not at rest by its own state, as last
+// recorded, whichever spawn made it.
+func (a *App) liveThreadRest(threadID string) workerRest {
+	w := &a.liveWorkers
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.threads[threadID].workerRest
+}
+
 // liveWorker reports whether threadID is a worker not at rest, as last
 // recorded.
 func (a *App) liveWorker(threadID string) bool {

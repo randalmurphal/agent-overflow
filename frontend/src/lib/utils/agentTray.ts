@@ -31,10 +31,13 @@ export function isOpenAgentRow(row: Pick<ThreadAgentRow, 'state' | 'worker'>): b
  * The state a row shows: its request's while that is open, and once it
  * settled, its worker's while that is not at rest: running, blocked or
  * queued, the words of a request's own states, or waiting on what it
- * started (background work, a loop, watch or reminder, a timer).
+ * started (background work, a loop, watch or reminder, a timer). A request
+ * still running whose worker waits is one held until that worker rests,
+ * and shows it waiting.
  */
 export function agentRowShownState(row: Pick<ThreadAgentRow, 'state' | 'worker'>): string {
-  return SETTLED_STATES.has(row.state) && row.worker ? row.worker : row.state;
+  if (!row.worker) return row.state;
+  return SETTLED_STATES.has(row.state) || (row.state === 'running' && row.worker === 'waiting') ? row.worker : row.state;
 }
 
 /**

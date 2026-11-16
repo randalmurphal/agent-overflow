@@ -59,9 +59,16 @@ describe('an open row', () => {
     expect(agentRowStateLabel(waiting)).toBe('waiting');
     expect(agentWorkerCount([waiting], (r) => agentRowShownState(r) === 'running')).toBe(0);
     expect(agentRowStateLabel(live('replied', undefined, { lateReply: true }))).toBe('replied late');
-    // An open request reads as its own state, whatever its worker does.
+    // An open request reads as its own state, whatever its worker does,
+    // but one held for its worker's rest: its turn ended and its worker
+    // waits on what it started.
     expect(agentRowShownState(live('accepted', 'running'))).toBe('accepted');
     expect(agentRowStateLabel(live('accepted', 'running'))).toBe('queued');
+    expect(agentRowShownState(live('running', 'blocked'))).toBe('running');
+    const held = live('running', 'waiting');
+    expect(agentRowShownState(held)).toBe('waiting');
+    expect(agentRowStateLabel(held)).toBe('waiting');
+    expect(agentWorkerCount([held], (r) => agentRowShownState(r) === 'running')).toBe(0);
   });
 
   it('counts each worker once, however many open requests went to it', () => {
