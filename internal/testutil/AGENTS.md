@@ -19,6 +19,10 @@ packages. Test-specific setup stays beside the test that owns it.
   test package that links a provider spawn package installs it;
   `TestEveryTestBinaryThatCanStartAProviderInstallsThePoison` fails one that
   does not. Standard library only, like `mockexec/`.
+- `helperproc/` ties a helper process to the test binary that started it
+  (`Tie`, `Hold`), so a helper that stands in for a backend ends when that
+  binary is killed or times out. A helper never blocks on `select {}`.
+  Standard library only.
 - `deadline.go` is a context whose deadline the test ends at a chosen
   moment, for code that acts on a deadline without racing a real clock.
 - `git.go` creates local repositories and local bare origins. No helper here

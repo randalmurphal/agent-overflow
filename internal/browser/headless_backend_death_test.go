@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/orphanreaper"
+	"agent-overflow/internal/testutil/helperproc"
 )
 
 // chromiumBackendHelperEnv makes TestChromiumBackendHelper the backend that
@@ -50,7 +51,7 @@ func TestChromiumBackendHelper(t *testing.T) {
 		t.Fatal(err)
 	}
 	fmt.Println("ready")
-	select {}
+	helperproc.Hold()
 }
 
 // A backend that dies without stopping its browser takes every process of
@@ -63,6 +64,7 @@ func TestABackendsDeathEndsEveryProcessOfItsChromium(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	helperproc.Tie(t, backend)
 	if err := backend.Start(); err != nil {
 		t.Fatal(err)
 	}

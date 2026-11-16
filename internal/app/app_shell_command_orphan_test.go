@@ -18,6 +18,7 @@ import (
 
 	"agent-overflow/internal/orphanreaper"
 	"agent-overflow/internal/procutil"
+	"agent-overflow/internal/testutil/helperproc"
 
 	"github.com/google/uuid"
 	"github.com/shirou/gopsutil/v4/process"
@@ -137,7 +138,7 @@ func TestShellCommandBackendHelper(t *testing.T) {
 	// The sidecar is told of the group before the record is written.
 	record := waitOrphanRecord(t, app.orphanRegistry)
 	fmt.Printf("ready %d\n", record.PGID)
-	select {}
+	helperproc.Hold()
 }
 
 // sidecarOf returns the orphan reaper sidecar the backend started.
@@ -191,6 +192,7 @@ func TestABackendsDeathEndsItsShellCommand(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			helperproc.Tie(t, backend)
 			if err := backend.Start(); err != nil {
 				t.Fatal(err)
 			}

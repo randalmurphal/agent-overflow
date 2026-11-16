@@ -18,6 +18,7 @@ import (
 	"agent-overflow/internal/procutil"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/codex"
+	"agent-overflow/internal/testutil/helperproc"
 	"agent-overflow/internal/testutil/mockexec"
 )
 
@@ -98,7 +99,7 @@ func TestProviderBackendHelper(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	select {}
+	helperproc.Hold()
 }
 
 // providerMock is a provider CLI that, like Claude, does not exit when its
@@ -160,6 +161,7 @@ func TestABackendsDeathEndsItsProviderSession(t *testing.T) {
 				t.Fatal(err)
 			}
 			backend.Stderr = os.Stderr
+			helperproc.Tie(t, backend)
 			if err := backend.Start(); err != nil {
 				t.Fatal(err)
 			}
