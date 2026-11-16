@@ -6,8 +6,11 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -142,6 +145,109 @@ func TestAnArchiveDuringTheFirstReconcileClosesWhatItOpened(t *testing.T) {
 	}
 	if _, _, asking := f.app.asyncQuestionBlocked(f.worker.ID); asking {
 		t.Fatal("an archived worker's question is open")
+	}
+}
+
+// echoAnswerWithItsRowFailing hands the spawner's queued answer to a live
+// worker session and lands the session's echo of it with every timeline
+// write of a user row refused: the provider has the answer, and only the
+// row that records it failed.
+func (f asyncQuestionFixture) echoAnswerWithItsRowFailing(t *testing.T) {
+	t.Helper()
+	stdinLog := f.workerRecordingSession(t)
+	f.app.triage.FlushQueuedItems(f.worker.ID)
+	envelopes := waitForRecordedUserEnvelopes(t, stdinLog, 1)
+	if len(envelopes) != 1 {
+		t.Fatalf("the session was written %d messages, want the answer", len(envelopes))
+	}
+	f.app.flushDispatch.wg.Wait()
+	execOnStore(t, f.dbPath, `CREATE TRIGGER refuse_echo_update BEFORE UPDATE OF meta ON items
+		WHEN NEW.kind='user_text' AND json_extract(NEW.meta,'$.provider_item_id') IS NOT NULL
+		BEGIN SELECT RAISE(ABORT, 'injected echo write failure'); END`)
+	execOnStore(t, f.dbPath, `CREATE TRIGGER refuse_echo_insert BEFORE INSERT ON items WHEN NEW.kind='user_text'
+		BEGIN SELECT RAISE(ABORT, 'injected echo write failure'); END`)
+	wireID, _ := envelopes[0]["uuid"].(string)
+	text, _ := envelopeText(t, envelopes[0])
+	meta, err := json.Marshal(map[string]any{"provider_item_id": wireID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.app.triage.Handle(provider.ProviderEvent{
+		Kind: provider.EventUserText, ThreadID: f.worker.ID, Content: text, Meta: meta, Timestamp: time.Now(),
+	}); err == nil {
+		t.Fatal("the echo's row write was not refused")
+	}
+}
+
+// requireTakenIn fails unless the answer under sendID stands as the
+// worker took it in: its question answered and not reopened, its recovery
+// row gone, and no other token putting the question to the spawner again.
+func (f asyncQuestionFixture) requireTakenIn(t *testing.T, sendID, state string) {
+	t.Helper()
+	questions, err := f.app.store.ListAsyncQuestions(f.worker.ID, "question:ask")
+	if err != nil || len(questions) != 1 || questions[0].State != state || questions[0].Answer != "One" {
+		t.Fatalf("the question = %+v, %v; want it %s with the spawner's answer", questions, err, state)
+	}
+	answered := strings.TrimPrefix(sendID, workerAnswerSendIDRoot)
+	if tokens := workerPromptTokens(t, f.app, f.spawner.ID); slices.ContainsFunc(tokens, func(token string) bool { return token != answered }) {
+		t.Fatalf("the spawner was asked again: %q", tokens)
+	}
+	if open := openWorkerRegistrations(f.app, f.worker.ID); len(open) != 0 {
+		t.Fatalf("the answered question is registered again under %q", open)
+	}
+	if _, _, asking := f.app.asyncQuestionBlocked(f.worker.ID); asking {
+		t.Fatal("the answered question is open again")
+	}
+	if draft, _, err := f.app.store.GetThreadDraft(f.worker.ID); err != nil || strings.Contains(draft.Content, "Answer: One") {
+		t.Fatalf("the worker's composer = %q, %v; want the answer kept out of it", draft.Content, err)
+	}
+}
+
+// An answer the worker's provider echoed is taken in, whatever the echo's
+// own row write did: its echo confirms the questions answered and retires
+// the answer's recovery row, so an End Session after a failed row write
+// neither reopens the question nor asks the spawner again.
+func TestAnEchoedSpawnerAnswerWhoseRowFailedIsNotGivenBack(t *testing.T) {
+	t.Parallel()
+	f := newAsyncQuestionFixture(t, "async-echo-row", store.PlacementOwned)
+	sendID := f.answered(t)
+	f.echoAnswerWithItsRowFailing(t)
+	if err := f.app.StopSession(f.worker.ID); err != nil {
+		t.Fatal(err)
+	}
+	f.drain(t)
+	f.requireTakenIn(t, sendID, "delivered")
+	if durable, _ := queuedSendIDs(t, f.app, f.worker.ID); slices.Contains(durable, sendID) {
+		t.Fatalf("the taken-in answer's recovery row is still queued: %q", durable)
+	}
+}
+
+// An echo whose confirmation fails to write is kept, as an answer's or a
+// completion's is: an End Session meanwhile reads the answer consumed and
+// gives nothing back, and the confirmation lands at its next try.
+func TestAnEchoedSpawnerAnswerWhoseConfirmationFailsIsKept(t *testing.T) {
+	t.Parallel()
+	f := newAsyncQuestionFixture(t, "async-echo-confirm", store.PlacementOwned)
+	sendID := f.answered(t)
+	execOnStore(t, f.dbPath, `CREATE TRIGGER refuse_answer_confirm BEFORE UPDATE OF state ON async_questions
+		WHEN NEW.state='delivered' BEGIN SELECT RAISE(ABORT, 'injected confirm failure'); END`)
+	f.echoAnswerWithItsRowFailing(t)
+	if !f.app.echoed(sendID) {
+		t.Fatal("the failed confirmation was not kept")
+	}
+	if err := f.app.StopSession(f.worker.ID); err != nil {
+		t.Fatal(err)
+	}
+	f.drain(t)
+	f.requireTakenIn(t, sendID, "submitted")
+	execOnStore(t, f.dbPath, `DROP TRIGGER refuse_answer_confirm`)
+	f.app.retryOwnedEchoes(f.worker.ID)
+	if f.app.echoed(sendID) {
+		t.Fatal("the confirmation did not land once the store took it")
+	}
+	f.requireTakenIn(t, sendID, "delivered")
+	if durable, _ := queuedSendIDs(t, f.app, f.worker.ID); slices.Contains(durable, sendID) {
+		t.Fatalf("the taken-in answer's recovery row is still queued: %q", durable)
 	}
 }
 

@@ -3,12 +3,14 @@ package app
 import (
 	"log"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/store"
 )
 
 // Triage reports a delivery fact once: the turn a request's message was
 // delivered into (bindDeliveredRequests) and the echo of an answer, a
-// reminder or a completion (confirmOwnedDeliveries). The report is the only
+// reminder, a completion or a spawner's answer to its worker's async
+// questions (confirmOwnedDeliveries). The report is the only
 // evidence there will be, so a store write that records it and fails keeps
 // the fact here, as resolved, until a write lands: every read of a
 // receipt's turn tries its binding again and reads the kept one while the
@@ -28,8 +30,8 @@ type receiptBinding struct {
 	rebindFrom int
 }
 
-// ownedEcho is the provider's echo of an answer, a reminder or a completion
-// whose confirmation has not been written.
+// ownedEcho is the provider's echo of a message ownedSendID names whose
+// confirmation has not been written.
 type ownedEcho struct {
 	threadID string
 	itemID   string
@@ -114,14 +116,20 @@ func (a *App) deliveredReceipt(token string) (store.ThreadRequestReceipt, bool, 
 	return a.deliveredReceiptLocked(token)
 }
 
-// confirmOwnedEcho writes the confirmation of an echoed answer, reminder or
-// completion, keeping the echo for the next try when the write fails.
+// confirmOwnedEcho writes the confirmation of an echoed answer, reminder,
+// completion or spawner's answer to a worker's async questions, keeping the
+// echo for the next try when the write fails.
 func (a *App) confirmOwnedEcho(sendID string, echo ownedEcho) error {
 	var err error
 	if token, late, ok := threadWakeFromSendID(sendID); ok {
 		_, err = a.store.ConfirmThreadWake(token, late, echo.itemID, echo.at)
 	} else if computerID, requestID, ok := remoteCompletionFromSendID(sendID); ok {
 		_, err = a.store.ConfirmRemoteCompletion(computerID, requestID, echo.at)
+	} else if isWorkerAnswer(sendID) {
+		var confirmed bool
+		if confirmed, err = a.store.ConfirmAsyncAnswer(echo.threadID, sendID, echo.itemID); confirmed {
+			a.emit(eventchan.ProviderAsyncQuestionsChanged, map[string]string{"threadId": echo.threadID})
+		}
 	} else {
 		return nil
 	}

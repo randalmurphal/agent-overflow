@@ -288,6 +288,40 @@ func (s *Store) ReturnAsyncAnswer(threadID, sendID string, reopened func(revisio
 	return revisions, tx.Commit()
 }
 
+// ConfirmAsyncAnswer records the provider's echo of an answer the app
+// wrote to threadID's async questions, as the echo's user row does through
+// its triggers once it is written (async_question_answer_insert): in one
+// transaction the questions sendID claimed read delivered, by the user row
+// itemID, and the recovery row the dispatch kept for the answer
+// (DeleteDispatchedFlushQueueItem) goes. It reports whether any question
+// changed: none does once a row write or an earlier confirmation took them,
+// or the answer went back.
+func (s *Store) ConfirmAsyncAnswer(threadID, sendID, itemID string) (_ bool, err error) {
+	if threadID == "" || sendID == "" {
+		return false, fmt.Errorf("store: confirm an async answer: thread and send id are required")
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return false, err
+	}
+	defer rollbackTx(tx, "store: confirm "+sendID, &err)
+	result, err := tx.Exec(`UPDATE async_questions SET state='delivered',user_item_id=?
+ WHERE thread_id=? AND send_id<>'' AND send_id=? AND state='submitted'`, itemID, threadID, sendID)
+	if err != nil {
+		return false, fmt.Errorf("store: confirm %s: %w", sendID, err)
+	}
+	confirmed, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	if _, err := tx.Exec(`DELETE FROM flush_queue_items WHERE thread_id=? AND send_id<>'' AND send_id=? AND EXISTS (
+ SELECT 1 FROM async_questions q WHERE q.thread_id=flush_queue_items.thread_id AND q.send_id<>''
+ AND q.send_id=flush_queue_items.send_id AND q.state='delivered')`, threadID, sendID); err != nil {
+		return false, fmt.Errorf("store: confirm %s: %w", sendID, err)
+	}
+	return confirmed > 0, tx.Commit()
+}
+
 // AsyncAnswerMessage validates the submitted snapshot and includes each question's text.
 func (s *Store) AsyncAnswerMessage(threadID, sendID string, answers []AsyncQuestionAnswer) (string, bool, error) {
 	return asyncAnswerMessage(s.reader(), threadID, sendID, answers)

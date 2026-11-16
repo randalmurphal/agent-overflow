@@ -1113,14 +1113,15 @@ func (a *App) giveBackToOwners(threadID string, messages []ownedMessage) {
 	returned := false
 	a.retryOwnedEchoes(threadID)
 	for _, m := range messages {
-		if isWorkerAnswer(m.sendID) {
-			// Its questions say whether the provider took it in: an echo
-			// marks them delivered, and nothing returns them then.
-			logThreadRequestSweep("return "+m.sendID+" to its questions", a.returnWorkerAnswer(threadID, m.sendID, false))
-			continue
-		}
 		if a.echoed(m.sendID) {
 			// The provider took it in; only its confirmation is unwritten.
+			continue
+		}
+		if isWorkerAnswer(m.sendID) {
+			// Its questions say whether the provider took it in: its echo's
+			// confirmation marks them delivered, and nothing returns them
+			// then.
+			logThreadRequestSweep("return "+m.sendID+" to its questions", a.returnWorkerAnswer(threadID, m.sendID, false))
 			continue
 		}
 		if token, late, ok := threadWakeFromSendID(m.sendID); ok {
@@ -1160,9 +1161,11 @@ func (a *App) giveBackToOwners(threadID string, messages []ownedMessage) {
 }
 
 // confirmOwnedDeliveries records the provider's echo of the answers,
-// reminders and completions consumed sends carry: the second phase of their
-// owners' delivery mark, after which nothing gives them back, with the row
-// that carried an answer, which its request names from then on. It runs on
+// reminders, completions and spawners' answers to async questions consumed
+// sends carry: the second phase of their owners' delivery mark, after which
+// nothing gives them back, with the row that carried an answer, which its
+// request or its questions name from then on, whether or not the echo's own
+// row write lands. It runs on
 // the provider read loop under the flush anchor lock, so a person's send
 // costs nothing but the id check. A confirmation whose write fails is kept
 // and written again (app_thread_tools_bookkeeping.go), and until then the

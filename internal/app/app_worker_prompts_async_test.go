@@ -31,6 +31,7 @@ import (
 
 type asyncQuestionFixture struct {
 	app      *App
+	dbPath   string
 	spawner  store.Thread
 	worker   store.Thread
 	notified *recordingNotificationSender
@@ -41,7 +42,8 @@ type asyncQuestionFixture struct {
 // what is queued stays queued.
 func newAsyncQuestionFixture(t *testing.T, id string, placement string) asyncQuestionFixture {
 	t.Helper()
-	a, _ := newAppForFlushQueueRPC(t)
+	a, dbPath := newTestAppWithStorePath(t)
+	a.testEmitHook = (&emitRecorder{}).capture
 	a.triage = triage.NewRouter(a.store, a.emit)
 	a.configureTriageQueueCallbacks()
 	a.startSessionFn = func(string) error { return errors.New("the provider binary is missing") }
@@ -64,7 +66,7 @@ func newAsyncQuestionFixture(t *testing.T, id string, placement string) asyncQue
 	if _, err := a.store.SetThreadPlacement([]string{worker.ID}, placement); err != nil {
 		t.Fatal(err)
 	}
-	return asyncQuestionFixture{app: a, spawner: spawner, worker: worker, notified: notified}
+	return asyncQuestionFixture{app: a, dbPath: dbPath, spawner: spawner, worker: worker, notified: notified}
 }
 
 func (f asyncQuestionFixture) drain(t *testing.T) {

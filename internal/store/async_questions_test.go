@@ -340,6 +340,65 @@ func TestAReturnedAsyncAnswerReopensItsQuestions(t *testing.T) {
 	}
 }
 
+// The provider's echo of an app-written answer confirms it whether or not
+// the echo's row lands: its questions read delivered by the echo's row,
+// its recovery row goes, and a return after that reopens nothing. A second
+// confirmation, or one of an answer returned, changes nothing.
+func TestAConfirmedAsyncAnswerIsTakenIn(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThread(t, s, "q")
+	questionFixture(t, s, "q", "question:call")
+	answers := []AsyncQuestionAnswer{{ItemID: "question:call", Index: 0, Answer: "Two"}, {ItemID: "question:call", Index: 1, Answer: "Friday"}}
+	body, _, err := s.AsyncAnswerMessage("q", "agent-answer:t", answers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.QueueAsyncAnswers(FlushQueueItem{ID: "queue", ThreadID: "q", SendID: "agent-answer:t", Message: body}, answers, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteDispatchedFlushQueueItem("queue"); err != nil {
+		t.Fatal(err)
+	}
+	if queued, err := s.ListFlushQueueItems("q"); err != nil || len(queued) != 1 {
+		t.Fatalf("the dispatched answer's recovery row = %+v, %v; want it kept", queued, err)
+	}
+	if confirmed, err := s.ConfirmAsyncAnswer("q", "agent-answer:t", "echo"); err != nil || !confirmed {
+		t.Fatalf("confirm = %v, %v; want its questions taken in", confirmed, err)
+	}
+	rows, err := s.ListAsyncQuestions("q", "question:call")
+	if err != nil || len(rows) != 2 || rows[0].State != "delivered" || rows[1].State != "delivered" || rows[0].UserItemID != "echo" {
+		t.Fatalf("after the confirmation = %+v, %v; want both delivered by the echo's row", rows, err)
+	}
+	if queued, err := s.ListFlushQueueItems("q"); err != nil || len(queued) != 0 {
+		t.Fatalf("the confirmed answer's recovery row = %+v, %v; want it gone", queued, err)
+	}
+	if again, err := s.ConfirmAsyncAnswer("q", "agent-answer:t", "echo"); err != nil || again {
+		t.Fatalf("a second confirmation = %v, %v; want nothing changed", again, err)
+	}
+	if reopened, err := s.ReturnAsyncAnswer("q", "agent-answer:t", nil); err != nil || len(reopened) != 0 {
+		t.Fatalf("returning a confirmed answer = %v, %v; want nothing reopened", reopened, err)
+	}
+
+	questionFixture(t, s, "q", "question:other")
+	other := []AsyncQuestionAnswer{{ItemID: "question:other", Index: 0, Answer: "One"}, {ItemID: "question:other", Index: 1, Answer: "Monday"}}
+	body, _, err = s.AsyncAnswerMessage("q", "agent-answer:u", other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.QueueAsyncAnswers(FlushQueueItem{ID: "queue-2", ThreadID: "q", SendID: "agent-answer:u", Message: body}, other, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ReturnAsyncAnswer("q", "agent-answer:u", nil); err != nil {
+		t.Fatal(err)
+	}
+	if confirmed, err := s.ConfirmAsyncAnswer("q", "agent-answer:u", "late"); err != nil || confirmed {
+		t.Fatalf("confirming a returned answer = %v, %v; want nothing changed", confirmed, err)
+	}
+	if rows, err := s.ListAsyncQuestions("q", "question:other"); err != nil || rows[0].State != "unanswered" {
+		t.Fatalf("the returned answer's questions = %+v, %v; want them unanswered", rows, err)
+	}
+}
+
 // An item's unanswered questions are read together with its revision, on
 // the pending index, and an answer claimed against a revision the item
 // left is refused whole, its questions and its queue row untouched.
