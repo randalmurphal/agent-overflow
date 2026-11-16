@@ -172,6 +172,12 @@ var Defaults = []Keybinding{
 	{Key: "alt+l", Command: "pane.focusRight", DefaultID: "pane.focusRight.vim"},
 	{Key: "alt+shift+h", Command: "pane.moveLeft", DefaultID: "pane.moveLeft.vim"},
 	{Key: "alt+shift+l", Command: "pane.moveRight", DefaultID: "pane.moveRight.vim"},
+	// Maximize the focused pane over the strip, or restore it. Joins the
+	// alt+shift pane family; Enter for "enter this pane", as iTerm2's
+	// Cmd+Shift+Enter maximizes a split. Un-gated like the pane-nav chords so
+	// it escapes a focused terminal (TERMINAL_ESCAPE_COMMAND_IDS); the
+	// command itself is inert under compact, which shows one pane already.
+	{Key: "alt+shift+enter", Command: "pane.togglePromoted", DefaultID: "pane.togglePromoted"},
 	{Key: "mod+shift+g", Command: "diff.panel.toggle", When: "hasActiveThread && !terminalFocus", DefaultID: "diff.panel.toggle"},
 	// mod+f opens the focused pane's find bar, matching the editor convention
 	// where Ctrl+F finds in the current document and Ctrl+Shift+F

@@ -33,9 +33,9 @@ import {
 } from './commandRegistry.svelte';
 import { registerAirspaceSurface, resetAirspaceForTest } from '../utils/paneAirspace.svelte';
 import { closePalette, openPalette } from './palette.svelte';
-import { focusPane, registerPaneForTest, resetPanesForTest } from './panes.svelte';
+import { focusPane, getFocusedPaneId, registerPaneForTest, resetPanesForTest } from './panes.svelte';
 import { PANE_NAV_COMMAND_IDS, TERMINAL_ESCAPE_COMMAND_IDS } from './paneNavCommands';
-import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from './paneLayout.svelte';
+import { getPromotedPaneId, resetPaneLayoutForTest, setPaneLayoutItemsForTest } from './paneLayout.svelte';
 import {
   closeMessageSearch,
   isMessageSearchOpen,
@@ -2456,6 +2456,24 @@ describe('pane navigation into a terminal pane', () => {
     const { left, right } = twoPaneLayout(makeThread({ id: 'chat2', mode: 'chat' }));
     runCommand('pane.focusRight', makeCommandContext(left, {}));
     expect(right.consumeTerminalFocusRequest()).toBe(false);
+  });
+
+  it('pane.togglePromoted promotes the focused pane, restores it on the second run, and is off under compact', () => {
+    const { left } = twoPaneLayout(makeThread({ id: 'chat2', mode: 'chat' }));
+    focusPane('right');
+    expect(runCommand('pane.togglePromoted', makeCommandContext(left, {}))).toBe(true);
+    expect(getPromotedPaneId()).toBe('right');
+    expect(getFocusedPaneId()).toBe('right');
+    runCommand('pane.togglePromoted', makeCommandContext(left, {}));
+    expect(getPromotedPaneId()).toBeNull();
+
+    setCompactLayoutForTest(true);
+    try {
+      expect(isCommandEnabled('pane.togglePromoted', makeCommandContext(left, {}))).toBe(false);
+    } finally {
+      setCompactLayoutForTest(false);
+    }
+    expect(TERMINAL_ESCAPE_COMMAND_IDS.has('pane.togglePromoted')).toBe(true);
   });
 
   it('every PANE_NAV_COMMAND_IDS entry is a registered builtin command', () => {

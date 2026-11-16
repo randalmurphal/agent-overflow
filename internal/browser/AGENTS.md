@@ -21,6 +21,12 @@ mode. Product behavior and authority are defined in
 - One manager owns one engine. Profiles are per workspace, pages are per thread,
   and every operation rechecks thread ownership. Closing the last page disposes
   its profile; manager shutdown joins all engine work.
+- A tab's lifecycle is Manager state (`lifecycle.go`): a page being created is
+  a pending tab, a closed page leaves the tab set before its engine teardown
+  runs, and both keep counting toward caps and holding the workspace's
+  profile until the engine is done. A teardown that runs after its tab left
+  reports through `reportTeardown`. Loading and favicon state is
+  `pagestate.go`.
 - Pages start hidden. Present only the selected page for a visible companion
   pane. The pane uses a native view positioned over the SPA; pixels do not cross
   the transport.
@@ -43,8 +49,9 @@ mode. Product behavior and authority are defined in
   With multiple pages, require an explicit handle. Never infer a caller or use
   MRU selection.
 - Keep the existing resource bounds on profiles, pages, viewport size,
-  operations, snapshots, screenshots, downloads, assets, console data, and MCP
-  bodies. Do not start an engine per tool call.
+  operations, snapshots, screenshots, downloads, assets, console data, CDP
+  network buffers (`networkEnableParams`), and MCP bodies. Do not start an
+  engine per tool call.
 - Engine callbacks must not synchronously perform teardown that waits on the
   callback's own event loop or UI thread.
 

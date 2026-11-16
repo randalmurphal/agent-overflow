@@ -1,21 +1,42 @@
 <script lang="ts">
+  import CircleAlert from '@lucide/svelte/icons/circle-alert';
   import Plus from '@lucide/svelte/icons/plus';
   import X from '@lucide/svelte/icons/x';
   import type { BrowserPageInfo } from '../../stores/bindings';
   import Icon from '../primitives/Icon.svelte';
+  import SteppedSpinner from '../primitives/SteppedSpinner.svelte';
 
   let {
     sessionName,
     pages,
     activePageId,
     onAct,
+    onNewTab,
   }: {
     sessionName: string;
     pages: BrowserPageInfo[];
     activePageId: string;
     /** Runs a chrome action; an omitted pageId means the active page. */
     onAct: (kind: string, pageId?: string, address?: string, index?: number) => Promise<void>;
+    /** Opens a new tab the user asked for. */
+    onNewTab: () => void;
   } = $props();
+
+  /** A tab's state, for its indicator and its test hook. */
+  function tabState(page: BrowserPageInfo): string {
+    if (page.error) return 'error';
+    if (page.creating) return 'creating';
+    if (page.restoring) return 'restoring';
+    if (page.loading) return 'loading';
+    if (page.suspended) return 'suspended';
+    return 'ready';
+  }
+
+  function tabTitle(page: BrowserPageInfo, state: string): string {
+    if (page.label || page.title) return page.label || page.title;
+    if (state === 'creating') return 'Opening…';
+    return page.url && page.url !== 'about:blank' ? page.url : 'New tab';
+  }
 
   // ─── Tab drag-reorder ──────────────────────────────────────────────────
   // Same HTML5 DnD protocol the pane host uses for pane reordering. The
@@ -87,12 +108,13 @@
     <span class="mb-1 max-w-36 shrink-0 truncate px-1.5 text-[0.68rem] text-fg-muted" title={sessionName}>{sessionName}</span>
   {/if}
   {#each pages as page, tabIndex (page.id)}
+    {@const status = tabState(page)}
     {#if dropSlot === tabIndex && dragPageId}
       <div class="h-6 w-0.5 shrink-0 self-center rounded bg-accent"></div>
     {/if}
     <div
       class="group flex h-8 min-w-28 max-w-48 items-center rounded-t-md {page.id === activePageId ? 'bg-surface-0 text-fg' : 'text-fg-muted hover:bg-surface-2'} {page.id === dragPageId ? 'opacity-50' : ''}"
-      title={page.label ? `${page.label} — ${page.title || page.url}` : page.title || page.url}
+      title={page.error ? `Could not open this tab: ${page.error}` : page.label ? `${page.label} — ${page.title || page.url}` : page.title || page.url}
       draggable="true"
       ondragstart={(event) => tabDragStart(event, page.id)}
       ondragover={(event) => tabDragOver(event, tabIndex)}
@@ -105,9 +127,20 @@
       }}
     >
       <button
-        class="h-full min-w-0 flex-1 truncate pl-2 text-left text-[0.72rem]"
+        class="flex h-full min-w-0 flex-1 items-center gap-1.5 pl-2 text-left text-[0.72rem]"
+        data-testid="browser-tab"
+        data-tab-state={status}
         onclick={() => void onAct('activate', page.id)}
-      >{page.label || page.title || page.url || 'New tab'}</button>
+      >
+        {#if status === 'error'}
+          <Icon icon={CircleAlert} size={12} class="shrink-0 text-error" />
+        {:else if status === 'creating' || status === 'restoring' || status === 'loading'}
+          <SteppedSpinner size={12} class="shrink-0" />
+        {:else if page.favicon}
+          <img src={page.favicon} alt="" class="size-3 shrink-0" draggable="false" />
+        {/if}
+        <span class="min-w-0 truncate">{tabTitle(page, status)}</span>
+      </button>
       <button
         type="button"
         aria-label="Close tab"
@@ -119,7 +152,7 @@
   {#if dropSlot === pages.length && dragPageId}
     <div class="h-6 w-0.5 shrink-0 self-center rounded bg-accent"></div>
   {/if}
-  <button class="mb-1 rounded p-1.5 text-fg-muted hover:bg-surface-2 hover:text-fg" aria-label="New tab" title="New tab" onclick={() => void onAct('new', '')}>
+  <button class="mb-1 rounded p-1.5 text-fg-muted hover:bg-surface-2 hover:text-fg" aria-label="New tab" title="New tab" onclick={() => onNewTab()}>
     <Icon icon={Plus} size={14} />
   </button>
 </div>

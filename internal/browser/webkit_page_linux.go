@@ -12,6 +12,7 @@ import (
 	"io"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unsafe"
 )
@@ -64,6 +65,9 @@ type webkitPage struct {
 	lastActivity time.Time
 	// findCount is the last search's answer, which its steps report.
 	findCount findResult
+	// loadOrder numbers the view's loading changes, on the GTK thread
+	// (pageHooks.Loading).
+	loadOrder atomic.Uint64
 }
 
 func (p *webkitPage) Lifetime() context.Context { return p.ctx }

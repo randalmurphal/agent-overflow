@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { isLocalEnter } from '../../utils/localEnter';
   import type { BackendKey } from '../../transport/backendKey';
   import type { ThreadTerminalStateHandle } from './terminalStore.svelte';
   import EditorLink from '../common/EditorLink.svelte';
@@ -131,7 +132,7 @@
           // WAI-ARIA tab pattern activates on Enter AND Space. Previous
           // version handled only Enter, so keyboard users couldn't
           // activate tabs with Space.
-          if (e.key === 'Enter' || e.key === ' ') {
+          if (isLocalEnter(e) || e.key === ' ') {
             e.preventDefault();
             onSelect(tab.terminalID);
           }

@@ -273,6 +273,17 @@ Mechanism in
   a restart like the layout; take-control and side chats last the session.
   Nothing is shared across clients. The browser pane follows its backend
   state instead (`frontend/src/lib/stores/companionStash.ts`).
+- Any pane (thread, companion, tool) can be promoted to fill the pane
+  area as if it were the only pane, and demoted back to its slot: its
+  header's maximize control, a double-click on its title, or
+  `alt+shift+enter`. Per client, never persisted; compact ignores it.
+  Nothing remounts or reloads: the pane keeps its element, its slot holds
+  its place so no other pane moves, and a clip reveal of about 180 ms
+  (none under reduced motion) animates both ways. The strip does not
+  scroll under a promoted pane. Focusing or revealing another pane, or
+  starting a drag that places a pane, demotes first, so the pane asked for
+  is always shown; closing the promoted pane ends the promotion. Escape
+  does not demote: in a thread pane it interrupts a turn.
 - Thread groups, pins, and auto-pin rulings: `docs/specs/sidebar-thread-groups.md`
   and `internal/store/AGENTS.md`. Re-pin-to-bump is deliberately dead.
 - Thread content search matches title and workspace path only. Searching
@@ -560,6 +571,12 @@ and anti-changes that live only here:
 - A browser page fills the pane at 1:1 and reflows with it, like a tab in
   any browser. A fixed page size is an explicit `browser_viewport set`,
   never a default the pane scales down.
+- Browser tabs are the backend's state, never invented by the client: a new
+  tab shows as opening, a failed one the user opened stays with its error,
+  and a closed one leaves at once while the engine finishes in the
+  background. A failure of that teardown is shown, never only logged. A new
+  tab the user opened focuses the address bar; an agent's never takes focus.
+  `docs/architecture/browser-tools.md`.
 - Every thread/workspace event reaches any client with visibility; channel
   audience is by data class, loopback-only is for host directives only. A
   mutation that persists without emitting is a bug.

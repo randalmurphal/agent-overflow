@@ -81,6 +81,17 @@ func prepareBrowserProfileStorage(mode string) (string, error) {
 // thread here is expected; the first call additionally blocks on a cold
 // WebView2 environment create.
 func (a *launcherApp) handleBrowserHostDirective(bs *wsllauncher.Bootstrap, directive webview2host.Directive) {
+	if directive.Op == webview2host.OpRelease {
+		// A release never builds the host: with none there is no
+		// environment to release.
+		a.mu.Lock()
+		host := a.browserHost
+		a.mu.Unlock()
+		if host != nil {
+			host.Apply(directive)
+		}
+		return
+	}
 	host, err := a.ensureBrowserHost(bs)
 	if err != nil {
 		log.Printf("browser host: cannot host directive %q: %v", directive.Op, err)

@@ -35,6 +35,7 @@ import {
   openThreadInNewPane,
   openThreadInPane,
   syncThreadReply,
+  togglePanePromotion,
 } from './panes.svelte';
 import { threadRowFrameMark } from './threadRowFrames';
 import { closePaneFind, hasPaneFindBarFocus, hasPaneFindProvider, isPaneFindOpen, openPaneFind, paneFindRegionElement, paneFindTarget, paneOfFindKey } from './paneFind.svelte';
@@ -359,6 +360,20 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     icon: '⇢',
     editableReachable: true,
     run: () => { moveFocusedPane(1); },
+  });
+
+  // Compact shows one pane at a time; the layout store refuses a promotion
+  // there, so the command is not offered.
+  registerCommand({
+    id: 'pane.togglePromoted',
+    label: 'Pane: Maximize or Restore',
+    icon: '⤢',
+    when: '!compactLayout',
+    editableReachable: true,
+    run: () => {
+      const paneId = getFocusedPaneId();
+      if (paneId) togglePanePromotion(paneId);
+    },
   });
 
   registerCommand({

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { isLocalEnter } from '../../../utils/localEnter';
   // Inline new-branch slot. Renders one of three states based on the
   // thread's worktree intent:
   //
@@ -107,7 +108,7 @@
     // Enter confirms the IME candidate while composing; creating the worktree
     // here would use the pre-composition name.
     if (event.key === 'Enter' && isImeComposingEvent(event)) return;
-    if (event.key === 'Enter') {
+    if (isLocalEnter(event)) {
       event.preventDefault();
       void confirmCreate();
     } else if (event.key === 'Escape') {

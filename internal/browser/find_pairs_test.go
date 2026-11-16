@@ -539,7 +539,7 @@ func newFindTableEnv(t *testing.T, base string) *findTableEnv {
 		actions: map[string]int{}, lastStop: map[string]findStopRecord{},
 		failed: map[string]map[uint64]bool{"A": {}, "B": {}}, undelivered: map[string]uint64{},
 	}
-	other, err := f.manager.NewCompanionPage(t.Context(), f.access)
+	other, err := f.manager.NewCompanionPage(t.Context(), f.access, "")
 	if err != nil {
 		t.Fatal(err)
 	}

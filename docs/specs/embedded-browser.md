@@ -101,7 +101,9 @@ The launcher creates a second WebView2 environment ("pane
 environment") with its own user-data folder, entirely separate from
 the SPA webview's environment. Browser pages are one controller per
 tab (spike-verified preferred over `Target.createTarget`: a
-controller is a positionable window, a bare CDP target is not).
+controller is a positionable window, a bare CDP target is not). The
+first create starts the environment; the backend's idle engine stop
+releases it (see Pane directives), and the next create starts it again.
 
 Spike-verified recipes, all load-bearing:
 
@@ -190,6 +192,13 @@ died) ride the same connection's RPC path, like `updater:install`
 already does. The launcher applies one page's directives in the order
 they arrived.
 
+When the backend stops its engine, two minutes after the last profile
+closes, it sends `release`. The launcher releases the pane environment
+and its browser process tree unless a page or a create still uses it,
+and never builds its host for one. A launcher that predates `release`
+logs and drops it as an unknown op and keeps the environment, as a
+backend that predates it never sends one.
+
 A pane's position does not need the backend: the SPA and the
 controllers share the launcher's UI thread. The SPA posts each geometry
 report to the launcher (`chrome.webview.postMessage`, Wails'
@@ -265,6 +274,10 @@ navigation buttons, close — the same `BrowserPane.svelte` chrome — with
 the frame `<img>` replaced by an empty host rect the native view is
 positioned over.
 
+- Tabs render the Manager's state only: a tab being created, restoring,
+  loading or failed shows that state, and the host rect says so while
+  the active tab has no page to present (as built: browser-tools.md
+  § Ownership and lifecycle).
 - The SPA observes the host rect (`ResizeObserver` + scroll/layout +
   the pane-layout and sidebar stores — a divider drag on ANOTHER pane
   slides this one sideways without resizing it, which no observer or
@@ -386,8 +399,9 @@ object no matter which clipboard formats carry it (bare `CF_HDROP`,
 virtual-file `FileGroupDescriptorW`/`FileContents`, even Explorer's own
 copy), while a drag from Explorer — including `\\wsl.localhost` paths —
 attaches fine. The WSL staging pipeline went with the copy. The Globe
-reopen chip and `BrowserCompanionThreadState` hydration survive
-(thread browser state still exists). The MCP server, Access model,
+header button and `BrowserCompanionThreadState` hydration survive
+(thread browser state still exists); the button is present whenever the
+native browser is usable and opens a first tab when there is none. The MCP server, Access model,
 bounds, and artifact quota code survive untouched.
 
 Remote `--connect` clients get **no browser pane and no browser

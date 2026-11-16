@@ -1,5 +1,6 @@
 import { reportBrowserPaneRect } from '../../stores/browserCompanion.svelte';
 import { airspaceIntersects, airspaceSurfaces } from '../../utils/paneAirspace.svelte';
+import { promotedLayerClip, promotedLayerFrame } from '../../utils/panePromotion.svelte';
 import { rgbChannels, toConcreteColor } from '../../utils/cssColorProbe';
 import { getPaneLayoutItems } from '../../stores/paneLayout.svelte';
 import { getSidebarWidth, isSidebarCollapsed } from '../../stores/sidebarLayout.svelte';
@@ -66,6 +67,15 @@ export function createBrowserPaneGeometry(options: BrowserPaneGeometryOptions): 
         bottom = Math.min(bottom, r.bottom);
       }
     }
+    // A promoted pane reveals through an animated clip-path, which no
+    // ancestor's overflow reports.
+    const layer = promotedLayerClip(el);
+    if (layer) {
+      left = Math.max(left, layer.left);
+      top = Math.max(top, layer.top);
+      right = Math.min(right, layer.right);
+      bottom = Math.min(bottom, layer.bottom);
+    }
     return { left, top, right, bottom };
   }
 
@@ -103,7 +113,7 @@ export function createBrowserPaneGeometry(options: BrowserPaneGeometryOptions): 
       rect.height >= 1 &&
       clipWidth >= 1 &&
       clipHeight >= 1 &&
-      !airspaceIntersects({ left: clip.left, top: clip.top, right: clip.right, bottom: clip.bottom });
+      !airspaceIntersects({ left: clip.left, top: clip.top, right: clip.right, bottom: clip.bottom }, el);
     const report = {
       x: round2(rect.left),
       y: round2(rect.top),
@@ -158,6 +168,13 @@ export function createBrowserPaneGeometry(options: BrowserPaneGeometryOptions): 
   $effect(() => {
     airspaceSurfaces();
     options.attached();
+    scheduleRect();
+  });
+
+  // A promoted pane, this one or one above it, changes what is visible here
+  // on every frame of its reveal and when it starts or ends.
+  $effect(() => {
+    promotedLayerFrame();
     scheduleRect();
   });
 

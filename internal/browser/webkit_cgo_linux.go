@@ -230,6 +230,18 @@ func aoWebKitPageInfo(pageID C.uint64_t, uri *C.char, title *C.char) {
 	go page.engine.events.PageInfoChanged(page.handle, location, name)
 }
 
+//export aoWebKitPageLoading
+func aoWebKitPageLoading(pageID C.uint64_t, loading C.int) {
+	page := webkitLookupPage(uint64(pageID))
+	if page == nil || page.hooks.Loading == nil {
+		return
+	}
+	// Numbered here, on the GTK thread, in the order the view changed; the
+	// Manager takes its own locks, so the report leaves the thread.
+	order := page.loadOrder.Add(1)
+	go page.hooks.Loading(loading != 0, order)
+}
+
 //export aoWebKitDocumentCommitted
 func aoWebKitDocumentCommitted(pageID C.uint64_t) {
 	page := webkitLookupPage(uint64(pageID))

@@ -15,6 +15,7 @@
   import type { SessionDiedEvent } from '../../types/events';
   import Icon from '../primitives/Icon.svelte';
   import IconButton from '../primitives/IconButton.svelte';
+  import PanePromoteButton from '../panes/PanePromoteButton.svelte';
   import TakeControlTerminal from './TakeControlTerminal.svelte';
   import ProviderIcon from '../shared/ProviderIcon.svelte';
 
@@ -69,7 +70,8 @@
     <ProviderIcon provider="claude-tui" size={13} />
     <span class="font-medium text-fg">Claude TUI</span>
     <span class="opacity-70">terminal</span>
-    <div class="ml-auto">
+    <div class="ml-auto flex items-center gap-1">
+      <PanePromoteButton {paneId} testId="take-control-promote" />
       <IconButton
         label="Close take-control terminal"
         size="sm"

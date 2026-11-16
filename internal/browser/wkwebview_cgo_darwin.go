@@ -250,6 +250,18 @@ func aoWKVPageInfo(pageID C.uint64_t, uri *C.char, title *C.char) {
 	go page.engine.events.PageInfoChanged(page.handle, location, name)
 }
 
+//export aoWKVPageLoading
+func aoWKVPageLoading(pageID C.uint64_t, loading C.int) {
+	page := wkLookupPage(uint64(pageID))
+	if page == nil || page.hooks.Loading == nil {
+		return
+	}
+	// Numbered here, on the main thread, in the order the view changed; the
+	// Manager takes its own locks, so the report leaves the thread.
+	order := page.loadOrder.Add(1)
+	go page.hooks.Loading(loading != 0, order)
+}
+
 //export aoWKVDocumentCommitted
 func aoWKVDocumentCommitted(pageID C.uint64_t) {
 	page := wkLookupPage(uint64(pageID))

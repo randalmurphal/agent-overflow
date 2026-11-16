@@ -9,7 +9,13 @@ import (
 	"unicode/utf8"
 )
 
+// SelectPage pins one of the caller's tabs as the companion's. The pane
+// presents it first; a suspended page then restores, and its info is read.
 func (m *Manager) SelectPage(ctx context.Context, access Access, pageID string) (PageInfo, error) {
+	pageID = strings.TrimSpace(pageID)
+	if err := m.selectTab(access, pageID); err != nil {
+		return PageInfo{}, err
+	}
 	p, _, err := m.resolvePage(ctx, access, pageID, false)
 	if err != nil {
 		return PageInfo{}, err
@@ -23,12 +29,37 @@ func (m *Manager) SelectPage(ctx context.Context, access Access, pageID string) 
 		return PageInfo{}, infoErr
 	}
 	p.setInfo(info)
-	info = p.cachedInfo()
-	p.touch()
-	m.setActivePage(access.ThreadID, p.id)
+	return p.cachedInfo(), nil
+}
+
+// selectTab makes one of the thread's tabs, in any state, the active one and
+// presents it before any page work: a live page is shown at once, and a tab
+// with no page yet (creating, restoring, suspended, failed) shows its state
+// until it has one. A live page counts as used.
+func (m *Manager) selectTab(access Access, pageID string) error {
+	m.mu.Lock()
+	var found *threadTab
+	tabs := m.companionTabsLocked(access.ThreadID)
+	for i := range tabs {
+		if tabs[i].id == pageID {
+			found = &tabs[i]
+		}
+	}
+	if found == nil {
+		m.mu.Unlock()
+		return errPageNotFound
+	}
+	info := m.sessionLocked(access.ThreadID)
+	info.ActivePageID = pageID
+	info.UpdatedAt = time.Now()
+	m.sessions[access.ThreadID] = info
+	m.mu.Unlock()
+	if found.live != nil {
+		found.live.touch()
+	}
 	m.emitThreadState(access.ThreadID)
 	m.syncPanePresentation(access.ThreadID)
-	return info, nil
+	return nil
 }
 
 func (m *Manager) LabelPage(ctx context.Context, access Access, pageID, label string) (PageInfo, error) {
@@ -141,15 +172,15 @@ func (m *Manager) setActivePage(threadID, pageID string) {
 	m.mu.Unlock()
 }
 
-// repairActivePage keeps the thread's active page one of its pages, live or
-// suspended: a missing one is replaced by the most recently used page, and a
-// thread with none hides its companion.
+// repairActivePage keeps the thread's active page one of its tabs, live,
+// suspended or pending: a missing one is replaced by the most recently used
+// tab, and a thread with none hides its companion.
 func (m *Manager) repairActivePage(threadID string) {
 	m.mu.Lock()
 	info := m.sessionLocked(threadID)
 	var replacement *threadTab
 	activeExists := false
-	tabs := m.threadTabsLocked(threadID)
+	tabs := m.companionTabsLocked(threadID)
 	for i := range tabs {
 		if tabs[i].id == info.ActivePageID {
 			activeExists = true

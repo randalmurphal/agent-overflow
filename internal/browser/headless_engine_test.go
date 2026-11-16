@@ -870,6 +870,56 @@ func TestCDPPageOwnsItsMainFrameBeforeReportingOne(t *testing.T) {
 	}
 }
 
+// Every CDP page (the hosted WebView2 engine starts the same one) enables
+// Network with explicit caps, so Chromium retains no response bodies or post
+// data for it and copies at most one byte of post data into an event.
+func TestCDPPageEnablesNetworkWithNoRetainedBodies(t *testing.T) {
+	browser := writeFakeChromium(t, "chromium")
+	engine := newTestHeadlessEngine(t, browser.path)
+	profile := testHeadlessProfile(t, engine, "/home/dev/repo", false)
+	page, err := profile.NewPage(context.Background(), testPageHooks())
+	if err != nil {
+		t.Fatalf("new page: %v", err)
+	}
+	defer page.Close()
+	type caps struct {
+		MaxTotalBufferSize    *int64 `json:"maxTotalBufferSize"`
+		MaxResourceBufferSize *int64 `json:"maxResourceBufferSize"`
+		MaxPostDataSize       *int64 `json:"maxPostDataSize"`
+	}
+	// chromedp's attach enables Network first with Chromium's defaults, and a
+	// later Network.enable replaces the limits, so the page's last one counts.
+	var last *caps
+	for _, call := range browser.calls() {
+		if call.Method != "Network.enable" || call.SessionID == "" {
+			continue
+		}
+		var got caps
+		if len(call.Params) > 0 {
+			if err := json.Unmarshal(call.Params, &got); err != nil {
+				t.Fatalf("decode Network.enable %s: %v", call.Params, err)
+			}
+		}
+		last = &got
+	}
+	if last == nil {
+		t.Fatal("the page never enabled Network")
+	}
+	if last.MaxTotalBufferSize == nil || *last.MaxTotalBufferSize != 0 ||
+		last.MaxResourceBufferSize == nil || *last.MaxResourceBufferSize != 0 ||
+		last.MaxPostDataSize == nil || *last.MaxPostDataSize != 1 {
+		t.Fatalf("the page's last Network.enable caps total %v, resource %v, post data %v; want 0, 0, 1",
+			ptrValue(last.MaxTotalBufferSize), ptrValue(last.MaxResourceBufferSize), ptrValue(last.MaxPostDataSize))
+	}
+}
+
+func ptrValue(v *int64) any {
+	if v == nil {
+		return "absent"
+	}
+	return *v
+}
+
 // A CDP page reports a new document when its main frame navigates
 // (Page.frameNavigated with no parent); a child frame's navigation and a
 // same-document one (Page.navigatedWithinDocument) are not one. The hosted

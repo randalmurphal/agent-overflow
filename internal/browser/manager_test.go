@@ -148,8 +148,19 @@ type disposeCountingEngine struct {
 	*fakeEngine
 	disposed     atomic.Int64
 	disposeErr   error
+	onStarted    func()
 	onNewProfile func()
 	onNewPage    func() error
+}
+
+// Start runs onStarted once, after the engine started.
+func (e *disposeCountingEngine) Start(ctx context.Context) error {
+	err := e.fakeEngine.Start(ctx)
+	if hook := e.onStarted; hook != nil && err == nil {
+		e.onStarted = nil
+		hook()
+	}
+	return err
 }
 
 func newDisposeCountingManager(t *testing.T) (*Manager, *disposeCountingEngine) {
@@ -307,8 +318,16 @@ func TestAPageOpenedAsItsWorkspacesLastPageClosesStaysOpen(t *testing.T) {
 			if openErr != nil {
 				t.Fatalf("open during the close: %v", openErr)
 			}
-			if got := engine.disposed.Load(); got != 1 {
-				t.Fatalf("%d profile disposals, want the emptied profile's one", got)
+			// The Manager's close keeps the profile until the page's
+			// teardown ends, so the page opened on its state push joins it;
+			// an engine's close has already emptied it, and the open waits
+			// for its disposal.
+			want := int64(1)
+			if closer.name == "closed by the manager" {
+				want = 0
+			}
+			if got := engine.disposed.Load(); got != want {
+				t.Fatalf("%d profile disposals, want %d", got, want)
 			}
 			if _, err := manager.Open(t.Context(), other, "https://example.test/next", OpenOptions{PageID: opened.ID}); err != nil {
 				t.Fatalf("navigate the page opened during the close: %v", err)
@@ -437,22 +456,6 @@ func runConcurrently(fn func()) <-chan struct{} {
 	return done
 }
 
-// engineStartedContext runs onStarted once, the first time the caller's
-// context is checked with the engine running.
-type engineStartedContext struct {
-	context.Context
-	engine    browserEngine
-	onStarted func()
-	fired     atomic.Bool
-}
-
-func (c *engineStartedContext) Err() error {
-	if c.engine.Running() && c.fired.CompareAndSwap(false, true) {
-		c.onStarted()
-	}
-	return c.Context.Err()
-}
-
 // The idle close that fires while a page is being created, once the engine
 // has started for it or while its workspace's profile is being created,
 // keeps the engine and the page.
@@ -462,7 +465,8 @@ func TestAnIdleCloseDuringPageCreationKeepsThePage(t *testing.T) {
 		arm  func(t *testing.T, e *disposeCountingEngine, hook func()) context.Context
 	}{
 		{"engine started", func(t *testing.T, e *disposeCountingEngine, hook func()) context.Context {
-			return &engineStartedContext{Context: t.Context(), engine: e, onStarted: hook}
+			e.onStarted = hook
+			return t.Context()
 		}},
 		{"profile being created", func(t *testing.T, e *disposeCountingEngine, hook func()) context.Context {
 			e.onNewProfile = hook

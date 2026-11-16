@@ -65,6 +65,8 @@ export class CompanionEvent {
      * closing, another owner's start), so a find bar showing it closes.
      * A Kind "escape" event names only ThreadID and PageID: a bare Escape
      * was pressed in that page while a pane showed it, and the page kept it.
+     * A Kind "teardown" event names ThreadID, PageID and Error: a page that
+     * already left the tab set failed to close or to release its profile.
      */
     "find"?: FindState | null;
 
@@ -280,6 +282,32 @@ export class PageInfo {
      * call on it, or presenting it, reloads its URL.
      */
     "suspended"?: boolean;
+
+    /**
+     * The fields below ride only the companion state (threadState); a tool
+     * result never carries them.
+     * 
+     * Creating marks a tab whose engine page is still being created, and
+     * Restoring a suspended tab whose reload is in flight. Error is why a
+     * tab the user opened could not be created; the tab stays until it is
+     * closed. None of the three has a page to present.
+     */
+    "creating"?: boolean;
+    "restoring"?: boolean;
+    "error"?: string;
+
+    /**
+     * Loading is whether the page's main frame is loading, as its engine
+     * reports it (pagestate.go).
+     */
+    "loading"?: boolean;
+
+    /**
+     * Favicon is the page's icon as a bounded image data URL, read in the
+     * page on an engine with a pane; empty when the page has none, the
+     * engine cannot read one, or it was not an allowed image.
+     */
+    "favicon"?: string;
 
     /** Creates a new PageInfo instance. */
     constructor($$source: Partial<PageInfo> = {}) {

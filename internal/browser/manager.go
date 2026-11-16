@@ -103,6 +103,19 @@ type Manager struct {
 	// began before its browser was turned off or its site data cleared
 	// records nothing. Guarded by mu.
 	recordsCleared uint64
+	// pending holds the pages being created, and the failed creations of
+	// tabs the user opened, by page id (lifecycle.go). Guarded by mu.
+	pending map[string]*pendingPage
+	// disposing holds, per canonical workspace, the disposal in flight of a
+	// profile releaseScopeLocked unregistered; the channel closes when it
+	// ends. Guarded by mu.
+	disposing map[string]chan struct{}
+	// lifeWork joins the page closes and profile disposals that run after
+	// their caller returned (goLife). Each is admitted under lifeGate unless
+	// lifeClosed, which Close sets under it before it waits.
+	lifeWork   sync.WaitGroup
+	lifeGate   sync.Mutex
+	lifeClosed bool
 	// recordDir holds the durable copy of the suspended pages, one file per
 	// thread (page_records.go). persistMu orders its writes: each takes its
 	// snapshot under mu while holding persistMu, so an older snapshot never
@@ -211,7 +224,11 @@ type workspaceScope struct {
 	pages     map[string]*managedPage
 	// creating counts the pages createPage is creating in this scope. Guarded
 	// by m.mu.
-	creating      int
+	creating int
+	// closing holds the pages closed and not yet disposed, by page id
+	// (lifecycle.go). They are out of pages, so nothing finds or presents
+	// them as live, and still count toward every cap. Guarded by m.mu.
+	closing       map[string]*pageClose
 	downloadDir   string
 	downloadBytes atomic.Int64
 }
@@ -222,17 +239,22 @@ type managedPage struct {
 	access Access
 	driver pageDriver
 	// ctx is the page's lifetime, taken from its driver. Operations are
-	// bounded against it.
+	// bounded against it. cancelOps ends it before the driver closes, so a
+	// close cancels the operations in flight (closePageAsync).
 	ctx       context.Context
+	cancelOps context.CancelFunc
 	mu        sync.Mutex
 	lastUse   atomic.Int64
 	createdAt int64
 	// tabOrder is the page's position key in the thread's tab strip: creation
 	// time by default, renumbered by MoveCompanionPage. Atomic because tab
 	// sorts run outside m.mu.
-	tabOrder     atomic.Int64
-	metaMu       sync.RWMutex
-	info         PageInfo
+	tabOrder atomic.Int64
+	metaMu   sync.RWMutex
+	info     PageInfo
+	// load is the page's loading state and favicon (pagestate.go), guarded
+	// by metaMu.
+	load         pageLoad
 	logMu        sync.Mutex
 	logs         []ConsoleLog
 	clipboardMu  sync.Mutex
@@ -288,7 +310,7 @@ func newManagedPage(access Access) *managedPage {
 
 func (p *managedPage) attach(driver pageDriver) {
 	p.driver = driver
-	p.ctx = driver.Lifetime()
+	p.ctx, p.cancelOps = context.WithCancel(driver.Lifetime())
 }
 
 func NewManager(configDir string, config Config, opts ManagerOptions) *Manager {
@@ -297,6 +319,8 @@ func NewManager(configDir string, config Config, opts ManagerOptions) *Manager {
 		profileDir:    filepath.Join(configDir, browserProfileDir),
 		scopes:        make(map[string]*workspaceScope),
 		suspended:     make(map[string]*suspendedPage),
+		pending:       make(map[string]*pendingPage),
+		disposing:     make(map[string]chan struct{}),
 		recordDir:     filepath.Join(configDir, browserPageRecordDir),
 		panes:         make(map[string]paneMount),
 		sessions:      make(map[string]SessionInfo),
@@ -490,58 +514,10 @@ func (m *Manager) Pages(ctx context.Context, access Access) ([]PageInfo, error) 
 	return out, nil
 }
 
-// ClosePage closes one of the caller's pages. A suspended page has no engine
-// page to close; closing it forgets its record.
-func (m *Manager) ClosePage(ctx context.Context, access Access, pageID string) error {
-	err := m.closeLivePage(ctx, access, pageID)
-	if errors.Is(err, errPageNotFound) {
-		return m.forgetRecord(access.ThreadID, pageID)
-	}
-	return err
-}
-
-// closeLivePage closes a live page. It answers errPageNotFound when the page
-// is not live.
-func (m *Manager) closeLivePage(ctx context.Context, access Access, pageID string) error {
-	p, scope, err := m.lookupOwnedPage(access, pageID)
-	if err != nil {
-		return err
-	}
-	return m.closeFoundPage(ctx, access, p, scope)
-}
-
-// closeFoundPage closes a page a lookup found live. It answers
-// errPageNotFound when the page stopped being live before its lock was
-// taken: suspended meanwhile, it is now a record for ClosePage to forget.
-func (m *Manager) closeFoundPage(ctx context.Context, access Access, p *managedPage, scope *workspaceScope) error {
-	p.mu.Lock()
-	m.mu.Lock()
-	registered := scope.pages[p.id] == p
-	m.mu.Unlock()
-	if !registered {
-		p.mu.Unlock()
-		return errPageNotFound
-	}
-	m.cancelPageDownloads(p, scope)
-	p.driver.Close()
-	m.endFindLocked(p)
-	p.mu.Unlock()
-	m.mu.Lock()
-	delete(scope.pages, p.id)
-	release := m.releaseScopeLocked(scope)
-	m.mu.Unlock()
-	m.repairActivePage(access.ThreadID)
-	m.emitThreadState(access.ThreadID)
-	m.syncPanePresentation(access.ThreadID)
-	if release {
-		return m.disposeScope(ctx, scope)
-	}
-	return nil
-}
-
 // CloseThread closes every page the thread owns, including a popup one of
-// them opens while it runs, forgets its suspended pages and their saved copy,
-// and forgets the thread's browser session. A page the engine closed
+// them opens while it runs, closes its tabs still being created and forgets
+// its failed ones, forgets its suspended pages and their saved copy, and
+// forgets the thread's browser session. A page the engine closed
 // meanwhile counts as closed. A workspace profile that fails to dispose once
 // its last page is gone (a browser process that would not stop, ephemeral
 // site data left on disk) is returned, as ClosePage returns it, after every
@@ -556,6 +532,7 @@ func (m *Manager) CloseThread(ctx context.Context, threadID string) error {
 	if err := m.forgetThreadRecords(threadID); err != nil {
 		log.Printf("browser: close thread %s: %v", threadID, err)
 	}
+	m.closeThreadPending(threadID)
 	var errs []error
 	for pages := m.ownedPages(threadID); len(pages) > 0; pages = m.ownedPages(threadID) {
 		if err := ctx.Err(); err != nil {
@@ -607,6 +584,16 @@ func (m *Manager) Close() error {
 	m.closed = true
 	m.mu.Unlock()
 	err := errors.Join(m.saveOpenPages(), m.closeBrowser(context.Background()))
+	// The browser's close disposed every profile, closing pages included; a
+	// close or disposal still running finishes against it. On the engine's
+	// UI thread it cannot be waited for: its engine calls dispatch to this
+	// very thread, and the engine is already stopped.
+	m.lifeGate.Lock()
+	m.lifeClosed = true
+	m.lifeGate.Unlock()
+	if ui, ok := m.engine.(engineUIThread); !ok || !ui.OnUIThread() {
+		m.lifeWork.Wait()
+	}
 	// The browser's close submitted the end of every page's find; what an
 	// engine reports after it has no page left to end a find on.
 	m.findGate.Lock()
@@ -627,35 +614,19 @@ func (m *Manager) pageForOpen(ctx context.Context, access Access, requested stri
 		p, _, err := m.resolvePage(ctx, access, requested, skipLoad)
 		return p, err
 	}
-	return m.createPage(ctx, access)
+	return m.createPage(ctx, access, false)
 }
 
-func (m *Manager) createPage(ctx context.Context, access Access) (*managedPage, error) {
-	p := newManagedPage(access)
-	p.info = PageInfo{ID: p.id, URL: "about:blank"}
-	// One startMu hold spans the engine start and the page's registration, so
-	// the idle close cannot stop the engine in between.
-	m.startMu.Lock()
-	defer m.startMu.Unlock()
-	scope, err := m.openPageLocked(ctx, access, p, true)
-	if err != nil {
-		return nil, err
-	}
-	m.mu.Lock()
-	scope.creating--
-	scope.pages[p.id] = p
-	m.mu.Unlock()
-	m.pageChanged(p)
-	return p, nil
-}
-
-// openPageLocked starts the engine if it is not running, applies the page
-// caps, and creates p's engine page in the scope of access's workspace, laid
-// out at its thread's viewport. It returns with the scope reserved for p
-// (scope.creating): the caller registers p or abandons it (abandonPage). The
-// per-thread cap is skipped for a restore, whose record already holds its
-// thread's slot. The caller holds startMu.
-func (m *Manager) openPageLocked(ctx context.Context, access Access, p *managedPage, threadCap bool) (*workspaceScope, error) {
+// openPageLocked starts the engine if it is not running, applies the
+// workspace and process caps, and creates p's engine page in the scope of
+// access's workspace, laid out at its thread's viewport. It returns with the
+// scope reserved for p (scope.creating): the caller registers p or abandons
+// it (abandonPage). The thread's cap is the caller's: a new page is admitted
+// when its tab appears (createPage), and a restore's record already holds
+// its thread's slot. A profile of the workspace still being disposed is
+// waited for, so two profiles never hold one workspace's site data. The
+// caller holds startMu.
+func (m *Manager) openPageLocked(ctx context.Context, access Access, p *managedPage) (*workspaceScope, error) {
 	workspace, err := canonicalRoot(access.Workspace)
 	if err != nil {
 		return nil, fmt.Errorf("browser: resolve workspace: %w", err)
@@ -670,26 +641,36 @@ func (m *Manager) openPageLocked(ctx context.Context, access Access, p *managedP
 		return nil, err
 	}
 	m.mu.Lock()
-	if m.closed {
+	for {
+		if m.closed {
+			m.mu.Unlock()
+			return nil, fmt.Errorf("browser: manager closed")
+		}
+		if m.idleTimer != nil {
+			m.idleTimer.Stop()
+			m.idleTimer = nil
+		}
+		disposing := m.disposing[workspace]
+		if m.scopes[workspace] != nil || disposing == nil {
+			break
+		}
 		m.mu.Unlock()
-		return nil, fmt.Errorf("browser: manager closed")
-	}
-	if m.idleTimer != nil {
-		m.idleTimer.Stop()
-		m.idleTimer = nil
+		select {
+		case <-disposing:
+		case <-ctx.Done():
+			m.scheduleIdleClose()
+			return nil, ctx.Err()
+		}
+		m.mu.Lock()
 	}
 	scope := m.scopes[workspace]
-	if scope == nil && len(m.scopes) >= maxWorkspaceContexts {
+	if scope == nil && len(m.scopes)+len(m.disposing) >= maxWorkspaceContexts {
 		m.mu.Unlock()
 		return nil, fmt.Errorf("browser: workspace context limit reached (%d)", maxWorkspaceContexts)
 	}
-	if threadCap && m.threadPageCountLocked(access.ThreadID) >= maxPagesPerThread {
-		m.mu.Unlock()
-		return nil, fmt.Errorf("browser: page limit reached for thread (%d); close a page first", maxPagesPerThread)
-	}
 	if scope != nil && scopeLoadLocked(scope) >= maxPagesPerWorkspace {
 		m.mu.Unlock()
-		return nil, fmt.Errorf("browser: page limit reached for workspace (%d)", maxPagesPerWorkspace)
+		return nil, fmt.Errorf("browser: page limit reached for workspace (%d)%s", maxPagesPerWorkspace, closingHint(len(scope.closing)))
 	}
 	if countPagesLocked(m.scopes) >= maxPagesTotal {
 		m.mu.Unlock()
@@ -728,21 +709,6 @@ func (m *Manager) openPageLocked(ctx context.Context, access Access, p *managedP
 	return scope, nil
 }
 
-// abandonPage closes a page openPageLocked created that will not be
-// registered, ends its reservation, and disposes the scope if that left it
-// empty.
-func (m *Manager) abandonPage(scope *workspaceScope, p *managedPage) error {
-	p.driver.Close()
-	m.mu.Lock()
-	scope.creating--
-	release := m.releaseScopeLocked(scope)
-	m.mu.Unlock()
-	if release {
-		return m.disposeScope(context.Background(), scope)
-	}
-	return nil
-}
-
 // newPage creates p's engine page in scope, laid out at its thread's
 // viewport.
 func (m *Manager) newPage(ctx context.Context, scope *workspaceScope, p *managedPage) error {
@@ -767,6 +733,7 @@ func (m *Manager) pageHooks(p *managedPage) pageHooks {
 		PageURL:           func() string { return p.cachedInfo().URL },
 		Allow:             func(rawURL string) bool { return m.navigationAllowed(p.access, rawURL) },
 		DocumentCommitted: func() func() { return m.documentCommitted(p) },
+		Loading:           func(loading bool, order uint64) { m.pageLoading(p, loading, order) },
 	}
 }
 
@@ -791,7 +758,10 @@ func (m *Manager) createScope(access Access) (*workspaceScope, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &workspaceScope{workspace: workspace, profile: profile, pages: make(map[string]*managedPage), downloadDir: downloadDir}, nil
+	return &workspaceScope{
+		workspace: workspace, profile: profile, downloadDir: downloadDir,
+		pages: make(map[string]*managedPage), closing: make(map[string]*pageClose),
+	}, nil
 }
 
 // startLocked starts the engine unless it is running. The caller holds
@@ -901,42 +871,17 @@ func (m *Manager) removeClosedPage(handle string) {
 	if closed != nil {
 		m.endFind(closed)
 	}
+	if released != nil {
+		// Off the engine's callback, as a closed page's disposal always is,
+		// and started before the state push: a page opened in the workspace
+		// on that push waits for it.
+		m.disposeReleased(released, owner, closed.id)
+	}
 	if owner != "" {
 		m.repairActivePage(owner)
 		m.emitThreadState(owner)
 		m.syncPanePresentation(owner)
 	}
-	if released != nil {
-		if err := m.disposeScope(context.Background(), released); err != nil {
-			log.Printf("browser: dispose the profile of %s: %v", released.workspace, err)
-		}
-	}
-}
-
-// releaseScopeLocked unregisters scope when it has no page and none is being
-// created, and reports whether the caller must dispose it. Deciding and
-// unregistering under one m.mu hold means a concurrent createPage either
-// reserved the scope first or creates a new one, and a scope that is no
-// longer registered is never disposed again. The caller holds m.mu.
-func (m *Manager) releaseScopeLocked(scope *workspaceScope) bool {
-	if len(scope.pages) > 0 || scope.creating > 0 || m.scopes[scope.workspace] != scope {
-		return false
-	}
-	delete(m.scopes, scope.workspace)
-	return true
-}
-
-// disposeScope disposes a scope releaseScopeLocked unregistered and starts
-// the idle close once no scope remains.
-func (m *Manager) disposeScope(ctx context.Context, scope *workspaceScope) error {
-	err := scope.profile.Dispose(ctx)
-	m.mu.Lock()
-	noScopes := len(m.scopes) == 0
-	m.mu.Unlock()
-	if noScopes {
-		m.scheduleIdleClose()
-	}
-	return err
 }
 
 func (m *Manager) closeBrowser(caller context.Context) error {
@@ -955,7 +900,7 @@ func (m *Manager) closeIdleBrowser() {
 	m.startMu.Lock()
 	defer m.startMu.Unlock()
 	m.mu.Lock()
-	idle := len(m.scopes) == 0
+	idle := len(m.scopes) == 0 && len(m.disposing) == 0
 	m.mu.Unlock()
 	if !idle {
 		return
@@ -980,6 +925,18 @@ func (m *Manager) closeBrowserLocked(caller context.Context) error {
 		}
 	}
 	m.scopes = make(map[string]*workspaceScope)
+	// A failed creation's tab names a page that never existed in the
+	// browser being closed.
+	for id, pending := range m.pending {
+		if pending.err != "" {
+			delete(m.pending, id)
+			owners[pending.p.owner] = struct{}{}
+		}
+	}
+	disposing := make([]chan struct{}, 0, len(m.disposing))
+	for _, done := range m.disposing {
+		disposing = append(disposing, done)
+	}
 	for owner := range owners {
 		info := m.sessionLocked(owner)
 		info.ActivePageID = ""
@@ -1029,6 +986,18 @@ func (m *Manager) closeBrowserLocked(caller context.Context) error {
 	case <-done:
 	case <-closeCtx.Done():
 		timedOut = true
+	}
+	if ui, ok := m.engine.(engineUIThread); !ok || !ui.OnUIThread() {
+		// A profile released by a page's close is disposed off that close;
+		// the engine stops after it. On the UI thread that disposal waits for
+		// this very thread, so the stop goes first there.
+		for _, wait := range disposing {
+			select {
+			case <-wait:
+			case <-closeCtx.Done():
+				timedOut = true
+			}
+		}
 	}
 	m.engine.Stop()
 	if timedOut {

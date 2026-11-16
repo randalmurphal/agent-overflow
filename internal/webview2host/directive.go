@@ -59,6 +59,12 @@ const (
 	OpFind Op = "find"
 	// OpFindStop ends the page's find and hides its find bar.
 	OpFindStop Op = "find-stop"
+	// OpRelease releases the pane environment, and with it the WebView2
+	// browser process tree, unless a page or a create still uses it. The
+	// backend sends it when its idle engine stops; the next create starts a
+	// fresh environment. It addresses no page and is answered by no report.
+	// A launcher that predates it drops it as an unknown op.
+	OpRelease Op = "release"
 )
 
 // Directive is one pane-host command. It is the JSON payload of an
@@ -180,6 +186,8 @@ func (d Directive) Validate() error {
 		if len(d.Accelerators) > maxAccelerators {
 			return fmt.Errorf("%d accelerators exceeds the %d cap", len(d.Accelerators), maxAccelerators)
 		}
+		return nil
+	case OpRelease:
 		return nil
 	default:
 		return fmt.Errorf("%w: %q", ErrUnknownOp, d.Op)

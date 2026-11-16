@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unsafe"
 )
@@ -71,6 +72,9 @@ type wkPage struct {
 	// snapshotMu serializes the resize/capture/restore a full-document
 	// screenshot performs, so two captures cannot restore each other's size.
 	snapshotMu sync.Mutex
+	// loadOrder numbers the view's loading changes, on the main thread
+	// (pageHooks.Loading).
+	loadOrder atomic.Uint64
 }
 
 func (p *wkPage) Lifetime() context.Context { return p.ctx }

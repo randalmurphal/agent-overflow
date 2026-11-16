@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import PaneFindBar from './PaneFindBar.svelte';
@@ -10,6 +10,14 @@ import {
   resetPaneFindForTest,
 } from '../../stores/paneFind.svelte';
 import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from '../../stores/paneLayout.svelte';
+import { clearCommandRegistry, registerCommand } from '../../stores/commandRegistry.svelte';
+import { makeCommandContext } from '../../stores/builtinCommands.svelte';
+import {
+  dispatchKey,
+  eventMatchesKeybindingCommand,
+  resetKeybindingsStore,
+  setKeybindingsForTest,
+} from '../../stores/keybindings.svelte';
 import { fakeFilterProvider, fakeFindProvider, type FakeFilterProvider, type FakeFindProvider } from '../../../test/helpers/paneFind.svelte';
 
 let provider: FakeFindProvider;
@@ -199,6 +207,37 @@ describe('<PaneFindBar>', () => {
     await fireEvent.keyDown(input, { key: 'Enter', isComposing: true });
     expect(provider.next).toHaveBeenCalledTimes(1);
     expect(provider.previous).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves Enter with Alt, Ctrl or Meta to the app: the maximize chord dispatches from the input', async () => {
+    const run = vi.fn();
+    registerCommand({ id: 'pane.togglePromoted', label: 'Maximize', editableReachable: true, run });
+    setKeybindingsForTest([{ key: 'alt+shift+enter', command: 'pane.togglePromoted' }]);
+    // App.svelte's editable branch: a prevented event is declined.
+    const reachable = new Set(['pane.togglePromoted']);
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.defaultPrevented) return;
+      const ctx = makeCommandContext(null, {});
+      if (eventMatchesKeybindingCommand(event, ctx, reachable) && dispatchKey(event, ctx)) event.preventDefault();
+    };
+    window.addEventListener('keydown', onKey);
+    try {
+      const { getByTestId } = renderBar();
+      await openBar();
+      provider.set({ count: 3, current: 0 });
+      await tick();
+      const input = getByTestId('pane-find-input');
+      await fireEvent.keyDown(input, { key: 'Enter', altKey: true, shiftKey: true });
+      expect(run).toHaveBeenCalledTimes(1);
+      await fireEvent.keyDown(input, { key: 'Enter', ctrlKey: true });
+      await fireEvent.keyDown(input, { key: 'Enter', metaKey: true });
+      expect(provider.previous).not.toHaveBeenCalled();
+      expect(provider.next).not.toHaveBeenCalled();
+    } finally {
+      window.removeEventListener('keydown', onKey);
+      clearCommandRegistry();
+      resetKeybindingsStore();
+    }
   });
 
   it('a close clears and returns focus to where it was', async () => {

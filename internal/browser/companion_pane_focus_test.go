@@ -94,7 +94,7 @@ func newFocusWorld(t *testing.T) *focusWorld {
 		t.Fatalf("open thread a's other page: %v", err)
 	}
 	w.aOther = other.ID
-	page, err := m.NewCompanionPage(t.Context(), w.a)
+	page, err := m.NewCompanionPage(t.Context(), w.a, "")
 	if err != nil {
 		t.Fatalf("open thread a's page: %v", err)
 	}
