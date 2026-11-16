@@ -42,6 +42,12 @@ func TestOneMountPresentsAThreadsPages(t *testing.T) {
 				if got := <-applied; got != access.ThreadID {
 					t.Fatalf("viewport applied for %q", got)
 				}
+				// A pass that saw the page lag may owe the drain another
+				// pass; it settles before the next step.
+				awaitViewportIdle(t, manager, access.ThreadID)
+				for len(applied) > 0 {
+					<-applied
+				}
 			}
 			var routed []CompanionEvent
 			manager.SetEventSink(func(event CompanionEvent) {

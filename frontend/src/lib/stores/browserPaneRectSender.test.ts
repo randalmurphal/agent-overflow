@@ -1,9 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createBrowserPaneRectSender, type BrowserPaneRectReport } from './browserPaneRectSender';
+import { createBrowserPaneRectSender, type SequencedPaneRect } from './browserPaneRectSender';
 
-function rect(x: number, visible = true): BrowserPaneRectReport {
+// The report's sequence is its x unless a test says otherwise: one number
+// per distinct report.
+function rect(x: number, visible = true, seq = x): SequencedPaneRect {
   return {
-    x, y: 20, width: 800, height: 600,
+    seq, x, y: 20, width: 800, height: 600,
     clipX: x, clipY: 20, clipWidth: 800, clipHeight: 600,
     viewportWidth: 1600, viewportHeight: 900, devicePixelRatio: 1.25,
     visible, background: '#000000',
@@ -72,6 +74,16 @@ describe('browser pane rect sender', () => {
     expect(calls.map((c) => c.x)).toEqual([1, 5]);
   });
 
+  it('sends a rect the pane returned to under its newer sequence', async () => {
+    const { calls, sender } = harness();
+    sender.report('m', rect(1, true, 1));
+    calls[0].resolve();
+    await flush();
+    await flush();
+    sender.report('m', rect(1, true, 3));
+    expect(calls).toHaveLength(2);
+  });
+
   it('lands the last report when sends fail, retrying with the newest', async () => {
     const { calls, failures, sender } = harness();
     sender.report('m', rect(1));
@@ -109,6 +121,49 @@ describe('browser pane rect sender', () => {
     expect(String(failures[0].error)).toContain('backend restarting');
     sender.report('m', rect(1));
     expect(calls).toHaveLength(4);
+  });
+
+  it('treats a failed send as unknown backend state, so the newest report still goes out', async () => {
+    // The transport can reject after the backend applied the call (a lost
+    // reply): each failed send here applies first, then rejects.
+    const { calls, failures, sender } = harness({ maxRetries: 1 });
+    let backend = 0;
+    const accept = async (i: number) => {
+      backend = calls[i].x;
+      calls[i].resolve();
+      await flush();
+      await flush();
+    };
+    const applyThenReject = async (i: number) => {
+      backend = calls[i].x;
+      calls[i].reject(new Error('rpc timeout'));
+      await flush();
+      await flush();
+    };
+    sender.report('m', rect(1));
+    await accept(0);
+    sender.report('m', rect(2));
+    await applyThenReject(1);
+    await vi.advanceTimersByTimeAsync(10);
+    expect(calls.map((c) => c.x)).toEqual([1, 2, 2]);
+    // Back to the first rect while the retry is out.
+    sender.report('m', rect(1));
+    await applyThenReject(2);
+    expect(failures).toHaveLength(1);
+    expect(calls.map((c) => c.x)).toEqual([1, 2, 2, 1]);
+    await accept(3);
+    expect(backend).toBe(1);
+
+    // A failure after the backend accepted rect 1 makes rect 1 unknown too:
+    // the same report is sent again rather than skipped.
+    sender.report('m', rect(2));
+    await applyThenReject(4);
+    await vi.advanceTimersByTimeAsync(10);
+    await applyThenReject(5);
+    sender.report('m', rect(1));
+    expect(calls.map((c) => c.x)).toEqual([1, 2, 2, 1, 2, 2, 1]);
+    await accept(6);
+    expect(backend).toBe(1);
   });
 
   it('stops reporting a mount the backend no longer has', async () => {

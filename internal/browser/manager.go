@@ -136,7 +136,12 @@ type Manager struct {
 	presenting map[string]*presentSync
 	// presented is, per thread, the page the last presentation pass showed
 	// (presentPanes); a thread showing none has no entry. Guarded by mu.
-	presented      map[string]string
+	presented map[string]string
+	// awaitingLayout is, per thread, the active page the last presentation
+	// pass held hidden because it lagged the thread viewport. Whichever
+	// apply lays it out first (applyViewportLocked) asks for the pass that
+	// shows it. Guarded by mu.
+	awaitingLayout map[string]string
 	artifactRoot   string
 	artifactInitMu sync.Mutex
 	artifactReady  bool
@@ -427,7 +432,9 @@ func (m *Manager) NewPage(ctx context.Context, access Access) (PageInfo, error) 
 	if err != nil {
 		return PageInfo{}, err
 	}
-	p.mu.Lock()
+	if err := m.lockPageForOperation(ctx, p); err != nil {
+		return PageInfo{}, err
+	}
 	defer p.mu.Unlock()
 	opCtx, cancel := operationContext(ctx, p.ctx, 5*time.Second)
 	defer cancel()
@@ -462,7 +469,9 @@ func (m *Manager) navigate(ctx context.Context, access Access, targetURL string,
 	if err != nil {
 		return PageInfo{}, err
 	}
-	p.mu.Lock()
+	if err := m.lockPageForOperation(ctx, p); err != nil {
+		return PageInfo{}, err
+	}
 	defer p.mu.Unlock()
 	opCtx, cancel := operationContext(ctx, p.ctx, operationTimeout)
 	defer cancel()

@@ -17,7 +17,9 @@ func (m *Manager) Locator(ctx context.Context, access Access, opts LocatorOption
 	if err != nil {
 		return LocatorResult{}, err
 	}
-	p.mu.Lock()
+	if err := m.lockPageForOperation(ctx, p); err != nil {
+		return LocatorResult{}, err
+	}
 	defer p.mu.Unlock()
 	timeout, err := boundedTimeout(opts.TimeoutMS)
 	if err != nil {

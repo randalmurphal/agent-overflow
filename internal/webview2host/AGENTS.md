@@ -39,9 +39,13 @@ The SPA also posts each pane geometry report to the launcher
 (`geometry.go`); `presenter.go` decides where a page shows. A page bound by
 its bounds directive to a mount with a local report is placed from that
 report with `paneplace.Fit` and shows only while the backend shows it and
-the report is visible; otherwise the directive's rect stands. Only backend
-directives bind a page to a mount. The mailbox keeps the newest report per
-mount, drops older sequences, and has at most one UI-thread drain queued.
+the report is visible, unless the directive's `Seq` (the SPA's number for
+the report the backend placed from) is newer than the report's; then, and
+without a local report, the directive's rect stands. Only backend
+directives bind a page to a mount. Raw reports have their own validation:
+an empty clip on either axis is a hidden pane, not an error. The mailbox
+keeps the newest report per mount, drops older sequences, and has at most
+one UI-thread drain queued.
 
 All COM controller and HWND mutations run on the launcher UI thread. Completion
 handlers may arrive there, so never block on backend RPC inline. Serialize

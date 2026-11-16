@@ -5,8 +5,10 @@
 // runs each call on its own goroutine, last writer wins) and a drag cannot
 // fill the transport's in-flight cap. A report equal to the last one the
 // backend accepted is not sent; the key is recorded only once a send
-// succeeds, so a failed report is never mistaken for a delivered one. A
-// failure is retried, bounded, with the newest report: a lost final report
+// succeeds and cleared by any failure, since a failed send may have applied
+// anyway, so the backend's rect is unknown until the next success. A
+// failure is retried, bounded, with the newest report, and the newest
+// report behind a send that gave up still goes out: a lost final report
 // would leave the native view where the pane no longer is. A refusal that
 // says the mount is gone ends the mount's reports (the pane is tearing down,
 // and a new attach reports afresh).
@@ -27,8 +29,19 @@ export interface BrowserPaneRectReport {
   background: string;
 }
 
+/**
+ * A report numbered per mount: `seq` advances once per distinct report and
+ * rides on the backend report and on the launcher's local post alike, so
+ * the launcher places from whichever of the two is newer
+ * (internal/webview2host/presenter.go). The sender's dedupe includes it: a
+ * rect the pane returns to is a newer report than the same rect before.
+ */
+export interface SequencedPaneRect extends BrowserPaneRectReport {
+  seq: number;
+}
+
 export interface BrowserPaneRectSenderOptions {
-  send: (mount: string, rect: BrowserPaneRectReport) => Promise<unknown>;
+  send: (mount: string, rect: SequencedPaneRect) => Promise<unknown>;
   /** A report that still failed after every retry. */
   onFailure: (mount: string, error: unknown) => void;
   /** Whether a refusal means the backend no longer has the mount. */
@@ -38,14 +51,14 @@ export interface BrowserPaneRectSenderOptions {
 }
 
 export interface BrowserPaneRectSender {
-  report(mount: string, rect: BrowserPaneRectReport): void;
+  report(mount: string, rect: SequencedPaneRect): void;
   /** Drops the mount's state; an answer still in flight is ignored. */
   forget(mount: string): void;
 }
 
 interface Pending {
   key: string;
-  rect: BrowserPaneRectReport;
+  rect: SequencedPaneRect;
 }
 
 interface MountState {
@@ -53,7 +66,8 @@ interface MountState {
   current: Pending | null;
   /** The newest report that arrived while `current` was out. */
   next: Pending | null;
-  /** The last report the backend accepted. */
+  /** The backend's rect, known since the last send succeeded; '' when a
+   *  send failed after it. */
   acceptedKey: string;
   failures: number;
   retryTimer: ReturnType<typeof setTimeout> | null;
@@ -98,6 +112,10 @@ export function createBrowserPaneRectSender(options: BrowserPaneRectSenderOption
       mounts.delete(mount);
       return;
     }
+    // A failed send may still have applied (the transport rejects on a lost
+    // reply without undoing the call), so the backend's rect is unknown and
+    // no later report may be skipped as already delivered.
+    state.acceptedKey = '';
     state.failures += 1;
     if (state.failures > maxRetries) {
       state.failures = 0;
@@ -128,7 +146,7 @@ export function createBrowserPaneRectSender(options: BrowserPaneRectSenderOption
 
   return {
     report(mount, rect) {
-      const item = { key: browserPaneRectKey(rect), rect: { ...rect } };
+      const item = { key: `${rect.seq}:${browserPaneRectKey(rect)}`, rect: { ...rect } };
       let state = mounts.get(mount);
       if (!state) {
         state = { current: null, next: null, acceptedKey: '', failures: 0, retryTimer: null };

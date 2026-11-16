@@ -36,9 +36,12 @@ mode. Product behavior and authority are defined in
   1280x720 before any pane) unless `browser_viewport set` pinned one. Pane
   sizes are applied latest-wins per thread in `viewport.go`, never inline in
   the rect report, and only to the active page; any other page takes the
-  viewport in `resolvePage` before an operation and is never newly shown
-  while it lags (`presentPanes`). The pane is a viewer: `placePage`
-  (`internal/paneplace`, shared with the Windows launcher) fits the viewport
+  viewport under the operation's own lock (`lockPageForOperation`) and is
+  never newly shown while it lags (`presentPanes`); whichever apply lays a
+  held page out runs the pass that shows it (`presentLaidOut`), so a show
+  waits for the layout and never for page work. The pane is a viewer:
+  `placePage` (`internal/paneplace`, shared with the Windows launcher) fits
+  the viewport
   into the host rect and every engine draws the page at that
   `PanePlacement` scale without resizing it. A host that positions in whole
   pixels snaps edges, never origin and size apart (`paneplace.Layout`). A

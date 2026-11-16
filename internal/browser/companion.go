@@ -62,6 +62,12 @@ type PaneRect struct {
 	DevicePixelRatio float64 `json:"devicePixelRatio,omitempty"`
 	Visible          bool    `json:"visible"`
 	Background       string  `json:"background,omitempty"`
+	// Seq is the SPA's per-mount number for this report, advanced once per
+	// distinct report. The Windows SPA posts the same report to the launcher
+	// under the same number, and the hosted engine's bounds directive
+	// carries it, so the launcher places from whichever is newer. Zero is a
+	// reporter that does not number (tests, the harness bridge).
+	Seq uint64 `json:"seq,omitempty"`
 }
 
 // PanePlacement is where a presented page's view goes: the page keeps its
@@ -679,6 +685,24 @@ func (m *Manager) presentPanes(threadID string) {
 		m.presented[threadID] = active.id
 	} else {
 		delete(m.presented, threadID)
+	}
+	delete(m.awaitingLayout, threadID)
+	if lagging {
+		want := packViewport(sessionViewport(m.sessions[threadID]))
+		if active.viewport.Load() == want || active.viewportFailed.Load() == want {
+			// Laid out since the check above, by an apply that found no
+			// page awaiting it: this pass's loop runs another, and no drain
+			// is owed.
+			if st := m.presenting[threadID]; st != nil {
+				st.dirty = true
+			}
+			lagging = false
+		} else {
+			if m.awaitingLayout == nil {
+				m.awaitingLayout = make(map[string]string)
+			}
+			m.awaitingLayout[threadID] = active.id
+		}
 	}
 	m.mu.Unlock()
 	if lagging {

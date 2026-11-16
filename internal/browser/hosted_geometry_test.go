@@ -231,21 +231,44 @@ func TestOverlayPaneLayoutSnapsEdges(t *testing.T) {
 	}
 }
 
-// The bounds directive names the mount and the page size, so a launcher
-// holding newer geometry for that mount can place the page itself, and
-// carries the pixel ratio the launcher converts CSS pixels with.
+// The bounds directive names the mount, the page size and the sequence of
+// the report it was placed from, so a launcher holding newer geometry for
+// that mount can place the page itself, and carries the pixel ratio the
+// launcher converts CSS pixels with.
 func TestHostedBoundsDirectiveNamesTheMountAndPage(t *testing.T) {
 	engine, sink, _ := newHostedGeometryEngine(t)
 	pane := PaneRect{X: 12, Y: 34, Width: 800, Height: 600, ClipX: 12, ClipY: 34, ClipWidth: 800, ClipHeight: 600,
-		ViewportWidth: 1600, ViewportHeight: 900, DevicePixelRatio: 1.5, Visible: true}
+		ViewportWidth: 1600, ViewportHeight: 900, DevicePixelRatio: 1.5, Visible: true, Seq: 7}
 	placement, _ := placePage(pane, 800, 600)
 	placement.Mount = "mount-1"
 	engine.SetPageBounds("page1", placement)
 	d := sink.next(t)
-	if d.Mount != "mount-1" || d.PageW != 800 || d.PageH != 600 || d.DPR != 1.5 {
+	if d.Mount != "mount-1" || d.PageW != 800 || d.PageH != 600 || d.DPR != 1.5 || d.Seq != 7 {
 		t.Fatalf("directive = %+v", d)
 	}
 	if err := d.Validate(); err != nil {
 		t.Fatalf("directive invalid: %v", err)
+	}
+}
+
+// The Manager keeps a report's sequence with the mount's rect, so the
+// placement an engine is given names the report it was placed from.
+func TestPanePlacementCarriesTheReportSequence(t *testing.T) {
+	f := newPaneFollowFixture(t)
+	mount := f.attach(t)
+	rect := paneRect(800, 600)
+	rect.Seq = 9
+	if err := f.manager.SetPaneRect(mount, rect); err != nil {
+		t.Fatalf("set pane rect: %v", err)
+	}
+	f.awaitActiveAt(t, 800, 600)
+	f.awaitFollowIdle(t)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.placements) == 0 {
+		t.Fatal("the page was never placed")
+	}
+	if last := f.placements[len(f.placements)-1]; last.Rect.Seq != 9 || last.Mount != mount {
+		t.Fatalf("placement = %+v, want the report's sequence 9 in mount %s", last, mount)
 	}
 }

@@ -51,16 +51,16 @@ func TestParseGeometryMessageAcceptsAReportAndIgnoresOtherMessages(t *testing.T)
 	}
 }
 
-// The report moves a real window, so it is held to the bounds directive's
-// contract before it reaches the mailbox.
-func TestParseGeometryMessageRejectsWhatABoundsDirectiveWould(t *testing.T) {
+// The report moves a real window, so its numbers are held to a bounds
+// directive's bounds before it reaches the mailbox.
+func TestParseGeometryMessageRejectsMalformedReports(t *testing.T) {
 	for name, fields := range map[string]map[string]any{
 		"no mount":            {"mount": nil},
 		"mount with a slash":  {"mount": "a/b"},
 		"zero sequence":       {"seq": 0},
 		"huge x":              {"x": 1e9},
 		"negative width":      {"width": -1},
-		"half clip":           {"clipWidth": 0},
+		"negative clip":       {"clipHeight": -1},
 		"half viewport":       {"viewportHeight": 0},
 		"negative dpr":        {"devicePixelRatio": -1},
 		"absurd dpr":          {"devicePixelRatio": 1000},
@@ -79,6 +79,33 @@ func TestParseGeometryMessageRejectsWhatABoundsDirectiveWould(t *testing.T) {
 		g := PaneGeometry{Mount: "m", Seq: 1, X: v}
 		if err := g.Validate(); err == nil {
 			t.Fatalf("x=%v accepted", v)
+		}
+	}
+}
+
+// The SPA computes the clip per axis, so a pane scrolled fully out on one
+// axis reports an empty clip on that axis alone. That report is valid and
+// hides the page at once, without waiting for the backend's directive.
+func TestAReportClippedOutOnOneAxisHidesThePage(t *testing.T) {
+	for name, fields := range map[string]map[string]any{
+		"out horizontally": {"clipWidth": 0, "visible": false},
+		"out vertically":   {"clipHeight": 0, "visible": false},
+		"collapsed":        {"width": 0, "height": 0, "clipWidth": 0, "clipHeight": 0, "visible": false},
+	} {
+		g, err := ParseGeometryMessage(geometryMessage(t, fields))
+		if err != nil {
+			t.Fatalf("%s: refused: %v", name, err)
+		}
+		var p pagePresentation
+		p.noteBounds(boundsDirective())
+		p.backendShown = true
+		if view := p.view(g, true); view.visible {
+			t.Fatalf("%s: the page stays shown: %+v", name, view)
+		}
+		// The clip alone hides it, whatever the visible flag says.
+		g.Visible = true
+		if view := p.view(g, true); view.visible {
+			t.Fatalf("%s: an empty clip left the page shown: %+v", name, view)
 		}
 	}
 }

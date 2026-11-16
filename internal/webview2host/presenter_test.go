@@ -101,6 +101,42 @@ func TestPresenterFallsBackToTheDirective(t *testing.T) {
 	}
 }
 
+// The SPA numbers each report once for both paths, so the newer of the two
+// places the page: a directive placed from a report the launcher never got
+// locally (its post failed) wins over the older local report, and a local
+// report at or past the directive's wins over it. A directive with no
+// sequence (an older backend) is the case above: any local report wins.
+func TestPresenterPlacesFromTheNewerReport(t *testing.T) {
+	var d Directive
+	if err := json.Unmarshal([]byte(`{"op":"bounds","pageId":"page-1","x":10,"y":20,"w":800,"h":600,"cx":10,"cy":20,"cw":800,"ch":600,"vw":1600,"vh":900,"mount":"mount-1","pageW":800,"pageH":600,"seq":5}`), &d); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	var p pagePresentation
+	p.noteBounds(d)
+	p.backendShown = true
+	for _, tc := range []struct {
+		seq   uint64
+		wantX float64
+	}{{4, 10}, {5, 300}, {6, 300}} {
+		local := localGeometry(300)
+		local.Seq = tc.seq
+		v := p.view(local, true)
+		if v.bounds.X != tc.wantX || !v.visible {
+			t.Fatalf("local seq %d against directive seq 5: view = %+v, want x %g", tc.seq, v, tc.wantX)
+		}
+	}
+	// A newer directive also decides visibility: a stale local report that
+	// says hidden does not hide a page the backend shows from a newer one.
+	stale := localGeometry(300)
+	stale.Seq, stale.Visible = 4, false
+	if v := p.view(stale, true); !v.visible {
+		t.Fatalf("a stale local report hid the page: %+v", v)
+	}
+}
+
 // An older launcher decodes the new directive into the fields it knows and
 // ignores the rest; those fields alone must still place the page where the
 // backend placed it.

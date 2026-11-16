@@ -55,7 +55,7 @@ func TestDirectiveValidateRejects(t *testing.T) {
 		{"bounds Inf", Directive{Op: OpBounds, PageID: "p", W: math.Inf(1), H: 1}, "not a finite number"},
 		{"bounds absurd", Directive{Op: OpBounds, PageID: "p", X: 1e9, W: 1, H: 1}, "outside"},
 		{"bounds half clip", Directive{Op: OpBounds, PageID: "p", W: 10, H: 10, CW: 5}, "clip must be a positive pair"},
-		{"bounds negative clip", Directive{Op: OpBounds, PageID: "p", W: 10, H: 10, CW: 5, CH: -1}, "clip must be a positive pair"},
+		{"bounds negative clip", Directive{Op: OpBounds, PageID: "p", W: 10, H: 10, CW: 5, CH: -1}, "clip size must not be negative"},
 		{"bounds clip NaN", Directive{Op: OpBounds, PageID: "p", W: 10, H: 10, CX: math.NaN(), CW: 5, CH: 5}, "not a finite number"},
 		{"bounds bg not hex", Directive{Op: OpBounds, PageID: "p", W: 10, H: 10, Bg: "red"}, "not #rrggbb"},
 		{"bounds bg short", Directive{Op: OpBounds, PageID: "p", W: 10, H: 10, Bg: "#fff"}, "not #rrggbb"},

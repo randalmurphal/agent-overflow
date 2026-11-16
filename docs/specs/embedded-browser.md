@@ -193,15 +193,19 @@ they arrived.
 A pane's position does not need the backend: the SPA and the
 controllers share the launcher's UI thread. The SPA posts each geometry
 report to the launcher (`chrome.webview.postMessage`, Wails'
-`RawMessageHandler`) as well as to the backend, numbered per mount, and
-only where the launcher advertised that it takes them. A bounds
-directive names the mount and the page's viewport; with a report for
-that mount the launcher places the page from it with the shared rule
+`RawMessageHandler`) as well as to the backend, only where the launcher
+advertised that it takes them. Each distinct report is numbered once
+per mount and carries that number on both paths. A bounds directive
+names the mount, the page's viewport and the number of the report it
+was placed from; with a report for that mount at that number or later,
+the launcher places the page from it with the shared rule
 (`internal/paneplace`) and ignores the directive's position, and shows
-the page only while the backend shows it and the report is visible.
-Without one (an older SPA, backend or launcher on either side) the
-directive's rect stands as before. The backend still receives every
-report: it owns the viewport and which mount presents.
+the page only while the backend shows it and the report is visible. A
+directive newer than the launcher's report (a failed post) stands, as
+it does without one (an older SPA, backend or launcher on either side).
+A directive without a number (an older backend) yields to any report.
+The backend still receives every report: it owns the viewport and which
+mount presents.
 
 ## 6. macOS / Linux: native driver
 

@@ -4,21 +4,22 @@ import "agent-overflow/internal/paneplace"
 
 // pagePresentation is what the launcher knows about one page's presentation
 // from the backend: its last bounds directive (the placement, the mount it
-// was placed in, the page's viewport) and whether the backend shows the page.
-// The page-to-mount binding comes only from here; local geometry never names
-// a page.
+// was placed in, the page's viewport, the sequence of the report it was
+// placed from) and whether the backend shows the page. The page-to-mount
+// binding comes only from here; local geometry never names a page.
 type pagePresentation struct {
 	directive    paneBounds
 	hasBounds    bool
 	mount        string
 	pageW, pageH int
+	seq          uint64
 	backendShown bool
 }
 
 // noteBounds records a validated bounds directive.
 func (p *pagePresentation) noteBounds(d Directive) {
 	p.directive, p.hasBounds = d.paneBounds(), true
-	p.mount, p.pageW, p.pageH = d.Mount, d.PageW, d.PageH
+	p.mount, p.pageW, p.pageH, p.seq = d.Mount, d.PageW, d.PageH, d.Seq
 }
 
 // paneView is where and whether the host shows a page.
@@ -28,16 +29,19 @@ type paneView struct {
 	visible   bool
 }
 
-// view decides where and whether a page shows. With local geometry for the
-// page's mount, the page is placed from it with the backend's own rule
-// (paneplace.Fit at the directive's page size) and shows only while the
-// backend shows it AND the local report says the pane is visible: the local
-// report is never older than the one the backend placed from, so the
-// directive's position is ignored and a stale directive cannot move the view
-// back. Without local geometry (an older SPA or backend, or a mount the
-// mailbox evicted) the directive stands as it always did.
+// view decides where and whether a page shows. The SPA numbers each report
+// once and sends that number on both paths, so the newer of the local report
+// and the directive's report places the page. With local geometry for the
+// page's mount at the directive's sequence or later, the page is placed from
+// it with the backend's own rule (paneplace.Fit at the directive's page
+// size) and shows only while the backend shows it AND the local report says
+// the pane is visible, so a directive that lags the pane cannot move the
+// view back. A directive newer than the local report (its post failed, or
+// has not arrived) stands, as it does without local geometry (an older SPA,
+// or a mount the mailbox evicted). A directive with no sequence (an older
+// backend) yields to any local report.
 func (p pagePresentation) view(local PaneGeometry, hasLocal bool) paneView {
-	if p.mount == "" || !hasLocal || p.pageW <= 0 || p.pageH <= 0 || local.Mount != p.mount {
+	if p.mount == "" || !hasLocal || p.pageW <= 0 || p.pageH <= 0 || local.Mount != p.mount || local.Seq < p.seq {
 		return paneView{bounds: p.directive, hasBounds: p.hasBounds, visible: p.backendShown}
 	}
 	fit, _, ok := paneplace.Fit(paneplace.Rect{

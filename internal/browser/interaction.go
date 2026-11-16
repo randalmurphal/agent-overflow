@@ -15,7 +15,9 @@ func (m *Manager) Pointer(ctx context.Context, access Access, opts PointerOption
 	if err != nil {
 		return PageInfo{}, err
 	}
-	p.mu.Lock()
+	if err := m.lockPageForOperation(ctx, p); err != nil {
+		return PageInfo{}, err
+	}
 	defer p.mu.Unlock()
 	opCtx, cancel := operationContext(ctx, p.ctx, operationTimeout)
 	defer cancel()
@@ -46,7 +48,9 @@ func (m *Manager) DOMAction(ctx context.Context, access Access, opts DOMActionOp
 		if lookupErr != nil {
 			return nil, lookupErr
 		}
-		p.mu.Lock()
+		if err := m.lockPageForOperation(ctx, p); err != nil {
+			return nil, err
+		}
 		defer p.mu.Unlock()
 		opCtx, cancel := operationContext(ctx, p.ctx, operationTimeout)
 		defer cancel()
@@ -90,7 +94,9 @@ func (m *Manager) scrollNodeReference(ctx context.Context, p *managedPage, ref n
 	if err := validateScrollDelta(x, y); err != nil {
 		return PageInfo{}, err
 	}
-	p.mu.Lock()
+	if err := m.lockPageForOperation(ctx, p); err != nil {
+		return PageInfo{}, err
+	}
 	defer p.mu.Unlock()
 	opCtx, cancel := operationContext(ctx, p.ctx, operationTimeout)
 	defer cancel()
@@ -170,7 +176,9 @@ func (m *Manager) WaitAdvanced(ctx context.Context, access Access, opts WaitOpti
 	if err != nil {
 		return PageInfo{}, err
 	}
-	p.mu.Lock()
+	if err := m.lockPageForOperation(ctx, p); err != nil {
+		return PageInfo{}, err
+	}
 	defer p.mu.Unlock()
 	timeout, err := boundedTimeout(opts.TimeoutMS)
 	if err != nil {

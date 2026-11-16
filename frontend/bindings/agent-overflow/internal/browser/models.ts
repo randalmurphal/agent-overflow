@@ -378,6 +378,15 @@ export class PaneRect {
     "visible": boolean;
     "background"?: string;
 
+    /**
+     * Seq is the SPA's per-mount number for this report, advanced once per
+     * distinct report. The Windows SPA posts the same report to the launcher
+     * under the same number, and the hosted engine's bounds directive
+     * carries it, so the launcher places from whichever is newer. Zero is a
+     * reporter that does not number (tests, the harness bridge).
+     */
+    "seq"?: number;
+
     /** Creates a new PaneRect instance. */
     constructor($$source: Partial<PaneRect> = {}) {
         if (!("x" in $$source)) {

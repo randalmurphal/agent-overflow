@@ -818,9 +818,10 @@ func (e *hostedEngine) HidePage(handle string) {
 // draws at the OS scale alone, so the webview zoom is recovered from the two
 // device pixel ratios.
 //
-// The directive also names the pane mount and the page's viewport: a launcher
-// that measures the mount itself places the page from its own rect with the
-// same rule (paneplace.Fit) and ignores this one's position.
+// The directive also names the pane mount, the page's viewport and the
+// report's sequence: a launcher that measures the mount itself places the
+// page from its own rect with the same rule (paneplace.Fit) unless this
+// directive's report is newer than its own.
 func (e *hostedEngine) SetPageBounds(handle string, placement PanePlacement) {
 	if !e.setBounds(handle, placement) {
 		return
@@ -834,6 +835,7 @@ func (e *hostedEngine) SetPageBounds(handle string, placement PanePlacement) {
 		DPR:   rect.DevicePixelRatio,
 		Bg:    rect.Background,
 		Mount: placement.Mount, PageW: placement.PageWidth, PageH: placement.PageHeight,
+		Seq: rect.Seq,
 	})
 	e.syncViewScale(handle)
 }
