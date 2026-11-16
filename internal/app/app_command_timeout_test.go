@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -111,7 +112,7 @@ func TestClaudeTUIReceivesTheCommandTimeoutCeiling(t *testing.T) {
 	}
 
 	app = newTestAppWithStore(t)
-	if _, err := app.SetProviderCustomEnvVar("claude", "BASH_MAX_TIMEOUT_MS", "99999999", false); err != nil {
+	if _, err := app.SetProviderCustomEnvVar(context.Background(), "claude", "BASH_MAX_TIMEOUT_MS", "99999999", false); err != nil {
 		t.Fatalf("SetProviderCustomEnvVar: %v", err)
 	}
 	if got := startClaudeTUIRecordingTimeout(t, app, "tui-timeout-custom"); got != "set=yes value=99999999" {
