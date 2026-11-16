@@ -71,6 +71,13 @@ const QUEUED = 'Queued behind the open turn.';
 const QUEUED_WAKE = 'An answer arrived.';
 const TYPED = 'Typed in the composer.';
 const REPLACED = 'The text a resend replaced.';
+/** The repeated text: queued, and already in the composer. */
+const REPEAT = 'Please continue';
+/** The padded thread's two queued messages and draft, as the rows hold them, and the draft the restore writes. */
+const SPACED = { first: '\n\tqueued text\u00A0\n', second: ' second\t', draft: 'old draft\n' };
+const SPACED_DRAFT = 'queued text\n\nsecond\n\nold draft';
+/** An SQL string literal. */
+const sqlText = (text: string) => `'${text.replaceAll("'", "''")}'`;
 /** The second member of the joined unconfirmed message, whose queue copy outlived the write. */
 const MEMBER = 'A second message joined to the first.';
 /** usermessage.JoinSeparator. */
@@ -86,6 +93,10 @@ interface Staged {
   terminalId: string;
   scratchId: string;
   preparingId: string;
+  /** A queued message whose text the composer already holds. */
+  repeatId: string;
+  /** Queued messages and a draft padded with newlines, tabs and a non-breaking space. */
+  spacedId: string;
   holderId: string;
   forkId: string;
 }
@@ -156,6 +167,8 @@ async function stageCrashedRoot(rig: Sandbox): Promise<Omit<Staged, 'holderId' |
     const draftId = await seedAgentThread(host, 'upgrade-draft', 'Resent while running');
     const scratchId = await seedAgentThread(host, 'upgrade-scratch', 'Side chat');
     const preparingId = await seedAgentThread(host, 'upgrade-preparing', 'Fork in preparation');
+    const repeatId = await seedAgentThread(host, 'upgrade-repeat', 'Queued what the composer held');
+    const spacedId = await seedAgentThread(host, 'upgrade-spaced', 'Queued with padding');
     const terminal = await startTerminalThread(host, 'Shell of the dead process');
     expect(terminal.mode).toBe('terminal');
     const mockId = await startMock(host, threadId);
@@ -174,7 +187,7 @@ async function stageCrashedRoot(rig: Sandbox): Promise<Omit<Staged, 'holderId' |
         (SELECT COUNT(*) FROM flush_queue_items) + (SELECT COUNT(*) FROM items WHERE kind = 'user_text'
           AND json_valid(meta) AND json_extract(meta, '$.pendingFlush') = 1) AS n`))[0].n).toBe(1);
     expect(await host.crash()).toBe(true);
-    return { threadId, quietId, codexId, draftId, terminalId: terminal.id, scratchId, preparingId };
+    return { threadId, quietId, codexId, draftId, terminalId: terminal.id, scratchId, preparingId, repeatId, spacedId };
   } finally {
     await host.close();
   }
@@ -266,6 +279,15 @@ async function stageFixtures(rig: Sandbox, s: Staged): Promise<void> {
     INSERT INTO thread_drafts (thread_id, content, attachments, updated_at, has_content)
       VALUES ('${s.codexId}', '${TYPED}', '["att-typed"]', ${now}, 1), ('${s.draftId}', '${TYPED}', '[]', ${now}, 1),
              ('${s.quietId}', 'kept', '[]', ${now}, 1);
+    -- The restore's composition: a queued message the draft already holds
+    -- word for word, which the draft must then hold twice; and two queued
+    -- messages and a draft padded with whitespace, which the restore trims.
+    INSERT INTO flush_queue_items (id, thread_id, send_id, message, enqueued_at)
+      VALUES ('fq-repeat', '${s.repeatId}', 'send-repeat', ${sqlText(REPEAT)}, ${now}),
+             ('fq-spaced-1', '${s.spacedId}', 'send-spaced-1', ${sqlText(SPACED.first)}, ${now}),
+             ('fq-spaced-2', '${s.spacedId}', 'send-spaced-2', ${sqlText(SPACED.second)}, ${now + 1});
+    INSERT INTO thread_drafts (thread_id, content, attachments, updated_at, has_content)
+      VALUES ('${s.repeatId}', ${sqlText(REPEAT)}, '[]', ${now}, 1), ('${s.spacedId}', ${sqlText(SPACED.draft)}, '[]', ${now}, 1);
     INSERT INTO thread_draft_recoveries (thread_id, send_id, content, attachments)
       VALUES ('${s.draftId}', 'send-lost', '${REPLACED}', '[]');
     -- background-terminal-stashes: a background task's end that outran its row.
@@ -388,6 +410,10 @@ test('the release upgrade check tells a dead process\'s recovered rows from alte
         (SELECT content FROM thread_drafts WHERE thread_id = '${quietId}') AS draft,
         (SELECT delivered_how FROM thread_requests WHERE token = 'req-delivered') AS how`))
       .toEqual([{ queued: 0, draft: 'kept', how: 'queued' }]);
+    // MergeParts' composition: a repeated text twice, padding trimmed.
+    expect(await dbQuery(rig.dbPath, `SELECT thread_id AS thread, content FROM thread_drafts
+        WHERE thread_id IN ('${staged.repeatId}', '${staged.spacedId}') ORDER BY thread_id = '${staged.spacedId}'`))
+      .toEqual([{ thread: staged.repeatId, content: `${REPEAT}\n\n${REPEAT}` }, { thread: staged.spacedId, content: SPACED_DRAFT }]);
     expect(byRule(clean)).toEqual({
       'crashed-turns turns': 1,
       'crashed-turn-rows items': 1,
@@ -402,8 +428,8 @@ test('the release upgrade check tells a dead process\'s recovered rows from alte
       // The Codex thread's stamps move with its worktree setup's row, which that rule counts.
       'thread-stamps threads': 1,
       'worktree-setups threads': 1,
-      'queued-messages flush_queue_items': 3,
-      'queued-message-drafts thread_drafts': 1,
+      'queued-messages flush_queue_items': 6,
+      'queued-message-drafts thread_drafts': 3,
       'queued-wakes-to-draft thread_requests': 2,
       'retired-message-claims diff_review_comments': 1,
       'unsettled-review-claims diff_review_comments': 1,
@@ -462,6 +488,14 @@ test('the release upgrade check tells a dead process\'s recovered rows from alte
         sql: `UPDATE thread_requests SET delivered_how = 'draft' WHERE token = 'req-delivered'` },
       { rule: 'replacement-drafts: draft holds only the old draft', table: 'thread_draft_recoveries',
         sql: `UPDATE thread_drafts SET content = '${TYPED}' WHERE thread_id = '${staged.draftId}'` },
+      { rule: 'queued-messages: a repeated text lost, the draft left as it was', table: 'flush_queue_items',
+        sql: `UPDATE thread_drafts SET content = ${sqlText(REPEAT)} WHERE thread_id = '${staged.repeatId}'` },
+      { rule: 'queued-messages: the restored parts in the wrong order', table: 'flush_queue_items',
+        sql: `UPDATE thread_drafts SET content = ${sqlText('second\n\nqueued text\n\nold draft')} WHERE thread_id = '${staged.spacedId}'` },
+      { rule: 'queued-messages: a part restored twice', table: 'flush_queue_items',
+        sql: `UPDATE thread_drafts SET content = ${sqlText(`queued text\n\n${SPACED_DRAFT}`)} WHERE thread_id = '${staged.spacedId}'` },
+      { rule: 'queued-messages: the padding kept', table: 'flush_queue_items',
+        sql: `UPDATE thread_drafts SET content = ${sqlText(`${SPACED.first}\n\n${SPACED.second}\n\n${SPACED.draft}`)} WHERE thread_id = '${staged.spacedId}'` },
       { rule: 'replacement-drafts: draft holds only the replaced text', table: 'thread_drafts',
         sql: `UPDATE thread_drafts SET content = '${REPLACED}' WHERE thread_id = '${staged.draftId}'` },
       { rule: 'retired-message-claims: resolved, not returned', table: 'diff_review_comments',

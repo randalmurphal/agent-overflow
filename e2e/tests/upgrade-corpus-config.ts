@@ -131,7 +131,7 @@ const orphanedClaudeLaunch = (x: string) => `${x}.kind = 'tool_call' AND ${x}.st
  * or top-level row follows it. A mark on any other row is history, which
  * v152 clears and the boot leaves alone.
  */
-const unconfirmedUserRow = (x: string) => `${x}.kind = 'user_text' AND ${x}.parent_id = '' AND ${meta(x, 'pendingFlush')} = 1
+export const unconfirmedUserRow = (x: string) => `${x}.kind = 'user_text' AND ${x}.parent_id = '' AND ${meta(x, 'pendingFlush')} = 1
   AND ${x}.created_at >= (SELECT t.created_at FROM mig.threads t WHERE t.id = ${x}.thread_id)
   AND NOT EXISTS (SELECT 1 FROM mig.turns t WHERE t.thread_id = ${x}.thread_id AND t.turn_index > ${x}.turn_index)
   AND NOT EXISTS (SELECT 1 FROM mig.items l WHERE l.thread_id = ${x}.thread_id AND l.turn_index > ${x}.turn_index AND l.parent_id = '')`;
@@ -156,33 +156,8 @@ const incompleteOwnAdmission = (x: string) => `${x}.purpose <> '' AND ${x}.confi
  */
 const isArray = (json: string) => `(CASE WHEN json_valid(${json}) THEN json_type(${json}) END) = 'array'`;
 const jsonArray = (json: string) => `(CASE WHEN ${isArray(json)} THEN ${json} ELSE '[]' END)`;
-/**
- * The booted draft `d` holds one restored message: its trimmed text, when it
- * has any, and every attachment id `ids` (a query of a column `id`) names.
- * composerdraft.MergeParts joins each message's trimmed text ahead of the
- * old draft's and keeps every attachment id once.
- */
-const draftHolds = (d: string, text: string, ids: string) => `(trim(${text}) = '' OR instr(${d}.content, trim(${text})) > 0)
-  AND ${isArray(`${d}.attachments`)}
-  AND NOT EXISTS (SELECT 1 FROM (${ids}) n WHERE n.id <> ''
-    AND NOT EXISTS (SELECT 1 FROM json_each(${jsonArray(`${d}.attachments`)}) h WHERE h.value = n.id))`;
-/** The booted draft of the thread of `x` holds that message. */
-const restoredToDraft = (x: string, text: string, ids: string) =>
-  `EXISTS (SELECT 1 FROM main.thread_drafts d WHERE d.thread_id = ${x}.thread_id AND ${draftHolds('d', text, ids)})`;
-/** A user row's meta, or an empty object when it is not JSON (the restore then takes only its summary). */
+/** A user row's meta, or an empty object when it is not JSON. */
 const userMeta = (x: string) => `(CASE WHEN json_valid(${x}.meta) THEN ${x}.meta ELSE '{}' END)`;
-/** The queue row `x`'s payload as JSON, or an empty object when it does not decode (draftPartFromQueueRow then takes only its text). */
-const queuePayload = (x: string) => `(CASE WHEN json_valid(CAST(${x}.payload AS TEXT)) THEN CAST(${x}.payload AS TEXT) ELSE '{}' END)`;
-/** The user row `x` answers for the send `sendId`: its own, or a joined member's (userRowSendIDs). */
-const carriesSend = (x: string, sendId: string) => `(json_extract(${userMeta(x)}, '$.sendId') = ${sendId}
-  OR ${sendId} IN (SELECT value FROM json_each(${jsonArray(`json_extract(${userMeta(x)}, '$.joinedSendIds')`)})))`;
-/** The unconfirmed row `x` went to the draft whole: its text without the review comments it rendered, and its attachments (draftPartFromUserItem). */
-const unconfirmedRestored = (x: string) => restoredToDraft(x,
-  `COALESCE(json_extract(${userMeta(x)}, '$.textBeforeReviewComments'), ${x}.summary)`,
-  `SELECT trim(json_extract(a.value, '$.id')) AS id FROM json_each(${jsonArray(`json_extract(${userMeta(x)}, '$.attachments')`)}) a`);
-/** An unconfirmed row of the thread of queue row `q` carries its send: `q` is a copy of a member of that row. */
-const queueCopyCarried = (q: string, restored: boolean) => `${q}.send_id <> '' AND EXISTS (SELECT 1 FROM mig.items u
-  WHERE u.thread_id = ${q}.thread_id AND ${unconfirmedUserRow('u')} AND ${carriesSend('u', `${q}.send_id`)}${restored ? ` AND ${unconfirmedRestored('u')}` : ''})`;
 /** The provider's id on the user row `x` (usermessage.ReadProviderItemID). */
 const providerItemId = (x: string) => `COALESCE(json_extract(${userMeta(x)}, '$.provider_item_id'), '')`;
 /** A reader-authored user row (store.readerAuthoredUserTextFilterFor). */
@@ -194,28 +169,29 @@ const readerUserText = (x: string) => `${x}.parent_id = '' AND ${x}.kind = 'user
  * FindUserTextItemBySendID finds, by its own send id first and a joined one
  * second, carries the provider's id.
  */
-const sendConfirmed = (thread: string, sendId: string) => `${sendId} <> '' AND COALESCE(
+export const sendConfirmed = (thread: string, sendId: string) => `${sendId} <> '' AND COALESCE(
   (SELECT ${providerItemId('i')} <> '' FROM main.items i WHERE i.thread_id = ${thread} AND ${readerUserText('i')}
     AND json_extract(${userMeta('i')}, '$.sendId') = ${sendId} LIMIT 1),
   (SELECT ${providerItemId('i')} <> '' FROM main.items i WHERE i.thread_id = ${thread} AND ${readerUserText('i')}
     AND ${sendId} IN (SELECT value FROM json_each(${jsonArray(`json_extract(${userMeta('i')}, '$.joinedSendIds')`)})) LIMIT 1),
   0)`;
-/** The send `sendId` is recorded in the thread of `x`: a user row or a queue row carries it (app.findRecordedSend). */
-const sendRecorded = (x: string, sendId: string) => `(EXISTS (SELECT 1 FROM mig.items u WHERE u.thread_id = ${x}.thread_id AND u.kind = 'user_text'
+/** The send `sendId` is recorded in thread `thread`: a user row or a queue row carries it (app.findRecordedSend). */
+export const sendRecorded = (thread: string, sendId: string) => `(EXISTS (SELECT 1 FROM mig.items u WHERE u.thread_id = ${thread}
+    AND ${readerUserText('u')}
     AND (json_extract(${userMeta('u')}, '$.sendId') = ${sendId}
       OR ${sendId} IN (SELECT value FROM json_each(${jsonArray(`json_extract(${userMeta('u')}, '$.joinedSendIds')`)}))))
-  OR EXISTS (SELECT 1 FROM mig.flush_queue_items q WHERE q.thread_id = ${x}.thread_id AND q.send_id = ${sendId}))`;
+  OR EXISTS (SELECT 1 FROM mig.flush_queue_items q WHERE q.thread_id = ${thread} AND q.send_id = ${sendId}))`;
 /**
- * The draft a restore wrote over `s`: MergeParts keeps the old draft's text
- * and attachments, its terminal chips (an empty value becomes '[]') and its
- * pending plan, and adds the restored messages, which their own rules check.
+ * The booted draft of the thread of `x` is exactly what the boot's composer
+ * restores write from the migrated store's rows: restoredDraftThreads
+ * (upgrade-corpus-fingerprint.ts) composes it and substitutes the threads
+ * whose draft matches for `{restored}` when a rule is composed. The restores
+ * write the draft and delete every row they took in one transaction, so a
+ * row they take may leave only when its thread's draft matches.
  */
-const draftKept = `(trim(s.content) = '' OR instr(b.content, trim(s.content)) > 0)
-  AND ${isArray('b.attachments')}
-  AND NOT EXISTS (SELECT 1 FROM json_each(${jsonArray('s.attachments')}) o
-    WHERE NOT EXISTS (SELECT 1 FROM json_each(${jsonArray('b.attachments')}) h WHERE h.value = o.value))
-  AND (b.terminal_chips = s.terminal_chips OR (trim(s.terminal_chips) = '' AND b.terminal_chips = '[]'))
-  AND (COALESCE(s.pending_plan_implementation, '') = '' OR b.pending_plan_implementation IS s.pending_plan_implementation)`;
+const draftRestored = (x: string) => `${x}.thread_id IN ({restored})`;
+/** MergeParts keeps a pending plan the draft already had. */
+const draftPlanKept = `(COALESCE(s.pending_plan_implementation, '') = '' OR b.pending_plan_implementation IS s.pending_plan_implementation)`;
 const draftColumns = ['content', 'attachments', 'terminal_chips', 'pending_plan_implementation', 'updated_at', 'has_content'];
 /** A review comment a claim release returned: a sent one is a draft again, any other keeps its status; the claim is cleared and the body kept. */
 const claimReturned = `b.claim_thread_id = '' AND b.claim_item_id = '' AND b.claim_settles = ''
@@ -269,7 +245,7 @@ export const recoveryRules: RecoveryRule[] = [
     // The row is the unit, a joined one included: it goes to the draft whole.
     name: 'unconfirmed-queued-messages', writer: 'app.(*App).restoreThreadQueueAtBoot (store.RestoreFlushQueueToDraft)',
     table: 'items', removes: true,
-    rows: `${unconfirmedUserRow('s')} AND ${unconfirmedRestored('s')}`,
+    rows: `${unconfirmedUserRow('s')} AND ${draftRestored('s')}`,
   },
   {
     name: 'unconfirmed-message-search-rows', writer: 'store.RetireUndeliveredUserRow (deleteThreadItemTx clears its search rows)',
@@ -311,23 +287,17 @@ export const recoveryRules: RecoveryRule[] = [
     rows: "s.worktree_setup_state = 'running'", columns: ['worktree_setup_state'], to: "b.worktree_setup_state = 'failed'",
   },
   {
-    // restoreThreadQueueAtBoot's three cases, in its order: a copy of a
-    // member of an unconfirmed row leaves with that row, which the draft
-    // holds whole; a message the provider confirmed leaves with no text;
-    // any other goes to the draft, its text and its payload's attachments
-    // (draftPartFromQueueRow).
+    // restoreThreadQueueAtBoot takes every queue row of the thread: a copy
+    // of a joined row's member and a message the provider confirmed add no
+    // text, the rest do; restoredDraftThreads composes which.
     name: 'queued-messages', writer: 'app.(*App).restoreThreadQueueAtBoot (store.RestoreFlushQueueToDraft)',
-    table: 'flush_queue_items', removes: true,
-    rows: `CASE WHEN ${queueCopyCarried('s', false)} THEN ${queueCopyCarried('s', true)}
-      WHEN ${sendConfirmed('s.thread_id', 's.send_id')} THEN 1
-      ELSE ${restoredToDraft('s', 's.message',
-        `SELECT a.value AS id FROM json_each(${jsonArray(`json_extract(${queuePayload('s')}, '$.attachmentIds')`)}) a`)} END`,
+    table: 'flush_queue_items', removes: true, rows: draftRestored('s'),
   },
   {
     name: 'queued-message-drafts', writer: 'app.(*App).restoreQueuedDraft (composerdraft.MergeParts)', table: 'thread_drafts',
     rows: `EXISTS (SELECT 1 FROM mig.flush_queue_items q WHERE q.thread_id = s.thread_id)
       OR EXISTS (SELECT 1 FROM mig.items u WHERE u.thread_id = s.thread_id AND ${unconfirmedUserRow('u')})`,
-    columns: draftColumns, to: draftKept,
+    columns: draftColumns, to: `${draftRestored('s')} AND ${draftPlanKept}`,
   },
   {
     name: 'queued-wakes-to-draft', writer: 'app.noteThreadWakeRestoredToDraft (store.MarkThreadRequestDeliveredAsDraft)',
@@ -352,13 +322,12 @@ export const recoveryRules: RecoveryRule[] = [
     // A recovery whose send is recorded is dropped (its message is in the
     // history or the queue); any other goes to the draft (recoverReplacementDraft).
     name: 'replacement-draft-recoveries', writer: 'app.(*App).restoreReplacementDraftsAtBoot', table: 'thread_draft_recoveries',
-    removes: true,
-    rows: `${sendRecorded('s', 's.send_id')} OR ${restoredToDraft('s', 's.content',
-      `SELECT a.value AS id FROM json_each(${jsonArray('s.attachments')}) a`)}`,
+    removes: true, rows: draftRestored('s'),
   },
   {
     name: 'replacement-drafts', writer: 'app.(*App).recoverReplacementDraft (composerdraft.MergeParts)', table: 'thread_drafts',
-    rows: 'EXISTS (SELECT 1 FROM mig.thread_draft_recoveries r WHERE r.thread_id = s.thread_id)', columns: draftColumns, to: draftKept,
+    rows: 'EXISTS (SELECT 1 FROM mig.thread_draft_recoveries r WHERE r.thread_id = s.thread_id)', columns: draftColumns,
+    to: `${draftRestored('s')} AND ${draftPlanKept}`,
   },
   {
     name: 'open-receipts', writer: 'app.(*App).sweepThreadRequestsAtBoot', table: 'thread_request_receipts',
