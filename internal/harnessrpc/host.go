@@ -73,6 +73,12 @@ type Host interface {
 	// CancelProviderLogins ends every provider sign-in and leaves each
 	// provider idle.
 	CancelProviderLogins()
+	// RunBackgroundFetchPass runs one pass of the unattended fetch cadence,
+	// which an isolated boot never starts.
+	RunBackgroundFetchPass(context.Context)
+	// ForgetGitFetches forgets each repository's fetch freshness and
+	// failure backoff, which are keyed by a path the next fixture can reuse.
+	ForgetGitFetches()
 	// PauseMergedPRCleanup stops the merged pull request cleanup, joins it
 	// and drops its in-memory state; resume starts it again from nothing.
 	PauseMergedPRCleanup() (resume func())

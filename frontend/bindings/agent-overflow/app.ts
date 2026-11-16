@@ -2691,6 +2691,18 @@ export function GitCreateWorktree(threadID: string, branch: string): $Cancellabl
 }
 
 /**
+ * GitFetchOrigin fetches origin into the workspace's repository and may ask
+ * for credentials: the action behind GitStatus.RemoteSignInError. Like
+ * GitMaybeFetchRemotes it moves only remote-tracking refs, so it takes no
+ * workspace locks.
+ */
+export function GitFetchOrigin(ws: app$0.WorkspaceRef): $CancellablePromise<git$0.GitActionResult> {
+    return $Call.ByID(3703670631, ws).then(($result: any) => {
+        return $$createType117($result);
+    });
+}
+
+/**
  * GitListBranchPruneCandidates refreshes remote-tracking refs
  * (`git fetch --all --prune`, so upstream-gone status is current) and
  * returns local branches whose upstream is gone, classified for the

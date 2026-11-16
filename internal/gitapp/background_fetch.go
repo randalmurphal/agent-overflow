@@ -146,7 +146,13 @@ func (s *Service) RunBackgroundFetchPass(ctx context.Context) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if s.shuttingDown() || s.store == nil || s.backgroundFetchEnabled == nil || !s.backgroundFetchEnabled() {
+	if s.shuttingDown() || s.store == nil || s.backgroundFetchEnabled == nil {
+		return
+	}
+	if !s.backgroundFetchEnabled() {
+		// Turned off: nothing retries a failing repository, so its backoff
+		// and its sign-in mark end here.
+		s.core.ForgetFetchFailures()
 		return
 	}
 	projects, err := s.store.ListProjects()

@@ -148,6 +148,10 @@ func (c *Core) fetchOriginForSeed(ctx context.Context, cwd string) (bool, error)
 		if c.fetchIsFresh(key) {
 			return false, nil
 		}
+		// A failure here starts no backoff and marks nothing: the cut
+		// reports it (WorktreeSeed.FetchErr), and the cadence that would
+		// retry it may be turned off. A cadence fetch waiting on this
+		// flight records the failure itself (FetchRemotesBackground).
 		if err := c.fetchFn(ctx, cwd); err != nil {
 			return false, err
 		}

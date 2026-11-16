@@ -568,6 +568,7 @@ export const GitCommit = dispatch('GitCommit');
 export const GetGitActionOutcome = dispatch('GetGitActionOutcome');
 export const GitPush = dispatch('GitPush');
 export const GitPull = dispatch('GitPull');
+export const GitFetchOrigin = dispatch('GitFetchOrigin');
 export const GitCheckout = dispatch('GitCheckout');
 export const GitCreateBranchFrom = dispatch('GitCreateBranchFrom');
 export const GitCreatePR = dispatch('GitCreatePR');

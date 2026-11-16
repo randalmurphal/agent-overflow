@@ -183,6 +183,16 @@ func (a *App) GitPull(ws WorkspaceRef, attemptID string) (gitops.GitActionResult
 	})
 }
 
+// GitFetchOrigin fetches origin into the workspace's repository and may ask
+// for credentials: the action behind GitStatus.RemoteSignInError. Like
+// GitMaybeFetchRemotes it moves only remote-tracking refs, so it takes no
+// workspace locks.
+//
+//ao:scope git:operate
+func (a *App) GitFetchOrigin(ctx context.Context, ws WorkspaceRef) (gitops.GitActionResult, error) {
+	return a.gitApplication().FetchOrigin(ctx, ws)
+}
+
 // GitCheckout switches the workspace to an existing branch, or to a tag
 // ("refs/tags/<name>") which leaves it detached there, and returns the
 // checkout's resulting state. Moving a detached HEAD away from commits no

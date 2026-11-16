@@ -300,6 +300,12 @@ func (h *harnessHost) CancelProviderLogins() {
 	}
 }
 
+func (h *harnessHost) RunBackgroundFetchPass(ctx context.Context) {
+	h.app.runBackgroundFetchPass(ctx)
+}
+
+func (h *harnessHost) ForgetGitFetches() { h.app.gitCore().ForgetFetches() }
+
 func (h *harnessHost) ResetSessionImporter() {
 	h.app.sessionImporter().Reset()
 }

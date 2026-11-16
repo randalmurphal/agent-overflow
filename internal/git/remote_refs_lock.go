@@ -18,22 +18,24 @@ import (
 var remoteRefsLocks = keyedlock.New()
 
 // lockRemoteRefs takes the repository's remote-refs lock when spec updates
-// remote-tracking refs and returns its release. A cwd git cannot resolve to
-// a common dir has no refs to share; the command itself reports that
-// failure.
-func (c *Core) lockRemoteRefs(spec commandSpec) (func(), error) {
+// remote-tracking refs and returns that repository's common dir with the
+// lock's release; the common dir is empty for any other command. A cwd git
+// cannot resolve to a common dir has no refs to share; the command itself
+// reports that failure.
+func (c *Core) lockRemoteRefs(spec commandSpec) (commonDir string, unlock func(), err error) {
 	if !spec.updatesRemoteRefs && (spec.binary != "git" || !isRemoteRefsCommand(spec.args)) {
-		return func() {}, nil
+		return "", func() {}, nil
 	}
-	commonDir, err := c.CommonDir(spec.cwd)
+	commonDir, err = c.CommonDir(spec.cwd)
 	if err != nil {
-		return func() {}, nil
+		return "", func() {}, nil
 	}
 	ctx := spec.ctx
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	return remoteRefsLocks.LockCtx(ctx, commonDir)
+	unlock, err = remoteRefsLocks.LockCtx(ctx, commonDir)
+	return commonDir, unlock, err
 }
 
 // isRemoteRefsCommand reports whether args run a git command that writes

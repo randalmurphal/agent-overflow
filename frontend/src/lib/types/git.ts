@@ -35,6 +35,12 @@ export interface GitStatus {
   behindCount: number;
   hasOriginRemote: boolean;
   /**
+   * Git's diagnosis when the app's last background fetch of origin failed
+   * because the remote wanted a login, so the counts above may be stale.
+   * `GitFetchOrigin` is the fetch that may ask for one.
+   */
+  remoteSignInError?: string;
+  /**
    * Canonical id of the origin remote's forge. Drives PR/MR label
    * adaptation and gates the "Create PR" action.
    * Values: "github" | "gitlab" | "" (unknown / no origin).

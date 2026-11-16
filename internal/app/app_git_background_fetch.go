@@ -13,7 +13,8 @@ func (a *App) stopBackgroundGitFetch() {
 	a.gitApplication().StopBackgroundFetch()
 }
 
-// runBackgroundFetchPass performs one pass for focused App integration tests.
+// runBackgroundFetchPass performs one pass for focused App integration tests
+// and for the harness, whose boot never starts the cadence.
 func (a *App) runBackgroundFetchPass(ctx context.Context) {
 	a.gitApplication().RunBackgroundFetchPass(ctx)
 }

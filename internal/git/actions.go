@@ -223,6 +223,8 @@ func (c *Core) PruneRemotes(cwd string) error {
 // older than 2× FetchStaleWindow so the map stays bounded by
 // recently-active repos rather than the lifetime total. The 2× floor
 // keeps a freshly-stamped sibling repo from being dropped mid-window.
+// A fetch that succeeded ends the repository's failure record
+// (fetch_failure.go).
 func (c *Core) stampFetchCache(key string) {
 	now := c.nowFn()
 	c.fetchCacheMu.Lock()
@@ -233,13 +235,17 @@ func (c *Core) stampFetchCache(key string) {
 			delete(c.fetchCache, k)
 		}
 	}
+	signInCleared := c.forgetFetchFailureLocked(key)
 	c.fetchCacheMu.Unlock()
+	if signInCleared {
+		c.notifyRemoteSignIn(key)
+	}
 }
 
-// InvalidateFetchCache drops the staleness clock for cwd's repo so the
-// next MaybeFetchRemotes / FetchRemotesBackground call refetches.
-// Callers that mutate remote-tracking refs out of band should use this
-// to keep the picker honest. Mirrors InvalidatePRCache /
+// InvalidateFetchCache drops the staleness clock and the failure record
+// for cwd's repo so the next MaybeFetchRemotes / FetchRemotesBackground
+// call refetches. Callers that mutate remote-tracking refs out of band
+// should use this to keep the picker honest. Mirrors InvalidatePRCache /
 // InvalidateForgeCache.
 func (c *Core) InvalidateFetchCache(cwd string) {
 	key, err := c.CommonDir(cwd)
@@ -249,6 +255,17 @@ func (c *Core) InvalidateFetchCache(cwd string) {
 	c.fetchCacheMu.Lock()
 	delete(c.fetchCache, key)
 	c.fetchCacheMu.Unlock()
+	c.forgetFetchFailure(key)
+}
+
+// ForgetFetches drops every repository's staleness clock and failure
+// record. For a harness reset, whose next fixture can reuse a path; it
+// tells no observer, since the repositories it forgets are gone.
+func (c *Core) ForgetFetches() {
+	c.fetchCacheMu.Lock()
+	defer c.fetchCacheMu.Unlock()
+	clear(c.fetchCache)
+	clear(c.fetchFailures)
 }
 
 // Checkout switches to an existing branch (CheckoutRef).
