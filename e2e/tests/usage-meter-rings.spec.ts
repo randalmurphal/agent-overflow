@@ -34,6 +34,8 @@ test('a weekly-only account shows one 7d meter, with a scoped weekly limit as it
     turns: [turn('weekly-only', [accountWide]), turn('weekly-and-scoped', [accountWide, scoped])],
     afterTurns: 'repeatLast',
   } });
+  // The reset left no reading behind, so every meter below comes from this test.
+  expect(await harness.rpc('GetRateLimitsSnapshots')).toEqual([]);
   const threadId = await seedAgentThread(harness, 'usage-meter-rings', 'Usage rings', 'codex');
   await harness.open(page);
   await page.getByTestId('thread-row').click();
@@ -42,10 +44,21 @@ test('a weekly-only account shows one 7d meter, with a scoped weekly limit as it
   await harness.rpc('SendMessage', threadId, 'go', null);
   await harness.waitForEvent('provider:turn_completed');
 
+  // A 5h meter that stays names the readings the backend holds, which tells
+  // a reading this test never sent from one the page kept.
+  const noFiveHourMeter = async () => {
+    try {
+      await expect(page.getByTestId('composer-rate-limit-5h')).toHaveCount(0);
+    } catch (error) {
+      const held = JSON.stringify(await harness.rpc('GetRateLimitsSnapshots'));
+      throw new Error(`a 5h meter is shown; the backend holds ${held}`, { cause: error });
+    }
+  };
+
   // Weekly only: no 5h meter, and the 7d meter is today's single ring.
   const weekly = page.getByTestId('composer-rate-limit-7d');
   await expect(weekly.getByRole('button')).toHaveAttribute('aria-label', '7-day limit: 40% used');
-  await expect(page.getByTestId('composer-rate-limit-5h')).toHaveCount(0);
+  await noFiveHourMeter();
   await expect(weekly.locator('[data-meter-arc="inner"]')).toHaveCount(0);
   await expect(weekly.locator('[data-meter-arc="main"]')).toHaveAttribute('stroke-width', '3.5');
   const singleBox = (await weekly.locator('svg').boundingBox())!;
@@ -66,7 +79,7 @@ test('a weekly-only account shows one 7d meter, with a scoped weekly limit as it
     inner: getComputedStyle(svg.querySelector('[data-meter-arc="inner"]')!).stroke,
   }));
   expect(strokes.inner).not.toBe(strokes.main);
-  await expect(page.getByTestId('composer-rate-limit-5h')).toHaveCount(0);
+  await noFiveHourMeter();
 
   // The meter keeps its footprint, and the painted label sits wholly inside
   // the inner ring's inner edge (radius 9 minus half its 2-unit stroke).
