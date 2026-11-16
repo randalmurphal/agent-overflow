@@ -28,6 +28,13 @@ import { isCompactLayout } from './layoutMode.svelte';
 import { errString } from '../utils/errors';
 import { createSequenceGate } from './snapshotStream';
 import { getTransportHelloFor } from './transportStatus.svelte';
+import {
+  browserPaneRectKey,
+  createBrowserPaneRectSender,
+  type BrowserPaneRectReport,
+} from './browserPaneRectSender';
+import { paneGeometryBridgeAvailable, postPaneGeometry } from '../native/paneGeometryBridge';
+import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
 
 // The browser pane's state store. The pane surface itself is an empty host
 // rect the platform positions a NATIVE browser view over (spec
@@ -115,6 +122,7 @@ const store = createEntityStore<BrowserCompanionView, void>({
     apply(emptyView(admitState(result.state) || !held ? result.state : held));
     return async () => {
       if (paneIds.get(key) === result.id) paneIds.delete(key);
+      forgetPaneMount(result.id);
       await BrowserCompanionPaneDetach(result.id);
     };
   },
@@ -129,33 +137,60 @@ export function browserPaneMountId(threadId: string): string | null {
   return paneIds.get(threadId) ?? null;
 }
 
+// The backend's answer when a rect names a mount it no longer has
+// (internal/browser SetPaneRect): a teardown race, which the next attach
+// re-reports.
+const MOUNT_GONE = 'pane mount not found';
+
+function threadForMount(mount: string): string | null {
+  for (const [threadId, id] of paneIds) {
+    if (id === mount) return threadId;
+  }
+  return null;
+}
+
+const rectSender = createBrowserPaneRectSender({
+  send: (mount, rect) => BrowserCompanionPaneRect(mount, new BrowserPaneRect(rect)),
+  isMountGone: (error) => errString(error).includes(MOUNT_GONE),
+  onFailure: (mount, error) => {
+    const threadId = threadForMount(mount);
+    if (threadId) noteBrowserActionError(threadId, `The browser view could not follow the pane: ${errString(error)}`);
+  },
+});
+
+// Per mount, the last report posted to the launcher and the sequence the
+// launcher orders them by (native/paneGeometryBridge.ts).
+const localReports = new Map<string, { key: string; seq: number }>();
+
 /**
  * Reports where the mounted pane's host rect sits, already coalesced to one
- * call per changed frame by the pane. A refusal is a teardown race (the mount
- * or its connection just died), and the next attach re-reports — so it is
- * dropped rather than surfaced.
+ * call per frame by the pane. The backend receives it in order through
+ * `rectSender`; a launcher that takes geometry directly also receives it at
+ * once, numbered per mount, and moves the view without the backend round
+ * trip.
  */
-export function reportBrowserPaneRect(
-  threadId: string,
-  rect: {
-    x: number;
-    y: number;
-    width: number;
-    height: number;
-    clipX: number;
-    clipY: number;
-    clipWidth: number;
-    clipHeight: number;
-    viewportWidth: number;
-    viewportHeight: number;
-    devicePixelRatio: number;
-    visible: boolean;
-    background: string;
-  },
-): void {
-  const id = paneIds.get(threadId);
-  if (!id) return;
-  void BrowserCompanionPaneRect(id, new BrowserPaneRect(rect)).catch(() => {});
+export function reportBrowserPaneRect(threadId: string, rect: BrowserPaneRectReport): void {
+  const mount = paneIds.get(threadId);
+  if (!mount) return;
+  rectSender.report(mount, rect);
+  const key = browserPaneRectKey(rect);
+  const local = localReports.get(mount) ?? { key: '', seq: 0 };
+  if (local.key === key || !paneGeometryBridgeAvailable()) return;
+  local.key = key;
+  local.seq += 1;
+  localReports.set(mount, local);
+  try {
+    postPaneGeometry({ mount, seq: local.seq, ...rect });
+  } catch (err) {
+    // The backend's report still places the view, a round trip later.
+    reportFrontendDiagnostic('Browser pane geometry post to the window host failed', errString(err));
+  }
+}
+
+/** Ends a mount's reports, local and to the backend. */
+function forgetPaneMount(mount: string): void {
+  rectSender.forget(mount);
+  localReports.delete(mount);
 }
 
 function sourcePaneIdForThread(threadId: string): string | null {
@@ -383,6 +418,8 @@ export function reconcileBrowserCompanionForPane(paneId: string, threadId: strin
 addPaneThreadMountedObserver(reconcileBrowserCompanionForPane);
 
 export function resetBrowserCompanionForTest(): void {
+  for (const mount of paneIds.values()) forgetPaneMount(mount);
+  for (const mount of [...localReports.keys()]) forgetPaneMount(mount);
   paneIds.clear();
   stateOrder.reset();
   liveStates.reset();

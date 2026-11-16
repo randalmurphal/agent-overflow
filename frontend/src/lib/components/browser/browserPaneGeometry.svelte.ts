@@ -6,7 +6,7 @@ import { getSidebarWidth, isSidebarCollapsed } from '../../stores/sidebarLayout.
 import { getAppliedTheme } from '../../theme/themeApply.svelte';
 
 // ─── Host-rect geometry ────────────────────────────────────────────────
-// One report per changed frame: every signal below only SCHEDULES, and the
+// At most one report per frame: every signal below only SCHEDULES, and the
 // flush reads geometry once. There is deliberately no standing rAF loop —
 // a per-frame callback would pin frame production at panel refresh.
 
@@ -30,7 +30,6 @@ export interface BrowserPaneGeometry {
  */
 export function createBrowserPaneGeometry(options: BrowserPaneGeometryOptions): BrowserPaneGeometry {
   let rectFrame = 0;
-  let lastSentKey = '';
   let bgRaw = '';
   let bgHex = '';
   let hostWidth = $state(0);
@@ -123,24 +122,16 @@ export function createBrowserPaneGeometry(options: BrowserPaneGeometryOptions): 
       visible,
       background: paneBackground(el),
     };
-    const key =
-      `${report.x},${report.y},${report.width},${report.height},` +
-      `${report.clipX},${report.clipY},${report.clipWidth},${report.clipHeight},` +
-      `${report.viewportWidth},${report.viewportHeight},${report.devicePixelRatio},` +
-      `${report.visible},${report.background}`;
-    if (key === lastSentKey) return;
-    lastSentKey = key;
+    // The store sends it in order and skips one the backend already has.
     reportBrowserPaneRect(threadId, report);
   }
 
-  // Leaving a thread drops its pending frame and its dedupe key, so the next
-  // thread's first report is always sent.
+  // Leaving a thread drops its pending frame.
   $effect(() => {
     if (!options.threadId()) return;
     return () => {
       if (rectFrame) cancelAnimationFrame(rectFrame);
       rectFrame = 0;
-      lastSentKey = '';
     };
   });
 
@@ -166,7 +157,7 @@ export function createBrowserPaneGeometry(options: BrowserPaneGeometryOptions): 
   // id re-sends the rect a too-early report dropped.
   $effect(() => {
     airspaceSurfaces();
-    if (options.attached()) lastSentKey = '';
+    options.attached();
     scheduleRect();
   });
 
@@ -175,7 +166,7 @@ export function createBrowserPaneGeometry(options: BrowserPaneGeometryOptions): 
   // resize or scroll event reports (live incident 2026-08-31: the native
   // view stayed planted until the next scroll). Pane widths and the sidebar
   // are the app's own movers, so reading them here re-measures on every
-  // frame of a drag. Over-firing is fine — flushRect dedupes.
+  // frame of a drag. Over-firing is fine: the store skips an unchanged rect.
   $effect(() => {
     for (const item of getPaneLayoutItems()) void item.widthPx;
     void getSidebarWidth();
