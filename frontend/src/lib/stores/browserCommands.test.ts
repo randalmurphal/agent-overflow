@@ -97,20 +97,16 @@ describe('browser commands', () => {
     ]);
   });
 
-  it('next and previous tab step through the strip and wrap', () => {
+  it('next and previous tab each send one relative step, also back to back with no state between', () => {
     focusPane('browser-main');
     runCommand('browser.nextTab', ctx());
-    expect(act).toHaveBeenLastCalledWith(THREAD, expect.objectContaining({ kind: 'activate', pageId: 'c' }));
-    pushState('c');
     runCommand('browser.nextTab', ctx());
-    expect(act).toHaveBeenLastCalledWith(THREAD, expect.objectContaining({ kind: 'activate', pageId: 'a' }));
-    pushState('a');
     runCommand('browser.prevTab', ctx());
-    expect(act).toHaveBeenLastCalledWith(THREAD, expect.objectContaining({ kind: 'activate', pageId: 'c' }));
-    act.mockClear();
-    pushState('a', ['a']);
-    runCommand('browser.nextTab', ctx());
-    expect(act).not.toHaveBeenCalled();
+    expect(act.mock.calls.map(([thread, action]) => [thread, action.kind, action.index, action.pageId])).toEqual([
+      [THREAD, 'step', 1, ''],
+      [THREAD, 'step', 1, ''],
+      [THREAD, 'step', -1, ''],
+    ]);
   });
 
   it('reload reloads the active tab', () => {
@@ -146,9 +142,9 @@ describe('browser commands', () => {
 
     focusPane('browser-main');
     expect(dispatchKey(key({ key: 'Tab', ctrlKey: true }), ctx(), { isMac: false })).toBe(true);
-    expect(act).toHaveBeenLastCalledWith(THREAD, expect.objectContaining({ kind: 'activate', pageId: 'c' }));
+    expect(act).toHaveBeenLastCalledWith(THREAD, expect.objectContaining({ kind: 'step', index: 1 }));
     expect(dispatchKey(key({ key: 'Tab', ctrlKey: true, shiftKey: true }), ctx(), { isMac: false })).toBe(true);
-    expect(act).toHaveBeenLastCalledWith(THREAD, expect.objectContaining({ kind: 'activate', pageId: 'a' }));
+    expect(act).toHaveBeenLastCalledWith(THREAD, expect.objectContaining({ kind: 'step', index: -1 }));
     expect(dispatchKey(key({ key: 'F5' }), ctx(), { isMac: false })).toBe(true);
     expect(act).toHaveBeenLastCalledWith(THREAD, expect.objectContaining({ kind: 'reload', pageId: 'b' }));
     expect(dispatchKey(key({ key: 'r', metaKey: true }), ctx(), { isMac: true })).toBe(true);
@@ -169,6 +165,6 @@ describe('browser commands', () => {
       window.removeEventListener('keydown', dispatcher);
     }
     expect(getFocusedPaneId()).toBe('browser-main');
-    expect(act).toHaveBeenLastCalledWith(THREAD, expect.objectContaining({ kind: 'activate', pageId: 'c' }));
+    expect(act).toHaveBeenLastCalledWith(THREAD, expect.objectContaining({ kind: 'step', index: 1 }));
   });
 });

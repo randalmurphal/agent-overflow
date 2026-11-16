@@ -44,19 +44,32 @@ func (m *Manager) SelectPage(ctx context.Context, access Access, pageID string) 
 // with no page yet (creating, restoring, suspended, failed) shows its state
 // until it has one. A live page counts as used.
 func (m *Manager) selectTab(access Access, pageID string) error {
-	m.mu.Lock()
-	var found *threadTab
-	tabs := m.companionTabsLocked(access.ThreadID)
-	for i := range tabs {
-		if tabs[i].id == pageID {
-			found = &tabs[i]
+	_, err := m.selectTabWhere(access, func(tabs []threadTab, _ string) int {
+		for i := range tabs {
+			if tabs[i].id == pageID {
+				return i
+			}
 		}
-	}
-	if found == nil {
-		m.mu.Unlock()
-		return errPageNotFound
-	}
+		return -1
+	})
+	return err
+}
+
+// selectTabWhere is selectTab of the tab pick chooses from the companion's
+// tabs in strip order and the active tab's id, under one hold of m.mu so the
+// choice and the selection see the same tabs. A pick of -1 is
+// errPageNotFound. It answers the selected id.
+func (m *Manager) selectTabWhere(access Access, pick func(tabs []threadTab, activePageID string) int) (string, error) {
+	m.mu.Lock()
+	tabs := m.companionTabsLocked(access.ThreadID)
 	info := m.sessionLocked(access.ThreadID)
+	at := pick(tabs, info.ActivePageID)
+	if at < 0 || at >= len(tabs) {
+		m.mu.Unlock()
+		return "", errPageNotFound
+	}
+	found := &tabs[at]
+	pageID := found.id
 	info.ActivePageID = pageID
 	info.UpdatedAt = time.Now()
 	m.sessions[access.ThreadID] = info
@@ -66,7 +79,7 @@ func (m *Manager) selectTab(access Access, pageID string) error {
 	}
 	m.emitThreadState(access.ThreadID)
 	m.syncPanePresentation(access.ThreadID)
-	return nil
+	return pageID, nil
 }
 
 func (m *Manager) LabelPage(ctx context.Context, access Access, pageID, label string) (PageInfo, error) {

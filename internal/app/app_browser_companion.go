@@ -18,8 +18,9 @@ type BrowserCompanionAction struct {
 	Kind    string `json:"kind"`
 	PageID  string `json:"pageId,omitempty"`
 	Address string `json:"address,omitempty"`
-	// Index is the target tab position for "move". Not omitempty: index 0
-	// (move to the front) is a real value.
+	// Index is the target tab position for "move" and the relative step for
+	// "step" (1 next, -1 previous, wrapping). Not omitempty: index 0 (move to
+	// the front) is a real value.
 	Index int `json:"index"`
 }
 
@@ -160,6 +161,8 @@ func (a *App) BrowserCompanionDo(ctx context.Context, threadID string, action Br
 		err = a.browser.manager.StopCompanionLoad(ctx, access, action.PageID)
 	case "activate":
 		err = a.browser.manager.ActivateCompanionPage(ctx, access, action.PageID)
+	case "step":
+		err = a.browser.manager.StepCompanionPage(ctx, access, action.Index)
 	case "move":
 		err = a.browser.manager.MoveCompanionPage(access, action.PageID, action.Index)
 	case "show":

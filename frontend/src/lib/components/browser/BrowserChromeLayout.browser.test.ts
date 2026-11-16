@@ -10,6 +10,7 @@ import BrowserTabStrip, { TAB_MAX_WIDTH, TAB_MIN_WIDTH } from './BrowserTabStrip
 import BrowserAddressBar from './BrowserAddressBar.svelte';
 import { raf } from '../../../test/helpers/browserFrames';
 import { rawProps } from '../../../test/helpers/rawProps.svelte';
+import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
 
 let host: HTMLDivElement | null = null;
 let app: ReturnType<typeof mount> | null = null;
@@ -159,33 +160,75 @@ describe('browser tab strip layout', () => {
 });
 
 describe('browser address row layout', () => {
+  afterEach(() => setCompactLayoutForTest(false));
+
+  const shown = (el: Element | null): el is HTMLElement => !!el && el.getClientRects().length > 0;
+
   for (const width of [320, 480, 800]) {
-    it(`fits a ${width}px pane with a usable address field`, async () => {
-      host = document.createElement('div');
-      host.style.cssText = `position:fixed;top:0;left:0;width:${width}px`;
-      document.body.append(host);
-      app = mount(BrowserAddressBar, {
-        target: host,
-        props: {
-          activePage: { id: 'a', url: 'file:///repo/report.html', title: 'Report', canGoBack: true, canGoForward: false } as never,
-          sizeLabel: '',
-          promotePaneId: 'browser-main',
-          onAct: async () => {},
-          onRevealPageFile: async () => {},
-          onOpenFile: () => {},
-          onLeave: () => {},
-        },
-      });
-      flushSync();
-      await raf();
-      const row = host.querySelector<HTMLElement>('[data-testid="browser-address-row"]')!;
-      const input = host.querySelector<HTMLElement>('input[aria-label="Address"]')!;
-      expect(row.scrollWidth).toBeLessThanOrEqual(row.clientWidth + 1);
-      expect(box(input).width).toBeGreaterThanOrEqual(width < 400 ? 60 : 200);
-      for (const button of row.querySelectorAll<HTMLElement>('button')) {
-        if (getComputedStyle(button).display === 'none' || button.closest('.hidden')) continue;
-        expect(box(button).right).toBeLessThanOrEqual(box(row).right + 0.5);
+    for (const compact of [false, true]) {
+      for (const sizeLabel of ['', '1280×720']) {
+        for (const localFile of [false, true]) {
+          const name = `${width}px${compact ? ' compact' : ''}${sizeLabel ? ' with the size label' : ''}${localFile ? ' on a local file' : ''}`;
+          it(`${name}: a usable address field and full-size buttons, the rest in More`, async () => {
+            setCompactLayoutForTest(compact);
+            host = document.createElement('div');
+            host.style.cssText = `position:fixed;top:0;left:0;width:${width}px`;
+            document.body.append(host);
+            app = mount(BrowserAddressBar, {
+              target: host,
+              props: {
+                activePage: {
+                  id: 'a',
+                  url: localFile ? 'file:///repo/report.html' : 'https://example.test/',
+                  title: 'Report',
+                  canGoBack: true,
+                  canGoForward: false,
+                } as never,
+                sizeLabel,
+                promotePaneId: 'browser-main',
+                onAct: async () => {},
+                onRevealPageFile: async () => {},
+                onOpenFile: () => {},
+                onLeave: () => {},
+              },
+            });
+            flushSync();
+            await raf();
+            const row = host.querySelector<HTMLElement>('[data-testid="browser-address-row"]')!;
+            const input = host.querySelector<HTMLElement>('input[aria-label="Address"]')!;
+            expect(row.scrollWidth).toBeLessThanOrEqual(row.clientWidth + 1);
+            expect(box(input).width).toBeGreaterThanOrEqual(width < 480 ? 96 : width < 800 ? 150 : 200);
+            const target = compact ? 36 : 28;
+            const buttons = [...row.querySelectorAll<HTMLElement>('button')].filter(shown);
+            expect(buttons.length).toBeGreaterThanOrEqual(4);
+            for (const button of buttons) {
+              expect(box(button).width, button.getAttribute('aria-label') ?? '').toBeCloseTo(target, 0);
+              expect(box(button).right).toBeLessThanOrEqual(box(row).right + 0.5);
+            }
+
+            const more = host.querySelector<HTMLElement>('[data-testid="browser-more"]');
+            const label = host.querySelector('[data-testid="browser-pane-size"]');
+            if (width >= (compact ? 576 : 448)) {
+              expect(shown(more)).toBe(false);
+              expect(shown(host.querySelector('[data-testid="browser-open-file"]'))).toBe(true);
+              expect(shown(label)).toBe(!!sizeLabel);
+              expect(buttons.some((b) => b.getAttribute('aria-label') === 'Show in folder')).toBe(localFile);
+              return;
+            }
+            expect(shown(more)).toBe(true);
+            expect(shown(host.querySelector('[data-testid="browser-open-file"]'))).toBe(false);
+            expect(shown(label)).toBe(false);
+            more!.click();
+            flushSync();
+            await raf();
+            const items = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].map((el) => el.textContent?.trim() ?? '');
+            expect(items.some((text) => text.includes('Open file'))).toBe(true);
+            expect(items.some((text) => text.includes('Open devtools'))).toBe(true);
+            expect(items.some((text) => text.includes('Show in folder'))).toBe(localFile);
+            expect(items.some((text) => text.includes(`Laid out at ${sizeLabel}`))).toBe(!!sizeLabel);
+          });
+        }
       }
-    });
+    }
   }
 });

@@ -157,14 +157,19 @@ behave as a desktop browser's:
   alert when it failed. Close shows on the active tab and on hover, always
   under compact; a middle click closes. A double-click on the strip's empty
   space maximizes or restores the pane, as a pane title does.
+- The address row's buttons never shrink and the address keeps at least
+  6rem. Below a 28rem row (36rem under compact) the page's size label, open
+  file, show in folder and devtools move into a More menu.
 - Focusing the address selects it; a second click places the caret. Enter
   (plain or with Shift) navigates; Escape puts the page's address back and
   moves focus to the page area. DOM focus only: the native page takes
   keyboard focus from a click, as § Keyboard says. Switching tabs replaces
   an edit with the new tab's address.
 - While the page loads, reload is stop. `StopCompanionLoad` takes no page
-  lock, so it stops an address-bar navigation in flight, and that
-  navigation answers without an error. Every engine stops a load (CDP
+  lock, so it stops an address-bar navigation in flight. Once the engine
+  has stopped, the navigation it interrupted (not one queued behind it)
+  answers its abort (CDP `net::ERR_ABORTED`) without an error; any other
+  failure stands. Every engine stops a load (CDP
   `Page.stopLoading`, `webkit_web_view_stop_loading`, WKWebView
   `stopLoading`).
 - The address takes a backend path, a workspace-relative file, a `file:`
@@ -184,10 +189,17 @@ behave as a desktop browser's:
 - Chords, live while the browser pane is the focused pane
   (`browserPaneFocused`): new tab `mod+t`, focus the address `mod+l`, reload
   `mod+r` and `f5`, next and previous tab `ctrl+tab` and `ctrl+shift+tab`,
-  beside close tab `mod+w`. The app window reloads the app on `mod+r` before
-  the SPA sees it (`internal/uikeys`), so `mod+r` reaches the browser only
-  from the page, through the accelerator replay; `f5` is the reload from the
-  pane's chrome. A bare `f5` is never claimed from the page.
+  beside close tab `mod+w`. A bare `f5` is never claimed from the page.
+  Next and previous tab send a relative `step` that the Manager applies to
+  its own order and selection (`StepCompanionPage`), so presses faster than
+  the state push each move one tab.
+- The desktop and Windows launcher windows bind `mod+r` to reloading the app
+  before the SPA sees the key. The SPA reports its browser pane focus over
+  the webview's raw message channel, and while it is focused the window
+  hands `mod+r` to the SPA, which runs `browser.reload` or hands it back
+  (`internal/uikeys/pagechords.go`, `frontend/src/lib/native/shellChords.svelte.ts`).
+  `mod+shift+r` always reloads the app. The `--connect` window hosts no
+  native page and keeps the plain binding.
 
 ## Keyboard
 

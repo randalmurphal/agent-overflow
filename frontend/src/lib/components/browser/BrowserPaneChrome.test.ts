@@ -113,6 +113,37 @@ describe('<BrowserPane> chrome', () => {
     expect((await view.findByRole('alert')).textContent).toContain('outside the workspace');
   });
 
+  it('offers only the results of the query on screen while a new one is pending', async () => {
+    let releaseCss: (() => void) | null = null;
+    setBindingMock('SearchWorkspaceFiles', vi.fn(async (_ws: unknown, text: string) => {
+      if (text === 'css') await new Promise<void>((resolve) => (releaseCss = resolve));
+      return { root: '/repo', truncated: false, files: [{ path: `old/${text}.file`, kind: 'file' }] };
+    }));
+    const act = setBindingMock('BrowserCompanionDo', vi.fn(async () => state([page('a')])));
+    const view = mount([page('a')]);
+    await ready(view);
+    await fireEvent.click(view.getByRole('button', { name: 'Open file' }));
+    const field = await view.findByTestId('browser-file-search');
+    await fireEvent.input(field, { target: { value: 'html' } });
+    await vi.advanceTimersByTimeAsync(BROWSER_FILE_SEARCH_DEBOUNCE_MS);
+    await waitFor(() => expect(view.getAllByTestId('browser-file-result')).toHaveLength(1));
+
+    // The query changes; its search is still running.
+    await fireEvent.input(field, { target: { value: 'css' } });
+    expect(view.queryAllByTestId('browser-file-result')).toHaveLength(0);
+    await fireEvent.keyDown(field, { key: 'Enter' });
+    await vi.advanceTimersByTimeAsync(BROWSER_FILE_SEARCH_DEBOUNCE_MS);
+    expect(view.queryAllByTestId('browser-file-result')).toHaveLength(0);
+    await fireEvent.keyDown(field, { key: 'Enter' });
+    expect(act).not.toHaveBeenCalledWith(THREAD, expect.objectContaining({ kind: 'navigate' }));
+
+    releaseCss!();
+    await waitFor(() => expect(view.getByTestId('browser-file-result').textContent).toContain('old/css.file'));
+    await fireEvent.keyDown(field, { key: 'Enter' });
+    await waitFor(() => expect(act).toHaveBeenCalledWith(THREAD, expect.objectContaining({ kind: 'navigate', address: '/repo/old/css.file' })));
+    expect(act).not.toHaveBeenCalledWith(THREAD, expect.objectContaining({ address: '/repo/old/html.file' }));
+  });
+
   it('shows a failed search in the picker', async () => {
     setBindingMock('SearchWorkspaceFiles', vi.fn(async () => {
       throw new Error('workspace is gone');

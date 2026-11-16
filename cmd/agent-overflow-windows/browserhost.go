@@ -34,6 +34,7 @@ import (
 	"strings"
 
 	"agent-overflow/internal/appidentity"
+	"agent-overflow/internal/uikeys"
 	"agent-overflow/internal/webview2host"
 	"agent-overflow/internal/wsldistro"
 	"agent-overflow/internal/wsllauncher"
@@ -175,7 +176,21 @@ func (a *launcherApp) ensureBrowserHost(bs *wsllauncher.Bootstrap) (*webview2hos
 	return host, nil
 }
 
-// handlePaneGeometryMessage is Options.RawMessageHandler. The SPA posts each
+// handleRawMessage is Options.RawMessageHandler: the SPA's browser pane
+// focus reports (uikeys.PageChords) and its pane geometry.
+func (a *launcherApp) handleRawMessage(window application.Window, message string, origin *application.OriginInfo) {
+	if !strings.HasPrefix(message, uikeys.MessagePrefix) {
+		a.handlePaneGeometryMessage(window, message, origin)
+		return
+	}
+	if a.chords == nil || !a.trustedPaneGeometrySource(window, origin) {
+		log.Printf("launcher: ignore a chord message from an untrusted document")
+		return
+	}
+	a.chords.HandleMessage(window, message)
+}
+
+// handlePaneGeometryMessage takes the geometry messages. The SPA posts each
 // browser pane geometry report here as well as to the backend, so a pane
 // that scrolls or slides moves its page on this process's UI thread without
 // the round trip through WSL (webview2host/geometry.go). Wails calls it on a

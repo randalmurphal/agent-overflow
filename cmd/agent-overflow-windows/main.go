@@ -563,6 +563,9 @@ type launcherApp struct {
 	// to the launcher directly (handlePaneGeometryMessage). It exists before
 	// the browser host and is safe from any goroutine.
 	paneGeometry *webview2host.GeometryMailbox
+	// chords routes Ctrl+R to the SPA while its browser pane is focused
+	// (uikeys.PageChords), reported over the same raw message channel.
+	chords *uikeys.PageChords
 
 	// flushGeometry persists the window placement immediately. Set on the
 	// ApplicationStarted handler (with window) and read on shutdown as a
@@ -1387,6 +1390,7 @@ func buildApp(distros []wsllauncher.Distro, initialURL, chosen string, transient
 		notificationActivations: wsllauncher.NewNotificationActivationQueue(),
 		disableGPUVsync:         disableGPUVsync,
 		paneGeometry:            webview2host.NewGeometryMailbox(),
+		chords:                  uikeys.NewPageChords(),
 	}
 	if disableGPUVsync {
 		log.Printf("webview2: GPU vsync disabled by Settings > Performance (%s on the app window and the browser pane)", disableGPUVsyncArg)
@@ -1444,7 +1448,7 @@ func buildApp(distros []wsllauncher.Distro, initialURL, chosen string, transient
 		Windows: webviewBrowserOptions(mode, profileDir, diagnosticsDir, !applier, disableGPUVsync),
 		// The SPA's browser pane geometry, posted straight to this process
 		// (browserhost.go). Wails keeps "wails:" messages for itself.
-		RawMessageHandler: a.handlePaneGeometryMessage,
+		RawMessageHandler: a.handleRawMessage,
 		// Cancel app shutdown until the user explicitly closes the
 		// window. Without this, a transient WSL hiccup during launch
 		// would crash us silently.
@@ -1496,7 +1500,7 @@ func buildApp(distros []wsllauncher.Distro, initialURL, chosen string, transient
 	// the same .exe (only this ldflags string differs) and Wails
 	// compiles WebView2 devtools in unconditionally — the binding is
 	// the only thing standing between prod users and an inspector.
-	keyBindings := uikeys.BrowserWithReload(a.currentBackendURL)
+	keyBindings := a.chords.Bindings(uikeys.BrowserWithReload(a.currentBackendURL))
 	if launcherMode == "dev" {
 		keyBindings = uikeys.WithDevTools(keyBindings)
 	}
@@ -1543,6 +1547,9 @@ func buildApp(distros []wsllauncher.Distro, initialURL, chosen string, transient
 		// a.pageTicket refuses anyway until a backend exists to mint one.
 		uiwindow.DeliverPageTicket(w, a.pageTicket)
 		advertisePaneGeometry(w)
+		w.OnWindowEvent(events.Common.WindowRuntimeReady, func(*application.WindowEvent) {
+			a.chords.DocumentLoaded(w)
+		})
 		a.mu.Lock()
 		a.window = w
 		a.flushGeometry = flush

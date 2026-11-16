@@ -842,8 +842,9 @@ export class BrowserCompanionAction {
     "address"?: string;
 
     /**
-     * Index is the target tab position for "move". Not omitempty: index 0
-     * (move to the front) is a real value.
+     * Index is the target tab position for "move" and the relative step for
+     * "step" (1 next, -1 previous, wrapping). Not omitempty: index 0 (move to
+     * the front) is a real value.
      */
     "index": number;
 

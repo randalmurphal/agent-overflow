@@ -7,8 +7,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/chromedp/chromedp"
 )
 
 func TestFileAddressClassifiesWindowsAndFileURLForms(t *testing.T) {
@@ -213,7 +216,7 @@ func TestStopCompanionLoadStopsAHeldNavigationWithoutAnError(t *testing.T) {
 		case <-ctx.Done():
 			return ctx.Err()
 		}
-		return errors.New("net::ERR_ABORTED")
+		return fmt.Errorf("%w: net::ERR_ABORTED", errNavigationAborted)
 	}
 	fake.mu.Unlock()
 
@@ -249,6 +252,141 @@ func TestStopCompanionLoadStopsAHeldNavigationWithoutAnError(t *testing.T) {
 	fake.mu.Unlock()
 	if _, err := m.NavigateCompanion(t.Context(), access, pageID, "https://example.test/broken"); err == nil || !strings.Contains(err.Error(), "ERR_NAME_NOT_RESOLVED") {
 		t.Fatalf("an unstopped failure answered %v", err)
+	}
+}
+
+// stoppableFake makes the fixture page's navigation to /held wait until a
+// stop reaches the engine and then fail with heldErr, fails /queued with
+// queuedErr, and runs stopResult as the engine's stop. It returns a channel
+// closed once /held is inside the engine.
+func stoppableFake(t *testing.T, p *managedPage, heldErr, queuedErr, stopResult error) <-chan struct{} {
+	t.Helper()
+	fake := p.driver.(*fakePage)
+	entered := make(chan struct{})
+	abort := make(chan struct{})
+	var once sync.Once
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	fake.navigateHook = func(ctx context.Context, rawURL string) error {
+		switch {
+		case strings.HasSuffix(rawURL, "/held"):
+			close(entered)
+			select {
+			case <-abort:
+				return heldErr
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		case strings.HasSuffix(rawURL, "/queued"):
+			return queuedErr
+		}
+		return nil
+	}
+	fake.stopHook = func() error {
+		once.Do(func() { close(abort) })
+		return stopResult
+	}
+	return entered
+}
+
+func navigateAsync(m *Manager, access Access, pageID, address string) <-chan error {
+	done := make(chan error, 1)
+	go func() {
+		_, err := m.NavigateCompanion(context.Background(), access, pageID, address)
+		done <- err
+	}()
+	return done
+}
+
+func awaitResult(t *testing.T, done <-chan error) error {
+	t.Helper()
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out")
+		return nil
+	}
+}
+
+// A stop is the executing navigation's: one queued behind it keeps its own
+// failure, a real one or an abort the stop did not cause.
+func TestStopCompanionLoadLeavesAQueuedNavigationsFailureStanding(t *testing.T) {
+	for _, queuedErr := range []error{
+		errors.New("net::ERR_NAME_NOT_RESOLVED"),
+		fmt.Errorf("%w: net::ERR_ABORTED by the page", errNavigationAborted),
+	} {
+		t.Run(queuedErr.Error(), func(t *testing.T) {
+			m, access, pageID, _ := newNavigateFixture(t, false)
+			p, _, err := m.lookupOwnedPage(access, pageID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			entered := stoppableFake(t, p, fmt.Errorf("%w: net::ERR_ABORTED", errNavigationAborted), queuedErr, nil)
+			held := navigateAsync(m, access, pageID, "https://example.test/held")
+			<-entered
+			queued := navigateAsync(m, access, pageID, "https://example.test/queued")
+			// Let the queued navigation reach the page lock the held one owns.
+			time.Sleep(50 * time.Millisecond)
+			if err := m.StopCompanionLoad(t.Context(), access, pageID); err != nil {
+				t.Fatalf("stop = %v", err)
+			}
+			if err := awaitResult(t, held); err != nil {
+				t.Fatalf("the stopped navigation answered %v", err)
+			}
+			if err := awaitResult(t, queued); err == nil || err.Error() != queuedErr.Error() {
+				t.Fatalf("the queued navigation answered %v, want %v", err, queuedErr)
+			}
+		})
+	}
+}
+
+// A stop the engine refused stopped nothing, so the abort stands.
+func TestStopCompanionLoadThatFailsLeavesTheAbortStanding(t *testing.T) {
+	m, access, pageID, _ := newNavigateFixture(t, false)
+	p, _, err := m.lookupOwnedPage(access, pageID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entered := stoppableFake(t, p, fmt.Errorf("%w: net::ERR_ABORTED", errNavigationAborted), nil, errors.New("stop refused"))
+	held := navigateAsync(m, access, pageID, "https://example.test/held")
+	<-entered
+	if err := m.StopCompanionLoad(t.Context(), access, pageID); err == nil {
+		t.Fatal("a refused stop answered no error")
+	}
+	if err := awaitResult(t, held); !errors.Is(err, errNavigationAborted) {
+		t.Fatalf("the navigation answered %v, want its abort", err)
+	}
+}
+
+// Only the stop's own abort is suppressed: the stopped navigation's other
+// failures stand.
+func TestStopCompanionLoadSuppressesOnlyTheAbort(t *testing.T) {
+	m, access, pageID, _ := newNavigateFixture(t, false)
+	p, _, err := m.lookupOwnedPage(access, pageID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entered := stoppableFake(t, p, errors.New("net::ERR_CONNECTION_RESET"), nil, nil)
+	held := navigateAsync(m, access, pageID, "https://example.test/held")
+	<-entered
+	if err := m.StopCompanionLoad(t.Context(), access, pageID); err != nil {
+		t.Fatalf("stop = %v", err)
+	}
+	if err := awaitResult(t, held); err == nil || !strings.Contains(err.Error(), "ERR_CONNECTION_RESET") {
+		t.Fatalf("the navigation answered %v, want its failure", err)
+	}
+}
+
+func TestCDPNavigateErrorMarksOnlyTheAbort(t *testing.T) {
+	if err := cdpNavigateError(&chromedp.LoadError{ErrorText: "net::ERR_ABORTED"}); !errors.Is(err, errNavigationAborted) {
+		t.Fatalf("ERR_ABORTED = %v, want errNavigationAborted", err)
+	}
+	if err := cdpNavigateError(&chromedp.LoadError{ErrorText: "net::ERR_NAME_NOT_RESOLVED"}); errors.Is(err, errNavigationAborted) {
+		t.Fatalf("ERR_NAME_NOT_RESOLVED = %v, marked as an abort", err)
+	}
+	if err := cdpNavigateError(context.DeadlineExceeded); errors.Is(err, errNavigationAborted) || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("deadline = %v", err)
 	}
 }
 

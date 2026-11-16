@@ -787,6 +787,43 @@ func (m *Manager) ActivateCompanionPage(ctx context.Context, access Access, page
 	if err := m.selectTab(access, pageID); err != nil {
 		return err
 	}
+	return m.restoreSelectedTab(ctx, access, pageID)
+}
+
+// StepCompanionPage is the user's next/previous tab: it selects the tab step
+// places from the active one in strip order, wrapping, as one change to the
+// Manager's own order and selection, so presses in a row each move one tab
+// whatever the client last saw. With no active tab, a forward step selects
+// the first tab and a backward one the last. Then it is ActivateCompanionPage.
+func (m *Manager) StepCompanionPage(ctx context.Context, access Access, step int) error {
+	if step == 0 {
+		return fmt.Errorf("browser: tab step must not be 0")
+	}
+	pageID, err := m.selectTabWhere(access, func(tabs []threadTab, active string) int {
+		n := len(tabs)
+		if n == 0 {
+			return -1
+		}
+		at := -1
+		for i := range tabs {
+			if tabs[i].id == active {
+				at = i
+			}
+		}
+		if at < 0 && step < 0 {
+			at = 0
+		}
+		return ((at+step)%n + n) % n
+	})
+	if err != nil {
+		return err
+	}
+	return m.restoreSelectedTab(ctx, access, pageID)
+}
+
+// restoreSelectedTab restores the selected tab when it is suspended and
+// answers once it is; a tab closed meanwhile is no error.
+func (m *Manager) restoreSelectedTab(ctx context.Context, access Access, pageID string) error {
 	m.mu.Lock()
 	_, suspended := m.suspended[pageID]
 	m.mu.Unlock()
