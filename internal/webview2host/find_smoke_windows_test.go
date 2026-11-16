@@ -72,7 +72,7 @@ func TestFindSmokeOpensTheEnginesFindBar(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		host.Close()
-		ui.do(host.releaseEnvironment)
+		ui.do(host.env.release)
 	})
 
 	host.Apply(Directive{Op: OpCreate, PageID: "page-1", ProfileID: "smoke"})

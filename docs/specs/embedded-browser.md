@@ -101,7 +101,9 @@ The launcher creates a second WebView2 environment ("pane
 environment") with its own user-data folder, entirely separate from
 the SPA webview's environment. Browser pages are one controller per
 tab (spike-verified preferred over `Target.createTarget`: a
-controller is a positionable window, a bare CDP target is not).
+controller is a positionable window, a bare CDP target is not). The
+first create starts the environment; the backend's idle engine stop
+releases it (see Pane directives), and the next create starts it again.
 
 Spike-verified recipes, all load-bearing:
 
@@ -189,6 +191,13 @@ launcher → backend acks/events (controller created, engine process
 died) ride the same connection's RPC path, like `updater:install`
 already does. The launcher applies one page's directives in the order
 they arrived.
+
+When the backend stops its engine, two minutes after the last profile
+closes, it sends `release`. The launcher releases the pane environment
+and its browser process tree unless a page or a create still uses it,
+and never builds its host for one. A launcher that predates `release`
+logs and drops it as an unknown op and keeps the environment, as a
+backend that predates it never sends one.
 
 A pane's position does not need the backend: the SPA and the
 controllers share the launcher's UI thread. The SPA posts each geometry

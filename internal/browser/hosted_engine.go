@@ -272,8 +272,15 @@ func (e *hostedEngine) Interrupt() {
 	}
 }
 
+// Stop drops the CDP connection and asks the launcher to release its pane
+// environment, the WebView2 browser process tree. The Manager stops the
+// engine a grace period after its last profile closes (idleBrowserDelay), and
+// that one timer is the idle rule; the launcher only refuses a release while
+// a page or a create still uses the environment. An engine that never started
+// sends nothing, so a release never makes the launcher build its host.
 func (e *hostedEngine) Stop() {
 	e.mu.Lock()
+	wasStarted := e.started
 	browserCancel, allocCancel := e.browserCancel, e.allocCancel
 	e.browserCtx, e.browserCancel, e.allocCancel = nil, nil, nil
 	e.started = false
@@ -291,6 +298,9 @@ func (e *hostedEngine) Stop() {
 	}
 	if allocCancel != nil {
 		allocCancel()
+	}
+	if wasStarted {
+		e.dispatch(webview2host.Directive{Op: webview2host.OpRelease})
 	}
 }
 
