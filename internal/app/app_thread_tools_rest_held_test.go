@@ -221,3 +221,56 @@ func TestNoHeldSpawnSettlesBeforeTheBootRecoveredItsWorkers(t *testing.T) {
 		t.Fatalf("settled %+v; want the worker's last message", row)
 	}
 }
+
+// A held spawn whose worker's turn ended asking an async question does not
+// settle at the boot before the question is routed again: the boot's
+// passes wait for its recovery, and the recovery reads the stored question,
+// not the routes the reconciliation fills later. Once the question is
+// dismissed the worker is at rest and the spawn settles finished.
+func TestNoHeldSpawnSettlesBeforeTheBootRestoredItsWorkersQuestion(t *testing.T) {
+	t.Parallel()
+	f := newRequestFixture(t)
+	f.watchAgentRows()
+	f.app.configureTriageQueueCallbacks()
+	f.holdCallerSession()
+	workerGate := filepath.Join(t.TempDir(), "worker")
+	installMockClaudeTurns(t, f.app, [][]string{gatedTurn(workerGate, "Asked which board.")})
+	ack := f.spawnWorker(t, "run the board")
+	f.awaitTurnRunning(t, ack.Token)
+	if _, err := f.app.store.RecordAsyncQuestions(store.Item{ID: "question:ask", ThreadID: ack.ThreadID, Kind: "assistant_text", Role: "assistant",
+		Status: "completed", Meta: `{"delivery":"async","questions":[{"title":"Which board?"}]}`}); err != nil {
+		t.Fatal(err)
+	}
+	f.app.noteWorkerWaiting(ack.ThreadID)
+	release(t, workerGate)
+	f.awaitRestHold(t, ack)
+
+	after := f.restart(t)
+	after.watchAgentRows()
+	after.app.sweepThreadRequestsAtBoot()
+	if !after.app.restHeld(ack.ThreadID, ack.Token) {
+		t.Fatal("the boot did not hold the request again")
+	}
+	after.app.settleRestedReceipts()
+	if row := after.request(t, ack.Token); row.State != store.ThreadRequestRunning {
+		t.Fatalf("request after a pass before the recovery %+v; want it running", row)
+	}
+	// The recovery runs before the questions are routed again
+	// (seedAsyncQuestionPrompts): only the stored question says it asks.
+	after.app.recoverRestAtBoot()
+	after.app.threadRequestsWG.Wait()
+	if row := after.request(t, ack.Token); row.State != store.ThreadRequestRunning {
+		t.Fatalf("request after the recovery %+v; want it running while its worker asks", row)
+	}
+	if rest, err := after.app.threadRest(ack.ThreadID); err != nil || rest.unrest != workerBlocked {
+		t.Fatalf("the worker's rest %+v, %v; want it blocked on its question", rest, err)
+	}
+	if _, err := after.app.store.DismissUnansweredAsyncQuestions(ack.ThreadID); err != nil {
+		t.Fatal(err)
+	}
+	after.app.noteWorkerWaiting(ack.ThreadID)
+	row := after.awaitRequestState(t, ack.Token, store.ThreadRequestFinished)
+	if string(row.Answer) != "Asked which board." {
+		t.Fatalf("settled %+v; want the worker's last message", row)
+	}
+}

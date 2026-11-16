@@ -501,9 +501,9 @@ func TestAStopPausesTheRunsThatReportToTheThread(t *testing.T) {
 
 // A running workflow run that reports to a worker keeps it from rest: its
 // rest reads waiting on the run by its goal, and so does its spawn's row,
-// framed as the run is bound. The run pausing for a person brings it to
-// rest; the run resumed keeps it from rest again, framed by the run's state
-// change alone.
+// framed as the run is bound. The run paused for a person, and the turn its
+// notice started stopped, it is at rest; the run resumed keeps it from rest
+// again, framed by the run's state change alone.
 func TestARunningWorkflowRunKeepsTheThreadItReportsToFromRest(t *testing.T) {
 	t.Parallel()
 	f := newRestRunFixture(t)
@@ -527,19 +527,19 @@ func TestARunningWorkflowRunKeepsTheThreadItReportsToFromRest(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitForWorkflowItem(t, f.app, item.ID, engine.StateNeedsHuman, engine.ReasonPaused)
-	if rest, err := f.app.threadRest(f.worker.ID); err != nil || rest.unrest != "" {
-		t.Fatalf("rest with the run paused = %+v, %v; want at rest", rest, err)
-	}
-	waitUntil(t, 10*time.Second, func() bool { return row().Worker == "" })
 	// The pause's notice starts a turn of the worker; with its session
-	// stopped it is at rest again. Resumed, the run keeps it from rest: no
-	// message reaches the worker for that, so only the run's state change
-	// brings its row back to waiting.
+	// stopped, the run paused, it is at rest.
 	f.settle()
 	if err := f.app.StopSession(f.worker.ID); err != nil {
 		t.Fatalf("StopSession: %v", err)
 	}
 	waitUntil(t, 10*time.Second, func() bool { return row().Worker == "" })
+	if rest, err := f.app.threadRest(f.worker.ID); err != nil || rest.unrest != "" {
+		t.Fatalf("rest with the run paused = %+v, %v; want at rest", rest, err)
+	}
+	// Resumed, the run keeps it from rest: no message reaches the worker
+	// for that, so only the run's state change brings its row back to
+	// waiting.
 	if err := f.app.WorkflowResumeItem(context.Background(), item.ID, "", false); err != nil {
 		t.Fatal(err)
 	}
