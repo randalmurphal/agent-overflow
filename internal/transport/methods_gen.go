@@ -161,7 +161,6 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "ForkThreadFromMessage", ID: 3977213964, Scope: "threads:operate", Route: "thread"},                                // main.App.ForkThreadFromMessage
 	{Name: "GenerateCommitMessage", ID: 1669373286, Scope: "git:operate", Route: "workspace"},                                 // main.App.GenerateCommitMessage
 	{Name: "GetAccessOverview", ID: 1559710962, Scope: "access:admin", Route: "home"},                                         // main.App.GetAccessOverview
-	{Name: "GetAssistantDependents", ID: 3538357009, Scope: "threads:read", Route: "thread"},                                  // main.App.GetAssistantDependents
 	{Name: "GetAttachmentThumbnail", ID: 3414107538, Scope: "threads:read", Route: "thread"},                                  // main.App.GetAttachmentThumbnail
 	{Name: "GetClaudeSkills", ID: 1573335127, Scope: "threads:operate", Route: "selected"},                                    // main.App.GetClaudeSkills
 	{Name: "GetClaudeSlashCommands", ID: 2854892544, Scope: "threads:read", Route: "selected"},                                // main.App.GetClaudeSlashCommands
@@ -171,6 +170,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "GetComputerRoutes", ID: 873893084, Scope: "session", Route: "selected"},                                           // main.App.GetComputerRoutes
 	{Name: "GetContextSettings", ID: 3416004963, Scope: "settings:read", Route: "home"},                                       // main.App.GetContextSettings
 	{Name: "GetConversationMutationState", ID: 3307838728, Scope: "threads:operate", Route: "thread"},                         // main.App.GetConversationMutationState
+	{Name: "GetDeleteDependents", ID: 1944158988, Scope: "threads:read", Route: "thread"},                                     // main.App.GetDeleteDependents
 	{Name: "GetDevServers", ID: 139818238, Scope: "preview:open", Route: "selected"},                                          // main.App.GetDevServers
 	{Name: "GetDeviceName", ID: 1370118726, Scope: "session", Route: "home"},                                                  // main.App.GetDeviceName
 	{Name: "GetDiffContextLines", ID: 1590634674, Scope: "files:read", Route: "workspace"},                                    // main.App.GetDiffContextLines
