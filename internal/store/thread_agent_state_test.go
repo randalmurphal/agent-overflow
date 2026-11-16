@@ -23,7 +23,6 @@ func TestThreadAgentStateIsTheOpenStateASpawnOfItReads(t *testing.T) {
 		seedAgentRequest(t, s, token, chain[i], ThreadRequestSpawn, id, false, int64(110+i))
 		settleAgentRequest(t, s, token, int64(210+i))
 	}
-	const window = 10_000
 	check := func(what string, waiting, live []string, open, rows bool) {
 		t.Helper()
 		checkBoth(t, s, what, waiting, live, open, open, rows)
@@ -56,21 +55,19 @@ func TestThreadAgentStateIsTheOpenStateASpawnOfItReads(t *testing.T) {
 func checkBoth(t *testing.T, s *Store, what string, waiting, live []string, stateOpen, targetOpen, rows bool) {
 	t.Helper()
 	const window = 10_000
-	{
-		state, err := s.ReadThreadAgentState(ThreadAgentStateRead{Thread: "root", Waiting: waiting, Live: live, SettledSince: window})
-		if err != nil {
-			t.Fatal(err)
-		}
-		listed, _, err := s.ListThreadAgentTree(ThreadAgentTreeRead{
-			Root: "lead", Waiting: waiting, Live: live, SettledSince: window, Depth: 4, Limit: 8, Tokens: []string{"to-root"},
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		target := len(listed) == 1 && listed[0].TargetOpen
-		if state.OpenBelow != stateOpen || target != targetOpen || state.Rows != rows {
-			t.Fatalf("%s: state %+v, the spawn's target open %v; want open %v and %v, rows %v", what, state, target, stateOpen, targetOpen, rows)
-		}
+	state, err := s.ReadThreadAgentState(ThreadAgentStateRead{Thread: "root", Waiting: waiting, Live: live, SettledSince: window})
+	if err != nil {
+		t.Fatal(err)
+	}
+	listed, _, err := s.ListThreadAgentTree(ThreadAgentTreeRead{
+		Root: "lead", Waiting: waiting, Live: live, SettledSince: window, Depth: 4, Limit: 8, Tokens: []string{"to-root"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := len(listed) == 1 && listed[0].TargetOpen
+	if state.OpenBelow != stateOpen || target != targetOpen || state.Rows != rows {
+		t.Fatalf("%s: state %+v, the spawn's target open %v; want open %v and %v, rows %v", what, state, target, stateOpen, targetOpen, rows)
 	}
 }
 
