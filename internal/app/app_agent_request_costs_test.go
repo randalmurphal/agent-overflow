@@ -123,7 +123,7 @@ func TestALocalSendAndItsSettlementTakeOneTransactionEach(t *testing.T) {
 	}
 
 	queued := f.app.triage.QueuedFlushItems(h.thread.ID)
-	f.app.dispatchFlush(h.thread.ID, queued)
+	dispatchThroughWorker(f.app, h.thread.ID, queued)
 	head, ok := f.app.triage.PeekPendingSendHeadForTest(h.thread.ID)
 	if !ok {
 		t.Fatal("no pending send")

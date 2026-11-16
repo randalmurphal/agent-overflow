@@ -1006,9 +1006,9 @@ func (a *App) dropScratchThreadForRequest(token, threadID string) {
 // whether a caller hears that a turn ended without an answer, and a
 // thread_reply is the answer. The one caller it is not owed to is a thread
 // that cannot take it: one that is gone, that this computer may no longer
-// run, or whose delete committed (store.CheckThreadDeliverable). A caller a
-// delete only claimed is owed it: the fence refuses the delivery, and the
-// wake's retry brings it once the delete is refused. An archived caller is refused by the statement that stores the reply
+// run, or whose delete committed (store.CheckThreadDeliverable); one a
+// delete only claimed takes it into its queue. An archived caller is
+// refused by the statement that stores the reply
 // (store.ThreadRequestSettlement.ArmWake), where an archive cannot slip in
 // between the check and the write. The reply stays on the request either
 // way, where `thread_status` returns it.

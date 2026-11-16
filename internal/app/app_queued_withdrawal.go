@@ -238,7 +238,7 @@ func (a *App) withdrawQueuedMessage(ctx context.Context, threadID, sendID string
 // An error names each message left queued: a later start would deliver
 // it, so the caller reports it. One left by shutdown is the next boot's,
 // which discards it the same way (discardAgentWakeAtBoot). A message the
-// dispatch already took is the session's.
+// dispatch committed to writing is the session's.
 func (a *App) withdrawQueuedMessages(threadID string, match func(sendID string) bool, by queuedWithdrawal) error {
 	rows, err := a.store.ListFlushQueueItems(threadID)
 	if err != nil {

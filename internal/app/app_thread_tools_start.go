@@ -878,6 +878,7 @@ func (t threadToolsApp) requeueRequest(token, targetThreadID string, message use
 	_, err = t.app.registerQueueItem(targetThreadID, message.Text(), SendMessageOptions{SendID: threadRequestSendID(token)}, injectedQueueOptions{
 		preserveDraft:     true,
 		held:              true,
+		appWritten:        true,
 		heldWhileArchived: true,
 		origin:            agentmeta.OriginAgentThread,
 		originThread:      origin,

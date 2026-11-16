@@ -253,6 +253,7 @@ func (a *App) requeueAssistantMessage(threadID, sendID, body string) {
 	if _, err := a.registerQueueItem(threadID, message.Text(), SendMessageOptions{SendID: sendID}, injectedQueueOptions{
 		preserveDraft:     true,
 		held:              true,
+		appWritten:        true,
 		heldWhileArchived: true,
 		origin:            message.Origin(),
 		originWake:        message.Attribution().Wake,

@@ -412,7 +412,6 @@ func TestQueuedWakePromotesOnlyWhileItsClaimIsCurrent(t *testing.T) {
 	if err := f.store.UpdateWorkItemOriginThread(item.ID, thread.ID); err != nil {
 		t.Fatal(err)
 	}
-	f.service.deps.WakeDelivery.HasLiveSession = func(string) bool { return true }
 	var onDurable func()
 	f.service.deps.WakeDelivery.QueueMessage = func(threadID, _ string, composed wake.Message, settle func()) error {
 		message := composed.String()

@@ -424,6 +424,15 @@ type threadIdentity struct {
 	// that lifetime. Guarded by r.mu, exactly as that map was.
 	claimedFlushItems []QueuedFlushItem
 
+	// dispatchGeneration is the app's dispatch generation for the thread
+	// (FlushDispatchGeneration). On the identity so a cleanup keeps it, and
+	// under r.mu so tryFlushQueue stamps a handoff with the generation it
+	// was made in.
+	dispatchGeneration uint64
+	// flushDroppedBelow is one past the last generation whose queued work
+	// was thrown away, 0 when none was (AdvanceFlushDispatchGeneration).
+	flushDroppedBelow uint64
+
 	// epoch counts MarkThreadActive calls. An asynchronous teardown
 	// captures the epoch before unregistering a dead session and hands it
 	// to CleanupThreadIfEpoch, which no-ops when the epoch has moved —

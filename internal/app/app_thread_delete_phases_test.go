@@ -25,6 +25,7 @@ import (
 	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/threadtools"
 	"agent-overflow/internal/transport"
+	workflowwake "agent-overflow/internal/workflow/wake"
 )
 
 // The phases of a family delete (app_thread_delete.go): a claimed thread is
@@ -33,8 +34,10 @@ import (
 // what it must for the next attempt.
 
 // Every door that runs, moves or changes a thread refuses one a delete
-// claimed, with the claim kept, and works again once the claim is released.
-// Transfers are fenced in the store (TestADeleteClaimsItsFamilyInOneTransaction).
+// claimed, with the claim kept, and works again once the claim is released;
+// what the app writes for it queues, and the queue waits for the decision
+// (TestEveryAppMessageDoorQueuesForAClaimedThread). Transfers are fenced in
+// the store (TestADeleteClaimsItsFamilyInOneTransaction).
 func TestEveryDoorRefusesAClaimedThread(t *testing.T) {
 	t.Parallel()
 	type door struct {
@@ -73,16 +76,11 @@ func TestEveryDoorRefusesAClaimedThread(t *testing.T) {
 			})
 			return err
 		}},
-		"wake delivery": {func(t *testing.T, f *requestFixture) string {
-			id := f.plainThread(t).ID
-			armLoop(t, f.app, id)
-			return id
-		}, func(t *testing.T, f *requestFixture, id string, nth int) error {
-			wakes, err := f.app.store.ListAgentWakes(id)
-			if err != nil || len(wakes) != 1 {
-				t.Fatalf("wakes = %+v, %v", wakes, err)
-			}
-			return f.app.deliverAgentWake(t.Context(), wakes[0], int64(nth+1), testAgentWake(t, wakes[0], "fired"))
+		// An outside script's `thread send` is a send to the thread, not a
+		// message the app writes.
+		"outside send": {plain, func(t *testing.T, f *requestFixture, id string, _ int) error {
+			_, err := f.app.SendExternalThreadMessage(t.Context(), id, "the deploy finished")
+			return err
 		}},
 		"fork": {func(t *testing.T, f *requestFixture) string {
 			return f.forkableThread(t, "sess-door-fork").ID
@@ -128,18 +126,14 @@ func TestEveryDoorRefusesAClaimedThread(t *testing.T) {
 			f := newRequestFixture(t)
 			f.mockClaude(t, "one", "two", "three")
 			id := door.seed(t, f)
-			if _, err := f.app.store.ClaimDeleteFamily("door-op", []string{id}); err != nil {
-				t.Fatal(err)
-			}
+			claimForTest(t, f.app, "door-op", []string{id})
 			if err := door.open(t, f, id, 0); !errors.Is(err, store.ErrThreadDeleting) {
 				t.Fatalf("%s on a claimed thread = %v, want store.ErrThreadDeleting", name, err)
 			}
 			if err := f.app.store.CheckThreadNotDeleting(id); !errors.Is(err, store.ErrThreadDeleting) {
 				t.Fatalf("the claim after a refused %s = %v, want it kept", name, err)
 			}
-			if err := f.app.store.ReleaseDeleteClaim("door-op"); err != nil {
-				t.Fatal(err)
-			}
+			releaseForTest(t, f.app, "door-op")
 			err := door.open(t, f, id, 1)
 			// Claude takes no steer: past the fence, the provider refuses it.
 			if name == "steer" && err != nil && strings.Contains(err.Error(), `not supported for provider "claude"`) {
@@ -148,6 +142,86 @@ func TestEveryDoorRefusesAClaimedThread(t *testing.T) {
 			if err != nil {
 				t.Fatalf("%s once the claim was released: %v", name, err)
 			}
+		})
+	}
+}
+
+// Every door through which the app writes a message for a thread queues
+// it on one a delete claimed and starts nothing: a stopped thread's start
+// and a live session's dispatch wait for the decision. The claim's release
+// delivers what each queued, with nothing else run.
+func TestEveryAppMessageDoorQueuesForAClaimedThread(t *testing.T) {
+	t.Parallel()
+	type door struct {
+		// live gives the thread a session before the claim.
+		live bool
+		// seed prepares the thread before the claim.
+		seed func(t *testing.T, a *App, threadID string)
+		open func(t *testing.T, f *requestFixture, threadID string) error
+	}
+	wake := func(t *testing.T, f *requestFixture, id string) error {
+		wakes, err := f.app.store.ListAgentWakes(id)
+		if err != nil || len(wakes) != 1 {
+			t.Fatalf("wakes = %+v, %v", wakes, err)
+		}
+		return f.app.deliverAgentWake(t.Context(), wakes[0], 1, testAgentWake(t, wakes[0], "fired"))
+	}
+	workflowWake := func(t *testing.T, f *requestFixture, id string) error {
+		return f.app.queueWorkflowWake(id, "release", workflowwake.Message{Notice: workflowwake.DataNotice, Data: "Phase build finished."}, nil)
+	}
+	doors := map[string]door{
+		"workflow wake":                   {open: workflowWake},
+		"workflow wake to a live session": {live: true, open: workflowWake},
+		"wake delivery":                   {seed: armLoop, open: wake},
+		"wake delivery to a live session": {live: true, seed: armLoop, open: wake},
+		"reminder": {open: func(t *testing.T, f *requestFixture, id string) error {
+			insertTestReminder(t, f.app, "door-reminder", id, "check the deploy", time.Now().Add(-time.Second).UnixMilli())
+			f.app.fireDueThreadReminders(time.Now())
+			f.app.threadRequestsWG.Wait()
+			return nil
+		}},
+		"stopped worker notice": {open: func(t *testing.T, f *requestFixture, id string) error {
+			worker := f.plainThread(t)
+			var result ThreadAgentStop
+			f.app.tellSpawnerOfUserStop(store.ThreadRequest{Token: "door-stop", CallerThreadID: id, TargetThreadID: worker.ID, Kind: store.ThreadRequestSpawn},
+				"worker-stopped:door-stop", &result)
+			if len(result.Failures) != 0 {
+				return errors.New(strings.Join(result.Failures, "; "))
+			}
+			return nil
+		}},
+		"usage-limit continue": {open: func(t *testing.T, f *requestFixture, id string) error {
+			return f.app.continueAfterUsageLimit(t.Context(), id, func() bool { return true })
+		}},
+	}
+	for name, door := range doors {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			f := newRequestFixture(t)
+			f.app.configureTriageQueueCallbacks()
+			f.mockClaude(t, "one", "two", "three")
+			id := f.plainThread(t).ID
+			if door.seed != nil {
+				door.seed(t, f.app, id)
+			}
+			if door.live {
+				if err := f.app.StartSession(id); err != nil {
+					t.Fatal(err)
+				}
+			}
+			claimForTest(t, f.app, "door-op", []string{id})
+			if err := door.open(t, f, id); err != nil {
+				t.Fatalf("%s on a claimed thread = %v, want it queued", name, err)
+			}
+			waitAtGates(t, f.app, 1)
+			if rows := durableQueueRows(t, f.app, id); len(rows) != 1 {
+				t.Fatalf("queued on a claimed thread = %+v, want the one message", rows)
+			}
+			if _, live := f.app.sessionManager().get(id); live != door.live {
+				t.Fatalf("session live = %v on a claimed thread, want %v", live, door.live)
+			}
+			releaseForTest(t, f.app, "door-op")
+			waitUntil(t, 20*time.Second, func() bool { return len(durableQueueRows(t, f.app, id)) == 0 })
 		})
 	}
 }

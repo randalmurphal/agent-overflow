@@ -177,7 +177,7 @@ func TestFlushDispatchHoldsTurnAllocationThroughRegistration(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		app.dispatchFlush(thread.ID, []triage.QueuedFlushItem{{ID: "queue:alloc", Message: "queued", Payload: json.RawMessage(`{}`)}})
+		dispatchThroughWorker(app, thread.ID, []triage.QueuedFlushItem{{ID: "queue:alloc", Message: "queued", Payload: json.RawMessage(`{}`)}})
 	}()
 	time.Sleep(100 * time.Millisecond)
 	if app.triage.HasPendingSendForThread(thread.ID) {

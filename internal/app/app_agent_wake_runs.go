@@ -173,9 +173,18 @@ func (a *App) recoverAgentWakesAtBoot() {
 // fireAgentWake claims one interval row and runs it off the sweep's
 // goroutine: a watch script can take minutes, and a loop's delivery takes the
 // thread's lock and can start its session. It reports whether the run
-// started: false is a lost claim, a failed one (logged) or a shutdown. The
-// claim and the run's registration are one step under the wake lifecycle
-// lock, so a cancel never lands between them.
+// started: false is a lost claim, a failed one (logged), a run of the row
+// still registered, or a shutdown. The claim and the run's registration are
+// one step under the wake lifecycle lock, so a cancel never lands between
+// them.
+//
+// Registration is checked before the claim rather than undone after it:
+// runs are added only under this lock, so a row with no run registered at
+// the check still has none at the registration, and only a shutdown can
+// refuse it, which leaves the row `running` for the next boot. A previous
+// run unregisters in the step that arms its row (retireAgentWakeRun), so a
+// row the sweep read armed has no run; the check keeps any other path from
+// leaving a row `running` with no run to end it.
 func (a *App) fireAgentWake(row store.AgentWake, now time.Time, fire agentWakeFire) bool {
 	_, next := agentWakeElapsed(row.NextAt, now.UnixMilli(), row.IntervalSeconds*1000)
 	if next <= now.UnixMilli() {
@@ -183,6 +192,9 @@ func (a *App) fireAgentWake(row store.AgentWake, now time.Time, fire agentWakeFi
 	}
 	a.agentWakes.lifecycle.Lock()
 	defer a.agentWakes.lifecycle.Unlock()
+	if !a.agentWakeRunRegistrableLocked(row.ID) {
+		return false
+	}
 	claimedRow, claimed, err := a.store.ClaimAgentWake(row, now.UnixMilli(), next, fire.missed)
 	if err != nil {
 		logThreadRequestSweep("claim "+row.Kind+" "+row.ID, err)
@@ -196,7 +208,7 @@ func (a *App) fireAgentWake(row store.AgentWake, now time.Time, fire agentWakeFi
 	if a.agentWakeClaimedForTest != nil {
 		a.agentWakeClaimedForTest(row)
 	}
-	// False when shutting down: the row stays `running`, and the next
+	// False only when shutting down: the row stays `running`, and the next
 	// boot records the cut and runs it again.
 	return a.registerAgentWakeRunLocked(row, func(ctx context.Context, run *agentWakeRun) {
 		select {
@@ -242,7 +254,7 @@ func (a *App) runAgentWakeFire(ctx context.Context, run *agentWakeRun, row store
 		}
 		a.noteAgentWakeStderr(run, row, result.stderr)
 		if outcome, wakes := result.outcome(agentWatchTimeout(row)); !wakes {
-			a.retryHeldAgentWake(row)
+			a.retryHeldAgentWake(ctx, row)
 			a.finishAgentWakeFire(run, row, outcome, "", fire.missed, store.AgentWakeNoWake)
 			return
 		}
@@ -272,20 +284,22 @@ func (a *App) settleAgentWakeDelivery(run *agentWakeRun, row store.AgentWake, fi
 		// the next one that reaches the queue says so.
 		a.finishAgentWakeFire(run, row, agentWakeOutcomeSkipped, kept, fire.missed+1, store.AgentWakeLost)
 	case run.wasStopped():
-	case a.lifeCtx().Err() != nil, errors.Is(err, store.ErrThreadDeleteClaimed):
+		// A delivery a cancel cut short is no failure to log. Only an early
+		// exit: a stopped run has lost its row, so retirement writes
+		// nothing for it anyway (retireAgentWakeRun).
+	case a.lifeCtx().Err() != nil:
 		// The output never reached the queue, so the run is treated as not
-		// run: due again at its own fire, which the next boot replays, or,
-		// for a thread a delete claimed, the sweep once a refused delete
-		// releases it (DueAgentWakes).
-		var err error
-		a.rearmAfterAgentWakeRun(row.ID, run, func() {
-			_, err = a.store.ReleaseUndeliveredAgentWake(row.ID, agentWakeOutcomeNotDelivered, kept, fire.at)
-		})
-		if err != nil {
-			logThreadRequestSweep("release undelivered "+row.Kind+" "+row.ID, err)
-		} else {
+		// run: due again at its own fire, which the next boot replays. A
+		// watch's run is not repeated by its replay, which runs the script
+		// again: its output stays on the row, and the outcome is what makes
+		// the replay's wake say so.
+		a.retireAgentWakeRun(run, row, func() {
+			if _, err := a.store.ReleaseUndeliveredAgentWake(row.ID, agentWakeOutcomeNotDelivered, kept, fire.at); err != nil {
+				logThreadRequestSweep("release undelivered "+row.Kind+" "+row.ID, err)
+				return
+			}
 			a.emitAgentWakeChanged(row.ThreadID, row.ID)
-		}
+		})
 	default:
 		log.Printf("agent wakes: %s %q on %s: %v", row.Kind, row.Label, row.ThreadID, err)
 		a.finishAgentWakeFire(run, row, agentWakeOutcomeNotDelivered+": "+err.Error(), kept, fire.missed, store.AgentWakeLost)
@@ -295,42 +309,46 @@ func (a *App) settleAgentWakeDelivery(run *agentWakeRun, row store.AgentWake, fi
 func (a *App) finishAgentWakeFire(
 	run *agentWakeRun, row store.AgentWake, outcome, output string, missed int64, carry store.AgentWakeCarry,
 ) {
-	if run.wasStopped() {
-		return
-	}
-	var finished store.AgentWake
-	var applied bool
-	var err error
-	a.rearmAfterAgentWakeRun(row.ID, run, func() {
-		finished, applied, err = a.store.FinishAgentWake(row.ID, outcome, output, missed, carry)
+	a.retireAgentWakeRun(run, row, func() {
+		if finished, applied, err := a.store.FinishAgentWake(row.ID, outcome, output, missed, carry); err != nil {
+			logThreadRequestSweep("finish "+row.Kind+" "+row.ID, err)
+		} else if applied {
+			a.emitAgentWakeRow(row.ThreadID, finished)
+		} else {
+			a.emitAgentWakeChanged(row.ThreadID, row.ID)
+		}
 	})
-	if err != nil {
-		logThreadRequestSweep("finish "+row.Kind+" "+row.ID, err)
-	} else if applied {
-		a.emitAgentWakeRow(row.ThreadID, finished)
-	} else {
-		a.emitAgentWakeChanged(row.ThreadID, row.ID)
-	}
-	// The row is armed again with its next fire, which may be sooner than
-	// the sweep's sleep.
-	a.nudgeThreadRequestSweep()
 }
 
-// rearmAfterAgentWakeRun runs arm, the write that ends an interval run by
-// arming its row again, and ends the run's registration in the same step
-// under the wake lifecycle lock. A fire's claim and registration are one
-// step under that lock too (fireAgentWake), so a claim of the armed row
-// never finds this run still registered: its registration would fail and
-// leave the row claimed `running` with nothing running it.
-func (a *App) rearmAfterAgentWakeRun(wakeID string, run *agentWakeRun, arm func()) {
-	a.agentWakes.lifecycle.Lock()
-	defer a.agentWakes.lifecycle.Unlock()
-	arm()
-	a.agentWakes.mu.Lock()
-	if a.agentWakes.runs[wakeID] == run {
-		delete(a.agentWakes.runs, wakeID)
+// retireAgentWakeRun ends an interval run and publishes the row it leaves
+// behind as one step under the wake lifecycle lock, the lock a fire claims
+// and registers under (fireAgentWake) and a cancel stops a run under
+// (cancelAgentWake): the run is unregistered, then write puts the row back
+// to armed. A pass that reads the row armed therefore finds no run of it
+// registered and can start the next one. Only a run still registered for
+// the row writes: one a cancel or a stop took out has lost the row, which a
+// later registration and fire may have made another run's, and writes
+// nothing. Every write that ends a run goes through here: a finish
+// (FinishAgentWake) and a shutdown's release (ReleaseUndeliveredAgentWake).
+//
+// The sweep is nudged once the lock is released: the row's next fire may
+// already be due (a run that outlived its interval), and a pass that read
+// the row while it was running sleeps as if it had none.
+func (a *App) retireAgentWakeRun(run *agentWakeRun, row store.AgentWake, write func()) {
+	if hook := a.agentWakeRetiringForTest; hook != nil {
+		hook(row, false)
 	}
-	a.agentWakes.mu.Unlock()
+	a.agentWakes.lifecycle.Lock()
+	if !a.unregisterAgentWakeRun(row.ID, run) {
+		a.agentWakes.lifecycle.Unlock()
+		return
+	}
+	write()
+	if hook := a.agentWakeRetiringForTest; hook != nil {
+		hook(row, true)
+	}
+	a.agentWakes.lifecycle.Unlock()
+	a.nudgeThreadRequestSweep()
 }
 
 // agentWatchResult is what one interval watch run came to.
@@ -599,9 +617,7 @@ func (a *App) runAgentWatchProcess(ctx context.Context, run *agentWakeRun, row s
 			a.noteAgentWakeStderr(run, row, taken)
 			a.noteAgentWakeOutcome(run, row.ID, agentWakeOutcomeDelivered, store.AgentWakeCarried)
 			return true
-		case errors.Is(err, store.ErrAgentWakeStillQueued), errors.Is(err, store.ErrThreadDeleteClaimed), ctx.Err() != nil:
-			// Held: a wake still queued, or a delete deciding whether the
-			// thread stays.
+		case errors.Is(err, store.ErrAgentWakeStillQueued), ctx.Err() != nil:
 			stderr.restore(taken)
 			return false
 		default:
@@ -713,15 +729,29 @@ func (a *App) startAgentWakeRun(row store.AgentWake, body func(ctx context.Conte
 	return a.registerAgentWakeRunLocked(row, body)
 }
 
+// agentWakeRunRegistrableLocked reports whether a run of the row could be
+// registered now: the app is not shutting down and no run of the row is
+// registered. The caller holds the wake lifecycle lock.
+func (a *App) agentWakeRunRegistrableLocked(wakeID string) bool {
+	a.agentWakes.mu.Lock()
+	defer a.agentWakes.mu.Unlock()
+	return a.agentWakeRunRegistrableMuLocked(wakeID)
+}
+
+func (a *App) agentWakeRunRegistrableMuLocked(wakeID string) bool {
+	if a.shuttingDown.Load() || a.lifeCtx().Err() != nil {
+		return false
+	}
+	_, running := a.agentWakes.runs[wakeID]
+	return !running
+}
+
 // registerAgentWakeRunLocked is startAgentWakeRun for a caller that holds
 // the wake lifecycle lock.
 func (a *App) registerAgentWakeRunLocked(row store.AgentWake, body func(ctx context.Context, run *agentWakeRun)) bool {
 	a.agentWakes.mu.Lock()
 	defer a.agentWakes.mu.Unlock()
-	if a.shuttingDown.Load() || a.lifeCtx().Err() != nil {
-		return false
-	}
-	if _, running := a.agentWakes.runs[row.ID]; running {
+	if !a.agentWakeRunRegistrableMuLocked(row.ID) {
 		return false
 	}
 	if a.agentWakes.runs == nil {
@@ -742,13 +772,22 @@ func (a *App) registerAgentWakeRunLocked(row store.AgentWake, body func(ctx cont
 }
 
 func (a *App) endAgentWakeRun(wakeID string, run *agentWakeRun) {
-	a.agentWakes.mu.Lock()
-	if a.agentWakes.runs[wakeID] == run {
-		delete(a.agentWakes.runs, wakeID)
-	}
-	a.agentWakes.mu.Unlock()
+	a.unregisterAgentWakeRun(wakeID, run)
 	run.cancel()
 	close(run.done)
+}
+
+// unregisterAgentWakeRun takes run out of the registry if it is still the
+// row's, and reports whether it was: a stop or a retirement may already have
+// taken it, and a later run may hold the row's place.
+func (a *App) unregisterAgentWakeRun(wakeID string, run *agentWakeRun) bool {
+	a.agentWakes.mu.Lock()
+	defer a.agentWakes.mu.Unlock()
+	if a.agentWakes.runs[wakeID] != run {
+		return false
+	}
+	delete(a.agentWakes.runs, wakeID)
+	return true
 }
 
 // stopAgentWakeRun stops the run of one row, if any, without waiting.

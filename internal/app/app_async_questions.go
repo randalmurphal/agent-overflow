@@ -59,7 +59,9 @@ func (a *App) queueAsyncAnswers(threadID, sendID string, answers []store.AsyncQu
 		if thread.Provider != "codex" {
 			return "", false, fmt.Errorf("async answers require a Codex thread")
 		}
-		if err := a.store.CheckThreadExecutionAccess(thread); err != nil {
+		// A delete's claim is the queue write's to decide: it takes an
+		// agent's answers and refuses the person's (registerQueueItem).
+		if err := a.store.CheckThreadDeliverable(thread); err != nil {
 			return "", false, err
 		}
 		body, already, err := a.store.AsyncAnswerMessage(threadID, sendID, answers)

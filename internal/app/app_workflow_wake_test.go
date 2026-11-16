@@ -70,9 +70,9 @@ func (a *App) sweepWorkflowUsageAttention() {
 	a.surfaceReclaimedWorkflowUsageAttention(a.reclaimWorkflowUsageAttention())
 }
 
-// wakeHarness wires the two seams a wake crosses — the ordinary send and the
-// flush queue — so a test can assert which one a delivery took without a
-// provider process.
+// wakeHarness wires the seams a wake crosses — an idle thread's session
+// start and the flush queue — so a test can assert which one a delivery took
+// without a provider process.
 type wakeHarness struct {
 	app   *App
 	mu    sync.Mutex
@@ -97,12 +97,34 @@ func newWakeHarness(t *testing.T) *wakeHarness {
 		h.sends = append(h.sends, content)
 		return nil
 	}
-	app.triage.SetFlushDispatcher(func(_ string, items []triage.QueuedFlushItem) {
+	// An idle thread's wake starts its session, and that start is the
+	// provider taking the wake at once: what it flushes is a send, settled
+	// as the dispatch settles it. A live session's flush stops at the
+	// dispatcher.
+	started := map[string]bool{}
+	app.startSessionFn = func(threadID string) error {
 		h.mu.Lock()
-		defer h.mu.Unlock()
+		started[threadID] = true
+		h.mu.Unlock()
+		app.triage.FlushQueuedItems(threadID)
+		return nil
+	}
+	app.triage.SetFlushDispatcher(func(threadID string, items []triage.QueuedFlushItem) {
+		h.mu.Lock()
+		idle := started[threadID]
 		for _, item := range items {
+			if idle {
+				h.sends = append(h.sends, item.Message)
+				continue
+			}
 			h.queued = append(h.queued, item.Message)
 			h.queuedItems = append(h.queuedItems, item)
+		}
+		h.mu.Unlock()
+		if idle {
+			for _, item := range items {
+				item.Settlement.Settle("")
+			}
 		}
 	})
 	app.testEmitHook = func(name string, data any) {
@@ -125,8 +147,12 @@ func (h *wakeHarness) snapshot() (sends, queued, events, errorTexts []string) {
 }
 
 // drain waits for the app's wake worker, which runs off the engine's emit
-// goroutine and therefore is not finished when the transition returns.
-func (h *wakeHarness) drain() { h.app.workflowApplication().WaitWake() }
+// goroutine and therefore is not finished when the transition returns, and
+// for the session starts its wakes made.
+func (h *wakeHarness) drain() {
+	h.app.workflowApplication().WaitWake()
+	h.app.waitAgentNoticeWork()
+}
 
 // dispatchQueued completes the queued messages the way the real dispatch worker
 // does once it has written them to the provider: it runs each item's
@@ -233,7 +259,7 @@ func TestWorkflowWakeDeliversToAnIdleBoundThread(t *testing.T) {
 
 	sends, queued, _, _ := h.snapshot()
 	if len(sends) != 1 || len(queued) != 0 {
-		t.Fatalf("idle delivery took sends=%d queued=%d, want one ordinary send", len(sends), len(queued))
+		t.Fatalf("idle delivery took sends=%d queued=%d, want one sent by the session it started", len(sends), len(queued))
 	}
 	for _, want := range []string{`Run "wake-done"`, "is done", `Phase "verify"`, "nothing is waiting on a reply"} {
 		if !strings.Contains(sends[0], want) {

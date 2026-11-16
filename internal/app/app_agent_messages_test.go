@@ -296,7 +296,7 @@ func TestFlushAcknowledgementClassifiesTheJoinedRow(t *testing.T) {
 					Payload: flushQueuePayloadJSON(t, payload), EnqueuedAt: now + int64(1+i),
 				})
 			}
-			app.dispatchFlush(thread.ID, items)
+			dispatchThroughWorker(app, thread.ID, items)
 
 			var acks []QueueFlushedItem
 			for _, call := range rec.snapshot() {

@@ -118,7 +118,7 @@ func TestDispatchFlush_Claude_FoldsCLIMergeAcrossDrains(t *testing.T) {
 	// TWO drains, one message each: the join at dispatch does not apply, so
 	// each message reaches the CLI as its own envelope under its own uuid.
 	for i, message := range messages {
-		app.dispatchFlush(thread.ID, []triage.QueuedFlushItem{{
+		dispatchThroughWorker(app, thread.ID, []triage.QueuedFlushItem{{
 			ID:      fmt.Sprintf("queue:%d", i),
 			Message: message,
 			Payload: flushQueuePayloadJSON(t, flushQueuePayload{

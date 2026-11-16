@@ -112,10 +112,14 @@ func (s *Store) BeginThreadDelete(id string) error {
 //
 //  1. Claim (ClaimDeleteFamily): one transaction reads the family
 //     (ListDeleteFamily) and writes the operation's id into each row's
-//     delete_claim. A claimed row is still listed everywhere, but it runs
-//     nothing and moves nowhere (CheckThreadNotDeleting): no send, session
-//     start, spawn, fork, handoff, transfer, archive, placement or group
-//     change is admitted on it.
+//     delete_claim. A claimed row is still listed everywhere, takes what
+//     the app queues for it and starts nothing: a queued message starts
+//     nothing by itself, so the app's queue writes and withdrawals pass a
+//     claim (CheckThreadDeliverable), and every door that starts or moves
+//     something refuses it (CheckThreadNotDeleting,
+//     CheckThreadExecutionAccess): no session start, dispatch of its queue,
+//     send, spawn, fork, handoff, transfer, archive, placement or group
+//     change.
 //  2. Verify, in the app, writes nothing; a refusal releases every claim
 //     in one transaction (ReleaseDeleteClaim).
 //  3. Commit (CommitDeleteClaim): one transaction sets deleting on every
@@ -136,9 +140,9 @@ func (s *Store) BeginThreadDelete(id string) error {
 var ErrThreadDeleting = errors.New("store: this thread is being deleted")
 
 // ErrThreadDeleteClaimed is ErrThreadDeleting for a thread a delete claimed
-// and has not committed: the delete may still be refused, and the thread
-// then takes what it refused now. A delivery it refuses is deferred, not
-// lost.
+// and has not committed: the delete may still be refused, so a start it
+// turns away that nobody asked for in the moment is "not now", never a
+// failure, and waits for the decision.
 var ErrThreadDeleteClaimed error = deleteClaimedRefusal{}
 
 type deleteClaimedRefusal struct{}
@@ -175,9 +179,8 @@ func deleteRefusal(threadID string, state ThreadDeleteState) error {
 // CheckThreadDeliverable refuses a thread that will never take a message
 // again: one gone to every operation (CheckThreadDeleteAccess: a holder, a
 // thread given to another computer) or one whose delete committed. A claim
-// passes: a delivery is owed to a claimed thread, the fence refuses the
-// delivery attempt, and the delivery's retry brings it once the delete is
-// refused.
+// passes: a claimed thread takes what the app queues for it, which starts
+// nothing until the claim is released.
 func (s *Store) CheckThreadDeliverable(thread Thread) error {
 	if err := s.CheckThreadDeleteAccess(thread); err != nil {
 		return err
@@ -201,10 +204,11 @@ func (e *DeleteClaimedError) Error() string {
 func (e *DeleteClaimedError) Is(target error) bool { return target == ErrThreadDeleting }
 
 // CheckThreadNotDeleting refuses, with ErrThreadDeleting, a thread a delete
-// claimed or committed. A missing thread passes: each caller has its own
-// answer for one. Read under the thread's action lock it holds until the
-// lock is released, because a claim is written before the delete takes the
-// thread's lock to verify it.
+// claimed or committed: the check of a door that starts something. A
+// missing thread passes: each caller has its own answer for one. Read
+// under the thread's action lock it holds until the lock is released,
+// because a claim is written before the delete takes the thread's lock to
+// verify it.
 func (s *Store) CheckThreadNotDeleting(threadID string) error {
 	return checkThreadNotDeleting(s.reader(), threadID)
 }
@@ -235,6 +239,14 @@ func (s *Store) ThreadDeleteClaim(threadID string) (claim string, committed bool
 	return claim, committed, nil
 }
 
+// ThreadDeleteHold is how far a delete has gone with one thread
+// (ThreadWorkspaceRef.Delete): the delete that claimed it, empty for none,
+// and whether a delete committed it.
+type ThreadDeleteHold struct {
+	Claim     string
+	Committed bool
+}
+
 // ClaimDeleteFamily claims for the delete op, in one transaction, the
 // threads ids names and what deleting them takes (ListDeleteFamily). It
 // refuses, changing nothing, when one of them is claimed by another delete
@@ -242,8 +254,10 @@ func (s *Store) ThreadDeleteClaim(threadID string) (claim string, committed bool
 // delete only goes forward, and this one joins it. A thread op already
 // claimed stays claimed, so a delete reads its family again with the same
 // call, which claims the threads a drained spawn added. It returns the
-// family as claimed.
-func (s *Store) ClaimDeleteFamily(op string, ids []string) (members []DeleteMember, err error) {
+// family as claimed. gate, when set, runs in the transaction before any
+// claim is written, with the threads about to be claimed; its error refuses
+// the claim, changing nothing.
+func (s *Store) ClaimDeleteFamily(op string, ids []string, gate func(threads []string) error) (members []DeleteMember, err error) {
 	if op == "" {
 		return nil, errors.New("store: a delete claim needs its operation's id")
 	}
@@ -260,6 +274,17 @@ func (s *Store) ClaimDeleteFamily(op string, ids []string) (members []DeleteMemb
 	for _, member := range members {
 		if !member.Committed && member.Claim != "" && member.Claim != op {
 			return nil, &DeleteClaimedError{ThreadID: member.ThreadID}
+		}
+	}
+	var claiming []string
+	for _, member := range members {
+		if !member.Committed && member.Claim != op {
+			claiming = append(claiming, member.ThreadID)
+		}
+	}
+	if gate != nil && len(claiming) > 0 {
+		if err := gate(claiming); err != nil {
+			return nil, err
 		}
 	}
 	for i, member := range members {

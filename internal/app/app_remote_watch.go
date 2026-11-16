@@ -273,7 +273,9 @@ func (a *App) checkRemoteWatch(w store.RemoteWatch) {
 
 	// A moved conversation retains its receipts but cannot be driven
 	// from the old owner. Do not turn a completion into a workflow takeover.
-	if err = a.store.CheckThreadExecutionAccess(thread); err != nil {
+	// A thread a delete claimed takes it into its queue, as every
+	// app-written message (store.CheckThreadDeliverable).
+	if err = a.store.CheckThreadDeliverable(thread); err != nil {
 		_ = a.store.ObserveRemoteWatch(w.ComputerID, w.RequestID, w.Receipt, "Completion is waiting for this conversation’s execution ownership.", time.Now().Add(30*time.Second).UnixMilli())
 		return
 	}
@@ -441,7 +443,7 @@ func (a *App) prepareRemoteCompletion(w store.RemoteWatch, output remoteCompleti
 		// Owed once the thread is unarchived; the watcher skips it until then.
 		return usermessage.AgentMessage{}, false, nil
 	}
-	if err = a.store.CheckThreadExecutionAccess(thread); err != nil {
+	if err = a.store.CheckThreadDeliverable(thread); err != nil {
 		return usermessage.AgentMessage{}, false, err
 	}
 	if thread.Mode == threadmode.ModeWorkflow {

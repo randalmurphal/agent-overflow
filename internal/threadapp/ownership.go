@@ -26,6 +26,22 @@ func (s *Service) LockMutable(ctx context.Context, threadID string) (func(), err
 	return unlock, nil
 }
 
+// LockDeliverable is LockMutable for the queue doors of a message the app
+// writes for a thread: its queue write and its withdrawal. A thread a delete
+// claimed takes it, since a queued message starts nothing by itself, and
+// one whose delete committed refuses it (store.CheckThreadDeliverable).
+func (s *Service) LockDeliverable(ctx context.Context, threadID string) (func(), error) {
+	unlock, err := s.mutations.LockCtx(ctx, threadID)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.checkMutable(threadID, (*store.Store).CheckThreadDeliverable); err != nil {
+		unlock()
+		return nil, err
+	}
+	return unlock, nil
+}
+
 // LockMutations takes the mutation lock without CheckMutable, for a
 // session teardown: dropping the queue of a thread that has moved, is in
 // transfer or is a holder must still serialize with queue writes, and
@@ -79,7 +95,11 @@ func (s *Service) checkCleanup(threadID string, cleanup, fenced bool) (retired b
 			return true, nil
 		}
 	}
-	err = s.checkMutable(threadID, fenced)
+	access := (*store.Store).CheckThreadExecutionAccess
+	if !fenced {
+		access = (*store.Store).CheckThreadDeleteAccess
+	}
+	err = s.checkMutable(threadID, access)
 	if err == nil {
 		return false, nil
 	}
@@ -106,10 +126,12 @@ func (s *Service) checkCleanup(threadID string, cleanup, fenced bool) (retired b
 // (for example, deleting an absent draft is a successful no-op). A thread a
 // delete claimed or committed is refused (store.ErrThreadDeleting).
 func (s *Service) CheckMutable(threadID string) error {
-	return s.checkMutable(threadID, true)
+	return s.checkMutable(threadID, (*store.Store).CheckThreadExecutionAccess)
 }
 
-func (s *Service) checkMutable(threadID string, fenced bool) error {
+// checkMutable is CheckMutable with access the check of a thread whose row
+// is present: how far a delete may have gone with it is access's to say.
+func (s *Service) checkMutable(threadID string, access func(*store.Store, store.Thread) error) error {
 	database, err := s.database("change conversation")
 	if err != nil {
 		return err
@@ -123,8 +145,5 @@ func (s *Service) checkMutable(threadID string, fenced bool) error {
 	}
 	// Pending forks only read the parent's native identity. Execution will
 	// materialize their own; CheckThreadExecutionAccess owns that distinction.
-	if !fenced {
-		return database.CheckThreadDeleteAccess(thread)
-	}
-	return database.CheckThreadExecutionAccess(thread)
+	return access(database, thread)
 }

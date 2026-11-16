@@ -103,7 +103,7 @@ func TestThreadsReferencingWorkspaceMatchesEitherPathColumn(t *testing.T) {
 
 // ThreadsReferencingWorkspaces answers each directory as
 // ThreadsReferencingWorkspace does, a link included, and a thread on one
-// directory through both columns once.
+// directory through both columns once, each with its delete state.
 func TestThreadsReferencingWorkspacesAnswersEachDirectory(t *testing.T) {
 	first, second := t.TempDir(), t.TempDir()
 	alias := filepath.Join(t.TempDir(), "first-link")
@@ -116,16 +116,31 @@ func TestThreadsReferencingWorkspacesAnswersEachDirectory(t *testing.T) {
 	seedThread(t, database, "worktree-ref", "project", t.TempDir(), alias)
 	seedThread(t, database, "both", "project", second, second)
 	seedThread(t, database, "elsewhere", "project", t.TempDir(), "")
+	if _, err := database.ClaimDeleteFamily("op-1", []string{"both"}, nil); err != nil {
+		t.Fatal(err)
+	}
 
-	got, err := service.ThreadsReferencingWorkspaces([]string{alias, second})
+	refs, err := service.ThreadsReferencingWorkspaces([]string{alias, second})
 	if err != nil {
 		t.Fatalf("ThreadsReferencingWorkspaces: %v", err)
 	}
-	for i := range got {
+	got := make([][]string, len(refs))
+	for i := range refs {
+		for _, ref := range refs[i] {
+			got[i] = append(got[i], ref.ID)
+		}
 		slices.Sort(got[i])
 	}
 	if len(got) != 2 || !slices.Equal(got[0], []string{"workspace-ref", "worktree-ref"}) || !slices.Equal(got[1], []string{"both"}) {
 		t.Fatalf("got %v, want the first directory's two threads and the second's one", got)
+	}
+	if hold := refs[1][0].Delete; hold.Claim != "op-1" || hold.Committed {
+		t.Errorf("the claimed thread's delete = %+v, want op-1's claim", hold)
+	}
+	for _, ref := range refs[0] {
+		if ref.Delete != (store.ThreadDeleteHold{}) {
+			t.Errorf("%s's delete = %+v, want none", ref.ID, ref.Delete)
+		}
 	}
 }
 

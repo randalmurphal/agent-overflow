@@ -1,7 +1,9 @@
 package app
 
 import (
+	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -176,8 +178,8 @@ func TestAFireOfARowItsRunJustArmedStarts(t *testing.T) {
 		{"finished", func(a *App, run *agentWakeRun, loop store.AgentWake, _ int64) {
 			a.finishAgentWakeFire(run, loop, agentWakeOutcomeDelivered, "", 0, store.AgentWakeCarried)
 		}},
-		{"held by a delete", func(a *App, run *agentWakeRun, loop store.AgentWake, at int64) {
-			a.settleAgentWakeDelivery(run, loop, agentWakeFire{at: at}, "Loop \"board\" fired.", store.ErrThreadDeleteClaimed)
+		{"not delivered", func(a *App, run *agentWakeRun, loop store.AgentWake, at int64) {
+			a.settleAgentWakeDelivery(run, loop, agentWakeFire{at: at}, "Loop \"board\" fired.", errors.New("the queue refused it"))
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -215,5 +217,152 @@ func TestAFireOfARowItsRunJustArmedStarts(t *testing.T) {
 				t.Fatal("the next fire's run is not the one registered")
 			}
 		})
+	}
+}
+
+// A watch run that outlived its interval leaves its row due as it ends. A
+// sweep pass that reads the row armed before the run that armed it has
+// ended runs it again: the run is unregistered in the step that arms the
+// row, so no pass claims the row while its previous run still holds it.
+func TestAWatchRunThatOutlivedItsIntervalRunsAgain(t *testing.T) {
+	t.Parallel()
+	a, _ := newAppForFlushQueueRPC(t)
+	stubNoticeStarts(a)
+	thread := noticeTestThread(t, a, "outlived")
+	testAssistant(t, a, thread.ID)
+	claims := make(chan struct{}, 8)
+	a.agentWakeClaimedForTest = func(store.AgentWake) {
+		select {
+		case claims <- struct{}{}:
+		default:
+		}
+	}
+	held, proceed := make(chan struct{}), make(chan struct{})
+	var mu sync.Mutex
+	retired := 0
+	a.agentWakeRetiringForTest = func(row store.AgentWake, rearmed bool) {
+		if row.Label != "slow" || !rearmed {
+			return
+		}
+		mu.Lock()
+		retired++
+		first := retired == 1
+		mu.Unlock()
+		if first {
+			close(held)
+			<-proceed
+		}
+	}
+	// Due now: the sweep fires it, and its next fire comes a second later,
+	// before the run ends.
+	registerTestWake(t, a, store.AgentWake{ThreadID: thread.ID, Kind: store.AgentWakeWatch, Label: "slow",
+		Command: "sleep 1.2; echo tick", IntervalSeconds: 1, NextAt: time.Now().UnixMilli()})
+	runSweeps(t, a)
+	<-claims
+	within(t, "the run's end", held)
+	// Any pass now finds the row due. It claims the row before the run that
+	// armed it has ended, or waits for that run to end; give it the time
+	// the claim takes.
+	a.nudgeThreadRequestSweep()
+	select {
+	case <-claims:
+	case <-time.After(300 * time.Millisecond):
+	}
+	close(proceed)
+	waitUntil(t, 10*time.Second, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return retired >= 2
+	})
+}
+
+// A run that reaches its retirement after its row was cancelled, registered
+// again under the same label and fired again writes nothing: the row is the
+// new run's, still running, with nothing of the old run's outcome on it.
+func TestARetiringRunThatLostItsRowWritesNothing(t *testing.T) {
+	t.Parallel()
+	a, _ := newAppForFlushQueueRPC(t)
+	stubNoticeStarts(a)
+	thread := noticeTestThread(t, a, "retired")
+	oldHeld, releaseOld, gate := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	defer close(gate)
+	var mu sync.Mutex
+	retiring := 0
+	a.agentWakeRetiringForTest = func(row store.AgentWake, locked bool) {
+		if row.Label != "board" || locked {
+			return
+		}
+		mu.Lock()
+		retiring++
+		first := retiring == 1
+		mu.Unlock()
+		if first {
+			// The old run, before it takes the lifecycle lock.
+			close(oldHeld)
+			<-releaseOld
+			return
+		}
+		<-gate
+	}
+	wake := store.AgentWake{ThreadID: thread.ID, Kind: store.AgentWakeLoop, Label: "board", Note: "check the board",
+		IntervalSeconds: 3600, NextAt: time.Now().Add(-time.Minute).UnixMilli()}
+	loop := registerTestWake(t, a, wake)
+	if !a.fireAgentWake(loop, time.Now(), agentWakeFire{at: time.Now().UnixMilli()}) {
+		t.Fatal("the first fire did not start")
+	}
+	within(t, "the old run's retirement", oldHeld)
+	a.agentWakes.mu.Lock()
+	old := a.agentWakes.runs[loop.ID]
+	a.agentWakes.mu.Unlock()
+	if old == nil {
+		t.Fatal("the old run is not registered")
+	}
+	if _, cancelled, err := a.cancelAgentWake(thread.ID, "board", store.AgentWakeLoop); err != nil || !cancelled {
+		t.Fatalf("cancel = %v, %v", cancelled, err)
+	}
+	again := registerTestWake(t, a, wake)
+	if again.ID != loop.ID {
+		t.Fatalf("the same label registered as row %s, want %s", again.ID, loop.ID)
+	}
+	if !a.fireAgentWake(again, time.Now(), agentWakeFire{at: time.Now().UnixMilli()}) {
+		t.Fatal("the new fire did not start")
+	}
+	claimed, found, err := a.store.GetAgentWake(loop.ID)
+	if err != nil || !found || claimed.State != store.AgentWakeRunning {
+		t.Fatalf("the new run's row = %+v, %v, %v; want it running", claimed, found, err)
+	}
+	close(releaseOld)
+	within(t, "the old run's end", old.done)
+	row, found, err := a.store.GetAgentWake(loop.ID)
+	if err != nil || !found {
+		t.Fatalf("the row: %v, %v", found, err)
+	}
+	if row.State != store.AgentWakeRunning || row.LastOutcome != claimed.LastOutcome || row.Missed != claimed.Missed ||
+		row.Undelivered != claimed.Undelivered || row.NextAt != claimed.NextAt {
+		t.Fatalf("after the old run retired the row = %+v, want the new run's as claimed %+v", row, claimed)
+	}
+}
+
+// A fire never claims a row whose previous run is still registered: the
+// claim would leave the row running with no run to end it.
+func TestAFireDoesNotClaimARowWhoseRunIsRegistered(t *testing.T) {
+	t.Parallel()
+	a, _ := newAppForFlushQueueRPC(t)
+	stubNoticeStarts(a)
+	thread := noticeTestThread(t, a, "registered")
+	loop := registerTestWake(t, a, store.AgentWake{ThreadID: thread.ID, Kind: store.AgentWakeLoop, Label: "board", Note: "check the board",
+		IntervalSeconds: 3600, NextAt: time.Now().Add(-time.Minute).UnixMilli()})
+	a.agentWakes.mu.Lock()
+	if a.agentWakes.runs == nil {
+		a.agentWakes.runs = make(map[string]*agentWakeRun)
+	}
+	a.agentWakes.runs[loop.ID] = &agentWakeRun{threadID: thread.ID, cancel: func() {}, done: make(chan struct{})}
+	a.agentWakes.mu.Unlock()
+	if a.fireAgentWake(loop, time.Now(), agentWakeFire{at: time.Now().UnixMilli()}) {
+		t.Fatal("a fire started beside the row's registered run")
+	}
+	row, found, err := a.store.GetAgentWake(loop.ID)
+	if err != nil || !found || row.State != store.AgentWakeArmed || row.NextAt != loop.NextAt {
+		t.Fatalf("the row = %+v, %v, %v; want it armed and due as it was", row, found, err)
 	}
 }

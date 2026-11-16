@@ -132,7 +132,13 @@ queue, the rows of written, unconfirmed messages included; a stop nobody asked
 for (a removed worktree, a reconnect) returns it to the composer, as a session
 death does. A caller releases that lock before it tears down; the idle reaper,
 which holds it, uses the HoldingMutations variant. See
-[turn-lifecycle.md](../../docs/architecture/turn-lifecycle.md).
+[turn-lifecycle.md](../../docs/architecture/turn-lifecycle.md). A queued
+message's row is what says it is wanted: a withdrawal deletes it, and every
+dispatch commit point and put-back reads the rows under the same lock
+before it sends or requeues a copy
+([user-message-ordering.md](../../docs/architecture/user-message-ordering.md)).
+Do not add a side set of withdrawn ids; a new path that sends or puts back a
+queued copy reads the rows (`wantedFlushItems`).
 
 Agent thread requests settle once. Every state change on a request or receipt
 is conditional on the state it expects to find, and a change that does not
@@ -255,7 +261,14 @@ Every thread delete is one family delete (`deleteThreads`,
 `app_thread_delete.go`): claim, verify, commit, destroy. Refusals belong to
 verify, before anything stops; after the commit a delete only goes forward. A
 door that runs, moves or changes a thread refuses one a delete claimed, through
-`CheckMutable`, `admitWork` or the store write's own check.
+`CheckMutable`, `admitWork` or the store write's own check. A claimed thread
+takes app messages into its queue (`LockDeliverable`), and a start the app
+makes for it, a notice's session start or a queue dispatch, waits for the
+delete's decision at its gate (`deleteDecisions`) holding no lock
+([Owned workers](../../docs/specs/standing-agents.md#owned-workers)). Only
+a dispatch worker, notice work or a wake's run may reach a gate; a caller
+that may hold a thread's lock hands such a start to notice work
+(`redeliverMovedAgentWake`).
 
 ## Lifecycle and tests
 

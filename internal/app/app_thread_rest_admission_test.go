@@ -224,6 +224,12 @@ func TestAnArchivedThreadStartsNoWorkWhileItsSessionStops(t *testing.T) {
 			f := newRequestFixture(t)
 			f.mockClaudeHoldingTheTurn(t, "working")
 			ack := f.runningRequest(t, "work on it")
+			// The turn's row is written once the provider starts it: an
+			// archive requested before that keeps the session for the turn.
+			waitUntil(t, 10*time.Second, func() bool {
+				_, open, err := f.app.store.GetActiveTurn(ack.ThreadID)
+				return err == nil && open
+			})
 			var admitErr error
 			tried := false
 			f.app.queueDropReadForTest = func(threadID string) {

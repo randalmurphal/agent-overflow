@@ -88,6 +88,19 @@ type QueuedFlushItem struct {
 	// Nil for user-typed messages. Workflow wakes use it for the durable wake
 	// signature and provider-usage attention claim that suppress duplicates.
 	Settlement *FlushSettlement
+	// NoRow marks a message with no durable queue row: a recovery that could
+	// not restore a message the provider was already handed queued it again
+	// (the app's requeue fallbacks), its row having gone at that write, and
+	// its durable copy is the timeline row it still has (StaleUserItemID) or
+	// none, when writing its queue row again failed. Every other queued
+	// message has a row, and the app sends or restores it only while the row
+	// stands; this one passes those checks, and a withdrawal finds nothing of
+	// it to take back.
+	NoRow bool
+	// DispatchGeneration is the thread's dispatch generation when the queue
+	// handed the message out (tryFlushQueue): a handoff that outlived a
+	// teardown or a recovery carries an older one than the thread's.
+	DispatchGeneration uint64
 }
 
 type UnconfirmedFlushItem struct {
@@ -114,6 +127,12 @@ type UnconfirmedFlushItem struct {
 	// ended (provider.CommandDiscarded), as against one it cancelled while
 	// the session lives on.
 	Discarded bool
+	// Queued marks a message drained from a queue, never handed to the
+	// provider: it is restored only while its durable row stands, unless
+	// NoRow says it has none.
+	Queued bool
+	// NoRow is the queued message's QueuedFlushItem.NoRow.
+	NoRow bool
 }
 
 // FlushSettlement owns the one durable-delivery transition for an injected
@@ -271,15 +290,58 @@ func (r *Router) RegisterQueueItem(threadID string, item QueuedFlushItem) int64 
 	return item.EnqueuedAt
 }
 
+// FlushDispatchGeneration is the thread's dispatch generation, which the
+// app advances when a teardown or a recovery takes the thread's queued
+// work (AdvanceFlushDispatchGeneration). It lives on the never-deleted
+// identity, read under the lock the queue hands messages out under, so
+// every handoff carries the generation it was made in.
+func (r *Router) FlushDispatchGeneration(threadID string) uint64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if identity := r.identityIfPresent(threadID); identity != nil {
+		return identity.dispatchGeneration
+	}
+	return 0
+}
+
+// AdvanceFlushDispatchGeneration starts the thread's next dispatch
+// generation and returns it: every handoff and batch of an earlier one is
+// stale from now on. dropped says the generation ends because its queued
+// work was thrown away (a Stop's teardown, a revert), as against taken by a
+// recovery: a stale handoff of it, or of any earlier one, is then thrown away
+// too (FlushGenerationDropped).
+func (r *Router) AdvanceFlushDispatchGeneration(threadID string, dropped bool) uint64 {
+	if threadID == "" {
+		return 0
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	identity := r.identity(threadID)
+	if dropped {
+		identity.flushDroppedBelow = identity.dispatchGeneration + 1
+	}
+	identity.dispatchGeneration++
+	return identity.dispatchGeneration
+}
+
+// FlushGenerationDropped reports whether the thread's queued work was
+// thrown away at or after generation's end (AdvanceFlushDispatchGeneration).
+func (r *Router) FlushGenerationDropped(threadID string, generation uint64) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	identity := r.identityIfPresent(threadID)
+	return identity != nil && generation < identity.flushDroppedBelow
+}
+
 // RemoveQueuedFlushItem drops one still-queued message by id and returns it,
 // so a caller that owns the message (a cancelled agent request) can take it
 // back before the provider ever sees it.
 //
-// It refuses — false, nothing removed — once the message has left the queue:
-// a batch claimed for dispatch is already on its way to the provider, and a
-// removal that raced it would leave the caller believing a delivered message
-// was withdrawn. The claim is checked on the never-deleted identity, the same
-// place QueuedFlushItemCount reads it from, so the handoff window is covered.
+// It refuses — false, nothing removed — once the message has left the queue,
+// a batch claimed for dispatch included: the dispatcher holds that copy, and
+// drops it at its commit point once the message's durable row is gone. The
+// claim is checked on the never-deleted identity, the same place
+// QueuedFlushItemCount reads it from, so the handoff window is covered.
 //
 // The removed item's settlement is NOT run here: the durable row belongs to
 // the caller, which deletes it with whatever bookkeeping the message carried.
@@ -525,6 +587,12 @@ func (r *Router) tryFlushQueue(threadID, sessionToken string) bool {
 	}
 	batch := make([]QueuedFlushItem, len(queue))
 	copy(batch, queue)
+	// The generation is the one the messages leave the queue in, so a
+	// handoff a teardown or a recovery overtakes arrives stale.
+	generation := r.identity(threadID).dispatchGeneration
+	for i := range batch {
+		batch[i].DispatchGeneration = generation
+	}
 	st.queuedFlushItems = nil
 	// The claim lives on the never-deleted identity (see threadIdentity):
 	// the dispatcher below runs outside r.mu, so a session teardown can
@@ -688,6 +756,8 @@ func (r *Router) DrainUnconfirmedFlushItems(threadID string) []UnconfirmedFlushI
 			EnqueuedAt:      item.EnqueuedAt,
 			StaleUserItemID: item.StaleUserItemID,
 			Settlement:      item.Settlement,
+			Queued:          true,
+			NoRow:           item.NoRow,
 		})
 	}
 	drainState.queuedFlushItems = nil

@@ -141,34 +141,14 @@ func (a *App) workflowApplication() *workflowapp.Service {
 				},
 			},
 			WakeDelivery: workflowapp.WakeDeliveryPorts{
-				HasLiveSession: func(threadID string) bool {
-					_, live := a.sessionManager().get(threadID)
-					return live
-				},
-				// A run's wake is the workflow's report, not the person's. Both
-				// wait for the boot steps a trial defers, so a run the rebuild
+				// A run's wake is the workflow's report, not the person's. It
+				// waits for the boot steps a trial defers, so a run the rebuild
 				// resumes reaches a session only once the boot has finished.
 				QueueMessage: func(threadID, workflowID string, composed wake.Message, onDurable func()) error {
 					if err := a.waitForBootSteps(a.lifeCtx()); err != nil {
 						return err
 					}
 					return a.queueWorkflowWake(threadID, workflowID, composed, onDurable)
-				},
-				SendMessage: func(threadID, workflowID string, composed wake.Message) error {
-					if err := a.waitForBootSteps(a.lifeCtx()); err != nil {
-						return err
-					}
-					message, err := workflowWakeMessage(workflowID, composed)
-					if err != nil {
-						return err
-					}
-					_, err = a.sendMessageWithOptions(
-						context.Background(), threadID, message.Text(), sendMessageOptions{
-							PreserveDraft: true,
-							Origin:        message.Origin(), OriginWake: message.Attribution().Wake,
-						},
-					)
-					return err
 				},
 			},
 			MemoryTree: func(item store.WorkItem) (workflowapp.MemoryTree, error) {
@@ -353,7 +333,14 @@ func projectWorkflowWatch(value workflowapp.WatchResult) WorkflowAgentWatchResul
 // queues for an agent is.
 const workflowWakeSendIDRoot = "workflow-wake:"
 
-// queueWorkflowWake queues a run's wake for the thread's agent.
+// queueWorkflowWake queues a run's wake for the thread's agent, and starts
+// the thread's session for it when it has none, as a notice's start does
+// (startAgentNoticeSession). onDurable runs once the message reaches the
+// provider or the composer. The wake is the workflow's report, so a thread a
+// delete claimed takes it and its start waits for the decision. An archive
+// or a Stop's rest does not refuse it: the engine settles what its wake
+// becomes (workflowapp.resolveWakeThread), and neither starts the thread
+// for it.
 func (a *App) queueWorkflowWake(threadID, workflowID string, composed wake.Message, onDurable func()) error {
 	var settled func(string)
 	if onDurable != nil {
@@ -363,14 +350,32 @@ func (a *App) queueWorkflowWake(threadID, workflowID string, composed wake.Messa
 	if err != nil {
 		return err
 	}
-	_, err = a.registerQueueItem(
-		threadID, message.Text(), SendMessageOptions{SendID: workflowWakeSendIDRoot + uuid.NewString()},
+	sendID := workflowWakeSendIDRoot + uuid.NewString()
+	if _, err := a.registerQueueItem(
+		threadID, message.Text(), SendMessageOptions{SendID: sendID},
 		injectedQueueOptions{
-			preserveDraft: true, onDurable: settled,
-			origin: message.Origin(), originWake: message.Attribution().Wake,
+			preserveDraft: true, onDurable: settled, appWritten: true,
+			// The start below is the wake's, as a notice's is: the
+			// dispatcher does not start a second one.
+			noticeStarts: true,
+			origin:       message.Origin(), originWake: message.Attribution().Wake,
 		},
-	)
-	return err
+	); err != nil {
+		return err
+	}
+	if _, live := a.sessionManager().get(threadID); live {
+		return nil
+	}
+	notice := agentNotice{
+		threadID: threadID,
+		sendID:   sendID,
+		startFailed: func(err error) string {
+			return "A workflow run's report is queued for this thread, but the agent could not start: " + err.Error()
+		},
+	}
+	// Refused only once shutdown began: the durable row is the next boot's.
+	a.goAgentNoticeWork(threadID, func() { a.startAgentNoticeSession(a.lifeCtx(), notice, false) })
+	return nil
 }
 
 // workflowWakeMessage is a run's wake (wake.Compose, wake.ComposeProgress),

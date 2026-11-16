@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -97,10 +96,6 @@ type workerPrompt struct {
 	// unanswered questions, and its route is asyncQuestionRoutes'.
 	async bool
 	state workerPromptState
-	// deferred marks a routed prompt whose wake a delete's claim on the
-	// agent refused; the claim's release puts it to the agent again
-	// (redeliverDeferredWorkerPrompts).
-	deferred bool
 	// answer is what the agent sent, so a retry of the same answer is
 	// recognized.
 	answer   string
@@ -286,26 +281,10 @@ func (a *App) deliverWorkerPrompt(route provider.PromptRoute, prompt workerPromp
 			return fmt.Sprintf("Thread %q is waiting on your answer and its prompt is queued here, but this thread's agent could not start: %v", worker.Title, err)
 		},
 	})
-	switch {
-	case errors.Is(err, store.ErrThreadDeleteClaimed) && a.workerPrompts.deferWake(registered.token):
-		// A delete holds the agent while it decides. The prompt stays
-		// routed there: a refused delete puts it to the agent again, and a
-		// committed one moves it on (reroutePromptsFrom).
-	case err != nil:
+	if err != nil {
 		log.Printf("worker prompts: deliver %s of %s to %s: %v", prompt.requestID, prompt.workerID, route.ThreadID, err)
 		a.handBackWorkerPrompt(registered.token)
 	}
-}
-
-// redeliverDeferredWorkerPrompts puts to each of agents the prompts whose
-// wakes a delete's claim on it refused, now that the claim is released. It
-// runs on the prompts' serial queue, behind the delivery that deferred them.
-func (a *App) redeliverDeferredWorkerPrompts(agents []string) {
-	a.workerPrompts.run(func() {
-		for _, prompt := range a.workerPrompts.takeDeferred(agents) {
-			a.deliverWorkerPrompt(provider.PromptRoute{ThreadID: prompt.agentID}, prompt)
-		}
-	})
 }
 
 // workerPromptRoute is where a registration's prompt is routed now, nil
@@ -713,37 +692,6 @@ func (w *workerPrompts) settleToken(token string) (workerPrompt, bool) {
 	}
 	prompt.state, prompt.closedAt = workerPromptSettled, time.Now()
 	return *prompt, true
-}
-
-// deferWake marks the registration under token deferred when it is routed
-// and still the prompt's current one.
-func (w *workerPrompts) deferWake(token string) bool {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	prompt := w.byToken[token]
-	if prompt == nil || prompt.state != workerPromptRouted || w.current[prompt.key()] != token {
-		return false
-	}
-	prompt.deferred = true
-	return true
-}
-
-// takeDeferred clears and returns the deferred routed registrations whose
-// agent is one of agents.
-func (w *workerPrompts) takeDeferred(agents []string) []workerPrompt {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	var taken []workerPrompt
-	for _, prompt := range w.byToken {
-		if !prompt.deferred || !slices.Contains(agents, prompt.agentID) {
-			continue
-		}
-		prompt.deferred = false
-		if prompt.state == workerPromptRouted {
-			taken = append(taken, *prompt)
-		}
-	}
-	return taken
 }
 
 // beginAnswer claims a routed prompt for the agent's answer.

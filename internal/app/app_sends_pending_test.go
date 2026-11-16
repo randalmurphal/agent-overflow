@@ -147,7 +147,7 @@ func TestSendsPendingSpansTheFlushToItsEcho(t *testing.T) {
 		Codex:    installSteerTestSession(t, app, thread, "ok"),
 	})
 
-	app.triage.RegisterQueueItem(thread.ID, triage.QueuedFlushItem{ID: "queue:abc", Message: "drained", Payload: json.RawMessage(`{}`)})
+	app.triage.RegisterQueueItem(thread.ID, triage.QueuedFlushItem{ID: "queue:abc", Message: "drained", Payload: json.RawMessage(`{}`), NoRow: true})
 	if !app.triage.FlushQueuedItems(thread.ID) {
 		t.Fatal("queue did not drain")
 	}
@@ -238,7 +238,7 @@ func TestSendsPendingClearsOnDispatcherExits(t *testing.T) {
 		exit func(*App, string)
 	}{
 		{"rollback", func(app *App, threadID string) { app.dropFlushQueue(threadID) }},
-		{"session end", func(app *App, threadID string) { app.drainFlushDispatchForSessionEnd(threadID) }},
+		{"session end", func(app *App, threadID string) { app.takeFlushDispatch(threadID, false) }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -267,7 +267,7 @@ func TestSendsPendingClearsOnDispatcherExits(t *testing.T) {
 		}
 		// An empty message (admitted by older clients) is settled and
 		// dropped rather than delivered or requeued.
-		app.enqueueFlushDispatch(thread.ID, []triage.QueuedFlushItem{{ID: "q1", Payload: json.RawMessage(`{}`)}})
+		app.enqueueFlushDispatch(thread.ID, []triage.QueuedFlushItem{{ID: "q1", Payload: json.RawMessage(`{}`), NoRow: true}})
 		waitFor(t, "the dispatch worker to finish", func() bool {
 			app.flushDispatch.mu.Lock()
 			defer app.flushDispatch.mu.Unlock()

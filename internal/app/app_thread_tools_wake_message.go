@@ -182,7 +182,9 @@ func (a *App) deliverThreadWakeMessage(message threadWakeMessage) bool {
 		fail("read the caller thread", err)
 		return true
 	}
-	if err := a.store.CheckThreadExecutionAccess(thread); err != nil {
+	// A caller a delete claimed takes the wake into its queue, as every
+	// app-written message (store.CheckThreadDeliverable).
+	if err := a.store.CheckThreadDeliverable(thread); err != nil {
 		fail("deliver to "+thread.ID, err)
 		return true
 	}

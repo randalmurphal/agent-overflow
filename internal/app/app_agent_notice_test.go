@@ -795,7 +795,7 @@ func TestARetryForAWakeNoLongerWantedWithdrawsTheHeldWake(t *testing.T) {
 		t.Fatalf("CancelAgentWake: %v", err)
 	}
 	notice, _ := a.agentWakeNotice(row, agentWakeSendID(row.ID, 2), testAgentWake(t, row, "board fired again"))
-	if err := a.retryAgentWakeStart(row, notice); !errors.Is(err, store.ErrAgentWakeStillQueued) {
+	if err := a.retryAgentWakeStart(t.Context(), row, notice); !errors.Is(err, store.ErrAgentWakeStillQueued) {
 		t.Fatalf("retryAgentWakeStart: %v, want ErrAgentWakeStillQueued", err)
 	}
 	a.waitAgentNoticeWork()

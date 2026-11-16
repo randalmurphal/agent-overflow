@@ -45,11 +45,17 @@ type QueueStateChangedEvent struct {
 }
 
 type flushDispatchBatch struct {
+	// items are the messages the batch has not finished writing: a group
+	// leaves when it settles or goes back to the queue, and a message whose
+	// row is gone at its group's commit point is dropped (commitFlushGroup).
 	items      []triage.QueuedFlushItem
 	generation uint64
+	// writing are the ids of the group the worker committed to write and
+	// has not settled or requeued yet: a withdrawal finds them dispatched.
+	writing map[string]struct{}
 }
 
-// QueueFlushedEvent is emitted by `dispatchFlush` at the start of a
+// QueueFlushedEvent is emitted by `dispatchFlushWithGeneration` at the start of a
 // successful per-item provider dispatch. It carries the
 // (queueItemId → userItemId) mapping the frontend uses to keep the
 // message in the above-composer pending area while waiting for the
@@ -137,30 +143,80 @@ func (a *App) enqueueFlushDispatch(threadID string, items []triage.QueuedFlushIt
 	if threadID == "" || len(items) == 0 {
 		return
 	}
-	batch := make([]triage.QueuedFlushItem, len(items))
-	copy(batch, items)
-
+	if hook := a.flushHandoffForTest; hook != nil {
+		hook(threadID)
+	}
 	a.flushDispatch.mu.Lock()
 	a.ensureFlushDispatchMapsLocked()
-	generation := a.flushDispatch.generation[threadID]
-	a.flushDispatch.queues[threadID] = append(a.flushDispatch.queues[threadID], flushDispatchBatch{
-		items:      batch,
-		generation: generation,
-	})
-	a.flushDispatch.inflightItems[threadID] += len(batch)
-	a.markSendsPendingDirty(threadID)
+	// The generation the queue handed the messages out in: a handoff a
+	// teardown or a recovery overtook is not this session's to send.
+	generation := items[0].DispatchGeneration
+	stale := generation != a.currentFlushDispatchGeneration(threadID)
+	if !stale {
+		a.flushDispatch.queues[threadID] = append(a.flushDispatch.queues[threadID], flushDispatchBatch{
+			items:      slices.Clone(items),
+			generation: generation,
+		})
+		a.flushDispatch.inflightItems[threadID] += len(items)
+		a.markSendsPendingDirty(threadID)
+	}
 	// The worker may finish before this callback returns. Retire triage's
 	// overlapping claim before starting it, so a later snapshot cannot
 	// resurrect a message whose dispatch has already settled.
 	a.triage.ReleaseFlushClaim(threadID, items)
+	switch {
+	case stale && a.triage.FlushGenerationDropped(threadID, generation):
+		// A Stop's teardown or a revert threw its generation's queue away,
+		// and the handoff goes with it: its rows went with that drop.
+	case stale:
+		a.flushDispatch.wg.Add(1)
+		go a.restoreStaleFlushHandoff(threadID, slices.Clone(items))
+	default:
+		a.startFlushDispatchWorkerLocked(threadID)
+	}
+	a.flushDispatch.mu.Unlock()
+}
+
+// restoreStaleFlushHandoff takes the messages of a handoff that a recovery
+// overtook (enqueueFlushDispatch) as that recovery took the rest of the
+// queue: back to the composer, or to their owners, while their rows stand.
+// A withdrawal took the rows of the others, and they go nowhere
+// (restoreFlushItemsToDraftLocked).
+func (a *App) restoreStaleFlushHandoff(threadID string, items []triage.QueuedFlushItem) {
+	defer a.flushDispatch.wg.Done()
+	unlock := a.threadLocks().Lock(threadID)
+	defer unlock()
+	drained := make([]triage.UnconfirmedFlushItem, 0, len(items))
+	for _, item := range items {
+		drained = append(drained, unconfirmedFromQueued(item))
+	}
+	sortByEnqueuedAt(drained)
+	a.restoreFlushItemsToDraftLocked(threadID, drained, queueRestoredReasonSessionDied)
+}
+
+// unconfirmedFromQueued is a queued message, never handed to the provider,
+// in the form a restore takes.
+func unconfirmedFromQueued(item triage.QueuedFlushItem) triage.UnconfirmedFlushItem {
+	return triage.UnconfirmedFlushItem{
+		QueueItemID:     item.ID,
+		Message:         item.Message,
+		Payload:         append(json.RawMessage(nil), item.Payload...),
+		EnqueuedAt:      item.EnqueuedAt,
+		StaleUserItemID: item.StaleUserItemID,
+		Settlement:      item.Settlement,
+		Queued:          true,
+		NoRow:           item.NoRow,
+	}
+}
+
+// startFlushDispatchWorkerLocked starts threadID's worker unless one runs.
+// The caller holds flushDispatch.mu.
+func (a *App) startFlushDispatchWorkerLocked(threadID string) {
 	if a.flushDispatch.running[threadID] {
-		a.flushDispatch.mu.Unlock()
 		return
 	}
 	a.flushDispatch.running[threadID] = true
 	a.flushDispatch.wg.Add(1)
-	a.flushDispatch.mu.Unlock()
-
 	go a.runFlushDispatchWorker(threadID)
 }
 
@@ -189,12 +245,15 @@ func (a *App) runFlushDispatchWorker(threadID string) {
 		a.flushDispatch.mu.Unlock()
 
 		a.dispatchFlushWithGeneration(threadID, batch.items, batch.generation)
+		if hook := a.flushDispatchReturnedForTest; hook != nil {
+			hook(threadID)
+		}
 
 		a.flushDispatch.mu.Lock()
 		delete(a.flushDispatch.current, threadID)
 		delete(a.flushDispatch.dispatching, threadID)
 		a.markSendsPendingDirty(threadID)
-		if a.flushDispatch.generation[threadID] == batch.generation {
+		if a.currentFlushDispatchGeneration(threadID) == batch.generation {
 			a.flushDispatch.inflightItems[threadID] -= len(batch.items)
 			if a.flushDispatch.inflightItems[threadID] <= 0 {
 				delete(a.flushDispatch.inflightItems, threadID)
@@ -255,9 +314,6 @@ func (a *App) ensureFlushDispatchMapsLocked() {
 	if a.flushDispatch.inflightItems == nil {
 		a.flushDispatch.inflightItems = make(map[string]int)
 	}
-	if a.flushDispatch.generation == nil {
-		a.flushDispatch.generation = make(map[string]uint64)
-	}
 	if a.flushDispatch.flushUnsettled == nil {
 		a.flushDispatch.flushUnsettled = make(map[string]struct{})
 	}
@@ -290,8 +346,9 @@ func (a *App) dropFlushQueue(threadID string) {
 // queue. A surviving row would make the next boot restore a message the
 // user's revert or Stop discarded, and a surviving batch would be dispatched
 // to the next session: the worker, once it has the action lock, finds its
-// generation gone and sends nothing. The caller clears triage's own queue
-// and holds the thread's mutation lock.
+// generation gone and sends nothing, and a handoff still on its way arrives
+// stale and goes with them (enqueueFlushDispatch). The caller clears
+// triage's own queue and holds the thread's mutation lock.
 //
 // It returns the answers, reminders and remote completions the durable drop
 // kept (dropDurableFlushQueue), for the caller to give back to their owners
@@ -300,13 +357,19 @@ func (a *App) dropFlushQueue(threadID string) {
 // still has (QueuedFlushItem.StaleUserItemID).
 func (a *App) dropFlushQueueLocked(threadID string) ([]ownedMessage, []triage.QueuedFlushItem) {
 	held := a.dropDurableFlushQueue(threadID)
-	return held, a.drainFlushDispatchForSessionEnd(threadID)
+	return held, a.takeFlushDispatch(threadID, true)
 }
 
-func (a *App) drainFlushDispatchForSessionEnd(threadID string) []triage.QueuedFlushItem {
+// takeFlushDispatch takes every message the dispatch holds for a thread and
+// has not written, and starts the thread's next generation, so the worker
+// sends none of them and a handoff still on its way arrives stale. dropped
+// says the caller throws the queue away (a Stop's teardown, a revert), and
+// such a handoff goes with it; a session end's restore takes them back
+// (advanceFlushDispatchGenerationLocked).
+func (a *App) takeFlushDispatch(threadID string, dropped bool) []triage.QueuedFlushItem {
 	a.flushDispatch.mu.Lock()
 	a.ensureFlushDispatchMapsLocked()
-	a.flushDispatch.generation[threadID]++
+	a.advanceFlushDispatchGenerationLocked(threadID, dropped)
 	var drained []triage.QueuedFlushItem
 	if current, ok := a.flushDispatch.current[threadID]; ok {
 		drained = append(drained, current.items...)
@@ -323,13 +386,204 @@ func (a *App) drainFlushDispatchForSessionEnd(threadID string) []triage.QueuedFl
 	return drained
 }
 
-func (a *App) currentFlushDispatchGeneration(threadID string) uint64 {
+// wantedFlushItems reads, in one statement, which of items are still
+// wanted: those whose durable row stands, and those that never had one
+// (triage.QueuedFlushItem.NoRow). A withdrawal deletes the row, so a copy
+// of a withdrawn message fails it wherever it is. A failed read keeps every
+// message: a group's commit point reads again before any is sent.
+func (a *App) wantedFlushItems(threadID string, items []triage.QueuedFlushItem) func(triage.QueuedFlushItem) bool {
+	present, err := a.store.FlushQueueItemsPresent(threadID, rowIDs(items))
+	if err != nil {
+		log.Printf("flush queue: read which queued messages of %s are wanted: %v", threadID, err)
+		return func(triage.QueuedFlushItem) bool { return true }
+	}
+	return func(item triage.QueuedFlushItem) bool { return item.NoRow || present[item.ID] }
+}
+
+// rowIDs are the ids of items that have a durable row.
+func rowIDs(items []triage.QueuedFlushItem) []string {
+	ids := make([]string, 0, len(items))
+	for _, item := range items {
+		if !item.NoRow {
+			ids = append(ids, item.ID)
+		}
+	}
+	return ids
+}
+
+// requeueWantedFlushItems puts items, which a dispatch took and did not
+// write, back on the queue for its next trigger, less those whose rows a
+// withdrawal took meanwhile, under the mutation lock the withdrawal takes.
+// The caller holds the thread's action lock.
+func (a *App) requeueWantedFlushItems(threadID string, items []triage.QueuedFlushItem) {
+	unlock := a.threadApplication().LockMutations(threadID)
+	defer unlock()
+	wanted := a.wantedFlushItems(threadID, items)
+	for _, item := range items {
+		if wanted(item) {
+			a.triage.RegisterQueueItem(threadID, item)
+		}
+	}
+}
+
+// commitFlushGroup is a group's commit point, before anything of the group
+// is persisted or written: under the thread's mutation lock, which a
+// withdrawal takes, it reads in one statement which of the group's messages
+// still have their rows, drops the others from the group and from the batch
+// the worker holds, and marks the rest as being written, which a
+// withdrawal from now on finds dispatched (flushItemWritten). A withdrawal
+// and a send of one message are thereby ordered: whichever takes the lock
+// first wins. The caller holds the thread's action lock.
+func (a *App) commitFlushGroup(threadID string, generation uint64, group []triage.QueuedFlushItem) ([]triage.QueuedFlushItem, error) {
+	unlock := a.threadApplication().LockMutations(threadID)
+	defer unlock()
+	present, err := a.store.FlushQueueItemsPresent(threadID, rowIDs(group))
+	if err != nil {
+		return nil, err
+	}
+	sending := make([]triage.QueuedFlushItem, 0, len(group))
+	writing := make(map[string]struct{}, len(group))
+	dropped := make(map[string]struct{})
+	for _, item := range group {
+		if item.NoRow || present[item.ID] {
+			sending = append(sending, item)
+			writing[item.ID] = struct{}{}
+		} else {
+			dropped[item.ID] = struct{}{}
+		}
+	}
 	a.flushDispatch.mu.Lock()
 	defer a.flushDispatch.mu.Unlock()
-	if a.flushDispatch.generation == nil {
+	if current, ok := a.flushDispatch.current[threadID]; ok && current.generation == generation {
+		current.items = withoutIDs(current.items, dropped)
+		current.writing = writing
+		a.flushDispatch.current[threadID] = current
+	}
+	if len(dropped) > 0 {
+		a.forgetDispatchingLocked(threadID, dropped)
+	}
+	return sending, nil
+}
+
+// finishFlushGroup takes a group the worker settled or put back on the
+// queue out of the batch it holds, and ends its write.
+func (a *App) finishFlushGroup(threadID string, generation uint64, group []triage.QueuedFlushItem) {
+	done := make(map[string]struct{}, len(group))
+	for _, item := range group {
+		done[item.ID] = struct{}{}
+	}
+	a.flushDispatch.mu.Lock()
+	defer a.flushDispatch.mu.Unlock()
+	current, ok := a.flushDispatch.current[threadID]
+	if !ok || current.generation != generation {
+		return
+	}
+	current.items = withoutIDs(current.items, done)
+	current.writing = nil
+	a.flushDispatch.current[threadID] = current
+}
+
+// withoutIDs is items less those ids names, in a new slice.
+func withoutIDs(items []triage.QueuedFlushItem, ids map[string]struct{}) []triage.QueuedFlushItem {
+	return slices.DeleteFunc(slices.Clone(items), func(item triage.QueuedFlushItem) bool {
+		_, gone := ids[item.ID]
+		return gone
+	})
+}
+
+// forgetDispatchingLocked takes ids out of the not-yet-delivered remainder
+// the queue snapshot shows. The caller holds flushDispatch.mu.
+func (a *App) forgetDispatchingLocked(threadID string, ids map[string]struct{}) {
+	if remaining := withoutIDs(a.flushDispatch.dispatching[threadID], ids); len(remaining) == 0 {
+		delete(a.flushDispatch.dispatching, threadID)
+	} else {
+		a.flushDispatch.dispatching[threadID] = remaining
+	}
+	a.markSendsPendingDirty(threadID)
+}
+
+// flushItemWritten reports whether a dispatch committed to write the queued
+// message row is the row of, or wrote it and the provider has not confirmed
+// it (an answer's row stands until its echo): a withdrawal finds it
+// dispatched. The caller holds the thread's mutation lock, which a group's
+// commit point takes, so no group commits meanwhile.
+func (a *App) flushItemWritten(threadID string, row store.FlushQueueItem) bool {
+	a.flushDispatch.mu.Lock()
+	current, ok := a.flushDispatch.current[threadID]
+	_, writing := current.writing[row.ID]
+	writing = ok && writing && current.generation == a.currentFlushDispatchGeneration(threadID)
+	a.flushDispatch.mu.Unlock()
+	if writing {
+		return true
+	}
+	if a.triage == nil {
+		return false
+	}
+	for _, sent := range a.triage.UnconfirmedFlushSends(threadID) {
+		if sent.QueueItemID == row.ID || (row.SendID != "" && slices.Contains(unconfirmedMembersOf(sent).ids, row.SendID)) {
+			return true
+		}
+	}
+	return false
+}
+
+// forgetUnsentCopies takes a withdrawn message's copies out of what the
+// queue snapshot shows: triage's queue and the batches the dispatch holds.
+// The message's row is the authority, so a copy this does not reach, as in
+// triage's handoff, is dropped at the dispatch's commit point; this only
+// keeps the snapshot from listing it until then.
+func (a *App) forgetUnsentCopies(threadID, id string) {
+	a.flushDispatch.mu.Lock()
+	defer a.flushDispatch.mu.Unlock()
+	a.ensureFlushDispatchMapsLocked()
+	if a.triage != nil {
+		a.triage.RemoveQueuedFlushItem(threadID, id)
+	}
+	gone := map[string]struct{}{id: {}}
+	queue := a.flushDispatch.queues[threadID]
+	for i, batch := range queue {
+		kept := withoutIDs(batch.items, gone)
+		if len(kept) == len(batch.items) {
+			continue
+		}
+		if len(kept) == 0 {
+			queue = slices.Delete(queue, i, i+1)
+		} else {
+			batch.items = kept
+			queue[i] = batch
+		}
+		a.flushDispatch.queues[threadID] = queue
+		if a.flushDispatch.inflightItems[threadID]--; a.flushDispatch.inflightItems[threadID] <= 0 {
+			delete(a.flushDispatch.inflightItems, threadID)
+		}
+		break
+	}
+	if current, ok := a.flushDispatch.current[threadID]; ok {
+		current.items = withoutIDs(current.items, gone)
+		a.flushDispatch.current[threadID] = current
+	}
+	a.forgetDispatchingLocked(threadID, gone)
+}
+
+// currentFlushDispatchGeneration is the thread's dispatch generation, kept
+// where the queue stamps each handoff with it
+// (triage.FlushDispatchGeneration).
+func (a *App) currentFlushDispatchGeneration(threadID string) uint64 {
+	if a.triage == nil {
 		return 0
 	}
-	return a.flushDispatch.generation[threadID]
+	return a.triage.FlushDispatchGeneration(threadID)
+}
+
+// advanceFlushDispatchGenerationLocked starts the thread's next dispatch
+// generation; dropped says the queue was thrown away, not recovered
+// (triage.AdvanceFlushDispatchGeneration). The caller holds
+// flushDispatch.mu, so a worker reading the generation under it sees the
+// bump with the bookkeeping it went with.
+func (a *App) advanceFlushDispatchGenerationLocked(threadID string, dropped bool) {
+	if a.triage != nil {
+		a.triage.AdvanceFlushDispatchGeneration(threadID, dropped)
+	}
 }
 
 func (a *App) isFlushDispatchGenerationCurrent(threadID string, generation uint64) bool {
@@ -359,81 +613,8 @@ func (a *App) drainFlushDispatch(ctx context.Context, timeout time.Duration) err
 // flushQueuePayload is the local-scope alias for flushqueue.Payload.
 // Kept as a local name so the compile-time drift guard in
 // app_flush_queue_test.go and the in-place reads/writes from
-// dispatchFlush + RegisterQueueItem don't need cosmetic churn.
+// the dispatch + RegisterQueueItem don't need cosmetic churn.
 type flushQueuePayload = flushqueue.Payload
-
-// dispatchFlush is the triage.FlushDispatcher implementation: when
-// triage observes a safe provider boundary, it hands queued user
-// messages here for delivery to the provider.
-//
-// A drain is split into GROUPS (groupFlushDispatch) and each group becomes
-// exactly one provider message. Codex and claude-tui take one group per item;
-// headless Claude takes the whole drain as one group, because its own command
-// queue merges a multi-message boundary drain into one transcript entry under
-// the LAST uuid — see flushDispatchJoinsMessages and claude-wire.md
-// §Queued-message consumption.
-//
-// Per-group flow:
-//
-//  1. Decode each member's QueuedFlushItem.Payload into flushQueuePayload
-//     and resolve its attachments + source/revision plan refs (same shape
-//     Send and Steer use). A failure here is BEFORE any durable or wire
-//     effect, so nothing is sent and every member requeues in order.
-//  2. Join the resolved members into one message: one content string, one
-//     attachment list, one meta carrying every member's send id
-//     (joinFlushMembers). A single-member group joins to itself.
-//  3. Allocate a stable AO identity independently of its turn placement.
-//  4. Register the pending-send marker — provider-specific:
-//     - Claude with active turn: EAGER persist. The user_text row is
-//     persisted immediately at the active turn's index so it appears
-//     in the timeline at the point it was dispatched (before any
-//     response items the agent produces after). A non-deferred
-//     pending send is registered at the response turn so
-//     resolveTurnIndexOnStart opens a fresh turn for the response.
-//     On echo, attachProviderItemIDToUserRow stamps provider_item_id.
-//     Publish queue_flushed after quiet persistence and before the
-//     provider write. The pending registry then covers live-state reads.
-//     - Claude without active turn / Codex: DEFERRED persist. The
-//     row is deferred via RegisterPendingFlushSend and persisted at
-//     echo time via persistDeferredUserText at MAX+1 item_index.
-//  5. Call the provider:
-//     - Claude: sess.Send writes a fresh user envelope to stdin;
-//     Claude's queue processor (queryGuard-gated) consumes it between
-//     turns.
-//     - Codex: sess.Steer pushes onto the active turn's
-//     pending_input. Falls back to sess.Send when Steer returns
-//     ErrNoActiveTurn.
-//
-// On any definite group error, the dispatcher persists a sibling `error`
-// row, aborts the current batch, and requeues the group plus every group
-// not yet attempted.
-//
-// Invoked by the app-layer per-thread flush worker, after triage has released
-// r.mu. The worker preserves FIFO order across multiple boundary drains and
-// prevents concurrent sequence allocation for one thread.
-func (a *App) dispatchFlush(threadID string, items []triage.QueuedFlushItem) {
-	// The worker records the batch under the same lock as its pop; a
-	// direct call records its own, so both entry paths keep the batch
-	// visible to the queue snapshot for the whole dispatch.
-	a.beginFlushDispatchVisibility(threadID, items)
-	defer a.endFlushDispatchVisibility(threadID)
-	a.dispatchFlushWithGeneration(threadID, items, a.currentFlushDispatchGeneration(threadID))
-}
-
-func (a *App) beginFlushDispatchVisibility(threadID string, items []triage.QueuedFlushItem) {
-	a.flushDispatch.mu.Lock()
-	a.ensureFlushDispatchMapsLocked()
-	a.flushDispatch.dispatching[threadID] = items
-	a.markSendsPendingDirty(threadID)
-	a.flushDispatch.mu.Unlock()
-}
-
-func (a *App) endFlushDispatchVisibility(threadID string) {
-	a.flushDispatch.mu.Lock()
-	delete(a.flushDispatch.dispatching, threadID)
-	a.markSendsPendingDirty(threadID)
-	a.flushDispatch.mu.Unlock()
-}
 
 // noteFlushDispatchItemSettled drops one item from the in-flight remainder.
 // Called once its `queue_flushed` is about to be emitted (Zone 2 takes over)
@@ -482,7 +663,7 @@ func (a *App) noteFlushDispatchGroupSettled(threadID string, group []triage.Queu
 // the batches still waiting for the worker. Current generation only — a
 // rollback's discarded batches are not queued for anyone.
 func (a *App) pendingFlushDispatchItemsLocked(threadID string) []triage.QueuedFlushItem {
-	generation := a.flushDispatch.generation[threadID]
+	generation := a.currentFlushDispatchGeneration(threadID)
 	var out []triage.QueuedFlushItem
 	out = append(out, a.flushDispatch.dispatching[threadID]...)
 	for _, batch := range a.flushDispatch.queues[threadID] {
@@ -539,31 +720,103 @@ func (a *App) queueSnapshotForThreadLocked(threadID string) []QueuedItem {
 	return out
 }
 
+// dispatchFlushWithGeneration sends one batch under the thread's action
+// lock, starting the thread's session first when it has none
+// (lockFlushDispatch). Each group then has its commit point
+// (commitFlushGroup), right before anything of it is persisted or written: a
+// message withdrawn before it is not sent, and a withdrawal after it finds the
+// message dispatched.
+//
+// A drain is split into GROUPS (groupFlushDispatch) and each group becomes
+// exactly one provider message. Codex and claude-tui take one group per item;
+// headless Claude takes the whole drain as one group, because its own command
+// queue merges a multi-message boundary drain into one transcript entry under
+// the LAST uuid — see flushDispatchJoinsMessages and claude-wire.md
+// §Queued-message consumption.
+//
+// Per-group flow:
+//
+//  1. Decode each member's QueuedFlushItem.Payload into flushQueuePayload
+//     and resolve its attachments + source/revision plan refs (same shape
+//     Send and Steer use). A failure here is BEFORE any durable or wire
+//     effect, so nothing is sent and every member requeues in order.
+//  2. Join the resolved members into one message: one content string, one
+//     attachment list, one meta carrying every member's send id
+//     (joinFlushMembers). A single-member group joins to itself.
+//  3. Allocate a stable AO identity independently of its turn placement.
+//  4. Register the pending-send marker — provider-specific:
+//     - Claude with active turn: EAGER persist. The user_text row is
+//     persisted immediately at the active turn's index so it appears
+//     in the timeline at the point it was dispatched (before any
+//     response items the agent produces after). A non-deferred
+//     pending send is registered at the response turn so
+//     resolveTurnIndexOnStart opens a fresh turn for the response.
+//     On echo, attachProviderItemIDToUserRow stamps provider_item_id.
+//     Publish queue_flushed after quiet persistence and before the
+//     provider write. The pending registry then covers live-state reads.
+//     - Claude without active turn / Codex: DEFERRED persist. The
+//     row is deferred via RegisterPendingFlushSend and persisted at
+//     echo time via persistDeferredUserText at MAX+1 item_index.
+//  5. Call the provider:
+//     - Claude: sess.Send writes a fresh user envelope to stdin;
+//     Claude's queue processor (queryGuard-gated) consumes it between
+//     turns.
+//     - Codex: sess.Steer pushes onto the active turn's
+//     pending_input. Falls back to sess.Send when Steer returns
+//     ErrNoActiveTurn.
+//
+// On any definite group error, the dispatcher persists a sibling `error`
+// row, aborts the current batch, and requeues the group plus every group
+// not yet attempted, less the messages withdrawn meanwhile
+// (requeueWantedFlushItems).
 func (a *App) dispatchFlushWithGeneration(threadID string, items []triage.QueuedFlushItem, generation uint64) {
 	if len(items) == 0 {
 		return
 	}
 
-	unlock := a.threadLocks().Lock(threadID)
+	unlock, ready := a.lockFlushDispatch(threadID, items, generation)
+	if !ready {
+		return
+	}
 	defer unlock()
-	if !a.isFlushDispatchGenerationCurrent(threadID, generation) {
-		return
-	}
-	if !a.ensureSessionForFlushLocked(threadID, items, generation) {
-		return
-	}
 
 	groups := a.groupFlushDispatch(threadID, items)
 	for i, group := range groups {
 		if !a.isFlushDispatchGenerationCurrent(threadID, generation) {
 			return
 		}
+		if hook := a.flushGroupCommitForTest; hook != nil {
+			hook(threadID, false)
+		}
+		committed, err := a.commitFlushGroup(threadID, generation, group)
+		if err != nil {
+			// Nothing of this group or the rest was sent, and without the
+			// rows read none is known withdrawn: all of it goes back.
+			log.Printf("flush dispatch: thread=%s items=[%s]: %v", threadID, flushGroupIDs(group), err)
+			for _, unattempted := range groups[i:] {
+				for _, item := range unattempted {
+					a.triage.RegisterQueueItem(threadID, item)
+				}
+				a.noteFlushDispatchGroupSettled(threadID, unattempted)
+				a.finishFlushGroup(threadID, generation, unattempted)
+			}
+			a.emitQueueStateChanged(threadID)
+			return
+		}
+		if hook := a.flushGroupCommitForTest; hook != nil {
+			hook(threadID, true)
+		}
+		if len(committed) == 0 {
+			continue
+		}
+		group = committed
 		flushedItems, flushedEmitted, requeue, written, err := a.dispatchFlushGroup(threadID, group)
 		if errors.Is(err, errEmptyUserMessage) {
 			// Older clients admitted empty rows. They have no input to retry
 			// or restore, and must not block the meaningful tail of the queue.
 			a.noteFlushDispatchGroupSettled(threadID, group)
 			a.settleFlushGroup(threadID, group, "")
+			a.finishFlushGroup(threadID, generation, group)
 			continue
 		}
 		if err != nil {
@@ -580,18 +833,16 @@ func (a *App) dispatchFlushWithGeneration(threadID string, items []triage.Queued
 			// Requeue FIRST, then drop the in-flight record: the triage
 			// queue has the item back before this layer stops vouching
 			// for it, so a snapshot from another goroutine in between
-			// still sees it.
-			for _, item := range requeue {
-				a.triage.RegisterQueueItem(threadID, item)
-			}
+			// still sees it. The failed group's write ends before the
+			// requeue reads its rows, so a withdrawal from then on removes
+			// the message rather than finding it dispatched.
+			back := slices.Clone(requeue)
 			for _, unattempted := range groups[i+1:] {
-				for _, item := range unattempted {
-					a.triage.RegisterQueueItem(threadID, item)
-				}
+				back = append(back, unattempted...)
 			}
-			for _, settled := range groups[i:] {
-				a.noteFlushDispatchGroupSettled(threadID, settled)
-			}
+			a.finishFlushGroup(threadID, generation, back)
+			a.requeueWantedFlushItems(threadID, back)
+			a.noteFlushDispatchGroupSettled(threadID, back)
 			a.emitQueueStateChanged(threadID)
 			return
 		}
@@ -606,69 +857,138 @@ func (a *App) dispatchFlushWithGeneration(threadID string, items []triage.Queued
 		// every member of a joined group settles on the one write that carried
 		// it.
 		a.settleFlushGroup(threadID, group, written)
+		a.finishFlushGroup(threadID, generation, group)
 	}
 	a.emitQueueStateChanged(threadID)
 }
+
+// lockFlushDispatch takes the thread's action lock for one batch's dispatch
+// and readies the thread to take it. It reports whether the batch is to be
+// sent; only then does the caller hold the lock and release it with the
+// returned func.
+//
+// A thread a delete claimed is waited on, without the lock and with the
+// batch still the worker's current one, until the delete decides
+// (waitDeleteDecision), and the dispatch is then tried again from the top: a
+// refused delete's batch is sent as if the claim had never stood, and a
+// committed thread is sent nothing, its queue its teardown's. The check runs
+// under the lock the delete's verify takes, so a batch either went before
+// the verify read the thread or waits. A thread with no session has it
+// started for the batch (ensureSessionForFlushLocked), and a claim that start
+// meets is waited on the same way.
+func (a *App) lockFlushDispatch(threadID string, items []triage.QueuedFlushItem, generation uint64) (func(), bool) {
+	for {
+		unlock := a.threadLocks().Lock(threadID)
+		outcome := a.readyFlushDispatchLocked(threadID, items, generation)
+		if outcome == flushSessionReady {
+			return unlock, true
+		}
+		unlock()
+		if outcome != flushSessionClaimed {
+			return nil, false
+		}
+		if !a.waitDeleteDecision(a.lifeCtx(), threadID) {
+			// Shut down, or a claim no delete decides: the rows are the next boot's.
+			return nil, false
+		}
+	}
+}
+
+// readyFlushDispatchLocked is one try of lockFlushDispatch under the
+// thread's action lock.
+func (a *App) readyFlushDispatchLocked(threadID string, items []triage.QueuedFlushItem, generation uint64) flushSession {
+	if !a.isFlushDispatchGenerationCurrent(threadID, generation) {
+		return flushSessionNone
+	}
+	err := a.store.CheckThreadNotDeleting(threadID)
+	switch {
+	case errors.Is(err, store.ErrThreadDeleteClaimed):
+		return flushSessionClaimed
+	case errors.Is(err, store.ErrThreadDeleting):
+		return flushSessionNone
+	case err != nil:
+		// Nothing was sent: the batch, less what was withdrawn, goes back on
+		// the queue for the next trigger, as a failed group does.
+		log.Printf("flush dispatch: thread=%s items=[%s]: %v", threadID, flushGroupIDs(items), err)
+		a.requeueFlushBatch(threadID, items, generation)
+		return flushSessionNone
+	}
+	return a.ensureSessionForFlushLocked(threadID, items, generation)
+}
+
+// flushSession is what readying a thread for a batch came to.
+type flushSession int
+
+const (
+	// flushSessionReady: a session runs, or the batch has nothing to send
+	// (dispatchFlushGroup settles empty items without one).
+	flushSessionReady flushSession = iota
+	// flushSessionClaimed: a delete claimed the thread; the dispatch waits
+	// for its decision and tries again.
+	flushSessionClaimed
+	// flushSessionNone: nothing is sent now. The batch went back to the
+	// queue or the composer, or is its teardown's.
+	flushSessionNone
+)
 
 // ensureSessionForFlushLocked starts the thread's session for a batch queued
 // while it had none: a message accepted while the thread was stopped (its
 // session died, its worktree was removed, it was reconnecting) is sent the way
 // a direct send is, by starting the session. When the session cannot start,
 // the batch goes back to the composer with the reason on the thread, so the
-// message is never left queued with nothing to send it. It reports whether a
-// session is running, or the batch has nothing to send (dispatchFlushGroup
-// settles empty items without a session). Caller holds the thread action lock.
+// message is never left queued with nothing to send it. Caller holds the
+// thread action lock.
 //
 // The start is a door like any other, so it respects the fences a notice's
-// start does (startAgentNoticeSession): a thread a Stop is bringing to rest,
-// an archived thread and a thread a delete claimed or committed start
-// nothing. The batch goes back to the queue unsent, for the rest, the archive
-// or the delete to take back, or for the thread's next start. That refusal is
-// not a failed start: no composer restore, no error row, no failure streak.
-// Nor is a start that succeeded and left no session: the batch is still the
-// queue's, unless the teardown that ended that session took it (the
-// generation moved).
-func (a *App) ensureSessionForFlushLocked(threadID string, items []triage.QueuedFlushItem, generation uint64) bool {
+// start does (startAgentNoticeSession): a thread a Stop is bringing to rest
+// and an archived thread start nothing. The batch goes back to the queue
+// unsent, for the rest or the archive to take back, or for the thread's next
+// start. That refusal is not a failed start: no composer restore, no error
+// row, no failure streak. Nor is a start that succeeded and left no session:
+// the batch is still the queue's, unless the teardown that ended that session
+// took it (the generation moved). A start a delete's claim refused waits for
+// the delete's decision (lockFlushDispatch), and a thread a delete committed
+// is sent nothing.
+func (a *App) ensureSessionForFlushLocked(threadID string, items []triage.QueuedFlushItem, generation uint64) flushSession {
 	if _, live := a.sessionManager().get(threadID); live || !flushBatchCarriesInput(items) {
-		return true
+		return flushSessionReady
 	}
 	fenced, err := a.flushStartFenced(threadID)
 	if err == nil && fenced {
-		a.requeueFlushBatch(threadID, items)
-		return false
+		a.requeueFlushBatch(threadID, items, generation)
+		return flushSessionNone
 	}
 	if err == nil {
 		err = a.startSession(a.lifeCtx(), threadID)
-		if err == nil {
+		switch {
+		case err == nil:
 			if _, live := a.sessionManager().get(threadID); live {
-				return true
+				return flushSessionReady
 			}
 			if a.isFlushDispatchGenerationCurrent(threadID, generation) {
-				a.requeueFlushBatch(threadID, items)
+				a.requeueFlushBatch(threadID, items, generation)
 			}
-			return false
+			return flushSessionNone
+		case errors.Is(err, store.ErrThreadDeleteClaimed):
+			return flushSessionClaimed
+		case errors.Is(err, store.ErrThreadDeleting):
+			return flushSessionNone
 		}
 	}
 	if errors.Is(err, ErrShuttingDown) || a.lifeCtx().Err() != nil {
 		// The durable rows stay for the next boot's restore.
-		return false
+		return flushSessionNone
 	}
 	log.Printf("flush dispatch: thread=%s items=[%s]: start session: %v", threadID, flushGroupIDs(items), err)
 	restored := make([]triage.UnconfirmedFlushItem, 0, len(items))
 	for _, item := range items {
-		restored = append(restored, triage.UnconfirmedFlushItem{
-			QueueItemID:     item.ID,
-			Message:         item.Message,
-			Payload:         append(json.RawMessage(nil), item.Payload...),
-			EnqueuedAt:      item.EnqueuedAt,
-			StaleUserItemID: item.StaleUserItemID,
-			Settlement:      item.Settlement,
-		})
+		restored = append(restored, unconfirmedFromQueued(item))
 	}
 	// The batch leaves the worker before the composer gets it, as a session
 	// death drains the worker before its restore, so no read finds the
 	// message queued and in the composer at once.
 	a.noteFlushDispatchGroupSettled(threadID, items)
+	a.finishFlushGroup(threadID, generation, items)
 	// What the app wrote among them never enters the composer
 	// (agentPartsNotTakenIn): an answer, a reminder or a completion goes back
 	// to its owner, a wake's row records it was not delivered, and the
@@ -683,7 +1003,7 @@ func (a *App) ensureSessionForFlushLocked(threadID string, items []triage.Queued
 	a.restoreFlushItemsToDraftLocked(threadID, restored, queueRestoredReasonSessionStartFailed)
 	a.emitErrorToThread(threadID, "Queued messages could not be sent and are back in the composer: "+err.Error())
 	a.emitQueueStateChanged(threadID)
-	return false
+	return flushSessionNone
 }
 
 // flushBatchCarriesInput reports whether any item has input to send. An item
@@ -702,8 +1022,9 @@ func flushBatchCarriesInput(items []triage.QueuedFlushItem) bool {
 }
 
 // flushStartFenced reports whether the dispatcher may not start the thread's
-// session: a Stop is bringing it to rest (threadRestFence), it is archived,
-// or a delete claimed or committed it. An error names the read.
+// session: a Stop is bringing it to rest (threadRestFence), or it is
+// archived. A delete's claim or commit is the start's own refusal
+// (ensureSessionForFlushLocked). An error names the read.
 func (a *App) flushStartFenced(threadID string) (bool, error) {
 	if a.resting.holds(threadID) {
 		return true, nil
@@ -712,18 +1033,18 @@ func (a *App) flushStartFenced(threadID string) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("read the thread: %w", err)
 	}
-	return thread.Archived || thread.Delete != store.ThreadNotDeleting, nil
+	return thread.Archived, nil
 }
 
-// requeueFlushBatch puts a batch the dispatcher did not send back on the
-// triage queue, ahead of anything queued since, without flushing it: the
-// thread's next start or turn boundary sends it. Requeued before the worker
-// stops vouching for it, so no snapshot misses it.
-func (a *App) requeueFlushBatch(threadID string, items []triage.QueuedFlushItem) {
-	for _, item := range items {
-		a.triage.RegisterQueueItem(threadID, item)
-	}
+// requeueFlushBatch puts a batch the dispatcher sent none of back on the
+// triage queue, less what was withdrawn meanwhile (requeueWantedFlushItems),
+// ahead of anything queued since, without flushing it: the thread's next
+// start or turn boundary sends it. Requeued before the worker stops vouching
+// for it, so no snapshot misses it.
+func (a *App) requeueFlushBatch(threadID string, items []triage.QueuedFlushItem, generation uint64) {
+	a.requeueWantedFlushItems(threadID, items)
 	a.noteFlushDispatchGroupSettled(threadID, items)
+	a.finishFlushGroup(threadID, generation, items)
 	a.emitQueueStateChanged(threadID)
 }
 
@@ -1342,10 +1663,16 @@ type injectedQueueOptions struct {
 	// back by a Stop or a session end sets it, so the giving back does not
 	// start the turn the Stop ended or resend into a session that failed it.
 	held bool
+	// appWritten marks a message the app writes for the thread, as against
+	// a person's: it is taken by a thread a delete claimed
+	// (threadapp.LockDeliverable), which refuses a person's.
+	appWritten bool
 	// heldWhileArchived refuses the message with errThreadArchived when the
-	// thread is archived, before persist runs. App-written notices set it
-	// (queueAgentNotice); a person's message is taken by an archived thread
-	// they opened.
+	// thread is archived, before persist runs, and with errThreadResting
+	// while a Stop brings it to rest. queueAgentNotice sets it for every
+	// notice but the person's own answers. A person's message is taken by an
+	// archived thread they opened, and a workflow run's wake is the engine's
+	// to settle (queueWorkflowWake).
 	heldWhileArchived bool
 	// noticeStarts marks a notice whose own caller starts the thread's
 	// session when it has none (queueAgentNotice), so the queue write does
@@ -1424,7 +1751,11 @@ func (a *App) registerQueueItem(
 	if opts.RevisionSourceDiffReview == nil && len(opts.RevisionSourceDiffCommentIDs) > 0 {
 		return QueuedItem{}, fmt.Errorf("register queue item: diff review comments require a source diff review")
 	}
-	unlock, err := a.threadApplication().LockMutable(context.Background(), threadID)
+	lock := a.threadApplication().LockMutable
+	if injected.appWritten {
+		lock = a.threadApplication().LockDeliverable
+	}
+	unlock, err := lock(context.Background(), threadID)
 	if err != nil {
 		return QueuedItem{}, err
 	}
@@ -1611,19 +1942,22 @@ func (a *App) registerQueueItem(
 // withdrawal path for a message the app itself queued on someone's behalf —
 // an agent request cancelled before the target's turn boundary drained it.
 //
-// It refuses once the message reached the provider, because by then there is
-// nothing to withdraw: the caller is told so and cancels the turn instead.
-// The two refusals are told apart, because they mean different things to a
-// caller that has to say what it stopped: queueRemovalAbsent is a send id
-// nothing on this queue carries, queueRemovalDispatched is an entry the
-// dispatch already claimed. An error is a failure to carry out a removal that
-// should have applied.
+// The message's durable row is the authority: deleting it withdraws the
+// message wherever a copy of it waits unsent, because every dispatch commit
+// point and every put-back reads the rows first and drops a message whose row
+// is gone (commitFlushGroup, requeueWantedFlushItems,
+// restoreFlushItemsToDraftLocked). It refuses once a dispatch committed to
+// writing the message, or wrote it and awaits its echo (flushItemWritten):
+// the caller is told so and cancels the turn instead. The two refusals are
+// told apart, because they mean different things to a caller that has to say
+// what it stopped: queueRemovalAbsent is a send id nothing on this queue
+// carries, queueRemovalDispatched is an entry the dispatch is sending or
+// sent. An error is a failure to carry out a removal that should have
+// applied.
 //
 // Lock order is registerQueueItem's: send admission, then the thread mutation
-// lock, then the dispatch handoff mutex. Holding the handoff mutex is what
-// keeps the removal from racing tryFlushQueue's claim window — the claim is
-// taken under triage's own lock and checked there, and this mutex is what
-// stops a fresh handoff starting between the check and the delete.
+// lock, which every commit point and put-back takes, then the dispatch
+// handoff mutex, then the dispatch bookkeeping lock.
 func (a *App) removeQueuedItem(ctx context.Context, threadID, sendID string) (queueRemoval, error) {
 	return a.removeQueuedItemWith(ctx, threadID, sendID, func(row store.FlushQueueItem) error {
 		return a.store.DeleteFlushQueueItem(row.ID)
@@ -1642,7 +1976,8 @@ func (a *App) removeQueuedItemWith(ctx context.Context, threadID, sendID string,
 		return queueRemovalAbsent, err
 	}
 	defer unlockAdmission()
-	unlock, err := a.threadApplication().LockMutable(ctx, threadID)
+	// What the app queued it may take back from a thread a delete claimed.
+	unlock, err := a.threadApplication().LockDeliverable(ctx, threadID)
 	if err != nil {
 		return queueRemovalAbsent, err
 	}
@@ -1661,17 +1996,15 @@ func (a *App) removeQueuedItemWith(ctx context.Context, threadID, sendID string,
 		// tell the two apart reads the message's own record.
 		return queueRemovalAbsent, nil
 	}
-	if a.triage != nil {
-		if _, taken := a.triage.RemoveQueuedFlushItem(threadID, row.ID); !taken {
-			// The in-memory entry is mid-handoff or already drained. The
-			// durable row stays: its settlement deletes it when the dispatch
-			// or the restore finishes.
-			return queueRemovalDispatched, nil
-		}
+	if a.flushItemWritten(threadID, row) {
+		// The durable row stays: its settlement deletes it when the
+		// dispatch finishes, or the echo when an answer's write lands.
+		return queueRemovalDispatched, nil
 	}
 	if err := deleteRow(row); err != nil {
 		return queueRemovalAbsent, fmt.Errorf("remove queued item: %w", err)
 	}
+	a.forgetUnsentCopies(threadID, row.ID)
 	a.emitQueueStateChanged(threadID)
 	return queueRemovalRemoved, nil
 }
@@ -1686,8 +2019,9 @@ const (
 	// queueRemovalRemoved: the message was taken back off the queue, durable
 	// row and in-memory entry together.
 	queueRemovalRemoved
-	// queueRemovalDispatched: the entry was already claimed for dispatch or
-	// drained. The turn it starts is what a caller must stop instead.
+	// queueRemovalDispatched: a dispatch committed to writing the entry, or
+	// wrote it and awaits its echo. The turn it starts is what a caller must
+	// stop instead.
 	queueRemovalDispatched
 )
 

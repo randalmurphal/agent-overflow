@@ -59,7 +59,7 @@ func TestDispatchFlush_Codex_DefersUserItemUntilWireEcho(t *testing.T) {
 		Codex:    sess,
 	})
 
-	app.dispatchFlush(thread.ID, []triage.QueuedFlushItem{
+	dispatchThroughWorker(app, thread.ID, []triage.QueuedFlushItem{
 		{
 			ID:      "queue:abc",
 			Message: "drained",
@@ -119,7 +119,7 @@ func TestDispatchFlush_Codex_DefersUserItemUntilWireEcho(t *testing.T) {
 // TestDispatchFlush_EchoLandsAfterRowsThatArrivedFirst is the integration-
 // level companion to triage's
 // TestHandleUserText_DeferredFlush_LandsAfterContentThatArrivedFirst.
-// It exercises the full dispatchFlush -> provider write -> wire echo
+// It exercises the full flush dispatch -> provider write -> wire echo
 // path: a row persisted between dispatch and the wire echo must keep its
 // index, and the queued user_text row must land at MAX+1 at echo time
 // (i.e. AFTER the rows the model emitted first).
@@ -155,7 +155,7 @@ func TestDispatchFlush_EchoLandsAfterRowsThatArrivedFirst(t *testing.T) {
 		Codex:    sess,
 	})
 
-	app.dispatchFlush(thread.ID, []triage.QueuedFlushItem{
+	dispatchThroughWorker(app, thread.ID, []triage.QueuedFlushItem{
 		{
 			ID:      "queue:abc",
 			Message: "queued before assistant output",
@@ -246,10 +246,10 @@ func TestDispatchFlush_SecondBatchBeforeEchoAllocatesNextFlushID(t *testing.T) {
 		Codex:    sess,
 	})
 
-	app.dispatchFlush(thread.ID, []triage.QueuedFlushItem{
+	dispatchThroughWorker(app, thread.ID, []triage.QueuedFlushItem{
 		{ID: "queue:first", Message: "first"},
 	})
-	app.dispatchFlush(thread.ID, []triage.QueuedFlushItem{
+	dispatchThroughWorker(app, thread.ID, []triage.QueuedFlushItem{
 		{ID: "queue:second", Message: "second"},
 	})
 
@@ -304,7 +304,7 @@ func TestDispatchFlush_EmitsQueueFlushedBeforeQueueDrainedSnapshot(t *testing.T)
 		Codex:    sess,
 	})
 
-	app.dispatchFlush(thread.ID, []triage.QueuedFlushItem{
+	dispatchThroughWorker(app, thread.ID, []triage.QueuedFlushItem{
 		{ID: "queue:started", Message: "started"},
 	})
 
@@ -370,7 +370,7 @@ func TestDispatchFlush_Codex_NoActiveTurnFallsBackToSend(t *testing.T) {
 		Codex:    sess,
 	})
 
-	app.dispatchFlush(thread.ID, []triage.QueuedFlushItem{
+	dispatchThroughWorker(app, thread.ID, []triage.QueuedFlushItem{
 		{ID: "queue:fallback", Message: "race"},
 	})
 	flushed := app.triage.LiveStateSnapshotForThread(thread.ID).FlushedItems
@@ -480,7 +480,7 @@ func TestDispatchFlush_NoSession_DoesNotPersistUserRow(t *testing.T) {
 	// No app.sessions entry — this simulates the torn-down case, whose
 	// replacement session fails to start.
 	app.startSessionFn = func(string) error { return errors.New("the session cannot start") }
-	app.dispatchFlush(thread.ID, []triage.QueuedFlushItem{
+	dispatchThroughWorker(app, thread.ID, []triage.QueuedFlushItem{
 		{ID: "queue:0", Message: "x"},
 	})
 
@@ -540,7 +540,7 @@ func TestDispatchFlush_PerItemFailure_AbortsBatch(t *testing.T) {
 		Codex:    sess,
 	})
 
-	app.dispatchFlush(thread.ID, []triage.QueuedFlushItem{
+	dispatchThroughWorker(app, thread.ID, []triage.QueuedFlushItem{
 		{ID: "queue:0", Message: "first"},
 		{ID: "queue:1", Message: "second"},
 		{ID: "queue:2", Message: "third"},
@@ -616,7 +616,7 @@ func TestDispatchFlush_FailedItemDoesNotEmitQueueFlushed(t *testing.T) {
 		Codex:    sess,
 	})
 
-	app.dispatchFlush(thread.ID, []triage.QueuedFlushItem{
+	dispatchThroughWorker(app, thread.ID, []triage.QueuedFlushItem{
 		{ID: "queue:failed", Message: "failed"},
 	})
 
@@ -664,7 +664,7 @@ func TestDispatchFlush_CodexSteerTimeoutKeepsPendingConfirmation(t *testing.T) {
 		Codex:    sess,
 	})
 
-	app.dispatchFlush(thread.ID, []triage.QueuedFlushItem{
+	dispatchThroughWorker(app, thread.ID, []triage.QueuedFlushItem{
 		{ID: "queue:timeout", Message: "eventually accepted"},
 	})
 
@@ -811,8 +811,8 @@ func TestEnqueueFlushDispatch_SerializesBatchesForOneThread(t *testing.T) {
 	})
 
 	unlock := app.threadLocks().Lock(thread.ID)
-	app.enqueueFlushDispatch(thread.ID, []triage.QueuedFlushItem{{ID: "queue:0", Message: "first"}})
-	app.enqueueFlushDispatch(thread.ID, []triage.QueuedFlushItem{{ID: "queue:1", Message: "second"}})
+	app.enqueueFlushDispatch(thread.ID, []triage.QueuedFlushItem{{ID: "queue:0", Message: "first", NoRow: true}})
+	app.enqueueFlushDispatch(thread.ID, []triage.QueuedFlushItem{{ID: "queue:1", Message: "second", NoRow: true}})
 	if got := app.flushDispatchItemCount(thread.ID); got != 2 {
 		unlock()
 		t.Fatalf("in-flight flush dispatch count: got %d, want 2", got)
@@ -1011,7 +1011,7 @@ func TestDispatchFlush_PayloadDecoding(t *testing.T) {
 		Token:    "flush-token",
 		Codex:    sess,
 	})
-	app.dispatchFlush(thread.ID, []triage.QueuedFlushItem{
+	dispatchThroughWorker(app, thread.ID, []triage.QueuedFlushItem{
 		{
 			ID:      "queue:0",
 			Message: "no payload",
@@ -1315,7 +1315,7 @@ func TestDispatchFlush_Claude_EagerPersistAtActiveTurn(t *testing.T) {
 		Liveness: newSessionLiveness(time.Now()),
 	})
 
-	app.dispatchFlush(thread.ID, []triage.QueuedFlushItem{
+	dispatchThroughWorker(app, thread.ID, []triage.QueuedFlushItem{
 		{ID: "queue:msg1", Message: "queued follow-up", Payload: json.RawMessage(`{}`)},
 	})
 
@@ -1485,7 +1485,7 @@ func TestDispatchFlush_Claude_EagerPersist_RepositionsAfterContentBeforeEcho(t *
 		Liveness: newSessionLiveness(time.Now()),
 	})
 
-	app.dispatchFlush(thread.ID, []triage.QueuedFlushItem{
+	dispatchThroughWorker(app, thread.ID, []triage.QueuedFlushItem{
 		{ID: "queue:msg1", Message: "feel free to update", Payload: json.RawMessage(`{}`)},
 	})
 
@@ -1629,10 +1629,10 @@ func TestDispatchFlush_Claude_InterruptPromotesAfterStoppedByUser(t *testing.T) 
 	// drain so each keeps its own row: a single drain of both would join
 	// them into one outbound Claude message (see dispatchFlushGroup), and
 	// promotion has to order MULTIPLE quiet rows.
-	app.dispatchFlush(thread.ID, []triage.QueuedFlushItem{
+	dispatchThroughWorker(app, thread.ID, []triage.QueuedFlushItem{
 		{ID: "queue:m1", Message: "test message 1", Payload: json.RawMessage(`{}`)},
 	})
-	app.dispatchFlush(thread.ID, []triage.QueuedFlushItem{
+	dispatchThroughWorker(app, thread.ID, []triage.QueuedFlushItem{
 		{ID: "queue:m2", Message: "test message 2", Payload: json.RawMessage(`{}`)},
 	})
 
@@ -1754,7 +1754,7 @@ func TestDispatchFlush_Claude_NoActiveTurn_DefersLikeCodex(t *testing.T) {
 		Liveness: newSessionLiveness(time.Now()),
 	})
 
-	app.dispatchFlush(thread.ID, []triage.QueuedFlushItem{
+	dispatchThroughWorker(app, thread.ID, []triage.QueuedFlushItem{
 		{ID: "queue:def", Message: "follow-up after turn", Payload: json.RawMessage(`{}`)},
 	})
 
@@ -2015,12 +2015,14 @@ func TestSessionDeathRestoresQueuedFlushItemsToDraft(t *testing.T) {
 		Payload:    json.RawMessage(`{}`),
 		EnqueuedAt: 10,
 		Settlement: settlement,
+		NoRow:      true,
 	})
 	app.triage.RegisterQueueItem(thread.ID, triage.QueuedFlushItem{
 		ID:         "queue:second",
 		Message:    "second queued",
 		Payload:    json.RawMessage(`{}`),
 		EnqueuedAt: 20,
+		NoRow:      true,
 	})
 
 	app.restoreUnconfirmedQueueOnSessionDeath(thread.ID)
@@ -2070,6 +2072,7 @@ func TestSessionDeathDraftFailureRequeuesWithoutSettling(t *testing.T) {
 	app.triage.RegisterQueueItem(thread.ID, triage.QueuedFlushItem{
 		ID: "queue:retry", Message: "still pending", Payload: json.RawMessage(`{}`),
 		EnqueuedAt: 10, Settlement: settlement,
+		NoRow: true,
 	})
 	if err := app.store.Close(); err != nil {
 		t.Fatalf("close store: %v", err)
@@ -2115,6 +2118,7 @@ func TestPreInitTeardownRestoresQueuedSendsToDraft(t *testing.T) {
 		Message:    "queued while the dead session was starting",
 		Payload:    json.RawMessage(`{}`),
 		EnqueuedAt: 10,
+		NoRow:      true,
 	})
 	app.sessionManager().put(thread.ID, session{Provider: string(provider.Claude), Token: "doa-token"})
 
@@ -2160,6 +2164,7 @@ func TestSessionStatusErrorRestoresQueuedFlushItemsToDraft(t *testing.T) {
 				Message:    "restore through handler",
 				Payload:    json.RawMessage(`{}`),
 				EnqueuedAt: 10,
+				NoRow:      true,
 			})
 
 			handler := startedSessionEventHandler(app, thread.ID, "session-token", string(providerType))
@@ -2320,7 +2325,7 @@ func TestDispatchFlush_StaleRowCleanupBeforePersist(t *testing.T) {
 		Liveness: newSessionLiveness(time.Now()),
 	})
 
-	app.dispatchFlush(thread.ID, []triage.QueuedFlushItem{{
+	dispatchThroughWorker(app, thread.ID, []triage.QueuedFlushItem{{
 		ID: "queue:retry", Message: "retry me", Payload: json.RawMessage(`{}`),
 		StaleUserItemID: "user:0:flush:1",
 	}})
@@ -2376,7 +2381,7 @@ func TestDispatchFlush_FailedDispatchKeepsStaleRow(t *testing.T) {
 
 	// An attachment that no longer resolves fails the dispatch before the
 	// stale row's cleanup.
-	app.dispatchFlush(thread.ID, []triage.QueuedFlushItem{{
+	dispatchThroughWorker(app, thread.ID, []triage.QueuedFlushItem{{
 		ID: "queue:keep", Message: "keep me", Payload: json.RawMessage(`{"attachmentIds":["gone"]}`),
 		StaleUserItemID: "user:0:flush:1",
 	}})
@@ -2450,7 +2455,7 @@ func TestDispatchFlush_PostPersistFailureRequeuesWithFreshRowMarker(t *testing.T
 		Liveness: newSessionLiveness(time.Now()),
 	})
 
-	app.dispatchFlush(thread.ID, []triage.QueuedFlushItem{{
+	dispatchThroughWorker(app, thread.ID, []triage.QueuedFlushItem{{
 		ID: "queue:retry", Message: "retry me", Payload: json.RawMessage(`{}`),
 		StaleUserItemID: "user:0:flush:1",
 	}})
@@ -2520,7 +2525,7 @@ func TestDispatchFlush_RequeueAfterQueueFlushedRepublishesTheQueueID(t *testing.
 		Liveness: newSessionLiveness(time.Now()),
 	})
 
-	app.dispatchFlush(thread.ID, []triage.QueuedFlushItem{{
+	dispatchThroughWorker(app, thread.ID, []triage.QueuedFlushItem{{
 		ID: "queue:republish", Message: "write this", Payload: json.RawMessage(`{}`),
 	}})
 
@@ -2811,6 +2816,7 @@ func TestStartSession_FlushesRequeuedItems(t *testing.T) {
 	app.triage.RegisterQueueItem(thread.ID, triage.QueuedFlushItem{
 		ID: "queue:idle", Message: "flush me", Payload: json.RawMessage(`{}`),
 		EnqueuedAt: 10,
+		NoRow:      true,
 	})
 
 	if err := app.StartSession(thread.ID); err != nil {
@@ -2877,6 +2883,7 @@ func TestSessionDeathRetriesStaleRowCleanupForQueuedItem(t *testing.T) {
 		ID: "queue:stale", Message: "survived one death",
 		Payload: json.RawMessage(`{}`), EnqueuedAt: 10,
 		StaleUserItemID: "user:0:flush:1",
+		NoRow:           true,
 	})
 
 	app.restoreUnconfirmedQueueOnSessionDeath(thread.ID)
@@ -2919,6 +2926,7 @@ func TestTeardownDeadPreInitSession_KeepsRequeuedItems(t *testing.T) {
 	app.triage.RegisterQueueItem(thread.ID, triage.QueuedFlushItem{
 		ID: "queue:survivor", Message: "keep me", Payload: json.RawMessage(`{}`),
 		EnqueuedAt: 10, StaleUserItemID: "user:0:flush:1",
+		NoRow: true,
 	})
 	app.sessionManager().put(thread.ID, session{
 		Provider: string(provider.Claude),
@@ -2984,8 +2992,9 @@ func TestSessionDeathDedupeDispatchCurrentAndPendingFlush(t *testing.T) {
 			Payload:    json.RawMessage(`{}`),
 			EnqueuedAt: 10,
 			Settlement: settlement,
+			NoRow:      true,
 		}},
-		generation: app.flushDispatch.generation[thread.ID],
+		generation: app.currentFlushDispatchGeneration(thread.ID),
 	}
 	app.flushDispatch.inflightItems[thread.ID] = 1
 	app.flushDispatch.mu.Unlock()
@@ -3480,7 +3489,7 @@ func TestDispatchFlush_CodexTurnStartTimeoutKeepsPendingConfirmation(t *testing.
 		Codex:    sess,
 	})
 
-	app.dispatchFlush(thread.ID, []triage.QueuedFlushItem{
+	dispatchThroughWorker(app, thread.ID, []triage.QueuedFlushItem{
 		{ID: "queue:start-timeout", Message: "eventually accepted"},
 	})
 
@@ -3664,7 +3673,7 @@ func TestDispatchFlush_SettlesOnlyAfterTheProviderWrite(t *testing.T) {
 		})
 
 		fired := 0
-		app.dispatchFlush(thread.ID, []triage.QueuedFlushItem{{
+		dispatchThroughWorker(app, thread.ID, []triage.QueuedFlushItem{{
 			ID: "queue:ok", Message: "wake", Payload: json.RawMessage(`{}`),
 			Settlement: triage.NewFlushSettlement(func(string) { fired++ }),
 		}})
@@ -3691,7 +3700,7 @@ func TestDispatchFlush_SettlesOnlyAfterTheProviderWrite(t *testing.T) {
 		app.sessionManager().put(thread.ID, session{Provider: string(provider.Codex), Token: "flush-token", Codex: sess})
 
 		fired := 0
-		app.dispatchFlush(thread.ID, []triage.QueuedFlushItem{{
+		dispatchThroughWorker(app, thread.ID, []triage.QueuedFlushItem{{
 			ID: "queue:fail", Message: "wake", Payload: json.RawMessage(`{}`),
 			Settlement: triage.NewFlushSettlement(func(string) { fired++ }),
 		}})
@@ -3791,7 +3800,7 @@ func TestDiscardedSendsRestoreWithTheQueueInOrder(t *testing.T) {
 		row := store.Item{ID: fmt.Sprintf("user:flush:%d", i), ThreadID: thread.ID, Kind: "user_text", Role: "user", Status: "completed", Summary: text, CreatedAt: now, UpdatedAt: now}
 		app.triage.RegisterPendingFlushSendWithExpectation(thread.ID, fmt.Sprintf("queue:%d", i), row, int64(10*(i+1)), triage.PendingSendExpectation{ProviderItemID: fmt.Sprintf("u-%d", i)})
 	}
-	app.triage.RegisterQueueItem(thread.ID, triage.QueuedFlushItem{ID: "queue:third", Message: "third", Payload: json.RawMessage(`{}`), EnqueuedAt: 30})
+	app.triage.RegisterQueueItem(thread.ID, triage.QueuedFlushItem{ID: "queue:third", Message: "third", Payload: json.RawMessage(`{}`), EnqueuedAt: 30, NoRow: true})
 
 	handler := startedSessionEventHandler(app, thread.ID, "session-token", string(provider.Claude))
 	lifecycle := func(uuid string, state provider.CommandLifecycleState) {
@@ -3944,6 +3953,7 @@ func TestAutoReconnectAfterDeathRestoresTheQueueFirst(t *testing.T) {
 		}
 		app.triage.RegisterQueueItem(thread.ID, triage.QueuedFlushItem{
 			ID: "queue:" + thread.ID, Message: "queued before the death", Payload: json.RawMessage(`{}`), EnqueuedAt: 10,
+			NoRow: true,
 		})
 		ids = append(ids, thread.ID)
 	}
@@ -4007,7 +4017,7 @@ func TestDispatchFlush_QuietRowDoesNotDeliverItsReviewDrafts(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			app.dispatchFlush(thread.ID, []triage.QueuedFlushItem{{ID: "queue:review", Message: "see the notes", Payload: payload}})
+			dispatchThroughWorker(app, thread.ID, []triage.QueuedFlushItem{{ID: "queue:review", Message: "see the notes", Payload: payload}})
 
 			owner := store.ThreadReviewOwner(thread.ID)
 			var quiet store.Item

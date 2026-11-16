@@ -102,7 +102,14 @@ func TestAWakeLostToShutdownTellsTheTray(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	a.appCtx = ctx
+	// The fire's run, registered as its claim registers it (fireAgentWake).
 	run := &agentWakeRun{threadID: thread.ID, cancel: func() {}, done: make(chan struct{})}
+	a.agentWakes.mu.Lock()
+	if a.agentWakes.runs == nil {
+		a.agentWakes.runs = make(map[string]*agentWakeRun)
+	}
+	a.agentWakes.runs[loop.ID] = run
+	a.agentWakes.mu.Unlock()
 
 	a.settleAgentWakeDelivery(run, loop, agentWakeFire{at: now.UnixMilli()}, "Loop \"board\" fired.", context.Canceled)
 	change := awaitWakeChange(t, rec, thread.ID, loop.ID, func(c ThreadWakeChange) bool {

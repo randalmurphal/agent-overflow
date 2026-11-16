@@ -1,0 +1,569 @@
+package app
+
+import (
+	"context"
+	"errors"
+	"strings"
+	"testing"
+	"time"
+
+	"agent-overflow/internal/entityid"
+	"agent-overflow/internal/store"
+)
+
+// A start the app makes on its own, a live session's dispatch or a notice's
+// session start, waits at a delete's decision gate while the delete decides
+// (deleteDecisions): a refused delete's starts go on as if the claim had
+// never stood, a committed delete's start nothing, and none is left
+// waiting.
+
+// waitingAtGates is how many starts wait at a delete's gate.
+func waitingAtGates(a *App) int {
+	a.deleteDecisions.mu.Lock()
+	defer a.deleteDecisions.mu.Unlock()
+	return a.deleteDecisions.waiting
+}
+
+// quietAtGates routes the worker prompts and waits until every notice start
+// and dispatch begun has finished or waits at a delete's gate.
+func quietAtGates(t *testing.T, a *App) {
+	t.Helper()
+	if err := a.drainWorkerPrompts(t.Context(), 10*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	waitUntil(t, 10*time.Second, func() bool {
+		a.agentNoticeWork.mu.Lock()
+		notices := a.agentNoticeWork.running
+		a.agentNoticeWork.mu.Unlock()
+		a.flushDispatch.mu.Lock()
+		workers := len(a.flushDispatch.running)
+		a.flushDispatch.mu.Unlock()
+		return notices+workers == waitingAtGates(a)
+	})
+}
+
+// waitAtGates waits until n starts wait at a delete's gate.
+func waitAtGates(t *testing.T, a *App, n int) {
+	t.Helper()
+	waitUntil(t, 10*time.Second, func() bool { return waitingAtGates(a) == n })
+}
+
+// nothingWaits fails unless no start waits at a gate and no notice start or
+// dispatch is left running.
+func nothingWaits(t *testing.T, a *App) {
+	t.Helper()
+	a.waitAgentNoticeWork()
+	a.flushDispatch.wg.Wait()
+	if n := waitingAtGates(a); n != 0 {
+		t.Fatalf("%d starts still wait at a gate", n)
+	}
+	a.flushDispatch.mu.Lock()
+	workers := len(a.flushDispatch.running)
+	a.flushDispatch.mu.Unlock()
+	if workers != 0 {
+		t.Fatalf("%d dispatch workers are left", workers)
+	}
+}
+
+// abandonGates drops every gate as the end of the process that held them
+// does: a start waiting at one finds the claim with no delete to decide it.
+func abandonGates(a *App) {
+	a.deleteDecisions.mu.Lock()
+	defer a.deleteDecisions.mu.Unlock()
+	for id, gate := range a.deleteDecisions.gates {
+		close(gate.decided)
+		delete(a.deleteDecisions.gates, id)
+	}
+}
+
+// claimForTest claims ids for the delete op as a delete does, opening each
+// thread's gate before its claim; releaseForTest refuses it.
+func claimForTest(t *testing.T, a *App, op string, ids []string) {
+	t.Helper()
+	if _, err := a.store.ClaimDeleteFamily(op, ids, func(threads []string) error {
+		return a.deleteDecisions.open(op, threads)
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func releaseForTest(t *testing.T, a *App, op string) {
+	t.Helper()
+	if err := a.store.ReleaseDeleteClaim(op); err != nil {
+		t.Fatal(err)
+	}
+	a.deleteDecisions.shut(op, nil)
+}
+
+// deleteOf runs a delete of threadID, refused or committed as refuse says,
+// on its own goroutine, and returns once its claim is written; verified runs
+// once it verified the family, before its decision. The returned channel
+// has its error.
+func deleteOf(t *testing.T, a *App, threadID string, refuse bool, verified func()) <-chan error {
+	t.Helper()
+	claimed := make(chan struct{})
+	a.deleteClaimedForTest = func([]string) { close(claimed) }
+	done := make(chan error, 1)
+	go func() {
+		_, err := a.deleteThreads(deleteRequest{seeds: []string{threadID}, verified: func([]store.DeleteMember) error {
+			verified()
+			if refuse {
+				return errRefusedForTest
+			}
+			return nil
+		}})
+		done <- err
+	}()
+	within(t, "the claim", claimed)
+	a.deleteClaimedForTest = nil
+	return done
+}
+
+// decided waits for a delete deleteOf ran, and fails unless it was refused
+// or committed as refuse said.
+func decided(t *testing.T, done <-chan error, refuse bool) {
+	t.Helper()
+	if err := within(t, "the delete", done); errors.Is(err, errRefusedForTest) != refuse || (!refuse && err != nil) {
+		t.Fatalf("the delete = %v, want refused %v", err, refuse)
+	}
+}
+
+// A claim that lands while a live session's batch waits for the thread's
+// action lock holds the batch: the dispatch reads the claim once it has the
+// lock and waits for the decision. A refused delete's batch is sent once; a
+// committed one's is sent nothing, with no waiter or worker left.
+func TestAClaimLandingWhileABatchWaitsOnTheActionLockHoldsIt(t *testing.T) {
+	t.Parallel()
+	for _, refuse := range []bool{true, false} {
+		t.Run(map[bool]string{true: "refused", false: "committed"}[refuse], func(t *testing.T) {
+			t.Parallel()
+			f := newClaimFixture(t)
+			if err := f.app.StartSession(f.caller.ID); err != nil {
+				t.Fatal(err)
+			}
+			unlock := f.app.threadLocks().Lock(f.caller.ID)
+			marker := "held-" + entityid.New()
+			queueTestWake(t, f.app, f.caller.ID, marker)
+			heldAtTheActionLock(t, f.app, f.caller.ID)
+			done := deleteOf(t, f.app, f.caller.ID, refuse, func() {
+				waitAtGates(t, f.app, 1)
+				if n := f.sent(t, marker); n != 0 {
+					t.Errorf("a claimed thread's batch reached the provider %d times", n)
+				}
+			})
+			unlock()
+			decided(t, done, refuse)
+			if refuse {
+				f.deliveredOnce(t, marker)
+				return
+			}
+			nothingWaits(t, f.app)
+			if n := f.sent(t, marker); n != 0 {
+				t.Fatalf("a committed thread's batch reached the provider %d times", n)
+			}
+		})
+	}
+}
+
+// A batch waiting for a delete that is refused, and claimed again by a
+// second delete before the batch reads the thread again, waits for the
+// second delete's decision too.
+func TestABatchWaitsForAReclaimAfterARelease(t *testing.T) {
+	t.Parallel()
+	f := newClaimFixture(t)
+	if err := f.app.StartSession(f.caller.ID); err != nil {
+		t.Fatal(err)
+	}
+	marker := "twice-held-" + entityid.New()
+	var unlock func()
+	first := deleteOf(t, f.app, f.caller.ID, true, func() {
+		queueTestWake(t, f.app, f.caller.ID, marker)
+		waitAtGates(t, f.app, 1)
+		// Held across the refusal, so the batch reads the thread again only
+		// once the second delete's claim is written.
+		unlock = f.app.threadLocks().Lock(f.caller.ID)
+	})
+	decided(t, first, true)
+	second := deleteOf(t, f.app, f.caller.ID, true, func() {
+		waitAtGates(t, f.app, 1)
+		if n := f.sent(t, marker); n != 0 {
+			t.Errorf("the batch reached the provider %d times before the second decision", n)
+		}
+	})
+	unlock()
+	decided(t, second, true)
+	f.deliveredOnce(t, marker)
+	nothingWaits(t, f.app)
+}
+
+// A delete that commits a family while a live thread's batch and a stopped
+// worker's two notice starts wait for its decision ends all three: nothing
+// is sent or started, no start is recorded as failed, and no waiter, notice
+// start or dispatch worker is left.
+func TestACommitEndsEveryStartWaitingForIt(t *testing.T) {
+	t.Parallel()
+	f := newClaimFixture(t)
+	worker := f.plainThread(t)
+	recordSpawn(t, f.app, "spawn-"+entityid.New(), f.caller.ID, worker.ID)
+	if err := f.app.StartSession(f.caller.ID); err != nil {
+		t.Fatal(err)
+	}
+	batch := "batch-" + entityid.New()
+	reminders := []string{"remind-" + entityid.New(), "remind-" + entityid.New()}
+	done := deleteOf(t, f.app, f.caller.ID, false, func() {
+		queueTestWake(t, f.app, f.caller.ID, batch)
+		for _, token := range reminders {
+			insertTestReminder(t, f.app, token, worker.ID, "remind "+token, time.Now().Add(-time.Second).UnixMilli())
+			f.app.fireDueThreadReminders(time.Now())
+			awaitQueuedWake(t, f.app, worker.ID, threadWakeSendID(token))
+		}
+		waitAtGates(t, f.app, 3)
+	})
+	decided(t, done, false)
+	nothingWaits(t, f.app)
+	if n := len(recordedUserEnvelopes(t, f.stdin)); n != 0 {
+		t.Fatalf("the committed family's provider was written %d messages", n)
+	}
+	if _, live := f.app.sessionManager().get(worker.ID); live {
+		t.Fatal("a committed worker was started")
+	}
+	f.app.agentNoticeWork.mu.Lock()
+	failing := len(f.app.agentNoticeWork.failing)
+	running := f.app.agentNoticeWork.running
+	f.app.agentNoticeWork.mu.Unlock()
+	if failing != 0 || running != 0 {
+		t.Fatalf("after the commit: %d failed starts recorded, %d notice starts running; want none", failing, running)
+	}
+}
+
+// Shutdown ends the starts waiting for a delete's decision: the batch and
+// the notice start return without sending or starting anything and record
+// no failure, and the messages stay in the durable queue for the next boot.
+func TestShutdownEndsTheStartsWaitingForADecision(t *testing.T) {
+	t.Parallel()
+	f := newClaimFixture(t)
+	f.app.appCtx, f.app.appCancel = context.WithCancel(context.Background())
+	worker := f.plainThread(t)
+	recordSpawn(t, f.app, "spawn-"+entityid.New(), f.caller.ID, worker.ID)
+	if err := f.app.StartSession(f.caller.ID); err != nil {
+		t.Fatal(err)
+	}
+	batch := "batch-" + entityid.New()
+	token := "remind-" + entityid.New()
+	refusedDelete(t, f.app, f.caller.ID, func() {
+		queueTestWake(t, f.app, f.caller.ID, batch)
+		insertTestReminder(t, f.app, token, worker.ID, "remind "+token, time.Now().Add(-time.Second).UnixMilli())
+		f.app.fireDueThreadReminders(time.Now())
+		waitAtGates(t, f.app, 2)
+		f.app.appCancel()
+		nothingWaits(t, f.app)
+	})
+	if n := len(recordedUserEnvelopes(t, f.stdin)); n != 0 {
+		t.Fatalf("the provider was written %d messages", n)
+	}
+	if _, live := f.app.sessionManager().get(worker.ID); live {
+		t.Fatal("the worker was started")
+	}
+	f.app.agentNoticeWork.mu.Lock()
+	failing := len(f.app.agentNoticeWork.failing)
+	f.app.agentNoticeWork.mu.Unlock()
+	if failing != 0 {
+		t.Fatalf("%d failed starts recorded at shutdown, want none", failing)
+	}
+	if len(durableQueueRows(t, f.app, f.caller.ID)) != 1 || len(durableQueueRows(t, f.app, worker.ID)) != 1 {
+		t.Fatal("a message left the durable queue at shutdown")
+	}
+}
+
+// A worker that joins the family while the delete verifies it, its spawn
+// named during the drain, has its gate opened with its claim: a notice for
+// it then waits for the decision, and the refused delete's release starts
+// the worker for it.
+func TestAThreadTheFamilyGainsDuringVerifyWaitsForTheDecision(t *testing.T) {
+	t.Parallel()
+	f := newClaimFixture(t)
+	owner := f.caller.ID
+	done, err := f.app.admitWork(owner, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	late := f.plainThread(t)
+	if _, err := f.app.store.AcceptLocalThreadRequest(store.ThreadRequest{
+		Token: "tok-late", CallerThreadID: owner, Kind: store.ThreadRequestSpawn, State: store.ThreadRequestUnconfirmed,
+	}, store.ThreadRequestReceipt{Token: "tok-late", OwnerDeviceID: "device", Kind: store.ThreadRequestSpawn, SourceThreadID: owner}); err != nil {
+		t.Fatal(err)
+	}
+	named := make(chan error, 1)
+	go func() {
+		defer done()
+		// Name the spawn's thread once the delete waits on it.
+		for {
+			f.app.resting.mu.Lock()
+			closed := f.app.resting.closed[owner] > 0
+			f.app.resting.mu.Unlock()
+			if closed {
+				break
+			}
+			time.Sleep(time.Millisecond)
+		}
+		_, err := f.app.store.NameLocalThreadRequestTarget("tok-late", late.ID, true)
+		named <- err
+	}()
+	token := "remind-" + entityid.New()
+	f.app.deleteVerifiedForTest = func(id string) {
+		if id != late.ID {
+			return
+		}
+		insertTestReminder(t, f.app, token, late.ID, "remind "+token, time.Now().Add(-time.Second).UnixMilli())
+		f.app.fireDueThreadReminders(time.Now())
+		awaitQueuedWake(t, f.app, late.ID, threadWakeSendID(token))
+		waitAtGates(t, f.app, 1)
+	}
+	if _, err := f.app.deleteThreads(deleteRequest{seeds: []string{owner}, verified: func(members []store.DeleteMember) error {
+		if !memberOf(members, late.ID) {
+			t.Error("the late worker did not join the family")
+		}
+		return errRefusedForTest
+	}}); !errors.Is(err, errRefusedForTest) {
+		t.Fatalf("the delete = %v, want it refused", err)
+	}
+	f.app.deleteVerifiedForTest = nil
+	if err := within(t, "the late spawn", named); err != nil {
+		t.Fatalf("name the late spawn's thread: %v", err)
+	}
+	f.deliveredOnce(t, "remind "+token)
+	nothingWaits(t, f.app)
+}
+
+func memberOf(members []store.DeleteMember, id string) bool {
+	for _, member := range members {
+		if member.ThreadID == id {
+			return true
+		}
+	}
+	return false
+}
+
+// A fire's run that tries the start again for its row's wake a failed start
+// left queued waits for a delete's decision as a registered run: cancelling
+// the loop ends the run and its wait, and nothing starts.
+func TestAFireRunWaitingForADecisionEndsWithItsCancel(t *testing.T) {
+	t.Parallel()
+	f := newClaimFixture(t)
+	f.app.agentWakes.floorOverride = 20 * time.Millisecond
+	f.app.startSessionFn = func(string) error { return errors.New("the provider binary is missing") }
+	loop := registerTestWake(t, f.app, store.AgentWake{ThreadID: f.caller.ID, Kind: store.AgentWakeLoop, Label: "board", Note: "board",
+		IntervalSeconds: 3600, NextAt: time.Now().Add(time.Hour).UnixMilli()})
+	if err := f.app.deliverAgentWake(t.Context(), loop, 1, testAgentWake(t, loop, "board fired")); err != nil {
+		t.Fatal(err)
+	}
+	f.app.waitAgentNoticeWork()
+	waitUntil(t, 10*time.Second, func() bool { return f.app.agentNoticeRetryDue(f.caller.ID) })
+	f.app.startSessionFn = nil
+	running := func() bool {
+		f.app.agentWakes.mu.Lock()
+		defer f.app.agentWakes.mu.Unlock()
+		_, ok := f.app.agentWakes.runs[loop.ID]
+		return ok
+	}
+	refusedDelete(t, f.app, f.caller.ID, func() {
+		now := time.Now()
+		if !f.app.fireAgentWake(loop, now, agentWakeFire{at: now.UnixMilli()}) {
+			t.Fatal("the fire did not start")
+		}
+		waitAtGates(t, f.app, 1)
+		if !running() {
+			t.Fatal("the run waiting for the decision is not registered")
+		}
+		if _, cancelled, err := f.app.cancelAgentWake(f.caller.ID, loop.Label, loop.Kind); err != nil || !cancelled {
+			t.Fatalf("cancel the loop = %v, %v", cancelled, err)
+		}
+		waitUntil(t, 10*time.Second, func() bool { return !running() })
+		waitAtGates(t, f.app, 0)
+	})
+	if _, live := f.app.sessionManager().get(f.caller.ID); live {
+		t.Fatal("the cancelled run's start went ahead")
+	}
+}
+
+// S r6 finding 1 and A r4 finding 1: a release that lands after a dispatch
+// read the claim and before it reached the gate is not missed. The dispatch
+// finds the gate shut and the claim gone, and sends the batch.
+func TestAReleaseBeforeTheBatchReachesTheGateIsNotMissed(t *testing.T) {
+	t.Parallel()
+	f := newClaimFixture(t)
+	if err := f.app.StartSession(f.caller.ID); err != nil {
+		t.Fatal(err)
+	}
+	marker := "early-release-" + entityid.New()
+	hook, at, proceed := holdOnce()
+	f.app.deleteDecisionReadForTest = hook
+	refusedDelete(t, f.app, f.caller.ID, func() {
+		queueTestWake(t, f.app, f.caller.ID, marker)
+		within(t, "the dispatch at the gate", at)
+	})
+	close(proceed)
+	f.deliveredOnce(t, marker)
+	nothingWaits(t, f.app)
+}
+
+// The boot releases every claim the process before it left undecided before
+// anything starts (settlePriorInstance), so no claim stands without a delete
+// to decide it, and a notice start after the boot starts the thread.
+func TestTheBootLeavesNoClaimWithoutItsDelete(t *testing.T) {
+	t.Parallel()
+	f := newClaimFixture(t)
+	if _, err := f.app.store.ClaimDeleteFamily("quit-op", []string{f.caller.ID}, nil); err != nil {
+		t.Fatal(err)
+	}
+	after := f.restart(t)
+	after.app.configureTriageQueueCallbacks()
+	after.app.settlePriorInstance()
+	if claim, committed, err := after.app.store.ThreadDeleteClaim(f.caller.ID); err != nil || claim != "" || committed {
+		t.Fatalf("the claim after the boot = %q committed %v (%v), want none", claim, committed, err)
+	}
+	after.holdCallerSession()
+	if !after.app.startAgentNoticeSession(t.Context(), agentNotice{threadID: f.caller.ID, sendID: "wake:after-boot"}, false) {
+		t.Fatal("a notice start after the boot did not start the thread")
+	}
+	nothingWaits(t, after.app)
+}
+
+// A claim no delete under way holds, which only a boot whose release failed
+// leaves, ends a start that meets it rather than leaving it waiting or
+// spinning: nothing is sent or started, no failure is recorded, and the
+// message stays queued for the next boot.
+func TestAClaimNoDeleteDecidesEndsTheStart(t *testing.T) {
+	t.Parallel()
+	f := newClaimFixture(t)
+	if err := f.app.StartSession(f.caller.ID); err != nil {
+		t.Fatal(err)
+	}
+	worker := f.plainThread(t)
+	if _, err := f.app.store.ClaimDeleteFamily("quit-op", []string{f.caller.ID, worker.ID}, nil); err != nil {
+		t.Fatal(err)
+	}
+	queueTestWake(t, f.app, f.caller.ID, "batch-"+entityid.New())
+	token := "remind-" + entityid.New()
+	insertTestReminder(t, f.app, token, worker.ID, "remind "+token, time.Now().Add(-time.Second).UnixMilli())
+	f.app.fireDueThreadReminders(time.Now())
+	awaitQueuedWake(t, f.app, worker.ID, threadWakeSendID(token))
+	nothingWaits(t, f.app)
+	if n := len(recordedUserEnvelopes(t, f.stdin)); n != 0 {
+		t.Fatalf("the provider was written %d messages", n)
+	}
+	f.app.agentNoticeWork.mu.Lock()
+	failing := len(f.app.agentNoticeWork.failing)
+	f.app.agentNoticeWork.mu.Unlock()
+	if failing != 0 {
+		t.Fatalf("%d failed starts recorded, want none", failing)
+	}
+	if len(durableQueueRows(t, f.app, f.caller.ID)) != 1 || len(durableQueueRows(t, f.app, worker.ID)) != 1 {
+		t.Fatal("a message left the durable queue")
+	}
+}
+
+// A claim whose write fails after its gates opened shuts them: nothing is
+// left gated, and the next delete of the thread goes ahead.
+func TestAClaimThatFailsShutsTheGatesItOpened(t *testing.T) {
+	t.Parallel()
+	f := newClaimFixture(t)
+	execOnStore(t, f.dbPath, `CREATE TRIGGER refuse_claim BEFORE UPDATE OF delete_claim ON threads BEGIN SELECT RAISE(ABORT, 'injected claim failure'); END`)
+	if _, err := f.app.DeleteThread(f.caller.ID); err == nil || !strings.Contains(err.Error(), "injected claim failure") {
+		t.Fatalf("the delete = %v, want the claim's failure", err)
+	}
+	execOnStore(t, f.dbPath, `DROP TRIGGER refuse_claim`)
+	f.app.deleteDecisions.mu.Lock()
+	gates := len(f.app.deleteDecisions.gates)
+	f.app.deleteDecisions.mu.Unlock()
+	if gates != 0 {
+		t.Fatalf("%d gates left open by the failed claim", gates)
+	}
+	if result, err := f.app.DeleteThread(f.caller.ID); err != nil || len(result.WorkersNotDeleted) > 0 {
+		t.Fatalf("the next delete = %+v, %v", result, err)
+	}
+}
+
+// A teardown gives a moved wake back holding the torn-down thread's action
+// lock, and a delete of that thread and the wake's verifies it under that
+// lock. The start the wake waits on, the retry of a failed start that left
+// the row's earlier wake queued, runs as notice work holding no lock, so
+// the teardown and the delete both finish: a refused delete's release
+// delivers the wake once, and a committed delete's teardown drops it.
+func TestATeardownGivingAWakeBackDoesNotWaitForADeleteThatNeedsItsLock(t *testing.T) {
+	t.Parallel()
+	for name, refuse := range map[string]bool{"refused": true, "committed": false} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			f := newClaimFixture(t)
+			f.app.agentWakes.floorOverride = 20 * time.Millisecond
+			marker := "moved-" + entityid.New()
+			old, loop := handOffToCaller(t, f, store.AgentWake{Kind: store.AgentWakeLoop, Label: "board", Note: "board"}, marker)
+			f.app.startSessionFn = func(string) error { return errors.New("the provider binary is missing") }
+			row := wakeRow(t, f.app, loop.ID)
+			if row.ThreadID != f.caller.ID {
+				t.Fatalf("the loop is %s's, want the successor's", row.ThreadID)
+			}
+			if err := f.app.deliverAgentWake(t.Context(), row, 1, testAgentWake(t, row, "board fired")); err != nil {
+				t.Fatal(err)
+			}
+			f.app.waitAgentNoticeWork()
+			waitUntil(t, 10*time.Second, func() bool { return f.app.agentNoticeRetryDue(f.caller.ID) })
+			f.app.startSessionFn = nil
+
+			unlockOld := f.app.threadLocks().Lock(old)
+			claimed, decide := make(chan struct{}), make(chan struct{})
+			f.app.deleteClaimedForTest = func([]string) { close(claimed) }
+			done := make(chan error, 1)
+			go func() {
+				_, err := f.app.deleteThreads(deleteRequest{seeds: []string{f.caller.ID, old}, verified: func([]store.DeleteMember) error {
+					<-decide
+					if refuse {
+						return errRefusedForTest
+					}
+					return nil
+				}})
+				done <- err
+			}()
+			within(t, "the claim", claimed)
+			f.app.deleteClaimedForTest = nil
+			torn := make(chan error, 1)
+			go func() {
+				defer unlockOld()
+				torn <- f.app.teardownAndCloseSession(old, session{})
+			}()
+			select {
+			case err := <-torn:
+				if err != nil {
+					t.Fatal(err)
+				}
+			case <-time.After(5 * time.Second):
+				// The start ends finding no delete to decide the claim, and the rest follows.
+				abandonGates(f.app)
+				<-torn
+				close(decide)
+				<-done
+				t.Fatal("the teardown and the delete wait on each other")
+			}
+			// The retried start waits for the decision on its own.
+			waitAtGates(t, f.app, 1)
+			close(decide)
+			decided(t, done, refuse)
+			if refuse {
+				f.deliveredOnce(t, marker)
+			} else {
+				f.settle(t)
+				if n := f.sent(t, marker); n != 0 {
+					t.Fatalf("the provider was written the moved wake %d times", n)
+				}
+				if _, live := f.app.sessionManager().get(f.caller.ID); live {
+					t.Fatal("the committed thread started")
+				}
+				if ids := queuedSendIDsOf(t, f.app, f.caller.ID, agentWakeSendIDPrefix(loop.ID)); len(ids) != 0 {
+					t.Fatalf("the committed thread still queues %v", ids)
+				}
+			}
+			nothingWaits(t, f.app)
+		})
+	}
+}

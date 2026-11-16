@@ -13,7 +13,7 @@ import (
 // would, so TearDown and Drop see what they run on.
 func commitDelete(t *testing.T, database *store.Store, ids ...string) {
 	t.Helper()
-	if _, err := database.ClaimDeleteFamily("op", ids); err != nil {
+	if _, err := database.ClaimDeleteFamily("op", ids, nil); err != nil {
 		t.Fatalf("ClaimDeleteFamily: %v", err)
 	}
 	if _, err := database.CommitDeleteClaim("op", store.DeleteWorktrees{}); err != nil {
@@ -259,7 +259,7 @@ func TestAClaimedThreadIsTheDeletesAlone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := database.ClaimDeleteFamily("op", []string{thread.ID}); err != nil {
+	if _, err := database.ClaimDeleteFamily("op", []string{thread.ID}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := service.CheckMutable(thread.ID); !errors.Is(err, store.ErrThreadDeleting) {

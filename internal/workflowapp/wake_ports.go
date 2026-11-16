@@ -10,14 +10,13 @@ type LifecyclePorts struct {
 }
 
 // WakeDeliveryPorts is the existing user-message durability ladder expressed
-// from the wake consumer's side. QueueMessage's callback fires only once the
-// root send path has made the message durable.
+// from the wake consumer's side.
 type WakeDeliveryPorts struct {
-	HasLiveSession func(threadID string) bool
-	// QueueMessage and SendMessage deliver a run's wake, attributed to the
-	// workflow it came from.
+	// QueueMessage queues a run's wake for the thread, attributed to the
+	// workflow it came from, and starts the thread's session for it when it
+	// has none. onDurable fires only once the message reaches the provider
+	// or the composer.
 	QueueMessage func(threadID, workflowID string, message wake.Message, onDurable func()) error
-	SendMessage  func(threadID, workflowID string, message wake.Message) error
 }
 
 // AttentionPorts keeps OS notification and optional model-upgraded digest work

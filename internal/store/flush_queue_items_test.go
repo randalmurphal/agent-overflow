@@ -279,6 +279,38 @@ func TestFlushQueueItemsAreScopedToTheirThread(t *testing.T) {
 	}
 }
 
+// The presence read names exactly the asked rows that stand in the asked
+// thread's queue: not a deleted one, not another thread's, not one never
+// asked about.
+func TestFlushQueueItemsPresentNamesTheThreadsStandingRows(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThread(t, s, "thread-a")
+	mustCreateThread(t, s, "thread-b")
+	for _, row := range []FlushQueueItem{
+		{ID: "queue:a1", ThreadID: "thread-a", Message: "a1", EnqueuedAt: 1},
+		{ID: "queue:a2", ThreadID: "thread-a", Message: "a2", EnqueuedAt: 2},
+		{ID: "queue:a3", ThreadID: "thread-a", Message: "a3", EnqueuedAt: 3},
+		{ID: "queue:b1", ThreadID: "thread-b", Message: "b1", EnqueuedAt: 1},
+	} {
+		if err := s.InsertFlushQueueItem(row); err != nil {
+			t.Fatalf("insert %s: %v", row.ID, err)
+		}
+	}
+	if err := s.DeleteFlushQueueItem("queue:a2"); err != nil {
+		t.Fatal(err)
+	}
+	present, err := s.FlushQueueItemsPresent("thread-a", []string{"queue:a1", "queue:a2", "queue:b1", "queue:none"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(present) != 1 || !present["queue:a1"] {
+		t.Fatalf("present = %v, want queue:a1 alone", present)
+	}
+	if present, err := s.FlushQueueItemsPresent("thread-a", nil); err != nil || len(present) != 0 {
+		t.Fatalf("present for no ids = %v, %v; want none", present, err)
+	}
+}
+
 // Deleting a thread takes its queue with it. Without the cascade a deleted
 // thread's rows would outlive every path that could ever clear them, and the
 // boot sweep would try to write a draft for a thread that no longer exists.

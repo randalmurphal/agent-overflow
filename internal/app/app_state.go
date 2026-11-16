@@ -59,13 +59,12 @@ type appFlushDispatchState struct {
 	// both claim the same message, and on requeue the triage queue has
 	// taken the item back before it does.
 	//
-	// Deliberately NOT `current`: that one is the session-death drain's
-	// view and must keep the whole batch (dedupeUnconfirmedFlushItems
-	// resolves its overlap with the pending-send drain).
+	// Deliberately NOT `current`: that one is the batch as the worker and
+	// a session-death drain see it, the messages it has not finished
+	// writing, whose groups leave it as they settle or go back to the queue.
 	dispatching   map[string][]triage.QueuedFlushItem
 	running       map[string]bool
 	inflightItems map[string]int
-	generation    map[string]uint64
 	// flushUnsettled holds each thread with a `queue_flushed` that no
 	// provider:sends_pending frame reading nothing pending has covered yet.
 	// publishSendsPending emits that frame for a listed thread even when
@@ -251,4 +250,7 @@ type appAgentNoticeWorkState struct {
 	// (session_start_failures), and boot loads it, so a start after a
 	// restart withdraws a notification raised before it.
 	failing map[string]time.Time
+	// running counts the work in flight, which a test tells apart from the
+	// work waiting at a delete's gate (deleteDecisions.waiting).
+	running int
 }

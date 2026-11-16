@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -380,6 +381,61 @@ func TestTwoDeletesSharingAWorktreeLeaveItRemovedOrNamed(t *testing.T) {
 	}
 }
 
+// A remover that reads a worktree's occupants while a younger plain delete
+// holds the other thread on it decides from that one read, though the plain
+// delete drops the thread's row right after it: the worktree is kept and
+// named, and after a reopen nothing of either delete is left.
+func TestAnOccupantDeletedAfterTheOccupancyReadStillLeavesTheWorktreeNamed(t *testing.T) {
+	t.Parallel()
+	f := newSharedTree(t)
+	aVerified, bVerified := newHold(), newHold()
+	f.app.deleteVerifiedForTest = func(id string) {
+		switch id {
+		case "a":
+			aVerified.stop()
+		case "b":
+			bVerified.stop()
+		}
+	}
+	type answer struct {
+		result DeleteThreadResult
+		err    error
+	}
+	bDone := make(chan answer, 1)
+	f.app.deleteOccupantsReadForTest = func() {
+		// b's delete drops b's row before a decides what the read found.
+		close(bVerified.release)
+		b := within(t, "the plain delete of b", bDone)
+		if b.err != nil || len(b.result.WorkersNotDeleted) > 0 {
+			t.Errorf("the plain delete of b = %+v, %v", b.result, b.err)
+		}
+	}
+	aDone := make(chan answer, 1)
+	go func() {
+		var a answer
+		a.result, a.err = f.app.DeleteThreadsAndWorktrees(context.Background(), []string{"a"})
+		aDone <- a
+	}()
+	within(t, "a's verify", aVerified.reached)
+	go func() {
+		var b answer
+		b.result, b.err = f.app.DeleteThread("b")
+		bDone <- b
+	}()
+	within(t, "b's verify", bVerified.reached)
+	close(aVerified.release)
+	a := within(t, "the delete of a", aDone)
+	if a.err != nil || len(a.result.WorkersNotDeleted) > 0 {
+		t.Fatalf("the delete of a = %+v, %v", a.result, a.err)
+	}
+	named := len(a.result.RetainedWorktrees) == 1 && a.result.RetainedWorktrees[0].Path == f.tree &&
+		strings.Contains(a.result.RetainedWorktrees[0].Reason, "is being deleted by another delete")
+	if exists(t, f.tree) && !named {
+		t.Errorf("the worktree is on disk and the delete did not name it: %+v", a.result)
+	}
+	f.reopen(t, "a", "b")
+}
+
 // A worktree the delete removed whose cleanup after it then failed (a
 // terminal opened in it that would not close) is named in the result with
 // the error, as its own kind: the worktree is gone, and so are its threads.
@@ -414,4 +470,30 @@ func TestAWorktreeCleanupFailureAfterTheRemovalIsInTheResult(t *testing.T) {
 	if !gone(t, f.app, "a") || exists(t, f.tree) {
 		t.Errorf("a gone %v, worktree removed %v; want both", gone(t, f.app, "a"), !exists(t, f.tree))
 	}
+}
+
+// A delete that shares a worktree with threads other deletes hold reads
+// them and their claims in one query, however many there are: arbitrating
+// the site reads the store a constant number of times.
+func TestArbitratingASharedWorktreeReadsItsOccupantsClaimsOnce(t *testing.T) {
+	t.Parallel()
+	f := newSharedTree(t)
+	claimed := []string{"b"}
+	for i := range 99 {
+		id := fmt.Sprintf("c-%02d", i)
+		f.thread(t, id, f.tree)
+		claimed = append(claimed, id)
+	}
+	// An older delete claimed every other thread on the worktree.
+	claimForTest(t, f.app, "0-older", claimed)
+	reads := readsUnder(f.app.store, "app.(*familyDelete).verifyWorktrees")
+	_, err := f.app.DeleteThreadsAndWorktrees(context.Background(), []string{"a"})
+	total, byAccessor := reads()
+	if code, _, _ := errorsx.PublicDetails(err); code != "delete_worktree_being_deleted" {
+		t.Fatalf("the delete = %v, want it refused for the other delete", err)
+	}
+	if total > 4 {
+		t.Errorf("arbitrating the site read the store %d times (%v), want at most 4 whatever its occupants", total, byAccessor)
+	}
+	untouched(t, f.app, "a")
 }

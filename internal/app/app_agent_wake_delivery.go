@@ -91,15 +91,31 @@ func (a *App) deliverAgentWake(ctx context.Context, row store.AgentWake, fireAt 
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	retry, err := a.queueAgentWake(row, fireAt, message)
+	if retry != nil {
+		return retry(ctx)
+	}
+	return err
+}
+
+// queueAgentWake is deliverAgentWake short of the start it tries again: when
+// the row's previous wake waits on a start that failed, it returns that
+// retry, for a caller that may hold a thread's lock to run as notice work.
+func (a *App) queueAgentWake(row store.AgentWake, fireAt int64, message usermessage.AgentMessage) (func(context.Context) error, error) {
 	notice, abandoned := a.agentWakeNotice(row, agentWakeSendID(row.ID, fireAt), message)
 	err := a.queueAgentNotice(notice)
-	if errors.Is(err, store.ErrAgentWakeStillQueued) {
-		err = a.retryAgentWakeStart(row, notice)
+	if _, live := a.sessionManager().get(row.ThreadID); errors.Is(err, store.ErrAgentWakeStillQueued) && !live && a.agentNoticeRetryDue(row.ThreadID) {
+		return func(ctx context.Context) error {
+			if err := a.retryAgentWakeStart(ctx, row, notice); err != nil {
+				return err
+			}
+			return *abandoned
+		}, nil
 	}
 	if err != nil {
-		return err
+		return nil, err
 	}
-	return *abandoned
+	return nil, *abandoned
 }
 
 // agentWakeNotice is the notice that carries one wake of row, message, as
@@ -161,8 +177,8 @@ func (a *App) agentWakeNotice(row store.AgentWake, sendID string, message userme
 // the agent and this fire is skipped. When it waits on a start that failed,
 // this fire tries the start again for it, and once a session is up its own
 // wake (notice) queues behind the waiting one, so both go. That is the most
-// one row ever has queued.
-func (a *App) retryAgentWakeStart(row store.AgentWake, notice agentNotice) error {
+// one row ever has queued. ctx is the run's: the start waits on it.
+func (a *App) retryAgentWakeStart(ctx context.Context, row store.AgentWake, notice agentNotice) error {
 	if _, live := a.sessionManager().get(row.ThreadID); live || !a.agentNoticeRetryDue(row.ThreadID) {
 		return store.ErrAgentWakeStillQueued
 	}
@@ -172,7 +188,7 @@ func (a *App) retryAgentWakeStart(row store.AgentWake, notice agentNotice) error
 	}
 	// The start is the held wake's, so a keep that refuses it withdraws the
 	// wake that is queued, not this fire's, which is not.
-	if waiting && !a.startAgentNoticeSession(held, true) {
+	if waiting && !a.startAgentNoticeSession(ctx, held, true) {
 		return store.ErrAgentWakeStillQueued
 	}
 	notice.persist = func(item store.FlushQueueItem) error {
@@ -183,8 +199,9 @@ func (a *App) retryAgentWakeStart(row store.AgentWake, notice agentNotice) error
 
 // retryHeldAgentWake is a watch run with no wake of its own trying the
 // start again for the wake of its row that a failed start left queued, so
-// a watch that has gone quiet does not leave that wake waiting.
-func (a *App) retryHeldAgentWake(row store.AgentWake) {
+// a watch that has gone quiet does not leave that wake waiting. ctx is the
+// run's: the start waits on it.
+func (a *App) retryHeldAgentWake(ctx context.Context, row store.AgentWake) {
 	if _, live := a.sessionManager().get(row.ThreadID); live || !a.agentNoticeRetryDue(row.ThreadID) {
 		return
 	}
@@ -194,7 +211,7 @@ func (a *App) retryHeldAgentWake(row store.AgentWake) {
 		return
 	}
 	if waiting {
-		a.startAgentNoticeSession(held, true)
+		a.startAgentNoticeSession(ctx, held, true)
 	}
 }
 

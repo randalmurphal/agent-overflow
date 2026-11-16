@@ -1002,7 +1002,7 @@ done
 	waitForIdleTurn()
 	seedClaudeBackgroundTaskRow(t, app, thread.ID, "toolu_affected_gate", "task-affected-gate", time.Now().UnixMilli())
 
-	app.dispatchFlush(thread.ID, []triage.QueuedFlushItem{{
+	dispatchThroughWorker(app, thread.ID, []triage.QueuedFlushItem{{
 		ID:      "queue:after-orphan",
 		Message: "queued after orphaned advisor",
 		Payload: json.RawMessage(`{}`),

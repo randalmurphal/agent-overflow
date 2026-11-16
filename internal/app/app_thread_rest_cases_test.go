@@ -284,7 +284,7 @@ func TestAThreadBeingStoppedTakesNoAppMessage(t *testing.T) {
 		t.Fatalf("the refused message started the thread %d times", n)
 	}
 	// A notice queued before the rest began, whose start comes once it has.
-	a.startAgentNoticeSession(agentNotice{
+	a.startAgentNoticeSession(t.Context(), agentNotice{
 		threadID: thread.ID, sendID: "wake:queued-before",
 		startFailed: func(err error) string { return err.Error() },
 	}, false)

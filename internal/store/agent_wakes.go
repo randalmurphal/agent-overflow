@@ -331,9 +331,8 @@ func (s *Store) ListLiveAgentWakes() ([]AgentWake, error) {
 }
 
 // DueAgentWakes lists the interval rows whose fire has come. A long-running
-// watch has no fire time; its process is the schedule. A row whose thread a
-// delete holds waits (agentWakeFireable): its fire is due again once a
-// refused delete releases the claim, and a committed delete drops it.
+// watch has no fire time; its process is the schedule. A row of a thread
+// whose delete committed is not fired (agentWakeFireable).
 func (s *Store) DueAgentWakes(now int64, limit int) ([]AgentWake, error) {
 	if limit < 1 {
 		limit = 32
@@ -357,10 +356,12 @@ func (s *Store) NextAgentWakeDue() (ScheduledMoment, error) {
 	return ScheduledMoment{At: next.Int64, Set: next.Valid}, nil
 }
 
-// agentWakeFireable is the filter on agent_wakes rows that keeps out a row
-// whose thread a delete claimed or committed.
+// agentWakeFireable keeps out a row whose thread's delete committed: a
+// fire runs a watch's script, and a committed thread starts nothing before
+// its destroy drops the row. A claimed thread's rows fire, and their wakes
+// wait in its queue.
 const agentWakeFireable = `NOT EXISTS (SELECT 1 FROM threads
-		WHERE threads.id = agent_wakes.thread_id AND (threads.deleting = 1 OR threads.delete_claim <> ''))`
+		WHERE threads.id = agent_wakes.thread_id AND threads.deleting = 1)`
 
 // ClaimAgentWake starts one interval run of the row as the caller read it
 // (selected): armed to running, with the next fire and the fires this one

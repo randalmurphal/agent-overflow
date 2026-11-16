@@ -276,6 +276,9 @@ type App struct {
 	threadSearchIndex threadSearchIndexBuild
 	// pendingThreadDeletes completes interrupted thread deletes at boot.
 	pendingThreadDeletes pendingThreadDeletes
+	// deleteDecisions are the running deletes' decision gates, which the
+	// app's own starts wait at (app_thread_delete.go).
+	deleteDecisions deleteDecisions
 	// terminalThreads ends each terminal thread when its last shell exits
 	// (app_terminal_threads.go).
 	terminalThreads terminalThreads
@@ -745,6 +748,34 @@ type App struct {
 	// and its run's registration (fireAgentWake), under the wake lifecycle
 	// lock, so a test can cancel the row at that moment.
 	agentWakeClaimedForTest func(row store.AgentWake)
+	// agentWakeRetiringForTest, when set, runs as an interval run publishes
+	// the row it leaves behind (retireAgentWakeRun): before the write, and
+	// after it under the wake lifecycle lock (rearmed), so a test can hold
+	// the run on either side of the write.
+	agentWakeRetiringForTest func(row store.AgentWake, rearmed bool)
+	// deleteDecisionReadForTest, when set, runs in a start that met a
+	// delete's claim once it read the claim, before it looks for the
+	// delete's gate (waitDeleteDecision), so a test can decide the delete
+	// at that moment.
+	deleteDecisionReadForTest func(threadID string)
+	// flushHandoffForTest, when set, runs as triage hands a batch to the
+	// dispatch (enqueueFlushDispatch), before the dispatch records it, so a
+	// test can withdraw a message in the handoff.
+	flushHandoffForTest func(threadID string)
+	// requeueRowsReadForTest, when set, runs in a requeue between its read
+	// of which rows stand and its queueing of the messages again
+	// (requeueUnconfirmedFlushItemsLocked), so a test can withdraw one then.
+	requeueRowsReadForTest func(threadID string)
+	// flushDispatchReturnedForTest, when set, runs in a dispatch worker once
+	// a batch's dispatch returned and released the thread's action lock,
+	// before the worker retires the batch, so a test can recover the
+	// session in between.
+	flushDispatchReturnedForTest func(threadID string)
+	// flushGroupCommitForTest, when set, runs in a dispatch under the
+	// thread's action lock right before a group's commit point (committed
+	// false) and right after it (committed true), so a test can withdraw a
+	// message on either side of it.
+	flushGroupCommitForTest func(threadID string, committed bool)
 	// cancelReadForTest, when set, runs in a request cancel between its read
 	// of the receipt and its settlement (stopThreadRequestWorkFor), so a
 	// test can settle the receipt at that moment.
@@ -780,6 +811,10 @@ type App struct {
 	// threadID and released its action lock (familyDelete.verify), so a
 	// test can act between two threads' checks.
 	deleteVerifiedForTest func(threadID string)
+	// deleteOccupantsReadForTest, when set, runs once a delete read who is
+	// on the worktrees it would remove (familyDelete.verifyWorktrees), so a
+	// test can delete one of them before the delete decides.
+	deleteOccupantsReadForTest func()
 	// deleteCommittedForTest, when set, runs once a delete committed and
 	// before it destroys anything (familyDelete.commit).
 	deleteCommittedForTest func(threadIDs []string)

@@ -67,7 +67,7 @@ func TestAJoinedDispatchMarksOnlyTheAppsMember(t *testing.T) {
 	})
 
 	const wake, person = "Loop fired.", "my own words"
-	app.dispatchFlush(thread.ID, []triage.QueuedFlushItem{
+	dispatchThroughWorker(app, thread.ID, []triage.QueuedFlushItem{
 		{ID: "queue:wake", Message: wake, EnqueuedAt: now, Payload: flushQueuePayloadJSON(t, flushQueuePayload{
 			SendID: agentWakeSendID("w-1", now), Origin: agentmeta.OriginAgentWake, OriginWake: loopWakeOrigin(),
 		})},
@@ -128,7 +128,7 @@ func TestARequeuedJoinedRowIsMarkedByItsParts(t *testing.T) {
 	now := time.Now().UnixMilli()
 	const person, wake = "first, mine", "Loop fired."
 	wakeID := agentWakeSendID("w-1", now)
-	app.dispatchFlush(thread.ID, []triage.QueuedFlushItem{{
+	dispatchThroughWorker(app, thread.ID, []triage.QueuedFlushItem{{
 		ID: "queue:joined", Message: person + agentmeta.JoinSeparator + wake, EnqueuedAt: now,
 		Payload: flushQueuePayloadJSON(t, flushQueuePayload{
 			SendID: "send-person", JoinedSendIDs: []string{"send-person", wakeID}, ExpandComposerCommands: true,

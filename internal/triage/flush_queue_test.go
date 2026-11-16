@@ -208,6 +208,46 @@ func TestTryFlushQueue_FiresAndConsumes(t *testing.T) {
 	}
 }
 
+// Every handoff carries the generation it was made in, which an advance
+// leaves behind; a dropping advance marks that generation and every earlier
+// one dropped, and a recovering advance marks none.
+func TestAHandoffsGenerationAndWhetherItWasDropped(t *testing.T) {
+	router, _, _ := newTestRouter(t)
+	rec := &recordingDispatcher{}
+	router.SetFlushDispatcher(rec.dispatch)
+
+	router.RegisterQueueItem("t1", makeQueueItem("queue:held", "held"))
+	generation := router.FlushDispatchGeneration("t1")
+	if !router.FlushQueuedItems("t1") {
+		t.Fatal("FlushQueuedItems returned false")
+	}
+	calls := rec.waitForAtLeastCalls(t, 1)
+	for _, item := range calls[0].Items {
+		if item.DispatchGeneration != generation {
+			t.Fatalf("handed out %+v, want generation %d", item, generation)
+		}
+	}
+	recovered := router.AdvanceFlushDispatchGeneration("t1", false)
+	if recovered == generation || router.FlushDispatchGeneration("t1") != recovered {
+		t.Fatalf("advance from %d = %d, read back %d", generation, recovered, router.FlushDispatchGeneration("t1"))
+	}
+	if router.FlushGenerationDropped("t1", generation) {
+		t.Fatal("a recovery marked its generation dropped")
+	}
+	dropped := router.AdvanceFlushDispatchGeneration("t1", true)
+	for _, g := range []uint64{generation, recovered} {
+		if !router.FlushGenerationDropped("t1", g) {
+			t.Fatalf("generation %d, ended at or before a drop, is not dropped", g)
+		}
+	}
+	if router.FlushGenerationDropped("t1", dropped) {
+		t.Fatal("the generation after the drop is dropped")
+	}
+	if router.FlushGenerationDropped("t2", 0) {
+		t.Fatal("an unknown thread reports a drop")
+	}
+}
+
 func TestFlushQueuedItems_DispatchesQueuedItems(t *testing.T) {
 	router, _, _ := newTestRouter(t)
 	rec := &recordingDispatcher{}

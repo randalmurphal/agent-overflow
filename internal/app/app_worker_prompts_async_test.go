@@ -70,13 +70,12 @@ func newAsyncQuestionFixture(t *testing.T, id string, placement string) asyncQue
 	return asyncQuestionFixture{app: a, dbPath: dbPath, spawner: spawner, worker: worker, notified: notified}
 }
 
+// drain waits out the prompts, notice starts and settlements begun; a start
+// waiting for a delete's decision counts as done (quietAtGates).
 func (f asyncQuestionFixture) drain(t *testing.T) {
 	t.Helper()
 	for range 3 {
-		if err := f.app.drainWorkerPrompts(context.Background(), 10*time.Second); err != nil {
-			t.Fatal(err)
-		}
-		f.app.waitAgentNoticeWork()
+		quietAtGates(t, f.app)
 		f.app.threadRequestsWG.Wait()
 		f.app.notifications.queue.Wait()
 	}

@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/entityid"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/transport"
 	"agent-overflow/internal/triage"
@@ -14,10 +15,11 @@ import (
 
 // The queue dispatcher starts the session a person's queued message needs,
 // and its start is a door like any other: it starts nothing on a thread a
-// Stop brought to rest, an archived thread, or one a delete claimed or
-// committed. A refusal there is not a failed start: the message stays
-// queued, the composer and the timeline are untouched, and no failure
-// streak begins. An owned worker is no fence: its queue starts it.
+// Stop brought to rest or an archived thread. A refusal there is not a
+// failed start: the message stays queued, the composer and the timeline are
+// untouched, and no failure streak begins. An owned worker is no fence: its
+// queue starts it. A delete's claim is waited on instead
+// (TestTheDispatcherStartWaitsForADeleteDecision).
 func TestTheDispatcherStartsNoFencedThread(t *testing.T) {
 	t.Parallel()
 	f := newRequestFixture(t)
@@ -50,16 +52,6 @@ func TestTheDispatcherStartsNoFencedThread(t *testing.T) {
 		}},
 		{name: "archived", thread: f.plainThread(t), fence: func(t *testing.T, id string) {
 			if _, _, err := f.app.store.ArchiveThread(id); err != nil {
-				t.Fatal(err)
-			}
-		}},
-		{name: "delete claimed", thread: f.plainThread(t), fence: func(t *testing.T, id string) {
-			if _, err := f.app.store.ClaimDeleteFamily("door-op-"+id, []string{id}); err != nil {
-				t.Fatal(err)
-			}
-		}},
-		{name: "delete committed", thread: f.plainThread(t), fence: func(t *testing.T, id string) {
-			if err := f.app.store.BeginThreadDelete(id); err != nil {
 				t.Fatal(err)
 			}
 		}},
@@ -109,6 +101,89 @@ func TestTheDispatcherStartsNoFencedThread(t *testing.T) {
 				t.Error("the refusal started a failure streak")
 			}
 		})
+	}
+}
+
+// A dispatcher start for a person's queued message on a thread with no
+// session waits for a delete's decision when the delete claimed the thread
+// before the dispatch read it, or while the start ran: it holds no lock,
+// starts nothing and records no failure meanwhile, and the message stays
+// out of the composer. A refused delete's thread is started and sent the
+// message once; a committed one starts nothing and its message is its
+// teardown's.
+func TestTheDispatcherStartWaitsForADeleteDecision(t *testing.T) {
+	t.Parallel()
+	for _, when := range []string{"before the dispatch", "during the start"} {
+		for _, refuse := range []bool{true, false} {
+			t.Run(when+"/"+map[bool]string{true: "refused", false: "committed"}[refuse], func(t *testing.T) {
+				t.Parallel()
+				f := newClaimFixture(t)
+				id := f.caller.ID
+				marker := "queued-" + entityid.New()
+				holdFlushQueue(f.app)
+				if _, err := f.app.RegisterQueueItem(t.Context(), id, marker, SendMessageOptions{SendID: "door-send-" + entityid.New()}); err != nil {
+					t.Fatalf("RegisterQueueItem: %v", err)
+				}
+				f.app.triage.SetFlushDispatcher(f.app.enqueueFlushDispatch)
+				waiting := func() {
+					waitAtGates(t, f.app, 1)
+					if _, live := f.app.sessionManager().get(id); live {
+						t.Error("a claimed thread's session started")
+					}
+					if n := f.sent(t, marker); n != 0 {
+						t.Errorf("a claimed thread's message reached the provider %d times", n)
+					}
+					if draft, _, err := f.app.store.GetThreadDraft(id); err != nil || draft.Content != "" {
+						t.Errorf("composer = %q (%v), want the message still queued", draft.Content, err)
+					}
+				}
+				var done <-chan error
+				if when == "before the dispatch" {
+					done = deleteOf(t, f.app, id, refuse, func() {
+						f.app.triage.FlushQueuedItems(id)
+						waiting()
+					})
+				} else {
+					atStart, claimed := make(chan struct{}), make(chan struct{})
+					var once sync.Once
+					f.app.startSessionFn = func(threadID string) error {
+						once.Do(func() {
+							close(atStart)
+							<-claimed
+						})
+						return f.app.startSessionNow(threadID)
+					}
+					f.app.triage.FlushQueuedItems(id)
+					within(t, "the dispatcher's start", atStart)
+					done = deleteOf(t, f.app, id, refuse, waiting)
+					close(claimed)
+				}
+				decided(t, done, refuse)
+				if !refuse {
+					nothingWaits(t, f.app)
+					if n := len(recordedUserEnvelopes(t, f.stdin)); n != 0 {
+						t.Fatalf("the committed thread's provider was written %d messages", n)
+					}
+					return
+				}
+				f.deliveredOnce(t, marker)
+				items, err := f.app.store.ListItems(id)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, item := range items {
+					if item.Kind == "error" || strings.Contains(item.Summary, "could not be sent") {
+						t.Errorf("the wait wrote %s row %q", item.Kind, item.Summary)
+					}
+				}
+				f.app.agentNoticeWork.mu.Lock()
+				_, failing := f.app.agentNoticeWork.failing[id]
+				f.app.agentNoticeWork.mu.Unlock()
+				if failing {
+					t.Error("the wait started a failure streak")
+				}
+			})
+		}
 	}
 }
 

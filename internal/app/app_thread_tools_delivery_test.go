@@ -164,7 +164,7 @@ func (h *heldRequestTarget) send(t *testing.T, messages ...string) ([]string, st
 	if len(queued) != len(messages) {
 		t.Fatalf("queued = %+v, want the requests waiting on the turn", queued)
 	}
-	h.f.app.dispatchFlush(h.thread.ID, queued)
+	dispatchThroughWorker(h.f.app, h.thread.ID, queued)
 	head, ok := h.f.app.triage.PeekPendingSendHeadForTest(h.thread.ID)
 	if !ok || head.ExpectedProviderItemID == "" {
 		t.Fatalf("no pending send carries the dispatched uuid: %+v", head)
@@ -544,7 +544,7 @@ func (c *codexRequestTarget) steer(t *testing.T) (string, triage.PendingSendSnap
 	if len(queued) != 1 {
 		t.Fatalf("queued = %+v, want the request waiting on the turn", queued)
 	}
-	c.f.app.dispatchFlush(c.thread.ID, queued)
+	dispatchThroughWorker(c.f.app, c.thread.ID, queued)
 	head, ok := c.f.app.triage.PeekPendingSendHeadForTest(c.thread.ID)
 	if !ok {
 		t.Fatal("the steer left no pending send")
@@ -1020,7 +1020,7 @@ func TestCancellingARequestCaughtInItsFlushLeavesTheRunningTurnAlone(t *testing.
 				t.Fatalf("queue the request message: %v", err)
 			}
 			if queued := f.app.triage.QueuedFlushItems(h.thread.ID); len(queued) > 0 {
-				f.app.dispatchFlush(h.thread.ID, queued)
+				dispatchThroughWorker(f.app, h.thread.ID, queued)
 			}
 			record, found, err := f.app.findRecordedSend(h.thread.ID, threadRequestSendID(token))
 			if err != nil || !found || !record.dispatched {
@@ -1147,7 +1147,7 @@ func TestARequestDrainedIntoASelfWokenTurnSettlesWithThatTurn(t *testing.T) {
 	h.turnComplete(t)
 	h.frame(t, provider.ProviderEvent{Kind: provider.EventInit})
 	h.text(t, "a-cascade", "A background task finished.")
-	f.app.dispatchFlush(h.thread.ID, f.app.triage.QueuedFlushItems(h.thread.ID))
+	dispatchThroughWorker(f.app, h.thread.ID, f.app.triage.QueuedFlushItems(h.thread.ID))
 	head, ok := f.app.triage.PeekPendingSendHeadForTest(h.thread.ID)
 	if !ok || head.ExpectedProviderItemID == "" || head.HasDeferred || head.TurnIndex != 2 {
 		t.Fatalf("fixture: the flush did not go into the running turn 1: %+v ok=%v", head, ok)
@@ -1220,8 +1220,8 @@ func twoDeferredRequests(t *testing.T, f *requestFixture, h *heldRequestTarget) 
 	if len(queued) != 2 {
 		t.Fatalf("queued = %+v, want both requests", queued)
 	}
-	f.app.dispatchFlush(h.thread.ID, queued[:1])
-	f.app.dispatchFlush(h.thread.ID, queued[1:])
+	dispatchThroughWorker(f.app, h.thread.ID, queued[:1])
+	dispatchThroughWorker(f.app, h.thread.ID, queued[1:])
 	pending := f.app.triage.PendingSendsForTest(h.thread.ID)
 	if len(pending) != 2 || !pending[0].HasDeferred || !pending[1].HasDeferred ||
 		pending[0].TurnIndex != 1 || pending[1].TurnIndex != 2 {

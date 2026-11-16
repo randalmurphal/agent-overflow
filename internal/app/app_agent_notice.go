@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log"
@@ -127,6 +128,7 @@ func (a *App) queueAgentNotice(notice agentNotice) error {
 			persist:       notice.persist,
 			// The flag, not the check, is the notice's: the queue write
 			// decides it under the lock both archive doors take.
+			appWritten:        !notice.fromPerson,
 			heldWhileArchived: !notice.fromPerson,
 			// The start below is the notice's, with its own archive, rest
 			// and keep checks and failure rows.
@@ -138,7 +140,7 @@ func (a *App) queueAgentNotice(notice agentNotice) error {
 		return nil
 	}
 	// Refused only once shutdown began: the durable row is the next boot's.
-	a.goAgentNoticeWork(notice.threadID, func() { a.startAgentNoticeSession(notice, false) })
+	a.goAgentNoticeWork(notice.threadID, func() { a.startAgentNoticeSession(a.lifeCtx(), notice, false) })
 	return nil
 }
 
@@ -154,8 +156,14 @@ func (a *App) goAgentNoticeWork(threadID string, fn func()) bool {
 		return false
 	}
 	a.agentNoticeWork.wg.Add(1)
+	a.agentNoticeWork.running++
 	go func() {
 		defer a.agentNoticeWork.wg.Done()
+		defer func() {
+			a.agentNoticeWork.mu.Lock()
+			a.agentNoticeWork.running--
+			a.agentNoticeWork.mu.Unlock()
+		}()
 		defer func() {
 			if recovered := recover(); recovered != nil {
 				log.Printf("agent notice: work for %s panicked: %v\n%s", threadID, recovered, debug.Stack())
@@ -181,12 +189,17 @@ func (a *App) goAgentNoticeWork(threadID string, fn func()) bool {
 // to its watch, a thread request's answer or reminder to its request, and
 // every other app message is withdrawn (stopRestingThreadWork).
 //
+// A thread a delete claimed is waited on, without the lock, until the delete
+// decides or ctx ends (waitDeleteDecision), and the start is then tried
+// again from the top; a thread a delete committed starts nothing, and its
+// teardown takes the queue. Neither is a failure.
+//
 // A retry is a later fire trying the start again for a wake an earlier
 // failed start left queued. It runs only once the thread's last failed
 // start is old enough (agentNoticeRetryDue), and its own failure writes no
 // row: the failure that began the streak said why, and the message it would
 // speak for is the one already said to be queued.
-func (a *App) startAgentNoticeSession(notice agentNotice, retry bool) bool {
+func (a *App) startAgentNoticeSession(ctx context.Context, notice agentNotice, retry bool) bool {
 	unlock, err := a.threadLocks().LockCtx(a.lifeCtx(), notice.threadID)
 	if err != nil {
 		// Shutting down: the durable row is the next boot's.
@@ -225,6 +238,11 @@ func (a *App) startAgentNoticeSession(notice agentNotice, retry bool) bool {
 			startErr = a.startSession(a.lifeCtx(), notice.threadID)
 		}
 	}()
+	if errors.Is(startErr, store.ErrThreadDeleting) {
+		unlock()
+		return errors.Is(startErr, store.ErrThreadDeleteClaimed) && a.waitDeleteDecision(ctx, notice.threadID) &&
+			a.startAgentNoticeSession(ctx, notice, retry)
+	}
 	failed := checkErr != nil || startErr != nil
 	stopping := failed && (errors.Is(startErr, ErrShuttingDown) || a.lifeCtx().Err() != nil)
 	first := false

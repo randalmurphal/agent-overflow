@@ -87,6 +87,39 @@ func (s *Store) DeleteFlushQueueItem(id string) error {
 	return nil
 }
 
+// FlushQueueItemsPresent reports, in one statement, which of ids are rows of
+// threadID's queue now: a message whose row a withdrawal deleted is no
+// longer wanted, whatever copy of it memory still holds.
+func (s *Store) FlushQueueItemsPresent(threadID string, ids []string) (map[string]bool, error) {
+	present := make(map[string]bool, len(ids))
+	if len(ids) == 0 {
+		return present, nil
+	}
+	encoded, err := json.Marshal(ids)
+	if err != nil {
+		return nil, fmt.Errorf("store: read flush queue rows of %s: %w", threadID, err)
+	}
+	rows, err := s.db.Query(`SELECT id FROM flush_queue_items
+		WHERE thread_id = ? AND id IN (SELECT value FROM json_each(?))`, threadID, string(encoded))
+	if err != nil {
+		return nil, fmt.Errorf("store: read flush queue rows of %s: %w", threadID, err)
+	}
+	scanErr := func() error {
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				return err
+			}
+			present[id] = true
+		}
+		return rows.Err()
+	}()
+	if err := errors.Join(scanErr, rows.Close()); err != nil {
+		return nil, fmt.Errorf("store: read flush queue rows of %s: %w", threadID, err)
+	}
+	return present, nil
+}
+
 // DeleteDispatchedFlushQueueItems retires the queue rows of the messages one
 // successful provider write carried, in one statement: the members of a
 // joined message lose their rows together, so a crash leaves all of them for

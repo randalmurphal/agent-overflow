@@ -14,7 +14,7 @@ import (
 )
 
 // holdFixture is a run parked at a gate and bound to an idle thread, whose
-// wakes are counted as ordinary sends. Transitions go through the engine's
+// wakes are counted as queued messages. Transitions go through the engine's
 // event path, so the watch ring records them before their wake jobs queue.
 type holdFixture struct {
 	*serviceFixture
@@ -38,14 +38,16 @@ func newHoldFixture(t *testing.T) *holdFixture {
 		t.Fatal(err)
 	}
 	f.item.OriginThreadID = f.thread
-	f.service.deps.WakeDelivery.SendMessage = func(threadID, _ string, composed wake.Message) error {
+	// Each wake reaches the provider as it is queued.
+	f.service.deps.WakeDelivery.QueueMessage = func(threadID, _ string, composed wake.Message, onDurable func()) error {
 		message := composed.String()
 		if threadID != f.thread || !strings.Contains(message, f.item.ID) {
 			t.Fatalf("wake to %q: %q", threadID, message)
 		}
 		f.mu.Lock()
-		defer f.mu.Unlock()
 		f.sent = append(f.sent, message)
+		f.mu.Unlock()
+		onDurable()
 		return nil
 	}
 	return f

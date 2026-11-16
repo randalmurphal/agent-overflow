@@ -711,20 +711,31 @@ func (a *App) moveQueuedAgentWake(oldThreadID string, row store.FlushQueueItem) 
 // redeliverMovedAgentWake queues a wake taken back from a thread a handoff
 // superseded on the thread that holds its row now. One that cannot be
 // queued there is recorded on the row as not delivered, a watch keeping its
-// output, and the next fire says so.
+// output, and the next fire says so. A teardown calls it holding the old
+// thread's action lock, so a start it tries again for the wake runs as
+// notice work, holding no lock while it waits for a delete's decision.
 func (a *App) redeliverMovedAgentWake(oldThreadID string, w returnedWake) {
 	wakeID, fireAt, _ := agentWakeFromSendID(w.sendID)
 	row, found, err := a.store.GetAgentWake(wakeID)
 	if err == nil && !found {
 		return
 	}
+	settle := func(err error) {
+		if err != nil {
+			log.Printf("assistants: hand off %s: move %s on: %v", oldThreadID, w.sendID, err)
+			a.noteMovedAgentWakeUndelivered(oldThreadID, w)
+		}
+	}
+	var retry func(context.Context) error
 	if err == nil {
-		err = a.deliverAgentWake(a.lifeCtx(), row, fireAt, w.message)
+		if err = a.lifeCtx().Err(); err == nil {
+			retry, err = a.queueAgentWake(row, fireAt, w.message)
+		}
 	}
-	if err != nil {
-		log.Printf("assistants: hand off %s: move %s on: %v", oldThreadID, w.sendID, err)
-		a.noteMovedAgentWakeUndelivered(oldThreadID, w)
+	if retry != nil && !a.goAgentNoticeWork(row.ThreadID, func() { settle(retry(a.lifeCtx())) }) {
+		err = ErrShuttingDown
 	}
+	settle(err)
 }
 
 // noteMovedAgentWakeUndelivered records on its row a wake a handoff could

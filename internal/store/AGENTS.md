@@ -189,7 +189,9 @@ an atomic persistence decision; they must not become a business-logic layer.
   removes `thread_fork_lineage` rows calls `holdersMayBeReleased` after its
   commit, so the app deletes the holders it released.
 - A delete claim (`threads.delete_claim`) fences its thread at every write
-  that runs, moves or changes it (`checkThreadNotDeleting`). Claim, release
+  that runs, moves or changes it (`checkThreadNotDeleting`); an app
+  message's queue write passes it (`CheckThreadDeliverable`), and due reads
+  ignore it. Claim, release
   and commit each change one delete's family in one transaction, and a
   worker's claim takes its owner as its fence (`thread_delete.go`); keep that
   fence a parameter, not a read of this computer's state.

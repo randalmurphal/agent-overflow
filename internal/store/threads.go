@@ -715,43 +715,40 @@ func hiddenThreadModesClause(column string) (string, []any) {
 // rows, including archived ones. Worktree removal uses this to avoid deleting a
 // checkout that an archived thread would reference if restored.
 func (s *Store) ListThreadWorkspaceRefs() ([]ThreadWorkspaceRef, error) {
-	rows, err := s.reader().Query(
-		`SELECT id, workspace_path, COALESCE(worktree_path, '') FROM threads`,
-	)
+	refs, err := s.queryThreadWorkspaceRefs(`SELECT ` + threadWorkspaceRefColumns + ` FROM threads t`)
 	if err != nil {
 		return nil, fmt.Errorf("store: list thread workspace refs: %w", err)
 	}
-	defer rows.Close()
-
-	var refs []ThreadWorkspaceRef
-	for rows.Next() {
-		var ref ThreadWorkspaceRef
-		if err := rows.Scan(&ref.ID, &ref.WorkspacePath, &ref.WorktreePath); err != nil {
-			return nil, fmt.Errorf("store: scan thread workspace ref: %w", err)
-		}
-		refs = append(refs, ref)
-	}
-	return refs, rows.Err()
+	return refs, nil
 }
 
 // ListThreadWorkspaceRefsByProject is ListThreadWorkspaceRefs for the rows of
 // one project, archived and hidden rows included: a checkout that vanished
 // under an archived thread must be reattached before the thread is restored.
 func (s *Store) ListThreadWorkspaceRefsByProject(projectID string) ([]ThreadWorkspaceRef, error) {
-	rows, err := s.reader().Query(
-		`SELECT id, workspace_path, COALESCE(worktree_path, '') FROM threads WHERE project_id = ?`,
-		projectID,
-	)
+	refs, err := s.queryThreadWorkspaceRefs(`SELECT `+threadWorkspaceRefColumns+` FROM threads t WHERE t.project_id = ?`, projectID)
 	if err != nil {
 		return nil, fmt.Errorf("store: list thread workspace refs for project %s: %w", projectID, err)
 	}
-	defer rows.Close()
+	return refs, nil
+}
 
-	var refs []ThreadWorkspaceRef
+// threadWorkspaceRefColumns is a ThreadWorkspaceRef's columns of the
+// threads row aliased t, in queryThreadWorkspaceRefs' scan order.
+const threadWorkspaceRefColumns = `t.id, t.workspace_path, COALESCE(t.worktree_path, ''), t.delete_claim, t.deleting`
+
+// queryThreadWorkspaceRefs runs a query selecting threadWorkspaceRefColumns
+// and scans its rows.
+func (s *Store) queryThreadWorkspaceRefs(query string, args ...any) (refs []ThreadWorkspaceRef, err error) {
+	rows, err := s.reader().Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { err = errors.Join(err, rows.Close()) }()
 	for rows.Next() {
 		var ref ThreadWorkspaceRef
-		if err := rows.Scan(&ref.ID, &ref.WorkspacePath, &ref.WorktreePath); err != nil {
-			return nil, fmt.Errorf("store: scan thread workspace ref: %w", err)
+		if err := rows.Scan(&ref.ID, &ref.WorkspacePath, &ref.WorktreePath, &ref.Delete.Claim, &ref.Delete.Committed); err != nil {
+			return nil, fmt.Errorf("scan: %w", err)
 		}
 		refs = append(refs, ref)
 	}
@@ -820,7 +817,7 @@ const threadBusyPredicateSQL = `(
      )
    )`
 
-const blockedThreadWorkspaceRefsSQL = `SELECT t.id, t.workspace_path, COALESCE(t.worktree_path, '')
+const blockedThreadWorkspaceRefsSQL = `SELECT ` + threadWorkspaceRefColumns + `
   FROM threads t
  WHERE ` + threadBusyPredicateSQL
 
@@ -836,21 +833,11 @@ const blockedThreadWorkspaceRefsSQL = `SELECT t.id, t.workspace_path, COALESCE(t
 // is selective: it is three index probes per thread row and the result set is
 // the handful of threads that are busy right now, not the history.
 func (s *Store) ListBlockedThreadWorkspaceRefs() ([]ThreadWorkspaceRef, error) {
-	rows, err := s.reader().Query(blockedThreadWorkspaceRefsSQL)
+	refs, err := s.queryThreadWorkspaceRefs(blockedThreadWorkspaceRefsSQL)
 	if err != nil {
 		return nil, fmt.Errorf("store: list blocked thread workspace refs: %w", err)
 	}
-	defer rows.Close()
-
-	var refs []ThreadWorkspaceRef
-	for rows.Next() {
-		var ref ThreadWorkspaceRef
-		if err := rows.Scan(&ref.ID, &ref.WorkspacePath, &ref.WorktreePath); err != nil {
-			return nil, fmt.Errorf("store: scan blocked thread workspace ref: %w", err)
-		}
-		refs = append(refs, ref)
-	}
-	return refs, rows.Err()
+	return refs, nil
 }
 
 // updateThreadSetSQL is UpdateThread's whole-row thread write. No production

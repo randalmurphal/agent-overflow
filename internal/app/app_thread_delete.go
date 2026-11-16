@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"agent-overflow/internal/entityid"
@@ -28,7 +29,9 @@ import (
 //  1. Claim. One transaction claims the whole family for the operation
 //     (store.ClaimDeleteFamily), refused, with nothing claimed, when another
 //     delete holds a claim in it. A claimed thread stays listed, and runs
-//     and moves nothing (store.CheckThreadNotDeleting).
+//     and moves nothing (store.CheckThreadNotDeleting): a person's door
+//     refuses it, and a start the app makes on its own waits for the
+//     decision (deleteDecisions).
 //  2. Verify. The claimed threads have their work admission closed and
 //     drained (threadRestFence.close), the family is claimed again, which
 //     takes a worker a drained spawn added, and each thread's refusals run
@@ -343,16 +346,124 @@ func (op *familyDelete) closeAdmission(threadID string) {
 	op.reopens = append(op.reopens, op.app.resting.close(threadID))
 }
 
-// claimFamily reads and claims the family (store.ClaimDeleteFamily).
+// claimFamily reads and claims the family (store.ClaimDeleteFamily),
+// opening the decision gate of each thread it claims before the claim is
+// written; a claim that fails shuts the gates it opened.
 func (op *familyDelete) claimFamily() ([]store.DeleteMember, error) {
 	if hook := op.app.deleteFamilyReadForTest; hook != nil {
 		hook()
 	}
-	members, err := op.app.store.ClaimDeleteFamily(op.id, op.req.seeds)
+	opened := []string{}
+	members, err := op.app.store.ClaimDeleteFamily(op.id, op.req.seeds, func(threads []string) error {
+		if err := op.app.deleteDecisions.open(op.id, threads); err != nil {
+			return err
+		}
+		opened = threads
+		return nil
+	})
 	if err != nil {
+		op.app.deleteDecisions.shut(op.id, opened)
 		return nil, op.claimRefusal(err)
 	}
 	return members, nil
+}
+
+// deleteDecisions are the running deletes' decision gates, by thread. A
+// delete opens a thread's gate before it writes the thread's claim
+// (claimFamily) and shuts it once the claim is released or committed
+// (refuse, commit), so on a running app a claimed thread's gate is open; the
+// boot releases every claim no delete committed before anything starts
+// (releaseUndecidedDeletes). A start the app makes on its own, a dispatch or
+// a notice's session start, that meets a claim waits at the gate holding no
+// lock (waitDeleteDecision); a person's doors refuse at once. A delete never
+// waits at a gate. Zero value ready.
+type deleteDecisions struct {
+	mu      sync.Mutex
+	gates   map[string]deleteGate
+	waiting int // starts waiting at a gate
+}
+
+// deleteGate is one thread's gate: its delete, and what the decision closes.
+type deleteGate struct {
+	op      string
+	decided chan struct{}
+}
+
+// open opens op's gate on each of threads, all or none: a thread another
+// delete's gate is open on refuses them (*store.DeleteClaimedError).
+func (d *deleteDecisions) open(op string, threads []string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for _, id := range threads {
+		if gate, ok := d.gates[id]; ok && gate.op != op {
+			return &store.DeleteClaimedError{ThreadID: id}
+		}
+	}
+	if d.gates == nil {
+		d.gates = make(map[string]deleteGate)
+	}
+	for _, id := range threads {
+		if _, ok := d.gates[id]; !ok {
+			d.gates[id] = deleteGate{op: op, decided: make(chan struct{})}
+		}
+	}
+	return nil
+}
+
+// shut shuts op's gates on threads, or every one of op's for nil: the starts
+// waiting there go on.
+func (d *deleteDecisions) shut(op string, threads []string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for id, gate := range d.gates {
+		if gate.op == op && (threads == nil || slices.Contains(threads, id)) {
+			close(gate.decided)
+			delete(d.gates, id)
+		}
+	}
+}
+
+// waitDeleteDecision waits, holding no lock, for the decision of the delete
+// that claims threadID, and reports whether the start is to try again from
+// the top: false when ctx ended first, or when the claim stands with no
+// delete under way to decide it (a boot whose release failed), which leaves
+// the thread's queue to the next boot.
+func (a *App) waitDeleteDecision(ctx context.Context, threadID string) bool {
+	claim, committed, err := a.store.ThreadDeleteClaim(threadID)
+	if err != nil || committed || claim == "" {
+		// Decided, or unread: the start's own check reads it again.
+		return true
+	}
+	if hook := a.deleteDecisionReadForTest; hook != nil {
+		hook(threadID)
+	}
+	d := &a.deleteDecisions
+	d.mu.Lock()
+	gate, open := d.gates[threadID]
+	open = open && gate.op == claim
+	if open {
+		d.waiting++
+	}
+	d.mu.Unlock()
+	if !open {
+		// A gate shuts after its claim is decided: a claim standing now has no delete.
+		if again, committed, err := a.store.ThreadDeleteClaim(threadID); err == nil && again == claim && !committed {
+			log.Printf("app: thread %s is claimed by delete %s, which is not under way; what it queued waits for the next boot", threadID, claim)
+			return false
+		}
+		return true
+	}
+	defer func() {
+		d.mu.Lock()
+		d.waiting--
+		d.mu.Unlock()
+	}()
+	select {
+	case <-gate.decided:
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }
 
 // claim claims the family (phase 1).
@@ -477,6 +588,9 @@ func (op *familyDelete) verifyWorktrees() error {
 	if err != nil {
 		return err
 	}
+	if hook := op.app.deleteOccupantsReadForTest; hook != nil {
+		hook()
+	}
 	var emptied []deleteSite
 	for _, site := range sites {
 		if len(site.outside) == 0 {
@@ -518,28 +632,25 @@ func (op *familyDelete) verifyWorktrees() error {
 // to the other: the delete whose claim is older (newDeleteOperationID)
 // keeps it and names it, and the younger is refused, so its retry, once the
 // older ends, finds the worktree its own. A thread a delete committed
-// without a claim (store.BeginThreadDelete) counts as older.
+// without a claim (store.BeginThreadDelete) counts as older. How far a
+// delete has gone with each outside thread comes from the read that found
+// it on the worktree (familyWorktrees), so a thread whose row a delete drops
+// afterwards is weighed as that read found it.
 func (op *familyDelete) sharedWithADelete(site deleteSite) (*RetainedWorktree, error) {
-	claims := make([]string, len(site.outside))
-	for i, id := range site.outside {
-		claim, committed, err := op.app.store.ThreadDeleteClaim(id)
-		if err != nil {
-			return nil, err
-		}
-		if claim == "" && !committed {
+	for _, occupant := range site.outside {
+		if occupant.Delete.Claim == "" && !occupant.Delete.Committed {
 			return nil, nil
 		}
-		claims[i] = claim
 	}
-	for i, id := range site.outside {
-		if claims[i] < op.id {
+	for _, occupant := range site.outside {
+		if occupant.Delete.Claim < op.id {
 			return nil, errorsx.Public("delete_worktree_being_deleted", fmt.Sprintf(
 				"Nothing was deleted: thread %s, which is also on the worktree %s, is being deleted. Delete again when that ends.",
-				op.app.threadName(id), site.path), store.ErrThreadDeleting)
+				op.app.threadName(occupant.ID), site.path), store.ErrThreadDeleting)
 		}
 	}
 	return &RetainedWorktree{Path: site.path, Reason: fmt.Sprintf(
-		"thread %s, which is also on it, is being deleted by another delete", op.app.threadName(site.outside[0]))}, nil
+		"thread %s, which is also on it, is being deleted by another delete", op.app.threadName(site.outside[0].ID))}, nil
 }
 
 // threadName names a thread to a person: its title, quoted, or its id when
@@ -636,30 +747,16 @@ func familyRefusal(member store.DeleteMember, err error) error {
 }
 
 // refuse releases every claim of the delete, in one transaction, and
-// returns cause: a refused delete changes nothing. A release that fails
-// leaves the claims fenced until the next boot releases them, and is said
+// returns cause: a refused delete changes nothing, and the starts waiting
+// for its decision go on. A release that fails leaves the claims fenced, and
+// those starts waiting, until the next boot releases them, and is said
 // beside cause.
 func (op *familyDelete) refuse(cause error) error {
 	if err := op.app.store.ReleaseDeleteClaim(op.id); err != nil {
 		return errors.Join(cause, fmt.Errorf("and the delete's claim could not be taken back until the app restarts: %w", err))
 	}
-	threads := make([]string, len(op.members))
-	for i, member := range op.members {
-		threads[i] = member.ThreadID
-	}
-	op.app.deliverDeferredByDelete(threads)
+	op.app.deleteDecisions.shut(op.id, nil)
 	return cause
-}
-
-// deliverDeferredByDelete delivers what a delete's claim held back from
-// threads, once the claim is released: a claim defers a delivery and a
-// commit ends it (store.ErrThreadDeleteClaimed). A loop or watch fire waits
-// for the sweep (store.DueAgentWakes), a worker's prompt for its
-// redelivery here, and a request's wake for its own retry
-// (retryUndeliveredThreadWakes).
-func (a *App) deliverDeferredByDelete(threads []string) {
-	a.nudgeThreadRequestSweep()
-	a.redeliverDeferredWorkerPrompts(threads)
 }
 
 // commit commits the claimed family (phase 3) and tells clients its rows
@@ -682,6 +779,9 @@ func (op *familyDelete) commit() error {
 	if err != nil {
 		return err
 	}
+	// The starts waiting for the decision find the threads committed and
+	// start nothing; their queues are their teardowns'.
+	op.app.deleteDecisions.shut(op.id, nil)
 	for _, site := range op.sites {
 		if occupant := committed.Occupied[site.path]; occupant != "" {
 			op.kept = append(op.kept, RetainedWorktree{Path: site.path, Reason: op.app.keptFor(occupant)})
@@ -888,12 +988,14 @@ func (op *familyDelete) removeEmptiedWorktree(member store.DeleteMember, outcome
 // deleteSite is one worktree a delete empties.
 type deleteSite struct {
 	projectID, path string
-	// outside are the threads outside the delete on it.
-	outside []string
+	// outside are the threads outside the delete on it, each with how far a
+	// delete had gone with it, from one read.
+	outside []store.ThreadWorkspaceRef
 }
 
 // familyWorktrees lists, each once, the worktrees the family members take
-// accepts are on, with the threads outside the family on each. A delete
+// accepts are on, with the threads outside the family on each and their
+// delete state, all in one read of the thread rows. A delete
 // removes the ones with none (familyDelete.verifyWorktrees), and its
 // confirmation counts the same ones (GetDeleteDependents).
 func (a *App) familyWorktrees(family []store.DeleteMember, take func(store.DeleteMember) bool) ([]deleteSite, error) {
@@ -926,9 +1028,9 @@ func (a *App) familyWorktrees(family []store.DeleteMember, take func(store.Delet
 		return nil, err
 	}
 	for i := range sites {
-		for _, id := range occupants[i] {
-			if !in[id] {
-				sites[i].outside = append(sites[i].outside, id)
+		for _, occupant := range occupants[i] {
+			if !in[occupant.ID] {
+				sites[i].outside = append(sites[i].outside, occupant)
 			}
 		}
 	}

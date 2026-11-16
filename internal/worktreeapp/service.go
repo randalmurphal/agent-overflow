@@ -148,8 +148,9 @@ func (s *Service) ThreadsReferencingWorkspace(path string) ([]string, error) {
 
 // ThreadsReferencingWorkspaces is ThreadsReferencingWorkspace for several
 // directories in one read of the thread rows, each stored path resolved
-// once: the i-th answer is paths[i]'s.
-func (s *Service) ThreadsReferencingWorkspaces(paths []string) ([][]string, error) {
+// once: the i-th answer is paths[i]'s. Each thread comes with how far a
+// delete had gone with it in that read (store.ThreadWorkspaceRef.Delete).
+func (s *Service) ThreadsReferencingWorkspaces(paths []string) ([][]store.ThreadWorkspaceRef, error) {
 	refs, err := s.store.ListThreadWorkspaceRefs()
 	if err != nil {
 		return nil, err
@@ -171,17 +172,17 @@ func (s *Service) ThreadsReferencingWorkspaces(paths []string) ([][]string, erro
 		resolved[path] = c
 		return c
 	}
-	out := make([][]string, len(paths))
+	out := make([][]store.ThreadWorkspaceRef, len(paths))
 	for _, ref := range refs {
 		worktree, workspace := canonical(ref.WorktreePath), canonical(ref.WorkspacePath)
 		for _, i := range at[worktree] {
-			out[i] = append(out[i], ref.ID)
+			out[i] = append(out[i], ref)
 		}
 		if workspace == worktree {
 			continue
 		}
 		for _, i := range at[workspace] {
-			out[i] = append(out[i], ref.ID)
+			out[i] = append(out[i], ref)
 		}
 	}
 	return out, nil

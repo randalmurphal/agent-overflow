@@ -64,14 +64,17 @@ func (a *App) restoreUnconfirmedQueueOnSessionDeathIf(
 // for a reason other than the person's own Stop hands its queued messages
 // back to the composer the same way a death does.
 func (a *App) restoreUnconfirmedQueueLocked(threadID string) []triage.UnconfirmedFlushItem {
+	unlock := a.threadApplication().LockMutations(threadID)
 	restore := a.restoreUnconfirmedQueueOwing(threadID)
+	unlock()
 	a.finishFlushRestore(threadID, restore)
 	return restore.requeued
 }
 
 // restoreUnconfirmedQueueOwing is restoreUnconfirmedQueueLocked leaving the
-// settlement of what the app wrote to the caller (finishFlushRestore), for a
-// teardown that restores under the thread's mutation lock: settling
+// settlement of what the app wrote and the announcement to the caller
+// (finishFlushRestore), for a caller that holds the thread's mutation lock
+// (restoreFlushItemsToDraftOwing) and releases it before it settles: settling
 // requeues other threads' requests, a queue write that takes that lock.
 func (a *App) restoreUnconfirmedQueueOwing(threadID string) flushRestore {
 	a.forgetAgentWakeTurns(threadID)
@@ -81,19 +84,11 @@ func (a *App) restoreUnconfirmedQueueOwing(threadID string) flushRestore {
 	// threadLock -> a.flushDispatch.mu is the established lock order documented
 	// by RegisterQueueItem. Draining here, rather than before the thread lock,
 	// keeps the guard and the destructive operation in one critical section.
-	dispatchItems := a.drainFlushDispatchForSessionEnd(threadID)
+	dispatchItems := a.takeFlushDispatch(threadID, false)
 
 	drained := a.triage.DrainUnconfirmedFlushItems(threadID)
 	for _, item := range dispatchItems {
-		payload := append(json.RawMessage(nil), item.Payload...)
-		drained = append(drained, triage.UnconfirmedFlushItem{
-			QueueItemID:     item.ID,
-			Message:         item.Message,
-			Payload:         payload,
-			EnqueuedAt:      item.EnqueuedAt,
-			StaleUserItemID: item.StaleUserItemID,
-			Settlement:      item.Settlement,
-		})
+		drained = append(drained, unconfirmedFromQueued(item))
 	}
 	drained = dedupeUnconfirmedFlushItems(drained)
 	sortByEnqueuedAt(drained)
@@ -149,18 +144,31 @@ func sortByEnqueuedAt(items []triage.UnconfirmedFlushItem) {
 // the app's messages are settled (settleNotTakenIn) once the restore of the
 // rest has committed. A restore that fails requeues the items whole, the
 // app's messages included, and they are still queued.
+//
+// A message drained from a queue goes back only while its durable row stands
+// (unless it never had one, triage.QueuedFlushItem.NoRow): a withdrawal
+// deleted the row of one it took back, whatever copy of it the drain found.
+// The rows are read and the draft written, or the messages queued again,
+// under the thread's mutation lock, which a withdrawal takes, so a message is
+// withdrawn before the read or finds its row retired with the restore.
 func (a *App) restoreFlushItemsToDraftLocked(threadID string, drained []triage.UnconfirmedFlushItem, reason string) []triage.UnconfirmedFlushItem {
+	unlock := a.lockForQueuedRows(threadID, drained)
 	restore := a.restoreFlushItemsToDraftOwing(threadID, drained, reason)
+	unlock()
 	a.finishFlushRestore(threadID, restore)
 	return restore.requeued
 }
 
-// flushRestore is a restore whose composer write is done and whose
-// settlement of what the app wrote is owed (finishFlushRestore).
+// flushRestore is a restore whose composer write, or whose requeue when that
+// write failed, is done, and whose settlement of what the app wrote and
+// announcement are owed (finishFlushRestore).
 type flushRestore struct {
-	// requeued are the items a failed restore requeued instead; nothing
-	// else is owed then.
+	// requeued are the items a failed restore queued again instead, as they
+	// were queued; nothing else is owed then but the announcement.
 	requeued []triage.UnconfirmedFlushItem
+	// failed is why the composer write failed; requeueFailed why a requeued
+	// message's durable row could not be written.
+	failed, requeueFailed error
 	// restored is set when the composer write committed.
 	restored bool
 	owed     []notTakenIn
@@ -168,9 +176,18 @@ type flushRestore struct {
 }
 
 // finishFlushRestore settles what the app wrote among a committed restore's
-// messages (settleNotTakenIn) and tells clients what the restore changed.
-// The caller holds the thread action lock and not its mutation lock.
+// messages (settleNotTakenIn) and tells clients what the restore changed, or
+// tells the thread why a failed one queued them again. The caller holds the
+// thread action lock and not its mutation lock.
 func (a *App) finishFlushRestore(threadID string, restore flushRestore) {
+	if restore.requeueFailed != nil {
+		a.emitRequeuePersistFailed(threadID, restore.requeueFailed)
+	}
+	if restore.failed != nil {
+		a.emitWireErrorToThread(threadID, "Could not restore queued messages: "+restore.failed.Error())
+		a.emitQueueStateChanged(threadID)
+		return
+	}
 	if !restore.restored {
 		return
 	}
@@ -181,8 +198,14 @@ func (a *App) finishFlushRestore(threadID string, restore flushRestore) {
 }
 
 // restoreFlushItemsToDraftOwing is restoreFlushItemsToDraftLocked leaving
-// the settlement and the announcement to finishFlushRestore.
+// the settlement and the announcement to finishFlushRestore. The caller holds
+// the thread's mutation lock when drained holds a queued message with a
+// durable row (lockForQueuedRows).
 func (a *App) restoreFlushItemsToDraftOwing(threadID string, drained []triage.UnconfirmedFlushItem, reason string) flushRestore {
+	drained = a.withoutWithdrawnQueued(threadID, drained)
+	if len(drained) == 0 {
+		return flushRestore{}
+	}
 	// The composer write, the queue rows' removal and the retire of every
 	// row the messages have (a quiet row, a stale row a requeue carries, or
 	// the id a deferred message's review drafts were claimed for) are one
@@ -226,10 +249,11 @@ func (a *App) restoreFlushItemsToDraftOwing(threadID string, drained []triage.Un
 			QueueItemIDs: queueItemIDs, RetireItemIDs: retire,
 		}); err != nil {
 			log.Printf("flush queue: restore draft (%s) for %s: %v — requeueing the messages", reason, threadID, err)
-			a.emitWireErrorToThread(threadID, "Could not restore queued messages: "+err.Error())
-			a.requeueUnconfirmedFlushItems(threadID, drained)
-			a.emitQueueStateChanged(threadID)
-			return flushRestore{requeued: drained}
+			// Queued again under the same hold of the mutation lock as the
+			// rows were read, so a withdrawal is either seen by that read or
+			// finds them queued.
+			requeued, persistErr := a.requeueUnconfirmedFlushItemsLocked(threadID, drained)
+			return flushRestore{requeued: requeued, failed: err, requeueFailed: persistErr}
 		}
 	}
 	for _, settlement := range settlements {
@@ -241,6 +265,57 @@ func (a *App) restoreFlushItemsToDraftOwing(threadID string, drained []triage.Un
 		QueueItemIDs: queueItemIDs,
 		UserItemIDs:  userItemIDs,
 	}}
+}
+
+// lockForQueuedRows takes the thread's mutation lock when drained holds a
+// queued message with a durable row, whose withdrawal the restore must order
+// against, and returns its release; with none it takes nothing.
+func (a *App) lockForQueuedRows(threadID string, drained []triage.UnconfirmedFlushItem) func() {
+	if !slices.ContainsFunc(drained, hasQueueRow) {
+		return func() {}
+	}
+	return a.threadApplication().LockMutations(threadID)
+}
+
+// hasQueueRow reports whether item was drained from a queue with its durable
+// row.
+func hasQueueRow(item triage.UnconfirmedFlushItem) bool {
+	return item.Queued && !item.NoRow && item.QueueItemID != ""
+}
+
+// withoutWithdrawnQueued is drained less the queued messages whose rows are
+// gone. A failed read keeps every message: a message the person queued is
+// not lost to a store error. The caller holds the thread's mutation lock.
+func (a *App) withoutWithdrawnQueued(threadID string, drained []triage.UnconfirmedFlushItem) []triage.UnconfirmedFlushItem {
+	var ids []string
+	for _, item := range drained {
+		if hasQueueRow(item) {
+			ids = append(ids, item.QueueItemID)
+		}
+	}
+	if len(ids) == 0 {
+		return drained
+	}
+	present, err := a.store.FlushQueueItemsPresent(threadID, ids)
+	if err != nil {
+		log.Printf("flush queue: read which drained messages of %s are wanted: %v", threadID, err)
+		return drained
+	}
+	return slices.DeleteFunc(drained, func(item triage.UnconfirmedFlushItem) bool {
+		return hasQueueRow(item) && !present[item.QueueItemID]
+	})
+}
+
+// queueRowsPresent reads which of ids are rows of threadID's queue, for a
+// requeue that marks a message without one (triage.QueuedFlushItem.NoRow).
+// ok is false when the read failed.
+func (a *App) queueRowsPresent(threadID string, ids []string) (map[string]bool, bool) {
+	present, err := a.store.FlushQueueItemsPresent(threadID, ids)
+	if err != nil {
+		log.Printf("flush queue: read which requeued messages of %s have rows: %v", threadID, err)
+		return nil, false
+	}
+	return present, true
 }
 
 // cleanupStaleFlushRow takes back a message the provider never consumed,
@@ -501,6 +576,17 @@ func (a *App) requeueEagerPersistedFlushes(threadID string, persisted []triage.E
 	if a.triage == nil || len(persisted) == 0 {
 		return
 	}
+	ids := make([]string, 0, len(persisted))
+	for _, p := range persisted {
+		if p.QueueItemID != "" {
+			ids = append(ids, p.QueueItemID)
+		}
+	}
+	// The provider was handed these, which retired their rows; one that
+	// still stands is an answer's, kept until its echo, and a withdrawal
+	// takes it back. The persisted row is each one's durable copy, so none
+	// gets a queue row again. A failed read marks them all rowless.
+	present, _ := a.queueRowsPresent(threadID, ids)
 	for _, p := range persisted {
 		payload, err := flushPayloadFromUserMeta(p.Meta)
 		if err != nil {
@@ -518,6 +604,7 @@ func (a *App) requeueEagerPersistedFlushes(threadID string, persisted []triage.E
 			Payload:         payload,
 			EnqueuedAt:      p.EnqueuedAt,
 			StaleUserItemID: p.UserItemID,
+			NoRow:           !present[queueID],
 		})
 	}
 	a.emitQueueStateChanged(threadID)
@@ -709,44 +796,103 @@ func unconfirmedFlushRestoreScore(item triage.UnconfirmedFlushItem) int {
 	return score
 }
 
-// requeueUnconfirmedFlushItems puts messages a restore could not return to
-// the composer back on the queue, durable first like any queued message. One
-// that had reached the provider lost its durable row at that write, so it
-// gets the row again under its queue id, which the dispatch or restore of the
-// requeued message retires. One whose earlier row is still in the
-// store (StaleUserItemID) keeps that row as its durable copy instead: the
-// boot restore takes an unconfirmed row back with its text, so a queue row
-// as well would put the message in the composer twice.
+// requeueUnconfirmedFlushItems is requeueUnconfirmedFlushItemsLocked taking
+// the lock it needs, and telling the thread when a row could not be written.
 func (a *App) requeueUnconfirmedFlushItems(threadID string, items []triage.UnconfirmedFlushItem) {
-	if a.triage == nil {
-		return
+	unlock := a.lockForQueuedRows(threadID, items)
+	_, err := a.requeueUnconfirmedFlushItemsLocked(threadID, items)
+	unlock()
+	if err != nil {
+		a.emitRequeuePersistFailed(threadID, err)
 	}
+}
+
+// requeueUnconfirmedFlushItemsLocked puts messages a restore could not
+// return to the composer back on the queue, durable first like any queued
+// message, and returns them as queued, for a caller that must queue them
+// again after a cleanup wiped the queue.
+//
+// A queued message's row is what says it is wanted: one whose row is gone was
+// withdrawn, and is dropped. A message the provider was handed lost its row at
+// that write, unless it is an answer awaiting its echo, so it gets the row
+// again under its queue id, which the dispatch or restore of the requeued
+// message retires. One whose earlier row is still in the store
+// (StaleUserItemID) keeps that row as its durable copy instead and is queued
+// without a queue row (triage.QueuedFlushItem.NoRow): the boot restore takes
+// an unconfirmed row back with its text, so a queue row as well would put the
+// message in the composer twice. A failed read keeps every queued message as
+// it was queued and treats every handed one as rowless. err joins the rows
+// that could not be written; those messages stay queued without one.
+//
+// The caller holds the thread's mutation lock when one of items was queued
+// with its row (lockForQueuedRows), so no withdrawal fits between the read
+// and the queueing it guards.
+func (a *App) requeueUnconfirmedFlushItemsLocked(threadID string, items []triage.UnconfirmedFlushItem) ([]triage.UnconfirmedFlushItem, error) {
+	if a.triage == nil {
+		return nil, nil
+	}
+	ids := make([]string, 0, len(items))
+	for _, item := range items {
+		if item.QueueItemID != "" && !item.NoRow {
+			ids = append(ids, item.QueueItemID)
+		}
+	}
+	present, read := a.queueRowsPresent(threadID, ids)
+	if hook := a.requeueRowsReadForTest; hook != nil {
+		hook(threadID)
+	}
+	requeued := make([]triage.UnconfirmedFlushItem, 0, len(items))
+	var failed []error
 	for _, item := range items {
 		queued, ok := queuedFlushItemFromUnconfirmed(item)
 		if !ok {
 			continue
 		}
-		if queued.StaleUserItemID == "" {
-			var payload flushQueuePayload
-			if len(queued.Payload) > 0 {
-				if err := json.Unmarshal(queued.Payload, &payload); err != nil {
-					log.Printf("flush queue: decode requeued payload %s/%s for its send id: %v", threadID, queued.ID, err)
-				}
-			}
-			if err := a.store.EnsureFlushQueueItem(store.FlushQueueItem{
-				ID:         queued.ID,
-				ThreadID:   threadID,
-				SendID:     payload.SendID,
-				Message:    queued.Message,
-				Payload:    queued.Payload,
-				EnqueuedAt: queued.EnqueuedAt,
-			}); err != nil {
-				log.Printf("flush queue: persist requeued message %s/%s: %v", threadID, queued.ID, err)
-				a.emitErrorToThread(threadID, "Saving a queued message failed. It stays queued but will not survive an app restart: "+err.Error())
+		rowless := item.NoRow || (read && !present[queued.ID]) || (!read && !item.Queued)
+		if item.Queued && !item.NoRow && rowless {
+			continue
+		}
+		if rowless && !item.Queued && queued.StaleUserItemID == "" {
+			if err := a.persistRequeuedFlushItem(threadID, queued); err != nil {
+				failed = append(failed, err)
+			} else {
+				rowless = false
 			}
 		}
+		queued.NoRow = rowless
 		a.triage.RegisterQueueItem(threadID, queued)
+		requeued = append(requeued, unconfirmedFromQueued(queued))
 	}
+	return requeued, errors.Join(failed...)
+}
+
+// persistRequeuedFlushItem writes the durable row of a message queued again
+// after the provider was handed it.
+func (a *App) persistRequeuedFlushItem(threadID string, queued triage.QueuedFlushItem) error {
+	var payload flushQueuePayload
+	if len(queued.Payload) > 0 {
+		if err := json.Unmarshal(queued.Payload, &payload); err != nil {
+			log.Printf("flush queue: decode requeued payload %s/%s for its send id: %v", threadID, queued.ID, err)
+		}
+	}
+	if err := a.store.EnsureFlushQueueItem(store.FlushQueueItem{
+		ID:         queued.ID,
+		ThreadID:   threadID,
+		SendID:     payload.SendID,
+		Message:    queued.Message,
+		Payload:    queued.Payload,
+		EnqueuedAt: queued.EnqueuedAt,
+	}); err != nil {
+		log.Printf("flush queue: persist requeued message %s/%s: %v", threadID, queued.ID, err)
+		return err
+	}
+	return nil
+}
+
+// emitRequeuePersistFailed tells the thread a requeued message's durable row
+// could not be written (requeueUnconfirmedFlushItemsLocked).
+func (a *App) emitRequeuePersistFailed(threadID string, err error) {
+	a.emitErrorToThread(threadID, "Saving a queued message failed. It stays queued but will not survive an app restart: "+err.Error())
 }
 
 // queuedFlushItemFromUnconfirmed is the queue item that sends a message

@@ -262,7 +262,7 @@ func TestADeleteClaimsItsFamilyInOneTransaction(t *testing.T) {
 	spawnLocal(t, s, "tok-deep", "owned", "deep", true)
 	spawnLocal(t, s, "tok-placed", "owner", "placed", false)
 
-	members, err := s.ClaimDeleteFamily("op-1", []string{"owner"})
+	members, err := s.ClaimDeleteFamily("op-1", []string{"owner"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -284,7 +284,7 @@ func TestADeleteClaimsItsFamilyInOneTransaction(t *testing.T) {
 	// Another delete of any thread in the family is refused, with nothing
 	// claimed.
 	var claimed *DeleteClaimedError
-	if _, err := s.ClaimDeleteFamily("op-2", []string{"owned"}); !errors.As(err, &claimed) || claimed.ThreadID != "owned" || !errors.Is(err, ErrThreadDeleting) {
+	if _, err := s.ClaimDeleteFamily("op-2", []string{"owned"}, nil); !errors.As(err, &claimed) || claimed.ThreadID != "owned" || !errors.Is(err, ErrThreadDeleting) {
 		t.Fatalf("a second delete = %v, want the claimed thread named", err)
 	}
 	if ids, err := queryIDs(s.db, `SELECT id FROM threads WHERE delete_claim = 'op-2'`); err != nil || len(ids) != 0 {
@@ -325,7 +325,7 @@ func TestADeleteClaimsItsFamilyInOneTransaction(t *testing.T) {
 	// A worker its owner spawned since joins the claim when it is read again.
 	mustCreateThread(t, s, "late")
 	spawnLocal(t, s, "tok-late", "owner", "late", true)
-	if members, err = s.ClaimDeleteFamily("op-1", []string{"owner"}); err != nil {
+	if members, err = s.ClaimDeleteFamily("op-1", []string{"owner"}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if got := familyIDs(members); !slices.Equal(got, []string{"owner", "late", "owned", "deep"}) {
@@ -347,7 +347,7 @@ func TestADeleteClaimsItsFamilyInOneTransaction(t *testing.T) {
 		t.Errorf("execution after the release = %v", err)
 	}
 
-	if _, err := s.ClaimDeleteFamily("op-2", []string{"owned"}); err != nil {
+	if _, err := s.ClaimDeleteFamily("op-2", []string{"owned"}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.db.Exec(`UPDATE threads SET worktree_path = '/wt/owned' WHERE id = 'owned'`); err != nil {
@@ -371,7 +371,7 @@ func TestADeleteClaimsItsFamilyInOneTransaction(t *testing.T) {
 		t.Errorf("catalog = %v, want the committed thread gone", ids)
 	}
 	// A later delete of the owner joins the committed threads.
-	if members, err = s.ClaimDeleteFamily("op-3", []string{"owner"}); err != nil {
+	if members, err = s.ClaimDeleteFamily("op-3", []string{"owner"}, nil); err != nil {
 		t.Fatalf("a delete over a committed thread: %v", err)
 	}
 	for _, member := range members {
@@ -433,7 +433,7 @@ func TestACommitRecordsOnlyTheWorktreeRemovalsItChecked(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if _, err := s.ClaimDeleteFamily("op", []string{"a", "b"}); err != nil {
+			if _, err := s.ClaimDeleteFamily("op", []string{"a", "b"}, nil); err != nil {
 				t.Fatal(err)
 			}
 			commit, err := s.CommitDeleteClaim("op", siteWorktrees("/wt/y", "a", "b"))
@@ -457,7 +457,7 @@ func TestACommitRecordsOnlyTheWorktreeRemovalsItChecked(t *testing.T) {
 		if _, err := s.db.Exec(`UPDATE threads SET worktree_path = '/wt/y' WHERE id = 'a'`); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := s.ClaimDeleteFamily("op", []string{"a"}); err != nil {
+		if _, err := s.ClaimDeleteFamily("op", []string{"a"}, nil); err != nil {
 			t.Fatal(err)
 		}
 		if commit, err := s.CommitDeleteClaim("op", DeleteWorktrees{}); err != nil || len(commit.RemoveWorktrees) != 0 {
@@ -499,6 +499,121 @@ func TestAWorkersClaimIsFencedByItsOwner(t *testing.T) {
 	}
 }
 
+// A delete's claim changes nothing that is due: a request wake owed to a
+// claimed thread is listed for the retry and read as the sweep's next due
+// moment, as on any thread, since its delivery only queues. An agent wake
+// of a claimed thread is due, and one of a committed thread is not: a fire
+// runs its command, and a committed thread takes nothing.
+func TestAClaimKeepsWhatIsDue(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThread(t, s, "caller")
+	if _, err := s.RegisterAgentWake(AgentWake{ID: "loop", ThreadID: "caller", Kind: AgentWakeLoop, Label: "board", Note: "n", IntervalSeconds: 60, NextAt: 100}); err != nil {
+		t.Fatal(err)
+	}
+	wakeDue := func() bool {
+		t.Helper()
+		rows, err := s.DueAgentWakes(nowMillis(), 32)
+		if err != nil {
+			t.Fatal(err)
+		}
+		next, err := s.NextAgentWakeDue()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if listed := len(rows) == 1; listed != next.Set {
+			t.Fatalf("listed %d agent wakes, next due %+v: the two reads disagree", len(rows), next)
+		}
+		return len(rows) == 1
+	}
+	if err := s.InsertThreadRequest(ThreadRequest{Token: "owed", CallerThreadID: "caller", Kind: ThreadRequestSend, State: ThreadRequestRunning}); err != nil {
+		t.Fatal(err)
+	}
+	if settled, err := s.SettleThreadRequest("owed", ThreadRequestOpenStates(), ThreadRequestSettlement{
+		State: ThreadRequestReplied, Answer: []byte("done"), AnswerKind: ThreadAnswerReply, ArmWake: true,
+	}); err != nil || !settled {
+		t.Fatalf("settle = %v, %v", settled, err)
+	}
+	later := nowMillis() + 3_600_000
+	due := func() bool {
+		t.Helper()
+		rows, err := s.UndeliveredThreadRequestWakes(later, 32)
+		if err != nil {
+			t.Fatal(err)
+		}
+		schedule, err := s.NextThreadRequestWork()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if listed := len(rows) == 1; listed != schedule.Wake.Set {
+			t.Fatalf("listed %d wakes, next due %+v: the two reads disagree", len(rows), schedule.Wake)
+		}
+		return len(rows) == 1
+	}
+	if !due() || !wakeDue() {
+		t.Fatal("the wakes are not due before any delete")
+	}
+	if _, err := s.ClaimDeleteFamily("op-1", []string{"caller"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if !due() || !wakeDue() {
+		t.Fatal("the wakes of a claimed thread are not due")
+	}
+	if err := s.ReleaseDeleteClaim("op-1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.BeginThreadDelete("caller"); err != nil {
+		t.Fatal(err)
+	}
+	if wakeDue() {
+		t.Fatal("an agent wake of a committed thread is due")
+	}
+}
+
+// Every workspace-reference read carries, from the same row, what
+// ThreadDeleteClaim reads: a claim, a commit, or neither.
+func TestThreadWorkspaceRefsCarryEachThreadsDelete(t *testing.T) {
+	s := newTestStore(t)
+	for _, id := range []string{"claimed", "committed", "free"} {
+		mustCreateThread(t, s, id)
+	}
+	if _, err := s.ClaimDeleteFamily("op-1", []string{"claimed"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.BeginThreadDelete("committed"); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]ThreadDeleteHold{"claimed": {Claim: "op-1"}, "committed": {Committed: true}, "free": {}}
+	for id, hold := range want {
+		claim, committed, err := s.ThreadDeleteClaim(id)
+		if err != nil || claim != hold.Claim || committed != hold.Committed {
+			t.Fatalf("%s one at a time = %q %v %v; want %+v", id, claim, committed, err, hold)
+		}
+	}
+	all, err := s.ListThreadWorkspaceRefs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	thread, err := s.GetThread("free")
+	if err != nil {
+		t.Fatal(err)
+	}
+	byProject, err := s.ListThreadWorkspaceRefsByProject(thread.ProjectID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, refs := range map[string][]ThreadWorkspaceRef{"all": all, "by project": byProject} {
+		got := make(map[string]ThreadDeleteHold, len(refs))
+		for _, ref := range refs {
+			got[ref.ID] = ref.Delete
+		}
+		for id, hold := range want {
+			if got[id] != hold {
+				t.Errorf("%s: %s = %+v, want %+v", name, id, got[id], hold)
+			}
+		}
+	}
+}
+
 func catalogIDsOf(t *testing.T, s *Store) []string {
 	t.Helper()
 	ids, err := queryIDs(s.db, `SELECT id FROM owned_threads ORDER BY id`)
@@ -506,4 +621,41 @@ func catalogIDsOf(t *testing.T, s *Store) []string {
 		t.Fatal(err)
 	}
 	return ids
+}
+
+// A claim's gate runs before any claim is written, with exactly the threads
+// the claim takes: not one the delete already claims, and not one committed.
+// Its error refuses the claim, writing nothing.
+func TestAClaimsGateSeesTheThreadsItTakesAndCanRefuseIt(t *testing.T) {
+	s := newTestStore(t)
+	for _, id := range []string{"a", "b", "c"} {
+		mustCreateThread(t, s, id)
+	}
+	var gated [][]string
+	gate := func(threads []string) error {
+		gated = append(gated, slices.Clone(threads))
+		return nil
+	}
+	if _, err := s.ClaimDeleteFamily("op", []string{"a"}, gate); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ClaimDeleteFamily("op", []string{"a", "b"}, gate); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CommitDeleteClaim("op", DeleteWorktrees{}); err != nil {
+		t.Fatal(err)
+	}
+	refused := errors.New("refused by the gate")
+	if _, err := s.ClaimDeleteFamily("op-2", []string{"a", "c"}, func(threads []string) error {
+		gated = append(gated, slices.Clone(threads))
+		return refused
+	}); !errors.Is(err, refused) {
+		t.Fatalf("a refused gate's claim = %v, want its error", err)
+	}
+	if want := [][]string{{"a"}, {"b"}, {"c"}}; !slices.EqualFunc(gated, want, slices.Equal[[]string]) {
+		t.Fatalf("gated %q, want %q", gated, want)
+	}
+	if claim, committed, _ := deleteClaimOf(t, s, "c"); claim != "" || committed {
+		t.Fatalf("c after a refused gate = claim %q committed %v, want nothing written", claim, committed)
+	}
 }

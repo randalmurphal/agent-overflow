@@ -184,7 +184,7 @@ func TestRequeuedQueueItemKeepsItsDurableRow(t *testing.T) {
 		Codex:    sess,
 	})
 
-	app.dispatchFlush(thread.ID, items)
+	dispatchThroughWorker(app, thread.ID, items)
 
 	rows := durableQueueRows(t, app, thread.ID)
 	if len(rows) != 1 || rows[0].ID != queued.ID {
