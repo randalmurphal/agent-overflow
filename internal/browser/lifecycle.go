@@ -28,7 +28,7 @@ import (
 //     page there waits for it rather than opening a second profile.
 
 // pendingPage is a page createPage is creating, or a failed creation a user
-// tab keeps. Every field but p and done is guarded by m.mu.
+// tab keeps. Every field but p, done and cleanupErr is guarded by m.mu.
 type pendingPage struct {
 	p      *managedPage
 	cancel context.CancelFunc
@@ -40,6 +40,44 @@ type pendingPage struct {
 	closed bool
 	// done closes when createPage has finished with the entry.
 	done chan struct{}
+	// cleanupErr is the failed teardown of a creation closed while it ran,
+	// written before done closes.
+	cleanupErr error
+}
+
+// wait answers the creation's cleanup failure once createPage is done.
+func (pending *pendingPage) wait(ctx context.Context) error {
+	select {
+	case <-pending.done:
+		return pending.cleanupErr
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// teardownFailure marks the part of a failed creation that is the failed
+// disposal of the profile the failure left empty, which a creation closed
+// while it ran still reports.
+type teardownFailure struct{ err error }
+
+func (e *teardownFailure) Error() string { return e.err.Error() }
+func (e *teardownFailure) Unwrap() error { return e.err }
+
+// asTeardown marks err as a teardown failure; nil stays nil.
+func asTeardown(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &teardownFailure{err: err}
+}
+
+// teardownPart answers the teardown failure inside err, or nil.
+func teardownPart(err error) error {
+	var failure *teardownFailure
+	if errors.As(err, &failure) {
+		return failure.err
+	}
+	return nil
 }
 
 // pageClose is one page's close in flight. err is written before done
@@ -126,12 +164,19 @@ func (m *Manager) createPage(ctx context.Context, access Access, user bool) (*ma
 	// the idle close cannot stop the engine in between.
 	m.startMu.Lock()
 	scope, err := m.openPageLocked(createCtx, access, p)
+	// One m.mu hold settles the creation against its close flag as it is
+	// now, so a close cannot land between reading the flag and acting on it.
 	m.mu.Lock()
 	closed := pending.closed
-	if err == nil && !closed {
+	switch {
+	case err == nil && !closed:
 		delete(m.pending, p.id)
 		scope.creating--
 		scope.pages[p.id] = p
+	case err != nil && (closed || !user):
+		delete(m.pending, p.id)
+	case err != nil:
+		pending.err = truncateUTF8(err.Error(), maxPageErrorBytes)
 	}
 	m.mu.Unlock()
 	m.startMu.Unlock()
@@ -143,20 +188,21 @@ func (m *Manager) createPage(ctx context.Context, access Access, user bool) (*ma
 	case err == nil:
 		// Closed while the engine created it: the engine page is closed
 		// before the entry stops holding the thread's slot.
-		abandonErr := m.abandonPage(scope, p)
+		pending.cleanupErr = m.abandonPage(scope, p)
 		m.dropPending(pending)
-		if abandonErr != nil {
-			m.reportTeardown(owner, p.id, abandonErr)
+		if pending.cleanupErr != nil {
+			m.reportTeardown(owner, p.id, pending.cleanupErr)
 		}
 		return nil, errClosedWhileCreating
 	}
-	m.mu.Lock()
-	if closed || !user {
-		delete(m.pending, p.id)
-	} else {
-		pending.err = truncateUTF8(err.Error(), maxPageErrorBytes)
+	if closed {
+		// The creation's own failure (its cancellation, mostly) is moot for
+		// a closed tab; the profile it left behind failing to dispose is not.
+		pending.cleanupErr = teardownPart(err)
+		if pending.cleanupErr != nil {
+			m.reportTeardown(owner, p.id, pending.cleanupErr)
+		}
 	}
-	m.mu.Unlock()
 	m.repairActivePage(owner)
 	m.emitThreadState(owner)
 	m.syncPanePresentation(owner)
@@ -243,16 +289,11 @@ func (m *Manager) closePage(ctx context.Context, access Access, pageID string, w
 	if !errors.Is(err, errPageNotFound) {
 		return err
 	}
-	if done, ok := m.closePending(access, pageID); ok {
+	if pending, ok := m.closePending(access, pageID); ok {
 		if !wait {
 			return nil
 		}
-		select {
-		case <-done:
-			return nil
-		case <-ctx.Done():
-			return ctx.Err()
-		}
+		return pending.wait(ctx)
 	}
 	return m.forgetRecord(access.ThreadID, pageID)
 }
@@ -268,7 +309,8 @@ func (m *Manager) closeLivePage(ctx context.Context, access Access, pageID strin
 }
 
 // beginCloseLive starts the close of the caller's live page, or answers the
-// close already running for it.
+// close already running for it. Finding the page and moving it to closing is
+// one m.mu hold, so concurrent closes agree on one teardown.
 func (m *Manager) beginCloseLive(access Access, pageID string) (*pageClose, error) {
 	m.mu.Lock()
 	for _, scope := range m.scopes {
@@ -279,32 +321,56 @@ func (m *Manager) beginCloseLive(access Access, pageID string) (*pageClose, erro
 			}
 			return c, nil
 		}
+		if p := scope.pages[pageID]; p != nil {
+			if p.owner != access.ThreadID {
+				m.mu.Unlock()
+				return nil, errPageNotFound
+			}
+			c := markClosingLocked(p, scope)
+			m.mu.Unlock()
+			m.startClose(scope, c)
+			return c, nil
+		}
 	}
 	m.mu.Unlock()
-	p, scope, err := m.lookupOwnedPage(access, pageID)
-	if err != nil {
-		return nil, err
-	}
-	return m.closeFoundPage(p, scope)
+	return nil, errPageNotFound
 }
 
 // closeFoundPage closes a page a lookup found live: it leaves the tab set at
-// once and is disposed after. It answers errPageNotFound when the page
-// stopped being live meanwhile: suspended, it is now a record for ClosePage
-// to forget; closing, its close answers.
+// once and is disposed after. A page whose close began meanwhile answers that
+// close. It answers errPageNotFound when the page stopped being live
+// otherwise: suspended, it is now a record for ClosePage to forget.
 func (m *Manager) closeFoundPage(p *managedPage, scope *workspaceScope) (*pageClose, error) {
 	m.mu.Lock()
+	if c := scope.closing[p.id]; c != nil && c.p == p {
+		m.mu.Unlock()
+		return c, nil
+	}
 	if scope.pages[p.id] != p {
 		m.mu.Unlock()
 		return nil, errPageNotFound
 	}
+	c := markClosingLocked(p, scope)
+	m.mu.Unlock()
+	m.startClose(scope, c)
+	return c, nil
+}
+
+// markClosingLocked moves a live page to its scope's closing pages. The
+// caller holds m.mu and calls startClose after releasing it.
+func markClosingLocked(p *managedPage, scope *workspaceScope) *pageClose {
 	delete(scope.pages, p.id)
 	c := &pageClose{p: p, done: make(chan struct{})}
 	if scope.closing == nil {
 		scope.closing = make(map[string]*pageClose)
 	}
 	scope.closing[p.id] = c
-	m.mu.Unlock()
+	return c
+}
+
+// startClose publishes a page's move to closing and runs its teardown.
+func (m *Manager) startClose(scope *workspaceScope, c *pageClose) {
+	p := c.p
 	// An operation holding the page's lock gives it up; one waiting for it
 	// finds the page gone (pageLive) or its operations ended.
 	p.cancelOps()
@@ -316,7 +382,6 @@ func (m *Manager) closeFoundPage(p *managedPage, scope *workspaceScope) (*pageCl
 	if !m.goLife(func() { m.runClose(scope, c) }) {
 		m.runClose(scope, c)
 	}
-	return c, nil
 }
 
 // runClose is a close's engine half. It waits for the page's lock, closes
@@ -345,9 +410,9 @@ func (m *Manager) runClose(scope *workspaceScope, c *pageClose) {
 }
 
 // closePending closes a tab that is still being created, or a failed
-// creation's tab. The returned channel closes when the creation has
-// finished with it; false when pageID is no such tab of the caller.
-func (m *Manager) closePending(access Access, pageID string) (<-chan struct{}, bool) {
+// creation's tab, and answers its entry, whose wait ends when the creation
+// has finished with it; false when pageID is no such tab of the caller.
+func (m *Manager) closePending(access Access, pageID string) (*pendingPage, bool) {
 	m.mu.Lock()
 	pending := m.pending[pageID]
 	if pending == nil || pending.p.owner != access.ThreadID {
@@ -364,7 +429,7 @@ func (m *Manager) closePending(access Access, pageID string) (<-chan struct{}, b
 	m.repairActivePage(access.ThreadID)
 	m.emitThreadState(access.ThreadID)
 	m.syncPanePresentation(access.ThreadID)
-	return pending.done, true
+	return pending, true
 }
 
 // closeThreadPending closes every tab of the thread that is still being

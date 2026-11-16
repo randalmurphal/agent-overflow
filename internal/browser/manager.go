@@ -689,7 +689,7 @@ func (m *Manager) openPageLocked(ctx context.Context, access Access, p *managedP
 		release := m.releaseScopeLocked(scope)
 		m.mu.Unlock()
 		if release {
-			err = errors.Join(err, m.disposeScope(context.Background(), scope))
+			err = errors.Join(err, asTeardown(m.disposeScope(context.Background(), scope)))
 		}
 		return nil, err
 	}
@@ -708,6 +708,7 @@ func (m *Manager) newPage(ctx context.Context, scope *workspaceScope, p *managed
 		driver.Close()
 		return err
 	}
+	m.pageAttached(p)
 	p.touch()
 	return nil
 }
@@ -812,6 +813,7 @@ func (m *Manager) adoptPopup(popup enginePopup) {
 		driver.Close()
 		return
 	}
+	m.pageAttached(p)
 	m.mu.Lock()
 	// The opener may have closed meanwhile, with its thread's other pages.
 	current := m.scopes[scope.workspace]

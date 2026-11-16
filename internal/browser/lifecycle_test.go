@@ -14,18 +14,20 @@ import (
 
 // lifecycleEngine is the recording pane host with gates on the engine work
 // behind a tab's lifecycle: a page's creation, a driver's close, a profile's
-// disposal, a navigation and an address read. A gate set with hold makes
-// every later call wait for its release; the matching channel receives one
-// value per call that reached it.
+// disposal, a navigation, an address read and a favicon read. A gate set
+// with hold makes every later call wait for its release; the matching
+// channel receives one value per call that reached it. onNewPage, when set,
+// runs with the page's hooks before NewPage returns.
 type lifecycleEngine struct {
 	*recordingPaneHost
 	mu                                       sync.Mutex
 	newPageGate, closeGate, disposeGate      chan struct{}
-	navGate, infoGate                        chan struct{}
+	navGate, infoGate, evalGate              chan struct{}
 	creating, closing, disposing, navigating chan struct{}
-	reading                                  chan struct{}
+	reading, evaluating                      chan struct{}
 	newPageErr, disposeErr                   error
 	favicon                                  string
+	onNewPage                                func(pageHooks)
 	disposed, closed                         atomic.Int64
 	disposingNow, profileDuringDispose       atomic.Bool
 }
@@ -41,6 +43,7 @@ func newLifecycleManager(t *testing.T) (*Manager, *lifecycleEngine) {
 		disposing:         make(chan struct{}, 16),
 		navigating:        make(chan struct{}, 16),
 		reading:           make(chan struct{}, 16),
+		evaluating:        make(chan struct{}, 16),
 	}
 	manager.engine = engine
 	return manager, engine
@@ -64,8 +67,8 @@ func (e *lifecycleEngine) hold(gate *chan struct{}) (release func()) {
 	return release
 }
 
-// pass waits at gate when it is set, signalling reached first. A non-nil
-// ctx ends the wait early with its error.
+// pass waits at gate when it is set, signalling reached first. ctx ends the
+// wait early with its error.
 func (e *lifecycleEngine) pass(ctx context.Context, gate *chan struct{}, reached chan struct{}) error {
 	e.mu.Lock()
 	ch := *gate
@@ -74,10 +77,6 @@ func (e *lifecycleEngine) pass(ctx context.Context, gate *chan struct{}, reached
 		return nil
 	}
 	reached <- struct{}{}
-	if ctx == nil {
-		<-ch
-		return nil
-	}
 	select {
 	case <-ch:
 		return nil
@@ -106,7 +105,7 @@ type lifecycleProfile struct {
 // gets its engine page.
 func (p *lifecycleProfile) NewPage(ctx context.Context, hooks pageHooks) (pageDriver, error) {
 	e := p.engine
-	_ = e.pass(nil, &e.newPageGate, e.creating)
+	_ = e.pass(context.Background(), &e.newPageGate, e.creating)
 	e.mu.Lock()
 	err := e.newPageErr
 	e.mu.Unlock()
@@ -117,6 +116,13 @@ func (p *lifecycleProfile) NewPage(ctx context.Context, hooks pageHooks) (pageDr
 	if err != nil {
 		return nil, err
 	}
+	e.mu.Lock()
+	hook := e.onNewPage
+	e.onNewPage = nil
+	e.mu.Unlock()
+	if hook != nil {
+		hook(hooks)
+	}
 	return &lifecycleDriver{pageDriver: driver, engine: e}, nil
 }
 
@@ -125,7 +131,7 @@ func (p *lifecycleProfile) Dispose(ctx context.Context) error {
 	e.disposed.Add(1)
 	e.disposingNow.Store(true)
 	defer e.disposingNow.Store(false)
-	_ = e.pass(nil, &e.disposeGate, e.disposing)
+	_ = e.pass(context.Background(), &e.disposeGate, e.disposing)
 	e.mu.Lock()
 	failure := e.disposeErr
 	e.mu.Unlock()
@@ -138,7 +144,7 @@ type lifecycleDriver struct {
 }
 
 func (d *lifecycleDriver) Close() {
-	_ = d.engine.pass(nil, &d.engine.closeGate, d.engine.closing)
+	_ = d.engine.pass(context.Background(), &d.engine.closeGate, d.engine.closing)
 	d.engine.closed.Add(1)
 	d.pageDriver.Close()
 }
@@ -157,11 +163,15 @@ func (d *lifecycleDriver) Info(ctx context.Context) (string, string, error) {
 	return d.pageDriver.Info(ctx)
 }
 
-// Evaluate answers the engine's favicon to the favicon read.
+// Evaluate answers the favicon the engine had when the read began, after the
+// read's gate.
 func (d *lifecycleDriver) Evaluate(ctx context.Context, source string, readOnly bool) (json.RawMessage, error) {
 	d.engine.mu.Lock()
 	icon := d.engine.favicon
 	d.engine.mu.Unlock()
+	if err := d.engine.pass(ctx, &d.engine.evalGate, d.engine.evaluating); err != nil {
+		return nil, err
+	}
 	return json.Marshal(icon)
 }
 

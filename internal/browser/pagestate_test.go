@@ -37,16 +37,104 @@ func TestLoadingKeepsTheNewestReportAndReadsTheFavicon(t *testing.T) {
 	if loading() {
 		t.Fatal("a newer stop left the page loading")
 	}
+	waitFavicon(t, manager, access, page.ID, icon)
+}
+
+// waitFavicon waits until the tab shows want and no favicon read runs.
+func waitFavicon(t *testing.T, m *Manager, access Access, pageID, want string) {
+	t.Helper()
+	p, _, err := m.lookupOwnedPage(access, pageID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		if tab, _ := findTab(manager, access, page.ID); tab.Favicon == icon {
-			break
+		tab, _ := findTab(m, access, pageID)
+		p.metaMu.RLock()
+		idle := !p.load.reading && !p.load.want
+		p.metaMu.RUnlock()
+		if tab.Favicon == want && idle {
+			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("the stopped load published no favicon")
+			t.Fatalf("favicon %.40q (reading: %v), want %.40q", tab.Favicon, !idle, want)
 		}
-		time.Sleep(5 * time.Millisecond)
+		time.Sleep(time.Millisecond)
 	}
+}
+
+func iconURL(name string) string {
+	return "data:image/png;base64," + base64.StdEncoding.EncodeToString([]byte("\x89PNG\r\n\x1a\n"+name))
+}
+
+func setFavicon(engine *lifecycleEngine, icon string) {
+	engine.mu.Lock()
+	engine.favicon = icon
+	engine.mu.Unlock()
+}
+
+// A load that starts and stops before the engine page is attached (a popup
+// loading while it is adopted) is recorded; its favicon is read once the page
+// has its driver, never before.
+func TestALoadBeforeAttachmentReadsTheFaviconOnceAttached(t *testing.T) {
+	manager, engine := newLifecycleManager(t)
+	setFavicon(engine, iconURL("early"))
+	engine.onNewPage = func(hooks pageHooks) {
+		hooks.Loading(true, 1)
+		hooks.Loading(false, 2)
+		// A read begun now would find no driver or context.
+		time.Sleep(20 * time.Millisecond)
+	}
+	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+	page, err := manager.NewCompanionPage(t.Context(), access, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFavicon(t, manager, access, page.ID, iconURL("early"))
+}
+
+// A stop handled before its load's start still reads the favicon: the start,
+// older, is dropped, and no loading edge was seen.
+func TestAStopHandledBeforeItsStartReadsTheFavicon(t *testing.T) {
+	manager, engine := newLifecycleManager(t)
+	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+	page := mustOpen(t, manager, access, "https://example.test/")
+	waitFavicon(t, manager, access, page.ID, "")
+	p, _, err := manager.lookupOwnedPage(access, page.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setFavicon(engine, iconURL("next"))
+	manager.pageLoading(p, false, 1002)
+	manager.pageLoading(p, true, 1001)
+	waitFavicon(t, manager, access, page.ID, iconURL("next"))
+	if tab, _ := findTab(manager, access, page.ID); tab.Loading {
+		t.Fatal("the older start left the page loading")
+	}
+}
+
+// A favicon read that a new load overtakes keeps nothing: its answer is the
+// old document's. The new load's stop reads the new one.
+func TestAReadANewLoadOvertakesIsDropped(t *testing.T) {
+	manager, engine := newLifecycleManager(t)
+	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+	page := mustOpen(t, manager, access, "https://example.test/")
+	waitFavicon(t, manager, access, page.ID, "")
+	p, _, err := manager.lookupOwnedPage(access, page.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	release := engine.hold(&engine.evalGate)
+	defer release()
+	setFavicon(engine, iconURL("old"))
+	manager.pageLoading(p, false, 1001)
+	receive(t, engine.evaluating, "the old document's favicon read")
+	manager.pageLoading(p, true, 1002)
+	setFavicon(engine, iconURL("new"))
+	release()
+	waitFavicon(t, manager, access, page.ID, "")
+	manager.pageLoading(p, false, 1003)
+	waitFavicon(t, manager, access, page.ID, iconURL("new"))
 }
 
 // An engine with no pane reads no favicon.
@@ -61,7 +149,7 @@ func TestAnEngineWithNoPaneReadsNoFavicon(t *testing.T) {
 	manager.pageLoading(p, true, 1000)
 	manager.pageLoading(p, false, 1001)
 	p.metaMu.RLock()
-	reads := p.load.faviconGen
+	reads := p.load.reads
 	p.metaMu.RUnlock()
 	if reads != 0 {
 		t.Fatalf("%d favicon reads on an engine with no pane", reads)
