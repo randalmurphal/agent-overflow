@@ -5,16 +5,14 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"strconv"
+	"strings"
 	"sync"
+	"time"
 )
 
-const reapSubcommand = "__reap"
-
-// Subcommand returns the argv token that routes a process into RunChild.
-// Every executable that calls Spawn with its own path compares os.Args[1]
-// against this before any other startup: main() in the app, and TestMain in
-// a test binary that boots the app.
-func Subcommand() string { return reapSubcommand }
+// SidecarName is the argument that names the sidecar in its command line.
+const SidecarName = "agent-overflow-reaper"
 
 // Client is the parent-side handle to a reaper sidecar. It owns the write
 // end of the control pipe: writing watch/release commands updates the
@@ -29,18 +27,17 @@ type Client struct {
 	done bool
 }
 
-// Spawn launches `selfExe __reap` with the read end of a fresh control
-// pipe on fd 3 and returns a Client holding the write end. selfExe is
-// normally os.Executable(). Go marks the write end close-on-exec, so it
-// never leaks into the provider subprocesses spawned later — the parent
-// stays the pipe's sole writer, which is what makes EOF a reliable
-// parent-death signal.
-func Spawn(selfExe string) (*Client, error) {
+// Spawn launches the sidecar with the read end of a fresh control pipe on
+// fd 3 and returns a Client holding the write end. Go marks the write end
+// close-on-exec, so it never leaks into the provider subprocesses spawned
+// later — the parent stays the pipe's sole writer, which is what makes EOF
+// a reliable parent-death signal.
+func Spawn() (*Client, error) {
 	r, w, err := os.Pipe()
 	if err != nil {
 		return nil, fmt.Errorf("orphanreaper: pipe: %w", err)
 	}
-	cmd := sidecarCommand(selfExe, r)
+	cmd := sidecarCommand(r, killGracePeriod)
 	if err := cmd.Start(); err != nil {
 		r.Close()
 		w.Close()
@@ -52,21 +49,15 @@ func Spawn(selfExe string) (*Client, error) {
 	return &Client{cmd: cmd, w: w}, nil
 }
 
-// sidecarRuntimeEnv runs the sidecar's Go runtime with one P. The sidecar
-// only blocks on a pipe read, signals and sleeps, so more Ps buy nothing,
-// while each costs an OS thread and per-P caches for the app's whole life.
-// It is set through the environment because the app's package inits run
-// before RunChild, and runtime.GOMAXPROCS there cannot retire the threads
-// they already started.
-const sidecarRuntimeEnv = "GOMAXPROCS=1"
-
-// sidecarCommand builds the sidecar process with control on fd 3. Appending
-// sidecarRuntimeEnv after the inherited environment overrides any GOMAXPROCS
-// the app itself was started with.
-func sidecarCommand(selfExe string, control *os.File) *exec.Cmd {
-	cmd := exec.Command(selfExe, reapSubcommand)
-	cmd.Env = append(os.Environ(), sidecarRuntimeEnv)
-	cmd.ExtraFiles = []*os.File{control} // lands as fd 3 (controlFD) in the child
+// sidecarCommand builds the sidecar process: sidecarScript under /bin/sh,
+// with control on fd 3 and the SIGTERM→SIGKILL grace in whole seconds. The
+// script arrives on stdin, so the command line reads
+// `/bin/sh -s agent-overflow-reaper 2`.
+func sidecarCommand(control *os.File, grace time.Duration) *exec.Cmd {
+	seconds := strconv.Itoa(int(grace / time.Second))
+	cmd := exec.Command("/bin/sh", "-s", SidecarName, seconds)
+	cmd.Stdin = strings.NewReader(sidecarScript)
+	cmd.ExtraFiles = []*os.File{control} // lands as fd 3, which sidecarScript reads
 	cmd.Stderr = os.Stderr               // surface the sidecar's diagnostics
 	applySidecarProcessAttrs(cmd)
 	return cmd

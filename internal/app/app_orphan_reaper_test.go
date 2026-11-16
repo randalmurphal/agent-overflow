@@ -4,6 +4,7 @@ package app
 
 import (
 	"os"
+	"slices"
 	"syscall"
 	"testing"
 	"time"
@@ -13,10 +14,9 @@ import (
 	"github.com/shirou/gopsutil/v4/process"
 )
 
-// The sidecar Start spawns re-execs this binary, so it acts as the reaper
-// only when TestMain dispatches the subcommand as main() does. It then
-// exits on the control pipe's EOF, and Close returns promptly.
-func TestOrphanReaperSidecarRunsAsTheReaper(t *testing.T) {
+// The sidecar Start spawns exits cleanly on the control pipe's EOF, and Close
+// returns promptly.
+func TestOrphanReaperSidecarExitsOnClose(t *testing.T) {
 	t.Parallel()
 	a := NewApp()
 	if err := a.startOrphanReaper(t.TempDir()); err != nil {
@@ -34,14 +34,13 @@ func TestOrphanReaperSidecarRunsAsTheReaper(t *testing.T) {
 			t.Fatalf("sidecar exit: %v", err)
 		}
 	case <-time.After(10 * time.Second):
-		// A sidecar that is not the reaper is running this suite. Its group
-		// is its own (Setpgid), so ending it ends what it started.
+		// Its group is its own (Setpgid), so ending it ends what it started.
 		for _, pid := range sidecars {
 			if err := syscall.Kill(-pid, syscall.SIGKILL); err != nil {
 				t.Errorf("kill sidecar group %d: %v", pid, err)
 			}
 		}
-		t.Fatal("the sidecar did not exit on EOF; TestMain must dispatch the reaper subcommand")
+		t.Fatal("the sidecar did not exit on EOF")
 	}
 }
 
@@ -62,7 +61,7 @@ func reaperSidecarPIDs(t *testing.T) []int {
 			// Another test's child that exited meanwhile is not the sidecar.
 			continue
 		}
-		if len(args) > 1 && args[1] == orphanreaper.Subcommand() {
+		if slices.Contains(args, orphanreaper.SidecarName) {
 			pids = append(pids, int(child.Pid))
 		}
 	}
