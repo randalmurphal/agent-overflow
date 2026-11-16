@@ -144,6 +144,51 @@ per-platform no-op.
   for it. Saving uses the pages' cached address and title and makes no engine
   call.
 
+## The pane's chrome
+
+The tab strip and address row (`frontend/src/lib/components/browser/`)
+behave as a desktop browser's:
+
+- Tabs share the strip evenly between 200 and 72 px; past that the tab row
+  scrolls sideways (a vertical wheel scrolls it too) and keeps the active
+  tab in view. The new-tab button follows the last tab outside the
+  scroller, so it never scrolls away. A tab shows a stepped spinner while
+  creating, restoring or loading, its favicon or a globe otherwise, and an
+  alert when it failed. Close shows on the active tab and on hover, always
+  under compact; a middle click closes. A double-click on the strip's empty
+  space maximizes or restores the pane, as a pane title does.
+- Focusing the address selects it; a second click places the caret. Enter
+  (plain or with Shift) navigates; Escape puts the page's address back and
+  moves focus to the page area. DOM focus only: the native page takes
+  keyboard focus from a click, as § Keyboard says. Switching tabs replaces
+  an edit with the new tab's address.
+- While the page loads, reload is stop. `StopCompanionLoad` takes no page
+  lock, so it stops an address-bar navigation in flight, and that
+  navigation answers without an error. Every engine stops a load (CDP
+  `Page.stopLoading`, `webkit_web_view_stop_loading`, WKWebView
+  `stopLoading`).
+- The address takes a backend path, a workspace-relative file, a `file:`
+  URL, a host, or a search. A Windows drive path (`C:\x`, `C:/x`), a UNC
+  path (`\\wsl.localhost\<distro>\...`, `\\wsl$\<distro>\...`) and the
+  `file:` URLs of either resolve to the backend path through the engine's
+  renderer mapping (`engineFileURL`, `wslpath -u` on the WSL build) before
+  file authorization. A path the mapping cannot reach (another
+  distribution, a network share), or any Windows path on an engine without
+  one, is an error naming the path, never a search
+  (`internal/browser/companion_navigate.go`).
+- "Open file" lists the thread's workspace on the computer that owns it
+  (the sidebar's `DirectoryBrowser`) and searches it with the composer's
+  workspace file search. The chosen absolute path navigates the active tab,
+  or a new tab when none can take an address, under the file
+  authorization; a refusal is the pane's banner.
+- Chords, live while the browser pane is the focused pane
+  (`browserPaneFocused`): new tab `mod+t`, focus the address `mod+l`, reload
+  `mod+r` and `f5`, next and previous tab `ctrl+tab` and `ctrl+shift+tab`,
+  beside close tab `mod+w`. The app window reloads the app on `mod+r` before
+  the SPA sees it (`internal/uikeys`), so `mod+r` reaches the browser only
+  from the page, through the accelerator replay; `f5` is the reload from the
+  pane's chrome. A bare `f5` is never claimed from the page.
+
 ## Keyboard
 
 The page is a native view beside the SPA's, and the window has one keyboard

@@ -181,6 +181,48 @@ export const KEYBINDING_DEFAULTS: readonly KeybindingRule[] = [
     "defaultKey": "alt+shift+enter"
   },
   {
+    "key": "mod+t",
+    "command": "browser.newTab",
+    "when": "browserPaneFocused",
+    "defaultId": "browser.newTab",
+    "defaultKey": "mod+t"
+  },
+  {
+    "key": "mod+l",
+    "command": "browser.focusAddress",
+    "when": "browserPaneFocused",
+    "defaultId": "browser.focusAddress",
+    "defaultKey": "mod+l"
+  },
+  {
+    "key": "mod+r",
+    "command": "browser.reload",
+    "when": "browserPaneFocused",
+    "defaultId": "browser.reload",
+    "defaultKey": "mod+r"
+  },
+  {
+    "key": "f5",
+    "command": "browser.reload",
+    "when": "browserPaneFocused",
+    "defaultId": "browser.reload.f5",
+    "defaultKey": "f5"
+  },
+  {
+    "key": "ctrl+tab",
+    "command": "browser.nextTab",
+    "when": "browserPaneFocused",
+    "defaultId": "browser.nextTab",
+    "defaultKey": "ctrl+tab"
+  },
+  {
+    "key": "ctrl+shift+tab",
+    "command": "browser.prevTab",
+    "when": "browserPaneFocused",
+    "defaultId": "browser.prevTab",
+    "defaultKey": "ctrl+shift+tab"
+  },
+  {
     "key": "mod+shift+g",
     "command": "diff.panel.toggle",
     "when": "hasActiveThread \u0026\u0026 !terminalFocus",

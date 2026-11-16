@@ -85,6 +85,8 @@ export interface CommandFlags {
   workflowsPaneFocused: boolean;
   /** True while the raw focused pane is the Pull requests pane. */
   pullsPaneFocused: boolean;
+  /** True while the raw focused pane is a browser companion pane. */
+  browserPaneFocused: boolean;
   /** True while the focused workflows pane is showing a run detail level. */
   workflowsRunDetail: boolean;
   /**

@@ -5,10 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"net"
-	"net/url"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -778,48 +774,4 @@ func (m *Manager) ActivateCompanionPage(ctx context.Context, access Access, page
 		return nil
 	}
 	return err
-}
-
-func (m *Manager) NavigateCompanion(ctx context.Context, access Access, pageID, address string) (PageInfo, error) {
-	address = strings.TrimSpace(address)
-	if address == "" {
-		return PageInfo{}, fmt.Errorf("browser: address is required")
-	}
-	lower := strings.ToLower(address)
-	parsed, _ := url.Parse(address)
-	if parsed != nil && strings.EqualFold(parsed.Scheme, "file") {
-		localPath := filepath.FromSlash(parsed.Path)
-		if engine, ok := m.engine.(engineFileURL); ok {
-			// A pasted file URL is in the RENDERER's form; OpenFile wants
-			// the backend path behind it.
-			mapped, err := engine.BackendFilePath(ctx, address)
-			if err != nil {
-				return PageInfo{}, err
-			}
-			localPath = mapped
-		}
-		return m.OpenFile(ctx, access, localPath, OpenOptions{PageID: pageID})
-	}
-	if filepath.IsAbs(address) {
-		return m.OpenFile(ctx, access, address, OpenOptions{PageID: pageID})
-	}
-	workspaceFile := filepath.Join(access.Workspace, filepath.FromSlash(address))
-	if info, err := os.Stat(workspaceFile); err == nil && info.Mode().IsRegular() {
-		return m.OpenFile(ctx, access, workspaceFile, OpenOptions{PageID: pageID})
-	}
-	if !strings.HasPrefix(lower, "http://") && !strings.HasPrefix(lower, "https://") {
-		host := address
-		if before, _, ok := strings.Cut(address, ":"); ok {
-			host = before
-		}
-		isHost := strings.Contains(host, ".") || strings.EqualFold(host, "localhost") || net.ParseIP(strings.Trim(host, "[]")) != nil
-		if strings.ContainsAny(address, " \t\r\n") || !isHost {
-			address = "https://www.google.com/search?q=" + url.QueryEscape(address)
-		} else if strings.EqualFold(host, "localhost") || net.ParseIP(strings.Trim(host, "[]")) != nil {
-			address = "http://" + address
-		} else {
-			address = "https://" + address
-		}
-	}
-	return m.Open(ctx, access, address, OpenOptions{PageID: pageID})
 }

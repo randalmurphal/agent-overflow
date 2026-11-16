@@ -504,14 +504,43 @@ export function takeAddressFocus(threadId: string, active: { id: string; creatin
  * holds focus, and the command falls through to its pane close.
  */
 export function closeFocusedBrowserTab(): boolean {
+  const focused = focusedBrowser();
+  const pageId = focused?.state?.activePageId || focused?.state?.pages?.[0]?.id;
+  if (!focused || !pageId) return false;
+  void browserCompanionAct(focused.threadId, { kind: 'close', pageId });
+  return true;
+}
+
+/**
+ * The thread of the focused pane when it is a browser companion, with its
+ * last state (null before any). Null when another pane, or none, is focused.
+ */
+export function focusedBrowser(): { threadId: string; state: BrowserCompanionEvent | null } | null {
   const focusedId = getFocusedPaneId();
   const companion = focusedId ? getCompanionPane(focusedId) : null;
-  if (companion?.kind !== 'browser') return false;
+  if (companion?.kind !== 'browser') return null;
   const threadId = getPane(companion.sourcePaneId)?.threadId;
-  const state = threadId ? liveStates.get(threadId) : null;
-  const pageId = state?.activePageId || state?.pages?.[0]?.id;
-  if (!threadId || !pageId) return false;
-  void browserCompanionAct(threadId, { kind: 'close', pageId });
+  if (!threadId) return null;
+  return { threadId, state: liveStates.get(threadId) };
+}
+
+// The mounted pane's address bar, per thread, for the focus-address
+// command: the pane registers it while mounted (registerBrowserAddressBar).
+const addressBars = new Map<string, () => void>();
+
+/** Registers the thread's mounted address bar focuser; the result removes it. */
+export function registerBrowserAddressBar(threadId: string, focus: () => void): () => void {
+  addressBars.set(threadId, focus);
+  return () => {
+    if (addressBars.get(threadId) === focus) addressBars.delete(threadId);
+  };
+}
+
+/** Focuses the thread's address bar with its text selected; false with no pane mounted. */
+export function focusBrowserAddressBar(threadId: string): boolean {
+  const focus = addressBars.get(threadId);
+  if (!focus) return false;
+  focus();
   return true;
 }
 
@@ -564,6 +593,7 @@ export function resetBrowserCompanionForTest(): void {
   dropAllAddressFocus();
   addressFocusIntents.reset();
   hydratedThreads.clear();
+  addressBars.clear();
   store.suspend();
   store.resetAll();
 }

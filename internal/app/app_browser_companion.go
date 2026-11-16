@@ -154,8 +154,10 @@ func (a *App) BrowserCompanionDo(ctx context.Context, threadID string, action Br
 	switch strings.ToLower(strings.TrimSpace(action.Kind)) {
 	case "navigate":
 		_, err = a.browser.manager.NavigateCompanion(ctx, access, action.PageID, action.Address)
-	case "back", "forward", "reload", "stop":
+	case "back", "forward", "reload":
 		_, err = a.browser.manager.History(ctx, access, action.PageID, action.Kind)
+	case "stop":
+		err = a.browser.manager.StopCompanionLoad(ctx, access, action.PageID)
 	case "activate":
 		err = a.browser.manager.ActivateCompanionPage(ctx, access, action.PageID)
 	case "move":

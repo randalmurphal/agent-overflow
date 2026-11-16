@@ -282,6 +282,9 @@ type managedPage struct {
 	// frame committed, stamped on the engine's own thread (find.go).
 	incarnation uint64
 	docEpoch    atomic.Uint64
+	// userStops counts the pane's stop presses (StopCompanionLoad), so an
+	// address-bar navigation the user stopped answers without an error.
+	userStops atomic.Uint64
 	// viewport is the size the page last laid out at (packViewport), and
 	// viewportFailed the size it last refused (viewport.go). A pane resize
 	// lays out only the active page, so a hidden page lags its thread's
