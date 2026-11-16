@@ -178,6 +178,21 @@ var Defaults = []Keybinding{
 	// it escapes a focused terminal (TERMINAL_ESCAPE_COMMAND_IDS); the
 	// command itself is inert under compact, which shows one pane already.
 	{Key: "alt+shift+enter", Command: "pane.togglePromoted", DefaultID: "pane.togglePromoted"},
+	// Browser pane chrome, the desktop-browser chords, live only while the
+	// browser pane is the focused pane: a chord pressed in the native page is
+	// claimed by the engine (every chord with ctrl, meta or alt bound here is)
+	// and replayed after the pane is focused (docs/architecture/browser-tools.md
+	// § Keyboard). ctrl+tab is literal ctrl, as for terminal tabs: mod+tab is
+	// the macOS app switcher. Reload has two chords: mod+r reaches the page's
+	// replay only, because the app window reserves mod+r for reloading the app
+	// (internal/uikeys) before the SPA sees it, so f5 is the reload from the
+	// pane's own chrome.
+	{Key: "mod+t", Command: "browser.newTab", When: "browserPaneFocused", DefaultID: "browser.newTab"},
+	{Key: "mod+l", Command: "browser.focusAddress", When: "browserPaneFocused", DefaultID: "browser.focusAddress"},
+	{Key: "mod+r", Command: "browser.reload", When: "browserPaneFocused", DefaultID: "browser.reload"},
+	{Key: "f5", Command: "browser.reload", When: "browserPaneFocused", DefaultID: "browser.reload.f5"},
+	{Key: "ctrl+tab", Command: "browser.nextTab", When: "browserPaneFocused", DefaultID: "browser.nextTab"},
+	{Key: "ctrl+shift+tab", Command: "browser.prevTab", When: "browserPaneFocused", DefaultID: "browser.prevTab"},
 	{Key: "mod+shift+g", Command: "diff.panel.toggle", When: "hasActiveThread && !terminalFocus", DefaultID: "diff.panel.toggle"},
 	// mod+f opens the focused pane's find bar, matching the editor convention
 	// where Ctrl+F finds in the current document and Ctrl+Shift+F
