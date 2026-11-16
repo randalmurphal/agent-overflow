@@ -232,11 +232,7 @@ func TestAutoSwitchSettingOffEndsEarlierWaits(t *testing.T) {
 	app.ensureTriageRouter()
 	rig := newAutoSwitchRig(t, app, string(provider.Claude), "first", "second")
 	rig.settings(t, map[string]any{"accountAutoContinue": true})
-	// Both refusals must land before the reset their reading names: one
-	// after it is marked for the one-hour guess, and the later thread then
-	// waits past the test. The steps between the reading and the later
-	// refusal can take seconds on a loaded runner.
-	reset := 15 * time.Second
+	reset := 3 * time.Second
 	rig.reading("first", usageLimit("session", 100, reset))
 	rig.reading("second", usageLimit("session", 100, reset))
 	earlier := autoSwitchThread("earlier", string(provider.Claude), "claude-opus-5")
