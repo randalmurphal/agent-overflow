@@ -1049,29 +1049,13 @@ export function DeleteSoundFile(id: string): $CancellablePromise<void> {
 
 /**
  * DeleteThread deletes the thread with everything under it, and drops
- * their rows. Each dropped row is broadcast as `deleted`, so a second
+ * their rows. Each committed row is broadcast as `deleted`, so a second
  * attached client drops the same rows and their caches without a refresh.
- * A worker whose delete failed after its claim is named in the result
+ * A thread under it whose destroy failed is named in the result
  * (DeleteThreadResult).
  */
 export function DeleteThread(id: string): $CancellablePromise<app$0.DeleteThreadResult> {
     return $Call.ByID(1186337974, id).then(($result: any) => {
-        return $$createType30($result);
-    });
-}
-
-/**
- * DeleteThreadAndWorktrees is DeleteThread for a person's delete from the
- * sidebar or the archived threads list: it also removes the worktrees the
- * delete empties, the thread's and its workers', as Remove Worktree does,
- * keeping one another thread is on. A worktree that cannot be removed fails
- * the delete of the threads on it: for the named thread nothing is deleted,
- * and a worker is named in the result and stays with the threads under it.
- * A caller without git:operate is refused, with nothing deleted, when there
- * is a worktree to remove.
- */
-export function DeleteThreadAndWorktrees(threadID: string): $CancellablePromise<app$0.DeleteThreadResult> {
-    return $Call.ByID(3734810511, threadID).then(($result: any) => {
         return $$createType30($result);
     });
 }
@@ -1087,6 +1071,22 @@ export function DeleteThreadAndWorktrees(threadID: string): $CancellablePromise<
  */
 export function DeleteThreadGroup(id: string): $CancellablePromise<void> {
     return $Call.ByID(4104302889, id);
+}
+
+/**
+ * DeleteThreadsAndWorktrees is DeleteThread for a person's delete of one or
+ * more threads of this computer from the sidebar or the archived threads
+ * list, as one delete: it also removes the worktrees the delete empties, the
+ * threads' own and those under them, as Remove Worktree does, keeping one a
+ * thread outside the delete is on. A worktree with unsaved work refuses the
+ * whole delete, with nothing stopped or deleted. A caller without
+ * git:operate is refused, with nothing deleted, when there is a worktree to
+ * remove.
+ */
+export function DeleteThreadsAndWorktrees(threadIDs: string[]): $CancellablePromise<app$0.DeleteThreadResult> {
+    return $Call.ByID(4153346978, threadIDs).then(($result: any) => {
+        return $$createType30($result);
+    });
 }
 
 /**
@@ -1637,11 +1637,12 @@ export function GetConversationMutationState(threadID: string, userItemID: strin
 }
 
 /**
- * GetDeleteDependents reads what deleting threadID takes with it, for its
- * delete confirmation.
+ * GetDeleteDependents reads what deleting threadIDs, threads of this
+ * computer, takes with them as one delete, for its confirmation: a worktree
+ * only threads of the set are on counts once.
  */
-export function GetDeleteDependents(threadID: string): $CancellablePromise<app$0.DeleteDependents> {
-    return $Call.ByID(1944158988, threadID).then(($result: any) => {
+export function GetDeleteDependents(threadIDs: string[]): $CancellablePromise<app$0.DeleteDependents> {
+    return $Call.ByID(1944158988, threadIDs).then(($result: any) => {
         return $$createType54($result);
     });
 }

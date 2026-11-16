@@ -96,8 +96,8 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	784096448: 'home', // DeleteProviderCustomEnvVar
 	2725195951: 'home', // DeleteSoundFile
 	1186337974: 'thread', // DeleteThread
-	3734810511: 'thread', // DeleteThreadAndWorktrees
 	4104302889: 'home', // DeleteThreadGroup
+	4153346978: 'home', // DeleteThreadsAndWorktrees
 	604263015: 'home', // DevicePairingStatus
 	1721991996: 'selected', // DictationSources
 	1061100039: 'selected', // DisallowPreviewPort
@@ -132,7 +132,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	873893084: 'selected', // GetComputerRoutes
 	3416004963: 'home', // GetContextSettings
 	3307838728: 'thread', // GetConversationMutationState
-	1944158988: 'thread', // GetDeleteDependents
+	1944158988: 'home', // GetDeleteDependents
 	139818238: 'selected', // GetDevServers
 	1370118726: 'home', // GetDeviceName
 	1590634674: 'workspace', // GetDiffContextLines

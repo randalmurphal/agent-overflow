@@ -135,8 +135,8 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "DeleteProviderCustomEnvVar", ID: 784096448, Scope: "settings:write", Route: "home", StepUp: true},                 // main.App.DeleteProviderCustomEnvVar
 	{Name: "DeleteSoundFile", ID: 2725195951, Scope: "settings:write", Route: "home"},                                         // main.App.DeleteSoundFile
 	{Name: "DeleteThread", ID: 1186337974, Scope: "threads:operate", Route: "thread"},                                         // main.App.DeleteThread
-	{Name: "DeleteThreadAndWorktrees", ID: 3734810511, Scope: "threads:operate", Route: "thread"},                             // main.App.DeleteThreadAndWorktrees
 	{Name: "DeleteThreadGroup", ID: 4104302889, Scope: "threads:operate", Route: "home"},                                      // main.App.DeleteThreadGroup
+	{Name: "DeleteThreadsAndWorktrees", ID: 4153346978, Scope: "threads:operate", Route: "home"},                              // main.App.DeleteThreadsAndWorktrees
 	{Name: "DevicePairingStatus", ID: 604263015, Scope: "access:admin", Route: "home"},                                        // main.App.DevicePairingStatus
 	{Name: "DictationSources", ID: 1721991996, Scope: "threads:operate", Route: "selected"},                                   // main.App.DictationSources
 	{Name: "DisallowPreviewPort", ID: 1061100039, Scope: "access:admin", Route: "selected"},                                   // main.App.DisallowPreviewPort
@@ -171,7 +171,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "GetComputerRoutes", ID: 873893084, Scope: "session", Route: "selected"},                                           // main.App.GetComputerRoutes
 	{Name: "GetContextSettings", ID: 3416004963, Scope: "settings:read", Route: "home"},                                       // main.App.GetContextSettings
 	{Name: "GetConversationMutationState", ID: 3307838728, Scope: "threads:operate", Route: "thread"},                         // main.App.GetConversationMutationState
-	{Name: "GetDeleteDependents", ID: 1944158988, Scope: "threads:read", Route: "thread"},                                     // main.App.GetDeleteDependents
+	{Name: "GetDeleteDependents", ID: 1944158988, Scope: "threads:read", Route: "home"},                                       // main.App.GetDeleteDependents
 	{Name: "GetDevServers", ID: 139818238, Scope: "preview:open", Route: "selected"},                                          // main.App.GetDevServers
 	{Name: "GetDeviceName", ID: 1370118726, Scope: "session", Route: "home"},                                                  // main.App.GetDeviceName
 	{Name: "GetDiffContextLines", ID: 1590634674, Scope: "files:read", Route: "workspace"},                                    // main.App.GetDiffContextLines
