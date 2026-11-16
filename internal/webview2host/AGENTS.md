@@ -27,12 +27,21 @@ identifier with its page, and close the relay with the controller. Never expose
 WebView2's debug endpoint to the backend or LAN.
 
 The browser controller is a child of the launcher's HWND. Use the clip container
-and preserve sibling z-order. Convert frontend CSS pixels using the owning
-window's current scale. Hide during invalid or zero-sized geometry. Hiding
-hides only the container and keeps the controller `IsVisible`; an invisible
-controller stops compositing, which freezes frames and hangs CDP captures. The
-page's size and scale come from the backend's device-metrics override, never
-from the controller's bounds.
+and preserve sibling z-order. Convert frontend CSS pixels with the report's
+`devicePixelRatio`, falling back to the window's client size over the SPA
+viewport. Hide during invalid or zero-sized geometry. Hiding hides only the
+container and keeps the controller `IsVisible`; an invisible controller stops
+compositing, which freezes frames and hangs CDP captures. The page's size and
+scale come from the backend's device-metrics override, never from the
+controller's bounds.
+
+The SPA also posts each pane geometry report to the launcher
+(`geometry.go`); `presenter.go` decides where a page shows. A page bound by
+its bounds directive to a mount with a local report is placed from that
+report with `paneplace.Fit` and shows only while the backend shows it and
+the report is visible; otherwise the directive's rect stands. Only backend
+directives bind a page to a mount. The mailbox keeps the newest report per
+mount, drops older sequences, and has at most one UI-thread drain queued.
 
 All COM controller and HWND mutations run on the launcher UI thread. Completion
 handlers may arrive there, so never block on backend RPC inline. Serialize

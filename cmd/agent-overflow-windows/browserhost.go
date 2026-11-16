@@ -39,6 +39,7 @@ import (
 	"agent-overflow/internal/wsllauncher"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
+	"github.com/wailsapp/wails/v3/pkg/events"
 )
 
 // browserProfilesDir is the pane environment's user-data folder, beside
@@ -135,7 +136,8 @@ func (a *launcherApp) ensureBrowserHost(bs *wsllauncher.Bootstrap) (*webview2hos
 		// WebView2 requires every COM and window call on the thread owning
 		// the host window, which is the thread Wails runs its message pump
 		// on.
-		OnMain: application.InvokeSync,
+		OnMain:   application.InvokeSync,
+		Geometry: a.paneGeometry,
 	})
 	if err != nil {
 		return nil, err
@@ -171,6 +173,68 @@ func (a *launcherApp) ensureBrowserHost(bs *wsllauncher.Bootstrap) (*webview2hos
 	}
 	go tunnel.Run(ctx)
 	return host, nil
+}
+
+// handlePaneGeometryMessage is Options.RawMessageHandler. The SPA posts each
+// browser pane geometry report here as well as to the backend, so a pane
+// that scrolls or slides moves its page on this process's UI thread without
+// the round trip through WSL (webview2host/geometry.go). Wails calls it on a
+// goroutine per message: the mailbox orders reports by their sequence, and
+// at most one drain is ever queued on the UI thread, which this never waits
+// on.
+func (a *launcherApp) handlePaneGeometryMessage(window application.Window, message string, origin *application.OriginInfo) {
+	report, err := webview2host.ParseGeometryMessage(message)
+	if errors.Is(err, webview2host.ErrNotGeometry) {
+		log.Printf("launcher: ignore unknown raw webview message (%d bytes)", len(message))
+		return
+	}
+	if err != nil {
+		log.Printf("browser host: ignore invalid pane geometry: %v", err)
+		return
+	}
+	if !a.trustedPaneGeometrySource(window, origin) {
+		log.Printf("browser host: ignore pane geometry from an untrusted document")
+		return
+	}
+	if a.paneGeometry.Put(report) {
+		application.InvokeAsync(a.drainPaneGeometry)
+	}
+}
+
+// trustedPaneGeometrySource accepts only the launcher's own window showing
+// the backend's SPA.
+func (a *launcherApp) trustedPaneGeometrySource(window application.Window, origin *application.OriginInfo) bool {
+	a.mu.Lock()
+	own := a.window
+	bs := a.backendBootstrap
+	a.mu.Unlock()
+	if own == nil || window == nil || bs == nil || origin == nil || window.ID() != own.ID() {
+		return false
+	}
+	return webview2host.TrustedGeometrySource(origin.Origin, origin.TopOrigin, bs.PageURL)
+}
+
+// drainPaneGeometry is the one queued UI-thread callback: it takes every
+// report since the last drain and re-presents the pages bound to them.
+// Reports that land before the host exists wait in the mailbox for the
+// page's first bounds directive.
+func (a *launcherApp) drainPaneGeometry() {
+	reports := a.paneGeometry.Take()
+	a.mu.Lock()
+	host := a.browserHost
+	a.mu.Unlock()
+	if host != nil {
+		host.ApplyGeometry(reports)
+	}
+}
+
+// advertisePaneGeometry tells each document the window loads that this
+// launcher takes geometry messages; a SPA posts none without it, so a newer
+// SPA under an older launcher only reports to the backend.
+func advertisePaneGeometry(window *application.WebviewWindow) {
+	window.OnWindowEvent(events.Common.WindowRuntimeReady, func(*application.WindowEvent) {
+		window.ExecJS(webview2host.GeometryCapabilityScript)
+	})
 }
 
 // reportBrowserHost posts one answer back over the bridge the directive

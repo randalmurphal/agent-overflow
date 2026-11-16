@@ -11,7 +11,23 @@ type rect struct{ Left, Top, Right, Bottom int32 }
 func (r rect) width() int32  { return r.Right - r.Left }
 func (r rect) height() int32 { return r.Bottom - r.Top }
 
-// paneLayout is one bounds directive resolved into the two rectangles the
+// deviceScale is the factor pair from the SPA's CSS pixels to the host
+// window's client pixels. The SPA's devicePixelRatio is exactly that factor
+// (OS scale times webview zoom), so it wins when the rect carries one. Without
+// it the proportion of the client size to the SPA viewport stands in, which
+// is off by the fraction innerWidth truncates away. No viewport means the
+// rect is already in client pixels.
+func deviceScale(b paneBounds, clientW, clientH int32, hasClient bool) (sx, sy float64) {
+	if b.DPR > 0 {
+		return b.DPR, b.DPR
+	}
+	if b.VW > 0 && b.VH > 0 && hasClient && clientW > 0 && clientH > 0 {
+		return float64(clientW) / b.VW, float64(clientH) / b.VH
+	}
+	return 1, 1
+}
+
+// paneLayout is one bounds rect resolved into the two rectangles the
 // host actually sets: where the clip container goes inside the launcher
 // window, and where the controller goes inside that container.
 type paneLayout struct {
@@ -26,8 +42,8 @@ type paneLayout struct {
 	Controller rect
 }
 
-// resolvePaneLayout scales a CSS-pixel bounds directive by sx/sy and
-// splits it into the container and controller rectangles.
+// resolvePaneLayout scales a CSS-pixel bounds rect by sx/sy and splits it
+// into the container and controller rectangles.
 //
 // Rounding is OUTWARD on every edge — floor for left/top, ceil for
 // right/bottom — and the controller's offset is derived from the SAME
@@ -40,7 +56,7 @@ type paneLayout struct {
 // A zero clip pair means unclipped: the clip IS the full rect, and the
 // controller then sits at the container's origin with the container's
 // exact size.
-func resolvePaneLayout(d Directive, sx, sy float64) paneLayout {
+func resolvePaneLayout(d paneBounds, sx, sy float64) paneLayout {
 	clipX, clipY, clipW, clipH := d.CX, d.CY, d.CW, d.CH
 	if clipW <= 0 || clipH <= 0 {
 		clipX, clipY, clipW, clipH = d.X, d.Y, d.W, d.H

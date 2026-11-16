@@ -3,7 +3,7 @@ package webview2host
 import "testing"
 
 func TestResolvePaneLayoutUnclippedPutsTheControllerAtTheContainerOrigin(t *testing.T) {
-	got := resolvePaneLayout(Directive{X: 10, Y: 20, W: 300, H: 400}, 1, 1)
+	got := resolvePaneLayout(paneBounds{X: 10, Y: 20, W: 300, H: 400}, 1, 1)
 	want := paneLayout{
 		Container:  rect{Left: 10, Top: 20, Right: 310, Bottom: 420},
 		Controller: rect{Left: 0, Top: 0, Right: 300, Bottom: 400},
@@ -17,7 +17,7 @@ func TestResolvePaneLayoutClipCropsWithoutResizingTheController(t *testing.T) {
 	// A pane whose left 100px sit behind the sidebar: the container starts
 	// where the visible part does, and the controller keeps its full 300px
 	// width by starting 100px to the LEFT of the container.
-	got := resolvePaneLayout(Directive{
+	got := resolvePaneLayout(paneBounds{
 		X: 10, Y: 20, W: 300, H: 400,
 		CX: 110, CY: 20, CW: 200, CH: 400,
 	}, 1, 1)
@@ -37,7 +37,7 @@ func TestResolvePaneLayoutClipCropsWithoutResizingTheController(t *testing.T) {
 }
 
 func TestResolvePaneLayoutScalesBothRectsByTheSameFactor(t *testing.T) {
-	got := resolvePaneLayout(Directive{
+	got := resolvePaneLayout(paneBounds{
 		X: 100, Y: 50, W: 400, H: 200,
 		CX: 200, CY: 50, CW: 300, CH: 200,
 	}, 2, 2)
@@ -57,7 +57,7 @@ func TestResolvePaneLayoutNeverClipsASharedEdgeByAFractionalPixel(t *testing.T) 
 	// inside it: a 1px inset there is a hairline of launcher background
 	// cutting across the page.
 	for _, sx := range []float64{1.25, 1.5, 1.75, 2.25, 0.9} {
-		layout := resolvePaneLayout(Directive{
+		layout := resolvePaneLayout(paneBounds{
 			X: 37, Y: 11, W: 613, H: 409,
 			// Clipped on the RIGHT only, so left and top are shared.
 			CX: 37, CY: 11, CW: 300, CH: 409,
@@ -80,13 +80,13 @@ func TestResolvePaneLayoutNeverClipsASharedEdgeByAFractionalPixel(t *testing.T) 
 }
 
 func TestResolvePaneLayoutRoundsOutward(t *testing.T) {
-	got := resolvePaneLayout(Directive{X: 10, Y: 10, W: 100, H: 100}, 1.5, 1.5)
+	got := resolvePaneLayout(paneBounds{X: 10, Y: 10, W: 100, H: 100}, 1.5, 1.5)
 	// 10*1.5 = 15 exactly; 110*1.5 = 165 exactly. Shift by a third of a
 	// pixel and both edges must move OUT, never in.
 	if got.Container != (rect{Left: 15, Top: 15, Right: 165, Bottom: 165}) {
 		t.Fatalf("container = %+v", got.Container)
 	}
-	got = resolvePaneLayout(Directive{X: 10.4, Y: 10.4, W: 100.2, H: 100.2}, 1, 1)
+	got = resolvePaneLayout(paneBounds{X: 10.4, Y: 10.4, W: 100.2, H: 100.2}, 1, 1)
 	if got.Container != (rect{Left: 10, Top: 10, Right: 111, Bottom: 111}) {
 		t.Fatalf("container = %+v, want outward rounding on every edge", got.Container)
 	}
@@ -96,7 +96,7 @@ func TestResolvePaneLayoutClampsAbsurdDevicePixels(t *testing.T) {
 	// Validate bounds the DIPs, but the scale factor comes from a live
 	// client area and is not part of that contract. int32 wrap here would
 	// place a window at a random coordinate.
-	got := resolvePaneLayout(Directive{X: maxPaneDIP, Y: maxPaneDIP, W: maxPaneDIP, H: maxPaneDIP}, 1e6, 1e6)
+	got := resolvePaneLayout(paneBounds{X: maxPaneDIP, Y: maxPaneDIP, W: maxPaneDIP, H: maxPaneDIP}, 1e6, 1e6)
 	if got.Container.Right != maxPaneDevicePX || got.Container.Bottom != maxPaneDevicePX {
 		t.Fatalf("container = %+v, want clamped edges", got.Container)
 	}

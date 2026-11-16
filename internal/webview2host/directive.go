@@ -96,10 +96,22 @@ type Directive struct {
 	// unscaled (treat X/Y/W/H as client pixels).
 	VW float64 `json:"vw,omitempty"`
 	VH float64 `json:"vh,omitempty"`
+	// DPR is the SPA's devicePixelRatio when the rect was measured: CSS
+	// pixels times DPR are the host window's client pixels. Zero means
+	// unknown, and the host falls back to its client size over VW/VH.
+	DPR float64 `json:"dpr,omitempty"`
 	// Bg is the pane surface's resolved CSS color ("#rrggbb"), painted by
 	// the controller where the page has not presented yet so freshly
 	// exposed strips match the pane. Empty leaves the engine default.
 	Bg string `json:"bg,omitempty"`
+	// Mount names the pane mount the backend placed the page in, and
+	// PageW/PageH the page's viewport in CSS pixels. A launcher that holds
+	// its own, newer geometry for that mount (PaneGeometry) places the page
+	// from it with paneplace.Fit and ignores X..CH; without it, X..CH stand.
+	// Empty on a backend that predates local geometry.
+	Mount string `json:"mount,omitempty"`
+	PageW int    `json:"pageW,omitempty"`
+	PageH int    `json:"pageH,omitempty"`
 	// Accelerators is OpAccelerators' payload: the whole bound set, `mod`
 	// already resolved by the backend.
 	Accelerators []keybindings.Accelerator `json:"accelerators,omitempty"`
@@ -171,10 +183,58 @@ func (d Directive) Validate() error {
 }
 
 func (d Directive) validateBounds() error {
+	if d.W <= 0 || d.H <= 0 {
+		return fmt.Errorf("bounds must have positive width and height, got %gx%g", d.W, d.H)
+	}
+	if err := d.paneBounds().validate(); err != nil {
+		return err
+	}
+	if d.Mount != "" {
+		if err := validateToken("mount id", d.Mount, maxPageIDLen); err != nil {
+			return err
+		}
+	}
+	// The page size is all-or-nothing and bounded like the rect: it is what
+	// a local placement divides by.
+	if (d.PageW > 0) != (d.PageH > 0) || d.PageW < 0 || d.PageH < 0 ||
+		float64(d.PageW) > maxPaneDIP || float64(d.PageH) > maxPaneDIP {
+		return fmt.Errorf("bounds page size must be a positive pair or absent, got %dx%d", d.PageW, d.PageH)
+	}
+	return nil
+}
+
+// paneBounds is one rect the host positions a page at: the fitted rect, its
+// clip, the SPA viewport and pixel ratio it was measured under, and the pane
+// color. A bounds directive carries one; a local placement computes one.
+// Comparable, so the host can skip a move to where the page already is.
+type paneBounds struct {
+	X, Y, W, H     float64
+	CX, CY, CW, CH float64
+	VW, VH, DPR    float64
+	Bg             string
+}
+
+func (d Directive) paneBounds() paneBounds {
+	return paneBounds{
+		X: d.X, Y: d.Y, W: d.W, H: d.H,
+		CX: d.CX, CY: d.CY, CW: d.CW, CH: d.CH,
+		VW: d.VW, VH: d.VH, DPR: d.DPR, Bg: d.Bg,
+	}
+}
+
+// maxPaneDPR bounds a device pixel ratio: far above any real display times
+// any webview zoom, and small enough that a scaled maxPaneDIP stays inside
+// the host's int32 clamp.
+const maxPaneDPR = 64.0
+
+// validate checks every number is finite and bounded and every pair is
+// all-or-nothing. It does not require a positive size: a geometry report
+// for a pane with nothing to show is valid and simply hides the page.
+func (b paneBounds) validate() error {
 	for name, value := range map[string]float64{
-		"x": d.X, "y": d.Y, "w": d.W, "h": d.H,
-		"cx": d.CX, "cy": d.CY, "cw": d.CW, "ch": d.CH,
-		"vw": d.VW, "vh": d.VH,
+		"x": b.X, "y": b.Y, "w": b.W, "h": b.H,
+		"cx": b.CX, "cy": b.CY, "cw": b.CW, "ch": b.CH,
+		"vw": b.VW, "vh": b.VH, "dpr": b.DPR,
 	} {
 		if math.IsNaN(value) || math.IsInf(value, 0) {
 			return fmt.Errorf("bounds %s is not a finite number", name)
@@ -183,23 +243,23 @@ func (d Directive) validateBounds() error {
 			return fmt.Errorf("bounds %s %g is outside +/-%g DIPs", name, value, maxPaneDIP)
 		}
 	}
-	if d.W <= 0 || d.H <= 0 {
-		return fmt.Errorf("bounds must have positive width and height, got %gx%g", d.W, d.H)
+	if b.W < 0 || b.H < 0 {
+		return fmt.Errorf("bounds size must not be negative, got %gx%g", b.W, b.H)
 	}
 	// The clip is all-or-nothing like the viewport: a fully clipped pane is
 	// hidden upstream, never sized to nothing here.
-	if (d.CW > 0) != (d.CH > 0) || d.CW < 0 || d.CH < 0 {
-		return fmt.Errorf("bounds clip must be a positive pair or absent, got %gx%g", d.CW, d.CH)
+	if (b.CW > 0) != (b.CH > 0) || b.CW < 0 || b.CH < 0 {
+		return fmt.Errorf("bounds clip must be a positive pair or absent, got %gx%g", b.CW, b.CH)
 	}
 	// The viewport pair is all-or-nothing: scaling one axis and not the
 	// other could only misplace the view.
-	if (d.VW > 0) != (d.VH > 0) || d.VW < 0 || d.VH < 0 {
-		return fmt.Errorf("bounds viewport must be a positive pair or absent, got %gx%g", d.VW, d.VH)
+	if (b.VW > 0) != (b.VH > 0) || b.VW < 0 || b.VH < 0 {
+		return fmt.Errorf("bounds viewport must be a positive pair or absent, got %gx%g", b.VW, b.VH)
 	}
-	if err := validateBg(d.Bg); err != nil {
-		return err
+	if b.DPR < 0 || b.DPR > maxPaneDPR {
+		return fmt.Errorf("bounds dpr %g is outside 0..%g", b.DPR, maxPaneDPR)
 	}
-	return nil
+	return validateBg(b.Bg)
 }
 
 // validateBg accepts "" or "#rrggbb". The value reaches a COM color struct
