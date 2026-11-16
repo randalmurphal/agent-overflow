@@ -834,8 +834,11 @@ Ruling 36, as built:
   state (`workerUnrest`), and one the work below it: the listing's reads
   (`ThreadAgentRequest.TargetOpen`, `agentTargetOpenSQL`), whose answer
   the row's state, the listing's membership, Past and the summaries all
-  take.
+  take. A fresh read of both, `threadRest`, is what a spawn's settlement,
+  `thread_status` with `thread_ids` and a paired computer's answers take
+  ([agent-thread-tools.md](agent-thread-tools.md#wakes-q7-q8-q15-q25)).
   The app keeps the spawned threads not at rest in memory (`liveWorkers`),
+  a thread a paired computer's spawn made here included,
   each with its spawn link and what its durable sources last said, and
   re-evaluates a thread only on the events that change a source: its turn,
   prompts, queue and provider timers (`noteWorkerLiveness`, memory reads),
@@ -1547,8 +1550,20 @@ closes up their spacing so the row holds at a phone width.
   paired computer's target reports only that it waits, and on which of
   that computer's threads when its prompt went to one rather than the
   person. A
-  running target's latest activity is a second line; the chevron opens the
-  row's digest: the activity, what it is blocked on in full, the last
+  spawn's row says what its thread did as a subagent's row says what its
+  agent did, from the one formatter both use (`AgentMetrics.svelte`): its
+  top-level tool calls and the tokens its turns spent over the thread's
+  life, the running turn's included (`store.ThreadTallies`, kept by
+  triggers, one probe per thread a read), live while it works and kept,
+  final, once it rests and under Past. A running target's latest
+  top-level tool call is its activity, beside the counts on a second
+  line, emitted at most every 2 s; its messages are not activity, its
+  last one is in the digest. A waiting worker's line is what it waits on
+  instead, and a blocked one's what blocks it. A paired computer reports
+  its spawn's counts and line with its `agent_rows` answer
+  (`ThreadAgentRows.ToolCalls`, `Tokens`, `Activity`), refreshed as that
+  answer is; one that predates them shows the row without them. The
+  chevron opens the row's digest: the activity, what it is blocked on in full, the last
   message in the thread (a request without the footer the app appended)
   and the answer once it settled. State comes from the thread tools' own
   derivation (`requestStateFrom`, which `requestStateView` runs for

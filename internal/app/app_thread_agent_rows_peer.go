@@ -12,7 +12,6 @@ import (
 	"agent-overflow/internal/entityid"
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/rpcclient"
-	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadtools"
 )
 
@@ -219,21 +218,33 @@ func (a *App) answerThreadAgentRows(ctx context.Context, args threadAgentPeerArg
 		return ThreadAgentRows{}, fmt.Errorf("read thread %s: %w", args.ThreadID, err)
 	}
 	listing.ThreadProvider = thread.Provider
-	rest, err := a.workerUnrest(args.ThreadID)
+	rest, err := a.threadRest(args.ThreadID)
 	if err != nil {
 		return ThreadAgentRows{}, fmt.Errorf("read whether thread %s is at rest: %w", args.ThreadID, err)
 	}
-	listing.Worker = rest.unrest
-	view := newThreadAgentView(a)
-	state, err := a.store.ReadThreadAgentState(store.ThreadAgentStateRead{
-		Thread: args.ThreadID, Waiting: view.waiting, Live: view.live, SettledSince: view.since,
-	})
-	if err != nil {
-		return ThreadAgentRows{}, fmt.Errorf("read whether thread %s has open work: %w", args.ThreadID, err)
+	if !rest.below {
+		listing.Worker = rest.unrest
 	}
-	open := rest.unrest != "" || state.OpenBelow
+	open := rest.unrest != ""
 	listing.Open = &open
+	tallies, err := a.store.ThreadTallies([]string{args.ThreadID})
+	if err != nil {
+		return ThreadAgentRows{}, fmt.Errorf("read what thread %s did: %w", args.ThreadID, err)
+	}
+	tally := tallies[args.ThreadID]
+	listing.ToolCalls, listing.Tokens = tally.ToolCalls, tally.Tokens
+	if open {
+		// As this computer's own row of it reads (threadAgentView.row).
+		listing.Activity = a.threadAgentActivity(args.ThreadID)
+		if listing.Activity == "" {
+			listing.Activity = rest.detail
+		}
+	}
 	if args.StateOnly {
+		state, err := a.threadAgentState(args.ThreadID)
+		if err != nil {
+			return ThreadAgentRows{}, err
+		}
 		listing.Hidden = state.Rows
 	}
 	return listing, nil

@@ -55,9 +55,9 @@ type liveWorkers struct {
 	threads  map[string]liveWorker
 }
 
-// liveWorker is one thread not at rest: why, as a row shows it; the token
-// of the local spawn that reaches it (its link), empty for a thread no
-// local spawn made; and for a spawned thread, what its durable sources
+// liveWorker is one thread not at rest: why, as a row shows it; the spawn
+// that made it (its link, workerLinkOf), empty for a thread no spawn made;
+// and for a spawned thread, what its durable sources
 // said when they last changed (waits), background when that is background
 // work. A thread no spawn made is kept while triage holds it, so it costs
 // one lookup each time it leaves rest, not one per change.
@@ -246,10 +246,11 @@ func (a *App) workerTimerUnrest(threadID string) workerRest {
 // What it costs:
 //
 //   - triage's sources and the timers are memory;
-//   - the spawn link is recorded, or one search for a thread not recorded;
+//   - the spawn link is recorded, or up to two searches for a thread not
+//     recorded (workerLinkOf);
 //   - with durable, for a spawned thread only, workerDurableUnrest's reads.
 //
-// It reports whether the thread is a worker, one a local spawn made, now
+// It reports whether the thread is a worker, one a spawn made, now
 // or as last recorded, so a change on either side is framed. A failed read
 // leaves the record as it was, so the next change reads again, and is
 // returned with worker true.
@@ -266,7 +267,7 @@ func (a *App) reassessWorker(threadID string, durable bool) (bool, error) {
 	w.mu.Unlock()
 	next := liveWorker{link: before.link, waits: before.waits, background: before.background}
 	if !known {
-		link, _, err := a.store.SpawnLinkOf(threadID)
+		link, err := a.workerLinkOf(threadID)
 		if err != nil {
 			return true, err
 		}
@@ -298,6 +299,27 @@ func (a *App) reassessWorker(threadID string, durable bool) (bool, error) {
 	w.mu.Unlock()
 	return next.link != "", nil
 }
+
+// workerLinkOf is the spawn that makes threadID a worker: its local spawn
+// link or, for a thread a paired computer's spawn made here, that spawn
+// (peerSpawnLink), so this computer follows it as a worker for that
+// computer's rows (answerThreadAgentRows). Empty for any other thread.
+func (a *App) workerLinkOf(threadID string) (string, error) {
+	link, found, err := a.store.SpawnLinkOf(threadID)
+	if err != nil || found {
+		return link, err
+	}
+	token, found, err := a.store.PeerSpawnReceiptOf(threadID)
+	if err != nil || !found {
+		return "", err
+	}
+	return peerSpawnLink(token), nil
+}
+
+// peerSpawnLink is the link of a thread a paired computer's spawn made
+// here. No local request carries it, so no row here reads that thread's
+// record as its worker's (liveWorkerUnrest).
+func peerSpawnLink(token string) string { return "peer:" + token }
 
 // waitsOnBackground reports whether threadID's durable sources last said
 // it waits on background work.
@@ -361,7 +383,7 @@ func (a *App) forgetLiveWorker(deleted string) error {
 	w.mu.Unlock()
 	var firstErr error
 	for _, id := range ids {
-		link, _, err := a.store.SpawnLinkOf(id)
+		link, err := a.workerLinkOf(id)
 		if err != nil {
 			if firstErr == nil {
 				firstErr = err

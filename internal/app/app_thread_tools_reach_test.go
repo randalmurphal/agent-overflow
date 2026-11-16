@@ -46,7 +46,9 @@ type reachPair struct {
 	source   *App
 	dest     *App
 	destWire *pairedBackend
-	manager  *attachedbackends.Manager
+	// destBus is what the destination's router emits to.
+	destBus *capturedEventBus
+	manager *attachedbackends.Manager
 	// computer is the destination's id as the source's pairings name it.
 	computer string
 	// project is a project registered on the DESTINATION. A spawn there
@@ -74,7 +76,7 @@ func newReachPair(t *testing.T) *reachPair {
 func newReachPairServedBy(t *testing.T, serve func(*testing.T, *App) *pairedBackend) *reachPair {
 	t.Helper()
 
-	dest, _ := setupE2EApp(t)
+	dest, destBus := setupE2EApp(t)
 	dest.configDir = t.TempDir()
 	if err := dest.initIdentity("thread-tools-destination"); err != nil {
 		t.Fatal(err)
@@ -100,7 +102,7 @@ func newReachPairServedBy(t *testing.T, serve func(*testing.T, *App) *pairedBack
 	publishReachIdentity(t, source, sourceID)
 
 	pair := &reachPair{
-		source: source, dest: dest, destWire: wire, sourceID: sourceID,
+		source: source, dest: dest, destWire: wire, destBus: destBus, sourceID: sourceID,
 		project: project.ID, dbPath: dbPath, settingsDir: settingsDir,
 	}
 	pair.manager = pair.pairWith(t, "source")

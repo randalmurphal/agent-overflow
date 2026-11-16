@@ -787,6 +787,24 @@ func (s *Store) ThreadSpawnedForSource(threadID, owner, sourceThreadID string) (
 	return found, nil
 }
 
+// PeerSpawnReceiptOf names the receipt of the spawn a paired computer made
+// threadID with here: a spawn receipt naming it whose token no request on
+// this computer holds. One search of the receipts by target.
+func (s *Store) PeerSpawnReceiptOf(threadID string) (string, bool, error) {
+	var token string
+	err := s.reader().QueryRow(`SELECT rc.token FROM thread_request_receipts rc
+		 WHERE rc.target_thread_id = ? AND rc.kind = 'spawn'
+		   AND NOT EXISTS (SELECT 1 FROM thread_requests r WHERE r.token = rc.token)
+		 LIMIT 1`, threadID).Scan(&token)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("store: read the paired computer's spawn of %s: %w", threadID, err)
+	}
+	return token, true, nil
+}
+
 // ListOpenThreadRequestReceipts returns every receipt still `accepted` or
 // `running`, targeted or not. Boot settles all of them as interrupted: a
 // queued send that never reached the provider can no longer settle on its own,

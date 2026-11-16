@@ -122,9 +122,18 @@ type ThreadAgentRow struct {
 	BlockedOn       string `json:"blockedOn,omitempty"`
 	BlockedDetail   string `json:"blockedDetail,omitempty"`
 	BlockedRoutedTo string `json:"blockedRoutedTo,omitempty"`
-	// Activity is what a running local target did last: its latest
-	// top-level tool call or message, while the request runs.
+	// Activity is what a running target did last: its latest top-level
+	// tool call, while the request runs or its worker is not at rest; a
+	// waiting worker's is what it waits on. A paired computer reports its
+	// spawn's.
 	Activity string `json:"activity,omitempty"`
+	// ToolCalls and Tokens are what the thread a spawn made did over its
+	// life: its top-level tool calls and the tokens its turns spent, the
+	// running turn's included (store.ThreadTallies), read here or reported
+	// by the paired computer that holds it; zero for every other kind and
+	// from a computer that does not report them.
+	ToolCalls int64 `json:"toolCalls,omitempty"`
+	Tokens    int64 `json:"tokens,omitempty"`
 	// LastMessage is who spoke last in a local target and the end of it.
 	LastMessage     string `json:"lastMessage,omitempty"`
 	LastMessageRole string `json:"lastMessageRole,omitempty"`
@@ -168,6 +177,12 @@ type ThreadAgentRows struct {
 	// for (answerThreadAgentRows). Nil from a computer that predates it,
 	// whose rows say what they can (peerListingOpen).
 	Open *bool `json:"open,omitempty"`
+	// Activity, ToolCalls and Tokens are the listed thread's own, answered
+	// by agent_rows for the spawn row on the computer that asked
+	// (ThreadAgentRow). A computer that predates them sends none.
+	Activity  string `json:"activity,omitempty"`
+	ToolCalls int64  `json:"toolCalls,omitempty"`
+	Tokens    int64  `json:"tokens,omitempty"`
 }
 
 // ThreadAgentRowChange is one `thread:agent_rows_changed` frame: the request
@@ -619,6 +634,11 @@ func (a *App) nestPeerAgentRows(parent *ThreadAgentRow, slot threadAgentRemoteSl
 	if parent.SettledAt != 0 && parent.Worker == workerBlocked {
 		parent.BlockedOn = "person"
 	}
+	// What the thread there did, as its last answer reported it.
+	parent.ToolCalls, parent.Tokens = answer.listing.ToolCalls, answer.listing.Tokens
+	if parent.open() && parent.BlockedOn == "" {
+		parent.Activity = answer.listing.Activity
+	}
 	if answer.err != nil {
 		parent.NestedUnavailable = threadAgentPeerUnavailable(parent.Computer, answer.err)
 		return nil, nil
@@ -747,7 +767,34 @@ func (v threadAgentView) rows(requests []store.ThreadAgentRequest) ([]ThreadAgen
 		out = append(out, v.row(request, names))
 	}
 	v.attachLastMessages(out)
+	v.attachTallies(out)
 	return out, nil
+}
+
+// attachTallies reads what the thread each local spawn made did, for every
+// such row at once.
+func (v threadAgentView) attachTallies(rows []ThreadAgentRow) {
+	ids := make([]string, 0, len(rows))
+	for _, row := range rows {
+		if row.Kind == store.ThreadRequestSpawn && row.ComputerID == "" && row.ThreadID != "" {
+			ids = append(ids, row.ThreadID)
+		}
+	}
+	if len(ids) == 0 {
+		return
+	}
+	tallies, err := v.app.store.ThreadTallies(ids)
+	if err != nil {
+		// The counts are beside the row; the row stands.
+		log.Printf("agent rows: read thread tallies: %v", err)
+		return
+	}
+	for index := range rows {
+		row := &rows[index]
+		if tally, ok := tallies[row.ThreadID]; ok && row.Kind == store.ThreadRequestSpawn && row.ComputerID == "" {
+			row.ToolCalls, row.Tokens = tally.ToolCalls, tally.Tokens
+		}
+	}
 }
 
 func (v threadAgentView) row(request store.ThreadAgentRequest, names map[string]store.ThreadName) ThreadAgentRow {
@@ -1377,15 +1424,12 @@ func (a *App) tapThreadAgentRows(name eventchan.Channel, data any) {
 	}
 }
 
-// noteThreadAgentActivity records a running target's latest top-level row
-// as its activity line, and emits it at most every
-// threadAgentActivityEvery.
+// noteThreadAgentActivity records a running target's latest top-level tool
+// call as its activity line, as a subagent's row shows its latest tool, and
+// emits it at most every threadAgentActivityEvery. Its messages are not
+// activity: its last one is the row's digest.
 func (a *App) noteThreadAgentActivity(threadID string, item store.Item) {
-	switch item.Kind {
-	case "user_text", "thinking", "reasoning":
-		return
-	}
-	if threadID == "" {
+	if item.Kind != "tool_call" || threadID == "" {
 		return
 	}
 	// Every top-level row of every thread passes here: only a thread a
