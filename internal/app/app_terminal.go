@@ -260,13 +260,14 @@ func (a *App) RestartTerminal(terminalID string) (TerminalHandle, error) {
 	}
 	defer unlock()
 	summary, err := a.terminals.Restart(terminalID)
-	if err != nil {
+	if summary.TerminalID == "" {
 		return TerminalHandle{}, err
 	}
 	// A restart is a close plus an open, and the close already emitted
 	// terminal:exit — so without this every other client would watch the tab
-	// disappear and never see the replacement.
-	return a.announceTerminalOpened(summary), nil
+	// disappear and never see the replacement. A close that failed still
+	// started the replacement, so it is announced and the failure returned.
+	return a.announceTerminalOpened(summary), err
 }
 
 // GetTerminalReplay returns the base64-encoded replay buffer plus a sequence

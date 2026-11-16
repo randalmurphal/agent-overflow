@@ -4,11 +4,14 @@ package terminal
 
 import (
 	"errors"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"agent-overflow/internal/procutil"
 	"agent-overflow/internal/procutil/procutiltest"
 )
 
@@ -541,5 +544,43 @@ func TestManagerCloseMatchingClosesAcrossThreads(t *testing.T) {
 	}
 	if !seen[a.TerminalID] || !seen[b.TerminalID] {
 		t.Fatalf("exit callbacks = %v, want %s and %s", seen, a.TerminalID, b.TerminalID)
+	}
+}
+
+// A restart whose old terminal cannot be closed cleanly (a job it left
+// survives) reports that, and still starts the replacement: the old shell
+// has exited, and the job stays watched by the reaper.
+func TestManagerRestartReportsAnOldTerminalItCouldNotClose(t *testing.T) {
+	ensurePTYAvailable(t)
+	prev := stopLeftovers
+	stopLeftovers = func(*exec.Cmd, time.Duration) error { return procutil.ErrGroupSurvived }
+	t.Cleanup(func() { stopLeftovers = prev })
+
+	m := NewManager(nil, nil)
+	t.Cleanup(func() { _ = m.Shutdown() })
+	pidFile := filepath.Join(t.TempDir(), "job.pid")
+	old, err := m.Open("thread-restart", SessionOptions{
+		Reaper: procutiltest.Reaper(),
+		Shell:  "/bin/sh",
+		Args: []string{"-c",
+			`sh -c "trap '' HUP TERM; echo \$\$ > \"\$0\"; exec sleep 120" "$0" & sleep 120`,
+			pidFile},
+		Cwd: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	backgroundJobPID(t, pidFile)
+
+	replacement, err := m.Restart(old.TerminalID)
+	if !errors.Is(err, procutil.ErrGroupSurvived) {
+		t.Fatalf("Restart = %v, want the old terminal's close failure", err)
+	}
+	if replacement.TerminalID == "" || replacement.TerminalID == old.TerminalID {
+		t.Fatalf("replacement = %q (old %q), want a new running terminal", replacement.TerminalID, old.TerminalID)
+	}
+	list := m.List("thread-restart")
+	if len(list) != 1 || list[0].TerminalID != replacement.TerminalID {
+		t.Fatalf("terminals after the restart = %+v, want only the replacement", list)
 	}
 }
