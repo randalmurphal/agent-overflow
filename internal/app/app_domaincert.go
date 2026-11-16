@@ -110,7 +110,7 @@ func (a *App) startDomainCertificateLoop(dir string) {
 	a.domainCert.mu.Unlock()
 
 	ctx := a.lifeCtx()
-	go func() {
+	a.unattendedLoops.Go(func() {
 		for {
 			wait := a.reconcileDomainCertificate(ctx)
 			timer := time.NewTimer(wait)
@@ -123,7 +123,7 @@ func (a *App) startDomainCertificateLoop(dir string) {
 			case <-timer.C:
 			}
 		}
-	}()
+	})
 }
 
 // kickDomainCertificate asks the loop to reconcile now. Never blocks and
