@@ -213,6 +213,25 @@ describe('<BrowserPane> chrome', () => {
     expect(document.activeElement).toBe(view.getByTestId('browser-pane-host-rect'));
   });
 
+  it.each([
+    ['Escape', 'https://example.test/a'],
+    ['Enter', 'https://example.test/typed'],
+  ])('%s in the address asks the engine to give the page the keyboard', async (key, typed) => {
+    const actions: string[] = [];
+    setBindingMock('BrowserCompanionDo', async (_thread: string, action: { kind: string }) => {
+      actions.push(action.kind);
+      return undefined;
+    });
+    const view = mount([page('a')]);
+    const address = await ready(view);
+    address.focus();
+    await fireEvent.input(address, { target: { value: typed } });
+    actions.length = 0;
+    await fireEvent.keyDown(address, { key });
+    await waitFor(() => expect(actions).toContain('focus-page'));
+    expect(actions.includes('navigate')).toBe(key === 'Enter');
+  });
+
   it('mod+l focuses its address with the text selected, until the pane unmounts', async () => {
     setBindingMock('BrowserCompanionDo', async () => undefined);
     const view = mount([page('a')]);
