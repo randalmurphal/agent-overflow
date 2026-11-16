@@ -1,6 +1,7 @@
 package usermessage
 
 import (
+	"encoding/json"
 	"errors"
 	"reflect"
 	"testing"
@@ -126,6 +127,72 @@ func TestAttributionIsACopy(t *testing.T) {
 	if facts := report.Attribution().Wake.Facts; facts.Check(report.Text()) != nil {
 		t.Fatalf("the report changed: %+v", facts)
 	}
+}
+
+// A built message shares nothing with what it was built from: a caller that
+// changes its footer, wake or notice afterward changes neither the text nor
+// any field of the attribution.
+func TestAMessageSharesNothingWithItsInputs(t *testing.T) {
+	t.Parallel()
+	footer := threadtools.Footer{Title: "Lead", ThreadID: "t-lead", Token: "k", Agent: &threadtools.SenderAgent{Role: "Plans."}}
+	single := threadtools.Wake{Kind: threadtools.WakeReply, Text: "Done.", Sources: []threadtools.WakeSource{
+		{Title: "W", ThreadID: "t-w", Tokens: []string{"a", "b"}, Agent: &threadtools.SenderAgent{Role: "Builds."}},
+	}}
+	digest := threadtools.Wake{Kind: threadtools.WakeReply, Text: "Same.", Sources: []threadtools.WakeSource{
+		{Title: "W", ThreadID: "t-w", Tokens: []string{"a", "b"}, Agent: &threadtools.SenderAgent{Role: "Builds."}},
+		{Title: "X", ThreadID: "t-x", ComputerID: "c-1", Computer: "Desk", Tokens: []string{"c"}, Agent: &threadtools.SenderAgent{Role: "Lexes."}},
+	}}
+	stopped := threadtools.WorkerStopped{Title: "W", ThreadID: "t-w", Token: "k", Failures: []string{"its turn"}}
+	build := map[string]func(t *testing.T) AgentMessage{
+		"request": func(t *testing.T) AgentMessage {
+			message, err := Request(store.ThreadRequestSend, Sender{ThreadID: "t-lead", Title: "Lead"}, footer, "Ship it.")
+			if err != nil {
+				t.Fatal(err)
+			}
+			return message
+		},
+		"answer":         func(*testing.T) AgentMessage { return Answer(single) },
+		"digest":         func(*testing.T) AgentMessage { return Answer(digest) },
+		"stopped worker": func(*testing.T) AgentMessage { return StoppedWorker(stopped, "c-1", "Desk") },
+		"message":        func(*testing.T) AgentMessage { return Message(Sender{ThreadID: "t-lead", Title: "Lead"}, "Hi.") },
+		"report":         func(*testing.T) AgentMessage { return Report(ReportLoop, Reporter{Label: "l"}, "n", "d", "h") },
+	}
+	built := map[string]AgentMessage{}
+	before := map[string]Attribution{}
+	for name, construct := range build {
+		built[name] = construct(t)
+		before[name] = built[name].Attribution()
+	}
+	texts := map[string]string{}
+	for name, message := range built {
+		texts[name] = message.Text()
+	}
+	footer.Agent.Role = "changed"
+	for _, wake := range []threadtools.Wake{single, digest} {
+		for i := range wake.Sources {
+			wake.Sources[i].Tokens[0] = "changed"
+			wake.Sources[i].Agent.Role = "changed"
+			wake.Sources[i].Title = "changed"
+		}
+	}
+	stopped.Failures[0] = "changed"
+	for name, message := range built {
+		if message.Text() != texts[name] {
+			t.Errorf("%s: text changed to %q", name, message.Text())
+		}
+		if after := message.Attribution(); !reflect.DeepEqual(after, before[name]) {
+			t.Errorf("%s: attribution changed:\n%s\nwas\n%s", name, attributionJSON(t, after), attributionJSON(t, before[name]))
+		}
+	}
+}
+
+func attributionJSON(t *testing.T, attribution Attribution) string {
+	t.Helper()
+	encoded, err := json.Marshal(attribution)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(encoded)
 }
 
 // The person's and the app's messages carry no attribution an agent row

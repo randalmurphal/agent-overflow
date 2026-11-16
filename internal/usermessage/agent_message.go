@@ -27,8 +27,9 @@ import (
 //     on their behalf, which no agent row reads.
 //   - DecodeStored: a message read back from where it was stored, checked.
 //
-// A message is a value: Attribution returns a copy, so nothing a caller
-// does to it changes the message.
+// A message is a value: it shares nothing with the inputs it was built from,
+// and Attribution returns a copy, so nothing a caller does to either changes
+// the message.
 type AgentMessage struct {
 	text   string
 	origin string
@@ -100,10 +101,19 @@ func Request(kind string, from Sender, footer threadtools.Footer, body string) (
 			from.Title, from.ThreadID, footer.Title, footer.ThreadID)
 	}
 	text, facts := footer.Message(body)
-	return AgentMessage{text: text, origin: OriginAgentThread, thread: &OriginThread{
+	return threadMessage(text, facts, OriginThread{
 		ComputerID: from.ComputerID, ComputerName: from.ComputerName, ThreadID: from.ThreadID, Title: from.Title,
-		Token: footer.Token, Kind: kind, Facts: &facts,
-	}}, nil
+		Token: footer.Token, Kind: kind,
+	}), nil
+}
+
+// threadMessage is an agent thread's message of text, attributed to from
+// with facts. The facts are copied: what a renderer returns can share slices
+// with the value it rendered, which stays its caller's.
+func threadMessage(text string, facts threadtools.MessageFacts, from OriginThread) AgentMessage {
+	facts = facts.Clone()
+	from.Facts = &facts
+	return AgentMessage{text: text, origin: OriginAgentThread, thread: &from}
 }
 
 // Answer is what a request's caller is told of it (threadtools.Wake.Message),
@@ -112,7 +122,7 @@ func Request(kind string, from Sender, footer threadtools.Footer, body string) (
 // for several threads names them all in its facts; a reminder names none.
 func Answer(wake threadtools.Wake) AgentMessage {
 	text, facts := wake.Message()
-	from := OriginThread{Kind: OriginKindWake, Facts: &facts}
+	from := OriginThread{Kind: OriginKindWake}
 	if len(wake.Sources) > 0 {
 		first := wake.Sources[0]
 		from.ComputerID, from.ComputerName, from.ThreadID, from.Title = first.ComputerID, first.Computer, first.ThreadID, first.Title
@@ -120,7 +130,7 @@ func Answer(wake threadtools.Wake) AgentMessage {
 			from.Token = first.Tokens[0]
 		}
 	}
-	return AgentMessage{text: text, origin: OriginAgentThread, thread: &from}
+	return threadMessage(text, facts, from)
 }
 
 // StoppedWorker is the notice telling a spawner the user stopped its worker
@@ -129,10 +139,10 @@ func Answer(wake threadtools.Wake) AgentMessage {
 // computerName name the worker's computer, empty for the spawner's own.
 func StoppedWorker(notice threadtools.WorkerStopped, computerID, computerName string) AgentMessage {
 	text, facts := notice.Message()
-	return AgentMessage{text: text, origin: OriginAgentThread, thread: &OriginThread{
+	return threadMessage(text, facts, OriginThread{
 		ComputerID: computerID, ComputerName: computerName, ThreadID: notice.ThreadID, Title: notice.Title,
-		Token: notice.Token, Kind: OriginKindWake, Facts: &facts,
-	}}
+		Token: notice.Token, Kind: OriginKindWake,
+	})
 }
 
 // Sender is the thread a Message is from.
@@ -148,10 +158,9 @@ type Sender struct {
 // its worker's questions: body as written, attributed to from.
 func Message(from Sender, body string) AgentMessage {
 	text, facts := threadtools.PlainMessage(body)
-	return AgentMessage{text: text, origin: OriginAgentThread, thread: &OriginThread{
+	return threadMessage(text, facts, OriginThread{
 		ComputerID: from.ComputerID, ComputerName: from.ComputerName, ThreadID: from.ThreadID, Title: from.Title,
-		Facts: &facts,
-	}}
+	})
 }
 
 // ReportKind is the kind of a Report, the OriginWake kind its row is badged
