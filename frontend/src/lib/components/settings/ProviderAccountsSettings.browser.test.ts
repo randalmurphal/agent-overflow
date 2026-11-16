@@ -174,10 +174,33 @@ function controlLines(controls: HTMLElement): { top: number; bottom: number; rig
 }
 
 /** "Active" is never broken: the name beside it gives way instead. */
-function expectActiveWhole(card: HTMLElement, active: boolean) {
+function expectActiveWhole(card: HTMLElement, active: boolean): HTMLElement | undefined {
   const pill = [...card.querySelectorAll('span')].find((el) => el.textContent?.trim() === 'Active');
   expect(!!pill).toBe(active);
   if (pill) expect(lineCount(pill)).toBe(1);
+  return pill;
+}
+
+function overlapsVertically(a: DOMRect, b: DOMRect): boolean {
+  return a.top < b.bottom && a.bottom > b.top;
+}
+
+/**
+ * The page's sign-in button lies inside the accounts column with its label;
+ * `wraps` says whether the label may take more than one line.
+ */
+function expectLoginButtonFits(view: Awaited<ReturnType<typeof renderAccounts>>, provider: string, wraps: boolean): DOMRect {
+  const column = view.getByTestId(`provider-accounts-${provider}`).getBoundingClientRect();
+  const button = view.getByRole('button', { name: 'Log in to another account' });
+  const rect = button.getBoundingClientRect();
+  expect(rect.left, 'sign-in button left').toBeGreaterThanOrEqual(column.left - 0.5);
+  expect(rect.right, 'sign-in button right').toBeLessThanOrEqual(column.right + 0.5);
+  for (const text of textRects(button)) {
+    expect(text.left, 'sign-in label left').toBeGreaterThanOrEqual(rect.left - 0.5);
+    expect(text.right, 'sign-in label right').toBeLessThanOrEqual(rect.right + 0.5);
+  }
+  if (!wraps) expect(new Set(textRects(button).map((r) => Math.round(r.top))).size, 'sign-in label lines').toBe(1);
+  return rect;
 }
 
 it.each(
@@ -196,21 +219,37 @@ it.each(
     const name = view.getByTestId(`provider-account-name-${id}`);
     const controls = view.getByTestId(`provider-account-controls-${id}`);
     expect(card.textContent?.includes('Usage not checked yet.')).toBe(!row.usage);
-    expectActiveWhole(card, row.active !== false);
+    const pill = expectActiveWhole(card, row.active !== false);
 
     // Its column runs to the card's edge, so the explanation lines below it
     // get the same width, and the controls sit on their own row beneath.
     const column = name.closest('button')!;
     expect(column.getBoundingClientRect().right).toBeCloseTo(box.right, 0);
-    // A name that fits is shown whole; a longer one takes all its row has
-    // left after the grip, the status dot and the pill, which at the
-    // default text size is at least half the card.
-    if (name.scrollWidth > name.clientWidth + 1) {
-      const rowEnd = name.parentElement!.lastElementChild!.getBoundingClientRect().right;
-      expect(rowEnd).toBeCloseTo(box.right, 0);
-    }
+    // A name is shown whole or keeps at least 6em of text, the layout
+    // spec's bar for a cut text; at the default text size that is at least
+    // half the card.
+    const em = parseFloat(getComputedStyle(name).fontSize);
+    expect(name.clientWidth, 'name width').toBeGreaterThanOrEqual(Math.min(name.scrollWidth, 6 * em) - 0.5);
     if (size === DEFAULT_TEXT_SIZE) {
       expect(name.clientWidth).toBeGreaterThanOrEqual(Math.min(name.scrollWidth, box.width / 2));
+    }
+    // "Active" sits beside the name unless that would leave the name under
+    // 6em; then it drops below, in line with the name's text. At the default
+    // text size it always fits beside.
+    const nameBox = name.getBoundingClientRect();
+    const pillBox = pill?.getBoundingClientRect();
+    const pillBeside = !!pillBox && overlapsVertically(pillBox, nameBox);
+    if (pillBox && !pillBeside) {
+      const gap = parseFloat(getComputedStyle(pill!.parentElement!).columnGap);
+      expect(box.right - nameBox.left - gap - pillBox.width, 'room beside the pill').toBeLessThan(6 * em);
+      expect(pillBox.top).toBeGreaterThanOrEqual(nameBox.bottom - 0.5);
+      expect(pillBox.left).toBeCloseTo(nameBox.left, 0);
+      expect(pillBox.right).toBeLessThanOrEqual(box.right + 0.5);
+    }
+    if (pillBox && size === DEFAULT_TEXT_SIZE) expect(pillBeside, 'pill beside the name').toBe(true);
+    // A name that is cut takes all its line has left.
+    if (name.scrollWidth > name.clientWidth + 1) {
+      expect(pillBeside ? pillBox!.right : nameBox.right).toBeCloseTo(box.right, 0);
     }
     expect(controls.getBoundingClientRect().top).toBeGreaterThanOrEqual(name.getBoundingClientRect().bottom);
 
@@ -237,6 +276,10 @@ it.each(
     expect(remove.top).toBeCloseTo(refresh.top, 0);
     expect(card.scrollWidth).toBeLessThanOrEqual(card.clientWidth + 1);
   }
+  // The page's sign-in button stays inside the column; its label wraps only
+  // when one line cannot fit, which never happens at the default size.
+  const provider = (state.rows[0].provider as string | undefined) ?? 'codex';
+  expectLoginButtonFits(view, provider, size !== DEFAULT_TEXT_SIZE);
 });
 
 // Desktop keeps one row: the name column on the left, the controls beside it
@@ -252,10 +295,16 @@ it.each(ACCOUNT_STATES.flatMap(([label, state]) => [1024, 1280].map((width) => [
       const controls = view.getByTestId(`provider-account-controls-${id}`).getBoundingClientRect();
       const cardBox = card.getBoundingClientRect();
       const padding = parseFloat(getComputedStyle(card).paddingTop);
-      expectActiveWhole(card, state.rows[index].active !== false);
+      const pill = expectActiveWhole(card, state.rows[index].active !== false);
+      if (pill) expect(overlapsVertically(pill.getBoundingClientRect(), name)).toBe(true);
       expect(controls.top).toBeCloseTo(cardBox.top + padding + 1, 0);
       expect(controls.left).toBeGreaterThanOrEqual(name.right);
       expect(cardBox.right - controls.right).toBeCloseTo(parseFloat(getComputedStyle(card).paddingRight) + 1, 0);
     }
+    // The sign-in button keeps its one-line width beside the section title.
+    const provider = (state.rows[0].provider as string | undefined) ?? 'codex';
+    const login = expectLoginButtonFits(view, provider, false);
+    const title = view.getByRole('heading', { name: 'Accounts' }).getBoundingClientRect();
+    expect(overlapsVertically(login, title)).toBe(true);
   },
 );

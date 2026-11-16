@@ -311,14 +311,17 @@
 >
   <SettingsHeader title="Accounts" description="Saved native logins and their last-known limits.">
     {#snippet badge()}
+      <!-- Its label wraps only where one line is wider than the column (a
+           phone at a large text size); the button then takes the column's
+           width. Anywhere else it is one line beside the title. -->
       <button
         type="button"
-        class={PRIMARY_BUTTON_CLASS}
+        class="{PRIMARY_BUTTON_CLASS} block w-full"
         disabled={credentialOpInFlight || !admin}
         title={ungrantedTitle}
         onclick={() => void startProviderLogin(provider, backend)}
       >
-        {actions.loggingIn ? 'Signing in…' : 'Log in to another account'}
+        <span class="whitespace-normal">{actions.loggingIn ? 'Signing in…' : 'Log in to another account'}</span>
       </button>
     {/snippet}
   </SettingsHeader>
@@ -389,22 +392,29 @@
               onclick={cardAction(account)}
               aria-label={providerAccountActionLabel(account)}
             >
-              <span class="flex items-center gap-2">
-                <span
-                  class="h-2 w-2 shrink-0 rounded-full border {account.needsLogin
-                    ? 'border-warning'
-                    : account.active
-                      ? 'border-accent bg-accent'
-                      : 'border-fg-hint'}"
-                  aria-hidden="true"
-                ></span>
-                <span
-                  class="truncate text-[0.75rem] font-medium {account.needsLogin
-                    ? 'text-fg-muted'
-                    : 'text-fg'}"
-                  data-testid="provider-account-name-{account.id}"
-                >
-                  {providerAccountName(account)}
+              <!-- "Active" drops below the name, in line with its text, when
+                   staying beside it would leave the name under 6em (the
+                   dot, name and pill outgrow a phone card at large text
+                   sizes). The name's group starts at 6em and grows to its
+                   whole width; the row's padding is where the dot sits. -->
+              <span class="flex flex-wrap items-center gap-x-2 gap-y-0.5 pl-4">
+                <span class="-ml-4 flex min-w-0 max-w-max grow basis-[calc(1rem+6em)] items-center gap-2 text-[0.75rem]">
+                  <span
+                    class="h-2 w-2 shrink-0 rounded-full border {account.needsLogin
+                      ? 'border-warning'
+                      : account.active
+                        ? 'border-accent bg-accent'
+                        : 'border-fg-hint'}"
+                    aria-hidden="true"
+                  ></span>
+                  <span
+                    class="truncate font-medium {account.needsLogin
+                      ? 'text-fg-muted'
+                      : 'text-fg'}"
+                    data-testid="provider-account-name-{account.id}"
+                  >
+                    {providerAccountName(account)}
+                  </span>
                 </span>
                 {#if account.active}
                   <span class="shrink-0 rounded-full bg-accent/10 px-1.5 py-0.5 text-[0.625rem] font-medium text-accent">

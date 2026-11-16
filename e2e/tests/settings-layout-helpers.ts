@@ -3,7 +3,7 @@ import path from 'node:path';
 import { expect, type Page } from '@playwright/test';
 import type { HarnessApp } from '../src/harness.js';
 import type { SeedResult } from './fixtures.js';
-import { completeCodexSignIn } from './provider-account-helpers.js';
+import { completeClaudeSignIn, completeCodexSignIn, seedNativeClaudeLogin } from './provider-account-helpers.js';
 
 export interface LayoutFault {
   section: string;
@@ -60,17 +60,23 @@ export async function layoutFaults(page: Page, section: string, selector = panel
     }
     const lineTops = (range: Range) =>
       new Set([...range.getClientRects()].filter((r) => r.width > 0 && r.height > 0).map((r) => Math.round(r.top))).size;
-    // The lines a control's label takes. Only its text counts: an icon
-    // beside the label has a box of its own on the same line.
+    // The most lines one of a control's labels takes. Only its text counts:
+    // an icon beside the label has a box of its own on the same line. A
+    // control that stacks labels in blocks of their own (an account card's
+    // name over its organization) measures each block's text separately.
     const labelLines = (el: Element) => {
-      const tops = new Set<number>();
+      const tops = new Map<Element, Set<number>>();
       const texts = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
       for (let node = texts.nextNode(); node; node = texts.nextNode()) {
+        let block = node.parentElement!;
+        while (block !== el && getComputedStyle(block).display.startsWith('inline')) block = block.parentElement!;
+        const lines = tops.get(block) ?? new Set<number>();
+        tops.set(block, lines);
         const range = document.createRange();
         range.selectNodeContents(node);
-        for (const r of range.getClientRects()) if (r.width > 0 && r.height > 0) tops.add(Math.round(r.top));
+        for (const r of range.getClientRects()) if (r.width > 0 && r.height > 0) lines.add(Math.round(r.top));
       }
-      return tops.size;
+      return Math.max(0, ...[...tops.values()].map((lines) => lines.size));
     };
 
     // A field scrolls its own value and an ellipsis is a deliberate cut, as
@@ -215,21 +221,36 @@ export async function settingsLayoutFaults(harness: HarnessApp, page: Page, comp
 }
 
 /**
- * Measures the Codex account card that has the most to fit (see
- * saveCodexAccountNeedingSignIn) on a phone. Saving the account is
- * process-wide state, so the caller passes a backend it owns.
+ * Measures the Accounts sections on a phone: the Codex account that has the
+ * most to fit (see saveCodexAccountNeedingSignIn), and two Claude accounts,
+ * a native login and one signed in through Settings, whose cards carry the
+ * reorder grip. The section's sign-in button may wrap its label: it does
+ * where one line is wider than the column. Saving accounts is process-wide
+ * state, so the caller passes a backend it owns.
  */
-export async function codexAccountCardFaults(harness: HarnessApp, page: Page): Promise<LayoutFault[]> {
+export async function accountsSectionFaults(harness: HarnessApp, page: Page): Promise<LayoutFault[]> {
+  await seedNativeClaudeLogin(harness, 'morgan.alvarez-kowalski@northwind-engineering.test', Date.now() + 20 * 24 * 3600_000);
   await harness.open(page);
   await page.getByTestId('sidebar-settings-button').click();
   await saveCodexAccountNeedingSignIn(harness, page, true);
-  // Reopening the page it was saved on keeps the page mounted; a fresh load
-  // lists the account as it is now.
-  await page.reload();
-  await page.getByTestId('sidebar-settings-button').click();
+  const faults: LayoutFault[] = [];
+  const measure = async (section: string, provider: string) => {
+    const found = await layoutFaults(page, section, `[data-testid="provider-accounts-${provider}"]`);
+    faults.push(...found.filter((fault) => !(fault.kind === 'control-wraps' && fault.text === 'Log in to another account')));
+  };
+  await openSection(page, 'Claude Code');
+  await page.getByTestId('provider-accounts-claude').getByRole('button', { name: 'Log in to another account' }).click();
+  await completeClaudeSignIn(page, 'sam@northwind.test');
+  await expect(page.locator('[data-testid="provider-accounts-claude"] [data-account-card]')).toHaveCount(2);
+  await settle(page);
+  await measure('Claude Code', 'claude');
+  await page.getByTestId('settings-page-back').click();
+  // Another section in between remounts the Codex page, which lists the
+  // account as it is now.
   await openSection(page, 'Codex');
   await expect(page.locator('[data-testid^="provider-account-sign-in-"]')).toBeVisible();
-  return layoutFaults(page, 'Codex', '[data-account-card]');
+  await measure('Codex', 'codex');
+  return faults;
 }
 
 /**
