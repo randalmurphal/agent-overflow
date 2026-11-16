@@ -124,7 +124,15 @@ func TestThreadShowLabelsAgentMessagesWithTheirSender(t *testing.T) {
 	flow.Meta = `{"origin":"agent-wake","originWake":{"kind":"workflow","label":"release"}}`
 	mixed := textItem("mixed", "user_text", "wake then mine")
 	mixed.Meta = `{"origin":"agent-wake","originWake":{"kind":"loop"},"expandComposerCommands":true}`
-	f.turn(t, thread.ID, 0, 1_000, person, request, loop, worker, script, peer, job, flow, mixed)
+	reminder := textItem("reminder", "user_text", "Reminder you set [token k]:\nCheck.")
+	reminder.Meta = `{"origin":"agent-thread","originThread":{"threadId":"","token":"k","kind":"wake","facts":{"outcome":"reminder","tokens":["k"]}},"sendId":"thread-wake:k"}`
+	// main wrote a reminder with no facts.
+	oldReminder := textItem("old-reminder", "user_text", "Reminder you set [token k]:\nCheck.")
+	oldReminder.Meta = `{"origin":"agent-thread","originThread":{"threadId":"","token":"k"},"sendId":"thread-wake:k"}`
+	digest := textItem("digest", "user_text", "2 threads sent the same reply:")
+	digest.Meta = `{"origin":"agent-thread","originThread":{"threadId":"t-a","title":"A","token":"k","kind":"wake","facts":{"outcome":"reply","tokens":["k","l"],` +
+		`"threads":[{"threadId":"t-a","title":"A","tokens":["k"]},{"threadId":"t-b","title":"B","computerId":"c-desk","computerName":"desk","tokens":["l"]}]}}}`
+	f.turn(t, thread.ID, 0, 1_000, person, request, loop, worker, script, peer, job, flow, mixed, reminder, oldReminder, digest)
 
 	bounds, err := f.adapter.ResolveWindow(t.Context(), threadtools.WindowQuery{ThreadID: thread.ID, Kind: threadtools.WindowAll})
 	if err != nil {
@@ -144,6 +152,11 @@ func TestThreadShowLabelsAgentMessagesWithTheirSender(t *testing.T) {
 		"job":     `[agent job from remote job "nightly build" on GPU box]`,
 		"flow":    `[agent flow from workflow "release"]`,
 		"mixed":   "[user mixed]",
+		// A reminder names no thread, and a digest names every thread it
+		// answers for.
+		"reminder":     `[agent reminder from a reminder this thread set]`,
+		"old-reminder": `[agent old-reminder from a reminder this thread set]`,
+		"digest":       `[agent digest from 2 threads: "A" (t-a), "B" (t-b, on desk)]`,
 	}
 	if len(page.Items) != len(want) {
 		t.Fatalf("page = %+v", page.Items)

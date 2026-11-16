@@ -326,11 +326,20 @@ func agentMessageSender(row store.Item) (from string, ok bool) {
 		return "", false
 	}
 	if origin := meta.OriginThread; origin != nil {
-		where := origin.ThreadID
-		if origin.ComputerName != "" {
-			where += ", on " + origin.ComputerName
+		facts := origin.Facts
+		switch {
+		case facts != nil && facts.Outcome == threadtools.WakeReminder,
+			facts == nil && origin.ThreadID == "" && strings.HasPrefix(meta.SendID, "thread-wake"):
+			// main wrote a reminder's wake with no thread and no facts.
+			return "a reminder this thread set", true
+		case facts != nil && len(facts.Threads) > 1:
+			names := make([]string, 0, len(facts.Threads))
+			for _, thread := range facts.Threads {
+				names = append(names, threadNaming(thread.Title, thread.ThreadID, thread.ComputerName))
+			}
+			return fmt.Sprintf("%d threads: %s", len(names), strings.Join(names, ", ")), true
 		}
-		return fmt.Sprintf("%q (%s)", origin.Title, where), true
+		return threadNaming(origin.Title, origin.ThreadID, origin.ComputerName), true
 	}
 	if wake := meta.OriginWake; wake != nil {
 		switch wake.Kind {
@@ -347,6 +356,15 @@ func agentMessageSender(row store.Item) (from string, ok bool) {
 		}
 	}
 	return "another agent", true
+}
+
+// threadNaming names a thread as a status line does: `"title" (id[, on
+// computer])`.
+func threadNaming(title, threadID, computer string) string {
+	if computer != "" {
+		threadID += ", on " + computer
+	}
+	return fmt.Sprintf("%q (%s)", title, threadID)
 }
 
 // threadToolsItemKind maps a store row onto the transcript vocabulary and
