@@ -393,7 +393,7 @@ func TestARestoreWhoseDraftWriteFailsSettlesNothingItRequeues(t *testing.T) {
 				}
 				prompt, _ := f.app.workerPrompts.add(workerPrompt{
 					workerID: "worker-thread", agentID: f.caller.ID, requestID: "approval-1",
-				}, func(triage.PromptRef) bool { return true })
+				}, func(workerPrompt) bool { return true })
 				// The loop wake never left the queue: its durable row is the
 				// only copy a quit would keep.
 				wakeRow := store.FlushQueueItem{
@@ -526,7 +526,7 @@ func TestAnUnsplittableJoinGoesToTheComposerWhole(t *testing.T) {
 			prompt, _ := f.app.workerPrompts.add(workerPrompt{
 				workerID: "worker-thread", agentID: f.caller.ID, requestID: "approval-1",
 				approval: &provider.ApprovalRequest{ToolName: "Bash", Description: "run it"},
-			}, func(triage.PromptRef) bool { return true })
+			}, func(workerPrompt) bool { return true })
 			ids := []string{"person-send", agentSendIDRoot + "deploy", agentWakeSendID(wake.ID, 1000), prompt.sendID(), threadWakeSendID(token)}
 			content := strings.Join([]string{
 				"my own words",

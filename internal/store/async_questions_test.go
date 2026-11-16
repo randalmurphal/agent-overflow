@@ -2,6 +2,7 @@ package store
 
 import (
 	"encoding/json"
+	"slices"
 	"testing"
 )
 
@@ -222,5 +223,36 @@ func TestRestoredAsyncAnswerSettlesAtomicallyWithQueueRemoval(t *testing.T) {
 	queued, err := s.ListFlushQueueItems("q")
 	if err != nil || len(queued) != 0 {
 		t.Fatalf("retained restored queue: %+v %v", queued, err)
+	}
+}
+
+// The boot lists the threads with a question still unanswered, on the
+// pending index, and a rest dismisses only those questions.
+func TestUnansweredAsyncQuestionsAreListedAndDismissedByThread(t *testing.T) {
+	s := newTestStore(t)
+	for _, id := range []string{"open", "answered", "other"} {
+		mustCreateThread(t, s, id)
+		questionFixture(t, s, id, "question:call")
+	}
+	answers := []AsyncQuestionAnswer{{ItemID: "question:call", Index: 0, Answer: "Two"}, {ItemID: "question:call", Index: 1, Answer: "Friday"}}
+	body, _, err := s.AsyncAnswerMessage("answered", "send", answers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.QueueAsyncAnswers(FlushQueueItem{ID: "queue", ThreadID: "answered", SendID: "send", Message: body, Payload: json.RawMessage(`{}`), EnqueuedAt: 3}, answers); err != nil {
+		t.Fatal(err)
+	}
+	if ids, err := s.ThreadsWithUnansweredAsyncQuestions(); err != nil || !slices.Equal(slices.Sorted(slices.Values(ids)), []string{"open", "other"}) {
+		t.Fatalf("threads with unanswered questions = %q, %v", ids, err)
+	}
+	assertPlanUses(t, s.db, "idx_async_questions_pending", "EXPLAIN QUERY PLAN "+threadsWithUnansweredAsyncQuestionsSQL)
+	if n, err := s.DismissUnansweredAsyncQuestions("open"); err != nil || n != 2 {
+		t.Fatalf("dismissed %d, %v; want both of its questions", n, err)
+	}
+	if n, err := s.DismissUnansweredAsyncQuestions("answered"); err != nil || n != 0 {
+		t.Fatalf("dismissed %d answered questions, %v", n, err)
+	}
+	if ids, err := s.ThreadsWithUnansweredAsyncQuestions(); err != nil || !slices.Equal(ids, []string{"other"}) {
+		t.Fatalf("threads with unanswered questions after the dismissal = %q, %v", ids, err)
 	}
 }

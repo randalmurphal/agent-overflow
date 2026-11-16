@@ -206,7 +206,11 @@ delete reconciles the prompts routed to the thread it changed
 is kept, and the others move on or go to the user; none is left routed to
 nobody. A token names one prompt occurrence (`triage.PromptRef`): it
 answers, settles and releases only that prompt, written only to the session
-that asked it, never a later prompt under the same request id.
+that asked it, never a later prompt under the same request id. A Codex
+thread's async questions are prompts on the same registry, but triage's
+live state ends with the session and they do not: their route is kept
+in `app_worker_prompts_async.go`, reconciled from the store on every
+change to them and at boot.
 
 Project and thread service writes return the current row plus whether durable
 state changed. Emit updates only for changes, while still returning the row to

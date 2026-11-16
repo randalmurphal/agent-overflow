@@ -111,7 +111,7 @@ func (a *App) lockClientSendAdmission(ctx context.Context, threadID, sendID stri
 var appSendIDRoots = []string{
 	agentWakeSendIDRoot, agentSendIDRoot, workerPromptSendIDRoot, assistantSendIDRoot,
 	remoteCompletionSendIDRoot, workflowWakeSendIDRoot, threadRequestSendIDPrefix, workerStoppedSendIDRoot,
-	threadWakeSendID(""), threadWakeLateSendID(""),
+	threadWakeSendID(""), threadWakeLateSendID(""), workerAnswerSendIDRoot,
 }
 
 func sendAdmissionKey(threadID, sendID string) string {

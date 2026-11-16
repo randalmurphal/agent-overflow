@@ -770,14 +770,23 @@ func (v threadAgentView) row(request store.ThreadAgentRequest, names map[string]
 	blocked := false
 	var remote remoteBlocked
 	var snapshot triage.LiveStateSnapshot
+	var asked struct{ detail, routedTo string }
 	switch {
 	case !live || row.TargetThreadID == "":
 	case !local:
 		remote = v.app.remoteRequestBlocked(row.Token)
 		blocked = remote.blocked
-	case v.app.triage != nil:
-		snapshot = v.app.triage.LiveStateSnapshotForThread(row.TargetThreadID)
-		blocked = threadToolsLiveState(snapshot).Blocked()
+	default:
+		if v.app.triage != nil {
+			snapshot = v.app.triage.LiveStateSnapshotForThread(row.TargetThreadID)
+		}
+		held := threadToolsLiveState(snapshot)
+		blocked = held.Blocked()
+		if !blocked && !held.ActiveTurn && !held.PendingSends {
+			// With nothing else open, an async question is what it waits on
+			// (workerHeldUnrest).
+			asked.detail, asked.routedTo, blocked = v.app.asyncQuestionBlocked(row.TargetThreadID)
+		}
 	}
 	state := requestStateFrom(row, request.AnswerHead, request.HasLateReply, requestTitleFrom(row, names), blocked)
 	out := ThreadAgentRow{
@@ -826,6 +835,9 @@ func (v threadAgentView) row(request store.ThreadAgentRequest, names map[string]
 		}
 	case row.TargetThreadID != "":
 		out.BlockedOn, out.BlockedDetail, out.BlockedRoutedTo = threadAgentBlockedOn(snapshot)
+		if out.BlockedOn == "" && blocked {
+			out.BlockedOn, out.BlockedDetail, out.BlockedRoutedTo = "question", clipLine(asked.detail), asked.routedTo
+		}
 		out.Activity = v.app.threadAgentActivity(row.TargetThreadID)
 		if out.Activity == "" {
 			// A waiting worker's line is what it waits on.

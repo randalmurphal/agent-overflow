@@ -719,7 +719,9 @@ Ruling 36, as built:
   request's: it is open while its request is open or the thread the spawn
   made is not at rest, whatever its placement. A thread is at rest when it
   has no turn, no queued message, no open prompt
-  (`triage.LiveStateSnapshotForThread`), no running background work
+  (`triage.LiveStateSnapshotForThread`, and a Codex async question not
+  yet answered or dismissed, which reads `blocked` while nothing else
+  runs or is queued: `asyncQuestionBlocked`), no running background work
   (`runningBackgroundWorkForThread`: Claude tasks and background agents,
   Codex subagents and terminals, remote commands), no armed loop or watch
   (`agent_wakes`), no reminder that has not fired, and no provider timer
@@ -868,9 +870,10 @@ thread:
    and ends its session as End Session does, a thread with no session
    included: the provider process and everything it runs (background
    shells, subagents, terminals and provider timers) end, its background
-   items read as ended, its open prompts close and their wakes routed to
-   its spawner are withdrawn, and the messages the person queued in its
-   composer are dropped with the queue.
+   items read as ended, its open prompts close and its unanswered async
+   questions are dismissed, their wakes routed to its spawner withdrawn,
+   and the messages the person queued in its composer are dropped with
+   the queue.
 6. Withdraws what the app queued for it and cancels its asks and the
    commands it started on paired computers, as an archive does. A cancel
    the computer does not take is named in the failures and sent again

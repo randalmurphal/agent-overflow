@@ -514,8 +514,16 @@ refuses the agent's later reply. A wake the agent's session never took
 in, or that
 the end of its session cleared, hands the prompt back to the user. The
 token lives as long as the prompt, in memory: a restart ends the
-worker's session and its prompts with it. `decision` and `answers` on
-any other token are refused.
+worker's session and its prompts with it. A Codex worker's async
+question, which its turn ends by asking and a later message answers,
+goes the same way, its parts still unanswered as one prompt: the reply
+is written to the worker as one message attributed to the spawner, and
+the user answering or dismissing a part in the worker refuses the
+token and puts the parts left to the spawner under a new one. It
+outlives the worker's session, is put to the spawner again under a new
+token after a restart, and is dismissed by a Stop of the worker; an
+archived worker's question waits for its unarchive. `decision` and
+`answers` on any other token are refused.
 
 ### `thread_status`
 

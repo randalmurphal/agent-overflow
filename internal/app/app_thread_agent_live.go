@@ -8,6 +8,7 @@ import (
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/threadtools"
 )
 
 // A spawn's Agents row is open while the thread it made is not at rest
@@ -93,13 +94,14 @@ func (a *App) workerUnrest(threadID string) (workerRest, error) {
 }
 
 // workerHeldUnrest is why threadID is not at rest from what triage holds,
-// no store read: waiting on a person for a prompt, in a turn, or holding
-// messages queued for one.
+// no store read: waiting on a person for a prompt, in a turn, holding
+// messages queued for one, or with none of those, waiting for the answer
+// to an async question (asyncQuestionBlocked).
 func (a *App) workerHeldUnrest(threadID string) string {
-	if a.triage == nil {
-		return ""
+	var live threadtools.LiveState
+	if a.triage != nil {
+		live = threadToolsLiveState(a.triage.LiveStateSnapshotForThread(threadID))
 	}
-	live := threadToolsLiveState(a.triage.LiveStateSnapshotForThread(threadID))
 	switch {
 	case live.Blocked():
 		return workerBlocked
@@ -107,6 +109,9 @@ func (a *App) workerHeldUnrest(threadID string) string {
 		return workerRunning
 	case live.PendingSends:
 		return workerQueued
+	}
+	if _, _, asking := a.asyncQuestionBlocked(threadID); asking {
+		return workerBlocked
 	}
 	return ""
 }

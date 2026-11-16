@@ -398,6 +398,9 @@ func (a *App) restThreadHere(ctx context.Context, threadID string, by restStop, 
 	background, err := a.endRestingThreadSession(threadID, by, result)
 	result.Background += background
 	fail("end its session", err)
+	// Its async questions outlive the session, and close with the rest as
+	// its other prompts did.
+	fail("dismiss its questions", a.dismissRestingAsyncQuestions(threadID))
 	// After the session end, as an archive's: what the teardown dropped went
 	// back to its owners, and what it left is withdrawn here.
 	fail("stop its work", a.stopRestingThreadWork(work))

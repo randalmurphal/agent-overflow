@@ -29,7 +29,7 @@ func promptRouted(w *workerPrompts, token string) bool {
 // resolution nor is settled again by a give-back of its own token.
 func TestAWorkerPromptsCurrentRegistrationIsTheOneSettled(t *testing.T) {
 	t.Parallel()
-	open := func(triage.PromptRef) bool { return true }
+	open := func(workerPrompt) bool { return true }
 	for i := range 64 {
 		var prompts workerPrompts
 		old, _ := prompts.add(workerPrompt{workerID: "worker", requestID: "approval-1", agentID: "a", occurrence: 1}, open)
@@ -63,7 +63,7 @@ func TestAWorkerPromptsCurrentRegistrationIsTheOneSettled(t *testing.T) {
 // answered does not come back routed when its answer fails.
 func TestALaterRegistrationRetiresTheEarlierOne(t *testing.T) {
 	t.Parallel()
-	open := func(triage.PromptRef) bool { return true }
+	open := func(workerPrompt) bool { return true }
 	var prompts workerPrompts
 	first, _ := prompts.add(workerPrompt{workerID: "worker", requestID: "approval-1", agentID: "a", occurrence: 1}, open)
 	second, replaced := prompts.add(workerPrompt{workerID: "worker", requestID: "approval-1", agentID: "b", occurrence: 2}, open)
@@ -94,7 +94,7 @@ func TestAWorkerPromptNoLongerOpenIsClosed(t *testing.T) {
 	t.Parallel()
 	var prompts workerPrompts
 	ended := map[provider.PromptOccurrence]bool{}
-	open := func(ref triage.PromptRef) bool { return !ended[ref.Occurrence] }
+	open := func(prompt workerPrompt) bool { return !ended[prompt.occurrence] }
 	first, _ := prompts.add(workerPrompt{workerID: "worker", requestID: "approval-1", agentID: "a", occurrence: 1}, open)
 	ended[1] = true
 	prompts.add(workerPrompt{workerID: "other", requestID: "approval-9", agentID: "a", occurrence: 9}, open)

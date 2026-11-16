@@ -48,11 +48,18 @@ import (
 //
 // The record of a routed prompt lives in memory only: a provider prompt
 // lives no longer than the worker's session, and none survives a restart.
+// A Codex worker's async questions are its prompts too, and outlive both;
+// app_worker_prompts_async.go keeps where each goes and routes them again
+// at boot.
 
 // workerPromptSendIDRoot names the wake that carries a worker's prompt; the
 // token completes it. It is not a loop or watch wake's root, so the turn it
 // starts is not a tick and notifies like any other.
 const workerPromptSendIDRoot = "agent-ask:"
+
+// workerAnswerSendIDRoot names the message that carries an agent's answer
+// to its worker's async questions; the prompt's token completes it.
+const workerAnswerSendIDRoot = "agent-answer:"
 
 // workerPromptRetention is how long an answered or settled prompt is kept so
 // a late or repeated thread_reply is told what happened to it.
@@ -83,7 +90,10 @@ type workerPrompt struct {
 	occurrence provider.PromptOccurrence
 	approval   *provider.ApprovalRequest
 	question   *provider.UserInputRequest
-	state      workerPromptState
+	// async marks a Codex async question prompt: question holds its
+	// unanswered questions, and its route is asyncQuestionRoutes'.
+	async bool
+	state workerPromptState
 	// answer is what the agent sent, so a retry of the same answer is
 	// recognized.
 	answer   string
@@ -113,6 +123,8 @@ type workerPrompts struct {
 	// answer a late reply.
 	current map[workerPromptKey]string
 	queue   serialqueue.Queue
+	// async is where each open async question prompt goes.
+	async asyncQuestionRoutes
 }
 
 // routeWorkerPrompt is triage's prompt router: the thread that spawned
@@ -131,8 +143,34 @@ func (a *App) routeWorkerPrompt(threadID string) *provider.PromptRoute {
 
 // tapWorkerPrompt is the emit tap: a prompt announced routed is delivered
 // to its agent, and a prompt announced as the user's or resolved settles
-// its routed registration.
+// its routed registration. A change to a thread's async questions, or to
+// whether it is listed, archived or there at all, reconciles its async
+// question prompts.
 func (a *App) tapWorkerPrompt(name eventchan.Channel, data any) {
+	if event, ok := data.(triage.ThreadUpdateEvent); ok {
+		// Every frame but a patch: an archive, an unarchive, a delete, a
+		// placement, or a spawn naming its thread.
+		if event.Action != triage.ThreadActionPatch {
+			id := event.ID
+			if event.Thread != nil {
+				id = event.Thread.ID
+			}
+			a.syncAsyncQuestionPrompts(id)
+		}
+		return
+	}
+	switch name {
+	case eventchan.ProviderAsyncQuestionsChanged:
+		if event, ok := data.(map[string]string); ok {
+			a.syncAsyncQuestionPrompts(event["threadId"])
+		}
+		return
+	case eventchan.UserMessageReverted:
+		if event, ok := data.(UserMessageRevertedEvent); ok {
+			a.syncAsyncQuestionPrompts(event.ThreadID)
+		}
+		return
+	}
 	var prompt workerPrompt
 	var route *provider.PromptRoute
 	var action string
@@ -176,10 +214,7 @@ func (a *App) tapWorkerPrompt(name eventchan.Channel, data any) {
 // was answered, or moved again) is left to that one; a prompt the agent
 // cannot take moves on (handBackWorkerPrompt).
 func (a *App) deliverWorkerPrompt(route provider.PromptRoute, prompt workerPrompt) {
-	if a.triage == nil {
-		return
-	}
-	if current, open := a.triage.PromptRoute(prompt.ref()); !open || current == nil || current.ThreadID != route.ThreadID {
+	if current, open := a.workerPromptRoute(prompt); !open || current == nil || current.ThreadID != route.ThreadID {
 		return
 	}
 	prompt.agentID = route.ThreadID
@@ -231,10 +266,22 @@ func (a *App) deliverWorkerPrompt(route provider.PromptRoute, prompt workerPromp
 	}
 }
 
-// workerPromptOpen reports whether the prompt ref names is still open in
-// the worker's session that asked it.
-func (a *App) workerPromptOpen(ref triage.PromptRef) bool {
-	_, open := a.triage.PromptRoute(ref)
+// workerPromptRoute is where a registration's prompt is routed now, nil
+// when it is the user's, and whether it is still open: in the worker's
+// session that asked it, or for an async question, in the store.
+func (a *App) workerPromptRoute(prompt workerPrompt) (*provider.PromptRoute, bool) {
+	if prompt.async {
+		return a.asyncQuestionRoute(prompt.ref())
+	}
+	if a.triage == nil {
+		return nil, false
+	}
+	return a.triage.PromptRoute(prompt.ref())
+}
+
+// workerPromptOpen reports whether a registration's prompt is still open.
+func (a *App) workerPromptOpen(prompt workerPrompt) bool {
+	_, open := a.workerPromptRoute(prompt)
 	return open
 }
 
@@ -248,10 +295,7 @@ func (a *App) workerPromptLive(token string) bool {
 // workerPromptOpenTo reports whether a registration's prompt is open and
 // still routed to the registration's agent.
 func (a *App) workerPromptOpenTo(prompt workerPrompt) bool {
-	if a.triage == nil {
-		return false
-	}
-	route, open := a.triage.PromptRoute(prompt.ref())
+	route, open := a.workerPromptRoute(prompt)
 	return open && route != nil && route.ThreadID == prompt.agentID
 }
 
@@ -270,8 +314,8 @@ func (a *App) settleWorkerPrompt(workerID, requestID string, occurrence provider
 // settleEndedWorkerPrompts closes the prompts a worker's session took with
 // it when it ended, which no resolution settles, and withdraws their wakes
 // still queued for the agent, so the agent is not asked what nobody waits
-// on. It runs on the prompts' serial queue, after any delivery announced
-// before the end.
+// on. Its async questions are not its session's and stay open. It runs on
+// the prompts' serial queue, after any delivery announced before the end.
 func (a *App) settleEndedWorkerPrompts(workerID string) {
 	a.workerPrompts.queue.Go(func() {
 		for _, prompt := range a.workerPrompts.settleWorker(workerID) {
@@ -296,10 +340,17 @@ func (a *App) withdrawWorkerPromptWake(prompt workerPrompt) {
 // replaced, moves nothing.
 func (a *App) handBackWorkerPrompt(token string) {
 	prompt, settled := a.workerPrompts.settleToken(token)
-	if !settled || a.triage == nil {
+	if !settled {
 		return
 	}
-	if a.triage.RejectPrompt(prompt.agentID, prompt.ref()) {
+	moved := false
+	switch {
+	case prompt.async:
+		moved = a.rerouteAsyncQuestions(prompt.agentID, []triage.PromptRef{prompt.ref()}, true) > 0
+	case a.triage != nil:
+		moved = a.triage.RejectPrompt(prompt.agentID, prompt.ref())
+	}
+	if moved {
 		log.Printf("worker prompts: %s of %s moved on: %s could not take it", prompt.requestID, prompt.workerID, prompt.agentID)
 	}
 }
@@ -311,10 +362,11 @@ func (a *App) handBackWorkerPrompt(token string) {
 // the others go to the assistant's next thread, or to the user when the
 // worker's prompts route to nobody now.
 func (a *App) reroutePromptsFrom(threadID string) {
-	if a.triage == nil {
-		return
+	moved := a.rerouteAsyncQuestions(threadID, nil, false)
+	if a.triage != nil {
+		moved += a.triage.ReroutePrompts(threadID)
 	}
-	if moved := a.triage.ReroutePrompts(threadID); moved > 0 {
+	if moved > 0 {
 		log.Printf("worker prompts: %d prompts routed to %s moved on", moved, threadID)
 	}
 }
@@ -360,11 +412,15 @@ func (a *App) answerWorkerPrompt(ctx context.Context, caller threadtools.Caller,
 		a.workerPrompts.endAnswer(prompt.token, workerPromptSettled)
 		return ack, true, errWorkerPromptClosed
 	}
-	// The answer goes to the session that asked, or nowhere.
-	if approval != nil {
+	// The answer goes to the session that asked, or nowhere; an async
+	// question's goes to the worker's queue, as the person's answers do.
+	switch {
+	case prompt.async:
+		err = a.answerAsyncWorkerPrompt(ctx, prompt, *question)
+	case approval != nil:
 		approval.Occurrence = prompt.occurrence
 		err = a.RespondToApproval(ctx, prompt.workerID, *approval)
-	} else {
+	default:
 		question.Occurrence = prompt.occurrence
 		err = a.RespondToUserInput(ctx, prompt.workerID, *question)
 	}
@@ -446,6 +502,12 @@ func workerPromptResponse(prompt *workerPrompt, call threadtools.ReplyCall) (*pr
 	}
 	answers := make(map[string]provider.UserInputAnswer, len(questions))
 	for i, q := range questions {
+		// An async question is answered by a message, which says
+		// something for each part.
+		if prompt.async && strings.TrimSpace(values[i]) == "" {
+			return nil, nil, errorsx.Public(threadtools.CodeInvalidRequest,
+				"Give an answer for every part of that question.", nil)
+		}
 		answers[q.ID] = provider.UserInputAnswer{values[i]}
 	}
 	return nil, &provider.UserInputResponse{RequestID: prompt.requestID, Decision: "accept", Answers: answers}, nil
@@ -474,7 +536,11 @@ func renderWorkerPromptWake(workerTitle, workerID string, prompt *workerPrompt) 
 		}
 	} else {
 		for i, q := range prompt.question.Questions {
-			fmt.Fprintf(&data, "%d. %s: %s\n", i+1, q.Header, q.Question)
+			if q.Header == "" {
+				fmt.Fprintf(&data, "%d. %s\n", i+1, q.Question)
+			} else {
+				fmt.Fprintf(&data, "%d. %s: %s\n", i+1, q.Header, q.Question)
+			}
 			for _, option := range q.Options {
 				if option.Description != "" {
 					fmt.Fprintf(&data, "   option: %s (%s)\n", option.Label, option.Description)
@@ -505,7 +571,7 @@ func renderWorkerPromptWake(workerTitle, workerID string, prompt *workerPrompt) 
 // past their retention and closes the routed ones whose prompt is gone, so
 // the registry holds no more than the open prompts and a day of closed
 // ones.
-func (w *workerPrompts) add(prompt workerPrompt, open func(triage.PromptRef) bool) (registered workerPrompt, replaced *workerPrompt) {
+func (w *workerPrompts) add(prompt workerPrompt, open func(workerPrompt) bool) (registered workerPrompt, replaced *workerPrompt) {
 	prompt.token = newThreadRequestToken()
 	now := time.Now()
 	w.mu.Lock()
@@ -524,7 +590,7 @@ func (w *workerPrompts) add(prompt workerPrompt, open func(triage.PromptRef) boo
 		replaced = &retired
 	}
 	for token, existing := range w.byToken {
-		if existing.state == workerPromptRouted && !open(existing.ref()) {
+		if existing.state == workerPromptRouted && !open(*existing) {
 			existing.state, existing.closedAt = workerPromptSettled, now
 		}
 		if !existing.closedAt.IsZero() && now.Sub(existing.closedAt) > workerPromptRetention {
@@ -572,14 +638,15 @@ func (w *workerPrompts) settle(workerID, requestID string, upTo provider.PromptO
 	return *prompt, true
 }
 
-// settleWorker closes every routed registration of workerID's prompts.
+// settleWorker closes every routed registration of the prompts workerID's
+// session asked, which leaves its async questions.
 func (w *workerPrompts) settleWorker(workerID string) []workerPrompt {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	var closed []workerPrompt
 	now := time.Now()
 	for _, prompt := range w.byToken {
-		if prompt.workerID != workerID || prompt.state != workerPromptRouted {
+		if prompt.workerID != workerID || prompt.async || prompt.state != workerPromptRouted {
 			continue
 		}
 		prompt.state, prompt.closedAt = workerPromptSettled, now

@@ -89,6 +89,9 @@ func (a *App) startThreadRequestSweeps() {
 		// The workers that wait on what survived the restart, read once the
 		// loops and watches are recovered.
 		a.seedLiveWorkers()
+		// The async questions a restart left open go to their threads'
+		// spawners again, and their threads read as waiting on them.
+		a.seedAsyncQuestionPrompts()
 		a.runThreadRequestSweeps(nudge)
 	})
 }

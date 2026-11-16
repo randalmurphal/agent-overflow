@@ -10,7 +10,6 @@ import (
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadtools"
-	"agent-overflow/internal/triage"
 	"agent-overflow/internal/usermessage"
 )
 
@@ -143,7 +142,7 @@ func TestThreadAgentIncomingWakesSendsAndQuestionsWithdrawToTheirOwners(t *testi
 	a.waitAgentNoticeWork()
 	prompt, _ := a.workerPrompts.add(workerPrompt{
 		workerID: "worker-thread", agentID: thread.ID, requestID: "question-1",
-	}, func(triage.PromptRef) bool { return true })
+	}, func(workerPrompt) bool { return true })
 	if err := a.queueAgentNotice(agentNotice{
 		threadID: thread.ID, sendID: prompt.sendID(),
 		origin:      usermessage.OriginAgentWake,

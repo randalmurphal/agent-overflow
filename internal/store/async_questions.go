@@ -148,6 +148,42 @@ func (s *Store) ListAsyncQuestions(threadID, itemID string) ([]AsyncQuestion, er
 	return out, rows.Err()
 }
 
+// ThreadsWithUnansweredAsyncQuestions lists the threads with a question
+// still waiting for an answer, on idx_async_questions_pending.
+func (s *Store) ThreadsWithUnansweredAsyncQuestions() ([]string, error) {
+	rows, err := s.reader().Query(threadsWithUnansweredAsyncQuestionsSQL)
+	if err != nil {
+		return nil, fmt.Errorf("store: list the threads with unanswered questions: %w", err)
+	}
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, errors.Join(err, rows.Close())
+		}
+		out = append(out, id)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return nil, fmt.Errorf("store: list the threads with unanswered questions: %w", err)
+	}
+	return out, nil
+}
+
+// The state IN term is idx_async_questions_pending's predicate, which lets
+// the plan use the partial index.
+const threadsWithUnansweredAsyncQuestionsSQL = `SELECT DISTINCT thread_id FROM async_questions
+ WHERE state IN ('unanswered','submitted','restored') AND state='unanswered'`
+
+// DismissUnansweredAsyncQuestions dismisses every question of threadID
+// still waiting for an answer and reports how many it dismissed.
+func (s *Store) DismissUnansweredAsyncQuestions(threadID string) (int64, error) {
+	result, err := s.db.Exec(`UPDATE async_questions SET state='dismissed' WHERE thread_id=? AND state='unanswered'`, threadID)
+	if err != nil {
+		return 0, fmt.Errorf("store: dismiss the questions of %s: %w", threadID, err)
+	}
+	return result.RowsAffected()
+}
+
 // AsyncAnswerMessage validates the submitted snapshot and includes each question's text.
 func (s *Store) AsyncAnswerMessage(threadID, sendID string, answers []AsyncQuestionAnswer) (string, bool, error) {
 	return asyncAnswerMessage(s.reader(), threadID, sendID, answers)
