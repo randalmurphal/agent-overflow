@@ -46,8 +46,16 @@ func State(thread Thread, live LiveState) string {
 	}
 }
 
-// Resting reports whether a thread is doing nothing and is not waiting on
-// a person. A thread_status wait on a thread id ends when it rests.
+// Rests reports whether a thread_status row's thread rests: its state is
+// a resting one (Resting) and nothing it started still runs (WaitingOn). A
+// thread_status wait on a thread id ends when it rests. A computer that
+// predates waiting_on reports the state alone.
+func Rests(state ThreadState) bool {
+	return Resting(state.State) && state.WaitingOn == ""
+}
+
+// Resting reports whether a thread's state is doing nothing and is not
+// waiting on a person; Rests adds what the thread still waits on.
 func Resting(state string) bool {
 	switch state {
 	case StateRunning, StatePendingApproval, StateAwaitingInput:

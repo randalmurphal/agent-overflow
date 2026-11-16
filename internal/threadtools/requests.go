@@ -299,8 +299,8 @@ func (c *session) statusThreads(ctx context.Context, args statusArgs, wait int) 
 		}
 		// Resting is derived here from the state and what the thread still
 		// waits on, so a row cannot report a restedness that disagrees with
-		// them. A computer that predates waiting_on reports the state alone.
-		state.Resting = Resting(state.State) && state.WaitingOn == ""
+		// them.
+		state.Resting = Rests(state)
 		result.Threads = append(result.Threads, state)
 	}
 	if result.TimedOut {

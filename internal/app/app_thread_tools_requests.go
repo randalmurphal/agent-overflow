@@ -363,7 +363,7 @@ func (t threadToolsApp) threadStateNow(ctx context.Context, threadID string) (th
 		}
 		out.WaitingOn = rest.waitingLine()
 	}
-	out.Resting = threadtools.Resting(out.State) && out.WaitingOn == ""
+	out.Resting = threadtools.Rests(out)
 	return out, nil
 }
 
