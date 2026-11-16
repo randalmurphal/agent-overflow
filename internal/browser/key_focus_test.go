@@ -181,7 +181,7 @@ func TestPageChordIsRoutedToThePaneShowingThePage(t *testing.T) {
 			return f.fake.Handle()
 		}, false},
 		{"another tab shown", func(t *testing.T, f *findFixture) string {
-			if _, err := f.manager.NewCompanionPage(t.Context(), f.access); err != nil {
+			if _, err := f.manager.NewCompanionPage(t.Context(), f.access, ""); err != nil {
 				t.Fatal(err)
 			}
 			return f.fake.Handle()

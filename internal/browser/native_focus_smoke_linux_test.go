@@ -307,7 +307,7 @@ func TestNativeEngineRealHiddenPageGivesUpFocus(t *testing.T) {
 
 	t.Run("a tab switch", func(t *testing.T) {
 		page := open(t, "tabs", left)
-		other, err := manager.NewCompanionPage(ctx, page.access)
+		other, err := manager.NewCompanionPage(ctx, page.access, "")
 		if err != nil {
 			t.Fatalf("open a second tab: %v", err)
 		}
@@ -325,7 +325,7 @@ func TestNativeEngineRealHiddenPageGivesUpFocus(t *testing.T) {
 
 	t.Run("the focused page closed", func(t *testing.T) {
 		page := open(t, "closed", left)
-		other, err := manager.NewCompanionPage(ctx, page.access)
+		other, err := manager.NewCompanionPage(ctx, page.access, "")
 		if err != nil {
 			t.Fatalf("open a second tab: %v", err)
 		}

@@ -293,7 +293,7 @@ func TestFindRefusesBadRequests(t *testing.T) {
 func TestFindRunsOnlyOnTheShownActivePage(t *testing.T) {
 	f := newFindFixture(t, "https://example.test/alpha")
 	// A new tab becomes the active one.
-	if _, err := f.manager.NewCompanionPage(t.Context(), f.access); err != nil {
+	if _, err := f.manager.NewCompanionPage(t.Context(), f.access, ""); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := f.manager.Find(t.Context(), f.access, f.pageID, "start", "alpha", f.mount, f.nextSeq()); err == nil || !strings.Contains(err.Error(), "shows") {
@@ -394,7 +394,7 @@ func TestFindEndsWhenThePageIsHiddenOrReplaced(t *testing.T) {
 	f := newFindFixture(t, "https://example.test/alpha")
 	started := f.find(t, "start", "alpha")
 	f.wantCall(t, "start alpha")
-	other, err := f.manager.NewCompanionPage(t.Context(), f.access)
+	other, err := f.manager.NewCompanionPage(t.Context(), f.access, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -522,7 +522,7 @@ func TestFindEndsOnEachTransitionTwice(t *testing.T) {
 		{
 			name: "switch page",
 			away: func(t *testing.T, f *findFixture) {
-				other, err := f.manager.NewCompanionPage(t.Context(), f.access)
+				other, err := f.manager.NewCompanionPage(t.Context(), f.access, "")
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -902,7 +902,7 @@ func TestFindEndDuringAStartLandsAfterIt(t *testing.T) {
 		end  func(*testing.T, *findFixture)
 	}{
 		{"switch page", func(t *testing.T, f *findFixture) {
-			other, err := f.manager.NewCompanionPage(t.Context(), f.access)
+			other, err := f.manager.NewCompanionPage(t.Context(), f.access, "")
 			if err != nil {
 				t.Error(err)
 				return

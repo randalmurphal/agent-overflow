@@ -361,7 +361,7 @@ func (m *Manager) lookupOrSelectPage(ctx context.Context, access Access, pageID 
 	tabs := m.threadTabs(access.ThreadID)
 	switch len(tabs) {
 	case 0:
-		p, err := m.createPage(ctx, access)
+		p, err := m.createPage(ctx, access, false)
 		if err != nil {
 			return nil, nil, err
 		}

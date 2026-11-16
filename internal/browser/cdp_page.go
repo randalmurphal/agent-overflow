@@ -32,6 +32,7 @@ type cdpPage struct {
 
 	frames  *frameTracker
 	network *networkTracker
+	loads   cdpLoadTracker
 
 	// The device-metrics override is one value with two owners: the
 	// Manager sets the viewport (SetViewport, under the page lock) and the
@@ -97,6 +98,13 @@ func dialCDPBrowser(browserCtx context.Context, subscribe func() error) error {
 	return err
 }
 
+// reportLoading hands a loading change to the Manager.
+func (p *cdpPage) reportLoading(loading bool, order uint64) {
+	if p.hooks.Loading != nil {
+		p.hooks.Loading(loading, order)
+	}
+}
+
 func (p *cdpPage) Lifetime() context.Context { return p.ctx }
 func (p *cdpPage) Handle() string            { return p.handle }
 func (p *cdpPage) Close()                    { p.cancel() }
@@ -148,6 +156,17 @@ func (p *cdpPage) installHandlers() error {
 	})
 	onTargetEvent(ctx, page.FrameDetached, logf, func(event page.EventFrameDetached) {
 		p.frames.detached(event.FrameID)
+	})
+	// The main frame's id is the target's.
+	onTargetEvent(ctx, page.FrameStartedLoading, logf, func(event page.EventFrameStartedLoading) {
+		if string(event.FrameID) == p.handle {
+			p.reportLoading(p.loads.started())
+		}
+	})
+	onTargetEvent(ctx, page.FrameStoppedLoading, logf, func(event page.EventFrameStoppedLoading) {
+		if string(event.FrameID) == p.handle {
+			p.reportLoading(p.loads.stopped())
+		}
 	})
 	// chromedp.Console is the one ordered join of several event methods that
 	// chromedp offers: console API calls and browser log entries reach the

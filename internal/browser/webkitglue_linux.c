@@ -15,6 +15,7 @@ extern void aoWebKitAllow(uint64_t page_id, uint64_t profile_id, void *decision,
 extern void aoWebKitConsole(uint64_t page_id, char *payload);
 extern void aoWebKitPageInfo(uint64_t page_id, char *uri, char *title);
 extern void aoWebKitDocumentCommitted(uint64_t page_id);
+extern void aoWebKitPageLoading(uint64_t page_id, int loading);
 extern void aoWebKitPageClosed(uint64_t page_id);
 extern void aoWebKitPopup(uint64_t opener_page_id, uint64_t profile_id,
                           void *view, char *uri);
@@ -659,6 +660,15 @@ static void ao_load_changed(WebKitWebView *view, WebKitLoadEvent event, gpointer
   }
 }
 
+// WebKitWebView:is-loading is the view's own answer, read when it changes
+// (WebKit-6.0.gir, webkit_web_view_is_loading).
+static void ao_notify_loading(GObject *object, GParamSpec *spec, gpointer data) {
+  (void)spec;
+  (void)data;
+  WebKitWebView *view = WEBKIT_WEB_VIEW(object);
+  aoWebKitPageLoading(ao_view_page_id(view), webkit_web_view_is_loading(view) ? 1 : 0);
+}
+
 static void ao_view_closed(WebKitWebView *view, gpointer data) {
   (void)data;
   aoWebKitPageClosed(ao_view_page_id(view));
@@ -1010,6 +1020,7 @@ static void ao_connect_view(WebKitWebView *view, uint64_t page_id, const char *u
   g_signal_connect(view, "notify::title", G_CALLBACK(ao_notify_info), NULL);
   g_signal_connect(view, "notify::uri", G_CALLBACK(ao_notify_info), NULL);
   g_signal_connect(view, "load-changed", G_CALLBACK(ao_load_changed), NULL);
+  g_signal_connect(view, "notify::is-loading", G_CALLBACK(ao_notify_loading), NULL);
   g_signal_connect(view, "close", G_CALLBACK(ao_view_closed), NULL);
   g_signal_connect(view, "script-dialog", G_CALLBACK(ao_script_dialog), NULL);
   g_signal_connect(view, "run-file-chooser", G_CALLBACK(ao_file_chooser), NULL);

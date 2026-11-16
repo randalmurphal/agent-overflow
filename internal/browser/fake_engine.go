@@ -141,6 +141,8 @@ type fakePage struct {
 	ctx     context.Context
 	cancel  context.CancelFunc
 	handle  string
+	// loadOrder numbers the loading reports (pageHooks.Loading).
+	loadOrder atomic.Uint64
 
 	mu      sync.Mutex
 	url     string
@@ -224,9 +226,19 @@ func (p *fakePage) Navigate(_ context.Context, rawURL string) error {
 	p.url, p.title = rawURL, fakeTitle(rawURL)
 	p.mu.Unlock()
 	if commits {
+		p.reportLoading(true)
 		p.commitDocument()
+		p.reportLoading(false)
 	}
 	return nil
+}
+
+// reportLoading reports a load starting or stopping, as a real engine's
+// loading signal does around each new document.
+func (p *fakePage) reportLoading(loading bool) {
+	if p.hooks.Loading != nil {
+		p.hooks.Loading(loading, p.loadOrder.Add(1))
+	}
 }
 
 // fakeDocument is an address without its fragment.
@@ -286,7 +298,9 @@ func (p *fakePage) History(_ context.Context, action string) error {
 	case "reload":
 		// A reload loads the same address as a new document.
 		p.mu.Unlock()
+		p.reportLoading(true)
 		p.commitDocument()
+		p.reportLoading(false)
 		return nil
 	case "stop":
 		p.mu.Unlock()
@@ -295,7 +309,9 @@ func (p *fakePage) History(_ context.Context, action string) error {
 	p.url = p.history[p.index]
 	p.title = fakeTitle(p.url)
 	p.mu.Unlock()
+	p.reportLoading(true)
 	p.commitDocument()
+	p.reportLoading(false)
 	return nil
 }
 

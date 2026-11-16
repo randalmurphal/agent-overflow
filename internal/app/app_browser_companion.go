@@ -148,6 +148,9 @@ func (a *App) BrowserCompanionDo(ctx context.Context, threadID string, action Br
 	if err != nil {
 		return appbrowser.CompanionEvent{}, err
 	}
+	// newPage is the page a "new" opened, named in the answer so the client
+	// that asked can tell its own tab from one an agent opened meanwhile.
+	newPage := ""
 	switch strings.ToLower(strings.TrimSpace(action.Kind)) {
 	case "navigate":
 		_, err = a.browser.manager.NavigateCompanion(ctx, access, action.PageID, action.Address)
@@ -164,9 +167,14 @@ func (a *App) BrowserCompanionDo(ctx context.Context, threadID string, action Br
 		visible := false
 		_, err = a.browser.manager.Visibility(ctx, access, &visible, "")
 	case "new":
-		_, err = a.browser.manager.NewCompanionPage(ctx, access)
+		// Address, when set, is navigated in the new tab (a mod-clicked link).
+		var page appbrowser.PageInfo
+		page, err = a.browser.manager.NewCompanionPage(ctx, access, action.Address)
+		newPage = page.ID
 	case "close":
-		err = a.browser.manager.ClosePage(ctx, access, action.PageID)
+		// Answers once the tab is gone; a teardown failure after it is a
+		// "teardown" event.
+		err = a.browser.manager.CloseCompanionPage(ctx, access, action.PageID)
 	case "devtools":
 		err = a.browser.manager.OpenPaneDevTools(ctx, access, action.PageID)
 	default:
@@ -180,7 +188,9 @@ func (a *App) BrowserCompanionDo(ctx context.Context, threadID string, action Br
 	if err != nil {
 		return appbrowser.CompanionEvent{}, err
 	}
-	return a.browser.manager.CompanionState(access), nil
+	state := a.browser.manager.CompanionState(access)
+	state.PageID = newPage
+	return state, nil
 }
 
 // BrowserFindAction is one request of the browser pane's find: start (the

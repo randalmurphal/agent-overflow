@@ -1,0 +1,250 @@
+package browser
+
+import (
+	"context"
+	"errors"
+	"slices"
+	"strings"
+	"testing"
+)
+
+// A tab the user opens appears at once, creating, selected and shown, before
+// the engine page exists, and turns ready when it does; from no tab at all,
+// the companion is shown with it.
+func TestANewTabShowsCreatingThenReady(t *testing.T) {
+	manager, engine := newLifecycleManager(t)
+	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+	release := engine.hold(&engine.newPageGate)
+	defer release()
+	type result struct {
+		info PageInfo
+		err  error
+	}
+	created := async(func() result {
+		info, err := manager.NewCompanionPage(context.Background(), access, "")
+		return result{info, err}
+	})
+	receive(t, engine.creating, "the engine page's creation")
+	state := manager.CompanionState(access)
+	if len(state.Pages) != 1 || !state.Pages[0].Creating {
+		t.Fatalf("tabs while the page is created = %+v, want one creating tab", state.Pages)
+	}
+	id := state.Pages[0].ID
+	if state.ActivePageID != id || (state.Visible == nil || !*state.Visible) {
+		t.Fatalf("while created: active %q visible %v, want the new tab shown", state.ActivePageID, state.Visible != nil && *state.Visible)
+	}
+	release()
+	got := await(t, created, "the creation")
+	if got.err != nil || got.info.ID != id {
+		t.Fatalf("new = %+v, %v, want page %s", got.info, got.err, id)
+	}
+	state = manager.CompanionState(access)
+	if len(state.Pages) != 1 || state.Pages[0].Creating || state.ActivePageID != id || (state.Visible == nil || !*state.Visible) {
+		t.Fatalf("after the creation: %+v", state)
+	}
+}
+
+// A creation the user asked for that fails stays as a tab showing why until
+// it is closed; an agent's failed creation leaves no tab.
+func TestAFailedCreationShowsOnTheUsersTabOnly(t *testing.T) {
+	manager, engine := newLifecycleManager(t)
+	engine.newPageErr = errors.New("engine refused the page")
+	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+
+	info, err := manager.NewCompanionPage(t.Context(), access, "")
+	if err != nil || info.ID != "" {
+		t.Fatalf("a failed user creation = %+v, %v, want no page and no error", info, err)
+	}
+	state := manager.CompanionState(access)
+	if len(state.Pages) != 1 || !strings.Contains(state.Pages[0].Error, "engine refused") || state.Pages[0].Creating {
+		t.Fatalf("tabs after the failure = %+v, want one tab with the error", state.Pages)
+	}
+	failed := state.Pages[0].ID
+	if state.ActivePageID != failed {
+		t.Fatalf("active %q, want the failed tab", state.ActivePageID)
+	}
+	if err := manager.ActivateCompanionPage(t.Context(), access, failed); err != nil {
+		t.Fatalf("select the failed tab: %v", err)
+	}
+	if err := manager.CloseCompanionPage(t.Context(), access, failed); err != nil {
+		t.Fatalf("close the failed tab: %v", err)
+	}
+	if got := tabIDs(manager, access); len(got) != 0 {
+		t.Fatalf("tabs after closing the failed one = %v", got)
+	}
+
+	if _, err := manager.Open(t.Context(), access, "https://example.test/", OpenOptions{}); !errors.Is(err, engine.newPageErr) {
+		t.Fatalf("agent open = %v, want the refusal", err)
+	}
+	if got := tabIDs(manager, access); len(got) != 0 {
+		t.Fatalf("an agent's failed creation left tabs %v", got)
+	}
+	manager.mu.Lock()
+	pending := len(manager.pending)
+	manager.mu.Unlock()
+	if pending != 0 || registeredScopes(manager) != 0 {
+		t.Fatalf("%d pending entries and %d scopes after the failures", pending, registeredScopes(manager))
+	}
+}
+
+// A tab closed while its page is created leaves at once; the engine page
+// that arrives after is closed, the profile it alone held is disposed, and
+// the creation answers no page and no error.
+func TestClosingATabWhileItIsCreated(t *testing.T) {
+	manager, engine := newLifecycleManager(t)
+	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+	release := engine.hold(&engine.newPageGate)
+	defer release()
+	type result struct {
+		info PageInfo
+		err  error
+	}
+	created := async(func() result {
+		info, err := manager.NewCompanionPage(context.Background(), access, "")
+		return result{info, err}
+	})
+	receive(t, engine.creating, "the engine page's creation")
+	id := tabIDs(manager, access)[0]
+	if err := manager.CloseCompanionPage(t.Context(), access, id); err != nil {
+		t.Fatalf("close a creating tab: %v", err)
+	}
+	if got := tabIDs(manager, access); len(got) != 0 {
+		t.Fatalf("tabs right after closing the creating one = %v", got)
+	}
+	// A second close joins the first; it is done when the creation is.
+	done, ok := manager.closePending(access, id)
+	if !ok {
+		t.Fatal("a second close does not find the creating tab")
+	}
+	release()
+	if got := await(t, created, "the creation"); got.err != nil || got.info.ID != "" {
+		t.Fatalf("creation of a closed tab = %+v, %v, want no page and no error", got.info, got.err)
+	}
+	receive(t, done, "the creation's end")
+	if got := engine.closed.Load(); got != 1 {
+		t.Fatalf("the late engine page was closed %d times", got)
+	}
+	if got := engine.disposed.Load(); got != 1 || registeredScopes(manager) != 0 {
+		t.Fatalf("%d disposals and %d scopes after the abandoned creation", got, registeredScopes(manager))
+	}
+}
+
+// Closing a thread closes its tab still being created, so no page registers
+// after it, and forgets its failed one.
+func TestCloseThreadClosesCreatingAndFailedTabs(t *testing.T) {
+	manager, engine := newLifecycleManager(t)
+	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+	engine.newPageErr = errors.New("engine refused the page")
+	if _, err := manager.NewCompanionPage(t.Context(), access, ""); err != nil {
+		t.Fatal(err)
+	}
+	engine.mu.Lock()
+	engine.newPageErr = nil
+	engine.mu.Unlock()
+	release := engine.hold(&engine.newPageGate)
+	defer release()
+	created := async(func() error {
+		_, err := manager.NewCompanionPage(context.Background(), access, "")
+		return err
+	})
+	receive(t, engine.creating, "the engine page's creation")
+	if got := tabIDs(manager, access); len(got) != 2 {
+		t.Fatalf("tabs before the close = %v, want the failed and the creating one", got)
+	}
+	if err := manager.CloseThread(t.Context(), access.ThreadID); err != nil {
+		t.Fatal(err)
+	}
+	if got := tabIDs(manager, access); len(got) != 0 {
+		t.Fatalf("tabs after closing the thread = %v", got)
+	}
+	release()
+	if err := await(t, created, "the creation"); err != nil {
+		t.Fatalf("creation closed by the thread's close = %v", err)
+	}
+	if got := tabIDs(manager, access); len(got) != 0 {
+		t.Fatalf("a page registered after the thread closed: %v", got)
+	}
+	manager.mu.Lock()
+	pending := len(manager.pending)
+	manager.mu.Unlock()
+	if pending != 0 || registeredScopes(manager) != 0 {
+		t.Fatalf("%d pending entries and %d scopes after the thread closed", pending, registeredScopes(manager))
+	}
+}
+
+// Selecting a tab presents it before any page work: a live page is shown
+// before its address is read, and a suspended page is active and restoring
+// before its restore ends.
+func TestSelectPresentsBeforePageWork(t *testing.T) {
+	manager, engine := newLifecycleManager(t)
+	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+	a := mustOpen(t, manager, access, "https://example.test/a")
+	b, err := manager.NewCompanionPage(t.Context(), access, "https://example.test/b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	attachSizedPane(t, manager, engine.recordingPaneHost, access)
+
+	releaseInfo := engine.hold(&engine.infoGate)
+	defer releaseInfo()
+	selected := async(func() error {
+		_, err := manager.SelectPage(context.Background(), access, a.ID)
+		return err
+	})
+	receive(t, engine.reading, "the page's address read")
+	if calls := engine.take(); !slices.Contains(calls, "show:"+paneHandle(manager, access, a.ID)) {
+		t.Fatalf("calls before the address read = %v, want the page shown", calls)
+	}
+	releaseInfo()
+	if err := await(t, selected, "the select"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := manager.SuspendThread(t.Context(), access.ThreadID); err != nil {
+		t.Fatal(err)
+	}
+	releaseNav := engine.hold(&engine.navGate)
+	defer releaseNav()
+	activated := async(func() error { return manager.ActivateCompanionPage(context.Background(), access, b.ID) })
+	receive(t, engine.navigating, "the restore's navigation")
+	state := manager.CompanionState(access)
+	tab, _ := findTab(manager, access, b.ID)
+	if state.ActivePageID != b.ID || !tab.Restoring {
+		t.Fatalf("while restoring: active %q, tab %+v", state.ActivePageID, tab)
+	}
+	releaseNav()
+	if err := await(t, activated, "the restore"); err != nil {
+		t.Fatal(err)
+	}
+	if tab, _ := findTab(manager, access, b.ID); tab.Suspended || tab.Restoring {
+		t.Fatalf("after the restore: %+v", tab)
+	}
+}
+
+// A tab the user closes while it restores is gone, and the selection that
+// restored it is no error.
+func TestClosingATabWhileItRestores(t *testing.T) {
+	manager, engine := newLifecycleManager(t)
+	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+	page := mustOpen(t, manager, access, "https://example.test/")
+	if err := manager.SuspendThread(t.Context(), access.ThreadID); err != nil {
+		t.Fatal(err)
+	}
+	release := engine.hold(&engine.navGate)
+	defer release()
+	activated := async(func() error { return manager.ActivateCompanionPage(context.Background(), access, page.ID) })
+	receive(t, engine.navigating, "the restore's navigation")
+	if err := manager.CloseCompanionPage(t.Context(), access, page.ID); err != nil {
+		t.Fatalf("close a restoring tab: %v", err)
+	}
+	if got := tabIDs(manager, access); len(got) != 0 {
+		t.Fatalf("tabs right after closing the restoring one = %v", got)
+	}
+	release()
+	if err := await(t, activated, "the restore"); err != nil {
+		t.Fatalf("the selection of a tab closed while it restored = %v", err)
+	}
+	if got := tabIDs(manager, access); len(got) != 0 {
+		t.Fatalf("the restore brought back %v", got)
+	}
+}

@@ -18,6 +18,7 @@ extern void aoWKVAllow(uint64_t page_id, uint64_t profile_id, void *decision, ch
 extern void aoWKVConsole(uint64_t page_id, char *payload);
 extern void aoWKVPageInfo(uint64_t page_id, char *uri, char *title);
 extern void aoWKVDocumentCommitted(uint64_t page_id);
+extern void aoWKVPageLoading(uint64_t page_id, int loading);
 extern void aoWKVPageClosed(uint64_t page_id);
 extern void aoWKVPopup(uint64_t opener_page_id, uint64_t profile_id, void *view, char *uri);
 extern int aoWKVPagePresented(uint64_t page_id);
@@ -756,6 +757,11 @@ static void ao_attach_download(WKWebView *view, WKDownload *download) {
     return;
   }
   WKWebView *view = (WKWebView *)object;
+  if ([keyPath isEqualToString:@"loading"]) {
+    // WKWebView.loading is the view's own answer, read when it changes.
+    aoWKVPageLoading(ao_view_page_id(view), [view isLoading] ? 1 : 0);
+    return;
+  }
   aoWKVPageInfo(ao_view_page_id(view), ao_dup([[view URL] absoluteString]), ao_dup([view title]));
 }
 
@@ -1162,6 +1168,10 @@ static void ao_connect_view(WKWebView *view, uint64_t page_id, uint64_t profile_
          forKeyPath:@"URL"
             options:NSKeyValueObservingOptionNew
             context:&kAOObserverContext];
+  [view addObserver:ao_delegate()
+         forKeyPath:@"loading"
+            options:NSKeyValueObservingOptionNew
+            context:&kAOObserverContext];
   // Spec §7: macOS devtools are Safari's Develop menu against an inspectable
   // view, not an in-app inspector.
   if (@available(macOS 13.3, *)) {
@@ -1222,6 +1232,7 @@ int ao_wkv_view_close(void *view) {
     @try {
       [v removeObserver:ao_delegate() forKeyPath:@"title" context:&kAOObserverContext];
       [v removeObserver:ao_delegate() forKeyPath:@"URL" context:&kAOObserverContext];
+      [v removeObserver:ao_delegate() forKeyPath:@"loading" context:&kAOObserverContext];
     } @catch (NSException *ignored) {
       (void)ignored;
     }
