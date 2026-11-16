@@ -301,7 +301,11 @@ Mechanism in
   group; the spawner or the user moves it either way later. Archiving a
   thread archives its owned workers, and deleting it deletes them, down
   the lineage (ruling 2026-11-16); a worker with a sidebar row is the
-  person's and stays. Placement is organization only: the spawn record, the
+  person's and stays. A delete is one backend operation over the whole
+  family: anything under the thread that refuses refuses it, with
+  nothing deleted, and a delete from the sidebar or the archived threads
+  list removes the worktrees it empties in the backend, keeping one
+  another thread uses. Placement is organization only: the spawn record, the
   reply path and the read mark on an answer do not change. An assistant
   row never joins a group.
 - Thread content search matches title and workspace path only. Searching
