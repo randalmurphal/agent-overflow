@@ -106,7 +106,6 @@ func (t threadToolsApp) createSpawned(
 		Model:       create.Model,
 		Effort:      create.ReasoningEffort,
 		Owned:       spawn.owned,
-		Spawned:     true,
 	})
 }
 

@@ -745,6 +745,11 @@ type App struct {
 	// its authentication and before its admission, so a test can hold it
 	// there while the thread is brought to rest.
 	admitWorkForTest func(threadID string)
+	// asyncQuestionsReadForTest, when set, runs in a reconcile of threadID's
+	// async questions between its store read and what it registers
+	// (reconcileAsyncQuestions), so a test can change the thread at that
+	// moment.
+	asyncQuestionsReadForTest func(threadID string)
 	// spawnNamingForTest, when set, runs in a local thread_spawn of
 	// callerThreadID's once its thread is made and before the spawn names
 	// it (acceptRequest), so a test can hold an admitted spawn there.

@@ -258,6 +258,35 @@ func TestUnansweredAsyncQuestionsAreListedAndDismissedByThread(t *testing.T) {
 	}
 }
 
+// A thread's unanswered questions are read only while this computer holds
+// the thread unarchived: an archived thread, one being deleted and one
+// moved away read none, and an unarchived one reads them again.
+func TestUnansweredAsyncQuestionsAreReadOnlyForAThreadHeldHere(t *testing.T) {
+	s := newTestStore(t)
+	for _, id := range []string{"archived", "deleting", "moved"} {
+		mustCreateThread(t, s, id)
+		questionFixture(t, s, id, "question:call")
+	}
+	if _, err := s.db.Exec(`UPDATE threads SET archived=1 WHERE id='archived'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(`UPDATE threads SET deleting=1 WHERE id='deleting'`); err != nil {
+		t.Fatal(err)
+	}
+	seedCompletedOutgoingMove(t, s, "moved")
+	for _, id := range []string{"archived", "deleting", "moved"} {
+		if groups, err := s.UnansweredAsyncQuestions(id); err != nil || len(groups) != 0 {
+			t.Fatalf("the questions of %s = %+v, %v; want none", id, groups, err)
+		}
+	}
+	if _, err := s.db.Exec(`UPDATE threads SET archived=0 WHERE id='archived'`); err != nil {
+		t.Fatal(err)
+	}
+	if groups, err := s.UnansweredAsyncQuestions("archived"); err != nil || len(groups) != 1 || len(groups[0].Questions) != 2 {
+		t.Fatalf("the unarchived thread's questions = %+v, %v; want both", groups, err)
+	}
+}
+
 // An app-written answer the provider did not take in goes back whole: its
 // queue row goes and its questions are unanswered, in one transaction. One
 // the provider took in, or returned before, reopens nothing.

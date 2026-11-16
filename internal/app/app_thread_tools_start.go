@@ -564,9 +564,10 @@ func (t threadToolsApp) acceptRequest(
 		// one is never listed. An assistant's thread, made before its
 		// request, goes out again naming its spawner.
 		t.app.announcePlaced(target)
-		// A fork it made carries its source's async questions, which go
-		// to this spawner now that the request names it.
-		t.app.emitAsyncQuestionsChanged(target)
+		// A fork it made carries its source's async questions, which go to
+		// this spawner now that the request names it, though a frame of the
+		// fork before the naming left them the person's.
+		t.app.adoptAsyncQuestionPrompts(target)
 	}
 	if origin.foreign {
 		// This thread now answers a paired computer's request, so it serves

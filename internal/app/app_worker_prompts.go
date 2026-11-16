@@ -160,22 +160,17 @@ func (a *App) routeWorkerPrompt(threadID string) *provider.PromptRoute {
 // tapWorkerPrompt is the emit tap: a prompt announced routed is delivered
 // to its agent, and a prompt announced as the user's or resolved settles
 // its routed registration. A change to a thread's async questions
-// reconciles its async question prompts, and so does a change to whether a
-// thread holding one open is listed, archived or there at all. What can
-// open a question on a thread holding none emits the change itself: an
-// unarchive, a fork, a spawn naming its thread, the boot.
+// reconciles its async question prompts, and so does every thread frame but
+// a patch: a thread made, copied, moved here or forked, an archive or an
+// unarchive, a delete, a placement, a handoff.
 func (a *App) tapWorkerPrompt(name eventchan.Channel, data any) {
 	if event, ok := data.(triage.ThreadUpdateEvent); ok {
-		// Every frame but a patch: an archive, a delete, a placement, a
-		// handoff.
 		if event.Action != triage.ThreadActionPatch {
 			id := event.ID
 			if event.Thread != nil {
 				id = event.Thread.ID
 			}
-			if a.workerPrompts.async.holds(id) {
-				a.syncAsyncQuestionPrompts(id)
-			}
+			a.syncAsyncQuestionPrompts(id)
 		}
 		return
 	}

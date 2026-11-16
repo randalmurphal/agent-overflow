@@ -638,28 +638,34 @@ func TestAHandBackAnnouncedAfterItsQuestionClosedDoesNotNotify(t *testing.T) {
 	}
 }
 
-// A thread frame reconciles only a thread holding an open question: a frame
-// of any other thread, a Claude thread or a Codex thread asking nothing,
-// reads nothing from the store. The questions' own change opens one, and
-// a frame of that thread then reconciles it.
-func TestAThreadFrameReadsOnlyAThreadWithAnOpenQuestion(t *testing.T) {
+// Every thread frame but a patch reconciles its thread, and that costs one
+// store read whatever the thread: one asking nothing, a Claude thread
+// included, or one whose open question is unchanged. A patch reads nothing.
+func TestAThreadFrameReconcilesItsThreadInOneRead(t *testing.T) {
 	t.Parallel()
 	f := newAsyncQuestionFixture(t, "async-frames", store.PlacementOwned)
-	frame := func(id string) {
-		f.app.tapWorkerPrompt(eventchan.ThreadUpdated, triage.ThreadUpdateEvent{Action: triage.ThreadActionFull, ID: id})
+	frame := func(action, id string) (int, map[string]int) {
+		t.Helper()
+		reads := readsUnder(f.app.store, "app.(*App).reconcileAsyncQuestions")
+		f.app.tapWorkerPrompt(eventchan.ThreadUpdated, triage.ThreadUpdateEvent{Action: action, ID: id})
 		f.drain(t)
+		return reads()
 	}
-	reads := readsUnder(f.app.store, "app.(*App).reconcileAsyncQuestions")
-	frame(f.spawner.ID)
-	frame(f.worker.ID)
-	if total, by := reads(); total != 0 {
-		t.Fatalf("frames of threads asking nothing read %d times: %v", total, by)
+	for _, id := range []string{f.spawner.ID, f.worker.ID} {
+		if total, by := frame(triage.ThreadActionFull, id); total != 1 {
+			t.Fatalf("a frame of %s, asking nothing, read %d times: %v", id, total, by)
+		}
+	}
+	if total, by := frame(triage.ThreadActionPatch, f.worker.ID); total != 0 {
+		t.Fatalf("a patch read %d times: %v", total, by)
 	}
 	f.ask(t, "question:ask", `{"delivery":"async","questions":[{"title":"Which scope?"}]}`)
-	reads = readsUnder(f.app.store, "app.(*App).reconcileAsyncQuestions")
-	frame(f.worker.ID)
-	if total, _ := reads(); total == 0 {
-		t.Fatal("a frame of the thread with an open question did not reconcile it")
+	token, _ := f.wake(t, f.spawner.ID)
+	if total, by := frame(triage.ThreadActionFull, f.worker.ID); total != 1 {
+		t.Fatalf("a frame of the thread with an unchanged question read %d times: %v", total, by)
+	}
+	if again, _ := f.wake(t, f.spawner.ID); again != token {
+		t.Fatalf("a frame put the unchanged question again under %s, was %s", again, token)
 	}
 }
 
@@ -788,7 +794,7 @@ func TestNoAsyncQuestionReconcileRunsAfterShutdownBegins(t *testing.T) {
 		t.Fatal(during)
 	}
 	f.app.emit(eventchan.ProviderAsyncQuestionsChanged, map[string]string{"threadId": f.worker.ID})
-	f.app.workerPrompts.run(func() { f.app.reconcileAsyncQuestions(f.worker.ID) })
+	f.app.workerPrompts.run(func() { f.app.reconcileAsyncQuestions(f.worker.ID, false) })
 	f.app.workerPrompts.queue.Wait()
 	if total, by := reads(); total != 0 {
 		t.Fatalf("reconciles read %d times once shutdown began: %v", total, by)

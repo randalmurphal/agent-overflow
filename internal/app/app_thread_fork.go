@@ -76,11 +76,6 @@ type forkOptions struct {
 	// out for it here: the spawn announces it once the naming write owns it
 	// (acceptRequest), so no client lists it first.
 	Owned bool
-	// Spawned is a thread_spawn's fork, owned or not. Its spawner is known
-	// once the request names it, so the async questions it carries are
-	// reconciled then (acceptRequest) rather than here, where they would go
-	// to the person.
-	Spawned bool
 }
 
 // forkThreadTail forks a thread at its tail with the given overrides. It is
@@ -321,10 +316,6 @@ func (a *App) forkThreadAt(ctx context.Context, sourceThreadID string, atTurnInd
 	if !opts.Owned {
 		a.announceThread(triage.ThreadActionListed, ready.ID)
 	}
-	if !opts.Spawned {
-		// It carries its source's async questions.
-		a.emitAsyncQuestionsChanged(ready.ID)
-	}
 	return ready, nil
 }
 
@@ -480,8 +471,6 @@ func (a *App) ForkThreadFromMessage(ctx context.Context, sourceThreadID string, 
 		return store.Thread{}, errors.Join(err, cleanups.Run())
 	}
 	a.announceThread(triage.ThreadActionListed, ready.ID)
-	// It carries its source's async questions.
-	a.emitAsyncQuestionsChanged(ready.ID)
 	return ready, nil
 }
 

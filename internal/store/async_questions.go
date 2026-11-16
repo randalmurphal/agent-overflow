@@ -159,7 +159,9 @@ type AsyncQuestionGroup struct {
 }
 
 // UnansweredAsyncQuestions reads threadID's questions still waiting for an
-// answer, by item, oldest first, on idx_async_questions_pending.
+// answer, by item, oldest first, on idx_async_questions_pending, in one
+// statement: none for a thread this computer does not hold (gone, being
+// deleted or moved away) or that is archived, whose questions ask nobody.
 func (s *Store) UnansweredAsyncQuestions(threadID string) ([]AsyncQuestionGroup, error) {
 	rows, err := s.reader().Query(unansweredAsyncQuestionsSQL, threadID)
 	if err != nil {
@@ -191,10 +193,12 @@ func (s *Store) UnansweredAsyncQuestions(threadID string) ([]AsyncQuestionGroup,
 
 // The state IN term is idx_async_questions_pending's predicate, which lets
 // the plan use the partial index; its order keeps an item's rows together.
-// The revision is read from the item's rows by the primary key.
+// The revision is read from the item's rows by the primary key, and the
+// thread's row once, by its own.
 const unansweredAsyncQuestionsSQL = `SELECT q.item_id,q.question_index,q.title,q.options,q.created_at,
  (SELECT MAX(r.revision) FROM async_questions r WHERE r.thread_id=q.thread_id AND r.item_id=q.item_id)
- FROM async_questions q WHERE q.thread_id=? AND q.state IN ('unanswered','submitted','restored') AND q.state='unanswered'
+ FROM async_questions q WHERE q.thread_id=?1 AND q.state IN ('unanswered','submitted','restored') AND q.state='unanswered'
+ AND EXISTS (SELECT 1 FROM owned_threads t WHERE t.id=?1 AND t.archived=0)
  ORDER BY q.created_at,q.item_id,q.question_index`
 
 // asyncQuestionRevision is itemID's revision, 0 when it has no questions.

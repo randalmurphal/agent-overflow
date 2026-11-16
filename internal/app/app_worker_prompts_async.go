@@ -2,8 +2,6 @@ package app
 
 import (
 	"context"
-	"database/sql"
-	"errors"
 	"fmt"
 	"log"
 	"slices"
@@ -32,17 +30,18 @@ import (
 // (seedAsyncQuestionPrompts).
 //
 // The record follows the store, not the other way round: every change to a
-// thread's questions emits provider:async_questions_changed, and so do the
-// writes that can open questions on a thread holding none: an unarchive, a
-// fork, which carries its source's questions, and a spawn naming its thread.
-// A revert emits user_message:reverted, and a thread frame but a patch of a
-// thread holding an open question says it may be archived, deleted or
-// placed; a frame of any other thread costs nothing. Each queues one
-// reconcile of that thread on the prompts' serial queue
-// (syncAsyncQuestionPrompts), none once shutdown has begun, which
-// reads the thread's unanswered questions and announces what opened and
-// what closed. An archived thread's questions are not open: an archive asks
-// nobody, as it ends its session's prompts. One item's unanswered questions
+// thread's questions emits provider:async_questions_changed, a revert emits
+// user_message:reverted, and every thread frame but a patch says the thread
+// may have been made, copied, moved here, forked (a fork carries its
+// source's questions), archived, unarchived, deleted or placed. Each queues
+// one reconcile of that thread on the prompts' serial queue
+// (syncAsyncQuestionPrompts), none once shutdown has begun, which reads the
+// thread's unanswered questions in one statement and announces what opened
+// and what closed: a thread asking nothing costs that read and no more. A
+// spawn that names a fork's thread adopts the questions a frame before the
+// naming left the person's (adoptAsyncQuestionPrompts). An archived or
+// moved thread's questions are not open: an archive asks nobody, as it
+// ends its session's prompts. One item's unanswered questions
 // are one prompt, whose occurrence is the item's revision in the store
 // (store.AsyncQuestionGroup): any change to the item's questions (the
 // person answered, dismissed or reopened some, an answer came back) moves
@@ -87,26 +86,19 @@ func (a *App) syncAsyncQuestionPrompts(threadID string) {
 	if threadID == "" || a.shuttingDown.Load() {
 		return
 	}
-	a.workerPrompts.run(func() { a.reconcileAsyncQuestions(threadID) })
+	a.workerPrompts.run(func() { a.reconcileAsyncQuestions(threadID, false) })
 }
 
-// emitAsyncQuestionsChanged says threadID's async questions may have
-// changed by a write that does not report its questions: one that can open
-// them on a thread holding none.
-func (a *App) emitAsyncQuestionsChanged(threadID string) {
-	a.emit(eventchan.ProviderAsyncQuestionsChanged, map[string]string{"threadId": threadID})
-}
-
-// holds reports whether threadID has an open async question prompt.
-func (r *asyncQuestionRoutes) holds(threadID string) bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	for key := range r.open {
-		if key.workerID == threadID {
-			return true
-		}
+// adoptAsyncQuestionPrompts queues a reconcile of threadID's async
+// question prompts that puts those it holds unrouted to the thread's
+// spawner, for the spawn that just named it. A reconcile that read them
+// before the naming found no spawner and left them the person's; nothing
+// else routes them again while their questions do not change.
+func (a *App) adoptAsyncQuestionPrompts(threadID string) {
+	if threadID == "" || a.shuttingDown.Load() {
+		return
 	}
-	return false
+	a.workerPrompts.run(func() { a.reconcileAsyncQuestions(threadID, true) })
 }
 
 // seedAsyncQuestionPrompts routes, at boot, the async questions a restart
@@ -128,13 +120,18 @@ func (a *App) seedAsyncQuestionPrompts() {
 // reconcileAsyncQuestions announces what changed in threadID's open async
 // question prompts: each that closed settles its registration and
 // withdraws its wake, and each that opened goes to the thread's spawner, or
-// to the person. It runs on the prompts' serial queue. A failed read
-// changes nothing; the next change reads again.
-func (a *App) reconcileAsyncQuestions(threadID string) {
+// to the person. adopt opens again, under the route the thread has now,
+// each prompt it holds unrouted (adoptAsyncQuestionPrompts). It runs on
+// the prompts' serial queue, one store read when nothing opens. A failed
+// read changes nothing; the next change reads again.
+func (a *App) reconcileAsyncQuestions(threadID string, adopt bool) {
 	open, err := a.openAsyncQuestions(threadID)
 	if err != nil {
 		log.Printf("worker prompts: read the async questions of %s: %v", threadID, err)
 		return
+	}
+	if hook := a.asyncQuestionsReadForTest; hook != nil {
+		hook(threadID)
 	}
 	routes := &a.workerPrompts.async
 	routes.mu.Lock()
@@ -143,7 +140,7 @@ func (a *App) reconcileAsyncQuestions(threadID string) {
 		if key.workerID != threadID {
 			continue
 		}
-		if now, still := open[key.requestID]; still && now.request.Occurrence == held.request.Occurrence {
+		if now, still := open[key.requestID]; still && now.request.Occurrence == held.request.Occurrence && (!adopt || held.route != nil) {
 			delete(open, key.requestID)
 			continue
 		}
@@ -185,19 +182,9 @@ func (a *App) reconcileAsyncQuestions(threadID string) {
 }
 
 // openAsyncQuestions reads threadID's unanswered async questions, by item,
-// as the prompts they make, unrouted: none for a thread that is gone or
-// archived.
+// as the prompts they make, unrouted, in one store read: none for a thread
+// that is gone, moved away or archived.
 func (a *App) openAsyncQuestions(threadID string) (map[string]asyncQuestionPrompt, error) {
-	thread, err := a.store.GetThread(threadID)
-	if errors.Is(err, sql.ErrNoRows) || errors.Is(err, store.ErrThreadGone) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	if thread.Archived {
-		return nil, nil
-	}
 	groups, err := a.store.UnansweredAsyncQuestions(threadID)
 	if err != nil {
 		return nil, err
