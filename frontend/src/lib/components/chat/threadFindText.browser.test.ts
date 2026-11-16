@@ -75,6 +75,20 @@ describe('thread find text', () => {
     await expect.poll(() => painted(target), { timeout: 3_000 }).toEqual(counted(projected(pane, row)));
   });
 
+  it("counts and paints a command block's command line", async () => {
+    const want: Record<string, string[]> = {
+      'user with a command alone': ['ls -la needle-dir'],
+      'user with a failed command whose text changed': ['make needle-target', 'run it again'],
+      'user with a command between messages': ['ls -la', 'first needle part --- second needle part'],
+    };
+    for (const [name, runs] of Object.entries(want)) {
+      const row = FIND_TEXT_ROWS.find((each) => each.name === name)!;
+      const { pane, target } = await render(row);
+      expect(counted(projected(pane, row)), name).toEqual(runs);
+      await expect.poll(() => painted(target), { timeout: 3_000 }).toEqual(runs);
+    }
+  });
+
   // The store's candidate test (internal/store/find_candidate_test.go) reads
   // this file: each row as the store holds it, with the payload its
   // candidate reads (a reasoning row's content, a tool row's payload meta),

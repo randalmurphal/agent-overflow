@@ -185,13 +185,20 @@ export function stripAttachmentImages(summary: string): string {
   return summary.replace(/\n\n!\[[^\]]*]\(attachment:\/\/[^\s)]+\)/g, '');
 }
 
+/** A composer shell command's output, which a user row shows as a command block. */
+export function isShellOutput(
+  attachment: AttachmentPreviewSource,
+): attachment is AttachmentPreviewSource & { shell: ShellOutputMeta } {
+  return attachment.kind === 'file' && attachment.shell !== undefined;
+}
+
 /**
- * The text a user message's bubble shows (UserMessageBody), its find
- * region: the summary without its image blocks and without the typed
- * `!command` of each shell output, which the output's own block shows.
+ * The text a user message's bubble shows (UserMessageBody): the summary
+ * without its image blocks and without the typed `!command` of each shell
+ * output, which the output's own block shows.
  */
 export function userMessageVisibleText(summary: string, attachments: readonly AttachmentPreviewSource[]): string {
-  const shells = attachments.flatMap((attachment) => (attachment.kind === 'file' && attachment.shell ? [attachment.shell] : []));
+  const shells = attachments.filter(isShellOutput).map((attachment) => attachment.shell);
   return textWithoutShellInvocations(stripAttachmentImages(summary).trimEnd(), shells);
 }
 
