@@ -1,9 +1,9 @@
 import { SvelteMap } from 'svelte/reactivity';
-import { untrack } from 'svelte';
 import { toastLostWrite, writeFailure, type LostWriteText } from './lostWrite';
 import { withBackendTarget } from '../transport/backends';
 import type { BackendKey } from '../transport/backendKey';
 import type { PRRef } from '../utils/prReference';
+import type { ReviewPRIdentity } from './reviewPRIdentity.svelte';
 
 // One review pane's small forge writes on a comment: a reaction's toggle
 // and a suggestion's apply. Each is one operation on one key (a chip, a
@@ -29,11 +29,11 @@ import type { PRRef } from '../utils/prReference';
 
 export interface ForgeOpsHost {
   readonly backend: BackendKey;
+  /** The PR the pane's state is on (its computer-scoped key, whatever
+   * the scope), and when it becomes another. */
+  readonly prIdentity: ReviewPRIdentity;
   /** The PR the pane shows, or null outside the PR scope. */
   ref(): PRRef | null;
-  /** The PR's computer-scoped key (computerPRKey of ref), whatever the
-   * scope; null without a PR. */
-  identity(): string | null;
   /** The PR's applied seq (peekPRSeq of its entity key), which settles a
    * write. */
   appliedSeq(): number;
@@ -88,7 +88,6 @@ export function createForgeOps(host: ForgeOpsHost): ForgeOps {
   // replaces or clears a newer one's sentence.
   const surfaceOwner = new Map<string, number>();
   let counter = 0;
-  let epoch = $state(0);
   let disposed = false;
 
   function opPending(op: Op | undefined): boolean {
@@ -98,29 +97,18 @@ export function createForgeOps(host: ForgeOpsHost): ForgeOps {
   }
 
   function scoped(key: string): string | null {
-    const identity = host.identity();
+    const identity = host.prIdentity.key;
     return identity === null ? null : `${identity}${SEP}${key}`;
   }
 
-  // A moment without a PR (git status settling) is not another PR.
-  let identity: string | null = untrack(() => host.identity());
-  const stopWatch = $effect.root(() => {
-    $effect(() => {
-      const next = host.identity();
-      if (next === null || next === identity) return;
-      const was = identity;
-      identity = next;
-      if (was === null) return;
-      untrack(() => {
-        epoch += 1;
-        errors.clear();
-        surfaceOwner.clear();
-      });
-    });
+  const stopWatch = host.prIdentity.onChange((from) => {
+    if (from === null) return;
+    errors.clear();
+    surfaceOwner.clear();
   });
 
   const activeKeys = $derived.by<readonly string[]>(() => {
-    const identity = host.identity();
+    const identity = host.prIdentity.key;
     if (identity === null) return [];
     const prefix = `${identity}${SEP}`;
     const out: string[] = [];
@@ -135,7 +123,7 @@ export function createForgeOps(host: ForgeOpsHost): ForgeOps {
       const opKey = scoped(key);
       const surfaceKey = scoped(surface);
       if (!ref || opKey === null || surfaceKey === null || opPending(ops.get(opKey))) return false;
-      const started = epoch;
+      const started = host.prIdentity.epoch;
       const op: Op = { id: ++counter, launch: host.launch() };
       ops.set(opKey, op);
       surfaceOwner.set(surfaceKey, op.id);
@@ -150,7 +138,7 @@ export function createForgeOps(host: ForgeOpsHost): ForgeOps {
           toastLostWrite(lost, err);
           return false;
         }
-        if (started !== epoch) return false;
+        if (started !== host.prIdentity.epoch) return false;
         if (surfaceOwner.get(surfaceKey) === op.id) errors.set(surfaceKey, writeFailure(err).sentence);
         if (options.refreshOn?.(err)) void host.refreshThreads();
         return false;
@@ -172,7 +160,7 @@ export function createForgeOps(host: ForgeOpsHost): ForgeOps {
       const surfaceKey = scoped(surface);
       return surfaceKey === null ? null : (errors.get(surfaceKey) ?? null);
     },
-    get epoch() { return epoch; },
+    get epoch() { return host.prIdentity.epoch; },
     get activeKeys() { return activeKeys; },
     dispose() {
       disposed = true;

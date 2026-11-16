@@ -21,13 +21,13 @@ func TestCommandTimeoutReachesTheSpawnEnvironment(t *testing.T) {
 	if cfg.CommandTimeoutHours != 5 {
 		t.Fatalf("CommandTimeoutHours = %d, want 5", cfg.CommandTimeoutHours)
 	}
-	env := provider.BuildEnvironment(claudeSpawnEnv(cfg), claudeSpawnUnsetEnv()...)
+	env := provider.BuildEnvironment(claudeSpawnEnv(cfg), launchUnsetEnv()...)
 	if value, found := envLookup(env, BashMaxTimeoutEnv); !found || value != "18000000" {
 		t.Fatalf("%s = %q (present=%v), want 18000000 over the inherited value", BashMaxTimeoutEnv, value, found)
 	}
 
 	cfg.Env = map[string]string{BashMaxTimeoutEnv: "99999999"}
-	env = provider.BuildEnvironment(claudeSpawnEnv(cfg), claudeSpawnUnsetEnv()...)
+	env = provider.BuildEnvironment(claudeSpawnEnv(cfg), launchUnsetEnv()...)
 	if value, _ := envLookup(env, BashMaxTimeoutEnv); value != "99999999" {
 		t.Fatalf("%s = %q, want the custom environment's value", BashMaxTimeoutEnv, value)
 	}

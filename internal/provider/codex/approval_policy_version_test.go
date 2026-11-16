@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 )
 
@@ -25,6 +26,7 @@ import (
 // test can compose them: it stays green while the wire path stops calling one.
 func modeApprovalPolicyOnTheWire(mode provider.RuntimeMode, codexVersion string) string {
 	cfg := ConfigFromOptions(provider.SessionOptions{RuntimeMode: mode, WorkDir: "/tmp/x"})
+	cfg.Reaper = procutiltest.Reaper()
 	policy, ok := buildThreadParams(cfg, codexVersion)["approvalPolicy"].(string)
 	if !ok {
 		return ""

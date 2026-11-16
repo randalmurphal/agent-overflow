@@ -281,7 +281,8 @@ export function renderStaticTokenHtml(
 							'>',
 						);
 						if (!render(children)) return false;
-						output.push(escapeHtml(linkTagText(token.href, streamdown.allowedLinkPrefixes ?? [])));
+						const tag = linkTagText(token.href, streamdown.allowedLinkPrefixes ?? []);
+						if (tag) output.push(`<span data-find-skip="">${escapeHtml(tag)}</span>`);
 						output.push('</span>');
 					}
 					break;

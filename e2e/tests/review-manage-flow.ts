@@ -24,9 +24,16 @@
 // its Merge, Description and Conversation, Details showing only the
 // sentence and no management control anywhere, and the controls return
 // on the next read of the PR (the Conversation's refresh) once the read
-// answers; and a host without the set mutations' operationMode shows no
-// Edit on the reviewers, assignees and labels rows while the title,
-// description and state controls stay. A held Enter on the title bar's
+// answers; a GitLab 19.6 that refuses introspection offers every
+// control; and a GitLab 17.11, below the supported floor, shows Details
+// as the sentence naming its release and the floor, with no management
+// control anywhere. A GitLab project that asks for the approver's
+// password offers no Approve and says why, refuses a review sent with
+// Approve the same way before any write, and one that takes one
+// reviewer refuses a second with that limit. A Request changes on
+// GitLab 19.6 and 18.5 posts a thread to resolve, and Details shows the
+// reviewer state each recorded (changes requested, reviewed). A held
+// Enter on the title bar's
 // `⋯` opens the menu and activates nothing. Closing the pane with Ctrl+W
 // while a picker holds a change writes that change (desktop). A
 // description save whose answer the fake holds until Back (compact) or
@@ -577,7 +584,6 @@ export function reviewManageFlow({ compact }: ManageSurface): void {
     await seedPullRequest(harness, 'gitlab', thread);
     const refusal = { status: 403, body: { message: '403 Forbidden' } };
     await refuseForgeRoute(harness, { route: 'glab graphql PRManageChecks', ...refusal });
-    await refuseForgeRoute(harness, { route: 'glab graphql PRManage', ...refusal });
     await page.emulateMedia({ colorScheme: 'dark' });
     await harness.open(page);
     const review = await openReview(page, thread, 'gitlab', compact);
@@ -603,7 +609,6 @@ export function reviewManageFlow({ compact }: ManageSurface): void {
     // The read answers again: the controls return with the next read of
     // the PR, which the Conversation's refresh asks for.
     await clearForgeRefusal(harness, 'glab graphql PRManageChecks');
-    await clearForgeRefusal(harness, 'glab graphql PRManage');
     await press(review.getByTestId('review-refresh-comments'));
     await expect(details.getByTestId('review-details-unavailable')).toHaveCount(0, { timeout: 30_000 });
     await expect(details.getByTestId('review-details-rows')).toBeVisible();
@@ -613,10 +618,10 @@ export function reviewManageFlow({ compact }: ManageSurface): void {
     await expectEveryForgeCallHandled(harness);
   });
 
-  test('gitlab: a host without the set mutations offers no people or label edits, and keeps the rest', async ({ harness, page }, testInfo: TestInfo) => {
+  test('gitlab: a server that refuses introspection offers every control', async ({ harness, page }) => {
     test.setTimeout(180_000);
-    const thread = 'Manage older host thread';
-    await seedPullRequest(harness, 'gitlab', thread, (seed) => ({ ...seed, serverLacks: ['operationMode'] }));
+    const thread = 'Manage no introspection thread';
+    await seedPullRequest(harness, 'gitlab', thread, (seed) => ({ ...seed, serverVersion: '19.6.1-ee', serverLacks: ['introspection'] }));
     await page.emulateMedia({ colorScheme: 'dark' });
     await harness.open(page);
     const review = await openReview(page, thread, 'gitlab', compact);
@@ -625,13 +630,123 @@ export function reviewManageFlow({ compact }: ManageSurface): void {
     await (compact ? details.locator('button[aria-expanded]').first().tap() : details.locator('button[aria-expanded]').first().click());
     await expect(details.getByTestId('review-details-rows')).toBeVisible();
     await expect(details.locator('[data-testid="review-details-reviewer"][data-login="alee"]')).toBeVisible();
-    for (const id of ['review-title-edit', 'review-description-edit', 'review-pr-state-menu', 'review-details-rerequest']) {
+    await expandReviewSection(page, 'review-pr-merge');
+    for (const id of ['review-title-edit', 'review-description-edit', 'review-pr-state-menu', 'review-details-edit-reviewers', 'review-details-edit-assignees', 'review-details-edit-labels', 'review-merge-row-bypass']) {
       await expect(page.getByTestId(id).first(), id).toBeAttached();
     }
-    for (const row of ['reviewers', 'assignees', 'labels']) {
-      await expect(details.getByTestId(`review-details-edit-${row}`), row).toHaveCount(0);
-    }
+    await expectEveryForgeCallHandled(harness);
+  });
+
+  // 19.6 takes reviewer_state on the publish; 18.5 does not, and the fake
+  // refuses it there, so the handled-calls check proves none was sent.
+  for (const [version, state] of [['19.6.1-ee', 'CHANGES_REQUESTED'], ['18.5.2', 'COMMENTED']] as const) {
+    test(`gitlab ${version}: Request changes posts a thread to resolve and Details shows the state GitLab recorded`, async ({ harness, page }, testInfo: TestInfo) => {
+      test.setTimeout(180_000);
+      const thread = `Manage request changes ${version}`;
+      await seedPullRequest(harness, 'gitlab', thread, (seed) => ({
+        ...seed,
+        serverVersion: version,
+        pulls: (seed.pulls ?? []).map((pr) => ({ ...pr, reviewers: [...(pr.reviewers ?? []), 'ao-viewer'] })),
+      }));
+      await page.emulateMedia({ colorScheme: 'dark' });
+      await harness.open(page);
+      const review = await openReview(page, thread, 'gitlab', compact);
+      const press = (target: Locator) => (compact ? target.tap() : target.click());
+      await expect(review.getByTestId('review-pr-title')).toContainText(TITLE, { timeout: 30_000 });
+
+      const row = review.locator('[data-testid="review-line-block"] > div').filter({ hasText: 'await post()' });
+      if (!compact) await row.hover();
+      await press(row.getByTestId('review-add-comment'));
+      const editor = review.getByTestId('review-draft-editor');
+      await editor.locator('textarea').fill('Retry here, once.');
+      await press(editor.getByTestId('review-draft-editor-add'));
+      const strip = review.getByTestId('review-send-strip');
+      await expect(strip).toBeVisible();
+      await strip.getByTestId('review-submit-target').selectOption('pr');
+      await press(strip.getByRole('button', { name: 'Request changes' }));
+      await strip.getByTestId('review-summary').fill('Cap the retries at one.');
+      await press(strip.getByTestId('review-send-comments'));
+      await expect(strip).toHaveCount(0, { timeout: 30_000 });
+
+      const conversation = await expandReviewSection(page, 'review-pr-conversation');
+      const changes = conversation.getByTestId('review-conversation-thread').filter({ hasText: 'Cap the retries at one.' });
+      await expect(changes).toContainText('Changes requested:', { timeout: 30_000 });
+      await expect(changes.getByTestId('review-thread-resolve')).toBeAttached();
+      const details = review.getByTestId('review-pr-details');
+      if ((await details.getAttribute('data-open')) !== 'true') await press(details.locator('button[aria-expanded]').first());
+      await expect(details.locator('[data-testid="review-details-reviewer"][data-login="ao-viewer"]')).toHaveAttribute('data-state', state, { timeout: 30_000 });
+      await review.screenshot({ path: testInfo.outputPath(`${testInfo.project.name}-gitlab-request-changes-${version}.png`) });
+      await expectEveryForgeCallHandled(harness);
+    });
+  }
+
+  test('gitlab: a server below the supported floor says so in Details and offers no management control', async ({ harness, page }, testInfo: TestInfo) => {
+    test.setTimeout(180_000);
+    const thread = 'Manage older host thread';
+    await seedPullRequest(harness, 'gitlab', thread, (seed) => ({ ...seed, serverVersion: '17.11.3' }));
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await harness.open(page);
+    const review = await openReview(page, thread, 'gitlab', compact);
+    await expect(review.getByTestId('review-pr-title')).toContainText(TITLE, { timeout: 30_000 });
+    await expect(await expandReviewSection(page, 'review-pr-conversation')).toContainText('One question on the backoff.');
+    const details = review.getByTestId('review-pr-details');
+    await (compact ? details.locator('button[aria-expanded]').first().tap() : details.locator('button[aria-expanded]').first().click());
+    await expect(details.getByTestId('review-details-unavailable')).toContainText('runs 17.11; GitLab 18.0 or later is needed.');
+    await expect(details.getByTestId('review-details-rows')).toHaveCount(0);
+    for (const id of MANAGE_CONTROLS) await expect(page.getByTestId(id), id).toHaveCount(0);
     await details.screenshot({ path: testInfo.outputPath(`${testInfo.project.name}-gitlab-details-older-host.png`) });
+    await expectEveryForgeCallHandled(harness);
+  });
+
+  // A GitLab project that asks for the approver's password and takes one
+  // reviewer per merge request: the Merge section offers no Approve and
+  // says why, and a second reviewer GitLab drops is refused with the
+  // project's limit, not as a non-member.
+  test("gitlab: a password-to-approve project says why Approve is absent, and a one-reviewer project says why a second is dropped", async ({ harness, page }) => {
+    test.setTimeout(180_000);
+    const thread = 'Manage free project thread';
+    await seedPullRequest(harness, 'gitlab', thread, (seed) => ({
+      ...seed,
+      merge: { free: true, approvalPassword: true },
+      pulls: [{ ...seed.pulls![0], reviewers: ['alee'], changeRequests: [] }],
+    }));
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await harness.open(page);
+    const review = await openReview(page, thread, 'gitlab', compact);
+    const press = (target: Locator) => (compact ? target.tap() : target.click());
+    await expect(review.getByTestId('review-pr-title')).toContainText(TITLE, { timeout: 30_000 });
+    const merge = await expandReviewSection(page, 'review-pr-merge');
+    await expect(merge).toContainText('GitLab asks for your password to approve in this project. Approve on GitLab.');
+    await expect(merge.getByTestId('review-merge-approve')).toHaveCount(0);
+
+    // A review sent with Approve gets the same refusal before any write:
+    // no draft note, publish or approval, and the comment stays to send.
+    const since = await lastSeq(harness);
+    const row = review.locator('[data-testid="review-line-block"] > div').filter({ hasText: 'await post()' });
+    if (!compact) await row.hover();
+    await press(row.getByTestId('review-add-comment'));
+    const editor = review.getByTestId('review-draft-editor');
+    await editor.locator('textarea').fill('Retry here, once.');
+    await press(editor.getByTestId('review-draft-editor-add'));
+    const strip = review.getByTestId('review-send-strip');
+    await strip.getByTestId('review-submit-target').selectOption('pr');
+    await press(strip.getByRole('button', { name: 'Approve' }));
+    await press(strip.getByTestId('review-send-comments'));
+    await expect(review.getByTestId('review-submit-error')).toContainText('GitLab asks for your password to approve in this project. Approve on GitLab.', { timeout: 30_000 });
+    await expect(strip).toBeVisible();
+    expect(await writes(harness, ['glab api create draft note', 'glab api publish draft notes', 'glab api approve'], since)).toEqual([]);
+
+    const details = review.getByTestId('review-pr-details');
+    await press(details.locator('button[aria-expanded]').first());
+    await expect(details.getByTestId('review-details-rows')).toBeVisible();
+    await press(details.getByTestId('review-details-edit-reviewers'));
+    const picker = page.getByTestId('review-picker');
+    await picker.getByTestId('review-picker-search').fill('jane');
+    await press(picker.locator('[data-testid="review-picker-option"][data-key="u:jdoe"]'));
+    await page.keyboard.press('Escape');
+    await expect(picker).toHaveCount(0);
+    await expect(details.getByTestId('review-details-error-reviewers-message')).toContainText('this project allows one reviewer per merge request; more need GitLab Premium');
+    await expect(details.locator('[data-testid="review-details-reviewer"][data-login="jdoe"]')).toHaveCount(0);
     await expectEveryForgeCallHandled(harness);
   });
 

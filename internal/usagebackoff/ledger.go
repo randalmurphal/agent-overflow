@@ -126,6 +126,15 @@ func (l *Ledger) Note(providerName, accountID string, err error) {
 	l.saveLocked()
 }
 
+// Clear drops every hold and strike count, in memory and on disk.
+func (l *Ledger) Clear() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	clear(l.until)
+	clear(l.headerlessStrikes)
+	l.saveLocked()
+}
+
 // fileEntry is one persisted account hold. The wire shape is the ledger's own
 // file format; nothing else reads it.
 type fileEntry struct {

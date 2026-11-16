@@ -19,25 +19,31 @@
 // each, and every character the scan reads or searches counts as well, one
 // unit per `UNIT_CHARS` (`LONG_TEXT` characters are `CLOCK_ROWS` units).
 // A text the rule searches counts the characters each chunk folds
-// (`findMatchChunk`). A filter block, at most `LONG_TEXT` stored
-// characters, counts its stored length once searched. The clock is read
-// once a count crosses a multiple of `CLOCK_ROWS` units, and the scan
-// pauses there once the slice is spent, so between two clock reads it
-// reads or searches at most 2 x `LONG_TEXT` + the needle's length
-// characters, besides one line it reads whole.
+// (`findMatchChunk`). A filter block, at most `LONG_TEXT` bytes of text,
+// counts its length once searched. The clock is read once a count crosses
+// a multiple of `CLOCK_ROWS` units, and the scan pauses there once the
+// slice is spent, so between two clock reads it reads or searches at most
+// 2 x `LONG_TEXT` + the needle's length characters, besides one line it
+// reads whole.
 //
 // The rule reads a row's text only when its line can match: the scan runs
-// a filter (findMatch.ts#findFilterPattern) over the stored text of a
-// block of lines at a time, never decoded or folded, and a row whose line
+// a filter (findMatch.ts#findFilterPattern) over the text of a block of
+// lines at a time, decoded at once and never folded, and a row whose line
 // it does not flag costs its walk, its count toward the slice and its
 // inserts, nothing else.
 //
 // Text the patch memory budget evicted is pinned, read back
 // (`PatchBody.load`) and held until the walk leaves it, so a budget smaller
 // than what one read brings back cannot evict it before its lines are
-// read and make each of them another read.
+// read and make each of them another read. What is held is bounded by
+// size: the lines from the evicted one through `patchTextReadAheadBytes`
+// bytes, at least that one line, and the rest of the chunks
+// they lie in (`PatchBody.pinnedEnd`), which the pin holds anyway. The
+// next range is pinned before the last is released, so a chunk the two
+// share is read once.
 
 import type { DiffReviewComment, ReviewThread } from '../types/models';
+import { patchTextReadAheadBytes } from './patchMemory.svelte';
 import { findFilterPattern, findMatchChunk, findNeedle, flagFilterLines, LONG_TEXT } from './findMatch';
 import type { FindRun } from './findHighlights';
 import { RowWalker } from './patchRows';
@@ -83,34 +89,37 @@ export interface ReviewFindScanOptions {
   now?(): number;
 }
 
-/** Lines read back together when the scan meets an evicted line. */
-export const LOAD_LINES = 512;
 /** Most lines one filter block reads. */
 export const BLOCK_LINES = 512;
 /** Units of work between clock reads. */
 export const CLOCK_ROWS = 256;
 /** Characters read or searched that count one unit of work. */
 const UNIT_CHARS = LONG_TEXT / CLOCK_ROWS;
-/** Most stored characters one filter block reads: the size the rule
- * searches at a time. A longer line is never read by the filter: the rule
- * searches it `LONG_TEXT` at a time. */
+/** Most bytes of text one filter block reads, which decode to no more
+ * characters than the rule searches at a time. A longer line is never
+ * read by the filter: the rule searches it `LONG_TEXT` at a time. */
 const BLOCK_SIZE = LONG_TEXT;
 const DEFAULT_SLICE_MS = 8;
 
 class StopScan extends Error {}
 
-// The end of the filter block from line `start`: lines of one segment, at
-// most BLOCK_LINES and BLOCK_SIZE stored characters, and at least one.
-function blockEndOf(body: PatchBody, start: number): number {
+// The end of the lines of one segment from line `start`, at most `lines`
+// of them and `size` bytes, and at least one.
+function linesEndOf(body: PatchBody, start: number, lines: number, size: number): number {
   const base = body.storedLineStart(start);
   let low = start + 1;
-  let high = Math.min(body.segmentEnd(start), start + BLOCK_LINES);
+  let high = Math.min(body.segmentEnd(start), start + lines);
   while (low < high) {
     const mid = (low + high + 1) >> 1;
-    if (body.storedLineEnd(mid - 1) - base <= BLOCK_SIZE) low = mid;
+    if (body.storedLineEnd(mid - 1) - base <= size) low = mid;
     else high = mid - 1;
   }
   return low;
+}
+
+// The end of the filter block from line `start`.
+function blockEndOf(body: PatchBody, start: number): number {
+  return linesEndOf(body, start, BLOCK_LINES, BLOCK_SIZE);
 }
 
 function lineSpot(path: string, lineIndex: number): ReviewFindFileSpot {
@@ -192,13 +201,15 @@ export async function scanReviewFind(content: ReviewFindContent, query: string, 
   }
 
   // `read` run over lines [start, end) of `body` read back, which stay
-  // held; a scan that stopped being live while the read was out goes no
-  // further.
+  // held with the rest of their chunks; a scan that stopped being live
+  // while the read was out goes no further.
   async function readBack<T>(body: PatchBody, start: number, end: number, read: () => T): Promise<T> {
+    const holdEnd = body.pinnedEnd(start, end);
+    const release = body.pin(start, holdEnd);
     dropHeld();
-    releaseHeld = body.pin(start, end);
-    heldEnd = end;
-    const loading = body.load(start, end);
+    releaseHeld = release;
+    heldEnd = holdEnd;
+    const loading = body.load(start, holdEnd);
     if (loading !== null) await loading;
     if (!options.live()) throw new StopScan();
     return read();
@@ -207,32 +218,41 @@ export async function scanReviewFind(content: ReviewFindContent, query: string, 
   // A line's text, read back with the lines after it when evicted.
   async function lineText(body: PatchBody, lineIndex: number): Promise<string> {
     if (body.resident(lineIndex, lineIndex + 1)) return body.text(lineIndex);
-    return await readBack(body, lineIndex, Math.min(body.lineCount, lineIndex + LOAD_LINES), () => body.text(lineIndex));
+    const end = linesEndOf(body, lineIndex, Infinity, patchTextReadAheadBytes());
+    return await readBack(body, lineIndex, end, () => body.text(lineIndex));
   }
 
   // One file's filter: whether the rule must read line `lineIndex`, asked
   // in ascending line order. It searches a block of lines when the walk
   // enters it, and answers synchronously unless that block was evicted or
-  // its search ended the slice. `flags` is the scan's one array, which
-  // only the filter of the file being walked uses.
-  function lineFilter(body: PatchBody, pattern: RegExp, flags: Int32Array): { flagged(lineIndex: number): boolean | Promise<boolean> } {
-    const lineStart = (line: number) => body.storedLineStart(line);
+  // its search ended the slice. `text` gives the line last flagged from
+  // the block's decoded text, or null for a line the filter did not
+  // read. `flags` and `starts` are the scan's arrays, which only the
+  // filter of the file being walked uses.
+  function lineFilter(body: PatchBody, pattern: RegExp, flags: Int32Array, starts: Int32Array): {
+    flagged(lineIndex: number): boolean | Promise<boolean>;
+    text(): string | null;
+  } {
     // The flagged lines, ascending, of the block [.., end), the first
-    // `count` of `flags`; `at` is the first not behind the walk.
+    // `count` of `flags`, and where each starts in `block`, the block's
+    // text; `at` is the first not behind the walk.
     let count = 0;
     let at = 0;
     let end = 0;
+    let block: string | null = null;
     const pick = (lineIndex: number): boolean => {
       while (at < count && flags[at] < lineIndex) at += 1;
       return at < count && flags[at] === lineIndex;
     };
-    // Flags the block's lines from `stored`; true once the slice is spent.
-    const search = (start: number, stored: string): boolean => {
-      count = flagFilterLines(pattern, stored, start, end, lineStart, flags);
-      return spent(Math.ceil(stored.length / UNIT_CHARS));
+    // Flags the block's lines from their text; true once the slice is
+    // spent.
+    const search = (start: number, text: string): boolean => {
+      block = text;
+      count = flagFilterLines(pattern, text, start, flags, starts);
+      return spent(Math.ceil(text.length / UNIT_CHARS));
     };
     const searchEvicted = async (start: number): Promise<boolean> => {
-      if (search(start, await readBack(body, start, end, () => body.storedRange(start, end)))) await pause();
+      if (search(start, await readBack(body, start, end, () => body.segmentText(start, end)))) await pause();
       return pick(start);
     };
     return {
@@ -240,16 +260,23 @@ export async function scanReviewFind(content: ReviewFindContent, query: string, 
         if (lineIndex < end) return pick(lineIndex);
         at = 0;
         if (body.lineSize(lineIndex) > BLOCK_SIZE) {
-          // One line over the block size: the rule searches it.
+          // One line over the block size: the rule reads and searches it.
           end = lineIndex + 1;
           flags[0] = lineIndex;
           count = 1;
+          block = null;
           return true;
         }
         end = blockEndOf(body, lineIndex);
         if (!body.resident(lineIndex, end)) return searchEvicted(lineIndex);
-        if (search(lineIndex, body.storedRange(lineIndex, end))) return pause().then(() => pick(lineIndex));
+        if (search(lineIndex, body.segmentText(lineIndex, end))) return pause().then(() => pick(lineIndex));
         return pick(lineIndex);
+      },
+      text() {
+        if (block === null) return null;
+        const start = starts[at];
+        const newline = block.indexOf('\n', start);
+        return block.slice(start, newline < 0 ? block.length : newline);
       },
     };
   }
@@ -260,6 +287,7 @@ export async function scanReviewFind(content: ReviewFindContent, query: string, 
   // The rule decides what a flagged line matches.
   const rowRule = needle.includes('\n') ? 'none' : (findFilterPattern(needle) ?? 'every');
   const flags = typeof rowRule === 'string' ? null : new Int32Array(BLOCK_LINES);
+  const starts = flags === null ? null : new Int32Array(BLOCK_LINES);
 
   const inserts = reviewInsertsByFile(content.files, content.drafts, [], content.prThreads, new Set());
   try {
@@ -315,7 +343,9 @@ export async function scanReviewFind(content: ReviewFindContent, query: string, 
       const body = file.body;
       const folds = body.hasMarkers ? (content.foldLines?.(path) ?? null) : null;
       const walker = new RowWalker(file);
-      const filter = typeof rowRule === 'string' || flags === null ? null : lineFilter(body, rowRule, flags);
+      const filter = typeof rowRule === 'string' || flags === null || starts === null ? null : lineFilter(body, rowRule, flags, starts);
+      // A flagged line's text: from the filter's block when it read one.
+      const flaggedText = async (lineIndex: number): Promise<string> => filter?.text() ?? await lineText(body, lineIndex);
       let markerRun = 0;
       let lastLine = -1;
       const media = content.showsMedia?.(file) ?? false;
@@ -344,7 +374,7 @@ export async function scanReviewFind(content: ReviewFindContent, query: string, 
             markerRun += 1;
             if (flagged) {
               const { oldAt, newAt } = findMarkerLines(walker);
-              const text = await lineText(body, lineIndex);
+              const text = await flaggedText(lineIndex);
               if (await emitText(text, file, { kind: 'line', tag: `m${oldAt}:${newAt}:${run}` }, lineSpot(path, lineIndex))) return true;
             }
           }
@@ -352,7 +382,7 @@ export async function scanReviewFind(content: ReviewFindContent, query: string, 
           markerRun = 0;
           if (flagged) {
             // Code text: the +/- or context prefix is the gutter's.
-            const text = (await lineText(body, lineIndex)).slice(1);
+            const text = (await flaggedText(lineIndex)).slice(1);
             if (await emitText(text, file, { kind: 'line', tag: findRowTag(walker) }, lineSpot(path, lineIndex))) return true;
           }
         }

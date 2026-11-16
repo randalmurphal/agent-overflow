@@ -61,6 +61,42 @@ export interface ThreadDraftPlaceholderOptions {
   switchLoad(): ThreadSwitchLoad;
 }
 
+/**
+ * CreateThread for a draft with `settings`' provider, model, mode and
+ * workspace, on the project's own computer. Materializes a placeholder, and
+ * gives text left in a deleted draft thread a new one.
+ */
+export async function createDraftThread(
+  projectId: string,
+  fallbackMode: DraftPlaceholderMode,
+  settings: Thread | null,
+): Promise<Thread> {
+  const backend = requireEntityBackend(projectBackend(projectId));
+  // An un-seeded placeholder carries the provider fallback
+  // startDraftPlaceholder needs to satisfy the Thread type, not a user
+  // choice: defaults always arrive with a model, so an empty model is what
+  // says "nobody has chosen yet". Sending the fallback would pin the row to
+  // Codex when the remembered seed is another provider, so this states
+  // neither and lets CreateThread seed the pair it would have seeded.
+  const chosen = Boolean(settings?.model);
+  return (await withBackendTarget(backend, () => CreateThread({
+    projectId,
+    groupId: settings?.groupId,
+    provider: chosen ? settings?.provider : undefined,
+    model: chosen ? settings?.model : undefined,
+    mode: settings?.mode ?? fallbackMode,
+    reasoningEffort: settings?.reasoningEffort,
+    fastMode: settings?.fastMode,
+    contextWindow: settings?.contextWindow,
+    autoCompactStandardPercent: settings?.autoCompactStandardPercent,
+    autoCompactExtendedPercent: settings?.autoCompactExtendedPercent,
+    runtimeMode: settings?.runtimeMode,
+    worktreePath: settings?.worktreePath,
+    workspaceOverride: settings?.workspacePath,
+    branch: settings?.branch,
+  }))) as Thread;
+}
+
 export function createThreadDraftPlaceholder(
   options: ThreadDraftPlaceholderOptions,
 ) {
@@ -235,32 +271,7 @@ export function createThreadDraftPlaceholder(
   async function materializeDraftPlaceholder(): Promise<Thread | null> {
     const placeholder = draftPlaceholder;
     if (!placeholder) return options.getThread();
-    const current = options.getThread();
-    const backend = requireEntityBackend(projectBackend(placeholder.projectId));
-    // An un-seeded placeholder carries the provider fallback
-    // startDraftPlaceholder needs to satisfy the Thread type, not a user
-    // choice: defaults always arrive with a model, so an empty model is what
-    // says "nobody has chosen yet". Sending the fallback would pin the row to
-    // Codex when the remembered seed is another provider, so this states
-    // neither and lets CreateThread seed the pair it would have seeded.
-    const chosen = Boolean(current?.model);
-    const created = (await withBackendTarget(backend, () => CreateThread({
-      projectId: placeholder.projectId,
-      groupId: current?.groupId,
-      provider: chosen ? current?.provider : undefined,
-      model: chosen ? current?.model : undefined,
-      mode: current?.mode ?? placeholder.mode,
-      reasoningEffort: current?.reasoningEffort,
-      fastMode: current?.fastMode,
-      contextWindow: current?.contextWindow,
-      autoCompactStandardPercent: current?.autoCompactStandardPercent,
-      autoCompactExtendedPercent: current?.autoCompactExtendedPercent,
-      runtimeMode: current?.runtimeMode,
-      worktreePath: current?.worktreePath,
-      workspaceOverride: current?.workspacePath,
-      branch: current?.branch,
-    }))) as Thread;
-    return created;
+    return createDraftThread(placeholder.projectId, placeholder.mode, options.getThread());
   }
 
   function adoptMaterializedDraftThread(materializedThread: Thread): void {
@@ -281,7 +292,8 @@ export function createThreadDraftPlaceholder(
    * the stale-create guard checks the placeholder id at completion.
    *
    * Side effects on success: seeds the default worktree intent for the
-   * new thread, prepends it to the sidebar threads registry, adopts it
+   * new thread, prepends it to the sidebar threads registry when the
+   * composer holds content, adopts it
    * on the pane, and points the pane's registered composer-draft store
    * at the new thread id (so typed text saved against the placeholder
    * id flushes through to the real thread row).
@@ -327,9 +339,15 @@ export function createThreadDraftPlaceholder(
         const listed = getThreadById(created.id);
         created = threadReplyRow(created, mark, listed) ?? listed ?? created;
         seedDefaultWorktreeIntentForDraft(created);
-        prependThread(created);
-        adoptMaterializedDraftThread(created);
         const draftStore = getComposerDraftForPane(paneId);
+        // The sidebar lists a never-sent thread once it is real
+        // (store.sidebarListedClause). Typed text makes it real with the
+        // save that follows, so this screen lists it now rather than a
+        // debounce later; a row created already real arrived as `listed`.
+        // One materialized for anything else (a staged workspace choice) is
+        // listed by the write that makes it real, on every screen at once.
+        if (draftStore?.hasDraft) prependThread(created);
+        adoptMaterializedDraftThread(created);
         if (draftStore) draftStore.adoptThread(created.id);
         return created.id;
       } catch (err) {

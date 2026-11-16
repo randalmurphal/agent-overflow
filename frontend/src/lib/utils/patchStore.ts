@@ -1,18 +1,15 @@
-import { unpackText } from './packedText';
 import { PatchChunks, type PatchTextLost, type PatchTextSource } from './patchChunks';
 
 // Compact storage for the review pane's patches. A patch of any size
-// arrives in chunks (`ReadReviewDiff`) and is held as those chunk
-// strings (`patchChunks.ts`) plus typed-array indexes: one Uint32 line
+// arrives in chunks (`reviewDiffStream.ts`) and is held as those chunks'
+// UTF-8 bytes (`patchChunks.ts`) plus typed-array indexes: one Uint32 line
 // start per line, and one kind byte per line. Nothing allocates per line.
-// Rows, line objects and line strings are materialized only for the rows
-// on screen (`patchRows.ts`).
+// Line strings are decoded only for the rows on screen (`patchRows.ts`)
+// and the ranges a reader asks for.
 //
-// A chunk is plain (its text) or packed (its UTF-8 bytes, one character
-// each: `packedText.ts`). A line of packed text holding a byte past ASCII
-// is a wide line, one bit per line; reading one decodes it, and every
-// other line reads as it is stored. Positions and lengths the store keeps
-// count stored characters, which for packed text are bytes.
+// Positions and sizes the store keeps count those bytes: a line's start,
+// its size, a range's size. Only a line callback sees positions in the
+// arrived chunk's text, which is not kept.
 //
 // Chunk text can be evicted under the memory budget; line indexes, kinds
 // and hunks stay, so everything but a line's text is always answerable.
@@ -45,9 +42,9 @@ export interface HunkStarts {
 /** What a line is: a kind, or a hunk header with its starts. */
 export type LineClass = Exclude<LineKind, typeof LINE_HUNK> | HunkStarts;
 
-// Characters of a line spanning chunks that its classification reads:
-// enough for any header line's path.
-const SPANNING_PREFIX_CHARS = 16 * 1024;
+// Bytes of a line spanning chunks that its classification reads: enough
+// for any header line's path.
+const SPANNING_PREFIX_BYTES = 16 * 1024;
 
 // Line starts of the chunk being indexed, copied out once its size is
 // known. Shared by every store, since indexing is synchronous; dropped back
@@ -59,6 +56,46 @@ let scratchStarts = new Uint32Array(SCRATCH_LINES);
 // way a read that failed or was cancelled stops.
 function stopIndexing(): void {
   if (scratchStarts.length > SCRATCH_LINES) scratchStarts = new Uint32Array(SCRATCH_LINES);
+}
+
+// Every decode of held bytes. A leading U+FEFF is text, not a mark to
+// drop.
+const decoder = new TextDecoder('utf-8', { ignoreBOM: true });
+
+// The text of byte runs that are consecutive in the patch: a run may end
+// inside a character the next one finishes.
+function decodeRuns(runs: readonly Uint8Array[]): string {
+  if (runs.length === 1) return decoder.decode(runs[0]);
+  let out = '';
+  for (let index = 0; index < runs.length; index += 1) out += decoder.decode(runs[index], { stream: index + 1 < runs.length });
+  return out;
+}
+
+// `at`, or the start of the character `at` is inside, no earlier than
+// `floor`: a cut there keeps whole characters.
+function characterStart(bytes: Uint8Array, at: number, floor: number): number {
+  while (at > floor && at < bytes.length && (bytes[at] & 0xc0) === 0x80) at -= 1;
+  return at;
+}
+
+/** How many bytes TextEncoder writes for `text`, which writes a lone
+ * surrogate as U+FFFD. */
+export function utf8Length(text: string): number {
+  let bytes = text.length;
+  for (let index = 0; index < text.length; index += 1) {
+    const unit = text.charCodeAt(index);
+    if (unit < 0x80) continue;
+    if (unit < 0x800) {
+      bytes += 1;
+    } else if (unit >= 0xd800 && unit <= 0xdbff && (text.charCodeAt(index + 1) & 0xfc00) === 0xdc00) {
+      // A pair: two units, four bytes.
+      bytes += 2;
+      index += 1;
+    } else {
+      bytes += 2;
+    }
+  }
+  return bytes;
 }
 
 export interface StoredLine {
@@ -76,34 +113,34 @@ export interface PatchTextKey {
 }
 
 /** A chunk's backend byte range, which an evicted chunk is read again
- * by, its form and its key. A plain chunk may have a key (the key of the
- * text through its end); a packed chunk always has one, and `wide`, the
- * index of the first byte past ASCII of each line that has one, which is
- * never empty. */
-export type PatchChunkSpan =
-  | { offset: number; nextOffset: number; wide?: undefined; key?: PatchTextKey }
-  | { offset: number; nextOffset: number; wide: readonly number[]; key: PatchTextKey };
+ * by, and the key of the text through its end when the backend sent
+ * one. */
+export interface PatchChunkSpan {
+  offset: number;
+  nextOffset: number;
+  key?: PatchTextKey;
+}
 
-/** Runs for each line a chunk completes: the text its first character is
- * in, the line's offset there and stored length, and whether that range
- * is a wide line (unpack what is kept of it). Answers what the line is. */
-export type PatchLineCallback = (line: number, text: string, offset: number, length: number, wide: boolean) => LineClass;
-
-const NO_MARKS: readonly number[] = [];
+/** Runs for each line a chunk completes, with text that holds the line
+ * at [offset, offset + length) in UTF-16 units of `text`; a line spanning
+ * chunks is given its first SPANNING_PREFIX_BYTES bytes. Answers what the
+ * line is. */
+export type PatchLineCallback = (line: number, text: string, offset: number, length: number) => LineClass;
 
 /**
- * A copy of text read from a store that shares no memory with its chunk.
- * V8 and JavaScriptCore slice strings by reference, so a line kept after
- * its chunk is evicted would keep the whole chunk; slicing a
- * concatenation flattens it into a new string first.
+ * A copy of a slice that shares no memory with the string it was sliced
+ * from. V8 and JavaScriptCore slice strings by reference, so a path kept
+ * from a chunk's arrived text would keep all of that text; slicing a
+ * concatenation flattens it into a new string first. Text a store decodes
+ * is a string of its own.
  */
 export function ownText(text: string): string {
   return (' ' + text).slice(1);
 }
 
 /** Copies (ownText) the text a parsed file or an open editor keeps from a
- * store's chunks. An object so a test can see each kept string pass
- * through it. */
+ * slice of a longer string. An object so a test can see each kept string
+ * pass through it. */
 export const keptText = { own: ownText };
 
 /**
@@ -116,9 +153,10 @@ export const keptText = { own: ownText };
  */
 export class PatchStore {
   private readonly chunks = new PatchChunks();
-  // Per chunk: its line starts, first line and line count; where it
-  // starts, in stored characters; and whether its text holds a newline
-  // and ends with one, so a line's chunks are known without its text.
+  // Per chunk: its line starts (bytes into the chunk), first line and
+  // line count; where it starts in the patch's bytes; and whether it holds
+  // a newline and ends with one, so a line's chunks are known without its
+  // text.
   private readonly starts: Uint32Array[] = [];
   private readonly firstLines: number[] = [];
   private readonly counts: number[] = [];
@@ -131,10 +169,10 @@ export class PatchStore {
   private hunkNew = new Int32Array(16);
   private hunkCount = 0;
   private folds: Map<number, { id: number; lines: number }> | null = null;
-  // One bit per line: whether it is a wide line. Null until the first.
-  private wideBits: Uint8Array | null = null;
   private lines = 0;
   private stored = 0;
+  // The line still arriving: its chunk, its start there and its bytes
+  // so far.
   private openLine = -1;
   private openChunk = 0;
   private openOffset = 0;
@@ -145,8 +183,7 @@ export class PatchStore {
     return this.lines;
   }
 
-  /** Stored characters of everything appended: a size, not the text's
-   * UTF-16 length (packed text stores bytes). */
+  /** UTF-8 bytes of everything appended. */
   get storedSize(): number {
     return this.stored;
   }
@@ -154,46 +191,53 @@ export class PatchStore {
   /**
    * Appends one chunk of patch text. `onLine` runs once per line that the
    * chunk completes, in line order; it may not read the store's line
-   * text, which is indexed after the chunk is. `span` is the chunk's
-   * backend byte range and form (PatchChunkSpan); PatchParser, the one
-   * appender, has validated it.
+   * text, which is indexed after the chunk is. The store keeps the
+   * chunk's bytes, not `data`, so `data` must start and end between
+   * characters: a surrogate pair cut in two would be held as two U+FFFD.
+   * The backend never cuts inside a character (gitdiff.ChunkCut). `span`
+   * is the chunk's backend byte range and key (PatchChunkSpan);
+   * PatchParser, the one appender, has validated it.
    */
   append(data: string, onLine: PatchLineCallback, span?: PatchChunkSpan): void {
-    const wide = span?.wide;
-    const chunk = this.chunks.push(data, wide !== undefined, span, true);
-    this.pushChunk(data);
-    this.index(chunk, data, onLine, wide ?? NO_MARKS);
+    if ((data.charCodeAt(0) & 0xfc00) === 0xdc00 || (data.charCodeAt(data.length - 1) & 0xfc00) === 0xd800) {
+      throw new Error('patch store: a chunk is cut inside a character');
+    }
+    const chunk = this.chunks.push(data, span, true);
+    const bytes = this.chunks.peek(chunk, this.lines);
+    this.pushChunk(bytes);
+    this.index(chunk, data, bytes, onLine);
     this.chunks.indexed(this.openLine >= 0 ? this.openChunk : -1);
   }
 
   // The store's half of a new chunk; its line index is set by `index`.
-  private pushChunk(data: string): void {
+  private pushChunk(bytes: Uint8Array): void {
     this.storedStarts.push(this.stored);
-    this.stored += data.length;
-    this.newlines.push(data.includes('\n'));
-    this.newlineEnds.push(data.endsWith('\n'));
+    this.stored += bytes.length;
+    this.newlines.push(bytes.includes(10));
+    this.newlineEnds.push(bytes.length > 0 && bytes[bytes.length - 1] === 10);
   }
 
-  // A cursor over the chunk's marks (`wide`) marks its wide lines.
-  private index(chunk: number, data: string, onLine: PatchLineCallback, wide: readonly number[]): void {
+  // Walks the chunk's text, which the callback reads, and its bytes,
+  // which the index records, a newline at a time: the nth newline of one
+  // is the nth of the other. Text with nothing past ASCII is its bytes.
+  private index(chunk: number, data: string, bytes: Uint8Array, onLine: PatchLineCallback): void {
+    const ascii = bytes.length === data.length;
     let pos = 0;
-    let mark = 0;
+    let at = 0;
     if (this.openLine >= 0) {
       const end = data.indexOf('\n');
-      if (mark < wide.length && wide[mark] < (end < 0 ? data.length : end)) {
-        this.markWide(this.openLine);
-        mark += 1;
-      }
       if (end < 0) {
         // The middle of a line longer than the chunk.
-        this.openLength += data.length;
+        this.openLength += bytes.length;
         this.firstLines.push(this.lines);
         this.counts.push(0);
         this.starts.push(new Uint32Array(0));
         return;
       }
-      this.completeOpenLine(this.openLength + end, onLine);
+      const byteEnd = ascii ? end : bytes.indexOf(10);
+      this.completeOpenLine(this.openLength + byteEnd, onLine);
       pos = end + 1;
+      at = byteEnd + 1;
     }
     const firstLine = this.lines;
     let count = 0;
@@ -205,25 +249,20 @@ export class PatchStore {
         grown.set(scratchStarts);
         scratchStarts = grown;
       }
-      scratchStarts[count] = pos;
+      scratchStarts[count] = at;
       count += 1;
       this.ensureKindCapacity(this.lines);
       const end = data.indexOf('\n', pos);
-      let wideLine = false;
-      if (mark < wide.length && wide[mark] < (end < 0 ? data.length : end)) {
-        this.markWide(line);
-        mark += 1;
-        wideLine = true;
-      }
       if (end < 0) {
         this.openLine = line;
         this.openChunk = chunk;
-        this.openOffset = pos;
-        this.openLength = data.length - pos;
+        this.openOffset = at;
+        this.openLength = bytes.length - at;
         break;
       }
-      this.record(line, onLine(line, data, pos, end - pos, wideLine));
+      this.record(line, onLine(line, data, pos, end - pos));
       pos = end + 1;
+      at = ascii ? pos : bytes.indexOf(10, at) + 1;
     }
     this.firstLines.push(firstLine);
     this.counts.push(count);
@@ -238,15 +277,15 @@ export class PatchStore {
     this.chunks.ended();
   }
 
-  // A line that spans chunks is classified from its first characters,
-  // joined from its pieces: a header line is short and arrives whole this
-  // way, and a longer line only needs its prefix. The open line's chunks
-  // are pinned while it is open.
+  // A line that spans chunks is classified from its first bytes, joined
+  // from its pieces: a header line is short and arrives whole this way,
+  // and a longer line only needs its prefix. The open line's chunks are
+  // pinned while it is open. `length` is the line's, in bytes.
   private completeOpenLine(length: number, onLine: PatchLineCallback): void {
     const line = this.openLine;
     this.openLine = -1;
-    const prefix = this.joined(line, this.openChunk, this.openOffset, Math.min(length, SPANNING_PREFIX_CHARS), false);
-    this.record(line, onLine(line, prefix, 0, length, false));
+    const prefix = this.joined(line, this.openChunk, this.openOffset, Math.min(length, SPANNING_PREFIX_BYTES), false);
+    this.record(line, onLine(line, prefix, 0, prefix.length));
   }
 
   private record(line: number, kind: LineClass): void {
@@ -258,52 +297,31 @@ export class PatchStore {
     this.kinds[line] = LINE_HUNK;
   }
 
-  private markWide(line: number): void {
-    this.wideBits ??= new Uint8Array(this.kinds.length >> 3);
-    this.wideBits[line >> 3] |= 1 << (line & 7);
-  }
-
-  private isWide(line: number): boolean {
-    const bits = this.wideBits;
-    return bits !== null && (bits[line >> 3] & (1 << (line & 7))) !== 0;
-  }
-
-  // The first wide line in [line, end), or end.
-  private nextWide(line: number, end: number): number {
-    const bits = this.wideBits;
-    if (bits === null) return end;
-    while (line < end) {
-      const rest = bits[line >> 3] >> (line & 7);
-      if (rest === 0) line = (line | 7) + 1;
-      else if ((rest & 1) !== 0) return line;
-      else line += 1;
-    }
-    return end;
-  }
-
-  // A line's text from `start` in `chunk`, its pieces joined, at most
-  // `limit` stored characters of it. A wide line's packed pieces are
-  // decoded one by one: a chunk never ends inside a character. `read`
-  // counts the read as a use of the chunks.
+  // A line's text from byte `start` in `chunk`, its pieces joined, at
+  // most `limit` bytes of it, cut between characters. `read` counts the
+  // read as a use of the chunks.
   private joined(line: number, chunk: number, start: number, limit: number, read: boolean): string {
-    const wide = this.isWide(line);
-    let out = '';
-    let stored = 0;
-    for (let at = chunk; at < this.chunks.count && stored < limit; at += 1) {
-      const text = read ? this.chunks.read(at, line) : this.chunks.peek(at, line);
+    const runs: Uint8Array[] = [];
+    let taken = 0;
+    for (let at = chunk; at < this.chunks.count; at += 1) {
+      const bytes = read ? this.chunks.read(at, line) : this.chunks.peek(at, line);
       const from = at === chunk ? start : 0;
-      const newline = text.indexOf('\n', from);
-      const to = Math.min(newline < 0 ? text.length : newline, from + limit - stored);
-      stored += to - from;
-      const piece = text.slice(from, to);
-      out += wide && this.chunks.isPacked(at) ? unpackText(piece) : piece;
+      const newline = bytes.indexOf(10, from);
+      const to = newline < 0 ? bytes.length : newline;
+      if (to - from > limit - taken) {
+        runs.push(bytes.subarray(from, characterStart(bytes, from + limit - taken, from)));
+        break;
+      }
+      runs.push(bytes.subarray(from, to));
+      taken += to - from;
       if (newline >= 0) break;
     }
-    return out;
+    return decodeRuns(runs);
   }
 
   /** A store of explicitly typed lines, for patches built in memory. Its
-   * text is not read from a diff and is not counted. */
+   * text is not read from a diff and is not counted. A lone surrogate in
+   * a line is held, and read back, as U+FFFD. */
   static fromLines(lines: readonly StoredLine[]): PatchStore {
     const store = new PatchStore();
     if (lines.length === 0) return store;
@@ -314,15 +332,15 @@ export class PatchStore {
     for (let index = 0; index < lines.length; index += 1) {
       const line = lines[index];
       starts[index] = pos;
-      pos += line.content.length + 1;
+      pos += utf8Length(line.content) + 1;
       store.record(index, line.kind);
       if (line.fold) {
         store.folds ??= new Map();
         store.folds.set(index, line.fold);
       }
     }
-    store.chunks.push(text, false, undefined, false);
-    store.pushChunk(text);
+    store.chunks.push(text, undefined, false);
+    store.pushChunk(store.chunks.peek(0, 0));
     store.firstLines.push(0);
     store.counts.push(lines.length);
     store.starts.push(starts);
@@ -367,11 +385,10 @@ export class PatchStore {
     const chunk = this.chunkOf(line);
     const local = line - this.firstLines[chunk];
     const start = this.starts[chunk][local];
-    if (this.isWide(line)) return this.joined(line, chunk, start, Infinity, true);
-    const text = this.chunks.read(chunk, line);
-    if (local + 1 < this.counts[chunk]) return text.slice(start, this.starts[chunk][local + 1] - 1);
-    const newline = text.indexOf('\n', start);
-    if (newline >= 0) return text.slice(start, newline);
+    const bytes = this.chunks.read(chunk, line);
+    if (local + 1 < this.counts[chunk]) return decoder.decode(bytes.subarray(start, this.starts[chunk][local + 1] - 1));
+    const newline = bytes.indexOf(10, start);
+    if (newline >= 0) return decoder.decode(bytes.subarray(start, newline));
     // A line longer than its chunk: the rest is in the chunks after it.
     return this.joined(line, chunk, start, Infinity, true);
   }
@@ -401,6 +418,19 @@ export class PatchStore {
     if (end <= start) return () => {};
     const first = this.chunkOf(start);
     return this.chunks.pin(first, this.lastChunk(first, start, end));
+  }
+
+  /** The end of the lines whose text lies in the chunks that hold lines
+   * [start, end), at least `end`: what a pin of [start, end) holds
+   * anyway, since a pin holds whole chunks. */
+  pinnedEnd(start: number, end: number): number {
+    if (end <= start) return end;
+    const last = this.lastChunk(this.chunkOf(start), start, end);
+    if (last === this.firstLines.length - 1) return Math.max(end, this.lines);
+    // The last line starting in the chunk continues past it unless the
+    // chunk ends with a newline.
+    const after = this.firstLines[last] + this.counts[last];
+    return Math.max(end, this.newlineEnds[last] ? after : after - 1);
   }
 
   /** Makes the text held so far and appended from now on evictable: it
@@ -443,60 +473,35 @@ export class PatchStore {
     return chunk;
   }
 
-  /** Stored position of a line's first character: a size bound, not a
-   * UTF-16 offset (packed text stores bytes). */
+  /** Where a line starts in the patch's UTF-8 bytes. */
   storedLineStart(line: number): number {
     const chunk = this.chunkOf(line);
     return this.storedStarts[chunk] + this.starts[chunk][line - this.firstLines[chunk]];
   }
 
-  /** Stored position just past a line's last character. */
+  /** Where a line's text ends in the patch's UTF-8 bytes, before its
+   * newline. */
   storedLineEnd(line: number): number {
     if (line + 1 < this.lineCount) return this.storedLineStart(line + 1) - 1;
     return this.storedSize - (this.newlineEnds[this.newlineEnds.length - 1] ? 1 : 0);
   }
 
-  /** Lines [start, end) joined with newlines. Throws PatchTextNotResident
-   * when the store does not hold all of them. */
+  /** Lines [start, end) joined with newlines, decoded at once. Throws
+   * PatchTextNotResident when the store does not hold all of them. */
   textRange(start: number, end: number): string {
-    if (end <= start) return '';
-    let wide = this.nextWide(start, end);
-    if (wide === end) return this.storedRange(start, end);
-    // Stored slices between wide lines, each wide line decoded alone.
-    let out = '';
-    let run = start;
-    while (wide < end) {
-      if (run < wide) out += this.storedRange(run, wide) + '\n';
-      out += this.text(wide);
-      run = wide + 1;
-      if (run < end) out += '\n';
-      wide = this.nextWide(run, end);
-    }
-    return run < end ? out + this.storedRange(run, end) : out;
-  }
-
-  /** Lines [start, end) as stored, joined with newlines: not their text.
-   * A packed line is its UTF-8 bytes, one character each, never decoded.
-   * Throws PatchTextNotResident when the store does not hold all of them. */
-  storedRange(start: number, end: number): string {
     if (end <= start) return '';
     const from = this.storedLineStart(start);
     const to = this.storedLineEnd(end - 1);
     const first = this.chunkOf(start);
-    const last = this.chunkOf(end - 1);
-    const firstBase = this.storedStarts[first];
-    const firstText = this.chunks.read(first, start);
-    if (first === last && to - firstBase <= firstText.length) {
-      return firstText.slice(from - firstBase, to - firstBase);
+    const base = this.storedStarts[first];
+    const bytes = this.chunks.read(first, start);
+    if (to - base <= bytes.length) return decoder.decode(bytes.subarray(from - base, to - base));
+    const runs = [bytes.subarray(from - base)];
+    for (let chunk = first + 1; chunk < this.storedStarts.length && this.storedStarts[chunk] < to; chunk += 1) {
+      const held = this.chunks.read(chunk, start);
+      runs.push(held.subarray(0, Math.min(held.length, to - this.storedStarts[chunk])));
     }
-    let out = '';
-    for (let chunk = first; chunk < this.storedStarts.length; chunk += 1) {
-      const base = this.storedStarts[chunk];
-      if (base >= to) break;
-      const text = this.chunks.read(chunk, start);
-      out += text.slice(Math.max(0, from - base), Math.min(text.length, to - base));
-    }
-    return out;
+    return decodeRuns(runs);
   }
 
   private chunkOf(line: number): number {
@@ -532,11 +537,6 @@ export class PatchStore {
     const grown = new Uint8Array(size);
     grown.set(this.kinds);
     this.kinds = grown;
-    if (this.wideBits !== null) {
-      const bits = new Uint8Array(size >> 3);
-      bits.set(this.wideBits);
-      this.wideBits = bits;
-    }
   }
 }
 

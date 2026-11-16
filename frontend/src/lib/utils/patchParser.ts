@@ -1,6 +1,5 @@
 import { formatSourceKey } from './diffSourceKey';
 import { appendFNV1a32, FNV_OFFSET_BASIS_32 } from './fnv1a';
-import { checkPackedCut, checkWideMarks, unpackText } from './packedText';
 import { PatchBody, type BodySegment } from './patchBody';
 import {
   cleanPath,
@@ -30,14 +29,13 @@ import {
 // into files with the same rules as `parsePatchFiles`; each file is a
 // `PatchBody` (`patchBody.ts`).
 
-/** A chunk's byte range and marks as the backend answers them
- * (ReviewDiffChunk): a chunk is packed exactly when `wide` is non-empty,
- * and a backend older than the key answers none. PatchParser.append
- * checks them and stores the chunk under the PatchChunkSpan they make. */
+/** A chunk's byte range and key as the backend answers them
+ * (ReviewDiffChunk); a backend older than the key answers none.
+ * PatchParser.append checks them and stores the chunk under the
+ * PatchChunkSpan they make. */
 export interface PatchChunkMarks {
   offset: number;
   nextOffset: number;
-  wide?: readonly number[];
   key?: PatchTextKey;
 }
 
@@ -154,6 +152,8 @@ export function patchFileFromReviewFile(file: ReviewFile): PatchFile {
 }
 
 interface Section {
+  /** Copied from the chunk text it was read in (keptText), so a section
+   * that spans later chunks keeps none of that text. */
   path: string;
   kind: string;
   additions: number;
@@ -189,14 +189,13 @@ export class PatchParser {
   private hash = FNV_OFFSET_BASIS_32;
   private units = 0;
   private ended = false;
-  private readonly onLine: PatchLineCallback = (line, text, offset, length, wide) => this.classifyLine(line, text, offset, length, wide);
+  private readonly onLine: PatchLineCallback = (line, text, offset, length) => this.classifyLine(line, text, offset, length);
 
-  /** Appends patch text. A plain chunk may end anywhere; a packed one
-   * ends between characters. `chunk` is what the backend answered with
-   * the text (PatchChunkMarks): the byte range for a store that can evict
-   * it, `wide` for packed text, `key` for the source key through the
-   * chunk's end. A chunk with a key is not hashed. Marks the chunk cannot
-   * have are refused before any of the chunk is stored. */
+  /** Appends patch text, which may end anywhere. `chunk` is what the
+   * backend answered with the text (PatchChunkMarks): the byte range for
+   * a store that can evict it, `key` for the source key through the
+   * chunk's end. A chunk with a key is not hashed. A key the chunk cannot
+   * have is refused before any of the chunk is stored. */
   append(data: string, chunk?: PatchChunkMarks): void {
     if (this.ended) throw new Error('patch parser: append after end');
     if (data === '') return;
@@ -214,30 +213,20 @@ export class PatchParser {
   }
 
   // The one check of what a chunk arrives with, and the span it is stored
-  // under. The marks come off the wire, so their types are checked too.
+  // under. The key comes off the wire, so its type is checked too.
   private checkSpan(data: string, chunk: PatchChunkMarks): PatchChunkSpan {
-    const { offset, nextOffset, wide, key } = chunk;
-    if (wide === undefined || (Array.isArray(wide) && wide.length === 0)) {
-      if (key !== undefined) this.checkKey(key, data, false);
-      return { offset, nextOffset, key };
-    }
-    if (!Array.isArray(wide)) throw new Error('patch parser: a packed chunk came with wide marks that are not a list');
-    if (key === undefined) throw new Error('patch parser: a packed chunk came without its key');
-    checkWideMarks(data, wide);
-    checkPackedCut(data);
-    this.checkKey(key, data, true);
-    return { offset, nextOffset, wide, key };
+    const { offset, nextOffset, key } = chunk;
+    if (key !== undefined) this.checkKey(key, data);
+    return { offset, nextOffset, key };
   }
 
-  // A key is cumulative. A plain chunk's text is its units, so its key
-  // counts exactly those more; a packed chunk's bytes decode to no more
-  // units than bytes.
-  private checkKey(key: PatchTextKey, data: string, packed: boolean): void {
-    const most = this.units + data.length;
+  // A key is cumulative and a chunk's text is its units, so its key
+  // counts exactly those more.
+  private checkKey(key: PatchTextKey, data: string): void {
     const valid = typeof key === 'object' && key !== null
       && Number.isInteger(key.hash) && key.hash >= 0 && key.hash < 0x1_0000_0000
       && Number.isSafeInteger(key.units)
-      && (packed ? key.units >= this.units && key.units <= most : key.units === most);
+      && key.units === this.units + data.length;
     if (!valid) throw new Error('patch parser: a chunk came with a key that cannot be its text\'s');
   }
 
@@ -265,16 +254,14 @@ export class PatchParser {
     return formatSourceKey(this.hash, this.units);
   }
 
-  // Prefixes and hunk headers are ASCII, so they read the same in packed
-  // text; what a line keeps is unpacked when `wide`.
-  private classifyLine(line: number, text: string, offset: number, length: number, wide: boolean): LineClass {
+  private classifyLine(line: number, text: string, offset: number, length: number): LineClass {
     const kind = this.body.next(text, offset, length);
     if (startsAt(text, offset, length, 'diff --git ')) {
       this.finishSection(line);
-      const header = lineText(text, offset, offset + length, wide);
+      const header = text.slice(offset, offset + length);
       const parts = header.split(/\s+/);
       this.current = {
-        path: cleanPath(parts[3] ?? ''),
+        path: keptText.own(cleanPath(parts[3] ?? '')),
         kind: 'modified',
         additions: 0,
         deletions: 0,
@@ -300,11 +287,11 @@ export class PatchParser {
       if (startsAt(text, offset, length, 'deleted file')) current.kind = 'deleted';
       if (startsAt(text, offset, length, 'rename from ')) current.kind = 'renamed';
       if (startsAt(text, offset, length, 'rename to ')) {
-        current.path = cleanPath(lineText(text, offset + 'rename to '.length, offset + length, wide));
+        current.path = keptText.own(cleanPath(text.slice(offset + 'rename to '.length, offset + length)));
       }
       if (outside && startsAt(text, offset, length, '+++ ')) {
-        const next = cleanPath(lineText(text, offset + 4, offset + length, wide));
-        if (next && next !== '/dev/null') current.path = next;
+        const next = cleanPath(text.slice(offset + 4, offset + length));
+        if (next && next !== '/dev/null') current.path = keptText.own(next);
       }
       if (plus) current.additions += 1;
       if (minus) current.deletions += 1;
@@ -321,7 +308,7 @@ export class PatchParser {
       if (current && current.firstHunk < 0) current.firstHunk = line;
     } else if (kind !== HUNK_OUTSIDE || PATCH_META_PREFIXES.some((prefix) => startsAt(text, offset, length, prefix))) {
       // A malformed hunk header, the no-newline marker, or a file header.
-      if (current?.leading) readHeaderLine(current.header, lineText(text, offset, offset + length, wide));
+      if (current?.leading) readHeaderLine(current.header, text.slice(offset, offset + length));
       return LINE_META;
     } else {
       // git's one line for a binary file stays a line of the body, as it
@@ -366,7 +353,7 @@ export class PatchParser {
 
   private sectionFile(section: Section): ReviewFile {
     return {
-      path: keptText.own(section.path),
+      path: section.path,
       kind: section.kind,
       additions: section.additions,
       deletions: section.deletions,
@@ -382,7 +369,7 @@ export class PatchParser {
     const segments: BodySegment[] = [{ store: this.store, start: deleted.start, end: deleted.end }];
     if (added.firstHunk >= 0) segments.push({ store: this.store, start: added.firstHunk, end: added.end });
     return {
-      path: keptText.own(deleted.path),
+      path: deleted.path,
       kind: 'modified',
       additions: deleted.additions + added.additions,
       deletions: deleted.deletions + added.deletions,
@@ -396,11 +383,6 @@ export class PatchParser {
 const BINARY_PREFIX_MAX = 16;
 function isBinaryLine(text: string): boolean {
   return text.startsWith('Binary files ') || text.startsWith('GIT binary patch');
-}
-
-// The text of [from, to) of a line callback's `text`.
-function lineText(text: string, from: number, to: number, wide: boolean): string {
-  return wide ? unpackText(text.slice(from, to)) : text.slice(from, to);
 }
 
 function startsAt(text: string, offset: number, length: number, prefix: string): boolean {

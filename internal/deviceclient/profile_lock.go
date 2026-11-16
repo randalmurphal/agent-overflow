@@ -31,7 +31,9 @@ func lockProfile(ctx context.Context, dir, name string) (func() error, error) {
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		return nil, err
 	}
+	started := time.Now()
 	f, err := filelock.Acquire(ctx, filepath.Join(root, name+".lock"))
+	logSlowStep(stepProfileLock, started, err)
 	if err != nil {
 		return nil, err
 	}

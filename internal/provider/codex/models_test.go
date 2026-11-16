@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/testutil/mockexec"
 )
@@ -15,6 +16,7 @@ func TestListModelsUsesCodexMetadataAndStaticContextWindows(t *testing.T) {
 	binary := writeModelListFakeCodex(t, `[{"model":"gpt-5.5","displayName":"gpt-5.5","hidden":false,"supportedReasoningEfforts":[{"reasoningEffort":"low","description":"Fast responses with lighter reasoning"},{"reasoningEffort":"high","description":"Greater reasoning depth for complex problems"},{"reasoningEffort":"xhigh","description":"Extra high reasoning depth for complex problems"}],"defaultReasoningEffort":"high","serviceTiers":[{"id":"priority","name":"Fast","description":"1.5x speed, increased usage"}]},{"model":"legacy-hidden","displayName":"Legacy Hidden","hidden":true,"supportedReasoningEfforts":[{"reasoningEffort":"low","description":"Low"}],"defaultReasoningEffort":"low","serviceTiers":[]}]`)
 
 	models, err := ListModels(context.Background(), ModelListConfig{
+		Reaper:       procutiltest.Reaper(),
 		Binary:       binary,
 		CustomModels: []string{"custom-codex"},
 	})
@@ -216,7 +218,7 @@ func TestListModelsFollowsPagination(t *testing.T) {
 	t.Parallel()
 	binary := writeModelListPagingFakeCodex(t)
 
-	models, err := ListModels(context.Background(), ModelListConfig{Binary: binary})
+	models, err := ListModels(context.Background(), ModelListConfig{Reaper: procutiltest.Reaper(), Binary: binary})
 	if err != nil {
 		t.Fatalf("ListModels: %v", err)
 	}
@@ -237,7 +239,7 @@ func TestListModelsRejectsRepeatedCursor(t *testing.T) {
 	t.Parallel()
 	binary := writeModelListRepeatedCursorFakeCodex(t)
 
-	_, err := ListModels(context.Background(), ModelListConfig{Binary: binary})
+	_, err := ListModels(context.Background(), ModelListConfig{Reaper: procutiltest.Reaper(), Binary: binary})
 	if err == nil || !strings.Contains(err.Error(), "repeated cursor") {
 		t.Fatalf("ListModels repeated cursor error = %v, want repeated cursor", err)
 	}
@@ -247,7 +249,7 @@ func TestListModelsRejectsExcessivePages(t *testing.T) {
 	t.Parallel()
 	binary := writeModelListEndlessPagingFakeCodex(t)
 
-	_, err := ListModels(context.Background(), ModelListConfig{Binary: binary})
+	_, err := ListModels(context.Background(), ModelListConfig{Reaper: procutiltest.Reaper(), Binary: binary})
 	if err == nil || !strings.Contains(err.Error(), "exceeded 20 pages") {
 		t.Fatalf("ListModels excessive pages error = %v, want exceeded pages", err)
 	}
@@ -340,7 +342,7 @@ func contains(values []string, target string) bool {
 func TestListModelsCarriesTheCodexDefault(t *testing.T) {
 	t.Parallel()
 	binary := writeModelListFakeCodex(t, `[{"model":"gpt-6.1-sol","displayName":"GPT-6.1-Sol","hidden":false,"isDefault":true,"supportedReasoningEfforts":[],"defaultReasoningEffort":"medium","serviceTiers":[]},{"model":"gpt-6-luna","displayName":"GPT-6-Luna","hidden":false,"isDefault":false,"supportedReasoningEfforts":[],"defaultReasoningEffort":"low","serviceTiers":[]}]`)
-	models, err := ListModels(context.Background(), ModelListConfig{Binary: binary, CustomModels: []string{"custom-codex"}})
+	models, err := ListModels(context.Background(), ModelListConfig{Reaper: procutiltest.Reaper(), Binary: binary, CustomModels: []string{"custom-codex"}})
 	if err != nil {
 		t.Fatalf("ListModels: %v", err)
 	}

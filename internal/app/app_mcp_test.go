@@ -1,6 +1,7 @@
 package app
 
 import (
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/testutil/mockexec"
 	"context"
 	"encoding/json"
@@ -230,6 +231,7 @@ done
 	binary := filepath.Join(t.TempDir(), "codex")
 	mockexec.Write(t, binary, script)
 	sess, err := codex.NewSession(context.Background(), "ao-thread", codex.Config{
+		Reaper: procutiltest.Reaper(),
 		Binary: binary, Model: "test-model", WorkDir: t.TempDir(),
 	}, func(provider.ProviderEvent) {})
 	if err != nil {

@@ -198,6 +198,14 @@ export class Status {
      * CheckError is why the last check could not answer, "" when it did.
      */
     "checkError"?: string;
+
+    /**
+     * SignInRequired reports that the last check asked nothing because the
+     * provider's login has expired: `claude doctor` would renew the token,
+     * and a renewal past the login's refresh deadline blanks the saved
+     * credential. Nothing is offered until a check after a sign-in answers.
+     */
+    "signInRequired"?: boolean;
     "run": Run;
 
     /** Creates a new Status instance. */
@@ -228,10 +236,10 @@ export class Status {
      * Creates a new Status instance from a string or object.
      */
     static createFrom($$source: any = {}): Status {
-        const $$createField6_0 = $$createType2;
+        const $$createField7_0 = $$createType2;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("run" in $$parsedSource) {
-            $$parsedSource["run"] = $$createField6_0($$parsedSource["run"]);
+            $$parsedSource["run"] = $$createField7_0($$parsedSource["run"]);
         }
         return new Status($$parsedSource as Partial<Status>);
     }

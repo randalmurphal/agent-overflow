@@ -168,11 +168,11 @@ describe('clipSpeechEngine', () => {
     const playback = t.speak(['One.', 'Two.']);
     await t.fetcher.of('One.').resolve();
     await t.element.startLatest();
-    await t.fetcher.of('Two.').reject(new Error('this computer is already reading 4 sentences aloud; try again shortly'));
+    await t.fetcher.of('Two.').reject(new Error('this computer is already reading 4 sections aloud; try again shortly'));
     expect(t.pieces).toEqual([0]);
     t.element.emit('ended');
     await t.clock.fire();
-    await expect(playback.done).rejects.toThrow('this computer is already reading 4 sentences aloud');
+    await expect(playback.done).rejects.toThrow('this computer is already reading 4 sections aloud');
     expectReleased(t);
   });
 

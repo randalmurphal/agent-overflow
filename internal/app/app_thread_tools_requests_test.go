@@ -17,9 +17,11 @@ import (
 	"agent-overflow/internal/flushqueue"
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/identity"
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/store/storetest"
 	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/threadapp"
 	"agent-overflow/internal/threadmode"
@@ -45,6 +47,9 @@ type requestFixture struct {
 	caller store.Thread
 	// callerHeld carries holdCallerTurn's session hold across restart.
 	callerHeld bool
+	// dbPath is the database file, for a test that injects a failure
+	// through a connection of its own.
+	dbPath string
 }
 
 func newRequestFixture(t *testing.T) *requestFixture {
@@ -56,7 +61,8 @@ func newRequestFixture(t *testing.T) *requestFixture {
 // what a test asserting project or worktree behavior needs.
 func newRequestFixtureIn(t *testing.T, workspace string) *requestFixture {
 	t.Helper()
-	app, bus := setupE2EApp(t)
+	dbPath := storetest.ClonePath(t)
+	app, bus := setupE2EAppOn(t, dbPath, t.TempDir())
 	// Exports and answer files land under the data directory; a fixture
 	// without one would write into the repository working directory.
 	app.configDir = t.TempDir()
@@ -65,7 +71,7 @@ func newRequestFixtureIn(t *testing.T, workspace string) *requestFixture {
 		t.Fatalf("create caller thread: %v", err)
 	}
 	app.installThreadRequestObserver()
-	return &requestFixture{app: app, bus: bus, caller: caller}
+	return &requestFixture{app: app, bus: bus, caller: caller, dbPath: dbPath}
 }
 
 // mockClaude installs a provider that answers each user message with one
@@ -268,7 +274,7 @@ func TestThreadRequestSettlesOnlyOnTheTurnThatConsumedIt(t *testing.T) {
 		t.Fatalf("request did not settle: %+v", f.request(t, ack.Token))
 	}
 	// A second, human turn in the same thread.
-	if err := f.app.SendMessage(ack.ThreadID, "and now the other platform", nil); err != nil {
+	if err := f.app.SendMessage(context.Background(), ack.ThreadID, "and now the other platform", nil); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 	f.bus.nextProviderEventOfKind(t, provider.EventTurnComplete, 10*time.Second)
@@ -2122,9 +2128,11 @@ func (f *requestFixture) restart(t *testing.T) *requestFixture {
 		app.threadRequestsWG.Wait()
 	})
 	app.installThreadRequestObserver()
-	after := &requestFixture{app: app, bus: bus, caller: f.caller}
+	after := &requestFixture{app: app, bus: bus, caller: f.caller, dbPath: f.dbPath}
+	// A restarted App has no dispatcher, so its start alone is held.
 	if f.callerHeld {
-		after.holdCallerSession()
+		after.callerHeld = true
+		after.holdCallerStart()
 	}
 	return after
 }
@@ -2142,12 +2150,26 @@ func (f *requestFixture) holdCallerTurn(t *testing.T) {
 	f.holdCallerSession()
 }
 
-// holdCallerSession makes a start of the caller's session spawn nothing.
-// The open turn row alone does not hold a wake: a wake to a caller with no
-// session starts one, and that start dispatches the queue to the provider
-// and deletes the durable row. Other threads start as usual.
+// holdCallerSession keeps a wake to the caller in its durable queue. The open
+// turn row alone does not hold it: a wake to a caller with no session starts
+// one, and the dispatch then sends the queue to the provider, or returns it
+// to the composer when the start left no session. So the caller's session
+// spawns nothing and its queue is never dispatched. Other threads start and
+// dispatch as usual.
 func (f *requestFixture) holdCallerSession() {
 	f.callerHeld = true
+	f.holdCallerStart()
+	app, caller := f.app, f.caller.ID
+	app.triage.SetFlushDispatcher(func(threadID string, items []triage.QueuedFlushItem) {
+		if threadID != caller {
+			app.enqueueFlushDispatch(threadID, items)
+		}
+	})
+}
+
+// holdCallerStart makes a start of the caller's session spawn nothing. Other
+// threads start as usual.
+func (f *requestFixture) holdCallerStart() {
 	app, caller := f.app, f.caller.ID
 	app.startSessionFn = func(threadID string) error {
 		if threadID == caller {
@@ -2431,6 +2453,7 @@ func TestBootSweepSettlesWhatTheRestartInterrupted(t *testing.T) {
 
 	after := f.restart(t)
 	after.app.sweepThreadRequestsAtBoot()
+	after.app.finishThreadRequestSweepAtBoot()
 
 	row := after.awaitRequestState(t, ack.Token, store.ThreadRequestInterrupted)
 	if row.State != store.ThreadRequestInterrupted {
@@ -2759,7 +2782,7 @@ func TestTwoQueuedRequestsSettleOnTheOneTurnThatConsumedThem(t *testing.T) {
 	// dispatch is the behavior under test, not the provider's answer.
 	stdinLog := filepath.Join(t.TempDir(), "claude-stdin.jsonl")
 	sess, err := claude.NewSession(context.Background(), target.ID,
-		claude.Config{Binary: writeClaudeStdinRecorderBinary(t, stdinLog), WorkDir: workspace},
+		claude.Config{Reaper: procutiltest.Reaper(), Retention: claude.UserHomeRetention(0), Binary: writeClaudeStdinRecorderBinary(t, stdinLog), WorkDir: workspace},
 		func(provider.ProviderEvent) {})
 	if err != nil {
 		t.Fatalf("claude.NewSession: %v", err)
@@ -3040,7 +3063,7 @@ func TestThreadStatusSaysTheQueuedMessageIsStillComing(t *testing.T) {
 		// calls thread_status is. Its queue hands the wake straight to the
 		// session, where it waits for the turn boundary: no durable queue
 		// row is left, and the message has still not arrived.
-		if err := f.app.SendMessage(f.caller.ID, "look into the backfill", nil); err != nil {
+		if err := f.app.SendMessage(context.Background(), f.caller.ID, "look into the backfill", nil); err != nil {
 			t.Fatalf("SendMessage: %v", err)
 		}
 		// Mid-turn means the turn is open in the store, not only that the

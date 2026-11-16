@@ -1,6 +1,7 @@
 package app
 
 import (
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/testutil/mockexec"
 	"context"
 	"encoding/json"
@@ -46,8 +47,10 @@ func TestSetThreadMcpServerEnabled_Claude_LiveSession_FiresToggleRPC(t *testing.
 		context.Background(),
 		thread.ID,
 		claude.Config{
-			Binary:  binary,
-			WorkDir: workspace,
+			Reaper:    procutiltest.Reaper(),
+			Retention: claude.UserHomeRetention(0),
+			Binary:    binary,
+			WorkDir:   workspace,
 		},
 		func(provider.ProviderEvent) {},
 	)
@@ -112,6 +115,7 @@ command = "gh-mcp"
 		context.Background(),
 		thread.ID,
 		codex.Config{
+			Reaper:  procutiltest.Reaper(),
 			Binary:  binary,
 			Model:   "gpt-5",
 			WorkDir: workspace,
@@ -184,8 +188,10 @@ func TestListThreadMcpServers_Claude_LiveSession_UsesSessionTruth(t *testing.T) 
 		context.Background(),
 		thread.ID,
 		claude.Config{
-			Binary:  binary,
-			WorkDir: workspace,
+			Reaper:    procutiltest.Reaper(),
+			Retention: claude.UserHomeRetention(0),
+			Binary:    binary,
+			WorkDir:   workspace,
 		},
 		func(provider.ProviderEvent) {},
 	)

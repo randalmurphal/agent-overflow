@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
+	"time"
 
 	"agent-overflow/internal/forgeapi"
 	"agent-overflow/internal/forgeattach"
@@ -37,9 +39,11 @@ type Forge interface {
 	// ListOpenPRs returns open PRs/MRs for the given head/source branch.
 	ListOpenPRs(ctx context.Context, cwd, head string) ([]GitPR, error)
 	// ListMergedPRHeads returns the head branch name + head SHA of up to
-	// `limit` recently merged PRs/MRs. One bulk read backing the prune
-	// preview's squash-merge detection: a gone local branch whose tip
-	// matches a merged PR head was fully pushed before the merge.
+	// `limit` recently merged PRs/MRs, and of a fork's merged into its
+	// parent. One bulk read backing the prune preview's squash-merge
+	// detection: a gone local branch whose tip matches a merged PR head
+	// was fully pushed before the merge. A failed read of the parent
+	// answers the origin's heads beside its error.
 	ListMergedPRHeads(ctx context.Context, cwd string, limit int) ([]MergedPRHead, error)
 	// ReadPRStates reads the state and merge time of every PR in prs, all
 	// of repo's repository, in one request per 100 PRs. A PR the forge does
@@ -122,6 +126,8 @@ func (p PRReadParts) none() bool { return !p.Detail && !p.Threads && !p.CI && !p
 // ReactionsUnavailable is the sentence saying the threads carry no
 // reactions because the read that has them failed (GitLab's award emoji
 // read, which is apart from its discussions); the threads stand.
+// ThreadsTruncated is the sentence saying the threads are the first the
+// read's page bound takes, not all of them (threadsTruncatedSentence).
 type PRRead struct {
 	Detail               PRDetail
 	Threads              []ReviewThread
@@ -129,6 +135,17 @@ type PRRead struct {
 	CI                   CIPipeline
 	HasCI                bool
 	ReactionsUnavailable string
+	ThreadsTruncated     string
+}
+
+// prReadMaxPages bounds the pages of one list a PR read follows: GitHub's
+// review threads, conversation comments and one thread's comments, and
+// GitLab's discussions, each at most prReadMaxPages * 100.
+const prReadMaxPages = 10
+
+// threadsTruncatedSentence is PRRead.ThreadsTruncated for ref.
+func threadsTruncatedSentence(ref PRReference) string {
+	return fmt.Sprintf("Only the first %d threads and comments of this conversation are shown; the rest are on %s.", prReadMaxPages*100, forgeLabels(ref.Forge).host(ref.Host))
 }
 
 // MergedPRHead is one merged PR/MR's head coordinates as returned by
@@ -145,7 +162,10 @@ type MergedPRHead struct {
 const (
 	ReviewVerdictApprove        = "approve"
 	ReviewVerdictRequestChanges = "request-changes"
-	ReviewVerdictComment        = "comment"
+	// ReviewChangesNeedSummary refuses a Request changes review without a
+	// summary, on both forges.
+	ReviewChangesNeedSummary = "Request changes needs a summary saying what to change."
+	ReviewVerdictComment     = "comment"
 
 	MergeabilityConflicts = "conflicts"
 	MergeabilityClean     = "clean"
@@ -196,6 +216,11 @@ type PRDetail struct {
 	// Manage is the Details section and the management capabilities
 	// (forge_manage.go).
 	Manage PRManage `json:"manage"`
+	// Unavailable is a sentence for each optional part of the read the
+	// forge would not answer (team reviewers, check runs, workflow runs),
+	// saying what is not shown and why. The management part's sentence is
+	// Manage.Unavailable.
+	Unavailable []string `json:"unavailable,omitempty"`
 }
 
 type PRDiffRefs struct {
@@ -261,6 +286,13 @@ type ReviewThread struct {
 	IsResolved   bool            `json:"isResolved"`
 	IsOutdated   bool            `json:"isOutdated"`
 	Comments     []ReviewComment `json:"comments"`
+	// CannotResolveReason, set on a resolvable thread, is why the viewer
+	// may not resolve it (or reopen it, once resolved): GitHub's
+	// viewerCanResolve and viewerCanUnresolve, GitLab's role and
+	// authorship. CannotReplyReason is why the viewer may not reply
+	// (GitHub's viewerCanReply). Empty is allowed or unknown.
+	CannotResolveReason string `json:"cannotResolveReason,omitempty"`
+	CannotReplyReason   string `json:"cannotReplyReason,omitempty"`
 }
 
 // ReviewComment is one comment of a thread. ID is what an edit or a
@@ -290,6 +322,10 @@ type ReviewComment struct {
 	URL             string              `json:"url,omitempty"`
 	Suggestions     []CommentSuggestion `json:"suggestions,omitempty"`
 	Reactions       []CommentReaction   `json:"reactions,omitempty"`
+	// CannotReactReason is why the viewer may not add or remove a
+	// reaction here (GitHub's viewerCanReact); empty is allowed or
+	// unknown (GitLab's notes carry no permission).
+	CannotReactReason string `json:"cannotReactReason,omitempty"`
 }
 
 type ReviewReplyTo struct {
@@ -297,9 +333,15 @@ type ReviewReplyTo struct {
 	DatabaseID int64  `json:"databaseID"`
 }
 
+// SubmitReviewRequest is one review. HeadSHA is the head the reviewer's
+// diff was loaded at, and every comment's lines are of that diff: GitHub
+// pins the review and its file comments to it (commit_id), as Approve and
+// PostLineComment do; GitLab refuses with *HeadMovedError before any write
+// when the merge request's head is another, and approves only that head.
 type SubmitReviewRequest struct {
 	Verdict  string              `json:"verdict"`
 	Body     string              `json:"body"`
+	HeadSHA  string              `json:"headSha"`
 	Comments []ReviewLineComment `json:"comments"`
 }
 
@@ -367,11 +409,19 @@ type PartialSubmitError struct {
 	UnpostedReplies []int
 	Unconfirmed     bool
 	Err             error
-	// ApproveErr is an approval the forge refused or did not confirm
-	// besides Err (GitLab approves after the publish): a second outcome,
-	// reported with the first.
-	ApproveErr error
+	// Verdict names the verdict's own write after GitLab's publish, the
+	// approval or the changes-requested thread, when it failed: as Err when
+	// it is the only failure, as VerdictErr beside another one (a second
+	// outcome, reported with the first).
+	Verdict    string
+	VerdictErr error
 }
+
+// The verdict writes PartialSubmitError.Verdict names.
+const (
+	SubmitStepApproval      = "approval"
+	SubmitStepChangesThread = "changes-requested thread"
+)
 
 // ReplyThreadGoneError is a held reply the forge refused because its
 // thread no longer exists (deleted, or its only comment deleted).
@@ -417,10 +467,13 @@ func (e *PartialSubmitError) Error() string {
 	}
 	if e.FailedThreadID != "" {
 		msg := fmt.Sprintf("review submitted, but posting the reply to thread %s failed: %v", e.FailedThreadID, e.Err)
-		if e.ApproveErr != nil {
-			msg += fmt.Sprintf("; the approval failed too: %v", e.ApproveErr)
+		if e.VerdictErr != nil {
+			msg += fmt.Sprintf("; the %s failed too: %v", e.Verdict, e.VerdictErr)
 		}
 		return msg
+	}
+	if e.Verdict != "" {
+		return fmt.Sprintf("review submitted, but the %s failed: %v", e.Verdict, e.Err)
 	}
 	return fmt.Sprintf("review submitted, but a follow-up step failed: %v", e.Err)
 }
@@ -669,9 +722,92 @@ func NormalizePRState(s string) string {
 // without its cancellation. A write the forge may already have applied must
 // finish and report, because a caller that stopped waiting cannot tell an
 // applied write from one never sent. Each request keeps its own bound
-// (forgeapi's read timeout, the Core command timeout).
+// (forgeapi's read timeout, the Core command timeout). The caller's
+// deadline still bounds a write of several requests (writeSteps).
 func forgeWrite(ctx context.Context) context.Context {
-	return context.WithoutCancel(ctx)
+	return context.WithValue(context.WithoutCancel(ctx), forgeWriteCallerKey{}, ctx)
+}
+
+type forgeWriteCallerKey struct{}
+
+// SubmitSettleTimeout bounds the read or cleanup that settles one submit
+// write whose answer did not decide it: GitHub's read of the viewer's
+// reviews, GitLab's read of its pending draft notes and its removal of the
+// drafts a stopped submit created.
+const SubmitSettleTimeout = 30 * time.Second
+
+// writeSteps is the context the steps of a write of several requests run
+// under, from a forgeWrite context: it ends when the caller ends at its
+// deadline, with the caller's cause, and not when the caller cancels. Its
+// reads run on it, so the deadline cuts them; each write runs on the
+// forgeWrite context and asks stopped first, so the deadline stops the
+// write before it starts and never while it is in flight. A run past the
+// deadline is then one write and what settles it (SubmitSettleTimeout).
+func writeSteps(ctx context.Context) (context.Context, context.CancelFunc) {
+	steps, cancel := context.WithCancelCause(ctx)
+	caller := writeCaller(ctx)
+	if caller == nil {
+		return steps, func() { cancel(nil) }
+	}
+	var mu sync.Mutex
+	var timer *time.Timer
+	stop := context.AfterFunc(caller, func() {
+		if cause := deadlineCause(caller); cause != nil {
+			cancel(cause)
+			return
+		}
+		// Cancelled first: the deadline still ends the steps.
+		if deadline, ok := caller.Deadline(); ok {
+			mu.Lock()
+			timer = time.AfterFunc(time.Until(deadline), func() { cancel(context.DeadlineExceeded) })
+			mu.Unlock()
+		}
+	})
+	return steps, func() {
+		stop()
+		mu.Lock()
+		if timer != nil {
+			timer.Stop()
+		}
+		mu.Unlock()
+		cancel(nil)
+	}
+}
+
+// writeCaller is the caller's context forgeWrite detached ctx from, or nil.
+func writeCaller(ctx context.Context) context.Context {
+	caller, _ := ctx.Value(forgeWriteCallerKey{}).(context.Context)
+	return caller
+}
+
+// deadlineCause is caller's cause once it has ended at its deadline, else
+// nil.
+func deadlineCause(caller context.Context) error {
+	select {
+	case <-caller.Done():
+	default:
+		return nil
+	}
+	if !errors.Is(caller.Err(), context.DeadlineExceeded) {
+		return nil
+	}
+	return context.Cause(caller)
+}
+
+// stopped is the error a write of several requests answers instead of
+// starting its next one once its caller's deadline ended it: a request
+// never sent. It reads the caller itself, so a deadline that has ended
+// stops the next request whether or not steps has been told yet.
+func stopped(steps context.Context) error {
+	if caller := writeCaller(steps); caller != nil {
+		if cause := deadlineCause(caller); cause != nil {
+			return &forgeapi.NotSentError{Err: cause}
+		}
+	}
+	if steps.Err() == nil {
+		return nil
+	}
+	return &forgeapi.NotSentError{Err: context.Cause(steps)}
 }
 
 // ReadPR reads the parts of ref want names in one forge read (see
@@ -698,10 +834,22 @@ func (c *Core) ListReviewThreads(ctx context.Context, ref PRReference) ([]Review
 	return read.Threads, err
 }
 
+// SubmitReview posts review (see SubmitReviewRequest); a request without
+// the head it was written against is refused before any request.
 func (c *Core) SubmitReview(ctx context.Context, ref PRReference, review SubmitReviewRequest) (SubmitReviewResult, error) {
 	if err := ref.Validate(); err != nil {
 		return SubmitReviewResult{}, err
 	}
+	head, err := validMergeHead(review.HeadSHA)
+	if err != nil {
+		return SubmitReviewResult{}, err
+	}
+	// GitHub refuses Request changes without a body, and GitLab's is a
+	// thread to resolve, which needs one: both say what to change.
+	if strings.EqualFold(review.Verdict, ReviewVerdictRequestChanges) && strings.TrimSpace(review.Body) == "" {
+		return SubmitReviewResult{}, &ForgeActionError{Kind: ForgeErrorRefused, Message: ReviewChangesNeedSummary}
+	}
+	review.HeadSHA = head
 	return c.ForgeByID(ref.Forge).SubmitReview(forgeWrite(ctx), ref, review)
 }
 

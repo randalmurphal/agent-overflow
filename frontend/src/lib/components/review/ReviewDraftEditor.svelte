@@ -39,7 +39,9 @@
     /** Posting now: which action is primary and why now is withheld.
      * Absent where comments are drafts only. */
     post?: { primary: 'now' | 'draft'; withheld: string | null } | null;
-    /** A comment posted now is in flight or awaiting the forge's answer. */
+    /** The comment is out: a draft being saved, or a comment posted now
+     * in flight or awaiting the forge's answer. The review state holds it,
+     * so a remounted row cannot save it again. */
     pending?: boolean;
     /** The forge's sentence for a comment posted now that it refused. */
     error?: string | null;
@@ -64,19 +66,15 @@
   }
 
   let { editor, body, onBodyChange, onCancel, onSubmit, post = null, pending = false, error = null, consumeFocus, onUseLine, onMove, onCancelMove, onDropRange, preview = null, previewSource = null, suggest = null, agentOnlyReason = null }: Props = $props();
-  let submitting = $state(false);
   let shell: HTMLDivElement | undefined = $state();
-  const saveable = $derived(body.trim().length > 0 && !submitting && editor.state === 'placed' && !editor.repeated);
+  const saveable = $derived(body.trim().length > 0 && !pending && editor.state === 'placed' && !editor.repeated);
 
   async function submit(mode: 'draft' | 'now'): Promise<void> {
     if (!saveable) return;
-    submitting = true;
     try {
       await onSubmit(editor.id, body, mode);
     } catch {
       // The store owns the user-facing error; keep this editor mounted.
-    } finally {
-      submitting = false;
     }
   }
 

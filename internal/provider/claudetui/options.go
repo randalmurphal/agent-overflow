@@ -2,6 +2,7 @@ package claudetui
 
 import (
 	"agent-overflow/internal/logging"
+	"agent-overflow/internal/procutil"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 )
@@ -23,6 +24,10 @@ type Config struct {
 	// headless provider uses (NewProviderEventLogger, nil unless
 	// AGENT_OVERFLOW_DEBUG opts in), so a production session pays nothing.
 	EventLogger *logging.Logger
+	// Reaper ends the interactive claude's process group if the backend dies
+	// first. It is handed the group as the pty starts and released when the
+	// process exits.
+	Reaper procutil.Reaper
 	// Model is the resolved model id (incl. the [1m] suffix when extended
 	// context is requested), reusing the headless model resolution.
 	Model string
@@ -123,11 +128,11 @@ type Config struct {
 	// CLAUDE_CODE_HARBOR_KITE gate and sets it only when the setting asks.
 	CrossSessionEnabled bool
 	CrossSessionInbound string
-	// CleanupPeriodDays is the `cleanupPeriodDays` the `--settings` block
-	// carries, from claude.CleanupPeriodOverride. Zero sends none. The
-	// TUI sweeps the same config home a headless session does; see
-	// claude/retention.go.
-	CleanupPeriodDays int
+	// Retention is the TUI's answer to the transcript sweep, carried in the
+	// `--settings` block. The TUI sweeps the same config home a headless
+	// session does; see claude/retention.go. The zero value refuses the
+	// launch.
+	Retention claude.Retention
 	// Upstream overrides the gateway's forward target. Empty means the real
 	// Anthropic API; tests point it at a stub.
 	Upstream string

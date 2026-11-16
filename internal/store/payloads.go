@@ -395,6 +395,14 @@ func (s *Store) ReplacePayloadData(threadID, id string, data []byte, meta string
 		return err
 	}
 
+	// The chunks go first: the data write recomputes the find text of the
+	// rows that show the payload from its data and chunks
+	// (trg_payloads_find_text_update).
+	if _, err := tx.Exec(
+		`DELETE FROM payload_chunks WHERE thread_id = ? AND payload_id = ?`, threadID, id,
+	); err != nil {
+		return fmt.Errorf("store: replace payload data clear chunks %s: %w", id, err)
+	}
 	// Clearing the span columns in the same UPDATE keeps a replaced
 	// payload from carrying span blobs computed for the superseded
 	// content; the persist tap recomputes them for the new data. The
@@ -410,11 +418,6 @@ func (s *Store) ReplacePayloadData(threadID, id string, data []byte, meta string
 	}
 	if err := requireRowsAffected(result, label); err != nil {
 		return err
-	}
-	if _, err := tx.Exec(
-		`DELETE FROM payload_chunks WHERE thread_id = ? AND payload_id = ?`, threadID, id,
-	); err != nil {
-		return fmt.Errorf("store: replace payload data clear chunks %s: %w", id, err)
 	}
 	if err := bumpHistoryRevForPayloadTx(tx, threadID, id, fmt.Sprintf("store: replace payload data %s", id)); err != nil {
 		return err

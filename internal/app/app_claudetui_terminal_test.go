@@ -1,6 +1,7 @@
 package app
 
 import (
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/testutil/mockexec"
 	"context"
 	"encoding/base64"
@@ -10,6 +11,7 @@ import (
 	"testing"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/claudetui"
 	"agent-overflow/internal/transport"
 )
@@ -31,9 +33,11 @@ func newTakeControlFixture(t *testing.T) (*App, string) {
 
 	const threadID = "thread-take-control"
 	sess, err := claudetui.NewSession(context.Background(), threadID, claudetui.Config{
-		Binary:  binary,
-		WorkDir: dir,
-		Env:     []string{"HOME=" + dir, "PATH=" + os.Getenv("PATH")},
+		Reaper:    procutiltest.Reaper(),
+		Retention: claude.UserHomeRetention(0),
+		Binary:    binary,
+		WorkDir:   dir,
+		Env:       []string{"HOME=" + dir, "PATH=" + os.Getenv("PATH")},
 	}, func(provider.ProviderEvent) {})
 	if err != nil {
 		t.Fatalf("claudetui.NewSession: %v", err)

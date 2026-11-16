@@ -70,7 +70,7 @@ type oneshotSpec struct {
 // startOneshotClient spawns the app-server and completes the
 // initialize/initialized handshake. The returned client is ready for
 // requests; the caller must close it.
-func startOneshotClient(ctx context.Context, spec oneshotSpec) (*oneshotClient, error) {
+func startOneshotClient(ctx context.Context, lifetime provider.Lifetime, spec oneshotSpec) (*oneshotClient, error) {
 	binary := strings.TrimSpace(spec.Binary)
 	if binary == "" {
 		binary = "codex"
@@ -80,7 +80,7 @@ func startOneshotClient(ctx context.Context, spec oneshotSpec) (*oneshotClient, 
 		label = spec.ClientName
 	}
 
-	proc, err := provider.Spawn(ctx, provider.SpawnConfig{
+	proc, err := provider.Spawn(ctx, lifetime, provider.SpawnConfig{
 		Binary:   binary,
 		Args:     codexAppServerArgs(),
 		Dir:      spec.WorkDir,

@@ -260,46 +260,60 @@ func TestGitLabCancelFollowsTheCancelPermission(t *testing.T) {
 	}
 }
 
-// A GitLab before 16.6 has no cancel permission fields, and a field the
-// schema lacks fails the whole document: the read falls back to the
-// document without them, where update decides cancel, and the host is
-// read that way from then on.
-func TestGitLabPipelineJobsWithoutTheCancelPermissions(t *testing.T) {
+// A GitLab below the supported floor lacks project.pipeline(id:) (17.2)
+// and fails the whole rows document: the rows read is refused with the
+// floor sentence before PipelineJobs is sent, for a PR's CI and a
+// pipeline alike.
+func TestGitLabPipelineRowsBelowTheFloorAreRefused(t *testing.T) {
+	t.Parallel()
+	mr := gitlabTestProject + "/merge_requests/7"
+	core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
+		switch {
+		case call.Path == "metadata":
+			return forgeAPIAnswer{Body: `{"version":"17.1.4-ee"}`}
+		case call.Path == gitlabTestProject+"/pipelines/77":
+			return forgeAPIAnswer{Body: `{"id":77,"status":"running","ref":"main","sha":"abc","web_url":"https://gitlab.example/p/77"}`}
+		case call.Path == mr:
+			return forgeAPIAnswer{Body: `{"iid":7,"state":"opened","head_pipeline":{"id":77,"status":"running"}}`}
+		case call.Op == "PipelineJobs":
+			t.Error("PipelineJobs was sent to a server below the floor")
+		}
+		return forgeUnexpected(t, call)
+	})
+	_, err := core.ReadPipeline(t.Context(), gitlabTestRepo(), "77", nil, nil)
+	want := "GitLab on " + testForgeHost + " runs 17.1; GitLab 18.0 or later is needed."
+	if refused, ok := errors.AsType[*ForgeActionError](err); !ok || refused.Message != want {
+		t.Fatalf("ReadPipeline below the floor = %v, want %q", err, want)
+	}
+	if _, err := core.ListPRCIJobs(t.Context(), gitlabTestRef(7), nil, nil); err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("PR CI below the floor = %v, want %q", err, want)
+	}
+	if n := countOp(calls, "PipelineJobs"); n != 0 {
+		t.Fatalf("PipelineJobs reads = %d", n)
+	}
+}
+
+// The rows document always selects the cancel permissions: a server that
+// refuses it fails the read, with no second document.
+func TestGitLabPipelineJobsHasNoFallbackDocument(t *testing.T) {
 	t.Parallel()
 	core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
 		switch {
 		case call.Path == "projects/grp%2Fsub%2Fapp/pipelines/77":
 			return forgeAPIAnswer{Body: `{"id":77,"status":"running","ref":"main","sha":"abc","web_url":"https://gitlab.example/p/77"}`}
-		case call.Op == "PipelineJobs" && strings.Contains(call.Query, "cancelBuild"):
-			return forgeAPIAnswer{Body: `{"errors":[{"message":"Field 'cancelPipeline' doesn't exist on type 'PipelinePermissions'","locations":[{"line":5,"column":40}],"path":["query PipelineJobs","project","pipeline","userPermissions","cancelPipeline"],"extensions":{"code":"undefinedField","typeName":"PipelinePermissions","fieldName":"cancelPipeline"}},{"message":"Field 'cancelBuild' doesn't exist on type 'JobPermissions'","extensions":{"code":"undefinedField","typeName":"JobPermissions","fieldName":"cancelBuild"}}]}`}
 		case call.Op == "PipelineJobs":
-			if strings.Contains(call.Query, "cancelPipeline") {
-				t.Errorf("the fallback document still selects cancelPipeline")
+			if !strings.Contains(call.Query, "cancelBuild") || !strings.Contains(call.Query, "cancelPipeline") {
+				t.Errorf("PipelineJobs without the cancel permissions: %s", call.Query)
 			}
-			page := gitlabJobsPage([]string{"test"}, "",
-				gitlabJobNode("Ci::Build", 12, "lint", "test", "RUNNING", `"startedAt":"2026-10-20T10:00:00Z","cancelable":true,"userPermissions":{"updateBuild":true,"readJobArtifacts":true}`))
-			body := strings.Replace(page.Body, `"pipeline":{`, `"pipeline":{"retryable":false,"cancelable":true,"userPermissions":{"updatePipeline":true},`, 1)
-			return forgeAPIAnswer{Body: body}
+			return forgeAPIAnswer{Body: `{"errors":[{"message":"Field 'cancelBuild' doesn't exist on type 'JobPermissions'","extensions":{"code":"undefinedField","typeName":"JobPermissions","fieldName":"cancelBuild"}}]}`}
 		}
 		return forgeUnexpected(t, call)
 	})
-	for range 2 {
-		pipeline, err := core.ReadPipeline(t.Context(), gitlabTestRepo(), "77", nil, nil)
-		if err != nil {
-			t.Fatalf("ReadPipeline on an older GitLab: %v", err)
-		}
-		if got := FindCIJob(pipeline, "12").Actions.Cancel; got != CIActionAllowed || pipeline.Actions.Cancel != CIActionAllowed {
-			t.Fatalf("cancel on an older GitLab: job %q, pipeline %q, want allowed by update", got, pipeline.Actions.Cancel)
-		}
+	if _, err := core.ReadPipeline(t.Context(), gitlabTestRepo(), "77", nil, nil); err == nil || !strings.Contains(err.Error(), "cancelBuild") {
+		t.Fatalf("refused rows document = %v, want its error", err)
 	}
-	jobsReads := 0
-	for _, op := range calls.ops() {
-		if op == "PipelineJobs" {
-			jobsReads++
-		}
-	}
-	if jobsReads != 3 {
-		t.Fatalf("PipelineJobs reads = %d, want the refused one, its fallback and the second read's fallback alone", jobsReads)
+	if n := countOp(calls, "PipelineJobs"); n != 1 {
+		t.Fatalf("PipelineJobs reads = %d, want 1", n)
 	}
 }
 

@@ -65,6 +65,12 @@ type Host interface {
 	// ResetForgeCaches forgets what the forge adapters remember of each
 	// host and project, which the next fixture can contradict.
 	ResetForgeCaches()
+	// ResetProviderUsage forgets the cached usage readings, the turn
+	// activity that paces their polling and the server holds.
+	ResetProviderUsage()
+	// CancelProviderLogins ends every provider sign-in and leaves each
+	// provider idle.
+	CancelProviderLogins()
 	// PauseMergedPRCleanup stops the merged pull request cleanup, joins it
 	// and drops its in-memory state; resume starts it again from nothing.
 	PauseMergedPRCleanup() (resume func())

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/providertest"
 )
 
 func TestIsThreadNotFoundRequiresTheResumeErrorShape(t *testing.T) {
@@ -158,7 +159,7 @@ func TestDispatchLineServerRequest(t *testing.T) {
 
 	// Server request with id + method — routes to handleServerRequest.
 	ctx, cancel := context.WithCancel(context.Background())
-	proc, err := provider.Spawn(ctx, provider.SpawnConfig{Binary: "cat"})
+	proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{Binary: "cat"})
 	if err != nil {
 		t.Fatalf("spawn: %v", err)
 	}
@@ -295,7 +296,7 @@ func TestCodexSendRequestReturnsErrorWhenSessionStops(t *testing.T) {
 	// the request on the wire rather than between registering and writing it.
 	received := filepath.Join(t.TempDir(), "received")
 	ctx, cancelProc := context.WithCancel(context.Background())
-	proc, err := provider.Spawn(ctx, provider.SpawnConfig{
+	proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{
 		Binary: "sh",
 		Args:   []string{"-c", `IFS= read -r line && : > "$0"; cat >/dev/null`, received},
 	})
@@ -380,7 +381,7 @@ func TestCodexSendRequestReturnsErrorWhenSessionStops(t *testing.T) {
 // that the goroutine count returns to baseline.
 func TestCodexSendRequestTimeoutDrainsLateResponse(t *testing.T) {
 	ctx, cancelProc := context.WithCancel(context.Background())
-	proc, err := provider.Spawn(ctx, provider.SpawnConfig{
+	proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{
 		Binary: "sh",
 		Args:   []string{"-c", "cat >/dev/null"},
 	})
@@ -449,7 +450,7 @@ func TestCodexSendRequestTimeoutDrainsLateResponse(t *testing.T) {
 func TestCodexSendRequestManyTimeoutsDoNotLeak(t *testing.T) {
 	t.Parallel()
 	ctx, cancelProc := context.WithCancel(context.Background())
-	proc, err := provider.Spawn(ctx, provider.SpawnConfig{
+	proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{
 		Binary: "sh",
 		Args:   []string{"-c", "cat >/dev/null"},
 	})
@@ -494,7 +495,7 @@ func TestCodexSendRequestManyTimeoutsDoNotLeak(t *testing.T) {
 func TestCodexReadLoopEmitsDisconnectedOnExit(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
-	proc, err := provider.Spawn(ctx, provider.SpawnConfig{Binary: "cat"})
+	proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{Binary: "cat"})
 	if err != nil {
 		t.Fatalf("spawn: %v", err)
 	}
@@ -541,7 +542,7 @@ func TestCodexReadLoopEmitsErrorStatusOnCleanUnexpectedExit(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	proc, err := provider.Spawn(ctx, provider.SpawnConfig{
+	proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{
 		Binary: "sh",
 		Args:   []string{"-c", "sleep 0.05; exit 0"},
 	})
@@ -588,7 +589,7 @@ func TestCodexReadLoopEmitsErrorStatusOnUnexpectedExit(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	proc, err := provider.Spawn(ctx, provider.SpawnConfig{
+	proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{
 		Binary: "sh",
 		Args:   []string{"-c", "sleep 0.05; exit 9"},
 	})
@@ -640,7 +641,7 @@ func TestCodexReadLoopEmitsErrorStatusOnUnexpectedExit(t *testing.T) {
 func TestCodexReadLoopCleansPendingOnExit(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
-	proc, err := provider.Spawn(ctx, provider.SpawnConfig{Binary: "cat"})
+	proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{Binary: "cat"})
 	if err != nil {
 		t.Fatalf("spawn: %v", err)
 	}

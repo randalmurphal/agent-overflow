@@ -57,6 +57,7 @@ How the app works today. Under [`architecture/`](architecture/).
 | File | 1-line summary |
 |---|---|
 | [`providers.md`](architecture/providers.md) | Provider process model, session identity, approval round-trip. |
+| [`process-lifetime.md`](architecture/process-lifetime.md) | What ends each child process when the backend dies: the orphan reaper and every spawner's lifetime. |
 | [`claude-tui-provider.md`](architecture/claude-tui-provider.md) | The third provider: the real Claude Code TUI in a PTY, with the event stream reconstructed from outside the process. |
 | [`recovery.md`](architecture/recovery.md) | Session recovery on restart, thread switch, disconnect. |
 | [`revert-modes.md`](architecture/revert-modes.md) | Message anchors, fork-from-message, and edit-and-resend conversation rollback. |

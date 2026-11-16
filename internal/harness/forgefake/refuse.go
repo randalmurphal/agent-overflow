@@ -33,10 +33,12 @@ type Refusal struct {
 	Hold   bool              `json:"hold,omitempty"`
 }
 
-// refusalStatuses are the statuses a refusal may answer.
+// refusalStatuses are the statuses a refusal may answer: 404 is GitHub's
+// single sign-on refusal beside X-GitHub-SSO, 502 and 504 its answer to a
+// GraphQL query it stopped after 10 seconds.
 var refusalStatuses = map[int]bool{
-	http.StatusUnauthorized: true, http.StatusForbidden: true, http.StatusMethodNotAllowed: true,
-	http.StatusConflict: true, http.StatusUnprocessableEntity: true,
+	http.StatusUnauthorized: true, http.StatusForbidden: true, http.StatusNotFound: true, http.StatusMethodNotAllowed: true,
+	http.StatusConflict: true, http.StatusUnprocessableEntity: true, http.StatusBadGateway: true, http.StatusGatewayTimeout: true,
 }
 
 // SetRefusal arms refusal on its route, replacing any it had; a Status of
@@ -64,7 +66,7 @@ func (e *Engine) SetRefusal(refusal Refusal) error {
 			return fmt.Errorf("forge refusal: a 200 on %s is a GraphQL refusal and its body carries errors", refusal.Route)
 		}
 	default:
-		return fmt.Errorf("forge refusal: status %d is not 401, 403, 405, 409 or 422 (or 200 with errors on a GraphQL route)", refusal.Status)
+		return fmt.Errorf("forge refusal: status %d is not 401, 403, 404, 405, 409, 422, 502 or 504 (or 200 with errors on a GraphQL route)", refusal.Status)
 	}
 	if len(refusal.Body) > 0 && !json.Valid(refusal.Body) {
 		return fmt.Errorf("forge refusal: body is not JSON")

@@ -95,8 +95,8 @@ async function dispatch(spec: Record<string, unknown>): Promise<unknown> {
   switch (str(spec, 'kind')) {
     case 'viewport':
       // The one query kind that reports settledness, and therefore the one
-      // that pays for the observer. `element`, `globals`, `perf`, `reload`
-      // and `open` answer without it and must not install it.
+      // that pays for the observer. `element`, `globals`, `perf`, `reload`,
+      // `open` and `review-diff-memory` answer without it and must not install it.
       armMutationClock();
       return readViewport(document, {
         settledMs: num(spec, 'settledMs', DEFAULT_SETTLED_MS),
@@ -136,6 +136,8 @@ async function dispatch(spec: Record<string, unknown>): Promise<unknown> {
       return dispatchReload(num(spec, 'delayMs', DEFAULT_RELOAD_DELAY_MS));
     case 'open':
       return dispatchOpen(str(spec, 'threadId'), spec.newPane === true);
+    case 'review-diff-memory':
+      return dispatchReviewDiffMemory(spec);
     case '':
       return fail('query spec has no kind');
     default:
@@ -209,6 +211,33 @@ async function dispatchOpen(threadId: string, newPane: boolean): Promise<unknown
     ? await panes.openThreadInNewPane(thread)
     : await panes.openThreadInPane(thread);
   return { v: 1, opened: true, threadId, paneId: pane.paneId, newPane };
+}
+
+// ---------------------------------------------------------------------------
+// review-diff-memory
+//
+// The review diff text budget (utils/patchMemory.svelte.ts) is 256 MiB, or
+// 64 MiB compact: a spec would stream hundreds of megabytes to cross it.
+// `budgetBytes` sets it for this page (null restores the default) and
+// enforces it at once; the answer reads what the budget holds. It is the
+// same seam the unit tests set, reached only through this harness-only
+// bridge.
+async function dispatchReviewDiffMemory(spec: Record<string, unknown>): Promise<unknown> {
+  const memory = await import('../utils/patchMemory.svelte');
+  if (Object.hasOwn(spec, 'budgetBytes')) {
+    const bytes = spec.budgetBytes;
+    if (bytes !== null && !(typeof bytes === 'number' && Number.isSafeInteger(bytes) && bytes > 0)) {
+      return fail('review-diff-memory budgetBytes must be a positive integer or null');
+    }
+    memory.setPatchTextBudgetForTest(bytes);
+    memory.patchMemory.enforce();
+  }
+  return {
+    v: 1,
+    heldBytes: memory.patchTextHeldBytes(),
+    pinnedBytes: memory.patchTextPinnedBytes(),
+    evictableChunks: memory.patchTextEvictableChunks(),
+  };
 }
 
 function dispatchPerf(spec: Record<string, unknown>): unknown {

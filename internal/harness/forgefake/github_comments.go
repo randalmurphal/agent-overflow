@@ -1,6 +1,7 @@
 package forgefake
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"slices"
@@ -238,6 +239,10 @@ func ghPullCommentReply(e *Engine, c *call, m []string) response {
 	}
 	if strings.TrimSpace(in.Body) == "" {
 		return ghUnprocessable("body is required")
+	}
+	if !p.mayReply() {
+		out, _ := json.Marshal(map[string]any{"message": "Resource not accessible by integration", "status": "403"})
+		return response{stdout: out, stderr: "403 Resource not accessible by integration", status: http.StatusForbidden, header: http.Header{"Content-Type": {"application/json; charset=utf-8"}}}
 	}
 	comment := Comment{ID: e.ids.next(), Author: e.viewer, Body: in.Body, CreatedAt: githubNow()}
 	p.Threads[at].Comments = append(p.Threads[at].Comments, comment)

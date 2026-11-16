@@ -63,6 +63,47 @@ func TestScanSkipsAnOversizedLineAndKeepsReadingTheFile(t *testing.T) {
 	}
 }
 
+// A provider killed while appending leaves its last row cut mid-JSON with no
+// newline. The import keeps every complete row before it.
+func TestLoadSessionImportsPastARowCutMidWrite(t *testing.T) {
+	path := filepath.Join(t.TempDir(), sessionA+".jsonl")
+	writeJSONL(t, path,
+		userRow("u1", "", "start", "2026-01-01T00:00:00.000Z"),
+		assistantRow("a1", "u1", "msg_1", []any{textBlock("answer")}, "2026-01-01T00:00:01.000Z"),
+	)
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatalf("open fixture: %v", err)
+	}
+	if _, err := f.WriteString(`{"type":"user","uuid":"u2","parentUuid":"a1","message":{"role":"user","con`); err != nil {
+		f.Close()
+		t.Fatalf("append cut row: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("close fixture: %v", err)
+	}
+
+	loaded, err := LoadSession(path)
+	if err != nil {
+		t.Fatalf("LoadSession over a cut last row: %v", err)
+	}
+	defer loaded.Close()
+	branch, found, err := loaded.ConvertActiveBranch()
+	if err != nil || !found {
+		t.Fatalf("ConvertActiveBranch: found=%v err=%v", found, err)
+	}
+	var chain []string
+	for _, row := range branch.Chain {
+		chain = append(chain, row.UUID)
+	}
+	if got := strings.Join(chain, ","); got != "u1,a1" {
+		t.Fatalf("active chain = %s, want u1,a1", got)
+	}
+	if len(branch.Events) == 0 {
+		t.Fatal("the complete rows produced no events")
+	}
+}
+
 func TestLoadSessionRefusesAnAbsurdlyLargeTranscript(t *testing.T) {
 	path := filepath.Join(t.TempDir(), sessionA+".jsonl")
 	f, err := os.Create(path)

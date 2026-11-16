@@ -126,6 +126,35 @@ test('next, previous, back 10 seconds and read from here move an OpenAI reading'
   expect(speech.minted.every((m) => SECTION_TEXTS.includes(m.text))).toBe(true);
 });
 
+// Four presses of next inside one task land before any section the skips
+// abandon has been admitted on the computer. Each skip releases what it
+// abandoned there, so bursts past the computer's eight waiting sections
+// and four syntheses keep the reading going.
+test('pressing next in quick bursts keeps an OpenAI reading going', async ({ harness, page }) => {
+  await installSpeechStub(page, { enabled: true });
+  await setUpOpenAIVoices(harness, 'sk-e2e-read-aloud-sections-burst');
+  const sections = 24;
+  await seedSectionReplies(harness, 0, Array.from({ length: sections }, (_, i) => `## Part ${i + 1}\n\nSection ${i + 1}.`).join('\n\n'));
+  await openThread(harness, page);
+  await openVoiceSettings(page);
+  await page.getByTestId('read-aloud-voice-select').selectOption('openai:marin');
+  await page.keyboard.press('Escape');
+
+  const reply = replyParts(page, 'Section 1.');
+  await reply.control('').click();
+  await expect(reply.slot).toHaveAttribute('data-waiting', 'false');
+  for (let burst = 1; burst <= 5; burst += 1) {
+    await reply.control('-next').evaluate((next) => {
+      for (let press = 0; press < 4; press += 1) (next as HTMLButtonElement).click();
+    });
+    await expect(reply.marker).toHaveAttribute('data-section', String(burst * 4));
+    await expect(reply.slot).toHaveAttribute('data-waiting', 'false');
+    await expect(reply.slot).toHaveAttribute('data-phase', 'playing');
+  }
+  await expect(reply.slot).toHaveAttribute('data-phase', 'idle', { timeout: 20_000 });
+  await expect(page.getByTestId('toast-message')).toHaveCount(0);
+});
+
 test('the read-from-here buttons exist only on the reply being read, each shown only on hover', async ({ harness, page }) => {
   await installSpeechStub(page, { enabled: true });
   await seedSectionReplies(harness);

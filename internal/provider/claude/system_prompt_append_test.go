@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/testutil/mockexec"
 )
@@ -54,7 +55,7 @@ func TestBuildArgsPassesTheAppendSystemPromptFileAndSnapshotFlag(t *testing.T) {
 	}
 	t.Cleanup(func() { RemoveSystemPromptFile(appendPath) })
 
-	args := buildArgs(Config{AppendSystemPrompt: "APPENDED GUIDE", InstalledCLIVersion: "2.1.284 (Claude Code)"}, "", appendPath)
+	args := buildArgs(Config{Reaper: procutiltest.Reaper(), AppendSystemPrompt: "APPENDED GUIDE", InstalledCLIVersion: "2.1.284 (Claude Code)"}, "", appendPath)
 	if !hasArgPair(args, "--append-system-prompt-file", appendPath) {
 		t.Errorf("argv lacks --append-system-prompt-file %s: %v", appendPath, args)
 	}
@@ -68,11 +69,11 @@ func TestBuildArgsPassesTheAppendSystemPromptFileAndSnapshotFlag(t *testing.T) {
 		t.Errorf("argv lacks --system-prompt-snapshot off on 2.1.284: %v", args)
 	}
 
-	args = buildArgs(Config{InstalledCLIVersion: "2.1.266"}, "", "")
+	args = buildArgs(Config{Reaper: procutiltest.Reaper(), InstalledCLIVersion: "2.1.266"}, "", "")
 	if slices.Contains(args, "--append-system-prompt-file") || slices.Contains(args, "--system-prompt-snapshot") {
 		t.Errorf("argv carries append or snapshot flags without a guide on an old build: %v", args)
 	}
-	args = buildArgs(Config{InstalledCLIVersion: "2.1.284"}, "", "")
+	args = buildArgs(Config{Reaper: procutiltest.Reaper(), InstalledCLIVersion: "2.1.284"}, "", "")
 	if !hasArgPair(args, "--system-prompt-snapshot", "off") {
 		t.Errorf("snapshot opt-out must not depend on the append: %v", args)
 	}
@@ -105,6 +106,8 @@ func TestNewSessionWritesAndRemovesBothPromptFiles(t *testing.T) {
 
 	dir := t.TempDir()
 	s, err := NewSession(context.Background(), testThread, Config{
+		Reaper:             procutiltest.Reaper(),
+		Retention:          UserHomeRetention(0),
 		Binary:             binary,
 		SystemPrompt:       "REPLACEMENT",
 		AppendSystemPrompt: "APPENDED GUIDE",
@@ -152,6 +155,8 @@ func TestNewSessionRemovesBothPromptFilesWhenTheSpawnFails(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	_, err := NewSession(context.Background(), testThread, Config{
+		Reaper:             procutiltest.Reaper(),
+		Retention:          UserHomeRetention(0),
 		Binary:             t.TempDir() + "/does-not-exist",
 		SystemPrompt:       "REPLACEMENT",
 		AppendSystemPrompt: "APPENDED GUIDE",
@@ -174,6 +179,8 @@ func TestKilledSessionLeavesItsPromptFilesOnlyInTheSystemPromptDir(t *testing.T)
 	dir := t.TempDir()
 	binary := writeArgvRecordingClaude(t, t.TempDir()+"/argv.txt")
 	s, err := NewSession(context.Background(), testThread, Config{
+		Reaper:             procutiltest.Reaper(),
+		Retention:          UserHomeRetention(0),
 		Binary:             binary,
 		SystemPrompt:       "REPLACEMENT",
 		AppendSystemPrompt: "APPENDED GUIDE",
@@ -226,6 +233,8 @@ func TestNewSessionPassesTheSnapshotOptOutToTheProcess(t *testing.T) {
 	}{{"", false}, {"2.1.266", false}, {"2.1.284 (Claude Code)", true}} {
 		argvPath := t.TempDir() + "/argv.txt"
 		s, err := NewSession(context.Background(), testThread, Config{
+			Reaper:              procutiltest.Reaper(),
+			Retention:           UserHomeRetention(0),
 			Binary:              writeArgvRecordingClaude(t, argvPath),
 			InstalledCLIVersion: tc.version,
 		}, func(provider.ProviderEvent) {})

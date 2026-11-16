@@ -26,7 +26,7 @@ import (
 
 func TestSpawnAndEcho(t *testing.T) {
 	ctx := context.Background()
-	p, err := Spawn(ctx, SpawnConfig{Binary: "cat"})
+	p, err := Spawn(ctx, testLifetime, SpawnConfig{Binary: "cat"})
 	if err != nil {
 		t.Fatalf("spawn cat: %v", err)
 	}
@@ -49,7 +49,7 @@ func TestSpawnAndEcho(t *testing.T) {
 
 func TestSpawnMultipleLines(t *testing.T) {
 	ctx := context.Background()
-	p, err := Spawn(ctx, SpawnConfig{Binary: "cat"})
+	p, err := Spawn(ctx, testLifetime, SpawnConfig{Binary: "cat"})
 	if err != nil {
 		t.Fatalf("spawn cat: %v", err)
 	}
@@ -75,7 +75,7 @@ func TestSpawnMultipleLines(t *testing.T) {
 
 func TestCloseGraceful(t *testing.T) {
 	ctx := context.Background()
-	p, err := Spawn(ctx, SpawnConfig{Binary: "cat"})
+	p, err := Spawn(ctx, testLifetime, SpawnConfig{Binary: "cat"})
 	if err != nil {
 		t.Fatalf("spawn cat: %v", err)
 	}
@@ -98,7 +98,7 @@ func TestCloseGraceful(t *testing.T) {
 func TestKillImmediate(t *testing.T) {
 	ctx := context.Background()
 	// sleep won't exit on stdin close, so Kill is the only way.
-	p, err := Spawn(ctx, SpawnConfig{Binary: "sleep", Args: []string{"60"}})
+	p, err := Spawn(ctx, testLifetime, SpawnConfig{Binary: "sleep", Args: []string{"60"}})
 	if err != nil {
 		t.Fatalf("spawn sleep: %v", err)
 	}
@@ -122,7 +122,7 @@ func TestKillImmediate(t *testing.T) {
 func TestReadLineEOFAfterExit(t *testing.T) {
 	ctx := context.Background()
 	// echo outputs one line then exits.
-	p, err := Spawn(ctx, SpawnConfig{Binary: "echo", Args: []string{"hello"}})
+	p, err := Spawn(ctx, testLifetime, SpawnConfig{Binary: "echo", Args: []string{"hello"}})
 	if err != nil {
 		t.Fatalf("spawn echo: %v", err)
 	}
@@ -147,7 +147,7 @@ func TestReadLineEOFAfterExit(t *testing.T) {
 
 func TestWriteLineAfterExit(t *testing.T) {
 	ctx := context.Background()
-	p, err := Spawn(ctx, SpawnConfig{Binary: "true"})
+	p, err := Spawn(ctx, testLifetime, SpawnConfig{Binary: "true"})
 	if err != nil {
 		t.Fatalf("spawn true: %v", err)
 	}
@@ -163,7 +163,7 @@ func TestWriteLineAfterExit(t *testing.T) {
 
 func TestSetpgid(t *testing.T) {
 	ctx := context.Background()
-	p, err := Spawn(ctx, SpawnConfig{Binary: "cat"})
+	p, err := Spawn(ctx, testLifetime, SpawnConfig{Binary: "cat"})
 	if err != nil {
 		t.Fatalf("spawn cat: %v", err)
 	}
@@ -181,7 +181,7 @@ func TestSetpgid(t *testing.T) {
 func TestSpawnWithEnv(t *testing.T) {
 	ctx := context.Background()
 	// Use env to print a specific variable.
-	p, err := Spawn(ctx, SpawnConfig{
+	p, err := Spawn(ctx, testLifetime, SpawnConfig{
 		Binary: "sh",
 		Args:   []string{"-c", "echo $TEST_VAR"},
 		Env:    map[string]string{"TEST_VAR": "hello_from_test"},
@@ -204,7 +204,7 @@ func TestSpawnWithEnv(t *testing.T) {
 
 func TestSpawnWithDir(t *testing.T) {
 	ctx := context.Background()
-	p, err := Spawn(ctx, SpawnConfig{
+	p, err := Spawn(ctx, testLifetime, SpawnConfig{
 		Binary: "pwd",
 		Dir:    "/tmp",
 	})
@@ -228,7 +228,7 @@ func TestSpawnWithDir(t *testing.T) {
 
 func TestSpawnInvalidBinary(t *testing.T) {
 	ctx := context.Background()
-	_, err := Spawn(ctx, SpawnConfig{Binary: "/nonexistent/binary"})
+	_, err := Spawn(ctx, testLifetime, SpawnConfig{Binary: "/nonexistent/binary"})
 	if err == nil {
 		t.Fatal("expected error for nonexistent binary, got nil")
 	}
@@ -319,7 +319,7 @@ func TestProviderEventLoggingCapturesInputAndOutput(t *testing.T) {
 	}
 	defer logger.Close()
 
-	p, err := Spawn(ctx, SpawnConfig{
+	p, err := Spawn(ctx, testLifetime, SpawnConfig{
 		Binary:      "cat",
 		EventLogger: logger,
 		ThreadID:    "thread-123",
@@ -368,7 +368,7 @@ func TestProviderEventLoggingCapturesInputAndOutput(t *testing.T) {
 
 func TestProviderEventLoggingDisabledWithoutLogger(t *testing.T) {
 	ctx := context.Background()
-	p, err := Spawn(ctx, SpawnConfig{Binary: "cat"})
+	p, err := Spawn(ctx, testLifetime, SpawnConfig{Binary: "cat"})
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
@@ -391,7 +391,7 @@ func TestProviderEventLoggingUsesRedactor(t *testing.T) {
 	}
 	defer logger.Close()
 
-	p, err := Spawn(ctx, SpawnConfig{
+	p, err := Spawn(ctx, testLifetime, SpawnConfig{
 		Binary:      "cat",
 		EventLogger: logger,
 		EventLogRedactor: func(_ string, data []byte) []byte {
@@ -438,7 +438,7 @@ func splitNonEmptyLines(data string) []string {
 
 func TestReadLineReturnsCopy(t *testing.T) {
 	ctx := context.Background()
-	p, err := Spawn(ctx, SpawnConfig{Binary: "cat"})
+	p, err := Spawn(ctx, testLifetime, SpawnConfig{Binary: "cat"})
 	if err != nil {
 		t.Fatalf("spawn: %v", err)
 	}
@@ -473,7 +473,7 @@ func TestReadLineReturnsCopy(t *testing.T) {
 
 func TestDoneChannelCloses(t *testing.T) {
 	ctx := context.Background()
-	p, err := Spawn(ctx, SpawnConfig{Binary: "true"})
+	p, err := Spawn(ctx, testLifetime, SpawnConfig{Binary: "true"})
 	if err != nil {
 		t.Fatalf("spawn: %v", err)
 	}
@@ -488,7 +488,7 @@ func TestDoneChannelCloses(t *testing.T) {
 
 func TestErrAccessor(t *testing.T) {
 	ctx := context.Background()
-	p, err := Spawn(ctx, SpawnConfig{Binary: "false"})
+	p, err := Spawn(ctx, testLifetime, SpawnConfig{Binary: "false"})
 	if err != nil {
 		t.Fatalf("spawn: %v", err)
 	}
@@ -503,7 +503,7 @@ func TestErrAccessor(t *testing.T) {
 
 func TestMarshalProcessExitMetaForExitCode(t *testing.T) {
 	ctx := context.Background()
-	p, err := Spawn(ctx, SpawnConfig{Binary: "false"})
+	p, err := Spawn(ctx, testLifetime, SpawnConfig{Binary: "false"})
 	if err != nil {
 		t.Fatalf("spawn: %v", err)
 	}
@@ -526,7 +526,7 @@ func TestMarshalProcessExitMetaForExitCode(t *testing.T) {
 
 func TestMarshalProcessExitMetaForSignal(t *testing.T) {
 	ctx := context.Background()
-	p, err := Spawn(ctx, SpawnConfig{
+	p, err := Spawn(ctx, testLifetime, SpawnConfig{
 		Binary: "sh",
 		Args:   []string{"-c", "kill -TERM $$"},
 	})
@@ -580,7 +580,7 @@ func TestMarshalProcessExitMetaForNonExitError(t *testing.T) {
 
 func TestStderrTailCapturesFinalOutput(t *testing.T) {
 	ctx := context.Background()
-	p, err := Spawn(ctx, SpawnConfig{
+	p, err := Spawn(ctx, testLifetime, SpawnConfig{
 		Binary: "sh",
 		Args:   []string{"-c", `echo "error: unknown option '--thinking-display'" >&2; exit 1`},
 	})
@@ -657,7 +657,7 @@ func TestSanitizeChildStderrBoundsAndFlattens(t *testing.T) {
 
 func TestWaitProcessExitErr(t *testing.T) {
 	ctx := context.Background()
-	p, err := Spawn(ctx, SpawnConfig{Binary: "false"})
+	p, err := Spawn(ctx, testLifetime, SpawnConfig{Binary: "false"})
 	if err != nil {
 		t.Fatalf("spawn: %v", err)
 	}
@@ -725,7 +725,7 @@ func TestIsClosedPipeErr(t *testing.T) {
 func TestCloseEscalatesToSignal(t *testing.T) {
 	shortenGraces(t, 100*time.Millisecond, 2*time.Second)
 	ctx := context.Background()
-	p, err := Spawn(ctx, SpawnConfig{Binary: "sleep", Args: []string{"60"}})
+	p, err := Spawn(ctx, testLifetime, SpawnConfig{Binary: "sleep", Args: []string{"60"}})
 	if err != nil {
 		t.Fatalf("spawn sleep: %v", err)
 	}
@@ -753,7 +753,7 @@ func TestCloseEscalatesToSignal(t *testing.T) {
 // A child that ignores SIGTERM is killed once killGrace passes after it.
 func TestCloseEscalatesToKillWhenTermIsIgnored(t *testing.T) {
 	shortenGraces(t, 100*time.Millisecond, 200*time.Millisecond)
-	p, err := Spawn(context.Background(), SpawnConfig{Binary: writeSignalIgnoringScript(t)})
+	p, err := Spawn(context.Background(), testLifetime, SpawnConfig{Binary: writeSignalIgnoringScript(t)})
 	if err != nil {
 		t.Fatalf("spawn: %v", err)
 	}
@@ -813,7 +813,7 @@ func TestCloseSwallowsExitCodeOnIntentionalShutdown(t *testing.T) {
 	// `false` exits with code 1 immediately. By the time Close runs
 	// the Wait goroutine has already captured the *exec.ExitError into
 	// p.err and closed p.done.
-	p, err := Spawn(ctx, SpawnConfig{Binary: "false", Provider: "claude", ThreadID: "closing-thread"})
+	p, err := Spawn(ctx, testLifetime, SpawnConfig{Binary: "false", Provider: "claude", ThreadID: "closing-thread"})
 	if err != nil {
 		t.Fatalf("spawn: %v", err)
 	}
@@ -854,7 +854,7 @@ func TestReadLineOversizedKillsProcess(t *testing.T) {
 		`perl -e 'print "x" x %d'; sleep 60`,
 		maxLineSize+256*1024,
 	)
-	p, err := Spawn(ctx, SpawnConfig{
+	p, err := Spawn(ctx, testLifetime, SpawnConfig{
 		Binary: "sh",
 		Args:   []string{"-c", script},
 	})
@@ -892,7 +892,7 @@ func TestReadLineJustUnderCapSucceeds(t *testing.T) {
 	// bufio refills so a bogus size counter would trip.
 	payloadLen := 128 * 1024
 	script := fmt.Sprintf(`perl -e 'print "x" x %d; print "\n"'; sleep 60`, payloadLen)
-	p, err := Spawn(ctx, SpawnConfig{
+	p, err := Spawn(ctx, testLifetime, SpawnConfig{
 		Binary: "sh",
 		Args:   []string{"-c", script},
 	})
@@ -918,7 +918,7 @@ func TestReadLineManyUnderCap(t *testing.T) {
 	// the cap; the regression would be a new path that counts bytes across
 	// lines or forgets to reset per-line buffers.
 	script := `for i in $(seq 1 50); do perl -e 'print "y" x 500'; echo; done`
-	p, err := Spawn(ctx, SpawnConfig{
+	p, err := Spawn(ctx, testLifetime, SpawnConfig{
 		Binary: "sh",
 		Args:   []string{"-c", script},
 	})
@@ -1091,7 +1091,7 @@ func TestGracefulCancelSignalsTermBeforeKilling(t *testing.T) {
 	binary := writeSignalTrapScript(t, marker)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	p, err := Spawn(ctx, SpawnConfig{Binary: binary, GracefulCancel: true})
+	p, err := Spawn(ctx, testLifetime, SpawnConfig{Binary: binary, GracefulCancel: true})
 	if err != nil {
 		cancel()
 		t.Fatalf("spawn: %v", err)
@@ -1134,7 +1134,7 @@ func TestGracefulCancelEscalatesToKillWhenTermIsIgnored(t *testing.T) {
 	binary := writeSignalIgnoringScript(t)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	p, err := Spawn(ctx, SpawnConfig{Binary: binary, GracefulCancel: true})
+	p, err := Spawn(ctx, testLifetime, SpawnConfig{Binary: binary, GracefulCancel: true})
 	if err != nil {
 		cancel()
 		t.Fatalf("spawn: %v", err)
@@ -1166,7 +1166,7 @@ func TestSpawnWithoutGracefulCancelKillsImmediately(t *testing.T) {
 	binary := writeSignalTrapScript(t, marker)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	p, err := Spawn(ctx, SpawnConfig{Binary: binary})
+	p, err := Spawn(ctx, testLifetime, SpawnConfig{Binary: binary})
 	if err != nil {
 		cancel()
 		t.Fatalf("spawn: %v", err)

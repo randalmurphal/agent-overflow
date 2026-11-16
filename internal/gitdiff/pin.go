@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"hash"
 	"io"
-	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -428,7 +427,7 @@ func (s *Sides) ReadWorktreeFile(path, blob string, buf []byte) error {
 		s.beforeWorktreeOpen(path)
 	}
 	file, err := root.Open(filepath.FromSlash(path))
-	if errors.Is(err, fs.ErrNotExist) {
+	if isAbsent(err) {
 		return ErrChangedSinceRead
 	}
 	if err != nil {

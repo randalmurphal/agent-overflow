@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"agent-overflow/internal/provider/claude"
 )
 
 // The providers this service checks, in the order every []Status lists them.
@@ -19,9 +21,9 @@ var providerOrder = []string{ProviderClaude, ProviderCodex}
 
 const (
 	checkInterval = time.Hour
-	// checkTimeout bounds one provider's lookup: `claude doctor` plus one
+	// CheckTimeout bounds one provider's lookup: `claude doctor` plus one
 	// small HTTP answer.
-	checkTimeout = time.Minute
+	CheckTimeout = time.Minute
 )
 
 // Binary is one provider installation's executables.
@@ -42,7 +44,13 @@ type Command struct {
 	Args   []string
 	// Env overrides the inherited environment.
 	Env map[string]string
-	Dir string
+	// UnsetEnv names inherited variables the command must not see.
+	UnsetEnv []string
+	Dir      string
+	// Done, when set, is asked about the output so far as it arrives. Once
+	// it answers true the command has said what its caller needs: the
+	// Runner stops it and returns that output with no error.
+	Done func(output string) bool
 }
 
 // Output is a finished command's exit status and the end of its stdout and
@@ -73,7 +81,13 @@ type Deps struct {
 	Env func(providerName string) map[string]string
 	// WorkDir is the directory commands run in.
 	WorkDir func() (string, error)
-	Runner  Runner
+	// ClaudeRetention is a Claude command's answer to the transcript sweep
+	// for a process started in workDir (claude.NewCommandLine).
+	ClaudeRetention func(workDir string) claude.Retention
+	// ClaudeLoginExpired reports that the selected Claude login is past its
+	// refresh deadline, the state in which no Claude process is started.
+	ClaudeLoginExpired func() (bool, error)
+	Runner             Runner
 	// AfterRun runs once an update command exits, before the installed
 	// version is read again.
 	AfterRun func()
@@ -188,7 +202,7 @@ func (s *Service) snapshotLocked() []Status {
 }
 
 // Check looks up every provider again, the providers concurrently, and
-// returns the result. Each lookup is bounded by checkTimeout and ends at
+// returns the result. Each lookup is bounded by CheckTimeout and ends at
 // Stop. After Stop it looks nothing up.
 func (s *Service) Check() []Status {
 	var wg sync.WaitGroup
@@ -212,7 +226,7 @@ func (s *Service) checkProvider(providerName string) checked {
 	providerState := s.providers[providerName]
 	providerState.checkMu.Lock()
 	defer providerState.checkMu.Unlock()
-	ctx, cancel := context.WithTimeout(s.life, checkTimeout)
+	ctx, cancel := context.WithTimeout(s.life, CheckTimeout)
 	result := s.lookup(ctx, providerName)
 	cancel()
 	published := false
@@ -224,7 +238,8 @@ func (s *Service) checkProvider(providerName string) checked {
 		status := &providerState.status
 		status.InstalledVersion = result.installed
 		status.LatestVersion, status.Available, status.CheckError = result.latest, result.available, ""
-		if result.err != nil {
+		status.SignInRequired = errors.Is(result.err, errSignInRequired)
+		if result.err != nil && !status.SignInRequired {
 			status.CheckError = result.err.Error()
 		}
 		status.CheckedAt = s.deps.Now().UnixMilli()
@@ -321,7 +336,7 @@ func unknownProvider(providerName string) error {
 
 // command builds one invocation of executable with env, in the work
 // directory. Callers pass the install their check read, never fresh Deps
-// reads.
+// reads. The Claude CLI itself is started only through claudeCommand.
 func (s *Service) command(providerName, executable string, env map[string]string, args ...string) (Command, error) {
 	if executable == "" {
 		return Command{}, fmt.Errorf("no %s binary is configured", providerName)
@@ -331,4 +346,25 @@ func (s *Service) command(providerName, executable string, env map[string]string
 		return Command{}, fmt.Errorf("resolve the directory to run %s in: %w", providerName, err)
 	}
 	return Command{Binary: executable, Args: args, Env: env, Dir: dir}, nil
+}
+
+// claudeCommand builds one invocation of the Claude CLI: command's rules
+// plus the command line every Claude launch takes, which carries the
+// transcript retention for the work directory.
+func (s *Service) claudeCommand(claudeBinary string, env map[string]string, args ...string) (Command, error) {
+	command, err := s.command(ProviderClaude, claudeBinary, env)
+	if err != nil {
+		return Command{}, err
+	}
+	// A missing dependency gives no answer, which NewCommandLine refuses.
+	var retention claude.Retention
+	if s.deps.ClaudeRetention != nil {
+		retention = s.deps.ClaudeRetention(command.Dir)
+	}
+	line, err := claude.NewCommandLine(retention, "", args...)
+	if err != nil {
+		return Command{}, err
+	}
+	command.Args, command.Env, command.UnsetEnv = line.Args(), line.Env(env), line.UnsetEnv()
+	return command, nil
 }

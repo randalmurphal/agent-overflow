@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"math/rand/v2"
 	"os"
@@ -15,11 +16,23 @@ import (
 	"agent-overflow/internal/jstext/jstexttest"
 )
 
+// wireRoundTrip marshals v as the transport does and decodes it into out,
+// as a JSON client receives it.
+func wireRoundTrip(t *testing.T, v, out any) {
+	t.Helper()
+	buf, err := json.Marshal(v)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if err := json.Unmarshal(buf, out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+}
+
 // checkKeyedReads reads an opened diff to its end several times over,
-// each pass at its own random chunk sizes, with the plain and the packed
-// method. Every chunk's key is the key of the patch text up to its end,
-// the two methods answer the same key, and a re-read of each chunk
-// answers the key it answered first.
+// each pass at its own random chunk sizes. Every chunk's key is the key
+// of the patch text up to its end, and a re-read of each chunk answers
+// the chunk and key it answered first.
 func checkKeyedReads(t *testing.T, app *App, ctx context.Context, opened ReviewDiffOpened, rng *rand.Rand) {
 	t.Helper()
 	if opened.ID == "" || opened.Chunk.EOF {
@@ -39,18 +52,9 @@ func checkKeyedReads(t *testing.T, app *App, ctx context.Context, opened ReviewD
 		text := opened.Chunk.Data
 		for offset := opened.Chunk.NextOffset; ; {
 			maxBytes := gitdiff.MinChunkBytes + rng.IntN(4*gitdiff.MinChunkBytes)
-			var chunk ReviewDiffChunk
-			if rng.IntN(2) == 0 {
-				var err error
-				if chunk, err = app.ReadReviewDiff(ctx, opened.ID, offset, maxBytes); err != nil {
-					t.Fatalf("pass %d: ReadReviewDiff(%d): %v", pass, offset, err)
-				}
-			} else {
-				packed, err := app.ReadReviewDiffPacked(ctx, opened.ID, offset, maxBytes)
-				if err != nil {
-					t.Fatalf("pass %d: ReadReviewDiffPacked(%d): %v", pass, offset, err)
-				}
-				chunk = ReviewDiffChunk{Data: unpackedForTest(t, packed), Offset: packed.Offset, NextOffset: packed.NextOffset, EOF: packed.EOF, Key: packed.Key}
+			chunk, err := app.ReadReviewDiff(ctx, opened.ID, offset, maxBytes)
+			if err != nil {
+				t.Fatalf("pass %d: ReadReviewDiff(%d): %v", pass, offset, err)
 			}
 			text += chunk.Data
 			if want := jstext.EmptyKey.Extend(text); chunk.Key != want {
@@ -65,20 +69,14 @@ func checkKeyedReads(t *testing.T, app *App, ctx context.Context, opened ReviewD
 			}
 			offset = chunk.NextOffset
 		}
-		// A packed chunk's text is its sanitized bytes, so passes compare
-		// as a client would.
-		if pass > 0 && jstext.EmptyKey.Extend(text) != jstext.EmptyKey.Extend(patch) {
+		if pass > 0 && text != patch {
 			t.Fatalf("pass %d read a different patch", pass)
 		}
 		patch = text
 		for _, s := range all {
-			plain, err := app.ReadReviewDiff(ctx, opened.ID, s.chunk.Offset, s.maxBytes)
-			if err != nil || plain.Key != s.chunk.Key || plain.NextOffset != s.chunk.NextOffset {
-				t.Fatalf("pass %d: plain re-read at %d: %+v, %v; want key %+v", pass, s.chunk.Offset, plain.Key, err, s.chunk.Key)
-			}
-			packed, err := app.ReadReviewDiffPacked(ctx, opened.ID, s.chunk.Offset, s.maxBytes)
-			if err != nil || packed.Key != s.chunk.Key {
-				t.Fatalf("pass %d: packed re-read at %d: %+v, %v; want key %+v", pass, s.chunk.Offset, packed.Key, err, s.chunk.Key)
+			again, err := app.ReadReviewDiff(ctx, opened.ID, s.chunk.Offset, s.maxBytes)
+			if err != nil || again != s.chunk {
+				t.Fatalf("pass %d: re-read at %d: %+v, %v; want %+v", pass, s.chunk.Offset, again.Key, err, s.chunk.Key)
 			}
 		}
 	}
@@ -87,18 +85,8 @@ func checkKeyedReads(t *testing.T, app *App, ctx context.Context, opened ReviewD
 	}
 }
 
-// unpackedForTest is a chunk's text: its sanitized UTF-8 when packed,
-// which keys as its raw bytes do, and its data otherwise.
-func unpackedForTest(t *testing.T, chunk ReviewDiffChunk) string {
-	t.Helper()
-	if len(chunk.Wide) == 0 {
-		return chunk.Data
-	}
-	return jstexttest.Unpack(t, chunk.Data)
-}
-
 // The git diff's keys are proven in gitdiff (TestDiffKeyIsTheTextsAtAnyChunking);
-// an edits diff keys its chunks here, read through both methods.
+// an edits diff keys its chunks here.
 func TestReviewDiffKeyIsTheWholeTextsAtAnyChunkingOfAnEditsDiff(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)
@@ -132,25 +120,15 @@ func TestReviewDiffKeysServeConcurrentReads(t *testing.T) {
 	errs := make(chan error, 8)
 	for worker := range 8 {
 		maxBytes := gitdiff.MinChunkBytes * (1 + worker%3)
-		read := app.ReadReviewDiff
-		if worker%2 == 0 {
-			read = app.ReadReviewDiffPacked
-		}
 		wg.Go(func() {
 			var text []byte
 			for offset := int64(0); ; {
-				chunk, err := read(ctx, opened.ID, offset, maxBytes)
+				chunk, err := app.ReadReviewDiff(ctx, opened.ID, offset, maxBytes)
 				if err != nil {
 					errs <- err
 					return
 				}
-				if len(chunk.Wide) == 0 {
-					text = append(text, chunk.Data...)
-				} else {
-					for _, r := range chunk.Data {
-						text = append(text, byte(r))
-					}
-				}
+				text = append(text, chunk.Data...)
 				if want := jstext.EmptyKey.Extend(string(text)); chunk.Key != want {
 					errs <- errors.New("a concurrent read answered a wrong key")
 					return

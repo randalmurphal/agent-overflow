@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"agent-overflow/internal/procutil/procutiltest"
 )
 
 // TestRunInjectsCheckoutPaths pins the env contract setup recipes are written
@@ -22,7 +24,7 @@ func TestRunInjectsCheckoutPaths(t *testing.T) {
 	}
 	t.Setenv(ProjectRootEnv, filepath.Join(t.TempDir(), "stale-project"))
 	t.Setenv(WorktreePathEnv, filepath.Join(t.TempDir(), "stale-worktree"))
-	if err := Run(context.Background(), project, worktree, Config{
+	if err := Run(context.Background(), procutiltest.Reaper(), project, worktree, Config{
 		Run: [][]string{
 			// Relative redirect: also proves the variables agree with the cwd.
 			{"/bin/sh", "-c", `printf '%s\n%s\n%s\n' "$AO_PROJECT_ROOT" "$AO_WORKTREE_PATH" "$PATH" > reported.txt`},
@@ -93,7 +95,7 @@ func TestRunTimeoutKillsTheProcessTree(t *testing.T) {
 	project := t.TempDir()
 	worktree := t.TempDir()
 	started := time.Now()
-	err := Run(context.Background(), project, worktree, Config{
+	err := Run(context.Background(), procutiltest.Reaper(), project, worktree, Config{
 		Run: [][]string{{"/bin/sh", "-c", "sleep 10 & wait"}}, Timeout: "20ms",
 	})
 	if err == nil || !strings.Contains(err.Error(), "timed out") {
@@ -107,7 +109,7 @@ func TestRunTimeoutKillsTheProcessTree(t *testing.T) {
 func TestRunReportsTheFailingCommandsOutputTail(t *testing.T) {
 	project := t.TempDir()
 	worktree := t.TempDir()
-	err := Run(context.Background(), project, worktree, Config{
+	err := Run(context.Background(), procutiltest.Reaper(), project, worktree, Config{
 		Run: [][]string{{"/bin/sh", "-c", "echo diagnosis >&2; exit 3"}},
 	})
 	if err == nil || !strings.Contains(err.Error(), "failed: exit status 3; output tail: diagnosis") {
@@ -120,7 +122,7 @@ func TestRunReportsTheFailingCommandsOutputTail(t *testing.T) {
 func TestRunStopsAtTheFirstFailure(t *testing.T) {
 	project := t.TempDir()
 	worktree := t.TempDir()
-	err := Run(context.Background(), project, worktree, Config{
+	err := Run(context.Background(), procutiltest.Reaper(), project, worktree, Config{
 		Run: [][]string{
 			{"/bin/sh", "-c", "exit 1"},
 			{"/bin/sh", "-c", "printf ran > second.txt"},
@@ -135,13 +137,13 @@ func TestRunStopsAtTheFirstFailure(t *testing.T) {
 }
 
 func TestRunZeroConfigDoesNothing(t *testing.T) {
-	if err := Run(context.Background(), t.TempDir(), t.TempDir(), Config{}); err != nil {
+	if err := Run(context.Background(), procutiltest.Reaper(), t.TempDir(), t.TempDir(), Config{}); err != nil {
 		t.Fatalf("empty setup = %v", err)
 	}
 }
 
 func TestRunRefusesAnUnparseableTimeout(t *testing.T) {
-	err := Run(context.Background(), t.TempDir(), t.TempDir(), Config{Timeout: "later"})
+	err := Run(context.Background(), procutiltest.Reaper(), t.TempDir(), t.TempDir(), Config{Timeout: "later"})
 	if err == nil || !strings.Contains(err.Error(), "invalid worktree setup timeout") {
 		t.Fatalf("bad timeout error = %v", err)
 	}

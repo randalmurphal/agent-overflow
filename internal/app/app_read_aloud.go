@@ -16,18 +16,18 @@ import (
 )
 
 // Read aloud in OpenAI voices: with Settings > Voice's switch on and a key
-// in its file, a client reading a reply aloud sends each sentence here
+// in its file, a client reading a reply aloud sends each section here
 // (MintReadAloudTicket) and fetches its audio from the URL it gets back.
 // The fetch is what calls OpenAI with the key (internal/openai) and answers
 // a WAV file (transport's speech route). Nothing is stored, and the key is
 // read only for each connection's handshake. A write to the switch ends
-// every sentence admitted before it (app_settings_broadcast.go).
+// every section admitted before it (app_settings_broadcast.go).
 
 // readAloudTimeout bounds one fetch's synthesis, retry included.
 const readAloudTimeout = 45 * time.Second
 
 // readAloudOffStatus is the status of a fetch refused because the switch
-// is off or was written since the sentence was admitted. No other failure
+// is off or was written since the section was admitted. No other failure
 // of the route uses it: it is the HTTP form of readaloud.OffCode, and a
 // client stops on it without reporting an error.
 const readAloudOffStatus = http.StatusForbidden
@@ -50,7 +50,7 @@ type ReadAloudSourceStatus struct {
 }
 
 // readAloudAPIOn is the Settings > Voice switch. Off by default: it sends
-// each sentence to OpenAI with this computer's key.
+// each section to OpenAI with this computer's key.
 func (a *App) readAloudAPIOn() bool {
 	return a.settings != nil && a.settings.BackendScreen().Get().ReadAloudAPIEnabled
 }
@@ -77,8 +77,8 @@ func (a *App) ReadAloudSource() (ReadAloudSourceStatus, error) {
 	return status, nil
 }
 
-// MintReadAloudTicket admits one sentence to be spoken in voice and returns
-// the relative URL the audio is fetched from once.
+// MintReadAloudTicket admits one section of a reply to be spoken in voice
+// and returns the relative URL the audio is fetched from once.
 //
 //ao:scope threads:operate
 //ao:route selected
@@ -103,12 +103,31 @@ func (a *App) MintReadAloudTicket(ctx context.Context, text, voice string) (stri
 	}
 	url, err := server.MintSpeechTicket(id)
 	if err != nil {
-		if _, takeErr := sentences.Take(id); takeErr != nil {
-			return "", errors.Join(err, takeErr)
-		}
+		sentences.Release(id)
 		return "", err
 	}
 	return url, nil
+}
+
+// ReleaseReadAloudTicket gives back a URL MintReadAloudTicket returned
+// whose reader no longer wants it, after a skip or a stop: a section still
+// waiting is dropped with its ticket, and one being synthesized ends and
+// gives its slot back before this returns, so the reader's next fetch
+// cannot be refused for it. A section already read or gone is ignored.
+//
+//ao:scope threads:operate
+//ao:route selected
+func (a *App) ReleaseReadAloudTicket(ticketURL string) error {
+	server := a.transportServer.Load()
+	if server == nil {
+		return errors.New("read aloud: transport is not serving")
+	}
+	speechID, err := server.ReleaseSpeechTicket(ticketURL)
+	if err != nil {
+		return err
+	}
+	a.readAloudSentences().Release(speechID)
+	return nil
 }
 
 func (a *App) readAloudSentences() *readaloud.Sentences {
@@ -116,7 +135,7 @@ func (a *App) readAloudSentences() *readaloud.Sentences {
 	return a.readAloud
 }
 
-// ReadAloudTransfer adapts admitted sentences onto the transport's speech
+// ReadAloudTransfer adapts admitted sections onto the transport's speech
 // route. A package function, not a method, so it never becomes an RPC.
 func ReadAloudTransfer(a *App) transport.SpeechTransfer { return readAloudTransfer{app: a} }
 
@@ -127,17 +146,9 @@ func (t readAloudTransfer) SpeakSentence(ctx context.Context, speechID string) (
 	if !a.readAloudAPIOn() {
 		return nil, &transport.SpeechError{Status: readAloudOffStatus, Err: readaloud.ErrOff}
 	}
-	sentence, err := a.readAloudSentences().Take(speechID)
-	switch {
-	case errors.Is(err, readaloud.ErrOff):
-		// Dropped by a write to the switch, which may be back on by now.
-		return nil, &transport.SpeechError{Status: readAloudOffStatus, Err: err}
-	case err != nil:
-		return nil, &transport.SpeechError{Status: http.StatusNotFound, Err: err}
-	}
 	speaking, cancel := context.WithTimeout(ctx, readAloudTimeout)
 	defer cancel()
-	clip, err := a.readAloudSentences().Synthesize(speaking, sentence, a.speakWithOpenAI)
+	clip, err := a.readAloudSentences().Synthesize(speaking, speechID, a.speakWithOpenAI)
 	if err != nil {
 		return nil, readAloudFailure(ctx, err)
 	}
@@ -173,10 +184,14 @@ func readAloudFailure(request context.Context, err error) error {
 	case request.Err() != nil, errors.As(err, &classified):
 		return err
 	case errors.Is(err, readaloud.ErrOff):
+		// Dropped by a write to the switch, which may be back on by now.
 		return &transport.SpeechError{Status: readAloudOffStatus, Err: err}
+	case errors.Is(err, readaloud.ErrUnknown):
+		// Already spent, expired, or given back by its reader.
+		return &transport.SpeechError{Status: http.StatusNotFound, Err: err}
 	case errors.Is(err, context.DeadlineExceeded):
 		return &transport.SpeechError{Status: http.StatusGatewayTimeout,
-			Err: fmt.Errorf("OpenAI took longer than %d seconds to read the sentence aloud", int(readAloudTimeout.Seconds()))}
+			Err: fmt.Errorf("OpenAI took longer than %d seconds to read the section aloud", int(readAloudTimeout.Seconds()))}
 	case errors.Is(err, readaloud.ErrBusy), errors.Is(err, openai.ErrRateLimited):
 		return &transport.SpeechError{Status: http.StatusTooManyRequests, Err: err}
 	}

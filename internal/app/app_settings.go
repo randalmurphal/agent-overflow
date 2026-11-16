@@ -335,8 +335,11 @@ func (a *App) providerBinaryPath(providerName string) string {
 	case string(provider.Claude), string(provider.ClaudeTUI):
 		// The interactive TUI provider drives the same `claude` binary as the
 		// headless one — one binary setting backs both.
-		if path := strings.TrimSpace(cfg.ClaudeBinaryPath); path != "" {
+		if path := strings.TrimSpace(cfg.ClaudeBinaryPath); path != "" && path != settings.DefaultSettings.ClaudeBinaryPath {
 			return path
+		}
+		if a.defaultProviderBinaryOverride != "" {
+			return a.defaultProviderBinaryOverride
 		}
 		return settings.DefaultSettings.ClaudeBinaryPath
 	case string(provider.Codex):

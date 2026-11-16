@@ -10,6 +10,7 @@ import (
 	"agent-overflow/internal/codexapp"
 	"agent-overflow/internal/codexskills"
 	"agent-overflow/internal/codexusage"
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/codex"
@@ -68,6 +69,7 @@ func TestProviderLeafBindingDTOProjectionsAreFieldComplete(t *testing.T) {
 	}
 	app.codexAppOnce.Do(func() {
 		app.codexApp = codexapp.New(codexapp.Deps{
+			Reaper: procutiltest.Reaper(),
 			Binary: func() string { return "codex-test" },
 			ActiveAccount: func() codexapp.AccountSelection {
 				return codexapp.AccountSelection{ID: "account-1", Email: "user@example.com"}
@@ -109,6 +111,7 @@ func TestProviderLeafBindingsAllocateWireSlices(t *testing.T) {
 	app = NewApp()
 	app.codexAppOnce.Do(func() {
 		app.codexApp = codexapp.New(codexapp.Deps{
+			Reaper: procutiltest.Reaper(),
 			Binary: func() string { return "codex-test" }, SkillsCache: cache,
 		})
 	})

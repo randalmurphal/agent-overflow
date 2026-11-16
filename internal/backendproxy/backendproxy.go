@@ -29,6 +29,7 @@ import (
 	"strings"
 	"time"
 
+	"agent-overflow/internal/logging"
 	"agent-overflow/internal/loopback"
 	"agent-overflow/internal/relaysession"
 	"agent-overflow/internal/transport"
@@ -210,7 +211,10 @@ func (c *Carrier) BootstrapURL() string { return c.bootstrapURL }
 // fetch dies on the read rules and a refused upgrade is a bare 1006. The
 // body is bounded and fully read, so the connection is reusable and a
 // caller that wants the manifest's own fields has them.
-func (c *Carrier) FetchBootstrap(ctx context.Context) (int, []byte, error) {
+func (c *Carrier) FetchBootstrap(ctx context.Context) (status int, _ []byte, err error) {
+	defer func(started time.Time) {
+		logging.LogSlowStep(slowStepComponent, stepManifest, started, logging.HTTPOutcome(status, err))
+	}(time.Now())
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.bootstrapURL, nil)
 	if err != nil {
 		return 0, nil, fmt.Errorf("backendproxy: build the manifest request: %w", err)
@@ -272,7 +276,28 @@ func (c *Carrier) CarryUpgrade(w http.ResponseWriter, r *http.Request) {
 		}
 		r = r.WithContext(context.WithValue(r.Context(), upgradeTicketKey{}, ticket))
 	}
+	r = r.WithContext(context.WithValue(r.Context(), upgradeStartedKey{}, time.Now()))
 	c.ws.ServeHTTP(w, r)
+}
+
+// Steps of carrying a page to the upstream, as logged.
+const (
+	slowStepComponent = "backendproxy"
+	stepManifest      = "manifest"
+	stepUpgrade       = "upgrade"
+)
+
+// upgradeStartedKey carries when CarryUpgrade handed the handshake to the
+// proxy, so the upstream's answer or the dial failure can time the step:
+// the proxy only returns once the carried socket closes.
+type upgradeStartedKey struct{}
+
+// logUpgradeStep logs the upstream dial and handshake when it outlasted the
+// threshold (logging.LogSlowStep).
+func logUpgradeStep(ctx context.Context, outcome string) {
+	if started, ok := ctx.Value(upgradeStartedKey{}).(time.Time); ok {
+		logging.LogSlowStep(slowStepComponent, stepUpgrade, started, outcome)
+	}
 }
 
 // CarryTransfer carries one attachment body between the page and the
@@ -410,12 +435,18 @@ func (c *Carrier) newWSProxy() (*httputil.ReverseProxy, error) {
 			// Nothing to mark in paired mode: the ticket was single-use
 			// and is already spent, and the session behind it renews on
 			// its own schedule rather than on a refusal.
+			outcome := logging.StatusOutcome(resp.StatusCode)
+			if resp.StatusCode != http.StatusSwitchingProtocols && outcome == "ok" {
+				outcome = "refused"
+			}
+			logUpgradeStep(resp.Request.Context(), outcome)
 			if session != nil && resp.StatusCode != http.StatusSwitchingProtocols {
 				session.Stale()
 			}
 			return nil
 		},
-		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			logUpgradeStep(r.Context(), logging.ErrorOutcome(err))
 			// An unreachable upstream is a page's ordinary outage: its
 			// reconnect ladder retries and its manifest refetch owns the
 			// "credential is dead" verdict. Log once, answer the shape a

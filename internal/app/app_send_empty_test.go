@@ -33,7 +33,7 @@ func TestEmptySendRefusedBeforeDraftHistoryQueueOrRuntimeEffects(t *testing.T) {
 				case "send", "workflow":
 					_, err = app.SendMessageWithOptions(context.Background(), thread.ID, " \n\t", opts)
 				case "legacy":
-					err = app.SendMessage(thread.ID, "", nil)
+					err = app.SendMessage(context.Background(), thread.ID, "", nil)
 				case "queue":
 					_, err = app.RegisterQueueItem(context.Background(), thread.ID, " \n\t", opts)
 				case "steer":
@@ -70,6 +70,7 @@ func TestEmptyRetryReturnsAcceptedQueueReceiptAcrossSendMethods(t *testing.T) {
 		t.Fatal(err)
 	}
 	opts := SendMessageOptions{SendID: "accepted"}
+	holdFlushQueue(app)
 	first, err := app.RegisterQueueItem(context.Background(), thread.ID, "accepted once", opts)
 	if err != nil {
 		t.Fatal(err)
@@ -105,7 +106,10 @@ func TestQueueAdmitsAttachmentAndRevisionCommentOnlyInput(t *testing.T) {
 			if err := app.store.CreateThread(thread); err != nil {
 				t.Fatal(err)
 			}
-			// Queue admission retains references; dispatch resolves their content.
+			// Queue admission retains references; dispatch resolves their
+			// content. Held, so the dispatch worker does not start the
+			// thread's session and take the row.
+			holdFlushQueue(app)
 			if _, err := app.RegisterQueueItem(context.Background(), thread.ID, "", tc.opts); err != nil {
 				t.Fatal(err)
 			}
@@ -135,15 +139,21 @@ func TestLegacyEmptyQueueSettlesWithoutBlockingMeaningfulInput(t *testing.T) {
 				if err := app.store.InsertFlushQueueItem(row); err != nil {
 					t.Fatal(err)
 				}
-				batch = append(batch, triage.QueuedFlushItem{ID: row.ID, Message: row.Message, Payload: row.Payload, Settlement: app.flushQueueSettlement(thread.ID, row.ID, nil)})
+				batch = append(batch, triage.QueuedFlushItem{ID: row.ID, Message: row.Message, Payload: row.Payload})
 			}
 			batch[0].StaleUserItemID = "stale-empty-user"
 			if err := app.store.InsertItem(store.Item{ID: batch[0].StaleUserItemID, ThreadID: thread.ID, Kind: "user_text", Role: "user"}); err != nil {
 				t.Fatal(err)
 			}
-			// No session: the meaningful message must retain ordinary retry
-			// behavior, while the preceding empty rows settle without dispatch.
-			app.dispatchFlush(thread.ID, batch)
+			// The meaningful message waits in the queue behind the empty
+			// rows, which settle without dispatch and without starting a
+			// session for nothing to send.
+			holdFlushQueue(app)
+			app.triage.RegisterQueueItem(thread.ID, batch[2])
+			app.dispatchFlush(thread.ID, batch[:2])
+			if _, started := app.sessionManager().get(thread.ID); started {
+				t.Fatal("settling empty rows started a session")
+			}
 			rows := durableQueueRows(t, app, thread.ID)
 			if len(rows) != 1 || rows[0].ID != "meaningful" {
 				t.Fatalf("durable queue after empty cleanup: %+v", rows)
@@ -165,7 +175,7 @@ func TestAttachmentOnlySendStillReachesProvider(t *testing.T) {
 	app := newMixedTurnApp(t)
 	thread, capture := newMixedTurnThread(t, app, "attachment-only-send")
 	ids, fileLine := mixedTurnFixture(t, app, thread.ID)
-	if err := app.SendMessage(thread.ID, "", ids); err != nil {
+	if err := app.SendMessage(context.Background(), thread.ID, "", ids); err != nil {
 		t.Fatal(err)
 	}
 	blocks := waitForCapturedUserEnvelopes(t, capture, 1)[0]

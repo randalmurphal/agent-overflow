@@ -150,6 +150,8 @@
   let openPRURL = $derived(safeExternalURL(status?.openPrUrl));
   let prMenuLabel = $derived(hasOpenPR ? labels.openAction : labels.createAction);
   let prLookupError = $derived(status?.openPrLookupError?.trim() ?? '');
+  // The origin is on a forge host this release does not support.
+  let forgeUnsupported = $derived(status?.forge ? '' : (status?.forgeUnsupported?.trim() ?? ''));
   let canCreatePR = $derived(
     status !== null &&
       status.hasUpstream &&
@@ -305,7 +307,7 @@
         />
         <MenuItem
           label={prMenuLabel}
-          description={prLookupError && !hasOpenPR ? `Could not check existing ${labels.noun}: ${prLookupError}` : undefined}
+          description={forgeUnsupported || (prLookupError && !hasOpenPR ? `Could not check existing ${labels.noun}: ${prLookupError}` : undefined)}
           title={
             hasOpenPR && !openPRURL
               ? `Invalid ${labels.longSingular} URL`
@@ -340,18 +342,6 @@
     {/snippet}
   </Popover>
 
-  <LazyOverlay
-    load={() => import('./CommitDialog.svelte')}
-    active={showCommit}
-    props={{ pane, open: showCommit, onClose: handleCommitClose }}
-  />
-
-  <LazyOverlay
-    load={() => import('./CreatePRDialog.svelte')}
-    active={showCreatePR}
-    props={{ pane, open: showCreatePR, onClose: handleCreatePRClose }}
-  />
-
   <ConfirmDialog
     open={showRemoveWorktreeConfirm}
     title="Remove worktree"
@@ -368,3 +358,18 @@
     onCancel={closeRemoveWorktreeConfirm}
   />
 {/if}
+
+<!-- An open dialog outlives a failed or missing status (a dropped
+     connection fails the refresh until recovery answers), so its draft and a
+     commit it is waiting on survive; the dialogs read the pane themselves. -->
+<LazyOverlay
+  load={() => import('./CommitDialog.svelte')}
+  active={showCommit}
+  props={{ pane, open: showCommit, onClose: handleCommitClose }}
+/>
+
+<LazyOverlay
+  load={() => import('./CreatePRDialog.svelte')}
+  active={showCreatePR}
+  props={{ pane, open: showCreatePR, onClose: handleCreatePRClose }}
+/>

@@ -20,7 +20,7 @@ import (
 // author's on main.go line 2, and, unless gone, nothing else.
 func (c *reviewSubmitCase) seedTheirThread(t *testing.T, gone bool) {
 	t.Helper()
-	pull := forgefake.Pull{Number: 9, Title: "Widgets", Author: "octo", HeadRef: "feature", State: "open", Diff: reviewTestDiff}
+	pull := forgefake.Pull{Number: 9, Title: "Widgets", Author: "octo", HeadRef: "feature", HeadSHA: reviewTestHead, State: "open", Diff: reviewTestDiff}
 	if !gone {
 		line := 2
 		pull.Threads = []forgefake.Thread{{ID: map[string]string{"github": "PRRT_theirs", "gitlab": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}[c.pr.Forge], Path: "main.go", Line: &line, Side: "right",
@@ -29,7 +29,11 @@ func (c *reviewSubmitCase) seedTheirThread(t *testing.T, gone bool) {
 	repo := forgefake.Repo{Forge: c.pr.Forge, Project: "acme/widgets", Pulls: []forgefake.Pull{pull}}
 	if c.pr.Forge == "github" {
 		// Below write access, which may edit and delete others' comments.
+		// GitHub would not let TRIAGE resolve either; the knob lets it, so
+		// the resolve cases test the pull check, not the permission.
 		repo.Merge = &forgefake.RepoMerge{Permission: "TRIAGE"}
+		may := true
+		repo.Pulls[0].Viewer = &forgefake.ViewerCan{Resolve: &may}
 	}
 	if _, err := c.engine.Seed(forgefake.Fixture{Viewer: "alice", Repos: []forgefake.Repo{repo}}); err != nil {
 		t.Fatal(err)
@@ -386,7 +390,7 @@ func TestSubmitPRReviewGitLabHeldRepliesKeepTheirDiscussion(t *testing.T) {
 	line := 2
 	seed := func(threads ...forgefake.Thread) {
 		t.Helper()
-		pull := forgefake.Pull{Number: 9, Title: "Widgets", Author: "octo", HeadRef: "feature", State: "open", Threads: threads, Diff: reviewTestDiff}
+		pull := forgefake.Pull{Number: 9, Title: "Widgets", Author: "octo", HeadRef: "feature", HeadSHA: reviewTestHead, State: "open", Threads: threads, Diff: reviewTestDiff}
 		if _, err := c.engine.Seed(forgefake.Fixture{Viewer: "alice", Repos: []forgefake.Repo{{Forge: "gitlab", Project: "acme/widgets", Pulls: []forgefake.Pull{pull}}}}); err != nil {
 			t.Fatal(err)
 		}
@@ -441,5 +445,38 @@ func TestSubmitPRReviewGitLabHeldRepliesKeepTheirDiscussion(t *testing.T) {
 	}
 	if status := c.comment(t, false, lost.ID).Status; status != "draft" {
 		t.Fatalf("the dropped reply is %q, want draft", status)
+	}
+}
+
+// A GitHub resolve runs as the other PR writes: a thread named under a
+// pull it is not on is refused as not_found with nothing changed, and one
+// that lands answers with the sequence of the pump's poll that shows it.
+func TestSetPRThreadResolvedChecksThePullAndSettles(t *testing.T) {
+	t.Parallel()
+	c := newReviewSubmitCase(t, "github")
+	c.seedTheirThread(t, false)
+	stubPRCIFetch(c.app)
+	sub, err := c.app.SubscribePRUpdates(context.Background(), c.pr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = c.app.UnsubscribePRUpdates(context.Background(), sub.ID)
+		c.app.prUpdates.wg.Wait()
+	})
+	other := c.pr
+	other.Number = 10
+	if _, err := c.app.SetPRThreadResolved(context.Background(), other, "PRRT_theirs", true); reviewSubmitCode(err) != "forge_"+gitops.ForgeErrorNotFound {
+		t.Fatalf("resolve under another pull = %v, want not_found", err)
+	}
+	if threadWithBody(c.threads(t), "theirs").IsResolved {
+		t.Fatal("a refused resolve changed the thread")
+	}
+	result, err := c.app.SetPRThreadResolved(context.Background(), c.pr, "PRRT_theirs", true)
+	if err != nil || result.Seq <= sub.Seq {
+		t.Fatalf("resolve = %+v, %v; want the seq of the poll after it, past %d", result, err, sub.Seq)
+	}
+	if !threadWithBody(c.threads(t), "theirs").IsResolved {
+		t.Fatal("the resolve did not change the thread")
 	}
 }

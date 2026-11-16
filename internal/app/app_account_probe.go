@@ -32,10 +32,10 @@ type ProviderAccountEvent struct {
 // (provider:status carries the binary-level diagnostic), don't block
 // app startup.
 //
-// Called from ServiceStartup in a goroutine — the probes spawn
-// short-lived subprocesses (5–8s each) that we never want blocking app
-// boot. Fire-and-forget by design: nothing in-app waits on either
-// probe.
+// Called by the boot's unattended work, on the boot's own goroutine, so
+// its startupProbeWG.Add happens before Shutdown's Wait: the probes spawn
+// short-lived subprocesses (5–8s each) on their own goroutines, which
+// nothing but Shutdown waits for.
 func (a *App) probeStartupAccountInfo() {
 	if a.settings == nil {
 		return

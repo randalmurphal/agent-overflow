@@ -13,6 +13,14 @@ package.
 `ReservedEnvNames` is the source of truth for values AO pins or clears; keep
 the settings copy and its drift test synchronized.
 
+`Spawn` takes a required `Lifetime`: `Watched` for a process that runs until
+its owner closes it, `Bounded` for one that finishes within its context's
+deadline. Both hand the group to the orphan reaper; the zero value, a nil
+reaper and a bounded launch without a deadline start nothing. A launch config
+that reaches `Spawn` carries a `Reaper`; tests pass `procutiltest.Reaper()`, or
+`providertest.Lifetime()` to `Spawn` itself. Which launch has which lifetime is
+in [process lifetime](../../docs/architecture/process-lifetime.md).
+
 Probe working directories are required and absolute. Keep all dimensions of
 `ProbeCacheKey`: binary, account, working directory, and the digest of the
 configured environment. Never place credential values in cache keys.

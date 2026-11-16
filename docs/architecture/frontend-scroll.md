@@ -1739,10 +1739,21 @@ leaves the layout.
 
 A pane that renders a thread timeline uses `stores/threadFind.svelte.ts`,
 and only for an owner advertising `thread-find.v1`: `SearchThreadItems` and
-`SearchTimelineItems` return the hits of the transcript the pane shows
-(main top-level rows, or an agent scope's direct children) in document
-order with their `(turnIndex, itemIndex)`, walking the timeline arms on the
-call's context. One read is in flight per layout pane
+`SearchTimelineItems` return the candidate rows of the transcript the pane
+shows (main top-level rows, or an agent scope's direct children) in
+document order, walking the timeline arms on the call's context. A
+candidate's stored candidate text (`items.find_text`,
+`internal/store/find_candidate.go`) holds the query's loose form, or
+matches every query for a row whose Markdown the store cannot read as the
+frontend does; a candidate may hold no match, and a row that holds one is
+always a candidate. The pane counts a candidate's matches in its find text, the
+text its renderer marks `data-find-text` and the highlighter paints, by
+the find rule over the projection beside each row renderer
+(`chat/threadFindText.ts`), so the count and the paint read the same
+text; `threadFindText.browser.test.ts` holds each kind's projection to
+its render, and `findCandidateVectors.json` holds the store's candidates
+to the projections. An answer stopped at its limit shows the count with a
+`+`. One read is in flight per layout pane
 (`paneFindReads`), across body remounts: a newer query or an invalidation
 waits behind it and replaces any other waiting read, and a close drops
 it. An answer applies only for its query, transcript, owner and switch
@@ -1751,8 +1762,12 @@ searches again. The window's `searchRevision` (any summary change, streaming
 deltas included) drives a rate-bounded re-read. While a find is open it
 calls `watchSearchableEvents`, and the window also counts upserts, deltas,
 patches and removals of its thread or scope that it refuses or does not
-hold, retaining none of them. That re-read that updates the count and
-the current hit without moving the view.
+hold, retaining none of them. A re-read passes the last answer's `since`,
+and the store re-reads only the rows whose `rev` passed it
+(`idx_items_thread_rev`); it answers in full after a delete or move (the
+thread's `history_epoch`), an import change, a capped answer, or more
+changed rows than the limit. A re-read updates the count and the current
+hit without moving the view.
 
 A new query starts at the first hit at or below the reading position
 recorded in the pane's scroll snapshot, else the last; it moves only when
@@ -1769,8 +1784,8 @@ fetches are not committed once it ends. Its paging claims
 when its request settles: the timeline calls `releaseEndedNavigation` at
 every navigation end, and a newer page load or cut releases them too, so
 the window pages again while the request is still out. A newer claim is
-never released by an older navigation. Matches in mounted rows paint through
-`utils/findHighlights.ts`.
+never released by an older navigation. Matches in mounted rows' find
+text paint through `utils/findHighlights.ts`.
 
 A hit goes through `navigateToThreadItem(pane, threadId, itemId)`
 (`stores/threadItemNavigation.ts`). A pane that shows another thread by then

@@ -5,6 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/http"
+	"net/url"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -32,36 +35,37 @@ const gitlabCacheMax = 256
 
 // gitlabProjectSettings is the subset of projects/P the merge options read.
 type gitlabProjectSettings struct {
+	// ID and ForkedFrom are the project's id and, for a fork, the project
+	// it was forked from, where a fork checkout's merge requests open
+	// (ListOpenPRs).
+	ID         int64 `json:"id"`
+	ForkedFrom *struct {
+		ID int64 `json:"id"`
+	} `json:"forked_from_project"`
 	MergeMethod                               string `json:"merge_method"`
 	SquashOption                              string `json:"squash_option"`
 	RemoveSourceBranchAfterMerge              bool   `json:"remove_source_branch_after_merge"`
 	OnlyAllowMergeIfPipelineSucceeds          bool   `json:"only_allow_merge_if_pipeline_succeeds"`
 	OnlyAllowMergeIfAllDiscussionsAreResolved bool   `json:"only_allow_merge_if_all_discussions_are_resolved"`
-	Permissions                               struct {
-		ProjectAccess *gitlabAccessRaw `json:"project_access"`
-		GroupAccess   *gitlabAccessRaw `json:"group_access"`
-	} `json:"permissions"`
-}
-
-type gitlabAccessRaw struct {
-	AccessLevel int `json:"access_level"`
+	// MergeTrainsEnabled is a Premium or Ultimate project's merge trains
+	// ("Indicates if merge trains are enabled."; exposed to every reader
+	// of a licensed project by ee/lib/ee/api/entities/project.rb at
+	// v18.0.0-ee, absent on Free).
+	MergeTrainsEnabled bool `json:"merge_trains_enabled"`
 }
 
 // gitlabDeveloperAccess is the access level GitLab's default branch
 // protection lets merge.
 const gitlabDeveloperAccess = 30
 
-// accessLevel is the viewer's highest access to the project, 0 when the
-// answer carried none.
-func (s gitlabProjectSettings) accessLevel() int {
-	level := 0
-	for _, access := range []*gitlabAccessRaw{s.Permissions.ProjectAccess, s.Permissions.GroupAccess} {
-		if access != nil {
-			level = max(level, access.AccessLevel)
-		}
-	}
-	return level
-}
+// gitlabProjectAccessQuery reads the viewer's role in a project.
+// maxAccessLevel is "Maximum access level of the current user in the
+// project." (GraphQL reference at 18.0), so it counts a group the project
+// is shared with; REST permissions do not (their group_access is the
+// project's own group and its ancestors).
+const gitlabProjectAccessQuery = `query ProjectAccess($fullPath: ID!) {
+  project(fullPath: $fullPath) { maxAccessLevel { integerValue } }
+}`
 
 // gitlabCache holds values read from GitLab for gitlabCacheTTL, at most
 // gitlabCacheMax of them.
@@ -134,6 +138,94 @@ func (f *gitlabForge) projectSettings(ctx context.Context, client *forgeapi.Clie
 	return settings, nil
 }
 
+// gitlabTrainCar is a car of the merge trains API.
+type gitlabTrainCar struct {
+	ID           int64  `json:"id"`
+	TargetBranch string `json:"target_branch"`
+}
+
+// gitlabTrainPageSize is the cars one position read asks for: a car past
+// it reads as queued without a position.
+const gitlabTrainPageSize = 100
+
+// readGitLabMergeTrain is an open merge request's merge train on a merge
+// train project (Premium, Ultimate). Only an armed auto-merge can be on
+// the train, so one that is not costs no request. An armed one reads its
+// car (GET merge_trains/merge_requests/N, "Get merge train information
+// for the requested merge request", 404 when it has none: it joins once
+// its checks pass), and a car its position: GitLab orders a train's
+// active cars by id (MergeTrains::Train#all_cars at v18.0.0-ee), so it
+// is the car's place among the target branch's cars of GET
+// merge_trains?scope=active&sort=asc, read without the branch in the
+// path, which the route does not escape.
+func readGitLabMergeTrain(ctx context.Context, client *forgeapi.Client, ref PRReference, mr gitlabMRRaw, canRemove bool) (*MergeQueue, error) {
+	queue := &MergeQueue{Required: true}
+	if !mr.MergeWhenPipelineSucceeds {
+		return queue, nil
+	}
+	queue.CanRemove = canRemove
+	trains := gitlabProjectPath(ref.Project()) + "/merge_trains"
+	var car gitlabTrainCar
+	if _, err := client.JSON(ctx, forgeapi.Request{Path: trains + "/merge_requests/" + strconv.Itoa(ref.Number)}, &car); err != nil {
+		if status, ok := errors.AsType[*forgeapi.StatusError](err); ok && status.Status == http.StatusNotFound {
+			return queue, nil
+		}
+		return nil, err
+	}
+	queue.Queued = true
+	var cars []gitlabTrainCar
+	query := url.Values{"scope": {"active"}, "sort": {"asc"}, "per_page": {strconv.Itoa(gitlabTrainPageSize)}}
+	resp, err := client.JSON(ctx, forgeapi.Request{Path: trains, Query: query}, &cars)
+	if err != nil {
+		return nil, err
+	}
+	size := 0
+	for _, each := range cars {
+		if each.TargetBranch != mr.TargetBranch {
+			continue
+		}
+		size++
+		if each.ID == car.ID {
+			queue.Position = size
+		}
+	}
+	if strings.TrimSpace(resp.Header.Get("X-Next-Page")) == "" {
+		queue.Size = size
+	}
+	return queue, nil
+}
+
+// viewerAccess is the current login's access level in repo (10 guest to
+// 50 owner, 0 for none), read with gitlabProjectAccessQuery at most once
+// per login per gitlabCacheTTL and published under the credential that
+// answered, as projectSettings is.
+func (f *gitlabForge) viewerAccess(ctx context.Context, client *forgeapi.Client, ref RepoReference) (int, error) {
+	fp, err := client.CredentialFingerprint(ctx)
+	if err != nil {
+		return 0, err
+	}
+	key := func(fp string) string { return fp + " " + ref.Host + " " + ref.Project() }
+	if access, ok := f.access.get(key(fp), f.core.nowFn()); ok {
+		return access, nil
+	}
+	var raw struct {
+		Project *struct {
+			MaxAccessLevel struct {
+				IntegerValue int `json:"integerValue"`
+			} `json:"maxAccessLevel"`
+		} `json:"project"`
+	}
+	resp, err := client.GraphQL(ctx, "ProjectAccess", gitlabProjectAccessQuery, map[string]any{"fullPath": ref.Project()}, &raw)
+	if err != nil {
+		return 0, err
+	}
+	if raw.Project == nil {
+		return 0, fmt.Errorf("GitLab answered no project %s on %s", ref.Project(), ref.Host)
+	}
+	f.access.put(key(resp.Credential), raw.Project.MaxAccessLevel.IntegerValue, f.core.nowFn())
+	return raw.Project.MaxAccessLevel.IntegerValue, nil
+}
+
 // viewerLogin is the username host's current login reads as (GET user),
 // read at most once per login per gitlabCacheTTL and published under the
 // credential that answered (Response.Credential), as projectSettings is.
@@ -201,12 +293,13 @@ func (f *gitlabForge) readViewer(ctx context.Context, client *forgeapi.Client, h
 // gitlabFillMerge fills the detail's readiness, merge options, end of
 // life and whether viewer (the login's username, empty when unknown)
 // authored it from the merge request, its approvals, the project's
-// settings and the read's events.
-func gitlabFillMerge(detail *PRDetail, mr gitlabMRRaw, approvals gitlabApprovalsRaw, settings gitlabProjectSettings, events []ReviewEvent, viewer string) {
+// settings, the viewer's access level (viewerAccess, needed only when it
+// cannot merge) and the read's events.
+func gitlabFillMerge(detail *PRDetail, mr gitlabMRRaw, approvals gitlabApprovalsRaw, settings gitlabProjectSettings, access int, events []ReviewEvent, viewer string) {
 	detail.ViewerIsAuthor = viewer != "" && strings.EqualFold(viewer, mr.Author.Username)
 	detail.Readiness = gitlabReadiness(mr, approvals, settings)
 	detail.Readiness.Approvals = ApprovalCount{Given: len(approvals.ApprovedBy), Required: approvals.ApprovalsRequired}
-	detail.Merge = gitlabMergeOptions(mr, approvals, settings, detail.Readiness, events, detail.ViewerIsAuthor)
+	detail.Merge = gitlabMergeOptions(mr, approvals, settings, access, detail.Readiness, events, detail.ViewerIsAuthor)
 	switch NormalizePRState(mr.State) {
 	case "merged":
 		detail.MergedAt = mr.MergedAt
@@ -457,7 +550,8 @@ const gitlabAutoMergePrefix = "enabled an automatic merge"
 // author is whether the viewer opened the merge request: GitLab lets the
 // author cancel an auto-merge without merge rights and refuses the
 // author's approval unless the project allows it (user_can_approve).
-func gitlabMergeOptions(mr gitlabMRRaw, approvals gitlabApprovalsRaw, settings gitlabProjectSettings, readiness MergeReadiness, events []ReviewEvent, author bool) MergeOptions {
+// access is the viewer's access level, 0 when unknown.
+func gitlabMergeOptions(mr gitlabMRRaw, approvals gitlabApprovalsRaw, settings gitlabProjectSettings, access int, readiness MergeReadiness, events []ReviewEvent, author bool) MergeOptions {
 	open := NormalizePRState(mr.State) == "open"
 	fork := mr.SourceProjectID != 0 && mr.ProjectID != 0 && mr.SourceProjectID != mr.ProjectID
 	out := MergeOptions{
@@ -465,11 +559,18 @@ func gitlabMergeOptions(mr gitlabMRRaw, approvals gitlabApprovalsRaw, settings g
 		ViewerCanMerge:   mr.User.CanMerge,
 		ViewerCanApprove: approvals.UserCanApprove,
 		ViewerApproved:   approvals.UserHasApproved,
+		// GitLab answers no rebase or draft permission of its own: a rebase
+		// is offered with merge rights, the draft toggle to them and the
+		// author, and an approver may always withdraw their approval.
+		ViewerCanUpdateBranch: open && mr.User.CanMerge,
+		ViewerCanUnapprove:    open && approvals.UserHasApproved,
+		ViewerCanMarkReady:    open && (mr.User.CanMerge || author),
 	}
 	if !open {
 		return out
 	}
-	if !fork {
+	// A merge train takes no branch delete (gitlabJoinMergeTrain).
+	if !fork && !settings.MergeTrainsEnabled {
 		out.DeleteBranchOffered = true
 		out.DeleteBranchDefault = settings.RemoveSourceBranchAfterMerge
 		if mr.ForceRemoveSourceBranch != nil {
@@ -483,17 +584,26 @@ func gitlabMergeOptions(mr gitlabMRRaw, approvals gitlabApprovalsRaw, settings g
 		out.AutoMerge = gitlabAutoMerge(mr, out.Methods, events, author)
 	}
 	if !mr.User.CanMerge {
-		if level := settings.accessLevel(); level > 0 && level < gitlabDeveloperAccess {
+		if access > 0 && access < gitlabDeveloperAccess {
 			out.CannotMergeReason = "Your role in this project cannot merge."
 		} else {
 			out.CannotMergeReason = fmt.Sprintf("You do not have merge access to %s.", mr.TargetBranch)
 		}
+		out.CannotUpdateBranchReason = "Rebasing this branch needs merge access to this project."
+		if !author {
+			out.CannotMarkReadyReason = "Only the author and people with merge access can mark this merge request ready."
+		}
 	}
-	if !approvals.UserCanApprove && !approvals.UserHasApproved {
+	switch {
+	case !approvals.UserCanApprove && !approvals.UserHasApproved:
 		out.CannotApproveReason = "You are not an eligible approver."
 		if author {
 			out.CannotApproveReason = "You cannot approve your own merge request."
 		}
+	case approvals.UserCanApprove && approvals.RequirePasswordToApprove:
+		// gitlabApproveRequest refuses the approve itself.
+		out.ViewerCanApprove = false
+		out.CannotApproveReason = gitlabApprovalPasswordReason
 	}
 	return out
 }
@@ -618,6 +728,14 @@ func gitlabNoteEvent(body string) (kind, ref, text string, ok bool) {
 		return EventAutoMergeCancel, "", "", true
 	case strings.HasPrefix(plain, "aborted the automatic merge"):
 		return EventAutoMergeCancel, "", plain, true
+	// A merge train's (SystemNotes::MergeTrainService at v18.0.0-ee),
+	// whose link is dropped.
+	case strings.HasPrefix(plain, "started a [merge train]"), strings.HasPrefix(plain, "added this merge request to the [merge train]"),
+		plain == "enabled automatic add to merge train when checks pass":
+		return EventAutoMergeSet, "", gitlabDropLinks(plain), true
+	case strings.HasPrefix(plain, "removed this merge request from the merge train"), plain == "cancelled automatic add to merge train",
+		strings.HasPrefix(plain, "aborted automatic add to merge train"):
+		return EventAutoMergeCancel, "", plain, true
 	case strings.HasPrefix(plain, "changed target branch from "),
 		strings.HasPrefix(plain, "deleted the `") && strings.Contains(plain, "This merge request now targets the `"):
 		return EventBaseChanged, gitlabLastCode(plain), "", true
@@ -625,6 +743,14 @@ func gitlabNoteEvent(body string) (kind, ref, text string, ok bool) {
 		return EventReviewRequested, gitlabReviewers(strings.TrimPrefix(plain, "requested review from ")), "", true
 	}
 	return "", "", "", false
+}
+
+// gitlabMarkdownLink is a Markdown link, its text the first group.
+var gitlabMarkdownLink = regexp.MustCompile(`\[([^\]]*)\]\([^)]*\)`)
+
+// gitlabDropLinks is text with each Markdown link replaced by its text.
+func gitlabDropLinks(text string) string {
+	return gitlabMarkdownLink.ReplaceAllString(text, "$1")
 }
 
 // gitlabLastCode is the last `quoted` name in a note.

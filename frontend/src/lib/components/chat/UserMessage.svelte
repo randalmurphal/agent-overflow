@@ -15,7 +15,6 @@
   import CopyButton from '../primitives/CopyButton.svelte';
   import UserMessageBody from './UserMessageBody.svelte';
   import ShellCommandBlock from './ShellCommandBlock.svelte';
-  import { textWithoutShellInvocations } from '../../utils/shellInvocation';
   import UserMessageEditor from './UserMessageEditor.svelte';
   import { preservePaneScrollAnchorAt } from './preserveScrollAnchor';
   import Icon from '../primitives/Icon.svelte';
@@ -25,8 +24,8 @@
   import {
     parseUserMessageAttachments,
     parseUserMessageMeta,
-    stripAttachmentImages,
     userMessageCommandRanges,
+    userMessageVisibleText,
     peerSessionOriginLabel,
     userMessageOrigin,
     userMessageOriginThread,
@@ -166,10 +165,7 @@
     { cache },
   );
   // The typed `!command` a shell output stands for is shown by its block.
-  const visibleSummary = $derived(textWithoutShellInvocations(
-    stripAttachmentImages(item.summary).trimEnd(),
-    shellOutputs.map((attachment) => attachment.shell!),
-  ));
+  const visibleSummary = $derived(userMessageVisibleText(item.summary, attachments));
   // A message that is nothing but commands is drawn as the blocks themselves,
   // without the message bubble around them.
   const commandsOnly = $derived(

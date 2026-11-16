@@ -38,7 +38,7 @@ export interface LaunchOptions {
   dataDir?: string;
   /** Extra environment (merged over process.env). */
   env?: Record<string, string>;
-  /** Boot deadline in ms. Default 30s (first boot migrates the DB). */
+  /** Bound of the bootstrap-line launch step in ms. Default BOOTSTRAP_STEP_MS. */
   timeoutMs?: number;
   /** Hard per-process fallback when the Go launcher cannot install a kernel aggregate limit. */
   memoryLimitBytes?: number;

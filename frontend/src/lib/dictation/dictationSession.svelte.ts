@@ -104,6 +104,9 @@ export interface DictationRemote {
   live: LiveDictationRemote;
 }
 
+/** Why a recording ended on its own when its microphone went away. */
+export const MIC_ENDED = 'The microphone stopped (unplugged, or its permission was withdrawn), so the recording ended there.';
+
 /** A recording stops itself after this long; the computer caps the bytes. */
 export const MAX_RECORDING_MS = 10 * 60 * 1000;
 
@@ -173,7 +176,12 @@ export class DictationSession {
       this.error = 'This browser cannot record audio.';
       return;
     }
-    const attempt = new Attempt(this.env, this.remote);
+    const attempt: Attempt = new Attempt(this.env, this.remote, (err) => {
+      // An upload or the recorder failed: stop now, not when the user
+      // finishes speaking into a recording that cannot be sent.
+      attempt.abandon();
+      this.settle(attempt, errorMessage(err, 'Recording upload failed.'));
+    });
     this.current = attempt;
     this.activeSource = 'recorded';
     this.phase = 'starting';
@@ -280,7 +288,8 @@ export class DictationSession {
     const refusal = attempt.refusal();
     if (refusal !== null) {
       attempt.abandon();
-      this.settle(attempt, refusal);
+      // A microphone that went away explains an empty recording better.
+      this.settle(attempt, attempt.micEnded ? MIC_ENDED : refusal);
       return;
     }
     try {
@@ -295,7 +304,10 @@ export class DictationSession {
       // mic says so.
       this.settle(attempt, this.onTranscript(text) ? attempt.lostEnding() : 'The transcript could not be inserted.');
     } catch (err) {
-      attempt.finished();
+      // A finish whose answer never arrived may still be running on the
+      // computer; one the computer refused is gone, and the cancel does
+      // nothing there.
+      attempt.abandon();
       if (this.current !== attempt) return;
       if (attempt instanceof LiveAttempt) this.settleLiveFailure(attempt, err);
       else this.settle(attempt, errorMessage(err, 'Transcription failed.'));
@@ -353,6 +365,8 @@ export class DictationSession {
 interface Recording {
   stream: MediaStream | null;
   recordingId: string | null;
+  /** The microphone's track ended from outside the session. */
+  readonly micEnded: boolean;
   sample(): number;
   /** Stops capture, keeps its last audio, and releases the microphone. */
   stopRecording(): Promise<void>;
@@ -369,14 +383,37 @@ interface Recording {
   abandon(): void;
 }
 
+/** Calls `onEnded` once when a track of `stream` ends from outside the
+ * session (unplugged, permission withdrawn); stopping a track fires
+ * nothing. A track already ended calls it on the next microtask, once the
+ * caller is recording. Returns the unwatch. */
+function watchMicrophone(stream: MediaStream, onEnded: () => void): () => void {
+  const tracks = stream.getTracks();
+  let done = false;
+  const fire = (): void => {
+    if (done) return;
+    done = true;
+    onEnded();
+  };
+  for (const track of tracks) track.addEventListener('ended', fire);
+  if (tracks.some((track) => track.readyState === 'ended')) queueMicrotask(fire);
+  return () => {
+    done = true;
+    for (const track of tracks) track.removeEventListener('ended', fire);
+  };
+}
+
 /** One recorded attempt and everything it holds. */
 class Attempt implements Recording {
   stream: MediaStream | null = null;
   recordingId: string | null = null;
+  micEnded = false;
   pieces = 0;
   uploads: Promise<void> = Promise.resolve();
   private readonly env: DictationEnvironment;
   private readonly remote: DictationRemote;
+  private readonly onFailed: (err: unknown) => void;
+  private unwatch: (() => void) | null = null;
   private recorder: RecorderLike | null = null;
   private meter: LevelMeter | null = null;
   private levelTimer: unknown = null;
@@ -400,12 +437,16 @@ class Attempt implements Recording {
   /** The computer has let the recording go: finished, or told to cancel. */
   private released = false;
 
-  constructor(env: DictationEnvironment, remote: DictationRemote) {
+  /** `onFailed` ends the attempt when an upload or the recorder fails. */
+  constructor(env: DictationEnvironment, remote: DictationRemote, onFailed: (err: unknown) => void) {
     this.env = env;
     this.remote = remote;
+    this.onFailed = onFailed;
   }
 
-  record(format: RecordingFormat, onLevel: () => void, onCap: () => void): void {
+  /** `onEnd` stops the recording: at the cap, or when the microphone goes
+   * away. */
+  record(format: RecordingFormat, onLevel: () => void, onEnd: () => void): void {
     const stream = this.stream!;
     const recordingId = this.recordingId!;
     const recorder = this.env.createRecorder(stream, format);
@@ -422,16 +463,18 @@ class Attempt implements Recording {
         try {
           await this.remote.upload(recordingId, seq, data);
         } catch (err) {
-          if (!this.abandoned) this.uploadError = err;
+          this.fail(err);
         }
       });
     };
     this.stopped = new Promise((resolve) => {
       recorder.onstop = () => resolve();
     });
-    recorder.onerror = () => {
-      if (!this.abandoned) this.uploadError = new Error('The recorder stopped unexpectedly.');
-    };
+    recorder.onerror = () => this.fail(new Error('The recorder stopped unexpectedly.'));
+    this.unwatch = watchMicrophone(stream, () => {
+      this.micEnded = true;
+      onEnd();
+    });
     this.meter = this.env.createLevelMeter(stream);
     this.metered = this.meter !== null;
     this.stretchSeconds = this.meter?.stretchSeconds ?? 0;
@@ -439,8 +482,14 @@ class Attempt implements Recording {
     this.unheard = this.metered ? [] : null;
     this.startedAt = this.env.now();
     this.levelTimer = this.env.setInterval(onLevel, LEVEL_INTERVAL_MS);
-    this.capTimer = this.env.setTimeout(onCap, MAX_RECORDING_MS);
+    this.capTimer = this.env.setTimeout(onEnd, MAX_RECORDING_MS);
     recorder.start(format.timeslice);
+  }
+
+  private fail(err: unknown): void {
+    if (this.abandoned || this.uploadError !== null) return;
+    this.uploadError = err;
+    this.onFailed(err);
   }
 
   sample(): number {
@@ -491,21 +540,21 @@ class Attempt implements Recording {
 
   /** Why the recording should not be transcribed, or null to transcribe. */
   refusal(): string | null {
-    if (this.uploadError !== null) return errorMessage(this.uploadError, 'Recording upload failed.');
     // Without a meter, or a verdict on its silence, there is no silence
     // check; the computer decides.
     if ((this.metered && !this.unjudged && this.peak < SILENCE_PEAK) || this.pieces === 0) return 'No speech heard.';
     return null;
   }
 
-  /** An upload failure is this attempt's refusal, settled by stop. */
+  /** An upload or recorder failure settles through onFailed. */
   failed(): boolean {
-    return false;
+    return this.uploadError !== null;
   }
 
-  /** The recorder hands over its last piece before it stops. */
+  /** The recorder hands over its last piece before it stops; only a
+   * microphone that went away cut the recording short. */
   lostEnding(): string | null {
-    return null;
+    return this.micEnded ? MIC_ENDED : null;
   }
 
   finished(): void {
@@ -538,6 +587,8 @@ class Attempt implements Recording {
   private releaseDevices(): void {
     this.meter?.close();
     this.meter = null;
+    this.unwatch?.();
+    this.unwatch = null;
     if (this.stream) stopStream(this.stream);
     this.stream = null;
     if (this.recorder) {
@@ -554,6 +605,8 @@ class Attempt implements Recording {
 class LiveAttempt implements Recording {
   stream: MediaStream | null = null;
   recordingId: string | null = null;
+  micEnded = false;
+  private unwatch: (() => void) | null = null;
   private readonly env: DictationEnvironment;
   private readonly remote: LiveDictationRemote;
   private readonly onHeard: (heard: string) => void;
@@ -585,7 +638,9 @@ class LiveAttempt implements Recording {
     this.onFailed = onFailed;
   }
 
-  capture(pcm: PcmStream, onLevel: () => void, onCap: () => void): void {
+  /** `onEnd` stops the recording: at the cap, or when the microphone goes
+   * away. */
+  capture(pcm: PcmStream, onLevel: () => void, onEnd: () => void): void {
     if (this.abandoned || this.stream === null) {
       pcm.close();
       return;
@@ -600,8 +655,12 @@ class LiveAttempt implements Recording {
     // The meter only drives the ring here; silence is judged from every
     // sample sent, which a sampled meter can miss between reads.
     this.meter = this.env.createLevelMeter(this.stream!);
+    this.unwatch = watchMicrophone(this.stream, () => {
+      this.micEnded = true;
+      onEnd();
+    });
     this.levelTimer = this.env.setInterval(onLevel, LEVEL_INTERVAL_MS);
-    this.capTimer = this.env.setTimeout(onCap, MAX_RECORDING_MS);
+    this.capTimer = this.env.setTimeout(onEnd, MAX_RECORDING_MS);
   }
 
   /** The computer is connecting; once it has, what was queued meanwhile
@@ -707,6 +766,7 @@ class LiveAttempt implements Recording {
   }
 
   lostEnding(): string | null {
+    if (this.micEnded) return MIC_ENDED;
     if (this.flushError === null) return null;
     return `The end of the recording may be missing: ${errorMessage(this.flushError, 'the microphone capture did not stop cleanly.')}`;
   }
@@ -746,6 +806,8 @@ class LiveAttempt implements Recording {
       this.pcm.close();
     }
     this.pcm = null;
+    this.unwatch?.();
+    this.unwatch = null;
     if (this.stream) stopStream(this.stream);
     this.stream = null;
   }

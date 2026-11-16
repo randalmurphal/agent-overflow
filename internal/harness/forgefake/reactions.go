@@ -127,6 +127,7 @@ func ghReactionTarget(e *Engine, c *call, v graphQLVars) response {
 	return graphQLData(map[string]any{"node": map[string]any{
 		"__typename":     typename,
 		"pullRequest":    map[string]any{"number": p.Number, "repository": map[string]any{"nameWithOwner": r.Project}},
+		"viewerCanReact": p.mayReact(),
 		"reactionGroups": e.githubReactionGroups(comment[at]),
 	}})
 }
@@ -152,6 +153,9 @@ func ghReaction(add bool) func(e *Engine, c *call, v graphQLVars) response {
 		_, p, thread, at, ok := e.githubCommentByNode(c, id)
 		if !ok {
 			return graphQLMutationError(field, "NOT_FOUND", fmt.Sprintf("Could not resolve to a node with the global id of '%s'", id))
+		}
+		if !p.mayReact() {
+			return graphQLMutationError(field, "FORBIDDEN", fmt.Sprintf("%s does not have the correct permissions to execute `%s`", e.viewer, map[bool]string{true: "AddReaction", false: "RemoveReaction"}[add]))
 		}
 		comments := p.Comments
 		if thread >= 0 {
@@ -291,15 +295,11 @@ func glabDeleteNoteAward(e *Engine, c *call, m []string) response {
 // glabNoteReactions answers MRNoteReactions: every note of the merge
 // request (its threads', its conversation comments and replies, its
 // system notes) in pages of 100 from after, each with its awards in one
-// page of 100. A server that lacks Note.awardEmoji (ServerLacks
-// "awardEmoji") refuses the document as such a server does.
+// page of 100.
 func glabNoteReactions(e *Engine, c *call, v graphQLVars) response {
-	r, p, fail, ok := e.glabGraphQLMR(c, v, "fullPath")
+	_, p, fail, ok := e.glabGraphQLMR(c, v, "fullPath")
 	if !ok {
 		return fail
-	}
-	if r.lacks(lacksAwardEmoji) {
-		return glabGraphQLInvalid("Field 'awardEmoji' doesn't exist on type 'Note'")
 	}
 	offset, err := v.cursor("after")
 	if err != nil {

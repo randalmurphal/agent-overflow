@@ -17,10 +17,19 @@ an allowlist entry when its exception is fixed.
 - Use `keyedSignalRegistry.svelte.ts` for push-fed keyed state with no resource
   lifecycle. `set` is the only box creator. Svelte does not track state created
   inside the reaction currently reading it.
-- Use `snapshotStream.ts` for a keyed stream of sequenced frames that converges
-  with a full-snapshot RPC. It owns the buffer of frames that arrive during a
-  read, newest-read-wins, and the replay over the snapshot; the owning store
-  keeps the state, what a snapshot means, and how a frame folds in.
+- Use `snapshotStream.ts` whenever a call's answer is state the frames of a
+  channel also change. The transport writes events queued for a connection
+  ahead of a reply, including ones published after the method returned, so
+  frames of work a call started can precede its answer, and can name a key
+  only that answer reveals. `hydrate` reads a key's snapshot
+  (newest-read-wins); `claim` runs any other call, holding one key, or
+  every key when the answer names one the client does not know yet. Both
+  buffer the held keys' frames and replay them over the applied answer; the
+  owning store keeps the state, what an answer means, and how a frame folds
+  in. When the producer publishes outside the lock that orders its states,
+  it numbers them (a per-process `Seq`) and the fold keeps the newest per
+  launch through `createSequenceGate`. Never apply an answer over frames
+  without one of these.
 - Entity values use deep `$state` by default. Set `rawValue: true` only when all
   writers replace values wholesale. In-place mutation of a raw value does not
   wake readers.
@@ -72,8 +81,10 @@ the second `wailsEventOn` argument; an empty `backendId` means unknown origin.
 Treat persisted row events as distributed convergence:
 
 - `thread:updated` and `project:updated` apply the complete row for `full` and
-  `listed`; `unlisted` and `deleted` remove it. A thread `full` frame never adds
-  unknown sidebar membership. A `patch` changes only its named fields.
+  `listed`; `unlisted` and `deleted` remove it. A thread `emptied` frame removes
+  only its sidebar row: panes showing it and its per-thread state stay. A thread
+  `full` frame never adds unknown sidebar membership. A `patch` changes only its
+  named fields.
 - A thread row an RPC returns is applied with `syncThreadReply` (or
   `threadReplyRow`) and a `threadRowFrameMark` taken before the call, so a
   frame that arrived during the call is not undone by the older reply.
@@ -212,7 +223,9 @@ Change thread, project and group rows through the catalog writer's `mutate`,
 a pure transform that `computerCatalogReads.ts` records for the reads of that
 computer in flight and replays over their answers. A pushed or local change
 must never drop an answer: nothing would re-read a catalog that has not
-loaded.
+loaded. The transform carries the change's whole meaning over any answer: a
+`listed` frame upserts its row (`listThread`, `listProjectLocal`), since the
+answer it replays over may lack a row the client already held.
 
 Frontend preferences and appearance libraries remain local to the frontend and
 survive host removal. Mirror only generated `FRONTEND_DEVICE_SETTINGS_KEYS` to
@@ -263,8 +276,18 @@ installs every held row at once.
 `composerDraftSnapshots` serializes draft persistence. A prepared send is a fixed
 ordering boundary: admit its snapshot before clearing the composer, enqueue later
 edits behind it, and never dispatch after preparation fails. Only the write that
-ran and still matches may clear pending state. Hydration preserves attachment ID
-order and treats a missing attachment record as an error.
+ran and still matches may clear pending state. The empty-draft cleanup is a
+boundary in the same order: writes behind it are sent only if it kept the
+thread, nothing is ever sent for a thread it deleted, and the store on that
+thread keeps its buffer for the replacement the composer materializes. Text a
+client holds unsaved for a thread that is deleted under it, by its own cleanup
+or another screen's, moves to a new draft thread of its own and is never
+dropped; a delete refused because another screen saved first leaves that
+screen's draft alone, and so does a delete that failed or whose kept draft
+could not be read. Controls that write a thread row wait for an in-flight
+cleanup with `settleEmptyDraftCleanup` and act on what it leaves.
+Hydration preserves attachment ID order and treats a missing attachment record
+as an error.
 
 `threadModelControls.ts` owns model changes from pickers and commands. Retry a
 fallback with `UpdateThreadModelSelection`; confirmation comes from the effective

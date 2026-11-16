@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"agent-overflow/internal/procutil"
+	"agent-overflow/internal/provider"
 )
 
 // Fork asks the Codex app-server to create a full-history fork of the
@@ -81,6 +84,8 @@ type rpcCaller func(ctx context.Context, method string, params any) (json.RawMes
 type ForkSpec struct {
 	// Binary is the codex CLI path. Empty falls back to "codex" on PATH.
 	Binary string
+	// Reaper ends the process if the backend dies first. Required.
+	Reaper procutil.Reaper
 	// WorkDir is the source thread's workspace: the app-server resolves
 	// project configuration from its cwd.
 	WorkDir string
@@ -111,7 +116,7 @@ func ForkThread(ctx context.Context, spec ForkSpec) (string, error) {
 	if strings.TrimSpace(spec.SourceThreadID) == "" {
 		return "", fmt.Errorf("codex: thread/fork: source thread id is required")
 	}
-	client, err := startOneshotClient(ctx, oneshotSpec{
+	client, err := startOneshotClient(ctx, provider.Bounded(spec.Reaper), oneshotSpec{
 		Binary:     spec.Binary,
 		WorkDir:    spec.WorkDir,
 		Env:        spec.Env,

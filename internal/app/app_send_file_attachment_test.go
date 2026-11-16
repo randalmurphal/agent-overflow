@@ -155,7 +155,7 @@ func TestSendMessage_MixedAttachmentTurnReachesTheWire(t *testing.T) {
 	thread, capturePath := newMixedTurnThread(t, app, "thread-mixed-send")
 	ids, fileLine := mixedTurnFixture(t, app, thread.ID)
 
-	if err := app.SendMessage(thread.ID, mixedTurnMessage, ids); err != nil {
+	if err := app.SendMessage(context.Background(), thread.ID, mixedTurnMessage, ids); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 	envelopes := waitForCapturedUserEnvelopes(t, capturePath, 1)

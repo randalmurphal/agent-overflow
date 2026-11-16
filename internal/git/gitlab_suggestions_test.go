@@ -12,7 +12,7 @@ import (
 )
 
 const gitlabTestDiscussionWithSuggestion = `{"id":"d1","notes":[{"id":31,"body":"` + "```suggestion\\nTWO\\n```" + `","system":false,"created_at":"t","resolvable":true,"resolved":false,
-	"author":{"username":"rev","name":"Rev"},"position":{"head_sha":"head2","new_path":"a.go","old_path":"a.go","position_type":"text","new_line":2},
+	"author":{"username":"rev","name":"Rev"},"position":{"head_sha":"ab12cd34","new_path":"a.go","old_path":"a.go","position_type":"text","new_line":2},
 	"suggestions":[{"id":901,"from_line":2,"to_line":2,"appliable":true,"applied":false,"from_content":"two\n","to_content":"TWO\n"}]}]}`
 
 func gitlabApplyReq() SuggestionApply {
@@ -29,7 +29,7 @@ func TestGitLabSuggestionReadAndApply(t *testing.T) {
 	head := "dead2" + strings.Repeat("0", 35)
 	var applyAnswer atomic.Value
 	applyAnswer.Store(forgeAPIAnswer{Body: `{"id":901,"from_line":2,"to_line":2,"appliable":false,"applied":true,"from_content":"two\n","to_content":"TWO\n"}`})
-	mrBody := strings.ReplaceAll(gitlabTestMR(7, 0), `"head2"`, `"`+head+`"`)
+	mrBody := strings.ReplaceAll(gitlabTestMR(7, 0), `"ab12cd34"`, `"`+head+`"`)
 	var discussion atomic.Value
 	discussion.Store(gitlabTestDiscussionWithSuggestion)
 	core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
@@ -173,8 +173,8 @@ func gitlabReactionsCoreWith(t *testing.T, reactions func() forgeAPIAnswer, disc
 			return forgeAPIAnswer{Body: gitlabTestMR(7, 0)}
 		case strings.HasPrefix(call.Path, mr+"/discussions?"):
 			return forgeAPIAnswer{Body: discussions.Load().(string)}
-		case call.Path == gitlabTestProject:
-			return forgeAPIAnswer{Body: gitlabTestProjectSettings}
+		case call.Op == "ProjectAccess":
+			return forgeAPIAnswer{Body: gitlabDeveloperRole}
 		case call.Path == "user":
 			return forgeAPIAnswer{Body: `{"id":1,"username":"me"}`}
 		case call.Op == "MRNoteReactions":
@@ -255,21 +255,17 @@ func TestGitLabReactionsReadFailureKeepsTheThreads(t *testing.T) {
 		t.Fatalf("after the retry was due = %+v (%d reads)", r, countOps(calls, "MRNoteReactions"))
 	}
 
+	// Every supported GitLab has Note.awardEmoji, so a document refused for
+	// it is a failure like any other, retried after the backoff.
 	lacking, lackingCalls, _ := gitlabReactionsCore(t, func() forgeAPIAnswer {
 		return forgeAPIAnswer{Body: `{"errors":[{"message":"Field 'awardEmoji' doesn't exist on type 'Note'"}]}`}
 	})
-	for range 2 {
-		out, err := lacking.ReadPR(t.Context(), gitlabTestRef(7), PRReadParts{Threads: true}, nil, nil)
-		if err != nil || out.ReactionsUnavailable != "Reactions are not shown: this GitLab server does not report them." {
-			t.Fatalf("server without the field = %q, %v", out.ReactionsUnavailable, err)
-		}
+	out, err := lacking.ReadPR(t.Context(), gitlabTestRef(7), PRReadParts{Threads: true}, nil, nil)
+	if err != nil || out.ReactionsUnavailable != "Reactions are not shown: GitLab's reactions could not be read." {
+		t.Fatalf("a refused reactions document = %q, %v", out.ReactionsUnavailable, err)
 	}
 	if n := countOps(lackingCalls, "MRNoteReactions"); n != 1 {
-		t.Fatalf("a server without the field was asked %d times", n)
-	}
-	lacking.ResetForgeCaches()
-	if _, err := lacking.ReadPR(t.Context(), gitlabTestRef(7), PRReadParts{Threads: true}, nil, nil); err != nil || countOps(lackingCalls, "MRNoteReactions") != 2 {
-		t.Fatalf("ResetForgeCaches kept the host's answer")
+		t.Fatalf("reactions reads = %d", n)
 	}
 }
 
@@ -469,13 +465,12 @@ func TestGitLabReactionsStaleReadIsNotStored(t *testing.T) {
 	}
 }
 
-// A failure and a server without the field learned by a read that began
-// before a reset are not kept past it.
+// A failure learned by a read that began before a reset is not kept past
+// it.
 func TestGitLabReactionsFailureAcrossAReset(t *testing.T) {
 	t.Parallel()
 	for name, answer := range map[string]forgeAPIAnswer{
-		"failure":       {Status: http.StatusBadGateway, Body: `{"message":"bad gateway"}`},
-		"lacking field": {Body: `{"errors":[{"message":"Field 'awardEmoji' doesn't exist on type 'Note'"}]}`},
+		"failure": {Status: http.StatusBadGateway, Body: `{"message":"bad gateway"}`},
 	} {
 		var calls atomic.Int32
 		reactions, started, release := gitlabBlockedReactions(func() forgeAPIAnswer {

@@ -62,7 +62,7 @@ func (c *carrier) sendDeviceName(ctx context.Context, name string) error {
 		return err
 	}
 	defer rpc.Close()
-	if err := rpc.Call(ctx, "UpdateClientDeviceName", nil, name, c.platform); err != nil {
+	if err := timedPeerCall(ctx, rpc, "UpdateClientDeviceName", nil, name, c.platform); err != nil {
 		return err
 	}
 	return c.client.SetDeviceLabel(name)

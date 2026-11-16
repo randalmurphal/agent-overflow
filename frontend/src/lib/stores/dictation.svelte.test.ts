@@ -2,9 +2,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 import { hasScope } from '../transport/scopes';
 import { __attachBackendForTest, __resetBackendsForTest, detachBackend } from '../transport/backends';
+import { TransportError } from '../transport/wsClient';
 import {
+  FINISH_UNANSWERED,
   applyDictationSourcesChanged,
   dictationLiveReady,
+  dictationRemote,
   dictationSubscriptionReady,
   dictationSource,
   installDictationSourcesRefresh,
@@ -152,6 +155,18 @@ describe('dictation availability', () => {
     window.dispatchEvent(new Event('focus'));
     document.dispatchEvent(new Event('visibilitychange'));
     expect(read).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('dictation finish', () => {
+  const recordingEngine = { records: true, streamsPcm: false };
+
+  it('says the computer never answered rather than quoting the transport', async () => {
+    attachLaptop();
+    setBindingMock('FinishDictation', async () => {
+      throw new TransportError('timeout', 'RPC 1 timed out after 195000ms');
+    });
+    await expect(dictationRemote('laptop', recordingEngine).finish('rec-1', 2)).rejects.toThrow(FINISH_UNANSWERED);
   });
 });
 

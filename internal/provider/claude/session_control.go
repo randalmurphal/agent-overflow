@@ -31,9 +31,10 @@ const DefaultControlRequestTimeout = 10 * time.Second
 // DefaultControlRequestCeiling bounds the whole wait, progress or not, so
 // a CLI that keeps writing and never answers fails loudly too. A Stop of
 // 100 agents with 3 shells each acks after 1,200 kill frames, which the
-// read loop delivered in 1.5 s (e2e/tests/stop-scale.spec.ts); a minute
-// is far past any reachable burst.
-const DefaultControlRequestCeiling = 60 * time.Second
+// read loop delivered in 1.5 s (e2e/tests/stop-scale.spec.ts); half a
+// minute is far past any reachable burst, and it keeps one control request
+// inside the default budget of the app method that waits for it.
+const DefaultControlRequestCeiling = 30 * time.Second
 
 // SetModelControlRequestTimeout is set_model's silence budget. From Claude
 // 2.1.307 the CLI waits up to 15 s for the API to confirm the model before

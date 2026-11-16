@@ -204,7 +204,7 @@ func (m *Manager) ReorderProviderAccounts(providerName string, accountIDs []stri
 	if err != nil {
 		return err
 	}
-	m.emitProviderAccountsChanged()
+	m.emitProviderAccountsChanged(providerName)
 	return nil
 }
 
@@ -232,7 +232,7 @@ func (m *Manager) SetProviderAccountAutoSwitch(providerName, accountID string, e
 	} else {
 		m.audit("took %s account %s out of the auto-switch pool", providerName, accountID)
 	}
-	m.emitProviderAccountsChanged()
+	m.emitProviderAccountsChanged(providerName)
 	return nil
 }
 
@@ -479,8 +479,8 @@ func (m *Manager) switchProviderAccount(
 	m.emitProviderAccount(providerName, account, info, generation)
 	// Which card is active is part of the listing, and the per-account frame
 	// above carries no `active` flag for the card that just LOST it.
-	m.emitProviderAccountsChanged()
-	m.applySelection(providerName, generation, account.ID)
+	m.emitProviderAccountsChanged(providerName)
+	m.applySelection(providerName, generation, currentID, account.ID)
 	reconcileMu.Unlock()
 	reconcileLocked = false
 	return ManagedAccount{
@@ -640,16 +640,43 @@ func (m *Manager) invalidateProviderAccountProbe(providerName, binary string) {
 	}
 }
 
+// adoptCurrentProviderAccount records the account a probe identified as the
+// canonical login. A probe can find another saved account's login there (an
+// outside `/login` not yet reconciled); adopting it moves the selection, and
+// the returned move says from where, for applySelection once mu is released.
 func (m *Manager) adoptCurrentProviderAccount(
 	providerName string,
 	info provider.AccountInfo,
 	credential *provideraccounts.CredentialSnapshot,
-) (provideraccounts.Account, SignIn, error) {
+) (provideraccounts.Account, SignIn, selectionMove, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.store == nil || m.credentials == nil {
-		return provideraccounts.Account{}, SignIn{}, nil
+		return provideraccounts.Account{}, SignIn{}, selectionMove{}, nil
 	}
+	previous, _ := m.store.Active(providerName, time.Now())
+	account, signIn, err := m.adoptCurrentProviderAccountLocked(providerName, info, credential)
+	if err != nil || !signIn.Switched {
+		return account, signIn, selectionMove{}, err
+	}
+	return account, signIn, selectionMove{
+		moved: true, previousID: previous.ID, accountID: account.ID,
+		generation: m.store.Generation(providerName),
+	}, nil
+}
+
+// selectionMove is a change of the selected account made under mu.
+type selectionMove struct {
+	moved                 bool
+	previousID, accountID string
+	generation            uint64
+}
+
+func (m *Manager) adoptCurrentProviderAccountLocked(
+	providerName string,
+	info provider.AccountInfo,
+	credential *provideraccounts.CredentialSnapshot,
+) (provideraccounts.Account, SignIn, error) {
 	if credential == nil {
 		return provideraccounts.Account{}, SignIn{}, nil
 	}

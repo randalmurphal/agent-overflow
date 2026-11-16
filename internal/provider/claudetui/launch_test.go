@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider/claude"
 )
 
@@ -26,8 +27,8 @@ func hasArgPair(args []string, flag, value string) bool {
 // has nothing to surface, and neither AO nor the TUI shows any thinking. The flag
 // is LIVE-confirmed against 2.1.170 in the CLI capture spike thinking_title.
 func TestBuildLaunchOptionsEnablesThinkingDisplay(t *testing.T) {
-	cfg := Config{Binary: "claude", WorkDir: t.TempDir(), HookCmd: "/tmp/ao-exe"}
-	opts, err := buildLaunchOptions(cfg, "", "", "http://127.0.0.1:1", "http://127.0.0.1:2/hook", "tok")
+	cfg := Config{Reaper: procutiltest.Reaper(), Binary: "claude", WorkDir: t.TempDir(), HookCmd: "/tmp/ao-exe"}
+	opts, err := buildLaunchOptions(withTestRetention(cfg), "", "", "http://127.0.0.1:1", "http://127.0.0.1:2/hook", "tok")
 	if err != nil {
 		t.Fatalf("buildLaunchOptions: %v", err)
 	}
@@ -42,8 +43,8 @@ func TestBuildLaunchOptionsEnablesThinkingDisplay(t *testing.T) {
 // (xhigh on opus-4-8) and the AO effort selection is silently ignored — the
 // reported bug. Same global flag headless passes (provider/claude/session.go).
 func TestBuildLaunchOptionsPassesEffort(t *testing.T) {
-	cfg := Config{Binary: "claude", WorkDir: t.TempDir(), HookCmd: "/tmp/ao-exe", ReasoningEffort: "high"}
-	opts, err := buildLaunchOptions(cfg, "", "", "http://127.0.0.1:1", "http://127.0.0.1:2/hook", "tok")
+	cfg := Config{Reaper: procutiltest.Reaper(), Binary: "claude", WorkDir: t.TempDir(), HookCmd: "/tmp/ao-exe", ReasoningEffort: "high"}
+	opts, err := buildLaunchOptions(withTestRetention(cfg), "", "", "http://127.0.0.1:1", "http://127.0.0.1:2/hook", "tok")
 	if err != nil {
 		t.Fatalf("buildLaunchOptions: %v", err)
 	}
@@ -56,8 +57,8 @@ func TestBuildLaunchOptionsPassesEffort(t *testing.T) {
 // must NOT pass --effort, so the CLI keeps its own default rather than receiving
 // an empty value.
 func TestBuildLaunchOptionsOmitsEffortWhenUnset(t *testing.T) {
-	cfg := Config{Binary: "claude", WorkDir: t.TempDir(), HookCmd: "/tmp/ao-exe"}
-	opts, err := buildLaunchOptions(cfg, "", "", "http://127.0.0.1:1", "http://127.0.0.1:2/hook", "tok")
+	cfg := Config{Reaper: procutiltest.Reaper(), Binary: "claude", WorkDir: t.TempDir(), HookCmd: "/tmp/ao-exe"}
+	opts, err := buildLaunchOptions(withTestRetention(cfg), "", "", "http://127.0.0.1:1", "http://127.0.0.1:2/hook", "tok")
 	if err != nil {
 		t.Fatalf("buildLaunchOptions: %v", err)
 	}
@@ -81,8 +82,8 @@ func TestBuildLaunchOptionsPassesTheSystemPromptFile(t *testing.T) {
 	}
 	t.Cleanup(func() { claude.RemoveSystemPromptFile(path) })
 
-	cfg := Config{Binary: "claude", WorkDir: t.TempDir(), HookCmd: "/tmp/ao-exe", SystemPrompt: prompt}
-	opts, err := buildLaunchOptions(cfg, path, "", "http://127.0.0.1:1", "http://127.0.0.1:2/hook", "tok")
+	cfg := Config{Reaper: procutiltest.Reaper(), Binary: "claude", WorkDir: t.TempDir(), HookCmd: "/tmp/ao-exe", SystemPrompt: prompt}
+	opts, err := buildLaunchOptions(withTestRetention(cfg), path, "", "http://127.0.0.1:1", "http://127.0.0.1:2/hook", "tok")
 	if err != nil {
 		t.Fatalf("buildLaunchOptions: %v", err)
 	}
@@ -104,8 +105,8 @@ func TestBuildLaunchOptionsPassesTheSystemPromptFile(t *testing.T) {
 // A session with no override must pass no flag at all, so the CLI keeps its
 // own prompt rather than being handed an empty file path.
 func TestBuildLaunchOptionsOmitsTheSystemPromptFlagWithoutAnOverride(t *testing.T) {
-	cfg := Config{Binary: "claude", WorkDir: t.TempDir(), HookCmd: "/tmp/ao-exe"}
-	opts, err := buildLaunchOptions(cfg, "", "", "http://127.0.0.1:1", "http://127.0.0.1:2/hook", "tok")
+	cfg := Config{Reaper: procutiltest.Reaper(), Binary: "claude", WorkDir: t.TempDir(), HookCmd: "/tmp/ao-exe"}
+	opts, err := buildLaunchOptions(withTestRetention(cfg), "", "", "http://127.0.0.1:1", "http://127.0.0.1:2/hook", "tok")
 	if err != nil {
 		t.Fatalf("buildLaunchOptions: %v", err)
 	}
@@ -119,12 +120,13 @@ func TestBuildLaunchOptionsOmitsTheSystemPromptFlagWithoutAnOverride(t *testing.
 // named tools' schemas are absent from the request.
 func TestBuildLaunchOptionsPassesOneDisallowedToolsFlagPerName(t *testing.T) {
 	cfg := Config{
+		Reaper:          procutiltest.Reaper(),
 		Binary:          "claude",
 		WorkDir:         t.TempDir(),
 		HookCmd:         "/tmp/ao-exe",
 		DisallowedTools: []string{"Workflow", "WebSearch"},
 	}
-	opts, err := buildLaunchOptions(cfg, "", "", "http://127.0.0.1:1", "http://127.0.0.1:2/hook", "tok")
+	opts, err := buildLaunchOptions(withTestRetention(cfg), "", "", "http://127.0.0.1:1", "http://127.0.0.1:2/hook", "tok")
 	if err != nil {
 		t.Fatalf("buildLaunchOptions: %v", err)
 	}
@@ -157,7 +159,7 @@ func countEnv(env []string, key string) (int, string) {
 // caller-provided value — the user's custom provider environment — wins.
 func TestBuildEnvDefaultsTodoToolsOptIn(t *testing.T) {
 	t.Run("default applied when absent", func(t *testing.T) {
-		env := buildEnv(Config{Env: []string{"FOO=bar"}}, "http://gw", "http://hook", "tok")
+		env := buildEnv(testUnsetEnv(), Config{Reaper: procutiltest.Reaper(), Env: []string{"FOO=bar"}}, "http://gw", "http://hook", "tok")
 		if n, v := countEnv(env, todoToolsEnvVar); n != 1 || v != "true" {
 			t.Fatalf("%s: got %d entries (last %q), want exactly one =true; env %v", todoToolsEnvVar, n, v, env)
 		}
@@ -165,7 +167,8 @@ func TestBuildEnvDefaultsTodoToolsOptIn(t *testing.T) {
 
 	t.Run("user opt-out survives without a duplicate", func(t *testing.T) {
 		env := buildEnv(
-			Config{Env: []string{"FOO=bar", todoToolsEnvVar + "=false"}},
+			testUnsetEnv(),
+			Config{Reaper: procutiltest.Reaper(), Env: []string{"FOO=bar", todoToolsEnvVar + "=false"}},
 			"http://gw", "http://hook", "tok",
 		)
 		if n, v := countEnv(env, todoToolsEnvVar); n != 1 || v != "false" {
@@ -175,7 +178,8 @@ func TestBuildEnvDefaultsTodoToolsOptIn(t *testing.T) {
 
 	t.Run("owned gateway keys still replaced", func(t *testing.T) {
 		env := buildEnv(
-			Config{Env: []string{BaseURLEnv + "=https://dirty.example"}},
+			testUnsetEnv(),
+			Config{Reaper: procutiltest.Reaper(), Env: []string{BaseURLEnv + "=https://dirty.example"}},
 			"http://gw", "http://hook", "tok",
 		)
 		if n, v := countEnv(env, BaseURLEnv); n != 1 || v != "http://gw" {
@@ -190,14 +194,14 @@ func TestBuildEnvDefaultsTodoToolsOptIn(t *testing.T) {
 // value outranks the setting.
 func TestBuildEnvTodoReminderMode(t *testing.T) {
 	t.Run("disabled exports off", func(t *testing.T) {
-		env := buildEnv(Config{Env: []string{"FOO=bar"}, DisableTodoReminders: true}, "http://gw", "http://hook", "tok")
+		env := buildEnv(testUnsetEnv(), Config{Reaper: procutiltest.Reaper(), Env: []string{"FOO=bar"}, DisableTodoReminders: true}, "http://gw", "http://hook", "tok")
 		if n, v := countEnv(env, todoReminderModeEnvVar); n != 1 || v != "off" {
 			t.Fatalf("%s: got %d entries (last %q), want exactly one =off; env %v", todoReminderModeEnvVar, n, v, env)
 		}
 	})
 
 	t.Run("enabled exports nothing", func(t *testing.T) {
-		env := buildEnv(Config{Env: []string{"FOO=bar"}}, "http://gw", "http://hook", "tok")
+		env := buildEnv(testUnsetEnv(), Config{Reaper: procutiltest.Reaper(), Env: []string{"FOO=bar"}}, "http://gw", "http://hook", "tok")
 		if n, v := countEnv(env, todoReminderModeEnvVar); n != 0 {
 			t.Fatalf("%s: got %d entries (last %q), want none; env %v", todoReminderModeEnvVar, n, v, env)
 		}
@@ -205,7 +209,8 @@ func TestBuildEnvTodoReminderMode(t *testing.T) {
 
 	t.Run("user value survives without a duplicate", func(t *testing.T) {
 		env := buildEnv(
-			Config{Env: []string{todoReminderModeEnvVar + "=baseline"}, DisableTodoReminders: true},
+			testUnsetEnv(),
+			Config{Reaper: procutiltest.Reaper(), Env: []string{todoReminderModeEnvVar + "=baseline"}, DisableTodoReminders: true},
 			"http://gw", "http://hook", "tok",
 		)
 		if n, v := countEnv(env, todoReminderModeEnvVar); n != 1 || v != "baseline" {
@@ -221,7 +226,8 @@ func TestBuildEnvTodoReminderMode(t *testing.T) {
 func TestBuildEnvOwnsTheTaskListID(t *testing.T) {
 	t.Run("stated from the config", func(t *testing.T) {
 		env := buildEnv(
-			Config{Env: []string{claude.TaskListIDEnv + "=inherited", "FOO=bar"}, TaskListID: "thread-1"},
+			testUnsetEnv(),
+			Config{Reaper: procutiltest.Reaper(), Env: []string{claude.TaskListIDEnv + "=inherited", "FOO=bar"}, TaskListID: "thread-1"},
 			"http://gw", "http://hook", "tok",
 		)
 		if n, v := countEnv(env, claude.TaskListIDEnv); n != 1 || v != "thread-1" {
@@ -231,7 +237,8 @@ func TestBuildEnvOwnsTheTaskListID(t *testing.T) {
 
 	t.Run("inherited value dropped when the config has none", func(t *testing.T) {
 		env := buildEnv(
-			Config{Env: []string{claude.TaskListIDEnv + "=inherited", "FOO=bar"}},
+			testUnsetEnv(),
+			Config{Reaper: procutiltest.Reaper(), Env: []string{claude.TaskListIDEnv + "=inherited", "FOO=bar"}},
 			"http://gw", "http://hook", "tok",
 		)
 		if n, v := countEnv(env, claude.TaskListIDEnv); n != 0 {
@@ -261,7 +268,7 @@ func envValueIn(env []string, key string) (string, bool) {
 // mode-parity default, which holds and then silently drops peer messages.
 func TestHookSettingsCarryTheCrossSessionPolicy(t *testing.T) {
 	for _, policy := range []string{"accept", "refuse"} {
-		cfg := Config{CrossSessionInbound: policy}
+		cfg := Config{Reaper: procutiltest.Reaper(), CrossSessionInbound: policy}
 		rendered, err := hookSettingsJSON(cfg)
 		if err != nil {
 			t.Fatalf("hookSettingsJSON: %v", err)
@@ -278,7 +285,7 @@ func TestHookSettingsCarryTheCrossSessionPolicy(t *testing.T) {
 // An absent policy states nothing rather than pinning one: the same
 // zero-value-means-say-nothing rule the rest of the block follows.
 func TestHookSettingsOmitAnEmptyCrossSessionPolicy(t *testing.T) {
-	rendered, err := hookSettingsJSON(Config{CrossSessionInbound: "   "})
+	rendered, err := hookSettingsJSON(Config{Reaper: procutiltest.Reaper(), CrossSessionInbound: "   "})
 	if err != nil {
 		t.Fatalf("hookSettingsJSON: %v", err)
 	}
@@ -288,28 +295,61 @@ func TestHookSettingsOmitAnEmptyCrossSessionPolicy(t *testing.T) {
 }
 
 // The TUI sweeps the same config home a headless session does, so its
-// settings block carries the same transcript retention.
-func TestHookSettingsCarryCleanupPeriodDays(t *testing.T) {
-	rendered, err := hookSettingsJSON(Config{CleanupPeriodDays: 90})
-	if err != nil {
-		t.Fatalf("hookSettingsJSON: %v", err)
+// settings block carries the same transcript retention beside the hooks.
+func TestLaunchSettingsCarryCleanupPeriodDays(t *testing.T) {
+	block := func(retention claude.Retention) string {
+		t.Helper()
+		opts, err := buildLaunchOptions(Config{Reaper: procutiltest.Reaper(), Binary: "claude", WorkDir: t.TempDir(), HookCmd: "/tmp/ao-exe", Retention: retention},
+			"", "", "http://127.0.0.1:1", "http://127.0.0.1:2/hook", "tok")
+		if err != nil {
+			t.Fatalf("buildLaunchOptions: %v", err)
+		}
+		if got := strings.Count(strings.Join(opts.Args, " "), "--settings"); got != 1 {
+			t.Fatalf("want one --settings flag, got %d in %v", got, opts.Args)
+		}
+		for i, arg := range opts.Args {
+			if arg == "--settings" {
+				return opts.Args[i+1]
+			}
+		}
+		return ""
 	}
+	rendered := block(claude.UserHomeRetention(90))
 	if !strings.Contains(rendered, `"cleanupPeriodDays":90`) {
 		t.Fatalf("retention missing from the settings block: %s", rendered)
 	}
 	if !strings.Contains(rendered, `"hooks"`) {
 		t.Fatalf("retention displaced the relay hooks: %s", rendered)
 	}
-
-	for _, days := range []int{0, -1} {
-		rendered, err := hookSettingsJSON(Config{CleanupPeriodDays: days})
-		if err != nil {
-			t.Fatalf("hookSettingsJSON: %v", err)
-		}
-		if strings.Contains(rendered, "cleanupPeriodDays") {
-			t.Fatalf("period %d rendered a key: %s", days, rendered)
-		}
+	if rendered := block(claude.UserHomeRetention(0)); strings.Contains(rendered, "cleanupPeriodDays") {
+		t.Fatalf("no period rendered a key: %s", rendered)
 	}
+}
+
+// A launch with no retention answer is refused.
+func TestBuildLaunchOptionsRefusesAnUnansweredRetention(t *testing.T) {
+	if _, err := buildLaunchOptions(Config{Reaper: procutiltest.Reaper(), Binary: "claude", WorkDir: t.TempDir(), HookCmd: "/tmp/ao-exe"},
+		"", "", "http://127.0.0.1:1", "http://127.0.0.1:2/hook", "tok"); err == nil {
+		t.Fatal("buildLaunchOptions accepted a Config with no Retention")
+	}
+}
+
+// withTestRetention answers for the user's home with no period when cfg, in
+// a test that does not exercise retention, gives no answer.
+func withTestRetention(cfg Config) Config {
+	if cfg.Retention == (claude.Retention{}) {
+		cfg.Retention = claude.UserHomeRetention(0)
+	}
+	return cfg
+}
+
+// testUnsetEnv is the UnsetEnv of a TUI command line.
+func testUnsetEnv() []string {
+	line, err := claude.NewCommandLine(claude.UserHomeRetention(0), "")
+	if err != nil {
+		panic(err)
+	}
+	return line.UnsetEnv()
 }
 
 // B18, TUI half. The PTY launch assembles a full []string environment
@@ -323,7 +363,7 @@ func TestBuildEnvDropsAnInheritedCrossSessionGateWhenDisabled(t *testing.T) {
 		"CLAUDE_CODE_SESSION_NAME=someone-elses-name",
 		"HOME=/home/test",
 	}
-	env := buildEnv(Config{Env: base}, "http://gw", "http://hook", "tok")
+	env := buildEnv(testUnsetEnv(), Config{Reaper: procutiltest.Reaper(), Env: base}, "http://gw", "http://hook", "tok")
 
 	if value, found := envValueIn(env, claude.CrossSessionGateEnv); found {
 		t.Fatalf("%s = %q, want it absent — the setting says off", claude.CrossSessionGateEnv, value)
@@ -347,7 +387,7 @@ func TestBuildEnvDropsAnInheritedConfigHome(t *testing.T) {
 		"CLAUDE_SECURESTORAGE_CONFIG_DIR=/alternate",
 		"HOME=/home/test",
 	}
-	env := buildEnv(Config{Env: base}, "http://gw", "http://hook", "tok")
+	env := buildEnv(testUnsetEnv(), Config{Reaper: procutiltest.Reaper(), Env: base}, "http://gw", "http://hook", "tok")
 
 	for _, key := range claude.ConfigHomeUnsetEnv() {
 		if value, found := envValueIn(env, key); found {
@@ -362,7 +402,7 @@ func TestBuildEnvDropsAnInheritedConfigHome(t *testing.T) {
 // Enabled states the gate explicitly, overriding whatever the host carried.
 func TestBuildEnvStatesTheCrossSessionGateWhenEnabled(t *testing.T) {
 	base := []string{claude.CrossSessionGateEnv + "=totally-bogus", "HOME=/home/test"}
-	env := buildEnv(Config{Env: base, CrossSessionEnabled: true}, "http://gw", "http://hook", "tok")
+	env := buildEnv(testUnsetEnv(), Config{Reaper: procutiltest.Reaper(), Env: base, CrossSessionEnabled: true}, "http://gw", "http://hook", "tok")
 
 	if value, found := envValueIn(env, claude.CrossSessionGateEnv); !found || value != "1" {
 		t.Fatalf("%s = %q (present=%v), want \"1\"", claude.CrossSessionGateEnv, value, found)
@@ -378,7 +418,7 @@ func TestBuildEnvStatesTheCrossSessionGateWhenEnabled(t *testing.T) {
 // does: one binary, one attachments root, and a take-control session must
 // not be the surface that prompts for a file AO put there itself.
 func TestBuildLaunchOptionsEmitsAddDir(t *testing.T) {
-	opts, err := buildLaunchOptions(Config{
+	opts, err := buildLaunchOptions(Config{Reaper: procutiltest.Reaper(), Retention: claude.UserHomeRetention(0),
 		Binary:         "claude",
 		WorkDir:        "/tmp/work",
 		AdditionalDirs: []string{"/var/attachments", "/var/other"},

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/testutil/mockexec"
 )
@@ -29,6 +30,7 @@ done
 	ctx := context.Background()
 	eventCh := make(chan provider.ProviderEvent, 100)
 	s, err := NewSession(ctx, testThread, Config{
+		Reaper:  procutiltest.Reaper(),
 		Binary:  scriptPath,
 		Model:   "test-model",
 		WorkDir: "/tmp",
@@ -125,6 +127,7 @@ func TestSessionStartVerifiesApprovalsReviewerEcho(t *testing.T) {
 				WorkDir:     "/tmp",
 			})
 			cfg.Binary = codexReviewerEchoScript(t, capturePath, tc.threadResult)
+			cfg.Reaper = procutiltest.Reaper()
 
 			s, err := NewSession(context.Background(), testThread, cfg, func(provider.ProviderEvent) {})
 			if s != nil {

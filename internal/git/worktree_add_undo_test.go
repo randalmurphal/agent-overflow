@@ -203,8 +203,8 @@ func TestCheckoutsLeaveTheWorktreeUnlocked(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, path := range []string{attached, created} {
-		if locked, err := core.worktreeLocked(repo, path); err != nil || locked {
-			t.Fatalf("%s locked = %v (%v), want unlocked", path, locked, err)
+		if entry, _, err := core.worktreeEntry(repo, path); err != nil || entry.locked {
+			t.Fatalf("%s locked = %v (%v), want unlocked", path, entry.locked, err)
 		}
 	}
 }
@@ -309,8 +309,8 @@ func TestRemoveWorktreeLiftsTheLockOfAnInterruptedCheckout(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "crashed")
 	testutil.RunGit(t, repo, "worktree", "add", "--lock", "--reason", checkoutLockReason+"00000000-0000-0000-0000-000000000000", "--", path, "feature/crashed")
 	core := NewCore()
-	if locked, err := core.worktreeLocked(repo, path); err != nil || !locked {
-		t.Fatalf("worktree locked = %v (%v)", locked, err)
+	if entry, _, err := core.worktreeEntry(repo, path); err != nil || !entry.locked {
+		t.Fatalf("worktree locked = %v (%v)", entry.locked, err)
 	}
 	if registered, err := worktreeRegisteredAt(repo, path); err != nil || !registered {
 		t.Fatalf("ListWorktrees does not show the locked checkout (%v)", err)

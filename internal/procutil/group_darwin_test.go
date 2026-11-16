@@ -53,8 +53,8 @@ func TestSignalGroupTreatsAnExitedUnreapedGroupAsDone(t *testing.T) {
 	if err := KillConfiguredGroup(cmd); !errors.Is(err, os.ErrProcessDone) {
 		t.Fatalf("KillConfiguredGroup = %v, want os.ErrProcessDone", err)
 	}
-	if err := TerminateConfiguredGroup(cmd); !errors.Is(err, os.ErrProcessDone) {
-		t.Fatalf("TerminateConfiguredGroup = %v, want os.ErrProcessDone", err)
+	if err := terminateConfiguredGroup(cmd); !errors.Is(err, os.ErrProcessDone) {
+		t.Fatalf("terminateConfiguredGroup = %v, want os.ErrProcessDone", err)
 	}
 	if ConfiguredGroupAlive(cmd) {
 		t.Fatal("a group whose members have all exited is reported alive")

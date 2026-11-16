@@ -10,6 +10,7 @@ import (
 	"sync"
 	"testing"
 
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/testutil/mockexec"
 )
@@ -131,6 +132,7 @@ func (r *deliveryRecorder) snapshot() (records, errs []string) {
 func startDeliverySession(t *testing.T, binary, dir, guide, resume string, recorder *deliveryRecorder, received string) *Session {
 	t.Helper()
 	sess, err := NewSession(context.Background(), "thread-1", Config{
+		Reaper:                        procutiltest.Reaper(),
 		Binary:                        binary,
 		WorkDir:                       dir,
 		ResumeThreadID:                resume,
@@ -285,6 +287,7 @@ func TestUntrackedResumeNeverInjects(t *testing.T) {
 	binary := writeInjectAppServer(t, dir, requestLog, "configured", "")
 
 	sess, err := NewSession(context.Background(), "thread-1", Config{
+		Reaper: procutiltest.Reaper(),
 		Binary: binary, WorkDir: dir, ResumeThreadID: "mock-thread",
 	}, func(provider.ProviderEvent) {})
 	if err != nil {

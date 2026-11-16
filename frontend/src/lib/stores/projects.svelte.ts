@@ -296,6 +296,18 @@ export function addProjectLocal(p: Project): void {
 }
 
 /**
+ * The project belongs in the sidebar (a `listed` frame): its row replaced
+ * where it is, keeping the counts as `updateProjectLocal` does, and added
+ * when absent. One transform for both, because a catalog read in flight
+ * replays it over an answer that may lack the row.
+ */
+export function listProjectLocal(p: Project): void {
+  catalogWriter.mutate(projectBackend(p.id), (rows) => rows.some((existing) => existing.project.id === p.id)
+    ? rows.map((existing) => existing.project.id === p.id ? { ...existing, project: p } : existing)
+    : [{ project: p, threadCount: 0, lastActive: 0 }, ...rows]);
+}
+
+/**
  * Replace a project's row after rename / archive / unarchive. Preserves
  * the existing threadCount + lastActive so the sidebar doesn't flicker
  * back to 0 threads until the next refresh.

@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/testutil/mockexec"
 )
@@ -99,6 +100,7 @@ func newQueueSessionWithConfig(
 		onEvent = func(provider.ProviderEvent) {}
 	}
 	cfg := Config{
+		Reaper:  procutiltest.Reaper(),
 		Binary:  binary,
 		Model:   "test-model",
 		WorkDir: "/tmp",

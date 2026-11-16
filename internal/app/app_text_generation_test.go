@@ -59,6 +59,7 @@ func TestResolveTextGenerationConfig_Layer1FallbackClaudeMissing(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
+	resetProviderBinarySettings(t, app)
 	if _, err := app.settings.Update(map[string]any{
 		"textGenerationProvider": "claude",
 	}); err != nil {
@@ -107,6 +108,7 @@ func TestResolveTextGenerationConfig_DoesNotCarryModelAcrossProviders(t *testing
 	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
+	resetProviderBinarySettings(t, app)
 	if _, err := app.settings.Update(map[string]any{
 		"textGenerationProvider": "codex",
 		"textGenerationModel":    "gpt-5.4-pro", // user-customized Codex model
@@ -135,6 +137,7 @@ func TestResolveTextGenerationConfig_KeepsUserModelWhenProviderUnchanged(t *test
 	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
+	resetProviderBinarySettings(t, app)
 	if _, err := app.settings.Update(map[string]any{
 		"textGenerationProvider": "codex",
 		"textGenerationModel":    "gpt-5.4-pro",
@@ -156,6 +159,7 @@ func TestResolveTextGenerationConfig_CoercesEffortForKnownCodexModel(t *testing.
 	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
+	resetProviderBinarySettings(t, app)
 	if _, err := app.settings.Update(map[string]any{
 		"textGenerationProvider":        "codex",
 		"textGenerationModel":           "gpt-5.5",
@@ -178,6 +182,7 @@ func TestResolveTextGenerationConfig_PreservesUltraForSol(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
+	resetProviderBinarySettings(t, app)
 	if _, err := app.settings.Update(map[string]any{
 		"textGenerationProvider":        "codex",
 		"textGenerationModel":           "gpt-5.6-sol",

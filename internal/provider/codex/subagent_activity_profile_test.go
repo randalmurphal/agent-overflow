@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/providertest"
 )
 
 // v2StartedWithProfile is a codex 0.162+ started activity: the child's
@@ -95,7 +96,7 @@ func TestStartedActivityProfileReplacesTheChildResumeRead(t *testing.T) {
 			t.Parallel()
 			s := newMultiAgentV2RoutingSession(t, func(provider.ProviderEvent) {})
 			ctx, cancel := context.WithCancel(context.Background())
-			proc, err := provider.Spawn(ctx, provider.SpawnConfig{Binary: "sh", Args: []string{"-c", "cat > /dev/null"}})
+			proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{Binary: "sh", Args: []string{"-c", "cat > /dev/null"}})
 			if err != nil {
 				t.Fatalf("spawn: %v", err)
 			}

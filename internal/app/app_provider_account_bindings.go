@@ -68,7 +68,6 @@ func (a *App) switchProviderAccount(
 	if automatic {
 		selectAccount = a.providerAccounts.AutoSwitchProviderAccount
 	}
-	from := a.providerAccounts.Selection(providerName).AccountID
 	account, err := selectAccount(providerName, accountID)
 	// A declined switch activated nothing, so there is no new identity to
 	// learn — and the catalog probe would spawn the CLI for an answer the
@@ -78,9 +77,6 @@ func (a *App) switchProviderAccount(
 		// The meters and auto-switch otherwise hold this account's last
 		// reading until the next poll.
 		a.providerLifecycleService().RequestReading(providerName)
-		// A refusal of a request already in flight on the previous account
-		// is charged to that account, not the new selection.
-		a.accountSwitch().SelectionMoved(provider.UsageProviderFamily(providerName), from, accountID)
 	}
 	return account, err
 }

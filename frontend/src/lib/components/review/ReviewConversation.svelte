@@ -282,6 +282,9 @@
 </script>
 
 <div bind:this={rootEl} class="relative px-3 py-3.5 text-xs" data-testid="review-conversation">
+  {#if review.prThreadsTruncated}
+    <p class="mb-3 text-[0.6875rem] text-fg-subtle" data-testid="review-threads-truncated">{review.prThreadsTruncated}</p>
+  {/if}
   {#if review.reactionsUnavailable}
     <p class="mb-3 text-[0.6875rem] text-fg-subtle" data-testid="review-reactions-unavailable">{review.reactionsUnavailable}</p>
   {/if}

@@ -31,7 +31,7 @@ import type { Settings } from '../../types/settings';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { emitWailsEvent } from '../../../test/mocks/wailsio-runtime';
 import { emitItemEventUpsert, installThreadSwitchMocks } from '../../../test/helpers/chat';
-import { THREAD_ROW_DRAG_MIME } from '../../utils/threadDragPayload';
+import { endThreadRowDrag, THREAD_ROW_DRAG_MIME, threadDragPayloadForEvent } from '../../utils/threadDragPayload';
 import {
   REMOTE_BACKEND_UUID,
   resetStagedBackends,
@@ -397,15 +397,19 @@ describe('<ThreadRow> drag source', () => {
     // Its own type alone: plain text would make every text field a drop
     // target for the row.
     expect(dataTransfer.types).toEqual([THREAD_ROW_DRAG_MIME]);
-    // Project and current group ride along: a group drop target refuses a
-    // cross-project thread, and the ungroup drop needs to know what the
-    // thread left.
-    expect(JSON.parse(dataTransfer.getData(THREAD_ROW_DRAG_MIME))).toEqual({
+    // Any drop target can read the DataTransfer, a page in a browser pane
+    // included: it carries the thread's id and nothing of its title,
+    // project or group.
+    expect(dataTransfer.getData(THREAD_ROW_DRAG_MIME)).toBe('drag-source');
+    // Project and current group stay in the document: a group drop target
+    // refuses a cross-project thread, and the ungroup drop needs to know
+    // what the thread left.
+    expect(threadDragPayloadForEvent({ dataTransfer } as unknown as DragEvent)).toEqual({
       threadId: 'drag-source',
-      title: 'Drag Source',
       projectId: 'project-1',
       groupId: 'group-1',
     });
+    endThreadRowDrag();
   });
 
   it('drags the thread from the worktree sublabel instead of selecting its text', async () => {
@@ -424,9 +428,8 @@ describe('<ThreadRow> drag source', () => {
 
     await fireEvent.dragStart(label, { dataTransfer });
 
-    expect(JSON.parse(dataTransfer.getData(THREAD_ROW_DRAG_MIME))).toMatchObject({
-      threadId: 'drag-sublabel',
-    });
+    expect(dataTransfer.getData(THREAD_ROW_DRAG_MIME)).toBe('drag-sublabel');
+    endThreadRowDrag();
   });
 });
 

@@ -415,6 +415,45 @@ describe('refreshDiscussionChannel fetch shape', () => {
     expect(pane.channelMessages.map((m) => m.sequence)).toEqual([0, 1]);
   });
 
+  // A state push that lands while the read is in flight describes a change
+  // the read may predate, and the transport can write it ahead of the reply.
+  it('keeps a state push that arrived during the read', async () => {
+    const pane = await buildPane(discussionThread(), [], 'a');
+    setBindingMock('GetChannelState', async () => {
+      emitWailsEvent('discussion:state', makeStatePayload({ turnCount: 3, status: 'concluded', awaitingResponse: false }));
+      return makeStatePayload({ turnCount: 2 });
+    });
+    setBindingMock('GetChannelMessages', async () => []);
+
+    await refreshDiscussionChannel(pane);
+
+    expect(pane.channelTurnCount).toBe(3);
+    expect(pane.channelStatus).toBe('concluded');
+  });
+
+  it('applies a state push that follows the read', async () => {
+    const pane = await buildPane(discussionThread(), [], 'a');
+    setBindingMock('GetChannelState', async () => makeStatePayload({ turnCount: 2 }));
+    setBindingMock('GetChannelMessages', async () => []);
+    await refreshDiscussionChannel(pane);
+    expect(pane.channelTurnCount).toBe(2);
+    emitWailsEvent('discussion:state', makeStatePayload({ turnCount: 3 }));
+    expect(pane.channelTurnCount).toBe(3);
+  });
+
+  it('keeps a state push that arrived during the gap read', async () => {
+    const pane = await buildPane(discussionThread(), [], 'a');
+    setBindingMock('GetChannelState', async () => {
+      emitWailsEvent('discussion:state', makeStatePayload({ turnCount: 5 }));
+      return makeStatePayload({ turnCount: 4 });
+    });
+    setBindingMock('GetChannelMessages', async () => []);
+    emitWailsEvent(transportGapChannel, { channel: 'discussion:state', seq: 2 });
+    await vi.waitFor(() => expect(pane.channelTurnCount).toBe(5));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(pane.channelTurnCount).toBe(5);
+  });
+
   it('is a no-op for a pane with no discussionId', async () => {
     const pane = await buildPane(makeThread({ id: 'plain-thread', discussionId: undefined }), [], 'a');
     const stateMock = setBindingMock('GetChannelState', async () => makeStatePayload());
@@ -435,7 +474,7 @@ describe('transport gap recovery for discussion channels', () => {
     const messagesMock = setBindingMock('GetChannelMessages', async () => [makeMessage({ sequence: 0 })]);
 
     emitWailsEvent(transportGapChannel, { channel: 'discussion:message', seq: 1 });
-    // The gap handler's fetchDiscussionChannelSnapshot chains a
+    // The gap handler's readDiscussionChannel chains a
     // Promise.all of two RPCs through an async function's own return,
     // then a further `.then()` that applies the result to each pane —
     // more microtask hops than a bare `await Promise.resolve()` pair

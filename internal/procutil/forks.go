@@ -11,6 +11,9 @@ import "syscall"
 // process that only writes an executable for another process to run does
 // not take it. It takes syscall.ForkLock for reading, so concurrent writers
 // do not wait for each other.
+//
+// A write that can take long (copying a large file) uses WriteExecutable,
+// which holds process starts off for less where the platform allows.
 func HoldForks() (release func()) {
 	syscall.ForkLock.RLock()
 	return syscall.ForkLock.RUnlock

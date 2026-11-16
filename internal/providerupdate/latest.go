@@ -105,7 +105,13 @@ func (s *Service) plan(ctx context.Context, providerName string, binary Binary, 
 		latest, err = s.manifestVersion(ctx, BrewCaskURL(cask))
 		executable, args = brew, []string{"upgrade", "--cask", cask}
 	case providerName == ProviderClaude:
-		latest, err = s.claudeLatest(ctx, binary.Path, env)
+		if latest, err = s.claudeLatest(ctx, binary.Path, env); err != nil {
+			return "", Command{}, err
+		}
+		if update, err = s.claudeCommand(binary.Path, env, args...); err != nil {
+			return "", Command{}, err
+		}
+		return latest, update, nil
 	case providerName == ProviderCodex && binary.Launcher != "":
 		latest, err = s.manifestVersion(ctx, CodexNPMLatestURL)
 		executable = binary.Launcher
@@ -159,17 +165,38 @@ func (s *Service) codexLatestRelease(ctx context.Context) (string, error) {
 	return requireVersion(version, CodexLatestReleaseURL)
 }
 
+// errSignInRequired is the check of a Claude install whose login has
+// expired (Status.SignInRequired).
+var errSignInRequired = errors.New("the Claude login has expired; sign in to Claude again to check for an update")
+
 // claudeLatest is the version of the release channel `claude doctor` says
 // the user's settings cascade selects, which is the channel `claude update`
 // follows.
-func (s *Service) claudeLatest(ctx context.Context, claude string, env map[string]string) (string, error) {
-	command, err := s.command(ProviderClaude, claude, env, "doctor")
+//
+// No doctor runs on a login past its refresh deadline: like every Claude
+// start it would renew the token, and that renewal blanks the saved
+// credential (docs/references/claude.md). The doctor is stopped once it has
+// printed its channel, so one that lingers with no terminal holds no process
+// until doctorTimeout.
+func (s *Service) claudeLatest(ctx context.Context, claudeBinary string, env map[string]string) (string, error) {
+	expired, err := s.deps.ClaudeLoginExpired()
+	if err != nil {
+		return "", fmt.Errorf("could not read the Claude login before running claude doctor: %w", err)
+	}
+	if expired {
+		return "", errSignInRequired
+	}
+	command, err := s.claudeCommand(claudeBinary, env, "doctor")
 	if err != nil {
 		return "", err
 	}
+	command.Done = doctorNamedChannel
 	runCtx, cancel := context.WithTimeout(ctx, doctorTimeout)
 	out, err := s.deps.Runner(runCtx, command)
 	cancel()
+	if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+		return "", fmt.Errorf("claude doctor did not report its auto-update channel within %s and was stopped", doctorTimeout)
+	}
 	if err != nil {
 		return "", fmt.Errorf("could not run claude doctor: %w", err)
 	}
@@ -189,6 +216,17 @@ func (s *Service) claudeLatest(ctx context.Context, claude string, env map[strin
 }
 
 const doctorChannelLabel = "Auto-update channel:"
+
+// doctorNamedChannel reports that output holds a whole `Auto-update
+// channel:` line, which is all a check reads from `claude doctor`.
+func doctorNamedChannel(output string) bool {
+	for line := range strings.Lines(stripANSI(output)) {
+		if strings.HasSuffix(line, "\n") && strings.Contains(line, doctorChannelLabel) {
+			return true
+		}
+	}
+	return false
+}
 
 // parseDoctorChannel reads the `Auto-update channel:` line of `claude
 // doctor` output. Only "latest" and "stable" are accepted, because the

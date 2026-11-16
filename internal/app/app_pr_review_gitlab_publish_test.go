@@ -27,7 +27,7 @@ func newGitLabPublishCase(t *testing.T, threadOwned bool) *gitlabPublishCase {
 	t.Helper()
 	c := &gitlabPublishCase{reviewSubmitCase: newReviewSubmitCase(t, "gitlab"), threadOwned: threadOwned, discussion: strings.Repeat("b", 40)}
 	line := 2
-	pull := forgefake.Pull{Number: 9, Title: "Widgets", Author: "octo", HeadRef: "feature", State: "open", Diff: reviewTestDiff,
+	pull := forgefake.Pull{Number: 9, Title: "Widgets", Author: "octo", HeadRef: "feature", HeadSHA: reviewTestHead, State: "open", Diff: reviewTestDiff,
 		Threads: []forgefake.Thread{{ID: c.discussion, Path: "main.go", Line: &line, Side: "right", Comments: []forgefake.Comment{{ID: 502, Author: "alice", Body: "open root"}}}}}
 	if _, err := c.engine.Seed(forgefake.Fixture{Viewer: "alice", Repos: []forgefake.Repo{{Forge: "gitlab", Project: "acme/widgets", Pulls: []forgefake.Pull{pull}}}}); err != nil {
 		t.Fatal(err)

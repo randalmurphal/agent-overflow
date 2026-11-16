@@ -27,12 +27,15 @@ import (
 	"io"
 	"time"
 
+	"agent-overflow/internal/procutil"
 	"agent-overflow/internal/provider"
 )
 
 // ProbeConfig customizes a short-lived account probe invocation.
 type ProbeConfig struct {
 	Binary string // default: "codex"
+	// Reaper ends the process if the backend dies first. Required.
+	Reaper procutil.Reaper
 	// WorkDir is the parent of the temporary account working directory. REQUIRED, and
 	// must be absolute — see provider.ValidateProbeWorkDir for why an
 	// inherited cwd is not an acceptable default here.
@@ -115,7 +118,7 @@ func ProbeAccount(ctx context.Context, cfg ProbeConfig) (_ provider.AccountInfo,
 		return provider.AccountInfo{}, err
 	}
 	defer func() { retErr = errors.Join(retErr, cleanup()) }()
-	proc, err := provider.Spawn(probeCtx, spawnCfg)
+	proc, err := provider.Spawn(probeCtx, provider.Bounded(cfg.Reaper), spawnCfg)
 	if err != nil {
 		return provider.AccountInfo{}, fmt.Errorf("codex: probe spawn: %w", err)
 	}

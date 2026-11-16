@@ -193,7 +193,7 @@ describe('tool panes in the strip', () => {
       dropEffect: 'none',
       effectAllowed: 'copy',
       getData: (type: string) => type === THREAD_ROW_DRAG_MIME
-        ? encodeThreadDragPayload({ threadId: 'dropped', title: 'Dropped', projectId: 'project-1' })
+        ? encodeThreadDragPayload({ threadId: 'dropped', projectId: 'project-1' })
         : '',
       setData: () => {},
       setDragImage: () => {},
@@ -350,7 +350,7 @@ describe('a tool dragged from the tools row', () => {
     const rendered = render(PaneHost);
     const left = section(rendered.container, 'left');
     stubRect(left, 0, 700);
-    beginThreadRowDrag({ threadId: 'stale', title: 'Stale', projectId: 'project-1' });
+    beginThreadRowDrag({ threadId: 'stale', projectId: 'project-1' });
     beginToolPaneDrag({ kind: 'workflows' });
     await drag(left, 'dragover', toolDrag('workflows', true), 600);
     await drag(left, 'drop', toolDrag('workflows', false), 600);

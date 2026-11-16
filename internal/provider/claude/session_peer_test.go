@@ -15,6 +15,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/testutil/mockexec"
 )
@@ -254,6 +255,8 @@ done
 	mockexec.Write(t, scriptPath, script)
 
 	s, err := NewSession(context.Background(), testThread, Config{
+		Reaper:              procutiltest.Reaper(),
+		Retention:           UserHomeRetention(0),
 		Binary:              scriptPath,
 		CrossSessionEnabled: true,
 		PeerSessionName:     "old-name",
@@ -480,7 +483,7 @@ func TestSendReleasesTheIssuedUUIDWhenTheWriteFails(t *testing.T) {
 	scriptDir := t.TempDir()
 	scriptPath := filepath.Join(scriptDir, "mock-claude")
 	mockexec.Write(t, scriptPath, "#!/bin/bash\nexec cat\n")
-	s, err := NewSession(context.Background(), testThread, Config{Binary: scriptPath}, func(provider.ProviderEvent) {})
+	s, err := NewSession(context.Background(), testThread, Config{Reaper: procutiltest.Reaper(), Retention: UserHomeRetention(0), Binary: scriptPath}, func(provider.ProviderEvent) {})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -541,6 +544,8 @@ func TestConcurrentRenamePeerSessionEndsOnTheSameNameTheWireDoes(t *testing.T) {
 
 	for attempt := range 25 {
 		s, err := NewSession(context.Background(), testThread, Config{
+			Reaper:              procutiltest.Reaper(),
+			Retention:           UserHomeRetention(0),
 			Binary:              scriptPath,
 			CrossSessionEnabled: true,
 		}, func(provider.ProviderEvent) {})
@@ -816,6 +821,8 @@ func TestRenamePeerSessionMarksItsOutputRowSuppressed(t *testing.T) {
 	script := "#!/bin/sh\nwhile IFS= read -r line; do :; done\n"
 	mockexec.Write(t, scriptPath, script)
 	s, err := NewSession(context.Background(), testThread, Config{
+		Reaper:              procutiltest.Reaper(),
+		Retention:           UserHomeRetention(0),
 		Binary:              scriptPath,
 		CrossSessionEnabled: true,
 	}, func(provider.ProviderEvent) {})

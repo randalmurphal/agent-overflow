@@ -847,6 +847,7 @@ const workflowDispositionPR = "pr"
 //
 //ao:scope threads:autonomy
 //ao:route home
+//ao:budget 12m
 func (a *App) WorkflowMergeItem(ctx context.Context, itemID string) (WorkflowDispositionReceipt, error) {
 	receipt, err := a.workflowApplication().MergeItem(ctx, itemID)
 	return projectWorkflowDispositionReceipt(receipt), err
@@ -857,6 +858,7 @@ func (a *App) WorkflowMergeItem(ctx context.Context, itemID string) (WorkflowDis
 //
 //ao:scope threads:autonomy
 //ao:route home
+//ao:budget 22m
 func (a *App) WorkflowCreateItemPR(ctx context.Context, itemID string) (WorkflowDispositionReceipt, error) {
 	receipt, err := a.workflowApplication().CreateItemPR(ctx, itemID)
 	return projectWorkflowDispositionReceipt(receipt), err
@@ -889,7 +891,14 @@ func (a *App) workflowProjectProfile(projectID string) (*profile.Profile, error)
 	return source.Profile(a.lifeCtx(), projectID)
 }
 
+// autoDisposeWorkflowItem waits for the boot's steps before clients: a run a
+// trial's rebuild finished would otherwise merge, push or open a pull request
+// before the commit.
 func (a *App) autoDisposeWorkflowItem(itemID string) {
+	if err := a.waitForBootSteps(a.lifeCtx()); err != nil {
+		log.Printf("workflow auto-disposition %s: %v", itemID, err)
+		return
+	}
 	if err := a.workflowApplication().AutoDispose(itemID); err != nil {
 		log.Printf("workflow auto-disposition %s: %v", itemID, err)
 		a.emit(eventchan.WorkflowError, engine.ErrorEvent{

@@ -9,8 +9,8 @@
 // branch, on GitHub and GitLab; a PR closed without merging changes nothing
 // and stops being read, and closed, reopened and merged is cleaned up;
 // uncommitted changes keep the worktree with one warning notice that does
-// not repeat; a removal git refuses is told once with no path, retried, and
-// removed once git allows it; a worktree moved to another branch, or a
+// not repeat; a worktree git will never remove (it has submodules) is kept
+// and told once with no path; a worktree moved to another branch, or a
 // thread that left its worktree, is left alone; a fork's PR from the same
 // branch name is not shown, tracked or acted on, on both forges; with
 // "Fetch remotes in the background" off nothing is read, and turning it on
@@ -51,7 +51,7 @@ import {
 } from './merge-cleanup-helpers.js';
 import { basename, errorToasts, harnessGit, listWorktrees, openThread, samePath, threadRow } from './worktree-removal-helpers.js';
 import { existsSync } from 'node:fs';
-import { rm, writeFile } from 'node:fs/promises';
+import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 const POLL_MS = 400;
@@ -222,7 +222,7 @@ test('uncommitted changes keep the merged PR\'s worktree with one warning notice
   await expectEveryForgeCallHandled(harness);
 });
 
-test('a clean worktree git refuses to remove is told once with no path, retried, and removed once git allows it', async ({ harness, page }) => {
+test('a clean worktree git will never remove is kept and told once with no path', async ({ harness, page }) => {
   const fixture = await seedMergeFixture(harness, { forge: 'github', name: 'merge-refused', titles: ['Refused work'], branch: 'refused-branch', number: 14 });
   const [threadId] = fixture.threadIds;
   await lookUpPR(harness, fixture);
@@ -238,23 +238,13 @@ test('a clean worktree git refuses to remove is told once with no path, retried,
   expect(harnessGit(harness, fixture.worktreePath, 'status', '--porcelain')).toBe('');
   await mergePR(harness, fixture);
 
+  // A refusal that never goes away is not retried: the worktree is kept.
+  await expectHandled(harness, threadId, 'kept');
   const kept = notices(page, 'Kept worktree');
-  await expect(kept).toHaveText('PR #14 merged. Kept worktree refused-branch: removing it failed.');
+  await expect(kept).toHaveText('PR #14 merged. Kept worktree refused-branch: it has submodules.');
   await expect(kept).toHaveClass(/text-warning/);
   await expectWorktreeKept(harness, threadId, fixture);
-  // Not handled: the removal is retried, with growing waits, and told once.
-  await expect.poll(() => trackedRow(harness, threadId)?.removal_failed_at ?? 0).toBeGreaterThan(0);
-  expect(trackedRow(harness, threadId)?.handled_at).toBe(0);
-  await new Promise((resolve) => setTimeout(resolve, POLL_MS * 8));
-  await expect(kept).toHaveCount(1);
-
-  // Once git allows it, a retry removes the worktree and says so.
-  harnessGit(harness, fixture.worktreePath, 'rm', '--quiet', 'vendored');
-  harnessGit(harness, fixture.worktreePath, 'commit', '--quiet', '-m', 'drop the submodule');
-  await rm(path.join(harnessGit(harness, fixture.worktreePath, 'rev-parse', '--absolute-git-dir'), 'modules'), { recursive: true, force: true });
-  await expectHandled(harness, threadId, 'removed');
-  await expect(page.getByTestId('env-picker-trigger')).toHaveText('Base', { timeout: 15_000 });
-  await expect(notices(page, 'Removed worktree')).toHaveText('PR #14 merged. Removed worktree refused-branch; this thread now runs in Base.');
+  await expectNoMoreStateReads(harness, POLL_MS);
   await expect(kept).toHaveCount(1);
   await expectEveryForgeCallHandled(harness);
 });
@@ -505,7 +495,7 @@ test('a PR the app\'s create action opens is tracked from that create', async ({
   await seedForge(harness, [{ ...fixture.repo, pulls: [] }]);
   await harness.open(page);
   const result = await harness.rpc<{ prUrl?: string; error?: string }>(
-    'GitCreatePR', { projectId: fixture.projectId, workspacePath: fixture.worktreePath }, 'Created here', '', false,
+    'GitCreatePR', { projectId: fixture.projectId, workspacePath: fixture.worktreePath }, 'Created here', '', false, '',
   );
   expect(result.error ?? '').toBe('');
   const number = Number(result.prUrl?.split('/').pop());

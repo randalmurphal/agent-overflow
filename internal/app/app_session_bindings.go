@@ -49,9 +49,12 @@ func (a *App) StopSession(threadID string) error {
 // content. The options-aware path below owns newer composer controls.
 //
 //ao:scope threads:operate
-func (a *App) SendMessage(threadID string, content string, attachmentIDs []string) error {
+func (a *App) SendMessage(ctx context.Context, threadID string, content string, attachmentIDs []string) error {
 	if a.shuttingDown.Load() {
 		return ErrShuttingDown
+	}
+	if err := a.requireAutonomyForThread(ctx, threadID, ""); err != nil {
+		return err
 	}
 	_, err := a.sendMessageWithOptions(context.Background(), threadID, content, sendMessageOptions{
 		AttachmentIDs: attachmentIDs,
@@ -134,6 +137,7 @@ func (a *App) SendMessageWithOptions(ctx context.Context, threadID string, conte
 // live agent instead, before anything is cancelled, interrupted or written.
 //
 //ao:scope threads:operate
+//ao:budget 90s
 func (a *App) InterruptTurn(threadID string, confirmedAgents []string) error {
 	_, err := a.interruptTurnAtIndex(context.Background(), threadID, anyOpenTurn, stopByUser(confirmedAgents))
 	return err
@@ -155,6 +159,7 @@ type InterruptAndRevertResult struct {
 // It never reverts.
 //
 //ao:scope threads:operate
+//ao:budget 90s
 func (a *App) InterruptAndRevertIfClean(threadID string, opts InterruptRevertOptions, confirmedAgents []string) (InterruptAndRevertResult, error) {
 	if err := a.InterruptTurn(threadID, confirmedAgents); err != nil {
 		return InterruptAndRevertResult{}, err
@@ -307,7 +312,7 @@ func (a *App) ReconnectSession(threadID string) error {
 	defer a.releaseReconnect(threadID)
 	unlock := a.threadLocks().Lock(threadID)
 	defer unlock()
-	if err := a.stopSession(threadID); err != nil {
+	if err := a.stopSessionForRestart(threadID); err != nil {
 		return err
 	}
 	return a.startSession(context.Background(), threadID)
@@ -328,7 +333,7 @@ func (a *App) reconnectSessionLocked(ctx context.Context, threadID string) error
 	defer a.releaseReconnect(threadID)
 	// The stop half stays uncancellable on purpose: it is provider IO, and it
 	// has already run by the time the start half's join could be abandoned.
-	if err := a.stopSession(threadID); err != nil {
+	if err := a.stopSessionForRestart(threadID); err != nil {
 		return err
 	}
 	return a.startSession(ctx, threadID)
@@ -364,4 +369,16 @@ func (a *App) stopSession(threadID string) error {
 		return a.stopSessionFn(threadID)
 	}
 	return a.StopSession(threadID)
+}
+
+// stopSessionForRestart is the stop half of a reconnect. Nobody asked for
+// the thread's queue to go, so it returns to the composer, as it does when
+// a session dies (teardownAndCloseSessionRestoringQueue). Caller holds the
+// thread action lock.
+func (a *App) stopSessionForRestart(threadID string) error {
+	if a.stopSessionFn != nil {
+		return a.stopSessionFn(threadID)
+	}
+	sess, _ := a.sessionManager().take(threadID)
+	return a.teardownAndCloseSessionRestoringQueue(threadID, sess)
 }

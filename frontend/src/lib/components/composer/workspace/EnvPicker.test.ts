@@ -14,6 +14,7 @@ import { buildPane as buildRegisteredPane, makeThread as makeBaseThread } from '
 import { idleWorkspaceActivity, makeWorkspaceLock } from '../../../../test/helpers/workspaceLock';
 import { emitWailsEvent } from '../../../../test/mocks/wailsio-runtime';
 import { registerPaneForTest, resetPanesForTest } from '../../../stores/panes.svelte';
+import { withEmptyDraftCleanup } from '../../../stores/emptyDraftCleanup';
 
 function makeThread(overrides: Partial<Thread> = {}): Thread {
   return makeBaseThread({
@@ -129,6 +130,38 @@ describe('<EnvPicker>', () => {
       expect(call).toEqual(['thread-1', '/tmp/wt-feature']);
     });
   });
+
+  it.each(['an existing worktree', 'New Worktree'])(
+    'waits for an empty-draft delete before choosing %s, then applies it to the placeholder',
+    async (choice) => {
+      const pane = await buildPane(makeThread({ id: 'emptied', isDraft: true, workspacePath: '/repo', projectPath: '/repo' }));
+      setBindingMock('GitListWorktrees', async () => [
+        { path: '/repo', branch: 'main', head: 'abc' },
+        { path: '/tmp/wt-feature', branch: 'feat', head: 'def' },
+      ]);
+      const update = setBindingMock('UpdateThreadWorkspace', async () => makeThread({ workspacePath: '/tmp/wt-feature' }));
+      const create = setBindingMock('CreateThread', async (options: Record<string, unknown>) =>
+        makeThread({ id: 'replacement', isDraft: true, workspacePath: String(options.workspaceOverride ?? '/repo') }));
+      let answer!: () => void;
+      const answered = new Promise<void>((resolve) => { answer = resolve; });
+      const cleanup = withEmptyDraftCleanup('emptied', async () => { await answered; return true; }, async () => {
+        pane.dematerializeEmptyDraftThread();
+      });
+      const { getByTestId, findByRole } = render(EnvPicker, { props: { pane, workspaceLock: makeWorkspaceLock() } });
+      await fireEvent.click(getByTestId('env-picker-trigger'));
+      await fireEvent.click(await findByRole('menuitem', { name: choice === 'New Worktree' ? /New Worktree/ : /wt-feature/ }));
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      expect(update).not.toHaveBeenCalled();
+      expect(create).not.toHaveBeenCalled();
+      answer();
+      await cleanup;
+
+      // A placeholder materializes for a workspace choice; nothing names the deleted row.
+      await waitFor(() => expect(pane.threadId).toBe('replacement'));
+      expect(update).not.toHaveBeenCalled();
+      if (choice !== 'New Worktree') expect(create).toHaveBeenCalledWith(expect.objectContaining({ workspaceOverride: '/tmp/wt-feature' }));
+    },
+  );
 
   it('shows the branch beside a worktree only when it differs from the directory name', async () => {
     const pane = await buildPane(makeThread({ workspacePath: '/repo', projectPath: '/repo' }));

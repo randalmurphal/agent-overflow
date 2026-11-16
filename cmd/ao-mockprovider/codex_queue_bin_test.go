@@ -208,6 +208,32 @@ func TestCodexSteerEchoesTheClientMessageID(t *testing.T) {
 	}
 }
 
+// A turn that cannot take input (a review or a compaction) refuses a steer,
+// and the refused input reaches no turn: no echo follows the error.
+func TestCodexRefusedSteerIsNotEchoed(t *testing.T) {
+	sc := queueScenario()
+	sc.Codex.Responses = map[string]string{
+		"turn/steer": `{"jsonrpc":"2.0","id":${REQUEST_ID},"error":{"code":-32600,"message":"the active turn cannot be steered","data":{"codexErrorInfo":{"activeTurnNotSteerable":{"turnKind":"review"}}}}}`,
+	}
+	p, advance := startControlledMock(t, sc, []string{"app-server"})
+	defer advance("hold")
+
+	p.send(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)
+	p.expectLine(testTimeout)
+	p.send(`{"jsonrpc":"2.0","method":"initialized"}`)
+	p.send(`{"jsonrpc":"2.0","id":2,"method":"thread/start","params":{}}`)
+	p.expectLine(testTimeout)
+	p.send(`{"jsonrpc":"2.0","id":3,"method":"turn/start","params":{"threadId":"th-q","input":[{"type":"text","text":"first"}],"clientUserMessageId":"user:0"}}`)
+	p.expectLine(testTimeout)
+	p.expectLineContaining(`"method":"turn/started"`, testTimeout)
+
+	p.send(`{"jsonrpc":"2.0","id":4,"method":"turn/steer","params":{"threadId":"th-q","expectedTurnId":"turn-1","input":[{"type":"text","text":"steered"}],"clientUserMessageId":"user:0:flush:1"}}`)
+	if got := p.expectLineContaining(`"id":4`, testTimeout); !strings.Contains(got, "activeTurnNotSteerable") {
+		t.Fatalf("steer response = %s, want the refusal", got)
+	}
+	p.expectNoLine(300 * time.Millisecond)
+}
+
 // userMessageItemID pulls `params.item.id` out of an `item/completed` line.
 func userMessageItemID(t *testing.T, line string) string {
 	t.Helper()

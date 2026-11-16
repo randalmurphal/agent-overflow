@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/providertest"
 )
 
 // TestClosedSessionDispatchRefusesAsErrSessionClosed pins the regression
@@ -27,7 +28,7 @@ func TestClosedSessionDispatchRefusesAsErrSessionClosed(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	// `cat` is a stand-in process, never a provider CLI: Close needs a real
 	// *provider.Process to close and this test must not spawn codex.
-	proc, err := provider.Spawn(ctx, provider.SpawnConfig{Binary: "cat"})
+	proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{Binary: "cat"})
 	if err != nil {
 		t.Fatalf("spawn: %v", err)
 	}

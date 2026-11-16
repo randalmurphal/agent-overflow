@@ -59,7 +59,7 @@ interface Session {
  * the event registry the store subscribes to is a different object than
  * the one this file imported at the top.
  */
-async function session(opts: { harness: boolean; remote?: boolean }): Promise<Session> {
+async function session(opts: { harness: boolean; remote?: boolean; queryOnRegister?: string }): Promise<Session> {
   vi.resetModules();
   const runtime = await import('../../test/mocks/wailsio-runtime');
   const bindings = await import('../../test/mocks/bindings-app');
@@ -74,6 +74,12 @@ async function session(opts: { harness: boolean; remote?: boolean }): Promise<Se
 
   let pageId = store.__frontendPageIDForTest();
   bindings.setBindingMock('HarnessRegisterPage', (...args: unknown[]) => {
+    // The backend can query a page the moment it registers, and the
+    // transport writes that event ahead of the registration reply.
+    if (opts.queryOnRegister) {
+      runtime.emitWailsEvent('harness:ui-query', { id: opts.queryOnRegister, spec: { v: 1, kind: 'viewport' }, pageId });
+      opts.queryOnRegister = undefined;
+    }
     return { pageId, marker: String(args[1] ?? ''), origin: String(args[2] ?? '') };
   });
   const reply = bindings.setBindingMock('HarnessUIQueryReply', () => null);
@@ -202,6 +208,15 @@ describe('installHarnessBridge', () => {
     expect(chunk.activations).toBe(1);
     expect(s.replies()).toHaveLength(2);
     teardown();
+  });
+
+  it('answers a query sent the moment the page registered', async () => {
+    const s = await session({ harness: true, queryOnRegister: 'uq-register' });
+    const teardown = s.install();
+    await settle(() => s.replies().length > 0);
+    expect(s.replies()[0]![1]).toBe('uq-register');
+    teardown();
+    await settle(() => chunk.stops > 0);
   });
 
   // The second half of the same promise, and the one a perf run depends

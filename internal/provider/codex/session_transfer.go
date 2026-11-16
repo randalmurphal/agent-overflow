@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"agent-overflow/internal/procutil"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/codex/rollout"
 	"agent-overflow/internal/transferfiles"
@@ -41,7 +42,9 @@ func decodeTransferReference(threadID string, response json.RawMessage) (rollout
 }
 
 type TransferSnapshotConfig struct {
-	Binary  string
+	Binary string
+	// Reaper ends the process if the backend dies first. Required.
+	Reaper  procutil.Reaper
 	Home    string
 	WorkDir string
 	Env     map[string]string
@@ -63,7 +66,7 @@ func ReadTransferSnapshot(ctx context.Context, cfg TransferSnapshotConfig, sessi
 	if err := provider.ValidateProbeWorkDir("codex transfer", cfg.WorkDir); err != nil {
 		return TransferSnapshot{}, err
 	}
-	client, err := startOneshotClient(ctx, oneshotSpec{Binary: cfg.Binary, WorkDir: cfg.WorkDir, Env: cfg.Env, ClientName: provider.CodexClientOrigin, Experimental: true, Label: "conversation transfer"})
+	client, err := startOneshotClient(ctx, provider.Watched(cfg.Reaper), oneshotSpec{Binary: cfg.Binary, WorkDir: cfg.WorkDir, Env: cfg.Env, ClientName: provider.CodexClientOrigin, Experimental: true, Label: "conversation transfer"})
 	if err != nil {
 		return TransferSnapshot{}, err
 	}

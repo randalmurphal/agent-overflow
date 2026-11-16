@@ -1,12 +1,21 @@
 // The find provider of every pane that renders a thread timeline: a thread
 // pane, a side chat, and an agent pane over a scoped transcript.
 //
-// Hits come from the store's indexed read of the transcript the pane shows,
-// in document order. Typing is debounced. One read is in flight at a time:
-// a newer query or an invalidation waits, replacing any other waiting read,
-// and a close drops the waiting one. An answer applies only while its
-// query, its transcript, the thread's owner and the timeline's generation
-// are all still the ones it was asked for.
+// The store answers candidates: the rows of the transcript the pane shows
+// that may hold a match, in document order, as pages serve them. A hit is a
+// candidate whose find text (host.findRuns, chat/threadFindText.ts)
+// holds a match by the find rule, the text the highlighter paints, so the
+// count and the paint read the same text. Hits are re-decided when a row's
+// find text can change without a read (host.reevaluate callers: an
+// expanded body loading).
+//
+// Typing is debounced. One read is in flight at a time: a newer query or an
+// invalidation waits, replacing any other waiting read, and a close drops
+// the waiting one. An answer applies only while its query, its transcript,
+// the thread's owner and the timeline's generation are all still the ones
+// it was asked for. A refresh passes the last answer's state, so the store
+// re-reads only the rows written since (SearchThreadItems); it answers in
+// full when it cannot.
 //
 // A new query starts at the first hit at or below the reading position (the
 // last hit when none is below), so the view moves as little as possible;
@@ -16,13 +25,15 @@
 // transcript changed) updates the count and the current hit in place. DOM
 // work (reading position, highlights) belongs to the host.
 
-import { SearchThreadItems, type ThreadMessageHit } from './bindings';
+import { SearchThreadItems, type ThreadFindSince } from './bindings';
 import { paneFindReads, type PaneFindProvider, type PaneFindResult } from './paneFind.svelte';
 import type { ScrollToItemOptions } from './threadPaneShared';
 import type { BackendKey } from '../transport/backends';
+import type { Item } from '../types/models';
 import { addErrorToast } from './toast.svelte';
 import { createRefreshScheduler } from '../utils/refreshScheduler';
 import { errString } from '../utils/errors';
+import { countFindMatches, findNeedle } from '../utils/findMatch';
 
 export const THREAD_FIND_DEBOUNCE_MS = 150;
 export const THREAD_FIND_LIMIT = 1000;
@@ -34,7 +45,11 @@ export interface TimelineCoordinate {
   itemIndex: number;
 }
 
-type Hit = Pick<ThreadMessageHit, 'itemId' | 'turnIndex' | 'itemIndex'>;
+interface Hit {
+  itemId: string;
+  turnIndex: number;
+  itemIndex: number;
+}
 
 export interface ThreadFindScope {
   threadId: string;
@@ -60,6 +75,10 @@ export interface ThreadFindHost {
   readingPosition(): TimelineCoordinate | null;
   /** True when the item's row is mounted and in the viewport. */
   isOnScreen(itemId: string): boolean;
+  /** The runs of text a row's find text shows (threadFindText.ts). */
+  findRuns(item: Item): readonly string[];
+  /** Whether a row's find text can change with no new read (an expanded body). */
+  findRunsLive(item: Item): boolean;
   /** Paint the query's matches, with the current hit's row distinguished. */
   paint(query: string, currentItemId: string | null): void;
 }
@@ -69,6 +88,8 @@ export interface ThreadFind extends PaneFindProvider {
   previous(): void;
   /** Re-read the current query (the transcript changed); keeps the current hit. */
   refresh(): void;
+  /** Re-decide the hits among the candidates held (a row's find text changed). */
+  reevaluate(): void;
   /**
    * The transcript, its owner or its generation changed: drop the hits and
    * search the current query again.
@@ -81,7 +102,7 @@ function compare(a: TimelineCoordinate, b: TimelineCoordinate): number {
 }
 
 /** First hit at or below `position`, else the last; -1 with no hits. */
-export function currentHitIndex(hits: readonly Hit[], position: TimelineCoordinate | null): number {
+export function currentHitIndex(hits: readonly TimelineCoordinate[], position: TimelineCoordinate | null): number {
   if (hits.length === 0) return -1;
   if (!position) return 0;
   const below = hits.findIndex((h) => compare(h, position) >= 0);
@@ -99,6 +120,14 @@ export function createThreadFind(host: ThreadFindHost, noun: () => string = () =
   let hits = $state.raw<Hit[]>([]);
   let current = $state(-1);
   let pending = $state(false);
+  let capped = $state(false);
+  // The candidates of the last answer, by id, and the state it read.
+  let candidates = new Map<string, Item>();
+  let since: ThreadFindSince | null = null;
+  // Whether a candidate's find text matches the needle, for rows whose
+  // find text only a new read changes. Keyed by the row object an answer gave.
+  let decided = new WeakMap<Item, boolean>();
+  let decidedNeedle = '';
   // Moves on every query change, rescope and close; an answer must match it.
   let seq = 0;
   let timer: ReturnType<typeof setTimeout> | null = null;
@@ -113,7 +142,7 @@ export function createThreadFind(host: ThreadFindHost, noun: () => string = () =
     get count() { return hits.length; },
     get current() { return current; },
     get pending() { return pending; },
-    get capped() { return hits.length >= THREAD_FIND_LIMIT; },
+    get capped() { return capped; },
   };
 
   function currentId(): string | null {
@@ -139,6 +168,45 @@ export function createThreadFind(host: ThreadFindHost, noun: () => string = () =
   function dropHits(): void {
     hits = [];
     current = -1;
+    capped = false;
+    candidates = new Map();
+    since = null;
+  }
+
+  function matches(item: Item, needle: string): boolean {
+    if (needle !== decidedNeedle) {
+      decided = new WeakMap();
+      decidedNeedle = needle;
+    }
+    const live = host.findRunsLive(item);
+    if (!live) {
+      const known = decided.get(item);
+      if (known !== undefined) return known;
+    }
+    const hit = host.findRuns(item).some((run) => countFindMatches(run, needle) > 0);
+    if (!live) decided.set(item, hit);
+    return hit;
+  }
+
+  /** The hits among the candidates, in document order. */
+  function decide(): Hit[] {
+    const needle = findNeedle(query);
+    const out: Hit[] = [];
+    for (const item of candidates.values()) {
+      if (matches(item, needle)) out.push({ itemId: item.id, turnIndex: item.turnIndex, itemIndex: item.itemIndex });
+    }
+    return out.sort(compare);
+  }
+
+  /** Re-decides the hits and keeps the current one where it can. */
+  function settle(fallback: TimelineCoordinate | null): boolean {
+    const previous = hits[current];
+    const next = decide();
+    if (next.length === hits.length && next.every((hit, at) => hit.itemId === hits[at].itemId)) return false;
+    hits = next;
+    const kept = previous ? next.findIndex((h) => h.itemId === previous.itemId) : -1;
+    current = kept >= 0 ? kept : currentHitIndex(next, previous ?? fallback);
+    return true;
   }
 
   /** Ends the session's reads and its reveal; the next read starts fresh. */
@@ -179,10 +247,11 @@ export function createThreadFind(host: ThreadFindHost, noun: () => string = () =
       paint();
       return;
     }
-    let answer: Hit[];
+    const after = mode === 'refresh' ? since : null;
+    let answer;
     try {
       const selection = scope.scopeRootId ? { scopeRootId: scope.scopeRootId } : undefined;
-      answer = (await SearchThreadItems(scope.threadId, asked, THREAD_FIND_LIMIT, selection)) ?? [];
+      answer = await SearchThreadItems(scope.threadId, asked, THREAD_FIND_LIMIT, selection, after);
     } catch (err) {
       if (stale()) return;
       dropHits();
@@ -192,17 +261,23 @@ export function createThreadFind(host: ThreadFindHost, noun: () => string = () =
       return;
     }
     if (stale()) return;
+    const items = (answer?.items ?? []) as unknown as Item[];
+    if (answer?.incremental && after) {
+      for (const id of answer.changed ?? []) candidates.delete(id);
+    } else {
+      candidates = new Map();
+      capped = answer?.capped === true;
+    }
+    for (const item of items) candidates.set(item.id, item);
+    since = answer?.since ?? null;
     if (mode === 'refresh') {
-      const previous = hits[current];
-      hits = answer;
-      const kept = previous ? answer.findIndex((h) => h.itemId === previous.itemId) : -1;
-      current = kept >= 0 ? kept : currentHitIndex(answer, previous ?? host.readingPosition());
+      settle(host.readingPosition());
       paint();
       return;
     }
-    hits = answer;
+    hits = decide();
     pending = false;
-    current = currentHitIndex(answer, host.readingPosition());
+    current = currentHitIndex(hits, host.readingPosition());
     paint();
     reveal(false);
   }
@@ -232,6 +307,8 @@ export function createThreadFind(host: ThreadFindHost, noun: () => string = () =
     search(next: string): void {
       supersede();
       query = next.trim();
+      // The held candidates answer another query; the next read is full.
+      since = null;
       if (!query) {
         dropHits();
         pending = false;
@@ -249,6 +326,10 @@ export function createThreadFind(host: ThreadFindHost, noun: () => string = () =
     previous: () => step(-1),
     refresh(): void {
       if (query) refreshes.request();
+    },
+    reevaluate(): void {
+      if (!query || pending || candidates.size === 0) return;
+      if (settle(host.readingPosition())) paint();
     },
     rescope(): void {
       supersede();

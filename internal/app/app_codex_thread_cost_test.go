@@ -2,6 +2,7 @@ package app
 
 import (
 	"agent-overflow/internal/testutil/mockexec"
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -104,7 +105,7 @@ func startThreadCostSession(t *testing.T, app *App, id, usageReply, capturePath 
 			t.Errorf("stop cost fixture session: %v", err)
 		}
 	})
-	if err := app.SendMessage(id, "price this", nil); err != nil {
+	if err := app.SendMessage(context.Background(), id, "price this", nil); err != nil {
 		t.Fatalf("SendMessage() error = %v", err)
 	}
 	return id

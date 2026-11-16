@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/testutil/mockexec"
 )
@@ -225,6 +226,7 @@ func TestApplyLiveUpdateFastModeToggleReachesTurnStart(t *testing.T) {
 	mockexec.Write(t, scriptPath, codexTurnCaptureScript(capturePath))
 
 	s, err := NewSession(context.Background(), testThread, Config{
+		Reaper:         procutiltest.Reaper(),
 		Binary:         scriptPath,
 		Model:          "gpt-5.5",
 		WorkDir:        "/tmp",
@@ -283,6 +285,7 @@ func TestServiceTierClearIsScopedToWhatAOAsserted(t *testing.T) {
 	mockexec.Write(t, scriptPath, codexTurnCaptureScript(capturePath))
 
 	s, err := NewSession(context.Background(), testThread, Config{
+		Reaper:         procutiltest.Reaper(),
 		Binary:         scriptPath,
 		Model:          "gpt-5.5",
 		WorkDir:        "/tmp",
@@ -405,6 +408,7 @@ func TestApplyLiveUpdateAppliesOnNextTurnStart(t *testing.T) {
 	mockexec.Write(t, scriptPath, codexTurnCaptureScript(capturePath))
 
 	s, err := NewSession(context.Background(), testThread, Config{
+		Reaper:          procutiltest.Reaper(),
 		Binary:          scriptPath,
 		Model:           "gpt-5.5-codex",
 		WorkDir:         "/tmp",

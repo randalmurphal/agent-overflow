@@ -65,6 +65,10 @@ func TestRemoteCompletionQueueHandoffDraftAndRestartRecovery(t *testing.T) {
 	t.Parallel()
 	a, rec := newAppForFlushQueueRPC(t)
 	a.startSessionFn = func(string) error { return nil }
+	// The start leaves no session, so the completion stays queued for the
+	// restart below; the held dispatcher keeps its worker from returning it
+	// to the composer first.
+	holdFlushQueue(a)
 	thread := remoteWatchThread(t, a, string(provider.Claude))
 	w := completedRemoteWatch(t, a, thread)
 	if _, err := a.store.UpsertThreadDraft(store.ThreadDraft{ThreadID: thread.ID, Content: "my unsent draft", Attachments: "[]", TerminalChips: "[]", UpdatedAt: time.Now().UnixMilli()}); err != nil {

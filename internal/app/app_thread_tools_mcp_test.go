@@ -1,6 +1,7 @@
 package app
 
 import (
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/testutil/mockexec"
 	"bufio"
 	"context"
@@ -351,7 +352,9 @@ func TestThreadToolsSwitchReachesLiveSessions(t *testing.T) {
 			capture := t.TempDir()
 			if name == string(provider.Claude) {
 				sess, err := claude.NewSession(ctx, thread.ID, claude.Config{
-					Binary: writeClaudeMcpToggleCaptureBinary(t, capture), WorkDir: thread.WorkspacePath,
+					Reaper:    procutiltest.Reaper(),
+					Retention: claude.UserHomeRetention(0),
+					Binary:    writeClaudeMcpToggleCaptureBinary(t, capture), WorkDir: thread.WorkspacePath,
 				}, func(provider.ProviderEvent) {})
 				if err != nil {
 					t.Fatal(err)
@@ -477,6 +480,7 @@ func TestThreadMCPPerConversationToggleIsANDedWithTheSwitch(t *testing.T) {
 func newCodexSessionForThreadTools(t *testing.T, ctx context.Context, thread store.Thread, capture string) (*codex.Session, error) {
 	t.Helper()
 	sess, err := codex.NewSession(ctx, thread.ID, codex.Config{
+		Reaper:  procutiltest.Reaper(),
 		Binary:  writeCodexRefreshCaptureBinary(t, capture, "thread-tools-provider", ""),
 		Model:   "gpt-5",
 		WorkDir: thread.WorkspacePath,

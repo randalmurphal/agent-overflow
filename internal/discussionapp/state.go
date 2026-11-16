@@ -8,10 +8,21 @@ import (
 	"agent-overflow/internal/store"
 )
 
-func (s *Service) Post(channelID, content string) (store.ChannelMessage, error) {
+func (s *Service) Post(channelID, content string, check DriveCheck) (store.ChannelMessage, error) {
 	st, _, channels, err := s.services()
 	if err != nil {
 		return store.ChannelMessage{}, fmt.Errorf("channel service unavailable")
+	}
+	channel, err := st.GetChannel(channelID)
+	if err != nil {
+		return store.ChannelMessage{}, err
+	}
+	roster, err := discussionRoster(st, channel)
+	if err != nil {
+		return store.ChannelMessage{}, err
+	}
+	if err := checkParticipants(check, roster); err != nil {
+		return store.ChannelMessage{}, err
 	}
 	message, err := channels.PostMessage(discussion.PostMessageInput{
 		ChannelID: channelID, FromType: discussion.FromTypeHuman,

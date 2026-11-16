@@ -57,6 +57,7 @@ func TestAsyncAnswerSessionDeathRetainsRecoveryAfterStateWriteFailure(t *testing
 	a.testEmitHook = rec.capture
 	a.triage = triage.NewRouter(a.store, rec.captureChannel)
 	a.configureTriageQueueCallbacks()
+	holdFlushQueue(a)
 	thread := testThread("async-restore-failure")
 	thread.Provider = "codex"
 	thread.WorkspacePath = t.TempDir()
@@ -155,7 +156,7 @@ func TestAsyncAnswerDispatchRetainsRecoveryUntilProviderEcho(t *testing.T) {
 	}
 	// A successful steer only queues input inside Codex. The process can still
 	// exit before the model consumes it and echoes its stable message identity.
-	a.flushQueueSettlement(thread.ID, "queue", nil).Settle()
+	a.settleFlushGroup(thread.ID, []triage.QueuedFlushItem{{ID: "queue"}})
 	if rows := durableQueueRows(t, a, thread.ID); len(rows) != 1 {
 		t.Fatal("provider write discarded the unconfirmed answer's recovery record")
 	}

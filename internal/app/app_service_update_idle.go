@@ -6,52 +6,35 @@ import (
 	"time"
 )
 
-// updateWorkReason only reads existing owners. It runs under workAdmission.mu,
-// so it must never acquire a thread action lock or call the workflow actor.
+// updateWorkReason says what running work the restart to update waits for,
+// or "". It runs under workAdmission.mu, so it must never acquire a thread
+// action lock or call the workflow actor; the computer scope of
+// runningWorkIn only reads existing owners.
 func (a *App) updateWorkReason() (string, error) {
-	// Read triage before dispatch: a queue handoff retains its triage claim
-	// until the dispatcher has published its in-flight count.
-	if a.triage.AnyUnfinishedWork(wakeupReapGrace) {
+	work, err := a.runningWorkIn(workScope{computer: true})
+	if err != nil || !work.running() {
+		return "", err
+	}
+	switch work.kind {
+	case workTurn, workAwaitingAnswer:
 		return "Waiting for turns and queued work to finish…", nil
-	}
-	a.flushDispatch.mu.Lock()
-	flushing := len(a.flushDispatch.inflightItems) != 0
-	a.flushDispatch.mu.Unlock()
-	if flushing {
+	case workQueuedMessages:
 		return "Waiting for queued messages to finish…", nil
-	}
-	if a.remoteJobs != nil && a.remoteJobs.HasActive() {
-		return "Waiting for remote commands to finish…", nil
-	}
-	if a.shellCommands != nil && a.shellCommands.HasActive() {
+	case workBackgroundTasks:
+		return "Waiting for background agents and commands to finish…", nil
+	case workShellCommand:
 		return "Waiting for shell commands to finish…", nil
-	}
-	if a.terminals != nil && len(a.terminals.ThreadProcesses()) != 0 {
+	case workTerminal:
 		return "Close this computer’s terminals to finish the update.", nil
-	}
-	if a.store == nil {
-		return "", nil // Bare update fixtures have no session-capable store.
-	}
-	count, err := a.store.CountWorkItemsInStates("running")
-	if err != nil {
-		return "", fmt.Errorf("checking active workflows: %w", err)
-	}
-	if count != 0 {
+	case workRemoteJob:
+		return "Waiting for remote commands to finish…", nil
+	case workWorkflow:
 		return "Waiting for workflows to finish…", nil
+	case workProviderUpdate:
+		return "Waiting for a provider CLI update to finish…", nil
+	default:
+		return fmt.Sprintf("Waiting to finish: %s…", work.kind), nil
 	}
-	for threadID, sess := range a.sessionManager().snapshot() {
-		if sess.Liveness != nil && sess.Liveness.ActiveTurns.Load() > 0 {
-			return "Waiting for provider turns to finish…", nil
-		}
-		rows, err := a.runningBackgroundWorkForThread(threadID, sess.Provider)
-		if err != nil {
-			return "", fmt.Errorf("checking background work: %w", err)
-		}
-		if len(rows) != 0 {
-			return "Waiting for background agents and commands to finish…", nil
-		}
-	}
-	return "", nil
 }
 
 // waitForUpdateIdle returns once work admission is closed with nothing

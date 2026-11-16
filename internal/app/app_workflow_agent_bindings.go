@@ -1579,10 +1579,11 @@ func (a *App) WorkflowAgentSetNotes(ctx context.Context, automationID, notes str
 // minted it ended — is discovered by the next call's 401 rather than by a
 // watcher that hangs until someone kills it.
 
-// maxWorkflowWatchHold bounds one blocked call. It sits under the CLI's 30s RPC
-// timeout on purpose: the client must be the one still waiting when the server
-// answers, never the other way round, or every quiet minute would look like a
-// dead backend. It is also the worst case for noticing a revoked token.
+// maxWorkflowWatchHold bounds one blocked call. It sits under
+// transport.DefaultMethodBudget on purpose: the client must be the one still
+// waiting when the server answers, never the other way round, or every quiet
+// minute would look like a dead backend. It is also the worst case for
+// noticing a revoked token.
 const maxWorkflowWatchHold = 25 * time.Second
 
 // WorkflowAgentWatchInput is `run watch`. Cursor is the sequence the caller

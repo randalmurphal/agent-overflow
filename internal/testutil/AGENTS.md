@@ -12,16 +12,26 @@ packages. Test-specific setup stays beside the test that owns it.
   use it too.
 - `providerpath/` puts poisoned `claude` and `codex` first on PATH from
   TestMain, so a bare provider name never reaches an installed CLI, and fails
-  the run naming the tests that tried. It also points SHELL at a stand-in
+  the run naming the caller: the poison holds its caller while TestMain
+  captures the goroutines waiting on a child process and the running tests.
+  It also points SHELL at a stand-in
   that skips login startup files, so a shell sync cannot reorder PATH. Every
   test package that links a provider spawn package installs it;
   `TestEveryTestBinaryThatCanStartAProviderInstallsThePoison` fails one that
   does not. Standard library only, like `mockexec/`.
+- `helperproc/` ties a helper process to the test binary that started it
+  (`Tie`, `Hold`), so a helper that stands in for a backend ends when that
+  binary is killed or times out. A helper never blocks on `select {}`.
+  Standard library only.
+- `deadline.go` is a context whose deadline the test ends at a chosen
+  moment, for code that acts on a deadline without racing a real clock.
 - `git.go` creates local repositories and local bare origins. No helper here
   reaches a network, and its git commands do not read the user's global
   config: a fixture that commits sets its own identity.
 - `store.go` inserts the project row required by thread foreign keys.
-- `logcapture.go` captures logs for assertions.
+- `logcapture.go` captures logs for assertions; `slowstep.go` parses and
+  format-checks `logging.LogSlowStep` lines and lowers their threshold for
+  one test, shared because four packages emit the line.
 
 Keep behavior and assertions in the package under test. Helpers only stage
 fixtures and return their handles or paths. Do not add `*App` construction here;

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, beforeEach } from 'vitest';
+import { afterEach, describe, expect, it, beforeEach, vi } from 'vitest';
 import {
   createComposerDraftStore,
   resetComposerDraftSnapshotsForTest,
@@ -6,8 +6,9 @@ import {
   type DraftStoreOptions,
 } from './composerDraft.svelte';
 import type { Attachment } from '../types/attachment';
-import { getToasts } from './toast.svelte';
-import { getRememberedDraftSnapshot } from './composerDraftSnapshots';
+import { getToasts, resetToastsForTest } from './toast.svelte';
+import { flushFrontendErrors, resetFrontendErrorCaptureForTest } from '../utils/frontendErrorCapture';
+import { DraftThreadDeletedError, getRememberedDraftSnapshot } from './composerDraftSnapshots';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 
 function installMocks(draft: {
@@ -775,6 +776,253 @@ describe('composerDraft store', () => {
 
     resolveSave?.();
     await flushing;
+  });
+});
+
+// Screen A empties a new thread and its cleanup asks the backend to delete
+// it; A types while that is in flight. Screen B may have saved a draft into
+// the thread first, which is why the backend refuses. The writes queued
+// behind the cleanup reach the thread only when B's draft is proven absent.
+describe('empty-draft cleanup of a thread another screen may hold', () => {
+  const THREAD = 'shared-draft';
+  let stored: Record<string, string>;
+  let reports: string[];
+
+  beforeEach(() => {
+    resetComposerDraftSnapshotsForTest();
+    resetToastsForTest();
+    resetFrontendErrorCaptureForTest();
+    installMocks({ content: '', attachmentIds: [], terminalChips: [] });
+    stored = {};
+    setBindingMock('SaveDraft', async (id: string, content: string) => { stored[id] = content; });
+    reports = [];
+    setBindingMock('ReportFrontendErrorBatch', async (lines: string[]) => { reports.push(...lines); });
+  });
+  afterEach(resetFrontendErrorCaptureForTest);
+
+  function storedDraftIs(content: string) {
+    setBindingMock('GetDraft', async (id: string) => ({ threadId: id, content, attachmentIds: [], terminalChips: [], updatedAt: 1 }));
+  }
+
+  function readFails(id: string) {
+    setBindingMock('GetDraft', async (threadId: string) => {
+      if (threadId === id) throw new Error('temporary read failure');
+      return { threadId, content: '', attachmentIds: [], terminalChips: [], updatedAt: 1 };
+    });
+  }
+
+  /** A's store on the emptied thread, its cleanup waiting on the delete answer, A's typing queued behind it. */
+  async function cleanupWithTyping(options: { moveOn?: boolean; erase?: boolean; debounceMs?: number; flush?: boolean } = {}) {
+    const store = createStore({ debounceMs: options.debounceMs ?? 60_000 });
+    await store.setThread(THREAD);
+    let answer!: (deleted: boolean) => void;
+    let fail!: (err: unknown) => void;
+    const cleanup = store.deleteEmptyThread(THREAD, () => new Promise<boolean>((resolve, reject) => {
+      answer = resolve;
+      fail = reject;
+    }));
+    store.setContent('this screen text');
+    if (options.erase) store.setContent('');
+    const saved = options.flush === false ? Promise.resolve() : store.flush();
+    if (options.moveOn) await store.setThread('elsewhere');
+    // B's save landed before the delete looked.
+    stored[THREAD] = 'other screen text';
+    return { store, cleanup, saved, answer: (deleted: boolean) => answer(deleted), fail: (err: unknown) => fail(err) };
+  }
+
+  async function diagnostics(): Promise<string[]> {
+    await flushFrontendErrors();
+    return reports.map((line) => (JSON.parse(line) as { message: string }).message);
+  }
+  const errorToasts = () => getToasts().filter((toast) => toast.type === 'error').map((toast) => toast.message);
+
+  it('keeps B’s draft and A’s text when the read of the kept draft fails', async () => {
+    const run = await cleanupWithTyping();
+    readFails(THREAD);
+    run.answer(false);
+    await expect(run.cleanup).resolves.toEqual({ outcome: 'unknown', unsaved: null });
+    await run.saved;
+
+    expect(stored[THREAD]).toBe('other screen text');
+    // The store let go of the thread and carries the text to the next one.
+    expect(run.store.threadId).toBeNull();
+    expect(run.store.content).toBe('this screen text');
+    expect(getRememberedDraftSnapshot(THREAD)).toBeUndefined();
+    expect(errorToasts()).toEqual([expect.stringContaining('temporary read failure')]);
+    expect(await diagnostics()).toEqual(['Empty-draft cleanup: Could not read the draft another screen may have saved']);
+  });
+
+  it('returns A’s text for a new thread when the read fails after A moved on', async () => {
+    const run = await cleanupWithTyping({ moveOn: true });
+    readFails(THREAD);
+    run.answer(false);
+    const result = await run.cleanup;
+    await run.saved;
+
+    expect(result).toEqual({ outcome: 'unknown', unsaved: expect.objectContaining({ content: 'this screen text' }) });
+    expect(stored[THREAD]).toBe('other screen text');
+    expect(run.store.threadId).toBe('elsewhere');
+    expect(errorToasts()).toHaveLength(1);
+  });
+
+  it('keeps A’s text off the thread when the delete itself fails', async () => {
+    const run = await cleanupWithTyping();
+    run.fail(new Error('delete failed'));
+    await expect(run.cleanup).resolves.toEqual({ outcome: 'unknown', unsaved: null });
+    await run.saved;
+
+    expect(stored[THREAD]).toBe('other screen text');
+    expect(run.store.threadId).toBeNull();
+    expect(run.store.content).toBe('this screen text');
+    expect(errorToasts()).toEqual([expect.stringContaining('delete failed')]);
+    expect(await diagnostics()).toEqual(['Empty-draft cleanup: Could not remove an emptied new thread']);
+  });
+
+  it('passes a failed delete to the caller when nothing typed here waits on the thread', async () => {
+    const store = createStore({ debounceMs: 60_000 });
+    await store.setThread(THREAD);
+    await expect(store.deleteEmptyThread(THREAD, async () => { throw new Error('delete failed'); }))
+      .rejects.toThrow('delete failed');
+    expect(store.threadId).toBe(THREAD);
+    expect(stored).toEqual({});
+    expect(errorToasts()).toEqual([]);
+  });
+
+  it('saves A’s text to the kept thread when its stored draft is read and empty', async () => {
+    const run = await cleanupWithTyping();
+    stored[THREAD] = '';
+    storedDraftIs('');
+    run.answer(false);
+    await expect(run.cleanup).resolves.toEqual({ outcome: 'kept' });
+    await run.saved;
+
+    expect(stored[THREAD]).toBe('this screen text');
+    expect(run.store.threadId).toBe(THREAD);
+    expect(errorToasts()).toEqual([]);
+  });
+
+  it('keeps the thread without reading when nothing typed here waits on it', async () => {
+    const store = createStore({ debounceMs: 60_000 });
+    await store.setThread(THREAD);
+    const read = setBindingMock('GetDraft', async () => { throw new Error('not expected'); });
+    await expect(store.deleteEmptyThread(THREAD, async () => false)).resolves.toEqual({ outcome: 'kept' });
+    expect(read).not.toHaveBeenCalled();
+    expect(store.threadId).toBe(THREAD);
+  });
+
+  it('yields to B’s draft when the read shows it', async () => {
+    const run = await cleanupWithTyping();
+    storedDraftIs('other screen text');
+    run.answer(false);
+    await expect(run.cleanup).resolves.toEqual({ outcome: 'contested', unsaved: null });
+    await run.saved;
+
+    expect(stored[THREAD]).toBe('other screen text');
+    expect(run.store.threadId).toBeNull();
+    expect(run.store.content).toBe('this screen text');
+    expect(errorToasts()).toEqual([]);
+  });
+
+  it('never sends A’s writes to a thread the delete removed', async () => {
+    const run = await cleanupWithTyping();
+    delete stored[THREAD];
+    run.answer(true);
+    await expect(run.cleanup).resolves.toEqual({ outcome: 'deleted', unsaved: null });
+    await run.saved;
+
+    expect(stored).toEqual({});
+    expect(run.store.threadId).toBeNull();
+    expect(run.store.content).toBe('this screen text');
+    expect(errorToasts()).toEqual([]);
+  });
+
+  it('a second cleanup behind an unknown one finds nothing of A’s waiting and keeps the thread', async () => {
+    const run = await cleanupWithTyping({ moveOn: true });
+    readFails(THREAD);
+    const again = run.store.deleteEmptyThread(THREAD, async () => false);
+    run.answer(false);
+
+    expect((await run.cleanup).outcome).toBe('unknown');
+    await expect(again).resolves.toEqual({ outcome: 'kept' });
+    await run.saved;
+    expect(stored[THREAD]).toBe('other screen text');
+    expect(errorToasts()).toHaveLength(1);
+  });
+
+  // A typed and then erased everything while the delete was pending: the
+  // queued save is empty, and empty still overwrites.
+  describe('when A typed and erased everything', () => {
+    it('drops the erasing save and shows B’s draft when the read shows it', async () => {
+      const run = await cleanupWithTyping({ erase: true });
+      storedDraftIs('other screen text');
+      run.answer(false);
+      await expect(run.cleanup).resolves.toEqual({ outcome: 'yielded' });
+      await run.saved;
+
+      expect(stored[THREAD]).toBe('other screen text');
+      expect(run.store.threadId).toBe(THREAD);
+      await vi.waitFor(() => expect(run.store.content).toBe('other screen text'));
+      expect(run.store.hasPendingSave).toBe(false);
+      expect(errorToasts()).toEqual([]);
+    });
+
+    it('drops an erasing save its debounce has not admitted yet', async () => {
+      const run = await cleanupWithTyping({ erase: true, debounceMs: 5, flush: false });
+      storedDraftIs('other screen text');
+      run.answer(false);
+      await expect(run.cleanup).resolves.toEqual({ outcome: 'yielded' });
+      await new Promise((resolve) => setTimeout(resolve, 30));
+
+      expect(stored[THREAD]).toBe('other screen text');
+    });
+
+    it('lets the erasing save drain when the kept thread is read and empty', async () => {
+      const run = await cleanupWithTyping({ erase: true });
+      stored[THREAD] = '';
+      storedDraftIs('');
+      run.answer(false);
+      await expect(run.cleanup).resolves.toEqual({ outcome: 'kept' });
+      await run.saved;
+
+      expect(stored[THREAD]).toBe('');
+      expect(run.store.threadId).toBe(THREAD);
+      expect(errorToasts()).toEqual([]);
+    });
+
+    it('drops the erasing save and reports when the read fails', async () => {
+      const run = await cleanupWithTyping({ erase: true });
+      readFails(THREAD);
+      run.answer(false);
+      await expect(run.cleanup).resolves.toEqual({ outcome: 'yielded' });
+      await run.saved;
+
+      expect(stored[THREAD]).toBe('other screen text');
+      expect(run.store.threadId).toBe(THREAD);
+      expect(run.store.content).toBe('');
+      expect(errorToasts()).toEqual([expect.stringContaining('temporary read failure')]);
+      expect(await diagnostics()).toEqual(['Empty-draft cleanup: Could not read the draft another screen may have saved']);
+    });
+
+    it('drops the erasing save before passing on a failed delete', async () => {
+      const run = await cleanupWithTyping({ erase: true });
+      run.fail(new Error('delete failed'));
+      await expect(run.cleanup).rejects.toThrow('delete failed');
+      await run.saved;
+
+      expect(stored[THREAD]).toBe('other screen text');
+      expect(run.store.threadId).toBe(THREAD);
+    });
+  });
+
+  it('a second cleanup behind a deletion is refused because the thread is gone', async () => {
+    const run = await cleanupWithTyping();
+    const again = run.store.deleteEmptyThread(THREAD, async () => false);
+    run.answer(true);
+
+    expect((await run.cleanup).outcome).toBe('deleted');
+    await expect(again).rejects.toBeInstanceOf(DraftThreadDeletedError);
+    await run.saved;
+    expect(stored[THREAD]).toBe('other screen text');
   });
 });
 

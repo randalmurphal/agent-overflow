@@ -3,11 +3,13 @@
 // Run "go run ./internal/transport/methodgen" to regenerate.
 //
 // Which attached backend each bound method's call belongs to
-// (docs/specs/remote-access.md §10, "Routing an RPC"). The Go half is
-// internal/transport/methods_gen.go's Route column, generated from the
-// same scan in the same run; the thread, project and workspace routes are
-// inferred from the method's first parameter, the rest are authored
-// //ao:route directives.
+// (docs/specs/remote-access.md §10, "Routing an RPC"), and how long its
+// server side may run (docs/architecture/transport.md#method-budgets). The
+// Go half is internal/transport/methods_gen.go's Route and Budget columns,
+// generated from the same scan in the same run; the thread, project and
+// workspace routes are inferred from the method's first parameter, the rest
+// are authored //ao:route directives, and budgets are //ao:budget
+// directives.
 
 export type MethodRoute = 'thread' | 'project' | 'workspace' | 'home' | 'selected' | 'all';
 
@@ -143,6 +145,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	711021853: 'thread', // GetEditDiffImage
 	1655853383: 'selected', // GetEditorSettings
 	1581952506: 'home', // GetErrorLogLines
+	2541596437: 'workspace', // GetGitActionOutcome
 	4123560639: 'workspace', // GetGitStatus
 	3015840904: 'home', // GetKeybindings
 	1709188995: 'selected', // GetLocalImage
@@ -151,6 +154,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1632984917: 'selected', // GetModelsForProvider
 	652617244: 'home', // GetNativeNetworkConfig
 	1026796858: 'home', // GetNetworkSettings
+	3742557566: 'home', // GetObservabilityTracing
 	1435724188: 'selected', // GetPRCILogLines
 	2443547196: 'selected', // GetPRDetail
 	106351482: 'workspace', // GetPRMergeConflicts
@@ -340,7 +344,6 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1797221017: 'selected', // ReadAloudSource
 	2036690300: 'selected', // ReadPipelineStages
 	2473150982: 'home', // ReadReviewDiff
-	4058838878: 'home', // ReadReviewDiffPacked
 	3285994337: 'thread', // ReadShellAttachmentOutput
 	2424974671: 'thread', // ReadThreadRemoteLog
 	2274850917: 'home', // RecheckClaudeAccount
@@ -359,6 +362,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	111779378: 'home', // RegisterOwnDevice
 	2641306153: 'home', // RegisterPushToken
 	1034543696: 'thread', // RegisterQueueItem
+	3381314677: 'selected', // ReleaseReadAloudTicket
 	504085501: 'home', // ReleaseReviewDiff
 	3940492954: 'selected', // RemoteCommandArtifact
 	235246962: 'selected', // RemoteCommandCancel
@@ -577,4 +581,50 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	536579134: 'home', // WorkflowUpdateAutomation
 	146795716: 'home', // WriteTerminal
 	1859440887: 'workspace', // WriteWorkspaceFile
+};
+
+/** How long a method that declares no budget may run on the server. */
+export const DEFAULT_METHOD_BUDGET_MS = 45000;
+/** How much longer than its method's budget a client waits for the answer. */
+export const METHOD_ANSWER_MARGIN_MS = 15000;
+
+/** The methods whose server side may run longer than the default, by id. */
+export const METHOD_BUDGETS_MS: Readonly<Record<number, number>> = {
+	2421300190: 1200000, // AgentRemoteFetchArtifact
+	2233479686: 1200000, // AgentRemoteFetchLog
+	2367642633: 720000, // AttachThreadWorktree
+	2347956003: 60000, // CheckForUpdate
+	987486764: 120000, // CheckProviderUpdates
+	2579322833: 720000, // CreateThread
+	1594348919: 660000, // FetchForgeAttachment
+	2178028847: 180000, // FinishDictation
+	2246569884: 120000, // ForkSideChat
+	4063914461: 120000, // ForkThread
+	3977213964: 120000, // ForkThreadFromMessage
+	1669373286: 420000, // GenerateCommitMessage
+	2541596437: 720000, // GetGitActionOutcome
+	4070778679: 600000, // GetPRReviewSubmitOutcome
+	2744542956: 120000, // GetProviderUpdateNotes
+	1598126927: 720000, // GitCheckout
+	1971060042: 720000, // GitCommit
+	429779991: 1260000, // GitCreateBranchFrom
+	4106667105: 720000, // GitCreatePR
+	3327650914: 720000, // GitCreateWorktree
+	3933172764: 720000, // GitPull
+	4036251239: 720000, // GitPush
+	1057032236: 720000, // GitSyncBranch
+	753394581: 90000, // InterruptAndRevertIfClean
+	850013031: 90000, // InterruptTurn
+	2660387675: 720000, // OpenPRThread
+	2870364785: 720000, // PrepareThreadWorktree
+	1986917811: 1800000, // SaveCIArtifacts
+	2960563266: 660000, // SaveForgeAttachment
+	1537914193: 900000, // SavePRCIJobLog
+	2692607191: 600000, // SubmitPRReview
+	894716875: 780000, // ThreadToolCall
+	2624544009: 60000, // ThreadToolQuery
+	1291217507: 90000, // TriggerMcpAuth
+	417766274: 90000, // TriggerWorkspaceMcpAuth
+	1792283305: 1320000, // WorkflowCreateItemPR
+	3006532931: 720000, // WorkflowMergeItem
 };

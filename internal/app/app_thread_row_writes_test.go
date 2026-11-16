@@ -18,7 +18,7 @@ import (
 // its write (a followed worktree move, a rename) has to survive.
 
 // storeWriteFrame matches a goroutine frame inside a store write.
-var storeWriteFrame = regexp.MustCompile(`agent-overflow/internal/store\.\(\*Store\)\.(Update|Set|Rename|Mark|Create|Record|Clear|apply)`)
+var storeWriteFrame = regexp.MustCompile(`agent-overflow/internal/store\.\(\*Store\)\.(Update|Upsert|Delete|Commit|Set|Rename|Mark|Create|Record|Clear|apply)`)
 
 // landWhileStoreWriteWaits holds SQLite's write lock with landSQL applied but
 // not committed, runs op, and commits once op waits inside a store write.
@@ -139,5 +139,29 @@ func TestCheckoutMoveKeepsARenameThatLandedAfterItsRead(t *testing.T) {
 	}
 	if stored.Title != "Renamed meanwhile" || !samePath(stored.WorkspacePath, worktree) || worktree == "" {
 		t.Fatalf("row = title %q workspace %q, want the rename and %q", stored.Title, stored.WorkspacePath, worktree)
+	}
+}
+
+// A draft save and clear read the thread's listing before they write, inside
+// one transaction; a write another connection holds is waited out, not
+// failed.
+func TestDraftWritesWaitForAWriteThatLandedAfterTheirRead(t *testing.T) {
+	t.Parallel()
+	app, dbPath := newTestAppWithStorePath(t)
+	thread := testThread("thread-draft-wait")
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	landWhileStoreWriteWaits(t, dbPath, "SaveDraft", func() error {
+		return app.SaveDraft(t.Context(), thread.ID, "typed", nil, nil, nil)
+	}, `UPDATE threads SET title = ? WHERE id = ?`, "Renamed meanwhile", thread.ID)
+	if listed, err := app.store.ThreadListed(thread.ID); err != nil || !listed {
+		t.Fatalf("ThreadListed after the save = %v, %v", listed, err)
+	}
+	landWhileStoreWriteWaits(t, dbPath, "ClearDraft", func() error {
+		return app.ClearDraft(t.Context(), thread.ID)
+	}, `UPDATE threads SET title = ? WHERE id = ?`, "Renamed again", thread.ID)
+	if listed, err := app.store.ThreadListed(thread.ID); err != nil || listed {
+		t.Fatalf("ThreadListed after the clear = %v, %v", listed, err)
 	}
 }

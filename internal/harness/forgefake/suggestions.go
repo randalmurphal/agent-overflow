@@ -300,7 +300,7 @@ func ghSuggestionTarget(e *Engine, c *call, v graphQLVars) response {
 	if !ok {
 		return graphQLNotFound(data, []string{"comment"}, fmt.Sprintf("Could not resolve to a node with the global id of '%s'", commentID))
 	}
-	nodes := e.githubThreadNodes(r, p)
+	nodes := e.githubThreadNodes(r, p, githubGraphQLPageSize)
 	var node map[string]any
 	for _, candidate := range nodes {
 		if candidate["id"] == thread.ID {

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/testutil/mockexec"
 	"context"
 	"fmt"
@@ -104,6 +105,7 @@ func installCodexReviewSession(t *testing.T, app *App, thread store.Thread, revi
 		context.Background(),
 		thread.ID,
 		codex.Config{
+			Reaper:  procutiltest.Reaper(),
 			Binary:  writeCodexReviewBinary(t, codexThreadID, reviewThreadID, capturePath),
 			WorkDir: thread.WorkspacePath,
 		},
@@ -302,6 +304,7 @@ func TestComposerReviewUsesOneTurnWithAgentActivityAndSourcedResult(t *testing.T
 		context.Background(),
 		thread.ID,
 		codex.Config{
+			Reaper:  procutiltest.Reaper(),
 			Binary:  writeProjectedCodexReviewBinary(t, thread.ID+"-codex", capturePath),
 			WorkDir: thread.WorkspacePath,
 			Model:   "gpt-parent",
@@ -497,7 +500,7 @@ func TestCodexReviewBindingsRefuseANonCodexThread(t *testing.T) {
 	sess, err := claude.NewSession(
 		context.Background(),
 		thread.ID,
-		claude.Config{Binary: writeClaudeControlPassthroughBinary(t), WorkDir: thread.WorkspacePath},
+		claude.Config{Reaper: procutiltest.Reaper(), Retention: claude.UserHomeRetention(0), Binary: writeClaudeControlPassthroughBinary(t), WorkDir: thread.WorkspacePath},
 		func(provider.ProviderEvent) {},
 	)
 	if err != nil {

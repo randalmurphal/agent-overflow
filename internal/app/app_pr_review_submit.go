@@ -31,11 +31,18 @@ import (
 //     note of the viewer, an unlocked submit could publish the notes a
 //     locked one is still creating, which that one's cleanup would then
 //     read as removed. Nothing else creates draft notes (replies and
-//     thread actions post notes directly), so nothing else takes it.
+//     thread actions post notes directly), so nothing else takes it. A
+//     GitLab submit that finds pending draft notes before creating its own
+//     (a review started on GitLab, notes an earlier submit could not
+//     remove) is refused (gitops.PendingDraftNotesError), so it publishes
+//     only what it created.
 //   - A result means this submit reached the forge: Posted says the forge
 //     took a review from it, Unconfirmed that the forge's answer did not
 //     say (gitops.UnconfirmedSubmitError: its drafts stay drafts and are
-//     not held, since nothing proves they posted). An error means it
+//     not held, since nothing proves they posted). Each forge first settles
+//     a lost answer by reading what landed (GitLab's pending draft notes,
+//     GitHub's reviews by the viewer), so Unconfirmed is what that read
+//     could not decide. An error means it
 //     posted nothing. A draft that is not a draft any more (sent by an earlier
 //     submit, another tab or device, or a message) is refused with
 //     ReviewDraftsNotDraftsCode, and one an earlier review posted that is
@@ -52,10 +59,16 @@ import (
 //     result (PartialFailureKind "unmarked"). The next submit for the
 //     owner retries the marking before it reads anything, and refuses to
 //     post while it fails; so does the next list of the owner's drafts.
-//   - A request with an AttemptID records its outcome (reviewAttempts):
+//   - A request with an AttemptID records its outcome (reviewAttempts, a
+//     writeAttempts):
 //     GetPRReviewSubmitOutcome answers it after a lost answer, and a
 //     request repeating the id gets the recorded outcome and posts
 //     nothing.
+//   - A submit runs to its outcome whatever its caller does, within its
+//     budget (withinMethodBudgetFinishing): reviewSubmitFinish before the
+//     budget it starts no forge request, finishes and settles the one
+//     under way, and answers what posted. A part it never started is reported as not
+//     posted, never as one that may have.
 //
 // What this does not cover: the process ending between the forge's answer
 // and the mark leaves posted drafts listed as unsent, with no record that
@@ -63,7 +76,8 @@ import (
 // backend by its hello's launchId and says the review may be on the PR.
 // The lock is this backend's: two computers holding the same PR's drafts
 // do not share it, and on GitLab two computers submitting the same MR at
-// once can publish each other's notes.
+// once can publish each other's notes when one creates its notes between
+// the other's pending check and its publish.
 //
 // A request without Drafts is the caller's comments, posted as given; the
 // caller marks its drafts with MarkDiffReviewCommentsSent or
@@ -84,10 +98,14 @@ const reviewUnmarkedKind = "unmarked"
 
 // SubmitPRReviewRequest is one review submit: a verdict, a summary and the
 // comments, either built by the caller (Comments) or, with Drafts, read
-// from the stored drafts it names.
+// from the stored drafts it names. HeadSHA is the PR head the caller's
+// diff was loaded at, required (gitops.SubmitReviewRequest): a head that
+// moved since is refused as kind stale_head on GitLab and pins the review
+// to it on GitHub; a thread's sent drafts record it (`pr:<head>`).
 type SubmitPRReviewRequest struct {
 	Verdict  string                     `json:"verdict"`
 	Body     string                     `json:"body"`
+	HeadSHA  string                     `json:"headSha"`
 	Comments []gitops.ReviewLineComment `json:"comments"`
 	// Drafts names the stored pr-scope drafts the review carries; Comments
 	// is then ignored. Absent from a client older than pr-review-drafts.v1.
@@ -102,9 +120,6 @@ type SubmitPRReviewRequest struct {
 type SubmitPRReviewDrafts struct {
 	ThreadID string   `json:"threadId,omitempty"`
 	IDs      []string `json:"ids"`
-	// HeadSHA is the PR head the drafts were written against; a thread's
-	// sent drafts record it (`pr:<head>`).
-	HeadSHA string `json:"headSha,omitempty"`
 }
 
 // SubmitPRReview posts a review of pr. With review.Drafts it posts the
@@ -112,23 +127,42 @@ type SubmitPRReviewDrafts struct {
 //
 //ao:scope git:operate
 //ao:route selected
-func (a *App) SubmitPRReview(ctx context.Context, pr gitops.PRReference, review SubmitPRReviewRequest) (result SubmitPRReviewResult, err error) {
+//ao:budget 10m
+func (a *App) SubmitPRReview(ctx context.Context, pr gitops.PRReference, review SubmitPRReviewRequest) (SubmitPRReviewResult, error) {
+	run, cancel := withinMethodBudgetFinishing(context.WithoutCancel(ctx), "SubmitPRReview", "Posting the review", reviewSubmitFinish)
+	defer cancel()
+	return a.submitPRReview(run, pr, review)
+}
+
+// reviewSubmitFinish is how long a review submit may still run once its
+// context ends: the forge request under way, the read or cleanup that
+// settles it (gitops.SubmitSettleTimeout), and the PR's refresh
+// (reviewRefreshWait).
+const reviewSubmitFinish = transport.DefaultMethodBudget + gitops.SubmitSettleTimeout + reviewRefreshWait
+
+// reviewRefreshWait bounds the wait for the PR's refresh after a submit.
+const reviewRefreshWait = transport.DefaultMethodBudget
+
+// submitPRReview is SubmitPRReview on run, the context its budget ends.
+func (a *App) submitPRReview(ctx context.Context, pr gitops.PRReference, review SubmitPRReviewRequest) (SubmitPRReviewResult, error) {
 	if a.shuttingDown.Load() {
 		return SubmitPRReviewResult{}, ErrShuttingDown
 	}
 	if err := pr.Validate(); err != nil {
 		return SubmitPRReviewResult{}, err
 	}
-	if review.AttemptID != "" {
-		attempt, repeated := a.reviewAttempts.begin(review.AttemptID, pr.Identity())
-		if repeated && attempt.prKey != pr.Identity() {
-			return SubmitPRReviewResult{}, fmt.Errorf("submit PR review: attempt %s was a submit to another PR", review.AttemptID)
-		}
-		if repeated {
-			return attempt.wait(ctx)
-		}
-		defer func() { a.reviewAttempts.finish(attempt, result, err) }()
+	if review.AttemptID == "" {
+		return a.submitPRReviewLocked(ctx, pr, review)
 	}
+	return a.reviewAttempts.run(ctx, review.AttemptID, pr.Identity(), attemptRefusals{
+		other:     fmt.Errorf("submit PR review: attempt %s was a submit to another PR", review.AttemptID),
+		forgotten: errors.New("submit PR review: this attempt ran before and its outcome is no longer kept"),
+		panicked:  errors.New("submit PR review: failed unexpectedly"),
+	}, func() (SubmitPRReviewResult, error) { return a.submitPRReviewLocked(ctx, pr, review) })
+}
+
+// submitPRReviewLocked is submitPRReview under the PR's submit lock.
+func (a *App) submitPRReviewLocked(ctx context.Context, pr gitops.PRReference, review SubmitPRReviewRequest) (SubmitPRReviewResult, error) {
 	// Every submit to the PR holds its lock, whatever the request's shape:
 	// on GitLab one submit's publish takes the draft notes another is
 	// still creating.
@@ -138,11 +172,43 @@ func (a *App) SubmitPRReview(ctx context.Context, pr gitops.PRReference, review 
 	}
 	defer unlock()
 	if review.Drafts == nil {
-		result, err := a.gitCore().SubmitReview(forgeapi.WithInteractive(ctx), pr, gitops.SubmitReviewRequest{Verdict: review.Verdict, Body: review.Body, Comments: review.Comments})
+		result, err := a.gitCore().SubmitReview(forgeapi.WithInteractive(ctx), pr, gitops.SubmitReviewRequest{Verdict: review.Verdict, Body: review.Body, HeadSHA: review.HeadSHA, Comments: review.Comments})
 		mapped, err := mapSubmitPRReviewResult(pr, gitops.ActionReview, result, err)
-		return mapped, gitops.ExplainForgeError(pr, gitops.ActionReview, err)
+		a.refreshAfterSubmit(ctx, pr, err)
+		return mapped, explainSubmitError(ctx, pr, err)
 	}
-	return a.submitPRReviewDrafts(ctx, pr, review)
+	mapped, err := a.submitPRReviewDrafts(ctx, pr, review)
+	a.refreshAfterSubmit(ctx, pr, err)
+	return mapped, err
+}
+
+// refreshAfterSubmit polls the PR's live pump once a submit answered or
+// may have posted, so the pane shows what the forge holds now: the
+// viewer's reviewer state as the forge set it (GitLab may record reviewed
+// for a Request changes its tier lacks), the review's threads and the
+// merge blockers, never the verdict the request asked for.
+func (a *App) refreshAfterSubmit(ctx context.Context, pr gitops.PRReference, err error) {
+	if _, unconfirmed := errors.AsType[*gitops.UnconfirmedSubmitError](err); err == nil || unconfirmed {
+		// After the budget's cutoff too: what posted shows.
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), reviewRefreshWait)
+		defer cancel()
+		a.refreshPRSnapshot(ctx, pr)
+	}
+}
+
+// explainSubmitError is a submit's not-posted error as the person reads
+// it. A submit its budget stopped, before a write it never started or in a
+// read the cutoff cut, says so; an error that says more (drafts it could
+// not remove, a write that may have applied) keeps its own sentence.
+func explainSubmitError(run context.Context, pr gitops.PRReference, err error) error {
+	_, stoppedStep := errors.AsType[budgetExceeded](err)
+	cutRead := run.Err() != nil && errors.Is(err, context.Canceled)
+	_, left := errors.AsType[*gitops.DraftsLeftError](err)
+	_, unconfirmed := errors.AsType[*gitops.UnconfirmedSubmitError](err)
+	if (stoppedStep || cutRead) && !left && !unconfirmed {
+		return budgetError(run, err)
+	}
+	return gitops.ExplainForgeError(pr, gitops.ActionReview, err)
 }
 
 // submitPRReviewDrafts is SubmitPRReview with Drafts, under the PR's lock.
@@ -154,7 +220,7 @@ func (a *App) submitPRReviewDrafts(ctx context.Context, pr gitops.PRReference, r
 			return SubmitPRReviewResult{}, err
 		}
 		owner = store.ThreadReviewOwner(threadID)
-		sentTurnID = "pr:" + review.Drafts.HeadSHA
+		sentTurnID = "pr:" + review.HeadSHA
 	}
 	source := prDraftSource(pr)
 	if err := a.reconcilePostedReviewDrafts(owner); err != nil {
@@ -167,7 +233,7 @@ func (a *App) submitPRReviewDrafts(ctx context.Context, pr gitops.PRReference, r
 	if err != nil {
 		return SubmitPRReviewResult{}, fmt.Errorf("submit PR review: %w", err)
 	}
-	request := gitops.SubmitReviewRequest{Verdict: review.Verdict, Body: review.Body, Comments: make([]gitops.ReviewLineComment, 0, len(drafts))}
+	request := gitops.SubmitReviewRequest{Verdict: review.Verdict, Body: review.Body, HeadSHA: review.HeadSHA, Comments: make([]gitops.ReviewLineComment, 0, len(drafts))}
 	for _, draft := range drafts {
 		if comment, ok := reviewLineCommentForDraft(draft); ok {
 			request.Comments = append(request.Comments, comment)
@@ -184,7 +250,7 @@ func (a *App) submitPRReviewDrafts(ctx context.Context, pr gitops.PRReference, r
 	}
 	mapped, err := mapSubmitPRReviewResult(pr, gitops.ActionReview, result, err)
 	if err != nil {
-		return SubmitPRReviewResult{}, gitops.ExplainForgeError(pr, gitops.ActionReview, err)
+		return SubmitPRReviewResult{}, explainSubmitError(ctx, pr, err)
 	}
 	// The one place a draft submit says it posted.
 	mapped.Posted = mapped.PostedReview || mapped.PostedFileComments > 0 || mapped.PostedReplies > 0
@@ -216,8 +282,8 @@ func (a *App) submitPRReviewDrafts(ctx context.Context, pr gitops.PRReference, r
 }
 
 // PRReviewSubmitOutcome is what a submit attempt did: "posted" (Result),
-// "unconfirmed" (Result: the forge did not say), "failed" (Code and
-// Message: it posted nothing), "unknown" (this process never received
+// "unconfirmed" (Result: the forge did not say), "failed" (Code,
+// Message and Chain, what its first caller was told: it posted nothing), "unknown" (this process never received
 // it), or "forgotten" (it may have received it and no longer keeps the
 // outcome).
 type PRReviewSubmitOutcome struct {
@@ -225,6 +291,7 @@ type PRReviewSubmitOutcome struct {
 	Result  *SubmitPRReviewResult `json:"result,omitempty"`
 	Code    string                `json:"code,omitempty"`
 	Message string                `json:"message,omitempty"`
+	Chain   []string              `json:"chain,omitempty"`
 }
 
 // GetPRReviewSubmitOutcome answers what the submit attempt attemptID to pr
@@ -233,139 +300,24 @@ type PRReviewSubmitOutcome struct {
 //ao:scope git:operate
 //ao:route selected
 //ao:callerbound
+//ao:budget 10m
 func (a *App) GetPRReviewSubmitOutcome(ctx context.Context, pr gitops.PRReference, attemptID string) (PRReviewSubmitOutcome, error) {
 	if err := pr.Validate(); err != nil {
 		return PRReviewSubmitOutcome{}, err
 	}
-	attempt, forgotten := a.reviewAttempts.find(attemptID, pr.Identity())
-	if forgotten {
-		return PRReviewSubmitOutcome{State: "forgotten"}, nil
+	outcome, err := a.reviewAttempts.outcome(ctx, attemptID, pr.Identity())
+	if err != nil {
+		return PRReviewSubmitOutcome{}, err
 	}
-	if attempt == nil {
-		return PRReviewSubmitOutcome{State: "unknown"}, nil
-	}
-	select {
-	case <-attempt.done:
-	case <-ctx.Done():
-		return PRReviewSubmitOutcome{}, ctx.Err()
-	}
-	return attempt.outcome, nil
-}
-
-// reviewAttemptsKept bounds the finished attempts whose outcome a process
-// keeps; reviewAttemptIDsKept the ones after those whose id it keeps.
-const (
-	reviewAttemptsKept   = 256
-	reviewAttemptIDsKept = 4096
-)
-
-// reviewAttempts holds the submit attempts this process received: every
-// running one and the outcomes of the last reviewAttemptsKept finished,
-// then the ids alone of the reviewAttemptIDsKept before those
-// (forgotten). Once an id leaves that too (overflowed), an id it does not
-// hold may be one it received, so it can no longer say an attempt never
-// arrived.
-type reviewAttempts struct {
-	mu         sync.Mutex
-	byID       map[string]*reviewAttempt
-	finished   []string
-	forgotten  map[string]string // id to PR key
-	forgetting []string
-	overflowed bool
-}
-
-type reviewAttempt struct {
-	id      string
-	prKey   string
-	done    chan struct{}
-	outcome PRReviewSubmitOutcome
-	result  SubmitPRReviewResult
-	err     error
-}
-
-// begin records attempt id, or returns the one already recorded under it.
-// An id whose outcome was dropped returns a finished attempt that says so,
-// so a repeat posts nothing.
-func (r *reviewAttempts) begin(id, prKey string) (*reviewAttempt, bool) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if prior, ok := r.byID[id]; ok {
-		return prior, true
-	}
-	if forgottenPR, ok := r.forgotten[id]; ok {
-		attempt := &reviewAttempt{id: id, prKey: forgottenPR, done: make(chan struct{}), err: errors.New("submit PR review: this attempt ran before and its outcome is no longer kept")}
-		close(attempt.done)
-		return attempt, true
-	}
-	if r.byID == nil {
-		r.byID = make(map[string]*reviewAttempt)
-	}
-	attempt := &reviewAttempt{id: id, prKey: prKey, done: make(chan struct{})}
-	r.byID[id] = attempt
-	return attempt, false
-}
-
-func (r *reviewAttempts) finish(attempt *reviewAttempt, result SubmitPRReviewResult, err error) {
-	attempt.result, attempt.err = result, err
 	switch {
-	case err == nil && result.Unconfirmed:
-		attempt.outcome = PRReviewSubmitOutcome{State: "unconfirmed", Result: &result}
-	case err == nil:
-		attempt.outcome = PRReviewSubmitOutcome{State: "posted", Result: &result}
-	default:
-		code, message, ok := errorsx.PublicDetails(err)
-		if !ok {
-			message = "The review was not posted."
-		}
-		attempt.outcome = PRReviewSubmitOutcome{State: "failed", Code: code, Message: message}
+	case outcome.state == attemptDone && outcome.result.Unconfirmed:
+		return PRReviewSubmitOutcome{State: "unconfirmed", Result: &outcome.result}, nil
+	case outcome.state == attemptDone:
+		return PRReviewSubmitOutcome{State: "posted", Result: &outcome.result}, nil
+	case outcome.state == attemptFailed:
+		return PRReviewSubmitOutcome{State: "failed", Code: outcome.code, Message: outcome.message, Chain: outcome.chain}, nil
 	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.finished = append(r.finished, attempt.id)
-	for len(r.finished) > reviewAttemptsKept {
-		dropped := r.finished[0]
-		if r.forgotten == nil {
-			r.forgotten = make(map[string]string)
-		}
-		r.forgotten[dropped] = r.byID[dropped].prKey
-		r.forgetting = append(r.forgetting, dropped)
-		delete(r.byID, dropped)
-		r.finished = r.finished[1:]
-	}
-	for len(r.forgetting) > reviewAttemptIDsKept {
-		delete(r.forgotten, r.forgetting[0])
-		r.forgetting = r.forgetting[1:]
-		r.overflowed = true
-	}
-	close(attempt.done)
-}
-
-// find returns attempt id to prKey, or reports it forgotten: received and
-// its outcome dropped, or not held once ids have overflowed, so it may
-// have been received.
-func (r *reviewAttempts) find(id, prKey string) (attempt *reviewAttempt, forgotten bool) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if attempt, ok := r.byID[id]; ok {
-		if attempt.prKey == prKey {
-			return attempt, false
-		}
-		return nil, false
-	}
-	if forgottenPR, ok := r.forgotten[id]; ok {
-		return nil, forgottenPR == prKey
-	}
-	return nil, r.overflowed
-}
-
-// wait answers a repeated attempt with the first one's outcome.
-func (attempt *reviewAttempt) wait(ctx context.Context) (SubmitPRReviewResult, error) {
-	select {
-	case <-attempt.done:
-		return attempt.result, attempt.err
-	case <-ctx.Done():
-		return SubmitPRReviewResult{}, ctx.Err()
-	}
+	return PRReviewSubmitOutcome{State: outcome.state}, nil
 }
 
 // prDraftSource is the comment source of pr's pr-scope drafts; the

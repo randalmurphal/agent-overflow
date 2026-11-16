@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"agent-overflow/internal/procutil"
 	"agent-overflow/internal/provider"
 	codexprovider "agent-overflow/internal/provider/codex"
 )
@@ -29,7 +30,7 @@ const (
 
 // Lister is the seam tests use to stub out the CLI shell-out. Production
 // wires it to codexprovider.ListModels.
-type Lister func(ctx context.Context, binary string) ([]provider.ModelInfo, error)
+type Lister func(ctx context.Context, binary string, reaper procutil.Reaper) ([]provider.ModelInfo, error)
 
 // Cache TTLs Codex model lookups per binary path and single-flights
 // concurrent calls. Construct with New; the zero value is unusable.
@@ -91,8 +92,9 @@ func NewWith(ttl time.Duration, list Lister, now func() time.Time) *Cache {
 //
 // A non-empty binary is required; empty input falls through to the
 // CodexBinaryPath default that codex.ListModels resolves internally.
-// The returned slice is a defensive clone — callers may mutate it.
-func (c *Cache) Get(ctx context.Context, binary string) ([]provider.ModelInfo, error) {
+// The returned slice is a defensive clone — callers may mutate it. reaper
+// ends a lookup's process if the backend dies first.
+func (c *Cache) Get(ctx context.Context, binary string, reaper procutil.Reaper) ([]provider.ModelInfo, error) {
 	binary = strings.TrimSpace(binary)
 	c.mu.Lock()
 	if e, ok := c.entries[binary]; ok && c.now().Before(e.expiresAt) {
@@ -115,7 +117,7 @@ func (c *Cache) Get(ctx context.Context, binary string) ([]provider.ModelInfo, e
 	c.inflight[binary] = l
 	c.mu.Unlock()
 
-	go c.run(context.WithoutCancel(ctx), binary, l)
+	go c.run(context.WithoutCancel(ctx), binary, reaper, l)
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
@@ -127,8 +129,8 @@ func (c *Cache) Get(ctx context.Context, binary string) ([]provider.ModelInfo, e
 // run is one shared lookup. It belongs to no caller: it keeps the first
 // caller's values but not its cancellation, ends at the lister's own
 // bound, and each caller waits on its own context.
-func (c *Cache) run(ctx context.Context, binary string, l *load) {
-	models, err := c.list(ctx, binary)
+func (c *Cache) run(ctx context.Context, binary string, reaper procutil.Reaper, l *load) {
+	models, err := c.list(ctx, binary, reaper)
 	cloned := provider.CloneModels(models)
 
 	c.mu.Lock()
@@ -244,6 +246,6 @@ func (c *Cache) Reset() {
 	c.mu.Unlock()
 }
 
-func defaultLister(ctx context.Context, binary string) ([]provider.ModelInfo, error) {
-	return codexprovider.ListModels(ctx, codexprovider.ModelListConfig{Binary: binary})
+func defaultLister(ctx context.Context, binary string, reaper procutil.Reaper) ([]provider.ModelInfo, error) {
+	return codexprovider.ListModels(ctx, codexprovider.ModelListConfig{Binary: binary, Reaper: reaper})
 }

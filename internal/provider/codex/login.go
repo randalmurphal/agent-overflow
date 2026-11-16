@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"agent-overflow/internal/procutil"
 	"agent-overflow/internal/provider"
 )
 
@@ -38,7 +39,9 @@ const (
 
 // LoginConfig configures one sign-in app-server process.
 type LoginConfig struct {
-	Binary  string
+	Binary string
+	// Reaper ends the process if the backend dies first. Required.
+	Reaper  procutil.Reaper
 	WorkDir string // required absolute parent for the isolated account working directory
 	// Env is the environment this invocation runs with, the same map an
 	// account probe takes, and it must carry CODEX_HOME pointed at the
@@ -147,7 +150,7 @@ func StartLogin(ctx context.Context, cfg LoginConfig) (*LoginSession, error) {
 	if err != nil {
 		return nil, err
 	}
-	proc, err := provider.Spawn(ctx, spawnCfg)
+	proc, err := provider.Spawn(ctx, provider.Watched(cfg.Reaper), spawnCfg)
 	if err != nil {
 		return nil, errors.Join(fmt.Errorf("codex: sign-in spawn: %w", err), cleanup())
 	}

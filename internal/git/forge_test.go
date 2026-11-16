@@ -293,7 +293,7 @@ func TestCoreRefusesInvalidPRReferenceBeforeDispatch(t *testing.T) {
 			return err
 		},
 		"SubmitReview": func() error {
-			_, err := core.SubmitReview(t.Context(), ref, SubmitReviewRequest{Verdict: ReviewVerdictComment})
+			_, err := core.SubmitReview(t.Context(), ref, SubmitReviewRequest{Verdict: ReviewVerdictComment, HeadSHA: githubTestPinnedHead})
 			return err
 		},
 		"ReplyToThread":     func() error { return core.ReplyToThread(t.Context(), ref, "t", 1, "body") },

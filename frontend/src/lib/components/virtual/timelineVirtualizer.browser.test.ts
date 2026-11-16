@@ -305,7 +305,6 @@ describe('mount + tail seeding', () => {
     await waitFor(
       () => scrollEl.clientHeight === 200 && harness.handle()?.getViewportSize() === 200,
       'short intrinsic viewport',
-      240,
     );
     expect(scrollEl.scrollHeight).toBe(200);
     expect(scrollEl.style.maxHeight).toBe('320px');
@@ -317,7 +316,6 @@ describe('mount + tail seeding', () => {
     await waitFor(
       () => scrollEl.clientHeight === 320 && harness.handle()?.getViewportSize() === 320,
       'capped intrinsic viewport',
-      240,
     );
     expect(scrollEl.scrollHeight).toBe(1000);
 
@@ -326,7 +324,6 @@ describe('mount + tail seeding', () => {
       () => scrollEl.clientHeight === VIEWPORT_PX &&
         harness.handle()?.getViewportSize() === VIEWPORT_PX,
       'fixed viewport after intrinsic opt-out',
-      240,
     );
     expect(scrollEl.style.maxHeight).toBe('');
     expect(resizeTargets.observed(firstLimit)).toBe(false);
@@ -336,7 +333,6 @@ describe('mount + tail seeding', () => {
     await waitFor(
       () => scrollEl.clientHeight === 240 && harness.handle()?.getViewportSize() === 240,
       'intrinsic viewport after re-entry',
-      240,
     );
     expect(scrollEl.style.maxHeight).toBe('240px');
     const secondLimit = scrollEl.querySelector('[data-virtual-intrinsic-viewport-limit]')!;
@@ -1791,7 +1787,6 @@ describe('hidden pane guard (display:none RO deliveries)', () => {
     await waitFor(
       () => scrollEl.clientHeight === 320 && harness.handle()?.getViewportSize() === 320,
       'intrinsic viewport mount',
-      240,
     );
 
     host.style.display = 'none';
@@ -1803,7 +1798,6 @@ describe('hidden pane guard (display:none RO deliveries)', () => {
     await waitFor(
       () => scrollEl.clientHeight === 320 && harness.handle()?.getViewportSize() === 320,
       'intrinsic viewport after pane reveal',
-      240,
     );
     expect(resizeObserverErrors.messages).toEqual([]);
   });

@@ -161,6 +161,7 @@ type OpenPRThreadResult struct {
 //
 //ao:scope git:operate
 //ao:route selected
+//ao:budget 12m
 func (a *App) OpenPRThread(ctx context.Context, req OpenPRThreadRequest) (OpenPRThreadResult, error) {
 	if a.shuttingDown.Load() {
 		return OpenPRThreadResult{}, ErrShuttingDown

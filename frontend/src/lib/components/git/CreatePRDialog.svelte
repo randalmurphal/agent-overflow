@@ -2,9 +2,15 @@
   import Modal from '../primitives/Modal.svelte';
   import Button from '../primitives/Button.svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
-  import type { GitActionResult } from '../../types/git';
   import { GitCreatePR } from '../../stores/bindings';
   import { addToast } from '../../stores/toast.svelte';
+  import {
+    askGitAttempt,
+    lostAnswerAskAgainMessage,
+    runGitAttempt,
+    unknownAttemptMessage,
+    type GitAttemptAnswer,
+  } from './gitAttempt';
   import { forgeLabels } from '../../utils/forgeLabels';
   import { FIELD_CLASS } from './dialogFieldClass';
 
@@ -20,38 +26,60 @@
   let draft = $state(false);
   let creating = $state(false);
   let error = $state<string | null>(null);
+  // The attempt whose answer was lost and whose outcome is not known yet:
+  // the next press asks for it rather than creating again (gitAttempt.ts).
+  let lostAttempt = $state<string | null>(null);
 
   // The request is a fact about the CHECKOUT, so the call takes the pane's
   // workspace ref. Null means this pane names no repository; the control
   // that opens this dialog does not render in that case.
   let workspace = $derived(pane.workspace);
-  // Labels follow the forge the status stream detected (PR vs MR).
-  let labels = $derived(forgeLabels(pane.gitStatus.status?.forge));
+  // Labels follow the forge the status stream detected (PR vs MR), and keep
+  // the last one detected while the status is re-read (a dropped connection
+  // re-sources it), so a create in flight keeps its forge's name.
+  let lastForge: string | undefined;
+  let labels = $derived.by(() => {
+    const forge = pane.gitStatus.status?.forge;
+    if (forge) lastForge = forge;
+    return forgeLabels(forge ?? lastForge);
+  });
 
   async function handleCreate() {
     const ws = workspace;
-    if (!title.trim() || !ws || creating) return;
+    const lost = lostAttempt;
+    if ((lost === null && !title.trim()) || !ws || creating) return;
     creating = true;
     error = null;
     try {
-      const result = await GitCreatePR(ws, title.trim(), body.trim(), draft);
-      const r = result as GitActionResult;
-      if (r.error) {
-        error = r.error;
-      } else {
+      settle(lost !== null
+        ? await askGitAttempt(ws, 'pr', lost)
+        : await runGitAttempt(ws, 'pr', (attemptId) => GitCreatePR(ws, title.trim(), body.trim(), draft, attemptId)));
+    } finally {
+      creating = false;
+    }
+  }
+
+  function settle(answer: GitAttemptAnswer): void {
+    lostAttempt = answer.kind === 'lost' ? answer.attemptId : null;
+    switch (answer.kind) {
+      case 'done':
         addToast(
           'success',
-          r.prUrl ? `${labels.noun} created: ${r.prUrl}` : `${labels.noun} created`,
+          answer.result.prUrl ? `${labels.noun} created: ${answer.result.prUrl}` : `${labels.noun} created`,
         );
         title = '';
         body = '';
         draft = false;
         onClose();
-      }
-    } catch (err) {
-      error = err instanceof Error ? err.message : String(err);
-    } finally {
-      creating = false;
+        return;
+      case 'failed':
+        error = answer.message;
+        return;
+      case 'lost':
+        error = lostAnswerAskAgainMessage(labels.noun, labels.createAction, answer);
+        return;
+      case 'unknown':
+        error = unknownAttemptMessage(labels.noun);
     }
   }
 </script>
@@ -108,7 +136,7 @@
       variant="primary"
       size="sm"
       onclick={handleCreate}
-      disabled={!title.trim()}
+      disabled={!title.trim() && lostAttempt === null}
       loading={creating}
       testId="create-pr-submit"
     >

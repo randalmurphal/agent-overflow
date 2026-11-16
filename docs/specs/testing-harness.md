@@ -356,6 +356,8 @@ Query kinds (the spec is a tagged union, versioned `v:1`):
   `__stickState`, ui-trace `recent(n)`). The whitelist lives in the
   bridge; unknown names error.
 - `perf`: meter control (§5).
+- `review-diff-memory`: lowers the review diff text budget for the page
+  (`budgetBytes`) and reads what it holds, so a spec can evict diff text.
 
 The bridge is also the place future inspection kinds land (a11y tree
 walk, computed-style probes); one union, one version field.

@@ -9,9 +9,11 @@ import { selectedBackend } from './selectedBackend.svelte';
 
 import { tick } from 'svelte';
 import { SIDEBAR_JUMP_LIMIT } from './sidebarThreadOrder';
+import { isEmptyDraftCleanupPending, settleEmptyDraftCleanup } from './emptyDraftCleanup';
 import type { ThreadPane } from './thread.svelte';
 import type { Thread } from '../types/models';
 import type { TerminalHandle } from '../types/terminal';
+import { startTerminal } from './eventsTerminal';
 import type { WorkspaceRef } from '../types/git';
 import { registerCommand, type CommandContext, type CommandFlags } from './commandRegistry.svelte';
 import { providerSupports } from '../providers/catalog';
@@ -56,11 +58,10 @@ import {
   terminalStateKeyForPane,
 } from '../components/terminal/terminalStore.svelte';
 import { runTerminalToggle } from '../components/terminal/terminalToggle';
+import { gitAttemptFailure, pullWorkspace, pushWorkspace } from '../components/git/gitActions';
 import {
   ApprovalResponse,
   CloseTerminal,
-  GitPull,
-  GitPush,
   OpenTerminal,
   RefreshTerminal,
   RespondToApproval,
@@ -538,13 +539,17 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
         // recorded at the fork, and UpdateThreadMode refuses to move it.
         if (t.mode === 'discussion' || isScratchThreadMode(t.mode)) return;
         const next = cycleMode(t.mode);
+        // Applied wherever the emptied draft's in-flight delete leaves the pane.
+        if (isEmptyDraftCleanupPending(pane.threadId)) await settleEmptyDraftCleanup(pane.threadId);
         if (pane.hasDraftPlaceholder) {
           pane.setDraftPlaceholderMode(next);
           return;
         }
+        const threadId = pane.threadId;
+        if (!threadId) return;
         try {
           const mark = threadRowFrameMark();
-          const updated = (await UpdateThreadMode(t.id, next)) as Thread;
+          const updated = (await UpdateThreadMode(threadId, next)) as Thread;
           syncThreadReply(updated, mark);
         } catch (err) {
           addErrorToast(userFacingError(err), err);
@@ -1026,15 +1031,18 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
         terminalStateKeyForPane(threadId, pane.paneId),
       );
       if (!state) return;
-      OpenTerminal(threadId, new TerminalOpenOptions({ cwd: pane.thread?.workspacePath }))
-        .then((th) => {
-          const handle = th as TerminalHandle;
-          if (handle?.summary) {
-            state.addTab(handle.summary);
-            // addTab makes the new tab active → the surface remounts
-            // TerminalBody; request focus so the cursor lands in the new tab.
-            pane.requestTerminalFocus();
-          }
+      startTerminal(
+        async () => (await OpenTerminal(threadId, new TerminalOpenOptions({ cwd: pane.thread?.workspacePath }))) as TerminalHandle,
+        (handle) => {
+          if (handle?.summary) state.addTab(handle.summary);
+        },
+      )
+        .then((handle) => {
+          const terminalID = handle?.summary?.terminalID;
+          // addTab makes the new tab active → the surface remounts
+          // TerminalBody; request focus so the cursor lands in the new tab,
+          // unless its exit overtook the answer and the tab is gone.
+          if (terminalID && state.tabs.some((tab) => tab.terminalID === terminalID)) pane.requestTerminalFocus();
         })
         .catch((err) => {
           console.error('terminal: OpenTerminal (newTab) failed', err);
@@ -1129,8 +1137,10 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     run: (ctx) =>
       withWorkspace(ctx, async (workspace) => {
         try {
-          await GitPush(workspace);
-          addToast('success', 'Pushed.');
+          const answer = await pushWorkspace(workspace);
+          const failure = gitAttemptFailure('push', answer);
+          if (!failure) addToast('success', 'Pushed.');
+          else addErrorToast(failure.message, failure.error);
         } catch (err) {
           addErrorToast(userFacingError(err), err);
         }
@@ -1145,8 +1155,10 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
     run: (ctx) =>
       withWorkspace(ctx, async (workspace) => {
         try {
-          await GitPull(workspace);
-          addToast('success', 'Pulled.');
+          const answer = await pullWorkspace(workspace);
+          const failure = gitAttemptFailure('pull', answer);
+          if (!failure) addToast('success', 'Pulled.');
+          else addErrorToast(failure.message, failure.error);
         } catch (err) {
           addErrorToast(userFacingError(err), err);
         }

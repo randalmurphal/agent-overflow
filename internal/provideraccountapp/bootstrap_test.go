@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provideraccounts"
 )
@@ -119,7 +120,7 @@ func testBootRecoversASelectedCodexRotation(t *testing.T, foreignSweep bool, use
 	if err != nil {
 		t.Fatal(err)
 	}
-	manager := NewManager(Deps{})
+	manager := NewManager(Deps{Reaper: procutiltest.Reaper()})
 	if err := manager.Attach(store, credentials, ""); err != nil {
 		t.Fatal(err)
 	}
@@ -161,7 +162,7 @@ func testBootRecoversASelectedCodexRotation(t *testing.T, foreignSweep bool, use
 		if err != nil {
 			t.Fatal(err)
 		}
-		sweeper := NewManager(Deps{})
+		sweeper := NewManager(Deps{Reaper: procutiltest.Reaper()})
 		if err := sweeper.Attach(foreignStore, foreignCredentials, ""); err != nil {
 			t.Fatal(err)
 		}

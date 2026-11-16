@@ -201,7 +201,7 @@ describe('<GitActionsControl> consumer rendering', () => {
     await fireEvent.click(await findByLabelText('More git actions'));
     await fireEvent.click(await findByRole('menuitem', { name: 'Push' }));
     await flush();
-    expect(pushArgs).toEqual([[pane.workspace]]);
+    expect(pushArgs).toEqual([[pane.workspace, expect.any(String)]]);
   });
 });
 
@@ -394,6 +394,27 @@ describe('<GitActionsControl> palette dialog event', () => {
     expect(await findByText('Commit Changes')).toBeInTheDocument();
   });
 
+  it('keeps an open dialog, and what it holds, while the status fails and recovers', async () => {
+    setBindingMock('GetWorkspaceActivity', async () => idleWorkspaceActivity());
+    const pane = await buildPane();
+    __seedGitStatusForTest(WORKSPACE, status({ hasChanges: true }));
+    const { findByText, findByLabelText, findByTestId } = render(GitActionsControl, { props: { pane } });
+    await flush();
+    dispatchOpen(pane.paneId, 'commit');
+    await findByText('Commit Changes');
+    const subject = await findByLabelText('Subject');
+    await fireEvent.input(subject, { target: { value: 'Draft subject' } });
+
+    // A dropped connection fails the status refresh, then recovery answers.
+    __seedGitStatusErrorForTest(WORKSPACE, 'connection lost');
+    expect(await findByTestId('git-actions-error')).toBeInTheDocument();
+    expect(await findByLabelText('Subject')).toBe(subject);
+    __seedGitStatusForTest(WORKSPACE, status({ hasChanges: true }));
+    await flush();
+    expect(await findByLabelText('Subject')).toBe(subject);
+    expect(subject).toHaveValue('Draft subject');
+  });
+
   it('does not open a dialog for a view-only session', async () => {
     await pairViewOnly();
     const pane = await buildPane();
@@ -548,7 +569,7 @@ describe('<GitActionsControl> palette dialog event', () => {
     await flush();
 
     expect(pane.threadId).toBeNull();
-    expect(pullArgs).toEqual([[{ projectId: 'project-1', workspacePath: WORKSPACE }]]);
+    expect(pullArgs).toEqual([[{ projectId: 'project-1', workspacePath: WORKSPACE }, expect.any(String)]]);
   });
 
   // A terminal-only thread carries no project, so `pane.workspace` is null and
@@ -655,6 +676,20 @@ describe('<GitActionsControl> forge labels', () => {
     await flush();
     const item = getByText('Create PR').closest('[role="menuitem"]');
     expect(item?.getAttribute('aria-disabled')).toBe('true');
+  });
+
+  it('says why in place of Create PR when the origin is on GitHub Enterprise, and keeps the git actions', async () => {
+    const pane = await buildPane();
+    const sentence = 'Pull requests on GitHub Enterprise (github.acme.corp) are not supported yet.';
+    __seedGitStatusForTest(WORKSPACE, status({ forge: '', forgeUnsupported: sentence, branch: 'feature', isDefaultBranch: false, aheadCount: 1 }));
+    const { findByLabelText, getByText, getAllByText } = render(GitActionsControl, { props: { pane } });
+    await fireEvent.click(await findByLabelText('More git actions'));
+    await flush();
+    const item = getByText('Create PR').closest('[role="menuitem"]');
+    expect(item?.getAttribute('aria-disabled')).toBe('true');
+    expect(item).toHaveTextContent(sentence);
+    const push = getAllByText('Push').map((el) => el.closest('[role="menuitem"]')).find((el) => el !== null);
+    expect(push?.getAttribute('aria-disabled')).toBeNull();
   });
 });
 

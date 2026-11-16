@@ -35,6 +35,8 @@ export type TurnStep =
   | { emitLines: string[] }
   /** Park the turn until the test advances the named gate. */
   | { gate: string }
+  /** Claude under holdQueuedInput: consume every held message into this turn. */
+  | { drainQueued: true }
   /** Ask the app for a decision and branch on it. */
   | { approval: ApprovalRequest }
   | { delayMs: number };
@@ -126,6 +128,7 @@ function stepJSON(step: TurnStep): Record<string, unknown> {
   }
   if ('capture' in step) return { capture: step.capture };
   if ('gate' in step) return { waitSignal: { name: step.gate } };
+  if ('drainQueued' in step) return { drainQueuedInput: true };
   if ('approval' in step) {
     const { toolName, input, toolUseId, onAllow, onDeny, timeoutMs } = step.approval;
     return {
@@ -161,6 +164,8 @@ export function threadToolsScenario(opts: {
    * message up. Off, the mock opens its turn at once, over the running one.
    */
   holdQueuedInput?: boolean;
+  /** Codex only: JSON-RPC response templates by method. */
+  codexResponses?: Record<string, string>;
 }): Record<string, unknown> {
   const turns = opts.turns.map((turn, index) => {
     const steps: Array<Record<string, unknown>> = [];
@@ -187,8 +192,20 @@ export function threadToolsScenario(opts: {
     turns,
     afterTurns: opts.afterTurns ?? 'repeatLast',
     ...(opts.holdQueuedInput ? { claude: { holdQueuedInput: true } } : {}),
+    ...(opts.codexResponses ? { codex: { responses: opts.codexResponses } } : {}),
   };
 }
+
+/**
+ * The app-server's refusal of a steer into a turn that cannot take input (a
+ * review or a compaction). A message sent during such a turn stays on the
+ * app's queue until the turn ends, which is the one state in which a queued
+ * message can still be taken back.
+ */
+export const CODEX_STEER_NOT_STEERABLE = {
+  'turn/steer':
+    '{"jsonrpc":"2.0","id":${REQUEST_ID},"error":{"code":-32600,"message":"the active turn cannot be steered","data":{"codexErrorInfo":{"activeTurnNotSteerable":{"turnKind":"review"}}}}}',
+};
 
 /** A scenario that answers with text and calls nothing. */
 export function plainScenario(opts: {

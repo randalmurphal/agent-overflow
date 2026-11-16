@@ -1,9 +1,10 @@
-import type { CommitFile, CommitSelection, GitActionResult, WorkspaceRef } from '../../types/git';
+import type { CommitFile, CommitSelection, WorkspaceRef } from '../../types/git';
 import { GenerateCommitMessage, GitCommit, ListCommitFiles } from '../../stores/bindings';
 import { createRefreshScheduler, type RefreshToken } from '../../utils/refreshScheduler';
 import { userFacingError } from '../../utils/userFacingError';
 import { isMethodUnavailableError } from '../../stores/transportStatus.svelte';
 import { carryActive, carrySelection, commitSelection, toggleAll, toggleOne } from './commitFiles';
+import { askGitAttempt, runGitAttempt, type GitAttemptAnswer } from './gitAttempt';
 
 // The state of one opening of the commit dialog on one checkout: the file
 // list as the backend last answered it, which rows are selected, which row
@@ -14,6 +15,16 @@ import { carryActive, carrySelection, commitSelection, toggleAll, toggleOne } fr
 // Selection is by path and starts empty: nothing is committed that was not
 // picked, and a file that appears while the dialog is open arrives
 // unselected.
+//
+// Each press of Commit is one attempt (gitAttempt.ts): a commit whose answer
+// was lost reads as landed once the computer says it did. While the
+// computer cannot be asked, the attempt stays open and the next press asks
+// again rather than committing a second time.
+
+/** Shown while a lost commit's outcome cannot be asked for. */
+export const COMMIT_ANSWER_LOST = 'The connection dropped before the commit answered, so it may have landed. Press Commit to ask the computer what happened.';
+/** Shown when the computer has no record of a lost commit. */
+export const COMMIT_OUTCOME_UNKNOWN = 'The computer has no record of this commit: it never arrived, or the computer restarted since. The file list shows what is still uncommitted.';
 
 export interface CommitDialogState {
   readonly files: readonly CommitFile[];
@@ -32,6 +43,9 @@ export interface CommitDialogState {
   readonly generating: boolean;
   /** Why the last commit attempt was refused. */
   readonly commitError: string | null;
+  /** A commit's answer was lost and its outcome is not known yet; Commit
+   * asks for it instead of committing. */
+  readonly outcomeUnknown: boolean;
 
   /** Lists the files again. Flood-safe; the first call runs at once. */
   refresh(): void;
@@ -60,6 +74,8 @@ export function createCommitDialogState(workspace: WorkspaceRef, onEmptied: () =
   let committing = $state(false);
   let generating = $state(false);
   let commitError = $state<string | null>(null);
+  // The attempt whose answer was lost and whose outcome is not known yet.
+  let lostAttempt = $state<string | null>(null);
   let committedHere = false;
   let requested = false;
 
@@ -97,6 +113,27 @@ export function createCommitDialogState(workspace: WorkspaceRef, onEmptied: () =
     }
   }
 
+  // Settles one attempt's answer: the new commit's SHA, or null with
+  // `commitError` saying why nothing is known to have been committed.
+  function settle(answer: GitAttemptAnswer): string | null {
+    lostAttempt = answer.kind === 'lost' ? answer.attemptId : null;
+    switch (answer.kind) {
+      case 'done':
+        selected = new Set();
+        committedHere = true;
+        return answer.result.commitSha ?? '';
+      case 'failed':
+        commitError = answer.message;
+        return null;
+      case 'lost':
+        commitError = `${COMMIT_ANSWER_LOST} ${answer.message}`;
+        return null;
+      case 'unknown':
+        commitError = COMMIT_OUTCOME_UNKNOWN;
+        return null;
+    }
+  }
+
   function refresh(immediate = false): void {
     scheduler.request({ immediate: immediate || !requested });
     requested = true;
@@ -114,6 +151,7 @@ export function createCommitDialogState(workspace: WorkspaceRef, onEmptied: () =
     get committing() { return committing; },
     get generating() { return generating; },
     get commitError() { return commitError; },
+    get outcomeUnknown() { return lostAttempt !== null; },
 
     refresh: () => refresh(),
     activate(path) { active = path; },
@@ -125,22 +163,17 @@ export function createCommitDialogState(workspace: WorkspaceRef, onEmptied: () =
     },
 
     async commit(subject, body) {
+      if (committing) return null;
+      const lost = lostAttempt;
       const covered = selection;
-      if (!covered || committing || subject.trim() === '') return null;
+      if (lost === null && (!covered || subject.trim() === '')) return null;
       committing = true;
       commitError = null;
       try {
-        const result = await GitCommit(workspace, subject.trim(), body.trim(), covered) as GitActionResult;
-        if (result.error) {
-          commitError = result.error;
-          return null;
-        }
-        selected = new Set();
-        committedHere = true;
-        return result.commitSha ?? '';
-      } catch (err) {
-        commitError = err instanceof Error ? err.message : String(err);
-        return null;
+        return settle(lost !== null
+          ? await askGitAttempt(workspace, 'commit', lost)
+          : await runGitAttempt(workspace, 'commit', (attemptId) =>
+            GitCommit(workspace, subject.trim(), body.trim(), covered!, attemptId)));
       } finally {
         committing = false;
         // The commit, or its refusal, changed what there is to list.

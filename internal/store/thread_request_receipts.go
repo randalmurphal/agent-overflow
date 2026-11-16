@@ -284,30 +284,37 @@ func (s *Store) SetThreadReceiptAnswerTurn(token, targetThreadID, turnID string)
 // SettleThreadRequestReceipt stores the whole answer on the destination row
 // and bumps the revision, provided the row is still in one of `from`. The
 // turn-end observer passes {running} so a thread_reply that landed first
-// wins; the cancel path passes both open states.
+// wins; the cancel path passes both open states. A receipt whose request was
+// made on this computer settles with it instead (SettleLocalThreadRequest).
 func (s *Store) SettleThreadRequestReceipt(token string, from []string, settlement ThreadRequestSettlement) (bool, error) {
+	settled, _, err := settleThreadReceipt(s.db, token, from, settlement)
+	return settled, err
+}
+
+// settleThreadReceipt is SettleThreadRequestReceipt on a pool or a caller's
+// transaction. It also returns the settlement as stored, with the settled and
+// expiry moments it filled in.
+func settleThreadReceipt(db sqlExecutor, token string, from []string, settlement ThreadRequestSettlement) (bool, ThreadRequestSettlement, error) {
 	action := fmt.Sprintf("store: settle thread receipt %s", token)
 	if err := settlement.validate(action, threadReceiptStates); err != nil {
-		return false, err
+		return false, settlement, err
 	}
-	if settlement.ArmWake {
-		return false, fmt.Errorf("%s: a receipt has no wake to arm", action)
+	if settlement.ArmWake || settlement.DisarmWake {
+		return false, settlement, fmt.Errorf("%s: a receipt has no wake to arm or disarm", action)
 	}
 	clause, args, err := stateInClause(action, from, threadReceiptStates)
 	if err != nil {
-		return false, err
+		return false, settlement, err
 	}
-	settledAt := settlement.SettledAt
-	if settledAt == 0 {
-		settledAt = nowMillis()
+	if settlement.SettledAt == 0 {
+		settlement.SettledAt = nowMillis()
 	}
-	expiresAt := settlement.ExpiresAt
-	if expiresAt == 0 {
-		expiresAt = settledAt + threadAnswerHoldMillis
+	if settlement.ExpiresAt == 0 {
+		settlement.ExpiresAt = settlement.SettledAt + threadAnswerHoldMillis
 	}
 	set := []any{settlement.State, nilIfEmptyBytes(settlement.Answer), settlement.AnswerKind,
-		settledAt, expiresAt, nowMillis(), token}
-	result, err := s.db.Exec(
+		settlement.SettledAt, settlement.ExpiresAt, nowMillis(), token}
+	result, err := db.Exec(
 		`UPDATE thread_request_receipts
 		    SET state = ?, answer = ?, answer_kind = ?, revision = revision + 1,
 		        settled_at = ?, expires_at = ?, updated_at = ?
@@ -315,9 +322,10 @@ func (s *Store) SettleThreadRequestReceipt(token string, from []string, settleme
 		append(set, args...)...,
 	)
 	if err != nil {
-		return false, fmt.Errorf("%s: %w", action, err)
+		return false, settlement, fmt.Errorf("%s: %w", action, err)
 	}
-	return rowsChanged(result, action)
+	settled, err := rowsChanged(result, action)
+	return settled, settlement, err
 }
 
 // threadAnswerHoldMillis is how long an uncollected answer waits for its
@@ -330,13 +338,19 @@ const threadAnswerHoldMillis = 24 * 60 * 60 * 1000
 // receipt with no late reply yet and a hold still running accepts it: the
 // source stops polling once the hold on the first answer runs out, so a reply
 // after that would never be collected. Every other state is refused by the
-// caller with its state as the reason.
+// caller with its state as the reason. A receipt whose request was made on
+// this computer stores it with that request instead
+// (StoreLocalThreadRequestLateReply).
 func (s *Store) StoreThreadReceiptLateReply(token string, reply []byte, at int64) (bool, error) {
+	return storeThreadReceiptLateReply(s.db, token, reply, at)
+}
+
+func storeThreadReceiptLateReply(db sqlExecutor, token string, reply []byte, at int64) (bool, error) {
 	action := fmt.Sprintf("store: store thread receipt late reply %s", token)
 	if at == 0 {
 		at = nowMillis()
 	}
-	result, err := s.db.Exec(
+	result, err := db.Exec(
 		`UPDATE thread_request_receipts
 		    SET late_reply = ?, late_reply_at = ?, revision = revision + 1,
 		        expires_at = ?, updated_at = ?
@@ -352,22 +366,39 @@ func (s *Store) StoreThreadReceiptLateReply(token string, reply []byte, at int64
 
 // AckThreadRequestReceipt records the revision the source has durably stored.
 // The sweep only drops an answer whose latest revision nobody collected, so
-// the acknowledgement is what makes expiry safe.
+// the acknowledgement is what makes expiry safe. A revision past the
+// receipt's own is recorded as the receipt's: nobody can have stored what the
+// receipt does not hold yet.
 func (s *Store) AckThreadRequestReceipt(token string, revision, at int64) (bool, error) {
-	action := fmt.Sprintf("store: acknowledge thread receipt %s", token)
 	if at == 0 {
 		at = nowMillis()
 	}
-	result, err := s.db.Exec(
+	return ackThreadReceipt(s.db, token, revision, at)
+}
+
+func ackThreadReceipt(db sqlExecutor, token string, revision, at int64) (bool, error) {
+	action := fmt.Sprintf("store: acknowledge thread receipt %s", token)
+	result, err := db.Exec(
 		`UPDATE thread_request_receipts
-		    SET collected_revision = ?, collected_at = ?, updated_at = ?
-		  WHERE token = ? AND collected_revision < ?`,
+		    SET collected_revision = MIN(?, revision), collected_at = ?, updated_at = ?
+		  WHERE token = ? AND collected_revision < MIN(?, revision)`,
 		revision, at, nowMillis(), token, revision,
 	)
 	if err != nil {
 		return false, fmt.Errorf("%s: %w", action, err)
 	}
 	return rowsChanged(result, action)
+}
+
+// ThreadReceiptSettled reports whether a receipt state carries an answer a
+// request can collect: anything but the two open states, and the empty word
+// of a receipt nobody reported.
+func ThreadReceiptSettled(state string) bool {
+	switch state {
+	case "", ThreadReceiptAccepted, ThreadReceiptRunning:
+		return false
+	}
+	return true
 }
 
 // GetThreadRequestReceipt reads one receipt. The bool separates an unknown

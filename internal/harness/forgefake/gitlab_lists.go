@@ -22,9 +22,8 @@ var gitlabGraphQL = []graphQLOp{
 	{kind: "query", name: "PullsReviewingApprovals", required: []string{"fullPath", "viewer"}, optional: []string{"after"}, run: glabPullsRead("reviewer", gitlabApprovalsNode)},
 	{kind: "query", name: "PullsAuthoredApprovals", required: []string{"fullPath", "viewer"}, optional: []string{"after"}, run: glabPullsRead("author", gitlabApprovalsNode)},
 	{kind: "query", name: "PipelineJobs", required: []string{"fullPath", "id"}, optional: []string{"after"}, run: glabPipelineJobs},
-	{kind: "query", name: "PRManageSchema", run: glabManageSchema},
-	{kind: "query", name: "PRManage", required: []string{"fullPath", "iid"}, run: glabManage(false)},
-	{kind: "query", name: "PRManageChecks", required: []string{"fullPath", "iid"}, run: glabManage(true)},
+	{kind: "query", name: "ProjectAccess", required: []string{"fullPath"}, run: glabProjectAccess},
+	{kind: "query", name: "PRManageChecks", required: []string{"fullPath", "iid"}, run: glabManage},
 	{kind: "mutation", name: "PRRereview", required: []string{"projectPath", "iid", "userId"}, run: glabRereview},
 	{kind: "mutation", name: "PRBypassChanges", required: []string{"projectPath", "iid"}, run: glabBypassChanges},
 	{kind: "query", name: "PRMergeMessage", required: []string{"fullPath", "iid"}, run: glabMergeMessage},
@@ -112,7 +111,8 @@ func gitlabReviewNode(p *Pull) map[string]any {
 
 // gitlabReviewState is a reviewer's reviewState: approved while their
 // approval stands, requested_changes for one in changeRequests, reviewed
-// for one who commented on the merge request, else unreviewed.
+// for one a publish set so or who commented on the merge request, else
+// unreviewed.
 func gitlabReviewState(p *Pull, login string) string {
 	switch {
 	case gitlabViewerApproved(p, login):
@@ -121,7 +121,7 @@ func gitlabReviewState(p *Pull, login string) string {
 		return "requested_changes"
 	case containsFold(p.rerequested, login):
 		return "unreviewed"
-	case len(gitlabComments(p, login)) > 0:
+	case containsFold(p.reviewedBy, login), len(gitlabComments(p, login)) > 0:
 		return "reviewed"
 	}
 	return "unreviewed"
@@ -145,9 +145,13 @@ func gitlabComments(p *Pull, login string) []gitlabComment {
 		}
 	}
 	for _, thread := range p.Threads {
+		targetType := "DiffNote"
+		if thread.Path == "" {
+			targetType = "DiscussionNote"
+		}
 		for _, comment := range thread.Comments {
 			if strings.EqualFold(comment.Author, login) {
-				out = append(out, gitlabComment{at: comment.CreatedAt, targetType: "DiffNote"})
+				out = append(out, gitlabComment{at: comment.CreatedAt, targetType: targetType})
 			}
 		}
 	}

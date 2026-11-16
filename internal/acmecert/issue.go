@@ -84,6 +84,10 @@ func New(cfg Config) (*Issuer, error) {
 	if len(cfg.Hook) == 0 || strings.TrimSpace(cfg.Hook[0]) == "" {
 		return nil, errors.New("acmecert: no DNS hook command configured, so nothing can answer the challenge")
 	}
+	if cfg.Reaper == nil {
+		return nil, errors.New("acmecert: no reaper to end the DNS hook with the app")
+	}
+	reaper := cfg.Reaper
 	timeout := cfg.HookTimeout
 	if timeout <= 0 {
 		timeout = DefaultHookTimeout
@@ -96,7 +100,9 @@ func New(cfg Config) (*Issuer, error) {
 		newCA: func(key crypto.Signer) CA {
 			return &acme.Client{Key: key, DirectoryURL: directoryURL}
 		},
-		runHook: runHook,
+		runHook: func(ctx context.Context, argv []string, timeout time.Duration, action, fqdn, value string) error {
+			return runHook(ctx, reaper, argv, timeout, action, fqdn, value)
+		},
 	}, nil
 }
 

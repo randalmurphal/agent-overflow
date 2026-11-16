@@ -11,6 +11,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"agent-overflow/internal/procutil/procutiltest"
 )
 
 // ensurePTYAvailable verifies the runner has access to /bin/sh and that a
@@ -42,9 +44,10 @@ func TestTerm_OpenClosesProcessCleanly(t *testing.T) {
 
 	m := NewManager(nil, nil)
 	summary, err := m.Open("thread-clean", SessionOptions{
-		Shell: "/bin/sh",
-		Args:  []string{"-c", "sleep 30"},
-		Cwd:   t.TempDir(),
+		Reaper: procutiltest.Reaper(),
+		Shell:  "/bin/sh",
+		Args:   []string{"-c", "sleep 30"},
+		Cwd:    t.TempDir(),
 	})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
@@ -82,9 +85,10 @@ func TestTerm_WriteAndReadRoundTrip(t *testing.T) {
 
 	m := NewManager(onOutput, nil)
 	summary, err := m.Open("thread-rt", SessionOptions{
-		Shell: "/bin/sh",
-		Args:  []string{"-c", "cat"},
-		Cwd:   t.TempDir(),
+		Reaper: procutiltest.Reaper(),
+		Shell:  "/bin/sh",
+		Args:   []string{"-c", "cat"},
+		Cwd:    t.TempDir(),
 	})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
@@ -119,11 +123,12 @@ func TestTerm_ResizeChangesCols(t *testing.T) {
 		outputSeenOnce.Do(func() { close(outputSeen) })
 	}, nil)
 	summary, err := m.Open("thread-resize", SessionOptions{
-		Shell: "/bin/sh",
-		Args:  []string{"-c", "sleep 10"},
-		Cwd:   t.TempDir(),
-		Rows:  24,
-		Cols:  80,
+		Reaper: procutiltest.Reaper(),
+		Shell:  "/bin/sh",
+		Args:   []string{"-c", "sleep 10"},
+		Cwd:    t.TempDir(),
+		Rows:   24,
+		Cols:   80,
 	})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
@@ -152,9 +157,10 @@ func TestTerm_GetTerminalReplayReturnsRingContent(t *testing.T) {
 	script := fmt.Sprintf("for i in $(seq 1 %d); do printf '%%s\\n' %s; done",
 		8000, strings.Repeat("A", 64))
 	summary, err := m.Open("thread-replay", SessionOptions{
-		Shell: "/bin/sh",
-		Args:  []string{"-c", script},
-		Cwd:   t.TempDir(),
+		Reaper: procutiltest.Reaper(),
+		Shell:  "/bin/sh",
+		Args:   []string{"-c", script},
+		Cwd:    t.TempDir(),
 	})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
@@ -183,9 +189,10 @@ func TestTerm_RestartSpawnsNewProcess(t *testing.T) {
 
 	m := NewManager(nil, nil)
 	summary, err := m.Open("thread-restart", SessionOptions{
-		Shell: "/bin/sh",
-		Args:  []string{"-c", "sleep 10"},
-		Cwd:   t.TempDir(),
+		Reaper: procutiltest.Reaper(),
+		Shell:  "/bin/sh",
+		Args:   []string{"-c", "sleep 10"},
+		Cwd:    t.TempDir(),
 	})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
@@ -219,9 +226,10 @@ func TestTerm_CloseThreadClosesAllTerminalsForThread(t *testing.T) {
 	pids := []int{}
 	for i := 0; i < 3; i++ {
 		s, err := m.Open("multi-thread", SessionOptions{
-			Shell: "/bin/sh",
-			Args:  []string{"-c", "sleep 30"},
-			Cwd:   t.TempDir(),
+			Reaper: procutiltest.Reaper(),
+			Shell:  "/bin/sh",
+			Args:   []string{"-c", "sleep 30"},
+			Cwd:    t.TempDir(),
 		})
 		if err != nil {
 			t.Fatalf("Open %d: %v", i, err)
@@ -255,9 +263,10 @@ func TestTerm_MultipleThreadsIsolated(t *testing.T) {
 
 	m := NewManager(nil, nil)
 	sA, err := m.Open("iso-A", SessionOptions{
-		Shell: "/bin/sh",
-		Args:  []string{"-c", "cat"},
-		Cwd:   t.TempDir(),
+		Reaper: procutiltest.Reaper(),
+		Shell:  "/bin/sh",
+		Args:   []string{"-c", "cat"},
+		Cwd:    t.TempDir(),
 	})
 	if err != nil {
 		t.Fatalf("Open A: %v", err)
@@ -265,9 +274,10 @@ func TestTerm_MultipleThreadsIsolated(t *testing.T) {
 	t.Cleanup(func() { _ = m.Close(sA.TerminalID) })
 
 	sB, err := m.Open("iso-B", SessionOptions{
-		Shell: "/bin/sh",
-		Args:  []string{"-c", "cat"},
-		Cwd:   t.TempDir(),
+		Reaper: procutiltest.Reaper(),
+		Shell:  "/bin/sh",
+		Args:   []string{"-c", "cat"},
+		Cwd:    t.TempDir(),
 	})
 	if err != nil {
 		t.Fatalf("Open B: %v", err)
@@ -306,9 +316,10 @@ func TestTerm_ConcurrentWritesNoRace(t *testing.T) {
 		outputSeenOnce.Do(func() { close(outputSeen) })
 	}, nil)
 	summary, err := m.Open("thread-concur", SessionOptions{
-		Shell: "/bin/sh",
-		Args:  []string{"-c", "cat"},
-		Cwd:   t.TempDir(),
+		Reaper: procutiltest.Reaper(),
+		Shell:  "/bin/sh",
+		Args:   []string{"-c", "cat"},
+		Cwd:    t.TempDir(),
 	})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
@@ -359,9 +370,10 @@ func TestTerm_ManagerShutdownKillsAllProcesses(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		threadID := fmt.Sprintf("shut-%d", i)
 		s, err := m.Open(threadID, SessionOptions{
-			Shell: "/bin/sh",
-			Args:  []string{"-c", "sleep 30"},
-			Cwd:   t.TempDir(),
+			Reaper: procutiltest.Reaper(),
+			Shell:  "/bin/sh",
+			Args:   []string{"-c", "sleep 30"},
+			Cwd:    t.TempDir(),
 		})
 		if err != nil {
 			t.Fatalf("Open %d: %v", i, err)
@@ -391,9 +403,10 @@ func TestTerm_LimitMaxTerminalsPerThread(t *testing.T) {
 
 	for i := 0; i < 10; i++ {
 		_, err := m.Open("cap", SessionOptions{
-			Shell: "/bin/sh",
-			Args:  []string{"-c", "sleep 30"},
-			Cwd:   t.TempDir(),
+			Reaper: procutiltest.Reaper(),
+			Shell:  "/bin/sh",
+			Args:   []string{"-c", "sleep 30"},
+			Cwd:    t.TempDir(),
 		})
 		if err != nil {
 			t.Fatalf("Open %d: %v (no per-thread cap expected by design)", i, err)
@@ -419,9 +432,10 @@ func TestTerm_PTYDeathPropagatesDisconnect(t *testing.T) {
 
 	m := NewManager(nil, onExit)
 	summary, err := m.Open("thread-death", SessionOptions{
-		Shell: "/bin/sh",
-		Args:  []string{"-c", "sleep 60"},
-		Cwd:   t.TempDir(),
+		Reaper: procutiltest.Reaper(),
+		Shell:  "/bin/sh",
+		Args:   []string{"-c", "sleep 60"},
+		Cwd:    t.TempDir(),
 	})
 	if err != nil {
 		t.Fatalf("Open: %v", err)

@@ -2,6 +2,7 @@ package app
 
 import (
 	"agent-overflow/internal/testutil/mockexec"
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -57,7 +58,7 @@ func startExitMarkerClaudeSession(t *testing.T, app *App, bus *capturedEventBus,
 	if err := app.StartSession(threadID); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
-	if err := app.SendMessage(threadID, "hello", nil); err != nil {
+	if err := app.SendMessage(context.Background(), threadID, "hello", nil); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 	bus.nextProviderEventOfKind(t, provider.EventInit, 5*time.Second)
@@ -355,7 +356,7 @@ func TestSendAfterArchiveStartsAColdSession(t *testing.T) {
 		t.Fatal("archive did not close the session")
 	}
 
-	if err := app.SendMessage(thread.ID, "still here", nil); err != nil {
+	if err := app.SendMessage(context.Background(), thread.ID, "still here", nil); err != nil {
 		t.Fatalf("SendMessage after archive: %v", err)
 	}
 	second, restarted := app.sessionManager().get(thread.ID)

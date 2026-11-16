@@ -88,6 +88,7 @@ type WorktreeListItem struct {
 // Preserves legacy semantics — no carry-over of local changes.
 //
 //ao:scope git:operate
+//ao:budget 12m
 func (a *App) GitCreateWorktree(threadID, branch string) (string, error) {
 	updated, err := a.PrepareThreadWorktree(threadID, "", branch, false)
 	if err != nil {
@@ -116,7 +117,11 @@ func (a *App) GitCreateWorktree(threadID, branch string) (string, error) {
 // On stash-apply failure the worktree is removed and the stash entry is
 // kept so the user can recover via `git stash list`.
 //
+// The budget covers the worktree's add, whose post-checkout hook runs
+// inside it (gitops.HookTimeout).
+//
 //ao:scope git:operate
+//ao:budget 12m
 func (a *App) PrepareThreadWorktree(threadID, baseBranch, requestedBranch string, carryLocalChanges bool) (store.Thread, error) {
 	endWork, admitErr := a.workAdmission.begin(a.lifeCtx())
 	if admitErr != nil {
@@ -240,7 +245,11 @@ func (a *App) PrepareThreadWorktree(threadID, baseBranch, requestedBranch string
 // flipping to the existing worktree before calling here. Any number of
 // worktrees may sit on one tag; each gets its own directory named after it.
 //
+// The budget covers the worktree's add, whose post-checkout hook runs
+// inside it (gitops.HookTimeout).
+//
 //ao:scope git:operate
+//ao:budget 12m
 func (a *App) AttachThreadWorktree(threadID, branch string) (store.Thread, error) {
 	endWork, admitErr := a.workAdmission.begin(a.lifeCtx())
 	if admitErr != nil {
@@ -370,9 +379,13 @@ type worktreeRemovalPolicy struct {
 	// mergedPR names the merged pull request the removal is for; each moved
 	// thread is told (worktreeRemoval.mergedPR).
 	mergedPR string
+	// unattended marks a removal nobody asked for: a worktree a person
+	// locked is kept (gitops.Core.RemoveWorktreeUnattended). Unattended
+	// removals never force.
+	unattended bool
 	// idle is a further gate run with every occupant's lock held, after the
-	// running-turn and background-task check, so a thread cannot start
-	// work between the caller's check and the removal.
+	// running-work check (ensureWorkspaceChangeAllowed), so a thread cannot
+	// start work between the caller's check and the removal.
 	idle func(occupants []string) error
 }
 
@@ -471,7 +484,7 @@ func (a *App) removeProjectWorktree(projectID, project, worktreePath string, pol
 		return nil, &errWorktreeBusy{reason: err}
 	}
 
-	if err := a.ensureWorkspaceChangeAllowed("remove this worktree", worktreePath); err != nil {
+	if err := a.ensureWorkspaceChangeAllowed("remove this worktree", worktreePath, attached, workspaceRemovalHandles...); err != nil {
 		return nil, &errWorktreeBusy{reason: err}
 	}
 	if policy.idle != nil {
@@ -500,7 +513,11 @@ func (a *App) removeProjectWorktree(projectID, project, worktreePath string, pol
 	// the watcher, when its panes follow their threads to the root; on
 	// failure it ends here and a refresh shows the tree as it stands.
 	resumeStatus := a.gitApplication().SuppressStatus(worktreePath)
-	if err := core.RemoveWorktreeForce(project, worktreePath, force); err != nil {
+	remove := core.RemoveWorktreeForce
+	if policy.unattended {
+		remove = func(cwd, path string, _ bool) error { return core.RemoveWorktreeUnattended(cwd, path) }
+	}
+	if err := remove(project, worktreePath, force); err != nil {
 		resumeStatus()
 		return nil, err
 	}
@@ -731,8 +748,11 @@ func pathWithin(path, root string) bool {
 // So the session is stopped, never restarted; the next send starts it from
 // the row's new workspace. A running turn ends interrupted, as it does when
 // any session is stopped, and the thread's background tasks show as died.
-// Messages queued behind the turn go back to the composer, as they do when a
-// session dies, rather than being dropped by a stop nobody asked for.
+// The stop hands the messages queued behind the turn back to the composer,
+// as a session death does, rather than dropping them: nobody asked for it
+// (teardownAndCloseSessionRestoringQueue). It empties the queue under the
+// lock every queue write takes, so a message queued before the stop goes
+// to the composer with the rest and one queued after it stays queued.
 //
 // Detaching first is what lets the caller move the row before the process
 // exits, which can take seconds: a detached session's late events cannot
@@ -746,23 +766,13 @@ func (a *App) detachSessionForRemovedWorkspace(threadID string) func() error {
 	if !a.hasActiveSession(threadID) {
 		return nil
 	}
-	requeued := a.restoreUnconfirmedQueueLocked(threadID)
 	sess, _ := a.sessionManager().take(threadID)
 	a.drainProviderEvents(threadID, "detach session from removed worktree")
 	return func() error {
-		var err error
 		if a.stopSessionFn != nil {
-			err = a.stopSessionFn(threadID)
-		} else {
-			err = a.teardownAndCloseSession(threadID, sess)
+			return a.stopSessionFn(threadID)
 		}
-		if len(requeued) > 0 {
-			// The stop wiped the queue these re-entered; register them again
-			// so the next start's flush still finds them.
-			a.requeueUnconfirmedFlushItems(threadID, requeued)
-			a.emitQueueStateChanged(threadID)
-		}
-		return err
+		return a.teardownAndCloseSessionRestoringQueue(threadID, sess)
 	}
 }
 
@@ -824,12 +834,16 @@ func (a *App) reattachThreadsFromRemovedWorktree(removal *worktreeRemoval, mutab
 		stop := a.detachSessionForRemovedWorkspace(id)
 		// Only the triple, so a write to another column since the read above
 		// survives.
-		row, changed, updateErr := a.store.UpdateThreadCheckout(id, t.WorkspacePath, t.WorktreePath, t.Branch)
+		write, updateErr := a.store.UpdateThreadCheckout(id, t.WorkspacePath, t.WorktreePath, t.Branch)
 		if updateErr == nil {
-			if changed {
-				t = row
+			if write.Changed {
+				t = write.Row
 			}
-			a.announceThread(triage.ThreadActionFull, id)
+			// A never-sent thread the worktree alone listed leaves the
+			// sidebar with it.
+			if !a.announceListing(id, write.Listing) {
+				a.announceThread(triage.ThreadActionFull, id)
+			}
 		}
 		if stop != nil {
 			if err := stop(); err != nil {
@@ -1210,7 +1224,8 @@ func (a *App) commitThreadCheckout(thread store.Thread, move threadCheckoutMove)
 	}
 	// Only the triple: the row was read before the git work above, and a
 	// write to another column since then must survive.
-	if _, _, err := a.store.UpdateThreadCheckout(threadID, thread.WorkspacePath, thread.WorktreePath, thread.Branch); err != nil {
+	write, err := a.store.UpdateThreadCheckout(threadID, thread.WorkspacePath, thread.WorktreePath, thread.Branch)
+	if err != nil {
 		rollback()
 		return store.Thread{}, err
 	}
@@ -1229,10 +1244,14 @@ func (a *App) commitThreadCheckout(thread store.Thread, move threadCheckoutMove)
 	// new checkout. `store.UpdateThread` rewrites the whole row, so the
 	// no-change test is the three fields a move owns — re-selecting the
 	// workspace the thread already sits in moves nothing and says nothing.
-	a.announceThreadIfChanged(triage.ThreadActionFull, threadID,
-		move.previousWorkspace != thread.WorkspacePath ||
-			move.previousWorktree != thread.WorktreePath ||
-			move.previousBranch != thread.Branch)
+	// Binding a worktree to a never-sent thread lists it, and unbinding one
+	// takes it off the list.
+	if !a.announceListing(threadID, write.Listing) {
+		a.announceThreadIfChanged(triage.ThreadActionFull, threadID,
+			move.previousWorkspace != thread.WorkspacePath ||
+				move.previousWorktree != thread.WorktreePath ||
+				move.previousBranch != thread.Branch)
+	}
 	return refreshed, nil
 }
 
