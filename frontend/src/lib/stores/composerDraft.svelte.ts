@@ -15,6 +15,8 @@ import {
   forgetDraftSnapshot,
   forgetDraftSnapshotIfMatches,
   getRememberedDraftSnapshotForStore,
+  hasRememberedDraftSnapshot,
+  hasWaitingDraftWrites,
   abandonDraftThreadWrites,
   DraftThreadDeletedError,
   markDraftThreadDeleted,
@@ -62,8 +64,14 @@ export interface DraftStoreOptions {
  */
 export type EmptyThreadCleanup =
   | { outcome: 'deleted'; unsaved: ComposerDraftSnapshot | null }
-  /** The thread stays, and nothing this client typed can overwrite another screen's draft in it. */
+  /** The thread stays: nothing this client wrote waits on it, or its stored draft was read and is empty. */
   | { outcome: 'kept' }
+  /**
+   * The thread stays and may hold another screen's draft, and nothing this
+   * client wrote meanwhile had content: its waiting writes were dropped and
+   * the store stays on the thread. A failed read has been reported.
+   */
+  | { outcome: 'yielded' }
   /** Another screen's draft kept the thread; this client's text left it. */
   | { outcome: 'contested'; unsaved: ComposerDraftSnapshot | null }
   /**
@@ -283,6 +291,19 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
       return null;
     }
     return unsaved;
+  }
+
+  /**
+   * As yieldContestedThread, when what this client wrote meanwhile has no
+   * content: there is nothing to move, so the store stays on `id` and only
+   * its waiting writes (an erasing save) are dropped.
+   */
+  function dropEmptyWrites(id: string): void {
+    abandonDraftThreadWrites(id);
+    if (threadId !== id) return;
+    clearDebounce();
+    pendingSaveGeneration++;
+    hasPendingSave = false;
   }
 
   /** Did another screen leave content in `id`'s stored draft? */
@@ -562,16 +583,24 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
      * the answer: sent to the kept thread; never sent when it was deleted,
      * when another screen's draft is what kept it, or when either could not
      * be learned. Rejects with `remove`'s error only when nothing typed here
-     * waits on the thread.
+     * has content, after dropping any write still waiting.
      */
     deleteEmptyThread(id: string, remove: () => Promise<boolean>): Promise<EmptyThreadCleanup> {
       return queueDraftThreadCleanup(id, async (): Promise<EmptyThreadCleanup> => {
-        // Only this client's typing since the decision can overwrite.
+        // Anything this client wrote since the decision can overwrite, an
+        // erasing save included: a queued write, or unsaved state a
+        // debounce has yet to admit.
+        const writesWait = () => persists && (hasRememberedDraftSnapshot(id) || hasWaitingDraftWrites(id));
         const holdsTyping = () => persists && unsavedDraftSnapshot(id) !== undefined;
-        // Neither answer is known: keep the typing off the thread rather
-        // than let its waiting writes run there.
+        // Neither answer is known: keep this client's writes off the thread
+        // rather than let them run there.
         const yieldUnknown = (label: string, err: unknown): EmptyThreadCleanup => {
           reportFrontendDiagnostic(`Empty-draft cleanup: ${label}`, errString(err));
+          if (!holdsTyping()) {
+            addErrorToast(`${label}: ${errString(err)}`, err);
+            dropEmptyWrites(id);
+            return { outcome: 'yielded' };
+          }
           addErrorToast(`${label}; the text typed meanwhile moved to a new thread: ${errString(err)}`, err);
           return { outcome: 'unknown', unsaved: yieldContestedThread(id) };
         };
@@ -579,11 +608,12 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
         try {
           removed = await remove();
         } catch (err) {
-          if (!holdsTyping()) throw err;
-          return yieldUnknown('Could not remove an emptied new thread', err);
+          if (holdsTyping()) return yieldUnknown('Could not remove an emptied new thread', err);
+          if (writesWait()) dropEmptyWrites(id);
+          throw err;
         }
         if (removed) return { outcome: 'deleted', unsaved: releaseDeletedThread(id) };
-        if (!holdsTyping()) return { outcome: 'kept' };
+        if (!writesWait()) return { outcome: 'kept' };
         let stored: boolean;
         try {
           stored = await storedDraftHasContent(id);
@@ -591,7 +621,11 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
           return yieldUnknown('Could not read the draft another screen may have saved', err);
         }
         if (!stored) return { outcome: 'kept' };
-        return { outcome: 'contested', unsaved: yieldContestedThread(id) };
+        if (holdsTyping()) return { outcome: 'contested', unsaved: yieldContestedThread(id) };
+        // Nothing typed here to keep: show the other screen's draft.
+        dropEmptyWrites(id);
+        void reloadFromBackend(id);
+        return { outcome: 'yielded' };
       });
     },
     releaseDeletedThread,

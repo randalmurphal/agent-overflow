@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, beforeEach } from 'vitest';
+import { afterEach, describe, expect, it, beforeEach, vi } from 'vitest';
 import {
   createComposerDraftStore,
   resetComposerDraftSnapshotsForTest,
@@ -812,8 +812,8 @@ describe('empty-draft cleanup of a thread another screen may hold', () => {
   }
 
   /** A's store on the emptied thread, its cleanup waiting on the delete answer, A's typing queued behind it. */
-  async function cleanupWithTyping(options: { moveOn?: boolean } = {}) {
-    const store = createStore({ debounceMs: 60_000 });
+  async function cleanupWithTyping(options: { moveOn?: boolean; erase?: boolean; debounceMs?: number; flush?: boolean } = {}) {
+    const store = createStore({ debounceMs: options.debounceMs ?? 60_000 });
     await store.setThread(THREAD);
     let answer!: (deleted: boolean) => void;
     let fail!: (err: unknown) => void;
@@ -822,7 +822,8 @@ describe('empty-draft cleanup of a thread another screen may hold', () => {
       fail = reject;
     }));
     store.setContent('this screen text');
-    const saved = store.flush();
+    if (options.erase) store.setContent('');
+    const saved = options.flush === false ? Promise.resolve() : store.flush();
     if (options.moveOn) await store.setThread('elsewhere');
     // B's save landed before the delete looked.
     stored[THREAD] = 'other screen text';
@@ -946,6 +947,71 @@ describe('empty-draft cleanup of a thread another screen may hold', () => {
     await run.saved;
     expect(stored[THREAD]).toBe('other screen text');
     expect(errorToasts()).toHaveLength(1);
+  });
+
+  // A typed and then erased everything while the delete was pending: the
+  // queued save is empty, and empty still overwrites.
+  describe('when A typed and erased everything', () => {
+    it('drops the erasing save and shows B’s draft when the read shows it', async () => {
+      const run = await cleanupWithTyping({ erase: true });
+      storedDraftIs('other screen text');
+      run.answer(false);
+      await expect(run.cleanup).resolves.toEqual({ outcome: 'yielded' });
+      await run.saved;
+
+      expect(stored[THREAD]).toBe('other screen text');
+      expect(run.store.threadId).toBe(THREAD);
+      await vi.waitFor(() => expect(run.store.content).toBe('other screen text'));
+      expect(run.store.hasPendingSave).toBe(false);
+      expect(errorToasts()).toEqual([]);
+    });
+
+    it('drops an erasing save its debounce has not admitted yet', async () => {
+      const run = await cleanupWithTyping({ erase: true, debounceMs: 5, flush: false });
+      storedDraftIs('other screen text');
+      run.answer(false);
+      await expect(run.cleanup).resolves.toEqual({ outcome: 'yielded' });
+      await new Promise((resolve) => setTimeout(resolve, 30));
+
+      expect(stored[THREAD]).toBe('other screen text');
+    });
+
+    it('lets the erasing save drain when the kept thread is read and empty', async () => {
+      const run = await cleanupWithTyping({ erase: true });
+      stored[THREAD] = '';
+      storedDraftIs('');
+      run.answer(false);
+      await expect(run.cleanup).resolves.toEqual({ outcome: 'kept' });
+      await run.saved;
+
+      expect(stored[THREAD]).toBe('');
+      expect(run.store.threadId).toBe(THREAD);
+      expect(errorToasts()).toEqual([]);
+    });
+
+    it('drops the erasing save and reports when the read fails', async () => {
+      const run = await cleanupWithTyping({ erase: true });
+      readFails(THREAD);
+      run.answer(false);
+      await expect(run.cleanup).resolves.toEqual({ outcome: 'yielded' });
+      await run.saved;
+
+      expect(stored[THREAD]).toBe('other screen text');
+      expect(run.store.threadId).toBe(THREAD);
+      expect(run.store.content).toBe('');
+      expect(errorToasts()).toEqual([expect.stringContaining('temporary read failure')]);
+      expect(await diagnostics()).toEqual(['Empty-draft cleanup: Could not read the draft another screen may have saved']);
+    });
+
+    it('drops the erasing save before passing on a failed delete', async () => {
+      const run = await cleanupWithTyping({ erase: true });
+      run.fail(new Error('delete failed'));
+      await expect(run.cleanup).rejects.toThrow('delete failed');
+      await run.saved;
+
+      expect(stored[THREAD]).toBe('other screen text');
+      expect(run.store.threadId).toBe(THREAD);
+    });
   });
 
   it('a second cleanup behind a deletion is refused because the thread is gone', async () => {

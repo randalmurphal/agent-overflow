@@ -204,6 +204,11 @@ export async function queueDraftThreadCleanup<T>(threadId: string, run: () => Pr
   return answer;
 }
 
+/** Is a draft write (not a cleanup) queued for the thread behind the one running? */
+export function hasWaitingDraftWrites(threadId: string): boolean {
+  return draftWriters.get(threadId)?.pending.some((pending) => !pending.cleanup) ?? false;
+}
+
 /** Unsaved local edits for the thread with something in them, if any. */
 export function unsavedDraftSnapshot(threadId: string): ComposerDraftSnapshot | undefined {
   const snapshot = localDraftSnapshots.get(threadId);
