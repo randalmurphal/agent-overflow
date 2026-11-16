@@ -4,7 +4,7 @@ import '../../../app.css';
 import TimelineLeaf from './TimelineLeaf.svelte';
 import { buildPane, makeThread } from '../../../test/helpers/chat';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
-import { FIND_TEXT_ROWS, FIND_TEXT_WORKSPACE, type FindTextRow } from '../../../test/fixtures/findTextRows';
+import { FIND_CANDIDATE_ROWS, FIND_TEXT_ROWS, FIND_TEXT_WORKSPACE, type FindTextRow } from '../../../test/fixtures/findTextRows';
 import { paneWorkspacePath } from '../../stores/threadPaneShared';
 import type { ThreadPane } from '../../stores/thread.svelte';
 import { findTextSegments } from '../../utils/findHighlights';
@@ -80,7 +80,7 @@ describe('thread find text', () => {
   // candidate reads (a reasoning row's content, a tool row's payload meta),
   // and the runs of find text it shows at most, expanded. `vitest -u` rewrites it.
   it('writes the find runs the store candidates must hold', async () => {
-    const rows = FIND_TEXT_ROWS.map((row) => ({
+    const rows = FIND_CANDIDATE_ROWS.map((row) => ({
       name: row.name,
       kind: row.item.kind,
       summary: row.item.summary,
@@ -95,7 +95,7 @@ describe('thread find text', () => {
         isItemSmoothing: () => false,
       }).filter((run) => run.trim()),
     }));
-    expect(rows.filter((row) => !row.runs.length).map((row) => row.name)).toEqual([
+    expect(rows.filter((row) => !row.runs.length && !row.name.startsWith('combination')).map((row) => row.name)).toEqual([
       'generic tool path', 'thinking collapsed', 'notification',
       // Chat drops embedded HTML: these show none of it.
       'assistant 17', 'assistant 18', 'assistant 26',

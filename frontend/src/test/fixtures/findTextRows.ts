@@ -4,7 +4,7 @@
 // store's candidate test reads, to the runs they project.
 
 import type { Item } from '../../lib/types/models';
-import { CORPUS, generatedMarkdown } from './markdownFindCorpus';
+import { CORPUS, findCandidateCombinations, generatedMarkdown } from './markdownFindCorpus';
 
 export const FIND_TEXT_THREAD = 'thread-1';
 /** The workspace of makeThread, which the rows' paths are shown against. */
@@ -44,6 +44,10 @@ const bash = (input: Record<string, unknown>) => JSON.stringify({ input });
 export const FIND_TEXT_ROWS: FindTextRow[] = [
   row('user plain', { kind: 'user_text', summary: 'Please find **needle** and [docs](https://example.com/x) as typed' }),
   row('user with an image block', { kind: 'user_text', summary: 'look at this needle\n\n![image](attachment://att-1)' }),
+  row('user with an image block between messages', {
+    kind: 'user_text',
+    summary: 'see [docs](https://example.com/x) needle\n\n![image](attachment://att-1)\n\n---\n\nsecond needle',
+  }),
   row('error', { kind: 'error', summary: 'Request failed: needle not found' }),
   row('command from meta', { kind: 'tool_call', toolName: 'Bash', summary: 'Bash', meta: bash({ command: 'grep -rn needle src/' }) }),
   row('command with a description', { kind: 'tool_call', toolName: 'Bash', summary: 'Bash', meta: bash({ command: 'ls -la', description: 'List the needle files' }) }),
@@ -65,4 +69,11 @@ export const FIND_TEXT_ROWS: FindTextRow[] = [
     ...Array.from({ length: 30 }, (_, i) => generatedMarkdown(i + 101)),
     '{"answer":"raw json needle","items":[1,2]}',
   ].map((summary, at) => row(`assistant ${at}`, { kind: 'assistant_text', summary })),
+];
+
+/** The rows findCandidateVectors.json holds: every row above, and the
+ * combinations of Markdown pieces, which the vectors hold without a render. */
+export const FIND_CANDIDATE_ROWS: FindTextRow[] = [
+  ...FIND_TEXT_ROWS,
+  ...findCandidateCombinations().map((summary, at) => row(`combination ${at}`, { kind: 'assistant_text', summary })),
 ];

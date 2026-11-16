@@ -165,3 +165,33 @@ func TestSearchThreadItems_MatchesPastAnEmbeddedNUL(t *testing.T) {
 		}
 	}
 }
+
+// A row is a candidate for a query its rendered Markdown spells across an
+// escaped link-like run and a real link, and a row whose Markdown the
+// candidate reader cannot read is a candidate for any query, from its
+// stored candidate text and from one computed while the backfill has not
+// reached it.
+func TestSearchThreadItems_FindsAcrossMarkdownTheReaderMustRead(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThreadForSearch(t, s, "t1", "x")
+	mustInsertItemForSearch(t, s, "t1", "mixed", 0, `a \[b](literal) c [d](https://example.com) e`, 100)
+	mustInsertItemForSearch(t, s, "t1", "unsure", 1, "nested [outer [inner](https://example.com/i) rest](https://example.com/o) after", 200)
+	mustInsertItemForSearch(t, s, "t1", "plain", 2, "nothing to see", 300)
+	check := func(stage, query, want string) {
+		t.Helper()
+		got, err := s.SearchThreadItems(context.Background(), "t1", query, TimelineSelection{}, 0, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ids := findHitIDs(got); ids != want {
+			t.Fatalf("%s: %q hits = %s, want %s", stage, query, ids, want)
+		}
+	}
+	check("stored", "literal) c d e", "[mixed unsure]")
+	check("stored", "zebra", "[unsure]")
+	if _, err := s.db.Exec(`UPDATE items SET find_text = NULL WHERE thread_id = 't1'`); err != nil {
+		t.Fatal(err)
+	}
+	check("unfilled", "literal) c d e", "[mixed unsure]")
+	check("unfilled", "zebra", "[unsure]")
+}

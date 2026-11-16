@@ -57,7 +57,74 @@ export const CORPUS = [
   // What skipped content or a dropped construct leaves joined in the source.
   'joined $m$ math and pic![alt](https://example.com/p.png)ture and [bad](javascript:alert(1))tail',
   '**foo**bar and [docs](https://example.com/x)suffix and AT&amp;T',
+  // Link-like text the lexer shows as written beside markup it erases.
+  'a \\[b](literal) c [d](https://example.com) e',
+  'esc \\[x\\](q) and \\(p\\) then [real](https://example.com/r) end',
+  'wiki [page](https://en.example.org/wiki/Foo_(bar)) after and x](z) tail',
+  'nested [outer [inner](https://example.com/i) rest](https://example.com/o) after',
+  'adjacent [one](https://example.com/1)[two](https://example.com/2) and ![pic](https://example.com/p.png)[three](https://example.com/3) end',
+  'code `[x](q)` and `<b>` then [z](https://example.com/z) w',
+  'entity &amp; [a&amp;c](https://example.com/e) &lt;c&gt; d',
+  '[label]: https://example.com/l\n[text][label] and [a](https://example.com/a) c',
+  '<https://example.com/a](q)> and [c](https://example.com/c) d',
+  'see https://example.com/x](q) and [c](https://example.com/c) d',
+  '[t](https://example.com "ti tle") and \\[u](v) w',
+  'x <span title="a](q)">s</span> [z](https://example.com/z) w',
+  'cost $a](q)$ and [c](https://example.com/c) d',
+  'tag <composer@0.7s> label and [a](https://example.com/a) c',
+  '~~gone [a](https://example.com/a)~~ and H~2~O [c](https://example.com/c) d',
+  // Markup that hides what the store's candidate reader would read as code,
+  // a tag or a fence (internal/store/find_markdown.go).
+  'cite [x `q] z [a](https://example.com/a) `c end',
+  'see http://`a [b](https://example.com/b) c` d `e [f](https://example.com/f) g',
+  'gone ~~a `b~~ [c](https://example.com/c) d` e',
+  'sub ~a<!--b~ c--> [d](https://example.com/d) e',
+  'sup ^a<!--b^ c--> [d](https://example.com/d) e',
+  'cost $$`x$$ [a](https://example.com/q) `c end',
+  'a <!-- x\n[b](https://example.com/b) --> c [d](https://example.com/d) e',
+  'x <Span>q</Span> [a](https://example.com/a) w',
+  '> x <a b=\n> "1"> q [c](https://example.com/c) d',
+  '| h | i |\n| --- | --- |\n| `a ``x | [b](https://example.com/q) w | z`` c` |',
+  'a `b\nc [d](https://example.com/d) e` f [g](https://example.com/g) z',
+  '> [!NOTE](https://example.com/n) x [a](https://example.com/a) w',
+  '> [l]: https://example.com/l\n> [t][l] and [a](https://example.com/a) c',
+  '- [l]: https://example.com/l\n  [t][l] and [a](https://example.com/a) c',
+  '<div>\n```\n</div>\n\n[a](https://example.com/q) w\n\n```\nx\n```',
+  '$$\n```\n$$\n\n[a](https://example.com/a) w\n\n```\nx\n```',
+  '[^n]: note\n```\n\n[a](https://example.com/a) w\n\n```\nx\n```',
+  '- a\n  ```\n  x\n\n[b](https://example.com/q) c\n\n```\nq\n```',
+  '````markdown\n[a](https://example.com/q) w\n```\nx\n```\n````',
 ];
+
+// Markdown pieces whose reading depends on what is around them, for the
+// find candidate vectors: every pair, and seeded sequences of up to five
+// in containers, each piece between words a query can span.
+const PIECES = [
+  '[x](https://e.io/u)', '\\[y](v)', '[z](w q)', '`[c](d)`', '![p](https://e.io/i.png)', '<b>', '</b>', '<!-- m -->',
+  '<https://e.io/a>', 'https://e.io/b', '&amp;', '[r][s]', '](t)', '[', '`', '$m$', '~~d~~', '*e*', '~f~',
+  '[n [o](https://e.io/o) p](https://e.io/n)', '[a](<https://e.io/l>)', '[t](https://e.io "ti")', '\n', '|',
+];
+const WRAPS: readonly ((inner: string) => string)[] = [
+  (inner) => inner,
+  (inner) => `- ${inner}`,
+  (inner) => `> ${inner}`,
+  (inner) => `| h |\n| --- |\n| ${inner.replace(/\n/g, ' ')} |`,
+  (inner) => `# ${inner.replace(/\n/g, ' ')}`,
+  (inner) => `\`\`\`\n${inner}\n\`\`\`\n\n${inner}`,
+  (inner) => `[s]: https://e.io/s\n${inner}`,
+];
+
+export function findCandidateCombinations(): string[] {
+  const join = (pieces: readonly string[]) => pieces.map((piece, at) => `k${at} ${piece}`).join(' ') + ` k${pieces.length}`;
+  const sources: string[] = [];
+  for (const first of PIECES) for (const second of PIECES) sources.push(join([first, second]));
+  const next = random(7);
+  for (let i = 0; i < 300; i++) {
+    const pieces = Array.from({ length: 3 + Math.floor(next() * 3) }, () => PIECES[Math.floor(next() * PIECES.length)]);
+    sources.push(WRAPS[Math.floor(next() * WRAPS.length)](join(pieces)));
+  }
+  return sources;
+}
 
 // Random comments of real markdown and HTML.
 function random(seed: number): () => number {
