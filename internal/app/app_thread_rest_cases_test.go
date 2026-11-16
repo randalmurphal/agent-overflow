@@ -45,9 +45,12 @@ func TestThreadCancelOfASpawnedThreadBringsItToRest(t *testing.T) {
 	if spawn := f.request(t, child.Token); spawn.State != store.ThreadRequestCancelled || spawn.Notify {
 		t.Fatalf("the spawn = %s notify %v; want it cancelled with its wake disarmed", spawn.State, spawn.Notify)
 	}
+	// The rest cuts the turn twice, once for the spawn's request and once as
+	// the session ends, and the provider has acknowledged both before the
+	// turn reports its end: the turn still carries one stop row.
 	want := stopByThread(f.caller.Title, f.caller.ID, "")
-	if labels := stopRowLabels(t, f.app, child.ThreadID); !slices.Contains(labels, want.label) {
-		t.Fatalf("the cut turn's rows = %q, want %q", labels, want.label)
+	if labels := stopRowLabels(t, f.app, child.ThreadID); !slices.Equal(labels, []string{want.label}) {
+		t.Fatalf("the cut turn's rows = %q, want [%q]", labels, want.label)
 	}
 	if row, _, err := f.app.store.GetAgentWake(loop.ID); err != nil || row.State != store.AgentWakeCancelled || !strings.Contains(row.LastOutcome, f.caller.Title) {
 		t.Fatalf("the loop = %+v, %v; want it cancelled naming the calling thread", row, err)

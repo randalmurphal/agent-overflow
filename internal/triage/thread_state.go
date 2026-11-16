@@ -507,6 +507,14 @@ type threadIdentity struct {
 	// persisting must keep reading the mark. MarkThreadActive is the one
 	// clear, and it is explicit for that reason.
 	interruptMarks []interruptMark
+
+	// stopRow is the newest turn of this session whose stop row is
+	// written (claimStopRow), so a turn carries one however many writers
+	// resolve its stop. Host state on the identity for the reason
+	// interruptMarks is: a stop can be written after cleanupThread. Guarded
+	// by r.mu; MarkThreadActive clears it, because a replacement after
+	// revert reuses turn indexes.
+	stopRow stopRowClaim
 }
 
 // state returns the thread's mutable correlation state, creating it on

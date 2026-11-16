@@ -1905,12 +1905,13 @@ func TestAStopFromAnotherComputerNamesItByThisComputersPairing(t *testing.T) {
 	t.Parallel()
 	remotetest.Require(t)
 	pair := newReachPair(t)
-	gate := filepath.Join(t.TempDir(), "stop")
+	// The mock acknowledges each interrupt at once and never reports the
+	// turn's end, as the CLI can be slow to: the cancel's rest cuts the turn
+	// for the spawn's request and again as it ends the session, both while
+	// the turn is still open.
 	installMockClaudeTurns(t, pair.dest, [][]string{{
 		mockClaudeInitLine,
 		`{"type":"assistant","message":{"id":"msg-stop","role":"assistant","content":[{"type":"text","text":"working on it"}]}}`,
-		testutil.MockWaitForFile(gate),
-		`{"type":"result","subtype":"error_during_execution","is_error":true,"errors":["[Request interrupted by user]"]}`,
 	}})
 	spawn := pair.spawnThere(t, "work to be stopped", map[string]any{"notify": true})
 	waitUntilE2E(t, 30*time.Second, "the turn opens on the destination", func() bool {
@@ -1919,24 +1920,13 @@ func TestAStopFromAnotherComputerNamesItByThisComputersPairing(t *testing.T) {
 	})
 	threadID := pair.receipt(t, spawn.Token).TargetThreadID
 
-	stopped := make(chan error, 1)
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		_, err := pair.adapter().Cancel(ctx, pair.callerIdentity(), threadtools.CancelCall{ThreadID: threadID, ComputerID: pair.computer})
-		stopped <- err
-	}()
-	// The cancel of a thread the caller spawned brings it to rest: the
-	// spawn's receipt settles first, then its turn is interrupted, which the
-	// mock acknowledges once the gate opens.
-	waitUntilE2E(t, 30*time.Second, "the destination settles the spawn", func() bool {
-		return pair.receipt(t, spawn.Token).State == store.ThreadReceiptCancelled
-	})
-	if err := os.WriteFile(gate, nil, 0o600); err != nil {
-		t.Fatalf("open gate: %v", err)
-	}
-	if err := <-stopped; err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := pair.adapter().Cancel(ctx, pair.callerIdentity(), threadtools.CancelCall{ThreadID: threadID, ComputerID: pair.computer}); err != nil {
 		t.Fatalf("cancel the thread on the other computer: %v", err)
+	}
+	if state := pair.receipt(t, spawn.Token).State; state != store.ThreadReceiptCancelled {
+		t.Fatalf("the spawn's receipt on the other computer = %s, want cancelled", state)
 	}
 	if _, live := pair.dest.sessionManager().get(threadID); live {
 		t.Fatal("the spawned thread on the other computer still has a session")

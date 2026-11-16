@@ -687,7 +687,7 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 	// complete finds how it was stopped.
 	var stopErr error
 	if stopOwed {
-		if _, err := r.persistTurnError(evt.ThreadID, turnIndex, heldStop.summary, now); err != nil {
+		if _, err := r.writeStopRow(evt.ThreadID, turnIndex, heldStop.summary, now); err != nil {
 			stopErr = fmt.Errorf("write held stop of %s/%d: %w", evt.ThreadID, turnIndex, err)
 		}
 	}
@@ -1538,7 +1538,7 @@ func (r *Router) settleQueuedEchoPredecessor(threadID string, turnIndex int, com
 		persistErr = errors.Join(persistErr, err)
 	}
 	if stopOwed {
-		if _, err := r.persistTurnError(threadID, turnIndex, heldStop.summary, completedAt); err != nil {
+		if _, err := r.writeStopRow(threadID, turnIndex, heldStop.summary, completedAt); err != nil {
 			log.Printf("triage: write held stop of queued-echo predecessor %s/%d: %v", threadID, turnIndex, err)
 			persistErr = errors.Join(persistErr, err)
 		}
@@ -1971,7 +1971,9 @@ const StoppedByUser = "Stopped by user"
 // the stop until that turn settles (stop_waiting_send.go): the provider
 // may abort the turn, run it to a normal end, or retire the send unrun,
 // and only the first is a stopped turn. A Stop of the open turn writes at
-// once and withdraws a stop held for it. The flip is idempotent against
+// once and withdraws a stop held for it. A turn carries one stop row: a
+// later Stop of a turn whose row is written flips its rows and writes no
+// second one (writeStopRow). The flip is idempotent against
 // the echo path's own
 // interrupted-predecessor flip (R10-4): rows it already moved out of
 // streaming/running are skipped. tok fences the whole call against
@@ -1980,8 +1982,8 @@ const StoppedByUser = "Stopped by user"
 //
 // Returns the error id that was persisted so the caller can surface
 // diagnostics or correlate with downstream emissions; empty string
-// when no turn could be resolved, the stop is held for its turn, or the
-// session was replaced.
+// when no turn could be resolved, the stop is held for its turn, the
+// turn's stop row was already written, or the session was replaced.
 func (r *Router) MarkInterrupt(threadID string, sample InterruptSample, tok FlushStampToken, summary string) (string, error) {
 	if summary == "" {
 		return "", fmt.Errorf("triage: mark interrupt of %s: no stop summary", threadID)
@@ -2020,13 +2022,14 @@ func (r *Router) MarkInterrupt(threadID string, sample InterruptSample, tok Flus
 }
 
 // writeTurnStop flips the turn's unsettled rows to errored with the
-// " — stopped" suffix and writes its stop row reading summary.
+// " — stopped" suffix and writes its stop row reading summary, unless the
+// turn has one (writeStopRow).
 func (r *Router) writeTurnStop(threadID string, turnIndex int, summary string) (string, error) {
 	now := time.Now().UnixMilli()
 	if err := r.flipTurnItemsErrored(threadID, turnIndex, now, stoppedSummary); err != nil {
 		return "", err
 	}
-	return r.persistTurnError(threadID, turnIndex, summary, now)
+	return r.writeStopRow(threadID, turnIndex, summary, now)
 }
 
 // Wait blocks until every in-flight Handle call has returned and every
@@ -2456,6 +2459,7 @@ func (r *Router) MarkThreadActive(threadID, sessionToken string) {
 	// "interrupted". Entries are keyed by router-unique seqs, so a stale
 	// restore's removal against the fresh list finds nothing.
 	identity.interruptMarks = nil
+	identity.stopRow = stopRowClaim{}
 	var effectiveModelRevision uint64
 	if hadEffectiveModel {
 		effectiveModelRevision = r.nextEffectiveModelRevisionLocked(threadID)
