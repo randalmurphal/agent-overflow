@@ -135,9 +135,15 @@ func personalStop(transcriptRootIDs []string) *agentKillConsent {
 // reason to refuse.
 //
 // The events already read from the provider are handled first, so an agent
-// whose launch is reported and not yet stored is counted. The event worker
-// never takes the thread action lock, so the wait is safe under it. An
-// agent the CLI launches after this check is beyond what the app can see.
+// whose launch waits in the thread's event queue is counted. The event
+// worker never takes the thread action lock, so the wait is safe under it.
+// A launch the app reads after the wait begins is not seen: the CLI can
+// launch an agent at any moment up to the interrupt reaching it, so that
+// window cannot be closed from this side, only kept as short as one read.
+//
+// A stalled event worker does not hold the stop: the wait gives up at its
+// stall bound, which is logged, and the stop proceeds on what is stored. A
+// person must be able to stop a thread whose event handling is stuck.
 func (a *App) refuseBackgroundKill(threadID string, sess session, consent *agentKillConsent) error {
 	if consent == nil || sess.Claude == nil {
 		return nil

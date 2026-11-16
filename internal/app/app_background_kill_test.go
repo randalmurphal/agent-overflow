@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -393,19 +394,24 @@ func TestInterruptTurn_AgentLaunchedWhileWaitingForTheLockIsRefused(t *testing.T
 func TestInterruptTurn_AgentWhoseLaunchIsStillQueuedIsRefused(t *testing.T) {
 	t.Parallel()
 	f := newClaudeAgentKillFixture(t)
-	stored := make(chan struct{})
 	release := make(chan struct{})
+	var once sync.Once
+	releaseQueue := func() { once.Do(func() { close(release) }) }
+	t.Cleanup(releaseQueue)
 	f.app.providerEvents.enqueue(f.thread.ID, provider.ProviderEvent{}, func(provider.ProviderEvent) {
 		<-release
 		f.launchAgent(t, "queued", "task-queued", "")
-		close(stored)
 	})
 
 	done := make(chan error, 1)
 	go func() { done <- f.app.InterruptTurn(f.thread.ID, nil) }()
-	// A stop that does not wait for the queue has interrupted by now.
-	time.Sleep(200 * time.Millisecond)
-	close(release)
+	// The launch is stored only after the stop is seen waiting on the
+	// queue, so a stop that does not wait fails here instead of finding
+	// the agent already stored.
+	if !waitForQueueWaiter(&f.app.providerEvents, f.thread.ID) {
+		t.Fatal("the stop did not wait for the events already read from the provider")
+	}
+	releaseQueue()
 
 	select {
 	case err := <-done:
@@ -416,7 +422,6 @@ func TestInterruptTurn_AgentWhoseLaunchIsStillQueuedIsRefused(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("InterruptTurn did not return once the queued launch was stored")
 	}
-	<-stored
 	if n := f.interrupts(t); n != 0 {
 		t.Fatalf("the queued agent was killed: %d interrupts sent", n)
 	}
