@@ -153,7 +153,7 @@ func (m *Manager) hasTab(threadID, pageID string) bool {
 }
 
 // livePageLocked finds a live page by id in any scope. The caller holds m.mu.
-func (m *Manager) livePageLocked(pageID string) (*managedPage, *workspaceScope) {
+func (m *Manager) livePageLocked(pageID string) (*managedPage, *jarScope) {
 	for _, scope := range m.scopes {
 		if p := scope.pages[pageID]; p != nil {
 			return p, scope
@@ -166,7 +166,7 @@ func (m *Manager) livePageLocked(pageID string) (*managedPage, *workspaceScope) 
 // when it is suspended. Concurrent touches of one suspended page share one
 // restore. skipLoad restores the page blank, for a caller that navigates it
 // next. A page another thread owns is not found.
-func (m *Manager) resolvePage(ctx context.Context, access Access, pageID string, skipLoad bool) (*managedPage, *workspaceScope, error) {
+func (m *Manager) resolvePage(ctx context.Context, access Access, pageID string, skipLoad bool) (*managedPage, *jarScope, error) {
 	pageID = strings.TrimSpace(pageID)
 	for {
 		m.mu.Lock()
@@ -226,77 +226,95 @@ func (m *Manager) runRestore(access Access, rec *suspendedPage, call *restoreCal
 	}
 }
 
-// restorePage replaces rec with a live page of the same id at rec's address.
-// The page is registered, and the record dropped, in one m.mu hold and only
-// once it is fully loaded; any failure leaves the record as it was.
+// restorePage replaces rec with a live page of the same id at rec's address,
+// in its thread's jar. The page is registered, and the record
+// dropped, in one m.mu hold and only once it is fully loaded; any failure
+// leaves the record as it was. A page loaded in a jar its thread switched
+// away from meanwhile is closed and the restore starts again in the new
+// jar.
 func (m *Manager) restorePage(ctx context.Context, access Access, rec *suspendedPage, skipLoad bool) error {
-	m.mu.Lock()
-	target, title, label := rec.url, rec.title, rec.label
-	createdAt, lastUse := rec.createdAt, rec.lastUse
-	m.mu.Unlock()
-	if skipLoad || target == "" || target == "about:blank" {
-		target, title = "", ""
-	}
-	if target != "" && !m.navigationAllowed(access, target) {
-		return fmt.Errorf("browser: page %s cannot be restored: %s is not allowed; navigate the page elsewhere or close it", rec.id, target)
-	}
+	for {
+		m.mu.Lock()
+		target, title, label := rec.url, rec.title, rec.label
+		createdAt, lastUse := rec.createdAt, rec.lastUse
+		m.mu.Unlock()
+		if skipLoad || target == "" || target == "about:blank" {
+			target, title = "", ""
+		}
+		if target != "" && !m.navigationAllowed(access, target) {
+			return fmt.Errorf("browser: page %s cannot be restored: %s is not allowed; navigate the page elsewhere or close it", rec.id, target)
+		}
 
-	p := newManagedPage(access)
-	p.id, p.createdAt = rec.id, createdAt
-	p.lastUse.Store(lastUse)
-	p.info = PageInfo{ID: rec.id, URL: "about:blank", Label: label}
+		p := newManagedPage(access)
+		p.id, p.createdAt = rec.id, createdAt
+		p.lastUse.Store(lastUse)
+		p.info = PageInfo{ID: rec.id, URL: "about:blank", Label: label}
+		scope, err := m.openAndLoad(ctx, access, p, target, title)
+		if err != nil {
+			return fmt.Errorf("browser: restore page %s: %w", rec.id, err)
+		}
+
+		m.mu.Lock()
+		closing := m.closed
+		current := !closing && m.suspended[rec.id] == rec
+		stale := current && !m.jarCurrentLocked(p)
+		if current && !stale {
+			delete(scope.creating, p)
+			// The record's tab position may have moved while the page loaded.
+			p.tabOrder.Store(rec.tabOrder)
+			delete(m.suspended, rec.id)
+			scope.pages[p.id] = p
+		}
+		m.mu.Unlock()
+		if closing {
+			// Close saved the record before this page loaded; it stays suspended
+			// for the next boot.
+			return errors.Join(fmt.Errorf("browser: restore page %s: the browser is shutting down", rec.id), m.abandonPage(scope, p))
+		}
+		if !current {
+			// The page was closed, its thread deleted or archived, or the browser
+			// turned off while it loaded.
+			return errors.Join(fmt.Errorf("browser: restore page %s: %w", rec.id, errPageNotFound), m.abandonPage(scope, p))
+		}
+		if stale {
+			m.abandonStale(scope, p, p)
+			continue
+		}
+		m.pageChanged(p)
+		if err := m.persistThreads([]string{p.owner}); err != nil {
+			// The page is live; its saved copy still lists it as suspended, which
+			// only brings it back as a suspended page after a crash.
+			log.Printf("browser: restore page %s: update saved pages: %v", p.id, err)
+		}
+		return nil
+	}
+}
+
+// openAndLoad creates p's engine page (openPageLocked) and loads target in it when target is set, with title shown while
+// it loads. The load runs outside startMu, as any navigation does; the scope
+// stays reserved for the page until the caller registers or abandons it. A
+// failed load abandons the page.
+func (m *Manager) openAndLoad(ctx context.Context, access Access, p *managedPage, target, title string) (*jarScope, error) {
 	m.startMu.Lock()
 	scope, err := m.openPageLocked(ctx, access, p)
 	m.startMu.Unlock()
+	if err != nil || target == "" {
+		return scope, err
+	}
+	p.setInfo(PageInfo{ID: p.id, URL: target, Title: title})
+	opCtx, cancel := operationContext(ctx, p.ctx, operationTimeout)
+	err = p.driver.Navigate(opCtx, target)
+	if err == nil {
+		var info PageInfo
+		if info, err = m.pageInfo(opCtx, p); err == nil {
+			p.setInfo(info)
+		}
+	}
+	cancel()
 	if err != nil {
-		return fmt.Errorf("browser: restore page %s: %w", rec.id, err)
+		return nil, errors.Join(fmt.Errorf("load %s: %w", target, err), m.abandonPage(scope, p))
 	}
-	// The load runs outside startMu, as any navigation does; the scope stays
-	// reserved for the page until it is registered or abandoned.
-	if target != "" {
-		p.setInfo(PageInfo{ID: rec.id, URL: target, Title: title})
-		opCtx, cancel := operationContext(ctx, p.ctx, operationTimeout)
-		err := p.driver.Navigate(opCtx, target)
-		if err == nil {
-			var info PageInfo
-			if info, err = m.pageInfo(opCtx, p); err == nil {
-				p.setInfo(info)
-			}
-		}
-		cancel()
-		if err != nil {
-			return errors.Join(fmt.Errorf("browser: restore page %s at %s: %w", rec.id, target, err), m.abandonPage(scope, p))
-		}
-	}
-
-	m.mu.Lock()
-	closing := m.closed
-	current := !closing && m.suspended[rec.id] == rec
-	if current {
-		scope.creating--
-		// The record's tab position may have moved while the page loaded.
-		p.tabOrder.Store(rec.tabOrder)
-		delete(m.suspended, rec.id)
-		scope.pages[p.id] = p
-	}
-	m.mu.Unlock()
-	if closing {
-		// Close saved the record before this page loaded; it stays suspended
-		// for the next boot.
-		return errors.Join(fmt.Errorf("browser: restore page %s: the browser is shutting down", rec.id), m.abandonPage(scope, p))
-	}
-	if !current {
-		// The page was closed, its thread deleted or archived, or the browser
-		// turned off while it loaded.
-		return errors.Join(fmt.Errorf("browser: restore page %s: %w", rec.id, errPageNotFound), m.abandonPage(scope, p))
-	}
-	m.pageChanged(p)
-	if err := m.persistThreads([]string{p.owner}); err != nil {
-		// The page is live; its saved copy still lists it as suspended, which
-		// only brings it back as a suspended page after a crash.
-		log.Printf("browser: restore page %s: update saved pages: %v", p.id, err)
-	}
-	return nil
+	return scope, nil
 }
 
 // SuspendThread unloads the live pages the thread owns and keeps each as a
@@ -360,7 +378,7 @@ func (m *Manager) suspendPage(ctx context.Context, p *managedPage) (bool, error)
 		log.Printf("browser: suspend page %s: read its address: %v; keeping %s", p.id, err, info.URL)
 	}
 	m.mu.Lock()
-	var scope *workspaceScope
+	var scope *jarScope
 	for _, candidate := range m.scopes {
 		if candidate.pages[p.id] == p {
 			scope = candidate
@@ -454,8 +472,10 @@ func (m *Manager) forgetThreadRecords(threadID string) error {
 	return m.persistThreads([]string{threadID})
 }
 
-// forgetAllRecords drops every suspended page and the saved copies.
-func (m *Manager) forgetAllRecords() error {
+// forgetAllRecords drops every suspended page and the saved copies. keepJars
+// keeps the threads' jar settings, saved again on their own; otherwise every
+// thread's browser returns to the default jar.
+func (m *Manager) forgetAllRecords(keepJars bool) error {
 	m.persistMu.Lock()
 	m.mu.Lock()
 	threads := make(map[string]bool)
@@ -464,8 +484,22 @@ func (m *Manager) forgetAllRecords() error {
 	}
 	m.suspended = make(map[string]*suspendedPage)
 	m.recordsCleared++
+	var jarThreads []string
+	for threadID, info := range m.sessions {
+		switch {
+		case jarKindOf(info) == JarWorktree:
+		case keepJars:
+			jarThreads = append(jarThreads, threadID)
+		default:
+			info.Jar = JarWorktree
+			m.sessions[threadID] = info
+		}
+	}
 	m.mu.Unlock()
 	err := removeRecordDir(m.recordDir)
+	if err == nil && len(jarThreads) > 0 {
+		err = m.writeRecordFilesLocked(jarThreads)
+	}
 	m.persistMu.Unlock()
 	for threadID := range threads {
 		m.repairActivePage(threadID)

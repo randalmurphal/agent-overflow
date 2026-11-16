@@ -112,7 +112,7 @@ type engineFileURL interface {
 	BackendFilePath(ctx context.Context, rawURL string) (string, error)
 }
 
-// engineProfile is one canonical workspace's isolated site data: the unit that
+// engineProfile is one cookie jar's isolated site data (jar.go): the unit that
 // owns its pages and their download behavior. Site data itself is the ENGINE's
 // (spec §4) — a real browser profile on disk, or an ephemeral session — so
 // nothing here reads or writes it.
@@ -133,17 +133,18 @@ type engineProfile interface {
 
 // profileOptions is the AO-owned configuration a profile is created against.
 type profileOptions struct {
-	// Workspace is the canonical workspace root the profile isolates.
-	Workspace string
+	// Jar is the identity of the jar the profile isolates (jarIdentity.key).
+	// An engine derives its profile directory or id from it and nothing
+	// else, so one jar is one profile across restarts.
+	Jar string
 	// DownloadDir is the AO artifact directory downloads must land in.
 	DownloadDir string
-	// Persist is the user's site-data setting. An engine keeps its profile
-	// on disk only when this is true; false is an in-memory/ephemeral
-	// session (spec §4). The hosted engine forwards it as the directive's
-	// Ephemeral flag.
-	Persist bool
-	// Allow is the workspace's navigation policy, for an engine that can
-	// load a page before AttachPage installs the page's own policy.
+	// Ephemeral keeps the profile in memory only (spec §4): the site-data
+	// setting is off, or the jar is private. The hosted engine forwards it
+	// as the directive's Ephemeral flag.
+	Ephemeral bool
+	// Allow is the jar's navigation policy (jarAllowRoots), for an engine
+	// that can load a page before AttachPage installs the page's own policy.
 	Allow func(url string) bool
 }
 

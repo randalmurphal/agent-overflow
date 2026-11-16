@@ -2,7 +2,6 @@ package browser
 
 import (
 	"context"
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"log"
@@ -186,13 +185,11 @@ func (e *headlessEngine) liveProfiles() []*headlessProfile {
 	return live
 }
 
-// NewProfile lays one workspace's Chromium user-data directory out; the
-// process itself waits for the first page.
+// NewProfile lays one jar's Chromium user-data directory out; the process
+// itself waits for the first page.
 //
-// The workspace DIGEST names the directory, not its path: a workspace root
-// can be long, can hold characters a directory name cannot, and must not be
-// readable from a listing of the profile tree. That is the same rule and
-// the same tree (browserProfileDir) the WebKitGTK engine uses, which is
+// The jar's digest names the directory (jarDirName). That is the same rule
+// and the same tree (browserProfileDir) the WebKitGTK engine uses, which is
 // what makes Settings → Clear site data a real clear here — deleting the
 // tree deletes this engine's cookies too, so it implements no engineSiteData
 // of its own.
@@ -200,15 +197,14 @@ func (e *headlessEngine) NewProfile(_ context.Context, opts profileOptions) (eng
 	if !e.Running() {
 		return nil, errors.New("browser: engine unavailable")
 	}
-	if strings.TrimSpace(opts.Workspace) == "" {
-		return nil, errors.New("browser: workspace is required for a browser profile")
+	if strings.TrimSpace(opts.Jar) == "" {
+		return nil, errors.New("browser: a cookie jar is required for a browser profile")
 	}
 	if opts.Allow == nil {
 		return nil, errors.New("browser: a navigation policy is required for a browser profile")
 	}
-	digest := sha256.Sum256([]byte(opts.Workspace))
-	p := &headlessProfile{engine: e, handle: fmt.Sprintf("%x", digest[:12]), downloadDir: opts.DownloadDir, allow: opts.Allow}
-	if opts.Persist {
+	p := &headlessProfile{engine: e, handle: jarDirName(opts.Jar), downloadDir: opts.DownloadDir, allow: opts.Allow}
+	if !opts.Ephemeral {
 		p.userDataDir = filepath.Join(e.configDir, browserProfileDir, p.handle, "chromium")
 	} else {
 		// An ephemeral session is a real Chromium profile on a directory

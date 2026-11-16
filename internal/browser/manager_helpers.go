@@ -33,7 +33,7 @@ var errPageNotFound = errors.New("browser: page not found")
 // after the page closed: the view is never touched then.
 var errViewClosed = errors.New("browser: the page is closed")
 
-func (m *Manager) lookupOwnedPage(access Access, pageID string) (*managedPage, *workspaceScope, error) {
+func (m *Manager) lookupOwnedPage(access Access, pageID string) (*managedPage, *jarScope, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, scope := range m.scopes {
@@ -50,10 +50,8 @@ func (m *Manager) lookupOwnedPage(access Access, pageID string) (*managedPage, *
 func (m *Manager) workspaceForPage(pageID string) string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	for workspace, scope := range m.scopes {
-		if scope.pages[pageID] != nil {
-			return workspace
-		}
+	if p, _ := m.livePageLocked(pageID); p != nil {
+		return p.access.Workspace
 	}
 	return ""
 }
@@ -72,7 +70,7 @@ func (m *Manager) threadPageCountLocked(threadID string) int {
 			}
 		}
 		for _, c := range scope.closing {
-			if c.p.owner == threadID {
+			if c.p.owner == threadID && !c.replaced {
 				count++
 			}
 		}
@@ -90,16 +88,16 @@ func (m *Manager) threadPageCountLocked(threadID string) int {
 	return count
 }
 
-// scopeLoadLocked counts the engine pages a scope holds, is creating or is
-// still closing: the quantity the workspace cap bounds. Suspended pages hold
-// none. The caller holds m.mu.
-func scopeLoadLocked(scope *workspaceScope) int {
-	return len(scope.pages) + len(scope.closing) + scope.creating
+// scopeLoadLocked counts the engine pages a jar holds, is creating or is
+// still closing: a jar is one profile, and it holds no more pages than one
+// workspace may. Suspended pages hold none. The caller holds m.mu.
+func scopeLoadLocked(scope *jarScope) int {
+	return len(scope.pages) + len(scope.closing) + len(scope.creating)
 }
 
 // countPagesLocked counts the engine pages of every scope, the quantity the
 // process cap bounds. The caller holds m.mu.
-func countPagesLocked(scopes map[string]*workspaceScope) int {
+func countPagesLocked(scopes map[string]*jarScope) int {
 	count := 0
 	for _, scope := range scopes {
 		count += scopeLoadLocked(scope)

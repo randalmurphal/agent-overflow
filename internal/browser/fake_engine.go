@@ -71,13 +71,16 @@ func (e *fakeEngine) NewProfile(_ context.Context, opts profileOptions) (engineP
 	if !e.Running() {
 		return nil, errors.New("browser: engine unavailable")
 	}
-	return &fakeProfile{engine: e, handle: fmt.Sprintf("fake-profile-%d", e.seq.Add(1)), workspace: opts.Workspace}, nil
+	return &fakeProfile{engine: e, handle: fmt.Sprintf("fake-profile-%d", e.seq.Add(1)), jar: opts.Jar, ephemeral: opts.Ephemeral, allow: opts.Allow}, nil
 }
 
 type fakeProfile struct {
-	engine    *fakeEngine
-	handle    string
-	workspace string
+	engine *fakeEngine
+	handle string
+	// jar, ephemeral and allow are what the profile was created with.
+	jar       string
+	ephemeral bool
+	allow     func(url string) bool
 
 	mu       sync.Mutex
 	disposed bool

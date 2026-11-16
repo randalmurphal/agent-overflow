@@ -37,6 +37,9 @@ type CompanionEvent struct {
 	// ViewportSet is whether browser_viewport pinned that size; otherwise it
 	// follows the pane and the pane shows the page at 1:1.
 	ViewportSet bool `json:"viewportSet,omitempty"`
+	// Jar rides a Kind "state" event: the cookie jar the thread's pages
+	// open in (SessionInfo.Jar).
+	Jar string `json:"jar,omitempty"`
 	// Accelerator rides a Kind "accelerator" event: a bound chord pressed
 	// while the thread's page view held keyboard focus, for the frontend to
 	// dispatch as if the SPA had received it.
@@ -119,6 +122,9 @@ type Access struct {
 	ThreadID    string
 	Workspace   string
 	ProjectRoot string
+	// ProjectID is the store's id of the thread's project, which a
+	// "project" cookie jar is keyed by (jar.go).
+	ProjectID string
 }
 
 type PageInfo struct {
@@ -447,9 +453,18 @@ type SessionInfo struct {
 	// PaneW/PaneH is the last mounted pane host size, whole CSS pixels inside
 	// the viewport bounds; the viewport pages follow while none is pinned.
 	// Zero until a pane reports a rect.
-	PaneW     int       `json:"paneWidth,omitempty"`
-	PaneH     int       `json:"paneHeight,omitempty"`
+	PaneW int `json:"paneWidth,omitempty"`
+	PaneH int `json:"paneHeight,omitempty"`
+	// Jar is the cookie jar the thread's pages open in (jar.go): worktree,
+	// project, thread or private.
+	Jar       string    `json:"jar"`
 	UpdatedAt time.Time `json:"-"`
+	// jarGen advances with every change of Jar; a page opened under an
+	// older generation is not admitted (jarCurrentLocked).
+	jarGen uint64
+	// privateJar is the token of the thread's live private jar, "" when it
+	// has none.
+	privateJar string
 }
 
 type Controller interface {

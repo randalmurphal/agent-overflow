@@ -46,3 +46,29 @@ func TestBrowserCompanionNewNamesAShownTabAndCloseRemovesIt(t *testing.T) {
 		t.Fatalf("after close = %+v", state)
 	}
 }
+
+// The pane's "jar" sets the thread's cookie jar; the project jar is keyed by
+// the thread's project, which the app passes in with its workspace.
+func TestBrowserCompanionJarUsesTheThreadsProject(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	manager := appbrowser.NewManager(t.TempDir(), appbrowser.Config{Enabled: true}, appbrowser.ManagerOptions{FakeEngine: true})
+	app.browser.manager = manager
+	t.Cleanup(func() { _ = manager.Close() })
+	thread := makeWorkspaceThread(t, app, "thread-companion-jar")
+	ctx := t.Context()
+
+	if _, err := app.BrowserCompanionDo(ctx, thread.ID, BrowserCompanionAction{Kind: "new"}); err != nil {
+		t.Fatal(err)
+	}
+	state, err := app.BrowserCompanionDo(ctx, thread.ID, BrowserCompanionAction{Kind: "jar", Jar: appbrowser.JarProject})
+	if err != nil {
+		t.Fatalf("choose the project jar: %v", err)
+	}
+	if state.Jar != appbrowser.JarProject || len(state.Pages) != 1 {
+		t.Fatalf("after choosing the project jar: %+v", state)
+	}
+	if _, err := app.BrowserCompanionDo(ctx, thread.ID, BrowserCompanionAction{Kind: "jar", Jar: "shared"}); err == nil {
+		t.Fatal("an unknown jar was accepted")
+	}
+}

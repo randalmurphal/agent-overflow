@@ -21,6 +21,8 @@ type BrowserCompanionAction struct {
 	// Index is the target tab position for "move". Not omitempty: index 0
 	// (move to the front) is a real value.
 	Index int `json:"index"`
+	// Jar is the cookie jar for "jar": worktree, project, thread or private.
+	Jar string `json:"jar,omitempty"`
 }
 
 func (a *App) browserAccess(threadID string) (appbrowser.Access, error) {
@@ -29,7 +31,7 @@ func (a *App) browserAccess(threadID string) (appbrowser.Access, error) {
 		return appbrowser.Access{}, err
 	}
 	return appbrowser.Access{
-		ThreadID: thread.ID, Workspace: thread.WorkspacePath, ProjectRoot: thread.ProjectPath,
+		ThreadID: thread.ID, Workspace: thread.WorkspacePath, ProjectRoot: thread.ProjectPath, ProjectID: thread.ProjectID,
 	}, nil
 }
 
@@ -179,6 +181,9 @@ func (a *App) BrowserCompanionDo(ctx context.Context, threadID string, action Br
 		err = a.browser.manager.CloseCompanionPage(ctx, access, action.PageID)
 	case "devtools":
 		err = a.browser.manager.OpenPaneDevTools(ctx, access, action.PageID)
+	case "jar":
+		// Closes the live tabs and reopens their addresses in the new jar.
+		err = a.browser.manager.SetJar(access, action.Jar)
 	default:
 		err = fmt.Errorf("browser: unsupported companion action %q", action.Kind)
 	}

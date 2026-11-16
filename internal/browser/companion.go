@@ -212,6 +212,7 @@ func (m *Manager) threadState(threadID string) CompanionEvent {
 	event.ActivePageID = session.ActivePageID
 	event.ViewportWidth, event.ViewportHeight = sessionViewport(session)
 	event.ViewportSet = session.ViewportSet
+	event.Jar = jarKindOf(session)
 	return event
 }
 

@@ -86,6 +86,9 @@ type pageClose struct {
 	p    *managedPage
 	done chan struct{}
 	err  error
+	// replaced marks a close whose tab a jar switch reopens: the reopened
+	// tab holds the thread-cap slot instead. Guarded by m.mu.
+	replaced bool
 }
 
 func (c *pageClose) wait(ctx context.Context) error {
@@ -162,24 +165,41 @@ func (m *Manager) createPage(ctx context.Context, access Access, user bool) (*ma
 
 	// One startMu hold spans the engine start and the page's registration, so
 	// the idle close cannot stop the engine in between.
-	m.startMu.Lock()
-	scope, err := m.openPageLocked(createCtx, access, p)
-	// One m.mu hold settles the creation against its close flag as it is
-	// now, so a close cannot land between reading the flag and acting on it.
-	m.mu.Lock()
-	closed := pending.closed
-	switch {
-	case err == nil && !closed:
-		delete(m.pending, p.id)
-		scope.creating--
-		scope.pages[p.id] = p
-	case err != nil && (closed || !user):
-		delete(m.pending, p.id)
-	case err != nil:
-		pending.err = truncateUTF8(err.Error(), maxPageErrorBytes)
+	var scope *jarScope
+	var err error
+	var closed bool
+	for {
+		m.startMu.Lock()
+		scope, err = m.openPageLocked(createCtx, access, p)
+		// One m.mu hold settles the creation against its close flag and its
+		// thread's jar as they are now, so neither a close nor a jar switch can
+		// land between reading them and acting on it.
+		m.mu.Lock()
+		closed = pending.closed
+		if err == nil && !closed && !m.jarCurrentLocked(p) {
+			// The thread switched jars while the engine created the page in the
+			// old one: it is created again, under the same tab, in the new one.
+			stale := p
+			p = m.freshPendingPageLocked(pending)
+			m.mu.Unlock()
+			m.startMu.Unlock()
+			m.abandonStale(scope, stale, p)
+			continue
+		}
+		switch {
+		case err == nil && !closed:
+			delete(m.pending, p.id)
+			delete(scope.creating, p)
+			scope.pages[p.id] = p
+		case err != nil && (closed || !user):
+			delete(m.pending, p.id)
+		case err != nil:
+			pending.err = truncateUTF8(err.Error(), maxPageErrorBytes)
+		}
+		m.mu.Unlock()
+		m.startMu.Unlock()
+		break
 	}
-	m.mu.Unlock()
-	m.startMu.Unlock()
 
 	switch {
 	case err == nil && !closed:
@@ -215,6 +235,29 @@ func (m *Manager) createPage(ctx context.Context, access Access, user bool) (*ma
 	return nil, err
 }
 
+// freshPendingPageLocked replaces a pending tab's page, whose engine page was
+// created under a jar its thread has left, with a new page under the same id
+// and tab position, and answers it. The caller holds m.mu and abandons the
+// old page (abandonStale).
+func (m *Manager) freshPendingPageLocked(pending *pendingPage) *managedPage {
+	old := pending.p
+	p := newManagedPage(old.access)
+	p.id, p.createdAt, p.info = old.id, old.createdAt, old.cachedInfo()
+	p.tabOrder.Store(old.tabOrder.Load())
+	p.lastUse.Store(old.lastUse.Load())
+	pending.p = p
+	return p
+}
+
+// abandonStale closes a page created in a jar its thread has left, before it
+// was registered; a failure to release that jar's profile reports as the
+// teardown of the tab's page.
+func (m *Manager) abandonStale(scope *jarScope, stale, tab *managedPage) {
+	if err := m.abandonPage(scope, stale); err != nil {
+		m.reportTeardown(tab.owner, tab.id, err)
+	}
+}
+
 // shownOnTab is a failed creation the user's tab shows as its Error.
 type shownOnTab struct{ err error }
 
@@ -240,7 +283,7 @@ func (m *Manager) admitThreadPageLocked(threadID string) error {
 	closing := 0
 	for _, scope := range m.scopes {
 		for _, c := range scope.closing {
-			if c.p.owner == threadID {
+			if c.p.owner == threadID && !c.replaced {
 				closing++
 			}
 		}
@@ -340,7 +383,7 @@ func (m *Manager) beginCloseLive(access Access, pageID string) (*pageClose, erro
 // once and is disposed after. A page whose close began meanwhile answers that
 // close. It answers errPageNotFound when the page stopped being live
 // otherwise: suspended, it is now a record for ClosePage to forget.
-func (m *Manager) closeFoundPage(p *managedPage, scope *workspaceScope) (*pageClose, error) {
+func (m *Manager) closeFoundPage(p *managedPage, scope *jarScope) (*pageClose, error) {
 	m.mu.Lock()
 	if c := scope.closing[p.id]; c != nil && c.p == p {
 		m.mu.Unlock()
@@ -358,7 +401,7 @@ func (m *Manager) closeFoundPage(p *managedPage, scope *workspaceScope) (*pageCl
 
 // markClosingLocked moves a live page to its scope's closing pages. The
 // caller holds m.mu and calls startClose after releasing it.
-func markClosingLocked(p *managedPage, scope *workspaceScope) *pageClose {
+func markClosingLocked(p *managedPage, scope *jarScope) *pageClose {
 	delete(scope.pages, p.id)
 	c := &pageClose{p: p, done: make(chan struct{})}
 	if scope.closing == nil {
@@ -369,7 +412,7 @@ func markClosingLocked(p *managedPage, scope *workspaceScope) *pageClose {
 }
 
 // startClose publishes a page's move to closing and runs its teardown.
-func (m *Manager) startClose(scope *workspaceScope, c *pageClose) {
+func (m *Manager) startClose(scope *jarScope, c *pageClose) {
 	p := c.p
 	// An operation holding the page's lock gives it up; one waiting for it
 	// finds the page gone (pageLive) or its operations ended.
@@ -387,7 +430,7 @@ func (m *Manager) startClose(scope *workspaceScope, c *pageClose) {
 // runClose is a close's engine half. It waits for the page's lock, closes
 // the driver, and releases the scope, disposing it when this was its last
 // page.
-func (m *Manager) runClose(scope *workspaceScope, c *pageClose) {
+func (m *Manager) runClose(scope *jarScope, c *pageClose) {
 	p := c.p
 	p.mu.Lock()
 	m.cancelPageDownloads(p, scope)
@@ -459,10 +502,10 @@ func (m *Manager) closeThreadPending(threadID string) {
 // abandonPage closes a page openPageLocked created that will not be
 // registered, ends its reservation, and disposes the scope if that left it
 // empty.
-func (m *Manager) abandonPage(scope *workspaceScope, p *managedPage) error {
+func (m *Manager) abandonPage(scope *jarScope, p *managedPage) error {
 	p.driver.Close()
 	m.mu.Lock()
-	scope.creating--
+	delete(scope.creating, p)
 	release := m.releaseScopeLocked(scope)
 	m.mu.Unlock()
 	if release {
@@ -472,31 +515,41 @@ func (m *Manager) abandonPage(scope *workspaceScope, p *managedPage) error {
 }
 
 // releaseScopeLocked unregisters scope when it has no page, none closing and
-// none being created, and reports whether the caller must dispose it; the
-// workspace is then disposing until disposeScope ends. Deciding and
-// unregistering under one m.mu hold means a concurrent createPage either
-// reserved the scope first or waits for the disposal, and a scope that is no
-// longer registered is never disposed again. The caller holds m.mu.
-func (m *Manager) releaseScopeLocked(scope *workspaceScope) bool {
-	if len(scope.pages) > 0 || len(scope.closing) > 0 || scope.creating > 0 || m.scopes[scope.workspace] != scope {
+// none being created, and reports whether the caller must dispose it; the jar
+// is then disposing until disposeScope ends. Deciding and unregistering under
+// one m.mu hold means a concurrent createPage either reserved the scope first
+// or waits for the disposal, and a scope that is no longer registered is
+// never disposed again. Every path a page leaves its scope by calls it, so it
+// also forgets the authority of a workspace left with no page. A private jar
+// released is gone: its thread's next private page opens a new one. The
+// caller holds m.mu.
+func (m *Manager) releaseScopeLocked(scope *jarScope) bool {
+	m.pruneAuthoritiesLocked()
+	if len(scope.pages) > 0 || len(scope.closing) > 0 || len(scope.creating) > 0 || m.scopes[scope.jar.key] != scope {
 		return false
 	}
-	delete(m.scopes, scope.workspace)
+	delete(m.scopes, scope.jar.key)
+	if scope.jar.private != "" {
+		if info, ok := m.sessions[scope.jar.thread]; ok && info.privateJar == scope.jar.private {
+			info.privateJar = ""
+			m.sessions[scope.jar.thread] = info
+		}
+	}
 	if m.disposing == nil {
 		m.disposing = make(map[string]chan struct{})
 	}
-	m.disposing[scope.workspace] = make(chan struct{})
+	m.disposing[scope.jar.key] = make(chan struct{})
 	return true
 }
 
 // disposeScope disposes a scope releaseScopeLocked unregistered, frees its
-// workspace for a new profile, and starts the idle close once no scope
+// jar for a new profile, and starts the idle close once no scope
 // remains.
-func (m *Manager) disposeScope(ctx context.Context, scope *workspaceScope) error {
+func (m *Manager) disposeScope(ctx context.Context, scope *jarScope) error {
 	err := scope.profile.Dispose(ctx)
 	m.mu.Lock()
-	if done := m.disposing[scope.workspace]; done != nil {
-		delete(m.disposing, scope.workspace)
+	if done := m.disposing[scope.jar.key]; done != nil {
+		delete(m.disposing, scope.jar.key)
 		close(done)
 	}
 	noScopes := len(m.scopes) == 0 && len(m.disposing) == 0
@@ -509,7 +562,7 @@ func (m *Manager) disposeScope(ctx context.Context, scope *workspaceScope) error
 
 // disposeReleased disposes a released scope off the caller, reporting a
 // failure as the teardown of the page whose close released it.
-func (m *Manager) disposeReleased(scope *workspaceScope, threadID, pageID string) {
+func (m *Manager) disposeReleased(scope *jarScope, threadID, pageID string) {
 	run := func() {
 		ctx, cancel := context.WithTimeout(context.Background(), disposeTimeout)
 		defer cancel()

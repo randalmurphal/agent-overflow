@@ -45,7 +45,7 @@ func TestRevealPageFileResolvesTheDisplayedFileAndRefusesTheRest(t *testing.T) {
 	p.viewport.Store(packViewport(defaultViewportWidth, defaultViewportHeight))
 	var revealed string
 	m := &Manager{
-		scopes:   map[string]*workspaceScope{"/repo": {pages: map[string]*managedPage{p.id: p}}},
+		scopes:   map[string]*jarScope{"/repo": {pages: map[string]*managedPage{p.id: p}}},
 		sessions: map[string]SessionInfo{"thread": {ActivePageID: p.id}},
 		revealFileInFileManager: func(_ context.Context, path string) error {
 			revealed = path
@@ -113,7 +113,7 @@ func TestRevealPageFileResolvesRendererFormURLsThroughTheEngine(t *testing.T) {
 	var revealed string
 	m := &Manager{
 		engine:   rendererFSEngine{base: dir},
-		scopes:   map[string]*workspaceScope{"/repo": {pages: map[string]*managedPage{p.id: p}}},
+		scopes:   map[string]*jarScope{"/repo": {pages: map[string]*managedPage{p.id: p}}},
 		sessions: map[string]SessionInfo{"thread": {ActivePageID: p.id}},
 		revealFileInFileManager: func(_ context.Context, path string) error {
 			revealed = path

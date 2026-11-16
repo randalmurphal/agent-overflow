@@ -2,7 +2,6 @@ package browser
 
 import (
 	"context"
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"log"
@@ -91,7 +90,12 @@ type Manager struct {
 	config  Config
 	closed  bool
 
-	scopes map[string]*workspaceScope
+	// scopes holds the open cookie jars by jarIdentity.key (jar.go).
+	scopes map[string]*jarScope
+	// authorities holds, per canonical workspace with a page in any jar, what
+	// the workspace owns: its download directory and quota (jar.go).
+	// Guarded by mu.
+	authorities map[string]*workspaceAuthority
 	// stateSeq numbers every thread state snapshot (CompanionEvent.Seq).
 	// Guarded by mu.
 	stateSeq uint64
@@ -106,9 +110,9 @@ type Manager struct {
 	// pending holds the pages being created, and the failed creations of
 	// tabs the user opened, by page id (lifecycle.go). Guarded by mu.
 	pending map[string]*pendingPage
-	// disposing holds, per canonical workspace, the disposal in flight of a
-	// profile releaseScopeLocked unregistered; the channel closes when it
-	// ends. Guarded by mu.
+	// disposing holds, per jar key, the disposal in flight of a profile
+	// releaseScopeLocked unregistered; the channel closes when it ends.
+	// Guarded by mu.
 	disposing map[string]chan struct{}
 	// lifeWork joins the page closes and profile disposals that run after
 	// their caller returned (goLife). Each is admitted under lifeGate unless
@@ -223,19 +227,22 @@ type CDPRelay interface {
 	BrowserWebSocketURL(ctx context.Context) (string, error)
 }
 
-type workspaceScope struct {
-	workspace string
-	profile   engineProfile
-	pages     map[string]*managedPage
-	// creating counts the pages createPage is creating in this scope. Guarded
-	// by m.mu.
-	creating int
+// jarScope is one open cookie jar: its engine profile and the pages in it,
+// which may belong to several workspaces' authority (jar.go).
+type jarScope struct {
+	jar     jarIdentity
+	profile engineProfile
+	pages   map[string]*managedPage
+	// creating holds the pages being created in this scope, reserving it.
+	// Guarded by m.mu.
+	creating map[*managedPage]struct{}
 	// closing holds the pages closed and not yet disposed, by page id
 	// (lifecycle.go). They are out of pages, so nothing finds or presents
 	// them as live, and still count toward every cap. Guarded by m.mu.
-	closing       map[string]*pageClose
-	downloadDir   string
-	downloadBytes atomic.Int64
+	closing map[string]*pageClose
+	// downloadDir is where the engine writes this jar's downloads before
+	// they move to their workspace's directory.
+	downloadDir string
 }
 
 type managedPage struct {
@@ -243,6 +250,11 @@ type managedPage struct {
 	owner  string
 	access Access
 	driver pageDriver
+	// jarGen is the generation of its thread's jar setting the page was
+	// opened under, and authority its workspace's (jar.go). Set before the
+	// page is registered; read under m.mu.
+	jarGen    uint64
+	authority *workspaceAuthority
 	// ctx is the page's lifetime, taken from its driver. Operations are
 	// bounded against it. cancelOps ends it before the driver closes, so a
 	// close cancels the operations in flight (closePageAsync).
@@ -325,7 +337,7 @@ func NewManager(configDir string, config Config, opts ManagerOptions) *Manager {
 	m := &Manager{
 		config:        config,
 		profileDir:    filepath.Join(configDir, browserProfileDir),
-		scopes:        make(map[string]*workspaceScope),
+		scopes:        make(map[string]*jarScope),
 		suspended:     make(map[string]*suspendedPage),
 		pending:       make(map[string]*pendingPage),
 		disposing:     make(map[string]chan struct{}),
@@ -407,8 +419,9 @@ func (m *Manager) Reconfigure(config Config) error {
 	if !config.Enabled || changedPersistence {
 		// The pages close as they always have, suspended ones included: a
 		// disabled browser keeps no browser state, and a page restored into
-		// the other site-data mode would not be the page that was open.
-		return errors.Join(m.forgetAllRecords(), m.closeBrowser(context.Background()))
+		// the other site-data mode would not be the page that was open. The
+		// threads' jar settings stay unless the browser is off.
+		return errors.Join(m.forgetAllRecords(config.Enabled), m.closeBrowser(context.Background()))
 	}
 	return nil
 }
@@ -535,8 +548,15 @@ func (m *Manager) Pages(ctx context.Context, access Access) ([]PageInfo, error) 
 // saved copy of a deleted or archived thread.
 //
 // The records go first, so no restore can register a page after the loop
-// below has closed the thread's live ones.
+// below has closed the thread's live ones; the thread's jar setting goes with
+// them.
 func (m *Manager) CloseThread(ctx context.Context, threadID string) error {
+	m.mu.Lock()
+	if info, ok := m.sessions[threadID]; ok {
+		info.Jar = JarWorktree
+		m.sessions[threadID] = info
+	}
+	m.mu.Unlock()
 	if err := m.forgetThreadRecords(threadID); err != nil {
 		log.Printf("browser: close thread %s: %v", threadID, err)
 	}
@@ -570,7 +590,7 @@ func (m *Manager) CloseThread(ctx context.Context, threadID string) error {
 // engineSiteData and clears its own. Both halves run; a Settings button that
 // silently clears nothing on some platforms is not an option.
 func (m *Manager) ClearSiteData(ctx context.Context) error {
-	if err := errors.Join(m.forgetAllRecords(), m.closeBrowser(ctx)); err != nil {
+	if err := errors.Join(m.forgetAllRecords(true), m.closeBrowser(ctx)); err != nil {
 		return err
 	}
 	var errs []error
@@ -625,16 +645,16 @@ func (m *Manager) pageForOpen(ctx context.Context, access Access, requested stri
 	return m.createPage(ctx, access, false)
 }
 
-// openPageLocked starts the engine if it is not running, applies the
-// workspace and process caps, and creates p's engine page in the scope of
-// access's workspace, laid out at its thread's viewport. It returns with the
-// scope reserved for p (scope.creating): the caller registers p or abandons
-// it (abandonPage). The thread's cap is the caller's: a new page is admitted
-// when its tab appears (createPage), and a restore's record already holds
-// its thread's slot. A profile of the workspace still being disposed is
-// waited for, so two profiles never hold one workspace's site data. The
-// caller holds startMu.
-func (m *Manager) openPageLocked(ctx context.Context, access Access, p *managedPage) (*workspaceScope, error) {
+// openPageLocked starts the engine if it is not running, applies the jar,
+// workspace and process caps, and creates p's engine page in the jar its
+// thread's setting names, laid out at its thread's viewport. It stamps p with
+// the setting's generation and its workspace's authority, and returns with the scope reserved for p
+// (scope.creating): the caller registers p or abandons it (abandonPage). The
+// thread's cap is the caller's: a new page is admitted when its tab appears
+// (createPage), and a restore's record already holds its thread's slot. A
+// profile of the jar still being disposed is waited for, so two profiles
+// never hold one jar's site data. The caller holds startMu.
+func (m *Manager) openPageLocked(ctx context.Context, access Access, p *managedPage) (*jarScope, error) {
 	workspace, err := canonicalRoot(access.Workspace)
 	if err != nil {
 		return nil, fmt.Errorf("browser: resolve workspace: %w", err)
@@ -648,7 +668,13 @@ func (m *Manager) openPageLocked(ctx context.Context, access Access, p *managedP
 		m.scheduleIdleClose()
 		return nil, err
 	}
+	authorityDir := filepath.Join(m.artifactRoot, "downloads", jarDirName(workspace))
+	if err := os.MkdirAll(authorityDir, 0o700); err != nil {
+		m.scheduleIdleClose()
+		return nil, fmt.Errorf("browser: create download directory: %w", err)
+	}
 	m.mu.Lock()
+	var jar jarIdentity
 	for {
 		if m.closed {
 			m.mu.Unlock()
@@ -658,8 +684,13 @@ func (m *Manager) openPageLocked(ctx context.Context, access Access, p *managedP
 			m.idleTimer.Stop()
 			m.idleTimer = nil
 		}
-		disposing := m.disposing[workspace]
-		if m.scopes[workspace] != nil || disposing == nil {
+		if jar, err = m.jarForLocked(access, jarKindOf(m.sessionLocked(access.ThreadID))); err != nil {
+			m.mu.Unlock()
+			m.scheduleIdleClose()
+			return nil, err
+		}
+		disposing := m.disposing[jar.key]
+		if m.scopes[jar.key] != nil || disposing == nil {
 			break
 		}
 		m.mu.Unlock()
@@ -671,42 +702,51 @@ func (m *Manager) openPageLocked(ctx context.Context, access Access, p *managedP
 		}
 		m.mu.Lock()
 	}
-	scope := m.scopes[workspace]
+	scope := m.scopes[jar.key]
 	if scope == nil && len(m.scopes)+len(m.disposing) >= maxWorkspaceContexts {
 		m.mu.Unlock()
-		return nil, fmt.Errorf("browser: workspace context limit reached (%d)", maxWorkspaceContexts)
+		return nil, fmt.Errorf("browser: browser profile limit reached (%d); close the pages of another workspace or cookie jar", maxWorkspaceContexts)
+	}
+	if load, closing := m.workspaceLoadLocked(workspace); load >= maxPagesPerWorkspace {
+		m.mu.Unlock()
+		return nil, fmt.Errorf("browser: page limit reached for workspace (%d)%s", maxPagesPerWorkspace, closingHint(closing))
 	}
 	if scope != nil && scopeLoadLocked(scope) >= maxPagesPerWorkspace {
 		m.mu.Unlock()
-		return nil, fmt.Errorf("browser: page limit reached for workspace (%d)%s", maxPagesPerWorkspace, closingHint(len(scope.closing)))
+		return nil, fmt.Errorf("browser: page limit reached for the cookie jar (%d)%s", maxPagesPerWorkspace, closingHint(len(scope.closing)))
 	}
 	if countPagesLocked(m.scopes) >= maxPagesTotal {
 		m.mu.Unlock()
 		return nil, fmt.Errorf("browser: process page limit reached (%d)", maxPagesTotal)
 	}
+	p.jarGen = m.sessionLocked(access.ThreadID).jarGen
+	p.authority = m.authorityLocked(workspace, authorityDir)
 	// The reservation keeps a concurrent close of the scope's last page from
 	// disposing the profile this page is being created in.
 	if scope != nil {
-		scope.creating++
+		scope.creating[p] = struct{}{}
 	}
 	m.mu.Unlock()
 
 	if scope == nil {
-		scope, err = m.createScope(access)
+		scope, err = m.createScope(jar, access)
 		if err != nil {
+			m.mu.Lock()
+			m.pruneAuthoritiesLocked()
+			m.mu.Unlock()
 			// The engine may be running for this page alone.
 			m.scheduleIdleClose()
 			return nil, err
 		}
-		scope.creating = 1
+		scope.creating[p] = struct{}{}
 		m.mu.Lock()
-		m.scopes[workspace] = scope
+		m.scopes[jar.key] = scope
 		m.mu.Unlock()
 	}
 
 	if err := m.newPage(ctx, scope, p); err != nil {
 		m.mu.Lock()
-		scope.creating--
+		delete(scope.creating, p)
 		release := m.releaseScopeLocked(scope)
 		m.mu.Unlock()
 		if release {
@@ -719,7 +759,7 @@ func (m *Manager) openPageLocked(ctx context.Context, access Access, p *managedP
 
 // newPage creates p's engine page in scope, laid out at its thread's
 // viewport.
-func (m *Manager) newPage(ctx context.Context, scope *workspaceScope, p *managedPage) error {
+func (m *Manager) newPage(ctx context.Context, scope *jarScope, p *managedPage) error {
 	driver, err := scope.profile.NewPage(ctx, m.pageHooks(p))
 	if err != nil {
 		return err
@@ -746,30 +786,25 @@ func (m *Manager) pageHooks(p *managedPage) pageHooks {
 	}
 }
 
-// createScope creates the profile for access's canonical workspace. The
-// profile's navigation policy is the workspace's: a workspace belongs to one
-// project, so access's roots are those of every thread with a page in it.
-func (m *Manager) createScope(access Access) (*workspaceScope, error) {
-	m.mu.Lock()
-	persist := m.config.PersistSiteData
-	m.mu.Unlock()
-	workspace := access.Workspace
-	digest := sha256.Sum256([]byte(workspace))
-	downloadDir := filepath.Join(m.artifactRoot, "downloads", fmt.Sprintf("%x", digest[:12]))
+// createScope creates the profile of one jar. Its profile-level navigation
+// policy is what every page the jar can hold is allowed (jarAllowRoots).
+func (m *Manager) createScope(jar jarIdentity, access Access) (*jarScope, error) {
+	downloadDir := filepath.Join(m.artifactRoot, "downloads", jarDirName(jar.key))
 	if err := os.MkdirAll(downloadDir, 0o700); err != nil {
 		return nil, fmt.Errorf("browser: create download directory: %w", err)
 	}
-	roots := Access{Workspace: workspace, ProjectRoot: access.ProjectRoot}
+	roots := jarAllowRoots(jar, access)
 	profile, err := m.engine.NewProfile(context.Background(), profileOptions{
-		Workspace: workspace, DownloadDir: downloadDir, Persist: persist,
+		Jar: jar.key, DownloadDir: downloadDir, Ephemeral: jar.ephemeral,
 		Allow: func(rawURL string) bool { return m.navigationAllowed(roots, rawURL) },
 	})
 	if err != nil {
 		return nil, err
 	}
-	return &workspaceScope{
-		workspace: workspace, profile: profile, downloadDir: downloadDir,
+	return &jarScope{
+		jar: jar, profile: profile, downloadDir: downloadDir,
 		pages: make(map[string]*managedPage), closing: make(map[string]*pageClose),
+		creating: make(map[*managedPage]struct{}),
 	}, nil
 }
 
@@ -796,30 +831,28 @@ func (m *Manager) startLocked(ctx context.Context) error {
 }
 
 // adoptPopup takes ownership of a page the engine opened by itself. The opener
-// decides the thread; this manager's own limits decide whether it survives.
+// decides the thread, the workspace authority and the jar; this manager's own
+// limits decide whether it survives.
 func (m *Manager) adoptPopup(popup enginePopup) {
 	m.mu.Lock()
-	var scope *workspaceScope
-	var owner string
-	var access Access
+	var scope *jarScope
+	var opener *managedPage
 	for _, candidate := range m.scopes {
 		if candidate.profile.Handle() != popup.Profile {
 			continue
 		}
-		scope = candidate
-		if opener := pageWithHandle(candidate, popup.Opener); opener != nil {
-			owner, access = opener.owner, opener.access
-		}
+		scope, opener = candidate, pageWithHandle(candidate, popup.Opener)
 		break
 	}
-	tooMany := owner != "" && (m.threadPageCountLocked(owner) >= maxPagesPerThread || scopeLoadLocked(scope) >= maxPagesPerWorkspace || countPagesLocked(m.scopes) >= maxPagesTotal)
-	m.mu.Unlock()
-	if scope == nil || owner == "" || tooMany {
+	if opener == nil || m.popupRefusedLocked(scope, opener) {
+		m.mu.Unlock()
 		m.engine.DiscardPage(popup.Handle)
 		return
 	}
+	p := newManagedPage(opener.access)
+	p.jarGen, p.authority = opener.jarGen, opener.authority
+	m.mu.Unlock()
 
-	p := newManagedPage(access)
 	p.info = PageInfo{ID: p.id, URL: truncateUTF8(popup.URL, maxBrowserURLBytes), Title: truncateUTF8(popup.Title, maxBrowserTitleBytes)}
 	p.touch()
 	driver, err := scope.profile.AttachPage(context.Background(), popup.Handle, m.pageHooks(p))
@@ -836,9 +869,11 @@ func (m *Manager) adoptPopup(popup enginePopup) {
 	}
 	m.pageAttached(p)
 	m.mu.Lock()
-	// The opener may have closed meanwhile, with its thread's other pages.
-	current := m.scopes[scope.workspace]
-	if current != scope || pageWithHandle(scope, popup.Opener) == nil || m.threadPageCountLocked(owner) >= maxPagesPerThread || scopeLoadLocked(scope) >= maxPagesPerWorkspace || countPagesLocked(m.scopes) >= maxPagesTotal {
+	// The opener may have closed meanwhile, with its thread's other pages. A
+	// jar switch is one such close: it moves every live page of the thread
+	// to closing in the hold that advances the generation, so a live opener
+	// is always in its thread's current jar and the popup is too.
+	if m.scopes[scope.jar.key] != scope || pageWithHandle(scope, popup.Opener) == nil || m.popupRefusedLocked(scope, p) {
 		m.mu.Unlock()
 		driver.Close()
 		return
@@ -851,9 +886,18 @@ func (m *Manager) adoptPopup(popup enginePopup) {
 	}
 }
 
+// popupRefusedLocked reports whether a popup of p's thread, workspace and jar
+// would pass a cap. The caller holds m.mu.
+func (m *Manager) popupRefusedLocked(scope *jarScope, p *managedPage) bool {
+	load, _ := m.workspaceLoadLocked(p.access.Workspace)
+	return m.threadPageCountLocked(p.owner) >= maxPagesPerThread ||
+		load >= maxPagesPerWorkspace || scopeLoadLocked(scope) >= maxPagesPerWorkspace ||
+		countPagesLocked(m.scopes) >= maxPagesTotal
+}
+
 // pageWithHandle returns the scope's page whose driver has handle, or nil.
 // The caller holds m.mu.
-func pageWithHandle(scope *workspaceScope, handle string) *managedPage {
+func pageWithHandle(scope *jarScope, handle string) *managedPage {
 	for _, p := range scope.pages {
 		if p.driver.Handle() == handle {
 			return p
@@ -866,7 +910,7 @@ func (m *Manager) removeClosedPage(handle string) {
 	m.mu.Lock()
 	var owner string
 	var closed *managedPage
-	var released *workspaceScope
+	var released *jarScope
 	for _, scope := range m.scopes {
 		if p := pageWithHandle(scope, handle); p != nil {
 			owner, closed = p.owner, p
@@ -924,7 +968,7 @@ func (m *Manager) closeIdleBrowser() {
 // holds startMu.
 func (m *Manager) closeBrowserLocked(caller context.Context) error {
 	m.mu.Lock()
-	scopes := make([]*workspaceScope, 0, len(m.scopes))
+	scopes := make([]*jarScope, 0, len(m.scopes))
 	owners := make(map[string]struct{})
 	var pages []*managedPage
 	for _, scope := range m.scopes {
@@ -934,7 +978,8 @@ func (m *Manager) closeBrowserLocked(caller context.Context) error {
 			pages = append(pages, p)
 		}
 	}
-	m.scopes = make(map[string]*workspaceScope)
+	m.scopes = make(map[string]*jarScope)
+	m.authorities = nil
 	// A failed creation's tab names a page that never existed in the
 	// browser being closed.
 	for id, pending := range m.pending {
@@ -953,6 +998,14 @@ func (m *Manager) closeBrowserLocked(caller context.Context) error {
 		info.Visible = false
 		info.UpdatedAt = time.Now()
 		m.sessions[owner] = info
+	}
+	// Every private jar goes with the browser; the next private page opens
+	// a new one.
+	for threadID, info := range m.sessions {
+		if info.privateJar != "" {
+			info.privateJar = ""
+			m.sessions[threadID] = info
+		}
 	}
 	if m.idleTimer != nil {
 		m.idleTimer.Stop()

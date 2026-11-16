@@ -40,6 +40,12 @@ export class CompanionEvent {
     "viewportSet"?: boolean;
 
     /**
+     * Jar rides a Kind "state" event: the cookie jar the thread's pages
+     * open in (SessionInfo.Jar).
+     */
+    "jar"?: string;
+
+    /**
      * Accelerator rides a Kind "accelerator" event: a bound chord pressed
      * while the thread's page view held keyboard focus, for the frontend to
      * dispatch as if the SPA had received it.
@@ -95,17 +101,17 @@ export class CompanionEvent {
      */
     static createFrom($$source: any = {}): CompanionEvent {
         const $$createField2_0 = $$createType1;
-        const $$createField11_0 = $$createType3;
-        const $$createField14_0 = $$createType5;
+        const $$createField12_0 = $$createType3;
+        const $$createField15_0 = $$createType5;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("pages" in $$parsedSource) {
             $$parsedSource["pages"] = $$createField2_0($$parsedSource["pages"]);
         }
         if ("accelerator" in $$parsedSource) {
-            $$parsedSource["accelerator"] = $$createField11_0($$parsedSource["accelerator"]);
+            $$parsedSource["accelerator"] = $$createField12_0($$parsedSource["accelerator"]);
         }
         if ("find" in $$parsedSource) {
-            $$parsedSource["find"] = $$createField14_0($$parsedSource["find"]);
+            $$parsedSource["find"] = $$createField15_0($$parsedSource["find"]);
         }
         return new CompanionEvent($$parsedSource as Partial<CompanionEvent>);
     }

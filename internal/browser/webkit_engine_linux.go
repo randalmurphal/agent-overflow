@@ -4,7 +4,6 @@ package browser
 
 import (
 	"context"
-	"crypto/sha256"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -164,17 +163,13 @@ func (e *webkitEngine) NewProfile(_ context.Context, opts profileOptions) (engin
 		return nil, fmt.Errorf("browser: a navigation policy is required for a browser profile")
 	}
 	id := webkitProfileSeq.Add(1)
-	// The workspace digest, not its path: a workspace root can be long, can
-	// hold characters a directory name cannot, and must not be readable from
-	// the profile directory listing.
-	digest := sha256.Sum256([]byte(opts.Workspace))
 	// browserProfileDir is the same constant ClearSiteData deletes: the two
 	// must name one tree or clearing site data would miss the engine's.
-	root := filepath.Join(e.configDir, browserProfileDir, fmt.Sprintf("%x", digest[:12]))
+	root := filepath.Join(e.configDir, browserProfileDir, jarDirName(opts.Jar))
 	dataDir := filepath.Join(root, "data")
 	cacheDir := filepath.Join(root, "cache")
 	cookieFile := filepath.Join(dataDir, "cookies.sqlite")
-	if opts.Persist {
+	if !opts.Ephemeral {
 		if err := os.MkdirAll(dataDir, 0o700); err != nil {
 			return nil, fmt.Errorf("browser: create site data directory: %w", err)
 		}
@@ -185,7 +180,7 @@ func (e *webkitEngine) NewProfile(_ context.Context, opts profileOptions) (engin
 	// An ephemeral session keeps everything in memory and touches no path at
 	// all, which is what the site-data setting being off has to mean for an
 	// engine whose storage is its own.
-	session, err := webkitNewSession(dataDir, cacheDir, cookieFile, opts.DownloadDir, !opts.Persist, id)
+	session, err := webkitNewSession(dataDir, cacheDir, cookieFile, opts.DownloadDir, opts.Ephemeral, id)
 	if err != nil {
 		return nil, err
 	}
@@ -203,7 +198,7 @@ func (e *webkitEngine) NewProfile(_ context.Context, opts profileOptions) (engin
 	return profile, nil
 }
 
-// webkitProfile is one workspace's WebKitNetworkSession: its own cookie jar,
+// webkitProfile is one jar's WebKitNetworkSession: its own cookie jar,
 // cache, and download destination, never the process-wide default session
 // (which would write into the user's ~/.local/share/webkitgtk).
 type webkitProfile struct {
