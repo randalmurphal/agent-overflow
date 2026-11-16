@@ -27,6 +27,7 @@
   import { HOME_BACKEND } from '../../transport/backendKey';
   import BrowserTabStrip from './BrowserTabStrip.svelte';
   import { createBrowserPaneGeometry } from './browserPaneGeometry.svelte';
+  import { provideBrowserPaneThread } from './browserPaneThread';
 
   // The pane surface is an empty HOST RECT: the platform positions a real
   // native browser view over it (spec docs/specs/embedded-browser.md §7).
@@ -36,6 +37,7 @@
   // through the airspace registry.
 
   let { ctx }: { ctx: PanelContext } = $props();
+  provideBrowserPaneThread(() => ctx.threadId);
   let surface: HTMLDivElement | undefined = $state(undefined);
   let attachment = $state<ReturnType<typeof attachBrowserCompanion> | null>(null);
 

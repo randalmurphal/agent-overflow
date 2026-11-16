@@ -387,9 +387,21 @@ export async function browserCompanionAct(
   return (await runBrowserAction(threadId, action)).failure;
 }
 
+/** The cookie jars a thread's browser can use (internal/browser/jar.go). */
+export type BrowserJar = 'worktree' | 'project' | 'thread' | 'private';
+
+/**
+ * Sets the cookie jar the thread's browser uses. The backend closes the
+ * live tabs and reopens their addresses in the new jar; the caller asks
+ * the user first when any are open. A refusal lands in the pane's banner.
+ */
+export async function setBrowserJar(threadId: string, jar: BrowserJar): Promise<BrowserActionFailure | null> {
+  return (await runBrowserAction(threadId, { kind: 'jar', jar })).failure;
+}
+
 async function runBrowserAction(
   threadId: string,
-  action: { kind: string; pageId?: string; address?: string; index?: number },
+  action: { kind: string; pageId?: string; address?: string; index?: number; jar?: BrowserJar },
 ): Promise<{ failure: BrowserActionFailure | null; state: BrowserCompanionEvent | null }> {
   noteBrowserActionError(threadId, '');
   try {
@@ -400,6 +412,7 @@ async function runBrowserAction(
         pageId: action.pageId ?? '',
         address: action.address ?? '',
         index: action.index ?? 0,
+        ...(action.jar ? { jar: action.jar } : {}),
       }),
     );
     applyBrowserCompanionState(state);

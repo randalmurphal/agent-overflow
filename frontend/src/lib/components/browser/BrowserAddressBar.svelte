@@ -13,6 +13,7 @@
   import Icon from '../primitives/Icon.svelte';
   import IconButton from '../primitives/IconButton.svelte';
   import PanePromoteButton from '../panes/PanePromoteButton.svelte';
+  import BrowserJarControl from './BrowserJarControl.svelte';
 
   // The browser's toolbar: history, reload (stop while the page loads), the
   // address, and the pane's own controls. The address behaves as a
@@ -152,6 +153,7 @@
       title="The page is laid out at this size and shown scaled to fit the pane"
     >{sizeLabel}</span>
   {/if}
+  <BrowserJarControl />
   <IconButton label="Open file" title="Open a file from this workspace" size="sm" testId="browser-open-file" onClick={() => onOpenFile()}><Icon icon={FileSearch} size={14} /></IconButton>
   {#if activeIsLocalFile}
     <IconButton label="Show in folder" size="sm" onClick={() => void onRevealPageFile()}><Icon icon={FolderOpen} size={14} /></IconButton>

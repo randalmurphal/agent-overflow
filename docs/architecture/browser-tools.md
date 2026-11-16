@@ -19,8 +19,8 @@ Three settings are independent:
 
 - `browserEnabled` (default `true`) controls tool exposure and immediately
   closes browser state when turned off.
-- `browserPersistSiteData` (default `true`) decides whether a canonical
-  workspace's site data lives in a real browser profile on disk or only in
+- `browserPersistSiteData` (default `true`) decides whether each cookie
+  jar's site data lives in a real browser profile on disk or only in
   memory. The site data is the ENGINE's, always: AO reads and writes none of
   it, so the engine's own store is the single source of truth rather than a
   copy of it.
@@ -56,12 +56,32 @@ per-platform no-op.
 
 - One lazily started engine per AO process. AO downloads no engine: the engine
   is the platform's own, hosted by the app or by its launcher.
-- One isolated profile per canonical workspace with at least one active browser
-  page. Threads on that workspace intentionally share login state; pages remain
-  owned by the registering thread.
+- One isolated profile per cookie jar with at least one active browser page.
+  Each thread's browser chooses its jar from the address row's cookie jar
+  menu: `worktree` (default; the threads on a canonical workspace share login
+  state, in the profile they used before jars), `project` (the project's
+  threads that choose it share one, in any worktree; keyed on the project id
+  the app passes in `Access`), `thread` (this browser only, kept between
+  sessions) or `private` (never on disk; a new identity each time, gone when
+  its last page closes). `internal/browser/jar.go` is the only mapping from a
+  thread's choice to a jar; engines get a jar key and an ephemeral flag.
+  `browser_session` reports the jar. Agents have no tool to change it, since
+  a switch closes the user's tabs. Pages remain owned by the registering
+  thread.
+- A jar shares site data and nothing else. Navigation and file permissions,
+  the download directory and the download quota stay per canonical
+  workspace, whichever jar a page is in.
+- Switching the jar with tabs open asks first in the pane. The Manager then
+  closes the thread's tabs and reopens their addresses in the new jar, in the
+  same order and with the same active tab, under new page ids; each reopen
+  waits for its old page's teardown. A tab whose reopen fails stays as a
+  failed tab with its `error`. A per-thread jar generation fences a create,
+  restore or reopen that began before the switch, so it retries in the new
+  jar; a popup is admitted only beside a live opener, which a switch has
+  already closed. A shutdown during a switch loses the tabs still reopening.
 - A thread gets an opaque MCP URL capability at provider-session start, and
   session end revokes it. Its registration does not create a profile or page.
-- The first page operation creates the workspace profile and a page. Page
+- The first page operation creates the jar's profile and a page. Page
   operations serialize per page; unrelated pages run concurrently.
 - The companion presents a page's real view only while a pane is mounted with a
   paintable host rect AND the thread's session is visible. AO presents only the
@@ -91,9 +111,9 @@ per-platform no-op.
   user's own new tab is also selected and shown at once, and a failed creation
   stays as a tab with its `error` until closed, while an agent's leaves no tab.
   A close removes the tab, cancels the page's operations and pushes the state
-  before the engine closes the page and, with the workspace's last page, its
+  before the engine closes the page and, with the jar's last page, its
   profile. Until that teardown ends the page counts toward the thread's limit
-  and its workspace opens no second profile. A teardown failure is a `teardown`
+  and its jar opens no second profile. A teardown failure is a `teardown`
   event: the pane's banner when the pane is open, otherwise a toast that stays.
   Selecting a tab presents it before any page work; a suspended tab shows
   `restoring` until its reload ends.
@@ -111,7 +131,7 @@ per-platform no-op.
 - A thread's pages outlive a stop of its provider session, so a restarted
   session finds the same tabs. Deleting or archiving the thread closes them and
   forgets their saved copies; an archive that keeps a re-engaged session keeps
-  its pages. A workspace profile with no pages is disposed. An engine with no
+  its pages. A jar profile with no pages is disposed. An engine with no
   profiles is stopped after a bounded idle delay.
 - When the session reaper ends an idle session, and only then, the thread's
   pages are suspended: each engine page is closed and the tab stays in the
@@ -129,13 +149,15 @@ per-platform no-op.
   starts a fresh page: history, console, downloads and clipboard do not
   return. A suspended tab counts toward the thread's page limit but holds no
   workspace or process page slot. Pages are never suspended for being hidden.
-- Suspended pages are saved as one JSON file per thread under
-  `browser-pages/` in the config directory, written atomically
-  (`internal/browser/page_records.go`). At boot, a file that is unreadable,
-  invalid or belongs to a deleted or archived thread is removed with a log
-  line, so a delete or archive that cannot remove a thread's file logs it and
-  still completes. Clearing site data and turning the browser off remove
-  every saved page.
+- Suspended pages and the thread's jar choice are saved as one JSON file per
+  thread under `browser-pages/` in the config directory, written atomically
+  (`internal/browser/page_records.go`); a thread with no saved page keeps a
+  file only for a non-default jar. At boot, a file that is unreadable,
+  invalid (an unknown jar included) or belongs to a deleted or archived
+  thread is removed with a log line, so a delete or archive that cannot
+  remove a thread's file logs it and still completes. Clearing site data and
+  changing the persistence setting remove every saved page and keep jar
+  choices; turning the browser off removes both.
 - App shutdown saves the open pages, cancels calls, disposes profiles, stops
   the engine, then closes the MCP listener. Wails runs that shutdown ON the
   desktop UI thread, which the WebKit engines dispatch every native call to,
@@ -446,7 +468,7 @@ it without relying on an optional skill.
 
 | Tool | Purpose |
 |---|---|
-| `browser_session` | Name the thread-owned automation session. |
+| `browser_session` | Name the thread-owned automation session and its cookie jar. |
 | `browser_open` | Create a background HTTP(S) page, or intentionally navigate an existing `page_id`. |
 | `browser_new_page` | Create a blank background tab without navigating it. |
 | `browser_open_file` | Create a background page for an existing regular HTML, PDF, image, text, or other browser-renderable file, or navigate an existing `page_id`. |
@@ -508,7 +530,7 @@ preflight the endpoint refuses rather than letting a `text/plain` CORS
 simple request through unannounced.
 
 The engine's own sandbox and site isolation remain enabled.
-The manager uses a per-workspace profile, grants no camera, microphone,
+The manager uses a per-jar profile, grants no camera, microphone,
 geolocation, notification, or system-clipboard permission, bounds navigation
 and tool deadlines, caps pages and contexts, dismisses JavaScript dialogs,
 blocks dangerous navigation schemes, and never exposes a debugging
@@ -517,7 +539,7 @@ only to AO-owned directories with file/count/byte caps; download filenames are
 sanitized across macOS, Linux, and Windows and never target the user's normal
 Downloads directory. A download that begins outside every AO page is
 cancelled. Downloads are capped at 512 MiB each and 2 GiB reserved
-per live workspace; downloads and asset bundles share a 4 GiB per-process
+per live workspace, whichever jars its pages are in; downloads and asset bundles share a 4 GiB per-process
 artifact quota. Files older than seven days are pruned on the next artifact
 use, while newer files are never silently evicted to make quota room.
 
@@ -570,10 +592,10 @@ so the differences are only where the platform itself differs:
 
 - **Site data is WebKit's directory, not AO's.** macOS exposes no documented
   way to place a `WKWebsiteDataStore` in a chosen path. On macOS 14+ each
-  workspace gets its own persistent store keyed by a digest of the workspace
-  root; on macOS 13 there is no per-workspace persistent store at all, so
-  the site-data setting has no effect there and every workspace is
-  in-memory-only.
+  persistent jar gets its own store keyed by a digest of the jar (a worktree
+  jar's is the workspace root's, as before jars); on macOS 13 there is no
+  per-jar persistent store at all, so the site-data setting has no effect
+  there and every jar is in-memory-only.
 - **Clearing site data is WebKit's removal, not a directory delete.** Because
   WebKit owns where those stores live, Clear site data asks it to remove every
   data store AO created — all of them, and only them: the app's own SPA webview
@@ -612,7 +634,7 @@ producing frames.
 **Serve mode drives a headless Chromium** (`docs/specs/remote-access.md` §7,
 and the operator's copy in [serve-mode.md](serve-mode.md) § Browser tools). A
 backend with no window cannot host a view, so it launches its own browser
-instead: one process per workspace profile, started by that profile's first
+instead: one process per jar profile, started by that profile's first
 page and stopped with it, sandbox on. The tool surface is again identical, for
 the same reason the WSL one is — the operations are the same CDP calls. What
 is absent is the PANE, which is window chrome: an agent on a serve host gets

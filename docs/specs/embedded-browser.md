@@ -57,24 +57,36 @@ tool result, artifact quotas, the MCP server and its capability URLs.
 What changes underneath it is the engine: instead of one managed
 headless Chrome process, pages are engine pages hosted as above.
 
-- One isolated engine profile per canonical workspace (today's
-  BrowserContext-per-workspace becomes a WebView2 profile / a
-  WebKitNetworkSession with a dedicated data directory —
+- One isolated engine profile per cookie jar (a WebView2 profile / a
+  WebKitNetworkSession with a dedicated data directory;
   spike-verified isolated: cookies, localStorage, IndexedDB all
-  per-session, verified across process restarts). Threads on a
-  workspace share logins; pages stay thread-owned. WebKit views are
-  ALWAYS constructed against an explicit AO-owned data dir: merely
+  per-session, verified across process restarts). Each thread's
+  browser chooses its jar: `worktree` (the default, shared by the
+  threads on a canonical workspace, with the same profile ids as
+  before jars), `project` (shared by the project's threads that choose
+  it, in any worktree), `thread` (this browser only, persistent) or
+  `private` (ephemeral, a new identity each time it is created, gone
+  when its last page closes). `jar.go` is the one mapping from
+  (thread, choice) to a jar; engines receive only a jar key and an
+  ephemeral flag. Pages stay thread-owned. WebKit views are ALWAYS
+  constructed against an explicit AO-owned data dir: merely
   instantiating the default session writes into
   `~/.local/share/webkitgtk/`.
+- A jar carries site data only. Navigation and file permissions,
+  download directories and download quotas stay per workspace, so two
+  worktrees sharing a project jar keep their own authority.
 - Pages start hidden (invisible controller / unparented or hidden
   view). `browser_visibility` presents one page inside the pane.
-- Page limit (8/thread), context limit, label rules, parallel-agent
-  page-handle discipline: all unchanged.
+- Limits: 8 pages per thread, 24 per workspace across its jars, 24
+  per jar, 64 in total, and at most 12 live profiles. A tab being
+  reopened by a jar switch counts once. Label rules and parallel-agent
+  page-handle discipline are unchanged.
 
 ## 4. Site data
 
-Engine-managed, on disk, per workspace, AO-owned directory tree
-(`<data root>/browser-profiles/<workspace-hash>/`). Like a normal
+Engine-managed, on disk, per cookie jar, AO-owned directory tree
+(`<data root>/browser-profiles/<jar-hash>/`; a worktree jar's hash is
+the canonical workspace's, so its directory predates jars). Like a normal
 browser profile: cookies, localStorage, IndexedDB, service workers,
 HTTP cache — everything the engine persists, not just the two
 categories the checkpoint system encrypted.
@@ -84,11 +96,12 @@ Consequences, deliberate:
 - The AES-GCM checkpoint machinery (`state.go`, keyring key) is
   deleted. Site data at rest has the same protection as the user's own
   browser profile: filesystem permissions (0700 dirs).
-- `browserPersistSiteData=false` maps to in-memory/ephemeral sessions
-  (WebView2 InPrivate profile; WebKit ephemeral WebsiteDataStore /
-  non-persistent session).
-- **Clear site data** closes engine pages for the workspace, then
-  deletes the profile directory.
+- `browserPersistSiteData=false` maps every jar to in-memory/ephemeral
+  sessions (WebView2 InPrivate profile; WebKit ephemeral
+  WebsiteDataStore / non-persistent session). A `private` jar is
+  always ephemeral and is never written to disk.
+- **Clear site data** closes every engine page, then deletes every
+  jar's profile directory. Each thread's jar choice survives it.
 - Old encrypted checkpoints are deleted on first boot of the new code
   (they cannot be imported into an engine profile; they were only
   cookies + localStorage).
