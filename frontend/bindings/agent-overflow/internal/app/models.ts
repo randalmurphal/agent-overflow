@@ -8154,7 +8154,7 @@ export class ThreadAgentRow {
     /**
      * ToolCalls and Tokens are what the thread a spawn made did over its
      * life: its top-level tool calls and the tokens its turns spent, the
-     * running turn's included (store.ThreadTallies), read here or reported
+     * running turn's included (store.ThreadTally), read here or reported
      * by the paired computer that holds it; zero for every other kind and
      * from a computer that does not report them.
      */
