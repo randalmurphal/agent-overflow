@@ -244,46 +244,48 @@ func (s *Store) DismissUnansweredAsyncQuestions(threadID string) (int64, error) 
 	return result.RowsAffected()
 }
 
-// AsyncAnswerItems names the items whose questions the answer sendID
-// claimed and the provider has not taken in (submitted, or restored with
-// it), on idx_async_questions_send.
-func (s *Store) AsyncAnswerItems(threadID, sendID string) ([]string, error) {
-	items, err := queryIDs(s.reader(), `SELECT DISTINCT item_id FROM async_questions
- WHERE thread_id=? AND send_id<>'' AND send_id=? AND state IN ('submitted','restored') ORDER BY item_id`, threadID, sendID)
-	if err != nil {
-		return nil, fmt.Errorf("store: read the questions %s answers: %w", sendID, err)
-	}
-	return items, nil
-}
-
 // ReturnAsyncAnswer takes back an answer the app wrote to threadID's async
 // questions that the provider did not take in: in one transaction it
 // deletes the queue row that carries it, if any is left, and puts the
-// questions it claimed back to unanswered. It reports whether any question
-// reopened: none does once the provider took the answer in (its questions
-// read delivered) or it was returned before.
-func (s *Store) ReturnAsyncAnswer(threadID, sendID string) (_ bool, err error) {
+// questions it claimed back to unanswered. It returns the revision each
+// item it reopened is at now (AsyncQuestionGroup.Revision): none once the
+// provider took the answer in (its questions read delivered) or it was
+// returned before. reopened, when set, is given those revisions inside the
+// transaction, before any reader can see them.
+func (s *Store) ReturnAsyncAnswer(threadID, sendID string, reopened func(revisions map[string]int64)) (_ map[string]int64, err error) {
 	if threadID == "" || sendID == "" {
-		return false, fmt.Errorf("store: return an async answer: thread and send id are required")
+		return nil, fmt.Errorf("store: return an async answer: thread and send id are required")
 	}
 	tx, err := s.db.Begin()
 	if err != nil {
-		return false, err
+		return nil, err
 	}
 	defer rollbackTx(tx, "store: return "+sendID, &err)
 	if _, err := tx.Exec(`DELETE FROM flush_queue_items WHERE thread_id=? AND send_id<>'' AND send_id=?`, threadID, sendID); err != nil {
-		return false, fmt.Errorf("store: return %s: %w", sendID, err)
+		return nil, fmt.Errorf("store: return %s: %w", sendID, err)
 	}
-	result, err := tx.Exec(`UPDATE async_questions SET state='unanswered',answer='',send_id='',user_item_id=''
+	items, err := queryIDs(tx, `SELECT DISTINCT item_id FROM async_questions
  WHERE thread_id=? AND send_id<>'' AND send_id=? AND state IN ('submitted','restored')`, threadID, sendID)
 	if err != nil {
-		return false, fmt.Errorf("store: return %s: %w", sendID, err)
+		return nil, fmt.Errorf("store: return %s: %w", sendID, err)
 	}
-	reopened, err := result.RowsAffected()
-	if err != nil {
-		return false, err
+	if len(items) == 0 {
+		return nil, tx.Commit()
 	}
-	return reopened > 0, tx.Commit()
+	if _, err := tx.Exec(`UPDATE async_questions SET state='unanswered',answer='',send_id='',user_item_id=''
+ WHERE thread_id=? AND send_id<>'' AND send_id=? AND state IN ('submitted','restored')`, threadID, sendID); err != nil {
+		return nil, fmt.Errorf("store: return %s: %w", sendID, err)
+	}
+	revisions := make(map[string]int64, len(items))
+	for _, item := range items {
+		if revisions[item], err = asyncQuestionRevision(tx, threadID, item); err != nil {
+			return nil, fmt.Errorf("store: return %s: %w", sendID, err)
+		}
+	}
+	if reopened != nil {
+		reopened(revisions)
+	}
+	return revisions, tx.Commit()
 }
 
 // AsyncAnswerMessage validates the submitted snapshot and includes each question's text.

@@ -62,9 +62,11 @@ type asyncQuestionRoutes struct {
 	mu   sync.Mutex
 	open map[workerPromptKey]asyncQuestionPrompt
 	// toPerson names the items a person took the spawner's answer back from
-	// (returnWorkerAnswer): their next occurrence is the person's, as a
-	// hand-back is.
-	toPerson map[workerPromptKey]bool
+	// (returnWorkerAnswer), each with the revision that return left it at:
+	// the occurrence a reconcile opens at that revision or later is the
+	// person's, as a hand-back is. A reconcile that read the item before the
+	// return reads an older revision, and neither takes nor consumes it.
+	toPerson map[workerPromptKey]int64
 }
 
 // asyncQuestionPrompt is one item's unanswered questions, as one prompt:
@@ -160,7 +162,7 @@ func (a *App) reconcileAsyncQuestions(threadID string, adopt bool) {
 		for _, prompt := range open {
 			key := workerPromptKey{workerID: threadID, requestID: prompt.request.RequestID}
 			prompt.route = route
-			if routes.toPerson[key] {
+			if at, marked := routes.toPerson[key]; marked && int64(prompt.request.Occurrence) >= at {
 				prompt.route = nil
 				delete(routes.toPerson, key)
 			}
@@ -384,48 +386,50 @@ func isWorkerAnswer(sendID string) bool {
 // Returned by the app or a failure, the questions go where the worker's
 // questions route now, the spawner when it can take them. Withdrawn by a
 // person (byPerson), who overruled the agent, they go to the person, as a
-// hand-back does: the items are marked before the write, so no reconcile
-// opens them for the spawner in between.
+// hand-back does: each item is marked with the revision the return leaves
+// it at, inside the return's transaction, so a reconcile that reads the
+// return reads the mark, and one that read the item before it neither
+// takes nor consumes the mark.
 func (a *App) returnWorkerAnswer(threadID, sendID string, byPerson bool) error {
-	var marked []workerPromptKey
+	var mark func(map[string]int64)
+	var marked map[string]int64
 	if byPerson {
-		items, err := a.store.AsyncAnswerItems(threadID, sendID)
-		if err != nil {
-			return err
+		mark = func(revisions map[string]int64) {
+			marked = revisions
+			a.workerPrompts.async.markToPerson(threadID, revisions)
 		}
-		marked = a.workerPrompts.async.markToPerson(threadID, items)
 	}
-	reopened, err := a.store.ReturnAsyncAnswer(threadID, sendID)
+	reopened, err := a.store.ReturnAsyncAnswer(threadID, sendID, mark)
 	if err != nil {
-		a.workerPrompts.async.unmarkToPerson(marked)
+		a.workerPrompts.async.unmarkToPerson(threadID, marked)
 		return err
 	}
-	if reopened {
+	if len(reopened) > 0 {
 		a.emit(eventchan.ProviderAsyncQuestionsChanged, map[string]string{"threadId": threadID})
 	}
 	return nil
 }
 
-func (r *asyncQuestionRoutes) markToPerson(threadID string, items []string) []workerPromptKey {
+func (r *asyncQuestionRoutes) markToPerson(threadID string, revisions map[string]int64) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.toPerson == nil {
-		r.toPerson = make(map[workerPromptKey]bool)
+		r.toPerson = make(map[workerPromptKey]int64)
 	}
-	keys := make([]workerPromptKey, 0, len(items))
-	for _, item := range items {
-		key := workerPromptKey{workerID: threadID, requestID: item}
-		r.toPerson[key] = true
-		keys = append(keys, key)
+	for item, revision := range revisions {
+		r.toPerson[workerPromptKey{workerID: threadID, requestID: item}] = revision
 	}
-	return keys
 }
 
-func (r *asyncQuestionRoutes) unmarkToPerson(keys []workerPromptKey) {
+// unmarkToPerson takes back the marks of a return that did not commit.
+func (r *asyncQuestionRoutes) unmarkToPerson(threadID string, revisions map[string]int64) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	for _, key := range keys {
-		delete(r.toPerson, key)
+	for item, revision := range revisions {
+		key := workerPromptKey{workerID: threadID, requestID: item}
+		if r.toPerson[key] == revision {
+			delete(r.toPerson, key)
+		}
 	}
 }
 

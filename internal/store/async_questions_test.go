@@ -3,6 +3,7 @@ package store
 import (
 	"encoding/json"
 	"errors"
+	"maps"
 	"slices"
 	"testing"
 )
@@ -288,8 +289,10 @@ func TestUnansweredAsyncQuestionsAreReadOnlyForAThreadHeldHere(t *testing.T) {
 }
 
 // An app-written answer the provider did not take in goes back whole: its
-// queue row goes and its questions are unanswered, in one transaction. One
-// the provider took in, or returned before, reopens nothing.
+// queue row goes and its questions are unanswered, in one transaction,
+// which reports the revision it left each item at, inside the transaction
+// and as its result. One the provider took in, or returned before, reopens
+// nothing.
 func TestAReturnedAsyncAnswerReopensItsQuestions(t *testing.T) {
 	s := newTestStore(t)
 	mustCreateThread(t, s, "q")
@@ -302,20 +305,29 @@ func TestAReturnedAsyncAnswerReopensItsQuestions(t *testing.T) {
 	if err := s.QueueAsyncAnswers(FlushQueueItem{ID: "queue", ThreadID: "q", SendID: "agent-answer:t", Message: body}, answers, nil); err != nil {
 		t.Fatal(err)
 	}
-	if items, err := s.AsyncAnswerItems("q", "agent-answer:t"); err != nil || !slices.Equal(items, []string{"question:call"}) {
-		t.Fatalf("the answer's items = %q, %v", items, err)
+	var during map[string]int64
+	duringSeen := -1
+	reopened, err := s.ReturnAsyncAnswer("q", "agent-answer:t", func(revisions map[string]int64) {
+		during = revisions
+		// A reader outside the transaction does not see the return yet.
+		if groups, err := s.UnansweredAsyncQuestions("q"); err == nil {
+			duringSeen = len(groups)
+		}
+	})
+	if err != nil || len(reopened) != 1 || !maps.Equal(reopened, during) {
+		t.Fatalf("return = %v (inside it %v), %v; want its one item reopened", reopened, during, err)
 	}
-	if reopened, err := s.ReturnAsyncAnswer("q", "agent-answer:t"); err != nil || !reopened {
-		t.Fatalf("return = %v, %v; want its questions reopened", reopened, err)
+	if duringSeen != 0 {
+		t.Fatalf("a reader inside the return read %d unanswered items, want none before it committed", duringSeen)
 	}
-	if groups, err := s.UnansweredAsyncQuestions("q"); err != nil || len(groups) != 1 || len(groups[0].Questions) != 2 {
-		t.Fatalf("after the return = %+v, %v; want both questions unanswered", groups, err)
+	if groups, err := s.UnansweredAsyncQuestions("q"); err != nil || len(groups) != 1 || len(groups[0].Questions) != 2 || groups[0].Revision != reopened["question:call"] {
+		t.Fatalf("after the return = %+v, %v; want both questions unanswered at revision %d", groups, err, reopened["question:call"])
 	}
 	if queued, err := s.ListFlushQueueItems("q"); err != nil || len(queued) != 0 {
 		t.Fatalf("the returned answer is still queued: %+v, %v", queued, err)
 	}
-	if reopened, err := s.ReturnAsyncAnswer("q", "agent-answer:t"); err != nil || reopened {
-		t.Fatalf("a second return = %v, %v; want nothing reopened", reopened, err)
+	if again, err := s.ReturnAsyncAnswer("q", "agent-answer:t", func(map[string]int64) { t.Error("a second return reported a reopening") }); err != nil || len(again) != 0 {
+		t.Fatalf("a second return = %v, %v; want nothing reopened", again, err)
 	}
 	if err := s.QueueAsyncAnswers(FlushQueueItem{ID: "queue-2", ThreadID: "q", SendID: "agent-answer:u", Message: body}, answers, nil); err != nil {
 		t.Fatal(err)
@@ -323,8 +335,8 @@ func TestAReturnedAsyncAnswerReopensItsQuestions(t *testing.T) {
 	if err := s.InsertItem(Item{ID: "echo", ThreadID: "q", ItemIndex: 1, Kind: "user_text", Role: "user", Meta: `{"sendId":"agent-answer:u","provider_item_id":"native"}`, CreatedAt: 4, UpdatedAt: 4}); err != nil {
 		t.Fatal(err)
 	}
-	if reopened, err := s.ReturnAsyncAnswer("q", "agent-answer:u"); err != nil || reopened {
-		t.Fatalf("returning a delivered answer = %v, %v; want nothing reopened", reopened, err)
+	if delivered, err := s.ReturnAsyncAnswer("q", "agent-answer:u", nil); err != nil || len(delivered) != 0 {
+		t.Fatalf("returning a delivered answer = %v, %v; want nothing reopened", delivered, err)
 	}
 }
 

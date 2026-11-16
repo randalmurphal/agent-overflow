@@ -144,3 +144,55 @@ func TestAnArchiveDuringTheFirstReconcileClosesWhatItOpened(t *testing.T) {
 		t.Fatal("an archived worker's question is open")
 	}
 }
+
+// A person's withdrawal of the spawner's answer puts its questions to the
+// person even when a reconcile that read the item before the return
+// publishes after it: that older reading neither takes the person's
+// override nor leaves the item's next occurrence with the spawner. One item
+// asks two questions; the spawner answered the first while the second was
+// dismissed, and the second is reopened, whose reconcile reads only it and
+// waits while the person withdraws the answer.
+func TestAReconcileOlderThanAWithdrawalLeavesTheQuestionsThePersons(t *testing.T) {
+	t.Parallel()
+	f := newAsyncQuestionFixture(t, "async-withdraw-race", store.PlacementOwned)
+	f.ask(t, "question:ask", twoAsyncQuestions)
+	if err := f.app.SetAsyncQuestionDismissed(t.Context(), f.worker.ID, "question:ask", 1, true); err != nil {
+		t.Fatal(err)
+	}
+	f.drain(t)
+	answered, _ := f.wake(t, f.spawner.ID)
+	if ack, _, err := f.app.answerWorkerPrompt(t.Context(), threadtools.Caller{ThreadID: f.spawner.ID}, threadtools.ReplyCall{Token: answered, Text: "One"}); err != nil || !ack.Accepted {
+		t.Fatalf("the spawner's reply = %+v, %v", ack, err)
+	}
+	f.drain(t)
+	read, resume := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	f.app.asyncQuestionsReadForTest = func(threadID string) {
+		if threadID == f.worker.ID {
+			once.Do(func() {
+				close(read)
+				<-resume
+			})
+		}
+	}
+	if err := f.app.SetAsyncQuestionDismissed(t.Context(), f.worker.ID, "question:ask", 1, false); err != nil {
+		t.Fatal(err)
+	}
+	<-read
+	stop, err := f.app.StopThreadAgentIncoming(t.Context(), f.worker.ID, workerAnswerSendIDRoot+answered)
+	close(resume)
+	if err != nil || stop.Outcome != threadAgentStopped {
+		t.Fatalf("withdraw = %+v, %v", stop, err)
+	}
+	f.drain(t)
+	questions, err := f.app.store.ListAsyncQuestions(f.worker.ID, "question:ask")
+	if err != nil || len(questions) != 2 || questions[0].State != "unanswered" || questions[1].State != "unanswered" {
+		t.Fatalf("the questions = %+v, %v; want both unanswered", questions, err)
+	}
+	if detail, routedTo, asking := f.app.asyncQuestionBlocked(f.worker.ID); !asking || detail != "Which scope?" || routedTo != "" {
+		t.Fatalf("the worker asks %q of %q (%v), want both questions the person's", detail, routedTo, asking)
+	}
+	if open := openWorkerRegistrations(f.app, f.worker.ID); len(open) != 0 {
+		t.Fatalf("the withdrawn questions are registered with the spawner under %q", open)
+	}
+}
