@@ -39,11 +39,7 @@ export interface MigrationException {
   reason: string;
 }
 
-export const migrationExceptions: MigrationException[] = [
-  { version: 146, table: 'pr_views', dropped: true, reason: 'the Pull requests page no longer records which PRs the app opened; attention comes from the forge' },
-  { version: 152, table: 'items', columns: ['meta', 'rev'], reason: 'clears pendingFlush from user rows a later turn follows or another thread copied in; the item revision trigger restamps each one' },
-  { version: 152, table: 'threads', columns: ['history_rev'], reason: 'a thread whose user row lost a stale pendingFlush moves to a new history revision' },
-];
+export const migrationExceptions: MigrationException[] = [];
 
 /**
  * Tables the old-row comparison skips, with the reason. Row counts are
