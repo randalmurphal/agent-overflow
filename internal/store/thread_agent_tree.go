@@ -926,8 +926,8 @@ var threadAgentRowFramesSQL = `WITH RECURSIVE
      WHERE up.depth + 1 < ?5 AND ` + agentSpawnLinkSQL("sp") + ` AND sp.target_thread_id = up.thread)
 SELECT DISTINCT token, thread, 0 FROM up
 UNION ALL
-SELECT DISTINCT '', r.caller_thread_id, 1 FROM json_each(?1) j CROSS JOIN thread_requests r
- WHERE r.token = j.value AND r.lineage_only = 0
+SELECT DISTINCT '', r.caller_thread_id, 1 FROM json_each(?1) CROSS JOIN thread_requests r
+ WHERE r.token = json_each.value AND r.lineage_only = 0
    AND (EXISTS (SELECT 1 FROM thread_requests link
                  WHERE link.target_thread_id = r.caller_thread_id AND ` + agentSpawnLinkSQL("link") + `)
         OR EXISTS (SELECT 1 FROM thread_request_receipts rc
