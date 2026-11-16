@@ -1,10 +1,14 @@
 package app
 
 // A spawn's row counts what its thread did (docs/specs/standing-agents.md,
-// "Agents segment"): each tool call once, the tokens of its turns and its
-// own Codex agents, and the time its turns ran, refreshed as each moves.
+// "Agents segment"): each tool call once, the tokens it spent itself, and
+// the time its turns ran, refreshed as each moves. Its native agents are
+// rows of their own with counts of their own.
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -14,9 +18,10 @@ import (
 )
 
 // A running worker's row is framed again for each new tool call, one whose
-// line reads as the last one did included, for its usage's progress and
-// for its Codex agent's; the agent's spend counts in its tokens until its
-// completion records it, and once.
+// line reads as the last one did included, and for its usage's progress.
+// Its tokens are its own: a Codex child's spend, and a nested child's under
+// it, move nothing, live or recorded; its own turn's settlement moves them
+// by its own spend.
 func TestAWorkerRowRefreshesAsItsCountsMove(t *testing.T) {
 	t.Parallel()
 	f := newRequestFixture(t)
@@ -41,24 +46,69 @@ func TestAWorkerRowRefreshesAsItsCountsMove(t *testing.T) {
 	framed("usage progress", func() {
 		f.app.tapThreadAgentRows(eventchan.ProviderUsage, provider.UsageEvent{Action: "progress", ThreadID: worker.ID, UsedTokens: 10})
 	})
-	framed("an agent's progress", func() {
-		workerEvent(t, f.app, worker.ID, provider.ProviderEvent{Kind: provider.EventSubagentProgress, ItemID: "agent-launch"},
-			map[string]any{"taskId": "child", "totalTokens": 500, "outsideParentUsage": true})
-	})
-	if row := f.awaitWorker(t, f.caller.ID, "counts-spawn", workerRunning); row.Tokens != 500 {
-		t.Fatalf("row %+v; want the running agent's 500 tokens", row)
-	}
-	// Its completion records 700: counted once, the live entry past it adding
-	// nothing.
+	// A child and a child of it spend, live and then on their completion
+	// records: the worker's tokens stay where they were.
 	workerEvent(t, f.app, worker.ID, provider.ProviderEvent{Kind: provider.EventSubagentProgress, ItemID: "agent-launch"},
-		map[string]any{"taskId": "child", "totalTokens": 700, "outsideParentUsage": true})
+		map[string]any{"taskId": "child", "totalTokens": 500})
+	workerEvent(t, f.app, worker.ID, provider.ProviderEvent{Kind: provider.EventSubagentProgress, ItemID: "nested-launch", ParentToolUseID: "agent-launch"},
+		map[string]any{"taskId": "grandchild", "totalTokens": 300})
 	now := time.Now().UnixMilli()
-	if err := f.app.store.InsertItem(store.Item{ID: "agent-done", ThreadID: worker.ID, TurnIndex: 90, ItemIndex: 1, Kind: "tool_completion", Role: "assistant", Status: "completed",
-		CompletionOf: "agent-launch", Meta: `{"subagentProgress":{"totalTokens":700,"outsideParentUsage":true}}`, CreatedAt: now, UpdatedAt: now}); err != nil {
+	for i, done := range []struct{ id, launch string }{{"agent-done", "agent-launch"}, {"nested-done", "nested-launch"}} {
+		if err := f.app.store.InsertItem(store.Item{ID: done.id, ThreadID: worker.ID, TurnIndex: 90, ItemIndex: 1 + i, Kind: "tool_completion", Role: "assistant", Status: "completed",
+			CompletionOf: done.launch, Meta: `{"subagentProgress":{"totalTokens":700}}`, CreatedAt: now, UpdatedAt: now}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.app.threadRequestsWG.Wait()
+	if row := f.awaitWorker(t, f.caller.ID, "counts-spawn", workerRunning); row.Tokens != 0 {
+		t.Fatalf("row %+v; want none of its agents' tokens", row)
+	}
+	// Its own turn settles: 40 fresh input, 5 cache writes, 15 output,
+	// what the provider names its own.
+	own := provider.TokenUsage{InputTokens: 40, CacheReadInputTokens: 900, CacheCreationInputTokens: 5, OutputTokens: 15}
+	framed("its own settlement", func() {
+		workerEvent(t, f.app, worker.ID, provider.ProviderEvent{Kind: provider.EventTurnComplete, TurnComplete: &provider.WireTurnCompleteMeta{
+			StopReason: "end_turn", UsageScope: "codex-process", Usage: &own, OwnUsage: &own,
+			ModelUsage: []provider.ModelTokenUsage{{Model: "gpt-5.2-codex", TokenUsage: own}},
+		}}, nil)
+	})
+	f.expectRested(t, "counts-spawn")
+	tallies, err := f.app.store.ThreadTallies([]string{worker.ID}, time.Now())
+	if err != nil || tallies[worker.ID].Tokens != 60 {
+		t.Fatalf("tallies %+v, %v; want the worker's own 60", tallies, err)
+	}
+}
+
+// A worker that delegates to a native subagent counts its own spend: the
+// captured delegating turn (subagent_usage_inclusion_20260703.ndjson) shows
+// the parent-only 23,369 on its spawn's row, while the billing ledger keeps
+// the subagent-inclusive 36,709.
+func TestADelegatingWorkerRowCountsItsOwnSpend(t *testing.T) {
+	t.Parallel()
+	f := newRequestFixture(t)
+	f.watchAgentRows()
+	f.holdCallerSession()
+	data, err := os.ReadFile(filepath.Join("docs", "references", "fixtures", "claude", "subagent_usage_inclusion_20260703.ndjson"))
+	if err != nil {
 		t.Fatal(err)
 	}
-	if row := f.awaitWorker(t, f.caller.ID, "counts-spawn", workerRunning); row.Tokens != 700 {
-		t.Fatalf("row %+v; want the agent's 700 tokens once", row)
+	var turn []string
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		turn = append(turn, line)
+	}
+	installMockClaudeTurns(t, f.app, [][]string{turn})
+	ack := f.spawnWorker(t, "work out 17*23 with a helper")
+	var row ThreadAgentRow
+	waitUntil(t, 20*time.Second, func() bool {
+		row, _ = agentRowByToken(f.agentRows(t, f.caller.ID).Rows, ack.Token)
+		return row.Tokens == 23369
+	})
+	billed, err := f.app.store.QueryUsage(store.UsageQuery{ThreadID: ack.ThreadID})
+	if err != nil || len(billed) != 1 {
+		t.Fatalf("ledger %+v, %v", billed, err)
+	}
+	if spend := billed[0].InputTokens + billed[0].CacheCreationInputTokens + billed[0].OutputTokens; spend != 36709 {
+		t.Fatalf("ledger spends %d; want the subagent-inclusive 36,709", spend)
 	}
 }
 

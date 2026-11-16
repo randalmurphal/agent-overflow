@@ -2,9 +2,6 @@ package app
 
 import (
 	"fmt"
-	"log"
-	"maps"
-	"slices"
 	"sync"
 	"time"
 
@@ -463,35 +460,4 @@ func (a *App) liveWorkerThreads() []string {
 		}
 	}
 	return out
-}
-
-// threadAgentTally is what the thread a spawn made did, as its Agents row
-// shows it (ThreadAgentRow.ToolCalls, Tokens, RuntimeMs): the store's
-// tally (store.ThreadTally), plus what its Codex agents still running
-// spent past what their completions recorded. A Claude agent's spend is in
-// its thread's own turn usage; a Codex agent's never is, so the thread's
-// spend as a unit adds it (provider.SubagentProgressMeta.OutsideParentUsage).
-// A failed read of the recorded spend leaves the live spend out.
-func (a *App) threadAgentTally(threadID string, tally store.ThreadTally) store.ThreadTally {
-	if a.triage == nil {
-		return tally
-	}
-	live := map[string]int64{}
-	for _, entry := range a.triage.LiveSubagentProgress(threadID) {
-		if entry.Progress.OutsideParentUsage && entry.Progress.TotalTokens > 0 {
-			live[entry.ItemID] = entry.Progress.TotalTokens
-		}
-	}
-	if len(live) == 0 {
-		return tally
-	}
-	recorded, err := a.store.AgentCompletionSpend(threadID, slices.Collect(maps.Keys(live)))
-	if err != nil {
-		log.Printf("agent rows: read the recorded spend of %s's agents: %v", threadID, err)
-		return tally
-	}
-	for launch, spent := range live {
-		tally.Tokens += max(0, spent-recorded[launch])
-	}
-	return tally
 }

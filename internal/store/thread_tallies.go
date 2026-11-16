@@ -9,8 +9,9 @@ import (
 
 // A thread's tallies are what an agent row counts of its whole life, as a
 // subagent's row counts its run (docs/specs/standing-agents.md, "Agents
-// segment"): the tool calls it executed, the tokens it and its native
-// subagents spent, and the time it spent in turns. `thread_tallies` holds
+// segment"): the tool calls it executed, the tokens it spent itself, and the
+// time it spent in turns. Its native subagents are rows of their own with
+// counts of their own, so none of theirs is in it. `thread_tallies` holds
 // them per thread, each kept where the work is first recorded as the
 // thread's own, in that write's transaction (migration v154):
 //
@@ -21,16 +22,12 @@ import (
 //     threads.history_bulk_load and counts nothing; a restore runs with the
 //     triggers dropped. A row a revert or a retention sweep later removes
 //     stays counted: the count is of what the thread did.
-//   - trg_usage_ledger_tally_tokens adds each settled turn's spend
-//     (usageSpendSQLPlain) for a thread that exists. A provider whose turn
-//     usage includes its native subagents' (Claude's modelUsage) counts
-//     them here.
-//   - trg_items_tally_agent_tokens adds the spend of a native subagent whose
-//     usage is outside its parent's turn usage (a Codex child), from the
-//     final numbers its completion record carries
-//     (provider.SubagentProgressMeta.OutsideParentUsage): what that record
-//     adds over the launch's earlier completions, since a child's figure is
-//     cumulative.
+//   - tokens is the thread's own spend (provider.TokenUsage.Spend), added
+//     by the usage settlement that accounts it (AppendUsageAndReconcile,
+//     OwnSpend), from the figure the provider reports as the thread's own
+//     (provider.WireTurnCompleteMeta.OwnUsage): Claude's flat result.usage,
+//     not its subagent-inclusive modelUsage, which the billing ledger keeps;
+//     a Codex turn's usage, which never carries its children's.
 //   - turn_ms is the time the thread's turns ran, from start to end, added
 //     by the turn owner's writes (UpdateTurnCompleted, ReopenTurn and the
 //     late payload's completion advance) as each moves a turn's end
@@ -38,7 +35,8 @@ import (
 //     boot settles, and a fork's copy of its source's turns, add nothing.
 //
 // A read adds what the running turn has done so far: its usage_pending
-// tokens and the time since it started. Each read is a probe of the tally,
+// tokens, which are the thread's own as well (a subagent's live usage is
+// not reported there), and the time since it started. Each read is a probe of the tally,
 // the pending rows and the open turn per thread, whatever the thread's
 // size. The row cascades with its thread.
 var threadTalliesV154SQL = `
@@ -56,14 +54,27 @@ SELECT thread_id, SUM(tool_calls), SUM(tokens), SUM(turn_ms) FROM (
      WHERE i.kind = 'tool_call' AND i.parent_id = '' AND ` + threadOwnTurnSQL("i") + `
      GROUP BY i.thread_id
     UNION ALL
-    SELECT thread_id, 0, SUM(` + usageSpendSQLPlain + `), 0 FROM usage_ledger
-     WHERE thread_id IN (SELECT id FROM threads) GROUP BY thread_id
+    SELECT l.thread_id, 0, SUM(` + usageSpendSQLPlain + `), 0 FROM usage_ledger l
+     WHERE l.thread_id IN (SELECT id FROM threads) AND ` + ledgerOwnSpendSQL("l") + `
+     GROUP BY l.thread_id
     UNION ALL
     SELECT i.thread_id, 0, 0, SUM(MAX(0, i.completed_at - i.started_at)) FROM turns i
      WHERE i.completed_at IS NOT NULL AND ` + threadOwnTurnSQL("i") + `
      GROUP BY i.thread_id
 ) GROUP BY thread_id;
 `
+
+// ledgerOwnSpendSQL is whether the ledger row alias names is the thread's
+// own spend, as far as the ledger can say: a Codex row is, and a Claude
+// row is when its turn ran no native subagent, whose usage Claude's
+// modelUsage includes and which the turn's items show as rows nested under
+// its launch. A Claude turn that ran one recorded no parent-only figure, so
+// the migration counts none of it.
+func ledgerOwnSpendSQL(alias string) string {
+	return `(` + alias + `.provider <> 'claude' OR NOT EXISTS (SELECT 1 FROM turns t
+	           JOIN items n ON n.thread_id = t.thread_id AND n.turn_index = t.turn_index AND n.parent_id <> ''
+	          WHERE t.turn_id = ` + alias + `.turn_id))`
+}
 
 // threadOwnTurnSQL is whether the row alias names, of a thread's items or
 // turns, is one the thread ran rather than one a pointer fork inherited
@@ -85,45 +96,39 @@ BEGIN
     INSERT INTO thread_tallies (thread_id, tool_calls) VALUES (NEW.thread_id, 1)
     ON CONFLICT (thread_id) DO UPDATE SET tool_calls = tool_calls + 1;
 END;
-
-CREATE TRIGGER trg_items_tally_agent_tokens AFTER INSERT ON items
-WHEN NEW.completion_of <> '' AND json_valid(NEW.meta)
- AND json_extract(NEW.meta, '$.subagentProgress.outsideParentUsage') = 1
- AND (SELECT history_bulk_load FROM threads WHERE id = NEW.thread_id) = 0
-BEGIN
-    INSERT INTO thread_tallies (thread_id, tokens)
-    VALUES (NEW.thread_id, MAX(0, COALESCE(json_extract(NEW.meta, '$.subagentProgress.totalTokens'), 0)
-        - COALESCE((SELECT MAX(json_extract(o.meta, '$.subagentProgress.totalTokens')) FROM items o
-                     WHERE o.thread_id = NEW.thread_id AND o.completion_of = NEW.completion_of AND o.completion_of <> ''
-                       AND o.id <> NEW.id AND json_valid(o.meta)), 0)))
-    ON CONFLICT (thread_id) DO UPDATE SET tokens = tokens + excluded.tokens;
-END;
-
-CREATE TRIGGER trg_usage_ledger_tally_tokens AFTER INSERT ON usage_ledger
-WHEN EXISTS (SELECT 1 FROM threads WHERE id = NEW.thread_id)
-BEGIN
-    INSERT INTO thread_tallies (thread_id, tokens) VALUES (NEW.thread_id, ` + usageSpendSQLNew + `)
-    ON CONFLICT (thread_id) DO UPDATE SET tokens = tokens + excluded.tokens;
-END;
 `
 
-// dropThreadTallyTriggersSQL removes the triggers above.
-const dropThreadTallyTriggersSQL = `DROP TRIGGER IF EXISTS trg_items_tally_tool_calls;
-DROP TRIGGER IF EXISTS trg_items_tally_agent_tokens;
-DROP TRIGGER IF EXISTS trg_usage_ledger_tally_tokens;`
+// dropThreadTallyTriggersSQL removes the trigger above.
+const dropThreadTallyTriggersSQL = `DROP TRIGGER IF EXISTS trg_items_tally_tool_calls;`
 
-// usageSpendSQLPlain is a usage row's token spend, as a subagent's row
-// counts its agent's (provider.SubagentProgressMeta.TotalTokens): fresh
-// input, cache writes and output. A cached prompt read again is no spend;
-// counting it would grow with each round rather than with the work.
+// usageSpendSQLPlain is a usage row's token spend, as
+// provider.TokenUsage.Spend counts it: fresh input, cache writes and output.
 const usageSpendSQLPlain = `input_tokens + cache_creation_input_tokens + output_tokens`
 
-// usageSpendSQLNew is usageSpendSQLPlain over a trigger's NEW row.
-const usageSpendSQLNew = `NEW.input_tokens + NEW.cache_creation_input_tokens + NEW.output_tokens`
+// OwnSpend is a usage settlement's spend of the thread's own: what it adds
+// to the thread's tally (AppendUsageAndReconcile).
+type OwnSpend struct {
+	ThreadID string
+	Tokens   int64
+}
+
+// addOwnSpendTx adds spend to its thread's tally, in the settlement's
+// transaction; a thread already gone keeps none.
+func addOwnSpendTx(tx *sql.Tx, spend OwnSpend) error {
+	if spend.ThreadID == "" || spend.Tokens <= 0 {
+		return nil
+	}
+	if _, err := tx.Exec(`INSERT INTO thread_tallies (thread_id, tokens)
+		SELECT ?1, ?2 WHERE EXISTS (SELECT 1 FROM threads WHERE id = ?1)
+		ON CONFLICT (thread_id) DO UPDATE SET tokens = tokens + excluded.tokens`, spend.ThreadID, spend.Tokens); err != nil {
+		return fmt.Errorf("store: count the own spend of %s: %w", spend.ThreadID, err)
+	}
+	return nil
+}
 
 // ThreadTally is what one thread did over its life: the tool calls it
-// executed, the tokens it and its native subagents spent and the time its
-// turns ran, the running turn's included as of the read. Running is
+// executed, the tokens it spent itself and the time its turns ran, the
+// running turn's included as of the read. Running is
 // whether a turn runs now, whose time grows from the read on.
 type ThreadTally struct {
 	ToolCalls int64
@@ -175,45 +180,6 @@ func (s *Store) ThreadTallies(threadIDs []string, now time.Time) (map[string]Thr
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("store: read thread tallies: %w", err)
-	}
-	return out, nil
-}
-
-// AgentCompletionSpend reads, of threadID's native subagent launches,
-// the largest spend each one's completion records carry whose usage is
-// outside the thread's own (trg_items_tally_agent_tokens): what the tally
-// already counts of a launch that runs again. A launch with none is left
-// out.
-func (s *Store) AgentCompletionSpend(threadID string, launches []string) (map[string]int64, error) {
-	out := map[string]int64{}
-	if len(launches) == 0 {
-		return out, nil
-	}
-	ids, err := json.Marshal(launches)
-	if err != nil {
-		return nil, fmt.Errorf("store: read the agents' counted spend: %w", err)
-	}
-	rows, err := s.reader().Query(`SELECT o.completion_of, MAX(json_extract(o.meta, '$.subagentProgress.totalTokens'))
-		  FROM json_each(?2) j CROSS JOIN items o
-		 WHERE o.thread_id = ?1 AND o.completion_of = j.value AND o.completion_of <> '' AND json_valid(o.meta)
-		   AND json_extract(o.meta, '$.subagentProgress.outsideParentUsage') = 1
-		 GROUP BY o.completion_of`, threadID, string(ids))
-	if err != nil {
-		return nil, fmt.Errorf("store: read the agents' counted spend: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-	for rows.Next() {
-		var launch string
-		var spend sql.NullInt64
-		if err := rows.Scan(&launch, &spend); err != nil {
-			return nil, fmt.Errorf("store: scan an agent's counted spend: %w", err)
-		}
-		if spend.Valid {
-			out[launch] = spend.Int64
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: read the agents' counted spend: %w", err)
 	}
 	return out, nil
 }

@@ -94,10 +94,9 @@ func TestMigrationV154Schema(t *testing.T) {
 		"session_start_failures",
 		"sqlite_autoindex_agent_helpers_1", "sqlite_autoindex_agent_past_threads_1",
 		"sqlite_autoindex_agent_wakes_1", "sqlite_autoindex_agents_1", "sqlite_autoindex_agents_2", "sqlite_autoindex_session_start_failures_1",
-		"thread_tallies", "trg_items_tally_agent_tokens", "trg_items_tally_tool_calls",
+		"thread_tallies", "trg_items_tally_tool_calls",
 		"trg_thread_placement_spawn_gone", "trg_thread_requests_open_below_delete", "trg_thread_requests_open_below_insert",
 		"trg_thread_requests_open_below_update", "trg_thread_requests_spawn_cycle_insert", "trg_thread_requests_spawn_cycle_update",
-		"trg_usage_ledger_tally_tokens",
 	}; !slices.Equal(added, want) {
 		t.Errorf("v%d added\n %v\nwant\n %v", assistantsMigrationVersion, added, want)
 	}

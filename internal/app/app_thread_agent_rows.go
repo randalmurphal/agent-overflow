@@ -129,9 +129,10 @@ type ThreadAgentRow struct {
 	// spawn's.
 	Activity string `json:"activity,omitempty"`
 	// ToolCalls, Tokens and RuntimeMs are what the thread a spawn made did
-	// over its life (store.ThreadTally, threadAgentTally): each top-level
-	// tool call it executed, once; the tokens its turns and its own native
-	// agents spent; and the time its turns ran, the open one's so far.
+	// over its life (store.ThreadTally): each top-level tool call it
+	// executed, once; the tokens it spent itself, as a native agent's row
+	// counts its agent's, its own native agents' left to their rows; and
+	// the time its turns ran, the open one's so far.
 	// TurnOpen says a turn is open, whose time goes on from RuntimeMs as
 	// read. Read here, or reported by the paired computer that holds it;
 	// zero for every other kind and from a computer that does not report
@@ -898,7 +899,7 @@ func (v threadAgentView) row(request store.ThreadAgentRequest, names map[string]
 		if row.Kind == store.ThreadRequestSpawn {
 			out.Placement, out.Archived = name.Placement, name.Archived
 			// What the thread it made did, read with its name.
-			tally := v.app.threadAgentTally(row.TargetThreadID, name.Tally)
+			tally := name.Tally
 			out.ToolCalls, out.Tokens, out.RuntimeMs, out.TurnOpen = tally.ToolCalls, tally.Tokens, tally.RuntimeMs, tally.Running
 		}
 	}
@@ -1523,13 +1524,6 @@ func (a *App) tapThreadAgentRows(name eventchan.Channel, data any) {
 	case eventchan.ProviderItemEvent:
 		if event, ok := data.(triage.ItemStreamEvent); ok && event.Item != nil && event.Item.ParentID == "" {
 			a.noteThreadAgentActivity(event.ThreadID, *event.Item)
-		}
-	case eventchan.ProviderSubagentProgress:
-		// A Codex agent's spend counts in its thread's tokens once its
-		// completion records it; its progress refreshes the row's counts
-		// until then (noteThreadAgentCounts).
-		if event, ok := data.(triage.SubagentProgressEvent); ok && event.ParentID == "" {
-			a.noteThreadAgentCounts(event.ThreadID)
 		}
 	}
 }

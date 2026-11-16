@@ -762,7 +762,7 @@ export const coverageAllowlist: CoverageAllowance[] = [
   // Provider accounting the mock does not report.
   { table: 'usage_ledger', reason: 'token usage the provider reports; the mock reports none' },
   { table: 'usage_pending', reason: 'token usage the provider reports; the mock reports none' },
-  { table: 'thread_tallies', columns: ['tokens'], reason: "the tokens a thread spent, counted from the usage the provider reports; the mock reports none" },
+  { table: 'thread_tallies', columns: ['tokens'], reason: "the tokens a thread spent itself, counted from the own usage the provider reports with a turn's settlement; the mock reports none" },
   { table: 'provider_thread_cost', reason: 'cost the provider reports; the mock reports none' },
   { table: 'turns', columns: ['token_usage_json'], reason: 'token usage the provider reports; the mock reports none' },
   { table: 'threads', columns: ['last_token_usage', 'live_todo'], reason: 'token usage and a TodoWrite list, which no library scenario emits' },

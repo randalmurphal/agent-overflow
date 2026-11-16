@@ -168,7 +168,6 @@ func mergeSubagentProgress(base, tick provider.SubagentProgressMeta) provider.Su
 	if tick.Summary != "" {
 		out.Summary = tick.Summary
 	}
-	out.OutsideParentUsage = out.OutsideParentUsage || tick.OutsideParentUsage
 	return out
 }
 

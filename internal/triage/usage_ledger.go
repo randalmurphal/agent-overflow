@@ -20,11 +20,17 @@ func (r *Router) appendUsageLedger(evt provider.ProviderEvent, turnID string, me
 			r.emitUsageFailure(evt.ThreadID, err)
 		}
 	}()
-	if len(meta.ModelUsage) == 0 || evt.ParentToolUseID != "" {
+	var own int64
+	if meta.OwnUsage != nil {
+		own = meta.OwnUsage.Spend()
+	}
+	if (len(meta.ModelUsage) == 0 && own == 0) || evt.ParentToolUseID != "" {
 		return nil
 	}
 	rows := r.usageLedgerRows(evt, turnID, meta.ModelUsage, now)
-	if err := r.store.AppendUsageAndReconcile(meta.UsageScope, rows); err != nil {
+	// The thread's own spend counts in its tally with the settlement that
+	// accounts it.
+	if err := r.store.AppendUsageAndReconcile(meta.UsageScope, rows, store.OwnSpend{ThreadID: evt.ThreadID, Tokens: own}); err != nil {
 		return fmt.Errorf("usage accounting for %s: %w", evt.ThreadID, err)
 	}
 	r.throttledEmitUsage(evt.ThreadID, provider.UsageEvent{Action: "progress", ThreadID: evt.ThreadID})

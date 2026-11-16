@@ -175,9 +175,12 @@ type turnCompleteMeta struct {
 	// deltas — see provider.WireTurnCompleteMeta). Usage persists on the
 	// turns row; ModelUsage appends usage-ledger rows.
 	ModelUsage []provider.ModelTokenUsage
-	Aborted    bool
-	Truncated  bool
-	Error      string
+	// OwnUsage is the thread's own share of what ModelUsage accounts
+	// (provider.WireTurnCompleteMeta.OwnUsage), its tally's tokens.
+	OwnUsage  *provider.TokenUsage
+	Aborted   bool
+	Truncated bool
+	Error     string
 }
 
 func turnCompleteMetaFromEvent(evt provider.ProviderEvent) (turnCompleteMeta, error) {
@@ -220,6 +223,7 @@ func wireTurnCompleteMeta(meta provider.WireTurnCompleteMeta) turnCompleteMeta {
 		AssistantMessageID: meta.AssistantMessageID,
 		Usage:              usage,
 		ModelUsage:         meta.ModelUsage,
+		OwnUsage:           meta.OwnUsage,
 		UsageScope:         meta.UsageScope,
 		Aborted:            meta.Aborted,
 		Error:              meta.ErrorMessage,

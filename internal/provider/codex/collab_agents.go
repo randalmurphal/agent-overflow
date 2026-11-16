@@ -338,9 +338,6 @@ func (s *Session) childProgressEvent(providerThreadID, parentToolUseID string, p
 	meta, err := json.Marshal(provider.SubagentProgressMeta{
 		TaskID:      providerThreadID,
 		TotalTokens: spend,
-		// The parent's thread/tokenUsage/updated never carries a child's
-		// spend: the thread's spend as a unit adds it.
-		OutsideParentUsage: true,
 	})
 	if err != nil {
 		log.Printf("codex: marshal child progress for %s: %v", providerThreadID, err)

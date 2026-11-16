@@ -180,21 +180,7 @@ func (p *Parser) takeModelUsageDeltas(rawModelUsage json.RawMessage) (deltas []p
 // only the cumulative `total_cost_usd` needs delta treatment. The turn
 // attributes to the parser's tracked model as a single entry.
 func (p *Parser) takeFlatUsageDelta(raw map[string]json.RawMessage) (provider.TokenUsage, []provider.ModelTokenUsage) {
-	var usage provider.TokenUsage
-	if v, ok := raw["usage"]; ok {
-		var u struct {
-			InputTokens              int `json:"input_tokens"`
-			OutputTokens             int `json:"output_tokens"`
-			CacheReadInputTokens     int `json:"cache_read_input_tokens"`
-			CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
-		}
-		if json.Unmarshal(v, &u) == nil {
-			usage.InputTokens = u.InputTokens
-			usage.OutputTokens = u.OutputTokens
-			usage.CacheReadInputTokens = u.CacheReadInputTokens
-			usage.CacheCreationInputTokens = u.CacheCreationInputTokens
-		}
-	}
+	usage := flatUsage(raw)
 	var reported *float64
 	valid := json.Unmarshal(raw["total_cost_usd"], &reported) == nil && reported != nil && *reported >= 0
 	reliable := valid && (p == nil || (!p.usageFlatCostMissing && *reported >= p.usageAccountedCostUSD))
@@ -217,6 +203,59 @@ func (p *Parser) takeFlatUsageDelta(raw map[string]json.RawMessage) (provider.To
 	row := p.accountingModelUsage(p.currentModel(), usage)
 	row.CostReported = reliable
 	return usage, []provider.ModelTokenUsage{row}
+}
+
+// flatUsage reads a result's flat `usage`: the turn's own, parent-only.
+func flatUsage(raw map[string]json.RawMessage) provider.TokenUsage {
+	var usage provider.TokenUsage
+	if v, ok := raw["usage"]; ok {
+		var u struct {
+			InputTokens              int `json:"input_tokens"`
+			OutputTokens             int `json:"output_tokens"`
+			CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+			CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+		}
+		if json.Unmarshal(v, &u) == nil {
+			usage.InputTokens = u.InputTokens
+			usage.OutputTokens = u.OutputTokens
+			usage.CacheReadInputTokens = u.CacheReadInputTokens
+			usage.CacheCreationInputTokens = u.CacheCreationInputTokens
+		}
+	}
+	return usage
+}
+
+// takeOwnUsage is the thread's own share of what a result accounts
+// (provider.WireTurnCompleteMeta.OwnUsage), nil when it accounts nothing:
+// the flat `usage`, which is this turn's and excludes its subagents', plus
+// the thread's own live usage of the process's earlier turns whose results
+// accounted nothing, since this result's cumulative delta covers them too.
+// A result that accounts nothing (an interrupt's empty modelUsage, a
+// replayed result) keeps its turn's live usage, parent-only like the flat
+// figure, for the result that does. Call once per result envelope, after
+// takeTurnUsage and before finishUsageSegment, whose live totals it reads.
+func (p *Parser) takeOwnUsage(raw map[string]json.RawMessage, accounted bool) *provider.TokenUsage {
+	if p == nil {
+		if !accounted {
+			return nil
+		}
+		own := flatUsage(raw)
+		return &own
+	}
+	if !accounted {
+		for _, live := range p.usageProgress.totals {
+			p.usageOwnUnaccounted.Add(live)
+		}
+		return nil
+	}
+	own := flatUsage(raw)
+	own.Add(p.usageOwnUnaccounted)
+	own.TotalCostUSD = 0
+	p.usageOwnUnaccounted = provider.TokenUsage{}
+	if own.IsZero() {
+		return nil
+	}
+	return &own
 }
 
 // Live usage and result.modelUsage can spell one model differently (Haiku's

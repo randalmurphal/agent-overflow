@@ -552,8 +552,14 @@ type WireTurnCompleteMeta struct {
 	AssistantMessageID string
 	Usage              *TokenUsage
 	ModelUsage         []ModelTokenUsage
-	Aborted            bool
-	ErrorMessage       string
+	// OwnUsage is the thread's own usage over the span this settlement's
+	// ModelUsage accounts, without its native subagents': Claude's
+	// modelUsage includes its subagents' and its flat result.usage does
+	// not; a Codex turn's usage never carries its children's. Nil when
+	// the settlement accounts nothing.
+	OwnUsage     *TokenUsage
+	Aborted      bool
+	ErrorMessage string
 	// FastMode is the provider's fast-mode report for the turn that just
 	// ended. Nil when the envelope carried no fast-mode keys — see
 	// FastModeStatus for why absence is silence, not "off". Live state,
@@ -821,13 +827,6 @@ type SubagentProgressMeta struct {
 	AgentType string `json:"agentType,omitempty"`
 	// Summary is an optional provider-written progress summary.
 	Summary string `json:"summary,omitempty"`
-	// OutsideParentUsage marks an agent whose TotalTokens is not part of
-	// its parent thread's own turn usage: a Codex child, whose spend the
-	// parent's usage stream never carries. A Claude agent's spend is in
-	// its parent's modelUsage and is not marked. The thread's spend as a
-	// unit, its own and its native agents' (store.ThreadTally.Tokens), adds
-	// a marked agent's figure from its completion record.
-	OutsideParentUsage bool `json:"outsideParentUsage,omitempty"`
 }
 
 // SubagentBackgroundedMeta is the typed payload for
