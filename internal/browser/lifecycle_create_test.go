@@ -87,45 +87,83 @@ func TestAFailedCreationShowsOnTheUsersTabOnly(t *testing.T) {
 	}
 }
 
-// A tab closed while its page is created leaves at once; the engine page
-// that arrives after is closed, the profile it alone held is disposed, and
-// the creation answers no page and no error.
+// A tab closed while its page is created leaves at once; an engine page that
+// arrives after is closed, the profile it alone held is disposed, and the
+// creation answers no page and no error. A failure of that cleanup, after
+// the engine page arrived or after the creation failed, is reported and
+// answers a close that waits; the creation's own cancellation is not.
 func TestClosingATabWhileItIsCreated(t *testing.T) {
-	manager, engine := newLifecycleManager(t)
-	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
-	release := engine.hold(&engine.newPageGate)
-	defer release()
-	type result struct {
-		info PageInfo
-		err  error
-	}
-	created := async(func() result {
-		info, err := manager.NewCompanionPage(context.Background(), access, "")
-		return result{info, err}
-	})
-	receive(t, engine.creating, "the engine page's creation")
-	id := tabIDs(manager, access)[0]
-	if err := manager.CloseCompanionPage(t.Context(), access, id); err != nil {
-		t.Fatalf("close a creating tab: %v", err)
-	}
-	if got := tabIDs(manager, access); len(got) != 0 {
-		t.Fatalf("tabs right after closing the creating one = %v", got)
-	}
-	// A second close joins the first; it is done when the creation is.
-	done, ok := manager.closePending(access, id)
-	if !ok {
-		t.Fatal("a second close does not find the creating tab")
-	}
-	release()
-	if got := await(t, created, "the creation"); got.err != nil || got.info.ID != "" {
-		t.Fatalf("creation of a closed tab = %+v, %v, want no page and no error", got.info, got.err)
-	}
-	receive(t, done, "the creation's end")
-	if got := engine.closed.Load(); got != 1 {
-		t.Fatalf("the late engine page was closed %d times", got)
-	}
-	if got := engine.disposed.Load(); got != 1 || registeredScopes(manager) != 0 {
-		t.Fatalf("%d disposals and %d scopes after the abandoned creation", got, registeredScopes(manager))
+	for _, tc := range []struct {
+		name               string
+		createFails        bool
+		disposeFails       bool
+		wantClosedByEngine int64
+	}{
+		{"page arrives", false, false, 1},
+		{"page arrives, profile will not stop", false, true, 1},
+		{"creation fails", true, false, 0},
+		{"creation fails, profile will not stop", true, true, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			manager, engine := newLifecycleManager(t)
+			if tc.createFails {
+				engine.newPageErr = errors.New("engine refused the page")
+			}
+			if tc.disposeFails {
+				engine.disposeErr = errors.New("the profile's browser would not stop")
+			}
+			events := recordEvents(manager)
+			access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+			release := engine.hold(&engine.newPageGate)
+			defer release()
+			type result struct {
+				info PageInfo
+				err  error
+			}
+			created := async(func() result {
+				info, err := manager.NewCompanionPage(context.Background(), access, "")
+				return result{info, err}
+			})
+			receive(t, engine.creating, "the engine page's creation")
+			id := tabIDs(manager, access)[0]
+			if err := manager.CloseCompanionPage(t.Context(), access, id); err != nil {
+				t.Fatalf("close a creating tab: %v", err)
+			}
+			if got := tabIDs(manager, access); len(got) != 0 {
+				t.Fatalf("tabs right after closing the creating one = %v", got)
+			}
+			// A second close joins the first; it ends when the creation does.
+			pending, ok := manager.closePending(access, id)
+			if !ok {
+				t.Fatal("a second close does not find the creating tab")
+			}
+			waited := async(func() error { return pending.wait(context.Background()) })
+			release()
+			if got := await(t, created, "the creation"); got.err != nil || got.info.ID != "" {
+				t.Fatalf("creation of a closed tab = %+v, %v, want no page and no error", got.info, got.err)
+			}
+			err := await(t, waited, "the waiting close")
+			if (tc.disposeFails && !errors.Is(err, engine.disposeErr)) || (!tc.disposeFails && err != nil) {
+				t.Fatalf("waiting close = %v, want the cleanup failure: %v", err, tc.disposeFails)
+			}
+			if tc.disposeFails {
+				event := events.waitFor(t, "the teardown failure", func(e CompanionEvent) bool { return e.Kind == "teardown" })
+				if event.PageID != id || !strings.Contains(event.Error, "would not stop") {
+					t.Fatalf("teardown event = %+v", event)
+				}
+			}
+			for len(events.ch) > 0 {
+				if event := <-events.ch; event.Kind == "teardown" && !tc.disposeFails {
+					t.Fatalf("a teardown report for a clean cleanup: %+v", event)
+				}
+			}
+			if got := engine.closed.Load(); got != tc.wantClosedByEngine {
+				t.Fatalf("the late engine page was closed %d times", got)
+			}
+			if got := engine.disposed.Load(); got != 1 || registeredScopes(manager) != 0 {
+				t.Fatalf("%d disposals and %d scopes after the abandoned creation", got, registeredScopes(manager))
+			}
+		})
 	}
 }
 

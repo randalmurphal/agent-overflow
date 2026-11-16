@@ -35,9 +35,19 @@ type pageLoad struct {
 	order   uint64
 	loading bool
 	favicon string
-	// faviconGen numbers favicon reads; only the newest read's answer is
-	// kept.
-	faviconGen uint64
+	// reports counts the Loading reports applied. A favicon read keeps its
+	// answer only if no report was applied while it ran: a load that started
+	// meanwhile is another document, whose stop reads again.
+	reports uint64
+	// attached is set once the page has its driver and context
+	// (pageAttached). Reports arrive from the moment the engine page exists,
+	// before that.
+	attached bool
+	// want is a read owed by a stopped load that no read has begun since;
+	// reading is a read running. One read runs per page at a time.
+	want, reading bool
+	// reads counts the reads begun.
+	reads uint64
 }
 
 // loadState answers the page's loading state and favicon.
@@ -47,8 +57,10 @@ func (p *managedPage) loadState() (bool, string) {
 	return p.load.loading, p.load.favicon
 }
 
-// pageLoading is pageHooks.Loading. A load that stops starts a favicon read
-// on an engine with a pane.
+// pageLoading is pageHooks.Loading. Every report newer than the last applied
+// is recorded, and a stop owes a favicon read on an engine with a pane,
+// whether or not the start before it was seen: reports of one load can be
+// handled in either order.
 func (m *Manager) pageLoading(p *managedPage, loading bool, order uint64) {
 	_, pane := m.engine.(paneHost)
 	p.metaMu.Lock()
@@ -57,28 +69,88 @@ func (m *Manager) pageLoading(p *managedPage, loading bool, order uint64) {
 		return
 	}
 	p.load.order = order
+	p.load.reports++
 	changed := p.load.loading != loading
 	p.load.loading = loading
-	read := changed && !loading && pane
-	var gen uint64
-	if read {
-		p.load.faviconGen++
-		gen = p.load.faviconGen
+	if !loading && pane {
+		p.load.want = true
 	}
+	start := p.load.beginReadLocked()
 	p.metaMu.Unlock()
-	if !changed {
-		return
+	if changed {
+		m.emitThreadState(p.owner)
 	}
-	m.emitThreadState(p.owner)
-	if read {
-		m.goLife(func() { m.refreshFavicon(p, gen) })
+	if start {
+		m.runFaviconReads(p)
 	}
 }
 
-// refreshFavicon reads the page's favicon and publishes it when it changed
-// and no newer read began. A page that cannot answer (a CSP, a failed fetch,
-// no icon, a non-http document) has none.
-func (m *Manager) refreshFavicon(p *managedPage, gen uint64) {
+// pageAttached marks p's driver and context set, which a favicon read uses,
+// and begins a read a load that stopped before then owes. It runs after
+// p.attach; the metaMu hold publishes those fields to the read.
+func (m *Manager) pageAttached(p *managedPage) {
+	p.metaMu.Lock()
+	p.load.attached = true
+	start := p.load.beginReadLocked()
+	p.metaMu.Unlock()
+	if start {
+		m.runFaviconReads(p)
+	}
+}
+
+// beginReadLocked reports whether the caller is to begin a read: one is owed,
+// the page is attached, and none runs. The caller holds metaMu.
+func (l *pageLoad) beginReadLocked() bool {
+	if !l.want || !l.attached || l.reading {
+		return false
+	}
+	l.reading = true
+	return true
+}
+
+// runFaviconReads runs the page's reads off the caller, one after another
+// while loads that stop meanwhile owe another.
+func (m *Manager) runFaviconReads(p *managedPage) {
+	run := func() {
+		for m.readFaviconOnce(p) {
+		}
+	}
+	if !m.goLife(run) {
+		// The Manager is closing; nothing reads again.
+		p.metaMu.Lock()
+		p.load.reading = false
+		p.metaMu.Unlock()
+	}
+}
+
+// readFaviconOnce reads the favicon and publishes it unless a report arrived
+// while it ran, and reports whether a read is owed again.
+func (m *Manager) readFaviconOnce(p *managedPage) bool {
+	p.metaMu.Lock()
+	p.load.want = false
+	p.load.reads++
+	reports := p.load.reports
+	p.metaMu.Unlock()
+	icon := m.readFavicon(p)
+	p.metaMu.Lock()
+	if p.load.want {
+		p.metaMu.Unlock()
+		return true
+	}
+	p.load.reading = false
+	if p.load.reports != reports || p.load.favicon == icon {
+		p.metaMu.Unlock()
+		return false
+	}
+	p.load.favicon = icon
+	p.metaMu.Unlock()
+	m.emitThreadState(p.owner)
+	return false
+}
+
+// readFavicon reads the page's favicon. A page that cannot answer (a CSP, a
+// failed fetch, no icon, a non-http document) has none.
+func (m *Manager) readFavicon(p *managedPage) string {
 	ctx, cancel := operationContext(context.Background(), p.ctx, faviconTimeout)
 	defer cancel()
 	value, _, err := runEvaluation(ctx, func(ctx context.Context, source string) (json.RawMessage, error) {
@@ -93,14 +165,7 @@ func (m *Manager) refreshFavicon(p *managedPage, gen uint64) {
 		// engine failure; the tab keeps no icon.
 		log.Printf("browser: read the favicon of page %s: %v", p.id, err)
 	}
-	p.metaMu.Lock()
-	if p.load.faviconGen != gen || p.load.favicon == icon {
-		p.metaMu.Unlock()
-		return
-	}
-	p.load.favicon = icon
-	p.metaMu.Unlock()
-	m.emitThreadState(p.owner)
+	return icon
 }
 
 // faviconImageTypes are the image subtypes a favicon may be.
