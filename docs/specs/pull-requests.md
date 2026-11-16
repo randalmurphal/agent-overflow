@@ -37,7 +37,8 @@ later Issues) are pane kinds behind one sidebar row.
 3. **Pipelines tab** on the page: project and ref filters, the existing
    stages / jobs / log view keyed by pipeline.
 4. **Issues** (GitHub issues, Jira): another tool pane in the same shell;
-   not designed here.
+   not designed here. Jira Cloud and Linear are specified in
+   [issues.md](issues.md).
 
 ## Success criteria
 

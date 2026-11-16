@@ -690,6 +690,10 @@ and anti-changes that live only here:
   diagnostics or on the wire. `gh`/`glab` stay the login, the token
   handoff and `pr create`/`mr create`. No token of our own, no stored
   token, no OAuth app. `docs/architecture/forge-transport.md`.
+- Issue trackers are a scoped exception to "no stored token": the Issues
+  pane uses the app's own Jira Cloud and Linear client with the user's API
+  token in an owner-only key file on the owning computer, never sent over
+  the app connection (rulings 2026-11-15, `docs/specs/issues.md`).
 
 ## Miscellany
 
