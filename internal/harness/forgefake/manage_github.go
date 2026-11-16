@@ -29,7 +29,7 @@ func (e *Engine) githubManageDetail(r *Repo, p *Pull, teams bool) map[string]any
 	for _, combined := range p.TeamReviewers {
 		reviewer := map[string]any{"__typename": "Team"}
 		if teams {
-			reviewer["combinedSlug"], reviewer["name"] = combined, r.team(combined).Name
+			reviewer["combinedSlug"], reviewer["teamName"] = combined, r.team(combined).Name
 		}
 		requests = append(requests, map[string]any{"requestedReviewer": reviewer})
 	}
@@ -347,7 +347,12 @@ func ghSetState(state string) func(e *Engine, c *call, v graphQLVars) response {
 			p.Draft = true
 			p.Events = append(p.Events, Event{ID: e.ids.next(), Kind: "marked_draft", Actor: e.viewer, At: now})
 		}
-		return graphQLData(map[string]any{field: map[string]any{"pullRequest": map[string]any{"state": strings.ToUpper(p.State), "isDraft": p.Draft}}})
+		// Each mutation's document selects the one field it changes.
+		answer := map[string]any{"state": strings.ToUpper(p.State)}
+		if state == "draft" {
+			answer = map[string]any{"isDraft": p.Draft}
+		}
+		return graphQLData(map[string]any{field: map[string]any{"pullRequest": answer}})
 	}
 }
 

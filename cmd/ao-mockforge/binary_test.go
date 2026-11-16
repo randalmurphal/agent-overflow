@@ -87,7 +87,7 @@ func newRig(t *testing.T, fixture forgefake.Fixture) *rig {
 		_ = srv.Shutdown(ctx)
 	})
 	env := []string{control.EnvAddr + "=" + srv.Addr(), control.EnvToken + "=" + srv.Token()}
-	api := httptest.NewServer(engine)
+	api := httptest.NewServer(answerChecked(t, engine))
 	t.Cleanup(api.Close)
 	svc, err := forgeapi.New(forgeapi.Options{Version: "test", Isolated: &forgeapi.Isolated{BaseURL: api.URL, Token: rigAPIToken}})
 	if err != nil {

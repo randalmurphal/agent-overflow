@@ -21,15 +21,15 @@ import (
 // in the window whatever the PR's count.
 const githubViewerReviewsQuery = `query ViewerReviews($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
-    pullRequest(number: $number) { reviews(last: 100) { nodes { databaseId viewerDidAuthor state body commit { oid } } } }
+    pullRequest(number: $number) { reviews(last: 100) { nodes { fullDatabaseId viewerDidAuthor state body commit { oid } } } }
   }
 }`
 
 type githubViewerReview struct {
-	DatabaseID      int64  `json:"databaseId"`
-	ViewerDidAuthor bool   `json:"viewerDidAuthor"`
-	State           string `json:"state"`
-	Body            string `json:"body"`
+	DatabaseID      githubBigInt `json:"fullDatabaseId"`
+	ViewerDidAuthor bool         `json:"viewerDidAuthor"`
+	State           string       `json:"state"`
+	Body            string       `json:"body"`
 	Commit          *struct {
 		OID string `json:"oid"`
 	} `json:"commit"`
@@ -60,7 +60,7 @@ func readGitHubViewerReviews(ctx context.Context, client *forgeapi.Client, ref P
 	out := map[int64]githubViewerReview{}
 	for _, review := range raw.Repository.PullRequest.Reviews.Nodes {
 		if review.ViewerDidAuthor {
-			out[review.DatabaseID] = review
+			out[int64(review.DatabaseID)] = review
 		}
 	}
 	return out, nil

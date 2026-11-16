@@ -2,7 +2,6 @@ package forgefake
 
 import (
 	"fmt"
-	"strings"
 )
 
 // GitHub's merge queue. A repository whose merge.mergeQueue is set
@@ -16,12 +15,10 @@ import (
 // never merges the queue on its own.
 
 // QueueEntry is a pull's place in its base's merge queue. Position is
-// GitHub's number (1 is next, as seeded), State GitHub's
-// MergeQueueEntryState (QUEUED by default), By the login that queued it
+// GitHub's number (1 is next, as seeded), By the login that queued it
 // (the pull's author by default) and At when (now by default).
 type QueueEntry struct {
 	Position int    `json:"position,omitempty"`
-	State    string `json:"state,omitempty"`
 	By       string `json:"by,omitempty"`
 	At       string `json:"at,omitempty"`
 }
@@ -30,13 +27,7 @@ type QueueEntry struct {
 // that requires its merge queue.
 const githubMergeQueueRule = "Repository rule violations found\n\nChanges must be made through the merge queue\n\n"
 
-var githubQueueStates = map[string]bool{"QUEUED": true, "AWAITING_CHECKS": true, "MERGEABLE": true, "UNMERGEABLE": true, "LOCKED": true}
-
 func (q *QueueEntry) normalize(author string) error {
-	q.State = strings.ToUpper(defaultString(q.State, "QUEUED"))
-	if !githubQueueStates[q.State] {
-		return fmt.Errorf("queued state %q is not a MergeQueueEntryState", q.State)
-	}
 	if q.Position < 0 {
 		return fmt.Errorf("queued position %d is negative", q.Position)
 	}
@@ -49,7 +40,7 @@ func (q *QueueEntry) normalize(author string) error {
 func githubQueueFields(r *Repo, p *Pull) map[string]any {
 	var entry any
 	if q := p.Queued; q != nil {
-		entry = map[string]any{"position": q.Position, "state": q.State, "enqueuedAt": q.At, "enqueuer": githubActor(q.By, "")}
+		entry = map[string]any{"position": q.Position, "enqueuedAt": q.At, "enqueuer": githubActor(q.By, "")}
 	}
 	var queue any
 	if r.Merge.MergeQueue {
@@ -109,7 +100,7 @@ func ghEnqueuePR(e *Engine, c *call, v graphQLVars) response {
 	default:
 		return graphQLMutationError(field, "UNPROCESSABLE", "Pull request is not mergeable and cannot be added to the merge queue")
 	}
-	p.Queued = &QueueEntry{Position: githubQueueTail(r), State: "QUEUED", By: e.viewer, At: githubNow()}
+	p.Queued = &QueueEntry{Position: githubQueueTail(r), By: e.viewer, At: githubNow()}
 	p.Readiness.AutoMerge = nil
 	return graphQLData(map[string]any{field: map[string]any{"mergeQueueEntry": map[string]any{"id": fmt.Sprintf("MQE_ao%d", e.ids.next())}}})
 }
@@ -166,7 +157,7 @@ func ghEnableQueuedAutoMerge(e *Engine, c *call, v graphQLVars) response {
 		if !r.Merge.MergeQueue {
 			return graphQLMutationError(field, "UNPROCESSABLE", "Pull request is in clean status")
 		}
-		p.Queued = &QueueEntry{Position: githubQueueTail(r), State: "QUEUED", By: e.viewer, At: githubNow()}
+		p.Queued = &QueueEntry{Position: githubQueueTail(r), By: e.viewer, At: githubNow()}
 		return graphQLData(map[string]any{field: map[string]any{"pullRequest": map[string]any{
 			"isInMergeQueue": true, "autoMergeRequest": nil,
 		}}})

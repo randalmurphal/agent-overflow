@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -102,7 +103,11 @@ func TestGitHubEditAndDeleteComment(t *testing.T) {
 			if strings.HasPrefix(fmt.Sprint(call.Vars["id"]), "IC_") {
 				typename = "IssueComment"
 			}
-			return githubData(fmt.Sprintf(`{"node":{"__typename":%q,"pullRequest":{"number":%s,"repository":{"nameWithOwner":%q}}}}`, typename, number, repo))
+			n, err := strconv.Atoi(number)
+			if err != nil {
+				t.Errorf("owner %q: %v", owner.Load(), err)
+			}
+			return githubData(`{"node":{` + githubCommentOwnerJSON(typename, repo, n) + `}}`)
 		}
 		if body := answer.Load().(string); body != "" {
 			return forgeAPIAnswer{Body: body}

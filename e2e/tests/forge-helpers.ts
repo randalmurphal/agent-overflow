@@ -49,7 +49,7 @@ export interface ForgeThread {
 
 /** A submitted verdict; on GitLab only APPROVED has a counterpart (an approval). */
 export interface ForgeReview {
-  /** GitHub databaseId; generated when omitted. */
+  /** GitHub fullDatabaseId; generated when omitted. */
   id?: number;
   author: string;
   authorName?: string;
@@ -131,7 +131,7 @@ export interface ForgePull {
   /** GitLab: the requested changes were bypassed. */
   changesOverridden?: boolean;
   /** GitHub: the pull's place in its base's merge queue (merge.mergeQueue). */
-  queued?: { position?: number; state?: 'QUEUED' | 'AWAITING_CHECKS' | 'MERGEABLE' | 'UNMERGEABLE' | 'LOCKED'; by?: string; at?: string };
+  queued?: { position?: number; by?: string; at?: string };
 }
 
 /** A pull's merge box (forgefake Readiness). */
