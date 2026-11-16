@@ -29,10 +29,14 @@ import (
 //     not its subagent-inclusive modelUsage, which the billing ledger keeps;
 //     a Codex turn's usage, which never carries its children's.
 //   - turn_ms is the time the thread's turns ran, from start to end, added
-//     by the turn owner's writes (UpdateTurnCompleted, ReopenTurn and the
-//     late payload's completion advance) as each moves a turn's end
-//     (tallyTurnSpanTx). Time between turns is not in it; a crashed turn the
-//     boot settles, and a fork's copy of its source's turns, add nothing.
+//     by the writes that move a turn's end (tallyTurnSpanTx):
+//     UpdateTurnCompleted, ReopenTurn, the late payload's completion
+//     advance, and the boot's settle of a turn a crash left open
+//     (RecoverCrashedTurns), which ends it at its last recorded activity,
+//     so the time the app was down is not in it. Each adds what it moved
+//     the span by, so a crashed turn later reopened and ended again counts
+//     once. Time between turns is not in it, nor is a fork's copy of its
+//     source's turns.
 //
 // A read adds what the running turn has done so far: its usage_pending
 // tokens, which are the thread's own as well (a subagent's live usage is

@@ -112,6 +112,59 @@ func TestADelegatingWorkerRowCountsItsOwnSpend(t *testing.T) {
 	}
 }
 
+// A worker whose turn a crash left open shows, under Past after the boot,
+// the time it ran to the last activity that turn recorded, not the time
+// the app was down; a later reopen and end of that turn counts it once.
+func TestACrashedWorkersPastRuntimeEndsAtItsLastActivity(t *testing.T) {
+	t.Parallel()
+	f := newRequestFixture(t)
+	worker := f.settledSpawn(t, "crash-spawn", f.caller.ID)
+	base := time.Now().Add(-2 * time.Hour).UnixMilli()
+	if err := f.app.store.InsertTurn(store.Turn{TurnID: worker.ID + ":0", ThreadID: worker.ID, TurnIndex: 0, StartedAt: base}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.app.store.UpdateTurnCompleted(worker.ID+":0", base+60_000, "end_turn", "", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	start := base + 120_000
+	if err := f.app.store.InsertTurn(store.Turn{TurnID: worker.ID + ":1", ThreadID: worker.ID, TurnIndex: 1, StartedAt: start}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.app.store.InsertItem(store.Item{ID: "crash-step", ThreadID: worker.ID, TurnIndex: 1, Kind: "tool_call", Role: "assistant",
+		Status: "running", Summary: "Running tests", CreatedAt: start + 10_000, UpdatedAt: start + 30_000}); err != nil {
+		t.Fatal(err)
+	}
+
+	after := f.restart(t)
+	if _, err := after.app.triage.RecoverCrashedTurns(); err != nil {
+		t.Fatal(err)
+	}
+	past := func() ThreadAgentRow {
+		t.Helper()
+		page, err := after.app.ListThreadPastAgentRows(f.caller.ID, store.PastAgentRowsCursor{}, 8)
+		if err != nil {
+			t.Fatal(err)
+		}
+		row, ok := agentRowByToken(page.Rows, "crash-spawn")
+		if !ok {
+			t.Fatalf("no Past row in %+v", page.Rows)
+		}
+		return row
+	}
+	if row := past(); row.TurnOpen || row.RuntimeMs != 90_000 {
+		t.Fatalf("Past row after the boot %+v; want 90s: 60s and the crashed turn's 30s, not the downtime", row)
+	}
+	if err := after.app.store.ReopenTurn(worker.ID + ":1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := after.app.store.UpdateTurnCompleted(worker.ID+":1", start+35_000, "end_turn", "", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if row := past(); row.TurnOpen || row.RuntimeMs != 95_000 {
+		t.Fatalf("Past row once the turn ended again %+v; want 95s, counted once", row)
+	}
+}
+
 // A worker's runtime is the time its turns ran: the open turn's so far,
 // then each ended turn's, never the idle time between them, and never less
 // than it read before.

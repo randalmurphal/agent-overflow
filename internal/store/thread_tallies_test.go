@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"fmt"
 	"maps"
 	"path/filepath"
 	"testing"
@@ -181,6 +182,65 @@ func TestThreadTalliesFollowEveryWrite(t *testing.T) {
 	}
 	if n := countRows(t, s, `SELECT count(*) FROM thread_tallies`); n != 0 {
 		t.Fatalf("%d tallies left after the delete", n)
+	}
+}
+
+// A turn a crash left open ran until the last activity it recorded: the
+// boot ends it there and counts that span, not the hour the app was down,
+// and a later reopen and end of it moves the count by what it moved the
+// end, once.
+func TestACrashedTurnCountsToItsLastActivity(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThread(t, s, "worker")
+	if err := s.InsertTurn(Turn{TurnID: "worker:0", ThreadID: "worker", TurnIndex: 0, StartedAt: 0}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateTurnCompleted("worker:0", 60_000, "end_turn", "", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	const start = 100_000
+	if err := s.InsertTurn(Turn{TurnID: "worker:1", ThreadID: "worker", TurnIndex: 1, StartedAt: start}); err != nil {
+		t.Fatal(err)
+	}
+	for i, at := range [][2]int64{{start + 5_000, start + 10_000}, {start + 20_000, start + 30_000}} {
+		if err := s.InsertItem(Item{ID: fmt.Sprintf("step-%d", i), ThreadID: "worker", TurnIndex: 1, ItemIndex: i, Kind: "tool_call",
+			Role: "assistant", Status: "running", Summary: "step", CreatedAt: at[0], UpdatedAt: at[1]}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	boot := int64(start + 30_000 + time.Hour.Milliseconds())
+	if _, err := s.RecoverCrashedTurns(func(s string) string { return s + " (interrupted)" }, boot); err != nil {
+		t.Fatal(err)
+	}
+	turn, ok, err := s.GetTurn("worker:1")
+	if err != nil || !ok || turn.CompletedAt == nil || *turn.CompletedAt != start+30_000 || turn.StopReason != "interrupted" {
+		t.Fatalf("crashed turn %+v, %v, %v; want ended interrupted at its last activity, %d", turn, ok, err, start+30_000)
+	}
+	tally := func(now int64) ThreadTally {
+		t.Helper()
+		got, err := s.ThreadTallies([]string{"worker"}, time.UnixMilli(now))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got["worker"]
+	}
+	if got := tally(boot); got.RuntimeMs != 90_000 || got.Running {
+		t.Fatalf("runtime after the boot %+v; want 60s and the crashed turn's 30s, not the downtime", got)
+	}
+	if err := s.ReopenTurn("worker:1"); err != nil {
+		t.Fatal(err)
+	}
+	if got := tally(boot + 1_000); got.RuntimeMs != 60_000+boot+1_000-start || !got.Running {
+		t.Fatalf("runtime of the reopened turn %+v; want the crashed span taken back and the turn counted to now", got)
+	}
+	if err := s.UpdateTurnCompleted("worker:1", start+35_000, "end_turn", "", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateTurnLatePayload("worker:1", LateTurnPayload{CompletedAtAdvance: start + 40_000}); err != nil {
+		t.Fatal(err)
+	}
+	if got := tally(boot); got.RuntimeMs != 100_000 || got.Running {
+		t.Fatalf("runtime once it ended again %+v; want 60s and its 40s, counted once", got)
 	}
 }
 
