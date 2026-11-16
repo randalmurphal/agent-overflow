@@ -1,11 +1,11 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, within } from '@testing-library/svelte';
 import AgentProfilesSettings from './AgentProfilesSettings.svelte';
-import { loadSettings } from '../../stores/settings.svelte';
+import { applySettingsSnapshot, loadSettings } from '../../stores/settings.svelte';
 import { getBindingMock, setBindingMock } from '../../../test/mocks/bindings-app';
 import { makeSettings } from '../../../test/helpers/settings';
 import { SETTINGS_DEFAULTS } from '../../generated/settingsDefaults';
-import type { AgentProfile, ProviderStatus, Settings } from '../../types/settings';
+import type { AgentNote, AgentProfile, Settings } from '../../types/settings';
 
 const PROFILE: AgentProfile = {
   name: 'Reviewer',
@@ -17,20 +17,15 @@ const PROFILE: AgentProfile = {
   instructions: '',
 };
 
-function status(provider: string, installed: boolean): ProviderStatus {
-  return {
-    provider,
-    installed,
-    version: '',
-    binaryPath: '',
-    status: installed ? 'ready' : 'not_found',
-    message: '',
-  };
-}
+type Check = { problem?: string; missing?: string };
 
+/**
+ * Loads `overrides` as the saved settings, with UpdateSettings keeping what
+ * it is sent and CheckAgentProfiles answering `check` for each profile.
+ */
 async function seed(
   overrides: Partial<Settings> = {},
-  statuses: ProviderStatus[] = [status('claude', true), status('codex', true)],
+  check: (profile: AgentProfile) => Check = () => ({}),
 ): Promise<void> {
   let saved: Settings = makeSettings(overrides);
   setBindingMock('GetSettings', async () => saved);
@@ -38,9 +33,16 @@ async function seed(
     saved = { ...saved, ...(patch as Partial<Settings>) };
     return saved;
   });
-  setBindingMock('GetProviderStatuses', async () => statuses);
+  setBindingMock('CheckAgentProfiles', vi.fn(async (profiles: AgentProfile[]) => profiles.map(check)));
   await loadSettings();
 }
+
+/** A change saved elsewhere: another window, or a paired computer's page. */
+function savedElsewhere(lists: { agentProfiles?: AgentProfile[]; agentNotes?: AgentNote[] }): void {
+  applySettingsSnapshot(makeSettings({ agentProfiles: [PROFILE], agentNotes: [NOTE], ...lists }));
+}
+
+const NOTE: AgentNote = { text: 'Keep it short.', when: '' };
 
 function lastPatch(): Record<string, unknown> {
   return getBindingMock('UpdateSettings')!.mock.calls.at(-1)![0] as Record<string, unknown>;
@@ -71,6 +73,7 @@ describe('<AgentProfilesSettings>', () => {
     await fireEvent.input(name, { target: { value: ' Critic ' } });
     expect(getBindingMock('UpdateSettings')!.mock.calls).toHaveLength(0);
     await fireEvent.change(name);
+    await settle();
 
     expect(lastPatch()).toEqual({ agentProfiles: [{ ...PROFILE, name: 'Critic' }] });
   });
@@ -92,6 +95,7 @@ describe('<AgentProfilesSettings>', () => {
     const name = view.getByLabelText('Name') as HTMLInputElement;
     await fireEvent.input(name, { target: { value: 'Critic' } });
     await fireEvent.change(name);
+    await settle();
     const useFor = view.getByLabelText('Use for') as HTMLTextAreaElement;
     await fireEvent.input(useFor, { target: { value: 'Reviews, sharply.' } });
     finish();
@@ -108,7 +112,6 @@ describe('<AgentProfilesSettings>', () => {
     const view = render(AgentProfilesSettings);
     await settle();
 
-    const { applySettingsSnapshot } = await import('../../stores/settings.svelte');
     applySettingsSnapshot(makeSettings({ agentProfiles: [{ ...PROFILE, name: 'Renamed' }], agentNotes: [] }));
     await settle();
 
@@ -154,6 +157,7 @@ describe('<AgentProfilesSettings>', () => {
     const useFor = within(added).getByLabelText('Use for');
     await fireEvent.input(useFor, { target: { value: 'Anything.' } });
     await fireEvent.change(useFor);
+    await settle();
     expect(lastPatch()).toEqual({
       agentProfiles: [
         PROFILE,
@@ -162,6 +166,7 @@ describe('<AgentProfilesSettings>', () => {
     });
 
     await fireEvent.click(view.getByRole('button', { name: 'Delete Reviewer' }));
+    await settle();
     expect((lastPatch().agentProfiles as AgentProfile[]).map((profile) => profile.name)).toEqual(['Mine']);
 
     const when = view.getByLabelText('Shown') as HTMLSelectElement;
@@ -196,30 +201,202 @@ describe('<AgentProfilesSettings>', () => {
     expect(lastPatch()).toEqual({ subThreadLevels: 4 });
   });
 
-  // A profile on a provider this computer does not run stays editable and
-  // says it is not offered here; one on a provider that runs says nothing.
-  it.each([
-    ['Codex is not installed', {}, [status('claude', true), status('codex', false)]],
-    ['Codex is turned off', { codexEnabled: false }, [status('claude', true), status('codex', true)]],
-  ] as const)('marks a Codex profile when %s', async (_, overrides, statuses) => {
-    await seed({ ...overrides, agentProfiles: [PROFILE, { ...PROFILE, name: 'Claude one', provider: 'claude', model: '' }] }, [...statuses]);
+  // What the computer makes of a profile (CheckAgentProfiles): one it
+  // lacks the provider or model for stays editable and says it is not
+  // offered here; one whose effort its model lacks is held back.
+  it('marks a profile this computer cannot offer, and says nothing of one it can', async () => {
+    await seed(
+      { agentProfiles: [PROFILE, { ...PROFILE, name: 'Claude one', provider: 'claude', model: '' }] },
+      (profile) => (profile.provider === 'codex' ? { missing: 'Codex does not run on this computer.' } : {}),
+    );
     const view = render(AgentProfilesSettings);
     await settle();
 
     const [codex, claude] = view.getAllByTestId('agent-profile');
-    expect(within(codex).getByTestId('agent-profile-unavailable').textContent).toContain(
-      'Codex does not run on this computer, so threads here are not offered this profile.',
+    expect(within(codex).getByTestId('agent-profile-unavailable').textContent).toBe(
+      'Codex does not run on this computer. Threads here are not offered this profile; a paired computer that runs it still offers it.',
     );
     expect(within(claude).queryByTestId('agent-profile-unavailable')).toBeNull();
     expect((within(codex).getByLabelText('Name') as HTMLInputElement).disabled).toBe(false);
     expect(within(codex).queryByTestId('agent-profile-error')).toBeNull();
   });
 
-  it('marks nothing when both providers run', async () => {
-    await seed({ agentProfiles: [PROFILE] });
+  it('holds back an effort the model does not offer and says why', async () => {
+    const problem = 'claude-haiku-4 takes no effort setting; leave effort unset.';
+    await seed({ agentProfiles: [PROFILE] }, (profile) => (profile.effort === 'max' ? { problem } : {}));
     const view = render(AgentProfilesSettings);
     await settle();
-    expect(view.queryByTestId('agent-profile-unavailable')).toBeNull();
+
+    await fireEvent.change(view.getByLabelText('Effort'), { target: { value: 'max' } });
+    await settle();
+    expect(getBindingMock('UpdateSettings')!.mock.calls).toHaveLength(0);
+    expect(view.getByTestId('agent-profile-error').textContent).toBe(problem);
+    expect((view.getByLabelText('Effort') as HTMLSelectElement).value).toBe('max');
+
+    await fireEvent.change(view.getByLabelText('Effort'), { target: { value: 'high' } });
+    await settle();
+    expect(view.queryByTestId('agent-profile-error')).toBeNull();
+    expect(lastPatch()).toEqual({ agentProfiles: [PROFILE] });
+  });
+
+  // The check is what UpdateSettings checks too, so a computer that cannot
+  // run it (an older one) leaves the decision to the save.
+  it('saves when the computer cannot check', async () => {
+    await seed({ agentProfiles: [PROFILE] });
+    setBindingMock('CheckAgentProfiles', async () => {
+      throw new Error('unknown method');
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const view = render(AgentProfilesSettings);
+    await settle();
+
+    const name = view.getByLabelText('Name') as HTMLInputElement;
+    await fireEvent.input(name, { target: { value: 'Critic' } });
+    await fireEvent.change(name);
+    await settle();
+    expect(lastPatch()).toEqual({ agentProfiles: [{ ...PROFILE, name: 'Critic' }] });
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  describe('each list keeps its own draft', () => {
+    it('saving a note leaves an unsaved profile edit alone, and the reverse', async () => {
+      await seed({ agentProfiles: [PROFILE], agentNotes: [NOTE] });
+      const view = render(AgentProfilesSettings);
+      await settle();
+
+      // A profile edit the checks hold back, then a note saved.
+      const name = view.getByLabelText('Name') as HTMLInputElement;
+      await fireEvent.input(name, { target: { value: '' } });
+      await fireEvent.change(name);
+      const noteText = view.getByLabelText('Note') as HTMLTextAreaElement;
+      await fireEvent.input(noteText, { target: { value: 'Keep it shorter.' } });
+      await fireEvent.change(noteText);
+      await settle();
+      expect(lastPatch()).toEqual({ agentNotes: [{ text: 'Keep it shorter.', when: '' }] });
+      expect(name.value).toBe('');
+      expect(view.getByTestId('agent-profile-error').textContent).toBe('Give the profile a name.');
+
+      // A note edit held back, then a profile saved.
+      await fireEvent.input(noteText, { target: { value: ' ' } });
+      await fireEvent.change(noteText);
+      await fireEvent.input(name, { target: { value: 'Critic' } });
+      await fireEvent.change(name);
+      await settle();
+      expect(lastPatch()).toEqual({ agentProfiles: [{ ...PROFILE, name: 'Critic' }] });
+      expect(noteText.value).toBe(' ');
+    });
+
+    it('keeps an unsaved entry when the list changes elsewhere, and takes the rest', async () => {
+      const other = { ...PROFILE, name: 'Other', useFor: 'Other things.' };
+      await seed({ agentProfiles: [PROFILE, other], agentNotes: [NOTE] });
+      const view = render(AgentProfilesSettings);
+      await settle();
+
+      const [first] = view.getAllByTestId('agent-profile');
+      const useFor = within(first).getByLabelText('Use for') as HTMLTextAreaElement;
+      await fireEvent.input(useFor, { target: { value: 'Reviews, half typed' } });
+      savedElsewhere({ agentProfiles: [PROFILE, { ...other, useFor: 'Changed there.' }] });
+      await settle();
+
+      const [mine, theirs] = view.getAllByTestId('agent-profile');
+      expect((within(mine).getByLabelText('Use for') as HTMLTextAreaElement).value).toBe('Reviews, half typed');
+      expect((within(theirs).getByLabelText('Use for') as HTMLTextAreaElement).value).toBe('Changed there.');
+      expect(view.queryByTestId('agent-profile-conflict')).toBeNull();
+
+      await fireEvent.change(within(mine).getByLabelText('Use for'));
+      await settle();
+      expect(lastPatch()).toEqual({
+        agentProfiles: [{ ...PROFILE, useFor: 'Reviews, half typed' }, { ...other, useFor: 'Changed there.' }],
+      });
+    });
+
+    // Changed in both places: the person's version stays, marked, until they
+    // save it over the other or take the other.
+    it('marks an entry changed in both places and lets the person take the other version', async () => {
+      await seed({ agentProfiles: [PROFILE], agentNotes: [NOTE] });
+      const view = render(AgentProfilesSettings);
+      await settle();
+
+      const useFor = view.getByLabelText('Use for') as HTMLTextAreaElement;
+      await fireEvent.input(useFor, { target: { value: 'Mine.' } });
+      savedElsewhere({ agentProfiles: [{ ...PROFILE, useFor: 'Theirs.' }] });
+      await settle();
+      expect(useFor.value).toBe('Mine.');
+      const conflict = view.getByTestId('agent-profile-conflict');
+      expect(conflict.textContent).toContain('This was also changed elsewhere. Your version is kept here; saving replaces the other one.');
+
+      await fireEvent.click(within(conflict).getByRole('button', { name: 'Use the other version' }));
+      expect((view.getByLabelText('Use for') as HTMLTextAreaElement).value).toBe('Theirs.');
+      expect(view.queryByTestId('agent-profile-conflict')).toBeNull();
+      expect(getBindingMock('UpdateSettings')!.mock.calls).toHaveLength(0);
+    });
+
+    it('saves the person\'s version over the other one when they save', async () => {
+      await seed({ agentProfiles: [PROFILE], agentNotes: [NOTE] });
+      const view = render(AgentProfilesSettings);
+      await settle();
+
+      const useFor = view.getByLabelText('Use for') as HTMLTextAreaElement;
+      await fireEvent.input(useFor, { target: { value: 'Mine.' } });
+      savedElsewhere({ agentProfiles: [{ ...PROFILE, useFor: 'Theirs.' }] });
+      await settle();
+      await fireEvent.change(view.getByLabelText('Use for'));
+      await settle();
+      expect(lastPatch()).toEqual({ agentProfiles: [{ ...PROFILE, useFor: 'Mine.' }] });
+      expect(view.queryByTestId('agent-profile-conflict')).toBeNull();
+    });
+
+    // A save checks the profiles first; a change saved elsewhere meanwhile
+    // is part of what it writes, not overwritten by the list it started with.
+    it('writes a change saved elsewhere while its check ran', async () => {
+      const other = { ...PROFILE, name: 'Other', useFor: 'Other things.' };
+      await seed({ agentProfiles: [PROFILE, other], agentNotes: [NOTE] });
+      let release: () => void = () => {};
+      setBindingMock('CheckAgentProfiles', (profiles: AgentProfile[]) =>
+        new Promise((resolve) => {
+          release = () => resolve(profiles.map(() => ({})));
+        }),
+      );
+      const view = render(AgentProfilesSettings);
+      await settle();
+      release();
+      await settle();
+
+      const name = view.getAllByLabelText('Name')[0] as HTMLInputElement;
+      await fireEvent.input(name, { target: { value: 'Critic' } });
+      await fireEvent.change(name);
+      const pending = release;
+      savedElsewhere({ agentProfiles: [PROFILE, { ...other, useFor: 'Changed there.' }] });
+      await settle();
+      release();
+      pending();
+      await settle();
+      release();
+      await settle();
+
+      expect(lastPatch()).toEqual({
+        agentProfiles: [{ ...PROFILE, name: 'Critic' }, { ...other, useFor: 'Changed there.' }],
+      });
+    });
+
+    it('keeps a note changed in both places beside the other version', async () => {
+      await seed({ agentProfiles: [PROFILE], agentNotes: [NOTE] });
+      const view = render(AgentProfilesSettings);
+      await settle();
+
+      await fireEvent.input(view.getByLabelText('Note'), { target: { value: 'Mine.' } });
+      savedElsewhere({ agentNotes: [{ text: 'Theirs.', when: '' }] });
+      await settle();
+      const texts = view.getAllByLabelText('Note').map((el) => (el as HTMLTextAreaElement).value);
+      expect(texts).toEqual(['Theirs.', 'Mine.']);
+      const [, mine] = view.getAllByTestId('agent-note');
+      const conflict = within(mine).getByTestId('agent-note-conflict');
+      expect(conflict.textContent).toContain('This was changed or removed elsewhere. Your version is kept here; saving adds it back.');
+
+      await fireEvent.click(within(conflict).getByRole('button', { name: 'Discard mine' }));
+      expect(view.getAllByLabelText('Note').map((el) => (el as HTMLTextAreaElement).value)).toEqual(['Theirs.']);
+    });
   });
 
   it('keeps an emptied roster empty rather than showing the seeds', async () => {

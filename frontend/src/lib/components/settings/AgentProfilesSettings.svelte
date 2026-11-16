@@ -1,12 +1,12 @@
 <script lang="ts">
   // The agent roster: the profiles a thread spawns by name, the notes it
   // reads when choosing, and how deep sub-threads may go
-  // (internal/settings/agentroster.go). The lists are edited in a local
-  // draft and saved whole when a control commits (change, not input), and
-  // only when every entry passes the checks the backend makes, so a
-  // half-typed name never reaches the agents. An entry that fails a check
-  // keeps what was typed and says why beside it.
-  import { onMount } from 'svelte';
+  // (internal/settings/agentroster.go). Each list is edited in its own
+  // draft (rosterDraft.ts) and saved whole when a control commits (change,
+  // not input), and only when every entry passes the checks the backend
+  // makes, so a half-typed name never reaches the agents. An entry that
+  // fails a check keeps what was typed and says why beside it.
+  import { onMount, untrack } from 'svelte';
   import { settingsComputer } from './settingsComputer';
   import SettingsField from './SettingsField.svelte';
   import SettingsHeader from './SettingsHeader.svelte';
@@ -25,14 +25,13 @@
     MAX_PROFILE_USE_FOR_CHARS,
     noteProblems,
     profileProblems,
-    providerOffered,
     trimNote,
     trimProfile,
   } from './agentRoster';
+  import { draftOf, markSaved, reconcile, takeTheirs, type Draft } from './rosterDraft';
   import { SETTINGS_DEFAULTS } from '../../generated/settingsDefaults';
-  import { GetProviderStatuses } from '../../stores/bindings';
-  import { addErrorToast } from '../../stores/toast.svelte';
-  import type { AgentNote, AgentNoteWhen, AgentProfile, ProviderStatus } from '../../types/settings';
+  import { CheckAgentProfiles } from '../../stores/bindings';
+  import type { AgentNote, AgentNoteWhen, AgentProfile } from '../../types/settings';
 
   const { getSettings, updateSetting, updateSettingsPatch, call } = settingsComputer();
   let settings = $derived(getSettings());
@@ -42,7 +41,6 @@
     { value: 'claude', label: 'Claude' },
     { value: 'codex', label: 'Codex' },
   ];
-  const PROVIDER_NAMES = { claude: 'Claude', codex: 'Codex' } as const;
   const EFFORTS: { value: AgentProfile['effort']; label: string }[] = [
     { value: '', label: 'Inherit' },
     ...(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'] as const).map((value) => ({
@@ -65,81 +63,154 @@
   ];
   const LEVELS = [1, 2, 3, 4];
 
-  function cloneProfiles(list: readonly AgentProfile[]): AgentProfile[] {
-    return list.map((profile) => ({ ...profile }));
-  }
-  function cloneNotes(list: readonly AgentNote[]): AgentNote[] {
-    return list.map((note) => ({ ...note }));
-  }
+  // A profile's saved counterpart, when it changed elsewhere too: the one
+  // with its name, which is unique in the list.
+  const sameProfile = (origin: AgentProfile, entry: AgentProfile) =>
+    origin.name.toLowerCase() === entry.name.toLowerCase();
 
-  // The draft follows the lists when they change: a save from here (the
-  // store shows it at once, so its reply changes nothing when the backend
-  // takes it, and puts back the saved lists with its error toast when it
-  // does not) or one made elsewhere.
-  let profiles = $state<AgentProfile[]>(cloneProfiles(getSettings().agentProfiles));
-  let notes = $state<AgentNote[]>(cloneNotes(getSettings().agentNotes));
-  let followed = JSON.stringify([getSettings().agentProfiles, getSettings().agentNotes]);
+  // Each list follows its own saved value: a save from here (the store
+  // shows it at once, and puts back the saved list with its error toast
+  // when the backend refuses it) or one made elsewhere. What is dirty here
+  // stays (rosterDraft.ts reconcile).
+  let profiles = $state<Draft<AgentProfile>>(draftOf(getSettings().agentProfiles));
+  let notes = $state<Draft<AgentNote>>(draftOf(getSettings().agentNotes));
+  let followedProfiles = JSON.stringify(getSettings().agentProfiles);
+  let followedNotes = JSON.stringify(getSettings().agentNotes);
+  // Bumped when an outside change replaces a draft, so a save that was
+  // checking the replaced draft does not write it.
+  let profilesGeneration = 0;
+  let notesGeneration = 0;
   $effect(() => {
-    const saved = JSON.stringify([settings.agentProfiles, settings.agentNotes]);
-    if (saved === followed) return;
-    followed = saved;
-    profiles = cloneProfiles(settings.agentProfiles);
-    notes = cloneNotes(settings.agentNotes);
+    const saved = settings.agentProfiles;
+    const key = JSON.stringify(saved);
+    if (key === followedProfiles) return;
+    followedProfiles = key;
+    untrack(() => {
+      profilesGeneration += 1;
+      profiles = reconcile($state.snapshot(profiles) as Draft<AgentProfile>, saved, trimProfile, sameProfile);
+      void checkProfiles(saved.map(trimProfile));
+    });
+  });
+  $effect(() => {
+    const saved = settings.agentNotes;
+    const key = JSON.stringify(saved);
+    if (key === followedNotes) return;
+    followedNotes = key;
+    untrack(() => {
+      notesGeneration += 1;
+      notes = reconcile($state.snapshot(notes) as Draft<AgentNote>, saved, trimNote);
+    });
   });
 
-  let profileErrors = $derived(profileProblems(profiles));
-  let noteErrors = $derived(noteProblems(notes));
+  let profileErrors = $derived(profileProblems(profiles.entries.map((entry) => entry.value)));
+  let noteErrors = $derived(noteProblems(notes.entries.map((entry) => entry.value)));
 
-  function saveProfiles(): void {
+  // What this computer makes of each profile's provider, model and effort
+  // (CheckAgentProfiles): a problem blocks the save, a missing provider or
+  // model is a note. Keyed by those three, so an entry shows the check of
+  // what it holds and nothing while that is unchecked.
+  type ProfileCheck = { problem?: string; missing?: string };
+  let checks = $state<Record<string, ProfileCheck>>({});
+  const checkKey = (profile: AgentProfile) => JSON.stringify([profile.provider, profile.model.trim(), profile.effort]);
+
+  /**
+   * Checks `list` and records the results; false when a profile cannot
+   * run, null when the computer could not check (an older one, or the call
+   * failed), so the save goes ahead and UpdateSettings decides.
+   */
+  async function checkProfiles(list: AgentProfile[]): Promise<boolean | null> {
+    let results: ProfileCheck[];
+    try {
+      results = ((await call(() => CheckAgentProfiles(list))) ?? []) as ProfileCheck[];
+    } catch (err) {
+      console.warn('Could not check the agent profiles against this computer:', err);
+      return null;
+    }
+    const next = { ...checks };
+    list.forEach((profile, index) => {
+      next[checkKey(profile)] = results[index] ?? {};
+    });
+    checks = next;
+    return results.every((result) => !result?.problem);
+  }
+
+  let profileSaves = 0;
+  async function saveProfiles(): Promise<void> {
     if (profileErrors.size > 0) return;
-    const trimmed = profiles.map(trimProfile);
-    void updateSetting('agentProfiles', trimmed);
+    const save = ++profileSaves;
+    const generation = profilesGeneration;
+    const entries = [...profiles.entries];
+    const sent = entries.map((entry) => trimProfile($state.snapshot(entry.value) as AgentProfile));
+    const runnable = await checkProfiles(sent);
+    if (save !== profileSaves || runnable === false) return;
+    if (generation !== profilesGeneration) {
+      // The list changed elsewhere meanwhile: save the reconciled draft,
+      // unless an entry changed in both places waits on the person.
+      if (!profiles.entries.some((entry) => entry.theirs !== undefined)) void saveProfiles();
+      return;
+    }
+    markSaved(profiles, entries, sent);
+    void updateSetting('agentProfiles', sent);
   }
   function saveNotes(): void {
     if (noteErrors.size > 0) return;
-    const trimmed = notes.map(trimNote);
-    void updateSetting('agentNotes', trimmed);
+    const entries = [...notes.entries];
+    const sent = entries.map((entry) => trimNote($state.snapshot(entry.value) as AgentNote));
+    markSaved(notes, entries, sent);
+    void updateSetting('agentNotes', sent);
   }
 
   function addProfile(): void {
-    profiles.push({ name: '', useFor: '', provider: '', model: '', effort: '', runtimeMode: '', instructions: '' });
+    profiles.entries.push({
+      value: { name: '', useFor: '', provider: '', model: '', effort: '', runtimeMode: '', instructions: '' },
+      origin: null,
+    });
   }
   function deleteProfile(index: number): void {
-    profiles.splice(index, 1);
-    saveProfiles();
+    const [entry] = profiles.entries.splice(index, 1);
+    if (entry?.origin) profiles.removed.push(entry.origin);
+    void saveProfiles();
   }
   function addNote(): void {
-    notes.push({ text: '', when: '' });
+    notes.entries.push({ value: { text: '', when: '' }, origin: null });
   }
   function deleteNote(index: number): void {
-    notes.splice(index, 1);
+    const [entry] = notes.entries.splice(index, 1);
+    if (entry?.origin) notes.removed.push(entry.origin);
     saveNotes();
   }
   function restore(): void {
-    profiles = cloneProfiles(SETTINGS_DEFAULTS.agentProfiles as AgentProfile[]);
-    notes = cloneNotes(SETTINGS_DEFAULTS.agentNotes as AgentNote[]);
-    void updateSettingsPatch({ agentProfiles: cloneProfiles(profiles), agentNotes: cloneNotes(notes) });
+    const shippedProfiles = SETTINGS_DEFAULTS.agentProfiles as AgentProfile[];
+    const shippedNotes = SETTINGS_DEFAULTS.agentNotes as AgentNote[];
+    profiles = draftOf(shippedProfiles);
+    notes = draftOf(shippedNotes);
+    void updateSettingsPatch({
+      agentProfiles: shippedProfiles.map((profile) => ({ ...profile })),
+      agentNotes: shippedNotes.map((note) => ({ ...note })),
+    });
   }
 
-  // Which providers run here, for marking a profile that is not offered.
-  let statuses = $state<ProviderStatus[] | undefined>(undefined);
   onMount(() => {
-    let live = true;
-    void (async () => {
-      try {
-        const all = ((await call(() => GetProviderStatuses())) ?? []) as ProviderStatus[];
-        if (live) statuses = all;
-      } catch (err) {
-        if (!live) return;
-        console.error('Failed to load provider statuses:', err);
-        addErrorToast('Failed to load provider statuses.', err);
-      }
-    })();
-    return () => {
-      live = false;
-    };
+    void checkProfiles(getSettings().agentProfiles.map(trimProfile));
   });
 </script>
+
+<!--
+  An entry changed here while the saved list changed it too: the person's
+  version stays until they save it over the other or take the other.
+-->
+{#snippet changedElsewhere(testId: string, replaced: boolean, takeOther: () => void)}
+  <p class="flex flex-wrap items-baseline gap-x-2 text-[0.71875rem] text-fg-muted" role="status" data-testid={testId}>
+    <span>
+      {replaced
+        ? 'This was also changed elsewhere. Your version is kept here; saving replaces the other one.'
+        : 'This was changed or removed elsewhere. Your version is kept here; saving adds it back.'}
+    </span>
+    <button type="button" class={GHOST_BUTTON_CLASS} onclick={takeOther}>
+      {replaced ? 'Use the other version' : 'Discard mine'}
+    </button>
+  </p>
+{/snippet}
 
 <div class="settings-sections" data-testid="settings-agent-profiles">
   <section>
@@ -176,12 +247,13 @@
       data-settings-label="Profiles"
       data-testid="agent-profiles-list"
     >
-      {#if profiles.length === 0}
+      {#if profiles.entries.length === 0}
         <p class="text-[0.71875rem] text-fg-hint">No profiles. Threads spawn with their own provider and model.</p>
       {/if}
-      {#each profiles as profile, index (index)}
-        {@const offered = providerOffered(profile.provider, settings, statuses)}
-        {@const error = profileErrors.get(index)}
+      {#each profiles.entries as entry, index (index)}
+        {@const profile = entry.value}
+        {@const check = checks[checkKey(profile)]}
+        {@const error = profileErrors.get(index) ?? check?.problem}
         <div
           class="flex flex-col gap-2 rounded-[var(--radius-field)] border border-border-subtle bg-surface-1/30 p-3"
           data-testid="agent-profile"
@@ -194,8 +266,8 @@
               type="text"
               placeholder="Name"
               maxlength={MAX_PROFILE_NAME_CHARS}
-              bind:value={profile.name}
-              onchange={saveProfiles}
+              bind:value={entry.value.name}
+              onchange={() => void saveProfiles()}
               aria-invalid={error !== undefined}
               class="{INPUT_CLASS} max-w-[10rem] font-medium"
             />
@@ -205,8 +277,8 @@
               title="Provider"
               value={profile.provider}
               onchange={(e) => {
-                profile.provider = (e.target as HTMLSelectElement).value as AgentProfile['provider'];
-                saveProfiles();
+                entry.value.provider = (e.target as HTMLSelectElement).value as AgentProfile['provider'];
+                void saveProfiles();
               }}
               class={SELECT_CLASS}
             >
@@ -220,8 +292,8 @@
               type="text"
               placeholder="Inherit model"
               maxlength={MAX_PROFILE_MODEL_CHARS}
-              bind:value={profile.model}
-              onchange={saveProfiles}
+              bind:value={entry.value.model}
+              onchange={() => void saveProfiles()}
               class="{INPUT_CLASS} max-w-[12rem] font-mono"
             />
             <label class="sr-only" for="agent-profile-effort-{index}">Effort</label>
@@ -230,8 +302,8 @@
               title="Effort"
               value={profile.effort}
               onchange={(e) => {
-                profile.effort = (e.target as HTMLSelectElement).value as AgentProfile['effort'];
-                saveProfiles();
+                entry.value.effort = (e.target as HTMLSelectElement).value as AgentProfile['effort'];
+                void saveProfiles();
               }}
               class={SELECT_CLASS}
             >
@@ -245,8 +317,8 @@
               title="Runtime mode"
               value={profile.runtimeMode}
               onchange={(e) => {
-                profile.runtimeMode = (e.target as HTMLSelectElement).value as AgentProfile['runtimeMode'];
-                saveProfiles();
+                entry.value.runtimeMode = (e.target as HTMLSelectElement).value as AgentProfile['runtimeMode'];
+                void saveProfiles();
               }}
               class={SELECT_CLASS}
             >
@@ -263,10 +335,13 @@
               Delete
             </button>
           </div>
-          {#if offered === false && profile.provider !== ''}
+          {#if check?.missing && !error}
             <p class="text-[0.71875rem] text-fg-muted" data-testid="agent-profile-unavailable">
-              {`${PROVIDER_NAMES[profile.provider]} does not run on this computer, so threads here are not offered this profile. A paired computer that runs it still offers it.`}
+              {`${check.missing} Threads here are not offered this profile; a paired computer that runs it still offers it.`}
             </p>
+          {/if}
+          {#if entry.theirs !== undefined}
+            {@render changedElsewhere('agent-profile-conflict', entry.theirs !== null, () => takeTheirs(profiles, index))}
           {/if}
           <label class="flex flex-col gap-1 text-[0.71875rem] text-fg-muted">
             Use for
@@ -274,8 +349,8 @@
               rows={2}
               maxlength={MAX_PROFILE_USE_FOR_CHARS}
               placeholder="What this agent is good at, what it costs, and what not to use it for."
-              bind:value={profile.useFor}
-              onchange={saveProfiles}
+              bind:value={entry.value.useFor}
+              onchange={() => void saveProfiles()}
               class="{INPUT_CLASS} resize-y"
             ></textarea>
           </label>
@@ -283,8 +358,8 @@
             Instructions, appended to the sub-thread's system prompt (optional)
             <textarea
               rows={2}
-              bind:value={profile.instructions}
-              onchange={saveProfiles}
+              bind:value={entry.value.instructions}
+              onchange={() => void saveProfiles()}
               class="{INPUT_CLASS} resize-y"
             ></textarea>
           </label>
@@ -297,7 +372,7 @@
         <button
           type="button"
           class={SECONDARY_BUTTON_CLASS}
-          disabled={profiles.length >= MAX_AGENT_PROFILES}
+          disabled={profiles.entries.length >= MAX_AGENT_PROFILES}
           onclick={addProfile}
         >
           Add profile
@@ -317,7 +392,8 @@
       data-settings-label="Choosing notes"
       data-testid="agent-notes-list"
     >
-      {#each notes as note, index (index)}
+      {#each notes.entries as entry, index (index)}
+        {@const note = entry.value}
         {@const error = noteErrors.get(index)}
         <div class="flex flex-col gap-2" data-testid="agent-note">
           <label class="sr-only" for="agent-note-text-{index}">Note</label>
@@ -325,7 +401,7 @@
             id="agent-note-text-{index}"
             rows={3}
             maxlength={MAX_AGENT_NOTE_CHARS}
-            bind:value={note.text}
+            bind:value={entry.value.text}
             onchange={saveNotes}
             aria-invalid={error !== undefined}
             class="{INPUT_CLASS} resize-y"
@@ -336,7 +412,7 @@
               id="agent-note-when-{index}"
               value={note.when}
               onchange={(e) => {
-                note.when = (e.target as HTMLSelectElement).value as AgentNoteWhen;
+                entry.value.when = (e.target as HTMLSelectElement).value as AgentNoteWhen;
                 saveNotes();
               }}
               class="{SELECT_CLASS} min-w-0 flex-1 truncate"
@@ -349,6 +425,9 @@
               Delete
             </button>
           </div>
+          {#if entry.theirs !== undefined}
+            {@render changedElsewhere('agent-note-conflict', entry.theirs !== null, () => takeTheirs(notes, index))}
+          {/if}
           {#if error}
             <p class="text-[0.71875rem] text-error" role="alert">{error}</p>
           {/if}
@@ -358,7 +437,7 @@
         <button
           type="button"
           class={SECONDARY_BUTTON_CLASS}
-          disabled={notes.length >= MAX_AGENT_NOTES}
+          disabled={notes.entries.length >= MAX_AGENT_NOTES}
           onclick={addNote}
         >
           Add note

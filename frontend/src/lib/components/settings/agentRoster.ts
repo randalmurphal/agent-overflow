@@ -2,7 +2,7 @@
 // (agentProfileProblem, agentNoteProblem and the list bounds) so the page
 // never sends an edit the strict update path refuses.
 
-import type { AgentNote, AgentProfile, ProviderStatus, Settings } from '../../types/settings';
+import type { AgentNote, AgentProfile } from '../../types/settings';
 
 export const MAX_AGENT_PROFILES = 24;
 export const MAX_PROFILE_NAME_CHARS = 32;
@@ -83,23 +83,4 @@ export function noteProblems(notes: readonly AgentNote[]): Map<number, string> {
     }
   });
   return problems;
-}
-
-/**
- * Whether threads on this computer are offered a profile on `provider`: the
- * provider is turned on and its binary resolves, as the backend's catalog
- * decides (internal/app/app_thread_tools_roster.go providerOffered). A
- * profile that inherits its provider is always offered. Undefined while the
- * statuses load.
- */
-export function providerOffered(
-  provider: AgentProfile['provider'],
-  settings: Settings,
-  statuses: readonly ProviderStatus[] | undefined,
-): boolean | undefined {
-  if (provider === '') return true;
-  const enabled = provider === 'claude' ? settings.claudeEnabled : settings.codexEnabled;
-  if (!enabled) return false;
-  if (!statuses) return undefined;
-  return statuses.some((status) => status.provider === provider && status.installed);
 }

@@ -131,9 +131,9 @@ describe('AO thread tool rows', () => {
         input: { prompt: 'p', ...input },
         ao_result: { token: TOKEN, thread_id: CHILD, title: 'Docs slice', state: 'running', outcome: 'backgrounded' },
       }, { payloadId: 'p-spawn' });
-    let read: ReturnType<typeof vi.fn>;
+    let read: ReturnType<typeof vi.fn<(id: string) => Promise<unknown>>>;
     beforeEach(() => {
-      read = vi.fn(async () => makeThread({ id: CHILD, title: 'Docs slice' }));
+      read = vi.fn(async (_id: string) => makeThread({ id: CHILD, title: 'Docs slice' }));
       setBindingMock('GetThread', read);
     });
 
