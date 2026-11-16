@@ -8,6 +8,7 @@ import {
   type PaneBoundaryDrag,
 } from '../utils/paneWidths';
 import { getPaneHostWidth } from './layoutMetrics.svelte';
+import { isCompactLayout } from './layoutMode.svelte';
 import type { AgentPaneScopeSnapshot } from '../types/settings';
 
 // 'thread' panes host a ChatView for a ThreadPane (the registry in
@@ -110,9 +111,39 @@ export function onPaneLayoutItemsRemoved(listener: (paneIds: readonly string[]) 
   return () => { removalListeners.delete(listener); };
 }
 
+// The promoted pane: one layout item laid over the strip as if it were the
+// only pane, until demoted. Per client and never persisted. Compact shows
+// one pane already, so it ignores the promotion, refuses a new one, and
+// PaneHost clears it on entering compact. PaneHost owns the animation
+// toward this intent (panePromotion.svelte.ts).
+let promotedPaneId: string | null = $state(null);
+
+/** Reactive: the promoted pane, null when none or under compact. */
+export function getPromotedPaneId(): string | null {
+  return isCompactLayout() ? null : promotedPaneId;
+}
+
+/**
+ * Promote a layout pane, replacing any other promotion. Refused (false)
+ * under compact or for an id not in the layout.
+ */
+export function promotePane(paneId: string): boolean {
+  if (isCompactLayout()) return false;
+  if (!layoutItems.some((item) => item.paneId === paneId)) return false;
+  promotedPaneId = paneId;
+  return true;
+}
+
+export function demotePane(): void {
+  promotedPaneId = null;
+}
+
 function replaceLayoutItems(next: PaneLayoutItem[]): void {
   const previous = layoutItems;
   layoutItems = next;
+  if (promotedPaneId !== null && !next.some((item) => item.paneId === promotedPaneId)) {
+    promotedPaneId = null;
+  }
   if (removalListeners.size === 0) return;
   const kept = new Set(next.map((item) => item.paneId));
   const removed = previous.filter((item) => !kept.has(item.paneId)).map((item) => item.paneId);
@@ -474,6 +505,7 @@ export function averagePaneWidthPx(): number {
 }
 
 export function resetPaneLayoutForTest(): void {
+  promotedPaneId = null;
   replaceLayoutItems([defaultMainPaneLayoutItem()]);
 }
 

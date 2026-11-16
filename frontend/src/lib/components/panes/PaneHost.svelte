@@ -1,6 +1,7 @@
 <script lang="ts">
   import SteppedSpinner from '../primitives/SteppedSpinner.svelte';
   import PaneCloseButton from './PaneCloseButton.svelte';
+  import PanePromoteButton from './PanePromoteButton.svelte';
   import { untrack } from 'svelte';
   import ChatView from '../chat/ChatView.svelte';
   import CompanionPane from './CompanionPane.svelte';
@@ -12,7 +13,14 @@
     getPane,
   } from '../../stores/panes.svelte';
   import { getMinPaneWidth } from '../../stores/paneDensity.svelte';
-  import { getPaneLayoutItems, isCompanionKind, isToolKind } from '../../stores/paneLayout.svelte';
+  import {
+    demotePane,
+    getPaneLayoutItems,
+    getPromotedPaneId,
+    isCompanionKind,
+    isToolKind,
+    type PaneLayoutItem,
+  } from '../../stores/paneLayout.svelte';
   import { setPaneHostWidth } from '../../stores/layoutMetrics.svelte';
   import { REVEAL_PANE_EVENT } from '../../stores/eventNames';
   import { compactShownPaneId, getCompactScreen, isCompactLayout, noteCompactPaneShown } from '../../stores/layoutMode.svelte';
@@ -20,8 +28,10 @@
   import { measurePane } from './measurePane';
   import { airspaceSurface } from '../../utils/paneAirspace.svelte';
   import { createPaneThreadDrag, PANE_DROP_SEAM_PX } from './usePaneThreadDrag.svelte';
+  import { createPanePromotion } from './panePromotion.svelte';
 
   const PANE_SELECTOR = '[data-pane-id]';
+  const SLOT_SELECTOR = '[data-pane-slot]';
   type PaneRevealAlignment = 'start' | 'end';
 
   let layoutItems = $derived(getPaneLayoutItems());
@@ -63,11 +73,58 @@
     return null;
   }
 
+  function paneSlotPlaceholder(paneId: string): HTMLElement | null {
+    for (const slotEl of hostEl?.querySelectorAll<HTMLElement>(SLOT_SELECTOR) ?? []) {
+      if (slotEl.dataset.paneSlot === paneId) return slotEl;
+    }
+    return null;
+  }
+
+  // Where a pane sits in the strip: its section, or while it is promoted
+  // the placeholder holding its slot. Every offset and reveal reads this.
+  function paneSlotById(paneId: string): HTMLElement | null {
+    return paneSlotPlaceholder(paneId) ?? paneElementById(paneId);
+  }
+
   const drag = createPaneThreadDrag({
     getStripEl: () => stripEl,
     getHostEl: () => hostEl,
     getLayoutItems: () => layoutItems,
   });
+
+  // A reveal asked for while a pane is promoted waits for the demote it
+  // causes: the strip does not move while a pane is laid over it.
+  let revealAfterDemote: string | null = null;
+  const promotion = createPanePromotion({
+    getHostEl: () => hostEl,
+    sectionOf: paneElementById,
+    slotOf: paneSlotPlaceholder,
+    onCapture: () => {
+      cancelStripGlide();
+      pendingScrollPaneId = null;
+      pendingScrollInstant = false;
+    },
+    onRelease: () => {
+      publishPaneOffsets();
+      const paneId = revealAfterDemote;
+      revealAfterDemote = null;
+      if (paneId) requestPaneScroll(paneId);
+    },
+  });
+  let promotedId = $derived(getPromotedPaneId());
+  let shownPromotedId = $derived(promotion.shownId);
+
+  // Revealing the promoted pane has nothing to do: it fills the strip.
+  // Revealing any other pane demotes first and reveals once the strip is
+  // free, so the pane asked for always ends up on screen.
+  function revealHeldByPromotion(paneId: string): boolean {
+    const intent = untrack(getPromotedPaneId);
+    if (intent === null && promotion.shownId === null) return false;
+    if (paneId === intent) return true;
+    revealAfterDemote = paneId;
+    demotePane();
+    return true;
+  }
 
   // A pane's own observer saw it move or resize: republish the whole
   // snapshot rather than patch one offset into a snapshot of another width.
@@ -83,11 +140,26 @@
     const el = hostEl;
     if (!el) return;
     const offsets = new Map<string, number>();
-    for (const paneEl of el.querySelectorAll<HTMLElement>(PANE_SELECTOR)) {
-      const paneId = paneEl.dataset.paneId;
-      if (paneId) offsets.set(paneId, paneEl.offsetLeft);
+    // A promoted pane's placeholder comes before its section, and its
+    // offset is the slot's.
+    for (const child of el.children) {
+      if (!(child instanceof HTMLElement)) continue;
+      const paneId = child.dataset.paneSlot ?? child.dataset.paneId;
+      if (paneId && !offsets.has(paneId)) offsets.set(paneId, child.offsetLeft);
     }
     stripGeometry = { width: el.clientWidth, offsets };
+  }
+
+  // The strip's scroll range from its flow alone: sections, slots and gap
+  // wrappers, not a promoted section laid over it.
+  function flowScrollMax(el: HTMLElement): number {
+    let right = 0;
+    for (const child of el.children) {
+      if (!(child instanceof HTMLElement) || child.dataset.panePromoted === 'true') continue;
+      if (!child.dataset.paneId && !child.dataset.paneSlot && child.dataset.paneGapIndex === undefined) continue;
+      right = Math.max(right, child.offsetLeft + child.offsetWidth);
+    }
+    return Math.max(0, right - el.clientWidth);
   }
 
   // Single home for the strip's scroll bounds: every scrollLeft the strip
@@ -111,7 +183,7 @@
     // the target pane's current offset; if it disappeared (pane closed), stop
     // the glide rather than writing stale geometry back.
     if (glideTargetLeft !== null) {
-      const targetPane = glideTargetPaneId ? paneElementById(glideTargetPaneId) : null;
+      const targetPane = glideTargetPaneId ? paneSlotById(glideTargetPaneId) : null;
       if (!targetPane || glideTargetAlignment === null) {
         cancelStripGlide();
       } else {
@@ -139,6 +211,7 @@
     const el = hostEl;
     if (!el) return;
     const publishScrollPosition = (): void => {
+      promotion.holdStrip(el);
       measureCompactShownPane();
     };
     // A horizontal wheel/trackpad gesture over the strip is user scroll
@@ -152,6 +225,7 @@
       const entry = entries[0];
       if (entry) setPaneHostWidth(entry.contentRect.width);
       reconcilePaneHostGeometry();
+      promotion.holdStrip(el, flowScrollMax(el));
       realignCompactStrip();
     });
     obs.observe(el);
@@ -180,6 +254,7 @@
   $effect(() => {
     return () => {
       drag.destroy();
+      promotion.destroy();
       cancelStripGlide();
       // The record measures this strip; it ends with it.
       noteCompactPaneShown(null);
@@ -247,6 +322,59 @@
     };
   });
 
+  // The strip follows the store's promoted pane. Membership is read so a
+  // shown pane that closes ends its promotion in the same flush.
+  $effect(() => {
+    const next = promotedId;
+    const instant = compact;
+    void paneStructureKey;
+    untrack(() => promotion.follow(next, {
+      instant,
+      present: (paneId) => layoutItems.some((item) => item.paneId === paneId),
+    }));
+  });
+
+  // Focus moving to another pane demotes: the promoted pane is the only one
+  // on screen, and the newly focused one must be seen.
+  $effect(() => {
+    const focused = focusedPaneId;
+    untrack(() => {
+      const intent = getPromotedPaneId();
+      if (intent !== null && focused !== null && focused !== intent) demotePane();
+    });
+  });
+
+  // A horizontal wheel over a promoted pane would scroll the strip under
+  // it; take it unless something inside the pane scrolls that way. Bound
+  // only while a pane is shown so ordinary strip scrolling stays passive.
+  $effect(() => {
+    const el = hostEl;
+    const shown = shownPromotedId;
+    if (!el || shown === null) return;
+    const blockStripWheel = (event: WheelEvent): void => {
+      // Shift turns a vertical wheel into a horizontal scroll.
+      const dx = event.shiftKey && event.deltaX === 0 ? event.deltaY : event.deltaX;
+      if (dx === 0) return;
+      if (!event.shiftKey && Math.abs(event.deltaX) < Math.abs(event.deltaY)) return;
+      if (scrollsHorizontallyWithin(event.target, paneElementById(shown), dx)) return;
+      event.preventDefault();
+    };
+    el.addEventListener('wheel', blockStripWheel, { passive: false });
+    return () => el.removeEventListener('wheel', blockStripWheel);
+  });
+
+  function scrollsHorizontallyWithin(target: EventTarget | null, root: HTMLElement | null, dx: number): boolean {
+    if (!root || !(target instanceof Element) || !root.contains(target)) return false;
+    for (let node: Element | null = target; node && node !== root; node = node.parentElement) {
+      if (node.scrollWidth <= node.clientWidth + 1) continue;
+      const overflowX = getComputedStyle(node).overflowX;
+      if (overflowX !== 'auto' && overflowX !== 'scroll') continue;
+      const room = dx > 0 ? node.scrollWidth - node.clientWidth - node.scrollLeft : node.scrollLeft;
+      if (room > 0.5) return true;
+    }
+    return false;
+  }
+
   // Compact shows one pane, and the layout store's record of which one
   // (`isPaneOnScreen`) is a measurement of this strip, written only here:
   // the pane whose section holds the strip's centre. It runs wherever the
@@ -285,7 +413,7 @@
     if (!untrack(() => compact)) return;
     const before = untrack(compactShownPaneId);
     const revealing = glideTargetLeft !== null || pendingScrollPaneId !== null;
-    const paneEl = before === null || revealing ? null : paneElementById(before);
+    const paneEl = before === null || revealing ? null : paneSlotById(before);
     if (paneEl) snapPaneIntoView(paneEl);
   }
 
@@ -303,10 +431,12 @@
     untrack(() => {
       if (leaving) noteCompactPaneShown(null);
       if (!entering) return;
+      // Compact shows one pane already; a promotion does not survive it.
+      demotePane();
       reconcilePaneHostGeometry();
       measureCompactShownPane();
       const shown = compactShownPaneId();
-      const paneEl = shown === null ? null : paneElementById(shown);
+      const paneEl = shown === null ? null : paneSlotById(shown);
       if (paneEl) snapPaneIntoView(paneEl);
     });
   });
@@ -325,6 +455,7 @@
   let pendingScrollPaneId: string | null = null;
   let pendingScrollInstant = false;
   function requestPaneScroll(paneId: string, opts?: { instant?: boolean }): void {
+    if (revealHeldByPromotion(paneId)) return;
     const alreadyScheduled = pendingScrollPaneId !== null;
     pendingScrollPaneId = paneId;
     pendingScrollInstant = pendingScrollInstant || (opts?.instant ?? false);
@@ -334,11 +465,11 @@
       const instant = pendingScrollInstant;
       pendingScrollPaneId = null;
       pendingScrollInstant = false;
-      if (!target) return;
-      const paneEl = paneElementById(target);
+      if (!target || revealHeldByPromotion(target)) return;
+      const paneEl = paneSlotById(target);
       if (!paneEl) return;
       if (instant) snapPaneIntoView(paneEl);
-      else scrollPaneIntoView(paneEl);
+      else scrollPaneIntoView(paneEl, target);
     });
   }
 
@@ -458,7 +589,7 @@
     el.scrollLeft = clampStripScrollLeft(el, target.left);
   }
 
-  function scrollPaneIntoView(paneEl: HTMLElement): void {
+  function scrollPaneIntoView(paneEl: HTMLElement, paneId: string): void {
     const el = hostEl;
     if (!el) return;
     // Judge visibility against where the strip is HEADED (the in-flight
@@ -468,8 +599,7 @@
     const viewLeft = glideTargetLeft ?? el.scrollLeft;
     const target = paneRevealTarget(paneEl, viewLeft);
     if (target === null) return;
-    const paneId = paneEl.dataset.paneId;
-    if (paneId) glideStripTo(target.left, paneId, target.alignment);
+    glideStripTo(target.left, paneId, target.alignment);
   }
 
   // Pointer focus: reveal only on an actual focus TRANSITION (clicking an
@@ -499,6 +629,15 @@
     return `flex-grow:${widthPx};flex-basis:${widthPx}px;min-width:${minPaneWidth}px`;
   }
 
+  // A promoted section is laid over the strip's visible area: the host's
+  // padding box at the locked scroll position. Its slot keeps the flex
+  // style above. Above the dividers (z-20), below drop indicators (z-40)
+  // and the drag shield.
+  function sectionStyle(item: PaneLayoutItem): string {
+    if (shownPromotedId !== item.paneId) return paneSectionStyle(item.widthPx);
+    return `position:absolute;top:0;bottom:0;left:${promotion.lockedLeft}px;width:100%;z-index:30`;
+  }
+
 </script>
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -516,7 +655,10 @@
 >
 <div
   bind:this={hostEl}
-  class="relative flex-1 flex min-w-0 min-h-0 overflow-x-auto overflow-y-hidden compact:overflow-x-hidden"
+  class={[
+    'relative flex-1 flex min-w-0 min-h-0 overflow-x-auto overflow-y-hidden compact:overflow-x-hidden',
+    shownPromotedId !== null ? 'pane-host-promoted' : '',
+  ].join(' ')}
   inert={threadInert}
   data-popover-clip-boundary
   data-testid="pane-host"
@@ -534,6 +676,18 @@
     </section>
   {:else}
     {#each layoutItems as item, index (item.id)}
+      {#if shownPromotedId === item.paneId}
+        <!-- The promoted pane's slot: same flex style, so no other pane
+             moves while the section is laid over the strip. Offsets and
+             reveals read it in place of the section (paneSlotById). -->
+        <div
+          class="min-h-0 min-w-0 shrink-0"
+          style={paneSectionStyle(item.widthPx)}
+          data-pane-slot={item.paneId}
+          data-testid="pane-promoted-slot"
+          aria-hidden="true"
+        ></div>
+      {/if}
       {#if isCompanionKind(item.kind)}
         <!-- Companion panes (plan/review/browser/agent panels + the
              take-control PTY mirror) are not ThreadPanes: no thread-drop
@@ -545,18 +699,20 @@
              marks the pairing on both halves. -->
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <section
-          use:measurePane={{ paneId: item.paneId, onOffsetChange: handlePaneOffsetChange }}
-          style={paneSectionStyle(item.widthPx)}
+          use:measurePane={{ paneId: item.paneId, onOffsetChange: handlePaneOffsetChange, promoted: shownPromotedId === item.paneId }}
+          style={sectionStyle(item)}
+          style:clip-path={promotion.clipFor(item.paneId)}
           class={[
             item.kind === 'take-control' ? 'take-control-pair-top' : '',
             'flex min-h-0 min-w-0 shrink-0 flex-col overflow-hidden border-r border-border-subtle/70',
-            focusedPaneId === item.paneId ? 'bg-surface-0/40' : '',
+            shownPromotedId === item.paneId ? 'bg-surface-0' : focusedPaneId === item.paneId ? 'bg-surface-0/40' : '',
           ].join(' ')}
           data-pane-id={item.paneId}
           data-pane-kind={item.kind}
           data-pane-min-width={minPaneWidth}
           data-pane-width={item.widthPx}
           data-pane-focused={focusedPaneId === item.paneId}
+          data-pane-promoted={shownPromotedId === item.paneId}
           onpointerdown={() => handlePanePointerDown(item.paneId)}
           onfocusin={() => handlePaneFocusIn(item.paneId)}
         >
@@ -572,7 +728,8 @@
               {#if sideChatPane?.threadId}
                 <ChatView pane={sideChatPane} />
               {:else}
-                <div class="flex justify-end border-b border-border-subtle p-2">
+                <div class="flex justify-end gap-1 border-b border-border-subtle p-2">
+                  <PanePromoteButton paneId={item.paneId} />
                   <PaneCloseButton paneId={item.paneId} />
                 </div>
                 <div role="status" aria-busy="true" class="flex flex-1 items-center justify-center gap-2 px-4 text-sm text-fg-muted" data-testid="side-chat-preparing">
@@ -605,11 +762,12 @@
         {@const toolKind = item.kind}
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <section
-          use:measurePane={{ paneId: item.paneId, onOffsetChange: handlePaneOffsetChange }}
-          style={paneSectionStyle(item.widthPx)}
+          use:measurePane={{ paneId: item.paneId, onOffsetChange: handlePaneOffsetChange, promoted: shownPromotedId === item.paneId }}
+          style={sectionStyle(item)}
+          style:clip-path={promotion.clipFor(item.paneId)}
           class={[
             'flex min-h-0 min-w-0 shrink-0 flex-col overflow-hidden border-r border-border-subtle/70',
-            focusedPaneId === item.paneId ? 'bg-surface-0/40' : '',
+            shownPromotedId === item.paneId ? 'bg-surface-0' : focusedPaneId === item.paneId ? 'bg-surface-0/40' : '',
             drag.draggingPaneId === item.paneId ? 'opacity-55' : '',
           ].join(' ')}
           data-pane-id={item.paneId}
@@ -617,13 +775,14 @@
           data-pane-min-width={minPaneWidth}
           data-pane-width={item.widthPx}
           data-pane-focused={focusedPaneId === item.paneId}
+          data-pane-promoted={shownPromotedId === item.paneId}
           onpointerdown={() => handlePanePointerDown(item.paneId)}
           onfocusin={() => handlePaneFocusIn(item.paneId)}
         >
           <ToolPane
             paneId={item.paneId}
             kind={toolKind}
-            onPaneDragStart={(event) => drag.onPaneDragStart(event, item.paneId)}
+            onPaneDragStart={shownPromotedId === item.paneId ? undefined : (event) => drag.onPaneDragStart(event, item.paneId)}
           />
         </section>
       {:else}
@@ -632,12 +791,13 @@
         {#if pane}
           <!-- svelte-ignore a11y_no_static_element_interactions -->
           <section
-            use:measurePane={{ paneId: item.paneId, onOffsetChange: handlePaneOffsetChange }}
-            style={paneSectionStyle(item.widthPx)}
+            use:measurePane={{ paneId: item.paneId, onOffsetChange: handlePaneOffsetChange, promoted: shownPromotedId === item.paneId }}
+            style={sectionStyle(item)}
+            style:clip-path={promotion.clipFor(item.paneId)}
             class={[
               'flex min-h-0 min-w-0 shrink-0 flex-col overflow-hidden border-r border-border-subtle/70',
               paired ? 'take-control-pair-top' : '',
-              focusedPaneId === item.paneId ? 'bg-surface-0/40' : '',
+              shownPromotedId === item.paneId ? 'bg-surface-0' : focusedPaneId === item.paneId ? 'bg-surface-0/40' : '',
               drag.draggingPaneId === item.paneId ? 'opacity-55' : '',
               drag.duplicateDropPaneId === item.paneId ? 'ring-2 ring-accent/70 ring-inset' : '',
             ].join(' ')}
@@ -646,18 +806,23 @@
             data-pane-min-width={minPaneWidth}
             data-pane-width={item.widthPx}
             data-pane-focused={focusedPaneId === item.paneId}
+            data-pane-promoted={shownPromotedId === item.paneId}
             data-pane-paired={paired}
             onpointerdown={() => handlePanePointerDown(item.paneId)}
             onfocusin={() => handlePaneFocusIn(item.paneId)}
           >
             <RenderBoundary label="This thread pane" testId="pane-render-error">
-              <ChatView {pane} onPaneDragStart={(event) => drag.onPaneDragStart(event, item.paneId)} />
+              <ChatView
+                {pane}
+                onPaneDragStart={shownPromotedId === item.paneId ? undefined : (event) => drag.onPaneDragStart(event, item.paneId)}
+              />
             </RenderBoundary>
           </section>
         {:else}
           <section
-            style={paneSectionStyle(item.widthPx)}
-            class="flex min-h-0 min-w-0 shrink-0 items-center justify-center text-sm text-error"
+            style={sectionStyle(item)}
+            style:clip-path={promotion.clipFor(item.paneId)}
+            class="flex min-h-0 min-w-0 shrink-0 items-center justify-center bg-surface-0 text-sm text-error"
             data-pane-id={item.paneId}
             data-pane-kind={item.kind}
             data-pane-missing="true"

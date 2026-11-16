@@ -28,6 +28,13 @@ is the drag handle. Open, close and placement belong to
 - Desktop owns resizers and multi-pane layout. Compact mode shows one pane at a
   time while keeping the strip mounted; use the shared layout mode rather than
   device or runtime detection.
+- A promoted pane (`paneLayout.svelte#getPromotedPaneId`, animated by
+  `panePromotion.svelte.ts`) keeps its section, laid over the strip, while
+  a `data-pane-slot` placeholder holds its flex slot. Code that reads a
+  pane's place in the strip (offsets, reveals, drop slots, the measured
+  width a divider drag starts from) reads the slot, never the promoted
+  section's box. Native browser views read the promoted layer through
+  `utils/panePromotion.svelte.ts`.
 
 ## Find
 

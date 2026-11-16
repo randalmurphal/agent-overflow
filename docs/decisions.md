@@ -273,6 +273,17 @@ Mechanism in
   a restart like the layout; take-control and side chats last the session.
   Nothing is shared across clients. The browser pane follows its backend
   state instead (`frontend/src/lib/stores/companionStash.ts`).
+- Any pane (thread, companion, tool) can be promoted to fill the pane
+  area as if it were the only pane, and demoted back to its slot: its
+  header's maximize control, a double-click on its title, or
+  `alt+shift+enter`. Per client, never persisted; compact ignores it.
+  Nothing remounts or reloads: the pane keeps its element, its slot holds
+  its place so no other pane moves, and a clip reveal of about 180 ms
+  (none under reduced motion) animates both ways. The strip does not
+  scroll under a promoted pane. Focusing or revealing another pane, or
+  starting a drag that places a pane, demotes first, so the pane asked for
+  is always shown; closing the promoted pane ends the promotion. Escape
+  does not demote: in a thread pane it interrupts a turn.
 - Thread groups, pins, and auto-pin rulings: `docs/specs/sidebar-thread-groups.md`
   and `internal/store/AGENTS.md`. Re-pin-to-bump is deliberately dead.
 - Thread content search matches title and workspace path only. Searching

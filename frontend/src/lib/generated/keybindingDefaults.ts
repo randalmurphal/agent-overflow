@@ -175,6 +175,12 @@ export const KEYBINDING_DEFAULTS: readonly KeybindingRule[] = [
     "defaultKey": "alt+shift+l"
   },
   {
+    "key": "alt+shift+enter",
+    "command": "pane.togglePromoted",
+    "defaultId": "pane.togglePromoted",
+    "defaultKey": "alt+shift+enter"
+  },
+  {
     "key": "mod+shift+g",
     "command": "diff.panel.toggle",
     "when": "hasActiveThread \u0026\u0026 !terminalFocus",
