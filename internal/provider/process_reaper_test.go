@@ -150,7 +150,10 @@ func TestALaunchsLeftoversEndBeforeItsGroupIsReleased(t *testing.T) {
 func TestCloseAfterTheLeaderExitsReturnsOnceALeftoverIgnoringTermIsKilled(t *testing.T) {
 	shortenGraces(t, 100*time.Millisecond, 200*time.Millisecond)
 	reaper := &procutiltest.Recorder{}
-	p, child := spawnLeavingAChild(t, Watched(reaper), `(trap "" TERM; exec sleep 120)`)
+	// The leader ignores SIGTERM before it forks, so the child ignores it
+	// from its first instruction: a trap set in the child could lose the race
+	// with the signal.
+	p, child := spawnLeavingAChild(t, Watched(reaper), `trap "" TERM; sleep 120`)
 	start := time.Now()
 	if err := p.Close(); err != nil {
 		t.Fatalf("Close = %v, want nil", err)
