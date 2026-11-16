@@ -1,10 +1,10 @@
 package browser
 
 import (
+	"context"
 	"errors"
 	"slices"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 )
@@ -18,11 +18,33 @@ func tabURLs(m *Manager, access Access) []string {
 	return urls
 }
 
-// Switching the jar with tabs open closes the live pages and reopens their
-// addresses in the new jar in the same order, with the same tab active and
-// the same labels; a suspended tab stays suspended and restores into the new
-// jar; the old jar, left empty, is disposed.
-func TestSwitchingTheJarReopensTheTabsInTheNewJar(t *testing.T) {
+// waitDisposed waits until the profile of jar has been disposed.
+func waitDisposed(t *testing.T, engine *jarEngine, jar string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if profile := engine.profile(jar); profile != nil && profile.disposed.Load() {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the profile of %s was never disposed", jar)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// restore restores one tab as the pane's selection does, in the background.
+func restore(m *Manager, access Access, pageID string) <-chan error {
+	done := make(chan error, 1)
+	go func() { done <- m.ActivateCompanionPage(context.Background(), access, pageID) }()
+	return done
+}
+
+// Switching the jar with tabs open suspends every live tab into the new jar
+// under its id, order, label and address, the active tab staying active; a
+// tab already suspended stays so; the old jar, left empty, is disposed; and
+// each tab restores into the new jar when it is used.
+func TestSwitchingTheJarSuspendsTheTabsIntoTheNewJar(t *testing.T) {
 	manager, engine := newJarManager(t, t.TempDir(), Config{Enabled: true, PersistSiteData: true})
 	proj := newProject(t, "P")
 	access := proj.access("a", proj.one)
@@ -45,92 +67,94 @@ func TestSwitchingTheJarReopensTheTabsInTheNewJar(t *testing.T) {
 	if moved, err := manager.suspendPage(t.Context(), live); err != nil || !moved {
 		t.Fatalf("suspend the first page: %v", err)
 	}
-	before := tabURLs(manager, access)
-	worktree := canonical(t, proj.one)
+	beforeIDs, beforeURLs := tabIDs(manager, access), tabURLs(manager, access)
 
 	setJar(t, manager, access, JarThread)
-	waitSettled(t, manager, access)
 
 	state := manager.CompanionState(access)
-	if after := tabURLs(manager, access); !slices.Equal(after, before) {
-		t.Fatalf("tabs after the switch = %q, want %q in the same order", after, before)
-	}
 	if state.Jar != JarThread {
 		t.Fatalf("state names jar %q, want thread", state.Jar)
 	}
-	var active PageInfo
+	if ids, urls := tabIDs(manager, access), tabURLs(manager, access); !slices.Equal(ids, beforeIDs) || !slices.Equal(urls, beforeURLs) {
+		t.Fatalf("tabs after the switch = %q %q, want %q %q", ids, urls, beforeIDs, beforeURLs)
+	}
 	for _, page := range state.Pages {
-		if page.ID == state.ActivePageID {
-			active = page
+		if !page.Suspended {
+			t.Fatalf("tab %+v is not suspended after the switch", page)
 		}
-		if page.ID == second.ID || page.ID == third.ID {
-			t.Fatalf("live page %s survived the switch under its old id", page.ID)
-		}
-		if page.ID == first.ID {
-			if !page.Suspended {
-				t.Fatal("the suspended tab was loaded by the switch")
-			}
-			continue
-		}
-		if page.Creating || page.Error != "" || page.Suspended {
-			t.Fatalf("reopened tab %+v did not settle live", page)
-		}
-		if got := pageJar(t, manager, page.ID); got != "thread:a" {
-			t.Fatalf("tab %s reopened in %q, want the thread's jar", page.URL, got)
+		if page.ID == second.ID && page.Label != "login" {
+			t.Fatalf("the second tab lost its label: %+v", page)
 		}
 	}
-	if active.URL != "https://example.test/second" || active.Label != "login" {
-		t.Fatalf("the active tab after the switch is %+v, want the reopened second page with its label", active)
+	if state.ActivePageID != second.ID {
+		t.Fatalf("active tab after the switch is %q, want %q", state.ActivePageID, second.ID)
 	}
-	if !engine.profile(worktree).disposed.Load() {
-		t.Fatal("the old jar outlived the switch that emptied it")
+	waitDisposed(t, engine, canonical(t, proj.one))
+
+	for _, id := range []string{second.ID, first.ID} {
+		if err := manager.ActivateCompanionPage(t.Context(), access, id); err != nil {
+			t.Fatalf("restore %s: %v", id, err)
+		}
+		if got := pageJar(t, manager, id); got != "thread:a" {
+			t.Fatalf("tab %s restored into %q, want the new jar", id, got)
+		}
 	}
-	if err := manager.ActivateCompanionPage(t.Context(), access, first.ID); err != nil {
-		t.Fatal(err)
-	}
-	if got := pageJar(t, manager, first.ID); got != "thread:a" {
-		t.Fatalf("the suspended tab restored into %q, want the new jar", got)
-	}
-	if len(tabIDs(manager, access)) != 3 {
-		t.Fatalf("the thread has %d tabs, want 3", len(tabIDs(manager, access)))
+	if page, _ := findTab(manager, access, third.ID); !page.Suspended {
+		t.Fatal("a tab nobody used was loaded")
 	}
 }
 
-// A tab whose reopen fails stays in its place with its address and the
-// failure, and the others reopen.
-func TestASwitchReportsAFailedReopenOnItsTab(t *testing.T) {
+// The switch's records are on disk before any page's teardown begins: a
+// shutdown or crash while the old pages close loses no tab and keeps the new
+// jar.
+func TestASwitchSavesItsTabsBeforeTheOldPagesClose(t *testing.T) {
+	dir := t.TempDir()
+	manager, engine := newJarManager(t, dir, Config{Enabled: true, PersistSiteData: true})
+	proj := newProject(t, "P")
+	access := proj.access("a", proj.one)
+	openPage(t, manager, access, "https://example.test/one")
+	openPage(t, manager, access, "https://example.test/two")
+	release := engine.holdClose()
+	t.Cleanup(release)
+	setJar(t, manager, access, JarThread)
+
+	// A second process reading the same saved copy while the old pages are
+	// still closing: what a restart after a crash here would find.
+	restarted, _ := newJarManager(t, dir, Config{Enabled: true, PersistSiteData: true})
+	state := restarted.CompanionState(access)
+	if state.Jar != JarThread || !slices.Equal(tabURLs(restarted, access), []string{"https://example.test/one", "https://example.test/two"}) {
+		t.Fatalf("saved copy during the switch: jar %q, tabs %q", state.Jar, tabURLs(restarted, access))
+	}
+	release()
+}
+
+// A tab that cannot come back in the new jar stays suspended, with the
+// failure reported to whoever restored it, and the others come back.
+func TestASwitchedTabThatCannotComeBackStaysSuspended(t *testing.T) {
 	manager, engine := newJarManager(t, t.TempDir(), Config{Enabled: true, PersistSiteData: true})
 	proj := newProject(t, "P")
 	access := proj.access("a", proj.one)
-	openPage(t, manager, access, "https://example.test/ok")
-	openPage(t, manager, access, "https://example.test/down")
+	ok := openPage(t, manager, access, "https://example.test/ok")
+	down := openPage(t, manager, access, "https://example.test/down")
 	engine.mu.Lock()
 	engine.navErr["https://example.test/down"] = errors.New("net::ERR_CONNECTION_REFUSED")
 	engine.mu.Unlock()
 
 	setJar(t, manager, access, JarThread)
-	waitSettled(t, manager, access)
-	pages := manager.CompanionState(access).Pages
-	if len(pages) != 2 {
-		t.Fatalf("%d tabs after the switch, want 2", len(pages))
+	if err := manager.ActivateCompanionPage(t.Context(), access, down.ID); err == nil || !strings.Contains(err.Error(), "ERR_CONNECTION_REFUSED") {
+		t.Fatalf("restoring the failing tab answered %v", err)
 	}
-	if pages[0].Error != "" || pages[0].URL != "https://example.test/ok" {
-		t.Fatalf("the first tab = %+v, want it reopened", pages[0])
+	if page, found := findTab(manager, access, down.ID); !found || !page.Suspended || page.URL != "https://example.test/down" {
+		t.Fatalf("the failed tab = %+v (found %v), want it suspended at its address", page, found)
 	}
-	if pages[1].URL != "https://example.test/down" || !strings.Contains(pages[1].Error, "ERR_CONNECTION_REFUSED") {
-		t.Fatalf("the failed tab = %+v, want its address and the failure", pages[1])
-	}
-	if err := manager.CloseCompanionPage(t.Context(), access, pages[1].ID); err != nil {
-		t.Fatalf("close the failed tab: %v", err)
-	}
-	if got := tabURLs(manager, access); !slices.Equal(got, []string{"https://example.test/ok"}) {
-		t.Fatalf("tabs after closing the failed one = %q", got)
+	if err := manager.ActivateCompanionPage(t.Context(), access, ok.ID); err != nil {
+		t.Fatalf("restore the other tab: %v", err)
 	}
 }
 
-// A tab's reopen waits for its predecessor to close, so a thread at its page
-// cap switches without passing any cap, and its tabs stay within the cap.
-func TestASwitchAtTheThreadCapReopensEveryTab(t *testing.T) {
+// A thread at its page cap switches without passing it, and every tab comes
+// back.
+func TestASwitchAtTheThreadCapKeepsEveryTab(t *testing.T) {
 	manager, _ := newJarManager(t, t.TempDir(), Config{Enabled: true, PersistSiteData: true})
 	proj := newProject(t, "P")
 	access := proj.access("a", proj.one)
@@ -138,18 +162,187 @@ func TestASwitchAtTheThreadCapReopensEveryTab(t *testing.T) {
 		openPage(t, manager, access, "https://example.test/")
 	}
 	setJar(t, manager, access, JarProject)
-	waitSettled(t, manager, access)
-	pages := manager.CompanionState(access).Pages
-	if len(pages) != maxPagesPerThread {
-		t.Fatalf("%d tabs after the switch, want %d", len(pages), maxPagesPerThread)
-	}
-	for _, page := range pages {
-		if page.Error != "" {
-			t.Fatalf("tab failed to reopen at the cap: %s", page.Error)
-		}
-	}
 	if _, err := manager.NewPage(t.Context(), access); err == nil || !strings.Contains(err.Error(), "page limit reached for thread") {
 		t.Fatalf("a page past the cap after the switch answered %v", err)
+	}
+	for _, id := range tabIDs(manager, access) {
+		if err := manager.ActivateCompanionPage(t.Context(), access, id); err != nil {
+			t.Fatalf("restore %s at the cap: %v", id, err)
+		}
+	}
+}
+
+// While the old pages close, each one and the record that replaced it are one
+// tab in the thread's cap: the thread can open as many more as it had room
+// for, and no more.
+func TestASwitchKeepsTheThreadCapExact(t *testing.T) {
+	manager, engine := newJarManager(t, t.TempDir(), Config{Enabled: true, PersistSiteData: true})
+	proj := newProject(t, "P")
+	access := proj.access("a", proj.one)
+	for range maxPagesPerThread - 1 {
+		openPage(t, manager, access, "https://example.test/")
+	}
+	release := engine.holdClose()
+	t.Cleanup(release)
+	setJar(t, manager, access, JarThread)
+	if _, err := manager.NewPage(t.Context(), access); err != nil {
+		t.Fatalf("the thread's last free slot was taken by the switch: %v", err)
+	}
+	if _, err := manager.NewPage(t.Context(), access); err == nil || !strings.Contains(err.Error(), "page limit reached for thread") {
+		t.Fatalf("a page past the cap during the switch answered %v", err)
+	}
+}
+
+// Closing the switched tabs while their old pages still close does not free
+// the slots those pages hold: eight live pages with a slow teardown, a
+// switch, all eight tabs closed, and the thread still cannot open a ninth
+// engine page until the old ones are gone.
+func TestClosedSwitchedTabsKeepTheirSlotsUntilTheirPagesClose(t *testing.T) {
+	manager, engine := newJarManager(t, t.TempDir(), Config{Enabled: true, PersistSiteData: true})
+	proj := newProject(t, "P")
+	access := proj.access("a", proj.one)
+	for range maxPagesPerThread {
+		openPage(t, manager, access, "https://example.test/")
+	}
+	release := engine.holdClose()
+	t.Cleanup(release)
+	setJar(t, manager, access, JarThread)
+	for _, id := range tabIDs(manager, access) {
+		if err := manager.CloseCompanionPage(t.Context(), access, id); err != nil {
+			t.Fatalf("close switched tab %s: %v", id, err)
+		}
+	}
+	if ids := tabIDs(manager, access); len(ids) != 0 {
+		t.Fatalf("tabs after closing every switched tab = %q", ids)
+	}
+	if _, err := manager.NewPage(t.Context(), access); err == nil || !strings.Contains(err.Error(), "still shutting down") {
+		t.Fatalf("a page while the eight old pages still close answered %v", err)
+	}
+	release()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		_, err := manager.NewPage(t.Context(), access)
+		if err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no page after the old pages closed: %v", err)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	for range maxPagesPerThread - 1 {
+		if _, err := manager.NewPage(t.Context(), access); err != nil {
+			t.Fatalf("a page after the old pages closed: %v", err)
+		}
+	}
+}
+
+// A restore waits for every page the switch closed, so a workspace at its
+// page cap switches without a tab failing on pages still shutting down.
+func TestARestoreWaitsForTheSwitchsTeardown(t *testing.T) {
+	manager, engine := newJarManager(t, t.TempDir(), Config{Enabled: true, PersistSiteData: true})
+	proj := newProject(t, "P")
+	var threads []Access
+	for _, id := range []string{"a", "b", "c"} {
+		access := proj.access(id, proj.one)
+		threads = append(threads, access)
+		for range maxPagesPerThread {
+			openPage(t, manager, access, "https://example.test/")
+		}
+	}
+	release := engine.holdClose()
+	t.Cleanup(release)
+	setJar(t, manager, threads[0], JarThread)
+	restored := restore(manager, threads[0], tabIDs(manager, threads[0])[0])
+	select {
+	case err := <-restored:
+		t.Fatalf("the restore ended while the pages it replaces were still closing: %v", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	release()
+	if err := <-restored; err != nil {
+		t.Fatalf("restore after the switch's teardown: %v", err)
+	}
+}
+
+// A restore that would meet the profile cap only because the switch's own
+// old profile is still closing waits for its disposal: twelve live profiles,
+// two tabs of the switching thread in one, and the first old page closed
+// while the second still closes.
+func TestARestoreWaitsForTheSwitchsOldProfile(t *testing.T) {
+	manager, engine := newJarManager(t, t.TempDir(), Config{Enabled: true, PersistSiteData: true})
+	proj := newProject(t, "P")
+	switching := proj.access("a", proj.one)
+	openPage(t, manager, switching, "https://example.test/one")
+	openPage(t, manager, switching, "https://example.test/two")
+	for i := range maxWorkspaceContexts - 1 {
+		other := proj.access("other-"+string(rune('a'+i)), proj.one)
+		setJar(t, manager, other, JarThread)
+		openPage(t, manager, other, "https://example.test/")
+	}
+	step := engine.stepCloses(t)
+	setJar(t, manager, switching, JarThread)
+	step()
+	// Both tabs, so the one whose own old page has closed is among them.
+	var restores []<-chan error
+	for _, id := range tabIDs(manager, switching) {
+		restores = append(restores, restore(manager, switching, id))
+	}
+	for _, restored := range restores {
+		select {
+		case err := <-restored:
+			t.Fatalf("a restore ended while the old profile still had a page closing: %v", err)
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+	step()
+	for _, restored := range restores {
+		if err := <-restored; err != nil {
+			t.Fatalf("restore after the old profile's disposal: %v", err)
+		}
+	}
+}
+
+// Clearing site data while a switched tab waits to come back leaves nothing
+// to come back: no tab, no page, no profile of the new jar.
+func TestClearingSiteDataDuringASwitchLeavesNothing(t *testing.T) {
+	manager, engine := newJarManager(t, t.TempDir(), Config{Enabled: true, PersistSiteData: true})
+	proj := newProject(t, "P")
+	access := proj.access("a", proj.one)
+	page := openPage(t, manager, access, "https://example.test/")
+	release := engine.holdClose()
+	t.Cleanup(release)
+	setJar(t, manager, access, JarThread)
+	restored := restore(manager, access, page.ID)
+	// The restore is waiting for the switch's teardown.
+	deadline := time.Now().Add(5 * time.Second)
+	for tab, _ := findTab(manager, access, page.ID); !tab.Restoring; tab, _ = findTab(manager, access, page.ID) {
+		if time.Now().After(deadline) {
+			t.Fatal("the switched tab never started restoring")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	cleared := make(chan error, 1)
+	go func() { cleared <- manager.ClearSiteData(t.Context()) }()
+	for len(tabIDs(manager, access)) != 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("clearing site data kept the switched tab")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	release()
+	if err := <-cleared; err != nil {
+		t.Fatal(err)
+	}
+	// The tab is gone, so the selection that asked for it answers nothing.
+	if err := <-restored; err != nil {
+		t.Fatalf("restoring a cleared tab answered %v", err)
+	}
+	if ids := tabIDs(manager, access); len(ids) != 0 || len(manager.ownedPages(access.ThreadID)) != 0 {
+		t.Fatalf("after the clear: tabs %q, pages %d", ids, len(manager.ownedPages(access.ThreadID)))
+	}
+	if engine.profile("thread:a") != nil {
+		t.Fatal("the new jar's profile was created after its tabs were cleared")
 	}
 }
 
@@ -207,8 +400,7 @@ func TestASwitchFencesAnInFlightRestore(t *testing.T) {
 	}
 	release := engine.holdNav()
 	t.Cleanup(release)
-	restored := make(chan error, 1)
-	go func() { restored <- manager.ActivateCompanionPage(t.Context(), access, page.ID) }()
+	restored := restore(manager, access, page.ID)
 	if got := <-engine.navigating; got != "https://example.test/saved" {
 		t.Fatalf("the restore navigated to %q", got)
 	}
@@ -223,7 +415,7 @@ func TestASwitchFencesAnInFlightRestore(t *testing.T) {
 }
 
 // A popup a page opens while its thread switches jars is not adopted: its
-// opener belongs to the old jar.
+// opener has left for the new jar.
 func TestASwitchFencesPopupAdoption(t *testing.T) {
 	manager, engine := newJarManager(t, t.TempDir(), Config{Enabled: true, PersistSiteData: true})
 	proj := newProject(t, "P")
@@ -242,12 +434,14 @@ func TestASwitchFencesPopupAdoption(t *testing.T) {
 	}
 	engine.mu.Unlock()
 	manager.adoptPopup(enginePopup{Profile: engine.profile(worktree).Handle(), Opener: opener, Handle: "popup", URL: "https://example.test/popup"})
-	waitSettled(t, manager, access)
-	if got := tabURLs(manager, access); !slices.Equal(got, []string{"https://example.test/"}) {
-		t.Fatalf("tabs after a popup raced the switch = %q, want only the reopened opener", got)
+	if ids := tabIDs(manager, access); !slices.Equal(ids, []string{page.ID}) {
+		t.Fatalf("tabs after a popup raced the switch = %q, want only the opener", ids)
 	}
-	if got := pageJar(t, manager, tabIDs(manager, access)[0]); got != "thread:a" {
-		t.Fatalf("the opener reopened in %q", got)
+	if err := manager.ActivateCompanionPage(t.Context(), access, page.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got := pageJar(t, manager, page.ID); got != "thread:a" {
+		t.Fatalf("the opener came back in %q", got)
 	}
 }
 
@@ -263,8 +457,8 @@ func TestSettingTheJarWithNoTabsOnlyApplies(t *testing.T) {
 	}
 	page := openPage(t, manager, access, "https://example.test/")
 	setJar(t, manager, access, JarProject)
-	if ids := tabIDs(manager, access); len(ids) != 1 || ids[0] != page.ID {
-		t.Fatalf("re-setting the same jar reopened the tabs: %q", ids)
+	if got, ok := findTab(manager, access, page.ID); !ok || got.Suspended {
+		t.Fatalf("re-setting the same jar touched the tab: %+v", got)
 	}
 	if err := manager.SetJar(access, "shared"); err == nil {
 		t.Fatal("an unknown jar was accepted")
@@ -275,172 +469,23 @@ func TestSettingTheJarWithNoTabsOnlyApplies(t *testing.T) {
 	}
 }
 
-// A reopened tab creates its engine page only once the page it replaces has
-// closed, so a workspace at its page cap switches without a tab failing on
-// pages still shutting down.
-func TestAReopenWaitsForItsPredecessorsClose(t *testing.T) {
-	manager, engine := newJarManager(t, t.TempDir(), Config{Enabled: true, PersistSiteData: true})
-	proj := newProject(t, "P")
-	var threads []Access
-	for _, id := range []string{"a", "b", "c"} {
-		access := proj.access(id, proj.one)
-		threads = append(threads, access)
-		for range maxPagesPerThread {
-			openPage(t, manager, access, "https://example.test/")
-		}
-	}
-	release := engine.holdClose()
-	t.Cleanup(release)
-	setJar(t, manager, threads[0], JarThread)
-	// Long enough for a reopen that did not wait to have failed on the
-	// workspace cap.
-	for deadline := time.Now().Add(200 * time.Millisecond); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
-		for _, page := range manager.CompanionState(threads[0]).Pages {
-			if !page.Creating {
-				t.Fatalf("tab %+v settled while the pages it replaces were still closing", page)
-			}
-		}
-	}
-	release()
-	waitSettled(t, manager, threads[0])
-	for _, page := range manager.CompanionState(threads[0]).Pages {
-		if page.Error != "" {
-			t.Fatalf("a reopened tab failed: %s", page.Error)
-		}
-	}
-}
-
-// While a switch reopens the tabs, each reopened tab holds its predecessor's
-// place in the thread's cap, once: the thread can open as many more tabs as
-// it had room for, and no more.
-func TestASwitchKeepsTheThreadCapExact(t *testing.T) {
+// A second switch before the first one's tabs come back leaves them
+// suspended, and they come back in the newest jar; the intermediate jar is
+// never created.
+func TestASecondSwitchMovesTheTabsToTheNewestJar(t *testing.T) {
 	manager, engine := newJarManager(t, t.TempDir(), Config{Enabled: true, PersistSiteData: true})
 	proj := newProject(t, "P")
 	access := proj.access("a", proj.one)
-	for range maxPagesPerThread - 1 {
-		openPage(t, manager, access, "https://example.test/")
-	}
-	// The replaced pages stay closing while the thread opens more.
-	release := engine.holdClose()
-	t.Cleanup(release)
+	page := openPage(t, manager, access, "https://example.test/")
 	setJar(t, manager, access, JarThread)
-	if _, err := manager.NewPage(t.Context(), access); err != nil {
-		t.Fatalf("the thread's last free slot was taken by the switch: %v", err)
-	}
-	if _, err := manager.NewPage(t.Context(), access); err == nil || !strings.Contains(err.Error(), "page limit reached for thread") {
-		t.Fatalf("a page past the cap during the switch answered %v", err)
-	}
-	release()
-	waitSettled(t, manager, access)
-	if got := len(manager.CompanionState(access).Pages); got != maxPagesPerThread {
-		t.Fatalf("%d tabs after the switch, want %d", got, maxPagesPerThread)
-	}
-}
-
-// A second switch while the first one's tabs are still reopening moves them
-// to the newest jar.
-func TestASecondSwitchMovesTabsStillReopening(t *testing.T) {
-	manager, engine := newJarManager(t, t.TempDir(), Config{Enabled: true, PersistSiteData: true})
-	proj := newProject(t, "P")
-	access := proj.access("a", proj.one)
-	openPage(t, manager, access, "https://example.test/")
-	release := engine.holdNav()
-	t.Cleanup(release)
-	setJar(t, manager, access, JarThread)
-	<-engine.navigating
 	setJar(t, manager, access, JarProject)
-	release()
-	waitSettled(t, manager, access)
-	ids := tabIDs(manager, access)
-	if len(ids) != 1 {
-		t.Fatalf("tabs = %q, want one", ids)
-	}
-	if got := pageJar(t, manager, ids[0]); got != "project:P" {
-		t.Fatalf("the tab settled in %q, want the newest jar", got)
-	}
-	if thread := engine.profile("thread:a"); thread == nil || !thread.disposed.Load() {
-		t.Fatal("the intermediate jar was not released")
-	}
-}
-
-// A tab still reopening when the browser closes (site data cleared) goes
-// with the browser, as its live tabs do.
-func TestATabReopeningWhenTheBrowserClosesGoesWithIt(t *testing.T) {
-	manager, engine := newJarManager(t, t.TempDir(), Config{Enabled: true, PersistSiteData: true})
-	proj := newProject(t, "P")
-	access := proj.access("a", proj.one)
-	openPage(t, manager, access, "https://example.test/")
-	release := engine.holdNav()
-	t.Cleanup(release)
-	setJar(t, manager, access, JarThread)
-	<-engine.navigating
-	if err := manager.ClearSiteData(t.Context()); err != nil {
+	if err := manager.ActivateCompanionPage(t.Context(), access, page.ID); err != nil {
 		t.Fatal(err)
 	}
-	release()
-	waitSettled(t, manager, access)
-	if state := manager.CompanionState(access); len(state.Pages) != 0 || state.ActivePageID != "" {
-		t.Fatalf("after the browser closed: tabs %+v, active %q; want none", state.Pages, state.ActivePageID)
+	if got := pageJar(t, manager, page.ID); got != "project:P" {
+		t.Fatalf("the tab came back in %q, want the newest jar", got)
 	}
-	if len(manager.ownedPages(access.ThreadID)) != 0 {
-		t.Fatal("a reopened page was registered in a closed browser")
-	}
-}
-
-// A reopen that fails and leaves its new jar's profile unable to stop reports
-// that cleanup even when the failed tab is closed before it is shown, and the
-// close that took the tab answers with it, as a user's failed new tab does.
-func TestAFailedReopenClosedBeforeItIsShownReportsItsCleanup(t *testing.T) {
-	manager, engine := newLifecycleManager(t)
-	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
-	openPage(t, manager, access, "https://example.test/")
-	release := engine.hold(&engine.newPageGate)
-	t.Cleanup(release)
-	var (
-		closing  sync.Once
-		pending  *pendingPage
-		teardown = make(chan CompanionEvent, 4)
-	)
-	manager.SetEventSink(func(event CompanionEvent) {
-		if event.Kind == "teardown" {
-			teardown <- event
-			return
-		}
-		for _, page := range event.Pages {
-			if page.Error != "" {
-				closing.Do(func() {
-					var ok bool
-					if pending, ok = manager.closePending(access, page.ID); !ok {
-						t.Error("the close does not find the failed tab")
-					}
-				})
-			}
-		}
-	})
-	setJar(t, manager, access, JarThread)
-	// The old page has closed and its profile stopped; the reopen is creating
-	// its page in the new jar.
-	await(t, engine.creating, "the reopen's page creation")
-	engine.mu.Lock()
-	engine.newPageErr = errors.New("engine refused the page")
-	engine.disposeErr = errors.New("the profile's browser would not stop")
-	engine.mu.Unlock()
-	release()
-	deadline := time.Now().Add(5 * time.Second)
-	for len(manager.CompanionState(access).Pages) > 0 {
-		if time.Now().After(deadline) {
-			t.Fatalf("the failed tab was never closed: %+v", manager.CompanionState(access).Pages)
-		}
-		time.Sleep(time.Millisecond)
-	}
-	if pending == nil {
-		t.Fatal("the failed tab was never published")
-	}
-	if err := pending.wait(t.Context()); !errors.Is(err, engine.disposeErr) {
-		t.Fatalf("the close of the failed tab = %v, want the cleanup failure", err)
-	}
-	event := await(t, teardown, "the teardown report")
-	if !strings.Contains(event.Error, "would not stop") {
-		t.Fatalf("teardown event = %+v", event)
+	if engine.profile("thread:a") != nil {
+		t.Fatal("the intermediate jar was created")
 	}
 }

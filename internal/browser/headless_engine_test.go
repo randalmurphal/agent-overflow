@@ -224,7 +224,7 @@ func testHeadlessProfile(t *testing.T, engine *headlessEngine, workspace string,
 	t.Helper()
 	profile, err := engine.NewProfile(context.Background(), profileOptions{
 		Jar: workspace, DownloadDir: filepath.Join(t.TempDir(), "downloads"), Ephemeral: !persist,
-		Allow: func(string) bool { return true },
+		Allow: func(string, string, string) bool { return true },
 	})
 	if err != nil {
 		t.Fatalf("new profile for %s: %v", workspace, err)
@@ -747,15 +747,25 @@ type requestAnswer struct {
 
 // Chromium runs a page it opened by itself before the Manager can adopt it
 // and AttachPage can install the page's own policy, so the profile enables
-// the workspace's policy on the browser session at launch, for every
-// request the page policy intercepts, and answers what it pauses there.
-func TestHeadlessProfileAppliesTheWorkspacePolicyToEveryPage(t *testing.T) {
+// the jar's policy on the browser session at launch, for every request the
+// page policy intercepts, and answers what it pauses there. Each request
+// names the page it belongs to and, for a popup, the page that opened it,
+// whose authority the Manager answers with.
+func TestHeadlessProfileAppliesTheOpenersPolicyToAPopup(t *testing.T) {
 	browser := writeFakeChromium(t, "chromium")
 	engine := newTestHeadlessEngine(t, browser.path)
+	engine.events.PopupOpened = func(enginePopup) {}
 	const allowed = "file:///home/dev/repo/index.html"
+	var mu sync.Mutex
+	var asked [][2]string
 	profile, err := engine.NewProfile(context.Background(), profileOptions{
 		Jar: "/home/dev/repo", DownloadDir: filepath.Join(t.TempDir(), "downloads"), Ephemeral: true,
-		Allow: func(url string) bool { return url == allowed },
+		Allow: func(page, opener, url string) bool {
+			mu.Lock()
+			asked = append(asked, [2]string{page, opener})
+			mu.Unlock()
+			return opener == "P-opener" && url == allowed
+		},
 	})
 	if err != nil {
 		t.Fatalf("new profile: %v", err)
@@ -778,20 +788,31 @@ func TestHeadlessProfileAppliesTheWorkspacePolicyToEveryPage(t *testing.T) {
 		t.Fatalf("Fetch.enable on the browser session: %+v, want once with %+v", enabled, want)
 	}
 
+	browser.send(popupCreated("P-popup", "P-opener"))
+	eventually(t, "the popup to be known", func() bool {
+		_, bound := engine.profileForPage("P-popup")
+		return bound
+	})
 	browser.send(pausedRequest("R-allowed", "P-popup", allowed))
 	browser.send(pausedRequest("R-refused", "P-popup", "file:///home/dev/secret.txt"))
+	browser.send(pausedRequest("R-subframe", "F-subframe", allowed))
 	var continued, failed []requestAnswer
-	eventually(t, "both paused requests to be answered on the browser session", func() bool {
+	eventually(t, "the paused requests to be answered on the browser session", func() bool {
 		calls := browser.calls()
 		continued = browserCallParams[requestAnswer](t, calls, "Fetch.continueRequest")
 		failed = browserCallParams[requestAnswer](t, calls, "Fetch.failRequest")
-		return len(continued)+len(failed) >= 2
+		return len(continued)+len(failed) >= 3
 	})
 	if len(continued) != 1 || continued[0].RequestID != "R-allowed" {
 		t.Fatalf("continued %+v, want only R-allowed", continued)
 	}
-	if len(failed) != 1 || failed[0] != (requestAnswer{RequestID: "R-refused", ErrorReason: "BlockedByClient"}) {
-		t.Fatalf("failed %+v, want only R-refused, blocked by client", failed)
+	if len(failed) != 2 {
+		t.Fatalf("failed %+v, want R-refused and R-subframe", failed)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !slices.Contains(asked, [2]string{"P-popup", "P-opener"}) || !slices.Contains(asked, [2]string{"F-subframe", ""}) {
+		t.Fatalf("the policy was asked %q, want the popup with its opener and the subframe with none", asked)
 	}
 }
 
@@ -1426,7 +1447,7 @@ func assertRealPopupsPassThePolicy(t *testing.T, engine *headlessEngine) {
 	popups := make(chan enginePopup, 2)
 	engine.events.PopupOpened = func(popup enginePopup) { popups <- popup }
 	created, err := engine.NewProfile(t.Context(), profileOptions{
-		Jar: workspace, DownloadDir: filepath.Join(t.TempDir(), "downloads"), Ephemeral: true, Allow: inWorkspace,
+		Jar: workspace, DownloadDir: filepath.Join(t.TempDir(), "downloads"), Ephemeral: true, Allow: func(_, _, url string) bool { return inWorkspace(url) },
 	})
 	if err != nil {
 		t.Fatalf("new profile: %v", err)

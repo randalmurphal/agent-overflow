@@ -135,52 +135,34 @@ func TestNativeEngineRefusesProfilesWhileStopped(t *testing.T) {
 }
 
 // A popup loads the moment WebKit creates it, before the Manager adopts it,
-// so its first navigations reach Go with no page id. What answers them is the
-// file boundary: the workspace's policy until adoption, the page's own after,
-// and a refusal once either is gone.
-func TestWebKitNavigationPolicyCoversAPopupBeforeAdoption(t *testing.T) {
+// so the glue names its opener's page for its first navigations
+// (ao_view_policy_page_id). Every navigation answers with the policy of the
+// page named: its own once adopted, its opener's before. A page that is gone,
+// or a view with none, refuses.
+func TestWebKitNavigationPolicyIsThePagesOrItsOpeners(t *testing.T) {
 	const (
-		inside   = "file:///home/dev/repo/index.html"
-		outside  = "file:///home/dev/secret.txt"
-		pageOnly = "https://page.test/"
+		inside  = "file:///home/dev/repo/index.html"
+		outside = "file:///home/dev/secret.txt"
 	)
-	profile := &webkitProfile{id: webkitProfileSeq.Add(1), allow: func(url string) bool { return url == inside }}
-	webkitProfileByID.Store(profile.id, profile)
-	t.Cleanup(func() { webkitProfileByID.Delete(profile.id) })
-	page := &webkitPage{id: webkitPageSeq.Add(1), hooks: pageHooks{Allow: func(url string) bool { return url == pageOnly }}}
+	page := &webkitPage{id: webkitPageSeq.Add(1), hooks: pageHooks{Allow: func(url string) bool { return url == inside }}}
 	webkitPageByID.Store(page.id, page)
 	t.Cleanup(func() { webkitPageByID.Delete(page.id) })
-	closedPage, disposedProfile := webkitPageSeq.Add(1), webkitProfileSeq.Add(1)
+	closedPage := webkitPageSeq.Add(1)
 
 	for _, tc := range []struct {
-		name              string
-		pageID, profileID uint64
-		url               string
-		want              bool
+		name   string
+		pageID uint64
+		url    string
+		want   bool
 	}{
-		{"an unadopted popup loads a workspace file", 0, profile.id, inside, true},
-		{"an unadopted popup is refused a file outside the workspace", 0, profile.id, outside, false},
-		{"an adopted page answers with its own policy", page.id, profile.id, pageOnly, true},
-		{"an adopted page does not fall back to the workspace's policy", page.id, profile.id, inside, false},
-		{"a closed page refuses", closedPage, profile.id, inside, false},
-		{"a popup of a disposed profile refuses", 0, disposedProfile, inside, false},
+		{"a page or a popup's opener allows its workspace's file", page.id, inside, true},
+		{"a page or a popup's opener refuses a file outside it", page.id, outside, false},
+		{"a closed page or opener refuses", closedPage, inside, false},
+		{"a view with no page and no opener refuses", 0, inside, false},
 	} {
-		if got := webkitNavigationAllowed(tc.pageID, tc.profileID, tc.url); got != tc.want {
+		if got := webkitNavigationAllowed(tc.pageID, tc.url); got != tc.want {
 			t.Errorf("%s: allowed = %v, want %v", tc.name, got, tc.want)
 		}
-	}
-}
-
-// The workspace policy is what answers for a popup before adoption, so a
-// profile without one must not exist.
-func TestNativeEngineRefusesAProfileWithoutANavigationPolicy(t *testing.T) {
-	engine := newNativeEngine(t.TempDir(), ManagerOptions{
-		NativeWindow: func() unsafe.Pointer { return nil },
-	}, engineEvents{}).(*webkitEngine)
-	engine.started = true
-	_, err := engine.NewProfile(context.Background(), profileOptions{Jar: t.TempDir(), Ephemeral: true})
-	if err == nil || !strings.Contains(err.Error(), "navigation policy") {
-		t.Fatalf("profile error = %v, want a missing navigation policy refusal", err)
 	}
 }
 

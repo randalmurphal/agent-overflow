@@ -25,10 +25,12 @@ mode. Product behavior and authority are defined in
   only the jar key and an ephemeral flag, and the worktree jar keeps the
   canonical workspace as its key so existing profile ids do not change. Jars
   carry site data only: navigation and file policy, download directories and
-  quotas stay per workspace (`workspaceAuthority`). A switch
-  (`jar_switch.go`) advances the thread's jar generation in the same lock hold
-  that closes its pages; any create, restore or reopen admitted under an older
-  generation must retry, never land in the old jar.
+  quotas stay per workspace (`workspaceAuthority`); a jar profile's own
+  policy answers with a page's or its opener's authority (`jarAllows`). A
+  switch (`jar_switch.go`) advances the thread's jar generation and suspends
+  its live pages into durable records in one lock hold; the tabs return
+  only through the restore path, and any create or restore admitted under
+  an older generation must retry, never land in the old jar.
 - A tab's lifecycle is Manager state (`lifecycle.go`): a page being created is
   a pending tab, a closed page leaves the tab set before its engine teardown
   runs, and both keep counting toward caps and holding the jar's

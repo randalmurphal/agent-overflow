@@ -203,9 +203,6 @@ func (e *wkEngine) NewProfile(_ context.Context, opts profileOptions) (enginePro
 	if !e.Running() {
 		return nil, fmt.Errorf("browser: engine unavailable")
 	}
-	if opts.Allow == nil {
-		return nil, fmt.Errorf("browser: a navigation policy is required for a browser profile")
-	}
 	id := wkProfileSeq.Add(1)
 	store, err := wkNewStore(wkStoreIdentifier(opts.Jar), opts.Ephemeral)
 	if err != nil {
@@ -213,8 +210,8 @@ func (e *wkEngine) NewProfile(_ context.Context, opts profileOptions) (enginePro
 	}
 	profile := &wkProfile{
 		engine: e, id: id, handle: fmt.Sprintf("profile-%d", id), store: store,
-		downloadDir: opts.DownloadDir, allow: opts.Allow,
-		pages: make(map[*wkPage]struct{}), downloads: make(map[string]*wkDownload),
+		downloadDir: opts.DownloadDir,
+		pages:       make(map[*wkPage]struct{}), downloads: make(map[string]*wkDownload),
 	}
 	wkProfileByID.Store(id, profile)
 	e.mu.Lock()
@@ -239,9 +236,6 @@ type wkProfile struct {
 	// only honest answer there.
 	store       unsafe.Pointer
 	downloadDir string
-	// allow is the workspace's navigation policy. It answers for a popup
-	// until the Manager adopts it (wkNavigationAllowed).
-	allow func(url string) bool
 
 	mu        sync.Mutex
 	disposed  bool

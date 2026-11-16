@@ -60,7 +60,10 @@ func (m *Manager) workspaceForPage(pageID string) string {
 // pending, and its pages still closing: a suspended page holds no engine
 // resource but keeps its slot in the thread's page cap, which is what bounds
 // the saved pages a thread keeps, and a closed page holds its slot until its
-// engine page is gone (lifecycle.go). The caller holds m.mu.
+// engine page is gone (lifecycle.go). A page a jar switch closed and the
+// record it left under the same id are one tab, counted once; a closed
+// record leaves the slot to the page until its teardown ends (SetJar). The
+// caller holds m.mu.
 func (m *Manager) threadPageCountLocked(threadID string) int {
 	count := 0
 	for _, scope := range m.scopes {
@@ -70,7 +73,7 @@ func (m *Manager) threadPageCountLocked(threadID string) int {
 			}
 		}
 		for _, c := range scope.closing {
-			if c.p.owner == threadID && !c.replaced {
+			if c.p.owner == threadID && m.suspended[c.p.id] == nil {
 				count++
 			}
 		}

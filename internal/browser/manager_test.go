@@ -905,14 +905,14 @@ func TestAProfileCarriesItsWorkspacesNavigationPolicy(t *testing.T) {
 		"https://example.test/":        true,
 		"chrome://settings/":           false,
 	} {
-		if got := allow(url); got != want {
+		if got := allow("", "", url); got != want {
 			t.Errorf("the profile's policy answers %v for %s, want %v", got, url, want)
 		}
 	}
 	manager.mu.Lock()
 	manager.config.AllowOutsideWorkspace = true
 	manager.mu.Unlock()
-	if !allow("file://" + files["outside"]) {
+	if !allow("", "", "file://"+files["outside"]) {
 		t.Error("the profile's policy ignores the outside-workspace setting")
 	}
 }

@@ -585,9 +585,11 @@ and anti-changes that live only here:
 - Each thread's browser chooses its cookie jar: this worktree (default),
   the whole project, this browser only, or private. A jar shares sign-ins
   and site data only; file and navigation permissions and download quotas
-  stay with the thread's workspace. Switching with tabs open asks first,
-  then reopens the same addresses in the new jar; page state is not
-  carried over. Agents read the jar but cannot change it.
+  stay with the thread's workspace, and a popup keeps its opener's. A
+  private jar is never part of a persistent profile and is discarded when
+  its last tab closes. Switching with tabs open asks first, then suspends
+  the tabs into the new jar, where they load again when used; page state is
+  not carried over. Agents read the jar but cannot change it.
   `docs/architecture/browser-tools.md`.
 - Every thread/workspace event reaches any client with visibility; channel
   audience is by data class, loopback-only is for host directives only. A
