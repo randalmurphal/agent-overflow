@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -26,6 +28,55 @@ func (c storeCost) since(before storeCost) storeCost {
 	return storeCost{c.reads - before.reads, c.writes - before.writes, c.commits - before.commits}
 }
 
+// readsUnder counts, until stop runs, the store reads issued with fn or one
+// of its closures on the reading goroutine's stack, by the store accessor
+// that issued each. fn is a function name after its package path, as
+// "app.(*App).fireAgentWake"; a goroutine fn starts is under it through
+// the closure it runs. A ReadCount window also counts what other goroutines
+// read meanwhile, as a title generation, a queue dispatch or an Agents rows
+// drain left running by an earlier step; this counts the measured path's
+// reads alone.
+func readsUnder(s *store.Store, fn string) (stop func() (total int, byAccessor map[string]int)) {
+	var mu sync.Mutex
+	byAccessor := map[string]int{}
+	stopObserving := s.ObserveReads(func() {
+		pcs := make([]uintptr, 64)
+		n := runtime.Callers(2, pcs)
+		for n == len(pcs) {
+			pcs = make([]uintptr, 2*len(pcs))
+			n = runtime.Callers(2, pcs)
+		}
+		frames := runtime.CallersFrames(pcs[:n])
+		accessor, inStore, under := "", true, false
+		for !under {
+			frame, more := frames.Next()
+			name := frame.Function[strings.LastIndex(frame.Function, "/")+1:]
+			if inStore = inStore && strings.HasPrefix(name, "store."); inStore {
+				accessor = name
+			}
+			under = name == fn || strings.HasPrefix(name, fn+".func")
+			if !more {
+				break
+			}
+		}
+		if under {
+			mu.Lock()
+			byAccessor[accessor]++
+			mu.Unlock()
+		}
+	})
+	return func() (int, map[string]int) {
+		stopObserving()
+		mu.Lock()
+		defer mu.Unlock()
+		total := 0
+		for _, n := range byAccessor {
+			total += n
+		}
+		return total, byAccessor
+	}
+}
+
 // A send into a busy thread on this computer writes its request and its
 // receipt in one transaction and resolves its target once, and its
 // settlement writes the receipt, the request and the acknowledgement in
@@ -36,21 +87,15 @@ func TestALocalSendAndItsSettlementTakeOneTransactionEach(t *testing.T) {
 	callerMidTurn(t, f)
 	h := newHeldRequestTarget(t, f)
 
-	// A turn end with no request on it, for the settlement's measure.
-	// Each measured turn end starts with its text written and what the send
-	// queued reported: the stream buffers flush on a timer, and the
-	// sends-pending observer reports the target's queue change on its own
-	// goroutine, whose Agents rows drain then looks up the target's spawn
-	// link and frames its row. Either landing inside one window and not the
-	// other would count as the settlement's. The observer goes first: it is
-	// what queues the drain.
+	// A turn end with no request on it, for the settlement's transaction.
+	// Each measured turn end starts with its text written: the stream
+	// buffers flush on a timer, and a flush landing in one window and not
+	// the other would count as the settlement's.
 	flushText := func() {
 		t.Helper()
 		if err := f.app.triage.FlushThread(h.thread.ID); err != nil {
 			t.Fatal(err)
 		}
-		f.app.sendsPending.wg.Wait()
-		f.app.threadRequestsWG.Wait()
 	}
 	h.text(t, "a-plain", "warming up")
 	flushText()
@@ -90,7 +135,9 @@ func TestALocalSendAndItsSettlementTakeOneTransactionEach(t *testing.T) {
 	h.text(t, "a-answer", "The changelog lists the fix.")
 	flushText()
 	before = storeCostOf(f.app.store)
+	settlementReads := readsUnder(f.app.store, "app.(*App).settleReceiptsForEndedTurn")
 	h.turnComplete(t)
+	reads, readsBy := settlementReads()
 	settled := storeCostOf(f.app.store).since(before)
 	if row := f.request(t, ack.Token); row.State != store.ThreadRequestFinished {
 		t.Fatalf("request after its turn = %q, want finished", row.State)
@@ -99,13 +146,17 @@ func TestALocalSendAndItsSettlementTakeOneTransactionEach(t *testing.T) {
 		t.Fatalf("receipt after the settlement = %+v, want it acknowledged and keeping its answer", receipt)
 	}
 	// One transaction for the receipt, the request and the acknowledgement,
-	// on top of the turn end's own; the receipt read once. Before: three
-	// transactions, and the receipt read three times and the request twice.
+	// on top of the turn end's own; the receipt read once and the request
+	// not at all. Before: three transactions, and the receipt read three
+	// times and the request twice.
 	if extra := settled.commits - plainEnd.commits; extra != 1 {
 		t.Errorf("the settlement added %d transactions to the turn end (%+v against %+v), want 1", extra, settled, plainEnd)
 	}
-	if extra := settled.reads - plainEnd.reads; extra > 10 {
-		t.Errorf("the settlement added %d reads to the turn end, want at most 10", extra)
+	receipt := readsBy["store.(*Store).GetThreadRequestReceipt"]
+	request := readsBy["store.(*Store).GetThreadRequest"] + readsBy["store.(*Store).GetThreadRequests"]
+	if receipt != 1 || request != 0 || reads > 10 {
+		t.Errorf("the settlement read the store %d times, the receipt %d and the request %d (%v), want at most 10, the receipt once and the request never",
+			reads, receipt, request, readsBy)
 	}
 }
 
@@ -140,7 +191,10 @@ func TestAWatchFireReadsItsRowOnce(t *testing.T) {
 	watch := registerTestWake(t, a, store.AgentWake{ThreadID: thread.ID, Kind: store.AgentWakeWatch, Label: "news",
 		Command: "echo news", IntervalSeconds: 3600, TimeoutSeconds: 60, NextAt: time.Now().Add(time.Hour).UnixMilli()})
 	framesBefore := wakeRowsChanged(rec, thread.ID)
-	reads := a.store.ReadCount()
+	// The fire's own reads: the claim's, and its run's on the goroutine the
+	// fire starts. The queue's dispatch attempt and the Agents rows drain the
+	// wake starts run on their own and are not the fire's.
+	fireReads := readsUnder(a.store, "app.(*App).fireAgentWake")
 	if !a.fireAgentWake(watch, time.Now(), agentWakeFire{at: time.Now().UnixMilli()}) {
 		t.Fatal("the watch did not fire")
 	}
@@ -149,7 +203,8 @@ func TestAWatchFireReadsItsRowOnce(t *testing.T) {
 		last := len(changes) - 1
 		return last >= 0 && changes[last].Row != nil && changes[last].Row.State == store.AgentWakeArmed && changes[last].Row.LastOutcome != ""
 	})
-	reads = a.store.ReadCount() - reads
+	a.threadRequestsWG.Wait() // the run's end, after its finish's frame
+	reads, readsBy := fireReads()
 	changes := wakeChanges(rec, thread.ID)[framesBefore:]
 	if first := changes[0].Row; first == nil || first.State != store.AgentWakeRunning {
 		t.Fatalf("the claim's frame = %+v, want the running row", changes[0])
@@ -157,11 +212,12 @@ func TestAWatchFireReadsItsRowOnce(t *testing.T) {
 	if last := changes[len(changes)-1].Row; last.LastOutcome != agentWakeOutcomeDelivered {
 		t.Fatalf("the finish's frame = %+v, want the delivered row", last)
 	}
-	// Before: the claim's and the finish's frames each read the row, the
-	// delivery read it again after the render's read, and read the thread
-	// before the queue's own read did: 23.
-	if reads > 19 {
-		t.Errorf("the fire read the store %d times, want at most 19", reads)
+	// The row is read for the stderr note's frame, after the run and under
+	// the queue's lock. Before: the claim's and the finish's frames each read
+	// the row, the delivery read it again after the render's read, and read
+	// the thread before the queue's own read did.
+	if rows := readsBy["store.(*Store).GetAgentWake"]; rows != 3 || reads > 15 {
+		t.Errorf("the fire read the store %d times, the row %d (%v), want at most 15 and the row 3 times", reads, rows, readsBy)
 	}
 }
 

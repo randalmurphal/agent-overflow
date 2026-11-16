@@ -57,6 +57,8 @@ type Store struct {
 	// reads counts the read statements accessors have issued; see
 	// ReadCount.
 	reads atomic.Uint64
+	// readObserver is the function ObserveReads set, or nil.
+	readObserver atomic.Pointer[func()]
 	// writes counts the row writes the writer connection has run; see
 	// WriteCount.
 	writes *atomic.Uint64
@@ -258,6 +260,9 @@ func openReadPool(db *sql.DB, dbPath string, gate *connGate) (*sql.DB, error) {
 // with its deadline as the backstop.
 func (s *Store) reader() *sql.DB {
 	s.reads.Add(1)
+	if observe := s.readObserver.Load(); observe != nil {
+		(*observe)()
+	}
 	if s.read == nil || s.readsQuiesced.Load() {
 		return s.db
 	}
@@ -273,6 +278,16 @@ func (s *Store) reader() *sql.DB {
 // an atomic add on a path that is about to touch SQLite, and nothing in
 // production reads it.
 func (s *Store) ReadCount() uint64 { return s.reads.Load() }
+
+// ObserveReads runs fn on the reading goroutine at each read ReadCount
+// counts, until the returned stop runs. A window of ReadCount also counts
+// whatever another goroutine read meanwhile; fn sees the reading stack, so
+// a test can count only the reads of the path it measures. One observer at
+// a time; nothing in production sets it.
+func (s *Store) ObserveReads(fn func()) (stop func()) {
+	s.readObserver.Store(&fn)
+	return func() { s.readObserver.CompareAndSwap(&fn, nil) }
+}
 
 // WriteCount is how many row writes the writer connection has run since
 // the store opened: each INSERT, UPDATE, DELETE or REPLACE statement,
