@@ -101,7 +101,11 @@ func (e wslEngine) BackendFilePath(_ context.Context, rawURL string) (string, er
 func newNavigateFixture(t *testing.T, wsl bool) (*Manager, Access, string, string) {
 	t.Helper()
 	m := NewManager(t.TempDir(), Config{Enabled: true}, ManagerOptions{FakeEngine: true})
-	t.Cleanup(func() { m.Close() })
+	t.Cleanup(func() {
+		if err := m.Close(); err != nil {
+			t.Errorf("close the manager: %v", err)
+		}
+	})
 	root := t.TempDir()
 	workspace := filepath.Join(root, "repo")
 	if err := os.MkdirAll(workspace, 0o755); err != nil {
