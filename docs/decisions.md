@@ -577,6 +577,11 @@ and anti-changes that live only here:
   background. A failure of that teardown is shown, never only logged. A new
   tab the user opened focuses the address bar; an agent's never takes focus.
   `docs/architecture/browser-tools.md`.
+- The browser pane's chrome behaves like a desktop browser's (tab sizing,
+  select-all address, stop, the usual chords while the pane is focused). A
+  Windows or `\\wsl` path typed into it opens the file it names or fails
+  naming the path, never a web search; a file can also be picked from the
+  workspace without knowing its path.
 - Every thread/workspace event reaches any client with visibility; channel
   audience is by data class, loopback-only is for host directives only. A
   mutation that persists without emitting is a bug.

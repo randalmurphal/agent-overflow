@@ -273,7 +273,8 @@ positioned over.
 - Tabs render the Manager's state only: a tab being created, restoring,
   loading or failed shows that state, and the host rect says so while
   the active tab has no page to present (as built: browser-tools.md
-  § Ownership and lifecycle).
+  § Ownership and lifecycle). The strip and address row behave as a
+  desktop browser's (browser-tools.md § The pane's chrome).
 - The SPA observes the host rect (`ResizeObserver` + scroll/layout +
   the pane-layout and sidebar stores — a divider drag on ANOTHER pane
   slides this one sideways without resizing it, which no observer or
