@@ -61,12 +61,15 @@ type threadTab struct {
 	lastUse int64
 	live    *managedPage
 	rec     *suspendedPage
+	pending *pendingPage
 }
 
 // threadTabs is THE tab-strip order of a thread's pages, live and suspended:
 // every surface that lists them (companion state, browser_pages, ambiguity
 // errors, tab moves) uses it, so the UI, the tools and the errors never
-// disagree about which tab is first.
+// disagree about which tab is first. The companion also shows the tabs
+// still being created and failed creations (companionTabsLocked); a tool
+// sees a page once it exists.
 func (m *Manager) threadTabs(threadID string) []threadTab {
 	m.mu.Lock()
 	tabs := m.threadTabsLocked(threadID)
@@ -76,12 +79,42 @@ func (m *Manager) threadTabs(threadID string) []threadTab {
 
 // threadTabsLocked is threadTabs with m.mu held by the caller.
 func (m *Manager) threadTabsLocked(threadID string) []threadTab {
+	return m.listTabsLocked(threadID, false)
+}
+
+// companionTabsLocked is the tab set the companion shows: threadTabsLocked
+// with the pending tabs, and each tab's companion-only state filled in
+// (PageInfo.Creating, Restoring, Error, Loading, Favicon). The caller holds
+// m.mu.
+func (m *Manager) companionTabsLocked(threadID string) []threadTab {
+	return m.listTabsLocked(threadID, true)
+}
+
+func (m *Manager) listTabsLocked(threadID string, companion bool) []threadTab {
 	var tabs []threadTab
+	if companion {
+		for _, pending := range m.pending {
+			p := pending.p
+			if p.owner != threadID || pending.closed {
+				continue
+			}
+			info := p.cachedInfo()
+			info.Creating, info.Error = pending.err == "", pending.err
+			tabs = append(tabs, threadTab{
+				id: p.id, info: info, order: p.tabOrder.Load(), created: p.createdAt,
+				lastUse: p.lastUse.Load(), pending: pending,
+			})
+		}
+	}
 	for _, scope := range m.scopes {
 		for _, p := range scope.pages {
 			if p.owner == threadID {
+				info := p.cachedInfo()
+				if companion {
+					info.Loading, info.Favicon = p.loadState()
+				}
 				tabs = append(tabs, threadTab{
-					id: p.id, info: p.cachedInfo(), order: p.tabOrder.Load(), created: p.createdAt,
+					id: p.id, info: info, order: p.tabOrder.Load(), created: p.createdAt,
 					lastUse: p.lastUse.Load(), live: p,
 				})
 			}
@@ -89,8 +122,10 @@ func (m *Manager) threadTabsLocked(threadID string) []threadTab {
 	}
 	for _, rec := range m.suspended {
 		if rec.owner == threadID {
+			info := rec.info()
+			info.Restoring = companion && rec.restoring != nil
 			tabs = append(tabs, threadTab{
-				id: rec.id, info: rec.info(), order: rec.tabOrder, created: rec.createdAt,
+				id: rec.id, info: info, order: rec.tabOrder, created: rec.createdAt,
 				lastUse: rec.lastUse, rec: rec,
 			})
 		}
@@ -104,10 +139,12 @@ func (m *Manager) threadTabsLocked(threadID string) []threadTab {
 	return tabs
 }
 
-// hasTab reports whether pageID is one of the thread's pages, live or
-// suspended.
+// hasTab reports whether pageID is one of the tabs the thread's companion
+// shows: live, suspended or pending.
 func (m *Manager) hasTab(threadID, pageID string) bool {
-	for _, tab := range m.threadTabs(threadID) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, tab := range m.companionTabsLocked(threadID) {
 		if tab.id == pageID {
 			return true
 		}
@@ -152,7 +189,8 @@ func (m *Manager) resolvePage(ctx context.Context, access Access, pageID string,
 			return nil, nil, errPageNotFound
 		}
 		call := rec.restoring
-		if call == nil {
+		started := call == nil
+		if started {
 			call = &restoreCall{done: make(chan struct{})}
 			rec.restoring = call
 			// The restore runs on its own bounded context, so a caller that
@@ -160,6 +198,10 @@ func (m *Manager) resolvePage(ctx context.Context, access Access, pageID string,
 			go m.runRestore(access, rec, call, skipLoad)
 		}
 		m.mu.Unlock()
+		if started {
+			// The tab shows it is restoring (PageInfo.Restoring).
+			m.emitThreadState(access.ThreadID)
+		}
 		select {
 		case <-call.done:
 		case <-ctx.Done():
@@ -183,6 +225,11 @@ func (m *Manager) runRestore(access Access, rec *suspendedPage, call *restoreCal
 	m.mu.Unlock()
 	call.err = err
 	close(call.done)
+	if err != nil {
+		// A restored page was announced with its registration; a tab left
+		// suspended stops showing the restore.
+		m.emitThreadState(rec.owner)
+	}
 }
 
 // restorePage replaces rec with a live page of the same id at rec's address.
@@ -205,7 +252,7 @@ func (m *Manager) restorePage(ctx context.Context, access Access, rec *suspended
 	p.lastUse.Store(lastUse)
 	p.info = PageInfo{ID: rec.id, URL: "about:blank", Label: label}
 	m.startMu.Lock()
-	scope, err := m.openPageLocked(ctx, access, p, false)
+	scope, err := m.openPageLocked(ctx, access, p)
 	m.startMu.Unlock()
 	if err != nil {
 		return fmt.Errorf("browser: restore page %s: %w", rec.id, err)

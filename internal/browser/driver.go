@@ -165,6 +165,12 @@ type pageHooks struct {
 	// engine then runs the work it returns, when not nil, in the same
 	// callback: that work never waits, and the Manager joins what it starts.
 	DocumentCommitted func() (finish func())
+	// Loading reports whether the page's main frame is loading. order is the
+	// engine's count of the loading changes it has seen, which only grows:
+	// the Manager keeps the answer with the highest order, so reports that
+	// reach it out of order settle on the engine's latest. Never called on a
+	// UI thread (it takes Manager locks).
+	Loading func(loading bool, order uint64)
 }
 
 // pageDriver is one engine's implementation of every per-page operation the

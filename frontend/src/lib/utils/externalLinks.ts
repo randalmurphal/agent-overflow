@@ -1,5 +1,5 @@
 import { OpenExternalURL } from '../stores/bindings';
-import { browserCompanionAct, browserCompanionState, canUseNativeBrowser } from '../stores/browserCompanion.svelte';
+import { canUseNativeBrowser, openBrowserTab } from '../stores/browserCompanion.svelte';
 import { addErrorToast } from '../stores/toast.svelte';
 import { runMode } from '../transport/runMode';
 import type { BackendKey } from '../transport/backendKey';
@@ -176,19 +176,13 @@ function threadIdForTarget(target: EventTarget | null): string {
 }
 
 /**
- * Open a URL in the thread's companion browser pane.
- *
- * Two calls because the backend has no new-page-with-address action: `new`
- * mints the page and pushes the state that names it active, and the
- * navigate follows on that id. A refused `new` stops the sequence rather
- * than navigating whatever tab happened to be active, which would take a
- * page the person was reading.
+ * Open a URL in a new tab of the thread's companion browser, which opens the
+ * pane even when the thread had no tab. One `new` carrying the address, so
+ * no other tab is ever navigated; a refusal reaches the pane's banner or a
+ * toast (openBrowserTab).
  */
 async function openInCompanionBrowser(threadId: string, url: string): Promise<void> {
-  if (await browserCompanionAct(threadId, { kind: 'new' })) return;
-  const pageId = browserCompanionState(threadId)?.activePageId ?? '';
-  if (!pageId) return;
-  await browserCompanionAct(threadId, { kind: 'navigate', pageId, address: url });
+  await openBrowserTab(threadId, { address: url });
 }
 
 function handleExternalLinkClick(event: MouseEvent): void {

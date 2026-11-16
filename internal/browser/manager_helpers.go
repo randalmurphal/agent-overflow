@@ -58,10 +58,11 @@ func (m *Manager) workspaceForPage(pageID string) string {
 	return ""
 }
 
-// threadPageCountLocked counts the thread's tabs, live and suspended: a
-// suspended page holds no engine resource but keeps its slot in the
-// thread's page cap, which is what bounds the saved pages a thread keeps.
-// The caller holds m.mu.
+// threadPageCountLocked counts the thread's tabs, live, suspended and
+// pending, and its pages still closing: a suspended page holds no engine
+// resource but keeps its slot in the thread's page cap, which is what bounds
+// the saved pages a thread keeps, and a closed page holds its slot until its
+// engine page is gone (lifecycle.go). The caller holds m.mu.
 func (m *Manager) threadPageCountLocked(threadID string) int {
 	count := 0
 	for _, scope := range m.scopes {
@@ -69,6 +70,16 @@ func (m *Manager) threadPageCountLocked(threadID string) int {
 			if p.owner == threadID {
 				count++
 			}
+		}
+		for _, c := range scope.closing {
+			if c.p.owner == threadID {
+				count++
+			}
+		}
+	}
+	for _, pending := range m.pending {
+		if pending.p.owner == threadID {
+			count++
 		}
 	}
 	for _, rec := range m.suspended {
@@ -79,11 +90,11 @@ func (m *Manager) threadPageCountLocked(threadID string) int {
 	return count
 }
 
-// scopeLoadLocked counts the engine pages a scope holds or is creating: the
-// quantity the workspace cap bounds. Suspended pages hold none. The caller
-// holds m.mu.
+// scopeLoadLocked counts the engine pages a scope holds, is creating or is
+// still closing: the quantity the workspace cap bounds. Suspended pages hold
+// none. The caller holds m.mu.
 func scopeLoadLocked(scope *workspaceScope) int {
-	return len(scope.pages) + scope.creating
+	return len(scope.pages) + len(scope.closing) + scope.creating
 }
 
 // countPagesLocked counts the engine pages of every scope, the quantity the

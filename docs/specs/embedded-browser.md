@@ -261,6 +261,10 @@ navigation buttons, close — the same `BrowserPane.svelte` chrome — with
 the frame `<img>` replaced by an empty host rect the native view is
 positioned over.
 
+- Tabs render the Manager's state only: a tab being created, restoring,
+  loading or failed shows that state, and the host rect says so while
+  the active tab has no page to present (as built: browser-tools.md
+  § Ownership and lifecycle).
 - The SPA observes the host rect (`ResizeObserver` + scroll/layout +
   the pane-layout and sidebar stores — a divider drag on ANOTHER pane
   slides this one sideways without resizing it, which no observer or
@@ -382,8 +386,9 @@ object no matter which clipboard formats carry it (bare `CF_HDROP`,
 virtual-file `FileGroupDescriptorW`/`FileContents`, even Explorer's own
 copy), while a drag from Explorer — including `\\wsl.localhost` paths —
 attaches fine. The WSL staging pipeline went with the copy. The Globe
-reopen chip and `BrowserCompanionThreadState` hydration survive
-(thread browser state still exists). The MCP server, Access model,
+header button and `BrowserCompanionThreadState` hydration survive
+(thread browser state still exists); the button is present whenever the
+native browser is usable and opens a first tab when there is none. The MCP server, Access model,
 bounds, and artifact quota code survive untouched.
 
 Remote `--connect` clients get **no browser pane and no browser

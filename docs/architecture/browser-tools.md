@@ -86,6 +86,28 @@ per-platform no-op.
 - `pane.close` (Mod+W) on a focused browser companion closes the active tab;
   the companion closes when its last tab does. Closing the companion any other
   way hides the session and keeps its pages, so reopening shows the same tabs.
+- A tab's state comes from the Manager alone (`internal/browser/lifecycle.go`).
+  A new tab is in the state, `creating`, before the engine page exists; the
+  user's own new tab is also selected and shown at once, and a failed creation
+  stays as a tab with its `error` until closed, while an agent's leaves no tab.
+  A close removes the tab, cancels the page's operations and pushes the state
+  before the engine closes the page and, with the workspace's last page, its
+  profile. Until that teardown ends the page counts toward the thread's limit
+  and its workspace opens no second profile. A teardown failure is a `teardown`
+  event: the pane's banner when the pane is open, otherwise a toast that stays.
+  Selecting a tab presents it before any page work; a suspended tab shows
+  `restoring` until its reload ends.
+- Each page reports `loading` and a `favicon`. Every engine reports loading
+  (CDP frame start and stop events, WebKitGTK `is-loading`, WKWebView
+  `loading`). When a load stops, an engine with a pane reads the favicon in
+  the page with shared JavaScript, so the fetch carries the page's session:
+  an image data URL within 32 KB, empty when there is none or it is refused.
+  Headless Chromium has no pane and reports none.
+- The chat header's browser button is present wherever the native browser is
+  usable for the thread, tabs or not. With no tab it opens the pane on a new
+  tab, as a mod-clicked link does on a tab at the link. A new tab the user
+  opened takes the address bar's focus, text selected, once it is ready,
+  unless the user pressed a key or the pointer first or another tab is shown.
 - A thread's pages outlive a stop of its provider session, so a restarted
   session finds the same tabs. Deleting or archiving the thread closes them and
   forgets their saved copies; an archive that keeps a re-engaged session keeps
@@ -160,7 +182,7 @@ so AO's chords have to be taken back at the engine:
   refuses any other connection; see transport.md, the host-window cookie):
   the native view lives in that window. A browser tab on the host offers
   and opens no pane, as a connected browser does. Both openers, a state
-  push (which the chip's show produces) and the reconcile on a thread
+  push (which the header button's show and new tab produce) and the reconcile on a thread
   mount, go through `openBrowserCompanion`, which asks
   `canUseNativeBrowser`; a mod-clicked link asks it before minting a
   page, and no layout restore or companion stash reopens a browser pane.

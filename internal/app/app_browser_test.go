@@ -500,22 +500,6 @@ func TestCompanionTabOpenedDuringADeleteIsClosed(t *testing.T) {
 	}
 }
 
-// deleteOnFirstErr runs onErr the first time its Err is read. A page open
-// checks its context before it registers the page, after the companion
-// action read the thread's row.
-type deleteOnFirstErr struct {
-	context.Context
-	fired atomic.Bool
-	onErr func()
-}
-
-func (c *deleteOnFirstErr) Err() error {
-	if c.fired.CompareAndSwap(false, true) {
-		c.onErr()
-	}
-	return c.Context.Err()
-}
-
 // Every companion action opens a page for a thread that has none. A thread
 // deleted between the action's row read and the page's registration gets
 // that page closed.
@@ -550,13 +534,18 @@ func TestCompanionActionOpeningAPageForADeletedThreadClosesIt(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			ctx := &deleteOnFirstErr{Context: context.Background(), onErr: func() {
-				if err := app.DeleteThread(thread.ID); err != nil {
-					t.Errorf("delete: %v", err)
+			// A page open pushes its creating tab after the action read the
+			// thread's row and before the page is registered.
+			var fired atomic.Bool
+			manager.SetEventSink(func(event appbrowser.CompanionEvent) {
+				if event.ThreadID == thread.ID && len(event.Pages) > 0 && fired.CompareAndSwap(false, true) {
+					if err := app.DeleteThread(thread.ID); err != nil {
+						t.Errorf("delete: %v", err)
+					}
 				}
-			}}
-			err = call(ctx, app, thread.ID)
-			if !ctx.fired.Load() {
+			})
+			err = call(context.Background(), app, thread.ID)
+			if !fired.Load() {
 				t.Fatalf("the action opened no page (%v)", err)
 			}
 			if !errors.Is(err, sql.ErrNoRows) {
@@ -595,7 +584,7 @@ func TestCompanionPageOpenedAfterADeleteClosesItself(t *testing.T) {
 			// An action that read the row before the delete opens its page
 			// after the delete's last close.
 			access := appbrowser.Access{ThreadID: threadID, Workspace: t.TempDir()}
-			if _, err := manager.NewCompanionPage(context.Background(), access); err != nil {
+			if _, err := manager.NewCompanionPage(context.Background(), access, ""); err != nil {
 				t.Fatal(err)
 			}
 			if err := app.closeBrowserPagesIfThreadDeleted(threadID); !errors.Is(err, sql.ErrNoRows) {

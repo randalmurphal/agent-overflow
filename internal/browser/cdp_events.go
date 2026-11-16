@@ -200,6 +200,39 @@ func (t *networkTracker) idle(now time.Time, quiet time.Duration) bool {
 	return len(t.inFlight) == 0 && now.Sub(t.last) >= quiet
 }
 
+// cdpLoadTracker is whether a page's main frame is loading, from
+// Page.frameStartedLoading and Page.frameStoppedLoading.
+//
+// The two arrive on two subscriptions. For one frame they alternate,
+// starting with a start, so once every event is handled the frame is loading
+// exactly when more starts than stops were handled, in whatever order. Each
+// handled event answers that with the number of events handled, which only
+// grows, and the Manager keeps the answer with the highest number
+// (pageHooks.Loading), so the last answer it keeps is the settled one. A load
+// already running when the page subscribed shows its stop alone, which leaves
+// the count one stop ahead for the page's life: its loads then never read as
+// loading, which shows no spinner rather than one that never stops. Only a
+// page attached mid-load can be in that state (a popup); a created page
+// subscribes before its first navigation. Two counters are all it keeps.
+type cdpLoadTracker struct {
+	mu            sync.Mutex
+	starts, stops uint64
+}
+
+func (t *cdpLoadTracker) started() (bool, uint64) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.starts++
+	return t.starts > t.stops, t.starts + t.stops
+}
+
+func (t *cdpLoadTracker) stopped() (bool, uint64) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.stops++
+	return t.starts > t.stops, t.starts + t.stops
+}
+
 // frameTracker is the set of frames a page has reported, which downloads are
 // routed by.
 //

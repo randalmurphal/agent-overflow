@@ -11,6 +11,7 @@ import { closePaneFind, hasPaneFindProvider, isPaneFindOpen, openPaneFind, reset
 import { installCompanionPanes, openCompanion, resetCompanionPanesForTest } from '../../stores/companionPanes.svelte';
 import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from '../../stores/paneLayout.svelte';
 import { createPane, resetPanesForTest } from '../../stores/panes.svelte';
+import { getToasts, resetToastsForTest } from '../../stores/toast.svelte';
 
 const THREAD = 'thread-1';
 
@@ -292,5 +293,102 @@ describe('<BrowserPane> find', () => {
     await view.findByText('Page a');
     await tick();
     expect(hasPaneFindProvider('browser-main')).toBe(false);
+  });
+});
+
+describe('<BrowserPane> tab lifecycle', () => {
+  function resetAll(): void {
+    resetBrowserCompanionForTest();
+    resetToastsForTest();
+    resetCompanionPanesForTest();
+    resetPaneLayoutForTest();
+    resetPanesForTest();
+  }
+
+  beforeEach(() => {
+    resetAll();
+    installCompanionPanes();
+    setPaneLayoutItemsForTest([{ id: 'main', paneId: 'main', kind: 'thread', widthPx: 640 }]);
+    createPane('main').replaceThread(makeThread({ id: THREAD }));
+    openCompanion('main', 'browser');
+    setBindingMock('BrowserCompanionPaneDetach', async () => undefined);
+    setBindingMock('BrowserCompanionPaneRect', async () => undefined);
+  });
+  afterEach(() => resetAll());
+
+  function mount(pages: Record<string, unknown>[], activePageId = String(pages[0]?.id ?? '')) {
+    setBindingMock('BrowserCompanionPaneAttach', async () => ({
+      id: 'mount-1',
+      state: { kind: 'state', threadId: THREAD, activePageId, visible: true, pages },
+    }));
+    return render(BrowserPane, { ctx: makeStubPanelContext({ threadId: THREAD, paneId: 'main' }) });
+  }
+
+  it('shows each tab state and says why the active tab has no page', async () => {
+    setBindingMock('BrowserCompanionDo', async () => undefined);
+    const view = mount([
+      { ...page('a', false), title: '', url: 'about:blank', creating: true },
+      { ...page('b', false), error: 'profile is locked' },
+      { ...page('c', false), loading: true },
+      { ...page('d', false), favicon: 'data:image/png;base64,AAAA' },
+    ]);
+    await waitFor(() => expect(view.getAllByTestId('browser-tab')).toHaveLength(4));
+    const tabs = view.getAllByTestId('browser-tab');
+    expect(tabs.map((tab) => tab.dataset.tabState)).toEqual(['creating', 'error', 'loading', 'ready']);
+    expect(tabs[0].textContent).toContain('Opening…');
+    expect(tabs[3].querySelector('img')?.getAttribute('src')).toBe('data:image/png;base64,AAAA');
+    expect(view.getByTestId('browser-pane-pending').textContent).toBe('Opening…');
+    expect((view.getByRole('textbox', { name: 'Address' }) as HTMLInputElement).disabled).toBe(true);
+
+    applyBrowserCompanionState({ kind: 'state', threadId: THREAD, activePageId: 'b', visible: true, pages: [{ ...page('b', false), error: 'profile is locked' }] } as never);
+    await waitFor(() => expect(view.getByTestId('browser-pane-pending').textContent).toBe('This tab could not be opened: profile is locked'));
+  });
+
+  it('focuses the address with its text selected for the tab the user opened, once it is ready', async () => {
+    let answer!: () => void;
+    const act = setBindingMock('BrowserCompanionDo', vi.fn(async (_thread: string, action: { kind: string }) => {
+      expect(action.kind).toBe('new');
+      applyBrowserCompanionState({ kind: 'state', threadId: THREAD, seq: 1, activePageId: 'n', visible: true, pages: [page('a', false), { ...page('n', false), url: 'about:blank', title: '', creating: true }] } as never);
+      await new Promise<void>((resolve) => { answer = resolve; });
+      return { kind: 'state', threadId: THREAD, seq: 2, activePageId: 'n', visible: true, pages: [page('a', false), { ...page('n', false), url: 'https://example.test/n', title: '' }], pageId: 'n' };
+    }));
+    const view = mount([page('a', false)]);
+    const address = view.getByRole('textbox', { name: 'Address' }) as HTMLInputElement;
+    await waitFor(() => expect(address.disabled).toBe(false));
+    await fireEvent.click(view.getByRole('button', { name: 'New tab' }));
+    await waitFor(() => expect(view.getAllByTestId('browser-tab').map((tab) => tab.dataset.tabState)).toEqual(['ready', 'creating']));
+    expect(document.activeElement).not.toBe(address);
+    answer();
+    await waitFor(() => expect(document.activeElement).toBe(address));
+    expect(address.value).toBe('https://example.test/n');
+    expect([address.selectionStart, address.selectionEnd]).toEqual([0, address.value.length]);
+    expect(act).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves focus alone when the user acted before the new tab was ready', async () => {
+    let answer!: () => void;
+    setBindingMock('BrowserCompanionDo', vi.fn(async () => {
+      await new Promise<void>((resolve) => { answer = resolve; });
+      return { kind: 'state', threadId: THREAD, seq: 2, activePageId: 'n', visible: true, pages: [page('a', false), page('n', false)], pageId: 'n' };
+    }));
+    const view = mount([page('a', false)]);
+    const address = view.getByRole('textbox', { name: 'Address' }) as HTMLInputElement;
+    await waitFor(() => expect(address.disabled).toBe(false));
+    await fireEvent.click(view.getByRole('button', { name: 'New tab' }));
+    window.dispatchEvent(new Event('pointerdown'));
+    answer();
+    await waitFor(() => expect(view.getAllByTestId('browser-tab')).toHaveLength(2));
+    await tick();
+    await tick();
+    expect(document.activeElement).not.toBe(address);
+  });
+
+  it('puts a teardown failure in the open pane\'s banner, not a toast', async () => {
+    setBindingMock('BrowserCompanionDo', async () => undefined);
+    const view = mount([page('a', false)]);
+    await view.findByText('Page a');
+    applyBrowserCompanionState({ kind: 'teardown', threadId: THREAD, pageId: 'b', error: 'profile would not stop' } as never);
+    expect((await view.findByRole('alert')).textContent).toContain('profile would not stop');
+    expect(getToasts()).toEqual([]);
   });
 });

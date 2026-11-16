@@ -35,6 +35,8 @@ import {
 } from './browserPaneRectSender';
 import { paneGeometryBridgeAvailable, postPaneGeometry } from '../native/paneGeometryBridge';
 import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
+import { getSettings } from './settings.svelte';
+import { addErrorToast } from './toast.svelte';
 
 // The browser pane's state store. The pane surface itself is an empty host
 // rect the platform positions a NATIVE browser view over (spec
@@ -84,6 +86,18 @@ export function canUseNativeBrowser(threadId: string): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * Whether the thread's browser can be opened from this page at all: the
+ * pane can host it (canUseNativeBrowser), the home backend has a browser
+ * engine (the hello's `browser` capability) and the browser is turned on.
+ * The chat header's browser button renders on this, tabs or not.
+ */
+export function canOpenNativeBrowser(threadId: string): boolean {
+  if (!canUseNativeBrowser(threadId)) return false;
+  if (!(getTransportHelloFor(HOME_BACKEND)?.capabilities.includes('browser') ?? false)) return false;
+  return getSettings(HOME_BACKEND).browserEnabled;
 }
 
 /**
@@ -215,6 +229,10 @@ export function applyBrowserCompanionState(event: BrowserCompanionEvent): void {
     applyBrowserFindEvent(event);
     return;
   }
+  if (event.kind === 'teardown') {
+    reportBrowserTeardown(event);
+    return;
+  }
   if (event.kind !== 'state') return;
   if (!admitState(event)) return;
   hydratedThreads.add(event.threadId);
@@ -237,6 +255,27 @@ export function applyBrowserCompanionState(event: BrowserCompanionEvent): void {
     event.threadId,
     previous ? { ...previous, state: event, error: '' } : emptyView(event),
   );
+}
+
+/**
+ * A page that already left the tab strip failed to close, or its profile
+ * failed to release (the backend's "teardown" event). The open pane's banner
+ * carries it; with no pane, which is the case once the last tab closed, a
+ * toast that stays until dismissed does.
+ */
+function reportBrowserTeardown(event: BrowserCompanionEvent): void {
+  const message = `A closed browser tab did not shut down cleanly: ${event.error || 'unknown error'}`;
+  if (browserPaneOpen(event.threadId)) {
+    noteBrowserActionError(event.threadId, message);
+    return;
+  }
+  addErrorToast(message, new Error(event.error || message), 0);
+}
+
+/** Whether the thread's browser pane is open here, with its banner. */
+function browserPaneOpen(threadId: string): boolean {
+  const sourcePaneId = sourcePaneIdForThread(threadId);
+  return sourcePaneId !== null && !!companionForSource(sourcePaneId, 'browser') && !!store.snapshot(threadId);
 }
 
 // True while a chord the page claimed is dispatched (replayBrowserAccelerator).
@@ -337,6 +376,13 @@ export async function browserCompanionAct(
   threadId: string,
   action: { kind: string; pageId?: string; address?: string; index?: number },
 ): Promise<BrowserActionFailure | null> {
+  return (await runBrowserAction(threadId, action)).failure;
+}
+
+async function runBrowserAction(
+  threadId: string,
+  action: { kind: string; pageId?: string; address?: string; index?: number },
+): Promise<{ failure: BrowserActionFailure | null; state: BrowserCompanionEvent | null }> {
   noteBrowserActionError(threadId, '');
   try {
     const state = await BrowserCompanionDo(
@@ -349,12 +395,96 @@ export async function browserCompanionAct(
       }),
     );
     applyBrowserCompanionState(state);
-    return null;
+    return { failure: null, state };
   } catch (err) {
     const message = errString(err);
     noteBrowserActionError(threadId, message);
-    return { error: message, cause: err };
+    return { failure: { error: message, cause: err }, state: null };
   }
+}
+
+/**
+ * Opens a new tab in the thread's browser for the user, showing the pane
+ * even when the thread had no tab: the backend selects the tab and shows the
+ * companion before the engine page exists, so the creating tab arrives with
+ * the pane. `address`, when set, is loaded in it (a mod-clicked link).
+ * `focusAddress` is the new-tab button's, shortcut's and header button's: the
+ * address bar takes focus, its text selected, once the tab is ready, unless
+ * the user did anything else first (addressFocusIntent).
+ */
+export async function openBrowserTab(
+  threadId: string,
+  options: { address?: string; focusAddress?: boolean } = {},
+): Promise<BrowserActionFailure | null> {
+  if (options.focusAddress) armAddressFocus(threadId);
+  const { failure, state } = await runBrowserAction(threadId, { kind: 'new', address: options.address });
+  // A refusal with no pane to carry its banner (the thread had no tab, so
+  // none opened) goes to a toast.
+  if (failure && !browserPaneOpen(threadId)) addErrorToast(failure.error, failure.cause);
+  if (options.focusAddress && addressFocusIntents.get(threadId) === PENDING_TAB) {
+    // The answer names the tab; none when it failed or was closed, and
+    // the failed tab shows why.
+    const pageId = failure ? '' : (state?.pageId ?? '');
+    if (pageId) addressFocusIntents.set(threadId, pageId);
+    else dropAddressFocus(threadId);
+  }
+  return failure;
+}
+
+// Address-bar focus the user asked for with a new tab, per thread: null for
+// none, PENDING_TAB until the `new` answer names the tab, then its page id.
+// Any pointer press or key in the window before the pane takes it withdraws
+// every intent (the user moved on), as does the pane finding another tab
+// active.
+const PENDING_TAB = '';
+const addressFocusIntents = createKeyedSignalRegistry<string | null>(null);
+const armedAddressFocus = new Set<string>();
+
+function armAddressFocus(threadId: string): void {
+  if (armedAddressFocus.size === 0 && typeof window !== 'undefined') {
+    window.addEventListener('pointerdown', dropAllAddressFocus, true);
+    window.addEventListener('keydown', dropAllAddressFocus, true);
+  }
+  armedAddressFocus.add(threadId);
+  addressFocusIntents.set(threadId, PENDING_TAB);
+}
+
+function dropAddressFocus(threadId: string): void {
+  if (!armedAddressFocus.delete(threadId)) return;
+  addressFocusIntents.set(threadId, null);
+  if (armedAddressFocus.size === 0 && typeof window !== 'undefined') {
+    window.removeEventListener('pointerdown', dropAllAddressFocus, true);
+    window.removeEventListener('keydown', dropAllAddressFocus, true);
+  }
+}
+
+function dropAllAddressFocus(): void {
+  for (const threadId of [...armedAddressFocus]) dropAddressFocus(threadId);
+}
+
+/**
+ * The tab whose address bar should take focus once it is ready: its page id,
+ * PENDING_TAB ('') while the request is unanswered, null for none. Reactive.
+ */
+export function addressFocusIntent(threadId: string): string | null {
+  return addressFocusIntents.get(threadId);
+}
+
+/**
+ * The pane's answer to an intent for the tab it shows: true, once, when the
+ * intended tab is the active one and ready to take an address. Another
+ * active tab, or the intended tab failing, withdraws the intent.
+ */
+export function takeAddressFocus(threadId: string, active: { id: string; creating?: boolean; error?: string } | null): boolean {
+  const intent = addressFocusIntents.get(threadId);
+  if (intent === null || intent === PENDING_TAB || !active) return false;
+  if (active.id !== intent || active.error) {
+    dropAddressFocus(threadId);
+    return false;
+  }
+  if (active.creating) return false;
+  dropAddressFocus(threadId);
+  return true;
 }
 
 /**
@@ -424,6 +554,8 @@ export function resetBrowserCompanionForTest(): void {
   stateOrder.reset();
   liveStates.reset();
   findCleanupErrors.reset();
+  dropAllAddressFocus();
+  addressFocusIntents.reset();
   hydratedThreads.clear();
   store.suspend();
   store.resetAll();

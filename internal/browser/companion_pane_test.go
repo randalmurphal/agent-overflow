@@ -74,7 +74,7 @@ func newPaneHostManager(t *testing.T) (*Manager, *recordingPaneHost, Access, str
 	if err != nil {
 		t.Fatalf("open first page: %v", err)
 	}
-	second, err := manager.NewCompanionPage(t.Context(), access)
+	second, err := manager.NewCompanionPage(t.Context(), access, "")
 	if err != nil {
 		t.Fatalf("open second page: %v", err)
 	}

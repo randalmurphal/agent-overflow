@@ -21,6 +21,12 @@ mode. Product behavior and authority are defined in
 - One manager owns one engine. Profiles are per workspace, pages are per thread,
   and every operation rechecks thread ownership. Closing the last page disposes
   its profile; manager shutdown joins all engine work.
+- A tab's lifecycle is Manager state (`lifecycle.go`): a page being created is
+  a pending tab, a closed page leaves the tab set before its engine teardown
+  runs, and both keep counting toward caps and holding the workspace's
+  profile until the engine is done. A teardown that runs after its tab left
+  reports through `reportTeardown`. Loading and favicon state is
+  `pagestate.go`.
 - Pages start hidden. Present only the selected page for a visible companion
   pane. The pane uses a native view positioned over the SPA; pixels do not cross
   the transport.

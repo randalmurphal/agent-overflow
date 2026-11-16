@@ -425,7 +425,7 @@ func TestAClosePageRacingASuspensionClosesTheRecord(t *testing.T) {
 	if err := manager.SuspendThread(t.Context(), access.ThreadID); err != nil {
 		t.Fatal(err)
 	}
-	if err := manager.closeFoundPage(t.Context(), access, p, scope); !errors.Is(err, errPageNotFound) {
+	if _, err := manager.closeFoundPage(p, scope); !errors.Is(err, errPageNotFound) {
 		t.Fatalf("close of a page suspended after its lookup = %v", err)
 	}
 	if err := manager.ClosePage(t.Context(), access, page.ID); err != nil {

@@ -571,6 +571,12 @@ and anti-changes that live only here:
 - A browser page fills the pane at 1:1 and reflows with it, like a tab in
   any browser. A fixed page size is an explicit `browser_viewport set`,
   never a default the pane scales down.
+- Browser tabs are the backend's state, never invented by the client: a new
+  tab shows as opening, a failed one the user opened stays with its error,
+  and a closed one leaves at once while the engine finishes in the
+  background. A failure of that teardown is shown, never only logged. A new
+  tab the user opened focuses the address bar; an agent's never takes focus.
+  `docs/architecture/browser-tools.md`.
 - Every thread/workspace event reaches any client with visibility; channel
   audience is by data class, loopback-only is for host directives only. A
   mutation that persists without emitting is a bug.
