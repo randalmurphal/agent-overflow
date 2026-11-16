@@ -255,16 +255,14 @@ AND previous.direction='outgoing' AND previous.phase IN ('committed','complete')
 // (fork_holders.go) is history its forks read, not a conversation: a deleted
 // thread its forks still read keeps its id as one, and is gone to anything
 // that would run in it. A thread a delete claimed or committed when it was
-// read runs nothing (Thread.Deleting); the delete's own teardown reads
+// read runs nothing (Thread.Delete), a claimed one refused with
+// ErrThreadDeleteClaimed; the delete's own teardown reads
 // CheckThreadDeleteAccess instead.
 func (s *Store) CheckThreadExecutionAccess(thread Thread) error {
 	if err := s.CheckThreadDeleteAccess(thread); err != nil {
 		return err
 	}
-	if thread.Deleting {
-		return fmt.Errorf("store: thread %s: %w", thread.ID, ErrThreadDeleting)
-	}
-	return nil
+	return deleteRefusal(thread.ID, thread.Delete)
 }
 
 // CheckThreadDeleteAccess is CheckThreadExecutionAccess for the delete that

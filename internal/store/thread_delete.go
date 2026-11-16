@@ -135,6 +135,59 @@ func (s *Store) BeginThreadDelete(id string) error {
 // handoff and an archive.
 var ErrThreadDeleting = errors.New("store: this thread is being deleted")
 
+// ErrThreadDeleteClaimed is ErrThreadDeleting for a thread a delete claimed
+// and has not committed: the delete may still be refused, and the thread
+// then takes what it refused now. A delivery it refuses is deferred, not
+// lost.
+var ErrThreadDeleteClaimed error = deleteClaimedRefusal{}
+
+type deleteClaimedRefusal struct{}
+
+func (deleteClaimedRefusal) Error() string        { return ErrThreadDeleting.Error() }
+func (deleteClaimedRefusal) Is(target error) bool { return target == ErrThreadDeleting }
+
+// ThreadDeleteState is how far a delete has gone with a thread
+// (Thread.Delete).
+type ThreadDeleteState int
+
+const (
+	// ThreadNotDeleting is a thread no delete holds.
+	ThreadNotDeleting ThreadDeleteState = iota
+	// ThreadDeleteClaimed is a thread a delete claimed and has not
+	// committed (threads.delete_claim).
+	ThreadDeleteClaimed
+	// ThreadDeleteCommitted is a thread a delete committed
+	// (threads.deleting): it is gone for good.
+	ThreadDeleteCommitted
+)
+
+// deleteRefusal is the fence's refusal of threadID in state, nil for none.
+func deleteRefusal(threadID string, state ThreadDeleteState) error {
+	switch state {
+	case ThreadDeleteClaimed:
+		return fmt.Errorf("store: thread %s: %w", threadID, ErrThreadDeleteClaimed)
+	case ThreadDeleteCommitted:
+		return fmt.Errorf("store: thread %s: %w", threadID, ErrThreadDeleting)
+	}
+	return nil
+}
+
+// CheckThreadDeliverable refuses a thread that will never take a message
+// again: one gone to every operation (CheckThreadDeleteAccess: a holder, a
+// thread given to another computer) or one whose delete committed. A claim
+// passes: a delivery is owed to a claimed thread, the fence refuses the
+// delivery attempt, and the delivery's retry brings it once the delete is
+// refused.
+func (s *Store) CheckThreadDeliverable(thread Thread) error {
+	if err := s.CheckThreadDeleteAccess(thread); err != nil {
+		return err
+	}
+	if thread.Delete == ThreadDeleteCommitted {
+		return deleteRefusal(thread.ID, thread.Delete)
+	}
+	return nil
+}
+
 // DeleteClaimedError is a delete refused, with nothing changed, because a
 // thread it takes is claimed by another delete still deciding.
 type DeleteClaimedError struct {
@@ -157,17 +210,16 @@ func (s *Store) CheckThreadNotDeleting(threadID string) error {
 }
 
 func checkThreadNotDeleting(q transferQuerier, threadID string) error {
-	var deleting bool
-	err := q.QueryRow(`SELECT deleting = 1 OR delete_claim <> '' FROM threads WHERE id = ?`, threadID).Scan(&deleting)
+	var state ThreadDeleteState
+	err := q.QueryRow(`SELECT CASE WHEN deleting = 1 THEN 2 WHEN delete_claim <> '' THEN 1 ELSE 0 END
+		FROM threads WHERE id = ?`, threadID).Scan(&state)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		return nil
 	case err != nil:
 		return fmt.Errorf("store: read the delete of thread %s: %w", threadID, err)
-	case deleting:
-		return fmt.Errorf("store: thread %s: %w", threadID, ErrThreadDeleting)
 	}
-	return nil
+	return deleteRefusal(threadID, state)
 }
 
 // ThreadDeleteClaim reads how far a delete has gone with threadID: the

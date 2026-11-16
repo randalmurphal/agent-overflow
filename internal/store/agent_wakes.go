@@ -328,13 +328,15 @@ func (s *Store) ListLiveAgentWakes() ([]AgentWake, error) {
 }
 
 // DueAgentWakes lists the interval rows whose fire has come. A long-running
-// watch has no fire time; its process is the schedule.
+// watch has no fire time; its process is the schedule. A row whose thread a
+// delete holds waits (agentWakeFireable): its fire is due again once a
+// refused delete releases the claim, and a committed delete drops it.
 func (s *Store) DueAgentWakes(now int64, limit int) ([]AgentWake, error) {
 	if limit < 1 {
 		limit = 32
 	}
 	rows, err := s.reader().Query(`SELECT `+agentWakeColumns+` FROM agent_wakes
-		WHERE state = 'armed' AND next_at <= ? AND long_running = 0
+		WHERE state = 'armed' AND next_at <= ? AND long_running = 0 AND `+agentWakeFireable+`
 		ORDER BY next_at LIMIT `+strconv.Itoa(limit), now)
 	if err != nil {
 		return nil, fmt.Errorf("store: list due agent wakes: %w", err)
@@ -346,11 +348,16 @@ func (s *Store) DueAgentWakes(now int64, limit int) ([]AgentWake, error) {
 func (s *Store) NextAgentWakeDue() (ScheduledMoment, error) {
 	var next sql.NullInt64
 	if err := s.reader().QueryRow(`SELECT MIN(next_at) FROM agent_wakes
-		WHERE state = 'armed' AND long_running = 0`).Scan(&next); err != nil {
+		WHERE state = 'armed' AND long_running = 0 AND ` + agentWakeFireable).Scan(&next); err != nil {
 		return ScheduledMoment{}, fmt.Errorf("store: read next agent wake: %w", err)
 	}
 	return ScheduledMoment{At: next.Int64, Set: next.Valid}, nil
 }
+
+// agentWakeFireable is the filter on agent_wakes rows that keeps out a row
+// whose thread a delete claimed or committed.
+const agentWakeFireable = `NOT EXISTS (SELECT 1 FROM threads
+		WHERE threads.id = agent_wakes.thread_id AND (threads.deleting = 1 OR threads.delete_claim <> ''))`
 
 // ClaimAgentWake starts one interval run of the row as the caller read it
 // (selected): armed to running, with the next fire and the fires this one

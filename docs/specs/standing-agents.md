@@ -746,7 +746,13 @@ Ruling 36, as built:
   claimed thread stays listed and read, and runs and moves nothing:
   execution (`CheckThreadExecutionAccess`), work admission, edits, a
   placement or group move, a handoff and an outgoing transfer refuse it
-  (`ErrThreadDeleting`). Verify: the claimed threads have their work
+  (`ErrThreadDeleting`). A claim defers what is owed to the thread and
+  a commit ends it (`ErrThreadDeleteClaimed`, `CheckThreadDeliverable`):
+  a reply owed to a claimed sender stays owed and its wake's retry
+  brings it, a loop or interval watch is not fired while the claim
+  stands and its refused fire is due again, a long-running watch holds
+  its output, and a worker's prompt stays routed to its claimed spawner
+  and is put to it again when the claim is released. Verify: the claimed threads have their work
   admission closed and drained (`threadRestFence.close`), so a spawn
   already admitted names its thread; then the family is claimed again
   once, which takes such a worker, and each thread's refusals run under

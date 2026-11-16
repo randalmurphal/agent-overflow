@@ -272,9 +272,11 @@ func (a *App) settleAgentWakeDelivery(run *agentWakeRun, row store.AgentWake, fi
 		// the next one that reaches the queue says so.
 		a.finishAgentWakeFire(run, row, agentWakeOutcomeSkipped, kept, fire.missed+1, store.AgentWakeLost)
 	case run.wasStopped():
-	case a.lifeCtx().Err() != nil:
+	case a.lifeCtx().Err() != nil, errors.Is(err, store.ErrThreadDeleteClaimed):
 		// The output never reached the queue, so the run is treated as not
-		// run: due again at its own fire, which the next boot replays.
+		// run: due again at its own fire, which the next boot replays, or,
+		// for a thread a delete claimed, the sweep once a refused delete
+		// releases it (DueAgentWakes).
 		if _, err := a.store.ReleaseUndeliveredAgentWake(row.ID, agentWakeOutcomeNotDelivered, kept, fire.at); err != nil {
 			logThreadRequestSweep("release undelivered "+row.Kind+" "+row.ID, err)
 		} else {
@@ -554,7 +556,9 @@ func (a *App) runAgentWatchProcess(ctx context.Context, run *agentWakeRun, row s
 			a.noteAgentWakeStderr(run, row, taken)
 			a.noteAgentWakeOutcome(run, row.ID, agentWakeOutcomeDelivered, store.AgentWakeCarried)
 			return true
-		case errors.Is(err, store.ErrAgentWakeStillQueued), ctx.Err() != nil:
+		case errors.Is(err, store.ErrAgentWakeStillQueued), errors.Is(err, store.ErrThreadDeleteClaimed), ctx.Err() != nil:
+			// Held: a wake still queued, or a delete deciding whether the
+			// thread stays.
 			stderr.restore(taken)
 			return false
 		default:

@@ -500,10 +500,11 @@ type Thread struct {
 	SessionRef     string `json:"sessionRef,omitempty"`
 	PendingForkRef string `json:"pendingForkRef,omitempty"`
 	ForkPreparing  bool   `json:"forkPreparing,omitempty"`
-	// Deleting is whether a delete had claimed or committed the thread
-	// when it was read (threads.delete_claim, threads.deleting), which
-	// CheckThreadExecutionAccess refuses. Never sent to a client.
-	Deleting bool `json:"-"`
+	// Delete is how far a delete had gone with the thread when it was
+	// read: claimed (threads.delete_claim) or committed (threads.deleting).
+	// CheckThreadExecutionAccess refuses both; only a commit is the
+	// thread's end (CheckThreadDeliverable). Never sent to a client.
+	Delete ThreadDeleteState `json:"-"`
 	// PendingForkResumeAt pins the transcript cut for a lazy Claude fork:
 	// the source-session leaf uuid captured when the fork was taken. The
 	// fork's first session start passes it (repaired against the CLI's

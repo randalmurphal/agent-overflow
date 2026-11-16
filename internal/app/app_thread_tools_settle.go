@@ -992,8 +992,10 @@ func (a *App) collectLocalLateReply(token string) bool {
 // It is, whether or not the caller asked to be notified: `notify` decides
 // whether a caller hears that a turn ended without an answer, and a
 // thread_reply is the answer. The one caller it is not owed to is a thread
-// that cannot take it: one that is gone or that this computer may no longer
-// run. An archived caller is refused by the statement that stores the reply
+// that cannot take it: one that is gone, that this computer may no longer
+// run, or whose delete committed (store.CheckThreadDeliverable). A caller a
+// delete only claimed is owed it: the fence refuses the delivery, and the
+// wake's retry brings it once the delete is refused. An archived caller is refused by the statement that stores the reply
 // (store.ThreadRequestSettlement.ArmWake), where an archive cannot slip in
 // between the check and the write. The reply stays on the request either
 // way, where `thread_status` returns it.
@@ -1011,7 +1013,7 @@ func (a *App) replyArmsWake(row store.ThreadRequest) bool {
 		log.Printf("thread tools: read caller %s of request %s: %v", row.CallerThreadID, row.Token, err)
 		return true
 	}
-	return a.store.CheckThreadExecutionAccess(thread) == nil
+	return a.store.CheckThreadDeliverable(thread) == nil
 }
 
 // finishThreadRequestCollection decides how a stored settlement reaches the

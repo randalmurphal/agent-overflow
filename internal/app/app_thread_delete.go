@@ -643,7 +643,23 @@ func (op *familyDelete) refuse(cause error) error {
 	if err := op.app.store.ReleaseDeleteClaim(op.id); err != nil {
 		return errors.Join(cause, fmt.Errorf("and the delete's claim could not be taken back until the app restarts: %w", err))
 	}
+	threads := make([]string, len(op.members))
+	for i, member := range op.members {
+		threads[i] = member.ThreadID
+	}
+	op.app.deliverDeferredByDelete(threads)
 	return cause
+}
+
+// deliverDeferredByDelete delivers what a delete's claim held back from
+// threads, once the claim is released: a claim defers a delivery and a
+// commit ends it (store.ErrThreadDeleteClaimed). A loop or watch fire waits
+// for the sweep (store.DueAgentWakes), a worker's prompt for its
+// redelivery here, and a request's wake for its own retry
+// (retryUndeliveredThreadWakes).
+func (a *App) deliverDeferredByDelete(threads []string) {
+	a.nudgeThreadRequestSweep()
+	a.redeliverDeferredWorkerPrompts(threads)
 }
 
 // commit commits the claimed family (phase 3) and tells clients its rows
