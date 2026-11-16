@@ -135,9 +135,15 @@ const unconfirmedUserRow = (x: string) => `${x}.kind = 'user_text' AND ${x}.pare
   AND ${x}.created_at >= (SELECT t.created_at FROM mig.threads t WHERE t.id = ${x}.thread_id)
   AND NOT EXISTS (SELECT 1 FROM mig.turns t WHERE t.thread_id = ${x}.thread_id AND t.turn_index > ${x}.turn_index)
   AND NOT EXISTS (SELECT 1 FROM mig.items l WHERE l.thread_id = ${x}.thread_id AND l.turn_index > ${x}.turn_index AND l.parent_id = '')`;
-/** The thread request `x` whose wake is still queued: a durable queue row or an unconfirmed user row carries its send id. */
+/**
+ * The thread request `x` whose wake the boot restore returns to the draft: an
+ * unconfirmed user row carries its send id, or a durable queue row does
+ * whose message the provider had not confirmed (a confirmed one is dropped
+ * without marking the wake).
+ */
 const queuedWake = (x: string) => `(EXISTS (SELECT 1 FROM mig.flush_queue_items q
-    WHERE q.send_id IN ('thread-wake:' || ${x}.token, 'thread-wake-late:' || ${x}.token))
+    WHERE q.send_id IN ('thread-wake:' || ${x}.token, 'thread-wake-late:' || ${x}.token)
+      AND NOT (${sendConfirmed('q.thread_id', 'q.send_id')}))
   OR EXISTS (SELECT 1 FROM mig.items u WHERE ${unconfirmedUserRow('u')} AND instr(u.meta, ${x}.token) > 0))`;
 /** The pairing link `x` of an approved own-device admission the last run did not finish: store.IncompleteOwnAdmissions' selection. */
 const incompleteOwnAdmission = (x: string) => `${x}.purpose <> '' AND ${x}.confirmed_at IS NOT NULL AND ${x}.canceled_at IS NULL
@@ -167,10 +173,33 @@ const restoredToDraft = (x: string, text: string, ids: string) =>
 const userMeta = (x: string) => `(CASE WHEN json_valid(${x}.meta) THEN ${x}.meta ELSE '{}' END)`;
 /** The queue row `x`'s payload as JSON, or an empty object when it does not decode (draftPartFromQueueRow then takes only its text). */
 const queuePayload = (x: string) => `(CASE WHEN json_valid(CAST(${x}.payload AS TEXT)) THEN CAST(${x}.payload AS TEXT) ELSE '{}' END)`;
-/** A send id of the user row `x` (its own, or a joined member's) is a queue row's of its thread, which lends the text instead. */
-const sendQueued = (x: string) => `EXISTS (SELECT 1 FROM mig.flush_queue_items q WHERE q.thread_id = ${x}.thread_id AND q.send_id <> ''
-  AND (q.send_id = json_extract(${userMeta(x)}, '$.sendId')
-    OR q.send_id IN (SELECT value FROM json_each(${jsonArray(`json_extract(${userMeta(x)}, '$.joinedSendIds')`)}))))`;
+/** The user row `x` answers for the send `sendId`: its own, or a joined member's (userRowSendIDs). */
+const carriesSend = (x: string, sendId: string) => `(json_extract(${userMeta(x)}, '$.sendId') = ${sendId}
+  OR ${sendId} IN (SELECT value FROM json_each(${jsonArray(`json_extract(${userMeta(x)}, '$.joinedSendIds')`)})))`;
+/** The unconfirmed row `x` went to the draft whole: its text without the review comments it rendered, and its attachments (draftPartFromUserItem). */
+const unconfirmedRestored = (x: string) => restoredToDraft(x,
+  `COALESCE(json_extract(${userMeta(x)}, '$.textBeforeReviewComments'), ${x}.summary)`,
+  `SELECT trim(json_extract(a.value, '$.id')) AS id FROM json_each(${jsonArray(`json_extract(${userMeta(x)}, '$.attachments')`)}) a`);
+/** An unconfirmed row of the thread of queue row `q` carries its send: `q` is a copy of a member of that row. */
+const queueCopyCarried = (q: string, restored: boolean) => `${q}.send_id <> '' AND EXISTS (SELECT 1 FROM mig.items u
+  WHERE u.thread_id = ${q}.thread_id AND ${unconfirmedUserRow('u')} AND ${carriesSend('u', `${q}.send_id`)}${restored ? ` AND ${unconfirmedRestored('u')}` : ''})`;
+/** The provider's id on the user row `x` (usermessage.ReadProviderItemID). */
+const providerItemId = (x: string) => `COALESCE(json_extract(${userMeta(x)}, '$.provider_item_id'), '')`;
+/** A reader-authored user row (store.readerAuthoredUserTextFilterFor). */
+const readerUserText = (x: string) => `${x}.parent_id = '' AND ${x}.kind = 'user_text'
+  AND COALESCE(json_extract(${userMeta(x)}, '$.wire_only'), 0) != 1`;
+/**
+ * The provider confirmed the message of the send `sendId` in thread `thread`
+ * (app.queuedSendDelivered): the booted store's user row
+ * FindUserTextItemBySendID finds, by its own send id first and a joined one
+ * second, carries the provider's id.
+ */
+const sendConfirmed = (thread: string, sendId: string) => `${sendId} <> '' AND COALESCE(
+  (SELECT ${providerItemId('i')} <> '' FROM main.items i WHERE i.thread_id = ${thread} AND ${readerUserText('i')}
+    AND json_extract(${userMeta('i')}, '$.sendId') = ${sendId} LIMIT 1),
+  (SELECT ${providerItemId('i')} <> '' FROM main.items i WHERE i.thread_id = ${thread} AND ${readerUserText('i')}
+    AND ${sendId} IN (SELECT value FROM json_each(${jsonArray(`json_extract(${userMeta('i')}, '$.joinedSendIds')`)})) LIMIT 1),
+  0)`;
 /** The send `sendId` is recorded in the thread of `x`: a user row or a queue row carries it (app.findRecordedSend). */
 const sendRecorded = (x: string, sendId: string) => `(EXISTS (SELECT 1 FROM mig.items u WHERE u.thread_id = ${x}.thread_id AND u.kind = 'user_text'
     AND (json_extract(${userMeta('u')}, '$.sendId') = ${sendId}
@@ -237,14 +266,10 @@ export const recoveryRules: RecoveryRule[] = [
     columns: ['status', 'summary', 'updated_at', 'rev'], to: "b.status IN ('errored', 'completed')",
   },
   {
-    // Its text without the review comments it rendered, and its attachments,
-    // go to the draft (draftPartFromUserItem), unless a queue row carries
-    // the same send.
+    // The row is the unit, a joined one included: it goes to the draft whole.
     name: 'unconfirmed-queued-messages', writer: 'app.(*App).restoreThreadQueueAtBoot (store.RestoreFlushQueueToDraft)',
     table: 'items', removes: true,
-    rows: `${unconfirmedUserRow('s')} AND (${sendQueued('s')} OR ${restoredToDraft('s',
-      `COALESCE(json_extract(${userMeta('s')}, '$.textBeforeReviewComments'), s.summary)`,
-      `SELECT trim(json_extract(a.value, '$.id')) AS id FROM json_each(${jsonArray(`json_extract(${userMeta('s')}, '$.attachments')`)}) a`)})`,
+    rows: `${unconfirmedUserRow('s')} AND ${unconfirmedRestored('s')}`,
   },
   {
     name: 'unconfirmed-message-search-rows', writer: 'store.RetireUndeliveredUserRow (deleteThreadItemTx clears its search rows)',
@@ -286,11 +311,17 @@ export const recoveryRules: RecoveryRule[] = [
     rows: "s.worktree_setup_state = 'running'", columns: ['worktree_setup_state'], to: "b.worktree_setup_state = 'failed'",
   },
   {
-    // Its text and its payload's attachments go to the draft (draftPartFromQueueRow).
+    // restoreThreadQueueAtBoot's three cases, in its order: a copy of a
+    // member of an unconfirmed row leaves with that row, which the draft
+    // holds whole; a message the provider confirmed leaves with no text;
+    // any other goes to the draft, its text and its payload's attachments
+    // (draftPartFromQueueRow).
     name: 'queued-messages', writer: 'app.(*App).restoreThreadQueueAtBoot (store.RestoreFlushQueueToDraft)',
     table: 'flush_queue_items', removes: true,
-    rows: restoredToDraft('s', 's.message',
-      `SELECT a.value AS id FROM json_each(${jsonArray(`json_extract(${queuePayload('s')}, '$.attachmentIds')`)}) a`),
+    rows: `CASE WHEN ${queueCopyCarried('s', false)} THEN ${queueCopyCarried('s', true)}
+      WHEN ${sendConfirmed('s.thread_id', 's.send_id')} THEN 1
+      ELSE ${restoredToDraft('s', 's.message',
+        `SELECT a.value AS id FROM json_each(${jsonArray(`json_extract(${queuePayload('s')}, '$.attachmentIds')`)}) a`)} END`,
   },
   {
     name: 'queued-message-drafts', writer: 'app.(*App).restoreQueuedDraft (composerdraft.MergeParts)', table: 'thread_drafts',

@@ -210,7 +210,9 @@ whatever release wrote the root. A rule that removes or rewrites a row
 holding a person's words also checks where they went: a queued message, an
 unconfirmed one and a resend's recovery are removed only when the booted
 draft holds their text and attachments, and the draft they land in must
-keep its own. Stamps follow writes, never stand alone: a row's
+keep its own. A queue copy of a member of an unconfirmed joined row leaves
+only when the draft holds that row whole, and a queue row whose message a
+provider-confirmed row carries leaves with no text. Stamps follow writes, never stand alone: a row's
 `rev`, the thread's `history_rev` and `history_epoch`, and a subagent card
 may move only in a thread whose `items` rows the boot changed, removed or
 added (`rows: 'thread-write'`), also on a row another rule settles. A boot
