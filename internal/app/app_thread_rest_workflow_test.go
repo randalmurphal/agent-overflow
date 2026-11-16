@@ -501,8 +501,9 @@ func TestAStopPausesTheRunsThatReportToTheThread(t *testing.T) {
 
 // A running workflow run that reports to a worker keeps it from rest: its
 // rest reads waiting on the run by its goal, and so does its spawn's row,
-// framed as the run is bound. The run pausing for a person brings it to rest,
-// framed by the run's state change.
+// framed as the run is bound. The run pausing for a person brings it to
+// rest; the run resumed keeps it from rest again, framed by the run's state
+// change alone.
 func TestARunningWorkflowRunKeepsTheThreadItReportsToFromRest(t *testing.T) {
 	t.Parallel()
 	f := newRestRunFixture(t)
@@ -530,4 +531,20 @@ func TestARunningWorkflowRunKeepsTheThreadItReportsToFromRest(t *testing.T) {
 		t.Fatalf("rest with the run paused = %+v, %v; want at rest", rest, err)
 	}
 	waitUntil(t, 10*time.Second, func() bool { return row().Worker == "" })
+	// The pause's notice starts a turn of the worker; with its session
+	// stopped it is at rest again. Resumed, the run keeps it from rest: no
+	// message reaches the worker for that, so only the run's state change
+	// brings its row back to waiting.
+	f.settle()
+	if err := f.app.StopSession(f.worker.ID); err != nil {
+		t.Fatalf("StopSession: %v", err)
+	}
+	waitUntil(t, 10*time.Second, func() bool { return row().Worker == "" })
+	if err := f.app.WorkflowResumeItem(context.Background(), item.ID, "", false); err != nil {
+		t.Fatal(err)
+	}
+	waitUntil(t, 10*time.Second, func() bool {
+		r := row()
+		return r.Worker == workerWaiting && r.Activity == "Workflow · ship it"
+	})
 }
