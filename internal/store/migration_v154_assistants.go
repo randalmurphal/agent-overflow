@@ -44,8 +44,8 @@ import (
 // idx_threads_delete_claim holds the claimed ones, for the boot that
 // releases the claims no delete committed. `spawn_instructions` is the text
 // a thread_spawn appended to the thread's system prompt for its life, and
-// `spawn_level` the sub-thread level a paired computer's spawn carried
-// here, zero for every other thread.
+// `spawn_level` the sub-thread level a paired computer's spawn or ask
+// carried here while that delegation lasts, zero for every other thread.
 //
 // thread_requests and thread_request_receipts gain:
 //

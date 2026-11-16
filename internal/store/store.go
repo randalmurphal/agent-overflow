@@ -634,10 +634,12 @@ type Thread struct {
 	// at creation and carried by a fork and a transfer; absent from
 	// updateThreadSetSQL, so nothing rewrites it.
 	SpawnInstructions string `json:"spawnInstructions,omitempty"`
-	// SpawnLevel is the sub-thread level a paired computer's spawn carried
-	// here (migration v154): how far below a thread the person talks to
-	// the spawn's thread is. Zero for every thread a local spawn or the
-	// person made, whose level the spawn links answer (SubThreadLevel).
+	// SpawnLevel is the sub-thread level a paired computer's spawn or ask
+	// carried here (migration v154): how far below a thread the person
+	// talks to the thread is. Zero for every thread a local spawn, a local
+	// ask or the person made, whose level its links answer
+	// (SubThreadLevel), and zero again once the thread is placed in the
+	// sidebar or transferred, which ends that delegation.
 	SpawnLevel int `json:"spawnLevel,omitempty"`
 	// AskCopy marks the hidden copy a thread_ask runs in (a scratch thread
 	// its request owns, scratch_threads.request_token): it takes no

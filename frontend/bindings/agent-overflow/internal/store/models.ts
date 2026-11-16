@@ -1904,10 +1904,12 @@ export class Thread {
     "spawnInstructions"?: string;
 
     /**
-     * SpawnLevel is the sub-thread level a paired computer's spawn carried
-     * here (migration v154): how far below a thread the person talks to
-     * the spawn's thread is. Zero for every thread a local spawn or the
-     * person made, whose level the spawn links answer (SubThreadLevel).
+     * SpawnLevel is the sub-thread level a paired computer's spawn or ask
+     * carried here (migration v154): how far below a thread the person
+     * talks to the thread is. Zero for every thread a local spawn, a local
+     * ask or the person made, whose level its links answer
+     * (SubThreadLevel), and zero again once the thread is placed in the
+     * sidebar or transferred, which ends that delegation.
      */
     "spawnLevel"?: number;
 

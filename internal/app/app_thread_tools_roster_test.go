@@ -340,6 +340,32 @@ func TestARemoteSpawnCarriesItsLevelAndInstructions(t *testing.T) {
 		t.Fatalf("a spawn given a sidebar row carries level %d, %v; want 0", thread.SpawnLevel, err)
 	}
 
+	// An ask's copy there is one below the asker, as a local ask's is.
+	consulted := forkableThreadOn(t, pair.dest, "consulted-there")
+	ask, err := pair.adapter().Ask(context.Background(), pair.callerIdentity(), threadtools.AskCall{
+		ThreadID: consulted.ID, ComputerID: pair.computer, Question: "what did you do?",
+	})
+	if err != nil {
+		t.Fatalf("remote ask: %v", err)
+	}
+	copyID := pair.receipt(t, ask.Token).TargetThreadID
+	if level, err := pair.dest.store.SubThreadLevel(copyID); err != nil || level != 2 {
+		t.Fatalf("the ask copy there is at level %d, %v; want 2", level, err)
+	}
+
+	// The person filing the worker in a group there ends the delegation it
+	// came with, and its next session can spawn again.
+	group, err := pair.dest.store.CreateThreadGroup(thread.ProjectID, "Taken over")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pair.dest.SetThreadGroup([]string{child}, group.ID); err != nil {
+		t.Fatal(err)
+	}
+	if place, err := pair.dest.subThreadPlaceOf(child); err != nil || place.level != 0 || !place.canSpawn() {
+		t.Fatalf("the worker filed in a group there: %+v, %v", place, err)
+	}
+
 	if _, err := pair.dest.settings.Update(map[string]any{"subThreadLevels": 1}); err != nil {
 		t.Fatal(err)
 	}

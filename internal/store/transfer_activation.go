@@ -62,6 +62,10 @@ func (s *Store) CommitIncomingThreadTransfer(ctx context.Context, id, digest str
 	if target.ID != row.ThreadID {
 		return ThreadTransfer{}, errors.New("transfer: activation names another conversation")
 	}
+	// A moved or copied thread is a conversation of its own here: the
+	// delegation a paired computer carried to it stays behind
+	// (SubThreadLevel).
+	target.SpawnLevel = 0
 	if row.Phase == "complete" {
 		return row, nil
 	}

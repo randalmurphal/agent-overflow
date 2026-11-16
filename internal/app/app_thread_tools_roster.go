@@ -150,6 +150,16 @@ func (t threadToolsApp) refuseSpawnPastLimit(callerThreadID string) (int, error)
 	return place.level + 1, nil
 }
 
+// carriedLevel is the level a request's new thread stores: what a paired
+// computer's spawn or ask carried, none below zero, and zero for this
+// computer's own, whose spawn link or ask counts instead.
+func carriedLevel(origin threadRequestOrigin, level int) int {
+	if !origin.foreign {
+		return 0
+	}
+	return max(level, 0)
+}
+
 // refuseCarriedLevelPastLimit refuses a paired computer's spawn whose thread
 // would sit past this computer's own limit.
 func (t threadToolsApp) refuseCarriedLevelPastLimit(level int) error {

@@ -81,8 +81,11 @@ type scratchForkOptions struct {
 	// RuntimeMode is the fork's, empty to inherit the source's.
 	RuntimeMode string
 	// RequestToken is the agent request an ask fork answers. A side chat has
-	// none: a person is driving it.
+	// none: a person is driving it, so it continues no agent's delegation
+	// and is level 0 (store.SubThreadLevel).
 	RequestToken string
+	// SpawnLevel is the level a paired computer's ask carried to its copy.
+	SpawnLevel int
 }
 
 // forkScratchThread forks source at its tail into a hidden scratch thread and
@@ -98,6 +101,7 @@ func (a *App) forkScratchThread(
 		Mode:        threadmode.ModeScratch,
 		RuntimeMode: opts.RuntimeMode,
 		Title:       scratchForkTitle(opts.TitlePrefix, source.Title),
+		SpawnLevel:  opts.SpawnLevel,
 	})
 	if err != nil {
 		return store.Thread{}, err

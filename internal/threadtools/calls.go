@@ -93,6 +93,11 @@ type AskCall struct {
 	Question    string `json:"question"`
 	WaitSeconds int    `json:"wait_seconds"`
 	Notify      bool   `json:"notify"`
+	// Level is the sub-thread level of the copy that answers, one below
+	// the asker's, set by the asker's computer on an ask it forwards to
+	// another, which stores it with the copy. Zero on a local ask, whose
+	// level the ask itself answers (SpawnCall.Level).
+	Level int `json:"level,omitempty"`
 }
 
 // ReplyCall settles one request the caller's thread was asked.
