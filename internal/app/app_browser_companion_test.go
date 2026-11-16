@@ -1,10 +1,57 @@
 package app
 
 import (
+	"context"
+	"errors"
 	"testing"
 
 	appbrowser "agent-overflow/internal/browser"
+	"agent-overflow/internal/transport"
 )
+
+// The pane's "focus-page" hands the keyboard to the presented page, and only
+// the host's own window may ask: the native view lives there. With nothing
+// presented (the fake engine has no views) it is a no-op answering the
+// thread's state.
+func TestBrowserCompanionFocusPageIsTheHostWindowsAlone(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	manager := appbrowser.NewManager(t.TempDir(), appbrowser.Config{Enabled: true}, appbrowser.ManagerOptions{FakeEngine: true})
+	app.browser.manager = manager
+	t.Cleanup(func() { _ = manager.Close() })
+	thread := makeWorkspaceThread(t, app, "thread-companion-focus")
+	if _, err := app.BrowserCompanionDo(t.Context(), thread.ID, BrowserCompanionAction{Kind: "new"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name  string
+		ctx   func() context.Context
+		allow bool
+	}{
+		{"the host window", func() context.Context {
+			ctx, _ := transport.WithConnState(t.Context(), transport.ConnPrincipal{HostWindow: true})
+			return ctx
+		}, true},
+		{"another client with the launch credential", func() context.Context {
+			ctx, _ := transport.WithConnState(t.Context(), transport.ConnPrincipal{})
+			return ctx
+		}, false},
+		{"an in-process caller", func() context.Context { return t.Context() }, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			state, err := app.BrowserCompanionDo(tc.ctx(), thread.ID, BrowserCompanionAction{Kind: "focus-page"})
+			if !tc.allow {
+				if !errors.Is(err, errBrowserPaneNotHostWindow) {
+					t.Fatalf("focus-page = %v; want the host-window refusal", err)
+				}
+				return
+			}
+			if err != nil || len(state.Pages) != 1 {
+				t.Fatalf("focus-page = %+v, %v; want the thread's state", state, err)
+			}
+		})
+	}
+}
 
 // The pane's "new" from no tab shows the companion on the new tab and names
 // it in the answer, navigating an address it carries (a mod-clicked link);

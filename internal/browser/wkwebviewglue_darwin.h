@@ -40,6 +40,12 @@ void ao_wkv_set_find_frame_script(const char *script, const char *world);
 // accepted it, 0 otherwise.
 int ao_wkv_focus_app(void);
 
+// ao_wkv_view_focus_presented makes a presented view its window's first
+// responder, as a click into it does: 1 when AppKit accepted it, 0 when it
+// refused, -1 when the view is not presented and focus was left alone. A
+// window that is not key keeps the responder for when it becomes key.
+int ao_wkv_view_focus_presented(void *view);
+
 // ao_wkv_host_park puts a view into the park view at its own slot, at its
 // viewport (ao_wkv_view_set_size) and scale 1. The park view is 1x1 with a
 // masked layer, so a parked view is IN THE WINDOW (real viewport,

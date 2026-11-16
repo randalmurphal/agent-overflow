@@ -66,6 +66,12 @@ int ao_wk_host_hide(void *view, int slot);
 // decides whether a dialog, picker, or context menu is shown or answered.
 int ao_wk_host_presented(void *view);
 
+// ao_wk_view_focus_presented gives a presented view keyboard focus within
+// its window, as a click into it does: 1 when GTK made it the focus widget,
+// 0 when GTK refused, -1 when the view is not presented and focus was left
+// alone. GTK moves focus only inside the window; it never activates it.
+int ao_wk_view_focus_presented(void *view);
+
 // ---- session -------------------------------------------------------------
 
 // ao_wk_session_new creates one workspace's isolated WebKitNetworkSession over

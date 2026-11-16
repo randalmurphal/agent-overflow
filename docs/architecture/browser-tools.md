@@ -223,6 +223,20 @@ so AO's chords have to be taken back at the engine:
   webview through the same code as a claimed chord's handoff
   (`ao_wk_focus_app`, `ao_wkv_focus_app`, and the launcher's
   `releaseFocus`). Showing a page takes no focus.
+- The pane hands the keyboard to the page the way a browser does after the
+  address bar's Enter or Escape: the `focus-page` companion action
+  (`focusBrowserPage` in the frontend store, host window only) reaches
+  `Manager.FocusCompanionPage`, which asks the engine to focus the thread's
+  presented page (`paneHost.FocusPage`) and does nothing when none is
+  presented. The engine checks again that it shows the view, where its hides
+  run: `ao_wk_view_focus_presented` grabs GTK focus on the WebKitGTK view,
+  `ao_wkv_view_focus_presented` makes the WKWebView first responder, and the
+  launcher applies a `focus` directive on the page's lane with
+  `ICoreWebView2Controller::MoveFocus` (programmatic) only while its window
+  is in the foreground (`focusDecision`), the rule a claimed chord's handoff
+  keeps, so AO never takes the OS focus from another application. A
+  controller that refuses answers a `focus-failed` report, which reaches the
+  pane as an error.
 - Only the host's own window mounts a pane (`BrowserCompanionPaneAttach`
   refuses any other connection; see transport.md, the host-window cookie):
   the native view lives in that window. A browser tab on the host offers

@@ -244,6 +244,26 @@ func (h *Host) Apply(directive Directive) {
 		h.withPage(directive.PageID, func(page *hostPage) { h.startFind(page, directive.Query) })
 	case OpFindStop:
 		h.withPage(directive.PageID, h.stopFind)
+	case OpFocus:
+		h.withPage(directive.PageID, h.focusPage)
+	}
+}
+
+// focusPage moves keyboard focus into a page the host shows, while the
+// launcher window is the foreground window (focusDecision). Runs on the UI
+// thread, so the view it checks is the one on screen.
+func (h *Host) focusPage(page *hostPage) {
+	switch focusDecision(page.shown, isForeground(h.config.HostWindow())) {
+	case focusNotShown:
+		h.config.Logf("browser host: page %s focus: not shown, focus left alone", page.id)
+		return
+	case focusNotForeground:
+		h.config.Logf("browser host: page %s focus: the launcher window is not in the foreground, focus left alone", page.id)
+		return
+	}
+	if err := page.controller.moveFocus(moveFocusProgrammatic); err != nil {
+		h.config.Logf("browser host: page %s focus: %v", page.id, err)
+		h.config.Report(page.id, ReportFocusFailed, err.Error())
 	}
 }
 

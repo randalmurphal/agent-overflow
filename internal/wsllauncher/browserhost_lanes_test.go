@@ -121,3 +121,42 @@ func TestDirectiveLanesCollapseOnlyAdjacentBounds(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 }
+
+// A focus rides its page's lane: it runs after the show it follows, and the
+// bounds around it never collapse across it.
+func TestAFocusFollowsItsPagesShow(t *testing.T) {
+	release := make(chan struct{})
+	var mu sync.Mutex
+	var got []string
+	finished := make(chan struct{}, 16)
+	lanes := newDirectiveLanes(func(d webview2host.Directive) {
+		if d.Op == webview2host.OpShow {
+			<-release
+		}
+		mu.Lock()
+		got = append(got, fmt.Sprintf("%s:%g", d.Op, d.X))
+		mu.Unlock()
+		finished <- struct{}{}
+	})
+	bounds := func(x float64) webview2host.Directive {
+		return webview2host.Directive{Op: webview2host.OpBounds, PageID: "p", X: x, W: 1, H: 1}
+	}
+	lanes.submit(bounds(1))
+	lanes.submit(webview2host.Directive{Op: webview2host.OpShow, PageID: "p"})
+	lanes.submit(bounds(2))
+	lanes.submit(webview2host.Directive{Op: webview2host.OpFocus, PageID: "p"})
+	lanes.submit(bounds(3))
+	close(release)
+	for range 5 {
+		select {
+		case <-finished:
+		case <-time.After(5 * time.Second):
+			t.Fatal("lane stalled")
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if want := []string{"bounds:1", "show:0", "bounds:2", "focus:0", "bounds:3"}; !slices.Equal(got, want) {
+		t.Fatalf("ran %v, want %v", got, want)
+	}
+}

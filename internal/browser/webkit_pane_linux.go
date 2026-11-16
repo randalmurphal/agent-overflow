@@ -166,6 +166,23 @@ func (e *webkitEngine) HidePage(handle string) {
 	}
 }
 
+// FocusPage gives the presented page's view keyboard focus within the
+// window. Whether it is presented is read on the GTK thread, after any hide
+// queued before it. A page that closed answers nil: there is nothing to
+// focus.
+func (e *webkitEngine) FocusPage(handle string) error {
+	p := webkitPaneTarget(handle)
+	if p == nil {
+		return nil
+	}
+	if err := webkitFocusPresentedView(p.liveView()); err != nil && !errors.Is(err, errViewClosed) {
+		return err
+	}
+	return nil
+}
+
+var _ paneHost = (*webkitEngine)(nil)
+
 func (e *webkitEngine) OpenPageDevTools(handle string) {
 	if p := webkitPaneTarget(handle); p != nil {
 		_ = webkitOpenInspector(p.liveView())

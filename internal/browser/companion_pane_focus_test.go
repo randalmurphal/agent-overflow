@@ -35,6 +35,20 @@ func (e *focusPaneHost) HidePage(handle string) {
 	e.mu.Unlock()
 }
 
+// FocusPage gives a shown page the focus, as a click does, and leaves a
+// page that is not shown alone, as every engine does.
+func (e *focusPaneHost) FocusPage(handle string) error {
+	if err := e.recordingPaneHost.FocusPage(handle); err != nil {
+		return err
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.shown[handle] {
+		e.focus = handle
+	}
+	return nil
+}
+
 func (e *focusPaneHost) click(t *testing.T, handle string) {
 	t.Helper()
 	e.mu.Lock()
