@@ -356,6 +356,9 @@ func validateSettings(current Settings) (Settings, error) {
 	if err := validateDictationAPI(&current); err != nil {
 		return Settings{}, err
 	}
+	if err := validateAgentRoster(&current); err != nil {
+		return Settings{}, err
+	}
 
 	return current, nil
 }
@@ -531,6 +534,7 @@ func sanitizeLoadedSettings(current Settings) Settings {
 		current.SpinnerCompactionAnimation,
 	)
 	sanitizeDictationAPI(&current)
+	sanitizeAgentRoster(&current)
 	return current
 }
 

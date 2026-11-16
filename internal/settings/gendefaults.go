@@ -260,5 +260,6 @@ func emitFrontendConstraints(b *strings.Builder) {
 		MinClaudeMaxCommandTimeoutHours, MaxClaudeMaxCommandTimeoutHours)
 	fmt.Fprintf(b, "  accountAutoSwitchThreshold: [%d, %d],\n",
 		MinAccountAutoSwitchThreshold, MaxAccountAutoSwitchThreshold)
+	fmt.Fprintf(b, "  subThreadLevels: [%d, %d],\n", MinSubThreadLevels, MaxSubThreadLevels)
 	b.WriteString("};\n")
 }
