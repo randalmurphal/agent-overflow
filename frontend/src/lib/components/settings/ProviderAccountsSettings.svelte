@@ -403,7 +403,7 @@
                   {providerAccountName(account)}
                 </span>
                 {#if account.active}
-                  <span class="rounded-full bg-accent/10 px-1.5 py-0.5 text-[0.625rem] font-medium text-accent">
+                  <span class="shrink-0 rounded-full bg-accent/10 px-1.5 py-0.5 text-[0.625rem] font-medium text-accent">
                     Active
                   </span>
                 {/if}
