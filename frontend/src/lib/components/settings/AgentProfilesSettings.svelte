@@ -160,6 +160,12 @@
     void updateSetting('agentNotes', sent);
   }
 
+  // Taking the other version also drops a save still checking the draft
+  // it replaces.
+  function takeTheirsProfile(index: number): void {
+    profileSaves += 1;
+    takeTheirs(profiles, index);
+  }
   function addProfile(): void {
     profiles.entries.push({
       value: { name: '', useFor: '', provider: '', model: '', effort: '', runtimeMode: '', instructions: '' },
@@ -206,7 +212,14 @@
         ? 'This was also changed elsewhere. Your version is kept here; saving replaces the other one.'
         : 'This was changed or removed elsewhere. Your version is kept here; saving adds it back.'}
     </span>
-    <button type="button" class={GHOST_BUTTON_CLASS} onclick={takeOther}>
+    <!-- Pressing it leaves the focus in the field, so the press does not
+         commit, and save, the version it replaces. -->
+    <button
+      type="button"
+      class={GHOST_BUTTON_CLASS}
+      onpointerdown={(e) => e.preventDefault()}
+      onclick={takeOther}
+    >
       {replaced ? 'Use the other version' : 'Discard mine'}
     </button>
   </p>
@@ -341,7 +354,7 @@
             </p>
           {/if}
           {#if entry.theirs !== undefined}
-            {@render changedElsewhere('agent-profile-conflict', entry.theirs !== null, () => takeTheirs(profiles, index))}
+            {@render changedElsewhere('agent-profile-conflict', entry.theirs !== null, () => takeTheirsProfile(index))}
           {/if}
           <label class="flex flex-col gap-1 text-[0.71875rem] text-fg-muted">
             Use for
