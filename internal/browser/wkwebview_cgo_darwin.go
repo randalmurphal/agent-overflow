@@ -194,16 +194,16 @@ func aoWKVSnapshotDone(callID C.uint64_t, pixels unsafe.Pointer, width, height, 
 }
 
 //export aoWKVAllow
-func aoWKVAllow(pageID, profileID C.uint64_t, decision unsafe.Pointer, uri *C.char, download C.int) {
+func aoWKVAllow(pageID, _ C.uint64_t, decision unsafe.Pointer, uri *C.char, download C.int) {
 	target := wkTakeString(uri)
-	page, profile := uint64(pageID), uint64(profileID)
+	page := uint64(pageID)
 	// Answered OFF the main thread: navigation authority is the Manager's, and
 	// asking it takes Manager locks — blocking the main thread on a Go lock is
 	// how the whole window freezes behind one browser operation. The delegate
 	// deferred the decision with a copied block held for exactly this.
 	go func() {
 		verdict := C.int(C.AO_POLICY_CANCEL)
-		if wkNavigationAllowed(page, profile, target) {
+		if wkNavigationAllowed(page, target) {
 			// The Manager's authority is over the URL; whether an allowed URL
 			// navigates or downloads is what the anchor asked for.
 			verdict = C.AO_POLICY_ALLOW
@@ -217,15 +217,14 @@ func aoWKVAllow(pageID, profileID C.uint64_t, decision unsafe.Pointer, uri *C.ch
 	}()
 }
 
-// wkNavigationAllowed answers one navigation in a view. A page answers with
-// its own policy. A view with no page is a popup the Manager has not adopted
-// yet: it loads from creation, so its workspace's policy answers until
-// adoption stamps the page. A page or profile that is gone refuses.
-func wkNavigationAllowed(pageID, profileID uint64, target string) bool {
-	if pageID == 0 {
-		profile := wkLookupProfile(profileID)
-		return profile != nil && profile.allow(target)
-	}
+// wkNavigationAllowed answers one navigation in a view with the policy of
+// the page the glue names for it (ao_view_policy_page_id): the view's own
+// page, or for a popup the Manager has not adopted yet, which loads from
+// creation, its opener's. The opener's workspace authority is the one the
+// adopted popup gets, so the file policy is the same before and after
+// adoption, whatever cookie jar the pages are in. A page that is gone, or a
+// view with none, refuses.
+func wkNavigationAllowed(pageID uint64, target string) bool {
 	page := wkLookupPage(pageID)
 	return page != nil && (page.hooks.Allow == nil || page.hooks.Allow(target))
 }

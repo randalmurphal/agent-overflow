@@ -86,9 +86,6 @@ type pageClose struct {
 	p    *managedPage
 	done chan struct{}
 	err  error
-	// replaced marks a close whose tab a jar switch reopens: the reopened
-	// tab holds the thread-cap slot instead. Guarded by m.mu.
-	replaced bool
 }
 
 func (c *pageClose) wait(ctx context.Context) error {
@@ -285,7 +282,7 @@ func (m *Manager) admitThreadPageLocked(threadID string) error {
 	closing := 0
 	for _, scope := range m.scopes {
 		for _, c := range scope.closing {
-			if c.p.owner == threadID && !c.replaced {
+			if c.p.owner == threadID && m.suspended[c.p.id] == nil {
 				closing++
 			}
 		}
@@ -358,6 +355,12 @@ func (m *Manager) closeLivePage(ctx context.Context, access Access, pageID strin
 // one m.mu hold, so concurrent closes agree on one teardown.
 func (m *Manager) beginCloseLive(access Access, pageID string) (*pageClose, error) {
 	m.mu.Lock()
+	if m.suspended[pageID] != nil {
+		// A jar switch's record: the tab is the record, and its page closing
+		// under the same id is no longer a tab (SetJar).
+		m.mu.Unlock()
+		return nil, errPageNotFound
+	}
 	for _, scope := range m.scopes {
 		if c := scope.closing[pageID]; c != nil {
 			m.mu.Unlock()

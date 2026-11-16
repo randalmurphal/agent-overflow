@@ -26,9 +26,9 @@ type headlessProfile struct {
 	// logins from being deleted.
 	ephemeralRoot string
 	downloadDir   string
-	// allow is the workspace's navigation policy, which connect enables
-	// browser-wide.
-	allow func(url string) bool
+	// allow is the jar's navigation policy (profileOptions.Allow), which
+	// connect enables browser-wide.
+	allow func(page, opener, rawURL string) bool
 
 	// launchMu serializes ensureBrowser so a burst of concurrent page
 	// creations launches one Chromium rather than one each.
@@ -463,12 +463,17 @@ func (p *headlessProfile) subscribe(browserCtx context.Context) error {
 		return err
 	}
 	session := chromedp.FromContext(browserCtx).Browser
+	targets := newHeadlessTargets(p)
 	if err := onBrowserEvent(browserCtx, fetch.RequestPaused, logf, func(event fetch.EventRequestPaused) {
-		answerPausedRequest(browserCtx, session, event, p.allow)
+		// A page's main frame id is its target id, so a top-level request
+		// names its page, and a popup's names the opener whose authority it
+		// has until adoption gives it its own; a subframe's names neither.
+		page := string(event.FrameID)
+		opener := targets.opener(page)
+		answerPausedRequest(browserCtx, session, event, func(rawURL string) bool { return p.allow(page, opener, rawURL) })
 	}); err != nil {
 		return err
 	}
-	targets := newHeadlessTargets(p)
 	if err := onBrowserEvent(browserCtx, target.TargetCreated, logf, targets.created); err != nil {
 		return err
 	}
@@ -503,8 +508,11 @@ func (p *headlessProfile) subscribe(browserCtx context.Context) error {
 type headlessTargets struct {
 	profile *headlessProfile
 
-	mu       sync.Mutex
-	known    map[target.ID]struct{}
+	mu    sync.Mutex
+	known map[target.ID]struct{}
+	// openers maps each known popup to the page that opened it, for the
+	// browser-wide navigation policy.
+	openers  map[target.ID]target.ID
 	gone     *boundedMap[target.ID, struct{}]
 	heldInfo *boundedMap[target.ID, *target.Info]
 
@@ -515,6 +523,7 @@ func newHeadlessTargets(p *headlessProfile) *headlessTargets {
 	return &headlessTargets{
 		profile:  p,
 		known:    make(map[target.ID]struct{}),
+		openers:  make(map[target.ID]target.ID),
 		gone:     newBoundedMap[target.ID, struct{}](orderSlack),
 		heldInfo: newBoundedMap[target.ID, *target.Info](orderSlack),
 	}
@@ -555,6 +564,7 @@ func (h *headlessTargets) created(event target.EventTargetCreated) {
 		return
 	}
 	defer h.mu.Unlock()
+	h.openers[info.TargetID] = info.OpenerID
 	p.engine.bindPage(handle, p)
 	// On its own goroutine, as the WebKit engines report popups: the
 	// Manager adopts a popup through AttachPage, a CDP round trip that must
@@ -593,6 +603,7 @@ func (h *headlessTargets) infoChanged(event target.EventTargetInfoChanged) {
 func (h *headlessTargets) destroyed(event target.EventTargetDestroyed) {
 	h.mu.Lock()
 	delete(h.known, event.TargetID)
+	delete(h.openers, event.TargetID)
 	h.heldInfo.delete(event.TargetID)
 	h.gone.put(event.TargetID, struct{}{})
 	// A page the Manager created is bound before its created event may be
@@ -615,5 +626,13 @@ func (h *headlessTargets) destroyed(event target.EventTargetDestroyed) {
 func (h *headlessTargets) retained() int {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return len(h.known) + h.gone.len() + h.heldInfo.len()
+	return len(h.known) + len(h.openers) + h.gone.len() + h.heldInfo.len()
+}
+
+// opener answers the page that opened the popup page, or "" for a target
+// that is no known popup.
+func (h *headlessTargets) opener(page string) string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return string(h.openers[target.ID(page)])
 }

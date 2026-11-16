@@ -723,20 +723,20 @@ func (m *Manager) openPageLocked(ctx context.Context, access Access, p *managedP
 		return nil, fmt.Errorf("browser: process page limit reached (%d)", maxPagesTotal)
 	}
 	p.jarGen = m.sessionLocked(access.ThreadID).jarGen
-	p.authority = m.authorityLocked(workspace, authorityDir)
 	// The reservation keeps a concurrent close of the scope's last page from
-	// disposing the profile this page is being created in.
+	// disposing the profile this page is being created in, and the page's
+	// workspace authority is taken in the same hold: pruneAuthoritiesLocked
+	// keeps the authority of every reserved page, so a close elsewhere cannot
+	// forget the counter this page holds.
 	if scope != nil {
 		scope.creating[p] = struct{}{}
+		p.authority = m.authorityLocked(workspace, authorityDir)
 	}
 	m.mu.Unlock()
 
 	if scope == nil {
-		scope, err = m.createScope(jar, access)
+		scope, err = m.createScope(jar)
 		if err != nil {
-			m.mu.Lock()
-			m.pruneAuthoritiesLocked()
-			m.mu.Unlock()
 			// The engine may be running for this page alone.
 			m.scheduleIdleClose()
 			return nil, err
@@ -744,6 +744,7 @@ func (m *Manager) openPageLocked(ctx context.Context, access Access, p *managedP
 		scope.creating[p] = struct{}{}
 		m.mu.Lock()
 		m.scopes[jar.key] = scope
+		p.authority = m.authorityLocked(workspace, authorityDir)
 		m.mu.Unlock()
 	}
 
@@ -790,25 +791,27 @@ func (m *Manager) pageHooks(p *managedPage) pageHooks {
 }
 
 // createScope creates the profile of one jar. Its profile-level navigation
-// policy is what every page the jar can hold is allowed (jarAllowRoots).
-func (m *Manager) createScope(jar jarIdentity, access Access) (*jarScope, error) {
+// policy answers with the authority of the page a request belongs to, or its
+// opener's (jarAllows).
+func (m *Manager) createScope(jar jarIdentity) (*jarScope, error) {
 	downloadDir := filepath.Join(m.artifactRoot, "downloads", jarDirName(jar.key))
 	if err := os.MkdirAll(downloadDir, 0o700); err != nil {
 		return nil, fmt.Errorf("browser: create download directory: %w", err)
 	}
-	roots := jarAllowRoots(jar, access)
+	scope := &jarScope{
+		jar: jar, downloadDir: downloadDir,
+		pages: make(map[string]*managedPage), closing: make(map[string]*pageClose),
+		creating: make(map[*managedPage]struct{}),
+	}
 	profile, err := m.engine.NewProfile(context.Background(), profileOptions{
 		Jar: jar.key, DownloadDir: downloadDir, Ephemeral: jar.ephemeral,
-		Allow: func(rawURL string) bool { return m.navigationAllowed(roots, rawURL) },
+		Allow: func(page, opener, rawURL string) bool { return m.jarAllows(scope, page, opener, rawURL) },
 	})
 	if err != nil {
 		return nil, err
 	}
-	return &jarScope{
-		jar: jar, profile: profile, downloadDir: downloadDir,
-		pages: make(map[string]*managedPage), closing: make(map[string]*pageClose),
-		creating: make(map[*managedPage]struct{}),
-	}, nil
+	scope.profile = profile
+	return scope, nil
 }
 
 // startLocked starts the engine unless it is running. The caller holds

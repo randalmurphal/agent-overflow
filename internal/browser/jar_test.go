@@ -12,7 +12,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 )
 
 // jarEngine is the fake engine recording every profile it creates with the
@@ -31,6 +30,9 @@ type jarEngine struct {
 	creating    chan struct{}
 	onAttach    func()
 	closeGate   chan struct{}
+	closeStep   chan struct{}
+	profileGate chan struct{}
+	profiling   chan struct{}
 	cleared     atomic.Int64
 }
 
@@ -51,13 +53,20 @@ func newJarManager(t *testing.T, dir string, config Config) (*Manager, *jarEngin
 	t.Cleanup(func() { _ = manager.Close() })
 	engine := &jarEngine{
 		fakeEngine: newFakeEngine(), navErr: make(map[string]error),
-		navigating: make(chan string, 16), creating: make(chan struct{}, 16),
+		navigating: make(chan string, 16), creating: make(chan struct{}, 16), profiling: make(chan struct{}, 16),
 	}
 	manager.engine = engine
 	return manager, engine
 }
 
 func (e *jarEngine) NewProfile(ctx context.Context, opts profileOptions) (engineProfile, error) {
+	e.mu.Lock()
+	gate := e.profileGate
+	e.mu.Unlock()
+	if gate != nil {
+		e.profiling <- struct{}{}
+		<-gate
+	}
 	profile, err := e.fakeEngine.NewProfile(ctx, opts)
 	if err != nil {
 		return nil, err
@@ -164,12 +173,32 @@ func (p *jarProfile) Dispose(ctx context.Context) error {
 
 func (p *jarPage) Close() {
 	p.engine.mu.Lock()
-	gate := p.engine.closeGate
+	gate, step := p.engine.closeGate, p.engine.closeStep
 	p.engine.mu.Unlock()
-	if gate != nil {
+	switch {
+	case gate != nil:
 		<-gate
+	case step != nil:
+		<-step
 	}
 	p.pageDriver.Close()
+}
+
+// stepCloses holds every page close until step lets one through; at the
+// test's end every close passes.
+func (e *jarEngine) stepCloses(t *testing.T) (step func()) {
+	ch := make(chan struct{})
+	e.mu.Lock()
+	e.closeStep = ch
+	e.mu.Unlock()
+	t.Cleanup(func() {
+		e.mu.Lock()
+		e.closeStep = nil
+		e.mu.Unlock()
+		// Lets every close still waiting for a step through.
+		close(ch)
+	})
+	return func() { ch <- struct{}{} }
 }
 
 func (e *jarEngine) holdClose() (release func()) {
@@ -310,8 +339,8 @@ func TestProjectJarIsSharedAcrossWorktreesOnlyByThreadsThatChoseIt(t *testing.T)
 	}
 	setJar(t, manager, a, JarProject)
 	setJar(t, manager, b, JarProject)
-	waitSettled(t, manager, a)
-	waitSettled(t, manager, b)
+	restoreTabs(t, manager, a)
+	restoreTabs(t, manager, b)
 	pageC := openPage(t, manager, c, "https://example.test/c")
 
 	jarA, jarB := pageJar(t, manager, tabIDs(manager, a)[0]), pageJar(t, manager, tabIDs(manager, b)[0])
@@ -387,9 +416,9 @@ func TestPrivateJarIsEphemeralAndNewEachGeneration(t *testing.T) {
 		t.Fatalf("a private page after the last one closed opened in %q, want a new private jar", reopened)
 	}
 	setJar(t, manager, access, JarThread)
-	waitSettled(t, manager, access)
+	restoreTabs(t, manager, access)
 	setJar(t, manager, access, JarPrivate)
-	waitSettled(t, manager, access)
+	restoreTabs(t, manager, access)
 	again := pageJar(t, manager, tabIDs(manager, access)[0])
 	if again == reopened || again == jar || !strings.HasPrefix(again, "private:a:") {
 		t.Fatalf("a new private generation opened in %q, want an identity it never had", again)
@@ -432,12 +461,26 @@ func TestASharedJarKeepsEachWorkspacesAuthority(t *testing.T) {
 	if manager.navigationAllowed(livePage.access, "file://"+files["one"]) {
 		t.Fatal("the other worktree's page may navigate to this worktree's file")
 	}
+	// The jar's own policy, which an engine asks for a popup it loads before
+	// adoption, answers with the opener's authority, so the popup may open
+	// what it may open once adopted: its worktree's files, not the other's.
 	allow := engine.profile("project:P").allow
-	if allow("file://"+files["one"]) || allow("file://"+files["two"]) {
-		t.Fatal("the shared jar's own policy allows one worktree's files")
+	openerA, openerB := paneHandle(manager, a, pageA.ID), paneHandle(manager, b, pageB.ID)
+	if !allow("popup", openerA, "file://"+files["one"]) || !allow("popup", openerB, "file://"+files["two"]) {
+		t.Fatal("a popup in the shared jar is refused its opener's worktree file")
 	}
-	if !allow("file://"+files["root"]) || !allow("https://example.test/") {
-		t.Fatal("the shared jar's own policy refuses what every member may open")
+	if allow("popup", openerA, "file://"+files["two"]) || allow("popup", openerB, "file://"+files["one"]) {
+		t.Fatal("a popup in the shared jar may open the other worktree's file")
+	}
+	if !allow(openerA, "", "file://"+files["one"]) || allow(openerA, "", "file://"+files["two"]) {
+		t.Fatal("a page's own request is not answered with its own authority")
+	}
+	outside := filepath.Join(t.TempDir(), "outside.html")
+	if err := os.WriteFile(outside, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !allow("subframe", "", "file://"+files["root"]) || allow("subframe", "", "file://"+canonical(t, outside)) {
+		t.Fatal("a request naming no page is not bounded by what the jar's pages may open")
 	}
 
 	manager.mu.Lock()
@@ -698,22 +741,16 @@ func TestJarSettingSurvivesARestart(t *testing.T) {
 	})
 }
 
-// waitSettled waits until none of the thread's tabs is being created.
-func waitSettled(t *testing.T, m *Manager, access Access) {
+// restoreTabs restores every suspended tab of the thread, as using each
+// would, so the tabs a jar switch suspended are live in the new jar.
+func restoreTabs(t *testing.T, m *Manager, access Access) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		creating := false
-		for _, page := range m.CompanionState(access).Pages {
-			creating = creating || page.Creating
+	for _, page := range m.CompanionState(access).Pages {
+		if page.Suspended {
+			if err := m.ActivateCompanionPage(t.Context(), access, page.ID); err != nil {
+				t.Fatalf("restore %s: %v", page.ID, err)
+			}
 		}
-		if !creating {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the tabs of %s never settled: %+v", access.ThreadID, m.CompanionState(access).Pages)
-		}
-		time.Sleep(5 * time.Millisecond)
 	}
 }
 
@@ -834,5 +871,69 @@ func TestASavedFileWithAnUnknownJarIsDropped(t *testing.T) {
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatalf("the invalid file was kept: %v", err)
+	}
+}
+
+// A page creating its jar's profile takes its workspace's authority with its
+// reservation, so a close elsewhere that prunes authorities meanwhile cannot
+// leave it holding a counter its workspace no longer uses: the workspace keeps
+// one authority, and one download quota.
+func TestANewJarsFirstPageSharesItsWorkspacesAuthority(t *testing.T) {
+	manager, engine := newJarManager(t, t.TempDir(), Config{Enabled: true, PersistSiteData: true})
+	proj := newProject(t, "P")
+	a, b := proj.access("a", proj.one), proj.access("b", proj.one)
+	first := openPage(t, manager, a, "https://example.test/a")
+	setJar(t, manager, b, JarThread)
+	gate := make(chan struct{})
+	engine.mu.Lock()
+	engine.profileGate = gate
+	engine.mu.Unlock()
+	var once sync.Once
+	release := func() {
+		once.Do(func() {
+			engine.mu.Lock()
+			engine.profileGate = nil
+			engine.mu.Unlock()
+			close(gate)
+		})
+	}
+	t.Cleanup(release)
+	created := make(chan PageInfo, 1)
+	failed := make(chan error, 1)
+	go func() {
+		info, err := manager.NewPage(t.Context(), b)
+		if err != nil {
+			failed <- err
+			return
+		}
+		created <- info
+	}()
+	receive(t, engine.profiling, "the thread jar's profile creation")
+	// The workspace's only registered page closes while b's profile is
+	// created: the prune it runs sees no page of the workspace.
+	if err := manager.ClosePage(t.Context(), a, first.ID); err != nil {
+		t.Fatal(err)
+	}
+	release()
+	var info PageInfo
+	select {
+	case info = <-created:
+	case err := <-failed:
+		t.Fatalf("create in the new jar: %v", err)
+	}
+	second := openPage(t, manager, a, "https://example.test/again")
+	pb, _, err := manager.lookupOwnedPage(b, info.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pa, _, err := manager.lookupOwnedPage(a, second.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.mu.Lock()
+	registered := manager.authorities[canonical(t, proj.one)]
+	manager.mu.Unlock()
+	if pb.authority != registered || pa.authority != registered {
+		t.Fatal("one workspace's pages hold two authorities, so two download quotas")
 	}
 }

@@ -42,7 +42,7 @@ describe('<BrowserJarControl>', () => {
       'This worktree Shared with every thread on this worktree',
       "Whole project Shared with this project's threads that choose it, in any worktree",
       "This browser only This thread's own, kept between sessions",
-      'Private Never saved; gone when its last tab closes',
+      'Private Not kept; discarded when its last tab closes',
     ]);
     expect(rows.map((row) => row.getAttribute('aria-checked'))).toEqual(['false', 'true', 'false', 'false']);
   });
@@ -54,7 +54,7 @@ describe('<BrowserJarControl>', () => {
     await fireEvent.click(await view.findByTestId('browser-jar-thread'));
     const dialog = await view.findByRole('dialog');
     expect(dialog.textContent).toContain('Switch to This browser only?');
-    expect(dialog.textContent).toContain('The 2 open tabs close and reopen their addresses with the new cookie jar.');
+    expect(dialog.textContent).toContain('The 2 open tabs close and load their addresses again in the new cookie jar when you go back to them.');
     expect(dialog.textContent).toContain('form input, back and forward history, and sign-ins kept in the current jar');
     expect(act).not.toHaveBeenCalled();
 
@@ -65,7 +65,7 @@ describe('<BrowserJarControl>', () => {
 
     await fireEvent.click(view.getByTestId('browser-jar'));
     await fireEvent.click(await view.findByTestId('browser-jar-thread'));
-    await fireEvent.click(within(await view.findByRole('dialog')).getByRole('button', { name: 'Switch and reopen' }));
+    await fireEvent.click(within(await view.findByRole('dialog')).getByRole('button', { name: 'Switch cookie jar' }));
     await waitFor(() => expect(act).toHaveBeenCalledTimes(1));
     expect(act.mock.calls[0][0]).toBe(THREAD);
     expect(act.mock.calls[0][1]).toMatchObject({ kind: 'jar', jar: 'thread' });

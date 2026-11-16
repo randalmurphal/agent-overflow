@@ -65,8 +65,8 @@ headless Chrome process, pages are engine pages hosted as above.
   threads on a canonical workspace, with the same profile ids as
   before jars), `project` (shared by the project's threads that choose
   it, in any worktree), `thread` (this browser only, persistent) or
-  `private` (ephemeral, a new identity each time it is created, gone
-  when its last page closes). `jar.go` is the one mapping from
+  `private` (always ephemeral, a new identity each time it is created,
+  discarded when its last page closes). `jar.go` is the one mapping from
   (thread, choice) to a jar; engines receive only a jar key and an
   ephemeral flag. Pages stay thread-owned. WebKit views are ALWAYS
   constructed against an explicit AO-owned data dir: merely
@@ -96,10 +96,14 @@ Consequences, deliberate:
 - The AES-GCM checkpoint machinery (`state.go`, keyring key) is
   deleted. Site data at rest has the same protection as the user's own
   browser profile: filesystem permissions (0700 dirs).
-- `browserPersistSiteData=false` maps every jar to in-memory/ephemeral
-  sessions (WebView2 InPrivate profile; WebKit ephemeral
-  WebsiteDataStore / non-persistent session). A `private` jar is
-  always ephemeral and is never written to disk.
+- `browserPersistSiteData=false` maps every jar to an ephemeral profile,
+  and a `private` jar is always one. The contract every engine keeps: an
+  ephemeral profile is never part of a persistent profile, and its data is
+  discarded when the jar's last page closes. WebKit keeps it in memory (an
+  ephemeral network session, a non-persistent data store); WebView2 uses an
+  InPrivate profile, whose storage the runtime manages; headless Chromium
+  has no in-memory profile and uses a temporary user-data directory
+  (browser-tools.md, Platform behavior).
 - **Clear site data** closes every engine page, then deletes every
   jar's profile directory. Each thread's jar choice survives it.
 - Old encrypted checkpoints are deleted on first boot of the new code

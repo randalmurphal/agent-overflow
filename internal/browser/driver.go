@@ -148,9 +148,14 @@ type profileOptions struct {
 	// setting is off, or the jar is private. The hosted engine forwards it
 	// as the directive's Ephemeral flag.
 	Ephemeral bool
-	// Allow is the jar's navigation policy (jarAllowRoots), for an engine
-	// that can load a page before AttachPage installs the page's own policy.
-	Allow func(url string) bool
+	// Allow is the policy for a request an engine intercepts outside any one
+	// page's own policy: the headless engine's browser-wide interception,
+	// which also sees a popup before the Manager adopts it. page names the
+	// page the request belongs to and opener the page that opened it; either
+	// may be empty. The Manager answers with that page's workspace authority,
+	// or its opener's, never the jar's (jarAllows). The WebKit engines need
+	// none: their glue names a popup's opener for every navigation decision.
+	Allow func(page, opener, rawURL string) bool
 }
 
 // pageHooks are the AO-owned callbacks a page driver reports into. They carry

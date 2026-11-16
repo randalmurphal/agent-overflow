@@ -80,7 +80,7 @@ type fakeProfile struct {
 	// jar, ephemeral and allow are what the profile was created with.
 	jar       string
 	ephemeral bool
-	allow     func(url string) bool
+	allow     func(page, opener, rawURL string) bool
 
 	mu       sync.Mutex
 	disposed bool

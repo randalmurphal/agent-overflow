@@ -38,6 +38,10 @@ type suspendedPage struct {
 	// restoring is the restore in flight, which concurrent touches wait for
 	// rather than loading the page twice.
 	restoring *restoreCall
+	// after holds the teardowns of the pages a jar switch closed when it
+	// recorded this one (SetJar); a restore waits for all of them first. Not
+	// saved: after a restart those pages are long gone.
+	after []<-chan struct{}
 }
 
 func (r *suspendedPage) info() PageInfo {
@@ -231,8 +235,12 @@ func (m *Manager) runRestore(access Access, rec *suspendedPage, call *restoreCal
 // dropped, in one m.mu hold and only once it is fully loaded; any failure
 // leaves the record as it was. A page loaded in a jar its thread switched
 // away from meanwhile is closed and the restore starts again in the new
-// jar.
+// jar. A record a jar switch made first waits for the switch's teardown
+// (awaitSwitchTeardown).
 func (m *Manager) restorePage(ctx context.Context, access Access, rec *suspendedPage, skipLoad bool) error {
+	if err := m.awaitSwitchTeardown(ctx, rec); err != nil {
+		return err
+	}
 	for {
 		m.mu.Lock()
 		target, title, label := rec.url, rec.title, rec.label
@@ -288,6 +296,34 @@ func (m *Manager) restorePage(ctx context.Context, access Access, rec *suspended
 		}
 		return nil
 	}
+}
+
+// awaitSwitchTeardown waits until the pages a jar switch closed when it
+// recorded rec have finished their teardown (SetJar), so the restore neither
+// shares the id with a page still closing nor meets a cap only they hold. A
+// record forgotten meanwhile (its tab closed, the thread closed, site data
+// cleared, the browser turned off) is not restored.
+func (m *Manager) awaitSwitchTeardown(ctx context.Context, rec *suspendedPage) error {
+	m.mu.Lock()
+	after := rec.after
+	m.mu.Unlock()
+	if len(after) == 0 {
+		return nil
+	}
+	for _, done := range after {
+		select {
+		case <-done:
+		case <-ctx.Done():
+			return fmt.Errorf("browser: restore page %s: the page it replaces in the previous cookie jar is still closing: %w", rec.id, ctx.Err())
+		}
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.suspended[rec.id] != rec {
+		return fmt.Errorf("browser: restore page %s: %w", rec.id, errPageNotFound)
+	}
+	rec.after = nil
+	return nil
 }
 
 // openAndLoad creates p's engine page (openPageLocked) and loads target in it when target is set, with title shown while

@@ -62,23 +62,32 @@ per-platform no-op.
   state, in the profile they used before jars), `project` (the project's
   threads that choose it share one, in any worktree; keyed on the project id
   the app passes in `Access`), `thread` (this browser only, kept between
-  sessions) or `private` (never on disk; a new identity each time, gone when
-  its last page closes). `internal/browser/jar.go` is the only mapping from a
-  thread's choice to a jar; engines get a jar key and an ephemeral flag.
+  sessions) or `private` (always ephemeral: never part of a persistent
+  profile, discarded when its last page closes, a new identity each time).
+  `internal/browser/jar.go` is the only mapping from a thread's choice to a
+  jar; engines get a jar key and an ephemeral flag.
   `browser_session` reports the jar. Agents have no tool to change it, since
   a switch closes the user's tabs. Pages remain owned by the registering
   thread.
 - A jar shares site data and nothing else. Navigation and file permissions,
   the download directory and the download quota stay per canonical
-  workspace, whichever jar a page is in.
+  workspace, whichever jar a page is in. A popup the engine loads before the
+  Manager adopts it is held to its opener's policy, the one it gets on
+  adoption.
 - Switching the jar with tabs open asks first in the pane. The Manager then
-  closes the thread's tabs and reopens their addresses in the new jar, in the
-  same order and with the same active tab, under new page ids; each reopen
-  waits for its old page's teardown. A tab whose reopen fails stays as a
-  failed tab with its `error`. A per-thread jar generation fences a create,
-  restore or reopen that began before the switch, so it retries in the new
-  jar; a popup is admitted only beside a live opener, which a switch has
-  already closed. A shutdown during a switch loses the tabs still reopening.
+  suspends every live tab into the new jar: its page closes and a suspended
+  record keeps its id, position, label and address, the active tab staying
+  active, and the records are saved before any teardown starts, so a
+  shutdown or crash mid-switch loses no tab. The tabs come back through the
+  ordinary restore: the pane brings back the tab it shows, and the others
+  return when selected or used, with the navigation policy applied and no
+  page history. A tab that cannot come back stays suspended with the error.
+  A restore waits until every page the switch closed is gone, its old
+  profile's disposal included, and until then a closing page and its record
+  hold one slot in the thread's cap; closing the record leaves the slot to
+  the page. A per-thread jar generation fences a create or restore that
+  began before the switch, so it lands in the new jar; a popup is admitted
+  only beside a live opener, which a switch has already closed.
 - A thread gets an opaque MCP URL capability at provider-session start, and
   session end revokes it. Its registration does not create a profile or page.
 - The first page operation creates the jar's profile and a page. Page
@@ -687,6 +696,20 @@ the tools, and nobody gets a view of them. Selection is an explicit request
 that only the serve boot makes, never an inference from the absence of a
 window, or `go test` would start browsers. And nothing is ever downloaded: the
 Chromium has to already be installed, or the host keeps the windowless answer.
+
+**Ephemeral profiles** (a private jar, or every jar with the site-data
+setting off) keep one contract on every engine: the profile is never part of
+a persistent profile, and its data is discarded when the jar's last page
+closes. Where the data lives meanwhile is the engine's. WebKitGTK uses an
+ephemeral network session, which writes nothing to client storage, and
+WKWebView a non-persistent data store. WebView2 uses an InPrivate profile,
+whose storage the runtime manages and does not document. Headless Chromium
+has no in-memory profile: it runs on a temporary user-data directory
+(`os.TempDir`), which the profile's disposal deletes; one a crashed backend
+leaves behind is deleted by the next engine start's sweep
+(`internal/browser/headless_ephemeral.go`). An incognito browser context in
+the profile's process would keep it in memory; serve mode has no pane to
+choose a jar from, so that is not built.
 
 Every OTHER windowless run — `--connect`, `go test`, and any desktop whose OS
 is too old for its native engine — has **no browser engine and no browser

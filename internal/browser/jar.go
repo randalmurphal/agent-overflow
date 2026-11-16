@@ -20,13 +20,16 @@ import (
 //   - project: one jar per project, shared by every thread of the project
 //     that chose it, across its worktrees.
 //   - thread: this thread only, persistent.
-//   - private: this thread only, never on disk, a new identity for every
-//     generation of the setting and whenever its last page has closed.
+//   - private: this thread only, always ephemeral: never part of a
+//     persistent profile, and discarded when its last page closes, after
+//     which its next page gets a new identity, as does every generation of
+//     the setting. Where an ephemeral profile lives until then is the
+//     engine's (browser-tools.md, Platform behavior).
 //
 // The jar is only the engine's storage partition. Authority stays with the
 // page's workspace: navigation and file permissions are the page's own
-// Access (pageHooks.Allow), and download accounting is per workspace
-// (workspaceAuthority). jarForLocked is the one place a thread and its
+// Access (pageHooks.Allow, and for a popup before adoption its opener's:
+// jarAllows), and download accounting is per workspace (workspaceAuthority). jarForLocked is the one place a thread and its
 // setting become a jar identity; an engine receives only that identity and
 // whether the jar is ephemeral (profileOptions).
 
@@ -115,16 +118,43 @@ func (m *Manager) jarCurrentLocked(p *managedPage) bool {
 	return m.sessionLocked(p.owner).jarGen == p.jarGen
 }
 
-// jarAllowRoots is the authority a jar's profile-level navigation policy
-// uses, for a popup the engine loads before the Manager adopts it under its
-// opener's own Access: what every page the jar can hold is allowed. A
-// worktree jar holds its workspace's pages; any other jar can hold pages of
-// several worktrees of the project, which share only the project root.
-func jarAllowRoots(jar jarIdentity, access Access) Access {
-	if jar.kind == JarWorktree {
-		return Access{Workspace: access.Workspace, ProjectRoot: access.ProjectRoot}
+// jarAllows is a jar profile's own navigation policy (profileOptions.Allow).
+// A jar carries site data, never authority: a request is allowed what the
+// page it belongs to may open, or for a popup the Manager has not adopted
+// yet, what its opener may, which is what the popup is allowed once adopted.
+// A request the engine names neither page for (a subframe, under the
+// headless engine's browser-wide interception) is allowed what some page of
+// the jar may open; the page's own policy, which the engine also applies,
+// still bounds it.
+func (m *Manager) jarAllows(scope *jarScope, page, opener, rawURL string) bool {
+	m.mu.Lock()
+	var accesses []Access
+	if p := pageWithHandle(scope, page); page != "" && p != nil {
+		accesses = append(accesses, p.access)
+	} else if p := pageWithHandle(scope, opener); opener != "" && p != nil {
+		accesses = append(accesses, p.access)
+	} else {
+		seen := make(map[Access]bool)
+		add := func(p *managedPage) {
+			if !seen[p.access] {
+				seen[p.access] = true
+				accesses = append(accesses, p.access)
+			}
+		}
+		for _, p := range scope.pages {
+			add(p)
+		}
+		for p := range scope.creating {
+			add(p)
+		}
 	}
-	return Access{ProjectRoot: access.ProjectRoot}
+	m.mu.Unlock()
+	for _, access := range accesses {
+		if m.navigationAllowed(access, rawURL) {
+			return true
+		}
+	}
+	return false
 }
 
 // workspaceAuthority is what a canonical workspace owns across every jar its

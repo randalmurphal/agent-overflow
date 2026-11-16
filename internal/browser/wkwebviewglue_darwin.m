@@ -38,6 +38,7 @@ extern void aoWKVFindDone(uint64_t call_id, int found);
 
 // Association keys. The address is the key, so each needs storage of its own.
 static const char kAOPageIDKey;
+static const char kAOOpenerIDKey;
 static const char kAOProfileIDKey;
 static const char kAODownloadDirKey;
 static const char kAODownloadIDKey;
@@ -69,6 +70,18 @@ static uint64_t ao_view_page_id(id view) {
 
 static uint64_t ao_view_profile_id(id view) {
   return ao_number(objc_getAssociatedObject(view, &kAOProfileIDKey));
+}
+
+// ao_view_policy_page_id names the page whose navigation policy answers for
+// view: its own once the Manager has adopted it, and before that, for a
+// popup, the page that opened it (set when WebKit asks for the popup). Zero
+// refuses.
+static uint64_t ao_view_policy_page_id(id view) {
+  uint64_t page_id = ao_view_page_id(view);
+  if (page_id != 0) {
+    return page_id;
+  }
+  return ao_number(objc_getAssociatedObject(view, &kAOOpenerIDKey));
 }
 
 // ---------------------------------------------------------------------------
@@ -760,11 +773,12 @@ static void ao_attach_download(WKWebView *view, WKDownload *download) {
   // navigation: WebKit only turns it into a WKDownload when the answer is
   // WKNavigationActionPolicyDownload, so the flag rides along with the
   // deferred decision and the Go side answers 2 for an allowed download.
-  // A popup the Manager has not adopted has no page id yet; its profile's
-  // workspace policy answers for it.
+  // A popup the Manager has not adopted has no page id yet; its opener's
+  // policy answers for it, so the file policy is the same before and after
+  // adoption.
   int download = [navigationAction shouldPerformDownload] ? 1 : 0;
   void (^held)(WKNavigationActionPolicy) = Block_copy(decisionHandler);
-  aoWKVAllow(ao_view_page_id(webView), ao_view_profile_id(webView), (void *)held,
+  aoWKVAllow(ao_view_policy_page_id(webView), ao_view_profile_id(webView), (void *)held,
              ao_dup([url absoluteString]), download);
 }
 
@@ -831,10 +845,12 @@ static void ao_attach_download(WKWebView *view, WKDownload *download) {
                                         configuration:configuration];
   // The popup starts loading as soon as this returns, before the Manager can
   // adopt it, so every navigation in it is checked from the first one. It
-  // carries the opener's profile and download directory: the profile's
-  // workspace policy answers until adoption, and a download it starts before
-  // then reaches the Go side, which refuses one outside every page. The UI
+  // carries its opener's page, profile and download directory: the opener's
+  // policy answers until adoption, and a download it starts before then
+  // reaches the Go side, which refuses one outside every page. The UI
   // delegate waits for adoption.
+  objc_setAssociatedObject(popup, &kAOOpenerIDKey, @(ao_view_policy_page_id(webView)),
+                           OBJC_ASSOCIATION_RETAIN_NONATOMIC);
   objc_setAssociatedObject(popup, &kAOProfileIDKey, @(ao_view_profile_id(webView)),
                            OBJC_ASSOCIATION_RETAIN_NONATOMIC);
   objc_setAssociatedObject(popup, &kAODownloadDirKey,

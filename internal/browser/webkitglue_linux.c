@@ -11,7 +11,7 @@
 extern void aoWebKitEvalDone(uint64_t call_id, char *json, char *err);
 extern void aoWebKitSnapshotDone(uint64_t call_id, void *pixels, int width,
                                  int height, int stride, char *err);
-extern void aoWebKitAllow(uint64_t page_id, uint64_t profile_id, void *decision, char *uri);
+extern void aoWebKitAllow(uint64_t page_id, void *decision, char *uri);
 extern void aoWebKitConsole(uint64_t page_id, char *payload);
 extern void aoWebKitPageInfo(uint64_t page_id, char *uri, char *title);
 extern void aoWebKitDocumentCommitted(uint64_t page_id);
@@ -35,6 +35,7 @@ extern void aoWebKitFindDone(uint64_t call_id, int found, unsigned int match_cou
 #define AO_DL_CANCELED 2
 
 #define AO_PAGE_KEY "ao-page-id"
+#define AO_OPENER_KEY "ao-opener-page-id"
 #define AO_PROFILE_KEY "ao-profile-id"
 #define AO_SESSION_DL_DIR "ao-download-dir"
 #define AO_SESSION_KEY "ao-session"
@@ -43,6 +44,17 @@ extern void aoWebKitFindDone(uint64_t call_id, int found, unsigned int match_cou
 
 static uint64_t ao_view_page_id(gpointer view) {
   return (uint64_t)GPOINTER_TO_SIZE(g_object_get_data(G_OBJECT(view), AO_PAGE_KEY));
+}
+
+// ao_view_policy_page_id names the page whose navigation policy answers for
+// view: its own once the Manager has adopted it, and before that, for a
+// popup, the page that opened it (set by ao_create_view). Zero refuses.
+static uint64_t ao_view_policy_page_id(gpointer view) {
+  uint64_t page_id = ao_view_page_id(view);
+  if (page_id != 0) {
+    return page_id;
+  }
+  return (uint64_t)GPOINTER_TO_SIZE(g_object_get_data(G_OBJECT(view), AO_OPENER_KEY));
 }
 
 // ao_view_profile_id reads the profile off the view's network session. A popup
@@ -601,10 +613,10 @@ static gboolean ao_decide_policy(WebKitWebView *view, WebKitPolicyDecision *deci
   // Manager's, and asking it takes Manager locks. Blocking the GTK thread on a
   // Go lock is how the whole UI freezes behind one browser operation, so the
   // decision is held with a reference and finished from a goroutine. A popup
-  // the Manager has not adopted has no page id yet; its profile's workspace
-  // policy answers for it.
+  // the Manager has not adopted has no page id yet; its opener's policy
+  // answers for it, so the file policy is the same before and after adoption.
   g_object_ref(decision);
-  aoWebKitAllow(ao_view_page_id(view), ao_view_profile_id(view), decision, g_strdup(uri));
+  aoWebKitAllow(ao_view_policy_page_id(view), decision, g_strdup(uri));
   return TRUE;
 }
 
@@ -722,7 +734,10 @@ static GtkWidget *ao_create_view(WebKitWebView *view, WebKitNavigationAction *ac
   // Hold the popup until the Manager adopts or discards it.
   g_object_ref_sink(popup);
   // The popup starts loading as soon as this returns, before the Manager can
-  // adopt it, so every navigation in it is checked from the first one.
+  // adopt it, so every navigation in it is checked from the first one, under
+  // its opener's policy until adoption gives it its own.
+  g_object_set_data(G_OBJECT(popup), AO_OPENER_KEY,
+                    GSIZE_TO_POINTER((gsize)ao_view_policy_page_id(view)));
   g_signal_connect(popup, "decide-policy", G_CALLBACK(ao_decide_policy), NULL);
   WebKitURIRequest *request = action ? webkit_navigation_action_get_request(action) : NULL;
   const char *uri = request ? webkit_uri_request_get_uri(request) : NULL;

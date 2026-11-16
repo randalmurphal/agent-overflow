@@ -179,16 +179,16 @@ func aoWebKitSnapshotDone(callID C.uint64_t, pixels unsafe.Pointer, width, heigh
 }
 
 //export aoWebKitAllow
-func aoWebKitAllow(pageID, profileID C.uint64_t, decision unsafe.Pointer, uri *C.char) {
+func aoWebKitAllow(pageID C.uint64_t, decision unsafe.Pointer, uri *C.char) {
 	target := webkitTakeString(uri)
-	page, profile := uint64(pageID), uint64(profileID)
+	page := uint64(pageID)
 	// Answered OFF the GTK thread: navigation authority is the Manager's, and
 	// asking it takes Manager locks — blocking the GTK thread on a Go lock is
 	// how the whole window freezes behind one browser operation. The delegate
 	// deferred the decision with a reference held for exactly this.
 	go func() {
 		allow := C.int(0)
-		if webkitNavigationAllowed(page, profile, target) {
+		if webkitNavigationAllowed(page, target) {
 			allow = 1
 		}
 		// A loop that is gone takes the page with it, so an unanswered
@@ -197,15 +197,14 @@ func aoWebKitAllow(pageID, profileID C.uint64_t, decision unsafe.Pointer, uri *C
 	}()
 }
 
-// webkitNavigationAllowed answers one navigation in a view. A page answers
-// with its own policy. A view with no page is a popup the Manager has not
-// adopted yet: it loads from creation, so its workspace's policy answers
-// until adoption stamps the page. A page or profile that is gone refuses.
-func webkitNavigationAllowed(pageID, profileID uint64, target string) bool {
-	if pageID == 0 {
-		profile := webkitLookupProfile(profileID)
-		return profile != nil && profile.allow(target)
-	}
+// webkitNavigationAllowed answers one navigation in a view with the policy
+// of the page the glue names for it (ao_view_policy_page_id): the view's own
+// page, or for a popup the Manager has not adopted yet, which loads from
+// creation, its opener's. The opener's workspace authority is the one the
+// adopted popup gets, so the file policy is the same before and after
+// adoption, whatever cookie jar the pages are in. A page that is gone, or a
+// view with none, refuses.
+func webkitNavigationAllowed(pageID uint64, target string) bool {
 	page := webkitLookupPage(pageID)
 	return page != nil && (page.hooks.Allow == nil || page.hooks.Allow(target))
 }

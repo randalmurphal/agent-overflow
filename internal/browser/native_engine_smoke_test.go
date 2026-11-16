@@ -117,7 +117,9 @@ func awaitNativeHandle(window *application.WebviewWindow) bool {
 // without an opener, by scripting a blank popup's location, and in a blank
 // popup's subframe. Each load can start before the Manager adopts the popup,
 // so what keeps the file out of the adopted page is the policy the popup gets
-// when WebKit creates it. A popup of a workspace file must still load.
+// when WebKit creates it: its opener's. A popup of a workspace file must
+// still load, in every cookie jar: a jar never decides file authority, so a
+// worktree outside the project root keeps its files in a shared jar too.
 func TestNativeEngineRealPopupsPassTheWorkspacePolicy(t *testing.T) {
 	window := nativeSmokeWindow.Load()
 	if window == nil {
@@ -132,62 +134,71 @@ func TestNativeEngineRealPopupsPassTheWorkspacePolicy(t *testing.T) {
 			t.Errorf("close manager: %v", err)
 		}
 	})
-	for _, tc := range []struct{ name, open string }{
+	cases := []struct{ name, open string }{
 		{"direct", `window.open(SECRET);`},
 		{"noopener", `window.open(SECRET, "_blank", "noopener");`},
 		{"scripted", `window.open("about:blank").location.href = SECRET;`},
 		{"subframe", `const w = window.open("about:blank"); const f = w.document.createElement("iframe"); f.src = SECRET; w.document.body.appendChild(f);`},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			// Resolved roots: macOS temp directories sit behind a symlink, and
-			// the policy compares resolved paths.
-			workspace, outside := resolvedTempDir(t), resolvedTempDir(t)
-			secret := writeSmokeFile(t, outside, "secret.txt", "outside-secret")
-			allowed := writeSmokeFile(t, workspace, "allowed.txt", "workspace-ok")
-			opener := writeSmokeFile(t, workspace, "index.html", fmt.Sprintf(
-				"<!doctype html><title>opener</title><script>const SECRET = %s; %s window.open(%s);</script>",
-				jsonString(smokeFileURL(secret)), tc.open, jsonString(smokeFileURL(allowed))))
-			access := Access{ThreadID: "native-smoke-" + tc.name, Workspace: workspace}
-			t.Cleanup(func() {
-				if err := manager.CloseThread(context.Background(), access.ThreadID); err != nil {
-					t.Errorf("close the thread's pages: %v", err)
+	}
+	for _, jar := range []string{JarWorktree, JarThread, JarProject} {
+		for _, tc := range cases {
+			t.Run(jar+"/"+tc.name, func(t *testing.T) {
+				// Resolved roots: macOS temp directories sit behind a symlink, and
+				// the policy compares resolved paths.
+				workspace, outside := resolvedTempDir(t), resolvedTempDir(t)
+				secret := writeSmokeFile(t, outside, "secret.txt", "outside-secret")
+				allowed := writeSmokeFile(t, workspace, "allowed.txt", "workspace-ok")
+				opener := writeSmokeFile(t, workspace, "index.html", fmt.Sprintf(
+					"<!doctype html><title>opener</title><script>const SECRET = %s; %s window.open(%s);</script>",
+					jsonString(smokeFileURL(secret)), tc.open, jsonString(smokeFileURL(allowed))))
+				access := Access{
+					ThreadID: "native-smoke-" + jar + "-" + tc.name, Workspace: workspace,
+					ProjectRoot: resolvedTempDir(t), ProjectID: "native-smoke",
 				}
-			})
-			ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
-			defer cancel()
-			openerPage, err := manager.OpenFile(ctx, access, opener, OpenOptions{})
-			if err != nil {
-				t.Fatalf("open the workspace page: %v", err)
-			}
-			// The workspace popup, opened last, loading is the sign that the
-			// first navigations of every popup before it have been decided.
-			for !smokePopupsShow(ctx, t, manager, access, openerPage.ID, "workspace-ok") {
-				select {
-				case <-ctx.Done():
-					t.Fatal("the popup of a workspace file never loaded it")
-				case <-time.After(100 * time.Millisecond):
-				}
-			}
-			// The outside file must then stay out for a while longer, in every
-			// popup the Manager has adopted and in every subframe of one.
-			for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
-				if smokePopupsShow(ctx, t, manager, access, openerPage.ID, "outside-secret") {
-					t.Fatal("a popup shows the outside file")
-				}
-				for _, id := range smokePopups(ctx, t, manager, access, openerPage.ID) {
-					frames, _, err := manager.Evaluate(ctx, access, id, `Array.from(document.querySelectorAll("iframe"), (f) => { try { return f.contentWindow.location.href; } catch (e) { return "unreadable"; } })`, nil)
-					if err != nil {
-						t.Fatalf("read popup %s subframes: %v", id, err)
+				t.Cleanup(func() {
+					if err := manager.CloseThread(context.Background(), access.ThreadID); err != nil {
+						t.Errorf("close the thread's pages: %v", err)
 					}
-					list, _ := frames.([]any)
-					for _, frame := range list {
-						if frame != "about:blank" {
-							t.Fatalf("a subframe of popup %s left about:blank: %v", id, frame)
+				})
+				if err := manager.SetJar(access, jar); err != nil {
+					t.Fatalf("choose the %s jar: %v", jar, err)
+				}
+				ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+				defer cancel()
+				openerPage, err := manager.OpenFile(ctx, access, opener, OpenOptions{})
+				if err != nil {
+					t.Fatalf("open the workspace page: %v", err)
+				}
+				// The workspace popup, opened last, loading is the sign that the
+				// first navigations of every popup before it have been decided.
+				for !smokePopupsShow(ctx, t, manager, access, openerPage.ID, "workspace-ok") {
+					select {
+					case <-ctx.Done():
+						t.Fatal("the popup of a workspace file never loaded it")
+					case <-time.After(100 * time.Millisecond):
+					}
+				}
+				// The outside file must then stay out for a while longer, in every
+				// popup the Manager has adopted and in every subframe of one.
+				for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
+					if smokePopupsShow(ctx, t, manager, access, openerPage.ID, "outside-secret") {
+						t.Fatal("a popup shows the outside file")
+					}
+					for _, id := range smokePopups(ctx, t, manager, access, openerPage.ID) {
+						frames, _, err := manager.Evaluate(ctx, access, id, `Array.from(document.querySelectorAll("iframe"), (f) => { try { return f.contentWindow.location.href; } catch (e) { return "unreadable"; } })`, nil)
+						if err != nil {
+							t.Fatalf("read popup %s subframes: %v", id, err)
+						}
+						list, _ := frames.([]any)
+						for _, frame := range list {
+							if frame != "about:blank" {
+								t.Fatalf("a subframe of popup %s left about:blank: %v", id, frame)
+							}
 						}
 					}
 				}
-			}
-		})
+			})
+		}
 	}
 }
 
