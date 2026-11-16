@@ -467,7 +467,8 @@ of forks. The rule and its write paths are in
 
 ### Source deletion
 
-Deleting a thread first marks it `deleting` (`BeginThreadDelete`). From that
+Deleting a thread first marks it `deleting` (a family delete's
+`CommitDeleteClaim`, or `BeginThreadDelete` for a store-only delete). From that
 commit `owned_threads` leaves the thread out, so `CreatePointerFork` refuses it
 as a source (`ErrForkSourceDeleted`) and the set of forks that read it can only
 shrink. The paced drain (`DeleteThreadPaced`) removes the rows at or after the

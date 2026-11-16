@@ -234,6 +234,12 @@ mutation lock order. Workflow cancellation completes before project deletion
 acquires thread locks. Worktree setup is cancelled and joined before removing
 its path.
 
+Every thread delete is one family delete (`deleteThreads`,
+`app_thread_delete.go`): claim, verify, commit, destroy. Refusals belong to
+verify, before anything stops; after the commit a delete only goes forward. A
+door that runs, moves or changes a thread refuses one a delete claimed, through
+`CheckMutable`, `admitWork` or the store write's own check.
+
 ## Lifecycle and tests
 
 Shutdown cancels producers and joins package-owned goroutines before closing

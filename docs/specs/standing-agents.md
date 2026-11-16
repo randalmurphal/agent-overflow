@@ -260,9 +260,11 @@ Ruling of 2026-11-14 (owned workers, amending spawn placement of
     unpins the thread, as a group move does. Archiving a thread
     archives its owned workers down the lineage, each as an ordinary
     archive; unarchiving it leaves them archived. Deleting it deletes
-    its owned workers down the lineage, each as an ordinary delete, and
-    its confirmation counts them; a worker whose delete fails is named
-    and left standalone ([Owned workers](#owned-workers)).
+    its owned workers down the lineage in the same delete, and its
+    confirmation counts them; anything under it that refuses the delete
+    refuses all of it, and a worker whose delete fails after the delete
+    went ahead is named and finished by deleting again
+    ([Owned workers](#owned-workers)).
 
 Rulings of 2026-10-21 (assistants above projects):
 
@@ -533,15 +535,17 @@ removed with the assistant. The thread delete owns the removal, so
 every path that deletes the thread (the sidebar, a delete the boot
 finishes) removes them: only `<configDir>/agents/<agent-id>` is
 removed (`threadapp.DeletePorts.AssistantHome`), and a record naming
-any other path refuses the delete before anything is claimed, naming
-the folder. The past threads and helpers, and the workers under them,
-go in the same delete as any thread's workers ("Owned workers"): a
-transfer of any of them refuses the whole delete before anything is
-deleted. The current thread is claimed first; from its claim no helper
-is recorded for it and no handoff moves it (`ErrThreadGone`), and its
-row and the record drop last, only once nothing is under it
-(`AssistantDependentsError`). A removal that fails keeps the record and
-the delete pending for the next attempt. Deleting a past thread touches
+any other path refuses the delete before anything stops, naming the
+folder. The past threads and helpers, and the workers under them, go in
+the same delete as any thread's workers ("Owned workers"): a transfer of
+any of them refuses the whole delete before anything stops. From the
+delete's claim no handoff moves the current thread (`ErrThreadDeleting`),
+and from its commit no helper is recorded for it. Its home, row and
+record go last, only once nothing is under it: its teardown refuses,
+before touching anything, while a past thread or helper remains
+(`AssistantDependentsError`). A helper whose teardown fails keeps the
+assistant, its home and its history committed and hidden until deleting
+it again, or the next boot, finishes them. Deleting a past thread touches
 neither the record nor the home. Archiving the current thread archives the assistant: it
 cancels the loops and watches and unarchiving re-arms none. An
 unarchived past thread is listed in the fold as a child. The current
@@ -688,12 +692,11 @@ Ruling 36, as built:
   standalone; owned is refused for a thread with no spawn link
   (`ErrThreadNotSpawned`), and both are refused for an assistant's own
   thread (`ErrStandingAgentPlaced`) and a thread outside every project
-  (`ErrPlacementOutsideProjects`). When an owned project thread's link
-  is deleted by its spawner's delete, which deleted it first unless its
-  worktree could not be removed or its own delete failed, or by the
-  cleanup of a spawner moved to another computer, the trigger
-  `trg_thread_placement_spawn_gone` makes it standalone, whatever `superseded` rows still name it; a helper stays
-  owned.
+  (`ErrPlacementOutsideProjects`). An owned thread's spawner deletes it
+  first, so the link of an owned project thread is deleted while it
+  lives only by the cleanup of a spawner moved to another computer; the
+  trigger `trg_thread_placement_spawn_gone` then makes it standalone,
+  whatever `superseded` rows still name it. A helper stays owned.
 - `catalogThreadClause` is the one predicate for what the sidebar
   lists: the thread catalog, the project thread counts and the archived
   threads list leave hidden-mode and owned threads out. Search,
@@ -734,45 +737,59 @@ Ruling 36, as built:
   removal, a delete the boot finishes, the retention sweep, an ended
   terminal thread, an assistant's delete and the cleanup of an ask's
   copy. No agent tool deletes a thread.
-- The delete runs every refusal over the whole family first: a thread
-  in a transfer, an assistant home it may not remove, and for a project
-  removal a running thread outside the project. It then claims each
-  thread, owner before worker: it closes and drains the thread's work
-  admission (`threadRestFence.close`), so a spawn already admitted names
-  its thread before the thread's workers are read, and under that
-  thread's action lock alone checks the refusals again and writes the
-  delete mark (`ClaimThreadDelete`). A worker's mark holds only while
-  its owner still owns it (`ErrWorkerNotOwned`), and a placement or
-  group move refuses a marked thread (`ErrThreadDeleting`): a worker
-  moved to the sidebar before its claim is the person's, with its
-  session, loops and workers untouched, and after its claim it is the
-  delete's. The threads under the claimed ones are read again until
-  none is new. A refusal takes back every claim, so a refused delete
-  deletes nothing. Only then does anything stop: each thread is deleted
-  as a single delete is, deepest first, under its own lock, and no
-  delete holds one action lock while it takes another. A crash leaves
-  claimed rows, and the boot finishes each with the unclaimed workers
-  its spawn links still reach.
+- The delete runs in four phases (`app_thread_delete.go`), each phase's
+  write the store's (`store/thread_delete.go`). Claim: one transaction
+  claims the whole family for the delete (`threads.delete_claim`,
+  `ClaimDeleteFamily`), and refuses, claiming nothing, when another
+  delete holds a claim in it (`DeleteClaimedError`). A worker's claim
+  holds only while its owner still owns it (`ErrWorkerNotOwned`). A
+  claimed thread stays listed and read, and runs and moves nothing:
+  execution (`CheckThreadExecutionAccess`), work admission, edits, a
+  placement or group move, a handoff and an outgoing transfer refuse it
+  (`ErrThreadDeleting`). Verify: each claimed thread in turn has its work
+  admission closed and drained (`threadRestFence.close`), so a spawn
+  already admitted names its thread; then, under that thread's action
+  lock alone, the family is claimed again, which takes such a worker,
+  and the thread's refusals run: a transfer, an assistant home the
+  delete may not remove, an ended terminal's own check, and for a
+  project removal a running thread inside the project or out. A family
+  that keeps growing refuses the delete. A delete that removes worktrees
+  then asks for `git:operate` and runs the loss-of-work gate of each
+  worktree it would empty. Nothing is stopped. A refusal releases every
+  claim in one transaction (`ReleaseDeleteClaim`), so a refused delete
+  changes nothing. Commit: one transaction marks every claimed thread
+  deleting with the delete's worktree policy (`threads.deleting`,
+  `threads.delete_worktrees`, `CommitDeleteClaim`), and clients are
+  told the rows are gone. From here the delete only goes forward.
+  Destroy: each committed thread, once every thread under it is gone,
+  under its own action lock, is torn down (`threadapp.TearDown`), the
+  worktree it was the last thread on is removed when the policy says
+  so, and its row is dropped (`threadapp.Drop`). No delete holds one
+  action lock while it takes another.
+- A thread whose destroy fails keeps its commit with the threads above
+  it, and is never rolled back: the named thread's own failure is the
+  delete's error; another's is named beside it
+  (`DeleteThreadResult.WorkersNotDeleted`) and the sidebar's toast
+  deletes the named threads again, which joins the committed threads
+  and finishes them. A project removal with any such thread keeps the
+  project and says to remove it again; a door with no one waiting logs
+  it. The boot releases the claims no delete committed and finishes
+  every committed family with its recorded policy, dependents first
+  (`startPendingThreadDeletes`).
 - A delete from the sidebar or the archived threads list
-  (`DeleteThreadAndWorktrees`, which needs `git:operate` when there is a
-  worktree to remove) also removes, in the backend, each worktree the
-  claimed threads are on that no other thread is on, after stopping the
-  sessions on it, through Remove Worktree's remover and its loss-of-work
-  gate; a worktree another thread uses is kept. The window stops no
-  session and removes no worktree for a delete. A worktree that cannot
-  be removed fails the delete of the threads on it: for the named thread
-  nothing is deleted; a worker is taken back with the threads under it
-  and named beside the owner's delete
-  (`DeleteThreadResult.WorkersNotDeleted`), standalone once the owner's
-  row is gone. A worker whose delete fails after its claim is named the
-  same way and stays hidden until it is deleted again or the boot
-  finishes it. A project removal names them in
-  `ProjectDeletionResult.WorkersNotDeleted`; a door with no one waiting
-  logs them. A project removal claims its own threads holding all their
-  locks at once, to check that its footprint did not change, and
-  releases them before anything under them is claimed. The cleanup of a
-  thread moved to another computer deletes none of the workers it left
-  here.
+  (`DeleteThreadsAndWorktrees`, which needs `git:operate` when there is a
+  worktree to remove) also removes each worktree the family is on that no
+  thread outside it is on, through Remove Worktree's remover and its
+  loss-of-work gate, after the last thread on it is torn down and before
+  its row drops. Threads selected together are one such delete per
+  computer, so a worktree only they are on counts and goes once. A
+  worktree with unsaved work refuses the whole delete at its verify,
+  with nothing stopped. One that cannot be removed when the destroy
+  reaches it, unsaved work that appeared since, is left on disk and
+  named (`DeleteThreadResult.RetainedWorktrees`); its threads are still
+  deleted. The window stops no session and removes no worktree for a
+  delete. The cleanup of a thread moved to another computer deletes
+  none of the workers it left here.
 - A spawn's Agents row follows its worker's lifetime, not only its
   request's: it is open while its request is open or the thread the spawn
   made is not at rest, whatever its placement. A thread is at rest when it
