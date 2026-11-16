@@ -2,7 +2,11 @@ package webview2host
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
+	"strings"
 	"testing"
+	"time"
 )
 
 // The backend's directive for a page following an 800x600 pane mounted as
@@ -154,8 +158,146 @@ func TestFocusDecisionNeedsAShownPageAndTheForeground(t *testing.T) {
 		{"never placed", paneView{visible: true}, true, focusNotShown},
 		{"nothing", paneView{}, false, focusNotShown},
 	} {
-		if got := focusDecision(tc.view, tc.foreground); got != tc.want {
+		claimed := false
+		claim := func() bool { claimed = true; return true }
+		if got := focusDecision(tc.view, tc.foreground, claim); got != tc.want {
 			t.Errorf("%s: focusDecision = %v, want %v", tc.name, got, tc.want)
+		}
+		// Only an eligible page's request is claimed, so one declined for
+		// eligibility is not recorded as moved.
+		if claimed != (tc.want == focusMove) {
+			t.Errorf("%s: claimed %v", tc.name, claimed)
+		}
+	}
+}
+
+// A focus directive delayed on its way through WSL leaves the keyboard where
+// the user put it after asking: the SPA's withdrawal reaches the launcher
+// first, straight from the SPA, and the launcher drops the directive.
+func TestALauncherFocusWithdrawnBeforeItsDirectiveArrivesIsDropped(t *testing.T) {
+	shown := paneView{bounds: paneBounds{W: 10, H: 10}, hasBounds: true, visible: true}
+	arm := FocusIntentMessage{Mount: "mount-1", Intent: 1}
+	withdraw := FocusIntentMessage{Mount: "mount-1", Intent: 1, Withdrawn: true}
+	decide := func(f *FocusIntents, intent uint64, page string) focusOutcome {
+		return focusDecision(shown, true, func() bool { return f.Claim("mount-1", intent, page) })
+	}
+	for _, tc := range []struct {
+		name     string
+		messages []FocusIntentMessage
+	}{
+		// Each is the SPA withdrawing on the user's next focus choice.
+		{"the composer focused", []FocusIntentMessage{arm, withdraw}},
+		{"the address bar refocused", []FocusIntentMessage{arm, withdraw}},
+		{"a tab switch", []FocusIntentMessage{arm, withdraw}},
+		// Messages arrive on goroutines of their own.
+		{"the withdrawal heard before its arm", []FocusIntentMessage{withdraw, arm}},
+		// A newer request supersedes the delayed one.
+		{"a newer request armed", []FocusIntentMessage{arm, {Mount: "mount-1", Intent: 2}}},
+	} {
+		f := NewFocusIntents()
+		for _, msg := range tc.messages {
+			if page := f.Note(msg); page != "" {
+				t.Fatalf("%s: a withdrawal of an intent never applied handed back %q", tc.name, page)
+			}
+		}
+		if got := decide(f, 1, "page-1"); got != focusWithdrawn {
+			t.Errorf("%s: the delayed directive = %v, want it dropped", tc.name, got)
+		}
+	}
+
+	// A live intent moves focus, once per directive, and a directive that
+	// arrives before its arm moves it too.
+	f := NewFocusIntents()
+	f.Note(arm)
+	if got := decide(f, 1, "page-1"); got != focusMove {
+		t.Fatalf("a live intent = %v, want a move", got)
+	}
+	if got := decide(f, 2, "page-1"); got != focusMove {
+		t.Fatalf("a directive heard before its arm = %v, want a move", got)
+	}
+	if page := f.Note(FocusIntentMessage{Mount: "mount-1", Intent: 2}); page != "" {
+		t.Fatalf("the late arm handed back %q", page)
+	}
+
+	// An intent older than FocusIntentMaxAge is dropped.
+	now := time.Unix(1000, 0)
+	f = NewFocusIntents()
+	f.now = func() time.Time { return now }
+	f.Note(arm)
+	now = now.Add(FocusIntentMaxAge + time.Second)
+	if got := decide(f, 1, "page-1"); got != focusWithdrawn {
+		t.Fatalf("an expired intent = %v, want it dropped", got)
+	}
+}
+
+// A withdrawal heard after the launcher moved focus for the intent (the
+// residual race) names the page to take the keyboard back from, once; a
+// stale one names nothing.
+func TestALauncherWithdrawalAfterTheMoveHandsFocusBack(t *testing.T) {
+	f := NewFocusIntents()
+	f.Note(FocusIntentMessage{Mount: "mount-1", Intent: 3})
+	if !f.Claim("mount-1", 3, "page-1") {
+		t.Fatal("a live intent was not claimed")
+	}
+	if page := f.Note(FocusIntentMessage{Mount: "mount-1", Intent: 2, Withdrawn: true}); page != "" {
+		t.Fatalf("a stale withdrawal handed back %q", page)
+	}
+	if page := f.Note(FocusIntentMessage{Mount: "mount-1", Intent: 3, Withdrawn: true}); page != "page-1" {
+		t.Fatalf("the withdrawal handed back %q, want page-1", page)
+	}
+	if page := f.Note(FocusIntentMessage{Mount: "mount-1", Intent: 3, Withdrawn: true}); page != "" {
+		t.Fatalf("a repeated withdrawal handed back %q", page)
+	}
+	// Another mount's intents are its own.
+	if !f.Claim("mount-2", 1, "page-2") {
+		t.Fatal("another mount's intent was not claimed")
+	}
+}
+
+// The record is bounded like the geometry mailbox, evicting the least
+// recently updated mount.
+func TestFocusIntentsAreBounded(t *testing.T) {
+	f := NewFocusIntents()
+	for i := range MaxGeometryMounts + 1 {
+		f.Note(FocusIntentMessage{Mount: fmt.Sprintf("mount-%d", i), Intent: 1})
+	}
+	if len(f.entries) != MaxGeometryMounts {
+		t.Fatalf("%d mounts kept, want %d", len(f.entries), MaxGeometryMounts)
+	}
+	if _, ok := f.entries["mount-0"]; ok {
+		t.Fatal("the oldest mount was kept")
+	}
+}
+
+func TestParseFocusIntentMessage(t *testing.T) {
+	msg, err := ParseFocusIntentMessage(FocusMessagePrefix + `{"mount":"m-1","intent":2,"withdrawn":true,"extra":1}`)
+	if err != nil || msg != (FocusIntentMessage{Mount: "m-1", Intent: 2, Withdrawn: true}) {
+		t.Fatalf("parse = %+v, %v", msg, err)
+	}
+	for _, bad := range []string{
+		FocusMessagePrefix + `{"mount":"m-1","intent":0}`,
+		FocusMessagePrefix + `{"mount":"a/b","intent":1}`,
+		FocusMessagePrefix + `{"intent":1}`,
+		FocusMessagePrefix + `not json`,
+		FocusMessagePrefix + `{"mount":"` + strings.Repeat("m", maxFocusMessageBytes) + `","intent":1}`,
+	} {
+		if _, err := ParseFocusIntentMessage(bad); err == nil {
+			t.Errorf("%q parsed", bad)
+		}
+	}
+	if _, err := ParseFocusIntentMessage(GeometryMessagePrefix + `{}`); !errors.Is(err, ErrNotFocusIntent) {
+		t.Fatalf("a geometry message = %v, want ErrNotFocusIntent", err)
+	}
+	report := FocusReport{Mount: "m-1", Intent: 4, Error: "E_FAIL"}
+	if got, err := ParseFocusReport(report.Encode()); err != nil || got != report {
+		t.Fatalf("report round trip = %+v, %v", got, err)
+	}
+	if _, err := ParseFocusReport(`{"mount":"m-1"}`); err == nil {
+		t.Fatal("a report naming no intent parsed")
+	}
+	for _, kind := range []ReportKind{ReportFocused, ReportFocusFailed} {
+		if !ValidKind(kind) {
+			t.Errorf("%s is not a kind the backend accepts", kind)
 		}
 	}
 }

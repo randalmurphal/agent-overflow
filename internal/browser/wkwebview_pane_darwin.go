@@ -131,13 +131,28 @@ func (e *wkEngine) ShowPage(handle string) {
 // as a click into it does. Whether it is presented is read on the main
 // thread, after any hide queued before it. A window that is not key keeps
 // the responder for when it becomes key; AppKit never activates the app for
-// it. A page that closed answers nil.
-func (e *wkEngine) FocusPage(handle string) error {
+// it. The request's Live is read there too. A page that closed is not
+// presented.
+func (e *wkEngine) FocusPage(handle string, req focusRequest) (focusResult, error) {
+	p := wkPaneTarget(handle)
+	if p == nil {
+		return focusNotPresented, nil
+	}
+	result, err := wkFocusPresentedView(p.liveView(), req.Live)
+	if errors.Is(err, errViewClosed) {
+		return focusNotPresented, nil
+	}
+	return result, err
+}
+
+// ReleasePageFocus is engineAppFocus: the app takes the keyboard from the
+// page's view only if the view holds it.
+func (e *wkEngine) ReleasePageFocus(handle string) error {
 	p := wkPaneTarget(handle)
 	if p == nil {
 		return nil
 	}
-	if err := wkFocusPresentedView(p.liveView()); err != nil && !errors.Is(err, errViewClosed) {
+	if err := wkReleaseViewFocus(p.liveView()); err != nil && !errors.Is(err, errViewClosed) {
 		return err
 	}
 	return nil

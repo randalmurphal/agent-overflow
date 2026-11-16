@@ -33,7 +33,7 @@ import {
   createBrowserPaneRectSender,
   type BrowserPaneRectReport,
 } from './browserPaneRectSender';
-import { paneGeometryBridgeAvailable, postPaneGeometry } from '../native/paneGeometryBridge';
+import { paneGeometryBridgeAvailable, postPaneFocusIntent, postPaneGeometry } from '../native/paneGeometryBridge';
 import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
 import { getSettings } from './settings.svelte';
 import { addErrorToast } from './toast.svelte';
@@ -213,6 +213,11 @@ export function reportBrowserPaneRect(threadId: string, rect: BrowserPaneRectRep
 function forgetPaneMount(mount: string): void {
   rectSender.forget(mount);
   paneReports.delete(mount);
+  // Unmounting is a focus choice; the detach withdraws at the backend too.
+  for (const [threadId, record] of [...pageFocusIntents]) {
+    if (record.mount === mount) withdrawPageFocus(threadId);
+  }
+  pageFocusSeqs.delete(mount);
 }
 
 function sourcePaneIdForThread(threadId: string): string | null {
@@ -241,8 +246,16 @@ export function applyBrowserCompanionState(event: BrowserCompanionEvent): void {
     reportBrowserTeardown(event);
     return;
   }
+  if (event.kind === 'focus') {
+    settlePageFocus(event);
+    return;
+  }
   if (event.kind !== 'state') return;
   if (!admitState(event)) return;
+  // Another active tab (a switch by chord, by an agent) is another focus
+  // choice than the page asked for.
+  const focusIntent = pageFocusIntents.get(event.threadId);
+  if (focusIntent && (event.activePageId ?? '') !== focusIntent.pageId) withdrawPageFocus(event.threadId);
   hydratedThreads.add(event.threadId);
   if ((event.pages?.length ?? 0) > 0) liveStates.set(event.threadId, event);
   else liveStates.drop(event.threadId);
@@ -403,6 +416,7 @@ async function runBrowserAction(
   threadId: string,
   action: { kind: string; pageId?: string; address?: string; index?: number; jar?: BrowserJar },
 ): Promise<{ failure: BrowserActionFailure | null; state: BrowserCompanionEvent | null }> {
+  noteBrowserActionStarted(threadId);
   noteBrowserActionError(threadId, '');
   try {
     const state = await BrowserCompanionDo(
@@ -424,28 +438,168 @@ async function runBrowserAction(
   }
 }
 
+// Page focus intents (internal/browser/focus_intent.go): the user's request,
+// by the address bar's Enter or Escape, that one page take the keyboard. It
+// reaches the page a round trip later, and on Windows two, so the user's next
+// focus choice withdraws it first: a focus anywhere outside the pane's page
+// area (the composer, the address bar again), a press outside it, another
+// active tab, the pane unmounting. Per thread, the one request in flight;
+// numbered per mount, which is how the backend and the launcher tell arms,
+// withdrawals and answers apart whatever order they arrive in.
+interface PageFocusIntent {
+  threadId: string;
+  mount: string;
+  intent: number;
+  pageId: string;
+  /** The page area: a focus or press inside it is no other choice. */
+  area: HTMLElement;
+  /** browserActionCounts for the thread when it was armed. */
+  actionsAtArm: number;
+  timer: ReturnType<typeof setTimeout>;
+}
+
+// The backend's and the launcher's bound (FocusIntentMaxAge), with room for
+// the request's trip: until then a withdrawal may still matter.
+const PAGE_FOCUS_MAX_AGE_MS = 11_000;
+const pageFocusIntents = new Map<string, PageFocusIntent>();
+const pageFocusSeqs = new Map<string, number>();
+// Chrome actions started per thread, so a focus refusal that arrives after a
+// newer action knows it is older than that action's banner.
+const browserActionCounts = new Map<string, number>();
+
+function noteBrowserActionStarted(threadId: string): void {
+  browserActionCounts.set(threadId, (browserActionCounts.get(threadId) ?? 0) + 1);
+}
+
 /**
- * Gives keyboard focus to the page the thread's pane presents, as a browser
- * does after the address bar's Enter or Escape. Only this computer's app
- * window holds the native view (canUseNativeBrowser); anywhere else there is
- * nothing to focus. Unlike a chrome action it leaves a banner already up
- * (the navigation it follows may have failed) and puts a refusal in it.
- * Null on success or when there is nothing to focus.
+ * Gives keyboard focus to `pageId`, the page the thread's pane shows in
+ * `area`, as a browser does after the address bar's Enter or Escape: now if
+ * it is presented, or once it is (a restore, a layout), unless the user
+ * makes another focus choice first. Only this computer's app window holds
+ * the native view (canUseNativeBrowser); anywhere else there is nothing to
+ * focus. Unlike a chrome action it leaves a banner already up (the
+ * navigation it follows may have failed); a refusal, now or when the page
+ * is presented, goes in it unless a newer action's banner is up. Null on
+ * success or when there is nothing to focus.
  */
-export async function focusBrowserPage(threadId: string): Promise<BrowserActionFailure | null> {
+export async function focusBrowserPage(
+  threadId: string,
+  pageId: string,
+  area: HTMLElement,
+): Promise<BrowserActionFailure | null> {
   if (!canUseNativeBrowser(threadId)) return null;
+  const mount = paneIds.get(threadId);
+  if (!mount || !pageId) return null;
+  // A newer request supersedes the thread's last one wherever it is.
+  retirePageFocus(threadId);
+  const intent = (pageFocusSeqs.get(mount) ?? 0) + 1;
+  pageFocusSeqs.set(mount, intent);
+  const record: PageFocusIntent = {
+    threadId,
+    mount,
+    intent,
+    pageId,
+    area,
+    actionsAtArm: browserActionCounts.get(threadId) ?? 0,
+    timer: setTimeout(() => {
+      if (pageFocusIntents.get(threadId) === record) retirePageFocus(threadId);
+    }, PAGE_FOCUS_MAX_AGE_MS),
+  };
+  if (pageFocusIntents.size === 0 && typeof window !== 'undefined') {
+    document.addEventListener('focusin', onUserFocusChoice, true);
+    window.addEventListener('pointerdown', onUserFocusChoice, true);
+  }
+  pageFocusIntents.set(threadId, record);
+  try {
+    postPaneFocusIntent({ mount, intent, withdrawn: false });
+  } catch (err) {
+    // The launcher then applies the focus without hearing of this arm; a
+    // withdrawal still reaches it, and the backend.
+    reportFrontendDiagnostic('Browser page focus post to the window host failed', errString(err));
+  }
   try {
     const state = await BrowserCompanionDo(
       threadId,
-      new BrowserCompanionAction({ kind: 'focus-page', pageId: '', address: '', index: 0 }),
+      new BrowserCompanionAction({ kind: 'focus-page', pageId, address: '', index: 0, mount, intent }),
     );
     applyBrowserCompanionState(state);
     return null;
   } catch (err) {
     const message = errString(err);
-    noteBrowserActionError(threadId, message);
+    const current = pageFocusIntents.get(threadId) === record;
+    if (current) retirePageFocus(threadId);
+    if (current && bannerable(record)) noteBrowserActionError(threadId, message);
     return { error: message, cause: err };
   }
+}
+
+/**
+ * Whether a refusal of the intent may take the banner: no chrome action
+ * started since it was armed, or the one that did left no banner.
+ */
+function bannerable(record: PageFocusIntent): boolean {
+  if ((browserActionCounts.get(record.threadId) ?? 0) === record.actionsAtArm) return true;
+  return !store.snapshot(record.threadId)?.actionError;
+}
+
+/** Ends the thread's intent here without telling anyone: it landed, failed, aged out or was superseded. */
+function retirePageFocus(threadId: string): PageFocusIntent | null {
+  const record = pageFocusIntents.get(threadId);
+  if (!record) return null;
+  clearTimeout(record.timer);
+  pageFocusIntents.delete(threadId);
+  if (pageFocusIntents.size === 0 && typeof window !== 'undefined') {
+    document.removeEventListener('focusin', onUserFocusChoice, true);
+    window.removeEventListener('pointerdown', onUserFocusChoice, true);
+  }
+  return record;
+}
+
+/**
+ * The user made another focus choice: the thread's intent is withdrawn at
+ * the launcher (at once, in its own process) and at the backend, so a
+ * request still on its way moves nothing, and one that landed meanwhile
+ * gives the keyboard back.
+ */
+function withdrawPageFocus(threadId: string): void {
+  const record = retirePageFocus(threadId);
+  if (!record) return;
+  const { mount, intent } = record;
+  try {
+    postPaneFocusIntent({ mount, intent, withdrawn: true });
+  } catch (err) {
+    noteBrowserActionError(threadId, `The browser page may still take the keyboard: ${errString(err)}`);
+  }
+  void (async () => {
+    try {
+      await BrowserCompanionDo(
+        threadId,
+        new BrowserCompanionAction({ kind: 'focus-page-withdraw', pageId: '', address: '', index: 0, mount, intent }),
+      );
+    } catch (err) {
+      noteBrowserActionError(threadId, `The browser page may still take the keyboard: ${errString(err)}`);
+    }
+  })();
+}
+
+function onUserFocusChoice(event: Event): void {
+  const target = event.target;
+  for (const [threadId, record] of [...pageFocusIntents]) {
+    if (target instanceof Node && record.area.contains(target)) continue;
+    withdrawPageFocus(threadId);
+  }
+}
+
+/**
+ * A Kind "focus" event: how the intent it names ended. Only the thread's
+ * current intent settles; a refusal takes the banner unless a newer
+ * action's banner is up (bannerable).
+ */
+function settlePageFocus(event: BrowserCompanionEvent): void {
+  const record = pageFocusIntents.get(event.threadId);
+  if (!record || record.mount !== event.mount || record.intent !== event.focusIntent) return;
+  retirePageFocus(event.threadId);
+  if (event.error && bannerable(record)) noteBrowserActionError(event.threadId, event.error);
 }
 
 /**
@@ -629,6 +783,8 @@ export function reconcileBrowserCompanionForPane(paneId: string, threadId: strin
 addPaneThreadMountedObserver(reconcileBrowserCompanionForPane);
 
 export function resetBrowserCompanionForTest(): void {
+  for (const threadId of [...pageFocusIntents.keys()]) retirePageFocus(threadId);
+  browserActionCounts.clear();
   for (const mount of paneIds.values()) forgetPaneMount(mount);
   for (const mount of [...paneReports.keys()]) forgetPaneMount(mount);
   paneIds.clear();

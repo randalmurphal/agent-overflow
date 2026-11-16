@@ -853,6 +853,13 @@ export class BrowserCompanionAction {
      */
     "jar"?: string;
 
+    /**
+     * Mount and Intent name a page focus intent for "focus-page" and
+     * "focus-page-withdraw": the pane mount and its number for the request.
+     */
+    "mount"?: string;
+    "intent"?: number;
+
     /** Creates a new BrowserCompanionAction instance. */
     constructor($$source: Partial<BrowserCompanionAction> = {}) {
         if (!("kind" in $$source)) {

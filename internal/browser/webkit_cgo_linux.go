@@ -685,18 +685,41 @@ func (p *webkitPage) onKeyPress(seen func(keybindings.Accelerator, KeyPress)) (r
 	}, nil
 }
 
-// webkitFocusPresentedView gives a presented page's view keyboard focus.
-// A view that is not presented, checked on the GTK thread where hides run,
-// keeps focus where it is and answers nil.
-func webkitFocusPresentedView(view webkitView) error {
+// webkitFocusPresentedView gives a presented page's view keyboard focus
+// while live holds. Both are checked on the GTK thread, where hides run,
+// immediately before the grab: a dispatch that outlives gtkDo's deadline
+// still runs, and still checks.
+func webkitFocusPresentedView(view webkitView, live func() bool) (focusResult, error) {
 	result := C.int(0)
-	if err := view.do(func(view unsafe.Pointer) { result = C.ao_wk_view_focus_presented(view) }); err != nil {
+	withdrawn := false
+	err := view.do(func(view unsafe.Pointer) {
+		if !live() {
+			withdrawn = true
+			return
+		}
+		result = C.ao_wk_view_focus_presented(view)
+	})
+	switch {
+	case err != nil:
+		return focusNotPresented, err
+	case withdrawn:
+		return focusWithdrawn, nil
+	case result < 0:
+		return focusNotPresented, nil
+	case result == 0:
+		return focusNotPresented, fmt.Errorf("browser: the page's view did not take keyboard focus")
+	}
+	return focusMoved, nil
+}
+
+// webkitReleaseViewFocus gives the SPA's webview the keyboard if the view
+// holds it.
+func webkitReleaseViewFocus(view webkitView) error {
+	released := 0
+	if err := view.do(func(view unsafe.Pointer) { released = int(C.ao_wk_view_release_focus(view)) }); err != nil {
 		return err
 	}
-	if result == 0 {
-		return fmt.Errorf("browser: the page's view did not take keyboard focus")
-	}
-	return nil
+	return focusReleaseError(released)
 }
 
 // webkitFocusApp hands keyboard focus to the SPA's webview.

@@ -403,17 +403,40 @@ func wkLookupProfile(id uint64) *wkProfile {
 // ---------------------------------------------------------------------------
 
 // wkFocusPresentedView makes a presented page's view its window's first
-// responder. A view that is not presented, checked on the main thread where
-// hides run, keeps focus where it is and answers nil.
-func wkFocusPresentedView(view wkView) error {
+// responder while live holds. Both are checked on the main thread, where
+// hides run, immediately before the change: a dispatch that outlives wkDo's
+// deadline still runs, and still checks.
+func wkFocusPresentedView(view wkView, live func() bool) (focusResult, error) {
 	result := C.int(0)
-	if err := view.do(func(view unsafe.Pointer) { result = C.ao_wkv_view_focus_presented(view) }); err != nil {
+	withdrawn := false
+	err := view.do(func(view unsafe.Pointer) {
+		if !live() {
+			withdrawn = true
+			return
+		}
+		result = C.ao_wkv_view_focus_presented(view)
+	})
+	switch {
+	case err != nil:
+		return focusNotPresented, err
+	case withdrawn:
+		return focusWithdrawn, nil
+	case result < 0:
+		return focusNotPresented, nil
+	case result == 0:
+		return focusNotPresented, fmt.Errorf("browser: the page's view did not take keyboard focus")
+	}
+	return focusMoved, nil
+}
+
+// wkReleaseViewFocus makes the SPA's webview first responder if the view
+// is.
+func wkReleaseViewFocus(view wkView) error {
+	released := 0
+	if err := view.do(func(view unsafe.Pointer) { released = int(C.ao_wkv_view_release_focus(view)) }); err != nil {
 		return err
 	}
-	if result == 0 {
-		return fmt.Errorf("browser: the page's view did not take keyboard focus")
-	}
-	return nil
+	return focusReleaseError(released)
 }
 
 // wkFocusApp hands keyboard focus to the SPA's webview.

@@ -27,6 +27,11 @@ func (e *focusEngine) FocusApp() error {
 	return e.err
 }
 
+// ReleasePageFocus is engineAppFocus's other half, which no chord uses.
+func (e *focusEngine) ReleasePageFocus(string) error { return nil }
+
+var _ engineAppFocus = (*focusEngine)(nil)
+
 func (e *focusEngine) note(entry string) {
 	e.mu.Lock()
 	e.log = append(e.log, entry)

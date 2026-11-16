@@ -74,6 +74,9 @@ const (
 	// focusNotForeground leaves focus alone: the launcher window is not the
 	// foreground window.
 	focusNotForeground
+	// focusWithdrawn leaves focus alone: the user made another focus
+	// choice after asking (FocusIntents.Claim).
+	focusWithdrawn
 )
 
 // focusDecision answers what an OpFocus does for a page the host shows as
@@ -81,13 +84,17 @@ const (
 // takes keyboard focus, and only while the launcher window is the foreground
 // window: moving focus into a window that is not would activate it, and AO
 // never takes the OS focus from another application (the rule the
-// accelerator hand-back keeps, focusWindow).
-func focusDecision(shown paneView, launcherForeground bool) focusOutcome {
+// accelerator hand-back keeps, focusWindow). Eligibility is not permission:
+// claim, asked last and only of an eligible page, answers whether the
+// user's request still stands, and records the move when it does.
+func focusDecision(shown paneView, launcherForeground bool, claim func() bool) focusOutcome {
 	switch {
 	case !shown.visible || !shown.hasBounds:
 		return focusNotShown
 	case !launcherForeground:
 		return focusNotForeground
+	case !claim():
+		return focusWithdrawn
 	default:
 		return focusMove
 	}

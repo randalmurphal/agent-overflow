@@ -5,7 +5,9 @@ import (
 	"errors"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"agent-overflow/internal/webview2host"
 )
@@ -21,70 +23,401 @@ func focusCalls(e *recordingPaneHost) []string {
 	return calls
 }
 
+// focusEvents collects the Manager's Kind "focus" events.
+type focusEvents struct {
+	mu     sync.Mutex
+	events []CompanionEvent
+}
+
+func watchFocusEvents(m *Manager) *focusEvents {
+	f := &focusEvents{}
+	m.SetEventSink(func(event CompanionEvent) {
+		if event.Kind == "focus" {
+			f.mu.Lock()
+			f.events = append(f.events, event)
+			f.mu.Unlock()
+		}
+	})
+	return f
+}
+
+func (f *focusEvents) all() []CompanionEvent {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.events)
+}
+
+func (w *focusWorld) focusHolder() string {
+	focus, _ := w.e.state()
+	return focus
+}
+
 // The address bar's Enter and Escape hand the keyboard to the page the
-// thread's pane presents, and to no other thread's page.
+// thread's pane presents, and to no other thread's page, and the pane hears
+// that its intent landed.
 func TestFocusCompanionPageFocusesThePresentedPage(t *testing.T) {
 	w := newFocusWorld(t)
+	events := watchFocusEvents(w.m)
 	w.e.take()
-	if err := w.m.FocusCompanionPage(w.a); err != nil {
+	if err := w.m.FocusCompanionPage(w.a, w.aMount, w.aPage, 1); err != nil {
 		t.Fatalf("focus thread a's page: %v", err)
 	}
-	if focus, _ := w.e.state(); focus != w.handle(w.a, w.aPage) {
+	if focus := w.focusHolder(); focus != w.handle(w.a, w.aPage) {
 		t.Fatalf("focus is with %q, want thread a's presented page", focus)
 	}
 	if calls := focusCalls(w.e.recordingPaneHost); !slices.Equal(calls, []string{"focus:" + w.handle(w.a, w.aPage)}) {
 		t.Fatalf("focus requests %v, want thread a's presented page alone", calls)
 	}
-	if err := w.m.FocusCompanionPage(w.b); err != nil {
+	want := CompanionEvent{Kind: "focus", ThreadID: w.a.ThreadID, Mount: w.aMount, FocusIntent: 1}
+	if got := events.all(); len(got) != 1 || got[0].Kind != want.Kind || got[0].ThreadID != want.ThreadID ||
+		got[0].Mount != want.Mount || got[0].FocusIntent != want.FocusIntent || got[0].Error != "" {
+		t.Fatalf("focus events %+v, want %+v", got, want)
+	}
+	if err := w.m.FocusCompanionPage(w.b, w.bMount, w.bPage, 1); err != nil {
 		t.Fatalf("focus thread b's page: %v", err)
 	}
-	if focus, _ := w.e.state(); focus != w.handle(w.b, w.bPage) {
+	if focus := w.focusHolder(); focus != w.handle(w.b, w.bPage) {
 		t.Fatalf("focus is with %q, want thread b's presented page", focus)
+	}
+	// A mount belongs to its own thread.
+	if err := w.m.FocusCompanionPage(w.b, w.aMount, w.aPage, 2); err == nil {
+		t.Fatal("thread b armed a focus on thread a's mount")
 	}
 }
 
-// With nothing presented the request asks the engine for nothing and is no
-// error: the pane closed, its page hidden, the pane off screen.
-func TestFocusCompanionPageWithNothingPresentedIsANoOp(t *testing.T) {
+// A request is withdrawn by the user's next focus choice. A delayed request
+// that reaches the engine after it must leave the keyboard where the user
+// put it: in the composer, back in the address bar, or with the tab the
+// user switched to.
+func TestADelayedFocusIsWithdrawnByTheUsersNextFocusChoice(t *testing.T) {
 	for _, tc := range []struct {
-		name string
-		hide func(t *testing.T, w *focusWorld)
+		name   string
+		choose func(t *testing.T, w *focusWorld)
 	}{
-		{"the pane closed", func(t *testing.T, w *focusWorld) { w.m.DetachPane(w.aMount) }},
-		{"the companion hidden", func(t *testing.T, w *focusWorld) {
-			hide := false
-			if _, err := w.m.Visibility(t.Context(), w.a, &hide, ""); err != nil {
-				t.Fatalf("hide the companion: %v", err)
+		{"the composer focused", func(t *testing.T, w *focusWorld) {
+			if err := w.m.WithdrawCompanionPageFocus(w.a, w.aMount, 1); err != nil {
+				t.Fatalf("withdraw: %v", err)
 			}
 		}},
-		{"the pane off screen", func(t *testing.T, w *focusWorld) {
-			rect := visiblePaneRect
-			rect.Visible = false
-			if err := w.m.SetPaneRect(w.aMount, rect); err != nil {
-				t.Fatalf("report the pane off screen: %v", err)
+		{"the address bar refocused", func(t *testing.T, w *focusWorld) {
+			if err := w.m.WithdrawCompanionPageFocus(w.a, w.aMount, 1); err != nil {
+				t.Fatalf("withdraw: %v", err)
 			}
 		}},
+		{"a tab switch", func(t *testing.T, w *focusWorld) {
+			if err := w.m.ActivateCompanionPage(t.Context(), w.a, w.aOther); err != nil {
+				t.Fatalf("switch tabs: %v", err)
+			}
+			if err := w.m.WithdrawCompanionPageFocus(w.a, w.aMount, 1); err != nil {
+				t.Fatalf("withdraw: %v", err)
+			}
+		}},
+		// Another pane of the thread takes over the page, still shown.
+		{"the pane unmounting", func(t *testing.T, w *focusWorld) {
+			w.m.DetachPane(w.aMount)
+		}},
+	} {
+		t.Run(tc.name+" before the request reaches the UI thread", func(t *testing.T) {
+			w := newFocusWorld(t)
+			remountPane(t, w.m, w.a)
+			events := watchFocusEvents(w.m)
+			page := w.handle(w.a, w.aPage)
+			var once sync.Once
+			w.e.mu.Lock()
+			w.e.beforeFocus = func(handle string) {
+				if handle == page {
+					once.Do(func() { tc.choose(t, w) })
+				}
+			}
+			w.e.mu.Unlock()
+			if err := w.m.FocusCompanionPage(w.a, w.aMount, w.aPage, 1); err != nil {
+				t.Fatalf("focus: %v", err)
+			}
+			if focus := w.focusHolder(); focus != focusHeldByTheApp {
+				t.Fatalf("focus is with %q after the user chose elsewhere, want the app", focus)
+			}
+			if got := events.all(); len(got) != 0 {
+				t.Fatalf("a withdrawn focus reported %+v", got)
+			}
+		})
+		t.Run(tc.name+" before the request reaches the Manager", func(t *testing.T) {
+			w := newFocusWorld(t)
+			remountPane(t, w.m, w.a)
+			tc.choose(t, w)
+			w.e.take()
+			err := w.m.FocusCompanionPage(w.a, w.aMount, w.aPage, 1)
+			if tc.name == "the pane unmounting" {
+				if err == nil {
+					t.Fatal("a request for an unmounted pane was accepted")
+				}
+			} else if err != nil {
+				t.Fatalf("focus: %v", err)
+			}
+			if calls := focusCalls(w.e.recordingPaneHost); len(calls) != 0 {
+				t.Fatalf("a withdrawn request reached the engine: %v", calls)
+			}
+			if focus := w.focusHolder(); focus != focusHeldByTheApp {
+				t.Fatalf("focus is with %q, want the app", focus)
+			}
+		})
+	}
+}
+
+// A request names its page: when another tab became presented before the
+// request arrived, neither tab takes the keyboard.
+func TestAFocusRequestNeverFocusesAnotherTab(t *testing.T) {
+	w := newFocusWorld(t)
+	if err := w.m.ActivateCompanionPage(t.Context(), w.a, w.aOther); err != nil {
+		t.Fatalf("switch tabs: %v", err)
+	}
+	// The other tab shows once it has laid out at the pane's size.
+	other := w.handle(w.a, w.aOther)
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(5 * time.Millisecond) {
+		if _, shown := w.e.state(); shown[other] {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the other tab was never shown")
+		}
+	}
+	if err := w.m.FocusCompanionPage(w.a, w.aMount, w.aPage, 1); err != nil {
+		t.Fatalf("focus: %v", err)
+	}
+	if focus := w.focusHolder(); focus != focusHeldByTheApp {
+		t.Fatalf("focus is with %q, want the app", focus)
+	}
+}
+
+// A withdrawal that reaches the Manager after the engine moved the focus
+// (the residual race) gives the keyboard back to the app. One for a page
+// that no longer holds it changes nothing.
+func TestAWithdrawalAfterTheFocusLandedHandsItBack(t *testing.T) {
+	w := newFocusWorld(t)
+	if err := w.m.FocusCompanionPage(w.a, w.aMount, w.aPage, 1); err != nil {
+		t.Fatalf("focus: %v", err)
+	}
+	if focus := w.focusHolder(); focus != w.handle(w.a, w.aPage) {
+		t.Fatalf("focus is with %q, want the page", focus)
+	}
+	if err := w.m.WithdrawCompanionPageFocus(w.a, w.aMount, 1); err != nil {
+		t.Fatalf("withdraw: %v", err)
+	}
+	if focus := w.focusHolder(); focus != focusHeldByTheApp {
+		t.Fatalf("focus is with %q after the withdrawal, want the app", focus)
+	}
+
+	// Thread b's page took the keyboard by a click after its intent landed:
+	// withdrawing that intent leaves the click's focus alone.
+	if err := w.m.FocusCompanionPage(w.b, w.bMount, w.bPage, 1); err != nil {
+		t.Fatalf("focus thread b: %v", err)
+	}
+	w.e.click(t, w.handle(w.a, w.aPage))
+	if err := w.m.WithdrawCompanionPageFocus(w.b, w.bMount, 1); err != nil {
+		t.Fatalf("withdraw thread b: %v", err)
+	}
+	if focus := w.focusHolder(); focus != w.handle(w.a, w.aPage) {
+		t.Fatalf("focus is with %q, want the clicked page", focus)
+	}
+}
+
+// A newer request supersedes an older one on the mount, and an older one
+// arriving late changes nothing.
+func TestANewerFocusRequestSupersedesTheOlder(t *testing.T) {
+	w := newFocusWorld(t)
+	hide := false
+	if _, err := w.m.Visibility(t.Context(), w.a, &hide, ""); err != nil {
+		t.Fatalf("hide: %v", err)
+	}
+	if err := w.m.FocusCompanionPage(w.a, w.aMount, w.aOther, 1); err != nil {
+		t.Fatalf("focus the other tab: %v", err)
+	}
+	if err := w.m.FocusCompanionPage(w.a, w.aMount, w.aPage, 2); err != nil {
+		t.Fatalf("focus the page: %v", err)
+	}
+	if err := w.m.FocusCompanionPage(w.a, w.aMount, w.aOther, 1); err != nil {
+		t.Fatalf("a late older request: %v", err)
+	}
+	show := true
+	if _, err := w.m.Visibility(t.Context(), w.a, &show, w.aOther); err != nil {
+		t.Fatalf("show the other tab: %v", err)
+	}
+	if focus := w.focusHolder(); focus != focusHeldByTheApp {
+		t.Fatalf("focus is with %q, want the app: the request for this tab was superseded", focus)
+	}
+}
+
+// A request for a page that is not presented yet (the pane hidden or off
+// screen, the tab suspended and restoring) waits, and is applied once when
+// the page is presented. The show itself never focuses.
+func TestAFocusRequestWaitsForItsPageToBePresented(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		unshow  func(t *testing.T, w *focusWorld)
+		present func(t *testing.T, w *focusWorld)
+	}{
+		{"the companion hidden",
+			func(t *testing.T, w *focusWorld) {
+				hide := false
+				if _, err := w.m.Visibility(t.Context(), w.a, &hide, ""); err != nil {
+					t.Fatalf("hide the companion: %v", err)
+				}
+			},
+			func(t *testing.T, w *focusWorld) {
+				show := true
+				if _, err := w.m.Visibility(t.Context(), w.a, &show, w.aPage); err != nil {
+					t.Fatalf("show the companion: %v", err)
+				}
+			}},
+		{"the pane off screen",
+			func(t *testing.T, w *focusWorld) {
+				rect := visiblePaneRect
+				rect.Visible = false
+				if err := w.m.SetPaneRect(w.aMount, rect); err != nil {
+					t.Fatalf("report the pane off screen: %v", err)
+				}
+			},
+			func(t *testing.T, w *focusWorld) {
+				if err := w.m.SetPaneRect(w.aMount, visiblePaneRect); err != nil {
+					t.Fatalf("report the pane on screen: %v", err)
+				}
+			}},
+		{"the tab suspended and restored by its navigation",
+			// The tab is selected in a visible pane but not loaded: the
+			// address takes Enter, which navigates and so restores it.
+			func(t *testing.T, w *focusWorld) {
+				hide, show := false, true
+				if _, err := w.m.Visibility(t.Context(), w.a, &hide, ""); err != nil {
+					t.Fatalf("hide the companion: %v", err)
+				}
+				if err := w.m.SuspendThread(t.Context(), w.a.ThreadID); err != nil {
+					t.Fatalf("suspend: %v", err)
+				}
+				if ids := suspendedIDs(w.m, w.a.ThreadID); !slices.Contains(ids, w.aPage) {
+					t.Fatalf("suspended %v, want the page among them", ids)
+				}
+				if _, err := w.m.Visibility(t.Context(), w.a, &show, w.aPage); err != nil {
+					t.Fatalf("show the suspended tab: %v", err)
+				}
+			},
+			func(t *testing.T, w *focusWorld) {
+				if _, err := w.m.NavigateCompanion(t.Context(), w.a, w.aPage, "https://example.test/next"); err != nil {
+					t.Fatalf("navigate: %v", err)
+				}
+			}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			w := newFocusWorld(t)
-			tc.hide(t, w)
+			tc.unshow(t, w)
 			w.e.take()
-			if err := w.m.FocusCompanionPage(w.a); err != nil {
+			if err := w.m.FocusCompanionPage(w.a, w.aMount, w.aPage, 1); err != nil {
 				t.Fatalf("focus with nothing presented: %v", err)
 			}
 			if calls := focusCalls(w.e.recordingPaneHost); len(calls) != 0 {
 				t.Fatalf("focus requests %v with nothing presented", calls)
 			}
-			if focus, _ := w.e.state(); focus != focusHeldByTheApp {
+			tc.present(t, w)
+			page := w.handle(w.a, w.aPage)
+			if focus := w.focusHolder(); focus != page {
+				t.Fatalf("focus is with %q once the page is presented, want the page", focus)
+			}
+			// Applied once: hidden and shown again, the page does not take
+			// the keyboard a second time.
+			tc.unshow(t, w)
+			if focus := w.focusHolder(); focus == page {
+				t.Fatal("the page kept the focus through its hide")
+			}
+			tc.present(t, w)
+			if focus := w.focusHolder(); focus == page {
+				t.Fatal("a second presentation focused the page again")
+			}
+		})
+	}
+}
+
+// A waiting request ends with its tab closing, with its age, with the
+// user's next focus choice, and with its pane unmounting.
+func TestAWaitingFocusRequestEnds(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		end  func(t *testing.T, w *focusWorld)
+	}{
+		{"its tab closed", func(t *testing.T, w *focusWorld) {
+			if err := w.m.CloseCompanionPage(t.Context(), w.a, w.aPage); err != nil {
+				t.Fatalf("close the page: %v", err)
+			}
+		}},
+		{"its age", func(t *testing.T, w *focusWorld) {
+			w.m.mu.Lock()
+			w.m.panes[w.aMount].focus.intent.armed = time.Now().Add(-focusIntentMaxAge - time.Second)
+			w.m.mu.Unlock()
+		}},
+		{"a withdrawal", func(t *testing.T, w *focusWorld) {
+			if err := w.m.WithdrawCompanionPageFocus(w.a, w.aMount, 1); err != nil {
+				t.Fatalf("withdraw: %v", err)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := newFocusWorld(t)
+			hide := false
+			if _, err := w.m.Visibility(t.Context(), w.a, &hide, ""); err != nil {
+				t.Fatalf("hide the companion: %v", err)
+			}
+			if err := w.m.FocusCompanionPage(w.a, w.aMount, w.aPage, 1); err != nil {
+				t.Fatalf("focus: %v", err)
+			}
+			tc.end(t, w)
+			show, target := true, w.aPage
+			if !w.m.hasTab(w.a.ThreadID, w.aPage) {
+				target = w.aOther
+			}
+			if _, err := w.m.Visibility(t.Context(), w.a, &show, target); err != nil {
+				t.Fatalf("show the companion: %v", err)
+			}
+			if focus := w.focusHolder(); focus != focusHeldByTheApp {
 				t.Fatalf("focus is with %q, want the app", focus)
+			}
+			w.m.mu.Lock()
+			kept := w.m.panes[w.aMount].focus.intent
+			w.m.mu.Unlock()
+			if kept != nil {
+				t.Fatalf("the ended request is still held: %+v", kept)
 			}
 		})
 	}
 
-	// An engine with no native views presents nothing.
+	t.Run("its pane unmounted", func(t *testing.T) {
+		w := newFocusWorld(t)
+		hide := false
+		if _, err := w.m.Visibility(t.Context(), w.a, &hide, ""); err != nil {
+			t.Fatalf("hide the companion: %v", err)
+		}
+		if err := w.m.FocusCompanionPage(w.a, w.aMount, w.aPage, 1); err != nil {
+			t.Fatalf("focus: %v", err)
+		}
+		w.m.DetachPane(w.aMount)
+		show := true
+		if _, err := w.m.Visibility(t.Context(), w.a, &show, w.aPage); err != nil {
+			t.Fatalf("show the companion: %v", err)
+		}
+		mount := remountPane(t, w.m, w.a)
+		if focus := w.focusHolder(); focus != focusHeldByTheApp {
+			t.Fatalf("focus is with %q under a new mount %s, want the app", focus, mount)
+		}
+		if err := w.m.FocusCompanionPage(w.a, w.aMount, w.aPage, 2); err == nil {
+			t.Fatal("a focus armed on an unmounted pane was accepted")
+		}
+		if err := w.m.WithdrawCompanionPageFocus(w.a, w.aMount, 2); err != nil {
+			t.Fatalf("withdrawing on an unmounted pane: %v", err)
+		}
+	})
+}
+
+// An engine with no native views presents nothing to focus.
+func TestFocusCompanionPageOnAnEngineWithoutViewsIsANoOp(t *testing.T) {
 	m := NewManager(t.TempDir(), Config{Enabled: true}, ManagerOptions{FakeEngine: true})
 	t.Cleanup(func() { _ = m.Close() })
-	if err := m.FocusCompanionPage(Access{ThreadID: "thread", Workspace: t.TempDir()}); err != nil {
+	if err := m.FocusCompanionPage(Access{ThreadID: "thread", Workspace: t.TempDir()}, "mount", "page", 1); err != nil {
 		t.Fatalf("focus on an engine with no views: %v", err)
 	}
 }
@@ -99,7 +432,7 @@ func TestAClosingPageIsNeverFocused(t *testing.T) {
 	w.e.onHide = func(handle string) {
 		if handle == closing {
 			select {
-			case asked <- w.m.FocusCompanionPage(w.a):
+			case asked <- w.m.FocusCompanionPage(w.a, w.aMount, w.aPage, 1):
 			default:
 			}
 		}
@@ -122,46 +455,60 @@ func TestAClosingPageIsNeverFocused(t *testing.T) {
 			t.Fatal("the closing page was asked to take focus")
 		}
 	}
-	if focus, _ := w.e.state(); focus == closing {
+	if focus := w.focusHolder(); focus == closing {
 		t.Fatal("the closing page holds the focus")
 	}
 }
 
-// An engine that refuses the focus fails the request, naming the page.
+// An engine that refuses the focus reaches the pane as a Kind "focus" event
+// for the intent, naming the page.
 func TestFocusCompanionPageReportsTheEnginesRefusal(t *testing.T) {
 	w := newFocusWorld(t)
+	events := watchFocusEvents(w.m)
 	w.e.mu.Lock()
 	w.e.focusErr = errors.New("view refused")
 	w.e.mu.Unlock()
-	err := w.m.FocusCompanionPage(w.a)
-	if err == nil || !strings.Contains(err.Error(), "view refused") || !strings.Contains(err.Error(), w.aPage) {
-		t.Fatalf("refused focus = %v", err)
+	if err := w.m.FocusCompanionPage(w.a, w.aMount, w.aPage, 3); err != nil {
+		t.Fatalf("focus: %v", err)
+	}
+	got := events.all()
+	if len(got) != 1 || got[0].Mount != w.aMount || got[0].FocusIntent != 3 ||
+		!strings.Contains(got[0].Error, "view refused") || !strings.Contains(got[0].Error, w.aPage) {
+		t.Fatalf("refused focus events %+v", got)
+	}
+	// An engine's UI-thread dispatch that missed its deadline still runs
+	// after the error: it finds the request over.
+	w.e.mu.Lock()
+	late := w.e.lastFocus
+	w.e.mu.Unlock()
+	if late.Live == nil || late.Live() {
+		t.Fatal("a failed request is still live for a dispatch that runs late")
 	}
 }
 
-// The hosted engine asks the launcher to focus only a page it shows, on the
-// page's own lane, and a refusal the launcher reports reaches the page's
-// thread as a pane error.
+// The hosted engine asks the launcher to focus only a page it shows and an
+// intent that is live, naming the intent, on the page's own lane.
 func TestHostedFocusPageDirective(t *testing.T) {
-	var failed []string
-	engine, sink := newTestHostedEngine(t, stubRelay{}, engineEvents{
-		PageFocusFailed: func(handle string, err error) { failed = append(failed, handle+": "+err.Error()) },
-	})
+	engine, sink := newTestHostedEngine(t, stubRelay{}, engineEvents{})
 	engine.bind("page1", "TARGET-1")
 	engine.mu.Lock()
 	engine.drivers["page1"] = &cdpPage{ctx: t.Context()}
 	engine.readPageRatio = func(context.Context, *cdpPage) (float64, error) { return 1, nil }
 	engine.mu.Unlock()
+	live := func() bool { return true }
 
-	if err := engine.FocusPage("page1"); err != nil {
-		t.Fatalf("focus a hidden page: %v", err)
-	}
-	if ops := sink.ops(); slices.Contains(ops, webview2host.OpFocus) {
-		t.Fatalf("a hidden page was asked to focus: %v", ops)
+	if result, err := engine.FocusPage("page1", focusRequest{Mount: "mount1", Intent: 4, Live: live}); err != nil || result != focusNotPresented {
+		t.Fatalf("focus a hidden page = %v, %v", result, err)
 	}
 	engine.ShowPage("page1")
-	if err := engine.FocusPage("page1"); err != nil {
-		t.Fatalf("focus a shown page: %v", err)
+	if result, err := engine.FocusPage("page1", focusRequest{Mount: "mount1", Intent: 4, Live: func() bool { return false }}); err != nil || result != focusWithdrawn {
+		t.Fatalf("focus a withdrawn intent = %v, %v", result, err)
+	}
+	if ops := sink.ops(); slices.Contains(ops, webview2host.OpFocus) {
+		t.Fatalf("a hidden page or a withdrawn intent was sent: %v", ops)
+	}
+	if result, err := engine.FocusPage("page1", focusRequest{Mount: "mount1", Intent: 4, Live: live}); err != nil || result != focusDispatched {
+		t.Fatalf("focus a shown page = %v, %v", result, err)
 	}
 	var focus *webview2host.Directive
 	sink.mu.Lock()
@@ -172,35 +519,61 @@ func TestHostedFocusPageDirective(t *testing.T) {
 			focus = &d
 		}
 	}
-	if focus == nil || focus.PageID != "page1" {
-		t.Fatalf("directives %v, want a focus for page1", sink.ops())
+	if focus == nil || focus.PageID != "page1" || focus.Mount != "mount1" || focus.Intent != 4 {
+		t.Fatalf("directives %+v, want a focus for page1's intent 4 on mount1", all)
 	}
 	if err := focus.Validate(); err != nil {
 		t.Fatalf("the focus directive is invalid: %v", err)
 	}
-
-	engine.Report("page1", webview2host.ReportFocusFailed, "E_FAIL")
-	if len(failed) != 1 || !strings.Contains(failed[0], "page1: ") || !strings.Contains(failed[0], "E_FAIL") {
-		t.Fatalf("a refused focus reported %v", failed)
-	}
 }
 
-// A focus the launcher could not make reaches the owning thread's pane.
-func TestAFocusFailureReachesThePane(t *testing.T) {
-	w := newFocusWorld(t)
-	events := make(chan CompanionEvent, 16)
-	w.m.SetEventSink(func(event CompanionEvent) {
-		if event.Kind == "error" {
-			events <- event
-		}
+// The launcher's answers to a focus travel the report route the launcher
+// uses (Manager.ReportPaneHost) and reach the mount that armed the intent
+// as Kind "focus" events, a refusal with its error.
+func TestTheLaunchersFocusReportsReachTheIntentsPane(t *testing.T) {
+	sink := newDirectiveSink()
+	m := NewManager(t.TempDir(), Config{Enabled: true}, ManagerOptions{PaneHost: &PaneHostOptions{
+		Directive: sink.send,
+		Relay:     stubRelay{},
+	}})
+	t.Cleanup(func() { _ = m.Close() })
+	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+	m.mu.Lock()
+	m.panes["mount1"] = paneMount{threadID: access.ThreadID, seq: 1}
+	m.mu.Unlock()
+	page := &managedPage{id: "page1", owner: access.ThreadID, driver: &fakePage{handle: "handle1"}}
+	m.mu.Lock()
+	m.scopes = map[string]*workspaceScope{"scope": {pages: map[string]*managedPage{"page1": page}}}
+	m.mu.Unlock()
+	// The stand-in page has no engine page behind it for Close to close.
+	t.Cleanup(func() {
+		m.mu.Lock()
+		m.scopes = map[string]*workspaceScope{}
+		m.mu.Unlock()
 	})
-	w.m.pageFocusFailed(w.handle(w.a, w.aPage), errors.New("browser: the page did not take keyboard focus: E_FAIL"))
-	select {
-	case event := <-events:
-		if event.ThreadID != w.a.ThreadID || !strings.Contains(event.Error, "E_FAIL") {
-			t.Fatalf("error event %+v", event)
-		}
-	default:
-		t.Fatal("no error reached the pane")
+	events := watchFocusEvents(m)
+
+	failed := webview2host.FocusReport{Mount: "mount1", Intent: 2, Error: "E_FAIL"}.Encode()
+	if err := m.ReportPaneHost("handle1", webview2host.ReportFocusFailed, failed); err != nil {
+		t.Fatalf("route a focus failure: %v", err)
+	}
+	focused := webview2host.FocusReport{Mount: "mount1", Intent: 3}.Encode()
+	if err := m.ReportPaneHost("handle1", webview2host.ReportFocused, focused); err != nil {
+		t.Fatalf("route a focus: %v", err)
+	}
+	// A report for a mount of another thread reaches nobody.
+	other := webview2host.FocusReport{Mount: "mount-gone", Intent: 1}.Encode()
+	if err := m.ReportPaneHost("handle1", webview2host.ReportFocused, other); err != nil {
+		t.Fatalf("route a focus for a gone mount: %v", err)
+	}
+	got := events.all()
+	if len(got) != 2 {
+		t.Fatalf("focus events %+v, want the failure and the focus", got)
+	}
+	if got[0].ThreadID != access.ThreadID || got[0].Mount != "mount1" || got[0].FocusIntent != 2 || !strings.Contains(got[0].Error, "E_FAIL") {
+		t.Fatalf("failure event %+v", got[0])
+	}
+	if got[1].Mount != "mount1" || got[1].FocusIntent != 3 || got[1].Error != "" {
+		t.Fatalf("focus event %+v", got[1])
 	}
 }

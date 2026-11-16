@@ -94,13 +94,14 @@ type paneHost interface {
 	// ever equates CSS pixels with its native units. Always sent before a
 	// show.
 	SetPageBounds(handle string, placement PanePlacement)
-	// FocusPage gives the page's view keyboard focus, as a click into the
-	// page does, if and only if the host presents and shows that view now;
-	// otherwise it leaves focus alone and answers nil. It never takes the
-	// OS focus from another application. The Manager asks for the presented
-	// page only (FocusCompanionPage); the host's own check is what holds
-	// when a hide is racing the request.
-	FocusPage(handle string) error
+	// FocusPage gives the page's view keyboard focus for one focus intent,
+	// as a click into the page does, if and only if the host presents and
+	// shows that view and req.Live holds at the moment focus would move;
+	// otherwise it leaves focus alone. It never takes the OS focus from
+	// another application. The Manager asks for the presented page only
+	// (applyFocusIntent); the host's own checks are what hold when a hide or
+	// a withdrawal races the request.
+	FocusPage(handle string, req focusRequest) (focusResult, error)
 }
 
 // paneDevTools is the OPTIONAL inspector half, split from paneHost because
@@ -696,8 +697,17 @@ func (e *hostedEngine) Report(pageID string, kind webview2host.ReportKind, detai
 		e.events.KeyChord(pageID, pressed, KeyPress{})
 	case webview2host.ReportFindUnavailable:
 		e.noteFindUnavailable(pageID)
-	case webview2host.ReportFocusFailed:
-		e.events.PageFocusFailed(pageID, fmt.Errorf("browser: the page did not take keyboard focus: %s", detail))
+	case webview2host.ReportFocused, webview2host.ReportFocusFailed:
+		report, err := webview2host.ParseFocusReport(detail)
+		if err != nil {
+			e.logf("browser: pane host focus report for page %s is unreadable: %v", pageID, err)
+			return
+		}
+		var failure error
+		if kind == webview2host.ReportFocusFailed {
+			failure = fmt.Errorf("browser: the page did not take keyboard focus: %s", report.Error)
+		}
+		e.events.PageFocusReported(pageID, report.Mount, report.Intent, failure)
 	case webview2host.ReportCleared, webview2host.ReportClearFailed:
 		// A clear names a correlation id, not a page: there is no controller
 		// to close and no page to retire. Nobody waiting means ClearSiteData
@@ -813,20 +823,25 @@ func (e *hostedEngine) ShowPage(handle string) {
 }
 
 // FocusPage asks the launcher to move keyboard focus into the page's
-// controller. The directive rides the page's lane after its show, and the
-// launcher decides against what it shows and whether its window is in the
-// foreground; a controller that refuses the move answers ReportFocusFailed.
-func (e *hostedEngine) FocusPage(handle string) error {
+// controller for the request's intent. The directive rides the page's lane
+// after its show, and the launcher decides against what it shows, whether
+// its window is in the foreground, and whether the SPA has withdrawn the
+// intent (webview2host.FocusIntents); it answers ReportFocused or
+// ReportFocusFailed for a move it made or that was refused.
+func (e *hostedEngine) FocusPage(handle string, req focusRequest) (focusResult, error) {
 	e.mu.Lock()
 	shown := e.shown[handle]
 	e.mu.Unlock()
 	if !shown {
-		return nil
+		return focusNotPresented, nil
 	}
-	if !e.dispatch(webview2host.Directive{Op: webview2host.OpFocus, PageID: handle}) {
-		return fmt.Errorf("browser: the pane host could not be asked to focus page %s", handle)
+	if !req.Live() {
+		return focusWithdrawn, nil
 	}
-	return nil
+	if !e.dispatch(webview2host.Directive{Op: webview2host.OpFocus, PageID: handle, Mount: req.Mount, Intent: req.Intent}) {
+		return focusNotPresented, fmt.Errorf("browser: the pane host could not be asked to focus page %s", handle)
+	}
+	return focusDispatched, nil
 }
 
 // HidePage hides the page's clip container. The controller itself stays

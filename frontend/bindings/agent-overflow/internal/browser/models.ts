@@ -56,8 +56,11 @@ export class CompanionEvent {
      * Mount rides a Kind "accelerator" or "escape" event: the pane mount
      * (AttachPane) the thread's pages are presented in. The event reaches
      * every host client, and only the one holding that mount acts on it.
+     * It also rides a Kind "focus" event, which names the mount whose
+     * FocusIntent ended: the page took the keyboard, or Error says why not.
      */
     "mount"?: string;
+    "focusIntent"?: number;
 
     /**
      * FindMode rides a Kind "state" event: how the active page's find is
@@ -102,7 +105,7 @@ export class CompanionEvent {
     static createFrom($$source: any = {}): CompanionEvent {
         const $$createField2_0 = $$createType1;
         const $$createField12_0 = $$createType3;
-        const $$createField15_0 = $$createType5;
+        const $$createField16_0 = $$createType5;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("pages" in $$parsedSource) {
             $$parsedSource["pages"] = $$createField2_0($$parsedSource["pages"]);
@@ -111,7 +114,7 @@ export class CompanionEvent {
             $$parsedSource["accelerator"] = $$createField12_0($$parsedSource["accelerator"]);
         }
         if ("find" in $$parsedSource) {
-            $$parsedSource["find"] = $$createField15_0($$parsedSource["find"]);
+            $$parsedSource["find"] = $$createField16_0($$parsedSource["find"]);
         }
         return new CompanionEvent($$parsedSource as Partial<CompanionEvent>);
     }

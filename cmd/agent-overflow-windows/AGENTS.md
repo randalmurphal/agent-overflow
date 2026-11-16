@@ -60,11 +60,12 @@ their validation at this process boundary.
   lazily, answer result-bearing `create` and `clear-data` operations even when
   construction fails, serialize reports off the UI thread, and close the host
   before its parent window and backend. Browser storage is per runtime mode and
-  rejects symlink or reparse-point components. Pane geometry the SPA posts
-  arrives on Wails' raw message handler (`handleRawMessage`), beside the
-  reload chord reports for `uikeys.PageChords`: accept both only from
-  this window on the backend page's origin, never wait on the UI thread
-  there, and advertise each capability to each loaded document.
+  rejects symlink or reparse-point components. Pane geometry and page focus
+  intents the SPA posts arrive on Wails' raw message handler
+  (`handleRawMessage`), beside the reload chord reports for
+  `uikeys.PageChords`: accept them only from this window on the backend
+  page's origin, never wait on the UI thread there, and advertise each
+  capability to each loaded document.
 - Scrub inherited WebView2 profile overrides before either WebView environment
   is created. A set-but-empty override is still an override.
 

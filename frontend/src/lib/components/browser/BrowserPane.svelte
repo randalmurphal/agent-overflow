@@ -166,12 +166,14 @@
   /**
    * Leaves the address for the page. The host rect takes DOM focus first so
    * the address field blurs at once and a pane with no page shown still
-   * holds focus; the engine then gives the shown page the keyboard.
+   * holds focus; the engine then gives the active page the keyboard once it
+   * is shown, unless the user focuses or presses anywhere outside the host
+   * rect first.
    */
   function leaveAddress(): void {
     surface?.focus();
     const threadId = ctx.threadId;
-    if (threadId) void focusBrowserPage(threadId);
+    if (threadId && surface && activePageId) void focusBrowserPage(threadId, activePageId, surface);
   }
 
   function togglePromotion(): void {

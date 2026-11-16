@@ -60,10 +60,12 @@ const (
 	// OpFindStop ends the page's find and hides its find bar.
 	OpFindStop Op = "find-stop"
 	// OpFocus gives the page's controller keyboard focus, as a click into
-	// the page does: only while the page is presented and visible, and only
-	// while the launcher window is the foreground window (focusDecision).
-	// It rides the page's lane, after the show it follows. A failed move is
-	// answered with ReportFocusFailed.
+	// the page does, for the focus intent Mount and Intent name: only while
+	// the page is presented and visible, the launcher window is the
+	// foreground window, and the SPA has not withdrawn the intent
+	// (focusDecision, FocusIntents). It rides the page's lane, after the
+	// show it follows. A move made is answered with ReportFocused, a move
+	// refused with ReportFocusFailed.
 	OpFocus Op = "focus"
 )
 
@@ -122,6 +124,8 @@ type Directive struct {
 	PageW int    `json:"pageW,omitempty"`
 	PageH int    `json:"pageH,omitempty"`
 	Seq   uint64 `json:"seq,omitempty"`
+	// Intent is OpFocus's focus intent number on Mount (FocusIntents).
+	Intent uint64 `json:"intent,omitempty"`
 	// Accelerators is OpAccelerators' payload: the whole bound set, `mod`
 	// already resolved by the backend.
 	Accelerators []keybindings.Accelerator `json:"accelerators,omitempty"`
@@ -159,8 +163,19 @@ func (d Directive) Validate() error {
 			return err
 		}
 		return d.validateBounds()
-	case OpShow, OpHide, OpClose, OpDevTools, OpFindStop, OpFocus:
+	case OpShow, OpHide, OpClose, OpDevTools, OpFindStop:
 		return ValidatePageID(d.PageID)
+	case OpFocus:
+		if err := ValidatePageID(d.PageID); err != nil {
+			return err
+		}
+		if err := validateToken("mount id", d.Mount, maxPageIDLen); err != nil {
+			return err
+		}
+		if d.Intent == 0 {
+			return errors.New("focus must name its intent")
+		}
+		return nil
 	case OpFind:
 		if err := ValidatePageID(d.PageID); err != nil {
 			return err
@@ -335,10 +350,13 @@ const (
 	// before the page's ReportCreated, so the backend knows it before the
 	// page is used.
 	ReportFindUnavailable ReportKind = "find-unavailable"
-	// ReportFocusFailed carries the failure text of an OpFocus whose
-	// MoveFocus the controller refused. A focus the launcher declined (the
-	// page not presented, the window not in the foreground) is no failure
-	// and is not reported.
+	// ReportFocused says an OpFocus moved keyboard focus into the page. Its
+	// detail is a FocusReport naming the intent.
+	ReportFocused ReportKind = "focused"
+	// ReportFocusFailed says the controller refused an OpFocus's MoveFocus.
+	// Its detail is a FocusReport naming the intent and the error. A focus
+	// the launcher declined (the page not presented, the window not in the
+	// foreground, the intent withdrawn) is no failure and is not reported.
 	ReportFocusFailed ReportKind = "focus-failed"
 )
 
@@ -360,7 +378,8 @@ const MaxReportDetailBytes = 4096
 func ValidKind(kind ReportKind) bool {
 	switch kind {
 	case ReportCreated, ReportCreateFailed, ReportClosed, ReportProcessFailed,
-		ReportCleared, ReportClearFailed, ReportAccelerator, ReportFindUnavailable:
+		ReportCleared, ReportClearFailed, ReportAccelerator, ReportFindUnavailable,
+		ReportFocused, ReportFocusFailed:
 		return true
 	default:
 		return false

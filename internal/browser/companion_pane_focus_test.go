@@ -14,6 +14,9 @@ type focusPaneHost struct {
 	*recordingPaneHost
 	shown map[string]bool
 	focus string
+	// beforeFocus, when set, runs inside FocusPage before the engine's
+	// checks: a request delayed on its way to the UI thread.
+	beforeFocus func(handle string)
 }
 
 const focusHeldByTheApp = "app"
@@ -35,19 +38,51 @@ func (e *focusPaneHost) HidePage(handle string) {
 	e.mu.Unlock()
 }
 
-// FocusPage gives a shown page the focus, as a click does, and leaves a
-// page that is not shown alone, as every engine does.
-func (e *focusPaneHost) FocusPage(handle string) error {
-	if err := e.recordingPaneHost.FocusPage(handle); err != nil {
-		return err
+// FocusPage gives a shown page the focus, as a click does, while the request
+// is live, and leaves a page that is not shown alone, as every engine does.
+// Both are read after beforeFocus, which stands in for the wait for the
+// engine's UI thread.
+func (e *focusPaneHost) FocusPage(handle string, req focusRequest) (focusResult, error) {
+	if _, err := e.recordingPaneHost.FocusPage(handle, req); err != nil {
+		return focusNotPresented, err
+	}
+	e.mu.Lock()
+	before := e.beforeFocus
+	e.mu.Unlock()
+	if before != nil {
+		before(handle)
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if e.shown[handle] {
-		e.focus = handle
+	switch {
+	case !e.shown[handle]:
+		return focusNotPresented, nil
+	case !req.Live():
+		return focusWithdrawn, nil
+	}
+	e.focus = handle
+	return focusMoved, nil
+}
+
+// FocusApp gives the app the focus, as a claimed chord does.
+func (e *focusPaneHost) FocusApp() error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.focus = focusHeldByTheApp
+	return nil
+}
+
+// ReleasePageFocus gives the app the focus only if the page holds it.
+func (e *focusPaneHost) ReleasePageFocus(handle string) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.focus == handle {
+		e.focus = focusHeldByTheApp
 	}
 	return nil
 }
+
+var _ engineAppFocus = (*focusPaneHost)(nil)
 
 func (e *focusPaneHost) click(t *testing.T, handle string) {
 	t.Helper()
