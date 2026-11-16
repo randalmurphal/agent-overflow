@@ -271,8 +271,35 @@ func attachSizedPane(t *testing.T, manager *Manager, engine *recordingPaneHost, 
 	if got := <-applied; got != access.ThreadID {
 		t.Fatalf("viewport applied for %q, want %q", got, access.ThreadID)
 	}
+	// The drain may owe another pass (a presentation pass that saw the page
+	// lag asks for one); a pass left running would race the caller's.
+	awaitViewportIdle(t, manager, access.ThreadID)
+	for len(applied) > 0 {
+		<-applied
+	}
 	engine.take()
 	return mount.ID
+}
+
+// awaitViewportIdle waits until the thread's viewport drain has neither a
+// pass queued nor one running, and no presentation pass runs.
+func awaitViewportIdle(t *testing.T, manager *Manager, threadID string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		manager.mu.Lock()
+		st := manager.viewportSyncLocked(threadID)
+		_, presenting := manager.presenting[threadID]
+		busy := st.busy || st.dirty || presenting
+		manager.mu.Unlock()
+		if !busy {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the viewport drain never went idle")
+		}
+		time.Sleep(time.Millisecond)
+	}
 }
 
 // Presentation passes of a thread never overlap: a pass asked for while one

@@ -524,8 +524,11 @@ func TestADrainPushesStateOnceWhenItSettles(t *testing.T) {
 	close(release)
 	f.awaitActiveAt(t, 800, 600)
 	f.awaitFollowIdle(t)
+	// The drain pushes after it marks itself idle, so the push is waited
+	// for; anything else is already queued behind it.
 	states := 0
-	for {
+	deadline := time.After(5 * time.Second)
+	for states == 0 {
 		select {
 		case event := <-f.events:
 			if event.Kind == "state" {
@@ -533,6 +536,16 @@ func TestADrainPushesStateOnceWhenItSettles(t *testing.T) {
 				if event.ViewportWidth != 800 {
 					t.Fatalf("the settled push carries %d, want the final 800", event.ViewportWidth)
 				}
+			}
+		case <-deadline:
+			t.Fatal("the drain never pushed the settled state")
+		}
+	}
+	for {
+		select {
+		case event := <-f.events:
+			if event.Kind == "state" {
+				states++
 			}
 			continue
 		default:

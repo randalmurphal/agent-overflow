@@ -695,10 +695,12 @@ func (m *Manager) presentPanes(threadID string) {
 		want := packViewport(sessionViewport(m.sessions[threadID]))
 		if active.viewport.Load() == want || active.viewportFailed.Load() == want {
 			// Laid out since the check above, by an apply that found no
-			// page awaiting it: this pass's loop runs another.
+			// page awaiting it: this pass's loop runs another, and no drain
+			// is owed.
 			if st := m.presenting[threadID]; st != nil {
 				st.dirty = true
 			}
+			lagging = false
 		} else {
 			if m.awaitingLayout == nil {
 				m.awaitingLayout = make(map[string]string)

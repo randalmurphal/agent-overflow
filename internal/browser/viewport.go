@@ -216,13 +216,18 @@ func (m *Manager) lockPageForOperation(ctx context.Context, p *managedPage) erro
 
 // syncViewportLocked brings a page whose p.mu the caller holds to its
 // thread's viewport, applying again while the viewport moved during the last
-// apply. A drag that never settles holds the operation until ctx ends.
+// apply. A drag that never settles holds the operation until ctx ends. Each
+// apply shows a page held hidden for its layout (presentLaidOut): the
+// operation keeps the page lock for its own work, which the drain's
+// presentation would wait behind.
 func (m *Manager) syncViewportLocked(ctx context.Context, p *managedPage) error {
 	for !m.pageViewportCurrent(p) {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if err := m.applyViewportLocked(p); err != nil {
+		err := m.applyViewportLocked(p)
+		m.presentLaidOut(p)
+		if err != nil {
 			return fmt.Errorf("%w (page %s)", err, p.id)
 		}
 	}
@@ -268,34 +273,30 @@ func (m *Manager) applyViewport(p *managedPage) error {
 }
 
 // applyViewportLocked is applyViewport with p.mu held by the caller. It
-// records the size the page took, or the size it refused, and then asks for
-// the presentation pass a page held hidden for its layout is waiting on.
+// records the size the page took, or the size it refused.
 func (m *Manager) applyViewportLocked(p *managedPage) error {
 	m.mu.Lock()
 	width, height := sessionViewport(m.sessionLocked(p.owner))
 	m.mu.Unlock()
 	ctx, cancel := operationContext(context.Background(), p.ctx, 5*time.Second)
 	defer cancel()
-	err := p.driver.SetViewport(ctx, width, height)
-	if err != nil {
+	if err := p.driver.SetViewport(ctx, width, height); err != nil {
 		p.viewportFailed.Store(packViewport(width, height))
-		err = fmt.Errorf("browser: apply viewport: %w", err)
-	} else {
-		p.viewport.Store(packViewport(width, height))
-		p.viewportFailed.Store(0)
+		return fmt.Errorf("browser: apply viewport: %w", err)
 	}
-	m.presentLaidOut(p)
-	return err
+	p.viewport.Store(packViewport(width, height))
+	p.viewportFailed.Store(0)
+	return nil
 }
 
 // presentLaidOut runs the presentation pass for a page that presentPanes
-// held hidden until it was laid out, now that an apply settled it (a refused
-// size is shown too). The caller holds p.mu, which the operation that laid
-// the page out may keep for its own work, so the pass runs on a goroutine of
-// its own: the show waits for the layout only, never for page work, and no
-// engine host call is made under the page lock. presentPanes re-checks the
-// page under Manager.mu after recording it, so an apply that lands before
-// the record is seen there instead.
+// held hidden until it was laid out, now that an operation's apply settled
+// it (a refused size is shown too). The drain runs its own pass after each
+// apply. The caller holds p.mu, which the operation keeps for its own work,
+// so the pass runs on a goroutine of its own: the show waits for the layout
+// only, never for page work, and no engine host call is made under the page
+// lock. presentPanes re-checks the page under Manager.mu after recording
+// it, so an apply that lands before the record is seen there instead.
 func (m *Manager) presentLaidOut(p *managedPage) {
 	m.mu.Lock()
 	awaiting := m.awaitingLayout[p.owner] == p.id
