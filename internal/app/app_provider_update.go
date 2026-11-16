@@ -165,16 +165,7 @@ func runProviderUpdateGroup(ctx context.Context, reaper procutil.Reaper, command
 		Argv:   append([]string{command.Binary}, command.Args...),
 		Output: output,
 	})
-	text := tail.String()
-	// Neither changes what the user does next, so they are noted in the
-	// output the user reads rather than failing the command.
-	if outcome.Leftovers {
-		text += "\n[processes the command left running were stopped]"
-	}
-	if outputErr := outcome.OutputErr(); outputErr != nil {
-		text += fmt.Sprintf("\n[output may be incomplete: %v]", outputErr)
-	}
-	out := providerupdate.Output{Text: text, ExitCode: outcome.ExitCode}
+	out := providerupdate.Output{Text: providerUpdateText(tail.String(), outcome, err), ExitCode: outcome.ExitCode}
 	switch {
 	case errors.Is(err, procutil.ErrGroupSurvived):
 		return out, errors.Join(providerupdate.ErrCommandSurvived, runCtx.Err())
@@ -189,6 +180,20 @@ func runProviderUpdateGroup(ctx context.Context, reaper procutil.Reaper, command
 		return out, nil
 	}
 	return out, err
+}
+
+// providerUpdateText is the output the user reads, with notes that do not
+// change what the user does next: a sweep that stopped leftovers and a cut
+// output. Leftovers that outlived the sweep are ErrGroupSurvived, which the
+// run reports as still running, so they are not said to be stopped.
+func providerUpdateText(text string, outcome procutil.GroupOutcome, err error) string {
+	if outcome.Leftovers && !errors.Is(err, procutil.ErrGroupSurvived) {
+		text += "\n[processes the command left running were stopped]"
+	}
+	if outputErr := outcome.OutputErr(); outputErr != nil {
+		text += fmt.Sprintf("\n[output may be incomplete: %v]", outputErr)
+	}
+	return text
 }
 
 // providerUpdateOutput keeps a command's output tail and stops the command

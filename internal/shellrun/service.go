@@ -393,7 +393,9 @@ func (s *Service) execute(ctx context.Context, current *run) {
 	})
 	terminal.close(request.RunID)
 	close(current.exited)
-	if outcome.Leftovers {
+	// Leftovers that outlived the sweep are reported as still running below,
+	// so only a sweep that ended them says they were stopped.
+	if outcome.Leftovers && !errors.Is(runErr, procutil.ErrGroupSurvived) {
 		capture.note(leftoversNotice)
 	}
 	closeErr := errors.Join(capture.close(), outcome.PipeErr)

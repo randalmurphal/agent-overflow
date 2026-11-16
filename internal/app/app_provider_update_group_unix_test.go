@@ -127,3 +127,16 @@ func readChildPID(t *testing.T, path string) int {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+// Only a sweep that ended the leftovers says they were stopped; leftovers
+// that outlived it are the run's survivor error instead.
+func TestProviderUpdateTextSaysLeftoversStoppedOnlyWhenTheSweepEndedThem(t *testing.T) {
+	t.Parallel()
+	const stopped = "were stopped"
+	if got := providerUpdateText("out", procutil.GroupOutcome{Leftovers: true}, nil); !strings.Contains(got, stopped) {
+		t.Fatalf("swept leftovers: %q", got)
+	}
+	if got := providerUpdateText("out", procutil.GroupOutcome{Leftovers: true}, procutil.ErrGroupSurvived); strings.Contains(got, stopped) {
+		t.Fatalf("surviving leftovers said stopped: %q", got)
+	}
+}
