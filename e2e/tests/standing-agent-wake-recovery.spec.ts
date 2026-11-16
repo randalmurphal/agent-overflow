@@ -250,12 +250,15 @@ echo "the only report"
 // a person's queued text are taken back out of it when the session ends
 // before taking it in: the person's text alone goes back to the composer,
 // the wake's row records it not delivered and keeps its own text, and the
-// send leaves its notice. The three are queued while the thread's start
-// fails, so the start that follows sends them in one drain, and the
-// provider reads them and dies before answering. Claude's dispatcher joins
-// them into one message. Codex never joins: the person's message starts the
-// turn and the other two are steered into it, so they reach the agent, and
-// the person's text alone is still all that goes back.
+// send leaves its notice. The send and the wake stay queued while the
+// thread's start fails; the person's message, queued once the start works,
+// starts the session, whose first drain sends the three, and the provider
+// reads them and dies before answering. (A person's message whose start
+// fails goes back to the composer at once, so it cannot wait in the queue
+// with them.) Claude's dispatcher joins them into one message. Codex never
+// joins: the send, queued first, starts the turn and the wake and the
+// person's message are steered into it, so they reach the agent, and the
+// send alone is given back, to its notice; the composer stays empty.
 for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderName[]) {
   test(`${provider}: a wake and a send joined to a person's message leave it at session end`, async ({ page }) => {
     test.setTimeout(150_000);
@@ -314,15 +317,13 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       const own = 'my own words\n\n---\n\nand a second paragraph';
       await harness.rpc('StopSession', thread);
       await b.brk();
-      await harness.rpc('RegisterQueueItem', thread, own, { sendId: randomUUID() });
       const sent = await threadSend(dataDir, [thread, 'deploy 9 is done']);
       expect(sent.code, sent.stderr).toBe(0);
       await say('the joined report');
-      await expect.poll(() => queued().length, { timeout: 30_000 }).toBe(3);
-      const [personID, sendID, wakeID] = queued();
+      await expect.poll(() => queued().length, { timeout: 30_000 }).toBe(2);
+      const [sendID, wakeID] = queued();
       expect(sendID).toMatch(/^agent-send:/);
       expect(wakeID).toMatch(/^agent-wake:/);
-      expect(personID).not.toMatch(/^agent-/);
 
       // Mended with the watch's runs parked for the rest of the test, so
       // none overwrites the outcome under test, and a provider that reads
@@ -346,7 +347,9 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
           }),
         );
       }
-      await harness.rpc('StartSession', thread);
+      // The person's message starts the session, whose first drain takes
+      // the three.
+      await harness.rpc('RegisterQueueItem', thread, own, { sendId: randomUUID() });
       let mockId: string;
       if (provider === 'claude') {
         const joined = await wakeInput(harness, home, 'my own words');
@@ -355,8 +358,8 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
         expect(joined.report.input).toContain(`${aoMessageOpening('your watch "tick"')}Watch "tick" reported.`);
         mockId = joined.mockId;
       } else {
-        // Codex takes the person's message as the turn and the other two
-        // steered into it, each its own message.
+        // Codex takes the send as the turn and the other two steered into
+        // it, each its own message.
         mockId = (await awaitGate(harness, 'hold', home)).mockId;
         await expect.poll(() => countInputs(harness, home, 'Watch "tick" reported.'), { timeout: 30_000 }).toBe(1);
         expect(countInputs(harness, home, 'my own words')).toBe(1);
@@ -379,10 +382,10 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
       const userRows = (text: string) =>
         db<{ n: number }>(`SELECT COUNT(*) AS n FROM items WHERE thread_id = ? AND kind = 'user_text' AND summary LIKE ?`, thread, `%${text}%`)[0]
           .n;
-      await expect.poll(draft, { timeout: 30_000 }).not.toBe('');
-      console.log(`${provider}: composer after the session ended: ${JSON.stringify(draft())}`);
-      expect(draft()).toBe(own);
       if (provider === 'claude') {
+        await expect.poll(draft, { timeout: 30_000 }).not.toBe('');
+        console.log(`${provider}: composer after the session ended: ${JSON.stringify(draft())}`);
+        expect(draft()).toBe(own);
         await expect.poll(notices, { timeout: 30_000 }).toBe(1);
         expect(wakeRow().last_outcome).toBe('not delivered: the session ended before it took the wake in');
         expect(wakeRow().last_output).toContain('Watch "tick" reported.');
@@ -391,29 +394,30 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
         expect(wakeRow().last_output).not.toContain('deploy 9 is done');
         expect(userRows('my own words')).toBe(0);
       } else {
-        // Steered in, the wake and the send reached the agent before it
-        // died; only the person's message is given back. A quiet run that
-        // finished before the hold may have written "no output" over the
-        // wake's "delivered", so the check is that the end did not record it.
-        expect(notices()).toBe(0);
+        // Steered in, the wake and the person's message reached the agent
+        // before it died; only the send that started the turn is given
+        // back. A quiet run that finished before the hold may have written
+        // "no output" over the wake's "delivered", so the check is that the
+        // end did not record it.
+        await expect.poll(notices, { timeout: 30_000 }).toBe(1);
+        expect(draft()).toBe('');
         expect(wakeRow().last_outcome).not.toMatch(/^not delivered/);
         expect(userRows('Watch "tick" reported.')).toBe(1);
-        expect(userRows('deploy 9 is done')).toBe(1);
-        expect(userRows('my own words')).toBe(0);
+        expect(userRows('my own words')).toBe(1);
+        expect(userRows('deploy 9 is done')).toBe(0);
       }
       console.log(`${provider}: wake row after the session ended: ${JSON.stringify(wakeRow().last_outcome)}`);
 
       await harness.open(page);
       await page.getByTestId('thread-row').getByText('Joined watcher', { exact: true }).click();
       const composer = page.getByTestId('composer-root');
-      await expect(composer.locator('textarea')).toHaveValue(own);
+      await expect(composer.locator('textarea')).toHaveValue(provider === 'claude' ? own : '');
       // The composer sits under every capture.
       if (provider === 'claude') {
         await shoot(page, `${provider}-joined-death-person-text-only.png`, page.getByTestId('notification-row').filter({ hasText: notice }));
       } else {
-        await wakeBubble(page, 'Joined watcher', 'Sent by a script', 'deploy 9 is done');
         const steeredWake = await wakeBubble(page, 'Joined watcher', 'Watch · tick', 'the joined report');
-        await shoot(page, `${provider}-steered-death-person-text-only.png`, steeredWake);
+        await shoot(page, `${provider}-steered-death-send-given-back.png`, steeredWake);
       }
     } finally {
       await breaker?.cleanup();
