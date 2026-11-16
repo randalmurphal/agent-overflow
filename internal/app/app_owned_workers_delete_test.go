@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/entityid"
+	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/identity"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/terminal"
@@ -725,8 +726,11 @@ func TestAWorktreeWithUnsavedWorkRefusesTheDelete(t *testing.T) {
 			}
 			dirty(t, dirtyTree)
 			_, err := f.app.DeleteThreadsAndWorktrees(t.Context(), []string{owner.ID})
-			if err == nil || !strings.Contains(err.Error(), "unsaved work") || !strings.Contains(err.Error(), "the worktree "+dirtyTree+", which this delete would remove, cannot be removed, so nothing was deleted") {
+			if err == nil || !strings.Contains(err.Error(), "unsaved work") || !strings.Contains(err.Error(), "Nothing was deleted: the worktree "+dirtyTree+", which this delete would remove, has unsaved work.") {
 				t.Fatalf("DeleteThreadsAndWorktrees = %v, want it refused naming the worktree", err)
+			}
+			if code, _, ok := errorsx.PublicDetails(err); !ok || code != "delete_worktree_unsaved" {
+				t.Errorf("the refusal = code %q public %v, want the sentence every client shows", code, ok)
 			}
 			untouched(t, f.app, owner.ID, worker.ID, under.ID)
 			if !exists(t, ownerTree) || !exists(t, workerTree) {

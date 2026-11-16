@@ -129,7 +129,7 @@ export async function runOwnedWorkersDelete(harness: HarnessApp, page: Page, lay
   const unsaved = join(runningTree, 'unsaved.txt');
   writeFileSync(unsaved, 'work in progress\n');
   await confirmDelete(`${tag}-confirm.png`);
-  await expect(page.getByText(/cannot be removed, so nothing was deleted/).first()).toBeVisible();
+  await expect(page.getByText(/Nothing was deleted: the worktree .* has unsaved work/).first()).toBeVisible();
   await expect(rowIn(page, lead)).not.toHaveCount(0);
   for (const id of [lead, running, archived, nested]) await harness.rpc('GetThread', id);
   expect(existsSync(runningTree)).toBe(true);

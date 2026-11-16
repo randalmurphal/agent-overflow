@@ -9,6 +9,7 @@ import (
 	"slices"
 
 	"agent-overflow/internal/entityid"
+	"agent-overflow/internal/errorsx"
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/transport"
@@ -401,7 +402,13 @@ func (op *familyDelete) verify() error {
 		return err
 	}
 	for _, site := range sites {
-		if err := op.app.checkWorktreeRemovable(site); err != nil {
+		err := op.app.checkWorktreeRemovable(site)
+		var unsaved *errWorktreeUnsaved
+		switch {
+		case errors.As(err, &unsaved):
+			return errorsx.Public("delete_worktree_unsaved", fmt.Sprintf(
+				"Nothing was deleted: the worktree %s, which this delete would remove, has unsaved work. Commit or discard it, then delete again.", site.path), err)
+		case err != nil:
 			return fmt.Errorf("the worktree %s, which this delete would remove, cannot be removed, so nothing was deleted: %w", site.path, err)
 		}
 	}

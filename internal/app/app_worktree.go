@@ -517,9 +517,22 @@ func (a *App) worktreeLossOfWork(project, worktreePath string, policy worktreeRe
 	// Commits on no branch are lost with the worktree whatever happens to
 	// any branch, so keepsBranch does not waive them.
 	if status.Dirty || (!policy.keepsBranch && status.UnpushedCommits > 0) || status.OrphanCommits > 0 {
-		return fmt.Errorf("worktree %s has unsaved work (dirty=%v unpushed=%d orphan=%d); pass force to discard", worktreePath, status.Dirty, status.UnpushedCommits, status.OrphanCommits)
+		return &errWorktreeUnsaved{path: worktreePath, dirty: status.Dirty, unpushed: status.UnpushedCommits, orphan: status.OrphanCommits}
 	}
 	return nil
+}
+
+// errWorktreeUnsaved is worktreeLossOfWork's refusal of a worktree with
+// uncommitted changes or commits removing it would lose.
+type errWorktreeUnsaved struct {
+	path             string
+	dirty            bool
+	unpushed, orphan int
+}
+
+func (e *errWorktreeUnsaved) Error() string {
+	return fmt.Sprintf("worktree %s has unsaved work (dirty=%v unpushed=%d orphan=%d); pass force to discard",
+		e.path, e.dirty, e.unpushed, e.orphan)
 }
 
 // errWorktreeRemovedFollowUp is a removal git completed whose reaction
