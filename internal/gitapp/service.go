@@ -59,7 +59,7 @@ func New(deps Deps) *Service {
 	if core == nil {
 		core = gitops.NewCore()
 	}
-	return &Service{
+	s := &Service{
 		store:                  deps.Store,
 		core:                   core,
 		watch:                  deps.Watch,
@@ -74,6 +74,8 @@ func New(deps Deps) *Service {
 			handles: make(map[string]*statusPump),
 		},
 	}
+	core.SetRemoteSignInObserver(s.refreshRepositoryStatus)
+	return s
 }
 
 func (s *Service) shuttingDown() bool {

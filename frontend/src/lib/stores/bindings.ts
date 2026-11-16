@@ -349,6 +349,7 @@ export {
   ListCommitFiles,
   GitPush,
   GitPull,
+  GitFetchOrigin,
   GitCheckout,
   GitCreateBranchFrom,
   GitCreatePR,

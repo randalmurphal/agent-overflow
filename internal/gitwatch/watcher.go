@@ -162,7 +162,7 @@ type workspaceWatcher struct {
 	// suppressed counts the outstanding Manager.Suppress holds. While it is
 	// non-zero no status is computed or broadcast; it dies with the watcher.
 	suppressed int
-	// offeredChange is set when an offer published a non-PR change and
+	// offeredChange is set when an offer published an on-disk change and
 	// cleared by the run loop's next requested refresh, which counts it as
 	// a change that refresh observed.
 	offeredChange bool
@@ -551,11 +551,10 @@ func (w *workspaceWatcher) requestRefresh() {
 // fetch error is logged and returned for the run loop to retry; the
 // published status stays as-is so we don't mistake a transient error for
 // a real change. Reports whether publishing changed the published status
-// on any non-PR field — the run loop's miss-detection signal (PR fields
-// change through cache warming, not the filesystem, so they prove
-// nothing about watchpoint health). prRecheckAt is the fetched status's
+// on disk (statusDiffersOnDisk), the run loop's miss-detection signal.
+// prRecheckAt is the fetched status's
 // OpenPRRecheckAt, whether or not it was published; zero when suppressed.
-func (w *workspaceWatcher) refresh() (nonPRChanged bool, prRecheckAt time.Time, err error) {
+func (w *workspaceWatcher) refresh() (diskChanged bool, prRecheckAt time.Time, err error) {
 	if w.isSuppressed() {
 		return false, time.Time{}, nil
 	}
@@ -568,11 +567,11 @@ func (w *workspaceWatcher) refresh() (nonPRChanged bool, prRecheckAt time.Time, 
 	status.Seq = seq
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	nonPRChanged, held := w.publishLocked(status)
+	diskChanged, held := w.publishLocked(status)
 	if held {
 		return false, time.Time{}, nil
 	}
-	return nonPRChanged, status.OpenPRRecheckAt, nil
+	return diskChanged, status.OpenPRRecheckAt, nil
 }
 
 // offer publishes status, read outside the run loop, and requests a
@@ -580,8 +579,8 @@ func (w *workspaceWatcher) refresh() (nonPRChanged bool, prRecheckAt time.Time, 
 // itself while a hold keeps it from being published.
 func (w *workspaceWatcher) offer(status gitops.GitStatus) gitops.GitStatus {
 	w.mu.Lock()
-	nonPRChanged, held := w.publishLocked(status)
-	if nonPRChanged {
+	diskChanged, held := w.publishLocked(status)
+	if diskChanged {
 		w.offeredChange = true
 	}
 	answer := w.lastStatus
@@ -617,14 +616,15 @@ func (w *workspaceWatcher) takeOfferedChange() bool {
 // status carries the newer Seq, unless an answer handed out during a hold
 // (unpublishedAnswerSeq) may differ from what subscribers hold: then it is
 // broadcast, and one above that answer's Seq clears it. Reports whether
-// the published status changed on any non-PR field. w.mu must be held.
+// the published status changed on disk (statusDiffersOnDisk). w.mu must be
+// held.
 //
 // The broadcast runs UNDER w.mu so a concurrent removeSubscriber can't
 // close(s.updates) on a sub we're about to send to — sending on a
 // closed channel panics even from a non-blocking select. The sends are
 // themselves non-blocking (buffer size 1, supersede-on-overflow), so
 // the lock is held for microseconds bounded by len(subscribers).
-func (w *workspaceWatcher) publishLocked(status gitops.GitStatus) (nonPRChanged, held bool) {
+func (w *workspaceWatcher) publishLocked(status gitops.GitStatus) (diskChanged, held bool) {
 	if w.suppressed > 0 {
 		return false, true
 	}
@@ -653,14 +653,14 @@ func (w *workspaceWatcher) publishLocked(status gitops.GitStatus) (nonPRChanged,
 		default:
 		}
 	}
-	return statusDiffersIgnoringPR(status, previous), false
+	return statusDiffersOnDisk(status, previous), false
 }
 
 // probeLiveness checks whether the working tree drifted from lastStatus
 // without the fs watches saying so. It publishes nothing, so it takes no
 // Seq. Uses the fast status fn — probing an idle workspace must never
-// spawn a network PR lookup — and compares
-// ignoring PR fields for the same reason refresh's miss signal does.
+// spawn a network PR lookup — and compares with statusDiffersOnDisk for
+// the same reason refresh's miss signal does.
 // Errors are treated as "no evidence": a transient git failure must not
 // trigger reinstall churn.
 func (w *workspaceWatcher) probeLiveness() bool {
@@ -678,7 +678,7 @@ func (w *workspaceWatcher) probeLiveness() bool {
 	w.mu.Lock()
 	last := w.lastStatus
 	w.mu.Unlock()
-	return statusDiffersIgnoringPR(status, last)
+	return statusDiffersOnDisk(status, last)
 }
 
 func (w *workspaceWatcher) isSuppressed() bool {
@@ -707,14 +707,21 @@ func (w *workspaceWatcher) suppress() func() {
 	}
 }
 
-// statusDiffersIgnoringPR compares two statuses on everything except the
-// open-PR lookup fields. Zeroing copies and reusing Equal (rather than a
-// second field list) keeps the comparison honest when GitStatus grows a
-// field: Equal is the single place that must learn about it.
-func statusDiffersIgnoringPR(a, b gitops.GitStatus) bool {
-	a.OpenPRURL, a.OpenPRNumber, a.OpenPRLookupError, a.OpenPRLookupPending, a.OpenPRRecheckAt = "", 0, "", false, time.Time{}
-	b.OpenPRURL, b.OpenPRNumber, b.OpenPRLookupError, b.OpenPRLookupPending, b.OpenPRRecheckAt = "", 0, "", false, time.Time{}
-	return !a.Equal(b)
+// statusDiffersOnDisk compares two statuses on the fields the repository
+// on disk backs: everything except the open-PR lookup and the remote
+// sign-in error, which change through a forge answer or a failed fetch
+// and write nothing, so they prove nothing about watchpoint health.
+// Zeroing copies and reusing Equal (rather than a second field list)
+// keeps the comparison honest when GitStatus grows a field: Equal is the
+// single place that must learn about it.
+func statusDiffersOnDisk(a, b gitops.GitStatus) bool {
+	return !onDisk(a).Equal(onDisk(b))
+}
+
+func onDisk(status gitops.GitStatus) gitops.GitStatus {
+	status.OpenPRURL, status.OpenPRNumber, status.OpenPRLookupError, status.OpenPRLookupPending, status.OpenPRRecheckAt = "", 0, "", false, time.Time{}
+	status.RemoteSignInError = ""
+	return status
 }
 
 func (w *workspaceWatcher) addSubscriber(initial gitops.GitStatus) *Subscription {

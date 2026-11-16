@@ -35,6 +35,7 @@
     menuPullEnabled,
     menuPushEnabled,
     primaryActionFor,
+    runFetchOriginAction,
     runPullAction,
     runPushAction,
     runRemoveWorktreeAction,
@@ -43,6 +44,7 @@
   } from './gitActions';
   import type { WorkspaceRef } from '../../types/git';
   import { startNewBranchFromHere } from '../../stores/worktreeIntent.svelte';
+  import { addErrorToast } from '../../stores/toast.svelte';
   import { checkoutOf, isDetached } from '../../utils/checkout';
   import {
     TerminalsClosingNote,
@@ -161,15 +163,26 @@
       status.forge !== undefined,
   );
 
+  // The app's background fetch could not sign in to origin, so ahead/behind
+  // may be stale. The fetch offered for it is a clicked one, which may ask.
+  let signInError = $derived(status?.remoteSignInError?.trim() ?? '');
+
   let primaryAction = $derived(primaryActionFor(status));
   // A detached HEAD has nothing to push; the menu offers keeping its
   // commits on a new branch instead, through the shared new-branch flow.
   let detachedHead = $derived(!!status && isDetached(checkoutOf(status)));
 
+  // An action that waits on a credential prompt can answer after the pane
+  // moved to another conversation. The pane's banner is then that
+  // conversation's, so the failure goes to a toast instead.
   function ctx(ws: WorkspaceRef): GitActionCtx {
+    const startedOn = pane.threadId;
     return {
       workspace: ws,
-      reportError: (msg, err) => pane.setGeneralError(msg, err),
+      reportError: (msg, err) => {
+        if (pane.threadId === startedOn) pane.setGeneralError(msg, err);
+        else addErrorToast(msg, err ?? new Error(msg));
+      },
       refreshStatus: () => pane.gitStatus.refreshNow(),
     };
   }
@@ -235,6 +248,22 @@
   </Button>
 {:else if workspace !== null && status && status.isRepo}
   {@const ws = workspace}
+  <!-- Shown with or without the split button: the compact header rolls the
+       actions into its menu, not the warning. -->
+  {#if signInError}
+    <Button
+      variant="warning-outline"
+      size="xs"
+      onclick={() => void guard(() => runFetchOriginAction(ctx(ws)))}
+      disabled={actionLoading || gitUngranted}
+      title={gitUngranted
+        ? 'Not granted to this device'
+        : `Could not fetch from origin without signing in: ${signInError}. Click to fetch and sign in.`}
+      testId="git-sign-in-needed"
+    >
+      {#snippet children()}Sign-in needed{/snippet}
+    </Button>
+  {/if}
   {#if trigger}
   <div class="flex">
     <button
@@ -303,6 +332,18 @@
             void guard(() => runPullAction(ctx(ws)));
           }}
         />
+        {#if signInError}
+          <MenuItem
+            label="Fetch and sign in"
+            description={`Sign-in needed: ${signInError}`}
+            title={`Could not fetch from origin without signing in: ${signInError}`}
+            disabled={gitUngranted}
+            onSelect={() => {
+              showDropdown = false;
+              void guard(() => runFetchOriginAction(ctx(ws)));
+            }}
+          />
+        {/if}
         <MenuItem
           label={prMenuLabel}
           description={prLookupError && !hasOpenPR ? `Could not check existing ${labels.noun}: ${prLookupError}` : undefined}

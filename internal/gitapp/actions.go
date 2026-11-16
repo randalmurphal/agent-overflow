@@ -118,6 +118,19 @@ func (s *Service) Pull(ref WorkspaceRef) (gitops.GitActionResult, error) {
 	return gitops.GitActionResult{Action: "pull", Branch: s.core.CurrentBranch(workspace), Message: "Pulled latest changes"}, nil
 }
 
+// FetchOrigin fetches origin into the referenced workspace's repository for
+// a user who asked for it (gitops.Core.FetchOrigin). ctx ends the fetch.
+func (s *Service) FetchOrigin(ctx context.Context, ref WorkspaceRef) (gitops.GitActionResult, error) {
+	_, workspace, err := s.ResolveWorkspace(ref)
+	if err != nil {
+		return gitops.GitActionResult{}, err
+	}
+	if err := s.core.FetchOrigin(ctx, workspace); err != nil {
+		return gitops.GitActionResult{}, err
+	}
+	return gitops.GitActionResult{Action: "fetch", Branch: s.core.CurrentBranch(workspace), Message: "Fetched origin"}, nil
+}
+
 func (s *Service) CreatePR(ctx context.Context, ref WorkspaceRef, title, body string, draft bool) (gitops.GitActionResult, error) {
 	_, workspace, err := s.ResolveWorkspace(ref)
 	if err != nil {

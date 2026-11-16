@@ -245,6 +245,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "GitCreateBranchFrom", ID: 429779991, Scope: "git:operate", Route: "workspace"},                                    // main.App.GitCreateBranchFrom
 	{Name: "GitCreatePR", ID: 4106667105, Scope: "git:operate", Route: "workspace"},                                           // main.App.GitCreatePR
 	{Name: "GitCreateWorktree", ID: 3327650914, Scope: "git:operate", Route: "thread"},                                        // main.App.GitCreateWorktree
+	{Name: "GitFetchOrigin", ID: 3703670631, Scope: "git:operate", Route: "workspace"},                                        // main.App.GitFetchOrigin
 	{Name: "GitListBranchPruneCandidates", ID: 3795082615, Scope: "git:operate", Route: "workspace"},                          // main.App.GitListBranchPruneCandidates
 	{Name: "GitListBranches", ID: 2693102179, Scope: "git:operate", Route: "workspace"},                                       // main.App.GitListBranches
 	{Name: "GitListTags", ID: 3443522126, Scope: "git:operate", Route: "workspace"},                                           // main.App.GitListTags

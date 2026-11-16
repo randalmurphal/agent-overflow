@@ -182,6 +182,13 @@ type Core struct {
 	// fetch it. RWMutex matches the other caches above.
 	fetchCacheMu sync.RWMutex
 	fetchCache   map[string]time.Time
+	// fetchFailures holds the repositories whose unattended fetches are
+	// failing (fetch_failure.go), keyed like fetchCache and guarded by
+	// fetchCacheMu. A successful fetch drops the repository's record.
+	fetchFailures map[string]fetchFailure
+	// remoteSignInObserver is told when a repository's RemoteSignInError
+	// changes (SetRemoteSignInObserver).
+	remoteSignInObserver atomic.Pointer[func(commonDir string)]
 
 	// fetchFlight collapses concurrent fetches of the same repository into
 	// one subprocess. Keyed like fetchCache.
@@ -300,6 +307,7 @@ func NewCore(opts ...CoreOption) *Core {
 		originCache:           make(map[string]repoMetaEntry[originIdentity]),
 		repositoryLookupSlots: make(chan struct{}, 4),
 		fetchCache:            make(map[string]time.Time),
+		fetchFailures:         make(map[string]fetchFailure),
 		nowFn:                 time.Now,
 	}
 	core.fetchFn = core.fetchOriginQuiet
@@ -664,7 +672,7 @@ func (c *Core) runSpec(spec commandSpec) (commandResult, error) {
 		return commandResult{}, err
 	}
 	defer unlockWorktreeAdmin()
-	unlockRemoteRefs, err := c.lockRemoteRefs(spec)
+	remoteRefsRepo, unlockRemoteRefs, err := c.lockRemoteRefs(spec)
 	if err != nil {
 		return commandResult{}, err
 	}
@@ -746,6 +754,9 @@ func (c *Core) runSpec(spec commandSpec) (commandResult, error) {
 		)
 	}
 	if err == nil {
+		if remoteRefsRepo != "" {
+			c.retryFetchNow(remoteRefsRepo)
+		}
 		return result, nil
 	}
 

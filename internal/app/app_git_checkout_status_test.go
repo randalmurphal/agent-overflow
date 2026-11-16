@@ -52,7 +52,8 @@ func TestCheckoutAnswersWithTheStatusItProduced(t *testing.T) {
 
 // GetGitStatus and a checkout answer with the status the workspace's
 // stream publishes: sequenced after the subscribe snapshot, in the order
-// they were read, and broadcast on git:status with the same seq.
+// they were read, and the content git:status last broadcast, at the same
+// seq or an earlier one.
 func TestGitStatusAnswersAreTheStreamsPublishedStatus(t *testing.T) {
 	t.Parallel()
 	f := newTagFixture(t, initMainGitRepo(t))
@@ -76,18 +77,22 @@ func TestGitStatusAnswersAreTheStreamsPublishedStatus(t *testing.T) {
 			t.Errorf("unsubscribe: %v", err)
 		}
 	}()
+	// The watcher's own refresh can read a change before the method that
+	// made it does. It broadcasts that content first, and the answer then
+	// takes the newer seq without a second broadcast.
 	broadcast := func(label string, answer gitops.GitStatus) {
 		t.Helper()
 		deadline := time.After(5 * time.Second)
 		for {
-			for _, event := range gitStatusEventsFor(events, mu, res.Cwd) {
-				if event.Status == answer {
+			seen := gitStatusEventsFor(events, mu, res.Cwd)
+			if len(seen) > 0 {
+				if latest := seen[len(seen)-1].Status; latest.Equal(answer) && latest.Seq <= answer.Seq {
 					return
 				}
 			}
 			select {
 			case <-deadline:
-				t.Fatalf("%s: answer %+v was never broadcast", label, answer)
+				t.Fatalf("%s: answer %+v is not the latest of the broadcasts %+v", label, answer, seen)
 			case <-time.After(20 * time.Millisecond):
 			}
 		}

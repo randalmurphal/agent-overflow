@@ -34,6 +34,9 @@ on live thread/session ordering.
   from that status. With no watch manager the answer carries no `Seq`.
 - Keep background fetch non-interactive and origin-only through
   `internal/git`; this package never shells out directly.
+- A pass that finds background fetch turned off ends every fetch failure
+  record (`Core.ForgetFetchFailures`), so no `RemoteSignInError` outlives
+  the cadence that would retry it.
 - Workspace-scoped git RPCs take a `WorkspaceRef`, never a thread id. A
   workspace can serve multiple threads or a draft with no thread yet.
 - Agent activity never gates a BRANCH change. Checkout, create-branch, pull

@@ -3,7 +3,6 @@ package git
 import (
 	"context"
 	"fmt"
-	"slices"
 )
 
 // CommonDir returns the canonical path of cwd's shared git directory —
@@ -63,6 +62,10 @@ func (c *Core) CommonDir(cwd string) (string, error) {
 //     per-branch, so chasing them here would make what gets fetched
 //     depend on which worktree happened to win the tick.
 //
+// A repository whose last unattended fetch failed is not fetched again
+// until its retry is due (fetch_failure.go): until then the call returns
+// that failure again without fetching, unless origin's URL has changed.
+//
 // Concurrent calls for the same repository share one subprocess
 // (single-flight keyed on the common dir) instead of queueing a second
 // identical fetch behind the remote-refs lock.
@@ -75,9 +78,11 @@ func (c *Core) CommonDir(cwd string) (string, error) {
 // This is a background command by construction, so it keeps the package
 // default non-interactive env (see gitenv.NonInteractive) — against a
 // credential-requiring remote it fails fast with a readable error rather
-// than raising a credential dialog behind the app window. The caller
-// decides what a failure is worth saying out loud; for the app cadence
-// that is one memoized log line per repo (app_git_background_fetch.go).
+// than raising a credential dialog behind the app window. A failure that
+// names a missing login reaches clients as GitStatus.RemoteSignInError;
+// beyond that the caller decides what a failure is worth saying out loud,
+// and for the app cadence that is one memoized log line per repo
+// (gitapp/background_fetch.go).
 //
 // ctx bounds this caller's wait. Cancelling it kills the fetch when no
 // other caller waits for it, so the owner of the cadence can shut down
@@ -90,14 +95,25 @@ func (c *Core) FetchRemotesBackground(ctx context.Context, cwd string) (bool, er
 	if c.fetchIsFresh(key) {
 		return false, nil
 	}
+	// A read that failed says nothing about where origin points, so it
+	// neither fetches nor ends a recorded failure.
+	identity := c.readOriginRemote(cwd)
+	if identity.readErr != nil {
+		return false, identity.readErr
+	}
+	origin := identity.url
+	if err := c.fetchBackingOff(key, origin); err != nil {
+		return false, err
+	}
+	if !identity.known {
+		return false, nil
+	}
 
-	return c.fetchFlight.do(ctx, key, func(ctx context.Context) (bool, error) {
+	started := c.nowFn()
+	fetched, err := c.fetchFlight.do(ctx, key, func(ctx context.Context) (bool, error) {
 		// Re-check inside the flight: a caller that queued behind a
 		// just-finished fetch must not spawn a second one.
 		if c.fetchIsFresh(key) {
-			return false, nil
-		}
-		if !slices.Contains(c.listRemoteNames(cwd), "origin") {
 			return false, nil
 		}
 		if err := c.fetchFn(ctx, cwd); err != nil {
@@ -106,15 +122,49 @@ func (c *Core) FetchRemotesBackground(ctx context.Context, cwd string) (bool, er
 		c.stampFetchCache(key)
 		return true, nil
 	})
+	// Recorded by this caller, not inside the flight: the flight it joined
+	// may be a worktree cut's, which records nothing. A fetch ctx ended
+	// says nothing about the remote.
+	if err != nil && ctx.Err() == nil {
+		c.recordFetchFailure(key, origin, started, err)
+	}
+	return fetched, err
 }
 
 // fetchOriginQuiet is the production body behind Core.fetchFn.
 func (c *Core) fetchOriginQuiet(ctx context.Context, cwd string) error {
+	return c.fetchOrigin(ctx, cwd, false)
+}
+
+// FetchOrigin fetches origin into cwd's repository for a user who asked for
+// it, so a credential prompt may answer it: the way back from
+// GitStatus.RemoteSignInError. It runs the unattended fetch's command and,
+// like it, prunes nothing. A success stamps the freshness clock, which
+// forgets the recorded failure.
+func (c *Core) FetchOrigin(ctx context.Context, cwd string) error {
+	key, err := c.CommonDir(cwd)
+	if err != nil {
+		return err
+	}
+	if err := c.fetchOrigin(ctx, cwd, true); err != nil {
+		return err
+	}
+	c.stampFetchCache(key)
+	return nil
+}
+
+// fetchOrigin is the one `git fetch origin` behind the unattended cadence
+// and FetchOrigin; the two differ only in whether a credential prompt may
+// appear. Its messages are pinned to the C locale because a failure is
+// matched against signInDiagnoses.
+func (c *Core) fetchOrigin(ctx context.Context, cwd string, allowCredentialPrompt bool) error {
 	_, _, err := c.executeSpec(commandSpec{
-		binary: "git",
-		cwd:    cwd,
-		ctx:    ctx,
-		args:   []string{"fetch", "--quiet", "origin"},
+		binary:                "git",
+		cwd:                   cwd,
+		ctx:                   ctx,
+		allowCredentialPrompt: allowCredentialPrompt,
+		extraEnv:              localeCEnv,
+		args:                  []string{"fetch", "--quiet", "origin"},
 	})
 	return err
 }
