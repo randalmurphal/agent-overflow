@@ -25,7 +25,7 @@ func TestPageChordsRoutesReloadToTheFocusedBrowserPane(t *testing.T) {
 		t.Fatalf("unfocused: reloads=%d scripts=%d, want the app reload", w.reloadCount, len(w.scripts))
 	}
 
-	if !c.HandleMessage(w, FocusMessage(true)) {
+	if !c.HandleMessage(w, RouteMessage(true)) {
 		t.Fatal("focus message not taken")
 	}
 	reload(w)
@@ -39,7 +39,7 @@ func TestPageChordsRoutesReloadToTheFocusedBrowserPane(t *testing.T) {
 		t.Fatalf("force reloads = %d, want 1", w.forceReloadCount)
 	}
 
-	c.HandleMessage(w, FocusMessage(false))
+	c.HandleMessage(w, RouteMessage(false))
 	reload(w)
 	if w.reloadCount != 2 || len(w.scripts) != 1 {
 		t.Fatalf("unfocused again: reloads=%d scripts=%d", w.reloadCount, len(w.scripts))
@@ -50,11 +50,11 @@ func TestPageChordsReloadAppMessageReloadsAndClearsFocus(t *testing.T) {
 	c := NewPageChords()
 	bindings := c.Bindings(Browser())
 	w := &scriptWindow{}
-	c.HandleMessage(w, FocusMessage(true))
+	c.HandleMessage(w, RouteMessage(true))
 
 	c.HandleMessage(w, ReloadAppMessage)
-	if w.reloadCount != 1 || c.BrowserFocused() {
-		t.Fatalf("reloads=%d focused=%v, want the app reload and focus cleared", w.reloadCount, c.BrowserFocused())
+	if w.reloadCount != 1 || c.Routing() {
+		t.Fatalf("reloads=%d focused=%v, want the app reload and focus cleared", w.reloadCount, c.Routing())
 	}
 	bindings["CmdOrCtrl+r"](w)
 	if w.reloadCount != 2 || len(w.scripts) != 0 {
@@ -69,10 +69,10 @@ func TestPageChordsDocumentLoadedForgetsFocusAndAdvertises(t *testing.T) {
 	c := NewPageChords()
 	c.Bindings(Browser())
 	w := &scriptWindow{}
-	c.HandleMessage(w, FocusMessage(true))
+	c.HandleMessage(w, RouteMessage(true))
 
 	c.DocumentLoaded(w)
-	if c.BrowserFocused() {
+	if c.Routing() {
 		t.Fatal("a new document inherited the previous one's focus")
 	}
 	if len(w.scripts) != 1 || w.scripts[0] != CapabilityScript {

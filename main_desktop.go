@@ -185,8 +185,8 @@ type webviewShell struct {
 	// isolated instance remembers its own window, not the user's.
 	loadGeometry    func() windowgeom.Geometry
 	persistGeometry func(windowgeom.Geometry)
-	// chords routes Ctrl/Cmd+R to the SPA while its browser pane is
-	// focused (uikeys.PageChords); run sets it.
+	// chords routes Ctrl/Cmd+R to the SPA while it asks for the chord
+	// (uikeys.PageChords); run sets it.
 	chords *uikeys.PageChords
 }
 

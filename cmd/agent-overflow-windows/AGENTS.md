@@ -62,7 +62,7 @@ their validation at this process boundary.
   before its parent window and backend. Browser storage is per runtime mode and
   rejects symlink or reparse-point components. Pane geometry the SPA posts
   arrives on Wails' raw message handler (`handleRawMessage`), beside the
-  browser pane focus reports for `uikeys.PageChords`: accept both only from
+  reload chord reports for `uikeys.PageChords`: accept both only from
   this window on the backend page's origin, never wait on the UI thread
   there, and advertise each capability to each loaded document.
 - Scrub inherited WebView2 profile overrides before either WebView environment
