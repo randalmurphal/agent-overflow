@@ -101,6 +101,34 @@ func TestThreadsReferencingWorkspaceMatchesEitherPathColumn(t *testing.T) {
 	}
 }
 
+// ThreadsReferencingWorkspaces answers each directory as
+// ThreadsReferencingWorkspace does, a link included, and a thread on one
+// directory through both columns once.
+func TestThreadsReferencingWorkspacesAnswersEachDirectory(t *testing.T) {
+	first, second := t.TempDir(), t.TempDir()
+	alias := filepath.Join(t.TempDir(), "first-link")
+	if err := os.Symlink(first, alias); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+	service, database := newTestService(t, nil, nil)
+	seedProject(t, database, "project", first)
+	seedThread(t, database, "workspace-ref", "project", first, "")
+	seedThread(t, database, "worktree-ref", "project", t.TempDir(), alias)
+	seedThread(t, database, "both", "project", second, second)
+	seedThread(t, database, "elsewhere", "project", t.TempDir(), "")
+
+	got, err := service.ThreadsReferencingWorkspaces([]string{alias, second})
+	if err != nil {
+		t.Fatalf("ThreadsReferencingWorkspaces: %v", err)
+	}
+	for i := range got {
+		slices.Sort(got[i])
+	}
+	if len(got) != 2 || !slices.Equal(got[0], []string{"workspace-ref", "worktree-ref"}) || !slices.Equal(got[1], []string{"both"}) {
+		t.Fatalf("got %v, want the first directory's two threads and the second's one", got)
+	}
+}
+
 // goneWorktree registers a worktree of repo on a branch pushed to origin
 // with one further local commit, then deletes its directory.
 func goneWorktree(t *testing.T, repo, branch string) string {

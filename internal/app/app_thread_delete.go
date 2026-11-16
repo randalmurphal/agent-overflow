@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"log"
 	"slices"
+	"strconv"
+	"strings"
 
 	"agent-overflow/internal/entityid"
 	"agent-overflow/internal/errorsx"
@@ -32,18 +34,22 @@ import (
 //     under its action lock alone: a transfer, an assistant home the delete
 //     may not remove, the terminal's own gate, and for a project removal a
 //     running thread. The threads that claim added go the same way, until
-//     none is added. A delete that removes worktrees
-//     then asks for git:operate and runs each emptied worktree's
-//     loss-of-work gate. Nothing is stopped or removed; a refusal releases
-//     every claim in one transaction (store.ReleaseDeleteClaim).
-//  3. Commit. One transaction marks every claimed thread deleting with the
-//     delete's worktree policy (store.CommitDeleteClaim), and clients are
-//     told the rows are gone. From here the delete only goes forward.
+//     none is added. A delete that removes worktrees then settles the
+//     worktrees its threads are on (verifyWorktrees): it asks for
+//     git:operate and runs the loss-of-work gate of exactly the ones no
+//     thread outside it is on. Nothing is stopped or removed; a refusal
+//     releases every claim in one transaction (store.ReleaseDeleteClaim).
+//  3. Commit. One transaction marks every claimed thread deleting and
+//     records, on each thread on a worktree verify settled, that its
+//     destroy removes it, unless a thread outside the delete is on it now
+//     (store.CommitDeleteClaim). Clients are told the rows are gone. From
+//     here the delete only goes forward.
 //  4. Destroy. Each committed thread once every thread under it is gone,
-//     under its own action lock: torn down (threadapp.TearDown), the
-//     worktree it was the last thread on removed, and dropped
-//     (threadapp.Drop). A failure stops that thread and the threads above
-//     it, which stay committed for a repeated delete or the boot to finish.
+//     under its own action lock: torn down (threadapp.TearDown), its
+//     worktree removed when its commit recorded that and it is the last
+//     thread on it, and dropped (threadapp.Drop). A failure stops that
+//     thread and the threads above it, which stay committed for a repeated
+//     delete or the boot to finish.
 //
 // No action lock is held while another is taken. The boot releases the
 // claims no delete committed and finishes every committed family with its
@@ -70,7 +76,6 @@ func (a *App) DeleteThread(id string) (DeleteThreadResult, error) {
 // thread outside the delete is on. A worktree with unsaved work refuses the
 // whole delete, with nothing stopped or deleted. A caller without
 // git:operate is refused, with nothing deleted, when there is a worktree to
-// remove.
 //
 //ao:scope threads:operate
 //ao:route home
@@ -89,10 +94,10 @@ type DeleteThreadResult struct {
 	// committed and hidden until deleting the named threads again, or the
 	// next boot, finishes them.
 	WorkersNotDeleted []WorkerFailure `json:"workersNotDeleted,omitempty"`
-	// RetainedWorktrees are the worktrees the delete emptied and left on
-	// disk because their removal failed when it ran: unsaved work that
-	// appeared after the delete checked them, or a git refusal. Their
-	// threads are deleted.
+	// RetainedWorktrees are the worktrees the delete would have removed and
+	// left on disk, and why: a thread outside the delete reached one after
+	// the delete checked it, or its removal failed when it ran (unsaved work that appeared since,
+	// or a git refusal). Their threads are deleted.
 	RetainedWorktrees []RetainedWorktree `json:"retainedWorktrees,omitempty"`
 }
 
@@ -167,11 +172,14 @@ func (a *App) GetDeleteDependents(threadIDs []string) (DeleteDependents, error) 
 			dependents.Workers++
 		}
 	}
-	sites, err := a.emptiedWorktrees(family, func(member store.DeleteMember) bool { return !member.Holder })
+	sites, err := a.familyWorktrees(family, removesWorktree)
 	if err != nil {
 		return DeleteDependents{}, err
 	}
 	for _, site := range sites {
+		if len(site.outside) > 0 {
+			continue
+		}
 		dependents.Worktrees = append(dependents.Worktrees, DeleteWorktree{
 			ProjectID: site.projectID, WorktreePath: site.path, Terminals: a.worktreeTerminalCount(site.path),
 		})
@@ -276,6 +284,10 @@ type familyDelete struct {
 	index   map[string]int
 	// retired are the members that are a moved thread's cache or a holder.
 	retired map[string]bool
+	// sites are the worktrees the delete verified it removes, and kept the
+	// worktrees it keeps that its result names.
+	sites []deleteSite
+	kept  []RetainedWorktree
 	// changes counts the claims that found new threads.
 	changes int
 	// reopens are the admission closures, released when the delete ends.
@@ -423,25 +435,41 @@ func (op *familyDelete) verify() error {
 		}
 		frontier = added
 	}
-	if op.req.verified != nil {
-		if err := op.req.verified(op.members); err != nil {
+	if op.req.removeWorktrees != nil {
+		if err := op.verifyWorktrees(); err != nil {
 			return err
 		}
 	}
-	if op.req.removeWorktrees == nil {
-		return nil
+	if op.req.verified != nil {
+		return op.req.verified(op.members)
 	}
-	sites, err := op.app.emptiedWorktrees(op.members, op.removes)
+	return nil
+}
+
+// verifyWorktrees decides which worktrees the delete removes: those its
+// threads are on that no thread outside it is on (familyWorktrees). The
+// caller's permission and each one's loss-of-work gate are asked for
+// exactly those, and none is asked when there are none. A worktree that a
+// thread outside the delete is on stays.
+func (op *familyDelete) verifyWorktrees() error {
+	sites, err := op.app.familyWorktrees(op.members, op.removes)
 	if err != nil {
 		return err
 	}
-	if len(sites) == 0 {
+	var emptied []deleteSite
+	for _, site := range sites {
+		if len(site.outside) == 0 {
+			emptied = append(emptied, site)
+			continue
+		}
+	}
+	if len(emptied) == 0 {
 		return nil
 	}
 	if err := op.req.removeWorktrees(); err != nil {
 		return err
 	}
-	for _, site := range sites {
+	for _, site := range emptied {
 		err := op.app.checkWorktreeRemovable(site)
 		var unsaved *errWorktreeUnsaved
 		switch {
@@ -452,14 +480,31 @@ func (op *familyDelete) verify() error {
 			return fmt.Errorf("the worktree %s, which this delete would remove, cannot be removed, so nothing was deleted: %w", site.path, err)
 		}
 	}
+	op.sites = emptied
 	return nil
+}
+
+// threadName names a thread to a person: its title, quoted, or its id when
+// it has none or cannot be read.
+func (a *App) threadName(threadID string) string {
+	if row, err := a.store.GetThread(threadID); err == nil && strings.TrimSpace(row.Title) != "" {
+		return strconv.Quote(row.Title)
+	}
+	return threadID
 }
 
 // removes reports whether the delete removes member's worktree: one of the
 // threads it claimed, as against a committed one it joined, that is a
 // conversation of this computer.
 func (op *familyDelete) removes(member store.DeleteMember) bool {
-	return !member.Committed && !member.Holder && !op.retired[member.ThreadID]
+	return removesWorktree(member) && !op.retired[member.ThreadID]
+}
+
+// removesWorktree reports whether a delete's own claim takes member's
+// worktree: a thread it would claim, as against a committed one it would
+// join, that is no holder.
+func removesWorktree(member store.DeleteMember) bool {
+	return !member.Committed && !member.Holder
 }
 
 // verifyMember runs member's refusals under its action lock.
@@ -544,20 +589,37 @@ func (op *familyDelete) refuse(cause error) error {
 }
 
 // commit commits the claimed family (phase 3) and tells clients its rows
-// are gone.
+// are gone. A thread on a worktree the delete verified it removes is
+// recorded to remove it, unless the commit finds a thread outside the
+// delete on it now, and the worktree is then named as kept; no other thread
+// removes a worktree.
 func (op *familyDelete) commit() error {
-	removeWorktrees := op.req.removeWorktrees != nil
-	committed, err := op.app.store.CommitDeleteClaim(op.id, removeWorktrees)
+	var worktrees store.DeleteWorktrees
+	if len(op.sites) > 0 {
+		worktrees = store.DeleteWorktrees{
+			Site: siteOf(op.sites),
+			Inside: func(threadID string) bool {
+				_, in := op.index[threadID]
+				return in
+			},
+		}
+	}
+	committed, err := op.app.store.CommitDeleteClaim(op.id, worktrees)
 	if err != nil {
 		return err
 	}
-	for _, id := range committed {
+	for _, site := range op.sites {
+		if occupant := committed.Occupied[site.path]; occupant != "" {
+			op.kept = append(op.kept, RetainedWorktree{Path: site.path, Reason: op.app.keptFor(occupant)})
+		}
+	}
+	for _, id := range committed.Threads {
 		i, ok := op.index[id]
 		if !ok {
 			continue
 		}
 		member := op.members[i]
-		op.members[i].Committed, op.members[i].RemoveWorktrees = true, removeWorktrees
+		op.members[i].Committed, op.members[i].RemoveWorktrees = true, committed.RemoveWorktrees[id]
 		if member.Holder {
 			// No client lists a holder.
 			continue
@@ -571,9 +633,36 @@ func (op *familyDelete) commit() error {
 		}
 	}
 	if hook := op.app.deleteCommittedForTest; hook != nil {
-		hook(committed)
+		hook(committed.Threads)
 	}
 	return nil
+}
+
+// siteOf maps a stored workspace or worktree path to the one of sites it
+// names, "" for none, resolving each path once.
+func siteOf(sites []deleteSite) func(path string) string {
+	byCanonical := make(map[string]string, len(sites))
+	for _, site := range sites {
+		byCanonical[gitops.CanonicalPath(site.path)] = site.path
+	}
+	resolved := make(map[string]string)
+	return func(path string) string {
+		if strings.TrimSpace(path) == "" {
+			return ""
+		}
+		site, seen := resolved[path]
+		if !seen {
+			site = byCanonical[gitops.CanonicalPath(path)]
+			resolved[path] = site
+		}
+		return site
+	}
+}
+
+// keptFor is why a worktree the delete would remove is kept: threadID, a
+// thread outside the delete, is on it.
+func (a *App) keptFor(threadID string) string {
+	return fmt.Sprintf("thread %s, which this delete does not take, is on it", a.threadName(threadID))
 }
 
 // destroy destroys every committed thread of the family (phase 4), each
@@ -581,7 +670,7 @@ func (op *familyDelete) commit() error {
 // threads above it, which stay committed. A named thread's own failure is
 // the delete's error; any other thread's is named in the outcome.
 func (op *familyDelete) destroy() (deleteOutcome, error) {
-	var outcome deleteOutcome
+	outcome := deleteOutcome{retained: slices.Clone(op.kept)}
 	for _, member := range op.members {
 		if member.Kind == store.DeleteNamed && !op.retired[member.ThreadID] {
 			outcome.deleted = append(outcome.deleted, member.ThreadID)
@@ -645,43 +734,52 @@ func (op *familyDelete) destroyMember(member store.DeleteMember, outcome *delete
 	return threads.Drop(member.ThreadID, ports)
 }
 
-// errWorktreeShared keeps a worktree a thread outside the delete is on.
-var errWorktreeShared = errors.New("another thread is on the worktree")
+// errWorktreeWaiting leaves a worktree to the destroy of another thread of
+// the delete still on it that removes it too.
+var errWorktreeWaiting = errors.New("another thread of the delete removes the worktree")
 
-// removeEmptiedWorktree removes the worktree member is on once no other
-// thread is: no committed thread waiting for its own destroy, which removes
-// it then, and no thread outside the delete, which keeps it. The removal is
-// Remove Worktree's (removeProjectWorktree), whose loss-of-work gate runs
-// again: a worktree that cannot be removed now is left on disk and returned
-// to name in the result; its threads are still deleted.
+// errWorktreeKept keeps a worktree another thread is on.
+type errWorktreeKept struct{ reason string }
+
+func (e *errWorktreeKept) Error() string { return e.reason }
+
+// removeEmptiedWorktree removes the worktree member, a thread whose commit
+// recorded that it removes it, is on, once no other thread is. Another
+// thread of the delete still on it that removes it too removes it then;
+// any other thread on it keeps it, and it is returned to name in the
+// result. The removal is Remove Worktree's (removeProjectWorktree), whose
+// loss-of-work gate runs again and which reads who is on the worktree
+// again with every one of them locked: a worktree that cannot be removed
+// now is left on disk and named the same way; its threads are still
+// deleted.
 func (op *familyDelete) removeEmptiedWorktree(member store.DeleteMember) *RetainedWorktree {
 	path := member.WorktreePath
 	if path == "" || member.ProjectID == "" {
 		return nil
 	}
-	others := func(occupants []string) (waiting, shared bool, err error) {
+	others := func(occupants []string) error {
+		waiting := false
 		for _, id := range occupants {
 			if id == member.ThreadID {
 				continue
 			}
-			committed, err := op.app.store.ThreadDeleteCommitted(id)
-			if err != nil {
-				return false, false, err
+			if i, in := op.index[id]; in {
+				other := op.members[i]
+				if other.Committed && other.RemoveWorktrees && gitops.SameFilesystemPath(other.WorktreePath, path) {
+					waiting = true
+					continue
+				}
 			}
-			if committed {
-				waiting = true
-			} else {
-				shared = true
-			}
+			return &errWorktreeKept{reason: op.app.keptFor(id)}
 		}
-		return waiting, shared, nil
+		if waiting {
+			return errWorktreeWaiting
+		}
+		return nil
 	}
 	occupants, err := op.app.threadsReferencingWorkspace(path)
 	if err == nil {
-		var waiting, shared bool
-		if waiting, shared, err = others(occupants); err == nil && (waiting || shared) {
-			return nil
-		}
+		err = others(occupants)
 	}
 	var project store.Project
 	if err == nil {
@@ -695,24 +793,15 @@ func (op *familyDelete) removeEmptiedWorktree(member store.DeleteMember) *Retain
 		}
 	}
 	if err == nil {
-		_, err = op.app.removeProjectWorktree(member.ProjectID, project.Path, path, worktreeRemovalPolicy{
-			idle: func(occupants []string) error {
-				if waiting, shared, err := others(occupants); err != nil {
-					return err
-				} else if waiting || shared {
-					return errWorktreeShared
-				}
-				return nil
-			},
-		})
+		_, err = op.app.removeProjectWorktree(member.ProjectID, project.Path, path, worktreeRemovalPolicy{idle: others})
 	}
-	var busy *errWorktreeBusy
+	var kept *errWorktreeKept
 	var followUp *errWorktreeRemovedFollowUp
 	switch {
-	case err == nil:
+	case err == nil, errors.Is(err, errWorktreeWaiting):
 		return nil
-	case errors.As(err, &busy) && errors.Is(err, errWorktreeShared):
-		return nil
+	case errors.As(err, &kept):
+		return &RetainedWorktree{Path: path, Reason: kept.reason}
 	case errors.As(err, &followUp):
 		log.Printf("app: delete: worktree %s: %v", path, err)
 		return nil
@@ -724,33 +813,49 @@ func (op *familyDelete) removeEmptiedWorktree(member store.DeleteMember) *Retain
 // deleteSite is one worktree a delete empties.
 type deleteSite struct {
 	projectID, path string
+	// outside are the threads outside the delete on it.
+	outside []string
 }
 
-// emptiedWorktrees lists, each once, the worktrees of the family members
-// take accepts that no thread outside the family is on.
-func (a *App) emptiedWorktrees(family []store.DeleteMember, take func(store.DeleteMember) bool) ([]deleteSite, error) {
+// familyWorktrees lists, each once, the worktrees the family members take
+// accepts are on, with the threads outside the family on each. A delete
+// removes the ones with none (familyDelete.verifyWorktrees), and its
+// confirmation counts the same ones (GetDeleteDependents).
+func (a *App) familyWorktrees(family []store.DeleteMember, take func(store.DeleteMember) bool) ([]deleteSite, error) {
 	in := make(map[string]bool, len(family))
 	for _, member := range family {
 		in[member.ThreadID] = true
 	}
 	var sites []deleteSite
+	seen := make(map[string]bool)
 	for _, member := range family {
 		if !take(member) || member.WorktreePath == "" || member.ProjectID == "" {
 			continue
 		}
-		if slices.ContainsFunc(sites, func(site deleteSite) bool {
-			return site.projectID == member.ProjectID && gitops.SameFilesystemPath(site.path, member.WorktreePath)
-		}) {
+		key := member.ProjectID + "\x00" + gitops.CanonicalPath(member.WorktreePath)
+		if seen[key] {
 			continue
 		}
-		occupants, err := a.threadsReferencingWorkspace(member.WorktreePath)
-		if err != nil {
-			return nil, err
-		}
-		if slices.ContainsFunc(occupants, func(id string) bool { return !in[id] }) {
-			continue
-		}
+		seen[key] = true
 		sites = append(sites, deleteSite{projectID: member.ProjectID, path: member.WorktreePath})
+	}
+	if len(sites) == 0 {
+		return nil, nil
+	}
+	paths := make([]string, len(sites))
+	for i, site := range sites {
+		paths[i] = site.path
+	}
+	occupants, err := a.worktreeApplication().ThreadsReferencingWorkspaces(paths)
+	if err != nil {
+		return nil, err
+	}
+	for i := range sites {
+		for _, id := range occupants[i] {
+			if !in[id] {
+				sites[i].outside = append(sites[i].outside, id)
+			}
+		}
 	}
 	return sites, nil
 }

@@ -140,7 +140,8 @@ type DeleteMember struct {
 	// Claim is the delete that claimed it, empty for none.
 	Claim string
 	// Committed is a thread whose delete committed (threads.deleting), and
-	// RemoveWorktrees whether that delete removes the worktrees it empties.
+	// RemoveWorktrees whether its commit recorded that its destroy removes
+	// its worktree (threads.delete_worktrees).
 	Committed, RemoveWorktrees bool
 }
 

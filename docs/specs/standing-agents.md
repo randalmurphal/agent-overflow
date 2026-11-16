@@ -754,19 +754,26 @@ Ruling 36, as built:
   not remove, an ended terminal's own check, and for a project removal a
   running thread inside the project or out. The threads that claim
   added go the same way, so the family is read once per pass whatever
-  its size. A family that keeps growing refuses the delete. A delete that removes worktrees
-  then asks for `git:operate` and runs the loss-of-work gate of each
-  worktree it would empty. Nothing is stopped. A refusal releases every
-  claim in one transaction (`ReleaseDeleteClaim`), so a refused delete
-  changes nothing. Commit: one transaction marks every claimed thread
-  deleting with the delete's worktree policy (`threads.deleting`,
-  `threads.delete_worktrees`, `CommitDeleteClaim`), and clients are
-  told the rows are gone. From here the delete only goes forward.
+  its size. A family that keeps growing refuses the delete. A delete
+  that removes worktrees then asks for `git:operate` and runs the
+  loss-of-work gate of exactly the worktrees it would empty, and of
+  none when there are none. Nothing is stopped. A refusal releases
+  every claim in one transaction (`ReleaseDeleteClaim`), so a refused
+  delete changes nothing. Commit: one transaction marks every claimed
+  thread deleting (`threads.deleting`, `CommitDeleteClaim`) and records
+  on each thread on a worktree verify checked that its destroy removes
+  it (`threads.delete_worktrees`), unless the same transaction finds a
+  thread outside the delete on it, which keeps it and is named. Clients
+  are told the rows are gone. From here the delete only goes forward.
   Destroy: each committed thread, once every thread under it is gone,
-  under its own action lock, is torn down (`threadapp.TearDown`), the
-  worktree it was the last thread on is removed when the policy says
-  so, and its row is dropped (`threadapp.Drop`). No delete holds one
-  action lock while it takes another.
+  under its own action lock, is torn down (`threadapp.TearDown`), its
+  worktree is removed when its commit recorded that and no other thread
+  is on it, and its row is dropped (`threadapp.Drop`). Another thread
+  of the delete recorded to remove the same worktree removes it when
+  its own destroy comes; any other thread on it then keeps it, named.
+  The boot finishes a thread with what its commit recorded and removes
+  no other worktree. No delete holds one action lock while it takes
+  another.
 - A thread whose destroy fails keeps its commit with the threads above
   it, and is never rolled back: the named thread's own failure is the
   delete's error; another's is named beside it
@@ -785,9 +792,10 @@ Ruling 36, as built:
   its row drops. Threads selected together are one such delete per
   computer, so a worktree only they are on counts and goes once. A
   worktree with unsaved work refuses the whole delete at its verify,
-  with nothing stopped. One that cannot be removed when the destroy
-  reaches it, unsaved work that appeared since, is left on disk and
-  named (`DeleteThreadResult.RetainedWorktrees`); its threads are still
+  with nothing stopped. A worktree a thread outside the delete reached
+  after its verify, and one that cannot be removed when the destroy
+  reaches it, unsaved work that appeared since, is left on disk and named
+  (`DeleteThreadResult.RetainedWorktrees`); its threads are still
   deleted. The window stops no session and removes no worktree for a
   delete. The cleanup of a thread moved to another computer deletes
   none of the workers it left here.
