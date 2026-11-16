@@ -182,3 +182,38 @@ func TestALeftoverThatCannotBeEndedKeepsItsGroupWatched(t *testing.T) {
 		t.Fatalf("released %v, want the group still watched", released)
 	}
 }
+
+// A graceful cancel stops the whole group, so a helper that ignores SIGTERM
+// is gone once the cancelled launch's Close returns, and the group is
+// released then.
+func TestGracefulCancelEndsAChildThatIgnoresTerm(t *testing.T) {
+	shortenGraces(t, shutdownGrace, 200*time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	reaper := &procutiltest.Recorder{}
+	p, err := Spawn(ctx, Watched(reaper), SpawnConfig{
+		Binary: "sh", Args: []string{"-c", `sh -c 'trap "" TERM; echo $$; exec sleep 120' & exec sleep 120`},
+		GracefulCancel: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = p.Kill() })
+	line, err := p.ReadLine()
+	if err != nil {
+		t.Fatalf("read child pid: %v", err)
+	}
+	child, err := strconv.Atoi(string(line))
+	if err != nil {
+		t.Fatalf("child pid %q: %v", line, err)
+	}
+	t.Cleanup(func() { _ = syscall.Kill(child, syscall.SIGKILL) })
+	cancel()
+	if err := p.Close(); err != nil {
+		t.Fatalf("Close = %v, want nil", err)
+	}
+	requireGone(t, child)
+	if _, released := reaper.Calls(); !slices.Equal(released, []int{p.PID()}) {
+		t.Fatalf("released %v, want [%d]", released, p.PID())
+	}
+}

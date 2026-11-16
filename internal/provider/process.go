@@ -92,10 +92,9 @@ type SpawnConfig struct {
 	// answer and its write to disk destroys the login with no copy anywhere.
 	// SIGTERM lets the CLI finish the write and exit.
 	//
-	// The SIGTERM goes to the process group; the WaitDelay escalation is
-	// exec's own, which kills the LEADER only. Grandchildren that ignore
-	// SIGTERM are still collected by the caller's Close()/Kill() ladder,
-	// which signals the group.
+	// Both signals go to the process group (procutil.StopConfiguredGroup),
+	// so a helper that ignores SIGTERM is killed with the leader; exec's own
+	// WaitDelay escalation would kill only the leader.
 	//
 	// Session spawns deliberately do not set it: their Close() already runs
 	// the graceful stdin/TERM/KILL ladder, and a context cancel there is a
@@ -125,11 +124,15 @@ func Spawn(ctx context.Context, lifetime Lifetime, cfg SpawnConfig) (*Process, e
 	// children on Windows (the WSL-side Linux backend does).
 	applySysProcAttr(cmd)
 	if cfg.GracefulCancel {
-		// Returning nil rather than an error keeps exec's own accounting:
-		// a process that then exits leaves Wait reporting the context error,
-		// exactly as the default Kill-based cancel does.
+		// Returning nil once the group is gone keeps exec's own accounting: the
+		// exit leaves Wait reporting the context error, exactly as the default
+		// Kill-based cancel does. A group the stop could not empty is Wait's
+		// error, and settleGroup keeps it watched. WaitDelay only bounds Wait
+		// once the stop has returned.
 		cmd.Cancel = func() error {
-			signalGroupPlatform(cmd.Process.Pid, syscall.SIGTERM)
+			if err := procutil.StopConfiguredGroup(cmd, killGrace); err != nil && !errors.Is(err, os.ErrProcessDone) {
+				return err
+			}
 			return nil
 		}
 		cmd.WaitDelay = killGrace
