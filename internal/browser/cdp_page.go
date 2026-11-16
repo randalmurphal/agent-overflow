@@ -203,10 +203,27 @@ func (p *cdpPage) installHandlers() error {
 	if _, err := chromedp.Call(ctx, cdpruntime.Enable, cdp.Empty{}); err != nil {
 		return fmt.Errorf("browser: enable runtime capture: %w", err)
 	}
-	if _, err := chromedp.Call(ctx, network.Enable, network.EnableParams{}); err != nil {
+	if _, err := chromedp.Call(ctx, network.Enable, networkEnableParams()); err != nil {
 		return fmt.Errorf("browser: enable network lifecycle: %w", err)
 	}
 	return nil
+}
+
+// networkEnableParams enables the Network domain for its request lifecycle
+// events alone. By default Chromium keeps every page's response bodies and
+// request post data for Network.getResponseBody (200 MB per page, 20 MB per
+// resource) and copies post data of any size into each requestWillBeSent
+// event. Nothing here reads either: browser_assets streams its bodies
+// through Network.loadNetworkResource, which does not use that buffer. So the
+// buffers are zero, and post data is capped at one byte because Chromium
+// reads a zero post-data cap as unlimited. chromedp's attach has already
+// enabled Network with the defaults; this later enable replaces the limits.
+func networkEnableParams() network.EnableParams {
+	return network.EnableParams{
+		MaxTotalBufferSize:    new(int64(0)),
+		MaxResourceBufferSize: new(int64(0)),
+		MaxPostDataSize:       new(int64(1)),
+	}
 }
 
 // navigationPolicyPatterns are the requests the navigation policy decides.
