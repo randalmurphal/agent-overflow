@@ -35,8 +35,8 @@ func TestIsolationTimingReachesThreadPollAndTransferJobs(t *testing.T) {
 	computer := uuid.NewString()
 
 	open := f.seedRemoteRequest(t, computer)
-	if delay := f.scheduleDelay(t, open); delay <= 0 || delay > poll+200*time.Millisecond {
-		t.Fatalf("open request rescheduled in %s, want about %s", delay, poll)
+	if delay := f.scheduleDelay(t, open); !delay.is(poll) {
+		t.Fatalf("open request rescheduled in %s, want %s", delay, poll)
 	}
 	_, _, end := f.app.beginWait(context.Background(), threadRequestWait{}, []string{open})
 	if delay := f.app.threadPollDelay(open); delay != poll {
@@ -47,8 +47,8 @@ func TestIsolationTimingReachesThreadPollAndTransferJobs(t *testing.T) {
 	settled := f.seedRemoteRequest(t, computer)
 	now := time.Now()
 	f.settleRemote(t, settled, now, now.Add(threadLateReplyWindow))
-	if delay := f.scheduleDelay(t, settled); delay <= poll || delay > 2*poll+200*time.Millisecond {
-		t.Fatalf("settled request rescheduled in %s, want about %s", delay, 2*poll)
+	if delay := f.scheduleDelay(t, settled); !delay.is(2 * poll) {
+		t.Fatalf("settled request rescheduled in %s, want %s", delay, 2*poll)
 	}
 
 	if err := f.app.startThreadTransfers(); err != nil {

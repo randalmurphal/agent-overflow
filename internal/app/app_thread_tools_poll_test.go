@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -47,17 +48,47 @@ func (f *requestFixture) settleRemote(t *testing.T, token string, settledAt, exp
 	}
 }
 
+// scheduledDelay is how far out one rescheduling decision put a row: the
+// delay it chose lies in [min, max]. The decision reads the clock somewhere
+// inside the call, so time the call spends waiting on the store widens the
+// window instead of shifting it.
+type scheduledDelay struct {
+	polled   bool
+	min, max time.Duration
+}
+
+// is reports whether the decision chose want.
+func (d scheduledDelay) is(want time.Duration) bool {
+	return d.polled && d.min <= want && want <= d.max
+}
+
+func (d scheduledDelay) String() string {
+	if !d.polled {
+		return "retired"
+	}
+	return fmt.Sprintf("[%s, %s]", d.min, d.max)
+}
+
 // scheduleDelay runs one poll's rescheduling decision and reports how far
 // out it put the row.
-func (f *requestFixture) scheduleDelay(t *testing.T, token string) time.Duration {
+func (f *requestFixture) scheduleDelay(t *testing.T, token string) scheduledDelay {
 	t.Helper()
-	base := time.Now()
-	f.app.scheduleNextThreadPoll(f.request(t, token))
+	current := f.request(t, token)
+	before := time.Now()
+	f.app.scheduleNextThreadPoll(current)
+	after := time.Now()
 	row := f.request(t, token)
 	if !row.Polling {
-		return 0
+		return scheduledDelay{}
 	}
-	return time.UnixMilli(row.NextCheck).Sub(base)
+	// next_check is the decision's clock plus its delay, truncated to the
+	// millisecond.
+	next := time.UnixMilli(row.NextCheck)
+	return scheduledDelay{
+		polled: true,
+		min:    next.Sub(after) - time.Millisecond,
+		max:    next.Sub(before) + time.Millisecond,
+	}
 }
 
 // A settled request is polled for one thing only, a late thread_reply, and
@@ -73,9 +104,8 @@ func TestSettledRemotePollBacksOffThenRetires(t *testing.T) {
 	t.Run("an open request keeps its caller's cadence", func(t *testing.T) {
 		token := f.seedRemoteRequest(t, computer)
 		for range 3 {
-			delay := f.scheduleDelay(t, token)
-			if delay < threadPollNormalDelay-time.Second || delay > threadPollNormalDelay+time.Second {
-				t.Fatalf("open request rescheduled in %s, want about %s", delay, threadPollNormalDelay)
+			if delay := f.scheduleDelay(t, token); !delay.is(threadPollNormalDelay) {
+				t.Fatalf("open request rescheduled in %s, want %s", delay, threadPollNormalDelay)
 			}
 		}
 		if !f.request(t, token).Polling {
@@ -91,19 +121,19 @@ func TestSettledRemotePollBacksOffThenRetires(t *testing.T) {
 		previous := threadPollNormalDelay
 		for pass := range 4 {
 			delay := f.scheduleDelay(t, token)
-			if delay <= previous {
+			if !delay.polled || delay.min <= previous {
 				t.Fatalf("pass %d rescheduled in %s, want longer than the previous %s", pass, delay, previous)
 			}
-			if delay > threadPollLateCap+time.Second {
+			if delay.min > threadPollLateCap {
 				t.Fatalf("pass %d rescheduled in %s, past the %s ceiling", pass, delay, threadPollLateCap)
 			}
-			previous = delay
+			previous = delay.max
 		}
 		// The ceiling holds however long the destination stays quiet.
 		for range 20 {
 			f.app.scheduleNextThreadPoll(f.request(t, token))
 		}
-		if delay := f.scheduleDelay(t, token); delay < threadPollLateCap-time.Second || delay > threadPollLateCap+time.Second {
+		if delay := f.scheduleDelay(t, token); !delay.is(threadPollLateCap) {
 			t.Fatalf("settled cadence = %s, want the %s ceiling", delay, threadPollLateCap)
 		}
 	})
@@ -135,7 +165,7 @@ func TestSettledRemotePollBacksOffThenRetires(t *testing.T) {
 		token := f.seedRemoteRequest(t, computer)
 		now := time.Now()
 		f.settleRemote(t, token, now, now.Add(threadLateReplyWindow))
-		if delay := f.scheduleDelay(t, token); delay == 0 {
+		if delay := f.scheduleDelay(t, token); !delay.polled {
 			t.Fatal("a request still awaiting a late reply was retired")
 		}
 		stored, err := f.app.store.StoreThreadRequestLateReply(token, []byte("one more thing"), now.UnixMilli(), nil, false)
