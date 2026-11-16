@@ -257,6 +257,9 @@ type App struct {
 	// messages it carries (StartNextAssistantThread,
 	// recoverAssistantSessionLoss).
 	assistantHandOffs assistantHandOffState
+	// assistantsSwitch converges this computer on its Assistants setting
+	// (app_assistants_switch.go).
+	assistantsSwitch assistantsSwitchState
 	// projectIdentityWG joins the boot pass that re-derives project
 	// repository identity (startProjectIdentityRefresh).
 	projectIdentityWG sync.WaitGroup

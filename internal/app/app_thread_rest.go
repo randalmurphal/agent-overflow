@@ -281,6 +281,11 @@ func (a *App) admitWork(threadID, session string) (func(), error) {
 		return nil, errorsx.Public(threadtools.CodeInvalidRequest,
 			"This thread is being deleted and cannot start new work.", err)
 	}
+	// A thread under an assistant starts nothing while assistants are off;
+	// one admitted before they went off is drained by the pause's close.
+	if err := a.refusePausedAssistantThread(threadID); err != nil {
+		return nil, err
+	}
 	var current func() bool
 	if session != "" {
 		current = func() bool {

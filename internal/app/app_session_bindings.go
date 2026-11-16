@@ -362,6 +362,10 @@ func (a *App) startSession(ctx context.Context, threadID string) error {
 	if a.shuttingDown.Load() {
 		return ErrShuttingDown
 	}
+	// No door starts a paused assistant's thread (app_assistants_switch.go).
+	if err := a.refusePausedAssistantThread(threadID); err != nil {
+		return err
+	}
 	return a.runSessionStart(ctx, threadID, func() error {
 		start := a.startSessionNow
 		if a.startSessionFn != nil {

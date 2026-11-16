@@ -66,6 +66,18 @@ func (s *Store) ListThreadsUnderAssistants() ([]string, error) {
 		 UNION ALL SELECT thread_id FROM agent_past_threads`)
 }
 
+// PauseAgentWakeRun records on a row whose run the pause stopped that it did
+// not finish, and arms it again: an interval row is due once more at the
+// fire the run was for, so turning assistants on serves that fire, and a
+// long-running watch's process starts again then. A row no longer running
+// is left alone.
+func (s *Store) PauseAgentWakeRun(id, outcome string) (bool, error) {
+	return s.changeAgentWake(fmt.Sprintf("store: pause agent wake run %s", id),
+		`UPDATE agent_wakes SET state = 'armed', last_outcome = ?,
+		        next_at = CASE WHEN long_running = 0 THEN COALESCE(last_run_at, next_at) ELSE next_at END
+		  WHERE id = ? AND state = 'running'`, outcome, id)
+}
+
 // ListLiveAssistantAgentWakes lists the armed or running loops and watches
 // of the threads that live under an assistant, oldest first: what turning
 // assistants back on resumes.

@@ -144,6 +144,9 @@ func (a *App) checkAssistantProjects(choice assistantProjects) (assistantProject
 // clash found when the record is written deletes the thread and the home
 // again.
 func (a *App) createAssistant(ctx context.Context, spec assistantSpec) (store.Thread, store.StandingAgent, error) {
+	if err := a.refuseAssistantsOff(); err != nil {
+		return store.Thread{}, store.StandingAgent{}, err
+	}
 	name := strings.TrimSpace(spec.name)
 	if err := a.store.CheckAssistantName(name); err != nil {
 		return store.Thread{}, store.StandingAgent{}, err

@@ -133,13 +133,23 @@ func (a *App) fireDueAgentWakes(now time.Time) {
 // spec's restart rules: a row a quit left `running` is recorded
 // `cancelled-by-quit` and runs again now, an interval row whose fire came due
 // while the app was closed fires once with how many it missed, and every
-// long-running watch starts from scratch.
+// long-running watch starts from scratch. The rows of paused assistants wait
+// for assistants to be turned on (resumeAssistantWakes).
 func (a *App) recoverAgentWakesAtBoot() {
 	rows, err := a.store.ListLiveAgentWakes()
 	if err != nil {
 		logThreadRequestSweep("read loops and watches at boot", err)
 		return
 	}
+	a.recoverAgentWakes(rows, true)
+}
+
+// recoverAgentWakes applies the restart rules to rows the supervisor is not
+// running: at boot, or when assistants are turned on again. Only at boot
+// does an interval row whose fire came due fire here, as one that stands in
+// for the fires missed while the app was closed; otherwise the sweep serves
+// it as any due fire, counting what it missed.
+func (a *App) recoverAgentWakes(rows []store.AgentWake, boot bool) {
 	now := time.Now()
 	for _, row := range rows {
 		cut := row.State == store.AgentWakeRunning
@@ -161,7 +171,7 @@ func (a *App) recoverAgentWakesAtBoot() {
 			continue
 		}
 		elapsed, _ := agentWakeElapsed(row.NextAt, now.UnixMilli(), row.IntervalSeconds*1000)
-		if !cut && elapsed == 0 {
+		if !cut && (elapsed == 0 || !boot) {
 			continue
 		}
 		a.fireAgentWake(row, now, agentWakeFire{

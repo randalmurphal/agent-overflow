@@ -92,6 +92,11 @@ func (a *App) registerSettingsBroadcast() {
 		if revision, ok := switchRevision(changes, "accountAutoContinue"); ok {
 			a.accountSwitch().RevokeWaitsBefore(revision)
 		}
+		// Assistants turned off pause, and turned on resume
+		// (app_assistants_switch.go).
+		if _, ok := switchRevision(changes, "assistantsEnabled"); ok {
+			a.onAssistantsSettingChanged()
+		}
 	})
 }
 

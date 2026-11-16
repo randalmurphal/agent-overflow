@@ -703,10 +703,14 @@ func flushBatchCarriesInput(items []triage.QueuedFlushItem) bool {
 
 // flushStartFenced reports whether the dispatcher may not start the thread's
 // session: a Stop is bringing it to rest (threadRestFence), it is archived,
-// or a delete claimed or committed it. An error names the read.
+// a delete claimed or committed it, or it lives under an assistant while
+// assistants are off. An error names the read.
 func (a *App) flushStartFenced(threadID string) (bool, error) {
 	if a.resting.holds(threadID) {
 		return true, nil
+	}
+	if paused, err := a.pausedAssistantThread(threadID); err != nil || paused {
+		return paused, err
 	}
 	thread, err := a.store.GetThread(threadID)
 	if err != nil {
