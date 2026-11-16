@@ -203,3 +203,107 @@ func TestBootSettlesALocalRequestNothingElseCanSettle(t *testing.T) {
 		t.Error("the reminder no longer counts as open")
 	}
 }
+
+// orphanedLocalRequest is a local request left open beside a receipt that
+// settled without it. A non-empty `late` is a late reply the receipt took
+// after that, which the request never saw either.
+func (f *requestFixture) orphanedLocalRequest(t *testing.T, target string, settlement store.ThreadRequestSettlement, late string) string {
+	t.Helper()
+	token := newThreadRequestToken()
+	if err := f.app.store.InsertThreadRequest(store.ThreadRequest{
+		Token: token, CallerThreadID: f.caller.ID, Kind: store.ThreadRequestSend,
+		TargetThreadID: target, State: store.ThreadRequestRunning,
+	}); err != nil {
+		t.Fatalf("InsertThreadRequest: %v", err)
+	}
+	if _, _, err := f.app.store.AcceptThreadRequestReceipt(store.ThreadRequestReceipt{
+		Token: token, OwnerDeviceID: threadReceiptLocalOwner, SourceThreadID: f.caller.ID,
+		Kind: store.ThreadRequestSend, TargetThreadID: target, State: store.ThreadReceiptRunning,
+	}); err != nil {
+		t.Fatalf("AcceptThreadRequestReceipt: %v", err)
+	}
+	if settled, err := f.app.store.SettleThreadRequestReceipt(token, store.ThreadReceiptOpenStates(), settlement); err != nil || !settled {
+		t.Fatalf("SettleThreadRequestReceipt: settled=%v err=%v", settled, err)
+	}
+	if late != "" {
+		if stored, err := f.app.store.StoreThreadReceiptLateReply(token, []byte(late), 0); err != nil || !stored {
+			t.Fatalf("StoreThreadReceiptLateReply: stored=%v err=%v", stored, err)
+		}
+	}
+	return token
+}
+
+// The boot collects everything the receipt holds, the late reply included,
+// and acknowledges only that: a receipt that finished and then took the
+// explicit reply leaves the request reading the reply, with the reply owed
+// to the caller as its one message. Collecting the final alone and
+// acknowledging the late revision lost the reply for good, because a local
+// request has no poller and a repeated thread_reply stores nothing.
+func TestBootCollectsTheWholeReceiptOfAnOpenLocalRequest(t *testing.T) {
+	t.Parallel()
+	f := newRequestFixture(t)
+	target := f.busyThread(t, "")
+	final := store.ThreadRequestSettlement{State: store.ThreadReceiptFinished, Answer: []byte("original final"), AnswerKind: store.ThreadAnswerFinal}
+	withLate := f.orphanedLocalRequest(t, target.ID, final, "actual requested reply")
+	finalOnly := f.orphanedLocalRequest(t, target.ID, final, "")
+	replyOnly := f.orphanedLocalRequest(t, target.ID, store.ThreadRequestSettlement{
+		State: store.ThreadReceiptReplied, Answer: []byte("the explicit reply"), AnswerKind: store.ThreadAnswerReply,
+	}, "")
+
+	after := f.restart(t)
+	after.app.sweepThreadRequestsAtBoot()
+
+	works := map[string]threadSettlementWork{}
+	for _, work := range after.app.threadRequests.boot.works {
+		if work.token != "" {
+			works[work.token] = work
+		}
+	}
+	for token, want := range map[string]struct {
+		state, answer, late string
+		work                threadSettlementWork
+	}{
+		withLate:  {store.ThreadRequestFinished, "original final", "actual requested reply", threadSettlementWork{token: withLate, targetThread: target.ID, wake: true, late: true}},
+		finalOnly: {store.ThreadRequestFinished, "original final", "", threadSettlementWork{token: finalOnly, targetThread: target.ID}},
+		replyOnly: {store.ThreadRequestReplied, "the explicit reply", "", threadSettlementWork{token: replyOnly, targetThread: target.ID, wake: true}},
+	} {
+		receipt := after.receipt(t, token)
+		row := after.request(t, token)
+		if row.State != want.state || string(row.Answer) != want.answer || string(row.LateReply) != want.late ||
+			row.LateReplyAt != receipt.LateReplyAt || row.Revision != receipt.Revision {
+			t.Errorf("request = %q %q late %q at %d revision %d; want %q %q late %q at %d revision %d",
+				row.State, row.Answer, row.LateReply, row.LateReplyAt, row.Revision,
+				want.state, want.answer, want.late, receipt.LateReplyAt, receipt.Revision)
+		}
+		if receipt.CollectedRevision != receipt.Revision {
+			t.Errorf("receipt %q collected %d of %d, want the revision the request holds", want.answer, receipt.CollectedRevision, receipt.Revision)
+		}
+		if works[token] != want.work {
+			t.Errorf("boot work for %q = %+v, want %+v", want.answer, works[token], want.work)
+		}
+	}
+	if row := after.request(t, withLate); row.WakeOwed(false) || !row.WakeOwed(true) || !row.Notify {
+		t.Errorf("late request owes first %v late %v notify %v; want the reply alone owed", row.WakeOwed(false), row.WakeOwed(true), row.Notify)
+	}
+
+	// A second boot finds nothing open and writes nothing.
+	before := after.request(t, withLate)
+	again := after.restart(t)
+	again.app.sweepThreadRequestsAtBoot()
+	for _, work := range again.app.threadRequests.boot.works {
+		if work.token != "" {
+			t.Errorf("second boot settled %+v, want nothing", work)
+		}
+	}
+	if row := again.request(t, withLate); row.Revision != before.Revision || row.UpdatedAt != before.UpdatedAt {
+		t.Errorf("second boot rewrote the request: revision %d updated %d, was %d %d", row.Revision, row.UpdatedAt, before.Revision, before.UpdatedAt)
+	}
+
+	report, err := again.adapter().RequestStates(t.Context(), again.callerIdentity(), threadtools.StatusCall{Tokens: []string{withLate}})
+	if err != nil {
+		t.Fatalf("RequestStates: %v", err)
+	}
+	if len(report.Requests) != 1 || report.Requests[0].Answer != "actual requested reply" || report.Requests[0].AnswerKind != threadtools.AnswerReply {
+		t.Fatalf("status = %+v, want the late reply", report.Requests)
+	}
+}

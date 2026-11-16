@@ -366,16 +366,22 @@ func storeThreadReceiptLateReply(db sqlExecutor, token string, reply []byte, at 
 
 // AckThreadRequestReceipt records the revision the source has durably stored.
 // The sweep only drops an answer whose latest revision nobody collected, so
-// the acknowledgement is what makes expiry safe.
+// the acknowledgement is what makes expiry safe. A revision past the
+// receipt's own is recorded as the receipt's: nobody can have stored what the
+// receipt does not hold yet.
 func (s *Store) AckThreadRequestReceipt(token string, revision, at int64) (bool, error) {
-	action := fmt.Sprintf("store: acknowledge thread receipt %s", token)
 	if at == 0 {
 		at = nowMillis()
 	}
-	result, err := s.db.Exec(
+	return ackThreadReceipt(s.db, token, revision, at)
+}
+
+func ackThreadReceipt(db sqlExecutor, token string, revision, at int64) (bool, error) {
+	action := fmt.Sprintf("store: acknowledge thread receipt %s", token)
+	result, err := db.Exec(
 		`UPDATE thread_request_receipts
-		    SET collected_revision = ?, collected_at = ?, updated_at = ?
-		  WHERE token = ? AND collected_revision < ?`,
+		    SET collected_revision = MIN(?, revision), collected_at = ?, updated_at = ?
+		  WHERE token = ? AND collected_revision < MIN(?, revision)`,
 		revision, at, nowMillis(), token, revision,
 	)
 	if err != nil {
@@ -384,18 +390,15 @@ func (s *Store) AckThreadRequestReceipt(token string, revision, at int64) (bool,
 	return rowsChanged(result, action)
 }
 
-// ackThreadReceiptCollectedTx records that the request on this computer holds
-// the receipt's current revision, in the transaction that wrote it there.
-func ackThreadReceiptCollectedTx(tx *sql.Tx, token string) error {
-	if _, err := tx.Exec(
-		`UPDATE thread_request_receipts
-		    SET collected_revision = revision, collected_at = ?, updated_at = ?
-		  WHERE token = ? AND collected_revision < revision`,
-		nowMillis(), nowMillis(), token,
-	); err != nil {
-		return fmt.Errorf("store: acknowledge thread receipt %s: %w", token, err)
+// ThreadReceiptSettled reports whether a receipt state carries an answer a
+// request can collect: anything but the two open states, and the empty word
+// of a receipt nobody reported.
+func ThreadReceiptSettled(state string) bool {
+	switch state {
+	case "", ThreadReceiptAccepted, ThreadReceiptRunning:
+		return false
 	}
-	return nil
+	return true
 }
 
 // GetThreadRequestReceipt reads one receipt. The bool separates an unknown

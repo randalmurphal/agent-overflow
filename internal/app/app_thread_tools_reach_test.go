@@ -1490,7 +1490,7 @@ func TestForgettingAComputerRefusesOnceThenAbandonsItsRequests(t *testing.T) {
 	}
 	// The other computer was not told, so its receipt is untouched and the
 	// thread it started is still there.
-	if receipt := pair.receipt(t, spawn.Token); threadReceiptSettledState(receipt.State) {
+	if receipt := pair.receipt(t, spawn.Token); store.ThreadReceiptSettled(receipt.State) {
 		t.Fatalf("forgetting the computer settled its receipt as %q", receipt.State)
 	}
 }

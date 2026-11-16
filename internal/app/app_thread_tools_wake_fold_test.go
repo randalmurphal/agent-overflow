@@ -210,6 +210,79 @@ func TestAReplyFromAnotherComputerReachesASenderThatAskedForNoNotification(t *te
 	}
 }
 
+// An answer from another computer that finished and then took a late reply
+// is collected whole, with the reply as its one wake, and the revision it
+// acknowledges is the one it holds. An acknowledgement lost after the
+// collection (a crash, a failed call) is sent again by the next poll that
+// finds the destination still behind, and by no other.
+func TestARemoteAnswerIsCollectedWholeAndItsLostAcknowledgementResent(t *testing.T) {
+	t.Parallel()
+	f := newRequestFixture(t)
+	computer := uuid.NewString()
+	token := f.seedRemoteRequest(t, computer)
+	now := time.Now().UnixMilli()
+	answer := ThreadPeerRequest{
+		Token: token, Known: true, State: store.ThreadReceiptFinished,
+		Answer: "original final", AnswerKind: store.ThreadAnswerFinal,
+		LateReply: "actual requested reply", LateReplyAt: now,
+		Revision: 2, SettledAt: now - 1000, ExpiresAt: now + time.Hour.Milliseconds(),
+	}
+
+	revision, wakes, err := f.app.applyThreadPeerRequest(token, computer, answer)
+	if err != nil || revision != 2 {
+		t.Fatalf("applyThreadPeerRequest = revision %d err %v; want 2", revision, err)
+	}
+	if len(wakes) != 1 || wakes[0] != (threadWakeRef{token: token, late: true}) {
+		t.Fatalf("wakes owed = %+v, want the late reply's alone", wakes)
+	}
+	row := f.request(t, token)
+	if row.State != store.ThreadRequestFinished || string(row.Answer) != "original final" ||
+		string(row.LateReply) != "actual requested reply" || row.LateReplyAt != now || row.Revision != 2 {
+		t.Fatalf("request = %+v, want the final and the late reply at revision 2", row)
+	}
+
+	// The acknowledgement never arrived: the destination still reports
+	// nothing collected, and the poll acknowledges again, writing nothing.
+	revision, wakes, err = f.app.applyThreadPeerRequest(token, computer, answer)
+	if err != nil || revision != 2 || len(wakes) != 0 {
+		t.Fatalf("poll after a lost ack = revision %d wakes %+v err %v; want revision 2 and no wake", revision, wakes, err)
+	}
+	if again := f.request(t, token); again.Revision != row.Revision || again.UpdatedAt != row.UpdatedAt {
+		t.Fatalf("poll after a lost ack rewrote the request: %+v", again)
+	}
+	answer.CollectedRevision = 2
+	if revision, _, err = f.app.applyThreadPeerRequest(token, computer, answer); err != nil || revision != 0 {
+		t.Fatalf("poll after the ack = revision %d err %v; want nothing to acknowledge", revision, err)
+	}
+}
+
+// The destination reports the revision its source acknowledged, which is
+// what lets the source tell a lost acknowledgement from one that landed.
+func TestADestinationReportsTheRevisionItsSourceCollected(t *testing.T) {
+	t.Parallel()
+	f := newRequestFixture(t)
+	target := f.busyThread(t, "")
+	token := newThreadRequestToken()
+	if _, _, err := f.app.store.AcceptThreadRequestReceipt(store.ThreadRequestReceipt{
+		Token: token, OwnerDeviceID: "device-source", SourceThreadID: uuid.NewString(),
+		Kind: store.ThreadRequestSend, TargetThreadID: target.ID, State: store.ThreadReceiptRunning,
+	}); err != nil {
+		t.Fatalf("AcceptThreadRequestReceipt: %v", err)
+	}
+	if _, err := f.app.store.SettleThreadRequestReceipt(token, store.ThreadReceiptOpenStates(), store.ThreadRequestSettlement{
+		State: store.ThreadReceiptFinished, Answer: []byte("done"), AnswerKind: store.ThreadAnswerFinal,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.app.store.AckThreadRequestReceipt(token, 1, 0); err != nil {
+		t.Fatal(err)
+	}
+	state, err := f.app.threadPeerRequestState(t.Context(), "device-source", token)
+	if err != nil || state.Revision != 1 || state.CollectedRevision != 1 {
+		t.Fatalf("state = %+v, %v; want revision 1 collected", state, err)
+	}
+}
+
 // One turn that consumed two of a thread's messages ends once, and the
 // thread is told once: one message naming both requests. Each request still
 // records its own delivery, and the one that rode along knows which message
