@@ -397,6 +397,89 @@ func TestAFireRunWaitingForADecisionEndsWithItsCancel(t *testing.T) {
 	}
 }
 
+// A fire's run whose start for its row's held wake waits for a delete that
+// then commits ends with nothing started and nothing recorded: the failure
+// streak an earlier start left is not extended, and no notification or
+// error row reports the deleted thread. Knowing the delete committed, the
+// start does not go back for the thread's lock.
+func TestAFireRunWhoseDeleteCommittedEndsSilently(t *testing.T) {
+	t.Parallel()
+	f := newClaimFixture(t)
+	f.app.agentWakes.floorOverride = 20 * time.Millisecond
+	f.app.startSessionFn = func(string) error { return errors.New("the provider binary is missing") }
+	loop := registerTestWake(t, f.app, store.AgentWake{ThreadID: f.caller.ID, Kind: store.AgentWakeLoop, Label: "board", Note: "board",
+		IntervalSeconds: 3600, NextAt: time.Now().Add(time.Hour).UnixMilli()})
+	if err := f.app.deliverAgentWake(t.Context(), loop, 1, testAgentWake(t, loop, "board fired")); err != nil {
+		t.Fatal(err)
+	}
+	f.app.waitAgentNoticeWork()
+	waitUntil(t, 10*time.Second, func() bool { return f.app.agentNoticeRetryDue(f.caller.ID) })
+	f.app.startSessionFn = nil
+	f.app.notifications.queue.Wait()
+	notified := &recordingNotificationSender{}
+	f.app.osNotifications = notified
+	streak := func() (time.Time, bool) {
+		f.app.agentNoticeWork.mu.Lock()
+		defer f.app.agentNoticeWork.mu.Unlock()
+		at, ok := f.app.agentNoticeWork.failing[f.caller.ID]
+		return at, ok
+	}
+	failedAt, ok := streak()
+	if !ok {
+		t.Fatal("the failed start left no streak")
+	}
+	var run *agentWakeRun
+	hook, held, proceed := holdOnce()
+	f.app.deleteDecisionMadeForTest = hook
+	committedDelete(t, f.app, f.caller.ID, func() {
+		now := time.Now()
+		if !f.app.fireAgentWake(loop, now, agentWakeFire{at: now.UnixMilli()}) {
+			t.Fatal("the fire did not start")
+		}
+		waitAtGates(t, f.app, 1)
+		f.app.agentWakes.mu.Lock()
+		run = f.app.agentWakes.runs[loop.ID]
+		f.app.agentWakes.mu.Unlock()
+		if run == nil {
+			t.Fatal("the run waiting for the decision is not registered")
+		}
+	})
+	within(t, "the fire's start held", held)
+	if _, err := f.app.store.GetThread(f.caller.ID); err == nil {
+		t.Fatal("the deleted thread's row is still there")
+	}
+	unlock := f.app.threadLocks().Lock(f.caller.ID)
+	close(proceed)
+	select {
+	case <-run.done:
+	case <-time.After(5 * time.Second):
+		unlock()
+		<-run.done
+		t.Fatal("the fire's start went back for the thread's lock after its delete committed")
+	}
+	unlock()
+	nothingWaits(t, f.app)
+	f.app.notifications.queue.Wait()
+	if at, ok := streak(); !ok || !at.Equal(failedAt) {
+		t.Errorf("the failure streak = %v (%v), want it as the earlier start left it (%v)", at, ok, failedAt)
+	}
+	if sends := notified.snapshot(); len(sends) != 0 {
+		t.Errorf("notifications = %+v, want none", sends)
+	}
+	if rows := threadErrorRows(t, f.app.store, f.caller.ID, ""); len(rows) != 0 {
+		t.Errorf("error rows of the deleted thread = %q, want none", rows)
+	}
+	f.app.unsavedRows.mu.Lock()
+	unsaved := f.app.unsavedRows.threads[f.caller.ID]
+	f.app.unsavedRows.mu.Unlock()
+	if unsaved != nil {
+		t.Errorf("unsaved rows = %+v, want none", unsaved.Rows)
+	}
+	if _, live := f.app.sessionManager().get(f.caller.ID); live {
+		t.Error("the deleted thread started")
+	}
+}
+
 // S r6 finding 1 and A r4 finding 1: a release that lands after a dispatch
 // read the claim and before it reached the gate is not missed. The dispatch
 // finds the gate shut and the claim gone, and sends the batch.
