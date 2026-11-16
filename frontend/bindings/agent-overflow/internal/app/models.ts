@@ -8530,6 +8530,13 @@ export class ThreadPeerRequest {
     "lateReply"?: string;
     "lateReplyAt"?: number;
     "revision"?: number;
+
+    /**
+     * CollectedRevision is the revision the source last acknowledged. A
+     * source holding Revision sends its acknowledgement again while this is
+     * behind it.
+     */
+    "collectedRevision"?: number;
     "settledAt"?: number;
     "expiresAt"?: number;
 
