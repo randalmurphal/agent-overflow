@@ -15,9 +15,9 @@ import (
 // anything else is unconfirmed. A refusal needs no read.
 func TestGitHubSubmitReviewSettlesALostAnswer(t *testing.T) {
 	t.Parallel()
-	const old = `{"databaseId":1,"viewerDidAuthor":true,"state":"COMMENTED","body":"looks fine","commit":{"oid":"` + githubTestPinnedHead + `"}}`
+	const old = `{"fullDatabaseId":"1","viewerDidAuthor":true,"state":"COMMENTED","body":"looks fine","commit":{"oid":"` + githubTestPinnedHead + `"}}`
 	review := func(id int, viewer bool, state, body string) string {
-		return fmt.Sprintf(`{"databaseId":%d,"viewerDidAuthor":%t,"state":%q,"body":%q,"commit":{"oid":%q}}`, id, viewer, state, body, githubTestPinnedHead)
+		return fmt.Sprintf(`{"fullDatabaseId":"%d","viewerDidAuthor":%t,"state":%q,"body":%q,"commit":{"oid":%q}}`, id, viewer, state, body, githubTestPinnedHead)
 	}
 	cases := []struct {
 		name      string

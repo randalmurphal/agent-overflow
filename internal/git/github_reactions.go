@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 
 	"agent-overflow/internal/forgeapi"
 )
@@ -15,11 +14,7 @@ import (
 // already as asked.
 
 const githubReactionTargetQuery = `query ReactionTarget($id: ID!) {
-  node(id: $id) {
-    __typename
-    ... on PullRequestReviewComment { pullRequest { number repository { nameWithOwner } } viewerCanReact ` + githubReactionFields + ` }
-    ... on IssueComment { pullRequest { number repository { nameWithOwner } } viewerCanReact ` + githubReactionFields + ` }
-  }
+  node(id: $id) { ` + githubCommentOwnerFields + ` ... on Reactable { viewerCanReact ` + githubReactionFields + ` } }
 }`
 
 const (
@@ -43,13 +38,7 @@ func (f *githubForge) SetCommentReaction(ctx context.Context, ref PRReference, t
 	}
 	var raw struct {
 		Node *struct {
-			Typename    string `json:"__typename"`
-			PullRequest *struct {
-				Number     int `json:"number"`
-				Repository struct {
-					NameWithOwner string `json:"nameWithOwner"`
-				} `json:"repository"`
-			} `json:"pullRequest"`
+			githubCommentOwnerRaw
 			ViewerCanReact bool                     `json:"viewerCanReact"`
 			ReactionGroups []githubReactionGroupRaw `json:"reactionGroups"`
 		} `json:"node"`
@@ -61,13 +50,8 @@ func (f *githubForge) SetCommentReaction(ctx context.Context, ref PRReference, t
 		}
 		return err
 	}
-	kind := "PullRequestReviewComment"
-	if githubConversationTarget(target) {
-		kind = "IssueComment"
-	}
 	node := raw.Node
-	if node == nil || node.Typename != kind || node.PullRequest == nil || node.PullRequest.Number != ref.Number ||
-		!strings.EqualFold(node.PullRequest.Repository.NameWithOwner, ref.Namespace+"/"+ref.Repo) {
+	if node == nil || !node.onPR(ref, target) {
 		return &CommentNotOnPRError{CommentID: target.CommentID}
 	}
 	if !node.ViewerCanReact {

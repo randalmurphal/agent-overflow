@@ -53,7 +53,12 @@ inspection go through the harness wire with no fixture files.
   tokenizes the document; it does not check value types, fields,
   arguments or directives, and refuses a document with a fragment or a
   second operation. `cmd/ao-mockforge`'s `TestMain` fails when an
-  operation `internal/git` defines never reached a rig. An HTTP request with a token
+  operation `internal/git` defines never reached a rig. The rigs also
+  check each 200 GraphQL answer against the request's document and the
+  forge's schema (`internal/git/forgeschema`): a member the document
+  does not select under that response name, aliases included, or a
+  scalar of the wrong JSON kind fails the test. The engine itself loads
+  no schema; the documents are validated where they are defined. An HTTP request with a token
   other than the fixed one is an unhandled 401; one with no token at all
   (the boot's dev-server scan probing its own listeners) is a 401 that is
   not recorded. Specs assert none occurred
@@ -127,7 +132,8 @@ inspection go through the harness wire with no fixture files.
    own code against the engine in `cmd/ao-mockforge/binary_test.go`, whose
    rig runs the CLIs through the real binary and the forge API transport
    through the engine's HTTP mounts. The second test is what catches drift
-   between the app's request and the handler.
+   between the app's request and the handler, and between the handler's
+   answer and the document's shape.
 4. Update the table below.
 
 ## Invocations
@@ -158,7 +164,7 @@ project's path, escaped as one segment (`grp%2Fsub%2Ftool`).
 | GitHub | GraphQL `PRTimelinePage(owner, name, number, before, wantTeams)` | ReadPR events: older timeline pages, read backwards, with team reviewers and `teamsRefused` as PRTick |
 | GitHub | GraphQL `ThreadCommentsPage(threadID, after, wantReactions)`, `RollupContextsPage(commitID, number, after, wantCheckRuns, wantWorkflowRuns)` | ReadPR: one thread's comments, the rollup's contexts past 100 with the parts and `tokenCannotRead` as PRTick |
 | GitHub | GraphQL `PRMergeTarget(owner, name, number)`, `ViewerApproval(owner, name, number)` | merge actions: the pull's node id and head, `isMergeQueueEnabled` and `isInMergeQueue`; Unapprove: the viewer's standing approval |
-| GitHub | GraphQL `ViewerReviews(owner, name, number)` | SubmitReview, before its POST and to settle a lost answer: the pull's newest 100 reviews with `databaseId`, `viewerDidAuthor`, `state`, `body` and `commit.oid` |
+| GitHub | GraphQL `ViewerReviews(owner, name, number)` | SubmitReview, before its POST and to settle a lost answer: the pull's newest 100 reviews with `fullDatabaseId`, `viewerDidAuthor`, `state`, `body` and `commit.oid` |
 | GitHub | GraphQL `MergePR`, `EnableAutoMerge(pullRequestID, method, expectedHeadOid)` | Merge now (merged, MergedEvent and ClosedEvent, head deleted when the repository does) and Auto-merge (armed, the method's enabled event); a head other than `expectedHeadOid` answers "Head branch was modified. Review and try the merge again."; on a `merge.mergeQueue` base a merge answers GitHub's "Changes must be made through the merge queue" rule violation and an auto-merge with a method is refused |
 | GitHub | GraphQL `EnqueuePR(pullRequestID, expectedHeadOid)`, `DequeuePR(pullRequestID)`, `EnableQueuedAutoMerge(pullRequestID, expectedHeadOid)` | the merge queue (`merge.mergeQueue`, a pull's `queued`; see `merge_queue.go`): join now (a pull that could merge now takes the next position), leave, and join when ready (auto-merge with no method, which queues a pull that could merge now at once); each refuses an unqueued base, a viewer below WRITE, and a moved head where it names one. PRTick answers `isMergeQueueEnabled`, `isInMergeQueue`, `mergeQueueEntry` and the base's `mergeQueue.entries.totalCount` |
 | GitHub | GraphQL `DisableAutoMerge`, `MarkPRReady(pullRequestID)`, `UpdatePRBranch(pullRequestID, expectedHeadOid)`, `DismissReview(reviewID, message)` | Cancel auto-merge, Mark ready, Update branch (the head moves to a new commit; `FORBIDDEN` unless the viewer may update it, `viewer.updateBranch`, which a fork's pull without `maintainerCanModify` allows its author alone, answered as `viewerCanUpdateBranch` while behind), Unapprove (the review reads DISMISSED, a ReviewDismissedEvent) |

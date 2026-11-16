@@ -105,38 +105,53 @@ const (
 // about the PR: an edit or delete reads the owner first and refuses a
 // comment of another PR or repository.
 const githubCommentOwnerQuery = `query CommentOwner($id: ID!) {
-  node(id: $id) {
-    __typename
-    ... on PullRequestReviewComment { pullRequest { number repository { nameWithOwner } } }
-    ... on IssueComment { pullRequest { number repository { nameWithOwner } } }
-  }
+  node(id: $id) { ` + githubCommentOwnerFields + ` }
 }`
+
+// githubCommentOwnerFields select a comment node's type and the pull
+// request it is on. GitHub types pullRequest PullRequest! on a review
+// comment and PullRequest on an issue comment, and fields sharing a
+// response name must share a type, so the issue comment's is aliased.
+const githubCommentOwnerFields = `__typename ` +
+	`... on PullRequestReviewComment { pullRequest { number repository { nameWithOwner } } } ` +
+	`... on IssueComment { issuePullRequest: pullRequest { number repository { nameWithOwner } } }`
+
+// githubCommentOwnerRaw is what githubCommentOwnerFields read.
+type githubCommentOwnerRaw struct {
+	Typename         string                `json:"__typename"`
+	PullRequest      *githubCommentPullRaw `json:"pullRequest"`
+	IssuePullRequest *githubCommentPullRaw `json:"issuePullRequest"`
+}
+
+type githubCommentPullRaw struct {
+	Number     int `json:"number"`
+	Repository struct {
+		NameWithOwner string `json:"nameWithOwner"`
+	} `json:"repository"`
+}
+
+// onPR reports whether the node is a comment of the kind target names on
+// ref's pull request.
+func (n githubCommentOwnerRaw) onPR(ref PRReference, target CommentTarget) bool {
+	kind, pull := "PullRequestReviewComment", n.PullRequest
+	if githubConversationTarget(target) {
+		kind, pull = "IssueComment", n.IssuePullRequest
+	}
+	return n.Typename == kind && pull != nil && pull.Number == ref.Number &&
+		strings.EqualFold(pull.Repository.NameWithOwner, ref.Namespace+"/"+ref.Repo)
+}
 
 // requireCommentOnPR reads target's owner and refuses, before any write,
 // a comment that is not of the kind target names or not on ref's pull
 // request (*CommentNotOnPRError).
 func requireCommentOnPR(ctx context.Context, client *forgeapi.Client, ref PRReference, target CommentTarget) error {
 	var raw struct {
-		Node *struct {
-			Typename    string `json:"__typename"`
-			PullRequest *struct {
-				Number     int `json:"number"`
-				Repository struct {
-					NameWithOwner string `json:"nameWithOwner"`
-				} `json:"repository"`
-			} `json:"pullRequest"`
-		} `json:"node"`
+		Node *githubCommentOwnerRaw `json:"node"`
 	}
 	if _, err := client.GraphQL(ctx, "CommentOwner", githubCommentOwnerQuery, map[string]any{"id": target.CommentID}, &raw); err != nil {
 		return err
 	}
-	kind := "PullRequestReviewComment"
-	if githubConversationTarget(target) {
-		kind = "IssueComment"
-	}
-	node := raw.Node
-	if node == nil || node.Typename != kind || node.PullRequest == nil || node.PullRequest.Number != ref.Number ||
-		!strings.EqualFold(node.PullRequest.Repository.NameWithOwner, ref.Namespace+"/"+ref.Repo) {
+	if raw.Node == nil || !raw.Node.onPR(ref, target) {
 		return &CommentNotOnPRError{CommentID: target.CommentID}
 	}
 	return nil

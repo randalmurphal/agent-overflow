@@ -1,11 +1,17 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"io"
+	"maps"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -14,6 +20,7 @@ import (
 	"sync"
 	"testing"
 
+	"agent-overflow/internal/git/forgeschema"
 	"agent-overflow/internal/harness/forgefake"
 )
 
@@ -43,6 +50,49 @@ func recordRigInvocation(t testing.TB, inv forgefake.Invocation) {
 	if inv.Unhandled && strings.Contains(inv.Detail, "invalid http request") {
 		t.Errorf("%s", inv.Detail)
 	}
+}
+
+// answerChecked serves engine and fails t on a 200 GraphQL answer with
+// members the request's document does not select or a scalar of the
+// wrong JSON kind (forgeschema.AnswerProblems): the fake's handlers
+// build each answer by hand, and this holds them to the app's documents
+// and the forges' schemas.
+func answerChecked(t testing.TB, engine http.Handler) http.Handler {
+	graphQL := map[string]string{"/github/graphql": "github", "/gitlab/api/graphql": "gitlab"}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		forge := graphQL[r.URL.Path]
+		if forge == "" {
+			engine.ServeHTTP(w, r)
+			return
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read a GraphQL request: %v", err)
+			return
+		}
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		var payload struct {
+			Query string `json:"query"`
+		}
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Errorf("a GraphQL request that is not JSON: %v", err)
+		}
+		rec := httptest.NewRecorder()
+		engine.ServeHTTP(rec, r)
+		maps.Copy(w.Header(), rec.Header())
+		w.WriteHeader(rec.Code)
+		_, _ = w.Write(rec.Body.Bytes())
+		if rec.Code != http.StatusOK {
+			return
+		}
+		problems, err := forgeschema.AnswerProblems(forge, payload.Query, rec.Body.Bytes())
+		if err != nil {
+			t.Errorf("GraphQL answer check: %v", err)
+		}
+		for _, p := range problems {
+			t.Errorf("the fake's GraphQL answer: %s", p)
+		}
+	})
 }
 
 // graphQLOperationHeader is a document's start: every document opens

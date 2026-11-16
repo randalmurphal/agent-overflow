@@ -26,7 +26,7 @@ import (
 // its own ($wantTeams). The viewerCan* flags are the forge's own answer
 // per control.
 const githubManageFields = `... @include(if: $wantManage) { viewerCanUpdate viewerCanClose viewerCanReopen viewerCanLabel viewerCanAssign ` +
-	`reviewRequests(first: 100) { nodes { requestedReviewer { __typename ... on User { login name } ... on Bot { login } ... on Mannequin { login } ... on Team @include(if: $wantTeams) { combinedSlug name } } } } ` +
+	`reviewRequests(first: 100) { nodes { requestedReviewer { __typename ... on User { login name } ... on Bot { login } ... on Mannequin { login } ... on Team @include(if: $wantTeams) { combinedSlug teamName: name } } } } ` +
 	`assignees(first: 100) { nodes { login name } } ` +
 	`labels(first: 100) { nodes { id name color } } }`
 
@@ -49,6 +49,9 @@ type githubPullManageRaw struct {
 				Login        string `json:"login"`
 				Name         string `json:"name"`
 				CombinedSlug string `json:"combinedSlug"`
+				// TeamName is a team's name, aliased because User.name
+				// is nullable and Team.name is not.
+				TeamName string `json:"teamName"`
 			} `json:"requestedReviewer"`
 		} `json:"nodes"`
 	} `json:"reviewRequests"`
@@ -130,7 +133,7 @@ func (in githubMergeInputs) manage() PRManage {
 		}
 		person := PRPerson{Login: reviewer.Login, Name: reviewer.Name}
 		if reviewer.Typename == "Team" {
-			person = PRPerson{Login: reviewer.CombinedSlug, Name: reviewer.Name, Team: true}
+			person = PRPerson{Login: reviewer.CombinedSlug, Name: reviewer.TeamName, Team: true}
 		}
 		if person.Login != "" {
 			add(PRReviewer{PRPerson: person, State: ReviewerPending})

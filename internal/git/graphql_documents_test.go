@@ -2,10 +2,13 @@ package git
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"testing"
 
+	"agent-overflow/internal/git/forgeschema"
 	"agent-overflow/internal/harness/forgefake"
 )
 
@@ -37,6 +40,33 @@ func checkGraphQLRequest(t testing.TB, operation, query string, vars map[string]
 		t.Fatal(err)
 	}
 	return string(body), false
+}
+
+// checkGraphQLAnswer fails t on a test forge's 200 answer to a valid
+// document that has members the document does not select, or a scalar
+// of the wrong JSON kind (forgeschema.AnswerProblems), so a hand-written
+// answer cannot drift from the document it answers. A document that is
+// not valid against the schema is a test's stand-in, answered as the
+// test wants; the app's own are held valid by
+// TestGraphQLDocumentsMatchForgeSchemas.
+func checkGraphQLAnswer(t testing.TB, path string, call forgeAPICall, reply forgeAPIAnswer) {
+	if reply.Unshaped || (reply.Status != 0 && reply.Status != http.StatusOK) {
+		return
+	}
+	forge := "github"
+	if strings.HasPrefix(path, "/gitlab/") {
+		forge = "gitlab"
+	}
+	problems, err := forgeschema.AnswerProblems(forge, call.Query, []byte(reply.Body))
+	if errors.Is(err, forgeschema.ErrInvalidDocument) {
+		return
+	}
+	if err != nil {
+		t.Errorf("GraphQL %s answer: %v", call.Op, err)
+	}
+	for _, p := range problems {
+		t.Errorf("GraphQL %s answer: %s", call.Op, p)
+	}
 }
 
 // The checks fail on the shape of the ReactionTarget defect: a shared

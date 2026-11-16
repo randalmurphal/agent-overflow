@@ -13,7 +13,7 @@ const queueFixture = `{"viewer": "octo", "repos": [{
 		{"number": 2, "title": "Checking", "headRef": "checking", "headSha": "2222222222222222222222222222222222222222",
 		 "readiness": {"requiredChecks": ["unit"]}, "ci": {"jobs": [{"name": "unit", "status": "running"}]}},
 		{"number": 3, "title": "Queued", "headRef": "queued", "headSha": "3333333333333333333333333333333333333333",
-		 "queued": {"position": 1, "state": "mergeable", "by": "bob"}}
+		 "queued": {"position": 1, "by": "bob"}}
 	]
 }]}`
 
@@ -49,7 +49,7 @@ func TestGitHubMergeQueueModel(t *testing.T) {
 	if tick["isMergeQueueEnabled"] != true || tick["isInMergeQueue"] != false || tick["mergeQueueEntry"] != nil || tick["viewerCanEnableAutoMerge"] != true {
 		t.Fatalf("an unqueued pull = %v", tick)
 	}
-	if entry, _ := ghTick(t, srv, 3)["mergeQueueEntry"].(map[string]any); entry == nil || entry["position"] != float64(1) || entry["state"] != "MERGEABLE" ||
+	if entry, _ := ghTick(t, srv, 3)["mergeQueueEntry"].(map[string]any); entry == nil || entry["position"] != float64(1) ||
 		entry["enqueuer"].(map[string]any)["login"] != "bob" || entry["enqueuedAt"] == "" {
 		t.Fatalf("a seeded entry = %v", entry)
 	}
@@ -69,7 +69,7 @@ func TestGitHubMergeQueueModel(t *testing.T) {
 	if got := graphQL(t, srv, "github.com", "EnqueuePR", map[string]any{"pullRequestID": ready, "expectedHeadOid": head}); !strings.Contains(got.body, `"mergeQueueEntry":{"id":`) {
 		t.Fatalf("enqueue = %s", got.body)
 	}
-	if entry, _ := ghTick(t, srv, 1)["mergeQueueEntry"].(map[string]any); entry == nil || entry["position"] != float64(2) || entry["state"] != "QUEUED" || entry["enqueuer"].(map[string]any)["login"] != "octo" {
+	if entry, _ := ghTick(t, srv, 1)["mergeQueueEntry"].(map[string]any); entry == nil || entry["position"] != float64(2) || entry["enqueuer"].(map[string]any)["login"] != "octo" {
 		t.Fatalf("after enqueue = %v", entry)
 	}
 	if got := graphQL(t, srv, "github.com", "EnqueuePR", map[string]any{"pullRequestID": ready, "expectedHeadOid": head}); !strings.Contains(got.body, "already in the merge queue") {
@@ -115,7 +115,6 @@ func TestGitHubMergeQueueSeedRefusals(t *testing.T) {
 	for name, raw := range map[string]string{
 		"queued without a queue": `{"repos": [{"forge": "github", "project": "a/b", "pulls": [{"number": 1, "title": "t", "queued": {}}]}]}`,
 		"queued and closed":      `{"repos": [{"forge": "github", "project": "a/b", "merge": {"mergeQueue": true}, "pulls": [{"number": 1, "title": "t", "state": "closed", "queued": {}}]}]}`,
-		"an unknown state":       `{"repos": [{"forge": "github", "project": "a/b", "merge": {"mergeQueue": true}, "pulls": [{"number": 1, "title": "t", "queued": {"state": "waiting"}}]}]}`,
 		"a GitLab queue":         `{"repos": [{"forge": "gitlab", "project": "a/b", "merge": {"mergeQueue": true}}]}`,
 	} {
 		if _, err := seedJSON(New(Options{APIToken: testAPIToken}), raw); err == nil {

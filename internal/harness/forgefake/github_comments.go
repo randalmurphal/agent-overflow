@@ -77,14 +77,18 @@ func ghCommentOwner(e *Engine, c *call, v graphQLVars) response {
 	if !ok {
 		return graphQLNotFound(map[string]any{"node": nil}, []string{"node"}, fmt.Sprintf("Could not resolve to a node with the global id of '%s'", id))
 	}
-	typename := "PullRequestReviewComment"
-	if thread < 0 {
-		typename = "IssueComment"
+	return graphQLData(map[string]any{"node": githubCommentOwner(r, p, thread >= 0)})
+}
+
+// githubCommentOwner answers a comment node's type and the pull request
+// it is on, under the response name the app's selection gives each type:
+// an issue comment's pullRequest is aliased issuePullRequest.
+func githubCommentOwner(r *Repo, p *Pull, review bool) map[string]any {
+	pull := map[string]any{"number": p.Number, "repository": map[string]any{"nameWithOwner": r.Project}}
+	if review {
+		return map[string]any{"__typename": "PullRequestReviewComment", "pullRequest": pull}
 	}
-	return graphQLData(map[string]any{"node": map[string]any{
-		"__typename":  typename,
-		"pullRequest": map[string]any{"number": p.Number, "repository": map[string]any{"nameWithOwner": r.Project}},
-	}})
+	return map[string]any{"__typename": "IssueComment", "issuePullRequest": pull}
 }
 
 // ghCommentMutation is one of the four comment mutations: field is its

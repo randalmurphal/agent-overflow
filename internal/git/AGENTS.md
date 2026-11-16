@@ -35,6 +35,15 @@ it. Never recursively delete a path merely because it appears under a project
 directory. Keep main-worktree resolution and stale registration rules in
 internal/gitroot.
 
+GraphQL documents are package-level constants named for their forge
+(`github...`, `gitlab...`); one assembled at run time has its builder
+listed in `graphql_schema_test.go`. That test validates every document
+against the checked-in forge schemas (`forgeschema`, refreshed with
+`make forge-schemas`) and refuses deprecated selections. When two inline
+fragments select one name with different types, alias one side. Test
+forges' answers are checked against the document's shape too
+(`checkGraphQLAnswer`).
+
 Tests use real temporary repositories for Git semantics. Parser fixtures cover
 malformed and cross-version output, but mocked command success cannot prove
 worktree, index, ref, or quoting behavior.

@@ -507,7 +507,7 @@ type Thread struct {
 
 // Review is one submitted review verdict.
 type Review struct {
-	// ID is the review's numeric id (GitHub databaseId; its node id is
+	// ID is the review's numeric id (GitHub fullDatabaseId; its node id is
 	// derived from it). Generated when omitted.
 	ID     int64  `json:"id,omitempty"`
 	Author string `json:"author"`

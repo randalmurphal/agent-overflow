@@ -280,8 +280,18 @@ func TestGitHubApplySuggestionOutcomes(t *testing.T) {
 // githubReactionTarget answers ReactionTarget for comment IC_1 (an issue
 // comment) of o/r#5 with the viewer's heart, which the viewer may react to.
 func githubReactionTarget(typename string, number int) forgeAPIAnswer {
-	return githubData(fmt.Sprintf(`{"node":{"__typename":%q,"pullRequest":{"number":%d,"repository":{"nameWithOwner":"o/r"}},"viewerCanReact":true,
-		"reactionGroups":[{"content":"THUMBS_UP","viewerHasReacted":false,"reactors":{"totalCount":1}},{"content":"HEART","viewerHasReacted":true,"reactors":{"totalCount":1}}]}}`, typename, number))
+	return githubData(fmt.Sprintf(`{"node":{%s,"viewerCanReact":true,
+		"reactionGroups":[{"content":"THUMBS_UP","viewerHasReacted":false,"reactors":{"totalCount":1}},{"content":"HEART","viewerHasReacted":true,"reactors":{"totalCount":1}}]}}`, githubCommentOwnerJSON(typename, "o/r", number)))
+}
+
+// githubCommentOwnerJSON is the members githubCommentOwnerFields answer
+// for a comment of typename on repo#number.
+func githubCommentOwnerJSON(typename, repo string, number int) string {
+	field := "pullRequest"
+	if typename == "IssueComment" {
+		field = "issuePullRequest"
+	}
+	return fmt.Sprintf(`"__typename":%q,%q:{"number":%d,"repository":{"nameWithOwner":%q}}`, typename, field, number, repo)
 }
 
 func TestGitHubReactionWrites(t *testing.T) {
@@ -306,7 +316,7 @@ func TestGitHubReactionWrites(t *testing.T) {
 		{"another PR's comment", issue, githubReactionTarget("IssueComment", 6), "rocket", true, githubTestRef(5), "ReactionTarget", notOnPR},
 		{"a review comment named as an issue comment", issue, githubReactionTarget("PullRequestReviewComment", 5), "rocket", true, githubTestRef(5), "ReactionTarget", notOnPR},
 		// GitHub says no (a locked conversation): refused before any write.
-		{"the viewer may not react", issue, githubData(`{"node":{"__typename":"IssueComment","pullRequest":{"number":5,"repository":{"nameWithOwner":"o/r"}},"viewerCanReact":false,"reactionGroups":[]}}`), "rocket", true, githubTestRef(5), "ReactionTarget",
+		{"the viewer may not react", issue, githubData(`{"node":{` + githubCommentOwnerJSON("IssueComment", "o/r", 5) + `,"viewerCanReact":false,"reactionGroups":[]}}`), "rocket", true, githubTestRef(5), "ReactionTarget",
 			func(err error) bool { _, ok := errors.AsType[*ViewerCannotError](err); return ok }},
 		{"unknown id", issue, forgeAPIAnswer{Body: `{"data":{"node":null},"errors":[{"type":"NOT_FOUND","message":"x"}]}`}, "rocket", true, githubTestRef(5), "ReactionTarget", notOnPR},
 	} {

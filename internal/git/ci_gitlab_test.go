@@ -229,7 +229,7 @@ func TestGitLabPipelineRowsRefuseAnUnreadableAnswer(t *testing.T) {
 		{"an unknown kind", gitlabJobsPage([]string{"test"}, "", gitlabJobNode("Ci::Processable", 5, "x", "test", "SUCCESS", "")), "Ci::Processable"},
 		{"no pipeline", githubData(`{"project":{"pipeline":null}}`), "no pipeline 7002"},
 		{"no project", githubData(`{"project":null}`), "no pipeline 7002"},
-		{"a body that is not the shape", githubData(`{"project":{"pipeline":{"jobs":{"nodes":{}}}}}`), "decode"},
+		{"a body that is not the shape", forgeAPIAnswer{Body: `{"data":{"project":{"pipeline":{"jobs":{"nodes":{}}}}}}`, Unshaped: true}, "decode"},
 		{"GraphQL errors", forgeAPIAnswer{Body: `{"data":null,"errors":[{"message":"Internal server error"}]}`}, "Internal server error"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
