@@ -121,33 +121,50 @@ export class FactsThread {
  * fields a person's view renders: the timeline row reads these, never the
  * text, which is written for the agent. Each message's text and facts come
  * from one value through one function (Footer.Message, Wake.Message,
- * usermessage.WakeMessage), so the two cannot disagree. The row carries
- * them on its attribution (usermessage.OriginThread.Facts,
- * usermessage.OriginWake.Facts).
+ * WorkerStopped.Message and the usermessage constructors), so the two cannot
+ * disagree. The row carries them on its attribution
+ * (usermessage.OriginThread.Facts, usermessage.OriginWake.Facts), and a
+ * reader takes them only through usermessage.Describe, which checks them
+ * against the text (Check).
  */
 export class MessageFacts {
+    /**
+     * Form is what the message is: FormRequest, FormAnswer, FormMessage,
+     * FormReport, or FormWhole for one nothing is known of but its text.
+     */
+    "form": string;
+
+    /**
+     * Bytes is the length in bytes of the text the facts describe. Facts
+     * whose text changed behind their back no longer describe it, and a
+     * reader shows that message whole (Check).
+     */
+    "bytes": number;
+
     /**
      * Outcome is what an answer says happened to the requests it answers:
      * a WakeReply, WakeFinished, WakeErrored, WakeCancelled,
      * WakeInterrupted (a person's Stop included, told apart by StoppedBy),
      * WakeExpired or WakeReminder, WakeSettled for a settlement none of
      * those names, or OutcomeWorkerStopped for the notice that the person
-     * stopped a worker after it answered. Empty on every other message.
+     * stopped a worker after it answered. Set on an answer only.
      */
     "outcome"?: string;
 
     /**
      * Body is where the message's own words are in its text: what the
      * sender wrote, the answer, or the data a wake delivers. The spans are
-     * UTF-8 byte offsets, read in order and joined as they are; most bodies
+     * UTF-8 byte offsets on character boundaries, in order, not empty and
+     * not overlapping, read in order and joined as they are; most bodies
      * are one span. Empty when the message has none.
      */
     "body"?: Span[];
 
     /**
-     * Headline is what the row's header says the message is about, when
-     * that is not the first line of Body: a loop's note, a watch's first
-     * output line, a remote job's result.
+     * Headline is what the row's header says the message is about. A
+     * writer sets it when that is not the first line of Body (a loop's
+     * note, a watch's first output line, a remote job's result);
+     * usermessage.Describe sets it otherwise.
      */
     "headline"?: string;
 
@@ -210,6 +227,12 @@ export class MessageFacts {
 
     /** Creates a new MessageFacts instance. */
     constructor($$source: Partial<MessageFacts> = {}) {
+        if (!("form" in $$source)) {
+            this["form"] = "";
+        }
+        if (!("bytes" in $$source)) {
+            this["bytes"] = 0;
+        }
 
         Object.assign(this, $$source);
     }
@@ -218,18 +241,18 @@ export class MessageFacts {
      * Creates a new MessageFacts instance from a string or object.
      */
     static createFrom($$source: any = {}): MessageFacts {
-        const $$createField1_0 = $$createType2;
-        const $$createField8_0 = $$createType0;
-        const $$createField14_0 = $$createType4;
+        const $$createField3_0 = $$createType2;
+        const $$createField10_0 = $$createType0;
+        const $$createField16_0 = $$createType4;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("body" in $$parsedSource) {
-            $$parsedSource["body"] = $$createField1_0($$parsedSource["body"]);
+            $$parsedSource["body"] = $$createField3_0($$parsedSource["body"]);
         }
         if ("tokens" in $$parsedSource) {
-            $$parsedSource["tokens"] = $$createField8_0($$parsedSource["tokens"]);
+            $$parsedSource["tokens"] = $$createField10_0($$parsedSource["tokens"]);
         }
         if ("threads" in $$parsedSource) {
-            $$parsedSource["threads"] = $$createField14_0($$parsedSource["threads"]);
+            $$parsedSource["threads"] = $$createField16_0($$parsedSource["threads"]);
         }
         return new MessageFacts($$parsedSource as Partial<MessageFacts>);
     }
