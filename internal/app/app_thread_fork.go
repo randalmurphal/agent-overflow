@@ -79,6 +79,9 @@ type forkOptions struct {
 	// out for it here: the spawn announces it once the naming write owns it
 	// (acceptRequest), so no client lists it first.
 	Owned bool
+	// Group is the group a thread_spawn's fork is made in, "" for none, in
+	// place of its source's. Nil keeps the source's group.
+	Group *string
 	// Instructions are a thread_spawn's, appended after the instructions
 	// the fork keeps from its source, and SpawnLevel the sub-thread level a
 	// paired computer's spawn carried (store.Thread).
@@ -256,6 +259,9 @@ func (a *App) forkThreadAt(ctx context.Context, sourceThreadID string, atTurnInd
 	}
 	if opts.Effort != "" {
 		fork.ReasoningEffort = opts.Effort
+	}
+	if opts.Group != nil {
+		fork.GroupID = *opts.Group
 	}
 	if opts.Owned {
 		fork.GroupID = ""

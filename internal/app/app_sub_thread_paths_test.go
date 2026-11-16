@@ -281,3 +281,62 @@ func TestAnAgentCannotFreeItsOwnChainFromTheLimit(t *testing.T) {
 		t.Fatalf("the worker placing its own worker: %+v", result)
 	}
 }
+
+// A spawn's group is resolved where the thread is made: a fork named into
+// a group is made in it, never first in its source's, and a group made for
+// a thread that is then not made is taken back.
+func TestASpawnIsMadeInTheGroupItNames(t *testing.T) {
+	t.Parallel()
+	f := newRequestFixture(t)
+	f.holdCallerTurn(t)
+	installMockClaudeReplies(t, f.app, "on it")
+	source := f.forkableThread(t, "grouped-source")
+	old, err := f.app.store.CreateThreadGroup(source.ProjectID, "Old sweep")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.app.store.SetThreadGroup([]string{source.ID}, old.ID); err != nil {
+		t.Fatal(err)
+	}
+	ack, err := f.adapter().Spawn(t.Context(), f.callerIdentity(), threadtools.SpawnCall{
+		Prompt: "carry on", FromThread: source.ID, Group: "New sweep",
+	})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	fork, err := f.app.store.GetThread(ack.ThreadID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	groups, err := f.app.store.ListThreadGroups()
+	if err != nil {
+		t.Fatal(err)
+	}
+	named := map[string]string{}
+	for _, group := range groups {
+		named[group.ID] = group.Name
+	}
+	if named[fork.GroupID] != "New sweep" || fork.Placement != store.PlacementGrouped || fork.ProjectID != source.ProjectID {
+		t.Fatalf("the fork is %s in group %q of project %s, want grouped in New sweep in its source's project", fork.Placement, named[fork.GroupID], fork.ProjectID)
+	}
+
+	// A fork that cannot be made: its source's session is gone.
+	broken := f.forkableThread(t, "broken-source")
+	broken.SessionRef = "missing-session"
+	if err := f.app.store.UpdateThread(broken); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.adapter().Spawn(t.Context(), f.callerIdentity(), threadtools.SpawnCall{
+		Prompt: "carry on", FromThread: broken.ID, Group: "Never made",
+	}); err == nil {
+		t.Fatal("a fork of a source with no session was made")
+	}
+	if groups, err = f.app.store.ListThreadGroups(); err != nil {
+		t.Fatal(err)
+	}
+	for _, group := range groups {
+		if group.Name == "Never made" {
+			t.Fatalf("the group made for a thread that was not made stayed: %+v", group)
+		}
+	}
+}

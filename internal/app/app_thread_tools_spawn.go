@@ -3,7 +3,6 @@ package app
 import (
 	"cmp"
 	"context"
-	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -23,13 +22,14 @@ import (
 // every refusal names what this computer offers.
 
 // createSpawnedThread makes the thread a spawn runs in: a fork of another
-// thread when from_thread names one, a fresh thread otherwise. A group the
-// call names is joined once the thread exists, through the organize patch
-// the sidebar's own grouping uses, so the group is created in the NEW
-// thread's project: a fork's source project, or the destination's. The
-// spawn's placement wins over the group a fork inherits from its source:
-// an owned fork is made in no group and the naming write owns it, and a
-// standalone one leaves the group here.
+// thread when from_thread names one, a fresh thread otherwise, created in
+// its final group and placement. A group the call names is resolved, and
+// made if missing, in the NEW thread's project (a fork's source project, or
+// the destination's) before the thread exists; with none, a fork is made in
+// no group rather than in its source's. Creation is not a move: the thread
+// never passes through a group or placement it then leaves, so nothing
+// here is the person's act that ends a delegation (store.endCarriedLevelTx),
+// and a level a paired computer's spawn carried stays with the thread.
 //
 // Nothing here announces a fresh thread or an owned fork: the spawn's
 // request names and places the thread first, and acceptRequest announces
@@ -37,30 +37,50 @@ import (
 func (t threadToolsApp) createSpawnedThread(
 	ctx context.Context, call threadtools.SpawnCall, create spawnOptions,
 ) (store.Thread, error) {
-	thread, err := t.createSpawned(ctx, call, create)
-	if err != nil || (call.Group == "" && thread.GroupID == "") {
-		return thread, err
+	var source store.Thread
+	project := create.ProjectID
+	if call.FromThread != "" {
+		// A fork runs in its source's project and workspace with its
+		// source's provider: that is what forking is, and the tools layer
+		// already refused a from_thread on another computer.
+		var err error
+		if source, err = t.localThread(call.FromThread); err != nil {
+			return store.Thread{}, err
+		}
+		project = source.ProjectID
 	}
-	group := call.Group
-	what := fmt.Sprintf("join group %q", group)
-	if group == "" {
-		what = "leave the group its source is in"
+	var group store.ThreadGroup
+	made := false
+	if call.Group != "" {
+		var err error
+		group, made, err = t.app.store.EnsureThreadGroup(project, call.Group)
+		if err != nil {
+			return store.Thread{}, errorsx.Public(threadtools.CodeInvalidRequest, fmt.Sprintf(
+				"That spawn could not join group %q: %v. Nothing was created; make the request again.", call.Group, err), err)
+		}
+		if made {
+			// Before the thread: a client that receives the thread's groupId
+			// before the group row has nowhere to render it.
+			t.app.emitThreadGroup("create", group)
+		}
 	}
-	applied, err := t.app.applyThreadOrganizePatch(ctx, thread.ID, threadapp.OrganizePatch{Group: &group})
-	if err == nil {
-		return applied.Thread, nil
+	thread, err := t.createSpawned(ctx, call, create, source, group.ID)
+	if err != nil && made {
+		t.dropSpawnGroup(group)
 	}
-	// The thread exists and nothing owns it yet: no receipt names it and its
-	// prompt has not been sent. Take it back, as the scratch fork does,
-	// rather than leave a thread behind a refusal the caller will retry.
-	if deleteErr := t.app.deleteThread(thread.ID); deleteErr != nil {
-		log.Printf("thread tools: delete spawned thread %s after its group patch failed: %v", thread.ID, deleteErr)
-		return store.Thread{}, errorsx.Public(threadtools.CodeInvalidRequest, fmt.Sprintf(
-			"Thread %s was created but could not %s (%v), and removing it failed too. It is on this computer.",
-			thread.ID, what, err), errors.Join(err, deleteErr))
+	return thread, err
+}
+
+// dropSpawnGroup takes back a group a spawn made for a thread it then did
+// not make, unless a thread joined it meanwhile.
+func (t threadToolsApp) dropSpawnGroup(group store.ThreadGroup) {
+	dropped, err := t.app.store.DropEmptyThreadGroup(group.ID)
+	switch {
+	case err != nil:
+		log.Printf("thread tools: drop group %s a failed spawn made: %v", group.ID, err)
+	case dropped:
+		t.app.emitThreadGroup("delete", group)
 	}
-	return store.Thread{}, errorsx.Public(threadtools.CodeInvalidRequest, fmt.Sprintf(
-		"That spawn could not %s: %v. No thread was left behind; make the request again.", what, err), err)
 }
 
 // spawnOptions is what a spawn resolved: the thread's options and, for a
@@ -75,9 +95,10 @@ type spawnOptions struct {
 }
 
 func (t threadToolsApp) createSpawned(
-	ctx context.Context, call threadtools.SpawnCall, spawn spawnOptions,
+	ctx context.Context, call threadtools.SpawnCall, spawn spawnOptions, source store.Thread, groupID string,
 ) (store.Thread, error) {
 	create := spawn.CreateThreadOptions
+	create.GroupID = groupID
 	if call.FromThread == "" {
 		// createThreadCutting without its broadcast: acceptRequest announces
 		// the row once its request has placed it.
@@ -89,16 +110,9 @@ func (t threadToolsApp) createSpawned(
 		thread, _, err := t.app.createThreadRowCutting(ctx, create, spawn.worktree, false)
 		return thread, err
 	}
-	// A fork runs in its source's project and workspace with its source's
-	// provider: that is what forking is, and the tools layer already refused
-	// a from_thread on another computer. Everything else on the new thread
-	// was resolved in spawnThreadOptions from the caller's settings and the
-	// call's overrides, so it reaches the fork here rather than being
-	// dropped for the source's.
-	source, err := t.localThread(call.FromThread)
-	if err != nil {
-		return store.Thread{}, err
-	}
+	// Everything else on the new thread was resolved in spawnThreadOptions
+	// from the caller's settings and the call's overrides, so it reaches
+	// the fork here rather than being dropped for the source's.
 	return t.app.forkThreadTail(ctx, source.ID, forkOptions{
 		Mode:         create.Mode,
 		RuntimeMode:  create.RuntimeMode,
@@ -106,6 +120,7 @@ func (t threadToolsApp) createSpawned(
 		Model:        create.Model,
 		Effort:       create.ReasoningEffort,
 		Owned:        spawn.owned,
+		Group:        &groupID,
 		Instructions: call.Instructions,
 		SpawnLevel:   call.Level,
 	})
