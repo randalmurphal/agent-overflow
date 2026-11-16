@@ -1,11 +1,4 @@
 <script lang="ts">
-  import ArrowLeft from '@lucide/svelte/icons/arrow-left';
-  import ArrowRight from '@lucide/svelte/icons/arrow-right';
-  import FolderOpen from '@lucide/svelte/icons/folder-open';
-  import Plus from '@lucide/svelte/icons/plus';
-  import RefreshCw from '@lucide/svelte/icons/refresh-cw';
-  import SquareCode from '@lucide/svelte/icons/square-code';
-  import X from '@lucide/svelte/icons/x';
   import type { PanelContext } from '../../stores/panelContext.svelte';
   import {
     attachBrowserCompanion,
@@ -14,21 +7,17 @@
     noteBrowserActionError,
     noteBrowserFindCleanupError,
     browserFindCleanupError,
-    reportBrowserPaneRect,
   } from '../../stores/browserCompanion.svelte';
   import { BrowserCompanionRevealPageFile } from '../../stores/bindings';
-  import Icon from '../primitives/Icon.svelte';
   import { errString } from '../../utils/errors';
-  import { airspaceIntersects, airspaceSurfaces } from '../../utils/paneAirspace.svelte';
-  import { rgbChannels, toConcreteColor } from '../../utils/cssColorProbe';
-  import { getPaneLayoutItems } from '../../stores/paneLayout.svelte';
-  import { getSidebarWidth, isSidebarCollapsed } from '../../stores/sidebarLayout.svelte';
-  import { getAppliedTheme } from '../../theme/themeApply.svelte';
   import { untrack } from 'svelte';
   import PaneFindBar from '../panes/PaneFindBar.svelte';
   import { companionForSource } from '../../stores/companionPanes.svelte';
   import { closePaneFind, registerPaneFindProvider } from '../../stores/paneFind.svelte';
   import { createBrowserFind } from '../../stores/browserFind.svelte';
+  import BrowserAddressBar from './BrowserAddressBar.svelte';
+  import BrowserTabStrip from './BrowserTabStrip.svelte';
+  import { createBrowserPaneGeometry } from './browserPaneGeometry.svelte';
 
   // The pane surface is an empty HOST RECT: the platform positions a real
   // native browser view over it (spec docs/specs/embedded-browser.md §7).
@@ -40,16 +29,6 @@
   let { ctx }: { ctx: PanelContext } = $props();
   let surface: HTMLDivElement | undefined = $state(undefined);
   let attachment = $state<ReturnType<typeof attachBrowserCompanion> | null>(null);
-  let address = $state('');
-  let addressFocused = $state(false);
-  let rectFrame = 0;
-  let lastSentKey = '';
-  let bgRaw = '';
-  let bgHex = '';
-  // The host rect's own size, read off the same report as the geometry, so
-  // the size label can say how far the page is scaled down to fit.
-  let hostWidth = $state(0);
-  let hostHeight = $state(0);
 
   let view = $derived(attachment?.current ?? null);
   let findCleanupError = $derived(ctx.threadId ? browserFindCleanupError(ctx.threadId) : '');
@@ -57,37 +36,15 @@
   let sessionName = $derived(view?.state.sessionName ?? '');
   let activePageId = $derived(view?.state.activePageId ?? '');
   let activePage = $derived(pages.find((page) => page.id === activePageId) ?? pages[0] ?? null);
-  let activeIsLocalFile = $derived((activePage?.url ?? '').toLowerCase().startsWith('file:'));
-  // Boolean, not the view object: the re-report effect below must fire on
-  // attach, never on every page-state push.
+  // Boolean, not the view object: the geometry's re-report effect must fire
+  // on attach, never on every page-state push.
   let attached = $derived(view !== null);
-  // The page lays out at the thread's viewport. By default that is this host
-  // rect, so the page fills the pane at 1:1 and nothing needs saying. The
-  // label appears when the size is not the pane's: the agent pinned one, or
-  // the pane is below the viewport minimum, and then carries the size and,
-  // when the host rect is smaller, the percentage it is shown at.
-  let viewportWidth = $derived(view?.state.viewportWidth ?? 0);
-  let viewportHeight = $derived(view?.state.viewportHeight ?? 0);
-  let viewportPinned = $derived(view?.state.viewportSet === true);
-  let viewScale = $derived(
-    viewportWidth > 0 && viewportHeight > 0 && hostWidth > 0 && hostHeight > 0
-      ? Math.min(1, hostWidth / viewportWidth, hostHeight / viewportHeight)
-      : 1,
-  );
-  let sizeLabel = $derived(
-    viewportWidth > 0 && viewportHeight > 0 && (viewportPinned || viewScale < 1)
-      ? `${viewportWidth} × ${viewportHeight}` + (viewScale < 1 ? ` · ${Math.round(viewScale * 100)}%` : '')
-      : '',
-  );
 
   $effect(() => {
     const threadId = ctx.threadId;
     if (!threadId) return;
     attachment = attachBrowserCompanion(threadId);
     return () => {
-      if (rectFrame) cancelAnimationFrame(rectFrame);
-      rectFrame = 0;
-      lastSentKey = '';
       attachment?.release();
       attachment = null;
     };
@@ -122,158 +79,30 @@
     });
   });
 
-  $effect(() => {
-    const url = activePage?.url ?? '';
-    if (!addressFocused) address = url;
+  const geometry = createBrowserPaneGeometry({
+    surface: () => surface,
+    threadId: () => ctx.threadId,
+    attached: () => attached,
   });
 
-  // ─── Host-rect geometry ────────────────────────────────────────────────
-  // One report per changed frame: every signal below only SCHEDULES, and the
-  // flush reads geometry once. There is deliberately no standing rAF loop —
-  // a per-frame callback would pin frame production at panel refresh.
-
-  function scheduleRect(): void {
-    if (rectFrame) return;
-    rectFrame = requestAnimationFrame(() => {
-      rectFrame = 0;
-      flushRect();
-    });
-  }
-
-  // A native view cannot be partially cropped by the DOM, so the report
-  // carries the VISIBLE INTERSECTION of the host rect with every clipping
-  // ancestor (and the viewport): the platform host crops the view to it
-  // while the page keeps the full rect's size. A pane half behind the
-  // sidebar shows its visible half instead of hiding or overhanging.
-  function visibleClip(el: HTMLElement, rect: DOMRect): { left: number; top: number; right: number; bottom: number } {
-    let left = Math.max(rect.left, 0);
-    let top = Math.max(rect.top, 0);
-    let right = Math.min(rect.right, window.innerWidth);
-    let bottom = Math.min(rect.bottom, window.innerHeight);
-    for (let node = el.parentElement; node; node = node.parentElement) {
-      const style = getComputedStyle(node);
-      if (style.overflowX === 'visible' && style.overflowY === 'visible') continue;
-      const r = node.getBoundingClientRect();
-      if (style.overflowX !== 'visible') {
-        left = Math.max(left, r.left);
-        right = Math.min(right, r.right);
-      }
-      if (style.overflowY !== 'visible') {
-        top = Math.max(top, r.top);
-        bottom = Math.min(bottom, r.bottom);
-      }
-    }
-    return { left, top, right, bottom };
-  }
-
-  // The pane surface's resolved background color, memoized on the computed
-  // string so the canvas round trip only runs when the theme actually
-  // changes; the theme-change trigger below clears the memo.
-  function paneBackground(el: HTMLElement): string {
-    const raw = getComputedStyle(el).backgroundColor;
-    if (raw === bgRaw) return bgHex;
-    bgRaw = raw;
-    const channels = rgbChannels(toConcreteColor(raw));
-    bgHex =
-      channels && channels.a === 1
-        ? '#' + [channels.r, channels.g, channels.b].map((c) => c.toString(16).padStart(2, '0')).join('')
-        : '';
-    return bgHex;
-  }
-
-  const round2 = (value: number): number => Math.round(value * 100) / 100;
-
-  function flushRect(): void {
-    const el = surface;
-    const threadId = ctx.threadId;
-    if (!el || !threadId) return;
-    const rect = el.getBoundingClientRect();
-    hostWidth = rect.width;
-    hostHeight = rect.height;
-    const clip = visibleClip(el, rect);
-    const clipWidth = Math.max(0, clip.right - clip.left);
-    const clipHeight = Math.max(0, clip.bottom - clip.top);
-    // Obscurity is judged against the VISIBLE part: an overlay above a
-    // clipped-away strip does not hide the pane.
-    const visible =
-      rect.width >= 1 &&
-      rect.height >= 1 &&
-      clipWidth >= 1 &&
-      clipHeight >= 1 &&
-      !airspaceIntersects({ left: clip.left, top: clip.top, right: clip.right, bottom: clip.bottom });
-    const report = {
-      x: round2(rect.left),
-      y: round2(rect.top),
-      width: round2(rect.width),
-      height: round2(rect.height),
-      clipX: round2(clip.left),
-      clipY: round2(clip.top),
-      clipWidth: round2(clipWidth),
-      clipHeight: round2(clipHeight),
-      viewportWidth: window.innerWidth,
-      viewportHeight: window.innerHeight,
-      // The SPA's own pixel ratio (DPI times webview zoom): the host draws the
-      // page's CSS pixels at its own ratio, and the difference is the zoom the
-      // presentation must carry so the page fills the fitted rect.
-      devicePixelRatio: window.devicePixelRatio,
-      visible,
-      background: paneBackground(el),
-    };
-    const key =
-      `${report.x},${report.y},${report.width},${report.height},` +
-      `${report.clipX},${report.clipY},${report.clipWidth},${report.clipHeight},` +
-      `${report.viewportWidth},${report.viewportHeight},${report.devicePixelRatio},` +
-      `${report.visible},${report.background}`;
-    if (key === lastSentKey) return;
-    lastSentKey = key;
-    reportBrowserPaneRect(threadId, report);
-  }
-
-  $effect(() => {
-    const el = surface;
-    if (!el || !ctx.threadId) return;
-    const observer = new ResizeObserver(() => scheduleRect());
-    observer.observe(el);
-    const onLayoutShift = (): void => scheduleRect();
-    window.addEventListener('resize', onLayoutShift);
-    // Capture-phase: a scroll anywhere in an ancestor chain moves the rect
-    // without resizing it (the pane strip scrolling behind the sidebar).
-    document.addEventListener('scroll', onLayoutShift, true);
-    scheduleRect();
-    return () => {
-      observer.disconnect();
-      window.removeEventListener('resize', onLayoutShift);
-      document.removeEventListener('scroll', onLayoutShift, true);
-    };
-  });
-
-  // Overlay open/close re-evaluates obscurity; the mount acquiring its pane
-  // id re-sends the rect a too-early report dropped.
-  $effect(() => {
-    airspaceSurfaces();
-    if (attached) lastSentKey = '';
-    scheduleRect();
-  });
-
-  // Layout-driven POSITION changes: a divider drag on another pane slides
-  // this pane sideways without resizing it, which no ResizeObserver, window
-  // resize or scroll event reports (live incident 2026-08-31: the native
-  // view stayed planted until the next scroll). Pane widths and the sidebar
-  // are the app's own movers, so reading them here re-measures on every
-  // frame of a drag. Over-firing is fine — flushRect dedupes.
-  $effect(() => {
-    for (const item of getPaneLayoutItems()) void item.widthPx;
-    void getSidebarWidth();
-    void isSidebarCollapsed();
-    scheduleRect();
-  });
-
-  // A theme or mode change recolors the pane surface without moving it.
-  $effect(() => {
-    void getAppliedTheme();
-    bgRaw = '';
-    scheduleRect();
-  });
+  // The page lays out at the thread's viewport. By default that is this host
+  // rect, so the page fills the pane at 1:1 and nothing needs saying. The
+  // label appears when the size is not the pane's: the agent pinned one, or
+  // the pane is below the viewport minimum, and then carries the size and,
+  // when the host rect is smaller, the percentage it is shown at.
+  let viewportWidth = $derived(view?.state.viewportWidth ?? 0);
+  let viewportHeight = $derived(view?.state.viewportHeight ?? 0);
+  let viewportPinned = $derived(view?.state.viewportSet === true);
+  let viewScale = $derived(
+    viewportWidth > 0 && viewportHeight > 0 && geometry.hostWidth > 0 && geometry.hostHeight > 0
+      ? Math.min(1, geometry.hostWidth / viewportWidth, geometry.hostHeight / viewportHeight)
+      : 1,
+  );
+  let sizeLabel = $derived(
+    viewportWidth > 0 && viewportHeight > 0 && (viewportPinned || viewScale < 1)
+      ? `${viewportWidth} × ${viewportHeight}` + (viewScale < 1 ? ` · ${Math.round(viewScale * 100)}%` : '')
+      : '',
+  );
 
   async function act(kind: string, pageId = activePageId, nextAddress = '', index = 0): Promise<void> {
     const threadId = ctx.threadId;
@@ -307,160 +136,12 @@
       noteBrowserActionError(threadId, errString(err));
     }
   }
-
-  // ─── Tab drag-reorder ──────────────────────────────────────────────────
-  // Same HTML5 DnD protocol the pane host uses for pane reordering. The
-  // drop slot is a thin insertion bar between tabs; the drop commits a
-  // "move" action and the authoritative order comes back with the state.
-
-  const TAB_DRAG_MIME = 'application/x-ao-browser-tab';
-  let dragPageId = $state('');
-  let dropSlot = $state(-1);
-
-  function tabDragStart(event: DragEvent, pageId: string): void {
-    if (!event.dataTransfer) return;
-    event.dataTransfer.setData(TAB_DRAG_MIME, pageId);
-    event.dataTransfer.effectAllowed = 'move';
-    dragPageId = pageId;
-  }
-
-  function tabDragOver(event: DragEvent, index: number): void {
-    if (!dragPageId || !event.dataTransfer?.types.includes(TAB_DRAG_MIME)) return;
-    event.preventDefault();
-    event.dataTransfer.dropEffect = 'move';
-    const tab = event.currentTarget as HTMLElement;
-    const rect = tab.getBoundingClientRect();
-    dropSlot = event.clientX < rect.left + rect.width / 2 ? index : index + 1;
-  }
-
-  function stripDragOver(event: DragEvent): void {
-    if (!dragPageId || !event.dataTransfer?.types.includes(TAB_DRAG_MIME)) return;
-    // Only the strip's own empty tail; a tab under the pointer already set
-    // its slot and stopped the event from bubbling this far unhandled.
-    if (event.target !== event.currentTarget) return;
-    event.preventDefault();
-    event.dataTransfer.dropEffect = 'move';
-    dropSlot = pages.length;
-  }
-
-  function tabDrop(event: DragEvent): void {
-    const pageId = event.dataTransfer?.getData(TAB_DRAG_MIME) ?? '';
-    const slot = dropSlot;
-    dragPageId = '';
-    dropSlot = -1;
-    if (!pageId || slot < 0) return;
-    event.preventDefault();
-    const from = pages.findIndex((page) => page.id === pageId);
-    if (from < 0) return;
-    // The backend's move index addresses the list WITHOUT the moved tab.
-    const to = from < slot ? slot - 1 : slot;
-    if (to === from) return;
-    void act('move', pageId, '', to);
-  }
-
-  function tabDragEnd(): void {
-    dragPageId = '';
-    dropSlot = -1;
-  }
-
 </script>
 
 <div class="flex h-full min-h-0 flex-col bg-surface-0" data-testid="browser-pane">
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <div
-    class="flex min-h-9 items-end gap-1 overflow-x-auto border-b border-border-subtle bg-surface-1 px-1 pt-1"
-    onmousedown={(event) => {
-      // Middle-press would start OS autoscroll; on a tab strip it closes tabs.
-      if (event.button === 1) event.preventDefault();
-    }}
-    ondragover={stripDragOver}
-    ondrop={tabDrop}
-  >
-    {#if sessionName}
-      <span class="mb-1 max-w-36 shrink-0 truncate px-1.5 text-[0.68rem] text-fg-muted" title={sessionName}>{sessionName}</span>
-    {/if}
-    {#each pages as page, tabIndex (page.id)}
-      {#if dropSlot === tabIndex && dragPageId}
-        <div class="h-6 w-0.5 shrink-0 self-center rounded bg-accent"></div>
-      {/if}
-      <div
-        class="group flex h-8 min-w-28 max-w-48 items-center rounded-t-md {page.id === activePageId ? 'bg-surface-0 text-fg' : 'text-fg-muted hover:bg-surface-2'} {page.id === dragPageId ? 'opacity-50' : ''}"
-        title={page.label ? `${page.label} — ${page.title || page.url}` : page.title || page.url}
-        draggable="true"
-        ondragstart={(event) => tabDragStart(event, page.id)}
-        ondragover={(event) => tabDragOver(event, tabIndex)}
-        ondrop={tabDrop}
-        ondragend={tabDragEnd}
-        onauxclick={(event) => {
-          if (event.button !== 1) return;
-          event.preventDefault();
-          void act('close', page.id);
-        }}
-      >
-        <button
-          class="h-full min-w-0 flex-1 truncate pl-2 text-left text-[0.72rem]"
-          onclick={() => void act('activate', page.id)}
-        >{page.label || page.title || page.url || 'New tab'}</button>
-        <button
-          type="button"
-          aria-label="Close tab"
-          class="mr-1 rounded p-0.5 opacity-60 hover:bg-surface-3 hover:opacity-100"
-          onclick={() => void act('close', page.id)}
-        ><Icon icon={X} size={12} /></button>
-      </div>
-    {/each}
-    {#if dropSlot === pages.length && dragPageId}
-      <div class="h-6 w-0.5 shrink-0 self-center rounded bg-accent"></div>
-    {/if}
-    <button class="mb-1 rounded p-1.5 text-fg-muted hover:bg-surface-2 hover:text-fg" aria-label="New tab" title="New tab" onclick={() => void act('new', '')}>
-      <Icon icon={Plus} size={14} />
-    </button>
-  </div>
+  <BrowserTabStrip {sessionName} {pages} {activePageId} onAct={act} />
 
-  <div class="flex h-10 shrink-0 items-center gap-1 border-b border-border-subtle bg-surface-1 px-2">
-    <button class="rounded p-1.5 text-fg-muted enabled:hover:bg-surface-2 enabled:hover:text-fg disabled:opacity-35" aria-label="Back" disabled={!activePage?.canGoBack} onclick={() => void act('back')}><Icon icon={ArrowLeft} size={14} /></button>
-    <button class="rounded p-1.5 text-fg-muted enabled:hover:bg-surface-2 enabled:hover:text-fg disabled:opacity-35" aria-label="Forward" disabled={!activePage?.canGoForward} onclick={() => void act('forward')}><Icon icon={ArrowRight} size={14} /></button>
-    <button class="rounded p-1.5 text-fg-muted hover:bg-surface-2 hover:text-fg" aria-label="Reload" onclick={() => void act('reload')}><Icon icon={RefreshCw} size={13} /></button>
-    <input
-      class="h-7 min-w-0 flex-1 rounded-md border border-border-subtle bg-surface-0 px-2 text-[0.75rem] text-fg outline-none focus:border-accent/60"
-      aria-label="Address"
-      bind:value={address}
-      disabled={!activePage}
-      onfocus={() => (addressFocused = true)}
-      onblur={() => (addressFocused = false)}
-      onkeydown={(event) => {
-        // Until the pane knows the page it shows there is none to name, and
-        // a navigation naming none opens a new page.
-        if (event.key === 'Enter' && activePage) {
-          event.preventDefault();
-          (event.currentTarget as HTMLInputElement).blur();
-          void act('navigate', activePage.id, address);
-        }
-      }}
-    />
-    {#if sizeLabel}
-      <span
-        class="shrink-0 whitespace-nowrap px-1 font-mono text-[0.65rem] tabular-nums text-fg-muted"
-        data-testid="browser-pane-size"
-        title="The page is laid out at this size and shown scaled to fit the pane"
-      >{sizeLabel}</span>
-    {/if}
-    {#if activeIsLocalFile}
-      <button
-        class="rounded p-1.5 text-fg-muted hover:bg-surface-2 hover:text-fg"
-        aria-label="Show in folder"
-        title="Show in folder"
-        onclick={() => void revealPageFile()}
-      ><Icon icon={FolderOpen} size={13} /></button>
-    {/if}
-    <button
-      class="rounded p-1.5 text-fg-muted hover:bg-surface-2 hover:text-fg"
-      aria-label="Open devtools"
-      title="Open devtools"
-      onclick={() => void act('devtools')}
-    ><Icon icon={SquareCode} size={13} /></button>
-    <button class="rounded p-1.5 text-fg-muted hover:bg-surface-2 hover:text-fg" aria-label="Close browser" title="Close browser" onclick={() => void act('hide', '')}><Icon icon={X} size={14} /></button>
-  </div>
+  <BrowserAddressBar {activePage} {sizeLabel} onAct={act} onRevealPageFile={revealPageFile} />
 
   {#if browserPaneId}
     <PaneFindBar paneId={browserPaneId} title={activePage?.title || 'Browser'} fallbackFocus={() => surface ?? null} />
