@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { isLocalEnter } from '../../utils/localEnter';
   import { onDestroy, tick, untrack } from 'svelte';
   import type { ChannelMessage, ChannelStatePayload } from '../../types/discussion';
   import { paneWorkspacePath, type ThreadPane } from '../../stores/thread.svelte';
@@ -274,7 +275,7 @@
     // Enter mid-IME-composition confirms the candidate — the composed text
     // is not in the textarea's value yet, so posting would truncate it.
     if (e.key === 'Enter' && isImeComposingEvent(e)) return;
-    if (e.key === 'Enter' && !e.shiftKey) {
+    if (isLocalEnter(e) && !e.shiftKey) {
       e.preventDefault();
       handlePost();
     }
