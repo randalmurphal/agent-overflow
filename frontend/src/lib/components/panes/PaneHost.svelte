@@ -343,15 +343,21 @@
   // layer stay tabbable rather than inert: a pane command moves DOM focus
   // into its target in the same task as the focus change (alt+l focuses the
   // next composer), before any attribute could be cleared, and Tab out of a
-  // promoted pane is a way to leave it. A focus change with no promotion
-  // still reveals nothing.
+  // promoted pane is a way to leave it. Until the demote lands the reveal
+  // follows focus, so a second move (Tab again) is the one revealed. A focus
+  // change with no promotion still reveals nothing.
   $effect(() => {
     const focused = focusedPaneId;
     untrack(() => {
+      if (focused === null) return;
       const intent = getPromotedPaneId();
-      if (intent === null || focused === null || focused === intent) return;
-      revealAfterDemote = focused;
-      demotePane();
+      if (intent !== null) {
+        if (focused === intent) return;
+        revealAfterDemote = focused;
+        demotePane();
+        return;
+      }
+      if (promotion.shownId !== null) revealAfterDemote = focused;
     });
   });
 
