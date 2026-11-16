@@ -2,7 +2,9 @@
   // One row of the activity rail's Agents body (docs/specs/standing-agents.md,
   // "Agents segment"): a thread this thread is waiting on, or under Past one
   // it waited on, with its provider, title, state, how long since the
-  // request (a past row: when it settled), and what it is blocked on. A row
+  // request (a past row: when it settled), what a spawned thread did (its
+  // tool calls and tokens, as a subagent's row counts them), and what it is
+  // blocked on or did last. A row
   // is open while its request is, or its worker is not at rest; once its
   // request settled it shows its worker's state. The row's main button
   // opens the thread, or for a row no longer open the answer; the
@@ -32,6 +34,7 @@
   import PanelRightOpen from '@lucide/svelte/icons/panel-right-open';
   import UsersRound from '@lucide/svelte/icons/users-round';
   import AgentTrayRowDigest from './AgentTrayRowDigest.svelte';
+  import AgentMetrics from './AgentMetrics.svelte';
   import { activityRailIconActionClasses } from './activityRailClasses';
 
   interface Props {
@@ -74,6 +77,11 @@
   // A worker this computer spawned that has no sidebar row.
   let showInSidebar = $derived(row.kind === 'spawn' && row.placement === 'owned' && !row.archived && !row.computerId && Boolean(row.threadId));
   let activity = $derived(open && !blockedLabel ? (row.activity ?? '') : '');
+  // What the spawned thread did, live while it works and final once it
+  // rests; unknown from a computer that does not report it.
+  let toolUses = $derived(row.toolCalls ? row.toolCalls : null);
+  let tokens = $derived(row.tokens ? row.tokens : null);
+  let hasMetrics = $derived(toolUses !== null || tokens !== null);
   let stateTone = $derived.by(() => {
     switch (shownState) {
       case 'blocked':
@@ -229,10 +237,20 @@
     </div>
   {/if}
 
-  {#if blockedLabel}
-    <p class="truncate pb-0.5 pl-6 pr-1 text-[0.6875rem] text-warning" title={blockedLabel} data-testid="agent-tray-row-blocked">{blockedLabel}</p>
-  {:else if activity}
-    <p class="truncate pb-0.5 pl-6 pr-1 text-[0.6875rem] text-fg-hint/85" title={activity} data-testid="agent-tray-row-activity">{activity}</p>
+  {#if hasMetrics || blockedLabel || activity}
+    <p class="flex min-w-0 items-center gap-1 pb-0.5 pl-6 pr-1 text-[0.6875rem] text-fg-hint/85" data-testid="agent-tray-row-details-line">
+      {#if hasMetrics}
+        <span class="flex shrink-0 items-center gap-1 tabular-nums" data-testid="agent-tray-row-metrics">
+          <AgentMetrics {toolUses} {tokens} testIdPrefix="agent-tray-row" />
+        </span>
+        {#if blockedLabel || activity}<span aria-hidden="true">·</span>{/if}
+      {/if}
+      {#if blockedLabel}
+        <span class="min-w-0 truncate text-warning" title={blockedLabel} data-testid="agent-tray-row-blocked">{blockedLabel}</span>
+      {:else if activity}
+        <span class="min-w-0 truncate" title={activity} data-testid="agent-tray-row-activity">{activity}</span>
+      {/if}
+    </p>
   {/if}
   {#if degraded}
     <p class="truncate pb-0.5 pl-6 pr-1 text-[0.6875rem] text-warning" title={degraded} data-testid="agent-tray-row-degraded">{degraded}</p>

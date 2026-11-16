@@ -119,6 +119,33 @@ describe('the Agents segment', () => {
   });
 
   for (const compact of [false, true]) {
+    it(`${compact ? 'under compact, ' : ''}shows what a spawned thread did as a subagent's row does: its tools and tokens beside its latest tool call while it runs, the final counts once it settled`, async () => {
+      setCompactLayoutForTest(compact);
+      const { view, toggle } = await openTray((caller) => [
+        row('working', { callerThreadId: caller, toolCalls: 12, tokens: 18_240, activity: 'tail -f deploy.log' }),
+        row('one', { callerThreadId: caller, toolCalls: 1 }),
+        row('done', { callerThreadId: caller, state: 'finished', settledAt: Date.now(), toolCalls: 30, tokens: 1_240_000, activity: 'stale' }),
+        row('send', { callerThreadId: caller, kind: 'send' }),
+        row('blocked', { callerThreadId: caller, state: 'blocked', blockedOn: 'question', blockedDetail: 'Which branch?', toolCalls: 2, tokens: 900 }),
+      ]);
+      await fireEvent.click(toggle);
+      const [working, one, done, send, blocked] = await view.findAllByTestId('agent-tray-row');
+      expect(within(working).getByTestId('agent-tray-row-tools').textContent).toBe('12 tools');
+      expect(within(working).getByTestId('agent-tray-row-tokens').textContent).toBe('18.2k tokens');
+      expect(within(working).getByTestId('agent-tray-row-activity').textContent).toBe('tail -f deploy.log');
+      expect(within(working).getByTestId('agent-tray-row-elapsed').textContent).toBe('1m 5s');
+      expect(within(one).getByTestId('agent-tray-row-tools').textContent).toBe('1 tool');
+      expect(within(one).queryByTestId('agent-tray-row-tokens')).toBeNull();
+      expect(within(done).getByTestId('agent-tray-row-metrics').textContent?.replace(/\s+/g, ' ').trim()).toBe('30 tools · 1.2M tokens');
+      expect(within(done).queryByTestId('agent-tray-row-activity')).toBeNull();
+      expect(within(send).queryByTestId('agent-tray-row-metrics')).toBeNull();
+      expect(within(send).queryByTestId('agent-tray-row-details-line')).toBeNull();
+      expect(within(blocked).getByTestId('agent-tray-row-tools').textContent).toBe('2 tools');
+      expect(within(blocked).getByTestId('agent-tray-row-blocked').textContent).toBe('Asks: Which branch?');
+    });
+  }
+
+  for (const compact of [false, true]) {
     it(`${compact ? 'under compact, ' : ''}shows a row whose worker keeps working after its request settled as open: its state, activity, blocked line and Stop, counted once`, async () => {
       setCompactLayoutForTest(compact);
       const { view, toggle } = await openTray((caller) => [
