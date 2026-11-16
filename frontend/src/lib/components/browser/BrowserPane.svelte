@@ -1,16 +1,19 @@
 <script lang="ts">
   import type { PanelContext } from '../../stores/panelContext.svelte';
   import {
+    addressFocusIntent,
     attachBrowserCompanion,
     browserCompanionAct,
     browserPaneMountId,
+    openBrowserTab,
+    takeAddressFocus,
     noteBrowserActionError,
     noteBrowserFindCleanupError,
     browserFindCleanupError,
   } from '../../stores/browserCompanion.svelte';
   import { BrowserCompanionRevealPageFile } from '../../stores/bindings';
   import { errString } from '../../utils/errors';
-  import { untrack } from 'svelte';
+  import { tick, untrack } from 'svelte';
   import PaneFindBar from '../panes/PaneFindBar.svelte';
   import { companionForSource } from '../../stores/companionPanes.svelte';
   import { closePaneFind, registerPaneFindProvider } from '../../stores/paneFind.svelte';
@@ -126,6 +129,35 @@
     void act('activate', page.id);
   });
 
+  // A new tab the user opened takes the address bar's focus once it is ready
+  // (stores/browserCompanion#openBrowserTab); the store withdraws the intent
+  // when the user does anything else first or another tab is shown.
+  let addressBar: ReturnType<typeof BrowserAddressBar> | undefined = $state(undefined);
+  $effect(() => {
+    const threadId = ctx.threadId;
+    const page = activePage;
+    if (!threadId || addressFocusIntent(threadId) === null) return;
+    if (!untrack(() => takeAddressFocus(threadId, page))) return;
+    // After this update renders the bar enabled for the ready page.
+    void tick().then(() => addressBar?.focusAddress());
+  });
+
+  function openNewTab(): void {
+    const threadId = ctx.threadId;
+    if (threadId) void openBrowserTab(threadId, { focusAddress: true });
+  }
+
+  // What the host rect says while the active tab has no page to present.
+  let pendingNote = $derived(
+    activePage?.error
+      ? `This tab could not be opened: ${activePage.error}`
+      : activePage?.creating
+        ? 'Opening…'
+        : activePage?.restoring
+          ? 'Restoring…'
+          : '',
+  );
+
   async function revealPageFile(): Promise<void> {
     const threadId = ctx.threadId;
     if (!threadId || !activePageId) return;
@@ -139,9 +171,9 @@
 </script>
 
 <div class="flex h-full min-h-0 flex-col bg-surface-0" data-testid="browser-pane">
-  <BrowserTabStrip {sessionName} {pages} {activePageId} onAct={act} />
+  <BrowserTabStrip {sessionName} {pages} {activePageId} onAct={act} onNewTab={openNewTab} />
 
-  <BrowserAddressBar {activePage} {sizeLabel} onAct={act} onRevealPageFile={revealPageFile} />
+  <BrowserAddressBar bind:this={addressBar} {activePage} {sizeLabel} onAct={act} onRevealPageFile={revealPageFile} />
 
   {#if browserPaneId}
     <PaneFindBar paneId={browserPaneId} title={activePage?.title || 'Browser'} fallbackFocus={() => surface ?? null} />
@@ -166,6 +198,11 @@
   >
     {#if view?.error || attachment?.error}
       <div class="flex h-full items-center justify-center px-4 text-sm text-error">{view?.error || attachment?.error}</div>
+    {:else if pendingNote}
+      <div
+        class="flex h-full items-center justify-center px-4 text-sm {activePage?.error ? 'text-error' : 'text-fg-muted'}"
+        data-testid="browser-pane-pending"
+      >{pendingNote}</div>
     {/if}
   </div>
 </div>

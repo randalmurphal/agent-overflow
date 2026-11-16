@@ -1,8 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  addressFocusIntent,
   applyBrowserCompanionState,
   attachBrowserCompanion,
   browserCompanionAct,
+  openBrowserTab,
+  takeAddressFocus,
   canUseNativeBrowser,
   hydrateBrowserCompanionState,
   closeFocusedBrowserTab,
@@ -25,6 +28,7 @@ import { resetStagedBackends, stageBackend } from '../../test/helpers/backends';
 import * as runMode from '../transport/runMode';
 import { setCompactLayoutForTest } from './layoutMode.svelte';
 import { setHostWindowFromBootstrap } from '../transport/pageHost';
+import { getToasts, resetToastsForTest } from './toast.svelte';
 
 const page = (url: string, title: string) => ({ id: 'page-1', url, title, canGoBack: false, canGoForward: false });
 
@@ -566,5 +570,95 @@ describe('accelerators from the native page view', () => {
       window.removeEventListener('keydown', listener);
     }
     expect(seen).toEqual([]);
+  });
+});
+
+describe('tab lifecycle in the browser companion store', () => {
+  const THREAD = 'thread-browser';
+  const tab = (id: string, extra: Record<string, unknown> = {}) => ({
+    id, url: 'about:blank', title: '', canGoBack: false, canGoForward: false, ...extra,
+  });
+
+  beforeEach(() => {
+    resetBrowserCompanionForTest();
+    resetToastsForTest();
+    resetCompanionPanesForTest();
+    resetPaneLayoutForTest();
+    resetPanesForTest();
+    installCompanionPanes();
+    setPaneLayoutItemsForTest([{ id: 'main', paneId: 'main', kind: 'thread', widthPx: 640 }]);
+    createPane('main').replaceThread(makeThread({ id: THREAD }));
+  });
+  afterEach(() => {
+    resetBrowserCompanionForTest();
+    resetToastsForTest();
+  });
+
+  it('raises a teardown failure after the last tab closed as a toast that stays', () => {
+    applyBrowserCompanionState({ kind: 'state', threadId: THREAD, activePageId: 'a', visible: true, pages: [tab('a')] });
+    applyBrowserCompanionState({ kind: 'state', threadId: THREAD, visible: false, pages: [] });
+    expect(companionForSource('main', 'browser')).toBeNull();
+    applyBrowserCompanionState({ kind: 'teardown', threadId: THREAD, pageId: 'a', error: 'profile would not stop' });
+    const toasts = getToasts();
+    expect(toasts).toHaveLength(1);
+    expect(toasts[0].message).toContain('profile would not stop');
+    expect(toasts[0].duration).toBe(0);
+  });
+
+  it('opens the pane from no tab with the creating tab, then names the tab for focus', async () => {
+    let answer!: () => void;
+    setBindingMock('BrowserCompanionDo', vi.fn(async (_thread: string, action: { kind: string }) => {
+      expect(action.kind).toBe('new');
+      // The backend pushes the creating tab, shown, before it answers.
+      applyBrowserCompanionState({ kind: 'state', threadId: THREAD, seq: 1, activePageId: 'n', visible: true, pages: [tab('n', { creating: true })] });
+      await new Promise<void>((resolve) => { answer = resolve; });
+      return { kind: 'state', threadId: THREAD, seq: 2, activePageId: 'n', visible: true, pages: [tab('n')], pageId: 'n' };
+    }));
+    const opened = openBrowserTab(THREAD, { focusAddress: true });
+    await vi.waitFor(() => expect(companionForSource('main', 'browser')).not.toBeNull());
+    expect(addressFocusIntent(THREAD)).toBe('');
+    // Not while it is created: there is no page to take an address yet.
+    expect(takeAddressFocus(THREAD, { id: 'n', creating: true })).toBe(false);
+    answer();
+    expect(await opened).toBeNull();
+    expect(addressFocusIntent(THREAD)).toBe('n');
+    expect(takeAddressFocus(THREAD, { id: 'n' })).toBe(true);
+    // Once.
+    expect(takeAddressFocus(THREAD, { id: 'n' })).toBe(false);
+  });
+
+  it('drops the focus when the user moves on before the tab is ready', async () => {
+    setBindingMock('BrowserCompanionDo', vi.fn(async () => ({
+      kind: 'state', threadId: THREAD, activePageId: 'n', visible: true, pages: [tab('n')], pageId: 'n',
+    })));
+    const opened = openBrowserTab(THREAD, { focusAddress: true });
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'a' }));
+    await opened;
+    expect(addressFocusIntent(THREAD)).toBeNull();
+    expect(takeAddressFocus(THREAD, { id: 'n' })).toBe(false);
+  });
+
+  it('drops the focus when another tab is shown first', async () => {
+    setBindingMock('BrowserCompanionDo', vi.fn(async () => ({
+      kind: 'state', threadId: THREAD, activePageId: 'n', visible: true, pages: [tab('n')], pageId: 'n',
+    })));
+    await openBrowserTab(THREAD, { focusAddress: true });
+    expect(takeAddressFocus(THREAD, { id: 'other' })).toBe(false);
+    expect(addressFocusIntent(THREAD)).toBeNull();
+    expect(takeAddressFocus(THREAD, { id: 'n' })).toBe(false);
+  });
+
+  it('asks no focus for a tab opened without it, and none for a failed open', async () => {
+    setBindingMock('BrowserCompanionDo', vi.fn(async () => ({
+      kind: 'state', threadId: THREAD, activePageId: 'n', visible: true, pages: [tab('n')], pageId: 'n',
+    })));
+    await openBrowserTab(THREAD, { address: 'https://example.com' });
+    expect(addressFocusIntent(THREAD)).toBeNull();
+    // A failed creation answers no tab: the tab itself shows its error.
+    setBindingMock('BrowserCompanionDo', vi.fn(async () => ({
+      kind: 'state', threadId: THREAD, activePageId: 'n', visible: true, pages: [tab('n', { error: 'refused' })], pageId: '',
+    })));
+    await openBrowserTab(THREAD, { focusAddress: true });
+    expect(addressFocusIntent(THREAD)).toBeNull();
   });
 });

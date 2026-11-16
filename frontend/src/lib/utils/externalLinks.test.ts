@@ -19,6 +19,7 @@ import { OBSERVE_SCOPES, pairWithScopes, resetToLocalPage } from '../../test/hel
 import { __resetScopesForTest } from '../transport/scopes';
 import { setHostWindowFromBootstrap } from '../transport/pageHost';
 import { resetBrowserCompanionForTest } from '../stores/browserCompanion.svelte';
+import { getToasts, resetToastsForTest } from '../stores/toast.svelte';
 import { noteThread, __resetEntityIndexForTest } from '../transport/entityIndex';
 
 describe('safeExternalURL', () => {
@@ -486,6 +487,7 @@ describe('mod+click on an ordinary external link', () => {
     resetRunMode();
     resetToLocalPage();
     resetBrowserCompanionForTest();
+    resetToastsForTest();
     __resetEntityIndexForTest();
     originalOpen = window.open;
     window.open = vi.fn();
@@ -505,33 +507,30 @@ describe('mod+click on an ordinary external link', () => {
     document.body.innerHTML = '';
   });
 
-  it('opens a new companion tab on that address, on host', async () => {
+  it('opens a new companion tab on that address in one request, on host', async () => {
     const systemOpen = setBindingMock('OpenExternalURL', vi.fn(async () => undefined));
     const act = setBindingMock('BrowserCompanionDo', vi.fn(async () => ({
       threadId: 'thread-1',
       kind: 'state',
       pages: [{ id: 'page-1' }],
       activePageId: 'page-1',
+      pageId: 'page-1',
     })));
 
     expect(modClick(linkInThread())).toBe(false);
-    await waitFor(() => expect(act).toHaveBeenCalledTimes(2));
-    expect(act.mock.calls[0][1]).toMatchObject({ kind: 'new' });
-    expect(act.mock.calls[1][1]).toMatchObject({
-      kind: 'navigate',
-      pageId: 'page-1',
-      address: 'https://example.com/docs',
-    });
+    await waitFor(() => expect(act).toHaveBeenCalledTimes(1));
+    // The address rides the `new`, so no other tab is ever navigated.
+    expect(act.mock.calls[0][1]).toMatchObject({ kind: 'new', address: 'https://example.com/docs' });
     expect(systemOpen).not.toHaveBeenCalled();
   });
 
-  it('does not navigate when the new tab was refused', async () => {
+  it('reports a refused new tab in a toast when no pane carries a banner', async () => {
     const act = setBindingMock('BrowserCompanionDo', vi.fn(async () => {
       throw new Error('browser manager unavailable');
     }));
 
     expect(modClick(linkInThread())).toBe(false);
-    await waitFor(() => expect(act).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(getToasts().map((toast) => toast.message)).toContain('browser manager unavailable'));
     expect(act).toHaveBeenCalledTimes(1);
   });
 

@@ -24,12 +24,24 @@
 
   let address = $state('');
   let addressFocused = $state(false);
+  let input: HTMLInputElement | undefined = $state(undefined);
   let activeIsLocalFile = $derived((activePage?.url ?? '').toLowerCase().startsWith('file:'));
+  // A tab with no page to navigate yet (being created, or failed) takes no
+  // address.
+  let addressDisabled = $derived(!activePage || activePage.creating === true || !!activePage.error);
 
   $effect(() => {
-    const url = activePage?.url ?? '';
+    // A blank page reads as an empty address, ready to type into.
+    const url = activePage?.url === 'about:blank' ? '' : (activePage?.url ?? '');
     if (!addressFocused) address = url;
   });
+
+  /** Focuses the address with its text selected (a new tab the user opened). */
+  export function focusAddress(): void {
+    if (!input || input.disabled) return;
+    input.focus();
+    input.select();
+  }
 </script>
 
 <div class="flex h-10 shrink-0 items-center gap-1 border-b border-border-subtle bg-surface-1 px-2">
@@ -39,8 +51,9 @@
   <input
     class="h-7 min-w-0 flex-1 rounded-md border border-border-subtle bg-surface-0 px-2 text-[0.75rem] text-fg outline-none focus:border-accent/60"
     aria-label="Address"
+    bind:this={input}
     bind:value={address}
-    disabled={!activePage}
+    disabled={addressDisabled}
     onfocus={() => (addressFocused = true)}
     onblur={() => (addressFocused = false)}
     onkeydown={(event) => {
