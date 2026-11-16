@@ -208,11 +208,13 @@ meet, and whether it deletes rows. A rule reads the snapshot migrated
 alone, never the snapshot, so it names columns at the build's schema
 whatever release wrote the root. A rule that removes or rewrites a row
 holding a person's words also checks where they went: a queued message, an
-unconfirmed one and a resend's recovery are removed only when the booted
-draft holds their text and attachments, and the draft they land in must
-keep its own. A queue copy of a member of an unconfirmed joined row leaves
-only when the draft holds that row whole, and a queue row whose message a
-provider-confirmed row carries leaves with no text. Stamps follow writes, never stand alone: a row's
+unconfirmed one and a resend's recovery leave only when their thread's
+booted draft is exactly the draft the boot's restores compose from them
+(`restoredDraftThreads` in the fingerprint mirrors that composition: the
+parts in the restore's order, trimmed as Go trims, joined as
+`composerdraft.MergeParts` joins them, a joined row's member copies and
+provider-confirmed messages adding no text). Stamps follow writes, never
+stand alone: a row's
 `rev`, the thread's `history_rev` and `history_epoch`, and a subagent card
 may move only in a thread whose `items` rows the boot changed, removed or
 added (`rows: 'thread-write'`), also on a row another rule settles. A boot
