@@ -869,10 +869,10 @@ func (e *policyRecordingEngine) NewProfile(ctx context.Context, opts profileOpti
 	return e.fakeEngine.NewProfile(ctx, opts)
 }
 
-// A profile carries its workspace's navigation policy, which an engine
-// applies to a page it opened by itself before the Manager adopts it: the
-// roots of the thread that created the profile, and the outside-workspace
-// setting as it stands when a request is decided.
+// A profile carries its pages' navigation policy, which an engine applies to
+// a page it opened by itself before the Manager adopts it: the roots of the
+// page a request resolves to, and the outside-workspace setting as it stands
+// when a request is decided.
 func TestAProfileCarriesItsWorkspacesNavigationPolicy(t *testing.T) {
 	workspace, project, outside := t.TempDir(), t.TempDir(), t.TempDir()
 	files := map[string]string{
@@ -889,9 +889,12 @@ func TestAProfileCarriesItsWorkspacesNavigationPolicy(t *testing.T) {
 	t.Cleanup(func() { manager.Close() })
 	engine := &policyRecordingEngine{fakeEngine: newFakeEngine()}
 	manager.engine = engine
-	if _, err := manager.NewPage(t.Context(), Access{ThreadID: "thread", Workspace: workspace, ProjectRoot: project}); err != nil {
+	access := Access{ThreadID: "thread", Workspace: workspace, ProjectRoot: project}
+	page, err := manager.NewPage(t.Context(), access)
+	if err != nil {
 		t.Fatal(err)
 	}
+	owners := []string{paneHandle(manager, access, page.ID)}
 	engine.mu.Lock()
 	allow := engine.opts.Allow
 	engine.mu.Unlock()
@@ -905,14 +908,14 @@ func TestAProfileCarriesItsWorkspacesNavigationPolicy(t *testing.T) {
 		"https://example.test/":        true,
 		"chrome://settings/":           false,
 	} {
-		if got := allow("", "", url); got != want {
+		if got := allow(owners, url); got != want {
 			t.Errorf("the profile's policy answers %v for %s, want %v", got, url, want)
 		}
 	}
 	manager.mu.Lock()
 	manager.config.AllowOutsideWorkspace = true
 	manager.mu.Unlock()
-	if !allow("", "", "file://"+files["outside"]) {
+	if !allow(owners, "file://"+files["outside"]) {
 		t.Error("the profile's policy ignores the outside-workspace setting")
 	}
 }

@@ -224,7 +224,7 @@ func testHeadlessProfile(t *testing.T, engine *headlessEngine, workspace string,
 	t.Helper()
 	profile, err := engine.NewProfile(context.Background(), profileOptions{
 		Jar: workspace, DownloadDir: filepath.Join(t.TempDir(), "downloads"), Ephemeral: !persist,
-		Allow: func(string, string, string) bool { return true },
+		Allow: func([]string, string) bool { return true },
 	})
 	if err != nil {
 		t.Fatalf("new profile for %s: %v", workspace, err)
@@ -748,24 +748,37 @@ type requestAnswer struct {
 // Chromium runs a page it opened by itself before the Manager can adopt it
 // and AttachPage can install the page's own policy, so the profile enables
 // the jar's policy on the browser session at launch, for every request the
-// page policy intercepts, and answers what it pauses there. Each request
-// names the page it belongs to and, for a popup, the page that opened it,
-// whose authority the Manager answers with.
-func TestHeadlessProfileAppliesTheOpenersPolicyToAPopup(t *testing.T) {
+// page policy intercepts, and answers what it pauses there with the
+// Manager's policy for the jar. In a jar two worktrees share, a request has
+// the authority of the page its frame belongs to, or of its popup's openers;
+// a request whose owner is not resolved (a popup's request before Chromium
+// reports the popup, a subframe no page reported, a popup whose opener
+// closed) may open no workspace's files.
+func TestHeadlessJarPolicyAnswersWithTheRequestsOwner(t *testing.T) {
+	manager, jars := newJarManager(t, t.TempDir(), Config{Enabled: true, PersistSiteData: true})
+	proj := newProject(t, "P")
+	files := map[string]string{}
+	for name, dir := range map[string]string{"one": proj.one, "two": proj.two} {
+		path := filepath.Join(dir, name+".html")
+		if err := os.WriteFile(path, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		files[name] = "file://" + canonical(t, path)
+	}
+	a, b := proj.access("a", proj.one), proj.access("b", proj.two)
+	setJar(t, manager, a, JarProject)
+	setJar(t, manager, b, JarProject)
+	pageA := openPage(t, manager, a, "https://example.test/a")
+	openPage(t, manager, b, "https://example.test/b")
+	openerA := paneHandle(manager, a, pageA.ID)
+	jars.ownFrame("F-of-A", openerA)
+
 	browser := writeFakeChromium(t, "chromium")
 	engine := newTestHeadlessEngine(t, browser.path)
 	engine.events.PopupOpened = func(enginePopup) {}
-	const allowed = "file:///home/dev/repo/index.html"
-	var mu sync.Mutex
-	var asked [][2]string
 	profile, err := engine.NewProfile(context.Background(), profileOptions{
-		Jar: "/home/dev/repo", DownloadDir: filepath.Join(t.TempDir(), "downloads"), Ephemeral: true,
-		Allow: func(page, opener, url string) bool {
-			mu.Lock()
-			asked = append(asked, [2]string{page, opener})
-			mu.Unlock()
-			return opener == "P-opener" && url == allowed
-		},
+		Jar: "project:P", DownloadDir: filepath.Join(t.TempDir(), "downloads"), Ephemeral: true,
+		Allow: jars.profile("project:P").allow,
 	})
 	if err != nil {
 		t.Fatalf("new profile: %v", err)
@@ -788,32 +801,64 @@ func TestHeadlessProfileAppliesTheOpenersPolicyToAPopup(t *testing.T) {
 		t.Fatalf("Fetch.enable on the browser session: %+v, want once with %+v", enabled, want)
 	}
 
-	browser.send(popupCreated("P-popup", "P-opener"))
-	eventually(t, "the popup to be known", func() bool {
-		_, bound := engine.profileForPage("P-popup")
-		return bound
+	// expect sends each request and waits until every one is answered, so a
+	// later event cannot be handled before them.
+	expect := func(step string, requests map[string][3]string) {
+		t.Helper()
+		for id, r := range requests {
+			browser.send(pausedRequest(id, r[0], r[1]))
+		}
+		answers := map[string]bool{}
+		eventually(t, step+": the paused requests to be answered", func() bool {
+			calls := browser.calls()
+			for _, answer := range browserCallParams[requestAnswer](t, calls, "Fetch.continueRequest") {
+				answers[answer.RequestID] = true
+			}
+			for _, answer := range browserCallParams[requestAnswer](t, calls, "Fetch.failRequest") {
+				answers[answer.RequestID] = false
+			}
+			for id := range requests {
+				if _, ok := answers[id]; !ok {
+					return false
+				}
+			}
+			return true
+		})
+		for id, r := range requests {
+			if got := answers[id]; got != (r[2] == "allow") {
+				t.Errorf("%s: frame %s requesting %s was allowed=%v, want %s", step, r[0], r[1], got, r[2])
+			}
+		}
+	}
+
+	expect("before the popup is reported", map[string][3]string{
+		"R-early":         {"P-popup", files["one"], "refuse"},
+		"R-early-web":     {"P-popup", "https://example.test/", "allow"},
+		"R-unknown-frame": {"F-unknown", files["one"], "refuse"},
+		"R-frame":         {"F-of-A", files["one"], "allow"},
+		"R-frame-other":   {"F-of-A", files["two"], "refuse"},
 	})
-	browser.send(pausedRequest("R-allowed", "P-popup", allowed))
-	browser.send(pausedRequest("R-refused", "P-popup", "file:///home/dev/secret.txt"))
-	browser.send(pausedRequest("R-subframe", "F-subframe", allowed))
-	var continued, failed []requestAnswer
-	eventually(t, "the paused requests to be answered on the browser session", func() bool {
-		calls := browser.calls()
-		continued = browserCallParams[requestAnswer](t, calls, "Fetch.continueRequest")
-		failed = browserCallParams[requestAnswer](t, calls, "Fetch.failRequest")
-		return len(continued)+len(failed) >= 3
+
+	browser.send(popupCreated("P-popup", openerA))
+	browser.send(popupCreated("P-nested", "P-popup"))
+	eventually(t, "the popups to be known", func() bool {
+		_, popup := engine.profileForPage("P-popup")
+		_, nested := engine.profileForPage("P-nested")
+		return popup && nested
 	})
-	if len(continued) != 1 || continued[0].RequestID != "R-allowed" {
-		t.Fatalf("continued %+v, want only R-allowed", continued)
+	expect("after the popups are reported", map[string][3]string{
+		"R-popup":       {"P-popup", files["one"], "allow"},
+		"R-popup-other": {"P-popup", files["two"], "refuse"},
+		"R-nested":      {"P-nested", files["one"], "allow"},
+	})
+
+	if err := manager.ClosePage(t.Context(), a, pageA.ID); err != nil {
+		t.Fatal(err)
 	}
-	if len(failed) != 2 {
-		t.Fatalf("failed %+v, want R-refused and R-subframe", failed)
-	}
-	mu.Lock()
-	defer mu.Unlock()
-	if !slices.Contains(asked, [2]string{"P-popup", "P-opener"}) || !slices.Contains(asked, [2]string{"F-subframe", ""}) {
-		t.Fatalf("the policy was asked %q, want the popup with its opener and the subframe with none", asked)
-	}
+	expect("after the opener closed", map[string][3]string{
+		"R-orphan":       {"P-popup", files["one"], "refuse"},
+		"R-orphan-other": {"P-popup", files["two"], "refuse"},
+	})
 }
 
 // A profile answers every request it pauses, so one without a policy to ask
@@ -1447,7 +1492,7 @@ func assertRealPopupsPassThePolicy(t *testing.T, engine *headlessEngine) {
 	popups := make(chan enginePopup, 2)
 	engine.events.PopupOpened = func(popup enginePopup) { popups <- popup }
 	created, err := engine.NewProfile(t.Context(), profileOptions{
-		Jar: workspace, DownloadDir: filepath.Join(t.TempDir(), "downloads"), Ephemeral: true, Allow: func(_, _, url string) bool { return inWorkspace(url) },
+		Jar: workspace, DownloadDir: filepath.Join(t.TempDir(), "downloads"), Ephemeral: true, Allow: func(_ []string, url string) bool { return inWorkspace(url) },
 	})
 	if err != nil {
 		t.Fatalf("new profile: %v", err)

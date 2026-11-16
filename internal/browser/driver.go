@@ -150,12 +150,14 @@ type profileOptions struct {
 	Ephemeral bool
 	// Allow is the policy for a request an engine intercepts outside any one
 	// page's own policy: the headless engine's browser-wide interception,
-	// which also sees a popup before the Manager adopts it. page names the
-	// page the request belongs to and opener the page that opened it; either
-	// may be empty. The Manager answers with that page's workspace authority,
-	// or its opener's, never the jar's (jarAllows). The WebKit engines need
-	// none: their glue names a popup's opener for every navigation decision.
-	Allow func(page, opener, rawURL string) bool
+	// which also sees a popup before the Manager adopts it. owners is the
+	// frame the request belongs to followed by the pages that opened its
+	// page, nearest first, as far as the engine knows them. The Manager
+	// answers with the authority of the first owner it resolves to one of
+	// its pages, and with no workspace's authority when none resolves
+	// (jarAllows). The WebKit engines need none: their glue names a popup's
+	// opener for every navigation decision.
+	Allow func(owners []string, rawURL string) bool
 }
 
 // pageHooks are the AO-owned callbacks a page driver reports into. They carry

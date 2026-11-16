@@ -33,7 +33,14 @@ type jarEngine struct {
 	closeStep   chan struct{}
 	profileGate chan struct{}
 	profiling   chan struct{}
-	cleared     atomic.Int64
+	// frames maps a subframe to the handle of the page that reports it.
+	frames map[string]string
+	// closeHolds holds the close of one page, by handle (holdCloseOf).
+	closeHolds  map[string]chan struct{}
+	disposeGate chan struct{}
+	// lastPage is the handle of the page NewPage created last.
+	lastPage string
+	cleared  atomic.Int64
 }
 
 type jarProfile struct {
@@ -149,6 +156,9 @@ func (p *jarProfile) NewPage(ctx context.Context, hooks pageHooks) (pageDriver, 
 	if err != nil {
 		return nil, err
 	}
+	p.engine.mu.Lock()
+	p.engine.lastPage = driver.Handle()
+	p.engine.mu.Unlock()
 	return &jarPage{pageDriver: driver, engine: p.engine}, nil
 }
 
@@ -167,21 +177,73 @@ func (p *jarProfile) AttachPage(ctx context.Context, _ string, hooks pageHooks) 
 }
 
 func (p *jarProfile) Dispose(ctx context.Context) error {
+	p.engine.mu.Lock()
+	gate := p.engine.disposeGate
+	p.engine.mu.Unlock()
+	if gate != nil {
+		<-gate
+	}
 	p.disposed.Store(true)
 	return p.fakeProfile.Dispose(ctx)
 }
 
+// holdDispose holds every profile disposal until release.
+func (e *jarEngine) holdDispose(t *testing.T) (release func()) {
+	gate := make(chan struct{})
+	e.mu.Lock()
+	e.disposeGate = gate
+	e.mu.Unlock()
+	var once sync.Once
+	release = func() { once.Do(func() { close(gate) }) }
+	t.Cleanup(release)
+	return release
+}
+
+// ownFrame makes the page with handle report frame as one of its subframes.
+func (e *jarEngine) ownFrame(frame, handle string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.frames == nil {
+		e.frames = make(map[string]string)
+	}
+	e.frames[frame] = handle
+}
+
+func (p *jarPage) OwnsFrame(frame string) bool {
+	p.engine.mu.Lock()
+	owner, ok := p.engine.frames[frame]
+	p.engine.mu.Unlock()
+	return (ok && owner == p.Handle()) || p.pageDriver.OwnsFrame(frame)
+}
+
 func (p *jarPage) Close() {
 	p.engine.mu.Lock()
-	gate, step := p.engine.closeGate, p.engine.closeStep
+	gate, step, own := p.engine.closeGate, p.engine.closeStep, p.engine.closeHolds[p.Handle()]
 	p.engine.mu.Unlock()
 	switch {
 	case gate != nil:
 		<-gate
 	case step != nil:
 		<-step
+	case own != nil:
+		<-own
 	}
 	p.pageDriver.Close()
+}
+
+// holdCloseOf holds the close of the page with handle alone until release.
+func (e *jarEngine) holdCloseOf(t *testing.T, handle string) (release func()) {
+	gate := make(chan struct{})
+	e.mu.Lock()
+	if e.closeHolds == nil {
+		e.closeHolds = make(map[string]chan struct{})
+	}
+	e.closeHolds[handle] = gate
+	e.mu.Unlock()
+	var once sync.Once
+	release = func() { once.Do(func() { close(gate) }) }
+	t.Cleanup(release)
+	return release
 }
 
 // stepCloses holds every page close until step lets one through; at the
@@ -223,7 +285,11 @@ func (p *jarPage) Navigate(ctx context.Context, rawURL string) error {
 	p.engine.mu.Unlock()
 	if gate != nil {
 		p.engine.navigating <- rawURL
-		<-gate
+		select {
+		case <-gate:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
 	if failure != nil {
 		return failure
@@ -427,7 +493,7 @@ func TestPrivateJarIsEphemeralAndNewEachGeneration(t *testing.T) {
 
 // A shared jar shares storage, never authority: each page keeps its own
 // workspace's file permissions and download quota, and the jar's own policy
-// for a popup not yet adopted allows only what every member may open.
+// answers a popup not yet adopted with its opener's.
 func TestASharedJarKeepsEachWorkspacesAuthority(t *testing.T) {
 	manager, engine := newJarManager(t, t.TempDir(), Config{Enabled: true, PersistSiteData: true})
 	proj := newProject(t, "P")
@@ -466,21 +532,14 @@ func TestASharedJarKeepsEachWorkspacesAuthority(t *testing.T) {
 	// what it may open once adopted: its worktree's files, not the other's.
 	allow := engine.profile("project:P").allow
 	openerA, openerB := paneHandle(manager, a, pageA.ID), paneHandle(manager, b, pageB.ID)
-	if !allow("popup", openerA, "file://"+files["one"]) || !allow("popup", openerB, "file://"+files["two"]) {
+	if !allow([]string{"popup", openerA}, "file://"+files["one"]) || !allow([]string{"popup", openerB}, "file://"+files["two"]) {
 		t.Fatal("a popup in the shared jar is refused its opener's worktree file")
 	}
-	if allow("popup", openerA, "file://"+files["two"]) || allow("popup", openerB, "file://"+files["one"]) {
+	if allow([]string{"popup", openerA}, "file://"+files["two"]) || allow([]string{"popup", openerB}, "file://"+files["one"]) {
 		t.Fatal("a popup in the shared jar may open the other worktree's file")
 	}
-	if !allow(openerA, "", "file://"+files["one"]) || allow(openerA, "", "file://"+files["two"]) {
+	if !allow([]string{openerA}, "file://"+files["one"]) || allow([]string{openerA}, "file://"+files["two"]) {
 		t.Fatal("a page's own request is not answered with its own authority")
-	}
-	outside := filepath.Join(t.TempDir(), "outside.html")
-	if err := os.WriteFile(outside, nil, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if !allow("subframe", "", "file://"+files["root"]) || allow("subframe", "", "file://"+canonical(t, outside)) {
-		t.Fatal("a request naming no page is not bounded by what the jar's pages may open")
 	}
 
 	manager.mu.Lock()

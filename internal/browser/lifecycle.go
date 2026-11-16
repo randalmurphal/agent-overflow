@@ -167,7 +167,7 @@ func (m *Manager) createPage(ctx context.Context, access Access, user bool) (*ma
 	var closed bool
 	for {
 		m.startMu.Lock()
-		scope, err = m.openPageLocked(createCtx, access, p)
+		scope, err = m.openPageLocked(createCtx, access, p, nil)
 		// One m.mu hold settles the creation against its close flag and its
 		// thread's jar as they are now, so neither a close nor a jar switch can
 		// land between reading them and acting on it.
