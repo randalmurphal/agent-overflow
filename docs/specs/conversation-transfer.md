@@ -67,7 +67,11 @@ A transfer contains native resumable files, AO conversation metadata and history
 attachment metadata/bytes, and the workspace changes selected by the user.
 History rendering caches can be recomputed. Credentials, provider accounts,
 host settings, active processes and approval handles never travel with a thread.
-The destination chooses its own account and execution configuration. Before it
+The destination chooses its own account and execution configuration. A thread's
+spawn instructions travel with it; a destination whose transfer offer does not
+say it carries them is refused before preparation with a message to update it
+first. A sub-thread level carried from a paired computer does not travel: the
+transferred thread is no longer anyone's delegate. Before it
 acknowledges preparation, it checks the selected provider binary and fresh native
 account availability. A failed check keeps the source unretired; fixing the
 account and retrying finishes the same accepted operation. Claude credential

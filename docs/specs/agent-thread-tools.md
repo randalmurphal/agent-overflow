@@ -445,22 +445,43 @@ instructions; an empty field inherits the spawning thread's. Choosing
 notes (`agentNotes`) sit beside them, each shown always, only when the
 listed profiles run on both providers, or only when they run on one
 provider and at least two models. The app seeds eight profiles, each
-provider's from the lowest tier to the highest, and five notes, among
+provider's from the lowest tier to the highest, and six notes, among
 them one stating that tier is capability and effort is diligence. No
 seeded use-for line names another provider's profile, so a computer
-with one provider is never pointed at the other. An edited roster or
+with one provider is never pointed at the other; the comparison across
+the families is a note shown only when both run. An edited roster or
 note list is the person's and no later seed replaces it. Restore puts
 the seeds back.
+
+The settings page edits the profiles and the notes as two drafts, each
+saved whole when a control commits. A change saved elsewhere replaces
+the entries unchanged here and keeps the ones edited here; an entry
+changed in both places keeps the person's version, marked with a note
+that it changed elsewhere and a button to take the other version, until
+saving writes theirs over it (`frontend/src/lib/components/settings/rosterDraft.ts`).
 
 `thread_options` lists, per computer, the profiles that computer can
 run (`profiles`: name, `use_for`, the provider and model it resolves to,
 effort, runtime mode, whether it carries instructions) and the notes
 that apply (`profile_notes`). A computer runs a profile when its
 provider is turned on there and its binary resolves, the same check the
-thread tools catalog applies to every provider, and its model is in that
-provider's catalog there. A paired computer's rows are computed from the
-caller's roster against that computer's catalog. Sign-in is not read:
-a signed-out provider says so at the spawn's first turn.
+thread tools catalog applies to every provider, its model is in that
+provider's catalog there, and that model takes its effort. A paired
+computer's rows are computed from the caller's roster against that
+computer's catalog. Sign-in is not read: a signed-out provider says so
+at the spawn's first turn.
+
+One resolver turns a spawner's settings and a choice into what the spawn
+runs with (`threadtools.ResolveSpawn`), for the listing, the preflight
+of a spawn to another computer, the settings page and the spawn itself.
+An inherited model is the spawner's when the provider is the same, else
+the provider's default; an inherited effort is the spawner's when the
+model takes it, else the model's default. An explicit effort the model
+does not take is refused. The settings page checks each profile on its
+computer (`CheckAgentProfiles`): such an effort holds the save back with
+the reason, and `UpdateSettings` refuses it; a provider or model the
+computer lacks is a note that threads there are not offered the
+profile.
 
 `thread_spawn` `profile` names one, compared without case. Explicit
 `provider`, `model`, `effort` and `runtime_mode` override the matching
@@ -481,16 +502,28 @@ appended on every start and resume of Claude, Claude's terminal and
 Codex sessions, kept by a fork (which appends its own call's), and
 carried by a transfer. A provider that cannot append a system prompt is
 refused. A paired computer that does not list `spawn_instructions` in
-its options is refused rather than dropping them. The expanded spawn
-row shows them as the thread stores them.
+its options is refused rather than dropping them, and a transfer to a
+computer whose offer does not carry them is refused before anything
+moves, saying to update that computer first. The spawn's reply records
+them as the new thread stores them (`instructions`, a fork's source's
+included), on this computer or the one that ran it, and the expanded
+spawn row shows them from that reply alone, whatever became of the
+thread since.
 
 ### Sub-thread depth
 
-A thread's sub-thread level is the number of owned spawn links between
-it and the nearest thread above it that is not an owned worker
-(`Store.SubThreadLevel`): a thread the person talks to, one they placed
-in the sidebar and an assistant's own thread are level 0; an assistant's
-helper is level 1. Settings, Agent profiles, Sub-thread levels
+A thread's sub-thread level is the number of delegation links between
+it and the nearest thread above it that nothing delegated
+(`Store.SubThreadLevel`). An owned worker links to the thread that
+spawned it, and the throwaway copy behind an agent's `thread_ask` links
+to the asking thread, so a copy is one level below its asker with the
+same tools removed at the limit. A thread the person talks to, one they
+placed in the sidebar, a spawn given a sidebar row, a person's side chat
+(whose copy no request made), an assistant's own thread and its next
+thread, and a workflow phase thread are level 0; an assistant's helper
+is level 1. A phase thread has no thread tools and keeps its provider's
+subagents: the workflow's definition fixes its shape and the engine
+bounds its nesting. Settings, Agent profiles, Sub-thread levels
 (`subThreadLevels`, 1 to 4, default 2) is the deepest level allowed.
 A session at that level registers without `thread_spawn` and starts
 without its provider's native subagents (Claude and Claude's terminal:
@@ -501,11 +534,19 @@ The tool list is fixed when a session starts. A change to the setting,
 or a placement that moves a thread up or down, applies at the next
 start of each session; a `thread_spawn` that reaches a thread already
 at the limit, from a session started before the change, is refused
-naming the level and the limit. An owned spawn to a paired computer
-carries the caller's level plus one (`level`), stored on the new thread
-(`threads.spawn_level`) and counted beneath it; the destination refuses
-one past its own limit. A spawn given a sidebar row carries level 0. A
-computer from before levels ignores the field and behaves as before.
+naming the level and the limit. An owned spawn or an ask to a paired
+computer carries the caller's level plus one (`level`), stored on the
+new thread or copy (`threads.spawn_level`) and counted beneath it; the
+destination refuses one past its own limit. A spawn given a sidebar row
+carries level 0. A computer from before levels ignores the field and
+behaves as before. A carried level ends where the delegation does: when
+the thread is placed in a group or as a standalone row, and when it is
+copied or moved to another computer.
+
+An agent cannot free its own chain from the limit: `thread_update`
+refuses to move a thread at level 1 or deeper on the caller's own
+delegation chain, the caller included, into the sidebar or a group.
+The person can.
 
 ### `thread_send` (Q9, Q15)
 

@@ -1,10 +1,14 @@
 // Shared body of agent-profiles.spec.ts and its compact twin
 // (docs/specs/agent-thread-tools.md, "Agent profiles" and "Sub-thread
 // depth"). A profile added on the Agent profiles page, with the sub-thread
-// levels set to 1, is what the lead's thread_options lists; a spawn by that
-// profile lands on its provider, model and effort with its instructions
-// and the call's appended to the worker's system prompt; the spawn row shows
-// them; and the worker, at the limit, lists no thread_spawn.
+// levels set to 1, is what the lead's thread_options lists; the page keeps
+// each list's draft and an entry typed here when the roster changes
+// elsewhere; a spawn by that profile lands on its provider, model and
+// effort with its instructions and the call's appended to the worker's
+// system prompt; the spawn row shows them from the spawn's reply, also
+// after the worker is deleted and the page reloads; and the worker, and
+// the copy behind the lead's thread_ask, at the limit, list no
+// thread_spawn.
 import { expect, type Page } from '@playwright/test';
 
 import type { SeedResult } from './fixtures.js';
@@ -75,27 +79,99 @@ async function editRoster(page: Page, layout: Layout): Promise<void> {
   await page.getByTestId('agent-profiles-levels').selectOption('1');
 }
 
+/**
+ * Each roster list keeps its own draft: a note saved elsewhere leaves a
+ * profile's unsaved typing alone, and the profile changed elsewhere too is
+ * marked, keeping the typing until the person takes the other version.
+ * Leaves Scout saved as PROFILE.
+ */
+async function editWhileSavedElsewhere(harness: HarnessApp, page: Page, layout: Layout): Promise<void> {
+  const press = async (target: ReturnType<Page['locator']>) => {
+    if (layout === 'desktop') await target.click();
+    else await target.tap();
+  };
+  const card = page.locator(`[data-testid="agent-profile"][data-profile-name="${PROFILE.name}"]`);
+  const useFor = card.getByLabel('Use for');
+  await useFor.fill('Half typed');
+
+  const saved = await harness.rpc<RosterSettings>('GetSettings');
+  const notes = [...saved.agentNotes, { text: 'Saved elsewhere.', when: '' }];
+  await harness.rpc('UpdateSettings', { agentNotes: notes });
+  await expect(page.getByTestId('agent-note')).toHaveCount(notes.length);
+  await expect(useFor).toHaveValue('Half typed');
+
+  const theirs = saved.agentProfiles.map((profile) =>
+    profile.name === PROFILE.name ? { ...profile, useFor: 'Changed elsewhere.' } : profile,
+  );
+  await harness.rpc('UpdateSettings', { agentProfiles: theirs, agentNotes: saved.agentNotes });
+  await expect(page.getByTestId('agent-note')).toHaveCount(saved.agentNotes.length);
+  const conflict = card.getByTestId('agent-profile-conflict');
+  await expect(conflict).toContainText('This was also changed elsewhere. Your version is kept here; saving replaces the other one.');
+  await expect(useFor).toHaveValue('Half typed');
+  await press(conflict.getByRole('button', { name: 'Use the other version' }));
+  await expect(conflict).toHaveCount(0);
+  await expect(useFor).toHaveValue('Changed elsewhere.');
+
+  // The press kept the focus in the field, which still holds the text it
+  // had when focused: a change back to that text commits nothing.
+  await useFor.blur();
+  await useFor.fill(PROFILE.useFor);
+  await useFor.blur();
+}
+
+/** Opens the lead's thread and its spawn row, and returns the row's instructions fact. */
+async function spawnRowInstructions(harness: HarnessApp, page: Page) {
+  await harness.open(page);
+  if ((await page.locator('html').getAttribute('data-compact-screen')) === 'thread') {
+    await page.getByTestId('compact-back').click();
+  }
+  await page.getByTestId('thread-row-title').filter({ hasText: 'Profiles lead' }).first().click();
+  const runs = page.getByTestId('activity-run');
+  await expect(runs.first()).toBeAttached({ timeout: 30_000 });
+  for (let index = 0; index < (await runs.count()); index++) {
+    const run = runs.nth(index);
+    if ((await run.getAttribute('data-collapsed')) === 'true') await run.getByTestId('activity-run-header').click();
+  }
+  const row = page.getByTestId('tool-call-card')
+    .filter({ has: page.getByTestId('tool-call-card-label').filter({ hasText: /^spawn$/ }) })
+    .first();
+  await row.getByTestId('tool-call-card-toggle').click();
+  return row.locator('[data-testid="tool-call-card-ao-result-fact"][data-fact="instructions"]');
+}
+
 export async function runAgentProfiles(harness: HarnessApp, page: Page, layout: Layout): Promise<void> {
   const tag = layout === 'desktop' ? 'profiles' : 'compact-profiles';
   const seed = await harness.rpc<SeedResult>('HarnessSeed', {
     projects: [
       { name: `${tag}-lead`, repo: {}, threads: [{ title: 'Profiles lead', provider: 'claude' }] },
       { name: `${tag}-worker`, repo: {}, threads: [] },
+      {
+        name: `${tag}-asked`,
+        repo: {},
+        threads: [{
+          title: 'Asked',
+          provider: 'claude',
+          turns: [{ userText: 'look into the build', items: [{ kind: 'assistant_text', summary: 'The build is green.' }] }],
+        }],
+      },
     ],
   });
-  const [lead, worker] = seed.projects;
+  const [lead, worker, asked] = seed.projects;
   const leadId = lead.threadIds[0];
   const before = await harness.rpc<RosterSettings>('GetSettings');
 
   try {
     await harness.open(page);
-    await editRoster(page, layout);
-    await expect
+    const savedAsEdited = () => expect
       .poll(async () => {
         const saved = await harness.rpc<RosterSettings>('GetSettings');
         return [saved.subThreadLevels, saved.agentProfiles.find((profile) => profile.name === PROFILE.name)];
       })
       .toEqual([1, { ...PROFILE, provider: 'codex', effort: 'low', runtimeMode: '' }]);
+    await editRoster(page, layout);
+    await savedAsEdited();
+    await editWhileSavedElsewhere(harness, page, layout);
+    await savedAsEdited();
 
     await setScenario(harness, lead.path, threadToolsScenario({
       name: `${tag}-lead`, provider: 'claude',
@@ -108,8 +184,15 @@ export async function runAgentProfiles(harness: HarnessApp, page: Page, layout: 
               args: { prompt: 'Look at README.md.', title: 'Scout look', project_id: worker.projectId, profile: 'scout', instructions: CALL_INSTRUCTIONS },
             },
           },
+          // A session for the asked thread, so a copy of it can be made.
+          { call: { tool: 'thread_send', args: { thread_id: asked.threadIds[0], message: 'Check the build.', wait_seconds: 30 } } },
         ],
         text: 'Sent the scout.',
+      }, {
+        steps: [
+          { call: { tool: 'thread_ask', args: { thread_id: asked.threadIds[0], question: 'Is the build green?', wait_seconds: 30 } } },
+        ],
+        text: 'Asked.',
       }],
       afterTurns: 'silent',
     }));
@@ -117,6 +200,12 @@ export async function runAgentProfiles(harness: HarnessApp, page: Page, layout: 
       name: `${tag}-worker`, provider: 'codex', echoUserMessage: true,
       turns: [{ steps: [{ list: {} }], text: 'Looked.' }],
       afterTurns: 'silent',
+    }));
+    // The asked thread and then the ask's hidden copy of it run here.
+    await setScenario(harness, asked.path, threadToolsScenario({
+      name: `${tag}-asked`, provider: 'claude',
+      turns: [{ steps: [{ list: {} }], text: 'Green.' }],
+      afterTurns: 'repeatLast',
     }));
 
     await harness.rpc('GetProviderStatuses');
@@ -153,24 +242,31 @@ export async function runAgentProfiles(harness: HarnessApp, page: Page, layout: 
     const [codexConfig] = await sessionConfigs(harness, 'codex', 1);
     expect(codexConfig.developerInstructions?.endsWith(`${PROFILE.instructions}\n\n${CALL_INSTRUCTIONS}`)).toBe(true);
 
-    // The lead's spawn row shows the instructions the worker runs with.
-    await harness.open(page);
-    if ((await page.locator('html').getAttribute('data-compact-screen')) === 'thread') {
-      await page.getByTestId('compact-back').click();
-    }
-    await page.getByTestId('thread-row-title').filter({ hasText: 'Profiles lead' }).first().click();
-    const runs = page.getByTestId('activity-run');
-    await expect(runs.first()).toBeAttached({ timeout: 30_000 });
-    for (let index = 0; index < (await runs.count()); index++) {
-      const run = runs.nth(index);
-      if ((await run.getAttribute('data-collapsed')) === 'true') await run.getByTestId('activity-run-header').click();
-    }
-    const row = page.getByTestId('tool-call-card')
-      .filter({ has: page.getByTestId('tool-call-card-label').filter({ hasText: /^spawn$/ }) })
-      .first();
-    await row.getByTestId('tool-call-card-toggle').click();
-    const instructions = row.locator('[data-testid="tool-call-card-ao-fact"][data-fact="instructions"]');
-    await expect(instructions).toHaveText(`${PROFILE.instructions}\n\n${CALL_INSTRUCTIONS}`, { useInnerText: true });
+    // The asked thread is the person's, level 0, and can spawn; the copy
+    // behind the lead's ask of it is one level below the lead, so at the
+    // limit: it cannot.
+    const send = await awaitToolAnswer(harness, { tool: 'thread_send', cwd: lead.path });
+    expect(send.isError, send.text).toBe(false);
+    const own = await harness.awaitMcpTools({ server: THREAD_TOOLS_SERVER, cwd: asked.path });
+    expect(own.tools).toContain('thread_spawn');
+    await harness.waitForEvent('provider:turn_completed', (data: { threadId?: string }) => data.threadId === leadId);
+    await harness.rpc('SendMessage', leadId, 'ask it', null);
+    const ask = await awaitToolAnswer(harness, { tool: 'thread_ask', cwd: lead.path });
+    expect(ask.isError, ask.text).toBe(false);
+    const copy = await harness.awaitMcpTools({ server: THREAD_TOOLS_SERVER, cwd: asked.path });
+    expect(copy.isError).toBe(false);
+    expect(copy.tools).toContain('thread_show');
+    expect(copy.tools).not.toContain('thread_spawn');
+    expect(copy.instructions).toContain('the deepest allowed, so you cannot open new threads');
+
+    // The lead's spawn row shows the instructions the worker runs with, from
+    // the spawn's own reply: the same once the worker is deleted and the
+    // page reloads.
+    const whole = `${PROFILE.instructions}\n\n${CALL_INSTRUCTIONS}`;
+    await expect(await spawnRowInstructions(harness, page)).toHaveText(whole, { useInnerText: true });
+    await harness.rpc('DeleteThread', workerId);
+    await expect.poll(async () => (await threadRows(harness)).some((r) => r.id === workerId)).toBe(false);
+    await expect(await spawnRowInstructions(harness, page)).toHaveText(whole, { useInnerText: true });
   } finally {
     await harness.rpc('UpdateSettings', {
       agentProfiles: before.agentProfiles,

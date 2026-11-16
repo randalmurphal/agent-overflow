@@ -719,20 +719,32 @@ and anti-changes that live only here:
   not run: availability is the provider switch plus a binary that
   resolves, and notes that need both families are conditional notes the
   person can edit. The seeds are the owner's, ordered by tier within
-  each family; an edited roster is never replaced.
+  each family, with the comparison across families in a note shown only
+  when both run; an edited roster is never replaced. One resolver
+  decides what a profile runs with for the listing, the settings page
+  and the spawn, so a profile is listed only when it runs as listed.
   `docs/specs/agent-thread-tools.md`, Agent profiles.
 - Spawn instructions (2026-11-16): `thread_spawn` `instructions`, after a
   profile's, are appended last to the thread's system prompt for its
   whole life, stored with the thread, on every provider; a provider or
-  paired computer that cannot carry them refuses the spawn rather than
-  dropping them. `docs/specs/agent-thread-tools.md`, Spawn instructions.
+  paired computer that cannot carry them refuses the spawn, and one that
+  cannot receive them refuses the transfer, rather than dropping them.
+  The spawn row shows them from the spawn's own reply, never from the
+  live thread. `docs/specs/agent-thread-tools.md`, Spawn instructions.
 - Sub-thread depth is enforced by removing tools, not by refusing calls
   (2026-11-16): a session at the limit (Settings, 1 to 4, default 2) has
   no `thread_spawn` and no native subagents, and its guide says so. The
   tool list is fixed at session start; a spawn that reaches a thread at
-  the limit after a change is refused naming it. The level travels with
-  an owned spawn to a paired computer. `docs/specs/agent-thread-tools.md`,
-  Sub-thread depth.
+  the limit after a change is refused naming it. The level counts
+  delegation: an owned worker sits below its spawner and an agent's ask
+  copy below its asker. A thread outside an agent's delegation (a
+  sidebar row, including a spawn given one; a person's side chat; a
+  workflow phase, which its definition and engine bound) starts again
+  at 0, and an agent cannot move a thread on its own chain there. The
+  level travels with an owned spawn or ask to a paired computer and
+  ends when that thread leaves the delegation (grouped, made standalone,
+  copied or moved). `docs/specs/agent-thread-tools.md`, Sub-thread
+  depth.
 - AO tool rows (thread, workflow, browser, remote) present as sentences
   with structured results, never raw JSON (2026-10-13). The header says
   what the call did in a person's words, ids read as names, and the body

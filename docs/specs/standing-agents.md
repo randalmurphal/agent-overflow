@@ -909,8 +909,8 @@ Ruling 36, as built:
   own workers counted from it. A session at the limit starts without
   `thread_spawn` and without native subagents
   ([Sub-thread depth](agent-thread-tools.md#sub-thread-depth)). The limit
-  applies to owned workers only: a thread that is not owned starts the
-  count again.
+  applies to owned workers and an agent's ask copies: a thread that is
+  not owned starts the count again.
 
 ### At rest
 
