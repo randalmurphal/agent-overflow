@@ -316,11 +316,12 @@ describe('side chat companions', () => {
     // destroyPane takes the layout item and the ThreadPane with it.
     expect(paneIds()).toEqual(['main']);
     expect(getPane(paneId)).toBeUndefined();
+    // The deleted row leaves the frontend list too, once the delete has
+    // answered, so nothing can reopen it.
     await vi.waitFor(() => {
       expect(getBindingMock('DeleteThread')?.mock.calls).toEqual([['side-1']]);
+      expect(getThreads().map((thread) => thread.id)).toEqual([]);
     });
-    // The deleted row leaves the frontend list too, so nothing can reopen it.
-    expect(getThreads().map((thread) => thread.id)).toEqual([]);
   });
 
   it('deletes the scratch thread when a source pane with no thread is destroyed', async () => {
