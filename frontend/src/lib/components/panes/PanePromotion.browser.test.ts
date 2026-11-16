@@ -496,3 +496,86 @@ it('a resize during a promote retargets the clip to the new box and slot', async
   expect(largestStep(clips)).toBeLessThan(250);
   expect(rectOf(section('b'))).toEqual(paddingBox(strip));
 });
+
+it('a second focus move during the demote is the one revealed', async () => {
+  const strip = await mountStrip(['a', 'b', 'c'], 'a');
+  togglePanePromotion('a');
+  await waitFor(() => settledPromoted('a'), 'the promote landed');
+  const titleOf = (id: string): HTMLElement => section(id).querySelector<HTMLElement>('[data-testid="chat-header-title"]')!;
+  titleOf('b').focus();
+  await raf();
+  titleOf('c').focus();
+  await waitFor(settledDemoted, 'the demote landed');
+  const c = section('c');
+  await waitFor(
+    () => Math.abs(strip.scrollLeft - (c.offsetLeft + c.offsetWidth - strip.clientWidth)) < 1,
+    'the last focused pane revealed',
+  );
+  expect(document.activeElement).toBe(titleOf('c'));
+});
+
+interface Sample {
+  clip: { left: number; right: number };
+  target: { left: number; right: number };
+}
+
+// Widens the host by `step` px every frame until `settled`, sampling the
+// published clip and the live target after the controller drew the frame.
+async function widenEachFrame(id: string, step: number, target: () => { left: number; right: number }, settled: () => boolean): Promise<Sample[]> {
+  const samples: Sample[] = [];
+  const deadline = performance.now() + 5000;
+  while (!settled()) {
+    if (performance.now() > deadline) throw new Error('the transition did not land');
+    await raf();
+    const clip = promotedLayerClip(body(id));
+    if (clip) samples.push({ clip: { left: clip.left, right: clip.right }, target: target() });
+    host.style.width = `${host.getBoundingClientRect().width + step}px`;
+  }
+  return samples;
+}
+
+function distance(sample: Sample): number {
+  return Math.max(Math.abs(sample.clip.left - sample.target.left), Math.abs(sample.clip.right - sample.target.right));
+}
+
+function expectConverging(samples: Sample[]): void {
+  expect(samples.length).toBeGreaterThan(4);
+  for (let i = 1; i < samples.length; i += 1) {
+    expect(distance(samples[i])).toBeLessThanOrEqual(distance(samples[i - 1]) + 0.5);
+  }
+  expect(distance(samples.at(-1)!)).toBeLessThan(30);
+}
+
+it('a resize on every frame of a demote still converges on the live slot and lands without a snap', async () => {
+  host.style.width = '1200px';
+  const strip = await mountStrip(['a', 'b', 'c'], 'a');
+  togglePanePromotion('b');
+  await waitFor(() => settledPromoted('b'), 'the promote landed');
+  togglePanePromotion('b');
+  await tick();
+  const slotTarget = (): { left: number; right: number } => {
+    const slot = slots()[0].getBoundingClientRect();
+    const box = paddingBox(strip);
+    return { left: Math.max(slot.left, box.left), right: Math.min(slot.right, box.left + box.width) };
+  };
+  const samples = await widenEachFrame('b', 8, slotTarget, settledDemoted);
+  expectConverging(samples);
+  const landed = section('b').getBoundingClientRect();
+  const last = samples.at(-1)!.clip;
+  expect(Math.abs(last.left - landed.left)).toBeLessThan(30);
+  expect(Math.abs(last.right - landed.right)).toBeLessThan(30);
+});
+
+it('a resize on every frame of a promote still converges on the live box', async () => {
+  host.style.width = '1200px';
+  const strip = await mountStrip(['a', 'b', 'c'], 'a');
+  togglePanePromotion('b');
+  await tick();
+  const boxTarget = (): { left: number; right: number } => {
+    const box = paddingBox(strip);
+    return { left: box.left, right: box.left + box.width };
+  };
+  const samples = await widenEachFrame('b', 8, boxTarget, () => settledPromoted('b'));
+  expectConverging(samples);
+  expect(rectOf(section('b'))).toEqual(paddingBox(strip));
+});

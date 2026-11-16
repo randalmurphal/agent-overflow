@@ -137,6 +137,29 @@ func TestPresenterPlacesFromTheNewerReport(t *testing.T) {
 	}
 }
 
+// A focus moves keyboard focus into a page only while the host shows it and
+// the launcher window is the foreground window: AO never takes the OS focus
+// from another application, and never focuses a hidden or unplaced view.
+func TestFocusDecisionNeedsAShownPageAndTheForeground(t *testing.T) {
+	shown := paneView{bounds: paneBounds{W: 10, H: 10}, hasBounds: true, visible: true}
+	for _, tc := range []struct {
+		name       string
+		view       paneView
+		foreground bool
+		want       focusOutcome
+	}{
+		{"shown, foreground", shown, true, focusMove},
+		{"shown, another app in front", shown, false, focusNotForeground},
+		{"hidden", paneView{bounds: shown.bounds, hasBounds: true}, true, focusNotShown},
+		{"never placed", paneView{visible: true}, true, focusNotShown},
+		{"nothing", paneView{}, false, focusNotShown},
+	} {
+		if got := focusDecision(tc.view, tc.foreground); got != tc.want {
+			t.Errorf("%s: focusDecision = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
 // An older launcher decodes the new directive into the fields it knows and
 // ignores the rest; those fields alone must still place the page where the
 // backend placed it.

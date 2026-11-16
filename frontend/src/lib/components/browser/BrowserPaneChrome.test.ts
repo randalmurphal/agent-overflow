@@ -113,6 +113,65 @@ describe('<BrowserPane> chrome', () => {
     expect((await view.findByRole('alert')).textContent).toContain('outside the workspace');
   });
 
+  it('offers only the results of the query on screen while a new one is pending', async () => {
+    let releaseCss: (() => void) | null = null;
+    setBindingMock('SearchWorkspaceFiles', vi.fn(async (_ws: unknown, text: string) => {
+      if (text === 'css') await new Promise<void>((resolve) => (releaseCss = resolve));
+      return { root: '/repo', truncated: false, files: [{ path: `old/${text}.file`, kind: 'file' }] };
+    }));
+    const act = setBindingMock('BrowserCompanionDo', vi.fn(async () => state([page('a')])));
+    const view = mount([page('a')]);
+    await ready(view);
+    await fireEvent.click(view.getByRole('button', { name: 'Open file' }));
+    const field = await view.findByTestId('browser-file-search');
+    await fireEvent.input(field, { target: { value: 'html' } });
+    await vi.advanceTimersByTimeAsync(BROWSER_FILE_SEARCH_DEBOUNCE_MS);
+    await waitFor(() => expect(view.getAllByTestId('browser-file-result')).toHaveLength(1));
+
+    // The query changes; its search is still running.
+    await fireEvent.input(field, { target: { value: 'css' } });
+    expect(view.queryAllByTestId('browser-file-result')).toHaveLength(0);
+    await fireEvent.keyDown(field, { key: 'Enter' });
+    await vi.advanceTimersByTimeAsync(BROWSER_FILE_SEARCH_DEBOUNCE_MS);
+    expect(view.queryAllByTestId('browser-file-result')).toHaveLength(0);
+    await fireEvent.keyDown(field, { key: 'Enter' });
+    expect(act).not.toHaveBeenCalledWith(THREAD, expect.objectContaining({ kind: 'navigate' }));
+
+    releaseCss!();
+    await waitFor(() => expect(view.getByTestId('browser-file-result').textContent).toContain('old/css.file'));
+    await fireEvent.keyDown(field, { key: 'Enter' });
+    await waitFor(() => expect(act).toHaveBeenCalledWith(THREAD, expect.objectContaining({ kind: 'navigate', address: '/repo/old/css.file' })));
+    expect(act).not.toHaveBeenCalledWith(THREAD, expect.objectContaining({ address: '/repo/old/html.file' }));
+  });
+
+  it('returns focus to More after an action launched from its menu, the file picker included', async () => {
+    setBindingMock('BrowserCompanionDo', vi.fn(async () => state([page('a', { url: 'file:///repo/x.html' })])));
+    setBindingMock('BrowserCompanionRevealPageFile', vi.fn(async () => undefined));
+    const view = mount([page('a', { url: 'file:///repo/x.html' })]);
+    await ready(view);
+    const more = view.getByTestId('browser-more');
+    const choose = async (label: string) => {
+      more.focus();
+      await fireEvent.click(more);
+      const item = (await view.findAllByRole('menuitem')).find((el) => el.textContent?.includes(label))!;
+      item.focus();
+      await fireEvent.click(item);
+    };
+
+    await choose('Open file');
+    const field = await view.findByTestId('browser-file-search');
+    await waitFor(() => expect(document.activeElement).toBe(field));
+    await fireEvent.keyDown(field, { key: 'Escape' });
+    await waitFor(() => expect(view.queryByTestId('browser-file-picker')).toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(more));
+
+    for (const label of ['Show in folder', 'Open devtools']) {
+      await choose(label);
+      await waitFor(() => expect(view.queryAllByRole('menuitem')).toHaveLength(0));
+      expect(document.activeElement, label).toBe(more);
+    }
+  });
+
   it('shows a failed search in the picker', async () => {
     setBindingMock('SearchWorkspaceFiles', vi.fn(async () => {
       throw new Error('workspace is gone');
@@ -152,6 +211,25 @@ describe('<BrowserPane> chrome', () => {
     address.focus();
     await fireEvent.keyDown(address, { key: 'Escape' });
     expect(document.activeElement).toBe(view.getByTestId('browser-pane-host-rect'));
+  });
+
+  it.each([
+    ['Escape', 'https://example.test/a'],
+    ['Enter', 'https://example.test/typed'],
+  ])('%s in the address asks the engine to give the page the keyboard', async (key, typed) => {
+    const actions: string[] = [];
+    setBindingMock('BrowserCompanionDo', async (_thread: string, action: { kind: string }) => {
+      actions.push(action.kind);
+      return undefined;
+    });
+    const view = mount([page('a')]);
+    const address = await ready(view);
+    address.focus();
+    await fireEvent.input(address, { target: { value: typed } });
+    actions.length = 0;
+    await fireEvent.keyDown(address, { key });
+    await waitFor(() => expect(actions).toContain('focus-page'));
+    expect(actions.includes('navigate')).toBe(key === 'Enter');
   });
 
   it('mod+l focuses its address with the text selected, until the pane unmounts', async () => {

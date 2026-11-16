@@ -5,6 +5,7 @@
     attachBrowserCompanion,
     browserCompanionAct,
     browserPaneMountId,
+    focusBrowserPage,
     openBrowserTab,
     takeAddressFocus,
     noteBrowserActionError,
@@ -162,9 +163,15 @@
     if (threadId) void openBrowserTab(threadId, { focusAddress: true });
   }
 
-  /** Leaves the address for the page area (the host rect). */
+  /**
+   * Leaves the address for the page. The host rect takes DOM focus first so
+   * the address field blurs at once and a pane with no page shown still
+   * holds focus; the engine then gives the shown page the keyboard.
+   */
   function leaveAddress(): void {
     surface?.focus();
+    const threadId = ctx.threadId;
+    if (threadId) void focusBrowserPage(threadId);
   }
 
   function togglePromotion(): void {

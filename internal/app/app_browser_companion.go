@@ -18,8 +18,9 @@ type BrowserCompanionAction struct {
 	Kind    string `json:"kind"`
 	PageID  string `json:"pageId,omitempty"`
 	Address string `json:"address,omitempty"`
-	// Index is the target tab position for "move". Not omitempty: index 0
-	// (move to the front) is a real value.
+	// Index is the target tab position for "move" and the relative step for
+	// "step" (1 next, -1 previous, wrapping). Not omitempty: index 0 (move to
+	// the front) is a real value.
 	Index int `json:"index"`
 	// Jar is the cookie jar for "jar": worktree, project, thread or private.
 	Jar string `json:"jar,omitempty"`
@@ -162,6 +163,8 @@ func (a *App) BrowserCompanionDo(ctx context.Context, threadID string, action Br
 		err = a.browser.manager.StopCompanionLoad(ctx, access, action.PageID)
 	case "activate":
 		err = a.browser.manager.ActivateCompanionPage(ctx, access, action.PageID)
+	case "step":
+		err = a.browser.manager.StepCompanionPage(ctx, access, action.Index)
 	case "move":
 		err = a.browser.manager.MoveCompanionPage(access, action.PageID, action.Index)
 	case "show":
@@ -184,6 +187,14 @@ func (a *App) BrowserCompanionDo(ctx context.Context, threadID string, action Br
 	case "jar":
 		// Closes the live tabs and reopens their addresses in the new jar.
 		err = a.browser.manager.SetJar(access, action.Jar)
+	case "focus-page":
+		// Keyboard focus moves within the window the native view lives in,
+		// so only that window may ask for it.
+		if !transport.ConnStateFromContext(ctx).HostWindow() {
+			err = errBrowserPaneNotHostWindow
+		} else {
+			err = a.browser.manager.FocusCompanionPage(access)
+		}
 	default:
 		err = fmt.Errorf("browser: unsupported companion action %q", action.Kind)
 	}

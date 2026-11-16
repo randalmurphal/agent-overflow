@@ -780,6 +780,49 @@ func (m *Manager) NewCompanionPage(ctx context.Context, access Access, address s
 	return p.cachedInfo(), nil
 }
 
+// FocusCompanionPage gives keyboard focus to the page the thread's pane
+// presents, as a click into it does: the address bar's Enter and Escape
+// hand the keyboard to the page the way a browser's do. Nothing presented
+// (no pane, the pane hidden, a page closing or held hidden for its layout,
+// an engine without native views) is a no-op. The engine checks again what
+// it shows, so a hide racing this request still wins.
+func (m *Manager) FocusCompanionPage(access Access) error {
+	host, ok := m.engine.(paneHost)
+	if !ok {
+		return nil
+	}
+	m.mu.Lock()
+	var page *managedPage
+	if id := m.presented[access.ThreadID]; id != "" {
+		// A closing page has left its scope's pages already.
+		if p, _ := m.livePageLocked(id); p != nil && p.owner == access.ThreadID {
+			page = p
+		}
+	}
+	m.mu.Unlock()
+	if page == nil {
+		return nil
+	}
+	if err := host.FocusPage(page.driver.Handle()); err != nil {
+		return fmt.Errorf("browser: focus page %s: %w", page.id, err)
+	}
+	return nil
+}
+
+// pageFocusFailed is engineEvents.PageFocusFailed: a focus the host could
+// not make after FocusCompanionPage answered reaches the owner's pane as an
+// error, like any other failed pane action.
+func (m *Manager) pageFocusFailed(handle string, err error) {
+	m.mu.Lock()
+	page := m.pageByHandleLocked(handle)
+	m.mu.Unlock()
+	if page == nil {
+		log.Printf("browser: focus of a page that is gone (%s): %v", handle, err)
+		return
+	}
+	m.emit(CompanionEvent{Kind: "error", ThreadID: page.owner, Error: err.Error()})
+}
+
 // ActivateCompanionPage is the user selecting a tab in the pane. It is
 // presented first (selectTab); a suspended page is then restored, and the
 // call answers when it is. A tab closed while it restored is no error.
@@ -788,6 +831,43 @@ func (m *Manager) ActivateCompanionPage(ctx context.Context, access Access, page
 	if err := m.selectTab(access, pageID); err != nil {
 		return err
 	}
+	return m.restoreSelectedTab(ctx, access, pageID)
+}
+
+// StepCompanionPage is the user's next/previous tab: it selects the tab step
+// places from the active one in strip order, wrapping, as one change to the
+// Manager's own order and selection, so presses in a row each move one tab
+// whatever the client last saw. With no active tab, a forward step selects
+// the first tab and a backward one the last. Then it is ActivateCompanionPage.
+func (m *Manager) StepCompanionPage(ctx context.Context, access Access, step int) error {
+	if step == 0 {
+		return fmt.Errorf("browser: tab step must not be 0")
+	}
+	pageID, err := m.selectTabWhere(access, func(tabs []threadTab, active string) int {
+		n := len(tabs)
+		if n == 0 {
+			return -1
+		}
+		at := -1
+		for i := range tabs {
+			if tabs[i].id == active {
+				at = i
+			}
+		}
+		if at < 0 && step < 0 {
+			at = 0
+		}
+		return ((at+step)%n + n) % n
+	})
+	if err != nil {
+		return err
+	}
+	return m.restoreSelectedTab(ctx, access, pageID)
+}
+
+// restoreSelectedTab restores the selected tab when it is suspended and
+// answers once it is; a tab closed meanwhile is no error.
+func (m *Manager) restoreSelectedTab(ctx context.Context, access Access, pageID string) error {
 	m.mu.Lock()
 	_, suspended := m.suspended[pageID]
 	m.mu.Unlock()

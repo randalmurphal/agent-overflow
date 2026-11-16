@@ -30,24 +30,11 @@ import (
 type Host struct {
 	config Config
 
-	mu sync.Mutex
-	// envReady is closed once environment creation settles, success or
-	// failure. Directives that arrive during the cold create wait on it.
-	//
-	// The create is one-shot per GENERATION rather than once per process:
-	// clear-data releases the environment and bumps envGen, which re-arms
-	// envStarting and swaps in a fresh envReady so the next directive pays
-	// for a cold create against the recreated folder. Everything that
-	// mutates envGen, envReady or envStarting past ensureEnvironment's arm
-	// runs on the UI thread, which is what makes the close-once dance below
-	// safe without a second lock.
-	envReady    chan struct{}
-	envGen      uint64
-	envStarting bool
-	env         *iCoreWebView2Environment
-	env10       *iCoreWebView2Environment10
-	envErr      error
+	// env is the pane environment, created once per generation; clear-data
+	// starts a new generation (environment.go).
+	env *paneEnvironment[paneEnv]
 
+	mu    sync.Mutex
 	pages map[string]*hostPage
 	// accelerators is the bound-chord set every page's key events are gated
 	// on (accelerators_windows.go). Replaced whole by OpAccelerators.
@@ -119,9 +106,14 @@ type hostPage struct {
 	// ICoreWebView2Controller2, so an old runtime costs one line, not one
 	// per bounds directive.
 	bgUnsupported bool
-	failHandler   *iProcessFailedHandler
+	// failHandler, keyHandler and targetInfo are the page's callbacks that
+	// WebView2 holds; retireHandlers detaches them when the page goes.
+	failHandler *iProcessFailedHandler
+	keyHandler  *iAcceleratorKeyPressedHandler
+	targetInfo  *iDevToolsCompletedHandler
 	// findStarted is the page's one Start completion handler, made on the
-	// first find (find_windows.go).
+	// first find (find_windows.go). The page holds its constructor's
+	// reference until retireHandlers.
 	findStarted *iFindStartCompletedHandler
 	// pres is what the backend said about the page's presentation, and
 	// shown what the host last applied (presenter.go). UI thread only.
@@ -183,12 +175,13 @@ func New(config Config) (*Host, error) {
 	if err != nil {
 		return nil, fmt.Errorf("reserve browser host debugging port: %w", err)
 	}
-	return &Host{
-		config:   config,
-		envReady: make(chan struct{}),
-		pages:    make(map[string]*hostPage, 4),
-		cdpPort:  port,
-	}, nil
+	h := &Host{
+		config:  config,
+		pages:   make(map[string]*hostPage, 4),
+		cdpPort: port,
+	}
+	h.env = newPaneEnvironment(config.OnMain, h.startEnvironment, freePaneEnv, config.Logf, envCreateTimeout)
+	return h, nil
 }
 
 // CDPPort is the loopback port the pane environment's browser process
@@ -244,6 +237,26 @@ func (h *Host) Apply(directive Directive) {
 		h.withPage(directive.PageID, func(page *hostPage) { h.startFind(page, directive.Query) })
 	case OpFindStop:
 		h.withPage(directive.PageID, h.stopFind)
+	case OpFocus:
+		h.withPage(directive.PageID, h.focusPage)
+	}
+}
+
+// focusPage moves keyboard focus into a page the host shows, while the
+// launcher window is the foreground window (focusDecision). Runs on the UI
+// thread, so the view it checks is the one on screen.
+func (h *Host) focusPage(page *hostPage) {
+	switch focusDecision(page.shown, isForeground(h.config.HostWindow())) {
+	case focusNotShown:
+		h.config.Logf("browser host: page %s focus: not shown, focus left alone", page.id)
+		return
+	case focusNotForeground:
+		h.config.Logf("browser host: page %s focus: the launcher window is not in the foreground, focus left alone", page.id)
+		return
+	}
+	if err := page.controller.moveFocus(moveFocusProgrammatic); err != nil {
+		h.config.Logf("browser host: page %s focus: %v", page.id, err)
+		h.config.Report(page.id, ReportFocusFailed, err.Error())
 	}
 }
 
@@ -428,6 +441,7 @@ func (h *Host) closePages(match func(*hostPage) bool) {
 	}
 	h.config.OnMain(func() {
 		for _, page := range closing {
+			h.retireHandlers(page)
 			if page.view != nil {
 				page.view.release()
 			}
@@ -463,50 +477,27 @@ func (h *Host) closePages(match func(*hostPage) bool) {
 // Environment
 // ---------------------------------------------------------------------
 
-// ensureEnvironment starts the pane environment once per generation and
-// waits for it to settle. Every caller of one generation gets the same
-// error; a clear-data bumps the generation, so the next caller pays for a
-// fresh cold create rather than inheriting an environment whose folder was
-// deleted underneath it.
-func (h *Host) ensureEnvironment() (*iCoreWebView2Environment10, error) {
-	h.mu.Lock()
-	ready, gen := h.envReady, h.envGen
-	arm := !h.envStarting
-	h.envStarting = true
-	h.mu.Unlock()
-	if arm {
-		h.config.OnMain(h.startEnvironment)
-	}
-	select {
-	case <-ready:
-	case <-time.After(envCreateTimeout):
-		return nil, fmt.Errorf("browser host environment did not start within %s", envCreateTimeout)
-	}
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if h.envGen != gen {
-		// A clear-data released this generation's environment while the
-		// caller waited. Its own report already went out; this directive is
-		// told to come back rather than handed a released COM pointer.
-		return nil, errors.New("browser host environment was cleared; retry the directive")
-	}
-	if h.envErr != nil {
-		return nil, h.envErr
-	}
-	if h.env10 == nil {
-		return nil, errors.New("browser host environment settled with no environment")
-	}
-	return h.env10, nil
+// paneEnv is one adopted pane environment.
+type paneEnv struct {
+	env   *iCoreWebView2Environment
+	env10 *iCoreWebView2Environment10
 }
 
-// startEnvironment runs on the UI thread and kicks off the async create.
-// It does not wait: WebView2 invokes the completion handler from the
-// message pump, which cannot run while this call holds the thread.
-func (h *Host) startEnvironment() {
-	h.mu.Lock()
-	gen := h.envGen
-	h.mu.Unlock()
+// freePaneEnv drops an environment's COM references. Runs on the UI thread.
+func freePaneEnv(e paneEnv) {
+	if e.env10 != nil {
+		e.env10.release()
+	}
+	if e.env != nil {
+		e.env.release()
+	}
+}
 
+// startEnvironment runs on the UI thread and kicks off gen's async create
+// (paneEnvironment.begin). It does not wait: WebView2 invokes the completion
+// handler from the message pump, which cannot run while this call holds the
+// thread.
+func (h *Host) startEnvironment(gen uint64) {
 	// The scrub must precede EVERY environment creation in this process.
 	// See EnvOverrideNames: a set-but-empty WEBVIEW2_USER_DATA_FOLDER
 	// silently collapses the pane and the SPA onto one profile, with no
@@ -522,42 +513,47 @@ func (h *Host) startEnvironment() {
 		h.config.Logf("browser host: reading installed WebView2 version: %v", err)
 	}
 
+	folder, err := windows.UTF16PtrFromString(h.config.UserDataDir)
+	if err != nil {
+		h.env.settle(gen, fmt.Errorf("encode user data folder: %w", err))
+		return
+	}
+
 	// The port is the pane environment's alone; see paneEnvironmentArgs.
 	args := paneEnvironmentArgs(h.cdpPort, h.config.ExtraBrowserArgs)
-	_, optionsPtr := newEnvOptions(args, installed)
-
+	options := newEnvOptions(args, installed)
 	handler := newEnvironmentCompletedHandler(func(hr uintptr, env *iCoreWebView2Environment) {
 		h.environmentCompleted(gen, hr, env)
 	})
-	folder, err := windows.UTF16PtrFromString(h.config.UserDataDir)
-	if err != nil {
-		h.settleEnvironment(gen, fmt.Errorf("encode user data folder: %w", err))
-		return
-	}
+	// WebView2 holds its own references to both for as long as it needs
+	// them; these are the constructors' (comref_windows.go).
+	defer options.ref.release()
+	defer handler.ref.release()
 
 	hr, err := webviewloader.CreateCoreWebView2EnvironmentWithOptions(
 		nil,
 		folder,
-		optionsPtr,
+		uintptr(unsafe.Pointer(options)),
 		uintptr(unsafe.Pointer(handler)),
 	)
 	if err != nil {
-		h.settleEnvironment(gen, fmt.Errorf("load WebView2 runtime: %w", err))
+		h.env.settle(gen, fmt.Errorf("load WebView2 runtime: %w", err))
 		return
 	}
 	if hrErr := hresult(hr); hrErr != nil {
-		h.settleEnvironment(gen, fmt.Errorf("create pane environment: %w", hrErr))
+		h.env.settle(gen, fmt.Errorf("create pane environment: %w", hrErr))
 	}
 }
 
 // environmentCompleted runs on the UI thread, from the message pump.
+// paneEnvironment.completed decides whether gen still wants the environment.
 func (h *Host) environmentCompleted(gen uint64, hr uintptr, env *iCoreWebView2Environment) {
 	if err := hresult(hr); err != nil {
-		h.settleEnvironment(gen, fmt.Errorf("create pane environment: %w", err))
+		h.env.completed(gen, paneEnv{}, fmt.Errorf("create pane environment: %w", err))
 		return
 	}
 	if env == nil {
-		h.settleEnvironment(gen, errors.New("pane environment completed with no environment"))
+		h.env.completed(gen, paneEnv{}, errors.New("pane environment completed with no environment"))
 		return
 	}
 	env.addRef()
@@ -569,63 +565,12 @@ func (h *Host) environmentCompleted(gen uint64, hr uintptr, env *iCoreWebView2En
 		// silent shared profile is precisely the failure the whole
 		// isolation design exists to prevent.
 		env.release()
-		h.settleEnvironment(gen, errors.New(
+		h.env.completed(gen, paneEnv{}, errors.New(
 			"installed WebView2 runtime has no ICoreWebView2Environment10; "+
 				"per-workspace browser profiles need runtime 110 or newer"))
 		return
 	}
-	h.mu.Lock()
-	// Superseded-generation AND already-adopted both refuse the adopt. The
-	// second can happen without the first: a clear-data can run between an
-	// ensureEnvironment arm and its queued startEnvironment, whose create
-	// then carries the NEW generation — releaseEnvironment re-armed
-	// envStarting, so a later caller starts a second create for that same
-	// generation. Overwriting the first adopt here would leak its refs and
-	// keep the browser process pinning the folder a future clear deletes.
-	stale := h.envGen != gen || h.env10 != nil
-	if !stale {
-		h.env = env
-		h.env10 = env10
-	}
-	h.mu.Unlock()
-	if stale {
-		// Adopting a superseded environment would hand the next directive
-		// one rooted in the folder a clear-data just deleted, so both refs
-		// go back; the settled generation's answer (or the clear's own
-		// report) stands.
-		env10.release()
-		env.release()
-		return
-	}
-	h.settleEnvironment(gen, nil)
-}
-
-// settleEnvironment records one generation's outcome and releases its
-// waiters. Runs on the UI thread, always, which is what makes the
-// close-once check race-free.
-func (h *Host) settleEnvironment(gen uint64, err error) {
-	h.mu.Lock()
-	if h.envGen != gen {
-		h.mu.Unlock()
-		return
-	}
-	// An error settles the generation only while it has no environment: a
-	// duplicate create's failure must not poison a generation that already
-	// adopted a healthy one (environmentCompleted refuses the duplicate's
-	// adopt for the same reason).
-	if h.envErr == nil && h.env10 == nil {
-		h.envErr = err
-	}
-	ready := h.envReady
-	h.mu.Unlock()
-	if err != nil {
-		h.config.Logf("browser host: %v", err)
-	}
-	select {
-	case <-ready:
-	default:
-		close(ready)
-	}
+	h.env.completed(gen, paneEnv{env: env, env10: env10}, nil)
 }
 
 // ---------------------------------------------------------------------
@@ -647,9 +592,11 @@ func (h *Host) settleEnvironment(gen uint64, err error) {
 func (h *Host) clearData(correlationID string) {
 	// Order is the same load-bearing order the Manager uses: nothing may
 	// hold the profile open while it is deleted, or it writes its cookie
-	// jar back out over the cleared state.
+	// jar back out over the cleared state. Releasing the environment starts
+	// a new generation, so the next directive builds a fresh one against
+	// the recreated folder.
 	h.closePages(func(*hostPage) bool { return true })
-	h.config.OnMain(h.releaseEnvironment)
+	h.config.OnMain(h.env.release)
 
 	if err := clearUserDataDir(h.config.UserDataDir); err != nil {
 		h.config.Logf("browser host: clear site data: %v", err)
@@ -658,47 +605,6 @@ func (h *Host) clearData(correlationID string) {
 	}
 	h.config.Logf("browser host: cleared site data in %s", h.config.UserDataDir)
 	h.config.Report(correlationID, ReportCleared, "")
-}
-
-// releaseEnvironment drops the environment's COM objects and re-arms the
-// creation state, so the next directive lazily builds a fresh environment
-// against the recreated folder. Runs on the UI thread, like every other
-// COM call.
-//
-// Bumping envGen is what makes this safe against a create still in flight:
-// a completion handler for the old generation releases its own environment
-// instead of adopting it, and a waiter parked in ensureEnvironment is told
-// to retry rather than handed a pointer to a released object.
-func (h *Host) releaseEnvironment() {
-	h.mu.Lock()
-	env, env10 := h.env, h.env10
-	h.env, h.env10 = nil, nil
-	h.envErr = nil
-	h.envStarting = false
-	h.envGen++
-	// A fresh channel, and the old one is released rather than abandoned.
-	// ensureEnvironment waits on whichever channel it captured, and the
-	// superseded generation's settle no longer closes anything, so a caller
-	// parked on a cold create would otherwise sit out its full 30s bound to
-	// learn something already true. It wakes, sees the generation moved, and
-	// is told to retry. Closing here is race-free for the same reason
-	// settleEnvironment's is: both run on the UI thread.
-	stale := h.envReady
-	h.envReady = make(chan struct{})
-	h.mu.Unlock()
-
-	select {
-	case <-stale:
-	default:
-		close(stale)
-	}
-
-	if env10 != nil {
-		env10.release()
-	}
-	if env != nil {
-		env.release()
-	}
 }
 
 // clearUserDataDir deletes the folder and recreates it empty.
@@ -743,11 +649,12 @@ func clearUserDataDir(dir string) error {
 // ---------------------------------------------------------------------
 
 func (h *Host) create(directive Directive) {
-	env10, err := h.ensureEnvironment()
+	env, err := h.env.acquire()
 	if err != nil {
 		h.config.Report(directive.PageID, ReportCreateFailed, TruncateDetail(err.Error()))
 		return
 	}
+	env10 := env.env10
 	h.mu.Lock()
 	if _, exists := h.pages[directive.PageID]; exists {
 		h.mu.Unlock()
@@ -807,7 +714,10 @@ func (h *Host) create(directive Directive) {
 		handler := newControllerCompletedHandler(func(hr uintptr, controller *iCoreWebView2Controller) {
 			h.controllerCompleted(page, hwnd, hr, controller)
 		})
-
+		// WebView2 holds its own reference until it calls back; this is the
+		// constructor's. The handler is not detached when the page closes:
+		// its completion closes a controller that outlived the page.
+		defer handler.ref.release()
 		if err := env10.createControllerWithOptions(parent, options, handler); err != nil {
 			h.failUncreated(page, "create controller: "+err.Error())
 		}
@@ -890,12 +800,15 @@ func (h *Host) controllerCompleted(page *hostPage, hwnd uintptr, hr uintptr, con
 	if _, err := view.addProcessFailed(failHandler); err != nil {
 		h.config.Logf("browser host: page %s process-failed subscription: %v", page.id, err)
 	}
+	failHandler.ref.release()
 	keyHandler := newAcceleratorKeyPressedHandler(func(args *iAcceleratorKeyPressedEventArgs) {
 		h.acceleratorPressed(page, args)
 	})
+	page.keyHandler = keyHandler
 	if _, err := controller.addAcceleratorKeyPressed(keyHandler); err != nil {
 		h.config.Logf("browser host: page %s accelerator subscription: %v", page.id, err)
 	}
+	keyHandler.ref.release()
 
 	// A runtime without the find API has to be known before the page is
 	// used, so its report precedes created.
@@ -924,7 +837,10 @@ func (h *Host) controllerCompleted(page *hostPage, hwnd uintptr, hr uintptr, con
 		}
 		h.config.Report(page.id, ReportCreated, targetID)
 	})
-	if err := view.callDevToolsProtocolMethod("Target.getTargetInfo", "{}", done); err != nil {
+	page.targetInfo = done
+	err = view.callDevToolsProtocolMethod("Target.getTargetInfo", "{}", done)
+	done.ref.release()
+	if err != nil {
 		h.discardCreated(page, "Target.getTargetInfo dispatch: "+err.Error())
 	}
 }
@@ -976,6 +892,7 @@ func (h *Host) discardCreated(page *hostPage, detail string) {
 		// the controller and their closed report is the final word.
 		return
 	}
+	h.retireHandlers(page)
 	if page.view != nil {
 		page.view.release()
 		page.view = nil
@@ -994,6 +911,28 @@ func (h *Host) discardCreated(page *hostPage, detail string) {
 	destroyWindow(page.container)
 	page.container = 0
 	h.config.Report(page.id, ReportCreateFailed, TruncateDetail(detail))
+}
+
+// retireHandlers detaches the callbacks of a page that is going, so a late
+// call from WebView2 does nothing and a reference it never releases keeps
+// only the small handler, not the page. The controller-completed handler is
+// not among them: its completion must still close a controller that
+// outlived the page. Runs on the UI thread.
+func (h *Host) retireHandlers(page *hostPage) {
+	if page.failHandler != nil {
+		page.failHandler.done.detach()
+	}
+	if page.keyHandler != nil {
+		page.keyHandler.pressed.detach()
+	}
+	if page.targetInfo != nil {
+		page.targetInfo.done.detach()
+	}
+	if page.findStarted != nil {
+		page.findStarted.done.detach()
+		page.findStarted.ref.release()
+		page.findStarted = nil
+	}
 }
 
 func errString(err error) string {

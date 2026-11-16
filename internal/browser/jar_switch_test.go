@@ -4,6 +4,7 @@ import (
 	"errors"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -383,5 +384,63 @@ func TestATabReopeningWhenTheBrowserClosesGoesWithIt(t *testing.T) {
 	}
 	if len(manager.ownedPages(access.ThreadID)) != 0 {
 		t.Fatal("a reopened page was registered in a closed browser")
+	}
+}
+
+// A reopen that fails and leaves its new jar's profile unable to stop reports
+// that cleanup even when the failed tab is closed before it is shown, and the
+// close that took the tab answers with it, as a user's failed new tab does.
+func TestAFailedReopenClosedBeforeItIsShownReportsItsCleanup(t *testing.T) {
+	manager, engine := newLifecycleManager(t)
+	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+	openPage(t, manager, access, "https://example.test/")
+	release := engine.hold(&engine.newPageGate)
+	t.Cleanup(release)
+	var (
+		closing  sync.Once
+		pending  *pendingPage
+		teardown = make(chan CompanionEvent, 4)
+	)
+	manager.SetEventSink(func(event CompanionEvent) {
+		if event.Kind == "teardown" {
+			teardown <- event
+			return
+		}
+		for _, page := range event.Pages {
+			if page.Error != "" {
+				closing.Do(func() {
+					var ok bool
+					if pending, ok = manager.closePending(access, page.ID); !ok {
+						t.Error("the close does not find the failed tab")
+					}
+				})
+			}
+		}
+	})
+	setJar(t, manager, access, JarThread)
+	// The old page has closed and its profile stopped; the reopen is creating
+	// its page in the new jar.
+	await(t, engine.creating, "the reopen's page creation")
+	engine.mu.Lock()
+	engine.newPageErr = errors.New("engine refused the page")
+	engine.disposeErr = errors.New("the profile's browser would not stop")
+	engine.mu.Unlock()
+	release()
+	deadline := time.Now().Add(5 * time.Second)
+	for len(manager.CompanionState(access).Pages) > 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("the failed tab was never closed: %+v", manager.CompanionState(access).Pages)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if pending == nil {
+		t.Fatal("the failed tab was never published")
+	}
+	if err := pending.wait(t.Context()); !errors.Is(err, engine.disposeErr) {
+		t.Fatalf("the close of the failed tab = %v, want the cleanup failure", err)
+	}
+	event := await(t, teardown, "the teardown report")
+	if !strings.Contains(event.Error, "would not stop") {
+		t.Fatalf("teardown event = %+v", event)
 	}
 }

@@ -140,12 +140,38 @@ func TestNativeEngineRealClaimedChordFocusesTheApp(t *testing.T) {
 		}
 	}
 
+	// The address bar's Enter and Escape hand the keyboard back to the
+	// presented page (FocusCompanionPage), as a click into it does.
+	if err := manager.FocusCompanionPage(access); err != nil {
+		t.Fatalf("focus the presented page: %v", err)
+	}
+	if who, _ := holder("focus the presented page"); who != focusHeldByPage {
+		t.Fatalf("focus the presented page: the window's focus widget is %d, want the page", who)
+	}
+	if active && !pageHasFocus("focus the presented page") {
+		t.Fatal("focus the presented page: an active window's page does not have document focus")
+	}
+
 	// The hide itself hands focus over (TestNativeEngineRealHiddenPageGivesUpFocus);
 	// a parked page given focus anyway hands it over on a claim too. No pane
 	// shows it, so the chord is not routed.
 	hide := false
 	if _, err := manager.Visibility(ctx, access, &hide, ""); err != nil {
 		t.Fatalf("hide the page: %v", err)
+	}
+	// A hidden page is never given the focus.
+	if err := manager.FocusCompanionPage(access); err != nil {
+		t.Fatalf("focus with the page hidden: %v", err)
+	}
+	if who, _ := holder("focus with the page hidden"); who == focusHeldByPage {
+		t.Fatal("focus with the page hidden: the parked page took the focus")
+	}
+	// The engine's own check holds even when asked directly.
+	if err := manager.engine.(paneHost).FocusPage(view.Handle()); err != nil {
+		t.Fatalf("focus the parked page directly: %v", err)
+	}
+	if who, _ := holder("focus the parked page directly"); who == focusHeldByPage {
+		t.Fatal("focus the parked page directly: the parked page took the focus")
 	}
 	focusPage("the page hidden")
 	press("the page hidden", 'f', true)

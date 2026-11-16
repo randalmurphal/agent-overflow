@@ -4,6 +4,8 @@
   import SquareUser from '@lucide/svelte/icons/square-user';
   import VenetianMask from '@lucide/svelte/icons/venetian-mask';
   import { browserCompanionState, setBrowserJar, type BrowserJar } from '../../stores/browserCompanion.svelte';
+  import type { PopoverCloseReason } from '../../utils/popoverOwnership';
+  import { restorePickerFocus } from '../panes/paneComposerFocus';
   import Icon from '../primitives/Icon.svelte';
   import IconButton from '../primitives/IconButton.svelte';
   import Menu from '../primitives/Menu.svelte';
@@ -33,11 +35,40 @@
   let openTabs = $derived((browser?.pages ?? []).filter((page) => !page.suspended && !page.error).length);
 
   let anchor: HTMLSpanElement | undefined = $state(undefined);
+  // The element the menu was opened from instead of the trigger: the address
+  // row's More button once the row is too narrow to show the trigger.
+  let openedFrom: HTMLElement | undefined = $state(undefined);
   let open = $state(false);
   let confirming = $state<(typeof JARS)[number] | null>(null);
 
-  function choose(jar: (typeof JARS)[number]): void {
+  /** Opens the jar menu anchored at `from` (the More button). */
+  export function openMenu(from: HTMLElement | undefined): void {
+    openedFrom = from;
+    open = true;
+  }
+
+  /** The current jar's name, for the More menu's row; null outside a pane. */
+  export function currentLabel(): string | null {
+    return threadId ? current.label : null;
+  }
+
+  function trigger(): HTMLElement | undefined {
+    return (openedFrom ?? anchor)?.querySelector<HTMLElement>('button') ?? undefined;
+  }
+
+  function closeMenu(reason?: PopoverCloseReason): void {
+    const target = trigger();
     open = false;
+    openedFrom = undefined;
+    restorePickerFocus(reason, { triggerEl: target });
+  }
+
+  function choose(jar: (typeof JARS)[number]): void {
+    // Focus goes back to what opened the menu before a confirm opens, so the
+    // confirm returns it there.
+    trigger()?.focus();
+    open = false;
+    openedFrom = undefined;
     if (!threadId || jar.kind === current.kind) return;
     if (openTabs > 0) confirming = jar;
     else void setBrowserJar(threadId, jar.kind);
@@ -58,11 +89,14 @@
       testId="browser-jar"
       ariaHaspopup="menu"
       ariaExpanded={open}
-      onClick={() => (open = !open)}
+      onClick={() => {
+        openedFrom = undefined;
+        open = !open;
+      }}
     ><Icon icon={current.icon} size={14} /></IconButton>
   </span>
-  <Popover {anchor} {open} onClose={() => (open = false)} placement="bottom-end" role="none">
-    <Menu ariaLabel="Cookie jar" minWidthClass="w-[min(19rem,calc(100vw-2rem))] min-w-0" onClose={() => (open = false)}>
+  <Popover anchor={openedFrom ?? anchor} {open} onClose={closeMenu} placement="bottom-end" role="none">
+    <Menu ariaLabel="Cookie jar" minWidthClass="w-[min(19rem,calc(100vw-2rem))] min-w-0" onClose={closeMenu}>
       {#each JARS as jar (jar.kind)}
         <MenuItem
           label={jar.label}

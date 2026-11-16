@@ -24,9 +24,8 @@ func (h *Host) findSupported(view *iCoreWebView2) bool {
 		return false
 	}
 	view28.release()
-	h.mu.Lock()
-	env10 := h.env10
-	h.mu.Unlock()
+	env, _ := h.env.current()
+	env10 := env.env10
 	if env10 == nil {
 		return false
 	}
@@ -56,9 +55,8 @@ func (h *Host) openFind(page *hostPage, query string) error {
 		return errFindUnsupported
 	}
 	defer find.release()
-	h.mu.Lock()
-	env10 := h.env10
-	h.mu.Unlock()
+	env, _ := h.env.current()
+	env10 := env.env10
 	if env10 == nil {
 		return errFindNoEnvironment
 	}

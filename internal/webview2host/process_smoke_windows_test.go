@@ -60,7 +60,7 @@ func TestProcessSmokeBrowserExitsWithItsLastController(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		host.Close()
-		ui.do(host.releaseEnvironment)
+		ui.do(host.env.release)
 	})
 	await := func(pageID string, want ReportKind) {
 		t.Helper()
@@ -108,10 +108,7 @@ func TestProcessSmokeBrowserExitsWithItsLastController(t *testing.T) {
 	}
 	host.Apply(Directive{Op: OpCloseProfile, ProfileID: "smoke"})
 	await("page-1", ReportClosed)
-	host.mu.Lock()
-	held := host.env10 != nil
-	host.mu.Unlock()
-	if !held {
+	if _, held := host.env.current(); !held {
 		t.Fatal("the environment was released; this test needs it held")
 	}
 	switch event, err := windows.WaitForSingleObject(process, 30_000); {

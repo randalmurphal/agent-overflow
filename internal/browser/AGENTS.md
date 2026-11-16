@@ -37,7 +37,9 @@ mode. Product behavior and authority are defined in
   `pagestate.go`.
 - Pages start hidden. Present only the selected page for a visible companion
   pane. The pane uses a native view positioned over the SPA; pixels do not cross
-  the transport.
+  the transport. Keyboard focus enters a page's view only by a click or
+  `paneHost.FocusPage` for the presented page (`FocusCompanionPage`), which
+  every engine checks against what it shows on its own UI thread.
 - A page always lays out at the thread viewport (`sessionViewport`) whether
   hidden or presented. The viewport follows the mounted pane's size (whole
   pixels within the viewport bounds; the last size once the pane is gone;

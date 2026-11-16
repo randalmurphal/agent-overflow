@@ -185,6 +185,9 @@ type webviewShell struct {
 	// isolated instance remembers its own window, not the user's.
 	loadGeometry    func() windowgeom.Geometry
 	persistGeometry func(windowgeom.Geometry)
+	// chords routes Ctrl/Cmd+R to the SPA while it asks for the chord
+	// (uikeys.PageChords); run sets it.
+	chords *uikeys.PageChords
 }
 
 // run opens the window and blocks until the app loop exits, returning
@@ -206,6 +209,8 @@ func (s webviewShell) run() error {
 		return window
 	}
 	appOpts := desktopApplicationOptions(s.title)
+	s.chords = uikeys.NewPageChords()
+	appOpts.RawMessageHandler = s.rawMessageHandler(getWindow)
 	if s.singleInstance {
 		appOpts.SingleInstance = desktopSingleInstanceOptions(getWindow)
 	}
@@ -237,6 +242,9 @@ func (s webviewShell) run() error {
 	app.Event.OnApplicationEvent(events.Common.ApplicationStarted, func(*application.ApplicationEvent) {
 		w, flush := uiwindow.RestoreAndTrack(app, opts, s.loadGeometry(), s.persistGeometry)
 		uiwindow.DeliverPageTicket(w, s.mintTicket)
+		w.OnWindowEvent(events.Common.WindowRuntimeReady, func(*application.WindowEvent) {
+			s.chords.DocumentLoaded(w)
+		})
 		if s.pages != nil {
 			s.pages.attach(w, opts.URL)
 		}
@@ -304,7 +312,25 @@ func (s webviewShell) windowOptions() (application.WebviewWindowOptions, error) 
 	// builds, so WithDevTools is safe unconditionally here.
 	opts.URL = withClientID(appURL)
 	opts.KeyBindings = uikeys.WithDevTools(uikeys.BrowserWithReload(reloadURL))
+	if s.chords != nil {
+		opts.KeyBindings = s.chords.Bindings(opts.KeyBindings)
+	}
 	return opts, nil
+}
+
+// rawMessageHandler is Options.RawMessageHandler: the SPA's browser pane
+// focus reports, accepted only from this window's page on its origin.
+func (s webviewShell) rawMessageHandler(getWindow func() *application.WebviewWindow) func(application.Window, string, *application.OriginInfo) {
+	return func(from application.Window, message string, origin *application.OriginInfo) {
+		own := getWindow()
+		if s.chords == nil || own == nil || from == nil || from.ID() != own.ID() || !uikeys.TrustedPage(origin, s.pageURL()) {
+			log.Printf("desktop: ignore raw webview message from an untrusted document")
+			return
+		}
+		if !s.chords.HandleMessage(from, message) {
+			log.Printf("desktop: ignore unknown raw webview message (%d bytes)", len(message))
+		}
+	}
 }
 
 // nativeWindowPointer adapts a Wails window getter to the raw handle the

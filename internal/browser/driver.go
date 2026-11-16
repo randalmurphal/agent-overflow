@@ -407,6 +407,10 @@ type engineEvents struct {
 	// knows of it besides the chord. It runs on the engine's UI thread, so
 	// the answer must be a set lookup and nothing that waits.
 	KeyChord func(handle string, pressed keybindings.Accelerator, press KeyPress) bool
+	// PageFocusFailed reports a focus the host was asked for
+	// (paneHost.FocusPage) and could not make after answering, which only
+	// the hosted engine does: the launcher moves focus after the directive.
+	PageFocusFailed func(handle string, err error)
 }
 
 // KeyPress is what an in-process engine gathers about a key press besides

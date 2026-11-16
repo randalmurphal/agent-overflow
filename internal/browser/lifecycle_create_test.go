@@ -5,6 +5,7 @@ import (
 	"errors"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -164,6 +165,56 @@ func TestClosingATabWhileItIsCreated(t *testing.T) {
 				t.Fatalf("%d disposals and %d scopes after the abandoned creation", got, registeredScopes(manager))
 			}
 		})
+	}
+}
+
+// A user's failed creation whose profile would not stop reports that cleanup
+// even when the tab is closed after the creation settled and before its
+// failed tab was published, and the close that took it answers with it.
+func TestAFailedTabClosedBeforeItIsShownReportsItsCleanup(t *testing.T) {
+	manager, engine := newLifecycleManager(t)
+	engine.newPageErr = errors.New("engine refused the page")
+	engine.disposeErr = errors.New("the profile's browser would not stop")
+	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
+	var (
+		closing  sync.Once
+		pending  *pendingPage
+		teardown = make(chan CompanionEvent, 1)
+	)
+	manager.SetEventSink(func(event CompanionEvent) {
+		if event.Kind == "teardown" {
+			teardown <- event
+			return
+		}
+		// The first state with the failed tab: the creation has settled and
+		// is publishing it.
+		for _, page := range event.Pages {
+			if page.Error != "" {
+				closing.Do(func() {
+					var ok bool
+					if pending, ok = manager.closePending(access, page.ID); !ok {
+						t.Error("the close does not find the failed tab")
+					}
+				})
+			}
+		}
+	})
+	if _, err := manager.NewCompanionPage(t.Context(), access, ""); err != nil {
+		t.Fatal(err)
+	}
+	if pending == nil {
+		t.Fatal("the failed tab was never published")
+	}
+	if err := pending.wait(t.Context()); !errors.Is(err, engine.disposeErr) {
+		t.Fatalf("the close of the failed tab = %v, want the cleanup failure", err)
+	}
+	select {
+	case event := <-teardown:
+		if !strings.Contains(event.Error, "would not stop") {
+			t.Fatalf("teardown event = %+v", event)
+		}
+	default:
+		t.Fatal("no teardown report for the cleanup failure")
 	}
 }
 

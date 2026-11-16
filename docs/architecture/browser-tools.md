@@ -179,14 +179,19 @@ behave as a desktop browser's:
   alert when it failed. Close shows on the active tab and on hover, always
   under compact; a middle click closes. A double-click on the strip's empty
   space maximizes or restores the pane, as a pane title does.
+- The address row's buttons never shrink and the address keeps at least
+  6rem. Below a 32rem row (36rem under compact) the page's size label, cookie
+  jar, open file, show in folder and devtools move into a More menu.
 - Focusing the address selects it; a second click places the caret. Enter
   (plain or with Shift) navigates; Escape puts the page's address back and
   moves focus to the page area. DOM focus only: the native page takes
   keyboard focus from a click, as § Keyboard says. Switching tabs replaces
   an edit with the new tab's address.
 - While the page loads, reload is stop. `StopCompanionLoad` takes no page
-  lock, so it stops an address-bar navigation in flight, and that
-  navigation answers without an error. Every engine stops a load (CDP
+  lock, so it stops an address-bar navigation in flight. Once the engine
+  has stopped, the navigation it interrupted (not one queued behind it)
+  answers its abort (CDP `net::ERR_ABORTED`) without an error; any other
+  failure stands. Every engine stops a load (CDP
   `Page.stopLoading`, `webkit_web_view_stop_loading`, WKWebView
   `stopLoading`).
 - The address takes a backend path, a workspace-relative file, a `file:`
@@ -206,10 +211,20 @@ behave as a desktop browser's:
 - Chords, live while the browser pane is the focused pane
   (`browserPaneFocused`): new tab `mod+t`, focus the address `mod+l`, reload
   `mod+r` and `f5`, next and previous tab `ctrl+tab` and `ctrl+shift+tab`,
-  beside close tab `mod+w`. The app window reloads the app on `mod+r` before
-  the SPA sees it (`internal/uikeys`), so `mod+r` reaches the browser only
-  from the page, through the accelerator replay; `f5` is the reload from the
-  pane's chrome. A bare `f5` is never claimed from the page.
+  beside close tab `mod+w`. A bare `f5` is never claimed from the page.
+  Next and previous tab send a relative `step` that the Manager applies to
+  its own order and selection (`StepCompanionPage`), so presses faster than
+  the state push each move one tab.
+- The desktop and Windows launcher windows bind `mod+r` to reloading the app
+  before the SPA sees the key. While the browser pane is focused and the
+  effective keybindings run a command for `mod+r` there, the SPA asks over
+  the webview's raw message channel for the chord. The window then hands it
+  over, and the SPA replays it as a keydown through the keybinding
+  dispatcher, as it does a chord claimed in the page; a chord nothing runs
+  goes back and reloads the app
+  (`internal/uikeys/pagechords.go`, `frontend/src/lib/native/shellChords.svelte.ts`).
+  `mod+shift+r` always reloads the app. The `--connect` window hosts no
+  native page and keeps the plain binding.
 
 ## Keyboard
 
@@ -245,6 +260,20 @@ so AO's chords have to be taken back at the engine:
   webview through the same code as a claimed chord's handoff
   (`ao_wk_focus_app`, `ao_wkv_focus_app`, and the launcher's
   `releaseFocus`). Showing a page takes no focus.
+- The pane hands the keyboard to the page the way a browser does after the
+  address bar's Enter or Escape: the `focus-page` companion action
+  (`focusBrowserPage` in the frontend store, host window only) reaches
+  `Manager.FocusCompanionPage`, which asks the engine to focus the thread's
+  presented page (`paneHost.FocusPage`) and does nothing when none is
+  presented. The engine checks again that it shows the view, where its hides
+  run: `ao_wk_view_focus_presented` grabs GTK focus on the WebKitGTK view,
+  `ao_wkv_view_focus_presented` makes the WKWebView first responder, and the
+  launcher applies a `focus` directive on the page's lane with
+  `ICoreWebView2Controller::MoveFocus` (programmatic) only while its window
+  is in the foreground (`focusDecision`), the rule a claimed chord's handoff
+  keeps, so AO never takes the OS focus from another application. A
+  controller that refuses answers a `focus-failed` report, which reaches the
+  pane as an error.
 - Only the host's own window mounts a pane (`BrowserCompanionPaneAttach`
   refuses any other connection; see transport.md, the host-window cookie):
   the native view lives in that window. A browser tab on the host offers

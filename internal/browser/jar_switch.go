@@ -169,12 +169,14 @@ func (m *Manager) reopenPage(ctx context.Context, access Access, pending *pendin
 		pending.err = truncateUTF8(fmt.Sprintf("could not reopen in the new cookie jar: %v", err), maxPageErrorBytes)
 	}
 	m.mu.Unlock()
-	if closed {
-		pending.cleanupErr = teardownPart(err)
-		if pending.cleanupErr != nil {
-			m.reportTeardown(owner, pending.p.id, pending.cleanupErr)
-		}
-	} else if !errors.Is(err, context.Canceled) {
+	// As for a user's failed tab (createPage): the profile the failure left
+	// behind failing to dispose is reported whether or not a close has taken
+	// the tab, since one can at any point from here and then answers with it.
+	pending.cleanupErr = teardownPart(err)
+	if pending.cleanupErr != nil {
+		m.reportTeardown(owner, pending.p.id, pending.cleanupErr)
+	}
+	if !closed && !errors.Is(err, context.Canceled) {
 		log.Printf("browser: reopen page %s of thread %s in its new cookie jar: %v", pending.p.id, owner, err)
 	}
 	m.repairActivePage(owner)

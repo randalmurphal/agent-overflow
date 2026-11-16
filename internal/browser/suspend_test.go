@@ -411,22 +411,14 @@ func TestClosingASuspendedPageDuringItsRestoreAbandonsTheRestore(t *testing.T) {
 	}
 }
 
-// A close that found a page live and then waited while the page was
-// suspended reports it gone, so ClosePage forgets the record instead of
-// leaving it.
+// A close of a page suspended since it was opened finds no live page and
+// forgets the record instead of leaving it.
 func TestAClosePageRacingASuspensionClosesTheRecord(t *testing.T) {
 	manager, _ := newRestoreManager(t, t.TempDir(), ManagerOptions{})
 	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
 	page := mustOpen(t, manager, access, "https://example.test/page")
-	p, scope, err := manager.lookupOwnedPage(access, page.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
 	if err := manager.SuspendThread(t.Context(), access.ThreadID); err != nil {
 		t.Fatal(err)
-	}
-	if _, err := manager.closeFoundPage(p, scope); !errors.Is(err, errPageNotFound) {
-		t.Fatalf("close of a page suspended after its lookup = %v", err)
 	}
 	if err := manager.ClosePage(t.Context(), access, page.ID); err != nil {
 		t.Fatal(err)

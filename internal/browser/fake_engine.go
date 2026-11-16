@@ -170,8 +170,10 @@ type fakePage struct {
 	// allowed and before the load, so a test can hold a navigation in flight
 	// or fail it; an error fails the navigation.
 	navigateHook func(ctx context.Context, rawURL string) error
-	// stops counts the "stop" history actions the page received.
-	stops int
+	// stops counts the "stop" history actions the page received. stopHook,
+	// when set, runs first; an error fails the stop.
+	stops    int
+	stopHook func() error
 	// selection answers SelectionText.
 	selection string
 	// findMode answers FindMode; FindModeBar unless a test changes it.
@@ -323,6 +325,14 @@ func (p *fakePage) History(_ context.Context, action string) error {
 		p.reportLoading(false)
 		return nil
 	case "stop":
+		hook := p.stopHook
+		p.mu.Unlock()
+		if hook != nil {
+			if err := hook(); err != nil {
+				return err
+			}
+		}
+		p.mu.Lock()
 		p.stops++
 		p.mu.Unlock()
 		p.reportLoading(false)

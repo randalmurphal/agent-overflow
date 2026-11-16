@@ -98,8 +98,13 @@ describe('<BrowserPane> suspended pages', () => {
     await fireEvent.focus(address);
     await fireEvent.input(address, { target: { value: 'notes.html' } });
     await fireEvent.keyDown(address, { key: 'Enter' });
-    expect(act).toHaveBeenCalledTimes(1);
-    expect(act.mock.calls[0][1]).toMatchObject({ kind: 'navigate', pageId: 'a', address: 'notes.html' });
+    // Leaving the address also asks the engine to focus the page; exactly
+    // one navigation goes out, and it names the page.
+    const navigations = act.mock.calls
+      .map((call) => call[1] as { kind: string })
+      .filter((action) => action.kind === 'navigate');
+    expect(navigations).toHaveLength(1);
+    expect(navigations[0]).toMatchObject({ kind: 'navigate', pageId: 'a', address: 'notes.html' });
   });
 
   it('asks nothing for a live active page', async () => {

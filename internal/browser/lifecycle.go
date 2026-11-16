@@ -215,9 +215,11 @@ func (m *Manager) createPage(ctx context.Context, access Access, user bool) (*ma
 		}
 		return nil, errClosedWhileCreating
 	}
-	if closed {
-		// The creation's own failure (its cancellation, mostly) is moot for
-		// a closed tab; the profile it left behind failing to dispose is not.
+	if closed || user {
+		// The profile the creation left behind failing to dispose is
+		// reported whether or not its tab is still there: a close can take
+		// the tab at any point from here, and then answers with it. The
+		// creation's own failure (its cancellation, for a closed tab) is not.
 		pending.cleanupErr = teardownPart(err)
 		if pending.cleanupErr != nil {
 			m.reportTeardown(owner, p.id, pending.cleanupErr)
@@ -377,26 +379,6 @@ func (m *Manager) beginCloseLive(access Access, pageID string) (*pageClose, erro
 	}
 	m.mu.Unlock()
 	return nil, errPageNotFound
-}
-
-// closeFoundPage closes a page a lookup found live: it leaves the tab set at
-// once and is disposed after. A page whose close began meanwhile answers that
-// close. It answers errPageNotFound when the page stopped being live
-// otherwise: suspended, it is now a record for ClosePage to forget.
-func (m *Manager) closeFoundPage(p *managedPage, scope *jarScope) (*pageClose, error) {
-	m.mu.Lock()
-	if c := scope.closing[p.id]; c != nil && c.p == p {
-		m.mu.Unlock()
-		return c, nil
-	}
-	if scope.pages[p.id] != p {
-		m.mu.Unlock()
-		return nil, errPageNotFound
-	}
-	c := markClosingLocked(p, scope)
-	m.mu.Unlock()
-	m.startClose(scope, c)
-	return c, nil
 }
 
 // markClosingLocked moves a live page to its scope's closing pages. The
