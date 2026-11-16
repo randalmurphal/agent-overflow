@@ -1,0 +1,103 @@
+{
+  "type": "doc",
+  "version": 1,
+  "content": [
+    {
+      "type": "panel",
+      "attrs": {
+        "panelType": "info"
+      },
+      "content": [
+        {
+          "type": "rule"
+        },
+        {
+          "type": "paragraph",
+          "content": [
+            {
+              "type": "text",
+              "text": "after a rule"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "panel",
+      "attrs": {
+        "panelType": "tip"
+      },
+      "content": [
+        {
+          "type": "orderedList",
+          "attrs": {
+            "order": 3
+          },
+          "content": [
+            {
+              "type": "listItem",
+              "content": [
+                {
+                  "type": "paragraph",
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "third"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "blockquote",
+      "content": [
+        {
+          "type": "paragraph",
+          "content": [
+            {
+              "type": "text",
+              "text": "!NOTE",
+              "marks": [
+                {
+                  "type": "link",
+                  "attrs": {
+                    "href": "https://example.com/note"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "text": " is a link, not an alert"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "text",
+          "text": "!1234",
+          "marks": [
+            {
+              "type": "link",
+              "attrs": {
+                "href": "https://example.com/mr/1234"
+              }
+            }
+          ]
+        },
+        {
+          "type": "text",
+          "text": " needs no escape"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,2 @@
+line 1: <span> is kept as text; use plain text
+line 1: <a> is kept as text; use [text](url)

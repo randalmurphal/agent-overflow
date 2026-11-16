@@ -1,0 +1,5 @@
+> [!INFO]
+>
+> | ---
+>
+> after a rule

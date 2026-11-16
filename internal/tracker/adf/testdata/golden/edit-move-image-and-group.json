@@ -1,0 +1,75 @@
+{
+  "type": "doc",
+  "version": 1,
+  "content": [
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "text",
+          "text": "Before"
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "text",
+          "text": "Middle"
+        }
+      ]
+    },
+    {
+      "type": "mediaGroup",
+      "content": [
+        {
+          "type": "media",
+          "attrs": {
+            "collection": "contentId-42",
+            "id": "11111111-2222-4333-8444-555555555502",
+            "type": "file"
+          }
+        },
+        {
+          "type": "media",
+          "attrs": {
+            "collection": "contentId-42",
+            "id": "11111111-2222-4333-8444-555555555503",
+            "type": "file"
+          }
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "text",
+          "text": "After"
+        }
+      ]
+    },
+    {
+      "type": "mediaSingle",
+      "attrs": {
+        "layout": "align-start",
+        "width": 830,
+        "widthType": "pixel"
+      },
+      "content": [
+        {
+          "type": "media",
+          "attrs": {
+            "alt": "diagram.png",
+            "collection": "contentId-42",
+            "height": 752,
+            "id": "57f0e3b3-5c0d-7c6e-b6df-40b3c30223ce",
+            "type": "file",
+            "width": 1705
+          }
+        }
+      ]
+    }
+  ]
+}

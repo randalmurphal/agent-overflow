@@ -1,0 +1,5 @@
+line 3: replaced a block that had decisions; those are now plain
+refused: line 3: the decisions of "- Decision: Ship the March release" is still in the Markdown, but the edit would lose it
+refused: line 3: the decision "Ship the March release" is still in the Markdown, but the edit would lose it
+refused: line 5: the decision "Freeze the schema" is still in the Markdown, but the edit would lose it
+refused: line 6: the decision "Hire a second reviewer" is still in the Markdown, but the edit would lose it

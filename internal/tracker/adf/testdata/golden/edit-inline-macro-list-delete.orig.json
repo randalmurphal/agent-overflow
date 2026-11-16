@@ -1,0 +1,98 @@
+{
+  "type": "doc",
+  "version": 1,
+  "content": [
+    {
+      "type": "bulletList",
+      "content": [
+        {
+          "type": "listItem",
+          "content": [
+            {
+              "type": "paragraph",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "first "
+                },
+                {
+                  "type": "inlineExtension",
+                  "attrs": {
+                    "extensionType": "com.atlassian.confluence.macro.core",
+                    "extensionKey": "jira",
+                    "localId": "i-1",
+                    "parameters": {
+                      "macroParams": {
+                        "key": {
+                          "value": "BLITZ-1"
+                        }
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "listItem",
+          "content": [
+            {
+              "type": "paragraph",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "second "
+                },
+                {
+                  "type": "inlineExtension",
+                  "attrs": {
+                    "extensionType": "com.atlassian.confluence.macro.core",
+                    "extensionKey": "jira",
+                    "localId": "i-2",
+                    "parameters": {
+                      "macroParams": {
+                        "key": {
+                          "value": "BLITZ-2"
+                        }
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "listItem",
+          "content": [
+            {
+              "type": "paragraph",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "third "
+                },
+                {
+                  "type": "inlineExtension",
+                  "attrs": {
+                    "extensionType": "com.atlassian.confluence.macro.core",
+                    "extensionKey": "jira",
+                    "localId": "i-3",
+                    "parameters": {
+                      "macroParams": {
+                        "key": {
+                          "value": "BLITZ-3"
+                        }
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

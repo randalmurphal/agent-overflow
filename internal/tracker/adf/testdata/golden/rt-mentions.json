@@ -1,0 +1,47 @@
+{
+  "type": "doc",
+  "version": 1,
+  "content": [
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "text",
+          "text": "Ping "
+        },
+        {
+          "type": "mention",
+          "attrs": {
+            "id": "acc-jane",
+            "text": "@Jane Doe"
+          }
+        },
+        {
+          "type": "text",
+          "text": " and "
+        },
+        {
+          "type": "mention",
+          "attrs": {
+            "id": "acc-bob",
+            "text": "@Bob Smith"
+          }
+        },
+        {
+          "type": "text",
+          "text": ", also "
+        },
+        {
+          "type": "mention",
+          "attrs": {
+            "id": "557058:abcd"
+          }
+        },
+        {
+          "type": "text",
+          "text": "."
+        }
+      ]
+    }
+  ]
+}

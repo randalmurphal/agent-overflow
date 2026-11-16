@@ -1,0 +1,54 @@
+{
+  "type": "doc",
+  "version": 1,
+  "content": [
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "text",
+          "text": "blank "
+        },
+        {
+          "type": "mention",
+          "attrs": {
+            "id": "acc-1",
+            "text": "@  "
+          }
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "text",
+          "text": "spaced "
+        },
+        {
+          "type": "mention",
+          "attrs": {
+            "id": "acc-2",
+            "text": " Jane  Doe "
+          }
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "text",
+          "text": "multiline "
+        },
+        {
+          "type": "mention",
+          "attrs": {
+            "id": "acc-3",
+            "text": "@Bob\nSmith"
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,54 @@
+{
+  "type": "doc",
+  "version": 1,
+  "content": [
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "mention",
+          "attrs": {
+            "accessLevel": "",
+            "id": "acc-pat",
+            "text": "@Pat Lee"
+          }
+        },
+        {
+          "type": "text",
+          "text": " owns this."
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "text",
+          "text": "Thanks "
+        },
+        {
+          "type": "mention",
+          "attrs": {
+            "id": "acc-pat",
+            "text": "@Pat Lee"
+          }
+        },
+        {
+          "type": "text",
+          "text": " and "
+        },
+        {
+          "type": "mention",
+          "attrs": {
+            "id": "acc-jane",
+            "text": "@Jane Doe"
+          }
+        },
+        {
+          "type": "text",
+          "text": "."
+        }
+      ]
+    }
+  ]
+}

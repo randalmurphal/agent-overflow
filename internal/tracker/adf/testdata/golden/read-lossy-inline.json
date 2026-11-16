@@ -1,0 +1,185 @@
+{
+  "type": "doc",
+  "version": 1,
+  "content": [
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "status",
+          "attrs": {
+            "text": "In progress",
+            "color": "blue",
+            "localId": "s1"
+          }
+        },
+        {
+          "type": "text",
+          "text": " and "
+        },
+        {
+          "type": "status",
+          "attrs": {
+            "text": "done",
+            "color": "green"
+          }
+        },
+        {
+          "type": "text",
+          "text": "(paren)"
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "text",
+          "text": "due "
+        },
+        {
+          "type": "date",
+          "attrs": {
+            "timestamp": "1790812800000"
+          }
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "emoji",
+          "attrs": {
+            "shortName": ":smile:",
+            "text": "\ud83d\ude04"
+          }
+        },
+        {
+          "type": "text",
+          "text": " "
+        },
+        {
+          "type": "emoji",
+          "attrs": {
+            "shortName": ":flag_on:"
+          }
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "text",
+          "text": "fill: "
+        },
+        {
+          "type": "placeholder",
+          "attrs": {
+            "text": "Type here"
+          }
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "text",
+          "text": "card "
+        },
+        {
+          "type": "inlineCard",
+          "attrs": {
+            "url": "https://example.com/browse/X-1"
+          }
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "text",
+          "text": "file "
+        },
+        {
+          "type": "mediaInline",
+          "attrs": {
+            "type": "file",
+            "id": "m-1",
+            "collection": ""
+          }
+        },
+        {
+          "type": "text",
+          "text": " named "
+        },
+        {
+          "type": "mediaInline",
+          "attrs": {
+            "type": "file",
+            "id": "m-2",
+            "collection": "",
+            "alt": "report.pdf"
+          }
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "text",
+          "text": "macro "
+        },
+        {
+          "type": "inlineExtension",
+          "attrs": {
+            "extensionKey": "status-macro",
+            "extensionType": "com.example"
+          }
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "text",
+          "text": "mystery "
+        },
+        {
+          "type": "futureInline",
+          "attrs": {
+            "x": 1
+          }
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "mention",
+          "attrs": {
+            "id": "acc-1",
+            "text": "@Jane Doe",
+            "accessLevel": ""
+          }
+        },
+        {
+          "type": "text",
+          "text": " and "
+        },
+        {
+          "type": "mention",
+          "attrs": {
+            "id": "acc-2"
+          }
+        }
+      ]
+    }
+  ]
+}
