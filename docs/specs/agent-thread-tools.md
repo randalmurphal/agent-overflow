@@ -457,8 +457,15 @@ The settings page edits the profiles and the notes as two drafts, each
 saved whole when a control commits. A change saved elsewhere replaces
 the entries unchanged here and keeps the ones edited here; an entry
 changed in both places keeps the person's version, marked with a note
-that it changed elsewhere and a button to take the other version, until
-saving writes theirs over it (`frontend/src/lib/components/settings/rosterDraft.ts`).
+that it changed elsewhere, and its list is not saved while the mark
+stands: leaving a field keeps the draft. The note's two buttons, after
+the entry's fields in tab order, answer it: Save mine writes the
+person's version over the other, and Use the other version (Discard
+mine, when the other no longer exists) puts it back; either saves what
+waited once no mark is left. A save checks the profiles before writing,
+and writes only the draft revision it checked: a newer save, Restore,
+taking the other version and an outside change each start a new
+revision (`frontend/src/lib/components/settings/rosterDraft.ts`).
 
 `thread_options` lists, per computer, the profiles that computer can
 run (`profiles`: name, `use_for`, the provider and model it resolves to,
@@ -468,8 +475,10 @@ provider is turned on there and its binary resolves, the same check the
 thread tools catalog applies to every provider, its model is in that
 provider's catalog there, and that model takes its effort. A paired
 computer's rows are computed from the caller's roster against that
-computer's catalog. Sign-in is not read: a signed-out provider says so
-at the spawn's first turn.
+computer's catalog, including the models it runs but no longer lists,
+which its forwarded answer carries apart from the list
+(`unlisted_models`, never shown to the agent). Sign-in is not read: a
+signed-out provider says so at the spawn's first turn.
 
 One resolver turns a spawner's settings and a choice into what the spawn
 runs with (`threadtools.ResolveSpawn`), for the listing, the preflight
@@ -504,11 +513,13 @@ carried by a transfer. A provider that cannot append a system prompt is
 refused. A paired computer that does not list `spawn_instructions` in
 its options is refused rather than dropping them, and a transfer to a
 computer whose offer does not carry them is refused before anything
-moves, saying to update that computer first. The spawn's reply records
-them as the new thread stores them (`instructions`, a fork's source's
-included), on this computer or the one that ran it, and the expanded
-spawn row shows them from that reply alone, whatever became of the
-thread since.
+moves, saying to update that computer first. The request records them
+as the new thread stores them (a fork's source's included) when it names
+the thread: the receipt on the computer that ran it, and the request
+row on the caller's (`spawn_instructions` on both), so the spawn's reply
+(`instructions`), a retry and a status the caller recovers after losing
+the reply all read that record, and the expanded spawn row shows them
+from the reply alone, whatever became of the thread since.
 
 ### Sub-thread depth
 
@@ -540,8 +551,11 @@ new thread or copy (`threads.spawn_level`) and counted beneath it; the
 destination refuses one past its own limit. A spawn given a sidebar row
 carries level 0. A computer from before levels ignores the field and
 behaves as before. A carried level ends where the delegation does: when
-the thread is placed in a group or as a standalone row, and when it is
-copied or moved to another computer.
+an existing thread is placed in a group or as a standalone row, and when
+it is copied or moved to another computer. A spawn is made in the group
+and placement it ends with (a fork is made outside its source's group,
+in the one the spawn names if any), so creating one is not such a
+placement.
 
 An agent cannot free its own chain from the limit: `thread_update`
 refuses to move a thread at level 1 or deeper on the caller's own
