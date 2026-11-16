@@ -299,6 +299,12 @@ Mechanism in
   naming the previous thread (ruling 2026-10-15,
   [standing agents](specs/standing-agents.md) rulings 22 to 29,
   "Retention" and "Session loss").
+- Turning assistants off pauses and hides them; it never deletes. Every assistant, thread, home, memory folder, wake
+  registration and draft stays as it was, and turning them on resumes
+  each loop and watch, serving the fires it missed once with their
+  count. The setting is the computer's: it hides assistants in that
+  computer's window wherever they live, and pauses only that computer's
+  ([standing agents](specs/standing-agents.md), "Turning assistants off").
 - Multi-agent discussions are removed. No thread nests under another in
   the sidebar; a thread renders flat under its project or group, and a
   spawned thread is its spawner's worker with no row unless placed

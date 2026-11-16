@@ -1421,6 +1421,76 @@ because its caller is not a session. It returns once the message is
 queued, printing its send id, and never waits for a session start. It
 refuses an archived thread and a thread that is not on this computer.
 
+### Turning assistants off
+
+The Assistants setting (`assistantsEnabled`, user tier, on by default)
+is in Settings under Agents, between Thread tools and Agent profiles,
+beside the other settings about what agents get. Off pauses and hides;
+it never deletes ([decisions](../decisions.md#sidebar-threads-drafts)).
+
+**Hidden in this window.** The window reads the setting of the computer
+it runs on and hides every assistant, on whichever computer it lives:
+the Assistants section, New Assistant in a project's menu, New Thread,
+Same Assistant, the Projects and Previous Threads dialogs (one that is
+open closes, and does not come back when the setting is turned on), the
+threads under an assistant in the thread picker, message search and
+archived threads, and the memory page's sentence about assistants. A
+pane already showing a thread under an assistant stays, readable: its
+composer gives way to "Assistants are turned off in Settings. Turn them
+on to continue this thread." and its messages offer no fork, edit or
+run. Closing it would lose the layout the person comes back to.
+
+**Paused on this computer.** One rule decides what fires: while
+`store.PauseAssistants` is set, the store's due reads (the due loops,
+watches and reminders, the sweep's next moment and the live watch list)
+leave out every thread that lives under an assistant, its current
+thread, its past threads and its helpers. Nothing else fires a wake. No
+session starts for those threads: an app-written message waits in its
+queue, and any other start and any new work is refused with
+"Assistants are turned off in Settings on this computer." A worker's
+question goes to the user. The pause is set from the setting at boot,
+before the sweep's first pass, so a restart keeps it.
+
+Turning it off also stops what is running, thread by thread: watch
+scripts and long-running watches end and their rows are armed again
+with the interrupted fire still due; a request open on the thread
+settles as a Stop of it does, saying "Assistants were turned off in
+Settings before it answered."; a running turn is cut ("Stopped:
+assistants were turned off") and the session ends, with the messages
+queued behind it back in the composer. A thread that could not be
+stopped completely says so in its pane.
+
+Turning it on starts the long-running watches again, reruns a run a
+quit cut, lets the sweep serve each loop and watch that came due
+meanwhile once, saying how many fires it missed since the previous
+wake, fires the reminders that came due, and starts the session of each
+thread with messages waiting. Toggling quickly ends in the state the
+setting ends in.
+
+**Not offered to agents.** A session's tools leave out
+`thread_new_assistant`, `thread_watch`, `home_files` and the `agents`
+search filter, and the guide says nothing of assistants. A session that
+started before the change keeps its tool list; a call that needs
+assistants is refused with the same message. An assistant's name, or
+the id of a thread under one, is no address, and `thread_search` lists
+none of their threads, a paired computer's included. A caller on a
+paired computer is told which computer has them off.
+
+**Notifications.** A moment of a thread under a paused assistant is a
+hidden thread's, raised only where `notifyHiddenThreads` is on.
+
+**Kept.** Every assistant, thread, past thread, helper, home, memory
+folder, wake registration, draft and unread state is untouched. An
+assistant's home memory is neither read nor written while it is
+paused. Project and user memory ([memory](memory.md)) are not affected:
+threads that read them with shared memory on still do, and nobody
+receives the maintenance warnings, which only assistants get.
+
+**Paired computers.** The setting is this computer's. Hiding follows the
+setting of the computer the window runs on, wherever an assistant
+lives; pausing applies only to the computer whose setting it is, so a
+paired computer with it on keeps running and showing its own.
+
 ### Attention
 
 A thread's attention flag is three columns of `threads`:

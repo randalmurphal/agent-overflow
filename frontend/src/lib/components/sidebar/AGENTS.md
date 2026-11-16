@@ -21,6 +21,12 @@ which adds the project's empty state and drop targets.
   no pin or group item. Its past threads open from Previous Threads…
   (`PreviousThreadsDialog.svelte`, `stores/assistantPastThreads.svelte.ts`).
   Rules: [standing agents](../../../../../docs/specs/standing-agents.md#sidebar).
+- While the Assistants setting is off (`assistantsShown` in
+  `stores/assistants.svelte.ts`), nothing of assistants renders: no
+  Assistants section, no New Assistant…, and the assistant dialogs close
+  and do not open. Any other surface that lists threads leaves out those
+  under an assistant with `hiddenAssistantThread`. Rules:
+  [standing agents](../../../../../docs/specs/standing-agents.md#turning-assistants-off).
 - `sidebarListsThread` in `sidebarBuckets.ts` is the one place that
   decides a thread has a row: never archived, never `placement` owned.
   The buckets put an assistant in the Assistants section and every other
