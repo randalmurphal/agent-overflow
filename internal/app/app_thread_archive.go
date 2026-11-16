@@ -299,15 +299,12 @@ func (a *App) threadTurnStartedAfter(threadID string, sinceMillis int64) (bool, 
 	if err != nil {
 		return false, err
 	}
-	for _, turn := range turns {
-		if turn.StartedAt <= sinceMillis {
-			return false, nil
-		}
-		asked, found, err := a.store.FirstUserRowOfTurn(threadID, turn.TurnIndex)
-		if err != nil {
-			return false, err
-		}
-		return !found || asked > sinceMillis, nil
+	if len(turns) == 0 || turns[0].StartedAt <= sinceMillis {
+		return false, nil
 	}
-	return false, nil
+	asked, found, err := a.store.FirstUserRowOfTurn(threadID, turns[0].TurnIndex)
+	if err != nil {
+		return false, err
+	}
+	return !found || asked > sinceMillis, nil
 }
