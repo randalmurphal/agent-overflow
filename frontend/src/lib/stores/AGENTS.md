@@ -283,7 +283,8 @@ thread keeps its buffer for the replacement the composer materializes. Text a
 client holds unsaved for a thread that is deleted under it, by its own cleanup
 or another screen's, moves to a new draft thread of its own and is never
 dropped; a delete refused because another screen saved first leaves that
-screen's draft alone. Controls that write a thread row wait for an in-flight
+screen's draft alone, and so does a delete that failed or whose kept draft
+could not be read. Controls that write a thread row wait for an in-flight
 cleanup with `settleEmptyDraftCleanup` and act on what it leaves.
 Hydration preserves attachment ID order and treats a missing attachment record
 as an error.

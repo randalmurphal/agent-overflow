@@ -35,6 +35,20 @@ export async function settleEmptyDraftCleanup(threadId: string | null | undefine
   return cleanup ? cleanup.settled : false;
 }
 
+/**
+ * `remove`'s answer for a thread whose cleanup is in flight; true when it
+ * failed after the deletion broadcast proved the row gone (the reply was
+ * lost, or the delete committed and then reported a cleanup error).
+ */
+export async function removedOrDeletionObserved(threadId: string, remove: () => Promise<boolean>): Promise<boolean> {
+  try {
+    return await remove();
+  } catch (error) {
+    if (!pending.get(threadId)?.afterDeletion) throw error;
+    return true;
+  }
+}
+
 export async function withEmptyDraftCleanup(
   threadId: string,
   remove: () => Promise<boolean>,
@@ -49,15 +63,8 @@ export async function withEmptyDraftCleanup(
   }
   claim.count++;
   try {
-    let deleted: boolean;
-    try {
-      deleted = await remove();
-    } catch (error) {
-      // The event proves the deletion committed even if its RPC reply was
-      // lost. Use the ordinary restoration path to retain newly typed text.
-      if (!claim.afterDeletion) throw error;
-      deleted = true;
-    }
+    // Use the ordinary restoration path to retain newly typed text.
+    const deleted = await removedOrDeletionObserved(threadId, remove);
     claim.deleted ||= deleted;
     await restore(deleted);
   } finally {

@@ -52,7 +52,7 @@
   import { deriveComposerSendState } from './composerSendState';
   import { dispatchSend } from './composerSend';
   import { runInterrupt } from '../../stores/threadInterrupt.svelte';
-  import { isEmptyDraftCleanupPending, settleEmptyDraftCleanup, withEmptyDraftCleanup } from '../../stores/emptyDraftCleanup';
+  import { isEmptyDraftCleanupPending, removedOrDeletionObserved, settleEmptyDraftCleanup, withEmptyDraftCleanup } from '../../stores/emptyDraftCleanup';
   import { keepDraftInNewThread } from '../../stores/deletedDraftThread';
   import { applyThreadDeleted } from '../../stores/eventsThreadRows';
   import {
@@ -429,19 +429,23 @@
     answer: EmptyThreadCleanup | null,
   ): Promise<void> {
     // Also reached when only the deletion broadcast proved the delete.
-    const unsaved = (deleted ? cleanupDraft.releaseDeletedThread(threadId) : null) ?? answer?.unsaved ?? null;
-    const contested = answer?.contested === true;
+    const unsaved = (deleted ? cleanupDraft.releaseDeletedThread(threadId) : null)
+      ?? (answer && answer.outcome !== 'kept' ? answer.unsaved : null);
+    // Unknown is treated as contested: the store already moved the text off
+    // the thread and reported why.
+    const yielded = !deleted && (answer?.outcome === 'contested' || answer?.outcome === 'unknown');
     if (pane.threadId !== threadId) {
       // Typed into the thread, then moved on: the text is kept in a new
       // draft thread, as a new thread left with text in it is.
       if (unsaved) await keepDraftInNewThread(settings, unsaved, cleanupDraft);
       return;
     }
-    if (contested) {
+    if (yielded) {
       // Another screen's draft kept the thread. It stays theirs, listed;
-      // what this screen typed meanwhile goes to a new thread.
+      // what this screen typed meanwhile goes to a new thread. A thread
+      // whose state is unknown is left to the backend's row frames.
       emptyDraftCleanupKey = null;
-      const kept = pane.thread;
+      const kept = answer?.outcome === 'contested' ? pane.thread : null;
       if (pane.dematerializeEmptyDraftThread()) {
         if (kept) prependThread(kept);
         const replacementId = await pane.ensureMaterializedThread();
@@ -505,8 +509,11 @@
           await withEmptyDraftCleanup(
             threadId,
             async () => {
-              answer = await cleanupDraft.deleteEmptyThread(threadId, () => DeleteEmptyDraftThread(threadId));
-              return answer.deleted;
+              answer = await cleanupDraft.deleteEmptyThread(
+                threadId,
+                () => removedOrDeletionObserved(threadId, () => DeleteEmptyDraftThread(threadId)),
+              );
+              return answer.outcome === 'deleted';
             },
             (deleted) => handleEmptyDraftCleanupResult(cleanupDraft, threadId, settings, deleted, answer),
           );
