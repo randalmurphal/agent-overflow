@@ -537,6 +537,45 @@ func TestASpawnsReplyRecordsTheInstructionsItsThreadRunsWith(t *testing.T) {
 	}
 }
 
+// The instructions are the request's record from when the spawn named its
+// thread: a thread deleted while the spawn waits on it leaves them in the
+// reply.
+func TestASpawnWhoseThreadIsDeletedDuringItsWaitStillRecordsItsInstructions(t *testing.T) {
+	f := newRequestFixture(t)
+	f.mockClaudeHoldingTheTurn(t, "working")
+	type result struct {
+		ack threadtools.RequestAck
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		ack, err := f.adapter().Spawn(t.Context(), f.callerIdentity(), threadtools.SpawnCall{
+			Prompt: "work", Instructions: "Look for bugs.", WaitSeconds: 20,
+		})
+		done <- result{ack, err}
+	}()
+	var target string
+	waitUntilE2E(t, 15*time.Second, "the spawn's thread runs its prompt", func() bool {
+		rows, err := f.app.store.ListThreadRequestsByCaller(f.caller.ID, 10, 0)
+		if err != nil || len(rows) != 1 || rows[0].TargetThreadID == "" {
+			return false
+		}
+		target = rows[0].TargetThreadID
+		receipt, found, err := f.app.store.GetThreadRequestReceipt(rows[0].Token)
+		return err == nil && found && receipt.State == store.ThreadReceiptRunning && f.app.triage.OpenTurnIndex(target) >= 0
+	})
+	if _, err := f.app.DeleteThread(target); err != nil {
+		t.Fatalf("DeleteThread: %v", err)
+	}
+	if _, err := f.app.store.GetThread(target); err == nil {
+		t.Fatal("the spawned thread is still here")
+	}
+	got := <-done
+	if got.err != nil || got.ack.Instructions != "Look for bugs." {
+		t.Fatalf("the spawn's reply = %+v, %v; want its thread's instructions", got.ack, got.err)
+	}
+}
+
 // A paired computer's spawn carries its thread's level: the destination
 // stores it with the thread, counts that thread's own workers from it,
 // and refuses a spawn whose thread would sit past its own limit. A spawn's

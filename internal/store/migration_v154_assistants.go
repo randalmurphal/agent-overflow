@@ -92,6 +92,12 @@ import (
 //   - `open_below_0` to `open_below_3` on a local spawn, and on a receipt
 //     `own_turn`, whether the turn its message was delivered into opened
 //     for it (a cancel interrupts only such a turn).
+//   - `spawn_instructions` on both: a spawn's thread's instructions
+//     (threads.spawn_instructions), recorded once when the spawn names its
+//     thread, on the receipt and, for a local spawn, the source row; a
+//     remote spawn's source row records what its computer's answer
+//     carried. A spawn's result reads them from here, whatever became of
+//     the thread since.
 //
 // A thread is reached by at most one local spawn, its link
 // (idx_thread_requests_spawn_link): every writer that names a local spawn's
@@ -245,12 +251,14 @@ ALTER TABLE thread_requests ADD COLUMN open_below_0 INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE thread_requests ADD COLUMN open_below_1 INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE thread_requests ADD COLUMN open_below_2 INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE thread_requests ADD COLUMN open_below_3 INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE thread_requests ADD COLUMN spawn_instructions TEXT NOT NULL DEFAULT '';
 ALTER TABLE thread_request_receipts ADD COLUMN answer_agent INTEGER NOT NULL DEFAULT 0 CHECK(answer_agent IN (0,1));
 ALTER TABLE thread_request_receipts ADD COLUMN answer_agent_role TEXT NOT NULL DEFAULT '';
 ALTER TABLE thread_request_receipts ADD COLUMN late_reply_agent INTEGER NOT NULL DEFAULT 0 CHECK(late_reply_agent IN (0,1));
 ALTER TABLE thread_request_receipts ADD COLUMN late_reply_agent_role TEXT NOT NULL DEFAULT '';
 ALTER TABLE thread_request_receipts ADD COLUMN own_turn INTEGER NOT NULL DEFAULT 0 CHECK(own_turn IN (0,1));
 ALTER TABLE thread_request_receipts ADD COLUMN lineage_only INTEGER NOT NULL DEFAULT 0 CHECK(lineage_only IN (0,1));
+ALTER TABLE thread_request_receipts ADD COLUMN spawn_instructions TEXT NOT NULL DEFAULT '';
 
 CREATE TEMP TABLE v154_undelivered_wakes (
     thread_id TEXT NOT NULL,

@@ -657,6 +657,12 @@ func (a *App) applyThreadPeerRequest(token, computerID string, answer ThreadPeer
 			return 0, nil, err
 		}
 	}
+	// Whichever answer first states them, the call's own reply or a poll
+	// that recovered a lost one: the destination's receipt recorded them
+	// once, when it named the thread.
+	if err := a.store.RecordThreadRequestInstructions(token, answer.Instructions); err != nil {
+		return 0, nil, err
+	}
 	if !store.ThreadReceiptSettled(answer.State) {
 		// Still accepted or running there. The source row follows so
 		// thread_status reads the same word on both computers.

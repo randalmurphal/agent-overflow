@@ -213,18 +213,11 @@ func (t threadToolsApp) Spawn(ctx context.Context, caller threadtools.Caller, ca
 		if placement, err := threadtools.ResolveSpawnPlacement(call.Placement, call.Group); err == nil && placement == threadtools.PlacementOwned {
 			call.Level = level
 		}
-		ack, err := t.startRemoteRequest(ctx, caller, store.ThreadRequest{
+		return t.startRemoteRequest(ctx, caller, store.ThreadRequest{
 			Kind:           store.ThreadRequestSpawn,
 			OriginThreadID: call.FromThread,
 			Notify:         call.Notify,
 		}, call.ComputerID, "thread_spawn", call, call.WaitSeconds)
-		if err == nil && ack.Instructions == "" && call.FromThread == "" {
-			// No answer named them (a reply that never arrived): a fresh
-			// thread there stores exactly the call's, which a fork's
-			// source text would come before.
-			ack.Instructions = call.Instructions
-		}
-		return ack, err
 	}
 	origin, err := t.localOrigin(caller)
 	if err != nil {
@@ -241,30 +234,12 @@ func (t threadToolsApp) Spawn(ctx context.Context, caller threadtools.Caller, ca
 		return threadtools.RequestAck{}, err
 	}
 	token := newThreadRequestToken()
-	target, err := t.acceptSpawn(ctx, origin, token, call)
+	_, err = t.acceptSpawn(ctx, origin, token, call)
 	done()
 	if err != nil {
 		return threadtools.RequestAck{}, err
 	}
-	ack, err := t.ackRequest(ctx, caller, token, call.WaitSeconds)
-	if err != nil {
-		return threadtools.RequestAck{}, err
-	}
-	ack.Instructions = t.spawnedInstructions(target)
-	return ack, nil
-}
-
-// spawnedInstructions are the instructions a spawn's thread stores, read
-// once it exists, for the spawn's reply to record. A thread that cannot be
-// read leaves the reply without them, and the host log says why: the spawn
-// itself has happened, and refusing its reply would invite a second one.
-func (t threadToolsApp) spawnedInstructions(threadID string) string {
-	thread, err := t.app.store.GetThread(threadID)
-	if err != nil {
-		log.Printf("thread tools: read the instructions of spawned thread %s: %v", threadID, err)
-		return ""
-	}
-	return thread.SpawnInstructions
+	return t.ackRequest(ctx, caller, token, call.WaitSeconds)
 }
 
 // acceptSpawn is the destination half of a spawn: create the thread,

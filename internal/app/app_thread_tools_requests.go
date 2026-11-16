@@ -130,10 +130,18 @@ func (t threadToolsApp) ackRequest(ctx context.Context, caller threadtools.Calle
 	if err != nil {
 		return threadtools.RequestAck{}, err
 	}
-	return threadtools.RequestAck{
+	ack := threadtools.RequestAck{
 		RequestState: state,
 		Outcome:      threadRequestOutcome(row, state.State == threadtools.RequestBlocked),
-	}, nil
+	}
+	if row.Kind == store.ThreadRequestSpawn {
+		// Recorded with the request when its thread was named, here or on
+		// the computer that ran it, never read from the thread now.
+		if ack.Instructions, err = t.app.store.ThreadRequestSpawnInstructions(token); err != nil {
+			return threadtools.RequestAck{}, err
+		}
+	}
+	return ack, nil
 }
 
 // waitForRequest parks on one token and returns the row as it stands
