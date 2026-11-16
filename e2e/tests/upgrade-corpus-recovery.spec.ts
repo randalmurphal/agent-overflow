@@ -51,7 +51,7 @@ import {
   waitForGate,
 } from './agent-visibility-helpers.js';
 import type { SweepContext } from './upgrade-corpus-config.js';
-import { fingerprint, migrateAlone, type Fingerprint } from './upgrade-corpus-fingerprint.js';
+import { fingerprint, migrateAlone, storeAt, type Fingerprint } from './upgrade-corpus-fingerprint.js';
 import {
   census,
   compareCensus,
@@ -561,6 +561,46 @@ test('the release upgrade check tells a dead process\'s recovered rows from alte
     // A thread no rule selects that loses a row.
     const lost: Census = { ...after, threadItems: { ...after.threadItems, [quietId]: postTrial.threadItems[quietId] - 1 } };
     expect(() => compareCensus(postTrial, lost, schema, schema, 'boot', sweeps.growth)).toThrow(`thread ${quietId} had`);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+// A root from a release older than a column a recovery rule names: v148,
+// before thread_requests.delivered_with (v149), with an open local request
+// the dead process left running. The trial migrates it and its boot settles
+// the request; the fingerprint must classify that settlement over the store
+// the migrations left, not fail on the snapshot's older schema.
+const BEFORE_WAKE_CARRIER = 148;
+
+test('the release upgrade check classifies a boot recovery on a snapshot older than the rules', async () => {
+  test.setTimeout(3 * 60_000);
+  const root = await mkdtemp(path.join(tmpdir(), 'ao-upgrade-recovery-old-'));
+  try {
+    const rig = await buildSandbox(root);
+    await storeAt(rig.dbPath, BEFORE_WAKE_CARRIER);
+    const workspace = path.join(rig.dataRoot, 'workspaces', 'old');
+    await mkdir(workspace, { recursive: true });
+    write(rig.dbPath, `
+      INSERT INTO projects (id, path, name, created_at, updated_at) VALUES ('p-old', '${workspace}', 'Old', 1, 1);
+      INSERT INTO threads (id, project_id, title, provider, workspace_path, model, created_at, updated_at, archived, mode)
+        VALUES ('t-old', 'p-old', 'Caller', 'claude', '${workspace}', 'test-model', 1, 1, 0, 'chat');
+      INSERT INTO thread_requests (token, caller_thread_id, kind, state, created_at, updated_at)
+        VALUES ('req-old', 't-old', 'send', 'running', 1, 1);
+    `);
+    const id = newUpdateID();
+    const snapshot = await runUpdateCommand(rig, ['__update-snapshot', '--id', id], COMMAND_TIMEOUT_MS);
+    expect(updateResult(snapshot.events), snapshot.stderr).toMatchObject({ outcome: 'ok', schema: BEFORE_WAKE_CARRIER });
+    const trial = await runUpdateCommand(rig,
+      ['__update-trial-run', '--id', id, '--to', await buildVersion(), '--attempt', '1'], COMMAND_TIMEOUT_MS);
+    expect(updateResult(trial.events), trial.stderr).toMatchObject({ outcome: 'prepared' });
+    const snapshotDB = path.join(rig.dataRoot, 'agent-overflow', 'runtime', 'app-update', 'snapshot', 'agent-overflow.db');
+    const [{ schema }] = await dbQuery<{ schema: number }>(rig.dbPath, 'SELECT MAX(version) AS schema FROM migration_versions');
+    const result = await fingerprint(rig.dbPath, snapshotDB, BEFORE_WAKE_CARRIER, schema,
+      () => migrateAlone(snapshotDB, path.join(root, 'migrated-alone')));
+    expect(result.failures).toEqual([]);
+    expect(Object.fromEntries(result.recovery.map((entry) => [entry.rule, entry.rows]))).toMatchObject({ 'open-local-requests': 1 });
+    expect(await dbQuery(rig.dbPath, `SELECT state FROM thread_requests WHERE token = 'req-old'`)).toEqual([{ state: 'interrupted' }]);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
