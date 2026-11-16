@@ -60,6 +60,7 @@ type Options struct {
     MaxPerSecond float64         // paces every request of this client; zero does not pace
     ReadTimeout  time.Duration   // a call whose Request.Timeout is zero; zero means 45s
     MaxBodyBytes int64           // a body Do and JSON read; zero means 8 MiB
+    Proxy        func(*http.Request) (*url.URL, error) // nil connects directly
 }
 
 func New(opts Options) (*Client, error) // misconfiguration is a construction error
@@ -96,11 +97,11 @@ type Request struct {
   `BaseURL`. A redirect to another origin, and an absolute URL on another
   origin, are requested without it.
 - **Reads** (`GET`, `HEAD`, a `ReadOnly` POST) are retried on a connection
-  failure, a 429 and a 503, at most four times, waiting `Retry-After` when
-  the tracker names it and a doubling backoff otherwise, each wait capped
-  at 60 seconds.
-- **Writes are never replayed.** The one exception is a 429, which the
-  tracker answers before it applies anything. `WriteNotApplied(err)`
+  failure and a 503, at most four times, waiting `Retry-After` when the
+  tracker names it and a doubling backoff otherwise, each wait capped at
+  60 seconds. A rate limit is the gate's to handle, below.
+- **Writes are never replayed.** The one exception is a 429 on an
+  interactive call, which the tracker answers before it applies anything. `WriteNotApplied(err)`
   reports the failures that prove a write did not happen: it was never sent,
   or the tracker answered it in full with a 4xx. Every other failure of a
   write (a timeout or reset after the request was written, a 5xx, a 2xx
@@ -108,17 +109,22 @@ type Request struct {
   and the caller reads the ticket again before it offers the write again.
 - **Rate gate.** A 429 closes the client's gate until the time the tracker
   names. A background call made while it is closed fails at once with
-  `*RateLimitedError{Until}`; a call marked `WithInteractive(ctx)` waits
-  for the gate when the wait is short and otherwise fails the same way.
-  `MaxPerSecond` spaces requests for a tracker that limits by address.
+  `*RateLimitedError{Until}`, as does the background call that drew the
+  429. A call marked `WithInteractive(ctx)` waits for the gate and is sent
+  again when the gate opens within 10 seconds, and otherwise fails the
+  same way. `MaxPerSecond` spaces requests for a tracker that limits by
+  address.
+- **Environment.** The package reads none. A caller that honors the
+  user's proxy settings passes `http.ProxyFromEnvironment` as `Proxy`.
 - **Bodies are bounded.** `Do` and `JSON` refuse a body over the bound
   instead of reading it. `Stream` copies to its writer up to its limit.
 - **Transfers.** A `Transfer` request has no total timeout. It fails when
   no byte moves for the stall timeout, or when the answer's headers take
   longer than the header timeout after the request is sent.
 - **Isolation.** `New` refuses a `BaseURL` that is not https unless its host
-  is a loopback address, so a test server is reachable and a mistyped
-  scheme is not. Routing an isolated boot to a fake tracker is the app
+  is a loopback IP address, so a test server is reachable and a mistyped
+  scheme is not. The same rule holds for an absolute URL and every
+  redirect hop. Routing an isolated boot to a fake tracker is the app
   wiring's job and is not built.
 
 ### Dialect
