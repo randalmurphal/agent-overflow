@@ -70,8 +70,9 @@ func (t *terminalThreads) forget(threadID string) {
 // terminalThreadForOpen reports whether threadID names a terminal thread,
 // refusing one that has ended and an id with no thread row. A draft
 // placeholder has no row and is not a terminal thread. Call under the
-// thread's mutation lock, which OpenTerminal, RestartTerminal and the final
-// step of a delete all hold, so the answer cannot change before the open.
+// thread's mutation lock, which OpenTerminal, MoveThreadTerminals and the
+// final step of a delete all hold, so the answer cannot change before the
+// open.
 func (a *App) terminalThreadForOpen(threadID string) (bool, error) {
 	if isDraftPlaceholderThreadID(threadID) {
 		return false, nil
@@ -125,8 +126,8 @@ func (a *App) endTerminalThreadAfterExit(threadID string) {
 // endTerminalThread deletes threadID if it is a terminal thread that has
 // ended, under the action lock and ownership check DeleteThread uses, and
 // returns its title for a report of a failed delete. The check takes the
-// mutation lock, so it never sees the moment inside a RestartTerminal
-// between the old shell's exit and the new one's start.
+// mutation lock, so it waits out an OpenTerminal or MoveThreadTerminals that
+// has passed terminalThreadForOpen and not yet listed its shell.
 func (a *App) endTerminalThread(ctx context.Context, threadID string) (string, error) {
 	unlock, err := a.threadLocks().LockCtx(ctx, threadID)
 	if err != nil {

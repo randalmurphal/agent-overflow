@@ -448,7 +448,6 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "ResizeTerminal", ID: 1887984285, Scope: "terminal:operate", Route: "home"},                                                       // main.App.ResizeTerminal
 	{Name: "RespondToApproval", ID: 1919237704, Scope: "approvals:respond", Route: "thread"},                                                 // main.App.RespondToApproval
 	{Name: "RespondToUserInput", ID: 1071592868, Scope: "approvals:respond", Route: "thread"},                                                // main.App.RespondToUserInput
-	{Name: "RestartTerminal", ID: 4152403588, Scope: "terminal:operate", Route: "home"},                                                      // main.App.RestartTerminal
 	{Name: "RestartToUpdate", ID: 3141913084, Scope: "host", Route: "home"},                                                                  // main.App.RestartToUpdate
 	{Name: "RestoreAccessDevice", ID: 3386497005, Scope: "access:admin", Route: "home", Remote: true},                                        // main.App.RestoreAccessDevice
 	{Name: "ResyncLiveCode", ID: 1113976056, Scope: "files:read", Route: "thread"},                                                           // main.App.ResyncLiveCode

@@ -5075,16 +5075,6 @@ export function RespondToUserInput(threadID: string, response: provider$0.UserIn
 }
 
 /**
- * RestartTerminal kills the given terminal and spawns a fresh replacement
- * with the same configuration.
- */
-export function RestartTerminal(terminalID: string): $CancellablePromise<app$0.TerminalHandle> {
-    return $Call.ByID(4152403588, terminalID).then(($result: any) => {
-        return $$createType194($result);
-    });
-}
-
-/**
  * RestartToUpdate swaps in the staged update and relaunches. It spawns the
  * detached swap helper and asks Wails to begin its normal shutdown, so the
  * transport drains and stores flush before the process exits; the helper then

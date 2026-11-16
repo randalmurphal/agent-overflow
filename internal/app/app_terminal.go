@@ -235,41 +235,6 @@ func isDraftPlaceholderThreadID(threadID string) bool {
 	return strings.HasPrefix(strings.TrimSpace(threadID), "draft:")
 }
 
-// RestartTerminal kills the given terminal and spawns a fresh replacement
-// with the same configuration.
-//
-//ao:scope terminal:operate
-//ao:route home
-func (a *App) RestartTerminal(terminalID string) (TerminalHandle, error) {
-	endAdmission, admitErr := a.workAdmission.begin(a.lifeCtx())
-	if admitErr != nil {
-		return TerminalHandle{}, admitErr
-	}
-	defer endAdmission()
-
-	if a.terminals == nil {
-		return TerminalHandle{}, fmt.Errorf("terminal manager not initialized")
-	}
-	previous, err := a.terminals.Summary(terminalID)
-	if err != nil {
-		return TerminalHandle{}, err
-	}
-	unlock, err := a.threadApplication().LockMutable(context.Background(), previous.ThreadID)
-	if err != nil {
-		return TerminalHandle{}, err
-	}
-	defer unlock()
-	summary, err := a.terminals.Restart(terminalID)
-	if summary.TerminalID == "" {
-		return TerminalHandle{}, err
-	}
-	// A restart is a close plus an open, and the close already emitted
-	// terminal:exit — so without this every other client would watch the tab
-	// disappear and never see the replacement. A close that failed still
-	// started the replacement, so it is announced and the failure returned.
-	return a.announceTerminalOpened(summary), err
-}
-
 // GetTerminalReplay returns the base64-encoded replay buffer plus a sequence
 // watermark. base64 keeps binary safety for non-UTF-8 bytes emitted by the
 // shell.

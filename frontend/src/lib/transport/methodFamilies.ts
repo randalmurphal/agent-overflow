@@ -82,7 +82,6 @@ export const ROUTE_BY_ID_FAMILY: Readonly<Record<number, IdFamily | { family: Id
   2329592604: 'terminal', // GetTerminalReplay
   2618043580: 'terminal', // RefreshTerminal
   2702963191: 'terminal', // CloseTerminal
-  4152403588: 'terminal', // RestartTerminal
   // Subscription and review-diff handle ids, which are meaningful ONLY on
   // the connection that minted them. Every caller pins that computer
   // (withBackendTarget); an unpinned call resolves no owner.
