@@ -8153,9 +8153,10 @@ export class ThreadAgentRow {
 
     /**
      * ToolCalls, Tokens and RuntimeMs are what the thread a spawn made did
-     * over its life (store.ThreadTally, threadAgentTally): each top-level
-     * tool call it executed, once; the tokens its turns and its own native
-     * agents spent; and the time its turns ran, the open one's so far.
+     * over its life (store.ThreadTally): each top-level tool call it
+     * executed, once; the tokens it spent itself, as a native agent's row
+     * counts its agent's, its own native agents' left to their rows; and
+     * the time its turns ran, the open one's so far.
      * TurnOpen says a turn is open, whose time goes on from RuntimeMs as
      * read. Read here, or reported by the paired computer that holds it;
      * zero for every other kind and from a computer that does not report
