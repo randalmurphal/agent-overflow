@@ -116,7 +116,7 @@ func sortedNonEmpty(values map[string]struct{}) []string {
 var defaultAgentProfiles = []AgentProfile{
 	{
 		Name: "Luna", Provider: "codex", Model: "gpt-5.6-luna", Effort: "high",
-		UseFor: "Mechanical changes that sweep across many files, fanned out to many threads, with little or no judgement; or a search for something specific.",
+		UseFor: "Mechanical changes that sweep across many files, fanned out to many threads, with little or no judgment; or a search for something specific.",
 	},
 	{
 		Name: "Terra", Provider: "codex", Model: "gpt-5.6-terra", Effort: "high",
@@ -132,7 +132,7 @@ var defaultAgentProfiles = []AgentProfile{
 	},
 	{
 		Name: "Haiku", Provider: "claude", Model: "claude-haiku-5-5", Effort: "high",
-		UseFor: "Mechanical changes that sweep across many files, fanned out to many threads, with little or no judgement; or a search for something specific.",
+		UseFor: "Mechanical changes that sweep across many files, fanned out to many threads, with little or no judgment; or a search for something specific.",
 	},
 	{
 		Name: "Sonnet", Provider: "claude", Model: "claude-sonnet-5", Effort: "high",
@@ -144,14 +144,15 @@ var defaultAgentProfiles = []AgentProfile{
 	},
 	{
 		Name: "Fable", Provider: "claude", Model: "claude-fable-5", Effort: "high",
-		UseFor: "Design and product taste, and common-sense judgement on a plan or a result. Very expensive; moderate speed. Not for routine implementation.",
+		UseFor: "Design and product taste, and common-sense judgment on a plan or a result. Very expensive; moderate speed. Not for routine implementation.",
 	},
 }
 
 // The seeded notes. Advice that needs both families is its own note with
 // its condition, beside the same advice phrased for one family, so an
 // agent is never told to draw on a provider it cannot run and the person
-// can still edit each text.
+// can still edit each text. Only such a note compares profiles across the
+// families.
 var defaultAgentNotes = []AgentNote{
 	{
 		When: AgentNoteAlways,
@@ -159,15 +160,19 @@ var defaultAgentNotes = []AgentNote{
 	},
 	{
 		When: AgentNoteAlways,
-		Text: "Effort: use high by default. Use xhigh only for a genuinely hard problem, and more for reviews and architecture than for implementation, where it tends to cause overthinking. A task that needs taste but little judgement suits a stronger model at low or medium effort; a purely mechanical task suits a cheaper model at high effort.",
+		Text: "Effort: use high by default. Use xhigh only for a genuinely hard problem, and more for reviews and architecture than for implementation, where it tends to cause overthinking. A task that needs taste but little judgment suits a stronger model at low or medium effort; a purely mechanical task suits a cheaper model at high effort.",
 	},
 	{
 		When: AgentNoteBothProviders,
-		Text: "For a big judgement call, such as a complex decision, plan or design, or an important review, convene a council: about three models drawn from both the Claude and the Codex profiles, each asked the same question by one lead thread that compares the answers and reconciles them.",
+		Text: "Across the two families: Terra is probably the best value, and Sonnet is about the same; Haiku and Luna are about the same.",
+	},
+	{
+		When: AgentNoteBothProviders,
+		Text: "For a big judgment call, such as a complex decision, plan or design, or an important review, convene a council: about three models drawn from both the Claude and the Codex profiles, each asked the same question by one lead thread that compares the answers and reconciles them.",
 	},
 	{
 		When: AgentNoteOneProvider,
-		Text: "For a big judgement call, such as a complex decision, plan or design, or an important review, convene a council: about three different models, each asked the same question by one lead thread that compares the answers and reconciles them.",
+		Text: "For a big judgment call, such as a complex decision, plan or design, or an important review, convene a council: about three different models, each asked the same question by one lead thread that compares the answers and reconciles them.",
 	},
 	{
 		When: AgentNoteAlways,

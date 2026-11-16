@@ -35,7 +35,7 @@ export const SETTINGS_DEFAULTS = {
   agentProfiles: [
     {
       name: "Luna",
-      useFor: "Mechanical changes that sweep across many files, fanned out to many threads, with little or no judgement; or a search for something specific.",
+      useFor: "Mechanical changes that sweep across many files, fanned out to many threads, with little or no judgment; or a search for something specific.",
       provider: "codex",
       model: "gpt-5.6-luna",
       effort: "high",
@@ -71,7 +71,7 @@ export const SETTINGS_DEFAULTS = {
     },
     {
       name: "Haiku",
-      useFor: "Mechanical changes that sweep across many files, fanned out to many threads, with little or no judgement; or a search for something specific.",
+      useFor: "Mechanical changes that sweep across many files, fanned out to many threads, with little or no judgment; or a search for something specific.",
       provider: "claude",
       model: "claude-haiku-5-5",
       effort: "high",
@@ -98,7 +98,7 @@ export const SETTINGS_DEFAULTS = {
     },
     {
       name: "Fable",
-      useFor: "Design and product taste, and common-sense judgement on a plan or a result. Very expensive; moderate speed. Not for routine implementation.",
+      useFor: "Design and product taste, and common-sense judgment on a plan or a result. Very expensive; moderate speed. Not for routine implementation.",
       provider: "claude",
       model: "claude-fable-5",
       effort: "high",
@@ -112,15 +112,19 @@ export const SETTINGS_DEFAULTS = {
       when: "",
     },
     {
-      text: "Effort: use high by default. Use xhigh only for a genuinely hard problem, and more for reviews and architecture than for implementation, where it tends to cause overthinking. A task that needs taste but little judgement suits a stronger model at low or medium effort; a purely mechanical task suits a cheaper model at high effort.",
+      text: "Effort: use high by default. Use xhigh only for a genuinely hard problem, and more for reviews and architecture than for implementation, where it tends to cause overthinking. A task that needs taste but little judgment suits a stronger model at low or medium effort; a purely mechanical task suits a cheaper model at high effort.",
       when: "",
     },
     {
-      text: "For a big judgement call, such as a complex decision, plan or design, or an important review, convene a council: about three models drawn from both the Claude and the Codex profiles, each asked the same question by one lead thread that compares the answers and reconciles them.",
+      text: "Across the two families: Terra is probably the best value, and Sonnet is about the same; Haiku and Luna are about the same.",
       when: "both_providers",
     },
     {
-      text: "For a big judgement call, such as a complex decision, plan or design, or an important review, convene a council: about three different models, each asked the same question by one lead thread that compares the answers and reconciles them.",
+      text: "For a big judgment call, such as a complex decision, plan or design, or an important review, convene a council: about three models drawn from both the Claude and the Codex profiles, each asked the same question by one lead thread that compares the answers and reconciles them.",
+      when: "both_providers",
+    },
+    {
+      text: "For a big judgment call, such as a complex decision, plan or design, or an important review, convene a council: about three different models, each asked the same question by one lead thread that compares the answers and reconciles them.",
       when: "one_provider",
     },
     {

@@ -38,7 +38,7 @@ func TestTheSeededRosterIsValidAndReadByDefault(t *testing.T) {
 // provider's profiles are listed together from the lowest tier to the
 // highest, and no use-for line points at a profile of the other provider.
 // Text that applies to every computer names no profile at all.
-func TestTheSeedsShowEachProvidersLadderAndNameNoOtherProvider(t *testing.T) {
+func TestTheSeedsShowEachProvidersLadderAndCompareFamiliesOnlyWhenBothRun(t *testing.T) {
 	t.Parallel()
 	var order []string
 	for _, profile := range defaultAgentProfiles {
@@ -58,12 +58,26 @@ func TestTheSeedsShowEachProvidersLadderAndNameNoOtherProvider(t *testing.T) {
 			}
 		}
 	}
+	// Only a note shown when both providers run names profiles, and the
+	// comparison across the families is one of them.
+	compared := false
 	for _, note := range defaultAgentNotes {
+		named := 0
 		for _, profile := range defaultAgentProfiles {
 			if strings.Contains(note.Text, profile.Name) {
-				t.Errorf("a seeded note names %s: %q", profile.Name, note.Text)
+				named++
+				if note.When != AgentNoteBothProviders {
+					t.Errorf("a seeded note shown %q names %s: %q", note.When, profile.Name, note.Text)
+				}
 			}
 		}
+		if named > 0 {
+			compared = compared || (strings.Contains(note.Text, "Terra") && strings.Contains(note.Text, "Sonnet") &&
+				strings.Contains(note.Text, "Haiku") && strings.Contains(note.Text, "Luna"))
+		}
+	}
+	if !compared {
+		t.Error("no seeded note shown when both providers run compares Terra with Sonnet and Haiku with Luna")
 	}
 	// Tier and effort are stated together, as the two axes of one choice.
 	if !strings.HasPrefix(defaultAgentNotes[0].Text, "Tier and effort are two separate choices.") ||
