@@ -11,10 +11,12 @@ import (
 	"time"
 
 	"agent-overflow/internal/buildvariant/remotetest"
+	"agent-overflow/internal/claudecatalog"
 	"agent-overflow/internal/codexmodels"
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/procutil"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/store"
@@ -657,5 +659,87 @@ func TestARemoteSpawnCarriesItsLevelAndInstructions(t *testing.T) {
 	_, err = pair.adapter().Spawn(ctx, pair.callerIdentity(), threadtools.SpawnCall{Prompt: "too deep", ComputerID: pair.computer, ProjectID: pair.project})
 	if err == nil || !strings.Contains(err.Error(), "this computer allows 1") {
 		t.Fatalf("a spawn past the destination's limit = %v", err)
+	}
+}
+
+// A paired computer's thread_options answer carries the models it runs but
+// does not list, so the caller lists and spawns a profile on a model that
+// computer has left off its list, and one inheriting the caller's own model
+// left off there too. The list itself stays the computer's shortlist. Not
+// parallel: the probe catalog is process-wide.
+func TestAProfileOnAModelAPairedComputerRunsButDoesNotListIsOffered(t *testing.T) {
+	remotetest.Require(t)
+	pair := newReachPair(t)
+	installMockClaudeTurns(t, pair.dest, [][]string{{mockClaudeInitLine}})
+	// Both CLIs list Opus 4.8 and Sonnet 5; the caller's claude-opus-4-7
+	// and claude-opus-4-5 still run on either computer.
+	wire := []claude.WireModel{
+		{Value: "default", ResolvedModel: "claude-opus-4-8[1m]"},
+		{Value: "claude-sonnet-5", ResolvedModel: "claude-sonnet-5"},
+		{Value: "opus", ResolvedModel: "claude-opus-4-8"},
+	}
+	seedClaudeWire(t, pair.dest, wire)
+	capture := claudecatalog.ModelCapture{}
+	capture.Capture(wire, nil)
+	capture.Store(pair.source.claudeProbeModelKey())
+	if _, err := pair.source.settings.Update(map[string]any{"agentProfiles": []any{
+		map[string]any{"name": "Older Opus", "useFor": "Anything.", "provider": "claude", "model": "claude-opus-4-5"},
+		map[string]any{"name": "Like me", "useFor": "Anything."},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	answer := pair.call(t, "thread_options", `{"what":"models"}`)
+	encoded, err := json.Marshal(answer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "unlisted") {
+		t.Errorf("thread_options shows the agent the unlisted models: %s", encoded)
+	}
+	type computerRow struct {
+		ComputerID string                       `json:"computer_id"`
+		Providers  []threadtools.ProviderOption `json:"providers"`
+		Profiles   []threadtools.ProfileOption  `json:"profiles"`
+	}
+	var options struct {
+		Computers []computerRow `json:"computers"`
+	}
+	if err := json.Unmarshal(encoded, &options); err != nil {
+		t.Fatal(err)
+	}
+	index := slices.IndexFunc(options.Computers, func(row computerRow) bool { return row.ComputerID == pair.computer })
+	if index < 0 {
+		t.Fatalf("thread_options has no row for the paired computer: %s", encoded)
+	}
+	there := options.Computers[index]
+	for _, row := range options.Computers {
+		for _, option := range row.Providers {
+			for _, model := range option.Models {
+				if model.Slug == "claude-opus-4-5" || model.Slug == "claude-opus-4-7" {
+					t.Errorf("computer %s lists %s, which its CLI does not list", row.ComputerID, model.Slug)
+				}
+			}
+		}
+	}
+	want := map[string]string{"Older Opus": "claude-opus-4-5", "Like me": "claude-opus-4-7"}
+	listed := map[string]string{}
+	for _, profile := range there.Profiles {
+		listed[profile.Name] = profile.Model
+	}
+	for name, model := range want {
+		if listed[name] != model {
+			t.Errorf("the paired computer lists %q on %q, want it on %s; it lists %v", name, listed[name], model, listed)
+		}
+		spawned := pair.call(t, "thread_spawn", `{"prompt":"work","profile":`+quoteJSON(name)+
+			`,"computer_id":`+quoteJSON(pair.computer)+`,"project_id":`+quoteJSON(pair.project)+`}`)
+		token, _ := spawned["token"].(string)
+		thread, err := pair.dest.store.GetThread(pair.receipt(t, token).TargetThreadID)
+		if err != nil {
+			t.Fatalf("%s spawned no thread there: %v (%v)", name, err, spawned)
+		}
+		if thread.Model != model {
+			t.Errorf("%s runs %s there, want %s", name, thread.Model, model)
+		}
 	}
 }

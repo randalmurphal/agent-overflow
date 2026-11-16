@@ -237,13 +237,9 @@ func (c *session) checkSpawnDestination(ctx context.Context, call *SpawnCall) er
 	if err != nil {
 		return err
 	}
-	var answer optionsAnswerShape
-	if err := peerResult(raw, &answer); err != nil {
+	row, err := peerOptions(raw)
+	if err != nil {
 		return err
-	}
-	row := answer.computerOptions
-	if len(answer.Computers) > 0 {
-		row = answer.Computers[0]
 	}
 	return publicf(CodeInvalidRequest, "A thread on %s needs project_id: projects are registered per computer and cannot be inherited. %s offers: %s.", NameOfComputer(computer), NameOfComputer(computer), describeProjects(row.Projects))
 }

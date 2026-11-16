@@ -346,13 +346,9 @@ func (c *session) checkProfileOffered(ctx context.Context, call SpawnCall) error
 		if err != nil {
 			return err
 		}
-		var answer optionsAnswerShape
-		if err := peerResult(raw, &answer); err != nil {
+		row, err := peerOptions(raw)
+		if err != nil {
 			return err
-		}
-		row := answer.computerOptions
-		if len(answer.Computers) > 0 {
-			row = answer.Computers[0]
 		}
 		if call.Instructions != "" && !row.SpawnInstructions {
 			return publicf(CodeInvalidRequest, "%s runs an older version that cannot add instructions to a thread's system prompt. Spawn there without instructions or a profile that has them, or spawn on this computer.", NameOfComputer(computer))

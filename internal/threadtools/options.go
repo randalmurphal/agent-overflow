@@ -43,6 +43,11 @@ type computerOptions struct {
 	// the thread's system prompt; a computer that predates them leaves it
 	// out, and a spawn carrying instructions there is refused.
 	SpawnInstructions bool `json:"spawn_instructions,omitempty"`
+	// UnlistedModels carries each provider's Unlisted models to a caller
+	// asking through its pairing, keyed by provider: they resolve a
+	// profile there but are never listed. Only a forwarded answer has it,
+	// and peerOptions moves it back into the providers on arrival.
+	UnlistedModels map[string][]ModelOption `json:"unlisted_models,omitempty"`
 }
 
 // The two result shapes. A computer with no pairings inlines the one
@@ -180,13 +185,9 @@ func (c *session) optionsOne(ctx context.Context, computer Computer, local bool,
 		if err != nil {
 			return computerOptions{}, err
 		}
-		var result optionsAnswerShape
-		if err := peerResult(answer, &result); err != nil {
+		row, err := peerOptions(answer)
+		if err != nil {
 			return computerOptions{}, err
-		}
-		row := result.computerOptions
-		if len(result.Computers) > 0 {
-			row = result.Computers[0]
 		}
 		row.ComputerID, row.Computer, row.Local, row.Defaults = id, name, false, nil
 		return row, nil
@@ -209,6 +210,9 @@ func (c *session) optionsOne(ctx context.Context, computer Computer, local bool,
 		if row.Providers == nil {
 			row.Providers = []ProviderOption{}
 		}
+		if Forwarded(ctx) {
+			row.UnlistedModels = unlistedModels(row.Providers)
+		}
 	}
 	if args.What != OptionsModels {
 		row.Projects = projectSection(catalog.Projects, args.What)
@@ -219,6 +223,40 @@ func (c *session) optionsOne(ctx context.Context, computer Computer, local bool,
 	}
 	row.Defaults = defaults
 	return row, nil
+}
+
+// peerOptions reads a peer's thread_options answer as its own row, with the
+// models it runs but does not list back in its providers, so the caller
+// resolves the person's profiles against everything that computer can run.
+// A peer that predates UnlistedModels resolves against its list alone.
+func peerOptions(raw json.RawMessage) (computerOptions, error) {
+	var answer optionsAnswerShape
+	if err := peerResult(raw, &answer); err != nil {
+		return computerOptions{}, err
+	}
+	row := answer.computerOptions
+	if len(answer.Computers) > 0 {
+		row = answer.Computers[0]
+	}
+	for i := range row.Providers {
+		row.Providers[i].Unlisted = row.UnlistedModels[row.Providers[i].ID]
+	}
+	row.UnlistedModels = nil
+	return row, nil
+}
+
+func unlistedModels(providers []ProviderOption) map[string][]ModelOption {
+	var out map[string][]ModelOption
+	for _, provider := range providers {
+		if len(provider.Unlisted) == 0 {
+			continue
+		}
+		if out == nil {
+			out = map[string][]ModelOption{}
+		}
+		out[provider.ID] = provider.Unlisted
+	}
+	return out
 }
 
 // optionsRosterView is the caller's roster and its own settings, which a
