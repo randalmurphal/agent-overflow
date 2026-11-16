@@ -145,7 +145,7 @@ func TestMigrationV154Schema(t *testing.T) {
 			"late_reply_agent_role|TEXT|1|''|0", "own_turn|INTEGER|1|0|0", "lineage_only|INTEGER|1|0|0",
 		},
 		"async_questions": {"revision|INTEGER|1|1|0"},
-		"threads":         {"delete_claim|TEXT|1|''|0", "delete_worktrees|INTEGER|1|0|0"},
+		"threads":         {"delete_claim|TEXT|1|''|0", "delete_worktrees|INTEGER|1|0|0", "spawn_instructions|TEXT|1|''|0", "spawn_level|INTEGER|1|0|0"},
 	}
 	for _, table := range ledger {
 		got := columns(table)

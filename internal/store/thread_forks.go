@@ -59,8 +59,11 @@ func BuildForkedThread(source Thread) Thread {
 		LastTokenUsage:     source.LastTokenUsage,
 		GroupID:            source.GroupID,
 		ForkedFromThreadID: source.ID,
-		CreatedAt:          now,
-		UpdatedAt:          now,
+		// A fork continues its source's history, which was written under
+		// these instructions, so it keeps them.
+		SpawnInstructions: source.SpawnInstructions,
+		CreatedAt:         now,
+		UpdatedAt:         now,
 	}
 }
 
