@@ -143,6 +143,16 @@ func quoteJSON(text string) string {
 	return string(encoded)
 }
 
+// runSweeps starts the request sweep the boot starts, under an app lifetime
+// the fixture's cleanup cancels and joins. A test needs it when the delivery
+// it asserts can fall to the sweep: a settlement that lands while a tool call
+// still holds the token leaves the wake to the pass that call's release
+// nudges.
+func (f *requestFixture) runSweeps() {
+	f.app.appCtx, f.app.appCancel = context.WithCancel(context.Background())
+	f.app.startThreadRequestSweeps()
+}
+
 func (f *requestFixture) callerIdentity() threadtools.Caller {
 	return threadtools.Caller{ThreadID: f.caller.ID, Title: f.caller.Title, ComputerID: "local-computer", ComputerName: "This Mac"}
 }
@@ -2348,12 +2358,7 @@ func TestThreadReminderSweepFiresOnItsOwn(t *testing.T) {
 	t.Parallel()
 	f := newRequestFixture(t)
 	f.holdCallerTurn(t)
-	f.app.appCtx, f.app.appCancel = context.WithCancel(context.Background())
-	t.Cleanup(func() {
-		f.app.appCancel()
-		f.app.threadRequestsWG.Wait()
-	})
-	f.app.startThreadRequestSweeps()
+	f.runSweeps()
 
 	ack, err := f.adapter().Remind(t.Context(), f.callerIdentity(), threadtools.RemindCall{
 		DueAtUnixMs: time.Now().UnixMilli(), Note: "stand up",

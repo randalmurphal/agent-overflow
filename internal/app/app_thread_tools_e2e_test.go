@@ -211,6 +211,9 @@ func TestThreadMCPSpawnAndReplyRunOverTheLoopbackTransport(t *testing.T) {
 	// The turn stays open, which is what lets the answer be a reply rather
 	// than the turn's last words.
 	f.mockClaudeHoldingTheTurn(t, "counting")
+	// The spawn call holds its token until its response is flushed, and the
+	// reply can settle before that release runs; the wake is then the sweep's.
+	f.runSweeps()
 	callerToken := uuid.NewString()
 	f.app.sessionManager().put(f.caller.ID, session{Token: callerToken, Provider: string(provider.Claude)})
 	t.Cleanup(func() { _ = f.app.threadMCPServer().Close() })
