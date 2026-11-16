@@ -17,5 +17,6 @@ terminal's pty and `procutil.StartGroup`. Registry
 writes are atomic. Read errors are surfaced by explicit reads and sweeps; an
 add logs and replaces an unreadable registry so it cannot block a new session.
 
-The app starts no sidecar on Windows; `Client` methods are nil-safe there and in
-tests. Keep the internal `__reap` protocol out of user-facing command handling.
+The sidecar is a POSIX sh script (`reaper.go`) that dash, bash and busybox
+must all run; it validates every control line itself. The app starts no
+sidecar on Windows; `Client` methods are nil-safe there and in tests.

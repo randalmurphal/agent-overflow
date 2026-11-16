@@ -39,9 +39,8 @@ func TestChromiumBackendHelper(t *testing.T) {
 			"echo $$ > "+shellQuote(filepath.Join(dir, "leader"))+"\n"+
 			"echo 'DevTools listening on "+fakeDevToolsURL+"' >&2\n"+
 			"exec sleep 300\n")
-	// The sidecar the app starts at boot (app_orphan_reaper.go), which this
-	// binary runs as when TestMain sees its subcommand.
-	sidecar, err := orphanreaper.Spawn(os.Args[0])
+	// The sidecar the app starts at boot (app_orphan_reaper.go).
+	sidecar, err := orphanreaper.Spawn()
 	if err != nil {
 		t.Fatal(err)
 	}

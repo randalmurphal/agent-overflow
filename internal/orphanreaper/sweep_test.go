@@ -1,6 +1,7 @@
 package orphanreaper
 
 import (
+	"sync"
 	"syscall"
 	"testing"
 )
@@ -141,4 +142,34 @@ func TestSweepNoRecordsNoError(t *testing.T) {
 	if len(k.calls) != 0 {
 		t.Errorf("no records should mean no kills, got %v", k.calls)
 	}
+}
+
+// recordingKiller captures (pgid, signal) pairs in call order.
+type recordingKiller struct {
+	mu    sync.Mutex
+	calls []struct {
+		pgid int
+		sig  syscall.Signal
+	}
+}
+
+func (k *recordingKiller) kill(pgid int, sig syscall.Signal) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	k.calls = append(k.calls, struct {
+		pgid int
+		sig  syscall.Signal
+	}{pgid, sig})
+}
+
+func (k *recordingKiller) signalsFor(pgid int) []syscall.Signal {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	var out []syscall.Signal
+	for _, c := range k.calls {
+		if c.pgid == pgid {
+			out = append(out, c.sig)
+		}
+	}
+	return out
 }

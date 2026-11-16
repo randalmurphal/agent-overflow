@@ -39,11 +39,7 @@ func (a *App) startOrphanReaper(dbDir string) error {
 		return fmt.Errorf("startup sweep: %w", err)
 	}
 
-	exe, err := os.Executable()
-	if err != nil {
-		return fmt.Errorf("resolve executable: %w", err)
-	}
-	client, err := orphanreaper.Spawn(exe)
+	client, err := orphanreaper.Spawn()
 	if err != nil {
 		return fmt.Errorf("start sidecar: %w", err)
 	}

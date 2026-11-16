@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -153,7 +154,7 @@ func sidecarOf(t *testing.T, backend int) int {
 		t.Fatalf("list the backend's children: %v", err)
 	}
 	for _, child := range children {
-		if args, err := child.CmdlineSlice(); err == nil && len(args) > 1 && args[1] == orphanreaper.Subcommand() {
+		if args, err := child.CmdlineSlice(); err == nil && slices.Contains(args, orphanreaper.SidecarName) {
 			// A signal to the backend's group must not end the sidecar.
 			if pgid, err := syscall.Getpgid(int(child.Pid)); err != nil || pgid != int(child.Pid) {
 				t.Fatalf("the sidecar is in group %d %v, want its own", pgid, err)
