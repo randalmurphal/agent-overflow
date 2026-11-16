@@ -24,6 +24,7 @@ import { test, expect, type HarnessMockEvent, type SeedResult } from './fixtures
 import type { HarnessApp } from '../src/harness.js';
 import { sessionConfigs } from './workflows-helpers.js';
 import {
+  CODEX_STEER_NOT_STEERABLE,
   FOOTER_TOKEN_PATTERN,
   RESULT_TOKEN_PATTERN,
   SHOW_CURSOR_PATTERN,
@@ -1610,19 +1611,9 @@ test('thread_cancel takes a queued message back and interrupts a turn it started
         ],
       },
       {
-        // This thread is mid-turn with no session behind it, the state a
-        // restart leaves: a message sent to it stays on the durable queue
-        // instead of reaching a provider, which is the message a cancel
-        // can still take back.
         name: 'tt-cancel-queued',
         repo: {},
-        threads: [
-          {
-            title: 'Cancel queued target',
-            provider: 'claude',
-            turns: [{ userText: 'work that never finished', incomplete: true }],
-          },
-        ],
+        threads: [{ title: 'Cancel queued target', provider: 'codex' }],
       },
       {
         name: 'tt-cancel-busy',
@@ -1635,8 +1626,27 @@ test('thread_cancel takes a queued message back and interrupts a turn it started
   const bystander = seed.projects[0].threadIds[1];
   const callerPath = seed.projects[0].path;
   const queuedTarget = seed.projects[1].threadIds[0];
+  const queuedPath = seed.projects[1].path;
   const busyTarget = seed.projects[2].threadIds[0];
   const busyPath = seed.projects[2].path;
+
+  // The queued target is inside a turn of its own that holds and cannot take
+  // input (a Codex review), so a message sent to it waits on the app's queue
+  // for the turn to end. A turn that takes input would take the message at
+  // once, and a thread with no session starts one for it.
+  await setScenario(
+    harness,
+    queuedPath,
+    threadToolsScenario({
+      name: 'tt-cancel-queued-script',
+      provider: 'codex',
+      turns: [{ steps: [{ gate: 'hold-queued' }], text: 'Own work done.' }],
+      codexResponses: CODEX_STEER_NOT_STEERABLE,
+    }),
+  );
+  await harness.rpc('StartSession', queuedTarget);
+  await harness.rpc('SendMessage', queuedTarget, 'own work', null);
+  const queuedMock = await awaitGate(harness, 'hold-queued', queuedPath);
 
   // The busy thread parks inside the turn the request starts, so the
   // interrupt has something to stop.
@@ -1739,6 +1749,13 @@ test('thread_cancel takes a queued message back and interrupts a turn it started
   expect(
     (await harness.rpc<QueuedMessage[] | null>('GetQueueState', queuedTarget)) ?? [],
   ).toHaveLength(0);
+  // The turn it waited behind ends, and the message taken back never runs.
+  const queuedDone = awaitTurnCompleted(harness, queuedTarget);
+  await advanceGate(harness, queuedMock.mockId, 'hold-queued');
+  await queuedDone;
+  const queuedItems = await harness.rpc<Array<{ summary?: string }>>('ListItems', queuedTarget, true);
+  expect(queuedItems.some((item) => (item.summary ?? '').includes('Own work done.'))).toBe(true);
+  expect(queuedItems.some((item) => (item.summary ?? '').includes('queued work nobody wants'))).toBe(false);
 
   const refused = await awaitToolAnswer<CancelAnswer>(harness, { tool: 'thread_cancel' });
   expect(refused.isError).toBe(true);

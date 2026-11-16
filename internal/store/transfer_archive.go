@@ -3,7 +3,6 @@ package store
 import (
 	"context"
 	"errors"
-	"time"
 
 	"agent-overflow/internal/transferwire"
 )
@@ -35,7 +34,7 @@ func (s *Store) BindThreadTransferArchive(id string, archive transferwire.Upload
 	if row.Phase != "preparing" || (row.ManifestHash != "" && row.ManifestHash != archive.SHA256) {
 		return row, errors.New("transfer: archive cannot change after preparation")
 	}
-	row.ManifestHash, row.ArchiveSize, row.UpdatedAt = archive.SHA256, archive.Size, time.Now().UnixMilli()
+	row.ManifestHash, row.ArchiveSize, row.UpdatedAt = archive.SHA256, archive.Size, nextTransferStamp(row.UpdatedAt)
 	if _, err := tx.Exec(`UPDATE thread_transfers SET manifest_hash = ?,archive_size = ?,updated_at = ? WHERE id = ?`, row.ManifestHash, row.ArchiveSize, row.UpdatedAt, id); err != nil {
 		return row, err
 	}

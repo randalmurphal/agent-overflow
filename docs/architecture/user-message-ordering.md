@@ -109,9 +109,11 @@ Codex and claude-tui keep one message per queued item. See
 A quiet row is persisted without a `provider:item_event`, so a connected
 client keeps showing the message above its composer until the echo emits one.
 That marker is live state, not an inference: `LiveStateSnapshotForThread`
-publishes every unconsumed queued send as a pending flush item, and each
-pending send appears in exactly one of the snapshot's two lists: the
-composer marker or the deferred timeline rows a SQLite slice is blind to.
+lists every unconsumed queued send, deferred or quiet, in `FlushedItems`; a
+send anchored at an interrupt is already a timeline row and is not listed.
+`GetThreadLiveState` lists a message in exactly one place: in `QueueItems`
+while the queue or the dispatch worker still holds it, in `FlushedItems`
+once its dispatch hands it over.
 A client renders a flushed message in exactly one place at a time and hands
 it from the marker to the timeline when the row actually renders
 (`docs/architecture/turn-lifecycle.md` § Per-thread send queue). Quiet rows
@@ -147,7 +149,32 @@ returns at once (`queue_restored`, reason `not_delivered`). After `discarded`
 the session is ending: it returns with the rest of the queue in the
 session-end restore, in queue order, or when a replacement session starts, or
 is dropped with the queue by a Stop.
-Otherwise a send stays pending until session teardown repairs or restores it.
+Otherwise a send stays pending until its session ends, and no longer: a row
+carries `pendingFlush` only while its send is in the live registry. Every
+teardown takes the registry's unconfirmed sends before the triage cleanup
+sweeps it (`settleQueueForTeardown`): a death, a removed worktree or a
+reconnect returns them to the composer, and a Stop drops them with the queue,
+deleting their rows (`queue_restored`, reason `dropped`). A send the provider
+did consume is confirmed instead. Only the person's text ever returns to the
+composer: what the app wrote in a send (an answer, a reminder, a completion, a
+wake, an outside send) goes back to its owner or is recorded as not delivered
+(`agentPartsNotTakenIn`), and a joined send gives up those members by the
+parts its dispatch recorded (`agentmeta.JoinedPart`).
+A crash runs no teardown: the boot restore (`restoreDurableFlushQueueAtBoot`)
+takes back each main-timeline user row still marked `pendingFlush` that is
+residue, in its thread's last turn and written by that thread, retires it and
+returns the person's text in it to the composer (`unconfirmedRowAtBoot`). A
+joined row that carries the app's messages splits by its recorded parts, and
+one whose parts no longer describe its text is restored whole. A queue row
+that survived beside it as a copy of a message it carries adds no text: the
+row is the unit of the person's text. A queue row whose message a row the
+provider confirmed carries was delivered and is dropped. A dispatch deletes the queue
+rows of every message it carried in one statement. A marked row a
+later turn follows is history a later session ran with: the boot leaves it
+and the composer alone, and the store refuses to retire it
+(`RestoreFlushQueueToDraft`). Migration v152 cleared the marks earlier builds
+left on such rows. The draft, the queue rows and the retired rows are written
+in one transaction, so a crash cannot repeat or lose the text.
 
 The first matched confirmation captures placement before fallible cache writes. A stable
 predecessor identifies that boundary; retries must never ask for the current tail.

@@ -1,6 +1,7 @@
 package git
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -32,6 +33,8 @@ type forgeAPICall struct {
 	Path     string
 	Header   http.Header
 	Body     []byte
+	// Context is the request's, done once the client gives up on it.
+	Context context.Context
 }
 
 // forgeAPIAnswer is the fake's reply. A zero Status is 200.
@@ -81,7 +84,7 @@ func newForgeAPIService(t *testing.T, answer func(call forgeAPICall) forgeAPIAns
 	var restBase string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
-		call := forgeAPICall{RESTBase: restBase, Host: r.Host, Method: r.Method, Header: r.Header.Clone(), Body: body}
+		call := forgeAPICall{RESTBase: restBase, Host: r.Host, Method: r.Method, Header: r.Header.Clone(), Body: body, Context: r.Context()}
 		switch {
 		case r.URL.Path == "/github/graphql" || r.URL.Path == "/gitlab/api/graphql":
 			var payload struct {
@@ -168,10 +171,22 @@ func githubData(data string) forgeAPIAnswer {
 	return forgeAPIAnswer{Body: `{"data":` + data + `}`}
 }
 
+// forgeUnexpected fails the test for a request its fake does not answer,
+// except a GitLab release read (GET metadata), which a test about
+// something else gets answered as a current GitLab.
 func forgeUnexpected(t *testing.T, call forgeAPICall) forgeAPIAnswer {
+	if call.Op == "" && call.Method == http.MethodGet && call.Path == "metadata" {
+		return forgeAPIAnswer{Body: `{"version":"19.3.0-ee","enterprise":true}`}
+	}
 	t.Errorf("unexpected forge request %q %s %s", call.Op, call.Method, call.Path)
 	return forgeAPIAnswer{Status: http.StatusNotFound, Body: `{"message":"Not Found"}`}
 }
+
+// githubNoViewerReviews answers ViewerReviews for a PR with no reviews.
+const githubNoViewerReviews = `{"repository":{"pullRequest":{"reviews":{"nodes":[]}}}}`
+
+// githubTestPinnedHead is the head a test's review was written against.
+const githubTestPinnedHead = "abc1234"
 
 func githubTestRef(number int) PRReference {
 	return PRReference{Forge: "github", Host: testForgeHost, Namespace: "o", Repo: "r", Number: number}
@@ -310,17 +325,17 @@ func TestReadPRActorShapes(t *testing.T) {
 		"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[
 			{"id":"T1","isResolved":false,"isOutdated":false,"path":"a.go","line":3,"startLine":null,"originalLine":3,"originalStartLine":null,"diffSide":"RIGHT","startDiffSide":null,"subjectType":"LINE",
 			 "comments":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[
-				{"id":"c1","databaseId":11,"author":{"login":"github-actions"},"body":"bot","createdAt":"2026-01-01T00:00:00Z","replyTo":null},
-				{"id":"c2","databaseId":12,"author":null,"body":"ghost","createdAt":"2026-01-01T00:00:01Z","replyTo":{"id":"c1","databaseId":11}}
+				{"id":"c1","fullDatabaseId":"11","author":{"login":"github-actions"},"body":"bot","createdAt":"2026-01-01T00:00:00Z","replyTo":null},
+				{"id":"c2","fullDatabaseId":"12","author":null,"body":"ghost","createdAt":"2026-01-01T00:00:01Z","replyTo":{"id":"c1","fullDatabaseId":"11"}}
 			 ]}},
 			{"id":"T2","isResolved":false,"isOutdated":true,"path":"a.go","line":null,"startLine":null,"originalLine":5,"originalStartLine":4,"diffSide":"RIGHT","startDiffSide":null,"subjectType":"LINE",
 			 "comments":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[
-				{"id":"c3","databaseId":13,"author":{"login":"plain"},"body":"old","createdAt":"2026-01-01T00:00:02Z","replyTo":null}
+				{"id":"c3","fullDatabaseId":"13","author":{"login":"plain"},"body":"old","createdAt":"2026-01-01T00:00:02Z","replyTo":null}
 			 ]}}
 		]},
 		"comments":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[
-			{"id":"k1","databaseId":21,"author":{"login":"plain","name":null},"body":"shown","createdAt":"2026-01-01T00:00:00Z","isMinimized":false},
-			{"id":"k2","databaseId":22,"author":{"login":"spammer","name":"S"},"body":"hidden","createdAt":"2026-01-01T00:00:01Z","isMinimized":true}
+			{"id":"k1","fullDatabaseId":"21","author":{"login":"plain","name":null},"body":"shown","createdAt":"2026-01-01T00:00:00Z","isMinimized":false},
+			{"id":"k2","fullDatabaseId":"22","author":{"login":"spammer","name":"S"},"body":"hidden","createdAt":"2026-01-01T00:00:01Z","isMinimized":true}
 		]}
 	}}}}`
 	core, _ := newForgeAPICore(t, func(forgeAPICall) forgeAPIAnswer { return forgeAPIAnswer{Body: answer} })
@@ -393,7 +408,8 @@ func TestReadPRRequestsOnlyTheWantedParts(t *testing.T) {
 		}
 		vars := sent[0].Vars
 		if vars["owner"] != "o" || vars["name"] != "r" || vars["number"] != float64(14571) ||
-			vars["wantDetail"] != tc.detail || vars["wantThreads"] != tc.threads || vars["wantEvents"] != tc.events || vars["wantChecks"] != tc.checks {
+			vars["wantDetail"] != tc.detail || vars["wantThreads"] != tc.threads || vars["wantEvents"] != tc.events || vars["wantChecks"] != tc.checks ||
+			vars["pageSize"] != float64(100) || vars["wantManage"] != true || vars["wantTeams"] != true || vars["wantCheckRuns"] != true || vars["wantWorkflowRuns"] != true {
 			t.Fatalf("%+v: variables = %v", tc.want, vars)
 		}
 		if query != "" && sent[0].Query != query {
@@ -408,12 +424,22 @@ func TestReadPRRequestsOnlyTheWantedParts(t *testing.T) {
 		"viewer @include(if: $wantDetail)",
 		"... @include(if: $wantDetail)",
 		"commits(last: 1) @include(if: $wantChecks)",
-		"reviewThreads(first: 100) @include(if: $wantThreads)",
-		"comments(first: 100) @include(if: $wantThreads)",
+		"reviewThreads(first: $pageSize) @include(if: $wantThreads)",
+		"comments(first: $pageSize) @include(if: $wantThreads)",
+		"... @include(if: $wantManage)",
+		"... on Team @include(if: $wantTeams)",
+		"... on CheckRun @include(if: $wantCheckRuns)",
+		"checkSuite @include(if: $wantWorkflowRuns)",
 		"]) @include(if: $wantEvents)",
 	} {
 		if !strings.Contains(query, gate) {
 			t.Fatalf("PRTick lacks %q", gate)
+		}
+	}
+	// What the viewer may do is GitHub's answer, read with the parts.
+	for _, field := range []string{" viewerCanUpdateBranch maintainerCanModify ", " viewerCanResolve viewerCanUnresolve viewerCanReply ", " viewerCanDelete viewerCanReact "} {
+		if !strings.Contains(query, field) {
+			t.Fatalf("PRTick lacks %q", field)
 		}
 	}
 	if _, err := NewCore().ReadPR(t.Context(), githubTestRef(1), PRReadParts{}, nil, nil); err == nil {
@@ -422,8 +448,47 @@ func TestReadPRRequestsOnlyTheWantedParts(t *testing.T) {
 }
 
 func githubThreadJSON(id string, comments []string, hasNext bool) string {
-	return fmt.Sprintf(`{"id":%q,"isResolved":false,"isOutdated":false,"path":"a.go","line":1,"startLine":null,"originalLine":1,"originalStartLine":null,"diffSide":"RIGHT","startDiffSide":null,"subjectType":"LINE","comments":{"pageInfo":{"hasNextPage":%t,"endCursor":"c-%s"},"nodes":[%s]}}`,
+	return fmt.Sprintf(`{"id":%q,"isResolved":false,"isOutdated":false,"path":"a.go","line":1,"startLine":null,"originalLine":1,"originalStartLine":null,"diffSide":"RIGHT","startDiffSide":null,"subjectType":"LINE","viewerCanResolve":true,"viewerCanUnresolve":true,"viewerCanReply":true,"comments":{"pageInfo":{"hasNextPage":%t,"endCursor":"c-%s"},"nodes":[%s]}}`,
 		id, hasNext, id, strings.Join(comments, ","))
+}
+
+// A comment GitHub says the viewer may not react to (a locked
+// conversation, an archived repository) says why; one it may says
+// nothing.
+func TestGitHubCommentReactionsFollowGitHub(t *testing.T) {
+	t.Parallel()
+	for _, may := range []bool{true, false} {
+		var out ReviewComment
+		githubViewerCommentRaw{ViewerCanReact: may}.fill(&out)
+		if (out.CannotReactReason == "") != may {
+			t.Fatalf("viewerCanReact %v: reason %q", may, out.CannotReactReason)
+		}
+	}
+}
+
+// A thread says why its Resolve or Reply is unavailable from GitHub's
+// answer for the direction the thread's state offers: an open thread by
+// viewerCanResolve, a resolved one by viewerCanUnresolve.
+func TestGitHubThreadControlsFollowGitHub(t *testing.T) {
+	t.Parallel()
+	thread := func(resolved, resolve, unresolve, reply bool) ReviewThread {
+		return githubReviewThreads([]githubThreadRaw{{ID: "T", IsResolved: resolved, ViewerCanResolve: resolve, ViewerCanUnresolve: unresolve, ViewerCanReply: reply}})[0]
+	}
+	for _, tc := range []struct {
+		name                       string
+		got                        ReviewThread
+		cannotResolve, cannotReply bool
+	}{
+		{"may do both", thread(false, true, false, true), false, false},
+		{"open, may not resolve", thread(false, false, true, true), true, false},
+		{"resolved, may reopen", thread(true, false, true, true), false, false},
+		{"resolved, may not reopen", thread(true, true, false, true), true, false},
+		{"may not reply", thread(false, true, true, false), false, true},
+	} {
+		if (tc.got.CannotResolveReason != "") != tc.cannotResolve || (tc.got.CannotReplyReason != "") != tc.cannotReply {
+			t.Fatalf("%s: resolve %q, reply %q", tc.name, tc.got.CannotResolveReason, tc.got.CannotReplyReason)
+		}
+	}
 }
 
 func githubCommentsJSON(prefix string, from, n int, reply bool) []string {
@@ -431,9 +496,9 @@ func githubCommentsJSON(prefix string, from, n int, reply bool) []string {
 	for i := from; i < from+n; i++ {
 		replyTo := "null"
 		if reply {
-			replyTo = `{"id":"root","databaseId":1}`
+			replyTo = `{"id":"root","fullDatabaseId":"1"}`
 		}
-		out = append(out, fmt.Sprintf(`{"id":"%s%d","databaseId":%d,"author":{"login":"u"},"body":"b%d","createdAt":"2026-01-01T00:00:00Z","replyTo":%s,"isMinimized":false}`, prefix, i, i+1, i, replyTo))
+		out = append(out, fmt.Sprintf(`{"id":"%s%d","fullDatabaseId":"%d","author":{"login":"u"},"body":"b%d","createdAt":"2026-01-01T00:00:00Z","replyTo":%s,"isMinimized":false}`, prefix, i, i+1, i, replyTo))
 	}
 	return out
 }
@@ -492,8 +557,8 @@ func TestReadPRPagesEveryConnection(t *testing.T) {
 	if ops := withoutCIExtras(calls.ops()); fmt.Sprint(ops) != "[PRTick RollupContextsPage PRThreadsPage ThreadCommentsPage PRCommentsPage]" {
 		t.Fatalf("requests = %v", ops)
 	}
-	if len(got.Threads) != 2+150 {
-		t.Fatalf("threads = %d, want 2 review threads and 150 conversation comments", len(got.Threads))
+	if len(got.Threads) != 2+150 || got.ThreadsTruncated != "" {
+		t.Fatalf("threads = %d (truncated %q), want 2 review threads and 150 conversation comments", len(got.Threads), got.ThreadsTruncated)
 	}
 	if first := got.Threads[0]; len(first.Comments) != 130 || first.Comments[129].Body != "b129" || first.Comments[129].ReplyTo == nil {
 		t.Fatalf("thread T1 has %d comments, want 130 in order", len(first.Comments))
@@ -507,31 +572,48 @@ func TestReadPRPagesEveryConnection(t *testing.T) {
 }
 
 // A connection that never ends is read for githubReadMaxPages pages and
-// no more.
+// no more, and the read says its threads are the first of more: the
+// review threads, one thread's comments or the conversation comments.
 func TestReadPRStopsAtThePageCap(t *testing.T) {
 	t.Parallel()
-	page := 0
-	var mu sync.Mutex
-	core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
-		mu.Lock()
-		page++
-		n := page
-		mu.Unlock()
-		thread := githubThreadJSON("T"+strconv.Itoa(n), githubCommentsJSON("c", 0, 1, false), false)
-		switch call.Op {
-		case "PRTick":
-			return githubData(`{"repository":{"pullRequest":{"number":5,"reviewThreads":{"pageInfo":{"hasNextPage":true,"endCursor":"p"},"nodes":[` + thread + `]},"comments":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}`)
-		case "PRThreadsPage":
-			return githubData(`{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":true,"endCursor":"p"},"nodes":[` + thread + `]}}}}`)
-		}
-		return forgeUnexpected(t, call)
-	})
-	got, err := core.ReadPR(t.Context(), githubTestRef(5), PRReadParts{Threads: true}, nil, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if n := len(calls.all()); n != githubReadMaxPages || len(got.Threads) != githubReadMaxPages {
-		t.Fatalf("requests = %d, threads = %d, want %d of each", n, len(got.Threads), githubReadMaxPages)
+	const notice = "Only the first 1000 threads and comments of this conversation are shown; the rest are on forge.example."
+	for _, endless := range []string{"PRThreadsPage", "ThreadCommentsPage", "PRCommentsPage"} {
+		t.Run(endless, func(t *testing.T) {
+			t.Parallel()
+			page := 0
+			var mu sync.Mutex
+			core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
+				mu.Lock()
+				page++
+				n := page
+				mu.Unlock()
+				comment := githubCommentsJSON("c"+strconv.Itoa(n)+"-", 0, 1, false)
+				thread := githubThreadJSON("T"+strconv.Itoa(n), comment, endless == "ThreadCommentsPage")
+				switch call.Op {
+				case "PRTick":
+					return githubData(`{"repository":{"pullRequest":{"number":5,` +
+						`"reviewThreads":{"pageInfo":{"hasNextPage":` + strconv.FormatBool(endless == "PRThreadsPage") + `,"endCursor":"p"},"nodes":[` + thread + `]},` +
+						`"comments":{"pageInfo":{"hasNextPage":` + strconv.FormatBool(endless == "PRCommentsPage") + `,"endCursor":"p"},"nodes":[` + comment[0] + `]}}}}`)
+				case "PRThreadsPage":
+					return githubData(`{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":true,"endCursor":"p"},"nodes":[` + thread + `]}}}}`)
+				case "ThreadCommentsPage":
+					return githubData(`{"node":{"comments":{"pageInfo":{"hasNextPage":true,"endCursor":"p"},"nodes":[` + comment[0] + `]}}}`)
+				case "PRCommentsPage":
+					return githubData(`{"repository":{"pullRequest":{"comments":{"pageInfo":{"hasNextPage":true,"endCursor":"p"},"nodes":[` + comment[0] + `]}}}}`)
+				}
+				return forgeUnexpected(t, call)
+			})
+			got, err := core.ReadPR(t.Context(), githubTestRef(5), PRReadParts{Threads: true}, nil, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if n := len(calls.all()); n != githubReadMaxPages {
+				t.Fatalf("requests = %d, want %d", n, githubReadMaxPages)
+			}
+			if got.ThreadsTruncated != notice {
+				t.Fatalf("ThreadsTruncated = %q", got.ThreadsTruncated)
+			}
+		})
 	}
 }
 
@@ -882,8 +964,8 @@ func TestGitHubJobLog(t *testing.T) {
 }
 
 // A review is one REST POST; each file-level comment is another, against
-// the head commit the PR read reports. A failed file comment after the
-// review landed is a partial submit.
+// the head the review names. A failed file comment after the review landed
+// is a partial submit.
 func TestGitHubSubmitReview(t *testing.T) {
 	t.Parallel()
 	line := 7
@@ -892,6 +974,8 @@ func TestGitHubSubmitReview(t *testing.T) {
 		switch {
 		case call.Op == "PRTick":
 			return githubData(`{"viewer":{"login":"v"},"repository":{"pullRequest":{"number":5,"headRefOid":"abc123","author":{"login":"a"},"latestReviews":{"nodes":[]},"commits":{"nodes":[]}}}}`)
+		case call.Op == "ViewerReviews":
+			return githubData(githubNoViewerReviews)
 		case call.Method == http.MethodPost && call.Path == "repos/o/r/pulls/5/reviews":
 			return forgeAPIAnswer{Body: `{"id":1}`}
 		case call.Method == http.MethodPost && call.Path == "repos/o/r/pulls/5/comments":
@@ -902,7 +986,7 @@ func TestGitHubSubmitReview(t *testing.T) {
 		}
 		return forgeUnexpected(t, call)
 	})
-	review := SubmitReviewRequest{Verdict: ReviewVerdictRequestChanges, Body: "please fix", Comments: []ReviewLineComment{
+	review := SubmitReviewRequest{Verdict: ReviewVerdictRequestChanges, HeadSHA: githubTestPinnedHead, Body: "please fix", Comments: []ReviewLineComment{
 		{Path: "a.go", Body: "here", Line: &line, Side: "right"},
 		{Path: "b.go", Body: "whole file", Side: "file"},
 	}}
@@ -910,8 +994,8 @@ func TestGitHubSubmitReview(t *testing.T) {
 	if err != nil || !result.PostedReview || result.PostedFileComments != 1 {
 		t.Fatalf("SubmitReview = %+v, %v", result, err)
 	}
-	sent := calls.all()
-	if len(sent) != 3 || sent[0].Op != "PRTick" {
+	sent := slices.DeleteFunc(calls.all(), func(call forgeAPICall) bool { return call.Op == "ViewerReviews" })
+	if len(sent) != 2 {
 		t.Fatalf("requests = %v", calls.ops())
 	}
 	var reviewBody struct {
@@ -919,13 +1003,13 @@ func TestGitHubSubmitReview(t *testing.T) {
 		Body     string
 		Comments []map[string]any
 	}
-	if err := json.Unmarshal(sent[1].Body, &reviewBody); err != nil || reviewBody.Event != "REQUEST_CHANGES" || reviewBody.Body != "please fix" ||
+	if err := json.Unmarshal(sent[0].Body, &reviewBody); err != nil || reviewBody.Event != "REQUEST_CHANGES" || reviewBody.Body != "please fix" ||
 		len(reviewBody.Comments) != 1 || reviewBody.Comments[0]["path"] != "a.go" || reviewBody.Comments[0]["side"] != "RIGHT" || reviewBody.Comments[0]["line"] != float64(7) {
-		t.Fatalf("review body = %s (%v)", sent[1].Body, err)
+		t.Fatalf("review body = %s (%v)", sent[0].Body, err)
 	}
 	var fileBody map[string]string
-	if err := json.Unmarshal(sent[2].Body, &fileBody); err != nil || fileBody["commit_id"] != "abc123" || fileBody["subject_type"] != "file" || fileBody["path"] != "b.go" {
-		t.Fatalf("file comment body = %s (%v)", sent[2].Body, err)
+	if err := json.Unmarshal(sent[1].Body, &fileBody); err != nil || fileBody["commit_id"] != githubTestPinnedHead || fileBody["subject_type"] != "file" || fileBody["path"] != "b.go" {
+		t.Fatalf("file comment body = %s (%v)", sent[1].Body, err)
 	}
 
 	failComments.Store(true)
@@ -959,19 +1043,26 @@ func TestGitHubReplyToThread(t *testing.T) {
 }
 
 // Resolve and unresolve are one mutation document, the thread and the
-// wanted state as variables; the answer is read back.
+// wanted state as variables; the answer is read back. The thread is read
+// as the named PR's before the mutation.
 func TestGitHubSetThreadResolved(t *testing.T) {
 	t.Parallel()
 	var answer string
 	var mu sync.Mutex
-	core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
+	core, all := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
 		mu.Lock()
 		defer mu.Unlock()
-		if call.Op != "SetThreadResolved" {
-			return forgeUnexpected(t, call)
+		switch call.Op {
+		case "ThreadOwner":
+			return githubData(`{"node":{"__typename":"PullRequestReviewThread","pullRequest":{"number":5,"repository":{"nameWithOwner":"o/r"}}}}`)
+		case "SetThreadResolved":
+			return forgeAPIAnswer{Body: answer}
 		}
-		return forgeAPIAnswer{Body: answer}
+		return forgeUnexpected(t, call)
 	})
+	mutations := func() []forgeAPICall {
+		return slices.DeleteFunc(all.all(), func(call forgeAPICall) bool { return call.Op != "SetThreadResolved" })
+	}
 	set := func(body string) {
 		mu.Lock()
 		answer = body
@@ -985,7 +1076,7 @@ func TestGitHubSetThreadResolved(t *testing.T) {
 	if err := core.SetThreadResolved(t.Context(), githubTestRef(5), "PRRT_x", false); err != nil {
 		t.Fatal(err)
 	}
-	sent := calls.all()
+	sent := mutations()
 	if len(sent) != 2 || sent[0].Vars["threadID"] != "PRRT_x" || sent[0].Vars["resolved"] != true || sent[1].Vars["resolved"] != false ||
 		sent[0].Query != sent[1].Query || strings.Contains(sent[0].Query, "PRRT_x") {
 		t.Fatalf("mutations = %+v", sent)
@@ -1004,8 +1095,44 @@ func TestGitHubSetThreadResolved(t *testing.T) {
 	if _, ok := errors.AsType[*forgeapi.GraphQLError](err); !ok || !strings.Contains(err.Error(), "Resource not accessible") {
 		t.Fatalf("GraphQL failure = %v", err)
 	}
+	// A 200 whose body does not decode: the mutation may have run.
+	set("")
+	if err := core.SetThreadResolved(t.Context(), githubTestRef(5), "PRRT_x", true); !errors.As(err, new(*UnconfirmedWriteError)) {
+		t.Fatalf("an unreadable answer = %v, want unconfirmed", err)
+	}
 	if err := core.SetThreadResolved(t.Context(), githubTestRef(5), " ", true); err == nil {
 		t.Fatal("a resolve without a thread id was sent")
+	}
+}
+
+// A thread node id names nothing about its PR, so a resolve of a thread
+// that is not the named PR's (another number, another repository, a
+// comment's id, an id the login cannot see) is refused before the mutation.
+func TestGitHubSetThreadResolvedRefusesAThreadOfAnotherPR(t *testing.T) {
+	t.Parallel()
+	owners := map[string]string{
+		"PRRT_other_number": `{"data":{"node":{"__typename":"PullRequestReviewThread","pullRequest":{"number":6,"repository":{"nameWithOwner":"o/r"}}}}}`,
+		"PRRT_other_repo":   `{"data":{"node":{"__typename":"PullRequestReviewThread","pullRequest":{"number":5,"repository":{"nameWithOwner":"o/fork"}}}}}`,
+		"PRRC_comment":      `{"data":{"node":{"__typename":"PullRequestReviewComment"}}}`,
+		"PRRT_unknown":      `{"data":{"node":null},"errors":[{"type":"NOT_FOUND","path":["node"],"message":"Could not resolve to a node with the global id of 'PRRT_unknown'"}]}`,
+	}
+	core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
+		if call.Op == "ThreadOwner" {
+			return forgeAPIAnswer{Body: owners[call.Vars["id"].(string)]}
+		}
+		return forgeUnexpected(t, call)
+	})
+	for id := range owners {
+		err := core.SetThreadResolved(t.Context(), githubTestRef(5), id, true)
+		if !errors.As(err, new(*ThreadNotOnPRError)) {
+			t.Fatalf("%s: SetThreadResolved = %v, want ThreadNotOnPRError", id, err)
+		}
+		if explained, ok := errors.AsType[*ForgeActionError](ExplainForgeError(githubTestRef(5), ActionResolve, err)); !ok || explained.Kind != ForgeErrorNotFound {
+			t.Fatalf("%s: explained = %v", id, explained)
+		}
+	}
+	if ops := calls.ops(); slices.Contains(ops, "SetThreadResolved") {
+		t.Fatalf("requests = %v, want no mutation", ops)
 	}
 }
 
@@ -1099,6 +1226,51 @@ func TestGitHubListOpenPRsReadsPastForks(t *testing.T) {
 	}
 	if n := len(calls.all()) - 2; n != githubReadMaxPages {
 		t.Fatalf("forks-only lookup sent %d requests, want %d", n, githubReadMaxPages)
+	}
+}
+
+// A checkout of a fork finds the pull requests it opened in the fork's
+// parent: those whose head is the fork's branch, not another fork's or the
+// parent's own branch of the same name. Its merged heads add the parent's
+// merges from the fork. A repository that is no fork sends nothing more.
+func TestGitHubForkCheckoutFindsItsUpstreamPRs(t *testing.T) {
+	t.Parallel()
+	core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
+		upstream := call.Vars["owner"] == "acme"
+		switch {
+		case call.Op == "OpenPRsByHead" && !upstream:
+			return githubData(`{"repository":{"id":"R_fork","parent":{"owner":{"login":"acme"},"name":"repo"},"pullRequests":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}`)
+		case call.Op == "OpenPRsByHead":
+			return githubData(`{"repository":{"id":"R_acme","parent":null,"pullRequests":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[` +
+				`{"id":"PR_other","url":"https://github.com/acme/repo/pull/1","number":1,"title":"Other fork","state":"OPEN","isCrossRepository":true,"headRepository":{"id":"R_other"}},` +
+				`{"id":"PR_mine","url":"https://github.com/acme/repo/pull/2","number":2,"title":"Mine","state":"OPEN","baseRefName":"main","isCrossRepository":true,"headRepository":{"id":"R_fork"}},` +
+				`{"id":"PR_theirs","url":"https://github.com/acme/repo/pull/3","number":3,"title":"Upstream's own","state":"OPEN","isCrossRepository":false,"headRepository":{"id":"R_acme"}}]}}}`)
+		case call.Op == "MergedPRs" && !upstream:
+			return githubData(`{"repository":{"id":"R_fork","parent":{"owner":{"login":"acme"},"name":"repo"},"pullRequests":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"headRefName":"local","headRefOid":"aaa","url":"https://github.com/alice/repo/pull/1","headRepository":{"id":"R_fork"}}]}}}`)
+		case call.Op == "MergedPRs":
+			return githubData(`{"repository":{"id":"R_acme","parent":null,"pullRequests":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[` +
+				`{"headRefName":"feature","headRefOid":"bbb","url":"https://github.com/acme/repo/pull/9","headRepository":{"id":"R_fork"}},` +
+				`{"headRefName":"feature","headRefOid":"ccc","url":"https://github.com/acme/repo/pull/8","headRepository":{"id":"R_other"}},` +
+				`{"headRefName":"gone","headRefOid":"ddd","url":"https://github.com/acme/repo/pull/7","headRepository":null}]}}}`)
+		}
+		return forgeUnexpected(t, call)
+	})
+	cwd := t.TempDir()
+	seedForgeCacheGitHubOrigin(t, core, cwd, "https://github.com/alice/repo.git")
+	pulls, err := core.ListOpenPRs(t.Context(), cwd, "feature")
+	if err != nil || len(pulls) != 1 || pulls[0] != (GitPR{ID: "PR_mine", URL: "https://github.com/acme/repo/pull/2", Number: 2, Title: "Mine", State: "open", BaseBranch: "main"}) {
+		t.Fatalf("ListOpenPRs = %+v, %v; want the fork's PR in acme/repo alone", pulls, err)
+	}
+	if sent := calls.all(); len(sent) != 2 || sent[0].Vars["owner"] != "alice" || sent[1].Vars["owner"] != "acme" || sent[1].Vars["name"] != "repo" || sent[1].Vars["head"] != "feature" {
+		t.Fatalf("requests = %+v", sent)
+	}
+	heads, err := core.ListMergedPRHeads(t.Context(), cwd, 50)
+	want := []MergedPRHead{{HeadRefName: "local", HeadOid: "aaa", URL: "https://github.com/alice/repo/pull/1"}, {HeadRefName: "feature", HeadOid: "bbb", URL: "https://github.com/acme/repo/pull/9"}}
+	if err != nil || !slices.Equal(heads, want) {
+		t.Fatalf("ListMergedPRHeads = %+v, %v; want %+v", heads, err, want)
+	}
+	if sent := calls.all()[3]; sent.Vars["owner"] != "acme" || sent.Vars["first"] != float64(50) {
+		t.Fatalf("parent merged read = %+v", sent.Vars)
 	}
 }
 

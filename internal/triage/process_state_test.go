@@ -26,6 +26,8 @@ func TestASessionCommitReplacesOnlyItsProcessState(t *testing.T) {
 			s := r.state(threadID)
 			s.softClosedTurn, s.softClosedTurnSet = 2, true
 			s.settledTurns = map[int]bool{1: true}
+			s.lastSettled, s.lastSettledSet = settledTurnOutcome{turn: 1, cut: true}, true
+			s.waitingStop, s.waitingStopSet = waitingStop{turn: 2, summary: StoppedByUser}, true
 			s.effectiveModel, s.effectiveModelSet = "claude-opus-4-8", true
 			s.announcedDeath = "session-died:1"
 			s.deliveriesAwaitingTurn = []SendDelivery{{UserItemID: "user:1:flush:1"}}
@@ -50,6 +52,17 @@ func TestASessionCommitReplacesOnlyItsProcessState(t *testing.T) {
 			r.mu.Unlock()
 			if !reflect.DeepEqual(bound, processBound{}) {
 				t.Fatalf("the commit kept the retired process's state: %+v", bound)
+			}
+			// A held Stop is host state, dropped by name: the replacement
+			// reuses turn indexes.
+			r.mu.Lock()
+			held := false
+			if s := r.threadStateIfPresent(threadID); s != nil {
+				held = s.waitingStopSet
+			}
+			r.mu.Unlock()
+			if held {
+				t.Fatal("the commit kept a Stop held for the retired process's turn")
 			}
 			if !tc.cleanup && !r.HasQueuedFlushItems(threadID) {
 				t.Fatal("a replacement dropped the queue the host owns")

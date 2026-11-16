@@ -101,6 +101,9 @@ type threadRequestState struct {
 	// beside it, and after a restart it is empty until the next poll fills
 	// it in.
 	blocked map[string]remoteBlocked
+	// boot is what the boot sweep's settlements owe until the activation
+	// gate opens (finishThreadRequestSweepAtBoot).
+	boot bootThreadRequestSweep
 }
 
 // remoteBlocked is what a remote request's computer last reported of its

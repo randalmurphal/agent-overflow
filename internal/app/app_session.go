@@ -339,14 +339,6 @@ func (a *App) startSessionNow(threadID string) error {
 	// prompt change flag; a save that landed while it spawned flags it.
 	a.reconcileStalePromptSession(threadID)
 
-	// Register the freshly-spawned process group with the orphan reaper so
-	// it's torn down if the app dies before the session closes cleanly
-	// (macOS only; no-op elsewhere). Paired with the release in
-	// closeProviderSession.
-	if ps := newSess.ProviderSession(); ps != nil {
-		a.watchSessionProcess(ps.PID(), sessionToken)
-	}
-
 	// A session-death restore can requeue messages instead of restoring
 	// them to the draft (failed stale-row cleanup, R11-1). Every other
 	// drain trigger needs a live session (RegisterQueueItem) or wire
@@ -603,11 +595,12 @@ func (a *App) spawnProviderSession(
 			cfg.AllowedTools = append(cfg.AllowedTools, WorkflowToolsAllowedTool)
 		}
 		cfg.EventLogger = a.logger
+		cfg.Reaper = a.groupReaper("claude session")
 		cfg.MCPServers = mcpServers
 		cfg.AdditionalDirs = a.claudeAdditionalDirs()
 		cfg.AccessDirs = mem.Dirs
 		applyClaudeSessionAxes(&cfg, appSettings.ClaudeSessionAxesForProvider(t.Provider))
-		cfg.CleanupPeriodDays = a.claudeCleanupPeriodDays(cfg.WorkDir)
+		cfg.Retention = a.claudeRetention(cfg.WorkDir)
 		// The peer-visible name rides the Config rather than the options
 		// bundle on purpose: it is live-changeable through `/rename`, so
 		// letting the reconciler see it would queue a restart every time a
@@ -642,6 +635,7 @@ func (a *App) spawnProviderSession(
 		cfg.Binary = a.providerBinaryPath(t.Provider)
 		cfg.Env = a.sessionProcessEnv(t.Provider, cfg.Env, credential)
 		cfg.EventLogger = a.logger
+		cfg.Reaper = a.groupReaper("codex session")
 		cfg.MCPServers = mcpServers
 		// Codex never shows a server's instructions to the model, so the
 		// app guide and the on servers' guides ride developer instructions
@@ -847,9 +841,10 @@ func (a *App) claudeTUISessionConfig(
 	cfg.AdditionalDirs = a.claudeAdditionalDirs()
 	cfg.AccessDirs = mem.Dirs
 	cfg.MCPServers, cfg.AllowedTools = claudeTUIMCPServers(mcpServers)
-	cfg.CleanupPeriodDays = a.claudeCleanupPeriodDays(cfg.WorkDir)
+	cfg.Retention = a.claudeRetention(cfg.WorkDir)
 	cfg.Upstream = a.claudetuiUpstream()
 	cfg.EventLogger = a.logger
+	cfg.Reaper = a.groupReaper("claude terminal session")
 	var err error
 	cfg.SystemPromptDir, err = a.claudePromptFileDir()
 	if err != nil {
@@ -1156,8 +1151,11 @@ func (a *App) interruptTurnHoldingLock(threadID string, expectTurnIndex int, sto
 //     PromoteQuietFlushSends emits provider:item_event so they
 //     transition from Zone 2 to the timeline.
 //
-// For Codex, deferred sends are also re-sent as a fresh turn because
-// Codex discards steered pending_input on turn/interrupt.
+// For Codex, deferred sends steered into the running turn are also re-sent
+// as a fresh turn because Codex discards steered pending_input on
+// turn/interrupt. A send that went out as the input of a turn it starts
+// (EagerPersistedFlush.TurnInput) is that turn's own input and is not
+// re-sent.
 //
 // interruptedTurn is the caller's pre-ack OpenTurnIndex sample (-1
 // when no turn was open) — see EagerPersistDeferredFlushSends for why
@@ -1175,12 +1173,17 @@ func (a *App) eagerPersistFlushSendsOnInterrupt(threadID string, sess session, i
 	// review, CT4-1).
 	a.triage.PromoteQuietFlushSends(threadID, stampToken)
 
-	persisted := a.triage.EagerPersistDeferredFlushSends(threadID, interruptedTurn, stampToken)
-	if len(persisted) == 0 {
+	if sess.Codex == nil {
+		a.triage.EagerPersistDeferredFlushSends(threadID, interruptedTurn, stampToken)
 		return
 	}
-
-	if sess.Codex == nil {
+	var persisted []triage.EagerPersistedFlush
+	for _, flush := range a.triage.EagerPersistDeferredFlushSends(threadID, interruptedTurn, stampToken) {
+		if !flush.TurnInput {
+			persisted = append(persisted, flush)
+		}
+	}
+	if len(persisted) == 0 {
 		return
 	}
 
@@ -1396,13 +1399,13 @@ func (a *App) teardownDeadPreInitSession(threadID, sessionToken string) {
 }
 
 // teardownAndCloseSession runs the per-thread triage cleanup
-// and closes the provider subprocess. Shared by StopSession (user
-// action), idleCloseSession (reaper), and stopArchivedThreadSession
-// (archive releasing the thread's host resources) so the close sequence
-// stays in one place — future per-thread cleanup steps land once and all
-// paths inherit it. teardownDeadPreInitSession mirrors the sequence but owns
-// its own copy: its CleanupThread must be epoch-guarded against a
-// racing replacement start, and it restores the flush queue first.
+// and closes the provider subprocess, dropping the thread's queue. Shared by
+// StopSession (user action) and stopArchivedThreadSession (archive releasing
+// the thread's host resources) so the close sequence stays in one place —
+// future per-thread cleanup steps land once and all paths inherit it.
+// teardownDeadPreInitSession mirrors the sequence but owns its own copy: its
+// CleanupThread must be epoch-guarded against a racing replacement start,
+// and it restores the flush queue first.
 //
 // Callers must remove the session from a.sessions BEFORE invoking so
 // two concurrent closers can't both call Close on the same provider
@@ -1416,16 +1419,37 @@ func (a *App) teardownDeadPreInitSession(threadID, sessionToken string) {
 // closeProviderSession would be redundant, and it deliberately leaves
 // triage state alone so the final wire frames have somewhere to land.
 func (a *App) teardownAndCloseSession(threadID string, sess session) error {
-	return a.teardownSession(threadID, sess, false)
+	return a.teardownSession(threadID, sess, false, dropQueue)
 }
 
 // teardownAndCloseSessionHoldingMutations is teardownAndCloseSession for a
-// caller that holds the thread's mutation lock (the idle reaper).
+// caller that holds the thread's mutation lock (the idle reaper, which
+// tears down only a session with nothing queued).
 func (a *App) teardownAndCloseSessionHoldingMutations(threadID string, sess session) error {
-	return a.teardownSession(threadID, sess, true)
+	return a.teardownSession(threadID, sess, true, dropQueue)
 }
 
-func (a *App) teardownSession(threadID string, sess session, mutationsHeld bool) error {
+// teardownAndCloseSessionRestoringQueue is the teardown of a stop nobody
+// asked for: a removed worktree, a reconnect. The thread's queued and
+// unconfirmed messages go back to the composer, as they do when a session
+// dies. The caller holds the thread action lock and not its mutation lock.
+func (a *App) teardownAndCloseSessionRestoringQueue(threadID string, sess session) error {
+	return a.teardownSession(threadID, sess, false, restoreQueue)
+}
+
+// teardownQueue is what a session teardown does with the messages queued
+// behind the session and the ones it sent and never saw confirmed.
+type teardownQueue uint8
+
+const (
+	// dropQueue throws them away, durable rows included: the person's
+	// own Stop of the session, and archive.
+	dropQueue teardownQueue = iota
+	// restoreQueue hands them back to the composer.
+	restoreQueue
+)
+
+func (a *App) teardownSession(threadID string, sess session, mutationsHeld bool, queue teardownQueue) error {
 	a.workflowApplication().ReleaseUsageAttentionForThread(threadID)
 	// Events the provider emitted before the stop were read and must be
 	// persisted; CleanupThread below marks the thread stopped, after which
@@ -1434,7 +1458,7 @@ func (a *App) teardownSession(threadID string, sess session, mutationsHeld bool)
 	var held []ownedMessage
 	var requests teardownRequests
 	if a.triage != nil {
-		held, requests = a.dropQueueForTeardown(threadID, mutationsHeld)
+		held, requests = a.settleQueueForTeardown(threadID, mutationsHeld, queue)
 	}
 	// The answers and remote completions the drop held go back to their
 	// requests and watches once the session is closed, so a completion the
@@ -1479,37 +1503,59 @@ func (a *App) teardownSession(threadID string, sess session, mutationsHeld bool)
 	return err
 }
 
-// dropQueueForTeardown drops the thread's queue, durable rows, dispatch
-// batches and memory, and returns the answers and remote completions it
-// held for their owners, and the other threads' requests it took back
-// before the agent took them in (returnRequestsAtTeardown). CleanupThread DROPS the queued messages rather
-// than restoring them (teardownDeadPreInitSession is the path that
-// restores, and it does not come through here), so their durable rows go
-// with them: a row that outlived the queue it belonged to would put the
-// message back in the composer at the next boot, long after the user's
-// Stop threw it away. So do the batches a dispatch worker already took
-// from the queue, or it would put them back.
+// settleQueueForTeardown empties the thread's queue for a teardown, durable
+// rows and memory, and then runs the triage cleanup. A drop discards the
+// messages: a row that outlived the queue it belonged to would put the
+// message back in the composer at the next boot, long after the user's Stop
+// threw it away. A restore returns them to the composer first, and keeps
+// queued, durably, any message whose restore failed.
 //
-// CleanupThread also drops the messages the provider was handed and has
-// not confirmed, a person's as they are. An answer, a reminder or a
-// completion among them is held too: its row went at the provider write,
-// and nothing else would tell its owner it was not taken in.
+// Either way the triage cleanup finds no send still pending: a session's end
+// is where a message it sent and never confirmed stops being pending, so its
+// row leaves the timeline here with its text, to the composer or with the
+// dropped queue (itemmeta.SetPendingFlush). The sweep would otherwise forget
+// the send and leave its row marked as history.
+//
+// A drop returns the answers and remote completions it held for their
+// owners, and the other threads' requests it took back before the agent
+// took them in (returnRequestsAtTeardown). Among the messages the provider
+// was handed and has not confirmed, an answer, a reminder or a completion is
+// held too: its row went at the provider write, and nothing else would tell
+// its owner it was not taken in.
 //
 // It runs under the thread's mutation lock, which every queue write takes
 // (registerQueueItem), so a message queued during a teardown is either in
-// the queue the drop reads, and settled with it, or queued once the
-// memory cleanup is done, durable and in memory for the next session.
-// Nothing it runs takes the thread's action lock, which some of its
-// callers do not hold.
-func (a *App) dropQueueForTeardown(threadID string, mutationsHeld bool) ([]ownedMessage, teardownRequests) {
+// the queue the teardown empties, and settled with it, or queued once the
+// memory cleanup is done, durable and in memory for the next session. A
+// drop takes nothing else; a restore needs the thread action lock its
+// caller holds.
+func (a *App) settleQueueForTeardown(threadID string, mutationsHeld bool, queue teardownQueue) ([]ownedMessage, teardownRequests) {
 	if !mutationsHeld {
 		defer a.threadApplication().LockMutations(threadID)()
 	}
-	requests := a.returnRequestsAtTeardown(threadID)
-	held := a.dropDurableFlushQueue(threadID)
-	held = append(held, a.unconfirmedOwnedMessages(threadID, held)...)
-	a.discardFlushDispatch(threadID)
+	var held []ownedMessage
+	var requests teardownRequests
+	var requeued []triage.UnconfirmedFlushItem
+	switch queue {
+	case restoreQueue:
+		// The restore settles what the app wrote as a session end does
+		// (agentPartsNotTakenIn): answers and completions back to their
+		// owners, other threads' requests back to their queue.
+		requeued = a.restoreUnconfirmedQueueLocked(threadID)
+	default:
+		requests = a.returnRequestsAtTeardown(threadID)
+		var dispatched []triage.QueuedFlushItem
+		held, dispatched = a.dropFlushQueueLocked(threadID)
+		// Read before dropUnconfirmedSends drains the sends they name.
+		held = append(held, a.unconfirmedOwnedMessages(threadID, held)...)
+		a.dropUnconfirmedSends(threadID, dispatched, requests)
+	}
 	a.triage.CleanupThread(threadID)
+	if len(requeued) > 0 {
+		// The cleanup wiped the queue these re-entered.
+		a.requeueUnconfirmedFlushItems(threadID, requeued)
+		a.emitQueueStateChanged(threadID)
+	}
 	return held, requests
 }
 

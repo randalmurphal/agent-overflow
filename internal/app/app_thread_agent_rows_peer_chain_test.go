@@ -251,7 +251,7 @@ func TestAForwardedListingKeepsTheLastAnswerOfAComputerFurtherOn(t *testing.T) {
 			c.settle(t, 1)
 			c.atRest(t, 0, 2)
 			// The worker on C is continued there, and asks for an approval.
-			if err := c.apps[2].SendMessage(c.threads[1], "now run it", nil); err != nil {
+			if err := c.apps[2].SendMessage(context.Background(), c.threads[1], "now run it", nil); err != nil {
 				t.Fatalf("SendMessage there: %v", err)
 			}
 			waitUntil(t, 10*time.Second, func() bool {

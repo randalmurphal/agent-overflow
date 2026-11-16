@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/store"
@@ -408,7 +409,7 @@ func TestAFailedInterruptKeepsNoStop(t *testing.T) {
 func (q *queuedRequests) liveTarget(t *testing.T) {
 	t.Helper()
 	sess, err := claude.NewSession(context.Background(), q.target.ID,
-		claude.Config{Binary: writeClaudeInterruptRecorderBinary(t, filepath.Join(t.TempDir(), "interrupts.log")), WorkDir: t.TempDir()},
+		claude.Config{Reaper: procutiltest.Reaper(), Retention: claude.UserHomeRetention(0), Binary: writeClaudeInterruptRecorderBinary(t, filepath.Join(t.TempDir(), "interrupts.log")), WorkDir: t.TempDir()},
 		func(provider.ProviderEvent) {})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)

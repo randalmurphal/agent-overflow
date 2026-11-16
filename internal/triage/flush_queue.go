@@ -9,8 +9,8 @@ import (
 	"sync"
 	"time"
 
+	"agent-overflow/internal/agentmeta"
 	"agent-overflow/internal/store"
-	"agent-overflow/internal/usermessage"
 )
 
 // flush_queue.go owns the per-thread "queued user message awaiting provider
@@ -102,7 +102,7 @@ type UnconfirmedFlushItem struct {
 	// JoinedParts are the members of a joined message as they appear in its
 	// text, when the dispatch that joined it recorded them
 	// (PendingSendExpectation.JoinedParts).
-	JoinedParts []usermessage.JoinedPart
+	JoinedParts []agentmeta.JoinedPart
 	// StaleUserItemID carries a requeued item's failed-cleanup row id
 	// (QueuedFlushItem.StaleUserItemID) through a session-death drain
 	// that catches the item still queued, so the obligation survives

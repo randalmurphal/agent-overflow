@@ -96,6 +96,7 @@ func (a *App) mcpService() *mcpapp.Service {
 
 func (a *App) mcpDeps() mcpapp.Deps {
 	return mcpapp.Deps{
+		Reaper:         a.groupReaper("mcp sign-in"),
 		Context:        a.lifeCtx,
 		IsShuttingDown: a.shuttingDown.Load,
 		// Under the thread's action lock, as a send starts one, so the
@@ -139,16 +140,16 @@ func (a *App) mcpDeps() mcpapp.Deps {
 		SessionProcessEnv: func(providerName string) map[string]string {
 			return a.sessionProcessEnv(providerName, nil, aoSessionCredential{})
 		},
-		ClaudeCleanupPeriodDays: a.claudeCleanupPeriodDays,
-		ReadClaudeCredential:    a.readClaudeMCPCredential,
-		ClaudeConfigPath:        a.claudeConfigJSONPath,
-		CodexConfigPath:         a.codexConfigTOMLPath,
-		Emit:                    a.emit,
-		EmitThreadError:         a.emitErrorToThread,
-		EmitWireError:           a.emitWireErrorToThread,
-		Store:                   a.store,
-		Logger:                  a.logger,
-		ShutdownError:           ErrShuttingDown,
+		ClaudeRetention:      a.claudeRetention,
+		ReadClaudeCredential: a.readClaudeMCPCredential,
+		ClaudeConfigPath:     a.claudeConfigJSONPath,
+		CodexConfigPath:      a.codexConfigTOMLPath,
+		Emit:                 a.emit,
+		EmitThreadError:      a.emitErrorToThread,
+		EmitWireError:        a.emitWireErrorToThread,
+		Store:                a.store,
+		Logger:               a.logger,
+		ShutdownError:        ErrShuttingDown,
 	}
 }
 
@@ -196,6 +197,7 @@ func threadMCPServers(rows []mcpapp.ThreadMCPServer) []ThreadMCPServer {
 // session is live, we auto-start one for the round-trip.
 //
 //ao:scope settings:write
+//ao:budget 90s
 func (a *App) TriggerMcpAuth(threadID, name string) (MCPAuthInitResult, error) {
 	if isAppManagedMCPServer(name) {
 		return MCPAuthInitResult{}, errors.New("trigger mcp auth: built-in MCP server does not use provider OAuth")
@@ -367,6 +369,7 @@ func (a *App) SetWorkspaceMcpServerEnabled(providerName, workspacePath, name str
 //
 //ao:scope settings:write
 //ao:route selected
+//ao:budget 90s
 func (a *App) TriggerWorkspaceMcpAuth(providerName, workspacePath, serverName string) (MCPAuthInitResult, error) {
 	result, err := a.mcpService().TriggerWorkspaceMcpAuth(providerName, workspacePath, serverName)
 	return mcpAuthInitResult(result), err

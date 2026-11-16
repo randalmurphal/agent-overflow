@@ -14,6 +14,7 @@ import (
 	"unsafe"
 
 	appbrowser "agent-overflow/internal/browser"
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/codex"
@@ -109,8 +110,10 @@ func TestRefreshLiveBrowserMCPUsesClaudeToggle(t *testing.T) {
 	app, _, _ := newMCPTestApp(t)
 	captureDir := t.TempDir()
 	sess, err := claude.NewSession(context.Background(), "browser-claude", claude.Config{
-		Binary:  writeClaudeMcpToggleCaptureBinary(t, captureDir),
-		WorkDir: t.TempDir(),
+		Reaper:    procutiltest.Reaper(),
+		Retention: claude.UserHomeRetention(0),
+		Binary:    writeClaudeMcpToggleCaptureBinary(t, captureDir),
+		WorkDir:   t.TempDir(),
 	}, func(provider.ProviderEvent) {})
 	if err != nil {
 		t.Fatal(err)
@@ -131,8 +134,10 @@ func TestRefreshLiveBrowserMCPPreservesThreadDisable(t *testing.T) {
 	app.browser.mcp.SetThreadEnabled("browser-claude-disabled", false)
 	captureDir := t.TempDir()
 	sess, err := claude.NewSession(context.Background(), "browser-claude-disabled", claude.Config{
-		Binary:  writeClaudeMcpToggleCaptureBinary(t, captureDir),
-		WorkDir: t.TempDir(),
+		Reaper:    procutiltest.Reaper(),
+		Retention: claude.UserHomeRetention(0),
+		Binary:    writeClaudeMcpToggleCaptureBinary(t, captureDir),
+		WorkDir:   t.TempDir(),
 	}, func(provider.ProviderEvent) {})
 	if err != nil {
 		t.Fatal(err)
@@ -152,8 +157,10 @@ func TestBrowserSettingsCoalescingKeepsSkippedEnableTransition(t *testing.T) {
 	app, _, _ := newMCPTestApp(t)
 	captureDir := t.TempDir()
 	sess, err := claude.NewSession(context.Background(), "browser-coalesced", claude.Config{
-		Binary:  writeClaudeMcpToggleCaptureBinary(t, captureDir),
-		WorkDir: t.TempDir(),
+		Reaper:    procutiltest.Reaper(),
+		Retention: claude.UserHomeRetention(0),
+		Binary:    writeClaudeMcpToggleCaptureBinary(t, captureDir),
+		WorkDir:   t.TempDir(),
 	}, func(provider.ProviderEvent) {})
 	if err != nil {
 		t.Fatal(err)
@@ -182,6 +189,7 @@ func TestRefreshLiveBrowserMCPUsesCodexReload(t *testing.T) {
 	app, _, _ := newMCPTestApp(t)
 	captureDir := t.TempDir()
 	sess, err := codex.NewSession(context.Background(), "browser-codex", codex.Config{
+		Reaper:  procutiltest.Reaper(),
 		Binary:  writeCodexRefreshCaptureBinary(t, captureDir, "browser-codex-provider", ""),
 		Model:   "gpt-5",
 		WorkDir: t.TempDir(),

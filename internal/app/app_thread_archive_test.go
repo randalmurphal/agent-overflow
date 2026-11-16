@@ -78,7 +78,7 @@ func startExitMarkerClaudeSession(t *testing.T, app *App, bus *capturedEventBus,
 	if err := app.StartSession(threadID); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
-	if err := app.SendMessage(threadID, "hello", nil); err != nil {
+	if err := app.SendMessage(context.Background(), threadID, "hello", nil); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 	bus.nextProviderEventOfKind(t, provider.EventInit, 5*time.Second)
@@ -352,6 +352,55 @@ func TestArchiveThreadStopsSessionWhoseTurnStartedBeforeTheRequest(t *testing.T)
 	}
 }
 
+// The provider reports a turn some time after its message was written
+// (Claude's init, Codex's turn/started). A turn whose message was written
+// before the archive request but which the provider reported while the
+// archive ran was asked for before the reader archived, so the archive
+// stops it; one whose message was written after the request is a newer
+// engagement and keeps the session.
+func TestArchiveThreadStopsSessionWhoseTurnWasAskedForBeforeTheRequest(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name     string
+		asked    time.Duration
+		wantLive bool
+	}{
+		{"asked before", -time.Minute, false},
+		{"asked after", time.Minute, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			app := newTestAppWithStore(t)
+			thread := testThread("thread-archive-reported-late")
+			if err := app.store.CreateThread(thread); err != nil {
+				t.Fatalf("CreateThread: %v", err)
+			}
+			if err := app.store.InsertTurn(store.Turn{
+				TurnID: "turn-reported", ThreadID: thread.ID, TurnIndex: 0, StartedAt: time.Now().Add(2 * time.Minute).UnixMilli(),
+			}); err != nil {
+				t.Fatalf("InsertTurn: %v", err)
+			}
+			asked := time.Now().Add(tc.asked).UnixMilli()
+			if _, err := app.store.AppendItem(store.Item{ID: "user:0", ThreadID: thread.ID, TurnIndex: 0, Kind: "user_text", Role: "user",
+				Status: "completed", Summary: "work on it", Meta: "{}", CreatedAt: asked, UpdatedAt: asked}); err != nil {
+				t.Fatalf("AppendItem: %v", err)
+			}
+			app.sessionManager().put(thread.ID, session{
+				Provider: string(provider.Codex),
+				Token:    "tok",
+				Liveness: newSessionLiveness(time.Now()),
+			})
+
+			if err := archiveThread(app, thread.ID); err != nil {
+				t.Fatalf("ArchiveThread: %v", err)
+			}
+			if _, live := app.sessionManager().get(thread.ID); live != tc.wantLive {
+				t.Fatalf("session live after the archive = %v, want %v", live, tc.wantLive)
+			}
+		})
+	}
+}
+
 // TestArchiveThreadWithoutSessionStaysARowFlip pins the common case:
 // archiving a thread nobody is running touches the session map and
 // nothing else, and still archives.
@@ -442,7 +491,7 @@ func TestSendAfterArchiveStartsAColdSession(t *testing.T) {
 		t.Fatal("archive did not close the session")
 	}
 
-	if err := app.SendMessage(thread.ID, "still here", nil); err != nil {
+	if err := app.SendMessage(context.Background(), thread.ID, "still here", nil); err != nil {
 		t.Fatalf("SendMessage after archive: %v", err)
 	}
 	second, restarted := app.sessionManager().get(thread.ID)

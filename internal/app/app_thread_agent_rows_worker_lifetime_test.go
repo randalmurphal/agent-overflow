@@ -7,6 +7,7 @@ package app
 // requests went to it.
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"slices"
@@ -278,7 +279,7 @@ func TestAWorkerContinuedFromItsPaneReopensForItsSpawner(t *testing.T) {
 	f.awaitWorker(t, f.caller.ID, ack.Token, "")
 	frames := f.callerAgentFrames(t, f.caller.ID)
 
-	if err := f.app.SendMessage(ack.ThreadID, "now also update the changelog", nil); err != nil {
+	if err := f.app.SendMessage(context.Background(), ack.ThreadID, "now also update the changelog", nil); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 	row := f.awaitWorker(t, f.caller.ID, ack.Token, workerRunning)
@@ -548,7 +549,7 @@ func TestLiveWorkersAcrossArchiveDeleteAndPlacement(t *testing.T) {
 	}
 	work := func(worker store.Thread, token string) {
 		t.Helper()
-		if err := f.app.SendMessage(worker.ID, "keep going", nil); err != nil {
+		if err := f.app.SendMessage(context.Background(), worker.ID, "keep going", nil); err != nil {
 			t.Fatalf("SendMessage: %v", err)
 		}
 		f.awaitWorker(t, f.caller.ID, token, workerRunning)

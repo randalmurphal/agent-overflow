@@ -198,7 +198,7 @@ CREATE INDEX idx_payload_chunks_payload_start
 	{
 		Version: 12,
 		Name:    "channel_max_turns",
-		// v150 drops channels.
+		// v153 drops channels.
 		SQL: `ALTER TABLE channels ADD COLUMN max_turns INTEGER NOT NULL DEFAULT 8;`,
 	},
 	{
@@ -399,7 +399,7 @@ DELETE FROM diff_review_comments WHERE scope IN ('turn', 'session');`,
 	{
 		Version: 26,
 		Name:    "workflow_persistence",
-		// v150 drops automations and automation_cursors.
+		// v153 drops automations and automation_cursors.
 		SQL: `CREATE TABLE work_items (
     id             TEXT    PRIMARY KEY,
     project_id     TEXT    NOT NULL,
@@ -635,7 +635,7 @@ CREATE INDEX idx_work_item_units_worktree
 		// else entirely (an agent proposal id, a call site) and none of them are
 		// ever queried this way.
 		//
-		// v150 drops automations and this index.
+		// v153 drops automations and this index.
 		SQL: `ALTER TABLE automations ADD COLUMN last_fired_at INTEGER NOT NULL DEFAULT 0;
 
 ALTER TABLE automations ADD COLUMN last_run_item_id TEXT NOT NULL DEFAULT '';
@@ -1738,9 +1738,38 @@ CREATE INDEX idx_import_history_items_joined_send_ids
 	{Version: attachmentShellMigrationVersion, Name: "attachment_shell", SQL: attachmentShellV147SQL},
 	{Version: reviewRangesRepliesMigrationVersion, Name: "review_ranges_replies", SQL: reviewRangesRepliesV148SQL, Rebuild: true},
 	{Version: threadWakeCarrierMigrationVersion, Name: "thread_wake_carrier", SQL: threadWakeCarrierV149SQL},
-	{Version: retireFeaturesMigrationVersion, Name: "retire_features", SQL: retireFeaturesV150SQL, Rebuild: true},
-	{Version: assistantsMigrationVersion, Name: "assistants", SQL: assistantsV151SQL, Fix: fillAssistantLedger},
-	{Version: remoteCancelOwedMigrationVersion, Name: "remote_cancel_owed", SQL: remoteCancelOwedV152SQL},
+	{
+		Version: findTextMigrationVersion,
+		Name:    "find_text",
+		SQL:     findTextV150SQL,
+		Deferred: &DeferredMigration{
+			Title: "Find index",
+			Steps: []DeferredStep{
+				{Name: "fill_find_text", Run: backfillFindText},
+			},
+		},
+	},
+	{Version: reviewEditsScopeMigrationVersion, Name: "review_edits_scope", SQL: reviewEditsScopeV151SQL, Rebuild: true},
+	{
+		Version: stalePendingFlushMigrationVersion,
+		Name:    "stale_pending_flush",
+		SQL:     stalePendingFlushV152SQL,
+		Fix:     clearStalePendingFlushMarks,
+	},
+	{Version: retireFeaturesMigrationVersion, Name: "retire_features", SQL: retireFeaturesV153SQL, Rebuild: true},
+	{Version: assistantsMigrationVersion, Name: "assistants", SQL: assistantsV154SQL, Fix: fillAssistantLedger},
+	{Version: remoteCancelOwedMigrationVersion, Name: "remote_cancel_owed", SQL: remoteCancelOwedV155SQL},
+	{
+		Version: userFindTextMigrationVersion,
+		Name:    "user_find_text",
+		SQL:     userFindTextV156SQL,
+		Deferred: &DeferredMigration{
+			Title: "Find index",
+			Steps: []DeferredStep{
+				{Name: "fill_find_text", Run: backfillFindText},
+			},
+		},
+	},
 }
 
 // MigrationStep describes one pending migration as it begins, or a

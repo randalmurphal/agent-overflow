@@ -12,6 +12,7 @@ import (
 
 	"agent-overflow/internal/harness/control"
 	"agent-overflow/internal/harness/scenario"
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/provideraccountapp"
@@ -29,6 +30,7 @@ func startClaudeLoginMock(t *testing.T) (*claude.LoginSession, string) {
 	t.Helper()
 	configDir := t.TempDir()
 	session, err := claude.StartLogin(t.Context(), claude.LoginConfig{
+		Reaper:    procutiltest.Reaper(),
 		Binary:    mockBin,
 		ConfigDir: configDir,
 	})
@@ -222,6 +224,7 @@ func startCodexLoginMock(t *testing.T) (*codex.LoginSession, *control.Server, st
 
 	home := t.TempDir()
 	session, err := codex.StartLogin(t.Context(), codex.LoginConfig{
+		Reaper:  procutiltest.Reaper(),
 		Binary:  mockBin,
 		WorkDir: t.TempDir(),
 		Env: map[string]string{
@@ -267,6 +270,7 @@ func TestCodexDeviceSignInMockCompletesOnTheControlTrigger(t *testing.T) {
 	// name in the user's face — a whole harness sign-in that could not finish
 	// for a reason no sign-in code owned.
 	info, err := codex.ProbeAccount(t.Context(), codex.ProbeConfig{
+		Reaper:  procutiltest.Reaper(),
 		Binary:  mockBin,
 		WorkDir: t.TempDir(),
 		Env:     map[string]string{"CODEX_HOME": home},

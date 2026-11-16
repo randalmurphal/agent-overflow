@@ -1,6 +1,7 @@
 package app
 
 import (
+	"agent-overflow/internal/agentmeta"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/triage"
 	"agent-overflow/internal/usermessage"
@@ -9,7 +10,7 @@ import (
 // joinedFlushSeparator is the visible rule between the parts of a JOINED
 // queued message, shared with the triage-side fold of a merge the CLI made
 // across separate drains so the two produce the same row.
-const joinedFlushSeparator = usermessage.JoinSeparator
+const joinedFlushSeparator = agentmeta.JoinSeparator
 
 // flushMember is one queued item resolved up to the last fallible step before
 // anything durable happens. A joined group resolves EVERY member first, so an
@@ -43,9 +44,9 @@ type joinedFlushMessage struct {
 	// `$.sendId`; the rest ride Meta.JoinedSendIDs.
 	sendID string
 	// parts are the members as they appear in content, which a session-death
-	// restore splits the message by (usermessage.JoinedPart); nil for one
+	// restore splits the message by (agentmeta.JoinedPart); nil for one
 	// message, or when a member is a joined message whose parts are unknown.
-	parts []usermessage.JoinedPart
+	parts []agentmeta.JoinedPart
 	// guardSlashCommand comes from the FIRST member alone: Claude's command
 	// router tests the first character of the assembled message, so only the
 	// leading member's text can enter it.
@@ -162,7 +163,7 @@ func joinProviderAttachments(members []flushMember) []provider.ImageAttachment {
 // (usermessage.Join) and returns the joined summary, its encoded meta, the
 // joined message's parts, which the meta records too, and the send id that
 // names the joined row.
-func joinFlushMeta(members []flushMember) (string, string, []usermessage.JoinedPart, string, error) {
+func joinFlushMeta(members []flushMember) (string, string, []agentmeta.JoinedPart, string, error) {
 	joinMembers := make([]usermessage.JoinMember, 0, len(members))
 	for _, member := range members {
 		resolved := member.resolved

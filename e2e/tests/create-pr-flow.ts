@@ -5,8 +5,11 @@
 // flag, shows the created URL in a success toast, and the forge's new PR/MR
 // then turns the menu item into Open PR/MR. A forge refusal (an open PR/MR
 // already exists for the branch) shows inline and leaves the dialog open
-// with the typed title. The branch is published to a local origin that
-// answers as the forge (`publishBranch`); nothing leaves loopback.
+// with the typed title. A create whose answer a dropped connection lost
+// ends with the dialog showing the created PR/MR (GetGitActionOutcome),
+// and the forge records one create. The branch is published to a local
+// origin that answers as the forge (`publishBranch`); nothing leaves
+// loopback.
 import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { Page } from '@playwright/test';
@@ -32,6 +35,9 @@ export interface CreatePRSurface {
 }
 
 export const BRANCH = 'feature-pr';
+
+// GitCreatePR, as frontend/src/lib/transport/methodRoutes.ts lists it.
+const GIT_CREATE_PR_METHOD_ID = 4_106_667_105;
 
 const labels = {
   github: { noun: 'PR', create: 'Create PR', open: 'Open PR', dialog: 'Create Pull Request' },
@@ -142,6 +148,43 @@ export function createPRFlow(surface: CreatePRSurface): void {
     await surface.openGitMenu(page);
     await expect(page.getByRole('menu', { name: 'Git actions' }).getByRole('menuitem', { name: label.open })).toBeVisible({ timeout: 30_000 });
     await page.keyboard.press('Escape');
+    await expectEveryForgeCallHandled(harness);
+    await expect(errorToasts(page)).toHaveCount(0);
+  });
+
+  test(`a ${label.noun} whose answer the connection lost shows as created, and is created once`, async ({ harness, page }) => {
+    const name = `create-${forge}-lost`;
+    const { repo } = await seedPublishedBranch(harness, forge, name);
+    // The socket carrying the create closes as soon as the create is sent,
+    // so its answer is lost; the reconnected socket passes everything.
+    let dropped = false;
+    await page.routeWebSocket(/\/ws(?:\?|$)/, (socket) => {
+      const server = socket.connectToServer();
+      socket.onMessage((message) => {
+        server.send(message);
+        const frame = JSON.parse(String(message)) as { type?: string; methodId?: number };
+        if (!dropped && frame.type === 'rpc' && frame.methodId === GIT_CREATE_PR_METHOD_ID) {
+          dropped = true;
+          socket.close();
+        }
+      });
+      server.onMessage((message) => socket.send(message));
+    });
+    await harness.open(page);
+    await openThread(page, name);
+
+    await openFromMenu(page, surface);
+    const form = dialog(page, surface);
+    await form.getByLabel('Title').fill('Lost answer');
+    await form.getByTestId('create-pr-submit').click();
+    await expect.poll(() => dropped).toBe(true);
+
+    const url = createdURL(repo, 1);
+    await expect(page.getByRole('alert').filter({ hasText: `${label.noun} created: ${url}` })).toBeVisible();
+    await expect(form).toHaveCount(0);
+    const [call, ...more] = await createCalls(harness);
+    expect(more, 'the lost answer created again').toEqual([]);
+    expect(call.args).toEqual(createArgv(forge, 'Lost answer', '', false));
     await expectEveryForgeCallHandled(harness);
     await expect(errorToasts(page)).toHaveCount(0);
   });

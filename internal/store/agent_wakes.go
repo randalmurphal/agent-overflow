@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"agent-overflow/internal/agentmeta"
 )
 
 // The wake supervisor's rows (docs/specs/standing-agents.md, "Wake
@@ -16,10 +18,11 @@ import (
 // a change that finds the row in another state is a lost race, never a second
 // run.
 
-// Wake kinds.
+// Wake kinds: the kinds of the reports a loop's fire and a watch's output
+// are written as.
 const (
-	AgentWakeLoop  = "loop"
-	AgentWakeWatch = "watch"
+	AgentWakeLoop  = string(agentmeta.ReportLoop)
+	AgentWakeWatch = string(agentmeta.ReportWatch)
 )
 
 // Wake states. `running` is the supervisor's own execution: a watch script in

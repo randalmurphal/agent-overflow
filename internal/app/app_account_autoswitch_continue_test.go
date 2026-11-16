@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/accountswitch"
+	"agent-overflow/internal/agentmeta"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/testutil/mockexec"
 	"agent-overflow/internal/threadmode"
@@ -72,7 +73,7 @@ func appOriginRows(t *testing.T, app *App, threadID string) []string {
 			continue
 		}
 		var meta usermessage.Meta
-		if json.Unmarshal([]byte(item.Meta), &meta) == nil && meta.Origin == usermessage.OriginApp {
+		if json.Unmarshal([]byte(item.Meta), &meta) == nil && meta.Origin == agentmeta.OriginApp {
 			out = append(out, item.Summary)
 		}
 	}
@@ -119,7 +120,7 @@ func TestAutoSwitchRefusedClaudeTurnSwitchesAndContinues(t *testing.T) {
 			rig.start(t)
 			t.Cleanup(func() { _ = app.StopSession(thread.ID) })
 
-			if err := app.SendMessage(thread.ID, "go", nil); err != nil {
+			if err := app.SendMessage(context.Background(), thread.ID, "go", nil); err != nil {
 				t.Fatalf("SendMessage: %v", err)
 			}
 			bus.nextProviderEventOfKind(t, provider.EventTurnComplete, 10*time.Second)

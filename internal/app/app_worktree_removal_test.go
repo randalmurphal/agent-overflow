@@ -15,11 +15,13 @@ import (
 	"agent-overflow/internal/forgeapi"
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/harness/forgefake"
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/terminal"
 	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/threadmode"
+	"agent-overflow/internal/triage"
 	"agent-overflow/internal/workflow/engine"
 )
 
@@ -91,6 +93,60 @@ func TestRemoveOtherWorktreeReturnsMovedRowsAndStopsSessionsQuietly(t *testing.T
 	}
 }
 
+// A removed worktree was all that listed a never-sent occupant, so its move
+// to the root takes it off every sidebar (`emptied`, panes keep it); a sent
+// occupant stays listed and gets a plain row update. An external removal
+// also posts a notice in the thread, its first item, which lists it again.
+func TestWorktreeRemovalUnlistsANeverSentOccupant(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		remove  func(t *testing.T, f removalFixture)
+		noticed bool
+	}{
+		{"in-app", func(t *testing.T, f removalFixture) { f.remove(t) }, false},
+		{"external", func(t *testing.T, f removalFixture) {
+			testutil.RunGit(t, f.repo, "worktree", "remove", "--force", f.worktree)
+			f.app.reconcileProjectWorktrees(f.repo, []string{f.worktree})
+		}, true},
+	} {
+		for _, sent := range []bool{false, true} {
+			name := tc.name + map[bool]string{false: "-never-sent", true: "-sent"}[sent]
+			t.Run(name, func(t *testing.T) {
+				f := newRemovalFixture(t, "feature-unlist-"+name)
+				want := []string{triage.ThreadActionEmptied}
+				wantListed := tc.noticed
+				if !sent && tc.noticed {
+					want = append(want, triage.ThreadActionListed)
+				}
+				if sent {
+					want, wantListed = []string{triage.ThreadActionFull}, true
+					if err := f.app.store.InsertItem(store.Item{ID: f.occupant + "-sent", ThreadID: f.occupant, Kind: "user_text", Role: "user", Status: "completed", Summary: "sent"}); err != nil {
+						t.Fatalf("InsertItem: %v", err)
+					}
+				}
+				f.app.stopSessionFn = func(string) error { return nil }
+
+				tc.remove(t, f)
+
+				var actions []string
+				for _, evt := range f.rows.snapshot() {
+					if evt.Thread != nil && evt.Thread.ID == f.occupant {
+						actions = append(actions, evt.Action)
+					}
+				}
+				if !slices.Equal(actions, want) {
+					t.Fatalf("occupant frames = %v, want %v", actions, want)
+				}
+				listed, err := f.app.store.ThreadListed(f.occupant)
+				if err != nil || listed != wantListed {
+					t.Fatalf("ThreadListed after removal = %v, %v; want %v", listed, err, wantListed)
+				}
+			})
+		}
+	}
+}
+
 // A CLI can take seconds to exit, so a moved thread's row is written and
 // broadcast before its process is stopped: nothing reads the deleted path
 // while the stop runs. The session is detached first, so a late event from
@@ -122,7 +178,7 @@ func TestWorktreeRemovalMovesTheRowBeforeTheSessionStops(t *testing.T) {
 			f.app.stopSessionFn = func(id string) error {
 				stops++
 				f.assertAtRoot(t, id)
-				rows := f.rows.fullRowsFor(id)
+				rows := f.rows.rowFramesFor(id)
 				if len(rows) != 1 || !samePath(rows[0].WorkspacePath, f.repo) {
 					t.Errorf("thread:updated rows before the stop = %+v, want the moved row", rows)
 				}
@@ -185,7 +241,7 @@ func TestWorktreeRemovalClosesTerminalsOpenedInIt(t *testing.T) {
 	}
 	open := func(owner, cwd string) terminal.SessionSummary {
 		t.Helper()
-		summary, err := f.app.terminals.Open(owner, terminal.SessionOptions{Shell: "/bin/sh", Args: []string{"-c", "sleep 30"}, Cwd: cwd})
+		summary, err := f.app.terminals.Open(owner, terminal.SessionOptions{Reaper: procutiltest.Reaper(), Shell: "/bin/sh", Args: []string{"-c", "sleep 30"}, Cwd: cwd})
 		if err != nil {
 			t.Fatalf("open terminal in %s: %v", cwd, err)
 		}
@@ -217,7 +273,7 @@ func TestExternalWorktreeRemovalClosesTerminalsOpenedInIt(t *testing.T) {
 	f := newRemovalFixture(t, "feature-external-terminals")
 	f.app.terminals = terminal.NewManager(nil, nil)
 	t.Cleanup(func() { _ = f.app.terminals.Shutdown() })
-	if _, err := f.app.terminals.Open("draft:placeholder", terminal.SessionOptions{Shell: "/bin/sh", Args: []string{"-c", "sleep 30"}, Cwd: f.worktree}); err != nil {
+	if _, err := f.app.terminals.Open("draft:placeholder", terminal.SessionOptions{Reaper: procutiltest.Reaper(), Shell: "/bin/sh", Args: []string{"-c", "sleep 30"}, Cwd: f.worktree}); err != nil {
 		t.Fatalf("open terminal: %v", err)
 	}
 

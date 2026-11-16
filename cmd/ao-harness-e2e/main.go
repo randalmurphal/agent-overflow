@@ -33,11 +33,14 @@ import (
 )
 
 const (
-	// Four Playwright workers, their browsers, four app backends, and the
-	// Go/Node runners stay under 5 GiB. Six GiB leaves room for the complete
-	// gate while the host-global reservation and available-memory floor still
-	// refuse unsafe parallel launches.
-	defaultMemoryLimit = 6 << 30
+	// The limit is compared with the summed RSS of the suite's process tree,
+	// which counts the app binary's shared pages once per process. Four
+	// Playwright workers, their browsers, the app backends with their
+	// orphan-reaper sidecars, and the Go/Node runners peak near 6.5 GiB by
+	// that sum. Eight GiB leaves room for the complete gate while the
+	// host-global reservation and available-memory floor still refuse unsafe
+	// parallel launches.
+	defaultMemoryLimit = 8 << 30
 	monitorInterval    = 100 * time.Millisecond
 )
 

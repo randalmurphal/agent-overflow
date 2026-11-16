@@ -50,6 +50,9 @@ export function prDetailFixture(overrides: Partial<PRDetail> = {}): PRDetail {
       viewerCanMerge: true,
       viewerCanApprove: true,
       viewerApproved: false,
+      viewerCanUpdateBranch: true,
+      viewerCanUnapprove: true,
+      viewerCanMarkReady: true,
     },
     ...overrides,
   };

@@ -20,6 +20,11 @@ import {
   upsertProposedPlanForTests,
 } from '../../stores/proposedPlans.svelte';
 import {
+  refreshDiffReviewComments,
+  resetDiffReviewCommentsForTest,
+  setActiveDiffReviewSource,
+} from '../../stores/diffReviewComments.svelte';
+import {
   getQueueForThread,
   replaceQueueForThread,
   resetForTest as resetSendQueueForTest,
@@ -45,7 +50,7 @@ import {
   notifyTerminalFocus,
   resetTerminalFocusForTest,
 } from '../terminal/terminalStore.svelte';
-import { focusPane, registerPaneForTest, resetPanesForTest } from '../../stores/panes.svelte';
+import { focusPane, getPane, registerPaneForTest, resetPanesForTest } from '../../stores/panes.svelte';
 import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from '../../stores/paneLayout.svelte';
 import { resetCompanionPanesForTest } from '../../stores/companionPanes.svelte';
 import { idleWorkspaceActivity } from '../../../test/helpers/workspaceLock';
@@ -57,13 +62,30 @@ import { resetResendRevertMarkersForTest } from '../../stores/eventsMessageRever
 import { __setTransportHelloForTest } from '../../stores/transportStatus.svelte';
 import { applySessionLive } from '../../stores/threadSessionLive.svelte';
 import { DisconnectedError, TransportError } from '../../transport/wsClient';
-import { getToasts } from '../../stores/toast.svelte';
+import { getToasts, resetToastsForTest } from '../../stores/toast.svelte';
 import {
   applyShellCommandEvent,
   dismissShellRun,
   getShellRun,
   resetShellRunsForTest,
 } from '../../stores/shellCommands.svelte';
+import { probeReactivity } from '../../../test/helpers/reactivity.svelte';
+import { untrack } from 'svelte';
+import type { ThreadPane } from '../../stores/thread.svelte';
+import type { ComposerDraftStore } from '../../stores/composerDraft.svelte';
+
+/** ChatView's own wiring: the draft store follows the pane's thread id. */
+function followPaneThread(pane: ThreadPane, draft: ComposerDraftStore) {
+  let last = pane.threadId;
+  return probeReactivity(() => {
+    const current = pane.threadId;
+    if (current !== last) {
+      last = current;
+      untrack(() => { void draft.setThread(current); });
+    }
+    return current;
+  });
+}
 
 /**
  * Send options as they reach the wire. Every send carries a freshly minted
@@ -782,6 +804,11 @@ describe('<Composer>', () => {
     await fireEvent(textarea, makeClipboardPaste([
       new File(['png'], 'first.png', { type: 'image/png' }),
     ]));
+    // The upload waits for the delete: until it answers, the thread it
+    // would attach to may be the one being deleted.
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(upload).not.toHaveBeenCalled();
+    deleteGate.resolve(true);
 
     await waitFor(() => {
       expect(create).toHaveBeenCalledTimes(2);
@@ -792,7 +819,7 @@ describe('<Composer>', () => {
         expect.any(Number),
       );
     });
-    deleteGate.resolve(true);
+    expect(upload).toHaveBeenCalledTimes(1);
 
     await waitFor(() => {
       expect(pane.threadId).toBe(replacement.id);
@@ -1059,6 +1086,294 @@ describe('<Composer>', () => {
     expect(draft.content).toBe('typed again');
     await waitFor(() => {
       expect(save).toHaveBeenCalledWith(replacement.id, 'typed again', [], [], null);
+    });
+  });
+
+  // Type, erase, type again on a slow connection. The backend refuses a save
+  // for a thread its cleanup deleted, as it does in production. The save of
+  // the new text either fires while the delete is in flight or is still
+  // debounced when the delete returns.
+  it.each(['while the delete is in flight', 'after the delete returns'])(
+    'carries text typed during an empty-draft delete to the replacement thread, saving it %s',
+    async (when) => {
+      resetToastsForTest();
+      const pane = createThreadPane({ paneId: `cleanup-carry-${when}` });
+      registerPaneForTest(`cleanup-carry-${when}`, pane);
+      const project = makeProject({ id: `project-cleanup-carry-${when}` });
+      pane.startDraftPlaceholder(project, 'chat');
+      const draft = await buildDraft(null);
+      const follow = followPaneThread(pane, draft);
+      const first = makeTestThread({ id: `carry-first-${when}`, projectId: project.id, workspacePath: project.path, projectPath: project.path, isDraft: true });
+      const replacement = makeTestThread({ id: `carry-replacement-${when}`, projectId: project.id, workspacePath: project.path, projectPath: project.path, isDraft: true });
+      const replacementGate = deferred<typeof replacement>();
+      let createCount = 0;
+      setBindingMock('CreateThread', async () => (++createCount === 1 ? first : replacementGate.promise));
+      const deleted = new Set<string>();
+      const save = setBindingMock('SaveDraft', async (threadId: string) => {
+        if (deleted.has(threadId)) throw new TransportError('not_found', 'The requested item no longer exists.');
+      });
+      const deleteGate = deferred<void>();
+      const deleteEmpty = setBindingMock('DeleteEmptyDraftThread', async (threadId: string) => {
+        await deleteGate.promise;
+        deleted.add(threadId);
+        applyThreadUpdated({ action: 'deleted', id: threadId });
+        return true;
+      });
+
+      const { getByLabelText } = render(Composer, { props: { pane, draft } });
+      const textarea = getByLabelText('Message Input') as HTMLTextAreaElement;
+      await fireEvent.input(textarea, { target: { value: 'draft text' } });
+      await waitFor(() => expect(draft.threadId).toBe(first.id));
+      await fireEvent.input(textarea, { target: { value: '' } });
+      await waitFor(() => expect(deleteEmpty).toHaveBeenCalledWith(first.id));
+
+      await fireEvent.input(textarea, { target: { value: 'typed again' } });
+      if (when === 'while the delete is in flight') await new Promise((resolve) => setTimeout(resolve, 10));
+      deleteGate.resolve();
+
+      // The pane is back on a placeholder while the replacement is created,
+      // and typing there is kept too.
+      await waitFor(() => expect(pane.hasDraftPlaceholder).toBe(true));
+      await tick();
+      expect(draft.content).toBe('typed again');
+      expect(textarea.value).toBe('typed again');
+      await fireEvent.input(textarea, { target: { value: 'typed again, more' } });
+      replacementGate.resolve(replacement);
+
+      await waitFor(() => expect(pane.threadId).toBe(replacement.id));
+      expect(draft.threadId).toBe(replacement.id);
+      expect(draft.content).toBe('typed again, more');
+      await waitFor(() => expect(save).toHaveBeenCalledWith(replacement.id, 'typed again, more', [], [], null));
+      const typedAfterDecision = save.mock.calls.filter(([threadId, content]) => threadId === first.id && content !== '' && content !== 'draft text');
+      expect(typedAfterDecision).toEqual([]);
+      expect(getToasts().filter((toast) => toast.type === 'error').map((toast) => toast.message)).toEqual([]);
+      expect(pane.generalError).toBeFalsy();
+      follow.dispose();
+    },
+  );
+
+  async function startEmptyDraftCleanup(name: string, remove: (threadId: string) => Promise<boolean>) {
+    resetToastsForTest();
+    const pane = createThreadPane({ paneId: name });
+    registerPaneForTest(name, pane);
+    const project = makeProject({ id: `project-${name}` });
+    pane.startDraftPlaceholder(project, 'chat');
+    const draft = await buildDraft(null);
+    const follow = followPaneThread(pane, draft);
+    const first = makeTestThread({ id: `${name}-first`, projectId: project.id, workspacePath: project.path, projectPath: project.path, isDraft: true });
+    const replacement = makeTestThread({ id: `${name}-replacement`, projectId: project.id, workspacePath: project.path, projectPath: project.path, isDraft: true });
+    let createCount = 0;
+    const create = setBindingMock('CreateThread', async () => (++createCount === 1 ? first : replacement));
+    const deleted = new Set<string>();
+    const save = setBindingMock('SaveDraft', async (threadId: string) => {
+      if (deleted.has(threadId)) throw new TransportError('not_found', 'The requested item no longer exists.');
+    });
+    const deleteGate = deferred<void>();
+    const deleteEmpty = setBindingMock('DeleteEmptyDraftThread', async (threadId: string) => {
+      await deleteGate.promise;
+      const removed = await remove(threadId);
+      if (removed) {
+        deleted.add(threadId);
+        applyThreadUpdated({ action: 'deleted', id: threadId });
+      }
+      return removed;
+    });
+    const view = render(Composer, { props: { pane, draft } });
+    const textarea = view.getByLabelText('Message Input') as HTMLTextAreaElement;
+    await fireEvent.input(textarea, { target: { value: 'draft text' } });
+    await waitFor(() => expect(draft.threadId).toBe(first.id));
+    await fireEvent.input(textarea, { target: { value: '' } });
+    await waitFor(() => expect(deleteEmpty).toHaveBeenCalledWith(first.id));
+    const savedAfterDecision = () => save.mock.calls
+      .filter(([threadId, content]) => threadId === first.id && content !== '' && content !== 'draft text');
+    const errorToasts = () => getToasts().filter((toast) => toast.type === 'error').map((toast) => toast.message);
+    return { pane, draft, follow, first, replacement, create, save, deleteGate, view, textarea, savedAfterDecision, errorToasts };
+  }
+
+  it('sends a message submitted during an empty-draft delete to the replacement thread', async () => {
+    const run = await startEmptyDraftCleanup('cleanup-send', async () => true);
+    const send = setBindingMock('SendMessageWithOptions', async () => run.replacement);
+    setBindingMock('PinThread', async () => run.replacement);
+    await fireEvent.input(run.textarea, { target: { value: 'send me' } });
+    await fireEvent.click(run.view.getByTestId('composer-send'));
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(send).not.toHaveBeenCalled();
+    run.deleteGate.resolve();
+
+    await waitFor(() => expect(send).toHaveBeenCalledWith(run.replacement.id, 'send me', expect.anything()));
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(run.savedAfterDecision()).toEqual([]);
+    expect(run.errorToasts()).toEqual([]);
+    expect(run.pane.generalError).toBeFalsy();
+    run.follow.dispose();
+  });
+
+  it('keeps the thread and saves the typed text there when the backend refuses the delete', async () => {
+    const run = await startEmptyDraftCleanup('cleanup-refused', async () => false);
+    await fireEvent.input(run.textarea, { target: { value: 'typed again' } });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(run.savedAfterDecision()).toEqual([]);
+    run.deleteGate.resolve();
+
+    await waitFor(() => expect(run.save).toHaveBeenCalledWith(run.first.id, 'typed again', [], [], null));
+    expect(run.pane.threadId).toBe(run.first.id);
+    expect(run.draft.threadId).toBe(run.first.id);
+    expect(run.create).toHaveBeenCalledTimes(1);
+    expect(run.errorToasts()).toEqual([]);
+    run.follow.dispose();
+  });
+
+  it('keeps text typed into a deleted new thread after the pane moved on as a draft thread in the sidebar', async () => {
+    const run = await startEmptyDraftCleanup('cleanup-switch', async () => true);
+    await fireEvent.input(run.textarea, { target: { value: 'typed again' } });
+    const other = makeTestThread({ id: 'cleanup-switch-other' });
+    setBindingMock('SwitchThread', async () => other);
+    await run.pane.switchThread(other);
+    await waitFor(() => expect(run.draft.threadId).toBe(other.id));
+    run.deleteGate.resolve();
+
+    // The text lands in a new draft thread with the deleted one's settings.
+    await waitFor(() => expect(run.save).toHaveBeenCalledWith(run.replacement.id, 'typed again', [], [], null));
+    expect(run.create).toHaveBeenLastCalledWith(expect.objectContaining({ projectId: run.first.projectId, mode: 'chat' }));
+    expect(getThreadById(run.replacement.id)).toBeDefined();
+    expect(run.savedAfterDecision()).toEqual([]);
+    expect(run.errorToasts()).toEqual([]);
+    expect(run.pane.threadId).toBe(other.id);
+    expect(run.draft.content).not.toBe('typed again');
+    run.follow.dispose();
+  });
+
+  // Another screen saved its draft into the thread first, so the backend
+  // kept it. Text typed here meanwhile must not overwrite theirs.
+  it('moves text typed during the delete to a new thread when another screen’s draft kept the thread', async () => {
+    const run = await startEmptyDraftCleanup('cleanup-contested', async () => false);
+    setBindingMock('GetDraft', async (threadId: string) => ({
+      threadId,
+      content: threadId === run.first.id ? 'their text' : '',
+      attachmentIds: [],
+      terminalChips: [],
+      updatedAt: 1,
+    }));
+    await fireEvent.input(run.textarea, { target: { value: 'my text' } });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    run.deleteGate.resolve();
+
+    await waitFor(() => expect(run.pane.threadId).toBe(run.replacement.id));
+    expect(run.draft.threadId).toBe(run.replacement.id);
+    expect(run.draft.content).toBe('my text');
+    await waitFor(() => expect(run.save).toHaveBeenCalledWith(run.replacement.id, 'my text', [], [], null));
+    expect(run.savedAfterDecision()).toEqual([]);
+    expect(getThreadById(run.first.id)).toBeDefined();
+    expect(run.errorToasts()).toEqual([]);
+    run.follow.dispose();
+  });
+
+  // Whether another screen's draft kept the thread is unknown: the typed
+  // text leaves it as if one had, and the person is told why.
+  it.each([
+    ['the kept draft cannot be read', async (): Promise<boolean> => false, true],
+    ['the delete fails', async (): Promise<boolean> => { throw new Error('delete failed'); }, false],
+  ] as const)('moves text typed during the delete to a new thread when %s', async (_when, remove, readFails) => {
+    const run = await startEmptyDraftCleanup(`cleanup-unknown-${readFails}`, remove);
+    if (readFails) {
+      setBindingMock('GetDraft', async (threadId: string) => {
+        if (threadId === run.first.id) throw new Error('temporary read failure');
+        return { threadId, content: '', attachmentIds: [], terminalChips: [], updatedAt: 1 };
+      });
+    }
+    await fireEvent.input(run.textarea, { target: { value: 'my text' } });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    run.deleteGate.resolve();
+
+    await waitFor(() => expect(run.pane.threadId).toBe(run.replacement.id));
+    expect(run.draft.threadId).toBe(run.replacement.id);
+    expect(run.draft.content).toBe('my text');
+    await waitFor(() => expect(run.save).toHaveBeenCalledWith(run.replacement.id, 'my text', [], [], null));
+    expect(run.savedAfterDecision()).toEqual([]);
+    expect(run.errorToasts()).toEqual([expect.stringContaining(readFails ? 'temporary read failure' : 'delete failed')]);
+    // Its row is left to the backend's frames: it may be gone.
+    expect(getThreadById(run.first.id)).toBeUndefined();
+    run.follow.dispose();
+  });
+
+  it('treats a delete that failed after its deletion broadcast as a deletion', async () => {
+    const run = await startEmptyDraftCleanup('cleanup-broadcast-then-error', async (threadId) => {
+      applyThreadUpdated({ action: 'deleted', id: threadId });
+      throw new Error('close browser pages failed');
+    });
+    await fireEvent.input(run.textarea, { target: { value: 'my text' } });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    run.deleteGate.resolve();
+
+    await waitFor(() => expect(run.pane.threadId).toBe(run.replacement.id));
+    expect(run.draft.content).toBe('my text');
+    await waitFor(() => expect(run.save).toHaveBeenCalledWith(run.replacement.id, 'my text', [], [], null));
+    expect(run.savedAfterDecision()).toEqual([]);
+    expect(run.errorToasts()).toEqual([]);
+    run.follow.dispose();
+  });
+
+  describe('a new thread another screen erases', () => {
+    async function openSharedDraft(name: string) {
+      resetToastsForTest();
+      const row = makeTestThread({ id: `${name}-shared`, isDraft: true, projectId: `project-${name}`, projectPath: '/repo', workspacePath: '/repo', mode: 'chat' });
+      const replacement = makeTestThread({ id: `${name}-own`, isDraft: true, projectId: row.projectId, projectPath: '/repo', workspacePath: '/repo', mode: 'chat' });
+      const pane = await buildPane(row, [], name);
+      const draft = await buildDraft(row.id);
+      const follow = followPaneThread(pane, draft);
+      const create = setBindingMock('CreateThread', async () => replacement);
+      const view = render(Composer, { props: { pane, draft } });
+      const textarea = view.getByLabelText('Message Input') as HTMLTextAreaElement;
+      const errorToasts = () => getToasts().filter((toast) => toast.type === 'error').map((toast) => toast.message);
+      return { row, replacement, pane, draft, follow, create, textarea, errorToasts };
+    }
+
+    it('keeps unsaved text in a fresh thread of its own when the deletion broadcast arrives', async () => {
+      const run = await openSharedDraft('erased-broadcast');
+      const heldSave = deferred<void>();
+      const save = setBindingMock('SaveDraft', async (threadId: string) => {
+        if (threadId === run.row.id) await heldSave.promise;
+      });
+      await fireEvent.input(run.textarea, { target: { value: 'mine' } });
+      await waitFor(() => expect(save).toHaveBeenCalledWith(run.row.id, 'mine', [], [], null));
+      applyThreadUpdated({ action: 'deleted', id: run.row.id });
+      heldSave.reject(new TransportError('not_found', 'The requested item no longer exists.'));
+
+      await waitFor(() => expect(run.pane.threadId).toBe(run.replacement.id));
+      expect(run.draft.content).toBe('mine');
+      await waitFor(() => expect(save).toHaveBeenCalledWith(run.replacement.id, 'mine', [], [], null));
+      expect(getPane(run.pane.paneId)).toBe(run.pane);
+      expect(run.errorToasts()).toEqual([]);
+      run.follow.dispose();
+    });
+
+    it('keeps unsaved text in a fresh thread when its save answers not_found before the broadcast', async () => {
+      const run = await openSharedDraft('erased-not-found');
+      const save = setBindingMock('SaveDraft', async (threadId: string) => {
+        if (threadId === run.row.id) throw new TransportError('not_found', 'The requested item no longer exists.');
+      });
+      await fireEvent.input(run.textarea, { target: { value: 'mine' } });
+
+      await waitFor(() => expect(run.pane.threadId).toBe(run.replacement.id));
+      expect(run.draft.content).toBe('mine');
+      await waitFor(() => expect(save).toHaveBeenCalledWith(run.replacement.id, 'mine', [], [], null));
+      expect(getThreadById(run.row.id)).toBeUndefined();
+      expect(run.errorToasts()).toEqual([]);
+      // The broadcast arriving afterwards changes nothing.
+      applyThreadUpdated({ action: 'deleted', id: run.row.id });
+      await tick();
+      expect(run.pane.threadId).toBe(run.replacement.id);
+      expect(run.create).toHaveBeenCalledTimes(1);
+      run.follow.dispose();
+    });
+
+    it('follows the deletion as before when nothing is unsaved', async () => {
+      const run = await openSharedDraft('erased-idle');
+      applyThreadUpdated({ action: 'deleted', id: run.row.id });
+      await tick();
+      expect(getPane(run.pane.paneId)).toBeUndefined();
+      expect(run.create).not.toHaveBeenCalled();
+      run.follow.dispose();
     });
   });
 
@@ -1410,6 +1725,26 @@ describe('<Composer>', () => {
         }),
       );
     });
+  });
+
+  it('keeps offering a review\'s drafts while other sources fill the drafts cache', async () => {
+    const pane = await buildPane(makeTestThread(), []);
+    const draft = await buildDraft();
+    setBindingMock('ListDiffReviewComments', async (threadId: string, _scope: string, sourceKey: string) =>
+      (threadId === 'thread-1' && sourceKey === 'src-1'
+        ? [{ id: 'd-1', threadId, scope: 'workspace', sourceKey, filePath: 'a.go', status: 'draft', side: 'new', newLine: 1, selectedText: '', body: 'Fix this.', createdAt: 1, updatedAt: 1 }]
+        : []));
+    setActiveDiffReviewSource('thread-1', 'workspace', 'src-1');
+    try {
+      const { getByLabelText, findByText, queryByText } = render(Composer, { props: { pane, draft } });
+      await fireEvent.input(getByLabelText('Message Input'), { target: { value: 'Please address these.' } });
+      await findByText('Send comments');
+      for (let index = 0; index < 40; index += 1) await refreshDiffReviewComments('thread-2', 'workspace', `other-${index}`);
+      await tick();
+      expect(queryByText('Send comments')).toBeTruthy();
+    } finally {
+      resetDiffReviewCommentsForTest();
+    }
   });
 
   it('can send a typed plan refinement without draft comments from the send menu', async () => {

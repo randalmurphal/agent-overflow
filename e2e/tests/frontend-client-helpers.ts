@@ -2,6 +2,9 @@ import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import type { Page } from '@playwright/test';
 import { productBinary, spawnProduct } from '../src/product-process.js';
+import { launchStep, processDiagnostics } from '../src/harness-launch-step.js';
+
+const FRONTEND_STARTUP_MS = 10_000;
 
 /** Owns only a frontend controller. Both execution hosts are independent
  * harness processes, so stopping either cannot stop this screen. */
@@ -25,18 +28,16 @@ export async function launchFrontendClient(profiles: string, config: string, com
     try { await exited; } finally { clearTimeout(kill); }
   };
   try {
-    let timeout: ReturnType<typeof setTimeout> | undefined;
-    const next = await Promise.race([
+    const next = await launchStep('frontend client startup line', FRONTEND_STARTUP_MS, () => Promise.race([
       iterator.next(),
-      new Promise<never>((_, reject) => {
-        timeout = setTimeout(() => reject(new Error(`Frontend startup timed out: ${diagnostic}`)), 10_000);
-      }),
       exited.then(() => { throw new Error(`Frontend exited during startup: ${diagnostic}`); }),
-    ]).finally(() => clearTimeout(timeout));
+    ]), processDiagnostics('frontend client', child, () => diagnostic.split('\n')));
     if (next.done) throw new Error(`Frontend closed before startup: ${diagnostic}`);
     const { origin, token } = JSON.parse(next.value) as { origin: string; token: string };
     return {
       origin,
+      /** The controller's last stderr, where its device client logs. */
+      stderrLines: (): readonly string[] => diagnostic.split('\n'),
       async open(page: Page): Promise<void> {
         const response = await fetch(`${origin}/pageurl`, { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(10_000) });
         if (!response.ok) throw new Error(`Frontend page ticket failed: ${response.status}`);

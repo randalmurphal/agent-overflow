@@ -11,7 +11,7 @@
  * The row renders from the facts its served meta carries
  * (threadtools.MessageFacts, userMessageFacts), never from its text, which
  * is written for the agent. Go reads every row a client receives through
- * usermessage.Describe, rows main wrote before the facts included, and
+ * agentmeta.Describe, rows main wrote before the facts included, and
  * serves each agent message with facts that describe its text. A message
  * whose facts do not describe the text this client holds is shown whole.
  * internal/threadtools/testdata/agent_messages.json, which the Go templates
@@ -130,7 +130,7 @@ export interface AgentMessageRowPart extends AgentMessagePart {
 /**
  * The kinds of message this file names: a thread's request, the answer
  * coming back, a thread's plain message and a provider's own. A report's
- * kind is Go's, named by its category (usermessage.ReportDescriptor).
+ * kind is Go's, named by its category (agentmeta.ReportDescriptor).
  */
 export type AgentMessageKind =
   | 'spawn'
@@ -214,14 +214,22 @@ function source(kind: AgentMessageKind, sender: string, senderThread: UserMessag
 }
 
 /**
+ * White space as Go's unicode.IsSpace reads it, which FirstLine uses:
+ * U+0085 is, and U+FEFF is not, the reverse of JavaScript's `\s`.
+ */
+const SPACE_RUN = /[\t\n\v\f\r \u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+/g;
+const EDGE_SPACE = /^[\t\n\v\f\r \u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+|[\t\n\v\f\r \u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+$/g;
+
+/**
  * The first non-empty line of `text`, whitespace collapsed: the headline of
  * a message whose facts do not describe its text, and of a provider's own
- * message, which carries none (usermessage.FirstLine).
+ * message, which carries none. It is agentmeta.FirstLine, whose reading
+ * the store's thread find indexes.
  */
 function firstLineOf(text: string): string {
   for (const line of text.split('\n')) {
-    const trimmed = line.replace(/^>\s?/, '').trim();
-    if (trimmed !== '' && trimmed !== '---') return trimmed.replace(/\s+/g, ' ');
+    const trimmed = line.replace(/^> ?/, '').replace(EDGE_SPACE, '');
+    if (trimmed !== '' && trimmed !== '---') return trimmed.replace(SPACE_RUN, ' ');
   }
   return '';
 }
@@ -316,7 +324,7 @@ const UNREADABLE_REPORT: AgentMessageSource = {
 
 /**
  * An `agent-wake` row: a report the app wrote, read from its facts and
- * named as Go serves its kind (usermessage.ReportDescriptor). One whose
+ * named as Go serves its kind (agentmeta.ReportDescriptor). One whose
  * facts do not describe its text, or whose attribution this client cannot
  * read, is shown whole.
  */

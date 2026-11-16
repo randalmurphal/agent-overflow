@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"agent-overflow/internal/agentmeta"
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
@@ -563,9 +564,9 @@ func workerPromptAnswerKey(call threadtools.ReplyCall) string {
 // what the worker asks, quoted as data, and how to answer, headed in its
 // row by the prompt's first line.
 func workerPromptMessage(workerTitle, workerID string, prompt *workerPrompt) (usermessage.AgentMessage, error) {
-	kind := usermessage.ReportQuestion
+	kind := agentmeta.ReportQuestion
 	if prompt.approval != nil {
-		kind = usermessage.ReportApproval
+		kind = agentmeta.ReportApproval
 	}
 	notice := fmt.Sprintf("Thread %s (%s), which you spawned, is waiting on your answer. %s",
 		untrustedtext.Quote(workerTitle, 0), workerID, agentWakeDataNotice)

@@ -7,10 +7,12 @@
 // so it can be unit-tested without mounting the component.
 
 import {
+  GitFetchOrigin,
   GitPull,
   GitPush,
   RemoveOtherWorktree,
 } from '../../stores/bindings';
+import { lostAnswerMessage, runGitAttempt, unknownAttemptMessage, type GitAttemptAnswer } from './gitAttempt';
 import {
   syncRemovedWorktreeThreads,
   type WorktreeRemovalResult,
@@ -19,7 +21,6 @@ import { threadRowFrameMark } from '../../stores/threadRowFrames';
 import { addToast } from '../../stores/toast.svelte';
 import { errString } from '../../utils/errors';
 import type {
-  GitActionResult,
   GitStatus,
   WorkspaceRef,
 } from '../../types/git';
@@ -104,35 +105,69 @@ export interface GitActionCtx {
   refreshStatus: () => Promise<void>;
 }
 
-export async function runPushAction(ctx: GitActionCtx): Promise<void> {
-  try {
-    const result = (await GitPush(ctx.workspace)) as GitActionResult;
-    if (result.error) {
-      console.error('Push failed:', result.error);
-      ctx.reportError(`Push failed: ${result.error}`);
-      return;
-    }
-    addToast('success', 'Pushed successfully');
-    await ctx.refreshStatus();
-  } catch (err) {
-    console.error('Push failed:', err);
-    ctx.reportError(`Push failed: ${errString(err)}`, err);
+/** Pushes `workspace`'s branch as one attempt (gitAttempt.ts). */
+export function pushWorkspace(workspace: WorkspaceRef): Promise<GitAttemptAnswer> {
+  return runGitAttempt(workspace, 'push', (attemptId) => GitPush(workspace, attemptId));
+}
+
+/** Pulls `workspace`'s branch as one attempt (gitAttempt.ts). */
+export function pullWorkspace(workspace: WorkspaceRef): Promise<GitAttemptAnswer> {
+  return runGitAttempt(workspace, 'pull', (attemptId) => GitPull(workspace, attemptId));
+}
+
+/** The failure a push or pull answer reports, or null when it landed. */
+export function gitAttemptFailure(noun: string, answer: GitAttemptAnswer): { message: string; error?: unknown } | null {
+  switch (answer.kind) {
+    case 'done':
+      return null;
+    case 'failed':
+      return { message: answer.message, error: answer.error };
+    case 'lost':
+      return { message: lostAnswerMessage(noun, answer), error: answer.error };
+    case 'unknown':
+      return { message: unknownAttemptMessage(noun) };
   }
 }
 
-export async function runPullAction(ctx: GitActionCtx): Promise<void> {
+async function runSyncAction(
+  ctx: GitActionCtx,
+  label: string,
+  noun: string,
+  succeeded: string,
+  run: (workspace: WorkspaceRef) => Promise<GitAttemptAnswer>,
+): Promise<void> {
+  const failure = gitAttemptFailure(noun, await run(ctx.workspace));
+  if (failure) {
+    console.error(`${label} failed:`, failure.error ?? failure.message);
+    if (failure.error === undefined) ctx.reportError(`${label} failed: ${failure.message}`);
+    else ctx.reportError(`${label} failed: ${failure.message}`, failure.error);
+    return;
+  }
+  addToast('success', succeeded);
+  await ctx.refreshStatus();
+}
+
+export function runPushAction(ctx: GitActionCtx): Promise<void> {
+  return runSyncAction(ctx, 'Push', 'push', 'Pushed successfully', pushWorkspace);
+}
+
+export function runPullAction(ctx: GitActionCtx): Promise<void> {
+  return runSyncAction(ctx, 'Pull', 'pull', 'Pulled successfully', pullWorkspace);
+}
+
+/**
+ * Fetch origin for a user who asked: unlike the app's background fetch it
+ * may ask for a login, so it is the way out of `status.remoteSignInError`.
+ * The status that follows says whether the login is still missing.
+ */
+export async function runFetchOriginAction(ctx: GitActionCtx): Promise<void> {
   try {
-    const result = (await GitPull(ctx.workspace)) as GitActionResult;
-    if (result.error) {
-      console.error('Pull failed:', result.error);
-      ctx.reportError(`Pull failed: ${result.error}`);
-      return;
-    }
-    addToast('success', 'Pulled successfully');
+    await GitFetchOrigin(ctx.workspace);
+    addToast('success', 'Fetched origin');
     await ctx.refreshStatus();
   } catch (err) {
-    console.error('Pull failed:', err);
-    ctx.reportError(`Pull failed: ${errString(err)}`, err);
+    console.error('Fetch failed:', err);
+    ctx.reportError(`Fetch failed: ${errString(err)}`, err);
   }
 }
 

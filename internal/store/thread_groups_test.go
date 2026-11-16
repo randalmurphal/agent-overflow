@@ -78,13 +78,13 @@ func TestSetThreadGroupStripsThePin(t *testing.T) {
 	if err != nil {
 		t.Fatalf("set thread group: %v", err)
 	}
-	if len(moved) != 1 || moved[0].ID != "t-pinned" {
+	if len(moved) != 1 || moved[0].Thread.ID != "t-pinned" {
 		t.Fatalf("returned rows = %+v, want the moved thread", moved)
 	}
-	if moved[0].GroupID != group.ID {
-		t.Errorf("groupId = %q, want %q", moved[0].GroupID, group.ID)
+	if moved[0].Thread.GroupID != group.ID {
+		t.Errorf("groupId = %q, want %q", moved[0].Thread.GroupID, group.ID)
 	}
-	if moved[0].PinnedAt != nil || moved[0].PinGroup != nil {
+	if moved[0].Thread.PinnedAt != nil || moved[0].Thread.PinGroup != nil {
 		t.Errorf("joining a group left a pin behind: %+v", moved[0])
 	}
 
@@ -99,7 +99,7 @@ func TestSetThreadGroupStripsThePin(t *testing.T) {
 	if err != nil {
 		t.Fatalf("repeat move into the same group: %v", err)
 	}
-	if same[0].PinnedAt == nil || same[0].PinGroup == nil || *same[0].PinGroup != PinGroupBack {
+	if same[0].Thread.PinnedAt == nil || same[0].Thread.PinGroup == nil || *same[0].Thread.PinGroup != PinGroupBack {
 		t.Errorf("a move into the group the row is already in dropped its pin: %+v", same[0])
 	}
 
@@ -108,10 +108,10 @@ func TestSetThreadGroupStripsThePin(t *testing.T) {
 	if err != nil {
 		t.Fatalf("move between groups: %v", err)
 	}
-	if across[0].GroupID != other.ID {
-		t.Errorf("groupId = %q, want %q", across[0].GroupID, other.ID)
+	if across[0].Thread.GroupID != other.ID {
+		t.Errorf("groupId = %q, want %q", across[0].Thread.GroupID, other.ID)
 	}
-	if across[0].PinnedAt != nil || across[0].PinGroup != nil {
+	if across[0].Thread.PinnedAt != nil || across[0].Thread.PinGroup != nil {
 		t.Errorf("moving between groups left a pin behind: %+v", across[0])
 	}
 }
@@ -217,10 +217,11 @@ func TestUngroupKeepsThePinsOfUngroupedRows(t *testing.T) {
 		t.Fatalf("move grouped thread to the back burner: %v", err)
 	}
 
-	out, err := s.SetThreadGroup([]string{"t-pinned", "t-grouped"}, "")
+	moves, err := s.SetThreadGroup([]string{"t-pinned", "t-grouped"}, "")
 	if err != nil {
 		t.Fatalf("ungroup: %v", err)
 	}
+	out := ThreadMoveRows(moves)
 	if len(out) != 2 {
 		t.Fatalf("ungroup returned %d rows, want 2", len(out))
 	}

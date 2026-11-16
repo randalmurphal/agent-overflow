@@ -11,6 +11,7 @@ import (
 
 	"agent-overflow/internal/chatmodel"
 	"agent-overflow/internal/codexmodels"
+	"agent-overflow/internal/procutil"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/triage"
@@ -20,7 +21,7 @@ func TestGetThreadDefaultsDoesNotLoadColdCodexCatalog(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)
 	calls := 0
-	app.providerDiscoveryCaches.CodexModels = codexmodels.NewWith(time.Minute, func(context.Context, string) ([]provider.ModelInfo, error) {
+	app.providerDiscoveryCaches.CodexModels = codexmodels.NewWith(time.Minute, func(context.Context, string, procutil.Reaper) ([]provider.ModelInfo, error) {
 		calls++
 		return provider.ModelsForProvider(string(provider.Codex)), nil
 	}, time.Now)
@@ -51,7 +52,7 @@ func TestGetThreadDefaultsUsesWarmCodexCatalogWithoutReloading(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)
 	calls := 0
-	app.providerDiscoveryCaches.CodexModels = codexmodels.NewWith(time.Minute, func(context.Context, string) ([]provider.ModelInfo, error) {
+	app.providerDiscoveryCaches.CodexModels = codexmodels.NewWith(time.Minute, func(context.Context, string, procutil.Reaper) ([]provider.ModelInfo, error) {
 		calls++
 		return []provider.ModelInfo{{
 			Slug: "gpt-5.5", Provider: string(provider.Codex),
@@ -901,6 +902,15 @@ func TestCreateThreadInGroupPublishesGroupedDraft(t *testing.T) {
 	}
 	if thread.GroupID != group.ID || !thread.IsDraft {
 		t.Fatalf("unexpected thread: %+v", thread)
+	}
+	// An empty draft is not listed yet; its first text lists it, in the group.
+	for _, call := range rec.snapshot() {
+		if evt, ok := call.Data.(triage.ThreadUpdateEvent); ok && evt.Thread != nil && evt.Thread.ID == thread.ID {
+			t.Fatalf("empty draft announced before it was real: %+v", evt)
+		}
+	}
+	if err := app.SaveDraft(t.Context(), thread.ID, "typed", nil, nil, nil); err != nil {
+		t.Fatal(err)
 	}
 	listed := 0
 	for _, call := range rec.snapshot() {

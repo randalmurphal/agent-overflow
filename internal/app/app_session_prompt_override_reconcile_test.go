@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/claudetui"
@@ -196,6 +197,8 @@ func registerLiveClaudeCaptureSession(t *testing.T, app *App, threadID, workspac
 	initSeen := make(chan struct{})
 	var once sync.Once
 	cfg := claude.ConfigFromOptions(launch)
+	cfg.Reaper = procutiltest.Reaper()
+	cfg.Retention = claude.UserHomeRetention(0)
 	cfg.Binary = binary
 	cfg.WorkDir = workspace
 	cfg.SystemPromptDir = t.TempDir()

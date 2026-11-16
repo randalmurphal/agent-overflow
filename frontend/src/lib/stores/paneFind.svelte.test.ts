@@ -6,7 +6,7 @@ import {
   closePaneFind,
   declarePaneFindRegions,
   declarePaneFindSurface,
-  dropPaneFind,
+  dropPaneFindRegion,
   focusFirstPaneFindResult,
   getPaneFind,
   hasPaneFindProvider,
@@ -207,6 +207,24 @@ describe('pane find registry', () => {
     registerPaneFindProvider('a', provider());
     release();
     expect(hasPaneFindProvider('a')).toBe(true);
+  });
+
+  it('ends a replaced provider before the newer one searches, and its stale release clears nothing', () => {
+    const order: string[] = [];
+    const older = provider({ clear: vi.fn(() => order.push('older clear')) });
+    const release = registerPaneFindProvider('a', older);
+    openPaneFind('a');
+    setPaneFindQuery('a', 'needle');
+    const newer = provider({
+      search: vi.fn(() => order.push('newer search')),
+      clear: vi.fn(() => order.push('newer clear')),
+    });
+    registerPaneFindProvider('a', newer);
+    // Both paint under the pane's one highlight name, so the older session
+    // ends before the newer one paints.
+    expect(order).toEqual(['older clear', 'newer search']);
+    release();
+    expect(order).toEqual(['older clear', 'newer search']);
   });
 });
 
@@ -473,17 +491,21 @@ describe('a nested find surface', () => {
     expect(paneFindTarget('a')).toBe('a');
   });
 
-  it('drops one key\'s state and reads, leaving its siblings', async () => {
-    registerPaneFindProvider(tab1, provider());
-    registerPaneFindProvider(tab2, provider());
-    openPaneFind(tab1);
+  it('drops a region\'s state and reads under every pane, leaving its siblings', async () => {
+    const elsewhere = paneFindRegionKey('b', 'terminal:t1');
+    const longer = paneFindRegionKey('a', 'terminal:t11');
+    for (const key of [tab1, tab2, elsewhere, longer]) {
+      registerPaneFindProvider(key, provider());
+      openPaneFind(key);
+    }
     setPaneFindQuery(tab1, 'gone');
-    openPaneFind(tab2);
     const ran: string[] = [];
     paneFindReads(tab1).request(() => new Promise<void>(() => { ran.push('stuck'); }));
-    dropPaneFind(tab1);
+    dropPaneFindRegion('terminal:t1');
     expect(getPaneFind(tab1)).toBeNull();
+    expect(getPaneFind(elsewhere)).toBeNull();
     expect(getPaneFind(tab2)?.open).toBe(true);
+    expect(getPaneFind(longer)?.open).toBe(true);
     paneFindReads(tab1).request(async () => { ran.push('fresh'); });
     expect(ran).toEqual(['stuck', 'fresh']);
   });

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"agent-overflow/internal/agentmeta"
 	attachmentstore "agent-overflow/internal/attachment"
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/eventchan"
@@ -74,13 +75,13 @@ type sendMessageOptions struct {
 	// in a prompt the app itself wrote just by forgetting a flag.
 	ExpandComposerCommands bool
 	// Origin and OriginThread attribute the row to the agent thread that
-	// asked for it (usermessage.OriginAgentThread). Set only by the thread
+	// asked for it (agentmeta.OriginAgentThread). Set only by the thread
 	// tools' request send; every other caller leaves them empty.
 	Origin       string
-	OriginThread *usermessage.OriginThread
-	// OriginWake attributes a report the app writes (usermessage.OriginWake),
-	// with Origin usermessage.OriginAgentWake.
-	OriginWake *usermessage.OriginWake
+	OriginThread *agentmeta.OriginThread
+	// OriginWake attributes a report the app writes (agentmeta.OriginWake),
+	// with Origin agentmeta.OriginAgentWake.
+	OriginWake *agentmeta.OriginWake
 	// onDurable runs once a QUEUED message has either reached the provider
 	// or been restored into the composer after a session death. It is the
 	// only hook an app-internal injector gets on the queued path, where the
@@ -130,11 +131,11 @@ type userMessageInputs struct {
 	// behalf (`agent-thread`). Empty for everything a person typed, which
 	// is what keeps the chip off ordinary rows.
 	origin       string
-	originThread *usermessage.OriginThread
-	originWake   *usermessage.OriginWake
+	originThread *agentmeta.OriginThread
+	originWake   *agentmeta.OriginWake
 	// joinedParts are a requeued joined row's members, which the wire text
 	// marks one by one.
-	joinedParts []usermessage.JoinedPart
+	joinedParts []agentmeta.JoinedPart
 	// heldBy are the rows an earlier dispatch of this same message landed
 	// as and that are still to be retired (a requeue's stale row): the
 	// review comments their claims hold are this message's own, so its
@@ -369,13 +370,13 @@ func (a *App) rowWireText(threadID, content, metaJSON string) (string, error) {
 // wireText is content with meta as the model receives it, before file
 // attachment lines, and the composer command it expanded. A message the
 // app or an agent wrote opens with its sender and ends with the end line,
-// member by member when it is joined (usermessage.WireText); the stored
+// member by member when it is joined (agentmeta.WireText); the stored
 // row stays as written. A person's composer command expands after that,
 // except in a shell command (shellInvocation), which is not prose: a
 // `/word` in it is a path, not a composer command to expand.
 func (a *App) wireText(threadID, content string, meta usermessage.Meta, shellInvocation bool) (text, command string, err error) {
 	here, _ := a.backendIdentity()
-	text = usermessage.WireText(content, meta, here)
+	text = agentmeta.WireText(content, meta.Agent(), here)
 	if !meta.ExpandComposerCommands || shellInvocation {
 		return text, "", nil
 	}
@@ -721,7 +722,7 @@ func (a *App) sendMessageLocked(
 	// routing, and a title or branch named from it would read "Agent
 	// request from thread ...".
 	namingText := content
-	if opts.Origin == usermessage.OriginAgentThread {
+	if opts.Origin == agentmeta.OriginAgentThread {
 		namingText = threadtools.StripFooter(content)
 	}
 	// A command says what was run, not what the work is: the first prompt
@@ -1166,7 +1167,7 @@ func (t turnAttachments) promptText(messages []string, separator string) string 
 			texts = append(texts, message)
 			continue
 		}
-		parts := strings.Split(message, usermessage.JoinSeparator)
+		parts := strings.Split(message, agentmeta.JoinSeparator)
 		blocks := make(map[int]string, len(commands))
 		dropped := make(map[int]bool)
 		for i, run := range usermessage.ShellInvocationRuns(parts, commands) {
@@ -1188,7 +1189,7 @@ func (t turnAttachments) promptText(messages []string, separator string) string 
 			}
 			kept = append(kept, text)
 		}
-		texts = append(texts, strings.Join(kept, usermessage.JoinSeparator))
+		texts = append(texts, strings.Join(kept, agentmeta.JoinSeparator))
 	}
 	lines := make([]string, 0, len(t.files))
 	for i, file := range t.files {

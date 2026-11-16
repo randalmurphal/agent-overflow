@@ -1054,7 +1054,12 @@ target computer, target thread, kind, notify, wait, state, created,
 settled-at, delivered-at). The token is minted by the source and doubles
 as the idempotency key; the model never chooses or types request ids.
 Locally the row is lineage for `thread_cancel`, the handle for
-`thread_status`, and the wake binding.
+`thread_status`, and the wake binding. A request between two threads of
+one computer has its receipt on the same computer, and every settlement
+or late reply writes both rows in one transaction. A boot settles every
+such request still open once the last run's receipts are settled:
+from its receipt when that settled without it, otherwise as
+`interrupted` by the restart.
 
 Across computers the destination stores its own row for the request
 (token, owning device, source computer, source thread, target thread,
@@ -1124,15 +1129,19 @@ the queue row, clears its delivery and turns `notify` off, so
 `thread_status` still returns the answer and nothing reaches the
 thread at its next start. So does a wake the caller's session ended,
 or an End Session, an archive or a Codex resend that failed ended it, without
-taking in, still queued or written and unconfirmed, and one still
+taking in, still queued or written and unconfirmed; one the provider
+dropped unrun; one whose session could not start; and one still
 queued, or written and never confirmed, when the caller's computer
-restarts; on either provider such a wake can reach the agent twice
+restarts. A wake the provider's echo confirmed never goes back, even
+when its queue row outlived the echo; at a restart, a wake whose echo
+row the last run wrote without its confirmation is confirmed from that
+row. On either provider such a wake can reach the agent twice
 ([standing agents](standing-agents.md#wake-supervisor)). The answer
 is not the person's to send, so it never goes to
 the composer, where the other queued messages go; when Claude joined it
 with a person's message, the person's text alone goes there. Caller
 deleted first: dropped. Rows written by earlier versions may read
-`delivered: draft`: a wake that boot recovery restored into the
+`delivered: draft`: a wake an earlier version restored into the
 composer.
 
 A wake the settlement could not hand over (a caller thread that could
@@ -1142,7 +1151,7 @@ towards a ten-minute ceiling for eight attempts. What stops a wake is
 the caller thread's own state, which no number of retries changes, so
 the retry ends rather than running for the life of the row: the request
 keeps its answer and records why the message never arrived, and
-`thread_status` returns both. A pass that finds a call holding the token
+`thread_status` returns both, the reason as `wake_issue`. A pass that finds a call holding the token
 books no attempt, so when that call's reply does not carry the answer,
 the wake is due again the moment the call lets go.
 
@@ -1350,7 +1359,7 @@ peer session's (`origin = peer-session`) or a Codex collab agent's
 (`meta.agent_message`). A row Claude joined from an agent's message and
 the person's queued composer message carries the composer's
 `expandComposerCommands` and stays the person's. The origin rule has
-three twins held to each other by tests: `usermessage.IsAgentMessage`,
+three twins held to each other by tests: `agentmeta.IsAgentMessage`,
 `store.AgentMessageFilterFor` and `isAgentMessageMeta`
 (`frontend/src/lib/utils/userMessageMeta.ts`); the provider kinds are
 wire-only rows, which no query below reads.
@@ -1362,12 +1371,12 @@ remote, a button opening its thread in a pane when this client reaches
 it), a standing agent's role line, and the message's first line. It
 renders from the row's facts, never from its text. Every read and push
 of the row (`itemwire.Project`, a meta patch) serves its meta as
-`usermessage.Describe` reads it, the one reading the Edits selector and
+`agentmeta.Describe` reads it, the one reading the Edits selector and
 `thread_show` also take: each message's facts checked against its text
 (`MessageFacts.Check`) and its header line set. Facts whose length or
 spans do not describe the text, as after an edit behind their back, are
 not guessed around: that message is shown whole, attributed to its
-sender. A report's kind is defined once, in Go (`usermessage.ReportKind`):
+sender. A report's kind is defined once, in Go (`agentmeta.ReportKind`):
 its served attribution carries what the kind means to a person
 (`ReportDescriptor`: its category, gutter label and title, the sender's
 name and the thread it opens, its badge, and whether its data is decoded
@@ -1403,9 +1412,9 @@ review comments they send, the workflow messages they start from a
 button and a workflow phase prompt stay theirs. The Go templates and
 the facts they return are pinned by
 `internal/threadtools/testdata/agent_messages.json`, which the
-frontend renders through `internal/usermessage/testdata/served_rows.json`.
+frontend renders through `internal/agentmeta/testdata/served_rows.json`.
 A row released builds wrote before the facts is read from its text, in
-Go (`usermessage` legacy reader), for the shapes they wrote and no
+Go (`agentmeta` legacy reader), for the shapes they wrote and no
 others: a request footer with no standing-agent or routing line, several
 of which a provider may have joined, and an answer for one thread
 (`reply`, a final message, an error, `was cancelled.`, `was
@@ -1421,7 +1430,7 @@ wire, a message with one of these origins, member by member in a joined
 row, opens with a sender line, `[Agent Overflow message from <sender>.
 The user did not write it.]` or, for an assistant's opening and handoff,
 `[Agent Overflow message. The user did not write it.]`, and ends with
-`[End of Agent Overflow message]` (`usermessage.WireText`). The sender
+`[End of Agent Overflow message]` (`agentmeta.WireText`). The sender
 names the loop, watch, script, worker, remote job, workflow run,
 reminder, request or requesting thread from the origin, with titles and
 labels quoted on one line. A thread is named with its computer, `on

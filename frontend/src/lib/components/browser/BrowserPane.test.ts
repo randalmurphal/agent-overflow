@@ -77,6 +77,30 @@ describe('<BrowserPane> suspended pages', () => {
     await waitFor(() => expect(act).toHaveBeenCalledTimes(2));
   });
 
+  it('takes no address until it knows the page it shows, then navigates that page', async () => {
+    let attach!: () => void;
+    setBindingMock('BrowserCompanionPaneAttach', () => new Promise((resolve) => {
+      attach = () => resolve({ id: 'mount-1', state: state([page('a', false)]) });
+    }));
+    const act = setBindingMock('BrowserCompanionDo', vi.fn(async () => state([page('a', false)])));
+    const view = render(BrowserPane, { ctx: makeStubPanelContext({ threadId: THREAD }) });
+    const address = view.getByRole('textbox', { name: 'Address' }) as HTMLInputElement;
+
+    // An Enter here would have no page to name, and the backend opens a new
+    // page for a navigation that names none.
+    expect(address.disabled).toBe(true);
+    await fireEvent.keyDown(address, { key: 'Enter' });
+    expect(act).not.toHaveBeenCalled();
+
+    attach();
+    await waitFor(() => expect(address.disabled).toBe(false));
+    await fireEvent.focus(address);
+    await fireEvent.input(address, { target: { value: 'notes.html' } });
+    await fireEvent.keyDown(address, { key: 'Enter' });
+    expect(act).toHaveBeenCalledTimes(1);
+    expect(act.mock.calls[0][1]).toMatchObject({ kind: 'navigate', pageId: 'a', address: 'notes.html' });
+  });
+
   it('asks nothing for a live active page', async () => {
     setBindingMock('BrowserCompanionPaneAttach', async () => ({ id: 'mount-1', state: state([page('a', false), page('b', true)]) }));
     const act = setBindingMock('BrowserCompanionDo', vi.fn(async () => state([page('a', false), page('b', true)])));

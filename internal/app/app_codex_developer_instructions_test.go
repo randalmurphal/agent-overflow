@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -363,7 +364,7 @@ func TestCodexInjectPrecedesASendRacingTheResume(t *testing.T) {
 	errs := make(chan error, 2)
 	wg.Add(2)
 	go func() { defer wg.Done(); errs <- app.StartSession(thread.ID) }()
-	go func() { defer wg.Done(); errs <- app.SendMessage(thread.ID, "hello", nil) }()
+	go func() { defer wg.Done(); errs <- app.SendMessage(context.Background(), thread.ID, "hello", nil) }()
 	wg.Wait()
 	close(errs)
 	for err := range errs {

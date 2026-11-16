@@ -1,12 +1,14 @@
 package app
 
 import (
+	"context"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"agent-overflow/internal/agentmeta"
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
@@ -14,14 +16,15 @@ import (
 	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/threadtools"
 	"agent-overflow/internal/transport"
-	"agent-overflow/internal/usermessage"
 
 	"github.com/google/uuid"
 )
 
 // mockClaudeHoldingTheTurnRecording is mockClaudeHoldingTheTurn that logs
 // every line each session is written, so a test can see a message the
-// provider took off the queue.
+// provider took off the queue. Each session answers its first message and
+// holds that turn: a later message waits behind it, unread, as the CLI's own
+// queue holds one written during a turn.
 func (f *requestFixture) mockClaudeHoldingTheTurnRecording(t *testing.T, reply string) (stdinLog string) {
 	t.Helper()
 	stdinLog = filepath.Join(t.TempDir(), "stdin.log")
@@ -30,9 +33,10 @@ func (f *requestFixture) mockClaudeHoldingTheTurnRecording(t *testing.T, reply s
 		`{"type":"assistant","message":{"id":"msg-hold","role":"assistant","content":[{"type":"text","text":` + quoteJSON(reply) + `}]}}`,
 	}
 	var script strings.Builder
-	script.WriteString("#!/bin/sh\nset -u\nwhile IFS= read -r line; do\n")
+	script.WriteString("#!/bin/sh\nset -u\nanswered=0\nwhile IFS= read -r line; do\n")
 	script.WriteString("  printf '%s\\n' \"$line\" >> " + shellQuoteForTest(stdinLog) + "\n")
 	script.WriteString("  case \"$line\" in\n    *'\"type\":\"user\"'*)\n")
+	script.WriteString("      [ \"$answered\" = 1 ] && continue\n      answered=1\n")
 	for _, wire := range answer {
 		script.WriteString("      printf '%s\\n' " + shellQuoteForTest(wire) + "\n")
 	}
@@ -105,7 +109,7 @@ func TestHandOffInterruptsAReadRequest(t *testing.T) {
 	if receipt.State != store.ThreadReceiptInterrupted || !strings.Contains(string(receipt.Answer), target.ID) {
 		t.Fatalf("receipt = %s %q, want interrupted naming %s", receipt.State, receipt.Answer, target.ID)
 	}
-	opening := awaitQueuedOrSent(t, f.app, successor.ID, assistantSendID(string(usermessage.ReportHandOff), target.ID), stdinLog, "replaced your previous thread "+target.ID, 0)
+	opening := awaitQueuedOrSent(t, f.app, successor.ID, assistantSendID(string(agentmeta.ReportHandOff), target.ID), stdinLog, "replaced your previous thread "+target.ID, 0)
 	if !strings.Contains(opening, "token "+ack.Token) || !strings.Contains(opening, f.caller.ID) {
 		t.Fatalf("handoff block does not list the interrupted request:\n%s", opening)
 	}
@@ -145,7 +149,7 @@ func TestHandOffMovesAnUnreadRequest(t *testing.T) {
 	f := newAssistantFixture(t)
 	stdinLog := f.mockClaudeHoldingTheTurnRecording(t, "busy")
 	target, _ := f.assistantTarget(t, "Reviewer.")
-	if err := f.app.SendMessage(target.ID, "work on something", nil); err != nil {
+	if err := f.app.SendMessage(context.Background(), target.ID, "work on something", nil); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 	waitUntil(t, 20*time.Second, func() bool {
@@ -222,7 +226,7 @@ func TestHandOffWhileATurnRuns(t *testing.T) {
 	f := newAssistantFixture(t)
 	f.mockClaudeHoldingTheTurn(t, "busy")
 	f.assistantCaller(t)
-	if err := f.app.SendMessage(f.caller.ID, "start working", nil); err != nil {
+	if err := f.app.SendMessage(context.Background(), f.caller.ID, "start working", nil); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 	waitUntil(t, 20*time.Second, func() bool {
@@ -250,7 +254,7 @@ func TestHandOffMovesALoopWakeTheOldSessionHadNotTakenIn(t *testing.T) {
 	f := newAssistantFixture(t)
 	stdinLog := f.mockClaudeHoldingTheTurnRecording(t, "busy")
 	target, _ := f.assistantTarget(t, "Reviewer.")
-	if err := f.app.SendMessage(target.ID, "work on something", nil); err != nil {
+	if err := f.app.SendMessage(context.Background(), target.ID, "work on something", nil); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 	waitUntil(t, 20*time.Second, func() bool {
@@ -295,7 +299,7 @@ func TestHandOffTeardownTakesBackAQueuedWake(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	held, owed := f.app.dropQueueForTeardown(target.ID, false)
+	held, owed := f.app.settleQueueForTeardown(target.ID, false, dropQueue)
 	f.app.giveBackToOwners(target.ID, held)
 	f.app.giveBackTeardownRequests(target.ID, owed)
 	awaitQueuedOrSent(t, f.app, successor.ID, sendID, stdinLog, "inbox fired", 0)

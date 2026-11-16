@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"agent-overflow/internal/agenthome"
+	"agent-overflow/internal/agentmeta"
 	"agent-overflow/internal/entityid"
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/provider"
@@ -518,6 +519,7 @@ func (t threadToolsApp) acceptRequest(
 	}
 	target = receipt.TargetThreadID
 	made := false
+	listing := store.ListingUnchanged
 	if target == "" && create != nil {
 		if !created {
 			// The receipt exists with no thread: the attempt that accepted
@@ -541,14 +543,14 @@ func (t threadToolsApp) acceptRequest(
 		}
 		target = thread.ID
 		if origin.foreign {
-			_, err = t.app.store.SetThreadReceiptTarget(token, target)
+			_, listing, err = t.app.store.SetThreadReceiptTarget(token, target)
 		} else {
 			if hook := t.app.spawnNamingForTest; hook != nil {
 				hook(origin.caller.ThreadID)
 			}
 			// One write names the thread on both rows and accepts the source
 			// row; a request a settlement already moved keeps its state.
-			err = t.app.store.NameLocalThreadRequestTarget(token, target, own)
+			listing, err = t.app.store.NameLocalThreadRequestTarget(token, target, own)
 		}
 		if err != nil {
 			return "", false, t.discardUnnamedThread(target, err)
@@ -560,10 +562,11 @@ func (t threadToolsApp) acceptRequest(
 	}
 	if kind == store.ThreadRequestSpawn && (made || !origin.foreign) {
 		// A spawn's thread was created without a frame (createSpawnedThread)
-		// and goes out now that its request names and places it, so an owned
-		// one is never listed. An assistant's thread, made before its
-		// request, goes out again naming its spawner.
-		t.app.announcePlaced(target)
+		// and goes out now that its request names and places it, by the
+		// listing change the naming write read, so an owned one is never
+		// listed. An assistant's thread, made before its request, goes out
+		// again naming its spawner.
+		t.app.announcePlacement(target, listing)
 		// A fork it made carries its source's async questions, which go to
 		// this spawner now that the request names it, though a frame of the
 		// fork before the naming left them the person's.
@@ -861,7 +864,7 @@ func (t threadToolsApp) requeueRequest(token, targetThreadID string, message use
 	if !found || receipt.State != store.ThreadReceiptAccepted {
 		return nil
 	}
-	origin := &usermessage.OriginThread{
+	origin := &agentmeta.OriginThread{
 		ComputerID:   receipt.SourceComputerID,
 		ComputerName: receipt.SourceComputerName,
 		ThreadID:     receipt.SourceThreadID,
@@ -876,7 +879,7 @@ func (t threadToolsApp) requeueRequest(token, targetThreadID string, message use
 		preserveDraft:     true,
 		held:              true,
 		heldWhileArchived: true,
-		origin:            usermessage.OriginAgentThread,
+		origin:            agentmeta.OriginAgentThread,
 		originThread:      origin,
 		onDurable:         func(session string) { t.requestDispatched(token, targetThreadID, session) },
 	})

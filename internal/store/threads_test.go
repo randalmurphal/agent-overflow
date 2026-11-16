@@ -855,21 +855,22 @@ func TestUpdateThreadCheckoutWritesOnlyTheTriple(t *testing.T) {
 	if err := s.UpdateTitle(thr.ID, "Renamed"); err != nil {
 		t.Fatalf("UpdateTitle(): %v", err)
 	}
-	row, changed, err := s.UpdateThreadCheckout(thr.ID, "/tmp/wt", "/tmp/wt", "feature")
-	if err != nil || !changed {
-		t.Fatalf("UpdateThreadCheckout() = changed %v, %v", changed, err)
+	write, err := s.UpdateThreadCheckout(thr.ID, "/tmp/wt", "/tmp/wt", "feature")
+	if err != nil || !write.Changed {
+		t.Fatalf("UpdateThreadCheckout() = %+v, %v", write, err)
 	}
+	row := write.Row
 	if row.WorkspacePath != "/tmp/wt" || row.WorktreePath != "/tmp/wt" || row.Branch != "feature" || row.Title != "Renamed" {
 		t.Fatalf("row = %+v, want the triple moved and the title kept", row)
 	}
-	if _, changed, err := s.UpdateThreadCheckout(thr.ID, "/tmp/wt", "/tmp/wt", "feature"); err != nil || changed {
-		t.Fatalf("restated checkout = changed %v, %v; want no change", changed, err)
+	if write, err := s.UpdateThreadCheckout(thr.ID, "/tmp/wt", "/tmp/wt", "feature"); err != nil || write.Changed {
+		t.Fatalf("restated checkout = %+v, %v; want no change", write, err)
 	}
-	row, changed, err = s.UpdateThreadCheckout(thr.ID, "/tmp/root", "", "main")
-	if err != nil || !changed || row.WorktreePath != "" {
-		t.Fatalf("move to the root = %+v changed %v, %v", row, changed, err)
+	write, err = s.UpdateThreadCheckout(thr.ID, "/tmp/root", "", "main")
+	if err != nil || !write.Changed || write.Row.WorktreePath != "" {
+		t.Fatalf("move to the root = %+v, %v", write, err)
 	}
-	if _, _, err := s.UpdateThreadCheckout("missing", "/tmp/x", "", ""); !errors.Is(err, sql.ErrNoRows) {
+	if _, err := s.UpdateThreadCheckout("missing", "/tmp/x", "", ""); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("missing row error = %v, want sql.ErrNoRows", err)
 	}
 }
@@ -2872,8 +2873,8 @@ var threadColumnsNotWrittenByUpdateThread = map[string]string{
 	"attention_at":             "the attention flag its agent raised, owned by SetThreadAttention / ClearThreadAttention",
 	"newest_turn_error_turn":   "the same aggregate's newest turn (v121), maintained by the same triggers",
 	"deleting":                 "the committed-delete mark (v122), set by CommitDeleteClaim or DeleteThreadPaced's first transaction and gone with the row; a stale struct must not revive a thread whose delete went ahead",
-	"delete_claim":             "a delete's claim (v151), written only by the claim, release and commit of a family delete; a stale struct must not take or drop another operation's claim",
-	"delete_worktrees":         "a committed delete's worktree policy (v151), written only with its commit; a stale struct must not change how the boot finishes it",
+	"delete_claim":             "a delete's claim (v154), written only by the claim, release and commit of a family delete; a stale struct must not take or drop another operation's claim",
+	"delete_worktrees":         "a committed delete's worktree policy (v154), written only with its commit; a stale struct must not change how the boot finishes it",
 }
 
 // TestUpdateThreadColumnGate is the standing version of the six

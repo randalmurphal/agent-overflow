@@ -470,6 +470,7 @@ func requestStateFrom(row store.ThreadRequest, answer []byte, lateReply bool, ti
 		ExpiresAt:  row.ExpiresAt,
 		DueAt:      row.DueAt,
 		Answer:     string(answer),
+		WakeIssue:  row.WakeIssue,
 	}
 	if lateReply {
 		state.AnswerKind = threadtools.AnswerReply
@@ -762,14 +763,9 @@ func (t threadToolsApp) cancelRequest(ctx context.Context, caller threadtools.Ca
 	}
 
 	// The caller is cancelling its own request, and the report it is about
-	// to read says what happened. Clearing the notify flag first is what
-	// keeps the cancellation from also arriving later as an unread message
-	// about work the caller stopped on purpose.
-	if row.Notify {
-		if _, err := t.app.store.SetThreadRequestNotify(token, false); err != nil {
-			return threadtools.CancelReport{}, err
-		}
-	}
+	// to read says what happened. The cancel's settlement disarms the wake
+	// (stopThreadRequestWork), so the cancellation does not also arrive later
+	// as an unread message, and a cancel that fails leaves it armed.
 	effect, err := t.app.stopThreadRequestWork(ctx, token)
 	if err != nil {
 		return threadtools.CancelReport{}, err
@@ -784,7 +780,9 @@ func (t threadToolsApp) cancelRequest(ctx context.Context, caller threadtools.Ca
 
 // threadCancelTimeout bounds one forwarded cancel. It matches the remote
 // command stop: a cancel that cannot be delivered must not hold the calling
-// turn while an offline computer times out its whole call budget.
+// turn while an offline computer times out its whole call budget
+// (threadPeerCallWait). The destination settles its own receipt, so a cancel
+// whose answer is lost to the bound is collected by the next poll.
 const threadCancelTimeout = 20 * time.Second
 
 // cancelRemoteRequest stops one request on the computer that accepted it.

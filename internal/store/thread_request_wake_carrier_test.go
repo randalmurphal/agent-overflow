@@ -297,8 +297,8 @@ func TestWithdrawThreadWakeGivesItsRidersBack(t *testing.T) {
 			rowID := "queue:carrier"
 			if scope == WithdrawUnconfirmed {
 				// The dispatch retired the row at the provider write.
-				if err := s.DeleteDispatchedFlushQueueItem(rowID); err != nil {
-					t.Fatalf("DeleteDispatchedFlushQueueItem: %v", err)
+				if err := s.DeleteDispatchedFlushQueueItems([]string{rowID}); err != nil {
+					t.Fatalf("DeleteDispatchedFlushQueueItems: %v", err)
 				}
 				rowID = ""
 			}
@@ -382,6 +382,77 @@ func rawWakeItem(t *testing.T, s *Store, token string) string {
 		t.Fatalf("read the wake row of %s: %v", token, err)
 	}
 	return item
+}
+
+// A wake handed to a session that is stopped before confirming it goes back
+// to its request, not into the composer: the session's unconfirmed user row
+// is retired on its own (RetireUndeliveredUserRow), which leaves the request
+// alone, and the give-back (WithdrawThreadWake) owes the carrier and every
+// rider again, disarmed, while a wake the row did not carry stays queued. A
+// failed retire changes nothing.
+func TestADroppedUnconfirmedWakeGoesBackWithItsRiders(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThread(t, s, "t-caller")
+	for _, token := range []string{"tok-carrier", "tok-rider", "tok-other"} {
+		seedOwedThreadWake(t, s, token, "t-caller", ThreadRequestSend, 100, "the turn ended")
+	}
+	if err := s.QueueThreadWake("tok-carrier", []string{"tok-rider"}, false, FlushQueueItem{
+		ID: "queue:carrier", ThreadID: "t-caller", SendID: "thread-wake:tok-carrier", Message: "the turn ended", EnqueuedAt: 900,
+	}); err != nil {
+		t.Fatalf("QueueThreadWake: %v", err)
+	}
+	if err := s.QueueThreadWake("tok-other", nil, false, FlushQueueItem{
+		ID: "queue:other", ThreadID: "t-caller", SendID: "thread-wake:tok-other", Message: "the turn ended", EnqueuedAt: 900,
+	}); err != nil {
+		t.Fatalf("QueueThreadWake: %v", err)
+	}
+	// The dispatch wrote the carrier's message and dropped its queue row.
+	if err := s.DeleteDispatchedFlushQueueItems([]string{"queue:carrier"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AppendItem(Item{
+		ID: "user:1:flush:1", ThreadID: "t-caller", TurnIndex: 1, Kind: "user_text", Role: "user", Status: "completed",
+		Summary: "the turn ended", Meta: `{"sendId":"thread-wake:tok-carrier"}`, CreatedAt: 1, UpdatedAt: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := s.db.Exec(`CREATE TRIGGER refuse_row_delete BEFORE DELETE ON items WHEN OLD.id = 'user:1:flush:1'
+		BEGIN SELECT RAISE(ABORT, 'injected delete failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RetireUndeliveredUserRow("t-caller", "user:1:flush:1"); err == nil || !strings.Contains(err.Error(), "injected delete failure") {
+		t.Fatal("the retire succeeded past the injected failure")
+	}
+	if _, err := s.db.Exec(`DROP TRIGGER refuse_row_delete`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RetireUndeliveredUserRow("t-caller", "user:1:flush:1"); err != nil {
+		t.Fatalf("RetireUndeliveredUserRow: %v", err)
+	}
+	for _, token := range []string{"tok-carrier", "tok-rider"} {
+		if got := mustGetThreadRequest(t, s, token).DeliveredHow; got != ThreadWakeQueued {
+			t.Fatalf("%s delivered %q after the retire, want queued until the give-back", token, got)
+		}
+	}
+
+	returned, err := s.WithdrawThreadWake("tok-carrier", false, "", WithdrawUnconfirmed)
+	if err != nil {
+		t.Fatalf("WithdrawThreadWake: %v", err)
+	}
+	if !equalTokens(returned, "tok-carrier", "tok-rider") {
+		t.Fatalf("given back = %v, want the carrier and its rider", returned)
+	}
+	for _, token := range []string{"tok-carrier", "tok-rider"} {
+		row := mustGetThreadRequest(t, s, token)
+		if row.DeliveredAt != 0 || row.DeliveredHow != "" || row.DeliveredWith != "" || row.Notify || !row.WakeOwed(false) {
+			t.Errorf("%s after the drop = delivered %q at %d with %q, notify %v; want owed again and disarmed",
+				token, row.DeliveredHow, row.DeliveredAt, row.DeliveredWith, row.Notify)
+		}
+	}
+	if got := mustGetThreadRequest(t, s, "tok-other").DeliveredHow; got != ThreadWakeQueued {
+		t.Errorf("a wake the row did not carry reads %q, want it untouched", got)
+	}
 }
 
 // A message is written only if every request it names still owes the wake.

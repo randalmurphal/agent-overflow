@@ -10,7 +10,7 @@ import (
 
 // A thread asks for the user in two ways that read the same: a completion
 // newer than its read marker, and the attention flag its agent raised
-// (migration v150). A read clears both (threadReadTargetColumns). A turn
+// (migration v153). A read clears both (threadReadTargetColumns). A turn
 // nobody asked for and that found nothing worth the user's time asks for
 // neither: KeepThreadReadPast keeps a thread that was read, read past it.
 

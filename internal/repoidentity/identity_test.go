@@ -43,6 +43,21 @@ func TestRedactTextKeepsQuotedPasswordsPrivate(t *testing.T) {
 	}
 }
 
+// git quotes the remote and follows it with a colon; both survive, and a
+// second pass changes nothing.
+func TestRedactTextKeepsGitsPunctuationAroundARemote(t *testing.T) {
+	for _, remote := range []string{"https://user:sec'ret@github.com/a/b.git", "git@github.com:a/b.git"} {
+		const want = "fatal: could not read Username for '[remote]': terminal prompts disabled"
+		got := RedactText("fatal: could not read Username for '" + remote + "': terminal prompts disabled")
+		if got != want {
+			t.Errorf("RedactText = %q, want %q", got, want)
+		}
+		if again := RedactText(got); again != got {
+			t.Errorf("a second pass changed it to %q", again)
+		}
+	}
+}
+
 func TestDiagnosticsContainNoRepositoryURL(t *testing.T) {
 	for _, remote := range []string{"https://github.com/a/b", "git@github.com:a/b.git", "work-host:repo.git", "ssh://git@work-host/a/b"} {
 		if got := RedactText("failed '" + remote + "'"); strings.Contains(got, remote) || !strings.Contains(got, "[remote]") {

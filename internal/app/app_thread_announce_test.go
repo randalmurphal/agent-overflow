@@ -53,7 +53,7 @@ func announceRace(t *testing.T, app *App, threadID string, rows *threadRowRecord
 	if err != nil {
 		t.Fatalf("GetThread: %v", err)
 	}
-	frames := rows.fullRowsFor(threadID)
+	frames := rows.rowFramesFor(threadID)
 	if len(frames) == 0 {
 		t.Fatal("no thread:updated row frame")
 	}
@@ -118,7 +118,7 @@ func TestFollowFrameCarriesALaterReadStamp(t *testing.T) {
 	announceRace(t, f.app, f.thread.ID, f.rows, func() error {
 		handler(provider.ProviderEvent{Kind: provider.EventWorkspaceChanged, ThreadID: f.thread.ID, ItemID: "tool-wt-1", Meta: meta, Timestamp: time.Now()})
 		for deadline := time.Now().Add(15 * time.Second); time.Now().Before(deadline); time.Sleep(time.Millisecond) {
-			for _, row := range f.rows.fullRowsFor(f.thread.ID) {
+			for _, row := range f.rows.rowFramesFor(f.thread.ID) {
 				if samePath(row.WorkspacePath, worktree) {
 					return nil
 				}
@@ -162,8 +162,8 @@ func TestSwitchThreadReadStampFrameCarriesALaterMove(t *testing.T) {
 		f.app.waitMarkThreadReads()
 		return nil
 	}, func() error {
-		_, changed, err := f.app.store.UpdateThreadCheckout(f.thread.ID, elsewhere, elsewhere, "feature-elsewhere")
-		if err == nil && !changed {
+		write, err := f.app.store.UpdateThreadCheckout(f.thread.ID, elsewhere, elsewhere, "feature-elsewhere")
+		if err == nil && !write.Changed {
 			err = fmt.Errorf("the move to %s changed nothing", elsewhere)
 		}
 		return err
@@ -185,7 +185,7 @@ func TestSwitchThreadReadStampAnnouncesAfterItsWriteDeadline(t *testing.T) {
 	time.Sleep(markThreadReadTimeout + time.Second)
 	release()
 	f.app.waitMarkThreadReads()
-	frames := f.rows.fullRowsFor(f.thread.ID)
+	frames := f.rows.rowFramesFor(f.thread.ID)
 	if len(frames) != 1 || frames[0].LastReadAt == nil {
 		t.Fatalf("frames = %d, want the stamped row once the announce lock is free", len(frames))
 	}
@@ -214,7 +214,7 @@ func TestSwitchThreadReadStampAnnouncementEndsWithTheApp(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("the read stamp still waits to announce after the app context ended")
 	}
-	if frames := f.rows.fullRowsFor(f.thread.ID); len(frames) != 0 {
+	if frames := f.rows.rowFramesFor(f.thread.ID); len(frames) != 0 {
 		t.Fatalf("frames = %d after the app context ended, want 0", len(frames))
 	}
 }
@@ -245,7 +245,7 @@ func gateAnnounceReads(app *App, threadID string) (read <-chan struct{}, release
 			}
 		}
 		return row, err
-	})
+	}, app.store.ThreadListed)
 	var once sync.Once
 	return reached, func() { once.Do(func() { close(gate) }) }
 }

@@ -18,15 +18,16 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/agentmeta"
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/notify"
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadtools"
 	"agent-overflow/internal/triage"
-	"agent-overflow/internal/usermessage"
 )
 
 type asyncQuestionFixture struct {
@@ -206,11 +207,11 @@ func TestAWorkersAsyncQuestionGoesToItsSpawnerAndItsReplyAnswersIt(t *testing.T)
 	if err := json.Unmarshal(answer.Payload, &payload); err != nil {
 		t.Fatal(err)
 	}
-	if payload.Origin != usermessage.OriginAgentThread || payload.OriginThread == nil || payload.OriginThread.ThreadID != f.spawner.ID {
+	if payload.Origin != agentmeta.OriginAgentThread || payload.OriginThread == nil || payload.OriginThread.ThreadID != f.spawner.ID {
 		t.Fatalf("the answer is attributed %q %+v, want the spawner", payload.Origin, payload.OriginThread)
 	}
 	// The worker's row reads the answer as the spawner's message, all of it.
-	if read := usermessage.Describe(answer.Message, usermessage.Meta{Origin: payload.Origin, OriginThread: payload.OriginThread}); len(read) != 1 ||
+	if read := agentmeta.Describe(answer.Message, agentmeta.Meta{Origin: payload.Origin, OriginThread: payload.OriginThread}); len(read) != 1 ||
 		read[0].Facts.Form != threadtools.FormMessage || read[0].Body() != answer.Message || read[0].Facts.Headline != "Question: Which scope?" {
 		t.Fatalf("the worker's row reads the answer as %+v", read)
 	}
@@ -572,7 +573,7 @@ func (f asyncQuestionFixture) workerRecordingSession(t *testing.T) string {
 	t.Helper()
 	stdinLog := filepath.Join(t.TempDir(), "stdin.jsonl")
 	sess, err := claude.NewSession(context.Background(), f.worker.ID,
-		claude.Config{Binary: writeClaudeStdinRecorderBinary(t, stdinLog), WorkDir: f.worker.WorkspacePath},
+		claude.Config{Reaper: procutiltest.Reaper(), Retention: claude.UserHomeRetention(0), Binary: writeClaudeStdinRecorderBinary(t, stdinLog), WorkDir: f.worker.WorkspacePath},
 		func(provider.ProviderEvent) {})
 	if err != nil {
 		t.Fatal(err)
@@ -590,10 +591,15 @@ func TestASessionDeathSplitsASpawnerAnswerFromThePersonsText(t *testing.T) {
 	t.Parallel()
 	f := newAsyncQuestionFixture(t, "async-answer-joined", store.PlacementOwned)
 	sendID := f.answered(t)
+	// The session below stands in for the one the dispatcher would start for
+	// the person's message (ensureSessionForFlushLocked), so the dispatcher
+	// is held until it is up.
+	holdFlushQueue(f.app)
 	if _, err := f.app.RegisterQueueItem(t.Context(), f.worker.ID, "my own words", SendMessageOptions{SendID: "person-send"}); err != nil {
 		t.Fatal(err)
 	}
 	stdinLog := f.workerRecordingSession(t)
+	f.app.triage.SetFlushDispatcher(f.app.enqueueFlushDispatch)
 	f.app.triage.FlushQueuedItems(f.worker.ID)
 	if envelopes := waitForRecordedUserEnvelopes(t, stdinLog, 1); len(envelopes) != 1 {
 		t.Fatalf("the session was written %d messages, want one joined", len(envelopes))

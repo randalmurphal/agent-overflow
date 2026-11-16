@@ -14,6 +14,7 @@ import {
   type ToolPaneKind,
 } from './paneLayout.svelte';
 import { getThreadById, replaceThread as replaceThreadInRegistry } from './threads.svelte';
+import { carryUnsavedDraftOffDeletedThread } from './deletedDraftThread';
 import { threadReplyRow } from './threadRowFrames';
 import { setGitStatusPaneBridge } from './gitStatusStore.svelte';
 import { workspaceKeyForThread } from '../utils/workspaceKey';
@@ -442,6 +443,20 @@ export function closePanesShowingThread(threadId: string): void {
   const toDestroy: string[] = [];
   for (const pane of panes.values()) {
     if (pane.threadId === threadId) toDestroy.push(pane.paneId);
+  }
+  for (const id of toDestroy) destroyPane(id);
+}
+
+/**
+ * The thread is deleted. A pane holding unsaved composer text for it keeps
+ * that text in a fresh thread (deletedDraftThread.ts); every other pane on
+ * it closes.
+ */
+export function followDeletedThread(threadId: string): void {
+  const toDestroy: string[] = [];
+  for (const pane of panes.values()) {
+    if (pane.threadId !== threadId) continue;
+    if (!carryUnsavedDraftOffDeletedThread(pane, threadId)) toDestroy.push(pane.paneId);
   }
   for (const id of toDestroy) destroyPane(id);
 }

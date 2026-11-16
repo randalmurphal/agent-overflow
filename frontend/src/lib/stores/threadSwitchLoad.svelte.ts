@@ -215,8 +215,6 @@ export interface ThreadSwitchLoad {
    * reopen restores warm. Must run BEFORE `clear()` empties the items.
    */
   snapshotPaneForClose(): void;
-  /** Drop the pending replica write-back, if one is scheduled. */
-  cancelReplicaWriteBack(): void;
   /** Tear down the terminals a draft placeholder opened. */
   closeDraftPlaceholderTerminals(placeholderId: string): void;
   /**
@@ -1867,7 +1865,6 @@ export function createThreadSwitchLoad(
     retryHistoryLoad,
     dropCachedWindow,
     snapshotPaneForClose,
-    cancelReplicaWriteBack,
     closeDraftPlaceholderTerminals,
     dropDraftPlaceholderTerminals,
     migrateDraftPlaceholderTerminals,

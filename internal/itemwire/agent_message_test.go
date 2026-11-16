@@ -13,7 +13,7 @@ const mainRequest = "Ship it.\n\n---\nAgent request from thread \"L\" (t-l).\nIt
 const mainRequestMeta = `{"origin":"agent-thread","originThread":{"threadId":"t-l","title":"L","token":"a"},"sendId":"thread-request:a"}`
 
 // Every read and push of a user row an agent's message is in serves its
-// meta with the facts usermessage.Describe reads of its text; any other row
+// meta with the facts agentmeta.Describe reads of its text; any other row
 // keeps its meta.
 func TestProjectServesAnAgentRowWithItsFacts(t *testing.T) {
 	projected := Project(store.Item{Kind: "user_text", Summary: mainRequest, Meta: mainRequestMeta}, true)

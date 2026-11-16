@@ -5,9 +5,9 @@ import (
 	"strings"
 	"testing"
 
+	"agent-overflow/internal/agentmeta"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/triage"
-	"agent-overflow/internal/usermessage"
 )
 
 func TestItemFromTriageNilPayload(t *testing.T) {
@@ -113,10 +113,10 @@ func TestItemFromStoreCarriesTheAgentAttribution(t *testing.T) {
 		payload Payload
 		agent   bool
 	}{
-		{"request", Payload{Origin: usermessage.OriginAgentThread, OriginThread: &usermessage.OriginThread{ThreadID: "t-lead", Title: "Lead", Kind: "send"}}, true},
-		{"loop wake", Payload{Origin: usermessage.OriginAgentWake, OriginWake: &usermessage.OriginWake{Kind: "loop", Label: "nightly"}}, true},
+		{"request", Payload{Origin: agentmeta.OriginAgentThread, OriginThread: &agentmeta.OriginThread{ThreadID: "t-lead", Title: "Lead", Kind: "send"}}, true},
+		{"loop wake", Payload{Origin: agentmeta.OriginAgentWake, OriginWake: &agentmeta.OriginWake{Kind: "loop", Label: "nightly"}}, true},
 		{"the person's", Payload{ExpandComposerCommands: true}, false},
-		{"the person's under an agent's origin", Payload{Origin: usermessage.OriginAgentWake, ExpandComposerCommands: true}, false},
+		{"the person's under an agent's origin", Payload{Origin: agentmeta.OriginAgentWake, ExpandComposerCommands: true}, false},
 		{"an app notice with no origin", Payload{SendID: "remote-job:1"}, false},
 	} {
 		raw, err := json.Marshal(tc.payload)

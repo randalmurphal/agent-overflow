@@ -7,10 +7,10 @@ import { Create as $Create } from "@wailsio/runtime";
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
-import * as store$0 from "../store/models.js";
+import * as agentmeta$0 from "../agentmeta/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
-import * as usermessage$0 from "../usermessage/models.js";
+import * as store$0 from "../store/models.js";
 
 /**
  * QueuedItem is the wire-side projection of a triage QueuedFlushItem,
@@ -41,14 +41,14 @@ export class QueuedItem {
     /**
      * Origin, OriginThread and OriginWake attribute a message the app queued
      * on an agent's behalf, as the row it becomes will, a report's with its
-     * kind's descriptor (usermessage.OriginWake.Served). AgentMessage is
-     * usermessage.IsAgentMessage of that attribution: the message is not
+     * kind's descriptor (agentmeta.OriginWake.Served). AgentMessage is
+     * agentmeta.IsAgentMessage of that attribution: the message is not
      * the person's, so the composer's queue preview leaves it out and the
      * Agents rail segment lists it as incoming instead.
      */
     "origin"?: string;
-    "originThread"?: usermessage$0.OriginThread | null;
-    "originWake"?: usermessage$0.OriginWake | null;
+    "originThread"?: agentmeta$0.OriginThread | null;
+    "originWake"?: agentmeta$0.OriginWake | null;
     "agentMessage"?: boolean;
 
     /** Creates a new QueuedItem instance. */
@@ -116,7 +116,7 @@ const $$createType1 = store$0.ProposedPlanSourceRef.createFrom;
 const $$createType2 = $Create.Nullable($$createType1);
 const $$createType3 = store$0.DiffReviewSourceRef.createFrom;
 const $$createType4 = $Create.Nullable($$createType3);
-const $$createType5 = usermessage$0.OriginThread.createFrom;
+const $$createType5 = agentmeta$0.OriginThread.createFrom;
 const $$createType6 = $Create.Nullable($$createType5);
-const $$createType7 = usermessage$0.OriginWake.createFrom;
+const $$createType7 = agentmeta$0.OriginWake.createFrom;
 const $$createType8 = $Create.Nullable($$createType7);

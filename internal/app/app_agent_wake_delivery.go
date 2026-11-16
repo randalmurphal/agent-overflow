@@ -14,6 +14,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"agent-overflow/internal/agentmeta"
 	"agent-overflow/internal/composerdraft"
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/store"
@@ -220,7 +221,7 @@ func renderAgentLoopWake(row store.AgentWake, fire agentWakeFire) (usermessage.A
 	writeAgentWakeFireLines(&out, fire)
 	out.WriteString("note: ")
 	out.WriteString(untrustedtext.Quote(row.Note, 0))
-	return usermessage.Report(usermessage.ReportLoop, usermessage.Reporter{Label: row.Label},
+	return usermessage.Report(agentmeta.ReportLoop, usermessage.Reporter{Label: row.Label},
 		fmt.Sprintf("Loop %s fired. %s", untrustedtext.Quote(row.Label, 0), agentWakeDataNotice), out.String(), row.Note)
 }
 
@@ -246,7 +247,7 @@ func renderAgentWatchWake(row store.AgentWake, fire agentWakeFire, stdout, stder
 	if headline == "" {
 		headline = firstDataLine(string(stderr.data))
 	}
-	return usermessage.Report(usermessage.ReportWatch, usermessage.Reporter{Label: row.Label},
+	return usermessage.Report(agentmeta.ReportWatch, usermessage.Reporter{Label: row.Label},
 		fmt.Sprintf("Watch %s reported. %s", untrustedtext.Quote(row.Label, 0), agentWakeDataNotice),
 		strings.TrimRight(out.String(), "\n"), headline)
 }
@@ -257,7 +258,7 @@ func renderAgentSendWake(text string) (usermessage.AgentMessage, error) {
 	capped := newCappedText(text, agentWakeOutputCap)
 	var out strings.Builder
 	writeQuotedLines(&out, capped)
-	return usermessage.Report(usermessage.ReportSend, usermessage.Reporter{},
+	return usermessage.Report(agentmeta.ReportSend, usermessage.Reporter{},
 		agentSendWakeHeader+" "+agentWakeDataNotice, strings.TrimRight(out.String(), "\n"), firstDataLine(string(capped.data)))
 }
 
@@ -290,7 +291,7 @@ func queuedAgentMessage(item store.FlushQueueItem) usermessage.AgentMessage {
 
 // storedAgentMessage is usermessage.DecodeStored of the message sendID
 // names, its refusal logged: the message it returns is delivered either way.
-func storedAgentMessage(sendID, text, origin string, thread *usermessage.OriginThread, wake *usermessage.OriginWake) usermessage.AgentMessage {
+func storedAgentMessage(sendID, text, origin string, thread *agentmeta.OriginThread, wake *agentmeta.OriginWake) usermessage.AgentMessage {
 	message, err := usermessage.DecodeStored(text, origin, thread, wake)
 	if err != nil {
 		log.Printf("agent wakes: read back %s: %v", sendID, err)
@@ -633,6 +634,22 @@ func (owed teardownRequests) empty() bool {
 	return len(owed.queued) == 0 && len(owed.wakes) == 0 && len(owed.sent) == 0
 }
 
+// tookSend reports whether item is one of the sent messages the teardown
+// took back (sent), by the queue row it was dispatched from or, for one with
+// none, its timeline row.
+func (owed teardownRequests) tookSend(item triage.UnconfirmedFlushItem) bool {
+	userItemID := item.UserItemID
+	if item.QuietItem != nil {
+		userItemID = item.QuietItem.ID
+	}
+	return slices.ContainsFunc(owed.sent, func(send teardownSend) bool {
+		if item.QueueItemID != "" {
+			return send.queueItemID == item.QueueItemID
+		}
+		return userItemID != "" && send.userItemID == userItemID
+	})
+}
+
 type teardownSend struct {
 	userItemID  string
 	queueItemID string
@@ -890,7 +907,7 @@ func splitSessionEndParts(members unconfirmedMembers, content string) (app map[s
 			members.ids[0]: storedAgentMessage(members.ids[0], content, own.Origin, own.OriginThread, own.OriginWake),
 		}, nil, true
 	}
-	texts, fits := usermessage.SplitJoinedParts(content, members.parts)
+	texts, fits := agentmeta.SplitJoinedParts(content, members.parts)
 	if !fits || !partsNameIDs(members.parts, members.ids) {
 		return nil, nil, false
 	}
@@ -906,13 +923,13 @@ func splitSessionEndParts(members unconfirmedMembers, content string) (app map[s
 	if len(kept) == 0 {
 		return app, nil, true
 	}
-	joined := strings.Join(kept, usermessage.JoinSeparator)
+	joined := strings.Join(kept, agentmeta.JoinSeparator)
 	return app, &joined, true
 }
 
 // partsNameIDs reports whether parts name the send ids of a joined message
 // in its order; a member without a send id is in parts but not in ids.
-func partsNameIDs(parts []usermessage.JoinedPart, ids []string) bool {
+func partsNameIDs(parts []agentmeta.JoinedPart, ids []string) bool {
 	var named []string
 	for _, part := range parts {
 		if part.SendID != "" {
@@ -940,10 +957,10 @@ func agentAppPartRoot(sendID string) string {
 type unconfirmedMembers struct {
 	ids    []string
 	joined bool
-	parts  []usermessage.JoinedPart
+	parts  []agentmeta.JoinedPart
 	// own is the attribution of an item of one message, its facts
 	// included: its row's, or its payload's when it has no row.
-	own usermessage.JoinedPart
+	own agentmeta.JoinedPart
 }
 
 // unconfirmedMembersOf reads an unconfirmed item's members: from the row it
@@ -956,13 +973,13 @@ func unconfirmedMembersOf(item triage.UnconfirmedFlushItem) unconfirmedMembers {
 	members.ids, members.joined = unconfirmedSendIDs(item)
 	var payload flushQueuePayload
 	decoded := len(item.Payload) > 0 && json.Unmarshal(item.Payload, &payload) == nil
-	members.own = usermessage.JoinedPart{Origin: payload.Origin, OriginThread: payload.OriginThread, OriginWake: payload.OriginWake}
+	members.own = agentmeta.JoinedPart{Origin: payload.Origin, OriginThread: payload.OriginThread, OriginWake: payload.OriginWake}
 	for _, row := range []*store.Item{item.QuietItem, item.DeferredItem} {
 		if row == nil {
 			continue
 		}
 		if meta, err := usermessage.FromItem(*row); err == nil {
-			members.own = usermessage.JoinedPart{Origin: meta.Origin, OriginThread: meta.OriginThread, OriginWake: meta.OriginWake}
+			members.own = agentmeta.JoinedPart{Origin: meta.Origin, OriginThread: meta.OriginThread, OriginWake: meta.OriginWake}
 			break
 		}
 	}
@@ -1108,7 +1125,9 @@ func ownedSendID(sendID string) bool {
 // queued before then would be dropped with the rest. Each message goes back
 // by its row, so a message queued again after the caller read the queue is
 // not taken; an unconfirmed one has no row left and goes back while its
-// owner still reads queued.
+// owner still reads queued. One the provider confirmed never goes back:
+// its owner's store write refuses it and only removes a row that outlived
+// the echo.
 func (a *App) giveBackToOwners(threadID string, messages []ownedMessage) {
 	returned := false
 	a.retryOwnedEchoes(threadID)
@@ -1193,7 +1212,8 @@ func (a *App) confirmOwnedDeliveries(threadID string, sends []triage.ConsumedSen
 // completions the previous process handed a provider that never confirmed
 // them: their rows went at the provider write, and the session that held
 // them is gone. A message whose row is still queued is the row's, which
-// restoreDurableFlushQueueAtBoot gives back or keeps for the next boot.
+// restoreDurableFlushQueueAtBoot gives back or keeps for the next boot. One
+// whose echo a row proves is confirmed instead (confirmEchoedAtBoot).
 func (a *App) giveBackUnconfirmedAtBoot() {
 	byThread := make(map[string][]ownedMessage)
 	requests, err := a.store.UnconfirmedThreadWakes()
@@ -1224,7 +1244,7 @@ func (a *App) giveBackUnconfirmedAtBoot() {
 		owned = slices.DeleteFunc(owned, func(m ownedMessage) bool {
 			return slices.ContainsFunc(rows, func(row store.FlushQueueItem) bool { return row.SendID == m.sendID })
 		})
-		if len(owned) > 0 {
+		if owned = a.confirmEchoedAtBoot(threadID, owned); len(owned) > 0 {
 			a.giveBackToOwners(threadID, owned)
 		}
 	}
@@ -1302,11 +1322,15 @@ const agentSendIDRoot = "agent-send:"
 // message's send id. It is delivered as a wake is: badged as an outside
 // send, quoted as data and capped, and a thread with no live session starts
 // one. It returns once the message is queued, not once a session is up.
+// A full-access thread takes it only from a session holding threads:autonomy.
 //
 //ao:scope threads:operate
-func (a *App) SendExternalThreadMessage(threadID, text string) (string, error) {
+func (a *App) SendExternalThreadMessage(ctx context.Context, threadID, text string) (string, error) {
 	if strings.TrimSpace(text) == "" {
 		return "", errors.New("the message is empty")
+	}
+	if err := a.requireAutonomyForThread(ctx, threadID, ""); err != nil {
+		return "", err
 	}
 	thread, err := a.store.GetThread(threadID)
 	if errors.Is(err, sql.ErrNoRows) {

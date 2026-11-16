@@ -12,8 +12,9 @@ import {
 } from './threadStatuses.svelte';
 import { resetForTest as resetSendQueue, markItemsFlushed, getFlushedForThread, registerQueueItem } from './sendQueue.svelte';
 import { resetLiveUsageSnapshotsForTest } from './threadContextWindow';
-import { getThreads, getThreadLiveActivityAt, refreshThreads } from './threads.svelte';
+import { addThreadRemovedObserver, getThreads, getThreadLiveActivityAt, refreshThreads } from './threads.svelte';
 import { hasUnread } from '../utils/threadStatusPill';
+import { sidebarListsThread } from '../components/sidebar/sidebarBuckets';
 import { claimLocalReadMarker, resetLocalReadMarkersForTest } from './threadReadWrites';
 import { withEmptyDraftCleanup } from './emptyDraftCleanup';
 import { getToasts } from './toast.svelte';
@@ -2200,6 +2201,61 @@ describe('setupEventListeners', () => {
       emitWailsEvent('thread:updated', { action: 'deleted', id: 'thread-1' });
 
       expect(findPaneShowingThread('thread-1')).toBeNull();
+    });
+
+    it('takes an emptied thread off the sidebar and keeps the pane showing it', async () => {
+      const thread = makeThread({ id: 'thread-1', isDraft: true });
+      setBindingMock('ListThreads', async () => [thread, makeThread({ id: 'thread-2' })]);
+      await refreshThreads();
+      const pane = await buildPane(thread);
+      const removed: string[] = [];
+      const stopObserving = addThreadRemovedObserver((id) => removed.push(id));
+
+      emitWailsEvent('thread:updated', { action: 'emptied', thread: { ...thread, title: 'Renamed' } });
+
+      expect(getThreads().map((t) => t.id)).toEqual(['thread-2']);
+      expect(findPaneShowingThread('thread-1')).toBe(pane);
+      expect(pane.thread?.title).toBe('Renamed');
+      // The thread still exists, so its per-thread state stays.
+      expect(removed).toEqual([]);
+
+      emitWailsEvent('thread:updated', { action: 'listed', thread: { ...thread, title: 'Renamed' } });
+      expect(getThreads().map((t) => t.id)).toEqual(['thread-1', 'thread-2']);
+      stopObserving();
+    });
+
+    it('keeps an owned worker off the sidebar whatever frame announces it, and a pane on it open', async () => {
+      const worker = makeThread({ id: 'worker', placement: 'standalone' });
+      setBindingMock('ListThreads', async () => [worker, makeThread({ id: 'thread-2' })]);
+      await refreshThreads();
+      const pane = await buildPane(worker);
+      const removed: string[] = [];
+      const stopObserving = addThreadRemovedObserver((id) => removed.push(id));
+      const sidebar = () => getThreads().filter(sidebarListsThread).map((t) => t.id);
+      expect(sidebar()).toEqual(['worker', 'thread-2']);
+
+      // A placement write that makes it owned announces it `full`: the
+      // sidebar drops it, the pane stays and follows the row.
+      emitWailsEvent('thread:updated', { action: 'full', thread: { ...worker, placement: 'owned', title: 'Owned' } });
+      expect(sidebar()).toEqual(['thread-2']);
+      expect(findPaneShowingThread('worker')).toBe(pane);
+      expect(pane.thread?.placement).toBe('owned');
+
+      // A draft or worktree write that takes it off the listing.
+      emitWailsEvent('thread:updated', { action: 'emptied', thread: { ...worker, placement: 'owned' } });
+      expect(sidebar()).toEqual(['thread-2']);
+      expect(findPaneShowingThread('worker')).toBe(pane);
+
+      // A listing frame never makes an owned worker a sidebar row.
+      emitWailsEvent('thread:updated', { action: 'listed', thread: { ...worker, placement: 'owned' } });
+      expect(sidebar()).toEqual(['thread-2']);
+      expect(findPaneShowingThread('worker')).toBe(pane);
+      expect(removed).toEqual([]);
+
+      // Show in Sidebar lists it again.
+      emitWailsEvent('thread:updated', { action: 'listed', thread: { ...worker, placement: 'standalone' } });
+      expect(sidebar()).toEqual(['worker', 'thread-2']);
+      stopObserving();
     });
 
     it('evicts an empty draft during local cleanup but lets its composer restage, releasing on failure', async () => {

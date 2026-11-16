@@ -127,18 +127,21 @@ func (m *Manager) claudeProbeConfig(binary string, pins map[string]string) claud
 		Binary:         binary,
 		WorkDir:        providerProbeWorkDir(),
 		Env:            m.providerProbeEnv(string(provider.Claude), pins),
+		Reaper:         m.deps.Reaper,
 		ReadCredential: m.claudeProbeCredentialReader(pins),
 		// Sent to a probe of an isolated home too, where it has nothing to
 		// keep: one rule for every probe.
-		CleanupPeriodDays: m.claudeCleanupPeriodDays(providerProbeWorkDir()),
+		Retention: m.claudeRetention(providerProbeWorkDir()),
 	}
 }
 
-func (m *Manager) claudeCleanupPeriodDays(workDir string) int {
-	if m.deps.ClaudeCleanupPeriodDays == nil {
-		return 0
+// claudeRetention is the zero Retention, which refuses the probe, when the
+// dependency is missing.
+func (m *Manager) claudeRetention(workDir string) claude.Retention {
+	if m.deps.ClaudeRetention == nil {
+		return claude.Retention{}
 	}
-	return m.deps.ClaudeCleanupPeriodDays(workDir)
+	return m.deps.ClaudeRetention(workDir)
 }
 
 // ClaudeProbeConfig constructs the canonical account probe configuration.
@@ -191,6 +194,7 @@ func (m *Manager) codexProbeConfig(binary string, pins map[string]string) codex.
 		Binary:  binary,
 		WorkDir: providerProbeWorkDir(),
 		Env:     m.providerProbeEnv(string(provider.Codex), pins),
+		Reaper:  m.deps.Reaper,
 	}
 }
 

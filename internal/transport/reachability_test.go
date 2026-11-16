@@ -307,9 +307,8 @@ func TestSessionFloorMethodsAreTheSpecSet(t *testing.T) {
 		"AcceptOwnDeviceIntroduction": "requires personal membership and catalog-bound target identity/address/pin; target verifies this host's key",
 		// Review-diff handles are connection-owned, and each records the
 		// scope its Open method required; a read requires it again.
-		"ReadReviewDiff":       "reads only a handle the calling connection opened, under the scope its Open required",
-		"ReadReviewDiffPacked": "reads only a handle the calling connection opened, under the scope its Open required",
-		"ReleaseReviewDiff":    "releases only a handle the calling connection opened",
+		"ReadReviewDiff":    "reads only a handle the calling connection opened, under the scope its Open required",
+		"ReleaseReviewDiff": "releases only a handle the calling connection opened",
 	}
 	got := map[string]bool{}
 	for _, method := range GeneratedMethods {

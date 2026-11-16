@@ -6,6 +6,7 @@ import (
 	"errors"
 	"sync"
 
+	"agent-overflow/internal/procutil"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/worktreesetup"
 )
@@ -26,8 +27,11 @@ type Events interface {
 }
 
 type Config struct {
-	Store         Store
-	Events        Events
+	Store  Store
+	Events Events
+	// Reaper ends a setup command's group when the app dies without stopping
+	// it. Required.
+	Reaper        procutil.Reaper
 	Context       func() context.Context
 	BeginWork     func(context.Context) (func(), error)
 	ShutdownError error
@@ -37,6 +41,7 @@ type Config struct {
 type Service struct {
 	store         Store
 	events        Events
+	reaper        procutil.Reaper
 	context       func() context.Context
 	beginWork     func(context.Context) (func(), error)
 	shutdownError error
@@ -62,6 +67,7 @@ func New(config Config) *Service {
 	return &Service{
 		store:         config.Store,
 		events:        config.Events,
+		reaper:        config.Reaper,
 		context:       contextSource,
 		beginWork:     config.BeginWork,
 		shutdownError: shutdownError,

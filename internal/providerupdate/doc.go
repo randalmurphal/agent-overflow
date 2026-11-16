@@ -17,6 +17,13 @@
 // clears the latest version and reports why in CheckError; one provider's
 // failure never blocks the other's check.
 //
+// The Claude CLI is started only through claude.NewCommandLine, as every
+// Claude launch is, so `claude doctor` and `claude update` carry the
+// transcript retention. No doctor runs while the Claude login is past its
+// refresh deadline: the check clears the latest version and reports
+// SignInRequired instead of an error. A doctor is stopped once it has
+// printed its channel.
+//
 // A check describes one install: it reads the binary and environment once,
 // uses them for every command it runs and for the update it plans, and
 // fails when the binary or the installed version differs at its end.

@@ -54,8 +54,8 @@ type RemoteWatch struct {
 	StoppedAt int64 `json:"-"`
 }
 
-// remoteWatchesV91SQL is the table as v91 made it. v150 rebuilt it with
-// thread_id cascading from its thread (migration_v150_retire_features.go).
+// remoteWatchesV91SQL is the table as v91 made it. v153 rebuilt it with
+// thread_id cascading from its thread (migration_v153_retire_features.go).
 const remoteWatchesV91SQL = `CREATE TABLE remote_watches (
  computer_id TEXT NOT NULL, request_id TEXT NOT NULL, thread_id TEXT NOT NULL,
  fingerprint TEXT NOT NULL, label TEXT NOT NULL, receipt TEXT NOT NULL DEFAULT '{}',
@@ -301,8 +301,11 @@ type CompletionReturn struct {
 // durable transaction. The watch goes back to pending when the message was
 // still queued: one already dispatched has been delivered. One the provider
 // was handed and never confirmed (unconfirmed) has no row left and goes
-// back all the same, while the watch still reads queued and no echo has
-// confirmed it.
+// back all the same, while the watch still reads queued. One the provider
+// confirmed is never given back, by any caller: a queue row can outlive its
+// message's echo (the process died between the provider write and the
+// settlement that deletes the row, or that delete failed), and such a row
+// goes with the watch left queued and confirmed.
 //
 // paced, when set, decides when the watcher delivers it again from the
 // completions given back so far (WakeAttempts), read in the same
@@ -325,10 +328,7 @@ func (s *Store) WithdrawRemoteCompletion(computerID, requestID, rowID string, sc
 	if n == 0 && scope == WithdrawQueued {
 		return tx.Commit()
 	}
-	where := ` WHERE computer_id=? AND request_id=? AND notification='queued'`
-	if n == 0 && scope == WithdrawUnconfirmed {
-		where += ` AND confirmed_at IS NULL`
-	}
+	where := ` WHERE computer_id=? AND request_id=? AND notification='queued' AND confirmed_at IS NULL`
 	back := CompletionReturn{}
 	if paced != nil {
 		var attempts int64
@@ -343,11 +343,11 @@ func (s *Store) WithdrawRemoteCompletion(computerID, requestID, rowID string, sc
 	}
 	switch {
 	case back.Issue != "":
-		_, err = tx.Exec(`UPDATE remote_watches SET notification='dismissed',confirmed_at=NULL,wake_issue=?`+where, back.Issue, computerID, requestID)
+		_, err = tx.Exec(`UPDATE remote_watches SET notification='dismissed',wake_issue=?`+where, back.Issue, computerID, requestID)
 	case back.NextCheck != 0:
-		_, err = tx.Exec(`UPDATE remote_watches SET notification='pending',confirmed_at=NULL,next_check=?,wake_attempts=?`+where, back.NextCheck, back.Attempts, computerID, requestID)
+		_, err = tx.Exec(`UPDATE remote_watches SET notification='pending',next_check=?,wake_attempts=?`+where, back.NextCheck, back.Attempts, computerID, requestID)
 	default:
-		_, err = tx.Exec(`UPDATE remote_watches SET notification='pending',confirmed_at=NULL`+where, computerID, requestID)
+		_, err = tx.Exec(`UPDATE remote_watches SET notification='pending'`+where, computerID, requestID)
 	}
 	if err != nil {
 		return err

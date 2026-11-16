@@ -2,6 +2,7 @@ package aocli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,7 +10,6 @@ import (
 	"net/http"
 	"os"
 	"strings"
-	"time"
 
 	"agent-overflow/internal/transport"
 )
@@ -79,11 +79,6 @@ func SessionFromEnv(lookup func(string) (string, bool)) (Session, error) {
 	return session, nil
 }
 
-// rpcTimeout bounds one call. Every method behind the scoped surface answers
-// from persisted state or detaches its work, so a call that takes this long is
-// a wedged backend rather than slow work.
-const rpcTimeout = 30 * time.Second
-
 // client speaks the scoped HTTP RPC route. It is deliberately built on the
 // transport package's own frame types: the CLI and the server must agree about
 // the wire, and a duplicated struct here would be free to drift.
@@ -93,7 +88,7 @@ type client struct {
 }
 
 func newClient(session Session) *client {
-	return &client{session: session, http: &http.Client{Timeout: rpcTimeout}}
+	return &client{session: session, http: &http.Client{}}
 }
 
 // rpcError is a refusal the backend expressed in the frame envelope, keeping
@@ -128,7 +123,13 @@ func (c *client) call(method string, params ...any) (json.RawMessage, error) {
 		return nil, fmt.Errorf("encode %s request: %w", method, err)
 	}
 	endpoint := strings.TrimSuffix(c.session.Endpoint, "/") + transport.ScopedRPCPath
-	request, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(body))
+	// The wait is the method's own (transport.ClientWait), so the backend,
+	// whose method runs within its budget, is always the side that answers
+	// first: a verb that committed server-side never comes back to the
+	// operator as a deadline whose retry the run's state then refuses.
+	ctx, cancel := context.WithTimeout(context.Background(), transport.ClientWait(method))
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("build %s request: %w", method, err)
 	}

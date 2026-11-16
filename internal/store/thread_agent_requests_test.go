@@ -318,6 +318,43 @@ func TestThreadRequestChangesAreReported(t *testing.T) {
 		t.Fatal(err)
 	}
 	expect("caller-wide disarm", ThreadRequestChange{CallerThreadID: "lead"})
+
+	// A collection reports the request it wrote, and one that wrote nothing
+	// does not: another computer's answer, a receipt here the boot repair
+	// collects, and a late reply stored with its receipt.
+	if err := s.InsertThreadRequest(ThreadRequest{
+		Token: "remote", CallerThreadID: "lead", Kind: ThreadRequestSend, TargetComputerID: "backend-2",
+		TargetThreadID: "t-there", State: ThreadRequestRunning,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	expect("remote insert", ThreadRequestChange{Token: "remote", CallerThreadID: "lead"})
+	answer := ThreadReceiptAnswer{Revision: 1, State: ThreadReceiptFinished, Answer: []byte("done"), AnswerKind: ThreadAnswerFinal, SettledAt: 100}
+	for _, want := range [][]ThreadRequestChange{{{Token: "remote"}}, nil} {
+		if _, err := s.CollectThreadRequest("remote", answer, ThreadRequestWake{}); err != nil {
+			t.Fatal(err)
+		}
+		expect("remote collection", want...)
+	}
+	mustCreateThread(t, s, "worker")
+	seedLocalThreadRequest(t, s, "local", "lead", "worker", "")
+	expect("local insert", ThreadRequestChange{Token: "local", CallerThreadID: "lead"})
+	if _, _, err := settleThreadReceiptRow(s.db, "local", ThreadReceiptOpenStates(), ThreadRequestSettlement{
+		State: ThreadReceiptFinished, Answer: []byte("done"), AnswerKind: ThreadAnswerFinal,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	expect("a receipt's own settlement")
+	for _, want := range [][]ThreadRequestChange{{{Token: "local"}}, nil} {
+		if _, err := s.CollectLocalThreadReceipt("local", ThreadRequestWake{}); err != nil {
+			t.Fatal(err)
+		}
+		expect("local collection", want...)
+	}
+	if _, _, err := s.StoreLocalThreadRequestLateReply("local", []byte("late"), 0, nil, false); err != nil {
+		t.Fatal(err)
+	}
+	expect("local late reply", ThreadRequestChange{Token: "local"})
 	s.OnThreadRequestChanged(nil)
 	seedThreadRequest(t, s, "after", "lead", ThreadRequestSpawn, 102)
 	expect("a cleared hook")

@@ -15,19 +15,22 @@
 //     seed fields (v0.0.16 and later).
 //   AO_RELEASE_UPGRADE_CORPUS=<data root>
 //     An existing data root (an `ao-harness clone` of a real database) is
-//     copied in instead. Its schema is whatever it is: when it already
-//     matches the candidate the gate answers ready and the check covers
-//     the boot, the reads and the deferred phases.
-// Either way: the candidate's gated headless boot must refuse with
-// migrations-pending (or report ready when nothing is pending);
-// __update-snapshot and __update-trial-run must reach `prepared`; the next
-// gated boot must be ready; a candidate harness boot on the same root must
-// report the build's schema through HarnessStoreStatus, answer the
-// project, thread, archived and group reads with the counts the previous
-// release wrote, render the sidebar and open the largest thread in a real
-// browser without an uncaught error, and finish every deferred phase
-// without a failure. The census before and after is compared by
-// compareCensus: entities exact, rows never fewer, in total or per thread.
+//     copied in instead. Its schema is whatever it is.
+// Either way: a root behind the build's schema must make the gated
+// headless boot refuse with migrations-pending; __update-snapshot and
+// __update-trial-run must reach `prepared` (on a root already at the
+// build's schema too, before the gate answers ready); every old row the
+// trial changed must be one a migration exception or a recovery rule of
+// its boot explains (upgrade-corpus-fingerprint.ts); the next gated boot
+// must be ready; a candidate harness boot on the same root must report the
+// build's schema through HarnessStoreStatus, answer the project, thread,
+// archived and group reads with the counts the previous release wrote less
+// the threads a sweep rule removes, render the sidebar and open the largest
+// thread in a real browser without an uncaught error, and finish every
+// deferred phase without a failure. compareCensus holds entities exact and
+// rows never fewer, in total or per thread, across the migrations (less the
+// recovery rules' removals), the boots after the trial (less the sweep
+// rules') and the top-up.
 // AO_RELEASE_UPGRADE_REPORT names the JSON report (default: the test's
 // output dir); AO_RELEASE_UPGRADE_ROOT is where the sandbox is created;
 // AO_RELEASE_UPGRADE_KEEP=1 keeps it.
@@ -42,6 +45,7 @@ import {
   TRIAL_STALL_WINDOW_MS,
   UPDATE_COMMAND_CEILING_MS,
   UPDATE_COMMAND_STALL_WINDOW_MS,
+  type SweepContext,
 } from './upgrade-corpus-config.js';
 import { archiveCorpus, assertRelocated, restoreCorpus, type CorpusManifest } from './upgrade-corpus-archive.js';
 import { corpusPlan, seedCorpus } from './upgrade-corpus-generator.js';
@@ -50,13 +54,18 @@ import {
   awaitDeferredSettled,
   census,
   compareCensus,
-  fingerprint,
   largestThread,
   openThreadByTitle,
+  expectedCatalog,
+  readCatalog,
+  sweepBaseline,
+  sweepGrowth,
   type Census,
-  type Fingerprint,
   type StoreStatus,
+  type SweepBaseline,
+  type SweepCount,
 } from './upgrade-corpus-helpers.js';
+import { buildSchema, fingerprint, migrateAlone, type Fingerprint } from './upgrade-corpus-fingerprint.js';
 import {
   assertCadence,
   cliCalls,
@@ -107,9 +116,13 @@ interface Report {
   deferred: StoreStatus;
   /** Report cadence of the launcher's commands against their stall rules. */
   cadence: { snapshot: Cadence; trial?: Cadence };
-  /** The migration's effect on the snapshot's rows, table by table. */
+  /** The trial's effect on the snapshot's rows: by table, by cause, and by recovery rule. */
   fingerprint: Fingerprint;
-  /** Every census count after the run minus before it, tables included. */
+  /** Every census count after the migrations and the trial minus before them, tables included. */
+  migrationDeltas: Record<string, number>;
+  /** What each sweep rule let the boots after the trial remove. */
+  sweeps: SweepCount[];
+  /** Every census count after the candidate's boots minus after the trial, tables included. */
   censusDeltas: Record<string, number>;
   emptyTables: string[];
   /** The top-up's step timings and what it added. */
@@ -194,27 +207,41 @@ test('the candidate migrates a large previous-release database and boots on it',
     const largest = await largestThread(rig.dbPath);
     const candidateVersion = await buildVersion();
 
-    assertExceptionsCurrent(before.schemaVersion);
+    // The stale-entry rule is the lineage's: a real data root can sit at any
+    // version, ahead of the newest release included, and says nothing about
+    // which entries the next release's corpus has crossed.
+    if (!corpusRoot) assertExceptionsCurrent(before.schemaVersion);
 
-    // 2. The launcher's gate: a headless boot with --refuse-pending-migrations.
-    const gated = await startHeadless(rig, 10 * MINUTE);
-    headless.push(gated);
-    const gate = await timed(() => settledBootstrap(gated, 30 * MINUTE, BOOT_PROBE_DEADLINE_MS));
-    durations.gatedBootMs = gate.ms;
-    durations.gatedBootMaxProgressGapMs = gate.value.maxProgressGapMs;
-    await stopHeadless(gated);
-    report.gate = { status: gate.value.status };
+    // 2. Whether the candidate's gated boot would migrate: a root already
+    // at the build's schema boots straight through, settling what its
+    // last process left live, so its trial runs first (step 3) to read that
+    // boot against a snapshot; a root behind it is refused, as the launcher
+    // sees it, and then migrated.
+    const schemaDir = path.join(rig.root, 'build-schema');
+    const buildSchemaVersion = await buildSchema(schemaDir).finally(() => rm(schemaDir, { recursive: true, force: true }));
+    const current = before.schemaVersion === buildSchemaVersion;
     const updateID = newUpdateID();
-    if (gate.value.status === 409) {
-      const pending = JSON.parse(gate.value.body) as PendingRefusal;
-      report.gate.pending = pending;
-      expect(pending).toMatchObject({ reason: 'migrations-pending', database: before.schemaVersion });
-      expect(pending.pending).toBeGreaterThan(0);
-      // Provider probes are unattended work: none ran before the refusal.
-      expect(await cliCalls(rig)).toEqual([]);
+    // The census after the trial, and what the later boots' sweeps select,
+    // which the census and the reads allow.
+    let postTrial = before;
+    let swept: SweepBaseline = { threads: {}, rows: [] };
+    const gateBoot = async (name: 'gatedBoot' | 'readyBoot') => {
+      const gated = await startHeadless(rig, 10 * MINUTE);
+      headless.push(gated);
+      const gate = await timed(() => settledBootstrap(gated, 30 * MINUTE, BOOT_PROBE_DEADLINE_MS));
+      durations[`${name}Ms`] = gate.ms;
+      durations[`${name}MaxProgressGapMs`] = gate.value.maxProgressGapMs;
+      await stopHeadless(gated);
+      return gate.value;
+    };
 
-      // 3. The launcher's migration: snapshot, then the real App trial boot,
-      // each held to the stall rule its launcher judge applies.
+    // 3. The launcher's update: snapshot, then the real App trial boot,
+    // each held to the stall rule its launcher judge applies. Then the
+    // trial's effect on the rows it was handed: every row of the launcher's
+    // snapshot must still be in the store, byte for byte on the columns
+    // both schemas share, unless a migration exception or a recovery rule
+    // of the trial's boot explains the change.
+    const trialAndCompare = async (to: number) => {
       const snapshotStarted = Date.now();
       const snapshot = await timed(() => runUpdateCommand(rig, ['__update-snapshot', '--id', updateID], UPDATE_COMMAND_CEILING_MS));
       durations.snapshotMs = snapshot.ms;
@@ -229,34 +256,52 @@ test('the candidate migrates a large previous-release database and boots on it',
         ['__update-trial-run', '--id', updateID, '--to', candidateVersion, '--attempt', '1'], UPDATE_COMMAND_CEILING_MS));
       durations.trialMs = trial.ms;
       expect(updateResult(trial.value.events), trial.value.stderr).toMatchObject({ type: 'result', outcome: 'prepared' });
-      expect(trial.value.events.some((event) => event.progress?.phase === 'store.migrate'), trial.value.stderr).toBe(true);
+      expect(trial.value.events.some((event) => event.progress?.phase === 'store.migrate'), trial.value.stderr).toBe(to > before.schemaVersion);
       report.cadence.trial = assertCadence('__update-trial-run', trial.value.events, trialStarted, Date.now(),
         TRIAL_STALL_WINDOW_MS, TRIAL_CEILING_MS);
       expect(await cliCalls(rig)).toEqual([]);
 
-      // The migration's own effect on the rows it was handed: every row of
-      // the launcher's snapshot must still be in the migrated store, byte
-      // for byte on the columns both schemas share, before any boot
-      // serves it.
       const snapshotDB = path.join(rig.dataRoot, 'agent-overflow', 'runtime', 'app-update', 'snapshot', 'agent-overflow.db');
       await stat(snapshotDB);
-      const compared = await timed(() => fingerprint(rig.dbPath, snapshotDB, before.schemaVersion, pending.build));
+      const alone = path.join(rig.root, 'migrated-alone');
+      const compared = await timed(() => fingerprint(rig.dbPath, snapshotDB, before.schemaVersion, to,
+        () => migrateAlone(snapshotDB, alone)).finally(() => rm(alone, { recursive: true, force: true })));
       durations.fingerprintMs = compared.ms;
       report.fingerprint = compared.value;
+      if (compared.value.failures.length > 0) throw new Error(compared.value.failures.join('\n'));
+      // The migrations and the trial lost nothing beyond what the
+      // recovery rules removed; what the next ordinary boots sweep is read
+      // before any boot does.
+      postTrial = await census(rig.dbPath);
+      report.migrationDeltas = compareCensus(before, postTrial, before.schemaVersion, postTrial.schemaVersion, 'migration',
+        { removed: compared.value.recoveryRemoved });
+      swept = await sweepBaseline(rig.dbPath);
+    };
 
-      // 4. The next gated boot finds nothing pending.
-      const ready = await startHeadless(rig, 10 * MINUTE);
-      headless.push(ready);
-      const readiness = await timed(() => settledBootstrap(ready, 30 * MINUTE, BOOT_PROBE_DEADLINE_MS));
-      durations.readyBootMs = readiness.ms;
-      durations.readyBootMaxProgressGapMs = readiness.value.maxProgressGapMs;
-      expect(readiness.value.status, readiness.value.body).toBe(200);
-      await stopHeadless(ready);
+    if (current) {
+      await trialAndCompare(before.schemaVersion);
+      // 4. The gate answers ready.
+      const gate = await gateBoot('gatedBoot');
+      report.gate = { status: gate.status };
+      expect(gate.status, gate.body).toBe(200);
     } else {
-      expect(gate.value.status, gate.value.body).toBe(200);
+      // 4. The launcher's gate refuses, the update runs, and the next gated
+      // boot finds nothing pending.
+      const gate = await gateBoot('gatedBoot');
+      report.gate = { status: gate.status };
+      expect(gate.status, gate.body).toBe(409);
+      const pending = JSON.parse(gate.body) as PendingRefusal;
+      report.gate.pending = pending;
+      expect(pending).toMatchObject({ reason: 'migrations-pending', database: before.schemaVersion, build: buildSchemaVersion });
+      expect(pending.pending).toBeGreaterThan(0);
+      // Provider probes are unattended work: none ran before the refusal.
+      expect(await cliCalls(rig)).toEqual([]);
+      await trialAndCompare(pending.build);
+      const readiness = await gateBoot('readyBoot');
+      expect(readiness.status, readiness.body).toBe(200);
     }
     const migrated = await census(rig.dbPath);
-    expect(migrated.schemaVersion).toBe(report.gate.pending?.build ?? before.schemaVersion);
+    expect(migrated.schemaVersion).toBe(buildSchemaVersion);
 
     // 5. The candidate boots on the migrated root and answers the reads.
     const boot = await timed(() => launchHarness({ dataDir: rig.dataRoot, mockProvider: productBinary('ao-mockprovider'), mockForge: productBinary('ao-mockforge'), timeoutMs: 30 * MINUTE }));
@@ -268,30 +313,12 @@ test('the candidate migrates a large previous-release database and boots on it',
     expect(atBoot.deferredFailure).toBeNull();
     report.candidate = { version: candidate.bootstrap.version, schemaVersion: atBoot.schemaVersion };
     report.deferredAtBoot = atBoot;
-    // An empty list crosses the wire as null (a Go nil slice).
-    const list = async <T,>(method: string): Promise<T[]> => (await candidate!.rpc<T[] | null>(method)) ?? [];
-    const reads = await timed(async () => {
-      const projects = await list<unknown>('ListProjects');
-      const threads = await list<{ id: string; pinnedAt?: number }>('HarnessListThreadRows');
-      const archived = await list<unknown>('ListArchivedThreads');
-      const groups = await list<unknown>('ListThreadGroups');
-      return {
-        projects: projects.length,
-        threads: threads.length,
-        archived: archived.length,
-        groups: groups.length,
-        pinned: threads.filter((row) => row.pinnedAt != null).length,
-      };
-    });
+    // What the rowSweepRules conditions read: the projects' forge origins as the candidate resolves them.
+    const live: SweepContext = { forgeProjects: (await candidate.rpc<SweepContext['forgeProjects'] | null>('ListForgeProjects')) ?? [] };
+    const reads = await timed(() => readCatalog(candidate!, swept));
     durations.readsMs = reads.ms;
     report.reads = reads.value;
-    expect(reads.value).toEqual({
-      projects: before.projects,
-      threads: before.threads,
-      archived: before.archived,
-      groups: before.groups,
-      pinned: before.pinned,
-    });
+    expect(reads.value).toEqual(expectedCatalog(postTrial, swept));
 
     // 6. The page: every project in the sidebar, rows, the largest thread.
     // Uncaught page errors are caught at the page as well as from the
@@ -335,17 +362,18 @@ test('the candidate migrates a large previous-release database and boots on it',
     durations.candidateStopMs = stop.ms;
     candidate = undefined;
 
-    // 8. Nothing the previous release wrote is gone.
+    // 8. Nothing the previous release wrote is gone: the boots after the
+    // trial lost only what a sweep rule lets them.
     const after = await census(rig.dbPath);
     expect(after.schemaVersion).toBe(atBoot.schemaVersion);
-    report.censusDeltas = compareCensus(before, after, before.schemaVersion, after.schemaVersion);
+    const sweeps = await sweepGrowth(swept, rig.dbPath, live);
+    report.sweeps = sweeps.report;
+    report.censusDeltas = compareCensus(postTrial, after, postTrial.schemaVersion, after.schemaVersion, 'boot', sweeps.growth);
     report.emptyTables = Object.entries(after.tables).filter(([, n]) => n === 0).map(([name]) => name);
 
     // 9. The launcher commits by discarding the snapshot.
-    if (report.gate.status === 409) {
-      const discard = await runUpdateCommand(rig, ['__update-discard', '--id', updateID], 10 * MINUTE);
-      expect(updateResult(discard.events), discard.stderr).toMatchObject({ type: 'result', outcome: 'ok' });
-    }
+    const discard = await runUpdateCommand(rig, ['__update-discard', '--id', updateID], 10 * MINUTE);
+    expect(updateResult(discard.events), discard.stderr).toMatchObject({ type: 'result', outcome: 'ok' });
 
     // 10. The top-up: the candidate writes its own slice of use into the
     // migrated store, natively at its schema, so the corpus the next
@@ -361,7 +389,7 @@ test('the candidate migrates a large previous-release database and boots on it',
     durations.topUpStopMs = stopTopped.ms;
     candidate = undefined;
     const final = await census(rig.dbPath);
-    report.topUpDeltas = compareCensus(after, final, after.schemaVersion, final.schemaVersion, topped.value.growth);
+    report.topUpDeltas = compareCensus(after, final, after.schemaVersion, final.schemaVersion, 'top-up', topped.value.growth);
     report.cliCalls = await cliCalls(rig);
 
     // 11. The corpus the next release inherits: this root, as the candidate

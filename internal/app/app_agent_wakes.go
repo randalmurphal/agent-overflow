@@ -71,12 +71,44 @@ type agentWakeRun struct {
 	// A cancel with stopped unset is the app shutting down.
 	mu      sync.Mutex
 	stopped bool
+	// dir is the directory a watch's script is running in, empty while none
+	// is (runningWorkIn's workAgentWatch).
+	dir string
 }
 
 func (r *agentWakeRun) wasStopped() bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.stopped
+}
+
+// runIn records the directory the run's script runs in, or "" once it ended.
+func (r *agentWakeRun) runIn(dir string) {
+	r.mu.Lock()
+	r.dir = dir
+	r.mu.Unlock()
+}
+
+// agentWatchDirs lists the directories watch scripts are running in, of one
+// thread's runs or, with threadID empty, of every run.
+func (a *App) agentWatchDirs(threadID string) []string {
+	a.agentWakes.mu.Lock()
+	runs := make([]*agentWakeRun, 0, len(a.agentWakes.runs))
+	for _, run := range a.agentWakes.runs {
+		if threadID == "" || run.threadID == threadID {
+			runs = append(runs, run)
+		}
+	}
+	a.agentWakes.mu.Unlock()
+	var dirs []string
+	for _, run := range runs {
+		run.mu.Lock()
+		if run.dir != "" {
+			dirs = append(dirs, run.dir)
+		}
+		run.mu.Unlock()
+	}
+	return dirs
 }
 
 func (a *App) agentWakeFloor() time.Duration {

@@ -42,6 +42,11 @@ type processBound struct {
 	// `provider:turn_completed` emission is gated per ROUND via
 	// currentRound/takeOpenRound below.
 	settledTurns map[int]bool
+	// lastSettled is how this process's latest turn settlement ended
+	// (lastSettledSet), for a Stop marked after it (stop_waiting_send.go).
+	// It names a turn of settledTurns, so it resets with it.
+	lastSettled    settledTurnOutcome
+	lastSettledSet bool
 
 	// effectiveModel is the session-scoped model actually serving the
 	// thread after a provider fallback. The durable threads.model remains

@@ -198,11 +198,12 @@ func (a *Service) finishWorkspaceMCPAuth(
 // claudeWorkspaceAuthConfig is the process a Claude MCP sign-in runs in.
 func (a *Service) claudeWorkspaceAuthConfig(workspacePath string) claude.Config {
 	return claude.Config{
-		Binary:            a.providerBinaryPath(string(provider.Claude)),
-		WorkDir:           workspacePath,
-		Env:               a.sessionProcessEnv(string(provider.Claude)),
-		EventLogger:       a.logger,
-		CleanupPeriodDays: a.claudeCleanupPeriodDays(workspacePath),
+		Binary:      a.providerBinaryPath(string(provider.Claude)),
+		WorkDir:     workspacePath,
+		Env:         a.sessionProcessEnv(string(provider.Claude)),
+		EventLogger: a.logger,
+		Retention:   a.claudeRetention(workspacePath),
+		Reaper:      a.deps.Reaper,
 	}
 }
 
@@ -215,7 +216,7 @@ func (a *Service) startWorkspaceMCPAuth(
 		flow, result, err := claude.StartMCPAuth(ctx, claude.MCPAuthConfig{
 			Config:         a.claudeWorkspaceAuthConfig(workspacePath),
 			ReadCredential: a.claudeMCPAuthCredentialReader(),
-			RequestTimeout: mcpAuthRoundTripTimeout,
+			RequestTimeout: AuthRoundTripTimeout,
 		}, serverName)
 		if err != nil {
 			return nil, err
@@ -237,7 +238,8 @@ func (a *Service) startWorkspaceMCPAuth(
 			Binary:         a.providerBinaryPath(providerName),
 			WorkDir:        workspacePath,
 			Env:            a.sessionProcessEnv(providerName),
-			RequestTimeout: mcpAuthRoundTripTimeout,
+			RequestTimeout: AuthRoundTripTimeout,
+			Reaper:         a.deps.Reaper,
 		}, serverName)
 		if err != nil {
 			return nil, err

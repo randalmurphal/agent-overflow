@@ -123,6 +123,7 @@ func (a *App) forkCodexThreadAt(ctx context.Context, source store.Thread, lastTu
 		LastTurnID:     lastTurnID,
 		// The child is a new thread of this app's.
 		NativeMemoryOff: a.currentSettings().CodexNativeMemoryDisabled,
+		Reaper:          a.groupReaper("codex fork"),
 	})
 }
 
@@ -170,6 +171,7 @@ func (a *App) withCodexThreadSessionPreparedBy(
 		// The resume loads the thread with the memory mode it states, as
 		// every process that loads one of this app's threads does.
 		NativeMemoryOff: a.currentSettings().CodexNativeMemoryDisabled,
+		Reaper:          a.groupReaper("codex fork session"),
 	}, func(provider.ProviderEvent) {})
 	if err != nil {
 		return fmt.Errorf("resume source thread: %w", err)

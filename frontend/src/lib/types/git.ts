@@ -18,6 +18,8 @@ export type { CommitFiles } from '../../../bindings/agent-overflow/internal/app/
 // What GitCommit commits and GenerateCommitMessage describes: everything, or
 // exactly the given rows of the file list.
 export type { CommitSelection } from '../../../bindings/agent-overflow/internal/app/models';
+// What a commit attempt did, asked for after its answer was lost.
+export type { GitActionOutcome } from '../../../bindings/agent-overflow/internal/app/models';
 export type { ChangedFile as CommitFile } from '../../../bindings/agent-overflow/internal/gitdiff/models';
 
 export interface GitStatus {
@@ -33,11 +35,21 @@ export interface GitStatus {
   behindCount: number;
   hasOriginRemote: boolean;
   /**
+   * Git's diagnosis when the app's last background fetch of origin failed
+   * because the remote wanted a login, so the counts above may be stale.
+   * `GitFetchOrigin` is the fetch that may ask for one.
+   */
+  remoteSignInError?: string;
+  /**
    * Canonical id of the origin remote's forge. Drives PR/MR label
    * adaptation and gates the "Create PR" action.
    * Values: "github" | "gitlab" | "" (unknown / no origin).
    */
   forge?: string;
+  /** Why the PR features are unavailable when forge is empty because the
+   * origin is on a host this release does not support (GitHub
+   * Enterprise); the sentence shows in their place. */
+  forgeUnsupported?: string;
   openPrUrl?: string;
   openPrNumber?: number;
   /**

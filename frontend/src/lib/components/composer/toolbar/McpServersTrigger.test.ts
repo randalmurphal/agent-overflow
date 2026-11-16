@@ -6,6 +6,7 @@ import { ThreadMCPServer } from '../../../stores/bindings';
 import { resetPanesForTest } from '../../../stores/panes.svelte';
 import { getToasts } from '../../../stores/toast.svelte';
 import { refreshMcpServers } from '../../../stores/mcpServers.svelte';
+import { withEmptyDraftCleanup } from '../../../stores/emptyDraftCleanup';
 import {
   getBindingMock,
   resetBindingMocks,
@@ -336,4 +337,29 @@ it('keeps the saved off state and reports a rejected toggle', async () => {
   await waitFor(() => expect(getToasts().some((toast) => toast.message.includes('config write failed'))).toBe(true));
   expect(off.querySelector('[data-mcp-enabled]')).toHaveAttribute('data-mcp-enabled', 'false');
   expect(view.queryByRole('button', { name: 'Reconnect srv' })).toBeNull();
+});
+
+it('waits for an empty-draft delete, then toggles on the placeholder it leaves rather than the deleted thread', async () => {
+  setBindingMock('ListThreadMcpServers', async () => [row({ name: 'srv', source: 'config', disabled: true, status: 'disabled' })]);
+  setBindingMock('ListWorkspaceMcpServers', async () => [row({ name: 'srv', source: 'config', disabled: true, status: 'disabled' })]);
+  const threadToggle = setBindingMock('SetThreadMcpServerEnabled', async () => {});
+  const workspaceToggle = setBindingMock('SetWorkspaceMcpServerEnabled', async () => {});
+  const pane = await buildPane(makeThread({ id: 'emptied', isDraft: true, workspacePath: '/repo', projectPath: '/repo' }));
+  let answer!: () => void;
+  const answered = new Promise<void>((resolve) => { answer = resolve; });
+  const cleanup = withEmptyDraftCleanup('emptied', async () => { await answered; return true; }, async () => {
+    pane.dematerializeEmptyDraftThread();
+  });
+  const view = render(McpServersTrigger, { props: { pane } });
+  await fireEvent.click(view.getByTestId('composer-mcp-trigger'));
+  const item = await view.findByRole('menuitem', { name: 'srv Off' });
+  await waitFor(() => expect(item).not.toHaveAttribute('aria-disabled', 'true'));
+  await fireEvent.click(item);
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  expect(threadToggle).not.toHaveBeenCalled();
+  answer();
+  await cleanup;
+
+  await waitFor(() => expect(workspaceToggle).toHaveBeenCalledWith('claude', '/repo', 'srv', true));
+  expect(threadToggle).not.toHaveBeenCalled();
 });

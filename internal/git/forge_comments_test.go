@@ -192,6 +192,8 @@ func TestGitHubSubmitReviewPostsHeldReplies(t *testing.T) {
 	var goneRoot atomic.Int64
 	core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
 		switch {
+		case call.Op == "ViewerReviews":
+			return githubData(githubNoViewerReviews)
 		case call.Method == http.MethodPost && call.Path == "repos/o/r/pulls/5/reviews":
 			return forgeAPIAnswer{Body: `{"id":1}`}
 		case call.Method == http.MethodPost && strings.HasPrefix(call.Path, "repos/o/r/pulls/5/comments/"):
@@ -207,19 +209,19 @@ func TestGitHubSubmitReviewPostsHeldReplies(t *testing.T) {
 		{Body: "first", InReplyTo: &ReviewThreadReply{ThreadID: "PRRT_a", RootDatabaseID: 11}},
 		{Body: "second", InReplyTo: &ReviewThreadReply{ThreadID: "PRRT_b", RootDatabaseID: 12}},
 	}
-	result, err := core.SubmitReview(t.Context(), githubTestRef(5), SubmitReviewRequest{Verdict: ReviewVerdictComment, Body: "summary", Comments: append([]ReviewLineComment{{Path: "a.go", Body: "x", Line: &line, Side: "right"}}, replies...)})
+	result, err := core.SubmitReview(t.Context(), githubTestRef(5), SubmitReviewRequest{Verdict: ReviewVerdictComment, HeadSHA: githubTestPinnedHead, Body: "summary", Comments: append([]ReviewLineComment{{Path: "a.go", Body: "x", Line: &line, Side: "right"}}, replies...)})
 	if err != nil || !result.PostedReview || result.PostedReplies != 2 {
 		t.Fatalf("SubmitReview = %+v, %v", result, err)
 	}
-	if got := strings.Join(calls.ops(), ","); got != "POST repos/o/r/pulls/5/reviews,POST repos/o/r/pulls/5/comments/11/replies,POST repos/o/r/pulls/5/comments/12/replies" {
+	if got := strings.Join(calls.ops(), ","); got != "ViewerReviews,POST repos/o/r/pulls/5/reviews,POST repos/o/r/pulls/5/comments/11/replies,POST repos/o/r/pulls/5/comments/12/replies" {
 		t.Fatalf("requests = %s", got)
 	}
-	if body := string(calls.all()[1].Body); body != `{"body":"first"}` {
+	if body := string(calls.all()[2].Body); body != `{"body":"first"}` {
 		t.Fatalf("reply body = %s", body)
 	}
 
 	seen := len(calls.all())
-	result, err = core.SubmitReview(t.Context(), githubTestRef(5), SubmitReviewRequest{Verdict: ReviewVerdictComment, Comments: replies})
+	result, err = core.SubmitReview(t.Context(), githubTestRef(5), SubmitReviewRequest{Verdict: ReviewVerdictComment, HeadSHA: githubTestPinnedHead, Comments: replies})
 	if err != nil || result.PostedReview || result.PostedReplies != 2 {
 		t.Fatalf("replies alone = %+v, %v", result, err)
 	}
@@ -228,7 +230,7 @@ func TestGitHubSubmitReviewPostsHeldReplies(t *testing.T) {
 	}
 
 	goneRoot.Store(12)
-	_, err = core.SubmitReview(t.Context(), githubTestRef(5), SubmitReviewRequest{Verdict: ReviewVerdictComment, Comments: replies})
+	_, err = core.SubmitReview(t.Context(), githubTestRef(5), SubmitReviewRequest{Verdict: ReviewVerdictComment, HeadSHA: githubTestPinnedHead, Comments: replies})
 	partial, ok := errors.AsType[*PartialSubmitError](err)
 	if !ok || partial.PostedReview || partial.PostedReplies != 1 || partial.FailedThreadID != "PRRT_b" || partial.Unconfirmed {
 		t.Fatalf("gone thread = %#v", err)
@@ -238,7 +240,7 @@ func TestGitHubSubmitReviewPostsHeldReplies(t *testing.T) {
 	}
 
 	goneRoot.Store(11)
-	_, err = core.SubmitReview(t.Context(), githubTestRef(5), SubmitReviewRequest{Verdict: ReviewVerdictComment, Comments: replies})
+	_, err = core.SubmitReview(t.Context(), githubTestRef(5), SubmitReviewRequest{Verdict: ReviewVerdictComment, HeadSHA: githubTestPinnedHead, Comments: replies})
 	if _, partial := errors.AsType[*PartialSubmitError](err); partial || !errors.Is(err, forgeapi.ErrNotFound) {
 		t.Fatalf("a first reply refused with nothing posted = %v, want the refusal itself", err)
 	}
@@ -261,8 +263,8 @@ func TestGitHubReadCarriesCommentPermissions(t *testing.T) {
 		}
 		return githubData(`{"repository":{"pullRequest":{"number":5,
 			"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PRRT_1","isResolved":false,"isOutdated":false,"path":"a.go","line":3,"startLine":null,"diffSide":"RIGHT","subjectType":"LINE",
-				"comments":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PRRC_2","databaseId":2,"author":{"login":"me"},"body":"b","createdAt":"t","lastEditedAt":"t2","url":"https://github.com/o/r/pull/5#discussion_r2","viewerCanUpdate":true,"viewerCanDelete":true,"replyTo":null}]}}]},
-			"comments":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"IC_3","databaseId":3,"author":{"login":"other"},"body":"c","createdAt":"t","lastEditedAt":null,"url":"https://github.com/o/r/pull/5#issuecomment-3","viewerCanUpdate":false,"viewerCanDelete":true,"isMinimized":false}]}}}}`)
+				"comments":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PRRC_2","fullDatabaseId":"2","author":{"login":"me"},"body":"b","createdAt":"t","lastEditedAt":"t2","url":"https://github.com/o/r/pull/5#discussion_r2","viewerCanUpdate":true,"viewerCanDelete":true,"replyTo":null}]}}]},
+			"comments":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"IC_3","fullDatabaseId":"3","author":{"login":"other"},"body":"c","createdAt":"t","lastEditedAt":null,"url":"https://github.com/o/r/pull/5#issuecomment-3","viewerCanUpdate":false,"viewerCanDelete":true,"isMinimized":false}]}}}}`)
 	})
 	threads, err := core.ListReviewThreads(t.Context(), githubTestRef(5))
 	if err != nil || len(threads) != 2 {
@@ -286,7 +288,7 @@ func TestGitLabPostLineComment(t *testing.T) {
 	core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
 		switch {
 		case call.Method == http.MethodGet && call.Path == mr:
-			return forgeAPIAnswer{Body: strings.ReplaceAll(gitlabTestMR(7, 0), "head2", "abc1234")}
+			return forgeAPIAnswer{Body: strings.ReplaceAll(gitlabTestMR(7, 0), "ab12cd34", "abc1234")}
 		case call.Method == http.MethodGet && call.Path == mr+"/diffs?per_page=100":
 			return gitlabTestDiffsAnswer()
 		case call.Method == http.MethodPost && call.Path == mr+"/discussions":
@@ -304,7 +306,7 @@ func TestGitLabPostLineComment(t *testing.T) {
 	code := fmt.Sprintf("%x", sha1.Sum([]byte("a.go")))
 	want := `{"body":"range","position":{"base_sha":"base","start_sha":"start","head_sha":"abc1234","old_path":"a.go","new_path":"a.go","position_type":"text","new_line":6,` +
 		`"line_range":{"start":{"line_code":"` + code + `_3_4","old_line":3,"new_line":4},"end":{"line_code":"` + code + `_4_6","type":"new","new_line":6}}}}`
-	if sent := calls.all(); len(sent) != 3 || string(sent[2].Body) != want {
+	if sent := calls.all(); len(sent) != 4 || sent[0].Path != "metadata" || string(sent[3].Body) != want {
 		t.Fatalf("requests = %v, body = %s\nwant %s", calls.ops(), sent[len(sent)-1].Body, want)
 	}
 	err = core.PostPRLineComment(t.Context(), gitlabTestRef(7), "abc0000", ReviewLineComment{Path: "a.go", Body: "x", Line: &end, Side: "right"})
@@ -314,7 +316,7 @@ func TestGitLabPostLineComment(t *testing.T) {
 	if explained, _ := errors.AsType[*ForgeActionError](ExplainForgeError(gitlabTestRef(7), ActionComment, err)); explained == nil || explained.Kind != ForgeErrorStaleHead {
 		t.Fatalf("moved head sentence = %+v", explained)
 	}
-	if got := calls.ops(); len(got) != 4 || got[3] != "GET "+mr {
+	if got := calls.ops(); len(got) != 5 || got[4] != "GET "+mr {
 		t.Fatalf("a comment on a moved head was posted: %v", got)
 	}
 	// The created note is named as the read names it: its id.
@@ -347,7 +349,7 @@ func TestGitLabEditAndDeleteComment(t *testing.T) {
 	if err := core.DeletePRComment(t.Context(), gitlabTestRef(7), target); err != nil {
 		t.Fatal(err)
 	}
-	if sent := calls.all(); len(sent) != 2 || string(sent[0].Body) != `{"body":"new"}` {
+	if sent := calls.all(); len(sent) != 3 || sent[0].Path != "metadata" || string(sent[1].Body) != `{"body":"new"}` {
 		t.Fatalf("requests = %v", calls.ops())
 	}
 	answered.Store(41)
@@ -388,6 +390,8 @@ func TestGitLabSubmitReviewHeldReply(t *testing.T) {
 			return forgeAPIAnswer{Body: gitlabTestMR(7, 0)}
 		case call.Method == http.MethodGet && strings.HasPrefix(call.Path, mr+"/discussions?"):
 			return forgeAPIAnswer{Body: discussions()}
+		case call.Method == http.MethodGet && call.Path == mr+"/draft_notes?per_page=100":
+			return forgeAPIAnswer{Body: `[]`}
 		case call.Method == http.MethodGet && call.Path == mr+"/discussions/d9":
 			if state.Load() == "refused-gone" {
 				return forgeAPIAnswer{Status: http.StatusNotFound, Body: `{"message":"404 Not found"}`}
@@ -408,7 +412,7 @@ func TestGitLabSubmitReviewHeldReply(t *testing.T) {
 		}
 		return forgeUnexpected(t, call)
 	})
-	request := SubmitReviewRequest{Verdict: ReviewVerdictComment, Body: "summary", Comments: []ReviewLineComment{
+	request := SubmitReviewRequest{Verdict: ReviewVerdictComment, HeadSHA: gitlabTestHead, Body: "summary", Comments: []ReviewLineComment{
 		{Body: "held", InReplyTo: &ReviewThreadReply{ThreadID: "d9"}},
 	}}
 	draftBodies := func(from int) []string {
@@ -428,7 +432,7 @@ func TestGitLabSubmitReviewHeldReply(t *testing.T) {
 		t.Fatalf("draft notes = %v", got)
 	}
 	// An open discussion's reply keeps it open.
-	open := SubmitReviewRequest{Verdict: ReviewVerdictComment, Comments: []ReviewLineComment{{Body: "open root", InReplyTo: &ReviewThreadReply{ThreadID: "d8"}}}}
+	open := SubmitReviewRequest{Verdict: ReviewVerdictComment, HeadSHA: gitlabTestHead, Comments: []ReviewLineComment{{Body: "open root", InReplyTo: &ReviewThreadReply{ThreadID: "d8"}}}}
 	seen := len(calls.all())
 	published.Store(false)
 	_, _ = core.SubmitReview(t.Context(), gitlabTestRef(7), open)
@@ -477,8 +481,10 @@ func TestGitLabSubmitReviewHeldReply(t *testing.T) {
 }
 
 // A developer may edit and delete its own notes and no other; a
-// maintainer or owner every note. Each note links to its anchor on the
-// merge request.
+// maintainer or owner every note, however the role was granted: the role
+// is maxAccessLevel, which counts a group share that leaves the project's
+// REST permissions empty. Each note links to its anchor on the merge
+// request.
 func TestGitLabReadMarksTheViewersNotes(t *testing.T) {
 	t.Parallel()
 	mr := gitlabTestProject + "/merge_requests/7"
@@ -493,7 +499,9 @@ func TestGitLabReadMarksTheViewersNotes(t *testing.T) {
 			case strings.HasPrefix(call.Path, mr+"/discussions?"):
 				return forgeAPIAnswer{Body: `[{"id":"d","notes":[{"id":1,"body":"mine","author":{"username":"Me"}},{"id":2,"body":"theirs","author":{"username":"rev"}}]}]`}
 			case call.Path == gitlabTestProject:
-				return forgeAPIAnswer{Body: fmt.Sprintf(`{"permissions":{"project_access":null,"group_access":{"access_level":%d}}}`, tc.access)}
+				return forgeAPIAnswer{Body: `{"permissions":{"project_access":null,"group_access":null}}`}
+			case call.Op == "ProjectAccess":
+				return forgeAPIAnswer{Body: fmt.Sprintf(`{"data":{"project":{"maxAccessLevel":{"integerValue":%d}}}}`, tc.access)}
 			case call.Path == "user":
 				return forgeAPIAnswer{Body: `{"id":1,"username":"me"}`}
 			case call.Op == "MRNoteReactions":
@@ -519,6 +527,9 @@ func TestGitLabReadMarksTheViewersNotes(t *testing.T) {
 func TestReplyToAGoneThread(t *testing.T) {
 	t.Parallel()
 	core, _ := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
+		if call.Op == "" && call.Path == "metadata" {
+			return gitlabMetadata("19.6.0-ee")
+		}
 		return forgeAPIAnswer{Status: http.StatusNotFound, Body: `{"message":"Not Found"}`}
 	})
 	for _, ref := range []PRReference{githubTestRef(5), gitlabTestRef(7)} {

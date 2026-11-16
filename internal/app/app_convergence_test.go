@@ -73,7 +73,17 @@ func TestPrepareThreadWorktreeBroadcastsTheMovedRow(t *testing.T) {
 		_ = app.gitCore().RemoveWorktreeForce(repo, updated.WorktreePath, true)
 	})
 
-	assertThreadRowBroadcast(t, snapshot(), updated)
+	// A worktree makes the never-sent thread real, so the move also lists it.
+	assertThreadRowBroadcast(t, snapshot(), triage.ThreadActionListed, updated)
+
+	// Back at the root with no draft text it is not real any more: the
+	// frame takes it off every sidebar a fresh catalog read would omit it from.
+	snapshot = captureOrderedEmissions(app, string(eventchan.ThreadUpdated))
+	atRoot, err := app.switchThreadWorkspace(thread.ID, repo)
+	if err != nil {
+		t.Fatalf("switchThreadWorkspace() error = %v", err)
+	}
+	assertThreadRowBroadcast(t, snapshot(), triage.ThreadActionEmptied, atRoot)
 }
 
 // The attach path is the same move against a branch that already exists, and
@@ -93,6 +103,10 @@ func TestAttachThreadWorktreeBroadcastsTheMovedRow(t *testing.T) {
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
+	// A sent thread is listed already, so its move is a plain row update.
+	if err := app.store.InsertItem(store.Item{ID: "attach-broadcast-sent", ThreadID: thread.ID, Kind: "user_text", Role: "user", Status: "completed", Summary: "sent"}); err != nil {
+		t.Fatalf("InsertItem: %v", err)
+	}
 
 	snapshot := captureOrderedEmissions(app, string(eventchan.ThreadUpdated))
 	updated, err := app.AttachThreadWorktree(thread.ID, "feature/broadcast-attach")
@@ -103,7 +117,7 @@ func TestAttachThreadWorktreeBroadcastsTheMovedRow(t *testing.T) {
 		_ = app.gitCore().RemoveWorktreeForce(repo, updated.WorktreePath, true)
 	})
 
-	assertThreadRowBroadcast(t, snapshot(), updated)
+	assertThreadRowBroadcast(t, snapshot(), triage.ThreadActionFull, updated)
 }
 
 // The chokepoint's other rule, inherited from switchThreadWorkspace: a move
@@ -141,7 +155,7 @@ func TestSwitchThreadWorkspaceToTheSamePathIsSilent(t *testing.T) {
 // assertThreadRowBroadcast: exactly one `full` frame, carrying the row the RPC
 // answered with. Echo-equals-optimistic-apply is the property — the initiator
 // applies its own return value and then receives these same bytes.
-func assertThreadRowBroadcast(t *testing.T, captured []capturedEmission, want store.Thread) {
+func assertThreadRowBroadcast(t *testing.T, captured []capturedEmission, action string, want store.Thread) {
 	t.Helper()
 	if len(captured) != 1 {
 		t.Fatalf("thread:updated frames = %d, want 1 (%v)", len(captured), emissionNames(captured))
@@ -150,8 +164,8 @@ func assertThreadRowBroadcast(t *testing.T, captured []capturedEmission, want st
 	if !ok {
 		t.Fatalf("thread:updated payload type = %T, want triage.ThreadUpdateEvent", captured[0].data)
 	}
-	if event.Action != triage.ThreadActionFull {
-		t.Errorf("action = %q, want %q", event.Action, triage.ThreadActionFull)
+	if event.Action != action {
+		t.Errorf("action = %q, want %q", event.Action, action)
 	}
 	if event.Thread == nil {
 		t.Fatal("thread:updated carried no row")

@@ -16,8 +16,14 @@ const text = "The build finished in forty seconds."
 
 const answer = "Sure thing. Why don't penguins use Facebook? They already have plenty of ice to break."
 
-func sentenceAt(admitted uint64) Sentence {
-	return Sentence{Request: openai.SpeechRequest{Text: text, Voice: "marin"}, Admitted: admitted}
+// admit admits text at revision admitted and returns its id.
+func admit(t *testing.T, sentences *Sentences, admitted uint64) string {
+	t.Helper()
+	id, err := sentences.Admit(text, "marin", admitted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return id
 }
 
 // echo speaks every request as written.
@@ -30,14 +36,16 @@ type scripted struct {
 	mu          sync.Mutex
 	transcripts []string
 	calls       int
+	requests    []openai.SpeechRequest
 	// during runs inside each call, before it answers.
 	during func()
 }
 
-func (s *scripted) speak(_ context.Context, _ openai.SpeechRequest) (openai.Speech, error) {
+func (s *scripted) speak(_ context.Context, request openai.SpeechRequest) (openai.Speech, error) {
 	s.mu.Lock()
 	transcript := s.transcripts[min(s.calls, len(s.transcripts)-1)]
 	s.calls++
+	s.requests = append(s.requests, request)
 	during := s.during
 	s.mu.Unlock()
 	if during != nil {
@@ -53,9 +61,9 @@ func (s *scripted) called() int {
 }
 
 // synthesized runs one synthesis and closes its clip.
-func synthesized(t *testing.T, sentences *Sentences, sentence Sentence, speak SpeakFunc) error {
+func synthesized(t *testing.T, sentences *Sentences, id string, speak SpeakFunc) error {
 	t.Helper()
-	clip, err := sentences.Synthesize(context.Background(), sentence, speak)
+	clip, err := sentences.Synthesize(context.Background(), id, speak)
 	if err != nil {
 		return err
 	}
@@ -68,7 +76,7 @@ func everySlotIsFree(t *testing.T, sentences *Sentences, admitted uint64) {
 	t.Helper()
 	clips := make([]*Clip, 0, MaxSpeaking)
 	for range MaxSpeaking {
-		clip, err := sentences.Synthesize(context.Background(), sentenceAt(admitted), echo)
+		clip, err := sentences.Synthesize(context.Background(), admit(t, sentences, admitted), echo)
 		if err != nil {
 			t.Fatalf("a slot was not given back: %v", err)
 		}
@@ -81,22 +89,28 @@ func everySlotIsFree(t *testing.T, sentences *Sentences, admitted uint64) {
 	}
 }
 
-func TestAnAdmittedSentenceIsTakenOnce(t *testing.T) {
+func TestAnAdmittedSentenceIsSpokenOnce(t *testing.T) {
 	t.Parallel()
 	sentences := New(time.Minute)
 	id, err := sentences.Admit("  "+text+"\n", "coral", 7)
 	if err != nil {
 		t.Fatal(err)
 	}
-	taken, err := sentences.Take(id)
-	if err != nil || taken != (Sentence{Request: openai.SpeechRequest{Text: text, Voice: "coral"}, Admitted: 7}) {
-		t.Fatalf("Take = %+v, %v; want the trimmed text in its voice at its revision", taken, err)
+	speaker := &scripted{transcripts: []string{text}}
+	if err := synthesized(t, sentences, id, speaker.speak); err != nil {
+		t.Fatal(err)
 	}
-	if _, err := sentences.Take(id); !errors.Is(err, ErrUnknown) {
-		t.Fatalf("a second Take = %v, want ErrUnknown", err)
+	if want := (openai.SpeechRequest{Text: text, Voice: "coral"}); len(speaker.requests) != 1 || speaker.requests[0] != want {
+		t.Fatalf("spoke %+v; want the trimmed text in its voice, once", speaker.requests)
 	}
-	if _, err := sentences.Take("never-admitted"); !errors.Is(err, ErrUnknown) {
+	if err := synthesized(t, sentences, id, speaker.speak); !errors.Is(err, ErrUnknown) {
+		t.Fatalf("a second synthesis = %v, want ErrUnknown", err)
+	}
+	if err := synthesized(t, sentences, "never-admitted", speaker.speak); !errors.Is(err, ErrUnknown) {
 		t.Fatalf("an unknown id = %v, want ErrUnknown", err)
+	}
+	if speaker.called() != 1 {
+		t.Fatalf("OpenAI was asked %d times, want 1", speaker.called())
 	}
 	// Repeated admissions get distinct ids, each its own sentence.
 	first, err := sentences.Admit("One.", "marin", 7)
@@ -107,8 +121,9 @@ func TestAnAdmittedSentenceIsTakenOnce(t *testing.T) {
 	if err != nil || first == second {
 		t.Fatalf("ids %q and %q, %v", first, second, err)
 	}
-	if taken, _ := sentences.Take(second); taken.Request.Text != "Two." {
-		t.Fatalf("second id took %+v", taken)
+	two := &scripted{transcripts: []string{"Two."}}
+	if err := synthesized(t, sentences, second, two.speak); err != nil || two.requests[0].Text != "Two." {
+		t.Fatalf("second id spoke %+v, %v", two.requests, err)
 	}
 }
 
@@ -138,6 +153,22 @@ func TestAdmitRefusesWhatCannotBeRead(t *testing.T) {
 	}
 }
 
+// The client admits a reply one section at a time (several sentences up to
+// MaxTextCharacters), so a refusal the user reads names a section.
+func TestRefusalsNameTheSectionTheUserAskedFor(t *testing.T) {
+	t.Parallel()
+	for err, want := range map[error]string{
+		ErrUnknown:     "this section was already read aloud or has expired",
+		ErrBacklog:     "8 sections are already waiting to be read aloud; try again shortly",
+		ErrBusy:        "this computer is already reading 4 sections aloud; try again shortly",
+		ErrTextTooLong: "a section to read aloud is at most 1000 characters",
+	} {
+		if err.Error() != want {
+			t.Errorf("refusal = %q, want %q", err, want)
+		}
+	}
+}
+
 func TestAdmissionIsBoundedAndExpires(t *testing.T) {
 	t.Parallel()
 	now := time.Unix(1000, 0)
@@ -164,19 +195,19 @@ func TestAdmissionIsBoundedAndExpires(t *testing.T) {
 	if _, err := sentences.Admit(text, "marin", 0); !errors.Is(err, ErrBacklog) {
 		t.Fatalf("admission past the bound = %v, want ErrBacklog", err)
 	}
-	// Taking one frees its place.
-	if _, err := sentences.Take(ids[0]); err != nil {
+	// Synthesizing one frees its place.
+	if err := synthesized(t, sentences, ids[0], echo); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := sentences.Admit(text, "marin", 0); err != nil {
-		t.Fatalf("admission after a take: %v", err)
+		t.Fatalf("admission after a synthesis: %v", err)
 	}
 	advance(29 * time.Second)
-	if _, err := sentences.Take(ids[1]); err != nil {
+	if err := synthesized(t, sentences, ids[1], echo); err != nil {
 		t.Fatalf("a sentence inside its lifetime: %v", err)
 	}
 	advance(time.Second)
-	if _, err := sentences.Take(ids[2]); !errors.Is(err, ErrUnknown) {
+	if err := synthesized(t, sentences, ids[2], echo); !errors.Is(err, ErrUnknown) {
 		t.Fatalf("an expired sentence = %v, want ErrUnknown", err)
 	}
 	if n := sentences.Pending(); n != 0 {
@@ -189,7 +220,8 @@ func TestAdmissionIsBoundedAndExpires(t *testing.T) {
 
 func TestSynthesizeReturnsAReadingAsAWAVFile(t *testing.T) {
 	t.Parallel()
-	clip, err := New(time.Minute).Synthesize(context.Background(), sentenceAt(0), echo)
+	sentences := New(time.Minute)
+	clip, err := sentences.Synthesize(context.Background(), admit(t, sentences, 0), echo)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -205,12 +237,13 @@ func TestSynthesizeReturnsAReadingAsAWAVFile(t *testing.T) {
 func TestAnAnswerIsRetriedOnce(t *testing.T) {
 	t.Parallel()
 	once := &scripted{transcripts: []string{answer, text}}
-	if err := synthesized(t, New(time.Minute), sentenceAt(0), once.speak); err != nil || once.called() != 2 {
+	sentences := New(time.Minute)
+	if err := synthesized(t, sentences, admit(t, sentences, 0), once.speak); err != nil || once.called() != 2 {
 		t.Fatalf("answered then read: %v after %d calls", err, once.called())
 	}
 
 	always := &scripted{transcripts: []string{answer}}
-	if err := synthesized(t, New(time.Minute), sentenceAt(0), always.speak); !errors.Is(err, ErrMisread) {
+	if err := synthesized(t, sentences, admit(t, sentences, 0), always.speak); !errors.Is(err, ErrMisread) {
 		t.Fatalf("always answered: %v, want ErrMisread", err)
 	}
 	if always.called() != 2 {
@@ -223,7 +256,7 @@ func TestASpeakFailureIsNotRetried(t *testing.T) {
 	calls := 0
 	failure := errors.New("OpenAI is down")
 	sentences := New(time.Minute)
-	err := synthesized(t, sentences, sentenceAt(0), func(context.Context, openai.SpeechRequest) (openai.Speech, error) {
+	err := synthesized(t, sentences, admit(t, sentences, 0), func(context.Context, openai.SpeechRequest) (openai.Speech, error) {
 		calls++
 		return openai.Speech{}, failure
 	})
@@ -254,7 +287,8 @@ func (b blocking) speak(ctx context.Context, request openai.SpeechRequest) (open
 func refusedAtOnce(t *testing.T, sentences *Sentences, want error) {
 	t.Helper()
 	refused := make(chan error, 1)
-	go func() { refused <- synthesized(t, sentences, sentenceAt(0), echo) }()
+	id := admit(t, sentences, 0)
+	go func() { refused <- synthesized(t, sentences, id, echo) }()
 	select {
 	case err := <-refused:
 		if !errors.Is(err, want) {
@@ -271,7 +305,8 @@ func TestSynthesesAreCappedAndTheCapFrees(t *testing.T) {
 	held := blocking{entered: make(chan struct{}), release: make(chan struct{})}
 	done := make(chan error, MaxSpeaking)
 	for range MaxSpeaking {
-		go func() { done <- synthesized(t, sentences, sentenceAt(0), held.speak) }()
+		id := admit(t, sentences, 0)
+		go func() { done <- synthesized(t, sentences, id, held.speak) }()
 		<-held.entered
 	}
 	// Past the cap is refused at once, not queued behind the four.
@@ -292,7 +327,7 @@ func TestAClipHoldsItsSlotUntilClosed(t *testing.T) {
 	sentences := New(time.Minute)
 	var clips []*Clip
 	for range MaxSpeaking {
-		clip, err := sentences.Synthesize(context.Background(), sentenceAt(0), echo)
+		clip, err := sentences.Synthesize(context.Background(), admit(t, sentences, 0), echo)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -305,7 +340,7 @@ func TestAClipHoldsItsSlotUntilClosed(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	second, err := sentences.Synthesize(context.Background(), sentenceAt(0), echo)
+	second, err := sentences.Synthesize(context.Background(), admit(t, sentences, 0), echo)
 	if err != nil {
 		t.Fatalf("a synthesis after a clip closed: %v", err)
 	}
@@ -318,6 +353,80 @@ func TestAClipHoldsItsSlotUntilClosed(t *testing.T) {
 	everySlotIsFree(t, sentences, 0)
 }
 
+// stubborn holds every request until release closes, whatever its context
+// says: a synthesis that has not yet noticed its fetch went away.
+type stubborn struct {
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (b stubborn) speak(_ context.Context, request openai.SpeechRequest) (openai.Speech, error) {
+	b.entered <- struct{}{}
+	<-b.release
+	return openai.Speech{Transcript: request.Text}, nil
+}
+
+// Release drops a section still waiting, and ends a synthesis of one and
+// gives its slot back before it returns, before the synthesis has noticed:
+// with every slot taken, a reader's next synthesis is not refused for the
+// one it gave up.
+func TestReleaseFreesWhatItsReaderGaveUp(t *testing.T) {
+	t.Parallel()
+	sentences := New(time.Minute)
+	waiting, err := sentences.Admit(text, "marin", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sentences.Release(waiting)
+	if err := synthesized(t, sentences, waiting, echo); !errors.Is(err, ErrUnknown) || sentences.Pending() != 0 {
+		t.Fatalf("a released section was still waiting: %v", err)
+	}
+
+	held := stubborn{entered: make(chan struct{}), release: make(chan struct{})}
+	ids := make([]string, MaxSpeaking)
+	done := make(chan error, MaxSpeaking)
+	for i := range MaxSpeaking {
+		id, err := sentences.Admit(text, "marin", 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids[i] = id
+		go func() {
+			clip, err := sentences.Synthesize(context.Background(), id, held.speak)
+			if err == nil {
+				err = clip.Close()
+			}
+			done <- err
+		}()
+		<-held.entered
+	}
+	refusedAtOnce(t, sentences, ErrBusy)
+	sentences.Release(ids[0])
+	clip, err := sentences.Synthesize(context.Background(), admit(t, sentences, 0), echo)
+	if err != nil {
+		t.Fatalf("a synthesis after a release: %v", err)
+	}
+	refusedAtOnce(t, sentences, ErrBusy)
+	if err := clip.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	close(held.release)
+	released := 0
+	for range MaxSpeaking {
+		switch err := <-done; {
+		case errors.Is(err, ErrUnknown):
+			released++
+		case err != nil:
+			t.Fatal(err)
+		}
+	}
+	if released != 1 {
+		t.Fatalf("released syntheses answered ErrUnknown %d times, want 1", released)
+	}
+	everySlotIsFree(t, sentences, 0)
+}
+
 func TestCancellingASynthesisEndsItAndFreesItsSlot(t *testing.T) {
 	t.Parallel()
 	sentences := New(time.Minute)
@@ -325,8 +434,9 @@ func TestCancellingASynthesisEndsItAndFreesItsSlot(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, MaxSpeaking)
 	for range MaxSpeaking {
+		id := admit(t, sentences, 0)
 		go func() {
-			_, err := sentences.Synthesize(ctx, sentenceAt(0), held.speak)
+			_, err := sentences.Synthesize(ctx, id, held.speak)
 			done <- err
 		}()
 		<-held.entered
@@ -358,12 +468,13 @@ func TestRevokingEndsOlderAdmissions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	olderSpoken, newerSpoken := admit(t, sentences, 4), admit(t, sentences, 5)
 	held := blocking{entered: make(chan struct{}), release: make(chan struct{})}
 	speakingOlder := make(chan error, 1)
-	go func() { speakingOlder <- synthesized(t, sentences, sentenceAt(4), held.speak) }()
+	go func() { speakingOlder <- synthesized(t, sentences, olderSpoken, held.speak) }()
 	<-held.entered
 	speakingNewer := make(chan error, 1)
-	go func() { speakingNewer <- synthesized(t, sentences, sentenceAt(5), held.speak) }()
+	go func() { speakingNewer <- synthesized(t, sentences, newerSpoken, held.speak) }()
 	<-held.entered
 
 	sentences.RevokeBefore(5)
@@ -381,18 +492,15 @@ func TestRevokingEndsOlderAdmissions(t *testing.T) {
 		t.Fatalf("%d sentences wait after the revocation, want only the newer", waiting)
 	}
 	for range 2 {
-		if _, err := sentences.Take(older); !errors.Is(err, ErrOff) {
+		if err := synthesized(t, sentences, older, echo); !errors.Is(err, ErrOff) {
 			t.Fatalf("a revoked waiting sentence = %v, want ErrOff", err)
 		}
 	}
-	if _, err := sentences.Take(strings.Repeat("z", len(older))); !errors.Is(err, ErrUnknown) {
+	if err := synthesized(t, sentences, strings.Repeat("z", len(older)), echo); !errors.Is(err, ErrUnknown) {
 		t.Fatalf("an id that is not one of ours = %v, want ErrUnknown", err)
 	}
 	if _, err := sentences.Admit(text, "marin", 4); !errors.Is(err, ErrOff) {
 		t.Fatalf("an admission older than the revocation = %v, want ErrOff", err)
-	}
-	if err := synthesized(t, sentences, sentenceAt(4), echo); !errors.Is(err, ErrOff) {
-		t.Fatalf("a synthesis older than the revocation = %v, want ErrOff", err)
 	}
 	// A lower revision later does not bring the older ones back.
 	sentences.RevokeBefore(2)
@@ -400,7 +508,7 @@ func TestRevokingEndsOlderAdmissions(t *testing.T) {
 		t.Fatalf("an older admission after a lower revocation = %v, want ErrOff", err)
 	}
 
-	if _, err := sentences.Take(newer); err != nil {
+	if err := synthesized(t, sentences, newer, echo); err != nil {
 		t.Fatalf("a sentence admitted at the revocation's revision: %v", err)
 	}
 	close(held.release)
@@ -416,19 +524,20 @@ func TestRevokingEndsOlderAdmissions(t *testing.T) {
 func TestARevokedSentenceIsOffWhenEverySlotIsTaken(t *testing.T) {
 	t.Parallel()
 	sentences := New(time.Minute)
+	revoked := admit(t, sentences, 0)
 	clips := make([]*Clip, 0, MaxSpeaking)
 	for range MaxSpeaking {
-		clip, err := sentences.Synthesize(context.Background(), sentenceAt(0), echo)
+		clip, err := sentences.Synthesize(context.Background(), admit(t, sentences, 0), echo)
 		if err != nil {
 			t.Fatal(err)
 		}
 		clips = append(clips, clip)
 	}
 	sentences.RevokeBefore(1)
-	if err := synthesized(t, sentences, sentenceAt(0), echo); !errors.Is(err, ErrOff) {
+	if err := synthesized(t, sentences, revoked, echo); !errors.Is(err, ErrOff) {
 		t.Fatalf("a revoked sentence with every slot taken = %v, want ErrOff", err)
 	}
-	if err := synthesized(t, sentences, sentenceAt(1), echo); !errors.Is(err, ErrBusy) {
+	if err := synthesized(t, sentences, admit(t, sentences, 1), echo); !errors.Is(err, ErrBusy) {
 		t.Fatalf("a sentence admitted since, with every slot taken = %v, want ErrBusy", err)
 	}
 	for _, clip := range clips {
@@ -447,7 +556,7 @@ func TestRevokingBetweenAttemptsStopsTheRetry(t *testing.T) {
 	sentences := New(time.Minute)
 	speaker := &scripted{transcripts: []string{answer, text}}
 	speaker.during = func() { sentences.RevokeBefore(1) }
-	if err := synthesized(t, sentences, sentenceAt(0), speaker.speak); !errors.Is(err, ErrOff) {
+	if err := synthesized(t, sentences, admit(t, sentences, 0), speaker.speak); !errors.Is(err, ErrOff) {
 		t.Fatalf("Synthesize = %v, want ErrOff", err)
 	}
 	if speaker.called() != 1 {
@@ -461,7 +570,7 @@ func TestRevokingAsTheReadingArrivesWithholdsIt(t *testing.T) {
 	sentences := New(time.Minute)
 	speaker := &scripted{transcripts: []string{text}}
 	speaker.during = func() { sentences.RevokeBefore(1) }
-	if err := synthesized(t, sentences, sentenceAt(0), speaker.speak); !errors.Is(err, ErrOff) {
+	if err := synthesized(t, sentences, admit(t, sentences, 0), speaker.speak); !errors.Is(err, ErrOff) {
 		t.Fatalf("Synthesize = %v, want ErrOff", err)
 	}
 }
@@ -480,12 +589,97 @@ func TestRevokingOnceTheResultIsKnownIsOff(t *testing.T) {
 		},
 	} {
 		sentences := New(time.Minute)
+		id := admit(t, sentences, 0)
 		sentences.beforeFinish = func() { sentences.RevokeBefore(1) }
-		if err := synthesized(t, sentences, sentenceAt(0), speak); !errors.Is(err, ErrOff) {
+		if err := synthesized(t, sentences, id, speak); !errors.Is(err, ErrOff) {
 			t.Fatalf("%s: Synthesize = %v, want ErrOff", name, err)
 		}
 		// Its slot is free, and sentences admitted since are read.
 		sentences.beforeFinish = nil
 		everySlotIsFree(t, sentences, 1)
 	}
+}
+
+// A Release or RevokeBefore that lands once a synthesis has taken its
+// section and before it first speaks finds it: OpenAI is not asked, the
+// synthesis answers as for a section dropped while waiting, and its slot
+// is back. Releasing the spent id again is harmless.
+func TestAStopBeforeTheFirstSpeakAsksNothing(t *testing.T) {
+	t.Parallel()
+	for name, c := range map[string]struct {
+		stop func(sentences *Sentences, id string)
+		want error
+	}{
+		"released": {func(sentences *Sentences, id string) { sentences.Release(id); sentences.Release(id) }, ErrUnknown},
+		"revoked":  {func(sentences *Sentences, _ string) { sentences.RevokeBefore(1) }, ErrOff},
+	} {
+		sentences := New(time.Minute)
+		id := admit(t, sentences, 0)
+		speaker := &scripted{transcripts: []string{text}}
+		sentences.started = func() { c.stop(sentences, id) }
+		if err := synthesized(t, sentences, id, speaker.speak); !errors.Is(err, c.want) {
+			t.Fatalf("%s: Synthesize = %v, want %v", name, err, c.want)
+		}
+		if speaker.called() != 0 {
+			t.Fatalf("%s: OpenAI was asked %d times after the stop, want 0", name, speaker.called())
+		}
+		if held := len(sentences.slots); held != 0 {
+			t.Fatalf("%s: %d slots held after the stop, want 0", name, held)
+		}
+		sentences.Release(id)
+		if err := synthesized(t, sentences, id, speaker.speak); !errors.Is(err, c.want) || speaker.called() != 0 {
+			t.Fatalf("%s: the spent id again = %v after %d calls, want %v", name, err, speaker.called(), c.want)
+		}
+		sentences.started = nil
+		everySlotIsFree(t, sentences, 1)
+	}
+}
+
+// With every slot held, a section is refused at once without asking
+// OpenAI and without disturbing the syntheses that hold the slots: a
+// revoked one is ErrOff, any other ErrBusy, and the refused one is spent,
+// so releasing it afterwards is harmless.
+func TestEverySlotHeldRefusesWithoutSpeakingOrDisturbingTheHolders(t *testing.T) {
+	t.Parallel()
+	sentences := New(time.Minute)
+	revoked := admit(t, sentences, 0)
+	held := blocking{entered: make(chan struct{}), release: make(chan struct{})}
+	done := make(chan error, MaxSpeaking)
+	for range MaxSpeaking {
+		id := admit(t, sentences, 1)
+		go func() { done <- synthesized(t, sentences, id, held.speak) }()
+		<-held.entered
+	}
+	sentences.RevokeBefore(1)
+
+	speaker := &scripted{transcripts: []string{text}}
+	if err := synthesized(t, sentences, revoked, speaker.speak); !errors.Is(err, ErrOff) {
+		t.Fatalf("a revoked section with every slot held = %v, want ErrOff", err)
+	}
+	busy := admit(t, sentences, 1)
+	if err := synthesized(t, sentences, busy, speaker.speak); !errors.Is(err, ErrBusy) {
+		t.Fatalf("a section with every slot held = %v, want ErrBusy", err)
+	}
+	sentences.Release(busy)
+	sentences.Release(busy)
+	if err := synthesized(t, sentences, busy, speaker.speak); !errors.Is(err, ErrUnknown) {
+		t.Fatalf("a section refused for a slot, again = %v, want ErrUnknown", err)
+	}
+	if speaker.called() != 0 {
+		t.Fatalf("OpenAI was asked %d times for refused sections, want 0", speaker.called())
+	}
+	if n := len(sentences.slots); n != MaxSpeaking {
+		t.Fatalf("%d slots held, want the %d holders'", n, MaxSpeaking)
+	}
+
+	close(held.release)
+	for range MaxSpeaking {
+		if err := <-done; err != nil {
+			t.Fatalf("a holder was disturbed: %v", err)
+		}
+	}
+	if n := len(sentences.slots); n != 0 {
+		t.Fatalf("%d slots held once every holder closed, want 0", n)
+	}
+	everySlotIsFree(t, sentences, 1)
 }

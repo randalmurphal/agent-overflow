@@ -235,6 +235,7 @@ func TestCommandFailureMessagesDescribeRecoveryWithoutPrivateCauses(t *testing.T
 		{"permissions", -1, &os.PathError{Op: "exec", Path: "/private/path", Err: os.ErrPermission}, "permissions"},
 		{"exit", 7, errors.New("private process detail"), "code 7"},
 		{"start failure", -1, errors.New("private process detail"), "workspace availability"},
+		{"leftover outlived the sweep", 0, procutil.ErrGroupSurvived, "still running on the destination"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m, _ := manager(t, func(context.Context, string, []string, io.Writer) (Outcome, error) {
@@ -257,7 +258,9 @@ func TestCommandFailureMessagesDescribeRecoveryWithoutPrivateCauses(t *testing.T
 func TestAbandonedJobsStopAfterOwnerGraceWhilePolledJobsContinue(t *testing.T) {
 	t.Parallel()
 	o := logOptions(t, 1024)
-	o.OwnerGrace = 300 * time.Millisecond
+	// The polled job's lease is the gap between two polls below. A grace
+	// forty polls long keeps a stalled runner from letting it lapse.
+	o.OwnerGrace = time.Second
 	m, st := logManager(t, o, func(ctx context.Context, _ string, _ []string, out io.Writer) (Outcome, error) {
 		<-ctx.Done()
 		return Outcome{ExitCode: -1}, ctx.Err()
@@ -278,7 +281,7 @@ func TestAbandonedJobsStopAfterOwnerGraceWhilePolledJobsContinue(t *testing.T) {
 		if _, err := m.Get("other-owner", abandoned.ID); err == nil {
 			t.Fatal("another device's read counted as owner contact")
 		}
-		time.Sleep(o.OwnerGrace / 4)
+		time.Sleep(o.OwnerGrace / 40)
 	}
 	// The stop is under way by now; its receipt lands once the run returns.
 	// Read the stored row, which is no owner contact, and keep polling the
@@ -295,7 +298,7 @@ func TestAbandonedJobsStopAfterOwnerGraceWhilePolledJobsContinue(t *testing.T) {
 		if _, err := m.Get("owner", polled.ID); err != nil {
 			t.Fatal(err)
 		}
-		time.Sleep(o.OwnerGrace / 4)
+		time.Sleep(o.OwnerGrace / 40)
 	}
 	got, err := m.Get("owner", abandoned.ID)
 	if err != nil {

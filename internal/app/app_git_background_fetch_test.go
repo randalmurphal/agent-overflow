@@ -142,7 +142,10 @@ func TestBackgroundFetchPassMemoRecoversAndReports(t *testing.T) {
 		t.Fatalf("memo keys after a failing pass = %v, want one entry", got)
 	}
 
+	// A failing repository is retried on a backoff, and a pass inside it is
+	// not a recovery: end the record so this pass genuinely re-runs git.
 	testutil.RunGit(t, repo, "remote", "set-url", "origin", bare)
+	app.gitCore().InvalidateFetchCache(repo)
 	app.runBackgroundFetchPass(t.Context())
 	if got := memoKeys(app); len(got) != 0 {
 		t.Fatalf("memo keys after recovery = %v, want empty", got)

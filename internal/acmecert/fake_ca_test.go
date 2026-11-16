@@ -18,6 +18,8 @@ import (
 	"time"
 
 	"golang.org/x/crypto/acme"
+
+	"agent-overflow/internal/procutil/procutiltest"
 )
 
 // fixedAccountKey is a P-256 key checked in so the challenge value below
@@ -191,6 +193,7 @@ func newIssuance(t *testing.T, dir string, prepare func(*fakeCA)) *issuance {
 		Dir:    dir,
 		Domain: "backend.example",
 		Hook:   []string{"dns-hook", "--zone", "example"},
+		Reaper: procutiltest.Reaper(),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)

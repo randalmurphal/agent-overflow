@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/agentmeta"
 	"agent-overflow/internal/notify"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadtools"
@@ -25,9 +26,9 @@ import (
 
 // testAgentWake is a wake of row that says text, attributed to row.
 func testAgentWake(t testing.TB, row store.AgentWake, text string) usermessage.AgentMessage {
-	kind := usermessage.ReportLoop
+	kind := agentmeta.ReportLoop
 	if row.Kind == store.AgentWakeWatch {
-		kind = usermessage.ReportWatch
+		kind = agentmeta.ReportWatch
 	}
 	return builtMessage(t)(usermessage.Report(kind, usermessage.Reporter{Label: row.Label}, "", text, ""))
 }
@@ -88,7 +89,7 @@ func sendWithin(t *testing.T, a *App, threadID, text string, limit time.Duration
 	}
 	done := make(chan result, 1)
 	go func() {
-		sendID, err := a.SendExternalThreadMessage(threadID, text)
+		sendID, err := a.SendExternalThreadMessage(context.Background(), threadID, text)
 		done <- result{sendID, err}
 	}()
 	select {
@@ -312,7 +313,7 @@ func TestAThreadSendRefusedByAnArchiveSaysSoInOneSentence(t *testing.T) {
 	}
 	refused := make(chan error, 1)
 	go func() {
-		_, err := a.SendExternalThreadMessage(thread.ID, "deploy 6 is done")
+		_, err := a.SendExternalThreadMessage(context.Background(), thread.ID, "deploy 6 is done")
 		refused <- err
 	}()
 	waitUntil(t, 10*time.Second, func() bool { return a.threadApplication().MutationRefs(thread.ID) == 2 })
@@ -324,7 +325,7 @@ func TestAThreadSendRefusedByAnArchiveSaysSoInOneSentence(t *testing.T) {
 	if err := <-refused; err == nil || err.Error() != want {
 		t.Fatalf("refused at the queue write: %v, want %q", err, want)
 	}
-	if _, err := a.SendExternalThreadMessage(thread.ID, "deploy 7 is done"); err == nil || err.Error() != want {
+	if _, err := a.SendExternalThreadMessage(context.Background(), thread.ID, "deploy 7 is done"); err == nil || err.Error() != want {
 		t.Fatalf("refused up front: %v, want %q", err, want)
 	}
 	if rows := durableQueueRows(t, a, thread.ID); len(rows) != 0 {
@@ -715,6 +716,11 @@ func queuedSendIDs(t *testing.T, a *App, threadID string) (durable, memory []str
 func TestArchivingAStoppedThreadWithdrawsWhatTheAppQueued(t *testing.T) {
 	t.Parallel()
 	a, thread := heldNoticeFixture(t, "notice-archive-stopped")
+	// The person's message would start the session for the whole queue, and
+	// the failed start would return it (ensureSessionForFlushLocked). The
+	// dispatcher is held so all three wait for the archive, as the notices'
+	// own failed starts left the first two.
+	holdFlushQueue(a)
 	holdAgentWake(t, a, thread, store.AgentWakeLoop, "board")
 	sendWithin(t, a, thread.ID, "deploy 13 is done", 5*time.Second)
 	a.waitAgentNoticeWork()

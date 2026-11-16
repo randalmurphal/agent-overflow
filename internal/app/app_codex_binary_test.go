@@ -80,9 +80,18 @@ func putCodexOnPath(t *testing.T, app *App, f codexNpmFixture) {
 	t.Helper()
 	t.Setenv("PATH", f.bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	app.codexLookPathFn = nil
+	app.defaultProviderBinaryOverride = ""
 	if _, err := app.settings.Update(map[string]any{"codexBinaryPath": "codex"}); err != nil {
 		t.Fatalf("restore default codex setting: %v", err)
 	}
+}
+
+// useDefaultCodexLookup makes the default `codex` setting resolve through
+// lookPath, as production resolves it through exec.LookPath, instead of
+// running the fixture's poison.
+func useDefaultCodexLookup(app *App, lookPath func(string) (string, error)) {
+	app.defaultProviderBinaryOverride = ""
+	app.codexLookPathFn = lookPath
 }
 
 func realPath(t *testing.T, path string) string {
@@ -253,10 +262,10 @@ func TestDefaultCodexBinaryWalksPathOncePerInvalidation(t *testing.T) {
 		t.Fatalf("set claude binary: %v", err)
 	}
 	walks := 0
-	app.codexLookPathFn = func(string) (string, error) {
+	useDefaultCodexLookup(app, func(string) (string, error) {
 		walks++
 		return "", exec.ErrNotFound
-	}
+	})
 	if _, err := app.settings.Update(map[string]any{"codexBinaryPath": "codex"}); err != nil {
 		t.Fatalf("restore default codex setting: %v", err)
 	}
@@ -297,10 +306,10 @@ func TestDefaultCodexBinaryDropsARemovedNativeBinary(t *testing.T) {
 	writeProviderBinaryFile(t, f.wrapper, "exit 0")
 	writeProviderBinaryFile(t, f.native, "exit 0")
 	walks := 0
-	app.codexLookPathFn = func(string) (string, error) {
+	useDefaultCodexLookup(app, func(string) (string, error) {
 		walks++
 		return f.command, nil
-	}
+	})
 	if _, err := app.settings.Update(map[string]any{"codexBinaryPath": "codex"}); err != nil {
 		t.Fatalf("restore default codex setting: %v", err)
 	}
@@ -339,7 +348,7 @@ func TestDefaultCodexBinaryDoesNotCacheALookupThatRacedAPathChange(t *testing.T)
 	before := t.TempDir()
 	t.Setenv("PATH", before)
 	walks := 0
-	app.codexLookPathFn = func(string) (string, error) {
+	useDefaultCodexLookup(app, func(string) (string, error) {
 		walks++
 		if walks == 1 {
 			if err := os.Setenv("PATH", f.bin); err != nil {
@@ -348,7 +357,7 @@ func TestDefaultCodexBinaryDoesNotCacheALookupThatRacedAPathChange(t *testing.T)
 			return f.command, nil
 		}
 		return "", exec.ErrNotFound
-	}
+	})
 	app.invalidateDefaultCodexBinary()
 
 	if got := app.providerBinaryPath(string(provider.Codex)); got != nativePath(t, f) {

@@ -4,8 +4,7 @@
 // setupEventListeners.
 import type { Project } from '../types/models';
 import {
-  addProjectLocal,
-  getProject,
+  listProjectLocal,
   removeProjectLocal,
   updateProjectLocal,
 } from './projects.svelte';
@@ -55,12 +54,10 @@ export function applyProjectUpdated(evt: ProjectUpdateEvent): void {
       // Created or unarchived: the row belongs in the sidebar now. Insert it
       // if this client does not have it — the initiating client's own
       // addProjectLocal is the same step, so an echo of its own creation is
-      // idempotent. A row it already holds is converged instead, because
-      // addProjectLocal deliberately declines to overwrite (a refresh that
-      // raced it carries thread counts this frame does not).
+      // idempotent. A row it already holds is converged instead, keeping the
+      // thread counts a refresh that raced it carries and this frame does not.
       if (!evt.project?.id) return;
-      if (getProject(evt.project.id)) updateProjectLocal(evt.project);
-      else addProjectLocal(evt.project);
+      listProjectLocal(evt.project);
       return;
     }
     default: {

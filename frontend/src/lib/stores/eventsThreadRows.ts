@@ -8,14 +8,14 @@ import { isPassiveConnectionFailure } from '../transport/passiveReadFailure';
 // setupEventListeners.
 import type { TurnCompletedEvent } from '../types/events';
 import type { Thread } from '../types/models';
-import { closePanesShowingThread, findPaneShowingThread, iterPanes, moveAssistantPanes, syncThread } from './panes.svelte';
+import { closePanesShowingThread, findPaneShowingThread, followDeletedThread, iterPanes, moveAssistantPanes, syncThread } from './panes.svelte';
 import { refreshProjects, touchProjectActivity } from './projects.svelte';
 import { refreshThreadGroups } from './threadGroups.svelte';
 import { refreshAgentWakes } from './threadWakes.svelte';
 import { forgetThreadWorkerSummary, refreshThreadWorkerSummaries } from './threadWorkerSummaries.svelte';
 import { followAssistantHandOffInStash, followAssistantHandOffsInStash } from './companionStash';
 import { addErrorToast, addToast } from './toast.svelte';
-import { getThreadById, getThreadLiveActivityAt, getThreads, loadThreads, prependThread, removeThread, replaceAllThreads, replaceThread, touchThreadActivity } from './threads.svelte';
+import { getThreadById, getThreadLiveActivityAt, getThreads, listThread, loadThreads, removeThread, replaceAllThreads, replaceThread, touchThreadActivity, unlistThread } from './threads.svelte';
 import { projectReaderMessageSent, projectThreadError } from './threadStatuses.svelte';
 import type { ThreadPaneIngest } from './threadPaneRoles';
 import { pendingLocalReadMarker } from './threadReadWrites';
@@ -393,7 +393,7 @@ function patchMatchesThread(
  * frame that arrived after the call started.
  */
 export interface ThreadUpdateEvent {
-  /** 'full' | 'patch' | 'listed' | 'unlisted' | 'deleted' */
+  /** 'full' | 'patch' | 'listed' | 'unlisted' | 'emptied' | 'deleted' */
   action: string;
   thread?: Thread;
   id?: string;
@@ -428,6 +428,18 @@ export function applyThreadErrorNotice(evt: ThreadErrorNoticeEvent): void {
   if (!evt?.threadId) return;
   projectThreadError(evt.threadId);
   patchThreadDurableStatus(evt.threadId, { hasFailedTurn: true });
+}
+
+/**
+ * The thread row is gone from SQLite, learned from its broadcast or from a
+ * draft save answering not_found. Drop the row, then let panes showing it
+ * follow (panes.svelte.ts#followDeletedThread). An empty-draft cleanup this
+ * screen started applies its own result first. Repeating it is a no-op.
+ */
+export function applyThreadDeleted(id: string): void {
+  removeThread(id);
+  forgetThreadWorkerSummary(id);
+  if (!deferEmptyDraftDeletion(id, () => followDeletedThread(id))) followDeletedThread(id);
 }
 
 export function applyThreadUpdated(evt: ThreadUpdateEvent): void {
@@ -467,15 +479,10 @@ export function applyThreadUpdated(evt: ThreadUpdateEvent): void {
       return;
     }
     case 'deleted': {
-      // The row is gone from SQLite. Same teardown the deleting client
-      // runs on its own RPC result: drop the row and its per-thread
-      // caches, then close panes that were showing it — a pane on a row
-      // that no longer exists cannot load, send, or resume.
+      // A pane on a row that no longer exists cannot load, send, or
+      // resume: it closes, unless it holds unsaved text to keep.
       if (!evt.id) return;
-      removeThread(evt.id);
-      forgetThreadWorkerSummary(evt.id);
-      const id = evt.id;
-      if (!deferEmptyDraftDeletion(id, () => closePanesShowingThread(id))) closePanesShowingThread(id);
+      applyThreadDeleted(evt.id);
       return;
     }
     case 'unlisted': {
@@ -494,14 +501,25 @@ export function applyThreadUpdated(evt: ThreadUpdateEvent): void {
       else closePanesShowingThread(id);
       return;
     }
+    case 'emptied': {
+      // A never-sent thread lost what listed it (its draft text, its
+      // worktree): off the sidebar, but it still exists, so a pane showing
+      // it stays and keeps its state.
+      const id = evt.thread?.id ?? evt.id;
+      if (!id) return;
+      if (evt.thread) syncThreadRow(evt.thread);
+      unlistThread(id);
+      return;
+    }
     case 'listed': {
-      // Created, forked, or unarchived: the row belongs in the active
-      // sidebar now. Insert it if this client does not have it — the
-      // initiating client's own prepend is the same step, so an echo of
-      // its own creation is idempotent.
+      // Created, forked, unarchived, or made real by its first draft
+      // content, item or worktree (store.sidebarListedClause): the row
+      // belongs in the active sidebar now. Insert it if
+      // this client does not have it — the initiating client's own prepend
+      // is the same step, so an echo of its own creation is idempotent.
       if (!evt.thread?.id) return;
       const merged = mergeThreadRowWithLocal(evt.thread);
-      if (!getThreadById(merged.id)) prependThread(merged);
+      listThread(merged);
       syncThread(merged);
       return;
     }

@@ -11,7 +11,9 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/providertest"
 	"agent-overflow/internal/testutil/mockexec"
 )
 
@@ -38,6 +40,7 @@ done
 	mockexec.Write(t, scriptPath, script)
 
 	session, err := NewSession(context.Background(), testThread, Config{
+		Reaper:  procutiltest.Reaper(),
 		Binary:  scriptPath,
 		Model:   "test-model",
 		WorkDir: t.TempDir(),
@@ -101,7 +104,7 @@ func TestSendBindsOutputSchemaAcrossTurnStartOrdering(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			t.Cleanup(cancel)
-			proc, err := provider.Spawn(ctx, provider.SpawnConfig{
+			proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{
 				Binary: "sh",
 				Args:   []string{"-c", "cat > /dev/null"},
 			})

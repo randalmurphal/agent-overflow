@@ -20,7 +20,9 @@ import (
 // labels are the set mutations with operationMode REMOVE then APPEND, so
 // a change touches only whom or what it names, each checked against the
 // merge request the mutation answers: a person or label it did not apply
-// is a refusal naming it. Re-request and bypass are GraphQL-only.
+// is a refusal naming it. Re-request and bypass are GraphQL-only. A write
+// the server's release lacks (gitlab_version.go) is refused before it is
+// sent, naming the release it needs.
 
 // gitlabPut updates the merge request with body.
 func gitlabPut(ctx context.Context, client *forgeapi.Client, ref PRReference, body map[string]any) error {
@@ -31,7 +33,7 @@ func gitlabPut(ctx context.Context, client *forgeapi.Client, ref PRReference, bo
 // EditPR reads the merge request, refuses a description edit whose
 // expected description is no longer its own, and PUTs the edit.
 func (f *gitlabForge) EditPR(ctx context.Context, ref PRReference, edit PREdit) error {
-	client, err := f.core.gitlabAPI(ref.Host)
+	client, err := f.writeClient(ctx, ref)
 	if err != nil {
 		return err
 	}
@@ -89,17 +91,17 @@ func gitlabMRVars(ref PRReference) map[string]any {
 	return map[string]any{"projectPath": ref.Project(), "iid": strconv.Itoa(ref.Number)}
 }
 
-// gitlabUnsupported refuses a change the host's schema cannot make.
-func gitlabUnsupported(ref PRReference, what string) error {
-	return &ForgeActionError{Kind: ForgeErrorRefused, Message: fmt.Sprintf("GitLab on %s cannot change %s here; change them on GitLab.", ref.Host, what)}
-}
-
+// The set mutations answer whether the project takes more than one
+// person: without it (GitLab Free), GitLab keeps the first of the list and
+// drops the rest without an error. MergeRequest.allowsMultipleReviewers is
+// "Allows assigning multiple reviewers to a merge request." (GraphQL
+// reference at 18.0), allowsMultipleAssignees the same for assignees.
 const gitlabSetReviewersMutation = `mutation PRSetReviewers($projectPath: ID!, $iid: String!, $usernames: [String!]!, $mode: MutationOperationMode!) {
-  mergeRequestSetReviewers(input: {projectPath: $projectPath, iid: $iid, reviewerUsernames: $usernames, operationMode: $mode}) { errors mergeRequest { reviewers(first: 100) { pageInfo { hasNextPage } nodes { username } } } }
+  mergeRequestSetReviewers(input: {projectPath: $projectPath, iid: $iid, reviewerUsernames: $usernames, operationMode: $mode}) { errors mergeRequest { allowsMultipleReviewers reviewers(first: 100) { pageInfo { hasNextPage } nodes { username } } } }
 }`
 
 const gitlabSetAssigneesMutation = `mutation PRSetAssignees($projectPath: ID!, $iid: String!, $usernames: [String!]!, $mode: MutationOperationMode!) {
-  mergeRequestSetAssignees(input: {projectPath: $projectPath, iid: $iid, assigneeUsernames: $usernames, operationMode: $mode}) { errors mergeRequest { assignees(first: 100) { pageInfo { hasNextPage } nodes { username } } } }
+  mergeRequestSetAssignees(input: {projectPath: $projectPath, iid: $iid, assigneeUsernames: $usernames, operationMode: $mode}) { errors mergeRequest { allowsMultipleAssignees assignees(first: 100) { pageInfo { hasNextPage } nodes { username } } } }
 }`
 
 type gitlabUserConnection struct {
@@ -110,28 +112,22 @@ type gitlabUserConnection struct {
 type gitlabPeoplePayload struct {
 	Errors       []string `json:"errors"`
 	MergeRequest *struct {
-		Reviewers *gitlabUserConnection `json:"reviewers"`
-		Assignees *gitlabUserConnection `json:"assignees"`
+		AllowsMultipleReviewers bool                  `json:"allowsMultipleReviewers"`
+		AllowsMultipleAssignees bool                  `json:"allowsMultipleAssignees"`
+		Reviewers               *gitlabUserConnection `json:"reviewers"`
+		Assignees               *gitlabUserConnection `json:"assignees"`
 	} `json:"mergeRequest"`
 }
 
 // SetPRPeople removes, then adds, by username with the set mutations.
 func (f *gitlabForge) SetPRPeople(ctx context.Context, ref PRReference, reviewers bool, change PRPeopleChange) error {
-	client, err := f.core.gitlabAPI(ref.Host)
-	if err != nil {
-		return err
-	}
-	schema, err := f.manageSchema(ctx, client, ref.Host)
+	client, err := f.writeClient(ctx, ref)
 	if err != nil {
 		return err
 	}
 	op, doc, field, list := "PRSetAssignees", gitlabSetAssigneesMutation, "mergeRequestSetAssignees", "assignees"
-	supported := schema.setAssignees
 	if reviewers {
-		op, doc, field, list, supported = "PRSetReviewers", gitlabSetReviewersMutation, "mergeRequestSetReviewers", "reviewers", schema.setReviewers
-	}
-	if !supported {
-		return gitlabUnsupported(ref, list)
+		op, doc, field, list = "PRSetReviewers", gitlabSetReviewersMutation, "mergeRequestSetReviewers", "reviewers"
 	}
 	step := func(mode string, people []PRPerson) changeStep {
 		names := logins(people)
@@ -146,9 +142,9 @@ func (f *gitlabForge) SetPRPeople(ctx context.Context, ref PRReference, reviewer
 			if payload.MergeRequest == nil {
 				return &UnconfirmedWriteError{Err: fmt.Errorf("GitLab answered no merge request after setting its %s", list)}
 			}
-			now := payload.MergeRequest.Assignees
+			now, multiple, one := payload.MergeRequest.Assignees, payload.MergeRequest.AllowsMultipleAssignees, "assignee"
 			if reviewers {
-				now = payload.MergeRequest.Reviewers
+				now, multiple, one = payload.MergeRequest.Reviewers, payload.MergeRequest.AllowsMultipleReviewers, "reviewer"
 			}
 			if now == nil {
 				return &UnconfirmedWriteError{Err: fmt.Errorf("GitLab answered no %s after setting them", list)}
@@ -162,8 +158,8 @@ func (f *gitlabForge) SetPRPeople(ctx context.Context, ref PRReference, reviewer
 					return &ForgeActionError{Kind: ForgeErrorRefused, Message: fmt.Sprintf("GitLab kept %s on the %s.", joinClauses(missed), list)}
 				}
 				why := "they may not be members of the project"
-				if !reviewers {
-					why = "they may not be members of the project, or the project takes fewer assignees"
+				if !multiple && len(now.Nodes) > 0 {
+					why = fmt.Sprintf("this project allows one %s per merge request; more need GitLab Premium", one)
 				}
 				return &ForgeActionError{Kind: ForgeErrorRefused, Message: fmt.Sprintf("GitLab did not add %s to the %s: %s.", joinClauses(missed), list, why)}
 			})
@@ -254,16 +250,9 @@ type gitlabLabelsPayload struct {
 
 // SetPRLabels removes, then adds, by label id with mergeRequestSetLabels.
 func (f *gitlabForge) SetPRLabels(ctx context.Context, ref PRReference, change PRLabelChange) error {
-	client, err := f.core.gitlabAPI(ref.Host)
+	client, err := f.writeClient(ctx, ref)
 	if err != nil {
 		return err
-	}
-	schema, err := f.manageSchema(ctx, client, ref.Host)
-	if err != nil {
-		return err
-	}
-	if !schema.setLabels {
-		return gitlabUnsupported(ref, "labels")
 	}
 	step := func(mode string, labels []PRLabel) changeStep {
 		done, next := stepWords(strings.ToLower(mode), labelNames(labels), "labels")
@@ -332,7 +321,7 @@ func gitlabSetDraft(ctx context.Context, client *forgeapi.Client, ref PRReferenc
 // SetPRState closes or reopens with state_event, and converts to a draft
 // with mergeRequestSetDraft.
 func (f *gitlabForge) SetPRState(ctx context.Context, ref PRReference, state string) error {
-	client, err := f.core.gitlabAPI(ref.Host)
+	client, err := f.writeClient(ctx, ref)
 	if err != nil {
 		return err
 	}
@@ -353,7 +342,7 @@ const gitlabBypassMutation = `mutation PRBypassChanges($projectPath: ID!, $iid: 
 // RerequestReview asks reviewer, one of the merge request's reviewers
 // (GitLab refuses anyone else), for a new review, by user id.
 func (f *gitlabForge) RerequestReview(ctx context.Context, ref PRReference, reviewer PRPerson) error {
-	client, err := f.core.gitlabAPI(ref.Host)
+	client, err := f.writeClient(ctx, ref)
 	if err != nil {
 		return err
 	}
@@ -372,7 +361,7 @@ func (f *gitlabForge) DismissReview(context.Context, PRReference, string, string
 // BypassRequestedChanges overrides the merge request's requested changes;
 // GitLab takes it only from a user who may merge.
 func (f *gitlabForge) BypassRequestedChanges(ctx context.Context, ref PRReference) error {
-	client, err := f.core.gitlabAPI(ref.Host)
+	client, err := f.writeClient(ctx, ref)
 	if err != nil {
 		return err
 	}

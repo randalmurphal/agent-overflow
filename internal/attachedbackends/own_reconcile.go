@@ -169,7 +169,7 @@ func (m *Manager) reconcileOwnPeer(ctx context.Context, id string, hooks OwnDevi
 	}
 	defer rpc.Close()
 	var remote owndevices.List
-	if err = rpc.Call(ctx, "ListOwnDevices", &remote); err != nil {
+	if err = timedPeerCall(ctx, rpc, "ListOwnDevices", &remote); err != nil {
 		return err
 	}
 	if !remote.Enabled {
@@ -200,10 +200,10 @@ func (m *Manager) reconcileOwnPeer(ctx context.Context, id string, hooks OwnDevi
 	if !local.Enabled || !ok || self.Removed {
 		return nil // A local removal wins over a stale, still-online member.
 	}
-	if err = rpc.Call(ctx, "RegisterOwnDevice", &remote, self); err != nil {
+	if err = timedPeerCall(ctx, rpc, "RegisterOwnDevice", &remote, self); err != nil {
 		return err
 	}
-	if err = rpc.Call(ctx, "SyncOwnDevices", &remote, local.Members); err != nil {
+	if err = timedPeerCall(ctx, rpc, "SyncOwnDevices", &remote, local.Members); err != nil {
 		return err
 	}
 	if err = validateOwnSource(remote, id, key); errors.Is(err, errOwnDeviceRemoved) {
@@ -219,7 +219,7 @@ func (m *Manager) reconcileOwnPeer(ctx context.Context, id string, hooks OwnDevi
 		if mintErr != nil {
 			return mintErr
 		}
-		if err = rpc.Call(ctx, "AcceptOwnDeviceIntroduction", nil, link); err != nil {
+		if err = timedPeerCall(ctx, rpc, "AcceptOwnDeviceIntroduction", nil, link); err != nil {
 			return err
 		}
 	}
@@ -241,7 +241,7 @@ func (m *Manager) reconcileOwnPeer(ctx context.Context, id string, hooks OwnDevi
 		var invitation struct {
 			URL string `json:"url"`
 		}
-		if err := rpc.Call(ctx, "IntroduceOwnDevice", &invitation, member.BackendID); err != nil {
+		if err := timedPeerCall(ctx, rpc, "IntroduceOwnDevice", &invitation, member.BackendID); err != nil {
 			introductionErrors = append(introductionErrors, fmt.Errorf("connect computer %s: %w", member.BackendID, err))
 			continue
 		}

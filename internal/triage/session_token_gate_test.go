@@ -285,8 +285,16 @@ func TestProcessStateWritersRefuseARetiredSessionsFrame(t *testing.T) {
 			}
 		}, func(r *Router) bool { model, _ := r.EffectiveModelSnapshot(threadID); return model != "" }},
 		{"turn settlement", "turn settlement", func(t *testing.T, r *Router, token string) {
-			r.claimTurnSettlement(threadID, 4, token)
+			r.claimTurnSettlement(threadID, 4, token, false, false)
 		}, func(r *Router) bool { return r.isTurnSettled(threadID, 4) }},
+		{"latest settlement", "late settlement of a held stop", func(t *testing.T, r *Router, token string) {
+			r.settleWaitingStop(threadID, 4, token, true, false)
+		}, func(r *Router) bool {
+			r.mu.Lock()
+			defer r.mu.Unlock()
+			st := r.threadStateIfPresent(threadID)
+			return st != nil && st.lastSettledSet
+		}},
 		{"open turn and round", "turn start", func(t *testing.T, r *Router, token string) {
 			if err := r.handleTurnStart(fromSession(provider.ProviderEvent{Kind: provider.EventTurnStart, ThreadID: threadID, TurnID: "turn-1", Timestamp: time.Now()}, token)); err != nil {
 				t.Fatal(err)

@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/agentmeta"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadtools"
@@ -24,6 +25,12 @@ func TestThreadAgentIncomingRequestWithdrawTellsTheSender(t *testing.T) {
 	f.mockClaudeHoldingTheTurn(t, "working")
 	f.holdCallerTurn(t)
 	target := f.busyThread(t, "busy")
+	// busyThread's open turn has no session, which nothing in production
+	// leaves: a running turn has a live session, and a message queued with no
+	// session starts one (ensureSessionForFlushLocked). The dispatcher is
+	// held so the message waits in the queue as it would behind a running
+	// turn.
+	holdFlushQueue(f.app)
 	ack, err := f.adapter().Send(t.Context(), f.callerIdentity(), threadtools.SendCall{
 		ThreadID: target.ID, Message: "look at this too", Notify: true,
 	})
@@ -32,7 +39,7 @@ func TestThreadAgentIncomingRequestWithdrawTellsTheSender(t *testing.T) {
 	}
 	sendID := threadRequestSendID(ack.Token)
 	queued := f.app.queueSnapshotForThread(target.ID)
-	if len(queued) != 1 || queued[0].Origin != usermessage.OriginAgentThread || queued[0].OriginThread == nil ||
+	if len(queued) != 1 || queued[0].Origin != agentmeta.OriginAgentThread || queued[0].OriginThread == nil ||
 		queued[0].OriginThread.ThreadID != f.caller.ID {
 		t.Fatalf("the queue does not name the message's origin: %+v", queued)
 	}
@@ -107,6 +114,12 @@ func TestThreadAgentStopAllWithdrawsIncomingAndRefusesAPersonsMessage(t *testing
 	f.mockClaudeHoldingTheTurn(t, "working")
 	f.holdCallerTurn(t)
 	target := f.busyThread(t, "busy")
+	// busyThread's open turn has no session, which nothing in production
+	// leaves: a running turn has a live session, and a message queued with no
+	// session starts one (ensureSessionForFlushLocked). The dispatcher is
+	// held so the message waits in the queue as it would behind a running
+	// turn.
+	holdFlushQueue(f.app)
 	ack, err := f.adapter().Send(t.Context(), f.callerIdentity(), threadtools.SendCall{
 		ThreadID: target.ID, Message: "and this", Notify: true,
 	})
@@ -147,7 +160,7 @@ func TestThreadAgentIncomingWakesSendsAndQuestionsWithdrawToTheirOwners(t *testi
 	if err := a.queueAgentNotice(agentNotice{
 		threadID: thread.ID, sendID: prompt.sendID(),
 		prepare: func() (usermessage.AgentMessage, bool, error) {
-			return builtMessage(t)(usermessage.Report(usermessage.ReportQuestion, usermessage.Reporter{Label: "worker", ThreadID: "worker-thread"}, "", `Thread "worker" asks`, "")), true, nil
+			return builtMessage(t)(usermessage.Report(agentmeta.ReportQuestion, usermessage.Reporter{Label: "worker", ThreadID: "worker-thread"}, "", `Thread "worker" asks`, "")), true, nil
 		},
 		startFailed: func(err error) string { return "the agent could not start: " + err.Error() },
 	}); err != nil {
@@ -190,6 +203,12 @@ func TestThreadAgentIncomingCompletionsAndWorkflowWakes(t *testing.T) {
 	t.Parallel()
 	a, _ := newAppForFlushQueueRPC(t)
 	a.startSessionFn = func(string) error { return errors.New("the provider binary is missing") }
+	// A message queued on a thread whose session cannot start goes back to
+	// the composer (ensureSessionForFlushLocked); only a notice's own start,
+	// which failed here, leaves its message queued. The dispatcher is held so
+	// the workflow's wake and the person's message stay queued beside the
+	// completion, which is the queue this test withdraws from.
+	holdFlushQueue(a)
 	thread := remoteWatchThread(t, a, string(provider.Claude))
 	w := completedRemoteWatch(t, a, thread)
 	if err := a.queueAgentNotice(a.remoteCompletionNotice(w, remoteCompletionOutput{Tail: "done"})); err != nil {

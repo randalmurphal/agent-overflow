@@ -4,6 +4,8 @@ import { getToasts } from './toast.svelte';
 import { appStorageGet, appStorageSet, resetAppStorageForTest } from './appStorage';
 import {
   activeDiffReviewSourceForThread,
+  getDiffReviewComments,
+  refreshDiffReviewComments,
   replaceDiffReviewCommentsForTest,
 } from './diffReviewComments.svelte';
 import { projectTurnStarted } from './threadStatuses.svelte';
@@ -48,6 +50,7 @@ import { parseReviewFiles, sourceHash, type ReviewFile } from '../utils/patchPar
 import { keptText } from '../utils/patchStore';
 import { buildReviewRows, REVIEW_COMMIT_CARD_ROW_KEY } from '../utils/reviewRows';
 import { RANGE_LINE_NOT_IN_PR } from './reviewRangeComments';
+import { commentWriteKey } from './reviewCommentWrites.svelte';
 import {
   getSpansForReviewLine,
   resetDiffSpanCacheForTest,
@@ -2281,11 +2284,41 @@ describe('reviewPane store — PR scope', () => {
 
       await state.submitPRReview();
 
-      expect(submit.mock.calls[0]?.[1]).toEqual({ verdict: 'comment', body: 'overall note', comments: [{ path: 'src/app.ts', body: 'comment', line: 1, side: 'right' }] });
+      expect(submit.mock.calls[0]?.[1]).toEqual({ verdict: 'comment', body: 'overall note', headSha: 'sha-a', comments: [{ path: 'src/app.ts', body: 'comment', line: 1, side: 'right' }] });
       expect(mark).toHaveBeenCalledWith('thread-1', 'pr', PR_SOURCE_KEY, ['d-1'], 'pr:sha-a');
       expect(state.summaryBody).toBe('');
       expect(state.submitError).toBeNull();
       expect(state.drafts).toEqual([]);
+    });
+
+    it('marks the drafts against the head it sent after the PR under the pane switched during the call', async () => {
+      installPRMocks();
+      setBindingMock('SubscribePRUpdates', async (pr: { Number: number }) => ({
+        id: `sub-${pr.Number}`,
+        prKey: `github:owner/repo:${pr.Number}`,
+        detail: prDetailStub({ number: pr.Number, headSHA: pr.Number === 5 ? 'sha-a' : 'sha-z' }),
+        threads: [],
+        headSHA: pr.Number === 5 ? 'sha-a' : 'sha-z',
+      }));
+      const rows = [draft({ id: 'd-1', scope: 'pr', sourceKey: PR_SOURCE_KEY, newLine: 1, side: 'new' })];
+      const { mark } = threadDraftsBackend(rows);
+      let answer!: () => void;
+      const submit = setBindingMock('SubmitPRReview', () => new Promise((resolve) => {
+        answer = () => resolve({ postedReview: true, postedFileComments: 0 });
+      }));
+      const state = await prScopeWith(rows);
+      state.setSummaryBody('overall note');
+
+      const submitting = state.submitPRReview();
+      await vi.waitFor(() => expect(submit).toHaveBeenCalledTimes(1));
+      seedPaneWorkspaceStatus('pane-1', { forge: 'github', openPrUrl: 'https://github.com/owner/repo/pull/7', openPrNumber: 7 });
+      await state.reload();
+      expect(state.prHeadSHA).toBe('sha-z');
+      answer();
+      await submitting;
+
+      expect(submit.mock.calls[0]?.[1]).toMatchObject({ headSha: 'sha-a' });
+      expect(mark).toHaveBeenCalledWith('thread-1', 'pr', PR_SOURCE_KEY, ['d-1'], 'pr:sha-a');
     });
 
     it('sends no attempt id and, after a lost answer, asks nothing and says the review may be on the PR', async () => {
@@ -2443,8 +2476,8 @@ describe('reviewPane store — PR scope', () => {
       await state.submitPRReview();
 
       expect(submit.mock.calls[0]?.[1]).toEqual({
-        verdict: 'comment', body: 'overall note', comments: [],
-        drafts: { threadId: 'thread-1', ids: ['d-1'], headSha: 'sha-a' },
+        verdict: 'comment', body: 'overall note', headSha: 'sha-a', comments: [],
+        drafts: { threadId: 'thread-1', ids: ['d-1'] },
         attemptId: expect.any(String),
       });
       expect(mark).not.toHaveBeenCalled();
@@ -2454,6 +2487,48 @@ describe('reviewPane store — PR scope', () => {
       state.setSummaryBody('another note');
       await state.submitPRReview();
       expect(attemptOf(submit, 1)).not.toBe(attemptOf(submit, 0));
+    });
+
+    it('refuses to send while the pane knows the head moved, keeping the drafts, summary and verdict', async () => {
+      installPRMocks();
+      const rows = [row()];
+      threadDraftsBackend(rows);
+      const { submit } = draftBackend(rows);
+      const state = await prScopeWith(rows);
+      state.setSummaryBody('overall note');
+      state.setVerdict('approve');
+      applyPRUpdatedEvent({ prKey: PR_KEY, detail: prDetailStub({ headSHA: 'sha-b' }), threads: [], headSHA: 'sha-b' });
+      expect(state.prStale).toBe(true);
+
+      await state.submitPRReview();
+
+      expect(submit).not.toHaveBeenCalled();
+      expect(state.submitError).toBe('The branch moved after you loaded this. Reload and try again.');
+      expect(state.summaryBody).toBe('overall note');
+      expect(state.verdict).toBe('approve');
+      expect(state.drafts.map((comment) => comment.id)).toEqual(['d-1']);
+    });
+
+    it('a head the forge says moved keeps the drafts, summary and verdict and re-reads the PR for the Reload', async () => {
+      installPRMocks();
+      const rows = [row()];
+      threadDraftsBackend(rows);
+      const message = 'The branch moved after you loaded this. Reload and try again.';
+      setBindingMock('SubmitPRReview', async () => {
+        throw new TransportError('forge_stale_head', message);
+      });
+      setBindingMock('GetPRDetail', async () => prDetailStub({ headSHA: 'sha-b' }));
+      const state = await prScopeWith(rows);
+      state.setSummaryBody('overall note');
+      state.setVerdict('approve');
+
+      await expect(state.submitPRReview()).rejects.toBeInstanceOf(TransportError);
+
+      expect(state.submitError).toBe(message);
+      expect(state.summaryBody).toBe('overall note');
+      expect(state.verdict).toBe('approve');
+      expect(state.drafts.map((comment) => comment.id)).toEqual(['d-1']);
+      await vi.waitFor(() => expect(state.prStale).toBe(true));
     });
 
     for (const withDraft of [true, false]) {
@@ -2745,11 +2820,11 @@ function installChunkedDiff(
   const diff = fakeDiff(patch);
   let unblock!: () => void;
   const held = new Promise<void>((resolve) => { unblock = resolve; });
-  const open = setBindingMock(name, async () => ({ id, chunk: diff.read(0, size, false), headSha: opts.headSha ?? '', ...(opts.filesHandle ? { filesHandle: opts.filesHandle } : {}) }));
+  const open = setBindingMock(name, async () => ({ id, chunk: diff.read(0, size), headSha: opts.headSha ?? '', ...(opts.filesHandle ? { filesHandle: opts.filesHandle } : {}) }));
   const read = setBindingMock('ReadReviewDiff', async (handle: string, offset: number, maxBytes: number) => {
     if (handle !== id) throw new Error('review diff: not open');
     if (offset === opts.hold) await held;
-    return diff.read(offset, Math.min(maxBytes, size), false);
+    return diff.read(offset, Math.min(maxBytes, size));
   });
   const release = setBindingMock('ReleaseReviewDiff', async () => undefined);
   return { open, read, release, unblock };
@@ -4543,153 +4618,74 @@ describe('reviewPane store — diffs past the memory budget', () => {
   });
 });
 
-describe('reviewPane store — packed diff reads', () => {
+describe('reviewPane store — diff text past ASCII', () => {
   afterEach(() => {
     __resetReviewPaneStateForTest();
     setPatchTextBudgetForTest(null);
-    __setTransportHelloForTest(null);
   });
 
-  function packedHello(capabilities: string[]): void {
-    __setTransportHelloForTest({ launchId: 'l', protocolVersion: 1, capabilities, backendId: 'b1', backendName: '', serverTimeMs: 0, clockSkewMs: 0, bundleId: '', bundleVersion: '', minShellBuild: 0 });
-  }
-
-  // A diff served by the fake backend in both forms, windows clamped to
-  // `size`. `keyed` false is a backend older than the source key: no
-  // chunk carries one.
+  // A diff served by the fake backend, windows clamped to `size`. `keyed`
+  // false is a backend older than the source key: no chunk carries one.
   function installByteDiff(patch: string, size: number, keyed = true) {
     const diff = fakeDiff(patch);
-    // Offsets of the chunks the packed read answered plain, and how many
-    // it answered packed.
-    const answeredPlain = new Set<number>();
-    let answeredPacked = 0;
-    setBindingMock('OpenWorkspaceDiff', async () => ({ id: 'diff-1', chunk: diff.read(0, size, false, keyed), headSha: '' }));
-    const plain = setBindingMock('ReadReviewDiff', async (_id: string, offset: number, max: number) => diff.read(offset, Math.min(max, size), false, keyed));
-    const packed = setBindingMock('ReadReviewDiffPacked', async (_id: string, offset: number, max: number) => {
-      const chunk = diff.read(offset, Math.min(max, size), true, keyed);
-      if (chunk.wide === undefined) answeredPlain.add(offset);
-      else answeredPacked += 1;
-      return chunk;
-    });
+    setBindingMock('OpenWorkspaceDiff', async () => ({ id: 'diff-1', chunk: diff.read(0, size, keyed), headSha: '' }));
+    const read = setBindingMock('ReadReviewDiff', async (_id: string, offset: number, max: number) => diff.read(offset, Math.min(max, size), keyed));
     setBindingMock('ReleaseReviewDiff', async () => undefined);
-    return { plain, packed, answeredPlain, answeredPacked: () => answeredPacked };
+    return { read };
   }
 
-  // Three files whose wide lines are sparse enough for a 1000-byte chunk
-  // to pack, and whose wide paths make some chunks plain.
+  // Three files with lines and paths of two, three and four byte
+  // characters.
   const wideFile = (path: string) => patchFor(path, 150).replace(/^\+line (\d*0)$/gm, (line, n: string) => (Number(n) % 50 === 0 ? `+lïne ${n} ✓😀` : line));
   const lastFile = wideFile('src/c.ts');
   const patch = [wideFile('src/à côté.ts'), wideFile('src/日本.ts'), lastFile].join('\n');
   const SIZE = 1000;
   const BUDGET = 1000;
 
-  for (const capable of [true, false]) {
-    it(`reads ${capable ? 'packed from a backend that serves it' : 'plain from a backend that does not'}, and reads evicted text again the same way`, async () => {
-      packedHello(capable ? ['review-diff.packed.v1'] : []);
+  for (const keyed of [true, false]) {
+    it(`reads evicted text again as it was served${keyed ? '' : ' from a backend older than the key'}`, async () => {
       setPatchTextBudgetForTest(BUDGET);
-      // A backend without the packed read may also predate the key.
-      const { plain, packed, answeredPlain, answeredPacked } = installByteDiff(patch, SIZE, capable);
+      const { read } = installByteDiff(patch, SIZE, keyed);
       const state = reviewStateForPane('pane-1', subjectFor());
       await waitLoaded(state);
       expect(state.error).toBeNull();
-      const [used, unused] = capable ? [packed, plain] : [plain, packed];
-      expect(used).toHaveBeenCalled();
-      expect(unused).not.toHaveBeenCalled();
-      expect(answeredPacked() > 0).toBe(capable);
       expect(state.files.map((file) => file.path).sort()).toEqual(['src/c.ts', 'src/à côté.ts', 'src/日本.ts']);
       expect(state.sourceKey).toBe(diffSourceKey(patch));
 
       const last = state.files.find((file) => file.path === 'src/c.ts')!;
       expect(last.body.resident()).toBe(false);
-      used.mockClear();
+      read.mockClear();
       const lines = await last.body.whenResident(() => last.body.toPatchLines());
       expect(lines.map((line) => line.content)).toEqual(lastFile.split('\n'));
-      expect(used).toHaveBeenCalled();
-      // A chunk the packed read answered plain is read again plain.
-      expect(unused.mock.calls.map(([, offset]) => offset).filter((offset) => !answeredPlain.has(offset as number))).toEqual([]);
+      expect(read).toHaveBeenCalled();
     });
   }
 
-  it('holds a chunk the packed read answered as text as text, and reads it again with the plain read', async () => {
-    packedHello(['review-diff.packed.v1']);
+  it('reports text lost when a chunk is answered with other text of another length on its next read', async () => {
     setPatchTextBudgetForTest(BUDGET);
-    const { plain, packed } = installByteDiff(patch, SIZE);
-    const servePlain = plain.getMockImplementation()! as (...args: unknown[]) => Promise<object>;
-    packed.mockImplementation(async (...args: unknown[]) => servePlain(...args));
-    plain.mockClear();
-    const state = reviewStateForPane('pane-1', subjectFor());
-    await waitLoaded(state);
-    expect(state.error).toBeNull();
-    expect(packed).toHaveBeenCalled();
-    expect(plain).not.toHaveBeenCalled();
-    expect(state.files.map((file) => file.path).sort()).toEqual(['src/c.ts', 'src/à côté.ts', 'src/日本.ts']);
-    expect(state.sourceKey).toBe(diffSourceKey(patch));
-
-    const last = state.files.find((file) => file.path === 'src/c.ts')!;
-    expect(last.body.resident()).toBe(false);
-    packed.mockClear();
-    const lines = await last.body.whenResident(() => last.body.toPatchLines());
-    expect(lines.map((line) => line.content)).toEqual(lastFile.split('\n'));
-    expect(plain).toHaveBeenCalled();
-    expect(packed).not.toHaveBeenCalled();
-  });
-
-  it('reports text lost when a packed chunk is answered as text on its next read', async () => {
-    packedHello(['review-diff.packed.v1']);
-    setPatchTextBudgetForTest(BUDGET);
-    const { packed } = installByteDiff(patch, SIZE);
+    const { read } = installByteDiff(patch, SIZE);
     const state = reviewStateForPane('pane-1', subjectFor());
     await waitLoaded(state);
     const last = state.files.find((file) => file.path === 'src/c.ts')!;
     expect(last.body.resident()).toBe(false);
-    const serve = packed.getMockImplementation()! as (...args: unknown[]) => Promise<object>;
-    // The same chunk without its marks is the text form.
-    packed.mockImplementation(async (...args: unknown[]) => {
-      const { wide: _wide, ...chunk } = (await serve(...args)) as { wide?: number[] };
-      return chunk;
+    const serve = read.getMockImplementation()! as (...args: unknown[]) => Promise<{ data: string }>;
+    // The same characters, one byte wider each where they were narrower.
+    read.mockImplementation(async (...args: unknown[]) => {
+      const chunk = await serve(...args);
+      return { ...chunk, data: chunk.data.replace(/ï/g, '✓') };
     });
     await expect(last.body.whenResident(() => last.body.toPatchLines())).rejects.toBeInstanceOf(PatchTextLost);
   });
 
-  // The backend omits empty marks, but an empty list is no marks too.
-  it('holds a chunk whose marks are an empty list as text', async () => {
-    packedHello(['review-diff.packed.v1']);
-    setPatchTextBudgetForTest(BUDGET);
-    const { plain, packed } = installByteDiff(patch, SIZE);
-    const servePlain = plain.getMockImplementation()! as (...args: unknown[]) => Promise<object>;
-    packed.mockImplementation(async (...args: unknown[]) => ({ ...(await servePlain(...args)), wide: [] }));
-    plain.mockClear();
-    const state = reviewStateForPane('pane-1', subjectFor());
-    await waitLoaded(state);
-    expect(state.error).toBeNull();
-    expect(state.sourceKey).toBe(diffSourceKey(patch));
-    const last = state.files.find((file) => file.path === 'src/c.ts')!;
-    expect(last.body.resident()).toBe(false);
-    const lines = await last.body.whenResident(() => last.body.toPatchLines());
-    expect(lines.map((line) => line.content)).toEqual(lastFile.split('\n'));
-    expect(plain).toHaveBeenCalled();
-  });
-
-  it('fails the load on a packed chunk whose marks are not at bytes past ASCII', async () => {
-    packedHello(['review-diff.packed.v1']);
-    const { packed } = installByteDiff(patch, SIZE);
-    const serve = packed.getMockImplementation()! as (...args: unknown[]) => Promise<object>;
-    packed.mockImplementation(async (...args: unknown[]) => ({ ...(await serve(...args)), wide: [0, 1_000_000] }));
-    const state = reviewStateForPane('pane-1', subjectFor());
-    await waitLoaded(state);
-    expect(state.error).toContain('wide mark');
-  });
-
   it('keys the patch from the chunks\' keys without hashing its text', async () => {
-    packedHello(['review-diff.packed.v1']);
     setPatchTextBudgetForTest(BUDGET);
-    const { packed } = installByteDiff(patch, SIZE);
+    const { read } = installByteDiff(patch, SIZE);
     const append = vi.spyOn(sourceHash, 'append');
     try {
       const state = reviewStateForPane('pane-1', subjectFor());
       await waitLoaded(state);
       expect(state.error).toBeNull();
-      expect(packed).toHaveBeenCalled();
+      expect(read).toHaveBeenCalled();
       expect(state.sourceKey).toBe(diffSourceKey(patch));
       expect(append).not.toHaveBeenCalled();
     } finally {
@@ -4697,25 +4693,11 @@ describe('reviewPane store — packed diff reads', () => {
     }
   });
 
-  it('fails the load on a packed chunk without its key', async () => {
-    packedHello(['review-diff.packed.v1']);
-    const { packed } = installByteDiff(patch, SIZE);
-    const serve = packed.getMockImplementation()! as (...args: unknown[]) => Promise<object>;
-    packed.mockImplementation(async (...args: unknown[]) => {
-      const { key: _key, ...chunk } = (await serve(...args)) as { key?: unknown };
-      return chunk;
-    });
-    const state = reviewStateForPane('pane-1', subjectFor());
-    await waitLoaded(state);
-    expect(state.error).toContain('patch parser: a packed chunk came without its key');
-  });
-
   for (const key of [null, { hash: -1, units: 10_000 }, { hash: 1, units: 0 }]) {
     it(`fails the load on a chunk whose key is ${JSON.stringify(key)}`, async () => {
-      packedHello(['review-diff.packed.v1']);
-      const { packed } = installByteDiff(patch, SIZE);
-      const serve = packed.getMockImplementation()! as (...args: unknown[]) => Promise<object>;
-      packed.mockImplementation(async (...args: unknown[]) => ({ ...(await serve(...args)), key }));
+      const { read } = installByteDiff(patch, SIZE);
+      const serve = read.getMockImplementation()! as (...args: unknown[]) => Promise<object>;
+      read.mockImplementation(async (...args: unknown[]) => ({ ...(await serve(...args)), key }));
       const state = reviewStateForPane('pane-1', subjectFor());
       await waitLoaded(state);
       expect(state.error).toContain('key that cannot be');
@@ -5116,6 +5098,57 @@ describe('reviewPane store — open new-comment editors', () => {
     await expect(state.createComment(id, 'Body')).rejects.toThrow('create failed');
     expect(state.openEditors.map((editor) => editor.id)).toEqual([id]);
     expect(state.error).toBe('create failed');
+  });
+
+  it('saves an editor\'s draft once however often it is pressed while saving', async () => {
+    const { state, rows } = await workspaceWith(() => patchFor('src/app.ts', 1));
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const create = getBindingMock('CreateDiffReviewComment')!;
+    const saveOne = create.getMockImplementation()!;
+    create.mockImplementation(async (...args: unknown[]) => {
+      await gate;
+      return saveOne(...args);
+    });
+    const id = state.openDraftEditor({ filePath: 'src/app.ts', side: 'new', newLine: 1, selectedText: 'line 1' })!;
+    const first = state.createComment(id, 'Body');
+    expect(state.editorSaving(id)).toBe(true);
+    // Its row remounting (scrolled out and back) keeps nothing of its own:
+    // the presses that follow reach the store.
+    const again = [state.createComment(id, 'Body'), state.createComment(id, 'Body', 'now')];
+    release();
+    await Promise.allSettled([first, ...again]);
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(rows.map((row) => row.body)).toEqual(['Body']);
+    expect(state.editorSaving(id)).toBe(false);
+    expect(state.openEditors).toEqual([]);
+  });
+
+  it('keeps showing its drafts while other sources fill the drafts cache', async () => {
+    const { state } = await workspaceWith(() => patchFor('src/app.ts', 1));
+    const id = state.openDraftEditor({ filePath: 'src/app.ts', side: 'new', newLine: 1, selectedText: 'line 1' })!;
+    await state.createComment(id, 'Kept.');
+    for (let index = 0; index < 40; index += 1) await refreshDiffReviewComments('thread-2', 'workspace', `other-${index}`);
+    expect(state.drafts.map((comment) => comment.body)).toEqual(['Kept.']);
+    // Closed, the pane no longer holds its source.
+    disposeReviewStateForPane('pane-1', state);
+    for (let index = 0; index < 40; index += 1) await refreshDiffReviewComments('thread-2', 'workspace', `again-${index}`);
+    expect(getDiffReviewComments('thread-1', 'workspace', state.sourceKey)).toEqual([]);
+  });
+
+  it('saves again after a failed save', async () => {
+    const { state, create } = await workspaceWith(() => patchFor('src/app.ts', 1));
+    const saveOne = create.getMockImplementation()!;
+    create.mockImplementationOnce(async () => {
+      throw new Error('create failed');
+    });
+    const id = state.openDraftEditor({ filePath: 'src/app.ts', side: 'new', newLine: 1, selectedText: 'line 1' })!;
+    await expect(state.createComment(id, 'Body')).rejects.toThrow('create failed');
+    expect(state.editorSaving(id)).toBe(false);
+    create.mockImplementation(saveOne);
+    await state.createComment(id, 'Body');
+    expect(create).toHaveBeenCalledTimes(2);
+    expect(state.openEditors).toEqual([]);
   });
 
   it('opens no editor on a line the diff does not have, and refuses a quote longer than a comment may hold', async () => {
@@ -5983,5 +6016,259 @@ describe('reviewPane store — runs of a PR\'s commits', () => {
     expect(whole.mock.calls.length).toBe(before + 1);
     state.dismissCommitSelectionLost();
     expect(state.commitSelectionLost).toBe(false);
+  });
+});
+
+describe('reviewPane store — the PR under the pane changing', () => {
+  // The workspace's open PR is what moves under a pane: a checkout of
+  // another branch, or the branch's PR merging and a new one opening.
+  // null is a moment without one (git status settling).
+  function onPR(number: number | null): void {
+    seedPaneWorkspaceStatus('pane-1', number === null
+      ? { forge: 'github', openPrUrl: '', openPrNumber: 0 }
+      : { forge: 'github', openPrUrl: `https://github.com/owner/repo/pull/${number}`, openPrNumber: number });
+    flushSync();
+  }
+
+  function hello(capabilities: string[]): void {
+    __setTransportHelloForTest({ launchId: 'l', protocolVersion: 1, capabilities, backendId: 'b1', backendName: '', serverTimeMs: 0, clockSkewMs: 0, bundleId: '', bundleVersion: '', minShellBuild: 0 });
+  }
+
+  function deferred<T>() {
+    let resolve!: (value: T) => void;
+    let reject!: (err: unknown) => void;
+    const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
+    return { promise, resolve, reject };
+  }
+
+  function installTwoPRs(): void {
+    installPRMocks();
+    setBindingMock('SubscribePRUpdates', async (pr: { Number: number }) => ({
+      id: `sub-${pr.Number}`,
+      prKey: `github:owner/repo:${pr.Number}`,
+      detail: prDetailStub({ number: pr.Number, url: `https://github.com/owner/repo/pull/${pr.Number}`, headSHA: `sha-${pr.Number}` }),
+      threads: [],
+      headSHA: `sha-${pr.Number}`,
+      seq: 1,
+    }));
+  }
+
+  async function prPane(): Promise<ReturnType<typeof reviewStateForPane>> {
+    installTwoPRs();
+    const state = reviewStateForPane('pane-1', prSubject());
+    await waitLoaded(state);
+    await state.setScope('pr');
+    state.setSubmitTarget('pr');
+    return state;
+  }
+
+  // The pane on PR `number`, its diff loaded.
+  async function switchTo(state: ReturnType<typeof reviewStateForPane>, number: number): Promise<void> {
+    onPR(number);
+    expect(state.prRef?.number).toBe(number);
+    await state.reload();
+    await waitLoaded(state);
+    expect(state.prHeadSHA).toBe(`sha-${number}`);
+  }
+
+  const POSTED = { postedReview: true, postedFileComments: 0, posted: true };
+
+  afterEach(() => __setTransportHelloForTest(null));
+
+  it('shows another PR nothing typed, picked or refused for the first, and gives the first its own back', async () => {
+    hello(['pr-review-drafts.v1']);
+    const state = await prPane();
+    const submit = setBindingMock('SubmitPRReview', async () => {
+      throw new TransportError('forge_refused', 'The forge refused the review.');
+    });
+    state.setSummaryBody('for five');
+    state.setVerdict('request-changes');
+    await expect(state.submitPRReview()).rejects.toBeInstanceOf(TransportError);
+    expect(state.submitError).toBe('The forge refused the review.');
+
+    await switchTo(state, 7);
+    expect(state.summaryBody).toBe('');
+    expect(state.verdict).toBe('comment');
+    expect(state.submitError).toBeNull();
+    expect(state.sendStripShown).toBe(false);
+    // Send on #7 carries only what was given for #7.
+    submit.mockImplementation(async () => POSTED);
+    state.setVerdict('approve');
+    await state.submitPRReview();
+    expect(submit).toHaveBeenLastCalledWith(expect.objectContaining({ Number: 7 }), expect.objectContaining({ verdict: 'approve', body: '' }));
+    expect(state.verdict).toBe('comment');
+
+    await switchTo(state, 5);
+    expect(state.summaryBody).toBe('for five');
+    expect(state.verdict).toBe('request-changes');
+    expect(state.submitError).toBe('The forge refused the review.');
+    expect(state.sendStripShown).toBe(true);
+  });
+
+  it('keeps the review through a moment without a PR, and not into the next PR', async () => {
+    installTwoPRs();
+    const state = reviewStateForPane('pane-1', prSubject());
+    await waitLoaded(state);
+    state.setSummaryBody('for five');
+    state.setVerdict('approve');
+    onPR(null);
+    expect(state.prRef).toBeNull();
+    expect(state.summaryBody).toBe('for five');
+    onPR(5);
+    expect(state.summaryBody).toBe('for five');
+    expect(state.verdict).toBe('approve');
+    onPR(null);
+    onPR(7);
+    expect(state.summaryBody).toBe('');
+    expect(state.verdict).toBe('comment');
+    onPR(5);
+    expect(state.summaryBody).toBe('for five');
+  });
+
+  for (const outcome of ['posted', 'refused'] as const) {
+    it(`a review in flight when the PR changes holds nothing of the next PR's and settles its own (${outcome})`, async () => {
+      hello(['pr-review-drafts.v1']);
+      const state = await prPane();
+      const first = deferred<typeof POSTED>();
+      const submit = setBindingMock('SubmitPRReview', (pr: { Number: number }) => (pr.Number === 5 ? first.promise : Promise.resolve(POSTED)));
+      state.setSummaryBody('for five');
+      state.setVerdict('approve');
+      const sending = state.submitPRReview();
+      expect(state.sendingComments).toBe(true);
+
+      await switchTo(state, 7);
+      expect(state.sendingComments).toBe(false);
+      expect(state.sendStripShown).toBe(false);
+      state.setSummaryBody('for seven');
+      state.setVerdict('approve');
+      if (outcome === 'posted') first.resolve(POSTED);
+      else first.reject(new TransportError('forge_refused', 'The forge refused the review.'));
+      await (outcome === 'posted' ? sending : expect(sending).rejects.toBeInstanceOf(TransportError));
+      // #5's answer lands on #5: #7's summary, verdict, failure and the
+      // pane's error are untouched.
+      expect(state.summaryBody).toBe('for seven');
+      expect(state.verdict).toBe('approve');
+      expect(state.submitError).toBeNull();
+      expect(state.error).toBeNull();
+
+      await state.submitPRReview();
+      expect(submit).toHaveBeenLastCalledWith(expect.objectContaining({ Number: 7 }), expect.objectContaining({ verdict: 'approve', body: 'for seven' }));
+
+      await switchTo(state, 5);
+      expect(state.summaryBody).toBe(outcome === 'posted' ? '' : 'for five');
+      expect(state.verdict).toBe(outcome === 'posted' ? 'comment' : 'approve');
+      expect(state.submitError).toBe(outcome === 'posted' ? null : 'The forge refused the review.');
+    });
+  }
+
+  it('asks about a review whose answer was lost only on its own PR', async () => {
+    hello(['pr-review-drafts.v1']);
+    const state = await prPane();
+    const submit = setBindingMock('SubmitPRReview', async (pr: { Number: number }) => {
+      if (pr.Number === 5) throw new DisconnectedError('socket closed');
+      return POSTED;
+    });
+    const ask = setBindingMock('GetPRReviewSubmitOutcome', async () => {
+      throw new DisconnectedError('socket closed');
+    });
+    state.setSummaryBody('for five');
+    await expect(state.submitPRReview()).rejects.toBeInstanceOf(DisconnectedError);
+    expect(state.submitError).toContain('Send asks again');
+    expect(ask).toHaveBeenCalledTimes(1);
+
+    await switchTo(state, 7);
+    expect(state.submitError).toBeNull();
+    expect(state.sendStripShown).toBe(false);
+    state.setVerdict('approve');
+    await state.submitPRReview();
+    expect(ask).toHaveBeenCalledTimes(1);
+    expect(submit).toHaveBeenLastCalledWith(expect.objectContaining({ Number: 7 }), expect.objectContaining({ verdict: 'approve' }));
+
+    await switchTo(state, 5);
+    expect(state.submitError).toContain('Send asks again');
+    ask.mockImplementation(async () => ({ state: 'posted', result: POSTED }));
+    await state.submitPRReview();
+    expect(ask).toHaveBeenLastCalledWith(expect.objectContaining({ Number: 5 }), attemptOf(submit, 0));
+    expect(submit).toHaveBeenCalledTimes(2);
+    expect(state.summaryBody).toBe('');
+  });
+
+  it('a merge action in flight on one PR does not hold the next PR\'s', async () => {
+    const state = await prPane();
+    const first = deferred<{ seq: number }>();
+    const approve = setBindingMock('ApprovePR', (pr: { Number: number }) => (pr.Number === 5 ? first.promise : Promise.resolve({ seq: 0 })));
+    const approving = state.approvePR();
+    expect(state.mergeAction).toBe('approve');
+
+    await switchTo(state, 7);
+    expect(state.mergeAction).toBeNull();
+    await state.approvePR();
+    expect(approve).toHaveBeenLastCalledWith(expect.objectContaining({ Number: 7 }), 'sha-7');
+    first.resolve({ seq: 0 });
+    await approving;
+    expect(state.mergeAction).toBeNull();
+  });
+
+  describe('the PR comment field', () => {
+    beforeEach(() => hello(['pr-comment-actions.v1']));
+
+    it('belongs to its PR, and a comment waiting for its frame is released by the switch', async () => {
+      const state = await prPane();
+      const post = setBindingMock('PostPRComment', async (pr: { Number: number }) => ({ seq: pr.Number === 5 ? 9 : 0, commentId: `c-${pr.Number}` }));
+      state.sentComments.setPRCommentOpen(true);
+      state.sentComments.setPRCommentBody('to five');
+      await state.sentComments.postPRComment();
+      expect(state.commentWritePending(commentWriteKey.prComment)).toBe(true);
+
+      await switchTo(state, 7);
+      expect(state.commentWritePending(commentWriteKey.prComment)).toBe(false);
+      expect(state.sentComments.prCommentOpen).toBe(false);
+      expect(state.sentComments.prCommentBody).toBe('');
+      state.sentComments.setPRCommentOpen(true);
+      state.sentComments.setPRCommentBody('to seven');
+      await state.sentComments.postPRComment();
+      expect(post).toHaveBeenLastCalledWith(expect.objectContaining({ Number: 7 }), 'to seven');
+      expect(state.sentComments.prCommentOpen).toBe(false);
+
+      // #5's comment was taken: back on #5 its field is done, not waiting.
+      await switchTo(state, 5);
+      expect(state.commentWritePending(commentWriteKey.prComment)).toBe(false);
+      expect(state.sentComments.prCommentOpen).toBe(false);
+      expect(state.sentComments.prCommentBody).toBe('');
+    });
+
+    for (const outcome of ['taken', 'refused'] as const) {
+      it(`a comment answered after the switch settles on its own PR (${outcome})`, async () => {
+        const state = await prPane();
+        const first = deferred<{ seq: number; commentId: string }>();
+        setBindingMock('PostPRComment', (pr: { Number: number }) => (pr.Number === 5 ? first.promise : Promise.resolve({ seq: 0, commentId: 'c-7' })));
+        state.sentComments.setPRCommentOpen(true);
+        state.sentComments.setPRCommentBody('to five');
+        const posting = state.sentComments.postPRComment();
+
+        await switchTo(state, 7);
+        expect(state.commentWritePending(commentWriteKey.prComment)).toBe(false);
+        state.sentComments.setPRCommentOpen(true);
+        state.sentComments.setPRCommentBody('to seven');
+        if (outcome === 'taken') first.resolve({ seq: 9, commentId: 'c-5' });
+        else first.reject(new TransportError('forge_refused', 'The forge refused the comment.'));
+        await posting;
+        expect(state.commentWritePending(commentWriteKey.prComment)).toBe(false);
+        expect(state.commentWriteError(commentWriteKey.prComment)).toBeNull();
+        expect(state.sentComments.prCommentOpen).toBe(true);
+        expect(state.sentComments.prCommentBody).toBe('to seven');
+
+        await switchTo(state, 5);
+        expect(state.commentWritePending(commentWriteKey.prComment)).toBe(false);
+        if (outcome === 'taken') {
+          expect(state.sentComments.prCommentOpen).toBe(false);
+          expect(state.sentComments.prCommentBody).toBe('');
+        } else {
+          expect(state.sentComments.prCommentOpen).toBe(true);
+          expect(state.sentComments.prCommentBody).toBe('to five');
+          expect(state.commentWriteError(commentWriteKey.prComment)).toBe('The forge refused the comment.');
+        }
+      });
+    }
   });
 });

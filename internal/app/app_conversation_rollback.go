@@ -264,7 +264,7 @@ func (a *App) rollbackCodexThreadToMessage(thread store.Thread, anchor store.Mes
 	if err := a.purgeCodexProviderQueueForRollback(thread.ID); err != nil {
 		return fmt.Errorf("codex rollback: %w", err)
 	}
-	a.clearFlushDispatchForRollback(thread.ID)
+	a.dropFlushQueue(thread.ID)
 	newRef := ""
 	if anchorFound {
 		// The exclusive anchor the in-place cut needs. Resolved here

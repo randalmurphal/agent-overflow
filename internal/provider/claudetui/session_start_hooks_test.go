@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/testutil/mockexec"
@@ -309,6 +310,7 @@ func TestNewSessionFollowsTheHook(t *testing.T) {
 	} {
 		rec := &eventRecorder{}
 		s, err := NewSession(context.Background(), testThread, Config{
+			Reaper: procutiltest.Reaper(), Retention: claude.UserHomeRetention(0),
 			Binary: binary, WorkDir: t.TempDir(), HookCmd: "/opt/ao", Resume: tc.resume, SessionStartHook: tc.hook,
 		}, rec.record)
 		if err != nil {

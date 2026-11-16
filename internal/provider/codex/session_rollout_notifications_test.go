@@ -11,6 +11,7 @@ import (
 	"time"
 	"unsafe"
 
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 )
 
@@ -310,6 +311,7 @@ func TestResumeArmsRolloutTailOnlyWithUnresolvedSubagents(t *testing.T) {
 
 			events := make(chan provider.ProviderEvent, 8)
 			cfg := Config{
+				Reaper: procutiltest.Reaper(),
 				Binary: codexReviewerEchoScript(t, filepath.Join(dir, "codex-stdin.log"),
 					fmt.Sprintf(`{\"thread\":{\"id\":\"%s\",\"path\":\"%s\"}}`, providerThreadID, rollout)),
 				WorkDir:                      dir,

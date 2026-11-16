@@ -196,27 +196,17 @@ func (a *App) applyThreadOrganizePatchMutable(ctx context.Context, threadID stri
 	}
 	switch {
 	case !result.Changed:
-	case !result.ArchivedChanged && result.PlacementChanged:
-		a.announcePlaced(result.Thread.ID)
+	case result.ArchivedChanged && result.Thread.Archived:
+		// An archive closes the panes that show the thread.
+		a.announceThread(triage.ThreadActionUnlisted, result.Thread.ID)
 	default:
-		a.announceThread(organizeThreadAction(result), result.Thread.ID)
+		// An unarchive, a group move or a placement goes out by the
+		// listing change its write read: an owned worker or a never-sent
+		// thread nothing makes real stays off the list as `full`, and
+		// anything else is a whole-row update of a row already there.
+		a.announcePlacement(result.Thread.ID, result.Listing)
 	}
 	return result, work, nil
-}
-
-// organizeThreadAction picks the sidebar frame this patch produced. An
-// archive flip is what adds or removes the row from the active sidebar, so
-// it is announced as such; a placement move without one goes out as
-// announcePlaced decides; anything else is a whole-row update of a row
-// that is already there.
-func organizeThreadAction(result threadapp.OrganizeResult) string {
-	if !result.ArchivedChanged {
-		return triage.ThreadActionFull
-	}
-	if result.Thread.Archived {
-		return triage.ThreadActionUnlisted
-	}
-	return triage.ThreadActionListed
 }
 
 // UpdateGroup renames or deletes one group of this computer.

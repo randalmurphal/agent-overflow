@@ -437,7 +437,10 @@
     {#snippet icon()}<ToolKindIcon kind={classification.icon} ariaLabel={aoTool ? aoTool.tool : classification.label} />{/snippet}
     {#snippet label()}<span data-testid="tool-call-card-label" title={aoTool?.tool}>{classification.label}</span>{/snippet}
     {#snippet body()}
-      <span class={previewClass} data-testid="tool-call-card-preview">
+      <!-- The preview is the row's find text unless it names a path,
+           shown relative to the workspace, or an AO tool's argument by
+           this client's names for it (threadFindText.ts). -->
+      <span class={previewClass} data-testid="tool-call-card-preview" data-find-text={preview.path || aoTool ? undefined : ''}>
         {#if preview.path}
           <EditorLink backend={threadMachine(item.threadId, pane?.thread?.projectId)}
             path={preview.path.path}

@@ -8,14 +8,16 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"agent-overflow/internal/procutil/procutiltest"
 )
 
 func TestManagerOpenRequiresThreadAndCwd(t *testing.T) {
 	m := NewManager(nil, nil)
-	if _, err := m.Open("", SessionOptions{Cwd: t.TempDir()}); err == nil {
+	if _, err := m.Open("", SessionOptions{Reaper: procutiltest.Reaper(), Cwd: t.TempDir()}); err == nil {
 		t.Error("expected error for empty thread ID")
 	}
-	if _, err := m.Open("thread", SessionOptions{}); err == nil {
+	if _, err := m.Open("thread", SessionOptions{Reaper: procutiltest.Reaper()}); err == nil {
 		t.Error("expected error for empty cwd")
 	}
 }
@@ -36,9 +38,10 @@ func TestManagerOpenAndOutput(t *testing.T) {
 
 	m := NewManager(onOutput, onExit)
 	summary, err := m.Open("thread-x", SessionOptions{
-		Shell: "/bin/sh",
-		Args:  []string{"-c", "printf marker; exit 0"},
-		Cwd:   t.TempDir(),
+		Reaper: procutiltest.Reaper(),
+		Shell:  "/bin/sh",
+		Args:   []string{"-c", "printf marker; exit 0"},
+		Cwd:    t.TempDir(),
 	})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
@@ -75,9 +78,10 @@ func TestManagerDoesNotListAShellThatExitedBeforeRegistration(t *testing.T) {
 	m := NewManager(nil, func(string, string, ExitStatus) { close(exited) })
 	terminalID := "early-exit"
 	sess, err := newSession(terminalID, "thread-early", SessionOptions{
-		Shell: "/bin/sh",
-		Args:  []string{"-c", "exit 0"},
-		Cwd:   t.TempDir(),
+		Reaper: procutiltest.Reaper(),
+		Shell:  "/bin/sh",
+		Args:   []string{"-c", "exit 0"},
+		Cwd:    t.TempDir(),
 	}, m.sessionOutputCB("thread-early"), m.sessionExitCB("thread-early", terminalID))
 	if err != nil {
 		t.Fatalf("newSession: %v", err)
@@ -98,11 +102,12 @@ func TestManagerDoesNotListAShellThatExitedBeforeRegistration(t *testing.T) {
 func TestManagerWriteResizeRoundTrip(t *testing.T) {
 	m := NewManager(nil, nil)
 	summary, err := m.Open("thread-w", SessionOptions{
-		Shell: "/bin/sh",
-		Args:  []string{"-c", "cat"},
-		Cwd:   t.TempDir(),
-		Rows:  24,
-		Cols:  80,
+		Reaper: procutiltest.Reaper(),
+		Shell:  "/bin/sh",
+		Args:   []string{"-c", "cat"},
+		Cwd:    t.TempDir(),
+		Rows:   24,
+		Cols:   80,
 	})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
@@ -129,7 +134,8 @@ func TestManagerWriteResizeRoundTrip(t *testing.T) {
 func TestManagerReplayReturnsBuffer(t *testing.T) {
 	m := NewManager(nil, nil)
 	summary, err := m.Open("thread-r", SessionOptions{
-		Shell: "/bin/sh",
+		Reaper: procutiltest.Reaper(),
+		Shell:  "/bin/sh",
 		// The shell stays up until cleanup: an exited session is no longer
 		// listed, so a short-lived one would race the polling below.
 		Args: []string{"-c", "printf hello; sleep 30"},
@@ -155,9 +161,10 @@ func TestManagerReplayReturnsBuffer(t *testing.T) {
 func TestManagerCloseRemovesSession(t *testing.T) {
 	m := NewManager(nil, nil)
 	summary, err := m.Open("thread-c", SessionOptions{
-		Shell: "/bin/sh",
-		Args:  []string{"-c", "sleep 10"},
-		Cwd:   t.TempDir(),
+		Reaper: procutiltest.Reaper(),
+		Shell:  "/bin/sh",
+		Args:   []string{"-c", "sleep 10"},
+		Cwd:    t.TempDir(),
 	})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
@@ -205,9 +212,10 @@ func TestManagerCloseThreadClosesAll(t *testing.T) {
 	m := NewManager(nil, nil)
 	for i := 0; i < 3; i++ {
 		if _, err := m.Open("thread-multi", SessionOptions{
-			Shell: "/bin/sh",
-			Args:  []string{"-c", "sleep 10"},
-			Cwd:   t.TempDir(),
+			Reaper: procutiltest.Reaper(),
+			Shell:  "/bin/sh",
+			Args:   []string{"-c", "sleep 10"},
+			Cwd:    t.TempDir(),
 		}); err != nil {
 			t.Fatalf("Open %d: %v", i, err)
 		}
@@ -232,9 +240,10 @@ func TestManagerMoveThreadRekeysLiveSessions(t *testing.T) {
 		nil,
 	)
 	summary, err := m.Open("draft:thread", SessionOptions{
-		Shell: "/bin/sh",
-		Args:  []string{"-c", "cat"},
-		Cwd:   t.TempDir(),
+		Reaper: procutiltest.Reaper(),
+		Shell:  "/bin/sh",
+		Args:   []string{"-c", "cat"},
+		Cwd:    t.TempDir(),
 	})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
@@ -280,9 +289,10 @@ func TestManagerMoveThreadRekeysLiveSessions(t *testing.T) {
 func TestManagerRestartReplacesSession(t *testing.T) {
 	m := NewManager(nil, nil)
 	summary, err := m.Open("thread-x", SessionOptions{
-		Shell: "/bin/sh",
-		Args:  []string{"-c", "sleep 10"},
-		Cwd:   t.TempDir(),
+		Reaper: procutiltest.Reaper(),
+		Shell:  "/bin/sh",
+		Args:   []string{"-c", "sleep 10"},
+		Cwd:    t.TempDir(),
 	})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
@@ -309,9 +319,10 @@ func TestManagerShutdownClosesEverything(t *testing.T) {
 	m := NewManager(nil, nil)
 	for _, thread := range []string{"a", "b"} {
 		if _, err := m.Open(thread, SessionOptions{
-			Shell: "/bin/sh",
-			Args:  []string{"-c", "sleep 10"},
-			Cwd:   t.TempDir(),
+			Reaper: procutiltest.Reaper(),
+			Shell:  "/bin/sh",
+			Args:   []string{"-c", "sleep 10"},
+			Cwd:    t.TempDir(),
 		}); err != nil {
 			t.Fatalf("Open %s: %v", thread, err)
 		}
@@ -353,11 +364,12 @@ func TestManagerRefreshSerializesWithConcurrentResize(t *testing.T) {
 
 	m := NewManager(onOutput, nil)
 	summary, err := m.Open("thread-refresh-race", SessionOptions{
-		Shell: "/bin/sh",
-		Args:  []string{"-c", winchSizeReporter},
-		Cwd:   t.TempDir(),
-		Rows:  24,
-		Cols:  80,
+		Reaper: procutiltest.Reaper(),
+		Shell:  "/bin/sh",
+		Args:   []string{"-c", winchSizeReporter},
+		Cwd:    t.TempDir(),
+		Rows:   24,
+		Cols:   80,
 	})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
@@ -486,7 +498,7 @@ func TestManagerCloseMatchingClosesAcrossThreads(t *testing.T) {
 	kept := t.TempDir()
 	open := func(thread, cwd string) SessionSummary {
 		t.Helper()
-		summary, err := m.Open(thread, SessionOptions{Shell: "/bin/sh", Args: []string{"-c", "sleep 10"}, Cwd: cwd})
+		summary, err := m.Open(thread, SessionOptions{Reaper: procutiltest.Reaper(), Shell: "/bin/sh", Args: []string{"-c", "sleep 10"}, Cwd: cwd})
 		if err != nil {
 			t.Fatalf("Open: %v", err)
 		}

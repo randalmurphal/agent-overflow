@@ -358,7 +358,6 @@
     }
     const payload: ThreadDragPayload = {
       threadId: thread.id,
-      title: thread.title || 'Untitled',
       projectId: thread.projectId ?? '',
       ...(thread.groupId ? { groupId: thread.groupId } : {}),
       ...(agentBound ? { agentBound: true } : {}),

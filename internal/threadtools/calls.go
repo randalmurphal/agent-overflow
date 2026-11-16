@@ -281,6 +281,10 @@ type RequestState struct {
 	// WakeQueued is true when a wake for this answer is already in the
 	// caller's message queue, so the reply can say it is also arriving.
 	WakeQueued bool `json:"wake_queued,omitempty"`
+	// WakeIssue is why the message carrying this answer could not be handed
+	// to the caller thread, set while the retry runs and kept once it gives
+	// up.
+	WakeIssue string `json:"wake_issue,omitempty"`
 }
 
 // ThreadState is one watched thread's live state.

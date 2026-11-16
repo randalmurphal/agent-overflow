@@ -145,7 +145,7 @@
   {:else if displayItem.kind === 'api_error'}
     <APIErrorRow item={displayItem} />
   {:else if displayItem.kind === 'error'}
-    <div class="mb-4 rounded-[var(--radius-control)] border border-error/30 bg-error/10 px-3 py-2 text-sm text-error">
+    <div class="mb-4 rounded-[var(--radius-control)] border border-error/30 bg-error/10 px-3 py-2 text-sm text-error" data-find-text>
       {displayItem.summary}
     </div>
   {:else if displayItem.kind === 'compaction'}

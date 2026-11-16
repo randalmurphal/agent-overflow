@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/agentmeta"
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/store"
@@ -97,7 +99,7 @@ func TestDispatchFlush_Claude_FoldsCLIMergeAcrossDrains(t *testing.T) {
 	stdinLog := filepath.Join(t.TempDir(), "claude-stdin.jsonl")
 	sess, err := claude.NewSession(
 		context.Background(), thread.ID,
-		claude.Config{Binary: writeClaudeStdinRecorderBinary(t, stdinLog), WorkDir: workspace},
+		claude.Config{Reaper: procutiltest.Reaper(), Retention: claude.UserHomeRetention(0), Binary: writeClaudeStdinRecorderBinary(t, stdinLog), WorkDir: workspace},
 		func(provider.ProviderEvent) {},
 	)
 	if err != nil {
@@ -169,7 +171,7 @@ func TestDispatchFlush_Claude_FoldsCLIMergeAcrossDrains(t *testing.T) {
 	if _, found, err := app.store.GetThreadItem(thread.ID, firstRowID); err != nil || found {
 		t.Fatalf("merged-away row %s still present (found=%v err=%v)", firstRowID, found, err)
 	}
-	wantJoined := strings.Join(messages, usermessage.JoinSeparator)
+	wantJoined := strings.Join(messages, agentmeta.JoinSeparator)
 	if survivor.Summary != wantJoined {
 		t.Errorf("survivor summary:\n got %q\nwant %q", survivor.Summary, wantJoined)
 	}

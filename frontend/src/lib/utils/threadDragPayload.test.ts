@@ -3,7 +3,6 @@ import {
   beginThreadRowDrag,
   canDropThreadInGroup,
   canUngroupDroppedThread,
-  decodeThreadDragPayload,
   encodeThreadDragPayload,
   beginToolPaneDrag,
   decodeToolDragPayload,
@@ -16,89 +15,9 @@ import {
   TOOL_PANE_DRAG_MIME,
 } from './threadDragPayload';
 
-describe('pane thread drop helpers', () => {
-  it('round-trips thread drag payloads', () => {
-    const raw = encodeThreadDragPayload({
-      threadId: 'thread-1',
-      title: 'Build UI',
-      projectId: 'project-1',
-    });
-
-    expect(decodeThreadDragPayload(raw)).toEqual({
-      threadId: 'thread-1',
-      title: 'Build UI',
-      projectId: 'project-1',
-    });
-  });
-
-  it('round-trips the source group so an ungroup drop knows what it left', () => {
-    const raw = encodeThreadDragPayload({
-      threadId: 'thread-1',
-      title: 'Build UI',
-      projectId: 'project-1',
-      groupId: 'group-1',
-    });
-
-    expect(decodeThreadDragPayload(raw)).toEqual({
-      threadId: 'thread-1',
-      title: 'Build UI',
-      projectId: 'project-1',
-      groupId: 'group-1',
-    });
-  });
-
-  it('omits groupId entirely for an ungrouped thread', () => {
-    const decoded = decodeThreadDragPayload(
-      encodeThreadDragPayload({ threadId: 't', title: 'x', projectId: 'p' }),
-    );
-    expect(decoded).not.toBeNull();
-    expect('groupId' in (decoded as object)).toBe(false);
-  });
-
-  it('decodes a payload with no project or group into a usable pane drop', () => {
-    // A pane drop needs neither field, and a payload minted before they
-    // existed must not decode to null and swallow the drag.
-    expect(decodeThreadDragPayload(JSON.stringify({ threadId: 't', title: 'x' }))).toEqual({
-      threadId: 't',
-      title: 'x',
-      projectId: '',
-    });
-  });
-
-  it('drops a non-string projectId / groupId rather than trusting it', () => {
-    expect(
-      decodeThreadDragPayload(JSON.stringify({ threadId: 't', title: 'x', projectId: 7, groupId: 9 })),
-    ).toEqual({ threadId: 't', title: 'x', projectId: '' });
-    expect(
-      decodeThreadDragPayload(JSON.stringify({ threadId: 't', title: 'x', projectId: 'p', groupId: '' })),
-    ).toEqual({ threadId: 't', title: 'x', projectId: 'p' });
-  });
-
-  it('returns null for malformed JSON', () => {
-    expect(decodeThreadDragPayload('{not json')).toBeNull();
-    expect(decodeThreadDragPayload('')).toBeNull();
-  });
-
-  it('returns null when threadId is missing', () => {
-    expect(decodeThreadDragPayload(JSON.stringify({ title: 'Just a title' }))).toBeNull();
-  });
-
-  it('returns null when threadId is not a string', () => {
-    expect(decodeThreadDragPayload(JSON.stringify({ threadId: 42, title: 'x' }))).toBeNull();
-    expect(decodeThreadDragPayload(JSON.stringify({ threadId: null, title: 'x' }))).toBeNull();
-  });
-
-  it("defaults title to 'Untitled' when missing or non-string", () => {
-    expect(decodeThreadDragPayload(JSON.stringify({ threadId: 't' }))).toEqual({
-      threadId: 't',
-      title: 'Untitled',
-      projectId: '',
-    });
-    expect(decodeThreadDragPayload(JSON.stringify({ threadId: 't', title: 7 }))).toEqual({
-      threadId: 't',
-      title: 'Untitled',
-      projectId: '',
-    });
+describe('thread drag data', () => {
+  it('carries the thread id and nothing else', () => {
+    expect(encodeThreadDragPayload({ threadId: 'thread-1', projectId: 'project-1', groupId: 'group-1' })).toBe('thread-1');
   });
 });
 
@@ -121,36 +40,43 @@ describe('threadDragPayloadForEvent', () => {
     } as unknown as DragEvent;
   }
 
-  it('reads the DataTransfer when it answers', () => {
-    beginThreadRowDrag({ threadId: 'stale', title: 'Stale', projectId: 'p9' });
-    const payload = threadDragPayloadForEvent(evt(
-      [THREAD_ROW_DRAG_MIME],
-      encodeThreadDragPayload({ threadId: 'live', title: 'Live', projectId: 'p1' }),
-    ));
-    expect(payload?.threadId).toBe('live');
+  it('answers a drop with the record of the thread the DataTransfer names', () => {
+    beginThreadRowDrag({ threadId: 'dragging', projectId: 'p1', groupId: 'g1' });
+    expect(threadDragPayloadForEvent(evt([THREAD_ROW_DRAG_MIME], 'dragging')))
+      .toEqual({ threadId: 'dragging', projectId: 'p1', groupId: 'g1' });
+  });
+
+  // A record left by a drag that ended unheard, or a drag from another
+  // window of the app: the DataTransfer names the thread, and no project
+  // is known for it, so only the pane strip can place it.
+  it('answers a drop of another thread with its id alone', () => {
+    beginThreadRowDrag({ threadId: 'stale', projectId: 'p9' });
+    expect(threadDragPayloadForEvent(evt([THREAD_ROW_DRAG_MIME], 'live'))).toEqual({ threadId: 'live', projectId: '' });
+    endThreadRowDrag();
+    expect(threadDragPayloadForEvent(evt([THREAD_ROW_DRAG_MIME], 'live'))).toEqual({ threadId: 'live', projectId: '' });
   });
 
   it('falls back to the in-flight record when it does not', () => {
-    beginThreadRowDrag({ threadId: 'dragging', title: 'Dragging', projectId: 'p1', groupId: 'g1' });
+    beginThreadRowDrag({ threadId: 'dragging', projectId: 'p1', groupId: 'g1' });
     const payload = threadDragPayloadForEvent(evt([THREAD_ROW_DRAG_MIME], ''));
-    expect(payload).toEqual({ threadId: 'dragging', title: 'Dragging', projectId: 'p1', groupId: 'g1' });
+    expect(payload).toEqual({ threadId: 'dragging', projectId: 'p1', groupId: 'g1' });
   });
 
   it('never answers for a drag that is not a thread row', () => {
-    beginThreadRowDrag({ threadId: 'dragging', title: 'Dragging', projectId: 'p1' });
+    beginThreadRowDrag({ threadId: 'dragging', projectId: 'p1' });
     expect(threadDragPayloadForEvent(evt(['Files'], ''))).toBeNull();
   });
 
   it('forgets the record once the drag ends', () => {
-    beginThreadRowDrag({ threadId: 'dragging', title: 'Dragging', projectId: 'p1' });
+    beginThreadRowDrag({ threadId: 'dragging', projectId: 'p1' });
     endThreadRowDrag();
     expect(threadDragPayloadForEvent(evt([THREAD_ROW_DRAG_MIME], ''))).toBeNull();
   });
 });
 
 describe('group drop predicates', () => {
-  const inG1 = { threadId: 't', title: 't', projectId: 'p1', groupId: 'g1' };
-  const loose = { threadId: 't', title: 't', projectId: 'p1' };
+  const inG1 = { threadId: 't', projectId: 'p1', groupId: 'g1' };
+  const loose = { threadId: 't', projectId: 'p1' };
 
   it('accepts a loose thread of the same project', () => {
     expect(canDropThreadInGroup(loose, 'p1', 'g1')).toBe(true);
@@ -204,10 +130,10 @@ describe('tool drag payloads', () => {
 
   it('is never a thread, and a thread is never a tool', () => {
     beginToolPaneDrag({ kind: 'pulls' });
-    beginThreadRowDrag({ threadId: 'stale', title: 'Stale', projectId: 'p1' });
+    beginThreadRowDrag({ threadId: 'stale', projectId: 'p1' });
     const tool = evt([TOOL_PANE_DRAG_MIME], { [TOOL_PANE_DRAG_MIME]: encodeToolDragPayload({ kind: 'pulls' }) });
     expect(threadDragPayloadForEvent(tool)).toBeNull();
-    const thread = evt([THREAD_ROW_DRAG_MIME], { [THREAD_ROW_DRAG_MIME]: encodeThreadDragPayload({ threadId: 't', title: 'T', projectId: 'p1' }) });
+    const thread = evt([THREAD_ROW_DRAG_MIME], { [THREAD_ROW_DRAG_MIME]: encodeThreadDragPayload({ threadId: 't', projectId: 'p1' }) });
     expect(toolDragPayloadForEvent(thread)).toBeNull();
     expect(toolDragPayloadForEvent(evt(['Files'], {}))).toBeNull();
     expect(TOOL_PANE_DRAG_MIME).not.toBe(THREAD_ROW_DRAG_MIME);

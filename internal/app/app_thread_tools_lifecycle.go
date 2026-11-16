@@ -176,10 +176,18 @@ func (a *App) cancelOpenReceipt(token, answer string, stop turnStop, receipt *st
 			return false, err
 		}
 		var settled bool
+		// The sender's report says what happened, so a request of this
+		// computer's own that its sender cancelled settles with its wake
+		// disarmed, in the settlement's own write: a cancel that fails
+		// leaves the wake armed for the work still running. A paired
+		// computer's request disarms on its side once this cancel answers
+		// it. A person's Stop from the tray leaves it armed, so the sender's
+		// agent learns the stop was not its own.
 		work, settled, err = a.settleReadReceiptLocked(current, store.ThreadReceiptOpenStates(), store.ThreadRequestSettlement{
 			State:      store.ThreadReceiptCancelled,
 			Answer:     []byte(answer),
 			AnswerKind: store.ThreadAnswerError,
+			DisarmWake: answer == threadRequestSenderCancel,
 		}, dropScratchThread)
 		if err != nil || !settled {
 			return false, err

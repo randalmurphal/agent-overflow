@@ -7,16 +7,8 @@
 -->
 <script lang="ts">
   import Button from '../Button.svelte';
+  import type { ButtonSize as Size, ButtonVariant as Variant } from '../buttonClasses';
 
-  type Variant =
-    | 'primary'
-    | 'secondary'
-    | 'ghost'
-    | 'tinted'
-    | 'danger'
-    | 'danger-outline'
-    | 'danger-ghost';
-  type Size = 'xs' | 'sm' | 'md';
   type ButtonType = 'button' | 'submit' | 'reset';
 
   let {

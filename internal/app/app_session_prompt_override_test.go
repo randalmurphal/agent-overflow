@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/promptoverride"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
@@ -239,6 +240,7 @@ func TestBuildSessionOptionsRendersTheClaudeOverrideIntoTheLaunchConfig(t *testi
 	}
 
 	cfg := claude.ConfigFromOptions(opts)
+	cfg.Reaper = procutiltest.Reaper()
 	if cfg.SystemPrompt != want {
 		t.Fatalf("claude cfg.SystemPrompt = %q, want %q", cfg.SystemPrompt, want)
 	}
@@ -298,6 +300,7 @@ func TestBuildSessionOptionsAppliesBothAxesToClaudeTUI(t *testing.T) {
 	}
 
 	cfg := claudetui.ConfigFromOptions(opts)
+	cfg.Reaper = procutiltest.Reaper()
 	if cfg.SystemPrompt != want {
 		t.Fatalf("claudetui cfg.SystemPrompt = %q, want %q", cfg.SystemPrompt, want)
 	}
@@ -771,6 +774,7 @@ func TestNextSpawnAfterACodexForkStillCarriesTheOverrideAxes(t *testing.T) {
 	}
 
 	cfg := codex.ConfigFromOptions(opts)
+	cfg.Reaper = procutiltest.Reaper()
 	if cfg.SystemPrompt != "forked instructions" {
 		t.Fatalf("codex cfg.SystemPrompt = %q, want the override as baseInstructions", cfg.SystemPrompt)
 	}
@@ -796,6 +800,7 @@ func registerLiveCodexSession(t *testing.T, app *App, threadID string, launchOpt
 		`"method":"thread/resume"`: `{"jsonrpc":"2.0","id":%s,"result":{"thread":{"id":"mock-thread-override"}}}`,
 	})
 	cfg := codex.ConfigFromOptions(launchOpts)
+	cfg.Reaper = procutiltest.Reaper()
 	cfg.Binary = binary
 	sess, err := codex.NewSession(context.Background(), threadID, cfg, func(provider.ProviderEvent) {})
 	if err != nil {

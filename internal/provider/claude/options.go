@@ -614,11 +614,8 @@ type cliInlineSettings struct {
 	// ("Concise" / "Proactive" / "Explanatory" / "Learning"). There is no
 	// CLI flag for this axis — the settings key is the only delivery
 	// mechanism.
-	OutputStyle string `json:"outputStyle,omitempty"`
-	// CleanupPeriodDays is the transcript retention this process sweeps the
-	// config home with. See retention.go.
-	CleanupPeriodDays int               `json:"cleanupPeriodDays,omitempty"`
-	Env               map[string]string `json:"env,omitempty"`
+	OutputStyle string            `json:"outputStyle,omitempty"`
+	Env         map[string]string `json:"env,omitempty"`
 	// Hooks carries Config.SessionStartHook. The flagSettings layer's hooks
 	// merge with the user's own and run beside them.
 	Hooks map[string]any `json:"hooks,omitempty"`
@@ -656,11 +653,9 @@ func inlineSettingsForCLI(cfg Config) (string, bool) {
 		FastMode:            cfg.FastMode,
 		CrossSessionInbound: strings.TrimSpace(cfg.CrossSessionInbound),
 		OutputStyle:         strings.TrimSpace(cfg.OutputStyle),
-		// The CLI's schema rejects a value below one.
-		CleanupPeriodDays: max(cfg.CleanupPeriodDays, 0),
-		Env:               inlineSettingsEnvForCLI(cfg),
-		Hooks:             inlineSettingsHooksForCLI(cfg),
-		Permissions:       AccessPermissions(cfg.AccessDirs),
+		Env:                 inlineSettingsEnvForCLI(cfg),
+		Hooks:               inlineSettingsHooksForCLI(cfg),
+		Permissions:         AccessPermissions(cfg.AccessDirs),
 	}
 	if cfg.NativeMemoryOff {
 		off := false
@@ -669,7 +664,6 @@ func inlineSettingsForCLI(cfg Config) (string, bool) {
 	if !settings.FastMode &&
 		settings.CrossSessionInbound == "" &&
 		settings.OutputStyle == "" &&
-		settings.CleanupPeriodDays == 0 &&
 		len(settings.Env) == 0 &&
 		len(settings.Hooks) == 0 &&
 		settings.AutoMemoryEnabled == nil &&

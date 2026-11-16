@@ -335,6 +335,7 @@
     class="text-fg-muted"
     data-testid="assistant-message-body"
     data-render-mode="client-markdown"
+    data-find-text
   >
     <ChatMarkdown
       source={markdownSource}

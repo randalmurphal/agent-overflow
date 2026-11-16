@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/agentmeta"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/store"
@@ -176,7 +177,7 @@ func TestClaudeMergeFold_TwoMessagesBecomeOneRow(t *testing.T) {
 	if !found {
 		t.Fatalf("survivor row %s is gone", rowB.ID)
 	}
-	want := "first queued" + usermessage.JoinSeparator + "second queued"
+	want := "first queued" + agentmeta.JoinSeparator + "second queued"
 	if survivor.Summary != want {
 		t.Errorf("survivor summary:\n got %q\nwant %q", survivor.Summary, want)
 	}
@@ -245,7 +246,7 @@ func foldTwo(t *testing.T, textA, textB string, metaA, metaB usermessage.Meta) u
 	if !found {
 		t.Fatalf("survivor row %s is gone", rowB.ID)
 	}
-	if want := textA + usermessage.JoinSeparator + textB; survivor.Summary != want {
+	if want := textA + agentmeta.JoinSeparator + textB; survivor.Summary != want {
 		t.Fatalf("survivor summary:\n got %q\nwant %q", survivor.Summary, want)
 	}
 	meta, err := usermessage.FromItem(survivor)
@@ -261,19 +262,19 @@ func foldTwo(t *testing.T, textA, textB string, metaA, metaB usermessage.Meta) u
 func TestClaudeMergeFold_RecordsEachMembersPartAndOrigin(t *testing.T) {
 	request := "Fix the nil check."
 	person := "and also update the docs"
-	origin := &usermessage.OriginThread{ThreadID: "lead", Title: "Lead", Token: "tok-1", Kind: "send"}
+	origin := &agentmeta.OriginThread{ThreadID: "lead", Title: "Lead", Token: "tok-1", Kind: "send"}
 	meta := foldTwo(t, request, person,
-		usermessage.Meta{SendID: "thread-request:tok-1", Origin: usermessage.OriginAgentThread, OriginThread: origin},
+		usermessage.Meta{SendID: "thread-request:tok-1", Origin: agentmeta.OriginAgentThread, OriginThread: origin},
 		usermessage.Meta{SendID: "send-b"})
 
-	want := []usermessage.JoinedPart{
-		{SendID: "thread-request:tok-1", Bytes: len(request), Origin: usermessage.OriginAgentThread, OriginThread: origin},
+	want := []agentmeta.JoinedPart{
+		{SendID: "thread-request:tok-1", Bytes: len(request), Origin: agentmeta.OriginAgentThread, OriginThread: origin},
 		{SendID: "send-b", Bytes: len(person)},
 	}
 	if !reflect.DeepEqual(meta.JoinedParts, want) {
 		t.Fatalf("joinedParts:\n got %+v\nwant %+v", meta.JoinedParts, want)
 	}
-	got, agents, ok := usermessage.SplitPersonParts(request+usermessage.JoinSeparator+person, meta)
+	got, agents, ok := usermessage.SplitPersonParts(request+agentmeta.JoinSeparator+person, meta)
 	if !ok || got != person || len(agents) != 1 {
 		t.Fatalf("split: person %q, %d agent parts, ok %v; want %q, 1, true", got, len(agents), ok, person)
 	}
@@ -286,9 +287,9 @@ func TestClaudeMergeFold_RecordsNoPartsAMemberCannotSupport(t *testing.T) {
 	stale := usermessage.Meta{
 		SendID:        "send-a",
 		JoinedSendIDs: []string{"send-a", "send-c"},
-		JoinedParts:   []usermessage.JoinedPart{{SendID: "send-a", Bytes: 3}, {SendID: "send-c", Bytes: 99}},
+		JoinedParts:   []agentmeta.JoinedPart{{SendID: "send-a", Bytes: 3}, {SendID: "send-c", Bytes: 99}},
 	}
-	meta := foldTwo(t, "one"+usermessage.JoinSeparator+"two", "three", stale, usermessage.Meta{SendID: "send-b"})
+	meta := foldTwo(t, "one"+agentmeta.JoinSeparator+"two", "three", stale, usermessage.Meta{SendID: "send-b"})
 	if meta.JoinedParts != nil {
 		t.Fatalf("joinedParts: got %+v, want none", meta.JoinedParts)
 	}
@@ -346,7 +347,7 @@ func TestClaudeMergeFold_RenumbersImageMarkers(t *testing.T) {
 	if !found {
 		t.Fatalf("survivor row %s is gone", rowB.ID)
 	}
-	want := "look at [Image #1] please" + usermessage.JoinSeparator + "and [Image #2] too"
+	want := "look at [Image #1] please" + agentmeta.JoinSeparator + "and [Image #2] too"
 	if survivor.Summary != want {
 		t.Errorf("survivor summary:\n got %q\nwant %q", survivor.Summary, want)
 	}
@@ -394,7 +395,7 @@ func TestClaudeMergeFold_ThreeMessages(t *testing.T) {
 	if !found {
 		t.Fatalf("survivor row %s is gone", rowC.ID)
 	}
-	want := strings.Join([]string{"one", "two", "three"}, usermessage.JoinSeparator)
+	want := strings.Join([]string{"one", "two", "three"}, agentmeta.JoinSeparator)
 	if survivor.Summary != want {
 		t.Errorf("survivor summary:\n got %q\nwant %q", survivor.Summary, want)
 	}
@@ -532,7 +533,7 @@ func TestClaudeMergeFold_DeferredMemberHasNoRowToDelete(t *testing.T) {
 	if !found {
 		t.Fatalf("survivor row %s is gone", rowB.ID)
 	}
-	want := "first queued" + usermessage.JoinSeparator + "second queued"
+	want := "first queued" + agentmeta.JoinSeparator + "second queued"
 	if survivor.Summary != want {
 		t.Errorf("survivor summary:\n got %q\nwant %q", survivor.Summary, want)
 	}
@@ -592,7 +593,7 @@ func TestClaudeMergeFold_NineMessages(t *testing.T) {
 	if !found {
 		t.Fatal("the survivor row is gone")
 	}
-	if want := strings.Join(texts, usermessage.JoinSeparator); survivor.Summary != want {
+	if want := strings.Join(texts, agentmeta.JoinSeparator); survivor.Summary != want {
 		t.Errorf("survivor summary:\n got %q\nwant %q", survivor.Summary, want)
 	}
 }

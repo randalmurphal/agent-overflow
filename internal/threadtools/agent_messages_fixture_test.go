@@ -75,7 +75,7 @@ type fixturePart struct {
 }
 
 // fixtureOrigin is the attribution a row of the message carries, in
-// usermessage.OriginThread's JSON shape, facts included.
+// agentmeta.OriginThread's JSON shape, facts included.
 type fixtureOrigin struct {
 	ComputerID   string       `json:"computerId,omitempty"`
 	ComputerName string       `json:"computerName,omitempty"`
@@ -88,7 +88,7 @@ type fixtureOrigin struct {
 
 // fixtureCase is a row's text, each of its messages' attribution as the
 // writer stored it, and what the row shows of each. Members is each joined
-// member's length in bytes, as usermessage.JoinedPart records it, so the
+// member's length in bytes, as agentmeta.JoinedPart records it, so the
 // frontend splits the row the way a stored row's meta tells it to. Legacy
 // marks a text main's templates also wrote, which a row written before the
 // facts holds.

@@ -1,8 +1,11 @@
 package main
 
 import (
+	"fmt"
+	"go/ast"
 	"strings"
 	"testing"
+	"time"
 )
 
 // fixtureSpecs are the two testdata receivers, given in REVERSE name
@@ -293,6 +296,60 @@ func TestScanReceivers_ParsesCallerBound(t *testing.T) {
 	if !strings.Contains(string(rendered), `CallerBound: true}, // main.Zeta.Reads`) ||
 		strings.Contains(string(rendered), `CallerBound: true}, // main.Zeta.Writes`) {
 		t.Errorf("rendered table does not carry the CallerBound column:\n%s", rendered)
+	}
+}
+
+// TestScanReceivers_ParsesBudget pins the optional //ao:budget directive
+// into both tables: a dropped one has every client give up on the method at
+// the default wait while its server side keeps running.
+func TestScanReceivers_ParsesBudget(t *testing.T) {
+	specs := []receiverSpec{{Dir: "testdata/budget", Receiver: "Eta", Package: "main"}}
+	entries, err := scanReceivers(".", specs, nil, fixtureScopes, fixtureRoutes)
+	if err != nil {
+		t.Fatalf("scanReceivers: %v", err)
+	}
+	got := map[string]MethodEntry{}
+	for _, e := range entries {
+		got[e.Name] = e
+	}
+	if got["Slow"].Budget != 10*time.Minute || got["Quick"].Budget != 0 {
+		t.Fatalf("budgets = Slow %v, Quick %v; want 10m and none", got["Slow"].Budget, got["Quick"].Budget)
+	}
+	rendered, err := renderFile(entries)
+	if err != nil {
+		t.Fatalf("renderFile: %v", err)
+	}
+	if !strings.Contains(string(rendered), `Budget: 10 * time.Minute}, // main.Eta.Slow`) ||
+		strings.Contains(string(rendered), `Budget: 10 * time.Minute}, // main.Eta.Quick`) {
+		t.Errorf("rendered table does not carry the Budget column:\n%s", rendered)
+	}
+	ts := string(renderTS(entries))
+	slow := fmt.Sprintf("\t%d: 600000, // Slow\n", got["Slow"].ID)
+	if !strings.Contains(ts, slow) || strings.Contains(ts, "// Quick\n};") ||
+		!strings.Contains(ts, "export const DEFAULT_METHOD_BUDGET_MS = 45000;") ||
+		!strings.Contains(ts, "export const METHOD_ANSWER_MARGIN_MS = 15000;") {
+		t.Errorf("TS mirror does not carry the budgets:\n%s", ts)
+	}
+}
+
+// A budget directive that does not say what its author meant fails the run.
+func TestMethodAnnotations_RefusesABadBudget(t *testing.T) {
+	for _, tc := range []struct{ name, lines string }{
+		{"not a duration", "//ao:budget ten minutes"},
+		{"no value", "//ao:budget"},
+		{"no longer than the default", "//ao:budget 45s"},
+		{"past the ceiling", "//ao:budget 25h"},
+		{"two of them", "//ao:budget 2m\n//ao:budget 3m"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			doc := &ast.CommentGroup{}
+			for _, line := range strings.Split(tc.lines, "\n") {
+				doc.List = append(doc.List, &ast.Comment{Text: line})
+			}
+			if _, err := methodAnnotations(doc); err == nil {
+				t.Fatalf("%q was accepted", tc.lines)
+			}
+		})
 	}
 }
 

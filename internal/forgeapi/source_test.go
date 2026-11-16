@@ -59,12 +59,16 @@ func exit(code int, stderr string) fakeAnswer {
 }
 
 func gitlabConfig(oauth2, apiHost, apiProtocol, token string) map[string]fakeAnswer {
-	return map[string]fakeAnswer{
+	answers := map[string]fakeAnswer{
 		"glab config get is_oauth2 --host gl.example":    ok(oauth2 + "\n"),
 		"glab config get api_host --host gl.example":     ok(apiHost + "\n"),
 		"glab config get api_protocol --host gl.example": ok(apiProtocol + "\n"),
 		"glab config get token --host gl.example":        ok(token + "\n"),
 	}
+	for _, key := range []string{"ca_cert", "client_cert", "client_key", "proxy", "skip_tls_verify"} {
+		answers["glab config get "+key+" --host gl.example"] = ok("\n")
+	}
+	return answers
 }
 
 func TestCLITokenSourceReadsEachLoginKind(t *testing.T) {
@@ -94,6 +98,20 @@ func TestCLITokenSourceReadsEachLoginKind(t *testing.T) {
 		}
 		if slices.Contains(runner.commands(), "glab api --hostname gl.example version") {
 			t.Fatal("a personal token was refreshed through glab api")
+		}
+	})
+	t.Run("glab per-host TLS and proxy settings", func(t *testing.T) {
+		answers := gitlabConfig("", "", "", testSecret)
+		answers["glab config get ca_cert --host gl.example"] = ok("/etc/gl/ca.pem\n")
+		answers["glab config get client_cert --host gl.example"] = ok("/etc/gl/me.crt\n")
+		answers["glab config get client_key --host gl.example"] = ok("/etc/gl/me.key\n")
+		answers["glab config get proxy --host gl.example"] = ok("http://proxy.example:3128\n")
+		answers["glab config get skip_tls_verify --host gl.example"] = ok("true\n")
+		runner := &fakeRunner{answers: answers}
+		_, info, err := CLITokenSource{Run: runner.run}.Token(t.Context(), ForgeGitLab, "gl.example")
+		want := HostNetwork{CACert: "/etc/gl/ca.pem", ClientCert: "/etc/gl/me.crt", ClientKey: "/etc/gl/me.key", SkipTLSVerify: true, Proxy: "http://proxy.example:3128"}
+		if err != nil || info.Network != want {
+			t.Fatalf("Network = %+v, %v, want %+v", info.Network, err, want)
 		}
 	})
 	t.Run("glab OAuth2 refreshes before the read and sends Bearer", func(t *testing.T) {
@@ -207,6 +225,9 @@ func TestHandoffOutputNeverReachesAnError(t *testing.T) {
 		"glab config get api_protocol --host gitlab.com": ok(""),
 		"glab config get token --host gitlab.com":        exit(3, "keyring daemon crashed"),
 	}
+	for _, key := range []string{"ca_cert", "client_cert", "client_key", "proxy", "skip_tls_verify"} {
+		answers["glab config get "+key+" --host gitlab.com"] = ok("")
+	}
 	runner := &fakeRunner{answers: answers}
 	_, _, err := CLITokenSource{Run: runner.run}.Token(t.Context(), ForgeGitLab, "gitlab.com")
 	if err == nil {
@@ -220,5 +241,22 @@ func TestHandoffOutputNeverReachesAnError(t *testing.T) {
 	_, _, err = CLITokenSource{Run: runner.run}.Token(t.Context(), ForgeGitLab, "gl.example")
 	if err == nil || strings.Contains(err.Error(), testSecret) {
 		t.Fatalf("err = %v leaked the auth status output", err)
+	}
+}
+
+// A gh older than 2.17.0 has no `gh auth token`: it prints its usage
+// beside "unknown command", which can name the login command, and exits
+// 1. That is a CLI to update, not a login to fix or a network to retry.
+func TestCLITokenSourceReportsAGhWithoutAuthToken(t *testing.T) {
+	t.Parallel()
+	stderr := "unknown command \"token\" for \"gh auth\"\n\nUsage:  gh auth <command> [flags]\n\nAvailable commands:\n  login\n  logout\n  refresh\n  status\n\nRun 'gh auth login' to authenticate.\n"
+	runner := &fakeRunner{answers: map[string]fakeAnswer{"gh auth token --hostname github.com": exit(1, stderr)}}
+	_, _, err := CLITokenSource{Run: runner.run}.Token(t.Context(), ForgeGitHub, "github.com")
+	setup, ok := errors.AsType[*SetupError](err)
+	if !ok || setup.Kind != SetupOutdated || setup.Binary != "gh" || !strings.Contains(setup.Message, "2.17.0") {
+		t.Fatalf("Token error = %#v, want a SetupError of kind %q naming gh 2.17.0", err, SetupOutdated)
+	}
+	if !WriteNotApplied(err) {
+		t.Fatal("a token that was never read sent nothing, so a write it stopped was not applied")
 	}
 }

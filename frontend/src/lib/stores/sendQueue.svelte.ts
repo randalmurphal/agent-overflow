@@ -79,7 +79,7 @@ export interface QueueItem {
   /**
    * An agent's message the app queued on its behalf (a thread request, an
    * answer coming back, a wake), not the person's: the backend classifies
-   * it (usermessage.IsAgentMessage). The composer's preview leaves it out;
+   * it (agentmeta.IsAgentMessage). The composer's preview leaves it out;
    * the Agents rail segment lists it as incoming, named from the origin.
    */
   agentMessage?: boolean;
@@ -221,6 +221,13 @@ export function onRegistrationSendsPending(listener: SendsPendingAnswerListener)
 export function getQueueRevisionForThread(threadId: string | null | undefined): number {
   if (!threadId) return 0;
   return queueRevisionByThread.get(threadId) ?? 0;
+}
+
+/** A queue frame for the thread arrived. It is newer than every snapshot
+ * read in flight, whether or not it changed what this client holds: the
+ * transport writes it ahead of a reply read before it left. */
+export function noteQueueFrame(threadId: string): void {
+  if (threadId) bumpQueueRevision(threadId);
 }
 
 function bumpQueueRevision(threadId: string): void {

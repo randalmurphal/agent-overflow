@@ -19,7 +19,7 @@ import (
 
 // agentOpenDepth is how many spawns below a settled local spawn's target
 // open work keeps it listed, the depth its marks count
-// (open_below_0 to open_below_3, migration v151).
+// (open_below_0 to open_below_3, migration v154).
 const agentOpenDepth = 4
 
 // agentRootSQL and agentWindowSQL are the tree reads' root (?1) and settled
@@ -501,7 +501,7 @@ func agentOpenBelowSQL(alias string) string {
 // agentOpenWorkSQL matches a request that is open work under a spawn: an
 // open request the listing counts (a spawn, or a send or ask whose wake is
 // armed), or a spawn on another computer that last reported open work
-// there. The marks count these (migration v151).
+// there. The marks count these (migration v154).
 func agentOpenWorkSQL(alias string) string {
 	a := alias + "."
 	return `((` + a + `lineage_only = 0 AND ` + a + `settled_at IS NULL AND (` + a + `kind = 'spawn' OR (` + a + `kind IN ('send','ask') AND ` + a + `notify = 1)))

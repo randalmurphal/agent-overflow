@@ -411,6 +411,20 @@ func (s *Store) ListRecentTurns(threadID string, limit int) ([]Turn, error) {
 	return out, nil
 }
 
+// FirstUserRowOfTurn returns when the earliest top-level user row of a
+// thread's own turn was written, false when the turn has none. A message
+// is written to its row before the provider reports the turn it starts, so
+// this is when the turn was asked for. It reads idx_items_user_text.
+func (s *Store) FirstUserRowOfTurn(threadID string, turnIndex int) (int64, bool, error) {
+	var at sql.NullInt64
+	if err := s.reader().QueryRow(`SELECT MIN(created_at) FROM items
+		  WHERE thread_id = ? AND turn_index = ? AND kind = 'user_text' AND parent_id = ''`,
+		threadID, turnIndex).Scan(&at); err != nil {
+		return 0, false, fmt.Errorf("store: first user row of %s/%d: %w", threadID, turnIndex, err)
+	}
+	return at.Int64, at.Valid, nil
+}
+
 // GetActiveTurn returns the latest turn for a thread only when that latest
 // turn is still in-flight (completed_at=NULL).
 //

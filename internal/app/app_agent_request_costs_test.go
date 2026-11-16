@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/store"
@@ -177,7 +178,7 @@ func TestAWatchFireReadsItsRowOnce(t *testing.T) {
 	// A live session mid-turn, so the wake waits in the queue and nothing
 	// starts a provider.
 	sess, err := claude.NewSession(context.Background(), thread.ID,
-		claude.Config{Binary: writeClaudeStdinRecorderBinary(t, filepath.Join(t.TempDir(), "stdin.jsonl")), WorkDir: thread.WorkspacePath},
+		claude.Config{Reaper: procutiltest.Reaper(), Retention: claude.UserHomeRetention(0), Binary: writeClaudeStdinRecorderBinary(t, filepath.Join(t.TempDir(), "stdin.jsonl")), WorkDir: thread.WorkspacePath},
 		func(provider.ProviderEvent) {})
 	if err != nil {
 		t.Fatal(err)
@@ -248,9 +249,12 @@ func TestALocalSpawnOrAskIsAcceptedInTwoTransactions(t *testing.T) {
 			t.Fatalf("%s: accept = %q %v, %v", kind, target, fresh, err)
 		}
 		// A spawn's naming write also nests its thread, one keyed update.
-		maxWrites := uint64(4)
+		// The naming reads the thread's listing before and after its
+		// writes, so it opens with the no-op write that takes the write
+		// lock first (store.beginListingWrite).
+		maxWrites := uint64(5)
 		if kind == store.ThreadRequestSpawn {
-			maxWrites = 5
+			maxWrites = 6
 		}
 		if cost.commits != 2 || cost.writes > maxWrites {
 			t.Errorf("%s: the accept cost %+v, want 2 commits and at most %d writes", kind, cost, maxWrites)

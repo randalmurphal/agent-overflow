@@ -5,6 +5,7 @@ import {
   ListDiffReviewComments,
   UpdateDiffReviewComment,
 } from './bindings';
+import { createDraftSourceCache } from './draftSourceCache.svelte';
 import type {
   DiffReviewComment,
   DiffReviewCommentInput,
@@ -14,16 +15,17 @@ import type {
 } from '../types/models';
 
 // `commentsBySource` holds the reactive cache surfaced via
-// `getDiffReviewComments`. `fetchSeqBySource` is intentionally a plain
+// `getDiffReviewComments`, bounded with a surface's set held
+// (draftSourceCache.svelte.ts). `fetchSeqBySource` is intentionally a plain
 // `Map` so the synchronous fetch-bookkeeping (incrementing the seq before
 // awaiting the fetch) does not read or write the reactive map. Mixing the
 // two on a single SvelteMap entry caused `refreshDiffReviewComments`
 // callers inside a `$effect` to read+write the same key synchronously
 // and trip Svelte's update-depth guard.
-const commentsBySource = new SvelteMap<string, readonly DiffReviewComment[]>();
-const fetchSeqBySource = new Map<string, number>();
-const activeSourceByThread = new SvelteMap<string, SourceDiffReview | null>();
 const MAX_CACHED_DIFF_REVIEW_SOURCES = 16;
+const fetchSeqBySource = new Map<string, number>();
+const commentsBySource = createDraftSourceCache(MAX_CACHED_DIFF_REVIEW_SOURCES, (key) => fetchSeqBySource.delete(key));
+const activeSourceByThread = new SvelteMap<string, SourceDiffReview | null>();
 
 function cacheKey(threadId: string, scope: DiffReviewScope, sourceKey: string): string {
   return `${threadId}:${scope}:${sourceKey}`;
@@ -83,9 +85,14 @@ export async function refreshDiffReviewComments(
   if ((fetchSeqBySource.get(key) ?? 0) !== fetchSeq) {
     return commentsBySource.get(key) ?? [];
   }
-  commentsBySource.set(key, comments);
-  evictOldSources();
+  commentsBySource.put(key, comments);
   return comments;
+}
+
+/** Keeps one set in the cache while a surface shows it (the review pane's
+ * source, the composer's active one). Answers its release. */
+export function holdDiffReviewComments(threadId: string, scope: DiffReviewScope, sourceKey: string): () => void {
+  return commentsBySource.hold(cacheKey(threadId, scope, sourceKey));
 }
 
 export async function createDiffReviewComment(
@@ -141,7 +148,7 @@ export function replaceDiffReviewCommentsForTest(
   sourceKey: string,
   comments: readonly DiffReviewComment[],
 ): void {
-  commentsBySource.set(cacheKey(threadId, scope, sourceKey), normalizeComments(comments));
+  commentsBySource.put(cacheKey(threadId, scope, sourceKey), normalizeComments(comments));
 }
 
 export function resetForTest(): void {
@@ -151,12 +158,3 @@ export function resetForTest(): void {
 }
 
 export const resetDiffReviewCommentsForTest = resetForTest;
-
-function evictOldSources(): void {
-  while (commentsBySource.size > MAX_CACHED_DIFF_REVIEW_SOURCES) {
-    const first = commentsBySource.keys().next().value;
-    if (!first) return;
-    commentsBySource.delete(first);
-    fetchSeqBySource.delete(first);
-  }
-}

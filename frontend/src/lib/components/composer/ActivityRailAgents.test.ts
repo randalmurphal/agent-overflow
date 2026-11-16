@@ -11,6 +11,7 @@ import { __resetActivityRailUiPrefsForTest } from '../../stores/liveTodoState.sv
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
 import type { ThreadAgentRow, ThreadAgentStop } from '../../stores/bindings';
 import { replaceQueueForThread, resetForTest as resetSendQueue, type QueueItem } from '../../stores/sendQueue.svelte';
+import { withEmptyDraftCleanup } from '../../stores/emptyDraftCleanup';
 
 const navigate = vi.hoisted(() => vi.fn(async () => {}));
 vi.mock('../../stores/threadItemNavigation', () => ({ navigateToThreadItem: navigate }));
@@ -202,6 +203,31 @@ describe('the Agents segment', () => {
       'warning: Stopped Agent child: its turn, 1 background task and 2 agents of its own. Not stopped: stop its background work: the shell would not exit',
     ]));
     expect(view.getByTestId('agent-tray-row-stop-error').textContent).toContain('the shell would not exit');
+  });
+
+  it('waits out an emptied draft\'s delete of the thread before a Stop, and stops nothing it deleted', async () => {
+    const { pane, view, toggle } = await openTray((caller) => [row('a', { callerThreadId: caller }), row('b', { callerThreadId: caller })]);
+    const stop = vi.fn(async (): Promise<ThreadAgentStop> => ({ token: 'a', outcome: 'ended' }) as ThreadAgentStop);
+    const stopAll = vi.fn(async (): Promise<ThreadAgentStop[]> => []);
+    setBindingMock('StopThreadAgentRow', stop);
+    setBindingMock('StopThreadAgentRows', stopAll);
+    await fireEvent.click(toggle);
+    for (const deleted of [false, true]) {
+      stop.mockClear();
+      stopAll.mockClear();
+      let answer!: () => void;
+      const answered = new Promise<void>((resolve) => { answer = resolve; });
+      const cleanup = withEmptyDraftCleanup(pane.threadId!, async () => { await answered; return deleted; }, async () => {});
+      await fireEvent.click((await view.findAllByTestId('agent-tray-row-stop'))[0]);
+      await fireEvent.click(view.getByTestId('activity-rail-agents-stop-all'));
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      expect(stop).not.toHaveBeenCalled();
+      expect(stopAll).not.toHaveBeenCalled();
+      answer();
+      await cleanup;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      expect([deleted, stop.mock.calls.length, stopAll.mock.calls.length]).toEqual([deleted, deleted ? 0 : 1, deleted ? 0 : 1]);
+    }
   });
 
   it('reports a row that had already finished', async () => {

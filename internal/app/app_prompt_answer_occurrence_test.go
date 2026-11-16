@@ -103,7 +103,7 @@ func TestAUsersAnswerIsWrittenOnlyToTheSessionThatAsked(t *testing.T) {
 				if err := app.StartSession(thread.ID); err != nil {
 					t.Fatalf("StartSession: %v", err)
 				}
-				if err := app.SendMessage(thread.ID, message, nil); err != nil {
+				if err := app.SendMessage(context.Background(), thread.ID, message, nil); err != nil {
 					t.Fatalf("SendMessage: %v", err)
 				}
 			}

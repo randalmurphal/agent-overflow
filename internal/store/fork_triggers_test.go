@@ -110,7 +110,7 @@ func TestShownHistoryGuardsRefuseEveryColumn(t *testing.T) {
 }
 
 // TestShownHistoryGuardsAllowWhatNoForkShows: the guards pass a revision
-// touch, a spans write, a move of a row to another thread (a holder taking
+// touch, a spans write, a fill of the derived find text, a move of a row to another thread (a holder taking
 // it), a write that changes nothing, and any write to a row, payload or
 // turn row no fork shows: past the cut, hidden by the fork, or the cut
 // turn's row the fork owns.
@@ -120,6 +120,7 @@ func TestShownHistoryGuardsAllowWhatNoForkShows(t *testing.T) {
 		`UPDATE items SET updated_at = updated_at WHERE thread_id = 'S' AND id = 'u0'`,
 		`UPDATE items SET summary = summary, meta = meta WHERE thread_id = 'S' AND id = 'u0'`,
 		`UPDATE payloads SET spans = '[1]', preview_spans = '[1]' WHERE thread_id = 'S' AND id = 'p'`,
+		`UPDATE items SET find_text = 'derived' WHERE thread_id = 'S' AND id = 'u0'`,
 		`UPDATE items SET summary = 'edited', status = 'errored' WHERE thread_id = 'S' AND id = 'late'`,
 		`UPDATE items SET status = 'completed', summary = 'done' WHERE thread_id = 'S' AND id = 'run'`,
 		`UPDATE turns SET stop_reason = 'error', completed_at = 42 WHERE turn_id = 'S:1'`,
@@ -133,8 +134,9 @@ func TestShownHistoryGuardsAllowWhatNoForkShows(t *testing.T) {
 }
 
 // TestShownHistoryFixStandsDownThePayloadGuards: inside fixShownHistoryTx
-// a write to payload content F shows goes through, which each payload
-// guard refuses outside it. The guards of rows and turn rows stay up.
+// a write to payload content or a row F shows goes through, which each
+// payload guard and the item update guard refuse outside it. The guards of
+// row deletes and turn rows stay up.
 func TestShownHistoryFixStandsDownThePayloadGuards(t *testing.T) {
 	for _, c := range []struct {
 		write   string
@@ -145,7 +147,8 @@ func TestShownHistoryFixStandsDownThePayloadGuards(t *testing.T) {
 		{`INSERT INTO payload_chunks (thread_id, payload_id, chunk_index, start_offset, data, created_at) VALUES ('S', 'p', 9, 99, x'00', 1)`, true},
 		{`UPDATE payload_chunks SET data = x'00' WHERE thread_id = 'S' AND payload_id = 'p'`, true},
 		{`DELETE FROM payload_chunks WHERE thread_id = 'S' AND payload_id = 'p'`, true},
-		{`UPDATE items SET summary = 'edited' WHERE thread_id = 'S' AND id = 'u0'`, false},
+		{`UPDATE items SET summary = 'edited' WHERE thread_id = 'S' AND id = 'u0'`, true},
+		{`DELETE FROM items WHERE thread_id = 'S' AND id = 'u0'`, false},
 		{`UPDATE turns SET stop_reason = 'error' WHERE turn_id = 'S:0'`, false},
 	} {
 		s := shownHistoryFixture(t)

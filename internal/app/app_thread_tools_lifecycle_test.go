@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/entityid"
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/store"
@@ -291,6 +292,7 @@ func TestBootRedeliversASettledRequestsLostWake(t *testing.T) {
 
 	after := f.restart(t)
 	after.app.sweepThreadRequestsAtBoot()
+	after.app.finishThreadRequestSweepAtBoot()
 
 	var wake store.FlushQueueItem
 	waitUntil(t, 10*time.Second, func() bool {
@@ -582,8 +584,10 @@ func TestSettlementReturnsAResponderToItsSwitch(t *testing.T) {
 	}
 	captureDir := t.TempDir()
 	sess, err := claude.NewSession(ctx, thread.ID, claude.Config{
-		Binary:  writeClaudeMcpToggleCaptureBinary(t, captureDir),
-		WorkDir: thread.WorkspacePath,
+		Reaper:    procutiltest.Reaper(),
+		Retention: claude.UserHomeRetention(0),
+		Binary:    writeClaudeMcpToggleCaptureBinary(t, captureDir),
+		WorkDir:   thread.WorkspacePath,
 	}, func(provider.ProviderEvent) {})
 	if err != nil {
 		t.Fatalf("claude.NewSession: %v", err)

@@ -212,3 +212,24 @@ func TestDeleteEmptyDraftThreadKeepsThreadWithWorktree(t *testing.T) {
 		t.Fatal("thread row was deleted")
 	}
 }
+
+// A queued message is an accepted send waiting out a turn. Its row cascades
+// with the thread, so deleting the "empty" draft would discard it.
+func TestDeleteEmptyDraftThreadKeepsThreadWithQueuedMessage(t *testing.T) {
+	s := newTestStore(t)
+	thread := createDraftCleanupThread(t, s, "draft-with-queued-message", "chat")
+	if err := s.InsertFlushQueueItem(FlushQueueItem{ID: "queued-1", ThreadID: thread.ID, Message: "queued", EnqueuedAt: 1}); err != nil {
+		t.Fatalf("InsertFlushQueueItem: %v", err)
+	}
+
+	deleted, err := s.DeleteEmptyDraftThread(thread.ID)
+	if err != nil {
+		t.Fatalf("DeleteEmptyDraftThread: %v", err)
+	}
+	if deleted {
+		t.Fatal("thread with a queued message should not be deleted")
+	}
+	if items, err := s.ListFlushQueueItems(thread.ID); err != nil || len(items) != 1 {
+		t.Fatalf("queued message after cleanup: %+v, %v", items, err)
+	}
+}

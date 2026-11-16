@@ -17,6 +17,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"agent-overflow/internal/agentmeta"
 	"agent-overflow/internal/attachedbackends"
 	"agent-overflow/internal/buildvariant/remotetest"
 	"agent-overflow/internal/errorsx"
@@ -29,7 +30,6 @@ import (
 	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/threadtools"
 	"agent-overflow/internal/transport"
-	"agent-overflow/internal/usermessage"
 )
 
 // Agent thread tools across two computers, over the real wire: a real
@@ -870,7 +870,7 @@ func TestThreadToolsRemoteWakeNamesTheThreadAndComputerThatAnswered(t *testing.T
 	}
 	got := *payload.OriginThread
 	if got.Title != "Kernel build" || got.ThreadID != target || got.ComputerID != id || got.ComputerName != name ||
-		got.Kind != usermessage.OriginKindWake {
+		got.Kind != agentmeta.OriginKindWake {
 		t.Errorf("wake origin = %+v, want %q (%s) on %q (%s)", got, "Kernel build", target, name, id)
 	}
 }
@@ -996,9 +996,9 @@ func TestThreadToolsLostAdmissionAnswerIsUnconfirmedWithItsToken(t *testing.T) {
 
 	// A row still being admitted is fenced out of the poll, and the fence
 	// covers every attempt the admission can make.
-	if threadRequestAdmissionFence < threadPeerCallTimeout*threadPeerAdmissionAttempts {
+	if wait := threadPeerCallWait("ThreadToolCall"); threadRequestAdmissionFence < wait*threadPeerAdmissionAttempts {
 		t.Fatalf("the admission fence %s does not cover %d attempts of %s",
-			threadRequestAdmissionFence, threadPeerAdmissionAttempts, threadPeerCallTimeout)
+			threadRequestAdmissionFence, threadPeerAdmissionAttempts, wait)
 	}
 	inFlight := newThreadRequestToken()
 	if err := pair.source.store.InsertThreadRequest(store.ThreadRequest{
@@ -1496,7 +1496,7 @@ func TestForgettingAComputerRefusesOnceThenAbandonsItsRequests(t *testing.T) {
 	}
 	// The other computer was not told, so its receipt is untouched and the
 	// thread it started is still there.
-	if receipt := pair.receipt(t, spawn.Token); threadReceiptSettledState(receipt.State) {
+	if receipt := pair.receipt(t, spawn.Token); store.ThreadReceiptSettled(receipt.State) {
 		t.Fatalf("forgetting the computer settled its receipt as %q", receipt.State)
 	}
 }

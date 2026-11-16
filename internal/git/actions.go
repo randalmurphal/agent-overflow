@@ -1,6 +1,7 @@
 package git
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"unicode"
@@ -22,7 +23,7 @@ func (c *Core) Commit(cwd, subject, body string) (string, error) {
 		return "", fmt.Errorf("git commit subject is required")
 	}
 
-	if _, _, err := c.Execute(cwd, commitArgs(subject, body)...); err != nil {
+	if err := c.commit(cwd, nil, subject, body); err != nil {
 		return "", err
 	}
 
@@ -44,8 +45,8 @@ func (c *Core) Push(cwd string) error {
 // PushUnattended is Push for automation running with nobody watching (the
 // workflows engine's disposition step). A credential prompt there is not a
 // question anyone can answer: the dialog would sit behind the app window
-// until our 45s subprocess timeout fires, or forever if a GUI helper owns
-// it. Failing fast turns that into a run error the disposition surfaces.
+// until the push's bound (HookTimeout) ends it, or forever if a GUI helper
+// owns it. Failing fast turns that into a run error the disposition surfaces.
 func (c *Core) PushUnattended(cwd string) error {
 	return c.push(cwd, false)
 }
@@ -58,10 +59,12 @@ func (c *Core) push(cwd string, allowCredentialPrompt bool) error {
 	if err != nil {
 		return err
 	}
+	// The pre-push hook and the transfer run inside it.
 	_, _, err = c.executeSpec(commandSpec{
 		binary:                "git",
 		cwd:                   cwd,
 		allowCredentialPrompt: allowCredentialPrompt,
+		runsHooks:             true,
 		args:                  args,
 	})
 	return err
@@ -91,9 +94,10 @@ func (c *Core) pushArgs(cwd string) ([]string, error) {
 	return []string{"push", "--set-upstream", remote, qualified + ":" + qualified}, nil
 }
 
-// Pull fast-forwards the current branch from its upstream.
+// Pull fast-forwards the current branch from its upstream. Its post-merge
+// hook runs inside it.
 func (c *Core) Pull(cwd string) error {
-	_, _, err := c.executeInteractive(cwd, "pull", "--ff-only")
+	_, _, err := c.executeSpec(commandSpec{binary: "git", cwd: cwd, allowCredentialPrompt: true, runsHooks: true, args: []string{"pull", "--ff-only"}})
 	return err
 }
 
@@ -219,6 +223,8 @@ func (c *Core) PruneRemotes(cwd string) error {
 // older than 2× FetchStaleWindow so the map stays bounded by
 // recently-active repos rather than the lifetime total. The 2× floor
 // keeps a freshly-stamped sibling repo from being dropped mid-window.
+// A fetch that succeeded ends the repository's failure record
+// (fetch_failure.go).
 func (c *Core) stampFetchCache(key string) {
 	now := c.nowFn()
 	c.fetchCacheMu.Lock()
@@ -229,13 +235,17 @@ func (c *Core) stampFetchCache(key string) {
 			delete(c.fetchCache, k)
 		}
 	}
+	signInCleared := c.forgetFetchFailureLocked(key)
 	c.fetchCacheMu.Unlock()
+	if signInCleared {
+		c.notifyRemoteSignIn(key)
+	}
 }
 
-// InvalidateFetchCache drops the staleness clock for cwd's repo so the
-// next MaybeFetchRemotes / FetchRemotesBackground call refetches.
-// Callers that mutate remote-tracking refs out of band should use this
-// to keep the picker honest. Mirrors InvalidatePRCache /
+// InvalidateFetchCache drops the staleness clock and the failure record
+// for cwd's repo so the next MaybeFetchRemotes / FetchRemotesBackground
+// call refetches. Callers that mutate remote-tracking refs out of band
+// should use this to keep the picker honest. Mirrors InvalidatePRCache /
 // InvalidateForgeCache.
 func (c *Core) InvalidateFetchCache(cwd string) {
 	key, err := c.CommonDir(cwd)
@@ -245,6 +255,17 @@ func (c *Core) InvalidateFetchCache(cwd string) {
 	c.fetchCacheMu.Lock()
 	delete(c.fetchCache, key)
 	c.fetchCacheMu.Unlock()
+	c.forgetFetchFailure(key)
+}
+
+// ForgetFetches drops every repository's staleness clock and failure
+// record. For a harness reset, whose next fixture can reuse a path; it
+// tells no observer, since the repositories it forgets are gone.
+func (c *Core) ForgetFetches() {
+	c.fetchCacheMu.Lock()
+	defer c.fetchCacheMu.Unlock()
+	clear(c.fetchCache)
+	clear(c.fetchFailures)
 }
 
 // Checkout switches to an existing branch (CheckoutRef).
@@ -256,8 +277,10 @@ func (c *Core) Checkout(cwd, branch string) error {
 	return c.CheckoutRef(cwd, BranchRef(branch))
 }
 
+// executeCheckout runs `git checkout`, whose post-checkout hook runs inside
+// it.
 func (c *Core) executeCheckout(cwd string, args ...string) error {
-	_, _, err := c.Execute(cwd, append([]string{"checkout"}, args...)...)
+	_, _, err := c.executeWithHooks(cwd, append([]string{"checkout"}, args...)...)
 	return err
 }
 
@@ -276,7 +299,7 @@ func (c *Core) CheckoutNewBranch(cwd, name string) error {
 	if err := c.ensureBranchDoesNotExist(cwd, name); err != nil {
 		return err
 	}
-	_, stderr, err := c.Execute(cwd, "checkout", "-b", name)
+	_, stderr, err := c.executeWithHooks(cwd, "checkout", "-b", name)
 	return c.branchCreationError(cwd, err, stderr, name)
 }
 
@@ -437,6 +460,11 @@ func (c *Core) branchExistsChecked(cwd, branch string) (bool, error) {
 func (c *Core) branchCreationError(cwd string, err error, stderr, name string) error {
 	if err == nil {
 		return nil
+	}
+	// A checkout stopped in its post-checkout hook made the branch; it
+	// existing says nothing about why the command failed.
+	if _, stopped := errors.AsType[*commandStoppedError](err); stopped {
+		return err
 	}
 	if c.branchAlreadyExistsAfterCreationError(cwd, stderr, name) {
 		return branchAlreadyExistsError(name)

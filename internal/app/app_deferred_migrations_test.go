@@ -50,9 +50,11 @@ func deferredMigrationsPending(t *testing.T, app *App) bool {
 	return pending
 }
 
+// waitFor polls done until it holds. The bound only ends a test whose
+// condition never comes; a loaded shared runner must not reach it.
 func waitFor(t *testing.T, what string, done func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	for !done() {
 		if time.Now().After(deadline) {
 			t.Fatalf("timed out waiting for %s", what)

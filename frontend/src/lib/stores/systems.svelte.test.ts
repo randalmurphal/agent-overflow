@@ -127,8 +127,8 @@ describe('systems store', () => {
     expect(row.verificationNumber).toBe('42');
     expect(getPendingAttachments()).toEqual([row]);
 
-    const outcome = applyBackendAttach({ id: 'laptop', attached: true });
-    expect(outcome).toEqual({ name: 'Laptop', error: '' });
+    applyBackendAttach({ id: 'laptop', attached: true });
+    expect(getToasts().map((toast) => toast.message)).toEqual(['Attached Laptop']);
     expect(getPendingAttachments()).toEqual([]);
     // The transport registry learned the door from the event, not from a
     // manifest re-fetch.
@@ -148,11 +148,37 @@ describe('systems store', () => {
     }));
     await addSystem('link');
 
-    expect(applyBackendAttach({ id: 'laptop', attached: true }, 'desktop')).toBeNull();
+    applyBackendAttach({ id: 'laptop', attached: true }, 'desktop');
+    expect(getToasts()).toEqual([]);
     // The pending row survives: the pairing home is waiting on has not
     // been answered, and retiring it would drop the confirmation UI.
     expect(getPendingAttachments().map((p) => p.id)).toEqual(['laptop']);
     expect(backendById('laptop')).toBeUndefined();
+  });
+
+  // The host starts the confirmation wait before AddBackend answers, and
+  // the transport writes events queued for this connection ahead of the
+  // reply, so a wait that ends at once reports before the row exists.
+  it('settles a pairing whose outcome arrived before the AddBackend reply', async () => {
+    setBindingMock('AddBackend', async () => {
+      applyBackendAttach({ id: 'laptop', attached: false, error: 'declined' });
+      return { id: 'laptop', name: 'Laptop', endpoint: LAPTOP.endpoint, verificationNumber: '42' };
+    });
+    await addSystem('link');
+    expect(getPendingAttachments()).toEqual([]);
+    expect(getToasts().map((toast) => toast.message)).toEqual(['Could not attach Laptop: declined']);
+  });
+
+  it('settles a pairing whose outcome follows the AddBackend reply', async () => {
+    setBindingMock('AddBackend', async () => ({
+      id: 'laptop', name: 'Laptop', endpoint: LAPTOP.endpoint, verificationNumber: '42',
+    }));
+    setBindingMock('ListBackends', async () => [LAPTOP]);
+    await addSystem('link');
+    expect(getPendingAttachments().map((p) => p.id)).toEqual(['laptop']);
+    applyBackendAttach({ id: 'laptop', attached: true });
+    expect(getPendingAttachments()).toEqual([]);
+    expect(getToasts().map((toast) => toast.message)).toEqual(['Attached Laptop']);
   });
 
   it('reports a refused pairing by name and attaches nothing', async () => {
@@ -160,8 +186,8 @@ describe('systems store', () => {
       id: 'laptop', name: 'Laptop', endpoint: LAPTOP.endpoint, verificationNumber: '42',
     }));
     await addSystem('link');
-    const outcome = applyBackendAttach({ id: 'laptop', attached: false, error: 'declined' });
-    expect(outcome).toEqual({ name: 'Laptop', error: 'declined' });
+    applyBackendAttach({ id: 'laptop', attached: false, error: 'declined' });
+    expect(getToasts().map((toast) => toast.message)).toEqual(['Could not attach Laptop: declined']);
     expect(getPendingAttachments()).toEqual([]);
     expect(backendById('laptop')).toBeUndefined();
   });
@@ -176,7 +202,8 @@ describe('systems store', () => {
     await addSystem('link');
     setBindingMock('RemoveBackend', async () => {});
     await removeSystem('laptop');
-    expect(applyBackendAttach({ id: 'laptop', attached: false, error: 'forgotten' })).toBeNull();
+    applyBackendAttach({ id: 'laptop', attached: false, error: 'forgotten' });
+    expect(getToasts()).toEqual([]);
     expect(getPendingAttachments()).toEqual([]);
   });
 

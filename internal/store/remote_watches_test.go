@@ -334,7 +334,7 @@ func TestRemoteCompletionDeliveryIsConfirmedByItsEcho(t *testing.T) {
 		if err := s.QueueRemoteCompletion(w.ComputerID, w.RequestID, item); err != nil {
 			t.Fatal(err)
 		}
-		if err := s.DeleteDispatchedFlushQueueItem(item.ID); err != nil {
+		if err := s.DeleteDispatchedFlushQueueItems([]string{item.ID}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -389,7 +389,7 @@ func TestRemoteCompletionGivenBackWithAPace(t *testing.T) {
 		if err := s.QueueRemoteCompletion(w.ComputerID, w.RequestID, item); err != nil {
 			t.Fatal(err)
 		}
-		if err := s.DeleteDispatchedFlushQueueItem(item.ID); err != nil {
+		if err := s.DeleteDispatchedFlushQueueItems([]string{item.ID}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -565,23 +565,40 @@ func TestOnlyARefusedStartsDismissalGivesWayToAcceptance(t *testing.T) {
 	}
 }
 
-// A completion whose queue row is still there never reached the provider,
-// so it goes back whatever its confirmation reads: a row queued before
-// v150 was recorded as confirmed by the migration's backfill.
-func TestWithdrawRemoteCompletionWithItsRowIgnoresTheConfirmation(t *testing.T) {
-	s, thread := remoteWatchTestThread(t)
-	w := finishedRemoteWatch(t, s, thread)
-	item := FlushQueueItem{ID: "queue:" + w.RequestID, ThreadID: thread, SendID: "remote-completion:" + w.ComputerID + ":" + w.RequestID, Message: "done"}
-	if err := s.QueueRemoteCompletion(w.ComputerID, w.RequestID, item); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.ConfirmRemoteCompletion(w.ComputerID, w.RequestID, 500); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.WithdrawRemoteCompletion(w.ComputerID, w.RequestID, item.ID, WithdrawQueued, nil); err != nil {
-		t.Fatal(err)
-	}
-	if got := mustRemoteWatch(t, s, w); got.Notification != "pending" || got.ConfirmedAt != 0 {
-		t.Fatalf("a queued completion was kept: %q confirmed at %d", got.Notification, got.ConfirmedAt)
+// A queue row can outlive its completion's echo: the process died between
+// the provider write and the settlement that deletes the row, or that
+// delete failed. Withdrawing the row, by either scope, paced or not, takes
+// it out of the queue and leaves the watch queued and confirmed.
+func TestWithdrawRemoteCompletionNeverTakesBackAConfirmedCompletion(t *testing.T) {
+	paced := func(int64) CompletionReturn { return CompletionReturn{NextCheck: 9_000, Attempts: 1} }
+	for _, tc := range []struct {
+		name  string
+		scope WakeWithdrawal
+		paced func(int64) CompletionReturn
+	}{
+		{"queued", WithdrawQueued, nil},
+		{"unconfirmed", WithdrawUnconfirmed, nil},
+		{"paced", WithdrawUnconfirmed, paced},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, thread := remoteWatchTestThread(t)
+			w := finishedRemoteWatch(t, s, thread)
+			item := FlushQueueItem{ID: "queue:" + w.RequestID, ThreadID: thread, SendID: "remote-completion:" + w.ComputerID + ":" + w.RequestID, Message: "done"}
+			if err := s.QueueRemoteCompletion(w.ComputerID, w.RequestID, item); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := s.ConfirmRemoteCompletion(w.ComputerID, w.RequestID, 500); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.WithdrawRemoteCompletion(w.ComputerID, w.RequestID, item.ID, tc.scope, tc.paced); err != nil {
+				t.Fatal(err)
+			}
+			if got := mustRemoteWatch(t, s, w); got.Notification != "queued" || got.ConfirmedAt != 500 || got.WakeAttempts != 0 {
+				t.Fatalf("a confirmed completion was given back: %q confirmed at %d after %d attempts", got.Notification, got.ConfirmedAt, got.WakeAttempts)
+			}
+			if rows, err := s.ListFlushQueueItems(thread); err != nil || len(rows) != 0 {
+				t.Fatalf("queue rows after the withdraw = %+v, %v; want the row taken out", rows, err)
+			}
+		})
 	}
 }

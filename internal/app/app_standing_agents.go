@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/agenthome"
+	"agent-overflow/internal/agentmeta"
 	"agent-overflow/internal/entityid"
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/store"
@@ -75,7 +76,7 @@ func (a *App) CreateAssistant(ctx context.Context, opts CreateAssistantOptions) 
 		return store.Thread{}, refuseTakenAssistantName(err)
 	}
 	body := agenthome.OpeningMessage(thread.Title, agent.Home)
-	if err := a.queueAssistantMessage(thread.ID, assistantSendID(string(usermessage.ReportOpening), agent.ID), thread.Title, body); err != nil {
+	if err := a.queueAssistantMessage(thread.ID, assistantSendID(string(agentmeta.ReportOpening), agent.ID), thread.Title, body); err != nil {
 		return thread, fmt.Errorf("the assistant was created, but its opening message could not be queued: %w", err)
 	}
 	return thread, nil
@@ -263,9 +264,9 @@ func (a *App) requeueAssistantMessage(threadID, sendID, body string) {
 // assistantMessage is an assistant's opening or handoff block, the app's
 // prose throughout, labelled with the assistant's name.
 func assistantMessage(sendID, name, body string) (usermessage.AgentMessage, error) {
-	kind := usermessage.ReportOpening
-	if assistantSendIDKind(sendID) == string(usermessage.ReportHandOff) {
-		kind = usermessage.ReportHandOff
+	kind := agentmeta.ReportOpening
+	if assistantSendIDKind(sendID) == string(agentmeta.ReportHandOff) {
+		kind = agentmeta.ReportHandOff
 	}
 	return usermessage.Report(kind, usermessage.Reporter{Label: name}, "", body, "")
 }

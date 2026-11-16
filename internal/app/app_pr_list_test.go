@@ -546,6 +546,35 @@ func TestPRListDetailFailureListsTheRowsBesideIt(t *testing.T) {
 	}
 }
 
+// A read whose detail errors are all notices (what the rows leave out)
+// carries their sentences as the project's detail, not a failed refresh;
+// a notice beside a failure reads as the failure.
+func TestPRListNoticesAreTheProjectsDetail(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	app.prUpdates.interval = time.Hour
+	fake := newPRListFake(t, app)
+	notice := &gitops.PRListNotice{Sentence: "Check states are not shown: GitHub refused them."}
+	fake.set(func(f *prListFake) {
+		f.rows[prListRepoB.Key()] = []gitops.PRListRow{prListRow(prListRepoB, 2, nil)}
+		f.listErr[prListRepoB.Key()] = &gitops.PRListDetailError{Errs: []error{notice}}
+	})
+	events := capturePRList(t, app)
+	sub := subscribePRList(t, app)
+	if b := prListProject(t, awaitPRListRead(t, events), "p-b"); b.DetailError != notice.Sentence || b.Error != "" || len(b.Rows) != 1 {
+		t.Fatalf("project = %+v, want the rows and the notice", b)
+	}
+	fake.set(func(f *prListFake) {
+		f.listErr[prListRepoB.Key()] = &gitops.PRListDetailError{Errs: []error{notice, &forgeapi.TransientError{Err: errors.New("events: connection reset")}}}
+	})
+	if err := app.RefreshPRList(context.Background(), sub.ID); err != nil {
+		t.Fatal(err)
+	}
+	if b := prListProject(t, prListSnapshotNow(app), "p-b"); !strings.HasPrefix(b.DetailError, "failed to refresh from the forge") {
+		t.Fatalf("a notice beside a failure = %q, want the failed refresh", b.DetailError)
+	}
+}
+
 // A failing project keeps the rows last read beside its error and leaves
 // the other projects alone; a transient failure is held back once. A
 // removed project takes its rows along, in the pump and in the store.

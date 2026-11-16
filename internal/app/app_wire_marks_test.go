@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/agentmeta"
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/codex"
@@ -23,8 +25,8 @@ import (
 // under.
 const loopWakeMark = `[Agent Overflow message from your loop "inbox". The user did not write it.]`
 
-func loopWakeOrigin() *usermessage.OriginWake {
-	return &usermessage.OriginWake{Kind: store.AgentWakeLoop, Label: "inbox"}
+func loopWakeOrigin() *agentmeta.OriginWake {
+	return &agentmeta.OriginWake{Kind: store.AgentWakeLoop, Label: "inbox"}
 }
 
 // A loop's wake and the person's message Claude joins at a turn boundary go
@@ -54,7 +56,7 @@ func TestAJoinedDispatchMarksOnlyTheAppsMember(t *testing.T) {
 	}
 	stdinLog := filepath.Join(t.TempDir(), "claude-stdin.jsonl")
 	sess, err := claude.NewSession(context.Background(), thread.ID,
-		claude.Config{Binary: writeClaudeStdinRecorderBinary(t, stdinLog), WorkDir: workspace},
+		claude.Config{Reaper: procutiltest.Reaper(), Retention: claude.UserHomeRetention(0), Binary: writeClaudeStdinRecorderBinary(t, stdinLog), WorkDir: workspace},
 		func(provider.ProviderEvent) {})
 	if err != nil {
 		t.Fatalf("claude.NewSession: %v", err)
@@ -67,7 +69,7 @@ func TestAJoinedDispatchMarksOnlyTheAppsMember(t *testing.T) {
 	const wake, person = "Loop fired.", "my own words"
 	app.dispatchFlush(thread.ID, []triage.QueuedFlushItem{
 		{ID: "queue:wake", Message: wake, EnqueuedAt: now, Payload: flushQueuePayloadJSON(t, flushQueuePayload{
-			SendID: agentWakeSendID("w-1", now), Origin: usermessage.OriginAgentWake, OriginWake: loopWakeOrigin(),
+			SendID: agentWakeSendID("w-1", now), Origin: agentmeta.OriginAgentWake, OriginWake: loopWakeOrigin(),
 		})},
 		{ID: "queue:person", Message: person, EnqueuedAt: now + 1, Payload: flushQueuePayloadJSON(t, flushQueuePayload{
 			SendID: "send-person", ExpandComposerCommands: true,
@@ -79,7 +81,7 @@ func TestAJoinedDispatchMarksOnlyTheAppsMember(t *testing.T) {
 		t.Fatalf("stdin envelopes = %d, want the one joined message", len(envelopes))
 	}
 	got, _ := envelopeText(t, envelopes[0])
-	want := loopWakeMark + "\n" + wake + "\n" + usermessage.EndLine + usermessage.JoinSeparator + person
+	want := loopWakeMark + "\n" + wake + "\n" + agentmeta.EndLine + agentmeta.JoinSeparator + person
 	if got != want {
 		t.Errorf("wire text:\n got %q\nwant %q", got, want)
 	}
@@ -93,7 +95,7 @@ func TestAJoinedDispatchMarksOnlyTheAppsMember(t *testing.T) {
 			stored = append(stored, row.Summary)
 		}
 	}
-	if len(stored) != 1 || stored[0] != wake+usermessage.JoinSeparator+person {
+	if len(stored) != 1 || stored[0] != wake+agentmeta.JoinSeparator+person {
 		t.Errorf("stored rows = %q, want one holding the members as written", stored)
 	}
 }
@@ -113,7 +115,7 @@ func TestARequeuedJoinedRowIsMarkedByItsParts(t *testing.T) {
 	}
 	stdinLog := filepath.Join(t.TempDir(), "claude-stdin.jsonl")
 	sess, err := claude.NewSession(context.Background(), thread.ID,
-		claude.Config{Binary: writeClaudeStdinRecorderBinary(t, stdinLog), WorkDir: workspace},
+		claude.Config{Reaper: procutiltest.Reaper(), Retention: claude.UserHomeRetention(0), Binary: writeClaudeStdinRecorderBinary(t, stdinLog), WorkDir: workspace},
 		func(provider.ProviderEvent) {})
 	if err != nil {
 		t.Fatalf("claude.NewSession: %v", err)
@@ -127,12 +129,12 @@ func TestARequeuedJoinedRowIsMarkedByItsParts(t *testing.T) {
 	const person, wake = "first, mine", "Loop fired."
 	wakeID := agentWakeSendID("w-1", now)
 	app.dispatchFlush(thread.ID, []triage.QueuedFlushItem{{
-		ID: "queue:joined", Message: person + usermessage.JoinSeparator + wake, EnqueuedAt: now,
+		ID: "queue:joined", Message: person + agentmeta.JoinSeparator + wake, EnqueuedAt: now,
 		Payload: flushQueuePayloadJSON(t, flushQueuePayload{
 			SendID: "send-person", JoinedSendIDs: []string{"send-person", wakeID}, ExpandComposerCommands: true,
-			JoinedParts: []usermessage.JoinedPart{
+			JoinedParts: []agentmeta.JoinedPart{
 				{SendID: "send-person", Bytes: len(person)},
-				{SendID: wakeID, Bytes: len(wake), Origin: usermessage.OriginAgentWake, OriginWake: loopWakeOrigin()},
+				{SendID: wakeID, Bytes: len(wake), Origin: agentmeta.OriginAgentWake, OriginWake: loopWakeOrigin()},
 			},
 		}),
 	}})
@@ -142,7 +144,7 @@ func TestARequeuedJoinedRowIsMarkedByItsParts(t *testing.T) {
 		t.Fatalf("stdin envelopes = %d, want one", len(envelopes))
 	}
 	got, _ := envelopeText(t, envelopes[0])
-	want := person + usermessage.JoinSeparator + loopWakeMark + "\n" + wake + "\n" + usermessage.EndLine
+	want := person + agentmeta.JoinSeparator + loopWakeMark + "\n" + wake + "\n" + agentmeta.EndLine
 	if got != want {
 		t.Errorf("wire text:\n got %q\nwant %q", got, want)
 	}
@@ -220,7 +222,7 @@ func TestCodexResendAfterInterruptRebuildsTheWireText(t *testing.T) {
 	}
 	log := filepath.Join(t.TempDir(), "codex-stdin.jsonl")
 	sess, err := codex.NewSession(context.Background(), thread.ID,
-		codex.Config{Binary: writeCodexRecordingBinary(t, thread.ID+"-codex", log), WorkDir: thread.WorkspacePath},
+		codex.Config{Reaper: procutiltest.Reaper(), Binary: writeCodexRecordingBinary(t, thread.ID+"-codex", log), WorkDir: thread.WorkspacePath},
 		func(provider.ProviderEvent) {})
 	if err != nil {
 		t.Fatalf("codex.NewSession: %v", err)
@@ -230,7 +232,7 @@ func TestCodexResendAfterInterruptRebuildsTheWireText(t *testing.T) {
 	app.sessionManager().put(thread.ID, appSess)
 
 	wakeMeta, err := usermessage.Marshal(usermessage.Input{
-		SendID: agentWakeSendID("w-1", 1), Origin: usermessage.OriginAgentWake, OriginWake: loopWakeOrigin(),
+		SendID: agentWakeSendID("w-1", 1), Origin: agentmeta.OriginAgentWake, OriginWake: loopWakeOrigin(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -254,7 +256,7 @@ func TestCodexResendAfterInterruptRebuildsTheWireText(t *testing.T) {
 		texts = codexTurnStartTexts(t, log)
 		return len(texts) > 0
 	})
-	want := loopWakeMark + "\nLoop fired.\n" + usermessage.EndLine + "\n\n/workflow go\n\nAgent Overflow workflows"
+	want := loopWakeMark + "\nLoop fired.\n" + agentmeta.EndLine + "\n\n/workflow go\n\nAgent Overflow workflows"
 	if len(texts) != 1 || !strings.HasPrefix(texts[0], want) {
 		t.Fatalf("resent text = %q, want one turn/start opening %q", texts, want)
 	}

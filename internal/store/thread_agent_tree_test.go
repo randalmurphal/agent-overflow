@@ -419,7 +419,7 @@ func TestALiveThreadKeepsItsSpawnAndTheSpawnsAboveIt(t *testing.T) {
 			t.Fatalf("%v live, the candidates %v, %v; want none", other, ids, err)
 		}
 	}
-	// A superseded spawn of child, as migration v151 leaves an older one,
+	// A superseded spawn of child, as migration v154 leaves an older one,
 	// is lineage, not its link.
 	mustExec(t, s.db, `INSERT INTO thread_requests (token, caller_thread_id, kind, target_thread_id, state, created_at, updated_at, settled_at, superseded, lineage_only)
 		VALUES ('p-c', 'peer', 'spawn', 'child', 'finished', 90, 190, 190, 1, 1)`)
@@ -616,16 +616,20 @@ func TestConfirmedWakesNameTheirRow(t *testing.T) {
 	if id := wake(); id != "" {
 		t.Fatalf("a wake whose row is gone names %q", id)
 	}
-	// An archive that finds the wake's queue row takes the wake back.
+	// An archive that finds the queue row of a confirmed wake drops the
+	// row and keeps the wake, and the row it names.
 	if err := s.InsertFlushQueueItem(FlushQueueItem{ID: "queue:tok", ThreadID: "lead", SendID: "thread-wake:tok", Message: "the answer", EnqueuedAt: 330}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.WithdrawThreadWake("tok", false, "queue:tok", WithdrawQueued); err != nil {
 		t.Fatalf("withdraw: %v", err)
 	}
-	var cleared int
-	if err := s.db.QueryRow(`SELECT COUNT(*) FROM thread_requests WHERE token = 'tok' AND wake_item_id = ''`).Scan(&cleared); err != nil || cleared != 1 {
-		t.Fatalf("the give-back kept the wake row: %d, %v", cleared, err)
+	var kept int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM thread_requests WHERE token = 'tok' AND wake_item_id = 'row-b' AND confirmed_at = 300`).Scan(&kept); err != nil || kept != 1 {
+		t.Fatalf("the give-back took back a confirmed wake: %d, %v", kept, err)
+	}
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM flush_queue_items WHERE id = 'queue:tok'`).Scan(&kept); err != nil || kept != 0 {
+		t.Fatalf("the queue row stayed: %d, %v", kept, err)
 	}
 	if got, err := s.ThreadRequestDeliveries("other-thread", []string{"tok"}); err != nil || len(got) != 0 {
 		t.Fatalf("another thread read %+v, %v", got, err)

@@ -34,6 +34,8 @@ type githubForge struct {
 	// ciArtifacts which completed runs keep artifacts (ci_actions_github.go).
 	ciPermissions ciCapabilityCache[CIAction]
 	ciArtifacts   ciCapabilityCache[bool]
+	// readMemory keeps the PR read's shape (github_read_shape.go).
+	readMemory githubReadMemory
 }
 
 // resetCaches forgets what the adapter remembers of each repository
@@ -41,6 +43,7 @@ type githubForge struct {
 func (f *githubForge) resetCaches() {
 	f.ciPermissions.clear()
 	f.ciArtifacts.clear()
+	f.readMemory.clear()
 }
 
 func (f *githubForge) ID() string         { return "github" }
@@ -100,20 +103,42 @@ func (f *githubForge) githubOriginRepo(cwd string) (client *forgeapi.Client, own
 	return client, owner, repo, nil
 }
 
+// githubRepoParentRaw is a repository's node id and the repository it
+// was forked from (null for one that is no fork). A checkout of a fork
+// opens its pull requests in that parent, from a head in the fork.
+type githubRepoParentRaw struct {
+	ID     string `json:"id"`
+	Parent *struct {
+		Owner struct {
+			Login string `json:"login"`
+		} `json:"owner"`
+		Name string `json:"name"`
+	} `json:"parent"`
+}
+
+// githubHeadRepoRaw is a pull request's head repository, null when it was
+// deleted.
+type githubHeadRepoRaw struct {
+	ID string `json:"id"`
+}
+
 // githubOpenPRsQuery finds open pull requests by head branch name. The
 // filter matches a fork's branch of the same name too, so each node says
-// whether its head is in another repository.
+// whose repository its head is in.
 const githubOpenPRsQuery = `query OpenPRsByHead($owner: String!, $name: String!, $head: String!, $after: String) {
   repository(owner: $owner, name: $name) {
+    id parent { owner { login } name }
     pullRequests(headRefName: $head, states: [OPEN], first: 100, after: $after) {
       pageInfo { hasNextPage endCursor }
-      nodes { id url number title state baseRefName isCrossRepository }
+      nodes { id url number title state baseRefName isCrossRepository headRepository { id } }
     }
   }
 }`
 
 // ListOpenPRs returns the open pull requests whose head is the given
-// branch of cwd's origin repository itself. A fork's pull request from a
+// branch of cwd's origin repository itself: those opened in the origin
+// from its own branch, and, when the origin is a fork, those opened in
+// its parent from the fork's branch. A pull request from another fork's
 // branch of the same name is not one: it is someone else's work.
 func (f *githubForge) ListOpenPRs(ctx context.Context, cwd, head string) ([]GitPR, error) {
 	if strings.TrimSpace(head) == "" {
@@ -123,29 +148,53 @@ func (f *githubForge) ListOpenPRs(ctx context.Context, cwd, head string) ([]GitP
 	if err != nil {
 		return nil, err
 	}
+	origin, pulls, err := githubOpenPRsByHead(ctx, client, owner, repo, head, func(_ string, crossRepository bool) bool { return !crossRepository })
+	if err != nil || origin.Parent == nil {
+		return pulls, err
+	}
+	_, upstream, err := githubOpenPRsByHead(ctx, client, origin.Parent.Owner.Login, origin.Parent.Name, head, func(headRepo string, _ bool) bool { return headRepo == origin.ID })
+	if err != nil {
+		return nil, err
+	}
+	return append(pulls, upstream...), nil
+}
+
+// githubOpenPRsByHead reads owner/name's open pull requests from a head
+// branch named head, keeping those keep accepts by their head
+// repository's node id and whether it is another repository, beside the
+// repository's id and parent.
+func githubOpenPRsByHead(ctx context.Context, client *forgeapi.Client, owner, name, head string, keep func(headRepo string, crossRepository bool) bool) (githubRepoParentRaw, []GitPR, error) {
+	var repository githubRepoParentRaw
 	pulls := []GitPR{}
 	var after any
 	for pages := 0; pages < githubReadMaxPages; pages++ {
 		var raw struct {
 			Repository *struct {
+				githubRepoParentRaw
 				PullRequests struct {
 					PageInfo githubPageInfo `json:"pageInfo"`
 					Nodes    []struct {
 						GitPR
-						IsCrossRepository bool `json:"isCrossRepository"`
+						IsCrossRepository bool               `json:"isCrossRepository"`
+						HeadRepository    *githubHeadRepoRaw `json:"headRepository"`
 					} `json:"nodes"`
 				} `json:"pullRequests"`
 			} `json:"repository"`
 		}
-		vars := map[string]any{"owner": owner, "name": repo, "head": head, "after": after}
+		vars := map[string]any{"owner": owner, "name": name, "head": head, "after": after}
 		if _, err := client.GraphQL(ctx, "OpenPRsByHead", githubOpenPRsQuery, vars, &raw); err != nil {
-			return nil, err
+			return githubRepoParentRaw{}, nil, err
 		}
 		if raw.Repository == nil {
-			return nil, fmt.Errorf("GitHub answered no repository %s/%s", owner, repo)
+			return githubRepoParentRaw{}, nil, fmt.Errorf("GitHub answered no repository %s/%s", owner, name)
 		}
+		repository = raw.Repository.githubRepoParentRaw
 		for _, node := range raw.Repository.PullRequests.Nodes {
-			if node.IsCrossRepository {
+			headRepo := ""
+			if node.HeadRepository != nil {
+				headRepo = node.HeadRepository.ID
+			}
+			if !keep(headRepo, node.IsCrossRepository) {
 				continue
 			}
 			pr := node.GitPR
@@ -160,24 +209,26 @@ func (f *githubForge) ListOpenPRs(ctx context.Context, cwd, head string) ([]GitP
 		}
 		after = page.EndCursor
 	}
-	return pulls, nil
+	return repository, pulls, nil
 }
 
 // githubMergedPRsQuery lists merged pull requests, most recently updated
-// first.
+// first, each with its head repository.
 const githubMergedPRsQuery = `query MergedPRs($owner: String!, $name: String!, $first: Int!, $after: String) {
   repository(owner: $owner, name: $name) {
+    id parent { owner { login } name }
     pullRequests(states: [MERGED], first: $first, after: $after, orderBy: {field: UPDATED_AT, direction: DESC}) {
       pageInfo { hasNextPage endCursor }
-      nodes { headRefName headRefOid url }
+      nodes { headRefName headRefOid url headRepository { id } }
     }
   }
 }`
 
 // ListMergedPRHeads fetches up to limit recently merged PRs' head
-// coordinates, 100 per request. Recency-bounded by limit: old merges fall
-// off the window, which prune surfaces as "no merged PR found" rather
-// than an error.
+// coordinates, 100 per request: the origin's, and when the origin is a
+// fork, those among its parent's latest limit whose head was in the
+// fork. Recency-bounded by limit: old merges fall off the window, which
+// prune surfaces as "no merged PR found" rather than an error.
 func (f *githubForge) ListMergedPRHeads(ctx context.Context, cwd string, limit int) ([]MergedPRHead, error) {
 	if limit <= 0 {
 		return nil, errors.New("merged PR list limit must be positive")
@@ -186,47 +237,80 @@ func (f *githubForge) ListMergedPRHeads(ctx context.Context, cwd string, limit i
 	if err != nil {
 		return nil, err
 	}
+	origin, heads, err := githubMergedPRHeads(ctx, client, owner, repo, limit, func(string) bool { return true })
+	if err != nil || origin.Parent == nil {
+		return heads, err
+	}
+	_, upstream, err := githubMergedPRHeads(ctx, client, origin.Parent.Owner.Login, origin.Parent.Name, limit, func(headRepo string) bool { return headRepo == origin.ID })
+	if err != nil {
+		return heads, err
+	}
+	return append(heads, upstream...), nil
+}
+
+// githubMergedPRHeads reads owner/name's latest limit merged pull
+// requests, newest first, keeping those keep accepts by their head
+// repository's node id, beside the repository's id and parent.
+func githubMergedPRHeads(ctx context.Context, client *forgeapi.Client, owner, name string, limit int, keep func(headRepo string) bool) (githubRepoParentRaw, []MergedPRHead, error) {
+	var repository githubRepoParentRaw
 	heads := make([]MergedPRHead, 0, min(limit, githubReadPageSize))
 	var after any
-	for len(heads) < limit {
+	for read := 0; read < limit; {
 		var raw struct {
 			Repository *struct {
+				githubRepoParentRaw
 				PullRequests struct {
 					PageInfo githubPageInfo `json:"pageInfo"`
 					Nodes    []struct {
-						HeadRefName string `json:"headRefName"`
-						HeadRefOid  string `json:"headRefOid"`
-						URL         string `json:"url"`
+						HeadRefName    string             `json:"headRefName"`
+						HeadRefOid     string             `json:"headRefOid"`
+						URL            string             `json:"url"`
+						HeadRepository *githubHeadRepoRaw `json:"headRepository"`
 					} `json:"nodes"`
 				} `json:"pullRequests"`
 			} `json:"repository"`
 		}
-		vars := map[string]any{"owner": owner, "name": repo, "first": min(limit-len(heads), githubReadPageSize), "after": after}
+		vars := map[string]any{"owner": owner, "name": name, "first": min(limit-read, githubReadPageSize), "after": after}
 		if _, err := client.GraphQL(ctx, "MergedPRs", githubMergedPRsQuery, vars, &raw); err != nil {
-			return nil, err
+			return githubRepoParentRaw{}, nil, err
 		}
 		if raw.Repository == nil {
-			return nil, fmt.Errorf("GitHub answered no repository %s/%s", owner, repo)
+			return githubRepoParentRaw{}, nil, fmt.Errorf("GitHub answered no repository %s/%s", owner, name)
 		}
-		for _, row := range raw.Repository.PullRequests.Nodes {
-			heads = append(heads, MergedPRHead{HeadRefName: row.HeadRefName, HeadOid: row.HeadRefOid, URL: row.URL})
+		repository = raw.Repository.githubRepoParentRaw
+		nodes := raw.Repository.PullRequests.Nodes
+		read += len(nodes)
+		for _, row := range nodes {
+			headRepo := ""
+			if row.HeadRepository != nil {
+				headRepo = row.HeadRepository.ID
+			}
+			if keep(headRepo) {
+				heads = append(heads, MergedPRHead{HeadRefName: row.HeadRefName, HeadOid: row.HeadRefOid, URL: row.URL})
+			}
 		}
 		page := raw.Repository.PullRequests.PageInfo
-		if !page.HasNextPage || page.EndCursor == "" {
+		if len(nodes) == 0 || !page.HasNextPage || page.EndCursor == "" {
 			break
 		}
 		after = page.EndCursor
 	}
-	return heads, nil
+	return repository, heads, nil
 }
 
 // SubmitReview posts the review with its line and range comments, then
 // each file comment and each reply on its own after it: GitHub's review
 // takes neither, so they are follow-ups under the partial-submit contract.
-// A request with nothing for the review itself (a comment verdict with no
-// body and no line comment) posts no review, which GitHub would refuse,
-// and its first follow-up's error decides whether anything posted.
+// The review and every file comment are pinned to review.HeadSHA, so a
+// push since the reviewer loaded the diff moves none of them and approves
+// nothing the reviewer did not see. A request with nothing for the review
+// itself (a comment verdict with no body and no line comment) posts no
+// review, which GitHub would refuse, and its first follow-up's error
+// decides whether anything posted. Past the caller's deadline it starts
+// no request (writeSteps): the follow-ups it did not start stay unposted.
 func (f *githubForge) SubmitReview(ctx context.Context, ref PRReference, review SubmitReviewRequest) (SubmitReviewResult, error) {
+	steps, done := writeSteps(ctx)
+	defer done()
 	number := ref.Number
 	if _, _, err := splitGitHubProject(ref.Project()); err != nil {
 		return SubmitReviewResult{}, err
@@ -234,7 +318,6 @@ func (f *githubForge) SubmitReview(ctx context.Context, ref PRReference, review 
 	if number <= 0 {
 		return SubmitReviewResult{}, fmt.Errorf("PR number must be positive, got %d", number)
 	}
-	headSHA := ""
 	fileComments := make([]ReviewLineComment, 0)
 	replies := make([]ReviewLineComment, 0)
 	lineComments := make([]ReviewLineComment, 0, len(review.Comments))
@@ -255,13 +338,6 @@ func (f *githubForge) SubmitReview(ctx context.Context, ref PRReference, review 
 	if err != nil {
 		return SubmitReviewResult{}, err
 	}
-	if len(fileComments) > 0 {
-		read, err := f.ReadPR(ctx, ref, PRReadParts{Detail: true}, nil, nil)
-		if err != nil {
-			return SubmitReviewResult{}, err
-		}
-		headSHA = read.Detail.HeadSHA
-	}
 	pulls := githubPullPath(ref)
 	body, err := githubReviewRequestBody(review, lineComments)
 	if err != nil {
@@ -269,7 +345,7 @@ func (f *githubForge) SubmitReview(ctx context.Context, ref PRReference, review 
 	}
 	fileBodies := make([]githubFileCommentIn, 0, len(fileComments))
 	for _, comment := range fileComments {
-		in, err := githubFileCommentRequestBody(comment, headSHA)
+		in, err := githubFileCommentRequestBody(comment, review.HeadSHA)
 		if err != nil {
 			return SubmitReviewResult{}, err
 		}
@@ -279,10 +355,22 @@ func (f *githubForge) SubmitReview(ctx context.Context, ref PRReference, review 
 	followUps := len(fileComments) + len(replies)
 	emptyReview := body.Event == "COMMENT" && strings.TrimSpace(body.Body) == "" && len(body.Comments) == 0
 	if !emptyReview || followUps == 0 {
-		// The only write before the review exists: its error decides
-		// whether the review may have posted.
+		// The only write before the review exists: its error, or after a
+		// lost answer the viewer's reviews, decide whether it posted.
+		before, err := readGitHubViewerReviews(steps, client, ref)
+		if err != nil {
+			return SubmitReviewResult{}, err
+		}
+		if err := stopped(steps); err != nil {
+			return SubmitReviewResult{}, err
+		}
 		if err := postGitHubReview(ctx, client, ref, body); err != nil {
-			return SubmitReviewResult{}, submitWriteError(err)
+			if forgeapi.WriteNotApplied(err) {
+				return SubmitReviewResult{}, err
+			}
+			if err := settleGitHubReview(ctx, client, ref, body, before, err); err != nil {
+				return SubmitReviewResult{}, err
+			}
 		}
 		out.PostedReview = true
 	}
@@ -301,12 +389,18 @@ func (f *githubForge) SubmitReview(ctx context.Context, ref PRReference, review 
 		return &PartialSubmitError{PostedReview: out.PostedReview, PostedFileComments: out.PostedFileComments, PostedReplies: out.PostedReplies, FailedPath: path, FailedThreadID: threadID, UnpostedReplies: unposted, Unconfirmed: !forgeapi.WriteNotApplied(err), Err: err}
 	}
 	for i, in := range fileBodies {
+		if err := stopped(steps); err != nil {
+			return out, failed(err, fileComments[i].Path, "")
+		}
 		if _, err := client.JSON(ctx, forgeapi.Request{Method: http.MethodPost, Path: pulls + "/comments", Body: in}, nil); err != nil {
 			return out, failed(err, fileComments[i].Path, "")
 		}
 		out.PostedFileComments++
 	}
 	for _, reply := range replies {
+		if err := stopped(steps); err != nil {
+			return out, failed(err, "", reply.InReplyTo.ThreadID)
+		}
 		if err := postGitHubReply(ctx, client, ref, *reply.InReplyTo, reply.Body); err != nil {
 			return out, failed(err, "", reply.InReplyTo.ThreadID)
 		}
@@ -338,8 +432,9 @@ type githubReviewIn struct {
 
 func githubReviewRequestBody(review SubmitReviewRequest, comments []ReviewLineComment) (githubReviewIn, error) {
 	payload := githubReviewIn{
-		Event: githubReviewEvent(review.Verdict),
-		Body:  review.Body,
+		Event:    githubReviewEvent(review.Verdict),
+		Body:     review.Body,
+		CommitID: review.HeadSHA,
 	}
 	for _, comment := range comments {
 		in, err := githubReviewCommentBody(comment)
@@ -461,14 +556,19 @@ const githubSetThreadResolvedMutation = `mutation SetThreadResolved($threadID: I
   unresolve: unresolveReviewThread(input: {threadId: $threadID}) @skip(if: $resolved) { thread { isResolved } }
 }`
 
-// SetThreadResolved flips one review thread's resolved state. The thread
-// NODE id is unique on its host, so only the reference's host is used
-// here, the mirror of ReplyToThread, which needs the REST coordinates and
-// ignores the node id.
-//
-// The mutation's answer is read back rather than trusted: a 200 that
-// resolved nothing would otherwise reach the user as a success and leave
-// the pane showing a state the forge does not have.
+// githubThreadOwnerQuery reads which pull request a review thread's node
+// id belongs to: the id is global on its host, so the mutation alone names
+// nothing about the PR the caller named.
+const githubThreadOwnerQuery = `query ThreadOwner($id: ID!) {
+  node(id: $id) {
+    __typename
+    ... on PullRequestReviewThread { pullRequest { number repository { nameWithOwner } } }
+  }
+}`
+
+// SetThreadResolved flips one review thread's resolved state, after
+// reading that the thread is one of ref's pull request and refusing,
+// before any write, one that is not (*ThreadNotOnPRError).
 func (f *githubForge) SetThreadResolved(ctx context.Context, ref PRReference, threadID string, resolved bool) error {
 	if strings.TrimSpace(threadID) == "" {
 		return errors.New("GitHub thread resolution requires a review thread id")
@@ -477,6 +577,41 @@ func (f *githubForge) SetThreadResolved(ctx context.Context, ref PRReference, th
 	if err != nil {
 		return err
 	}
+	var raw struct {
+		Node *struct {
+			Typename    string `json:"__typename"`
+			PullRequest *struct {
+				Number     int `json:"number"`
+				Repository struct {
+					NameWithOwner string `json:"nameWithOwner"`
+				} `json:"repository"`
+			} `json:"pullRequest"`
+		} `json:"node"`
+	}
+	if _, err := client.GraphQL(ctx, "ThreadOwner", githubThreadOwnerQuery, map[string]any{"id": threadID}, &raw); err != nil && !graphQLNotFoundError(err) {
+		return err
+	}
+	node := raw.Node
+	if node == nil || node.Typename != "PullRequestReviewThread" || node.PullRequest == nil || node.PullRequest.Number != ref.Number ||
+		!strings.EqualFold(node.PullRequest.Repository.NameWithOwner, ref.Namespace+"/"+ref.Repo) {
+		return &ThreadNotOnPRError{ThreadID: threadID}
+	}
+	return setGitHubThreadResolved(ctx, client, threadID, resolved)
+}
+
+// graphQLNotFoundError reports a GraphQL answer whose only problem is an
+// id that resolves to nothing for this login.
+func graphQLNotFoundError(err error) bool {
+	graphQL, ok := errors.AsType[*forgeapi.GraphQLError](err)
+	return ok && graphQLNotFound(graphQL)
+}
+
+// setGitHubThreadResolved runs the mutation on a thread the caller knows
+// is the PR's. The mutation's answer is read back rather than trusted: a
+// 200 that resolved nothing would otherwise reach the user as a success
+// and leave the pane showing a state the forge does not have. A failure
+// the forge may have applied is an *UnconfirmedWriteError.
+func setGitHubThreadResolved(ctx context.Context, client *forgeapi.Client, threadID string, resolved bool) error {
 	type payload struct {
 		Thread *struct {
 			IsResolved bool `json:"isResolved"`
@@ -487,7 +622,7 @@ func (f *githubForge) SetThreadResolved(ctx context.Context, ref PRReference, th
 		Unresolve *payload `json:"unresolve"`
 	}
 	if _, err := client.GraphQL(ctx, "SetThreadResolved", githubSetThreadResolvedMutation, map[string]any{"threadID": threadID, "resolved": resolved}, &raw); err != nil {
-		return err
+		return writeOutcome(err)
 	}
 	answer := raw.Unresolve
 	if resolved {

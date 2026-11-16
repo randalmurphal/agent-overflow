@@ -101,9 +101,10 @@ const CapabilityFlushSettlement = "flush-settlement.v1"
 
 // CapabilityThreadFind names the find bar's search contract:
 // SearchTimelineItems for an agent transcript, and SearchThreadItems
-// answering only the main transcript's visible top-level rows. A backend
-// without it answers SearchThreadItems with agent descendants included, so
-// a client offers no find for its threads.
+// answering only the main transcript's visible top-level rows, both
+// answering the candidate rows the bar counts in and the incremental
+// refresh (store.ThreadFindAnswer). A client offers no find for the
+// threads of a backend without it.
 const CapabilityThreadFind = "thread-find.v1"
 
 // CapabilityPRReviewDrafts names SubmitPRReview's draft submit: a request
@@ -134,12 +135,6 @@ const CapabilityPRSuggestionsReactions = "pr-suggestions-reactions.v1"
 // client reading a backend without it offers no tags.
 const CapabilityGitTags = "git-tags.v1"
 
-// CapabilityReviewDiffPacked names ReadReviewDiffPacked: an open review
-// diff's later chunks read packed, one byte per character, with the index
-// of each line that holds a byte past ASCII. A client reading a backend
-// without it reads every chunk with ReadReviewDiff.
-const CapabilityReviewDiffPacked = "review-diff.packed.v1"
-
 var serverCapabilities = []string{
 	CapabilityRemoteNotifications,
 	CapabilityPasskeys,
@@ -161,7 +156,6 @@ var serverCapabilities = []string{
 	CapabilityPRCommentActions,
 	CapabilityPRSuggestionsReactions,
 	CapabilityGitTags,
-	CapabilityReviewDiffPacked,
 }
 
 // serverCapabilitiesWithBrowser is that list plus the one flag whose

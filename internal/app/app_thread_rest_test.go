@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"errors"
 	"slices"
 	"strings"
@@ -218,7 +219,7 @@ func TestAStopRestsAThreadWithNoSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Remind: %v", err)
 	}
-	if _, err := f.app.SendExternalThreadMessage(target, "a script says hello"); err != nil {
+	if _, err := f.app.SendExternalThreadMessage(context.Background(), target, "a script says hello"); err != nil {
 		t.Fatalf("SendExternalThreadMessage: %v", err)
 	}
 	f.app.waitAgentNoticeWork()

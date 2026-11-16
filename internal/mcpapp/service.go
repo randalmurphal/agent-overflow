@@ -12,6 +12,7 @@ import (
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/logging"
 	"agent-overflow/internal/mcpstatus"
+	"agent-overflow/internal/procutil"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/store"
@@ -37,7 +38,10 @@ type ClaudeLiveSession struct {
 
 // Deps supplies root-owned lifecycle, session, credential, and event seams.
 type Deps struct {
-	Context        func() context.Context
+	Context func() context.Context
+	// Reaper ends the provider processes this service starts if the
+	// backend dies first.
+	Reaper         procutil.Reaper
 	IsShuttingDown func() bool
 	// EnsureSession starts the thread's session when none is live.
 	EnsureSession     func(threadID string) error
@@ -46,22 +50,22 @@ type Deps struct {
 	ClaudeSessions    func(workspacePath string) []ClaudeLiveSession
 	ProviderBinary    func(providerName string) string
 	SessionProcessEnv func(providerName string) map[string]string
-	// ClaudeCleanupPeriodDays is the `cleanupPeriodDays` a Claude sign-in
-	// process carries, 0 for none (claude.Config.CleanupPeriodDays).
-	ClaudeCleanupPeriodDays func(workDir string) int
-	ReadClaudeCredential    func() ([]byte, error)
-	Emit                    func(eventchan.Channel, any)
-	EmitThreadError         func(threadID, message string)
-	EmitWireError           func(threadID, message string)
-	Store                   *store.Store
-	Logger                  *logging.Logger
-	ClaudeConfig            *claudeconfig.Store
-	ClaudeConfigPath        func() (string, error)
-	CodexConfig             *codexconfig.Store
-	CodexConfigPath         func() (string, error)
-	StatusCache             *mcpstatus.Cache
-	WorkspaceAuthStarter    WorkspaceAuthStarter
-	ShutdownError           error
+	// ClaudeRetention is a Claude sign-in process's answer to the
+	// transcript sweep (claude.Config.Retention).
+	ClaudeRetention      func(workDir string) claude.Retention
+	ReadClaudeCredential func() ([]byte, error)
+	Emit                 func(eventchan.Channel, any)
+	EmitThreadError      func(threadID, message string)
+	EmitWireError        func(threadID, message string)
+	Store                *store.Store
+	Logger               *logging.Logger
+	ClaudeConfig         *claudeconfig.Store
+	ClaudeConfigPath     func() (string, error)
+	CodexConfig          *codexconfig.Store
+	CodexConfigPath      func() (string, error)
+	StatusCache          *mcpstatus.Cache
+	WorkspaceAuthStarter WorkspaceAuthStarter
+	ShutdownError        error
 }
 
 // Service owns MCP configuration, status, OAuth, and live reload coordination.
@@ -124,11 +128,13 @@ func (a *Service) sessionProcessEnv(providerName string) map[string]string {
 	return a.deps.SessionProcessEnv(providerName)
 }
 
-func (a *Service) claudeCleanupPeriodDays(workDir string) int {
-	if a == nil || a.deps.ClaudeCleanupPeriodDays == nil {
-		return 0
+// claudeRetention is the zero Retention, which refuses the launch, when the
+// dependency is missing.
+func (a *Service) claudeRetention(workDir string) claude.Retention {
+	if a == nil || a.deps.ClaudeRetention == nil {
+		return claude.Retention{}
 	}
-	return a.deps.ClaudeCleanupPeriodDays(workDir)
+	return a.deps.ClaudeRetention(workDir)
 }
 
 func (a *Service) shutdownError() error {

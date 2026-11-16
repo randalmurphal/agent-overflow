@@ -31,7 +31,7 @@ it('a viewport-only delivery cannot snap a sent message’s glide to the bottom'
     await raf();
     expect(scroller.scrollTop - before).toBeLessThan(30);
     await waitFor(() => Math.abs(scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop) <= 1,
-      'the send glide to arrive', 240);
+      'the send glide to arrive');
   } finally {
     controller.detach();
     scroller.remove();
@@ -60,6 +60,6 @@ it('a prepared replacement follows through the send spring from an escaped reade
     expect(scroller.scrollTop, 'publishing the replacement does not snap to the new tail').toBe(400);
     await waitFor(() => scroller.scrollTop > 400, 'replacement motion starts');
     expect(scroller.scrollTop).toBeLessThan(800);
-    await waitFor(() => Math.abs(scroller.scrollTop - 800) <= 1, 'replacement settles at the new tail', 240);
+    await waitFor(() => Math.abs(scroller.scrollTop - 800) <= 1, 'replacement settles at the new tail');
   } finally { controller.detach(); scroller.remove(); }
 });

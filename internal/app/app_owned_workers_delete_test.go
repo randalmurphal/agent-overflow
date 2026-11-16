@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 	"agent-overflow/internal/entityid"
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/identity"
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/terminal"
 	"agent-overflow/internal/testutil"
@@ -805,7 +807,7 @@ func TestTheDeleteConfirmationCountsWhatTheDeleteTakes(t *testing.T) {
 	worker := f.thread(t, "past-worker", on(tree))
 	recordSpawn(t, f.app, "tok-past-worker", past.ID, worker.ID)
 	for range 2 {
-		if _, err := f.app.terminals.Open(worker.ID, terminal.SessionOptions{Shell: "/bin/sh", Args: []string{"-c", "sleep 30"}, Cwd: tree}); err != nil {
+		if _, err := f.app.terminals.Open(worker.ID, terminal.SessionOptions{Reaper: procutiltest.Reaper(), Shell: "/bin/sh", Args: []string{"-c", "sleep 30"}, Cwd: tree}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -877,7 +879,7 @@ func TestAProjectRemovalRefusesWhileAWorkerOutsideRuns(t *testing.T) {
 				runningSession(t, f.app, worker.ID)
 			} else {
 				f.app.deleteClaimedForTest = func([]string) {
-					sendErr = f.app.SendMessage(worker.ID, "more", nil)
+					sendErr = f.app.SendMessage(context.Background(), worker.ID, "more", nil)
 					runningSession(t, f.app, worker.ID)
 				}
 			}

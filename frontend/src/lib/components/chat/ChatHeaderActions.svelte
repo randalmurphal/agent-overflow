@@ -294,6 +294,9 @@
     {#if isAssistant}
       {@render nextThreadButton()}
     {/if}
+    <!-- Inside the cluster: without its split button the control still
+         shows its status error and its sign-in warning. -->
+    <GitActionsControl {pane} trigger={false} menuAnchor={moreTriggerEl} bind:this={gitControl} />
     <div bind:this={moreTriggerEl}>
     <Button
       variant="secondary"
@@ -379,7 +382,6 @@
       </Menu>
     {/snippet}
   </Popover>
-  <GitActionsControl {pane} trigger={false} menuAnchor={moreTriggerEl} bind:this={gitControl} />
 {:else}
 <div class="ml-auto flex items-center gap-1.5 shrink-0 flex-wrap justify-end @max-[36rem]/chat-header:shrink @max-[36rem]/chat-header:min-w-0">
   <PrBadge status={pane.gitStatus.status} onOpenReview={openPrReview} />

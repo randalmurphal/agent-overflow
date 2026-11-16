@@ -1,6 +1,8 @@
 package app
 
 import (
+	"log"
+
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/triage"
 )
@@ -41,6 +43,8 @@ func (a *App) threadAnnouncer() *triage.ThreadAnnouncer {
 	a.threadAnnouncerOnce.Do(func() {
 		a.threadRowAnnouncer = triage.NewThreadAnnouncer(func(threadID string) (store.Thread, error) {
 			return a.store.GetThread(threadID)
+		}, func(threadID string) (bool, error) {
+			return a.store.ThreadListed(threadID)
 		})
 	})
 	return a.threadRowAnnouncer
@@ -57,11 +61,91 @@ func (a *App) announceThread(action, threadID string) {
 }
 
 // announcePlaced emits threadID's row after a write that may have given it
-// a sidebar row or taken its row away by placement or group: `listed` or
-// `full` by the row it reads, never the archive's pane-closing `unlisted`
-// (triage.ThreadAnnouncer.AnnouncePlaced).
+// a sidebar row and returns no listing change (a send's first item, a
+// spawner's delete): `listed` when the store lists it (store.ThreadListed),
+// otherwise `full`, never the archive's pane-closing `unlisted`
+// (triage.ThreadAnnouncer.AnnouncePlaced). A write that returns its
+// listing change announces with announcePlacement.
 func (a *App) announcePlaced(threadID string) {
 	a.threadAnnouncer().AnnouncePlaced(a.emitEvent, threadID)
+}
+
+// announcePlacement announces a write that moved threadID by placement,
+// group or spawn naming, by the listing change the write read inside its
+// transaction (store.ListingChange): `listed` when it put the thread on the
+// list, so a client that lacks the row inserts it, and `full` otherwise,
+// so a client holding it converges in place and drops an owned row from
+// its sidebar. Never the archive's pane-closing `unlisted` nor the draft's
+// `emptied`: a pane on a worker stays open.
+func (a *App) announcePlacement(threadID string, listing store.ListingChange) {
+	action := triage.ThreadActionFull
+	if listing == store.ListingListed {
+		action = triage.ThreadActionListed
+	}
+	a.announceThread(action, threadID)
+}
+
+// announceListing announces a write that moved the thread across the
+// sidebar listing rule (store.ListingChange): `listed` when it put the
+// thread on the list, `emptied` when it took a never-sent thread off. A
+// screen whose catalog read came before the write learns of it only here.
+// Reports whether it announced.
+func (a *App) announceListing(threadID string, listing store.ListingChange) bool {
+	switch listing {
+	case store.ListingListed:
+		a.announceThread(triage.ThreadActionListed, threadID)
+	case store.ListingUnlisted:
+		a.announceThread(triage.ThreadActionEmptied, threadID)
+	default:
+		return false
+	}
+	return true
+}
+
+// listedAction is the frame for a write that may have put threadID on the
+// sidebar (creation, unarchive): `listed` when the row now meets the
+// listing rule (store.ThreadListed), `full` when it is a never-sent thread
+// with nothing that makes it real, which the write that does will list. A
+// failed read answers `listed`: a row shown early is corrected by the next
+// catalog read, a real one hidden is not.
+func (a *App) listedAction(threadID string) string {
+	listed, err := a.store.ThreadListed(threadID)
+	if err != nil {
+		log.Printf("thread %s: read its listing: %v", threadID, err)
+		return triage.ThreadActionListed
+	}
+	if listed {
+		return triage.ThreadActionListed
+	}
+	return triage.ThreadActionFull
+}
+
+// writeAppRow runs write, which persists a row the app posts on its own (a
+// notice, an error) and may be a never-sent thread's first item, and
+// announces `listed` when it put the thread on the list. The send path
+// announces the first item it writes itself. A failed write is checked too:
+// a refused one can leave an error row behind.
+func (a *App) writeAppRow(threadID string, write func() error) error {
+	if a.store == nil {
+		return write()
+	}
+	before, err := a.store.ThreadListed(threadID)
+	if err != nil {
+		log.Printf("thread %s: read its listing: %v", threadID, err)
+	}
+	writeErr := write()
+	if err == nil && before {
+		return writeErr
+	}
+	after, err := a.store.ThreadListed(threadID)
+	if err != nil {
+		log.Printf("thread %s: read its listing: %v", threadID, err)
+		return writeErr
+	}
+	if after {
+		a.announceThread(triage.ThreadActionListed, threadID)
+	}
+	return writeErr
 }
 
 // announceThreadIfChanged is the guard every mutation binding routes

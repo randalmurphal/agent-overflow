@@ -8,6 +8,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+
+	"agent-overflow/internal/agentmeta"
 )
 
 // FindStreamItemByProviderItemID resolves a turn's assistant text or
@@ -511,15 +513,14 @@ var readerAuthoredUserTextFilter = readerAuthoredUserTextFilterFor("")
 // person: `meta.origin` names an agent thread or the wake supervisor, and
 // the row does not carry the composer's `expandComposerCommands`, which a
 // headless Claude join of the person's message after an agent's keeps. It is
-// the SQL twin of usermessage.IsAgentMessage (pinned by
-// TestAgentMessageFilterMatchesIsAgentMessage), spelled with literals
-// because this package cannot import that one.
+// the SQL twin of agentmeta.IsAgentMessage (pinned by
+// TestAgentMessageClassifierAgreesInGoAndSQL).
 //
 // The person's messages are the reader-authored rows without it: the nav
 // rail's ticks and the composer's recall. The send-identity reads keep
 // agent rows, which carry the send ids a retry or a wake is found by.
 func AgentMessageFilterFor(alias string) string {
-	return `(COALESCE(CASE WHEN json_valid(` + alias + `meta) THEN json_extract(` + alias + `meta, '$.origin') END, '') IN ('agent-thread', 'agent-wake')
+	return `(COALESCE(CASE WHEN json_valid(` + alias + `meta) THEN json_extract(` + alias + `meta, '$.origin') END, '') IN ('` + agentmeta.OriginAgentThread + `', '` + agentmeta.OriginAgentWake + `')
 	  AND COALESCE(CASE WHEN json_valid(` + alias + `meta) THEN json_extract(` + alias + `meta, '$.expandComposerCommands') END, 0) != 1)`
 }
 

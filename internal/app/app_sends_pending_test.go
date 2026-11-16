@@ -237,7 +237,7 @@ func TestSendsPendingClearsOnDispatcherExits(t *testing.T) {
 		name string
 		exit func(*App, string)
 	}{
-		{"rollback", func(app *App, threadID string) { app.clearFlushDispatchForRollback(threadID) }},
+		{"rollback", func(app *App, threadID string) { app.dropFlushQueue(threadID) }},
 		{"session end", func(app *App, threadID string) { app.drainFlushDispatchForSessionEnd(threadID) }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -343,6 +343,7 @@ func TestRegisterQueueItemAnswersSendsPendingAtItsFrameSequence(t *testing.T) {
 	// The worker is stopped so the reply's own publish emits each frame;
 	// the test publishes the other changes itself.
 	app.stopSendsPending()
+	holdFlushQueue(app)
 
 	// Another thread's frame comes first: the sequence is the channel's.
 	app.triage.RegisterQueueItem("sends-pending-other", triage.QueuedFlushItem{ID: "other", Message: "other"})

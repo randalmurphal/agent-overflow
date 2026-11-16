@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import fixture from '../../../../internal/threadtools/testdata/agent_messages.json';
 import labels from '../../../../internal/app/testdata/agent_message_labels.json';
-import servedRows from '../../../../internal/usermessage/testdata/served_rows.json';
+import servedRows from '../../../../internal/agentmeta/testdata/served_rows.json';
 import type { Item } from '../types/models';
 import {
   agentMessageFromItem,
@@ -45,7 +45,7 @@ function row(summary: string, meta: Record<string, unknown>): Pick<Item, 'kind' 
 
 /**
  * A fixture case as a client receives the row its writer stored, with the
- * facts Go read of it (internal/usermessage/testdata/served_rows.json).
+ * facts Go read of it (internal/agentmeta/testdata/served_rows.json).
  */
 function fixtureRow(fixtureCase: FixtureCase): Pick<Item, 'kind' | 'meta' | 'summary'> {
   return { kind: 'user_text', summary: fixtureCase.text, meta: servedOf(fixtureCase).meta };
@@ -328,7 +328,7 @@ describe('agentMessageFromItem', () => {
 });
 
 describe('a report kind defined only in Go', () => {
-  // usermessage.testReportKind: no TypeScript names it.
+  // agentmeta.TestReportKind: no TypeScript names it.
   const served = servedRows.find((candidate) => candidate.name === 'a report of a kind only Go defines') as { text: string; meta: string };
 
   it('renders with the label, sender and body Go serves, not as an unknown wake', () => {
@@ -339,6 +339,25 @@ describe('a report kind defined only in Go', () => {
     expect(message.senderThread?.threadId).toBe('t-probe');
     // The data without the notice written for the agent, decoded for the person.
     expect(parsed(message.parts)).toEqual([{ body: '"saw <err>"\n"second line"', footer: null, wake: null }]);
+  });
+});
+
+describe('a first line under every white space class (agentmeta.FirstLine)', () => {
+  const served = servedRows.find((candidate) => candidate.name === "a whole message's first line under every white space class") as { text: string; meta: string };
+  const headline = (JSON.parse(served.meta) as { originThread: { facts: { headline: string } } }).originThread.facts.headline;
+
+  it('is the headline Go serves for the same text, read without facts', () => {
+    expect(headline).not.toBe('');
+    const withoutFacts = JSON.parse(served.meta) as { originThread: Record<string, unknown> };
+    delete withoutFacts.originThread.facts;
+    for (const meta of [
+      withoutFacts,
+      { agent_message: { sender: 'peer', messageType: 'MESSAGE' } },
+      { origin: 'peer-session', cross_session_from_name: 'BETA' },
+      { origin: 'agent-wake' },
+    ]) {
+      expect(agentMessageFromItem(row(served.text, meta))?.firstLine, JSON.stringify(meta)).toBe(headline);
+    }
   });
 });
 

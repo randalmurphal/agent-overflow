@@ -293,7 +293,7 @@ func (s *Store) ReturnAsyncAnswer(threadID, sendID string, reopened func(revisio
 // its triggers once it is written (async_question_answer_insert): in one
 // transaction the questions sendID claimed read delivered, by the user row
 // itemID, and the recovery row the dispatch kept for the answer
-// (DeleteDispatchedFlushQueueItem) goes. It reports whether any question
+// (DeleteDispatchedFlushQueueItems) goes. It reports whether any question
 // changed: none does once a row write or an earlier confirmation took them,
 // or the answer went back.
 func (s *Store) ConfirmAsyncAnswer(threadID, sendID, itemID string) (_ bool, err error) {

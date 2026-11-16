@@ -229,8 +229,9 @@ func (a *App) unarchiveThreadLocked(id string) (store.Thread, error) {
 		return store.Thread{}, err
 	}
 	// Broadcast as `listed` so every other attached client puts the row
-	// back in its sidebar.
-	a.announceThreadIfChanged(triage.ThreadActionListed, row.ID, changed)
+	// back in its sidebar, unless it is a never-sent thread the list does
+	// not count yet.
+	a.announceThreadIfChanged(a.listedAction(row.ID), row.ID, changed)
 	return row, nil
 }
 
@@ -244,8 +245,8 @@ func (a *App) unarchiveThreadLocked(id string) (store.Thread, error) {
 // Killing that turn would be a stale archive stopping work the reader
 // asked for AFTER they archived.
 //
-// The discriminator is the durable turn row's started_at, not the
-// session's activity stamp. A session that was mid-turn when the reader
+// The discriminator is when the newest turn began, from its durable rows
+// (threadTurnStartedAfter), not the session's activity stamp. A session that was mid-turn when the reader
 // archived keeps streaming events, so its activity stamp advances past
 // requestedAt within milliseconds — reading that as "re-engaged" would
 // make archive unable to stop the very sessions it most needs to. A
@@ -286,17 +287,27 @@ func (a *App) stopArchivedThreadSession(threadID string, requestedAtMillis int64
 }
 
 // threadTurnStartedAfter reports whether the thread's newest turn began
-// after the given instant. One indexed row read; turns are ordered by
-// turn_index, so the newest turn is also the newest start.
+// after the given instant: was asked for then, by the first message written
+// into it, or, with none (a turn the agent started on its own), reported
+// by the provider then. The provider reports a turn some time after its
+// message was written (Claude's init, Codex's turn/started), so a turn the
+// reader asked for before archiving can be reported after; it is not a
+// newer engagement. Two indexed reads; turns are ordered by turn_index, so
+// the newest turn is also the newest start.
 func (a *App) threadTurnStartedAfter(threadID string, sinceMillis int64) (bool, error) {
 	turns, err := a.store.ListRecentTurns(threadID, 1)
 	if err != nil {
 		return false, err
 	}
 	for _, turn := range turns {
-		if turn.StartedAt > sinceMillis {
-			return true, nil
+		if turn.StartedAt <= sinceMillis {
+			return false, nil
 		}
+		asked, found, err := a.store.FirstUserRowOfTurn(threadID, turn.TurnIndex)
+		if err != nil {
+			return false, err
+		}
+		return !found || asked > sinceMillis, nil
 	}
 	return false, nil
 }

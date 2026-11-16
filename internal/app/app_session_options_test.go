@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/codex"
@@ -32,6 +33,7 @@ func TestSessionOptionsFromThreadToClaudeConfigXHigh(t *testing.T) {
 	opts := provider.SessionOptionsFromThread(stored, provider.AutoCompactDefaults{}, false)
 	opts.SystemPrompt = "You are the agent."
 	cfg := claude.ConfigFromOptions(opts)
+	cfg.Reaper = procutiltest.Reaper()
 
 	if cfg.SystemPrompt != "You are the agent." {
 		t.Errorf("SystemPrompt = %q, want unchanged", cfg.SystemPrompt)
@@ -67,6 +69,7 @@ func TestSessionOptionsFromThreadToCodexConfigXHigh(t *testing.T) {
 	opts := provider.SessionOptionsFromThread(stored, provider.AutoCompactDefaults{}, false)
 	opts.SystemPrompt = "codex system prompt"
 	cfg := codex.ConfigFromOptions(opts)
+	cfg.Reaper = procutiltest.Reaper()
 
 	if cfg.ReasoningEffort != "xhigh" {
 		t.Errorf("ReasoningEffort = %q, want xhigh", cfg.ReasoningEffort)
@@ -89,6 +92,7 @@ func TestSessionOptionsCoercesStaleSonnetXHigh(t *testing.T) {
 
 	opts := provider.SessionOptionsFromThread(thread, provider.AutoCompactDefaults{}, false)
 	cfg := claude.ConfigFromOptions(opts)
+	cfg.Reaper = procutiltest.Reaper()
 
 	if opts.ReasoningEffort != provider.EffortHigh {
 		t.Fatalf("ReasoningEffort = %q, want high", opts.ReasoningEffort)
@@ -107,6 +111,7 @@ func TestSessionOptionsPreservesStoredCodexEffort(t *testing.T) {
 
 	opts := provider.SessionOptionsFromThread(thread, provider.AutoCompactDefaults{}, false)
 	cfg := codex.ConfigFromOptions(opts)
+	cfg.Reaper = procutiltest.Reaper()
 
 	if opts.ReasoningEffort != provider.EffortMax {
 		t.Fatalf("ReasoningEffort = %q, want max", opts.ReasoningEffort)
@@ -133,6 +138,7 @@ func TestSessionOptionsFastModePreservesClaudeModel(t *testing.T) {
 	}
 	opts := provider.SessionOptionsFromThread(stored, provider.AutoCompactDefaults{}, false)
 	cfg := claude.ConfigFromOptions(opts)
+	cfg.Reaper = procutiltest.Reaper()
 	if cfg.Model != "claude-opus-4-6" {
 		t.Errorf("Model = %q, want claude-opus-4-6", cfg.Model)
 	}
@@ -157,6 +163,7 @@ func TestSessionOptionsFastModePreservesCodexModel(t *testing.T) {
 	}
 	opts := provider.SessionOptionsFromThread(stored, provider.AutoCompactDefaults{}, false)
 	cfg := codex.ConfigFromOptions(opts)
+	cfg.Reaper = procutiltest.Reaper()
 	if cfg.Model != "gpt-5.5" {
 		t.Errorf("Model = %q, want gpt-5.5", cfg.Model)
 	}
@@ -185,6 +192,7 @@ func TestClaudeConfigBuildsArgsWithDangerousSkipFromFullAccess(t *testing.T) {
 	}
 	opts := provider.SessionOptionsFromThread(stored, provider.AutoCompactDefaults{}, false)
 	cfg := claude.ConfigFromOptions(opts)
+	cfg.Reaper = procutiltest.Reaper()
 
 	foundMode := false
 	foundSkip := false

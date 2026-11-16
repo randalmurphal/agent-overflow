@@ -13,6 +13,7 @@ import (
 	"agent-overflow/internal/entityid"
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/identity"
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/terminal"
@@ -391,7 +392,7 @@ func TestAWorktreeCleanupFailureAfterTheRemovalIsInTheResult(t *testing.T) {
 	f.app.terminals = terminal.NewManager(nil, nil)
 	t.Cleanup(func() { _ = f.app.terminals.Shutdown() })
 	// A terminal a draft opened in the worktree, which the removal closes.
-	if _, err := f.app.terminals.Open("draft", terminal.SessionOptions{Shell: "/bin/sh", Args: []string{"-c", "sleep 30"}, Cwd: f.tree}); err != nil {
+	if _, err := f.app.terminals.Open("draft", terminal.SessionOptions{Reaper: procutiltest.Reaper(), Shell: "/bin/sh", Args: []string{"-c", "sleep 30"}, Cwd: f.tree}); err != nil {
 		t.Fatal(err)
 	}
 	stuck := errors.New("the shell would not close")

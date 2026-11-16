@@ -138,14 +138,29 @@ func glabDraftDelete(e *Engine, c *call, m []string) response {
 // glabDraftPublish publishes every one of the viewer's draft notes: each
 // reply joins its discussion (and is dropped when that discussion went),
 // each positioned one becomes a thread, each other a conversation comment.
-// Another author's drafts stay pending.
+// Another author's drafts stay pending. From GitLab 19.3 it takes
+// reviewer_state (requested_changes or reviewed), which sets the viewer's
+// reviewer state after the publish; on a repository without Request
+// changes (noChangeRequests) requested_changes sets reviewed. A release
+// before 19.3 does not document the field, so the fake refuses it there.
 func glabDraftPublish(e *Engine, c *call, m []string) response {
-	if err := noRESTBody(c); err != nil {
+	var in struct {
+		ReviewerState string `json:"reviewer_state"`
+	}
+	if err := decodeRESTBody(c, &in, true); err != nil {
 		return unhandled("%v", err)
 	}
-	_, p, fail, ok := e.glabMRFrom(c, m)
+	r, p, fail, ok := e.glabMRFrom(c, m)
 	if !ok {
 		return fail
+	}
+	if in.ReviewerState != "" {
+		if in.ReviewerState != "requested_changes" && in.ReviewerState != "reviewed" {
+			return glabStatus(http.StatusBadRequest, "reviewer_state does not have a valid value")
+		}
+		if e.gitlabBefore(r.Host, gitlabReviewerStateSince) {
+			return unhandled("bulk_publish reviewer_state on GitLab %s, which documents it only from 19.3", e.gitlabHostVersion(r.Host))
+		}
 	}
 	now := glabNow()
 	kept := p.DraftNotes[:0]
@@ -180,5 +195,29 @@ func glabDraftPublish(e *Engine, c *call, m []string) response {
 		})
 	}
 	p.DraftNotes = kept
+	if in.ReviewerState != "" {
+		e.glabSetViewerReviewState(r, p, in.ReviewerState)
+	}
 	return response{status: http.StatusNoContent}
+}
+
+// glabSetViewerReviewState sets the viewer's reviewer state on p, when the
+// viewer is one of its reviewers: requested_changes (reviewed on a
+// repository without Request changes) or reviewed.
+func (e *Engine) glabSetViewerReviewState(r *Repo, p *Pull, state string) {
+	if !containsFold(p.Reviewers, e.viewer) {
+		return
+	}
+	p.rerequested = removeFold(p.rerequested, e.viewer)
+	if state == "requested_changes" && !r.NoChangeRequests {
+		if !containsFold(p.ChangeRequests, e.viewer) {
+			p.ChangeRequests = append(p.ChangeRequests, e.viewer)
+		}
+		p.reviewedBy = removeFold(p.reviewedBy, e.viewer)
+		return
+	}
+	p.ChangeRequests = removeFold(p.ChangeRequests, e.viewer)
+	if !containsFold(p.reviewedBy, e.viewer) {
+		p.reviewedBy = append(p.reviewedBy, e.viewer)
+	}
 }

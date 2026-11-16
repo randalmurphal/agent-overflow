@@ -37,6 +37,7 @@ import {
   type PaneFindResult,
 } from '../../stores/paneFind.svelte';
 import { getResolvedTheme } from '../../stores/themeMode.svelte';
+import { terminalFindRegion } from './terminalStore.svelte';
 import { getXtermFindColors, type TerminalFindColors } from './terminalTheme';
 import { scanTerminalBuffer, terminalLineAt, type TerminalMatch } from './terminalFindScan';
 import type { TerminalFindLayer, TerminalFindRun } from './terminalFindLayer';
@@ -47,9 +48,10 @@ import { reportFrontendDiagnostic } from '../../utils/frontendErrorCapture';
 import { errString } from '../../utils/errors';
 
 /** The find key of one terminal tab in a pane. Scoped under the pane, so
- * the store drops it when the pane leaves the layout. */
+ * the store drops it when the pane leaves the layout; the terminal store
+ * drops it when the terminal ends. */
 export function terminalFindKey(paneId: string, terminalID: string): string {
-  return paneFindRegionKey(paneId, `terminal:${terminalID}`);
+  return paneFindRegionKey(paneId, terminalFindRegion(terminalID));
 }
 
 /** Matches counted and painted; a count at it is capped. */

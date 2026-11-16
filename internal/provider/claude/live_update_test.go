@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/testutil/mockexec"
 )
@@ -234,7 +235,7 @@ done
 	}
 	cfg.Env["CAPTURE_FILE"] = capturePath
 
-	s, err := NewSession(context.Background(), testThread, cfg, func(provider.ProviderEvent) {})
+	s, err := NewSession(context.Background(), testThread, withTestRetention(cfg), func(provider.ProviderEvent) {})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -244,7 +245,7 @@ done
 }
 
 func TestApplyLiveUpdateSendsSetModel(t *testing.T) {
-	s, capturePath := liveUpdateTestSession(t, Config{BasePermissionMode: "default"})
+	s, capturePath := liveUpdateTestSession(t, Config{Reaper: procutiltest.Reaper(), BasePermissionMode: "default"})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -269,7 +270,7 @@ func TestApplyLiveUpdateSendsSetModel(t *testing.T) {
 }
 
 func TestApplyLiveUpdateAppliesBasePermissionMode(t *testing.T) {
-	s, capturePath := liveUpdateTestSession(t, Config{BasePermissionMode: "default"})
+	s, capturePath := liveUpdateTestSession(t, Config{Reaper: procutiltest.Reaper(), BasePermissionMode: "default"})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -307,7 +308,7 @@ func TestApplyLiveUpdateAppliesBasePermissionMode(t *testing.T) {
 // the restart fallback before any side effect (no wire write, model
 // untouched).
 func TestApplyLiveUpdateBypassEscalationRequiresRestart(t *testing.T) {
-	s, capturePath := liveUpdateTestSession(t, Config{BasePermissionMode: "default"})
+	s, capturePath := liveUpdateTestSession(t, Config{Reaper: procutiltest.Reaper(), BasePermissionMode: "default"})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -325,6 +326,7 @@ func TestApplyLiveUpdateBypassEscalationRequiresRestart(t *testing.T) {
 
 func TestApplyLiveUpdateBypassAllowedWhenSpawnedWithAllowFlag(t *testing.T) {
 	s, capturePath := liveUpdateTestSession(t, Config{
+		Reaper:             procutiltest.Reaper(),
 		BasePermissionMode: "default",
 		PermissionFlags:    []string{"--permission-mode", "default", "--allow-dangerously-skip-permissions"},
 	})
@@ -492,7 +494,7 @@ func decodeCapturedUserCommand(t *testing.T, line string) (string, string) {
 // newline — the CLI's command router must see "/" first) whose uuid comes
 // back on the receipt for async confirmation.
 func TestApplyLiveUpdateSendsEffortCommand(t *testing.T) {
-	s, capturePath := liveUpdateTestSession(t, Config{BasePermissionMode: "default"})
+	s, capturePath := liveUpdateTestSession(t, Config{Reaper: procutiltest.Reaper(), BasePermissionMode: "default"})
 	s.replaceAdvertisedCommands([]string{"effort", "fast"})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -522,6 +524,7 @@ func TestApplyLiveUpdateSendsEffortCommand(t *testing.T) {
 // /effort, then /fast.
 func TestApplyLiveUpdateOrdersModelBeforeCommands(t *testing.T) {
 	s, capturePath := liveUpdateTestSession(t, Config{
+		Reaper:             procutiltest.Reaper(),
 		BasePermissionMode: "default",
 		FastMode:           true,
 	})
@@ -568,7 +571,7 @@ func TestApplyLiveUpdateOrdersModelBeforeCommands(t *testing.T) {
 // advertised /effort (no init yet, older CLI, or gated account) routes the
 // whole update to the restart path before any side effect.
 func TestApplyLiveUpdateEffortNeedsAdvertisedCommand(t *testing.T) {
-	s, capturePath := liveUpdateTestSession(t, Config{BasePermissionMode: "default"})
+	s, capturePath := liveUpdateTestSession(t, Config{Reaper: procutiltest.Reaper(), BasePermissionMode: "default"})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -586,7 +589,7 @@ func TestApplyLiveUpdateEffortNeedsAdvertisedCommand(t *testing.T) {
 // loudly here, because the CLI would answer it with a non-error "Invalid
 // argument" text.
 func TestApplyLiveUpdateRejectsUnknownEffortTier(t *testing.T) {
-	s, _ := liveUpdateTestSession(t, Config{BasePermissionMode: "default"})
+	s, _ := liveUpdateTestSession(t, Config{Reaper: procutiltest.Reaper(), BasePermissionMode: "default"})
 	s.replaceAdvertisedCommands([]string{"effort"})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -602,7 +605,7 @@ func TestApplyLiveUpdateRejectsUnknownEffortTier(t *testing.T) {
 // "not available in the Agent SDK", so the enable must take the restart
 // path (the respawn adds the opt-in). Disable has no such gate.
 func TestApplyLiveUpdateFastEnableRequiresSpawnOptIn(t *testing.T) {
-	s, capturePath := liveUpdateTestSession(t, Config{BasePermissionMode: "default"})
+	s, capturePath := liveUpdateTestSession(t, Config{Reaper: procutiltest.Reaper(), BasePermissionMode: "default"})
 	s.replaceAdvertisedCommands([]string{"effort", "fast"})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -621,7 +624,7 @@ func TestApplyLiveUpdateFastEnableRequiresSpawnOptIn(t *testing.T) {
 // wire, so the caller's pending-apply registration always beats the CLI's
 // answer.
 func TestApplyLiveUpdatePreSendRunsBeforeAnyWrite(t *testing.T) {
-	s, capturePath := liveUpdateTestSession(t, Config{BasePermissionMode: "default"})
+	s, capturePath := liveUpdateTestSession(t, Config{Reaper: procutiltest.Reaper(), BasePermissionMode: "default"})
 	s.replaceAdvertisedCommands([]string{"effort"})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -653,7 +656,7 @@ func TestApplyLiveUpdatePreSendRunsBeforeAnyWrite(t *testing.T) {
 // /effort against a model with no reasoning tiers fails loudly before any
 // side effect.
 func TestApplyLiveUpdateEffortRefusedOnEffortlessModel(t *testing.T) {
-	s, capturePath := liveUpdateTestSession(t, Config{Model: "claude-haiku-4-5", BasePermissionMode: "default"})
+	s, capturePath := liveUpdateTestSession(t, Config{Reaper: procutiltest.Reaper(), Model: "claude-haiku-4-5", BasePermissionMode: "default"})
 	s.replaceAdvertisedCommands([]string{"effort"})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -673,7 +676,7 @@ func TestApplyLiveUpdateEffortRefusedOnEffortlessModel(t *testing.T) {
 // string type; anything outside on/off must fail before the wire, because
 // the CLI answers `/fast garbage` with a non-error "Usage:" text.
 func TestApplyLiveUpdateRejectsGarbageFastArgument(t *testing.T) {
-	s, capturePath := liveUpdateTestSession(t, Config{BasePermissionMode: "default", FastMode: true})
+	s, capturePath := liveUpdateTestSession(t, Config{Reaper: procutiltest.Reaper(), BasePermissionMode: "default", FastMode: true})
 	s.replaceAdvertisedCommands([]string{"fast"})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -694,7 +697,7 @@ func TestApplyLiveUpdateRejectsGarbageFastArgument(t *testing.T) {
 // spike-verified on 2.1.284). /effort is a user message on the wire and
 // must still go out live, not fall back to a restart.
 func TestApplyLiveUpdateEffortStaysLiveAfterOrphanedAdvisor(t *testing.T) {
-	s, capturePath := liveUpdateTestSession(t, Config{BasePermissionMode: "default"})
+	s, capturePath := liveUpdateTestSession(t, Config{Reaper: procutiltest.Reaper(), BasePermissionMode: "default"})
 	s.replaceAdvertisedCommands([]string{"effort"})
 	ingestTrackerLine(s.leafTracker, []byte(`{"type":"user","uuid":"u1","message":{"role":"user","content":"go"}}`))
 	ingestTrackerLine(s.leafTracker, []byte(`{"type":"assistant","uuid":"a-bash","parentUuid":"u1","message":{"id":"m1","role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{}}]}}`))

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"agent-overflow/internal/agentmeta"
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/flushqueue"
 	"agent-overflow/internal/provider"
@@ -9,7 +10,6 @@ import (
 	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/triage"
 	"agent-overflow/internal/untrustedtext"
-	"agent-overflow/internal/usermessage"
 	"agent-overflow/internal/workflow/engine"
 	workflowrunner "agent-overflow/internal/workflow/runner"
 	"agent-overflow/internal/workflow/wake"
@@ -280,8 +280,8 @@ func TestWorkflowWakeQueuesIntoABusyBoundThread(t *testing.T) {
 	notice := wake.DataNotice
 	wake := flushqueue.ItemFromTriage(thread.ID, h.queuedItems[0])
 	h.mu.Unlock()
-	if !wake.AgentMessage || wake.Origin != usermessage.OriginAgentWake || wake.OriginWake == nil ||
-		wake.OriginWake.Kind != string(usermessage.ReportWorkflow) || wake.OriginWake.Label != item.WorkflowID {
+	if !wake.AgentMessage || wake.Origin != agentmeta.OriginAgentWake || wake.OriginWake == nil ||
+		wake.OriginWake.Kind != string(agentmeta.ReportWorkflow) || wake.OriginWake.Label != item.WorkflowID {
 		t.Fatalf("queued wake attribution = agent %v origin %q wake %+v, want the workflow's", wake.AgentMessage, wake.Origin, wake.OriginWake)
 	}
 	// Its row shows the run's data, not the notice written for the agent.

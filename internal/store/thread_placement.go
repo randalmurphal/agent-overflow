@@ -6,7 +6,7 @@ import (
 	"fmt"
 )
 
-// Where the sidebar shows a thread (migration v150,
+// Where the sidebar shows a thread (migration v153,
 // docs/specs/standing-agents.md, "Owned workers"). The schema makes a row
 // grouped exactly when it has a group, so a group move is the one writer of
 // grouped (SetThreadGroup) and this file writes the other two. An owned
@@ -16,7 +16,7 @@ import (
 // assistant's own, past or helper thread) takes no placement: a helper is
 // owned from its spawn and stays so. A row is inserted standalone or
 // grouped, the write that names a local spawn's thread makes it owned, and
-// the trigger of v151 returns an owned row of a project to standalone when
+// the trigger of v154 returns an owned row of a project to standalone when
 // its last link is deleted.
 
 const (
@@ -59,34 +59,88 @@ func insertedPlacement(groupID string) string {
 // relation that owns it (spawnerOfSQL).
 var spawnLinkSQL = spawnerOfSQL("?1") + ` IS NOT NULL`
 
+// ThreadMove is one row a group or placement write moved, as it stands
+// after the write, and how the write moved it across the sidebar listing
+// (ListingChange), read inside the write's transaction.
+type ThreadMove struct {
+	Thread  Thread
+	Listing ListingChange
+}
+
+// ThreadMoveRows returns the rows of moves, in order.
+func ThreadMoveRows(moves []ThreadMove) []Thread {
+	rows := make([]Thread, 0, len(moves))
+	for _, move := range moves {
+		rows = append(rows, move.Thread)
+	}
+	return rows
+}
+
+// threadsListedTx reads, inside tx, whether the sidebar lists each id
+// (threadListed).
+func threadsListedTx(tx *sql.Tx, ids []string) (map[string]bool, error) {
+	listed := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		yes, err := threadListed(tx, id)
+		if err != nil {
+			return nil, err
+		}
+		listed[id] = yes
+	}
+	return listed, nil
+}
+
+// threadMovesTx reads back the rows ids name after a move and pairs each
+// with its listing change against before.
+func threadMovesTx(tx *sql.Tx, ids []string, before map[string]bool) ([]ThreadMove, error) {
+	rows, err := listThreadsByIDTx(tx, ids)
+	if err != nil {
+		return nil, err
+	}
+	after, err := threadsListedTx(tx, ids)
+	if err != nil {
+		return nil, err
+	}
+	moves := make([]ThreadMove, 0, len(rows))
+	for _, row := range rows {
+		moves = append(moves, ThreadMove{Thread: row, Listing: listingChange(before[row.ID], after[row.ID])})
+	}
+	return moves, nil
+}
+
 // SetThreadPlacement makes each named thread owned or standalone, out of
-// any group it was in, and returns the rows as they now stand. A row whose
-// placement changes loses its pin, as a row that joins or leaves a group
-// does: a thread starts unpinned in the place it moves to. One transaction;
-// any refusal rolls the whole call back.
-func (s *Store) SetThreadPlacement(threadIDs []string, placement string) ([]Thread, error) {
-	tx, err := s.db.Begin()
+// any group it was in, and returns the rows as they now stand with how
+// each moved across the sidebar listing. A row whose placement changes
+// loses its pin, as a row that joins or leaves a group does: a thread
+// starts unpinned in the place it moves to. One transaction; any refusal
+// rolls the whole call back.
+func (s *Store) SetThreadPlacement(threadIDs []string, placement string) ([]ThreadMove, error) {
+	tx, err := s.beginListingWrite()
 	if err != nil {
 		return nil, fmt.Errorf("store: begin thread placement: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
 	ids := uniqueNonEmptyStrings(threadIDs)
+	before, err := threadsListedTx(tx, ids)
+	if err != nil {
+		return nil, err
+	}
 	for _, id := range ids {
 		if _, err := setThreadPlacementTx(tx, id, placement); err != nil {
 			return nil, err
 		}
 	}
-	rows := []Thread{}
+	moves := []ThreadMove{}
 	if len(ids) > 0 {
-		if rows, err = listThreadsByIDTx(tx, ids); err != nil {
+		if moves, err = threadMovesTx(tx, ids, before); err != nil {
 			return nil, fmt.Errorf("store: read back placed threads: %w", err)
 		}
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("store: commit thread placement: %w", err)
 	}
-	return rows, nil
+	return moves, nil
 }
 
 // standingAgentThreadSQL and outsideProjectsSQL are the threads alias a

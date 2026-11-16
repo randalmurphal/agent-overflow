@@ -177,9 +177,6 @@ func (a *App) closeProviderSession(threadID string, sess session) error {
 	if providerSess == nil {
 		return nil
 	}
-	// Capture the pgid before Close — the process exits during Close and
-	// we want the group id regardless.
-	pgid := providerSess.PID()
 	closeErr := providerSess.Close()
 	// Close returns once the read loop is gone, which leaves its final
 	// events (the session's own "disconnected" among them) queued rather
@@ -192,11 +189,6 @@ func (a *App) closeProviderSession(threadID string, sess session) error {
 	if closeErr != nil {
 		return fmt.Errorf("close %s session for thread %s: %w", sess.Provider, threadID, closeErr)
 	}
-	// Clean close → the subprocess is down, so stop the orphan reaper from
-	// tracking it. On a Close error we deliberately keep the watch: an
-	// abandoned-but-still-alive subprocess must still be reaped if the app
-	// later dies.
-	a.releaseSessionProcess(pgid)
 	return nil
 }
 

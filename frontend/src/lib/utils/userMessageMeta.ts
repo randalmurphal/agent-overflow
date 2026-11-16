@@ -7,9 +7,10 @@ import {
 } from '../types/attachment';
 import type { Item, SourceProposedPlan } from '../types/models';
 import { MessageFacts } from '../../../bindings/agent-overflow/internal/threadtools/models';
-import { ReportDescriptor } from '../../../bindings/agent-overflow/internal/usermessage/models';
+import { ReportDescriptor } from '../../../bindings/agent-overflow/internal/agentmeta/models';
 import { commandWordRanges, type CommandWordRange } from './commandWords';
-import type { ShellOutputMeta } from './shellInvocation';
+import { textWithoutShellInvocations, type ShellOutputMeta } from './shellInvocation';
+import { readableWakeText } from './wakeText';
 
 export interface AttachmentPreviewSource {
   id: string;
@@ -176,7 +177,7 @@ function storedFacts(meta: UserMessageMeta): MessageFacts | null {
  * describe text: of a known form, written for its length in UTF-8 bytes,
  * with body spans inside it, in order, not empty and on character
  * boundaries, as threadtools MessageFacts.Check holds them. The served row
- * carries facts usermessage.Describe checked; facts that do not describe
+ * carries facts agentmeta.Describe checked; facts that do not describe
  * the text a client holds are null, and the row shows that text whole.
  */
 export function userMessageFacts(text: string, meta: UserMessageMeta): MessageFacts | null {
@@ -216,7 +217,7 @@ const JOIN_SEPARATOR_BYTES = new TextEncoder().encode('\n\n---\n\n');
 
 /**
  * Cut a joined row's text into the members its `joinedParts` record, each
- * with its own attribution: the TypeScript twin of usermessage
+ * with its own attribution: the TypeScript twin of agentmeta
  * SplitJoinedParts. A member's text is free text and can hold the separator,
  * so only the recorded UTF-8 lengths cut it. null when the row records no
  * parts or they do not describe its text exactly.
@@ -255,8 +256,8 @@ export function splitJoinedParts(text: string, meta: UserMessageMeta): JoinedMem
 /**
  * What wrote an `agent-wake` row: a loop, a watch, a script, a worker's
  * prompt, a remote job, a workflow run or the app opening an assistant's
- * thread (usermessage.ReportKind). Go serves each report's attribution with
- * what its kind means to a person (usermessage.ReportDescriptor), which
+ * thread (agentmeta.ReportKind). Go serves each report's attribution with
+ * what its kind means to a person (agentmeta.ReportDescriptor), which
  * names it everywhere here; a row without one is of a kind the serving
  * computer does not know, or did not decode, and is refused.
  */
@@ -349,7 +350,7 @@ export function isPendingFlushRow(item: Item): boolean {
  * `expandComposerCommands` is the person's: headless Claude joins queued
  * messages at a turn boundary, so one row can hold the person's message
  * after an agent's, attributed to the agent. The Go twin is
- * usermessage.IsAgentMessage; the SQL one store.AgentMessageFilterFor.
+ * agentmeta.IsAgentMessage; the SQL one store.AgentMessageFilterFor.
  */
 export function isAgentMessageMeta(meta: UserMessageMeta): boolean {
   if (meta.expandComposerCommands === true) return false;
@@ -380,6 +381,25 @@ export function isReaderAuthoredUserText(item: Item): boolean {
  */
 export function stripAttachmentImages(summary: string): string {
   return summary.replace(/\n\n!\[[^\]]*]\(attachment:\/\/[^\s)]+\)/g, '');
+}
+
+/**
+ * The text a user message's bubble shows (UserMessageBody), its find
+ * region: the summary without its image blocks and without the typed
+ * `!command` of each shell output, which the output's own block shows. A
+ * bubble of `agent-wake` origin (the person's message a provider joined
+ * after a wake, the one wake row that keeps the bubble) shows the wake's
+ * quoted data decoded instead (readableWakeText).
+ */
+export function userMessageVisibleText(
+  summary: string,
+  attachments: readonly AttachmentPreviewSource[],
+  origin = '',
+): string {
+  const text = stripAttachmentImages(summary).trimEnd();
+  if (origin === 'agent-wake') return readableWakeText(text);
+  const shells = attachments.flatMap((attachment) => (attachment.kind === 'file' && attachment.shell ? [attachment.shell] : []));
+  return textWithoutShellInvocations(text, shells);
 }
 
 /**

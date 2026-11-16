@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"testing"
 
+	"agent-overflow/internal/agentmeta"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadtools"
 )
@@ -22,9 +23,9 @@ func TestReportBodyIsTheDataAfterItsNotice(t *testing.T) {
 		{"prose with no notice", "", "You are Ops.\n\nMore.", "You are Ops.\n\nMore.", "You are Ops.\n\nMore."},
 		{"no data", "Loop fired.", "", "Loop fired.\n", ""},
 	} {
-		message := built(t)(Report(ReportWorkflow, Reporter{Label: "l"}, tc.notice, tc.data, ""))
+		message := built(t)(Report(agentmeta.ReportWorkflow, Reporter{Label: "l"}, tc.notice, tc.data, ""))
 		attribution := message.Attribution()
-		if message.Text() != tc.text || attribution.Origin != OriginAgentWake || attribution.Thread != nil || attribution.Wake.Kind != string(ReportWorkflow) {
+		if message.Text() != tc.text || attribution.Origin != agentmeta.OriginAgentWake || attribution.Thread != nil || attribution.Wake.Kind != string(agentmeta.ReportWorkflow) {
 			t.Errorf("%s: text %q attribution %+v, want %q from a workflow", tc.name, message.Text(), attribution, tc.text)
 			continue
 		}
@@ -37,22 +38,22 @@ func TestReportBodyIsTheDataAfterItsNotice(t *testing.T) {
 }
 
 // The kinds Report writes are the kinds DecodeStored reads: every
-// ReportKind both, and any other neither.
+// agentmeta.ReportKind both, and any other neither.
 func TestReportKindsAreTheKindsAStoredReportCarries(t *testing.T) {
 	t.Parallel()
-	for _, kind := range ReportKinds() {
+	for _, kind := range agentmeta.ReportKinds() {
 		message := built(t)(Report(kind, Reporter{Label: "l"}, "", "data", ""))
 		attribution := message.Attribution()
 		if _, err := DecodeStored(message.Text(), attribution.Origin, attribution.Thread, attribution.Wake); err != nil {
 			t.Errorf("%s: %v", kind, err)
 		}
 	}
-	facts := built(t)(Report(ReportLoop, Reporter{}, "", "data", "")).Attribution().Wake.Facts
-	for _, kind := range []ReportKind{"", "nonsense", "Loop", ReportKind(OriginKindWake), ReportKind(store.ThreadRequestSend + " ")} {
+	facts := built(t)(Report(agentmeta.ReportLoop, Reporter{}, "", "data", "")).Attribution().Wake.Facts
+	for _, kind := range []agentmeta.ReportKind{"", "nonsense", "Loop", agentmeta.ReportKind(agentmeta.OriginKindWake), agentmeta.ReportKind(store.ThreadRequestSend + " ")} {
 		if message, err := Report(kind, Reporter{Label: "l"}, "", "data", ""); err == nil {
 			t.Errorf("%q: Report wrote %+v", kind, message.Attribution().Wake)
 		}
-		if _, err := DecodeStored("data", OriginAgentWake, nil, &OriginWake{Kind: string(kind), Facts: facts}); !errors.Is(err, ErrStoredMessage) {
+		if _, err := DecodeStored("data", agentmeta.OriginAgentWake, nil, &agentmeta.OriginWake{Kind: string(kind), Facts: facts}); !errors.Is(err, ErrStoredMessage) {
 			t.Errorf("%q: DecodeStored read it: %v", kind, err)
 		}
 	}
@@ -82,7 +83,7 @@ func TestConstructorsWriteWhatDecodeStoredReads(t *testing.T) {
 		"answer from a thread never created": func() (AgentMessage, error) {
 			return Answer(threadtools.Wake{Kind: threadtools.WakeInterrupted, Text: threadtools.InterruptNeverStarted, Sources: []threadtools.WakeSource{{Tokens: []string{"k"}}}})
 		},
-		"report with no data": func() (AgentMessage, error) { return Report(ReportSend, Reporter{}, "n", "", "") },
+		"report with no data": func() (AgentMessage, error) { return Report(agentmeta.ReportSend, Reporter{}, "n", "", "") },
 	}
 	for _, kind := range []string{store.ThreadRequestSpawn, store.ThreadRequestSend, store.ThreadRequestAsk} {
 		messages["request: "+kind] = func() (AgentMessage, error) { return Request(kind, from, footer, "Ship it.") }
@@ -95,7 +96,7 @@ func TestConstructorsWriteWhatDecodeStoredReads(t *testing.T) {
 			return Answer(threadtools.Wake{Kind: kind, Text: "Said.", Sources: []threadtools.WakeSource{source}, MadeIn: "t-old", Now: "t-new"})
 		}
 	}
-	for _, kind := range ReportKinds() {
+	for _, kind := range agentmeta.ReportKinds() {
 		messages["report: "+string(kind)] = func() (AgentMessage, error) {
 			return Report(kind, Reporter{Label: "l", ThreadID: "t-w", Computer: "Desk"}, "n", "\nd", "h")
 		}
@@ -216,7 +217,7 @@ func TestAnswerIsAttributedToItsFirstSource(t *testing.T) {
 	}}))
 	thread := message.Attribution().Thread
 	if thread == nil || thread.ThreadID != "t-w" || thread.Title != "W" || thread.Token != "a" || thread.ComputerID != "c-1" ||
-		thread.ComputerName != "Desk" || thread.Kind != OriginKindWake || thread.Facts == nil || thread.Facts.Check(message.Text()) != nil {
+		thread.ComputerName != "Desk" || thread.Kind != agentmeta.OriginKindWake || thread.Facts == nil || thread.Facts.Check(message.Text()) != nil {
 		t.Fatalf("answer = %+v", thread)
 	}
 	reminder := built(t)(Answer(threadtools.Wake{Kind: threadtools.WakeReminder, Text: "Check.", Sources: []threadtools.WakeSource{{Tokens: []string{"r"}}}}))
@@ -248,7 +249,7 @@ func TestAttributionIsACopy(t *testing.T) {
 	if after := message.Attribution(); !reflect.DeepEqual(after, before) {
 		t.Fatalf("the message changed: %+v, was %+v", after.Thread, before.Thread)
 	}
-	report := built(t)(Report(ReportLoop, Reporter{Label: "l"}, "n", "d", ""))
+	report := built(t)(Report(agentmeta.ReportLoop, Reporter{Label: "l"}, "n", "d", ""))
 	report.Attribution().Wake.Facts.Body[0].End = 1
 	if facts := report.Attribution().Wake.Facts; facts.Check(report.Text()) != nil {
 		t.Fatalf("the report changed: %+v", facts)
@@ -284,7 +285,7 @@ func TestAMessageSharesNothingWithItsInputs(t *testing.T) {
 			return built(t)(Message(Sender{ThreadID: "t-lead", Title: "Lead"}, "Hi."))
 		},
 		"report": func(t *testing.T) AgentMessage {
-			return built(t)(Report(ReportLoop, Reporter{Label: "l"}, "n", "d", "h"))
+			return built(t)(Report(agentmeta.ReportLoop, Reporter{Label: "l"}, "n", "d", "h"))
 		},
 	}
 	built := map[string]AgentMessage{}
@@ -331,7 +332,7 @@ func TestPersonAndAppMessagesAreNoAgents(t *testing.T) {
 	t.Parallel()
 	for _, m := range []AgentMessage{PersonMessage("mine"), AppMessage("Continue")} {
 		attribution := m.Attribution()
-		if attribution.Thread != nil || attribution.Wake != nil || IsAgentMessage(Meta{Origin: attribution.Origin}) {
+		if attribution.Thread != nil || attribution.Wake != nil || agentmeta.IsAgentMessage(agentmeta.Meta{Origin: attribution.Origin}) {
 			t.Errorf("%q: attribution %+v, want none an agent row reads", m.Text(), attribution)
 		}
 	}
@@ -352,21 +353,21 @@ func TestDecodeStoredRefusesWhatNoConstructorWrites(t *testing.T) {
 		t.Fatalf("read back %+v, %v", read, err)
 	}
 	// main's request has no facts: kept for the legacy reader.
-	if _, err := DecodeStored("old", OriginAgentThread, &OriginThread{ThreadID: "t"}, nil); err != nil {
+	if _, err := DecodeStored("old", agentmeta.OriginAgentThread, &agentmeta.OriginThread{ThreadID: "t"}, nil); err != nil {
 		t.Fatalf("main's request: %v", err)
 	}
-	wake := built(t)(Report(ReportLoop, Reporter{Label: "l"}, "n", "d", "")).Attribution().Wake
+	wake := built(t)(Report(agentmeta.ReportLoop, Reporter{Label: "l"}, "n", "d", "")).Attribution().Wake
 	for name, tc := range map[string]struct {
 		text, origin string
-		thread       *OriginThread
-		wake         *OriginWake
+		thread       *agentmeta.OriginThread
+		wake         *agentmeta.OriginWake
 	}{
-		"text edited behind its facts":  {request.Text() + " more", OriginAgentThread, written.Thread, nil},
-		"text trimmed":                  {request.Text()[1:], OriginAgentThread, written.Thread, nil},
-		"a thread with a wake":          {request.Text(), OriginAgentThread, written.Thread, wake},
-		"a report of no known kind":     {"n\nd", OriginAgentWake, nil, &OriginWake{Kind: "nonsense", Facts: wake.Facts}},
-		"a report with no facts":        {"n\nd", OriginAgentWake, nil, &OriginWake{Kind: "loop"}},
-		"a report of no reporter":       {"n\nd", OriginAgentWake, nil, nil},
+		"text edited behind its facts":  {request.Text() + " more", agentmeta.OriginAgentThread, written.Thread, nil},
+		"text trimmed":                  {request.Text()[1:], agentmeta.OriginAgentThread, written.Thread, nil},
+		"a thread with a wake":          {request.Text(), agentmeta.OriginAgentThread, written.Thread, wake},
+		"a report of no known kind":     {"n\nd", agentmeta.OriginAgentWake, nil, &agentmeta.OriginWake{Kind: "nonsense", Facts: wake.Facts}},
+		"a report with no facts":        {"n\nd", agentmeta.OriginAgentWake, nil, &agentmeta.OriginWake{Kind: "loop"}},
+		"a report of no reporter":       {"n\nd", agentmeta.OriginAgentWake, nil, nil},
 		"the person's with an agent's":  {"mine", "", written.Thread, nil},
 		"an origin the app never wrote": {"x", "peer-session", nil, nil},
 	} {
@@ -392,14 +393,14 @@ func TestDecodeStoredRefusesWhatNoConstructorWrites(t *testing.T) {
 	}
 }
 
-func factsOf(thread *OriginThread) *threadtools.MessageFacts {
+func factsOf(thread *agentmeta.OriginThread) *threadtools.MessageFacts {
 	if thread == nil {
 		return nil
 	}
 	return thread.Facts
 }
 
-func factsOfWake(wake *OriginWake) *threadtools.MessageFacts {
+func factsOfWake(wake *agentmeta.OriginWake) *threadtools.MessageFacts {
 	if wake == nil {
 		return nil
 	}

@@ -146,7 +146,7 @@ func TestARevertsQueueClearReturnsASpawnerAnswer(t *testing.T) {
 	f := newAsyncQuestionFixture(t, "async-answer-reverted", store.PlacementOwned)
 	sendID := f.answered(t)
 	f.dispatchAnswer(t)
-	f.app.clearFlushDispatchForRollback(f.worker.ID)
+	f.app.dropFlushQueue(f.worker.ID)
 	f.app.emit(eventchan.UserMessageReverted, UserMessageRevertedEvent{ThreadID: f.worker.ID})
 	f.drain(t)
 	f.requireReturned(t, sendID)
@@ -173,7 +173,7 @@ func TestAFailedResendReturnsASpawnerAnswer(t *testing.T) {
 	for _, row := range rows {
 		// The dispatch took it: the provider write keeps an answer's row
 		// until its echo.
-		if err := f.app.store.DeleteDispatchedFlushQueueItem(row.ID); err != nil {
+		if err := f.app.store.DeleteDispatchedFlushQueueItems([]string{row.ID}); err != nil {
 			t.Fatal(err)
 		}
 		meta, err := usermessage.Marshal(usermessage.Input{SendID: row.SendID})

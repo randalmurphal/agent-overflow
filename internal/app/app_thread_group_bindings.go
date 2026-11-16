@@ -3,6 +3,7 @@ package app
 import (
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/triage"
 )
 
 // ThreadGroupUpdateEvent is the wire shape for thread-group:updated.
@@ -84,7 +85,11 @@ func (a *App) DeleteThreadGroup(id string) error {
 	if err != nil {
 		return err
 	}
-	a.announceMovedThreads(members)
+	// Grouped and standalone are both sidebar places, so ungrouping moves
+	// no member across the listing.
+	for _, member := range members {
+		a.announceThread(triage.ThreadActionFull, member.ID)
+	}
 	a.emitThreadGroup("delete", group)
 	return nil
 }
@@ -93,7 +98,7 @@ func (a *App) DeleteThreadGroup(id string) error {
 // is empty. It returns every row the call touched and emits one
 // thread:updated frame per row, because a move rewrites the group and
 // clears the pin of a row that changes group; an owned thread a move
-// groups joins the sidebar (announceMovedThreads).
+// groups joins the sidebar (announceMoves).
 //
 // The client routes this from the thread ids (methodFamilies.ts); home is
 // the single-backend fallback.
@@ -105,8 +110,8 @@ func (a *App) SetThreadGroup(threadIDs []string, groupID string) ([]store.Thread
 	if err != nil {
 		return nil, err
 	}
-	a.announceMovedThreads(moved)
-	return moved, nil
+	a.announceMoves(moved)
+	return store.ThreadMoveRows(moved), nil
 }
 
 // SetThreadPlacement makes threads owned by the thread that spawned them,
@@ -126,14 +131,14 @@ func (a *App) SetThreadPlacement(threadIDs []string, placement string) ([]store.
 	if err != nil {
 		return nil, err
 	}
-	a.announceMovedThreads(placed)
-	return placed, nil
+	a.announceMoves(placed)
+	return store.ThreadMoveRows(placed), nil
 }
 
-// announceMovedThreads announces each row a group or placement move wrote,
-// as a row that may have joined or left the sidebar (announcePlaced).
-func (a *App) announceMovedThreads(rows []store.Thread) {
-	for _, thread := range rows {
-		a.announcePlaced(thread.ID)
+// announceMoves announces each row a group or placement move wrote, by
+// the listing change its write read (announcePlacement).
+func (a *App) announceMoves(moves []store.ThreadMove) {
+	for _, move := range moves {
+		a.announcePlacement(move.Thread.ID, move.Listing)
 	}
 }

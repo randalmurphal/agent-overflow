@@ -9,7 +9,7 @@ show-more footer's dot counts unread rows, and running members sort
 above unread ones
 ([standing agents](standing-agents.md) rulings 31 to 34). Revised
 2026-10-17: a thread a standing agent spawned may be a member, and
-membership is the row's `placement` (store v150, standing agents
+membership is the row's `placement` (store v153, standing agents
 ruling 36).
 
 ## Goal
@@ -179,7 +179,7 @@ the row. Collapsed, it carries its members' bubbled dot.
 - `DeleteThreadGroup` clears the members' pins, active and archived, in
   the transaction that deletes the group, and returns the member rows as
   they now stand.
-- Migration v150 adds `threads.placement` (`owned`, `grouped`,
+- Migration v153 adds `threads.placement` (`owned`, `grouped`,
   `standalone`) with a CHECK that a row is `grouped` exactly when its
   `group_id` is set. `SetThreadGroup` writes `grouped` with the group;
   an ungroup writes `standalone` on a row that was grouped and leaves
@@ -282,10 +282,10 @@ Names are trimmed and non-empty; a blank rename is rejected.
 - Drag payload gains `projectId` and `groupId` (the thread's current
   group, if any). Because `DataTransfer.getData` is empty during
   `dragover` in every real browser and the group targets have to decide
-  THERE, the source row also records the in-flight payload in-process
+  THERE, the source row records the payload in-process
   (`beginThreadRowDrag` / `endThreadRowDrag`) and targets read it through
-  `threadDragPayloadForEvent`, which prefers the DataTransfer and falls
-  back to the record; `effectAllowed` widens from `copy` to `copyMove` so
+  `threadDragPayloadForEvent`; the DataTransfer carries only the thread
+  id, which a drop matches against the record; `effectAllowed` widens from `copy` to `copyMove` so
   a group target's `dropEffect = 'move'` is honored (the pane drop still
   answers `copy`). The hover state lives in `ProjectThreadList`
   (`dropTargetGroupId`), not on the row, so a member row lights its GROUP;

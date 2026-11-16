@@ -152,7 +152,11 @@ func (r *remoteArtifactReader) Read(p []byte) (int, error) {
 //
 //ao:scope terminal:operate
 //ao:route selected
+//ao:budget 20m
 func (a *App) AgentRemoteFetchArtifact(ctx context.Context, computerID, id, path string) (RemoteArtifact, error) {
+	// One call per chunk, so the fetch as a whole runs within its budget.
+	ctx, cancel := withinMethodBudget(ctx, "AgentRemoteFetchArtifact", "Fetching the artifact")
+	defer cancel()
 	job, err := a.AgentRemoteStatus(ctx, computerID, id)
 	if err != nil {
 		return RemoteArtifact{}, err
@@ -168,7 +172,7 @@ func (a *App) AgentRemoteFetchArtifact(ctx context.Context, computerID, id, path
 		return chunk, err
 	})
 	if err != nil {
-		return RemoteArtifact{}, a.remoteOperationError("fetch artifact", computerID, id, err)
+		return RemoteArtifact{}, a.remoteOperationError("fetch artifact", computerID, id, budgetError(ctx, err))
 	}
 	result.ComputerID, result.RequestID = computerID, id
 	return result, nil
@@ -315,7 +319,11 @@ type RemoteLogArtifact struct {
 //
 //ao:scope terminal:operate
 //ao:route selected
+//ao:budget 20m
 func (a *App) AgentRemoteFetchLog(ctx context.Context, computerID, id string) (RemoteLogArtifact, error) {
+	// One call per chunk, so the fetch as a whole runs within its budget.
+	ctx, cancel := withinMethodBudget(ctx, "AgentRemoteFetchLog", "Fetching the log")
+	defer cancel()
 	job, err := a.AgentRemoteStatus(ctx, computerID, id)
 	if err != nil {
 		return RemoteLogArtifact{}, err
@@ -335,7 +343,7 @@ func (a *App) AgentRemoteFetchLog(ctx context.Context, computerID, id string) (R
 		return chunk, err
 	})
 	if err != nil {
-		return RemoteLogArtifact{}, a.remoteOperationError("fetch log", computerID, id, err)
+		return RemoteLogArtifact{}, a.remoteOperationError("fetch log", computerID, id, budgetError(ctx, err))
 	}
 	result.ComputerID, result.RequestID = computerID, id
 	return RemoteLogArtifact{RemoteArtifact: result, Log: info}, nil

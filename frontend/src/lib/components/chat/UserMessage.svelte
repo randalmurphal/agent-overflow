@@ -14,7 +14,6 @@
   import CopyButton from '../primitives/CopyButton.svelte';
   import UserMessageBody from './UserMessageBody.svelte';
   import ShellCommandBlock from './ShellCommandBlock.svelte';
-  import { textWithoutShellInvocations } from '../../utils/shellInvocation';
   import UserMessageEditor from './UserMessageEditor.svelte';
   import { preservePaneScrollAnchorAt } from './preserveScrollAnchor';
   import Icon from '../primitives/Icon.svelte';
@@ -24,15 +23,14 @@
   import {
     parseUserMessageAttachments,
     parseUserMessageMeta,
-    stripAttachmentImages,
     userMessageCommandRanges,
     agentWakeOriginLabel,
+    userMessageVisibleText,
     userMessageOrigin,
     userMessageOriginThread,
     userMessageOriginWake,
   } from '../../utils/userMessageMeta';
   import { agentThreadOriginChip } from './agentThreadOrigin';
-  import { readableWakeText } from '../../utils/wakeText';
   import { threadMachine } from '../../stores/attachedBackends.svelte';
   import { imageAttachments, formatAttachmentSize } from '../../types/attachment';
   import { commandSegments } from '../../utils/commandWords';
@@ -171,11 +169,8 @@
   // text.
   const isWake = $derived(messageOrigin === 'agent-wake');
   // The typed `!command` a shell output stands for is shown by its block.
-  const visibleSummary = $derived.by(() => {
-    const summary = stripAttachmentImages(item.summary).trimEnd();
-    if (isWake) return readableWakeText(summary);
-    return textWithoutShellInvocations(summary, shellOutputs.map((attachment) => attachment.shell!));
-  });
+  // A wake's quoted data is shown decoded (userMessageVisibleText).
+  const visibleSummary = $derived(userMessageVisibleText(item.summary, attachments, messageOrigin));
   // A message that is nothing but commands is drawn as the blocks themselves,
   // without the message bubble around them.
   const commandsOnly = $derived(

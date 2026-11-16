@@ -6,6 +6,7 @@ package app
 // about the remote spawns at rest at its own slower pace.
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -68,7 +69,7 @@ func TestARemoteWorkerContinuedThereReopensForItsSpawner(t *testing.T) {
 	clear(pair.source.threadAgentPeers.entries)
 	pair.source.threadAgentPeers.mu.Unlock()
 
-	if err := pair.dest.SendMessage(child, "now also update the changelog", nil); err != nil {
+	if err := pair.dest.SendMessage(context.Background(), child, "now also update the changelog", nil); err != nil {
 		t.Fatalf("SendMessage there: %v", err)
 	}
 	waitUntil(t, 10*time.Second, func() bool {

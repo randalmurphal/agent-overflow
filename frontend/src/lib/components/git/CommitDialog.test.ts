@@ -4,7 +4,9 @@ import CommitDialog from './CommitDialog.svelte';
 import { resetPanesForTest } from '../../stores/panes.svelte';
 import { resetBindingMocks, setBindingMock, setReviewDiffMock } from '../../../test/mocks/bindings-app';
 import { __seedGitStatusForTest } from '../../stores/gitStatusStore.svelte';
-import type { CommitFile, CommitFiles, GitActionResult, GitStatus } from '../../types/git';
+import type { CommitFile, CommitFiles, GitActionOutcome, GitActionResult, GitStatus } from '../../types/git';
+import { DisconnectedError, TransportError } from '../../transport/wsClient';
+import { COMMIT_ANSWER_LOST, COMMIT_OUTCOME_UNKNOWN } from './commitDialogState.svelte';
 import { buildPane, makeThread } from '../../../test/helpers/chat';
 
 // Partial mock: only the snapshot is pinned. A whole-module factory would
@@ -132,7 +134,7 @@ describe('<CommitDialog> — file selection', () => {
     await fireEvent.click(m.commitButton());
 
     await waitFor(() => expect(m.rows()).toHaveLength(1));
-    expect(commit).toHaveBeenCalledWith(m.pane.workspace, 'First', '', { all: false, files: [THREE[0], THREE[1]] });
+    expect(commit).toHaveBeenCalledWith(m.pane.workspace, 'First', '', { all: false, files: [THREE[0], THREE[1]] }, expect.any(String));
     expect(m.onClose).not.toHaveBeenCalled();
     expect((document.getElementById('commit-subject') as HTMLInputElement).value).toBe('');
     expect(m.row('z.txt').getAttribute('aria-selected')).toBe('false');
@@ -208,7 +210,7 @@ describe('<CommitDialog> — file selection', () => {
     await fireEvent.click(m.check('z.txt'));
     await m.setSubject('Keys');
     await fireEvent.keyDown(document.getElementById('commit-subject')!, { key: 'Enter', ctrlKey: true });
-    await waitFor(() => expect(commit).toHaveBeenCalledWith(m.pane.workspace, 'Keys', '', { all: false, files: [THREE[2]] }));
+    await waitFor(() => expect(commit).toHaveBeenCalledWith(m.pane.workspace, 'Keys', '', { all: false, files: [THREE[2]] }, expect.any(String)));
   });
 
   it('keeps the selection across a refresh and leaves files that appear unselected', async () => {
@@ -338,7 +340,7 @@ describe('<CommitDialog> — pending operation notice', () => {
     await fireEvent.click(m.check('src/a.ts'));
     await m.setSubject('Finish it');
     await fireEvent.click(m.commitButton());
-    await waitFor(() => expect(commit).toHaveBeenCalledWith(m.pane.workspace, 'Finish it', '', { all: false, files: [THREE[0]] }));
+    await waitFor(() => expect(commit).toHaveBeenCalledWith(m.pane.workspace, 'Finish it', '', { all: false, files: [THREE[0]] }, expect.any(String)));
   });
 
   it('commits everything, with the rows locked, while git records only whole commits', async () => {
@@ -364,7 +366,7 @@ describe('<CommitDialog> — pending operation notice', () => {
     await waitFor(() => expect(generate).toHaveBeenCalledWith(m.pane.workspace, { all: true, files: [] }));
     await fireEvent.click(m.commitButton());
     await waitFor(() => expect(m.onClose).toHaveBeenCalledTimes(1));
-    expect(commit).toHaveBeenCalledWith(m.pane.workspace, 'Merge', '', { all: true, files: [] });
+    expect(commit).toHaveBeenCalledWith(m.pane.workspace, 'Merge', '', { all: true, files: [] }, expect.any(String));
   });
 
   it('names a pending revert', async () => {
@@ -439,6 +441,70 @@ describe('<CommitDialog> — pending operation notice', () => {
     await waitFor(() => expect(m.getByText(/unmerged files/).getAttribute('role')).toBe('alert'));
     expect(m.onClose).not.toHaveBeenCalled();
     expect((document.getElementById('commit-subject') as HTMLInputElement).value).toBe('Finish it');
+  });
+
+  it('shows a commit whose answer was lost as committed once the computer says it landed', async () => {
+    let files = THREE;
+    const commit = setBindingMock('GitCommit', async () => {
+      // The hook ran past the wait; the commit lands on the computer anyway.
+      files = [THREE[1], THREE[2]];
+      throw new TransportError('timeout', 'RPC 7 timed out after 735000ms');
+    });
+    const outcome = setBindingMock('GetGitActionOutcome', async () => ({
+      state: 'succeeded',
+      result: { action: 'commit', commitSha: 'abcdef0123456789' },
+    } as GitActionOutcome));
+    const m = await mount(() => listing(files));
+    await waitFor(() => expect(m.rows()).toHaveLength(3));
+    await fireEvent.click(m.check('src/a.ts'));
+    await m.setSubject('Slow hook');
+    await fireEvent.click(m.commitButton());
+
+    await waitFor(() => expect(m.rows()).toHaveLength(2));
+    const attemptId = commit.mock.calls[0]![4];
+    expect(attemptId).toEqual(expect.any(String));
+    expect(outcome).toHaveBeenCalledWith(m.pane.workspace, 'commit', attemptId);
+    expect(m.queryByRole('alert')).toBeNull();
+    expect((document.getElementById('commit-subject') as HTMLInputElement).value).toBe('');
+  });
+
+  it('asks again on the next press while a lost commit cannot be asked about, and never commits twice', async () => {
+    const commit = setBindingMock('GitCommit', async () => {
+      throw new DisconnectedError('socket closed');
+    });
+    let asks = 0;
+    const outcome = setBindingMock('GetGitActionOutcome', async () => {
+      asks += 1;
+      if (asks === 1) throw new DisconnectedError('socket closed');
+      return { state: 'failed', message: 'git commit: the pre-commit hook refused it' } as GitActionOutcome;
+    });
+    const m = await mount();
+    await waitFor(() => expect(m.rows()).toHaveLength(3));
+    await fireEvent.click(m.check('src/a.ts'));
+    await m.setSubject('Lost');
+    await fireEvent.click(m.commitButton());
+
+    await waitFor(() => expect(m.getByRole('alert').textContent).toContain(COMMIT_ANSWER_LOST));
+    await waitFor(() => expect(m.commitButton().disabled).toBe(false));
+    await fireEvent.click(m.commitButton());
+    await waitFor(() => expect(m.getByRole('alert').textContent).toContain('pre-commit hook refused it'));
+    expect(commit).toHaveBeenCalledTimes(1);
+    expect(outcome).toHaveBeenCalledTimes(2);
+    expect(outcome.mock.calls[1]![2]).toBe(commit.mock.calls[0]![4]);
+  });
+
+  it('says so when the computer has no record of a lost commit', async () => {
+    setBindingMock('GitCommit', async () => {
+      throw new DisconnectedError('socket closed');
+    });
+    setBindingMock('GetGitActionOutcome', async () => ({ state: 'unknown' } as GitActionOutcome));
+    const m = await mount();
+    await waitFor(() => expect(m.rows()).toHaveLength(3));
+    await fireEvent.click(m.check('src/a.ts'));
+    await m.setSubject('Unknown');
+    await fireEvent.click(m.commitButton());
+    await waitFor(() => expect(m.getByRole('alert').textContent).toBe(COMMIT_OUTCOME_UNKNOWN));
+    expect(m.row('src/a.ts').getAttribute('aria-selected')).toBe('true');
   });
 
   it('surfaces a thrown commit error inline and keeps the selection', async () => {

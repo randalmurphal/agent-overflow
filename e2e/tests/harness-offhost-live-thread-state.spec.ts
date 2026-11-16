@@ -49,7 +49,9 @@ import {
   textLines,
   toolResultLine,
   toolUseLine,
+  waitForGate,
 } from './agent-visibility-helpers.js';
+import { CODEX_STEER_NOT_STEERABLE, threadToolsScenario } from './thread-tools-helpers.js';
 import {
   PAIRED_APP_MOUNT_MS,
   confirmOnHost,
@@ -97,9 +99,9 @@ test.describe.serial('off-host live thread state', () => {
     expect(network.bindAll).toBe(true);
 
     // Two threads, because the cases must not share one: the queued item
-    // in the first is deliberately never flushed (nothing starts a session
-    // on that thread), and starting one for the approval case would drain
-    // it mid-assertion. Both carry a seeded turn, since a draft thread is
+    // in the first is deliberately never flushed (it waits behind a turn
+    // that cannot take input), and the approval case's turn would drain it
+    // mid-assertion. Both carry a seeded turn, since a draft thread is
     // hidden from the sidebar and the phone reaches a thread by clicking
     // its row. The repo is real because the approval names a file in it.
     const seed = await harness.rpc<SeedResult>('HarnessSeed', {
@@ -110,7 +112,7 @@ test.describe.serial('off-host live thread state', () => {
           threads: [
             {
               title: QUEUE_THREAD,
-              provider: 'claude',
+              provider: 'codex',
               turns: [{ userText: 'first', items: [{ kind: 'assistant_text', summary: 'one' }] }],
             },
             {
@@ -162,6 +164,21 @@ test.describe.serial('off-host live thread state', () => {
     // composer exists would assert nothing.
     await expect(phone.getByLabel('Message Input')).toBeEnabled();
     await expect(phone.getByTestId('send-queue-preview')).toHaveCount(0);
+    // The thread is inside a turn that cannot take input (a Codex review),
+    // so a message queued on it waits for the turn to end. A thread with no
+    // session would start one for it, and a turn that takes input would
+    // take it at once.
+    await harness.rpc('HarnessSetScenario', {
+      scenario: threadToolsScenario({
+        name: 'offhost-queue-held',
+        provider: 'codex',
+        turns: [{ steps: [{ gate: 'hold-queue-thread' }], text: 'Own work done.' }],
+        codexResponses: CODEX_STEER_NOT_STEERABLE,
+      }),
+    });
+    await startMock(harness, queueThreadId);
+    await harness.rpc('SendMessage', queueThreadId, 'own work', null);
+    await waitForGate(harness, 'hold-queue-thread');
     // A paired device is never `host`, whatever address it arrived from:
     // open-in-editor names an editor on the host's screen, which this
     // device has no use for (the owner's phone over `adb reverse` — a

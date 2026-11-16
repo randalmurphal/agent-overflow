@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/agenthome"
+	"agent-overflow/internal/agentmeta"
 	"agent-overflow/internal/composerdraft"
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/provider"
@@ -414,7 +415,7 @@ func (a *App) carrySessionLossItems(oldThreadID, successorID string, items []sto
 		parts = append(parts, part)
 	}
 	if err == nil {
-		_, err = a.mergeAndUpsertThreadDraft(successorID, parts)
+		err = a.restoreQueuedDraft(successorID, parts, store.QueueDraftRestore{})
 	}
 	if err != nil {
 		log.Printf("assistants: carry the messages to %s into %s: %v", oldThreadID, successorID, err)
@@ -452,7 +453,7 @@ func (a *App) returnSessionLossCarriesLocked(threadID string, items []store.Item
 		parts = append(parts, part)
 	}
 	if err == nil {
-		_, err = a.mergeAndUpsertThreadDraft(threadID, parts)
+		err = a.restoreQueuedDraft(threadID, parts, store.QueueDraftRestore{})
 	}
 	if err != nil {
 		log.Printf("assistants: put %d messages back in %s's composer: %v", len(items), threadID, err)
@@ -541,7 +542,7 @@ func (a *App) nextAssistantThread(ctx context.Context, threadID string, sessionL
 		SessionLost:      sessionLost,
 		Carried:          carried,
 	})
-	if err := a.queueAssistantMessage(successor.ID, assistantSendID(string(usermessage.ReportHandOff), threadID), successor.Title, body); err != nil {
+	if err := a.queueAssistantMessage(successor.ID, assistantSendID(string(agentmeta.ReportHandOff), threadID), successor.Title, body); err != nil {
 		return successor, fmt.Errorf("the assistant moved to its new thread, but its opening block could not be queued: %w", err)
 	}
 	log.Printf("assistants: %s moved from thread %s to %s", agent.ID, threadID, successor.ID)

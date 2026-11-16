@@ -226,6 +226,11 @@ type ThreadRequestSettlement struct {
 	// never armed (threadRequestArmSQL). A receipt has no wake, and its
 	// settlement refuses the flag.
 	ArmWake bool
+	// DisarmWake turns `notify` off with the settlement, for a request its
+	// own sender cancelled: the cancel's report says what happened. It is
+	// written with the settlement so a cancel that fails leaves the wake
+	// armed. A receipt refuses it too.
+	DisarmWake bool
 }
 
 // threadRequestArmSQL is the `notify` value a statement that stores a reply
@@ -244,6 +249,9 @@ func (s ThreadRequestSettlement) validate(action string, states map[string]struc
 	}
 	if _, ok := threadAnswerKinds[s.AnswerKind]; !ok {
 		return fmt.Errorf("%s: invalid answer kind %q", action, s.AnswerKind)
+	}
+	if s.ArmWake && s.DisarmWake {
+		return fmt.Errorf("%s: a settlement cannot both arm and disarm the wake", action)
 	}
 	return nil
 }
@@ -394,7 +402,7 @@ var threadRequestOpenStates = []string{ThreadRequestUnconfirmed, ThreadRequestAc
 //
 // Pass ThreadRequestOpenStates() for the ordinary collection path.
 func (s *Store) SettleThreadRequest(token string, from []string, settlement ThreadRequestSettlement) (bool, error) {
-	settled, err := settleThreadRequest(s.db, token, from, settlement)
+	settled, err := settleThreadRequest(s.db, token, from, settlement, "")
 	if settled {
 		s.noteThreadRequestChanged(ThreadRequestChange{Token: token})
 	}
@@ -402,8 +410,9 @@ func (s *Store) SettleThreadRequest(token string, from []string, settlement Thre
 }
 
 // settleThreadRequest is the settlement write on db, which reports nothing:
-// a caller on a transaction reports the change once it commits.
-func settleThreadRequest(db sqlExecutor, token string, from []string, settlement ThreadRequestSettlement) (bool, error) {
+// a caller on a transaction reports the change once it commits. `where`
+// narrows the rows it may settle further.
+func settleThreadRequest(db sqlExecutor, token string, from []string, settlement ThreadRequestSettlement, where string) (bool, error) {
 	action := fmt.Sprintf("store: settle thread request %s", token)
 	if err := settlement.validate(action, threadRequestStates); err != nil {
 		return false, err
@@ -418,13 +427,14 @@ func settleThreadRequest(db sqlExecutor, token string, from []string, settlement
 	}
 	agent, role := answerAgentColumns(settlement.Agent)
 	set := []any{settlement.State, nilIfEmptyBytes(settlement.Answer), settlement.AnswerKind,
-		settledAt, nilIfZero(settlement.ExpiresAt), agent, role, boolToInt(settlement.ArmWake), nowMillis(), token}
+		settledAt, nilIfZero(settlement.ExpiresAt), agent, role, boolToInt(settlement.DisarmWake), boolToInt(settlement.ArmWake),
+		nowMillis(), token}
 	result, err := db.Exec(
 		`UPDATE thread_requests
 		    SET state = ?, answer = ?, answer_kind = ?, revision = revision + 1,
 		        settled_at = ?, expires_at = ?, answer_agent = ?, answer_agent_role = ?,
-		        notify = `+threadRequestArmSQL+`, updated_at = ?
-		  WHERE token = ? AND `+clause,
+		        notify = CASE WHEN ? = 1 THEN 0 ELSE `+threadRequestArmSQL+` END, updated_at = ?
+		  WHERE token = ? AND `+clause+where,
 		append(set, args...)...,
 	)
 	if err != nil {
@@ -445,7 +455,7 @@ func (s *Store) SettleThreadRequestDelivered(token string, from []string, settle
 		return false, fmt.Errorf("%s: begin: %w", action, err)
 	}
 	defer rollbackTx(tx, action, &err)
-	settled, err := settleThreadRequest(tx, token, from, settlement)
+	settled, err := settleThreadRequest(tx, token, from, settlement, "")
 	if err != nil || !settled {
 		return false, err
 	}
@@ -470,6 +480,228 @@ func ThreadRequestOpenStates() []string {
 	return append([]string(nil), threadRequestOpenStates...)
 }
 
+// threadRequestLocalSQL limits a write to a request this computer answers
+// itself. A row naming another computer is a request this one sent there,
+// and a receipt here carrying the same token was minted by a paired
+// computer: writing its answer into that row would be wrong.
+const threadRequestLocalSQL = ` AND target_computer_id = ''`
+
+// ThreadReceiptAnswer is everything a receipt holds for its request at one
+// revision: the settlement and the late reply that followed it, each with the
+// standing agent that wrote it. A request collects it whole
+// (collectThreadRequest), so a revision acknowledged after a collection is one
+// whose every part the request holds.
+type ThreadReceiptAnswer struct {
+	Revision int64
+	// State is the receipt's word; the request stores its own for it.
+	State          string
+	Answer         []byte
+	AnswerKind     string
+	SettledAt      int64
+	ExpiresAt      int64
+	Agent          *ThreadAnswerAgent
+	LateReply      []byte
+	LateReplyAt    int64
+	LateReplyAgent *ThreadAnswerAgent
+}
+
+// Snapshot is what the receipt holds at its current revision.
+func (r ThreadRequestReceipt) Snapshot() ThreadReceiptAnswer {
+	return ThreadReceiptAnswer{
+		Revision: r.Revision, State: r.State, Answer: r.Answer, AnswerKind: r.AnswerKind,
+		SettledAt: r.SettledAt, ExpiresAt: r.ExpiresAt, Agent: r.AnswerAgent,
+		LateReply: r.LateReply, LateReplyAt: r.LateReplyAt, LateReplyAgent: r.LateReplyAgent,
+	}
+}
+
+// ThreadRequestWake is the request's half of a collection. ReplyArms is
+// whether an explicit reply the collection carries is owed to the caller as a
+// message (ThreadRequestSettlement.ArmWake); a caller may pass false for a
+// collection that carries no reply. A sender's own cancel disarms its wake
+// with the settlement instead (SettleLocalThreadRequest, DisarmWake).
+type ThreadRequestWake struct {
+	ReplyArms bool
+}
+
+// ThreadRequestCollected is what a collection wrote on the request: the
+// receipt's settlement, its late reply, or both.
+type ThreadRequestCollected struct {
+	Settled   bool
+	LateReply bool
+}
+
+// Any reports whether the collection wrote anything.
+func (c ThreadRequestCollected) Any() bool { return c.Settled || c.LateReply }
+
+// collectThreadRequest copies one receipt answer onto its request: the
+// settlement while the request is still open, and the late reply while the
+// request has none. Each write is conditional, so a collection repeated with
+// the same answer writes nothing. `where` narrows the request rows it may
+// write. It reports nothing; the caller reports the change once it commits.
+func collectThreadRequest(db sqlExecutor, token string, answer ThreadReceiptAnswer, wake ThreadRequestWake, where string) (ThreadRequestCollected, error) {
+	if !ThreadReceiptSettled(answer.State) {
+		return ThreadRequestCollected{}, nil
+	}
+	arms := wake.ReplyArms
+	settled, err := settleThreadRequest(db, token, threadRequestOpenStates, ThreadRequestSettlement{
+		State:      ThreadRequestStateForReceipt(answer.State),
+		Answer:     answer.Answer,
+		AnswerKind: answer.AnswerKind,
+		SettledAt:  answer.SettledAt,
+		ExpiresAt:  answer.ExpiresAt,
+		Agent:      answer.Agent,
+		ArmWake:    arms && answer.AnswerKind == ThreadAnswerReply,
+	}, where)
+	if err != nil {
+		return ThreadRequestCollected{}, err
+	}
+	collected := ThreadRequestCollected{Settled: settled}
+	if len(answer.LateReply) > 0 {
+		collected.LateReply, err = storeThreadRequestLateReply(db, token, answer.LateReply, answer.LateReplyAt,
+			answer.LateReplyAgent, arms, where)
+		if err != nil {
+			return ThreadRequestCollected{}, err
+		}
+	}
+	return collected, nil
+}
+
+// CollectThreadRequest copies an answer another computer reported onto the
+// request this computer sent there, settlement and late reply in one
+// transaction. The caller acknowledges answer.Revision to that computer after
+// it commits; a lost acknowledgement is sent again by the next poll, which
+// finds the request already holding the revision.
+func (s *Store) CollectThreadRequest(token string, answer ThreadReceiptAnswer, wake ThreadRequestWake) (_ ThreadRequestCollected, err error) {
+	action := fmt.Sprintf("store: collect thread request %s", token)
+	tx, err := s.db.Begin()
+	if err != nil {
+		return ThreadRequestCollected{}, fmt.Errorf("%s: begin: %w", action, err)
+	}
+	defer rollbackTx(tx, action, &err)
+	collected, err := collectThreadRequest(tx, token, answer, wake, "")
+	if err != nil {
+		return ThreadRequestCollected{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return ThreadRequestCollected{}, fmt.Errorf("%s: commit: %w", action, err)
+	}
+	if collected.Any() {
+		s.noteThreadRequestChanged(ThreadRequestChange{Token: token})
+	}
+	return collected, nil
+}
+
+// collectLocalThreadReceiptTx is the one collection of a receipt by the
+// request on this computer it answers: it reads the receipt at its current
+// revision, copies that whole answer onto the request, and acknowledges that
+// revision, all on the caller's transaction. A collection that wrote nothing
+// acknowledges nothing; one that wrote either part acknowledges the revision
+// it read, because the request now holds every part that it will ever take.
+// A request already settled another way (a refusal its own call returned)
+// keeps that settlement. A receipt the retention floor reduced to its
+// lineage holds nothing to collect.
+func collectLocalThreadReceiptTx(tx *sql.Tx, token string, wake ThreadRequestWake) (ThreadRequestCollected, error) {
+	receipt, err := scanThreadReceipt(tx.QueryRow(
+		`SELECT `+threadReceiptColumns+` FROM thread_request_receipts WHERE token = ? AND lineage_only = 0`, token))
+	if errors.Is(err, sql.ErrNoRows) {
+		return ThreadRequestCollected{}, nil
+	}
+	if err != nil {
+		return ThreadRequestCollected{}, fmt.Errorf("store: read thread receipt %s to collect: %w", token, err)
+	}
+	collected, err := collectThreadRequest(tx, token, receipt.Snapshot(), wake, threadRequestLocalSQL)
+	if err != nil || !collected.Any() {
+		return ThreadRequestCollected{}, err
+	}
+	if _, err := ackThreadReceipt(tx, token, receipt.Revision, nowMillis()); err != nil {
+		return ThreadRequestCollected{}, err
+	}
+	return collected, nil
+}
+
+// StoreLocalThreadRequestLateReply stores a late reply on a receipt and
+// collects it into the request on this computer it answers, in one
+// transaction, for the reason SettleLocalThreadRequest is one: a reply stored
+// on the receipt alone is lost, because a retry of the same text is the same
+// reply and stores nothing. agent is the replying thread as a standing agent
+// (StoreThreadReceiptLateReply). It reports whether the receipt took the
+// reply and what the request collected with it; a request this computer
+// sent to another one (a token collision) collects nothing.
+func (s *Store) StoreLocalThreadRequestLateReply(token string, reply []byte, at int64, agent *ThreadAnswerAgent, replyArms bool) (_ bool, _ ThreadRequestCollected, err error) {
+	action := fmt.Sprintf("store: store local thread request late reply %s", token)
+	if at == 0 {
+		at = nowMillis()
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return false, ThreadRequestCollected{}, fmt.Errorf("%s: begin: %w", action, err)
+	}
+	defer rollbackTx(tx, action, &err)
+	stored, err := storeThreadReceiptLateReply(tx, token, reply, at, agent)
+	if err != nil || !stored {
+		return false, ThreadRequestCollected{}, err
+	}
+	collected, err := collectLocalThreadReceiptTx(tx, token, ThreadRequestWake{ReplyArms: replyArms})
+	if err != nil {
+		return false, ThreadRequestCollected{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return false, ThreadRequestCollected{}, fmt.Errorf("%s: commit: %w", action, err)
+	}
+	if collected.Any() {
+		s.noteThreadRequestChanged(ThreadRequestChange{Token: token})
+	}
+	return true, collected, nil
+}
+
+// CollectLocalThreadReceipt collects a receipt that is already settled into
+// the request on this computer it answers, and acknowledges it, in one
+// transaction. It is the boot's repair of a request left open beside its
+// settled receipt, or holding a late reply its receipt took without it;
+// collecting one that holds everything already writes nothing.
+func (s *Store) CollectLocalThreadReceipt(token string, wake ThreadRequestWake) (_ ThreadRequestCollected, err error) {
+	action := fmt.Sprintf("store: collect local thread receipt %s", token)
+	tx, err := s.db.Begin()
+	if err != nil {
+		return ThreadRequestCollected{}, fmt.Errorf("%s: begin: %w", action, err)
+	}
+	defer rollbackTx(tx, action, &err)
+	collected, err := collectLocalThreadReceiptTx(tx, token, wake)
+	if err != nil {
+		return ThreadRequestCollected{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return ThreadRequestCollected{}, fmt.Errorf("%s: commit: %w", action, err)
+	}
+	if collected.Any() {
+		s.noteThreadRequestChanged(ThreadRequestChange{Token: token})
+	}
+	return collected, nil
+}
+
+// ThreadRequestStateForReceipt maps a receipt state onto the request's
+// vocabulary. The two sets differ only where the source knows something the
+// destination cannot (`unconfirmed`, `refused`), so everything settled has a
+// name on both sides.
+func ThreadRequestStateForReceipt(state string) string {
+	switch state {
+	case ThreadReceiptReplied:
+		return ThreadRequestReplied
+	case ThreadReceiptFinished:
+		return ThreadRequestFinished
+	case ThreadReceiptErrored:
+		return ThreadRequestErrored
+	case ThreadReceiptCancelled:
+		return ThreadRequestCancelled
+	case ThreadReceiptInterrupted:
+		return ThreadRequestInterrupted
+	case ThreadReceiptExpired:
+		return ThreadRequestExpired
+	default:
+		return ThreadRequestErrored
+	}
+}
+
 // StoreThreadRequestLateReply records a thread_reply that arrived after the
 // request had already settled. It is a new revision, so a `thread_status`
 // waiting past the collected revision returns and the wake path delivers a
@@ -482,22 +714,33 @@ func ThreadRequestOpenStates() []string {
 // `armWake` arms `notify` with the reply, as a settlement's ArmWake does and
 // under the same rule.
 func (s *Store) StoreThreadRequestLateReply(token string, reply []byte, at int64, agent *ThreadAnswerAgent, armWake bool) (bool, error) {
+	stored, err := storeThreadRequestLateReply(s.db, token, reply, at, agent, armWake, "")
+	if stored {
+		s.noteThreadRequestChanged(ThreadRequestChange{Token: token})
+	}
+	return stored, err
+}
+
+// storeThreadRequestLateReply is the late reply's write on db, which reports
+// nothing: a caller on a transaction reports the change once it commits.
+// `where` narrows the rows it may write further.
+func storeThreadRequestLateReply(db sqlExecutor, token string, reply []byte, at int64, agent *ThreadAnswerAgent, armWake bool, where string) (bool, error) {
 	action := fmt.Sprintf("store: store thread request late reply %s", token)
 	if at == 0 {
 		at = nowMillis()
 	}
 	isAgent, role := answerAgentColumns(agent)
-	result, err := s.db.Exec(
+	result, err := db.Exec(
 		`UPDATE thread_requests
 		    SET late_reply = ?, late_reply_at = ?, late_reply_agent = ?, late_reply_agent_role = ?, revision = revision + 1,
 		        notify = `+threadRequestArmSQL+`, updated_at = ?
-		  WHERE token = ? AND settled_at IS NOT NULL AND late_reply IS NULL AND lineage_only = 0`,
+		  WHERE token = ? AND settled_at IS NOT NULL AND late_reply IS NULL AND lineage_only = 0`+where,
 		nilIfEmptyBytes(reply), at, isAgent, role, boolToInt(armWake), nowMillis(), token,
 	)
 	if err != nil {
 		return false, fmt.Errorf("%s: %w", action, err)
 	}
-	return s.changedThreadRequest(token, result, action)
+	return rowsChanged(result, action)
 }
 
 // MarkThreadRequestDelivered records how the answer reached the caller. It
@@ -821,18 +1064,20 @@ func (s *Store) RetireThreadRequestPoll(token string) (bool, error) {
 
 // ScheduleThreadRequestWake books the next attempt at one undelivered wake.
 // It is written before the attempt, so a delivery that fails or hangs cannot
-// bring the retry round again at once.
-func (s *Store) ScheduleThreadRequestWake(token string, nextCheck, attempts int64) error {
+// bring the retry round again at once. It reports false, booking nothing,
+// when the row owes no wake: a delivery since the caller read it cleared the
+// schedule, and a booking then would leave a retry on a delivered row.
+func (s *Store) ScheduleThreadRequestWake(token string, nextCheck, attempts int64) (bool, error) {
 	action := fmt.Sprintf("store: schedule thread request wake %s", token)
 	result, err := s.db.Exec(
 		`UPDATE thread_requests SET wake_next_check = ?, wake_attempts = ?, updated_at = ?
-		  WHERE token = ?`,
+		  WHERE token = ? AND notify = 1 AND `+threadWakeOwedSQL,
 		nextCheck, attempts, nowMillis(), token,
 	)
 	if err != nil {
-		return fmt.Errorf("%s: %w", action, err)
+		return false, fmt.Errorf("%s: %w", action, err)
 	}
-	return requireRowsAffected(result, action)
+	return rowsChanged(result, action)
 }
 
 // NoteThreadRequestWakeIssue records why a wake could not be handed over.
@@ -954,6 +1199,27 @@ func (s *Store) ListOpenThreadRequestsForComputer(computerID string, limit int) 
 		return nil, fmt.Errorf("store: list open thread requests for computer %s: %w", computerID, err)
 	}
 	return collectThreadRequests(rows, fmt.Sprintf("store: list open thread requests for computer %s", computerID))
+}
+
+// ListOpenLocalThreadRequests returns every open spawn, send and ask this
+// computer's threads made of its own threads, oldest first. Each is settled
+// by its receipt, so at boot, once the sweep has settled every open receipt,
+// a row still listed here has nothing left that can settle it. A reminder is
+// left out: its clock settles it.
+func (s *Store) ListOpenLocalThreadRequests() ([]ThreadRequest, error) {
+	action := "store: list open local thread requests"
+	clause, args, err := stateInClause(action, threadRequestOpenStates, threadRequestStates)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.reader().Query(
+		`SELECT `+threadRequestColumns+` FROM thread_requests
+		  WHERE kind <> 'remind' AND `+clause+threadRequestLocalSQL+`
+		  ORDER BY created_at ASC, token ASC`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", action, err)
+	}
+	return collectThreadRequests(rows, action)
 }
 
 // DueThreadReminders returns the `remind` rows whose clock has passed. The
@@ -1541,10 +1807,14 @@ const threadWakeRidersSQL = `delivered_with = ?1 AND delivered_with <> ''`
 // Otherwise a row already gone means the wake was sent, and changes
 // nothing. A wake the provider was handed and never confirmed
 // (unconfirmed) has no row left and goes back all the same, while the
-// request still reads queued and the provider has not confirmed it. A
-// late wake clears only its own mark; the first answer's delivery stands. A
-// lineage-only row keeps its marks (clearLineagePayloadSQL): a cleared
-// delivered_at would read as a wake still owed.
+// request still reads queued. A wake the provider confirmed is never
+// given back, by any caller: a queue row can outlive its message's echo
+// (the process died between the provider write and the settlement that
+// deletes the row, or that delete failed), and such a row goes with the
+// mark left standing. A late wake clears only its own mark; the first
+// answer's delivery stands. A lineage-only row keeps its marks
+// (clearLineagePayloadSQL): a cleared delivered_at would read as a wake
+// still owed.
 //
 // token is the carrier: a first wake that answered other requests too
 // (delivered_with) gives every one of them back with it, since they were
@@ -1571,12 +1841,9 @@ func (s *Store) WithdrawThreadWake(token string, late bool, rowID string, scope 
 	}
 	var returned []string
 	if removed || scope != WithdrawQueued {
-		// A message still in the queue never reached the provider. One that
-		// left it goes back only while no echo has confirmed it.
-		unconfirmed := !removed && scope == WithdrawUnconfirmed
-		statements := []string{threadWakeGiveBackSQL(late, unconfirmed, false)}
+		statements := []string{threadWakeGiveBackSQL(late, false)}
 		if !late {
-			statements = append(statements, threadWakeGiveBackSQL(late, unconfirmed, true))
+			statements = append(statements, threadWakeGiveBackSQL(late, true))
 		}
 		for _, statement := range statements {
 			tokens, err := queryIDs(tx, statement, token, nowMillis(), ThreadWakeQueued)
@@ -1597,21 +1864,18 @@ func (s *Store) WithdrawThreadWake(token string, late bool, rowID string, scope 
 
 // threadWakeGiveBackSQL clears one wake's delivery mark (the late reply's
 // when late) and disarms it, on the carrier ?1 itself or, with riders, on
-// the requests that rode with it, returning each token it gave back.
-// unconfirmed limits it to a wake no echo has confirmed. ?2 is the time and
-// ?3 the queued route.
-func threadWakeGiveBackSQL(late, unconfirmed, riders bool) string {
+// the requests that rode with it, returning each token it gave back. A
+// wake an echo confirmed is left as it is. ?2 is the time and ?3 the
+// queued route.
+func threadWakeGiveBackSQL(late, riders bool) string {
 	delivered, confirmed, route, item, with := "delivered_at", "confirmed_at", "delivered_how", "wake_item_id", ", delivered_with = ''"
 	if late {
 		delivered, confirmed, route, item, with = "late_delivered_at", "late_confirmed_at", "late_delivered_how", "late_wake_item_id", ""
 	}
-	query := `UPDATE thread_requests SET ` + delivered + ` = NULL, ` + confirmed + ` = NULL, ` + route + ` = '', ` + item + ` = ''` + with + `,
+	return `UPDATE thread_requests SET ` + delivered + ` = NULL, ` + route + ` = '', ` + item + ` = ''` + with + `,
 	           notify = 0, updated_at = ?2
-	     WHERE ` + delivered + ` IS NOT NULL AND ` + route + ` = ?3 AND lineage_only = 0`
-	if unconfirmed {
-		query += ` AND ` + confirmed + ` IS NULL`
-	}
-	return query + threadWakeTargetSQL(riders) + ` RETURNING token`
+	     WHERE ` + delivered + ` IS NOT NULL AND ` + route + ` = ?3 AND lineage_only = 0
+	       AND ` + confirmed + ` IS NULL` + threadWakeTargetSQL(riders) + ` RETURNING token`
 }
 
 // threadWakeTargetSQL picks the rows a carrier ?1's wake write applies to:
@@ -1737,4 +2001,34 @@ func (s *Store) changedThreadRequest(token string, result sql.Result, action str
 		s.noteThreadRequestChanged(ThreadRequestChange{Token: token})
 	}
 	return changed, err
+}
+
+// ThreadWakeSendID names the message a request's wake is queued under: its
+// first answer, or its late reply (late). The two are distinct so a late
+// reply is never mistaken for a retry of the first wake and dropped by send
+// admission.
+func ThreadWakeSendID(token string, late bool) string {
+	if late {
+		return threadWakeLateSendIDPrefix + token
+	}
+	return threadWakeSendIDPrefix + token
+}
+
+const (
+	threadWakeSendIDPrefix     = "thread-wake:"
+	threadWakeLateSendIDPrefix = "thread-wake-late:"
+)
+
+// ParseThreadWakeSendID recovers the request a wake's send id belongs to:
+// the carrier of every request its message answers (WakeCarrier). The two
+// prefixes are disjoint, so either order reads the same send id; a bare
+// prefix names no request.
+func ParseThreadWakeSendID(sendID string) (token string, late bool, ok bool) {
+	if rest, found := strings.CutPrefix(sendID, threadWakeLateSendIDPrefix); found {
+		return rest, true, rest != ""
+	}
+	if rest, found := strings.CutPrefix(sendID, threadWakeSendIDPrefix); found {
+		return rest, false, rest != ""
+	}
+	return "", false, false
 }

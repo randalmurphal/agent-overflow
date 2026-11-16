@@ -64,7 +64,7 @@ func newLivenessHarness(t *testing.T, configure func(w *workspaceWatcher)) *live
 
 func (h *livenessHarness) fastCallCount() int { return int(h.fastCalls.Load()) }
 
-func TestStatusDiffersIgnoringPR(t *testing.T) {
+func TestStatusDiffersOnDisk(t *testing.T) {
 	t.Parallel()
 	base := gitops.GitStatus{IsRepo: true, Branch: "main", Insertions: 3, Forge: "github"}
 
@@ -74,14 +74,20 @@ func TestStatusDiffersIgnoringPR(t *testing.T) {
 	prOnly.OpenPRLookupError = "boom"
 	prOnly.OpenPRLookupPending = true
 	prOnly.OpenPRRecheckAt = time.Now()
-	if statusDiffersIgnoringPR(base, prOnly) {
-		t.Fatalf("PR-only delta must not count as a non-PR change")
+	if statusDiffersOnDisk(base, prOnly) {
+		t.Fatalf("PR-only delta must not count as an on-disk change")
+	}
+
+	signIn := base
+	signIn.RemoteSignInError = "fatal: Authentication failed"
+	if statusDiffersOnDisk(base, signIn) {
+		t.Fatalf("a remote sign-in error must not count as an on-disk change")
 	}
 
 	churn := base
 	churn.Insertions = 9
-	if !statusDiffersIgnoringPR(base, churn) {
-		t.Fatalf("working-tree delta must count as a non-PR change")
+	if !statusDiffersOnDisk(base, churn) {
+		t.Fatalf("working-tree delta must count as an on-disk change")
 	}
 }
 

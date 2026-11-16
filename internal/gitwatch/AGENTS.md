@@ -39,7 +39,7 @@ running the caller's read, requests a refresh, and returns the published
 status, or the read itself when nothing could publish it (nobody watches,
 or a `Suppress` hold). An answer handed out during a hold was never
 published, so the watcher broadcasts equal content too until it
-broadcasts a status with a Seq above that answer's. A non-PR change
+broadcasts a status with a Seq above that answer's. An on-disk change
 `Publish` published counts as observed by its refresh for missed-event
 detection, or, when a hold is taken first, by the last resume's refresh.
 A `Publish` while a cwd's first watcher reads its initial status is kept,

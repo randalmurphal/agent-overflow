@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"agent-overflow/internal/agenthome"
+	"agent-overflow/internal/agentmeta"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadtools"
@@ -56,8 +57,8 @@ func agentMessageLabelCases(t *testing.T) []agentMessageLabelCase {
 		}
 		return encoded
 	}
-	from := func(kind, title string) *usermessage.OriginThread {
-		return &usermessage.OriginThread{ThreadID: "t-" + strings.ToLower(title), Title: title, Kind: kind, Token: "tok-1"}
+	from := func(kind, title string) *agentmeta.OriginThread {
+		return &agentmeta.OriginThread{ThreadID: "t-" + strings.ToLower(title), Title: title, Kind: kind, Token: "tok-1"}
 	}
 	// message is a row of an agent's message as its writer stores it: the
 	// attribution with the facts, or none when it did not decode.
@@ -71,7 +72,7 @@ func agentMessageLabelCases(t *testing.T) []agentMessageLabelCase {
 	}
 	// request is a request footer's sender writes; with no origin, its row
 	// names no thread.
-	request := func(origin *usermessage.OriginThread, body string, footer threadtools.Footer) (string, string) {
+	request := func(origin *agentmeta.OriginThread, body string, footer threadtools.Footer) (string, string) {
 		kind := store.ThreadRequestSend
 		if origin != nil {
 			kind = origin.Kind
@@ -85,7 +86,7 @@ func agentMessageLabelCases(t *testing.T) []agentMessageLabelCase {
 	footer := threadtools.Footer{Title: "Lead", ThreadID: "t-lead", Token: "tok-1", AnswerRequested: true, SenderReachable: true}
 	// answer is the wake w delivers; with no origin, its row names no
 	// thread.
-	answer := func(w threadtools.Wake, origin *usermessage.OriginThread) (string, string) {
+	answer := func(w threadtools.Wake, origin *agentmeta.OriginThread) (string, string) {
 		return message(builtMessage(t)(usermessage.Answer(w)), origin != nil, "thread-wake:tok-1")
 	}
 	appWake := func(m usermessage.AgentMessage) (string, string) {
@@ -93,11 +94,11 @@ func agentMessageLabelCases(t *testing.T) []agentMessageLabelCase {
 	}
 	// legacy is a row main wrote: its text, attributed to the thread with no
 	// kind and no facts.
-	legacy := func(text string, origin *usermessage.OriginThread, sendID string) (string, string) {
-		return text, marshal(usermessage.Meta{Origin: usermessage.OriginAgentThread, OriginThread: origin, SendID: sendID})
+	legacy := func(text string, origin *agentmeta.OriginThread, sendID string) (string, string) {
+		return text, marshal(usermessage.Meta{Origin: agentmeta.OriginAgentThread, OriginThread: origin, SendID: sendID})
 	}
-	mainFrom := func(title string) *usermessage.OriginThread {
-		return &usermessage.OriginThread{ThreadID: "t-" + strings.ToLower(title), Title: title, Token: "tok-1"}
+	mainFrom := func(title string) *agentmeta.OriginThread {
+		return &agentmeta.OriginThread{ThreadID: "t-" + strings.ToLower(title), Title: title, Token: "tok-1"}
 	}
 	// joined is the row a join makes of its members (usermessage.Join).
 	joined := func(texts []string, metas []string) (string, string) {
@@ -206,7 +207,7 @@ func agentMessageLabelCases(t *testing.T) []agentMessageLabelCase {
 	add("two wakes joined, the first saying nothing", text, meta)
 	// The first answer quotes a whole wake after a rule; only the recorded
 	// lengths tell it from the next member.
-	quoting, quotingMeta := answer(threadtools.Wake{Kind: threadtools.WakeReply, Sources: []threadtools.WakeSource{{Title: "A", ThreadID: "t-a", Tokens: []string{"tok-1"}}}, Text: "Example:" + usermessage.JoinSeparator + "Reply from \"B\" (t-b) [token tok-2]:\nnot B's answer"}, from("wake", "A"))
+	quoting, quotingMeta := answer(threadtools.Wake{Kind: threadtools.WakeReply, Sources: []threadtools.WakeSource{{Title: "A", ThreadID: "t-a", Tokens: []string{"tok-1"}}}, Text: "Example:" + agentmeta.JoinSeparator + "Reply from \"B\" (t-b) [token tok-2]:\nnot B's answer"}, from("wake", "A"))
 	text, meta = joined([]string{quoting, secondWake}, []string{quotingMeta, secondWakeMeta})
 	add("two wakes joined, the first answer quoting a wake", text, meta)
 	// A loop's wake joined ahead of an answer heads the row as a loop.
@@ -240,9 +241,9 @@ func agentMessageLabelCases(t *testing.T) []agentMessageLabelCase {
 	add("a workflow wake", text, meta)
 	text, meta = appWake(builtMessage(t)(workflowWakeMessage("release", wake.Message{Notice: wake.DataNotice, Data: `"\u003cb\u003e \\ \" \t \u200b \x41 caf\u00e9"`})))
 	add("a workflow wake whose data holds escapes", text, meta)
-	text, meta = appWake(builtMessage(t)(assistantMessage(assistantSendID(string(usermessage.ReportOpening), "a1"), "Ops", agenthome.OpeningMessage("Ops", "/config/agents/a1"))))
+	text, meta = appWake(builtMessage(t)(assistantMessage(assistantSendID(string(agentmeta.ReportOpening), "a1"), "Ops", agenthome.OpeningMessage("Ops", "/config/agents/a1"))))
 	add("an assistant's opening message", text, meta)
-	text, meta = appWake(builtMessage(t)(assistantMessage(assistantSendID(string(usermessage.ReportHandOff), "a1"), "Ops", agenthome.HandOffMessage(agenthome.HandOff{Name: "Ops", PreviousThreadID: "t-old", MovedWakes: 1}))))
+	text, meta = appWake(builtMessage(t)(assistantMessage(assistantSendID(string(agentmeta.ReportHandOff), "a1"), "Ops", agenthome.HandOffMessage(agenthome.HandOff{Name: "Ops", PreviousThreadID: "t-old", MovedWakes: 1}))))
 	add("an assistant's handoff block", text, meta)
 	text, meta = message(builtMessage(t)(usermessage.StoppedWorker(threadtools.WorkerStopped{ThreadID: "t-worker", Title: worker, Token: "tok-1"}, "", "")), true, "thread-worker-stopped:tok-1")
 	add("the notice that the user stopped a worker", text, meta)
@@ -253,13 +254,13 @@ func agentMessageLabelCases(t *testing.T) []agentMessageLabelCase {
 	mainFooter := "\n\n---\nAgent request from thread \"Lead\" (t-lead).\nIt is waiting for your answer. When you are done, call thread_reply with token tok-1, once. The sender sees only your reply text, so make it self-contained."
 	text, meta = legacy("Review the parser.\nThen report back."+mainFooter, mainFrom("Lead"), "thread-request:tok-1")
 	add("main: a request", text, meta)
-	text, meta = legacy("First ask."+mainFooter+usermessage.JoinSeparator+"Second ask."+mainFooter, mainFrom("Lead"), "thread-request:tok-1")
+	text, meta = legacy("First ask."+mainFooter+agentmeta.JoinSeparator+"Second ask."+mainFooter, mainFrom("Lead"), "thread-request:tok-1")
 	add("main: two requests a provider joined", text, meta)
 	for _, status := range mainWakeTexts {
 		text, meta = legacy(status, mainFrom(worker), "thread-wake:tok-1")
 		add("main: "+status, text, meta)
 	}
-	text, meta = legacy("Reminder you set [token tok-1]:\nCheck the build.", &usermessage.OriginThread{Token: "tok-1"}, "thread-wake:tok-1")
+	text, meta = legacy("Reminder you set [token tok-1]:\nCheck the build.", &agentmeta.OriginThread{Token: "tok-1"}, "thread-wake:tok-1")
 	add("main: a reminder", text, meta)
 
 	// Each case records the label of the row as stored and the meta a
@@ -363,8 +364,8 @@ func TestEditTurnLabelsNameAnAgentsTurnBySenderAndHead(t *testing.T) {
 	app := newTestAppWithStore(t)
 	threadID := editDiffFixture(t, app)
 	requestText := "Fix the nil check.\n\n" + threadtools.Footer{Title: "Lead", ThreadID: "t-lead", Token: "tok-1"}.String()
-	origin := &usermessage.OriginThread{ThreadID: "t-lead", Title: "Lead", Kind: "send", Token: "tok-1"}
-	requestMeta, err := usermessage.MarshalMeta(usermessage.Meta{Origin: usermessage.OriginAgentThread, OriginThread: origin, SendID: "thread-request:tok-1"})
+	origin := &agentmeta.OriginThread{ThreadID: "t-lead", Title: "Lead", Kind: "send", Token: "tok-1"}
+	requestMeta, err := usermessage.MarshalMeta(usermessage.Meta{Origin: agentmeta.OriginAgentThread, OriginThread: origin, SendID: "thread-request:tok-1"})
 	if err != nil {
 		t.Fatal(err)
 	}

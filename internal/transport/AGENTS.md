@@ -81,6 +81,11 @@ declares `//ao:remote`; a build without remote access refuses it in the
 dispatcher ([build without remote access](../../docs/architecture/noremote-build.md)). Method IDs remain FNV-1a 32-bit hashes of
 `<package>.<typeName>.<methodName>` for Wails compatibility.
 
+A method whose server side can run past `DefaultMethodBudget` declares
+`//ao:budget <duration>` covering it, and every client derives its wait from
+that declaration (`ClientWait`, `rpcWaitMs`), never from a number of its
+own ([method budgets](../../docs/architecture/transport.md#method-budgets)).
+
 Run `make methodgen` after changing bound methods, scope or route vocabulary, or
 generator inputs. Commit both generated outputs. If the generator learns a new
 input, add it to its input manifest so cached tests remain valid.

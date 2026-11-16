@@ -38,7 +38,7 @@ func TestDraftTransferKeepsSourceFencedAndConsumesOnlyAtCompletion(t *testing.T)
 		t.Fatal("second transfer bypassed draft fence")
 	}
 	target := createDraftCleanupThread(t, s, "other", "chat")
-	if err := s.MoveThreadDraft(draft, ThreadDraft{ThreadID: target.ID, Content: draft.Content, Attachments: "[]", TerminalChips: "[]"}); err == nil {
+	if _, err := s.MoveThreadDraft(draft, ThreadDraft{ThreadID: target.ID, Content: draft.Content, Attachments: "[]", TerminalChips: "[]"}); err == nil {
 		t.Fatal("local move bypassed the transfer fence")
 	}
 	for _, phase := range []string{"prepared", "committed"} {
@@ -82,7 +82,7 @@ func TestMoveThreadDraftRollsBackWhenDestinationAlreadyHasContent(t *testing.T) 
 			t.Fatal(err)
 		}
 	}
-	if err := s.MoveThreadDraft(source, ThreadDraft{ThreadID: b.ID, Content: source.Content, Attachments: "[]", TerminalChips: "[]"}); err == nil {
+	if _, err := s.MoveThreadDraft(source, ThreadDraft{ThreadID: b.ID, Content: source.Content, Attachments: "[]", TerminalChips: "[]"}); err == nil {
 		t.Fatal("overwrote destination")
 	}
 	for _, want := range []ThreadDraft{source, target} {
@@ -108,7 +108,7 @@ func TestMoveThreadDraftCommitsDurablyBeforeSourceFilesCanBeRemoved(t *testing.T
 	}
 	target := draft
 	target.ThreadID = b.ID
-	if err := s.MoveThreadDraft(draft, target); err != nil {
+	if _, err := s.MoveThreadDraft(draft, target); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -159,7 +159,7 @@ func TestHandOffThreadDraftMovesWholeOrNotAtAll(t *testing.T) {
 		t.Fatal(err)
 	}
 	moved := ThreadDraft{ThreadID: b.ID, Content: "typed note"}
-	if err := s.HandOffThreadDraft(a.ID, &read, moved); err == nil {
+	if _, err := s.HandOffThreadDraft(a.ID, &read, moved); err == nil {
 		t.Fatal("moved a draft that changed after the move read it")
 	}
 	if got, _, _ := s.GetThreadDraft(a.ID); got.Content != "typed note, then more" {
@@ -172,8 +172,17 @@ func TestHandOffThreadDraftMovesWholeOrNotAtAll(t *testing.T) {
 	if _, err := s.UpsertThreadDraft(read); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.HandOffThreadDraft(a.ID, &read, moved); err != nil {
+	move, err := s.HandOffThreadDraft(a.ID, &read, moved)
+	if err != nil {
 		t.Fatal(err)
+	}
+	// Neither thread was ever sent: the draft is what listed the previous
+	// one, and lists the next one now.
+	if !move.Destination.Changed || move.Destination.Listing != ListingListed {
+		t.Fatalf("next thread's write = %+v, want changed and listed", move.Destination)
+	}
+	if !move.Source.Changed || move.Source.Listing != ListingUnlisted {
+		t.Fatalf("previous thread's write = %+v, want changed and unlisted", move.Source)
 	}
 	if _, found, _ := s.GetThreadDraft(a.ID); found {
 		t.Fatal("previous draft kept")
@@ -181,8 +190,12 @@ func TestHandOffThreadDraftMovesWholeOrNotAtAll(t *testing.T) {
 	if got, _, _ := s.GetThreadDraft(b.ID); got.Content != "typed note" {
 		t.Fatalf("next draft = %q", got.Content)
 	}
-	if err := s.HandOffThreadDraft(a.ID, nil, ThreadDraft{ThreadID: b.ID, Content: "carried"}); err != nil {
+	move, err = s.HandOffThreadDraft(a.ID, nil, ThreadDraft{ThreadID: b.ID, Content: "carried"})
+	if err != nil {
 		t.Fatalf("a move with no previous draft: %v", err)
+	}
+	if move.Source.Changed || !move.Destination.Changed || move.Destination.Listing != ListingUnchanged {
+		t.Fatalf("a move with no previous draft = %+v, want only the listed next thread's draft changed", move)
 	}
 }
 
@@ -206,7 +219,7 @@ func TestHandOffThreadDraftRecordsWhatItMoved(t *testing.T) {
 	if _, err := s.UpsertThreadDraft(draft); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.HandOffThreadDraft(past.ID, &draft, ThreadDraft{ThreadID: next.ID, Content: "typed note"}); err != nil {
+	if _, err := s.HandOffThreadDraft(past.ID, &draft, ThreadDraft{ThreadID: next.ID, Content: "typed note"}); err != nil {
 		t.Fatal(err)
 	}
 	if moved, found, err := s.MovedDraftOf(past.ID); err != nil || !found || moved.Content != "typed note" || moved.Attachments != `["att-1"]` {

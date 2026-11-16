@@ -85,8 +85,12 @@ func RedactText(text string) string {
 	redact := func(raw string) string {
 		// Apostrophes are legal in userinfo. Keep them inside the match so a
 		// quoted password cannot leave its suffix outside the redacted URL.
-		coordinate := strings.TrimRight(raw, "'")
-		return "[remote]" + raw[len(coordinate):]
+		// Only the quotes around the whole remote, and the colon git puts
+		// after the closing one, stay. An scp-style match begins at the
+		// opening quote; a URL match begins at its scheme.
+		coordinate := strings.TrimRight(raw, "':")
+		opening := len(raw) - len(strings.TrimLeft(raw, "'"))
+		return raw[:opening] + "[remote]" + raw[len(coordinate):]
 	}
 	return scpInText.ReplaceAllStringFunc(remoteInText.ReplaceAllStringFunc(text, redact), redact)
 }

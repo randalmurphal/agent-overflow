@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 
+	"agent-overflow/internal/agentmeta"
 	"agent-overflow/internal/entityid"
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/provider/claude"
@@ -323,18 +324,18 @@ func agentMessageSender(row store.Item) (from string, ok bool) {
 		}
 		return "another Claude session", true
 	}
-	if !usermessage.IsAgentMessage(meta) {
+	if !agentmeta.IsAgentMessage(meta.Agent()) {
 		return "", false
 	}
 	// The row's first agent message, as every reader takes it
-	// (usermessage.Describe): what it says it is, not what its text reads as.
-	described := usermessage.Describe(row.Summary, meta)
-	first := slices.IndexFunc(described, usermessage.Described.IsAgent)
+	// (agentmeta.Describe): what it says it is, not what its text reads as.
+	described := agentmeta.Describe(row.Summary, meta.Agent())
+	first := slices.IndexFunc(described, agentmeta.Described.IsAgent)
 	if first < 0 {
 		return "another agent", true
 	}
 	message := described[first]
-	if origin := message.Thread; message.Origin == usermessage.OriginAgentThread {
+	if origin := message.Thread; message.Origin == agentmeta.OriginAgentThread {
 		facts := message.Facts
 		switch {
 		case facts.Outcome == threadtools.WakeReminder:

@@ -38,9 +38,15 @@ export async function timed<T>(fn: () => Promise<T>): Promise<{ value: T; ms: nu
   return { value, ms: Date.now() - started };
 }
 
-export async function dbQuery<T>(dbPath: string, sql: string, attach?: string): Promise<T[]> {
-  const args = ['-o', 'json', 'db', '--file', dbPath];
-  if (attach) args.push('--attach', `snap=${attach}`);
+/**
+ * dbQuery runs one read-only statement on dbPath. `attach` is a database
+ * attached as `snap`, or schema names to database paths.
+ */
+export async function dbQuery<T>(dbPath: string, sql: string, attach?: string | Record<string, string>): Promise<T[]> {
+  // --limit 0: every row; the default cap would cut a result short silently.
+  const args = ['-o', 'json', 'db', '--file', dbPath, '--limit', '0'];
+  const schemas = typeof attach === 'string' ? { snap: attach } : attach ?? {};
+  for (const [name, file] of Object.entries(schemas)) args.push('--attach', `${name}=${file}`);
   const { stdout } = await execProduct(productBinary('ao-harness'), [...args, sql], {
     timeout: 10 * 60_000,
     maxBuffer: 256 * 1024 * 1024,
@@ -48,12 +54,18 @@ export async function dbQuery<T>(dbPath: string, sql: string, attach?: string): 
   return JSON.parse(stdout) as T[];
 }
 
-/** Every table of a schema, with the FTS shadow tables folded under their virtual table. */
+/** The suffixes of the shadow tables FTS3, FTS4 and FTS5 create beside a virtual table. */
+const shadowSuffixes = ['data', 'idx', 'content', 'docsize', 'config', 'segments', 'segdir', 'stat'];
+
+/**
+ * Every table of a schema, with the FTS shadow tables folded under their
+ * virtual table. Only the shadow suffixes fold: a real table that shares the
+ * prefix (thread_search_rows beside thread_search) is a table of its own.
+ */
 export async function tableNames(dbPath: string, schema: 'main' | 'snap', attach?: string): Promise<string[]> {
   const rows = await dbQuery<{ name: string; sql: string }>(dbPath,
     `SELECT name, sql FROM ${schema}.sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name`, attach);
-  const virtual = rows.filter((row) => /^CREATE VIRTUAL TABLE/i.test(row.sql)).map((row) => row.name);
-  return rows
-    .map((row) => row.name)
-    .filter((name) => !virtual.some((v) => name.startsWith(`${v}_`)));
+  const shadows = new Set(rows.filter((row) => /^CREATE VIRTUAL TABLE/i.test(row.sql))
+    .flatMap((row) => shadowSuffixes.map((suffix) => `${row.name}_${suffix}`)));
+  return rows.map((row) => row.name).filter((name) => !shadows.has(name));
 }

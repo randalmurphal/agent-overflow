@@ -2588,7 +2588,7 @@ func TestProposedPlanPersistBroadcastsTheThreadRow(t *testing.T) {
 func TestProposedPlanRowFrameUsesTheSharedAnnouncer(t *testing.T) {
 	router, st, emissions := newTestRouter(t)
 	createTestThread(t, st, "t1")
-	shared := NewThreadAnnouncer(st.GetThread)
+	shared := NewThreadAnnouncer(st.GetThread, st.ThreadListed)
 	router.SetThreadAnnouncer(shared)
 
 	release := shared.Hold("t1")

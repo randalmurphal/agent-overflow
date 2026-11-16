@@ -231,6 +231,7 @@
         <span
           class="min-w-0 flex-1 cursor-pointer truncate text-fg-muted/75"
           data-testid="agent-message-first-line"
+          data-find-text
           onclick={toggle}
         >{message.firstLine}</span>
       </span>

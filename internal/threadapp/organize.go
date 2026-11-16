@@ -116,10 +116,11 @@ type OrganizeResult struct {
 	// decides between the `listed` and `unlisted` sidebar frames and what
 	// tells root to release the thread's provider session.
 	ArchivedChanged bool
-	// PlacementChanged says the placement moved, by a group move or a
-	// placement write, which can give the thread a sidebar row or take it
-	// away (store.PlacementOwned).
-	PlacementChanged bool
+	// Listing is how the write moved the thread across the sidebar
+	// listing, read inside its transaction (store.ListingChange): an
+	// unarchive, a group move or a placement can give the thread a sidebar
+	// row, and an archive or an own can take it away.
+	Listing store.ListingChange
 	// CreatedGroup is the group this patch had to create, if any. A client
 	// holding no row for it has nowhere to render the moved thread, so
 	// root announces it exactly as the sidebar's own create does.
@@ -165,11 +166,11 @@ func (s *Service) ApplyOrganizePatch(threadID string, patch OrganizePatch) (Orga
 		return OrganizeResult{}, err
 	}
 	return OrganizeResult{
-		Thread:           applied.Thread,
-		Changed:          applied.Changed,
-		ArchivedChanged:  applied.ArchivedChanged,
-		PlacementChanged: applied.Thread.Placement != thread.Placement,
-		CreatedGroup:     applied.CreatedGroup,
+		Thread:          applied.Thread,
+		Changed:         applied.Changed,
+		ArchivedChanged: applied.ArchivedChanged,
+		Listing:         applied.Listing,
+		CreatedGroup:    applied.CreatedGroup,
 	}, nil
 }
 

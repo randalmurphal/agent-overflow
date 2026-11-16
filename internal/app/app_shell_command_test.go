@@ -8,12 +8,13 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
+	"agent-overflow/internal/agentmeta"
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/shellrun"
 	"agent-overflow/internal/store"
-	"agent-overflow/internal/usermessage"
 
 	"github.com/google/uuid"
 )
@@ -159,6 +160,44 @@ func TestRunThreadShellCommandSendsAFailureWithItsExitCode(t *testing.T) {
 	if err != nil || meta.Attachments[0].Shell.ExitCode != 7 {
 		t.Fatalf("row meta: %+v %v", meta, err)
 	}
+}
+
+// A command that prints bytes that are not UTF-8 (a binary file, a NUL)
+// still reaches the agent, the row's preview and a page read as valid text,
+// with what could not be decoded replaced.
+func TestBinaryOutputReachesEveryReaderAsValidText(t *testing.T) {
+	app, rec := newShellCommandApp(t)
+	thread, capturePath := newMixedTurnThread(t, app, "thread-shell-binary")
+	runID := uuid.NewString()
+	if _, err := app.RunThreadShellCommand(context.Background(), thread.ID, ShellCommandRequest{
+		RunID: runID, Command: `printf 'head\377\376\000tail\n'`,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if final := waitShellFinished(t, rec, runID); final.State != shellrun.StateSent {
+		t.Fatalf("terminal frame: %+v", final)
+	}
+	// One replacement for the run of bytes that do not decode: what the app
+	// replaced, not what a JSON encoder on the way would have.
+	const output = "head\uFFFD\x00tail\n"
+	readable := func(reader, text, want string) {
+		t.Helper()
+		if !utf8.ValidString(text) || !strings.Contains(text, want) {
+			t.Errorf("%s = %q, want valid UTF-8 holding %q", reader, text, want)
+		}
+	}
+	readable("wire text", waitForCapturedUserMessages(t, capturePath, 1)[0],
+		"<bash-stdout>"+strings.TrimSuffix(output, "\n")+"</bash-stdout>")
+	meta, err := usermessageMetaFromItem(userItems(t, app, thread.ID)[0])
+	if err != nil || len(meta.Attachments) != 1 || meta.Attachments[0].Shell == nil {
+		t.Fatalf("row meta: %+v %v", meta, err)
+	}
+	readable("preview", meta.Attachments[0].Shell.Preview, output)
+	page, err := app.ReadShellAttachmentOutput(thread.ID, meta.Attachments[0].ID, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	readable("output page", page.Data, output)
 }
 
 // A command that settles while a turn is running joins the ordinary queue
@@ -449,7 +488,7 @@ func TestACommandDoesNotNameTheWorktreeBranch(t *testing.T) {
 	}
 	// The same thread shape names its branch from a prompt.
 	prompted := temporaryWorktreeThread("thread-prompt-branch")
-	if err := app.SendMessage(prompted.ID, "add the settings page", nil); err != nil {
+	if err := app.SendMessage(context.Background(), prompted.ID, "add the settings page", nil); err != nil {
 		t.Fatal(err)
 	}
 	if len(named) != 1 || named[0] != "add the settings page" {
@@ -509,7 +548,7 @@ func TestUserShellPromptBlockUsesTheProvidersOwnRecord(t *testing.T) {
 // every ordinary file line, follows the text.
 func TestPromptTextPutsACommandBlockWhereItWasTyped(t *testing.T) {
 	t.Parallel()
-	separator := usermessage.JoinSeparator
+	separator := agentmeta.JoinSeparator
 	attachments := turnAttachments{files: []promptFile{
 		{text: "[file a]"},
 		{text: "<make>", shell: true, command: "make test"},
@@ -604,7 +643,7 @@ func TestResendingACommandMessageSendsTheSameBlock(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The bound composer entry point, which opts into command expansion.
-	if err := app.SendMessage(thread.ID, "!ls /workflow", []string{record.ID}); err != nil {
+	if err := app.SendMessage(context.Background(), thread.ID, "!ls /workflow", []string{record.ID}); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 	texts := waitForCapturedUserMessages(t, capturePath, 1)

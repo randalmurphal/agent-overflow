@@ -56,12 +56,17 @@ func (r *threadRowRecorder) snapshot() []triage.ThreadUpdateEvent {
 	return append([]triage.ThreadUpdateEvent(nil), r.events...)
 }
 
-func (r *threadRowRecorder) fullRowsFor(threadID string) []store.Thread {
+// rowFramesFor returns the rows of threadID's frames that restate its row
+// without archiving or deleting it: `full`, and `listed` or `emptied` when
+// the write also crossed the sidebar listing rule (a never-sent thread
+// gaining or losing its worktree).
+func (r *threadRowRecorder) rowFramesFor(threadID string) []store.Thread {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	var rows []store.Thread
 	for _, evt := range r.events {
-		if evt.Action == triage.ThreadActionFull && evt.Thread != nil && evt.Thread.ID == threadID {
+		restates := evt.Action == triage.ThreadActionFull || evt.Action == triage.ThreadActionListed || evt.Action == triage.ThreadActionEmptied
+		if restates && evt.Thread != nil && evt.Thread.ID == threadID {
 			rows = append(rows, *evt.Thread)
 		}
 	}
@@ -156,10 +161,14 @@ func TestFollowEnterWorktreeMovesThreadRowWithoutRestart(t *testing.T) {
 	if current, ok := f.app.sessionManager().get(f.thread.ID); !ok || current.Token != "token-live" {
 		t.Errorf("live session disturbed by the follow: present=%v token=%q", ok, current.Token)
 	}
-	waitUntil(t, 5*time.Second, func() bool { return len(f.rows.fullRowsFor(f.thread.ID)) > 0 })
-	broadcast := f.rows.fullRowsFor(f.thread.ID)[0]
+	waitUntil(t, 5*time.Second, func() bool { return len(f.rows.rowFramesFor(f.thread.ID)) > 0 })
+	broadcast := f.rows.rowFramesFor(f.thread.ID)[0]
 	if !samePath(broadcast.WorkspacePath, worktree) || broadcast.Branch != "worktree-feature-x" {
 		t.Errorf("broadcast row = %+v, want the moved workspace", broadcast)
+	}
+	// The fixture thread was never sent, so the worktree is what lists it.
+	if frames := f.rows.snapshot(); len(frames) != 1 || frames[0].Action != triage.ThreadActionListed {
+		t.Errorf("frames = %+v, want one listed frame", frames)
 	}
 }
 
@@ -248,7 +257,7 @@ func TestFollowExitWorktreeRemoveReattachesSiblingThreads(t *testing.T) {
 	if reattached.UpdatedAt != sibling.UpdatedAt {
 		t.Errorf("sibling UpdatedAt bumped by the sweep: %d -> %d", sibling.UpdatedAt, reattached.UpdatedAt)
 	}
-	waitUntil(t, 5*time.Second, func() bool { return len(f.rows.fullRowsFor(sibling.ID)) > 0 })
+	waitUntil(t, 5*time.Second, func() bool { return len(f.rows.rowFramesFor(sibling.ID)) > 0 })
 	waitUntil(t, 5*time.Second, func() bool { return len(worktreeRemovedEvents(events)) > 0 })
 	removals := worktreeRemovedEvents(events)
 	if len(removals) != 1 || !samePath(removals[0].Path, worktree) || len(removals[0].ThreadIDs) != 1 || removals[0].ThreadIDs[0] != sibling.ID {
@@ -296,8 +305,12 @@ func TestFollowRefusesDirectoryOutsideProjectWorktrees(t *testing.T) {
 	if !samePath(row.WorkspacePath, f.repo) || row.WorktreePath != "" {
 		t.Errorf("row moved to an unrepresentable directory: %+v", row)
 	}
-	if n := len(f.rows.fullRowsFor(f.thread.ID)); n != 0 {
-		t.Errorf("refused move broadcast %d row updates, want none", n)
+	// The refusal's error row is the never-sent thread's first item and
+	// lists it; no frame carries a moved row.
+	for _, frame := range f.rows.rowFramesFor(f.thread.ID) {
+		if !samePath(frame.WorkspacePath, f.repo) || frame.WorktreePath != "" {
+			t.Errorf("refused move broadcast a moved row: %+v", frame)
+		}
 	}
 }
 

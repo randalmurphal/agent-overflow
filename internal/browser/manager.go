@@ -92,6 +92,9 @@ type Manager struct {
 	closed  bool
 
 	scopes map[string]*workspaceScope
+	// stateSeq numbers every thread state snapshot (CompanionEvent.Seq).
+	// Guarded by mu.
+	stateSeq uint64
 	// suspended holds the pages whose engine page was unloaded (suspend.go),
 	// by page id. They belong to their thread's tab set but hold no engine
 	// resource. Guarded by mu.

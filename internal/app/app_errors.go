@@ -73,12 +73,14 @@ func (a *App) emitNoticeToThread(threadID, kind, content string) error {
 	if err != nil {
 		return fmt.Errorf("thread %s notice not recorded: %w", threadID, err)
 	}
-	if err := a.triage.HandleSynthetic(provider.ProviderEvent{
-		Kind:      provider.EventNotification,
-		ThreadID:  threadID,
-		Content:   content,
-		Meta:      meta,
-		Timestamp: time.Now(),
+	if err := a.writeAppRow(threadID, func() error {
+		return a.triage.HandleSynthetic(provider.ProviderEvent{
+			Kind:      provider.EventNotification,
+			ThreadID:  threadID,
+			Content:   content,
+			Meta:      meta,
+			Timestamp: time.Now(),
+		})
 	}); err != nil {
 		return fmt.Errorf("thread %s notice not recorded: %w", threadID, err)
 	}
@@ -102,12 +104,12 @@ func (a *App) routeErrorToThread(threadID, content string, synthetic bool) {
 		Content:   content,
 		Timestamp: time.Now(),
 	}
-	var err error
-	if synthetic {
-		err = a.triage.HandleSynthetic(evt)
-	} else {
-		err = a.triage.Handle(evt)
-	}
+	err := a.writeAppRow(threadID, func() error {
+		if synthetic {
+			return a.triage.HandleSynthetic(evt)
+		}
+		return a.triage.Handle(evt)
+	})
 	if err != nil {
 		log.Printf("emit error to thread %s: %v", threadID, err)
 	}

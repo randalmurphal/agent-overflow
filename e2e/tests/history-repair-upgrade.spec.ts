@@ -15,6 +15,7 @@ import * as path from 'node:path';
 import { launchHarness, type HarnessApp } from '../src/harness.js';
 import { execProduct, productBinary } from '../src/product-process.js';
 import { test, expect } from './fixtures.js';
+import { awaitDeferredSettled } from './upgrade-corpus-helpers.js';
 
 async function writeFixture(dbPath: string): Promise<void> {
   await execProduct(productBinary('ao-store-test'), ['-test.run', '^TestHistoryRepairHarnessFixture$', '-test.count=1'], {
@@ -47,7 +48,11 @@ test('an upgrade from v118 repairs stored history in the background', async ({ p
 
     host = await launchHarness({ dataDir: root });
     expect(host.bootstrap.dataDir).toBe(path.dirname(dbPath));
-    await expect.poll(() => watermark(dbPath), { timeout: 60_000 }).toBe(124);
+    // Every deferred phase of this build, not a fixed version: a later
+    // migration with a phase of its own moves the last watermark.
+    const settled = await awaitDeferredSettled(host, 60_000);
+    expect(settled.deferredLatest).toBeGreaterThanOrEqual(124);
+    expect(await watermark(dbPath)).toBe(settled.deferredLatest);
 
     expect(await count(dbPath, `SELECT count(*) AS n FROM deferred_migration_failures`)).toBe(0);
     expect(await count(dbPath, `SELECT count(*) AS n FROM subagent_aggregate_backfill`)).toBe(0);

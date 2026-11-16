@@ -271,7 +271,7 @@ func TestAThreadBeingStoppedTakesNoAppMessage(t *testing.T) {
 	}
 	thread := noticeTestThread(t, a, "resting")
 	release := a.resting.hold(thread.ID)
-	if _, err := a.SendExternalThreadMessage(thread.ID, "hello"); !errors.Is(err, errThreadResting) {
+	if _, err := a.SendExternalThreadMessage(context.Background(), thread.ID, "hello"); !errors.Is(err, errThreadResting) {
 		release()
 		t.Fatalf("an outside send during the rest = %v, want it refused", err)
 	}
@@ -290,7 +290,7 @@ func TestAThreadBeingStoppedTakesNoAppMessage(t *testing.T) {
 		t.Fatalf("a notice's start during the rest started the thread %d times", n)
 	}
 	release()
-	if _, err := a.SendExternalThreadMessage(thread.ID, "hello again"); err != nil {
+	if _, err := a.SendExternalThreadMessage(context.Background(), thread.ID, "hello again"); err != nil {
 		t.Fatalf("an outside send after the rest: %v", err)
 	}
 }

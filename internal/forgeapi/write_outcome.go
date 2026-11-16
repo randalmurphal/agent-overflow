@@ -52,7 +52,7 @@ func WriteNotApplied(err error) bool {
 		return gql.Refused()
 	}
 	if setup, ok := errors.AsType[*SetupError](err); ok {
-		return setup.Kind == SetupUnauthenticated || setup.Kind == SetupMissing
+		return setup.Kind == SetupUnauthenticated || setup.Kind == SetupMissing || setup.Kind == SetupOutdated
 	}
 	return false
 }

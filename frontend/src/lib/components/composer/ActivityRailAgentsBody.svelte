@@ -18,6 +18,7 @@
     type ThreadAgentStop,
   } from '../../stores/bindings';
   import { addErrorToast, addToast } from '../../stores/toast.svelte';
+  import { isEmptyDraftCleanupPending, settleEmptyDraftCleanup } from '../../stores/emptyDraftCleanup';
   import { threadMachine } from '../../stores/attachedBackends.svelte';
   import { withBackendTarget } from '../../transport/backends';
   import { navigateToThreadItem } from '../../stores/threadItemNavigation';
@@ -172,11 +173,20 @@
     addToast(tone, text);
   }
 
+  // A Stop writes this thread's rows, so it first waits out an emptied
+  // draft's in-flight delete of it, and does nothing if that deleted it.
+  // Show in Sidebar writes a worker's row, which a delete of an empty draft
+  // never takes.
+  async function removedByDraftCleanup(id: string): Promise<boolean> {
+    return isEmptyDraftCleanupPending(id) && await settleEmptyDraftCleanup(id);
+  }
+
   async function onStop(row: ThreadAgentRow): Promise<void> {
     if (!threadId) return;
     mark(row.token, true);
     setStopError(row.token, null);
     try {
+      if (await removedByDraftCleanup(threadId)) return;
       report(row.title, await StopThreadAgentRow(threadId, row.token));
     } catch (err) {
       addErrorToast(`Could not stop ${row.title}: ${errString(err)}`, err);
@@ -190,6 +200,7 @@
     if (!threadId || !sendId) return;
     mark(sendId, true);
     try {
+      if (await removedByDraftCleanup(threadId)) return;
       report(`the incoming ${message.kind}`, await StopThreadAgentIncoming(threadId, sendId));
     } catch (err) {
       addErrorToast(`Could not withdraw the incoming ${message.kind}: ${errString(err)}`, err);
@@ -203,6 +214,7 @@
     const titles = new Map(agents.rows.map((row) => [row.token, row.title]));
     stopAllInFlight = true;
     try {
+      if (await removedByDraftCleanup(threadId)) return;
       const stops = (await StopThreadAgentRows(threadId)) ?? [];
       for (const stop of stops) {
         const failure = agentStopReport(titles.get(stop.token) ?? '', stop).firstFailure;

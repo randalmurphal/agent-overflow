@@ -6,17 +6,20 @@
 // The shape is what the frontend reads back when rendering the user
 // row's attachments, source-plan badge, and revision-context badges;
 // changes here change what the UI sees, so the JSON tags are part of
-// the contract.
+// the contract. The attribution of a message an agent or the app wrote,
+// and the one reading of such a row, are internal/agentmeta's, which the
+// store also reads (Meta.Agent).
 package usermessage
 
 import (
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 	"unicode/utf8"
 
+	"agent-overflow/internal/agentmeta"
 	"agent-overflow/internal/store"
-	"agent-overflow/internal/threadtools"
 )
 
 // Meta is the JSON shape stored in store.Item.Meta for user_text rows.
@@ -75,25 +78,19 @@ type Meta struct {
 	// written together — a joined row with a SendID outside its array
 	// would answer one member and duplicate the rest.
 	JoinedSendIDs []string `json:"joinedSendIds,omitempty"`
-	// Origin names the non-human author of a user row, in the same field
-	// and vocabulary the provider-written rows use (`external-queue`,
-	// `peer-session`). Agent thread tools write OriginAgentThread; the
-	// frontend's one attribution branch labels every origin.
-	Origin string `json:"origin,omitempty"`
-	// OriginThread names the thread that wrote this row, on an
-	// `agent-thread` row. Absent on every other origin.
-	OriginThread *OriginThread `json:"originThread,omitempty"`
-	// OriginWake names the loop, watch or outside send that wrote this row,
-	// on an `agent-wake` row. Absent on every other origin.
-	OriginWake *OriginWake `json:"originWake,omitempty"`
+	// Origin, OriginThread and OriginWake attribute the row to the agent
+	// or the app that wrote it (agentmeta.Meta, which documents them).
+	Origin       string                  `json:"origin,omitempty"`
+	OriginThread *agentmeta.OriginThread `json:"originThread,omitempty"`
+	OriginWake   *agentmeta.OriginWake   `json:"originWake,omitempty"`
 	// JoinedParts are a joined row's members as they appear in its text,
-	// each with its attribution (JoinedPart), written when the row is
-	// joined. Origin above is the first attributed member's; these say
-	// which words are whose, so a restore that takes the row back gives the
-	// person back their own text and an agent's member back to its owner.
-	// Absent on a row of one message, on rows joined before it existed, and
-	// on a join of a member whose own parts are unknown (Join).
-	JoinedParts []JoinedPart `json:"joinedParts,omitempty"`
+	// each with its attribution (agentmeta.JoinedPart), written when the
+	// row is joined. Origin above is the first attributed member's; these
+	// say which words are whose, so a restore that takes the row back gives
+	// the person back their own text and an agent's member back to its
+	// owner. Absent on a row of one message, on rows joined before it
+	// existed, and on a join of a member whose own parts are unknown (Join).
+	JoinedParts []agentmeta.JoinedPart `json:"joinedParts,omitempty"`
 	// TextBeforeReviewComments is the message as it read before the diff
 	// review comments it carries were rendered into it, set when it
 	// rendered any; the row's summary is the rendered whole. The comments
@@ -113,81 +110,14 @@ func (m Meta) TextWithoutReviewComments(summary string) string {
 	return summary
 }
 
-// OriginAgentThread is the Origin value of a row one thread's agent wrote
-// into another thread through the thread tools.
-const OriginAgentThread = "agent-thread"
-
-// OriginAgentWake is the Origin value of a row the wake supervisor wrote: a
-// loop's fire, a watch's output, an outside `agent-overflow thread send`, or
-// a worker's prompt put to its agent.
-// The row is data delivered to the thread, never the user speaking.
-const OriginAgentWake = "agent-wake"
-
-// OriginWake identifies what wrote an `agent-wake` row: what its badge
-// renders.
-type OriginWake struct {
-	// Kind is the report's ReportKind.
-	Kind string `json:"kind"`
-	// Label is the loop or watch label, the worker's title, the remote
-	// job's label or the workflow's id; empty for an outside send.
-	Label string `json:"label,omitempty"`
-	// ThreadID is the worker of a `question` or `approval` wake.
-	ThreadID string `json:"threadId,omitempty"`
-	// Computer names the computer a `completion`'s job ran on.
-	Computer string `json:"computer,omitempty"`
-	// Facts is where the message's data is and what its row's header
-	// says, written with the text (Report).
-	Facts *threadtools.MessageFacts `json:"facts,omitempty"`
-	// Report is what the report's kind means to a person's view of it,
-	// set only where a client receives the attribution (Served), never
-	// stored.
-	Report *ReportDescriptor `json:"report,omitempty"`
-}
-
-// OriginApp is the Origin value of a row Agent Overflow wrote in its own voice.
-const OriginApp = "app"
-
-// OriginThread identifies the sending thread of an `agent-thread` row: what
-// the row's header names, and the request token that keeps three requests
-// from one thread to another distinguishable.
-type OriginThread struct {
-	ComputerID   string `json:"computerId,omitempty"`
-	ComputerName string `json:"computerName,omitempty"`
-	ThreadID     string `json:"threadId"`
-	Title        string `json:"title,omitempty"`
-	Token        string `json:"token,omitempty"`
-	// Kind is what the row delivers: the request kind (`spawn`, `send`,
-	// `ask`) on a request, or OriginKindWake on the wake carrying a
-	// request's answer back. Absent on rows written before it existed;
-	// readers fall back to the row's send id.
-	Kind string `json:"kind,omitempty"`
-	// Facts is what the message says, written with its text
-	// (ThreadMessage): a request's footer, an answer's outcome and the
-	// threads it speaks for. The timeline renders the row from these.
-	// Absent on rows written before they existed, whose text main's
-	// templates wrote and readers parse.
-	Facts *threadtools.MessageFacts `json:"facts,omitempty"`
-}
-
-// OriginKindWake is OriginThread.Kind on a wake. Its facts say which
-// settlement it carries.
-const OriginKindWake = "wake"
-
-// IsAgentMessage reports whether a user row is a message an agent wrote, not
-// the person: an `agent-thread` or `agent-wake` row. Such a row is no tick in
-// the message navigator, no entry in the composer's recall and no queued
-// message of the person's.
-//
-// A row that also carries ExpandComposerCommands is the person's: headless
-// Claude joins queued messages at a turn boundary, so one row can hold the
-// person's composer message after an agent's, and JoinMetas attributes it to
-// the agent. Only the composer path sets the flag. The SQL twin is
-// store.AgentMessageFilterFor and the frontend's is isAgentMessageMeta.
-func IsAgentMessage(meta Meta) bool {
-	if meta.ExpandComposerCommands {
-		return false
+// Agent is the part of m its attribution is read from (agentmeta.Meta):
+// what agentmeta.Describe, agentmeta.WireText and agentmeta.IsAgentMessage
+// read of the row.
+func (m Meta) Agent() agentmeta.Meta {
+	return agentmeta.Meta{
+		ExpandComposerCommands: m.ExpandComposerCommands, SendID: m.SendID, Origin: m.Origin,
+		OriginThread: m.OriginThread, OriginWake: m.OriginWake, JoinedParts: m.JoinedParts,
 	}
-	return meta.Origin == OriginAgentThread || meta.Origin == OriginAgentWake
 }
 
 // TickSendIDRoot opens the send id of every loop or watch wake, the
@@ -258,8 +188,8 @@ type Input struct {
 	SendID                 string
 	JoinedSendIDs          []string
 	Origin                 string
-	OriginThread           *OriginThread
-	OriginWake             *OriginWake
+	OriginThread           *agentmeta.OriginThread
+	OriginWake             *agentmeta.OriginWake
 	// TextBeforeReviewComments is Meta.TextBeforeReviewComments.
 	TextBeforeReviewComments *string
 }
@@ -357,6 +287,32 @@ func FromItem(item store.Item) (Meta, error) {
 		return Meta{}, fmt.Errorf("decode user message meta: %w", err)
 	}
 	return meta, nil
+}
+
+// ProjectRowMeta is a user row's encoded meta as a client receives it
+// (agentmeta.ProjectMeta), every key the typed Meta does not own kept. A row
+// that is not an agent's, or whose meta does not decode, is returned as
+// stored.
+func ProjectRowMeta(text, meta string) string {
+	if !strings.Contains(meta, agentmeta.OriginAgentThread) && !strings.Contains(meta, agentmeta.OriginAgentWake) {
+		return meta
+	}
+	decoded, err := FromItem(store.Item{Meta: meta})
+	if err != nil {
+		return meta
+	}
+	stored := decoded.Agent()
+	served, ok := agentmeta.ProjectMeta(text, stored)
+	if !ok || reflect.DeepEqual(served, stored) {
+		return meta
+	}
+	projected := decoded
+	projected.OriginThread, projected.OriginWake, projected.JoinedParts = served.OriginThread, served.OriginWake, served.JoinedParts
+	encoded, err := MergeJoinedMeta(meta, projected)
+	if err != nil {
+		return meta
+	}
+	return encoded
 }
 
 // EncodeDraftSource returns the JSON encoding of a source-proposed-plan

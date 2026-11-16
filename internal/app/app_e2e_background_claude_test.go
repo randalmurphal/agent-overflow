@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"reflect"
 	"strings"
@@ -46,7 +47,7 @@ func TestE2E_Claude_SpawnBackground_StopPerRow_KilledStatus(t *testing.T) {
 	if err := app.StartSession(thread.ID); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
-	if err := app.SendMessage(thread.ID, "run long job in background", nil); err != nil {
+	if err := app.SendMessage(context.Background(), thread.ID, "run long job in background", nil); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 
@@ -163,7 +164,7 @@ func TestE2E_Claude_SpawnMultiple_StopAll(t *testing.T) {
 	if err := app.StartSession(thread.ID); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
-	if err := app.SendMessage(thread.ID, "run two background jobs", nil); err != nil {
+	if err := app.SendMessage(context.Background(), thread.ID, "run two background jobs", nil); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 

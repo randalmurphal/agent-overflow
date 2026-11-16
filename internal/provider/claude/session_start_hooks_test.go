@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/testutil/mockexec"
 )
@@ -385,7 +386,7 @@ func TestNewSessionExpectsTheHookItsSpawnRuns(t *testing.T) {
 	} {
 		binary := mockexec.Write(t, t.TempDir()+"/mock-claude", "#!/bin/sh\nexec cat\n")
 		events := make(chan provider.ProviderEvent, 100)
-		s, err := NewSession(context.Background(), testThread, Config{Binary: binary, Resume: tc.resume, SessionStartHook: tc.hook},
+		s, err := NewSession(context.Background(), testThread, Config{Reaper: procutiltest.Reaper(), Retention: UserHomeRetention(0), Binary: binary, Resume: tc.resume, SessionStartHook: tc.hook},
 			func(event provider.ProviderEvent) { events <- event })
 		if err != nil {
 			t.Fatalf("%s: NewSession: %v", name, err)
@@ -427,7 +428,7 @@ func TestInlineSettingsCarryTheMemoryKeysBesideTheRetentionPeriod(t *testing.T) 
 	cfg.SessionStartHook = testHook()
 	cfg.NativeMemoryOff = true
 	cfg.AccessDirs = []string{"/memory/user"}
-	cfg.CleanupPeriodDays = 90
+	cfg.Retention = UserHomeRetention(90)
 	settings := settingsArg(t, buildArgs(cfg, "", ""))
 	for _, key := range []string{"hooks", "autoMemoryEnabled", "permissions", CleanupPeriodDaysSetting} {
 		if _, ok := settings[key]; !ok {

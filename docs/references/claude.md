@@ -69,7 +69,8 @@ our own code.
   blank. The CLI itself warns "Your login expires in N days · run /login
   to renew" inside the last 3 days. AO treats the login as ending at
   `claude.LoginExpiresAt`, the later of the deadline and that renewal,
-  and refuses to spawn a probe or refresh past it.
+  and refuses to spawn a probe, a refresh or the update check's
+  `claude doctor` past it.
 - **Three locks guard the credential file**, all `proper-lockfile`
   style: a lock IS a directory created with `mkdir`, staleness is
   judged by its mtime, and an abandoned one is reclaimed by removing

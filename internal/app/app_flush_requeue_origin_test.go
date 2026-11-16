@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	"agent-overflow/internal/agentmeta"
 	"agent-overflow/internal/flushqueue"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
@@ -22,7 +23,7 @@ func requireAgentPayload(t *testing.T, name string, raw json.RawMessage) {
 	if err := json.Unmarshal(raw, &payload); err != nil {
 		t.Fatalf("%s: decode payload: %v", name, err)
 	}
-	if payload.Origin != usermessage.OriginAgentThread || payload.OriginThread == nil || payload.OriginThread.Token != "tok-1" {
+	if payload.Origin != agentmeta.OriginAgentThread || payload.OriginThread == nil || payload.OriginThread.Token != "tok-1" {
 		t.Fatalf("%s: requeued payload lost who wrote it: %s", name, raw)
 	}
 }
@@ -37,13 +38,13 @@ func TestARequeuedMessageKeepsWhoWroteIt(t *testing.T) {
 		"deferred": {QueueItemID: "q1", Message: requeuedRequestText, DeferredItem: &row},
 		"quiet":    {QueueItemID: "q1", Message: requeuedRequestText, QuietItem: &row},
 	} {
-		queued, ok := queuedFlushItemFromUnconfirmed(item, nil)
+		queued, ok := queuedFlushItemFromUnconfirmed(item)
 		if !ok {
 			t.Fatalf("%s: not requeued", name)
 		}
 		requireAgentPayload(t, name, queued.Payload)
 	}
-	raw, err := flushPayloadFromUserMeta(requeuedRequestMeta, nil)
+	raw, err := flushPayloadFromUserMeta(requeuedRequestMeta)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +66,7 @@ func TestARequeuedAgentMessageKeepsTheTextItsFactsDescribe(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	payload, err := flushPayloadFromUserMeta(meta, nil)
+	payload, err := flushPayloadFromUserMeta(meta)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,7 +76,7 @@ func TestARequeuedAgentMessageKeepsTheTextItsFactsDescribe(t *testing.T) {
 		"deferred": {QueueItemID: "q1", Message: spawn.Text(), DeferredItem: &row},
 		"quiet":    {QueueItemID: "q1", Message: spawn.Text(), QuietItem: &row},
 	} {
-		queued, ok := queuedFlushItemFromUnconfirmed(item, nil)
+		queued, ok := queuedFlushItemFromUnconfirmed(item)
 		if !ok {
 			t.Fatalf("%s: not requeued", name)
 		}
@@ -83,7 +84,7 @@ func TestARequeuedAgentMessageKeepsTheTextItsFactsDescribe(t *testing.T) {
 		if err := json.Unmarshal(queued.Payload, &requeued); err != nil {
 			t.Fatalf("%s: decode payload: %v", name, err)
 		}
-		read := usermessage.Describe(queued.Message, usermessage.Meta{Origin: requeued.Origin, OriginThread: requeued.OriginThread})
+		read := agentmeta.Describe(queued.Message, agentmeta.Meta{Origin: requeued.Origin, OriginThread: requeued.OriginThread})
 		if queued.Message != spawn.Text() || len(read) != 1 || read[0].Facts.Form != threadtools.FormRequest || read[0].Body() != "Build   the docs  \nand more" {
 			t.Fatalf("%s: requeued %q reads as %+v", name, queued.Message, read)
 		}
@@ -93,7 +94,7 @@ func TestARequeuedAgentMessageKeepsTheTextItsFactsDescribe(t *testing.T) {
 		"queued":   {QueueItemID: "q2", Message: "  my words \n"},
 		"deferred": {QueueItemID: "q2", Message: "  my words \n", DeferredItem: &mine},
 	} {
-		if queued, ok := queuedFlushItemFromUnconfirmed(item, nil); !ok || queued.Message != "my words" {
+		if queued, ok := queuedFlushItemFromUnconfirmed(item); !ok || queued.Message != "my words" {
 			t.Fatalf("%s: the person's text requeued as %q", name, queued.Message)
 		}
 	}

@@ -523,7 +523,7 @@
               onSubmit={(editorId, body, mode) => review?.createComment(editorId, body, mode)}
               post={postFor(editor)}
               agentOnlyReason={editorLineComment(editor)?.reason ?? null}
-              pending={review?.commentWritePending(commentWriteKey.editor(editor.id)) ?? false}
+              pending={(review?.commentWritePending(commentWriteKey.editor(editor.id)) || review?.editorSaving(editor.id)) ?? false}
               error={review?.commentWriteError(commentWriteKey.editor(editor.id)) ?? null}
               onDropRange={(editorId) => review?.dropEditorRange(editorId)}
               consumeFocus={(editorId) => review?.consumeDraftEditorFocus(editorId) ?? false}

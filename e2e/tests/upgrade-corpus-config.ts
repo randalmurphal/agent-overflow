@@ -1,6 +1,6 @@
 // The release upgrade check's configuration (docs/architecture/release-upgrade-check.md).
-// Everything an author may need to touch when a migration lands is in this
-// file; the check's failure messages name the entry to add.
+// Everything an author may need to touch when a migration or a boot writer
+// lands is in this file; the check's failure messages name the entry to add.
 
 // Production limits the check mirrors. Each is pinned to its Go constant by
 // internal/wsllauncher/release_upgrade_mirror_test.go, so a product change
@@ -40,17 +40,16 @@ export interface MigrationException {
 }
 
 export const migrationExceptions: MigrationException[] = [
-  { version: 146, table: 'pr_views', dropped: true, reason: 'the Pull requests page no longer records which PRs the app opened; attention comes from the forge' },
-  { version: 150, table: 'channels', dropped: true, reason: 'v150 removes discussions and their channels' },
-  { version: 150, table: 'channel_messages', dropped: true, reason: 'v150 removes discussions and their channel messages' },
-  { version: 150, table: 'discussion_definitions', dropped: true, reason: 'v150 removes discussion definitions' },
-  { version: 150, table: 'threads', columns: ['mode'], reason: 'v150 turns a former discussion thread into a chat thread' },
-  { version: 150, table: 'scratch_threads', columns: ['return_mode'], reason: 'v150 returns a side chat opened from a discussion to chat mode' },
-  { version: 150, table: 'chat_bar_favorites', rowsMayShrink: true, reason: 'v150 keeps only model favorites; discussion favorites are removed' },
-  { version: 150, table: 'automations', dropped: true, reason: 'v150 removes the workflow scheduler and drops its automations' },
-  { version: 150, table: 'automation_cursors', dropped: true, reason: "v150 drops the scheduler's per-source cursors with its automations" },
-  { version: 150, table: 'work_items', columns: ['source', 'source_ref'], reason: 'v150 rewrites a run an automation started as a manual run with an empty source_ref, which named a dropped automation' },
-  { version: 150, table: 'remote_watches', rowsMayShrink: true, reason: 'v150 rebuilds remote_watches to cascade from its thread and deletes the watches whose thread is already gone' },
+  { version: 153, table: 'channels', dropped: true, reason: 'v153 removes discussions and their channels' },
+  { version: 153, table: 'channel_messages', dropped: true, reason: 'v153 removes discussions and their channel messages' },
+  { version: 153, table: 'discussion_definitions', dropped: true, reason: 'v153 removes discussion definitions' },
+  { version: 153, table: 'threads', columns: ['mode'], reason: 'v153 turns a former discussion thread into a chat thread' },
+  { version: 153, table: 'scratch_threads', columns: ['return_mode'], reason: 'v153 returns a side chat opened from a discussion to chat mode' },
+  { version: 153, table: 'chat_bar_favorites', rowsMayShrink: true, reason: 'v153 keeps only model favorites; discussion favorites are removed' },
+  { version: 153, table: 'automations', dropped: true, reason: 'v153 removes the workflow scheduler and drops its automations' },
+  { version: 153, table: 'automation_cursors', dropped: true, reason: "v153 drops the scheduler's per-source cursors with its automations" },
+  { version: 153, table: 'work_items', columns: ['source', 'source_ref'], reason: 'v153 rewrites a run an automation started as a manual run with an empty source_ref, which named a dropped automation' },
+  { version: 153, table: 'remote_watches', rowsMayShrink: true, reason: 'v153 rebuilds remote_watches to cascade from its thread and deletes the watches whose thread is already gone' },
 ];
 
 /**
@@ -63,6 +62,16 @@ export const fingerprintIgnoredTables: Record<string, string> = {
 };
 
 /**
+ * Columns, as `table.column`, the old-row comparison skips, with the
+ * reason: derived data no read serves, which its triggers and backfill
+ * rewrite whenever the row's text does.
+ */
+export const fingerprintIgnoredColumns: Record<string, string> = {
+  'items.find_text': "v150's thread-find candidate text, refilled by its triggers and deferred backfill",
+  'import_history_items.find_text': "v150's thread-find candidate text, refilled by its triggers and deferred backfill",
+};
+
+/**
  * Tables whose row count may shrink across a run, with the reason: the
  * progress tables of work a boot finishes, which delete their rows as the
  * work completes.
@@ -70,10 +79,516 @@ export const fingerprintIgnoredTables: Record<string, string> = {
 export const countIgnoredTables: Record<string, string> = {
   deferred_migration_failures: 'a retried phase clears its own failure rows',
   thread_search_build: 'the search index rebuild deletes its progress row when done',
+  thread_search: 'the contentless FTS index of thread_search_rows, whose rows the census and fingerprint compare',
   agent_end_backfill: "v124's deferred phase deletes each thread's row as it is settled",
   subagent_aggregate_backfill: "v121's deferred phase deletes each thread's row as it is recomputed",
   shown_history_fix: "v131's deferred phase clears its progress once every copy is fixed",
 };
+
+/**
+ * A RecoveryRule declares one change the candidate's boot makes to a row it
+ * finds, almost always settling state the previous process left live: a
+ * clone of a database whose app was running carries running rows, open
+ * turns and queued messages, and the update trial's boot settles them
+ * before the fingerprint reads the store. The check fails on any change the
+ * boot made to an old row that no rule explains, and reports every rule's
+ * count. Each entry names the Go writer and mirrors its own selection.
+ */
+export interface RecoveryRule {
+  name: string;
+  /** The Go function that makes the change. */
+  writer: string;
+  table: string;
+  /**
+   * The rows it applies to, as an SQL condition over the row `s` as the
+   * migrations left it, which is what the Go writer read (the snapshot
+   * migrated alone; its other tables are `mig.<table>`, the booted store's
+   * `main.<table>`). A rule never reads the snapshot itself, whose schema
+   * may predate the columns it names. Or 'thread-write': the
+   * row's thread had a row of `items` changed, removed or added by the
+   * boot, or for the `items` and `threads` stamp rules also a changed
+   * `subagent_aggregates` row. Stamps move with the writes that cause them,
+   * never on their own.
+   */
+  rows: string | 'thread-write';
+  /** The columns it may change from `s`, ['*'] for any. */
+  columns?: string[];
+  /** Keys of `meta` it may set; the rest of `meta` must be unchanged. */
+  metaKeys?: string[];
+  /** A condition over the booted row `b` (and `s`) a changed row must meet. */
+  to?: string;
+  /** It deletes the row. */
+  removes?: boolean;
+  /** The columns that identify a row of a table that declares no primary key. */
+  key?: string[];
+}
+
+/** A key of `meta` on the row `alias`, null when `meta` is not JSON. */
+const meta = (alias: string, key: string) => `(CASE WHEN json_valid(${alias}.meta) THEN json_extract(${alias}.meta, '$.${key}') END)`;
+/** The Claude background launch `x` no live agent or shell will report: RecoverOrphanedBackgroundTasks' selection. */
+const orphanedClaudeLaunch = (x: string) => `${x}.kind = 'tool_call' AND ${x}.status = 'running' AND ${x}.is_background = 1
+  AND COALESCE(${meta(x, 'live_background_active')}, 1) != 0
+  AND NOT EXISTS (SELECT 1 FROM mig.items c WHERE c.thread_id = ${x}.thread_id AND c.completion_of = ${x}.id AND c.completion_of <> '')
+  AND EXISTS (SELECT 1 FROM mig.threads t WHERE t.id = ${x}.thread_id AND t.provider IN ('claude', 'claude-tui'))`;
+/**
+ * The user row `x` of a message the previous process wrote to the provider
+ * and never saw confirmed: still marked pendingFlush, and residue, which
+ * store's markedUserRowSQL and unconfirmedUserRowResidueSQL
+ * (flush_queue_items.go) define: no older than its thread, and no later turn
+ * or top-level row follows it. A mark on any other row is history, which
+ * v152 clears and the boot leaves alone.
+ */
+export const unconfirmedUserRow = (x: string) => `${x}.kind = 'user_text' AND ${x}.parent_id = '' AND ${meta(x, 'pendingFlush')} = 1
+  AND ${x}.created_at >= (SELECT t.created_at FROM mig.threads t WHERE t.id = ${x}.thread_id)
+  AND NOT EXISTS (SELECT 1 FROM mig.turns t WHERE t.thread_id = ${x}.thread_id AND t.turn_index > ${x}.turn_index)
+  AND NOT EXISTS (SELECT 1 FROM mig.items l WHERE l.thread_id = ${x}.thread_id AND l.turn_index > ${x}.turn_index AND l.parent_id = '')`;
+/**
+ * The send id `sendId` names a message whose owner takes it back when the
+ * boot finds it undelivered (app.ownedSendID): a request's answer or late
+ * reply, a remote job's completion, or a spawner's answer to its worker's
+ * async questions. None of them goes to the composer.
+ */
+const ownedSend = (sendId: string) => `(${sendId} GLOB 'thread-wake:?*' OR ${sendId} GLOB 'thread-wake-late:?*'
+  OR ${sendId} GLOB 'remote-completion:*:*' OR ${sendId} GLOB 'agent-answer:*')`;
+/** The send id of the message that carried the first answer of the thread request `x`: its carrier's (delivered_with), or its own. */
+const firstWakeSend = (x: string) => `'thread-wake:' || CASE WHEN ${x}.delivered_with <> '' THEN ${x}.delivered_with ELSE ${x}.token END`;
+/**
+ * The thread request `x` whose wake the boot gives back to it, owed again
+ * and disarmed (store.WithdrawThreadWake): its first answer or its late
+ * reply is delivered and not confirmed, either still on a queue row
+ * (restoreThreadQueueAtBoot) or handed to the provider
+ * (giveBackUnconfirmedAtBoot), and no row carrying the provider's id
+ * answers for its message (confirmEchoedAtBoot confirms that one instead).
+ * A confirmed wake is never given back: a queue row that outlived its echo
+ * goes alone. A lineage-only row keeps its marks.
+ */
+const wakeGivenBack = (x: string) => `${x}.lineage_only = 0 AND (
+  (${x}.delivered_at IS NOT NULL AND ${x}.confirmed_at IS NULL
+    AND NOT (${sendConfirmed(`${x}.caller_thread_id`, firstWakeSend(x))}))
+  OR (${x}.late_delivered_at IS NOT NULL AND ${x}.late_confirmed_at IS NULL
+    AND NOT (${sendConfirmed(`${x}.caller_thread_id`, `'thread-wake-late:' || ${x}.token`)})))`;
+/**
+ * The thread request `x` whose unconfirmed delivery the boot confirms from
+ * the row of its echo (app.confirmEchoedAtBoot, store.ConfirmThreadWake):
+ * the last run died between the echo's row write and its confirmation.
+ */
+const wakeEchoConfirmed = (x: string) => `${x}.lineage_only = 0 AND (
+  (${x}.delivered_at IS NOT NULL AND ${x}.confirmed_at IS NULL
+    AND ${sendConfirmed(`${x}.caller_thread_id`, firstWakeSend(x))})
+  OR (${x}.late_delivered_at IS NOT NULL AND ${x}.late_confirmed_at IS NULL
+    AND ${sendConfirmed(`${x}.caller_thread_id`, `'thread-wake-late:' || ${x}.token`)}))`;
+/** The send id of the remote watch `x`'s completion (app.remoteCompletionSendID). */
+const completionSend = (x: string) => `'remote-completion:' || ${x}.computer_id || ':' || ${x}.request_id`;
+/** The pairing link `x` of an approved own-device admission the last run did not finish: store.IncompleteOwnAdmissions' selection. */
+const incompleteOwnAdmission = (x: string) => `${x}.purpose <> '' AND ${x}.confirmed_at IS NOT NULL AND ${x}.canceled_at IS NULL
+  AND ${x}.session_id NOT IN (SELECT session_id FROM mig.own_device_sessions)
+  AND ${x}.session_id IN (SELECT id FROM mig.sessions WHERE revoked_at IS NULL)`;
+/**
+ * Whether `json` is a JSON array, and the array or an empty one, so
+ * json_each never reads a corrupt value. CASE keeps the JSON functions
+ * from running on one: SQLite may evaluate both sides of an AND.
+ */
+const isArray = (json: string) => `(CASE WHEN json_valid(${json}) THEN json_type(${json}) END) = 'array'`;
+const jsonArray = (json: string) => `(CASE WHEN ${isArray(json)} THEN ${json} ELSE '[]' END)`;
+/** A user row's meta, or an empty object when it is not JSON. */
+const userMeta = (x: string) => `(CASE WHEN json_valid(${x}.meta) THEN ${x}.meta ELSE '{}' END)`;
+/** The provider's id on the user row `x` (usermessage.ReadProviderItemID). */
+const providerItemId = (x: string) => `COALESCE(json_extract(${userMeta(x)}, '$.provider_item_id'), '')`;
+/** A reader-authored user row (store.readerAuthoredUserTextFilterFor). */
+const readerUserText = (x: string) => `${x}.parent_id = '' AND ${x}.kind = 'user_text'
+  AND COALESCE(json_extract(${userMeta(x)}, '$.wire_only'), 0) != 1`;
+/**
+ * The provider confirmed the message of the send `sendId` in thread `thread`
+ * (app.queuedSendDelivered): the booted store's user row
+ * FindUserTextItemBySendID finds, by its own send id first and a joined one
+ * second, carries the provider's id.
+ */
+export const sendConfirmed = (thread: string, sendId: string) => `${sendId} <> '' AND COALESCE(
+  (SELECT ${providerItemId('i')} <> '' FROM main.items i WHERE i.thread_id = ${thread} AND ${readerUserText('i')}
+    AND json_extract(${userMeta('i')}, '$.sendId') = ${sendId} LIMIT 1),
+  (SELECT ${providerItemId('i')} <> '' FROM main.items i WHERE i.thread_id = ${thread} AND ${readerUserText('i')}
+    AND ${sendId} IN (SELECT value FROM json_each(${jsonArray(`json_extract(${userMeta('i')}, '$.joinedSendIds')`)})) LIMIT 1),
+  0)`;
+/** The send `sendId` is recorded in thread `thread`: a user row or a queue row carries it (app.findRecordedSend). */
+export const sendRecorded = (thread: string, sendId: string) => `(EXISTS (SELECT 1 FROM mig.items u WHERE u.thread_id = ${thread}
+    AND ${readerUserText('u')}
+    AND (json_extract(${userMeta('u')}, '$.sendId') = ${sendId}
+      OR ${sendId} IN (SELECT value FROM json_each(${jsonArray(`json_extract(${userMeta('u')}, '$.joinedSendIds')`)}))))
+  OR EXISTS (SELECT 1 FROM mig.flush_queue_items q WHERE q.thread_id = ${thread} AND q.send_id = ${sendId}))`;
+/**
+ * The booted draft of the thread of `x` is exactly what the boot's composer
+ * restores write from the migrated store's rows: restoredDraftThreads
+ * (upgrade-corpus-fingerprint.ts) composes it and substitutes the threads
+ * whose draft matches for `{restored}` when a rule is composed. The restores
+ * write the draft and delete every row they took in one transaction, so a
+ * row they take may leave only when its thread's draft matches.
+ */
+const draftRestored = (x: string) => `${x}.thread_id IN ({restored})`;
+/** MergeParts keeps a pending plan the draft already had. */
+const draftPlanKept = `(COALESCE(s.pending_plan_implementation, '') = '' OR b.pending_plan_implementation IS s.pending_plan_implementation)`;
+const draftColumns = ['content', 'attachments', 'terminal_chips', 'pending_plan_implementation', 'updated_at', 'has_content'];
+/** A review comment a claim release returned: a sent one is a draft again, any other keeps its status; the claim is cleared and the body kept. */
+const claimReturned = `b.claim_thread_id = '' AND b.claim_item_id = '' AND b.claim_settles = ''
+  AND CASE WHEN s.status = 'sent' THEN b.status = 'draft' AND b.sent_at = 0 AND b.sent_turn_id = ''
+    ELSE b.status = s.status AND b.sent_at = s.sent_at AND b.sent_turn_id = s.sent_turn_id END`;
+/** A credential row PruneCredentials deletes: expired a day before now. */
+const prunedBefore = `(CAST(strftime('%s', 'now') AS INTEGER) * 1000 - 86400000)`;
+const workflowRunLive = `EXISTS (SELECT 1 FROM mig.work_items w WHERE w.id = s.item_id AND w.state IN ('running', 'needs-human'))`;
+
+export const recoveryRules: RecoveryRule[] = [
+  {
+    name: 'crashed-turns', writer: 'store.(*Store).RecoverCrashedTurns', table: 'turns',
+    rows: 's.completed_at IS NULL', columns: ['completed_at', 'stop_reason'],
+    to: "b.completed_at IS NOT NULL AND b.stop_reason = 'interrupted'",
+  },
+  {
+    name: 'crashed-turn-rows', writer: 'store.(*Store).RecoverCrashedTurns (flipCrashedTurnItemsTx)', table: 'items',
+    rows: `s.status IN ('streaming', 'running') AND NOT (s.is_background = 1 AND s.kind = 'tool_call')
+      AND EXISTS (SELECT 1 FROM mig.turns t WHERE t.thread_id = s.thread_id AND t.turn_index = s.turn_index AND t.completed_at IS NULL)`,
+    columns: ['status', 'summary', 'updated_at', 'rev'], to: "b.status = 'errored'",
+  },
+  {
+    name: 'codex-background-runtime', writer: 'store.(*Store).RecoverCodexBackgroundRuntime', table: 'items',
+    rows: `s.kind = 'tool_call' AND s.status = 'running' AND s.is_background = 1 AND s.tool_name <> 'collab_agent'
+      AND COALESCE(${meta('s', 'live_background_active')}, 1) != 0
+      AND EXISTS (SELECT 1 FROM mig.threads t WHERE t.id = s.thread_id AND t.provider = 'codex')`,
+    columns: ['status', 'summary', 'decision', 'updated_at', 'rev'], to: "b.status = 'errored' AND b.decision = 'lost'",
+  },
+  {
+    name: 'claude-background-launches',
+    writer: 'triage.(*Router).RecoverOrphanedBackgroundTasks (its session_died sibling fires trg_items_settle_bg_launch_on_completion)',
+    table: 'items', rows: orphanedClaudeLaunch('s'), columns: ['rev'], metaKeys: ['live_background_active'],
+    to: `${meta('b', 'live_background_active')} = 0`,
+  },
+  {
+    name: 'claude-agent-rows', writer: 'store.(*Store).UpsertAgentEnd (settleAgentSubtreeTx), from RecoverOrphanedBackgroundTasks',
+    table: 'items',
+    rows: `s.status IN ('running', 'streaming') AND s.parent_id <> '' AND (s.thread_id, s.id) IN (
+      WITH RECURSIVE owned(thread_id, id, depth) AS (
+        SELECT x.thread_id, x.id, 0 FROM mig.items x WHERE ${orphanedClaudeLaunch('x')}
+        UNION
+        SELECT x.thread_id, ${meta('x', 'transcript_root_id')}, 0 FROM mig.items x
+         WHERE ${orphanedClaudeLaunch('x')} AND ${meta('x', 'transcript_root_id')} <> ''
+        UNION
+        SELECT c.thread_id, c.id, o.depth + 1 FROM owned o JOIN mig.items c ON c.thread_id = o.thread_id AND c.parent_id = o.id
+         WHERE o.depth < 64
+      ) SELECT thread_id, id FROM owned)`,
+    columns: ['status', 'summary', 'updated_at', 'rev'], to: "b.status IN ('errored', 'completed')",
+  },
+  {
+    // The row is the unit: it is retired whole, and the person's text in it
+    // goes to the draft. A joined row splits off the members the app wrote
+    // by the parts its dispatch recorded (unconfirmedRowAtBoot); one whose
+    // parts no longer describe its text goes to the draft whole.
+    name: 'unconfirmed-queued-messages', writer: 'app.(*App).restoreThreadQueueAtBoot (store.RestoreFlushQueueToDraft)',
+    table: 'items', removes: true,
+    rows: `${unconfirmedUserRow('s')} AND ${draftRestored('s')}`,
+  },
+  {
+    name: 'unconfirmed-message-search-rows', writer: 'store.RetireUndeliveredUserRow (deleteThreadItemTx clears its search rows)',
+    table: 'thread_search_rows', removes: true,
+    rows: `s.item_id <> '' AND EXISTS (SELECT 1 FROM mig.items i WHERE i.thread_id = s.thread_id AND i.id = s.item_id
+      AND ${unconfirmedUserRow('i')})`,
+  },
+  {
+    name: 'payloads-of-removed-items', writer: 'trg_items_gc_payload and trg_items_gc_input_payload (store/migrate_sql_items.go)',
+    table: 'payloads', removes: true,
+    rows: `EXISTS (SELECT 1 FROM mig.items i WHERE i.thread_id = s.thread_id AND (i.payload_id = s.id OR i.input_payload_id = s.id))
+      AND NOT EXISTS (SELECT 1 FROM main.items i WHERE i.thread_id = s.thread_id AND (i.payload_id = s.id OR i.input_payload_id = s.id))`,
+  },
+  {
+    name: 'chunks-of-removed-payloads', writer: 'payload_chunks ON DELETE CASCADE from payloads', table: 'payload_chunks', removes: true,
+    rows: 'NOT EXISTS (SELECT 1 FROM main.payloads p WHERE p.thread_id = s.thread_id AND p.id = s.payload_id)',
+  },
+  {
+    name: 'item-stamps', writer: 'trg_items_rev_* and trg_subagent_aggregates_stamp_* (store/history_rev_triggers.go)',
+    table: 'items', rows: 'thread-write', columns: ['rev'],
+  },
+  {
+    name: 'live-agent-cards', writer: 'store.(*Store).RecoverSubagentCards', table: 'subagent_aggregates',
+    rows: `EXISTS (SELECT 1 FROM mig.items x WHERE x.thread_id = s.thread_id AND x.kind = 'tool_call' AND x.status = 'running'
+      AND x.tool_name <> 'collab_agent' AND (x.is_background = 0 OR COALESCE(${meta('x', 'live_background_active')}, 1) != 0))`,
+    columns: ['*'],
+  },
+  {
+    name: 'written-chain-cards', writer: 'store cardWrite.finish (subagent_card_write.go), after a recovery write',
+    table: 'subagent_aggregates', rows: 'thread-write', columns: ['*'],
+  },
+  {
+    name: 'thread-stamps', writer: 'the items triggers (history_rev_triggers.go, thread_turn_error_aggregate.go)',
+    table: 'threads', rows: 'thread-write',
+    columns: ['history_rev', 'history_epoch', 'newest_turn_error_at', 'newest_turn_error_turn'],
+  },
+  {
+    name: 'worktree-setups', writer: 'store.(*Store).SweepRunningThreadWorktreeSetups', table: 'threads',
+    rows: "s.worktree_setup_state = 'running'", columns: ['worktree_setup_state'], to: "b.worktree_setup_state = 'failed'",
+  },
+  {
+    // A delete claim no delete committed: nothing of the thread was stopped or removed.
+    name: 'undecided-delete-claims', writer: 'store.(*Store).ReleaseUndecidedDeleteClaims (releaseUndecidedDeletes)', table: 'threads',
+    rows: "s.delete_claim <> '' AND s.deleting = 0", columns: ['delete_claim'], to: "b.delete_claim = ''",
+  },
+  {
+    // restoreThreadQueueAtBoot takes every queue row of the thread but the
+    // owned ones: a copy of a joined row's member, a message the provider
+    // confirmed and a message the app wrote (discardAgentWakeAtBoot) add no
+    // text, the rest do; restoredDraftThreads composes which.
+    name: 'queued-messages', writer: 'app.(*App).restoreThreadQueueAtBoot (store.RestoreFlushQueueToDraft)',
+    table: 'flush_queue_items', removes: true, rows: `${draftRestored('s')} AND NOT ${ownedSend('s.send_id')}`,
+  },
+  {
+    // An answer, a reminder, a completion or a spawner's answer goes back to
+    // its owner with its queue row, each in a transaction of its own.
+    name: 'owned-queued-messages',
+    writer: 'app.(*App).giveBackToOwners (store.WithdrawThreadWake, WithdrawRemoteCompletion, ReturnAsyncAnswer), from restoreThreadQueueAtBoot',
+    table: 'flush_queue_items', removes: true, rows: ownedSend('s.send_id'),
+  },
+  {
+    name: 'queued-message-drafts', writer: 'app.(*App).restoreQueuedDraft (composerdraft.MergeParts)', table: 'thread_drafts',
+    rows: `EXISTS (SELECT 1 FROM mig.flush_queue_items q WHERE q.thread_id = s.thread_id)
+      OR EXISTS (SELECT 1 FROM mig.items u WHERE u.thread_id = s.thread_id AND ${unconfirmedUserRow('u')})`,
+    columns: draftColumns, to: `${draftRestored('s')} AND ${draftPlanKept}`,
+  },
+  {
+    // The wake's own request and the requests that rode with it: the
+    // delivery mark cleared and the wake disarmed, so thread_status returns
+    // the answer and nothing delivers it unasked.
+    name: 'wakes-given-back',
+    writer: 'app.(*App).giveBackToOwners (store.WithdrawThreadWake), from restoreThreadQueueAtBoot and giveBackUnconfirmedAtBoot',
+    table: 'thread_requests', rows: wakeGivenBack('s'),
+    columns: ['delivered_at', 'delivered_how', 'wake_item_id', 'delivered_with',
+      'late_delivered_at', 'late_delivered_how', 'late_wake_item_id', 'notify', 'updated_at'],
+    to: 'b.notify = 0',
+  },
+  {
+    // The delivery the echo's row proves is confirmed by it, and stays delivered.
+    name: 'echoed-wakes-confirmed',
+    writer: 'app.(*App).confirmEchoedAtBoot (store.ConfirmThreadWake), from restoreThreadQueueAtBoot and giveBackUnconfirmedAtBoot',
+    table: 'thread_requests', rows: wakeEchoConfirmed('s'),
+    columns: ['confirmed_at', 'wake_item_id', 'late_confirmed_at', 'late_wake_item_id', 'updated_at'],
+    to: '(b.delivered_at IS NULL OR b.confirmed_at IS NOT NULL) AND (b.late_delivered_at IS NULL OR b.late_confirmed_at IS NOT NULL)',
+  },
+  {
+    // The watch is pending again, and the watcher delivers its completion. A
+    // confirmed one never goes back, and one its echo's row proves is
+    // confirmed instead (below).
+    name: 'completions-given-back',
+    writer: 'app.(*App).giveBackToOwners (store.WithdrawRemoteCompletion), from restoreThreadQueueAtBoot and giveBackUnconfirmedAtBoot',
+    table: 'remote_watches',
+    rows: `s.notification = 'queued' AND s.confirmed_at IS NULL AND NOT (${sendConfirmed('s.thread_id', completionSend('s'))})`,
+    columns: ['notification'], to: "b.notification = 'pending'",
+  },
+  {
+    name: 'echoed-completions-confirmed',
+    writer: 'app.(*App).confirmEchoedAtBoot (store.ConfirmRemoteCompletion), from restoreThreadQueueAtBoot and giveBackUnconfirmedAtBoot',
+    table: 'remote_watches',
+    rows: `s.notification = 'queued' AND s.confirmed_at IS NULL AND ${sendConfirmed('s.thread_id', completionSend('s'))}`,
+    columns: ['confirmed_at'], to: 'b.confirmed_at IS NOT NULL',
+  },
+  {
+    // The worker's questions are unanswered again, routed to their spawner anew.
+    name: 'worker-answers-returned', writer: 'app.(*App).returnWorkerAnswer (store.ReturnAsyncAnswer), from restoreThreadQueueAtBoot',
+    table: 'async_questions',
+    rows: `s.send_id GLOB 'agent-answer:*' AND s.state IN ('submitted', 'restored')
+      AND EXISTS (SELECT 1 FROM mig.flush_queue_items q WHERE q.thread_id = s.thread_id AND q.send_id = s.send_id)`,
+    columns: ['state', 'answer', 'send_id', 'user_item_id', 'revision'], to: "b.state = 'unanswered'",
+  },
+  {
+    // A loop's or watch's wake still queued, or carried by an unconfirmed
+    // message, is recorded not delivered; an interval row is due again by
+    // the fire it was for.
+    name: 'queued-agent-wakes', writer: 'app.(*App).discardAgentWakeAtBoot (store.ReleaseQueuedAgentWake)',
+    table: 'agent_wakes',
+    rows: `s.state <> 'cancelled' AND (EXISTS (SELECT 1 FROM mig.flush_queue_items q
+        WHERE substr(q.send_id, 1, length('agent-wake:' || s.id || ':')) = 'agent-wake:' || s.id || ':')
+      OR EXISTS (SELECT 1 FROM mig.items u WHERE ${unconfirmedUserRow('u')} AND instr(u.meta, '"agent-wake:' || s.id || ':') > 0))`,
+    columns: ['last_outcome', 'undelivered', 'last_output', 'next_at'],
+  },
+  {
+    name: 'retired-message-claims', writer: 'store.(*Store).RetireUndeliveredUserRow', table: 'diff_review_comments',
+    rows: `s.claim_item_id <> '' AND EXISTS (SELECT 1 FROM mig.items u WHERE u.thread_id = s.claim_thread_id AND u.id = s.claim_item_id
+      AND ${unconfirmedUserRow('u')})`,
+    columns: ['status', 'sent_at', 'sent_turn_id', 'claim_thread_id', 'claim_item_id', 'claim_settles'], to: claimReturned,
+  },
+  {
+    name: 'unsettled-review-claims', writer: 'store.(*Store).ReleaseUnsettledDiffReviewClaims', table: 'diff_review_comments',
+    rows: "s.claim_item_id <> '' AND s.claim_settles <> ''",
+    columns: ['status', 'sent_at', 'sent_turn_id', 'claim_thread_id', 'claim_item_id', 'claim_settles'], to: claimReturned,
+  },
+  {
+    // A recovery whose send is recorded is dropped (its message is in the
+    // history or the queue); any other goes to the draft (recoverReplacementDraft).
+    name: 'replacement-draft-recoveries', writer: 'app.(*App).restoreReplacementDraftsAtBoot', table: 'thread_draft_recoveries',
+    removes: true, rows: draftRestored('s'),
+  },
+  {
+    name: 'replacement-drafts', writer: 'app.(*App).recoverReplacementDraft (composerdraft.MergeParts)', table: 'thread_drafts',
+    rows: 'EXISTS (SELECT 1 FROM mig.thread_draft_recoveries r WHERE r.thread_id = s.thread_id)', columns: draftColumns,
+    to: `${draftRestored('s')} AND ${draftPlanKept}`,
+  },
+  {
+    name: 'open-receipts', writer: 'app.(*App).sweepThreadRequestsAtBoot', table: 'thread_request_receipts',
+    rows: "s.state IN ('accepted', 'running')", columns: ['*'], to: "b.state NOT IN ('accepted', 'running')",
+  },
+  {
+    name: 'open-local-requests', writer: 'app.(*App).sweepThreadRequestsAtBoot', table: 'thread_requests',
+    rows: `(s.state IN ('unconfirmed', 'accepted', 'running') AND s.kind <> 'remind' AND s.target_computer_id = '')
+      OR EXISTS (SELECT 1 FROM mig.thread_request_receipts r WHERE r.token = s.token AND r.state IN ('accepted', 'running'))`,
+    columns: ['*'],
+  },
+  {
+    name: 'background-terminal-stashes', writer: 'triage.(*Router).RecoverOrphanedBackgroundTasks', table: 'pending_background_task_terminals',
+    rows: '1', removes: true,
+  },
+  {
+    name: 'running-remote-jobs', writer: 'store.(*Store).RecoverRemoteJobs', table: 'remote_jobs',
+    rows: "s.state = 'running'", columns: ['state', 'finished_at', 'error'], to: "b.state = 'interrupted'",
+  },
+  {
+    name: 'workflow-runs', writer: 'workflow/engine.(*Engine).rebuild', table: 'work_items',
+    rows: "s.state IN ('running', 'needs-human')", columns: ['*'],
+  },
+  {
+    name: 'workflow-run-phases', writer: 'workflow/engine.(*Engine).rebuild', table: 'work_item_phases',
+    rows: workflowRunLive, columns: ['*'], key: ['item_id', 'phase_id', 'attempt'],
+  },
+  {
+    name: 'workflow-run-units', writer: 'workflow/engine.(*Engine).rebuild', table: 'work_item_units',
+    rows: workflowRunLive, columns: ['*'], key: ['item_id', 'phase_id', 'attempt', 'unit_id'],
+  },
+  {
+    // Reclaim takes the claim; recoverWorkflowUsageAttention then moves it to
+    // a run still affected and delivers it, or releases it when none is.
+    name: 'usage-attention-claims',
+    writer: 'store.(*Store).ReclaimQueuedWorkflowProviderUsageAttention, then workflowapp recoverWorkflowUsageAttention (Reassign, Promote or Release)',
+    table: 'workflow_provider_usage_attention', rows: 's.queued_generation > 0',
+    columns: ['queued_generation', 'queued_token', 'source_item_id', 'delivered_generation', 'updated_at'],
+    to: `b.queued_generation = 0 OR b.queued_token LIKE '%:' || b.scope_id || ':' || b.thread_id`,
+    key: ['scope_id', 'thread_id'],
+  },
+  {
+    name: 'local-session-scopes', writer: 'store.(*Store).EnsureLocalSession', table: 'sessions',
+    rows: `s.binding_class = 'loopback-only' AND s.revoked_at IS NULL
+      AND EXISTS (SELECT 1 FROM mig.devices d WHERE d.id = s.device_id AND d.channel = 'local' AND d.revoked_at IS NULL)`,
+    columns: ['scopes'],
+  },
+  {
+    name: 'own-admission-members', writer: 'identity.(*Sessions).RecoverOwnAdmissions (store.AdmitOwnPairing)', table: 'own_devices',
+    rows: `EXISTS (SELECT 1 FROM mig.pairing_links l WHERE ${incompleteOwnAdmission('l')}
+      AND l.purpose <> 'own-introduction' AND l.key_thumbprint = s.key_thumbprint)`,
+    columns: ['member', 'generation', 'removed'], to: 'b.removed = 0',
+  },
+  {
+    name: 'own-admission-revocations', writer: 'identity.(*Sessions).RecoverOwnAdmissions (RevokeSession when AdmitOwnPairing refuses)',
+    table: 'sessions', rows: `s.id IN (SELECT l.session_id FROM mig.pairing_links l WHERE ${incompleteOwnAdmission('l')})`,
+    columns: ['revoked_at'], to: 'b.revoked_at IS NOT NULL',
+  },
+  {
+    name: 'expired-sessions', writer: 'identity.(*Sessions).PruneCredentials (store.DeleteSessionsExpiredBefore)', table: 'sessions',
+    rows: `s.expires_at < ${prunedBefore}
+      AND NOT EXISTS (SELECT 1 FROM mig.refresh_secrets r WHERE r.session_id = s.id AND r.expires_at >= ${prunedBefore})`,
+    removes: true,
+  },
+  {
+    name: 'expired-refresh-secrets', writer: 'identity.(*Sessions).PruneCredentials (store.DeleteRefreshSecretsExpiredBefore)',
+    table: 'refresh_secrets',
+    rows: `s.expires_at < ${prunedBefore}
+      AND NOT EXISTS (SELECT 1 FROM mig.refresh_secrets n WHERE n.secret_hash = s.next_secret_hash AND n.consumed_at IS NULL)`,
+    removes: true,
+  },
+  {
+    name: 'expired-pairing-links', writer: 'identity.(*Sessions).PruneCredentials (store.DeletePairingLinksExpiredBefore)',
+    table: 'pairing_links', rows: `s.expires_at < ${prunedBefore} AND s.redeemed_at IS NULL`, removes: true,
+  },
+];
+
+/**
+ * A SweepRule declares threads the first ordinary boot after the trial
+ * deletes, wholly or down to what a fork still reads: the steps a trial
+ * defers to its commit (startBeforeClients) and the unattended work behind
+ * the activation gate. The check reads the threads each rule selects from
+ * the store the trial left, before any later boot, and the census and the
+ * reads then allow exactly the rows and listings those threads lost; every
+ * other thread must keep all of its rows. Each entry names the Go writer and
+ * mirrors its selection, as an SQL query of thread ids over that store.
+ */
+export interface SweepRule {
+  name: string;
+  writer: string;
+  threads: string;
+}
+
+export const sweepRules: SweepRule[] = [
+  {
+    name: 'terminal-threads', writer: 'app.(*App).endTerminalThreadsAtBoot (startBeforeClients)',
+    threads: "SELECT id FROM owned_threads WHERE mode = 'terminal'",
+  },
+  {
+    name: 'interrupted-forks', writer: 'app.(*App).cleanupPreparingForks (startBeforeClients)',
+    threads: 'SELECT id FROM threads WHERE fork_preparing = 1',
+  },
+  {
+    name: 'scratch-threads', writer: 'app.(*App).finishThreadRequestSweepAtBoot (startUnattendedWork)',
+    threads: 'SELECT thread_id FROM scratch_threads',
+  },
+  {
+    name: 'pending-thread-deletes', writer: 'app.(*App).startPendingThreadDeletes (completeThreadDeletes, after the first reads)',
+    threads: 'SELECT id FROM threads WHERE deleting = 1',
+  },
+  {
+    // {swept} is every thread the rules above select: a holder none of the
+    // rest reads is released when they go.
+    name: 'released-holders', writer: 'app.(*App).collectReleasedHolders (store.ListReleasedHolders)',
+    threads: `SELECT h.id FROM threads h WHERE h.mode = 'holder'
+      AND NOT EXISTS (SELECT 1 FROM thread_fork_lineage l WHERE l.ancestor_id = h.id AND l.thread_id NOT IN ({swept}))`,
+  },
+];
+
+/**
+ * What the candidate answers about the root it boots on, which a
+ * RowSweepRule's condition reads: ListForgeProjects, the projects whose
+ * origin names a forge repository (with Error when git could not read it).
+ */
+export interface SweepContext {
+  forgeProjects: Array<{ projectId: string; repo: unknown; error?: string }>;
+}
+
+/**
+ * A RowSweepRule declares rows outside any thread that an ordinary boot
+ * after the trial deletes because nothing on the root names them any more.
+ * A cloned root makes these real: `ao-harness clone` relocates every project
+ * to a throwaway repository with no forge remote. The check reads `read`
+ * for every row of `table` from the store the trial left, and allows the
+ * census to lose a row only when it is gone afterwards and `prunable` holds
+ * for it, given what the candidate answered. `prunable` mirrors the Go
+ * writer's condition.
+ */
+export interface RowSweepRule {
+  name: string;
+  writer: string;
+  table: string;
+  /** SQL select list over the table: `key` (the row's identity) and what `prunable` reads. */
+  read: string;
+  prunable: (row: Record<string, unknown>, live: SweepContext) => boolean;
+}
+
+/** Whether two git.RepoReference values on the wire name one repository. */
+const sameRepo = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+
+export const rowSweepRules: RowSweepRule[] = [
+  {
+    // prefetchPRList and the list pump keep the repositories current
+    // projects' origins name, and an errored origin's stored repository.
+    name: 'unprojected-pr-lists', writer: 'app.(*App).prunePRListStore (store.DeletePRListProjectsExcept)',
+    table: 'pr_list_projects', read: 'repo_key AS key, CAST(project_json AS TEXT) AS list',
+    prunable: (row, live) => {
+      const list = JSON.parse(String(row.list)) as { projectId?: string; repo?: unknown };
+      return !live.forgeProjects.some((project) => project.error
+        ? project.projectId === list.projectId
+        : sameRepo(project.repo, list.repo));
+    },
+  },
+];
 
 /**
  * The top-up (upgrade-corpus-topup.ts): what the candidate writes into
@@ -176,44 +691,42 @@ export const coverageAllowlist: CoverageAllowance[] = [
   { table: 'remote_watches', reason: 'a watch on a connected computer' },
   { table: 'thread_transfers', reason: 'a conversation moved or copied to a connected computer' },
   { table: 'thread_transfer_sessions', reason: 'a transfer session with a connected computer' },
+  { table: 'thread_requests', columns: ['target_computer_id', 'target_thread_title', 'next_check', 'attempts', 'issue', 'polling'], values: { polling: [0] }, reason: 'the poll of a request to a thread on a connected computer' },
   {
     table: 'thread_requests',
     columns: [
-      'due_at', 'target_computer_id', 'origin_thread_id', 'notify', 'late_reply', 'late_reply_at', 'delivered_at', 'delivered_how',
-      'late_delivered_at', 'next_check', 'attempts', 'issue', 'polling', 'target_thread_title', 'wake_attempts', 'wake_next_check',
-      'wake_issue', 'lineage_only', 'superseded', 'confirmed_at', 'late_confirmed_at', 'answer_agent', 'answer_agent_role', 'nested_open', 'target_provider',
-      'late_delivered_how', 'made_in_thread_id', 'wake_item_id', 'late_wake_item_id', 'open_below_0', 'open_below_1', 'open_below_2',
-      'open_below_3', 'late_reply_agent', 'late_reply_agent_role', 'delivered_with',
+      'origin_thread_id', 'late_reply', 'late_reply_at', 'late_delivered_at', 'wake_attempts', 'wake_next_check', 'wake_issue',
+      'lineage_only', 'superseded', 'late_confirmed_at', 'answer_agent', 'answer_agent_role', 'nested_open', 'target_provider',
+      'late_delivered_how', 'made_in_thread_id', 'late_wake_item_id', 'open_below_0', 'open_below_1', 'open_below_2',
+      'open_below_3', 'late_reply_agent', 'late_reply_agent_role',
     ],
     values: {
-      kind: ['send', 'ask', 'remind'],
-      notify: [1],
-      state: ['unconfirmed', 'accepted', 'running', 'replied', 'errored', 'cancelled', 'interrupted', 'expired', 'refused'],
-      answer_kind: ['', 'reply', 'error', 'note'],
-      delivered_how: ['inline', 'queued', 'draft'],
+      kind: ['ask'],
+      state: ['unconfirmed', 'accepted', 'running', 'errored', 'cancelled', 'interrupted', 'expired', 'refused'],
+      answer_kind: ['', 'error'],
+      delivered_how: ['draft'],
       late_delivered_how: ['inline', 'queued', 'draft'],
-      polling: [0],
       lineage_only: [1],
       superseded: [1],
       answer_agent: [1],
       late_reply_agent: [1],
       nested_open: [1],
     },
-    reason: "an agent's thread_send, thread_ask or thread_remind request, a request on a connected computer, and the answers and deliveries of one; the top-up's one request is the assistant's helper spawn",
+    reason: "the top-up's requests are thread_send and thread_remind requests its caller takes as each settles, and the assistant's helper spawn; an ask, a late reply, a failed or stopped request, a wake whose caller cannot take it (no request reads draft since a wake never enters the composer), an answer from a standing agent, a handoff's moved request, a remote spawn and a spawn the retention floor kept as lineage are not staged, and open states are ones a request passes through",
   },
   {
     table: 'thread_request_receipts',
     columns: ['late_reply', 'late_reply_at', 'answer_agent', 'answer_agent_role', 'late_reply_agent', 'late_reply_agent_role', 'lineage_only'],
     values: {
-      kind: ['send', 'ask', 'remind'],
-      state: ['accepted', 'running', 'replied', 'errored', 'cancelled', 'interrupted', 'expired'],
-      answer_kind: ['', 'reply', 'error', 'note'],
+      kind: ['ask', 'remind'],
+      state: ['accepted', 'running', 'errored', 'cancelled', 'interrupted', 'expired'],
+      answer_kind: ['', 'error', 'note'],
       answer_agent: [1],
       late_reply_agent: [1],
       own_turn: [0],
       lineage_only: [1],
     },
-    reason: "an agent's thread_send, thread_ask or thread_remind request and the answers of one, and a spawn's receipt the retention floor kept as its lineage, a month after it settled; the top-up's one request is the assistant's helper spawn",
+    reason: "a target receipts sends and spawns only (a reminder has no target); the top-up stages no ask, late reply, failed or stopped request or answer from a standing agent, open states are ones a request passes through, and a spawn's receipt the retention floor keeps as its lineage is a month old",
   },
   { table: 'async_questions', reason: "an agent's thread_ask question" },
   { table: 'agents', columns: ['creator_agent_id'], reason: "an assistant another assistant made with thread_new_assistant, which is an agent's thread request" },
@@ -241,9 +754,9 @@ export const coverageAllowlist: CoverageAllowance[] = [
   { table: 'proposed_plans', reason: 'a plan a Claude turn proposes through ExitPlanMode, which no library scenario emits' },
   { table: 'proposed_plan_comments', reason: 'review comments on a proposed plan' },
   { table: 'thread_drafts', columns: ['pending_plan_implementation'], values: { has_content: [0] }, reason: 'a draft seeded from an accepted plan, and an empty draft that only holds attachments' },
-  { table: 'diff_review_comments', reason: 'review comments on a pull request diff through the forge' },
+  { table: 'diff_review_comments', columns: ['claim_settles'], values: { claim_settles: ['row', 'confirm'] }, reason: "a sent draft's claim waits for its message's row or the provider's confirmation, and settles before the turn rests" },
+  { table: 'thread_pull_requests', columns: ['merged_at', 'handled_at', 'removal_failed_at', 'outcome'], values: { forge: ['gitlab'], outcome: ['removed', 'kept', 'gone', 'closed', 'skipped'] }, reason: "the top-up's pull request stays open, so no merge cleanup runs; one forge's pull request proves the table" },
   { table: 'pr_list_projects', reason: "the Pull requests list's stored copy of a forge project's read; the top-up's one forge-origin project names a repository the fake forge does not have, so its read fails and nothing is stored" },
-  { table: 'thread_pull_requests', reason: "an open pull request a forge reports for a thread's linked worktree; the top-up seeds no forge pull request" },
   { table: 'chat_bar_favorites', values: { provider: ['codex', 'claude-tui'] }, reason: 'favorites of other providers; one favorite proves the table' },
   { table: 'chat_model_profiles', values: { provider: ['claude-tui'], reasoning_effort: ['none', 'minimal', 'low', 'high', 'xhigh'], runtime_mode: ['read-only', 'approval-required', 'auto-accept-edits'] }, reason: 'one remembered profile per provider and model holds the settings used last; the claude-tui provider has no mock' },
 

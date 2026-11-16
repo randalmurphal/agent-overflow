@@ -85,7 +85,7 @@ func TestAnOrdinarySpawnersWorkerPromptsWakeItAndItsReplyAnswersThem(t *testing.
 	if err := app.StartSession(worker.ID); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
-	if err := app.SendMessage(worker.ID, "go", nil); err != nil {
+	if err := app.SendMessage(context.Background(), worker.ID, "go", nil); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 	var tokens []string
@@ -307,7 +307,7 @@ func TestAnOldPromptTokenCannotAnswerAReplacementSessionsPrompt(t *testing.T) {
 		if err := app.StartSession(worker.ID); err != nil {
 			t.Fatalf("StartSession: %v", err)
 		}
-		if err := app.SendMessage(worker.ID, message, nil); err != nil {
+		if err := app.SendMessage(context.Background(), worker.ID, message, nil); err != nil {
 			t.Fatalf("SendMessage: %v", err)
 		}
 	}

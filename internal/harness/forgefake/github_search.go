@@ -23,12 +23,17 @@ const githubSearchNotVisible = "The listed users and repositories cannot be sear
 
 // ghPullsSearch answers search(type: ISSUE, query: "is:pr is:open
 // repo:O/R", first: 100, after:) with the repository's open pulls, newest
-// first, a page of 100 from after, beside the viewer: each with its
-// opinions, first 100 review threads and the base's required approvals.
+// first, a page of 100 from after with their issueCount, beside the
+// viewer: each with its
+// opinions, first 100 review threads and the base's required approvals,
+// and its head's check state while $wantChecks, which a repository whose
+// token cannot read checks (tokenCannotRead) answers null beside a
+// FORBIDDEN error at its path.
 func ghPullsSearch(e *Engine, c *call, v graphQLVars) response {
 	query, err1 := v.str("query")
 	offset, err2 := v.cursor("after")
-	if err := firstErr(err1, err2); err != nil {
+	wantChecks, err3 := v.boolean("wantChecks")
+	if err := firstErr(err1, err2, err3); err != nil {
 		return unhandled("PullsSearch: %v", err)
 	}
 	m := githubOpenPullsQuery.FindStringSubmatch(query)
@@ -46,14 +51,28 @@ func ghPullsSearch(e *Engine, c *call, v graphQLVars) response {
 	nodes := []map[string]any{}
 	for i := len(r.Pulls) - 1; i >= 0; i-- {
 		if p := &r.Pulls[i]; p.State == "open" {
-			nodes = append(nodes, e.githubSearchPull(r, p))
+			nodes = append(nodes, e.githubSearchPull(r, p, wantChecks))
 		}
 	}
-	return graphQLData(map[string]any{"viewer": viewer, "search": graphQLConnection(nodes, offset, githubGraphQLPageSize)})
+	page := graphQLConnection(nodes, offset, githubGraphQLPageSize)
+	page["issueCount"] = len(nodes)
+	var errs []map[string]any
+	if wantChecks && slices.Contains(r.TokenCannotRead, tokenCannotReadChecks) {
+		for i, node := range page["nodes"].([]map[string]any) {
+			commit := node["commits"].(map[string]any)["nodes"].([]map[string]any)[0]["commit"].(map[string]any)
+			if commit["statusCheckRollup"] != nil {
+				commit["statusCheckRollup"] = nil
+				errs = append(errs, map[string]any{"type": "FORBIDDEN", "message": githubFineGrainedRefusal,
+					"path": []any{"search", "nodes", i, "commits", "nodes", 0, "commit", "statusCheckRollup"}})
+			}
+		}
+	}
+	return graphQLPartial(map[string]any{"viewer": viewer, "search": page}, errs)
 }
 
-// githubSearchPull is one PullsSearch node. Callers hold mu.
-func (e *Engine) githubSearchPull(r *Repo, p *Pull) map[string]any {
+// githubSearchPull is one PullsSearch node, with its head's check state
+// when checks is set. Callers hold mu.
+func (e *Engine) githubSearchPull(r *Repo, p *Pull, checks bool) map[string]any {
 	var decision any
 	if d := githubReviewDecision(r, p, e.viewer); d != "" {
 		decision = d
@@ -86,9 +105,13 @@ func (e *Engine) githubSearchPull(r *Repo, p *Pull) map[string]any {
 			latest = map[string]any{"state": review.State, "submittedAt": review.SubmittedAt}
 		}
 	}
-	var rollup any
-	if state := githubRollupState(p); state != "" {
-		rollup = map[string]any{"state": state}
+	commit := map[string]any{"committedDate": p.CommittedAt}
+	if checks {
+		var rollup any
+		if state := githubRollupState(p); state != "" {
+			rollup = map[string]any{"state": state}
+		}
+		commit["statusCheckRollup"] = rollup
 	}
 	// comments(last: 10) and reviews(last: 10): the conversation comments
 	// and the submitted reviews, oldest first, each with its author.
@@ -127,11 +150,9 @@ func (e *Engine) githubSearchPull(r *Repo, p *Pull) map[string]any {
 		"viewerLatestReview":       latest,
 		"reviewThreads":            graphQLConnection(threads, 0, githubGraphQLPageSize),
 		"baseRef":                  base,
-		"commits": map[string]any{"totalCount": p.Commits, "nodes": []map[string]any{{"commit": map[string]any{
-			"committedDate": p.CommittedAt, "statusCheckRollup": rollup,
-		}}}},
-		"comments": map[string]any{"nodes": comments},
-		"reviews":  map[string]any{"nodes": reviews},
+		"commits":                  map[string]any{"totalCount": p.Commits, "nodes": []map[string]any{{"commit": commit}}},
+		"comments":                 map[string]any{"nodes": comments},
+		"reviews":                  map[string]any{"nodes": reviews},
 	}
 }
 

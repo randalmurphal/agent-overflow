@@ -341,3 +341,121 @@ func TestWorktreeChangesListsRepositoriesAsGitlinks(t *testing.T) {
 		t.Fatalf("patch does not name the two repositories' commits:\n%s", patch)
 	}
 }
+
+// A path removed after the snapshot listed it, before git read it, lists as
+// it now is: an untracked file, link or repository not at all, a tracked
+// file or submodule as deleted. The rest of the listing is unaffected. Serial: it sets
+// beforeWorktreeHash.
+// A tracked path whose directory became a file is deleted, and the file is
+// added; the reverse lists the same way.
+func TestWorktreeChangesListAPathWhoseParentChangedKind(t *testing.T) {
+	t.Parallel()
+	for name, tc := range map[string]struct {
+		tracked, replaced, added string
+		want                     []ChangedFile
+	}{
+		"directory became a file": {
+			tracked: "dir/a.txt", replaced: "dir", added: "dir",
+			want: []ChangedFile{
+				{Path: "dir", Status: "A", Additions: 1},
+				{Path: "dir/a.txt", Status: "D", Deletions: 1},
+			},
+		},
+		"file became a directory": {
+			tracked: "node", replaced: "node", added: "node/child.txt",
+			want: []ChangedFile{
+				{Path: "node", Status: "D", Deletions: 1},
+				{Path: "node/child.txt", Status: "A", Additions: 1},
+			},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			repo := testutil.InitGitRepo(t)
+			if err := os.MkdirAll(filepath.Dir(filepath.Join(repo, tc.tracked)), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			commitFile(t, repo, tc.tracked, "tracked\n", "add tracked")
+			if err := os.RemoveAll(filepath.Join(repo, tc.replaced)); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(filepath.Dir(filepath.Join(repo, tc.added)), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			writeFile(t, repo, tc.added, "added\n")
+			if got := worktreeChanges(t, repo); !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("changes:\n got %+v\nwant %+v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestWorktreeChangesSkipPathsRemovedWhileListing(t *testing.T) {
+	repo := testutil.InitGitRepo(t)
+	inner := testutil.InitGitRepo(t)
+	testutil.RunGit(t, repo, "-c", "protocol.file.allow=always", "submodule", "add", "--quiet", inner, "sm")
+	testutil.RunGit(t, repo, "commit", "-m", "add submodule")
+	sm := filepath.Join(repo, "sm")
+	testutil.RunGit(t, sm, "config", "user.name", "Agent Overflow")
+	testutil.RunGit(t, sm, "config", "user.email", "agent-overflow@example.com")
+	commitFile(t, sm, "README.txt", "moved\n", "move the submodule")
+	commitFile(t, repo, "tracked.txt", "one\n", "add tracked")
+	writeFile(t, repo, "tracked.txt", "two\n")
+	writeFile(t, repo, "README.txt", "hello\nedited\n")
+	writeFile(t, repo, "kept.txt", "kept\n")
+	writeFile(t, repo, "vanishing.txt", "gone soon\n")
+	if err := os.Symlink("README.txt", filepath.Join(repo, "vanishing-link")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	nested := filepath.Join(repo, "nested")
+	testutil.RunGit(t, repo, "init", "--quiet", "-b", "main", nested)
+	testutil.RunGit(t, nested, "config", "user.name", "Agent Overflow")
+	testutil.RunGit(t, nested, "config", "user.email", "agent-overflow@example.com")
+	commitFile(t, nested, "n.txt", "n\n", "nested commit")
+	beforeWorktreeHash = func() {
+		for _, name := range []string{"tracked.txt", "vanishing.txt", "vanishing-link", "nested", "sm"} {
+			if err := os.RemoveAll(filepath.Join(repo, name)); err != nil {
+				t.Error(err)
+			}
+		}
+	}
+	t.Cleanup(func() { beforeWorktreeHash = nil })
+
+	got := worktreeChanges(t, repo)
+	want := []ChangedFile{
+		{Path: "README.txt", Status: "M", Additions: 1},
+		{Path: "kept.txt", Status: "A", Additions: 1},
+		{Path: "sm", Status: "D", Deletions: 1},
+		{Path: "tracked.txt", Status: "D", Deletions: 1},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("changes:\n got %+v\nwant %+v", got, want)
+	}
+}
+
+// A listed path git cannot read for any reason but its removal fails the
+// listing. Serial: it sets beforeWorktreeHash.
+func TestWorktreeChangesFailOnAnUnreadableListedPath(t *testing.T) {
+	repo := testutil.InitGitRepo(t)
+	writeFile(t, repo, "kept.txt", "kept\n")
+	writeFile(t, repo, "swapped.txt", "a file for now\n")
+	beforeWorktreeHash = func() {
+		path := filepath.Join(repo, "swapped.txt")
+		if err := os.Remove(path); err != nil {
+			t.Error(err)
+		}
+		if err := os.Mkdir(path, 0o755); err != nil {
+			t.Error(err)
+		}
+	}
+	t.Cleanup(func() { beforeWorktreeHash = nil })
+
+	root := t.TempDir()
+	files, err := WorktreeChanges(context.Background(), repo, root)
+	if err == nil || !strings.Contains(err.Error(), "hash worktree files") {
+		t.Fatalf("WorktreeChanges = %+v, %v; want the hash failure", files, err)
+	}
+	if left, readErr := os.ReadDir(root); readErr != nil || len(left) != 0 {
+		t.Fatalf("snapshot directory not released: %v %v", left, readErr)
+	}
+}

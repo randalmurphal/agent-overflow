@@ -25,14 +25,18 @@ import {
   type ProcessGroupMemberProof,
   type ProcessTreeProof,
 } from './harness-process.ts';
-import {
-  FALLBACK_MEMORY_LIMIT_BYTES,
-  HarnessWatchdog,
-} from './harness-watchdog.ts';
+import { FALLBACK_MEMORY_LIMIT_BYTES } from './harness-watchdog.ts';
 import { boundedCleanup } from './harness-cleanup.ts';
 import { BackendConsoleLog } from './harness-console-log.ts';
 import { launchEnvironment } from './harness-env.ts';
 import { productBinary, spawnProduct } from './product-process.ts';
+import {
+  BOOTSTRAP_STEP_MS,
+  LAUNCH_CLEANUP_MS,
+  LAUNCH_STEP_MS,
+  launchStep,
+  processDiagnostics,
+} from './harness-launch-step.ts';
 import { terminateHarness } from './harness-teardown.ts';
 import type { HarnessBootstrap, HarnessLaunchRecord, LaunchOptions } from './harness-types.ts';
 import { HarnessApp } from './harness-app.ts';
@@ -68,7 +72,11 @@ function normalizeSystemPath(value: string): string {
   return resolved;
 }
 
-/** Launch a harness-mode backend and connect to its event wire. */
+/**
+ * Launch a harness-mode backend and connect to its event wire. Every step
+ * runs under its own bound (harness-launch-step.ts), so a launch that stalls
+ * fails naming the step within `launchBudgetMs`.
+ */
 export async function launchHarness(opts: LaunchOptions = {}): Promise<HarnessApp> {
   const binary = opts.binary ?? productBinary('agent-overflow');
   const mockProvider = opts.mockProvider ?? process.env.AO_MOCKPROVIDER;
@@ -80,7 +88,9 @@ export async function launchHarness(opts: LaunchOptions = {}): Promise<HarnessAp
       'launchHarness requires the fixed ao-harness-e2e launcher; run `pnpm test`, `pnpm harness:flow`, or `bin/ao-harness-e2e`',
     );
   }
-  const requestedDataDir = opts.dataDir ?? (await mkdtemp(path.join(tmpdir(), 'ao-harness-')));
+  const requestedDataDir =
+    opts.dataDir ??
+    (await launchStep('create data dir', LAUNCH_STEP_MS, () => mkdtemp(path.join(tmpdir(), 'ao-harness-'))));
   const dataDir = normalizeSystemPath(requestedDataDir);
 
   const args = ['--harness', '--data-dir', dataDir];
@@ -139,35 +149,31 @@ export async function launchHarness(opts: LaunchOptions = {}): Promise<HarnessAp
     if (stderrTail.length > 200) stderrTail.shift();
     if (process.env.AO_HARNESS_DEBUG) console.error('[backend]', line);
   });
+  const diagnose = processDiagnostics('backend', child, () => stderrTail, [
+    `binary: ${binary}`,
+    `data dir: ${dataDir}`,
+  ]);
+  const step = <T>(name: string, boundMs: number, work: () => Promise<T>): Promise<T> =>
+    launchStep(name, boundMs, work, diagnose);
+  // A failed launch is stopped before its error is thrown, under a bound of
+  // its own, so a cleanup that stalls still reports the original failure.
+  // `cleanup` answers the error to throw, or undefined for the original.
+  const failure = async (error: unknown, cleanup: () => Promise<Error | undefined>): Promise<Error> => {
+    const cause = error instanceof Error ? error : new Error(String(error));
+    try {
+      return (await launchStep('clean up failed launch', LAUNCH_CLEANUP_MS, cleanup, diagnose)) ?? cause;
+    } catch (cleanupError) {
+      return new Error(`${cause.message}\n${(cleanupError as Error).message}`, { cause });
+    }
+  };
+
   // Attach to stdout immediately. Fast-failing fixtures can print and exit
   // while the launch identity is still being authenticated on macOS.
   const bootstrapPromise = new Promise<HarnessBootstrap>((resolve, reject) => {
-    const timeoutMs = opts.timeoutMs ?? 30_000;
-    const timer = setTimeout(() => {
-      void terminateHarness('SIGKILL', {
-        child,
-        watchdog: undefined,
-        memberProof: launchMemberProof,
-        treeProof: launchTreeProof,
-        identity: launchIdentity,
-        complete: false,
-        closed: false,
-        socketOpen: () => false,
-        shutdown: async () => undefined,
-        closeSocket: () => undefined,
-      });
-      reject(
-        new Error(
-          `harness did not print its bootstrap line within ${timeoutMs}ms\n` +
-            `binary: ${binary}\nstderr:\n${stderrTail.join('\n')}`,
-        ),
-      );
-    }, timeoutMs);
     createInterface({ input: child.stdout! }).on('line', (line) => {
       consoleLog.write(`[stdout] ${line}`);
       const at = line.indexOf(BOOTSTRAP_PREFIX);
       if (at === -1) return;
-      clearTimeout(timer);
       try {
         resolve(JSON.parse(line.slice(at + BOOTSTRAP_PREFIX.length)) as HarnessBootstrap);
       } catch (err) {
@@ -175,7 +181,6 @@ export async function launchHarness(opts: LaunchOptions = {}): Promise<HarnessAp
       }
     });
     child.on('exit', (code) => {
-      clearTimeout(timer);
       reject(
         new Error(
           `harness exited with code ${code} before printing its bootstrap line\n` +
@@ -184,7 +189,6 @@ export async function launchHarness(opts: LaunchOptions = {}): Promise<HarnessAp
       );
     });
     if (child.exitCode !== null || child.signalCode !== null) {
-      clearTimeout(timer);
       reject(
         new Error(
           `harness exited with code ${child.exitCode ?? 'signal'} before printing its bootstrap line\n` +
@@ -196,8 +200,9 @@ export async function launchHarness(opts: LaunchOptions = {}): Promise<HarnessAp
   // Mark early rejection handled while identity capture is in flight. Awaiting
   // the original promise below still receives the same rejection.
   void bootstrapPromise.catch(() => undefined);
+
   try {
-    launchIdentity = await captureProcessIdentity(child.pid);
+    launchIdentity = await step('identify process', LAUNCH_STEP_MS, () => captureProcessIdentity(child.pid));
   } catch (error) {
     if (child.exitCode !== null || child.signalCode !== null) {
       // The child can fail during runtime startup before the wrapper's exec
@@ -205,34 +210,40 @@ export async function launchHarness(opts: LaunchOptions = {}): Promise<HarnessAp
       // path so its stderr and owned data directory are still handled.
       launchIdentity = undefined;
     } else {
-      let proof: ProcessGroupMemberProof | undefined;
-      try {
-        proof = await captureProcessGroupMemberProofForPID(child.pid);
-      } catch (proofError) {
-        throw new Error(
-          `harness launch could not authenticate child and could not inspect its process group; preserving the owned root: ${(error as Error).message}; ${(proofError as Error).message}`,
-        );
-      }
-      if (!proof) {
-        throw new Error(
-          `harness launch could not authenticate child; preserving the owned root because no surviving process-group proof exists: ${(error as Error).message}`,
-        );
-      }
-      try {
-        await terminateChildTreeAndWaitVerified(child, undefined, 'SIGKILL', proof);
-      } catch (cleanupError) {
-        throw new Error(
-          `harness launch could not authenticate child and cleanup failed; preserving the owned root: ${(error as Error).message}; ${(cleanupError as Error).message}`,
-        );
-      }
-      if (ownsDataDir) await removeOwnedRoot(dataDir, consoleLog, 'after identity error');
-      throw new Error(`harness launch could not authenticate child: ${(error as Error).message}`);
+      throw await failure(error, async () => {
+        const reason = (error as Error).message;
+        let proof: ProcessGroupMemberProof | undefined;
+        try {
+          proof = await captureProcessGroupMemberProofForPID(child.pid);
+        } catch (proofError) {
+          return new Error(
+            `harness launch could not authenticate child and could not inspect its process group; preserving the owned root: ${reason}; ${(proofError as Error).message}`,
+          );
+        }
+        if (!proof) {
+          return new Error(
+            `harness launch could not authenticate child; preserving the owned root because no surviving process-group proof exists: ${reason}`,
+          );
+        }
+        try {
+          await terminateChildTreeAndWaitVerified(child, undefined, 'SIGKILL', proof);
+        } catch (cleanupError) {
+          return new Error(
+            `harness launch could not authenticate child and cleanup failed; preserving the owned root: ${reason}; ${(cleanupError as Error).message}`,
+          );
+        }
+        if (ownsDataDir) await removeOwnedRoot(dataDir, consoleLog, 'after identity error');
+        return new Error(`harness launch could not authenticate child: ${reason}`);
+      });
     }
   }
-  if (launchIdentity) {
+  const identity = launchIdentity;
+  if (identity) {
     try {
-      launchMemberProof = await captureProcessGroupMemberProof(launchIdentity);
-      launchTreeProof = await captureProcessTreeProof(launchIdentity);
+      await step('capture process proofs', LAUNCH_STEP_MS, async () => {
+        launchMemberProof = await captureProcessGroupMemberProof(identity);
+        launchTreeProof = await captureProcessTreeProof(identity);
+      });
     } catch (error) {
       console.error(`harness launch could not capture owned process-tree proof: ${(error as Error).message}`);
     }
@@ -240,7 +251,7 @@ export async function launchHarness(opts: LaunchOptions = {}): Promise<HarnessAp
 
   let app: HarnessApp | undefined;
   try {
-    const bootstrap = await bootstrapPromise;
+    const bootstrap = await step('bootstrap line', opts.timeoutMs ?? BOOTSTRAP_STEP_MS, () => bootstrapPromise);
     if (bootstrap.pid !== child.pid) {
       throw new Error(`harness bootstrap pid ${bootstrap.pid} does not match spawned pid ${child.pid}`);
     }
@@ -252,19 +263,21 @@ export async function launchHarness(opts: LaunchOptions = {}): Promise<HarnessAp
     if (bootstrap.startupError) {
       throw new Error(`harness backend failed to start: ${bootstrap.startupError}`);
     }
-    if (launchIdentity) {
-      const currentProof = await captureProcessGroupMemberProof(launchIdentity);
-      if (currentProof) launchMemberProof = currentProof;
-      try {
-        launchTreeProof = await captureProcessTreeProof(launchIdentity);
-      } catch (proofError) {
-        console.error(
-          `harness launch could not refresh owned process-tree proof: ${(proofError as Error).message}`,
-        );
-      }
+    if (identity) {
+      await step('refresh process proofs', LAUNCH_STEP_MS, async () => {
+        const currentProof = await captureProcessGroupMemberProof(identity);
+        if (currentProof) launchMemberProof = currentProof;
+        try {
+          launchTreeProof = await captureProcessTreeProof(identity);
+        } catch (proofError) {
+          console.error(
+            `harness launch could not refresh owned process-tree proof: ${(proofError as Error).message}`,
+          );
+        }
+      });
     }
 
-    app = new HarnessApp(
+    const started = new HarnessApp(
       child,
       bootstrap,
       consoleLog,
@@ -272,36 +285,41 @@ export async function launchHarness(opts: LaunchOptions = {}): Promise<HarnessAp
       ownsDataDir ? dataDir : undefined,
       launchMemberProof,
       launchTreeProof,
-      launchIdentity,
+      identity,
       stderrTail,
     );
-    await app.connect();
-    await app.startWatchdog(opts.memoryLimitBytes ?? FALLBACK_MEMORY_LIMIT_BYTES);
-    return app;
+    app = started;
+    await step('connect', LAUNCH_STEP_MS, () => started.connect());
+    await step('start watchdog', LAUNCH_STEP_MS, () =>
+      started.startWatchdog(opts.memoryLimitBytes ?? FALLBACK_MEMORY_LIMIT_BYTES),
+    );
+    return started;
   } catch (error) {
-    let safeToRemove = false;
-    try {
-      if (app) {
-        await app.close();
-      } else {
-        await terminateHarness('SIGKILL', {
-          child,
-          watchdog: undefined,
-          memberProof: launchMemberProof,
-          treeProof: launchTreeProof,
-          identity: launchIdentity,
-          complete: false,
-          closed: false,
-          socketOpen: () => false,
-          shutdown: async () => undefined,
-          closeSocket: () => undefined,
-        });
+    throw await failure(error, async () => {
+      let safeToRemove = false;
+      try {
+        if (app) {
+          await app.close();
+        } else {
+          await terminateHarness('SIGKILL', {
+            child,
+            watchdog: undefined,
+            memberProof: launchMemberProof,
+            treeProof: launchTreeProof,
+            identity,
+            complete: false,
+            closed: false,
+            socketOpen: () => false,
+            shutdown: async () => undefined,
+            closeSocket: () => undefined,
+          });
+        }
+        safeToRemove = true;
+      } finally {
+        if (ownsDataDir && safeToRemove) await removeOwnedRoot(dataDir, consoleLog, 'after launch error');
       }
-      safeToRemove = true;
-    } finally {
-      if (ownsDataDir && safeToRemove) await removeOwnedRoot(dataDir, consoleLog, 'after launch error');
-    }
-    throw error;
+      return undefined;
+    });
   }
 }
 

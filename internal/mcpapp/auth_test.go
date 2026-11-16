@@ -4,12 +4,14 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"agent-overflow/internal/procutil/procutiltest"
 )
 
 func TestStartClaudeMCPOAuthPollCancelsPriorRegistration(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	service := New(Deps{Context: func() context.Context { return ctx }})
+	service := New(Deps{Reaper: procutiltest.Reaper(), Context: func() context.Context { return ctx }})
 
 	peek := func(name string) *claudeMCPOAuthPoll {
 		service.claudeOAuthPollsMu.Lock()

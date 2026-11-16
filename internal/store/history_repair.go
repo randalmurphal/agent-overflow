@@ -425,11 +425,11 @@ func moveSealedRowsTx(tx *sql.Tx, threadID, chunkID string, piece []sealedRow) (
 	result, err = tx.Exec(`INSERT INTO items (
     id, thread_id, turn_index, item_index, kind, role, status, summary,
     payload_id, input_payload_id, parent_id, is_background, completion_of,
-    tool_name, decision, meta, created_at, updated_at
+    tool_name, decision, meta, created_at, updated_at, find_text
  )
  SELECT i.id, ?1, i.turn_index, i.item_index, i.kind, i.role, i.status, i.summary,
         i.payload_id, i.input_payload_id, i.parent_id, i.is_background, i.completion_of,
-        i.tool_name, i.decision, i.meta, i.created_at, i.updated_at
+        i.tool_name, i.decision, i.meta, i.created_at, i.updated_at, i.find_text
    FROM import_history_items i
   WHERE i.chunk_id = ?2 AND i.id IN (SELECT value FROM json_each(?3))
   ORDER BY i.turn_index, i.item_index`, threadID, chunkID, idList)

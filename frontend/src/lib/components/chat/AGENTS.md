@@ -111,6 +111,10 @@ islands, footnote popovers, selection preservation, and streamed reveal.
   and sanitizing with the options ChatMarkdown builds
   (`markdown/chatMarkdownOptions.ts`), and
   `markdownFindText.browser.test.ts` holds the two to the same text.
+- A timeline row marks the text thread find counts and paints with
+  `data-find-text`; `threadFindText.ts` projects the same text per row
+  kind. A renderer that changes what a row shows changes both, and
+  `threadFindText.browser.test.ts` holds them together.
 
 Use differential tests for both renderer paths and browser tests for DOM
 identity, selection, geometry, or actual scroll behavior.

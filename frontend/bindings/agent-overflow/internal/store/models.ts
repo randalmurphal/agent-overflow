@@ -1803,7 +1803,7 @@ export class Thread {
     "groupId"?: string;
 
     /**
-     * Placement is where the sidebar shows the row (migration v150):
+     * Placement is where the sidebar shows the row (migration v153):
      * PlacementOwned nowhere, as a worker of the thread that spawned it
      * (SpawnedByThreadID); PlacementGrouped in GroupID's group;
      * PlacementStandalone as a plain row of its project. The schema makes
@@ -2075,6 +2075,178 @@ export class ThreadAttention {
     static createFrom($$source: any = {}): ThreadAttention {
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         return new ThreadAttention($$parsedSource as Partial<ThreadAttention>);
+    }
+}
+
+/**
+ * ThreadFindAnswer is a thread find read: the rows of one transcript that
+ * may hold a match, as timeline pages serve them. The frontend decides
+ * which hold one, and where, by the find rule over each row's find text.
+ */
+export class ThreadFindAnswer {
+    /**
+     * Since is the state the answer read.
+     */
+    "since": ThreadFindSince;
+
+    /**
+     * Incremental is set when the answer holds only what changed after
+     * the state the caller passed.
+     */
+    "incremental": boolean;
+
+    /**
+     * Items are candidate rows in document order: every one of the
+     * transcript's, or of an incremental answer the changed ones.
+     */
+    "items": Item[];
+
+    /**
+     * Changed are the ids of every row an incremental answer re-read,
+     * whether it is a candidate now or not. A row among them that Items
+     * does not hold is no longer a candidate.
+     */
+    "changed": string[];
+
+    /**
+     * Capped is set when a full answer stopped at its limit with more
+     * candidates after it.
+     */
+    "capped": boolean;
+
+    /** Creates a new ThreadFindAnswer instance. */
+    constructor($$source: Partial<ThreadFindAnswer> = {}) {
+        if (!("since" in $$source)) {
+            this["since"] = (new ThreadFindSince());
+        }
+        if (!("incremental" in $$source)) {
+            this["incremental"] = false;
+        }
+        if (!("items" in $$source)) {
+            this["items"] = [];
+        }
+        if (!("changed" in $$source)) {
+            this["changed"] = [];
+        }
+        if (!("capped" in $$source)) {
+            this["capped"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ThreadFindAnswer instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ThreadFindAnswer {
+        const $$createField0_0 = $$createType30;
+        const $$createField2_0 = $$createType1;
+        const $$createField3_0 = $$createType5;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("since" in $$parsedSource) {
+            $$parsedSource["since"] = $$createField0_0($$parsedSource["since"]);
+        }
+        if ("items" in $$parsedSource) {
+            $$parsedSource["items"] = $$createField2_0($$parsedSource["items"]);
+        }
+        if ("changed" in $$parsedSource) {
+            $$parsedSource["changed"] = $$createField3_0($$parsedSource["changed"]);
+        }
+        return new ThreadFindAnswer($$parsedSource as Partial<ThreadFindAnswer>);
+    }
+}
+
+/**
+ * ThreadFindSince is the read a thread find answer made and the state of
+ * the transcript it read. A refresh passes it back to re-read only what
+ * changed; the read is incremental only when it is the same read of a
+ * later state.
+ */
+export class ThreadFindSince {
+    "threadId": string;
+
+    /**
+     * Needle is the query's loose form (findNeedle).
+     */
+    "needle": string;
+
+    /**
+     * Selection is the transcript read, as resolved.
+     */
+    "selection": TimelineSelection;
+    "limit": number;
+
+    /**
+     * Capped is set when the answer stopped at its limit: the rows after
+     * it are unknown, so a refresh reads in full.
+     */
+    "capped": boolean;
+
+    /**
+     * Generation is the store's replica generation, which a restore
+     * re-mints.
+     */
+    "generation": string;
+
+    /**
+     * Rev and Epoch are the thread's history_rev and history_epoch.
+     */
+    "rev": number;
+    "epoch": number;
+
+    /**
+     * ImportChunks and ImportOrder are the count and the last order of the
+     * imported history chunks the thread reads.
+     */
+    "importChunks": number;
+    "importOrder": number;
+
+    /** Creates a new ThreadFindSince instance. */
+    constructor($$source: Partial<ThreadFindSince> = {}) {
+        if (!("threadId" in $$source)) {
+            this["threadId"] = "";
+        }
+        if (!("needle" in $$source)) {
+            this["needle"] = "";
+        }
+        if (!("selection" in $$source)) {
+            this["selection"] = (new TimelineSelection());
+        }
+        if (!("limit" in $$source)) {
+            this["limit"] = 0;
+        }
+        if (!("capped" in $$source)) {
+            this["capped"] = false;
+        }
+        if (!("generation" in $$source)) {
+            this["generation"] = "";
+        }
+        if (!("rev" in $$source)) {
+            this["rev"] = 0;
+        }
+        if (!("epoch" in $$source)) {
+            this["epoch"] = 0;
+        }
+        if (!("importChunks" in $$source)) {
+            this["importChunks"] = 0;
+        }
+        if (!("importOrder" in $$source)) {
+            this["importOrder"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ThreadFindSince instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ThreadFindSince {
+        const $$createField2_0 = $$createType31;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("selection" in $$parsedSource) {
+            $$parsedSource["selection"] = $$createField2_0($$parsedSource["selection"]);
+        }
+        return new ThreadFindSince($$parsedSource as Partial<ThreadFindSince>);
     }
 }
 
@@ -2366,8 +2538,8 @@ export class TimelineDigestContext {
      * Creates a new TimelineDigestContext instance from a string or object.
      */
     static createFrom($$source: any = {}): TimelineDigestContext {
-        const $$createField0_0 = $$createType30;
-        const $$createField1_0 = $$createType30;
+        const $$createField0_0 = $$createType32;
+        const $$createField1_0 = $$createType32;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("after" in $$parsedSource) {
             $$parsedSource["after"] = $$createField0_0($$parsedSource["after"]);
@@ -2409,7 +2581,7 @@ export class TimelineScopeContext {
         const $$createField0_0 = $$createType0;
         const $$createField1_0 = $$createType0;
         const $$createField2_0 = $$createType17;
-        const $$createField3_0 = $$createType32;
+        const $$createField3_0 = $$createType34;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("root" in $$parsedSource) {
             $$parsedSource["root"] = $$createField0_0($$parsedSource["root"]);
@@ -2987,6 +3159,8 @@ const $$createType26 = Project.createFrom;
 const $$createType27 = ThreadAttention.createFrom;
 const $$createType28 = $Create.Nullable($$createType27);
 const $$createType29 = ThreadOrigin.createFrom;
-const $$createType30 = $Create.Nullable($$createType21);
-const $$createType31 = TimelineDigestContext.createFrom;
-const $$createType32 = $Create.Nullable($$createType31);
+const $$createType30 = ThreadFindSince.createFrom;
+const $$createType31 = TimelineSelection.createFrom;
+const $$createType32 = $Create.Nullable($$createType21);
+const $$createType33 = TimelineDigestContext.createFrom;
+const $$createType34 = $Create.Nullable($$createType33);

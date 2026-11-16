@@ -6,7 +6,9 @@ import (
 	"slices"
 	"strings"
 
+	"agent-overflow/internal/agentmeta"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/stringsx"
 	"agent-overflow/internal/threadtools"
 )
 
@@ -21,7 +23,7 @@ import (
 //   - StoppedWorker: the notice that the user stopped a spawner's worker.
 //   - Message: a thread's message with no footer, from its sender and body.
 //   - Report: every other message the app writes for an agent, of one of
-//     the ReportKinds.
+//     the agentmeta.ReportKinds.
 //   - PersonMessage and AppMessage: the person's own words and the app's
 //     on their behalf, which no agent row reads.
 //   - DecodeStored: a message read back from where it was stored, checked.
@@ -32,16 +34,16 @@ import (
 type AgentMessage struct {
 	text   string
 	origin string
-	thread *OriginThread
-	wake   *OriginWake
+	thread *agentmeta.OriginThread
+	wake   *agentmeta.OriginWake
 }
 
 // Attribution is a message's attribution as a row's meta stores it: its
 // origin and the OriginThread or OriginWake, with the facts, of that origin.
 type Attribution struct {
 	Origin string
-	Thread *OriginThread
-	Wake   *OriginWake
+	Thread *agentmeta.OriginThread
+	Wake   *agentmeta.OriginWake
 }
 
 // Text is what the message says, to the agent and in the row.
@@ -53,37 +55,7 @@ func (m AgentMessage) Origin() string { return m.origin }
 // Attribution is a copy of the message's attribution, which shares nothing
 // with the message.
 func (m AgentMessage) Attribution() Attribution {
-	return Attribution{Origin: m.origin, Thread: m.thread.clone(), Wake: m.wake.clone()}
-}
-
-func (t *OriginThread) clone() *OriginThread {
-	if t == nil {
-		return nil
-	}
-	copied := *t
-	copied.Facts = cloneFacts(t.Facts)
-	return &copied
-}
-
-func (w *OriginWake) clone() *OriginWake {
-	if w == nil {
-		return nil
-	}
-	copied := *w
-	copied.Facts = cloneFacts(w.Facts)
-	if w.Report != nil {
-		report := *w.Report
-		copied.Report = &report
-	}
-	return &copied
-}
-
-func cloneFacts(facts *threadtools.MessageFacts) *threadtools.MessageFacts {
-	if facts == nil {
-		return nil
-	}
-	copied := facts.Clone()
-	return &copied
+	return Attribution{Origin: m.origin, Thread: m.thread.Clone(), Wake: m.wake.Clone()}
 }
 
 // requestKinds are the OriginThread kinds of a request.
@@ -111,7 +83,7 @@ func Request(kind string, from Sender, footer threadtools.Footer, body string) (
 		return AgentMessage{}, fmt.Errorf("a request from thread %s with no token", from.ThreadID)
 	}
 	text, facts := footer.Message(body)
-	return threadMessage(text, facts, OriginThread{
+	return threadMessage(text, facts, agentmeta.OriginThread{
 		ComputerID: from.ComputerID, ComputerName: from.ComputerName, ThreadID: from.ThreadID, Title: from.Title,
 		Token: footer.Token, Kind: kind,
 	}), nil
@@ -120,10 +92,10 @@ func Request(kind string, from Sender, footer threadtools.Footer, body string) (
 // threadMessage is an agent thread's message of text, attributed to from
 // with facts. The facts are copied: what a renderer returns can share slices
 // with the value it rendered, which stays its caller's.
-func threadMessage(text string, facts threadtools.MessageFacts, from OriginThread) AgentMessage {
+func threadMessage(text string, facts threadtools.MessageFacts, from agentmeta.OriginThread) AgentMessage {
 	facts = facts.Clone()
 	from.Facts = &facts
-	return AgentMessage{text: text, origin: OriginAgentThread, thread: &from}
+	return AgentMessage{text: text, origin: agentmeta.OriginAgentThread, thread: &from}
 }
 
 // Answer is what a request's caller is told of it (threadtools.Wake.Message),
@@ -143,7 +115,7 @@ func Answer(wake threadtools.Wake) (AgentMessage, error) {
 		}
 	}
 	first := wake.Sources[0]
-	from := OriginThread{Kind: OriginKindWake, Token: first.Tokens[0]}
+	from := agentmeta.OriginThread{Kind: agentmeta.OriginKindWake, Token: first.Tokens[0]}
 	if wake.Kind == threadtools.WakeReminder {
 		if len(wake.Sources) > 1 || first.ThreadID != "" || first.Title != "" || first.ComputerID != "" || first.Computer != "" {
 			return AgentMessage{}, fmt.Errorf("a reminder from thread %q (%s): a reminder is the caller's own", first.Title, first.ThreadID)
@@ -165,9 +137,9 @@ func StoppedWorker(notice threadtools.WorkerStopped, computerID, computerName st
 		return AgentMessage{}, fmt.Errorf("a stopped worker's notice for thread %q under token %q", notice.ThreadID, notice.Token)
 	}
 	text, facts := notice.Message()
-	return threadMessage(text, facts, OriginThread{
+	return threadMessage(text, facts, agentmeta.OriginThread{
 		ComputerID: computerID, ComputerName: computerName, ThreadID: notice.ThreadID, Title: notice.Title,
-		Token: notice.Token, Kind: OriginKindWake,
+		Token: notice.Token, Kind: agentmeta.OriginKindWake,
 	}), nil
 }
 
@@ -188,7 +160,7 @@ func Message(from Sender, body string) (AgentMessage, error) {
 		return AgentMessage{}, errors.New("a thread's message from no thread")
 	}
 	text, facts := threadtools.PlainMessage(body)
-	return threadMessage(text, facts, OriginThread{
+	return threadMessage(text, facts, agentmeta.OriginThread{
 		ComputerID: from.ComputerID, ComputerName: from.ComputerName, ThreadID: from.ThreadID, Title: from.Title,
 	}), nil
 }
@@ -197,9 +169,11 @@ func Message(from Sender, body string) (AgentMessage, error) {
 func PersonMessage(text string) AgentMessage { return AgentMessage{text: text} }
 
 // AppMessage is Agent Overflow writing in its own voice on the person's
-// behalf, such as the Continue after a usage limit (OriginApp): the
+// behalf, such as the Continue after a usage limit (agentmeta.OriginApp): the
 // person's row, labelled as the app's, with nothing an agent row reads.
-func AppMessage(text string) AgentMessage { return AgentMessage{text: text, origin: OriginApp} }
+func AppMessage(text string) AgentMessage {
+	return AgentMessage{text: text, origin: agentmeta.OriginApp}
+}
 
 // ErrStoredMessage is what DecodeStored returns for a stored message whose
 // attribution or facts are not what any constructor writes.
@@ -214,8 +188,8 @@ var ErrStoredMessage = errors.New("the stored message's attribution does not hol
 // sender, with facts that claim nothing of it (threadtools.Whole). An agent
 // thread's message with no facts at all is one main wrote, kept as it is
 // for Describe's legacy reader.
-func DecodeStored(text, origin string, thread *OriginThread, wake *OriginWake) (AgentMessage, error) {
-	message := AgentMessage{text: text, origin: origin, thread: thread.clone(), wake: wake.clone()}
+func DecodeStored(text, origin string, thread *agentmeta.OriginThread, wake *agentmeta.OriginWake) (AgentMessage, error) {
+	message := AgentMessage{text: text, origin: origin, thread: thread.Clone(), wake: wake.Clone()}
 	refuse := func(format string, args ...any) (AgentMessage, error) {
 		err := fmt.Errorf("%w: %s", ErrStoredMessage, fmt.Sprintf(format, args...))
 		whole := threadtools.Whole(text)
@@ -228,13 +202,13 @@ func DecodeStored(text, origin string, thread *OriginThread, wake *OriginWake) (
 		return message, err
 	}
 	switch origin {
-	case "", OriginApp:
+	case "", agentmeta.OriginApp:
 		if thread != nil || wake != nil {
 			message.thread, message.wake = nil, nil
 			return message, fmt.Errorf("%w: a message of origin %q carries an agent's attribution", ErrStoredMessage, origin)
 		}
 		return message, nil
-	case OriginAgentThread:
+	case agentmeta.OriginAgentThread:
 		if wake != nil {
 			message.wake = nil
 			return refuse("an agent thread's message carries a wake's attribution")
@@ -246,14 +220,14 @@ func DecodeStored(text, origin string, thread *OriginThread, wake *OriginWake) (
 			return refuse("%v", err)
 		}
 		return message, nil
-	case OriginAgentWake:
+	case agentmeta.OriginAgentWake:
 		if thread != nil {
 			message.thread = nil
 		}
 		if wake == nil {
 			return message, fmt.Errorf("%w: a report names no reporter", ErrStoredMessage)
 		}
-		if !ReportKind(wake.Kind).known() {
+		if !agentmeta.ReportKind(wake.Kind).Known() {
 			return refuse("a report of kind %q", wake.Kind)
 		}
 		if thread != nil {
@@ -269,4 +243,46 @@ func DecodeStored(text, origin string, thread *OriginThread, wake *OriginWake) (
 	}
 	message.thread, message.wake = nil, nil
 	return message, fmt.Errorf("%w: origin %q is no message the app writes", ErrStoredMessage, origin)
+}
+
+// Reporter is what a Report is from, as its row names it: the loop or watch
+// label, the worker's title and thread, the remote job's label and computer,
+// the workflow's id, or the assistant's name. An outside send has none.
+type Reporter struct {
+	Label    string
+	ThreadID string
+	Computer string
+}
+
+// HeadlineBytes bounds the header line a Report's facts carry.
+const HeadlineBytes = 512
+
+// Report is a message the app writes for an agent that is no thread's
+// request, answer or message: a loop's fire, a watch's output, an outside
+// send, a worker's prompt, a remote job's report, a workflow run's wake, an
+// assistant's opening. Its text is notice, the line written for the agent
+// that the row does not show, then data, which the row shows; a message
+// that is prose throughout has no notice. Blank lines that open data are
+// spacing, not body. headline is what the row's header says it is about,
+// folded onto one bounded line; empty when that is the data's first line.
+// A kind that is none of the agentmeta.ReportKinds is refused.
+func Report(kind agentmeta.ReportKind, from Reporter, notice, data, headline string) (AgentMessage, error) {
+	if !kind.Known() {
+		return AgentMessage{}, fmt.Errorf("a report of kind %q", kind)
+	}
+	text, start := data, 0
+	if notice != "" {
+		text, start = notice+"\n"+data, len(notice)+1
+	}
+	start += len(data) - len(strings.TrimLeft(data, "\n"))
+	facts := threadtools.MessageFacts{
+		Form: threadtools.FormReport, Bytes: len(text),
+		Headline: stringsx.ClipRunes(strings.Join(strings.Fields(headline), " "), HeadlineBytes),
+	}
+	if start < len(text) {
+		facts.Body = []threadtools.Span{{Start: start, End: len(text)}}
+	}
+	return AgentMessage{text: text, origin: agentmeta.OriginAgentWake, wake: &agentmeta.OriginWake{
+		Kind: string(kind), Label: from.Label, ThreadID: from.ThreadID, Computer: from.Computer, Facts: &facts,
+	}}, nil
 }

@@ -23,8 +23,9 @@ func TestAStoppedRequestsWakeNamesWhoStoppedIt(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
 		name string
-		// before sets up another thread's cancel and returns that thread.
-		before func(t *testing.T, f *requestFixture, threadID string) threadtools.Caller
+		// before sets up another thread's cancel and returns that thread,
+		// and the request it left open on the stopped thread, if any.
+		before func(t *testing.T, f *requestFixture, threadID string) (threadtools.Caller, string)
 		stop   func(f *requestFixture, threadID string, by threadtools.Caller) error
 		want   func(by threadtools.Caller) string
 		label  func(by threadtools.Caller) string
@@ -41,12 +42,15 @@ func TestAStoppedRequestsWakeNamesWhoStoppedIt(t *testing.T) {
 			// A thread that sent to it, not the one that spawned it: a
 			// spawner's thread_cancel brings the thread to rest instead.
 			name: "another thread's thread_cancel",
-			before: func(t *testing.T, f *requestFixture, threadID string) threadtools.Caller {
+			// Its own message goes to the session during the turn it then
+			// stops, and no turn reads it.
+			before: func(t *testing.T, f *requestFixture, threadID string) (threadtools.Caller, string) {
 				other := f.targetIdentity(t, f.plainThread(t).ID)
-				if _, err := f.adapter().Send(t.Context(), other, threadtools.SendCall{ThreadID: threadID, Message: "and this"}); err != nil {
+				sent, err := f.adapter().Send(t.Context(), other, threadtools.SendCall{ThreadID: threadID, Message: "and this"})
+				if err != nil {
 					t.Fatalf("the other thread's send: %v", err)
 				}
-				return other
+				return other, sent.Token
 			},
 			stop: func(f *requestFixture, threadID string, by threadtools.Caller) error {
 				_, err := f.adapter().Cancel(context.Background(), by, threadtools.CancelCall{ThreadID: threadID})
@@ -94,8 +98,9 @@ func TestAStoppedRequestsWakeNamesWhoStoppedIt(t *testing.T) {
 			// once the stop is recorded, which is just before the interrupt
 			// is sent, so the turn ends after the stop sampled it.
 			var by threadtools.Caller
+			var open string
 			if testCase.before != nil {
-				by = testCase.before(t, f, ack.ThreadID)
+				by, open = testCase.before(t, f, ack.ThreadID)
 			}
 			stopped := make(chan error, 1)
 			go func() { stopped <- testCase.stop(f, ack.ThreadID, by) }()
@@ -126,7 +131,18 @@ func TestAStoppedRequestsWakeNamesWhoStoppedIt(t *testing.T) {
 				t.Errorf("stop rows in the stopped thread = %q, want [%q]", stopRows, want)
 			}
 
-			// The stop leaves with the thread's last open request.
+			// The stop leaves with the thread's last open request. A request
+			// whose message the session holds unread is still open, so the
+			// stop stays until it settles.
+			if open != "" {
+				f.awaitRequestState(t, open, store.ThreadRequestRunning)
+				if !f.app.holdsTurnStop(ack.ThreadID) {
+					t.Fatal("the stop left while a request was still open on the thread")
+				}
+				if _, err := f.adapter().Reply(t.Context(), f.targetIdentity(t, ack.ThreadID), threadtools.ReplyCall{Token: open, Text: "seen"}); err != nil {
+					t.Fatalf("reply to the open request: %v", err)
+				}
+			}
 			waitUntil(t, 10*time.Second, func() bool { return !f.app.holdsTurnStop(ack.ThreadID) })
 		})
 	}

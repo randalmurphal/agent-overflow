@@ -8,7 +8,7 @@ import {
   threadWorkerSummaryRetentionForTest,
 } from './threadWorkerSummaries.svelte';
 import { applyThreadAgentRowsChanged, applyThreadAgentRowsGap } from './eventsThreadAgentRows';
-import { applyThreadUpdated } from './eventsThreadRows';
+import { applyThreadDeleted, applyThreadUpdated } from './eventsThreadRows';
 import { DisconnectedError } from '../transport/wsClient';
 import type { ThreadWorkerSummary, ThreadWorkerSummaryPage } from './bindings';
 import { HOME_BACKEND } from '../transport/backendKey';
@@ -452,5 +452,13 @@ describe('thread worker summaries', () => {
     expect(get).toHaveBeenCalledTimes(3);
     expect(getThreadWorkerCounts('kept')).toEqual({ open: 0, needYou: 0 });
     expect(threadWorkerSummaryRetentionForTest()).toEqual({ ...EMPTY_RETENTION, snapshots: 1 });
+  });
+
+  it('forgets the counts of a thread a draft save found deleted, before its broadcast', async () => {
+    setBindingMock('ListThreadWorkerSummaries', async () => page([summary('gone', 2, 1), summary('kept', 1)]));
+    await refreshThreadWorkerSummaries();
+    applyThreadDeleted('gone');
+    expect(getThreadWorkerCounts('gone')).toEqual({ open: 0, needYou: 0 });
+    expect(getThreadWorkerCounts('kept')).toEqual({ open: 1, needYou: 0 });
   });
 });

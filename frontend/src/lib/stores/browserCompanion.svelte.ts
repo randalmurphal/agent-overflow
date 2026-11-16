@@ -26,6 +26,8 @@ import { addPaneThreadMountedObserver, focusPane, getAllPanes, getFocusedPaneId,
 import { hasScope } from '../transport/scopes';
 import { isCompactLayout } from './layoutMode.svelte';
 import { errString } from '../utils/errors';
+import { createSequenceGate } from './snapshotStream';
+import { getTransportHelloFor } from './transportStatus.svelte';
 
 // The browser pane's state store. The pane surface itself is an empty host
 // rect the platform positions a NATIVE browser view over (spec
@@ -48,6 +50,17 @@ const paneIds = new Map<string, string>();
 // header's browser chip re-evaluates only when ITS thread's pages change.
 const liveStates = createKeyedSignalRegistry<BrowserCompanionEvent | null>(null);
 const hydratedThreads = new Set<string>();
+
+// A thread's state arrives as pushes and as the answers of attach, action
+// and hydrate calls, and the transport can write a push published after a
+// call returned ahead of its reply. The backend numbers every snapshot, so
+// the newest by that number wins, whatever the arrival order.
+const stateOrder = createSequenceGate();
+
+/** Whether `state` is newer than every state of its thread seen so far. */
+function admitState(state: BrowserCompanionEvent): boolean {
+  return stateOrder.admit(state.threadId, state.seq, getTransportHelloFor(HOME_BACKEND)?.launchId ?? '');
+}
 
 /**
  * Whether THIS page can host the thread's native browser pane: the host's
@@ -97,7 +110,9 @@ const store = createEntityStore<BrowserCompanionView, void>({
     if (!canUseNativeBrowser(key)) throw new Error('A native browser pane is unavailable for this conversation on this device.');
     const result = await BrowserCompanionPaneAttach(key);
     paneIds.set(key, result.id);
-    apply(emptyView(result.state));
+    // A push that landed during the attach is newer than its answer.
+    const held = store.snapshot(key)?.state;
+    apply(emptyView(admitState(result.state) || !held ? result.state : held));
     return async () => {
       if (paneIds.get(key) === result.id) paneIds.delete(key);
       await BrowserCompanionPaneDetach(result.id);
@@ -166,6 +181,7 @@ export function applyBrowserCompanionState(event: BrowserCompanionEvent): void {
     return;
   }
   if (event.kind !== 'state') return;
+  if (!admitState(event)) return;
   hydratedThreads.add(event.threadId);
   if ((event.pages?.length ?? 0) > 0) liveStates.set(event.threadId, event);
   else liveStates.drop(event.threadId);
@@ -330,9 +346,8 @@ export function closeFocusedBrowserTab(): boolean {
 // The `browser:companion-state` channel is ephemeral (no replay), so a
 // freshly loaded UI cannot know a thread already has live pages. One
 // backend read per thread fills that in; every later change arrives as a
-// push. A push that lands first — or while the read is in flight — is
-// newer and wins: it marks the thread hydrated and the read's result is
-// dropped.
+// push. A push newer than the read's answer, whenever it landed, wins by
+// its number (`admitState`).
 export function hydrateBrowserCompanionState(threadId: string): void {
   if (!threadId || hydratedThreads.has(threadId)) return;
   // The read rides `host`, and it runs on every pane thread mount, so a
@@ -350,8 +365,7 @@ export function hydrateBrowserCompanionState(threadId: string): void {
     // same failure path as a rejection: callers run this from $effect bodies,
     // where an escaping throw tears down the component's effects.
     try {
-      const state = await BrowserCompanionThreadState(threadId);
-      if (liveStates.get(threadId) === null) applyBrowserCompanionState(state);
+      applyBrowserCompanionState(await BrowserCompanionThreadState(threadId));
     } catch {
       // A failed read (backend restarting, thread gone) must not pin the
       // thread as hydrated forever; the next mount retries.
@@ -370,6 +384,7 @@ addPaneThreadMountedObserver(reconcileBrowserCompanionForPane);
 
 export function resetBrowserCompanionForTest(): void {
   paneIds.clear();
+  stateOrder.reset();
   liveStates.reset();
   findCleanupErrors.reset();
   hydratedThreads.clear();

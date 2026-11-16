@@ -407,7 +407,9 @@ func NewRouter(st *store.Store, emit func(eventchan.Channel, any)) *Router {
 			usageEmit:            usageEmitMinInterval,
 		},
 	}
-	r.announcer = NewThreadAnnouncer(func(threadID string) (store.Thread, error) { return r.store.GetThread(threadID) })
+	r.announcer = NewThreadAnnouncer(
+		func(threadID string) (store.Thread, error) { return r.store.GetThread(threadID) },
+		func(threadID string) (bool, error) { return r.store.ThreadListed(threadID) })
 	return r
 }
 
@@ -1378,7 +1380,7 @@ func (r *Router) handleSubagentStatus(evt provider.ProviderEvent) error {
 // Action names what the receiver must do with the row, not which RPC ran,
 // because membership of the active sidebar is not derivable from the row
 // alone (listing also depends on whether the thread has items or draft
-// content, which only the backend knows):
+// content, which only the backend knows; store.sidebarListedClause):
 //
 //   - "full"     the row's current state — converge a row the client already
 //     has. Says nothing about membership, so a client that does
@@ -1387,11 +1389,14 @@ func (r *Router) handleSubagentStatus(evt provider.ProviderEvent) error {
 //     and keeps any pane that shows it.
 //   - "patch"    changed fields only, keyed by ID.
 //   - "listed"   the row belongs in the active sidebar now — insert it if
-//     absent (creation, fork, terminal start, unarchive, a
-//     placement or group move that gives an owned thread a row).
+//     absent (creation of a listed row, fork, terminal start, unarchive,
+//     the first item, draft content or worktree of a never-sent thread,
+//     and a placement or group move that gives an owned thread a row).
 //     An owned row is still kept out of the sidebar.
 //   - "unlisted" the row has left the active sidebar but still exists
-//     (archive). Carries the row so open panes converge too.
+//     (archive). Carries the row so open panes converge too, then close.
+//   - "emptied"  a never-sent thread lost what listed it (its draft text,
+//     its worktree). It leaves the sidebar; panes showing it keep it.
 //   - "deleted"  the row is gone from SQLite. ID only; one per row of a
 //     deleted tree, children included.
 type ThreadUpdateEvent struct {
@@ -1423,6 +1428,7 @@ const (
 	ThreadActionPatch    = "patch"
 	ThreadActionListed   = "listed"
 	ThreadActionUnlisted = "unlisted"
+	ThreadActionEmptied  = "emptied"
 	ThreadActionDeleted  = "deleted"
 )
 

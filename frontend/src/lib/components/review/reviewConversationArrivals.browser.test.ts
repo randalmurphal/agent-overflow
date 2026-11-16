@@ -234,6 +234,24 @@ describe('a reader scrolled into the Conversation feed', () => {
     expect(Math.abs(offsetOf(top) - before)).toBeLessThanOrEqual(1);
   });
 
+  it('shows the bounded-read notice from a frame, keeping the top card where it was, and drops it when a frame lacks it', async () => {
+    await openConversation();
+    const top = await scrollIntoFeed();
+    const before = offsetOf(top);
+    const notice = 'Only the first 1000 threads and comments of this conversation are shown; the rest are on GitHub.';
+    seq += 1;
+    applyPRUpdatedEvent({ prKey: KEY, detail: detail(), threads, headSHA: 'sha-a', seq, threadsTruncated: notice });
+    flushSync();
+    await frames(3);
+    expect(testid('review-threads-truncated')?.textContent).toBe(notice);
+    expect(Math.abs(offsetOf(top) - before)).toBeLessThanOrEqual(1);
+    seq += 1;
+    applyPRUpdatedEvent({ prKey: KEY, detail: detail(), threads, headSHA: 'sha-a', seq });
+    flushSync();
+    await frames(2);
+    expect(testid('review-threads-truncated')).toBeNull();
+  });
+
   it('loses the chip once the arrival is scrolled into view', async () => {
     await openConversation();
     await scrollIntoFeed();

@@ -56,11 +56,17 @@ func (f *MCPStatusFetcher) Fetch(ctx context.Context, _ mcpstatus.Provider) ([]m
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, f.Binary, "mcp", "list")
+	// `mcp list` never starts the transcript sweep (claude-wire.md,
+	// "Transcript cleanup"), so it carries no period.
+	line, err := NewCommandLine(NoSweepRetention(), "", "mcp", "list")
+	if err != nil {
+		return nil, err
+	}
+	cmd := exec.CommandContext(ctx, f.Binary, line.Args()...)
 	if f.Cwd != "" {
 		cmd.Dir = f.Cwd
 	}
-	cmd.Env = provider.FilterEnvironment(f.Env, ConfigHomeUnsetEnv()...)
+	cmd.Env = provider.FilterEnvironment(f.Env, line.UnsetEnv()...)
 	// TERM at the deadline, KILL only after WaitDelay — never exec's default
 	// instant SIGKILL. This runs in the canonical home under a tight timeout,
 	// and the CLI may be mid OAuth refresh when the deadline lands; Anthropic

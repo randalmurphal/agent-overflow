@@ -40,24 +40,29 @@ type graphQLOp struct {
 const githubGraphQLPageSize = 100
 
 var githubGraphQL = []graphQLOp{
-	{kind: "query", name: "PRTick", required: []string{"owner", "name", "number", "wantDetail", "wantThreads", "wantEvents", "wantChecks", "wantReactions"}, run: withReactionGroups(ghPRTick)},
-	{kind: "query", name: "PRThreadsPage", required: []string{"owner", "name", "number", "after", "wantReactions"}, run: withReactionGroups(ghPRThreadsPage)},
-	{kind: "query", name: "PRCommentsPage", required: []string{"owner", "name", "number", "after", "wantReactions"}, run: withReactionGroups(ghPRCommentsPage)},
+	{kind: "query", name: "PRTick", required: []string{"owner", "name", "number", "wantDetail", "wantThreads", "wantEvents", "wantChecks", "wantReactions", "pageSize", "wantManage", "wantTeams", "wantCheckRuns", "wantWorkflowRuns"}, run: withReactionGroups(ghPRTick)},
+	{kind: "query", name: "PRThreadsPage", required: []string{"owner", "name", "number", "after", "wantReactions", "pageSize"}, run: withReactionGroups(ghPRThreadsPage)},
+	{kind: "query", name: "PRCommentsPage", required: []string{"owner", "name", "number", "after", "wantReactions", "pageSize"}, run: withReactionGroups(ghPRCommentsPage)},
 	{kind: "query", name: "PRThreadStatesPage", required: []string{"owner", "name", "number", "after"}, run: ghPRThreadStatesPage},
-	{kind: "query", name: "PRTimelinePage", required: []string{"owner", "name", "number", "before"}, run: ghPRTimelinePage},
+	{kind: "query", name: "PRTimelinePage", required: []string{"owner", "name", "number", "before", "wantTeams"}, run: ghPRTimelinePage},
 	{kind: "query", name: "ThreadCommentsPage", required: []string{"threadID", "after", "wantReactions"}, run: withReactionGroups(ghThreadCommentsPage)},
-	{kind: "query", name: "RollupContextsPage", required: []string{"commitID", "number", "after"}, run: ghRollupContextsPage},
+	{kind: "query", name: "RollupContextsPage", required: []string{"commitID", "number", "after", "wantCheckRuns", "wantWorkflowRuns"}, run: ghRollupContextsPage},
 	{kind: "query", name: "CommentOwner", required: []string{"id"}, run: ghCommentOwner},
+	{kind: "query", name: "ThreadOwner", required: []string{"id"}, run: ghThreadOwner},
 	{kind: "mutation", name: "SetThreadResolved", required: []string{"threadID", "resolved"}, run: ghSetThreadResolved},
-	{kind: "query", name: "PullsSearch", required: []string{"query"}, optional: []string{"after"}, run: ghPullsSearch},
+	{kind: "query", name: "PullsSearch", required: []string{"query", "wantChecks"}, optional: []string{"after"}, run: ghPullsSearch},
 	{kind: "query", name: "OpenPRsByHead", required: []string{"owner", "name", "head"}, optional: []string{"after"}, run: ghOpenPRsByHead},
 	{kind: "query", name: "MergedPRs", required: []string{"owner", "name", "first"}, optional: []string{"after"}, run: ghMergedPRs},
 	{kind: "query", name: "PRStates", required: []string{"ids"}, run: ghPRStates},
 	{kind: "query", name: "PRMergeTarget", required: []string{"owner", "name", "number"}, run: ghPRMergeTarget},
 	{kind: "query", name: "ViewerApproval", required: []string{"owner", "name", "number"}, run: ghViewerApproval},
+	{kind: "query", name: "ViewerReviews", required: []string{"owner", "name", "number"}, run: ghViewerReviews},
 	{kind: "mutation", name: "MergePR", required: []string{"pullRequestID", "method", "expectedHeadOid"}, run: ghMergePR},
 	{kind: "mutation", name: "EnableAutoMerge", required: []string{"pullRequestID", "method", "expectedHeadOid"}, run: ghEnableAutoMerge},
 	{kind: "mutation", name: "DisableAutoMerge", required: []string{"pullRequestID"}, run: ghDisableAutoMerge},
+	{kind: "mutation", name: "EnqueuePR", required: []string{"pullRequestID", "expectedHeadOid"}, run: ghEnqueuePR},
+	{kind: "mutation", name: "DequeuePR", required: []string{"pullRequestID"}, run: ghDequeuePR},
+	{kind: "mutation", name: "EnableQueuedAutoMerge", required: []string{"pullRequestID", "expectedHeadOid"}, run: ghEnableQueuedAutoMerge},
 	{kind: "mutation", name: "DismissReview", required: []string{"reviewID", "message"}, run: ghDismissReview},
 	{kind: "mutation", name: "UpdatePRBranch", required: []string{"pullRequestID", "expectedHeadOid"}, run: ghUpdatePRBranch},
 	{kind: "mutation", name: "MarkPRReady", required: []string{"pullRequestID"}, run: ghMarkPRReady},
@@ -109,6 +114,9 @@ func (e *Engine) graphQL(c *call) response {
 	ops := githubGraphQL
 	if c.cli == "glab" {
 		ops = gitlabGraphQL
+		if refused, ok := e.glabIntrospectionRefused(c, req.Query); ok {
+			return refused
+		}
 	}
 	i := slices.IndexFunc(ops, func(op graphQLOp) bool { return op.name == req.OperationName })
 	if i < 0 {
@@ -296,15 +304,18 @@ func (e *Engine) ghGraphQLPull(c *call, project string, number int, base map[str
 // ghPRTick answers the pump's one read of a PR. number and headRefName
 // are always selected; $wantDetail adds the viewer, the repository's merge settings
 // and the detail fields, $wantChecks the head commit's rollup,
-// $wantThreads the first page of review threads and conversation
-// comments, and $wantEvents the newest page of timeline items.
+// $wantThreads the first $pageSize review threads and conversation
+// comments, and $wantEvents the newest page of timeline items, each with
+// the optional parts its variables select (github_read_parts.go). A
+// repository whose token cannot read a selected part refuses it.
 func ghPRTick(e *Engine, c *call, v graphQLVars) response {
 	project, number, err := v.pullVars()
 	wantDetail, err1 := v.boolean("wantDetail")
 	wantThreads, err2 := v.boolean("wantThreads")
 	wantChecks, err3 := v.boolean("wantChecks")
 	wantEvents, err4 := v.boolean("wantEvents")
-	if err := firstErr(err, err1, err2, err3, err4); err != nil {
+	parts, err5 := v.readParts("pageSize", "wantManage", "wantTeams", "wantCheckRuns", "wantWorkflowRuns")
+	if err := firstErr(err, err1, err2, err3, err4, err5); err != nil {
 		return unhandled("PRTick: %v", err)
 	}
 	data := map[string]any{}
@@ -315,34 +326,42 @@ func ghPRTick(e *Engine, c *call, v graphQLVars) response {
 	if !ok {
 		return fail
 	}
+	if r.TeamsRefused && parts.teams && (wantDetail && parts.manage || wantEvents) {
+		return ghTeamsScopeRefusal()
+	}
 	pull := map[string]any{"number": p.Number, "headRefName": p.HeadRef}
 	// viewerPermission is selected on every tick (the CI actions read it).
 	repository := map[string]any{"pullRequest": pull, "viewerPermission": r.Merge.Permission}
+	var errs []map[string]any
 	if wantDetail {
 		maps.Copy(repository, githubRepositoryMerge(r))
 		repository["owner"] = map[string]any{"__typename": githubOwnerType(r)}
 		maps.Copy(pull, e.githubPullDetail(r, p))
-		maps.Copy(pull, e.githubManageDetail(r, p))
+		if parts.manage {
+			maps.Copy(pull, e.githubManageDetail(r, p, parts.teams))
+		}
 	}
 	if wantChecks {
 		var rollup any
-		if contexts := githubContextNodes(r, p); len(contexts) > 0 {
-			rollup = map[string]any{"contexts": graphQLConnection(contexts, 0, githubGraphQLPageSize)}
+		if contexts := githubContextNodes(r, p, parts); len(contexts) > 0 {
+			page := graphQLConnection(contexts, 0, githubGraphQLPageSize)
+			errs = r.refuseContexts(page["nodes"].([]map[string]any), parts, []any{"repository", "pullRequest", "commits", "nodes", 0, "commit", "statusCheckRollup", "contexts", "nodes"})
+			rollup = map[string]any{"contexts": page}
 		}
 		pull["commits"] = map[string]any{"nodes": []map[string]any{{"commit": map[string]any{"id": githubCommitNodeID(r, p), "oid": p.HeadSHA, "statusCheckRollup": rollup}}}}
 	}
 	if wantThreads {
 		pull["state"] = strings.ToUpper(p.State)
 		pull["viewerCanApplySuggestion"] = p.State == "open" && e.mayPush(r, p)
-		pull["reviewThreads"] = graphQLConnection(e.githubThreadNodes(r, p), 0, githubGraphQLPageSize)
-		pull["comments"] = graphQLConnection(e.githubCommentNodes(r, p), 0, githubGraphQLPageSize)
+		pull["reviewThreads"] = graphQLConnection(e.githubThreadNodes(r, p, parts.pageSize), 0, parts.pageSize)
+		pull["comments"] = graphQLConnection(e.githubCommentNodes(r, p), 0, parts.pageSize)
 	}
 	if wantEvents {
-		items := githubTimelineNodes(p)
+		items := githubTimelineNodes(p, parts.teams)
 		pull["timelineItems"] = graphQLLast(items, len(items), githubGraphQLPageSize)
 	}
 	data["repository"] = repository
-	return graphQLData(data)
+	return graphQLPartial(data, errs)
 }
 
 // githubRepositoryMerge is the repository half of the detail: the merge
@@ -379,6 +398,7 @@ func (e *Engine) githubPullDetail(r *Repo, p *Pull) map[string]any {
 	}
 	write := githubRoles[r.Merge.Permission] >= githubRoles["WRITE"]
 	open := p.State == "open"
+	queue := githubQueueFields(r, p)
 	return map[string]any{
 		"title":                     p.Title,
 		"body":                      p.Body,
@@ -403,12 +423,18 @@ func (e *Engine) githubPullDetail(r *Repo, p *Pull) map[string]any {
 		"closedAt":                  closedAt,
 		"viewerDidAuthor":           strings.EqualFold(p.Author, e.viewer),
 		"isCrossRepository":         p.HeadRepo != "",
-		"viewerCanEnableAutoMerge":  open && r.Merge.AutoMergeAllowed && write && p.Readiness.AutoMerge == nil,
+		"viewerCanUpdateBranch":     open && p.Readiness.Behind && e.mayUpdateBranch(r, p),
+		"maintainerCanModify":       p.MaintainerCanModify,
+		"viewerCanEnableAutoMerge":  open && (r.Merge.AutoMergeAllowed || r.Merge.MergeQueue) && write && p.Readiness.AutoMerge == nil && p.Queued == nil,
 		"viewerCanDisableAutoMerge": open && p.Readiness.AutoMerge != nil && (write || strings.EqualFold(p.Readiness.AutoMerge.By, e.viewer)),
 		"autoMergeRequest":          autoMerge,
 		"latestOpinionatedReviews":  map[string]any{"nodes": githubOpinionNodes(r, p, e.viewer, true)},
 		"threadStates":              graphQLConnection(githubThreadStateNodes(p), 0, githubGraphQLPageSize),
 		"baseRef":                   githubBaseRef(p),
+		"isMergeQueueEnabled":       queue["isMergeQueueEnabled"],
+		"isInMergeQueue":            queue["isInMergeQueue"],
+		"mergeQueueEntry":           queue["mergeQueueEntry"],
+		"mergeQueue":                queue["mergeQueue"],
 	}
 }
 
@@ -624,7 +650,9 @@ func githubCommitNodeID(r *Repo, p *Pull) string {
 
 // githubContextNodes are the rollup's CheckRun contexts, one per job of
 // the pull's workflow run, each required when the base requires its name.
-func githubContextNodes(r *Repo, p *Pull) []map[string]any {
+// Without check runs selected each answers its __typename alone, without
+// workflow runs no checkSuite.
+func githubContextNodes(r *Repo, p *Pull, parts ghReadParts) []map[string]any {
 	pipeline := p.CI
 	if pipeline == nil {
 		return nil
@@ -633,9 +661,13 @@ func githubContextNodes(r *Repo, p *Pull) []map[string]any {
 	// left out.
 	out := make([]map[string]any, 0, len(pipeline.Jobs))
 	for _, current := range pipeline.current() {
+		if !parts.checkRuns {
+			out = append(out, map[string]any{"__typename": "CheckRun"})
+			continue
+		}
 		job := *current
 		status, conclusion := githubCheckState(job.Status)
-		out = append(out, map[string]any{
+		node := map[string]any{
 			"__typename":  "CheckRun",
 			"databaseId":  job.ID,
 			"name":        job.Name,
@@ -645,12 +677,15 @@ func githubContextNodes(r *Repo, p *Pull) []map[string]any {
 			"completedAt": nullable(job.CompletedAt),
 			"detailsUrl":  githubJobURL(r, pipeline, job),
 			"isRequired":  slices.Contains(p.Readiness.RequiredChecks, job.Name),
-			"checkSuite": map[string]any{"workflowRun": map[string]any{
+		}
+		if parts.workflowRuns {
+			node["checkSuite"] = map[string]any{"workflowRun": map[string]any{
 				"databaseId": pipeline.ID,
 				"url":        fmt.Sprintf("https://%s/%s/actions/runs/%d", r.Host, r.Project, pipeline.ID),
 				"workflow":   map[string]any{"name": pipeline.Name},
-			}},
-		})
+			}}
+		}
+		out = append(out, node)
 	}
 	return out
 }
@@ -663,7 +698,9 @@ func nullable(s string) any {
 	return s
 }
 
-func (e *Engine) githubThreadNodes(r *Repo, p *Pull) []map[string]any {
+// githubThreadNodes are the pull's review threads, each with its first
+// commentsPage comments.
+func (e *Engine) githubThreadNodes(r *Repo, p *Pull, commentsPage int) []map[string]any {
 	out := make([]map[string]any, 0, len(p.Threads))
 	for i := range p.Threads {
 		thread := &p.Threads[i]
@@ -690,18 +727,21 @@ func (e *Engine) githubThreadNodes(r *Repo, p *Pull) []map[string]any {
 			}
 		}
 		out = append(out, map[string]any{
-			"id":                thread.ID,
-			"isResolved":        thread.Resolved,
-			"isOutdated":        thread.Outdated,
-			"path":              thread.Path,
-			"line":              line,
-			"startLine":         startLine,
-			"originalLine":      originalLine,
-			"originalStartLine": originalStartLine,
-			"diffSide":          diffSide,
-			"startDiffSide":     startSide,
-			"subjectType":       subjectType,
-			"comments":          graphQLConnection(e.githubThreadCommentNodes(r, p, thread), 0, githubGraphQLPageSize),
+			"id":                 thread.ID,
+			"isResolved":         thread.Resolved,
+			"isOutdated":         thread.Outdated,
+			"path":               thread.Path,
+			"line":               line,
+			"startLine":          startLine,
+			"originalLine":       originalLine,
+			"originalStartLine":  originalStartLine,
+			"diffSide":           diffSide,
+			"startDiffSide":      startSide,
+			"subjectType":        subjectType,
+			"viewerCanResolve":   !thread.Resolved && e.mayResolve(r, p),
+			"viewerCanUnresolve": thread.Resolved && e.mayResolve(r, p),
+			"viewerCanReply":     p.mayReply(),
+			"comments":           graphQLConnection(e.githubThreadCommentNodes(r, p, thread), 0, commentsPage),
 		})
 	}
 	return out
@@ -713,17 +753,18 @@ func (e *Engine) githubThreadCommentNodes(r *Repo, p *Pull, thread *Thread) []ma
 		var replyTo any
 		if i > 0 {
 			root := thread.Comments[0]
-			replyTo = map[string]any{"id": githubCommentNodeID("PRRC", root.ID), "databaseId": root.ID}
+			replyTo = map[string]any{"id": githubCommentNodeID("PRRC", root.ID), "fullDatabaseId": strconv.FormatInt(root.ID, 10)}
 		}
 		node := map[string]any{
-			"id":         githubCommentNodeID("PRRC", comment.ID),
-			"databaseId": comment.ID,
-			"author":     githubActor(comment.Author, comment.AuthorName),
-			"body":       comment.Body,
-			"createdAt":  comment.CreatedAt,
-			"replyTo":    replyTo,
+			"id":             githubCommentNodeID("PRRC", comment.ID),
+			"fullDatabaseId": strconv.FormatInt(comment.ID, 10),
+			"author":         githubActor(comment.Author, comment.AuthorName),
+			"body":           comment.Body,
+			"createdAt":      comment.CreatedAt,
+			"replyTo":        replyTo,
 		}
 		maps.Copy(node, e.githubCommentViewerFields(r, comment, fmt.Sprintf("%s#discussion_r%d", githubPullURL(r, p), comment.ID)))
+		node["viewerCanReact"] = p.mayReact()
 		node["reactionGroups"] = e.githubReactionGroups(comment)
 		out = append(out, node)
 	}
@@ -734,14 +775,15 @@ func (e *Engine) githubCommentNodes(r *Repo, p *Pull) []map[string]any {
 	out := make([]map[string]any, 0, len(p.Comments))
 	for _, comment := range p.Comments {
 		node := map[string]any{
-			"id":          githubCommentNodeID("IC", comment.ID),
-			"databaseId":  comment.ID,
-			"author":      githubActor(comment.Author, comment.AuthorName),
-			"body":        comment.Body,
-			"createdAt":   comment.CreatedAt,
-			"isMinimized": false,
+			"id":             githubCommentNodeID("IC", comment.ID),
+			"fullDatabaseId": strconv.FormatInt(comment.ID, 10),
+			"author":         githubActor(comment.Author, comment.AuthorName),
+			"body":           comment.Body,
+			"createdAt":      comment.CreatedAt,
+			"isMinimized":    false,
 		}
 		maps.Copy(node, e.githubCommentViewerFields(r, comment, fmt.Sprintf("%s#issuecomment-%d", githubPullURL(r, p), comment.ID)))
+		node["viewerCanReact"] = p.mayReact()
 		node["reactionGroups"] = e.githubReactionGroups(comment)
 		out = append(out, node)
 	}
@@ -752,12 +794,20 @@ func githubCommentNodeID(prefix string, id int64) string {
 	return prefix + "_ao" + strconv.FormatInt(id, 10)
 }
 
-// ghPullConnectionPage answers PRThreadsPage and PRCommentsPage: one page
-// of a pull's connection from the after cursor.
-func ghPullConnectionPage(e *Engine, c *call, v graphQLVars, connection string, nodes func(*Repo, *Pull) []map[string]any) response {
+// ghPullConnectionPage answers PRThreadsPage, PRCommentsPage and
+// PRThreadStatesPage: one page of a pull's connection from the after
+// cursor, $pageSize long when the document declares it.
+func ghPullConnectionPage(e *Engine, c *call, v graphQLVars, connection string, nodes func(*Repo, *Pull, int) []map[string]any, sized bool) response {
 	project, number, err := v.pullVars()
 	offset, err1 := v.cursor("after")
-	if err := firstErr(err, err1); err != nil {
+	var parts ghReadParts
+	var err2 error
+	if sized {
+		parts, err2 = v.readParts("pageSize")
+	} else {
+		parts, err2 = v.readParts()
+	}
+	if err := firstErr(err, err1, err2); err != nil {
 		return unhandled("%v", err)
 	}
 	r, p, fail, ok := e.ghGraphQLPull(c, project, number, map[string]any{})
@@ -765,16 +815,16 @@ func ghPullConnectionPage(e *Engine, c *call, v graphQLVars, connection string, 
 		return fail
 	}
 	return graphQLData(map[string]any{"repository": map[string]any{"pullRequest": map[string]any{
-		connection: graphQLConnection(nodes(r, p), offset, githubGraphQLPageSize),
+		connection: graphQLConnection(nodes(r, p, parts.pageSize), offset, parts.pageSize),
 	}}})
 }
 
 func ghPRThreadsPage(e *Engine, c *call, v graphQLVars) response {
-	return ghPullConnectionPage(e, c, v, "reviewThreads", e.githubThreadNodes)
+	return ghPullConnectionPage(e, c, v, "reviewThreads", e.githubThreadNodes, true)
 }
 
 func ghPRCommentsPage(e *Engine, c *call, v graphQLVars) response {
-	return ghPullConnectionPage(e, c, v, "comments", e.githubCommentNodes)
+	return ghPullConnectionPage(e, c, v, "comments", func(r *Repo, p *Pull, _ int) []map[string]any { return e.githubCommentNodes(r, p) }, true)
 }
 
 // githubThread finds a review thread by node id among the GitHub
@@ -822,7 +872,8 @@ func ghRollupContextsPage(e *Engine, c *call, v graphQLVars) response {
 	id, err := v.str("commitID")
 	offset, err1 := v.cursor("after")
 	pullNumber, err2 := v.integer("number")
-	if err := firstErr(err, err1, err2); err != nil {
+	parts, err3 := v.readParts("wantCheckRuns", "wantWorkflowRuns")
+	if err := firstErr(err, err1, err2, err3); err != nil {
 		return unhandled("RollupContextsPage: %v", err)
 	}
 	m := githubCommitNodePattern.FindStringSubmatch(id)
@@ -846,10 +897,13 @@ func ghRollupContextsPage(e *Engine, c *call, v graphQLVars) response {
 			return unhandled("RollupContextsPage asks isRequired for #%d of the head of #%d", pullNumber, number)
 		}
 		var rollup any
-		if contexts := githubContextNodes(r, p); len(contexts) > 0 {
-			rollup = map[string]any{"contexts": graphQLConnection(contexts, offset, githubGraphQLPageSize)}
+		var errs []map[string]any
+		if contexts := githubContextNodes(r, p, parts); len(contexts) > 0 {
+			page := graphQLConnection(contexts, offset, githubGraphQLPageSize)
+			errs = r.refuseContexts(page["nodes"].([]map[string]any), parts, []any{"node", "statusCheckRollup", "contexts", "nodes"})
+			rollup = map[string]any{"contexts": page}
 		}
-		return graphQLData(map[string]any{"node": map[string]any{"statusCheckRollup": rollup}})
+		return graphQLPartial(map[string]any{"node": map[string]any{"statusCheckRollup": rollup}}, errs)
 	}
 	return graphQLNodeNotFound(id)
 }
@@ -868,12 +922,33 @@ func ghSetThreadResolved(e *Engine, c *call, v graphQLVars) response {
 	if resolved {
 		alias = "resolve"
 	}
-	_, _, thread := e.githubThread(c, id)
+	r, p, thread := e.githubThread(c, id)
 	if thread == nil {
 		return graphQLNotFound(map[string]any{alias: nil}, []string{alias}, fmt.Sprintf("Could not resolve to a node with the global id of '%s'", id))
 	}
+	if !e.mayResolve(r, p) {
+		return graphQLMutationError(alias, "FORBIDDEN", fmt.Sprintf("%s does not have the correct permissions to execute `%sReviewThread`", e.viewer, map[bool]string{true: "Resolve", false: "Unresolve"}[resolved]))
+	}
 	thread.Resolved = resolved
 	return graphQLData(map[string]any{alias: map[string]any{"thread": map[string]any{"isResolved": thread.Resolved}}})
+}
+
+// ghThreadOwner answers `node(id)` for a review thread: its type and the
+// pull request and repository it is on. An id no repository on the host
+// has a thread for is a NOT_FOUND.
+func ghThreadOwner(e *Engine, c *call, v graphQLVars) response {
+	id, err := v.str("id")
+	if err != nil {
+		return unhandled("ThreadOwner: %v", err)
+	}
+	r, p, thread := e.githubThread(c, id)
+	if thread == nil {
+		return graphQLNotFound(map[string]any{"node": nil}, []string{"node"}, fmt.Sprintf("Could not resolve to a node with the global id of '%s'", id))
+	}
+	return graphQLData(map[string]any{"node": map[string]any{
+		"__typename":  "PullRequestReviewThread",
+		"pullRequest": map[string]any{"number": p.Number, "repository": map[string]any{"nameWithOwner": r.Project}},
+	}})
 }
 
 // ghOpenPRsByHead answers the open pull requests of a head branch name, a
@@ -898,10 +973,35 @@ func ghOpenPRsByHead(e *Engine, c *call, v graphQLVars) response {
 		}
 		nodes = append(nodes, map[string]any{
 			"id": p.NodeID, "url": githubPullURL(r, p), "number": p.Number, "title": p.Title, "state": "OPEN",
-			"baseRefName": p.BaseRef, "isCrossRepository": p.HeadRepo != "",
+			"baseRefName": p.BaseRef, "isCrossRepository": p.HeadRepo != "", "headRepository": e.githubHeadRepository(r, p),
 		})
 	}
-	return graphQLData(map[string]any{"repository": map[string]any{"pullRequests": graphQLConnection(nodes, offset, githubGraphQLPageSize)}})
+	repository := e.githubRepoParent(r)
+	repository["pullRequests"] = graphQLConnection(nodes, offset, githubGraphQLPageSize)
+	return graphQLData(map[string]any{"repository": repository})
+}
+
+// githubRepoParent is a repository's node id and the parent it is a fork
+// of (Repo.Parent), null for none. Callers hold mu.
+func (e *Engine) githubRepoParent(r *Repo) map[string]any {
+	var parent any
+	if r.Parent != "" {
+		owner, name, _ := strings.Cut(r.Parent, "/")
+		parent = map[string]any{"owner": map[string]any{"login": owner}, "name": name}
+	}
+	return map[string]any{"id": githubRepoNodeID(r), "parent": parent}
+}
+
+// githubHeadRepository is a pull's head repository: its own, or the fork
+// its headRepo names, by node id. Callers hold mu.
+func (e *Engine) githubHeadRepository(r *Repo, p *Pull) map[string]any {
+	if p.HeadRepo == "" {
+		return map[string]any{"id": githubRepoNodeID(r)}
+	}
+	if fork := e.repoOn("github", r.Host, p.HeadRepo); fork != nil {
+		return map[string]any{"id": githubRepoNodeID(fork)}
+	}
+	return map[string]any{"id": "R_ao" + strconv.FormatInt(p.headRepoID, 10)}
 }
 
 // ghPRStates answers pull requests by node id, at most 100, each resolved
@@ -975,10 +1075,12 @@ func ghMergedPRs(e *Engine, c *call, v graphQLVars) response {
 	nodes := []map[string]any{}
 	for i := range r.Pulls {
 		if p := &r.Pulls[i]; p.State == "merged" {
-			nodes = append(nodes, map[string]any{"headRefName": p.HeadRef, "headRefOid": p.HeadSHA, "url": githubPullURL(r, p)})
+			nodes = append(nodes, map[string]any{"headRefName": p.HeadRef, "headRefOid": p.HeadSHA, "url": githubPullURL(r, p), "headRepository": e.githubHeadRepository(r, p)})
 		}
 	}
-	return graphQLData(map[string]any{"repository": map[string]any{"pullRequests": graphQLConnection(nodes, offset, first)}})
+	repository := e.githubRepoParent(r)
+	repository["pullRequests"] = graphQLConnection(nodes, offset, first)
+	return graphQLData(map[string]any{"repository": repository})
 }
 
 // graphQLLast is the page of at most last nodes before the before offset
@@ -1021,8 +1123,9 @@ var githubAutoMergeEventTypes = map[string]string{"merge": "AutoMergeEnabledEven
 // githubTimelineNodes are the pull's timeline items of the types the app
 // selects, oldest first: each submitted review (a PullRequestReview in
 // its current state, so a dismissed approval reads DISMISSED) and each
-// event.
-func githubTimelineNodes(p *Pull) []map[string]any {
+// event. Without teams selected a team reviewer answers its __typename
+// alone.
+func githubTimelineNodes(p *Pull, teams bool) []map[string]any {
 	type item struct {
 		at   time.Time
 		node map[string]any
@@ -1069,7 +1172,10 @@ func githubTimelineNodes(p *Pull) []map[string]any {
 		case "review_requested":
 			node["requestedReviewer"] = map[string]any{"__typename": "User", "login": event.Ref}
 			if strings.Contains(event.Ref, "/") {
-				node["requestedReviewer"] = map[string]any{"__typename": "Team", "combinedSlug": event.Ref}
+				node["requestedReviewer"] = map[string]any{"__typename": "Team"}
+				if teams {
+					node["requestedReviewer"] = map[string]any{"__typename": "Team", "combinedSlug": event.Ref}
+				}
 			}
 		}
 		items = append(items, item{at, node})
@@ -1085,7 +1191,7 @@ func githubTimelineNodes(p *Pull) []map[string]any {
 // ghPRThreadStatesPage answers one page of the review threads'
 // resolution states from the after cursor.
 func ghPRThreadStatesPage(e *Engine, c *call, v graphQLVars) response {
-	return ghPullConnectionPage(e, c, v, "reviewThreads", func(_ *Repo, p *Pull) []map[string]any { return githubThreadStateNodes(p) })
+	return ghPullConnectionPage(e, c, v, "reviewThreads", func(_ *Repo, p *Pull, _ int) []map[string]any { return githubThreadStateNodes(p) }, false)
 }
 
 // ghPRTimelinePage answers the timeline page before the before cursor,
@@ -1093,21 +1199,26 @@ func ghPRThreadStatesPage(e *Engine, c *call, v graphQLVars) response {
 func ghPRTimelinePage(e *Engine, c *call, v graphQLVars) response {
 	project, number, err := v.pullVars()
 	before, err1 := v.cursor("before")
-	if err := firstErr(err, err1); err != nil {
+	parts, err2 := v.readParts("wantTeams")
+	if err := firstErr(err, err1, err2); err != nil {
 		return unhandled("PRTimelinePage: %v", err)
 	}
-	_, p, fail, ok := e.ghGraphQLPull(c, project, number, map[string]any{})
+	r, p, fail, ok := e.ghGraphQLPull(c, project, number, map[string]any{})
 	if !ok {
 		return fail
 	}
+	if r.TeamsRefused && parts.teams {
+		return ghTeamsScopeRefusal()
+	}
 	return graphQLData(map[string]any{"repository": map[string]any{"pullRequest": map[string]any{
-		"timelineItems": graphQLLast(githubTimelineNodes(p), before, githubGraphQLPageSize),
+		"timelineItems": graphQLLast(githubTimelineNodes(p, parts.teams), before, githubGraphQLPageSize),
 	}}})
 }
 
 // ghPRMergeTarget answers what a merge action addresses: the pull's node
-// id, its head branch and whether that is a fork's, and whether the
-// repository deletes merged branches itself.
+// id, its head branch and whether that is a fork's, whether the
+// repository deletes merged branches itself, and whether the base merges
+// through a merge queue and the pull is in it.
 func ghPRMergeTarget(e *Engine, c *call, v graphQLVars) response {
 	project, number, err := v.pullVars()
 	if err != nil {
@@ -1117,9 +1228,12 @@ func ghPRMergeTarget(e *Engine, c *call, v graphQLVars) response {
 	if !ok {
 		return fail
 	}
+	pull := map[string]any{"id": p.NodeID, "headRefName": p.HeadRef, "isCrossRepository": p.HeadRepo != ""}
+	queue := githubQueueFields(r, p)
+	pull["isMergeQueueEnabled"], pull["isInMergeQueue"] = queue["isMergeQueueEnabled"], queue["isInMergeQueue"]
 	return graphQLData(map[string]any{"repository": map[string]any{
 		"deleteBranchOnMerge": r.Merge.DeleteBranchOnMerge,
-		"pullRequest":         map[string]any{"id": p.NodeID, "headRefName": p.HeadRef, "isCrossRepository": p.HeadRepo != ""},
+		"pullRequest":         pull,
 	}})
 }
 
@@ -1135,6 +1249,30 @@ func ghViewerApproval(e *Engine, c *call, v graphQLVars) response {
 	}
 	return graphQLData(map[string]any{"repository": map[string]any{"pullRequest": map[string]any{
 		"latestOpinionatedReviews": map[string]any{"nodes": githubOpinionNodes(r, p, e.viewer, false)},
+	}}})
+}
+
+// ghViewerReviews answers the pull's newest 100 reviews, oldest first, each
+// with its id, whether the viewer wrote it, its state, body and commit.
+func ghViewerReviews(e *Engine, c *call, v graphQLVars) response {
+	project, number, err := v.pullVars()
+	if err != nil {
+		return unhandled("ViewerReviews: %v", err)
+	}
+	_, p, fail, ok := e.ghGraphQLPull(c, project, number, map[string]any{})
+	if !ok {
+		return fail
+	}
+	reviews := p.Reviews[max(0, len(p.Reviews)-100):]
+	nodes := make([]map[string]any, 0, len(reviews))
+	for _, review := range reviews {
+		nodes = append(nodes, map[string]any{
+			"databaseId": review.ID, "viewerDidAuthor": strings.EqualFold(review.Author, e.viewer),
+			"state": review.State, "body": review.Body, "commit": map[string]any{"oid": review.CommitSHA},
+		})
+	}
+	return graphQLData(map[string]any{"repository": map[string]any{"pullRequest": map[string]any{
+		"reviews": map[string]any{"nodes": nodes},
 	}}})
 }
 
@@ -1179,7 +1317,8 @@ const githubHeadModified = "Head branch was modified. Review and try the merge a
 
 // ghMergeChecks refuses a merge or an auto-merge the forge would refuse:
 // a pull that is not open, a viewer without write access, a method the
-// repository does not allow, or a head other than expectedHeadOid.
+// repository does not allow, a head other than expectedHeadOid, or a
+// method-bearing merge on a merge queue's base.
 func (e *Engine) ghMergeChecks(r *Repo, p *Pull, v graphQLVars, field, mutation string) (string, response, bool) {
 	method, err := v.str("method")
 	head, err1 := v.str("expectedHeadOid")
@@ -1203,6 +1342,12 @@ func (e *Engine) ghMergeChecks(r *Repo, p *Pull, v graphQLVars, field, mutation 
 		}[name]), false
 	case head != p.HeadSHA:
 		return "", graphQLMutationError(field, "UNPROCESSABLE", githubHeadModified), false
+	case r.Merge.MergeQueue && field == "mergePullRequest":
+		return "", graphQLMutationError(field, "UNPROCESSABLE", githubMergeQueueRule), false
+	case r.Merge.MergeQueue:
+		// The queue's method applies; the fake refuses a method asked
+		// on its base, as gh does before asking.
+		return "", graphQLMutationError(field, "UNPROCESSABLE", "The merge method is set by the merge queue"), false
 	}
 	return name, response{}, true
 }
@@ -1353,7 +1498,7 @@ func ghUpdatePRBranch(e *Engine, c *call, v graphQLVars) response {
 	switch {
 	case p.State != "open":
 		return graphQLMutationError(field, "UNPROCESSABLE", "Pull request is not open")
-	case githubRoles[r.Merge.Permission] < githubRoles["WRITE"]:
+	case !e.mayUpdateBranch(r, p):
 		return graphQLMutationError(field, "FORBIDDEN", fmt.Sprintf("%s does not have the correct permissions to execute `UpdatePullRequestBranch`", e.viewer))
 	case head != p.HeadSHA:
 		return graphQLMutationError(field, "UNPROCESSABLE", "Expected head sha didn't match current head ref.")

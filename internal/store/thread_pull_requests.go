@@ -12,8 +12,8 @@ import (
 const (
 	// PROutcomeRemoved: it merged and its worktree was removed.
 	PROutcomeRemoved = "removed"
-	// PROutcomeKept: it merged and its worktree was kept for uncommitted
-	// changes.
+	// PROutcomeKept: it merged and its worktree was kept: uncommitted
+	// changes, a person's lock, or a removal git keeps refusing.
 	PROutcomeKept = "kept"
 	// PROutcomeGone: it merged and its worktree was already gone.
 	PROutcomeGone = "gone"

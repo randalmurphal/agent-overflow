@@ -9,7 +9,7 @@ import { noteThread } from '../../transport/entityIndex';
 import { setupEventListeners } from '../../stores/events';
 import type { ThreadAgentRow } from '../../stores/bindings';
 import type { UserMessageOriginWake } from '../../utils/userMessageMeta';
-import { ReportDescriptor } from '../../../../bindings/agent-overflow/internal/usermessage/models';
+import { ReportDescriptor } from '../../../../bindings/agent-overflow/internal/agentmeta/models';
 import { replaceQueueForThread, resetForTest as resetSendQueue, type QueueItem } from '../../stores/sendQueue.svelte';
 import { reportFrontendDiagnostic } from '../../utils/frontendErrorCapture';
 

@@ -16,6 +16,7 @@ import (
 
 	"agent-overflow/internal/entityid"
 	"agent-overflow/internal/identity"
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/terminal"
@@ -46,7 +47,7 @@ func TestEveryDoorRefusesAClaimedThread(t *testing.T) {
 	plain := func(t *testing.T, f *requestFixture) string { return f.plainThread(t).ID }
 	doors := map[string]door{
 		"send": {plain, func(t *testing.T, f *requestFixture, id string, _ int) error {
-			return f.app.SendMessage(id, "hello", nil)
+			return f.app.SendMessage(context.Background(), id, "hello", nil)
 		}},
 		"steer": {plain, func(t *testing.T, f *requestFixture, id string, _ int) error {
 			_, err := f.app.SteerMessageWithOptions(t.Context(), id, "steer", SendMessageOptions{})
@@ -54,6 +55,9 @@ func TestEveryDoorRefusesAClaimedThread(t *testing.T) {
 		}},
 		"session start": {plain, func(t *testing.T, f *requestFixture, id string, _ int) error {
 			return f.app.startSession(t.Context(), id)
+		}},
+		"reconnect": {plain, func(t *testing.T, f *requestFixture, id string, _ int) error {
+			return f.app.ReconnectSession(id)
 		}},
 		"thread_send to it": {plain, func(t *testing.T, f *requestFixture, id string, _ int) error {
 			_, err := f.adapter().Send(t.Context(), f.callerIdentity(), threadtools.SendCall{ThreadID: id, Message: "look"})
@@ -252,7 +256,8 @@ func TestADeleteReadsItsFamilyOncePerGrowthPass(t *testing.T) {
 						}
 						time.Sleep(time.Millisecond)
 					}
-					named <- f.app.store.NameLocalThreadRequestTarget("tok-late", spawned.ID, true)
+					_, err := f.app.store.NameLocalThreadRequestTarget("tok-late", spawned.ID, true)
+					named <- err
 				}()
 				t.Cleanup(func() {
 					if err := within(t, "the late spawn", named); err != nil {
@@ -553,7 +558,7 @@ func TestTwoSelectedThreadsOnOneWorktreeAreOneDelete(t *testing.T) {
 	tree := f.worktree(t, "shared")
 	a := f.thread(t, "a", on(tree))
 	b := f.thread(t, "b", on(tree))
-	if _, err := f.app.terminals.Open(a.ID, terminal.SessionOptions{Shell: "/bin/sh", Args: []string{"-c", "sleep 30"}, Cwd: tree}); err != nil {
+	if _, err := f.app.terminals.Open(a.ID, terminal.SessionOptions{Reaper: procutiltest.Reaper(), Shell: "/bin/sh", Args: []string{"-c", "sleep 30"}, Cwd: tree}); err != nil {
 		t.Fatal(err)
 	}
 	alone, err := f.app.GetDeleteDependents([]string{a.ID})

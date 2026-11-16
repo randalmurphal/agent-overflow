@@ -11,6 +11,7 @@ import { randomBytes } from 'node:crypto';
 import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { createInterface } from 'node:readline';
+import { launchStep, processDiagnostics } from '../src/harness-launch-step.js';
 import { FALLBACK_MEMORY_LIMIT_BYTES } from '../src/harness-watchdog.js';
 import { productBinary, spawnProduct } from '../src/product-process.js';
 
@@ -226,19 +227,16 @@ export async function startHeadless(sb: Sandbox, bootstrapTimeoutMs: number): Pr
   child.stderr!.on('data', (chunk: Buffer) => {
     stderr = (stderr + chunk.toString()).slice(-64 * 1024);
   });
-  const bootstrap = await new Promise<{ port: number; token: string }>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`no bootstrap line in ${bootstrapTimeoutMs}ms\n${stderr}`)), bootstrapTimeoutMs);
+  const bootstrap = await launchStep('headless bootstrap line', bootstrapTimeoutMs, () => new Promise<{ port: number; token: string }>((resolve, reject) => {
     createInterface({ input: child.stdout! }).on('line', (line) => {
       const at = line.indexOf(BOOTSTRAP_PREFIX);
       if (at < 0) return;
-      clearTimeout(timer);
       resolve(JSON.parse(line.slice(at + BOOTSTRAP_PREFIX.length)) as { port: number; token: string });
     });
     child.once('close', (code) => {
-      clearTimeout(timer);
       reject(new Error(`the backend exited with ${code} before its bootstrap line\n${stderr}`));
     });
-  }).catch((error: Error) => {
+  }), processDiagnostics('backend', child, () => stderr.split('\n'), [`data dir: ${sb.dataRoot}`])).catch((error: Error) => {
     killGroup(child);
     throw error;
   });

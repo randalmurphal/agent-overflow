@@ -7,26 +7,10 @@ import (
 	"strings"
 	"unicode"
 
+	"agent-overflow/internal/agentmeta"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 )
-
-// JoinSeparator is the visible rule between the parts of a JOINED queued
-// message. It goes in BOTH the stored row summary and the text written to the
-// provider, so the bubble the user reads back, the text the model receives,
-// and the message a revert cuts at are one thing.
-//
-// Claude Code's own boundary-drain merge newline-joins the parts
-// (`joinPromptValues`, src/cli/print.ts). AO uses a markdown rule instead
-// because its copy is also the row a person reads, edits and reverts to, and
-// two prompts run together across a bare newline read as one paragraph.
-//
-// It lives here rather than beside either joiner because two of them exist for
-// one wire fact: the flush dispatcher joins a drain it can see coming
-// (`internal/app/app_flush_dispatch_join.go`), and triage folds one the CLI
-// made across separate drains (`internal/triage/claude_merge_fold.go`). The
-// two must produce the same row.
-const JoinSeparator = "\n\n---\n\n"
 
 // TextPart is one member's contribution to a joined message: the text to
 // concatenate and how many images its inline `[Image #N]` markers index into.
@@ -69,7 +53,7 @@ func joinRenumbered(parts []TextPart, leaves [][]int) (string, []int) {
 	base := 0
 	for i, part := range parts {
 		if i > 0 {
-			text.WriteString(JoinSeparator)
+			text.WriteString(agentmeta.JoinSeparator)
 		}
 		bounds := leaves[i]
 		if bounds == nil {
@@ -93,7 +77,7 @@ func joinRenumbered(parts []TextPart, leaves [][]int) (string, []int) {
 				continue
 			}
 			for in >= leafEnd && leaf < len(bounds)-1 {
-				leafEnd += len(JoinSeparator) + bounds[leaf+1]
+				leafEnd += len(agentmeta.JoinSeparator) + bounds[leaf+1]
 				leaf++
 			}
 			measured[leaf] += len(label) - len(own)
@@ -133,7 +117,7 @@ func Join(members []JoinMember) (string, Meta) {
 		if !member.Meta.joined() {
 			continue
 		}
-		if _, fits := SplitJoinedParts(member.Text, member.Meta.JoinedParts); !fits {
+		if _, fits := agentmeta.SplitJoinedParts(member.Text, member.Meta.JoinedParts); !fits {
 			known = false
 			continue
 		}
@@ -146,10 +130,10 @@ func Join(members []JoinMember) (string, Meta) {
 	if !known {
 		return text, joined
 	}
-	joined.JoinedParts = make([]JoinedPart, 0, len(lengths))
+	joined.JoinedParts = make([]agentmeta.JoinedPart, 0, len(lengths))
 	for i, member := range members {
 		if leaves[i] == nil {
-			joined.JoinedParts = append(joined.JoinedParts, JoinedPart{
+			joined.JoinedParts = append(joined.JoinedParts, agentmeta.JoinedPart{
 				SendID: member.Meta.SendID, Bytes: lengths[len(joined.JoinedParts)],
 				Origin: member.Meta.Origin, OriginThread: member.Meta.OriginThread, OriginWake: member.Meta.OriginWake,
 			})
@@ -169,40 +153,21 @@ func (m Meta) joined() bool {
 	return len(m.JoinedSendIDs) > 0 || len(m.JoinedParts) > 0
 }
 
-// JoinedPart is one member of a joined message as it appears in the joined
-// text: its send id, empty for a member without one, its length in bytes,
-// separator excluded, and its attribution. A joined message's member texts
-// are free text, an answer's or a job output's included, and can hold the
-// separator, so only these lengths split one back into its members, and
-// only the attribution tells an agent's member from the person's.
-type JoinedPart struct {
-	SendID       string        `json:"sendId,omitempty"`
-	Bytes        int           `json:"bytes"`
-	Origin       string        `json:"origin,omitempty"`
-	OriginThread *OriginThread `json:"originThread,omitempty"`
-	OriginWake   *OriginWake   `json:"originWake,omitempty"`
-}
-
-// IsAgent reports whether the part is a message an agent or the app wrote.
-func (p JoinedPart) IsAgent() bool {
-	return IsAgentMessage(Meta{Origin: p.Origin})
-}
-
 // SplitPersonParts cuts a joined row's text into the person's text and the
 // agents' members, by the parts recorded on its meta. ok is false when the
 // row holds an agent's member and no recorded parts describe its text and
 // name it: then nothing can tell the person's words from the agent's. A row
 // with no agent's member is the person's whole.
 func SplitPersonParts(text string, meta Meta) (person string, agents []AgentPart, ok bool) {
-	agentOrigin := meta.Origin == OriginAgentThread || meta.Origin == OriginAgentWake
+	agentOrigin := meta.Origin == agentmeta.OriginAgentThread || meta.Origin == agentmeta.OriginAgentWake
 	if len(meta.JoinedParts) == 0 {
 		if agentOrigin {
 			return "", nil, false
 		}
 		return text, nil, true
 	}
-	members, fits := SplitJoinedParts(text, meta.JoinedParts)
-	if !fits || agentOrigin && !slices.ContainsFunc(meta.JoinedParts, JoinedPart.IsAgent) {
+	members, fits := agentmeta.SplitJoinedParts(text, meta.JoinedParts)
+	if !fits || agentOrigin && !slices.ContainsFunc(meta.JoinedParts, agentmeta.JoinedPart.IsAgent) {
 		return "", nil, false
 	}
 	var kept []string
@@ -213,45 +178,21 @@ func SplitPersonParts(text string, meta Meta) (person string, agents []AgentPart
 		}
 		kept = append(kept, members[i])
 	}
-	return strings.Join(kept, JoinSeparator), agents, true
+	return strings.Join(kept, agentmeta.JoinSeparator), agents, true
 }
 
 // AgentPart is an agent's member of a joined message and its text.
 type AgentPart struct {
-	JoinedPart
+	agentmeta.JoinedPart
 	Text string
-}
-
-// SplitJoinedParts cuts text into the members parts describe. ok is false
-// when parts do not describe text exactly.
-func SplitJoinedParts(text string, parts []JoinedPart) (members []string, ok bool) {
-	if len(parts) == 0 {
-		return nil, false
-	}
-	members = make([]string, 0, len(parts))
-	at := 0
-	for i, part := range parts {
-		if i > 0 {
-			if !strings.HasPrefix(text[at:], JoinSeparator) {
-				return nil, false
-			}
-			at += len(JoinSeparator)
-		}
-		if part.Bytes < 0 || part.Bytes > len(text)-at {
-			return nil, false
-		}
-		members = append(members, text[at:at+part.Bytes])
-		at += part.Bytes
-	}
-	return members, at == len(text)
 }
 
 // TrimJoinedParts is parts as they describe strings.TrimSpace(text): the
 // first and last members lose the white space the trim cuts from them. It
 // is nil when parts do not describe text, or when the trim reaches past a
 // member into a separator.
-func TrimJoinedParts(text string, parts []JoinedPart) []JoinedPart {
-	if _, ok := SplitJoinedParts(text, parts); !ok {
+func TrimJoinedParts(text string, parts []agentmeta.JoinedPart) []agentmeta.JoinedPart {
+	if _, ok := agentmeta.SplitJoinedParts(text, parts); !ok {
 		return nil
 	}
 	lead := len(text) - len(strings.TrimLeftFunc(text, unicode.IsSpace))

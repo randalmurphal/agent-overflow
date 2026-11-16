@@ -54,7 +54,9 @@ type CIPipeline struct {
 	// ActionsUnavailable is the sentence saying why some actions are not
 	// offered: a read behind their flags (GitHub's repository permission,
 	// a run's artifacts) failed, and the flags it would have set are
-	// absent. Empty when every flag was read.
+	// absent. A GitHub PR read that left out check runs or workflow runs
+	// (githubReadParts) leads with their sentences. Empty when every flag
+	// was read.
 	ActionsUnavailable string `json:"actionsUnavailable,omitempty"`
 	// ActionsRetryAt is when the failed read behind ActionsUnavailable may
 	// be asked again (its backoff's deadline), for the CI phase to read

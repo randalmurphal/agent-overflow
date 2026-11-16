@@ -4,6 +4,7 @@ import (
 	"slices"
 	"strconv"
 
+	"agent-overflow/internal/agentmeta"
 	"agent-overflow/internal/threadtools"
 	"agent-overflow/internal/usermessage"
 )
@@ -13,7 +14,7 @@ import (
 // selector). A person's message is its text, theirs alone when Claude joined
 // an agent's into it; an agent's is agentMessageLabel.
 func promptLabel(text string, meta usermessage.Meta) string {
-	if usermessage.IsAgentMessage(meta) {
+	if agentmeta.IsAgentMessage(meta.Agent()) {
 		return agentMessageLabel(text, meta)
 	}
 	if person, _, ok := usermessage.SplitPersonParts(text, meta); ok {
@@ -24,12 +25,12 @@ func promptLabel(text string, meta usermessage.Meta) string {
 
 // agentMessageLabel names an agent's message as the timeline's agent row
 // heads it: the sender of its first agent message, then that message's
-// header line, as usermessage.Describe reads them. The frontend heads the
+// header line, as agentmeta.Describe reads them. The frontend heads the
 // row from the same reading (agentMessageFromItem, agentMessage.ts), held to
 // this by testdata/agent_message_labels.json.
 func agentMessageLabel(text string, meta usermessage.Meta) string {
-	described := usermessage.Describe(text, meta)
-	first := slices.IndexFunc(described, usermessage.Described.IsAgent)
+	described := agentmeta.Describe(text, meta.Agent())
+	first := slices.IndexFunc(described, agentmeta.Described.IsAgent)
 	if first < 0 {
 		return text
 	}
@@ -45,8 +46,8 @@ func agentMessageLabel(text string, meta usermessage.Meta) string {
 // it: the thread it is attributed to, the threads a digest speaks for, this
 // thread for its own reminder, or what wrote a report (its descriptor's
 // sender), "A wake" for a report of a kind this computer does not know.
-func agentMessageSenderName(message usermessage.Described) string {
-	if message.Origin == usermessage.OriginAgentWake {
+func agentMessageSenderName(message agentmeta.Described) string {
+	if message.Origin == agentmeta.OriginAgentWake {
 		if message.Report == nil {
 			return "A wake"
 		}

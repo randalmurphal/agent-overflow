@@ -5,6 +5,7 @@ import (
 	"sync"
 	"time"
 
+	"agent-overflow/internal/agentmeta"
 	"agent-overflow/internal/itemmeta"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/usermessage"
@@ -99,7 +100,7 @@ type pendingSend struct {
 
 	// JoinedParts are a joined message's members as they appear in its
 	// text, which a session-death restore splits it by.
-	JoinedParts []usermessage.JoinedPart
+	JoinedParts []agentmeta.JoinedPart
 
 	// AnchoredAtInterrupt marks a flush entry whose row was already
 	// placed at its user-visible timeline position by the interrupt
@@ -129,6 +130,11 @@ type pendingSend struct {
 	// turn) must NOT get that call: their index belongs to an earlier,
 	// possibly settled turn.
 	WasDeferred bool
+
+	// TurnInput marks a flush send that went out as the input of a turn it
+	// starts, not as input waiting in a running turn. Codex discards only
+	// the latter at turn/interrupt, so the post-interrupt resend skips it.
+	TurnInput bool
 
 	// InterruptedTurnIndex is the logical turn that was open when a
 	// user interrupt claimed this entry (-1 when none has). Stamped
@@ -294,9 +300,9 @@ type PendingSendExpectation struct {
 	ContentBlockDigest []string
 
 	// JoinedParts are the members of a joined message as they appear in its
-	// text (usermessage.JoinedPart). They match no echo: a session-death
+	// text (agentmeta.JoinedPart). They match no echo: a session-death
 	// restore splits the message by them (UnconfirmedFlushItem.JoinedParts).
-	JoinedParts []usermessage.JoinedPart
+	JoinedParts []agentmeta.JoinedPart
 
 	// Members is the send id of every message the send carries, in order,
 	// "" for one sent without (usermessage.MemberSendIDs). Its delivery
@@ -314,7 +320,7 @@ type PendingSendExpectation struct {
 // diagnostics on stranded entries and the wall clock at the register
 // call is the natural reference.
 func (r *Router) RegisterPendingSendWithExpectation(threadID, aoItemID string, turnIndex int, expect PendingSendExpectation) {
-	r.registerPendingSend(threadID, aoItemID, turnIndex, "", 0, nil, nil, expect, sendShapeDirect)
+	r.registerPendingSend(threadID, aoItemID, turnIndex, "", 0, nil, nil, expect, sendShapeDirect, false)
 }
 
 // RegisterPendingSteerSendWithExpectation registers a mid-turn Codex
@@ -324,7 +330,7 @@ func (r *Router) RegisterPendingSendWithExpectation(threadID, aoItemID string, t
 // placed" is the only thing the two have in common and a steer is not a
 // turn opener.
 func (r *Router) RegisterPendingSteerSendWithExpectation(threadID, aoItemID string, turnIndex int, expect PendingSendExpectation) {
-	r.registerPendingSend(threadID, aoItemID, turnIndex, "", 0, nil, nil, expect, sendShapeSteer)
+	r.registerPendingSend(threadID, aoItemID, turnIndex, "", 0, nil, nil, expect, sendShapeSteer, false)
 }
 
 // RegisterPendingFlushResendWithExpectation registers a fresh entry for
@@ -335,7 +341,7 @@ func (r *Router) RegisterPendingSteerSendWithExpectation(threadID, aoItemID stri
 // caller pairs it with MarkPendingSendAnchoredAtInterrupt so the echo
 // stamps without re-bumping.
 func (r *Router) RegisterPendingFlushResendWithExpectation(threadID, aoItemID string, turnIndex int, expect PendingSendExpectation) {
-	r.registerPendingSend(threadID, aoItemID, turnIndex, "", 0, nil, nil, expect, sendShapeFlush)
+	r.registerPendingSend(threadID, aoItemID, turnIndex, "", 0, nil, nil, expect, sendShapeFlush, false)
 }
 
 // RegisterPendingFlushSendWithExpectation registers a deferred user_text
@@ -344,17 +350,27 @@ func (r *Router) RegisterPendingFlushResendWithExpectation(threadID, aoItemID st
 // message lands after content the model emitted between dispatch and
 // echo — see the pendingSend doc comment.
 func (r *Router) RegisterPendingFlushSendWithExpectation(threadID, queueItemID string, item store.Item, enqueuedAt int64, expect PendingSendExpectation) {
-	r.registerPendingSend(threadID, item.ID, item.TurnIndex, queueItemID, enqueuedAt, &item, nil, expect, sendShapeFlush)
+	r.registerPendingSend(threadID, item.ID, item.TurnIndex, queueItemID, enqueuedAt, &item, nil, expect, sendShapeFlush, false)
+}
+
+// RegisterPendingFlushTurnStartWithExpectation is the deferred flush
+// registration for a message sent as the input of a turn it starts (Codex
+// `turn/start` after a steer lost the race with the turn's end). The provider
+// holds that input as the turn's own, so an interrupt does not discard it:
+// the interrupt's eager persist still places the row, and reports it as
+// TurnInput so the app does not send it again.
+func (r *Router) RegisterPendingFlushTurnStartWithExpectation(threadID, queueItemID string, item store.Item, enqueuedAt int64, expect PendingSendExpectation) {
+	r.registerPendingSend(threadID, item.ID, item.TurnIndex, queueItemID, enqueuedAt, &item, nil, expect, sendShapeFlush, true)
 }
 
 // RegisterPendingQuietFlushSendWithExpectation is the quiet-flush
 // registration: the row was already persisted (eager persist) and the
 // echo only confirms it, at the caller-chosen turnIndex.
 func (r *Router) RegisterPendingQuietFlushSendWithExpectation(threadID, queueItemID string, item store.Item, turnIndex int, enqueuedAt int64, expect PendingSendExpectation) {
-	r.registerPendingSend(threadID, item.ID, turnIndex, queueItemID, enqueuedAt, nil, &item, expect, sendShapeFlush)
+	r.registerPendingSend(threadID, item.ID, turnIndex, queueItemID, enqueuedAt, nil, &item, expect, sendShapeFlush, false)
 }
 
-func (r *Router) registerPendingSend(threadID, aoItemID string, turnIndex int, queueItemID string, enqueuedAt int64, deferredItem, quietItem *store.Item, expect PendingSendExpectation, shape sendShape) {
+func (r *Router) registerPendingSend(threadID, aoItemID string, turnIndex int, queueItemID string, enqueuedAt int64, deferredItem, quietItem *store.Item, expect PendingSendExpectation, shape sendShape, turnInput bool) {
 	if threadID == "" || aoItemID == "" {
 		return
 	}
@@ -388,6 +404,7 @@ func (r *Router) registerPendingSend(threadID, aoItemID string, turnIndex int, q
 		ExpectedContentBlockDigest: expect.ContentBlockDigest,
 		JoinedParts:                expect.JoinedParts,
 		Shape:                      shape,
+		TurnInput:                  turnInput,
 		InterruptedTurnIndex:       -1,
 		WrittenDuringTurn:          writtenDuring,
 		Members:                    expect.Members,
@@ -924,6 +941,9 @@ type EagerPersistedFlush struct {
 	// CT13-2).
 	QueueItemID string
 	EnqueuedAt  int64
+	// TurnInput is the send's pendingSend.TurnInput: it went out as the
+	// input of a turn it starts, which the interrupt did not discard.
+	TurnInput bool
 }
 
 // EagerPersistDeferredFlushSends immediately persists all deferred
@@ -1010,6 +1030,7 @@ func (r *Router) EagerPersistDeferredFlushSends(threadID string, interruptedTurn
 		item        store.Item
 		queueItemID string
 		enqueuedAt  int64
+		turnInput   bool
 	}
 	var snapshots []eagerSnapshot
 	for i := range pending {
@@ -1018,6 +1039,7 @@ func (r *Router) EagerPersistDeferredFlushSends(threadID string, interruptedTurn
 				item:        *pending[i].DeferredItem,
 				queueItemID: pending[i].QueueItemID,
 				enqueuedAt:  pending[i].EnqueuedAt,
+				turnInput:   pending[i].TurnInput,
 			})
 			pending[i].QuietItem = pending[i].DeferredItem
 			pending[i].DeferredItem = nil
@@ -1057,6 +1079,7 @@ func (r *Router) EagerPersistDeferredFlushSends(threadID string, interruptedTurn
 			Meta:        persisted.Meta,
 			QueueItemID: snap.queueItemID,
 			EnqueuedAt:  snap.enqueuedAt,
+			TurnInput:   snap.turnInput,
 		})
 	}
 	return result

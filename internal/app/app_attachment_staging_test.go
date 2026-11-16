@@ -53,6 +53,7 @@ func TestStalledUploadDoesNotBlockDraftOrQueueAdmission(t *testing.T) {
 	t.Parallel()
 	app := newAttachmentTestApp(t)
 	app.ensureTriageRouter()
+	holdFlushQueue(app)
 	release, done := startPausedAttachment(t, app, context.Background())
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()

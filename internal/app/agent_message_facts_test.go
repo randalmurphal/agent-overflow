@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/agenthome"
+	"agent-overflow/internal/agentmeta"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadtools"
@@ -75,25 +76,25 @@ func TestEveryAgentWakeWriterStoresItsFacts(t *testing.T) {
 		{"a watch's output", builtMessage(t)(renderAgentWatchWake(store.AgentWake{Label: "ci"}, agentWakeFire{}, watchOut, cappedOutput{})),
 			store.AgentWakeWatch, `Watch "ci" reported. ` + agentWakeDataNotice, `"build failed: exit 2"`, "build failed: exit 2"},
 		{"an outside send", builtMessage(t)(renderAgentSendWake("deploy finished\nall good")),
-			string(usermessage.ReportSend), agentSendWakeHeader + " " + agentWakeDataNotice, `"all good"`, "deploy finished"},
+			string(agentmeta.ReportSend), agentSendWakeHeader + " " + agentWakeDataNotice, `"all good"`, "deploy finished"},
 		{"a worker's approval request", builtMessage(t)(workerPromptMessage("Worker", "t-worker", approval)),
-			string(usermessage.ReportApproval), `Thread "Worker" (t-worker), which you spawned, is waiting on your answer. ` + agentWakeDataNotice,
+			string(agentmeta.ReportApproval), `Thread "Worker" (t-worker), which you spawned, is waiting on your answer. ` + agentWakeDataNotice,
 			"token tok-1", "It asks for approval to use Bash."},
 		{"a worker's question", builtMessage(t)(workerPromptMessage("Worker", "t-worker", question)),
-			string(usermessage.ReportQuestion), `Thread "Worker" (t-worker), which you spawned, is waiting on your answer. ` + agentWakeDataNotice,
+			string(agentmeta.ReportQuestion), `Thread "Worker" (t-worker), which you spawned, is waiting on your answer. ` + agentWakeDataNotice,
 			"token tok-2", "1. Scope: Which module?"},
 		{"a remote job's report", builtMessage(t)(remoteCompletionMessage(remote, "desk", remoteCompletionOutput{Tail: "ok"})),
-			string(usermessage.ReportCompletion), "Remote job finished on desk: make test", "Output (untrusted):\nok", "finished; exit code: 2"},
+			string(agentmeta.ReportCompletion), "Remote job finished on desk: make test", "Output (untrusted):\nok", "finished; exit code: 2"},
 		{"a workflow run's wake", builtMessage(t)(workflowWakeMessage("release", wake.Message{Notice: wake.DataNotice, Data: "run: \"release\""})),
-			string(usermessage.ReportWorkflow), wake.DataNotice, `run: "release"`, ""},
-		{"an assistant's opening", builtMessage(t)(assistantMessage(assistantSendID(string(usermessage.ReportOpening), "a1"), "Ops", agenthome.OpeningMessage("Ops", "/config/agents/a1"))),
-			string(usermessage.ReportOpening), "", "Ops", ""},
-		{"an assistant's handoff", builtMessage(t)(assistantMessage(assistantSendID(string(usermessage.ReportHandOff), "a1"), "Ops", agenthome.HandOffMessage(agenthome.HandOff{Name: "Ops", PreviousThreadID: "t-old"}))),
-			string(usermessage.ReportHandOff), "", "t-old", ""},
+			string(agentmeta.ReportWorkflow), wake.DataNotice, `run: "release"`, ""},
+		{"an assistant's opening", builtMessage(t)(assistantMessage(assistantSendID(string(agentmeta.ReportOpening), "a1"), "Ops", agenthome.OpeningMessage("Ops", "/config/agents/a1"))),
+			string(agentmeta.ReportOpening), "", "Ops", ""},
+		{"an assistant's handoff", builtMessage(t)(assistantMessage(assistantSendID(string(agentmeta.ReportHandOff), "a1"), "Ops", agenthome.HandOffMessage(agenthome.HandOff{Name: "Ops", PreviousThreadID: "t-old"}))),
+			string(agentmeta.ReportHandOff), "", "t-old", ""},
 	} {
 		facts := factsOf(tc.message)
 		attribution := tc.message.Attribution()
-		if attribution.Origin != usermessage.OriginAgentWake || attribution.Wake == nil || attribution.Wake.Kind != tc.kind || facts == nil {
+		if attribution.Origin != agentmeta.OriginAgentWake || attribution.Wake == nil || attribution.Wake.Kind != tc.kind || facts == nil {
 			t.Errorf("%s: attribution %+v, want an agent wake of kind %s with facts", tc.name, attribution, tc.kind)
 			continue
 		}
@@ -115,7 +116,7 @@ func TestEveryAgentWakeWriterStoresItsFacts(t *testing.T) {
 // A headline is one line, bounded, whatever the writer passes it.
 func TestAWakeHeadlineIsOneBoundedLine(t *testing.T) {
 	t.Parallel()
-	message := builtMessage(t)(usermessage.Report(usermessage.ReportLoop, usermessage.Reporter{}, "notice", "data", "a\n  b\t"+strings.Repeat("界", usermessage.HeadlineBytes)))
+	message := builtMessage(t)(usermessage.Report(agentmeta.ReportLoop, usermessage.Reporter{}, "notice", "data", "a\n  b\t"+strings.Repeat("界", usermessage.HeadlineBytes)))
 	headline := factsOf(message).Headline
 	if strings.ContainsAny(headline, "\n\t") || !strings.HasPrefix(headline, "a b 界") || len(headline) > usermessage.HeadlineBytes {
 		t.Fatalf("headline %q (%d bytes), want one line within %d bytes", headline, len(headline), usermessage.HeadlineBytes)
@@ -135,7 +136,7 @@ func TestThreadWakeAndNoticeWritersStoreTheirFacts(t *testing.T) {
 	}
 	digest := builtMessage(t)(usermessage.Answer(app.threadWakeFor(threadWakeMessage{kind: threadtools.WakeReply, text: "Same answer.", rows: rows})))
 	facts := factsOf(digest)
-	if thread := digest.Attribution().Thread; digest.Origin() != usermessage.OriginAgentThread || thread.Kind != usermessage.OriginKindWake ||
+	if thread := digest.Attribution().Thread; digest.Origin() != agentmeta.OriginAgentThread || thread.Kind != agentmeta.OriginKindWake ||
 		thread.ThreadID != "t-local" || thread.Token != "tok-1" || facts == nil {
 		t.Fatalf("digest attribution %q %+v, want the carrier's wake with facts", digest.Origin(), thread)
 	}
@@ -158,7 +159,7 @@ func TestThreadWakeAndNoticeWritersStoreTheirFacts(t *testing.T) {
 	stopped := builtMessage(t)(usermessage.StoppedWorker(threadtools.WorkerStopped{ThreadID: "t-worker", Title: "Worker", Token: "tok-9", Failures: []string{"its watch"}}, "", ""))
 	if facts := factsOf(stopped); facts == nil || facts.Outcome != threadtools.OutcomeWorkerStopped ||
 		!slices.Equal(facts.Tokens, []string{"tok-9"}) || bodyOf(t, stopped.Text(), facts) != stopped.Text() ||
-		!strings.Contains(stopped.Text(), "its watch") || stopped.Attribution().Thread.Kind != usermessage.OriginKindWake {
+		!strings.Contains(stopped.Text(), "its watch") || stopped.Attribution().Thread.Kind != agentmeta.OriginKindWake {
 		t.Fatalf("worker-stopped notice %q, facts %+v", stopped.Text(), facts)
 	}
 }
@@ -185,7 +186,7 @@ func TestADeliveredWakeIsQueuedWithItsFacts(t *testing.T) {
 		t.Fatalf("queue = %+v, want the wake", queued)
 	}
 	stored := queuedAgentMessage(queued[0])
-	if stored.Origin() != usermessage.OriginAgentWake || !reflect.DeepEqual(factsOf(stored), factsOf(message)) {
+	if stored.Origin() != agentmeta.OriginAgentWake || !reflect.DeepEqual(factsOf(stored), factsOf(message)) {
 		t.Fatalf("queued attribution %+v, want the wake's facts %+v", stored.Attribution(), factsOf(message))
 	}
 }

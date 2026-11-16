@@ -4,9 +4,12 @@ export const THREAD_ROW_DRAG_MIME = 'application/x-agent-overflow-thread';
 export const TOOL_PANE_DRAG_MIME = 'application/x-agent-overflow-tool';
 export const PANE_REORDER_DRAG_MIME = 'application/x-agent-overflow-pane';
 
+/**
+ * A sidebar thread row's drag. Only its id leaves the document
+ * (`encodeThreadDragPayload`); the rest stays in the in-flight record.
+ */
 export interface ThreadDragPayload {
   threadId: string;
-  title: string;
   /**
    * The dragged thread's project. A group drop target refuses a thread
    * from another project, and the ungroup drop needs to know whose list
@@ -32,29 +35,15 @@ export interface PaneDropTarget {
   insertIndex: number;
 }
 
+/**
+ * What a thread row's DataTransfer carries: the thread's id alone. Any drop
+ * target can read it, a web page or another app included, and the app's own
+ * targets need no more: a drop in this document reads the rest from the
+ * in-flight record, and one in another window of the app can still place the
+ * thread as a pane.
+ */
 export function encodeThreadDragPayload(payload: ThreadDragPayload): string {
-  return JSON.stringify(payload);
-}
-
-export function decodeThreadDragPayload(raw: string): ThreadDragPayload | null {
-  try {
-    const parsed = JSON.parse(raw) as Partial<ThreadDragPayload>;
-    if (!parsed.threadId || typeof parsed.threadId !== 'string') return null;
-    return {
-      threadId: parsed.threadId,
-      title: typeof parsed.title === 'string' ? parsed.title : 'Untitled',
-      // Both stay tolerant of an absent field: a payload minted by an
-      // older client (or a pane drag that never needed them) must still
-      // decode into a usable pane drop rather than null.
-      projectId: typeof parsed.projectId === 'string' ? parsed.projectId : '',
-      ...(typeof parsed.groupId === 'string' && parsed.groupId
-        ? { groupId: parsed.groupId }
-        : {}),
-      ...(parsed.agentBound === true ? { agentBound: true } : {}),
-    };
-  } catch {
-    return null;
-  }
+  return payload.threadId;
 }
 
 /**
@@ -80,17 +69,21 @@ export function endThreadRowDrag(): void {
 }
 
 /**
- * The payload behind a drag event: the DataTransfer when it will talk (drop),
- * the in-flight record when it won't (dragover). Null unless the event really
- * carries a thread row, so a stale record can never answer for a file drag.
+ * The payload behind a drag event. During dragover the DataTransfer answers
+ * nothing and the in-flight record does. At a drop it names the thread: the
+ * record when it is that thread's, else a thread dragged from another
+ * document, whose project this one does not know. Null unless the event
+ * really carries a thread row, so a stale record can never answer for a
+ * file drag.
  */
 export function threadDragPayloadForEvent(event: DragEvent): ThreadDragPayload | null {
   const data = event.dataTransfer;
   if (!data) return null;
   if (!data.types.includes(THREAD_ROW_DRAG_MIME)) return null;
-  const raw = data.getData(THREAD_ROW_DRAG_MIME);
-  if (raw) return decodeThreadDragPayload(raw);
-  return inFlightThreadDrag;
+  const threadId = data.getData(THREAD_ROW_DRAG_MIME);
+  if (!threadId) return inFlightThreadDrag;
+  if (inFlightThreadDrag?.threadId === threadId) return inFlightThreadDrag;
+  return { threadId, projectId: '' };
 }
 
 /**

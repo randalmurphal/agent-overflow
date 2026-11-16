@@ -475,6 +475,19 @@ func (e *Engine) repoOn(forge, host, project string) *Repo {
 	return r
 }
 
+// headRepoID is the project id of p's head repository: r's own, the
+// seeded fork its headRepo names on r's host, or the fork's generated id.
+// Callers hold mu.
+func (e *Engine) headRepoID(r *Repo, p *Pull) int64 {
+	if p.HeadRepo == "" {
+		return r.ID
+	}
+	if fork := e.repoOn(r.Forge, r.Host, p.HeadRepo); fork != nil {
+		return fork.ID
+	}
+	return p.headRepoID
+}
+
 func (r *Repo) pull(number int) *Pull {
 	for i := range r.Pulls {
 		if r.Pulls[i].Number == number {

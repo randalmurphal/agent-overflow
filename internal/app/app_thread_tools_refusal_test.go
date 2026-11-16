@@ -313,6 +313,7 @@ func TestASendIntoAFullQueueSaysTheQueueIsFull(t *testing.T) {
 	q := newQueuedRequests(t)
 	f := q.f
 	f.holdCallerTurn(t)
+	holdFlushQueue(f.app)
 	for n := range maxQueueLength() {
 		if _, err := f.app.RegisterQueueItem(context.Background(), q.target.ID, "filler "+strconv.Itoa(n), SendMessageOptions{}); err != nil {
 			t.Fatalf("fill the queue at %d: %v", n, err)

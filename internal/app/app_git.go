@@ -102,7 +102,11 @@ func (a *App) GitMaybeFetchRemotes(ws WorkspaceRef) (bool, error) {
 // concurrent checkout can't flip the path between the check and the
 // operation.
 //
+// The budget covers the pull's transfer and post-merge hook
+// (gitops.HookTimeout).
+//
 //ao:scope git:operate
+//ao:budget 12m
 func (a *App) GitSyncBranch(ws WorkspaceRef, branch string) ([]gitops.GitBranch, error) {
 	project, workspace, err := a.gitApplication().ResolveWorkspace(ws)
 	if err != nil {
@@ -135,32 +139,58 @@ func (a *App) GitSyncBranch(ws WorkspaceRef, branch string) ([]gitops.GitBranch,
 // as it is. A selected file that changed since it was listed fails the
 // commit with ErrCommitFilesChanged.
 //
-//ao:scope git:operate
-func (a *App) GitCommit(ws WorkspaceRef, subject, body string, selection CommitSelection) (gitops.GitActionResult, error) {
-	const action = "commit"
-	workspace, err := a.reviewWorkspace(action, ws)
-	if err != nil {
-		return gitops.GitActionResult{}, err
-	}
-	listed, err := a.listedCommitSelection(a.lifeCtx(), workspace, selection)
-	if err != nil {
-		return gitops.GitActionResult{}, fmt.Errorf("%s: %w", action, err)
-	}
-	return a.gitApplication().Commit(ws, subject, body, listed)
-}
-
-// GitPush pushes the workspace's current branch.
+// attemptID, fresh for each press of Commit, records the commit's outcome
+// (attemptGitAction). The budget covers the commit's hooks
+// (gitops.HookTimeout) and the snapshot and index steps around them.
 //
 //ao:scope git:operate
-func (a *App) GitPush(ws WorkspaceRef) (gitops.GitActionResult, error) {
-	return a.gitApplication().Push(ws)
+//ao:budget 12m
+func (a *App) GitCommit(ws WorkspaceRef, subject, body string, selection CommitSelection, attemptID string) (gitops.GitActionResult, error) {
+	return a.attemptGitAction(gitActionCommit, ws, attemptID, func() (gitops.GitActionResult, error) {
+		const action = "commit"
+		if _, err := a.reviewWorkspace(action, ws); err != nil {
+			return gitops.GitActionResult{}, err
+		}
+		covered, err := a.commitSelection(selection)
+		if err != nil {
+			return gitops.GitActionResult{}, fmt.Errorf("%s: %w", action, err)
+		}
+		return a.gitApplication().Commit(ws, subject, body, covered)
+	})
 }
 
-// GitPull fast-forwards the workspace's current branch.
+// GitPush pushes the workspace's current branch. attemptID records the
+// push's outcome (attemptGitAction); the budget covers its pre-push hook and
+// transfer (gitops.HookTimeout).
 //
 //ao:scope git:operate
-func (a *App) GitPull(ws WorkspaceRef) (gitops.GitActionResult, error) {
-	return a.gitApplication().Pull(ws)
+//ao:budget 12m
+func (a *App) GitPush(ws WorkspaceRef, attemptID string) (gitops.GitActionResult, error) {
+	return a.attemptGitAction(gitActionPush, ws, attemptID, func() (gitops.GitActionResult, error) {
+		return a.gitApplication().Push(ws)
+	})
+}
+
+// GitPull fast-forwards the workspace's current branch. attemptID records
+// the pull's outcome (attemptGitAction); the budget covers its transfer and
+// post-merge hook (gitops.HookTimeout).
+//
+//ao:scope git:operate
+//ao:budget 12m
+func (a *App) GitPull(ws WorkspaceRef, attemptID string) (gitops.GitActionResult, error) {
+	return a.attemptGitAction(gitActionPull, ws, attemptID, func() (gitops.GitActionResult, error) {
+		return a.gitApplication().Pull(ws)
+	})
+}
+
+// GitFetchOrigin fetches origin into the workspace's repository and may ask
+// for credentials: the action behind GitStatus.RemoteSignInError. Like
+// GitMaybeFetchRemotes it moves only remote-tracking refs, so it takes no
+// workspace locks.
+//
+//ao:scope git:operate
+func (a *App) GitFetchOrigin(ctx context.Context, ws WorkspaceRef) (gitops.GitActionResult, error) {
+	return a.gitApplication().FetchOrigin(ctx, ws)
 }
 
 // GitCheckout switches the workspace to an existing branch, or to a tag
@@ -173,7 +203,10 @@ func (a *App) GitPull(ws WorkspaceRef) (gitops.GitActionResult, error) {
 // so a sibling thread sharing the worktree syncs without the frontend
 // guessing which rows moved. A tag checkout leaves them with no branch.
 //
+// The budget covers the checkout's post-checkout hook (gitops.HookTimeout).
+//
 //ao:scope git:operate
+//ao:budget 12m
 func (a *App) GitCheckout(ws WorkspaceRef, branch string) (GitWorkspaceState, error) {
 	project, workspace, err := a.gitApplication().ResolveWorkspace(ws)
 	if err != nil {
@@ -255,7 +288,11 @@ func (a *App) recordWorkspaceCheckout(label, project, workspace string, leftBehi
 // Thread rows in the workspace are re-branched as for GitCheckout. Does not
 // restart provider sessions because the cwd is unchanged.
 //
+// The budget covers two checkouts, each with its post-checkout hook
+// (gitops.HookTimeout).
+//
 //ao:scope git:operate
+//ao:budget 21m
 func (a *App) GitCreateBranchFrom(ws WorkspaceRef, name, baseBranch string, carryLocalChanges bool) (GitWorkspaceState, error) {
 	project, workspace, err := a.gitApplication().ResolveWorkspace(ws)
 	if err != nil {
@@ -397,10 +434,16 @@ func (a *App) createBranchInWorkspace(workspace, name string, resolvedBase gitop
 
 // GitCreatePR opens a pull request for the workspace's current branch. When
 // draft is true the PR is opened as a GitHub draft (gh pr create --draft).
+// attemptID records the creation's outcome (attemptGitAction); the budget
+// covers the forge CLI, which pushes the branch and runs its pre-push hook
+// (gitops.HookTimeout), and the open-PR lookup after it.
 //
 //ao:scope git:operate
-func (a *App) GitCreatePR(ctx context.Context, ws WorkspaceRef, title, body string, draft bool) (gitops.GitActionResult, error) {
-	return a.gitApplication().CreatePR(forgeapi.WithInteractive(ctx), ws, title, body, draft)
+//ao:budget 12m
+func (a *App) GitCreatePR(ctx context.Context, ws WorkspaceRef, title, body string, draft bool, attemptID string) (gitops.GitActionResult, error) {
+	return a.attemptGitAction(gitActionPR, ws, attemptID, func() (gitops.GitActionResult, error) {
+		return a.gitApplication().CreatePR(forgeapi.WithInteractive(ctx), ws, title, body, draft)
+	})
 }
 
 // restoreStashOnError best-effort applies a previously-pushed stash back
@@ -531,54 +574,62 @@ func (a *App) lockWorkspaceThreads(workspace string) ([]string, func(), error) {
 	}, nil
 }
 
-// ensureWorkspaceChangeAllowed refuses to DELETE a checkout while any thread
-// in it is working. The entity is the DIRECTORY, not the conversation: two
-// threads sharing a worktree is first-class, so a removal requested from
-// thread B would otherwise pull the directory out from under thread A's
-// running agent.
+// ensureWorkspaceChangeAllowed refuses to delete or copy a checkout while
+// work runs in it (runningWorkIn): in the directory itself, or in any of
+// threads, the threads that reference it. The entity is the DIRECTORY, not
+// the conversation: two threads sharing a worktree is first-class, so a
+// removal requested from thread B would otherwise pull the directory out from
+// under thread A's running agent. handled names the kinds the caller stops or
+// leaves running itself; every other kind refuses.
 //
-// It gates removal ONLY. Branch changes (GitCheckout, GitCreateBranchFrom,
-// GitPull, GitSyncBranch) are deliberately never gated on agent activity:
-// the user owns the branch and switches it whenever they like, agent or no
-// agent (ruling 2026-09-02). Do not add this check to them.
+// It gates removal and the copy of a checkout's changes ONLY. Branch changes
+// (GitCheckout, GitCreateBranchFrom, GitPull, GitSyncBranch) are deliberately
+// never gated on agent activity: the user owns the branch and switches it
+// whenever they like, agent or no agent (ruling 2026-09-02). Do not add this
+// check to them.
 //
-// It reads the same WorkspaceActivity projection the frontend's affordances
-// gate on, so a live button and a backend refusal cannot disagree — including
-// the words: these are the frontend workspace-change lock's two states
-// (TURN_REASON / TASKS_REASON), so the toast and the disabled-button tooltip
-// say the same thing. action names what the user asked for ("remove this
-// worktree") because the final `: `-segment must
-// stand alone — the frontend's userFacingError keeps only that segment — so
-// these messages carry no colon and cannot borrow context from a prefix.
+// A running turn and background tasks say what the frontend's
+// workspace-change lock says (TURN_REASON / TASKS_REASON), so the toast and
+// the disabled button agree; the lock shows only those two, and this refusal
+// covers the rest. action names what the user asked for ("remove this
+// worktree") because the final `: `-segment must stand alone (the frontend's
+// userFacingError keeps only that segment), so these messages carry no colon
+// and cannot borrow context from a prefix.
 //
 // The busy thread is deliberately NOT named: a thread id is a uuid, and a uuid
 // in a toast is noise the user cannot act on.
-func (a *App) ensureWorkspaceChangeAllowed(action, workspace string) error {
-	activity, err := a.worktreeApplication().Activity(workspace)
-	if err != nil {
+func (a *App) ensureWorkspaceChangeAllowed(action, workspace string, threads []string, handled ...workKind) error {
+	work, err := a.runningWorkIn(workScope{threads: threads, dir: workspace}, handled...)
+	if err != nil || !work.running() {
 		return err
 	}
-	if len(activity.BusyThreads) == 0 {
-		return nil
-	}
-	busy := activity.BusyThreads[0]
-	if busy.ActiveTurn {
+	switch work.kind {
+	case workTurn:
 		return fmt.Errorf("cannot %s while an agent is responding in it", action)
+	case workBackgroundTasks:
+		return fmt.Errorf("cannot %s while %d background task(s) are running in it", action, work.count)
+	default:
+		return fmt.Errorf("cannot %s while %s", action, work.kind)
 	}
-	return fmt.Errorf("cannot %s while %d background task(s) are running in it",
-		action, busy.RunningBackgroundTasks)
 }
 
+// workspaceRemovalHandles are the kinds a worktree removal stops or keeps
+// itself: it stops shell commands and setup recipes running in the directory,
+// closes its terminals, returns queued messages to the composer, and a
+// remote command's answer reaches the thread in Base.
+var workspaceRemovalHandles = []workKind{workShellCommand, workTerminal, workWorktreeSetup, workQueuedMessages, workRemoteWatch}
+
 // ensureThreadChangeAllowed refuses to move ONE thread out of its workspace
-// while that thread's own turn or background tools are in flight — the
-// provider session is bound to the cwd and changing it mid-turn would orphan
-// output. Deliberately NOT the directory question: moving an idle thread out
-// of a checkout a sibling is working in touches only the idle thread's row.
+// while that thread's own work is running in it: the provider session is
+// bound to the cwd, and a composer shell command's output would reach the
+// agent in another directory. Deliberately NOT the directory question: moving
+// an idle thread out of a checkout a sibling is working in touches only the
+// idle thread's row.
 func (a *App) ensureThreadChangeAllowed(threadID string) error {
 	if err := a.threadApplication().CheckMutable(threadID); err != nil {
 		return err
 	}
-	reason, err := a.threadActivityBlockReason(threadID)
+	reason, err := a.threadWorkBlockReason(threadID, threadMoveHandles...)
 	if err != nil {
 		return err
 	}
@@ -588,18 +639,41 @@ func (a *App) ensureThreadChangeAllowed(threadID string) error {
 	return nil
 }
 
+// threadMoveHandles are the kinds a thread's move to another checkout leaves
+// running: a terminal keeps its own directory, a queued message is sent in
+// the new one, and a remote command's answer reaches the thread wherever it
+// runs.
+var threadMoveHandles = []workKind{workTerminal, workQueuedMessages, workRemoteWatch}
+
+// threadDeleteHandles are the kinds deleting a thread stops itself
+// (threadDeletePorts): its session with its queue and pending answers, its
+// shell command, terminals, setup recipe and remote commands.
+var threadDeleteHandles = []workKind{workAwaitingAnswer, workQueuedMessages, workShellCommand, workTerminal, workWorktreeSetup, workRemoteWatch}
+
+// threadActivityBlockReason says what running work blocks deleting the
+// thread, or "".
 func (a *App) threadActivityBlockReason(threadID string) (string, error) {
-	if turn, ok, err := a.store.GetActiveTurn(threadID); err != nil {
-		return "", fmt.Errorf("check active turn: %w", err)
-	} else if ok {
-		return fmt.Sprintf("turn %d is active", turn.TurnIndex), nil
+	return a.threadWorkBlockReason(threadID, threadDeleteHandles...)
+}
+
+// threadWorkBlockReason describes the first work running in the thread that
+// handled does not name, or "".
+func (a *App) threadWorkBlockReason(threadID string, handled ...workKind) (string, error) {
+	work, err := a.runningWorkIn(workScope{threads: []string{threadID}}, handled...)
+	if err != nil || !work.running() {
+		return "", err
 	}
-	count, err := a.countRunningBackgroundTasks(threadID)
-	if err != nil {
-		return "", fmt.Errorf("check background tasks: %w", err)
+	switch work.kind {
+	case workTurn:
+		if turn, ok, err := a.store.GetActiveTurn(threadID); err != nil {
+			return "", fmt.Errorf("check active turn: %w", err)
+		} else if ok {
+			return fmt.Sprintf("turn %d is active", turn.TurnIndex), nil
+		}
+		return work.kind.String(), nil
+	case workBackgroundTasks:
+		return fmt.Sprintf("%d background task(s) are running", work.count), nil
+	default:
+		return work.kind.String(), nil
 	}
-	if count > 0 {
-		return fmt.Sprintf("%d background task(s) are running", count), nil
-	}
-	return "", nil
 }

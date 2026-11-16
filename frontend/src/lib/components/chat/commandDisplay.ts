@@ -13,6 +13,21 @@ export function isCommandToolName(toolName: string | undefined | null): boolean 
   return COMMAND_TOOL_NAMES.has(raw);
 }
 
+/** The description the call gave its command (Claude's Bash `description`), or ''. */
+export function commandDescriptionForItem(item: Item): string {
+  const input = parseJsonObject(item.meta)?.input;
+  const description = input && typeof input === 'object' && 'description' in input
+    ? input.description
+    : undefined;
+  return typeof description === 'string' ? description.trim() : '';
+}
+
+/** What a command row's header shows (CommandOutput): the description, or
+ * the command without its shell wrapper. Its find text. */
+export function commandHeaderText(item: Item, meta: CommandOutputMeta | null | undefined): string {
+  return commandDescriptionForItem(item) || stripShellWrapper(commandTextForItem(item, meta));
+}
+
 export function commandTextForItem(
   item: Item,
   meta: CommandOutputMeta | null | undefined,
@@ -105,6 +120,7 @@ function readNestedString(record: Record<string, unknown> | null, path: string[]
 function compactErrorMessage(value: string | undefined): string {
   if (!value) return '';
   const cleaned = value
+    // eslint-disable-next-line no-control-regex -- ESC opens the ANSI escape sequences this strips.
     .replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, '')
     .split('\n')
     .map((line) => line.replace(/\s+/g, ' ').trim())

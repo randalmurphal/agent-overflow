@@ -13,6 +13,7 @@ import { withForkProgress } from '../../stores/forkPreparation.svelte';
 // Keeping them in plain TS rather than a .svelte.ts module keeps the
 // coupling testable — no runes, no component context required.
 
+import { isEmptyDraftCleanupPending, settleEmptyDraftCleanup } from '../../stores/emptyDraftCleanup';
 import {
   ArchiveThread,
   DeleteThreadsAndWorktrees,
@@ -52,6 +53,9 @@ export function transferThreadAction(ctx: ThreadActionCtx): void {
   openConversationTransfer(ctx.thread);
 }
 
+// Each action that writes the row first waits out an emptied draft's
+// in-flight delete; a row that delete removed has nothing left to change.
+
 export const PIN_GROUP_FRONT = 0;
 export const PIN_GROUP_BACK = 1;
 
@@ -83,6 +87,7 @@ export async function renameThreadAction(
   const trimmed = newTitle.trim();
   if (!trimmed || trimmed === ctx.thread.title) return null;
   try {
+    if (isEmptyDraftCleanupPending(ctx.thread.id) && await settleEmptyDraftCleanup(ctx.thread.id)) return null;
     await RenameThread(ctx.thread.id, trimmed);
     updateThreadTitle(ctx.thread.id, trimmed);
     // The thread:updated event fires from the backend, but waiting on
@@ -116,6 +121,7 @@ export async function nextAssistantThreadAction(ctx: ThreadActionCtx): Promise<v
   handOffsRunning.add(assistant);
   const release = holdComposerForHandOff(ctx.thread.id);
   try {
+    if (isEmptyDraftCleanupPending(ctx.thread.id) && await settleEmptyDraftCleanup(ctx.thread.id)) return;
     await saveComposerForHandOff(ctx.thread.id);
     const mark = threadRowFrameMark();
     const successor = prependThreadReply((await StartNextAssistantThread(ctx.thread.id)) as Thread, mark);
@@ -160,6 +166,7 @@ async function saveComposerForHandOff(threadId: string): Promise<void> {
 
 export async function archiveThreadAction(ctx: ThreadActionCtx): Promise<void> {
   try {
+    if (isEmptyDraftCleanupPending(ctx.thread.id) && await settleEmptyDraftCleanup(ctx.thread.id)) return;
     // No StopSession here: ArchiveThread closes the thread's provider
     // session server-side (internal/app/app_thread_archive.go), so the
     // process is released for every client rather than only the one
@@ -219,6 +226,7 @@ async function archiveWorkersAgain(backend: BackendKey, workers: WorkerFailure[]
  */
 export async function forkThreadAction(ctx: ThreadActionCtx): Promise<void> {
   try {
+    if (isEmptyDraftCleanupPending(ctx.thread.id) && await settleEmptyDraftCleanup(ctx.thread.id)) return;
     const mark = threadRowFrameMark();
     const created = await withForkProgress(ctx.thread, async () => (await ForkThread(ctx.thread.id, null)) as Thread);
     const forked = prependThreadReply(await autoPinNewThread(created), mark);
@@ -233,6 +241,7 @@ export async function forkThreadAction(ctx: ThreadActionCtx): Promise<void> {
 
 export async function deleteThreadAction(ctx: ThreadActionCtx): Promise<void> {
   try {
+    if (isEmptyDraftCleanupPending(ctx.thread.id) && await settleEmptyDraftCleanup(ctx.thread.id)) return;
     const { backend, result } = await deleteThreadWithWorktrees(ctx.thread);
     removeThread(ctx.thread.id);
     closePanesShowingThread(ctx.thread.id);
@@ -258,6 +267,7 @@ export async function deleteThreadsAction(
   const byBackend = new Map<BackendKey, Pick<Thread, 'id' | 'title'>[]>();
   try {
     for (const thread of threads) {
+      if (isEmptyDraftCleanupPending(thread.id) && await settleEmptyDraftCleanup(thread.id)) continue;
       const backend = requireEntityBackend(threadOwner(thread.id));
       byBackend.set(backend, [...(byBackend.get(backend) ?? []), thread]);
     }
@@ -343,6 +353,7 @@ async function deleteAgain(backend: BackendKey, title: string, seeds: readonly s
 
 export async function markThreadUnreadAction(ctx: ThreadActionCtx): Promise<void> {
   try {
+    if (isEmptyDraftCleanupPending(ctx.thread.id) && await settleEmptyDraftCleanup(ctx.thread.id)) return;
     // The store owns the RPC and the local patch together: the two have
     // to happen under one claim on the read marker, or a thread:updated
     // row landing between them wins on a comparison it cannot make.
@@ -379,6 +390,7 @@ export async function copyThreadIdAction(ctx: ThreadActionCtx): Promise<void> {
 
 export async function pinThreadAction(ctx: ThreadActionCtx): Promise<void> {
   try {
+    if (isEmptyDraftCleanupPending(ctx.thread.id) && await settleEmptyDraftCleanup(ctx.thread.id)) return;
     const mark = threadRowFrameMark();
     const updated = await PinThread(ctx.thread.id);
     updateThreadPinState(ctx.thread.id, updated.pinnedAt ?? undefined, updated.pinGroup ?? undefined, mark);
@@ -390,6 +402,7 @@ export async function pinThreadAction(ctx: ThreadActionCtx): Promise<void> {
 
 export async function unpinThreadAction(ctx: ThreadActionCtx): Promise<void> {
   try {
+    if (isEmptyDraftCleanupPending(ctx.thread.id) && await settleEmptyDraftCleanup(ctx.thread.id)) return;
     const mark = threadRowFrameMark();
     const updated = await UnpinThread(ctx.thread.id);
     updateThreadPinState(ctx.thread.id, updated.pinnedAt ?? undefined, updated.pinGroup ?? undefined, mark);
@@ -404,6 +417,7 @@ export async function setThreadPinGroupAction(
   group: typeof PIN_GROUP_FRONT | typeof PIN_GROUP_BACK,
 ): Promise<void> {
   try {
+    if (isEmptyDraftCleanupPending(ctx.thread.id) && await settleEmptyDraftCleanup(ctx.thread.id)) return;
     const mark = threadRowFrameMark();
     const updated = await SetThreadPinGroup(ctx.thread.id, group);
     updateThreadPinState(ctx.thread.id, updated.pinnedAt ?? undefined, updated.pinGroup ?? undefined, mark);

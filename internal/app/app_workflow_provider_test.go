@@ -479,7 +479,7 @@ func TestWorkflowUnitFailureParksAndRetryCompletesTheRun(t *testing.T) {
 	if items, itemsErr := app.store.ListItems(units["beta"].ThreadID); itemsErr != nil || len(items) == 0 {
 		t.Fatalf("failed unit thread is not inspectable: %d items, %v", len(items), itemsErr)
 	}
-	if err := app.SendMessage(units["beta"].ThreadID, "let me fix this myself", nil); err == nil ||
+	if err := app.SendMessage(context.Background(), units["beta"].ThreadID, "let me fix this myself", nil); err == nil ||
 		!strings.Contains(err.Error(), "only a running unit can be taken over") {
 		t.Fatalf("send into a failed unit thread = %v, want a takeover refusal", err)
 	}
@@ -723,7 +723,7 @@ reliability:
 			}
 		}
 	})
-	if err := app.SendMessage(threadID, "I unblocked the beta slice by hand.", nil); err != nil {
+	if err := app.SendMessage(context.Background(), threadID, "I unblocked the beta slice by hand.", nil); err != nil {
 		unsubscribe()
 		t.Fatal(err)
 	}

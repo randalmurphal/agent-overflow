@@ -7,8 +7,11 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
+
+	"agent-overflow/internal/appdirs"
 )
 
 // historyRepairFixtureEnv names the database file TestHistoryRepairHarnessFixture
@@ -49,6 +52,178 @@ const schemaAheadFixtureEnv = "AO_TEST_SCHEMA_AHEAD_FIXTURE"
 // names the file to write.
 func TestSchemaAheadHarnessFixture(t *testing.T) {
 	stampAhead(t, harnessFixturePath(t, schemaAheadFixtureEnv), latestMigrationVersionForTest()+2, 0)
+}
+
+// migrateDatabaseEnv names an existing database TestMigrateHarnessDatabase
+// opens and closes. The release upgrade check
+// (e2e/tests/upgrade-corpus-helpers.ts) migrates a copy of the launcher's
+// snapshot with it, so what the migrations did to old rows can be told
+// from what the candidate's boot did after them.
+const migrateDatabaseEnv = "AO_TEST_MIGRATE_DATABASE"
+
+// migrateThroughEnv, when set, stops the migration at that version, so the
+// release upgrade check's recovery spec can build a store at an older
+// schema than this build's (e2e/tests/upgrade-corpus-recovery.spec.ts).
+const migrateThroughEnv = "AO_TEST_MIGRATE_THROUGH"
+
+// TestMigrateHarnessDatabase opens the database migrateDatabaseEnv names
+// with New, which runs the migration chain and writes nothing else, and
+// closes it; with migrateThroughEnv it applies the chain only through that
+// version. It never creates a database and refuses the app's own.
+func TestMigrateHarnessDatabase(t *testing.T) {
+	path := os.Getenv(migrateDatabaseEnv)
+	if path == "" {
+		t.Skip(migrateDatabaseEnv + " is not set")
+	}
+	through := 0
+	if raw := os.Getenv(migrateThroughEnv); raw != "" {
+		var err error
+		if through, err = strconv.Atoi(raw); err != nil || through < 1 {
+			t.Fatalf("%s=%q is not a migration version", migrateThroughEnv, raw)
+		}
+	}
+	if err := migrateHarnessDatabase(path, through); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// migrateHarnessDatabase migrates the existing database at path, which
+// must be absolute and outside the app's own data directory: through the
+// whole chain when through is 0, otherwise through that version.
+func migrateHarnessDatabase(path string, through int) error {
+	if !filepath.IsAbs(path) {
+		return fmt.Errorf("%q is not an absolute path", path)
+	}
+	if info, err := os.Stat(path); err != nil || !info.Mode().IsRegular() {
+		return fmt.Errorf("%s: not an existing database file (%v)", path, err)
+	}
+	if real, err := appdirs.Root(); err == nil && (path == real || strings.HasPrefix(path, real+string(filepath.Separator))) {
+		return fmt.Errorf("%s is the app's own database", path)
+	}
+	if through > 0 {
+		return migrateHarnessDatabaseThrough(path, through)
+	}
+	s, err := New(path)
+	if err != nil {
+		return fmt.Errorf("migrate %s: %w", path, err)
+	}
+	if err := s.Close(); err != nil {
+		return fmt.Errorf("close %s: %w", path, err)
+	}
+	return nil
+}
+
+// migrateHarnessDatabaseThrough applies the chain to the database at path
+// from its version through version through, as migrateThrough does for an
+// in-memory pre-image.
+func migrateHarnessDatabaseThrough(path string, through int) (err error) {
+	if latest := latestMigrationVersionForTest(); through > latest {
+		return fmt.Errorf("v%d is past this build's latest migration v%d", through, latest)
+	}
+	db, err := sql.Open("sqlite", poolDSN(path, writerConnPragmas))
+	if err != nil {
+		return fmt.Errorf("open %s: %w", path, err)
+	}
+	defer func() {
+		if closeErr := db.Close(); closeErr != nil && err == nil {
+			err = fmt.Errorf("close %s: %w", path, closeErr)
+		}
+	}()
+	db.SetMaxOpenConns(1)
+	if err := configureDatabase(db, writerConnPragmas); err != nil {
+		return fmt.Errorf("configure %s: %w", path, err)
+	}
+	if err := ensureMigrationTable(db); err != nil {
+		return fmt.Errorf("migration table of %s: %w", path, err)
+	}
+	var current int
+	if err := db.QueryRow(`SELECT COALESCE(MAX(version), 0) FROM migration_versions`).Scan(&current); err != nil {
+		return fmt.Errorf("read the version of %s: %w", path, err)
+	}
+	if current > through {
+		return fmt.Errorf("%s is at v%d, past v%d", path, current, through)
+	}
+	for _, m := range migrations {
+		if m.Version <= current || m.Version > through {
+			continue
+		}
+		apply := applyMigration
+		if m.Rebuild {
+			apply = applyRebuildMigration
+		}
+		if err := apply(db, m); err != nil {
+			return fmt.Errorf("apply migration v%d to %s: %w", m.Version, path, err)
+		}
+	}
+	return nil
+}
+
+// TestMigrateHarnessDatabaseRefusals pins what the migration fixture will
+// not open: a relative path, a missing file (it never creates one), and
+// the app's own database. A database it opens is at the latest version.
+func TestMigrateHarnessDatabaseRefusals(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	t.Setenv("HOME", dir)
+	t.Setenv("APPDATA", dir)
+	real, err := appdirs.Root()
+	if err != nil {
+		t.Fatal(err)
+	}
+	own := filepath.Join(real, "agent-overflow.db")
+	if err := os.MkdirAll(real, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(own, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, through := range []int{0, 2} {
+		for _, path := range []string{"agent-overflow.db", filepath.Join(dir, "missing.db"), own} {
+			if err := migrateHarnessDatabase(path, through); err == nil {
+				t.Errorf("migrateHarnessDatabase(%s, %d) succeeded, want a refusal", path, through)
+			}
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dir, "missing.db")); !os.IsNotExist(err) {
+		t.Fatalf("the refused missing database was created (%v)", err)
+	}
+	copy := filepath.Join(dir, "copy.db")
+	if err := os.WriteFile(copy, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	version := func() int {
+		t.Helper()
+		db, err := sql.Open("sqlite", poolDSN(copy, writerConnPragmas))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = db.Close() }()
+		var v int
+		if err := db.QueryRow(`SELECT MAX(version) FROM migration_versions`).Scan(&v); err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
+	latest := latestMigrationVersionForTest()
+	if err := migrateHarnessDatabase(copy, latest+1); err == nil {
+		t.Fatalf("migrating through v%d, past the chain, succeeded", latest+1)
+	}
+	older := latest - 3
+	if err := migrateHarnessDatabase(copy, older); err != nil {
+		t.Fatal(err)
+	}
+	if got := version(); got != older {
+		t.Fatalf("migrated through v%d to v%d", older, got)
+	}
+	if err := migrateHarnessDatabase(copy, older-1); err == nil {
+		t.Fatalf("migrating a v%d database through v%d succeeded, want a refusal", older, older-1)
+	}
+	if err := migrateHarnessDatabase(copy, 0); err != nil {
+		t.Fatal(err)
+	}
+	if got := version(); got != latest {
+		t.Fatalf("migrated to v%d, want v%d", got, latest)
+	}
 }
 
 // harnessFixturePath returns the database path env names for a harness

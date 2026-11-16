@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/agentmeta"
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/store"
@@ -40,7 +42,7 @@ func loadAgentMessageMetas(t *testing.T) []agentMessageMeta {
 	return cases
 }
 
-// The classifier exists three times: usermessage.IsAgentMessage, the store's
+// The classifier exists three times: agentmeta.IsAgentMessage, the store's
 // AgentMessageFilterFor behind the nav rail's ticks, and the frontend's
 // isAgentMessageMeta (userMessageMeta.test.ts reads the same cases). This
 // holds the first two to one answer per row, and the person's-message
@@ -78,7 +80,7 @@ func TestAgentMessageClassifierAgreesInGoAndSQL(t *testing.T) {
 	for i, tc := range agentMessageMetas {
 		id := items[i].ID
 		meta, decodeErr := usermessage.FromItem(store.Item{Meta: tc.Meta})
-		goAgent := decodeErr == nil && usermessage.IsAgentMessage(meta)
+		goAgent := decodeErr == nil && agentmeta.IsAgentMessage(meta.Agent())
 		if goAgent != tc.Agent {
 			t.Errorf("%s: IsAgentMessage = %v, want %v", tc.Name, goAgent, tc.Agent)
 		}
@@ -239,13 +241,13 @@ func TestUntitledSpawnIsNamedFromItsPromptNotItsFooter(t *testing.T) {
 // The flush acknowledgement tells the composer's preview whether the row a
 // dispatch wrote is an agent's: a drain of wakes alone is, and the same drain
 // joined with the person's composer message is the person's, as the joined
-// row itself is (usermessage.IsAgentMessage). The live-state snapshot that
+// row itself is (agentmeta.IsAgentMessage). The live-state snapshot that
 // replaces those acknowledgements after a reconnect says the same.
 func TestFlushAcknowledgementClassifiesTheJoinedRow(t *testing.T) {
 	t.Parallel()
 	wake := flushQueuePayload{
-		SendID: "agent-wake:w1", Origin: usermessage.OriginAgentWake,
-		OriginWake: &usermessage.OriginWake{Kind: "loop", Label: "nightly"},
+		SendID: "agent-wake:w1", Origin: agentmeta.OriginAgentWake,
+		OriginWake: &agentmeta.OriginWake{Kind: "loop", Label: "nightly"},
 	}
 	person := flushQueuePayload{SendID: "send-person", ExpandComposerCommands: true}
 	for _, tc := range []struct {
@@ -253,7 +255,7 @@ func TestFlushAcknowledgementClassifiesTheJoinedRow(t *testing.T) {
 		members []flushQueuePayload
 		agent   bool
 	}{
-		{"wakes alone", []flushQueuePayload{wake, {SendID: "agent-wake:w2", Origin: usermessage.OriginAgentWake, OriginWake: wake.OriginWake}}, true},
+		{"wakes alone", []flushQueuePayload{wake, {SendID: "agent-wake:w2", Origin: agentmeta.OriginAgentWake, OriginWake: wake.OriginWake}}, true},
 		{"a wake joined with the person's message", []flushQueuePayload{wake, person}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -278,7 +280,7 @@ func TestFlushAcknowledgementClassifiesTheJoinedRow(t *testing.T) {
 				t.Fatalf("seed tool_call: %v", err)
 			}
 			sess, err := claude.NewSession(context.Background(), thread.ID,
-				claude.Config{Binary: writeClaudeStdinRecorderBinary(t, filepath.Join(t.TempDir(), "stdin.jsonl")), WorkDir: workspace},
+				claude.Config{Reaper: procutiltest.Reaper(), Retention: claude.UserHomeRetention(0), Binary: writeClaudeStdinRecorderBinary(t, filepath.Join(t.TempDir(), "stdin.jsonl")), WorkDir: workspace},
 				func(provider.ProviderEvent) {})
 			if err != nil {
 				t.Fatalf("claude.NewSession: %v", err)
@@ -339,10 +341,10 @@ func TestRemoteCompletionQueuesAsAnAgentMessage(t *testing.T) {
 	if err := a.deliverRemoteCompletion(w, remoteCompletionOutput{Tail: w.Receipt.Output}); err != nil {
 		t.Fatal(err)
 	}
-	want := usermessage.OriginWake{Kind: string(usermessage.ReportCompletion), Label: w.Label, Computer: w.ComputerID}
+	want := agentmeta.OriginWake{Kind: string(agentmeta.ReportCompletion), Label: w.Label, Computer: w.ComputerID}
 	check := func(source string, item QueuedItem) {
 		t.Helper()
-		if !item.AgentMessage || item.Origin != usermessage.OriginAgentWake || item.OriginWake == nil ||
+		if !item.AgentMessage || item.Origin != agentmeta.OriginAgentWake || item.OriginWake == nil ||
 			item.OriginWake.Kind != want.Kind || item.OriginWake.Label != want.Label || item.OriginWake.Computer != want.Computer ||
 			item.OriginWake.Facts == nil || !strings.HasPrefix(item.OriginWake.Facts.Headline, w.Receipt.State) {
 			t.Fatalf("%s: queued completion = agent %v origin %q wake %+v, want an agent message from %+v", source, item.AgentMessage, item.Origin, item.OriginWake, want)

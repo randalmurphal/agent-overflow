@@ -3,7 +3,6 @@ package store
 import (
 	"context"
 	"errors"
-	"time"
 )
 
 // ThreadTransferCancellationRequested is the upload loop's small per-chunk
@@ -35,7 +34,7 @@ func (s *Store) RequestThreadTransferCancellation(id string) (ThreadTransfer, er
 	if row.CancelRequested || row.Phase == "canceled" {
 		return row, nil
 	}
-	row.CancelRequested, row.UpdatedAt = true, time.Now().UnixMilli()
+	row.CancelRequested, row.UpdatedAt = true, nextTransferStamp(row.UpdatedAt)
 	if _, err := tx.Exec(`UPDATE thread_transfers SET cancel_requested = 1,updated_at = ? WHERE id = ?`, row.UpdatedAt, id); err != nil {
 		return ThreadTransfer{}, err
 	}
@@ -77,7 +76,7 @@ func (s *Store) DiscardUnpreparedIncomingTransfer(id string) error {
 	if row.Direction != "incoming" || (row.Phase != "preparing" && row.Phase != "canceled") {
 		return errors.New("Cancel this prepared transfer from its source computer.")
 	}
-	if _, err := tx.Exec(`UPDATE thread_transfers SET phase='canceled',error='',updated_at=? WHERE id=?`, time.Now().UnixMilli(), id); err != nil {
+	if _, err := tx.Exec(`UPDATE thread_transfers SET phase='canceled',error='',updated_at=? WHERE id=?`, nextTransferStamp(row.UpdatedAt), id); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -104,7 +103,7 @@ func (s *Store) CancelIncomingThreadTransfer(id string, secret []byte) (ThreadTr
 	if row.Phase == "canceled" {
 		return row, nil
 	}
-	row.Phase, row.Error, row.UpdatedAt = "canceled", "", time.Now().UnixMilli()
+	row.Phase, row.Error, row.UpdatedAt = "canceled", "", nextTransferStamp(row.UpdatedAt)
 	if _, err := tx.Exec(`UPDATE thread_transfers SET phase = 'canceled',error = '',updated_at = ? WHERE id = ?`, row.UpdatedAt, id); err != nil {
 		return ThreadTransfer{}, err
 	}

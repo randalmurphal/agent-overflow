@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"reflect"
@@ -15,6 +16,7 @@ import (
 	"agent-overflow/internal/attachment"
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/flushqueue"
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/codex"
@@ -475,7 +477,9 @@ func TestDispatchFlush_NoSession_DoesNotPersistUserRow(t *testing.T) {
 		t.Fatalf("CreateThread: %v", err)
 	}
 
-	// No app.sessions entry — this simulates the torn-down case.
+	// No app.sessions entry — this simulates the torn-down case, whose
+	// replacement session fails to start.
+	app.startSessionFn = func(string) error { return errors.New("the session cannot start") }
 	app.dispatchFlush(thread.ID, []triage.QueuedFlushItem{
 		{ID: "queue:0", Message: "x"},
 	})
@@ -767,7 +771,10 @@ func TestConfiguredFlushDispatcher_DoesNotBlockProviderEventHandler(t *testing.T
 		if err != nil {
 			t.Fatalf("RegisterQueueItem: %v", err)
 		}
-	case <-time.After(250 * time.Millisecond):
+	// The test holds the thread lock until after this wait, so a
+	// registration that waits on it never returns: a long bound still
+	// catches it.
+	case <-time.After(30 * time.Second):
 		t.Fatal("configured flush dispatcher blocked queue registration")
 	}
 	if got := app.flushDispatchItemCount(thread.ID); got != 1 {
@@ -846,7 +853,7 @@ func TestDispatchFlush_StaleGenerationAfterRollbackDropsBatch(t *testing.T) {
 	}
 
 	staleGeneration := app.currentFlushDispatchGeneration(thread.ID)
-	app.clearFlushDispatchForRollback(thread.ID)
+	app.dropFlushQueue(thread.ID)
 
 	app.dispatchFlushWithGeneration(thread.ID, []triage.QueuedFlushItem{
 		{ID: "queue:stale", Message: "stale queued prompt"},
@@ -1294,7 +1301,7 @@ func TestDispatchFlush_Claude_EagerPersistAtActiveTurn(t *testing.T) {
 
 	sess, err := claude.NewSession(
 		context.Background(), thread.ID,
-		claude.Config{Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
+		claude.Config{Reaper: procutiltest.Reaper(), Retention: claude.UserHomeRetention(0), Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
 		func(provider.ProviderEvent) {},
 	)
 	if err != nil {
@@ -1464,7 +1471,7 @@ func TestDispatchFlush_Claude_EagerPersist_RepositionsAfterContentBeforeEcho(t *
 
 	sess, err := claude.NewSession(
 		context.Background(), thread.ID,
-		claude.Config{Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
+		claude.Config{Reaper: procutiltest.Reaper(), Retention: claude.UserHomeRetention(0), Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
 		func(provider.ProviderEvent) {},
 	)
 	if err != nil {
@@ -1604,7 +1611,7 @@ func TestDispatchFlush_Claude_InterruptPromotesAfterStoppedByUser(t *testing.T) 
 
 	sess, err := claude.NewSession(
 		context.Background(), thread.ID,
-		claude.Config{Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
+		claude.Config{Reaper: procutiltest.Reaper(), Retention: claude.UserHomeRetention(0), Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
 		func(provider.ProviderEvent) {},
 	)
 	if err != nil {
@@ -1733,7 +1740,7 @@ func TestDispatchFlush_Claude_NoActiveTurn_DefersLikeCodex(t *testing.T) {
 
 	sess, err := claude.NewSession(
 		context.Background(), thread.ID,
-		claude.Config{Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
+		claude.Config{Reaper: procutiltest.Reaper(), Retention: claude.UserHomeRetention(0), Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
 		func(provider.ProviderEvent) {},
 	)
 	if err != nil {
@@ -1958,6 +1965,7 @@ func TestRegisterQueueItem_AppendsAndEmitsState(t *testing.T) {
 		t.Fatalf("CreateThread: %v", err)
 	}
 
+	holdFlushQueue(app)
 	queued, err := app.RegisterQueueItem(context.Background(), thread.ID, "hello", SendMessageOptions{})
 	if err != nil {
 		t.Fatalf("RegisterQueueItem: %v", err)
@@ -2075,9 +2083,15 @@ func TestSessionDeathDraftFailureRequeuesWithoutSettling(t *testing.T) {
 	if len(requeued) != 1 || requeued[0].Settlement != settlement {
 		t.Fatalf("requeued recovery = %+v, want the original pending settlement", requeued)
 	}
+	// The live requeue carries the original settlement, joined with the
+	// retirement of the durable row the requeue gives it.
 	queued := app.triage.QueuedFlushItems(thread.ID)
-	if len(queued) != 1 || queued[0].Settlement != settlement {
-		t.Fatalf("live requeue = %+v, want the original pending settlement", queued)
+	if len(queued) != 1 {
+		t.Fatalf("live requeue = %+v, want the message queued once", queued)
+	}
+	queued[0].Settlement.Settle("")
+	if settled != 1 {
+		t.Fatalf("settling the live requeue ran the original settlement %d times, want 1", settled)
 	}
 }
 
@@ -2292,7 +2306,7 @@ func TestDispatchFlush_StaleRowCleanupBeforePersist(t *testing.T) {
 
 	sess, err := claude.NewSession(
 		context.Background(), thread.ID,
-		claude.Config{Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
+		claude.Config{Reaper: procutiltest.Reaper(), Retention: claude.UserHomeRetention(0), Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
 		func(provider.ProviderEvent) {},
 	)
 	if err != nil {
@@ -2343,7 +2357,7 @@ func TestDispatchFlush_FailedDispatchKeepsStaleRow(t *testing.T) {
 	app, _ := newAppForFlushQueueRPC(t)
 
 	thread := testThread("flush-stale-keep")
-	thread.Provider = string(provider.Claude)
+	thread.Provider = string(provider.Codex)
 	thread.WorkspacePath = t.TempDir()
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread: %v", err)
@@ -2357,9 +2371,13 @@ func TestDispatchFlush_FailedDispatchKeepsStaleRow(t *testing.T) {
 		t.Fatalf("seed stale row: %v", err)
 	}
 
-	// No session registered: dispatch fails at session resolution.
+	sess := installSteerTestSession(t, app, thread, "ok")
+	app.sessionManager().put(thread.ID, session{Provider: string(provider.Codex), Token: "flush-token", Codex: sess})
+
+	// An attachment that no longer resolves fails the dispatch before the
+	// stale row's cleanup.
 	app.dispatchFlush(thread.ID, []triage.QueuedFlushItem{{
-		ID: "queue:keep", Message: "keep me", Payload: json.RawMessage(`{}`),
+		ID: "queue:keep", Message: "keep me", Payload: json.RawMessage(`{"attachmentIds":["gone"]}`),
 		StaleUserItemID: "user:0:flush:1",
 	}})
 
@@ -2369,8 +2387,8 @@ func TestDispatchFlush_FailedDispatchKeepsStaleRow(t *testing.T) {
 		t.Error("failed dispatch deleted the stale flush row — the message's only durable copy is gone")
 	}
 	// The failing item requeues with its stale marker intact (round-13,
-	// CT13-1): the session-lookup failure happened BEFORE the cleanup
-	// ran, so the retry obligation must survive for the next dispatch.
+	// CT13-1): the failure happened BEFORE the cleanup ran, so the retry
+	// obligation must survive for the next dispatch.
 	requeued := app.triage.QueuedFlushItems(thread.ID)
 	if len(requeued) != 1 {
 		t.Fatalf("requeued items: got %d, want 1 (the failing item)", len(requeued))
@@ -2416,7 +2434,7 @@ func TestDispatchFlush_PostPersistFailureRequeuesWithFreshRowMarker(t *testing.T
 	// resolution and the quiet persist succeed, the stdin write fails.
 	sess, err := claude.NewSession(
 		context.Background(), thread.ID,
-		claude.Config{Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
+		claude.Config{Reaper: procutiltest.Reaper(), Retention: claude.UserHomeRetention(0), Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
 		func(provider.ProviderEvent) {},
 	)
 	if err != nil {
@@ -2486,7 +2504,7 @@ func TestDispatchFlush_RequeueAfterQueueFlushedRepublishesTheQueueID(t *testing.
 	// allocation and the quiet persist all succeed, the stdin write fails.
 	sess, err := claude.NewSession(
 		context.Background(), thread.ID,
-		claude.Config{Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
+		claude.Config{Reaper: procutiltest.Reaper(), Retention: claude.UserHomeRetention(0), Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
 		func(provider.ProviderEvent) {},
 	)
 	if err != nil {
@@ -2635,11 +2653,11 @@ func TestCodexResendAfterInterrupt_FailedSendRestoresDraft(t *testing.T) {
 }
 
 // TestCodexResendAfterInterrupt_DraftMergeFailureRequeues pins the
-// fallback inside restoreEagerPersistedFlushesToDraft: when the draft
-// write fails after the eager rows are already deleted, the messages
-// must keep a delivery vehicle — requeued with their queue identity —
-// and the row removal must still reach the frontend so no ghost
-// timeline row outlives its deleted store row.
+// fallback inside restoreEagerPersistedFlushesToDraft: the draft write and
+// the eager rows' removal are one write, so when it fails the rows stay and
+// the messages keep a delivery vehicle, requeued with their queue identity
+// and naming their rows for the redispatch to retire. Nothing tells the
+// frontend to drop a row the store still has.
 func TestCodexResendAfterInterrupt_DraftMergeFailureRequeues(t *testing.T) {
 	t.Parallel()
 	app, rec := newAppForFlushQueueRPC(t)
@@ -2683,11 +2701,11 @@ func TestCodexResendAfterInterrupt_DraftMergeFailureRequeues(t *testing.T) {
 
 	app.eagerPersistFlushSendsOnInterrupt(thread.ID, appSess, -1, tok)
 
-	// The row deletion happened before the draft write failed...
+	// The failed write removed nothing...
 	if _, found, err := app.store.GetThreadItem(thread.ID, "user:1:flush:1"); err != nil {
 		t.Fatalf("GetThreadItem: %v", err)
-	} else if found {
-		t.Error("eager row survived — cleanup runs before the draft write")
+	} else if !found {
+		t.Error("eager row deleted by a restore whose draft write failed")
 	}
 	// ...so the message falls back to the queue with its identity intact...
 	requeued := app.triage.QueuedFlushItems(thread.ID)
@@ -2699,27 +2717,20 @@ func TestCodexResendAfterInterrupt_DraftMergeFailureRequeues(t *testing.T) {
 		t.Errorf("requeued identity = %+v, want queue:q1/resend me/enqueued 10", got)
 	}
 	if got.StaleUserItemID != "user:1:flush:1" {
-		// The marker resolves as already-cleaned at redispatch (the row
-		// is gone); carrying it is what makes a partial delete retry-safe.
+		// The redispatch retires the row before it persists a fresh one.
 		t.Errorf("requeued StaleUserItemID = %q, want user:1:flush:1", got.StaleUserItemID)
 	}
-	// ...and the frontend still learns the row is gone.
-	restored := emittedQueueRestored(rec)
-	if len(restored) != 1 {
-		t.Fatalf("queue restored events = %+v, want one", restored)
-	}
-	if restored[0].Reason != "resend_failed" {
-		t.Errorf("restore reason = %q, want resend_failed", restored[0].Reason)
-	}
-	if strings.Join(restored[0].UserItemIDs, ",") != "user:1:flush:1" {
-		t.Errorf("restored user ids = %+v, want [user:1:flush:1]", restored[0].UserItemIDs)
+	// ...and the frontend keeps the row the store still has.
+	if restored := emittedQueueRestored(rec); len(restored) != 0 {
+		t.Fatalf("queue restored events = %+v, want none", restored)
 	}
 }
 
-// An eager row whose resend failed and whose draft write fails is requeued
-// as the row renders it: its summary with the review comments, which the
-// row's retire returned with their bodies for the resend to claim again,
-// and the text before them for a later restore to the composer.
+// An eager row whose resend failed and whose draft write fails is left as
+// it was, with its review comments claimed: the composer write and the
+// row's retire are one write. The message is requeued as the row renders
+// it, naming the row, so the resend retires it and claims the comments
+// again, and with the text before them for a later restore to the composer.
 func TestResendFailureRequeuesTheRenderedReviewComments(t *testing.T) {
 	t.Parallel()
 	app, _ := newAppForFlushQueueRPC(t)
@@ -2756,8 +2767,8 @@ func TestResendFailureRequeuesTheRenderedReviewComments(t *testing.T) {
 	}})
 
 	requeued := app.triage.QueuedFlushItems(thread.ID)
-	if len(requeued) != 1 || requeued[0].Message != resolved.content {
-		t.Fatalf("requeued = %+v, want the row's summary %q", requeued, resolved.content)
+	if len(requeued) != 1 || requeued[0].Message != resolved.content || requeued[0].StaleUserItemID != rowID {
+		t.Fatalf("requeued = %+v, want the row's summary %q naming row %s", requeued, resolved.content, rowID)
 	}
 	var payload flushQueuePayload
 	if err := json.Unmarshal(requeued[0].Payload, &payload); err != nil {
@@ -2766,14 +2777,12 @@ func TestResendFailureRequeuesTheRenderedReviewComments(t *testing.T) {
 	if payload.TextBeforeReviewComments == nil || *payload.TextBeforeReviewComments != "Resend me." {
 		t.Errorf("payload text before the review comments = %v, want the message's own text", payload.TextBeforeReviewComments)
 	}
-	want := []flushqueue.RenderedReviewComments{{
-		Source:   store.DiffReviewSourceRef{ThreadID: thread.ID, Scope: draft.Scope, SourceKey: draft.SourceKey},
-		Comments: []store.DiffReviewCommentSnapshot{{ID: draft.ID, Body: draft.Body}},
-	}}
-	if !reflect.DeepEqual(payload.RenderedReviewComments, want) {
-		t.Errorf("rendered review comments = %+v, want %+v", payload.RenderedReviewComments, want)
+	if _, found, err := app.store.GetThreadItem(thread.ID, rowID); err != nil || !found {
+		t.Fatalf("row after the failed restore: found=%v err=%v, want it kept", found, err)
 	}
-	wantReviewDraft(t, app, store.ThreadReviewOwner(thread.ID), draft.ID, "after the requeue")
+	if got, err := app.store.GetDiffReviewComment(store.ThreadReviewOwner(thread.ID), draft.ID); err != nil || got.Status != "sent" {
+		t.Fatalf("comment after the failed restore = %+v, %v; want it still claimed by the row", got, err)
+	}
 }
 
 // TestStartSession_FlushesRequeuedItems pins R12-2 (round 12): a
@@ -2945,7 +2954,7 @@ func TestQueuedFlushItemFromUnconfirmed_CarriesStaleMarker(t *testing.T) {
 		Message:         "still stale",
 		EnqueuedAt:      10,
 		StaleUserItemID: "user:2:flush:1",
-	}, nil)
+	})
 	if !ok {
 		t.Fatal("conversion rejected a message-bearing item")
 	}
@@ -3076,7 +3085,11 @@ func TestGetQueueState_ReturnsSnapshot(t *testing.T) {
 		t.Errorf("empty queue should return nil, got %+v", got)
 	}
 
-	q, _ := app.RegisterQueueItem(context.Background(), thread.ID, "snapshot me", SendMessageOptions{})
+	holdFlushQueue(app)
+	q, err := app.RegisterQueueItem(context.Background(), thread.ID, "snapshot me", SendMessageOptions{})
+	if err != nil {
+		t.Fatalf("RegisterQueueItem: %v", err)
+	}
 
 	snap, err := app.GetQueueState(thread.ID)
 	if err != nil {
@@ -3107,6 +3120,7 @@ func TestQueueSnapshot_CoversItemMidDispatch(t *testing.T) {
 		t.Fatalf("CreateThread: %v", err)
 	}
 
+	holdFlushQueue(app)
 	first, err := app.RegisterQueueItem(context.Background(), thread.ID, "mid dispatch", SendMessageOptions{})
 	if err != nil {
 		t.Fatalf("RegisterQueueItem: %v", err)
@@ -3134,7 +3148,9 @@ func TestQueueSnapshot_CoversItemMidDispatch(t *testing.T) {
 	}
 
 	// The emit path reads the same chain, so the concurrent register in
-	// this window keeps the in-flight message and appends its own.
+	// this window keeps the in-flight message and appends its own, which
+	// stays queued behind it.
+	holdFlushQueue(app)
 	rec.reset()
 	second, err := app.RegisterQueueItem(context.Background(), thread.ID, "queued behind", SendMessageOptions{})
 	if err != nil {
@@ -3178,6 +3194,7 @@ func TestGetThreadLiveState_ReturnsServerSideSnapshot(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("turn start: %v", err)
 	}
+	holdFlushQueue(app)
 	queued, err := app.RegisterQueueItem(context.Background(), thread.ID, "queued text", SendMessageOptions{
 		AttachmentIDs: []string{"att-1"},
 	})
@@ -3281,6 +3298,7 @@ func TestQueueStateChanged_PayloadDecodesAttachmentIDs(t *testing.T) {
 		t.Fatalf("CreateThread: %v", err)
 	}
 
+	holdFlushQueue(app)
 	if _, err := app.RegisterQueueItem(context.Background(), thread.ID, "with attachments", SendMessageOptions{
 		AttachmentIDs: []string{"att-1", "att-2"},
 	}); err != nil {
@@ -3505,7 +3523,7 @@ func TestFlushPayloadFromUserMeta_DropsBakedRevisionCommentIDs(t *testing.T) {
 		"revisionSourceDiffCommentIds":["d1"],
 		"expandComposerCommands":true
 	}`
-	raw, err := flushPayloadFromUserMeta(meta, nil)
+	raw, err := flushPayloadFromUserMeta(meta)
 	if err != nil {
 		t.Fatalf("flushPayloadFromUserMeta: %v", err)
 	}
@@ -3534,25 +3552,31 @@ func TestFlushPayloadFromUserMeta_DropsBakedRevisionCommentIDs(t *testing.T) {
 
 	// A row whose summary renders its review comments is resent as it is:
 	// the payload marks it with the text before them, keeps the diff ids as
-	// provenance and claims again the comments its retire returned. A row
-	// that renders none ignores a retire's comments. Plan ids still drop
-	// from both rebuilds.
+	// provenance, and the redispatch's retire adds the comments it returned
+	// for the resend to claim again (addReturnedReviewComments). A row that
+	// renders none ignores a retire's comments. Plan ids still drop from
+	// both rebuilds.
 	rendered := strings.Replace(meta, `"expandComposerCommands":true`, `"expandComposerCommands":true,"textBeforeReviewComments":"own text"`, 1)
 	returned := []store.DiffReviewReturnedComments{{
 		DiffReviewCommentSource: store.DiffReviewCommentSource{Owner: store.ThreadReviewOwner("t1"), Scope: "pr", SourceKey: "k"},
 		Comments:                []store.DiffReviewCommentSnapshot{{ID: "d1", Body: "Rename it."}},
 	}}
-	fromMeta, err := flushPayloadFromUserMeta(rendered, returned)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, itemPayload := queuePayloadFromUserItem(store.Item{Summary: "own text, rendered", Meta: rendered}, nil, nil)
-	fromItem := withReturnedReviewComments(itemPayload, returned)
-	for _, raw := range []json.RawMessage{fromMeta, fromItem} {
+	resent := func(raw json.RawMessage) flushQueuePayload {
+		t.Helper()
 		var payload flushQueuePayload
 		if err := json.Unmarshal(raw, &payload); err != nil {
 			t.Fatal(err)
 		}
+		addReturnedReviewComments(&payload, returned)
+		return payload
+	}
+	fromMeta, err := flushPayloadFromUserMeta(rendered)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, fromItem := queuePayloadFromUserItem(store.Item{Summary: "own text, rendered", Meta: rendered}, nil, nil)
+	for _, raw := range []json.RawMessage{fromMeta, fromItem} {
+		payload := resent(raw)
 		if len(payload.RevisionSourceCommentIDs) != 0 || strings.Join(payload.RevisionSourceDiffCommentIDs, ",") != "d1" {
 			t.Errorf("payload plan ids %v, diff ids %v; want none and [d1]", payload.RevisionSourceCommentIDs, payload.RevisionSourceDiffCommentIDs)
 		}
@@ -3567,15 +3591,11 @@ func TestFlushPayloadFromUserMeta_DropsBakedRevisionCommentIDs(t *testing.T) {
 			t.Errorf("rendered review comments = %+v, want %+v", payload.RenderedReviewComments, want)
 		}
 	}
-	plain, err := flushPayloadFromUserMeta(meta, returned)
+	plain, err := flushPayloadFromUserMeta(meta)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var plainPayload flushQueuePayload
-	if err := json.Unmarshal(plain, &plainPayload); err != nil {
-		t.Fatal(err)
-	}
-	if plainPayload.TextBeforeReviewComments != nil || len(plainPayload.RenderedReviewComments) != 0 {
+	if plainPayload := resent(plain); plainPayload.TextBeforeReviewComments != nil || len(plainPayload.RenderedReviewComments) != 0 {
 		t.Errorf("payload of a row rendering no review comments = %+v, want no rendered comments", plainPayload)
 	}
 	if got := rowTextWithoutReviewComments("own text, rendered", rendered); got != "own text" {
@@ -3603,13 +3623,13 @@ func TestQueuePayloadFromUserItemPreservesComposerCommandProvenance(t *testing.T
 // and provenance. Both decode helpers must fail loudly instead.
 func TestFlushUserMetaHelpers_RejectNullMeta(t *testing.T) {
 	t.Parallel()
-	if _, err := flushPayloadFromUserMeta("null", nil); err == nil {
+	if _, err := flushPayloadFromUserMeta("null"); err == nil {
 		t.Error("flushPayloadFromUserMeta(null) = nil error, want corrupt-meta failure")
 	}
 	if _, err := attachmentIDsFromUserMeta("null"); err == nil {
 		t.Error("attachmentIDsFromUserMeta(null) = nil error, want corrupt-meta failure")
 	}
-	if _, err := flushPayloadFromUserMeta("", nil); err != nil {
+	if _, err := flushPayloadFromUserMeta(""); err != nil {
 		t.Errorf("flushPayloadFromUserMeta(empty) = %v, want nil — absent meta is legitimate", err)
 	}
 }
@@ -3658,14 +3678,19 @@ func TestDispatchFlush_SettlesOnlyAfterTheProviderWrite(t *testing.T) {
 		app, _ := newAppForFlushQueueRPC(t)
 
 		thread := testThread("flush-ondispatched-fail")
-		thread.Provider = string(provider.Claude)
+		thread.Provider = string(provider.Codex)
 		thread.WorkspacePath = t.TempDir()
 		if err := app.store.CreateThread(thread); err != nil {
 			t.Fatalf("CreateThread: %v", err)
 		}
+		// A closed session fails the provider write.
+		sess := installSteerTestSession(t, app, thread, "no-active-turn")
+		if err := sess.Close(); err != nil {
+			t.Fatalf("close session: %v", err)
+		}
+		app.sessionManager().put(thread.ID, session{Provider: string(provider.Codex), Token: "flush-token", Codex: sess})
 
 		fired := 0
-		// No session registered: dispatch fails at session resolution.
 		app.dispatchFlush(thread.ID, []triage.QueuedFlushItem{{
 			ID: "queue:fail", Message: "wake", Payload: json.RawMessage(`{}`),
 			Settlement: triage.NewFlushSettlement(func(string) { fired++ }),
@@ -3965,7 +3990,7 @@ func TestDispatchFlush_QuietRowDoesNotDeliverItsReviewDrafts(t *testing.T) {
 			}
 			sess, err := claude.NewSession(
 				context.Background(), thread.ID,
-				claude.Config{Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
+				claude.Config{Reaper: procutiltest.Reaper(), Retention: claude.UserHomeRetention(0), Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
 				func(provider.ProviderEvent) {},
 			)
 			if err != nil {

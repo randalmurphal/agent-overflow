@@ -239,7 +239,7 @@ opens the session on it.
 
 | Concern | Today | After |
 |---|---|---|
-| Orphan reaper (macOS) | `watchSessionProcess` per session PID, released in `closeProviderSession` | Watched when a connection dials, released when it exits |
+| Orphan reaper (macOS, Linux) | Each session's process group, started by `provider.Spawn` with `provider.Watched` and watched through `groupReaper` until the group is empty ([process lifetime](../architecture/process-lifetime.md)) | Watched when a connection dials, released when its group is empty |
 | Binary-stale banner | Flag pinned per session token (`app_provider_binary_watch.go`) | A connection fact, projected onto each session on it; Restart moves the session to a connection on the current binary |
 | Process liveness | Read loop end per thread | `Connection.Done`; per-session teardown follows from it |
 | Raw event log and process logs | `SpawnConfig.ThreadID` (`process.go`) | Process lines name the connection; raw frames are logged after routing, under the routed thread |

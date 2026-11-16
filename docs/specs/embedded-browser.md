@@ -278,7 +278,11 @@ positioned over.
   choice, decided by feel). This is the one place the embed is
   visibly not-a-DOM-element; every native embed has it.
 - Pane hidden / thread switched / layout drag in progress → view
-  hidden. Nothing is torn down; page state lives on, the page keeps
+  hidden. A drag that places a pane (a sidebar thread row or tool, a pane
+  title) hides every view in the strip from its `dragstart` to its end,
+  under the strip's drag shield (an airspace surface), because a view
+  takes the drag from the page: nothing later than the `dragstart` is
+  sure to reach the SPA. Nothing is torn down; page state lives on, the page keeps
   its viewport and keeps producing frames. By default the viewport is
   the pane's own size (`viewport.go`: the rect's whole pixels within the
   viewport bounds, applied latest-wins per thread), so a presented
@@ -415,6 +419,17 @@ every other windowless deployment.
   no automated suite that spawns an engine, and windowless selection
   must keep answering `unavailableEngine`
   (`internal/browser/manager_test.go`).
+- A placing drag never reaching a page: the browser suite
+  (`paneDragBrowserView.browser.test.ts`) proves the pane reports its
+  view not visible from a sidebar `dragstart` with no other drag event,
+  and the Manager presents no page for such a rect (`paneCanShow`). That
+  a real OS drag then reaches the SPA and not the hidden view is checked
+  by hand on each engine through the real-engine gate: open a page whose
+  `dragenter` and `drop` listeners change its title, scroll the strip so
+  the browser pane touches the sidebar, and drag a sidebar thread
+  straight from its row onto the page, hold, and release over it. The
+  view hides as the drag starts, the title never changes, and the view
+  returns when the drag ends.
 - macOS: compiled, run and driven on the user's Mac 2026-09-03 through
   the real-engine gate (`AO_HARNESS_REAL_BROWSER=1 make harness-window`,
   tools called over the MCP endpoint off the mock provider's argv). The

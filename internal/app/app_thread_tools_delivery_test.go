@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/agentmeta"
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/store"
@@ -74,7 +76,7 @@ func newHeldRequestTarget(t *testing.T, f *requestFixture) *heldRequestTarget {
 	stdinLog := filepath.Join(t.TempDir(), "claude-stdin.jsonl")
 	sessionEvents := &atomic.Pointer[func(provider.ProviderEvent)]{}
 	sess, err := claude.NewSession(context.Background(), thread.ID,
-		claude.Config{Binary: writeClaudeStdinRecorderBinary(t, stdinLog), WorkDir: workspace},
+		claude.Config{Reaper: procutiltest.Reaper(), Retention: claude.UserHomeRetention(0), Binary: writeClaudeStdinRecorderBinary(t, stdinLog), WorkDir: workspace},
 		forwardTo(sessionEvents))
 	if err != nil {
 		t.Fatalf("claude.NewSession: %v", err)
@@ -612,16 +614,16 @@ func TestARequestARestoreTakesBackIsRequeuedOrSettled(t *testing.T) {
 			const first, second = "check the changelog", "and the release notes"
 			fields := usermessage.Meta{SendID: ids[0], JoinedSendIDs: ids}
 			if tc.parts {
-				fields.JoinedParts = []usermessage.JoinedPart{
-					{SendID: ids[0], Bytes: len(first), Origin: usermessage.OriginAgentThread},
-					{SendID: ids[1], Bytes: len(second), Origin: usermessage.OriginAgentThread},
+				fields.JoinedParts = []agentmeta.JoinedPart{
+					{SendID: ids[0], Bytes: len(first), Origin: agentmeta.OriginAgentThread},
+					{SendID: ids[1], Bytes: len(second), Origin: agentmeta.OriginAgentThread},
 				}
 			}
 			meta, err := usermessage.MarshalMeta(fields)
 			if err != nil {
 				t.Fatal(err)
 			}
-			text := first + usermessage.JoinSeparator + second
+			text := first + agentmeta.JoinSeparator + second
 			if tc.path == "session death" {
 				row := store.Item{ThreadID: target.ID, ID: "user:1:flush:1", Summary: text, Meta: meta}
 				f.app.restoreFlushItemsToDraftLocked(target.ID, []triage.UnconfirmedFlushItem{
@@ -748,7 +750,7 @@ func TestAReapedRequestGoesToASessionThatStartedBeforeItWasQueuedAgain(t *testin
 	}
 	stdin := filepath.Join(t.TempDir(), "next-session-stdin.jsonl")
 	next, err := claude.NewSession(context.Background(), h.thread.ID,
-		claude.Config{Binary: writeClaudeStdinRecorderBinary(t, stdin), WorkDir: h.thread.WorkspacePath},
+		claude.Config{Reaper: procutiltest.Reaper(), Retention: claude.UserHomeRetention(0), Binary: writeClaudeStdinRecorderBinary(t, stdin), WorkDir: h.thread.WorkspacePath},
 		func(provider.ProviderEvent) {})
 	if err != nil {
 		unlock()

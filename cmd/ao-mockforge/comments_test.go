@@ -253,7 +253,7 @@ func TestSubmitReviewHeldRepliesThroughTheAppsForgeCode(t *testing.T) {
 				return gitops.ReviewLineComment{Path: thread.Path, Body: body, InReplyTo: &gitops.ReviewThreadReply{ThreadID: thread.ID, RootDatabaseID: thread.Comments[0].DatabaseID}}
 			}
 			line := 5
-			review := gitops.SubmitReviewRequest{Verdict: gitops.ReviewVerdictComment, Body: "Notes", Comments: []gitops.ReviewLineComment{
+			review := gitops.SubmitReviewRequest{Verdict: gitops.ReviewVerdictComment, Body: "Notes", HeadSHA: read.Detail.HeadSHA, Comments: []gitops.ReviewLineComment{
 				{Path: "a.go", Body: "new line note", Line: &line, Side: "right"},
 				reply(theirs, "held reply"),
 			}}
@@ -285,7 +285,7 @@ func TestSubmitReviewHeldRepliesThroughTheAppsForgeCode(t *testing.T) {
 			if _, err := r.engine.Seed(fixture); err != nil {
 				t.Fatal(err)
 			}
-			_, err = r.core.SubmitReview(ctx, tc.ref, gitops.SubmitReviewRequest{Verdict: gitops.ReviewVerdictComment, Body: "Again", Comments: []gitops.ReviewLineComment{reply(theirs, "too late")}})
+			_, err = r.core.SubmitReview(ctx, tc.ref, gitops.SubmitReviewRequest{Verdict: gitops.ReviewVerdictComment, Body: "Again", HeadSHA: read.Detail.HeadSHA, Comments: []gitops.ReviewLineComment{reply(theirs, "too late")}})
 			if !errors.As(err, new(*gitops.ReplyThreadGoneError)) {
 				t.Fatalf("a held reply to a deleted thread = %v", err)
 			}
@@ -354,7 +354,7 @@ func TestGitLabCommentsOnARenamedFileThroughTheAppsForgeCode(t *testing.T) {
 			t.Fatalf("PostPRLineComment %q: %v", comment.Body, err)
 		}
 	}
-	review := gitops.SubmitReviewRequest{Verdict: gitops.ReviewVerdictComment, Comments: []gitops.ReviewLineComment{
+	review := gitops.SubmitReviewRequest{Verdict: gitops.ReviewVerdictComment, HeadSHA: strings.Repeat("4", 40), Comments: []gitops.ReviewLineComment{
 		{Path: "new.go", Body: "held across the change", Line: &three, OldLine: &three, Side: "right", Start: &gitops.ReviewLineStart{Line: 2, Side: "right"}},
 	}}
 	if _, err := r.core.SubmitReview(ctx, ref, review); err != nil {
@@ -395,7 +395,7 @@ func TestGitLabRangesReadBackAsPostedThroughTheAppsForgeCode(t *testing.T) {
 	}
 	held := cases[2].comment
 	held.Body = "mixed, held"
-	if _, err := r.core.SubmitReview(ctx, ref, gitops.SubmitReviewRequest{Verdict: gitops.ReviewVerdictComment, Comments: []gitops.ReviewLineComment{held}}); err != nil {
+	if _, err := r.core.SubmitReview(ctx, ref, gitops.SubmitReviewRequest{Verdict: gitops.ReviewVerdictComment, HeadSHA: strings.Repeat("4", 40), Comments: []gitops.ReviewLineComment{held}}); err != nil {
 		t.Fatalf("SubmitReview: %v", err)
 	}
 	expectAllHandled(t, r)
@@ -410,4 +410,33 @@ func TestGitLabRangesReadBackAsPostedThroughTheAppsForgeCode(t *testing.T) {
 			t.Fatalf("%q reads back as %+v, want %s %d..%d", tc.comment.Body, got, tc.side, tc.start, tc.line)
 		}
 	}
+}
+
+// A GitHub thread resolve through the app's own code reads the thread as
+// the named pull's first: its own thread resolves, and the same thread
+// named under another pull is refused with nothing changed.
+func TestGitHubResolveChecksTheThreadsPullThroughTheAppsForgeCode(t *testing.T) {
+	// GitHub lets the author and write access resolve; commentFixture's
+	// TRIAGE viewer may not.
+	fixture := commentFixture(githubMergeFixture("success"))
+	fixture.Repos[0].Merge.Permission = "WRITE"
+	r := newRig(t, fixture)
+	ctx := forgeapi.WithInteractive(t.Context())
+	ref := gitops.PRReference{Forge: "github", Host: "github.com", Namespace: "acme", Repo: "merge", Number: 9}
+	thread := threadByBody(mergeRead(t, r, ref), "theirs")
+	other := ref
+	other.Number = 10
+	if err := r.core.SetThreadResolved(ctx, other, thread.ID, true); !errors.As(err, new(*gitops.ThreadNotOnPRError)) {
+		t.Fatalf("resolve under another pull = %v, want ThreadNotOnPRError", err)
+	}
+	if got := threadByBody(mergeRead(t, r, ref), "theirs"); got.IsResolved {
+		t.Fatal("a refused resolve changed the thread")
+	}
+	if err := r.core.SetThreadResolved(ctx, ref, thread.ID, true); err != nil {
+		t.Fatalf("SetThreadResolved: %v", err)
+	}
+	if got := threadByBody(mergeRead(t, r, ref), "theirs"); !got.IsResolved {
+		t.Fatal("the resolve did not change the thread")
+	}
+	expectAllHandled(t, r)
 }

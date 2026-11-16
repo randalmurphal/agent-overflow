@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"agent-overflow/internal/agentmeta"
 	"agent-overflow/internal/slicesx"
 
 	"agent-overflow/internal/eventchan"
@@ -167,7 +168,7 @@ func (a *App) GetThreadLiveState(threadID string) (ThreadLiveState, error) {
 			SendID:       meta.SendID,
 			UserItemID:   item.UserItemID,
 			Message:      item.Message,
-			AgentMessage: usermessage.IsAgentMessage(meta),
+			AgentMessage: agentmeta.IsAgentMessage(meta.Agent()),
 		})
 	}
 	return state, nil

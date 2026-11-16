@@ -65,6 +65,10 @@ type ThreadOrganizeResult struct {
 	Changed bool
 	// ArchivedChanged says the archive flag itself moved.
 	ArchivedChanged bool
+	// Listing is how the write moved the thread across the sidebar
+	// listing: an unarchive, a group move or a placement can list it, and
+	// an archive or an own can take it off.
+	Listing ListingChange
 	// CreatedGroup is the group this write inserted, if any. A destination
 	// that already existed is not announced: every client already has it.
 	CreatedGroup *ThreadGroup
@@ -82,7 +86,7 @@ func (s *Store) ApplyThreadOrganize(threadID string, write ThreadOrganizeWrite) 
 	if threadID == "" {
 		return ThreadOrganizeResult{}, fmt.Errorf("store: organize thread: thread id is required")
 	}
-	tx, err := s.db.Begin()
+	tx, err := s.beginListingWrite()
 	if err != nil {
 		return ThreadOrganizeResult{}, fmt.Errorf("store: begin organize thread %s: %w", threadID, err)
 	}
@@ -91,6 +95,10 @@ func (s *Store) ApplyThreadOrganize(threadID string, write ThreadOrganizeWrite) 
 	before, err := getThreadTx(tx, threadID)
 	if err != nil {
 		return ThreadOrganizeResult{}, fmt.Errorf("store: organize thread %s: %w", threadID, err)
+	}
+	listedBefore, err := threadListed(tx, threadID)
+	if err != nil {
+		return ThreadOrganizeResult{}, err
 	}
 	result := ThreadOrganizeResult{Thread: before}
 
@@ -116,7 +124,7 @@ func (s *Store) ApplyThreadOrganize(threadID string, write ThreadOrganizeWrite) 
 		groupID = group.ID
 	}
 	if write.MoveGroup {
-		if _, err := setThreadGroupTx(tx, []string{threadID}, groupID); err != nil {
+		if err := setThreadGroupTx(tx, []string{threadID}, groupID); err != nil {
 			return ThreadOrganizeResult{}, err
 		}
 		if groupID != before.GroupID {
@@ -152,6 +160,11 @@ func (s *Store) ApplyThreadOrganize(threadID string, write ThreadOrganizeWrite) 
 			return ThreadOrganizeResult{}, fmt.Errorf("store: read back organized thread %s: %w", threadID, err)
 		}
 		result.Thread = current
+		listedAfter, err := threadListed(tx, threadID)
+		if err != nil {
+			return ThreadOrganizeResult{}, err
+		}
+		result.Listing = listingChange(listedBefore, listedAfter)
 	}
 	if err := tx.Commit(); err != nil {
 		return ThreadOrganizeResult{}, fmt.Errorf("store: commit organize thread %s: %w", threadID, err)

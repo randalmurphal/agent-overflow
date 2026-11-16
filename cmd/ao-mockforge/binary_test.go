@@ -580,6 +580,31 @@ func TestRateLimitsReadThroughTheAppsTransport(t *testing.T) {
 	}
 }
 
+// GitHub answers a GraphQL secondary rate limit with HTTP 200, a message
+// saying so and Retry-After: the read is rate limited until then, and the
+// gate holds the next background read without sending it.
+func TestGitHubSecondaryRateLimitAnsweredWith200(t *testing.T) {
+	r := newRig(t, githubFixture())
+	ref := gitops.PRReference{Forge: "github", Host: "github.com", Namespace: "acme", Repo: "widgets", Number: 7}
+	if err := r.engine.SetRefusal(forgefake.Refusal{Route: "gh graphql PRTick", Status: 200, Times: 1, Header: map[string]string{"Retry-After": "120"},
+		Body: []byte(`{"errors":[{"message":"You have exceeded a secondary rate limit. Please wait a few minutes before you try again."}]}`)}); err != nil {
+		t.Fatal(err)
+	}
+	before := time.Now()
+	_, err := r.core.GetPRDetail(t.Context(), ref)
+	var limited *forgeapi.RateLimitedError
+	if !errors.As(err, &limited) || limited.Until.Before(before.Add(119*time.Second)) || limited.Until.After(time.Now().Add(121*time.Second)) {
+		t.Fatalf("read answered 200 with a secondary limit = %v, want rate limited for Retry-After", err)
+	}
+	sent := len(r.engine.Invocations(0).Invocations)
+	if _, err := r.core.GetPRDetail(t.Context(), ref); !errors.As(err, &limited) {
+		t.Fatalf("background read while the gate is closed = %v", err)
+	}
+	if got := len(r.engine.Invocations(0).Invocations); got != sent {
+		t.Fatalf("the closed gate sent %d more requests", got-sent)
+	}
+}
+
 func TestPRReadsAddressTheReferencesHost(t *testing.T) {
 	github, gitlab := githubFixture(), gitlabFixture()
 	github.Repos[0].Host = "ghe.example:8443"
@@ -662,6 +687,51 @@ func TestPullListsResolveTheCheckoutsOrigin(t *testing.T) {
 	mergedMR, err := r.core.ListMergedPRHeads(t.Context(), gl, 10)
 	if err != nil || len(mergedMR) != 1 || mergedMR[0].HeadOid != strings.Repeat("e", 40) {
 		t.Fatalf("glab ListMergedPRHeads = %+v, %v", mergedMR, err)
+	}
+}
+
+// A checkout of a fork finds the pull request it opened in the fork's
+// parent, through the app's forge code on both forges: the one whose head
+// is the fork, not another fork's branch of the same name. Its merged
+// heads add the parent's merges from the fork.
+func TestForkCheckoutsFindTheirUpstreamPulls(t *testing.T) {
+	sha := strings.Repeat("f", 40)
+	pulls := func(fork string) []forgefake.Pull {
+		return []forgefake.Pull{
+			{Number: 1, Title: "Other fork", HeadRef: "feature", HeadRepo: "zed/" + fork, HeadSHA: strings.Repeat("1", 40)},
+			{Number: 2, Title: "Mine", HeadRef: "feature", HeadRepo: "alice/" + fork, HeadSHA: strings.Repeat("2", 40)},
+			{Number: 3, Title: "Merged", State: "merged", HeadRef: "done", HeadRepo: "alice/" + fork, HeadSHA: sha},
+		}
+	}
+	r := newRig(t, forgefake.Fixture{Repos: []forgefake.Repo{
+		{Forge: "github", Project: "acme/forked", Pulls: pulls("forked")},
+		{Forge: "github", Project: "alice/forked", Parent: "acme/forked"},
+		{Forge: "gitlab", Project: "grp/forked", Pulls: pulls("forked")},
+		{Forge: "gitlab", Project: "alice/forked", Parent: "grp/forked"},
+	}})
+	for _, tc := range []struct{ origin, url string }{
+		{"git@github.com:alice/forked.git", "https://github.com/acme/forked/pull/2"},
+		{"https://gitlab.com/alice/forked.git", "https://gitlab.com/grp/forked/-/merge_requests/2"},
+	} {
+		dir := t.TempDir()
+		for _, args := range [][]string{{"init", "-q"}, {"remote", "add", "origin", tc.origin}} {
+			if out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput(); err != nil {
+				t.Fatalf("git %v: %v\n%s", args, err, out)
+			}
+		}
+		open, err := r.core.ListOpenPRs(t.Context(), dir, "feature")
+		if err != nil || len(open) != 1 || open[0].URL != tc.url || open[0].State != "open" {
+			t.Fatalf("%s ListOpenPRs = %+v, %v; want %s", tc.origin, open, err, tc.url)
+		}
+		merged, err := r.core.ListMergedPRHeads(t.Context(), dir, 10)
+		if err != nil || len(merged) != 1 || merged[0].HeadRefName != "done" || merged[0].HeadOid != sha {
+			t.Fatalf("%s ListMergedPRHeads = %+v, %v", tc.origin, merged, err)
+		}
+	}
+	for _, inv := range r.engine.Invocations(0).Invocations {
+		if inv.Unhandled {
+			t.Fatalf("unimplemented invocation: %+v", inv)
+		}
 	}
 }
 
@@ -823,8 +893,9 @@ func TestUnimplementedInvocationSurfacesItsArgvToTheApp(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "unhandled http request") || !strings.Contains(err.Error(), "PUT projects/grp%2Fsub%2Ftool/merge_requests/3/discussions/abc") {
 		t.Fatalf("GitLab SetThreadResolved error = %v, want the fake's unhandled report with the request", err)
 	}
+	// The write first reads the server's release.
 	log := r.engine.Invocations(0).Invocations
-	if len(log) != 1 || !log[0].Unhandled || log[0].Via != forgefake.ViaHTTP || log[0].Method != "PUT" || log[0].Forge != "gitlab" {
+	if len(log) != 2 || log[0].Route != "glab api metadata" || !log[1].Unhandled || log[1].Via != forgefake.ViaHTTP || log[1].Method != "PUT" || log[1].Forge != "gitlab" {
 		t.Fatalf("recorded %+v", log)
 	}
 }
@@ -1303,7 +1374,7 @@ func TestGitHubSubmitReviewLineCommentsThroughTheAppsForgeCode(t *testing.T) {
 	r := newRig(t, githubMergeFixture("success"))
 	ref := gitops.PRReference{Forge: "github", Host: "github.com", Namespace: "acme", Repo: "merge", Number: 9}
 	right, left, start := 3, 7, 5
-	review := gitops.SubmitReviewRequest{Verdict: gitops.ReviewVerdictComment, Body: "Two notes", Comments: []gitops.ReviewLineComment{
+	review := gitops.SubmitReviewRequest{Verdict: gitops.ReviewVerdictComment, Body: "Two notes", HeadSHA: strings.Repeat("9", 40), Comments: []gitops.ReviewLineComment{
 		{Path: "a.go", Body: "nit", Line: &right, Side: "right"},
 		{Path: "b.go", Body: "range", Line: &left, Start: &gitops.ReviewLineStart{Line: start, Side: "left"}, Side: "left"},
 	}}
@@ -1330,10 +1401,136 @@ func TestGitHubSubmitReviewLineCommentsThroughTheAppsForgeCode(t *testing.T) {
 	}
 }
 
-// A GitLab review submit through the app's own code: one that fails after
-// creating its drafts deletes exactly those, by the ids GitLab returned,
-// and never the viewer's own pending draft with the same text; a retry
-// then publishes each comment once. A delete that fails too is said.
+// A GitLab before 19.5 has no cancel_auto_merge: the app's cancel goes to
+// cancel_merge_when_pipeline_succeeds by the host's release alone, with no
+// request to the newer route, and a cancel with nothing armed is an error.
+func TestGitLabCancelAutoMergeOnAnOlderReleaseThroughTheAppsForgeCode(t *testing.T) {
+	fixture := gitlabMergeFixture("running")
+	fixture.Repos[0].ServerVersion = "19.4.1-ee"
+	r := newRig(t, fixture)
+	ref := gitops.PRReference{Forge: "gitlab", Host: "gitlab.com", Namespace: "grp", Repo: "merge", Number: 4}
+	ctx := forgeapi.WithInteractive(t.Context())
+	if outcome, err := r.core.MergePR(ctx, ref, gitops.MergeRequest{Method: "merge", HeadSHA: strings.Repeat("4", 40), AutoMerge: true}); err != nil || !outcome.AutoMerge {
+		t.Fatalf("auto-merge = %+v, %v", outcome, err)
+	}
+	if err := r.core.CancelPRAutoMerge(ctx, ref); err != nil {
+		t.Fatalf("CancelPRAutoMerge on 19.4: %v", err)
+	}
+	if read := mergeRead(t, r, ref); read.Detail.Merge.AutoMerge != nil {
+		t.Fatalf("after cancel: %+v", read.Detail.Merge.AutoMerge)
+	}
+	if err := r.core.CancelPRAutoMerge(ctx, ref); err == nil || !strings.Contains(err.Error(), "Can't cancel the automatic merge") {
+		t.Fatalf("a second cancel = %v", err)
+	}
+	for _, inv := range r.engine.Invocations(0).Invocations {
+		if inv.Unhandled || strings.HasSuffix(inv.Path, "/cancel_auto_merge") {
+			t.Errorf("%s %s (unhandled %v): %s", inv.Method, inv.Path, inv.Unhandled, inv.Detail)
+		}
+	}
+}
+
+// A role through a group share, which GitLab's REST permissions leave
+// out, reads as that role through the app's own code: a maintainer may
+// edit another's note, a reporter is told its role cannot merge.
+func TestGitLabSharedRoleThroughTheAppsForgeCode(t *testing.T) {
+	fixture := gitlabMergeFixture("success")
+	fixture.Repos[0].Merge.Permission = "maintainer"
+	fixture.Repos[0].Merge.SharedAccess = true
+	fixture.Repos[0].Pulls[0].Comments = []forgefake.Comment{{Author: "octo", Body: "hello"}}
+	r := newRig(t, fixture)
+	ref := gitops.PRReference{Forge: "gitlab", Host: "gitlab.com", Namespace: "grp", Repo: "merge", Number: 4}
+	threads, err := r.core.ListReviewThreads(t.Context(), ref)
+	if err != nil || len(threads) != 1 || len(threads[0].Comments) != 1 {
+		t.Fatalf("ListReviewThreads = %+v, %v", threads, err)
+	}
+	if c := threads[0].Comments[0]; c.AuthorLogin != "octo" || !c.ViewerCanEdit || !c.ViewerCanDelete {
+		t.Fatalf("another's note as a shared maintainer = %+v", c)
+	}
+
+	fixture.Repos[0].Merge.Permission = "reporter"
+	r = newRig(t, fixture)
+	if merge := mergeRead(t, r, ref).Detail.Merge; merge.ViewerCanMerge || merge.CannotMergeReason != "Your role in this project cannot merge." {
+		t.Fatalf("a shared reporter's merge = %+v", merge)
+	}
+	for _, inv := range r.engine.Invocations(0).Invocations {
+		if inv.Unhandled {
+			t.Errorf("unhandled %s %s: %s", inv.Method, inv.Path, inv.Detail)
+		}
+	}
+}
+
+// A merge train project through the app's own code: Merge now puts the
+// merge request on the train behind the one already there and the
+// detail says where; auto-merge on one still running schedules it to
+// join; cancel takes it off; nothing merges around the train.
+func TestGitLabMergeTrainThroughTheAppsForgeCode(t *testing.T) {
+	fixture := gitlabMergeFixture("success")
+	repo := &fixture.Repos[0]
+	repo.Merge.MergeTrains, repo.Merge.DeleteBranchOnMerge = true, false
+	repo.Pulls[0].Readiness = nil
+	repo.Pulls = append(repo.Pulls,
+		forgefake.Pull{Number: 6, Title: "First", Author: "octo", HeadRef: "first", Readiness: &forgefake.Readiness{AutoMerge: &forgefake.AutoMerge{Strategy: "merge_train"}},
+			CI: &forgefake.Pipeline{ID: 460, Jobs: []forgefake.Job{{ID: 461, Name: "unit", Status: "success"}}}},
+		forgefake.Pull{Number: 7, Title: "Running", Author: "octo", HeadRef: "running", HeadSHA: strings.Repeat("7", 40),
+			CI: &forgefake.Pipeline{ID: 470, Jobs: []forgefake.Job{{ID: 471, Name: "unit", Status: "running"}}}})
+	r := newRig(t, fixture)
+	ctx := forgeapi.WithInteractive(t.Context())
+	ref := gitops.PRReference{Forge: "gitlab", Host: "gitlab.com", Namespace: "grp", Repo: "merge", Number: 4}
+	merge := mergeRead(t, r, ref).Detail.Merge
+	if merge.Queue == nil || *merge.Queue != (gitops.MergeQueue{Required: true}) || merge.DeleteBranchOffered {
+		t.Fatalf("before = %+v, queue %+v", merge, merge.Queue)
+	}
+	if outcome, err := r.core.MergePR(ctx, ref, gitops.MergeRequest{Method: "merge", HeadSHA: strings.Repeat("4", 40)}); err != nil || !outcome.AutoMerge {
+		t.Fatalf("Merge now = %+v, %v", outcome, err)
+	}
+	merge = mergeRead(t, r, ref).Detail.Merge
+	if q := merge.Queue; q == nil || *q != (gitops.MergeQueue{Required: true, Queued: true, Position: 2, Size: 2, CanRemove: true}) || merge.AutoMerge == nil {
+		t.Fatalf("on the train = %+v, queue %+v", merge, merge.Queue)
+	}
+	if err := r.core.CancelPRAutoMerge(ctx, ref); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+	if q := mergeRead(t, r, ref).Detail.Merge.Queue; q == nil || q.Queued {
+		t.Fatalf("after remove: %+v", q)
+	}
+	running := ref
+	running.Number = 7
+	if _, err := r.core.MergePR(ctx, running, gitops.MergeRequest{Method: "merge", HeadSHA: strings.Repeat("7", 40), AutoMerge: true}); err != nil {
+		t.Fatalf("auto-merge: %v", err)
+	}
+	if merge := mergeRead(t, r, running).Detail.Merge; merge.Queue == nil || merge.Queue.Queued || merge.AutoMerge == nil {
+		t.Fatalf("scheduled = %+v, queue %+v", merge, merge.Queue)
+	}
+	for _, inv := range r.engine.Invocations(0).Invocations {
+		if inv.Unhandled || inv.Route == "glab api merge" {
+			t.Errorf("%s %s (route %q, unhandled %v): %s", inv.Method, inv.Path, inv.Route, inv.Unhandled, inv.Detail)
+		}
+	}
+}
+
+// A project that requires the approver's password withholds Approve and
+// says why, through the app's own code; an approve sent anyway is
+// GitLab's refusal.
+func TestGitLabApprovalPasswordThroughTheAppsForgeCode(t *testing.T) {
+	fixture := gitlabMergeFixture("success")
+	fixture.Repos[0].Merge.ApprovalPassword = true
+	r := newRig(t, fixture)
+	ref := gitops.PRReference{Forge: "gitlab", Host: "gitlab.com", Namespace: "grp", Repo: "merge", Number: 4}
+	if merge := mergeRead(t, r, ref).Detail.Merge; merge.ViewerCanApprove || merge.CannotApproveReason != "GitLab asks for your password to approve in this project. Approve on GitLab." {
+		t.Fatalf("merge options = %+v", merge)
+	}
+	err := r.core.ApprovePR(forgeapi.WithInteractive(t.Context()), ref, strings.Repeat("4", 40))
+	if got := explained(t, ref, gitops.ActionApprove, err); got.Kind != gitops.ForgeErrorRefused {
+		t.Fatalf("an approve sent anyway = %+v", got)
+	}
+}
+
+// A GitLab review submit through the app's own code: the viewer's own
+// pending draft (a review started on GitLab) refuses it before any write,
+// since the publish would post that draft too. One that fails after
+// creating its drafts deletes exactly those, by the ids GitLab returned; a
+// retry then publishes each comment once. A delete that fails too is said,
+// and the drafts it left refuse the next submit.
 func TestGitLabSubmitReviewDraftsThroughTheAppsForgeCode(t *testing.T) {
 	fixture := gitlabMergeFixture("running")
 	fixture.Repos[0].Pulls[0].DraftNotes = []forgefake.DraftNote{{ID: 9001, Author: "alice", Note: "LGTM"}}
@@ -1342,7 +1539,7 @@ func TestGitLabSubmitReviewDraftsThroughTheAppsForgeCode(t *testing.T) {
 	ref := gitops.PRReference{Forge: "gitlab", Host: "gitlab.com", Namespace: "grp", Repo: "merge", Number: 4}
 	ctx := forgeapi.WithInteractive(t.Context())
 	line := 3
-	review := gitops.SubmitReviewRequest{Verdict: gitops.ReviewVerdictComment, Body: "LGTM", Comments: []gitops.ReviewLineComment{
+	review := gitops.SubmitReviewRequest{Verdict: gitops.ReviewVerdictComment, Body: "LGTM", HeadSHA: strings.Repeat("4", 40), Comments: []gitops.ReviewLineComment{
 		{Path: "a.go", Body: "nit", Line: &line, Side: "right"},
 	}}
 	routes := func(since int) (created, deleted []string) {
@@ -1360,17 +1557,29 @@ func TestGitLabSubmitReviewDraftsThroughTheAppsForgeCode(t *testing.T) {
 		return created, deleted
 	}
 
+	before := len(r.engine.Invocations(0).Invocations)
+	if _, err := r.core.SubmitReview(ctx, ref, review); !errors.As(err, new(*gitops.PendingDraftNotesError)) {
+		t.Fatalf("SubmitReview over the viewer's pending draft = %v, want refused", err)
+	}
+	if created, _ := routes(before); len(created) != 0 {
+		t.Fatalf("a refused submit created %v", created)
+	}
+	fixture.Repos[0].Pulls[0].DraftNotes = nil
+	if _, err := r.engine.Seed(fixture); err != nil {
+		t.Fatal(err)
+	}
+
 	if err := r.engine.SetRefusal(forgefake.Refusal{Route: "glab api publish draft notes", Status: 422, Times: 1, Body: []byte(`{"message":"refused"}`)}); err != nil {
 		t.Fatal(err)
 	}
-	before := len(r.engine.Invocations(0).Invocations)
+	before = len(r.engine.Invocations(0).Invocations)
 	if _, err := r.core.SubmitReview(ctx, ref, review); err == nil {
 		t.Fatal("SubmitReview succeeded through a refused publish")
 	} else if _, left := errors.AsType[*gitops.DraftsLeftError](err); left {
 		t.Fatalf("SubmitReview = %v, want its drafts removed", err)
 	}
 	created, deleted := routes(before)
-	if len(created) != 2 || len(deleted) != 2 || slices.Contains(deleted, "9001") {
+	if len(created) != 2 || len(deleted) != 2 {
 		t.Fatalf("created %v, deleted %v: want exactly the two created drafts deleted", created, deleted)
 	}
 
@@ -1383,10 +1592,9 @@ func TestGitLabSubmitReviewDraftsThroughTheAppsForgeCode(t *testing.T) {
 			bodies[comment.Body]++
 		}
 	}
-	// The viewer's own pending "LGTM" publishes with the review, as
-	// bulk_publish does on GitLab; nothing the failed submit made remains.
-	if bodies["nit"] != 1 || bodies["LGTM"] != 2 {
-		t.Fatalf("published comments = %v, want nit once and the two LGTMs", bodies)
+	// Nothing the failed submit made remains to publish twice.
+	if bodies["nit"] != 1 || bodies["LGTM"] != 1 {
+		t.Fatalf("published comments = %v, want each once", bodies)
 	}
 
 	for _, route := range []string{"glab api publish draft notes", "glab api delete draft note"} {
@@ -1400,6 +1608,14 @@ func TestGitLabSubmitReviewDraftsThroughTheAppsForgeCode(t *testing.T) {
 	}
 	if got := explained(t, ref, gitops.ActionReview, err); !strings.Contains(got.Message, "2 draft comments") || !strings.Contains(got.Message, "may still be pending") {
 		t.Fatalf("explained = %+v", got)
+	}
+	for _, route := range []string{"glab api publish draft notes", "glab api delete draft note"} {
+		if err := r.engine.SetRefusal(forgefake.Refusal{Route: route}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := r.core.SubmitReview(ctx, ref, review); !errors.As(err, new(*gitops.PendingDraftNotesError)) {
+		t.Fatalf("SubmitReview over the drafts left = %v, want refused", err)
 	}
 }
 
@@ -1451,6 +1667,49 @@ func TestRefusalsReachTheAppsExplanations(t *testing.T) {
 			if inv.Unhandled {
 				t.Errorf("unhandled %s %s: %s", inv.Method, inv.Path, inv.Detail)
 			}
+		}
+	}
+}
+
+// GitHub's refusals of the token itself reach the app's sentences as
+// kind forbidden, naming the cause: a PR read refused for single sign-on
+// with the authorize URL, an approval answered 404 beside X-GitHub-SSO
+// (not "not found"), and a fine-grained token's 403 on a write naming the
+// permission it needs.
+func TestGitHubTokenRefusalsReachTheAppsExplanations(t *testing.T) {
+	ctx := forgeapi.WithInteractive(t.Context())
+	r := newRig(t, githubMergeFixture("running"))
+	ref := gitops.PRReference{Forge: "github", Host: "github.com", Namespace: "acme", Repo: "merge", Number: 9}
+	const authorize = "https://github.com/orgs/acme/sso?authorization_request=A1B2"
+	saml := `"Resource protected by organization SAML enforcement. You must grant your Personal Access token access to this organization."`
+	sso := map[string]string{"X-GitHub-SSO": "required; url=" + authorize}
+	if err := r.engine.SetRefusal(forgefake.Refusal{Route: "gh graphql PRTick", Status: 200, Times: 1, Header: sso,
+		Body: []byte(`{"data":{"repository":null},"errors":[{"type":"FORBIDDEN","path":["repository"],"message":` + saml + `}]}`)}); err != nil {
+		t.Fatal(err)
+	}
+	_, err := r.core.ReadPR(ctx, ref, gitops.PRReadParts{Detail: true}, nil, nil)
+	if got := explained(t, ref, gitops.ActionRead, err); got.Kind != gitops.ForgeErrorForbidden || !strings.Contains(got.Message, "Authorize it at "+authorize) {
+		t.Fatalf("a read refused for single sign-on = %+v", got)
+	}
+	if err := r.engine.SetRefusal(forgefake.Refusal{Route: "gh api pull reviews", Status: 404, Times: 1, Header: sso, Body: []byte(`{"message":"Not Found"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	if got := explained(t, ref, gitops.ActionApprove, r.core.ApprovePR(ctx, ref, strings.Repeat("9", 40))); got.Kind != gitops.ForgeErrorForbidden || !strings.Contains(got.Message, "single sign-on") {
+		t.Fatalf("an approval answered 404 for single sign-on = %+v", got)
+	}
+	if err := r.engine.SetRefusal(forgefake.Refusal{Route: "gh api pull reviews", Status: 403, Times: 1, Header: map[string]string{"X-Accepted-GitHub-Permissions": "pull_requests=write"},
+		Body: []byte(`{"message":"Resource not accessible by personal access token"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	if got := explained(t, ref, gitops.ActionApprove, r.core.ApprovePR(ctx, ref, strings.Repeat("9", 40))); got.Kind != gitops.ForgeErrorForbidden || !strings.Contains(got.Message, "fine-grained token that cannot approve acme/merge#9 (it needs pull_requests=write)") {
+		t.Fatalf("a fine-grained token's refused approval = %+v", got)
+	}
+	if mergeRead(t, r, ref).Detail.Merge.ViewerApproved {
+		t.Fatal("a refused approval approved")
+	}
+	for _, inv := range r.engine.Invocations(0).Invocations {
+		if inv.Unhandled {
+			t.Errorf("unhandled %s %s: %s", inv.Method, inv.Path, inv.Detail)
 		}
 	}
 }

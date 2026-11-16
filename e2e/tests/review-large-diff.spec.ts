@@ -8,12 +8,20 @@
 // of the rows rather than all of them, and the file tree reaches the last
 // line of the last file and then the first line of the first file, both
 // outside the range held before the jump. The last line holds text past
-// ASCII, which arrives packed (ReadReviewDiffPacked) and shows as written.
+// ASCII, which shows as written.
 //
 // A workspace diff larger than one read, with text past ASCII: a draft
 // comment is saved under the source key of the patch, which the page takes
 // from the chunks' keys, and it equals the key of the text the backend
 // served.
+//
+// A workspace diff past a text budget the harness lowers
+// (`review-diff-memory`), which counts the bytes the page holds: the text
+// evicted at the end of the diff and then at its beginning is read again
+// from the open diff, and the backend answers each read again with the
+// chunk it served first, byte for byte, so the rows show the text as
+// written, text past ASCII included, and the pane never opens the diff
+// again.
 
 import { randomBytes } from 'node:crypto';
 import { writeFile } from 'node:fs/promises';
@@ -39,12 +47,11 @@ const WIDE_TAIL = ' naïve — 日本語 🎉';
 
 // Generated bindings send method ids (internal/transport/methods_gen.go).
 const OPEN_WORKSPACE_DIFF = 3558532873;
-const READ_REVIEW_DIFF_PACKED = 4058838878;
+const READ_REVIEW_DIFF = 2473150982;
 // A pane opened from a thread saves its drafts under the thread.
 const CREATE_DIFF_REVIEW_COMMENT = 565306783;
 
-// A chunk is packed exactly when it carries wide-line marks.
-interface ChunkAnswer { data: string; wide?: number[]; key?: { hash: number; units: number } }
+interface ChunkAnswer { data: string; key?: { hash: number; units: number } }
 interface RPCFrame {
   type?: string;
   id: string;
@@ -53,18 +60,18 @@ interface RPCFrame {
   result?: ChunkAnswer & { chunk?: ChunkAnswer };
 }
 
-/** The page's socket, proxied: the patch text its diff chunks carried, how
- * many of them arrived packed, the key the last one carried as a source
- * key, and the source key of the draft the page saved. */
+/** The page's socket, proxied: the patch text its diff chunks carried,
+ * the key the last one carried as a source key, and the source key of the
+ * draft the page saved. */
 async function watchDiff(page: Page) {
-  const seen = { text: '', packedChunks: 0, lastChunkKey: '', draftKey: '' };
+  const seen = { text: '', lastChunkKey: '', draftKey: '' };
   await page.routeWebSocket(/\/ws(?:\?|$)/, (route) => {
     const server = route.connectToServer();
     const chunkCalls = new Map<string, number>();
     route.onMessage((message) => {
       const frame = JSON.parse(String(message)) as RPCFrame;
       if (frame.type === 'rpc' && frame.methodId !== undefined) {
-        if (frame.methodId === OPEN_WORKSPACE_DIFF || frame.methodId === READ_REVIEW_DIFF_PACKED) chunkCalls.set(frame.id, frame.methodId);
+        if (frame.methodId === OPEN_WORKSPACE_DIFF || frame.methodId === READ_REVIEW_DIFF) chunkCalls.set(frame.id, frame.methodId);
         if (frame.methodId === CREATE_DIFF_REVIEW_COMMENT) seen.draftKey = String((frame.params?.[1] as { sourceKey?: string }).sourceKey);
       }
       server.send(message);
@@ -74,12 +81,9 @@ async function watchDiff(page: Page) {
       const method = frame.type === 'rpc' ? chunkCalls.get(frame.id) : undefined;
       if (method !== undefined && frame.result) {
         const chunk = method === OPEN_WORKSPACE_DIFF ? frame.result.chunk! : frame.result;
-        // An open starts the patch over. Packed data is the text's UTF-8,
-        // one character per byte.
+        // An open starts the patch over.
         if (method === OPEN_WORKSPACE_DIFF) seen.text = '';
-        const packed = (chunk.wide?.length ?? 0) > 0;
-        seen.text += packed ? Buffer.from(chunk.data, 'latin1').toString('utf8') : chunk.data;
-        if (packed) seen.packedChunks += 1;
+        seen.text += chunk.data;
         seen.lastChunkKey = chunk.key ? `fnv1a:${chunk.key.hash.toString(16).padStart(8, '0')}:${chunk.key.units}` : '';
       }
       route.send(message);
@@ -205,10 +209,142 @@ test('a workspace diff larger than one read saves a draft under the key of the t
   await editor.getByTestId('review-draft-editor-add').click();
   await expect(review.getByTestId('review-send-strip')).toContainText('1 draft');
 
-  expect(seen.packedChunks).toBeGreaterThan(0);
   expect(seen.text).toContain(WIDE_TAIL);
   expect(seen.text.length).toBeGreaterThan(big.length);
   expect(seen.lastChunkKey).toBe(sourceKeyOf(seen.text));
   expect(seen.draftKey).toBe(seen.lastChunkKey);
+  await expect(review.getByTestId('review-error')).toHaveCount(0);
+});
+
+interface ServedChunk {
+  method: 'open' | 'read';
+  offset: number;
+  nextOffset: number;
+  data: string;
+  eof: boolean;
+}
+
+/** The page's socket, proxied: every chunk of a review diff the backend
+ * served, in order. */
+async function watchDiffChunks(page: Page): Promise<ServedChunk[]> {
+  const served: ServedChunk[] = [];
+  const methods = new Map<number, ServedChunk['method']>([
+    [OPEN_WORKSPACE_DIFF, 'open'],
+    [READ_REVIEW_DIFF, 'read'],
+  ]);
+  await page.routeWebSocket(/\/ws(?:\?|$)/, (route) => {
+    const server = route.connectToServer();
+    const calls = new Map<string, ServedChunk['method']>();
+    route.onMessage((message) => {
+      const frame = JSON.parse(String(message)) as RPCFrame;
+      const method = frame.type === 'rpc' && frame.methodId !== undefined ? methods.get(frame.methodId) : undefined;
+      if (method) calls.set(frame.id, method);
+      server.send(message);
+    });
+    server.onMessage((message) => {
+      const frame = JSON.parse(String(message)) as RPCFrame;
+      const method = frame.type === 'rpc' ? calls.get(frame.id) : undefined;
+      if (method && frame.result) {
+        const chunk = (method === 'open' ? frame.result.chunk! : frame.result) as ChunkAnswer & { offset: number; nextOffset: number; eof: boolean };
+        served.push({ method, offset: chunk.offset, nextOffset: chunk.nextOffset, data: chunk.data, eof: chunk.eof });
+      }
+      route.send(message);
+    });
+  });
+  return served;
+}
+
+interface DiffMemory {
+  heldBytes: number;
+  pinnedBytes: number;
+  evictableChunks: number;
+}
+
+test('evicted diff text is read again from the open diff as it was served', async ({ harness, page }) => {
+  test.setTimeout(180_000);
+  const title = 'Evicted diff thread';
+  const seeded = await harness.rpc<SeedResult>('HarnessSeed', {
+    projects: [{
+      name: `evicted-diff-${randomBytes(4).toString('hex')}`,
+      repo: { commits: [{ message: 'init', files: { 'README.md': '# Seeded\n' } }] },
+      threads: [{ title, turns: [{ userText: 'Hello.', items: [{ kind: 'assistant_text', summary: 'Hi.' }] }] }],
+    }],
+  });
+  // About 7.7 MB of diff: two files near one read each and a last file
+  // of three reads, past a 2.5 MiB budget, with sparse text past ASCII.
+  const sizes = [24_000, 24_000, 70_000];
+  const evictedLine = (file: number, line: number) =>
+    `${fileName(file)} line ${String(line).padStart(6, '0')} ${'x'.repeat(48)}${line % 1000 === 3 ? WIDE_TAIL : ''}`;
+  const root = seeded.projects[0].path;
+  for (let file = 0; file < sizes.length; file += 1) {
+    const lines = Array.from({ length: sizes[file] }, (_, index) => evictedLine(file, index + 1));
+    await writeFile(path.join(root, `${fileName(file)}.txt`), `${lines.join('\n')}${WIDE_TAIL}\n`);
+  }
+  const last = sizes.length - 1;
+  const lastText = `${evictedLine(last, sizes[last])}${WIDE_TAIL}`;
+  const budget = 5 * 512 * 1024;
+
+  const served = await watchDiffChunks(page);
+  await harness.open(page);
+  const memory = (budgetBytes?: number) =>
+    harness.rpc<DiffMemory>('HarnessUIQuery', { v: 1, kind: 'review-diff-memory', ...(budgetBytes === undefined ? {} : { budgetBytes }) });
+  await memory(budget);
+  await page.getByTestId('thread-row').filter({ hasText: title }).click();
+  const toggle = page.getByTestId('review-toggle');
+  await expect(toggle).toBeVisible({ timeout: 30_000 });
+  await toggle.click();
+  const review = page.locator('section[data-pane-kind="review"]');
+  await expect(review.getByTestId('review-diff-stats')).toContainText(`${sizes.length} files`, { timeout: 60_000 });
+  await expect.poll(() => served.some((chunk) => chunk.eof), { timeout: 60_000 }).toBe(true);
+  const patchBytes = served.reduce((sum, chunk) => sum + chunk.nextOffset - chunk.offset, 0);
+  expect(patchBytes).toBeGreaterThan(2 * budget);
+  // The diff was read once, past the budget: text was evicted and the
+  // store kept the open diff to read it again.
+  const opened = await memory();
+  expect(opened.evictableChunks).toBeGreaterThan(0);
+  expect(opened.heldBytes).toBeLessThanOrEqual(budget + opened.pinnedBytes);
+  expect(new Set(served.map((chunk) => chunk.offset)).size).toBe(served.length);
+  const firstReads = served.length;
+
+  // Files over 5000 rows start collapsed.
+  await review.getByTestId('review-collapse-all-toggle').click();
+  const scroll = review.getByTestId('review-scroll');
+  const firstLine = review.getByText(evictedLine(0, 1));
+  await expect(firstLine).toBeInViewport();
+  const tree = review.getByTestId('review-tree-toggle');
+  if ((await tree.getAttribute('aria-pressed')) !== 'true') await tree.click();
+
+  // The end of the diff was evicted as it arrived.
+  await review.locator(`[data-testid="review-tree-file"][data-file-path="${fileName(last)}.txt"]`).click();
+  await expect(review.getByText(evictedLine(last, 1))).toBeInViewport();
+  const lastLine = review.getByText(lastText);
+  await expect
+    .poll(async () => {
+      await scroll.evaluate((el) => {
+        el.scrollTop = el.scrollHeight;
+      });
+      return (await lastLine.count()) > 0 && (await lastLine.isVisible());
+    })
+    .toBe(true);
+  await expect(lastLine).toBeInViewport();
+
+  // Reading the end gave up the beginning, which is read again.
+  await review.locator(`[data-testid="review-tree-file"][data-file-path="${fileName(0)}.txt"]`).click();
+  await expect(firstLine).toBeInViewport();
+  await expect(review.getByText(evictedLine(0, 3))).toBeVisible();
+
+  const again = served.slice(firstReads);
+  expect(again.map((chunk) => chunk.offset)).toContain(0);
+  expect(again.some((chunk) => chunk.offset > 0)).toBe(true);
+  // Each read again is the chunk served first.
+  for (const chunk of again) {
+    const first = served.find((candidate) => candidate.offset === chunk.offset)!;
+    expect(first, `offset ${chunk.offset} was served before`).not.toBe(chunk);
+    expect({ ...chunk, method: undefined }, `offset ${chunk.offset}`).toEqual({ ...first, method: undefined });
+    expect(chunk.method, `offset ${chunk.offset}`).toBe('read');
+  }
+  expect(again.some((chunk) => chunk.data.includes(WIDE_TAIL))).toBe(true);
+  // The pane never read the diff whole again.
+  expect(served.filter((chunk) => chunk.method === 'open')).toHaveLength(1);
   await expect(review.getByTestId('review-error')).toHaveCount(0);
 });

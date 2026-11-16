@@ -234,7 +234,7 @@ func (a *App) runAgentWakeFire(ctx context.Context, run *agentWakeRun, row store
 		message, err = renderAgentLoopWake(row, fire)
 		current = a.currentAgentWake(row)
 	case store.AgentWakeWatch:
-		result := a.runAgentWatchScript(ctx, row)
+		result := a.runAgentWatchScript(ctx, run, row)
 		if ctx.Err() != nil {
 			// Stopped: the row is not this run's any more. Shut down: the
 			// row stays `running` and the next boot reruns it.
@@ -347,27 +347,26 @@ func stderrSummary(stderr cappedOutput) string {
 	return "; stderr: " + text
 }
 
-// runAgentWatchScript runs one interval watch to its exit.
-func (a *App) runAgentWatchScript(ctx context.Context, row store.AgentWake) agentWatchResult {
+// runAgentWatchScript runs one interval watch to its exit, as the leader of
+// its own process group the orphan reaper watches (agentWatchGroup), so what
+// the script starts ends with it, on cancellation and when the backend dies.
+func (a *App) runAgentWatchScript(ctx context.Context, run *agentWakeRun, row store.AgentWake) agentWatchResult {
 	command, err := a.agentWatchCommand(row)
 	if err != nil {
 		return agentWatchResult{err: err}
 	}
+	run.runIn(command.dir)
+	defer run.runIn("")
 	runCtx, cancel := context.WithTimeout(ctx, agentWatchTimeout(row))
 	defer cancel()
 	stdout := newHeadOutput(agentWakeOutputCap)
 	stderr := newTailOutput(agentWakeStderrCap)
-	cmd := a.agentWatchExec(runCtx, row, command)
-	// In-memory writers never block, so the WaitDelay ConfigureGroup sets
-	// only cuts short a descendant that keeps the pipes open after the
-	// script exits; what the script wrote has been read by then.
-	cmd.Stdout, cmd.Stderr = stdout, stderr
-	if err := cmd.Start(); err != nil {
-		return agentWatchResult{err: fmt.Errorf("could not start: %w", err)}
+	// In-memory writers never block, so the group's drain ends as soon as the
+	// script and anything it left behind have closed the pipes.
+	outcome, err := procutil.RunGroup(runCtx, a.groupReaper(agentWatchOwner(row)), a.agentWatchGroup(row, command, stdout, stderr))
+	if err == nil {
+		err = outcome.OutputErr()
 	}
-	a.watchSessionProcess(cmd.Process.Pid, "agent-wake:"+row.ID)
-	err = waitAgentWatch(cmd)
-	a.releaseSessionProcess(cmd.Process.Pid)
 	result := agentWatchResult{stdout: stdout.take(), stderr: stderr.take(), err: err}
 	if errors.Is(runCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil {
 		result.timedOut = true
@@ -375,16 +374,23 @@ func (a *App) runAgentWatchScript(ctx context.Context, row store.AgentWake) agen
 	return result
 }
 
-// agentWatchExec builds a watch's process: `/bin/sh -c` in its own process
-// group, killed with the group on cancellation and, where the platform
-// allows, when this app dies. The caller registers the started process with
-// the orphan reaper, which covers macOS.
-func (a *App) agentWatchExec(ctx context.Context, row store.AgentWake, command agentWatchCommandSpec) *exec.Cmd {
-	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", row.Command)
-	cmd.Dir, cmd.Env = command.dir, command.env
-	procutil.ConfigureGroup(cmd)
-	procutil.KillWithParent(cmd)
-	return cmd
+// agentWatchGroup is a watch's process: `/bin/sh -c` leading its own process
+// group, stopped with the group on cancellation and swept with what it left
+// running when it exits. stdout and stderr stay apart: stdout is the wake,
+// stderr the row's summary tail.
+func (a *App) agentWatchGroup(row store.AgentWake, command agentWatchCommandSpec, stdout, stderr io.Writer) procutil.GroupCommand {
+	return procutil.GroupCommand{
+		Dir:    command.dir,
+		Env:    command.env,
+		Argv:   []string{"/bin/sh", "-c", row.Command},
+		Output: stdout,
+		Stderr: stderr,
+	}
+}
+
+// agentWatchOwner names a watch's process group to the orphan reaper.
+func agentWatchOwner(row store.AgentWake) string {
+	return "agent-wake:" + row.ID
 }
 
 // agentWatchCommand is where and how a watch runs.
@@ -520,19 +526,29 @@ func (a *App) runAgentWatchProcess(ctx context.Context, run *agentWakeRun, row s
 	if err != nil {
 		return "error: " + err.Error()
 	}
-	cmd := a.agentWatchExec(ctx, row, command)
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return "error: " + err.Error()
-	}
+	run.runIn(command.dir)
+	defer run.runIn("")
 	stderr := newTailOutput(agentWakeStderrCap)
-	cmd.Stderr = stderr
-	if err := cmd.Start(); err != nil {
+	// The group writes stdout into the pipe, and the reader turns it into
+	// lines. The reader never stops reading, so the group's drain never
+	// waits on it; the pipe closes once the group's Wait has returned, after
+	// which nothing writes to it, and the reader sees EOF.
+	stdout, stdoutSink := io.Pipe()
+	group, err := procutil.StartGroup(ctx, a.groupReaper(agentWatchOwner(row)), a.agentWatchGroup(row, command, stdoutSink, stderr))
+	if err != nil {
+		_ = stdoutSink.Close()
 		return "error: could not start: " + err.Error()
 	}
-	pid := cmd.Process.Pid
-	a.watchSessionProcess(pid, "agent-wake:"+row.ID)
-	defer a.releaseSessionProcess(pid)
+	type groupEnd struct {
+		outcome procutil.GroupOutcome
+		err     error
+	}
+	ended := make(chan groupEnd, 1)
+	go func() {
+		outcome, err := group.Wait()
+		_ = stdoutSink.Close()
+		ended <- groupEnd{outcome: outcome, err: err}
+	}()
 	lines := make(chan agentWatchLine, 64)
 	go readAgentWatchLines(stdout, lines)
 
@@ -585,13 +601,13 @@ func (a *App) runAgentWatchProcess(ctx context.Context, run *agentWakeRun, row s
 			}
 			if lines != nil {
 				// The reader may be blocked handing over a line; let it reach
-				// EOF, which the group kill brings.
+				// EOF, which the end of the group brings.
 				go func() {
 					for range lines {
 					}
 				}()
 			}
-			_ = waitAgentWatch(cmd)
+			<-ended
 			return ""
 		case line, open := <-lines:
 			if !open {
@@ -612,7 +628,11 @@ func (a *App) runAgentWatchProcess(ctx context.Context, run *agentWakeRun, row s
 			}
 		}
 	}
-	err = waitAgentWatch(cmd)
+	end := <-ended
+	err = end.err
+	if err == nil {
+		err = end.outcome.OutputErr()
+	}
 	rest := stderr.take()
 	a.noteAgentWakeStderr(run, row, rest)
 	tail := stderrSummary(rest)
@@ -624,14 +644,6 @@ func (a *App) runAgentWatchProcess(ctx context.Context, run *agentWakeRun, row s
 		return "error: " + err.Error() + tail
 	}
 	return "exited" + tail
-}
-
-func waitAgentWatch(cmd *exec.Cmd) error {
-	err := cmd.Wait()
-	if errors.Is(err, exec.ErrWaitDelay) {
-		err = nil
-	}
-	return err
 }
 
 // readAgentWatchLines splits a watch's stdout into lines, each clipped to the

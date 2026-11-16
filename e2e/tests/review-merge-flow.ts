@@ -15,8 +15,16 @@
 // and a reviewer approved the pill reads "Ready to merge", a head that
 // moved refuses Merge now with the moved-head sentence and a Reload
 // action, and Merge now then merges: the pill reads "Merged", the section
-// shows the merged row and no actions. Screenshots: the blocked and ready
-// sections on desktop, the wrapped section header on compact.
+// shows the merged row and no actions. On a GitLab merge train project
+// Merge adds to the train, the armed row shows the place and Remove takes
+// it off, with no merge around the train. A GitHub viewer GitHub refuses
+// Update branch, a thread's resolve, its reply and its reactions sees each reason in the
+// control's place, and no refused request is sent. On a GitHub base with
+// a merge queue, Merge offers no method or branch delete, "Add to merge
+// queue" puts the pull request in the queue (the armed row reads "In the
+// merge queue · 1 of 1"), its Remove takes it out, and no direct merge is
+// sent. Screenshots: the blocked and ready sections on desktop, the
+// wrapped section header on compact, the train row on both.
 
 import { randomBytes } from 'node:crypto';
 import type { Locator, Page, TestInfo } from '@playwright/test';
@@ -87,7 +95,7 @@ function repo(forge: Forge): ForgeRepo {
       };
 }
 
-async function seedMergeRequest(harness: HarnessApp, forge: Forge, title: string): Promise<ForgeRepo> {
+async function seedMergeRequest(harness: HarnessApp, forge: Forge, title: string, forgeRepo: ForgeRepo = repo(forge)): Promise<ForgeRepo> {
   const seed = await harness.rpc<SeedResult>('HarnessSeed', {
     projects: [
       {
@@ -97,7 +105,7 @@ async function seedMergeRequest(harness: HarnessApp, forge: Forge, title: string
       },
     ],
   });
-  return publishPullRequest(harness, seed.projects[0].path, repo(forge), {
+  return publishPullRequest(harness, seed.projects[0].path, forgeRepo, {
     'src/queue/deliver.ts': 'export async function deliver(): Promise<void> {\n  await post();\n}\n',
   });
 }
@@ -324,4 +332,157 @@ export function reviewMergeFlow({ compact }: MergeSurface): void {
       await expectEveryForgeCallHandled(harness);
     });
   }
+
+  // A GitLab merge train project, with another merge request already on
+  // the train: Merge reads "Add to merge train" and offers no branch
+  // delete or commit message; it puts the merge request on the train
+  // behind the other one ("In the merge train · 2 of 2", the button "In
+  // merge train"), and the row's Remove takes it off. Nothing merges
+  // around the train.
+  test('gitlab: a merge train project adds to the train, shows the place and removes it', async ({ harness, page }, testInfo: TestInfo) => {
+    const title = 'Merge train thread';
+    const seed = await harness.rpc<SeedResult>('HarnessSeed', {
+      projects: [
+        {
+          name: `train-${randomBytes(4).toString('hex')}`,
+          repo: { commits: [{ message: 'init', files: { 'README.md': '# Seeded\n' } }] },
+          threads: [{ title, turns: [{ userText: 'Hello.', items: [{ kind: 'assistant_text', summary: 'Hi.' }] }] }],
+        },
+      ],
+    });
+    const base = repo('gitlab');
+    const ahead = {
+      ...pull('gitlab', 'success', true),
+      number: NUMBER.gitlab + 1,
+      title: 'Ahead on the train',
+      headRef: 'ahead',
+      readiness: { autoMerge: { strategy: 'merge_train' as const } },
+      ci: { id: 44_200, jobs: [{ id: 44_201, name: 'unit', stage: 'test', status: 'success' as const, log: 'unit tests\n' }] },
+    };
+    await publishPullRequest(harness, seed.projects[0].path, {
+      ...base,
+      merge: { pipelineMustSucceed: true, mergeTrains: true },
+      pulls: [pull('gitlab', 'success', true), ahead],
+    }, { 'src/queue/deliver.ts': 'export async function deliver(): Promise<void> {\n  await post();\n}\n' });
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await harness.open(page);
+    const review = await openReview(page, title, 'gitlab', compact);
+    const press = (target: Locator) => (compact ? target.tap() : target.click());
+
+    const pill = review.getByTestId('review-pr-readiness');
+    await expect(pill).toHaveText('Ready to merge', { timeout: 30_000 });
+    await press(pill);
+    const section = review.getByTestId('review-pr-merge');
+    const trigger = section.getByTestId('review-merge-trigger');
+    await expect(trigger).toContainText(compact ? 'Add to train' : 'Add to merge train');
+    await press(trigger);
+    const menu = page.getByTestId('review-merge-menu');
+    await expect(menu.getByTestId('review-merge-now')).toContainText('Add to merge train');
+    await expect(menu.getByTestId('review-merge-delete-branch')).toHaveCount(0);
+    await expect(menu.getByTestId('review-merge-edit-message')).toHaveCount(0);
+    await press(menu.getByTestId('review-merge-now'));
+
+    const armed = section.getByTestId('review-merge-armed');
+    await expect(armed).toContainText('In the merge train · 2 of 2');
+    await expect(armed).toContainText('Added by ao-viewer');
+    await expect(trigger).toContainText(compact ? 'Queued' : 'In merge train');
+    await expect(pill).toHaveText('Ready to merge');
+    await armed.screenshot({ path: testInfo.outputPath(`${testInfo.project.name}-merge-train.png`) });
+    await press(armed.getByTestId('review-merge-row-cancel-auto'));
+    await expect(armed).toHaveCount(0);
+    await expect(trigger).toContainText(compact ? 'Add to train' : 'Add to merge train');
+
+    const routes = (await forgeInvocations(harness)).map((call) => call.route);
+    expect(routes).toContain('glab api add to merge train');
+    expect(routes).not.toContain('glab api merge');
+    await expectEveryForgeCallHandled(harness);
+  });
+
+  test('github: Update branch and the thread actions GitHub refuses this viewer say why in their place', async ({ harness, page }) => {
+    const title = 'Merge thread refused controls';
+    const base = repo('github');
+    await seedMergeRequest(harness, 'github', title, {
+      ...base,
+      merge: { ...base.merge, permission: 'READ' },
+      pulls: [{
+        ...pull('github', 'success', true),
+        readiness: { behind: true },
+        viewer: { updateBranch: false, resolve: false, reply: false, react: false },
+        threads: [{ id: 'T_refused', path: 'src/queue/deliver.ts', line: 2, comments: [{ author: 'rmurphy', body: 'Should this retry?', createdAt: '2026-10-19T10:00:00Z', reactions: [{ name: 'thumbsup', user: 'octo' }] }] }],
+      }],
+    });
+    await harness.open(page);
+    const review = await openReview(page, title, 'github', compact);
+    const press = (target: Locator) => (compact ? target.tap() : target.click());
+
+    const pill = review.getByTestId('review-pr-readiness');
+    await expect(pill).toHaveText(/Blocked/, { timeout: 30_000 });
+    await press(pill);
+    const section = review.getByTestId('review-pr-merge');
+    await expect(section).toHaveAttribute('data-open', 'true');
+    const rebase = section.locator('[data-testid="review-merge-blocker"][data-kind="rebase"]');
+    await expect(rebase.getByTestId('review-merge-cannot-update')).toHaveText('GitHub does not let you update this branch.');
+    await expect(rebase.getByTestId('review-merge-row-rebase')).toHaveCount(0);
+
+    const conversation = await expandReviewSection(page, 'review-pr-conversation');
+    const card = conversation.locator('[data-testid="review-conversation-thread"][data-thread-id="T_refused"]');
+    const resolve = card.getByTestId('review-thread-resolve');
+    await expect(resolve).toBeDisabled();
+    await expect(resolve).toHaveAttribute('title', "Only the pull request's author and people with write access can resolve or reopen conversations.");
+    await expect(card.getByTestId('review-thread-cannot-reply')).toHaveText('GitHub does not let you reply to this conversation.');
+    await expect(card.getByTestId('review-thread-reply')).toHaveCount(0);
+    const chip = card.getByTestId('review-reaction-chip');
+    await expect(chip).toBeDisabled();
+    await expect(chip).toHaveAttribute('title', 'GitHub does not let you react to this comment.');
+
+    const routes = (await forgeInvocations(harness)).map((call) => call.route);
+    expect(routes).not.toContain('gh graphql UpdatePRBranch');
+    expect(routes).not.toContain('gh graphql SetThreadResolved');
+    expect(routes).not.toContain('gh graphql AddReaction');
+    await expectEveryForgeCallHandled(harness);
+  });
+
+  test('github: on a merge queue base, Merge adds the pull request to the queue, shows its place, and Remove takes it out', async ({ harness, page }) => {
+    const title = 'Merge thread queue';
+    const base = repo('github');
+    await seedMergeRequest(harness, 'github', title, {
+      ...base,
+      merge: { mergeQueue: true },
+      pulls: [{ ...pull('github', 'success', true), readiness: {} }],
+    });
+    await harness.open(page);
+    const review = await openReview(page, title, 'github', compact);
+    const press = (target: Locator) => (compact ? target.tap() : target.click());
+
+    const pill = review.getByTestId('review-pr-readiness');
+    await expect(pill).toHaveText('Ready to merge', { timeout: 30_000 });
+    await press(pill);
+    const section = review.getByTestId('review-pr-merge');
+    await expect(section).toHaveAttribute('data-open', 'true');
+    const trigger = section.getByTestId('review-merge-trigger');
+    await expect(trigger).toContainText(compact ? 'Add to queue' : 'Add to merge queue');
+
+    // The queue's method applies: the menu offers none, nor a branch delete.
+    await press(trigger);
+    const menu = page.getByTestId('review-merge-menu');
+    await expect(menu).toBeVisible();
+    await expect(menu.locator('[data-testid^="review-merge-method-"]')).toHaveCount(0);
+    await expect(menu.getByTestId('review-merge-delete-branch')).toHaveCount(0);
+    await press(menu.getByTestId('review-merge-now'));
+    const queued = section.locator('[data-testid="review-merge-armed"][data-queued="true"]');
+    await expect(queued).toContainText('In the merge queue · 1 of 1');
+    await expect(queued).toContainText('Added by ao-viewer');
+    await expect(trigger).toContainText(compact ? 'Queued' : 'In merge queue');
+
+    // Remove takes it out; the section offers the queue again.
+    await press(queued.getByTestId('review-merge-row-cancel-auto'));
+    await expect(section.getByTestId('review-merge-armed')).toHaveCount(0);
+    await expect(trigger).toContainText(compact ? 'Add to queue' : 'Add to merge queue');
+
+    const routes = (await forgeInvocations(harness)).map((call) => call.route);
+    expect(routes).toContain('gh graphql EnqueuePR');
+    expect(routes).toContain('gh graphql DequeuePR');
+    expect(routes).not.toContain('gh graphql MergePR');
+    await expectEveryForgeCallHandled(harness);
+  });
 }

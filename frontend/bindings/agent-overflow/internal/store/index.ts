@@ -36,6 +36,8 @@ export {
     StandingAgent,
     Thread,
     ThreadAttention,
+    ThreadFindAnswer,
+    ThreadFindSince,
     ThreadGroup,
     ThreadMessageHit,
     ThreadOrigin,

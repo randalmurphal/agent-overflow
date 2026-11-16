@@ -16,7 +16,7 @@ func spawnLocal(t *testing.T, s *Store, token, caller, target string, own bool) 
 	}, ThreadRequestReceipt{Token: token, OwnerDeviceID: "device", Kind: ThreadRequestSpawn, SourceThreadID: caller}); err != nil {
 		t.Fatalf("accept %s: %v", token, err)
 	}
-	if err := s.NameLocalThreadRequestTarget(token, target, own); err != nil {
+	if _, err := s.NameLocalThreadRequestTarget(token, target, own); err != nil {
 		t.Fatalf("name %s: %v", token, err)
 	}
 }
@@ -88,7 +88,7 @@ func TestSpawnedChildMovesBetweenPlacements(t *testing.T) {
 		t.Errorf("grouping the assistant = %v, want ErrStandingAgentGrouped", err)
 	}
 	moved, err := s.SetThreadGroup([]string{"child"}, group.ID)
-	if err != nil || len(moved) != 1 || moved[0].Placement != PlacementGrouped || moved[0].GroupID != group.ID {
+	if err != nil || len(moved) != 1 || moved[0].Thread.Placement != PlacementGrouped || moved[0].Thread.GroupID != group.ID {
 		t.Fatalf("grouping the child = %+v, %v", moved, err)
 	}
 	// An ungroup naming a row that was never grouped leaves its placement.
@@ -163,11 +163,11 @@ func TestPlacementChangeUnpins(t *testing.T) {
 		t.Fatal(err)
 	}
 	rows, err := s.SetThreadPlacement([]string{"child"}, PlacementOwned)
-	if err != nil || rows[0].PinnedAt == nil {
+	if err != nil || rows[0].Thread.PinnedAt == nil {
 		t.Fatalf("an unchanged placement = %+v, %v; want the pin kept", rows, err)
 	}
 	rows, err = s.SetThreadPlacement([]string{"child"}, PlacementStandalone)
-	if err != nil || rows[0].PinnedAt != nil || rows[0].Placement != PlacementStandalone {
+	if err != nil || rows[0].Thread.PinnedAt != nil || rows[0].Thread.Placement != PlacementStandalone {
 		t.Fatalf("a placement change = %+v, %v; want standalone and unpinned", rows, err)
 	}
 }
@@ -368,7 +368,7 @@ func TestNamingWriteWithoutItsSourceRowLeavesTheThreadStandalone(t *testing.T) {
 	if err := s.DeleteThread("agent"); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.NameLocalThreadRequestTarget("tok", "child", true); err != nil {
+	if _, err := s.NameLocalThreadRequestTarget("tok", "child", true); err != nil {
 		t.Fatalf("name after the caller's delete: %v", err)
 	}
 	if got, _ := placementOf(t, s, "child"); got != PlacementStandalone {

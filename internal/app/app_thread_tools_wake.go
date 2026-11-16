@@ -2,7 +2,6 @@ package app
 
 import (
 	"log"
-	"strings"
 	"time"
 
 	"agent-overflow/internal/store"
@@ -14,27 +13,18 @@ import (
 // up with the reason recorded.
 
 // threadWakeSendID and threadWakeLateSendID name the two messages one request
-// can deliver. They are distinct so a late reply is never mistaken for a
-// retry of the first wake and dropped by send admission.
-func threadWakeSendID(token string) string     { return "thread-wake:" + token }
-func threadWakeLateSendID(token string) string { return "thread-wake-late:" + token }
+// can deliver (store.ThreadWakeSendID).
+func threadWakeSendID(token string) string     { return store.ThreadWakeSendID(token, false) }
+func threadWakeLateSendID(token string) string { return store.ThreadWakeSendID(token, true) }
 
 func threadWakeSendIDFor(token string, late bool) string {
-	if late {
-		return threadWakeLateSendID(token)
-	}
-	return threadWakeSendID(token)
+	return store.ThreadWakeSendID(token, late)
 }
 
-// threadWakeFromSendID reads a wake's request token back out of its send id:
-// the carrier of every request its message answers (store.ThreadRequest
-// WakeCarrier).
+// threadWakeFromSendID reads a wake's request token back out of its send id
+// (store.ParseThreadWakeSendID).
 func threadWakeFromSendID(sendID string) (token string, late, ok bool) {
-	if token, ok := strings.CutPrefix(sendID, "thread-wake-late:"); ok {
-		return token, true, token != ""
-	}
-	token, ok = strings.CutPrefix(sendID, "thread-wake:")
-	return token, false, ok && token != ""
+	return store.ParseThreadWakeSendID(sendID)
 }
 
 // redeliverHandedOffWakes sends the answers or reminders a thread New
@@ -255,9 +245,15 @@ func (a *App) claimThreadWakeRetry(row store.ThreadRequest, owed []bool, now tim
 		return nil, true
 	}
 	attempts := row.WakeAttempts + 1
-	if err := a.store.ScheduleThreadRequestWake(row.Token,
-		now.Add(threadWakeRetryDelay(attempts)).UnixMilli(), attempts); err != nil {
+	booked, err := a.store.ScheduleThreadRequestWake(row.Token,
+		now.Add(threadWakeRetryDelay(attempts)).UnixMilli(), attempts)
+	if err != nil {
 		logThreadRequestSweep("schedule the wake retry for "+row.Token, err)
+		return nil, false
+	}
+	// The pass read the row before a delivery that has landed since, such as
+	// the one a reminder fired in this pass starts.
+	if !booked {
 		return nil, false
 	}
 	for _, late := range stillOwed {

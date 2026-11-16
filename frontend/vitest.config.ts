@@ -4,6 +4,8 @@ import tailwindcss from '@tailwindcss/vite';
 import { playwright } from '@vitest/browser-playwright';
 import { globSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import type { Plugin } from 'vite';
+import { OPEN_THREAD_PANES_KEY } from './src/test/openThreadPanes.ts';
 
 // There is no `svelte.config.js` (see vite.config.ts for why). Saying so
 // keeps the plugin from logging "no Svelte config found" once per project
@@ -30,6 +32,33 @@ const happyDomResolve = {
     { find: 'katex/dist/katex.min.css', replacement: resolve(import.meta.dirname, 'src/test/mocks/empty-css.ts') },
   ],
 };
+
+// Records every pane `createThreadPane` makes in the happy-dom projects, so
+// the shared teardown (src/test/openThreadPanes.ts) can clear the ones a test
+// left open. The record is appended to the store's compiled module, so the
+// app's code carries no test hook.
+const threadStore = resolve(import.meta.dirname, 'src/lib/stores/thread.svelte.ts');
+function threadPaneTracker(): Plugin {
+  const record = `
+;{
+  const createUntracked = createThreadPane;
+  const open = (globalThis[Symbol.for(${JSON.stringify(OPEN_THREAD_PANES_KEY)})] ??= []);
+  createThreadPane = (...args) => {
+    const pane = createUntracked(...args);
+    open.push(pane);
+    return pane;
+  };
+}
+`;
+  return {
+    name: 'thread-pane-tracking',
+    enforce: 'post',
+    transform(code, id) {
+      if (id.split('?')[0] !== threadStore) return null;
+      return { code: code + record, map: null };
+    },
+  };
+}
 
 const unitInclude = ['src/**/*.{test,spec}.{ts,js}'];
 // Real-browser layout tests run in the `browser` project below.
@@ -108,7 +137,7 @@ export default defineConfig({
   test: {
     projects: [
       {
-        plugins: [svelte(svelteOptions)],
+        plugins: [svelte(svelteOptions), threadPaneTracker()],
         resolve: happyDomResolve,
         test: {
           ...unitTestOptions,
@@ -123,7 +152,7 @@ export default defineConfig({
         },
       },
       {
-        plugins: [svelte(svelteOptions)],
+        plugins: [svelte(svelteOptions), threadPaneTracker()],
         resolve: happyDomResolve,
         test: {
           ...unitTestOptions,
@@ -201,7 +230,7 @@ export default defineConfig({
         // reach the same mocked bindings — with a disjoint include glob and a
         // timeout that lets a long sweep finish rather than being cut off
         // mid-corpus.
-        plugins: [svelte(svelteOptions)],
+        plugins: [svelte(svelteOptions), threadPaneTracker()],
         resolve: happyDomResolve,
         test: {
           name: 'manual',

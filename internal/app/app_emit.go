@@ -200,9 +200,8 @@ func sessionCloseTask(a *App, threadID string, s session) closer.Task {
 	return closer.Task{
 		Label: fmt.Sprintf("session for thread %s", threadID),
 		Close: func() error {
-			// Routes through closeProviderSession so the orphan-reaper
-			// release fires on a clean shutdown close, same as every other
-			// teardown path.
+			// Routes through closeProviderSession, the teardown every
+			// other path uses.
 			return a.closeProviderSession(threadID, s)
 		},
 	}

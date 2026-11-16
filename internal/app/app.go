@@ -260,9 +260,15 @@ type App struct {
 	// projectIdentityWG joins the boot pass that re-derives project
 	// repository identity (startProjectIdentityRefresh).
 	projectIdentityWG sync.WaitGroup
-	// startupProbeWG joins the startup account probes and the Claude probe's
-	// retry loop (probeStartupAccountInfo).
+	// startupProbeWG joins the startup provider status probe
+	// (probeStartupProviderStatuses), the startup account probes and the
+	// Claude probe's retry loop (probeStartupAccountInfo).
 	startupProbeWG sync.WaitGroup
+	// unattendedLoops joins the goroutines the boot's unattended work leaves
+	// running that no narrower owner joins: the worktree watch's first read,
+	// the provider binary watcher, the domain certificate loop and the
+	// tailnet loop. Each ends with the app context.
+	unattendedLoops workGroup
 	// permissionModeFollowWG joins the goroutines that move a thread onto
 	// the permission mode Claude moved to (followClaudePermissionMode).
 	permissionModeFollowWG sync.WaitGroup
@@ -286,7 +292,11 @@ type App struct {
 	reviewSubmitsOnce  sync.Once
 	reviewSubmits      *keyedlock.Registry
 	postedReviewDrafts postedReviewDrafts
-	reviewAttempts     reviewAttempts
+	reviewAttempts     writeAttempts[SubmitPRReviewResult]
+	// gitActionAttempts are the outcomes of the git writes a client can
+	// lose the answer of: commit, push, pull, create PR (app_git_attempts.go).
+	// Zero value is ready.
+	gitActionAttempts writeAttempts[gitops.GitActionResult]
 	// providerTerminals is the per-connection take-control bookkeeping for
 	// claude-tui PTYs: which caller armed which attachment, so a dead socket
 	// releases exactly its own claim and its input lease. Zero value ready.
@@ -317,6 +327,11 @@ type App struct {
 	uiTraceOnce sync.Once
 	uiTracer    *uitrace.Tracer
 	uiTraceErr  error
+	// Settings that apply on the next start, as this session started with
+	// them (app_launch_setting.go): the launcher's GPU vsync preference
+	// (app_wsl.go) and OTLP tracing (app_observability_launch.go).
+	launchGPUVsync launchValue
+	launchTracing  launchValue
 	// frontendErrors is the always-on JSONL appender for window-level
 	// frontend runtime errors (onerror / unhandledrejection). Same lazy
 	// construction contract as uiTracer.
@@ -528,12 +543,11 @@ type App struct {
 	// construction keeps focused bare-App tests valid.
 	sessionRuntimeOnce sync.Once
 	sessionRuntime     *sessionruntime.Manager
-	// orphanReaper is the macOS sidecar process that kills provider
-	// process groups if this app dies ungracefully; orphanRegistry is the
-	// durable backstop the next launch sweeps. Both stay nil on
-	// Linux/Windows (which rely on Pdeathsig / a Job Object) and in tests
-	// — the watch/release helpers and Client methods are nil-safe. See
-	// app_orphan_reaper.go.
+	// orphanReaper is the sidecar process that kills the watched process
+	// groups if this app dies ungracefully; orphanRegistry is the durable
+	// backstop the next launch sweeps. Both stay nil on Windows and in tests
+	// that do not start them; the watch/release helpers and Client methods
+	// are nil-safe. See app_orphan_reaper.go.
 	orphanReaper   *orphanreaper.Client
 	orphanRegistry *orphanreaper.Registry
 	// threadApp owns store-backed thread application policy and the keyed
@@ -937,6 +951,13 @@ type App struct {
 	// no longer repoint a spawn at a real claude/codex binary. Set once
 	// before Start; never mutated afterwards.
 	providerBinaryOverride string
+	// defaultProviderBinaryOverride, when non-empty, is what a provider
+	// binary setting left at its default runs, in place of the bare name
+	// resolved on PATH. Test fixtures point it at their poisoned binary
+	// (isolateE2EProviderSpawns), so a default read after the fixture's
+	// settings directory is gone cannot reach an installed CLI. Production
+	// leaves it empty. Set before the App is used.
+	defaultProviderBinaryOverride string
 	// fileKeychainOverride makes initStores build Credentials with the
 	// file-backed Keychain stand-in instead of security(1). Harness mode
 	// sets it because a redirected $HOME isolates every file store but
@@ -951,6 +972,10 @@ type App struct {
 	// rollback could not undo. The zero value is OPEN: every boot except a
 	// supervisor trial never touches it. See app_activation.go.
 	activation activation
+	// workflowStartsHeldForBoot is true while the workflow engine runs paused
+	// only so its rebuild starts nothing before startBeforeClients. Written by
+	// Start before the gate's goroutine exists and cleared by that step.
+	workflowStartsHeldForBoot bool
 	// serviceUpdate holds this backend's ability to replace itself: the call
 	// that asks its supervisor to run an already-staged version, and the
 	// release source, layout and live flow the remote trigger drives. Both

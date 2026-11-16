@@ -213,27 +213,34 @@ func (s *Store) AcceptLocalThreadRequest(request ThreadRequest, receipt ThreadRe
 // source row that is gone, its caller deleted while the thread was being
 // created, is not an error: the thread exists and runs, and the receipt
 // names it. own makes a spawn's thread owned by its spawner in the same
-// transaction, when the source row is there to own it.
-func (s *Store) NameLocalThreadRequestTarget(token, threadID string, own bool) error {
+// transaction, when the source row is there to own it. It returns how the
+// naming moved the thread across the sidebar listing: a spawn's thread is
+// real from this write (threadRealClause), so one left standalone or
+// grouped joins the list here, and an owned one does not.
+func (s *Store) NameLocalThreadRequestTarget(token, threadID string, own bool) (ListingChange, error) {
 	action := fmt.Sprintf("store: name local thread request %s target", token)
 	if threadID == "" {
-		return fmt.Errorf("%s: thread id is required", action)
+		return ListingUnchanged, fmt.Errorf("%s: thread id is required", action)
 	}
 	now := nowMillis()
-	tx, err := s.db.Begin()
+	tx, err := s.beginListingWrite()
 	if err != nil {
-		return fmt.Errorf("%s: begin: %w", action, err)
+		return ListingUnchanged, fmt.Errorf("%s: begin: %w", action, err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	listedBefore, err := threadListed(tx, threadID)
+	if err != nil {
+		return ListingUnchanged, fmt.Errorf("%s: %w", action, err)
+	}
 	result, err := tx.Exec(`UPDATE thread_request_receipts SET target_thread_id = ?, updated_at = ?
 		  WHERE token = ? AND target_thread_id IS NULL`, threadID, now, token)
 	if err != nil {
-		return fmt.Errorf("%s: receipt: %w", action, err)
+		return ListingUnchanged, fmt.Errorf("%s: receipt: %w", action, err)
 	}
 	if named, err := rowsChanged(result, action); err != nil {
-		return err
+		return ListingUnchanged, err
 	} else if !named {
-		return fmt.Errorf("%s: no receipt is waiting for its thread", action)
+		return ListingUnchanged, fmt.Errorf("%s: no receipt is waiting for its thread", action)
 	}
 	var caller string
 	if err := tx.QueryRow(`UPDATE thread_requests
@@ -242,20 +249,24 @@ func (s *Store) NameLocalThreadRequestTarget(token, threadID string, own bool) e
 		  WHERE token = ? AND target_computer_id = '' AND lineage_only = 0
 		  RETURNING caller_thread_id`,
 		threadID, now, ThreadRequestUnconfirmed, ThreadRequestAccepted, token).Scan(&caller); err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return fmt.Errorf("%s: source: %w", action, err)
+		return ListingUnchanged, fmt.Errorf("%s: source: %w", action, err)
 	}
 	if own && caller != "" {
 		if err := ownSpawnedThreadTx(tx, threadID); err != nil {
-			return fmt.Errorf("%s: %w", action, err)
+			return ListingUnchanged, fmt.Errorf("%s: %w", action, err)
 		}
 	}
+	listedAfter, err := threadListed(tx, threadID)
+	if err != nil {
+		return ListingUnchanged, fmt.Errorf("%s: %w", action, err)
+	}
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("%s: commit: %w", action, err)
+		return ListingUnchanged, fmt.Errorf("%s: commit: %w", action, err)
 	}
 	if caller != "" {
 		s.noteThreadRequestChanged(ThreadRequestChange{Token: token, CallerThreadID: caller})
 	}
-	return nil
+	return listingChange(listedBefore, listedAfter), nil
 }
 
 const insertThreadReceiptSQL = `INSERT INTO thread_request_receipts (
@@ -303,21 +314,43 @@ func (r ThreadRequestReceipt) validated(action string) (ThreadRequestReceipt, er
 // once the destination has created it. It applies only while the target is
 // still undecided, so a retry that raced the first attempt cannot repoint a
 // receipt at a second thread; false means the target was already set and the
-// caller's thread is the loser of that race.
-func (s *Store) SetThreadReceiptTarget(token, threadID string) (bool, error) {
+// caller's thread is the loser of that race. It returns how the naming moved
+// the thread across the sidebar listing: a paired computer's spawn makes
+// its thread real (threadRealClause).
+func (s *Store) SetThreadReceiptTarget(token, threadID string) (bool, ListingChange, error) {
 	action := fmt.Sprintf("store: set thread receipt %s target", token)
 	if threadID == "" {
-		return false, fmt.Errorf("%s: thread id is required", action)
+		return false, ListingUnchanged, fmt.Errorf("%s: thread id is required", action)
 	}
-	result, err := s.db.Exec(
+	tx, err := s.beginListingWrite()
+	if err != nil {
+		return false, ListingUnchanged, fmt.Errorf("%s: begin: %w", action, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	listedBefore, err := threadListed(tx, threadID)
+	if err != nil {
+		return false, ListingUnchanged, fmt.Errorf("%s: %w", action, err)
+	}
+	result, err := tx.Exec(
 		`UPDATE thread_request_receipts SET target_thread_id = ?, updated_at = ?
 		  WHERE token = ? AND target_thread_id IS NULL`,
 		threadID, nowMillis(), token,
 	)
 	if err != nil {
-		return false, fmt.Errorf("%s: %w", action, err)
+		return false, ListingUnchanged, fmt.Errorf("%s: %w", action, err)
 	}
-	return rowsChanged(result, action)
+	named, err := rowsChanged(result, action)
+	if err != nil || !named {
+		return false, ListingUnchanged, err
+	}
+	listedAfter, err := threadListed(tx, threadID)
+	if err != nil {
+		return false, ListingUnchanged, fmt.Errorf("%s: %w", action, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return false, ListingUnchanged, fmt.Errorf("%s: commit: %w", action, err)
+	}
+	return true, listingChange(listedBefore, listedAfter), nil
 }
 
 // DetachThreadReceiptsFromThread clears the thread binding of every settled
@@ -479,30 +512,30 @@ func (s *Store) ReturnThreadReceipt(token string) (bool, error) {
 }
 
 // settleThreadReceiptRow is the receipt's conditional settlement on q, and
-// the row as it left it.
+// the row as it left it. A receipt has no wake: the settlement refuses
+// ArmWake and DisarmWake, which are the source row's half
+// (SettleLocalThreadRequest).
 func settleThreadReceiptRow(q sqlQueryer, token string, from []string, settlement ThreadRequestSettlement) (ThreadRequestReceipt, bool, error) {
 	action := fmt.Sprintf("store: settle thread receipt %s", token)
 	if err := settlement.validate(action, threadReceiptStates); err != nil {
 		return ThreadRequestReceipt{}, false, err
 	}
-	if settlement.ArmWake {
-		return ThreadRequestReceipt{}, false, fmt.Errorf("%s: a receipt has no wake to arm", action)
+	if settlement.ArmWake || settlement.DisarmWake {
+		return ThreadRequestReceipt{}, false, fmt.Errorf("%s: a receipt has no wake to arm or disarm", action)
 	}
 	clause, args, err := stateInClause(action, from, threadReceiptStates)
 	if err != nil {
 		return ThreadRequestReceipt{}, false, err
 	}
-	settledAt := settlement.SettledAt
-	if settledAt == 0 {
-		settledAt = nowMillis()
+	if settlement.SettledAt == 0 {
+		settlement.SettledAt = nowMillis()
 	}
-	expiresAt := settlement.ExpiresAt
-	if expiresAt == 0 {
-		expiresAt = settledAt + threadAnswerHoldMillis
+	if settlement.ExpiresAt == 0 {
+		settlement.ExpiresAt = settlement.SettledAt + threadAnswerHoldMillis
 	}
 	agent, role := answerAgentColumns(settlement.Agent)
 	set := []any{settlement.State, nilIfEmptyBytes(settlement.Answer), settlement.AnswerKind,
-		settledAt, expiresAt, agent, role, nowMillis(), token}
+		settlement.SettledAt, settlement.ExpiresAt, agent, role, nowMillis(), token}
 	receipt, err := scanThreadReceipt(q.QueryRow(
 		`UPDATE thread_request_receipts
 		    SET state = ?, answer = ?, answer_kind = ?, revision = revision + 1,
@@ -548,11 +581,17 @@ type LocalSettlement struct {
 // provided it is still open, and the receipt records the revision the
 // source stored. The receipt keeps its own copy of the answer. The
 // turn-end observer passes {running} so a thread_reply that landed first
-// wins; the cancel path passes both open states.
-func (s *Store) SettleLocalThreadRequest(token string, from []string, settlement ThreadRequestSettlement, sourceState string) (LocalSettlement, error) {
+// wins; the cancel path passes both open states. settlement.ArmWake and
+// settlement.DisarmWake are the source row's half and are written only to
+// a source row on this computer: a sender's own cancel disarms its wake in
+// the statement that settles it, so a cancel that fails leaves it armed.
+func (s *Store) SettleLocalThreadRequest(token string, from []string, settlement ThreadRequestSettlement, sourceState string) (_ LocalSettlement, err error) {
 	action := fmt.Sprintf("store: settle local thread request %s", token)
 	if _, ok := threadRequestStates[sourceState]; !ok {
 		return LocalSettlement{}, fmt.Errorf("%s: invalid source state %q", action, sourceState)
+	}
+	if settlement.ArmWake && settlement.DisarmWake {
+		return LocalSettlement{}, fmt.Errorf("%s: a settlement cannot both arm and disarm the wake", action)
 	}
 	openClause, openArgs, err := stateInClause(action, threadRequestOpenStates, threadRequestStates)
 	if err != nil {
@@ -562,10 +601,10 @@ func (s *Store) SettleLocalThreadRequest(token string, from []string, settlement
 	if err != nil {
 		return LocalSettlement{}, fmt.Errorf("%s: begin: %w", action, err)
 	}
-	defer func() { _ = tx.Rollback() }()
+	defer rollbackTx(tx, action, &err)
 	// The wake is the source row's; the receipt has none.
-	armWake := settlement.ArmWake
-	settlement.ArmWake = false
+	armWake, disarmWake := settlement.ArmWake, settlement.DisarmWake
+	settlement.ArmWake, settlement.DisarmWake = false, false
 	receipt, settled, err := settleThreadReceiptRow(tx, token, from, settlement)
 	if err != nil || !settled {
 		return LocalSettlement{}, err
@@ -588,16 +627,18 @@ func (s *Store) SettleLocalThreadRequest(token string, from []string, settlement
 		agent, role := answerAgentColumns(receipt.AnswerAgent)
 		now := nowMillis()
 		// RETURNING reads the wake as the settlement left it: a reply arms
-		// it in this statement (threadRequestArmSQL).
+		// it in this statement (threadRequestArmSQL), and a sender's cancel
+		// disarms it.
 		err := tx.QueryRow(
 			`UPDATE thread_requests
 			    SET state = ?, answer = ?, answer_kind = ?, revision = revision + 1,
 			        settled_at = ?, expires_at = ?, answer_agent = ?, answer_agent_role = ?,
-			        notify = `+threadRequestArmSQL+`, updated_at = ?
+			        notify = CASE WHEN ? = 1 THEN 0 ELSE `+threadRequestArmSQL+` END, updated_at = ?
 			  WHERE token = ? AND `+openClause+`
 			  RETURNING notify`,
 			append([]any{sourceState, nilIfEmptyBytes(receipt.Answer), receipt.AnswerKind, receipt.SettledAt,
-				nilIfZero(receipt.ExpiresAt), agent, role, boolToInt(armWake), now, token}, openArgs...)...).Scan(&notify)
+				nilIfZero(receipt.ExpiresAt), agent, role, boolToInt(disarmWake), boolToInt(armWake), now, token},
+				openArgs...)...).Scan(&notify)
 		switch {
 		case errors.Is(err, sql.ErrNoRows):
 		case err != nil:
@@ -607,9 +648,8 @@ func (s *Store) SettleLocalThreadRequest(token string, from []string, settlement
 		}
 		if out.Collected {
 			// The source has the answer durably; the receipt may drop its copy.
-			if _, err := tx.Exec(`UPDATE thread_request_receipts SET collected_revision = ?, collected_at = ?, updated_at = ?
-			    WHERE token = ? AND collected_revision < ?`, receipt.Revision, now, now, token, receipt.Revision); err != nil {
-				return LocalSettlement{}, fmt.Errorf("%s: acknowledge: %w", action, err)
+			if _, err := ackThreadReceipt(tx, token, receipt.Revision, now); err != nil {
+				return LocalSettlement{}, err
 			}
 			out.Receipt.CollectedRevision, out.Receipt.CollectedAt = receipt.Revision, now
 			out.Notify = notify != 0
@@ -636,14 +676,20 @@ const threadAnswerHoldMillis = 24 * 60 * 60 * 1000
 // source stops polling once the hold on the first answer runs out, so a reply
 // after that would never be collected. Every other state is refused by the
 // caller with its state as the reason. agent is the replying thread as a
-// standing agent, kept beside the first answer's (LateReplyAgent).
+// standing agent, kept beside the first answer's (LateReplyAgent). A receipt
+// whose request was made on this computer stores it with that request
+// instead (StoreLocalThreadRequestLateReply).
 func (s *Store) StoreThreadReceiptLateReply(token string, reply []byte, at int64, agent *ThreadAnswerAgent) (bool, error) {
+	return storeThreadReceiptLateReply(s.db, token, reply, at, agent)
+}
+
+func storeThreadReceiptLateReply(db sqlExecutor, token string, reply []byte, at int64, agent *ThreadAnswerAgent) (bool, error) {
 	action := fmt.Sprintf("store: store thread receipt late reply %s", token)
 	if at == 0 {
 		at = nowMillis()
 	}
 	isAgent, role := answerAgentColumns(agent)
-	result, err := s.db.Exec(
+	result, err := db.Exec(
 		`UPDATE thread_request_receipts
 		    SET late_reply = ?, late_reply_at = ?, late_reply_agent = ?, late_reply_agent_role = ?, revision = revision + 1,
 		        expires_at = ?, updated_at = ?
@@ -659,22 +705,39 @@ func (s *Store) StoreThreadReceiptLateReply(token string, reply []byte, at int64
 
 // AckThreadRequestReceipt records the revision the source has durably stored.
 // The sweep only drops an answer whose latest revision nobody collected, so
-// the acknowledgement is what makes expiry safe.
+// the acknowledgement is what makes expiry safe. A revision past the
+// receipt's own is recorded as the receipt's: nobody can have stored what the
+// receipt does not hold yet.
 func (s *Store) AckThreadRequestReceipt(token string, revision, at int64) (bool, error) {
-	action := fmt.Sprintf("store: acknowledge thread receipt %s", token)
 	if at == 0 {
 		at = nowMillis()
 	}
-	result, err := s.db.Exec(
+	return ackThreadReceipt(s.db, token, revision, at)
+}
+
+func ackThreadReceipt(db sqlExecutor, token string, revision, at int64) (bool, error) {
+	action := fmt.Sprintf("store: acknowledge thread receipt %s", token)
+	result, err := db.Exec(
 		`UPDATE thread_request_receipts
-		    SET collected_revision = ?, collected_at = ?, updated_at = ?
-		  WHERE token = ? AND collected_revision < ? AND lineage_only = 0`,
+		    SET collected_revision = MIN(?, revision), collected_at = ?, updated_at = ?
+		  WHERE token = ? AND collected_revision < MIN(?, revision) AND lineage_only = 0`,
 		revision, at, nowMillis(), token, revision,
 	)
 	if err != nil {
 		return false, fmt.Errorf("%s: %w", action, err)
 	}
 	return rowsChanged(result, action)
+}
+
+// ThreadReceiptSettled reports whether a receipt state carries an answer a
+// request can collect: anything but the two open states, and the empty word
+// of a receipt nobody reported.
+func ThreadReceiptSettled(state string) bool {
+	switch state {
+	case "", ThreadReceiptAccepted, ThreadReceiptRunning:
+		return false
+	}
+	return true
 }
 
 // GetThreadRequestReceipt reads one receipt. The bool separates an unknown

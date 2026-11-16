@@ -14,8 +14,8 @@ import (
 // from one value through one function (Footer.Message, Wake.Message,
 // WorkerStopped.Message and the usermessage constructors), so the two cannot
 // disagree. The row carries them on its attribution
-// (usermessage.OriginThread.Facts, usermessage.OriginWake.Facts), and a
-// reader takes them only through usermessage.Describe, which checks them
+// (agentmeta.OriginThread.Facts, agentmeta.OriginWake.Facts), and a
+// reader takes them only through agentmeta.Describe, which checks them
 // against the text (Check).
 type MessageFacts struct {
 	// Form is what the message is: FormRequest, FormAnswer, FormMessage,
@@ -41,7 +41,7 @@ type MessageFacts struct {
 	// Headline is what the row's header says the message is about. A
 	// writer sets it when that is not the first line of Body (a loop's
 	// note, a watch's first output line, a remote job's result);
-	// usermessage.Describe sets it otherwise.
+	// agentmeta.Describe sets it otherwise.
 	Headline string `json:"headline,omitempty"`
 
 	// Waiting, Reachable, UserMessage and RoutesPrompts are a request's

@@ -17,16 +17,16 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/testutil/mockexec"
 )
 
 // On Linux Chromium leads a process group of its own, which stop kills
-// whole, and the kernel kills it when the backend dies, so a crashed or
-// killed backend leaves no browser running.
-func TestChromiumCommandRunsInItsOwnGroupAndDiesWithTheBackend(t *testing.T) {
+// whole and the reaper ends with the backend.
+func TestChromiumCommandRunsInItsOwnGroup(t *testing.T) {
 	cmd := chromiumCommand("/usr/bin/chromium", chromiumArgs("/data/chromium"), chromiumEnv("/data/chromium"), os.Stderr)
-	if cmd.SysProcAttr == nil || !cmd.SysProcAttr.Setpgid || cmd.SysProcAttr.Pdeathsig != syscall.SIGKILL {
-		t.Fatalf("SysProcAttr = %+v, want Setpgid and Pdeathsig SIGKILL", cmd.SysProcAttr)
+	if cmd.SysProcAttr == nil || !cmd.SysProcAttr.Setpgid {
+		t.Fatalf("SysProcAttr = %+v, want Setpgid", cmd.SysProcAttr)
 	}
 }
 
@@ -40,20 +40,6 @@ func processRunning(pid int) bool {
 	}
 	_, exited, ok := parseProcStat(stat)
 	return ok && !exited
-}
-
-// readPIDFile reads a pid a script recorded before printing its endpoint.
-func readPIDFile(t *testing.T, path string) int {
-	t.Helper()
-	body, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read %s: %v", path, err)
-	}
-	pid, err := strconv.Atoi(strings.TrimSpace(string(body)))
-	if err != nil {
-		t.Fatalf("%s holds %q: %v", path, body, err)
-	}
-	return pid
 }
 
 // stopWithin runs stop and fails the test if it does not return in time.
@@ -81,7 +67,7 @@ func TestStopKillsEveryProcessInChromiumsGroup(t *testing.T) {
 			"echo $! > "+shellQuote(helperFile)+"\n"+
 			"echo 'DevTools listening on "+fakeDevToolsURL+"' >&2\n"+
 			"exec sleep 300\n")
-	process, _, err := startChromium(testLaunchContext(t, headlessTestDeadline), binary, nil, nil)
+	process, _, err := startChromium(testLaunchContext(t, headlessTestDeadline), procutiltest.Reaper(), binary, nil, nil)
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
@@ -187,7 +173,7 @@ func TestStopIsNotHeldByAProcessThatLeftTheGroup(t *testing.T) {
 			"echo $! > "+shellQuote(escapeeFile)+"\n"+
 			"echo 'DevTools listening on "+fakeDevToolsURL+"' >&2\n"+
 			"exec sleep 300\n")
-	process, _, err := startChromium(testLaunchContext(t, headlessTestDeadline), binary, nil, nil)
+	process, _, err := startChromium(testLaunchContext(t, headlessTestDeadline), procutiltest.Reaper(), binary, nil, nil)
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}

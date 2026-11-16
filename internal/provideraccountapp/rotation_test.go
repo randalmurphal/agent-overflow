@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provideraccounts"
 )
 
@@ -31,7 +32,7 @@ func TestClaudeProbeConfigAlwaysWiresTheRotationReader(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	manager := NewManager(Deps{})
+	manager := NewManager(Deps{Reaper: procutiltest.Reaper()})
 	if err := manager.Attach(accounts, credentials, ""); err != nil {
 		t.Fatal(err)
 	}
@@ -88,7 +89,7 @@ func TestClaudeProbeReaderReportsAnAbsentCredentialAsNotExist(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	manager := NewManager(Deps{})
+	manager := NewManager(Deps{Reaper: procutiltest.Reaper()})
 	if err := manager.Attach(accounts, credentials, ""); err != nil {
 		t.Fatal(err)
 	}

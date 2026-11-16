@@ -66,7 +66,7 @@
     if (reactions.canAdd) {
       out.push({
         id: 'react', icon: SmilePlus, label: 'Add reaction', haspopup: 'dialog', expanded: picking,
-        disabled: reactions.withheld !== null, disabledLabel: reactions.withheld ?? undefined, testid: 'review-comment-react',
+        disabled: (reactions.refused(comment) ?? reactions.withheld) !== null, disabledLabel: reactions.refused(comment) ?? reactions.withheld ?? undefined, testid: 'review-comment-react',
         run: () => reactions.setPickerOpen(owner, thread, comment, !picking),
       });
     }

@@ -128,6 +128,9 @@ func (a *App) queueAgentNotice(notice agentNotice) error {
 			// The flag, not the check, is the notice's: the queue write
 			// decides it under the lock both archive doors take.
 			heldWhileArchived: !notice.fromPerson,
+			// The start below is the notice's, with its own archive, rest
+			// and keep checks and failure rows.
+			noticeStarts: true,
 		}); err != nil {
 		return err
 	}

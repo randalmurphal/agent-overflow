@@ -85,7 +85,7 @@ func awaitSent(t *testing.T, stdinLog string, match func(string) bool) string {
 }
 
 // appMessageMarks are the marks the provider receives around a message the
-// app writes itself (usermessage.WireText).
+// app writes itself (agentmeta.WireText).
 const (
 	appMessageOpening = "[Agent Overflow message. The user did not write it.]\n"
 	appMessageClosing = "\n[End of Agent Overflow message]"

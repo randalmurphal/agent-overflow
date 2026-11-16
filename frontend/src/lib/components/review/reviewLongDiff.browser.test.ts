@@ -187,7 +187,7 @@ describe('a review diff past the held limit', () => {
     await settle(scrollEl);
     expect(scrollEl.querySelector<HTMLElement>('[data-thread="far"]')!.dataset.pulse).toBe('2');
     // Held for the pulse's lifetime (1.6s), then forgotten.
-    await waitFor(() => scrollEl.querySelector<HTMLElement>('[data-thread="far"]')!.dataset.pulse === '0', 'pulse released', 240);
+    await waitFor(() => scrollEl.querySelector<HTMLElement>('[data-thread="far"]')!.dataset.pulse === '0', 'pulse released');
   });
 
   it('keeps the line being read when the files are read again', async () => {
@@ -397,7 +397,7 @@ describe('review find over the real list', () => {
       const find = getPaneFindProvider('pane-fold') as ReviewFind<ReviewFindHit>;
       openPaneFind('pane-fold');
       setPaneFindQuery('pane-fold', 'zq');
-      await waitFor(() => find.result.count === 1 && !find.result.pending, 'the scan', 600);
+      await waitFor(() => find.result.count === 1 && !find.result.pending, 'the scan');
       await settle(scrollEl);
       // The fold opened while the query was still scanning.
       expect(pendingAtExpand).toBe(true);
@@ -443,7 +443,7 @@ describe('review find over the real list', () => {
       const find = getPaneFindProvider('pane-load') as ReviewFind<ReviewFindHit>;
       openPaneFind('pane-load');
       setPaneFindQuery('pane-load', 'f3:500');
-      await waitFor(() => find.result.count === 1 && !find.result.pending, 'the scan', 1200);
+      await waitFor(() => find.result.count === 1 && !find.result.pending, 'the scan');
       await settle(scrollEl);
       expect(pendingAtOpen).toBe(true);
       const row = scrollEl.querySelector<HTMLElement>(`[data-find-key="${keyIn(findProps.files, find.hits[0])}"]`);
@@ -698,7 +698,7 @@ describe('review find over the real list', () => {
       expect(find.hits.map((hit) => hit.identity)).toEqual(published);
       await waitFor(() => scans.held === 3, 'the last recount at a pause');
       scans.release();
-      await waitFor(() => !find.result.pending, 'the recount', 1200);
+      await waitFor(() => !find.result.pending, 'the recount');
       expect(find.result.count).toBe(3);
       expect(rowText(find.hits[find.result.current])).toContain('zq three');
     } finally {
@@ -746,7 +746,7 @@ describe('review find over the real list', () => {
       await settle(scrollEl);
       openPaneFind('pane-gone');
       setPaneFindQuery('pane-gone', 'zq');
-      await waitFor(() => find.result.count === 3 && !find.result.pending, 'the scan', 1200);
+      await waitFor(() => find.result.count === 3 && !find.result.pending, 'the scan');
       await settle(scrollEl);
       expect(find.hits[find.result.current].at).toEqual({ kind: 'draft', commentId: 'first' });
       expect(currentText('pane-gone')).toEqual(['zq']);
@@ -768,7 +768,7 @@ describe('review find over the real list', () => {
       expect(find.hits[find.result.current].at).toEqual({ kind: 'draft', commentId: 'first' });
       expect(currentText('pane-gone')).toEqual([]);
       scans.release();
-      await waitFor(() => !find.result.pending, 'the recount', 1200);
+      await waitFor(() => !find.result.pending, 'the recount');
       await settle(scrollEl);
       expect(find.result.count).toBe(2);
       expect(find.hits[find.result.current].at).toEqual({ kind: 'draft', commentId: 'second' });
@@ -806,7 +806,7 @@ describe('review find over the real list', () => {
       await settle(scrollEl);
       openPaneFind('pane-edit');
       setPaneFindQuery('pane-edit', 'zq');
-      await waitFor(() => !find.result.pending && shiftedLine() !== undefined, 'the scan and the shift', 1200);
+      await waitFor(() => !find.result.pending && shiftedLine() !== undefined, 'the scan and the shift');
       await settle(scrollEl);
       const line = shiftedLine()!;
       expect(line.textContent).toContain('zq one');
@@ -836,7 +836,7 @@ describe('review find over the real list', () => {
       expect(editSeen).toBe(true);
       expect(new Set(samples)).toEqual(new Set([left]));
       scans.release();
-      await waitFor(() => !find.result.pending, 'the recount', 1200);
+      await waitFor(() => !find.result.pending, 'the recount');
       await settle(scrollEl);
       sampling = false;
       expect(line.isConnected).toBe(true);
@@ -889,13 +889,13 @@ describe('review find over the real list', () => {
       await settle(scrollEl);
       openPaneFind('pane-hide');
       setPaneFindQuery('pane-hide', 'zq');
-      await waitFor(() => find.result.count === 2 && !find.result.pending, 'the scan', 1200);
+      await waitFor(() => find.result.count === 2 && !find.result.pending, 'the scan');
       expect(find.hits[find.result.current].path).toBe('src/a.test.ts');
       // To the later match and back: both have been shown in this list.
       find.next();
-      await waitFor(() => onScreen(scrollEl, 'zq deep in b'), 'the later match shown', 600);
+      await waitFor(() => onScreen(scrollEl, 'zq deep in b'), 'the later match shown');
       find.previous();
-      await waitFor(() => onScreen(scrollEl, 'zq in the test'), 'the first match shown again', 600);
+      await waitFor(() => onScreen(scrollEl, 'zq in the test'), 'the first match shown again');
       // Hide tests: the test file leaves the list, and the view recounts;
       // the recount waits at a pause, short of the later file's match.
       scans.hold();
@@ -913,11 +913,11 @@ describe('review find over the real list', () => {
         if (!onScreen(scrollEl, 'zq deep in b')) return false;
         pendingWhenShown = find.result.pending;
         return true;
-      }, 'the later match on screen', 600);
+      }, 'the later match on screen');
       expect(pendingWhenShown).toBe(true);
       expect(scans.held).toBe(1);
       scans.release();
-      await waitFor(() => !find.result.pending, 'the recount', 1200);
+      await waitFor(() => !find.result.pending, 'the recount');
       await settle(scrollEl);
       expect([find.result.count, find.result.current]).toEqual([1, 0]);
       expect(onScreen(scrollEl, 'zq deep in b')).toBe(true);
@@ -949,7 +949,7 @@ describe('review find over the real list', () => {
       await settle(scrollEl);
       openPaneFind('pane-lost');
       setPaneFindQuery('pane-lost', 'zq');
-      await waitFor(() => find.result.count === 3 && !find.result.pending, 'the scan', 1200);
+      await waitFor(() => find.result.count === 3 && !find.result.pending, 'the scan');
       await settle(scrollEl);
       expect(currentRow('pane-lost')?.textContent).toContain('zq one');
       // The second match's line keeps its number and loses its text.
@@ -970,11 +970,11 @@ describe('review find over the real list', () => {
       expect(currentRow('pane-lost')).toBeNull();
       expect(scans.held).toBe(1);
       scans.release();
-      await waitFor(() => !find.result.pending, 'the recount', 1200);
+      await waitFor(() => !find.result.pending, 'the recount');
       // The step was never shown: its survivor is revealed and painted.
-      await waitFor(() => onScreen(scrollEl, 'zq three'), 'the survivor on screen', 600);
+      await waitFor(() => onScreen(scrollEl, 'zq three'), 'the survivor on screen');
       expect(find.hits[find.result.current].at).toEqual({ kind: 'line', tag: 'c603:603' });
-      await waitFor(() => currentRow('pane-lost')?.textContent?.includes('zq three') === true, 'the survivor painted', 600);
+      await waitFor(() => currentRow('pane-lost')?.textContent?.includes('zq three') === true, 'the survivor painted');
     } finally {
       scans.restore();
       unmount(finder);
@@ -997,11 +997,11 @@ describe('review find over the real list', () => {
       await settle(scrollEl);
       openPaneFind('pane-wrap');
       setPaneFindQuery('pane-wrap', 'zq');
-      await waitFor(() => find.result.count === 2 && !find.result.pending, 'the scan', 1200);
-      await waitFor(() => !find.wants(find.selected!), 'the first shown', 600);
+      await waitFor(() => find.result.count === 2 && !find.result.pending, 'the scan');
+      await waitFor(() => !find.wants(find.selected!), 'the first shown');
       find.next();
       expect(find.wants(find.selected!)).toBe(true);
-      await waitFor(() => !find.wants(find.selected!), 'the step answered', 1200);
+      await waitFor(() => !find.wants(find.selected!), 'the step answered');
       // Answered shown: the painted match is in view then, and stays.
       const inView = () => {
         const row = currentRow('pane-wrap');
@@ -1043,10 +1043,10 @@ describe('review find over the real list', () => {
       openPaneFind(key);
       setPaneFindQuery(key, where === 'header' ? path : `zq${'x'.repeat(2000)}`);
       await waitFor(() => find.result.count === 1 && !find.result.pending, 'the scan');
-      await waitFor(() => !find.wants(find.selected!), 'the first reveal settled', 300);
+      await waitFor(() => !find.wants(find.selected!), 'the first reveal settled');
       // A step to it again (the one match): settles too.
       find.next();
-      await waitFor(() => !find.wants(find.selected!), 'the step settled', 300);
+      await waitFor(() => !find.wants(find.selected!), 'the step settled');
       const [range] = [...(CSS.highlights.get(`${findHighlightName(key)}-current`) ?? [])] as Range[];
       const rect = range.getBoundingClientRect();
       let clip = range.startContainer.parentElement!;
@@ -1102,8 +1102,8 @@ describe('review find over the real list', () => {
       await settle(scrollEl);
       openPaneFind('pane-move');
       setPaneFindQuery('pane-move', 'zq');
-      await waitFor(() => find.result.count === 2 && !find.result.pending, 'the scan', 1200);
-      await waitFor(() => !find.wants(find.selected!), 'the first shown', 600);
+      await waitFor(() => find.result.count === 2 && !find.result.pending, 'the scan');
+      await waitFor(() => !find.wants(find.selected!), 'the first shown');
       // A step into B, the second file: right after its row is asked of
       // the list, before the row is mounted, Hide tests removes A and B is
       // the first file.
@@ -1117,9 +1117,9 @@ describe('review find over the real list', () => {
       };
       find.next();
       expect(find.wants(find.selected!)).toBe(true);
-      await waitFor(() => mountedAtChange !== null, 'the row asked', 600);
+      await waitFor(() => mountedAtChange !== null, 'the row asked');
       expect(mountedAtChange).toBe(false);
-      await waitFor(() => !find.wants(find.selected!), 'the step settled', 1200);
+      await waitFor(() => !find.wants(find.selected!), 'the step settled');
       const row = currentRow('pane-move');
       expect(row?.textContent).toContain('zq far in b');
       const box = row!.getBoundingClientRect();
@@ -1172,13 +1172,13 @@ describe('review find over the real list', () => {
     let release = () => {};
     let gated = 0;
     const read = streamed.source.read.getMockImplementation()!;
-    streamed.source.read.mockImplementation(async (offset, nextOffset, packed) => {
+    streamed.source.read.mockImplementation(async (offset, nextOffset) => {
       const mine = gate;
       if (mine && nextOffset > at - 8000 && offset < at + 8000) {
         gated += 1;
         await mine;
       }
-      return read(offset, nextOffset, packed);
+      return read(offset, nextOffset);
     });
     const { props, scrollEl, body } = await mountBody(onePatch('x', '@@ -1 +1 @@', ['x']));
     const files = streamed.files;
@@ -1199,11 +1199,11 @@ describe('review find over the real list', () => {
       await settle(scrollEl);
       openPaneFind('pane-pick');
       setPaneFindQuery('pane-pick', 'zq');
-      await waitFor(() => find.result.count === 2 && !find.result.pending && !find.wants(find.selected!), 'the first shown', 1200);
+      await waitFor(() => find.result.count === 2 && !find.result.pending && !find.wants(find.selected!), 'the first shown');
       gate = new Promise<void>((resolve) => { release = resolve; });
       find.next();
       expect(find.hits[find.result.current].path).toBe('src/b.ts');
-      await waitFor(() => gated > 0, 'the read of the step\'s text', 600);
+      await waitFor(() => gated > 0, 'the read of the step\'s text');
       expect(find.wants(find.selected!)).toBe(true);
       // The reader picks file A in the tree.
       props.jumpToFilePath = 'src/a.ts';
@@ -1252,7 +1252,7 @@ describe('review find over the real list', () => {
       await settle(scrollEl);
       openPaneFind('pane-gap');
       setPaneFindQuery('pane-gap', 'needle');
-      await waitFor(() => !find.result.pending && shifted().length === 1, 'the scan and the shift', 1200);
+      await waitFor(() => !find.result.pending && shifted().length === 1, 'the scan and the shift');
       expect(find.hits[find.result.current].at).toEqual({ kind: 'line', tag: 'c100:100' });
       expect(currentRow('pane-gap')?.textContent).toContain('needle hundred');
       // The leading gap opens one line: line 99, also a match, above it.
@@ -1269,7 +1269,7 @@ describe('review find over the real list', () => {
       expect(currentRow('pane-gap')?.textContent).toContain('needle hundred');
       expect(shifted().map((line) => line.textContent?.includes('needle hundred'))).toEqual([true]);
       scans.release();
-      await waitFor(() => !find.result.pending, 'the recount', 1200);
+      await waitFor(() => !find.result.pending, 'the recount');
       await settle(scrollEl);
       expect(find.result.count).toBe(2);
       expect(find.hits[find.result.current].at).toEqual({ kind: 'line', tag: 'c100:100' });

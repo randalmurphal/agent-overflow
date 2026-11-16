@@ -59,6 +59,7 @@ How the app works today. Under [`architecture/`](architecture/).
 | File | 1-line summary |
 |---|---|
 | [`providers.md`](architecture/providers.md) | Provider process model, session identity, approval round-trip. |
+| [`process-lifetime.md`](architecture/process-lifetime.md) | What ends each child process when the backend dies: the orphan reaper and every spawner's lifetime. |
 | [`claude-tui-provider.md`](architecture/claude-tui-provider.md) | The third provider: the real Claude Code TUI in a PTY, with the event stream reconstructed from outside the process. |
 | [`recovery.md`](architecture/recovery.md) | Session recovery on restart, thread switch, disconnect. |
 | [`revert-modes.md`](architecture/revert-modes.md) | Message anchors, fork-from-message, and edit-and-resend conversation rollback. |
@@ -129,6 +130,7 @@ obsolete planning material. Update incoming links when moving or retiring a doc.
 | [`prompt-tool-overrides.md`](specs/prompt-tool-overrides.md) | Settings-level system-prompt overrides, per-provider tool toggles, and the app guide appended to interactive sessions. |
 | [`workflows-system-ui/UI-SPEC.md`](specs/workflows-system-ui/UI-SPEC.md) | The binding workflows UI spec (rev 2), now the `workflows` tool pane. Cited as `UI-SPEC §N` across the frontend. |
 | [`pull-requests.md`](specs/pull-requests.md) | Merge readiness, approve and merge in the review pane; the Pull requests page with attention states, "Open with agent" and pipelines; tools as pane kinds. Phase 1 in progress since 2026-10-20. |
+| [`issues.md`](specs/issues.md) | The Issues tool pane for Jira Cloud and Linear: rulings of 2026-11-15, the facts that bind the design, app constraints, the design of each screen and open questions, with a clickable mockup beside it (`issues-mockup.html`). Not implemented. |
 | [`cursor-provider.md`](specs/cursor-provider.md) | Cursor as a third provider over ACP, signed off 2026-08-31. Living gap table + spike backlog; not implemented yet. |
 | [`standing-agents.md`](specs/standing-agents.md) | Assistants the user creates: the record, its home and current thread, New Thread, Same Assistant, wake supervisor (remind, loop, watch), agent sidebar row, assistants above projects, discussions removed, workflows to MCP. Signed off 2026-10-10; built in slices. |
 | [`memory.md`](specs/memory.md) | What the app delivers to a session as memory: home, project and user scopes, typed facts and the built index, the write rules, maintenance warnings for assistants, and the shared and provider memory settings. Agreed 2026-10-21. |
@@ -153,6 +155,7 @@ External repos and tools we track, and how to use them. Under
 | [`spike-policy.md`](references/spike-policy.md) | When to write an isolated spike test outside the project. |
 | [`dev-server-proxy.md`](references/dev-server-proxy.md) | What a dev server does with the headers a reverse proxy rewrites, and what the preview gateway must send. Verified against Vite 8.2.2. |
 | [`forge-api-measurements.md`](references/forge-api-measurements.md) | Measured GitHub and GitLab API behavior behind the forge transport: process cost, token handoff, rate-limit headers, ETag and Range. |
+| [`tracker-api-measurements.md`](references/tracker-api-measurements.md) | Jira Cloud, Linear and Tempo API behavior behind the Issues spec, the planning poker add-on's calls as measured, and the SQLite and CSP facts that shape dashboards. |
 | [`voice-dictation.md`](references/voice-dictation.md) | Dictation through ChatGPT's transcribe endpoint, read-aloud in the device's voice or an OpenAI voice, and the other options researched. |
 | [`ao-harness.md`](references/ao-harness.md) | Generated command and output reference for the `ao-harness` shell driver. |
 | [`ao-cli.md`](references/ao-cli.md) | The `ao` scoped-token CLI: command tree and `--json` result shapes. |

@@ -9,6 +9,7 @@ import {
   createPRDiffReviewComment,
   deletePRDiffReviewComment,
   getPRDiffReviewComments,
+  holdPRDiffReviewComments,
   markPRDiffReviewCommentsSent,
   prDraftsKey,
   refreshPRDiffReviewComments,
@@ -50,6 +51,7 @@ import {
   createDiffReviewComment,
   deleteDiffReviewComment,
   getDiffReviewComments,
+  holdDiffReviewComments,
   refreshDiffReviewComments,
   setActiveDiffReviewSource,
   updateDiffReviewComment,
@@ -75,6 +77,7 @@ import { CI_SECTION_INLINE_MAX_BYTES, createCISubjectState, type CILogView } fro
 import type { CIActionsView } from './ciSubjectActions.svelte';
 import { addErrorToast, addToast } from './toast.svelte';
 import { createPRManageState, type PRManageView } from './prManage.svelte';
+import { createReviewPRIdentity } from './reviewPRIdentity.svelte';
 import { TransportError } from '../transport/wsClient';
 import type { ForgeFailure } from '../utils/forgeFailure';
 import {
@@ -300,6 +303,8 @@ export interface ReviewPaneState extends ReviewCommentActionsState, ReviewCommen
   readonly error: string | null;
   /** The PR threads read's failure, apart from the load's `error`. */
   readonly threadsError: string | null;
+  /** Drafts are being sent to a thread, or the PR on screen's review is
+   * being submitted. */
   readonly sendingComments: boolean;
   /** Whether the send strip shows: a draft, a summary or verdict kept for
    * the next submit, or a submit in flight or unresolved. */
@@ -309,6 +314,9 @@ export interface ReviewPaneState extends ReviewCommentActionsState, ReviewCommen
   readonly prThreads: readonly ReviewThread[];
   /** The forge's activity rows for the PR (approvals, merges, …). */
   readonly prEvents: readonly ReviewEvent[];
+  /** That the PR's threads are the first of more, one sentence; null
+   * when they are all, or off the PR. */
+  readonly prThreadsTruncated: string | null;
   // ------------------------------------------------------------------
   // The Merge section: readiness and the merge actions, the one home for
   // approve, merge and auto-merge on every surface (docs/specs/pull-requests.md).
@@ -401,6 +409,8 @@ export interface ReviewPaneState extends ReviewCommentActionsState, ReviewCommen
    * commit diff carry that diff's line numbers, which the forge would
    * misanchor against the PR head diff. */
   readonly effectiveSubmitTarget: 'agent' | 'pr';
+  /** The PR review being written, and its submit's failure: the PR's
+   * under the pane (reviewPRIdentity.svelte.ts), kept per PR. */
   readonly verdict: 'comment' | 'approve' | 'request-changes';
   readonly summaryBody: string;
   readonly submitError: string | null;
@@ -464,6 +474,9 @@ export interface ReviewPaneState extends ReviewCommentActionsState, ReviewCommen
    * answer is on screen). Rejects with ReviewCommentRefused when nothing
    * proves its line is the one it was opened on. */
   createComment(editorId: string, body: string, mode?: 'draft' | 'now'): Promise<void>;
+  /** The editor's comment is being saved as a draft: a press saves
+   * nothing more until that save ends. */
+  editorSaving(editorId: string): boolean;
   /** Shift+click on a line: spans the last-opened editor of the same file
    * from its line to `anchor`. Opens an editor on `anchor` when none is. */
   extendEditorRange(anchor: EditorAnchor, generation?: number): string | null;
@@ -856,7 +869,38 @@ interface SubmitAttempt {
   ids: readonly string[];
   body: string;
   verdict: 'comment' | 'approve' | 'request-changes';
+  /** The head the pane's diff was loaded at, which the review is of. */
+  headSha: string;
 }
+
+// What the pane holds for one PR (reviewPRIdentity.svelte.ts keeps one per
+// PR): the review being written and its submit, and the merge action. A
+// PR the pane leaves keeps its own until the pane is back on it, and an
+// answer settles the PR it was asked for.
+interface PRReviewState {
+  readonly verdict: 'comment' | 'approve' | 'request-changes';
+  readonly summaryBody: string;
+  readonly submitError: string | null;
+  /** The submit whose answer was lost and whose outcome is not known yet
+   * (resolveLostSubmit); a press of Send asks again instead of posting. */
+  readonly openSubmit: SubmitAttempt | null;
+  /** A submit or its outcome's ask is in flight. */
+  readonly submitting: boolean;
+  /** The merge action in flight, then (mergeAwait) the one whose success
+   * is waiting for the pump's answer: it reads as pending while the PR's
+   * applied seq is below the seq the action answered with (the poll it
+   * asked for stamped that seq, or stamped nothing when unchanged). The
+   * seq is the backend process's (its hello's launchId): a restarted
+   * backend's pump numbers from one again and its fresh snapshot is the
+   * forge's answer, so the wait ends with the launch; a re-subscribe to
+   * the same process (gap recovery) keeps it. */
+  readonly mergeAction: MergeActionKind | null;
+  readonly mergeAwait: { kind: MergeActionKind; key: string; seq: number; launch: string } | null;
+}
+
+const NO_PR_REVIEW: PRReviewState = {
+  verdict: 'comment', summaryBody: '', submitError: null, openSubmit: null, submitting: false, mergeAction: null, mergeAwait: null,
+};
 
 /** What an attempt did, as the backend answered or recorded it. Only a
  *  proof says not-posted; without one it is unconfirmed: the review may
@@ -874,6 +918,9 @@ function notPostedMessage(code: string | undefined, message: string): string {
   return message;
 }
 
+// The backend's sentence for a head that moved (git.ForgeErrorStaleHead),
+// said before Send when the pane already knows.
+const REVIEW_HEAD_MOVED = 'The branch moved after you loaded this. Reload and try again.';
 const REVIEW_NEVER_ARRIVED = 'The connection dropped before the review reached the computer, so nothing was posted.';
 const REVIEW_ANSWER_LOST = 'The connection dropped before the forge answered, so the review may already be on the PR. Check the PR before you submit again.';
 const REVIEW_UNCONFIRMED = 'The forge did not confirm the review, so it may already be on the PR. Check the PR before you submit again.';
@@ -994,6 +1041,11 @@ export function createReviewPaneState(
   let scope: ReviewScope = $state(initialScope);
   let heldPRRef = $state<PRRef | null>(initialScope === 'pr' ? (heldPRByRow.get(rowId) ?? null) : null);
   const prRef: PRRef | null = $derived(pinned ? pinned.pr : (workspacePRRef() ?? (scope === 'pr' ? heldPRRef : null)));
+  // The one owner of "the PR under the pane changed": per-PR state below
+  // and in the sub-stores is read through it.
+  const prIdentity = createReviewPRIdentity(() => (prRef ? computerPRKey(prRef) : null));
+  const reviews = prIdentity.keyed(NO_PR_REVIEW);
+  const review = $derived(reviews.current);
   let baseBranch: string | null = $state(persisted?.baseBranch ?? null);
   // The head THIS pane's diff was computed at, stamped with the PR it was
   // computed FOR. The PR's live head lives in the shared store; staleness
@@ -1033,23 +1085,10 @@ export function createReviewPaneState(
   // following that job; this pane holds its own follow on it.
   const ci = createCISubjectState(() => (scope === 'pr' && prRef ? { kind: 'pr', backend, pr: prRef } : null));
   let submitTarget: 'agent' | 'pr' = $state('agent');
-  let verdict: 'comment' | 'approve' | 'request-changes' = $state('comment');
-  let summaryBody = $state('');
-  let submitError: string | null = $state(null);
   const resolvingThreadIds: SvelteSet<string> = $state(new SvelteSet<string>());
   const resolveErrors = new SvelteMap<string, string>();
   let descriptionOpen = $state(false);
   let mergeOpen = $state(false);
-  // The merge action in flight, then (mergeAwait) the one whose success
-  // is waiting for the pump's answer: it reads as pending while the PR's
-  // applied seq is below the seq the action answered with (the poll it
-  // asked for stamped that seq, or stamped nothing when unchanged). The
-  // seq is the backend process's (its hello's launchId): a restarted
-  // backend's pump numbers from one again and its fresh snapshot is the
-  // forge's answer, so the wait ends with the launch; a re-subscribe to
-  // the same process (gap recovery) keeps it.
-  let mergeAction = $state<MergeActionKind | null>(null);
-  let mergeAwait = $state<{ kind: MergeActionKind; key: string; seq: number; launch: string } | null>(null);
   const backendLaunch = $derived(getTransportHelloFor(backend)?.launchId ?? '');
   const overviewScrollTops = new SvelteMap<ReviewSectionId, number>();
   let unresolvedCursor: string | null = $state(null);
@@ -1126,11 +1165,10 @@ export function createReviewPaneState(
   // is the sole reactive signal the `files` derived reads.
   const contextExpansions = new Map<string, ContextExpansionState>();
   let contextExpansionVersion = $state(0);
-  let sendingComments = $state(false);
-  // The PR review submit whose answer was lost and whose outcome is not
-  // known yet (resolveLostSubmit); a press of Send asks again instead of
-  // posting.
-  let openSubmit: SubmitAttempt | null = $state.raw(null);
+  // Drafts being sent to a thread; a PR review's submit is its PR's
+  // (`review.submitting`).
+  let sendingToThread = $state(false);
+  const sendingComments = $derived(sendingToThread || review.submitting);
   let openEditors: EditorRecord[] = $state.raw([]);
   // Draft-editor text lives HERE, not in the row component: editor rows
   // are virtualized, so scrolling one out of the render window unmounts
@@ -1206,9 +1244,10 @@ export function createReviewPaneState(
   const prEvents = $derived<readonly ReviewEvent[]>(prSnapshot?.events ?? EMPTY_PR_EVENTS);
   // A poll that failed after the action is the pump's answer too: the
   // banner says why the forge's state is unknown, and the button is free.
-  const mergeActionShown = $derived<MergeActionKind | null>(
-    mergeAction ?? (mergeAwait !== null && mergeAwait.key === prEntityKey && backendLaunch === mergeAwait.launch && peekPRSeq(prEntityKey) < mergeAwait.seq && prUpdateError === null ? mergeAwait.kind : null),
-  );
+  const mergeActionShown = $derived.by<MergeActionKind | null>(() => {
+    const { mergeAction, mergeAwait } = review;
+    return mergeAction ?? (mergeAwait !== null && mergeAwait.key === prEntityKey && backendLaunch === mergeAwait.launch && peekPRSeq(prEntityKey) < mergeAwait.seq && prUpdateError === null ? mergeAwait.kind : null);
+  });
   // The live feed universe: every thread, verdict, and commit push the
   // section could show, chronological newest first. The held order is
   // built FROM this and projected back ONTO it, so content updates
@@ -1311,8 +1350,8 @@ export function createReviewPaneState(
   // Never the live head: the actions are withheld until a diff is loaded.
   const mergeHeadSHA = $derived(loadedPRHeadSHA);
   const manage = createPRManageState({
+    prIdentity,
     get prRef() { return prRef; },
-    get identity() { return prRef ? computerPRKey(prRef) : null; },
     get mergeMethods() { return prSnapshot?.detail?.merge?.methods ?? null; },
     get entityKey() { return prEntityKey; },
     get appliedSeq() { return peekPRSeq(prEntityKey); },
@@ -1496,14 +1535,15 @@ export function createReviewPaneState(
   // A summary or verdict kept for the next PR review needs the strip to
   // send it, drafts or not.
   const sendStripShown = $derived(
-    drafts.length > 0 || sendingComments || openSubmit !== null
-      || (effectiveSubmitTarget === 'pr' && (summaryBody.trim() !== '' || verdict !== 'comment')),
+    drafts.length > 0 || sendingComments || review.openSubmit !== null
+      || (effectiveSubmitTarget === 'pr' && (review.summaryBody.trim() !== '' || review.verdict !== 'comment')),
   );
   const isTurnActive = $derived(threadId !== null && getActiveTurn(threadId) !== null);
 
   // Send now or hold, and the reply composers (reviewCommentActions.svelte.ts).
   const commentActions = createReviewCommentActions({
     backend,
+    prIdentity,
     scope: () => scope,
     // A head-ending run posts to the PR as All commits does, line by line.
     selectedCommitSHA: () => (headRange ? null : selectedCommitSHA),
@@ -1544,8 +1584,8 @@ export function createReviewPaneState(
   });
   const extras = createReviewCommentExtras({
     backend,
+    prIdentity,
     ref: () => (scope === 'pr' ? prRef : null),
-    identity: () => (prRef ? computerPRKey(prRef) : null),
     appliedSeq: () => peekPRSeq(prEntityKey),
     launch: () => backendLaunch,
     updateFailing: () => prUpdateError !== null,
@@ -1647,6 +1687,13 @@ export function createReviewPaneState(
     // The screen moving (compact navigation) takes or releases the permit.
     $effect(() => syncConflictPermit());
     $effect(() => {
+      // The drafts cache never evicts the comment source the pane shows.
+      const source = sourceKey;
+      if (!source) return;
+      if (pinnedDraftKey !== null) return holdPRDiffReviewComments(pinnedDraftKey, scope, source);
+      if (threadId !== null) return holdDiffReviewComments(threadId, scope, source);
+    });
+    $effect(() => {
       // A threads read's failure belongs to the PR it read, in PR scope.
       if (threadsError !== null && threadsError.key !== prEntityKey) threadsError = null;
     });
@@ -1747,6 +1794,7 @@ export function createReviewPaneState(
     ci.dispose();
     manage.dispose();
     releasePR();
+    prIdentity.dispose();
   }
 
   // The one writer of `conflictView`, so the reconcile permit cannot drift
@@ -2165,9 +2213,9 @@ export function createReviewPaneState(
   // Interval between publishes of a diff still arriving.
   const PROGRESS_PUBLISH_MS = 100;
   // One VerifyEditDiffs call: the files the backend verifies per call,
-  // and patch characters that stay far under a transport frame.
+  // and patch bytes that stay far under a transport frame.
   const VERIFY_BATCH_FILES = 200;
-  const VERIFY_BATCH_CHARS = 8 * 1024 * 1024;
+  const VERIFY_BATCH_BYTES = 8 * 1024 * 1024;
 
   /** One load's files on their way to the screen. */
   interface Arrival {
@@ -2409,10 +2457,10 @@ export function createReviewPaneState(
     // and within the files the backend verifies per call.
     for (let start = 0; start < candidates.length;) {
       let end = start + 1;
-      let chars = candidates[start].body.textSize;
+      let bytes = candidates[start].body.textSize;
       while (end < candidates.length && end - start < VERIFY_BATCH_FILES
-        && chars + candidates[end].body.textSize <= VERIFY_BATCH_CHARS) {
-        chars += candidates[end].body.textSize;
+        && bytes + candidates[end].body.textSize <= VERIFY_BATCH_BYTES) {
+        bytes += candidates[end].body.textSize;
         end += 1;
       }
       const batch = candidates.slice(start, end);
@@ -2766,10 +2814,17 @@ export function createReviewPaneState(
     return editor.anchor;
   }
 
+  // Editors whose draft is being saved: one save per editor at a time,
+  // held here because the row that pressed it unmounts and remounts.
+  const savingEditors = new SvelteSet<string>();
+
   async function createComment(editorId: string, body: string, mode: 'draft' | 'now' = 'draft'): Promise<void> {
     const trimmed = body.trim();
     const bundle = shown;
     if (!bundle?.sourceKey || !trimmed) return;
+    // A press while this editor's comment is out (a draft being saved, or
+    // posted now and waiting for its answer) saves nothing more.
+    if (savingEditors.has(editorId) || commentActions.writes.pending(commentWriteKey.editor(editorId))) return;
     const editor = openEditors.find((candidate) => candidate.id === editorId) ?? null;
     const start = editor?.rangeStart ?? null;
     try {
@@ -2787,10 +2842,15 @@ export function createReviewPaneState(
       if (mode === 'now') return await commentActions.postLineComment(editorId, anchor, start, trimmed, () => closeDraftEditor(editorId));
       if (pinnedDrafts !== null && !canDraftComments) throw new Error('Comment on the whole pull request: pick All commits.');
       const { filePath, oldLine, newLine, side } = anchor;
-      await saveDraft({
-        scope: bundle.scope, sourceKey: bundle.sourceKey, commitSha: bundle.commitSha, filePath, oldLine, newLine, side,
-        startOldLine: start?.oldLine, startNewLine: start?.newLine, selectedText: editor?.selectedText ?? '', body: trimmed,
-      });
+      savingEditors.add(editorId);
+      try {
+        await saveDraft({
+          scope: bundle.scope, sourceKey: bundle.sourceKey, commitSha: bundle.commitSha, filePath, oldLine, newLine, side,
+          startOldLine: start?.oldLine, startNewLine: start?.newLine, selectedText: editor?.selectedText ?? '', body: trimmed,
+        });
+      } finally {
+        savingEditors.delete(editorId);
+      }
       closeDraftEditor(editorId);
       error = null;
     } catch (err) {
@@ -2842,7 +2902,7 @@ export function createReviewPaneState(
 
   async function sendComments(): Promise<void> {
     if (!sourceKey || drafts.length === 0 || sendingComments || isTurnActive) return;
-    sendingComments = true;
+    sendingToThread = true;
     try {
       const thread = commentThreadId();
       const sendScope = scope;
@@ -2851,13 +2911,14 @@ export function createReviewPaneState(
       const pr = await prSendContext(sendScope, sending);
       await SendDiffReviewComments(thread, sendScope, key, sending.map((comment) => comment.id), { pr });
       forgetDraftEdits(sending);
-      pruneDraftEdits(sourceKey, await refreshDiffReviewComments(commentThreadId(), scope, sourceKey));
+      // The source it sent, whatever the pane shows by now.
+      pruneDraftEdits(key, await refreshDiffReviewComments(thread, sendScope, key));
       error = null;
     } catch (err) {
       error = userFacingError(err);
       throw err;
     } finally {
-      sendingComments = false;
+      sendingToThread = false;
     }
   }
 
@@ -2884,7 +2945,7 @@ export function createReviewPaneState(
     if (!pinnedDrafts) throw new Error('Only a review pinned to a pull request sends its drafts to a thread.');
     if (scope !== 'pr' || (selectedCommitSHA && !headRange)) throw new Error('Send the whole pull request\'s comments: pick All commits.');
     if (!sourceKey || drafts.length === 0 || sendingComments) return null;
-    sendingComments = true;
+    sendingToThread = true;
     try {
       const key = sourceKey;
       const sending = drafts;
@@ -2897,7 +2958,7 @@ export function createReviewPaneState(
       error = userFacingError(err);
       throw err;
     } finally {
-      sendingComments = false;
+      sendingToThread = false;
     }
   }
 
@@ -2907,20 +2968,29 @@ export function createReviewPaneState(
     // wrong lines or hard failures. The UI hides the 'pr' target there;
     // this guard backs it up.
     if (scope !== 'pr' || (selectedCommitSHA && !headRange) || !prRef || !sourceKey || sendingComments) return;
+    // The PR this press is for: every write below settles on it.
+    const on = computerPRKey(prRef);
+    const { openSubmit, summaryBody, verdict } = reviews.of(on);
     if (openSubmit !== null) {
       const lost = openSubmit;
-      sendingComments = true;
+      reviews.set(on, { submitting: true });
       try {
         await resolveLostSubmit(lost);
       } finally {
-        sendingComments = false;
+        reviews.set(on, { submitting: false });
       }
       return;
     }
     // From a head-ending run, the drafts the whole diff has no row for
     // (agent-only ones) stay out, as orphans do from All commits.
-    if (headRange && prLineIndex.state !== 'ready') {
-      submitError = 'The pull request\'s diff is still loading. Send the review once it has loaded.';
+    if ((headRange && prLineIndex.state !== 'ready') || loadedPRHeadSHA === '') {
+      reviews.set(on, { submitError: 'The pull request\'s diff is still loading. Send the review once it has loaded.' });
+      return;
+    }
+    // The review is of the diff on screen; a head the pane knows moved
+    // would be refused (GitLab) or pinned to commits it no longer shows.
+    if (prStale) {
+      reviews.set(on, { submitError: REVIEW_HEAD_MOVED });
       return;
     }
     const orphaned = headRange ? rangePROrphans(prLineIndex, drafts) : orphanedDraftIds();
@@ -2928,7 +2998,7 @@ export function createReviewPaneState(
     // A bare Approve is a valid review; comment and request-changes need
     // content (GitHub's API rejects those events without a body).
     if (submitDrafts.length === 0 && !summaryBody.trim() && verdict !== 'approve') {
-      submitError = 'No non-orphaned PR comments to submit.';
+      reviews.set(on, { submitError: 'No non-orphaned PR comments to submit.' });
       return;
     }
     const withDrafts = reviewDraftSubmit(backend);
@@ -2942,9 +3012,9 @@ export function createReviewPaneState(
       ids: submitDrafts.map((comment) => comment.id),
       body: summaryBody.trim(),
       verdict,
+      headSha: loadedPRHeadSHA,
     };
-    sendingComments = true;
-    submitError = null;
+    reviews.set(on, { submitting: true, submitError: null });
     let failure: unknown = null;
     try {
       const result = withDrafts
@@ -2954,14 +3024,17 @@ export function createReviewPaneState(
     } catch (err) {
       failure = err;
       if (isTransportClassError(err)) {
-        openSubmit = attempt;
+        reviews.set(on, { openSubmit: attempt });
         await resolveLostSubmit(attempt);
       } else {
         const code = err instanceof TransportError ? err.code : undefined;
         await settleSubmit(attempt, { kind: 'not-posted', message: notPostedMessage(code, userFacingError(err)) });
+        // A head that moved under the submit raises the stale banner and
+        // its Reload; the drafts, summary and verdict stay.
+        if (code === 'forge_stale_head' && prRef === attempt.ref) void refreshPRThreads();
       }
     } finally {
-      sendingComments = false;
+      reviews.set(on, { submitting: false });
     }
     if (failure !== null) throw failure;
   }
@@ -2972,8 +3045,9 @@ export function createReviewPaneState(
     return (await withBackendTarget(backend, () => SubmitPRReview(prReferenceWire(attempt.ref), {
       verdict: attempt.verdict,
       body: attempt.body,
+      headSha: attempt.headSha,
       comments: [],
-      drafts: { threadId: attempt.threadId ?? undefined, ids: [...attempt.ids], headSha: loadedPRHeadSHA },
+      drafts: { threadId: attempt.threadId ?? undefined, ids: [...attempt.ids] },
       attemptId: attempt.id,
     }))) as SubmitPRReviewResult;
   }
@@ -2986,6 +3060,7 @@ export function createReviewPaneState(
     const result = (await withBackendTarget(backend, () => SubmitPRReview(prReferenceWire(attempt.ref), {
       verdict: attempt.verdict,
       body: attempt.body,
+      headSha: attempt.headSha,
       comments: submitDrafts.map(reviewLineCommentForDraft).filter((comment) => comment !== null),
     }))) as SubmitPRReviewResult;
     let sent = submitDrafts;
@@ -3002,7 +3077,7 @@ export function createReviewPaneState(
       const ids = sent.map((comment) => comment.id);
       try {
         if (pinnedDrafts !== null) await markPRDiffReviewCommentsSent(pinnedDrafts, attempt.scope, attempt.source, ids);
-        else if (attempt.threadId !== null) await MarkDiffReviewCommentsSent(attempt.threadId, attempt.scope, attempt.source, ids, `pr:${loadedPRHeadSHA}`);
+        else if (attempt.threadId !== null) await MarkDiffReviewCommentsSent(attempt.threadId, attempt.scope, attempt.source, ids, `pr:${attempt.headSha}`);
       } catch (err) {
         const unmarked = `Its comments were not marked sent and still show as drafts; delete them instead of sending them again. ${userFacingError(err)}`;
         return {
@@ -3032,7 +3107,7 @@ export function createReviewPaneState(
     try {
       outcome = (await withBackendTarget(backend, () => GetPRReviewSubmitOutcome(prReferenceWire(attempt.ref), attempt.id))) as PRReviewSubmitOutcome;
     } catch (err) {
-      submitError = `${REVIEW_ANSWER_LOST} The computer could not be asked what happened, so Send asks again: ${userFacingError(err)}`;
+      reviews.set(computerPRKey(attempt.ref), { submitError: `${REVIEW_ANSWER_LOST} The computer could not be asked what happened, so Send asks again: ${userFacingError(err)}` });
       return;
     }
     if (outcome.state === 'posted' && outcome.result) {
@@ -3053,17 +3128,27 @@ export function createReviewPaneState(
   // The summary a submit posted leaves the box, unless it was changed
   // since the submit took it; so does its verdict.
   function clearSubmittedSummary(attempt: SubmitAttempt): void {
-    if (summaryBody.trim() === attempt.body) summaryBody = '';
+    const on = computerPRKey(attempt.ref);
+    const { summaryBody, verdict } = reviews.of(on);
+    reviews.set(on, {
+      summaryBody: summaryBody.trim() === attempt.body ? '' : summaryBody,
+      verdict: verdict === attempt.verdict ? 'comment' : verdict,
+    });
   }
 
-  // Ends an attempt with what it did. Only a posted review clears the
-  // summary; a review that was not posted, or whose outcome nothing can
-  // say, keeps the summary and verdict for the person to decide. The
-  // drafts and threads are read again only to show the backend's state.
+  // Ends an attempt with what it did, on the PR it was for whatever the
+  // pane shows by then. Only a posted review clears the summary; a review
+  // that was not posted, or whose outcome nothing can say, keeps the
+  // summary and verdict for the person to decide. The drafts and threads
+  // are read again only to show the backend's state.
   async function settleSubmit(attempt: SubmitAttempt, settlement: SubmitSettlement): Promise<void> {
-    if (openSubmit === attempt) openSubmit = null;
+    const on = computerPRKey(attempt.ref);
+    // The pane's own error speaks for the PR on screen only.
+    const shown = (): boolean => prIdentity.key === on;
+    if (reviews.of(on).openSubmit === attempt) reviews.set(on, { openSubmit: null });
     if (settlement.kind === 'posted') {
       const result = settlement.result;
+      let submitError: string | null = null;
       if (result.partialFailurePath) {
         submitError = `The review posted, but its comment on ${result.partialFailurePath} did not. ${result.partialFailure ?? 'Unknown error.'}`;
       } else if (result.partialFailureThreadId) {
@@ -3073,18 +3158,14 @@ export function createReviewPaneState(
         submitError = `The review posted, but a step after it did not. ${result.partialFailure}`;
       } else if (result.editedDraftIds?.length) {
         submitError = `The review posted. ${result.editedDraftIds.length === 1 ? 'A comment was' : `${result.editedDraftIds.length} comments were`} edited while it posted and ${result.editedDraftIds.length === 1 ? 'stays a draft' : 'stay drafts'}; the review has the text from before the edit.`;
-      } else {
-        submitError = null;
       }
-      if (result.posted && (!result.partialFailure || result.partialFailureKind === 'unmarked')) {
-        clearSubmittedSummary(attempt);
-        if (verdict === attempt.verdict) verdict = 'comment';
-      }
+      reviews.set(on, { submitError });
+      if (result.posted && (!result.partialFailure || result.partialFailureKind === 'unmarked')) clearSubmittedSummary(attempt);
       forgetDraftEdits((result.sentDraftIds ?? []).map((id) => ({ id })));
-      error = null;
+      if (shown()) error = null;
     } else {
-      submitError = settlement.message;
-      error = submitError;
+      reviews.set(on, { submitError: settlement.message });
+      if (shown()) error = settlement.message;
     }
     try {
       const read = attempt.threadId === null
@@ -3099,7 +3180,9 @@ export function createReviewPaneState(
         applyPRThreads(key, ((await withBackendTarget(backend, () => ListPRReviewThreads(prReferenceWire(attempt.ref)))) ?? []) as ReviewThread[], from);
       }
     } catch (err) {
-      error = userFacingError(err);
+      // Off screen, the read's failure waits with the review's own.
+      if (shown()) error = userFacingError(err);
+      else reviews.set(on, { submitError: [reviews.of(on).submitError, userFacingError(err)].filter(Boolean).join(' ') });
     }
   }
 
@@ -3210,18 +3293,18 @@ export function createReviewPaneState(
     if (scope !== 'pr' || !prRef || mergeActionShown !== null || mergeWithheldReason !== null) return;
     const ref = prRef;
     const key = prEntityKey;
+    const on = computerPRKey(ref);
     // The seq the answer names is this backend process's; a restart (a
     // new launch) starts a pump that numbers from one, whose snapshot is
     // the forge's answer.
     const launch = backendLaunch;
-    mergeAction = kind;
-    mergeAwait = null;
+    reviews.set(on, { mergeAction: kind, mergeAwait: null });
     let result: { seq: number };
     try {
       result = await withBackendTarget(backend, call);
     } catch (err) {
       if (disposed) return;
-      mergeAction = null;
+      reviews.set(on, { mergeAction: null });
       const action = mergeFailureAction(err);
       // A failure with a fix to press stays until pressed or dismissed.
       addErrorToast(`${MERGE_ACTION_LABEL[kind]} failed: ${userFacingError(err)}`, err, action ? 0 : undefined, action);
@@ -3229,9 +3312,9 @@ export function createReviewPaneState(
       return;
     }
     if (disposed) return;
-    mergeAction = null;
+    reviews.set(on, { mergeAction: null });
     if (key === null || backendLaunch !== launch || peekPRSeq(key) >= result.seq) return;
-    mergeAwait = { kind, key, seq: result.seq, launch };
+    reviews.set(on, { mergeAwait: { kind, key, seq: result.seq, launch } });
   }
 
   // A head that moved under the action is fixed by reloading the diff;
@@ -3644,6 +3727,7 @@ export function createReviewPaneState(
     get prDetail() { return prSnapshot?.detail ?? null; },
     get prThreads() { return prThreads; },
     get prEvents() { return prEvents; },
+    get prThreadsTruncated() { return scope === 'pr' && prRef !== null ? prSnapshot?.threadsTruncated ?? null : null; },
     get mergeOpen() { return mergeOpen; },
     setMergeOpen(open: boolean): void { mergeOpen = open; },
     get mergeAction() { return mergeActionShown; },
@@ -3706,9 +3790,9 @@ export function createReviewPaneState(
     get ciLogOpenSections() { return ci.logOpenSections; },
     get submitTarget() { return submitTarget; },
     get effectiveSubmitTarget() { return effectiveSubmitTarget; },
-    get verdict() { return verdict; },
-    get summaryBody() { return summaryBody; },
-    get submitError() { return submitError; },
+    get verdict() { return review.verdict; },
+    get summaryBody() { return review.summaryBody; },
+    get submitError() { return review.submitError; },
     get isTurnActive() { return isTurnActive; },
     get collapsedPaths() { return collapsedPaths; },
     get allCollapsed() { return allCollapsed; },
@@ -3747,6 +3831,7 @@ export function createReviewPaneState(
       return true;
     },
     createComment,
+    editorSaving: (editorId: string) => savingEditors.has(editorId),
     draftEditBodyFor(commentId: string): string | null {
       return draftEditBodies.get(commentId)?.body ?? null;
     },
@@ -3763,10 +3848,10 @@ export function createReviewPaneState(
       submitTarget = target;
     },
     setVerdict(nextVerdict: 'comment' | 'approve' | 'request-changes'): void {
-      verdict = nextVerdict;
+      reviews.set(prIdentity.key, { verdict: nextVerdict });
     },
     setSummaryBody(body: string): void {
-      summaryBody = body;
+      reviews.set(prIdentity.key, { summaryBody: body });
     },
     orphanedDraftIds,
     togglePRThread(prThreadId: string): void {

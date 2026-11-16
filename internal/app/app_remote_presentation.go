@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"agent-overflow/internal/agentmeta"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/usermessage"
 )
@@ -113,6 +114,6 @@ func remoteCompletionMessage(w store.RemoteWatch, computerName string, output re
 		message += "\nOutput omitted. Use remote_read_log or remote_search_log with the IDs above, or remote_fetch_log for the whole log."
 	}
 	return usermessage.Report(
-		usermessage.ReportCompletion, usermessage.Reporter{Label: w.Label, Computer: computerName},
+		agentmeta.ReportCompletion, usermessage.Reporter{Label: w.Label, Computer: computerName},
 		fmt.Sprintf("%s%s: %s", remoteJobWakeHeader, computerName, w.Label), message, result)
 }

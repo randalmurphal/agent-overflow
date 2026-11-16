@@ -225,6 +225,8 @@ func (r *Router) retireUnrunSend(threadID string, entry pendingSend, state provi
 	if _, ok := r.consumePendingSendByProviderID(threadID, entry.ExpectedProviderItemID); !ok {
 		return nil
 	}
+	// The send's turn never runs, so a Stop held for it cut nothing.
+	r.dropWaitingStop(threadID, entry.TurnIndex)
 	if item.DeferredItem == nil && item.QuietItem == nil {
 		// The send failed before its row was written; that failure already
 		// reached the user, and there is nothing to return.

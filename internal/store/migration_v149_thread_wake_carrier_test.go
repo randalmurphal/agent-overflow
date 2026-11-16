@@ -39,7 +39,7 @@ func TestThreadWakeCarrierMigrationDefaultsToTheRowsOwnMessage(t *testing.T) {
 		args      []any
 	}{
 		"confirm":   {threadWakeConfirmSQL(false, true), []any{"tok-old", int64(2), "row", int64(3)}},
-		"give back": {threadWakeGiveBackSQL(false, true, true), []any{"tok-old", int64(2), ThreadWakeQueued}},
+		"give back": {threadWakeGiveBackSQL(false, true), []any{"tok-old", int64(2), ThreadWakeQueued}},
 	} {
 		plan := explainWakeCarrierPlan(t, db, rider.statement, rider.args...)
 		if want := "idx_thread_requests_delivered_with"; !strings.Contains(plan, want) {

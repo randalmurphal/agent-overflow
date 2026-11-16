@@ -716,6 +716,11 @@ func (a *App) settleReceiptUnderLock(
 // lock must not be separated from this write: thread_reply's idempotency
 // check and a delivery binding a receipt to its turn. It returns the work
 // the caller must run after releasing the lock.
+//
+// A request this computer made of its own thread is collected in the same
+// transaction (store.SettleLocalThreadRequest); one from another computer is
+// collected by that computer's poller. settlement.DisarmWake is the request's
+// half and is written only to a request here.
 func (a *App) settleThreadReceiptLocked(
 	token string, from []string, settlement store.ThreadRequestSettlement, scratch bool,
 ) (threadSettlementWork, bool, error) {
@@ -749,9 +754,11 @@ func (a *App) settleReadReceiptLocked(
 		if err != nil {
 			return threadSettlementWork{}, false, err
 		}
-		settlement.ArmWake = found && row.TargetComputerID == "" && a.replyArmsWake(row)
+		// A cancel's settlement disarms instead (DisarmWake), in the same
+		// write; the store refuses both.
+		settlement.ArmWake = found && row.TargetComputerID == "" && !settlement.DisarmWake && a.replyArmsWake(row)
 	}
-	result, err := a.store.SettleLocalThreadRequest(token, from, settlement, threadRequestStateForReceipt(settlement.State))
+	result, err := a.store.SettleLocalThreadRequest(token, from, settlement, store.ThreadRequestStateForReceipt(settlement.State))
 	if err != nil {
 		return threadSettlementWork{}, false, err
 	}
@@ -780,6 +787,57 @@ func (a *App) settleReadReceiptLocked(
 		}
 	}
 	return work, true, nil
+}
+
+// collectionWake decides the wake one collection owes the caller. A late
+// reply collected with it is the one message: it replaces a first answer not
+// yet delivered (store.ThreadRequest.WakeOwed), and a first answer already
+// delivered is owed nothing more.
+func (a *App) collectionWake(token string, collected store.ThreadRequestCollected) (wake, late bool) {
+	switch {
+	case collected.LateReply:
+		return a.finishThreadRequestCollection(token, true), true
+	case collected.Settled:
+		return a.finishThreadRequestCollection(token, false), false
+	}
+	return false, false
+}
+
+// storeThreadReceiptLateReply stores a late reply on the receipt and, for a
+// request this computer made of its own thread, collects the receipt into the
+// request in the same transaction. agent is whether the thread that answered
+// is a standing agent now, which both rows record. It reports whether the
+// receipt took it and what the request collected.
+func (a *App) storeThreadReceiptLateReply(token string, reply []byte, at int64, agent *store.ThreadAnswerAgent) (bool, store.ThreadRequestCollected, error) {
+	source, local, err := a.localThreadRequest(token)
+	if err != nil {
+		return false, store.ThreadRequestCollected{}, err
+	}
+	if !local {
+		stored, err := a.store.StoreThreadReceiptLateReply(token, reply, at, agent)
+		return stored, store.ThreadRequestCollected{}, err
+	}
+	return a.store.StoreLocalThreadRequestLateReply(token, reply, at, agent, a.replyArmsWake(source))
+}
+
+// localThreadRequest reads the request a receipt answers, when this computer
+// made it of its own thread. A token no request here owns belongs to another
+// computer, whose poller collects it; that is the whole difference between
+// the local path and the remote one.
+func (a *App) localThreadRequest(token string) (store.ThreadRequest, bool, error) {
+	row, found, err := a.store.GetThreadRequest(token)
+	if err != nil || !found {
+		return store.ThreadRequest{}, false, err
+	}
+	if row.TargetComputerID != "" {
+		// The row names a request THIS computer sent elsewhere. A receipt
+		// carrying the same token was minted by a paired computer, and
+		// settling the outbound row from it would write another computer's
+		// answer into this one's request.
+		log.Printf("thread tools: receipt %s collides with an outbound request; nothing collected", token)
+		return store.ThreadRequest{}, false, nil
+	}
+	return row, true, nil
 }
 
 // Reply settles one request the caller's thread was asked.
@@ -883,7 +941,7 @@ func (t threadToolsApp) replyLocked(caller threadtools.Caller, call threadtools.
 			return threadtools.ReplyAck{}, work, errorsx.Public(threadtools.CodeInvalidRequest,
 				"That request finished more than a day ago and its sender has stopped listening for a reply. Use thread_send to reach it.", nil)
 		}
-		stored, err := t.app.store.StoreThreadReceiptLateReply(call.Token, text, now, t.answerAgent(call.Token, receipt.TargetThreadID))
+		stored, collected, err := t.app.storeThreadReceiptLateReply(call.Token, text, now, t.answerAgent(call.Token, receipt.TargetThreadID))
 		if err != nil {
 			return threadtools.ReplyAck{}, work, err
 		}
@@ -891,12 +949,8 @@ func (t threadToolsApp) replyLocked(caller threadtools.Caller, call threadtools.
 			return threadtools.ReplyAck{}, work, errorsx.Public(threadtools.CodeInvalidRequest,
 				"That request stopped accepting replies while this one was being written.", nil)
 		}
-		work = threadSettlementWork{
-			token:        call.Token,
-			targetThread: receipt.TargetThreadID,
-			late:         true,
-			wake:         t.app.collectLocalLateReply(call.Token),
-		}
+		work = threadSettlementWork{token: call.Token, targetThread: receipt.TargetThreadID}
+		work.wake, work.late = t.app.collectionWake(call.Token, collected)
 		ack.Accepted, ack.State = true, threadtools.RequestFinished
 
 	default:
@@ -943,47 +997,6 @@ func (a *App) dropScratchThreadForRequest(token, threadID string) {
 	if _, err := a.store.DeleteScratchThread(threadID); err != nil {
 		log.Printf("thread tools: delete scratch row %s: %v", threadID, err)
 	}
-}
-
-// collectLocalLateReply hands a late reply on this computer to the source
-// row on this computer. A token no source row here owns belongs to another
-// computer, whose poller collects it.
-//
-// The caller holds the token's settle lock, which is what makes the wake
-// decision below exclusive with a timing-out wait. It reports whether a wake
-// is owed; the caller delivers it after releasing that lock.
-func (a *App) collectLocalLateReply(token string) bool {
-	receipt, found, err := a.store.GetThreadRequestReceipt(token)
-	if err != nil {
-		log.Printf("thread tools: read receipt %s: %v", token, err)
-		return false
-	}
-	if !found {
-		return false
-	}
-	row, found, err := a.store.GetThreadRequest(token)
-	if err != nil {
-		log.Printf("thread tools: read request %s: %v", token, err)
-		return false
-	}
-	if !found {
-		return false
-	}
-	if row.TargetComputerID != "" {
-		// As settleReadReceiptLocked: another computer's receipt.
-		log.Printf("thread tools: receipt %s collides with an outbound request; nothing collected", token)
-		return false
-	}
-	if _, err := a.store.StoreThreadRequestLateReply(token, receipt.LateReply, receipt.LateReplyAt, receipt.LateReplyAgent,
-		a.replyArmsWake(row)); err != nil {
-		log.Printf("thread tools: store late reply %s: %v", token, err)
-		return false
-	}
-	// The source has the answer durably; the destination may drop its copy.
-	if _, err := a.store.AckThreadRequestReceipt(token, receipt.Revision, 0); err != nil {
-		log.Printf("thread tools: acknowledge receipt %s: %v", token, err)
-	}
-	return a.finishThreadRequestCollection(token, true)
 }
 
 // replyArmsWake reports whether an explicit reply to one of row's caller's
@@ -1044,27 +1057,4 @@ func (a *App) finishThreadRequestCollection(token string, late bool) bool {
 func (a *App) collectionWakeOwed(token string, notify bool) bool {
 	a.wakeRequestWaits(token)
 	return notify && !a.requestWaitActive(token)
-}
-
-// threadRequestStateForReceipt maps a destination state onto the source's
-// vocabulary. The two sets differ only where the source knows something the
-// destination cannot (`unconfirmed`, `refused`), so everything settled has a
-// name on both sides.
-func threadRequestStateForReceipt(state string) string {
-	switch state {
-	case store.ThreadReceiptReplied:
-		return store.ThreadRequestReplied
-	case store.ThreadReceiptFinished:
-		return store.ThreadRequestFinished
-	case store.ThreadReceiptErrored:
-		return store.ThreadRequestErrored
-	case store.ThreadReceiptCancelled:
-		return store.ThreadRequestCancelled
-	case store.ThreadReceiptInterrupted:
-		return store.ThreadRequestInterrupted
-	case store.ThreadReceiptExpired:
-		return store.ThreadRequestExpired
-	default:
-		return store.ThreadRequestErrored
-	}
 }

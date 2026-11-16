@@ -37,7 +37,7 @@ func ProbeIdentity(ctx context.Context, cfg ProbeConfig) (_ provider.AccountInfo
 		return provider.AccountInfo{}, err
 	}
 	defer func() { retErr = errors.Join(retErr, cleanup()) }()
-	proc, err := provider.Spawn(probeCtx, spawnCfg)
+	proc, err := provider.Spawn(probeCtx, provider.Bounded(cfg.Reaper), spawnCfg)
 	if err != nil {
 		return provider.AccountInfo{}, fmt.Errorf("codex: identity probe spawn: %w", err)
 	}

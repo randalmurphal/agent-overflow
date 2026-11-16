@@ -42,7 +42,10 @@ const (
 // threadAgentPeerListTimeout bounds a forwarded listing: a pane's read must
 // not wait long on a computer that does not answer. A forwarded Stop runs
 // interrupts there, each bounded by its provider's own interrupt timeout, so
-// it waits longer.
+// it waits longer. Both wait less than the destination's own budget
+// (threadPeerCallWait) on purpose: a listing lost to the bound is read again
+// on the pane's next refresh, and a Stop the destination finishes later
+// settles its receipts there, which the source's poll collects.
 const (
 	threadAgentPeerListTimeout = 5 * time.Second
 	threadAgentPeerStopTimeout = 45 * time.Second

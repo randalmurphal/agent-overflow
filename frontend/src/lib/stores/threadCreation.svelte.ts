@@ -191,7 +191,8 @@ export interface OpenDraftThreadOptions {
  * a pure UI state — no SQLite row is written. The first composer input
  * (typed text, paste, attachment upload) or toolbar action calls
  * `pane.ensureMaterializedThread()`, which creates the backend row,
- * prepends it to the sidebar with `isDraft=true`, and points the
+ * lists it in the sidebar with `isDraft=true` once it holds content (the
+ * sidebar listing rule, store.sidebarListedClause), and points the
  * composer-draft store at the new id. "+ New" repeated without any
  * action simply replaces the prior placeholder, so the user can spin up
  * and discard threads freely.

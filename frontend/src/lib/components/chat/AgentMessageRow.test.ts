@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import fixture from '../../../../../internal/threadtools/testdata/agent_messages.json';
-import servedRows from '../../../../../internal/usermessage/testdata/served_rows.json';
+import servedRows from '../../../../../internal/agentmeta/testdata/served_rows.json';
 import labels from '../../../../../internal/app/testdata/agent_message_labels.json';
 import { buildPane, makeItem, makeThread } from '../../../test/helpers/chat';
 import { resetBindingMocks } from '../../../test/mocks/bindings-app';
@@ -28,7 +28,7 @@ const fixtureCase = (name: string) =>
 const text = (name: string) => fixtureCase(name).text;
 /**
  * `attribution` with the facts a client receives for a fixture case's member
- * `index` (internal/usermessage/testdata/served_rows.json).
+ * `index` (internal/agentmeta/testdata/served_rows.json).
  */
 const withFacts = (name: string, attribution: Origin, index = 0): Origin => {
   const served = JSON.parse(servedRows.find((row) => row.name === name)!.meta) as {
@@ -41,7 +41,7 @@ const withFacts = (name: string, attribution: Origin, index = 0): Origin => {
 const joinedParts = (name: string, origins: Origin[]) =>
   fixtureCase(name).members.map((bytes, index) => ({ bytes, origin: 'agent-thread', originThread: withFacts(name, origins[index], index) }));
 
-/** What Go serves a loop's report kind as (usermessage.ReportDescriptor). */
+/** What Go serves a loop's report kind as (agentmeta.ReportDescriptor). */
 const loopReport = JSON.parse(labels.find((tc) => tc.name === 'a loop')!.meta).originWake.report;
 
 function agentRow(summary: string, meta: Record<string, unknown>, overrides: Partial<Item> = {}): Item {

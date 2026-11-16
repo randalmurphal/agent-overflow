@@ -9,6 +9,7 @@ import (
 	"sync"
 	"testing"
 
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/testutil/mockexec"
 )
@@ -72,6 +73,7 @@ func TestResumeExcludesTheThreadFromMemories(t *testing.T) {
 			requestLog := filepath.Join(dir, "requests.jsonl")
 			tc.cfg.Binary = writeInjectAppServer(t, dir, requestLog, "", tc.failMethod)
 			tc.cfg.WorkDir = dir
+			tc.cfg.Reaper = procutiltest.Reaper()
 			var mu sync.Mutex
 			var errs []string
 			sess, err := NewSession(context.Background(), "thread-1", tc.cfg, func(evt provider.ProviderEvent) {
@@ -140,6 +142,7 @@ func TestTurnStartCarriesTheSessionWritableRoots(t *testing.T) {
 		WorkDir:       "/tmp",
 		Sandbox:       "read-only",
 		WritableRoots: roots,
+		Reaper:        procutiltest.Reaper(),
 	}, func(provider.ProviderEvent) {})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)

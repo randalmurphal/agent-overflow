@@ -104,10 +104,11 @@ func TestMergedPRWorktreeBusyWaitsForPendingWork(t *testing.T) {
 	}
 
 	queued, queuedPath := mergeCleanupThread(t, app, repo, "feature/queued")
+	holdFlushQueue(app)
 	if _, err := app.RegisterQueueItem(context.Background(), queued.ID, "after this", SendMessageOptions{}); err != nil {
 		t.Fatalf("RegisterQueueItem: %v", err)
 	}
-	if err := app.mergedPRWorktreeBusy(queuedPath, []string{queued.ID}); err == nil || !strings.Contains(err.Error(), "queued messages") {
+	if err := app.mergedPRWorktreeBusy(queuedPath, []string{queued.ID}); err == nil || !strings.Contains(err.Error(), "messages are queued") {
 		t.Fatalf("a queued send: got %v, want a queued-messages refusal", err)
 	}
 
@@ -469,15 +470,16 @@ func TestMergedPRRemovalErrorsAfterTheChecks(t *testing.T) {
 func TestMergedPRRemovalFailureIsToldOnceAndRetried(t *testing.T) {
 	t.Parallel()
 	m := newMergeCase(t, "feature/refused")
-	vendored := testutil.InitGitRepo(t)
-	testutil.RunGit(t, m.path, "-c", "protocol.file.allow=always", "submodule", "--quiet", "add", vendored, "vendored")
-	testutil.RunGit(t, m.path, "commit", "-q", "-m", "vendor a submodule")
+	site := &mergedPRSite{path: m.path, project: m.repo, projectID: m.thread.ProjectID, threadIDs: []string{m.thread.ID}}
 	kept := "PR #5 merged. Kept worktree " + filepath.Base(m.path) + ": removing it failed."
 	warnings := func() []string { return timelineRows(t, m.app.store, m.thread.ID, "notification", noticeKindWarning) }
+	// No real refusal both lets the worktree be checked as clean and goes
+	// away when waited for, so the first attempt's is handed in.
+	refused := errors.New("git worktree remove failed: fatal: refused for a while")
 
-	m.pass()
-	m.expectOutcome(t, "")
-	m.expectWorktree(t, true)
+	if got := m.app.mergedPRRemovalFailed(m.pr, site, []string{m.thread.ID}, refused, time.Now()); got != mergedPRWait {
+		t.Fatalf("outcome = %v, want a wait for the retry", got)
+	}
 	if got := warnings(); len(got) != 1 || got[0] != kept {
 		t.Fatalf("warnings = %q, want %q", got, kept)
 	}
@@ -490,31 +492,89 @@ func TestMergedPRRemovalFailureIsToldOnceAndRetried(t *testing.T) {
 	if n := m.requests.Load() - before; n != 0 {
 		t.Fatalf("a pass inside the backoff made %d forge requests", n)
 	}
+	m.expectOutcome(t, "")
+	m.expectWorktree(t, true)
+
 	m.due()
 	m.pass()
 	if n := m.requests.Load() - before; n != 1 {
 		t.Fatalf("a due retry made %d forge requests, want 1", n)
 	}
-	m.expectOutcome(t, "")
+	m.expectOutcome(t, store.PROutcomeRemoved)
+	m.expectWorktree(t, false)
 	if got := warnings(); len(got) != 1 {
 		t.Fatalf("a retry repeated the warning: %q", got)
 	}
-
-	// git keeps refusing while the worktree's admin directory holds the
-	// submodule's repository.
-	testutil.RunGit(t, m.path, "rm", "-q", "vendored")
-	testutil.RunGit(t, m.path, "commit", "-q", "-m", "drop the submodule")
-	gitDir := strings.TrimSpace(gitOutput(t, m.path, "rev-parse", "--absolute-git-dir"))
-	if err := os.RemoveAll(filepath.Join(gitDir, "modules")); err != nil {
-		t.Fatal(err)
-	}
-	m.due()
-	m.pass()
-	m.expectOutcome(t, store.PROutcomeRemoved)
-	m.expectWorktree(t, false)
 	if got := timelineRows(t, m.app.store, m.thread.ID, "notification", noticeKindWorktreeCleanup); len(got) != 1 || got[0] != m.removedNotice() {
 		t.Fatalf("after the retry, notices = %q", got)
 	}
+}
+
+// A refusal that outlasts the retries keeps the worktree: the cleanup stops
+// trying, and asking the forge, after mergedPRRemovalAttempts.
+func TestMergedPRRemovalGitKeepsRefusingIsKept(t *testing.T) {
+	t.Parallel()
+	m := newMergeCase(t, "feature/always-refused")
+	site := &mergedPRSite{path: m.path, project: m.repo, projectID: m.thread.ProjectID, threadIDs: []string{m.thread.ID}}
+	refused := errors.New("git worktree remove failed: fatal: refused for good")
+	for attempt := 1; attempt <= mergedPRRemovalAttempts; attempt++ {
+		got := m.app.mergedPRRemovalFailed(m.pr, site, []string{m.thread.ID}, refused, time.Now())
+		want := mergedPRWait
+		if attempt == mergedPRRemovalAttempts {
+			want = mergedPRKept
+		}
+		if got != want {
+			t.Fatalf("attempt %d: outcome = %v, want %v", attempt, got, want)
+		}
+	}
+	if got := timelineRows(t, m.app.store, m.thread.ID, "notification", noticeKindWarning); len(got) != 1 {
+		t.Fatalf("warnings = %q, want the one told at the first failure", got)
+	}
+	if _, retried := m.app.mergedPRs.removals[threadPullRequestKey(m.pr)+"\x00"+m.path]; retried {
+		t.Fatal("a refusal that was given up on still holds a retry")
+	}
+}
+
+// git refuses a worktree with initialized submodules whatever the wait, and
+// one a person locked with a reason of their own is theirs: each is kept
+// with one notice and not retried. A lock with no reason, as Claude Code's
+// EnterWorktree leaves, is lifted.
+func TestMergedPRWorktreeGitWillNotRemoveIsKept(t *testing.T) {
+	t.Parallel()
+	t.Run("initialized submodules", func(t *testing.T) {
+		t.Parallel()
+		m := newMergeCase(t, "feature/submodule")
+		vendored := testutil.InitGitRepo(t)
+		testutil.RunGit(t, m.path, "-c", "protocol.file.allow=always", "submodule", "--quiet", "add", vendored, "vendored")
+		testutil.RunGit(t, m.path, "commit", "-q", "-m", "vendor a submodule")
+		m.pass()
+		m.expectOutcome(t, store.PROutcomeKept)
+		m.expectWorktree(t, true)
+		want := "PR #5 merged. Kept worktree " + filepath.Base(m.path) + ": it has submodules."
+		if got := timelineRows(t, m.app.store, m.thread.ID, "notification", noticeKindWarning); len(got) != 1 || got[0] != want {
+			t.Fatalf("warnings = %q, want %q", got, want)
+		}
+	})
+	t.Run("a person's lock", func(t *testing.T) {
+		t.Parallel()
+		m := newMergeCase(t, "feature/person-lock")
+		testutil.RunGit(t, m.repo, "worktree", "lock", "--reason", "on a removable drive", "--", m.path)
+		m.pass()
+		m.expectOutcome(t, store.PROutcomeKept)
+		m.expectWorktree(t, true)
+		want := "PR #5 merged. Kept worktree " + filepath.Base(m.path) + ": it is locked."
+		if got := timelineRows(t, m.app.store, m.thread.ID, "notification", noticeKindWarning); len(got) != 1 || got[0] != want {
+			t.Fatalf("warnings = %q, want %q", got, want)
+		}
+	})
+	t.Run("a lock with no reason", func(t *testing.T) {
+		t.Parallel()
+		m := newMergeCase(t, "feature/claude-lock")
+		testutil.RunGit(t, m.repo, "worktree", "lock", "--", m.path)
+		m.pass()
+		m.expectOutcome(t, store.PROutcomeRemoved)
+		m.expectWorktree(t, false)
+	})
 }
 
 // A failed open-PR lookup, and one where the forge still lists the merged

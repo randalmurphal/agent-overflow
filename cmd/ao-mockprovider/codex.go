@@ -289,6 +289,13 @@ func (a *codexAdapter) handleRequest(id json.RawMessage, method string, params j
 				return
 			}
 			write(a.responseLine(id, method, vars))
+			if a.refuses(method) {
+				// A scenario whose template answers the steer with an error
+				// (a review or a compaction turn: activeTurnNotSteerable)
+				// refuses it: the input reaches no turn, so nothing reports
+				// or echoes it.
+				return
+			}
 			write(steeredUserMessageLine(params, vars, a.steerSeq.Add(1)))
 			accepted = true
 		})
@@ -610,6 +617,20 @@ func (a *codexAdapter) responseLine(id json.RawMessage, method string, vars scen
 	sub["REQUEST_ID"] = string(id)
 	sub["HISTORY_MODE"] = a.currentHistoryMode()
 	return sub.Substitute(tmpl)
+}
+
+// refuses reports whether the scenario's response template for method is a
+// JSON-RPC error.
+func (a *codexAdapter) refuses(method string) bool {
+	tmpl, ok := a.responses[method]
+	if !ok {
+		return false
+	}
+	var reply struct {
+		Error json.RawMessage `json:"error"`
+	}
+	line := scenario.Vars{"REQUEST_ID": "0"}.Substitute(tmpl)
+	return json.Unmarshal([]byte(line), &reply) == nil && len(reply.Error) > 0
 }
 
 // handleResponse routes an app response (to one of OUR approval

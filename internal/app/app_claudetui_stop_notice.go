@@ -3,6 +3,7 @@ package app
 import (
 	"log"
 
+	"agent-overflow/internal/agentmeta"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/usermessage"
@@ -91,7 +92,7 @@ func (a *App) noticeClaudeTUIDiscardedMessage(threadID string) {
 // isReaderAuthoredUserItem reports whether item is a top-level message the
 // user sent, as opposed to a subagent prompt (parented), a wire-only echo
 // of content the provider consumed without an AO send, or an agent's
-// message or a wake (usermessage.IsAgentMessage), which is never the
+// message or a wake (agentmeta.IsAgentMessage), which is never the
 // person's. A row whose meta does not decode is not read as the person's
 // either.
 func isReaderAuthoredUserItem(item store.Item) bool {
@@ -100,5 +101,5 @@ func isReaderAuthoredUserItem(item store.Item) bool {
 		return false
 	}
 	meta, err := usermessage.FromItem(item)
-	return err == nil && !usermessage.IsAgentMessage(meta)
+	return err == nil && !agentmeta.IsAgentMessage(meta.Agent())
 }

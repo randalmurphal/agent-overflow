@@ -101,7 +101,7 @@ func killAtCleanup(t *testing.T, pid int) {
 func TestRunGroupReportsTheExitCodeAndCombinedOutput(t *testing.T) {
 	t.Parallel()
 	var output syncBuffer
-	outcome, err := RunGroup(context.Background(),
+	outcome, err := RunGroup(context.Background(), &recordingReaper{},
 		shellCommand(t, "echo to-stdout; echo to-stderr 1>&2; exit 3", &output))
 	if err == nil || outcome.ExitCode != 3 || outcome.Leftovers || outcome.Stopped || outcome.OutputHeld {
 		t.Fatalf("outcome=%+v err=%v", outcome, err)
@@ -111,16 +111,147 @@ func TestRunGroupReportsTheExitCodeAndCombinedOutput(t *testing.T) {
 	}
 }
 
+// With Stderr set, stderr from the command and from what it starts reaches
+// Stderr alone, and Output carries only stdout.
+func TestRunGroupGivesStderrItsOwnSinkWhenAsked(t *testing.T) {
+	t.Parallel()
+	var output, stderr syncBuffer
+	command := shellCommand(t, "echo to-stdout; echo to-stderr 1>&2; /bin/sh -c 'echo child-stderr 1>&2'; exit 3", &output)
+	command.Stderr = &stderr
+	reaper := &recordingReaper{}
+	outcome, err := RunGroup(context.Background(), reaper, command)
+	if err == nil || outcome.ExitCode != 3 || outcome.Leftovers || outcome.OutputHeld || outcome.PipeErr != nil {
+		t.Fatalf("outcome=%+v err=%v", outcome, err)
+	}
+	if text := output.String(); text != "to-stdout\n" {
+		t.Fatalf("output = %q, want stdout alone", text)
+	}
+	if text := stderr.String(); text != "to-stderr\nchild-stderr\n" {
+		t.Fatalf("stderr = %q, want the command's and its child's stderr", text)
+	}
+	requireReleased(t, reaper, true)
+}
+
+// A Stderr sink that refuses a write is reported, and its pipe keeps
+// draining so the command does not stall on it.
+func TestRunGroupKeepsDrainingWhenTheStderrSinkRefusesAWrite(t *testing.T) {
+	t.Parallel()
+	refused := errors.New("stderr sink is full")
+	var output syncBuffer
+	command := shellCommand(t, `echo to-stdout; head -c 1000000 /dev/zero | tr '\0' x 1>&2; exit 3`, &output)
+	command.Stderr = refusingWriter{refused}
+	done := make(chan GroupOutcome, 1)
+	go func() {
+		outcome, _ := RunGroup(context.Background(), &recordingReaper{}, command)
+		done <- outcome
+	}()
+	select {
+	case outcome := <-done:
+		if outcome.ExitCode != 3 || !errors.Is(outcome.PipeErr, refused) || output.String() != "to-stdout\n" {
+			t.Fatalf("outcome %+v, output %q", outcome, output.String())
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("the command stalled writing to a stderr pipe nobody read")
+	}
+}
+
+// recordingReaper records the groups a Group has watched and released.
+type recordingReaper struct {
+	mu       sync.Mutex
+	watched  []int
+	released []int
+}
+
+func (r *recordingReaper) Watch(pgid int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.watched = append(r.watched, pgid)
+}
+
+func (r *recordingReaper) Release(pgid int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.released = append(r.released, pgid)
+}
+
+func (r *recordingReaper) calls() (watched, released []int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]int(nil), r.watched...), append([]int(nil), r.released...)
+}
+
+// requireReleased fails unless the reaper watched one group and released
+// exactly that group, or, when released is false, released nothing.
+func requireReleased(t *testing.T, reaper *recordingReaper, released bool) {
+	t.Helper()
+	watched, gone := reaper.calls()
+	if len(watched) != 1 {
+		t.Fatalf("watched %v, want one group", watched)
+	}
+	if released && (len(gone) != 1 || gone[0] != watched[0]) {
+		t.Fatalf("released %v, want the group %d", gone, watched[0])
+	}
+	if !released && len(gone) != 0 {
+		t.Fatalf("released %v, want the group to stay watched", gone)
+	}
+}
+
+// The reaper watches the leader's group, whose id is the leader's pid, from
+// before StartGroup returns until Wait has seen the group end.
+func TestStartGroupHasTheReaperWatchTheGroupUntilItEnds(t *testing.T) {
+	t.Parallel()
+	reaper := &recordingReaper{}
+	group, err := StartGroup(context.Background(), reaper, GroupCommand{
+		Argv: []string{"sleep", "60"}, Output: &syncBuffer{}, TerminateGrace: time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	watched, released := reaper.calls()
+	if len(watched) != 1 || len(released) != 0 {
+		t.Fatalf("StartGroup returned with watched %v released %v, want one group watched", watched, released)
+	}
+	leader := watched[0]
+	pgid, err := syscall.Getpgid(leader)
+	if err != nil || pgid != leader {
+		t.Fatalf("Getpgid(%d) = %d %v, want the leader's own group", leader, pgid, err)
+	}
+	if err := SignalGroup(leader, syscall.SIGKILL); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := group.Wait(); err == nil {
+		t.Fatal("a killed command reported success")
+	}
+	requireReleased(t, reaper, true)
+}
+
+// No group starts without a reaper to end it with this process.
+func TestStartGroupRefusesACommandNoReaperWatches(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "ran")
+	_, err := StartGroup(context.Background(), nil, GroupCommand{
+		Argv: []string{"/bin/sh", "-c", "touch " + marker}, Output: &syncBuffer{},
+	})
+	if !errors.Is(err, ErrNoReaper) {
+		t.Fatalf("StartGroup without a reaper: %v, want ErrNoReaper", err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the command ran without a reaper: %v", err)
+	}
+}
+
 func TestRunGroupRefusesAnEmptyArgv(t *testing.T) {
 	t.Parallel()
-	if _, err := RunGroup(context.Background(), GroupCommand{Output: &syncBuffer{}}); err == nil {
+	if _, err := RunGroup(context.Background(), &recordingReaper{}, GroupCommand{Output: &syncBuffer{}}); err == nil {
 		t.Fatal("empty argv was accepted")
 	}
 }
 
 func TestRunGroupReportsAStartFailure(t *testing.T) {
 	t.Parallel()
-	outcome, err := RunGroup(context.Background(), GroupCommand{
+	outcome, err := RunGroup(context.Background(), &recordingReaper{}, GroupCommand{
 		Dir: t.TempDir(), Argv: []string{"/nonexistent/ao-procutil-binary"}, Output: &syncBuffer{},
 	})
 	if err == nil || outcome.ExitCode != -1 {
@@ -132,7 +263,7 @@ func TestRunGroupReportsAStartFailure(t *testing.T) {
 // os/exec's own text.
 func TestStartGroupReportsAStartFailureSynchronously(t *testing.T) {
 	t.Parallel()
-	group, err := StartGroup(context.Background(), GroupCommand{
+	group, err := StartGroup(context.Background(), &recordingReaper{}, GroupCommand{
 		Dir: t.TempDir(), Argv: []string{"/nonexistent/ao-procutil-binary"}, Output: &syncBuffer{},
 	})
 	if group != nil || !errors.Is(err, os.ErrNotExist) {
@@ -149,7 +280,7 @@ func TestStartGroupStartsNothingUnderADoneContext(t *testing.T) {
 	cancel()
 	var output syncBuffer
 	command := shellCommand(t, "echo ran > ran.txt", &output)
-	outcome, err := RunGroup(ctx, command)
+	outcome, err := RunGroup(ctx, &recordingReaper{}, command)
 	if !errors.Is(err, context.Canceled) || outcome.ExitCode != -1 {
 		t.Fatalf("outcome=%+v err=%v", outcome, err)
 	}
@@ -165,7 +296,7 @@ func TestStartGroupDrainsBeforeWaitAndWaitRepeatsItsResult(t *testing.T) {
 	var output syncBuffer
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	group, err := StartGroup(ctx, shellCommand(t,
+	group, err := StartGroup(ctx, &recordingReaper{}, shellCommand(t,
 		`trap 'exit 7' TERM; echo early; while :; do sleep 0.05; done`, &output))
 	if err != nil {
 		t.Fatal(err)
@@ -187,7 +318,7 @@ func TestStartGroupSurvivesRepeatedStartAndStop(t *testing.T) {
 	for round := range 10 {
 		var output syncBuffer
 		ctx, cancel := context.WithCancel(context.Background())
-		group, err := StartGroup(ctx, shellCommand(t, `echo up; sleep 60 & wait`, &output))
+		group, err := StartGroup(ctx, &recordingReaper{}, shellCommand(t, `echo up; sleep 60 & wait`, &output))
 		if err != nil {
 			cancel()
 			t.Fatalf("round %d: %v", round, err)
@@ -207,12 +338,14 @@ func TestRunGroupStopsLeftoverProcessesAndKeepsExitCode(t *testing.T) {
 	t.Parallel()
 	var output syncBuffer
 	started := time.Now()
-	outcome, err := RunGroup(context.Background(), shellCommand(t,
+	reaper := &recordingReaper{}
+	outcome, err := RunGroup(context.Background(), reaper, shellCommand(t,
 		`sh -c 'echo worker-started; while :; do sleep 0.05; echo worker-alive; done' &
 sleep 0.3; echo leader-done`, &output))
 	if err != nil || outcome.ExitCode != 0 || !outcome.Leftovers || outcome.OutputHeld || outcome.Stopped {
 		t.Fatalf("outcome=%+v err=%v", outcome, err)
 	}
+	requireReleased(t, reaper, true)
 	if elapsed := time.Since(started); elapsed > DefaultTerminateGrace+groupDrainGrace+5*time.Second {
 		t.Fatalf("leftover sweep took %s", elapsed)
 	}
@@ -224,19 +357,23 @@ sleep 0.3; echo leader-done`, &output))
 
 // KeepLeftovers leaves a process the command started on purpose running, and
 // a leftover that does not hold the output pipe does not delay the result.
+// The kept process is handed off: its group is released while it runs, so it
+// outlives this process.
 func TestRunGroupKeepsLeftoversWhenAsked(t *testing.T) {
 	t.Parallel()
 	var output syncBuffer
 	command := shellCommand(t, `sleep 60 >/dev/null 2>&1 & echo $! > pid; echo leader-done`, &output)
 	command.KeepLeftovers = true
 	started := time.Now()
-	outcome, err := RunGroup(context.Background(), command)
+	reaper := &recordingReaper{}
+	outcome, err := RunGroup(context.Background(), reaper, command)
 	elapsed := time.Since(started)
 	pid := recordedPID(t, filepath.Join(command.Dir, "pid"))
 	killAtCleanup(t, pid)
 	if err != nil || outcome.ExitCode != 0 || !outcome.Leftovers || outcome.OutputHeld || outcome.Stopped {
 		t.Fatalf("outcome=%+v err=%v", outcome, err)
 	}
+	requireReleased(t, reaper, true)
 	if elapsed >= groupDrainGrace {
 		t.Fatalf("a leftover that does not hold the pipe delayed the result by %s", elapsed)
 	}
@@ -256,7 +393,7 @@ func TestRunGroupReportsOutputAKeptLeftoverStillHolds(t *testing.T) {
 	command := shellCommand(t, `sleep 60 & echo $! > pid; echo leader-done`, &output)
 	command.KeepLeftovers = true
 	started := time.Now()
-	outcome, err := RunGroup(context.Background(), command)
+	outcome, err := RunGroup(context.Background(), &recordingReaper{}, command)
 	elapsed := time.Since(started)
 	pid := recordedPID(t, filepath.Join(command.Dir, "pid"))
 	killAtCleanup(t, pid)
@@ -281,7 +418,7 @@ func TestRunGroupCapturesAKeptLeftoversLateOutput(t *testing.T) {
 	var output syncBuffer
 	command := shellCommand(t, `(sleep 0.2; echo late-output) & echo leader-done`, &output)
 	command.KeepLeftovers = true
-	outcome, err := RunGroup(context.Background(), command)
+	outcome, err := RunGroup(context.Background(), &recordingReaper{}, command)
 	if err != nil || outcome.ExitCode != 0 || outcome.OutputHeld {
 		t.Fatalf("outcome=%+v err=%v", outcome, err)
 	}
@@ -298,7 +435,8 @@ func TestRunGroupCancellationStopsAKeptGroup(t *testing.T) {
 	defer cancel()
 	command := shellCommand(t, `sleep 60 >/dev/null 2>&1 & echo $! > pid; echo started; wait`, &output)
 	command.KeepLeftovers = true
-	group, err := StartGroup(ctx, command)
+	reaper := &recordingReaper{}
+	group, err := StartGroup(ctx, reaper, command)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -311,6 +449,7 @@ func TestRunGroupCancellationStopsAKeptGroup(t *testing.T) {
 		t.Fatalf("outcome=%+v err=%v", outcome, err)
 	}
 	waitForExit(t, pid)
+	requireReleased(t, reaper, true)
 }
 
 func TestGroupOutcomeOutputErr(t *testing.T) {
@@ -338,7 +477,7 @@ func TestRunGroupTerminatesBeforeKilling(t *testing.T) {
 	defer cancel()
 	done := make(chan GroupOutcome, 1)
 	go func() {
-		outcome, _ := RunGroup(ctx, shellCommand(t,
+		outcome, _ := RunGroup(ctx, &recordingReaper{}, shellCommand(t,
 			`trap 'echo graceful-term; exit 0' TERM; echo graceful-started; while :; do sleep 0.05; done`, &output))
 		done <- outcome
 	}()
@@ -360,7 +499,7 @@ func TestRunGroupKillsWhatIgnoresTerminate(t *testing.T) {
 	go func() {
 		command := shellCommand(t, `trap '' TERM; echo stubborn-started; sleep 60`, &output)
 		command.TerminateGrace = grace
-		outcome, _ := RunGroup(ctx, command)
+		outcome, _ := RunGroup(ctx, &recordingReaper{}, command)
 		done <- outcome
 	}()
 	waitForOutput(t, &output, "stubborn-started")
@@ -396,8 +535,9 @@ func TestRunGroupAbandonsALeaderTheKillDoesNotEnd(t *testing.T) {
 		err     error
 	}
 	done := make(chan result, 1)
+	reaper := &recordingReaper{}
 	go func() {
-		outcome, err := RunGroup(ctx, command)
+		outcome, err := RunGroup(ctx, reaper, command)
 		done <- result{outcome, err}
 	}()
 	waitForOutput(t, &output, "immune-started")
@@ -410,9 +550,31 @@ func TestRunGroupAbandonsALeaderTheKillDoesNotEnd(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("RunGroup waited on a command it could not stop")
 	}
+	requireReleased(t, reaper, false)
 	if err := KillConfiguredGroup(leader); err != nil {
 		t.Fatalf("end the abandoned command: %v", err)
 	}
+}
+
+// A leftover the sweep's kill could not end still runs, so its group stays
+// watched for the reaper to end with this process, and Wait reports it.
+func TestRunGroupKeepsALeftoverTheKillRefusedWatched(t *testing.T) {
+	t.Parallel()
+	var output syncBuffer
+	// The leader exits once the leftover ignores SIGTERM and has said so.
+	command := shellCommand(t,
+		`sh -c 'trap "" TERM; echo $$ > pid; exec sleep 60' & while [ ! -s pid ]; do sleep 0.01; done; echo leader-done`,
+		&output)
+	command.TerminateGrace = 200 * time.Millisecond
+	command.kill = func(*exec.Cmd) error { return syscall.EPERM }
+	reaper := &recordingReaper{}
+	outcome, err := RunGroup(context.Background(), reaper, command)
+	pid := recordedPID(t, filepath.Join(command.Dir, "pid"))
+	killAtCleanup(t, pid)
+	if !errors.Is(err, ErrGroupSurvived) || !outcome.Leftovers {
+		t.Fatalf("outcome=%+v err=%v, want ErrGroupSurvived", outcome, err)
+	}
+	requireReleased(t, reaper, false)
 }
 
 type refusingWriter struct{ err error }
@@ -435,7 +597,7 @@ func TestRunGroupKeepsDrainingWhenTheSinkRefusesAWrite(t *testing.T) {
 	}
 	done := make(chan result, 1)
 	go func() {
-		outcome, err := RunGroup(context.Background(), command)
+		outcome, err := RunGroup(context.Background(), &recordingReaper{}, command)
 		done <- result{outcome, err}
 	}()
 	select {
@@ -445,5 +607,115 @@ func TestRunGroupKeepsDrainingWhenTheSinkRefusesAWrite(t *testing.T) {
 		}
 	case <-time.After(15 * time.Second):
 		t.Fatal("the command stalled writing to a pipe nobody read")
+	}
+}
+
+// startStoppable starts script as a configured group whose leader is reaped
+// as soon as it exits, as exec.Cmd.Wait does while StopConfiguredGroup runs
+// from Cancel.
+func startStoppable(t *testing.T, script string) (*exec.Cmd, string) {
+	t.Helper()
+	dir := t.TempDir()
+	cmd := exec.Command("/bin/sh", "-c", script)
+	cmd.Dir = dir
+	ConfigureGroup(cmd)
+	cmd.Cancel = nil
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	waited := make(chan struct{})
+	go func() {
+		_ = cmd.Wait()
+		close(waited)
+	}()
+	t.Cleanup(func() {
+		_ = KillConfiguredGroup(cmd)
+		<-waited
+	})
+	return cmd, dir
+}
+
+// waitForFile waits for a script to write path.
+func waitForFile(t *testing.T, path string) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(path); err == nil {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("%s was not written", path)
+}
+
+// A leader that exits on SIGTERM leaves a child that ignores it; the child is
+// killed once the grace passes, and the stop returns only when the group is
+// gone.
+func TestStopConfiguredGroupKillsWhatOutlivesTheLeader(t *testing.T) {
+	t.Parallel()
+	const grace = 300 * time.Millisecond
+	cmd, dir := startStoppable(t, `sh -c 'trap "" TERM; echo $$ > pid; exec sleep 60' & wait`)
+	child := recordedPID(t, filepath.Join(dir, "pid"))
+	killAtCleanup(t, child)
+	started := time.Now()
+	if err := StopConfiguredGroup(cmd, grace); err != nil {
+		t.Fatalf("StopConfiguredGroup = %v", err)
+	}
+	if elapsed := time.Since(started); elapsed < grace {
+		t.Fatalf("stopped after %s, before the grace", elapsed)
+	}
+	if ConfiguredGroupAlive(cmd) || syscall.Kill(child, 0) == nil {
+		t.Fatal("a member of the group outlived the stop")
+	}
+}
+
+// A group that exits on SIGTERM ends the stop without waiting out the grace,
+// after its cleanup ran.
+func TestStopConfiguredGroupLetsACooperativeGroupFinish(t *testing.T) {
+	t.Parallel()
+	const grace = 10 * time.Second
+	cmd, dir := startStoppable(t, `trap 'sleep 0.2; echo done > cleaned; exit 0' TERM; echo started > ready; while :; do sleep 0.05; done`)
+	waitForFile(t, filepath.Join(dir, "ready"))
+	started := time.Now()
+	if err := StopConfiguredGroup(cmd, grace); err != nil {
+		t.Fatalf("StopConfiguredGroup = %v", err)
+	}
+	if elapsed := time.Since(started); elapsed >= grace {
+		t.Fatalf("waited out the grace: %s", elapsed)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "cleaned")); err != nil {
+		t.Fatalf("the SIGTERM cleanup did not finish: %v", err)
+	}
+	if ConfiguredGroupAlive(cmd) {
+		t.Fatal("the group outlived the stop")
+	}
+}
+
+// A group already gone is reported as such.
+func TestStopConfiguredGroupReportsAGoneGroup(t *testing.T) {
+	t.Parallel()
+	cmd := exec.Command("/bin/sh", "-c", "exit 0")
+	ConfigureGroup(cmd)
+	cmd.Cancel = nil
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if err := StopConfiguredGroup(cmd, time.Second); !errors.Is(err, os.ErrProcessDone) {
+		t.Fatalf("StopConfiguredGroup = %v, want os.ErrProcessDone", err)
+	}
+}
+
+// A kill that does not end the group, or that is refused, is returned
+// rather than read as a stopped group.
+func TestStopConfiguredGroupReportsAGroupTheKillDidNotEnd(t *testing.T) {
+	t.Parallel()
+	cmd, dir := startStoppable(t, `trap "" TERM; echo started > ready; while :; do sleep 0.05; done`)
+	waitForFile(t, filepath.Join(dir, "ready"))
+	if err := stopGroup(cmd, 100*time.Millisecond, func(*exec.Cmd) error { return nil }); !errors.Is(err, errGroupOutlivedKill) {
+		t.Fatalf("stop with a kill that had no effect = %v, want errGroupOutlivedKill", err)
+	}
+	refused := errors.New("refused")
+	if err := stopGroup(cmd, 100*time.Millisecond, func(*exec.Cmd) error { return refused }); !errors.Is(err, refused) {
+		t.Fatalf("stop with a refused kill = %v, want the kill's error", err)
 	}
 }

@@ -420,6 +420,7 @@ export const SetWSLDistroPreference = dispatch('SetWSLDistroPreference');
 // Launcher GPU vsync preference (Settings → Performance), same wsl.json.
 export const GetWebviewGPUVsyncDisabled = dispatch('GetWebviewGPUVsyncDisabled');
 export const SetWebviewGPUVsyncDisabled = dispatch('SetWebviewGPUVsyncDisabled');
+export const GetObservabilityTracing = dispatch('GetObservabilityTracing');
 // WSLDistro mirrors the generated Distro class from
 // internal/wsllauncher/models — tests pass plain object literals to
 // the mocks, but the class shape is needed so `import type { WSLDistro }`
@@ -571,8 +572,10 @@ export const GitListTags = dispatch('GitListTags');
 export const GitRefreshTags = dispatch('GitRefreshTags');
 export const GitListWorktrees = dispatch('GitListWorktrees');
 export const GitCommit = dispatch('GitCommit');
+export const GetGitActionOutcome = dispatch('GetGitActionOutcome');
 export const GitPush = dispatch('GitPush');
 export const GitPull = dispatch('GitPull');
+export const GitFetchOrigin = dispatch('GitFetchOrigin');
 export const GitCheckout = dispatch('GitCheckout');
 export const GitCreateBranchFrom = dispatch('GitCreateBranchFrom');
 export const GitCreatePR = dispatch('GitCreatePR');
@@ -638,6 +641,7 @@ export const OpenAIKeyFile = dispatch('OpenAIKeyFile');
 export const EditOpenAIKeyFile = dispatch('EditOpenAIKeyFile');
 export const ReadAloudSource = dispatch('ReadAloudSource');
 export const MintReadAloudTicket = dispatch('MintReadAloudTicket');
+export const ReleaseReadAloudTicket = dispatch('ReleaseReadAloudTicket');
 export const SearchWorkspaceFiles = dispatch('SearchWorkspaceFiles');
 export const ListChatBarFavorites = dispatch('ListChatBarFavorites');
 export const SetChatBarFavorite = dispatch('SetChatBarFavorite');
@@ -654,7 +658,6 @@ export const ListCommitFiles = dispatch('ListCommitFiles');
 export const OpenBranchBaseDiff = dispatch('OpenBranchBaseDiff');
 export const OpenCommitDiff = dispatch('OpenCommitDiff');
 export const ReadReviewDiff = dispatch('ReadReviewDiff');
-export const ReadReviewDiffPacked = dispatch('ReadReviewDiffPacked');
 export const ReleaseReviewDiff = dispatch('ReleaseReviewDiff');
 export const ListBranchCommits = dispatch('ListBranchCommits');
 export const ListRecentCommits = dispatch('ListRecentCommits');

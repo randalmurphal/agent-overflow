@@ -31,6 +31,9 @@ states its own coverage; do not maintain a duplicate spec catalog here.
   settings; a caller that needs another variable passes it through `env`.
   `tests/product-launch.spec.ts` fails when another file names a product
   binary and can start a process, or writes a script that names one.
+- `src/harness-launch-step.ts` bounds each step of starting a suite-owned
+  process. A new launch path runs every step through `launchStep`; a bound
+  that grows keeps `launchBudgetMs()` under the worker fixture timeout.
 - `tests/fixtures.ts` owns the worker backend and per-test reset. Before reset,
   wait until the previous context's page registration is gone; a leaked page is
   a test failure.
@@ -38,7 +41,10 @@ states its own coverage; do not maintain a duplicate spec catalog here.
   Execution hosts remain separate harness processes, and cold-start cases reuse
   only the intended disposable device profile.
 - Shared provider frames, pairing flows, and result narrowing belong in the
-  relevant `*-helpers.ts` or `probe-wire.ts`, not inline copies.
+  relevant `*-helpers.ts` or `probe-wire.ts`, not inline copies. A wait for
+  paired computers to show each other goes through `connectedAfterConfirm`,
+  which attaches both sides' stderr and quotes their slow-step lines
+  (`internal/logging/slow_step.go`) when it times out.
 - `forge-helpers.ts` seeds the fake `gh`/`glab` and forge API
   (`HarnessForgeSeed`), arms a route's refusal (`HarnessForgeRefuse`,
   optionally held until `HarnessForgeRelease`),

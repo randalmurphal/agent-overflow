@@ -63,6 +63,11 @@ func (a *App) resolveUserMessagePlacement(thread store.Thread, intent userMessag
 			return userMessagePlacement{}, err
 		}
 	}
+	if composer && !found {
+		// An earlier message still queued goes first: a direct send would
+		// reach the provider ahead of it.
+		found = a.hasUndispatchedFlushItems(thread.ID)
+	}
 	if composer && found {
 		if intent == messageLegacyComposer {
 			return userMessagePlacement{}, fmt.Errorf("This thread is already working. Reopen the app to update it, or wait for the turn to finish before sending again.")
@@ -95,6 +100,17 @@ func (a *App) resolveUserMessagePlacement(thread store.Thread, intent userMessag
 		}
 	}
 	return placement, nil
+}
+
+// hasUndispatchedFlushItems reports whether a queued message of the thread
+// has not been written to its provider yet: in triage's queue or claim, or in
+// the dispatch worker. Triage is read first, as pendingFlushWorkCount does, so
+// a batch moving to the worker between the reads is counted.
+func (a *App) hasUndispatchedFlushItems(threadID string) bool {
+	if a.triage != nil && a.triage.QueuedFlushItemCount(threadID) > 0 {
+		return true
+	}
+	return a.flushDispatchItemCount(threadID) > 0
 }
 
 func (a *App) userMessageAwaitingStart(threadID string) (bool, error) {

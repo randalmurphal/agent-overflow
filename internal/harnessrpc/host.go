@@ -59,8 +59,10 @@ type Host interface {
 	// another assistant holds is refused before the thread moves.
 	MakeAssistant(threadID string) (store.StandingAgent, error)
 	// BroadcastThreadRow re-reads one thread and emits it to connected
-	// clients as a full row. The seeder writes history behind the store,
-	// which changes derived row columns (IsDraft) no store write announces.
+	// clients, as `listed` when the row now belongs in the sidebar. The
+	// seeder writes history behind the store, which changes derived row
+	// columns (IsDraft) and lists the thread, and no store write announces
+	// either.
 	BroadcastThreadRow(threadID string)
 	StopSession(threadID string) error
 	// AwaitSessionEndWork waits for the work stopped sessions set off (a
@@ -80,6 +82,18 @@ type Host interface {
 	// ResetForgeCaches forgets what the forge adapters remember of each
 	// host and project, which the next fixture can contradict.
 	ResetForgeCaches()
+	// ResetProviderUsage forgets the cached usage readings, the turn
+	// activity that paces their polling and the server holds.
+	ResetProviderUsage()
+	// CancelProviderLogins ends every provider sign-in and leaves each
+	// provider idle.
+	CancelProviderLogins()
+	// RunBackgroundFetchPass runs one pass of the unattended fetch cadence,
+	// which an isolated boot never starts.
+	RunBackgroundFetchPass(context.Context)
+	// ForgetGitFetches forgets each repository's fetch freshness and
+	// failure backoff, which are keyed by a path the next fixture can reuse.
+	ForgetGitFetches()
 	// PauseMergedPRCleanup stops the merged pull request cleanup, joins it
 	// and drops its in-memory state; resume starts it again from nothing.
 	PauseMergedPRCleanup() (resume func())

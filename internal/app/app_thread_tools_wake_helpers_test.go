@@ -3,6 +3,7 @@ package app
 import (
 	"testing"
 
+	"agent-overflow/internal/agentmeta"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadtools"
 	"agent-overflow/internal/usermessage"
@@ -30,7 +31,7 @@ func wakeBodyOf(a *App, row store.ThreadRequest, late bool) (string, error) {
 
 // soloWakeOrigin is who a message carrying only this request's answer is
 // attributed to. It does not need the request settled.
-func soloWakeOrigin(t testing.TB, a *App, row store.ThreadRequest) *usermessage.OriginThread {
+func soloWakeOrigin(t testing.TB, a *App, row store.ThreadRequest) *agentmeta.OriginThread {
 	wake := a.threadWakeFor(threadWakeMessage{kind: threadtools.WakeReply, rows: []store.ThreadRequest{row}})
 	return builtMessage(t)(usermessage.Answer(wake)).Attribution().Thread
 }

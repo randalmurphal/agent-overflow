@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"agent-overflow/internal/codexskills"
+	"agent-overflow/internal/procutil"
+	"agent-overflow/internal/provider"
 )
 
 // skillsListMethod enumerates the skills visible from a set of working
@@ -216,6 +218,8 @@ func (s *Session) ListSkills(ctx context.Context, cwds []string, forceReload boo
 // no provider state is mutated.
 type SkillsFetcher struct {
 	Binary string
+	// Reaper ends the process if the backend dies first. Required.
+	Reaper procutil.Reaper
 	// WorkDir is the subprocess's working directory. It does not decide
 	// which directories are scanned (the request names those explicitly),
 	// but Codex layers project configuration by walking up from its cwd,
@@ -252,7 +256,7 @@ func (f *SkillsFetcher) Fetch(ctx context.Context, cwds []string, forceReload bo
 	// a throwaway process into the experimental surface would only change
 	// what the server is willing to emit. No notifications are awaited
 	// either — the invalidation signal belongs to live sessions.
-	client, err := startOneshotClient(ctx, oneshotSpec{
+	client, err := startOneshotClient(ctx, provider.Bounded(f.Reaper), oneshotSpec{
 		Binary:     f.Binary,
 		WorkDir:    workDir,
 		Env:        f.Env,

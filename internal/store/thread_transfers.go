@@ -185,6 +185,17 @@ func (s *Store) GetThreadTransferStatus(id string) (ThreadTransfer, error) {
 
 const transferStatusColumns = `id,thread_id,target_thread_id,peer_backend_id,kind,direction,phase,manifest_hash,archive_size,'',x'',CASE WHEN peer_state IS NULL THEN NULL ELSE x'7b7d' END,cancel_requested,ownership_epoch,error,created_at,updated_at,''`
 
+// nextTransferStamp is the updated_at of a write that changes a transfer's
+// published status (phase, error, cancellation, offer, archive identity),
+// given the stamp the row holds. A status is published after its write
+// commits and outside any lock, so two can arrive out of order; a reader
+// orders them by updated_at, which therefore rises with every such write even
+// inside one millisecond or across a clock step back. A write with no row in
+// hand states the same rule in SQL: MAX(now, updated_at + 1).
+func nextTransferStamp(previous int64) int64 {
+	return max(time.Now().UnixMilli(), previous+1)
+}
+
 // ListRecentThreadTransfers contains no private state and bounds both row count
 // and query payload. Pending operations sort first so failures remain visible.
 func (s *Store) ListRecentThreadTransfers() ([]ThreadTransfer, error) {
@@ -234,7 +245,7 @@ func (s *Store) BindThreadTransferPeer(id string, peer json.RawMessage) (ThreadT
 	}
 	row.PeerState = append(json.RawMessage(nil), peer...)
 	row.NeedsDestination = false
-	row.UpdatedAt = time.Now().UnixMilli()
+	row.UpdatedAt = nextTransferStamp(row.UpdatedAt)
 	if _, err := tx.Exec(`UPDATE thread_transfers SET peer_state = ?,updated_at = ? WHERE id = ?`, []byte(peer), row.UpdatedAt, id); err != nil {
 		return ThreadTransfer{}, err
 	}
@@ -299,7 +310,7 @@ func (s *Store) AdvanceThreadTransfer(id, phase, manifestHash string) (ThreadTra
 			return ThreadTransfer{}, err
 		}
 	}
-	row.Phase, row.ManifestHash, row.Error, row.UpdatedAt = phase, manifestHash, "", time.Now().UnixMilli()
+	row.Phase, row.ManifestHash, row.Error, row.UpdatedAt = phase, manifestHash, "", nextTransferStamp(row.UpdatedAt)
 	row.NeedsDestination = phase == "preparing" && row.Direction == "outgoing" && len(row.PeerState) == 0
 	_, err = tx.Exec(`UPDATE thread_transfers SET phase = ?, manifest_hash = ?, error = '', updated_at = ? WHERE id = ?`, phase, manifestHash, row.UpdatedAt, id)
 	if err != nil {

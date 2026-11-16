@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/agentmeta"
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/flushqueue"
 	gitops "agent-overflow/internal/git"
@@ -238,7 +239,7 @@ func TestThreadSpawnRunsTheWorkAndSettlesOnItsOwnTurn(t *testing.T) {
 	if err := json.Unmarshal([]byte(row.Meta), &meta); err != nil {
 		t.Fatalf("decode user meta: %v", err)
 	}
-	if meta.Origin != usermessage.OriginAgentThread || meta.OriginThread == nil ||
+	if meta.Origin != agentmeta.OriginAgentThread || meta.OriginThread == nil ||
 		meta.OriginThread.ThreadID != f.caller.ID || meta.OriginThread.Token != ack.Token ||
 		meta.OriginThread.Kind != store.ThreadRequestSpawn {
 		t.Fatalf("origin attribution = %+v", meta)
@@ -283,7 +284,7 @@ func TestThreadRequestSettlesOnlyOnTheTurnThatConsumedIt(t *testing.T) {
 		t.Fatalf("request did not settle: %+v", f.request(t, ack.Token))
 	}
 	// A second, human turn in the same thread.
-	if err := f.app.SendMessage(ack.ThreadID, "and now the other platform", nil); err != nil {
+	if err := f.app.SendMessage(context.Background(), ack.ThreadID, "and now the other platform", nil); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 	f.bus.nextProviderEventOfKind(t, provider.EventTurnComplete, 10*time.Second)
@@ -634,7 +635,7 @@ func TestAnAsksCopyRefusesAPersonsMessageAndKeep(t *testing.T) {
 			t.Fatalf("%s on the ask's copy = %v; want it refused as %s", what, err, askCopyReadOnlyCode)
 		}
 	}
-	refused("SendMessage", f.app.SendMessage(copyRow.ID, "and also look at the tests", nil))
+	refused("SendMessage", f.app.SendMessage(context.Background(), copyRow.ID, "and also look at the tests", nil))
 	_, err = f.app.SendMessageWithOptions(t.Context(), copyRow.ID, "and also the docs", SendMessageOptions{SendID: "person-send"})
 	refused("SendMessageWithOptions", err)
 	_, err = f.app.SteerMessageWithOptions(t.Context(), copyRow.ID, "stop reading", SendMessageOptions{SendID: "person-steer"})
@@ -1073,8 +1074,8 @@ func TestThreadRequestWithNoWaitArrivesAsAMessage(t *testing.T) {
 	if err := json.Unmarshal(wake.Payload, &payload); err != nil {
 		t.Fatalf("decode wake payload: %v", err)
 	}
-	if payload.Origin != string(usermessage.OriginAgentThread) || payload.OriginThread == nil ||
-		payload.OriginThread.Kind != usermessage.OriginKindWake {
+	if payload.Origin != string(agentmeta.OriginAgentThread) || payload.OriginThread == nil ||
+		payload.OriginThread.Kind != agentmeta.OriginKindWake {
 		t.Errorf("wake payload = %+v, want the agent-thread attribution of a wake", payload)
 	} else if facts := payload.OriginThread.Facts; facts == nil || facts.Outcome != threadtools.WakeFinished ||
 		!slices.Equal(facts.Tokens, []string{ack.Token}) || facts.Check(wake.Message) != nil || !strings.Contains(facts.BodyOf(wake.Message), "reversible") ||
@@ -2110,7 +2111,7 @@ func TestThreadSendStartsAnIdleThread(t *testing.T) {
 	if meta.SendID != threadRequestSendID(ack.Token) {
 		t.Errorf("send id = %q, want the request's own", meta.SendID)
 	}
-	if meta.Origin != usermessage.OriginAgentThread || meta.OriginThread.ThreadID != f.caller.ID ||
+	if meta.Origin != agentmeta.OriginAgentThread || meta.OriginThread.ThreadID != f.caller.ID ||
 		meta.OriginThread.Kind != store.ThreadRequestSend {
 		t.Errorf("attribution = %+v, want the caller thread's send", meta)
 	}
@@ -2135,9 +2136,11 @@ func (f *requestFixture) restart(t *testing.T) *requestFixture {
 		app.threadRequestsWG.Wait()
 	})
 	app.installThreadRequestObserver()
-	after := &requestFixture{app: app, bus: bus, caller: f.caller}
+	after := &requestFixture{app: app, bus: bus, caller: f.caller, dbPath: f.dbPath}
+	// A restarted App has no dispatcher, so its start alone is held.
 	if f.callerHeld {
-		after.holdCallerSession()
+		after.callerHeld = true
+		after.holdCallerStart()
 	}
 	return after
 }
@@ -2155,12 +2158,26 @@ func (f *requestFixture) holdCallerTurn(t *testing.T) {
 	f.holdCallerSession()
 }
 
-// holdCallerSession makes a start of the caller's session spawn nothing.
-// The open turn row alone does not hold a wake: a wake to a caller with no
-// session starts one, and that start dispatches the queue to the provider
-// and deletes the durable row. Other threads start as usual.
+// holdCallerSession keeps a wake to the caller in its durable queue. The open
+// turn row alone does not hold it: a wake to a caller with no session starts
+// one, and the dispatch then sends the queue to the provider, or returns it
+// to the composer when the start left no session. So the caller's session
+// spawns nothing and its queue is never dispatched. Other threads start and
+// dispatch as usual.
 func (f *requestFixture) holdCallerSession() {
 	f.callerHeld = true
+	f.holdCallerStart()
+	app, caller := f.app, f.caller.ID
+	app.triage.SetFlushDispatcher(func(threadID string, items []triage.QueuedFlushItem) {
+		if threadID != caller {
+			app.enqueueFlushDispatch(threadID, items)
+		}
+	})
+}
+
+// holdCallerStart makes a start of the caller's session spawn nothing. Other
+// threads start as usual.
+func (f *requestFixture) holdCallerStart() {
 	app, caller := f.app, f.caller.ID
 	app.startSessionFn = func(threadID string) error {
 		if threadID == caller {
@@ -2603,7 +2620,7 @@ func TestAMessageQueuedDuringADropLandsAfterIt(t *testing.T) {
 					t.Fatalf("StopSession: %v", err)
 				}
 			} else {
-				f.app.clearFlushDispatchForRollback(f.caller.ID)
+				f.app.dropFlushQueue(f.caller.ID)
 			}
 			unlock()
 			if !paused {
@@ -2678,7 +2695,7 @@ func TestARevertReturnsOnlyTheAnswersAndCompletionsItsDropTook(t *testing.T) {
 				waitUntil(t, 10*time.Second, func() bool { return len(f.app.triage.QueuedFlushItems(f.caller.ID)) == 0 })
 			}
 			// The rollback runs under the thread's action lock.
-			f.app.clearFlushDispatchForRollback(f.caller.ID)
+			f.app.dropFlushQueue(f.caller.ID)
 			durable, memory := queuedSendIDs(t, f.app, f.caller.ID)
 			row := f.request(t, token)
 			saved, err := f.app.store.GetRemoteWatch(w.ComputerID, w.RequestID)
@@ -2846,6 +2863,7 @@ func TestBootSweepSettlesWhatTheRestartInterrupted(t *testing.T) {
 
 	after := f.restart(t)
 	after.app.sweepThreadRequestsAtBoot()
+	after.app.finishThreadRequestSweepAtBoot()
 
 	row := after.awaitRequestState(t, ack.Token, store.ThreadRequestInterrupted)
 	if row.State != store.ThreadRequestInterrupted {
@@ -3387,7 +3405,7 @@ func TestThreadStatusSaysTheQueuedMessageIsStillComing(t *testing.T) {
 		// calls thread_status is. Its queue hands the wake straight to the
 		// session, where it waits for the turn boundary: no durable queue
 		// row is left, and the message has still not arrived.
-		if err := f.app.SendMessage(f.caller.ID, "look into the backfill", nil); err != nil {
+		if err := f.app.SendMessage(context.Background(), f.caller.ID, "look into the backfill", nil); err != nil {
 			t.Fatalf("SendMessage: %v", err)
 		}
 		// Mid-turn means the turn is open in the store, not only that the

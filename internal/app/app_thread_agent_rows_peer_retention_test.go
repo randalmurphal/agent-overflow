@@ -8,6 +8,7 @@ package app
 // expiring as every request's do.
 
 import (
+	"context"
 	"database/sql"
 	"testing"
 	"time"
@@ -183,7 +184,7 @@ func TestARemoteWorkerAtRestPastTheFloorIsFoundWhenContinued(t *testing.T) {
 	// Its spawner's pane stays closed: only the source's own sweep asks.
 	pair.source.threadPollOverride = 100 * time.Millisecond
 	pair.source.startThreadRequestSweeps()
-	if err := pair.dest.SendMessage(child, "now also update the changelog", nil); err != nil {
+	if err := pair.dest.SendMessage(context.Background(), child, "now also update the changelog", nil); err != nil {
 		t.Fatalf("SendMessage there: %v", err)
 	}
 	waitUntil(t, 20*time.Second, func() bool { return readRemoteSpawnRow(t, pair, spawn.Token).nested })

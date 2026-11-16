@@ -7,6 +7,7 @@ package app
 // workers").
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -90,7 +91,7 @@ func TestTheFirstRemoteWorkerToRestIsStillAskedAbout(t *testing.T) {
 		t.Fatalf("the sweep sleeps %v with a remote spawn at rest; want at most the rest pass's %v", delay, every)
 	}
 
-	if err := pair.dest.SendMessage(child, "now also update the changelog", nil); err != nil {
+	if err := pair.dest.SendMessage(context.Background(), child, "now also update the changelog", nil); err != nil {
 		t.Fatalf("SendMessage there: %v", err)
 	}
 	// Nothing here reads the spawner's listing, which would ask that

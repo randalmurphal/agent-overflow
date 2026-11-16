@@ -44,6 +44,12 @@
 // the client is the only consumer of the column and two hand-kept copies
 // agree only until the first edit.
 //
+// An optional `//ao:budget <duration>` declares how long a method's server
+// side may run when that is longer than defaultBudget: a commit's hooks, a
+// text generation, a download. Both tables carry it, so every client's wait
+// is the server's declared budget plus answerMargin, derived rather than
+// restated (docs/architecture/transport.md#method-budgets).
+//
 // Method-name -> FNV-1a-32 ID map matches Wails' internal/hash.Fnv
 // (verified at v3.0.0-alpha.76 against the generated frontend bindings:
 // fnvHash("main.App.ArchiveProject") == 1352159878).
@@ -68,6 +74,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const (
@@ -310,7 +317,20 @@ type MethodEntry struct {
 	Remote bool
 	// CallerBound comes from //ao:callerbound.
 	CallerBound bool
+	// Budget comes from //ao:budget; zero means defaultBudget.
+	Budget time.Duration
 }
+
+// defaultBudget is how long a method that declares no //ao:budget may run
+// on the server: the bound of one git, gh or glab subprocess or one forge
+// request. answerMargin is how much longer than its method's budget a
+// client waits, so the server's answer, its own timeout included, reaches
+// the caller first. maxBudget refuses a typo of a unit.
+const (
+	defaultBudget = 45 * time.Second
+	answerMargin  = 15 * time.Second
+	maxBudget     = 24 * time.Hour
+)
 
 func main() {
 	out := flag.String("out", defaultOut, "output file path (relative to repo root)")
@@ -554,6 +574,7 @@ func scanReceivers(root string, specs []receiverSpec, skip, scopes, routes map[s
 					StepUp:      ann.stepUp,
 					Remote:      ann.remote,
 					CallerBound: ann.callerBound,
+					Budget:      ann.budget,
 				})
 			}
 		}
@@ -671,7 +692,8 @@ func isContextType(expr ast.Expr) bool {
 
 // methodAnnotations reads the //ao: directives out of one method's doc
 // comment: the mandatory `//ao:scope <name>`, the route override
-// `//ao:route <name>`, and the optional `//ao:stepup` and `//ao:remote`.
+// `//ao:route <name>`, the optional `//ao:stepup`, `//ao:remote` and
+// `//ao:callerbound`, and the optional `//ao:budget <duration>`.
 //
 // Comment directives rather than struct tags or a side table, for the
 // same reason //wails:ignore is one: the classification travels with the
@@ -717,15 +739,42 @@ func methodAnnotations(doc *ast.CommentGroup) (methodAnnotation, error) {
 					routeDirective, ann.route, value)
 			}
 			ann.route = value
+		case strings.HasPrefix(c.Text, budgetDirective):
+			value := strings.TrimSpace(strings.TrimPrefix(c.Text, budgetDirective))
+			if ann.budget != 0 {
+				return methodAnnotation{}, fmt.Errorf("two %s directives; a method has one budget", budgetDirective)
+			}
+			budget, err := parseBudget(value)
+			if err != nil {
+				return methodAnnotation{}, err
+			}
+			ann.budget = budget
 		}
 	}
 	return ann, nil
+}
+
+// parseBudget reads one //ao:budget value: a Go duration longer than
+// defaultBudget, which every method already has, and at most maxBudget.
+func parseBudget(value string) (time.Duration, error) {
+	budget, err := time.ParseDuration(value)
+	if err != nil {
+		return 0, fmt.Errorf("%s %q is not a duration (\"10m\", \"90s\"): %w", budgetDirective, value, err)
+	}
+	if budget <= defaultBudget {
+		return 0, fmt.Errorf("%s %s is not above the %s every method has; remove the directive", budgetDirective, value, defaultBudget)
+	}
+	if budget > maxBudget {
+		return 0, fmt.Errorf("%s %s is above the %s ceiling", budgetDirective, value, maxBudget)
+	}
+	return budget, nil
 }
 
 // methodAnnotation is what one method's //ao: directives declare.
 type methodAnnotation struct {
 	scope, route                string
 	stepUp, remote, callerBound bool
+	budget                      time.Duration
 }
 
 // The directive spellings, named once so the parser and every error
@@ -739,6 +788,8 @@ const (
 	// callerBoundDirective marks a method whose context ends when its
 	// caller's connection does (internal/transport/callcontext.go).
 	callerBoundDirective = "//ao:callerbound"
+	// budgetDirective declares a method's server-side run bound.
+	budgetDirective = "//ao:budget"
 )
 
 // isPointerReceiver returns true when expr is "*<typeName>" — the
@@ -781,6 +832,19 @@ func fnvHash(s string) uint32 {
 	return h.Sum32()
 }
 
+// durationLiteral spells d as Go source in its largest whole unit.
+func durationLiteral(d time.Duration) string {
+	for _, unit := range []struct {
+		size time.Duration
+		name string
+	}{{time.Hour, "time.Hour"}, {time.Minute, "time.Minute"}, {time.Second, "time.Second"}, {time.Millisecond, "time.Millisecond"}} {
+		if d%unit.size == 0 {
+			return fmt.Sprintf("%d * %s", d/unit.size, unit.name)
+		}
+	}
+	return fmt.Sprintf("%d", d)
+}
+
 // renderFile emits the generated Go source.
 func renderFile(entries []MethodEntry) ([]byte, error) {
 	var buf bytes.Buffer
@@ -797,7 +861,19 @@ func renderFile(entries []MethodEntry) ([]byte, error) {
 
 package transport
 
-// MethodMeta is one row of the classification table: a method's wire
+import "time"
+
+`)
+	fmt.Fprintf(&buf, `// DefaultMethodBudget is how long the server side of a method that declares
+// no //ao:budget may run. MethodAnswerMargin is how much longer than its
+// method's budget a client waits for the answer (ClientWait).
+const (
+	DefaultMethodBudget = %s
+	MethodAnswerMargin  = %s
+)
+
+`, durationLiteral(defaultBudget), durationLiteral(answerMargin))
+	buf.WriteString(`// MethodMeta is one row of the classification table: a method's wire
 // identity and the capability its source annotation declares.
 //
 // The ID is Wails' internal/hash.Fnv("main.App.<Name>"), so the
@@ -822,6 +898,10 @@ package transport
 // CallerBound comes from //ao:callerbound and marks a method whose context
 // ends when its caller's connection does. Every other method's context
 // ends only at server shutdown (callcontext.go).
+//
+// Budget comes from //ao:budget: how long the method's server side may run
+// when that is longer than DefaultMethodBudget. Zero means the default;
+// read it through MethodBudget.
 type MethodMeta struct {
 	Name        string
 	ID          uint32
@@ -830,6 +910,7 @@ type MethodMeta struct {
 	StepUp      bool
 	Remote      bool
 	CallerBound bool
+	Budget      time.Duration
 }
 
 // GeneratedMethods is the static, sorted-by-name list of every method
@@ -849,6 +930,9 @@ var GeneratedMethods = []MethodMeta{
 		if e.CallerBound {
 			buf.WriteString(", CallerBound: true")
 		}
+		if e.Budget != 0 {
+			fmt.Fprintf(&buf, ", Budget: %s", durationLiteral(e.Budget))
+		}
 		fmt.Fprintf(&buf, "}, // %s\n", e.FQN)
 	}
 	buf.WriteString(`}
@@ -867,7 +951,7 @@ func NewMethodAllowList() map[string]bool {
 	return buf.Bytes(), nil
 }
 
-// renderTS emits the TypeScript mirror of the Route column.
+// renderTS emits the TypeScript mirror of the Route and Budget columns.
 //
 // Keyed by method ID rather than by name, because that is what the
 // client has when it routes: the generated bindings call $Call.ByID(id,
@@ -883,11 +967,13 @@ func renderTS(entries []MethodEntry) []byte {
 // Run "go run ./internal/transport/methodgen" to regenerate.
 //
 // Which attached backend each bound method's call belongs to
-// (docs/specs/remote-access.md §10, "Routing an RPC"). The Go half is
-// internal/transport/methods_gen.go's Route column, generated from the
-// same scan in the same run; the thread, project and workspace routes are
-// inferred from the method's first parameter, the rest are authored
-// //ao:route directives.
+// (docs/specs/remote-access.md §10, "Routing an RPC"), and how long its
+// server side may run (docs/architecture/transport.md#method-budgets). The
+// Go half is internal/transport/methods_gen.go's Route and Budget columns,
+// generated from the same scan in the same run; the thread, project and
+// workspace routes are inferred from the method's first parameter, the rest
+// are authored //ao:route directives, and budgets are //ao:budget
+// directives.
 
 export type MethodRoute = 'thread' | 'project' | 'workspace' | 'home' | 'selected' | 'all';
 
@@ -895,6 +981,21 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 `)
 	for _, e := range entries {
 		fmt.Fprintf(&buf, "\t%d: '%s', // %s\n", e.ID, e.Route, e.Name)
+	}
+	fmt.Fprintf(&buf, `};
+
+/** How long a method that declares no budget may run on the server. */
+export const DEFAULT_METHOD_BUDGET_MS = %d;
+/** How much longer than its method's budget a client waits for the answer. */
+export const METHOD_ANSWER_MARGIN_MS = %d;
+
+/** The methods whose server side may run longer than the default, by id. */
+export const METHOD_BUDGETS_MS: Readonly<Record<number, number>> = {
+`, defaultBudget.Milliseconds(), answerMargin.Milliseconds())
+	for _, e := range entries {
+		if e.Budget != 0 {
+			fmt.Fprintf(&buf, "\t%d: %d, // %s\n", e.ID, e.Budget.Milliseconds(), e.Name)
+		}
 	}
 	buf.WriteString("};\n")
 	return buf.Bytes()

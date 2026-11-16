@@ -1189,7 +1189,7 @@ func newTestAppAtStorePath(t *testing.T, dbPath string) *App {
 	// store closes.
 	t.Cleanup(app.waitAgentNoticeWork)
 	t.Cleanup(app.appCancel)
-	joinThreadRequestWorkAtCleanup(t, app)
+	joinBackgroundWorkAtCleanup(t, app)
 	ensureDefaultTestProject(t, app)
 	return app
 }
@@ -1207,12 +1207,14 @@ func newTestProviderCredentials(t *testing.T, userHome string) *provideraccounts
 }
 
 // resetProviderBinarySettings restores the bare-name binary defaults that
-// isolateE2EProviderSpawns poisons. For tests that assert PATH-resolution and
-// provider-fallback behavior through an injected lookPathFn — the fake makes
-// a real spawn impossible, and the assertions are about the names "claude"
-// and "codex", not about a poison path.
+// isolateE2EProviderSpawns poisons, in the settings and in what a default
+// setting runs. For tests that assert PATH-resolution and provider-fallback
+// behavior through an injected lookPathFn — the fake makes a real spawn
+// impossible, and the assertions are about the names "claude" and "codex",
+// not about a poison path.
 func resetProviderBinarySettings(t *testing.T, app *App) {
 	t.Helper()
+	app.defaultProviderBinaryOverride = ""
 	if _, err := app.settings.Update(map[string]any{
 		"claudeBinaryPath": "claude",
 		"codexBinaryPath":  "codex",

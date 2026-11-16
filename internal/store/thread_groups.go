@@ -255,31 +255,42 @@ func (s *Store) DeleteThreadGroup(id string) ([]Thread, error) {
 //     its pin, so a bulk selection naming members already in the
 //     destination, or never-grouped rows in an ungroup, leaves their pins
 //     alone.
-func (s *Store) SetThreadGroup(threadIDs []string, groupID string) ([]Thread, error) {
-	tx, err := s.db.Begin()
+//
+// Each row comes back with how the move took it across the sidebar
+// listing (ThreadMove): an owned worker moved into a group joins it.
+func (s *Store) SetThreadGroup(threadIDs []string, groupID string) ([]ThreadMove, error) {
+	tx, err := s.beginListingWrite()
 	if err != nil {
 		return nil, fmt.Errorf("store: begin thread group move: %w", err)
 	}
 	defer tx.Rollback()
 
-	moved, err := setThreadGroupTx(tx, threadIDs, groupID)
+	ids := uniqueNonEmptyStrings(threadIDs)
+	before, err := threadsListedTx(tx, ids)
 	if err != nil {
 		return nil, err
+	}
+	if err := setThreadGroupTx(tx, ids, groupID); err != nil {
+		return nil, err
+	}
+	moves := []ThreadMove{}
+	if len(ids) > 0 {
+		if moves, err = threadMovesTx(tx, ids, before); err != nil {
+			return nil, fmt.Errorf("store: read back moved threads: %w", err)
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("store: commit thread group move: %w", err)
 	}
-	return moved, nil
+	return moves, nil
 }
 
 // setThreadGroupTx is the move inside the caller's transaction, which is
-// where its refusals and its read-back belong: ApplyThreadOrganize writes a
-// title and a pin around it under the same all-or-nothing rule.
-func setThreadGroupTx(tx *sql.Tx, threadIDs []string, groupID string) ([]Thread, error) {
+// where its refusals belong: ApplyThreadOrganize writes a title and a pin
+// around it under the same all-or-nothing rule, and each caller reads back
+// what it needs.
+func setThreadGroupTx(tx *sql.Tx, threadIDs []string, groupID string) error {
 	ids := uniqueNonEmptyStrings(threadIDs)
-	if len(ids) == 0 {
-		return []Thread{}, nil
-	}
 
 	// Every right-hand side reads the row as it was before the UPDATE, so
 	// the pin CASEs compare against the old group_id.
@@ -301,10 +312,10 @@ func setThreadGroupTx(tx *sql.Tx, threadIDs []string, groupID string) ([]Thread,
 		// lock. Check inside this writer transaction to serialize it with a
 		// transfer reservation; a stale client cannot revive the old row.
 		if err := checkThreadTransferAccess(tx, id); err != nil {
-			return nil, err
+			return err
 		}
 		if err := checkThreadNotDeleting(tx, id); err != nil {
-			return nil, err
+			return err
 		}
 		var (
 			result sql.Result
@@ -314,29 +325,24 @@ func setThreadGroupTx(tx *sql.Tx, threadIDs []string, groupID string) ([]Thread,
 			result, err = tx.Exec(ungroupSQL, id)
 		} else {
 			if err := refuseAgentGroupingTx(tx, id); err != nil {
-				return nil, err
+				return err
 			}
 			result, err = tx.Exec(groupSQL, groupID, groupID, groupID, id, groupID)
 		}
 		if err != nil {
-			return nil, fmt.Errorf("store: set thread group for %s: %w", id, err)
+			return fmt.Errorf("store: set thread group for %s: %w", id, err)
 		}
 		affected, err := result.RowsAffected()
 		if err != nil {
-			return nil, fmt.Errorf("store: set thread group for %s: %w", id, err)
+			return fmt.Errorf("store: set thread group for %s: %w", id, err)
 		}
 		if affected == 0 {
 			if err := threadGroupMoveRefusal(tx, id); err != nil {
-				return nil, fmt.Errorf("store: set thread group for %s: %w", id, err)
+				return fmt.Errorf("store: set thread group for %s: %w", id, err)
 			}
 		}
 	}
-
-	moved, err := listThreadsByIDTx(tx, ids)
-	if err != nil {
-		return nil, fmt.Errorf("store: read back moved threads: %w", err)
-	}
-	return moved, nil
+	return nil
 }
 
 // threadGroupMoveRefusal names why a named id matched nothing, inside the

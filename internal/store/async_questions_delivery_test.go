@@ -33,7 +33,7 @@ func TestAsyncAnswerEchoRequiresIdentityAndSettlesOnMetaUpdate(t *testing.T) {
 			if err != nil || rows[0].State != "submitted" {
 				t.Fatalf("unconfirmed echo marked delivered: %+v %v", rows, err)
 			}
-			if err := s.DeleteDispatchedFlushQueueItem("queue"); err != nil {
+			if err := s.DeleteDispatchedFlushQueueItems([]string{"queue"}); err != nil {
 				t.Fatal(err)
 			}
 			if queued, err := s.ListFlushQueueItems("q"); err != nil || len(queued) != 1 {
@@ -121,13 +121,13 @@ func TestRestoreFlushQueueCannotOverwriteNewerDraftOrCrossThreads(t *testing.T) 
 	}
 	merged := expected
 	merged.Content = "restored answer"
-	if _, err := s.RestoreFlushQueueToDraft(expected, merged, nil); err == nil {
+	if _, err := s.RestoreFlushQueueToDraft(QueueDraftRestore{Expected: expected, Merged: merged}); err == nil {
 		t.Fatal("overwrote racing composer edit")
 	}
 	if err := s.InsertFlushQueueItem(FlushQueueItem{ID: "other-queue", ThreadID: "other", Message: "other"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.RestoreFlushQueueToDraft(newer, merged, []string{"other-queue"}); err == nil {
+	if _, err := s.RestoreFlushQueueToDraft(QueueDraftRestore{Expected: newer, Merged: merged, QueueItemIDs: []string{"other-queue"}}); err == nil {
 		t.Fatal("retired another thread's queue")
 	}
 	if current, _, err := s.GetThreadDraft("q"); err != nil || current.Content != newer.Content {

@@ -77,7 +77,7 @@ func (a *App) fetchThreadExport(ctx context.Context, computer threadtools.Comput
 	dir := filepath.Join(a.configDir, threadExportDirName)
 	artifact, err := receiveRemoteArtifact(ctx, dir, file.ExportID, threadID,
 		func(ctx context.Context, request RemoteArtifactRequest) (RemoteArtifactChunk, error) {
-			call, cancel := context.WithTimeout(ctx, threadPeerCallTimeout)
+			call, cancel := context.WithTimeout(ctx, threadPeerCallWait("ThreadToolExportChunk"))
 			defer cancel()
 			var chunk RemoteArtifactChunk
 			err := a.backends.CallThreadPeer(call, computer.ID, "ThreadToolExportChunk", &chunk, file.ExportID, request.Offset)

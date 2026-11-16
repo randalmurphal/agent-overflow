@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 )
 
@@ -80,6 +81,7 @@ func TestConfigFromOptionsFastModePreservesModelAndSetsFlag(t *testing.T) {
 func TestConfigFromOptionsFastModeIsNotJudgedByTheShippedList(t *testing.T) {
 	for _, model := range []string{"claude-opus-4-5", "claude-newer-than-the-list-1"} {
 		cfg := ConfigFromOptions(provider.SessionOptions{Provider: "claude", Model: model, FastMode: true})
+		cfg.Reaper = procutiltest.Reaper()
 		if !cfg.FastMode {
 			t.Fatalf("%s: FastMode = false, want the thread's setting", model)
 		}
@@ -230,7 +232,7 @@ func TestBuildArgsAutoCompactSendsWindowForExtendedTier(t *testing.T) {
 // Configs that bypass ConfigFromOptions: a percent with no known window
 // still renders the pct override but must not invent a window value.
 func TestBuildArgsAutoCompactOmitsWindowWhenUnresolved(t *testing.T) {
-	cfg := Config{AutoCompactPercent: 50}
+	cfg := Config{Reaper: procutiltest.Reaper(), AutoCompactPercent: 50}
 	args := buildArgs(cfg, "", "")
 	joined := strings.Join(args, " ")
 	if !strings.Contains(joined, `"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE":"50"`) {
@@ -266,7 +268,7 @@ func TestBuildArgsCombinesFastModeAndAutoCompactInOneSettingsFlag(t *testing.T) 
 // `{}`. The Config is hand-stamped because ConfigFromOptions no longer
 // produces an empty block — see the cross-session refusal below.
 func TestBuildArgsOmitsSettingsFlagWhenNothingSet(t *testing.T) {
-	args := buildArgs(Config{Model: "claude-opus-4-7"}, "", "")
+	args := buildArgs(Config{Reaper: procutiltest.Reaper(), Model: "claude-opus-4-7"}, "", "")
 	joined := strings.Join(args, " ")
 	if strings.Contains(joined, "--settings") {
 		t.Fatalf("expected no --settings flag when no settings-block axis is set, got %v", args)
@@ -381,6 +383,7 @@ func TestCrossSessionNameFlagDroppedWhenNameSanitizesEmpty(t *testing.T) {
 // resolution untouched rather than pinning "default".
 func TestBuildArgsRendersOutputStyleIntoSettings(t *testing.T) {
 	cfg := ConfigFromOptions(provider.SessionOptions{Provider: "claude", Model: "claude-opus-4-7"})
+	cfg.Reaper = procutiltest.Reaper()
 	cfg.OutputStyle = "Explanatory"
 	joined := strings.Join(buildArgs(cfg, "", ""), " ")
 	want := `--settings {"crossSessionInbound":"refuse","outputStyle":"Explanatory"}`
@@ -402,6 +405,7 @@ func TestBuildArgsRendersOutputStyleIntoSettings(t *testing.T) {
 // silently overwritten, one put here cannot.
 func TestBuildArgsRendersSubagentAndMemoryEnv(t *testing.T) {
 	cfg := ConfigFromOptions(provider.SessionOptions{Provider: "claude", Model: "claude-opus-4-7"})
+	cfg.Reaper = procutiltest.Reaper()
 	cfg.MaxSubagentSpawnDepth = 2
 	cfg.MaxConcurrentSubagents = 6
 	cfg.ToolMemoryLimit = "4G"
@@ -423,6 +427,7 @@ func TestBuildArgsRendersSubagentAndMemoryEnv(t *testing.T) {
 // with it.
 func TestBuildArgsOmitsZeroSubagentLimits(t *testing.T) {
 	cfg := ConfigFromOptions(provider.SessionOptions{Provider: "claude", Model: "claude-opus-4-7"})
+	cfg.Reaper = procutiltest.Reaper()
 	cfg.MaxSubagentSpawnDepth = 0
 	cfg.MaxConcurrentSubagents = 0
 	cfg.ToolMemoryLimit = "   "
@@ -582,6 +587,7 @@ func TestConfigFromOptionsThreadsIntoBuildArgs(t *testing.T) {
 // this helper is what makes Claude's CLI accept it.
 func TestMcpConfigForCLIBackfillsHTTPType(t *testing.T) {
 	cfg := Config{
+		Reaper: procutiltest.Reaper(),
 		MCPServers: map[string]any{
 			"browser": map[string]any{
 				"url": "http://127.0.0.1:1234/mcp/thread-A",
@@ -612,6 +618,7 @@ func TestMcpConfigForCLIBackfillsHTTPType(t *testing.T) {
 
 func TestBuildArgsCanMergeFirstPartyMCPWithNativeDiscovery(t *testing.T) {
 	cfg := Config{
+		Reaper: procutiltest.Reaper(),
 		MCPServers: map[string]any{
 			"workflows": map[string]any{
 				"url":     "http://127.0.0.1/mcp",
@@ -634,6 +641,7 @@ func TestBuildArgsCanMergeFirstPartyMCPWithNativeDiscovery(t *testing.T) {
 
 func TestMcpConfigForCLIPreservesExplicitType(t *testing.T) {
 	cfg := Config{
+		Reaper: procutiltest.Reaper(),
 		MCPServers: map[string]any{
 			"sse-server": map[string]any{
 				"type": "sse",
@@ -655,6 +663,7 @@ func TestMcpConfigForCLIPreservesExplicitType(t *testing.T) {
 
 func TestMcpConfigForCLIBackfillsStdioType(t *testing.T) {
 	cfg := Config{
+		Reaper: procutiltest.Reaper(),
 		MCPServers: map[string]any{
 			"local": map[string]any{
 				"command": "/usr/local/bin/my-mcp",
@@ -679,7 +688,7 @@ func TestBuildArgsAutoCompactClampsAbove90(t *testing.T) {
 	// normalizer so we exercise inlineSettingsForCLI's defensive clamp
 	// directly. A future regression that drops the clamp (or changes
 	// the upper bound) would show up here.
-	cfg := Config{AutoCompactPercent: 150}
+	cfg := Config{Reaper: procutiltest.Reaper(), AutoCompactPercent: 150}
 	args := buildArgs(cfg, "", "")
 	joined := strings.Join(args, " ")
 	want := `"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE":"90"`
@@ -734,6 +743,7 @@ func TestConfigFromOptionsRuntimeModeReadOnly(t *testing.T) {
 func TestOnlyReadOnlyDisallowsTools(t *testing.T) {
 	for _, mode := range provider.AllRuntimeModes {
 		cfg := ConfigFromOptions(provider.SessionOptions{Provider: "claude", RuntimeMode: mode})
+		cfg.Reaper = procutiltest.Reaper()
 		if mode == provider.RuntimeReadOnly {
 			if len(cfg.DisallowedTools) == 0 {
 				t.Errorf("mode %q: expected disallowed tools", mode)
@@ -830,7 +840,8 @@ func TestCrossSessionGateIsNotInheritedWhenDisabled(t *testing.T) {
 	t.Setenv(claudePeerSessionNameEnv, "someone-elses-name")
 
 	cfg := ConfigFromOptions(provider.SessionOptions{Provider: "claude", Model: "claude-opus-4-7"})
-	env := provider.BuildEnvironment(claudeSpawnEnv(cfg), claudeSpawnUnsetEnv()...)
+	cfg.Reaper = procutiltest.Reaper()
+	env := provider.BuildEnvironment(claudeSpawnEnv(cfg), launchUnsetEnv()...)
 
 	if value, found := envLookup(env, claudeHarborKiteEnv); found {
 		t.Fatalf("%s = %q in the child environment, want it absent — the setting says off", claudeHarborKiteEnv, value)
@@ -848,11 +859,12 @@ func TestCrossSessionGateIsNotInheritedWhenDisabled(t *testing.T) {
 // preference (provider.ReservedEnvNames).
 func TestTaskListIDIsPinnedToTheThread(t *testing.T) {
 	cfg := ConfigFromOptions(provider.SessionOptions{Provider: "claude", ThreadID: "thread-1", Model: "claude-opus-4-7"})
+	cfg.Reaper = procutiltest.Reaper()
 	if cfg.TaskListID != "thread-1" {
 		t.Fatalf("TaskListID = %q, want thread-1", cfg.TaskListID)
 	}
 	cfg.Env = map[string]string{claudeTaskListIDEnvVar: "someone-elses-list", "FOO": "bar"}
-	env := provider.BuildEnvironment(claudeSpawnEnv(cfg), claudeSpawnUnsetEnv()...)
+	env := provider.BuildEnvironment(claudeSpawnEnv(cfg), launchUnsetEnv()...)
 	if value, found := envLookup(env, claudeTaskListIDEnvVar); !found || value != "thread-1" {
 		t.Fatalf("%s = %q (present=%v), want thread-1", claudeTaskListIDEnvVar, value, found)
 	}
@@ -879,7 +891,7 @@ func TestCrossSessionGateIsStatedExplicitlyWhenEnabled(t *testing.T) {
 		Model:              "claude-opus-4-7",
 		ClaudeCrossSession: provider.ClaudeCrossSession{Enabled: true, Inbound: "accept"},
 	})
-	env := provider.BuildEnvironment(claudeSpawnEnv(cfg), claudeSpawnUnsetEnv()...)
+	env := provider.BuildEnvironment(claudeSpawnEnv(cfg), launchUnsetEnv()...)
 
 	if value, found := envLookup(env, claudeHarborKiteEnv); !found || value != "1" {
 		t.Fatalf("%s = %q (present=%v), want \"1\"", claudeHarborKiteEnv, value, found)
@@ -895,6 +907,7 @@ func TestCrossSessionGateIsStatedExplicitlyWhenEnabled(t *testing.T) {
 // every prompting mode.
 func TestBuildArgsRendersAllowedTools(t *testing.T) {
 	cfg := ConfigFromOptions(provider.SessionOptions{Provider: "claude"})
+	cfg.Reaper = procutiltest.Reaper()
 	cfg.AllowedTools = []string{"mcp__ao-thread-tools__*", "Read"}
 	args := buildArgs(cfg, "", "")
 	for _, tool := range cfg.AllowedTools {
@@ -930,13 +943,14 @@ func TestSpawnEnvRaisesTheMCPDescriptionCap(t *testing.T) {
 		t.Fatalf("ClaudeMCPDescriptionLengthLimit = %s, want the CLI's own tool-search cap 16384", want)
 	}
 	cfg := ConfigFromOptions(provider.SessionOptions{Provider: "claude", ThreadID: "thread-1", Model: "claude-opus-4-7"})
-	env := provider.BuildEnvironment(claudeSpawnEnv(cfg), claudeSpawnUnsetEnv()...)
+	cfg.Reaper = procutiltest.Reaper()
+	env := provider.BuildEnvironment(claudeSpawnEnv(cfg), launchUnsetEnv()...)
 	if value, found := envLookup(env, provider.ClaudeMCPDescriptionLengthEnv); !found || value != want {
 		t.Fatalf("%s = %q (present=%v), want %s", provider.ClaudeMCPDescriptionLengthEnv, value, found, want)
 	}
 
 	cfg.Env = map[string]string{provider.ClaudeMCPDescriptionLengthEnv: "8192"}
-	env = provider.BuildEnvironment(claudeSpawnEnv(cfg), claudeSpawnUnsetEnv()...)
+	env = provider.BuildEnvironment(claudeSpawnEnv(cfg), launchUnsetEnv()...)
 	if value, _ := envLookup(env, provider.ClaudeMCPDescriptionLengthEnv); value != "8192" {
 		t.Fatalf("%s = %q, want the user's 8192 to outrank AO's default", provider.ClaudeMCPDescriptionLengthEnv, value)
 	}

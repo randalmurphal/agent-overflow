@@ -108,8 +108,7 @@ export function countFindMatches(run: string, needle: string): number {
  * without the rest are flagged in vain. The bound caps the alternatives a
  * start position can try, and so the work per position. Each code point
  * spells as at most 3 preimages (the fold table's largest), each at most
- * 2 UTF-16 units plain and 4 bytes packed, so the pattern source stays
- * under 2 KB. */
+ * 2 UTF-16 units, so the pattern source stays under 1 KB. */
 export const FIND_FILTER_CODE_POINTS = 12;
 
 // Every code point x with foldCodePointValue(x) === code, read from the
@@ -129,33 +128,19 @@ function unitEscape(unit: number): string {
   return `\\u${unit.toString(16).padStart(4, '0')}`;
 }
 
-// A code point's UTF-8 bytes, each written as the character of that value:
-// its spelling in packed text (packedText.ts).
-function packedEscape(code: number): string {
-  const bytes = code < 0x800
-    ? [0xc0 | (code >> 6), 0x80 | (code & 0x3f)]
-    : code < 0x10000
-      ? [0xe0 | (code >> 12), 0x80 | ((code >> 6) & 0x3f), 0x80 | (code & 0x3f)]
-      : [0xf0 | (code >> 18), 0x80 | ((code >> 12) & 0x3f), 0x80 | ((code >> 6) & 0x3f), 0x80 | (code & 0x3f)];
-  return bytes.map((byte) => `\\x${byte.toString(16)}`).join('');
-}
-
 /**
- * A filter for the find rule over text as a patch store holds it, plain
- * or packed (packedText.ts), without folding or decoding it: a global
- * pattern that matches, in any text that holds a match of `needle` by the
- * rule (`forEachFindMatch(foldFindText(text), needle)`), at or before
- * that match's start. Each of the needle's first FIND_FILTER_CODE_POINTS
- * code points becomes the alternatives of every code point that folds to
- * it, spelled as UTF-16 and, past ASCII, as packed UTF-8 bytes. It can
- * match where the rule does not (a packed spelling read as plain text, a
- * prefix of a longer needle); the rule decides. Folding keeps length, so
- * a match's position in the text is its position in the folded text.
+ * A filter for the find rule over unfolded text: a global pattern that
+ * matches, in any text that holds a match of `needle` by the rule
+ * (`forEachFindMatch(foldFindText(text), needle)`), at or before that
+ * match's start. Each of the needle's first FIND_FILTER_CODE_POINTS code
+ * points becomes the alternatives of every code point that folds to it.
+ * It can match where the rule does not (a prefix of a longer needle); the
+ * rule decides. Folding keeps length, so a match's position in the text
+ * is its position in the folded text.
  *
  * Null when every text must be taken as matching: `needle` is empty or
  * holds a code point the pattern cannot spell, a lone surrogate (which
- * can match half of a pair) or U+FFFD (which packed text decodes from any
- * invalid byte sequence).
+ * can match half of a pair).
  */
 export function findFilterPattern(needle: string): RegExp | null {
   if (needle === '') return null;
@@ -165,13 +150,12 @@ export function findFilterPattern(needle: string): RegExp | null {
     if (spelled === FIND_FILTER_CODE_POINTS) break;
     spelled += 1;
     const code = char.codePointAt(0)!;
-    if ((code >= 0xd800 && code <= 0xdfff) || code === 0xfffd) return null;
+    if (code >= 0xd800 && code <= 0xdfff) return null;
     let units = '';
     const sequences: string[] = [];
     for (const x of foldPreimage(code)) {
       if (x < 0x10000) units += unitEscape(x);
       else sequences.push(unitEscape(0xd800 + ((x - 0x10000) >> 10)) + unitEscape(0xdc00 + ((x - 0x10000) & 0x3ff)));
-      if (x >= 0x80) sequences.push(packedEscape(x));
     }
     source += sequences.length === 0 ? `[${units}]` : `(?:${units === '' ? '' : `[${units}]|`}${sequences.join('|')})`;
   }
@@ -179,34 +163,33 @@ export function findFilterPattern(needle: string): RegExp | null {
 }
 
 /**
- * Writes to `out`, ascending, each line of [start, end) whose stored text
- * holds a match of `filter` (`findFilterPattern`), and returns how many.
- * `stored` is those lines' stored text joined by newlines
- * (PatchBody.storedRange); `lineStart(line)` is a line's position in the
- * store, in an origin of the caller's choice. A match is placed by
- * binary search over the starts and the search goes on from the next
- * line, so the work is one search and one placement per flagged line.
- * `out` must hold `end - start` lines.
+ * Writes to `out`, ascending, each line of `text` whose text holds a match
+ * of `filter` (`findFilterPattern`), and to `starts` where in `text` each
+ * starts, and returns how many. `text` is lines `start` on joined by
+ * newlines (PatchBody.segmentText). A match is placed by counting the
+ * newlines before it and the search goes on from the next line, so the
+ * work is one search per flagged line and one newline search per line
+ * passed. `out` and `starts` must hold the text's lines.
  */
-export function flagFilterLines(filter: RegExp, stored: string, start: number, end: number, lineStart: (line: number) => number, out: Int32Array): number {
-  const base = lineStart(start);
+export function flagFilterLines(filter: RegExp, text: string, start: number, out: Int32Array, starts: Int32Array): number {
   let count = 0;
   filter.lastIndex = 0;
-  // The first line the search can still be in.
-  let from = start;
-  for (let match = filter.exec(stored); match !== null; match = filter.exec(stored)) {
-    let low = from;
-    let high = end - 1;
-    while (low < high) {
-      const mid = (low + high + 1) >> 1;
-      if (lineStart(mid) - base <= match.index) low = mid;
-      else high = mid - 1;
+  // The line the search is in, and where it starts in `text`.
+  let line = start;
+  let lineStart = 0;
+  for (let match = filter.exec(text); match !== null; match = filter.exec(text)) {
+    for (let newline = text.indexOf('\n', lineStart); newline >= 0 && newline < match.index; newline = text.indexOf('\n', lineStart)) {
+      line += 1;
+      lineStart = newline + 1;
     }
-    out[count] = low;
+    out[count] = line;
+    starts[count] = lineStart;
     count += 1;
-    from = low + 1;
-    if (from >= end) break;
-    filter.lastIndex = lineStart(from) - base;
+    const next = text.indexOf('\n', match.index);
+    if (next < 0) break;
+    line += 1;
+    lineStart = next + 1;
+    filter.lastIndex = lineStart;
   }
   return count;
 }

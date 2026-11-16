@@ -25,7 +25,10 @@ func gitlabTestRef(number int) PRReference {
 	return PRReference{Forge: "gitlab", Host: testForgeHost, Namespace: "grp/sub", Repo: "app", Number: number}
 }
 
-// gitlabTestMR is a merge request with a diff head of "head2" and the
+// gitlabTestHead is gitlabTestMR's head.
+const gitlabTestHead = "ab12cd34"
+
+// gitlabTestMR is a merge request with a diff head of gitlabTestHead and the
 // head pipeline 77, or none when pipeline is 0.
 func gitlabTestMR(number int, pipeline int) string {
 	head := "null"
@@ -33,9 +36,9 @@ func gitlabTestMR(number int, pipeline int) string {
 		head = fmt.Sprintf(`{"id":%d,"status":"running","web_url":"https://gitlab.example/p/%d"}`, pipeline, pipeline)
 	}
 	return fmt.Sprintf(`{"iid":%d,"title":"MR","description":"Body","source_branch":"feature","target_branch":"main",
-		"sha":"head2","web_url":"https://gitlab.example/grp/sub/app/-/merge_requests/%d","state":"opened","draft":false,
+		"sha":"ab12cd34","web_url":"https://gitlab.example/grp/sub/app/-/merge_requests/%d","state":"opened","draft":false,
 		"changes_count":"3","has_conflicts":false,"detailed_merge_status":"mergeable","author":{"username":"author","name":"Author"},
-		"diff_refs":{"base_sha":"base","head_sha":"head2","start_sha":"start"},"head_pipeline":%s}`, number, number, head)
+		"diff_refs":{"base_sha":"base","head_sha":"ab12cd34","start_sha":"start"},"head_pipeline":%s}`, number, number, head)
 }
 
 // gitlabDiscussion is one positioned discussion whose note was written
@@ -99,7 +102,7 @@ func TestGitLabReadPRReadsTheMergeRequestOnce(t *testing.T) {
 		case mr + "/approvals":
 			return forgeAPIAnswer{Body: `{"approved_by":[{"approved_at":"t","user":{"username":"lead","name":"Lead"}}]}`}
 		case mr + "/discussions?per_page=100":
-			return forgeAPIAnswer{Body: "[" + gitlabDiscussion("d1", "head2") + "]", Header: http.Header{"X-Next-Page": {"2"}}}
+			return forgeAPIAnswer{Body: "[" + gitlabDiscussion("d1", "ab12cd34") + "]", Header: http.Header{"X-Next-Page": {"2"}}}
 		case mr + "/discussions?page=2&per_page=100":
 			return forgeAPIAnswer{Body: "[" + gitlabDiscussion("d2", "head1") + "]", Header: http.Header{"X-Next-Page": {""}}}
 		case gitlabTestProject:
@@ -114,15 +117,15 @@ func TestGitLabReadPRReadsTheMergeRequestOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	paths := gitlabPaths(calls)
-	if countPrefix(paths, "GET "+mr) != 1 || len(paths) != 10 {
-		t.Fatalf("requests = %q, want one MR read, the approvals, the project, the viewer, PRManageSchema, PRManage, two discussion pages, one MRNoteReactions page and one PipelineJobs page", paths)
+	if countPrefix(paths, "GET "+mr) != 1 || len(paths) != 11 {
+		t.Fatalf("requests = %q, want one MR read, the approvals, the project, the viewer and its role, the release, PRManageChecks, two discussion pages, one MRNoteReactions page and one PipelineJobs page", paths)
 	}
 	for _, call := range calls.all() {
 		if call.Host != testForgeHost || call.Header.Get("Private-Token") != "test-token" {
 			t.Fatalf("request %s went to %q with Private-Token %q", call.Path, call.Host, call.Header.Get("Private-Token"))
 		}
 	}
-	if d := read.Detail; d.Number != 7 || d.HeadSHA != "head2" || d.BaseRefSHA != "start" || d.ReviewDecision != "APPROVED" || len(d.LatestReviews) != 1 ||
+	if d := read.Detail; d.Number != 7 || d.HeadSHA != "ab12cd34" || d.BaseRefSHA != "start" || d.ReviewDecision != "APPROVED" || len(d.LatestReviews) != 1 ||
 		d.Checks.Total != 1 || d.ChangedFiles != 3 || d.DiffRefs == nil || d.DiffRefs.StartSHA != "start" {
 		t.Fatalf("detail = %+v", d)
 	}
@@ -153,14 +156,14 @@ func TestGitLabReadPRRequestsOnlyTheWantedParts(t *testing.T) {
 			return forgeAPIAnswer{Body: `[]`}
 		case call.Op == "PipelineJobs":
 			return gitlabJobs(1, 1)
-		case call.Op == "PRManageSchema":
-			return forgeAPIAnswer{Body: gitlabSchemaBare}
-		case call.Op == "PRManage":
+		case call.Op == "PRManageChecks":
 			return forgeAPIAnswer{Body: gitlabManageEmpty}
 		case call.Op == "MRNoteReactions":
 			return forgeAPIAnswer{Body: gitlabNoReactions}
 		case call.Path == mr+"/resource_state_events?per_page=100":
 			return forgeAPIAnswer{Body: `[]`}
+		case call.Op == "ProjectAccess":
+			return forgeAPIAnswer{Body: gitlabDeveloperRole}
 		case call.Path == gitlabTestProject:
 			return forgeAPIAnswer{Body: gitlabTestProjectSettings}
 		case call.Path == "user":
@@ -173,8 +176,8 @@ func TestGitLabReadPRRequestsOnlyTheWantedParts(t *testing.T) {
 		pipeline int32
 		paths    []string
 	}{
-		{PRReadParts{Detail: true}, 77, []string{"GET " + mr, "GET " + mr + "/approvals", "GET " + gitlabTestProject, "GET user", "GRAPHQL PRManageSchema", "GRAPHQL PRManage"}},
-		{PRReadParts{Detail: true}, 77, []string{"GET " + mr, "GET " + mr + "/approvals", "GRAPHQL PRManage"}},
+		{PRReadParts{Detail: true}, 77, []string{"GET " + mr, "GET " + mr + "/approvals", "GET " + gitlabTestProject, "GET user", "GRAPHQL ProjectAccess", "GET metadata", "GRAPHQL PRManageChecks"}},
+		{PRReadParts{Detail: true}, 77, []string{"GET " + mr, "GET " + mr + "/approvals", "GRAPHQL PRManageChecks"}},
 		// The first threads read reads the reactions; the next, with the
 		// same notes, answers them from memory.
 		{PRReadParts{Threads: true}, 77, []string{"GET " + mr, "GET " + mr + "/discussions?per_page=100", "GRAPHQL MRNoteReactions"}},
@@ -215,9 +218,9 @@ func TestGitLabThreadsStopOnANextPageThatDoesNotAdvance(t *testing.T) {
 		case call.Path == mr:
 			return forgeAPIAnswer{Body: gitlabTestMR(7, 0)}
 		case strings.HasPrefix(call.Path, mr+"/discussions?"):
-			return forgeAPIAnswer{Body: "[" + gitlabDiscussion("d", "head2") + "]", Header: http.Header{"X-Next-Page": {"1"}}}
-		case call.Path == gitlabTestProject:
-			return forgeAPIAnswer{Body: gitlabTestProjectSettings}
+			return forgeAPIAnswer{Body: "[" + gitlabDiscussion("d", "ab12cd34") + "]", Header: http.Header{"X-Next-Page": {"1"}}}
+		case call.Op == "ProjectAccess":
+			return forgeAPIAnswer{Body: gitlabDeveloperRole}
 		case call.Path == "user":
 			return forgeAPIAnswer{Body: `{"id":1,"username":"viewer"}`}
 		case call.Op == "MRNoteReactions":
@@ -230,7 +233,7 @@ func TestGitLabThreadsStopOnANextPageThatDoesNotAdvance(t *testing.T) {
 		t.Fatalf("ListReviewThreads = %+v, %v", threads, err)
 	}
 	if n := len(calls.all()); n != 5 {
-		t.Fatalf("requests = %q, want the MR, one discussions page, the project, the viewer and the reactions", gitlabPaths(calls))
+		t.Fatalf("requests = %q, want the MR, one discussions page, the viewer and its role, and the reactions", gitlabPaths(calls))
 	}
 }
 
@@ -265,7 +268,7 @@ func TestGitLabWithoutATransportIsErrNoForgeAPI(t *testing.T) {
 	if _, err := core.StreamCIJobLog(t.Context(), ref.Repository(), CIJobLogRequest{JobID: "9"}, nil); !errors.Is(err, ErrNoForgeAPI) {
 		t.Fatalf("StreamCIJobLog = %v", err)
 	}
-	if _, err := core.SubmitReview(t.Context(), ref, SubmitReviewRequest{Verdict: ReviewVerdictApprove}); !errors.Is(err, ErrNoForgeAPI) {
+	if _, err := core.SubmitReview(t.Context(), ref, SubmitReviewRequest{Verdict: ReviewVerdictApprove, HeadSHA: gitlabTestHead}); !errors.Is(err, ErrNoForgeAPI) {
 		t.Fatalf("SubmitReview = %v", err)
 	}
 }
@@ -281,6 +284,10 @@ func TestGitLabSubmitReview(t *testing.T) {
 		switch call.Method + " " + call.Path {
 		case "GET " + mr:
 			return forgeAPIAnswer{Body: gitlabTestMR(7, 0)}
+		case "GET " + mr + "/approvals":
+			return forgeAPIAnswer{Body: `{"user_can_approve":true}`}
+		case "GET " + mr + "/draft_notes?per_page=100":
+			return forgeAPIAnswer{Body: `[]`}
 		case "GET " + mr + "/diffs?per_page=100":
 			return gitlabTestDiffsAnswer()
 		case "POST " + mr + "/draft_notes":
@@ -296,7 +303,7 @@ func TestGitLabSubmitReview(t *testing.T) {
 		return forgeUnexpected(t, call)
 	})
 	line, old := 3, 3
-	review := SubmitReviewRequest{Verdict: ReviewVerdictApprove, Body: "Looks good", Comments: []ReviewLineComment{
+	review := SubmitReviewRequest{Verdict: ReviewVerdictApprove, HeadSHA: gitlabTestHead, Body: "Looks good", Comments: []ReviewLineComment{
 		{Path: "a.go", Body: "nit", Line: &line, Side: "right"},
 		{Path: "b.go", Body: "gone", Line: &old, Side: "left"},
 	}}
@@ -304,11 +311,14 @@ func TestGitLabSubmitReview(t *testing.T) {
 	if err != nil || !result.PostedReview {
 		t.Fatalf("SubmitReview = %+v, %v", result, err)
 	}
-	want := []string{"GET " + mr, "GET " + mr + "/diffs?per_page=100", "POST " + mr + "/draft_notes", "POST " + mr + "/draft_notes", "POST " + mr + "/draft_notes", "POST " + mr + "/draft_notes/bulk_publish", "POST " + mr + "/approve"}
+	want := []string{"GET metadata", "GET " + mr, "GET " + mr + "/approvals", "GET " + mr + "/draft_notes?per_page=100", "GET " + mr + "/diffs?per_page=100", "POST " + mr + "/draft_notes", "POST " + mr + "/draft_notes", "POST " + mr + "/draft_notes", "POST " + mr + "/draft_notes/bulk_publish", "POST " + mr + "/approve"}
 	if got := gitlabPaths(calls); strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("requests = %q, want %q", got, want)
 	}
-	sent := calls.all()
+	// Past the release, approvals and pending draft notes reads, the
+	// writes in order.
+	sent := slices.Delete(calls.all(), 0, 1)
+	sent = slices.Delete(sent, 1, 3)
 	var summary, right, left struct {
 		Note     string             `json:"note"`
 		Position *gitlabPositionRaw `json:"position"`
@@ -317,7 +327,7 @@ func TestGitLabSubmitReview(t *testing.T) {
 		t.Fatalf("summary note body = %s (%v)", sent[2].Body, err)
 	}
 	if err := json.Unmarshal(sent[3].Body, &right); err != nil || right.Note != "nit" || right.Position == nil || right.Position.PositionType != "text" ||
-		right.Position.HeadSHA != "head2" || right.Position.BaseSHA != "base" || right.Position.StartSHA != "start" ||
+		right.Position.HeadSHA != "ab12cd34" || right.Position.BaseSHA != "base" || right.Position.StartSHA != "start" ||
 		right.Position.NewLine == nil || *right.Position.NewLine != 3 || right.Position.OldLine != nil {
 		t.Fatalf("right-side note body = %s (%v)", sent[3].Body, err)
 	}
@@ -333,7 +343,7 @@ func TestGitLabSubmitReview(t *testing.T) {
 		t.Fatalf("bulk publish body = %q, want none", sent[5].Body)
 	}
 	var approve map[string]string
-	if err := json.Unmarshal(sent[6].Body, &approve); err != nil || len(approve) != 1 || approve["sha"] != "head2" {
+	if err := json.Unmarshal(sent[6].Body, &approve); err != nil || len(approve) != 1 || approve["sha"] != "ab12cd34" {
 		t.Fatalf("approve body = %s (%v), want the head the MR read named", sent[6].Body, err)
 	}
 
@@ -344,7 +354,7 @@ func TestGitLabSubmitReview(t *testing.T) {
 		t.Fatalf("failed approval after publishing = %v, want a partial submit", err)
 	}
 	// An approval alone that fails posted nothing.
-	_, err = core.SubmitReview(t.Context(), gitlabTestRef(7), SubmitReviewRequest{Verdict: ReviewVerdictApprove})
+	_, err = core.SubmitReview(t.Context(), gitlabTestRef(7), SubmitReviewRequest{Verdict: ReviewVerdictApprove, HeadSHA: gitlabTestHead})
 	if _, partial := errors.AsType[*PartialSubmitError](err); partial || err == nil {
 		t.Fatalf("failed bare approval = %v, want a plain error", err)
 	}
@@ -376,7 +386,7 @@ func TestGitLabReplyAndResolve(t *testing.T) {
 		}
 	}
 	sent := calls.all()
-	if len(sent) != 3 || string(sent[0].Body) != `{"body":"Thanks"}` || string(sent[1].Body) != `{"resolved":true}` || string(sent[2].Body) != `{"resolved":false}` {
+	if len(sent) != 4 || sent[0].Path != "metadata" || string(sent[1].Body) != `{"body":"Thanks"}` || string(sent[2].Body) != `{"resolved":true}` || string(sent[3].Body) != `{"resolved":false}` {
 		t.Fatalf("requests = %q", gitlabPaths(calls))
 	}
 	mu.Lock()
@@ -385,13 +395,25 @@ func TestGitLabReplyAndResolve(t *testing.T) {
 	if err := core.SetThreadResolved(t.Context(), ref, "abc/def", true); err == nil || !strings.Contains(err.Error(), "HTTP 400") {
 		t.Fatalf("refused resolve = %v, want the forge's 400", err)
 	}
+	if errors.As(core.SetThreadResolved(t.Context(), ref, "abc/def", true), new(*UnconfirmedWriteError)) {
+		t.Fatal("a refused resolve read as unconfirmed")
+	}
+	mu.Lock()
+	status = http.StatusBadGateway
+	mu.Unlock()
+	if err := core.SetThreadResolved(t.Context(), ref, "abc/def", true); !errors.As(err, new(*UnconfirmedWriteError)) {
+		t.Fatalf("a resolve answered 502 = %v, want unconfirmed", err)
+	}
+	mu.Lock()
+	status = http.StatusOK
+	mu.Unlock()
 	if err := core.ReplyToThread(t.Context(), ref, " ", 0, "x"); err == nil {
 		t.Fatal("a reply without a discussion id was sent")
 	}
 	if err := core.ReplyToThread(t.Context(), ref, "abc", 0, " "); err == nil {
 		t.Fatal("an empty reply was sent")
 	}
-	if n := len(calls.all()); n != 4 {
+	if n := len(calls.all()); n != 7 {
 		t.Fatalf("requests = %d, want the refused input to send nothing", n)
 	}
 }
@@ -525,6 +547,10 @@ func TestGitLabOriginScopedLists(t *testing.T) {
 	t.Parallel()
 	list := gitlabTestProject + "/merge_requests"
 	core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
+		if call.Path == gitlabTestProject {
+			// The origin is no fork.
+			return forgeAPIAnswer{Body: `{"id":10}`}
+		}
 		u, err := url.Parse(call.Path)
 		if err != nil || u.EscapedPath() != list {
 			return forgeUnexpected(t, call)
@@ -577,6 +603,9 @@ func TestGitLabOriginScopedLists(t *testing.T) {
 	want := []string{
 		"GET " + list + "?per_page=100&source_branch=feature%2Fx+y&state=opened",
 		"GET " + list + "?per_page=100&source_branch=none&state=opened",
+		// A branch with no merge request of its own asks whether the
+		// origin is a fork, once per login per gitlabCacheTTL.
+		"GET " + gitlabTestProject,
 		"GET " + list + "?order_by=updated_at&per_page=100&sort=desc&state=merged",
 		"GET " + list + "?order_by=updated_at&page=2&per_page=100&sort=desc&state=merged",
 		"GET " + list + "?order_by=updated_at&per_page=30&sort=desc&state=merged",
@@ -604,6 +633,9 @@ func TestGitLabListOpenPRsReadsPastForks(t *testing.T) {
 		return "[" + strings.Join(rows, ",") + "]"
 	}
 	core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
+		if call.Path == gitlabTestProject {
+			return forgeAPIAnswer{Body: `{"id":10}`}
+		}
 		u, err := url.Parse(call.Path)
 		if err != nil {
 			return forgeUnexpected(t, call)
@@ -629,8 +661,55 @@ func TestGitLabListOpenPRsReadsPastForks(t *testing.T) {
 	if err != nil || len(pulls) != 0 {
 		t.Fatalf("ListOpenPRs(forks-only) = %d pulls, %v", len(pulls), err)
 	}
-	if n := len(calls.all()) - 2; n != gitlabOpenMRsMaxPages {
-		t.Fatalf("forks-only lookup sent %d requests, want %d", n, gitlabOpenMRsMaxPages)
+	// The pages, then whether the origin is a fork (it is not).
+	if n := len(calls.all()) - 2; n != gitlabOpenMRsMaxPages+1 {
+		t.Fatalf("forks-only lookup sent %d requests, want %d", n, gitlabOpenMRsMaxPages+1)
+	}
+}
+
+// A checkout of a fork whose branch has no merge request in the fork
+// finds the one it opened in the project it was forked from: its source
+// is the fork, not another fork's or the source project's own branch of
+// the same name. Its merged heads add the source project's merges from
+// the fork.
+func TestGitLabForkCheckoutFindsItsUpstreamMR(t *testing.T) {
+	t.Parallel()
+	fork, upstream := gitlabTestProject+"/merge_requests", "projects/10/merge_requests"
+	core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
+		if call.Path == gitlabTestProject {
+			return forgeAPIAnswer{Body: `{"id":20,"forked_from_project":{"id":10,"path_with_namespace":"grp/upstream"}}`}
+		}
+		u, err := url.Parse(call.Path)
+		if err != nil {
+			return forgeUnexpected(t, call)
+		}
+		switch q := u.Query(); {
+		case u.EscapedPath() == fork && q.Get("state") == "opened":
+			return forgeAPIAnswer{Body: `[]`}
+		case u.EscapedPath() == fork:
+			return forgeAPIAnswer{Body: `[{"web_url":"https://gitlab.com/grp/sub/app/-/merge_requests/1","iid":1,"title":"Fork's own","state":"merged","project_id":20,"source_project_id":20,"source_branch":"local","sha":"aaa"}]`}
+		case u.EscapedPath() == upstream && q.Get("state") == "opened":
+			return forgeAPIAnswer{Body: `[{"web_url":"https://gitlab.com/grp/upstream/-/merge_requests/5","iid":5,"title":"Other fork","state":"opened","project_id":10,"source_project_id":30},` +
+				`{"web_url":"https://gitlab.com/grp/upstream/-/merge_requests/6","iid":6,"title":"Mine","state":"opened","project_id":10,"source_project_id":20,"target_branch":"main"}]`}
+		case u.EscapedPath() == upstream:
+			return forgeAPIAnswer{Body: `[{"source_branch":"feature","sha":"bbb","web_url":"https://gitlab.com/grp/upstream/-/merge_requests/6","source_project_id":20},` +
+				`{"source_branch":"feature","sha":"ccc","web_url":"https://gitlab.com/grp/upstream/-/merge_requests/5","source_project_id":30}]`}
+		}
+		return forgeUnexpected(t, call)
+	})
+	cwd := t.TempDir()
+	core.recordOrigin(cwd, originIdentity{url: "git@gitlab.com:grp/sub/app.git", known: true}, core.nowFn())
+	pulls, err := core.ListOpenPRs(t.Context(), cwd, "feature")
+	if err != nil || len(pulls) != 1 || pulls[0] != (GitPR{URL: "https://gitlab.com/grp/upstream/-/merge_requests/6", Number: 6, Title: "Mine", State: "open", BaseBranch: "main"}) {
+		t.Fatalf("ListOpenPRs = %+v, %v; want the fork's merge request in its source project", pulls, err)
+	}
+	heads, err := core.ListMergedPRHeads(t.Context(), cwd, 50)
+	want := []MergedPRHead{{HeadRefName: "local", HeadOid: "aaa", URL: "https://gitlab.com/grp/sub/app/-/merge_requests/1"}, {HeadRefName: "feature", HeadOid: "bbb", URL: "https://gitlab.com/grp/upstream/-/merge_requests/6"}}
+	if err != nil || !slices.Equal(heads, want) {
+		t.Fatalf("ListMergedPRHeads = %+v, %v; want %+v", heads, err, want)
+	}
+	if got := gitlabPaths(calls); !slices.Contains(got, "GET "+upstream+"?per_page=100&source_branch=feature&state=opened") {
+		t.Fatalf("requests = %v", got)
 	}
 }
 
@@ -689,11 +768,33 @@ func TestGitLabFetchAttachment(t *testing.T) {
 		t.Fatalf("FetchAttachment = %q %q %v", data, name, err)
 	}
 	sent := calls.all()
-	if len(sent) != 1 || sent[0].Host != "gitlab.example.com:8443" || sent[0].Header.Get("Accept") != "*/*" || sent[0].Header.Get("Private-Token") != "test-token" {
-		t.Fatalf("attachment request = %+v", sent)
+	if len(sent) != 2 || sent[0].Path != "metadata" || sent[1].Host != "gitlab.example.com:8443" || sent[1].Header.Get("Accept") != "*/*" || sent[1].Header.Get("Private-Token") != "test-token" {
+		t.Fatalf("attachment requests = %+v", sent)
 	}
 	if _, _, err := core.FetchAttachment(t.Context(), ref.Repository(), href, 4); err == nil || err.Error() != "attachment is larger than 4 bytes" {
 		t.Fatalf("over-cap attachment = %v", err)
+	}
+}
+
+// The uploads route a GitLab attachment is fetched from first exists in
+// 17.4: a server below the supported floor is refused with the floor
+// sentence before the upload is asked for.
+func TestGitLabFetchAttachmentBelowTheFloorIsRefused(t *testing.T) {
+	t.Parallel()
+	core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
+		if call.Path == "metadata" {
+			return forgeAPIAnswer{Body: `{"version":"17.3.7-ee","enterprise":true}`}
+		}
+		t.Errorf("sent %s %s to a server below the floor", call.Method, call.Path)
+		return forgeAPIAnswer{Status: http.StatusNotFound, Body: `{"message":"404 Not Found"}`}
+	})
+	ref := PRReference{Forge: "gitlab", Host: "gitlab.com", Namespace: "g", Repo: "r", Number: 1}
+	_, _, err := core.FetchAttachment(t.Context(), ref.Repository(), "/uploads/"+testUploadSecretB+"/a.png", 1<<20)
+	if refused, ok := errors.AsType[*ForgeActionError](err); !ok || refused.Message != "GitLab on gitlab.com runs 17.3; GitLab 18.0 or later is needed." {
+		t.Fatalf("FetchAttachment below the floor = %v", err)
+	}
+	if n := len(calls.all()); n != 1 {
+		t.Fatalf("requests = %d, want the release read alone", n)
 	}
 }
 
@@ -703,7 +804,10 @@ func TestGitLabFetchAttachment(t *testing.T) {
 func TestGitLabFetchAttachmentFailureHidesTheSecret(t *testing.T) {
 	t.Parallel()
 	var mode atomic.Value
-	core, _ := newForgeAPICore(t, func(forgeAPICall) forgeAPIAnswer {
+	core, _ := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
+		if call.Path == "metadata" {
+			return forgeUnexpected(t, call)
+		}
 		switch mode.Load() {
 		case "drop":
 			panic(http.ErrAbortHandler)

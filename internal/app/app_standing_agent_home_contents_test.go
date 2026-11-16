@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -269,7 +270,7 @@ func codexStarted(app *App, threadID, logPath string) startSession {
 			}
 		}
 		// A turn carries the folders it may write.
-		if err := app.SendMessage(threadID, "hello", nil); err != nil {
+		if err := app.SendMessage(context.Background(), threadID, "hello", nil); err != nil {
 			t.Fatalf("SendMessage: %v", err)
 		}
 		started.dirs = codexTurnWritableRoots(t, logPath)

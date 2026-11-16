@@ -38,6 +38,13 @@ type threadState struct {
 	// (the map's comma-ok).
 	openTurn    int
 	openTurnSet bool
+	// waitingStop is a Stop of a send whose turn had not opened, held until
+	// that turn settles (stop_waiting_send.go). The host writes it, so it
+	// is not process state: a session commit drops it by name
+	// (MarkThreadActive), because the replacement reuses turn indexes. How
+	// the latest settlement ended is the process's (processBound.lastSettled).
+	waitingStop    waitingStop
+	waitingStopSet bool
 	// turnStarting is non-nil while handleTurnStart runs, from before it
 	// writes the turns row until the open turn is set, and is closed
 	// when it returns. SampleInterrupt waits on it so an interrupt
@@ -198,8 +205,7 @@ type threadState struct {
 	// until the app returns them to the composer. Bounded by pendingSends,
 	// which feeds it. Lifecycle: drained by DrainUndeliveredSends (after a
 	// cancel, or when a replacement session starts) or the session-end
-	// DrainUnconfirmedFlushItems; swept at cleanup, so a Stop drops them
-	// with the rest of the queue.
+	// DrainUnconfirmedFlushItems, which a Stop's drop runs too.
 	undeliveredSends []UnconfirmedFlushItem
 	// recentFlushDigests is the ordered ledger of this thread's flush sends
 	// whose boundary is unresolved and the content-block fingerprints they

@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/testutil/mockexec"
 )
@@ -79,6 +80,7 @@ done
 	capture := forkCapture{request: dir + "/fork-request.json", turns: dir + "/fork-turns-request.json"}
 
 	s, err := NewSession(context.Background(), testThread, Config{
+		Reaper:  procutiltest.Reaper(),
 		Binary:  scriptPath,
 		Model:   "test-model",
 		WorkDir: "/tmp",
@@ -238,6 +240,7 @@ done
 	mockexec.Write(t, scriptPath, script)
 
 	s, err := NewSession(context.Background(), testThread, Config{
+		Reaper:  procutiltest.Reaper(),
 		Binary:  scriptPath,
 		Model:   "test-model",
 		WorkDir: "/tmp",
@@ -307,7 +310,8 @@ func TestForkThreadCutsOnAThreadlessAppServer(t *testing.T) {
 	requestLog := dir + "/requests.jsonl"
 	scriptPath := forkThreadMockBinary(t, dir, requestLog, forkResultReply)
 
-	forked, err := ForkThread(context.Background(), ForkSpec{
+	forked, err := ForkThread(forkContext(t), ForkSpec{
+		Reaper:         procutiltest.Reaper(),
 		Binary:         scriptPath,
 		WorkDir:        dir,
 		SourceThreadID: "source-thread",
@@ -354,7 +358,8 @@ func TestForkThreadWithoutAnAnchorSendsNoLastTurnIdAndReadsNoTail(t *testing.T) 
 	requestLog := dir + "/requests.jsonl"
 	binary := forkThreadMockBinary(t, dir, requestLog, forkResultReply)
 
-	forked, err := ForkThread(context.Background(), ForkSpec{
+	forked, err := ForkThread(forkContext(t), ForkSpec{
+		Reaper:         procutiltest.Reaper(),
 		Binary:         binary,
 		WorkDir:        dir,
 		SourceThreadID: "source-thread",
@@ -386,7 +391,8 @@ func TestForkThreadSurfacesTheAppServersRefusalAndClosesTheProcess(t *testing.T)
 	requestLog := dir + "/requests.jsonl"
 	binary := forkThreadMockBinary(t, dir, requestLog, forkErrorReply)
 
-	forked, err := ForkThread(context.Background(), ForkSpec{
+	forked, err := ForkThread(forkContext(t), ForkSpec{
+		Reaper:         procutiltest.Reaper(),
 		Binary:         binary,
 		WorkDir:        dir,
 		SourceThreadID: "gone",
@@ -413,7 +419,14 @@ func TestForkThreadSurfacesTheAppServersRefusalAndClosesTheProcess(t *testing.T)
 
 func TestForkThreadRequiresASource(t *testing.T) {
 	t.Parallel()
-	if _, err := ForkThread(context.Background(), ForkSpec{Binary: "/nonexistent/codex"}); err == nil {
+	if _, err := ForkThread(context.Background(), ForkSpec{Reaper: procutiltest.Reaper(), Binary: "/nonexistent/codex"}); err == nil {
 		t.Fatal("ForkThread() error = nil, want missing source failure")
 	}
+}
+
+// forkContext is the deadline a fork's app-server launch is bounded by.
+func forkContext(t *testing.T) context.Context {
+	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+	t.Cleanup(cancel)
+	return ctx
 }

@@ -12,6 +12,7 @@ import (
 	"sync"
 	"testing"
 
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/testutil"
 )
@@ -208,6 +209,7 @@ func TestNewSessionRegistersTheHookTheLoadRuns(t *testing.T) {
 			binary := writeInjectAppServer(t, dir, requestLog, "configured", "")
 			recorder := &errorRecorder{}
 			sess, err := NewSession(t.Context(), "thread-1", Config{
+				Reaper: procutiltest.Reaper(),
 				Binary: binary, WorkDir: dir, ResumeThreadID: tc.resume, SessionStartHook: tc.hook,
 			}, recorder.onEvent)
 			if err != nil {
@@ -237,6 +239,7 @@ func TestNewSessionRefusesAHookItCannotFollow(t *testing.T) {
 	t.Parallel()
 	binary := filepath.Join(t.TempDir(), "codex-never-run")
 	_, err := NewSession(t.Context(), "thread-1", Config{
+		Reaper: procutiltest.Reaper(),
 		Binary: binary, WorkDir: t.TempDir(),
 		SessionStartHook: &provider.SessionStartHook{Label: "the memory", Command: "hook"},
 	}, func(provider.ProviderEvent) {})
@@ -277,6 +280,7 @@ func TestATurnRunBeforeTheStartAnswerSettlesTheStart(t *testing.T) {
 	recorder := &errorRecorder{}
 	missed := 0
 	sess, err := NewSession(t.Context(), "thread-1", Config{
+		Reaper: procutiltest.Reaper(),
 		Binary: binary, WorkDir: t.TempDir(),
 		SessionStartHook: testHook(), SessionStartForget: func() error { missed++; return nil },
 	}, recorder.onEvent)
@@ -303,6 +307,7 @@ func TestResumeRegistersTheHookWhileTheDeliveryWaitsForIt(t *testing.T) {
 	binary := writeInjectAppServer(t, dir, requestLog, "configured", "")
 	recorder := &errorRecorder{}
 	sess, err := NewSession(t.Context(), "thread-1", Config{
+		Reaper: procutiltest.Reaper(),
 		Binary: binary, WorkDir: dir, SessionStartHook: testHook(),
 	}, recorder.onEvent)
 	if err != nil {
@@ -883,6 +888,7 @@ func TestCodexForgetsAPendingDeliveryWhenTheSessionEnds(t *testing.T) {
 			var mu sync.Mutex
 			forgot := 0
 			sess, err := NewSession(t.Context(), "thread-1", Config{
+				Reaper: procutiltest.Reaper(),
 				Binary: binary, WorkDir: t.TempDir(), ResumeThreadID: root,
 				SessionStartHook: testHook(), SessionStartForget: func() error {
 					mu.Lock()

@@ -11,7 +11,8 @@ export type ButtonVariant =
   | 'tinted'
   | 'danger'
   | 'danger-outline'
-  | 'danger-ghost';
+  | 'danger-ghost'
+  | 'warning-outline';
 export type ButtonSize = 'xs' | 'sm' | 'md';
 
 const BASE = [
@@ -53,6 +54,10 @@ const VARIANT: Record<ButtonVariant, string> = {
   'danger-ghost':
     'bg-transparent text-error/80 hover:text-error hover:bg-error/10 ' +
     'focus-visible:ring-error/40',
+  'warning-outline':
+    'border border-warning/50 bg-transparent text-warning ' +
+    'hover:border-warning hover:bg-warning/10 ' +
+    'focus-visible:ring-warning/40',
 };
 
 // Pressed-state styling is shared across every variant. The subtle

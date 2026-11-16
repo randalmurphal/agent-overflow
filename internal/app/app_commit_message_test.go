@@ -26,6 +26,7 @@ func newCommitMsgTestApp(t *testing.T) *App {
 	t.Helper()
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
+	resetProviderBinarySettings(t, app)
 	return app
 }
 

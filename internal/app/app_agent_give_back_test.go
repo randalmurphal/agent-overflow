@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/agentmeta"
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/store"
@@ -121,7 +123,7 @@ func claudeRecordingSession(t *testing.T, f *requestFixture) string {
 	t.Helper()
 	stdinLog := filepath.Join(t.TempDir(), "claude-stdin.jsonl")
 	sess, err := claude.NewSession(context.Background(), f.caller.ID,
-		claude.Config{Binary: writeClaudeStdinRecorderBinary(t, stdinLog), WorkDir: f.caller.WorkspacePath},
+		claude.Config{Reaper: procutiltest.Reaper(), Retention: claude.UserHomeRetention(0), Binary: writeClaudeStdinRecorderBinary(t, stdinLog), WorkDir: f.caller.WorkspacePath},
 		func(provider.ProviderEvent) {})
 	if err != nil {
 		t.Fatalf("claude.NewSession: %v", err)
@@ -186,9 +188,9 @@ func TestASessionDeathSplitsAJoinedAnswerAndCompletionExactly(t *testing.T) {
 	t.Parallel()
 	f := newRequestFixture(t)
 	f.app.startSessionFn = func(string) error { return nil }
-	token := settledAnswerHolding(t, f, "first half"+usermessage.JoinSeparator+"second half")
+	token := settledAnswerHolding(t, f, "first half"+agentmeta.JoinSeparator+"second half")
 	w := completedRemoteWatch(t, f.app, f.caller)
-	queueOwnedAndPersonMessages(t, f, token, false, w, "line one"+usermessage.JoinSeparator+"line two")
+	queueOwnedAndPersonMessages(t, f, token, false, w, "line one"+agentmeta.JoinSeparator+"line two")
 	if _, err := f.app.RegisterQueueItem(context.Background(), f.caller.ID, "and after", SendMessageOptions{SendID: "person-after"}); err != nil {
 		t.Fatalf("RegisterQueueItem: %v", err)
 	}
@@ -198,7 +200,7 @@ func TestASessionDeathSplitsAJoinedAnswerAndCompletionExactly(t *testing.T) {
 	f.app.restoreUnconfirmedQueueOnSessionDeath(f.caller.ID)
 
 	requireGivenBack(t, f, token, false, w)
-	requireDraft(t, f.app, f.caller.ID, "my own words"+usermessage.JoinSeparator+"and after")
+	requireDraft(t, f.app, f.caller.ID, "my own words"+agentmeta.JoinSeparator+"and after")
 }
 
 // A person's message with no send id, joined with one answer, names one send
@@ -228,18 +230,18 @@ func TestASessionDeathKeepsTheTextOfAPersonWithoutASendID(t *testing.T) {
 func TestSplitSessionEndPartsSplitsByTheRecordedParts(t *testing.T) {
 	t.Parallel()
 	wake, request := "agent-wake:w:1", threadRequestSendID("tok-1")
-	wakeWritten := builtMessage(t)(usermessage.Report(usermessage.ReportLoop, usermessage.Reporter{Label: "l"}, "", "the wake", "the wake's note")).Attribution()
+	wakeWritten := builtMessage(t)(usermessage.Report(agentmeta.ReportLoop, usermessage.Reporter{Label: "l"}, "", "the wake", "the wake's note")).Attribution()
 	requestWritten := builtMessage(t)(usermessage.Message(usermessage.Sender{ThreadID: "t-lead", Title: "Lead"}, "the request")).Attribution()
 	wakeFacts, requestFacts := wakeWritten.Wake.Facts, requestWritten.Thread.Facts
 	text, meta := usermessage.Join([]usermessage.JoinMember{
 		{Text: "mine, no send id"},
-		{Meta: usermessage.Meta{SendID: wake, Origin: usermessage.OriginAgentWake, OriginWake: wakeWritten.Wake}, Text: "the wake"},
+		{Meta: usermessage.Meta{SendID: wake, Origin: agentmeta.OriginAgentWake, OriginWake: wakeWritten.Wake}, Text: "the wake"},
 		{Meta: usermessage.Meta{SendID: "p2"}, Text: "and mine"},
-		{Meta: usermessage.Meta{SendID: request, Origin: usermessage.OriginAgentThread, OriginThread: requestWritten.Thread}, Text: "the request"},
+		{Meta: usermessage.Meta{SendID: request, Origin: agentmeta.OriginAgentThread, OriginThread: requestWritten.Thread}, Text: "the request"},
 	})
 	joined := unconfirmedMembers{ids: meta.JoinedSendIDs, joined: true, parts: meta.JoinedParts}
 	app, person, ok := splitSessionEndParts(joined, text)
-	if want := "mine, no send id" + usermessage.JoinSeparator + "and mine"; !ok || person == nil || *person != want {
+	if want := "mine, no send id" + agentmeta.JoinSeparator + "and mine"; !ok || person == nil || *person != want {
 		t.Fatalf("ok %v person %v; want %q", ok, person, want)
 	}
 	texts := func(app map[string]usermessage.AgentMessage) map[string]string {
@@ -254,14 +256,14 @@ func TestSplitSessionEndPartsSplitsByTheRecordedParts(t *testing.T) {
 	}
 	// Each part goes back with the attribution and facts it was written
 	// with, so its row reads as it did.
-	if got := app[wake].Attribution(); got.Origin != usermessage.OriginAgentWake || got.Wake == nil || !reflect.DeepEqual(got.Wake.Facts, wakeFacts) {
+	if got := app[wake].Attribution(); got.Origin != agentmeta.OriginAgentWake || got.Wake == nil || !reflect.DeepEqual(got.Wake.Facts, wakeFacts) {
 		t.Fatalf("the wake's attribution = %+v", got.Wake)
 	}
-	if got := app[request].Attribution(); got.Origin != usermessage.OriginAgentThread || got.Thread == nil || !reflect.DeepEqual(got.Thread.Facts, requestFacts) {
+	if got := app[request].Attribution(); got.Origin != agentmeta.OriginAgentThread || got.Thread == nil || !reflect.DeepEqual(got.Thread.Facts, requestFacts) {
 		t.Fatalf("the request's attribution = %+v", got.Thread)
 	}
 
-	oneID := usermessage.Meta{SendID: wake, Origin: usermessage.OriginAgentWake}
+	oneID := usermessage.Meta{SendID: wake, Origin: agentmeta.OriginAgentWake}
 	text, meta = usermessage.Join([]usermessage.JoinMember{{Text: "mine"}, {Meta: oneID, Text: "the wake"}})
 	app, person, ok = splitSessionEndParts(unconfirmedMembers{ids: meta.JoinedSendIDs, joined: true, parts: meta.JoinedParts}, text)
 	if !ok || person == nil || *person != "mine" || app[wake].Text() != "the wake" {
@@ -273,7 +275,7 @@ func TestSplitSessionEndPartsSplitsByTheRecordedParts(t *testing.T) {
 	if _, _, ok := splitSessionEndParts(unconfirmedMembers{ids: meta.JoinedSendIDs, joined: true, parts: meta.JoinedParts}, text+" "); ok {
 		t.Fatal("split a joined message whose parts no longer describe it")
 	}
-	own := usermessage.JoinedPart{SendID: wake, Origin: usermessage.OriginAgentWake, OriginWake: wakeWritten.Wake}
+	own := agentmeta.JoinedPart{SendID: wake, Origin: agentmeta.OriginAgentWake, OriginWake: wakeWritten.Wake}
 	app, person, ok = splitSessionEndParts(unconfirmedMembers{ids: []string{wake}, own: own}, "the wake")
 	if !ok || person != nil || app[wake].Text() != "the wake" || app[wake].Attribution().Wake == nil || !reflect.DeepEqual(app[wake].Attribution().Wake.Facts, wakeFacts) {
 		t.Fatalf("a lone wake: ok %v person %v app %+v", ok, person, app)
@@ -333,7 +335,7 @@ func TestAFailedResendGivesBackItsAnswerAndCompletion(t *testing.T) {
 	f.app.triage.CleanupThread(f.caller.ID)
 	var persisted []triage.EagerPersistedFlush
 	for i, row := range rows {
-		if err := f.app.store.DeleteDispatchedFlushQueueItem(row.ID); err != nil {
+		if err := f.app.store.DeleteDispatchedFlushQueueItems([]string{row.ID}); err != nil {
 			t.Fatal(err)
 		}
 		meta, err := usermessage.Marshal(usermessage.Input{SendID: row.SendID})
@@ -555,7 +557,7 @@ func TestAnUnsplittableJoinGoesToTheComposerWhole(t *testing.T) {
 				builtMessage(t)(renderAgentLoopWake(wake, agentWakeFire{})).Text(),
 				builtMessage(t)(workerPromptMessage("Worker", "worker-thread", &prompt)).Text(),
 				"the notes are ready",
-			}, usermessage.JoinSeparator)
+			}, agentmeta.JoinSeparator)
 			meta, err := usermessage.Marshal(usermessage.Input{SendID: ids[0], JoinedSendIDs: ids})
 			if err != nil {
 				t.Fatal(err)
@@ -776,6 +778,135 @@ func TestTheEchoConfirmsAnAnswersDelivery(t *testing.T) {
 }
 
 // A restart finds an answer, a late reply or a reminder and a completion
+// whose echo the last run confirmed while their queue rows were still
+// there (it died between the provider write and the settlement that
+// deletes them): the rows go, and both stay delivered and confirmed, so
+// nothing owes or delivers them again. The person's message beside them
+// still goes to the composer.
+func TestTheBootRestoreDropsTheQueueRowOfAConfirmedDelivery(t *testing.T) {
+	t.Parallel()
+	for _, tc := range owedWakeSeeds() {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			f := newRequestFixture(t)
+			f.app.startSessionFn = func(string) error { return nil }
+			token := tc.seed(t, f)
+			w := completedRemoteWatch(t, f.app, f.caller)
+			queueOwnedAndPersonMessages(t, f, token, tc.late, w, "build passed")
+			f.app.confirmOwnedDeliveries(f.caller.ID, []triage.ConsumedSend{{ItemID: "echo-row", SendIDs: []string{
+				store.ThreadWakeSendID(token, tc.late), remoteCompletionSendID(w),
+			}}})
+			before := f.request(t, token)
+
+			after := f.restart(t)
+			after.app.restoreDurableFlushQueueAtBoot()
+
+			row := after.request(t, token)
+			confirmed := row.ConfirmedAt
+			if tc.late {
+				confirmed = row.LateConfirmedAt
+			}
+			if !threadRequestDelivered(row, tc.late) || row.DeliveryRoute(tc.late) != store.ThreadWakeQueued || confirmed == 0 || row.Notify != before.Notify {
+				t.Fatalf("a confirmed answer was given back: delivered %v as %q, confirmed at %d, notify %v (was %v)",
+					threadRequestDelivered(row, tc.late), row.DeliveryRoute(tc.late), confirmed, row.Notify, before.Notify)
+			}
+			if saved, err := after.app.store.GetRemoteWatch(w.ComputerID, w.RequestID); err != nil || saved.Notification != "queued" || saved.ConfirmedAt == 0 {
+				t.Fatalf("a confirmed completion's watch = %+v %v, want queued and confirmed", saved, err)
+			}
+			if durable, memory := queuedSendIDs(t, after.app, f.caller.ID); len(durable) != 0 || len(memory) != 0 {
+				t.Fatalf("queue %q (in memory %q), want it empty", durable, memory)
+			}
+			requireDraft(t, after.app, f.caller.ID, "my own words")
+		})
+	}
+}
+
+// The last run died after the provider's echo wrote its row and before the
+// confirmation landed: the confirmation write failed and only memory kept
+// it, or the queue rows were still there. The row is the provider's word
+// that the agent took the message in, so the boot records the confirmation
+// from it and gives nothing back, with or without a queue row left.
+func TestTheBootConfirmsADeliveryItsEchoRowProves(t *testing.T) {
+	t.Parallel()
+	requireConfirmed := func(t *testing.T, f *requestFixture, token string, late bool, before store.ThreadRequest) {
+		t.Helper()
+		row := f.request(t, token)
+		confirmed := row.ConfirmedAt
+		if late {
+			confirmed = row.LateConfirmedAt
+		}
+		if !threadRequestDelivered(row, late) || row.DeliveryRoute(late) != store.ThreadWakeQueued || confirmed == 0 || row.Notify != before.Notify {
+			t.Fatalf("an answer its echo row proves was given back: delivered %v as %q, confirmed at %d, notify %v (was %v)",
+				threadRequestDelivered(row, late), row.DeliveryRoute(late), confirmed, row.Notify, before.Notify)
+		}
+	}
+	for _, tc := range owedWakeSeeds() {
+		t.Run("unconfirmed/"+tc.name, func(t *testing.T) {
+			t.Parallel()
+			f := newRequestFixture(t)
+			f.app.startSessionFn = func(string) error { return nil }
+			token := tc.seed(t, f)
+			f.app.deliverThreadWake(token, tc.late)
+			f.app.waitAgentNoticeWork()
+			envelope := dispatchUnconfirmed(t, f)
+			execOnStore(t, f.dbPath, `CREATE TRIGGER refuse_wake_confirm BEFORE UPDATE ON thread_requests
+				WHEN NEW.confirmed_at IS NOT OLD.confirmed_at OR NEW.late_confirmed_at IS NOT OLD.late_confirmed_at
+				BEGIN SELECT RAISE(ABORT, 'injected confirm failure'); END`)
+			wireID, _ := envelope["uuid"].(string)
+			text, _ := envelopeText(t, envelope)
+			meta, _ := json.Marshal(map[string]any{"provider_item_id": wireID})
+			if err := f.app.triage.Handle(provider.ProviderEvent{
+				Kind: provider.EventUserText, ThreadID: f.caller.ID, Content: text, Meta: meta, Timestamp: time.Now(),
+			}); err != nil {
+				t.Fatalf("echo: %v", err)
+			}
+			before := f.request(t, token)
+			if (!tc.late && before.ConfirmedAt != 0) || before.LateConfirmedAt != 0 {
+				t.Fatal("confirmed through the refused write")
+			}
+			if delivered, err := f.app.queuedSendDelivered(f.caller.ID, store.ThreadWakeSendID(token, tc.late)); err != nil || !delivered {
+				t.Fatalf("the echo wrote no row carrying the provider's id: %v %v", delivered, err)
+			}
+			execOnStore(t, f.dbPath, `DROP TRIGGER refuse_wake_confirm`)
+
+			after := f.restart(t)
+			after.app.restoreDurableFlushQueueAtBoot()
+
+			requireConfirmed(t, after, token, tc.late, before)
+		})
+		t.Run("queued/"+tc.name, func(t *testing.T) {
+			t.Parallel()
+			f := newRequestFixture(t)
+			f.app.startSessionFn = func(string) error { return nil }
+			token := tc.seed(t, f)
+			w := completedRemoteWatch(t, f.app, f.caller)
+			queueOwnedAndPersonMessages(t, f, token, tc.late, w, "build passed")
+			now := time.Now().UnixMilli()
+			for i, sendID := range []string{store.ThreadWakeSendID(token, tc.late), remoteCompletionSendID(w)} {
+				meta, _ := json.Marshal(map[string]any{"sendId": sendID, "provider_item_id": fmt.Sprintf("wire-%d", i)})
+				if _, err := f.app.store.AppendItem(store.Item{ID: fmt.Sprintf("echo-%d", i), ThreadID: f.caller.ID, TurnIndex: 1,
+					Kind: "user_text", Role: "user", Status: "completed", Summary: "echoed", Meta: string(meta), CreatedAt: now, UpdatedAt: now}); err != nil {
+					t.Fatalf("AppendItem: %v", err)
+				}
+			}
+			before := f.request(t, token)
+
+			after := f.restart(t)
+			after.app.restoreDurableFlushQueueAtBoot()
+
+			requireConfirmed(t, after, token, tc.late, before)
+			if saved, err := after.app.store.GetRemoteWatch(w.ComputerID, w.RequestID); err != nil || saved.Notification != "queued" || saved.ConfirmedAt == 0 {
+				t.Fatalf("a completion its echo row proves = %+v %v, want queued and confirmed", saved, err)
+			}
+			if durable, memory := queuedSendIDs(t, after.app, f.caller.ID); len(durable) != 0 || len(memory) != 0 {
+				t.Fatalf("queue %q (in memory %q), want it empty", durable, memory)
+			}
+			requireDraft(t, after.app, f.caller.ID, "my own words")
+		})
+	}
+}
+
+// A restart finds an answer, a late reply or a reminder and a completion
 // that the last run handed the provider and never saw confirmed, with no
 // queue row left: they go back to their owners, the completion due at once.
 func TestTheBootSweepGivesBackWhatWasNeverConfirmed(t *testing.T) {
@@ -847,7 +978,7 @@ func TestACompletionASessionEndGaveBackWaitsOnTheLadder(t *testing.T) {
 		if err := f.app.store.QueueRemoteCompletion(w.ComputerID, w.RequestID, item); err != nil {
 			t.Fatal(err)
 		}
-		if err := f.app.store.DeleteDispatchedFlushQueueItem(item.ID); err != nil {
+		if err := f.app.store.DeleteDispatchedFlushQueueItems([]string{item.ID}); err != nil {
 			t.Fatal(err)
 		}
 	}

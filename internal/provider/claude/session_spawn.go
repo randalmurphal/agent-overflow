@@ -10,6 +10,7 @@ import (
 
 	"agent-overflow/internal/claudeconfig"
 	"agent-overflow/internal/logging"
+	"agent-overflow/internal/procutil"
 	"agent-overflow/internal/provider"
 )
 
@@ -181,9 +182,10 @@ type Config struct {
 	// the CLI runs on Linux — including the WSL backend — because the
 	// implementation reads /proc/self/cgroup.
 	ToolMemoryLimit string
-	// CleanupPeriodDays is the `cleanupPeriodDays` the block carries, from
-	// CleanupPeriodOverride. Zero sends none. See retention.go.
-	CleanupPeriodDays int
+	// Retention is the session's answer to the transcript sweep, carried in
+	// its `--settings` block (retention.go). The zero value refuses the
+	// spawn.
+	Retention Retention
 	// Thinking is the extended-thinking axis: leave it to the CLI, turn it
 	// off, or pin a fixed token budget, plus whether thinking text reaches
 	// the wire.
@@ -229,6 +231,9 @@ type Config struct {
 	// should go through AutoCompactPercent's inline settings path instead.
 	Env         map[string]string
 	EventLogger *logging.Logger
+	// Reaper ends the session's process group if the backend dies first
+	// (provider.SpawnConfig.Reaper).
+	Reaper procutil.Reaper
 	// MCPServers carries optional MCP server configs to register for
 	// this session. Threaded through `--mcp-config <json>` and merged with
 	// native user/workspace discovery.
@@ -247,7 +252,7 @@ type Config struct {
 	AgentLaunchByTask func(taskID string) (launch AgentLaunchRecord, found bool, err error)
 }
 
-// claudeSpawnEnv and claudeSpawnUnsetEnv are the two halves of a Claude
+// claudeSpawnEnv and launchUnsetEnv are the two halves of a Claude
 // child's environment, named so a test can assert what the child actually
 // receives without spawning one. The pair is what makes "off means off"
 // true: the overrides SET the gate when the feature is on, and the unset
@@ -287,10 +292,6 @@ func withClaudeTaskListEnv(env map[string]string, taskListID string) map[string]
 	maps.Copy(merged, env)
 	merged[claudeTaskListIDEnvVar] = taskListID
 	return merged
-}
-
-func claudeSpawnUnsetEnv() []string {
-	return append(ConfigHomeUnsetEnv(), CrossSessionUnsetEnv()...)
 }
 
 // claudeCodeEntrypointEnv tags spawned `claude` processes so the
@@ -477,12 +478,20 @@ func RemoveSystemPromptFile(path string) {
 	}
 }
 
-// buildArgs constructs CLI flags from Config. systemPromptPath and
+// sessionCommandLine is the session's command line: its `--settings` block
+// with cfg.Retention's period, then sessionArgs. systemPromptPath and
 // appendSystemPromptPath are the files WriteSystemPromptFile produced for
 // cfg.SystemPrompt and cfg.AppendSystemPrompt (empty when the session
 // carries neither) — a prompt reaches the CLI by path, never as an argv
 // value.
-func buildArgs(cfg Config, systemPromptPath, appendSystemPromptPath string) []string {
+func sessionCommandLine(cfg Config, systemPromptPath, appendSystemPromptPath string) (CommandLine, error) {
+	settings, _ := inlineSettingsForCLI(cfg)
+	return NewCommandLine(cfg.Retention, settings, sessionArgs(cfg, systemPromptPath, appendSystemPromptPath)...)
+}
+
+// sessionArgs constructs the session's CLI flags from Config, apart from
+// the `--settings` block sessionCommandLine adds.
+func sessionArgs(cfg Config, systemPromptPath, appendSystemPromptPath string) []string {
 	args := []string{
 		"--input-format", "stream-json",
 		"--output-format", "stream-json",
@@ -574,9 +583,6 @@ func buildArgs(cfg Config, systemPromptPath, appendSystemPromptPath string) []st
 	}
 	if cfg.ReasoningEffort != "" {
 		args = append(args, "--effort", cfg.ReasoningEffort)
-	}
-	if settingsJSON, ok := inlineSettingsForCLI(cfg); ok {
-		args = append(args, "--settings", settingsJSON)
 	}
 	if mcpJSON, ok := mcpConfigForCLI(cfg); ok {
 		args = append(args, "--mcp-config", mcpJSON)

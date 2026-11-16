@@ -4,6 +4,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"agent-overflow/internal/procutil"
 )
 
 // maxReplayBytes caps the ring buffer per session. 256 KiB holds a few
@@ -19,6 +21,12 @@ type SessionOptions struct {
 	Env   []string
 	Rows  uint16
 	Cols  uint16
+	// Reaper is handed the session's process group as the process starts
+	// and released once it has exited, so the orphan reaper ends the group if
+	// the backend dies first. Required: the pty's hangup reaches only what
+	// still holds the terminal and does not ignore SIGHUP, and a pty process
+	// runs until it is closed.
+	Reaper procutil.Reaper
 }
 
 // SessionSummary is the flat description of a session for listings.

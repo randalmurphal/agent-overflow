@@ -110,7 +110,7 @@ func (a *App) startDomainCertificateLoop(dir string) {
 	a.domainCert.mu.Unlock()
 
 	ctx := a.lifeCtx()
-	go func() {
+	a.unattendedLoops.Go(func() {
 		for {
 			wait := a.reconcileDomainCertificate(ctx)
 			timer := time.NewTimer(wait)
@@ -123,7 +123,7 @@ func (a *App) startDomainCertificateLoop(dir string) {
 			case <-timer.C:
 			}
 		}
-	}()
+	})
 }
 
 // kickDomainCertificate asks the loop to reconcile now. Never blocks and
@@ -264,6 +264,7 @@ func (a *App) reconcileIssuedCertificate(
 		Dir:    dir,
 		Domain: cfg.CanonicalDomain,
 		Hook:   cfg.ACMEDNSHook,
+		Reaper: a.groupReaper("dns hook"),
 	})
 	if err != nil {
 		a.recordDomainCertFailure(fmt.Sprintf("%v", err))
