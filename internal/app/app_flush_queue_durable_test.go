@@ -658,8 +658,8 @@ func TestFindRecordedSendSurvivesNewerMessages(t *testing.T) {
 }
 
 // A queued item registered by an INJECTOR still settles its injector's
-// bookkeeping when the durable row is deleted: the row deletion is composed
-// into the settlement rather than replacing it.
+// bookkeeping when its dispatch deletes the durable row, and only once when
+// both endpoints reach it.
 func TestDurableRowDeletionComposesWithTheInjectorSettlement(t *testing.T) {
 	t.Parallel()
 	app, _ := newAppForFlushQueueRPC(t)
@@ -682,7 +682,7 @@ func TestDurableRowDeletionComposesWithTheInjectorSettlement(t *testing.T) {
 	if len(items) != 1 {
 		t.Fatalf("queued items: got %d, want 1", len(items))
 	}
-	items[0].Settlement.Settle()
+	app.settleFlushGroup(thread.ID, items)
 
 	if settled != 1 {
 		t.Fatalf("injector settlement ran %d times, want 1", settled)
@@ -690,7 +690,7 @@ func TestDurableRowDeletionComposesWithTheInjectorSettlement(t *testing.T) {
 	if rows := durableQueueRows(t, app, thread.ID); len(rows) != 0 {
 		t.Fatalf("durable rows after settling: got %+v, want none", rows)
 	}
-	// sync.Once: the two endpoints can race and the delete stays exactly once.
+	// sync.Once: the two endpoints can race and the bookkeeping runs once.
 	items[0].Settlement.Settle()
 	if settled != 1 {
 		t.Fatalf("injector settlement ran again: %d", settled)

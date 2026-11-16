@@ -603,8 +603,8 @@ func unconfirmedFlushRestoreScore(item triage.UnconfirmedFlushItem) int {
 // requeueUnconfirmedFlushItems puts messages a restore could not return to
 // the composer back on the queue, durable first like any queued message. One
 // that had reached the provider lost its durable row at that write, so it
-// gets the row again, and a settlement that retires it when the requeued
-// message is dispatched or restored. One whose earlier row is still in the
+// gets the row again under its queue id, which the dispatch or restore of the
+// requeued message retires. One whose earlier row is still in the
 // store (StaleUserItemID) keeps that row as its durable copy instead: the
 // boot restore takes an unconfirmed row back with its text, so a queue row
 // as well would put the message in the composer twice.
@@ -635,7 +635,6 @@ func (a *App) requeueUnconfirmedFlushItems(threadID string, items []triage.Uncon
 				log.Printf("flush queue: persist requeued message %s/%s: %v", threadID, queued.ID, err)
 				a.emitErrorToThread(threadID, "Saving a queued message failed. It stays queued but will not survive an app restart: "+err.Error())
 			}
-			queued.Settlement = triage.CombineFlushSettlements(queued.Settlement, a.flushQueueSettlement(threadID, queued.ID, nil))
 		}
 		a.triage.RegisterQueueItem(threadID, queued)
 	}
@@ -777,27 +776,40 @@ func (a *App) restoreDurableFlushQueueAtBoot() {
 
 // restoreThreadQueueAtBoot is the boot restore of one thread. The rows of
 // unconfirmed messages come first: they were dispatched, so they were queued
-// before anything still on the queue. A queue row that outlived its message's
-// provider write (an answer to an agent's question keeps it until the echo)
-// is the same message as that write's row, so the row lends no second copy.
+// before anything still on the queue.
+//
+// An unconfirmed row is restored whole, and a queue row that is a copy of a
+// message it carries (its send id is among the row's) gives no text of its
+// own. A queue row outlives its message's provider write when the process
+// dies between the write and its settlement, or when the message is an
+// answer to an agent's question, which keeps its row until the echo. The row
+// is the unit because a joined row (several queued messages one provider
+// message carried) cannot be split back into its members: its summary joins
+// them with a separator a member's own text may contain, renumbers their
+// image markers, and its attachments, text without review comments and
+// claimed comments are kept for the whole message, not per member. Restoring
+// some members from their queue copies and the rest from the row is
+// therefore not possible, and restoring the copies alone loses the others.
+//
+// A queue row whose message a row the provider confirmed carries was
+// delivered before the process died: it leaves with the rest, without
+// putting the message in the composer.
 //
 // The draft, the queue rows and the unconfirmed rows with the review
 // comments they claimed are written in one transaction, so a failure or a
-// crash leaves every message where it was for the next boot.
+// crash leaves every message where it was for the next boot. Nothing else
+// writes the thread's rows while the boot runs (no session has started and
+// no client call is served before Start returns), so the rows read here are
+// the rows that transaction changes.
 func (a *App) restoreThreadQueueAtBoot(threadID string, unconfirmedIDs []string) error {
 	rows, err := a.store.ListFlushQueueItems(threadID)
 	if err != nil {
 		return fmt.Errorf("list queued messages: %w", err)
 	}
-	queuedSends := make(map[string]bool, len(rows))
-	for _, row := range rows {
-		if row.SendID != "" {
-			queuedSends[row.SendID] = true
-		}
-	}
 	parts := make([]composerdraft.Part, 0, len(unconfirmedIDs)+len(rows))
 	var retire []string
 	var restoredSends []string
+	carried := make(map[string]bool)
 	for _, id := range unconfirmedIDs {
 		item, found, err := a.store.GetThreadItem(threadID, id)
 		if err != nil {
@@ -808,8 +820,8 @@ func (a *App) restoreThreadQueueAtBoot(threadID string, unconfirmedIDs []string)
 		}
 		retire = append(retire, id)
 		sends := userRowSendIDs(item)
-		if slices.ContainsFunc(sends, func(sendID string) bool { return queuedSends[sendID] }) {
-			continue
+		for _, sendID := range sends {
+			carried[sendID] = true
 		}
 		restoredSends = append(restoredSends, sends...)
 		if part := draftPartFromUserItem(item); !emptyDraftPart(part) {
@@ -819,6 +831,17 @@ func (a *App) restoreThreadQueueAtBoot(threadID string, unconfirmedIDs []string)
 	ids := make([]string, 0, len(rows))
 	for _, row := range rows {
 		ids = append(ids, row.ID)
+		if row.SendID != "" && carried[row.SendID] {
+			continue
+		}
+		delivered, err := a.queuedSendDelivered(threadID, row.SendID)
+		if err != nil {
+			return fmt.Errorf("read the row of queued message %s: %w", row.ID, err)
+		}
+		if delivered {
+			log.Printf("app: queued message %s of thread %s was delivered before the restart; dropping its queue row", row.ID, threadID)
+			continue
+		}
 		restoredSends = append(restoredSends, row.SendID)
 		if part := draftPartFromQueueRow(row); !emptyDraftPart(part) {
 			parts = append(parts, part)
@@ -837,6 +860,23 @@ func (a *App) restoreThreadQueueAtBoot(threadID string, unconfirmedIDs []string)
 	a.emit(eventchan.ProviderAsyncQuestionsChanged, map[string]string{"threadId": threadID})
 	log.Printf("app: restored %d queued message(s) into the composer for thread %s", len(parts), threadID)
 	return nil
+}
+
+// queuedSendDelivered reports whether the provider confirmed the message a
+// queue row with this send id is a copy of: a user row answers for the send
+// id and carries the provider's id for it. A confirmation can land between
+// the provider write and the settlement that deletes the queue row, so a
+// crash there leaves both. A row the provider has not confirmed (a revealed
+// interrupt row still awaiting its echo) is no proof of delivery.
+func (a *App) queuedSendDelivered(threadID, sendID string) (bool, error) {
+	if sendID == "" {
+		return false, nil
+	}
+	item, found, err := a.store.FindUserTextItemBySendID(threadID, sendID)
+	if err != nil || !found {
+		return false, err
+	}
+	return usermessage.ReadProviderItemID(item.Meta) != "", nil
 }
 
 // unconfirmedFlushSendIDs is every send id a message drained from the queue
