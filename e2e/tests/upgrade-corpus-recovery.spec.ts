@@ -428,14 +428,17 @@ test('the release upgrade check tells a dead process\'s recovered rows from alte
       .toEqual(['req-joined', 'req-rider', 'req-wake'].map((token) => ({ token, at: null, how: '', rode: '', notify: 0 })));
     // The joined row's person's text whole, the answer split off and its
     // member's queue copy adding nothing; the confirmed message's queue row
-    // gone with the draft and wake untouched.
+    // gone with the draft untouched, and its wake still delivered and
+    // confirmed, now naming its echo's row.
     expect(await dbQuery(rig.dbPath, `SELECT content FROM thread_drafts WHERE thread_id = '${threadId}'`))
       .toEqual([{ content: `${QUEUED}${JOIN}${MEMBER}` }]);
     expect(await dbQuery(rig.dbPath, `SELECT
         (SELECT COUNT(*) FROM flush_queue_items) AS queued,
         (SELECT content FROM thread_drafts WHERE thread_id = '${quietId}') AS draft,
-        (SELECT delivered_how FROM thread_requests WHERE token = 'req-delivered') AS how`))
-      .toEqual([{ queued: 0, draft: 'kept', how: 'queued' }]);
+        r.delivered_how AS how, r.confirmed_at IS NOT NULL AS confirmed, r.notify AS notify,
+        r.wake_item_id = (SELECT i.id FROM items i WHERE i.thread_id = '${quietId}' AND i.kind = 'user_text' AND i.parent_id = '') AS named
+        FROM thread_requests r WHERE r.token = 'req-delivered'`))
+      .toEqual([{ queued: 0, draft: 'kept', how: 'queued', confirmed: 1, notify: 1, named: 1 }]);
     // The wake its echo's row proves is confirmed by that row and stays delivered.
     expect(await dbQuery(rig.dbPath, `SELECT delivered_how AS how, confirmed_at IS NOT NULL AS confirmed, wake_item_id <> '' AS row, notify
         FROM thread_requests WHERE token = 'req-echoed'`))
@@ -463,6 +466,7 @@ test('the release upgrade check tells a dead process\'s recovered rows from alte
       'queued-message-drafts thread_drafts': 2,
       'wakes-given-back thread_requests': 3,
       'echoed-wakes-confirmed thread_requests': 1,
+      'confirmed-wakes-name-their-row thread_requests': 1,
       'retired-message-claims diff_review_comments': 1,
       'unsettled-review-claims diff_review_comments': 1,
       'replacement-draft-recoveries thread_draft_recoveries': 1,
@@ -502,6 +506,8 @@ test('the release upgrade check tells a dead process\'s recovered rows from alte
         sql: `UPDATE thread_requests SET delivered_at = NULL, delivered_how = '', notify = 0 WHERE token = 'req-delivered'` },
       { rule: 'echoed-wakes-confirmed: a wake its echo proves given back', table: 'thread_requests',
         sql: `UPDATE thread_requests SET delivered_at = NULL, delivered_how = '', confirmed_at = NULL, wake_item_id = '', notify = 0 WHERE token = 'req-echoed'` },
+      { rule: 'confirmed-wakes-name-their-row: the confirmation moved', table: 'thread_requests',
+        sql: `UPDATE thread_requests SET confirmed_at = confirmed_at + 1 WHERE token = 'req-delivered'` },
       { rule: 'queued-messages', table: 'flush_queue_items', sql: `INSERT INTO flush_queue_items SELECT id, thread_id, send_id, 'edited', payload, enqueued_at FROM snap.flush_queue_items` },
       // A wake's give-back leaves its thread's draft as the composer left
       // it: a draft that took the wake's text or attachment, lost its own,

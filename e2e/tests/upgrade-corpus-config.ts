@@ -177,6 +177,19 @@ const wakeEchoConfirmed = (x: string) => `${x}.lineage_only = 0 AND (
     AND ${sendConfirmed(`${x}.caller_thread_id`, firstWakeSend(x))})
   OR (${x}.late_delivered_at IS NOT NULL AND ${x}.late_confirmed_at IS NULL
     AND ${sendConfirmed(`${x}.caller_thread_id`, `'thread-wake-late:' || ${x}.token`)}))`;
+/**
+ * The confirmed thread request `x` whose wake's queue row outlived the echo:
+ * the boot drops that row, and before it confirms the send from its echo's
+ * row again (app.confirmEchoedAtBoot), which on a confirmed wake only names
+ * that row (store.ConfirmThreadWake), as a wake v154 confirmed never has.
+ */
+const wakeRowNamed = (x: string) => `${x}.lineage_only = 0 AND (
+  (${x}.delivered_at IS NOT NULL AND ${x}.confirmed_at IS NOT NULL
+    AND EXISTS (SELECT 1 FROM mig.flush_queue_items q WHERE q.thread_id = ${x}.caller_thread_id AND q.send_id = ${firstWakeSend(x)})
+    AND ${sendConfirmed(`${x}.caller_thread_id`, firstWakeSend(x))})
+  OR (${x}.late_delivered_at IS NOT NULL AND ${x}.late_confirmed_at IS NOT NULL
+    AND EXISTS (SELECT 1 FROM mig.flush_queue_items q WHERE q.thread_id = ${x}.caller_thread_id AND q.send_id = 'thread-wake-late:' || ${x}.token)
+    AND ${sendConfirmed(`${x}.caller_thread_id`, `'thread-wake-late:' || ${x}.token`)}))`;
 /** The send id of the remote watch `x`'s completion (app.remoteCompletionSendID). */
 const completionSend = (x: string) => `'remote-completion:' || ${x}.computer_id || ':' || ${x}.request_id`;
 /** The pairing link `x` of an approved own-device admission the last run did not finish: store.IncompleteOwnAdmissions' selection. */
@@ -367,6 +380,14 @@ export const recoveryRules: RecoveryRule[] = [
     table: 'thread_requests', rows: wakeEchoConfirmed('s'),
     columns: ['confirmed_at', 'wake_item_id', 'late_confirmed_at', 'late_wake_item_id', 'updated_at'],
     to: '(b.delivered_at IS NULL OR b.confirmed_at IS NOT NULL) AND (b.late_delivered_at IS NULL OR b.late_confirmed_at IS NOT NULL)',
+  },
+  {
+    // A confirmed wake stays delivered and confirmed; its echo's row is named.
+    name: 'confirmed-wakes-name-their-row',
+    writer: 'app.(*App).confirmEchoedAtBoot (store.ConfirmThreadWake), from restoreThreadQueueAtBoot',
+    table: 'thread_requests', rows: wakeRowNamed('s'),
+    columns: ['wake_item_id', 'late_wake_item_id', 'updated_at'],
+    to: 'b.confirmed_at IS s.confirmed_at AND b.late_confirmed_at IS s.late_confirmed_at',
   },
   {
     // The watch is pending again, and the watcher delivers its completion. A
@@ -723,7 +744,6 @@ export const coverageAllowlist: CoverageAllowance[] = [
       answer_kind: ['', 'error', 'note'],
       answer_agent: [1],
       late_reply_agent: [1],
-      own_turn: [0],
       lineage_only: [1],
     },
     reason: "a target receipts sends and spawns only (a reminder has no target); the top-up stages no ask, late reply, failed or stopped request or answer from a standing agent, open states are ones a request passes through, and a spawn's receipt the retention floor keeps as its lineage is a month old",
