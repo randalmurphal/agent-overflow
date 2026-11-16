@@ -26,7 +26,7 @@ var resultVocabulary = []string{
 	"errors", "indexing", "last_message", "self",
 	"reply", "final",
 	"backgrounded", "blocked", "unconfirmed",
-	"last_outcome", "last_output",
+	"last_outcome", "last_output", "waiting_on",
 }
 
 func schemaVocabulary(t *testing.T, shape Shape) (names, properties, enums []string) {
