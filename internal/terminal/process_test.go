@@ -5,6 +5,7 @@ package terminal
 import (
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -15,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/procutil"
 	"agent-overflow/internal/procutil/procutiltest"
 )
 
@@ -549,5 +551,79 @@ func TestAReapedProcessIsWatchedFromItsStartUntilItExits(t *testing.T) {
 				t.Fatalf("watched %v released %v once the process was gone, want [%d] each", watched, released, pid)
 			}
 		})
+	}
+}
+
+// startShellLeavingAJob starts a shell, watched by reaper, that leaves a job
+// in its own group ignoring the signals in traps, and exits once the job has
+// set its traps. It returns the process, once the shell has exited, and the
+// job's pid, which the test's cleanup kills.
+func startShellLeavingAJob(t *testing.T, reaper *procutiltest.Recorder, traps string) (*Process, int) {
+	t.Helper()
+	pidFile := filepath.Join(t.TempDir(), "job.pid")
+	p, err := Start(ProcessConfig{
+		Reaper: reaper,
+		Shell:  "/bin/sh",
+		Args: []string{"-c",
+			`sh -c "trap '' $1; echo \$\$ > \"\$0\"; exec sleep 120" "$0" & while [ ! -s "$0" ]; do sleep 0.01; done; exit 0`,
+			pidFile, traps},
+		Cwd: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = p.Kill() })
+	pid := backgroundJobPID(t, pidFile)
+	select {
+	case <-p.Done():
+	case <-time.After(10 * time.Second):
+		t.Fatal("process did not report the shell's exit")
+	}
+	return p, pid
+}
+
+// A job the shell left in its group runs on while the terminal is open, so
+// the group stays watched; Close ends the job, even one ignoring SIGTERM, and
+// returns only once it is gone, then releases the group.
+func TestCloseEndsAJobTheShellLeftBeforeReleasingItsGroup(t *testing.T) {
+	for _, c := range []struct{ name, traps string }{
+		{"job", "HUP"},
+		{"job ignoring SIGTERM", "HUP TERM"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			reaper := &procutiltest.Recorder{}
+			p, job := startShellLeavingAJob(t, reaper, c.traps)
+			if !processAlive(job) {
+				t.Fatal("the job ended with the shell")
+			}
+			if _, released := reaper.Calls(); len(released) != 0 {
+				t.Fatalf("released %v while the job runs, want the group still watched", released)
+			}
+			if err := p.Close(); err != nil {
+				t.Fatalf("Close = %v, want nil", err)
+			}
+			if processAlive(job) {
+				t.Fatalf("job %d still exists once Close returned", job)
+			}
+			if _, released := reaper.Calls(); !slices.Equal(released, []int{p.PID()}) {
+				t.Fatalf("released %v once Close returned, want [%d]", released, p.PID())
+			}
+		})
+	}
+}
+
+// A job Close cannot end keeps its group watched, for the reaper to end with
+// the backend, and Close reports it.
+func TestAJobCloseCannotEndKeepsItsGroupWatched(t *testing.T) {
+	prev := stopLeftovers
+	stopLeftovers = func(*exec.Cmd, time.Duration) error { return procutil.ErrGroupSurvived }
+	t.Cleanup(func() { stopLeftovers = prev })
+	reaper := &procutiltest.Recorder{}
+	p, _ := startShellLeavingAJob(t, reaper, "HUP TERM")
+	if err := p.Close(); !errors.Is(err, procutil.ErrGroupSurvived) {
+		t.Fatalf("Close = %v, want ErrGroupSurvived", err)
+	}
+	if _, released := reaper.Calls(); len(released) != 0 {
+		t.Fatalf("released %v, want the group still watched", released)
 	}
 }

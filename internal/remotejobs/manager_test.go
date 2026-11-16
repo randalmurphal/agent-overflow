@@ -235,6 +235,7 @@ func TestCommandFailureMessagesDescribeRecoveryWithoutPrivateCauses(t *testing.T
 		{"permissions", -1, &os.PathError{Op: "exec", Path: "/private/path", Err: os.ErrPermission}, "permissions"},
 		{"exit", 7, errors.New("private process detail"), "code 7"},
 		{"start failure", -1, errors.New("private process detail"), "workspace availability"},
+		{"leftover outlived the sweep", 0, procutil.ErrGroupSurvived, "still running on the destination"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m, _ := manager(t, func(context.Context, string, []string, io.Writer) (Outcome, error) {

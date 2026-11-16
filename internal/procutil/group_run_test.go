@@ -313,6 +313,8 @@ sleep 0.3; echo leader-done`, &output))
 
 // KeepLeftovers leaves a process the command started on purpose running, and
 // a leftover that does not hold the output pipe does not delay the result.
+// The kept process is still in the group, so the group stays watched and ends
+// with this process.
 func TestRunGroupKeepsLeftoversWhenAsked(t *testing.T) {
 	t.Parallel()
 	var output syncBuffer
@@ -327,9 +329,7 @@ func TestRunGroupKeepsLeftoversWhenAsked(t *testing.T) {
 	if err != nil || outcome.ExitCode != 0 || !outcome.Leftovers || outcome.OutputHeld || outcome.Stopped {
 		t.Fatalf("outcome=%+v err=%v", outcome, err)
 	}
-	// What the command left running on purpose is no longer its group's to
-	// end with this process.
-	requireReleased(t, reaper, true)
+	requireReleased(t, reaper, false)
 	if elapsed >= groupDrainGrace {
 		t.Fatalf("a leftover that does not hold the pipe delayed the result by %s", elapsed)
 	}
@@ -511,7 +511,7 @@ func TestRunGroupAbandonsALeaderTheKillDoesNotEnd(t *testing.T) {
 }
 
 // A leftover the sweep's kill could not end still runs, so its group stays
-// watched for the reaper to end with this process.
+// watched for the reaper to end with this process, and Wait reports it.
 func TestRunGroupKeepsALeftoverTheKillRefusedWatched(t *testing.T) {
 	t.Parallel()
 	var output syncBuffer
@@ -525,8 +525,8 @@ func TestRunGroupKeepsALeftoverTheKillRefusedWatched(t *testing.T) {
 	outcome, err := RunGroup(context.Background(), reaper, command)
 	pid := recordedPID(t, filepath.Join(command.Dir, "pid"))
 	killAtCleanup(t, pid)
-	if err != nil || !outcome.Leftovers {
-		t.Fatalf("outcome=%+v err=%v", outcome, err)
+	if !errors.Is(err, ErrGroupSurvived) || !outcome.Leftovers {
+		t.Fatalf("outcome=%+v err=%v, want ErrGroupSurvived", outcome, err)
 	}
 	requireReleased(t, reaper, false)
 }

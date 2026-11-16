@@ -8,7 +8,10 @@ This package owns six utilities:
   to the group once its grace passes with any member left, and a return
   only once the group is gone or with the error that left it running. Use
   it as `exec.Cmd.Cancel` rather than pairing a SIGTERM with `WaitDelay`,
-  which kills only the leader. `Group` stops through the same function. On Unix,
+  which kills only the leader. `Group` stops through the same function, and
+  an owner of a group `StartGroup` does not supervise (a provider, a
+  terminal) uses it to end what a reaped leader left before it releases the
+  group's watch. On Unix,
   `SignalGroup` returns `os.ErrProcessDone` once no member of a group can
   still run, including the exited, unreaped group that macOS refuses with
   EPERM. Use it wherever a group signal's result is checked.
@@ -29,8 +32,8 @@ This package owns six utilities:
   returns a `Group`; `Group.Wait` supervises it to the end, and `RunGroup` is
   the two together. Both take the `Reaper` that ends the group if this
   process dies, and refuse a nil one (`ErrNoReaper`): the group is watched
-  before `StartGroup` returns and released once `Wait` has seen it end, or
-  leave only kept leftovers. A group the kill could not end stays watched.
+  before `StartGroup` returns and released once no member is alive. Kept
+  leftovers and a group the kill could not end stay watched.
   Which spawners use it, and what ends the others, is in
   [process lifetime](../../docs/architecture/process-lifetime.md). This is the one implementation of pipe ownership,
   cancellation, the leftover sweep and the drain: do not build another from
@@ -40,11 +43,11 @@ This package owns six utilities:
   `TerminateGrace`, and sets `Stopped`: an exit status is then the command's
   answer to the signal, not its result. After the leader exits `Wait` stops
   whatever is still in the group and reports those processes as `Leftovers`;
-  `KeepLeftovers` leaves them running for a command that may start a service
-  on purpose. `OutputHeld` reports a pipe still open after the drain grace.
+  `KeepLeftovers` leaves them running, until this process exits, for a
+  command that may start a service on purpose. `OutputHeld` reports a pipe still open after the drain grace.
   `Wait`'s error is `*exec.ExitError` for a non-zero exit or a signal death,
-  or `ErrGroupSurvived` when the leader ignored SIGKILL (it runs as another
-  user) and was abandoned. `Output` should not return an error; one is
+  or `ErrGroupSurvived` when the leader, or a leftover the sweep stopped,
+  outlived SIGKILL (it runs as another user) and was abandoned. `Output` should not return an error; one is
   reported as `PipeErr` and the rest of the output is discarded.
   `GroupOutcome.OutputErr` folds `PipeErr` and `OutputHeld` (as
   `ErrOutputHeld`) into one error for a caller that fails a command whose
