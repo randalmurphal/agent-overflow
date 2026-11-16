@@ -127,6 +127,24 @@ func (e *wkEngine) ShowPage(handle string) {
 	}
 }
 
+// FocusPage makes the presented page's view its window's first responder,
+// as a click into it does. Whether it is presented is read on the main
+// thread, after any hide queued before it. A window that is not key keeps
+// the responder for when it becomes key; AppKit never activates the app for
+// it. A page that closed answers nil.
+func (e *wkEngine) FocusPage(handle string) error {
+	p := wkPaneTarget(handle)
+	if p == nil {
+		return nil
+	}
+	if err := wkFocusPresentedView(p.liveView()); err != nil && !errors.Is(err, errViewClosed) {
+		return err
+	}
+	return nil
+}
+
+var _ paneHost = (*wkEngine)(nil)
+
 func (e *wkEngine) HidePage(handle string) {
 	p := wkPaneTarget(handle)
 	if p == nil {

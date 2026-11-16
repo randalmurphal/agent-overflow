@@ -345,6 +345,7 @@ func NewManager(configDir string, config Config, opts ManagerOptions) *Manager {
 		DownloadStarted:  m.downloadStarted,
 		DownloadProgress: m.downloadProgress,
 		KeyChord:         m.keyChord,
+		PageFocusFailed:  m.pageFocusFailed,
 	})
 	pruneEncryptedCheckpoints(configDir)
 	m.loadPageRecords(opts.KeepThread)

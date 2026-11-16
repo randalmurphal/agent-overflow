@@ -440,6 +440,13 @@ int ao_wk_host_presented(void *view) {
   return gtk_widget_get_parent(GTK_WIDGET(host)) == ao_overlay ? 1 : 0;
 }
 
+int ao_wk_view_focus_presented(void *view) {
+  if (!ao_wk_host_presented(view)) {
+    return -1;
+  }
+  return gtk_widget_grab_focus(GTK_WIDGET(view)) ? 1 : 0;
+}
+
 // ---------------------------------------------------------------------------
 // Downloads
 // ---------------------------------------------------------------------------

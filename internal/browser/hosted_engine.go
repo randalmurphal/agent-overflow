@@ -94,6 +94,13 @@ type paneHost interface {
 	// ever equates CSS pixels with its native units. Always sent before a
 	// show.
 	SetPageBounds(handle string, placement PanePlacement)
+	// FocusPage gives the page's view keyboard focus, as a click into the
+	// page does, if and only if the host presents and shows that view now;
+	// otherwise it leaves focus alone and answers nil. It never takes the
+	// OS focus from another application. The Manager asks for the presented
+	// page only (FocusCompanionPage); the host's own check is what holds
+	// when a hide is racing the request.
+	FocusPage(handle string) error
 }
 
 // paneDevTools is the OPTIONAL inspector half, split from paneHost because
@@ -688,6 +695,8 @@ func (e *hostedEngine) Report(pageID string, kind webview2host.ReportKind, detai
 		e.events.KeyChord(pageID, pressed, KeyPress{})
 	case webview2host.ReportFindUnavailable:
 		e.noteFindUnavailable(pageID)
+	case webview2host.ReportFocusFailed:
+		e.events.PageFocusFailed(pageID, fmt.Errorf("browser: the page did not take keyboard focus: %s", detail))
 	case webview2host.ReportCleared, webview2host.ReportClearFailed:
 		// A clear names a correlation id, not a page: there is no controller
 		// to close and no page to retire. Nobody waiting means ClearSiteData
@@ -800,6 +809,23 @@ func (e *hostedEngine) ShowPage(handle string) {
 		// here or the page would draw at 1:1 and be cropped by the pane.
 		e.syncViewScale(handle)
 	}
+}
+
+// FocusPage asks the launcher to move keyboard focus into the page's
+// controller. The directive rides the page's lane after its show, and the
+// launcher decides against what it shows and whether its window is in the
+// foreground; a controller that refuses the move answers ReportFocusFailed.
+func (e *hostedEngine) FocusPage(handle string) error {
+	e.mu.Lock()
+	shown := e.shown[handle]
+	e.mu.Unlock()
+	if !shown {
+		return nil
+	}
+	if !e.dispatch(webview2host.Directive{Op: webview2host.OpFocus, PageID: handle}) {
+		return fmt.Errorf("browser: the pane host could not be asked to focus page %s", handle)
+	}
+	return nil
 }
 
 // HidePage hides the page's clip container. The controller itself stays

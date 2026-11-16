@@ -60,16 +60,22 @@ func focusWithin(hwnd uintptr) bool {
 	return child != 0
 }
 
+// isForeground answers whether hwnd is the foreground window.
+func isForeground(hwnd uintptr) bool {
+	if hwnd == 0 {
+		return false
+	}
+	foreground, _, _ := procGetForeground.Call()
+	return foreground == hwnd
+}
+
 // focusWindow gives hwnd keyboard focus, only while it is the foreground
 // window: SetFocus on a window that is not would activate it, and AO never
 // takes the OS focus. Wails answers WM_SETFOCUS on the launcher window by
 // moving focus into the SPA's WebView2 controller. Answers false when hwnd
 // is not the foreground window and focus was left alone.
 func focusWindow(hwnd uintptr) bool {
-	if hwnd == 0 {
-		return false
-	}
-	if foreground, _, _ := procGetForeground.Call(); foreground != hwnd {
+	if !isForeground(hwnd) {
 		return false
 	}
 	// SetFocus answers the previous focus window, which may be none.

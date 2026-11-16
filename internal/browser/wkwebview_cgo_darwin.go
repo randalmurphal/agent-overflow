@@ -402,6 +402,20 @@ func wkLookupProfile(id uint64) *wkProfile {
 // The Go-typed surface the rest of the engine uses
 // ---------------------------------------------------------------------------
 
+// wkFocusPresentedView makes a presented page's view its window's first
+// responder. A view that is not presented, checked on the main thread where
+// hides run, keeps focus where it is and answers nil.
+func wkFocusPresentedView(view wkView) error {
+	result := C.int(0)
+	if err := view.do(func(view unsafe.Pointer) { result = C.ao_wkv_view_focus_presented(view) }); err != nil {
+		return err
+	}
+	if result == 0 {
+		return fmt.Errorf("browser: the page's view did not take keyboard focus")
+	}
+	return nil
+}
+
 // wkFocusApp hands keyboard focus to the SPA's webview.
 func wkFocusApp() error {
 	ok := false

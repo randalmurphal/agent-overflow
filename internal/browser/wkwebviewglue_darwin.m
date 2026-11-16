@@ -647,6 +647,20 @@ int ao_wkv_host_hide(void *view, int slot) {
   }
 }
 
+int ao_wkv_view_focus_presented(void *view) {
+  @autoreleasepool {
+    if (!ao_wkv_host_presented(view)) {
+      return -1;
+    }
+    NSView *v = (NSView *)view;
+    NSWindow *window = [v window];
+    if (window == nil) {
+      return 0;
+    }
+    return [window makeFirstResponder:v] ? 1 : 0;
+  }
+}
+
 int ao_wkv_host_presented(void *view) {
   @autoreleasepool {
     if (view == NULL) {

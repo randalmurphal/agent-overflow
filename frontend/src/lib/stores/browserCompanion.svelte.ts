@@ -412,6 +412,30 @@ async function runBrowserAction(
 }
 
 /**
+ * Gives keyboard focus to the page the thread's pane presents, as a browser
+ * does after the address bar's Enter or Escape. Only this computer's app
+ * window holds the native view (canUseNativeBrowser); anywhere else there is
+ * nothing to focus. Unlike a chrome action it leaves a banner already up
+ * (the navigation it follows may have failed) and puts a refusal in it.
+ * Null on success or when there is nothing to focus.
+ */
+export async function focusBrowserPage(threadId: string): Promise<BrowserActionFailure | null> {
+  if (!canUseNativeBrowser(threadId)) return null;
+  try {
+    const state = await BrowserCompanionDo(
+      threadId,
+      new BrowserCompanionAction({ kind: 'focus-page', pageId: '', address: '', index: 0 }),
+    );
+    applyBrowserCompanionState(state);
+    return null;
+  } catch (err) {
+    const message = errString(err);
+    noteBrowserActionError(threadId, message);
+    return { error: message, cause: err };
+  }
+}
+
+/**
  * Opens a new tab in the thread's browser for the user, showing the pane
  * even when the thread had no tab: the backend selects the tab and shows the
  * companion before the engine page exists, so the creating tab arrives with

@@ -685,6 +685,20 @@ func (p *webkitPage) onKeyPress(seen func(keybindings.Accelerator, KeyPress)) (r
 	}, nil
 }
 
+// webkitFocusPresentedView gives a presented page's view keyboard focus.
+// A view that is not presented, checked on the GTK thread where hides run,
+// keeps focus where it is and answers nil.
+func webkitFocusPresentedView(view webkitView) error {
+	result := C.int(0)
+	if err := view.do(func(view unsafe.Pointer) { result = C.ao_wk_view_focus_presented(view) }); err != nil {
+		return err
+	}
+	if result == 0 {
+		return fmt.Errorf("browser: the page's view did not take keyboard focus")
+	}
+	return nil
+}
+
 // webkitFocusApp hands keyboard focus to the SPA's webview.
 func webkitFocusApp() error {
 	ok := false

@@ -59,6 +59,12 @@ const (
 	OpFind Op = "find"
 	// OpFindStop ends the page's find and hides its find bar.
 	OpFindStop Op = "find-stop"
+	// OpFocus gives the page's controller keyboard focus, as a click into
+	// the page does: only while the page is presented and visible, and only
+	// while the launcher window is the foreground window (focusDecision).
+	// It rides the page's lane, after the show it follows. A failed move is
+	// answered with ReportFocusFailed.
+	OpFocus Op = "focus"
 )
 
 // Directive is one pane-host command. It is the JSON payload of an
@@ -153,7 +159,7 @@ func (d Directive) Validate() error {
 			return err
 		}
 		return d.validateBounds()
-	case OpShow, OpHide, OpClose, OpDevTools, OpFindStop:
+	case OpShow, OpHide, OpClose, OpDevTools, OpFindStop, OpFocus:
 		return ValidatePageID(d.PageID)
 	case OpFind:
 		if err := ValidatePageID(d.PageID); err != nil {
@@ -329,6 +335,11 @@ const (
 	// before the page's ReportCreated, so the backend knows it before the
 	// page is used.
 	ReportFindUnavailable ReportKind = "find-unavailable"
+	// ReportFocusFailed carries the failure text of an OpFocus whose
+	// MoveFocus the controller refused. A focus the launcher declined (the
+	// page not presented, the window not in the foreground) is no failure
+	// and is not reported.
+	ReportFocusFailed ReportKind = "focus-failed"
 )
 
 // RPCReport is the method name the launcher posts its answers under, over

@@ -558,6 +558,15 @@ const moveFocusProgrammatic = 0
 
 // moveFocus is MoveFocus([in] COREWEBVIEW2_MOVE_FOCUS_REASON reason): keyboard
 // focus moves into the page.
+//
+// Slot checked against the official SDK header (Microsoft.Web.WebView2
+// 1.0.2903.40, build/native/include/WebView2.h, ICoreWebView2ControllerVtbl):
+// QueryInterface 0, AddRef 1, Release 2, get_IsVisible 3, put_IsVisible 4,
+// get_Bounds 5, put_Bounds 6, get_ZoomFactor 7, put_ZoomFactor 8,
+// add_ZoomFactorChanged 9, remove_ZoomFactorChanged 10,
+// SetBoundsAndZoomFactor 11, MoveFocus 12. iCoreWebView2ControllerVtbl puts
+// MoveFocus at the same index (TestControllerMoveFocusSlot), and the reason
+// enum there reads COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC = 0.
 func (c *iCoreWebView2Controller) moveFocus(reason uint32) error {
 	hr, _, _ := c.vtbl.MoveFocus.Call(uintptr(unsafe.Pointer(c)), uintptr(reason))
 	return hresult(hr)

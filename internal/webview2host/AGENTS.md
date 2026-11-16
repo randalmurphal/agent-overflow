@@ -48,6 +48,10 @@ an empty clip on either axis is a hidden pane, not an error. The mailbox
 keeps the newest report per mount, drops older sequences, and has at most
 one UI-thread drain queued.
 
+Keyboard focus moves into a page only by `OpFocus`, and only while the host
+shows the page and the launcher window is the foreground window
+(`focusDecision`); AO never takes the OS focus from another application.
+
 All COM controller and HWND mutations run on the launcher UI thread. Completion
 handlers may arrive there, so never block on backend RPC inline. Serialize
 reports to preserve created before later states such as closed.
@@ -63,7 +67,8 @@ callbacks when it goes, except controller-completed, whose completion closes
 a controller that outlived its page.
 
 Real WebView2 behavior is covered only by the `AO_NATIVE_BROWSER_SMOKE=1`
-Windows tests (`find_smoke_windows_test.go`, `process_smoke_windows_test.go`),
+Windows tests (`find_smoke_windows_test.go`, `focus_smoke_windows_test.go`,
+`process_smoke_windows_test.go`),
 which need an installed runtime and open a window. From WSL, build them with
 `GOOS=windows go test -c` and run the binary with
 `WSLENV=AO_NATIVE_BROWSER_SMOKE`.

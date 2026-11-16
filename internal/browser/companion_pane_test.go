@@ -26,6 +26,8 @@ type recordingPaneHost struct {
 	onShow func(handle string)
 	// onHide, when set, sees every HidePage after it is recorded.
 	onHide func(handle string)
+	// focusErr answers FocusPage.
+	focusErr error
 }
 
 func (e *recordingPaneHost) record(call string) {
@@ -52,6 +54,17 @@ func (e *recordingPaneHost) HidePage(handle string) {
 		onHide(handle)
 	}
 }
+
+// FocusPage records the request; focusErr, when set, is its answer.
+func (e *recordingPaneHost) FocusPage(handle string) error {
+	e.record("focus:" + handle)
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.focusErr
+}
+
+var _ paneHost = (*recordingPaneHost)(nil)
+
 func (e *recordingPaneHost) SetPageBounds(handle string, placement PanePlacement) {
 	e.record("bounds:" + handle)
 	e.mu.Lock()

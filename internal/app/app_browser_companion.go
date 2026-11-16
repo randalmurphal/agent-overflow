@@ -182,6 +182,14 @@ func (a *App) BrowserCompanionDo(ctx context.Context, threadID string, action Br
 		err = a.browser.manager.CloseCompanionPage(ctx, access, action.PageID)
 	case "devtools":
 		err = a.browser.manager.OpenPaneDevTools(ctx, access, action.PageID)
+	case "focus-page":
+		// Keyboard focus moves within the window the native view lives in,
+		// so only that window may ask for it.
+		if !transport.ConnStateFromContext(ctx).HostWindow() {
+			err = errBrowserPaneNotHostWindow
+		} else {
+			err = a.browser.manager.FocusCompanionPage(access)
+		}
 	default:
 		err = fmt.Errorf("browser: unsupported companion action %q", action.Kind)
 	}

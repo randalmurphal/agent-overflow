@@ -4,6 +4,8 @@ import {
   applyBrowserCompanionState,
   attachBrowserCompanion,
   browserCompanionAct,
+  focusBrowserPage,
+  noteBrowserActionError,
   openBrowserTab,
   takeAddressFocus,
   canUseNativeBrowser,
@@ -687,5 +689,66 @@ describe('tab lifecycle in the browser companion store', () => {
     })));
     await openBrowserTab(THREAD, { focusAddress: true });
     expect(addressFocusIntent(THREAD)).toBeNull();
+  });
+});
+
+describe('handing the keyboard to the browser page', () => {
+  const THREAD = 'thread-browser';
+  const shown = { kind: 'state', threadId: THREAD, activePageId: 'a', visible: true, pages: [page('https://example.test/', 'A')] };
+
+  beforeEach(() => {
+    resetBrowserCompanionForTest();
+    resetCompanionPanesForTest();
+    resetPaneLayoutForTest();
+    resetPanesForTest();
+    installCompanionPanes();
+    setPaneLayoutItemsForTest([{ id: 'main', paneId: 'main', kind: 'thread', widthPx: 640 }]);
+    createPane('main').replaceThread(makeThread({ id: THREAD }));
+    applyBrowserCompanionState(shown);
+  });
+  afterEach(() => resetBrowserCompanionForTest());
+
+  it('asks the backend to focus the presented page', async () => {
+    const act = setBindingMock('BrowserCompanionDo', vi.fn(async (thread: string, action: { kind: string }) => {
+      expect(thread).toBe(THREAD);
+      expect(action.kind).toBe('focus-page');
+      return shown;
+    }));
+    expect(await focusBrowserPage(THREAD)).toBeNull();
+    expect(act).toHaveBeenCalledTimes(1);
+  });
+
+  it('puts a refusal in the pane banner, and leaves a banner already up when it succeeds', async () => {
+    setBindingMock('BrowserCompanionPaneAttach', vi.fn(async () => ({ id: 'mount-1', state: shown })));
+    setBindingMock('BrowserCompanionPaneDetach', vi.fn(async () => {}));
+    const pane = attachBrowserCompanion(THREAD);
+    try {
+      await vi.waitFor(() => expect(pane.current).not.toBeNull());
+      setBindingMock('BrowserCompanionDo', vi.fn(async () => {
+        throw new Error('browser: focus page a: view refused');
+      }));
+      const failure = await focusBrowserPage(THREAD);
+      expect(failure?.error).toContain('view refused');
+      expect(pane.current?.actionError).toContain('view refused');
+
+      // The navigation the focus follows failed: its banner stays.
+      noteBrowserActionError(THREAD, 'navigation refused');
+      setBindingMock('BrowserCompanionDo', vi.fn(async () => shown));
+      expect(await focusBrowserPage(THREAD)).toBeNull();
+      expect(pane.current?.actionError).toBe('navigation refused');
+    } finally {
+      pane.release();
+    }
+  });
+
+  it('asks nothing outside the host window, where there is no native view', async () => {
+    setHostWindowFromBootstrap(false);
+    try {
+      const act = setBindingMock('BrowserCompanionDo', vi.fn(async () => shown));
+      expect(await focusBrowserPage(THREAD)).toBeNull();
+      expect(act).not.toHaveBeenCalled();
+    } finally {
+      setHostWindowFromBootstrap(true);
+    }
   });
 });

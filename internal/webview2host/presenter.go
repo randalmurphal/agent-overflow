@@ -63,6 +63,36 @@ func (p pagePresentation) view(local PaneGeometry, hasLocal bool) paneView {
 	}
 }
 
+// focusOutcome is what an OpFocus does.
+type focusOutcome int
+
+const (
+	// focusMove moves keyboard focus into the page's controller.
+	focusMove focusOutcome = iota
+	// focusNotShown leaves focus alone: the host does not show the page.
+	focusNotShown
+	// focusNotForeground leaves focus alone: the launcher window is not the
+	// foreground window.
+	focusNotForeground
+)
+
+// focusDecision answers what an OpFocus does for a page the host shows as
+// shown (the view it last applied). Only a page the host presents and shows
+// takes keyboard focus, and only while the launcher window is the foreground
+// window: moving focus into a window that is not would activate it, and AO
+// never takes the OS focus from another application (the rule the
+// accelerator hand-back keeps, focusWindow).
+func focusDecision(shown paneView, launcherForeground bool) focusOutcome {
+	switch {
+	case !shown.visible || !shown.hasBounds:
+		return focusNotShown
+	case !launcherForeground:
+		return focusNotForeground
+	default:
+		return focusMove
+	}
+}
+
 // presentStep is what the host must do to go from the view it shows to the
 // one it wants: move first (so a show never paints at the old place), then
 // show or hide. A hidden page is not moved; it moves when it is next shown.
