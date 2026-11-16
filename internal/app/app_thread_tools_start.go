@@ -202,7 +202,17 @@ func (t threadToolsApp) Spawn(ctx context.Context, caller threadtools.Caller, ca
 		return threadtools.RequestAck{}, err
 	}
 	call.Prompt, call.HomeFiles = prompt, nil
+	level, err := t.refuseSpawnPastLimit(caller.ThreadID)
+	if err != nil {
+		return threadtools.RequestAck{}, err
+	}
 	if t.remoteDestination(call.ComputerID) {
+		// The other computer has no spawn link to count, so the level of
+		// an owned spawn travels with it; one given a sidebar row is level
+		// 0 there, as it would be here.
+		if placement, err := threadtools.ResolveSpawnPlacement(call.Placement, call.Group); err == nil && placement == threadtools.PlacementOwned {
+			call.Level = level
+		}
 		return t.startRemoteRequest(ctx, caller, store.ThreadRequest{
 			Kind:           store.ThreadRequestSpawn,
 			OriginThreadID: call.FromThread,
@@ -245,6 +255,14 @@ func (t threadToolsApp) acceptSpawn(ctx context.Context, origin threadRequestOri
 		return "", t.failRequest(token, err)
 	}
 	call.Placement = placement
+	if !origin.foreign {
+		// Only a paired computer's spawn carries a level; a local one's is
+		// its spawn link.
+		call.Level = 0
+	}
+	if err := t.refuseCarriedLevelPastLimit(call.Level); err != nil {
+		return "", t.failRequest(token, err)
+	}
 	create, err := t.spawnThreadOptions(ctx, origin, call)
 	if err != nil {
 		return "", t.failRequest(token, err)

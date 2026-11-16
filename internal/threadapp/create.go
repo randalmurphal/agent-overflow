@@ -26,7 +26,12 @@ type CreateOptions struct {
 	Home string
 	// HelperOfAgentID records the thread as a helper of this assistant. A
 	// helper lives in the home, so it needs Home and no project.
-	HelperOfAgentID            string
+	HelperOfAgentID string
+	// SpawnInstructions and SpawnLevel are a thread_spawn's: the text
+	// appended to the thread's system prompt for its life, and the
+	// sub-thread level a paired computer's spawn carried (store.Thread).
+	SpawnInstructions          string
+	SpawnLevel                 int
 	GroupID                    string
 	Title                      string
 	Provider                   string
@@ -324,6 +329,8 @@ func (s *Service) create(opts CreateOptions, cutOut *CutWorktree) (store.Thread,
 		UpdatedAt:                  now,
 		CreatedByDevice:            opts.CreatedByDevice,
 		HelperOfAgentID:            strings.TrimSpace(opts.HelperOfAgentID),
+		SpawnInstructions:          opts.SpawnInstructions,
+		SpawnLevel:                 opts.SpawnLevel,
 		Origin:                     origin,
 	}
 	created, err := database.CreateThreadAndRead(thread)

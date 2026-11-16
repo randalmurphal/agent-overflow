@@ -336,7 +336,7 @@ func TestThreadToolsReachShapeFollowsThePairingSet(t *testing.T) {
 	t.Parallel()
 	remotetest.Require(t)
 	pair := newReachPair(t)
-	shape := pair.source.threadToolsShape(pair.caller.ID)
+	shape := pair.source.threadToolsShape(pair.caller.ID, subThreadPlace{})
 	if len(shape.Computers) != 1 || shape.Computers[0].ID != pair.computer {
 		t.Fatalf("shape names %+v, want the paired destination alone", shape.Computers)
 	}
@@ -351,7 +351,7 @@ func TestThreadToolsReachShapeFollowsThePairingSet(t *testing.T) {
 	if err := pair.source.RemoveBackend(pair.computer, false); err != nil {
 		t.Fatalf("forget the destination: %v", err)
 	}
-	if computers := pair.source.threadToolsShape(pair.caller.ID).Computers; len(computers) != 0 {
+	if computers := pair.source.threadToolsShape(pair.caller.ID, subThreadPlace{}).Computers; len(computers) != 0 {
 		t.Fatalf("the forgotten computer is still in the shape: %+v", computers)
 	}
 	if threadToolsOfferComputer(pair.source.threadMCPTools(threadMCPAccess{ThreadID: pair.caller.ID})) {

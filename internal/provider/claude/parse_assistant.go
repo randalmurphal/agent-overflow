@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"slices"
 	"strings"
 	"time"
 
@@ -875,8 +876,13 @@ func contextWindowFromClaudeUsage(usage assistantUsage) (provider.ContextWindow,
 // classification, not a tool name (see claude-wire.md
 // §system/task_started).
 func isAgentLaunchToolName(name string) bool {
-	return name == "Agent" || name == "Task"
+	return slices.Contains(SubagentLaunchTools, name)
 }
+
+// SubagentLaunchTools are the names Claude's subagent launcher has had, in
+// the form `--disallowedTools` takes: removing both from a session leaves it
+// no subagents on any CLI version.
+var SubagentLaunchTools = []string{"Agent", "Task"}
 
 // skillToolName is Claude's Skill tool. A forking skill runs as a
 // local_agent task bound to this call (claude-wire.md §E9).

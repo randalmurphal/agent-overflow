@@ -579,7 +579,7 @@ func TestSettlementReturnsAResponderToItsSwitch(t *testing.T) {
 	app.appCtx, app.appCancel = ctx, cancel
 	t.Cleanup(cancel)
 	thread, token := remoteMCPThread(t, app, string(provider.Claude))
-	if _, err := app.threadMCPConfigForThread(thread, token); err != nil {
+	if _, err := app.threadMCPConfigForThread(thread, token, subThreadPlace{}); err != nil {
 		t.Fatalf("threadMCPConfigForThread: %v", err)
 	}
 	captureDir := t.TempDir()

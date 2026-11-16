@@ -92,7 +92,7 @@ func TestCodexDeveloperInstructionsCarryTheHomeBlock(t *testing.T) {
 		t.Fatalf("readStandingAgentSession = %+v, %v", agent, err)
 	}
 	// What spawnProviderSession hands Codex with the guide off.
-	if got := f.app.codexDeveloperInstructions(thread.ID, joinPromptParts("", block), nil); got != block {
+	if got := f.app.codexDeveloperInstructions(thread.ID, joinPromptParts("", block), nil, subThreadPlace{}); got != block {
 		t.Errorf("developer instructions = %q, want the home block alone", got)
 	}
 	if got := joinPromptParts("GUIDE", block); got != "GUIDE\n\n"+block {

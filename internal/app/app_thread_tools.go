@@ -450,6 +450,12 @@ func (t threadToolsApp) Catalog(ctx context.Context, q threadtools.CatalogQuery)
 		if q.Provider != "" && q.Provider != name {
 			continue
 		}
+		// A provider the person turned off, or whose binary is not on
+		// this computer, is not offered: an agent is never told to spawn
+		// on it, and no profile on it is listed here.
+		if !t.app.providerOffered(name) {
+			continue
+		}
 		option, err := t.providerOption(name)
 		if err != nil {
 			// A provider whose catalog probe failed is still installed;

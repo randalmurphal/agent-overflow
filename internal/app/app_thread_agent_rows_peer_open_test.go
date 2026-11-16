@@ -143,11 +143,15 @@ func TestARemoteWorkersOpenWorkPastItsListingsLimitKeepsItOpen(t *testing.T) {
 // with only the last one running: every spawn the listing shows is open,
 // waiting on the work below it, counted and out of Past, and the last one
 // shown says more nests below it. Its computer is asked for its state
-// alone, and the computer past it is asked nothing.
+// alone, and the computer past it is asked nothing. The computers predate
+// sub-thread levels, the only way a chain grows this deep.
 func TestARemoteChainPastTheDepthBoundStaysOpenAndIsNotListedPastIt(t *testing.T) {
 	t.Parallel()
 	n := threadAgentRowDepth + 2
 	c := newAgentChain(t, n)
+	for _, peer := range c.peers[1:] {
+		peer.levelless.Store(true)
+	}
 	for i := range n - 1 {
 		installMockClaudeReplies(t, c.apps[i], "done", "noted", "noted", "noted")
 	}

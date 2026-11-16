@@ -100,12 +100,14 @@ func (t threadToolsApp) createSpawned(
 		return store.Thread{}, err
 	}
 	return t.app.forkThreadTail(ctx, source.ID, forkOptions{
-		Mode:        create.Mode,
-		RuntimeMode: create.RuntimeMode,
-		Title:       create.Title,
-		Model:       create.Model,
-		Effort:      create.ReasoningEffort,
-		Owned:       spawn.owned,
+		Mode:         create.Mode,
+		RuntimeMode:  create.RuntimeMode,
+		Title:        create.Title,
+		Model:        create.Model,
+		Effort:       create.ReasoningEffort,
+		Owned:        spawn.owned,
+		Instructions: call.Instructions,
+		SpawnLevel:   call.Level,
 	})
 }
 
@@ -137,6 +139,9 @@ func (t threadToolsApp) spawnThreadOptions(ctx context.Context, origin threadReq
 func (t threadToolsApp) resolveSpawnOptions(origin threadRequestOrigin, call threadtools.SpawnCall) (spawnOptions, error) {
 	if call.FromThread != "" {
 		opts, err := t.forkSpawnOptions(origin, call)
+		if err == nil {
+			err = refuseInstructionsUnappended(opts.Provider, call.Instructions)
+		}
 		return spawnOptions{CreateThreadOptions: opts}, err
 	}
 	// A spawn a paired computer forwarded has no caller thread here, so
@@ -154,8 +159,12 @@ func (t threadToolsApp) resolveSpawnOptions(origin threadRequestOrigin, call thr
 	if err != nil {
 		return spawnOptions{}, err
 	}
+	if err := refuseInstructionsUnappended(settings.Provider, call.Instructions); err != nil {
+		return spawnOptions{}, err
+	}
 	opts := spawnOptions{CreateThreadOptions: settings}
 	opts.Title, opts.ProjectID = call.Title, caller.ProjectID
+	opts.spawnInstructions, opts.spawnLevel = call.Instructions, call.Level
 	if call.ProjectID != "" {
 		if _, err := t.app.store.GetProject(call.ProjectID); err != nil {
 			return spawnOptions{}, errorsx.Public(threadtools.CodeNotFound,

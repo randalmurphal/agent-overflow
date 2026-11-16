@@ -1,0 +1,177 @@
+package app
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"slices"
+
+	"agent-overflow/internal/errorsx"
+	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/claude"
+	"agent-overflow/internal/provider/codex"
+	"agent-overflow/internal/threadtools"
+)
+
+// The agent roster and the sub-thread limit as this computer applies them
+// (docs/specs/agent-thread-tools.md, "Agent profiles" and "Sub-thread
+// depth"). Settings own the values; threadtools owns what an agent reads
+// of them; this file answers what only the app knows: which providers this
+// computer offers, a thread's level, and what a session at the limit loses.
+
+// Roster answers the person's agent profiles and notes from this
+// computer's settings.
+func (t threadToolsApp) Roster(context.Context) (threadtools.Roster, error) {
+	current := t.app.currentSettings()
+	roster := threadtools.Roster{
+		Profiles: make([]threadtools.AgentProfile, 0, len(current.AgentProfiles)),
+		Notes:    make([]threadtools.AgentNote, 0, len(current.AgentNotes)),
+	}
+	for _, profile := range current.AgentProfiles {
+		roster.Profiles = append(roster.Profiles, threadtools.AgentProfile{
+			Name: profile.Name, UseFor: profile.UseFor, Provider: profile.Provider, Model: profile.Model,
+			Effort: profile.Effort, RuntimeMode: profile.RuntimeMode, Instructions: profile.Instructions,
+		})
+	}
+	for _, note := range current.AgentNotes {
+		roster.Notes = append(roster.Notes, threadtools.AgentNote{Text: note.Text, When: note.When})
+	}
+	return roster, nil
+}
+
+// providerOffered reports whether this computer offers a provider to a
+// spawn: the person has not turned it off in Settings (claudeEnabled,
+// codexEnabled, the switches the pickers obey), and its binary resolves, as
+// the provider status check's first step finds it. Sign-in is not read: no
+// cheap signal of it exists, and a signed-out provider says so at its
+// first turn.
+func (a *App) providerOffered(name string) bool {
+	current := a.currentSettings()
+	switch name {
+	case string(provider.Claude):
+		if !current.ClaudeEnabled {
+			return false
+		}
+	case string(provider.Codex):
+		if !current.CodexEnabled {
+			return false
+		}
+	default:
+		return false
+	}
+	_, ok := a.resolveProviderBinaryIdentity(name)
+	return ok
+}
+
+// subThreadPlace is where a session's thread sits in the owned lineage when
+// the session starts: its level and the limit then. The zero value is no
+// limit known, which spawns as before.
+type subThreadPlace struct {
+	level, limit int
+}
+
+func (p subThreadPlace) canSpawn() bool { return p.limit == 0 || p.level < p.limit }
+
+// subThreadPlaceOf reads a thread's level and this computer's limit.
+func (a *App) subThreadPlaceOf(threadID string) (subThreadPlace, error) {
+	level, err := a.store.SubThreadLevel(threadID)
+	if err != nil {
+		return subThreadPlace{}, err
+	}
+	return subThreadPlace{level: level, limit: a.currentSettings().SubThreadLevels}, nil
+}
+
+// spawnShape is what a session's guide and tool list say about spawning:
+// its place, fixed at its start, and the providers and profiles this
+// computer offers now. A catalog or roster that cannot be read leaves the
+// names out rather than the guide.
+func (a *App) spawnShape(threadID string, place subThreadPlace, defaults threadtools.SpawnDefaults) threadtools.SpawnShape {
+	shape := threadtools.SpawnShape{Level: place.level, Limit: place.limit}
+	adapter := a.threadTools()
+	catalog, err := adapter.Catalog(context.Background(), threadtools.CatalogQuery{What: threadtools.OptionsModels})
+	if err != nil {
+		log.Printf("thread tools: providers for the guide of %s: %v", threadID, err)
+		return shape
+	}
+	for _, option := range catalog.Providers {
+		shape.Providers = append(shape.Providers, option.ID)
+	}
+	roster, err := adapter.Roster(context.Background())
+	if err != nil {
+		log.Printf("thread tools: agent profiles for the guide of %s: %v", threadID, err)
+		return shape
+	}
+	shape.Profiles = threadtools.ProfileNames(threadtools.ListProfiles(roster, catalog.Providers, defaults))
+	return shape
+}
+
+// nativeSubagentTools are what a session at the sub-thread limit is not
+// given of its provider's own subagents: Claude's agent launcher, by both
+// the names it has had, and Codex's collaboration agents toggle.
+func nativeSubagentTools(providerName string) []string {
+	switch providerName {
+	case string(provider.Claude), string(provider.ClaudeTUI):
+		return claude.SubagentLaunchTools
+	case string(provider.Codex):
+		return []string{codex.ToggleCollabAgents}
+	}
+	return nil
+}
+
+// withoutNativeSubagents adds the provider's subagent tools to a session's
+// disabled tools when its thread is at the sub-thread limit. The disabled
+// list is spawn-only and the reconciler pins it to the live session's, so a
+// limit reached or left mid-session applies at the next start.
+func withoutNativeSubagents(opts *provider.SessionOptions, providerName string, place subThreadPlace) {
+	if place.canSpawn() {
+		return
+	}
+	for _, tool := range nativeSubagentTools(providerName) {
+		if !slices.Contains(opts.DisabledTools, tool) {
+			opts.DisabledTools = append(opts.DisabledTools, tool)
+		}
+	}
+}
+
+// refuseSpawnPastLimit refuses a spawn from a thread at the limit: a
+// session that started before the setting changed or before the thread was
+// taken back into ownership still has thread_spawn, and so does a call that
+// raced one. It returns the level a thread the spawn makes will have.
+func (t threadToolsApp) refuseSpawnPastLimit(callerThreadID string) (int, error) {
+	place, err := t.app.subThreadPlaceOf(callerThreadID)
+	if err != nil {
+		return 0, err
+	}
+	if !place.canSpawn() {
+		return 0, errorsx.Public(threadtools.CodeInvalidRequest, fmt.Sprintf(
+			"This thread is %s of sub-threads below the thread the user talks to, and the limit is %d (Settings, Agent profiles), so it cannot spawn threads. Do the work yourself, or say in your answer that it needs more hands.",
+			threadtools.LevelCount(place.level), place.limit), nil)
+	}
+	return place.level + 1, nil
+}
+
+// refuseCarriedLevelPastLimit refuses a paired computer's spawn whose thread
+// would sit past this computer's own limit.
+func (t threadToolsApp) refuseCarriedLevelPastLimit(level int) error {
+	limit := t.app.currentSettings().SubThreadLevels
+	if level <= limit {
+		return nil
+	}
+	return errorsx.Public(threadtools.CodeInvalidRequest, fmt.Sprintf(
+		"That thread would be %s of sub-threads below the thread the user talks to, and this computer allows %d.", threadtools.LevelCount(level), limit), nil)
+}
+
+// refuseInstructionsUnappended refuses spawn instructions for a provider
+// whose sessions cannot append to the system prompt. Claude, Claude's
+// terminal and Codex all can.
+func refuseInstructionsUnappended(providerName, instructions string) error {
+	if instructions == "" {
+		return nil
+	}
+	switch providerName {
+	case string(provider.Claude), string(provider.ClaudeTUI), string(provider.Codex):
+		return nil
+	}
+	return errorsx.Public(threadtools.CodeInvalidRequest, fmt.Sprintf(
+		"%s sessions cannot add instructions to their system prompt. Put them in the prompt instead.", providerName), nil)
+}

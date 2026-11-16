@@ -49,6 +49,10 @@ type CreateThreadOptions struct {
 	// thread or helper. Never set from the wire.
 	home            string
 	helperOfAgentID string
+	// spawnInstructions and spawnLevel are a thread_spawn's
+	// (threadapp.CreateOptions). Never set from the wire.
+	spawnInstructions string
+	spawnLevel        int
 }
 
 // StartTerminalOptions selects where a new terminal thread is rooted.
@@ -223,6 +227,8 @@ func (a *App) createThreadRowCutting(
 		Branch:                     opts.Branch,
 		Home:                       opts.home,
 		HelperOfAgentID:            opts.helperOfAgentID,
+		SpawnInstructions:          opts.spawnInstructions,
+		SpawnLevel:                 opts.spawnLevel,
 		CreatedByDevice:            creatingDevice(ctx),
 		SettingsBucket:             settingsBucket,
 		SettingsClass:              string(settingsClass),
