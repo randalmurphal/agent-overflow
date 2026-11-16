@@ -188,35 +188,24 @@ func TestAFocusRequestNeverFocusesAnotherTab(t *testing.T) {
 	}
 }
 
-// A withdrawal that reaches the Manager after the engine moved the focus
-// (the residual race) gives the keyboard back to the app. One for a page
-// that no longer holds it changes nothing.
-func TestAWithdrawalAfterTheFocusLandedHandsItBack(t *testing.T) {
+// A withdrawal that reaches the Manager after the focus landed changes
+// nothing: the page may hold the keyboard by the user's own click since,
+// which nothing here can tell apart from the intent's move.
+func TestAWithdrawalAfterTheFocusLandedLeavesIt(t *testing.T) {
 	w := newFocusWorld(t)
+	page := w.handle(w.a, w.aPage)
 	if err := w.m.FocusCompanionPage(w.a, w.aMount, w.aPage, 1); err != nil {
 		t.Fatalf("focus: %v", err)
 	}
-	if focus := w.focusHolder(); focus != w.handle(w.a, w.aPage) {
+	if focus := w.focusHolder(); focus != page {
 		t.Fatalf("focus is with %q, want the page", focus)
 	}
+	w.e.click(t, page)
 	if err := w.m.WithdrawCompanionPageFocus(w.a, w.aMount, 1); err != nil {
 		t.Fatalf("withdraw: %v", err)
 	}
-	if focus := w.focusHolder(); focus != focusHeldByTheApp {
-		t.Fatalf("focus is with %q after the withdrawal, want the app", focus)
-	}
-
-	// Thread b's page took the keyboard by a click after its intent landed:
-	// withdrawing that intent leaves the click's focus alone.
-	if err := w.m.FocusCompanionPage(w.b, w.bMount, w.bPage, 1); err != nil {
-		t.Fatalf("focus thread b: %v", err)
-	}
-	w.e.click(t, w.handle(w.a, w.aPage))
-	if err := w.m.WithdrawCompanionPageFocus(w.b, w.bMount, 1); err != nil {
-		t.Fatalf("withdraw thread b: %v", err)
-	}
-	if focus := w.focusHolder(); focus != w.handle(w.a, w.aPage) {
-		t.Fatalf("focus is with %q, want the clicked page", focus)
+	if focus := w.focusHolder(); focus != page {
+		t.Fatalf("focus is with %q after a late withdrawal, want the clicked page", focus)
 	}
 }
 

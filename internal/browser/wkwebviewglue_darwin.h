@@ -46,11 +46,6 @@ int ao_wkv_focus_app(void);
 // window that is not key keeps the responder for when it becomes key.
 int ao_wkv_view_focus_presented(void *view);
 
-// ao_wkv_view_release_focus makes the SPA's webview first responder only if
-// the view, or a view inside it, is: 1 it was and the app took it, 0 it was
-// not, -1 it was and the app could not take it.
-int ao_wkv_view_release_focus(void *view);
-
 // ao_wkv_host_park puts a view into the park view at its own slot, at its
 // viewport (ao_wkv_view_set_size) and scale 1. The park view is 1x1 with a
 // masked layer, so a parked view is IN THE WINDOW (real viewport,

@@ -223,9 +223,7 @@ func (a *launcherApp) handlePaneGeometryMessage(window application.Window, messa
 
 // handlePaneFocusMessage takes a page focus intent's arm or withdrawal
 // (webview2host/focusintent.go), which must reach the launcher before a
-// focus directive that crosses WSL after it. A withdrawal of an intent the
-// host already moved focus for hands the keyboard back on the UI thread,
-// queued behind that move.
+// focus directive that crosses WSL after it.
 func (a *launcherApp) handlePaneFocusMessage(window application.Window, message string, origin *application.OriginInfo) {
 	msg, err := webview2host.ParseFocusIntentMessage(message)
 	if err != nil {
@@ -236,18 +234,7 @@ func (a *launcherApp) handlePaneFocusMessage(window application.Window, message 
 		log.Printf("browser host: ignore a pane focus message from an untrusted document")
 		return
 	}
-	page := a.paneFocus.Note(msg)
-	if page == "" {
-		return
-	}
-	application.InvokeAsync(func() {
-		a.mu.Lock()
-		host := a.browserHost
-		a.mu.Unlock()
-		if host != nil {
-			host.ReleasePageFocus(page)
-		}
-	})
+	a.paneFocus.Note(msg)
 }
 
 // trustedPaneGeometrySource accepts only the launcher's own window showing

@@ -15,8 +15,9 @@ import (
 // back through WSL; the withdrawal must win even when it is sent while the
 // directive is still on its way, so the SPA posts each arm and withdrawal
 // straight to the launcher (chrome.webview.postMessage, like its pane
-// geometry), and the launcher drops a directive whose intent it has heard
-// withdrawn. The backend's half is internal/browser/focus_intent.go.
+// geometry), and the launcher never applies a directive whose intent it has
+// heard withdrawn or replaced. The backend's half is
+// internal/browser/focus_intent.go.
 
 // FocusMessagePrefix starts every focus intent message the SPA posts.
 // Mirrored by frontend/src/lib/native/paneGeometryBridge.ts.
@@ -31,9 +32,9 @@ const FocusCapabilityGlobal = "__aoPaneFocusBridge"
 // window loads to advertise the capability.
 const FocusCapabilityScript = "window." + FocusCapabilityGlobal + " = 1;"
 
-// FocusIntentMaxAge bounds how long an intent stands. The backend keeps one
-// waiting this long for its page to be presented, and the launcher applies
-// none older, counted from when it heard the arm.
+// FocusIntentMaxAge bounds how long an intent stands where it is applied.
+// The backend keeps one waiting this long for its page to be presented, and
+// the launcher applies none older, counted from when each heard of it.
 const FocusIntentMaxAge = 10 * time.Second
 
 // maxFocusMessageBytes bounds one message; a message is a mount id and two
@@ -108,10 +109,16 @@ func ParseFocusReport(detail string) (FocusReport, error) {
 }
 
 // FocusIntents is the launcher's record of each mount's newest focus intent:
-// its number, whether it was withdrawn, when the arm was heard, and the page
-// a directive moved focus into for it. Messages arrive on goroutines of
-// their own; directives are decided on the UI thread. Neither waits on
-// anything but this lock.
+// its number, whether it was withdrawn, when the launcher first heard of it,
+// and the page a delivered directive waits to focus. Messages arrive on
+// goroutines of their own; directives and presentation run on the UI thread.
+// Neither waits on anything but this lock.
+//
+// Delivery is not application. A directive whose page the launcher does not
+// show (a promote, a demote, another geometry transition hid it locally)
+// stays pending, and the launcher applies it once when its own presentation
+// next shows that page (Take), while it is still the mount's newest,
+// unwithdrawn and not older than FocusIntentMaxAge.
 type FocusIntents struct {
 	mu      sync.Mutex
 	entries map[string]*focusIntentEntry
@@ -123,8 +130,8 @@ type focusIntentEntry struct {
 	intent    uint64
 	withdrawn bool
 	armed     time.Time
-	// applied is the page a directive moved focus into for intent.
-	applied string
+	// pending is the page a delivered directive for intent waits to focus.
+	pending string
 	touched uint64
 }
 
@@ -134,14 +141,9 @@ func NewFocusIntents() *FocusIntents {
 }
 
 // Note records an arm or a withdrawal. A message for an intent older than the
-// mount's newest is stale and changes nothing. It answers the page to take
-// the keyboard back from: one a directive already moved focus into for the
-// intent this withdraws. The caller hands it back on the UI thread if the
-// page still holds it (Host.ReleasePageFocus).
-func (f *FocusIntents) Note(msg FocusIntentMessage) (handBack string) {
-	if f == nil {
-		return ""
-	}
+// mount's newest is stale and changes nothing; a withdrawal, or a newer
+// intent's arm, ends a pending directive.
+func (f *FocusIntents) Note(msg FocusIntentMessage) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	entry := f.entries[msg.Mount]
@@ -149,28 +151,22 @@ func (f *FocusIntents) Note(msg FocusIntentMessage) (handBack string) {
 	case entry == nil:
 		entry = f.addLocked(msg.Mount)
 	case msg.Intent < entry.intent:
-		return ""
+		return
 	case msg.Intent == entry.intent:
-		if msg.Withdrawn && !entry.withdrawn {
-			entry.withdrawn = true
-			handBack, entry.applied = entry.applied, ""
+		if msg.Withdrawn {
+			entry.withdrawn, entry.pending = true, ""
 		}
-		return handBack
+		return
 	}
 	f.tick++
 	*entry = focusIntentEntry{intent: msg.Intent, withdrawn: msg.Withdrawn, armed: f.now(), touched: f.tick}
-	return ""
 }
 
-// Claim answers whether a focus directive for the mount's intent may move
-// focus into pageID now, and if so records the move: the SPA has not
-// withdrawn it or armed a newer one, and it is not older than
-// FocusIntentMaxAge. A directive that arrives before its arm is claimed, and
-// the arm that follows changes nothing.
-func (f *FocusIntents) Claim(mount string, intent uint64, pageID string) bool {
-	if f == nil {
-		return true
-	}
+// Deliver records a focus directive for the mount's intent as pending for
+// pageID, unless the SPA has withdrawn it or armed a newer one. A directive
+// that arrives before its arm is recorded, and the arm that follows changes
+// nothing.
+func (f *FocusIntents) Deliver(mount string, intent uint64, pageID string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	entry := f.entries[mount]
@@ -178,18 +174,32 @@ func (f *FocusIntents) Claim(mount string, intent uint64, pageID string) bool {
 		entry = f.addLocked(mount)
 	}
 	switch {
-	case intent < entry.intent:
-		return false
-	case intent == entry.intent && entry.withdrawn:
-		return false
-	case intent == entry.intent && f.now().Sub(entry.armed) > FocusIntentMaxAge:
-		return false
+	case intent < entry.intent, intent == entry.intent && entry.withdrawn:
+		return
 	case intent > entry.intent:
 		f.tick++
 		*entry = focusIntentEntry{intent: intent, armed: f.now(), touched: f.tick}
 	}
-	entry.applied = pageID
-	return true
+	entry.pending = pageID
+}
+
+// Take answers the intent pending for pageID, if one still stands, and
+// consumes it, so it is applied at most once. A withdrawal or a newer arm
+// has already ended it (Note); one older than FocusIntentMaxAge is dropped.
+func (f *FocusIntents) Take(pageID string) (mount string, intent uint64, ok bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for id, entry := range f.entries {
+		if entry.pending == "" || entry.pending != pageID {
+			continue
+		}
+		entry.pending = ""
+		if f.now().Sub(entry.armed) > FocusIntentMaxAge {
+			return "", 0, false
+		}
+		return id, entry.intent, true
+	}
+	return "", 0, false
 }
 
 // addLocked adds a mount's entry, evicting the least recently updated mount

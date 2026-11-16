@@ -25,10 +25,12 @@ import (
 //
 // The engine applies an intent only while its page is the one the mount
 // presents, and checks Live again on its own UI thread immediately before
-// moving focus (paneHost.FocusPage). A withdrawal that lands after that hands
-// the focus back to the app if the page still holds it (engineAppFocus); the
-// launcher-hosted engine does both checks in the launcher, which hears
-// withdrawals straight from the SPA (webview2host.FocusIntents).
+// moving focus (paneHost.FocusPage); the launcher-hosted engine checks in the
+// launcher, which hears withdrawals straight from the SPA
+// (webview2host.FocusIntents). Nothing undoes a focus that landed: a
+// withdrawal that reaches the application point after the move changes
+// nothing, since by then the page, or a newer focus of it, holds the keyboard
+// legitimately as far as the engine can tell.
 
 // focusIntentMaxAge bounds how long an intent waits for its page to be
 // presented (a restore, a layout).
@@ -67,8 +69,6 @@ type pageFocusIntent struct {
 	// claimed is set, under Manager.mu, once the intent is handed to the
 	// engine, so it is applied at most once at a time.
 	claimed bool
-	// handle is the page's driver handle once claimed.
-	handle string
 }
 
 // mountFocus is a mount's focus intent state. Guarded by Manager.mu.
@@ -127,46 +127,23 @@ func (m *Manager) FocusCompanionPage(access Access, mount, pageID string, intent
 }
 
 // WithdrawCompanionPageFocus withdraws the mount's focus intents numbered
-// up to intent: the user made another focus choice. One already applied
-// whose page still holds the keyboard gives it back to the app. A mount
-// that is gone has nothing to withdraw.
+// up to intent: the user made another focus choice. A mount that is gone has
+// nothing to withdraw.
 func (m *Manager) WithdrawCompanionPageFocus(access Access, mount string, intent uint64) error {
 	mount = strings.TrimSpace(mount)
 	if mount == "" || intent == 0 {
 		return errors.New("browser: a focus withdrawal needs its pane mount and intent")
 	}
 	m.mu.Lock()
+	defer m.mu.Unlock()
 	focus := m.mountFocusLocked(access.ThreadID, mount)
 	if focus == nil {
-		m.mu.Unlock()
 		return nil
 	}
 	focus.latest = max(focus.latest, intent)
-	withdrawn := focus.intent
-	if withdrawn == nil || withdrawn.id > intent {
-		m.mu.Unlock()
-		return nil
-	}
-	focus.intent = nil
-	withdrawn.withdrawn.Store(true)
-	handBack := withdrawn.claimed
-	m.mu.Unlock()
-	if !handBack {
-		return nil
-	}
-	return m.handBackPageFocus(withdrawn.handle)
-}
-
-// handBackPageFocus gives the keyboard back to the app from a page whose
-// focus intent was withdrawn after the engine applied it. Only an engine that
-// shares the app's window does it here; the launcher does it for its own.
-func (m *Manager) handBackPageFocus(handle string) error {
-	engine, ok := m.engine.(engineAppFocus)
-	if !ok || handle == "" {
-		return nil
-	}
-	if err := engine.ReleasePageFocus(handle); err != nil {
-		return fmt.Errorf("browser: give the keyboard back to the app: %w", err)
+	if focus.intent != nil && focus.intent.id <= intent {
+		focus.intent.withdrawn.Store(true)
+		focus.intent = nil
 	}
 	return nil
 }
@@ -214,10 +191,11 @@ func (m *Manager) applyFocusIntent(threadID string) {
 		m.mu.Unlock()
 		return
 	}
-	in.claimed, in.handle = true, page.driver.Handle()
+	in.claimed = true
+	handle := page.driver.Handle()
 	m.mu.Unlock()
 
-	result, err := host.FocusPage(in.handle, focusRequest{
+	result, err := host.FocusPage(handle, focusRequest{
 		Mount:  in.mount,
 		Intent: in.id,
 		Live:   func() bool { return !in.withdrawn.Load() },

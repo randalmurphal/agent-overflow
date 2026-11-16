@@ -145,19 +145,6 @@ func (e *wkEngine) FocusPage(handle string, req focusRequest) (focusResult, erro
 	return result, err
 }
 
-// ReleasePageFocus is engineAppFocus: the app takes the keyboard from the
-// page's view only if the view holds it.
-func (e *wkEngine) ReleasePageFocus(handle string) error {
-	p := wkPaneTarget(handle)
-	if p == nil {
-		return nil
-	}
-	if err := wkReleaseViewFocus(p.liveView()); err != nil && !errors.Is(err, errViewClosed) {
-		return err
-	}
-	return nil
-}
-
 var _ paneHost = (*wkEngine)(nil)
 
 func (e *wkEngine) HidePage(handle string) {

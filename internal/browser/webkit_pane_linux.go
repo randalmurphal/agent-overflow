@@ -181,19 +181,6 @@ func (e *webkitEngine) FocusPage(handle string, req focusRequest) (focusResult, 
 	return result, err
 }
 
-// ReleasePageFocus is engineAppFocus: the app takes the keyboard from the
-// page's view only if the view holds it.
-func (e *webkitEngine) ReleasePageFocus(handle string) error {
-	p := webkitPaneTarget(handle)
-	if p == nil {
-		return nil
-	}
-	if err := webkitReleaseViewFocus(p.liveView()); err != nil && !errors.Is(err, errViewClosed) {
-		return err
-	}
-	return nil
-}
-
 var _ paneHost = (*webkitEngine)(nil)
 
 func (e *webkitEngine) OpenPageDevTools(handle string) {

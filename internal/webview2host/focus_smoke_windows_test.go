@@ -16,9 +16,10 @@ var procSetForegroundWindow = user32.NewProc("SetForegroundWindow")
 //	AO_NATIVE_BROWSER_SMOKE=1 go test -run TestFocusSmoke ./internal/webview2host
 //
 // With the smoke window established as the foreground window, OpFocus moves
-// keyboard focus from the app into a shown page; it leaves focus alone for a
-// withdrawn intent, for a hidden page, and while another window is in the
-// foreground; and a withdrawal heard after the move gives the focus back.
+// keyboard focus from the app into a shown page, and a page hidden when its
+// directive arrives takes it when next shown; it leaves focus alone for a
+// withdrawn intent, pending or not, for a hidden page, and while another
+// window is in the foreground.
 // Windows grants the foreground only to a process allowed to take it, so a
 // run that cannot establish it skips, saying so, rather than pass on
 // assertions it could not make.
@@ -121,8 +122,8 @@ func TestFocusSmokeMovesFocusIntoAShownPage(t *testing.T) {
 	focus := func(intent uint64) {
 		host.Apply(Directive{Op: OpFocus, PageID: "page-1", Mount: "mount-1", Intent: intent})
 	}
-	arm := func(intent uint64, withdrawn bool) string {
-		return intents.Note(FocusIntentMessage{Mount: "mount-1", Intent: intent, Withdrawn: withdrawn})
+	arm := func(intent uint64, withdrawn bool) {
+		intents.Note(FocusIntentMessage{Mount: "mount-1", Intent: intent, Withdrawn: withdrawn})
 	}
 	// toApp gives the smoke window, standing in for the SPA, the keyboard.
 	toApp := func(state string) {
@@ -135,16 +136,6 @@ func TestFocusSmokeMovesFocusIntoAShownPage(t *testing.T) {
 	}
 
 	host.Apply(Directive{Op: OpBounds, PageID: "page-1", X: 0, Y: 0, W: 640, H: 480})
-
-	// Hidden: never focused.
-	arm(1, false)
-	focus(1)
-	if waitInPage(true) {
-		t.Fatal("a page never shown took the focus")
-	}
-	noReport("hidden")
-
-	host.Apply(Directive{Op: OpShow, PageID: "page-1"})
 	var foreground bool
 	ui.do(func() {
 		_, _, _ = procSetForegroundWindow.Call(ui.hwnd)
@@ -155,16 +146,30 @@ func TestFocusSmokeMovesFocusIntoAShownPage(t *testing.T) {
 	}
 	toApp("the app holds the keyboard")
 
-	// From the app into the page.
+	// Hidden: not focused, and the intent waits for the page's next show.
+	arm(1, false)
+	focus(1)
+	if waitInPage(true) {
+		t.Fatal("a page never shown took the focus")
+	}
+	noReport("hidden")
+	host.Apply(Directive{Op: OpShow, PageID: "page-1"})
+	if !waitInPage(true) {
+		t.Fatal("the page's show did not apply its waiting focus")
+	}
+	focusReport("shown", 1)
+
+	// From the app into a shown page.
+	toApp("before a shown page's focus")
 	arm(2, false)
 	focus(2)
 	if !waitInPage(true) {
 		t.Fatal("a shown page in the foreground window did not take the focus")
 	}
-	focusReport("shown", 2)
+	focusReport("focused", 2)
 
 	// A withdrawn intent moves nothing: the user chose elsewhere while the
-	// directive was on its way.
+	// directive was on its way, or while it waited for the page's show.
 	toApp("before a withdrawn intent")
 	arm(3, false)
 	arm(3, true)
@@ -173,22 +178,15 @@ func TestFocusSmokeMovesFocusIntoAShownPage(t *testing.T) {
 		t.Fatal("a withdrawn intent moved the focus into the page")
 	}
 	noReport("withdrawn")
-
-	// A withdrawal heard after the move gives the keyboard back.
+	host.Apply(Directive{Op: OpHide, PageID: "page-1"})
 	arm(4, false)
 	focus(4)
-	if !waitInPage(true) {
-		t.Fatal("a live intent did not move the focus")
+	arm(4, true)
+	host.Apply(Directive{Op: OpShow, PageID: "page-1"})
+	if waitInPage(true) {
+		t.Fatal("a waiting intent withdrawn before the show moved the focus")
 	}
-	focusReport("live", 4)
-	back := arm(4, true)
-	if back != "page-1" {
-		t.Fatalf("the withdrawal named %q to hand back, want page-1", back)
-	}
-	ui.do(func() { host.ReleasePageFocus(back) })
-	if waitInPage(false) {
-		t.Fatal("the withdrawn focus stayed in the page")
-	}
+	noReport("withdrawn while waiting")
 
 	t.Run("another window in the foreground", func(t *testing.T) {
 		var other uintptr

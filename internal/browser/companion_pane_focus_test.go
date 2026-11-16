@@ -64,26 +64,6 @@ func (e *focusPaneHost) FocusPage(handle string, req focusRequest) (focusResult,
 	return focusMoved, nil
 }
 
-// FocusApp gives the app the focus, as a claimed chord does.
-func (e *focusPaneHost) FocusApp() error {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	e.focus = focusHeldByTheApp
-	return nil
-}
-
-// ReleasePageFocus gives the app the focus only if the page holds it.
-func (e *focusPaneHost) ReleasePageFocus(handle string) error {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	if e.focus == handle {
-		e.focus = focusHeldByTheApp
-	}
-	return nil
-}
-
-var _ engineAppFocus = (*focusPaneHost)(nil)
-
 func (e *focusPaneHost) click(t *testing.T, handle string) {
 	t.Helper()
 	e.mu.Lock()

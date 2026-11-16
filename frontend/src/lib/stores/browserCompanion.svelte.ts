@@ -445,7 +445,11 @@ async function runBrowserAction(
 // area (the composer, the address bar again), a press outside it, another
 // active tab, the pane unmounting. Per thread, the one request in flight;
 // numbered per mount, which is how the backend and the launcher tell arms,
-// withdrawals and answers apart whatever order they arrive in.
+// withdrawals and answers apart whatever order they arrive in. A request
+// stays here, watched, until one of those choices withdraws it, a newer one
+// replaces it, or a Kind "focus" event says how it ended: whatever its arm's
+// answer was, and however long it took, since only where focus is applied
+// is its age known.
 interface PageFocusIntent {
   threadId: string;
   mount: string;
@@ -455,12 +459,8 @@ interface PageFocusIntent {
   area: HTMLElement;
   /** browserActionCounts for the thread when it was armed. */
   actionsAtArm: number;
-  timer: ReturnType<typeof setTimeout>;
 }
 
-// The backend's and the launcher's bound (FocusIntentMaxAge), with room for
-// the request's trip: until then a withdrawal may still matter.
-const PAGE_FOCUS_MAX_AGE_MS = 11_000;
 const pageFocusIntents = new Map<string, PageFocusIntent>();
 const pageFocusSeqs = new Map<string, number>();
 // Chrome actions started per thread, so a focus refusal that arrives after a
@@ -501,9 +501,6 @@ export async function focusBrowserPage(
     pageId,
     area,
     actionsAtArm: browserActionCounts.get(threadId) ?? 0,
-    timer: setTimeout(() => {
-      if (pageFocusIntents.get(threadId) === record) retirePageFocus(threadId);
-    }, PAGE_FOCUS_MAX_AGE_MS),
   };
   if (pageFocusIntents.size === 0 && typeof window !== 'undefined') {
     document.addEventListener('focusin', onUserFocusChoice, true);
@@ -525,10 +522,10 @@ export async function focusBrowserPage(
     applyBrowserCompanionState(state);
     return null;
   } catch (err) {
+    // The arm may still have landed: the request stays watched, and the
+    // user's next choice withdraws it.
     const message = errString(err);
-    const current = pageFocusIntents.get(threadId) === record;
-    if (current) retirePageFocus(threadId);
-    if (current && bannerable(record)) noteBrowserActionError(threadId, message);
+    if (pageFocusIntents.get(threadId) === record && bannerable(record)) noteBrowserActionError(threadId, message);
     return { error: message, cause: err };
   }
 }
@@ -542,11 +539,10 @@ function bannerable(record: PageFocusIntent): boolean {
   return !store.snapshot(record.threadId)?.actionError;
 }
 
-/** Ends the thread's intent here without telling anyone: it landed, failed, aged out or was superseded. */
+/** Ends the thread's intent here without telling anyone: it landed, failed or was superseded. */
 function retirePageFocus(threadId: string): PageFocusIntent | null {
   const record = pageFocusIntents.get(threadId);
   if (!record) return null;
-  clearTimeout(record.timer);
   pageFocusIntents.delete(threadId);
   if (pageFocusIntents.size === 0 && typeof window !== 'undefined') {
     document.removeEventListener('focusin', onUserFocusChoice, true);
