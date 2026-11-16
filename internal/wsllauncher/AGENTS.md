@@ -46,7 +46,8 @@ stale after an explicitly refused dial. Never put session credentials in URLs.
 
 Only replayable notification traffic carries a replay cursor. Update, browser,
 power, and native-network directives are ephemeral. Validate each directive and
-dispatch blocking handlers away from the socket read loop.
+dispatch blocking handlers away from the socket read loop. Browser-host
+directives keep arrival order per page (`directiveLanes`).
 
 Result-bearing RPCs have bounded pending-call and disconnect handling.
 Distinguish explicit refusal from undelivered calls. ClassifyInstallAck stops
