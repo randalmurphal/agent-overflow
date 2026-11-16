@@ -77,11 +77,11 @@ func (a *App) WorkflowBindThread(itemID, threadID string) (store.WorkItem, error
 		return store.WorkItem{}, fmt.Errorf("bind workflow run %s: %w", item.ID, err)
 	}
 	defer done()
-	if err := a.store.UpdateWorkItemOriginThread(item.ID, thread.ID); err != nil {
+	change, err := a.store.UpdateWorkItemOriginThread(item.ID, thread.ID)
+	if err != nil {
 		return store.WorkItem{}, err
 	}
-	// A running run it reports to keeps the thread from rest.
-	a.noteWorkerWaiting(thread.ID)
+	a.noteWorkflowOriginChange(change)
 	return a.store.GetWorkItem(item.ID)
 }
 
@@ -97,10 +97,11 @@ func (a *App) WorkflowUnbindThread(itemID string) (store.WorkItem, error) {
 	if err != nil {
 		return store.WorkItem{}, err
 	}
-	if err := a.store.UpdateWorkItemOriginThread(item.ID, ""); err != nil {
+	change, err := a.store.UpdateWorkItemOriginThread(item.ID, "")
+	if err != nil {
 		return store.WorkItem{}, err
 	}
-	a.noteWorkerWaiting(item.OriginThreadID)
+	a.noteWorkflowOriginChange(change)
 	return a.store.GetWorkItem(item.ID)
 }
 

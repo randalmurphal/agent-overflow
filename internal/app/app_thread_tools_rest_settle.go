@@ -3,6 +3,7 @@ package app
 import (
 	"fmt"
 	"log"
+	"maps"
 	"strings"
 	"time"
 
@@ -33,12 +34,24 @@ import (
 // then, by a turn end, a recovery event or the boot itself, waits for it.
 
 // restPasses schedules the passes: one at a time, again once done when
-// asked meanwhile, none before the boot's recovery (barred).
+// asked meanwhile, none before the boot's recovery (barred), and what that
+// recovery has still to do.
 type restPasses struct {
 	checking bool
 	again    bool
 	barred   bool
+	recovery restRecovery
 }
+
+// restRecovery is what the boot's recovery of rest has still to do: the
+// sources it has not read and the threads it has not reassessed, each
+// tried again by every pass of the request sweep (retryRestRecovery).
+type restRecovery struct {
+	sources map[string]bool
+	threads map[string]bool
+}
+
+func (r restRecovery) pending() bool { return len(r.sources)+len(r.threads) > 0 }
 
 // receiptAwaitsRest reports whether receipt settles on its thread's rest
 // rather than its turn's end: a spawn, or a send from the thread that
@@ -366,10 +379,10 @@ func (a *App) heldReceipts() []heldReceipt {
 }
 
 // settleRestedReceipts settles every held request whose thread is at rest
-// now, together, so a caller several of them answer is told once. A thread
-// liveWorkers records as not at rest by its own state is not read: its
-// record changes, and asks for another pass, when it rests. A read that
-// fails leaves the request held for the next pass.
+// now, together, so a caller several of them answer is told once. Each held
+// thread's rest is read fresh (threadRest), once a pass: what liveWorkers
+// records only draws rows, so a change it missed cannot hold a request. A
+// read that fails leaves the request held for the next pass.
 func (a *App) settleRestedReceipts() {
 	holds := a.heldReceipts()
 	rested := map[string]bool{}
@@ -377,11 +390,9 @@ func (a *App) settleRestedReceipts() {
 	for _, hold := range holds {
 		atRest, read := rested[hold.thread]
 		if !read {
-			if !a.liveWorker(hold.thread) {
-				var err error
-				if atRest, err = a.heldThreadAtRest(hold.thread); err != nil {
-					log.Printf("thread tools: read whether %s is at rest for request %s: %v", hold.thread, hold.token, err)
-				}
+			var err error
+			if atRest, err = a.heldThreadAtRest(hold.thread); err != nil {
+				log.Printf("thread tools: read whether %s is at rest for request %s: %v", hold.thread, hold.token, err)
 			}
 			rested[hold.thread] = atRest
 		}
@@ -483,21 +494,10 @@ func (a *App) barRestAtBoot() {
 	a.threadRequests.mu.Unlock()
 }
 
-// recoverRestAtBoot records, before any held request settles at rest, every
-// thread a recovered source keeps from rest, each reassessed here and not
-// off the boot's path: a loop or watch armed, a reminder unfired, a remote
-// command pending, an answer on its way, a workflow run reporting to it, a
-// question unanswered, a message queued. Then it lifts the bar and runs the
-// pass. A source it cannot read keeps the bar, so nothing settles on a
-// partial record; the requests stay held, and their threads' own turn ends
-// and session ends still settle every end but rest.
-func (a *App) recoverRestAtBoot() {
-	ok := true
-	seen := map[string]bool{}
-	for _, source := range []struct {
-		what string
-		read func() ([]string, error)
-	}{
+// restRecoverySources are the durable sources the boot recovers rest from,
+// each listing the threads it keeps from rest.
+func (a *App) restRecoverySources() []restRecoverySource {
+	return []restRecoverySource{
 		{"loops and watches", a.store.ThreadsWithLiveAgentWakes},
 		{"reminders", a.store.ThreadsWithOpenReminders},
 		{"remote commands", a.store.RemoteWatchThreadIDs},
@@ -505,34 +505,93 @@ func (a *App) recoverRestAtBoot() {
 		{"workflow runs", a.store.ThreadsWithRunningWorkflowRuns},
 		{"unanswered questions", a.store.ThreadsWithUnansweredAsyncQuestions},
 		{"queued messages", a.store.ListThreadsWithFlushQueueItems},
-	} {
+	}
+}
+
+type restRecoverySource struct {
+	what string
+	read func() ([]string, error)
+}
+
+// recoverRestAtBoot records, before any held request settles at rest, every
+// thread a recovered source keeps from rest, each reassessed on the
+// sweep's goroutine, before its first pass: a loop or watch armed, a
+// reminder unfired, a remote command pending, an answer on its way, a
+// workflow run reporting to it, a question unanswered, a message queued.
+// Then it lifts the bar and runs the pass. What fails is kept and tried
+// again by each pass of the sweep (retryRestRecovery), and the bar stays
+// until all of it succeeded, so nothing settles at rest on a partial
+// record; meanwhile the requests stay held, and their threads' turn ends
+// and session ends, and replies, still settle them every way but rest.
+func (a *App) recoverRestAtBoot() {
+	sources := map[string]bool{}
+	for _, source := range a.restRecoverySources() {
+		sources[source.what] = true
+	}
+	a.threadRequests.mu.Lock()
+	a.threadRequests.rest.recovery = restRecovery{sources: sources, threads: map[string]bool{}}
+	a.threadRequests.mu.Unlock()
+	a.retryRestRecovery()
+}
+
+// retryRestRecovery reads the sources the boot's recovery has not read and
+// reassesses the threads it has not, keeps what fails for the next pass,
+// and lifts the bar once nothing is left. Nothing to do once the recovery
+// is done. It runs on the sweep's goroutine, one at a time.
+func (a *App) retryRestRecovery() {
+	r := &a.threadRequests
+	r.mu.Lock()
+	if !r.rest.recovery.pending() {
+		r.mu.Unlock()
+		return
+	}
+	todo := r.rest.recovery
+	r.mu.Unlock()
+	left := restRecovery{sources: map[string]bool{}, threads: map[string]bool{}}
+	threads := maps.Clone(todo.threads)
+	for _, source := range a.restRecoverySources() {
+		if !todo.sources[source.what] {
+			continue
+		}
 		ids, err := source.read()
 		if err != nil {
 			log.Printf("thread tools: recover the threads waiting on %s: %v", source.what, err)
-			ok = false
+			left.sources[source.what] = true
 			continue
 		}
 		for _, id := range ids {
-			if seen[id] {
-				continue
-			}
-			seen[id] = true
-			if _, err := a.reassessWorker(id, true); err != nil {
-				log.Printf("thread tools: recover whether %s is at rest: %v", id, err)
-				ok = false
-			}
-			// Its rows are framed as any change's are.
-			a.noteWorkerWaiting(id)
+			threads[id] = true
 		}
 	}
-	if !ok {
-		return
+	for id := range threads {
+		if _, err := a.reassessWorker(id, true); err != nil {
+			log.Printf("thread tools: recover whether %s is at rest: %v", id, err)
+			left.threads[id] = true
+		}
+		// Its rows are framed as any change's are.
+		a.noteWorkerWaiting(id)
 	}
+	r.mu.Lock()
+	r.rest.recovery = left
+	done := !left.pending()
+	if done {
+		r.rest.recovery = restRecovery{}
+	}
+	if done {
+		r.rest.barred, r.rest.again = false, false
+	}
+	r.mu.Unlock()
+	if done {
+		a.noteRestWaitsMayChange()
+	}
+}
+
+// restRecoveryPending reports whether the boot's recovery of rest has
+// sources or threads left to try again.
+func (a *App) restRecoveryPending() bool {
 	a.threadRequests.mu.Lock()
-	a.threadRequests.rest.barred = false
-	a.threadRequests.rest.again = false
-	a.threadRequests.mu.Unlock()
-	a.noteRestWaitsMayChange()
+	defer a.threadRequests.mu.Unlock()
+	return a.threadRequests.rest.recovery.pending()
 }
 
 // requestWaitingOn is what an open request's thread waits on while its

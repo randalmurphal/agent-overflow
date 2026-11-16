@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 )
@@ -61,20 +62,35 @@ func (s *Store) ThreadsWithAnswerDue() ([]string, error) {
 		WHERE `+threadAnswerDueSQL(""))
 }
 
-// RunningWorkflowRunReportingTo names the oldest running workflow run that
-// reports to threadID, by its goal, found false when none does. A run
-// that waits on a person, or ended, starts no turn there by itself.
-func (s *Store) RunningWorkflowRunReportingTo(threadID string) (goal string, found bool, err error) {
+// WorkflowRunReportingTo names the oldest workflow run that reports to
+// threadID and is running, or is one of reporting (the runs whose report
+// the workflow owner says may still be owed, workflowapp.ReportingRuns), by
+// its goal, found false when none is. A run that waits on a person, or
+// ended, with its report in the thread's hands, starts no turn there by
+// itself.
+func (s *Store) WorkflowRunReportingTo(threadID string, reporting []string) (goal string, found bool, err error) {
+	ids, err := json.Marshal(append([]string{}, reporting...))
+	if err != nil {
+		return "", false, fmt.Errorf("store: read the workflow run reporting to %s: %w", threadID, err)
+	}
 	err = s.reader().QueryRow(`SELECT goal FROM work_items
-		WHERE origin_thread_id = ? AND origin_thread_id <> '' AND state = 'running'
-		ORDER BY created_at ASC, id ASC LIMIT 1`, threadID).Scan(&goal)
+		WHERE origin_thread_id = ? AND origin_thread_id <> ''
+		  AND (state = 'running' OR id IN (SELECT value FROM json_each(?)))
+		ORDER BY created_at ASC, id ASC LIMIT 1`, threadID, string(ids)).Scan(&goal)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", false, nil
 	}
 	if err != nil {
-		return "", false, fmt.Errorf("store: read the running workflow run of %s: %w", threadID, err)
+		return "", false, fmt.Errorf("store: read the workflow run reporting to %s: %w", threadID, err)
 	}
 	return goal, true, nil
+}
+
+// RunningRootWorkItemIDs lists the runs a thread can be bound to, a
+// root's, that are running.
+func (s *Store) RunningRootWorkItemIDs() ([]string, error) {
+	return s.queryThreadIDs("store: list the running root workflow runs",
+		`SELECT id FROM work_items WHERE state = 'running' AND parent_item_id = ''`)
 }
 
 // ThreadsWithRunningWorkflowRuns lists the threads a running workflow run

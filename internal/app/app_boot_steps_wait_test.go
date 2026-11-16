@@ -45,7 +45,7 @@ func TestWorkflowWakesWaitForTheBootStepsBeforeClients(t *testing.T) {
 	question := h.run(t, "wake-question", engine.StateNeedsHuman, engine.ReasonQuestion)
 	h.phase(t, question.ID, "plan", 1, "parked", "phase-thread", json.RawMessage(`{"status":"question","question":"Which base branch?"}`))
 	for item, thread := range map[string]string{done.ID: idle.ID, question.ID: busy.ID} {
-		if err := h.app.store.UpdateWorkItemOriginThread(item, thread); err != nil {
+		if _, err := h.app.store.UpdateWorkItemOriginThread(item, thread); err != nil {
 			t.Fatal(err)
 		}
 	}

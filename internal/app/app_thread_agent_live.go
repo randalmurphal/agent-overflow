@@ -184,7 +184,8 @@ func (a *App) workerHeldUnrest(threadID string) string {
 // request it made on its way to it (queued, store.ThreadAnswerDue); or,
 // waiting, running background work (what runningBackgroundWorkForThread
 // reports: Claude tasks and background agents, Codex subagents and
-// terminals, remote commands), a workflow run reporting to it, an armed
+// terminals, remote commands), a workflow run reporting to it that runs or
+// whose report is owed (workflowapp.Service.ReportingRuns), an armed
 // loop or watch, or a reminder that has not fired. The detail is the
 // background work's summary, the run's goal, or the loop, watch or
 // reminder named as its wake rows name it (wakeWaitingLine); background
@@ -216,11 +217,11 @@ func (a *App) workerDurableUnrest(threadID string) (workerRest, bool, error) {
 		}
 		return workerRest{unrest: workerWaiting, detail: detail}, true, nil
 	}
-	goal, running, err := a.store.RunningWorkflowRunReportingTo(threadID)
+	goal, reporting, err := a.store.WorkflowRunReportingTo(threadID, a.workflowApplication().ReportingRuns())
 	if err != nil {
 		return workerRest{}, false, err
 	}
-	if running {
+	if reporting {
 		return workerRest{unrest: workerWaiting, detail: workflowWaitingLine(goal)}, false, nil
 	}
 	wakes, err := a.store.ListAgentWakes(threadID)

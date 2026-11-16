@@ -39,6 +39,9 @@ const (
 	// writes, so it runs on its own much slower clock, and it is the
 	// longest the sweep ever sleeps.
 	threadRequestExpiryInterval = 10 * time.Minute
+	// restRecoveryRetry is how soon the sweep tries again what the boot's
+	// recovery of rest could not read (retryRestRecovery).
+	restRecoveryRetry = 5 * time.Second
 	// threadRequestPollBatch bounds one pass over the remote rows.
 	threadRequestPollBatch = 32
 	// threadRequestPollFanOut is how many destinations one pass visits at
@@ -130,6 +133,8 @@ func (a *App) runThreadRequestSweeps(nudge <-chan struct{}) {
 			return
 		}
 		now := time.Now()
+		// What the boot's recovery of rest could not read, read again.
+		a.retryRestRecovery()
 		a.fireDueThreadReminders(now)
 		a.fireDueAgentWakes(now)
 		a.pollRemoteThreadRequests(now)
@@ -184,6 +189,9 @@ func (a *App) threadRequestSweepDelay(lastExpiry time.Time) time.Duration {
 		}
 		if !a.threadRequestPollInFlight() {
 			due = append(due, schedule.Poll)
+		}
+		if a.restRecoveryPending() {
+			due = append(due, store.ScheduledMoment{At: time.Now().Add(restRecoveryRetry).UnixMilli(), Set: true})
 		}
 		if loops, err := a.store.NextAgentWakeDue(); err != nil {
 			logThreadRequestSweep("read the next loop or watch fire", err)

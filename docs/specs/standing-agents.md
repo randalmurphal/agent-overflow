@@ -825,8 +825,10 @@ Ruling 36, as built:
   as `thread_status` reads it awaiting input), no running background work
   (`runningBackgroundWorkForThread`: Claude tasks and background agents,
   Codex subagents and terminals, remote commands), no armed loop or watch
-  (`agent_wakes`), no reminder that has not fired, no running workflow
-  run that reports to it, no answer on its way to it (a request it made
+  (`agent_wakes`), no reminder that has not fired, no workflow run that
+  reports to it running or owing it its report (from the run's rest until
+  that rest's wake job ends, whatever it did with the report:
+  `workflowapp.Service.ReportingRuns`), no answer on its way to it (a request it made
   settled with its answer owed as a message, not yet echoed by the turn
   that reads it: `ThreadAnswerDue`), and no provider timer
   the idle reaper keeps a session for (`PendingWakeupAt`: a scheduled
@@ -839,14 +841,18 @@ Ruling 36, as built:
   the row's state, the listing's membership, Past and the summaries all
   take. A fresh read of both, `threadRest`, is what a spawn's settlement,
   `thread_status` with `thread_ids` and a paired computer's answers take
-  ([agent-thread-tools.md](agent-thread-tools.md#wakes-q7-q8-q15-q25)).
+  ([agent-thread-tools.md](agent-thread-tools.md#wakes-q7-q8-q15-q25));
+  every rest pass reads it for each held request's thread, whatever the
+  memory record below says, which only draws rows.
   The app keeps the spawned threads not at rest in memory (`liveWorkers`),
   a thread a paired computer's spawn made here included,
   each with its spawn link and what its durable sources last said, and
   re-evaluates a thread only on the events that change a source: its turn,
   prompts, queue and provider timers (`noteWorkerLiveness`, memory reads),
   and its background tray, wake, question, request and workflow frames,
-  a workflow run's binding and its session's end (`noteWorkerWaiting`,
+  a workflow run's binding, which names the thread it left and the one
+  it reports to now, both re-evaluated, a workflow run's owed report
+  ending, and its session's end (`noteWorkerWaiting`,
   which reads its durable sources again: its unanswered questions, the
   answers on their way to it, the background inventory, its workflow
   runs, its loops and watches, and its reminders). A changed request
@@ -923,9 +929,9 @@ Ruling 36, as built:
 ### At rest
 
 A thread is at rest when it has no turn, no queued message, no open
-prompt, no background work, no armed loop, watch or reminder, no running
-workflow run that reports to it, no answer on its way to it, and no open
-work below it. A Stop of a thread a thread spawned brings it to
+prompt, no background work, no armed loop, watch or reminder, no
+workflow run that reports to it running or owing it its report, no answer
+on its way to it, and no open work below it. A Stop of a thread a thread spawned brings it to
 rest: the Agents row's Stop of a spawn and Stop All
 ([Agents segment](#agents-segment)), and an agent's `thread_cancel` by
 thread id of a thread it spawned

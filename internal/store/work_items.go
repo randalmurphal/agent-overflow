@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"agent-overflow/internal/threadmode"
@@ -674,14 +675,45 @@ func (s *Store) UpdateWorkItemTriageThread(id, threadID string) error {
 // Thread lifetime is deliberately independent, like triage_thread_id: a deleted
 // thread leaves a stale id that the wake path clears when it next resolves it,
 // falling back to the unbound surface rather than losing the wake.
-func (s *Store) UpdateWorkItemOriginThread(id, threadID string) error {
-	result, err := s.db.Exec(
-		`UPDATE work_items SET origin_thread_id = ? WHERE id = ?`, threadID, id,
-	)
+//
+// It reports the thread the run reported to before and the one it reports to
+// now, read and written in one transaction: a running run keeps the thread it
+// reports to from rest, so both threads' rest may have changed.
+func (s *Store) UpdateWorkItemOriginThread(id, threadID string) (WorkItemOriginChange, error) {
+	label := fmt.Sprintf("store: update work item origin thread %s", id)
+	tx, err := s.db.Begin()
 	if err != nil {
-		return fmt.Errorf("store: update work item origin thread %s: %w", id, err)
+		return WorkItemOriginChange{}, fmt.Errorf("%s: begin: %w", label, err)
 	}
-	return requireRowsAffected(result, fmt.Sprintf("store: update work item origin thread %s", id))
+	defer tx.Rollback()
+	var previous string
+	if err := tx.QueryRow(`SELECT origin_thread_id FROM work_items WHERE id = ?`, id).Scan(&previous); err != nil {
+		return WorkItemOriginChange{}, fmt.Errorf("%s: %w", label, err)
+	}
+	if _, err := tx.Exec(`UPDATE work_items SET origin_thread_id = ? WHERE id = ?`, threadID, id); err != nil {
+		return WorkItemOriginChange{}, fmt.Errorf("%s: %w", label, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return WorkItemOriginChange{}, fmt.Errorf("%s: commit: %w", label, err)
+	}
+	return WorkItemOriginChange{Previous: previous, Current: threadID}, nil
+}
+
+// WorkItemOriginChange is a run's binding moved: the thread it reported to
+// before and the one it reports to now, either empty for none.
+type WorkItemOriginChange struct {
+	Previous, Current string
+}
+
+// Threads lists the threads the change touched, each once.
+func (c WorkItemOriginChange) Threads() []string {
+	var out []string
+	for _, thread := range []string{c.Previous, c.Current} {
+		if thread != "" && !slices.Contains(out, thread) {
+			out = append(out, thread)
+		}
+	}
+	return out
 }
 
 // WorkItemWakeSignature reads the signature of the last wake delivered into

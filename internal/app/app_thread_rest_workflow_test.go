@@ -264,7 +264,7 @@ func TestAStopLeavesAThreadARunWorksInToTheRun(t *testing.T) {
 	t.Parallel()
 	f := newRestRunFixture(t)
 	item, member := f.startRun(t, "member")
-	if err := f.app.store.UpdateWorkItemOriginThread(item.ID, member); err != nil {
+	if _, err := f.app.store.UpdateWorkItemOriginThread(item.ID, member); err != nil {
 		t.Fatal(err)
 	}
 	if err := f.app.store.InsertThreadRequest(store.ThreadRequest{
@@ -311,7 +311,7 @@ func TestAnAgentsCancelPausesTheRunsOfEveryThreadBelow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := f.app.store.UpdateWorkItemOriginThread(below.ID, grand.ID); err != nil {
+	if _, err := f.app.store.UpdateWorkItemOriginThread(below.ID, grand.ID); err != nil {
 		t.Fatal(err)
 	}
 	awaitLivePhaseSession(t, f.app, below.ID)
@@ -480,7 +480,7 @@ func TestAStopPausesTheRunsThatReportToTheThread(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := f.app.store.UpdateWorkItemOriginThread(unbound.ID, f.worker.ID); err != nil {
+	if _, err := f.app.store.UpdateWorkItemOriginThread(unbound.ID, f.worker.ID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := f.app.WorkflowUnbindThread(unbound.ID); err != nil {

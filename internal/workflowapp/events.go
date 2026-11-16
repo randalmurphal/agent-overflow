@@ -20,11 +20,15 @@ import (
 // or re-enter the engine. Everything past the classification below runs on the
 // per-App serial queues.
 func (s *Service) prepareEngineEvent(name eventchan.Channel, payload any) {
-	if name != eventchan.WorkflowItemState || s.deps.Digest == nil {
+	if name != eventchan.WorkflowItemState {
 		return
 	}
 	event, ok := payload.(engine.StateEvent)
-	if !ok || event.From == event.To || event.To != engine.StateNeedsHuman && event.To != engine.StateFailed {
+	if !ok {
+		return
+	}
+	s.noteReportTransition(event)
+	if s.deps.Digest == nil || event.From == event.To || event.To != engine.StateNeedsHuman && event.To != engine.StateFailed {
 		return
 	}
 	context, err := s.deps.Store.GetWorkItemAttentionContext(event.ItemID)
@@ -114,7 +118,10 @@ func (s *Service) afterWorkflowStateEvent(event engine.StateEvent) {
 	// The ring head now is this rest's own transition: a wake hold that keeps
 	// the rest back measures later moves of the run from here.
 	itemID, restAt := event.ItemID, s.watch.Head()
-	s.wake.Go(func() { s.surfaceRestingWorkflowItem(itemID, restAt) })
+	s.wake.Go(func() {
+		defer s.settleOwedReport(itemID)
+		s.surfaceRestingWorkflowItem(itemID, restAt)
+	})
 }
 
 // restingWorkflowState reports the transitions a run comes to rest on. `running`

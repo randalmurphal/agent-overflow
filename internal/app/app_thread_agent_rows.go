@@ -1315,6 +1315,15 @@ func (a *App) noteWorkerWaiting(threadID string) {
 	a.queueThreadAgentEmit(func(e *threadAgentEmits) { e.liveness[threadID] = true })
 }
 
+// noteWorkflowOriginChange reports a workflow run's binding moved: a
+// running run keeps the thread it reports to from rest, so the thread it
+// left and the one it reports to now are both read again.
+func (a *App) noteWorkflowOriginChange(change store.WorkItemOriginChange) {
+	for _, threadID := range change.Threads() {
+		a.noteWorkerWaiting(threadID)
+	}
+}
+
 // noteBackgroundTrayLiveness reports a background tray frame of a thread
 // to its reassessment, unless it can change nothing: a delta whose named
 // launches all still run, for a thread already waiting on its background

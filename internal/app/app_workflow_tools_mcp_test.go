@@ -424,7 +424,7 @@ func TestAWaitThatReturnedTheRestSuppressesItsWake(t *testing.T) {
 	h := newWakeHarness(t)
 	thread := h.chatThread(t, "waiting-thread")
 	item := h.run(t, "held-run", engine.StateRunning, "")
-	if err := h.app.store.UpdateWorkItemOriginThread(item.ID, thread.ID); err != nil {
+	if _, err := h.app.store.UpdateWorkItemOriginThread(item.ID, thread.ID); err != nil {
 		t.Fatal(err)
 	}
 	if err := h.app.store.UpdateWorkItemState(item.ID, string(engine.StateDone), "", time.Now().UnixMilli()); err != nil {
@@ -450,7 +450,7 @@ func TestABackgroundedWaitLeavesExactlyOneWake(t *testing.T) {
 	h := newWakeHarness(t)
 	thread := h.chatThread(t, "waiting-thread")
 	item := h.run(t, "slow-run", engine.StateRunning, "")
-	if err := h.app.store.UpdateWorkItemOriginThread(item.ID, thread.ID); err != nil {
+	if _, err := h.app.store.UpdateWorkItemOriginThread(item.ID, thread.ID); err != nil {
 		t.Fatal(err)
 	}
 	wait := waitOnRunFromThread(t, h, thread.ID, item.ID, 1)
@@ -504,7 +504,7 @@ func TestARestingAnswerDeliversOnlyOnceWritten(t *testing.T) {
 				token := uuid.NewString()
 				h.app.sessionManager().put(thread.ID, session{Token: token, Provider: thread.Provider})
 				item := h.run(t, "held-run", engine.StateRunning, "")
-				if err := h.app.store.UpdateWorkItemOriginThread(item.ID, thread.ID); err != nil {
+				if _, err := h.app.store.UpdateWorkItemOriginThread(item.ID, thread.ID); err != nil {
 					t.Fatal(err)
 				}
 				if err := h.app.store.UpdateWorkItemState(item.ID, string(engine.StateDone), "", time.Now().UnixMilli()); err != nil {
