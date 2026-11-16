@@ -4,23 +4,9 @@ import (
 	"strings"
 	"testing"
 
+	"agent-overflow/internal/forgeapi"
 	"agent-overflow/internal/git/forgeschema"
 )
-
-// Every GraphQL document this package can send is valid against its
-// forge's schema (forgeschema, refreshed by `make forge-schemas`),
-// selects nothing the schema deprecates, and defines the operation its
-// call site names. The documents are found where they are sent
-// (forgeschema.Sends): every call of forgeapi.Client.GraphQL, its
-// arguments traced to package-level constants or a table listed here; a
-// call site it cannot trace fails the test.
-
-// graphQLDocumentTables are the package-level tables a send ranges over
-// for its operation and document, by name. Their documents are built at
-// run time, so the test reads them from the values.
-var graphQLDocumentTables = map[string]any{
-	"gitlabPullsReads": gitlabPullsReads,
-}
 
 // allowedDeprecatedGraphQL are the deprecated schema elements a document
 // may select, keyed by forge and element, each with why. GitLab marks an
@@ -30,36 +16,35 @@ var allowedDeprecatedGraphQL = map[string]string{
 	"gitlab MergeRequest.mergeabilityChecks": "the Details read's change-request check (PRManageChecks); GitLab has no stable field for it",
 }
 
+// Every GraphQL document this package can send is valid against its
+// forge's schema (forgeschema, refreshed by `make forge-schemas`) and
+// selects nothing the schema deprecates. Client.GraphQL sends only a
+// forgeapi.Document, whose constructor registers it, so the registry is
+// every document; the package's are package-level values, made at init.
 func TestGraphQLDocumentsMatchForgeSchemas(t *testing.T) {
 	t.Parallel()
-	sends, sites, err := forgeschema.Sends(".", graphQLDocumentTables)
-	if err != nil {
-		t.Fatal(err)
-	}
+	docs := forgeapi.Documents()
 	allowed := map[string]bool{}
-	checked := map[string]bool{}
-	for _, send := range sends {
-		if op := forgeschema.OperationName(send.Text); op != send.Operation {
-			t.Errorf("%s sends %s as operation %q, but it defines %q", send.Site, send.Name, send.Operation, op)
+	for _, doc := range docs {
+		name := doc.Forge() + " " + doc.Operation()
+		// The constructor's reading of the operation agrees with a parser's.
+		if op := forgeschema.OperationName(doc.Text()); op != doc.Operation() {
+			t.Errorf("%s: a GraphQL parser reads operation %q", name, op)
 		}
-		if checked[send.Name] {
-			continue
-		}
-		checked[send.Name] = true
-		problems, deprecated, err := forgeschema.Check(send.Forge, send.Text)
+		problems, deprecated, err := forgeschema.Check(doc.Forge(), doc.Text())
 		if err != nil {
 			t.Fatal(err)
 		}
 		for _, p := range problems {
-			t.Errorf("%s (%s, sent at %s): %s", send.Name, send.Forge, send.Site, p)
+			t.Errorf("%s: %s", name, p)
 		}
 		for element, reason := range deprecated {
-			key := send.Forge + " " + element
+			key := doc.Forge() + " " + element
 			if _, ok := allowedDeprecatedGraphQL[key]; ok && strings.HasPrefix(reason, "Status: Experiment") {
 				allowed[key] = true
 				continue
 			}
-			t.Errorf("%s (%s) selects %s, which the schema deprecates (%s): use its replacement", send.Name, send.Forge, element, reason)
+			t.Errorf("%s selects %s, which the schema deprecates (%s): use its replacement", name, element, reason)
 		}
 	}
 	for key := range allowedDeprecatedGraphQL {
@@ -67,12 +52,20 @@ func TestGraphQLDocumentsMatchForgeSchemas(t *testing.T) {
 			t.Errorf("allowedDeprecatedGraphQL lists %s, which no document selects as an experiment", key)
 		}
 	}
-	t.Logf("%d call sites send %d documents", sites, len(checked))
-	// The trace reaches documents through locals, parameters, a function
-	// literal's parameters, a generic helper and a table.
-	for _, want := range []string{"githubPRTickQuery", "githubReopenPRMutation", "githubMergePRMessageMutation", "githubRemoveLabelsMutation", "gitlabSetDraftMutation", "gitlabPullsReads[5]"} {
-		if !checked[want] {
-			t.Errorf("the send trace missed %s", want)
+	t.Logf("%d documents", len(docs))
+	// The registry holds the constant documents and the built ones.
+	for _, want := range []string{"github PRTick", "github MergePRMessage", "gitlab PRSetDraft", "gitlab PRMergeMessage", "github PRMergeMessage", "gitlab PullsAuthoredApprovals"} {
+		if !strings.Contains(registered(docs), "\n"+want+"\n") {
+			t.Errorf("the registry lacks %s", want)
 		}
 	}
+}
+
+func registered(docs []forgeapi.Document) string {
+	var b strings.Builder
+	b.WriteString("\n")
+	for _, d := range docs {
+		b.WriteString(d.Forge() + " " + d.Operation() + "\n")
+	}
+	return b.String()
 }

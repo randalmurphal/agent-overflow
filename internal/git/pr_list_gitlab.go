@@ -65,15 +65,15 @@ const gitlabPullsApprovalFields = `iid approvalState { rules { type approvalsReq
 // gitlabPullsQuery is one GraphQL read of a project's open merge requests
 // the viewer reviews (filter reviewerUsername) or authored
 // (authorUsername), 100 per page, selecting fields.
-func gitlabPullsQuery(operation, filter, fields string) string {
-	return `query ` + operation + `($fullPath: ID!, $viewer: String!, $after: String) {
+func gitlabPullsQuery(operation, filter, fields string) forgeapi.Document {
+	return forgeapi.NewDocument(forgeapi.ForgeGitLab, `query `+operation+`($fullPath: ID!, $viewer: String!, $after: String) {
   project(fullPath: $fullPath) {
-    mergeRequests(` + filter + `: $viewer, state: opened, sort: UPDATED_DESC, first: 100, after: $after) {
+    mergeRequests(`+filter+`: $viewer, state: opened, sort: UPDATED_DESC, first: 100, after: $after) {
       pageInfo { hasNextPage endCursor }
-      nodes { ` + fields + ` }
+      nodes { `+fields+` }
     }
   }
-}`
+}`)
 }
 
 // The selections of the GraphQL reads.
@@ -83,17 +83,17 @@ const (
 	gitlabPullsApprovals
 )
 
-// gitlabPullsReads are the six GraphQL reads, by operation name.
+// gitlabPullsReads are the six GraphQL reads.
 var gitlabPullsReads = []struct {
-	operation, query string
-	selection        int
+	doc       forgeapi.Document
+	selection int
 }{
-	{"PullsReviewing", gitlabPullsQuery("PullsReviewing", "reviewerUsername", gitlabPullsReviewFields), gitlabPullsReview},
-	{"PullsAuthored", gitlabPullsQuery("PullsAuthored", "authorUsername", gitlabPullsReviewFields), gitlabPullsReview},
-	{"PullsReviewingActivity", gitlabPullsQuery("PullsReviewingActivity", "reviewerUsername", gitlabPullsActivityFields), gitlabPullsActivity},
-	{"PullsAuthoredActivity", gitlabPullsQuery("PullsAuthoredActivity", "authorUsername", gitlabPullsActivityFields), gitlabPullsActivity},
-	{"PullsReviewingApprovals", gitlabPullsQuery("PullsReviewingApprovals", "reviewerUsername", gitlabPullsApprovalFields), gitlabPullsApprovals},
-	{"PullsAuthoredApprovals", gitlabPullsQuery("PullsAuthoredApprovals", "authorUsername", gitlabPullsApprovalFields), gitlabPullsApprovals},
+	{gitlabPullsQuery("PullsReviewing", "reviewerUsername", gitlabPullsReviewFields), gitlabPullsReview},
+	{gitlabPullsQuery("PullsAuthored", "authorUsername", gitlabPullsReviewFields), gitlabPullsReview},
+	{gitlabPullsQuery("PullsReviewingActivity", "reviewerUsername", gitlabPullsActivityFields), gitlabPullsActivity},
+	{gitlabPullsQuery("PullsAuthoredActivity", "authorUsername", gitlabPullsActivityFields), gitlabPullsActivity},
+	{gitlabPullsQuery("PullsReviewingApprovals", "reviewerUsername", gitlabPullsApprovalFields), gitlabPullsApprovals},
+	{gitlabPullsQuery("PullsAuthoredApprovals", "authorUsername", gitlabPullsApprovalFields), gitlabPullsApprovals},
 }
 
 // gitlabPullNodeRaw is one merge request node of either selection.
@@ -198,7 +198,7 @@ func (f *gitlabForge) ListProjectPRs(ctx context.Context, repo RepoReference) ([
 			continue
 		}
 		wg.Go(func() {
-			nodes[i], nodeErrs[i] = readGitLabPulls(ctx, client, repo, viewer.Username, read.operation, read.query)
+			nodes[i], nodeErrs[i] = readGitLabPulls(ctx, client, repo, viewer.Username, read.doc)
 		})
 	}
 	wg.Go(func() { activity, eventsErr = f.viewerActivity(ctx, client, repo.Host, viewer) })
@@ -291,7 +291,7 @@ func readGitLabMRList(ctx context.Context, client *forgeapi.Client, repo RepoRef
 
 // readGitLabPulls reads one GraphQL selection's pages, at most
 // prListMaxPages.
-func readGitLabPulls(ctx context.Context, client *forgeapi.Client, repo RepoReference, viewer, operation, query string) ([]gitlabPullNodeRaw, error) {
+func readGitLabPulls(ctx context.Context, client *forgeapi.Client, repo RepoReference, viewer string, doc forgeapi.Document) ([]gitlabPullNodeRaw, error) {
 	var out []gitlabPullNodeRaw
 	var after any
 	for range prListMaxPages {
@@ -304,11 +304,11 @@ func readGitLabPulls(ctx context.Context, client *forgeapi.Client, repo RepoRefe
 			} `json:"project"`
 		}
 		vars := map[string]any{"fullPath": repo.Project(), "viewer": viewer, "after": after}
-		if _, err := client.GraphQL(ctx, operation, query, vars, &raw); err != nil {
+		if _, err := client.GraphQL(ctx, doc, vars, &raw); err != nil {
 			return nil, err
 		}
 		if raw.Project == nil || raw.Project.MergeRequests == nil {
-			return nil, fmt.Errorf("GitLab answered no merge requests for %s on %s (%s)", repo.Project(), repo.Host, operation)
+			return nil, fmt.Errorf("GitLab answered no merge requests for %s on %s (%s)", repo.Project(), repo.Host, doc.Operation())
 		}
 		out = append(out, raw.Project.MergeRequests.Nodes...)
 		page := raw.Project.MergeRequests.PageInfo

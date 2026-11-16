@@ -54,7 +54,7 @@ func TestIsolatedRequestsReachTheFakeBase(t *testing.T) {
 	}
 
 	var data struct{ Repository *struct{} }
-	_, err := s.GitHub("github.com").GraphQL(t.Context(), "Repo", "query Repo($owner: String!) { repository(owner: $owner) { id } }", map[string]any{"owner": "o"}, &data)
+	_, err := s.GitHub("github.com").GraphQL(t.Context(), testRepoDocument, map[string]any{"owner": "o"}, &data)
 	var gql *GraphQLError
 	if !errors.As(err, &gql) || gql.Problems[0].Type != "NOT_FOUND" {
 		t.Fatalf("GraphQL err = %v", err)
@@ -73,7 +73,7 @@ func TestIsolatedRequestsReachTheFakeBase(t *testing.T) {
 	}
 
 	var project struct{ Project *struct{} }
-	if _, err := s.GitLab("gitlab.example:8443").GraphQL(t.Context(), "Project", "query Project($fullPath: ID!) { project(fullPath: $fullPath) { id } }", map[string]any{"fullPath": "g/r"}, &project); err != nil {
+	if _, err := s.GitLab("gitlab.example:8443").GraphQL(t.Context(), testProjectDocument, map[string]any{"fullPath": "g/r"}, &project); err != nil {
 		t.Fatalf("GitLab GraphQL err = %v", err)
 	}
 	req, _ = got.last()

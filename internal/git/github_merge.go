@@ -27,69 +27,69 @@ import (
 // id, its head branch and whether that is a fork's, whether the
 // repository deletes merged branches itself, and whether the base merges
 // only through a merge queue and the PR is in it.
-const githubPRTargetQuery = `query PRMergeTarget($owner: String!, $name: String!, $number: Int!) {
+var githubPRTargetQuery = forgeapi.NewDocument(forgeapi.ForgeGitHub, `query PRMergeTarget($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
     deleteBranchOnMerge
     pullRequest(number: $number) { id headRefName isCrossRepository isMergeQueueEnabled isInMergeQueue }
   }
-}`
+}`)
 
 // The merge queue's mutations. A merge on a queue's base joins it now
 // (enqueuePullRequest, which GitHub refuses unless the PR can join at
 // once) or when ready (enablePullRequestAutoMerge with no method: the
 // queue's applies), as GitHub's Merge when ready does.
-const (
-	githubEnqueuePRMutation = `mutation EnqueuePR($pullRequestID: ID!, $expectedHeadOid: GitObjectID!) {
+var (
+	githubEnqueuePRMutation = forgeapi.NewDocument(forgeapi.ForgeGitHub, `mutation EnqueuePR($pullRequestID: ID!, $expectedHeadOid: GitObjectID!) {
   enqueuePullRequest(input: {pullRequestId: $pullRequestID, expectedHeadOid: $expectedHeadOid}) { mergeQueueEntry { id } }
-}`
-	githubDequeuePRMutation = `mutation DequeuePR($pullRequestID: ID!) {
+}`)
+	githubDequeuePRMutation = forgeapi.NewDocument(forgeapi.ForgeGitHub, `mutation DequeuePR($pullRequestID: ID!) {
   dequeuePullRequest(input: {id: $pullRequestID}) { mergeQueueEntry { id } }
-}`
-	githubEnableQueuedAutoMergeMutation = `mutation EnableQueuedAutoMerge($pullRequestID: ID!, $expectedHeadOid: GitObjectID!) {
+}`)
+	githubEnableQueuedAutoMergeMutation = forgeapi.NewDocument(forgeapi.ForgeGitHub, `mutation EnableQueuedAutoMerge($pullRequestID: ID!, $expectedHeadOid: GitObjectID!) {
   enablePullRequestAutoMerge(input: {pullRequestId: $pullRequestID, expectedHeadOid: $expectedHeadOid}) { pullRequest { isInMergeQueue autoMergeRequest { enabledAt } } }
-}`
+}`)
 )
 
-const githubMergePRMutation = `mutation MergePR($pullRequestID: ID!, $method: PullRequestMergeMethod!, $expectedHeadOid: GitObjectID!) {
+var githubMergePRMutation = forgeapi.NewDocument(forgeapi.ForgeGitHub, `mutation MergePR($pullRequestID: ID!, $method: PullRequestMergeMethod!, $expectedHeadOid: GitObjectID!) {
   mergePullRequest(input: {pullRequestId: $pullRequestID, mergeMethod: $method, expectedHeadOid: $expectedHeadOid}) { pullRequest { merged mergeCommit { oid } } }
-}`
+}`)
 
-const githubEnableAutoMergeMutation = `mutation EnableAutoMerge($pullRequestID: ID!, $method: PullRequestMergeMethod!, $expectedHeadOid: GitObjectID!) {
+var githubEnableAutoMergeMutation = forgeapi.NewDocument(forgeapi.ForgeGitHub, `mutation EnableAutoMerge($pullRequestID: ID!, $method: PullRequestMergeMethod!, $expectedHeadOid: GitObjectID!) {
   enablePullRequestAutoMerge(input: {pullRequestId: $pullRequestID, mergeMethod: $method, expectedHeadOid: $expectedHeadOid}) { pullRequest { autoMergeRequest { enabledAt } } }
-}`
+}`)
 
-const githubMergePRMessageMutation = `mutation MergePRMessage($pullRequestID: ID!, $method: PullRequestMergeMethod!, $expectedHeadOid: GitObjectID!, $commitHeadline: String!, $commitBody: String!) {
+var githubMergePRMessageMutation = forgeapi.NewDocument(forgeapi.ForgeGitHub, `mutation MergePRMessage($pullRequestID: ID!, $method: PullRequestMergeMethod!, $expectedHeadOid: GitObjectID!, $commitHeadline: String!, $commitBody: String!) {
   mergePullRequest(input: {pullRequestId: $pullRequestID, mergeMethod: $method, expectedHeadOid: $expectedHeadOid, commitHeadline: $commitHeadline, commitBody: $commitBody}) { pullRequest { merged mergeCommit { oid } } }
-}`
+}`)
 
-const githubEnableAutoMergeMessageMutation = `mutation EnableAutoMergeMessage($pullRequestID: ID!, $method: PullRequestMergeMethod!, $expectedHeadOid: GitObjectID!, $commitHeadline: String!, $commitBody: String!) {
+var githubEnableAutoMergeMessageMutation = forgeapi.NewDocument(forgeapi.ForgeGitHub, `mutation EnableAutoMergeMessage($pullRequestID: ID!, $method: PullRequestMergeMethod!, $expectedHeadOid: GitObjectID!, $commitHeadline: String!, $commitBody: String!) {
   enablePullRequestAutoMerge(input: {pullRequestId: $pullRequestID, mergeMethod: $method, expectedHeadOid: $expectedHeadOid, commitHeadline: $commitHeadline, commitBody: $commitBody}) { pullRequest { autoMergeRequest { enabledAt } } }
-}`
+}`)
 
-const githubDisableAutoMergeMutation = `mutation DisableAutoMerge($pullRequestID: ID!) {
+var githubDisableAutoMergeMutation = forgeapi.NewDocument(forgeapi.ForgeGitHub, `mutation DisableAutoMerge($pullRequestID: ID!) {
   disablePullRequestAutoMerge(input: {pullRequestId: $pullRequestID}) { pullRequest { autoMergeRequest { enabledAt } } }
-}`
+}`)
 
-const githubDismissReviewMutation = `mutation DismissReview($reviewID: ID!, $message: String!) {
+var githubDismissReviewMutation = forgeapi.NewDocument(forgeapi.ForgeGitHub, `mutation DismissReview($reviewID: ID!, $message: String!) {
   dismissPullRequestReview(input: {pullRequestReviewId: $reviewID, message: $message}) { pullRequestReview { state } }
-}`
+}`)
 
-const githubUpdateBranchMutation = `mutation UpdatePRBranch($pullRequestID: ID!, $expectedHeadOid: GitObjectID!) {
+var githubUpdateBranchMutation = forgeapi.NewDocument(forgeapi.ForgeGitHub, `mutation UpdatePRBranch($pullRequestID: ID!, $expectedHeadOid: GitObjectID!) {
   updatePullRequestBranch(input: {pullRequestId: $pullRequestID, expectedHeadOid: $expectedHeadOid}) { pullRequest { id } }
-}`
+}`)
 
-const githubMarkReadyMutation = `mutation MarkPRReady($pullRequestID: ID!) {
+var githubMarkReadyMutation = forgeapi.NewDocument(forgeapi.ForgeGitHub, `mutation MarkPRReady($pullRequestID: ID!) {
   markPullRequestReadyForReview(input: {pullRequestId: $pullRequestID}) { pullRequest { isDraft } }
-}`
+}`)
 
 // githubViewerApprovalQuery reads the reviewers' standing verdicts, for
 // the viewer's own approval: latestOpinionatedReviews keeps an approval a
 // later comment would hide in latestReviews.
-const githubViewerApprovalQuery = `query ViewerApproval($owner: String!, $name: String!, $number: Int!) {
+var githubViewerApprovalQuery = forgeapi.NewDocument(forgeapi.ForgeGitHub, `query ViewerApproval($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) { latestOpinionatedReviews(first: 100) { nodes { id state viewerDidAuthor } } }
   }
-}`
+}`)
 
 // githubUnapproveMessage is the dismissal message Unapprove leaves on the
 // review; GitHub requires one.
@@ -143,7 +143,7 @@ func (f *githubForge) prTarget(ctx context.Context, ref PRReference) (*forgeapi.
 			} `json:"pullRequest"`
 		} `json:"repository"`
 	}
-	if _, err := client.GraphQL(ctx, "PRMergeTarget", githubPRTargetQuery, vars, &raw); err != nil {
+	if _, err := client.GraphQL(ctx, githubPRTargetQuery, vars, &raw); err != nil {
 		return nil, githubPRTarget{}, err
 	}
 	if raw.Repository == nil || raw.Repository.PullRequest == nil || raw.Repository.PullRequest.ID == "" {
@@ -211,7 +211,7 @@ func (f *githubForge) Unapprove(ctx context.Context, ref PRReference) error {
 			} `json:"pullRequestReview"`
 		} `json:"dismissPullRequestReview"`
 	}
-	if _, err := client.GraphQL(ctx, "DismissReview", githubDismissReviewMutation, map[string]any{"reviewID": approvalID, "message": githubUnapproveMessage}, &raw); err != nil {
+	if _, err := client.GraphQL(ctx, githubDismissReviewMutation, map[string]any{"reviewID": approvalID, "message": githubUnapproveMessage}, &raw); err != nil {
 		return err
 	}
 	if raw.Dismiss == nil || raw.Dismiss.PullRequestReview == nil {
@@ -262,12 +262,12 @@ func (f *githubForge) Merge(ctx context.Context, ref PRReference, req MergeReque
 		return MergeOutcome{}, fmt.Errorf("%s#%d merges with a method: its base has no merge queue", ref.Project(), ref.Number)
 	}
 	vars := map[string]any{"pullRequestID": target.ID, "method": githubMergeMethodEnum(req.Method), "expectedHeadOid": strings.TrimSpace(req.HeadSHA)}
-	mergeOp, mergeDoc, autoOp, autoDoc := "MergePR", githubMergePRMutation, "EnableAutoMerge", githubEnableAutoMergeMutation
+	mergeDoc, autoDoc := githubMergePRMutation, githubEnableAutoMergeMutation
 	if m := req.CommitMessage; m != nil {
 		// The edited message rides its own operations, so a merge that
 		// leaves the default sends the same request as before.
 		vars["commitHeadline"], vars["commitBody"] = m.Title, m.Body
-		mergeOp, mergeDoc, autoOp, autoDoc = "MergePRMessage", githubMergePRMessageMutation, "EnableAutoMergeMessage", githubEnableAutoMergeMessageMutation
+		mergeDoc, autoDoc = githubMergePRMessageMutation, githubEnableAutoMergeMessageMutation
 	}
 	if req.AutoMerge {
 		var raw struct {
@@ -279,7 +279,7 @@ func (f *githubForge) Merge(ctx context.Context, ref PRReference, req MergeReque
 				} `json:"pullRequest"`
 			} `json:"enablePullRequestAutoMerge"`
 		}
-		if _, err := client.GraphQL(ctx, autoOp, autoDoc, vars, &raw); err != nil {
+		if _, err := client.GraphQL(ctx, autoDoc, vars, &raw); err != nil {
 			return MergeOutcome{}, err
 		}
 		if raw.Enable == nil || raw.Enable.PullRequest == nil || raw.Enable.PullRequest.AutoMergeRequest == nil {
@@ -298,7 +298,7 @@ func (f *githubForge) Merge(ctx context.Context, ref PRReference, req MergeReque
 			} `json:"pullRequest"`
 		} `json:"mergePullRequest"`
 	}
-	if _, err := client.GraphQL(ctx, mergeOp, mergeDoc, vars, &raw); err != nil {
+	if _, err := client.GraphQL(ctx, mergeDoc, vars, &raw); err != nil {
 		return MergeOutcome{}, err
 	}
 	if raw.Merge == nil || raw.Merge.PullRequest == nil {
@@ -347,7 +347,7 @@ func joinGitHubMergeQueue(ctx context.Context, client *forgeapi.Client, ref PRRe
 				} `json:"pullRequest"`
 			} `json:"enablePullRequestAutoMerge"`
 		}
-		if _, err := client.GraphQL(ctx, "EnableQueuedAutoMerge", githubEnableQueuedAutoMergeMutation, vars, &raw); err != nil {
+		if _, err := client.GraphQL(ctx, githubEnableQueuedAutoMergeMutation, vars, &raw); err != nil {
 			return MergeOutcome{}, err
 		}
 		// A PR that could merge now joins the queue at once instead.
@@ -363,7 +363,7 @@ func joinGitHubMergeQueue(ctx context.Context, client *forgeapi.Client, ref PRRe
 			} `json:"mergeQueueEntry"`
 		} `json:"enqueuePullRequest"`
 	}
-	if _, err := client.GraphQL(ctx, "EnqueuePR", githubEnqueuePRMutation, vars, &raw); err != nil {
+	if _, err := client.GraphQL(ctx, githubEnqueuePRMutation, vars, &raw); err != nil {
 		return MergeOutcome{}, err
 	}
 	if raw.Enqueue == nil || raw.Enqueue.Entry == nil {
@@ -381,7 +381,7 @@ func dequeueGitHubPR(ctx context.Context, client *forgeapi.Client, ref PRReferen
 			} `json:"mergeQueueEntry"`
 		} `json:"dequeuePullRequest"`
 	}
-	if _, err := client.GraphQL(ctx, "DequeuePR", githubDequeuePRMutation, map[string]any{"pullRequestID": target.ID}, &raw); err != nil {
+	if _, err := client.GraphQL(ctx, githubDequeuePRMutation, map[string]any{"pullRequestID": target.ID}, &raw); err != nil {
 		return err
 	}
 	if raw.Dequeue == nil || raw.Dequeue.Entry == nil {
@@ -430,7 +430,7 @@ func (f *githubForge) CancelAutoMerge(ctx context.Context, ref PRReference) erro
 			} `json:"pullRequest"`
 		} `json:"disablePullRequestAutoMerge"`
 	}
-	if _, err := client.GraphQL(ctx, "DisableAutoMerge", githubDisableAutoMergeMutation, map[string]any{"pullRequestID": target.ID}, &raw); err != nil {
+	if _, err := client.GraphQL(ctx, githubDisableAutoMergeMutation, map[string]any{"pullRequestID": target.ID}, &raw); err != nil {
 		return err
 	}
 	if raw.Disable == nil || raw.Disable.PullRequest == nil {
@@ -461,7 +461,7 @@ func (f *githubForge) UpdateBranch(ctx context.Context, ref PRReference, headSHA
 			} `json:"pullRequest"`
 		} `json:"updatePullRequestBranch"`
 	}
-	if _, err := client.GraphQL(ctx, "UpdatePRBranch", githubUpdateBranchMutation, map[string]any{"pullRequestID": target.ID, "expectedHeadOid": headSHA}, &raw); err != nil {
+	if _, err := client.GraphQL(ctx, githubUpdateBranchMutation, map[string]any{"pullRequestID": target.ID, "expectedHeadOid": headSHA}, &raw); err != nil {
 		return err
 	}
 	if raw.Update == nil || raw.Update.PullRequest == nil {
@@ -483,7 +483,7 @@ func (f *githubForge) MarkReady(ctx context.Context, ref PRReference) error {
 			} `json:"pullRequest"`
 		} `json:"markPullRequestReadyForReview"`
 	}
-	if _, err := client.GraphQL(ctx, "MarkPRReady", githubMarkReadyMutation, map[string]any{"pullRequestID": target.ID}, &raw); err != nil {
+	if _, err := client.GraphQL(ctx, githubMarkReadyMutation, map[string]any{"pullRequestID": target.ID}, &raw); err != nil {
 		return err
 	}
 	if raw.Ready == nil || raw.Ready.PullRequest == nil {

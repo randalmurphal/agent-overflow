@@ -1125,20 +1125,25 @@ type Response struct {
 
 func (c *Client) Do(ctx context.Context, r Request) (*Response, error)
 func (c *Client) JSON(ctx context.Context, r Request, out any) (*Response, error)
-func (c *Client) GraphQL(ctx context.Context, operation, query string, vars map[string]any, out any) (*Response, error)
+func (c *Client) GraphQL(ctx context.Context, doc Document, vars map[string]any, out any) (*Response, error)
+func NewDocument(forge, text string) Document // registers it; Documents() lists them
 func (c *Client) Stream(ctx context.Context, r Request, dst io.Writer, limit int64) (*Response, error)
 func (c *Client) Pages(ctx context.Context, r Request, visit func(*Response) (more bool, err error)) error
 func (c *Client) CredentialFingerprint(ctx context.Context) (string, error) // see Credentials
 ```
 
-- `GraphQL` sends variables as JSON `variables`, never interpolated into
-  the query, and the operation as `operationName`; a call without one is
-  refused. Errors in the GraphQL envelope become `*GraphQLError`; data
-  beside errors is handed back so a caller can decide what partial data it
-  accepts. It is the only way a document is sent: a REST path that
+- `GraphQL` sends a `Document`, whose operation name `NewDocument`
+  derives from its text and sends as `operationName`. `NewDocument`
+  panics on text without exactly one named operation, on an unknown
+  forge and on a second document with the forge and name of another, so
+  documents are package-level variables built at init. `GraphQL` refuses
+  a zero `Document` and one of the other forge. Variables go as JSON
+  `variables`, never interpolated into the query. Errors in the GraphQL
+  envelope become `*GraphQLError`; data beside errors is handed back so a
+  caller can decide what partial data it accepts. A REST path that
   resolves to the GraphQL endpoint (`graphql` on github.com's base) is
-  refused, so every document is one `internal/git`'s schema test traces
-  from a `GraphQL` call.
+  refused, so every document sent is in `Documents()`, which
+  `internal/git`'s schema test and the mock-forge rig check.
 - A body past its bound fails the call with `ErrBodyTooLarge`. A list
   read whose measured page can pass 1 MiB names its own bound
   (`internal/git/forge_body_limits.go`, sized in

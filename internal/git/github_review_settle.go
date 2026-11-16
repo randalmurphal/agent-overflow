@@ -19,11 +19,11 @@ import (
 // githubViewerReviewsQuery reads the PR's newest reviews with whether the
 // viewer wrote each: a review this submit posted is the newest, so it is
 // in the window whatever the PR's count.
-const githubViewerReviewsQuery = `query ViewerReviews($owner: String!, $name: String!, $number: Int!) {
+var githubViewerReviewsQuery = forgeapi.NewDocument(forgeapi.ForgeGitHub, `query ViewerReviews($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) { reviews(last: 100) { nodes { fullDatabaseId viewerDidAuthor state body commit { oid } } } }
   }
-}`
+}`)
 
 type githubViewerReview struct {
 	DatabaseID      githubBigInt `json:"fullDatabaseId"`
@@ -51,7 +51,7 @@ func readGitHubViewerReviews(ctx context.Context, client *forgeapi.Client, ref P
 			} `json:"pullRequest"`
 		} `json:"repository"`
 	}
-	if _, err := client.GraphQL(ctx, "ViewerReviews", githubViewerReviewsQuery, vars, &raw); err != nil {
+	if _, err := client.GraphQL(ctx, githubViewerReviewsQuery, vars, &raw); err != nil {
 		return nil, err
 	}
 	if raw.Repository == nil || raw.Repository.PullRequest == nil {

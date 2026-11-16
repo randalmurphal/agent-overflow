@@ -236,14 +236,14 @@ const githubListActivityDepth = "10"
 // read takes them (refUpdateRule, readable without admin, and rules).
 // $wantChecks gates the head's check state, an optional part a token may
 // be refused (githubReadParts).
-const githubPullsSearchQuery = `query PullsSearch($query: String!, $after: String, $wantChecks: Boolean!) {
+var githubPullsSearchQuery = forgeapi.NewDocument(forgeapi.ForgeGitHub, `query PullsSearch($query: String!, $after: String, $wantChecks: Boolean!) {
   viewer { login }
   search(type: ISSUE, query: $query, first: 100, after: $after) {
-    issueCount ` + githubPageInfoFields + `
+    issueCount `+githubPageInfoFields+`
     nodes {
       ... on PullRequest {
         id number url title isDraft createdAt updatedAt headRefOid headRefName baseRefName isCrossRepository
-        ` + githubActor + `
+        `+githubActor+`
         totalCommentsCount reviewDecision mergeStateStatus mergeable viewerDidAuthor
         reviewRequests(first: 20) { nodes { requestedReviewer { __typename ... on User { login } ... on Bot { login } ... on Mannequin { login } } } }
         latestOpinionatedReviews(first: 100) { nodes { state viewerDidAuthor } }
@@ -251,12 +251,12 @@ const githubPullsSearchQuery = `query PullsSearch($query: String!, $after: Strin
         reviewThreads(first: 100) { pageInfo { hasNextPage } nodes { isResolved } }
         baseRef { refUpdateRule { requiredApprovingReviewCount } rules(first: 100) { nodes { type parameters { __typename ... on PullRequestParameters { requiredApprovingReviewCount } } } } }
         commits(last: 1) { totalCount nodes { commit { committedDate statusCheckRollup @include(if: $wantChecks) { state } } } }
-        comments(last: ` + githubListActivityDepth + `) { nodes { author { login } createdAt } }
-        reviews(last: ` + githubListActivityDepth + `) { nodes { author { login } submittedAt } }
+        comments(last: `+githubListActivityDepth+`) { nodes { author { login } createdAt } }
+        reviews(last: `+githubListActivityDepth+`) { nodes { author { login } submittedAt } }
       }
     }
   }
-}`
+}`)
 
 type githubSearchPullRaw struct {
 	ID                 string         `json:"id"`
@@ -370,7 +370,7 @@ func (f *githubForge) ListProjectPRs(ctx context.Context, repo RepoReference) ([
 			} `json:"search"`
 		}
 		vars := map[string]any{"query": query, "after": after, "wantChecks": shape.has(githubPartCheckRuns)}
-		if _, err := client.GraphQL(ctx, "PullsSearch", githubPullsSearchQuery, vars, &raw); err != nil {
+		if _, err := client.GraphQL(ctx, githubPullsSearchQuery, vars, &raw); err != nil {
 			gql, refused := githubListChecksRefused(err)
 			if !refused || !shape.has(githubPartCheckRuns) {
 				return nil, err

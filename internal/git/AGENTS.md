@@ -35,14 +35,14 @@ it. Never recursively delete a path merely because it appears under a project
 directory. Keep main-worktree resolution and stale registration rules in
 internal/gitroot.
 
-GraphQL documents are package-level constants named for their forge
-(`github...`, `gitlab...`), passed to `Client.GraphQL` directly or
-through locals, parameters, or a range over a table listed in
-`graphql_schema_test.go`. That test traces every `GraphQL` call to its
-documents (`forgeschema.Sends`; a call it cannot trace fails), checks
-the call's operation name against the document's, validates each
-against the checked-in forge schemas (refreshed with `make
-forge-schemas`) and refuses deprecated selections. When two inline
+GraphQL documents are package-level `forgeapi.Document` values named
+for their forge (`github...`, `gitlab...`), built with
+`forgeapi.NewDocument`, the only kind `Client.GraphQL` sends. Building
+one registers it, so a document built inside a function escapes
+`graphql_schema_test.go` until that function runs. The test validates
+every registered document against the checked-in forge schemas
+(refreshed with `make forge-schemas`) and refuses deprecated
+selections. When two inline
 fragments select one name with different types, alias one side. Test
 forges' answers are checked against the document's shape too
 (`checkGraphQLAnswer`).

@@ -1,8 +1,7 @@
 // Package forgeschema holds the GitHub and gitlab.com GraphQL schemas and
-// checks documents and answers against them, for tests: it finds every
-// document internal/git sends where it is sent (Sends), checks that each
-// is valid and selects nothing deprecated (internal/git's
-// graphql_schema_test.go), and that a fake forge's answer to one has the
+// checks documents and answers against them, for tests: that each
+// registered forgeapi.Document is valid and selects nothing deprecated
+// (internal/git's graphql_schema_test.go), and that a fake forge's answer to one has the
 // shape the document selects (internal/git's test forge, the fake
 // forge's rigs in cmd/ao-mockforge).
 //
@@ -329,4 +328,17 @@ func sortedKeys(m map[string]any) []string {
 	}
 	slices.Sort(keys)
 	return keys
+}
+
+// OperationName is the name of the one operation document defines, or a
+// description of why there is none.
+func OperationName(document string) string {
+	doc, err := parser.ParseQuery(&ast.Source{Input: document})
+	if err != nil {
+		return "unparsable: " + err.Error()
+	}
+	if len(doc.Operations) != 1 {
+		return fmt.Sprintf("%d operations", len(doc.Operations))
+	}
+	return doc.Operations[0].Name
 }

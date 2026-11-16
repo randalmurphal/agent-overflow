@@ -14,6 +14,7 @@ import (
 	"sync"
 	"testing"
 
+	"agent-overflow/internal/forgeapi"
 	"agent-overflow/internal/git/forgeschema"
 	"agent-overflow/internal/harness/forgefake"
 )
@@ -22,12 +23,9 @@ import (
 // the forges' variable rules with the variables their callers build. The
 // rig's engine validates each request (forgefake.GraphQLRequestProblems)
 // and a rig test fails on one it refuses (recordRigInvocation); a run of
-// the whole package then fails when an operation internal/git's source
-// sends never reached a rig (checkEveryGraphQLOperationSent, from
+// the whole package then fails when a registered document's operation
+// (forgeapi.Documents) never reached a rig (checkEveryGraphQLOperationSent, from
 // TestMain), so a new document needs a test here that sends it.
-
-// gitSourceDir is the package whose documents are checked.
-const gitSourceDir = "../../internal/git"
 
 // rigOperations are the GraphQL operations the rigs' engines received.
 var rigOperations sync.Map
@@ -87,23 +85,18 @@ func answerChecked(t testing.TB, engine http.Handler) http.Handler {
 	})
 }
 
-// productionGraphQLOperations are the operation names internal/git
-// sends, found where it sends them (forgeschema.Sends). Its list reads
-// (gitlabPullsReads) build their documents at run time, out of reach of
-// this package, so their operations are not required here.
-func productionGraphQLOperations(dir string) ([]string, error) {
-	sends, _, err := forgeschema.Sends(dir, map[string]any{"gitlabPullsReads": nil})
-	if err != nil {
-		return nil, err
-	}
+// productionGraphQLOperations are the operation names of every GraphQL
+// document internal/git can send: Client.GraphQL takes only a
+// forgeapi.Document, and the constructor registers each.
+func productionGraphQLOperations() []string {
 	var ops []string
-	for _, send := range sends {
-		if !slices.Contains(ops, send.Operation) {
-			ops = append(ops, send.Operation)
+	for _, doc := range forgeapi.Documents() {
+		if !slices.Contains(ops, doc.Operation()) {
+			ops = append(ops, doc.Operation())
 		}
 	}
 	slices.Sort(ops)
-	return ops, nil
+	return ops
 }
 
 // checkEveryGraphQLOperationSent names the operations internal/git
@@ -115,10 +108,7 @@ func checkEveryGraphQLOperationSent() error {
 			return nil
 		}
 	}
-	ops, err := productionGraphQLOperations(gitSourceDir)
-	if err != nil {
-		return fmt.Errorf("read internal/git's GraphQL operations: %w", err)
-	}
+	ops := productionGraphQLOperations()
 	var missing []string
 	for _, op := range ops {
 		if _, ok := rigOperations.Load(op); !ok {
@@ -133,13 +123,10 @@ func checkEveryGraphQLOperationSent() error {
 
 func TestProductionGraphQLOperations(t *testing.T) {
 	t.Parallel()
-	ops, err := productionGraphQLOperations(gitSourceDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, want := range []string{"PRTick", "ReactionTarget", "AddReaction", "RemoveReaction", "MRNoteReactions", "PipelineJobs", "SuggestionFile", "PRManageChecks"} {
+	ops := productionGraphQLOperations()
+	for _, want := range []string{"PRTick", "ReactionTarget", "AddReaction", "RemoveReaction", "MRNoteReactions", "PipelineJobs", "SuggestionFile", "PRManageChecks", "PullsReviewing"} {
 		if !slices.Contains(ops, want) {
-			t.Errorf("the source scan missed %s: %v", want, ops)
+			t.Errorf("the registry lacks %s: %v", want, ops)
 		}
 	}
 }

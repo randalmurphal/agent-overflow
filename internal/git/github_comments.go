@@ -85,28 +85,28 @@ func githubConversationTarget(target CommentTarget) bool {
 	return target.ThreadID == target.CommentID
 }
 
-const (
-	githubUpdateReviewCommentMutation = `mutation UpdateReviewComment($id: ID!, $body: String!) {
+var (
+	githubUpdateReviewCommentMutation = forgeapi.NewDocument(forgeapi.ForgeGitHub, `mutation UpdateReviewComment($id: ID!, $body: String!) {
   updatePullRequestReviewComment(input: {pullRequestReviewCommentId: $id, body: $body}) { pullRequestReviewComment { id } }
-}`
-	githubUpdateIssueCommentMutation = `mutation UpdateIssueComment($id: ID!, $body: String!) {
+}`)
+	githubUpdateIssueCommentMutation = forgeapi.NewDocument(forgeapi.ForgeGitHub, `mutation UpdateIssueComment($id: ID!, $body: String!) {
   updateIssueComment(input: {id: $id, body: $body}) { issueComment { id } }
-}`
-	githubDeleteReviewCommentMutation = `mutation DeleteReviewComment($id: ID!) {
+}`)
+	githubDeleteReviewCommentMutation = forgeapi.NewDocument(forgeapi.ForgeGitHub, `mutation DeleteReviewComment($id: ID!) {
   deletePullRequestReviewComment(input: {id: $id}) { clientMutationId }
-}`
-	githubDeleteIssueCommentMutation = `mutation DeleteIssueComment($id: ID!) {
+}`)
+	githubDeleteIssueCommentMutation = forgeapi.NewDocument(forgeapi.ForgeGitHub, `mutation DeleteIssueComment($id: ID!) {
   deleteIssueComment(input: {id: $id}) { clientMutationId }
-}`
+}`)
 )
 
 // githubCommentOwnerQuery reads which pull request a comment's node id
 // belongs to. A node id is global, so a mutation on one names nothing
 // about the PR: an edit or delete reads the owner first and refuses a
 // comment of another PR or repository.
-const githubCommentOwnerQuery = `query CommentOwner($id: ID!) {
-  node(id: $id) { ` + githubCommentOwnerFields + ` }
-}`
+var githubCommentOwnerQuery = forgeapi.NewDocument(forgeapi.ForgeGitHub, `query CommentOwner($id: ID!) {
+  node(id: $id) { `+githubCommentOwnerFields+` }
+}`)
 
 // githubCommentOwnerFields select a comment node's type and the pull
 // request it is on. GitHub types pullRequest PullRequest! on a review
@@ -148,7 +148,7 @@ func requireCommentOnPR(ctx context.Context, client *forgeapi.Client, ref PRRefe
 	var raw struct {
 		Node *githubCommentOwnerRaw `json:"node"`
 	}
-	if _, err := client.GraphQL(ctx, "CommentOwner", githubCommentOwnerQuery, map[string]any{"id": target.CommentID}, &raw); err != nil {
+	if _, err := client.GraphQL(ctx, githubCommentOwnerQuery, map[string]any{"id": target.CommentID}, &raw); err != nil {
 		return err
 	}
 	if raw.Node == nil || !raw.Node.onPR(ref, target) {
@@ -168,14 +168,14 @@ func (f *githubForge) EditComment(ctx context.Context, ref PRReference, target C
 	if err := requireCommentOnPR(ctx, client, ref, target); err != nil {
 		return err
 	}
-	operation, document, field, node := "UpdateReviewComment", githubUpdateReviewCommentMutation, "updatePullRequestReviewComment", "pullRequestReviewComment"
+	document, field, node := githubUpdateReviewCommentMutation, "updatePullRequestReviewComment", "pullRequestReviewComment"
 	if githubConversationTarget(target) {
-		operation, document, field, node = "UpdateIssueComment", githubUpdateIssueCommentMutation, "updateIssueComment", "issueComment"
+		document, field, node = githubUpdateIssueCommentMutation, "updateIssueComment", "issueComment"
 	}
 	var raw map[string]map[string]*struct {
 		ID string `json:"id"`
 	}
-	if _, err := client.GraphQL(ctx, operation, document, map[string]any{"id": target.CommentID, "body": body}, &raw); err != nil {
+	if _, err := client.GraphQL(ctx, document, map[string]any{"id": target.CommentID, "body": body}, &raw); err != nil {
 		return writeOutcome(err)
 	}
 	if answer := raw[field][node]; answer == nil || answer.ID != target.CommentID {
@@ -192,14 +192,14 @@ func (f *githubForge) DeleteComment(ctx context.Context, ref PRReference, target
 	if err := requireCommentOnPR(ctx, client, ref, target); err != nil {
 		return err
 	}
-	operation, document, field := "DeleteReviewComment", githubDeleteReviewCommentMutation, "deletePullRequestReviewComment"
+	document, field := githubDeleteReviewCommentMutation, "deletePullRequestReviewComment"
 	if githubConversationTarget(target) {
-		operation, document, field = "DeleteIssueComment", githubDeleteIssueCommentMutation, "deleteIssueComment"
+		document, field = githubDeleteIssueCommentMutation, "deleteIssueComment"
 	}
 	var raw map[string]*struct {
 		ClientMutationID *string `json:"clientMutationId"`
 	}
-	if _, err := client.GraphQL(ctx, operation, document, map[string]any{"id": target.CommentID}, &raw); err != nil {
+	if _, err := client.GraphQL(ctx, document, map[string]any{"id": target.CommentID}, &raw); err != nil {
 		return writeOutcome(err)
 	}
 	if raw[field] == nil {
