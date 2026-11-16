@@ -551,9 +551,10 @@ func (a *App) threadAgentTreeDepth(ctx context.Context, view threadAgentView, th
 }
 
 // remoteAgentAnswers reads each remote spawn's rows: the last answer, with
-// another asked in the background, or every computer now, concurrently. A
-// spawn whose computer is no longer paired is asked nothing and answers
-// that it is not.
+// another asked in the background, or every computer now, concurrently,
+// recorded as any answer is and nested as the kept one, so a computer that
+// does not answer now shows its last answer either way. A spawn whose
+// computer is no longer paired is asked nothing and answers that it is not.
 func (a *App) remoteAgentAnswers(ctx context.Context, remote []threadAgentRemoteSlot, maxDepth int, peers threadAgentPeerMode) []threadAgentPeerAnswer {
 	answers := make([]threadAgentPeerAnswer, len(remote))
 	pairing := map[string]error{}
@@ -585,8 +586,7 @@ func (a *App) remoteAgentAnswers(ctx context.Context, remote []threadAgentRemote
 			depth := maxDepth - remote[i].depth
 			listing, err := a.peerThreadAgentRows(call, remote[i].spawn.TargetComputerID, remote[i].spawn.MadeIn(),
 				remote[i].spawn.TargetThreadID, depth)
-			a.notePeerAgentRows(remote[i].spawn, listing, err, depth <= 0 && listing.Open != nil)
-			answers[i] = threadAgentPeerAnswer{listing: listing, err: err}
+			answers[i] = a.notePeerAgentRows(remote[i].spawn, listing, err, depth <= 0 && listing.Open != nil)
 		})
 		return answers
 	}

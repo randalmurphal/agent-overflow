@@ -770,10 +770,12 @@ Ruling 36, as built:
   and asks no computer further on, so a chain of computers is asked no
   deeper than the listing shows; its row says when that thread has rows.
   A computer that predates the open state is read from the rows it
-  returns, as far as they reach. A failed call is no news of rest: the row keeps the state the
-  last answer gave, says that computer did not answer, and stays open,
-  counted and out of Past; with no answer remembered, as after a
-  restart, its recorded open work keeps it open, waiting. Only an answer
+  returns, as far as they reach. A failed call is no news of rest: the
+  row keeps the state the last answer gave, in a pane's read and in an
+  answer a computer gives for its own spawn's computer further on alike,
+  says that computer did not answer, and stays open, counted and out of
+  Past; with no answer remembered, as after a restart, its recorded open
+  work keeps it open, waiting. Only an answer
   closes it: rest there, or a refusal of the thread as not the spawn's.
   Nothing on that computer tells this one when a thread that rested is
   continued there, so the sweep also asks about the settled remote

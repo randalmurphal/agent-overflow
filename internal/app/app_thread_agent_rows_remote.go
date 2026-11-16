@@ -335,26 +335,36 @@ func (a *App) askPeerAgentRows(spawn store.ThreadRequest) {
 	}
 }
 
-// notePeerAgentRows records an answer a live listing read itself; stateOnly
-// says it is the thread's state alone.
-func (a *App) notePeerAgentRows(spawn store.ThreadRequest, listing ThreadAgentRows, err error, stateOnly bool) {
+// notePeerAgentRows records an answer a live listing read itself, stateOnly
+// when it is the thread's state alone, and returns what the listing nests
+// for the spawn: the answer, or for a call that failed the answer kept for
+// it, as a pane's read nests it (cachedPeerAgentRows): the last one with
+// the failure, and for a refusal none. An answer that is not recorded, at
+// shutdown or from a computer no longer paired, is nested as it came.
+func (a *App) notePeerAgentRows(spawn store.ThreadRequest, listing ThreadAgentRows, err error, stateOnly bool) threadAgentPeerAnswer {
+	answer := threadAgentPeerAnswer{listing: listing, err: err}
 	if errors.Is(err, context.Canceled) && a.lifeCtx().Err() != nil {
-		return
+		return answer
 	}
 	c := &a.threadAgentPeers
 	c.recording.Lock()
 	if !a.peerStillPaired(spawn.TargetComputerID) {
 		c.recording.Unlock()
-		return
+		return answer
 	}
 	a.recordPeerOpenWork(spawn, listing, err)
 	c.mu.Lock()
 	changed := c.noteAnswerLocked(spawn, listing, err, stateOnly)
+	if err != nil {
+		kept := c.entries[spawn.Token]
+		answer = threadAgentPeerAnswer{listing: kept.listing, err: kept.err}
+	}
 	c.mu.Unlock()
 	c.recording.Unlock()
 	if changed {
 		a.noteThreadRequestChanged(store.ThreadRequestChange{CallerThreadID: spawn.CallerThreadID})
 	}
+	return answer
 }
 
 // peerStillPaired reports whether an answer from computerID may be

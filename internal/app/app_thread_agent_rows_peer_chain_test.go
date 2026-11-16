@@ -187,6 +187,12 @@ func (c *agentChain) settle(t *testing.T, i int) {
 // background asking is done.
 func (c *agentChain) atRest(t *testing.T, from, to int) {
 	t.Helper()
+	var last string
+	t.Cleanup(func() {
+		if t.Failed() && last != "" {
+			t.Logf("the last thread not at rest: %s", last)
+		}
+	})
 	waitUntil(t, 10*time.Second, func() bool {
 		for i := from; i < to; i++ {
 			rest, err := c.apps[i+1].workerUnrest(c.threads[i])
@@ -194,6 +200,7 @@ func (c *agentChain) atRest(t *testing.T, from, to int) {
 				t.Fatal(err)
 			}
 			if rest.unrest != "" {
+				last = fmt.Sprintf("link %d: %+v", i, rest)
 				return false
 			}
 		}
@@ -215,4 +222,90 @@ func (c *agentChain) entryAt(i int, spawn string) (time.Time, error) {
 		return time.Time{}, nil
 	}
 	return entry.at, entry.err
+}
+
+// A computer answering for its worker on a computer further on renders that
+// worker as its own listing would: the worker on C answered B and is
+// blocked on an approval there; once C stops answering, B's answer to A
+// still gives C's last one, so A counts the approval as waiting on the
+// person. A refusal of the thread as gone there clears it.
+func TestAForwardedListingKeepsTheLastAnswerOfAComputerFurtherOn(t *testing.T) {
+	t.Parallel()
+	for _, outcome := range []string{"unreachable", "refused"} {
+		t.Run(outcome, func(t *testing.T) {
+			t.Parallel()
+			c := newAgentChain(t, 3)
+			installMockClaudeReplies(t, c.apps[0], "noted", "noted", "noted")
+			installMockClaudeReplies(t, c.apps[1], "done", "noted", "noted", "noted")
+			installMockClaudeTurns(t, c.apps[2], [][]string{{
+				mockClaudeInitLine,
+				`{"type":"assistant","message":{"id":"msg-1","role":"assistant","content":[{"type":"text","text":"The release is staged."}]}}`,
+				`{"type":"result","subtype":"success","is_error":false}`,
+			}, {
+				mockClaudeInitLine,
+				`{"type":"assistant","message":{"id":"msg-2","role":"assistant","content":[{"type":"text","text":"releasing"}]}}`,
+			}})
+			c.spawnAlong(t, 0, "watch the release")
+			c.spawnAlong(t, 1, "stage the release")
+			c.settle(t, 0)
+			c.settle(t, 1)
+			c.atRest(t, 0, 2)
+			// The worker on C is continued there, and asks for an approval.
+			if err := c.apps[2].SendMessage(c.threads[1], "now run it", nil); err != nil {
+				t.Fatalf("SendMessage there: %v", err)
+			}
+			waitUntil(t, 10*time.Second, func() bool {
+				return threadToolsLiveState(c.apps[2].triage.LiveStateSnapshotForThread(c.threads[1])).ActiveTurn
+			})
+			approvalOn(t, c.apps[2], c.threads[1], "release-approval")
+
+			summary := func() ThreadWorkerSummary {
+				t.Helper()
+				got, err := c.apps[0].GetThreadWorkerSummary(t.Context(), c.caller.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return got
+			}
+			waitUntil(t, 20*time.Second, func() bool { return summary().NeedYou == 1 })
+
+			switch outcome {
+			case "unreachable":
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				err := c.wires[2].srv.Shutdown(ctx)
+				cancel()
+				if err != nil {
+					t.Fatalf("stop computer 2: %v", err)
+				}
+			case "refused":
+				if err := c.apps[2].DeleteThread(c.threads[1]); err != nil {
+					t.Fatalf("delete the worker there: %v", err)
+				}
+			}
+			// B has asked C since, and A has B's answer from after that.
+			mark := time.Now()
+			waitUntil(t, 20*time.Second, func() bool {
+				summary()
+				asked, err := c.entryAt(1, c.spawns[1])
+				answered, _ := c.entryAt(0, c.spawns[0])
+				return asked.After(mark) && err != nil && answered.After(asked)
+			})
+			listing, err := c.apps[0].ListThreadAgentRows(t.Context(), c.caller.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			row, _ := agentRowByToken(listing.Rows, c.spawns[1])
+			got := summary()
+			switch outcome {
+			case "unreachable":
+				if got.NeedYou != 1 || row.Worker != workerBlocked || !row.needsYou() || row.NestedUnavailable == "" {
+					t.Fatalf("with computer 2 not answering: summary %+v, its worker's row %+v; want the approval still waiting on the person, saying it did not answer", got, row)
+				}
+			case "refused":
+				if got.NeedYou != 0 || row.Worker == workerBlocked {
+					t.Fatalf("with the worker gone there: summary %+v, its row %+v; want nothing waiting on the person", got, row)
+				}
+			}
+		})
+	}
 }
