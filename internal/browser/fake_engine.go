@@ -163,6 +163,12 @@ type fakePage struct {
 	// viewportHook, when set, sees every SetViewport after it is recorded,
 	// so a test can hold a layout in flight.
 	viewportHook func(width, height int)
+	// navigateHook, when set, runs inside Navigate after the address is
+	// allowed and before the load, so a test can hold a navigation in flight
+	// or fail it; an error fails the navigation.
+	navigateHook func(ctx context.Context, rawURL string) error
+	// stops counts the "stop" history actions the page received.
+	stops int
 	// selection answers SelectionText.
 	selection string
 	// findMode answers FindMode; FindModeBar unless a test changes it.
@@ -208,9 +214,17 @@ func (p *fakePage) Info(context.Context) (string, string, error) {
 	return p.url, p.title, nil
 }
 
-func (p *fakePage) Navigate(_ context.Context, rawURL string) error {
+func (p *fakePage) Navigate(ctx context.Context, rawURL string) error {
 	if p.hooks.Allow != nil && !p.hooks.Allow(rawURL) {
 		return fmt.Errorf("browser: navigation to %s is not allowed", rawURL)
+	}
+	p.mu.Lock()
+	hook := p.navigateHook
+	p.mu.Unlock()
+	if hook != nil {
+		if err := hook(ctx, rawURL); err != nil {
+			return err
+		}
 	}
 	p.mu.Lock()
 	// A navigation truncates the forward entries AFTER the current one and
@@ -306,7 +320,9 @@ func (p *fakePage) History(_ context.Context, action string) error {
 		p.reportLoading(false)
 		return nil
 	case "stop":
+		p.stops++
 		p.mu.Unlock()
+		p.reportLoading(false)
 		return nil
 	}
 	p.url = p.history[p.index]

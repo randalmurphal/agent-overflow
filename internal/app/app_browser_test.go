@@ -500,7 +500,8 @@ func TestCompanionTabOpenedDuringADeleteIsClosed(t *testing.T) {
 	}
 }
 
-// Every companion action opens a page for a thread that has none. A thread
+// Every companion action but stop opens a page for a thread that has none
+// (stop acts only on a live page, StopCompanionLoad). A thread
 // deleted between the action's row read and the page's registration gets
 // that page closed.
 func TestCompanionActionOpeningAPageForADeletedThreadClosesIt(t *testing.T) {
@@ -516,7 +517,6 @@ func TestCompanionActionOpeningAPageForADeletedThreadClosesIt(t *testing.T) {
 		{Kind: "back"},
 		{Kind: "forward"},
 		{Kind: "reload"},
-		{Kind: "stop"},
 	} {
 		calls[action.Kind] = func(ctx context.Context, app *App, threadID string) error {
 			_, err := app.BrowserCompanionDo(ctx, threadID, action)
