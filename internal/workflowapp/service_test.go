@@ -21,6 +21,7 @@ import (
 	"agent-overflow/internal/workflow/engine"
 	"agent-overflow/internal/workflow/memory"
 	workflowrunner "agent-overflow/internal/workflow/runner"
+	"agent-overflow/internal/workflow/wake"
 )
 
 type serviceFixture struct {
@@ -413,7 +414,8 @@ func TestQueuedWakePromotesOnlyWhileItsClaimIsCurrent(t *testing.T) {
 	}
 	f.service.deps.WakeDelivery.HasLiveSession = func(string) bool { return true }
 	var onDurable func()
-	f.service.deps.WakeDelivery.QueueMessage = func(threadID, _, message string, settle func()) error {
+	f.service.deps.WakeDelivery.QueueMessage = func(threadID, _ string, composed wake.Message, settle func()) error {
+		message := composed.String()
 		if threadID != thread.ID || !strings.Contains(message, item.ID) {
 			t.Fatalf("queued wake thread=%q message=%q", threadID, message)
 		}

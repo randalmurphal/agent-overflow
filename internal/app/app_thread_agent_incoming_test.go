@@ -11,6 +11,7 @@ import (
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadtools"
 	"agent-overflow/internal/usermessage"
+	"agent-overflow/internal/workflow/wake"
 )
 
 // A request another thread queued for this thread is an incoming
@@ -195,7 +196,7 @@ func TestThreadAgentIncomingCompletionsAndWorkflowWakes(t *testing.T) {
 		t.Fatalf("queue the completion: %v", err)
 	}
 	a.waitAgentNoticeWork()
-	if err := a.queueWorkflowWake(thread.ID, "wf-1", "Phase build finished.", nil); err != nil {
+	if err := a.queueWorkflowWake(thread.ID, "wf-1", wake.Message{Notice: wake.DataNotice, Data: "Phase build finished."}, nil); err != nil {
 		t.Fatalf("queue the workflow wake: %v", err)
 	}
 	person, err := a.registerQueueItem(thread.ID, "and mine", SendMessageOptions{SendID: "composer-1"}, injectedQueueOptions{preserveDraft: true})

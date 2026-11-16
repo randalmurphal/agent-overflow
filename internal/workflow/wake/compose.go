@@ -7,13 +7,23 @@ import (
 	"agent-overflow/internal/untrustedtext"
 )
 
+// Message is a wake as it was composed: DataNotice, the framing line written
+// for the agent, and the data under it, which opens with a blank line. A
+// person's view of the message shows the data; the agent reads String.
+type Message struct {
+	Notice string
+	Data   string
+}
+
+// String is the message as the agent reads it: the notice, then the data.
+func (m Message) String() string { return m.Notice + "\n" + m.Data }
+
 // Compose renders the wake message injected into a bound thread when a run
 // RESTS. The result is plain text with no envelope payloads: an agent that needs
 // the full record reads it through the references.
-func Compose(in Input) string {
+func Compose(in Input) Message {
 	var out strings.Builder
-	out.WriteString(DataNotice)
-	out.WriteString("\n\n")
+	out.WriteString("\n")
 	out.WriteString(headline(in.Run, in.Descendant != nil))
 	if in.Descendant != nil {
 		out.WriteByte('\n')
@@ -37,7 +47,7 @@ func Compose(in Input) string {
 	writeReferences(&out, in.References)
 	out.WriteString("\n\n")
 	out.WriteString(closing(in))
-	return out.String()
+	return Message{Notice: DataNotice, Data: out.String()}
 }
 
 // headline is the one line that always exists: what the run is and where it

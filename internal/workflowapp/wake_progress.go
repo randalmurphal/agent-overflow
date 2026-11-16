@@ -70,9 +70,9 @@ func (s *Service) surfaceWorkflowGateNotify(event engine.NotifyEvent) {
 	}
 	input.Outputs, input.OutputOverflow = s.workflowGateOutputs(item, event)
 	message := wake.ComposeProgress(input)
-	if len(message) > maxWakeMessageBytes {
+	if size := len(message.String()); size > maxWakeMessageBytes {
 		s.deps.Logf("workflow progress wake %s: composed %d bytes; maximum is %d",
-			root.ID, len(message), maxWakeMessageBytes)
+			root.ID, size, maxWakeMessageBytes)
 		return
 	}
 	s.deliverWorkflowWake(root, composedWake{signature: wake.ProgressSignature(input), message: message})

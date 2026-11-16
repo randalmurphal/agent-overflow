@@ -60,7 +60,7 @@ func TestEveryAgentWakeWriterStoresItsFacts(t *testing.T) {
 			"token tok-2", "1. Scope: Which module?"},
 		{"a remote job's report", remoteCompletionMessage(remote, "desk", remoteCompletionOutput{Tail: "ok"}),
 			usermessage.OriginWakeKindCompletion, "Remote job finished on desk: make test", "Output (untrusted):\nok", "finished; exit code: 2"},
-		{"a workflow run's wake", workflowWakeMessage("release", wake.DataNotice+"\nrun: \"release\""),
+		{"a workflow run's wake", workflowWakeMessage("release", wake.Message{Notice: wake.DataNotice, Data: "run: \"release\""}),
 			usermessage.OriginWakeKindWorkflow, wake.DataNotice, `run: "release"`, ""},
 		{"an assistant's opening", assistantMessage(assistantSendID(usermessage.OriginWakeKindOpening, "a1"), "Ops", agenthome.OpeningMessage("Ops", "/config/agents/a1")),
 			usermessage.OriginWakeKindOpening, "", "Ops", ""},

@@ -260,8 +260,8 @@ func (s *Service) composeWorkflowWake(item store.WorkItem, descendant *wakeDesce
 	}
 	input.References = references
 	message := wake.Compose(input)
-	if len(message) > maxWakeMessageBytes {
-		return composedWake{}, fmt.Errorf("composed wake is %d bytes; maximum is %d", len(message), maxWakeMessageBytes)
+	if size := len(message.String()); size > maxWakeMessageBytes {
+		return composedWake{}, fmt.Errorf("composed wake is %d bytes; maximum is %d", size, maxWakeMessageBytes)
 	}
 	return composedWake{signature: wake.Signature(input), message: message}, nil
 }

@@ -6,6 +6,7 @@ import (
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/workflow/engine"
+	"agent-overflow/internal/workflow/wake"
 )
 
 // Wake delivery — the one place a composed message becomes a message in a
@@ -27,7 +28,7 @@ const maxWakeMessageBytes = 24 * 1024
 // message it did not send, or send a message whose signature nobody computed.
 type composedWake struct {
 	signature      string
-	message        string
+	message        wake.Message
 	usageAttention *store.WorkflowProviderUsageAttentionClaim
 }
 

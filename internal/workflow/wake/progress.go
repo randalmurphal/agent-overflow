@@ -69,10 +69,9 @@ type ProgressInput struct {
 
 // ComposeProgress renders the message a `notify:` route injects into the bound
 // thread. It is pure, like Compose.
-func ComposeProgress(in ProgressInput) string {
+func ComposeProgress(in ProgressInput) Message {
 	var out strings.Builder
-	out.WriteString(DataNotice)
-	out.WriteString("\n\n")
+	out.WriteString("\n")
 	fmt.Fprintf(&out, "Run %s (workflow %s) is running — goal %s.",
 		untrustedtext.Field(in.Run.ItemID), untrustedtext.Field(in.Run.WorkflowID),
 		untrustedtext.Quote(in.Run.Goal, MaxGoalRunes))
@@ -86,7 +85,7 @@ func ComposeProgress(in ProgressInput) string {
 	writeProgressOutputs(&out, in)
 	out.WriteString("\n\n")
 	out.WriteString(progressClosing(in.Gate))
-	return out.String()
+	return Message{Notice: DataNotice, Data: out.String()}
 }
 
 // progressLine says what finished and where the run went next. The route is

@@ -1,5 +1,7 @@
 package workflowapp
 
+import "agent-overflow/internal/workflow/wake"
+
 // LifecyclePorts contains the one completion policy that still needs root git
 // and forge composition. workflowapp owns when it is serialized; the callback
 // performs the disposition itself.
@@ -14,8 +16,8 @@ type WakeDeliveryPorts struct {
 	HasLiveSession func(threadID string) bool
 	// QueueMessage and SendMessage deliver a run's wake, attributed to the
 	// workflow it came from.
-	QueueMessage func(threadID, workflowID, message string, onDurable func()) error
-	SendMessage  func(threadID, workflowID, message string) error
+	QueueMessage func(threadID, workflowID string, message wake.Message, onDurable func()) error
+	SendMessage  func(threadID, workflowID string, message wake.Message) error
 }
 
 // AttentionPorts keeps OS notification and optional model-upgraded digest work

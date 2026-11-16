@@ -10,6 +10,7 @@ import (
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/workflow/engine"
+	"agent-overflow/internal/workflow/wake"
 )
 
 // holdFixture is a run parked at a gate and bound to an idle thread, whose
@@ -37,7 +38,8 @@ func newHoldFixture(t *testing.T) *holdFixture {
 		t.Fatal(err)
 	}
 	f.item.OriginThreadID = f.thread
-	f.service.deps.WakeDelivery.SendMessage = func(threadID, _, message string) error {
+	f.service.deps.WakeDelivery.SendMessage = func(threadID, _ string, composed wake.Message) error {
+		message := composed.String()
 		if threadID != f.thread || !strings.Contains(message, f.item.ID) {
 			t.Fatalf("wake to %q: %q", threadID, message)
 		}
