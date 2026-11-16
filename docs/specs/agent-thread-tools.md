@@ -510,7 +510,12 @@ exist; `null` ungroups). One call covers "archive these five" or
 other; joining or leaving a group clears the thread's pin, and a pin in
 the same call applies after the group move, so it lands inside the new
 group. Refusals mirror the store: the calling thread cannot archive
-itself, and a title is trimmed and refused when empty. Works on another computer's threads;
+itself, and a title is trimmed and refused when empty. An archive that
+applied but whose cleanup did not finish (the provider session, its
+browser pages or its remote commands may still be running or open)
+reports the thread as updated with an error under
+`thread_archive_cleanup_failed`, the message the sidebar's archive
+shows, and the result's note asks the agent to tell the user. Works on another computer's threads;
 a thread joins groups only on its own computer. Used only when the user
 asks, or on threads the caller spawned once it is done with them.
 

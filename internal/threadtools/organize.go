@@ -95,14 +95,21 @@ func (c *session) update(ctx context.Context, raw json.RawMessage) (any, error) 
 		}
 	}
 
-	result := updateResult{Results: results}
-	for _, row := range results {
-		if row.Error != "" {
-			result.Note = "One or more threads were refused and left untouched; each says why. The others were updated."
-			break
-		}
+	return updateResult{Results: results, Note: updateNote(results)}, nil
+}
+
+// updateNote explains the errors in results. An error on a row that was
+// not updated is a refusal; on an updated row it is an archive whose
+// cleanup did not finish, which the user should hear about.
+func updateNote(results []ThreadUpdateResult) string {
+	var notes []string
+	if slices.ContainsFunc(results, func(row ThreadUpdateResult) bool { return row.Error != "" && !row.Updated }) {
+		notes = append(notes, "One or more threads were refused and left untouched; each says why. The others were updated.")
 	}
-	return result, nil
+	if slices.ContainsFunc(results, func(row ThreadUpdateResult) bool { return row.Error != "" && row.Updated }) {
+		notes = append(notes, "An updated thread with an error was archived, but something it ran may still be running or open; tell the user what its error says.")
+	}
+	return strings.Join(notes, " ")
 }
 
 // updatePatch validates the whole patch once. group and pin may come

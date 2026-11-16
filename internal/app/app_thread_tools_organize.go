@@ -76,7 +76,8 @@ func (t threadToolsApp) updateOneThread(ctx context.Context, caller threadtools.
 	}
 
 	applied, err := t.app.applyThreadOrganizePatch(ctx, threadID, patch)
-	if err != nil {
+	var cleanup *archiveCleanupError
+	if err != nil && !errors.As(err, &cleanup) {
 		result.Error, result.ErrorCode = organizeRefusal(threadID, err)
 		return result
 	}
@@ -84,11 +85,18 @@ func (t threadToolsApp) updateOneThread(ctx context.Context, caller threadtools.
 		result.Title = applied.Thread.Title
 	}
 	result.Updated = true
+	if cleanup != nil {
+		// The patch applied; what follows is what the archive's cleanup
+		// could not do, for the agent to pass on.
+		result.ErrorCode, result.Error = cleanup.PublicDetails()
+	}
 	return result
 }
 
 // applyThreadOrganizePatch is the write itself, with the locks, the events
-// and the archive side effects the sidebar's own bindings carry.
+// and the archive side effects the sidebar's own bindings carry. A patch
+// that archived the thread and whose cleanup failed returns the applied
+// result with an *archiveCleanupError, as ArchiveThread does.
 //
 // Archiving releases the thread's provider session (app_thread_archive.go
 // says why), and that release is serialized by the ACTION lock, so a patch
@@ -102,12 +110,11 @@ func (a *App) applyThreadOrganizePatch(ctx context.Context, threadID string, pat
 	}
 	if work != nil {
 		// The same cleanup the archive binding runs, through the same door,
-		// for the archive this patch committed. It is already durable, so a
-		// failure to reach the other computer is reported here rather than
-		// turned into a refusal of a change that landed; the destination
-		// stops the work itself after the owner grace.
+		// for the archive this patch committed. The tool result carries only
+		// the public message, so the causes are logged here.
 		if err := a.stopArchivedThreadWork(*work); err != nil {
-			log.Printf("thread tools: archive thread %s: cancel remote commands: %v", threadID, err)
+			log.Printf("thread tools: archive thread %s: %v", threadID, err)
+			return result, err
 		}
 	}
 	return result, nil
@@ -132,7 +139,7 @@ func (a *App) applyThreadOrganizePatchLocked(ctx context.Context, threadID strin
 	// teardown's queue drop takes the thread's mutation lock
 	// (settleQueueForTeardown), which is not reentrant.
 	if work != nil {
-		a.stopArchivedThreadSession(threadID, requestedAt)
+		a.stopArchivedThreadSession(work, requestedAt)
 	}
 	return result, work, nil
 }
