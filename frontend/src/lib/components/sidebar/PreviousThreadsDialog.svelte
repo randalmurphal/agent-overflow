@@ -14,7 +14,7 @@
     showMorePreviousThreads,
   } from '../../stores/assistantPastThreads.svelte';
   import { assistantCurrentThread } from '../../stores/threads.svelte';
-  import { assistantDisplayName } from '../../stores/assistants.svelte';
+  import { assistantDisplayName, assistantsShown } from '../../stores/assistants.svelte';
   import { getMinuteNow } from '../../stores/minuteClock.svelte';
   import { getSettings } from '../../stores/settings.svelte';
   import { relativeTime } from '../../utils/format';
@@ -25,8 +25,9 @@
   let agent = $derived(view ? assistantCurrentThread(view.opening.agentId) : undefined);
 
   // Archived, deleted or detached with its computer: nothing left to list.
+  // Assistants turned off: nothing of them shows.
   $effect(() => {
-    if (view !== null && agent === undefined) closePreviousThreadsDialog(view.opening);
+    if (view !== null && (agent === undefined || !assistantsShown())) closePreviousThreadsDialog(view.opening);
   });
 
   function superseded(at: number | null | undefined): string {

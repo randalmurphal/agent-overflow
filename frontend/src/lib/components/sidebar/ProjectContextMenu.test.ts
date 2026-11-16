@@ -5,6 +5,9 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import ProjectContextMenu from './ProjectContextMenu.svelte';
+import { tick } from 'svelte';
+import { applySettingsSnapshot } from '../../stores/settings.svelte';
+import { makeSettings } from '../../../test/helpers/settings';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
 import { OBSERVE_SCOPES, pairViewOnly, pairWithScopes, resetToLocalPage } from '../../../test/helpers/scopes';
 import {
@@ -345,6 +348,23 @@ describe('<ProjectContextMenu> compact create items', () => {
     expect(item.getAttribute('aria-disabled')).toBe('true');
     expect(item.getAttribute('title')).toBe('Not granted to this device');
   });
+});
+
+// New Assistant… is an assistant's entry point: gone, on the desktop and
+// under compact, while assistants are turned off.
+describe('<ProjectContextMenu> New Assistant…', () => {
+  afterEach(() => setCompactLayoutForTest(false));
+
+  for (const compact of [false, true]) {
+    it(`is offered while assistants are on and absent while they are off${compact ? ' under compact' : ''}`, async () => {
+      setCompactLayoutForTest(compact);
+      const view = renderMenu();
+      expect(view.queryByRole('menuitem', { name: 'New Assistant…' })).not.toBeNull();
+      applySettingsSnapshot(makeSettings({ assistantsEnabled: false }));
+      await tick();
+      expect(view.queryByRole('menuitem', { name: 'New Assistant…' })).toBeNull();
+    });
+  }
 });
 
 describe('<ProjectContextMenu> project writes without the grant', () => {

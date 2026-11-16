@@ -14,6 +14,7 @@
 import type { BackendKey } from '../transport/backendKey';
 import type { Thread } from '../types/models';
 import { selectedBackend } from './selectedBackend.svelte';
+import { assistantsShown } from './assistants.svelte';
 import type { ThreadPane } from './thread.svelte';
 
 export interface NewAssistantRequest {
@@ -47,7 +48,9 @@ export function getNewAssistantRequest(): NewAssistantOpening | null {
   return pending;
 }
 
+/** Opens New Assistant; nothing while assistants are turned off. */
 export function openNewAssistantDialog(request: NewAssistantRequest): void {
+  if (!assistantsShown()) return;
   pending = { ...request, selectedBackend: request.projectId ? undefined : selectedBackend() };
 }
 
@@ -71,9 +74,12 @@ export function getAssistantProjectsAgentId(): string | null {
   return projectsOf?.agentId ?? null;
 }
 
-/** Opens the Projects dialog of the assistant whose current thread this is; any other thread has none. */
+/**
+ * Opens the Projects dialog of the assistant whose current thread this is;
+ * any other thread has none, and nothing opens while assistants are off.
+ */
 export function openAssistantProjectsDialog(thread: Pick<Thread, 'agentId'>): void {
-  if (thread.agentId) projectsOf = { agentId: thread.agentId };
+  if (thread.agentId && assistantsShown()) projectsOf = { agentId: thread.agentId };
 }
 
 /** Whether `opening` is the Projects dialog's current opening. */

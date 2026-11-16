@@ -30,6 +30,7 @@
   import { hasScope } from '../../transport/scopes';
   import { isCompactLayout } from '../../stores/layoutMode.svelte';
   import { newThreadGroupInProject } from './threadGroupActions';
+  import { assistantsShown } from '../../stores/assistants.svelte';
 
   interface Props {
     project: ProjectWithCounts;
@@ -175,15 +176,17 @@
             }}
           />
         {/if}
-        <MenuItem
-          label="New Assistant…"
-          disabled={newAssistantUngranted}
-          title={newAssistantUngranted ? 'Not granted to this device' : undefined}
-          onSelect={() => {
-            onClose();
-            onNewAssistant?.();
-          }}
-        />
+        {#if assistantsShown()}
+          <MenuItem
+            label="New Assistant…"
+            disabled={newAssistantUngranted}
+            title={newAssistantUngranted ? 'Not granted to this device' : undefined}
+            onSelect={() => {
+              onClose();
+              onNewAssistant?.();
+            }}
+          />
+        {/if}
         <MenuDivider />
         <MenuItem
           label="Rename Project"

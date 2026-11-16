@@ -12,6 +12,8 @@ import { pendingAttention } from '../../utils/threadStatusPill';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import ChatView from './ChatView.svelte';
+import { applySettingsSnapshot } from '../../stores/settings.svelte';
+import { makeSettings } from '../../../test/helpers/settings';
 // ChatView imports its terminal surface lazily. Loaded with the file, the
 // terminal-mode test waits for the mount rather than for a first import
 // transforming the surface's component graph, which is load-dependent.
@@ -295,6 +297,52 @@ describe('<ChatView>', () => {
       expect(view.getByTestId('composer-root').querySelector('textarea')?.disabled).toBe(true);
     });
   }
+
+  // A pane already showing an assistant's thread when assistants are turned
+  // off stays readable and takes nothing: the composer gives way to a line
+  // saying why, kept mounted underneath for its draft, and the messages
+  // offer no fork, edit or run. Desktop and compact; on again, it is as it was.
+  for (const compact of [false, true]) {
+    it(`shows an assistant's thread read-only while assistants are off${compact ? ' under compact' : ''}`, async () => {
+      setCompactLayoutForTest(compact);
+      try {
+        const thread: Thread = { ...seedThread(), projectId: '', agentId: 'ops', title: 'Ops' };
+        const userItem = makeItem({
+          id: 'user:1', threadId: thread.id, turnIndex: 1, itemIndex: 0,
+          kind: 'user_text', role: 'user', summary: 'Watch the deploy',
+        });
+        const view = render(ChatView, { props: { pane: await buildPane(thread, [userItem]) } });
+        await tick();
+        const composerHidden = () => view.getByTestId('composer-root').closest('.hidden') !== null;
+        expect(view.queryByTestId('assistants-off-note')).toBeNull();
+        expect(composerHidden()).toBe(false);
+
+        applySettingsSnapshot(makeSettings({ assistantsEnabled: false }));
+        await tick();
+        expect(view.getByTestId('assistants-off-note').textContent?.trim()).toBe('Assistants are turned off in Settings. Turn them on to continue this thread.');
+        expect(composerHidden()).toBe(true);
+        expect(view.queryByLabelText('Fork from this message')).toBeNull();
+        expect(view.queryByLabelText('Edit message and resend from here')).toBeNull();
+        expect(view.container.querySelector('[data-ui-surface="chat"]')?.hasAttribute('data-shell-runnable')).toBe(false);
+        expect(view.getByTestId('chat-header-title')).toBeInTheDocument();
+
+        applySettingsSnapshot(makeSettings({ assistantsEnabled: true }));
+        await tick();
+        expect(view.queryByTestId('assistants-off-note')).toBeNull();
+        expect(composerHidden()).toBe(false);
+      } finally {
+        setCompactLayoutForTest(false);
+      }
+    });
+  }
+
+  it('leaves an ordinary thread as it is while assistants are off', async () => {
+    applySettingsSnapshot(makeSettings({ assistantsEnabled: false }));
+    const view = render(ChatView, { props: { pane: await buildPane() } });
+    await tick();
+    expect(view.queryByTestId('assistants-off-note')).toBeNull();
+    expect(view.getByTestId('composer-root').closest('.hidden')).toBeNull();
+  });
 
   it('forks from a user-message action through the chat-level handler', async () => {
     const thread = seedThread();

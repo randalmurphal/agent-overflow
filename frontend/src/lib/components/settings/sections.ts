@@ -130,6 +130,13 @@ export const SETTINGS_SECTIONS = [
     description: "The built-in thread tools agents use to read, start and answer this computer's other conversations.",
   },
   {
+    id: 'assistants',
+    label: 'Assistants',
+    group: 'Agents',
+    description:
+      'Named agents that keep their own home, memory, loops and watches across threads, and whether this computer shows and runs them.',
+  },
+  {
     id: 'agent-profiles',
     label: 'Agent profiles',
     group: 'Agents',

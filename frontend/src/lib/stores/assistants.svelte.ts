@@ -22,6 +22,29 @@ import { userFacingError } from '../utils/userFacingError';
 import { TransportError } from '../transport/wsClient';
 
 /**
+ * Whether this window shows assistants: the Assistants setting of the
+ * computer it runs on ("Turning assistants off"). Off hides every
+ * assistant in this window, on whichever computer it lives; nothing of
+ * theirs is deleted, and turning it on shows them again.
+ */
+export function assistantsShown(): boolean {
+  return getSettings().assistantsEnabled;
+}
+
+/** Whether a thread lives under an assistant: its current thread, a past thread or a helper. */
+export function livesUnderAssistant(thread: Pick<Thread, 'agentId' | 'pastAgentId' | 'helperOfAgentId'>): boolean {
+  return Boolean(thread.agentId || thread.pastAgentId || thread.helperOfAgentId);
+}
+
+/** Whether this window hides the thread because assistants are off. */
+export function hiddenAssistantThread(thread: Pick<Thread, 'agentId' | 'pastAgentId' | 'helperOfAgentId'>): boolean {
+  return !assistantsShown() && livesUnderAssistant(thread);
+}
+
+/** What a pane showing an assistant's thread says while assistants are off. */
+export const ASSISTANTS_OFF_NOTE = 'Assistants are turned off in Settings. Turn them on to continue this thread.';
+
+/**
  * End Session: end the thread's provider process with its background agents
  * and shells. A thread with no session is left as it is. Routed by the
  * thread id to the computer that owns it.

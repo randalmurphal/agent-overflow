@@ -12,6 +12,9 @@ import { installAnimateShim } from '../../../test/integration/_helpers';
 import type { Thread } from '../../types/models';
 import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
 import { __resetEntityIndexForTest, noteThread } from '../../transport/entityIndex';
+import { tick } from 'svelte';
+import { applySettingsSnapshot } from '../../stores/settings.svelte';
+import { makeSettings } from '../../../test/helpers/settings';
 
 beforeAll(installAnimateShim);
 
@@ -50,6 +53,29 @@ function makePane() {
 function markThreadRunning(threadId: string): void {
   projectTurnStarted(threadId, `turn:${threadId}`, 0, 0);
 }
+
+// ---- Assistants turned off ----
+
+// While assistants are off, the picker offers none of their threads: an
+// assistant's current thread, a past thread or a helper. On again, they
+// are offered as before.
+describe('<UnifiedThreadPicker> — assistants turned off', () => {
+  it('offers no thread under an assistant while assistants are off', async () => {
+    await seedThreads([
+      makeThread({ id: 'plain', title: 'Plain' }),
+      makeThread({ id: 'agent', title: 'Ops', agentId: 'ops' }),
+      makeThread({ id: 'past', title: 'Earlier Ops', pastAgentId: 'ops' }),
+      makeThread({ id: 'helper', title: 'Research', helperOfAgentId: 'ops' }),
+    ]);
+    applySettingsSnapshot(makeSettings({ assistantsEnabled: false }));
+    const view = render(UnifiedThreadPicker, { open: true, pane: makePane(), onClose: vi.fn() });
+    const hits = () => Array.from(view.container.ownerDocument.querySelectorAll<HTMLElement>('[data-testid^="thread-picker-hit-"]'), (el) => el.dataset.testid);
+    expect(hits()).toEqual(['thread-picker-hit-plain']);
+    applySettingsSnapshot(makeSettings({ assistantsEnabled: true }));
+    await tick();
+    expect(hits()?.sort()).toEqual(['thread-picker-hit-agent', 'thread-picker-hit-helper', 'thread-picker-hit-past', 'thread-picker-hit-plain']);
+  });
+});
 
 // ---- Visibility ----
 

@@ -20,10 +20,12 @@
   import { HOME_BACKEND } from '../../transport/backendKey';
   import { displayModelLabel } from '../../utils/modelLabels';
   import type { Thread } from '../../types/models';
-  import { ThreadDeleteNote, withDeleteNote } from '../../stores/assistants.svelte';
+  import { ThreadDeleteNote, hiddenAssistantThread, withDeleteNote } from '../../stores/assistants.svelte';
   import { deleteThreadWithWorktrees, reportDeleteLeftovers } from '../sidebar/threadRowActions';
 
   let archivedThreads: Thread[] = $state([]);
+  // An archived assistant's threads are not listed while assistants are off.
+  let listedThreads = $derived(archivedThreads.filter((thread) => !hiddenAssistantThread(thread)));
   let loading = $state(true);
   let loadError: string | null = $state(null);
   let deleteTarget: Thread | null = $state(null);
@@ -114,14 +116,14 @@
       <p class="text-[0.8125rem] text-fg-subtle">Loading...</p>
     {:else if loadError}
       <p class="text-[0.8125rem] text-error">Failed to load archived threads: {loadError}</p>
-    {:else if archivedThreads.length === 0}
+    {:else if listedThreads.length === 0}
       <p class="text-[0.8125rem] text-fg-subtle">No archived threads.</p>
     {:else}
       <p class="text-[0.65625rem] font-medium uppercase tracking-[0.16em] text-fg-hint">
-        {archivedThreads.length} archived {archivedThreads.length === 1 ? 'thread' : 'threads'}
+        {listedThreads.length} archived {listedThreads.length === 1 ? 'thread' : 'threads'}
       </p>
       <div class="mt-2 flex flex-col gap-px rounded-[var(--radius-field)] border border-border-subtle overflow-hidden">
-        {#each archivedThreads as thread (thread.id)}
+        {#each listedThreads as thread (thread.id)}
           <div class="group flex items-center gap-3 bg-surface-1/50 px-3 py-2.5 hover:bg-surface-2/30 transition-colors">
             <div class="min-w-0 flex-1">
               <p class="truncate text-[0.8125rem] font-medium text-fg">{thread.title || 'Untitled'}</p>

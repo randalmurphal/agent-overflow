@@ -17,6 +17,7 @@
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
   import SquarePen from '@lucide/svelte/icons/square-pen';
   import { nextAssistantThreadAction } from '../sidebar/threadRowActions';
+  import { assistantsShown } from '../../stores/assistants.svelte';
   import { openThreadFromNavigation } from '../../stores/panes.svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { getProject, getProjectLabelText } from '../../stores/projects.svelte';
@@ -60,8 +61,9 @@
   let { pane }: { pane: ThreadPane } = $props();
 
   // New Thread, Same Assistant (docs/specs/standing-agents.md, "Next
-  // thread"): on an assistant's current thread, desktop and compact.
-  let isAssistant = $derived(Boolean(pane.thread?.agentId) && !pane.thread?.archived);
+  // thread"): on an assistant's current thread, desktop and compact, while
+  // assistants are on.
+  let isAssistant = $derived(Boolean(pane.thread?.agentId) && !pane.thread?.archived && assistantsShown());
   // StartNextAssistantThread rides threads:autonomy.
   let nextThreadUngranted = $derived(!threadHasScope('threads:autonomy', pane.threadId, pane.thread?.projectId));
   function startNextAssistantThread(): void {

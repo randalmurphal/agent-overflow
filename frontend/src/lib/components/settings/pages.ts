@@ -22,6 +22,7 @@ import CommitMessageSettings from './CommitMessageSettings.svelte';
 import BrowserSettings from './BrowserSettings.svelte';
 import ThreadToolsSettings from './ThreadToolsSettings.svelte';
 import AgentGuideSettings from './AgentGuideSettings.svelte';
+import AssistantsSettings from './AssistantsSettings.svelte';
 import AgentProfilesSettings from './AgentProfilesSettings.svelte';
 import MemorySettings from './MemorySettings.svelte';
 import ProjectsSettings from './ProjectsSettings.svelte';
@@ -50,6 +51,7 @@ export const SETTINGS_PAGES: Record<SettingsSection, Component> = {
   'commit-messages': CommitMessageSettings,
   browser: BrowserSettings,
   'thread-tools': ThreadToolsSettings,
+  assistants: AssistantsSettings,
   'agent-profiles': AgentProfilesSettings,
   'agent-guide': AgentGuideSettings,
   memory: MemorySettings,

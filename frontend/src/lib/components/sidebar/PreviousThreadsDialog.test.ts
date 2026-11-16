@@ -19,6 +19,8 @@ import { noteThread, threadBackend } from '../../transport/entityIndex';
 import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
 import type { PastThreadsCursor } from '../../stores/bindings';
 import type { Thread } from '../../types/models';
+import { applySettingsSnapshot } from '../../stores/settings.svelte';
+import { makeSettings } from '../../../test/helpers/settings';
 
 vi.mock('../../stores/panes.svelte', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../stores/panes.svelte')>()),
@@ -156,5 +158,19 @@ describe('<PreviousThreadsDialog>', () => {
     await waitFor(() => expect(items(view.baseElement).length).toBeGreaterThan(0));
     replaceAllThreads([]);
     await waitFor(() => expect(getPreviousThreads()).toBeNull());
+  });
+
+  it('closes when assistants are turned off and opens for nothing while they are', async () => {
+    pages();
+    const view = render(PreviousThreadsDialog);
+    openPreviousThreadsDialog(agent, null);
+    await waitFor(() => expect(items(view.baseElement).length).toBeGreaterThan(0));
+    applySettingsSnapshot(makeSettings({ assistantsEnabled: false }));
+    await waitFor(() => expect(getPreviousThreads()).toBeNull());
+    openPreviousThreadsDialog(agent, null);
+    expect(getPreviousThreads()).toBeNull();
+    applySettingsSnapshot(makeSettings({ assistantsEnabled: true }));
+    await tick();
+    expect(view.queryByTestId('previous-threads-dialog')).toBeNull();
   });
 });

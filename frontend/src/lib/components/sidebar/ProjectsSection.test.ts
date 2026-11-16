@@ -21,6 +21,8 @@ import { setThreadFilterQuery } from '../../stores/threadFilter.svelte';
 import { isSidebarSectionExpanded, resetSidebarForTest } from '../../stores/sidebar.svelte';
 import { closeNewAssistantDialog, getNewAssistantRequest } from '../../stores/newAssistant.svelte';
 import { setPageGrantsFromBootstrap } from '../../transport/scopes';
+import { applySettingsSnapshot } from '../../stores/settings.svelte';
+import { makeSettings } from '../../../test/helpers/settings';
 import {
   isSessionImportOpen,
   resetSessionImportForTest,
@@ -126,6 +128,23 @@ describe('ProjectsSection assistants and projects', () => {
     expect(idsIn(view.getByTestId('sidebar-assistants-section'))).toEqual(['agent']);
     expect(idsIn(view.getByTestId('sidebar-projects-section'))).toEqual(['work', 'plain']);
     expect(view.getByTestId('sidebar-assistants-section').querySelector('[data-testid="thread-row-agent-projects"]')?.textContent?.trim()).toBe('Alpha');
+  });
+
+  it('has no Assistants section while assistants are off, and the same one when they are on again', async () => {
+    const view = render(ProjectsSection, { props: { pane: null } });
+    applySettingsSnapshot(makeSettings({ assistantsEnabled: false }));
+    await tick();
+    expect(view.queryByTestId('sidebar-assistants-section')).toBeNull();
+    expect(view.queryByRole('button', { name: 'New Assistant' })).toBeNull();
+    expect(idsIn(view.getByTestId('sidebar-projects-section'))).toEqual(['work', 'plain']);
+    setThreadFilterQuery('ops');
+    await tick();
+    expect(idsIn(view.getByTestId('sidebar-sections'))).toEqual([]);
+
+    setThreadFilterQuery('');
+    applySettingsSnapshot(makeSettings({ assistantsEnabled: true }));
+    await tick();
+    expect(idsIn(view.getByTestId('sidebar-assistants-section'))).toEqual(['agent']);
   });
 
   it('folds each section on its own and shows a search\'s matches through a fold', async () => {
