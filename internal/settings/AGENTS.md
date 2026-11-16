@@ -49,6 +49,7 @@ Remove a retired setting from validation, residency, generated defaults, binding
 - `network.go`: LAN, domain/TLS, tailnet, and configured preview ports. Validate independent halves independently.
 - `spinner.go`: custom verbs, animation exclusions, and compaction selection.
 - `voice.go`: the OpenAI API dictation options and their bounds, OpenAI's vocabulary restated (pinned by `internal/openai`'s tests).
+- `agentroster.go`: agent profiles, choosing notes and the sub-thread level limit, with their bounds and the seeds. Seeds are read through `copyDefaults`, never written through; an edited list is the person's. A seeded use-for line or note never names another provider's profile.
 - `notifycue.go`: the notification-cue value rule, the one authority for the built-in names plus the `custom:<id>` form the frontend mirrors.
 - `classdefaults.go`, `residency.go`, `tier.go`: storage routing and per-screen resolution.
 - `gendefaults.go`: Go-to-frontend default generation.

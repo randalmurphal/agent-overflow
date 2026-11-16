@@ -313,7 +313,9 @@ answer, and `what` keeps one section: `models` (providers, models and
 runtime modes), `projects` (each project with its path and workspaces)
 or `groups` (each project's id and name with its groups), reading only
 what that section needs; the caller's own row comes first and states the caller's
-current provider, model, effort and mode as the defaults. The `thread_spawn` schema descriptions state those live
+current provider, model, effort and mode as the defaults. Each row also
+lists the agent profiles that computer runs, and the answer carries the
+choosing notes that apply ([Agent profiles](#agent-profiles)). The `thread_spawn` schema descriptions state those live
 defaults too, so the common case needs no discovery call.
 
 ### `thread_spawn` (Q5, Q6, Q18)
@@ -433,6 +435,77 @@ link), a duplicate, a path that is missing or not a regular file, a file
 that goes on past the 1 MiB a read takes, and a total past the cap.
 The bounds and the reader are `internal/agenthome`. A forwarded call carries the composed text, so a
 destination that receives `home_files` refuses it.
+
+### Agent profiles
+
+A profile is a named agent the person keeps in Settings, Agent profiles
+(`agentProfiles`, `internal/settings/agentroster.go`): a name, a
+use-for line, and optionally a provider, model, effort, runtime mode and
+instructions; an empty field inherits the spawning thread's. Choosing
+notes (`agentNotes`) sit beside them, each shown always, only when the
+listed profiles run on both providers, or only when they run on one
+provider and at least two models. The app seeds eight profiles, each
+provider's from the lowest tier to the highest, and five notes, among
+them one stating that tier is capability and effort is diligence. No
+seeded use-for line names another provider's profile, so a computer
+with one provider is never pointed at the other. An edited roster or
+note list is the person's and no later seed replaces it. Restore puts
+the seeds back.
+
+`thread_options` lists, per computer, the profiles that computer can
+run (`profiles`: name, `use_for`, the provider and model it resolves to,
+effort, runtime mode, whether it carries instructions) and the notes
+that apply (`profile_notes`). A computer runs a profile when its
+provider is turned on there and its binary resolves, the same check the
+thread tools catalog applies to every provider, and its model is in that
+provider's catalog there. A paired computer's rows are computed from the
+caller's roster against that computer's catalog. Sign-in is not read:
+a signed-out provider says so at the spawn's first turn.
+
+`thread_spawn` `profile` names one, compared without case. Explicit
+`provider`, `model`, `effort` and `runtime_mode` override the matching
+part; an explicit provider other than the profile's drops the
+profile's model and effort. A profile the destination cannot run is
+refused naming the computer and why, and saying `thread_options` lists
+what each computer runs.
+
+### Spawn instructions
+
+`thread_spawn` `instructions` (at most 8 KiB with the profile's) is a
+one-off role appended to the new thread's system prompt for its whole
+life: after the app guide, a standing agent's block and, on Codex, the
+server guides, so it follows everything the app and the person append
+and replaces none of it. The profile's instructions come first, then the
+call's. They are stored with the thread (`threads.spawn_instructions`),
+appended on every start and resume of Claude, Claude's terminal and
+Codex sessions, kept by a fork (which appends its own call's), and
+carried by a transfer. A provider that cannot append a system prompt is
+refused. A paired computer that does not list `spawn_instructions` in
+its options is refused rather than dropping them. The expanded spawn
+row shows them as the thread stores them.
+
+### Sub-thread depth
+
+A thread's sub-thread level is the number of owned spawn links between
+it and the nearest thread above it that is not an owned worker
+(`Store.SubThreadLevel`): a thread the person talks to, one they placed
+in the sidebar and an assistant's own thread are level 0; an assistant's
+helper is level 1. Settings, Agent profiles, Sub-thread levels
+(`subThreadLevels`, 1 to 4, default 2) is the deepest level allowed.
+A session at that level registers without `thread_spawn` and starts
+without its provider's native subagents (Claude and Claude's terminal:
+`Agent` and `Task` disallowed; Codex: collab agents off), and its guide
+says so.
+
+The tool list is fixed when a session starts. A change to the setting,
+or a placement that moves a thread up or down, applies at the next
+start of each session; a `thread_spawn` that reaches a thread already
+at the limit, from a session started before the change, is refused
+naming the level and the limit. An owned spawn to a paired computer
+carries the caller's level plus one (`level`), stored on the new thread
+(`threads.spawn_level`) and counted beneath it; the destination refuses
+one past its own limit. A spawn given a sidebar row carries level 0. A
+computer from before levels ignores the field and behaves as before.
 
 ### `thread_send` (Q9, Q15)
 
@@ -798,10 +871,10 @@ The text, maintained beside the tool schemas in `internal/threadtools`:
 > history first, `worktree` runs it on that branch, checked out as it
 > is when the branch exists here or on a remote, detached at the tag when
 > the name is no branch but a tag, and otherwise created from `base` (a
-> branch or tag; origin's head of a branch unless `base_local`), and
-> `group` files it
-> in a sidebar group beside the threads of one sweep.
-> `thread_send` continues an existing thread as if the
+> branch or tag; origin's head of a branch unless `base_local`),
+> `group` files it in a sidebar group beside the threads of one sweep,
+> and `instructions` adds a one-off role to its system prompt for its
+> whole life. `thread_send` continues an existing thread as if the
 > user typed your `message`, queued after its current turn. `thread_ask`
 > asks a question of a hidden, read-only, throwaway copy of a thread, so
 > the real thread is never touched and the copy cannot wait on a person.
@@ -810,9 +883,12 @@ The text, maintained beside the tool schemas in `internal/threadtools`:
 > memory folder, prepended to the message under their names.
 > Use ask to consult a thread's context; use send to give it work. All
 > three return a `token`. Use your own subagents for pieces of your
-> current task. Use `thread_spawn` when the user asks for a separate
-> thread, when another provider or model should do the work, or when
-> the work should outlive your turn. A thread meant for the user to read
+> current task; they cost less. Use `thread_spawn` when the user asks
+> for a separate thread, when another provider or model suits the work
+> better, when the work needs its own branch, worktree or computer, when
+> it should outlive your turn or a restart or take follow-up messages
+> with its context kept, or when the user should be able to open, steer
+> or take it over. A thread meant for the user to read
 > or continue themselves gets a sidebar row: pass `placement` `standalone`
 > or a `group`. You
 > cannot send to or ask your own thread. An assistant lives outside
@@ -823,13 +899,22 @@ The text, maintained beside the tool schemas in `internal/threadtools`:
 > `name`, your opening `role` text and the `projects` it serves; a
 > worker cannot.
 >
-> Defaults. Omit provider, model, effort and runtime mode to inherit
-> yours. Use `thread_options` when you want another provider, model,
-> project, workspace or computer: it lists what exists, with the
-> defaults marked. Choose a different runtime mode only when the task
-> requires it, and `read-only` only for work that needs nothing but
-> reading files, since it blocks every shell command on Claude Code;
-> `thread_ask` selects its own.
+> Defaults. A spawn inherits your provider, model, effort, and runtime
+> mode; keep them unless the task suits another agent. The user set up
+> agent profiles for that: pass `profile` with one of Luna, Terra, Sol,
+> Astra, Haiku, Sonnet, Opus or Fable, and any `provider`, `model`,
+> `effort` or `runtime_mode` beside it overrides that part of the
+> profile. Pick a profile by its use-for line: `thread_options` lists
+> each one's, what it runs on each computer, and the user's notes on
+> choosing. `read-only` is the exception, not the safe choice: it blocks
+> every shell command on Claude Code, so no git, build, test or grep,
+> and sandboxes commands on Codex. Choose it only when the work needs
+> nothing but reading files; a review that runs tests, a thread that
+> commits or a thread that searches with a command needs the inherited
+> mode. A read-only thread that turns out to need a command fails at it
+> and tells you so. `thread_ask` is always read-only and needs no
+> choice. `thread_options` lists what a computer offers when you need
+> something you do not have.
 >
 > Waiting. Spawn and send return at once unless you pass
 > `wait_seconds` (up to 900); ask waits 300 seconds. `wait_seconds` is
@@ -956,7 +1041,17 @@ The text, maintained beside the tool schemas in `internal/threadtools`:
 
 With no paired computers the first paragraph says "on this computer",
 the "Other computers" paragraph is absent, and `computers` and
-`computer_id` do not exist.
+`computer_id` do not exist. The Starting and Defaults paragraphs follow
+the providers this computer offers: with one, "another provider or
+model" reads "another model" (or "a provider another computer offers"
+when one is paired), the read-only sentence names only that provider's
+effect, and the profile names are those its catalog runs, in roster
+order; with no profile it can run the profile sentence is left out, or
+points at `thread_options` when a paired computer may run some. A
+session at the deepest sub-thread level reads a Starting paragraph
+without `thread_spawn` and no Defaults paragraph
+([Sub-thread depth](#sub-thread-depth)); one level above it is told its
+spawns cannot spawn.
 
 The footers and wake headers are fixed templates in
 `internal/threadtools`, one test each. A message written by an agent

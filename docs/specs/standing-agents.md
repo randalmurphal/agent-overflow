@@ -902,6 +902,15 @@ Ruling 36, as built:
   Agents reads that reach it: a person with n old remote spawns whose
   threads there still exist keeps n rows, each asked about every
   ceil(n/32) × 30 s, at most one call a second in all.
+- Owned workers nest at most Settings, Agent profiles, Sub-thread levels
+  deep (1 to 4, default 2). The level is counted along the owned spawn
+  links (`Store.SubThreadLevel`): an assistant's own thread is 0 and its
+  helper 1, and a worker the person gives a sidebar row is 0, with its
+  own workers counted from it. A session at the limit starts without
+  `thread_spawn` and without native subagents
+  ([Sub-thread depth](agent-thread-tools.md#sub-thread-depth)). The limit
+  applies to owned workers only: a thread that is not owned starts the
+  count again.
 
 ### At rest
 

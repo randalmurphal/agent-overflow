@@ -439,6 +439,12 @@ app-managed server adds one.
   `applySettingsOwnedAxes` / `reconcileSettingsOwnedAxes` pair: a
   settings change never queues a restart and lands at the session's next
   start or resume.
+- **Spawn instructions.** A thread a spawn gave instructions
+  (`threads.spawn_instructions`) appends them last on every provider:
+  after the guide and a standing agent's block, and on Codex after the
+  server guides (`sessionPromptsFor`). They ride the same channels,
+  whatever `AgentGuideEnabled` says
+  ([agent-thread-tools.md §Spawn instructions](agent-thread-tools.md#spawn-instructions)).
 
 ### Delivery
 
