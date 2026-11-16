@@ -774,7 +774,9 @@ Ruling 36, as built:
   continued there, so the sweep also asks about the settled remote
   spawns at rest, one page of 32 every six poll intervals (30 s) from a
   cursor (`idx_thread_requests_remote_rest`), each once a cycle, through
-  the same in-flight, per-computer and backoff bounds: with n spawns at
+  the same in-flight, per-computer and backoff bounds; whether a pass is
+  due is read from the ledger on that index (`NextThreadRequestWork`), so
+  the first spawn to come to rest wakes the sweep for it: with n spawns at
   rest each is asked every ceil(n/32) × 30 s, and the pass makes at most
   about one call a second however many there are. An answer that finds
   one still at rest, or none, is kept nowhere and frames nothing; one

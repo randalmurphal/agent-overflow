@@ -163,22 +163,6 @@ func TestTheSweepAsksAboutRestingRemoteSpawnsAPageAtATime(t *testing.T) {
 	}
 }
 
-// With remote spawns at rest to ask about, the sweep wakes for the rest
-// pass's next page rather than sleeping to the retention clock.
-func TestTheSweepWakesForTheRestPass(t *testing.T) {
-	t.Parallel()
-	f := newRequestFixture(t)
-	idle := f.app.threadRequestSweepDelay(time.Now())
-	c := &f.app.threadAgentPeers
-	c.mu.Lock()
-	c.restPassAt, c.restPending = time.Now(), true
-	c.mu.Unlock()
-	every := f.app.threadAgentRestPassEvery()
-	if delay := f.app.threadRequestSweepDelay(time.Now()); delay > every || idle <= every {
-		t.Fatalf("the sweep sleeps %v with spawns at rest, %v without; want at most %v with them", delay, idle, every)
-	}
-}
-
 // A computer that runs an older version cannot list a thread's agents: the
 // rest pass's question to it records nothing, keeps nothing and frames
 // nothing, and the spawn stays at rest here.

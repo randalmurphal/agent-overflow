@@ -711,12 +711,15 @@ func (s *Store) ListRestingRemoteSpawns(afterSettledAt int64, afterToken string,
 	return collectThreadRequests(rows, "store: list resting remote spawns")
 }
 
-// restingRemoteSpawnsSQL reads one page of idx_thread_requests_remote_rest,
-// whose predicate it states.
+// restingRemoteSpawnSQL is the predicate of idx_thread_requests_remote_rest:
+// a settled spawn on another computer whose last answer listed no open work.
+const restingRemoteSpawnSQL = `nested_open = 0 AND settled_at IS NOT NULL AND kind = 'spawn'
+	    AND target_computer_id <> '' AND target_thread_id <> '' AND lineage_only = 0`
+
+// restingRemoteSpawnsSQL reads one page of idx_thread_requests_remote_rest.
 func restingRemoteSpawnsSQL(limit int) string {
 	return `SELECT ` + threadRequestColumns + ` FROM thread_requests
-	  WHERE nested_open = 0 AND settled_at IS NOT NULL AND kind = 'spawn'
-	    AND target_computer_id <> '' AND target_thread_id <> '' AND lineage_only = 0
+	  WHERE ` + restingRemoteSpawnSQL + `
 	    AND (settled_at, token) > (?, ?)
 	  ORDER BY settled_at ASC, token ASC LIMIT ` + strconv.Itoa(limit)
 }
@@ -1117,17 +1120,20 @@ type ThreadRequestSchedule struct {
 	// NestedOpen is whether a settled spawn on another computer still has
 	// open work there, which the poller reads agent_rows for at its pace.
 	NestedOpen bool
+	// RestingRemote is whether a settled spawn on another computer is at
+	// rest there, which the rest pass asks about at its slower pace.
+	RestingRemote bool
 }
 
 // NextThreadRequestWork reports when the unattended passes next have work.
 // On most computers nothing is scheduled, and the sweep sleeps on that answer
 // rather than asking three questions a second for the life of the process.
 //
-// One query, three indexed minima and one probe, so the answer describes
+// One query, three indexed minima and two probes, so the answer describes
 // one snapshot.
 func (s *Store) NextThreadRequestWork() (ThreadRequestSchedule, error) {
 	var reminder, poll, wake sql.NullInt64
-	var nestedOpen bool
+	var nestedOpen, restingRemote bool
 	if err := s.reader().QueryRow(
 		`SELECT
 		   (SELECT MIN(due_at) FROM thread_requests
@@ -1139,14 +1145,18 @@ func (s *Store) NextThreadRequestWork() (ThreadRequestSchedule, error) {
 		     WHERE notify = 1 AND `+threadWakeOwedSQL+`),
 		   EXISTS (SELECT 1 FROM thread_requests
 		     WHERE nested_open = 1 AND settled_at IS NOT NULL AND kind = 'spawn'
-		       AND target_computer_id <> '' AND lineage_only = 0)`,
-	).Scan(&reminder, &poll, &wake, &nestedOpen); err != nil {
+		       AND target_computer_id <> '' AND lineage_only = 0),
+		   EXISTS (SELECT 1 FROM thread_requests WHERE `+restingRemoteSpawnSQL+`)`,
+	).Scan(&reminder, &poll, &wake, &nestedOpen, &restingRemote); err != nil {
 		return ThreadRequestSchedule{}, fmt.Errorf("store: read next thread request work: %w", err)
 	}
 	moment := func(value sql.NullInt64) ScheduledMoment {
 		return ScheduledMoment{At: value.Int64, Set: value.Valid}
 	}
-	return ThreadRequestSchedule{Reminder: moment(reminder), Poll: moment(poll), Wake: moment(wake), NestedOpen: nestedOpen}, nil
+	return ThreadRequestSchedule{
+		Reminder: moment(reminder), Poll: moment(poll), Wake: moment(wake),
+		NestedOpen: nestedOpen, RestingRemote: restingRemote,
+	}, nil
 }
 
 // hasOpenThreadRequestsSQL probes a caller for an open request. A

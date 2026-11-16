@@ -171,10 +171,10 @@ func (a *App) threadRequestSweepDelay(lastExpiry time.Time) time.Duration {
 			// open: its rows are asked for again at the poll's pace.
 			due = append(due, store.ScheduledMoment{At: time.Now().Add(a.threadPollNormal()).UnixMilli(), Set: true})
 		}
-		if at, pending := a.nextRestPass(); pending {
+		if schedule.RestingRemote {
 			// Settled spawns on other computers at rest: the next page of
 			// them is asked about at the rest pass's pace.
-			due = append(due, store.ScheduledMoment{At: at.UnixMilli(), Set: true})
+			due = append(due, store.ScheduledMoment{At: a.nextRestPass().UnixMilli(), Set: true})
 		}
 		if !a.threadRequestPollInFlight() {
 			due = append(due, schedule.Poll)

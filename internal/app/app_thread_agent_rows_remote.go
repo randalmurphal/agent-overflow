@@ -88,11 +88,11 @@ type threadAgentPeerCache struct {
 	// sweepAfter is the last spawn the sweep asked about; the next sweep
 	// starts after it, and from the start once a page comes back short.
 	sweepAfter store.ThreadRequest
-	// restAfter is sweepAfter for the spawns at rest, restPassAt when that
-	// pass last read a page, and restPending whether it found any.
-	restAfter   store.ThreadRequest
-	restPassAt  time.Time
-	restPending bool
+	// restAfter is sweepAfter for the spawns at rest, and restPassAt when
+	// that pass last read a page. Whether there are any is the ledger's
+	// (store.ThreadRequestSchedule.RestingRemote).
+	restAfter  store.ThreadRequest
+	restPassAt time.Time
 	// probes are the queued or running spawns only the rest pass asked
 	// about: an answer for one that finds it still at rest is not kept.
 	probes map[string]bool
@@ -628,7 +628,6 @@ func (a *App) probeRestingRemoteSpawns() {
 	}
 	c.mu.Lock()
 	c.restAfter = store.ThreadRequest{SettledAt: next.SettledAt, Token: next.Token}
-	c.restPending = len(rows) > 0 || after.Token != ""
 	c.mu.Unlock()
 	paired := map[string]bool{}
 	for _, row := range rows {
@@ -647,11 +646,10 @@ func (a *App) probeRestingRemoteSpawns() {
 	}
 }
 
-// nextRestPass is when the rest pass reads its next page, and whether it
-// has any to read.
-func (a *App) nextRestPass() (time.Time, bool) {
+// nextRestPass is when the rest pass reads its next page.
+func (a *App) nextRestPass() time.Time {
 	c := &a.threadAgentPeers
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.restPassAt.Add(a.threadAgentRestPassEvery()), c.restPending
+	return c.restPassAt.Add(a.threadAgentRestPassEvery())
 }

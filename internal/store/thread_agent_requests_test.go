@@ -368,6 +368,9 @@ func TestListRestingRemoteSpawnsPagesFromTheLastRow(t *testing.T) {
 	s := newTestStore(t)
 	mustCreateThread(t, s, "lead")
 	mustCreateThread(t, s, "local")
+	if schedule, err := s.NextThreadRequestWork(); err != nil || schedule.RestingRemote {
+		t.Fatalf("schedule with no remote spawns = %+v, %v; want no rest pass due", schedule, err)
+	}
 	for i, token := range []string{"a", "b", "c", "open-there", "unsettled"} {
 		if err := s.InsertThreadRequest(ThreadRequest{Token: token, CallerThreadID: "lead", Kind: ThreadRequestSpawn,
 			TargetThreadID: "there-" + token, TargetComputerID: "peer-1", State: ThreadRequestRunning, CreatedAt: 100, UpdatedAt: 100}); err != nil {
@@ -398,6 +401,15 @@ func TestListRestingRemoteSpawnsPagesFromTheLastRow(t *testing.T) {
 	plan := queryPlanText(t, s.db, "EXPLAIN QUERY PLAN "+restingRemoteSpawnsSQL(2), int64(0), "")
 	if !strings.Contains(plan, "idx_thread_requests_remote_rest") || strings.Contains(plan, "TEMP B-TREE") {
 		t.Fatalf("the page reads %s", plan)
+	}
+	// Whether the rest pass is due is the ledger's: the schedule probes
+	// the same index.
+	if schedule, err := s.NextThreadRequestWork(); err != nil || !schedule.RestingRemote {
+		t.Fatalf("schedule = %+v, %v; want the rest pass due", schedule, err)
+	}
+	plan = queryPlanText(t, s.db, "EXPLAIN QUERY PLAN SELECT EXISTS (SELECT 1 FROM thread_requests WHERE "+restingRemoteSpawnSQL+")")
+	if !strings.Contains(plan, "idx_thread_requests_remote_rest") {
+		t.Fatalf("the schedule's probe reads %s", plan)
 	}
 }
 
