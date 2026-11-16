@@ -56,6 +56,18 @@ type SpawnCall struct {
 	// run. Notify delivers the answer as a message when the wait did not.
 	WaitSeconds int  `json:"wait_seconds"`
 	Notify      bool `json:"notify"`
+	// Profile is the agent profile the call named, already applied to the
+	// settings above by the tools layer; carried for the record.
+	Profile string `json:"profile,omitempty"`
+	// Instructions are appended to the new thread's system prompt for its
+	// whole life: the profile's, then the call's own. A fork's are its
+	// source's followed by these.
+	Instructions string `json:"instructions,omitempty"`
+	// Level is the sub-thread level the new thread will have, set by the
+	// caller's computer on a spawn it forwards to another, which stores it
+	// with the thread and applies its own limit to it. Zero on a local
+	// spawn, whose level its spawn link answers.
+	Level int `json:"level,omitempty"`
 	// HomeFiles are paths relative to the calling standing agent's home
 	// whose files are prepended to Prompt. They are read and folded into
 	// Prompt on the caller's computer, so a forwarded call never carries

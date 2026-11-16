@@ -40,6 +40,8 @@ type spawnArgs struct {
 	Effort        string   `json:"effort"`
 	Mode          string   `json:"mode"`
 	RuntimeMode   string   `json:"runtime_mode"`
+	Profile       string   `json:"profile"`
+	Instructions  string   `json:"instructions"`
 	WaitSeconds   *int     `json:"wait_seconds"`
 	Notify        bool     `json:"notify"`
 	HomeFiles     []string `json:"home_files"`
@@ -107,10 +109,22 @@ func (c *session) spawn(ctx context.Context, raw json.RawMessage) (any, error) {
 		Effort:            trim(args.Effort),
 		Mode:              trim(args.Mode),
 		RuntimeMode:       trim(args.RuntimeMode),
+		Instructions:      trim(args.Instructions),
 		Notify:            args.Notify,
 	}
 	if err := checkText(call.Prompt, "prompt"); err != nil {
 		return nil, err
+	}
+	if len(call.Instructions) > MaxSpawnInstructionsBytes {
+		return nil, invalidf("instructions must be at most %d bytes.", MaxSpawnInstructionsBytes)
+	}
+	if name := trim(args.Profile); name != "" {
+		if err := c.applyProfile(ctx, &call, name); err != nil {
+			return nil, err
+		}
+		if len(call.Instructions) > MaxSpawnInstructionsBytes {
+			return nil, invalidf("Profile %s's instructions and yours come to %d bytes together; at most %d fit. Shorten instructions.", call.Profile, len(call.Instructions), MaxSpawnInstructionsBytes)
+		}
 	}
 	files, err := homeFiles(args.HomeFiles)
 	if err != nil {
@@ -183,6 +197,9 @@ func (c *session) spawn(ctx context.Context, raw json.RawMessage) (any, error) {
 		call.ComputerID = source.Destination()
 	}
 	if err := c.checkSpawnDestination(ctx, &call); err != nil {
+		return nil, err
+	}
+	if err := c.checkProfileOffered(ctx, call); err != nil {
 		return nil, err
 	}
 	ack, err := c.app.Spawn(ctx, c.caller, call)

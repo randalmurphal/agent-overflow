@@ -2,6 +2,7 @@ package threadtools
 
 import (
 	"fmt"
+	"strings"
 
 	"agent-overflow/internal/agenthome"
 )
@@ -75,14 +76,33 @@ func spawnSchema(shape Shape) map[string]any {
 			"description": spawnDefaultText("Permission level of the new thread, a separate axis from mode", defaults.RuntimeMode) + " Keep the inherited one unless the task needs another. " + runtimeModeSentence() + ".",
 		},
 	}
+	properties["profile"] = map[string]any{
+		"type":        "string",
+		"description": profileDescription(shape.Spawn.Profiles),
+	}
+	properties["instructions"] = map[string]any{
+		"type":        "string",
+		"maxLength":   MaxSpawnInstructionsBytes,
+		"description": fmt.Sprintf("Text appended to the new thread's system prompt for its whole life, after everything the app and the user already put there, for a one-off role such as a reviewer told what to look for. A profile's own instructions come first. At most %d bytes with the profile's. The task itself goes in prompt.", MaxSpawnInstructionsBytes),
+	}
 	properties["home_files"] = homeFilesProperty("prompt")
 	waitProperties(properties, 0, "the new thread to answer")
 	computerIDProperty(shape, properties, "the project the thread should run in")
-	description := "Open a new thread, your worker, send prompt as its first user message, start its turn, and return the thread id and a request token. It inherits your project, workspace, provider, model, effort, mode and runtime mode unless you override them. By default it has no sidebar row: the user reaches it from your thread, and its questions and approvals come to you. A thread meant for the user to read or continue themselves gets a sidebar row: pass placement standalone, or group to file it in a group. Use it when the user asks for a separate thread, when another provider or model should do the work, or when the work should outlive your turn; use your own subagents for pieces of your current task."
+	description := "Open a new thread, your worker, send prompt as its first user message, start its turn, and return the thread id and a request token. It inherits your project, workspace, provider, model, effort, mode and runtime mode unless you override them. By default it has no sidebar row: the user reaches it from your thread, and its questions and approvals come to you. A thread meant for the user to read or continue themselves gets a sidebar row: pass placement standalone, or group to file it in a group. Use your own subagents for pieces of your current task; use this " + spawnWhen(shape) + "."
 	if shape.Paired() {
 		description += " With computer_id the thread is created on that computer, runs on its account, appears in its sidebar, and project_id must name one of its projects."
 	}
 	return tool("thread_spawn", description, properties, "prompt")
+}
+
+// profileDescription states the profiles this computer can run beside the
+// parameter, so a spawn by profile needs no discovery call for the name.
+func profileDescription(names []string) string {
+	text := "Agent profile to spawn as, by name: the provider, model, effort, runtime mode and instructions the user set up for one kind of work. provider, model, effort and runtime_mode passed beside it override that part of it. thread_options lists each profile's use-for line and what it runs on each computer."
+	if len(names) > 0 {
+		text += " This computer runs: " + strings.Join(names, ", ") + "."
+	}
+	return text
 }
 
 // homeFilesProperty is home_files on thread_spawn and thread_send.

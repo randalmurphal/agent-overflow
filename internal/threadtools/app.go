@@ -74,6 +74,10 @@ type App interface {
 	// Catalog returns what a spawn can choose from on this computer.
 	Catalog(ctx context.Context, q CatalogQuery) (Catalog, error)
 
+	// Roster returns the person's agent profiles and notes on choosing
+	// them, from this computer's settings.
+	Roster(ctx context.Context) (Roster, error)
+
 	// Spawn creates a visible thread, sends the prompt as its first user
 	// message, starts the turn and returns the request receipt. It mints
 	// the token, writes the request row and dispatches locally or to the
