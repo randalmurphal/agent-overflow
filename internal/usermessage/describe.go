@@ -26,6 +26,9 @@ type Described struct {
 	Wake   *OriginWake
 	// Facts are what the message says.
 	Facts threadtools.MessageFacts
+	// Report is what a report's kind means to the person reading it; nil
+	// for a message that is no report of a kind this computer knows.
+	Report *ReportDescriptor
 }
 
 // Body is what the message says in its own words.
@@ -88,7 +91,10 @@ func describeMessage(text, sendID, origin string, thread *OriginThread, wake *Or
 			one.Facts = thread.Facts.Clone()
 		}
 	case OriginAgentWake:
-		if wake != nil && wake.Facts != nil && wake.Facts.Form == threadtools.FormReport && wake.Facts.Check(text) == nil {
+		// A report of a kind this computer does not know is what the
+		// decoder refuses (DecodeStored): shown whole.
+		one.Report = wake.descriptor()
+		if one.Report != nil && wake.Facts != nil && wake.Facts.Form == threadtools.FormReport && wake.Facts.Check(text) == nil {
 			one.Facts = wake.Facts.Clone()
 		}
 	}
@@ -104,13 +110,8 @@ func headline(d Described) string {
 		return d.Facts.Headline
 	}
 	body := d.Facts.BodyOf(d.Text)
-	if d.Facts.Form == threadtools.FormReport && d.Wake != nil {
-		switch ReportKind(d.Wake.Kind) {
-		case ReportCompletion, ReportOpening, ReportHandOff:
-			// A job's output and the app's prose are shown as written.
-		default:
-			body = ReadableWakeText(body)
-		}
+	if d.Facts.Form == threadtools.FormReport && d.Report != nil && d.Report.Body == ReportBodyData {
+		body = ReadableWakeText(body)
 	}
 	if line := FirstLine(body); line != "" || len(d.Facts.Threads) < 2 {
 		return line
@@ -124,13 +125,20 @@ func headline(d Described) string {
 
 // ProjectMeta is meta as a reader of the row whose text is text receives
 // it: every agent message it holds attributed with the facts Describe reads
-// of it, and a row main wrote whose requests a provider joined given the
-// members its text holds (JoinedParts), each with its sender. The stored row
-// is not changed. ok is false for a row that is the person's.
+// of it and, a report, with its ReportDescriptor, and a row main wrote whose
+// requests a provider joined given the members its text holds
+// (JoinedParts), each with its sender. A person's row a report was joined
+// into keeps that report's descriptor for its badge. The stored row is not
+// changed. ok is false for a row with nothing to project.
 func ProjectMeta(text string, meta Meta) (projected Meta, ok bool) {
 	described, recorded := describe(text, meta)
 	if described == nil {
-		return meta, false
+		if meta.Origin != OriginAgentWake || meta.OriginWake == nil {
+			return meta, false
+		}
+		projected = meta
+		projected.OriginWake = meta.OriginWake.Served()
+		return projected, true
 	}
 	projected = meta
 	if len(described) == 1 && !recorded {
@@ -165,7 +173,7 @@ func withFacts(d Described) (*OriginThread, *OriginWake) {
 		thread.Facts = &facts
 		return thread, nil
 	case OriginAgentWake:
-		wake := d.Wake.clone()
+		wake := d.Wake.Served()
 		if wake == nil {
 			wake = &OriginWake{}
 		}

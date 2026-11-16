@@ -9,6 +9,7 @@ import { noteThread } from '../../transport/entityIndex';
 import { setupEventListeners } from '../../stores/events';
 import type { ThreadAgentRow } from '../../stores/bindings';
 import type { UserMessageOriginWake } from '../../utils/userMessageMeta';
+import { ReportDescriptor } from '../../../../bindings/agent-overflow/internal/usermessage/models';
 import { replaceQueueForThread, resetForTest as resetSendQueue, type QueueItem } from '../../stores/sendQueue.svelte';
 import { reportFrontendDiagnostic } from '../../utils/frontendErrorCapture';
 
@@ -375,7 +376,10 @@ describe('agents controller', () => {
   it('names each incoming message by its origin\'s kind, and lists only what the queue marks an agent\'s', async () => {
     const { pane, controller } = await mountAgents([]);
     const thread = (kind: string, threadId = 'sender') => ({ computerId: '', computerName: '', threadId, title: 'Sender', token: 'tok', kind });
-    const wake = (kind: UserMessageOriginWake['kind'], label: string): UserMessageOriginWake => ({ kind, label, threadId: '', computer: '' });
+    // A queued report's attribution as Go serves it; the kind names it here.
+    const wake = (kind: string, label: string): UserMessageOriginWake => ({
+      kind, label, threadId: '', computer: '', report: ReportDescriptor.createFrom({ badge: `${kind} · ${label}` }),
+    });
     replaceQueueForThread(pane.threadId!, [
       queued('spawn', { agentMessage: true, originThread: thread('spawn') }),
       queued('ask', { agentMessage: true, originThread: thread('ask') }),

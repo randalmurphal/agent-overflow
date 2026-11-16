@@ -40,7 +40,7 @@ func TestReportBodyIsTheDataAfterItsNotice(t *testing.T) {
 // ReportKind both, and any other neither.
 func TestReportKindsAreTheKindsAStoredReportCarries(t *testing.T) {
 	t.Parallel()
-	for _, kind := range reportKinds {
+	for _, kind := range ReportKinds() {
 		message := built(t)(Report(kind, Reporter{Label: "l"}, "", "data", ""))
 		attribution := message.Attribution()
 		if _, err := DecodeStored(message.Text(), attribution.Origin, attribution.Thread, attribution.Wake); err != nil {
@@ -95,7 +95,7 @@ func TestConstructorsWriteWhatDecodeStoredReads(t *testing.T) {
 			return Answer(threadtools.Wake{Kind: kind, Text: "Said.", Sources: []threadtools.WakeSource{source}, MadeIn: "t-old", Now: "t-new"})
 		}
 	}
-	for _, kind := range reportKinds {
+	for _, kind := range ReportKinds() {
 		messages["report: "+string(kind)] = func() (AgentMessage, error) {
 			return Report(kind, Reporter{Label: "l", ThreadID: "t-w", Computer: "Desk"}, "n", "\nd", "h")
 		}

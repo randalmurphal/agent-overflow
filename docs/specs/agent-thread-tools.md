@@ -1323,9 +1323,11 @@ constructor in `internal/usermessage` renders the text and the facts
 from one value and takes the attribution from the same source:
 `Request` (from the footer), `Answer` (from the wake), `Message` (a
 thread's plain words, such as a spawner's answer to its worker's
-questions), `StoppedWorker` and `Report` (a closed set of report
-kinds); a message read back from storage goes through `DecodeStored`,
-which refuses attribution no constructor writes.
+questions), `StoppedWorker` and `Report` (one of the `ReportKind`s).
+Each refuses input no message can be made of, such as a request from no
+thread; a message read back from storage goes through `DecodeStored`,
+which reads back what the constructors write and refuses attribution
+none writes.
 The facts travel wherever the attribution does: the queue payload, a
 joined row's parts, a message given back or requeued, a fork or handoff
 copy. A row rebuilt from a provider's session file has no attribution
@@ -1365,7 +1367,14 @@ of the row (`itemwire.Project`, a meta patch) serves its meta as
 (`MessageFacts.Check`) and its header line set. Facts whose length or
 spans do not describe the text, as after an edit behind their back, are
 not guessed around: that message is shown whole, attributed to its
-sender. Opened,
+sender. A report's kind is defined once, in Go (`usermessage.ReportKind`):
+its served attribution carries what the kind means to a person
+(`ReportDescriptor`: its category, gutter label and title, the sender's
+name and the thread it opens, its badge, and whether its data is decoded
+or shown as written), the Edits selector and `thread_show` name it from
+the same definition, and the frontend keeps only its icons, with a
+default icon for a category it has none for. A report of a kind the
+serving computer does not know is shown whole. Opened,
 it shows the message and its routing as facts: whether the
 sender waits, whether a reply reaches it, its role, where its spawned
 thread's prompts go, the sender's user message it quoted and the token;

@@ -7,6 +7,7 @@ import {
 } from '../types/attachment';
 import type { Item, SourceProposedPlan } from '../types/models';
 import { MessageFacts } from '../../../bindings/agent-overflow/internal/threadtools/models';
+import { ReportDescriptor } from '../../../bindings/agent-overflow/internal/usermessage/models';
 import { commandWordRanges, type CommandWordRange } from './commandWords';
 import type { ShellOutputMeta } from './shellInvocation';
 
@@ -252,53 +253,43 @@ export function splitJoinedParts(text: string, meta: UserMessageMeta): JoinedMem
 }
 
 /**
- * What wrote an `agent-wake` row: `loop` or `watch` with its label, `send`
- * for a script's outside message, or `question` or `approval` for a worker's
- * prompt put to the standing agent that spawned it, labelled with the
- * worker's title. An `assistant` or `handoff` wake is the app's opening
- * block of an assistant's thread, labelled with the assistant's name. A row
- * without a known kind is not attribution and is refused.
+ * What wrote an `agent-wake` row: a loop, a watch, a script, a worker's
+ * prompt, a remote job, a workflow run or the app opening an assistant's
+ * thread (usermessage.ReportKind). Go serves each report's attribution with
+ * what its kind means to a person (usermessage.ReportDescriptor), which
+ * names it everywhere here; a row without one is of a kind the serving
+ * computer does not know, or did not decode, and is refused.
  */
 export interface UserMessageOriginWake {
-  kind: 'loop' | 'watch' | 'send' | 'question' | 'approval' | 'completion' | 'workflow' | 'assistant' | 'handoff';
-  /** The loop, watch or worker; a `completion`'s job; a `workflow`'s id. */
+  /** The report's kind, as Go names it. */
+  kind: string;
+  /** The loop, watch or worker; a remote job's label; a workflow's id. */
   label: string;
-  /** The worker of a `question` or `approval` wake; empty otherwise. */
+  /** The worker of a worker's prompt; empty otherwise. */
   threadId: string;
-  /** The computer a `completion`'s job ran on; empty otherwise. */
+  /** The computer a remote job ran on; empty otherwise. */
   computer: string;
+  report: ReportDescriptor;
 }
 
-const WAKE_KINDS: ReadonlySet<string> = new Set(['loop', 'watch', 'send', 'question', 'approval', 'completion', 'workflow', 'assistant', 'handoff']);
-const WAKE_KIND_LABELS: Record<Exclude<UserMessageOriginWake['kind'], 'send'>, string> = {
-  loop: 'Loop',
-  watch: 'Watch',
-  question: 'Question',
-  approval: 'Approval',
-  completion: 'Remote job',
-  workflow: 'Workflow',
-  assistant: 'Opening',
-  handoff: 'New thread',
-};
+const REPORT_FIELDS = ['category', 'label', 'title', 'sender', 'badge', 'body'] as const;
 
 export function userMessageOriginWake(meta: UserMessageMeta): UserMessageOriginWake | null {
   const record = objectRecord(meta.originWake);
-  if (!record) return null;
-  const kind = stringField(record.kind);
-  if (!WAKE_KINDS.has(kind)) return null;
+  const report = objectRecord(record?.report);
+  if (!record || !report || REPORT_FIELDS.some((field) => typeof report[field] !== 'string')) return null;
   return {
-    kind: kind as UserMessageOriginWake['kind'],
+    kind: stringField(record.kind),
     label: stringField(record.label),
     threadId: stringField(record.threadId),
     computer: stringField(record.computer),
+    report: ReportDescriptor.createFrom({ ...report, opens: stringField(report.opens) }),
   };
 }
 
 /** The badge a wake row carries: which loop, watch or worker, or that a script sent it. */
 export function agentWakeOriginLabel(wake: UserMessageOriginWake): string {
-  if (wake.kind === 'send') return 'Sent by a script';
-  const kind = WAKE_KIND_LABELS[wake.kind];
-  return wake.label ? `${kind} · ${wake.label}` : kind;
+  return wake.report.badge;
 }
 
 function stringField(value: unknown): string {

@@ -3,7 +3,6 @@ package app
 import (
 	"slices"
 	"strconv"
-	"strings"
 
 	"agent-overflow/internal/threadtools"
 	"agent-overflow/internal/usermessage"
@@ -44,11 +43,14 @@ func agentMessageLabel(text string, meta usermessage.Meta) string {
 
 // agentMessageSenderName is who a message is from as its row's header names
 // it: the thread it is attributed to, the threads a digest speaks for, this
-// thread for its own reminder, or the loop, watch, worker, job, workflow or
-// script that reported.
+// thread for its own reminder, or what wrote a report (its descriptor's
+// sender), "A wake" for a report of a kind this computer does not know.
 func agentMessageSenderName(message usermessage.Described) string {
 	if message.Origin == usermessage.OriginAgentWake {
-		return agentReporterName(message.Wake)
+		if message.Report == nil {
+			return "A wake"
+		}
+		return message.Report.Sender
 	}
 	switch {
 	case len(message.Facts.Threads) > 1:
@@ -60,48 +62,4 @@ func agentMessageSenderName(message usermessage.Described) string {
 		return message.Thread.Title
 	}
 	return "another thread"
-}
-
-// agentReporterName names what wrote a report: an outside script, a remote
-// job and its computer, the app itself for an assistant's opening, or the
-// label of the loop, watch, worker or workflow, else its kind.
-func agentReporterName(from *usermessage.OriginWake) string {
-	if from == nil {
-		return "A wake"
-	}
-	switch from.Kind {
-	case string(usermessage.ReportSend):
-		return "A script"
-	case string(usermessage.ReportCompletion):
-		if name := strings.Join(nonEmpty(from.Label, from.Computer), " on "); name != "" {
-			return name
-		}
-		return "A remote job"
-	case string(usermessage.ReportOpening), string(usermessage.ReportHandOff):
-		return "Agent Overflow"
-	}
-	if title, known := agentWakeKindTitles[from.Kind]; known {
-		return firstNonEmpty(from.Label, title)
-	}
-	return "A wake"
-}
-
-// agentWakeKindTitles name a report by its kind, as the frontend's agent
-// row titles it, when it carries no label.
-var agentWakeKindTitles = map[string]string{
-	"loop":     "Loop wake",
-	"watch":    "Watch wake",
-	"question": "Worker's question",
-	"approval": "Worker's approval request",
-	"workflow": "Workflow wake",
-}
-
-func nonEmpty(values ...string) []string {
-	var out []string
-	for _, value := range values {
-		if value != "" {
-			out = append(out, value)
-		}
-	}
-	return out
 }

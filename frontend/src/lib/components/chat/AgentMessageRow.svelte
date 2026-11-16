@@ -20,6 +20,7 @@
   import Eye from '@lucide/svelte/icons/eye';
   import GitBranchPlus from '@lucide/svelte/icons/git-branch-plus';
   import Inbox from '@lucide/svelte/icons/inbox';
+  import MessageSquare from '@lucide/svelte/icons/message-square';
   import Monitor from '@lucide/svelte/icons/monitor';
   import OctagonX from '@lucide/svelte/icons/octagon-x';
   import Repeat from '@lucide/svelte/icons/repeat';
@@ -57,7 +58,10 @@
     message: AgentMessage;
   } = $props();
 
-  const ICONS: Record<AgentMessageKind, Component> = {
+  // A row's icon by its kind: each AgentMessageKind's, and each report
+  // category's this file knows. A report of a category it does not know
+  // (a kind added in Go alone) gets REPORT_ICON.
+  const ICONS: Record<AgentMessageKind, Component> & Record<string, Component | undefined> = {
     spawn: GitBranchPlus,
     request: Inbox,
     question: CircleQuestionMark,
@@ -83,6 +87,8 @@
     task: Bot,
     'final-answer': Bot,
   };
+
+  const REPORT_ICON: Component = MessageSquare;
 
   let expanded = $derived(pane.isUserMessageExpanded(item.id));
   let bodyDomId = $derived(chatRowDomId(pane, 'agent-message-body', item.id));
@@ -213,7 +219,7 @@
     class="rounded-[var(--radius-control)] px-1 py-1 hover:bg-surface-2/20"
     onToggle={toggle}
   >
-    {#snippet icon()}<Icon icon={ICONS[message.kind]} size={13} strokeWidth={2} class="text-fg-hint" />{/snippet}
+    {#snippet icon()}<Icon icon={ICONS[message.kind] ?? REPORT_ICON} size={13} strokeWidth={2} class="text-fg-hint" />{/snippet}
     {#snippet label()}<span data-testid="agent-message-kind" title={message.kindTitle}>{message.kindLabel}</span>{/snippet}
     {#snippet body()}
       <span class="flex min-w-0 flex-1 items-baseline gap-1.5 text-[0.75rem]">

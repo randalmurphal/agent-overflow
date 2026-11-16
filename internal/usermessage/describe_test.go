@@ -183,14 +183,18 @@ func TestDescribeReadsMainsTextAsItsFactsSay(t *testing.T) {
 
 // servedRowsFixture is each corpus case's row as a client receives it
 // (ProjectRowMeta): as its writer stored it, and, for a legacy case, as
-// main stored it. frontend/src/lib/utils/agentMessage.test.ts renders both.
+// main stored it; then, with its text, a report of a kind only Go defines
+// (testReportKind). frontend/src/lib/utils/agentMessage.test.ts renders
+// them.
 // Regenerate with UPDATE_SERVED_ROWS=1 make go-test
 // GO_TEST_PKGS=./internal/usermessage GO_TEST_FLAGS='-run
 // TestServedRowsFixture'.
 const servedRowsFixture = "testdata/served_rows.json"
 
 type servedRow struct {
-	Name       string `json:"name"`
+	Name string `json:"name"`
+	// Text is the row's text when it is no corpus case's.
+	Text       string `json:"text,omitempty"`
 	Meta       string `json:"meta"`
 	LegacyMeta string `json:"legacyMeta,omitempty"`
 }
@@ -211,6 +215,13 @@ func TestServedRowsFixture(t *testing.T) {
 		}
 		rows = append(rows, row)
 	}
+	withTestReportKind(t)
+	report := testOnlyReport(t)
+	attribution := report.Attribution()
+	rows = append(rows, servedRow{
+		Name: "a report of a kind only Go defines", Text: report.Text(),
+		Meta: served(report.Text(), Meta{Origin: attribution.Origin, OriginWake: attribution.Wake, SendID: "test-only:1"}),
+	})
 	encoded, err := json.MarshalIndent(rows, "", "  ")
 	if err != nil {
 		t.Fatal(err)
@@ -380,8 +391,8 @@ func TestDescribeShowsAMessageWhoseTextChangedWhole(t *testing.T) {
 }
 
 // A client receives a row's meta with each message's facts as Describe read
-// them and every other key as stored; a row that is the person's, or an
-// agent's whose facts already hold and say their header, is sent as it is.
+// them, a report's descriptor, and every other key as stored; a row that is
+// the person's is sent as it is.
 func TestProjectRowMetaKeepsWhatItDoesNotDescribe(t *testing.T) {
 	message := built(t)(Report(ReportLoop, Reporter{Label: "l"}, "Loop fired.", "note: \"x\"", "x"))
 	attribution := message.Attribution()
@@ -393,14 +404,18 @@ func TestProjectRowMetaKeepsWhatItDoesNotDescribe(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := ProjectRowMeta(message.Text(), stored); got != stored {
-		t.Fatalf("a row whose facts hold changed: %s", got)
+	served := ProjectRowMeta(message.Text(), stored)
+	decoded, err := FromItem(store.Item{Meta: served})
+	if err != nil || ReadProviderItemID(served) != "provider-1" || ReadProviderParentUUID(served) != "parent-1" ||
+		!reflect.DeepEqual(decoded.OriginWake.Facts, attribution.Wake.Facts) || decoded.OriginWake.Report == nil ||
+		decoded.OriginWake.Report.Sender != "l" || decoded.SendID != "agent-wake:1" {
+		t.Fatalf("a report whose facts hold served as %s", served)
 	}
 	if got := ProjectRowMeta("mine", `{"sendId":"s","provider_item_id":"p"}`); got != `{"sendId":"s","provider_item_id":"p"}` {
 		t.Fatalf("the person's row changed: %s", got)
 	}
 	edited := ProjectRowMeta(message.Text()+"!", stored)
-	decoded, err := FromItem(store.Item{Meta: edited})
+	decoded, err = FromItem(store.Item{Meta: edited})
 	if err != nil || ReadProviderItemID(edited) != "provider-1" || ReadProviderParentUUID(edited) != "parent-1" ||
 		decoded.OriginWake.Facts.Form != threadtools.FormWhole || decoded.SendID != "agent-wake:1" {
 		t.Fatalf("projected %s", edited)

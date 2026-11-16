@@ -112,32 +112,10 @@ func senderOf(origin string, thread *OriginThread, wake *OriginWake, here string
 		}
 		return "the agent in " + threadName(from.Title, from.ThreadID, computer), true
 	case OriginAgentWake:
-		var from OriginWake
-		if wake != nil {
-			from = *wake
+		if wake == nil {
+			return "", true
 		}
-		switch ReportKind(from.Kind) {
-		case ReportLoop:
-			return "your loop " + quoteName(from.Label), true
-		case ReportWatch:
-			return "your watch " + quoteName(from.Label), true
-		case ReportSend:
-			return "a script, through agent-overflow thread send", true
-		case ReportQuestion, ReportApproval:
-			return threadName(from.Label, from.ThreadID, "") + ", which you spawned", true
-		case ReportCompletion:
-			job := "a remote job"
-			if from.Label != "" {
-				job = "the remote job " + quoteName(from.Label)
-			}
-			if from.Computer != "" {
-				job += " on " + quoteName(from.Computer)
-			}
-			return job, true
-		case ReportWorkflow:
-			return "the workflow run " + quoteName(from.Label), true
-		}
-		return "", true
+		return wake.wireName(), true
 	}
 	return "", false
 }

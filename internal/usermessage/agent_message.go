@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"agent-overflow/internal/store"
-	"agent-overflow/internal/stringsx"
 	"agent-overflow/internal/threadtools"
 )
 
@@ -72,6 +71,10 @@ func (w *OriginWake) clone() *OriginWake {
 	}
 	copied := *w
 	copied.Facts = cloneFacts(w.Facts)
+	if w.Report != nil {
+		report := *w.Report
+		copied.Report = &report
+	}
 	return &copied
 }
 
@@ -190,80 +193,6 @@ func Message(from Sender, body string) (AgentMessage, error) {
 	}), nil
 }
 
-// ReportKind is the kind of a Report, the OriginWake kind its row is badged
-// with: one of the Report* constants. Report writes no other and
-// DecodeStored reads no other (reportKinds).
-type ReportKind string
-
-// The kinds of Report.
-const (
-	// ReportLoop and ReportWatch are a loop's fire and a watch's output.
-	ReportLoop  ReportKind = store.AgentWakeLoop
-	ReportWatch ReportKind = store.AgentWakeWatch
-	// ReportSend is an outside `agent-overflow thread send`.
-	ReportSend ReportKind = "send"
-	// ReportQuestion and ReportApproval are a worker's prompt put to the
-	// thread that spawned it.
-	ReportQuestion ReportKind = "question"
-	ReportApproval ReportKind = "approval"
-	// ReportCompletion is a remote job's report.
-	ReportCompletion ReportKind = "completion"
-	// ReportWorkflow is a workflow run's wake.
-	ReportWorkflow ReportKind = "workflow"
-	// ReportOpening and ReportHandOff are the messages that open an
-	// assistant's first thread and each later one.
-	ReportOpening ReportKind = "assistant"
-	ReportHandOff ReportKind = "handoff"
-)
-
-// reportKinds are every ReportKind.
-var reportKinds = []ReportKind{
-	ReportLoop, ReportWatch, ReportSend, ReportQuestion, ReportApproval, ReportCompletion, ReportWorkflow,
-	ReportOpening, ReportHandOff,
-}
-
-// Reporter is what a Report is from, as its row names it: the loop or watch
-// label, the worker's title and thread, the remote job's label and computer,
-// the workflow's id, or the assistant's name. An outside send has none.
-type Reporter struct {
-	Label    string
-	ThreadID string
-	Computer string
-}
-
-// HeadlineBytes bounds the header line a Report's facts carry.
-const HeadlineBytes = 512
-
-// Report is a message the app writes for an agent that is no thread's
-// request, answer or message: a loop's fire, a watch's output, an outside
-// send, a worker's prompt, a remote job's report, a workflow run's wake, an
-// assistant's opening. Its text is notice, the line written for the agent
-// that the row does not show, then data, which the row shows; a message
-// that is prose throughout has no notice. Blank lines that open data are
-// spacing, not body. headline is what the row's header says it is about,
-// folded onto one bounded line; empty when that is the data's first line.
-// A kind that is none of the ReportKinds is refused.
-func Report(kind ReportKind, from Reporter, notice, data, headline string) (AgentMessage, error) {
-	if !slices.Contains(reportKinds, kind) {
-		return AgentMessage{}, fmt.Errorf("a report of kind %q", kind)
-	}
-	text, start := data, 0
-	if notice != "" {
-		text, start = notice+"\n"+data, len(notice)+1
-	}
-	start += len(data) - len(strings.TrimLeft(data, "\n"))
-	facts := threadtools.MessageFacts{
-		Form: threadtools.FormReport, Bytes: len(text),
-		Headline: stringsx.ClipRunes(strings.Join(strings.Fields(headline), " "), HeadlineBytes),
-	}
-	if start < len(text) {
-		facts.Body = []threadtools.Span{{Start: start, End: len(text)}}
-	}
-	return AgentMessage{text: text, origin: OriginAgentWake, wake: &OriginWake{
-		Kind: string(kind), Label: from.Label, ThreadID: from.ThreadID, Computer: from.Computer, Facts: &facts,
-	}}, nil
-}
-
 // PersonMessage is the person's own words, which carry no attribution.
 func PersonMessage(text string) AgentMessage { return AgentMessage{text: text} }
 
@@ -324,7 +253,7 @@ func DecodeStored(text, origin string, thread *OriginThread, wake *OriginWake) (
 		if wake == nil {
 			return message, fmt.Errorf("%w: a report names no reporter", ErrStoredMessage)
 		}
-		if !slices.Contains(reportKinds, ReportKind(wake.Kind)) {
+		if !ReportKind(wake.Kind).known() {
 			return refuse("a report of kind %q", wake.Kind)
 		}
 		if thread != nil {

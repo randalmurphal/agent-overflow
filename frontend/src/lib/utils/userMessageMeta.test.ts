@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import agentMessageMetas from '../../../../internal/usermessage/testdata/agent_message_metas.json';
+import labels from '../../../../internal/app/testdata/agent_message_labels.json';
 
 import {
   isAgentMessageMeta,
@@ -219,28 +220,40 @@ describe('userMessageOriginThread', () => {
 });
 
 describe('userMessageOriginWake', () => {
-  it('reads every wake kind and labels each', () => {
-    const loop = userMessageOriginWake({ originWake: { kind: 'loop', label: 'board' } });
-    expect(loop).toEqual({ kind: 'loop', label: 'board', threadId: '', computer: '' });
-    expect(agentWakeOriginLabel(loop!)).toBe('Loop · board');
-    const watch = userMessageOriginWake({ originWake: { kind: 'watch', label: 'mrs' } });
-    expect(agentWakeOriginLabel(watch!)).toBe('Watch · mrs');
-    const send = userMessageOriginWake({ originWake: { kind: 'send' } });
-    expect(agentWakeOriginLabel(send!)).toBe('Sent by a script');
-    const question = userMessageOriginWake({ originWake: { kind: 'question', label: 'Deploy worker', threadId: 't1' } });
-    expect(question?.threadId).toBe('t1');
-    expect(agentWakeOriginLabel(question!)).toBe('Question · Deploy worker');
-    const approval = userMessageOriginWake({ originWake: { kind: 'approval', label: 'Deploy worker' } });
-    expect(agentWakeOriginLabel(approval!)).toBe('Approval · Deploy worker');
-    const job = userMessageOriginWake({ originWake: { kind: 'completion', label: 'build', computer: 'GPU box' } });
-    expect(job).toEqual({ kind: 'completion', label: 'build', threadId: '', computer: 'GPU box' });
-    expect(agentWakeOriginLabel(job!)).toBe('Remote job · build');
-    const run = userMessageOriginWake({ originWake: { kind: 'workflow', label: 'release' } });
-    expect(agentWakeOriginLabel(run!)).toBe('Workflow · release');
+  // Each report a Go writer wrote, as Go serves its attribution.
+  const served = (name: string) => {
+    const tc = labels.find((candidate) => candidate.name === name);
+    if (!tc) throw new Error(`no served row for ${name}`);
+    return parseUserMessageMeta(tc.meta);
+  };
+
+  it('reads every report kind and badges each as Go serves it', () => {
+    for (const [name, badge] of [
+      ['a loop', 'Loop · nightly'],
+      ['a watch', 'Watch · ci'],
+      ["a script's message", 'Sent by a script'],
+      ["a worker's approval request", 'Approval · Worker'],
+      ["an untitled worker's question", 'Question'],
+      ['a remote job', 'Remote job · make test'],
+      ['a workflow wake', 'Workflow · release'],
+      ["an assistant's opening message", 'Opening · Ops'],
+      ["an assistant's handoff block", 'New thread · Ops'],
+    ] as const) {
+      expect(agentWakeOriginLabel(userMessageOriginWake(served(name))!), name).toBe(badge);
+    }
+    const job = userMessageOriginWake(served('a remote job'));
+    expect(job).toMatchObject({ kind: 'completion', label: 'make test', threadId: '', computer: 'desk' });
+    expect(userMessageOriginWake(served("a worker's approval request"))?.threadId).toBe('t-worker');
   });
 
-  it('refuses a kind it does not know, which is not attribution', () => {
-    expect(userMessageOriginWake({ originWake: { kind: 'cron', label: 'x' } })).toBeNull();
+  it('reads a kind it has never heard of from what Go serves', () => {
+    const report = { category: 'probe', label: 'Probe', title: 'Probe report', sender: 'p', badge: 'Probe · p', body: 'data' };
+    expect(userMessageOriginWake({ originWake: { kind: 'probe', label: 'p', report } })).toMatchObject({ kind: 'probe', report });
+  });
+
+  it('refuses an attribution Go did not describe, which is not one it can read', () => {
+    expect(userMessageOriginWake({ originWake: { kind: 'loop', label: 'x' } })).toBeNull();
+    expect(userMessageOriginWake({ originWake: { kind: 'loop', report: { category: 'loop' } } })).toBeNull();
     expect(userMessageOriginWake({ originWake: 'loop' })).toBeNull();
     expect(userMessageOriginWake({})).toBeNull();
   });

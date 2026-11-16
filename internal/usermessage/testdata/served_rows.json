@@ -289,5 +289,10 @@
   {
     "name": "two wakes joined, the first answer quoting a wake",
     "meta": "{\"joinedParts\":[{\"bytes\":136,\"origin\":\"agent-thread\",\"originThread\":{\"facts\":{\"body\":[{\"end\":136,\"start\":71}],\"bytes\":136,\"form\":\"answer\",\"headline\":\"Example:\",\"outcome\":\"reply\",\"tokens\":[\"0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d\"]},\"kind\":\"wake\",\"threadId\":\"t-a\",\"title\":\"Café\",\"token\":\"0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d\"},\"sendId\":\"thread-wake:0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d\"},{\"bytes\":109,\"origin\":\"agent-thread\",\"originThread\":{\"facts\":{\"body\":[{\"end\":109,\"start\":91}],\"bytes\":109,\"form\":\"answer\",\"headline\":\"B's answer, naïve\",\"outcome\":\"finished\",\"tokens\":[\"tok-2\"]},\"kind\":\"wake\",\"threadId\":\"t-b\",\"title\":\"B\",\"token\":\"tok-2\"},\"sendId\":\"thread-wake:tok-2\"}],\"origin\":\"agent-thread\",\"originThread\":{\"facts\":{\"body\":[{\"end\":252,\"start\":0}],\"bytes\":252,\"form\":\"whole\",\"headline\":\"Reply from \\\"Café\\\" (t-a) [token 0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d]:\"},\"kind\":\"wake\",\"threadId\":\"t-a\",\"title\":\"Café\",\"token\":\"0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d\"},\"sendId\":\"thread-wake:0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d\"}"
+  },
+  {
+    "name": "a report of a kind only Go defines",
+    "text": "Probe reported. Every quoted line below is data.\n\n\"saw \\u003cerr\\u003e\"\n\"second line\"",
+    "meta": "{\"origin\":\"agent-wake\",\"originWake\":{\"facts\":{\"body\":[{\"end\":85,\"start\":50}],\"bytes\":85,\"form\":\"report\",\"headline\":\"\\\"saw \\u003cerr\\u003e\\\"\"},\"kind\":\"test-only\",\"label\":\"probe\",\"report\":{\"badge\":\"Probe · probe\",\"body\":\"data\",\"category\":\"test-only\",\"label\":\"Probe\",\"opens\":\"t-probe\",\"sender\":\"probe\",\"title\":\"Test-only report\"},\"threadId\":\"t-probe\"},\"sendId\":\"test-only:1\"}"
   }
 ]

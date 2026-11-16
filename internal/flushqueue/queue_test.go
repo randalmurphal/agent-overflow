@@ -131,5 +131,9 @@ func TestItemFromStoreCarriesTheAgentAttribution(t *testing.T) {
 			(tc.payload.OriginWake != nil && (got.OriginWake == nil || got.OriginWake.Label != "nightly")) {
 			t.Errorf("%s: attribution = %q %+v %+v", tc.name, got.Origin, got.OriginThread, got.OriginWake)
 		}
+		// A queued report is listed under the badge its kind serves.
+		if tc.payload.OriginWake != nil && (got.OriginWake.Report == nil || got.OriginWake.Report.Badge != "Loop · nightly") {
+			t.Errorf("%s: served %+v, want the loop's badge", tc.name, got.OriginWake.Report)
+		}
 	}
 }

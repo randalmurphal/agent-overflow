@@ -136,8 +136,12 @@ type OriginWake struct {
 	// Computer names the computer a `completion`'s job ran on.
 	Computer string `json:"computer,omitempty"`
 	// Facts is where the message's data is and what its row's header
-	// says, written with the text (WakeMessage).
+	// says, written with the text (Report).
 	Facts *threadtools.MessageFacts `json:"facts,omitempty"`
+	// Report is what the report's kind means to a person's view of it,
+	// set only where a client receives the attribution (Served), never
+	// stored.
+	Report *ReportDescriptor `json:"report,omitempty"`
 }
 
 // OriginApp is the Origin value of a row Agent Overflow wrote in its own voice.

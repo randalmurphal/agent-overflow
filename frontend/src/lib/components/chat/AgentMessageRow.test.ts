@@ -3,6 +3,7 @@ import { fireEvent, render } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import fixture from '../../../../../internal/threadtools/testdata/agent_messages.json';
 import servedRows from '../../../../../internal/usermessage/testdata/served_rows.json';
+import labels from '../../../../../internal/app/testdata/agent_message_labels.json';
 import { buildPane, makeItem, makeThread } from '../../../test/helpers/chat';
 import { resetBindingMocks } from '../../../test/mocks/bindings-app';
 import { stageBackend, resetStagedBackends } from '../../../test/helpers/backends';
@@ -39,6 +40,9 @@ const withFacts = (name: string, attribution: Origin, index = 0): Origin => {
 /** The joinedParts a join records for a fixture case's members, each attributed `origins[i]` with its facts. */
 const joinedParts = (name: string, origins: Origin[]) =>
   fixtureCase(name).members.map((bytes, index) => ({ bytes, origin: 'agent-thread', originThread: withFacts(name, origins[index], index) }));
+
+/** What Go serves a loop's report kind as (usermessage.ReportDescriptor). */
+const loopReport = JSON.parse(labels.find((tc) => tc.name === 'a loop')!.meta).originWake.report;
 
 function agentRow(summary: string, meta: Record<string, unknown>, overrides: Partial<Item> = {}): Item {
   return makeItem({ id: 'msg-1', kind: 'user_text', role: 'user', summary, meta: JSON.stringify(meta), ...overrides });
@@ -352,7 +356,10 @@ describe('<AgentMessageRow> through TimelineLeaf', () => {
         pane,
         item: agentRow('Loop "nightly" fired. x\nnote: "\\u003cgo\\u003e"', {
           origin: 'agent-wake', sendId: 'agent-wake:1',
-          originWake: { kind: 'loop', label: 'nightly', facts: { form: 'report', bytes: 46, body: [{ start: 24, end: 46 }], headline: '<go>' } },
+          originWake: {
+            kind: 'loop', label: 'nightly', report: loopReport,
+            facts: { form: 'report', bytes: 46, body: [{ start: 24, end: 46 }], headline: '<go>' },
+          },
         }),
       },
     });
@@ -371,6 +378,24 @@ describe('<AgentMessageRow> through TimelineLeaf', () => {
     expect(codex.queryByRole('button', { name: /edit/i })).toBeNull();
   });
 
+  it('renders a report of a kind only Go defines from what Go serves, with the default icon', async () => {
+    const pane = await buildPane();
+    const served = servedRows.find((row) => row.name === 'a report of a kind only Go defines') as { text: string; meta: string };
+    const view = render(TimelineLeaf, { props: { pane, item: makeItem({ id: 'msg-1', kind: 'user_text', role: 'user', summary: served.text, meta: served.meta }) } });
+    const row = view.getByTestId('agent-message-row');
+    expect(row.dataset.agentMessageKind).toBe('test-only');
+    expect(view.getByTestId('agent-message-kind').textContent).toBe('Probe');
+    expect(view.getByTestId('agent-message-sender').textContent).toBe('probe');
+    expect(view.getByTestId('agent-message-first-line').textContent).toBe('"saw <err>"');
+    expect(view.getByTestId('agent-message-toggle-icon-slot').childElementCount).toBeGreaterThan(0);
+    const toggle = view.getByTestId('agent-message-toggle');
+    expect(toggle.getAttribute('aria-label')).toBe('Test-only report from probe');
+    await fireEvent.click(toggle);
+    await tick();
+    expect(view.getByTestId('agent-message-text').textContent).toBe('"saw <err>"\n"second line"');
+    expect(row.textContent).not.toContain('Probe reported.');
+  });
+
   it('keeps the person\'s own message, and a join holding it, in the user bubble', async () => {
     const pane = await buildPane();
     const own = render(TimelineLeaf, { props: { pane, item: agentRow('hello', { sendId: 's1' }) } });
@@ -381,7 +406,7 @@ describe('<AgentMessageRow> through TimelineLeaf', () => {
       props: {
         pane,
         item: agentRow('wake\n\n---\n\nmine', {
-          origin: 'agent-wake', originWake: { kind: 'loop', label: 'x' }, expandComposerCommands: true,
+          origin: 'agent-wake', originWake: { kind: 'loop', label: 'x', report: { ...loopReport, badge: 'Loop · x' } }, expandComposerCommands: true,
         }),
       },
     });

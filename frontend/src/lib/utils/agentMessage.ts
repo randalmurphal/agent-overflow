@@ -127,27 +127,24 @@ export interface AgentMessageRowPart extends AgentMessagePart {
   source: AgentMessageSource;
 }
 
+/**
+ * The kinds of message this file names: a thread's request, the answer
+ * coming back, a thread's plain message and a provider's own. A report's
+ * kind is Go's, named by its category (usermessage.ReportDescriptor).
+ */
 export type AgentMessageKind =
   | 'spawn'
   | 'request'
   | 'question'
   | WakeKind
-  | 'loop'
-  | 'watch'
-  | 'script'
-  | 'worker-question'
-  | 'worker-approval'
-  | 'job'
-  | 'workflow'
-  | 'opening'
-  | 'handoff'
   | 'message'
   | 'task'
   | 'final-answer';
 
 /** Who sent a message and what kind of message it is. */
 export interface AgentMessageSource {
-  kind: AgentMessageKind;
+  /** An AgentMessageKind, or a report's category. */
+  kind: string;
   /** Short gutter label, like a tool row's tool name. */
   kindLabel: string;
   /** The kind in words, for the expanded row and assistive technology. */
@@ -206,15 +203,6 @@ const KIND_LABELS: Record<AgentMessageKind, { label: string; title: string }> = 
   spawn: { label: 'Spawn', title: 'Spawn prompt' },
   request: { label: 'Send', title: 'Request' },
   question: { label: 'Ask', title: 'Question' },
-  loop: { label: 'Loop', title: 'Loop wake' },
-  watch: { label: 'Watch', title: 'Watch wake' },
-  script: { label: 'Shell', title: 'Message from a script' },
-  'worker-question': { label: 'Ask', title: "Worker's question" },
-  'worker-approval': { label: 'Allow', title: "Worker's approval request" },
-  job: { label: 'Job', title: 'Remote job finished' },
-  workflow: { label: 'Run', title: 'Workflow wake' },
-  opening: { label: 'Start', title: "Assistant's opening message" },
-  handoff: { label: 'Moved', title: 'New thread, same assistant' },
   message: { label: 'Msg', title: 'Message' },
   task: { label: 'Task', title: 'Task' },
   'final-answer': { label: 'Final', title: 'Final answer' },
@@ -318,45 +306,38 @@ function wakeFrom(kind: WakeKind, facts: MessageFacts): WakeFacts {
   };
 }
 
-const WAKE_ORIGIN_KINDS: Record<string, AgentMessageKind> = {
-  loop: 'loop',
-  watch: 'watch',
-  send: 'script',
-  question: 'worker-question',
-  approval: 'worker-approval',
-  completion: 'job',
-  workflow: 'workflow',
-  assistant: 'opening',
-  handoff: 'handoff',
+/**
+ * A report whose attribution this client cannot read: of a kind the
+ * computer serving it does not know, or whose attribution did not decode.
+ */
+const UNREADABLE_REPORT: AgentMessageSource = {
+  kind: 'script', kindLabel: 'Shell', kindTitle: 'Message from a script', sender: 'A wake', senderThread: null, senderRole: '',
 };
 
 /**
- * An `agent-wake` row: a report the app wrote, from its facts. One whose
- * facts do not describe its text, or whose attribution did not decode, is
- * shown whole.
+ * An `agent-wake` row: a report the app wrote, read from its facts and
+ * named as Go serves its kind (usermessage.ReportDescriptor). One whose
+ * facts do not describe its text, or whose attribution this client cannot
+ * read, is shown whole.
  */
 function fromWake(text: string, meta: UserMessageMeta): AgentMessage {
-  const decoded = userMessageOriginWake(meta);
-  const wake = decoded ?? { kind: 'send' as const, label: '', threadId: '', computer: '' };
-  const kind = WAKE_ORIGIN_KINDS[wake.kind];
-  let sender = wake.label || KIND_LABELS[kind].title;
-  if (wake.kind === 'send') sender = decoded ? 'A script' : 'A wake';
-  if (wake.kind === 'completion') sender = [wake.label, wake.computer].filter(Boolean).join(' on ') || 'A remote job';
-  // An assistant's opening and handoff blocks are the app's own prose
-  // (docs/specs/standing-agents.md, "Standing agent").
-  if (kind === 'opening' || kind === 'handoff') sender = 'Agent Overflow';
-  const senderThread = wake.threadId !== ''
-    ? { computerId: '', computerName: '', threadId: wake.threadId, title: wake.label, token: '', kind: '' }
+  const wake = userMessageOriginWake(meta);
+  if (!wake) return sourced(UNREADABLE_REPORT, firstLineOf(text), [{ body: text, footer: null, wake: null }]);
+  const { report } = wake;
+  const senderThread = report.opens
+    ? { computerId: '', computerName: '', threadId: report.opens, title: wake.label, token: '', kind: '' }
     : null;
-  const facts = decoded ? userMessageFacts(text, meta) : null;
+  const reporter: AgentMessageSource = {
+    kind: report.category, kindLabel: report.label, kindTitle: report.title, sender: report.sender, senderThread, senderRole: '',
+  };
+  const facts = userMessageFacts(text, meta);
   if (!facts || facts.form !== 'report') {
-    return sourced(source(kind, sender, senderThread), facts?.headline ?? firstLineOf(text), [{ body: text, footer: null, wake: null }]);
+    return sourced(reporter, facts?.headline ?? firstLineOf(text), [{ body: text, footer: null, wake: null }]);
   }
   let body = factsBody(text, facts);
-  // A report's data is quoted for the agent and decoded for the person;
-  // a job's output and the app's prose are shown as written.
-  if (kind !== 'job' && kind !== 'opening' && kind !== 'handoff') body = readableWakeText(body);
-  return sourced(source(kind, sender, senderThread), facts.headline ?? '', [{ body, footer: null, wake: null }]);
+  // Data quoted for the agent is decoded for the person.
+  if (report.body === 'data') body = readableWakeText(body);
+  return sourced(reporter, facts.headline ?? '', [{ body, footer: null, wake: null }]);
 }
 
 const CODEX_MESSAGE_KINDS: Record<string, AgentMessageKind> = {
