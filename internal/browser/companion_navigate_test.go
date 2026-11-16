@@ -378,6 +378,170 @@ func TestStopCompanionLoadSuppressesOnlyTheAbort(t *testing.T) {
 	}
 }
 
+// fakeLoads models the engine's loads: each navigation to /<name> is a load
+// that runs until release(name), or until a stop aborts the load running
+// at that moment. beforeStop runs at the start of the nth engine stop, so a
+// test can hold a stop inside the engine.
+type fakeLoads struct {
+	mu         sync.Mutex
+	current    chan struct{}
+	entered    map[string]chan struct{}
+	release    map[string]chan struct{}
+	stops      int
+	beforeStop func(n int)
+}
+
+func installFakeLoads(t *testing.T, p *managedPage, names ...string) *fakeLoads {
+	t.Helper()
+	l := &fakeLoads{entered: map[string]chan struct{}{}, release: map[string]chan struct{}{}, beforeStop: func(int) {}}
+	for _, name := range names {
+		l.entered[name] = make(chan struct{})
+		l.release[name] = make(chan struct{})
+	}
+	fake := p.driver.(*fakePage)
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	fake.navigateHook = func(ctx context.Context, rawURL string) error {
+		name := rawURL[strings.LastIndex(rawURL, "/")+1:]
+		abort := make(chan struct{})
+		l.mu.Lock()
+		l.current = abort
+		close(l.entered[name])
+		l.mu.Unlock()
+		defer func() {
+			l.mu.Lock()
+			if l.current == abort {
+				l.current = nil
+			}
+			l.mu.Unlock()
+		}()
+		select {
+		case <-abort:
+			return fmt.Errorf("%w: net::ERR_ABORTED", errNavigationAborted)
+		case <-l.release[name]:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	fake.stopHook = func() error {
+		l.mu.Lock()
+		l.stops++
+		n := l.stops
+		before := l.beforeStop
+		l.mu.Unlock()
+		before(n)
+		l.mu.Lock()
+		if l.current != nil {
+			close(l.current)
+			l.current = nil
+		}
+		l.mu.Unlock()
+		return nil
+	}
+	return l
+}
+
+// within reports whether ch closes within d.
+func within(ch <-chan struct{}, d time.Duration) bool {
+	select {
+	case <-ch:
+		return true
+	case <-time.After(d):
+		return false
+	}
+}
+
+// A stop is dispatched against the navigation registered when it started:
+// one that finishes meanwhile cannot hand its place to the next, so the
+// next navigation's load is not the one stopped.
+func TestStopCompanionLoadCannotStopANavigationThatReplacedItsTarget(t *testing.T) {
+	m, access, pageID, _ := newNavigateFixture(t, false)
+	p, _, err := m.lookupOwnedPage(access, pageID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loads := installFakeLoads(t, p, "a", "b")
+	inStop := make(chan struct{})
+	resume := make(chan struct{})
+	loads.beforeStop = func(int) {
+		close(inStop)
+		<-resume
+	}
+	a := navigateAsync(m, access, pageID, "https://example.test/a")
+	<-loads.entered["a"]
+	stopped := make(chan error, 1)
+	go func() { stopped <- m.StopCompanionLoad(context.Background(), access, pageID) }()
+	<-inStop
+	// A finishes on its own while the stop is in the engine, and B follows.
+	close(loads.release["a"])
+	b := navigateAsync(m, access, pageID, "https://example.test/b")
+	if within(loads.entered["b"], 200*time.Millisecond) {
+		t.Error("the next navigation started while a stop was in flight")
+	}
+	close(resume)
+	if err := <-stopped; err != nil {
+		t.Fatalf("stop = %v", err)
+	}
+	if err := awaitResult(t, a); err != nil {
+		t.Fatalf("the finished navigation answered %v", err)
+	}
+	<-loads.entered["b"]
+	close(loads.release["b"])
+	if err := awaitResult(t, b); err != nil {
+		t.Fatalf("the next navigation answered %v, want its own load to finish", err)
+	}
+}
+
+// Two stops pressed together: the second runs after the first, against the
+// navigation registered then, never against a load the first let start.
+func TestStopCompanionLoadTwiceNeverStopsTheNextNavigationUnmarked(t *testing.T) {
+	m, access, pageID, _ := newNavigateFixture(t, false)
+	p, _, err := m.lookupOwnedPage(access, pageID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loads := installFakeLoads(t, p, "a", "b")
+	inFirst := make(chan struct{})
+	resumeFirst := make(chan struct{})
+	loads.beforeStop = func(n int) {
+		if n == 1 {
+			close(inFirst)
+			<-resumeFirst
+			return
+		}
+		// The second stop reaches the engine; give the next navigation the
+		// chance to start under it, as an unguarded stop would.
+		within(loads.entered["b"], 200*time.Millisecond)
+	}
+	a := navigateAsync(m, access, pageID, "https://example.test/a")
+	<-loads.entered["a"]
+	first := make(chan error, 1)
+	go func() { first <- m.StopCompanionLoad(context.Background(), access, pageID) }()
+	<-inFirst
+	second := make(chan error, 1)
+	go func() { second <- m.StopCompanionLoad(context.Background(), access, pageID) }()
+	time.Sleep(50 * time.Millisecond)
+	b := navigateAsync(m, access, pageID, "https://example.test/b")
+	time.Sleep(50 * time.Millisecond)
+	close(resumeFirst)
+	for _, ch := range []chan error{first, second} {
+		if err := <-ch; err != nil {
+			t.Fatalf("stop = %v", err)
+		}
+	}
+	if err := awaitResult(t, a); err != nil {
+		t.Fatalf("the stopped navigation answered %v", err)
+	}
+	<-loads.entered["b"]
+	close(loads.release["b"])
+	// B either ran after both stops, or was the navigation the second stop
+	// stopped and is marked for it: no error either way.
+	if err := awaitResult(t, b); err != nil {
+		t.Fatalf("the next navigation answered %v", err)
+	}
+}
+
 func TestCDPNavigateErrorMarksOnlyTheAbort(t *testing.T) {
 	if err := cdpNavigateError(&chromedp.LoadError{ErrorText: "net::ERR_ABORTED"}); !errors.Is(err, errNavigationAborted) {
 		t.Fatalf("ERR_ABORTED = %v, want errNavigationAborted", err)
