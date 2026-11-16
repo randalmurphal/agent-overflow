@@ -202,6 +202,11 @@ WHERE saved.thread_id = owned.id AND saved.direction = 'incoming' AND saved.phas
 	if _, err := tx.Exec(dropFindTextTriggersSQL); err != nil {
 		return Identity{}, fmt.Errorf("store: restore: suspend find text triggers: %w", err)
 	}
+	// The copied tallies are the snapshot's; counting the copied items and
+	// ledger rows into them again would double them.
+	if _, err := tx.Exec(dropThreadTallyTriggersSQL); err != nil {
+		return Identity{}, fmt.Errorf("store: restore: suspend thread tally triggers: %w", err)
+	}
 	for _, table := range tables {
 		if restoreSkipsTable(table) {
 			continue
@@ -260,6 +265,9 @@ WHERE saved.thread_id = owned.id AND saved.direction = 'incoming' AND saved.phas
 	}
 	if _, err := tx.Exec(findTextTriggersSQL); err != nil {
 		return Identity{}, fmt.Errorf("store: restore: reinstall find text triggers: %w", err)
+	}
+	if _, err := tx.Exec(threadTallyTriggersSQL); err != nil {
+		return Identity{}, fmt.Errorf("store: restore: reinstall thread tally triggers: %w", err)
 	}
 
 	// The search index describes the history that was just replaced, and an

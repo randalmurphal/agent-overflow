@@ -1757,7 +1757,7 @@ CREATE INDEX idx_import_history_items_joined_send_ids
 		Fix:     clearStalePendingFlushMarks,
 	},
 	{Version: retireFeaturesMigrationVersion, Name: "retire_features", SQL: retireFeaturesV153SQL, Rebuild: true},
-	{Version: assistantsMigrationVersion, Name: "assistants", SQL: assistantsV154SQL, Fix: fillAssistantLedger},
+	{Version: assistantsMigrationVersion, Name: "assistants", SQL: assistantsV154SQL + threadTalliesV154SQL, Fix: fillAssistantLedger},
 	{Version: remoteCancelOwedMigrationVersion, Name: "remote_cancel_owed", SQL: remoteCancelOwedV155SQL},
 	{
 		Version: userFindTextMigrationVersion,

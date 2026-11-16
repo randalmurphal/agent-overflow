@@ -137,7 +137,7 @@ func (s *Store) QueryWorkItemUsage(workItemID string) (WorkItemUsage, error) {
 		 COALESCE(SUM(cache_read_input_tokens), 0),
 		 COALESCE(SUM(cache_creation_input_tokens), 0),
 		 COALESCE(SUM(reasoning_output_tokens), 0),
-		 COALESCE(SUM(input_tokens + output_tokens + cache_read_input_tokens + cache_creation_input_tokens), 0),
+		 COALESCE(SUM(`+usageTotalTokensSQLPlain+`), 0),
 		 COALESCE(SUM(CASE WHEN cost_source = 'wire' THEN cost_usd ELSE 0 END), 0)
 		 FROM usage_records WHERE work_item_id = ?`, workItemID,
 	).Scan(
@@ -179,7 +179,7 @@ func queryWorkItemTreeUsage(q sqlQueryer, rootItemID string) (WorkItemUsage, err
 		 COALESCE(SUM(cache_read_input_tokens), 0),
 		 COALESCE(SUM(cache_creation_input_tokens), 0),
 		 COALESCE(SUM(reasoning_output_tokens), 0),
-		 COALESCE(SUM(input_tokens + output_tokens + cache_read_input_tokens + cache_creation_input_tokens), 0),
+		 COALESCE(SUM(`+usageTotalTokensSQLPlain+`), 0),
 		 COALESCE(SUM(CASE WHEN cost_source = 'wire' THEN cost_usd ELSE 0 END), 0)
 		 FROM usage_records WHERE work_item_id IN (SELECT id FROM tree)`, rootItemID,
 	).Scan(
