@@ -3,7 +3,6 @@
 package webview2host
 
 import (
-	"sync/atomic"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -23,8 +22,8 @@ import (
 //     makes CreateCoreWebView2EnvironmentWithOptions fail E_INVALIDARG.
 //     (Both measured in the 2026-08-31 spike.)
 //
-// The object outlives every call by construction: it is retained by the
-// host for the process lifetime, so its refcount is bookkeeping only.
+// Its reference count is real (comref_windows.go): the loader holds the
+// object for as long as it reads it.
 
 var (
 	ole32              = windows.NewLazySystemDLL("ole32.dll")
@@ -51,7 +50,7 @@ type envOptionsVtbl struct {
 
 type envOptions struct {
 	vtbl *envOptionsVtbl
-	refs int32
+	ref  comRef
 	// args and targetVersion are kept as Go strings so the values stay
 	// alive; every handout is a fresh CoTaskMemAlloc copy.
 	args          string
@@ -94,19 +93,15 @@ var envOptionsVtblInstance = envOptionsVtbl{
 	iUnknownVtbl: iUnknownVtbl{
 		QueryInterface: newComProc(func(this *envOptions, riid *windows.GUID, ppv *uintptr) uintptr {
 			if *riid == iidEnvironmentOptions || *riid == iidIUnknown {
-				atomic.AddInt32(&this.refs, 1)
+				this.ref.addRef()
 				*ppv = uintptr(unsafe.Pointer(this))
 				return 0
 			}
 			*ppv = 0
 			return 0x80004002 // E_NOINTERFACE
 		}),
-		AddRef: newComProc(func(this *envOptions) uintptr {
-			return uintptr(atomic.AddInt32(&this.refs, 1))
-		}),
-		Release: newComProc(func(this *envOptions) uintptr {
-			return uintptr(atomic.AddInt32(&this.refs, -1))
-		}),
+		AddRef:  comAddRef,
+		Release: comRelease,
 	},
 	GetAdditionalBrowserArguments: newComProc(func(this *envOptions, out *uintptr) uintptr {
 		*out = coTaskMemString(this.args)
@@ -130,19 +125,17 @@ var envOptionsVtblInstance = envOptionsVtbl{
 	PutAllowSingleSignOnUsingOSPrimary: newComProc(func(_ *envOptions, _ int32) uintptr { return 0 }),
 }
 
-// newEnvOptions returns the options object and a COM pointer to it usable as
-// the environmentOptions argument. The uintptr is not a Go pointer the
-// collector tracks, and refs never frees the object, so it is rooted for the
-// process like every handler (keepForWebView2).
-func newEnvOptions(args, targetVersion string) (*envOptions, uintptr) {
+// newEnvOptions returns the options object with the creator's reference;
+// the creator releases it after passing the object to the loader.
+func newEnvOptions(args, targetVersion string) *envOptions {
 	if targetVersion == "" {
 		targetVersion = minTargetBrowserVersion
 	}
-	options := keepForWebView2(&envOptions{
+	options := &envOptions{
 		vtbl:          &envOptionsVtblInstance,
-		refs:          1,
 		args:          args,
 		targetVersion: targetVersion,
-	})
-	return options, uintptr(unsafe.Pointer(options))
+	}
+	options.ref.own()
+	return options
 }

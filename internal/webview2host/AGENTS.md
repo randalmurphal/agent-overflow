@@ -17,10 +17,11 @@ only after completion. Validate every path component against symlinks and
 Windows reparse points before deletion.
 
 `clear-data` may race an asynchronous environment create. Preserve the
-generation contract documented on `ensureEnvironment`, `environmentCompleted`,
-and `releaseEnvironment`: clearing advances `envGen`, wakes old waiters, and
-forces a late completion to release its own COM references instead of adopting
-an environment rooted in the deleted profile.
+generation contract in `paneEnvironment` (`environment.go`, cross-platform and
+unit-tested): clearing advances the generation, wakes old waiters, skips a
+start queued for the old generation, and forces a late completion to release
+its own COM references instead of adopting an environment rooted in the
+deleted profile.
 
 The launcher is the sole CDP dialer. Bind the relay to loopback, pair the target
 identifier with its page, and close the relay with the controller. Never expose
@@ -55,9 +56,11 @@ Maintain handwritten COM interfaces in ABI order with explicit HRESULT,
 reference-count, UTF-16 ownership, and callback-lifetime handling. Close the
 host before its parent HWND and release controllers, handlers, relay,
 environment, and COM references in dependency order. A Go object handed to
-WebView2 as a COM pointer counts no references, so its constructor roots it
-for the process (`keepForWebView2`); never make its lifetime depend on a page
-or a clear.
+WebView2 as a COM pointer counts its references and is rooted while any
+remain (`comref_windows.go`). Its creator releases the constructor's
+reference after the hand-off call, success or failure; a page detaches its
+callbacks when it goes, except controller-completed, whose completion closes
+a controller that outlived its page.
 
 Real WebView2 behavior is covered only by the `AO_NATIVE_BROWSER_SMOKE=1`
 Windows tests (`find_smoke_windows_test.go`, `process_smoke_windows_test.go`),
