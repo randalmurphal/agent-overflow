@@ -10,8 +10,10 @@ import (
 	"time"
 
 	"agent-overflow/internal/buildvariant/remotetest"
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/triage"
 )
 
 // workerToolCall is a top-level Bash call of threadID's running turn.
@@ -56,7 +58,10 @@ func TestAWorkerRowCountsWhatItsThreadDid(t *testing.T) {
 		Provider: "claude", Model: "m", InputTokens: 30, OutputTokens: 10}}); err != nil {
 		t.Fatalf("put usage progress: %v", err)
 	}
-	workerEvent(t, f.app, worker.ID, provider.ProviderEvent{Kind: provider.EventTextDelta, ItemID: "said", Content: "The deploy check passes."}, nil)
+	// Its message, settled after the calls, as the item frame announces it.
+	f.app.tapThreadAgentRows(eventchan.ProviderItemEvent, triage.ItemStreamEvent{Action: "upsert", ThreadID: worker.ID, Item: &store.Item{
+		ID: "said", ThreadID: worker.ID, Kind: "assistant_text", Role: "assistant", Status: "completed", Summary: "The deploy check passes.",
+	}})
 	line := lastToolLine(t, f.app, worker.ID)
 	if line == "" {
 		t.Fatal("the tool call has no summary; this test needs one")
@@ -70,8 +75,8 @@ func TestAWorkerRowCountsWhatItsThreadDid(t *testing.T) {
 	// be there by the time the row reads it.
 	f.app.threadRequestsWG.Wait()
 	row = f.awaitWorker(t, f.caller.ID, "facts-spawn", workerRunning)
-	if row.ToolCalls != 2 || row.Tokens != 18200+40 || row.Activity != line {
-		t.Fatalf("running row %+v; want 2 tool calls, 18240 tokens and the line %q", row, line)
+	if row.ToolCalls != 2 || row.Tokens != 3200+40 || row.Activity != line {
+		t.Fatalf("running row %+v; want 2 tool calls, 3240 tokens (the cache reads no spend) and the line %q", row, line)
 	}
 
 	workerEvent(t, f.app, worker.ID, provider.ProviderEvent{Kind: provider.EventTurnComplete, TurnComplete: &provider.WireTurnCompleteMeta{StopReason: "end_turn"}}, nil)
@@ -81,7 +86,7 @@ func TestAWorkerRowCountsWhatItsThreadDid(t *testing.T) {
 		t.Fatal(err)
 	}
 	rested, _ := agentRowByToken(past.Rows, "facts-spawn")
-	if rested.ToolCalls != 2 || rested.Tokens != 18240 || rested.Activity != "" {
+	if rested.ToolCalls != 2 || rested.Tokens != 3240 || rested.Activity != "" {
 		t.Fatalf("past row %+v; want the final counts and no line", rested)
 	}
 	if untouched, _ := agentRowByToken(past.Rows, "idle-spawn"); untouched.ThreadID != idle.ID || untouched.ToolCalls != 0 || untouched.Tokens != 0 {

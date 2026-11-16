@@ -14,8 +14,8 @@ import (
 //   - trg_items_tally_tool_calls counts each top-level `tool_call` row
 //     written into the thread, a row a revert or a retention sweep later
 //     removes included: the count is of what the thread did.
-//   - trg_usage_ledger_tally_tokens adds each settled turn's tokens
-//     (usageTotalTokensSQL) for a thread that exists; the ledger keeps rows
+//   - trg_usage_ledger_tally_tokens adds each settled turn's spend
+//     (usageSpendSQLPlain) for a thread that exists; the ledger keeps rows
 //     of deleted threads, which tally nothing.
 //
 // A turn still running has its tokens in usage_pending, which a read adds,
@@ -35,7 +35,7 @@ SELECT thread_id, SUM(tool_calls), SUM(tokens) FROM (
     SELECT thread_id, COUNT(*) AS tool_calls, 0 AS tokens FROM items
      WHERE kind = 'tool_call' AND parent_id = '' GROUP BY thread_id
     UNION ALL
-    SELECT thread_id, 0, SUM(` + usageTotalTokensSQLPlain + `) FROM usage_ledger
+    SELECT thread_id, 0, SUM(` + usageSpendSQLPlain + `) FROM usage_ledger
      WHERE thread_id IN (SELECT id FROM threads) GROUP BY thread_id
 ) GROUP BY thread_id;
 `
@@ -54,7 +54,7 @@ END;
 CREATE TRIGGER trg_usage_ledger_tally_tokens AFTER INSERT ON usage_ledger
 WHEN EXISTS (SELECT 1 FROM threads WHERE id = NEW.thread_id)
 BEGIN
-    INSERT INTO thread_tallies (thread_id, tokens) VALUES (NEW.thread_id, ` + usageTotalTokensSQLNew + `)
+    INSERT INTO thread_tallies (thread_id, tokens) VALUES (NEW.thread_id, ` + usageSpendSQLNew + `)
     ON CONFLICT (thread_id) DO UPDATE SET tokens = tokens + excluded.tokens;
 END;
 `
@@ -63,12 +63,14 @@ END;
 const dropThreadTallyTriggersSQL = `DROP TRIGGER IF EXISTS trg_items_tally_tool_calls;
 DROP TRIGGER IF EXISTS trg_usage_ledger_tally_tokens;`
 
-// usageTotalTokensSQLPlain is a usage row's total tokens, the one sum every
-// token total reads: what the thread read, cached or not, and wrote.
-const usageTotalTokensSQLPlain = `input_tokens + output_tokens + cache_read_input_tokens + cache_creation_input_tokens`
+// usageSpendSQLPlain is a usage row's token spend, as a subagent's row
+// counts its agent's (provider.SubagentProgressMeta.TotalTokens): fresh
+// input, cache writes and output. A cached prompt read again is no spend;
+// counting it would grow with each round rather than with the work.
+const usageSpendSQLPlain = `input_tokens + cache_creation_input_tokens + output_tokens`
 
-// usageTotalTokensSQLNew is usageTotalTokensSQLPlain over a trigger's NEW row.
-const usageTotalTokensSQLNew = `NEW.input_tokens + NEW.output_tokens + NEW.cache_read_input_tokens + NEW.cache_creation_input_tokens`
+// usageSpendSQLNew is usageSpendSQLPlain over a trigger's NEW row.
+const usageSpendSQLNew = `NEW.input_tokens + NEW.cache_creation_input_tokens + NEW.output_tokens`
 
 // ThreadTally is what one thread did over its life: its top-level tool
 // calls and the tokens its turns spent, the running turn's included.
@@ -89,7 +91,7 @@ func (s *Store) ThreadTallies(threadIDs []string) (map[string]ThreadTally, error
 		return nil, fmt.Errorf("store: read thread tallies: %w", err)
 	}
 	rows, err := s.reader().Query(`SELECT ids.value, COALESCE(t.tool_calls, 0),
-		COALESCE(t.tokens, 0) + COALESCE((SELECT SUM(`+usageTotalTokensSQLPlain+`) FROM usage_pending p WHERE p.thread_id = ids.value), 0)
+		COALESCE(t.tokens, 0) + COALESCE((SELECT SUM(`+usageSpendSQLPlain+`) FROM usage_pending p WHERE p.thread_id = ids.value), 0)
 		  FROM (SELECT DISTINCT value FROM json_each(?)) AS ids
 		  LEFT JOIN thread_tallies t ON t.thread_id = ids.value`, string(ids))
 	if err != nil {

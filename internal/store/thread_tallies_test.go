@@ -7,8 +7,9 @@ import (
 )
 
 // v154 counts what each thread did before it: its top-level tool calls and
-// the tokens of its settled turns. A nested tool call, another row kind,
-// and the ledger rows of a deleted thread count for nothing.
+// the tokens its settled turns spent, cache reads not among them. A nested
+// tool call, another row kind, and the ledger rows of a deleted thread
+// count for nothing.
 func TestThreadTalliesMigrationCountsEachThreadsPast(t *testing.T) {
 	db := migrateThrough(t, assistantsMigrationVersion-1)
 	mustExec(t, db, `INSERT INTO projects (id, path, name, created_at, updated_at) VALUES ('p', '/tmp/p', 'P', 1, 1)`)
@@ -30,8 +31,8 @@ func TestThreadTalliesMigrationCountsEachThreadsPast(t *testing.T) {
 
 	migrateFrom(t, db, assistantsMigrationVersion-1)
 
-	if got := readTallies(t, db); len(got) != 1 || got["busy"] != (ThreadTally{ToolCalls: 2, Tokens: 2 * 334}) {
-		t.Fatalf("tallies after the upgrade %+v; want busy's two top-level calls and 668 tokens, nothing else", got)
+	if got := readTallies(t, db); len(got) != 1 || got["busy"] != (ThreadTally{ToolCalls: 2, Tokens: 2 * 34}) {
+		t.Fatalf("tallies after the upgrade %+v; want busy's two top-level calls and 68 tokens, nothing else", got)
 	}
 }
 
@@ -67,17 +68,17 @@ func TestThreadTalliesFollowEveryWrite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 1 || got["worker"] != (ThreadTally{ToolCalls: 2, Tokens: 1160 + 10}) {
+	if len(got) != 1 || got["worker"] != (ThreadTally{ToolCalls: 2, Tokens: 160 + 10}) {
 		t.Fatalf("tallies %+v; want the worker's two top-level calls, its settled turn and its running one", got)
 	}
 	// The running turn settles: its pending tokens become the ledger's,
 	// counted once.
 	settled := pending
-	settled.CacheReadInputTokens = 40
+	settled.OutputTokens = 13
 	if err := s.AppendUsageAndReconcile("scope", []UsageLedgerRow{settled}); err != nil {
 		t.Fatalf("settle usage: %v", err)
 	}
-	if got, err := s.ThreadTallies([]string{"worker"}); err != nil || got["worker"] != (ThreadTally{ToolCalls: 2, Tokens: 1160 + 50}) {
+	if got, err := s.ThreadTallies([]string{"worker"}); err != nil || got["worker"] != (ThreadTally{ToolCalls: 2, Tokens: 160 + 20}) {
 		t.Fatalf("tallies once the turn settled %+v, %v; want its final tokens counted once", got, err)
 	}
 	if err := s.DeleteThread("worker"); err != nil {
