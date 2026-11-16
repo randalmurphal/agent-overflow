@@ -126,6 +126,7 @@ obsolete planning material. Update incoming links when moving or retiring a doc.
 | [`prompt-tool-overrides.md`](specs/prompt-tool-overrides.md) | Settings-level system-prompt overrides, per-provider tool toggles, and the app guide appended to interactive sessions. |
 | [`workflows-system-ui/UI-SPEC.md`](specs/workflows-system-ui/UI-SPEC.md) | The binding workflows UI spec (rev 2), now the `workflows` tool pane. Cited as `UI-SPEC §N` across the frontend. |
 | [`pull-requests.md`](specs/pull-requests.md) | Merge readiness, approve and merge in the review pane; the Pull requests page with attention states, "Open with agent" and pipelines; tools as pane kinds. Phase 1 in progress since 2026-10-20. |
+| [`issues.md`](specs/issues.md) | The Issues tool pane for Jira Cloud and Linear: rulings of 2026-11-15, the facts that bind the design, app constraints, the design of each screen and open questions, with a clickable mockup beside it (`issues-mockup.html`). Not implemented. |
 | [`cursor-provider.md`](specs/cursor-provider.md) | Cursor as a third provider over ACP, signed off 2026-08-31. Living gap table + spike backlog; not implemented yet. |
 | [`account-auto-switch.md`](specs/account-auto-switch.md) | Switching a provider's selected account within a per-account pool when usage limits approach or refuse a turn, and continuing threads a usage limit stopped. Implemented 2026-11-13. |
 | [`plan-mode.md`](specs/plan-mode.md) | Plan mode as AO's own intent-to-merge-ready protocol: provider plan modes removed, per-thread plan files, the plan pane with anchored comments, project contract and personal settings, `PostCompact` re-injection. Signed off 2026-09-27; not implemented. |
@@ -146,6 +147,7 @@ External repos and tools we track, and how to use them. Under
 | [`claude-api-error-upstream-report.md`](references/claude-api-error-upstream-report.md) | Draft upstream bug report for a Claude Code API-error shape, still unfiled. |
 | [`spike-policy.md`](references/spike-policy.md) | When to write an isolated spike test outside the project. |
 | [`forge-api-measurements.md`](references/forge-api-measurements.md) | Measured GitHub and GitLab API behavior behind the forge transport: process cost, token handoff, rate-limit headers, ETag and Range. |
+| [`tracker-api-measurements.md`](references/tracker-api-measurements.md) | Jira Cloud, Linear and Tempo API behavior behind the Issues spec, the planning poker add-on's calls as measured, and the SQLite and CSP facts that shape dashboards. |
 | [`voice-dictation.md`](references/voice-dictation.md) | Dictation through ChatGPT's transcribe endpoint, read-aloud in the device's voice or an OpenAI voice, and the other options researched. |
 | [`ao-harness.md`](references/ao-harness.md) | Generated command and output reference for the `ao-harness` shell driver. |
 | [`ao-cli.md`](references/ao-cli.md) | The `ao` scoped-token CLI: command tree and `--json` result shapes. |
