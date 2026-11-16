@@ -30,8 +30,8 @@ func SetSlowStepThreshold(threshold time.Duration) (restore func()) {
 //
 //	<component>: slow step=<step> duration=<d> outcome=<outcome>
 //
-// step is a constant name and outcome comes from ErrorOutcome or
-// StatusOutcome. The line never carries an endpoint, a credential, a link
+// step is a constant name and outcome comes from ErrorOutcome,
+// StatusOutcome or HTTPOutcome. The line never carries an endpoint, a credential, a link
 // token, a verification number or a label; callers pass nothing else.
 func LogSlowStep(component, step string, started time.Time, outcome string) {
 	elapsed := time.Since(started)
@@ -71,4 +71,15 @@ func StatusOutcome(status int) string {
 	default:
 		return "ok"
 	}
+}
+
+// HTTPOutcome is how an HTTP exchange that returned status and err ended:
+// err's classification when the exchange failed, otherwise the status's. A
+// step that returns a fully read 4xx or 5xx with a nil err logs refused or
+// error, not ok.
+func HTTPOutcome(status int, err error) string {
+	if err != nil {
+		return ErrorOutcome(err)
+	}
+	return StatusOutcome(status)
 }
