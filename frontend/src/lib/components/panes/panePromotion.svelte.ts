@@ -22,8 +22,10 @@
 // (the placeholder, or before it renders the section's rect in flow). When
 // either moves mid-transition (a window resize), the clip retargets
 // without a jump: the difference between the clip last shown and the new
-// path is carried as a correction that shrinks to nothing as the
-// transition ends, so it lands exactly on the new slot or box.
+// path at that clip's progress is carried as a correction that shrinks to
+// nothing as the transition ends, so it lands exactly on the new slot or
+// box. Rebasing at the last shown progress keeps the step this frame
+// advanced, so a resize on every frame still converges.
 //
 // Transitions settle deterministically: a demote during a promote, or a
 // promote of the same pane during its demote, reverses from the current
@@ -118,6 +120,8 @@ export function createPanePromotion(options: PanePromotionOptions) {
   let lastClip: AirspaceRect | null = null;
   let correction: AirspaceRect = NO_OFFSET;
   let correctionBase = 0;
+  // The progress the last shown clip was drawn at.
+  let lastProgress = 0;
   let frame = 0;
   let lastTs: number | null = null;
 
@@ -129,8 +133,8 @@ export function createPanePromotion(options: PanePromotionOptions) {
 
   // Eased distance left before the current direction lands: the correction
   // shrinks with it, so it is gone as smoothly as the path arrives.
-  function remaining(): number {
-    const e = easeInOutCubic(progress);
+  function remaining(at = progress): number {
+    const e = easeInOutCubic(at);
     if (direction === 1) return 1 - e;
     if (direction === -1) return e;
     return 0;
@@ -177,25 +181,30 @@ export function createPanePromotion(options: PanePromotionOptions) {
     const slotEl = options.slotOf(id as string);
     const measured = slotEl ? plainRect(slotEl.getBoundingClientRect()) : startSlot;
     const slot = within(measured ?? box, box);
-    const e = easeInOutCubic(progress);
-    const path: AirspaceRect = {
-      left: slot.left + (box.left - slot.left) * e,
-      top: slot.top + (box.top - slot.top) * e,
-      right: slot.right + (box.right - slot.right) * e,
-      bottom: slot.bottom + (box.bottom - slot.bottom) * e,
+    const pathAt = (at: number): AirspaceRect => {
+      const e = easeInOutCubic(at);
+      return {
+        left: slot.left + (box.left - slot.left) * e,
+        top: slot.top + (box.top - slot.top) * e,
+        right: slot.right + (box.right - slot.right) * e,
+        bottom: slot.bottom + (box.bottom - slot.bottom) * e,
+      };
     };
+    const path = pathAt(progress);
     const key = `${rectKey(box)}|${rectKey(slot)}`;
     if (key !== geometryKey) {
-      // Retarget from the clip on screen, as far as it fits the new box.
+      // Retarget from the clip on screen, as far as it fits the new box,
+      // against the new path at the progress that clip was drawn at.
       if (lastClip !== null) {
         const shown = within(lastClip, box);
+        const base = pathAt(lastProgress);
         correction = {
-          left: shown.left - path.left,
-          top: shown.top - path.top,
-          right: shown.right - path.right,
-          bottom: shown.bottom - path.bottom,
+          left: shown.left - base.left,
+          top: shown.top - base.top,
+          right: shown.right - base.right,
+          bottom: shown.bottom - base.bottom,
         };
-        correctionBase = remaining();
+        correctionBase = remaining(lastProgress);
       }
       geometryKey = key;
     }
@@ -207,6 +216,7 @@ export function createPanePromotion(options: PanePromotionOptions) {
       bottom: path.bottom + correction.bottom * w,
     }, box);
     lastClip = clip;
+    lastProgress = progress;
     clipPath = `inset(${clip.top - box.top}px ${box.right - clip.right}px ${box.bottom - clip.bottom}px ${clip.left - box.left}px)`;
     setPromotedLayer(section, clip);
   }
