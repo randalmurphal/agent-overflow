@@ -46,6 +46,7 @@ require (
 	github.com/tree-sitter/tree-sitter-python v0.25.0
 	github.com/tree-sitter/tree-sitter-rust v0.24.2
 	github.com/tree-sitter/tree-sitter-typescript v0.23.2
+	github.com/vektah/gqlparser/v2 v2.5.64
 	github.com/wailsapp/wails/v3 v3.0.0-beta.4
 	github.com/yuin/goldmark v1.7.16
 	go.opentelemetry.io/otel v1.47.0
@@ -88,6 +89,7 @@ require (
 	github.com/Microsoft/go-winio v0.6.2 // indirect
 	github.com/ProtonMail/go-crypto v1.4.1 // indirect
 	github.com/adrg/xdg v0.5.3 // indirect
+	github.com/agnivade/levenshtein v1.2.2 // indirect
 	github.com/akutz/memconn v0.1.0 // indirect
 	github.com/alecthomas/chroma/v2 v2.27.0 // indirect
 	github.com/alexbrainman/sspi v0.0.0-20250919150558-7d374ff0d59e // indirect

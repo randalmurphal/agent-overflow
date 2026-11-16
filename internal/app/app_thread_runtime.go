@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -265,22 +266,47 @@ func (a *App) restartWorkspaceSession(threadID string) error {
 }
 
 func (a *App) deleteThreadTreeLocked(threadID string) error {
-	return a.threadApplication().DeleteTree(threadID, false, a.threadDeletePorts())
+	return a.threadApplication().DeleteTree(threadID, false, a.threadDeletePorts(nil))
 }
 
 func (a *App) deleteThreadTreeWithSubtreeLocksHeld(threadID string) error {
-	return a.threadApplication().DeleteTree(threadID, true, a.threadDeletePorts())
+	return a.threadApplication().DeleteTree(threadID, true, a.threadDeletePorts(nil))
 }
 
-func (a *App) threadDeletePorts() threadapp.DeletePorts {
+// threadDeletePorts wires a delete to the app. Work the delete could not
+// stop (an ask, or a command on another computer whose cancel was not
+// delivered) does not hold the delete: it goes into unstopped when the
+// caller reports it, and to the log otherwise.
+func (a *App) threadDeletePorts(unstopped *threadCleanupError) threadapp.DeletePorts {
+	// DeleteTree stops each thread's remote work twice. An ask the first
+	// pass could not stop is still open, so the second pass tries it again
+	// and its answer is the one that stands. A command whose cancel was not
+	// delivered is dismissed either way and never tried again, so every
+	// pass's undelivered cancels count.
+	var askThreads []string
+	asksByThread := map[string]error{}
 	return threadapp.DeletePorts{
 		StopRemoteWork: func(threadID string) error {
-			// Runs twice for a thread with a subtree; both halves are
-			// conditional updates, so the second pass finds nothing to do.
-			if err := a.stopThreadRequestsForDeletedThread(context.Background(), threadID); err != nil {
+			asks, err := a.stopThreadRequestsForDeletedThread(context.Background(), threadID)
+			if err != nil {
 				return err
 			}
-			return a.cancelThreadRemoteCommands(context.Background(), threadID)
+			commands, err := a.cancelThreadRemoteCommands(context.Background(), threadID)
+			if asks != nil || commands != nil {
+				log.Printf("app: delete thread %s: %v", threadID, errors.Join(asks, commands))
+			}
+			if unstopped != nil {
+				if _, seen := asksByThread[threadID]; !seen {
+					askThreads = append(askThreads, threadID)
+				}
+				asksByThread[threadID] = asks
+				unstopped.asks = nil
+				for _, id := range askThreads {
+					unstopped.asks = errors.Join(unstopped.asks, asksByThread[id])
+				}
+				unstopped.commands = errors.Join(unstopped.commands, commands)
+			}
+			return err
 		},
 		CleanProviderBackground: a.cleanThreadProviderBackground,
 		StopSession:             a.stopSession,

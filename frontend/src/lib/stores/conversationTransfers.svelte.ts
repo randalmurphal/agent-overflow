@@ -164,13 +164,20 @@ export async function cancelConversationTransfer(backend: BackendKey, row: Conve
   await refreshComputerTransfers(backend);
 }
 
+// The computer's list is bounded the same way (ListRecentThreadTransfers).
+const RECENT_TRANSFERS = 100;
+function recent(rows: readonly ConversationTransfer[]): ConversationTransfer[] {
+  return [...rows].sort((a, b) => Number(terminal(a)) - Number(terminal(b)) || b.updatedAt - a.updatedAt).slice(0, RECENT_TRANSFERS);
+}
+
 function receiveTransfer(backend: BackendKey, row: ConversationTransfer): void {
   const current = computers.get(backend);
   const previous = current.rows.find((value) => value.id === row.id);
   if (previous && previous.updatedAt > row.updatedAt) return;
-  const rows = [row, ...current.rows.filter((value) => value.id !== row.id)]
-    .sort((a, b) => Number(terminal(a)) - Number(terminal(b)) || b.updatedAt - a.updatedAt).slice(0, 100);
-  computers.set(backend, { rows, error: '' });
+  // A full list may have evicted this operation and with it the newer
+  // status the frame would have to lose to, so the computer ranks it.
+  if (!previous && current.rows.length >= RECENT_TRANSFERS) void refreshComputerTransfers(backend);
+  else computers.set(backend, { rows: recent([row, ...current.rows.filter((value) => value.id !== row.id)]), error: '' });
   if (row.phase === 'complete' && previous?.phase !== 'complete') refreshSidebarProjections();
 }
 export function terminal(row: ConversationTransfer): boolean { return row.phase === 'complete' || row.phase === 'canceled'; }
@@ -190,7 +197,7 @@ export async function refreshComputerTransfers(backend: BackendKey): Promise<voi
     await transferFrames.claim(backend, () => withBackendTarget(backend, () => GetThreadTransfers()), (rows) => {
       if (revisions.get(backend) !== revision || getBackendIdentity(backend).backendId !== identity) return;
       const before = new Map(computers.get(backend).rows.map((row) => [row.id, row]));
-      computers.set(backend, { rows: [...rows].sort((a, b) => Number(terminal(a)) - Number(terminal(b)) || b.updatedAt - a.updatedAt).slice(0, 100), error: '' });
+      computers.set(backend, { rows: recent(rows), error: '' });
       if (rows.some((row) => row.phase === 'complete' && before.get(row.id)?.phase !== 'complete')) refreshSidebarProjections();
     });
   } catch (error) {

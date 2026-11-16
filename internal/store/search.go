@@ -160,6 +160,10 @@ type ThreadFindAnswer struct {
 // limit caps the number of rows; zero or negative means unbounded. The
 // read runs on ctx, so a cancelled call stops it, and it takes a history
 // read slot.
+//
+// A query is one line, as the find bar's input holds it; one with a line
+// break is refused, since the candidate text holds a match only within a
+// line (find_candidate.go).
 func (s *Store) SearchThreadItems(ctx context.Context, threadID, query string, selection TimelineSelection, limit int, since *ThreadFindSince) (ThreadFindAnswer, error) {
 	if err := s.CheckForkReady(threadID); err != nil {
 		return ThreadFindAnswer{}, err
@@ -167,6 +171,9 @@ func (s *Store) SearchThreadItems(ctx context.Context, threadID, query string, s
 	trimmed := strings.TrimSpace(query)
 	if trimmed == "" {
 		return ThreadFindAnswer{Items: []Item{}, Changed: []string{}}, nil
+	}
+	if strings.ContainsAny(trimmed, "\r\n") {
+		return ThreadFindAnswer{}, errors.New("store: search thread items: the query spans lines")
 	}
 	needle := findNeedle(trimmed)
 	limit = max(limit, 0)

@@ -1758,6 +1758,7 @@ CREATE INDEX idx_import_history_items_joined_send_ids
 		SQL:     stalePendingFlushV152SQL,
 		Fix:     clearStalePendingFlushMarks,
 	},
+	{Version: findTextShellCommandsMigrationVersion, Name: "find_text_shell_commands", SQL: findTextShellCommandsV153SQL},
 }
 
 // MigrationStep describes one pending migration as it begins, or a

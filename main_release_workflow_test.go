@@ -257,3 +257,68 @@ func TestReleaseTagOnlyPromotesSavedCandidate(t *testing.T) {
 		t.Error("Android release must explicitly provision its SDK")
 	}
 }
+
+// A Linux artifact's glibc requirement comes from the machine that builds
+// it. validate_elf holds every artifact to GLIBC_FLOOR, and the job that
+// builds them runs on a named runner image, so a moved "latest" label cannot
+// change which distributions a release starts on.
+func TestLinuxReleaseArtifactsHoldTheGlibcFloor(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the release scripts run on Unix")
+	}
+	artifact := filepath.Join(t.TempDir(), "agent-overflow")
+	if err := os.WriteFile(artifact, append([]byte("\x7fELF"), make([]byte, 2<<20)...), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, symbols, wantErr string
+	}{
+		{"at the floor", "(GLIBC_2.2.5) malloc\n(GLIBC_2.34) pthread_create\n", ""},
+		{"an older two-digit minor", "(GLIBC_2.4) __stack_chk_fail\n(GLIBC_2.17) clock_gettime\n", ""},
+		{"above the floor", "(GLIBC_2.34) pthread_create\n(GLIBC_2.38) __isoc23_strtol\n", "requires glibc 2.38"},
+		{"unreadable", "", "could not read the glibc versions"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tools := t.TempDir()
+			stub := "#!/bin/sh\nprintf '%s' '" + tc.symbols + "'\n"
+			if err := os.WriteFile(filepath.Join(tools, "objdump"), []byte(stub), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			cmd := exec.Command("sh", "-c", `. scripts/release-common.sh; validate_elf "$1"`, "sh", artifact)
+			cmd.Env = append(os.Environ(), "PATH="+tools+string(os.PathListSeparator)+os.Getenv("PATH"))
+			out, err := cmd.CombinedOutput()
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("validate_elf refused it: %v\n%s", err, out)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(string(out), tc.wantErr) {
+				t.Fatalf("validate_elf err = %v, output %q, want %q", err, out, tc.wantErr)
+			}
+			if tc.name == "above the floor" && !strings.Contains(string(out), "__isoc23_strtol") {
+				t.Errorf("the refusal does not name the symbol: %s", out)
+			}
+		})
+	}
+
+	body, err := os.ReadFile(".github/workflows/release-build.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var workflow struct {
+		Jobs map[string]struct {
+			RunsOn string `yaml:"runs-on"`
+		}
+	}
+	if err := yaml.Unmarshal(body, &workflow); err != nil {
+		t.Fatal(err)
+	}
+	job, ok := workflow.Jobs["linux-wsl"]
+	if !ok {
+		t.Fatal("the Linux and WSL build job is missing")
+	}
+	if job.RunsOn == "" || strings.HasSuffix(job.RunsOn, "-latest") {
+		t.Errorf("the Linux and WSL build job runs on %q; it must name a runner image version", job.RunsOn)
+	}
+}

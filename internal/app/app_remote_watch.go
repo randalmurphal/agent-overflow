@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"slices"
 	"strconv"
@@ -504,14 +505,15 @@ func (a *App) remoteCommandStatus(ctx context.Context, computerID, requestID str
 // cancelThreadRemoteCommands stops every remote command a conversation still
 // owns and drops their pending notifications. Deleting, archiving or moving
 // the conversation calls it: nothing remains here to receive the result.
-// Parked tool calls return at once. Reaching the destination is best effort;
-// a job whose cancel could not be delivered is logged and still ends there
-// once this computer stops polling it, so the caller's operation proceeds.
-// Only store failures are returned.
-func (a *App) cancelThreadRemoteCommands(ctx context.Context, threadID string) error {
+// Parked tool calls return at once. It returns, apart, the cancels it could
+// not deliver (undelivered: those commands keep running on their computer
+// until its owner grace ends them, remotejobs.DefaultOwnerGrace) and the
+// store failures that left commands untracked (err). Each caller decides
+// whether its operation proceeds past either.
+func (a *App) cancelThreadRemoteCommands(ctx context.Context, threadID string) (undelivered, err error) {
 	rows, err := a.disarmRemoteCommands(threadID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	return a.cancelRemoteCommands(ctx, threadID, rows)
 }
@@ -527,27 +529,31 @@ func (a *App) disarmRemoteCommands(threadID string) ([]store.RemoteWatch, error)
 	return slices.DeleteFunc(rows, func(w store.RemoteWatch) bool { return w.Notification != "pending" }), nil
 }
 
-// cancelRemoteCommands cancels and dismisses exactly the commands named.
-func (a *App) cancelRemoteCommands(ctx context.Context, threadID string, rows []store.RemoteWatch) error {
+// cancelRemoteCommands cancels and dismisses exactly the commands named. A
+// cancel that does not reach the destination still dismisses the watch, and
+// one failure does not stop the rest; see cancelThreadRemoteCommands for
+// the two errors.
+func (a *App) cancelRemoteCommands(ctx context.Context, threadID string, rows []store.RemoteWatch) (undelivered, err error) {
+	var notDelivered, failed []error
 	for _, w := range rows {
 		unfinished := w.Receipt.ID == "" || w.Receipt.State == "running"
 		if unfinished && a.backends != nil {
 			call, cancel := context.WithTimeout(ctx, 20*time.Second)
 			var receipt RemoteCommand
-			err := a.backends.CallAgentPeer(call, w.ComputerID, "RemoteCommandCancel", &receipt, w.RequestID)
+			callErr := a.backends.CallAgentPeer(call, w.ComputerID, "RemoteCommandCancel", &receipt, w.RequestID)
 			cancel()
-			if err != nil {
-				log.Printf("remote command %s on %s: cancel for conversation %s not delivered; the destination stops it after the owner grace: %v", w.RequestID, w.ComputerID, threadID, err)
+			if callErr != nil {
+				notDelivered = append(notDelivered, fmt.Errorf("remote command %s on %s: cancel not delivered: %w", w.RequestID, w.ComputerID, callErr))
 			}
 		}
-		if err := a.store.DismissRemoteWatch(w.ComputerID, w.RequestID); err != nil {
-			return err
+		if dismissErr := a.store.DismissRemoteWatch(w.ComputerID, w.RequestID); dismissErr != nil {
+			failed = append(failed, fmt.Errorf("remote command %s on %s: dismiss: %w", w.RequestID, w.ComputerID, dismissErr))
 		}
 	}
 	if len(rows) > 0 {
 		a.emitBackgroundChanged(threadID)
 	}
-	return nil
+	return errors.Join(notDelivered...), errors.Join(failed...)
 }
 
 // remoteTrayToolName is the tray projection's tool name: the remote_run call

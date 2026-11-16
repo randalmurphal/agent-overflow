@@ -6,9 +6,11 @@ each owner's context and is covered by the owners.
 
 ## The orphan reaper
 
-`internal/orphanreaper` runs a sidecar, `<binary> __reap`, on macOS and on
-Linux, the WSL backend included. It leads its own process group, so a signal
-to the backend's group does not end it. It holds the read end of a pipe whose
+`internal/orphanreaper` runs a sidecar, a POSIX `/bin/sh` script
+(`/bin/sh -s agent-overflow-reaper 2`), on macOS and on Linux, the WSL backend
+included. A shell rather than the app's own binary keeps its private memory
+to a few hundred KB. It leads its own process group, so a signal to the
+backend's group does not end it. It holds the read end of a pipe whose
 only writer is the backend; EOF means the backend is gone, whatever reparented
 its children (init, launchd, or a subreaper such as `systemd --user`). It
 then sends SIGTERM to every watched group and SIGKILL two seconds later.
@@ -28,17 +30,14 @@ Signalling only a group's leader is not enough: Linux's parent-death signal
 reaches the leader, and a shell leader exits while what it started (`npm run
 dev` under `cd web && ...`) keeps running.
 
-After the backend dies the sidecar execs nothing and opens nothing: it
-signals the groups, sleeps, logs to the stderr it inherited and exits
-(`orphanreaper/reaper.go`). Its code is still read from its executable on
-first use, because the kernel loads an executable's pages when they first
-run, and the kill path first runs after the backend died. No AppImage is
-released: Linux releases are plain binaries. Run from an AppImage someone
-builds, that executable is in the squashfs mount the AppImage runtime
-unmounts when the backend exits (`internal/appimage`), so the sidecar can
-fail to load its kill path and leave the groups to the next launch's sweep.
-The update helper avoids the same mount by running the `.AppImage` file
-itself (`desktopInstall` in `main_update_apply.go`); the sidecar does not.
+After the backend dies the sidecar runs from the system shell, not from the
+backend's executable, so an AppImage mount the runtime unmounts at exit
+(`internal/appimage`) cannot take its kill path away. It signals the groups,
+forks `sleep` for the grace, logs to the stderr it inherited and exits
+(`orphanreaper/reaper.go`). The SIGKILL is sent from the script's EXIT trap:
+a shell that cannot fork `sleep` exits there, and SIGKILL then follows
+SIGTERM without the grace, or after the shell's own fork retries (bash
+retries for about fifteen seconds).
 
 ## Which spawners end with the backend
 

@@ -54,7 +54,7 @@ func TestIsolatedRequestsReachTheFakeBase(t *testing.T) {
 	}
 
 	var data struct{ Repository *struct{} }
-	_, err := s.GitHub("github.com").GraphQL(t.Context(), "Repo", "query Repo($owner: String!) { repository(owner: $owner) { id } }", map[string]any{"owner": "o"}, &data)
+	_, err := s.GitHub("github.com").GraphQL(t.Context(), testRepoDocument, map[string]any{"owner": "o"}, &data)
 	var gql *GraphQLError
 	if !errors.As(err, &gql) || gql.Problems[0].Type != "NOT_FOUND" {
 		t.Fatalf("GraphQL err = %v", err)
@@ -73,7 +73,7 @@ func TestIsolatedRequestsReachTheFakeBase(t *testing.T) {
 	}
 
 	var project struct{ Project *struct{} }
-	if _, err := s.GitLab("gitlab.example:8443").GraphQL(t.Context(), "Project", "query Project($fullPath: ID!) { project(fullPath: $fullPath) { id } }", map[string]any{"fullPath": "g/r"}, &project); err != nil {
+	if _, err := s.GitLab("gitlab.example:8443").GraphQL(t.Context(), testProjectDocument, map[string]any{"fullPath": "g/r"}, &project); err != nil {
 		t.Fatalf("GitLab GraphQL err = %v", err)
 	}
 	req, _ = got.last()
@@ -117,6 +117,46 @@ func TestRequestRefusals(t *testing.T) {
 	}
 	if _, err := s.GitHub("bad host/").Do(t.Context(), Request{Path: "user"}); err == nil {
 		t.Error("an invalid host was accepted")
+	}
+	if hits.Load() != 0 {
+		t.Fatalf("a refused request reached the server %d times", hits.Load())
+	}
+}
+
+// GitHub's REST base is the GraphQL endpoint's parent, so a REST path of
+// "graphql" would post a document outside GraphQL; it is refused.
+func TestRESTRefusesTheGraphQLEndpoint(t *testing.T) {
+	t.Parallel()
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { hits.Add(1) }))
+	defer srv.Close()
+	s, _ := liveService(t, &testSource{tokens: []string{testSecret}}, srv)
+	base, err := url.Parse(srv.URL + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.resolveBase = func(string, string, SourceInfo) (*url.URL, *url.URL, error) {
+		return base, base.JoinPath("graphql"), nil
+	}
+	for _, path := range []string{"graphql", "graphql/", "graphql?x=1"} {
+		if _, err := s.GitHub("github.com").JSON(t.Context(), Request{Method: http.MethodPost, Path: path, Body: map[string]string{"query": "query Q { viewer { login } }"}}, nil); err == nil || !strings.Contains(err.Error(), "GraphQL endpoint") {
+			t.Errorf("REST %s: %v", path, err)
+		}
+	}
+	// An attachment request may name an absolute https URL, the endpoint's
+	// own included.
+	endpoint, err := url.Parse("https://api.github.example/graphql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.resolveBase = func(string, string, SourceInfo) (*url.URL, *url.URL, error) {
+		return endpoint.JoinPath(".."), endpoint, nil
+	}
+	for _, path := range []string{"https://api.github.example/graphql", "https://API.github.example/graphql/"} {
+		_, err := s.GitHub("github.example").JSON(t.Context(), Request{Method: http.MethodPost, Path: path, Attachment: true, Body: map[string]string{"query": "query Q { viewer { login } }"}}, nil)
+		if err == nil || !strings.Contains(err.Error(), "is the GraphQL endpoint") {
+			t.Errorf("attachment %s: %v", path, err)
+		}
 	}
 	if hits.Load() != 0 {
 		t.Fatalf("a refused request reached the server %d times", hits.Load())

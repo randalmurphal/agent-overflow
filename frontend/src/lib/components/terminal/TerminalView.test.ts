@@ -56,7 +56,6 @@ vi.mock('../../stores/bindings', async (importOriginal) => ({
   RefreshTerminal: vi.fn(async () => {}),
   WriteTerminal: vi.fn(async () => {}),
   GetTerminalReplay: vi.fn(async () => ''),
-  RestartTerminal: vi.fn(),
   TerminalOpenOptions: class TerminalOpenOptions {
     cwd?: string;
     constructor(src: Partial<{ cwd: string }> = {}) {
@@ -110,7 +109,7 @@ function makePane(opts: MakePaneOpts = {}) {
           title: 'My Terminal',
           workspacePath: '/home/me',
           mode: 'terminal',
-          ...(opts.thread ?? {}),
+          ...opts.thread,
         };
   return {
     paneId: opts.paneId ?? 'pane-term',

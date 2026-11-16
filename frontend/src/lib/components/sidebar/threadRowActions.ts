@@ -38,6 +38,7 @@ import { expandProject } from '../../stores/sidebar.svelte';
 import { addErrorToast, addToast } from '../../stores/toast.svelte';
 import { copyToClipboard } from '../../utils/clipboard';
 import { userFacingError } from '../../utils/userFacingError';
+import { threadCleanupFailure } from '../../transport/threadCleanupFailure';
 import type { Thread } from '../../types/models';
 import { autoPinNewThread } from '../../stores/threadAutoPin';
 import { openConversationTransfer } from '../../stores/conversationTransfers.svelte';
@@ -100,9 +101,13 @@ export async function archiveThreadAction(ctx: ThreadActionCtx): Promise<void> {
     // process is released for every client rather than only the one
     // that remembers to ask first — and, unlike a client-side stop, it
     // re-checks that the thread was not re-engaged in the gap.
-    await ArchiveThread(ctx.thread.id);
+    const cleanupFailure = await threadCleanupFailure(ArchiveThread(ctx.thread.id));
     removeThread(ctx.thread.id);
     closePanesShowingThread(ctx.thread.id);
+    // The thread is archived; only the cleanup after it failed. A toast,
+    // not ctx.reportError: the pane that would show the error may be the
+    // one just closed, and a bulk caller would count it as not archived.
+    if (cleanupFailure) addErrorToast(userFacingError(cleanupFailure), cleanupFailure);
   } catch (err) {
     console.error('Failed to archive thread:', err);
     ctx.reportError(userFacingError(err), err);
@@ -138,9 +143,12 @@ export async function deleteThreadAction(ctx: ThreadActionCtx): Promise<void> {
       console.error('Failed to stop session before delete:', err);
     });
     if (worktree) await removeWorktreeAt(worktree);
-    await DeleteThread(ctx.thread.id);
+    const cleanupFailure = await threadCleanupFailure(DeleteThread(ctx.thread.id));
     removeThread(ctx.thread.id);
     closePanesShowingThread(ctx.thread.id);
+    // Deleted; only work it started elsewhere could not be stopped. A toast
+    // for the reason archive gives one.
+    if (cleanupFailure) addErrorToast(userFacingError(cleanupFailure), cleanupFailure);
   } catch (err) {
     console.error('Failed to delete thread:', err);
     ctx.reportError(userFacingError(err), err);

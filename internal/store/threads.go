@@ -1690,7 +1690,7 @@ type CheckoutWrite struct {
 func (s *Store) UpdateThreadCheckout(threadID, workspacePath, worktreePath, branch string) (CheckoutWrite, error) {
 	action := fmt.Sprintf("store: update checkout for %s", threadID)
 	args := []any{workspacePath, nilIfEmpty(worktreePath), nilIfEmpty(branch)}
-	tx, err := s.beginListingWrite()
+	tx, err := s.db.Begin()
 	if err != nil {
 		return CheckoutWrite{}, fmt.Errorf("%s: begin: %w", action, err)
 	}
@@ -1887,23 +1887,6 @@ const (
 	// ListingUnlisted: the write took it off the list; the row remains.
 	ListingUnlisted
 )
-
-// beginListingWrite begins a transaction whose first statement is a write,
-// for a writer that reads the listing before it writes. The write lock is
-// then taken, waiting out busy_timeout, before any read: a read first would
-// pin a snapshot, and a writer that committed meanwhile would fail the later
-// write with SQLITE_BUSY instead of waiting for it.
-func (s *Store) beginListingWrite() (*sql.Tx, error) {
-	tx, err := s.db.Begin()
-	if err != nil {
-		return nil, err
-	}
-	if _, err := tx.Exec(`UPDATE threads SET id = id WHERE 0`); err != nil {
-		_ = tx.Rollback()
-		return nil, err
-	}
-	return tx, nil
-}
 
 func listingChange(before, after bool) ListingChange {
 	switch {

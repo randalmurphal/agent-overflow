@@ -10,6 +10,7 @@ import { takePinnedBackend } from '../transport/backends';
 import type { TransportHello } from '../transport/wsClient';
 import { TransportError } from '../transport/wsClient';
 import { stageNoRemoteBuild } from '../../test/helpers/buildVariant';
+import { refreshSidebarProjections } from './eventsThreadRows';
 import {
   canOfferConversationTransfer, computerTransfers, initConversationTransfers, openConversationTransfer, pendingConversationTransfer,
   recoverConversationTransfer, refreshComputerTransfers, resetConversationTransfersForTest,
@@ -126,6 +127,29 @@ it('keeps the status read over an older event that arrived during it', async () 
   emitWailsEvent('thread:transfer', row({ phase: 'preparing', updatedAt: 2 }), SOURCE);
   resolve([row({ phase: 'sending', updatedAt: 4 })]); await read;
   expect(computerTransfers('tower').rows.find((value) => value.id === 'op-1')?.phase).toBe('sending');
+});
+
+const busy = (count: number) => Array.from({ length: count }, (_, index) => row({ id: `busy-${index}`, updatedAt: 100 + index }));
+
+it('does not resurrect an evicted transfer from an older frame', async () => {
+  stop = initConversationTransfers(); await tick();
+  const reads = setBindingMock('GetThreadTransfers', async () => { takePinnedBackend(); return busy(100); });
+  for (const value of busy(100)) emitWailsEvent('thread:transfer', value, SOURCE);
+  vi.mocked(refreshSidebarProjections).mockClear();
+  emitWailsEvent('thread:transfer', row({ phase: 'complete', updatedAt: 300 }), SOURCE); await tick();
+  expect(refreshSidebarProjections).toHaveBeenCalledTimes(1);
+  emitWailsEvent('thread:transfer', row({ phase: 'committed', updatedAt: 299 }), SOURCE); await tick();
+  expect(reads).toHaveBeenCalledTimes(2);
+  expect(computerTransfers('tower').rows).toHaveLength(100);
+  expect(computerTransfers('tower').rows.find((value) => value.id === 'op-1')).toBeUndefined();
+});
+
+it('shows a new transfer that reaches a full list', async () => {
+  stop = initConversationTransfers(); await tick();
+  setBindingMock('GetThreadTransfers', async () => { takePinnedBackend(); return [row({ phase: 'sending', updatedAt: 300 }), ...busy(99)]; });
+  for (const value of busy(100)) emitWailsEvent('thread:transfer', value, SOURCE);
+  emitWailsEvent('thread:transfer', row({ phase: 'preparing', updatedAt: 299 }), SOURCE); await tick();
+  expect(computerTransfers('tower').rows[0]).toMatchObject({ id: 'op-1', phase: 'sending' });
 });
 
 it('allows another copy once the previous operation completed', async () => {

@@ -611,7 +611,12 @@ type App struct {
 	// Test-only injection points for binding helpers that need to observe start/stop.
 	startSessionFn func(string) error
 	stopSessionFn  func(string) error
-	sendMessageFn  func(string, string, []string) error
+	// closeBrowserPagesFn and closeProviderSessionFn, when set, answer
+	// closeThreadBrowserPages and a teardown's provider close in place of the
+	// real ones, which the fakes and mock CLIs cannot make fail.
+	closeBrowserPagesFn    func(threadID string) error
+	closeProviderSessionFn func(threadID string) error
+	sendMessageFn          func(string, string, []string) error
 	// sendStageFn runs at two points of a direct send where a turn the
 	// provider starts on its own can land: "placed" (between placement and
 	// the row's persist) and "persisted" (after the allocation lock is

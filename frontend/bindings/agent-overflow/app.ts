@@ -286,13 +286,10 @@ export function ArchiveProject(id: string): $CancellablePromise<void> {
  * sidebar, and closes the thread's provider session so the host stops
  * carrying it.
  * 
- * The row flip commits first and the close follows. A failed close is
- * logged rather than returned: the archive itself has already succeeded
- * durably, and failing the call would tell the caller otherwise. That
- * is also the policy the desktop client encoded before this moved
- * server-side — it called StopSession, swallowed any failure, and
- * archived anyway. Moving it here is what makes the stop true for every
- * client instead of only the one that remembers to ask.
+ * The row flip commits first and the cleanup follows. A cleanup that
+ * fails returns a *threadCleanupError: the archive itself has committed
+ * and been announced, and the error says so and names what may still be
+ * running or open.
  */
 export function ArchiveThread(id: string): $CancellablePromise<void> {
     return $Call.ByID(3655608409, id);
@@ -1070,7 +1067,9 @@ export function DeleteSoundFile(id: string): $CancellablePromise<void> {
 
 /**
  * DeleteThread tears down the thread and any child threads. The recursive
- * cascade logic lives in app_thread_delete.go.
+ * cascade logic lives in app_thread_delete.go. A delete that finished but
+ * could not stop work the thread started elsewhere returns a
+ * *threadCleanupError saying the thread was deleted.
  * 
  * Every dropped row — the named thread and each of its children — is
  * broadcast as `deleted` so a second attached client drops the same rows and
@@ -2188,7 +2187,7 @@ export function GetServiceUpdateStatus(): $CancellablePromise<app$0.ServiceUpdat
 
 /**
  * GetSettings returns the current persisted settings merged over defaults,
- * with every secret redacted (see redactedSettings).
+ * projected for the caller (see settingsForCaller).
  * 
  * Resolved PER CALLER. The host and user tiers are global to this backend;
  * the device tier comes out of the calling connection's own ui_state bucket
@@ -5075,16 +5074,6 @@ export function RespondToUserInput(threadID: string, response: provider$0.UserIn
 }
 
 /**
- * RestartTerminal kills the given terminal and spawns a fresh replacement
- * with the same configuration.
- */
-export function RestartTerminal(terminalID: string): $CancellablePromise<app$0.TerminalHandle> {
-    return $Call.ByID(4152403588, terminalID).then(($result: any) => {
-        return $$createType194($result);
-    });
-}
-
-/**
  * RestartToUpdate swaps in the staged update and relaunches. It spawns the
  * detached swap helper and asks Wails to begin its normal shutdown, so the
  * transport drains and stores flush before the process exits; the helper then
@@ -5775,7 +5764,7 @@ export function SetProviderAccountAutoSwitch(providerName: string, accountID: st
 
 /**
  * SetProviderCustomEnvVar adds or replaces one custom environment variable for
- * a provider and returns the redacted settings snapshot the frontend store
+ * a provider and returns the projected settings snapshot the frontend store
  * re-seeds from. Reserved names, malformed names, oversize values, and
  * duplicates are rejected here — never dropped silently at spawn time.
  */
@@ -6607,7 +6596,7 @@ export function UpdateProposedPlanComment(threadID: string, commentID: string, i
  * lowPowerMode to false is a change from the true its class resolves to, so
  * it persists a row and outranks the table from then on.
  * 
- * The returned snapshot is redacted like GetSettings': the frontend store
+ * The returned snapshot is projected like GetSettings': the frontend store
  * re-seeds from it, and the two read paths must not disagree about whether the
  * store holds a plaintext secret. (Nothing consumes the secrets from here:
  * sensitive environment values have no read path at all.)

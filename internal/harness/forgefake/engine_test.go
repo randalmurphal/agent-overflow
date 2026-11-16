@@ -1947,8 +1947,10 @@ func TestGitHubMergeMutationsTransitionThePull(t *testing.T) {
 		t.Fatalf("after approve: timeline %v", nodes)
 	}
 	reviewID := opinions[0].(map[string]any)["id"].(string)
-	// SubmitReview settles a lost answer by the viewer's reviews.
+	// SubmitReview settles a lost answer by the viewer's reviews, told
+	// apart by fullDatabaseId, a BigInt GitHub encodes as a string.
 	if got := graphQL(t, srv, "github.com", "ViewerReviews", map[string]any{"owner": "acme", "name": "merge", "number": 2}); !strings.Contains(got.body, `"viewerDidAuthor":true`) ||
+		!strings.Contains(got.body, `"fullDatabaseId":"`) ||
 		!strings.Contains(got.body, `"state":"APPROVED"`) || !strings.Contains(got.body, `"oid":"2222222222222222222222222222222222222222"`) {
 		t.Fatalf("ViewerReviews = %s", got.body)
 	}

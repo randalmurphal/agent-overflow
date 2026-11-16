@@ -131,19 +131,19 @@ func (c gatedConnector) Connect(ctx context.Context) (driver.Conn, error) {
 	return cached, nil
 }
 
-// openPool opens one pool against dbPath with the given connection
-// pragmas, routed through gate. A non-nil commits is signalled by every
+// openPool opens one pool on dsn (poolDSN or writerDSN), routed through
+// gate. A non-nil commits is signalled by every
 // commit on the pool's connections, and a non-nil writes counts their
 // row writes.
 //
 // sql.OpenDB rather than sql.Open: the gate has to sit in front of the
 // physical open, and interposing on Connect is the supported way to do
 // that (modernc.org/sqlite documents NewConnector for exactly this).
-// The DSN is unchanged, so the pragmas still ride every connection.
-func openPool(dbPath string, pragmas []connPragma, gate *connGate, commits commitSignal, writes *atomic.Uint64) (*sql.DB, error) {
-	base, err := sqlite.NewConnector(poolDSN(dbPath, pragmas))
+// The DSN is unchanged, so its settings still ride every connection.
+func openPool(dsn string, gate *connGate, commits commitSignal, writes *atomic.Uint64) (*sql.DB, error) {
+	base, err := sqlite.NewConnector(dsn)
 	if err != nil {
-		return nil, fmt.Errorf("store: connector for %s: %w", dbPath, err)
+		return nil, fmt.Errorf("store: connector: %w", err)
 	}
 	return sql.OpenDB(gatedConnector{Connector: base, gate: gate, commits: commits, writes: writes}), nil
 }

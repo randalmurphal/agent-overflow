@@ -1,9 +1,10 @@
 import { describe, expect, it, beforeEach, vi } from 'vitest';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
-import { deleteThreadAction, forkThreadAction, pinThreadAction, setThreadPinGroupAction, unpinThreadAction, type ThreadActionCtx } from './threadRowActions';
+import { archiveThreadAction, deleteThreadAction, forkThreadAction, pinThreadAction, setThreadPinGroupAction, unpinThreadAction, type ThreadActionCtx } from './threadRowActions';
 import { applyThreadUpdated } from '../../stores/eventsThreadRows';
 import { buildPane, makeThread as makeBaseThread } from '../../../test/helpers/chat';
-import { resetPanesForTest } from '../../stores/panes.svelte';
+import { getPane, resetPanesForTest } from '../../stores/panes.svelte';
+import { TransportError } from '../../transport/wsClient';
 import { getToasts, removeToast } from '../../stores/toast.svelte';
 import {
   getThreadById,
@@ -133,11 +134,79 @@ describe('forkThreadAction', () => {
   });
 });
 
+describe('archiveThreadAction', () => {
+  beforeEach(() => {
+    resetBindingMocks();
+    resetPanesForTest();
+    clearThreadsForTest();
+    for (const toast of getToasts()) removeToast(toast.id);
+  });
+
+  // The archive committed and only the cleanup after it failed: the client
+  // agrees with the backend (row gone, pane closed) and shows the error once,
+  // as a toast that outlives the closed pane, never as a failed archive.
+  it('drops the thread and toasts the cleanup failure of an archive that happened', async () => {
+    const thread = makeBaseThread({ id: 'thread-1' });
+    prependThread(thread);
+    await buildPane(thread, [], 'pane-archived');
+    const message = 'The thread was archived, but its browser pages could not all be closed.';
+    setBindingMock('ArchiveThread', async () => {
+      throw new TransportError('thread_cleanup_failed', message);
+    });
+    const ctx = makeCtx({ id: 'thread-1' });
+
+    await archiveThreadAction(ctx);
+
+    expect(getThreadById('thread-1')).toBeUndefined();
+    expect(getPane('pane-archived')).toBeUndefined();
+    expect(ctx.reportError).not.toHaveBeenCalled();
+    const errors = getToasts().filter((t) => t.type === 'error');
+    expect(errors.map((t) => t.message)).toEqual([message]);
+  });
+
+  it('keeps the thread and reports through the caller when the archive itself failed', async () => {
+    const thread = makeBaseThread({ id: 'thread-1' });
+    prependThread(thread);
+    await buildPane(thread, [], 'pane-kept');
+    setBindingMock('ArchiveThread', async () => {
+      throw new TransportError('not_found', 'The requested item no longer exists.');
+    });
+    const ctx = makeCtx({ id: 'thread-1' });
+
+    await archiveThreadAction(ctx);
+
+    expect(getThreadById('thread-1')).toBeDefined();
+    expect(getPane('pane-kept')).toBeDefined();
+    expect(ctx.reportError).toHaveBeenCalledTimes(1);
+    expect(getToasts().filter((t) => t.type === 'error')).toEqual([]);
+  });
+});
+
 describe('deleteThreadAction', () => {
   beforeEach(() => {
     resetBindingMocks();
     resetPanesForTest();
     clearThreadsForTest();
+  });
+
+  it('drops the thread and toasts work a delete that happened could not stop', async () => {
+    const thread = makeBaseThread({ id: 'thread-1' });
+    prependThread(thread);
+    await buildPane(thread, [], 'pane-deleted');
+    for (const toast of getToasts()) removeToast(toast.id);
+    const message = 'The thread was deleted, but a command it started on another computer could not be cancelled and may keep running there for up to an hour.';
+    setBindingMock('StopSession', async () => {});
+    setBindingMock('DeleteThread', async () => {
+      throw new TransportError('thread_cleanup_failed', message);
+    });
+    const ctx = makeCtx({ id: 'thread-1' });
+
+    await deleteThreadAction(ctx);
+
+    expect(getThreadById('thread-1')).toBeUndefined();
+    expect(getPane('pane-deleted')).toBeUndefined();
+    expect(ctx.reportError).not.toHaveBeenCalled();
+    expect(getToasts().filter((t) => t.type === 'error').map((t) => t.message)).toEqual([message]);
   });
 
   it('applies the rows its worktree removal moved before deleting the thread', async () => {

@@ -274,8 +274,8 @@ type connHandler struct {
 //
 // profile is captured at upgrade time and carries per-connection
 // transport policy. profile.isLoopback is forwarded to every dispatcher
-// resolution (host-tooling receivers, redacted error text) and seeds the
-// per-call CallerProof the scope gate judges step-up on.
+// resolution (host-tooling receivers) and seeds the per-call CallerProof
+// the scope gate judges step-up on.
 func runConnHandler(ctx context.Context, ws *websocket.Conn, d *Dispatcher, bus *EventBus, settings connSettings, profile connProfile) {
 	if settings.readLimit <= 0 {
 		settings.readLimit = DefaultReadLimit

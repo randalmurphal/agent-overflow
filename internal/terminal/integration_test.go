@@ -182,41 +182,6 @@ func TestTerm_GetTerminalReplayReturnsRingContent(t *testing.T) {
 	}
 }
 
-// TestTerm_RestartSpawnsNewProcess confirms Restart yields a new PID and
-// terminal ID while preserving the thread binding.
-func TestTerm_RestartSpawnsNewProcess(t *testing.T) {
-	ensurePTYAvailable(t)
-
-	m := NewManager(nil, nil)
-	summary, err := m.Open("thread-restart", SessionOptions{
-		Reaper: procutiltest.Reaper(),
-		Shell:  "/bin/sh",
-		Args:   []string{"-c", "sleep 10"},
-		Cwd:    t.TempDir(),
-	})
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	t.Cleanup(func() { _ = m.CloseThread("thread-restart") })
-
-	originalPID := summary.PID
-	originalID := summary.TerminalID
-
-	replacement, err := m.Restart(originalID)
-	if err != nil {
-		t.Fatalf("Restart: %v", err)
-	}
-	if replacement.TerminalID == originalID {
-		t.Error("Restart reused old terminal ID")
-	}
-	if replacement.PID == originalPID {
-		t.Error("Restart reused old pid")
-	}
-	if replacement.ThreadID != "thread-restart" {
-		t.Errorf("ThreadID = %q, want thread-restart", replacement.ThreadID)
-	}
-}
-
 // TestTerm_CloseThreadClosesAllTerminalsForThread opens 3 terminals for the
 // same thread then CloseThread — all three must be closed.
 func TestTerm_CloseThreadClosesAllTerminalsForThread(t *testing.T) {

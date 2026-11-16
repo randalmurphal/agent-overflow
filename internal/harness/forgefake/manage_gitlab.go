@@ -335,7 +335,7 @@ func glabSetPeople(reviewers bool) func(e *Engine, c *call, v graphQLVars) respo
 			nodes = append(nodes, map[string]any{"username": login})
 		}
 		return graphQLData(map[string]any{field: map[string]any{"errors": []string{}, "mergeRequest": map[string]any{
-			list: glabFirstPage(nodes), "allowsMultipleReviewers": !r.Merge.Free, "allowsMultipleAssignees": !r.Merge.Free,
+			list: glabFirstPage(nodes), "allowsMultiple" + strings.ToUpper(list[:1]) + list[1:]: !r.Merge.Free,
 		}}})
 	}
 }

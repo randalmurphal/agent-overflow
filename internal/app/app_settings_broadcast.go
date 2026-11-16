@@ -20,12 +20,11 @@ import (
 //     authorized (spec §6) and, from phase 4, separately stored.
 //   - A write that changed nothing emits nothing. The settings service reports
 //     the changed keys, so a repeat save of an unchanged form is silent.
-//   - **The frame names keys, never values.** GetSettings redacts endpoint
-//     tokens and sensitive environment values, and there is no read path for
-//     either; a broadcast carrying values would be the single place around
-//     that. Receivers re-read through GetSettings and get the same redacted
-//     projection the initiator got back from its own write, so initiator and
-//     echo converge on identical state.
+//   - **The frame names keys, never values.** GetSettings projects values
+//     per caller (settingsForCaller); a broadcast carrying values would be
+//     the single place around that. Receivers re-read through GetSettings
+//     and get their own projection, the same one the initiator got back from
+//     its own write when both hold the same scopes.
 //
 // Registered once at startup (registerSettingsBroadcast); the settings service
 // holds exactly one observer, which is what keeps this the only emit site.

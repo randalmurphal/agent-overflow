@@ -142,10 +142,12 @@ func TestFakeEngineRefusesPageContentByName(t *testing.T) {
 // It is the fake engine plus a tally, because WHEN a profile is disposed is
 // Manager policy and holds on every engine. Each hook, when set, runs once as
 // the engine creates a profile or a profile creates a page; an onNewPage
-// error refuses the page.
+// error refuses the page. A disposeErr, when set, fails every disposal after
+// the profile is gone, as a browser process that would not stop does.
 type disposeCountingEngine struct {
 	*fakeEngine
 	disposed     atomic.Int64
+	disposeErr   error
 	onNewProfile func()
 	onNewPage    func() error
 }
@@ -188,7 +190,37 @@ func (p *countingProfile) NewPage(ctx context.Context, hooks pageHooks) (pageDri
 
 func (p *countingProfile) Dispose(ctx context.Context) error {
 	p.owner.disposed.Add(1)
-	return p.engineProfile.Dispose(ctx)
+	return errors.Join(p.engineProfile.Dispose(ctx), p.owner.disposeErr)
+}
+
+// A thread's close reports a workspace profile that fails to dispose, as
+// closing its last page alone does, and still closes the thread's pages in
+// every other workspace. Deleting a thread is the caller: a headless
+// browser that would not stop, or ephemeral site data left on disk, reaches
+// the person deleting it.
+func TestCloseThreadReportsAProfileThatFailsToDispose(t *testing.T) {
+	manager, engine := newDisposeCountingManager(t)
+	engine.disposeErr = errors.New("the profile's browser would not stop")
+	thread := "thread"
+	for range 2 {
+		access := Access{ThreadID: thread, Workspace: t.TempDir()}
+		if _, err := manager.Open(t.Context(), access, "https://example.test/", OpenOptions{}); err != nil {
+			t.Fatalf("open: %v", err)
+		}
+	}
+	err := manager.CloseThread(t.Context(), thread)
+	if !errors.Is(err, engine.disposeErr) {
+		t.Fatalf("CloseThread = %v, want the dispose failure", err)
+	}
+	if pages := manager.ownedPages(thread); len(pages) != 0 {
+		t.Fatalf("the closed thread still owns %d page(s)", len(pages))
+	}
+	if got := engine.disposed.Load(); got != 2 {
+		t.Fatalf("%d of 2 workspace profiles were disposed", got)
+	}
+	if err := manager.CloseThread(t.Context(), thread); err != nil {
+		t.Fatalf("a second close of the closed thread: %v", err)
+	}
 }
 
 // A workspace's profile is disposed when its LAST page closes, not when the

@@ -61,7 +61,6 @@ vi.mock('../../stores/bindings', async (importOriginal) => ({
     callLog.push({ fn: 'WriteTerminal', args: [terminalID, data] });
   }),
   GetTerminalReplay: vi.fn(async () => ''),
-  RestartTerminal: vi.fn(),
   // Simple stand-in for the generated class. Constructor matches the real
   // shape closely enough for call-site code that only reads `cwd`/`shell`.
   TerminalOpenOptions: class TerminalOpenOptions {

@@ -510,7 +510,12 @@ exist; `null` ungroups). One call covers "archive these five" or
 other; joining or leaving a group clears the thread's pin, and a pin in
 the same call applies after the group move, so it lands inside the new
 group. Refusals mirror the store: the calling thread cannot archive
-itself, and a title is trimmed and refused when empty. Works on another computer's threads;
+itself, and a title is trimmed and refused when empty. An archive that
+applied but whose cleanup did not finish (the provider session, its
+browser pages, its asks or its remote commands may still be running or
+open) reports the thread as updated with an error under
+`thread_cleanup_failed`, the message the sidebar's archive shows, and
+the result's note asks the agent to tell the user. Works on another computer's threads;
 a thread joins groups only on its own computer. Used only when the user
 asks, or on threads the caller spawned once it is done with them.
 
@@ -1056,9 +1061,11 @@ happened; the token and `thread_status` do.
   requests. Spawned
   and sent threads are left alone; only the bindings are dropped. A copy
   waits for outstanding requests and wake handoff like the existing
-  queued-work checks. The cancel is best-effort and logged when a
-  destination cannot be reached; an unreachable scratch ask finishes on
-  its own in read-only mode and its answer expires after a day.
+  queued-work checks. A cancel that does not reach its destination
+  does not hold the delete, archive or move: an archive or delete from
+  the sidebar reports it as a cleanup failure of a thread that is gone,
+  and a move logs it. An unreachable scratch ask finishes on its own in
+  read-only mode and its answer expires after a day.
 - Forgetting a computer with outstanding requests is refused once with
   the list; confirming abandons them locally: the requests settle
   `errored` ("computer forgotten"), their wakes are dropped, and no

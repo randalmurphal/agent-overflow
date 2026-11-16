@@ -200,10 +200,9 @@
    *
    * Selection is cleared AFTER the loop, not before — if a mid-batch
    * failure throws, the user keeps the selection and can retry the
-   * unaffected rows. Per-action error reporting is owned by each
-   * individual action (toast + `pane.setGeneralError`); we surface a
-   * lightweight aggregate signal via the action's own `reportError`
-   * channel by counting failures.
+   * unaffected rows. Each action reports its failure through the
+   * `reportError` given here, which counts it; the walk shows one
+   * aggregate toast at the end.
    */
   async function runBulk(
     action: (perThreadCtx: ThreadActionCtx) => Promise<void>,
@@ -223,6 +222,7 @@
             else await openThreadFromNavigation(next);
           },
           reportError: (msg, err) => {
+            failures += 1;
             lastError = msg;
             lastCause = err;
           },
@@ -238,8 +238,8 @@
     } else {
       const message = `${targets.length - failures}/${targets.length} succeeded` +
         (lastError ? ` — ${lastError}` : '');
-      if (pane) pane.setGeneralError(message, lastCause);
-      else addErrorToast(message, lastCause);
+      // A toast: a pane the walk archived or deleted is gone by now.
+      addErrorToast(message, lastCause);
     }
   }
 

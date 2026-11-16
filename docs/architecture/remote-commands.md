@@ -160,9 +160,11 @@ Finished workflow phases are not reopened.
 The conversation that called `remote_run` owns the job. Deleting, archiving or
 moving it cancels the commands it still owns and drops their pending
 notifications; a copy waits for outstanding remote work and its notification
-handoff like the existing queued/background-work checks. The cancel is
-delivered on a best-effort basis and logged when the destination cannot be
-reached. Deletion runs it before provider cleanup and again under the thread
+handoff like the existing queued/background-work checks. A cancel that cannot
+reach the destination still drops the notification and does not hold the
+operation; the command runs there until the owner grace
+(`remotejobs.DefaultOwnerGrace`) ends it. An archive or delete from the sidebar
+reports it in its cleanup error; a move logs it. Deletion runs it before provider cleanup and again under the thread
 mutation lock, so a concurrent send cannot leave an orphaned command.
 Forgetting a computer waits for outstanding jobs and notification handoff;
 reconnect an offline computer and stop its jobs first. Pairing credentials must

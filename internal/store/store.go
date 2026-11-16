@@ -132,7 +132,7 @@ func NewWithOptions(dbPath string, opts Options) (*Store, error) {
 	if opts.scratch {
 		pragmas = scratchWriterConnPragmas
 	}
-	db, err := openPool(dbPath, pragmas, gate, commits, writes)
+	db, err := openPool(writerDSN(dbPath, pragmas), gate, commits, writes)
 	if err != nil {
 		return nil, fmt.Errorf("store: open database: %w", err)
 	}
@@ -215,7 +215,7 @@ func openReadPool(db *sql.DB, dbPath string, gate *connGate) (*sql.DB, error) {
 	// _pragma values apply per connection (verified against
 	// modernc.org/sqlite v1.56.0). journal_mode is a property of the
 	// database file, so read connections inherit WAL.
-	read, err := openPool(dbPath, readerConnPragmas, gate, nil, nil)
+	read, err := openPool(poolDSN(dbPath, readerConnPragmas), gate, nil, nil)
 	if err != nil {
 		return nil, fmt.Errorf("store: open read pool: %w", err)
 	}

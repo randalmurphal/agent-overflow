@@ -1337,6 +1337,12 @@ const (
 	restoreQueue
 )
 
+// errBackgroundNotRetired marks a teardown whose provider closed but whose
+// Codex background calls could not be marked ended. They stopped with the
+// process; their rows still show as running until the thread's next session
+// start or the next app start retires them.
+var errBackgroundNotRetired = errors.New("background calls still marked running")
+
 func (a *App) teardownSession(threadID string, sess session, mutationsHeld bool, queue teardownQueue) error {
 	a.workflowApplication().ReleaseUsageAttentionForThread(threadID)
 	// Events the provider emitted before the stop were read and must be
@@ -1346,9 +1352,16 @@ func (a *App) teardownSession(threadID string, sess session, mutationsHeld bool,
 	if a.triage != nil {
 		a.settleQueueForTeardown(threadID, mutationsHeld, queue)
 	}
-	err := a.closeProviderSession(threadID, sess)
+	var err error
+	if a.closeProviderSessionFn != nil {
+		err = a.closeProviderSessionFn(threadID)
+	} else {
+		err = a.closeProviderSession(threadID, sess)
+	}
 	if err == nil && sess.Provider == string(provider.Codex) {
-		err = a.retireCodexBackgroundRuntime(threadID)
+		if retireErr := a.retireCodexBackgroundRuntime(threadID); retireErr != nil {
+			err = fmt.Errorf("%w: %w", errBackgroundNotRetired, retireErr)
+		}
 	}
 	if a.triage != nil {
 		// The provider process is gone, so its backgrounded shells are

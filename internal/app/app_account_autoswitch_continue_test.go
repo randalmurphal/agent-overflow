@@ -17,6 +17,11 @@ import (
 	"agent-overflow/internal/usermessage"
 )
 
+// autoSwitchWait bounds a wait for the coordinator's worker. As with
+// waitForCondition, the bound only ends a test whose event never comes; a
+// loaded shared runner must not reach it.
+const autoSwitchWait = 30 * time.Second
+
 // installUsageLimitClaude gives the app a mock Claude that echoes each user
 // message as --replay-user-messages does, refuses the first turn for a usage
 // limit (the usage-limit-claude scenario's wire lines) and answers the rest.
@@ -186,17 +191,17 @@ func TestAutoSwitchRefusedHiddenThreadSwitchesWithoutContinue(t *testing.T) {
 	}
 }
 
-// A message the person sends ends the wait: once the limit resets, only the
-// thread nobody wrote to is continued.
+// A message the person sends ends the wait: once the other account's limit
+// resets, only the thread nobody wrote to is continued.
 func TestAutoSwitchSendEndsTheWait(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.ensureTriageRouter()
+	app.accountSwitchCheckInterval = 10 * time.Millisecond
 	rig := newAutoSwitchRig(t, app, string(provider.Claude), "first", "second")
 	rig.settings(t, map[string]any{"accountAutoContinue": true})
-	reset := 3 * time.Second
-	rig.reading("first", usageLimit("session", 100, reset))
-	rig.reading("second", usageLimit("session", 100, reset))
+	rig.reading("first", usageLimit("session", 100, time.Hour))
+	rig.reading("second", usageLimit("session", 100, time.Hour))
 	messaged := autoSwitchThread("messaged", string(provider.Claude), "claude-opus-5")
 	putAccountSession(t, app, messaged, "second")
 	untouched := autoSwitchThread("untouched", string(provider.Claude), "claude-opus-5")
@@ -209,8 +214,8 @@ func TestAutoSwitchSendEndsTheWait(t *testing.T) {
 		t.Fatalf("send gate: %v", err)
 	}
 
-	time.Sleep(reset + time.Second)
-	rig.reading("second", usageLimit("session", 0, 5*time.Hour))
+	// The waiting-thread check switches to the account whose limit reset.
+	rig.reading("first", usageLimit("session", 0, 5*time.Hour))
 
 	waitForCondition(t, "the untouched thread's continue", func() bool {
 		return len(queuedMessages(app, untouched.ID)) == 1
@@ -230,11 +235,11 @@ func TestAutoSwitchSettingOffEndsEarlierWaits(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)
 	app.ensureTriageRouter()
+	app.accountSwitchCheckInterval = 10 * time.Millisecond
 	rig := newAutoSwitchRig(t, app, string(provider.Claude), "first", "second")
 	rig.settings(t, map[string]any{"accountAutoContinue": true})
-	reset := 3 * time.Second
-	rig.reading("first", usageLimit("session", 100, reset))
-	rig.reading("second", usageLimit("session", 100, reset))
+	rig.reading("first", usageLimit("session", 100, time.Hour))
+	rig.reading("second", usageLimit("session", 100, time.Hour))
 	earlier := autoSwitchThread("earlier", string(provider.Claude), "claude-opus-5")
 	putAccountSession(t, app, earlier, "second")
 	later := autoSwitchThread("later", string(provider.Claude), "claude-opus-5")
@@ -246,8 +251,8 @@ func TestAutoSwitchSettingOffEndsEarlierWaits(t *testing.T) {
 	rig.settings(t, map[string]any{"accountAutoContinue": true})
 	app.dispatchTurnObservers(later.ID, usageLimitRefusal(later.ID))
 
-	time.Sleep(reset + time.Second)
-	rig.reading("second", usageLimit("session", 0, 5*time.Hour))
+	// The waiting-thread check switches to the account whose limit reset.
+	rig.reading("first", usageLimit("session", 0, 5*time.Hour))
 
 	waitForCondition(t, "the later thread's continue", func() bool {
 		return len(queuedMessages(app, later.ID)) == 1
@@ -290,26 +295,25 @@ func TestAutoSwitchContinueRecheckedUnderThreadLock(t *testing.T) {
 	app.dispatchTurnObservers(thread.ID, usageLimitRefusal(thread.ID))
 	select {
 	case <-reached:
-	case <-time.After(5 * time.Second):
+	case <-time.After(autoSwitchWait):
 		unlock()
 		t.Fatal("the worker never reached Continue")
 	}
-	reset := 2 * time.Second
-	rig.reading("first", usageLimit("session", 100, reset))
+	rig.reading("first", usageLimit("session", 100, time.Hour))
 	unlock()
 	select {
 	case err := <-returned:
 		if err != nil {
 			t.Fatalf("Continue: %v", err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(autoSwitchWait):
 		t.Fatal("Continue did not return after the lock was released")
 	}
 	if got := queuedMessages(app, thread.ID); len(got) != 0 {
 		t.Fatalf("queue = %q, want no continue on an account that is out of usage", got)
 	}
 
-	time.Sleep(reset + time.Second)
+	// A reading that shows the limit reset ends the wait.
 	rig.reading("first", usageLimit("session", 0, 5*time.Hour))
 	waitForCondition(t, "the continue after the reset", func() bool {
 		return len(queuedMessages(app, thread.ID)) == 1
@@ -357,7 +361,7 @@ func TestAutoSwitchShutdownJoinsWithAWaitingThread(t *testing.T) {
 	app.dispatchTurnObservers(thread.ID, usageLimitRefusal(thread.ID))
 	select {
 	case <-reachedContinue:
-	case <-time.After(5 * time.Second):
+	case <-time.After(autoSwitchWait):
 		t.Fatal("the worker never reached Continue")
 	}
 	app.sessionManager().take(thread.ID)
@@ -370,7 +374,7 @@ func TestAutoSwitchShutdownJoinsWithAWaitingThread(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Shutdown: %v", err)
 		}
-	case <-time.After(10 * time.Second):
+	case <-time.After(autoSwitchWait):
 		t.Fatal("Shutdown did not join the auto-switch worker")
 	}
 	if n := lateNotices.Load(); n != 0 {

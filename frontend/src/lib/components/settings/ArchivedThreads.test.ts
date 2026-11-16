@@ -1,5 +1,6 @@
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { TransportError } from '../../transport/wsClient';
 
 import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
 import { buildPane, makeThread } from '../../../test/helpers/chat';
@@ -24,6 +25,31 @@ describe('<ArchivedThreads>', () => {
 
     const { findByText } = render(ArchivedThreads);
     expect(await findByText(/codex · GPT 5\.6 Sol/)).toBeTruthy();
+  });
+});
+
+// A delete that happened but could not stop the thread's work elsewhere
+// drops the row like any delete and shows the error, never "Failed to delete".
+describe('<ArchivedThreads> delete whose cleanup failed', () => {
+  beforeEach(() => {
+    resetBindingMocks();
+    resetPanesForTest();
+    resetToastsForTest();
+  });
+
+  it('drops the row and shows the cleanup failure', async () => {
+    const message = 'The thread was deleted, but an ask it sent to another thread could not be stopped and may keep running.';
+    setBindingMock('ListArchivedThreads', async () => [makeThread({ id: 'archived-cleanup', title: 'Old work', archived: true })]);
+    setBindingMock('StopSession', async () => {});
+    setBindingMock('DeleteThread', async () => { throw new TransportError('thread_cleanup_failed', message); });
+
+    const { findByLabelText, getByRole, queryByText, findByText } = render(ArchivedThreads);
+    await findByText('Old work');
+    await fireEvent.click(await findByLabelText('Delete permanently'));
+    await fireEvent.click(getByRole('button', { name: 'Delete' }));
+
+    await waitFor(() => expect(getToasts().map((t) => [t.type, t.message])).toEqual([['error', message]]));
+    expect(queryByText('Old work')).toBeNull();
   });
 });
 
