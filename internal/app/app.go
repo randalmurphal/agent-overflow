@@ -611,7 +611,10 @@ type App struct {
 	// Test-only injection points for binding helpers that need to observe start/stop.
 	startSessionFn func(string) error
 	stopSessionFn  func(string) error
-	sendMessageFn  func(string, string, []string) error
+	// closeBrowserPagesFn, when set, answers closeThreadBrowserPages in place
+	// of the browser manager, whose fake engine cannot fail a close.
+	closeBrowserPagesFn func(threadID string) error
+	sendMessageFn       func(string, string, []string) error
 	// sendStageFn runs at two points of a direct send where a turn the
 	// provider starts on its own can land: "placed" (between placement and
 	// the row's persist) and "persisted" (after the allocation lock is

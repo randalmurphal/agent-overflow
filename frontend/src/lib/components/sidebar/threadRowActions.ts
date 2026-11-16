@@ -38,6 +38,7 @@ import { expandProject } from '../../stores/sidebar.svelte';
 import { addErrorToast, addToast } from '../../stores/toast.svelte';
 import { copyToClipboard } from '../../utils/clipboard';
 import { userFacingError } from '../../utils/userFacingError';
+import { TransportError } from '../../transport/wsClient';
 import type { Thread } from '../../types/models';
 import { autoPinNewThread } from '../../stores/threadAutoPin';
 import { openConversationTransfer } from '../../stores/conversationTransfers.svelte';
@@ -92,6 +93,14 @@ export async function renameThreadAction(
   }
 }
 
+// The code ArchiveThread answers when the archive committed and the
+// cleanup after it did not finish (threadtools.CodeArchiveCleanupFailed).
+const ARCHIVE_CLEANUP_FAILED = 'thread_archive_cleanup_failed';
+
+function isArchiveCleanupFailure(err: unknown): err is TransportError {
+  return err instanceof TransportError && err.code === ARCHIVE_CLEANUP_FAILED;
+}
+
 export async function archiveThreadAction(ctx: ThreadActionCtx): Promise<void> {
   try {
     if (isEmptyDraftCleanupPending(ctx.thread.id) && await settleEmptyDraftCleanup(ctx.thread.id)) return;
@@ -100,9 +109,16 @@ export async function archiveThreadAction(ctx: ThreadActionCtx): Promise<void> {
     // process is released for every client rather than only the one
     // that remembers to ask first — and, unlike a client-side stop, it
     // re-checks that the thread was not re-engaged in the gap.
-    await ArchiveThread(ctx.thread.id);
+    const cleanupFailure = await ArchiveThread(ctx.thread.id).then(() => null, (err: unknown) => {
+      if (isArchiveCleanupFailure(err)) return err;
+      throw err;
+    });
     removeThread(ctx.thread.id);
     closePanesShowingThread(ctx.thread.id);
+    // The thread is archived; only the cleanup after it failed. A toast,
+    // not ctx.reportError: the pane that would show the error may be the
+    // one just closed, and a bulk caller would count it as not archived.
+    if (cleanupFailure) addErrorToast(userFacingError(cleanupFailure), cleanupFailure);
   } catch (err) {
     console.error('Failed to archive thread:', err);
     ctx.reportError(userFacingError(err), err);
