@@ -1,6 +1,7 @@
 package git
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -131,6 +132,15 @@ func (c *Core) commitFiles(cwd, subject, body string, selection CommitSelection)
 	if err != nil {
 		return "", err
 	}
+	// Refused before anything is committed: recording the selection would
+	// drop index entries it does not cover.
+	around, err := c.readIndexAround(cwd, entries)
+	if err != nil {
+		return "", err
+	}
+	if err := around.displaced(entries); err != nil {
+		return "", fmt.Errorf("git commit: %w", err)
+	}
 
 	index := []string{"GIT_INDEX_FILE=" + filepath.Join(scratch, "index")}
 	head, err := c.hasHead(cwd)
@@ -166,61 +176,79 @@ func (c *Core) commitFiles(cwd, subject, body string, selection CommitSelection)
 // Those paths are the selected ones (entries) and any other path a
 // pre-commit hook changed in the temporary index, so a hook that formats and
 // stages a file leaves the index agreeing with the commit rather than with
-// the content listed before the hook ran.
+// the content listed before the hook ran. Each path is written exactly, as
+// an entry or a removal; nothing under it or beside it is touched.
 //
 // A path the hook changed that was not selected takes the commit's entry
 // only while the user's index still holds the parent's entry there: an
-// entry the user staged differs from the parent, and is kept.
+// entry the user staged differs from the parent, and is kept. An entry that
+// would displace one the user's index keeps (a file where the index holds
+// entries under that path, or the reverse) fails without writing anything.
 func (c *Core) recordCommittedEntries(cwd, sha string, entries []indexEntry) error {
-	selected := make(map[string]bool, len(entries))
-	paths := make([]string, 0, len(entries))
-	for _, entry := range entries {
-		if !selected[entry.path] {
-			selected[entry.path] = true
-			paths = append(paths, entry.path)
-		}
-	}
 	changes, err := c.commitChanges(cwd, sha)
 	if err != nil {
 		return err
 	}
-	parent := make(map[string]string)
-	var hooked []string
+	committed := make(map[string]indexEntry, len(changes))
 	for _, change := range changes {
-		if !selected[change.path] {
-			hooked = append(hooked, change.path)
-			parent[change.path] = change.before
+		committed[change.after.path] = change.after
+	}
+	selected := make(map[string]bool, len(entries))
+	var paths, unchanged []string
+	for _, entry := range entries {
+		if selected[entry.path] {
+			continue
+		}
+		selected[entry.path] = true
+		paths = append(paths, entry.path)
+		if _, ok := committed[entry.path]; !ok {
+			unchanged = append(unchanged, entry.path)
 		}
 	}
-	if len(hooked) > 0 {
-		staged, err := c.indexStageZero(cwd, hooked)
+	if len(unchanged) > 0 {
+		// A selected path the commit did not change holds the parent's
+		// entry: the hook undid the selected change.
+		held, err := c.treeEntries(cwd, sha, unchanged)
 		if err != nil {
 			return err
 		}
-		for _, path := range hooked {
-			if current, ok := staged[path]; ok && current == parent[path] {
-				paths = append(paths, path)
-			}
+		for _, entry := range held {
+			committed[entry.path] = entry
 		}
 	}
-	if len(paths) == 0 {
-		// An empty pathspec list would reset the whole index.
-		return errors.New("git commit: no committed paths to record in the index")
-	}
-	var pathspecs strings.Builder
+	record := make([]indexEntry, 0, len(paths))
 	for _, path := range paths {
-		pathspecs.WriteString(path)
-		pathspecs.WriteByte(0)
+		record = append(record, committed[path])
 	}
-	_, _, err = c.executeSpec(commandSpec{binary: "git", cwd: cwd, stdin: pathspecs.String(),
-		args: []string{"--literal-pathspecs", "reset", "--quiet", sha, "--pathspec-from-file=-", "--pathspec-file-nul"}})
-	return err
+	var hooked []commitChange
+	candidates := append([]indexEntry(nil), record...)
+	for _, change := range changes {
+		if !selected[change.after.path] {
+			hooked = append(hooked, change)
+			candidates = append(candidates, change.after)
+		}
+	}
+	index, err := c.readIndexAround(cwd, candidates)
+	if err != nil {
+		return err
+	}
+	for _, change := range hooked {
+		if index.entries[change.after.path] == change.before {
+			record = append(record, change.after)
+		}
+	}
+	if err := index.displaced(record); err != nil {
+		return err
+	}
+	return c.writeIndexEntries(cwd, nil, record)
 }
 
-// commitChange is one path a commit changed against its parent; before is
-// the parent's "mode oid" there, or empty when the parent had no entry.
+// commitChange is one path a commit changed against its parent: before is
+// the parent's "mode oid" there, or empty when the parent had none, and
+// after is the commit's entry, a removal when it has none.
 type commitChange struct {
-	path, before string
+	before string
+	after  indexEntry
 }
 
 // commitChanges lists the paths commit sha changed against its parent, or
@@ -245,50 +273,189 @@ func (c *Core) commitChanges(cwd, sha string) ([]commitChange, error) {
 		if len(meta) != 5 {
 			return nil, fmt.Errorf("git diff-tree %s: malformed entry %q", sha, fields[i])
 		}
-		change := commitChange{path: fields[i+1]}
+		change := commitChange{after: indexEntry{path: fields[i+1]}}
 		if strings.Trim(meta[0], "0") != "" {
 			change.before = meta[0] + " " + meta[2]
+		}
+		if strings.Trim(meta[1], "0") != "" {
+			change.after.mode, change.after.oid = meta[1], meta[3]
 		}
 		changes = append(changes, change)
 	}
 	return changes, nil
 }
 
-// indexStageZero returns the user's index entry, as "mode oid", at each of
-// paths that has one. A path present only as a conflict stage maps to a
-// value no tree entry has, and a missing path to empty.
-func (c *Core) indexStageZero(cwd string, paths []string) (map[string]string, error) {
-	args := append([]string{"--literal-pathspecs", "ls-files", "--stage", "-z", "--"}, paths...)
+// treeEntries returns what commit sha holds at exactly each of paths: a
+// blob or gitlink, or a removal where it holds nothing or a directory. The
+// listing does not recurse; an entry beside or under a path is not one of
+// them.
+func (c *Core) treeEntries(cwd, sha string, paths []string) ([]indexEntry, error) {
+	args := append([]string{"--literal-pathspecs", "ls-tree", "--full-tree", "-z", sha, "--"}, paths...)
 	stdout, _, err := c.Execute(cwd, args...)
 	if err != nil {
 		return nil, err
 	}
-	want := make(map[string]bool, len(paths))
-	staged := make(map[string]string, len(paths))
-	for _, path := range paths {
-		want[path] = true
-		staged[path] = ""
-	}
+	held := make(map[string]indexEntry, len(paths))
 	for _, record := range strings.Split(strings.TrimSuffix(stdout, "\x00"), "\x00") {
 		if record == "" {
 			continue
 		}
+		// "<mode> <type> <oid>\t<path>"
+		meta, path, ok := strings.Cut(record, "\t")
+		fields := strings.Fields(meta)
+		if !ok || len(fields) != 3 {
+			return nil, fmt.Errorf("git ls-tree %s: malformed entry %q", sha, record)
+		}
+		if fields[1] != "tree" {
+			held[path] = indexEntry{mode: fields[0], oid: fields[2], path: path}
+		}
+	}
+	entries := make([]indexEntry, 0, len(paths))
+	for _, path := range paths {
+		entry, ok := held[path]
+		if !ok {
+			entry = indexEntry{path: path}
+		}
+		entries = append(entries, entry)
+	}
+	return entries, nil
+}
+
+// indexAround is what the user's index holds around a set of candidate
+// entries: the entry at each candidate path, and the entries a candidate
+// file would displace, since a path cannot be a file and a directory at once.
+type indexAround struct {
+	// entries maps a candidate path to its stage-zero "mode oid", empty when
+	// the index has none, or "conflict" when it holds only conflict stages.
+	entries map[string]string
+	// under maps a candidate file path to the index entries below it.
+	under map[string][]string
+	// files are index files at a directory of some candidate file.
+	files []string
+}
+
+// readIndexAround reads the user's index once, streamed, keeping only what
+// indexAround describes for candidates.
+func (c *Core) readIndexAround(cwd string, candidates []indexEntry) (*indexAround, error) {
+	index := &indexAround{entries: make(map[string]string, len(candidates)), under: make(map[string][]string)}
+	isFile := make(map[string]bool)
+	dirs := make(map[string]bool)
+	for _, entry := range candidates {
+		index.entries[entry.path] = ""
+		if entry.mode == "" {
+			continue
+		}
+		isFile[entry.path] = true
+		addParentDirs(dirs, entry.path)
+	}
+	records := &nulRecords{each: func(record string) error {
 		// "<mode> <oid> <stage>\t<path>"
 		meta, path, ok := strings.Cut(record, "\t")
 		fields := strings.Fields(meta)
 		if !ok || len(fields) != 3 {
-			return nil, fmt.Errorf("git ls-files: malformed entry %q", record)
+			return fmt.Errorf("git ls-files: malformed entry %q", record)
 		}
-		if !want[path] {
-			continue // Under a directory the pathspec named.
+		if _, candidate := index.entries[path]; candidate {
+			if fields[2] != "0" {
+				index.entries[path] = "conflict"
+			} else if index.entries[path] != "conflict" {
+				index.entries[path] = fields[0] + " " + fields[1]
+			}
 		}
-		if fields[2] != "0" {
-			staged[path] = "conflict"
+		if dirs[path] {
+			index.files = append(index.files, path)
+		}
+		for slash := range len(path) {
+			if path[slash] == '/' && isFile[path[:slash]] {
+				index.under[path[:slash]] = append(index.under[path[:slash]], path)
+			}
+		}
+		return nil
+	}}
+	if _, _, err := c.executeSpec(commandSpec{binary: "git", cwd: cwd, output: records, outputLimit: 1 << 40,
+		args: []string{"ls-files", "--stage", "-z"}}); err != nil {
+		return nil, err
+	}
+	if len(records.partial) > 0 {
+		return nil, fmt.Errorf("git ls-files: output ended inside an entry")
+	}
+	return index, nil
+}
+
+// ErrCommitDisplacesIndexEntries is a commit of listed files refused, or its
+// index update not made, because recording a file would remove index entries
+// at or under the same path that nothing recorded covers.
+var ErrCommitDisplacesIndexEntries = errors.New("the selected files would remove other staged entries from the index")
+
+// displaced reports, as ErrCommitDisplacesIndexEntries naming them, the
+// index entries recording would drop: entries under a recorded file, and a
+// file at a directory of one, that record does not itself write or remove.
+func (index *indexAround) displaced(record []indexEntry) error {
+	recorded := make(map[string]bool, len(record))
+	dirs := make(map[string]bool)
+	for _, entry := range record {
+		recorded[entry.path] = true
+		if entry.mode != "" {
+			addParentDirs(dirs, entry.path)
+		}
+	}
+	var lost []string
+	for _, entry := range record {
+		if entry.mode == "" {
 			continue
 		}
-		staged[path] = fields[0] + " " + fields[1]
+		for _, path := range index.under[entry.path] {
+			if !recorded[path] {
+				lost = append(lost, path)
+			}
+		}
 	}
-	return staged, nil
+	for _, path := range index.files {
+		if dirs[path] && !recorded[path] {
+			lost = append(lost, path)
+		}
+	}
+	if len(lost) == 0 {
+		return nil
+	}
+	named := strings.Join(lost[:min(len(lost), maxNamedChangedFiles)], ", ")
+	if more := len(lost) - maxNamedChangedFiles; more > 0 {
+		named = fmt.Sprintf("%s and %d more", named, more)
+	}
+	return fmt.Errorf("%w (%s): a path cannot be a file and a directory; select or unstage them", ErrCommitDisplacesIndexEntries, named)
+}
+
+// addParentDirs adds every directory above path to dirs.
+func addParentDirs(dirs map[string]bool, path string) {
+	for slash := range len(path) {
+		if path[slash] == '/' {
+			dirs[path[:slash]] = true
+		}
+	}
+}
+
+// nulRecords passes each NUL-terminated record written to it to each, and
+// keeps an unterminated tail in partial.
+type nulRecords struct {
+	each    func(record string) error
+	partial []byte
+}
+
+func (w *nulRecords) Write(p []byte) (int, error) {
+	n := len(p)
+	for {
+		end := bytes.IndexByte(p, 0)
+		if end < 0 {
+			w.partial = append(w.partial, p...)
+			return n, nil
+		}
+		record := string(append(w.partial, p[:end]...))
+		w.partial = w.partial[:0]
+		if err := w.each(record); err != nil {
+			return 0, err
+		}
+		p = p[end+1:]
+	}
 }
 
 // listedEntries checks each listed file against the snapshot and returns
