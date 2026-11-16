@@ -67,8 +67,13 @@ type engineUIThread interface {
 // chord it claims, inside KeyChord on the UI thread, so the handoff lands
 // before the next key and before the chord is dispatched (keyChord). The
 // launcher-hosted WebView2 claims in its own process and hands focus there.
+//
+// ReleasePageFocus gives the app the keyboard only if the page's view holds
+// it: a focus intent withdrawn after the engine applied it (focus_intent.go).
+// A page that closed answers nil.
 type engineAppFocus interface {
 	FocusApp() error
+	ReleasePageFocus(handle string) error
 }
 
 // focusReleaseError reads a native engine's answer to hiding or closing a
@@ -406,10 +411,12 @@ type engineEvents struct {
 	// knows of it besides the chord. It runs on the engine's UI thread, so
 	// the answer must be a set lookup and nothing that waits.
 	KeyChord func(handle string, pressed keybindings.Accelerator, press KeyPress) bool
-	// PageFocusFailed reports a focus the host was asked for
-	// (paneHost.FocusPage) and could not make after answering, which only
-	// the hosted engine does: the launcher moves focus after the directive.
-	PageFocusFailed func(handle string, err error)
+	// PageFocusReported reports how a focus the host was asked for
+	// (paneHost.FocusPage) ended after FocusPage answered, which only the
+	// hosted engine does: the launcher moves focus after the directive.
+	// mount and intent name the focus intent; err nil means the page took
+	// the keyboard.
+	PageFocusReported func(handle, mount string, intent uint64, err error)
 }
 
 // KeyPress is what an in-process engine gathers about a key press besides

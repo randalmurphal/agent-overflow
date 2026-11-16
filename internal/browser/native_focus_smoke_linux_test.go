@@ -142,7 +142,7 @@ func TestNativeEngineRealClaimedChordFocusesTheApp(t *testing.T) {
 
 	// The address bar's Enter and Escape hand the keyboard back to the
 	// presented page (FocusCompanionPage), as a click into it does.
-	if err := manager.FocusCompanionPage(access); err != nil {
+	if err := manager.FocusCompanionPage(access, mount.ID, page.ID, 1); err != nil {
 		t.Fatalf("focus the presented page: %v", err)
 	}
 	if who, _ := holder("focus the presented page"); who != focusHeldByPage {
@@ -150,6 +150,24 @@ func TestNativeEngineRealClaimedChordFocusesTheApp(t *testing.T) {
 	}
 	if active && !pageHasFocus("focus the presented page") {
 		t.Fatal("focus the presented page: an active window's page does not have document focus")
+	}
+	// A withdrawal that lands after the move (the user chose elsewhere while
+	// it was on its way) gives the keyboard back to the app.
+	if err := manager.WithdrawCompanionPageFocus(access, mount.ID, 1); err != nil {
+		t.Fatalf("withdraw the landed focus: %v", err)
+	}
+	if who, _ := holder("withdraw the landed focus"); who != focusHeldByApp {
+		t.Fatalf("withdraw the landed focus: the window's focus widget is %d, want the app's webview", who)
+	}
+	// The engine checks the intent on the GTK thread: a withdrawn one moves
+	// nothing, the page shown or not.
+	host := manager.engine.(paneHost)
+	withdrawn := focusRequest{Mount: mount.ID, Intent: 9, Live: func() bool { return false }}
+	if result, err := host.FocusPage(view.Handle(), withdrawn); err != nil || result != focusWithdrawn {
+		t.Fatalf("focus a withdrawn intent = %v, %v", result, err)
+	}
+	if who, _ := holder("focus a withdrawn intent"); who != focusHeldByApp {
+		t.Fatalf("focus a withdrawn intent: the window's focus widget is %d, want the app's webview", who)
 	}
 
 	// The hide itself hands focus over (TestNativeEngineRealHiddenPageGivesUpFocus);
@@ -159,19 +177,30 @@ func TestNativeEngineRealClaimedChordFocusesTheApp(t *testing.T) {
 	if _, err := manager.Visibility(ctx, access, &hide, ""); err != nil {
 		t.Fatalf("hide the page: %v", err)
 	}
-	// A hidden page is never given the focus.
-	if err := manager.FocusCompanionPage(access); err != nil {
+	// A hidden page is never given the focus: the request waits.
+	if err := manager.FocusCompanionPage(access, mount.ID, page.ID, 2); err != nil {
 		t.Fatalf("focus with the page hidden: %v", err)
 	}
 	if who, _ := holder("focus with the page hidden"); who == focusHeldByPage {
 		t.Fatal("focus with the page hidden: the parked page took the focus")
 	}
 	// The engine's own check holds even when asked directly.
-	if err := manager.engine.(paneHost).FocusPage(view.Handle()); err != nil {
-		t.Fatalf("focus the parked page directly: %v", err)
+	live := focusRequest{Mount: mount.ID, Intent: 9, Live: func() bool { return true }}
+	if result, err := host.FocusPage(view.Handle(), live); err != nil || result != focusNotPresented {
+		t.Fatalf("focus the parked page directly = %v, %v", result, err)
 	}
 	if who, _ := holder("focus the parked page directly"); who == focusHeldByPage {
 		t.Fatal("focus the parked page directly: the parked page took the focus")
+	}
+	// Presented again, the page takes the waiting request's focus.
+	if _, err := manager.Visibility(ctx, access, &show, page.ID); err != nil {
+		t.Fatalf("show the page again: %v", err)
+	}
+	if who, _ := holder("the waiting focus"); who != focusHeldByPage {
+		t.Fatalf("the waiting focus: the window's focus widget is %d once the page is presented, want the page", who)
+	}
+	if _, err := manager.Visibility(ctx, access, &hide, ""); err != nil {
+		t.Fatalf("hide the page again: %v", err)
 	}
 	focusPage("the page hidden")
 	press("the page hidden", 'f', true)

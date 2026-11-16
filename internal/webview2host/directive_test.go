@@ -22,7 +22,7 @@ func TestDirectiveValidateAcceptsEveryOp(t *testing.T) {
 		{Op: OpHide, PageID: "page-1"},
 		{Op: OpClose, PageID: "page-1"},
 		{Op: OpDevTools, PageID: "page-1"},
-		{Op: OpFocus, PageID: "page-1"},
+		{Op: OpFocus, PageID: "page-1", Mount: "mount-1", Intent: 1},
 		{Op: OpCloseProfile, ProfileID: "ws_abc"},
 		// A clear addresses the whole folder, so it names no profile: its
 		// page id is purely the correlation id the report comes back under.
@@ -50,7 +50,9 @@ func TestDirectiveValidateRejects(t *testing.T) {
 		{"create without profile", Directive{Op: OpCreate, PageID: "p"}, "profile id is required"},
 		{"show without page", Directive{Op: OpShow}, "page id is required"},
 		{"focus without page", Directive{Op: OpFocus}, "page id is required"},
-		{"focus with a bad page id", Directive{Op: OpFocus, PageID: "a/b"}, "page id"},
+		{"focus with a bad page id", Directive{Op: OpFocus, PageID: "a/b", Mount: "m", Intent: 1}, "page id"},
+		{"focus without mount", Directive{Op: OpFocus, PageID: "p", Intent: 1}, "mount id"},
+		{"focus without intent", Directive{Op: OpFocus, PageID: "p", Mount: "m"}, "intent"},
 		{"close-profile without profile", Directive{Op: OpCloseProfile}, "profile id is required"},
 		{"bounds zero size", Directive{Op: OpBounds, PageID: "p", W: 0, H: 10}, "positive width and height"},
 		{"bounds negative size", Directive{Op: OpBounds, PageID: "p", W: 10, H: -1}, "positive width and height"},

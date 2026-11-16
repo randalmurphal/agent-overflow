@@ -55,3 +55,37 @@ export function postPaneGeometry(report: PaneGeometryReport): boolean {
   webview.postMessage!(MESSAGE_PREFIX + JSON.stringify(report));
   return true;
 }
+
+// The same bridge carries a page focus intent's arm and withdrawal
+// (internal/webview2host/focusintent.go): the launcher applies a page focus a
+// round trip through WSL after the SPA asks, and must hear first that the
+// user chose elsewhere meanwhile.
+
+// FocusMessagePrefix and FocusCapabilityGlobal.
+const FOCUS_MESSAGE_PREFIX = 'ao:pane-focus:';
+const FOCUS_CAPABILITY_GLOBAL = '__aoPaneFocusBridge';
+
+/** One focus intent's arm, or with `withdrawn` its withdrawal; `intent` counts per mount from 1. */
+export interface PaneFocusIntentMessage {
+  mount: string;
+  intent: number;
+  withdrawn: boolean;
+}
+
+interface FocusBridgeWindow {
+  [FOCUS_CAPABILITY_GLOBAL]?: unknown;
+  chrome?: { webview?: { postMessage?: (message: string) => void } };
+}
+
+/**
+ * Posts a focus intent message to the host when it takes them, and answers
+ * whether it did. A throw from the native bridge propagates to the caller.
+ */
+export function postPaneFocusIntent(message: PaneFocusIntentMessage): boolean {
+  if (typeof window === 'undefined') return false;
+  const w = window as Window & FocusBridgeWindow;
+  const webview = w.chrome?.webview;
+  if (w[FOCUS_CAPABILITY_GLOBAL] !== 1 || typeof webview?.postMessage !== 'function') return false;
+  webview.postMessage(FOCUS_MESSAGE_PREFIX + JSON.stringify(message));
+  return true;
+}

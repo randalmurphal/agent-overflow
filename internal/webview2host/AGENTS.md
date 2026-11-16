@@ -49,8 +49,12 @@ keeps the newest report per mount, drops older sequences, and has at most
 one UI-thread drain queued.
 
 Keyboard focus moves into a page only by `OpFocus`, and only while the host
-shows the page and the launcher window is the foreground window
-(`focusDecision`); AO never takes the OS focus from another application.
+shows the page, the launcher window is the foreground window, and the SPA
+has not withdrawn the directive's focus intent (`focusDecision`,
+`focusintent.go`); AO never takes the OS focus from another application.
+The SPA posts each intent's arm and withdrawal to the launcher directly, so
+a withdrawal wins over a directive still crossing WSL; one heard after the
+move gives the keyboard back (`Host.ReleasePageFocus`).
 
 All COM controller and HWND mutations run on the launcher UI thread. Completion
 handlers may arrive there, so never block on backend RPC inline. Serialize

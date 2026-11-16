@@ -139,6 +139,7 @@ func (a *launcherApp) ensureBrowserHost(bs *wsllauncher.Bootstrap) (*webview2hos
 		// on.
 		OnMain:   application.InvokeSync,
 		Geometry: a.paneGeometry,
+		Focus:    a.paneFocus,
 	})
 	if err != nil {
 		return nil, err
@@ -177,8 +178,12 @@ func (a *launcherApp) ensureBrowserHost(bs *wsllauncher.Bootstrap) (*webview2hos
 }
 
 // handleRawMessage is Options.RawMessageHandler: the SPA's reload chord
-// reports (uikeys.PageChords) and its pane geometry.
+// reports (uikeys.PageChords), its page focus intents and its pane geometry.
 func (a *launcherApp) handleRawMessage(window application.Window, message string, origin *application.OriginInfo) {
+	if strings.HasPrefix(message, webview2host.FocusMessagePrefix) {
+		a.handlePaneFocusMessage(window, message, origin)
+		return
+	}
 	if !strings.HasPrefix(message, uikeys.MessagePrefix) {
 		a.handlePaneGeometryMessage(window, message, origin)
 		return
@@ -216,6 +221,35 @@ func (a *launcherApp) handlePaneGeometryMessage(window application.Window, messa
 	}
 }
 
+// handlePaneFocusMessage takes a page focus intent's arm or withdrawal
+// (webview2host/focusintent.go), which must reach the launcher before a
+// focus directive that crosses WSL after it. A withdrawal of an intent the
+// host already moved focus for hands the keyboard back on the UI thread,
+// queued behind that move.
+func (a *launcherApp) handlePaneFocusMessage(window application.Window, message string, origin *application.OriginInfo) {
+	msg, err := webview2host.ParseFocusIntentMessage(message)
+	if err != nil {
+		log.Printf("browser host: ignore invalid pane focus message: %v", err)
+		return
+	}
+	if !a.trustedPaneGeometrySource(window, origin) {
+		log.Printf("browser host: ignore a pane focus message from an untrusted document")
+		return
+	}
+	page := a.paneFocus.Note(msg)
+	if page == "" {
+		return
+	}
+	application.InvokeAsync(func() {
+		a.mu.Lock()
+		host := a.browserHost
+		a.mu.Unlock()
+		if host != nil {
+			host.ReleasePageFocus(page)
+		}
+	})
+}
+
 // trustedPaneGeometrySource accepts only the launcher's own window showing
 // the backend's SPA.
 func (a *launcherApp) trustedPaneGeometrySource(window application.Window, origin *application.OriginInfo) bool {
@@ -244,11 +278,12 @@ func (a *launcherApp) drainPaneGeometry() {
 }
 
 // advertisePaneGeometry tells each document the window loads that this
-// launcher takes geometry messages; a SPA posts none without it, so a newer
-// SPA under an older launcher only reports to the backend.
+// launcher takes geometry and page focus messages; a SPA posts none without
+// it, so a newer SPA under an older launcher only reports to the backend.
 func advertisePaneGeometry(window *application.WebviewWindow) {
 	window.OnWindowEvent(events.Common.WindowRuntimeReady, func(*application.WindowEvent) {
 		window.ExecJS(webview2host.GeometryCapabilityScript)
+		window.ExecJS(webview2host.FocusCapabilityScript)
 	})
 }
 

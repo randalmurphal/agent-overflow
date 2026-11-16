@@ -22,6 +22,10 @@ type BrowserCompanionAction struct {
 	// "step" (1 next, -1 previous, wrapping). Not omitempty: index 0 (move to
 	// the front) is a real value.
 	Index int `json:"index"`
+	// Mount and Intent name a page focus intent for "focus-page" and
+	// "focus-page-withdraw": the pane mount and its number for the request.
+	Mount  string `json:"mount,omitempty"`
+	Intent uint64 `json:"intent,omitempty"`
 }
 
 func (a *App) browserAccess(threadID string) (appbrowser.Access, error) {
@@ -182,13 +186,16 @@ func (a *App) BrowserCompanionDo(ctx context.Context, threadID string, action Br
 		err = a.browser.manager.CloseCompanionPage(ctx, access, action.PageID)
 	case "devtools":
 		err = a.browser.manager.OpenPaneDevTools(ctx, access, action.PageID)
-	case "focus-page":
+	case "focus-page", "focus-page-withdraw":
 		// Keyboard focus moves within the window the native view lives in,
-		// so only that window may ask for it.
-		if !transport.ConnStateFromContext(ctx).HostWindow() {
+		// so only that window may ask for it or take the request back.
+		switch {
+		case !transport.ConnStateFromContext(ctx).HostWindow():
 			err = errBrowserPaneNotHostWindow
-		} else {
-			err = a.browser.manager.FocusCompanionPage(access)
+		case action.Kind == "focus-page":
+			err = a.browser.manager.FocusCompanionPage(access, action.Mount, action.PageID, action.Intent)
+		default:
+			err = a.browser.manager.WithdrawCompanionPageFocus(access, action.Mount, action.Intent)
 		}
 	default:
 		err = fmt.Errorf("browser: unsupported companion action %q", action.Kind)

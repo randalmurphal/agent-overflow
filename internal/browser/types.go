@@ -44,7 +44,10 @@ type CompanionEvent struct {
 	// Mount rides a Kind "accelerator" or "escape" event: the pane mount
 	// (AttachPane) the thread's pages are presented in. The event reaches
 	// every host client, and only the one holding that mount acts on it.
-	Mount string `json:"mount,omitempty"`
+	// It also rides a Kind "focus" event, which names the mount whose
+	// FocusIntent ended: the page took the keyboard, or Error says why not.
+	Mount       string `json:"mount,omitempty"`
+	FocusIntent uint64 `json:"focusIntent,omitempty"`
 	// FindMode rides a Kind "state" event: how the active page's find is
 	// presented (FindModeBar or FindModeEngine), empty when it has none.
 	FindMode string `json:"findMode,omitempty"`

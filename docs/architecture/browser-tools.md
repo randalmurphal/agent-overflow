@@ -239,19 +239,35 @@ so AO's chords have to be taken back at the engine:
   (`ao_wk_focus_app`, `ao_wkv_focus_app`, and the launcher's
   `releaseFocus`). Showing a page takes no focus.
 - The pane hands the keyboard to the page the way a browser does after the
-  address bar's Enter or Escape: the `focus-page` companion action
-  (`focusBrowserPage` in the frontend store, host window only) reaches
-  `Manager.FocusCompanionPage`, which asks the engine to focus the thread's
-  presented page (`paneHost.FocusPage`) and does nothing when none is
-  presented. The engine checks again that it shows the view, where its hides
-  run: `ao_wk_view_focus_presented` grabs GTK focus on the WebKitGTK view,
+  address bar's Enter or Escape, as a focus intent: a transient request
+  that one page take the keyboard, named by the pane mount and a number per
+  mount (`focus_intent.go`, `focusBrowserPage` in the frontend store, host
+  window only). Being presented, visible or in the foreground makes a page
+  eligible; none of them overrides the user's next focus choice. The store
+  withdraws the intent on a focus or pointer press outside the page area
+  (the composer, the address bar again), another active tab, or the pane
+  unmounting, posting the withdrawal to the Windows launcher directly
+  (`ao:pane-focus:`, beside the pane geometry) and sending
+  `focus-page-withdraw`. The `focus-page` action arms it in
+  `Manager.FocusCompanionPage`, which applies it only while the mount
+  presents the named page, waiting through a restore or a layout until the
+  presentation pass shows it (`applyFocusIntent`, never `ShowPage`), and
+  drops it once withdrawn, superseded, its tab closed or ten seconds old
+  (`FocusIntentMaxAge`). The engine checks the page is shown and the intent
+  live where its hides run, immediately before moving focus:
+  `ao_wk_view_focus_presented` grabs GTK focus on the WebKitGTK view,
   `ao_wkv_view_focus_presented` makes the WKWebView first responder, and the
   launcher applies a `focus` directive on the page's lane with
   `ICoreWebView2Controller::MoveFocus` (programmatic) only while its window
-  is in the foreground (`focusDecision`), the rule a claimed chord's handoff
-  keeps, so AO never takes the OS focus from another application. A
-  controller that refuses answers a `focus-failed` report, which reaches the
-  pane as an error.
+  is in the foreground and it has not heard the intent withdrawn
+  (`focusDecision`, `FocusIntents`), so AO never takes the OS focus from
+  another application. A withdrawal that arrives after the move gives the
+  keyboard back to the app if the page still holds it (`ReleasePageFocus`
+  in each engine, `Host.ReleasePageFocus` in the launcher). The outcome
+  reaches the pane as a Kind `focus` event naming the intent; a refusal
+  (the launcher's `focus-failed` report) takes the pane's action banner
+  unless the intent is no longer the latest or a newer action's banner is
+  up.
 - Only the host's own window mounts a pane (`BrowserCompanionPaneAttach`
   refuses any other connection; see transport.md, the host-window cookie):
   the native view lives in that window. A browser tab on the host offers

@@ -563,6 +563,9 @@ type launcherApp struct {
 	// to the launcher directly (handlePaneGeometryMessage). It exists before
 	// the browser host and is safe from any goroutine.
 	paneGeometry *webview2host.GeometryMailbox
+	// paneFocus holds the SPA's page focus intent arms and withdrawals
+	// (handlePaneFocusMessage); safe from any goroutine.
+	paneFocus *webview2host.FocusIntents
 	// chords routes Ctrl+R to the SPA while it asks for the chord
 	// (uikeys.PageChords), reported over the same raw message channel.
 	chords *uikeys.PageChords
@@ -1390,6 +1393,7 @@ func buildApp(distros []wsllauncher.Distro, initialURL, chosen string, transient
 		notificationActivations: wsllauncher.NewNotificationActivationQueue(),
 		disableGPUVsync:         disableGPUVsync,
 		paneGeometry:            webview2host.NewGeometryMailbox(),
+		paneFocus:               webview2host.NewFocusIntents(),
 		chords:                  uikeys.NewPageChords(),
 	}
 	if disableGPUVsync {

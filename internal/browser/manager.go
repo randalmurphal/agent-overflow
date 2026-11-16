@@ -339,13 +339,13 @@ func NewManager(configDir string, config Config, opts ManagerOptions) *Manager {
 	}
 	m.accelerators = opts.Accelerators
 	m.engine = selectEngine(configDir, opts, engineEvents{
-		PopupOpened:      m.adoptPopup,
-		PageClosed:       m.removeClosedPage,
-		PageInfoChanged:  m.updatePageInfo,
-		DownloadStarted:  m.downloadStarted,
-		DownloadProgress: m.downloadProgress,
-		KeyChord:         m.keyChord,
-		PageFocusFailed:  m.pageFocusFailed,
+		PopupOpened:       m.adoptPopup,
+		PageClosed:        m.removeClosedPage,
+		PageInfoChanged:   m.updatePageInfo,
+		DownloadStarted:   m.downloadStarted,
+		DownloadProgress:  m.downloadProgress,
+		KeyChord:          m.keyChord,
+		PageFocusReported: m.pageFocusReported,
 	})
 	pruneEncryptedCheckpoints(configDir)
 	m.loadPageRecords(opts.KeepThread)

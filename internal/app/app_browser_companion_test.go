@@ -9,10 +9,10 @@ import (
 	"agent-overflow/internal/transport"
 )
 
-// The pane's "focus-page" hands the keyboard to the presented page, and only
-// the host's own window may ask: the native view lives there. With nothing
-// presented (the fake engine has no views) it is a no-op answering the
-// thread's state.
+// The pane's "focus-page" and "focus-page-withdraw" arm and withdraw a page
+// focus intent, and only the host's own window may ask: the native view
+// lives there. With nothing presented (the fake engine has no views) each is
+// a no-op answering the thread's state.
 func TestBrowserCompanionFocusPageIsTheHostWindowsAlone(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)
@@ -20,8 +20,14 @@ func TestBrowserCompanionFocusPageIsTheHostWindowsAlone(t *testing.T) {
 	app.browser.manager = manager
 	t.Cleanup(func() { _ = manager.Close() })
 	thread := makeWorkspaceThread(t, app, "thread-companion-focus")
-	if _, err := app.BrowserCompanionDo(t.Context(), thread.ID, BrowserCompanionAction{Kind: "new"}); err != nil {
+	opened, err := app.BrowserCompanionDo(t.Context(), thread.ID, BrowserCompanionAction{Kind: "new"})
+	if err != nil {
 		t.Fatal(err)
+	}
+	// A request names its mount, page and intent.
+	hostCtx, _ := transport.WithConnState(t.Context(), transport.ConnPrincipal{HostWindow: true})
+	if _, err := app.BrowserCompanionDo(hostCtx, thread.ID, BrowserCompanionAction{Kind: "focus-page"}); err == nil {
+		t.Fatal("a focus-page naming no intent was accepted")
 	}
 	for _, tc := range []struct {
 		name  string
@@ -38,18 +44,21 @@ func TestBrowserCompanionFocusPageIsTheHostWindowsAlone(t *testing.T) {
 		}, false},
 		{"an in-process caller", func() context.Context { return t.Context() }, true},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			state, err := app.BrowserCompanionDo(tc.ctx(), thread.ID, BrowserCompanionAction{Kind: "focus-page"})
-			if !tc.allow {
-				if !errors.Is(err, errBrowserPaneNotHostWindow) {
-					t.Fatalf("focus-page = %v; want the host-window refusal", err)
+		for _, kind := range []string{"focus-page", "focus-page-withdraw"} {
+			t.Run(tc.name+" "+kind, func(t *testing.T) {
+				action := BrowserCompanionAction{Kind: kind, PageID: opened.PageID, Mount: "mount-1", Intent: 1}
+				state, err := app.BrowserCompanionDo(tc.ctx(), thread.ID, action)
+				if !tc.allow {
+					if !errors.Is(err, errBrowserPaneNotHostWindow) {
+						t.Fatalf("%s = %v; want the host-window refusal", kind, err)
+					}
+					return
 				}
-				return
-			}
-			if err != nil || len(state.Pages) != 1 {
-				t.Fatalf("focus-page = %+v, %v; want the thread's state", state, err)
-			}
-		})
+				if err != nil || len(state.Pages) != 1 {
+					t.Fatalf("%s = %+v, %v; want the thread's state", kind, state, err)
+				}
+			})
+		}
 	}
 }
 
