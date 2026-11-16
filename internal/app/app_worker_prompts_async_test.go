@@ -9,7 +9,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -628,6 +630,163 @@ func TestAHandBackAnnouncedAfterItsQuestionClosedDoesNotNotify(t *testing.T) {
 		if !send.Retract {
 			t.Fatalf("a closed question notified: %+v", sends)
 		}
+	}
+}
+
+// A thread frame reconciles only a thread holding an open question: a frame
+// of any other thread, a Claude thread or a Codex thread asking nothing,
+// reads nothing from the store. The questions' own change opens one, and
+// a frame of that thread then reconciles it.
+func TestAThreadFrameReadsOnlyAThreadWithAnOpenQuestion(t *testing.T) {
+	t.Parallel()
+	f := newAsyncQuestionFixture(t, "async-frames", store.PlacementOwned)
+	frame := func(id string) {
+		f.app.tapWorkerPrompt(eventchan.ThreadUpdated, triage.ThreadUpdateEvent{Action: triage.ThreadActionFull, ID: id})
+		f.drain(t)
+	}
+	reads := readsUnder(f.app.store, "app.(*App).reconcileAsyncQuestions")
+	frame(f.spawner.ID)
+	frame(f.worker.ID)
+	if total, by := reads(); total != 0 {
+		t.Fatalf("frames of threads asking nothing read %d times: %v", total, by)
+	}
+	f.ask(t, "question:ask", `{"delivery":"async","questions":[{"title":"Which scope?"}]}`)
+	reads = readsUnder(f.app.store, "app.(*App).reconcileAsyncQuestions")
+	frame(f.worker.ID)
+	if total, _ := reads(); total == 0 {
+		t.Fatal("a frame of the thread with an open question did not reconcile it")
+	}
+}
+
+// A fork carries its source's open questions, which no frame of a thread
+// holding none reconciles: the fork says they changed, so they are open in
+// the fork from the start.
+func TestAForkOpensTheAsyncQuestionsItCarries(t *testing.T) {
+	t.Parallel()
+	f := newAsyncQuestionFixture(t, "async-fork", store.PlacementStandalone)
+	f.ask(t, "question:ask", `{"delivery":"async","questions":[{"title":"Which scope?"}]}`)
+	if _, err := f.app.settings.Update(map[string]any{
+		"codexBinaryPath": writeCodexForkAtBinary(t, codexForkMock{resumedThreadID: "async-fork-provider", forkedThreadID: "async-fork-child"}),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	worker, err := f.app.store.GetThread(f.worker.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker.SessionRef = "async-fork-provider"
+	if err := f.app.store.UpdateThread(worker); err != nil {
+		t.Fatal(err)
+	}
+	fork, err := f.app.ForkThread(t.Context(), f.worker.ID, nil)
+	if err != nil {
+		t.Fatalf("ForkThread: %v", err)
+	}
+	f.drain(t)
+	if detail, routedTo, asking := f.app.asyncQuestionBlocked(fork.ID); !asking || detail != "Which scope?" || routedTo != "" {
+		t.Fatalf("the fork asks %q of %q (%v), want its question open and the person's", detail, routedTo, asking)
+	}
+}
+
+// A fork from a message opens the async questions it carries the same way.
+func TestAForkFromAMessageOpensTheAsyncQuestionsItCarries(t *testing.T) {
+	t.Parallel()
+	app := newTestApp(t)
+	workspace := t.TempDir()
+	writeClaudeProjectSession(t, testProviderHome(t, app), workspace, "slice-ids-source", sliceIDsTestSessionJSONL)
+	source := createAppTestThread(t, app, "async-fork-message", "claude", workspace)
+	source.SessionRef = "slice-ids-source"
+	if err := app.store.UpdateThread(source); err != nil {
+		t.Fatal(err)
+	}
+	insertUserItemWithMeta(t, app.store, source.ID, "user:0", 0, "first", `{"provider_item_id":"u0"}`)
+	insertUserItemWithMeta(t, app.store, source.ID, "user:1", 1, "second", `{"provider_item_id":"u1"}`)
+	if _, err := app.store.RecordAsyncQuestions(store.Item{
+		ID: "question:ask", ThreadID: source.ID, TurnIndex: 1, Kind: "assistant_text", Role: "assistant", Status: "completed",
+		Meta: `{"delivery":"async","questions":[{"title":"Which scope?"}]}`,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	insertUserItemWithMeta(t, app.store, source.ID, "user:2", 2, "third", `{"provider_item_id":"u2"}`)
+	seedMessageAnchor(t, app.store, source.ID, "user:1", 1, "u1", "a0")
+	seedMessageAnchor(t, app.store, source.ID, "user:2", 2, "u2", "a1")
+	fork, err := app.ForkThreadFromMessage(t.Context(), source.ID, "user:2")
+	if err != nil {
+		t.Fatalf("ForkThreadFromMessage: %v", err)
+	}
+	if err := app.drainWorkerPrompts(context.Background(), 10*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if detail, routedTo, asking := app.asyncQuestionBlocked(fork.ID); !asking || detail != "Which scope?" || routedTo != "" {
+		t.Fatalf("the fork asks %q of %q (%v), want its question open and the person's", detail, routedTo, asking)
+	}
+}
+
+// A spawn's fork carries its source's async questions, and they go to the
+// spawner once the request names it, even when its prompt never reaches it.
+func TestASpawnedForkPutsTheAsyncQuestionsItCarriesToItsSpawner(t *testing.T) {
+	t.Parallel()
+	for _, placement := range []string{threadtools.PlacementOwned, threadtools.PlacementStandalone} {
+		t.Run(placement, func(t *testing.T) {
+			t.Parallel()
+			f := newRequestFixture(t)
+			source := f.forkableThread(t, "async-spawn-source-"+placement)
+			if _, err := f.app.store.RecordAsyncQuestions(store.Item{
+				ID: "question:ask", ThreadID: source.ID, Kind: "assistant_text", Role: "assistant", Status: "completed",
+				Meta: `{"delivery":"async","questions":[{"title":"Which scope?"}]}`,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.app.settings.Update(map[string]any{"claudeBinaryPath": filepath.Join(t.TempDir(), "missing-claude")}); err != nil {
+				t.Fatal(err)
+			}
+			_, err := f.adapter().Spawn(t.Context(), f.callerIdentity(), threadtools.SpawnCall{Prompt: "start", FromThread: source.ID, Placement: placement})
+			made := regexp.MustCompile(`Thread (\S+) was created for it`).FindStringSubmatch(fmt.Sprint(err))
+			if made == nil {
+				t.Fatalf("Spawn: %v, want a refusal naming the thread it made", err)
+			}
+			for range 3 {
+				if err := f.app.drainWorkerPrompts(context.Background(), 10*time.Second); err != nil {
+					t.Fatal(err)
+				}
+				f.app.threadRequestsWG.Wait()
+			}
+			if detail, routedTo, asking := f.app.asyncQuestionBlocked(made[1]); !asking || detail != "Which scope?" || routedTo != f.caller.Title {
+				t.Fatalf("the spawned fork asks %q of %q (%v), want its question open and its spawner's", detail, routedTo, asking)
+			}
+		})
+	}
+}
+
+// Shutdown joins the prompts' queue before the store closes, and nothing
+// queues a reconcile once it has begun: a change emitted after it reads
+// nothing.
+func TestNoAsyncQuestionReconcileRunsAfterShutdownBegins(t *testing.T) {
+	t.Parallel()
+	f := newAsyncQuestionFixture(t, "async-shutdown", store.PlacementOwned)
+	f.ask(t, "question:ask", `{"delivery":"async","questions":[{"title":"Which scope?"}]}`)
+	reads := readsUnder(f.app.store, "app.(*App).reconcileAsyncQuestions")
+	var during error
+	f.app.shutdownStepFn = func(step string, _ error) {
+		if step == "drain triage" {
+			// Shutdown has begun; the prompts' queue is not yet joined.
+			f.app.emit(eventchan.ProviderAsyncQuestionsChanged, map[string]string{"threadId": f.worker.ID})
+			if err := f.app.drainWorkerPrompts(context.Background(), 10*time.Second); err != nil {
+				during = err
+			}
+		}
+	}
+	if err := f.app.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+	if during != nil {
+		t.Fatal(during)
+	}
+	f.app.emit(eventchan.ProviderAsyncQuestionsChanged, map[string]string{"threadId": f.worker.ID})
+	f.app.workerPrompts.run(func() { f.app.reconcileAsyncQuestions(f.worker.ID) })
+	f.app.workerPrompts.queue.Wait()
+	if total, by := reads(); total != 0 {
+		t.Fatalf("reconciles read %d times once shutdown began: %v", total, by)
 	}
 }
 

@@ -231,6 +231,10 @@ func (a *App) unarchiveThreadLocked(id string) (store.Thread, error) {
 	// Broadcast as `listed` so every other attached client puts the row
 	// back in its sidebar.
 	a.announceThreadIfChanged(triage.ThreadActionListed, row.ID, changed)
+	if changed {
+		// Its async questions are open again (app_worker_prompts_async.go).
+		a.emitAsyncQuestionsChanged(row.ID)
+	}
 	return row, nil
 }
 

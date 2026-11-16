@@ -123,8 +123,24 @@ type workerPrompts struct {
 	// answer a late reply.
 	current map[workerPromptKey]string
 	queue   serialqueue.Queue
+	// gate guards closed, which shutdown sets before it joins the queue
+	// (drainWorkerPrompts): from then on nothing runs on it, so nothing
+	// reads SQLite after it closes.
+	gate   sync.Mutex
+	closed bool
 	// async is where each open async question prompt goes.
 	async asyncQuestionRoutes
+}
+
+// run queues job on the prompts' serial queue, unless shutdown closed it:
+// a prompt it would deliver or settle dies with the process, and the boot
+// routes the async questions again.
+func (w *workerPrompts) run(job func()) {
+	w.gate.Lock()
+	defer w.gate.Unlock()
+	if !w.closed {
+		w.queue.Go(job)
+	}
 }
 
 // routeWorkerPrompt is triage's prompt router: the thread that spawned
@@ -143,19 +159,23 @@ func (a *App) routeWorkerPrompt(threadID string) *provider.PromptRoute {
 
 // tapWorkerPrompt is the emit tap: a prompt announced routed is delivered
 // to its agent, and a prompt announced as the user's or resolved settles
-// its routed registration. A change to a thread's async questions, or to
-// whether it is listed, archived or there at all, reconciles its async
-// question prompts.
+// its routed registration. A change to a thread's async questions
+// reconciles its async question prompts, and so does a change to whether a
+// thread holding one open is listed, archived or there at all. What can
+// open a question on a thread holding none emits the change itself: an
+// unarchive, a fork, a spawn naming its thread, the boot.
 func (a *App) tapWorkerPrompt(name eventchan.Channel, data any) {
 	if event, ok := data.(triage.ThreadUpdateEvent); ok {
-		// Every frame but a patch: an archive, an unarchive, a delete, a
-		// placement, or a spawn naming its thread.
+		// Every frame but a patch: an archive, a delete, a placement, a
+		// handoff.
 		if event.Action != triage.ThreadActionPatch {
 			id := event.ID
 			if event.Thread != nil {
 				id = event.Thread.ID
 			}
-			a.syncAsyncQuestionPrompts(id)
+			if a.workerPrompts.async.holds(id) {
+				a.syncAsyncQuestionPrompts(id)
+			}
 		}
 		return
 	}
@@ -203,9 +223,9 @@ func (a *App) tapWorkerPrompt(name eventchan.Channel, data any) {
 	switch {
 	case action == "request" && route != nil:
 		to := *route
-		a.workerPrompts.queue.Go(func() { a.deliverWorkerPrompt(to, prompt) })
+		a.workerPrompts.run(func() { a.deliverWorkerPrompt(to, prompt) })
 	case action == "request" && (prompt.approval != nil || prompt.question != nil), action == "resolve":
-		a.workerPrompts.queue.Go(func() { a.settleWorkerPrompt(prompt.workerID, prompt.requestID, prompt.occurrence) })
+		a.workerPrompts.run(func() { a.settleWorkerPrompt(prompt.workerID, prompt.requestID, prompt.occurrence) })
 	}
 }
 
@@ -308,7 +328,7 @@ func (a *App) settleWorkerPrompt(workerID, requestID string, occurrence provider
 // on. Its async questions are not its session's and stay open. It runs on
 // the prompts' serial queue, after any delivery announced before the end.
 func (a *App) settleEndedWorkerPrompts(workerID string) {
-	a.workerPrompts.queue.Go(func() {
+	a.workerPrompts.run(func() {
 		for _, prompt := range a.workerPrompts.settleWorker(workerID) {
 			a.withdrawWorkerPromptWake(prompt)
 		}
@@ -709,8 +729,18 @@ func (w *workerPrompts) endAnswer(token string, state workerPromptState) {
 	prompt.closedAt = time.Now()
 }
 
-// drainWorkerPrompts lets queued deliveries and settlements finish before
-// SQLite closes.
+// drainWorkerPrompts waits for queued deliveries, settlements and
+// reconciles to finish.
 func (a *App) drainWorkerPrompts(ctx context.Context, timeout time.Duration) error {
 	return drainSerialQueue(ctx, &a.workerPrompts.queue, timeout)
+}
+
+// closeWorkerPrompts is shutdown's join of the prompts' queue, before
+// SQLite closes: nothing queued from here on runs, and what was queued
+// finishes.
+func (a *App) closeWorkerPrompts(ctx context.Context, timeout time.Duration) error {
+	a.workerPrompts.gate.Lock()
+	a.workerPrompts.closed = true
+	a.workerPrompts.gate.Unlock()
+	return a.drainWorkerPrompts(ctx, timeout)
 }

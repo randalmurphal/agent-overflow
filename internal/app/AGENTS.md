@@ -211,7 +211,9 @@ that asked it, never a later prompt under the same request id. A Codex
 thread's async questions are prompts on the same registry, but triage's
 live state ends with the session and they do not: their route is kept
 in `app_worker_prompts_async.go`, reconciled from the store on every
-change to them and at boot.
+change to them and at boot. A thread frame reconciles only a thread that
+holds one open; whatever can open one on a thread holding none emits the
+change itself. Shutdown joins the reconcile queue before the store closes.
 
 Project and thread service writes return the current row plus whether durable
 state changed. Emit updates only for changes, while still returning the row to

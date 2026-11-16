@@ -33,11 +33,14 @@ import (
 // (seedAsyncQuestionPrompts).
 //
 // The record follows the store, not the other way round: every change to a
-// thread's questions emits provider:async_questions_changed, a revert emits
-// user_message:reverted, and every thread frame but a patch says it may be
-// archived, unarchived, deleted or newly named by a spawn (a fork carries
-// its source's questions). Each queues one reconcile of that
-// thread on the prompts' serial queue (syncAsyncQuestionPrompts), which
+// thread's questions emits provider:async_questions_changed, and so do the
+// writes that can open questions on a thread holding none: an unarchive, a
+// fork, which carries its source's questions, and a spawn naming its thread.
+// A revert emits user_message:reverted, and a thread frame but a patch of a
+// thread holding an open question says it may be archived, deleted or
+// placed; a frame of any other thread costs nothing. Each queues one
+// reconcile of that thread on the prompts' serial queue
+// (syncAsyncQuestionPrompts), none once shutdown has begun, which
 // reads the thread's unanswered questions and announces what opened and
 // what closed. An archived thread's questions are not open: an archive asks
 // nobody, as it ends its session's prompts. One item's unanswered questions
@@ -78,12 +81,33 @@ type asyncQuestionPrompt struct {
 }
 
 // syncAsyncQuestionPrompts queues a reconcile of threadID's async question
-// prompts with its questions as the store has them.
+// prompts with its questions as the store has them. Once shutdown has
+// begun it queues none: the next boot routes what is open
+// (seedAsyncQuestionPrompts).
 func (a *App) syncAsyncQuestionPrompts(threadID string) {
-	if threadID == "" {
+	if threadID == "" || a.shuttingDown.Load() {
 		return
 	}
-	a.workerPrompts.queue.Go(func() { a.reconcileAsyncQuestions(threadID) })
+	a.workerPrompts.run(func() { a.reconcileAsyncQuestions(threadID) })
+}
+
+// emitAsyncQuestionsChanged says threadID's async questions may have
+// changed by a write that does not report its questions: one that can open
+// them on a thread holding none.
+func (a *App) emitAsyncQuestionsChanged(threadID string) {
+	a.emit(eventchan.ProviderAsyncQuestionsChanged, map[string]string{"threadId": threadID})
+}
+
+// holds reports whether threadID has an open async question prompt.
+func (r *asyncQuestionRoutes) holds(threadID string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for key := range r.open {
+		if key.workerID == threadID {
+			return true
+		}
+	}
+	return false
 }
 
 // seedAsyncQuestionPrompts routes, at boot, the async questions a restart
@@ -304,7 +328,7 @@ func (a *App) rerouteAsyncQuestions(from string, refs []triage.PromptRef, reject
 	}
 	routes.mu.Unlock()
 	for _, prompt := range moved {
-		a.workerPrompts.queue.Go(func() { a.announceAsyncQuestion(prompt) })
+		a.workerPrompts.run(func() { a.announceAsyncQuestion(prompt) })
 		a.noteWorkerLiveness(prompt.request.ThreadID)
 	}
 	return len(moved)
