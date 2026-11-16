@@ -81,16 +81,17 @@ func (s staleProviderBinary) sameFlag(other staleProviderBinary) bool {
 }
 
 // startProviderBinaryWatcher runs the provider-binary upgrade watcher.
-// Starts at app boot, exits when lifeCtx is cancelled (Shutdown step 1b).
+// Starts at app boot, exits when lifeCtx is cancelled (Shutdown step 1b),
+// and Shutdown joins it through unattendedLoops before the stores close.
 // It never mutates the session map — it only reads a snapshot of it and
-// emits — so unlike the idle reaper it needs no stop channel or WaitGroup.
+// emits — so unlike the idle reaper it needs no stop channel of its own.
 //
 // The first tick is at t = providerBinaryWatchInterval, not t=0: nothing can
 // have been upgraded in the first minute of a process that just resolved
 // those binaries, and boot already has enough subprocesses in flight.
 func (a *App) startProviderBinaryWatcher() {
 	ctx := a.lifeCtx()
-	go func() {
+	a.unattendedLoops.Go(func() {
 		ticker := time.NewTicker(providerBinaryWatchInterval)
 		defer ticker.Stop()
 		for {
@@ -101,7 +102,7 @@ func (a *App) startProviderBinaryWatcher() {
 				a.sweepProviderBinaries()
 			}
 		}
-	}()
+	})
 }
 
 // sweepProviderBinaries is one tick: refresh what each provider binary

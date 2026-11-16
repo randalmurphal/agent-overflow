@@ -225,9 +225,15 @@ type App struct {
 	// projectIdentityWG joins the boot pass that re-derives project
 	// repository identity (startProjectIdentityRefresh).
 	projectIdentityWG sync.WaitGroup
-	// startupProbeWG joins the startup account probes and the Claude probe's
-	// retry loop (probeStartupAccountInfo).
+	// startupProbeWG joins the startup provider status probe
+	// (probeStartupProviderStatuses), the startup account probes and the
+	// Claude probe's retry loop (probeStartupAccountInfo).
 	startupProbeWG sync.WaitGroup
+	// unattendedLoops joins the goroutines the boot's unattended work leaves
+	// running that no narrower owner joins: the worktree watch's first read,
+	// the provider binary watcher, the domain certificate loop and the
+	// tailnet loop. Each ends with the app context.
+	unattendedLoops workGroup
 	// permissionModeFollowWG joins the goroutines that move a thread onto
 	// the permission mode Claude moved to (followClaudePermissionMode).
 	permissionModeFollowWG sync.WaitGroup

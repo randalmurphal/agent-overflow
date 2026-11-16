@@ -97,6 +97,13 @@ func (p *recordingBootProgress) snapshot() (begun, ended, details []string) {
 // t.TempDir(), and the browser engine is the fake.
 func newBootTestApp(t *testing.T) *App {
 	t.Helper()
+	return newBootTestAppWithProvider(t, bootTestProviderBinary(t))
+}
+
+// newBootTestAppWithProvider is newBootTestApp with its own mock provider
+// binary.
+func newBootTestAppWithProvider(t *testing.T, providerBinary string) *App {
+	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
@@ -105,7 +112,7 @@ func newBootTestApp(t *testing.T) *App {
 	ConfigureIsolation(a, IsolationConfig{
 		// The background work a boot starts probes every provider; it
 		// runs this mock, never an installed CLI.
-		ProviderBinary:    bootTestProviderBinary(t),
+		ProviderBinary:    providerBinary,
 		CredentialHome:    home,
 		UseFileKeychain:   true,
 		MockBrowserEngine: true,

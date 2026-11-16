@@ -167,6 +167,10 @@ func (a *App) Shutdown(ctx context.Context) error {
 		}
 		return nil
 	}())
+	// The boot's unattended loops end with the app context. Joined before
+	// the worktree watcher closes, because the watch's first read feeds it,
+	// and before the stores close, because each loop reads settings or rows.
+	a.unattendedLoops.Close()
 	a.codexThreadService().Close()
 	// The auto-switch worker switches accounts, reads usage and queues
 	// continues into threads; appCtx is cancelled, so it is returning or

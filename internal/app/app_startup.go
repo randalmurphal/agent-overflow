@@ -271,6 +271,9 @@ func (a *App) reconcileProviderHome() error {
 // database undo it?" — and everything here answers no. The snapshot boundary
 // is the SQLite triple; provider credentials, attachment files, git objects,
 // ACME rate limits and tailnet state are all outside it.
+//
+// A step that leaves a goroutine running hands it to an owner Shutdown
+// joins; one with no narrower owner runs it in unattendedLoops.
 func (a *App) startUnattendedWork() []bootStep {
 	return []bootStep{
 		infallibleBootStep(a.startOwnDeviceConnections),
@@ -294,10 +297,10 @@ func (a *App) startUnattendedWork() []bootStep {
 		infallibleBootStep(a.startPRListPrefetch),
 		// Probe provider binaries once on boot so the thread-level banner
 		// can surface "claude not found" / "codex too old" before the user
-		// opens settings. Runs in a goroutine because DetectProvider spawns
-		// subprocesses (up to 5s per provider) and we never want that
+		// opens settings. Probes on its own goroutine because DetectProvider
+		// spawns subprocesses (up to 5s per provider) and we never want that
 		// blocking app startup.
-		infallibleBootStep(func() { go a.probeStartupProviderStatuses() }),
+		infallibleBootStep(a.probeStartupProviderStatuses),
 		// Probe authenticated account info (planType, subscription) for both
 		// providers. Separate goroutine because the account probe spawns a
 		// short-lived provider process and runs the wire handshake — slower
@@ -308,7 +311,7 @@ func (a *App) startUnattendedWork() []bootStep {
 		// provider's own credential store, and a Claude refresh token is
 		// single-use. A trial that rotated one and was then rolled back would
 		// leave the restored version holding a credential that is already spent.
-		infallibleBootStep(func() { go a.probeStartupAccountInfo() }),
+		infallibleBootStep(a.probeStartupAccountInfo),
 		// Start the Claude rate-limit probe loop. Startup account adoption runs
 		// the first usage read; this loop refreshes every 2 mins while at least
 		// one Claude session is alive, and turn-complete is wired separately in

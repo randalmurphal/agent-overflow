@@ -4,17 +4,21 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
 	"agent-overflow/internal/attachment"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/testutil/mockexec"
 	"agent-overflow/internal/threadmode"
 )
 
@@ -144,11 +148,17 @@ func TestAParkedTrialTouchesNothingOutsideTheDatabaseBeforeItsCommit(t *testing.
 
 	ActivateUnattendedWork(a, ServiceUpdateOutcome{})
 
-	waitUntil(t, 30*time.Second, func() bool {
-		_, terminalErr := a.store.GetThread(run.terminalThread)
-		_, forkErr := a.store.GetThread(run.preparingFork)
-		return errors.Is(terminalErr, sql.ErrNoRows) && errors.Is(forkErr, sql.ErrNoRows)
-	})
+	// Clients are admitted once every step before them has run.
+	admitCtx, cancelAdmit := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancelAdmit()
+	if err := WaitForActivation(a, admitCtx); err != nil {
+		t.Fatalf("WaitForActivation after the commit: %v", err)
+	}
+	for _, id := range []string{run.terminalThread, run.preparingFork} {
+		if _, err := a.store.GetThread(id); !errors.Is(err, sql.ErrNoRows) {
+			t.Errorf("thread %s after the commit: %v, want it removed", id, err)
+		}
+	}
 	for _, path := range run.removed() {
 		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
 			t.Errorf("%s after the commit: %v, want it removed", path, err)
@@ -200,6 +210,78 @@ func TestAFailingBootStepFailsTheBootAfterTheOtherSteps(t *testing.T) {
 	}
 	if state, err := a.WorkflowGetEngineState(); err != nil || state.Paused {
 		t.Errorf("workflow engine after the failed boot = %+v, %v; want its starts released", state, err)
+	}
+}
+
+// The goroutines the unattended work leaves running with no narrower owner
+// are ones Shutdown joins. The worktree watch's first read waits for the
+// first catalog reads, which no client makes here, and the binary watcher,
+// the domain certificate loop and the tailnet loop run until shutdown.
+func TestShutdownJoinsTheLoopsTheUnattendedWorkLeavesRunning(t *testing.T) {
+	a := newBootTestApp(t)
+	t.Cleanup(func() {
+		if err := a.Shutdown(context.Background()); err != nil {
+			t.Errorf("Shutdown: %v", err)
+		}
+	})
+	if err := a.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if got := a.unattendedLoops.members(); got != 4 {
+		t.Errorf("unattended loops after the boot = %d, want 4", got)
+	}
+	if err := a.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+	if got := a.unattendedLoops.members(); got != 0 {
+		t.Errorf("unattended loops after Shutdown = %d, want 0", got)
+	}
+}
+
+// The startup provider probes spawn provider processes; Shutdown waits for
+// every one the boot started instead of returning beside it.
+func TestShutdownWaitsForTheStartupProviderProbes(t *testing.T) {
+	marks := t.TempDir()
+	binary := mockexec.Write(t, filepath.Join(t.TempDir(), "provider"), fmt.Sprintf(
+		"#!/bin/sh\ntouch %q/start-$$\nif [ \"$1\" = --version ]; then sleep 1; echo '0.0.0 (boot test mock)'; fi\ntouch %q/done-$$\nexit 0\n",
+		marks, marks))
+	a := newBootTestAppWithProvider(t, binary)
+	t.Cleanup(func() {
+		if err := a.Shutdown(context.Background()); err != nil {
+			t.Errorf("Shutdown: %v", err)
+		}
+	})
+	count := func(prefix string) int {
+		matches, err := filepath.Glob(filepath.Join(marks, prefix+"-*"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(matches)
+	}
+	if err := a.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	waitUntil(t, 30*time.Second, func() bool { return count("start") > count("done") })
+	if err := a.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+	// A process Shutdown cancelled was killed before it could mark itself
+	// done; one that outlived Shutdown is still running.
+	starts, err := filepath.Glob(filepath.Join(marks, "start-*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, start := range starts {
+		pid, err := strconv.Atoi(strings.TrimPrefix(filepath.Base(start), "start-"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(filepath.Join(marks, fmt.Sprintf("done-%d", pid))); err == nil {
+			continue
+		}
+		if process, err := os.FindProcess(pid); err == nil && process.Signal(syscall.Signal(0)) == nil {
+			t.Errorf("provider process %d the boot started outlived Shutdown", pid)
+		}
 	}
 }
 

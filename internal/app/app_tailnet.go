@@ -151,7 +151,7 @@ func (a *App) startTailnetLoop(dir string) {
 	a.tailnet.mu.Unlock()
 
 	ctx := a.lifeCtx()
-	go func() {
+	a.unattendedLoops.Go(func() {
 		for {
 			wait := a.reconcileTailnet()
 			// Re-read the channel every pass: the node it belongs to is
@@ -172,7 +172,7 @@ func (a *App) startTailnetLoop(dir string) {
 			case <-timer.C:
 			}
 		}
-	}()
+	})
 }
 
 // kickTailnet asks the loop to reconcile now. Never blocks and never

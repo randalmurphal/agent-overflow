@@ -248,6 +248,36 @@ func TestShutdownWalksDocumentedOrder(t *testing.T) {
 	}
 }
 
+// An unattended loop that is mid-pass when the app context ends finishes
+// before Shutdown goes on to close what it reads, and none starts after.
+func TestShutdownWaitsForTheUnattendedLoops(t *testing.T) {
+	app, _ := newFullyWiredTestApp(t)
+	entered, release := make(chan struct{}), make(chan struct{})
+	app.unattendedLoops.Go(func() { close(entered); <-release })
+	<-entered
+
+	shutdown := make(chan error, 1)
+	go func() { shutdown <- app.Shutdown(context.Background()) }()
+	select {
+	case err := <-shutdown:
+		close(release)
+		t.Fatalf("Shutdown returned (%v) while an unattended loop was running", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(release)
+	select {
+	case err := <-shutdown:
+		if err != nil {
+			t.Fatalf("Shutdown: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Shutdown did not return after the loop ended")
+	}
+	if app.unattendedLoops.Go(func() {}) {
+		t.Error("an unattended loop started after Shutdown")
+	}
+}
+
 // TestShutdownIsIdempotent verifies a second Shutdown call returns nil
 // and does not re-run any subsystem close. Wails' lifecycle + tests that
 // also call Shutdown must stay safe under double-invocation.
