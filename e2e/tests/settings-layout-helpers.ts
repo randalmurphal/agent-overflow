@@ -13,6 +13,7 @@ export interface LayoutFault {
     | 'text-crushed'
     | 'word-broken'
     | 'control-wraps'
+    | 'control-outside'
     | 'input-crushed'
     | 'command-wraps';
   text: string;
@@ -21,20 +22,42 @@ export interface LayoutFault {
 const panelSelector = '[role="tabpanel"][id^="settings-panel-"]';
 
 /**
- * Every layout fault the open settings page shows: content wider than the
- * panel or cut off by a box inside it, a truncated text cut to a few
+ * Every layout fault the open settings page shows, or each box `selector`
+ * matches in it: content wider than the box or cut off by a box inside it,
+ * a control reaching past either side of it, a truncated text cut to a few
  * letters, a word broken mid-word, a labelled control wrapped onto a second
  * line, or a text field squeezed too narrow to read. A break at a hyphen,
  * dot or underscore is a legitimate wrap point; paths and words longer than
  * the column may break anywhere.
  */
-export async function layoutFaults(page: Page, section: string): Promise<LayoutFault[]> {
-  const found = await page.locator(panelSelector).evaluate((root) => {
+export async function layoutFaults(page: Page, section: string, selector = panelSelector): Promise<LayoutFault[]> {
+  const found = await page.locator(selector).evaluateAll((roots) => roots.flatMap((root) => {
     const faults: { kind: LayoutFault['kind']; text: string }[] = [];
     if (root.scrollWidth > root.clientWidth + 1) {
       faults.push({ kind: 'panel-overflow', text: `${root.scrollWidth}px content in ${root.clientWidth}px` });
     }
     const shown = (el: Element) => (el as HTMLElement).offsetParent !== null && getComputedStyle(el).visibility !== 'hidden';
+
+    // Overflow on the start side never scrolls into view, so a control is
+    // also measured against the box's edges. A control inside a box that
+    // clips or scrolls is that box's business (content-clipped).
+    const box = root.getBoundingClientRect();
+    const clipped = (el: Element) => {
+      for (let up = el.parentElement; up && up !== root; up = up.parentElement) {
+        if (getComputedStyle(up).overflowX !== 'visible') return true;
+      }
+      return false;
+    };
+    for (const el of root.querySelectorAll('button, [role="button"], a, label, input, select')) {
+      if (!shown(el) || el.closest('.sr-only') || clipped(el)) continue;
+      const rect = el.getBoundingClientRect();
+      if (rect.width === 0 || (rect.left >= box.left - 1 && rect.right <= box.right + 1)) continue;
+      const name = (el.textContent ?? '').trim() || el.getAttribute('aria-label') || el.tagName.toLowerCase();
+      faults.push({
+        kind: 'control-outside',
+        text: `"${name.slice(0, 40)}" spans ${Math.round(rect.left)}-${Math.round(rect.right)}px in ${Math.round(box.left)}-${Math.round(box.right)}px`,
+      });
+    }
     const lineTops = (range: Range) =>
       new Set([...range.getClientRects()].filter((r) => r.width > 0 && r.height > 0).map((r) => Math.round(r.top))).size;
     // The lines a control's label takes. Only its text counts: an icon
@@ -116,7 +139,7 @@ export async function layoutFaults(page: Page, section: string): Promise<LayoutF
       }
     }
     return faults;
-  });
+  }));
   return found.map((fault) => ({ section, ...fault }));
 }
 
@@ -189,6 +212,24 @@ export async function settingsLayoutFaults(harness: HarnessApp, page: Page, comp
     if (compact) await page.getByTestId('settings-page-back').click();
   }
   return faults;
+}
+
+/**
+ * Measures the Codex account card that has the most to fit (see
+ * saveCodexAccountNeedingSignIn) on a phone. Saving the account is
+ * process-wide state, so the caller passes a backend it owns.
+ */
+export async function codexAccountCardFaults(harness: HarnessApp, page: Page): Promise<LayoutFault[]> {
+  await harness.open(page);
+  await page.getByTestId('sidebar-settings-button').click();
+  await saveCodexAccountNeedingSignIn(harness, page, true);
+  // Reopening the page it was saved on keeps the page mounted; a fresh load
+  // lists the account as it is now.
+  await page.reload();
+  await page.getByTestId('sidebar-settings-button').click();
+  await openSection(page, 'Codex');
+  await expect(page.locator('[data-testid^="provider-account-sign-in-"]')).toBeVisible();
+  return layoutFaults(page, 'Codex', '[data-account-card]');
 }
 
 /**

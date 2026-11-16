@@ -336,7 +336,8 @@
   {:else}
     <p class="sr-only" aria-live="polite">{reorderNotice}</p>
     <!-- A narrow list (a phone) gives each card's name the full width it
-         needs to be told apart, and the controls a row of their own. -->
+         needs to be told apart, and the controls a row of their own that
+         wraps within the card at large text sizes. -->
     <div class="@container/accounts flex flex-col gap-2" bind:this={listEl}>
       {#each accounts as account, index (account.id)}
         {@const limits = getProviderRateLimits(provider, account.id, backend)}
@@ -436,7 +437,7 @@
             </button>
 
             <div
-              class="flex shrink-0 items-center gap-1 @max-lg/accounts:basis-full @max-lg/accounts:justify-end"
+              class="flex shrink-0 items-center gap-1 @max-lg/accounts:basis-full @max-lg/accounts:flex-wrap @max-lg/accounts:justify-end"
               data-testid="provider-account-controls-{account.id}">
               <label
                 class="flex cursor-pointer items-center gap-1.5 whitespace-nowrap px-1 text-[0.71875rem] text-fg-muted has-[:disabled]:cursor-not-allowed has-[:disabled]:opacity-50 compact:select-none"
@@ -475,33 +476,37 @@
                   Sign in again
                 </button>
               {/if}
-              <button
-                type="button"
-                class={GHOST_BUTTON_CLASS}
-                disabled={account.needsLogin || !!actions.refreshingID || credentialOpInFlight || !admin}
-                onclick={() => void refreshProviderAccountUsage(provider, account, backend)}
-                title={ungrantedTitle ?? (account.needsLogin
-                  ? 'Sign in again to refresh usage limits'
-                  : 'Refresh usage limits')}
-                aria-label={`Refresh usage for ${providerAccountName(account)}`}
-              >
-                <Icon
-                  icon={RefreshCw}
-                  size={12}
-                  strokeWidth={1.75}
-                  class={actions.refreshingID === account.id ? 'animate-spin' : ''}
-                />
-              </button>
-              <button
-                type="button"
-                class="{GHOST_BUTTON_CLASS} hover:text-error"
-                disabled={credentialOpInFlight || !admin}
-                onclick={() => requestRemoval(account)}
-                title={ungrantedTitle ?? 'Remove saved account'}
-                aria-label={`Remove ${providerAccountName(account)}`}
-              >
-                <Icon icon={Trash2} size={12} strokeWidth={1.75} />
-              </button>
+              <!-- The icon actions wrap as a pair, never leaving one alone on
+                   a line. -->
+              <div class="flex items-center gap-1">
+                <button
+                  type="button"
+                  class={GHOST_BUTTON_CLASS}
+                  disabled={account.needsLogin || !!actions.refreshingID || credentialOpInFlight || !admin}
+                  onclick={() => void refreshProviderAccountUsage(provider, account, backend)}
+                  title={ungrantedTitle ?? (account.needsLogin
+                    ? 'Sign in again to refresh usage limits'
+                    : 'Refresh usage limits')}
+                  aria-label={`Refresh usage for ${providerAccountName(account)}`}
+                >
+                  <Icon
+                    icon={RefreshCw}
+                    size={12}
+                    strokeWidth={1.75}
+                    class={actions.refreshingID === account.id ? 'animate-spin' : ''}
+                  />
+                </button>
+                <button
+                  type="button"
+                  class="{GHOST_BUTTON_CLASS} hover:text-error"
+                  disabled={credentialOpInFlight || !admin}
+                  onclick={() => requestRemoval(account)}
+                  title={ungrantedTitle ?? 'Remove saved account'}
+                  aria-label={`Remove ${providerAccountName(account)}`}
+                >
+                  <Icon icon={Trash2} size={12} strokeWidth={1.75} />
+                </button>
+              </div>
             </div>
           </div>
 

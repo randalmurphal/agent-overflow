@@ -1,18 +1,27 @@
-// An account card's Active pill keeps its word whole however much room the
-// card's controls take. The settings column wraps with
-// `overflow-wrap: anywhere` (SettingsView), which lets a shrinkable flex item
-// go narrower than a word, so the pill must not shrink: the name beside it
-// truncates instead.
-import { afterEach, beforeEach, expect, it } from 'vitest';
+// An account card lays out inside the real settings page at every interface
+// text size and font the settings offer. On a phone the name takes the
+// card's width and the controls a row beneath it, wrapping within the card
+// with each label whole; on desktop the controls sit beside the name.
+import { afterEach, beforeAll, beforeEach, expect, it } from 'vitest';
 import { cleanup, render, waitFor } from '@testing-library/svelte';
 import '../../../app.css';
-import ProviderAccountsSettings from './ProviderAccountsSettings.svelte';
+import SettingsView from './SettingsView.svelte';
+import { seedSettingsPages } from '../../../test/helpers/settingsPages';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
+import { hideSettingsRail, resetSettingsOverlayForTest } from '../../stores/settingsOverlay.svelte';
 import { resetForTest as resetProviderAccountsForTest } from '../../stores/providerAccounts.svelte';
 import { resetForTest as resetRateLimitsForTest, setProviderRateLimits } from '../../stores/rateLimitsInfo.svelte';
+import { applyFonts } from '../../utils/fonts';
+import { applyFontScale } from '../../utils/zoom';
+import type { SansFont } from '../../types/settings';
 
 const DAY_MS = 24 * 3600_000;
+const DEFAULT_TEXT_SIZE = 13;
+// Every interface font the Typography page offers, and its text sizes:
+// the default, a common enlargement and the largest.
+const FONTS: SansFont[] = ['geist', 'hack-nerd', 'system'];
+const TEXT_SIZES = [DEFAULT_TEXT_SIZE, 16, 20];
 
 function account(overrides: Record<string, unknown> = {}) {
   return {
@@ -30,9 +39,19 @@ function account(overrides: Record<string, unknown> = {}) {
   };
 }
 
+beforeAll(async () => {
+  // Hack Nerd Font loads on selection; load it up front so a measurement
+  // never sees its fallback.
+  await import('../../utils/hack-nerd.css');
+  for (const face of ['400 1em "Hack Nerd Font"', '700 1em "Hack Nerd Font"']) {
+    if ((await document.fonts.load(face, 'Auto-switch')).length === 0) throw new Error(`${face} did not load`);
+  }
+});
+
 let host: HTMLDivElement;
-beforeEach(() => {
+beforeEach(async () => {
   resetProviderAccountsForTest();
+  await seedSettingsPages();
   host = document.createElement('div');
   document.body.append(host);
 });
@@ -41,65 +60,72 @@ afterEach(() => {
   host.remove();
   resetProviderAccountsForTest();
   resetRateLimitsForTest();
+  resetSettingsOverlayForTest();
   setCompactLayoutForTest(false);
+  applyFonts('geist', 'geist');
+  applyFontScale(DEFAULT_TEXT_SIZE);
 });
 
-/** The lines a text node's characters sit on. */
-function lineCount(text: Node): number {
+/** The lines a node's characters sit on. */
+function lineCount(node: Node): number {
   const range = document.createRange();
-  range.selectNodeContents(text);
+  range.selectNodeContents(node);
   return new Set([...range.getClientRects()].filter((r) => r.width > 0 && r.height > 0).map((r) => Math.round(r.top))).size;
 }
 
-// 380px is the phone panel at a 412px screen (SettingsView's compact:px-4).
-it.each([
-  ['a saved login that is gone', 380, { needsLogin: true }],
-  ['a login about to expire', 380, { refreshTokenExpiresAt: Date.now() + 2 * DAY_MS }],
-  ['a signed-in account', 380, {}],
-  ['a login that is gone on a narrow phone', 320, { needsLogin: true }],
-  ['a login that is gone on desktop', 768, { needsLogin: true }],
-])('keeps "Active" on one line for %s at %ipx', async (_label, width, overrides) => {
-  setBindingMock('ListProviderAccounts', async () => [account(overrides)]);
-  setCompactLayoutForTest(width < 600);
-  host.style.cssText = `width:${width}px;overflow-wrap:anywhere;background:var(--color-surface-0);color:var(--color-fg)`;
-  const view = render(ProviderAccountsSettings, { target: host, props: { provider: 'codex' } });
-  const card = await view.findByTestId('provider-account-acct-1');
-  const pill = await waitFor(() => {
-    const found = [...card.querySelectorAll('span')].find((el) => el.textContent?.trim() === 'Active');
-    expect(found).toBeTruthy();
-    return found!;
-  });
-  if ('needsLogin' in overrides || 'refreshTokenExpiresAt' in overrides) {
-    expect(view.getByTestId('provider-account-sign-in-acct-1')).toBeTruthy();
+function textRects(el: Element): DOMRect[] {
+  const rects: DOMRect[] = [];
+  const texts = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+  for (let node = texts.nextNode(); node; node = texts.nextNode()) {
+    const range = document.createRange();
+    range.selectNodeContents(node);
+    rects.push(...[...range.getClientRects()].filter((r) => r.width > 0 && r.height > 0));
   }
-  const word = [...pill.childNodes].find((node) => node.nodeType === Node.TEXT_NODE && node.textContent?.trim())!;
-  expect(lineCount(word)).toBe(1);
-  // The name gives way instead, and nothing leaves the card.
-  expect(card.scrollWidth).toBeLessThanOrEqual(card.clientWidth + 1);
-});
+  return rects;
+}
 
-// An email is how a person tells two saved logins apart, so on a phone the
-// name takes the card's width and the controls move to a row beneath it.
+/** The card's box inside its border and padding. */
+function contentBox(card: HTMLElement) {
+  const box = card.getBoundingClientRect();
+  const style = getComputedStyle(card);
+  const left = box.left + parseFloat(style.borderLeftWidth) + parseFloat(style.paddingLeft);
+  const right = box.right - parseFloat(style.borderRightWidth) - parseFloat(style.paddingRight);
+  return { left, right, width: right - left };
+}
+
+// An email is how a person tells two saved logins apart.
 const LONG_EMAIL = 'morgan.alvarez-kowalski@northwind-engineering.test';
+interface AccountState {
+  rows: Record<string, unknown>[];
+  /** The first card's usage refresh is in flight. */
+  refreshing?: boolean;
+}
 // Each state lists its cards in order; every card is `acct-<position>`.
-const ACCOUNT_STATES: [string, Record<string, unknown>[]][] = [
-  ['a Codex login that is gone', [{ needsLogin: true }]],
-  ['a Codex login with a long email that is gone', [{ needsLogin: true, email: LONG_EMAIL }]],
-  ['a signed-in Codex account with a long email', [{ email: LONG_EMAIL }]],
-  ['an inactive Codex account with usage shown', [{ email: LONG_EMAIL, active: false, usage: true }]],
-  ['a Codex login about to expire', [{ refreshTokenExpiresAt: Date.now() + 2 * DAY_MS }]],
+const ACCOUNT_STATES: [string, AccountState][] = [
+  ['a Codex login that is gone', { rows: [{ needsLogin: true }] }],
+  ['a Codex login with a long email that is gone', { rows: [{ needsLogin: true, email: LONG_EMAIL }] }],
+  ['a signed-in Codex account with a long email', { rows: [{ email: LONG_EMAIL }] }],
+  ['an inactive Codex account with usage shown', { rows: [{ email: LONG_EMAIL, active: false, usage: true }] }],
+  ['a Codex login about to expire', { rows: [{ refreshTokenExpiresAt: Date.now() + 2 * DAY_MS }] }],
+  ['a Codex account refreshing its usage', { rows: [{ email: LONG_EMAIL }], refreshing: true }],
   [
-    'several Claude accounts, one inactive and gone',
-    [
-      { provider: 'claude', email: LONG_EMAIL, orgName: 'Northwind', usage: true },
-      { provider: 'claude', active: false, needsLogin: true, email: 'sam@northwind.test' },
-    ],
+    'two Claude accounts, one inactive and gone',
+    {
+      rows: [
+        { provider: 'claude', email: LONG_EMAIL, orgName: 'Northwind', usage: true },
+        { provider: 'claude', active: false, needsLogin: true, email: 'sam@northwind.test' },
+      ],
+    },
   ],
 ];
 
-function renderAccounts(width: number, rows: Record<string, unknown>[]) {
-  const provider = (rows[0].provider as 'codex' | 'claude' | undefined) ?? 'codex';
-  const accounts = rows.map(({ usage, ...overrides }, index) => {
+/**
+ * Opens the provider's settings page on a `screenWidth` screen, as the app
+ * does: the real panel padding and column around the accounts.
+ */
+async function renderAccounts(screenWidth: number, state: AccountState, textSize: number, font: SansFont) {
+  const provider = (state.rows[0].provider as 'codex' | 'claude' | undefined) ?? 'codex';
+  const accounts = state.rows.map(({ usage, ...overrides }, index) => {
     const id = `acct-${index + 1}`;
     if (usage) {
       setProviderRateLimits({
@@ -115,68 +141,118 @@ function renderAccounts(width: number, rows: Record<string, unknown>[]) {
     return account({ id, provider, ...overrides });
   });
   setBindingMock('ListProviderAccounts', async () => accounts);
-  setCompactLayoutForTest(width < 600);
-  host.style.cssText = `width:${width}px;overflow-wrap:anywhere;background:var(--color-surface-0);color:var(--color-fg)`;
-  return render(ProviderAccountsSettings, { target: host, props: { provider } });
-}
-
-/** The card's width inside its padding, which the name competes for. */
-function innerWidth(card: HTMLElement): number {
-  const style = getComputedStyle(card);
-  return card.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
-}
-
-it.each(ACCOUNT_STATES.flatMap(([label, rows]) => [320, 380].map((width) => [label, width, rows] as const)))(
-  'gives the name the card width for %s at %ipx',
-  async (_label, width, rows) => {
-    const view = renderAccounts(width, rows);
-    for (let index = 0; index < rows.length; index++) {
-      const id = `acct-${index + 1}`;
-      const card = await view.findByTestId(`provider-account-${id}`);
-      const name = view.getByTestId(`provider-account-name-${id}`);
-      const controls = view.getByTestId(`provider-account-controls-${id}`);
-      expect(card.textContent?.includes('Usage not checked yet.')).toBe(!rows[index].usage);
-      // A name that fits is shown whole; a longer one keeps most of the card
-      // (the rest of its row is the grip, the status dot and the pill).
-      expect(name.clientWidth).toBeGreaterThanOrEqual(Math.min(name.scrollWidth, innerWidth(card) * 0.6));
-      // Its column runs to the card's edge, so the explanation lines below
-      // it get the same width, and the controls sit on their own row
-      // beneath, inside the card.
-      const column = name.closest('button')!.getBoundingClientRect();
-      const contentRight = card.getBoundingClientRect().right - parseFloat(getComputedStyle(card).paddingRight) - 1;
-      expect(column.right).toBeCloseTo(contentRight, 0);
-      expect(controls.getBoundingClientRect().top).toBeGreaterThanOrEqual(name.getBoundingClientRect().bottom);
-      expect(controls.getBoundingClientRect().right).toBeLessThanOrEqual(card.getBoundingClientRect().right);
-      expect(card.scrollWidth).toBeLessThanOrEqual(card.clientWidth + 1);
-    }
-  },
-);
-
-it('keeps the phone layout while an account is refreshing', async () => {
   setBindingMock('RefreshProviderAccountUsage', () => new Promise<void>(() => {}));
-  const view = renderAccounts(380, [{ email: LONG_EMAIL }]);
-  const card = await view.findByTestId('provider-account-acct-1');
-  view.getByRole('button', { name: `Refresh usage for ${LONG_EMAIL}` }).click();
-  await waitFor(() => expect(card.querySelector('.animate-spin')).toBeTruthy());
-  const name = view.getByTestId('provider-account-name-acct-1');
-  expect(name.clientWidth).toBeGreaterThanOrEqual(innerWidth(card) * 0.6);
-  expect(view.getByTestId('provider-account-controls-acct-1').getBoundingClientRect().top)
-    .toBeGreaterThanOrEqual(name.getBoundingClientRect().bottom);
+  applyFonts(font, 'geist');
+  applyFontScale(textSize);
+  setCompactLayoutForTest(screenWidth < 600);
+  hideSettingsRail();
+  host.style.cssText = `width:${screenWidth}px;height:800px;background:var(--color-surface-0);color:var(--color-fg)`;
+  const view = render(SettingsView, { target: host, props: { onClose() {}, initialSection: provider } });
+  await view.findByTestId(`provider-account-acct-${state.rows.length}`);
+  if (state.refreshing) {
+    view.getByRole('button', { name: `Refresh usage for ${LONG_EMAIL}` }).click();
+    await waitFor(() => expect(view.getByTestId('provider-account-acct-1').querySelector('.animate-spin')).toBeTruthy());
+  }
+  await document.fonts.ready;
+  return view;
+}
+
+/** The controls row's lines: its children grouped where they overlap vertically. */
+function controlLines(controls: HTMLElement): { top: number; bottom: number; right: number }[] {
+  const rects = [...controls.children].map((el) => el.getBoundingClientRect()).sort((a, b) => a.top - b.top);
+  const lines: { top: number; bottom: number; right: number }[] = [];
+  for (const rect of rects) {
+    const line = lines.at(-1);
+    if (line && rect.top < line.bottom) {
+      line.bottom = Math.max(line.bottom, rect.bottom);
+      line.right = Math.max(line.right, rect.right);
+    } else {
+      lines.push({ top: rect.top, bottom: rect.bottom, right: rect.right });
+    }
+  }
+  return lines;
+}
+
+/** "Active" is never broken: the name beside it gives way instead. */
+function expectActiveWhole(card: HTMLElement, active: boolean) {
+  const pill = [...card.querySelectorAll('span')].find((el) => el.textContent?.trim() === 'Active');
+  expect(!!pill).toBe(active);
+  if (pill) expect(lineCount(pill)).toBe(1);
+}
+
+it.each(
+  ACCOUNT_STATES.flatMap(([label, state]) =>
+    [320, 380].flatMap((width) =>
+      TEXT_SIZES.flatMap((size) => FONTS.map((font) => [label, width, size, font, state] as const)),
+    ),
+  ),
+)('fits %s on a %ipx phone at text size %i in %s', async (_label, width, size, font, state) => {
+  const view = await renderAccounts(width, state, size, font);
+  for (let index = 0; index < state.rows.length; index++) {
+    const id = `acct-${index + 1}`;
+    const row = state.rows[index];
+    const card = view.getByTestId(`provider-account-${id}`);
+    const box = contentBox(card);
+    const name = view.getByTestId(`provider-account-name-${id}`);
+    const controls = view.getByTestId(`provider-account-controls-${id}`);
+    expect(card.textContent?.includes('Usage not checked yet.')).toBe(!row.usage);
+    expectActiveWhole(card, row.active !== false);
+
+    // Its column runs to the card's edge, so the explanation lines below it
+    // get the same width, and the controls sit on their own row beneath.
+    const column = name.closest('button')!;
+    expect(column.getBoundingClientRect().right).toBeCloseTo(box.right, 0);
+    // A name that fits is shown whole; a longer one takes all its row has
+    // left after the grip, the status dot and the pill, which at the
+    // default text size is at least half the card.
+    if (name.scrollWidth > name.clientWidth + 1) {
+      const rowEnd = name.parentElement!.lastElementChild!.getBoundingClientRect().right;
+      expect(rowEnd).toBeCloseTo(box.right, 0);
+    }
+    if (size === DEFAULT_TEXT_SIZE) {
+      expect(name.clientWidth).toBeGreaterThanOrEqual(Math.min(name.scrollWidth, box.width / 2));
+    }
+    expect(controls.getBoundingClientRect().top).toBeGreaterThanOrEqual(name.getBoundingClientRect().bottom);
+
+    // Every control, and every letter of its label, lies inside the card's
+    // content box, each label on one line; each line of controls ends at
+    // the card's right edge.
+    const items = [...controls.querySelectorAll<HTMLElement>('button, label, input')];
+    expect(items.length).toBeGreaterThanOrEqual(4);
+    for (const item of items) {
+      const rect = item.getBoundingClientRect();
+      const what = `${item.tagName.toLowerCase()} "${item.textContent?.trim() || item.getAttribute('aria-label')}"`;
+      expect(rect.left, `${what} left`).toBeGreaterThanOrEqual(box.left - 0.5);
+      expect(rect.right, `${what} right`).toBeLessThanOrEqual(box.right + 0.5);
+      for (const text of textRects(item)) {
+        expect(text.left, `${what} text left`).toBeGreaterThanOrEqual(Math.max(box.left, rect.left) - 0.5);
+        expect(text.right, `${what} text right`).toBeLessThanOrEqual(Math.min(box.right, rect.right) + 0.5);
+      }
+      expect(new Set(textRects(item).map((r) => Math.round(r.top))).size, `${what} lines`).toBeLessThanOrEqual(1);
+    }
+    for (const line of controlLines(controls)) expect(line.right).toBeCloseTo(box.right, 0);
+    // Refresh and remove wrap as a pair, so neither sits alone on a line.
+    const refresh = controls.querySelector('[aria-label^="Refresh usage for "]')!.getBoundingClientRect();
+    const remove = controls.querySelector('[aria-label^="Remove "]')!.getBoundingClientRect();
+    expect(remove.top).toBeCloseTo(refresh.top, 0);
+    expect(card.scrollWidth).toBeLessThanOrEqual(card.clientWidth + 1);
+  }
 });
 
 // Desktop keeps one row: the name column on the left, the controls beside it
 // at the top right.
-it.each(ACCOUNT_STATES.flatMap(([label, rows]) => [768, 1024].map((width) => [label, width, rows] as const)))(
+it.each(ACCOUNT_STATES.flatMap(([label, state]) => [1024, 1280].map((width) => [label, width, state] as const)))(
   'keeps the controls beside the name for %s at %ipx',
-  async (_label, width, rows) => {
-    const view = renderAccounts(width, rows);
-    for (let index = 0; index < rows.length; index++) {
+  async (_label, width, state) => {
+    const view = await renderAccounts(width, state, DEFAULT_TEXT_SIZE, 'geist');
+    for (let index = 0; index < state.rows.length; index++) {
       const id = `acct-${index + 1}`;
-      const card = await view.findByTestId(`provider-account-${id}`);
+      const card = view.getByTestId(`provider-account-${id}`);
       const name = view.getByTestId(`provider-account-name-${id}`).getBoundingClientRect();
       const controls = view.getByTestId(`provider-account-controls-${id}`).getBoundingClientRect();
       const cardBox = card.getBoundingClientRect();
       const padding = parseFloat(getComputedStyle(card).paddingTop);
+      expectActiveWhole(card, state.rows[index].active !== false);
       expect(controls.top).toBeCloseTo(cardBox.top + padding + 1, 0);
       expect(controls.left).toBeGreaterThanOrEqual(name.right);
       expect(cardBox.right - controls.right).toBeCloseTo(parseFloat(getComputedStyle(card).paddingRight) + 1, 0);
