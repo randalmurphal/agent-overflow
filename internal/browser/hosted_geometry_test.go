@@ -82,6 +82,65 @@ func TestHostedPositionOnlyChangeDoesNoMetricsWork(t *testing.T) {
 	}
 }
 
+// A scale that did not apply (here the page's pixel ratio could not be read)
+// is not remembered, so the next placement asks for it again rather than the
+// dedupe leaving the page at the wrong zoom.
+func TestHostedFailedScaleIsAskedAgain(t *testing.T) {
+	engine, _, recorder := newHostedGeometryEngine(t)
+	var mu sync.Mutex
+	fail := true
+	engine.mu.Lock()
+	engine.readPageRatio = func(context.Context, *cdpPage) (float64, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if fail {
+			return 0, context.DeadlineExceeded
+		}
+		return 1.25, nil
+	}
+	engine.mu.Unlock()
+	pane := PaneRect{X: 0, Y: 0, Width: 640, Height: 360, ClipX: 0, ClipY: 0, ClipWidth: 640, ClipHeight: 360,
+		ViewportWidth: 1600, ViewportHeight: 900, DevicePixelRatio: 2.5, Visible: true}
+	placement, _ := placePage(pane, 640, 360)
+	engine.SetPageBounds("page1", placement)
+	engine.ShowPage("page1")
+	idle := func() {
+		t.Helper()
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			engine.mu.Lock()
+			busy := engine.scales["page1"].busy
+			engine.mu.Unlock()
+			if !busy {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatal("the scale drain never went idle")
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}
+	idle()
+	asked := recorder.count()
+	mu.Lock()
+	fail = false
+	mu.Unlock()
+	pane.X, pane.ClipX = 5, 5
+	moved, _ := placePage(pane, 640, 360)
+	engine.SetPageBounds("page1", moved)
+	if got := recorder.count(); got != asked+1 {
+		t.Fatalf("after a failed scale a move asked %d times, want once", got-asked)
+	}
+	idle()
+	page := engine.driverFor("page1")
+	page.metricsMu.Lock()
+	got := page.viewScale
+	page.metricsMu.Unlock()
+	if got != 2 {
+		t.Fatalf("view scale = %v, want 1 x (2.5 / 1.25)", got)
+	}
+}
+
 // The page's own pixel ratio is a CDP evaluate. It runs in the scale drain,
 // so a presentation pass (which holds the thread's presentation) never waits
 // on it.

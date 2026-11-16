@@ -314,9 +314,10 @@ export class PageInfo {
 /**
  * PaneRect is where a mounted browser pane's host rect sits, in the SPA's own
  * CSS pixels, together with the SPA viewport it was measured in. A host never
- * assumes CSS pixels equal its units: it scales the rect by its own client
- * size over the viewport, which makes the position exact under webview zoom
- * (Ctrl+=) and any DPI without either side knowing the other's scale factor.
+ * assumes CSS pixels equal its units: it scales the rect by the SPA's
+ * DevicePixelRatio where it positions in device pixels (the Windows
+ * launcher), or by its own size over the viewport, which makes the position
+ * exact under webview zoom (Ctrl+=) and any DPI.
  * Visible is false while the pane is mounted but must not be painted over: an
  * AO overlay intersects the rect, or the rect is entirely off the pane strip.
  * 

@@ -951,8 +951,11 @@ func (e *hostedEngine) drainViewScale(handle string, st *viewScaleState) {
 			return
 		}
 		scale := want.placement
+		applied := true
 		if want.paneRatio > 0 {
-			scale *= paneZoom(want.paneRatio, e.pageDevicePixelRatio(handle, want.paneRatio))
+			pageRatio := e.pageDevicePixelRatio(handle, want.paneRatio)
+			applied = pageRatio > 0
+			scale *= paneZoom(want.paneRatio, pageRatio)
 		}
 		ctx, cancel := context.WithTimeout(p.ctx, 5*time.Second)
 		err := p.SetViewScale(ctx, scale)
@@ -960,8 +963,12 @@ func (e *hostedEngine) drainViewScale(handle string, st *viewScaleState) {
 		if err != nil && p.ctx.Err() == nil {
 			e.logf("browser: pane page %s view scale: %v", handle, err)
 		}
+		applied = applied && err == nil
 		e.mu.Lock()
 		if st.want == want || p.ctx.Err() != nil {
+			// A scale that did not fully apply is not remembered as asked,
+			// so the next presentation asks again.
+			st.asked = st.asked && applied
 			st.busy = false
 			e.mu.Unlock()
 			return
