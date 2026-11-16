@@ -135,6 +135,14 @@ import (
 // idx_agent_past_threads_agent orders an assistant's past threads newest
 // superseded first, ties by thread id, the page order of
 // ListAssistantPastThreads.
+//
+// async_questions gains `revision`. The highest revision of an item's rows
+// is the item's, and async_question_revision raises it on every change of
+// state of any of them (an answer, a dismissal, a reopen, a restore, a
+// delivery, a give-back), in the transaction of that change. Two readings
+// of an item with one revision ask the same questions: a worker's question
+// is put to its spawner under one, and an answer written for an older one
+// is refused where it is claimed (QueueAsyncAnswers).
 const assistantsMigrationVersion = 151
 
 const assistantsV151SQL = `
@@ -498,6 +506,15 @@ BEGIN
    WHERE id = OLD.target_thread_id AND placement = 'owned' AND project_id IS NOT NULL
      AND NOT EXISTS (SELECT 1 FROM thread_requests
                       WHERE kind = 'spawn' AND target_computer_id = '' AND superseded = 0 AND target_thread_id = OLD.target_thread_id);
+END;
+
+ALTER TABLE async_questions ADD COLUMN revision INTEGER NOT NULL DEFAULT 1;
+CREATE TRIGGER async_question_revision AFTER UPDATE OF state ON async_questions
+WHEN OLD.state IS NOT NEW.state
+BEGIN
+  UPDATE async_questions SET revision = (SELECT MAX(revision) FROM async_questions
+                                          WHERE thread_id = NEW.thread_id AND item_id = NEW.item_id) + 1
+   WHERE thread_id = NEW.thread_id AND item_id = NEW.item_id AND question_index = NEW.question_index;
 END;
 `
 

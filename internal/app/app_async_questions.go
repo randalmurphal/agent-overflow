@@ -30,7 +30,7 @@ func (a *App) SubmitAsyncAnswers(ctx context.Context, threadID, sendID string, a
 		return err
 	}
 	defer unlock()
-	return a.queueAsyncAnswers(threadID, sendID, answers, usermessage.PersonMessage, agentNotice{
+	return a.queueAsyncAnswers(threadID, sendID, answers, nil, usermessage.PersonMessage, agentNotice{
 		startFailed: func(err error) string {
 			return "Your answers are queued, but the agent could not start: " + err.Error()
 		},
@@ -42,11 +42,13 @@ func (a *App) SubmitAsyncAnswers(ctx context.Context, threadID, sendID string, a
 // queueAsyncAnswers claims answers to threadID's async questions and queues
 // them as one message, under sendID, whose admission lock its caller holds:
 // the person's (SubmitAsyncAnswers) or the spawner's agent's, written for a
-// worker (answerAsyncWorkerPrompt). written attributes the answers' text to
-// who wrote it, and notice brings what the thread is told when its session
-// will not start. A question already answered or dismissed is
+// worker (answerAsyncWorkerPrompt). asked is the revision of each item the
+// answers were written for, nil for the person's (store.QueueAsyncAnswers).
+// written attributes the answers' text to who wrote it, and notice brings
+// what the thread is told when its session will not start. A question
+// already answered or dismissed, or changed since asked, is
 // transport.ErrAlreadyHandled.
-func (a *App) queueAsyncAnswers(threadID, sendID string, answers []store.AsyncQuestionAnswer, written func(text string) usermessage.AgentMessage, notice agentNotice) error {
+func (a *App) queueAsyncAnswers(threadID, sendID string, answers []store.AsyncQuestionAnswer, asked map[string]int64, written func(text string) usermessage.AgentMessage, notice agentNotice) error {
 	notice.threadID, notice.sendID = threadID, sendID
 	text := func() (string, bool, error) {
 		thread, err := a.store.GetThread(threadID)
@@ -74,7 +76,7 @@ func (a *App) queueAsyncAnswers(threadID, sendID string, answers []store.AsyncQu
 		body, proceed, err := text()
 		return written(body), proceed, err
 	}
-	notice.persist = func(item store.FlushQueueItem) error { return a.store.QueueAsyncAnswers(item, answers) }
+	notice.persist = func(item store.FlushQueueItem) error { return a.store.QueueAsyncAnswers(item, answers, asked) }
 	err := a.queueAgentNotice(notice)
 	if errors.Is(err, store.ErrAsyncQuestionHandled) {
 		return fmt.Errorf("%w: %v", transport.ErrAlreadyHandled, err)

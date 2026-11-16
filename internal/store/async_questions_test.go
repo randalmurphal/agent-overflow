@@ -2,6 +2,7 @@ package store
 
 import (
 	"encoding/json"
+	"errors"
 	"slices"
 	"testing"
 )
@@ -25,7 +26,7 @@ func TestAsyncQuestionsSubmissionLifecycle(t *testing.T) {
 		t.Fatalf("message=%q already=%v err=%v", body, already, err)
 	}
 	queue := FlushQueueItem{ID: "queue-1", ThreadID: "q", SendID: "send-1", Message: body, Payload: json.RawMessage(`{}`), EnqueuedAt: 3}
-	if err := s.QueueAsyncAnswers(queue, answers); err != nil {
+	if err := s.QueueAsyncAnswers(queue, answers, nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.RecordAsyncQuestions(item); err != nil {
@@ -41,7 +42,7 @@ func TestAsyncQuestionsSubmissionLifecycle(t *testing.T) {
 	other := queue
 	other.ID = "queue-2"
 	other.SendID = "send-2"
-	if err := s.QueueAsyncAnswers(other, answers); err == nil {
+	if err := s.QueueAsyncAnswers(other, answers, nil); err == nil {
 		t.Fatal("second client duplicated answer")
 	}
 	if err := s.InsertItem(Item{ID: "user-answer", ThreadID: "q", ItemIndex: 1, Kind: "user_text", Role: "user", Meta: `{"sendId":"send-1","provider_item_id":"native-answer"}`, CreatedAt: 4, UpdatedAt: 4}); err != nil {
@@ -73,7 +74,7 @@ func TestAsyncQuestionsQueueFailureIsAtomic(t *testing.T) {
 		{{ItemID: item.ID, Index: 0, Answer: "One"}, {ItemID: item.ID, Index: 9, Answer: "bad"}},
 		{{ItemID: item.ID, Index: 0, Answer: "One"}, {ItemID: item.ID, Index: 0, Answer: "Two"}},
 	} {
-		if err := s.QueueAsyncAnswers(FlushQueueItem{ID: "queue", ThreadID: "q", SendID: "send"}, answers); err == nil {
+		if err := s.QueueAsyncAnswers(FlushQueueItem{ID: "queue", ThreadID: "q", SendID: "send"}, answers, nil); err == nil {
 			t.Fatal("invalid batch accepted")
 		}
 		rows, err := s.ListAsyncQuestions("q", "")
@@ -89,7 +90,7 @@ func TestAsyncQuestionsQueueFailureIsAtomic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.QueueAsyncAnswers(FlushQueueItem{ID: "occupied", ThreadID: "q", SendID: "send", Message: body}, answers); err == nil {
+	if err := s.QueueAsyncAnswers(FlushQueueItem{ID: "occupied", ThreadID: "q", SendID: "send", Message: body}, answers, nil); err == nil {
 		t.Fatal("queue insert should conflict")
 	}
 	rows, err := s.ListAsyncQuestions("q", "")
@@ -151,7 +152,7 @@ func TestAsyncQuestionsSurviveReopenAndQueueDrop(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.QueueAsyncAnswers(FlushQueueItem{ID: "queue", ThreadID: "q", SendID: "send", Message: body}, answers); err != nil {
+	if err := s.QueueAsyncAnswers(FlushQueueItem{ID: "queue", ThreadID: "q", SendID: "send", Message: body}, answers, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.Close(); err != nil {
@@ -188,7 +189,7 @@ func TestRestoredAsyncAnswerSettlesAtomicallyWithQueueRemoval(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.QueueAsyncAnswers(FlushQueueItem{ID: "queue", ThreadID: "q", SendID: "send", Message: body}, answers); err != nil {
+	if err := s.QueueAsyncAnswers(FlushQueueItem{ID: "queue", ThreadID: "q", SendID: "send", Message: body}, answers, nil); err != nil {
 		t.Fatal(err)
 	}
 	expected, _, err := s.GetThreadDraft("q")
@@ -239,7 +240,7 @@ func TestUnansweredAsyncQuestionsAreListedAndDismissedByThread(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.QueueAsyncAnswers(FlushQueueItem{ID: "queue", ThreadID: "answered", SendID: "send", Message: body, Payload: json.RawMessage(`{}`), EnqueuedAt: 3}, answers); err != nil {
+	if err := s.QueueAsyncAnswers(FlushQueueItem{ID: "queue", ThreadID: "answered", SendID: "send", Message: body, Payload: json.RawMessage(`{}`), EnqueuedAt: 3}, answers, nil); err != nil {
 		t.Fatal(err)
 	}
 	if ids, err := s.ThreadsWithUnansweredAsyncQuestions(); err != nil || !slices.Equal(slices.Sorted(slices.Values(ids)), []string{"open", "other"}) {
@@ -254,5 +255,48 @@ func TestUnansweredAsyncQuestionsAreListedAndDismissedByThread(t *testing.T) {
 	}
 	if ids, err := s.ThreadsWithUnansweredAsyncQuestions(); err != nil || !slices.Equal(ids, []string{"other"}) {
 		t.Fatalf("threads with unanswered questions after the dismissal = %q, %v", ids, err)
+	}
+}
+
+// An item's unanswered questions are read together with its revision, on
+// the pending index, and an answer claimed against a revision the item
+// left is refused whole, its questions and its queue row untouched.
+func TestAsyncAnswersAreClaimedAgainstTheirItemsRevision(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThread(t, s, "q")
+	questionFixture(t, s, "q", "question:call")
+	groups, err := s.UnansweredAsyncQuestions("q")
+	if err != nil || len(groups) != 1 || groups[0].ItemID != "question:call" || len(groups[0].Questions) != 2 || groups[0].Questions[1].Title != "Deadline?" {
+		t.Fatalf("unanswered = %+v, %v", groups, err)
+	}
+	assertPlanUses(t, s.db, "idx_async_questions_pending", "EXPLAIN QUERY PLAN "+unansweredAsyncQuestionsSQL, "q")
+	asked := groups[0].Revision
+	if err := s.SetAsyncQuestionDismissed("q", "question:call", 1, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetAsyncQuestionDismissed("q", "question:call", 1, false); err != nil {
+		t.Fatal(err)
+	}
+	groups, err = s.UnansweredAsyncQuestions("q")
+	if err != nil || len(groups) != 1 || len(groups[0].Questions) != 2 || groups[0].Revision <= asked {
+		t.Fatalf("after a dismissal and a reopen = %+v, %v; want both questions at a revision past %d", groups, err, asked)
+	}
+	answers := []AsyncQuestionAnswer{{ItemID: "question:call", Index: 0, Answer: "Two"}}
+	body, _, err := s.AsyncAnswerMessage("q", "agent-answer:t", answers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	queue := FlushQueueItem{ID: "queue", ThreadID: "q", SendID: "agent-answer:t", Message: body}
+	if err := s.QueueAsyncAnswers(queue, answers, map[string]int64{"question:call": asked}); !errors.Is(err, ErrAsyncQuestionHandled) {
+		t.Fatalf("an answer for the old revision: %v, want ErrAsyncQuestionHandled", err)
+	}
+	if rows, err := s.ListAsyncQuestions("q", "question:call"); err != nil || rows[0].State != "unanswered" || rows[0].SendID != "" {
+		t.Fatalf("after the refusal = %+v, %v", rows, err)
+	}
+	if queued, err := s.ListFlushQueueItems("q"); err != nil || len(queued) != 0 {
+		t.Fatalf("the refused answer was queued: %+v, %v", queued, err)
+	}
+	if err := s.QueueAsyncAnswers(queue, answers, map[string]int64{"question:call": groups[0].Revision}); err != nil {
+		t.Fatalf("an answer for the current revision: %v", err)
 	}
 }

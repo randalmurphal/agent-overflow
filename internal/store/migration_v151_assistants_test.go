@@ -49,8 +49,10 @@ func TestMigrationV151Schema(t *testing.T) {
 	mustExec(t, db, `INSERT INTO thread_requests (token, caller_thread_id, kind, target_thread_id, state, created_at, updated_at) VALUES
 		('spawn', 'lead', 'spawn', 'worker', 'finished', 5, 5),
 		('spawn-helper', 'lead', 'spawn', 'helper', 'finished', 6, 6)`)
+	mustExec(t, db, `INSERT INTO async_questions (thread_id, item_id, question_index, title, options, created_at) VALUES
+		('worker', 'ask', 0, 'Which scope?', '[]', 7), ('worker', 'ask', 1, 'When?', '[]', 7), ('worker', 'other', 0, 'Why?', '[]', 8)`)
 	threadsBefore := migrationThreadRows(t, db)
-	ledger := []string{"thread_requests", "thread_request_receipts"}
+	ledger := []string{"thread_requests", "thread_request_receipts", "async_questions"}
 	columnsBefore := map[string][]string{}
 	for _, table := range ledger {
 		columns, err := queryIDs(db, `SELECT name FROM pragma_table_info(?) ORDER BY cid`, table)
@@ -83,7 +85,7 @@ func TestMigrationV151Schema(t *testing.T) {
 	}
 	slices.Sort(added)
 	if want := []string{
-		"agent_helpers", "agent_past_threads", "agent_projects", "agent_wakes", "agents",
+		"agent_helpers", "agent_past_threads", "agent_projects", "agent_wakes", "agents", "async_question_revision",
 		"idx_agent_helpers_agent", "idx_agent_past_threads_agent", "idx_agent_projects_project", "idx_agent_wakes_due", "idx_agent_wakes_thread",
 		"idx_thread_request_receipts_age", "idx_thread_request_receipts_lineage", "idx_thread_requests_age", "idx_thread_requests_caller_settled", "idx_thread_requests_lineage",
 		"idx_thread_requests_nested_caller", "idx_thread_requests_nested_open", "idx_thread_requests_open_below", "idx_thread_requests_open_created", "idx_thread_requests_open_deep", "idx_thread_requests_remote_rest",
@@ -141,6 +143,7 @@ func TestMigrationV151Schema(t *testing.T) {
 			"answer_agent|INTEGER|1|0|0", "answer_agent_role|TEXT|1|''|0", "late_reply_agent|INTEGER|1|0|0",
 			"late_reply_agent_role|TEXT|1|''|0", "own_turn|INTEGER|1|0|0", "lineage_only|INTEGER|1|0|0",
 		},
+		"async_questions": {"revision|INTEGER|1|1|0"},
 	}
 	for _, table := range ledger {
 		got := columns(table)
@@ -200,6 +203,39 @@ func TestMigrationV151Schema(t *testing.T) {
 			t.Errorf("accepted %s", bad)
 		}
 	}
+	// An item's revision is its rows' highest: every change of state of
+	// any of them raises it, and nothing else does, nor another item's.
+	revision := func(item string) int64 {
+		t.Helper()
+		var got int64
+		if err := db.QueryRow(`SELECT MAX(revision) FROM async_questions WHERE thread_id = 'worker' AND item_id = ?`, item).Scan(&got); err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	if revision("ask") != 1 || revision("other") != 1 {
+		t.Fatalf("existing questions read revisions %d and %d, want 1", revision("ask"), revision("other"))
+	}
+	seen := []int64{revision("ask")}
+	for _, change := range []string{
+		`UPDATE async_questions SET state = 'dismissed' WHERE item_id = 'ask' AND question_index = 1`,
+		`UPDATE async_questions SET state = 'unanswered' WHERE item_id = 'ask' AND question_index = 1`,
+		`UPDATE async_questions SET state = 'submitted', answer = 'a', send_id = 's' WHERE item_id = 'ask'`,
+		`UPDATE async_questions SET state = 'unanswered', answer = '', send_id = '' WHERE item_id = 'ask'`,
+	} {
+		mustExec(t, db, change)
+		if now := revision("ask"); now <= seen[len(seen)-1] {
+			t.Fatalf("after %s the revision is %d, after %v", change, now, seen)
+		} else {
+			seen = append(seen, now)
+		}
+	}
+	mustExec(t, db, `UPDATE async_questions SET answer = '' WHERE item_id = 'ask'`)
+	mustExec(t, db, `UPDATE async_questions SET state = 'unanswered' WHERE item_id = 'ask'`)
+	if now := revision("ask"); now != seen[len(seen)-1] || revision("other") != 1 {
+		t.Fatalf("a write that changed no state moved the revision: %d after %v, other %d", now, seen, revision("other"))
+	}
+
 	mustExec(t, db, `INSERT INTO agents (id, thread_id, home, created_at) VALUES ('lead', 'lead', '/h/lead', 1)`)
 	if _, err := db.Exec(`INSERT INTO agents (id, thread_id, home, created_at) VALUES ('dup', 'lead', '/h', 1)`); err == nil {
 		t.Error("two assistants took one current thread")

@@ -518,8 +518,9 @@ worker's session and its prompts with it. A Codex worker's async
 question, which its turn ends by asking and a later message answers,
 goes the same way, its parts still unanswered as one prompt: the reply
 is written to the worker as one message attributed to the spawner, and
-the user answering or dismissing a part in the worker refuses the
-token and puts the parts left to the spawner under a new one. It
+any change to its parts (the user answering, dismissing or reopening
+one in the worker) refuses the token, a reply already on its way
+included, and puts the parts left to the spawner under a new one. It
 outlives the worker's session, is put to the spawner again under a new
 token after a restart, and is dismissed by a Stop of the worker; an
 archived worker's question waits for its unarchive. `decision` and

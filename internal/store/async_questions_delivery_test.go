@@ -19,7 +19,7 @@ func TestAsyncAnswerEchoRequiresIdentityAndSettlesOnMetaUpdate(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := s.QueueAsyncAnswers(FlushQueueItem{ID: "queue", ThreadID: "q", SendID: "send", Message: body}, answers); err != nil {
+			if err := s.QueueAsyncAnswers(FlushQueueItem{ID: "queue", ThreadID: "q", SendID: "send", Message: body}, answers, nil); err != nil {
 				t.Fatal(err)
 			}
 			if err := s.InsertFlushQueueItem(FlushQueueItem{ID: "other-queue", ThreadID: "other", SendID: "send", Message: "unrelated"}); err != nil {
@@ -71,7 +71,7 @@ func TestConcurrentAsyncAnswersHaveOneWinner(t *testing.T) {
 		}
 		go func() {
 			<-start
-			results <- s.QueueAsyncAnswers(FlushQueueItem{ID: sendID, ThreadID: "q", SendID: sendID, Message: body}, answers)
+			results <- s.QueueAsyncAnswers(FlushQueueItem{ID: sendID, ThreadID: "q", SendID: sendID, Message: body}, answers, nil)
 		}()
 	}
 	close(start)

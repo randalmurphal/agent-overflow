@@ -41,10 +41,14 @@ import (
 // reads the thread's unanswered questions and announces what opened and
 // what closed. An archived thread's questions are not open: an archive asks
 // nobody, as it ends its session's prompts. One item's unanswered questions
-// are one prompt; a change to which of them are unanswered (the person
-// answered or dismissed some) closes that occurrence and opens the rest as
-// a new one. While no turn runs and nothing is queued, an open question is
-// what its thread waits on: its Agents row reads blocked (workerHeldUnrest).
+// are one prompt, whose occurrence is the item's revision in the store
+// (store.AsyncQuestionGroup): any change to the item's questions (the
+// person answered, dismissed or reopened some, an answer came back) moves
+// it, which closes that occurrence and opens what is left as a new one,
+// however many changes one reconcile reads. The spawner's answer is claimed
+// against the revision it was written for (store.QueueAsyncAnswers). While
+// no turn runs and nothing is queued, an open question is what its thread
+// waits on: its Agents row reads blocked (workerHeldUnrest).
 //
 // A question that goes to the person and not to an agent notifies them when
 // the thread is owned, since its turn's end did not (notify.MapTurnRest).
@@ -55,15 +59,17 @@ import (
 type asyncQuestionRoutes struct {
 	mu   sync.Mutex
 	open map[workerPromptKey]asyncQuestionPrompt
-	last provider.PromptOccurrence
 }
 
 // asyncQuestionPrompt is one item's unanswered questions, as one prompt:
 // a user-input request whose question ids are the questions' indexes in
-// the item, so it renders and is answered as a worker's question is.
+// the item and whose occurrence is the item's revision, so it renders and
+// is answered as a worker's question is. asked is when the item asked,
+// which orders a thread's prompts.
 type asyncQuestionPrompt struct {
 	request provider.UserInputRequest
 	route   *provider.PromptRoute
+	asked   int64
 }
 
 // syncAsyncQuestionPrompts queues a reconcile of threadID's async question
@@ -109,7 +115,7 @@ func (a *App) reconcileAsyncQuestions(threadID string) {
 		if key.workerID != threadID {
 			continue
 		}
-		if now, still := open[key.requestID]; still && sameAsyncQuestions(now, held.request) {
+		if now, still := open[key.requestID]; still && now.request.Occurrence == held.request.Occurrence {
 			delete(open, key.requestID)
 			continue
 		}
@@ -126,11 +132,9 @@ func (a *App) reconcileAsyncQuestions(threadID string) {
 		if routes.open == nil {
 			routes.open = make(map[workerPromptKey]asyncQuestionPrompt)
 		}
-		for _, request := range open {
-			routes.last++
-			request.Occurrence = routes.last
-			prompt := asyncQuestionPrompt{request: request, route: route}
-			routes.open[workerPromptKey{workerID: threadID, requestID: request.RequestID}] = prompt
+		for _, prompt := range open {
+			prompt.route = route
+			routes.open[workerPromptKey{workerID: threadID, requestID: prompt.request.RequestID}] = prompt
 			opened = append(opened, prompt)
 		}
 		routes.mu.Unlock()
@@ -148,8 +152,9 @@ func (a *App) reconcileAsyncQuestions(threadID string) {
 }
 
 // openAsyncQuestions reads threadID's unanswered async questions, by item,
-// as the prompts they make: none for a thread that is gone or archived.
-func (a *App) openAsyncQuestions(threadID string) (map[string]provider.UserInputRequest, error) {
+// as the prompts they make, unrouted: none for a thread that is gone or
+// archived.
+func (a *App) openAsyncQuestions(threadID string) (map[string]asyncQuestionPrompt, error) {
 	thread, err := a.store.GetThread(threadID)
 	if errors.Is(err, sql.ErrNoRows) || errors.Is(err, store.ErrThreadGone) {
 		return nil, nil
@@ -160,31 +165,25 @@ func (a *App) openAsyncQuestions(threadID string) (map[string]provider.UserInput
 	if thread.Archived {
 		return nil, nil
 	}
-	rows, err := a.store.ListAsyncQuestions(threadID, "")
+	groups, err := a.store.UnansweredAsyncQuestions(threadID)
 	if err != nil {
 		return nil, err
 	}
-	open := map[string]provider.UserInputRequest{}
-	for _, row := range rows {
-		if row.State != "unanswered" {
-			continue
+	open := make(map[string]asyncQuestionPrompt, len(groups))
+	for _, group := range groups {
+		request := provider.UserInputRequest{
+			RequestID: group.ItemID, ThreadID: threadID, Occurrence: provider.PromptOccurrence(group.Revision),
 		}
-		request := open[row.ItemID]
-		request.RequestID, request.ThreadID = row.ItemID, threadID
-		question := provider.UserInputQuestion{ID: strconv.Itoa(row.Index), Question: row.Title}
-		for _, option := range row.Options {
-			question.Options = append(question.Options, provider.UserInputQuestionOption{Label: option})
+		for _, row := range group.Questions {
+			question := provider.UserInputQuestion{ID: strconv.Itoa(row.Index), Question: row.Title}
+			for _, option := range row.Options {
+				question.Options = append(question.Options, provider.UserInputQuestionOption{Label: option})
+			}
+			request.Questions = append(request.Questions, question)
 		}
-		request.Questions = append(request.Questions, question)
-		open[row.ItemID] = request
+		open[group.ItemID] = asyncQuestionPrompt{request: request, asked: group.Questions[0].CreatedAt}
 	}
 	return open, nil
-}
-
-// sameAsyncQuestions reports whether two readings of one item ask the same
-// unanswered questions.
-func sameAsyncQuestions(a, b provider.UserInputRequest) bool {
-	return slices.EqualFunc(a.Questions, b.Questions, func(x, y provider.UserInputQuestion) bool { return x.ID == y.ID })
 }
 
 // announceAsyncQuestion delivers an async question prompt to the thread it
@@ -304,7 +303,8 @@ func (a *App) asyncQuestionBlocked(threadID string) (detail, routedTo string, fo
 	defer routes.mu.Unlock()
 	var first *asyncQuestionPrompt
 	for key, held := range routes.open {
-		if key.workerID != threadID || (first != nil && held.request.Occurrence > first.request.Occurrence) {
+		if key.workerID != threadID || (first != nil && (held.asked > first.asked ||
+			held.asked == first.asked && held.request.RequestID > first.request.RequestID)) {
 			continue
 		}
 		copied := held
@@ -339,8 +339,9 @@ func (a *App) dismissRestingAsyncQuestions(threadID string) error {
 
 // answerAsyncWorkerPrompt writes the spawner's answer to a worker's async
 // questions through the path the person's answers take (queueAsyncAnswers),
-// attributed to the spawner. Its send id is the registration's, so the same
-// answer again is the same message.
+// attributed to the spawner and claimed against the occurrence the prompt
+// was put under, so a question changed since refuses it. Its send id is
+// the registration's, so the same answer again is the same message.
 func (a *App) answerAsyncWorkerPrompt(ctx context.Context, prompt workerPrompt, response provider.UserInputResponse) error {
 	answers := make([]store.AsyncQuestionAnswer, 0, len(prompt.question.Questions))
 	for _, q := range prompt.question.Questions {
@@ -363,7 +364,8 @@ func (a *App) answerAsyncWorkerPrompt(ctx context.Context, prompt workerPrompt, 
 	written := func(text string) usermessage.AgentMessage {
 		return usermessage.ThreadMessage(*origin, text, threadtools.MessageFacts{})
 	}
-	return a.queueAsyncAnswers(prompt.workerID, sendID, answers, written, agentNotice{
+	asked := map[string]int64{prompt.requestID: int64(prompt.occurrence)}
+	return a.queueAsyncAnswers(prompt.workerID, sendID, answers, asked, written, agentNotice{
 		startFailed: func(err error) string {
 			return fmt.Sprintf("Thread %q answered this thread's questions, but this thread's agent could not start: %v", origin.Title, err)
 		},

@@ -11,6 +11,7 @@ import (
 	"errors"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -422,5 +423,87 @@ func TestAWorkersOpenAsyncQuestionIsRoutedAgainAtBoot(t *testing.T) {
 	}
 	if row, _ := f.row(t); row.Worker != workerBlocked || row.BlockedRoutedTo != f.spawner.Title {
 		t.Fatalf("the worker's row after the boot = %+v", row)
+	}
+}
+
+// holdPrompts holds the prompts' serial queue until the returned release
+// runs, so what is queued behind it waits.
+func (f asyncQuestionFixture) holdPrompts(t *testing.T) (release func()) {
+	t.Helper()
+	held, gate := make(chan struct{}), make(chan struct{})
+	f.app.workerPrompts.queue.Go(func() {
+		close(held)
+		<-gate
+	})
+	<-held
+	var once sync.Once
+	release = func() { once.Do(func() { close(gate) }) }
+	t.Cleanup(release)
+	return release
+}
+
+// A part dismissed and reopened before any reconcile reads the change is
+// a new occurrence of the question: the token it was put to the spawner
+// under answers nothing, and it goes to the spawner again under a new one.
+func TestAnAsyncQuestionDismissedAndReopenedRetiresItsToken(t *testing.T) {
+	t.Parallel()
+	f := newAsyncQuestionFixture(t, "async-reopen", store.PlacementOwned)
+	f.ask(t, "question:ask", `{"delivery":"async","questions":[{"title":"Which scope?"}]}`)
+	old, _ := f.wake(t, f.spawner.ID)
+	release := f.holdPrompts(t)
+	for _, dismissed := range []bool{true, false} {
+		if err := f.app.SetAsyncQuestionDismissed(t.Context(), f.worker.ID, "question:ask", 0, dismissed); err != nil {
+			t.Fatal(err)
+		}
+	}
+	release()
+	f.drain(t)
+	if _, _, err := f.app.answerWorkerPrompt(t.Context(), threadtools.Caller{ThreadID: f.spawner.ID}, threadtools.ReplyCall{Token: old, Text: "One"}); !errors.Is(err, errWorkerPromptClosed) {
+		t.Fatalf("the old token's reply: %v, want the prompt closed", err)
+	}
+	if questions, err := f.app.store.ListAsyncQuestions(f.worker.ID, "question:ask"); err != nil || questions[0].State != "unanswered" {
+		t.Fatalf("the reopened question = %+v, %v; want it unanswered", questions, err)
+	}
+	if token, _ := f.wake(t, f.spawner.ID); token == old {
+		t.Fatal("the reopened question is still put to the spawner under its old token")
+	}
+}
+
+// A reply that passed the registry's check and waits to be written while
+// the question is dismissed and reopened is refused where its answer is
+// claimed: it was written for an occurrence that is gone.
+func TestAnAsyncReplyPausedWhileItsQuestionIsReplacedIsRefused(t *testing.T) {
+	t.Parallel()
+	f := newAsyncQuestionFixture(t, "async-paused", store.PlacementOwned)
+	f.ask(t, "question:ask", `{"delivery":"async","questions":[{"title":"Which scope?"}]}`)
+	token, _ := f.wake(t, f.spawner.ID)
+	key := sendAdmissionKey(f.worker.ID, workerAnswerSendIDRoot+token)
+	unlock := f.app.sendAdmissionLocks().Lock(key)
+	replied := make(chan error, 1)
+	go func() {
+		_, _, err := f.app.answerWorkerPrompt(context.Background(), threadtools.Caller{ThreadID: f.spawner.ID}, threadtools.ReplyCall{Token: token, Text: "One"})
+		replied <- err
+	}()
+	// The reply waits on the answer's admission, past the registry's check.
+	waitUntil(t, 10*time.Second, func() bool { return f.app.sendAdmissionLocks().Refs(key) == 2 })
+	for _, dismissed := range []bool{true, false} {
+		if err := f.app.SetAsyncQuestionDismissed(t.Context(), f.worker.ID, "question:ask", 0, dismissed); err != nil {
+			unlock()
+			t.Fatal(err)
+		}
+	}
+	f.drain(t)
+	unlock()
+	if err := <-replied; !errors.Is(err, errWorkerPromptClosed) {
+		t.Fatalf("the paused reply: %v, want it refused as closed", err)
+	}
+	questions, err := f.app.store.ListAsyncQuestions(f.worker.ID, "question:ask")
+	if err != nil || questions[0].State != "unanswered" || questions[0].Answer != "" {
+		t.Fatalf("the question = %+v, %v; want it unanswered", questions, err)
+	}
+	for _, row := range durableQueueRows(t, f.app, f.worker.ID) {
+		if strings.HasPrefix(row.SendID, workerAnswerSendIDRoot) {
+			t.Fatalf("the refused reply was queued: %+v", row)
+		}
 	}
 }

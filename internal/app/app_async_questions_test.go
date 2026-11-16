@@ -28,7 +28,7 @@ func TestQueuedAsyncAnswersRestoreWithoutReopeningOrResending(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := a.store.QueueAsyncAnswers(store.FlushQueueItem{ID: "queue", ThreadID: thread.ID, SendID: "send", Message: body}, answers); err != nil {
+	if err := a.store.QueueAsyncAnswers(store.FlushQueueItem{ID: "queue", ThreadID: thread.ID, SendID: "send", Message: body}, answers, nil); err != nil {
 		t.Fatal(err)
 	}
 	a.restoreDurableFlushQueueAtBoot()
@@ -75,7 +75,7 @@ func TestAsyncAnswerSessionDeathRetainsRecoveryAfterStateWriteFailure(t *testing
 	}
 	if _, err := a.registerQueueItem(thread.ID, body, SendMessageOptions{SendID: "send"}, injectedQueueOptions{
 		preserveDraft: true,
-		persist:       func(row store.FlushQueueItem) error { return a.store.QueueAsyncAnswers(row, answers) },
+		persist:       func(row store.FlushQueueItem) error { return a.store.QueueAsyncAnswers(row, answers, nil) },
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -181,7 +181,7 @@ func TestAsyncAnswerDispatchRetainsRecoveryUntilProviderEcho(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := a.store.QueueAsyncAnswers(store.FlushQueueItem{ID: "queue", ThreadID: thread.ID, SendID: "send", Message: body}, answers); err != nil {
+	if err := a.store.QueueAsyncAnswers(store.FlushQueueItem{ID: "queue", ThreadID: thread.ID, SendID: "send", Message: body}, answers, nil); err != nil {
 		t.Fatal(err)
 	}
 	// A successful steer only queues input inside Codex. The process can still

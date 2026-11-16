@@ -23,7 +23,7 @@ func TestAsyncQuestionStartsStructuredAndSurvivesTurnEnd(t *testing.T) {
 		t.Fatalf("start row: %+v %v", item, err)
 	}
 	answer := []store.AsyncQuestionAnswer{{ItemID: item.ID, Index: 0, Answer: "B"}}
-	if err := s.QueueAsyncAnswers(store.FlushQueueItem{ID: "queued", ThreadID: "q", SendID: "send", Message: "Question: Which?\nAnswer: B"}, answer); err != nil {
+	if err := s.QueueAsyncAnswers(store.FlushQueueItem{ID: "queued", ThreadID: "q", SendID: "send", Message: "Question: Which?\nAnswer: B"}, answer, nil); err != nil {
 		t.Fatal(err)
 	}
 	event.Kind = provider.EventContentBlockStop

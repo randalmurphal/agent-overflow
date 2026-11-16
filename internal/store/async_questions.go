@@ -148,6 +148,62 @@ func (s *Store) ListAsyncQuestions(threadID, itemID string) ([]AsyncQuestion, er
 	return out, rows.Err()
 }
 
+// AsyncQuestionGroup is one item's questions still waiting for an answer,
+// with the item's revision: the highest of its rows', which every change of
+// state of any of them raises (async_question_revision), so two readings
+// with one revision ask the same questions.
+type AsyncQuestionGroup struct {
+	ItemID    string
+	Revision  int64
+	Questions []AsyncQuestion
+}
+
+// UnansweredAsyncQuestions reads threadID's questions still waiting for an
+// answer, by item, oldest first, on idx_async_questions_pending.
+func (s *Store) UnansweredAsyncQuestions(threadID string) ([]AsyncQuestionGroup, error) {
+	rows, err := s.reader().Query(unansweredAsyncQuestionsSQL, threadID)
+	if err != nil {
+		return nil, fmt.Errorf("store: read the unanswered questions of %s: %w", threadID, err)
+	}
+	var out []AsyncQuestionGroup
+	for rows.Next() {
+		var options string
+		var q AsyncQuestion
+		var revision int64
+		if err := rows.Scan(&q.ItemID, &q.Index, &q.Title, &options, &q.CreatedAt, &revision); err != nil {
+			return nil, errors.Join(err, rows.Close())
+		}
+		if err := json.Unmarshal([]byte(options), &q.Options); err != nil {
+			return nil, errors.Join(fmt.Errorf("decode question options: %w", err), rows.Close())
+		}
+		q.State = "unanswered"
+		if n := len(out); n > 0 && out[n-1].ItemID == q.ItemID {
+			out[n-1].Questions = append(out[n-1].Questions, q)
+			continue
+		}
+		out = append(out, AsyncQuestionGroup{ItemID: q.ItemID, Revision: revision, Questions: []AsyncQuestion{q}})
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return nil, fmt.Errorf("store: read the unanswered questions of %s: %w", threadID, err)
+	}
+	return out, nil
+}
+
+// The state IN term is idx_async_questions_pending's predicate, which lets
+// the plan use the partial index; its order keeps an item's rows together.
+// The revision is read from the item's rows by the primary key.
+const unansweredAsyncQuestionsSQL = `SELECT q.item_id,q.question_index,q.title,q.options,q.created_at,
+ (SELECT MAX(r.revision) FROM async_questions r WHERE r.thread_id=q.thread_id AND r.item_id=q.item_id)
+ FROM async_questions q WHERE q.thread_id=? AND q.state IN ('unanswered','submitted','restored') AND q.state='unanswered'
+ ORDER BY q.created_at,q.item_id,q.question_index`
+
+// asyncQuestionRevision is itemID's revision, 0 when it has no questions.
+func asyncQuestionRevision(db sqlQueryer, threadID, itemID string) (int64, error) {
+	var revision sql.NullInt64
+	err := db.QueryRow(`SELECT MAX(revision) FROM async_questions WHERE thread_id=? AND item_id=?`, threadID, itemID).Scan(&revision)
+	return revision.Int64, err
+}
+
 // ThreadsWithUnansweredAsyncQuestions lists the threads with a question
 // still waiting for an answer, on idx_async_questions_pending.
 func (s *Store) ThreadsWithUnansweredAsyncQuestions() ([]string, error) {
@@ -229,8 +285,13 @@ func asyncAnswerMessage(db sqlQueryer, threadID, sendID string, answers []AsyncQ
 	return strings.Join(parts, "\n\n"), already == len(answers), nil
 }
 
-// QueueAsyncAnswers atomically claims every question and admits its one user message.
-func (s *Store) QueueAsyncAnswers(item FlushQueueItem, answers []AsyncQuestionAnswer) error {
+// QueueAsyncAnswers atomically claims every question and admits its one user
+// message. asked names, by item, the revision the answers were written for
+// (AsyncQuestionGroup.Revision): an item whose revision moved since was
+// answered, dismissed or reopened meanwhile, and the submission is
+// ErrAsyncQuestionHandled. The person's answers name none: they answer what
+// is unanswered when they land.
+func (s *Store) QueueAsyncAnswers(item FlushQueueItem, answers []AsyncQuestionAnswer, asked map[string]int64) error {
 	if item.SendID == "" || len(answers) == 0 {
 		return fmt.Errorf("question submission requires an identity and answers")
 	}
@@ -239,6 +300,15 @@ func (s *Store) QueueAsyncAnswers(item FlushQueueItem, answers []AsyncQuestionAn
 		return err
 	}
 	defer tx.Rollback()
+	for itemID, want := range asked {
+		revision, err := asyncQuestionRevision(tx, item.ThreadID, itemID)
+		if err != nil {
+			return err
+		}
+		if revision != want {
+			return ErrAsyncQuestionHandled
+		}
+	}
 	body, already, err := asyncAnswerMessage(tx, item.ThreadID, item.SendID, answers)
 	if err != nil {
 		return err
