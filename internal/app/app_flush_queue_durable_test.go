@@ -125,6 +125,9 @@ func TestSessionDeathRestoreDropsTheDurableRow(t *testing.T) {
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}
+	// The message waits in the queue for the death: a dispatch would start
+	// a session for a thread that has none.
+	holdFlushQueue(app)
 	if _, err := app.RegisterQueueItem(context.Background(), thread.ID, "not delivered", SendMessageOptions{}); err != nil {
 		t.Fatalf("RegisterQueueItem: %v", err)
 	}
