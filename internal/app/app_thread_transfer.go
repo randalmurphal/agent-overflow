@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"reflect"
 
@@ -334,7 +335,7 @@ func (a *App) makeTransferOffer(row store.ThreadTransfer, grant string) (transfe
 		return transferclient.Offer{}, err
 	}
 	backendID, _ := a.backendIdentity()
-	offer := transferclient.Offer{Version: transferwire.Version, OwnershipEpoch: row.OwnershipEpoch, BackendID: backendID, OperationID: row.ID, Endpoint: endpoint, CertFingerprint: fingerprint, Grant: grant}
+	offer := transferclient.Offer{Version: transferwire.Version, OwnershipEpoch: row.OwnershipEpoch, BackendID: backendID, OperationID: row.ID, Endpoint: endpoint, CertFingerprint: fingerprint, Grant: grant, SpawnInstructions: true}
 	client, err := transferclient.New(offer, a.dialComputer)
 	if err != nil {
 		return transferclient.Offer{}, err
@@ -365,6 +366,9 @@ func (a *App) BindThreadTransferDestination(ctx context.Context, threadID string
 	if row.ThreadID != threadID || row.Direction != "outgoing" || row.PeerBackendID != offer.BackendID || row.OwnershipEpoch != offer.OwnershipEpoch {
 		return row, errors.New("The destination offer belongs to another transfer.")
 	}
+	if err := a.refuseTransferDroppingInstructions(threadID, offer); err != nil {
+		return row, err
+	}
 	client, err := transferclient.New(offer, a.dialComputer)
 	if err != nil {
 		return row, err
@@ -380,6 +384,31 @@ func (a *App) BindThreadTransferDestination(ctx context.Context, threadID string
 		a.emit(eventchan.ThreadTransfer, row)
 	}
 	return row, err
+}
+
+// refuseTransferDroppingInstructions refuses a destination that would drop
+// the instructions a spawn gave the thread: a computer from before them
+// reads the manifest's thread without that field and keeps nothing of it.
+// The refusal comes before any byte is uploaded or the source is retired.
+// The sub-thread level needs no such check, because a transferred thread
+// keeps none (store.CommitIncomingThreadTransfer).
+func (a *App) refuseTransferDroppingInstructions(threadID string, offer transferclient.Offer) error {
+	if offer.SpawnInstructions {
+		return nil
+	}
+	thread, err := a.store.GetThread(threadID)
+	if err != nil {
+		return err
+	}
+	if thread.SpawnInstructions == "" {
+		return nil
+	}
+	name := a.threadRequestDestinationName(offer.BackendID)
+	if name == "" {
+		name = "The destination computer"
+	}
+	return errorsx.Public(transport.ErrCodeMethodError, fmt.Sprintf(
+		"%s runs an older version that would drop the instructions this conversation's spawn added to its system prompt. Update it first, then transfer the conversation again.", name), nil)
 }
 
 // RetryThreadTransfer wakes a durable operation without minting another copy.
