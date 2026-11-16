@@ -366,7 +366,7 @@ func (s *Store) ListUnconfirmedUserRows() ([]UnconfirmedUserRow, error) {
 	if err != nil {
 		return nil, fmt.Errorf("store: list unconfirmed user rows: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []UnconfirmedUserRow
 	for rows.Next() {
 		var row UnconfirmedUserRow

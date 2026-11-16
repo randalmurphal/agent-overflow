@@ -61,7 +61,7 @@ func (r *Router) holdWaitingStop(threadID string, turnIndex int, summary string)
 			return stopCutNothing
 		}
 		// A soft close: the turn's result is still to come.
-	} else if !(st.openTurnSet && st.openTurn == turnIndex) && st.turnStarting == nil && !st.hasPendingSendForTurn(turnIndex) {
+	} else if (!st.openTurnSet || st.openTurn != turnIndex) && st.turnStarting == nil && !st.hasPendingSendForTurn(turnIndex) {
 		// The send left without opening its turn during the interrupt's
 		// ack wait: the provider retired it unrun.
 		return stopCutNothing

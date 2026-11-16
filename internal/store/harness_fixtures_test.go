@@ -197,7 +197,7 @@ func TestMigrateHarnessDatabaseRefusals(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer db.Close()
+		defer func() { _ = db.Close() }()
 		var v int
 		if err := db.QueryRow(`SELECT MAX(version) FROM migration_versions`).Scan(&v); err != nil {
 			t.Fatal(err)

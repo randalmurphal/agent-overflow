@@ -33,7 +33,7 @@ func (f *requestFixture) execWaiting(t *testing.T, statement string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer raw.Close()
+	defer func() { _ = raw.Close() }()
 	if _, err := raw.Exec(statement); err != nil {
 		t.Fatal(err)
 	}

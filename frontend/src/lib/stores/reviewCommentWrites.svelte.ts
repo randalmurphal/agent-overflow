@@ -196,7 +196,7 @@ export function createCommentWrites(host: CommentWritesHost): CommentWrites {
   const stopRelease = host.prIdentity.onChange((from) => {
     if (from === null) return;
     const prefix = slot('', from);
-    for (const [key, wait] of [...awaiting]) {
+    for (const [key, wait] of Array.from(awaiting)) {
       if (!key.startsWith(prefix)) continue;
       awaiting.delete(key);
       wait.onSettled(Promise.resolve());

@@ -90,7 +90,7 @@ func (s *Store) UpsertThreadDraft(d ThreadDraft) (DraftWrite, error) {
 	if err != nil {
 		return DraftWrite{}, fmt.Errorf("store: upsert thread draft %s: %w", d.ThreadID, err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	write, err := upsertThreadDraft(tx, d)
 	if err != nil {
 		return DraftWrite{}, err
@@ -196,7 +196,7 @@ func (s *Store) DeleteThreadDraft(threadID string, expected *ThreadDraft) (Draft
 	if err != nil {
 		return DraftWrite{}, fmt.Errorf("store: delete thread draft %s: %w", threadID, err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	listedBefore, err := threadListed(tx, threadID)
 	if err != nil {
 		return DraftWrite{}, err

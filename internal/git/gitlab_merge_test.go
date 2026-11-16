@@ -1259,7 +1259,7 @@ func TestGitLabAutoMergeCarriesTheEditedMessage(t *testing.T) {
 func TestGitLabCancelAutoMergeFollowsTheRelease(t *testing.T) {
 	t.Parallel()
 	mr := gitlabTestProject + "/merge_requests/7"
-	cancel := func(version, answer string) (error, []string) {
+	cancel := func(version, answer string) ([]string, error) {
 		core, calls := gitlabMergeForge(t, func(call forgeAPICall) (forgeAPIAnswer, bool) {
 			switch call.Method + " " + call.Path {
 			case "GET metadata":
@@ -1272,28 +1272,28 @@ func TestGitLabCancelAutoMergeFollowsTheRelease(t *testing.T) {
 			return forgeAPIAnswer{}, false
 		})
 		err := core.CancelPRAutoMerge(t.Context(), gitlabTestRef(7))
-		return err, gitlabPaths(calls)
+		return gitlabPaths(calls), err
 	}
 	legacy := []string{"GET metadata", "POST " + mr + "/cancel_merge_when_pipeline_succeeds"}
 	current := []string{"GET metadata", "POST " + mr + "/cancel_auto_merge"}
 
-	if err, paths := cancel("19.4.2-ee", `201 {"status":"success"}`); err != nil || !slices.Equal(paths, legacy) {
+	if paths, err := cancel("19.4.2-ee", `201 {"status":"success"}`); err != nil || !slices.Equal(paths, legacy) {
 		t.Fatalf("19.4 cancel = %v, requests %q, want the older route alone", err, paths)
 	}
-	if err, _ := cancel("19.4.2-ee", `201 {"message":"Can't cancel the automatic merge","status":"error","http_status":406}`); err == nil || !strings.Contains(err.Error(), "Can't cancel the automatic merge") {
+	if _, err := cancel("19.4.2-ee", `201 {"message":"Can't cancel the automatic merge","status":"error","http_status":406}`); err == nil || !strings.Contains(err.Error(), "Can't cancel the automatic merge") {
 		t.Fatalf("19.4 nothing armed = %v", err)
 	}
-	if err, paths := cancel("19.5.0-ee", `201 {"iid":7}`); err != nil || !slices.Equal(paths, current) {
+	if paths, err := cancel("19.5.0-ee", `201 {"iid":7}`); err != nil || !slices.Equal(paths, current) {
 		t.Fatalf("19.5 cancel = %v, requests %q, want cancel_auto_merge alone", err, paths)
 	}
-	if err, paths := cancel("19.6.1-ee", `409 {"message":"Can't cancel the automatic merge"}`); err == nil || !slices.Equal(paths, current) {
+	if paths, err := cancel("19.6.1-ee", `409 {"message":"Can't cancel the automatic merge"}`); err == nil || !slices.Equal(paths, current) {
 		t.Fatalf("19.6 nothing armed = %v, requests %q", err, paths)
 	}
 	// A 404 is the merge request gone, on either route, with no second try.
-	if err, paths := cancel("19.5.0-ee", `404 {"message":"404 Merge Request Not Found"}`); !errors.Is(err, forgeapi.ErrNotFound) || !slices.Equal(paths, current) {
+	if paths, err := cancel("19.5.0-ee", `404 {"message":"404 Merge Request Not Found"}`); !errors.Is(err, forgeapi.ErrNotFound) || !slices.Equal(paths, current) {
 		t.Fatalf("19.5 gone = %v, requests %q", err, paths)
 	}
-	if err, paths := cancel("18.0.0-ee", `404 {"message":"404 Merge Request Not Found"}`); !errors.Is(err, forgeapi.ErrNotFound) || !slices.Equal(paths, legacy) {
+	if paths, err := cancel("18.0.0-ee", `404 {"message":"404 Merge Request Not Found"}`); !errors.Is(err, forgeapi.ErrNotFound) || !slices.Equal(paths, legacy) {
 		t.Fatalf("18.0 gone = %v, requests %q", err, paths)
 	}
 }

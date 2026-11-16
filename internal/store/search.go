@@ -302,7 +302,7 @@ func threadFindChanged(q sqlQueryer, threadID, filter string, filterArgs []any, 
 	if err != nil {
 		return nil, nil, false, fmt.Errorf("store: search thread items: read changed rows: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	changed, hits := []string{}, []string{}
 	for rows.Next() {
 		var id string

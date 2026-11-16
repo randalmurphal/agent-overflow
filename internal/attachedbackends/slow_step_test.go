@@ -59,7 +59,7 @@ func (p *stalledPeer) route(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
-	defer conn.CloseNow()
+	defer func() { _ = conn.CloseNow() }()
 	ctx := context.Background()
 	time.Sleep(p.hello)
 	if wsjson.Write(ctx, conn, map[string]any{"type": "hello", "backendId": p.id, "protocolVersion": transport.ProtocolVersion, "capabilities": []string{owndevices.Capability}}) != nil {

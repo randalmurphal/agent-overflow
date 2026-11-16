@@ -396,7 +396,7 @@ func TestListUnconfirmedUserRows(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer plan.Close()
+	defer func() { _ = plan.Close() }()
 	var steps []string
 	for plan.Next() {
 		var id, parent, unused int

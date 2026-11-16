@@ -172,10 +172,8 @@ func TestGitHubListLeavesOutRefusedCheckStates(t *testing.T) {
 				if call.Op != "PullsSearch" {
 					return forgeUnexpected(t, call)
 				}
-				rollup, errs := `,"statusCheckRollup":{"state":"SUCCESS"}`, ""
-				if call.Vars["wantChecks"] != true {
-					rollup = ""
-				} else {
+				rollup, errs := "", ""
+				if call.Vars["wantChecks"] == true {
 					rollup, errs = `,"statusCheckRollup":null`, `,"errors":`+tc.errors
 				}
 				return forgeAPIAnswer{Header: tc.header, Body: `{"data":{"viewer":{"login":"alice"},"search":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[` +

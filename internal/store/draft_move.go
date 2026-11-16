@@ -74,14 +74,14 @@ func (s *Store) MoveThreadDraft(expected, destination ThreadDraft) (DraftMove, e
 	}
 	current.UpdatedAt, expected.UpdatedAt = 0, 0
 	if current != expected {
-		return DraftMove{}, errors.New("The draft changed while switching projects. Try again.")
+		return DraftMove{}, errors.New("The draft changed while switching projects. Try again.") //nolint:staticcheck // ST1005: the user sees this sentence as written.
 	}
 	target, _, err := getThreadDraft(tx, destination.ThreadID)
 	if err != nil {
 		return DraftMove{}, err
 	}
 	if target.Content != "" || target.Attachments != "[]" || target.TerminalChips != "[]" || target.PendingPlanImplementation != "" {
-		return DraftMove{}, errors.New("The destination already contains a draft.")
+		return DraftMove{}, errors.New("The destination already contains a draft.") //nolint:staticcheck // ST1005: the user sees this sentence as written.
 	}
 	sourceListed, err := threadListed(tx, expected.ThreadID)
 	if err != nil {

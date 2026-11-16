@@ -102,19 +102,19 @@ func (a *App) checkTransferIdle(thread store.Thread) error {
 	if work.running() {
 		switch work.kind {
 		case workTurn:
-			return errors.New("Let the current turn finish before transferring this conversation.")
+			return errors.New("Let the current turn finish before transferring this conversation.") //nolint:staticcheck // ST1005: the user sees this sentence as written.
 		case workAwaitingAnswer, workQueuedMessages:
-			return errors.New("Finish or remove queued work before transferring this conversation.")
+			return errors.New("Finish or remove queued work before transferring this conversation.") //nolint:staticcheck // ST1005: the user sees this sentence as written.
 		case workBackgroundTasks:
-			return errors.New("Let background agents and commands finish before transferring this conversation.")
+			return errors.New("Let background agents and commands finish before transferring this conversation.") //nolint:staticcheck // ST1005: the user sees this sentence as written.
 		case workShellCommand:
-			return errors.New("Let the shell command finish before transferring this conversation.")
+			return errors.New("Let the shell command finish before transferring this conversation.") //nolint:staticcheck // ST1005: the user sees this sentence as written.
 		case workTerminal:
-			return errors.New("Close this conversation's terminals before transferring it. Running programs stay on their current computer.")
+			return errors.New("Close this conversation's terminals before transferring it. Running programs stay on their current computer.") //nolint:staticcheck // ST1005: the user sees this sentence as written.
 		case workRemoteWatch:
-			return errors.New("Let remote commands finish and their completion messages reach this conversation before copying it. Moving the conversation cancels them.")
+			return errors.New("Let remote commands finish and their completion messages reach this conversation before copying it. Moving the conversation cancels them.") //nolint:staticcheck // ST1005: the user sees this sentence as written.
 		default:
-			return fmt.Errorf("This conversation cannot be transferred while %s.", work.kind)
+			return fmt.Errorf("This conversation cannot be transferred while %s.", work.kind) //nolint:staticcheck // ST1005: the user sees this sentence as written.
 		}
 	}
 	if a.triage != nil {

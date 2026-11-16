@@ -110,7 +110,7 @@ function toastMessages(): string[] {
 }
 
 function clearToasts(): void {
-  for (const toast of [...getToasts()]) removeToast(toast.id);
+  for (const toast of getToasts()) removeToast(toast.id);
 }
 
 beforeEach(() => {

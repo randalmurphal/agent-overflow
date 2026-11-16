@@ -19,7 +19,7 @@ func requireFindTextCurrent(t *testing.T, s *Store, threadID, step string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var id, kind, want, summary, content string
 		var paid bool

@@ -114,7 +114,7 @@ func TestSignInStatesAreNumberedInTheOrderTheyAreStored(t *testing.T) {
 	manager.settleLoginRun(run, LoginPhaseFailed, "")
 	failed := manager.ProviderLoginState(string(provider.Claude))
 	idle := manager.CancelProviderLogin(string(provider.Claude))
-	if !(awaiting.Seq < verifying.Seq && verifying.Seq < failed.Seq && failed.Seq < idle.Seq) {
+	if awaiting.Seq >= verifying.Seq || verifying.Seq >= failed.Seq || failed.Seq >= idle.Seq {
 		t.Fatalf("Seq order awaiting %d, verifying %d, failed %d, idle %d", awaiting.Seq, verifying.Seq, failed.Seq, idle.Seq)
 	}
 	if newest := sink.newest(); newest.Seq != idle.Seq || newest.Phase != LoginPhaseIdle {

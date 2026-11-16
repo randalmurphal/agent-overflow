@@ -68,7 +68,7 @@ func TestCompanionStateSnapshotsAreNumberedInReadOrder(t *testing.T) {
 	first := m.threadState("a")
 	second := m.threadState("b")
 	third := m.threadState("a")
-	if first.Seq == 0 || !(first.Seq < second.Seq && second.Seq < third.Seq) {
+	if first.Seq == 0 || first.Seq >= second.Seq || second.Seq >= third.Seq {
 		t.Fatalf("Seq order %d, %d, %d", first.Seq, second.Seq, third.Seq)
 	}
 	var wg sync.WaitGroup

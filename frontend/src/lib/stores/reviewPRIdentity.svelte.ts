@@ -63,7 +63,7 @@ export function createReviewPRIdentity(live: () => string | null): ReviewPRIdent
       notified = next;
       untrack(() => {
         if (was !== null) epoch += 1;
-        for (const listener of [...listeners]) listener(was, next);
+        for (const listener of Array.from(listeners)) listener(was, next);
       });
     });
   });

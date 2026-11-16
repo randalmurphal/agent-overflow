@@ -1694,7 +1694,7 @@ func (s *Store) UpdateThreadCheckout(threadID, workspacePath, worktreePath, bran
 	if err != nil {
 		return CheckoutWrite{}, fmt.Errorf("%s: begin: %w", action, err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	before, err := threadListed(tx, threadID)
 	if err != nil {
 		return CheckoutWrite{}, err

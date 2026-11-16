@@ -9,9 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
-	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/testutil/mockexec"
 )
@@ -82,25 +80,6 @@ func TestTheFixtureJoinsTheDispatchWorkerAtCleanup(t *testing.T) {
 // them: with no dispatcher, a register does not hand them to the dispatch
 // worker, which would start the thread's session.
 func holdFlushQueue(app *App) { app.triage.SetFlushDispatcher(nil) }
-
-// installIdleProviderSession gives the thread a running session of its
-// provider that answers nothing.
-func installIdleProviderSession(t *testing.T, app *App, thread store.Thread) {
-	t.Helper()
-	if thread.Provider == string(provider.Codex) {
-		sess := installSteerTestSession(t, app, thread, "ok")
-		app.sessionManager().put(thread.ID, session{Provider: thread.Provider, Token: "idle-token", Codex: sess})
-		return
-	}
-	sess, err := claude.NewSession(context.Background(), thread.ID,
-		claude.Config{Reaper: procutiltest.Reaper(), Retention: claude.UserHomeRetention(0), Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
-		func(provider.ProviderEvent) {})
-	if err != nil {
-		t.Fatalf("claude.NewSession: %v", err)
-	}
-	t.Cleanup(func() { _ = sess.Close() })
-	app.sessionManager().put(thread.ID, session{Provider: thread.Provider, Token: "idle-token", Claude: sess})
-}
 
 // waitForStdinTexts waits until the fake CLI has been sent every text and
 // returns the order the first line naming each one arrived in.

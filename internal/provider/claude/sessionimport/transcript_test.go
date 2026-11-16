@@ -76,7 +76,7 @@ func TestLoadSessionImportsPastARowCutMidWrite(t *testing.T) {
 		t.Fatalf("open fixture: %v", err)
 	}
 	if _, err := f.WriteString(`{"type":"user","uuid":"u2","parentUuid":"a1","message":{"role":"user","con`); err != nil {
-		f.Close()
+		_ = f.Close()
 		t.Fatalf("append cut row: %v", err)
 	}
 	if err := f.Close(); err != nil {
@@ -87,7 +87,7 @@ func TestLoadSessionImportsPastARowCutMidWrite(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadSession over a cut last row: %v", err)
 	}
-	defer loaded.Close()
+	defer func() { _ = loaded.Close() }()
 	branch, found, err := loaded.ConvertActiveBranch()
 	if err != nil || !found {
 		t.Fatalf("ConvertActiveBranch: found=%v err=%v", found, err)

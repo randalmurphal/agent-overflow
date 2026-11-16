@@ -120,6 +120,7 @@ function readNestedString(record: Record<string, unknown> | null, path: string[]
 function compactErrorMessage(value: string | undefined): string {
   if (!value) return '';
   const cleaned = value
+    // eslint-disable-next-line no-control-regex -- ESC opens the ANSI escape sequences this strips.
     .replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, '')
     .split('\n')
     .map((line) => line.replace(/\s+/g, ' ').trim())

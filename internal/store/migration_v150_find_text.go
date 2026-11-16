@@ -248,7 +248,7 @@ func findTextPendingRows(ctx context.Context, s *Store, query, afterKey string, 
 	if err != nil {
 		return nil, "", err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var ids []int64
 	var key string
 	for rows.Next() {
