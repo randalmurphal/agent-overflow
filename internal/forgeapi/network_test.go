@@ -123,10 +123,16 @@ func TestGitLabHostNetworkSettings(t *testing.T) {
 		{CACert: keyPath},
 		{ClientCert: certPath},
 		{Proxy: "not a url"},
+		{Proxy: "user:hunter2@proxy.example:3128"},
 	} {
 		err := read(private, bad)
 		if setup, ok := errors.AsType[*SetupError](err); !ok || setup.Kind != SetupMissing || !strings.Contains(setup.Message, "glab's settings for gl.example cannot be used") {
 			t.Fatalf("%+v = %v, want the setup error", bad, err)
+		}
+		// The refusal reaches every caller of a forge method, paired
+		// devices included, so it must not repeat a proxy password.
+		if strings.Contains(err.Error(), "hunter2") {
+			t.Fatalf("the refusal repeats the proxy setting: %v", err)
 		}
 	}
 }
