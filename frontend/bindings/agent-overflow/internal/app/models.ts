@@ -8152,14 +8152,27 @@ export class ThreadAgentRow {
     "activity"?: string;
 
     /**
-     * ToolCalls and Tokens are what the thread a spawn made did over its
-     * life: its top-level tool calls and the tokens its turns spent, the
-     * running turn's included (store.ThreadTally), read here or reported
-     * by the paired computer that holds it; zero for every other kind and
-     * from a computer that does not report them.
+     * ToolCalls, Tokens and RuntimeMs are what the thread a spawn made did
+     * over its life (store.ThreadTally, threadAgentTally): each top-level
+     * tool call it executed, once; the tokens its turns and its own native
+     * agents spent; and the time its turns ran, the open one's so far.
+     * TurnOpen says a turn is open, whose time goes on from RuntimeMs as
+     * read. Read here, or reported by the paired computer that holds it;
+     * zero for every other kind and from a computer that does not report
+     * them, and for a paired spawn under Past whose computer has not
+     * answered, NestedUnavailable then saying why when it could not.
      */
     "toolCalls"?: number;
     "tokens"?: number;
+    "runtimeMs"?: number;
+    "turnOpen"?: boolean;
+
+    /**
+     * RestUnreported marks a request settled `finished` by a paired
+     * computer whose version settles a spawn when its turn ends and cannot
+     * report whether the thread came to rest (store.ThreadRequest.RestUnreported).
+     */
+    "restUnreported"?: boolean;
 
     /**
      * LastMessage is who spoke last in a local target and the end of it.
@@ -8308,13 +8321,16 @@ export class ThreadAgentRows {
     "open"?: boolean | null;
 
     /**
-     * Activity, ToolCalls and Tokens are the listed thread's own, answered
-     * by agent_rows for the spawn row on the computer that asked
-     * (ThreadAgentRow). A computer that predates them sends none.
+     * Activity, ToolCalls, Tokens, RuntimeMs and TurnOpen are the listed
+     * thread's own, answered by agent_rows for the spawn row on the
+     * computer that asked (ThreadAgentRow). A computer that predates them
+     * sends none.
      */
     "activity"?: string;
     "toolCalls"?: number;
     "tokens"?: number;
+    "runtimeMs"?: number;
+    "turnOpen"?: boolean;
 
     /** Creates a new ThreadAgentRows instance. */
     constructor($$source: Partial<ThreadAgentRows> = {}) {
@@ -9170,10 +9186,17 @@ export class ThreadPeerRequest {
      * WaitingOn is what the target still waits on while its request waits
      * for its rest: a spawn, or a send from the thread that spawned it,
      * whose turn ended with work of its own left (restSettlement). Live,
-     * never stored. A computer that does not send it settles such a
-     * request when its turn ends.
+     * never stored.
      */
     "waitingOn"?: string;
+
+    /**
+     * RestRule is set by a computer that settles such a request at its
+     * thread's rest. One that does not send it settles it when its turn
+     * ends and cannot report rest: its `finished` answer is collected with
+     * store.ThreadReceiptAnswer.RestUnreported.
+     */
+    "restRule"?: boolean;
 
     /**
      * AnswerAgent is set on a settled request whose thread was a standing
@@ -9205,14 +9228,14 @@ export class ThreadPeerRequest {
      * Creates a new ThreadPeerRequest instance from a string or object.
      */
     static createFrom($$source: any = {}): ThreadPeerRequest {
-        const $$createField18_0 = $$createType166;
         const $$createField19_0 = $$createType166;
+        const $$createField20_0 = $$createType166;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("answerAgent" in $$parsedSource) {
-            $$parsedSource["answerAgent"] = $$createField18_0($$parsedSource["answerAgent"]);
+            $$parsedSource["answerAgent"] = $$createField19_0($$parsedSource["answerAgent"]);
         }
         if ("lateReplyAgent" in $$parsedSource) {
-            $$parsedSource["lateReplyAgent"] = $$createField19_0($$parsedSource["lateReplyAgent"]);
+            $$parsedSource["lateReplyAgent"] = $$createField20_0($$parsedSource["lateReplyAgent"]);
         }
         return new ThreadPeerRequest($$parsedSource as Partial<ThreadPeerRequest>);
     }
