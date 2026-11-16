@@ -9186,9 +9186,10 @@ export class ThreadPeerRequest {
     "lateReplyAgent"?: ThreadPeerAgent | null;
 
     /**
-     * Instructions are what the spawn this call made appended to its
-     * thread's system prompt, as that thread stores them, for the spawn's
-     * reply on the calling computer. Set only on the reply to the spawn.
+     * Instructions are what a spawn's thread was given for its system
+     * prompt, as its receipt recorded them when it named the thread. Every
+     * answer about the spawn states them, so the calling computer records
+     * them from the first one that reaches it, a poll included.
      */
     "instructions"?: string;
 
