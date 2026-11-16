@@ -329,29 +329,14 @@ func TestCommitSelectedRefusesAFileThatDisplacesAStagedEntry(t *testing.T) {
 	writeRepoFile(t, repo, "dir", "now a file\n")
 	head := runGitStdout(t, repo, "rev-parse", "HEAD")
 	index := runGitStdout(t, repo, "ls-files", "--stage")
-	core := NewCore()
-
-	// The listing cannot read this shape yet (it inspects dir/a.txt through
-	// the file dir), so the selection is the one the dialog would send.
-	oid := strings.TrimSpace(runGitStdout(t, repo, "hash-object", "-w", "--", "dir"))
-	selection := []indexEntry{{path: "dir/a.txt"}, {mode: "100644", oid: oid, path: "dir"}}
-	around, err := core.readIndexAround(repo, selection)
-	if err != nil {
-		t.Fatalf("readIndexAround: %v", err)
-	}
-	if err := around.displaced(selection); !errors.Is(err, ErrCommitDisplacesIndexEntries) || !strings.Contains(err.Error(), "dir/b.txt") || strings.Contains(err.Error(), "a.txt") {
-		t.Fatalf("displaced = %v, want ErrCommitDisplacesIndexEntries naming dir/b.txt alone", err)
-	}
-	// Selecting the staged entry's removal too resolves it.
-	if err := around.displaced(append(selection, indexEntry{path: "dir/b.txt"})); err != nil {
-		t.Fatalf("displaced with every entry under dir recorded = %v", err)
+	selection := listedSelection(t, repo, "dir/a.txt", "dir")
+	if len(selection.Files) != 2 || selection.Files[0].Status == "" || selection.Files[1].Status == "" {
+		t.Fatalf("the listing did not show the directory-to-file change: %+v", selection.Files)
 	}
 
-	if _, err := core.CommitSelected(repo, "dir to file", "", CommitSelection{
-		Files:        []gitdiff.ChangedFile{{Path: "dir/a.txt", Status: "D"}, {Path: "dir", Status: "A"}},
-		SnapshotRoot: t.TempDir(),
-	}); err == nil {
-		t.Fatal("CommitSelected committed a file over a staged entry")
+	_, err := NewCore().CommitSelected(repo, "dir to file", "", selection)
+	if !errors.Is(err, ErrCommitDisplacesIndexEntries) || !strings.Contains(err.Error(), "dir/b.txt") || strings.Contains(err.Error(), "a.txt") {
+		t.Fatalf("CommitSelected = %v, want ErrCommitDisplacesIndexEntries naming dir/b.txt alone", err)
 	}
 	if got := runGitStdout(t, repo, "rev-parse", "HEAD"); got != head {
 		t.Fatalf("HEAD moved to %q", got)
