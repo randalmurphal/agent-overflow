@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log"
@@ -40,6 +41,15 @@ const assistantsOffMessage = "Assistants are turned off in Settings on this comp
 
 // errAssistantsOff refuses work that needs assistants while they are off.
 var errAssistantsOff = errorsx.Public(threadtools.CodeUnsupported, assistantsOffMessage, nil)
+
+// assistantsOffFor is errAssistantsOff as the thread tools' caller reads
+// it: a caller on a paired computer is told which computer has them off.
+func (a *App) assistantsOffFor(ctx context.Context) error {
+	if threadtools.Forwarded(ctx) {
+		return errorsx.Public(threadtools.CodeUnsupported, "Assistants are turned off in Settings on "+a.backendDisplayName()+".", nil)
+	}
+	return errAssistantsOff
+}
 
 // agentWakeOutcomePaused is the outcome of a run the pause stopped.
 const agentWakeOutcomePaused = "stopped: assistants were turned off; runs again when they are turned on"
@@ -114,6 +124,11 @@ func (a *App) convergeAssistants() {
 		}
 	}
 }
+
+// AssistantsOff is threadtools.App's: the thread tools keep paired
+// computers' assistants out of this computer's callers' answers while it is
+// off here.
+func (t threadToolsApp) AssistantsOff() bool { return t.app.assistantsPaused() }
 
 // assistantsPaused reports whether assistants are off on this computer.
 func (a *App) assistantsPaused() bool {

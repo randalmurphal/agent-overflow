@@ -411,6 +411,11 @@ func (c *session) stampGroup(computer Computer, result searchAnswerShape) search
 	for index := range group.Rows {
 		group.Rows[index].ComputerID, group.Rows[index].Computer = id, name
 	}
+	if c.assistantsOff {
+		// The assistants another computer lists are not offered to a caller
+		// on a computer with assistants off.
+		group.Rows = slices.DeleteFunc(group.Rows, func(row searchRow) bool { return row.Assistant != nil })
+	}
 	if group.Rows == nil {
 		group.Rows = []searchRow{}
 	}

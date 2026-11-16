@@ -283,14 +283,24 @@ func (t threadToolsApp) ResolveThreadRef(ctx context.Context, ref string) (threa
 		if err != nil {
 			return threadtools.Resolution{}, err
 		}
-		if visible {
-			return threadtools.Resolution{Matches: []threadtools.Candidate{{ThreadID: thread.ID, Title: thread.Title}}}, nil
+		if !visible {
+			return threadtools.Resolution{}, nil
 		}
-		return threadtools.Resolution{}, nil
+		// A thread under an assistant is no address while assistants are
+		// off: the caller is told why rather than that nothing matched.
+		if paused, err := t.app.pausedAssistantThread(thread.ID); err != nil {
+			return threadtools.Resolution{}, err
+		} else if paused {
+			return threadtools.Resolution{}, t.app.assistantsOffFor(ctx)
+		}
+		return threadtools.Resolution{Matches: []threadtools.Candidate{{ThreadID: thread.ID, Title: thread.Title}}}, nil
 	}
 	candidates, err := t.assistantCandidates(ref)
 	if err != nil {
 		return threadtools.Resolution{}, err
+	}
+	if len(candidates) > 0 && t.app.assistantsPaused() {
+		return threadtools.Resolution{}, t.app.assistantsOffFor(ctx)
 	}
 	if len(ref) < threadtools.MinPrefixLen {
 		return threadtools.Resolution{Matches: candidates}, nil
@@ -347,6 +357,11 @@ func (t threadToolsApp) prefixCandidates(ref, callerThreadID string) ([]threadto
 			return nil, err
 		}
 		if !visible {
+			continue
+		}
+		if paused, err := t.app.pausedAssistantThread(thread.ID); err != nil {
+			return nil, err
+		} else if paused {
 			continue
 		}
 		matches = append(matches, threadtools.Candidate{ThreadID: thread.ID, Title: thread.Title})
@@ -686,18 +701,25 @@ const (
 // from, which is the same id the receipt on this computer records.
 func (t threadToolsApp) threadToolsFilter(ctx context.Context, q threadtools.SearchQuery) (store.ThreadSearchFilter, error) {
 	caller, _ := threadtools.CallerFrom(ctx)
+	// Assistants turned off are listed to nobody, and asking for them is
+	// refused (app_assistants_switch.go).
+	paused := t.app.assistantsPaused()
+	if paused && q.Agents {
+		return store.ThreadSearchFilter{}, t.app.assistantsOffFor(ctx)
+	}
 	scratch, err := t.app.store.ListCallerScratchThreadIDs(caller.ThreadID)
 	if err != nil {
 		return store.ThreadSearchFilter{}, err
 	}
 	filter := store.ThreadSearchFilter{
-		ProjectID:        q.ProjectID,
-		Provider:         q.Provider,
-		Archived:         q.Archived,
-		SinceUnixMs:      q.SinceUnixMs,
-		SpawnedBy:        q.SpawnedBy,
-		Agents:           q.Agents,
-		ScratchThreadIDs: scratch,
+		ProjectID:             q.ProjectID,
+		Provider:              q.Provider,
+		Archived:              q.Archived,
+		SinceUnixMs:           q.SinceUnixMs,
+		SpawnedBy:             q.SpawnedBy,
+		Agents:                q.Agents,
+		ExceptUnderAssistants: paused,
+		ScratchThreadIDs:      scratch,
 	}
 	if q.ThreadID != "" {
 		filter.ThreadIDs = []string{q.ThreadID}

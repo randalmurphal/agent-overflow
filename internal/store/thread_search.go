@@ -102,6 +102,9 @@ type ThreadSearchFilter struct {
 	SpawnedBy string
 	// Agents restricts to assistants' current threads.
 	Agents bool
+	// ExceptUnderAssistants leaves out every thread that lives under an
+	// assistant, while assistants are turned off (assistants_paused.go).
+	ExceptUnderAssistants bool
 	// GroupIDs restricts to threads filed in one of these sidebar groups.
 	// A non-nil empty list matches no thread: the caller named a group
 	// this computer does not have.
@@ -201,6 +204,9 @@ func (f ThreadSearchFilter) threadRowConditions(alias string) ([]string, []any) 
 	}
 	if f.Agents {
 		conditions = append(conditions, `EXISTS (SELECT 1 FROM agents WHERE agents.thread_id = `+alias+`id)`)
+	}
+	if f.ExceptUnderAssistants {
+		conditions = append(conditions, "NOT "+threadUnderAssistantSQL(alias+"id"))
 	}
 	if f.SpawnedBy != "" {
 		conditions = append(conditions, spawnerOfSQL(alias+"id")+` = ?`)

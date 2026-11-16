@@ -14,11 +14,13 @@ import (
 // Both shapes are built from the same code: shape.Paired() decides whether
 // the computer parameters exist at all. No tool is pairing-only, so
 // pairing never adds or removes a tool; only the computer parameters
-// change. The one tool a shape removes is thread_spawn, for a session at
-// the sub-thread limit (SpawnShape.CanSpawn).
+// change. A shape removes thread_spawn for a session at the sub-thread
+// limit (SpawnShape.CanSpawn), and thread_watch and thread_new_assistant,
+// the assistants' own tools, while assistants are turned off.
 
 // ToolNames is the seventeen tools, in the order Tools returns them; a
-// session at the sub-thread limit is listed all but thread_spawn.
+// session at the sub-thread limit is listed all but thread_spawn, and one
+// with assistants off all but the last two.
 var ToolNames = []string{
 	"thread_search",
 	"thread_show",
@@ -51,7 +53,7 @@ func (s *Server) Tools(shape Shape) []map[string]any {
 	if shape.Spawn.CanSpawn() {
 		tools = append(tools, spawnSchema(shape))
 	}
-	return append(tools,
+	tools = append(tools,
 		sendSchema(shape),
 		askSchema(shape),
 		replySchema(),
@@ -62,9 +64,11 @@ func (s *Server) Tools(shape Shape) []map[string]any {
 		remindSchema(),
 		attentionSchema(),
 		loopSchema(s.wakeFloor),
-		watchSchema(s.wakeFloor),
-		newAssistantSchema(),
 	)
+	if shape.AssistantsOff {
+		return tools
+	}
+	return append(tools, watchSchema(s.wakeFloor), newAssistantSchema())
 }
 
 func tool(name, description string, properties map[string]any, required ...string) map[string]any {
@@ -145,7 +149,12 @@ func searchSchema(shape Shape) map[string]any {
 		},
 		"cursor": map[string]any{"type": "string", "description": "Opaque cursor from a previous thread_search result, passed back unchanged to continue past limit. Omit to start over."},
 	}
-	description := "Find threads, or list them. With query it is a full-text search over settled message text, tool call summaries and titles; without one it lists recent threads by last activity. Either way each row carries the thread id, title, project, provider, model, current state, last activity, branch, group, pin tier, archived and unread flags, last_message (who spoke last in the latest turn, when, and the end of what they said, which shows whether a thread that is idle is waiting on an answer), assistant on an assistant's current thread (its id, name and role line), self on the calling thread's own row, and with a query the matched item id and a snippet. Open a hit with thread_show around its item id, or read what a thread concluded with thread_show window last_answer. Scratch threads are never listed; workflow threads are. Check indexing before treating an empty result as conclusive: a computer still building its index covers only what it has indexed so far."
+	assistant := "assistant on an assistant's current thread (its id, name and role line), "
+	if shape.AssistantsOff {
+		delete(properties, "agents")
+		assistant = ""
+	}
+	description := "Find threads, or list them. With query it is a full-text search over settled message text, tool call summaries and titles; without one it lists recent threads by last activity. Either way each row carries the thread id, title, project, provider, model, current state, last activity, branch, group, pin tier, archived and unread flags, last_message (who spoke last in the latest turn, when, and the end of what they said, which shows whether a thread that is idle is waiting on an answer), " + assistant + "self on the calling thread's own row, and with a query the matched item id and a snippet. Open a hit with thread_show around its item id, or read what a thread concluded with thread_show window last_answer. Scratch threads are never listed; workflow threads are. Check indexing before treating an empty result as conclusive: a computer still building its index covers only what it has indexed so far."
 	if shape.Paired() {
 		properties["computers"] = map[string]any{
 			"type":        "array",

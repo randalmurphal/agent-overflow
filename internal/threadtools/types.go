@@ -27,6 +27,10 @@ type Shape struct {
 	Computers []Computer
 	Defaults  SpawnDefaults
 	Spawn     SpawnShape
+	// AssistantsOff is this computer's Assistants setting turned off: the
+	// session has no tool, parameter or sentence of the guide that is about
+	// assistants (docs/specs/standing-agents.md, "Turning assistants off").
+	AssistantsOff bool
 }
 
 // SpawnShape is what the guide and the tool list say about spawning in one

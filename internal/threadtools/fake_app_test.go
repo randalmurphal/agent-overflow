@@ -14,6 +14,8 @@ import (
 // run against real handler output rather than a hand-written reply.
 type fakeApp struct {
 	name string
+	// assistantsOff is the computer's Assistants setting turned off.
+	assistantsOff bool
 
 	threads  map[string]Thread
 	live     map[string]LiveState
@@ -331,6 +333,8 @@ func (f *fakeApp) Catalog(_ context.Context, q CatalogQuery) (Catalog, error) {
 }
 
 func (f *fakeApp) Roster(context.Context) (Roster, error) { return f.roster, nil }
+
+func (f *fakeApp) AssistantsOff() bool { return f.assistantsOff }
 
 func (f *fakeApp) Spawn(_ context.Context, _ Caller, call SpawnCall) (RequestAck, error) {
 	f.spawns = append(f.spawns, call)

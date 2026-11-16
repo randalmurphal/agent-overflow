@@ -118,6 +118,45 @@ func TestPausedAssistantsHaveNothingDue(t *testing.T) {
 	}
 }
 
+// While assistants are paused, a thread under an assistant is no message
+// search hit, by title or by message; an ordinary thread still is.
+func TestPausedAssistantsAreNoMessageSearchHits(t *testing.T) {
+	t.Parallel()
+	s := newTestStore(t)
+	homeThread(t, s, "ops", "")
+	mustRetitle(t, s, "ops", "quokka board")
+	if err := s.CreateStandingAgent(StandingAgent{ID: "a-ops", ThreadID: "ops", Home: "/h/ops", CreatedAt: 1}, defaultTestProjectID); err != nil {
+		t.Fatal(err)
+	}
+	homeThread(t, s, "helper", "a-ops")
+	mustCreateThread(t, s, "plain")
+	mustRetitle(t, s, "plain", "quokka notes")
+	mustInsertItemForSearch(t, s, "ops", "ops-item", 0, "quokka in ops", 1)
+	mustInsertItemForSearch(t, s, "helper", "helper-item", 0, "quokka in helper", 2)
+	mustInsertItemForSearch(t, s, "plain", "plain-item", 0, "quokka in plain", 3)
+
+	threads := func(paused bool) []string {
+		t.Helper()
+		s.PauseAssistants(paused)
+		hits, err := s.SearchThreadMessages("quokka", 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var ids []string
+		for _, hit := range hits {
+			ids = append(ids, hit.MatchType+":"+hit.ThreadID)
+		}
+		slices.Sort(ids)
+		return ids
+	}
+	if got, want := threads(true), []string{"item:plain", "title:plain"}; !slices.Equal(got, want) {
+		t.Errorf("paused hits = %v, want %v", got, want)
+	}
+	if got, want := threads(false), []string{"item:helper", "item:ops", "item:plain", "title:ops", "title:plain"}; !slices.Equal(got, want) {
+		t.Errorf("running hits = %v, want %v", got, want)
+	}
+}
+
 func wakeIDs(rows []AgentWake) []string {
 	ids := make([]string, 0, len(rows))
 	for _, row := range rows {

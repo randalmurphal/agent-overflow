@@ -83,7 +83,7 @@ func (a *App) threadToolsServer() *threadtools.Server {
 // place when its session started, and the providers and profiles this
 // computer offers.
 func (a *App) threadToolsShape(threadID string, place subThreadPlace) threadtools.Shape {
-	shape := threadtools.Shape{}
+	shape := threadtools.Shape{AssistantsOff: !a.currentSettings().AssistantsEnabled}
 	adapter := a.threadToolsAdapter()
 	shape.Computers = a.threadToolsShapeComputers(adapter)
 	thread, err := adapter.Thread(context.Background(), threadID)

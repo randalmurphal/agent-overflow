@@ -78,6 +78,13 @@ type App interface {
 	// them, from this computer's settings.
 	Roster(ctx context.Context) (Roster, error)
 
+	// AssistantsOff reports whether this computer's Assistants setting is
+	// off. Its own assistants are then no address and in no listing here;
+	// this package keeps the assistants other computers report out of its
+	// callers' answers too (docs/specs/standing-agents.md, "Turning
+	// assistants off").
+	AssistantsOff() bool
+
 	// Spawn creates a visible thread, sends the prompt as its first user
 	// message, starts the turn and returns the request receipt. It mints
 	// the token, writes the request row and dispatches locally or to the

@@ -1,6 +1,7 @@
 package threadtools
 
 import (
+	"cmp"
 	"context"
 	"strings"
 
@@ -139,6 +140,9 @@ func (c *session) resolveOn(ctx context.Context, ref, id string, followMoves boo
 			return target, err
 		}
 	}
+	if answer.hidAssistant {
+		return Target{}, errAssistantsOff()
+	}
 	if len(ref) < MinPrefixLen {
 		return Target{}, publicf(CodeNotFound, "No assistant is named %q on %s, and a thread id prefix needs at least %d characters.", ref, NameOfComputer(computer), MinPrefixLen)
 	}
@@ -168,12 +172,22 @@ func (c *session) fanOutResolve(ctx context.Context, ref string) (Target, error)
 	var matches []Candidate
 	var silent []Computer
 	var moved *resolveAnswer
+	var refusal error
 	seen := make(map[string]struct{}, len(answers))
 	for index := range answers {
 		answer := answers[index]
 		if answer.err != nil {
-			silent = append(silent, answer.computer)
+			// A computer that refused the reference answered; only one
+			// that failed to answer leaves the result incomplete.
+			if code, _, public := errorsx.PublicDetails(answer.err); public && code == CodeUnsupported {
+				refusal = cmp.Or(refusal, answer.err)
+			} else {
+				silent = append(silent, answer.computer)
+			}
 			continue
+		}
+		if answer.hidAssistant {
+			refusal = cmp.Or(refusal, errAssistantsOff())
 		}
 		for _, candidate := range c.withComputer(answer) {
 			if _, duplicate := seen[candidate.ThreadID]; duplicate {
@@ -200,6 +214,9 @@ func (c *session) fanOutResolve(ctx context.Context, ref string) (Target, error)
 			return target, err
 		}
 	}
+	if refusal != nil {
+		return Target{}, refusal
+	}
 	if len(silent) > 0 {
 		return Target{}, resolutionIncomplete(ref, silent)
 	}
@@ -211,6 +228,9 @@ type resolveAnswer struct {
 	local    bool
 	res      Resolution
 	err      error
+	// hidAssistant is set when the computer matched an assistant this
+	// caller is not offered while assistants are off here.
+	hidAssistant bool
 }
 
 func (c *session) askLocal(ctx context.Context, ref string) resolveAnswer {
@@ -224,6 +244,19 @@ func (c *session) askPeer(ctx context.Context, computer Computer, ref string) re
 		return resolveAnswer{computer: computer, err: err}
 	}
 	res, err := peer.Resolve(ctx, ref)
+	if err == nil && c.assistantsOff {
+		// Another computer's assistant is no address here while this
+		// computer has assistants off.
+		kept := res.Matches[:0:0]
+		for _, match := range res.Matches {
+			if match.Assistant == "" {
+				kept = append(kept, match)
+			}
+		}
+		hidden := len(kept) < len(res.Matches)
+		res.Matches = kept
+		return resolveAnswer{computer: computer, res: addressable(ref, res), hidAssistant: hidden}
+	}
 	return resolveAnswer{computer: computer, res: addressable(ref, res), err: err}
 }
 
