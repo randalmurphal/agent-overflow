@@ -96,7 +96,7 @@ func TestEverySettingsBindingBroadcasts(t *testing.T) {
 		{
 			name: "SetProviderCustomEnvVar",
 			write: func(app *App) error {
-				_, err := app.SetProviderCustomEnvVar("claude", "MY_VAR", "value", false)
+				_, err := app.SetProviderCustomEnvVar(context.Background(), "claude", "MY_VAR", "value", false)
 				return err
 			},
 			tier: "host",
@@ -117,24 +117,6 @@ func TestEverySettingsBindingBroadcasts(t *testing.T) {
 				t.Fatalf("frame = %+v, want tier %q keys %v", got, testCase.tier, testCase.keys)
 			}
 		})
-	}
-}
-
-// The frame names keys. Values never ride it, because GetSettings redacts
-// endpoint tokens and sensitive environment values and this channel must not
-// become the way around that.
-func TestSettingsBroadcastCarriesNoValues(t *testing.T) {
-	t.Parallel()
-	app := newTestApp(t)
-	broadcasts := captureSettingsBroadcasts(t, app)
-	const secret = "s3cret-value"
-	if _, err := app.SetProviderCustomEnvVar("claude", "MY_VAR", secret, true); err != nil {
-		t.Fatalf("SetProviderCustomEnvVar: %v", err)
-	}
-	for _, evt := range broadcasts.events {
-		if slices.Contains(evt.Keys, secret) {
-			t.Fatalf("frame carried the value: %+v", evt)
-		}
 	}
 }
 

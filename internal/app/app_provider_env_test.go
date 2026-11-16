@@ -74,7 +74,7 @@ func TestSessionProcessEnvFollowsCustomEnvAcrossTransitions(t *testing.T) {
 	}
 
 	// On: reaches Claude and claude-tui, not Codex.
-	if _, err := app.SetProviderCustomEnvVar("claude", "ANTHROPIC_BASE_URL", "https://gw.test", false); err != nil {
+	if _, err := app.SetProviderCustomEnvVar(context.Background(), "claude", "ANTHROPIC_BASE_URL", "https://gw.test", false); err != nil {
 		t.Fatalf("SetProviderCustomEnvVar() error = %v", err)
 	}
 	for _, providerName := range []string{string(provider.Claude), string(provider.ClaudeTUI)} {
@@ -88,7 +88,7 @@ func TestSessionProcessEnvFollowsCustomEnvAcrossTransitions(t *testing.T) {
 	}
 
 	// Codex keeps its own list.
-	if _, err := app.SetProviderCustomEnvVar("codex", "HTTPS_PROXY", "http://proxy.test:8080", false); err != nil {
+	if _, err := app.SetProviderCustomEnvVar(context.Background(), "codex", "HTTPS_PROXY", "http://proxy.test:8080", false); err != nil {
 		t.Fatalf("SetProviderCustomEnvVar() error = %v", err)
 	}
 	if got := app.sessionProcessEnv(string(provider.Codex), nil, aoSessionCredential{}); got["HTTPS_PROXY"] != "http://proxy.test:8080" {
@@ -99,7 +99,7 @@ func TestSessionProcessEnvFollowsCustomEnvAcrossTransitions(t *testing.T) {
 	}
 
 	// Off again: the removal has to reach the next spawn.
-	if _, err := app.DeleteProviderCustomEnvVar("claude", "ANTHROPIC_BASE_URL"); err != nil {
+	if _, err := app.DeleteProviderCustomEnvVar(context.Background(), "claude", "ANTHROPIC_BASE_URL"); err != nil {
 		t.Fatalf("DeleteProviderCustomEnvVar() error = %v", err)
 	}
 	for _, providerName := range []string{string(provider.Claude), string(provider.ClaudeTUI)} {
@@ -120,7 +120,7 @@ func TestSessionProcessEnvFollowsCustomEnvAcrossTransitions(t *testing.T) {
 func TestSessionProcessEnvPrecedenceAroundCustomEnv(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)
-	if _, err := app.SetProviderCustomEnvVar("claude", "SHARED", "user", false); err != nil {
+	if _, err := app.SetProviderCustomEnvVar(context.Background(), "claude", "SHARED", "user", false); err != nil {
 		t.Fatal(err)
 	}
 	got := app.sessionProcessEnv(
@@ -150,10 +150,10 @@ func TestSessionProcessEnvPrecedenceAroundCustomEnv(t *testing.T) {
 func TestProbeConfigsCarryCustomEnvWithPinsWinning(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)
-	if _, err := app.SetProviderCustomEnvVar("claude", "ANTHROPIC_BASE_URL", "https://gw.test", false); err != nil {
+	if _, err := app.SetProviderCustomEnvVar(context.Background(), "claude", "ANTHROPIC_BASE_URL", "https://gw.test", false); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := app.SetProviderCustomEnvVar("codex", "HTTPS_PROXY", "http://proxy.test:8080", false); err != nil {
+	if _, err := app.SetProviderCustomEnvVar(context.Background(), "codex", "HTTPS_PROXY", "http://proxy.test:8080", false); err != nil {
 		t.Fatal(err)
 	}
 
@@ -192,7 +192,7 @@ func TestProbeCacheKeyIncludesCustomEnv(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)
 	before := app.providerProbeCacheKey(string(provider.Claude), "claude")
-	if _, err := app.SetProviderCustomEnvVar("claude", "ANTHROPIC_BASE_URL", "https://gw.test", false); err != nil {
+	if _, err := app.SetProviderCustomEnvVar(context.Background(), "claude", "ANTHROPIC_BASE_URL", "https://gw.test", false); err != nil {
 		t.Fatal(err)
 	}
 	after := app.providerProbeCacheKey(string(provider.Claude), "claude")
@@ -215,7 +215,7 @@ func TestCustomEnvChangeEvictsBothProbeAnswers(t *testing.T) {
 	beforeKey := app.providerProbeCacheKey(string(provider.Claude), app.providerBinaryPath(string(provider.Claude)))
 	claudeAccountProbeCache().Set(beforeKey, provider.AccountInfo{Email: "old@example.test"})
 
-	if _, err := app.SetProviderCustomEnvVar("claude", "ANTHROPIC_BASE_URL", "https://gw.test", false); err != nil {
+	if _, err := app.SetProviderCustomEnvVar(context.Background(), "claude", "ANTHROPIC_BASE_URL", "https://gw.test", false); err != nil {
 		t.Fatal(err)
 	}
 	if _, hit := claudeAccountProbeCache().Get(beforeKey); hit {
@@ -228,7 +228,7 @@ func TestCustomEnvChangeEvictsBothProbeAnswers(t *testing.T) {
 
 	// Same on the way back out.
 	claudeAccountProbeCache().Set(afterKey, provider.AccountInfo{Email: "gw@example.test"})
-	if _, err := app.DeleteProviderCustomEnvVar("claude", "ANTHROPIC_BASE_URL"); err != nil {
+	if _, err := app.DeleteProviderCustomEnvVar(context.Background(), "claude", "ANTHROPIC_BASE_URL"); err != nil {
 		t.Fatal(err)
 	}
 	if _, hit := claudeAccountProbeCache().Get(afterKey); hit {
@@ -265,7 +265,7 @@ func TestClaudeTUINamedEnvChangeEvictsClaudeProbeAnswers(t *testing.T) {
 	beforeKey := app.providerProbeCacheKey(string(provider.Claude), app.providerBinaryPath(string(provider.Claude)))
 	claudeAccountProbeCache().Set(beforeKey, provider.AccountInfo{Email: "old@example.test"})
 
-	if _, err := app.SetProviderCustomEnvVar(string(provider.ClaudeTUI), "HTTPS_PROXY", "http://proxy.test:8080", false); err != nil {
+	if _, err := app.SetProviderCustomEnvVar(context.Background(), string(provider.ClaudeTUI), "HTTPS_PROXY", "http://proxy.test:8080", false); err != nil {
 		t.Fatal(err)
 	}
 	if _, hit := claudeAccountProbeCache().Get(beforeKey); hit {
@@ -281,13 +281,13 @@ func TestClaudeTUIRoutesCustomBaseURLToTheGatewayUpstream(t *testing.T) {
 	if got := app.claudetuiUpstream(); got != "" {
 		t.Fatalf("claudetuiUpstream() = %q, want the real API by default", got)
 	}
-	if _, err := app.SetProviderCustomEnvVar("claude", claudetui.BaseURLEnv, "https://gw.test", false); err != nil {
+	if _, err := app.SetProviderCustomEnvVar(context.Background(), "claude", claudetui.BaseURLEnv, "https://gw.test", false); err != nil {
 		t.Fatal(err)
 	}
 	if got := app.claudetuiUpstream(); got != "https://gw.test" {
 		t.Fatalf("claudetuiUpstream() = %q, want the configured endpoint", got)
 	}
-	if _, err := app.DeleteProviderCustomEnvVar("claude", claudetui.BaseURLEnv); err != nil {
+	if _, err := app.DeleteProviderCustomEnvVar(context.Background(), "claude", claudetui.BaseURLEnv); err != nil {
 		t.Fatal(err)
 	}
 	if got := app.claudetuiUpstream(); got != "" {
@@ -302,10 +302,10 @@ func TestTextGenerationCarriesTheChosenProvidersCustomEnv(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)
 	resetProviderBinarySettings(t, app)
-	if _, err := app.SetProviderCustomEnvVar("claude", "ANTHROPIC_BASE_URL", "https://claude.test", false); err != nil {
+	if _, err := app.SetProviderCustomEnvVar(context.Background(), "claude", "ANTHROPIC_BASE_URL", "https://claude.test", false); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := app.SetProviderCustomEnvVar("codex", "HTTPS_PROXY", "http://proxy.test:8080", false); err != nil {
+	if _, err := app.SetProviderCustomEnvVar(context.Background(), "codex", "HTTPS_PROXY", "http://proxy.test:8080", false); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := app.settings.Update(map[string]any{"textGenerationProvider": "claude"}); err != nil {
@@ -356,10 +356,10 @@ func TestTextGenerationCarriesTheChosenProvidersCustomEnv(t *testing.T) {
 func TestGetSettingsRedactsSensitiveCustomEnvValues(t *testing.T) {
 	t.Parallel()
 	app := newTestAppWithStore(t)
-	if _, err := app.SetProviderCustomEnvVar("claude", "OPEN_VALUE", "visible", false); err != nil {
+	if _, err := app.SetProviderCustomEnvVar(context.Background(), "claude", "OPEN_VALUE", "visible", false); err != nil {
 		t.Fatal(err)
 	}
-	returned, err := app.SetProviderCustomEnvVar("claude", "SECRET_TOKEN", "hunter2", true)
+	returned, err := app.SetProviderCustomEnvVar(context.Background(), "claude", "SECRET_TOKEN", "hunter2", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -404,7 +404,7 @@ func TestSensitiveCustomEnvSurvivesAReload(t *testing.T) {
 	dir := t.TempDir()
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(dir)
-	if _, err := app.SetProviderCustomEnvVar("codex", "PROXY_TOKEN", "hunter2", true); err != nil {
+	if _, err := app.SetProviderCustomEnvVar(context.Background(), "codex", "PROXY_TOKEN", "hunter2", true); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "settings.json")); err != nil {

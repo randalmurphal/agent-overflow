@@ -60,6 +60,15 @@ func (a *App) requireScope(ctx context.Context, scope transport.Scope, detail st
 	return transport.ScopeRequired(scope, detail)
 }
 
+// callerHolds reports whether the calling session holds scope, for a read
+// that projects its answer rather than refusing it. A call with no session
+// holds every scope, for the reason the file header gives; a session that
+// is no longer live holds none (callerGrants returns no grants for it).
+func (a *App) callerHolds(ctx context.Context, scope transport.Scope) bool {
+	granted, _, hasSession := a.callerGrants(ctx)
+	return !hasSession || holdsScope(granted, scope)
+}
+
 // requireStepUp refuses when the call carries no fresh step-up proof.
 //
 // Two proofs satisfy it — standing at the machine, or a passkey assertion

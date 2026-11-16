@@ -11,6 +11,7 @@ import (
 	"agent-overflow/internal/editor"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/settings"
+	"agent-overflow/internal/transport"
 )
 
 // GetProviderStatuses reports provider binary availability using the configured paths.
@@ -54,7 +55,7 @@ func (a *App) currentSettings() settings.Settings {
 }
 
 // GetSettings returns the current persisted settings merged over defaults,
-// with every secret redacted (see redactedSettings).
+// projected for the caller (see settingsForCaller).
 //
 // Resolved PER CALLER. The host and user tiers are global to this backend;
 // the device tier comes out of the calling connection's own ui_state bucket
@@ -74,29 +75,40 @@ func (a *App) GetSettings(ctx context.Context) (settings.Settings, error) {
 	if err != nil {
 		return settings.Settings{}, err
 	}
-	return redactedSettings(caller.Get()), nil
+	return a.settingsForCaller(ctx, caller.Get()), nil
 }
 
-// redactedSettings is the projection every bound method returning a full
-// Settings value goes through.
+// settingsForCaller is the projection every bound method returning a full
+// Settings value goes through. The settings:updated event carries key names
+// only, so a receiver reads values back through here as well.
 //
 // Prompt override texts are left out: each lives in its file, which the
 // user edits there, and the entry carries Blank instead
 // (settings.PromptOverridesForWire).
 //
 // SECURITY: the values of custom environment variables flagged sensitive
-// are cleared. A LAN-attached token-holder calling GetSettings must not be
-// able to harvest credentials — a sensitive environment value has no read
+// are cleared for every caller. A sensitive environment value has no read
 // path at all, and the UI overwrites it by re-entry.
+//
+// A caller without access:admin also does not receive the network block or
+// the OTLP endpoint. The network block's own read, GetNetworkSettings,
+// requires access:admin, and it holds the DNS hook command line; the
+// endpoint is a URL that can carry a collector credential. The rest of the
+// host tier stays readable: a view-only device renders which providers and
+// features this backend has enabled from it.
 //
 // The values are copied before clearing: settings.Service.Get returns a value
 // copy of Settings, but its maps share backing memory with the service's
 // cache, so clearing in place would corrupt every later reader.
-func redactedSettings(current settings.Settings) settings.Settings {
+func (a *App) settingsForCaller(ctx context.Context, current settings.Settings) settings.Settings {
 	current.ClaudeCustomEnv = settings.RedactProviderEnvVars(current.ClaudeCustomEnv)
 	current.CodexCustomEnv = settings.RedactProviderEnvVars(current.CodexCustomEnv)
 	current.ClaudePromptOverrides = settings.PromptOverridesForWire(current.ClaudePromptOverrides)
 	current.CodexPromptOverrides = settings.PromptOverridesForWire(current.CodexPromptOverrides)
+	if !a.callerHolds(ctx, transport.ScopeAccessAdmin) {
+		current.Network = settings.NetworkSettings{}
+		current.ObservabilityOtlpEndpoint = ""
+	}
 	return current
 }
 
@@ -124,7 +136,7 @@ func redactedSettings(current settings.Settings) settings.Settings {
 // lowPowerMode to false is a change from the true its class resolves to, so
 // it persists a row and outranks the table from then on.
 //
-// The returned snapshot is redacted like GetSettings': the frontend store
+// The returned snapshot is projected like GetSettings': the frontend store
 // re-seeds from it, and the two read paths must not disagree about whether the
 // store holds a plaintext secret. (Nothing consumes the secrets from here:
 // sensitive environment values have no read path at all.)
@@ -225,7 +237,7 @@ func (a *App) UpdateSettings(ctx context.Context, patch map[string]any) (setting
 			a.git.InvalidateAllForgeCache()
 		}
 	}
-	return redactedSettings(next), nil
+	return a.settingsForCaller(ctx, next), nil
 }
 
 // liveClaudeSettingsAxes are the settings keys whose save must converge
