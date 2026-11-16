@@ -1,13 +1,14 @@
 // The browser chrome's real layout in Chromium: tabs share the strip evenly
 // between their maximum and minimum width, the tab row scrolls past that with
 // the new-tab button still on screen and the active tab in view, and the
-// address row fits a narrow pane.
+// address row fits a narrow pane, its secondary controls (the cookie jar
+// included) moving into More.
 
 import { afterEach, describe, expect, it } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import '../../../app.css';
 import BrowserTabStrip, { TAB_MAX_WIDTH, TAB_MIN_WIDTH } from './BrowserTabStrip.svelte';
-import BrowserAddressBar from './BrowserAddressBar.svelte';
+import BrowserAddressBarPaneHarness from './BrowserAddressBarPaneHarness.svelte';
 import { raf } from '../../../test/helpers/browserFrames';
 import { rawProps } from '../../../test/helpers/rawProps.svelte';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
@@ -174,9 +175,10 @@ describe('browser address row layout', () => {
             host = document.createElement('div');
             host.style.cssText = `position:fixed;top:0;left:0;width:${width}px`;
             document.body.append(host);
-            app = mount(BrowserAddressBar, {
+            app = mount(BrowserAddressBarPaneHarness, {
               target: host,
               props: {
+                threadId: 'thread-layout',
                 activePage: {
                   id: 'a',
                   url: localFile ? 'file:///repo/report.html' : 'https://example.test/',
@@ -208,15 +210,18 @@ describe('browser address row layout', () => {
 
             const more = host.querySelector<HTMLElement>('[data-testid="browser-more"]');
             const label = host.querySelector('[data-testid="browser-pane-size"]');
-            if (width >= (compact ? 576 : 448)) {
+            const jar = host.querySelector<HTMLElement>('[data-testid="browser-jar"]');
+            if (width >= (compact ? 576 : 512)) {
               expect(shown(more)).toBe(false);
               expect(shown(host.querySelector('[data-testid="browser-open-file"]'))).toBe(true);
+              expect(shown(jar)).toBe(true);
               expect(shown(label)).toBe(!!sizeLabel);
               expect(buttons.some((b) => b.getAttribute('aria-label') === 'Show in folder')).toBe(localFile);
               return;
             }
             expect(shown(more)).toBe(true);
             expect(shown(host.querySelector('[data-testid="browser-open-file"]'))).toBe(false);
+            expect(shown(jar)).toBe(false);
             expect(shown(label)).toBe(false);
             more!.click();
             flushSync();
@@ -226,6 +231,25 @@ describe('browser address row layout', () => {
             expect(items.some((text) => text.includes('Open devtools'))).toBe(true);
             expect(items.some((text) => text.includes('Show in folder'))).toBe(localFile);
             expect(items.some((text) => text.includes(`Laid out at ${sizeLabel}`))).toBe(!!sizeLabel);
+            // The cookie jar is a row of More naming the current jar; it opens
+            // the jar menu at the More button, on screen.
+            const jarRow = document.querySelector<HTMLElement>('[data-testid="browser-more-jar"]')!;
+            expect(jarRow.textContent).toContain('Cookie jar');
+            expect(jarRow.textContent).toContain('This worktree');
+            jarRow.click();
+            flushSync();
+            await raf();
+            await raf();
+            expect(document.querySelector('[data-testid="browser-more-jar"]')).toBeNull();
+            const jars = [...document.querySelectorAll<HTMLElement>('[role="menuitemcheckbox"]')];
+            expect(jars.map((el) => el.getAttribute('aria-checked'))).toEqual(['true', 'false', 'false', 'false']);
+            const menu = box(jars[0].closest('[role="menu"]')!);
+            expect(menu.top).toBeGreaterThanOrEqual(box(more!).bottom - 0.5);
+            expect(menu.left).toBeGreaterThanOrEqual(-0.5);
+            expect(menu.right).toBeLessThanOrEqual(window.innerWidth + 0.5);
+            // Under the More button, shifted only as far as the screen edges need.
+            expect(menu.left).toBeLessThanOrEqual(box(more!).right);
+            expect(menu.right).toBeGreaterThanOrEqual(box(more!).left);
           });
         }
       }

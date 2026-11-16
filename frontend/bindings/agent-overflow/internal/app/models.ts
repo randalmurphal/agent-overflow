@@ -848,6 +848,11 @@ export class BrowserCompanionAction {
      */
     "index": number;
 
+    /**
+     * Jar is the cookie jar for "jar": worktree, project, thread or private.
+     */
+    "jar"?: string;
+
     /** Creates a new BrowserCompanionAction instance. */
     constructor($$source: Partial<BrowserCompanionAction> = {}) {
         if (!("kind" in $$source)) {

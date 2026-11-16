@@ -79,7 +79,7 @@ func TestNativeEngineRefusesProfilesWhileStopped(t *testing.T) {
 	if engine == nil {
 		return
 	}
-	if _, err := engine.NewProfile(context.Background(), profileOptions{Workspace: t.TempDir()}); err == nil {
+	if _, err := engine.NewProfile(context.Background(), profileOptions{Jar: t.TempDir(), Ephemeral: true}); err == nil {
 		t.Fatal("a profile on a stopped engine must be an error, not a live session")
 	}
 }
@@ -128,7 +128,7 @@ func TestNativeEngineRefusesAProfileWithoutANavigationPolicy(t *testing.T) {
 		NativeWindow: func() unsafe.Pointer { return nil },
 	}, engineEvents{}).(*wkEngine)
 	engine.started = true
-	_, err := engine.NewProfile(context.Background(), profileOptions{Workspace: t.TempDir()})
+	_, err := engine.NewProfile(context.Background(), profileOptions{Jar: t.TempDir(), Ephemeral: true})
 	if err == nil || !strings.Contains(err.Error(), "navigation policy") {
 		t.Fatalf("profile error = %v, want a missing navigation policy refusal", err)
 	}

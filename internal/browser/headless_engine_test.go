@@ -223,7 +223,7 @@ func newTestHeadlessEngine(t *testing.T, binary string) *headlessEngine {
 func testHeadlessProfile(t *testing.T, engine *headlessEngine, workspace string, persist bool) *headlessProfile {
 	t.Helper()
 	profile, err := engine.NewProfile(context.Background(), profileOptions{
-		Workspace: workspace, DownloadDir: filepath.Join(t.TempDir(), "downloads"), Persist: persist,
+		Jar: workspace, DownloadDir: filepath.Join(t.TempDir(), "downloads"), Ephemeral: !persist,
 		Allow: func(string) bool { return true },
 	})
 	if err != nil {
@@ -754,7 +754,7 @@ func TestHeadlessProfileAppliesTheWorkspacePolicyToEveryPage(t *testing.T) {
 	engine := newTestHeadlessEngine(t, browser.path)
 	const allowed = "file:///home/dev/repo/index.html"
 	profile, err := engine.NewProfile(context.Background(), profileOptions{
-		Workspace: "/home/dev/repo", DownloadDir: filepath.Join(t.TempDir(), "downloads"),
+		Jar: "/home/dev/repo", DownloadDir: filepath.Join(t.TempDir(), "downloads"), Ephemeral: true,
 		Allow: func(url string) bool { return url == allowed },
 	})
 	if err != nil {
@@ -800,7 +800,7 @@ func TestHeadlessProfileAppliesTheWorkspacePolicyToEveryPage(t *testing.T) {
 func TestHeadlessProfileRequiresANavigationPolicy(t *testing.T) {
 	engine := newTestHeadlessEngine(t, writeFakeChromium(t, "chromium").path)
 	if _, err := engine.NewProfile(context.Background(), profileOptions{
-		Workspace: "/home/dev/repo", DownloadDir: filepath.Join(t.TempDir(), "downloads"),
+		Jar: "/home/dev/repo", DownloadDir: filepath.Join(t.TempDir(), "downloads"), Ephemeral: true,
 	}); err == nil {
 		t.Fatal("a profile with no navigation policy was created")
 	}
@@ -1426,7 +1426,7 @@ func assertRealPopupsPassThePolicy(t *testing.T, engine *headlessEngine) {
 	popups := make(chan enginePopup, 2)
 	engine.events.PopupOpened = func(popup enginePopup) { popups <- popup }
 	created, err := engine.NewProfile(t.Context(), profileOptions{
-		Workspace: workspace, DownloadDir: filepath.Join(t.TempDir(), "downloads"), Allow: inWorkspace,
+		Jar: workspace, DownloadDir: filepath.Join(t.TempDir(), "downloads"), Ephemeral: true, Allow: inWorkspace,
 	})
 	if err != nil {
 		t.Fatalf("new profile: %v", err)

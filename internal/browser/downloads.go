@@ -14,12 +14,14 @@ import (
 // began; whether it is allowed to consume workspace and artifact bytes is
 // policy, and so is the sanitized name it will eventually be renamed to. It
 // answers false, and the engine cancels the download, when the download is
-// over quota or no managed page owns the frame it began in.
+// over quota or no managed page owns the frame it began in. The quota is the
+// page's workspace's (workspaceAuthority), whichever jar the page is in.
 func (m *Manager) downloadStarted(event downloadStart) bool {
-	p, scope := m.pageForFrame(event.Frame)
+	p, _ := m.pageForFrame(event.Frame)
 	if p == nil {
 		return false
 	}
+	authority := p.authority
 	p.downloadMu.Lock()
 	p.downloadSeq++
 	entry := DownloadInfo{
@@ -27,13 +29,13 @@ func (m *Manager) downloadStarted(event downloadStart) bool {
 		SuggestedName: safeArtifactName(event.SuggestedName, "download"),
 		State:         "in_progress", StartedAt: time.Now().UTC().Format(time.RFC3339Nano), reservedBytes: maxDownloadBytes,
 	}
-	scopeReserved := scope != nil && scope.downloadBytes.Add(maxDownloadBytes) <= maxWorkspaceDownloadBytes
+	scopeReserved := authority != nil && authority.downloadBytes.Add(maxDownloadBytes) <= maxWorkspaceDownloadBytes
 	globalReserved := scopeReserved && m.reserveArtifacts(maxDownloadBytes)
 	if !scopeReserved || !globalReserved {
 		if scopeReserved {
-			scope.downloadBytes.Add(-maxDownloadBytes)
-		} else if scope != nil && scope.downloadBytes.Load() > maxWorkspaceDownloadBytes {
-			scope.downloadBytes.Add(-maxDownloadBytes)
+			authority.downloadBytes.Add(-maxDownloadBytes)
+		} else if authority != nil && authority.downloadBytes.Load() > maxWorkspaceDownloadBytes {
+			authority.downloadBytes.Add(-maxDownloadBytes)
 		}
 		entry.State, entry.Error, entry.reservedBytes = "canceled", fmt.Sprintf("workspace downloads exceed %d bytes", maxWorkspaceDownloadBytes), 0
 		if scopeReserved && !globalReserved {
@@ -75,8 +77,8 @@ func (m *Manager) downloadProgress(event downloadProgress) {
 	if entry.Bytes > maxDownloadBytes && event.State == downloadInProgress {
 		entry.State = "canceled"
 		entry.Error = fmt.Sprintf("download exceeds %d bytes", maxDownloadBytes)
-		if scope != nil && entry.reservedBytes > 0 {
-			scope.downloadBytes.Add(-entry.reservedBytes)
+		if p.authority != nil && entry.reservedBytes > 0 {
+			p.authority.downloadBytes.Add(-entry.reservedBytes)
 			m.settleArtifactReservation(entry.reservedBytes, 0)
 			entry.reservedBytes = 0
 		}
@@ -95,12 +97,14 @@ func (m *Manager) downloadProgress(event downloadProgress) {
 	switch event.State {
 	case downloadCompleted:
 		entry.State = "completed"
-		if scope != nil && entry.reservedBytes > 0 {
-			scope.downloadBytes.Add(-entry.reservedBytes + entry.Bytes)
+		if p.authority != nil && entry.reservedBytes > 0 {
+			p.authority.downloadBytes.Add(-entry.reservedBytes + entry.Bytes)
 			m.settleArtifactReservation(entry.reservedBytes, entry.Bytes)
 			entry.reservedBytes = 0
 		}
-		if scope != nil {
+		if scope != nil && p.authority != nil {
+			// The engine writes into its jar's directory; the finished file
+			// moves to the page's workspace's.
 			source := event.FilePath
 			if source == "" {
 				source = filepath.Join(scope.downloadDir, filepath.Base(event.ID))
@@ -109,7 +113,7 @@ func (m *Manager) downloadProgress(event downloadProgress) {
 				entry.State, entry.Error = "failed", "browser returned a download path outside its artifact directory"
 				break
 			}
-			destination, renameErr := uniqueArtifactPath(scope.downloadDir, entry.SuggestedName)
+			destination, renameErr := uniqueArtifactPath(p.authority.downloadDir, entry.SuggestedName)
 			if renameErr == nil {
 				renameErr = os.Rename(source, destination)
 			}
@@ -121,8 +125,8 @@ func (m *Manager) downloadProgress(event downloadProgress) {
 		}
 	case downloadCanceled:
 		entry.State = "canceled"
-		if scope != nil && entry.reservedBytes > 0 {
-			scope.downloadBytes.Add(-entry.reservedBytes)
+		if p.authority != nil && entry.reservedBytes > 0 {
+			p.authority.downloadBytes.Add(-entry.reservedBytes)
 			m.settleArtifactReservation(entry.reservedBytes, 0)
 			entry.reservedBytes = 0
 		}
@@ -138,7 +142,7 @@ func pathInside(root, path string) bool {
 
 // pageForFrame walks the registry the Manager owns and asks each driver whether
 // the frame is one of its own. Ownership stays here; frame bookkeeping does not.
-func (m *Manager) pageForFrame(frame string) (*managedPage, *workspaceScope) {
+func (m *Manager) pageForFrame(frame string) (*managedPage, *jarScope) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, scope := range m.scopes {
@@ -151,7 +155,7 @@ func (m *Manager) pageForFrame(frame string) (*managedPage, *workspaceScope) {
 	return nil, nil
 }
 
-func (m *Manager) pageForDownload(id string) (*managedPage, *workspaceScope) {
+func (m *Manager) pageForDownload(id string) (*managedPage, *jarScope) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, scope := range m.scopes {
@@ -178,7 +182,7 @@ func (p *managedPage) signalDownloadLocked() {
 	p.downloadWait = make(chan struct{})
 }
 
-func (m *Manager) cancelPageDownloads(p *managedPage, scope *workspaceScope) {
+func (m *Manager) cancelPageDownloads(p *managedPage, scope *jarScope) {
 	p.downloadMu.Lock()
 	ids := make([]string, 0)
 	for i := range p.downloads {
@@ -187,8 +191,8 @@ func (m *Manager) cancelPageDownloads(p *managedPage, scope *workspaceScope) {
 			continue
 		}
 		entry.State, entry.Error = "canceled", "page closed"
-		if entry.reservedBytes > 0 {
-			scope.downloadBytes.Add(-entry.reservedBytes)
+		if entry.reservedBytes > 0 && p.authority != nil {
+			p.authority.downloadBytes.Add(-entry.reservedBytes)
 			m.settleArtifactReservation(entry.reservedBytes, 0)
 			entry.reservedBytes = 0
 		}

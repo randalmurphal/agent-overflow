@@ -372,7 +372,7 @@ func (m *Manager) refreshPageAfterOperation(ctx context.Context, p *managedPage)
 // lookupOrSelectPage answers the live page a page-scoped call acts on: the
 // named page, or with none named the thread's only page, or a new one when it
 // has none. A suspended page is restored, since the call touches it.
-func (m *Manager) lookupOrSelectPage(ctx context.Context, access Access, pageID string) (*managedPage, *workspaceScope, error) {
+func (m *Manager) lookupOrSelectPage(ctx context.Context, access Access, pageID string) (*managedPage, *jarScope, error) {
 	if pageID = strings.TrimSpace(pageID); pageID != "" {
 		return m.resolvePage(ctx, access, pageID, false)
 	}

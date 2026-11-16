@@ -525,7 +525,7 @@ func TestAuthorizeFileStaysWithinGrantedRoots(t *testing.T) {
 	if err := os.WriteFile(outside, []byte("secret"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	manager := &Manager{config: Config{}, scopes: make(map[string]*workspaceScope)}
+	manager := &Manager{config: Config{}, scopes: make(map[string]*jarScope)}
 	access := Access{ThreadID: "t", Workspace: root}
 	wantInside, _ := filepath.EvalSymlinks(inside)
 	if got, err := manager.authorizeFile(access, inside); err != nil || got != wantInside {
@@ -937,8 +937,8 @@ func TestTheManagerKeepsOnlyADownloadAPageOwnsWithinQuota(t *testing.T) {
 		t.Fatal("a download in a managed page within quota was refused")
 	}
 	manager.mu.Lock()
-	for _, scope := range manager.scopes {
-		scope.downloadBytes.Store(maxWorkspaceDownloadBytes)
+	for _, authority := range manager.authorities {
+		authority.downloadBytes.Store(maxWorkspaceDownloadBytes)
 	}
 	manager.mu.Unlock()
 	if manager.downloadStarted(downloadStart{Frame: frame, ID: "G-over"}) {

@@ -167,7 +167,7 @@ func (m *Manager) Visibility(ctx context.Context, access Access, visible *bool, 
 func (m *Manager) sessionLocked(threadID string) SessionInfo {
 	info, ok := m.sessions[threadID]
 	if !ok {
-		info = SessionInfo{Visible: false, ViewportW: defaultViewportWidth, ViewportH: defaultViewportHeight}
+		info = SessionInfo{Visible: false, ViewportW: defaultViewportWidth, ViewportH: defaultViewportHeight, Jar: JarWorktree}
 	}
 	return info
 }

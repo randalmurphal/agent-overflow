@@ -82,6 +82,7 @@ func (a *App) browserMCPConfigForThread(thread store.Thread, sessionToken string
 		ThreadID:    thread.ID,
 		Workspace:   thread.WorkspacePath,
 		ProjectRoot: thread.ProjectPath,
+		ProjectID:   thread.ProjectID,
 	}, sessionToken)
 }
 

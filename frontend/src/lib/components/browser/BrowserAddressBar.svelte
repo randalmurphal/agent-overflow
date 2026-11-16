@@ -19,6 +19,7 @@
   import MenuItem from '../primitives/MenuItem.svelte';
   import Popover from '../primitives/Popover.svelte';
   import PanePromoteButton from '../panes/PanePromoteButton.svelte';
+  import BrowserJarControl from './BrowserJarControl.svelte';
   import { restorePickerFocus } from '../panes/paneComposerFocus';
 
   // The browser's toolbar: history, reload (stop while the page loads), the
@@ -56,6 +57,8 @@
   // them (the markup's container query decides which shows).
   let moreOpen = $state(false);
   let moreAnchor: HTMLElement | undefined = $state(undefined);
+  let jarControl: ReturnType<typeof BrowserJarControl> | undefined = $state(undefined);
+  let jarLabel = $derived.by(() => jarControl?.currentLabel() ?? null);
 
   function closeMore(reason?: PopoverCloseReason): void {
     moreOpen = false;
@@ -146,10 +149,10 @@
 </script>
 
 <!-- The history buttons, the address and the pane's own controls always
-     show at full size. Below a 28rem row (36rem under compact, whose
-     buttons are larger) the page's secondary controls (its size,
-     open file, show in folder, devtools) move into the More menu, so the
-     address keeps its room. -->
+     show at full size. Below a 32rem row (36rem under compact, whose
+     buttons are larger) the page's secondary controls (its size, cookie
+     jar, open file, show in folder, devtools) move into the More menu, so
+     the address keeps its room. -->
 <div class="@container flex h-10 shrink-0 items-center gap-0.5 border-b border-border-subtle bg-surface-0 px-1.5 compact:h-12" data-testid="browser-address-row">
   <div class="flex shrink-0 items-center gap-0.5">
     <IconButton label="Back" size="sm" disabled={!activePage?.canGoBack} onClick={() => void onAct('back')}><Icon icon={ArrowLeft} size={15} /></IconButton>
@@ -180,7 +183,7 @@
     onkeydown={onKeydown}
   />
   <div class="flex shrink-0 items-center gap-0.5">
-    <div class="flex items-center gap-0.5 @max-[28rem]:hidden compact:@max-[36rem]:hidden" data-testid="browser-address-secondary">
+    <div class="flex items-center gap-0.5 @max-[32rem]:hidden compact:@max-[36rem]:hidden" data-testid="browser-address-secondary">
       {#if sizeLabel}
         <span
           class="whitespace-nowrap px-1 font-mono text-[0.65rem] tabular-nums text-fg-muted"
@@ -188,13 +191,14 @@
           title={SIZE_TITLE}
         >{sizeLabel}</span>
       {/if}
+      <BrowserJarControl bind:this={jarControl} />
       <IconButton label="Open file" title="Open a file from this workspace" size="sm" testId="browser-open-file" onClick={() => onOpenFile()}><Icon icon={FileSearch} size={14} /></IconButton>
       {#if activeIsLocalFile}
         <IconButton label="Show in folder" size="sm" onClick={() => void onRevealPageFile()}><Icon icon={FolderOpen} size={14} /></IconButton>
       {/if}
       <IconButton label="Open devtools" size="sm" onClick={() => void onAct('devtools')}><Icon icon={SquareCode} size={14} /></IconButton>
     </div>
-    <div class="hidden @max-[28rem]:flex compact:@max-[36rem]:flex" bind:this={moreAnchor}>
+    <div class="hidden @max-[32rem]:flex compact:@max-[36rem]:flex" bind:this={moreAnchor}>
       <IconButton label="More browser actions" size="sm" testId="browser-more" ariaHaspopup="menu" ariaExpanded={moreOpen} onClick={() => (moreOpen = !moreOpen)}><Icon icon={Ellipsis} size={15} /></IconButton>
     </div>
     {#if promotePaneId}
@@ -210,6 +214,9 @@
       {#if sizeLabel}
         <MenuItem label="Laid out at {sizeLabel}" title={SIZE_TITLE} disabled testId="browser-more-size" />
         <MenuDivider />
+      {/if}
+      {#if jarLabel}
+        <MenuItem label="Cookie jar" description={jarLabel} testId="browser-more-jar" onSelect={() => pick(() => jarControl?.openMenu(moreAnchor))} />
       {/if}
       <MenuItem label="Open file" onSelect={() => pick(onOpenFile)} />
       {#if activeIsLocalFile}

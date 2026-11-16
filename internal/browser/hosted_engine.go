@@ -301,26 +301,27 @@ func (e *hostedEngine) Stop() {
 	}
 }
 
-// NewProfile derives a launcher profile id from the canonical workspace.
-// Same isolation semantics as the managed-Chrome BrowserContext: one
-// profile per workspace, threads on a workspace share logins. The digest
-// is what makes the id stable across restarts, which is what makes those
-// logins survive one.
+// NewProfile derives a launcher profile id from the jar identity: one
+// profile per jar. The digest is what makes the id stable across restarts,
+// which is what makes a persistent jar's logins survive one.
 func (e *hostedEngine) NewProfile(_ context.Context, opts profileOptions) (engineProfile, error) {
-	id, err := hostedProfileID(opts.Workspace)
+	id, err := hostedProfileID(opts.Jar)
 	if err != nil {
 		return nil, err
 	}
 	// Site data is the engine's own (spec §4): a hosted profile is a real
 	// browser profile on disk and WebView2 persists it, so AO seeds nothing
 	// into it and reads nothing out of it.
-	return &hostedProfile{engine: e, id: id, ephemeral: !opts.Persist}, nil
+	return &hostedProfile{engine: e, id: id, ephemeral: opts.Ephemeral}, nil
 }
 
-func hostedProfileID(workspace string) (string, error) {
-	trimmed := strings.TrimSpace(workspace)
+// hostedProfileID is the WebView2 profile name of a jar. A worktree jar's
+// identity is its workspace path, so its name is the one every earlier build
+// derived.
+func hostedProfileID(jar string) (string, error) {
+	trimmed := strings.TrimSpace(jar)
 	if trimmed == "" {
-		return "", errors.New("browser: workspace is required for a pane profile")
+		return "", errors.New("browser: a cookie jar is required for a pane profile")
 	}
 	digest := sha256.Sum256([]byte(trimmed))
 	id := hostProfilePrefix + hex.EncodeToString(digest[:16])

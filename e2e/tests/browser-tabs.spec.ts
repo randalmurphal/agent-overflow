@@ -5,7 +5,9 @@
 // no tab opens the pane on a tab at the link. Closing the last tab closes the
 // pane and leaves the button. The new-tab shortcut, pressed with the browser
 // pane focused, opens a tab whose address bar takes focus with its text
-// selected, and the next-tab shortcut steps back to the first. A file opens
+// selected, and the next-tab shortcut steps back to the first. Switching the
+// cookie jar with tabs open asks first, then reopens the tabs in the new jar
+// in the same order with the same active tab. A file opens
 // through the address row's picker, by search and from the folder view,
 // without typing its path.
 import type { HarnessApp } from '../src/harness.js';
@@ -14,7 +16,8 @@ import { test, expect, type SeedResult } from './fixtures.js';
 interface BrowserState {
   activePageId?: string;
   visible?: boolean;
-  pages?: Array<{ id: string; url: string }>;
+  jar?: string;
+  pages?: Array<{ id: string; url: string; creating?: boolean; error?: string }>;
 }
 
 test('the header button and a mod-clicked link open the browser from no tab', async ({ harness, page }) => {
@@ -123,6 +126,49 @@ test('the new-tab shortcut focuses the new tab\'s address with its text selected
   await page.keyboard.press('Control+Tab');
   await expect.poll(() => activeURL(harness, threadId)).toBe('https://example.test/first');
   await expect(address).toHaveValue('https://example.test/first');
+});
+
+test('switching the cookie jar asks first, then reopens the tabs in order in the new jar', async ({ harness, page }) => {
+  const threadId = await seedBrowserThread(harness, 'Browser jars');
+  const urls = ['https://example.test/one', 'https://example.test/two'];
+  const ids: string[] = [];
+  for (const address of urls) {
+    const opened = await harness.rpc<BrowserState>('BrowserCompanionDo', threadId, { kind: 'new' });
+    const pageId = opened.activePageId ?? '';
+    ids.push(pageId);
+    await harness.rpc('BrowserCompanionDo', threadId, { kind: 'navigate', pageId, address });
+  }
+  await harness.rpc('BrowserCompanionDo', threadId, { kind: 'show', pageId: ids[0] });
+  await harness.open(page);
+  await page.getByText('Browser jars').click();
+  const pane = page.getByTestId('browser-pane');
+  await expect(pane.getByTestId('browser-tab')).toHaveCount(2);
+
+  const jar = pane.getByTestId('browser-jar');
+  await expect(jar).toHaveAttribute('aria-label', 'Cookie jar: This worktree');
+  await jar.click();
+  await page.getByTestId('browser-jar-thread').click();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog).toContainText('Switch to This browser only?');
+  await dialog.getByRole('button', { name: 'Cancel' }).click();
+  await expect(dialog).toHaveCount(0);
+  expect((await harness.rpc<BrowserState>('BrowserCompanionThreadState', threadId)).jar).toBe('worktree');
+
+  await jar.click();
+  await page.getByTestId('browser-jar-thread').click();
+  await dialog.getByRole('button', { name: 'Switch and reopen' }).click();
+  await expect(jar).toHaveAttribute('aria-label', 'Cookie jar: This browser only');
+  await expect.poll(async () => {
+    const state = await harness.rpc<BrowserState>('BrowserCompanionThreadState', threadId);
+    return {
+      jar: state.jar,
+      urls: state.pages?.map((tab) => tab.url),
+      active: state.pages?.findIndex((tab) => tab.id === state.activePageId),
+      reopened: state.pages?.every((tab) => !ids.includes(tab.id) && !tab.creating && !tab.error),
+    };
+  }).toEqual({ jar: 'thread', urls, active: 0, reopened: true });
+  await expect(pane.getByTestId('browser-tab')).toHaveCount(2);
+  await expect(pane.getByRole('textbox', { name: 'Address' })).toHaveValue(urls[0]);
 });
 
 test('a file opens from the picker by search and from the folder view', async ({ harness, page }) => {

@@ -18,12 +18,20 @@ mode. Product behavior and authority are defined in
   acts on a page by id goes through `resolvePage` so a suspended page
   restores under the navigation policy. Showing the companion (`Visibility`)
   only checks the tab exists; the pane's selection restores it.
-- One manager owns one engine. Profiles are per workspace, pages are per thread,
-  and every operation rechecks thread ownership. Closing the last page disposes
-  its profile; manager shutdown joins all engine work.
+- One manager owns one engine. Profiles are per cookie jar, pages are per
+  thread, and every operation rechecks thread ownership. Closing the last page
+  disposes its profile; manager shutdown joins all engine work.
+- `jar.go` alone maps a thread's jar choice to a jar identity; engines see
+  only the jar key and an ephemeral flag, and the worktree jar keeps the
+  canonical workspace as its key so existing profile ids do not change. Jars
+  carry site data only: navigation and file policy, download directories and
+  quotas stay per workspace (`workspaceAuthority`). A switch
+  (`jar_switch.go`) advances the thread's jar generation in the same lock hold
+  that closes its pages; any create, restore or reopen admitted under an older
+  generation must retry, never land in the old jar.
 - A tab's lifecycle is Manager state (`lifecycle.go`): a page being created is
   a pending tab, a closed page leaves the tab set before its engine teardown
-  runs, and both keep counting toward caps and holding the workspace's
+  runs, and both keep counting toward caps and holding the jar's
   profile until the engine is done. A teardown that runs after its tab left
   reports through `reportTeardown`. Loading and favicon state is
   `pagestate.go`.
@@ -98,10 +106,11 @@ Downloads use sanitized unique names under AO-owned artifact directories and
 never the user's Downloads directory. Preserve quota reservation, per-download
 bounds, page cancellation, and denial of sensitive website permissions.
 
-Site data belongs to the engine and is isolated per workspace. Persistent and
-ephemeral profiles must remain distinct. Clearing site data first closes pages,
-then removes AO-owned profile trees and asks engines with externally managed
-stores to clear themselves. A platform-specific silent no-op is incorrect.
+Site data belongs to the engine and is isolated per cookie jar. Persistent and
+ephemeral profiles must remain distinct; a private jar is always ephemeral.
+Clearing site data first closes pages, then removes AO-owned profile trees and
+asks engines with externally managed stores to clear themselves. A
+platform-specific silent no-op is incorrect.
 
 ## Tests and references
 

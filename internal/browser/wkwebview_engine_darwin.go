@@ -207,7 +207,7 @@ func (e *wkEngine) NewProfile(_ context.Context, opts profileOptions) (enginePro
 		return nil, fmt.Errorf("browser: a navigation policy is required for a browser profile")
 	}
 	id := wkProfileSeq.Add(1)
-	store, err := wkNewStore(wkStoreIdentifier(opts.Workspace), !opts.Persist)
+	store, err := wkNewStore(wkStoreIdentifier(opts.Jar), opts.Ephemeral)
 	if err != nil {
 		return nil, err
 	}

@@ -109,7 +109,7 @@ func newTestHostedEngine(t *testing.T, relay hostRelay, events engineEvents) (*h
 
 func testProfile(t *testing.T, engine *hostedEngine) *hostedProfile {
 	t.Helper()
-	profile, err := engine.NewProfile(context.Background(), profileOptions{Workspace: "/home/dev/repo"})
+	profile, err := engine.NewProfile(context.Background(), profileOptions{Jar: "/home/dev/repo", Ephemeral: true})
 	if err != nil {
 		t.Fatalf("new profile: %v", err)
 	}
@@ -432,7 +432,7 @@ func TestHostedEngineRekeysBrowserEventsOntoPageIDs(t *testing.T) {
 
 func TestHostedProfileDisposeClosesTheWholeProfile(t *testing.T) {
 	engine, sink := newTestHostedEngine(t, stubRelay{}, engineEvents{})
-	profile, err := engine.NewProfile(context.Background(), profileOptions{Workspace: "/home/dev/repo", Persist: false})
+	profile, err := engine.NewProfile(context.Background(), profileOptions{Jar: "/home/dev/repo", Ephemeral: true})
 	if err != nil {
 		t.Fatalf("new profile: %v", err)
 	}

@@ -1,0 +1,202 @@
+package browser
+
+import (
+	"crypto/sha256"
+	"fmt"
+	"strings"
+	"sync/atomic"
+
+	"github.com/google/uuid"
+)
+
+// Cookie jars. A jar is one engine profile: cookies and every other kind of
+// site data the engine keeps. Which jar a thread's pages open in is the
+// thread's jar setting (SessionInfo.Jar, saved with its pages in
+// page_records.go):
+//
+//   - worktree (the default): one jar per canonical workspace, shared by the
+//     threads on it. Its identity is the workspace path itself, so every
+//     engine derives exactly the profile it derived before jars existed.
+//   - project: one jar per project, shared by every thread of the project
+//     that chose it, across its worktrees.
+//   - thread: this thread only, persistent.
+//   - private: this thread only, never on disk, a new identity for every
+//     generation of the setting and whenever its last page has closed.
+//
+// The jar is only the engine's storage partition. Authority stays with the
+// page's workspace: navigation and file permissions are the page's own
+// Access (pageHooks.Allow), and download accounting is per workspace
+// (workspaceAuthority). jarForLocked is the one place a thread and its
+// setting become a jar identity; an engine receives only that identity and
+// whether the jar is ephemeral (profileOptions).
+
+// The jar kinds a thread's browser can use.
+const (
+	JarWorktree = "worktree"
+	JarProject  = "project"
+	JarThread   = "thread"
+	JarPrivate  = "private"
+)
+
+// validJarKind reports whether kind names a jar kind.
+func validJarKind(kind string) bool {
+	switch kind {
+	case JarWorktree, JarProject, JarThread, JarPrivate:
+		return true
+	}
+	return false
+}
+
+// jarKindOf answers a session's jar kind; an unset one is the default.
+func jarKindOf(info SessionInfo) string {
+	if info.Jar == "" {
+		return JarWorktree
+	}
+	return info.Jar
+}
+
+// jarIdentity is one jar as the Manager keys it and an engine receives it.
+type jarIdentity struct {
+	// key identifies the jar: the scope map's key and the engine's profile
+	// identity (profileOptions.Jar). A worktree jar's key is the canonical
+	// workspace; every other kind has a prefix no absolute path starts with.
+	key       string
+	kind      string
+	ephemeral bool
+	// thread is the owner of a thread or private jar, "" otherwise.
+	thread string
+	// private is a private jar's instance token, "" otherwise.
+	private string
+}
+
+// jarForLocked maps a thread's access and a jar kind to the jar its pages
+// open in. access.Workspace is canonical. A private jar without a live
+// instance takes a new token here. The caller holds m.mu.
+func (m *Manager) jarForLocked(access Access, kind string) (jarIdentity, error) {
+	jar := jarIdentity{kind: kind, ephemeral: !m.config.PersistSiteData}
+	switch kind {
+	case JarWorktree:
+		jar.key = access.Workspace
+	case JarProject:
+		if strings.TrimSpace(access.ProjectID) == "" {
+			return jarIdentity{}, fmt.Errorf("browser: this thread has no project to share a cookie jar with")
+		}
+		jar.key = "project:" + access.ProjectID
+	case JarThread:
+		jar.key, jar.thread = "thread:"+access.ThreadID, access.ThreadID
+	case JarPrivate:
+		info := m.sessionLocked(access.ThreadID)
+		if info.privateJar == "" {
+			info.privateJar = uuid.NewString()
+			m.sessions[access.ThreadID] = info
+		}
+		jar.key = "private:" + access.ThreadID + ":" + info.privateJar
+		jar.thread, jar.private, jar.ephemeral = access.ThreadID, info.privateJar, true
+	default:
+		return jarIdentity{}, fmt.Errorf("browser: unknown cookie jar %q", kind)
+	}
+	return jar, nil
+}
+
+// jarDirName is the directory name an engine keeps a jar's data under and
+// the jar's download directory: a digest, because a jar key can be long, can
+// hold characters a directory name cannot, and must not be readable from a
+// listing.
+func jarDirName(jar string) string {
+	digest := sha256.Sum256([]byte(jar))
+	return fmt.Sprintf("%x", digest[:12])
+}
+
+// jarCurrentLocked reports whether p was opened under its thread's current
+// jar setting. A switch advances the generation, so a page opened before it
+// is refused at admission (create, restore, popup) and nothing lands in the
+// old jar. The caller holds m.mu.
+func (m *Manager) jarCurrentLocked(p *managedPage) bool {
+	return m.sessionLocked(p.owner).jarGen == p.jarGen
+}
+
+// jarAllowRoots is the authority a jar's profile-level navigation policy
+// uses, for a popup the engine loads before the Manager adopts it under its
+// opener's own Access: what every page the jar can hold is allowed. A
+// worktree jar holds its workspace's pages; any other jar can hold pages of
+// several worktrees of the project, which share only the project root.
+func jarAllowRoots(jar jarIdentity, access Access) Access {
+	if jar.kind == JarWorktree {
+		return Access{Workspace: access.Workspace, ProjectRoot: access.ProjectRoot}
+	}
+	return Access{ProjectRoot: access.ProjectRoot}
+}
+
+// workspaceAuthority is what a canonical workspace owns across every jar its
+// pages are in: the directory its downloads land in and the bytes they
+// reserve. It lives while the workspace has a page, live, closing or being
+// created, in any jar (pruneAuthoritiesLocked).
+type workspaceAuthority struct {
+	workspace     string
+	downloadDir   string
+	downloadBytes atomic.Int64
+}
+
+// authorityLocked answers the workspace's authority, creating it. The caller
+// holds m.mu.
+func (m *Manager) authorityLocked(workspace, downloadDir string) *workspaceAuthority {
+	if m.authorities == nil {
+		m.authorities = make(map[string]*workspaceAuthority)
+	}
+	authority := m.authorities[workspace]
+	if authority == nil {
+		authority = &workspaceAuthority{workspace: workspace, downloadDir: downloadDir}
+		m.authorities[workspace] = authority
+	}
+	return authority
+}
+
+// pruneAuthoritiesLocked forgets the authority of every workspace with no
+// page left in any jar. The caller holds m.mu.
+func (m *Manager) pruneAuthoritiesLocked() {
+	if len(m.authorities) == 0 {
+		return
+	}
+	used := make(map[string]bool, len(m.authorities))
+	for _, scope := range m.scopes {
+		for _, p := range scope.pages {
+			used[p.access.Workspace] = true
+		}
+		for _, c := range scope.closing {
+			used[c.p.access.Workspace] = true
+		}
+		for p := range scope.creating {
+			used[p.access.Workspace] = true
+		}
+	}
+	for workspace := range m.authorities {
+		if !used[workspace] {
+			delete(m.authorities, workspace)
+		}
+	}
+}
+
+// workspaceLoadLocked counts the engine pages, in every jar, whose authority
+// is workspace: the quantity the per-workspace cap bounds, and of them the
+// pages still closing. The caller holds m.mu.
+func (m *Manager) workspaceLoadLocked(workspace string) (load, closing int) {
+	for _, scope := range m.scopes {
+		for _, p := range scope.pages {
+			if p.access.Workspace == workspace {
+				load++
+			}
+		}
+		for _, c := range scope.closing {
+			if c.p.access.Workspace == workspace {
+				load++
+				closing++
+			}
+		}
+		for p := range scope.creating {
+			if p.access.Workspace == workspace {
+				load++
+			}
+		}
+	}
+	return load, closing
+}
