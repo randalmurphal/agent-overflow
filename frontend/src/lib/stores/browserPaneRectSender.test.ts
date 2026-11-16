@@ -1,9 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createBrowserPaneRectSender, type BrowserPaneRectReport } from './browserPaneRectSender';
+import { createBrowserPaneRectSender, type SequencedPaneRect } from './browserPaneRectSender';
 
-function rect(x: number, visible = true): BrowserPaneRectReport {
+// The report's sequence is its x unless a test says otherwise: one number
+// per distinct report.
+function rect(x: number, visible = true, seq = x): SequencedPaneRect {
   return {
-    x, y: 20, width: 800, height: 600,
+    seq, x, y: 20, width: 800, height: 600,
     clipX: x, clipY: 20, clipWidth: 800, clipHeight: 600,
     viewportWidth: 1600, viewportHeight: 900, devicePixelRatio: 1.25,
     visible, background: '#000000',
@@ -70,6 +72,16 @@ describe('browser pane rect sender', () => {
     expect(calls).toHaveLength(1);
     sender.report('m', rect(5));
     expect(calls.map((c) => c.x)).toEqual([1, 5]);
+  });
+
+  it('sends a rect the pane returned to under its newer sequence', async () => {
+    const { calls, sender } = harness();
+    sender.report('m', rect(1, true, 1));
+    calls[0].resolve();
+    await flush();
+    await flush();
+    sender.report('m', rect(1, true, 3));
+    expect(calls).toHaveLength(2);
   });
 
   it('lands the last report when sends fail, retrying with the newest', async () => {

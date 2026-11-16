@@ -158,31 +158,39 @@ const rectSender = createBrowserPaneRectSender({
   },
 });
 
-// Per mount, the last report posted to the launcher and the sequence the
-// launcher orders them by (native/paneGeometryBridge.ts).
-const localReports = new Map<string, { key: string; seq: number }>();
+// Per mount: the newest distinct report, its sequence, and the sequence last
+// posted to the launcher (native/paneGeometryBridge.ts).
+const paneReports = new Map<string, { key: string; seq: number; postedSeq: number }>();
 
 /**
  * Reports where the mounted pane's host rect sits, already coalesced to one
- * call per frame by the pane. The backend receives it in order through
- * `rectSender`; a launcher that takes geometry directly also receives it at
- * once, numbered per mount, and moves the view without the backend round
- * trip.
+ * call per frame by the pane. Each distinct report is numbered once per
+ * mount. The backend receives it in order through `rectSender`, and its
+ * bounds directive carries the number; a launcher that takes geometry
+ * directly also receives it at once and moves the view without the backend
+ * round trip, placing from whichever of the two is newer.
  */
 export function reportBrowserPaneRect(threadId: string, rect: BrowserPaneRectReport): void {
   const mount = paneIds.get(threadId);
   if (!mount) return;
-  rectSender.report(mount, rect);
   const key = browserPaneRectKey(rect);
-  const local = localReports.get(mount) ?? { key: '', seq: 0 };
-  if (local.key === key || !paneGeometryBridgeAvailable()) return;
-  local.key = key;
-  local.seq += 1;
-  localReports.set(mount, local);
+  let state = paneReports.get(mount);
+  if (!state) {
+    state = { key: '', seq: 0, postedSeq: 0 };
+    paneReports.set(mount, state);
+  }
+  if (state.key !== key) {
+    state.key = key;
+    state.seq += 1;
+  }
+  const report = { ...rect, seq: state.seq };
+  rectSender.report(mount, report);
+  if (state.postedSeq === report.seq || !paneGeometryBridgeAvailable()) return;
   try {
-    postPaneGeometry({ mount, seq: local.seq, ...rect });
+    if (postPaneGeometry({ mount, ...report })) state.postedSeq = report.seq;
   } catch (err) {
-    // The backend's report still places the view, a round trip later.
+    // Until a post lands, the launcher places from the backend's directive,
+    // which carries this report's sequence; the next report posts again.
     reportFrontendDiagnostic('Browser pane geometry post to the window host failed', errString(err));
   }
 }
@@ -190,7 +198,7 @@ export function reportBrowserPaneRect(threadId: string, rect: BrowserPaneRectRep
 /** Ends a mount's reports, local and to the backend. */
 function forgetPaneMount(mount: string): void {
   rectSender.forget(mount);
-  localReports.delete(mount);
+  paneReports.delete(mount);
 }
 
 function sourcePaneIdForThread(threadId: string): string | null {
@@ -419,7 +427,7 @@ addPaneThreadMountedObserver(reconcileBrowserCompanionForPane);
 
 export function resetBrowserCompanionForTest(): void {
   for (const mount of paneIds.values()) forgetPaneMount(mount);
-  for (const mount of [...localReports.keys()]) forgetPaneMount(mount);
+  for (const mount of [...paneReports.keys()]) forgetPaneMount(mount);
   paneIds.clear();
   stateOrder.reset();
   liveStates.reset();

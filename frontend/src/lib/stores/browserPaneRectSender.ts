@@ -29,8 +29,19 @@ export interface BrowserPaneRectReport {
   background: string;
 }
 
+/**
+ * A report numbered per mount: `seq` advances once per distinct report and
+ * rides on the backend report and on the launcher's local post alike, so
+ * the launcher places from whichever of the two is newer
+ * (internal/webview2host/presenter.go). The sender's dedupe includes it: a
+ * rect the pane returns to is a newer report than the same rect before.
+ */
+export interface SequencedPaneRect extends BrowserPaneRectReport {
+  seq: number;
+}
+
 export interface BrowserPaneRectSenderOptions {
-  send: (mount: string, rect: BrowserPaneRectReport) => Promise<unknown>;
+  send: (mount: string, rect: SequencedPaneRect) => Promise<unknown>;
   /** A report that still failed after every retry. */
   onFailure: (mount: string, error: unknown) => void;
   /** Whether a refusal means the backend no longer has the mount. */
@@ -40,14 +51,14 @@ export interface BrowserPaneRectSenderOptions {
 }
 
 export interface BrowserPaneRectSender {
-  report(mount: string, rect: BrowserPaneRectReport): void;
+  report(mount: string, rect: SequencedPaneRect): void;
   /** Drops the mount's state; an answer still in flight is ignored. */
   forget(mount: string): void;
 }
 
 interface Pending {
   key: string;
-  rect: BrowserPaneRectReport;
+  rect: SequencedPaneRect;
 }
 
 interface MountState {
@@ -135,7 +146,7 @@ export function createBrowserPaneRectSender(options: BrowserPaneRectSenderOption
 
   return {
     report(mount, rect) {
-      const item = { key: browserPaneRectKey(rect), rect: { ...rect } };
+      const item = { key: `${rect.seq}:${browserPaneRectKey(rect)}`, rect: { ...rect } };
       let state = mounts.get(mount);
       if (!state) {
         state = { current: null, next: null, acceptedKey: '', failures: 0, retryTimer: null };

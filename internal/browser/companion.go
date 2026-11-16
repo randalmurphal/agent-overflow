@@ -65,6 +65,12 @@ type PaneRect struct {
 	DevicePixelRatio float64 `json:"devicePixelRatio,omitempty"`
 	Visible          bool    `json:"visible"`
 	Background       string  `json:"background,omitempty"`
+	// Seq is the SPA's per-mount number for this report, advanced once per
+	// distinct report. The Windows SPA posts the same report to the launcher
+	// under the same number, and the hosted engine's bounds directive
+	// carries it, so the launcher places from whichever is newer. Zero is a
+	// reporter that does not number (tests, the harness bridge).
+	Seq uint64 `json:"seq,omitempty"`
 }
 
 // PanePlacement is where a presented page's view goes: the page keeps its

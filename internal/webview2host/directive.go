@@ -105,13 +105,17 @@ type Directive struct {
 	// exposed strips match the pane. Empty leaves the engine default.
 	Bg string `json:"bg,omitempty"`
 	// Mount names the pane mount the backend placed the page in, and
-	// PageW/PageH the page's viewport in CSS pixels. A launcher that holds
-	// its own, newer geometry for that mount (PaneGeometry) places the page
-	// from it with paneplace.Fit and ignores X..CH; without it, X..CH stand.
-	// Empty on a backend that predates local geometry.
+	// PageW/PageH the page's viewport in CSS pixels. Seq is the number the
+	// SPA gave the report the backend placed from, the same number its local
+	// post of that report carries. A launcher that holds its own geometry
+	// for that mount (PaneGeometry) at Seq or later places the page from it
+	// with paneplace.Fit and ignores X..CH; otherwise X..CH stand. Mount is
+	// empty on a backend that predates local geometry; Seq is zero on one
+	// that predates numbered reports, and then any local geometry wins.
 	Mount string `json:"mount,omitempty"`
 	PageW int    `json:"pageW,omitempty"`
 	PageH int    `json:"pageH,omitempty"`
+	Seq   uint64 `json:"seq,omitempty"`
 	// Accelerators is OpAccelerators' payload: the whole bound set, `mod`
 	// already resolved by the backend.
 	Accelerators []keybindings.Accelerator `json:"accelerators,omitempty"`
