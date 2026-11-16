@@ -10,6 +10,99 @@ import { Create as $Create } from "@wailsio/runtime";
 import * as windowgeom$0 from "../windowgeom/models.js";
 
 /**
+ * AgentNote is one note on choosing an agent. When decides whether an
+ * agent is shown it, from the profiles it could spawn on a computer.
+ */
+export class AgentNote {
+    "text": string;
+    "when": string;
+
+    /** Creates a new AgentNote instance. */
+    constructor($$source: Partial<AgentNote> = {}) {
+        if (!("text" in $$source)) {
+            this["text"] = "";
+        }
+        if (!("when" in $$source)) {
+            this["when"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new AgentNote instance from a string or object.
+     */
+    static createFrom($$source: any = {}): AgentNote {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new AgentNote($$parsedSource as Partial<AgentNote>);
+    }
+}
+
+/**
+ * AgentProfile is one agent the person set up for spawning. Every setting
+ * but Name and UseFor is optional: empty inherits the spawner's.
+ */
+export class AgentProfile {
+    /**
+     * Name is what a spawn names the profile by, unique without regard to
+     * case.
+     */
+    "name": string;
+
+    /**
+     * UseFor is the line an agent reads when it chooses: what the profile
+     * is good at, what it costs, and what not to use it for.
+     */
+    "useFor": string;
+    "provider": string;
+    "model": string;
+    "effort": string;
+    "runtimeMode": string;
+
+    /**
+     * Instructions are appended to the system prompt of every sub-thread
+     * spawned with the profile, after what the app and the person already
+     * append, never replacing it.
+     */
+    "instructions": string;
+
+    /** Creates a new AgentProfile instance. */
+    constructor($$source: Partial<AgentProfile> = {}) {
+        if (!("name" in $$source)) {
+            this["name"] = "";
+        }
+        if (!("useFor" in $$source)) {
+            this["useFor"] = "";
+        }
+        if (!("provider" in $$source)) {
+            this["provider"] = "";
+        }
+        if (!("model" in $$source)) {
+            this["model"] = "";
+        }
+        if (!("effort" in $$source)) {
+            this["effort"] = "";
+        }
+        if (!("runtimeMode" in $$source)) {
+            this["runtimeMode"] = "";
+        }
+        if (!("instructions" in $$source)) {
+            this["instructions"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new AgentProfile instance from a string or object.
+     */
+    static createFrom($$source: any = {}): AgentProfile {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new AgentProfile($$parsedSource as Partial<AgentProfile>);
+    }
+}
+
+/**
  * Claude Code cross-session messaging — the machine-wide peer inbox.
  * 
  * Claude Code 2.1.224+ lets one Claude session on a host discover
@@ -647,6 +740,25 @@ export class Settings {
      * its next start or resume.
      */
     "sharedMemoryEnabled": boolean;
+
+    /**
+     * AgentProfiles are the agents an agent spawns a sub-thread by, and
+     * AgentNotes the notes on choosing between them (agentroster.go).
+     * Seeded from DefaultSettings: an absent key reads the current seed,
+     * and once the person edits either list the stored list is theirs. No
+     * omitempty: an emptied list is stored as empty, never read back as
+     * the seed.
+     */
+    "agentProfiles": AgentProfile[];
+    "agentNotes": AgentNote[];
+
+    /**
+     * SubThreadLevels is how many levels of owned sub-threads may exist
+     * under a thread the person talks to. A thread at the last level has
+     * no thread_spawn and no native subagents. Spawn-only: a session keeps
+     * the tool list it started with.
+     */
+    "subThreadLevels": number;
 
     /**
      * ClaudeNativeMemoryDisabled turns Claude Code's own auto memory off in
@@ -1350,6 +1462,15 @@ export class Settings {
         if (!("sharedMemoryEnabled" in $$source)) {
             this["sharedMemoryEnabled"] = false;
         }
+        if (!("agentProfiles" in $$source)) {
+            this["agentProfiles"] = [];
+        }
+        if (!("agentNotes" in $$source)) {
+            this["agentNotes"] = [];
+        }
+        if (!("subThreadLevels" in $$source)) {
+            this["subThreadLevels"] = 0;
+        }
         if (!("claudeNativeMemoryDisabled" in $$source)) {
             this["claudeNativeMemoryDisabled"] = false;
         }
@@ -1544,24 +1665,26 @@ export class Settings {
         const $$createField5_0 = $$createType0;
         const $$createField18_0 = $$createType0;
         const $$createField19_0 = $$createType0;
-        const $$createField34_0 = $$createType0;
-        const $$createField35_0 = $$createType0;
-        const $$createField36_0 = $$createType3;
-        const $$createField37_0 = $$createType3;
-        const $$createField38_0 = $$createType5;
-        const $$createField39_0 = $$createType5;
-        const $$createField40_0 = $$createType0;
-        const $$createField41_0 = $$createType0;
-        const $$createField45_0 = $$createType6;
-        const $$createField46_0 = $$createType7;
-        const $$createField48_0 = $$createType8;
-        const $$createField69_0 = $$createType9;
-        const $$createField70_0 = $$createType10;
-        const $$createField71_0 = $$createType11;
-        const $$createField73_0 = $$createType0;
-        const $$createField78_0 = $$createType0;
-        const $$createField80_0 = $$createType0;
-        const $$createField102_0 = $$createType12;
+        const $$createField24_0 = $$createType3;
+        const $$createField25_0 = $$createType5;
+        const $$createField37_0 = $$createType0;
+        const $$createField38_0 = $$createType0;
+        const $$createField39_0 = $$createType7;
+        const $$createField40_0 = $$createType7;
+        const $$createField41_0 = $$createType9;
+        const $$createField42_0 = $$createType9;
+        const $$createField43_0 = $$createType0;
+        const $$createField44_0 = $$createType0;
+        const $$createField48_0 = $$createType10;
+        const $$createField49_0 = $$createType11;
+        const $$createField51_0 = $$createType12;
+        const $$createField72_0 = $$createType13;
+        const $$createField73_0 = $$createType14;
+        const $$createField74_0 = $$createType15;
+        const $$createField76_0 = $$createType0;
+        const $$createField81_0 = $$createType0;
+        const $$createField83_0 = $$createType0;
+        const $$createField105_0 = $$createType16;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("recentWorkspaces" in $$parsedSource) {
             $$parsedSource["recentWorkspaces"] = $$createField5_0($$parsedSource["recentWorkspaces"]);
@@ -1572,59 +1695,65 @@ export class Settings {
         if ("dictationAPIKeywords" in $$parsedSource) {
             $$parsedSource["dictationAPIKeywords"] = $$createField19_0($$parsedSource["dictationAPIKeywords"]);
         }
+        if ("agentProfiles" in $$parsedSource) {
+            $$parsedSource["agentProfiles"] = $$createField24_0($$parsedSource["agentProfiles"]);
+        }
+        if ("agentNotes" in $$parsedSource) {
+            $$parsedSource["agentNotes"] = $$createField25_0($$parsedSource["agentNotes"]);
+        }
         if ("claudeHiddenModels" in $$parsedSource) {
-            $$parsedSource["claudeHiddenModels"] = $$createField34_0($$parsedSource["claudeHiddenModels"]);
+            $$parsedSource["claudeHiddenModels"] = $$createField37_0($$parsedSource["claudeHiddenModels"]);
         }
         if ("codexHiddenModels" in $$parsedSource) {
-            $$parsedSource["codexHiddenModels"] = $$createField35_0($$parsedSource["codexHiddenModels"]);
+            $$parsedSource["codexHiddenModels"] = $$createField38_0($$parsedSource["codexHiddenModels"]);
         }
         if ("claudeCustomEnv" in $$parsedSource) {
-            $$parsedSource["claudeCustomEnv"] = $$createField36_0($$parsedSource["claudeCustomEnv"]);
+            $$parsedSource["claudeCustomEnv"] = $$createField39_0($$parsedSource["claudeCustomEnv"]);
         }
         if ("codexCustomEnv" in $$parsedSource) {
-            $$parsedSource["codexCustomEnv"] = $$createField37_0($$parsedSource["codexCustomEnv"]);
+            $$parsedSource["codexCustomEnv"] = $$createField40_0($$parsedSource["codexCustomEnv"]);
         }
         if ("claudePromptOverrides" in $$parsedSource) {
-            $$parsedSource["claudePromptOverrides"] = $$createField38_0($$parsedSource["claudePromptOverrides"]);
+            $$parsedSource["claudePromptOverrides"] = $$createField41_0($$parsedSource["claudePromptOverrides"]);
         }
         if ("codexPromptOverrides" in $$parsedSource) {
-            $$parsedSource["codexPromptOverrides"] = $$createField39_0($$parsedSource["codexPromptOverrides"]);
+            $$parsedSource["codexPromptOverrides"] = $$createField42_0($$parsedSource["codexPromptOverrides"]);
         }
         if ("claudeDisabledTools" in $$parsedSource) {
-            $$parsedSource["claudeDisabledTools"] = $$createField40_0($$parsedSource["claudeDisabledTools"]);
+            $$parsedSource["claudeDisabledTools"] = $$createField43_0($$parsedSource["claudeDisabledTools"]);
         }
         if ("codexDisabledTools" in $$parsedSource) {
-            $$parsedSource["codexDisabledTools"] = $$createField41_0($$parsedSource["codexDisabledTools"]);
+            $$parsedSource["codexDisabledTools"] = $$createField44_0($$parsedSource["codexDisabledTools"]);
         }
         if ("claudeCrossSession" in $$parsedSource) {
-            $$parsedSource["claudeCrossSession"] = $$createField45_0($$parsedSource["claudeCrossSession"]);
+            $$parsedSource["claudeCrossSession"] = $$createField48_0($$parsedSource["claudeCrossSession"]);
         }
         if ("claudeSubagentLimits" in $$parsedSource) {
-            $$parsedSource["claudeSubagentLimits"] = $$createField46_0($$parsedSource["claudeSubagentLimits"]);
+            $$parsedSource["claudeSubagentLimits"] = $$createField49_0($$parsedSource["claudeSubagentLimits"]);
         }
         if ("claudeThinking" in $$parsedSource) {
-            $$parsedSource["claudeThinking"] = $$createField48_0($$parsedSource["claudeThinking"]);
+            $$parsedSource["claudeThinking"] = $$createField51_0($$parsedSource["claudeThinking"]);
         }
         if ("network" in $$parsedSource) {
-            $$parsedSource["network"] = $$createField69_0($$parsedSource["network"]);
+            $$parsedSource["network"] = $$createField72_0($$parsedSource["network"]);
         }
         if ("editor" in $$parsedSource) {
-            $$parsedSource["editor"] = $$createField70_0($$parsedSource["editor"]);
+            $$parsedSource["editor"] = $$createField73_0($$parsedSource["editor"]);
         }
         if ("retention" in $$parsedSource) {
-            $$parsedSource["retention"] = $$createField71_0($$parsedSource["retention"]);
+            $$parsedSource["retention"] = $$createField74_0($$parsedSource["retention"]);
         }
         if ("gitlabSelfHostedHosts" in $$parsedSource) {
-            $$parsedSource["gitlabSelfHostedHosts"] = $$createField73_0($$parsedSource["gitlabSelfHostedHosts"]);
+            $$parsedSource["gitlabSelfHostedHosts"] = $$createField76_0($$parsedSource["gitlabSelfHostedHosts"]);
         }
         if ("spinnerCustomVerbs" in $$parsedSource) {
-            $$parsedSource["spinnerCustomVerbs"] = $$createField78_0($$parsedSource["spinnerCustomVerbs"]);
+            $$parsedSource["spinnerCustomVerbs"] = $$createField81_0($$parsedSource["spinnerCustomVerbs"]);
         }
         if ("spinnerDisabledAnimations" in $$parsedSource) {
-            $$parsedSource["spinnerDisabledAnimations"] = $$createField80_0($$parsedSource["spinnerDisabledAnimations"]);
+            $$parsedSource["spinnerDisabledAnimations"] = $$createField83_0($$parsedSource["spinnerDisabledAnimations"]);
         }
         if ("window" in $$parsedSource) {
-            $$parsedSource["window"] = $$createField102_0($$parsedSource["window"]);
+            $$parsedSource["window"] = $$createField105_0($$parsedSource["window"]);
         }
         return new Settings($$parsedSource as Partial<Settings>);
     }
@@ -1633,14 +1762,18 @@ export class Settings {
 // Private type creation functions
 const $$createType0 = $Create.Array($Create.Any);
 const $$createType1 = $Create.Array($Create.Any);
-const $$createType2 = ProviderEnvVar.createFrom;
+const $$createType2 = AgentProfile.createFrom;
 const $$createType3 = $Create.Array($$createType2);
-const $$createType4 = PromptOverride.createFrom;
+const $$createType4 = AgentNote.createFrom;
 const $$createType5 = $Create.Array($$createType4);
-const $$createType6 = ClaudeCrossSession.createFrom;
-const $$createType7 = ClaudeSubagentLimits.createFrom;
-const $$createType8 = ClaudeThinking.createFrom;
-const $$createType9 = NetworkSettings.createFrom;
-const $$createType10 = EditorSettings.createFrom;
-const $$createType11 = RetentionSettings.createFrom;
-const $$createType12 = windowgeom$0.Geometry.createFrom;
+const $$createType6 = ProviderEnvVar.createFrom;
+const $$createType7 = $Create.Array($$createType6);
+const $$createType8 = PromptOverride.createFrom;
+const $$createType9 = $Create.Array($$createType8);
+const $$createType10 = ClaudeCrossSession.createFrom;
+const $$createType11 = ClaudeSubagentLimits.createFrom;
+const $$createType12 = ClaudeThinking.createFrom;
+const $$createType13 = NetworkSettings.createFrom;
+const $$createType14 = EditorSettings.createFrom;
+const $$createType15 = RetentionSettings.createFrom;
+const $$createType16 = windowgeom$0.Geometry.createFrom;
