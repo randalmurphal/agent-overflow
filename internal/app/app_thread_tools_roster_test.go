@@ -454,6 +454,16 @@ func TestTheEditorRefusesAProfileItsModelCannotRun(t *testing.T) {
 	if !slices.Equal(checks, want) {
 		t.Fatalf("checks = %+v, want %+v", checks, want)
 	}
+	// An effort the model has a setting for but does not offer.
+	unoffered, err := app.CheckAgentProfiles(context.Background(), []settings.AgentProfile{
+		{Name: "Unoffered", UseFor: "x", Provider: "claude", Model: "claude-opus-5", Effort: "minimal"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(unoffered) != 1 || !strings.HasPrefix(unoffered[0].Problem, `Model claude-opus-5 does not offer effort "minimal" on this computer. It offers: `) || unoffered[0].Missing != "" {
+		t.Fatalf("an effort the model does not offer checks as %+v", unoffered)
+	}
 	patch := func(list []settings.AgentProfile) map[string]any {
 		encoded, err := json.Marshal(list)
 		if err != nil {
