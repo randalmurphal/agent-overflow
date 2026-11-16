@@ -707,6 +707,9 @@ func (h *Harness) HarnessReset() (err error) {
 	// cleanup is paused and the projects whose lists and pumps read the
 	// forge are gone.
 	h.config.Host.ResetForgeCaches()
+	// A repository's fetch freshness and failure backoff are keyed by its
+	// path, which the next fixture can reuse for another repository.
+	h.config.Host.ForgetGitFetches()
 	// One spec's wakes must not be readable by the next: HarnessPushSent
 	// is a ledger with the same per-test lifetime as the mock registrations
 	// above, and an unbounded one, so nothing else would ever drop it.

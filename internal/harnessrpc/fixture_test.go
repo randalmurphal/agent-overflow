@@ -27,29 +27,31 @@ import (
 func TestMain(m *testing.M) { os.Exit(providerpath.Guard(func() int { return storetest.Run(m) })) }
 
 type testHost struct {
-	forgeCachesReset  int
-	store             *store.Store
-	replay            *replaylog.Manager
-	emit              func(eventchan.Channel, any)
-	eventBus          *transport.EventBus
-	origin            string
-	published         *store.Identity
-	sent              []string
-	browserScroll     func(string, string, float64, float64) error
-	browserScreenshot func(string, string) ([]byte, error)
-	pushSent          []PushMessage
-	claudeUsage       *claudefake.Usage
-	usageReadings     int
-	updateFeed        *updatefake.Feed
-	updateRechecks    int
-	onUpdateRecheck   func()
-	droppedRetained   int
-	droppedImages     int
-	broadcastRows     []string
-	mergedPRPauses    int
-	mergedPRResumes   int
-	onPause           func()
-	onResume          func()
+	forgeCachesReset    int
+	fetchPasses         int
+	gitFetchesForgotten int
+	store               *store.Store
+	replay              *replaylog.Manager
+	emit                func(eventchan.Channel, any)
+	eventBus            *transport.EventBus
+	origin              string
+	published           *store.Identity
+	sent                []string
+	browserScroll       func(string, string, float64, float64) error
+	browserScreenshot   func(string, string) ([]byte, error)
+	pushSent            []PushMessage
+	claudeUsage         *claudefake.Usage
+	usageReadings       int
+	updateFeed          *updatefake.Feed
+	updateRechecks      int
+	onUpdateRecheck     func()
+	droppedRetained     int
+	droppedImages       int
+	broadcastRows       []string
+	mergedPRPauses      int
+	mergedPRResumes     int
+	onPause             func()
+	onResume            func()
 }
 
 func newHarnessTestHost(t *testing.T) (*Harness, *testHost) {
@@ -175,6 +177,10 @@ func (h *testHost) ResetSessionImporter() {}
 func (h *testHost) DropReviewDiffImages() { h.droppedImages++ }
 
 func (h *testHost) ResetForgeCaches() { h.forgeCachesReset++ }
+
+func (h *testHost) RunBackgroundFetchPass(context.Context) { h.fetchPasses++ }
+
+func (h *testHost) ForgetGitFetches() { h.gitFetchesForgotten++ }
 
 // PauseMergedPRCleanup counts pauses and resumes and, through onPause and
 // onResume, lets a test see what the reset had done by then.

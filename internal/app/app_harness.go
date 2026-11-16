@@ -290,6 +290,12 @@ func (h *harnessHost) ClearUIState() error {
 
 func (h *harnessHost) ResetForgeCaches() { h.app.gitCore().ResetForgeCaches() }
 
+func (h *harnessHost) RunBackgroundFetchPass(ctx context.Context) {
+	h.app.runBackgroundFetchPass(ctx)
+}
+
+func (h *harnessHost) ForgetGitFetches() { h.app.gitCore().ForgetFetches() }
+
 func (h *harnessHost) ResetSessionImporter() {
 	h.app.sessionImporter().Reset()
 }

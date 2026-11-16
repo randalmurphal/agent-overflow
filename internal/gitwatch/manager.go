@@ -303,7 +303,7 @@ func (m *Manager) Publish(cwd string, read func() (gitops.GitStatus, error)) (gi
 // StatusFn and broadcast the result to every subscriber, for a change no
 // status read has shown yet (a PR the forge was just asked about). A
 // caller holding a status it read hands it out through Publish instead.
-// A requested refresh that observes a non-PR change the fs watches never
+// A requested refresh that observes an on-disk change the fs watches never
 // reported is evidence of dead watchpoints (see run).
 //
 // No watcher for cwd is a valid state — nobody is subscribed — so it is

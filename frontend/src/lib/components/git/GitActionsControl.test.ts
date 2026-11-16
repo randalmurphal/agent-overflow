@@ -408,6 +408,109 @@ describe('<GitActionsControl> palette dialog event', () => {
     expect(queryByText('Create Pull Request')).toBeNull();
   });
 
+  // The app's background fetch could not sign in: the header says so, with
+  // git's own diagnosis, and a click runs the fetch that may ask.
+  it('marks a workspace whose background fetch needs a sign-in and fetches on click', async () => {
+    const pane = await buildPane();
+    const fetch = setBindingMock('GitFetchOrigin', vi.fn(async () => ({ action: 'fetch' })));
+    const refreshNow = vi.spyOn(pane.gitStatus, 'refreshNow').mockResolvedValue();
+    const diagnosis = "fatal: could not read Username for '[remote]': terminal prompts disabled";
+    __seedGitStatusForTest(WORKSPACE, status({ remoteSignInError: diagnosis }));
+    const { findByTestId, findByLabelText, findByRole } = render(GitActionsControl, { props: { pane } });
+
+    const marker = await findByTestId('git-sign-in-needed');
+    expect(marker).toHaveTextContent('Sign-in needed');
+    expect(marker.getAttribute('title')).toContain(diagnosis);
+    // Same 24px as the rest of the header cluster, so it cannot grow the header.
+    expect(marker.className).toContain('h-6');
+    await fireEvent.click(marker);
+    await flush();
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(refreshNow).toHaveBeenCalled();
+
+    // The menu offers the same fetch.
+    await fireEvent.click(await findByLabelText('More git actions'));
+    const item = await findByRole('menuitem', { name: /Fetch and sign in/ });
+    expect(item).toHaveTextContent(`Sign-in needed: ${diagnosis}`);
+    await fireEvent.click(item);
+    await flush();
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('shows no sign-in marker or fetch row without the error, and drops them when it clears', async () => {
+    const pane = await buildPane();
+    __seedGitStatusForTest(WORKSPACE, status({ remoteSignInError: 'fatal: Authentication failed' }));
+    const { findByTestId, queryByTestId, findByLabelText, findByRole, queryByRole } = render(GitActionsControl, { props: { pane } });
+    await findByTestId('git-sign-in-needed');
+
+    __seedGitStatusForTest(WORKSPACE, status());
+    await flush();
+    expect(queryByTestId('git-sign-in-needed')).toBeNull();
+    await fireEvent.click(await findByLabelText('More git actions'));
+    await findByRole('menuitem', { name: 'Pull' });
+    expect(queryByRole('menuitem', { name: /Fetch and sign in/ })).toBeNull();
+  });
+
+  it('a view-only session sees the sign-in marker but cannot fetch', async () => {
+    await pairViewOnly();
+    const pane = await buildPane();
+    const fetch = setBindingMock('GitFetchOrigin', vi.fn(async () => ({ action: 'fetch' })));
+    __seedGitStatusForTest(WORKSPACE, status({ remoteSignInError: 'fatal: Authentication failed' }));
+    const { findByTestId } = render(GitActionsControl, { props: { pane } });
+    const marker = await findByTestId('git-sign-in-needed');
+    expect(marker).toBeDisabled();
+    await fireEvent.click(marker);
+    await flush();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  // The compact header mounts the control without its split button. The
+  // warning is not one of the actions it rolls into its menu.
+  it('keeps the sign-in marker when the split button is not rendered', async () => {
+    const pane = await buildPane();
+    const fetch = setBindingMock('GitFetchOrigin', vi.fn(async () => ({ action: 'fetch' })));
+    vi.spyOn(pane.gitStatus, 'refreshNow').mockResolvedValue();
+    __seedGitStatusForTest(WORKSPACE, status({ remoteSignInError: 'fatal: Authentication failed' }));
+    const { findByTestId, queryByLabelText } = render(GitActionsControl, { props: { pane, trigger: false } });
+
+    const marker = await findByTestId('git-sign-in-needed');
+    expect(queryByLabelText('More git actions')).toBeNull();
+    // The shared button's compact hit target.
+    expect(marker.className).toContain('compact:h-9');
+    await fireEvent.click(marker);
+    await flush();
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  // A fetch waiting on a credential prompt can fail long after the click.
+  // Its failure belongs to the conversation it was started from.
+  it('reports a failed fetch on the pane banner, or as a toast once the pane shows another conversation', async () => {
+    for (const moved of [false, true]) {
+      resetToastsForTest();
+      const pane = await buildPane();
+      let fail!: (err: Error) => void;
+      setBindingMock('GitFetchOrigin', vi.fn(() => new Promise((_resolve, reject) => { fail = reject; })));
+      const setGeneralError = vi.spyOn(pane, 'setGeneralError');
+      __seedGitStatusForTest(WORKSPACE, status({ remoteSignInError: 'fatal: Authentication failed' }));
+      const { findByTestId, unmount } = render(GitActionsControl, { props: { pane } });
+      await fireEvent.click(await findByTestId('git-sign-in-needed'));
+      await flush();
+
+      if (moved) vi.spyOn(pane, 'threadId', 'get').mockReturnValue('another-thread');
+      fail(new Error('sign-in cancelled'));
+      await flush();
+      const toasts = getToasts().map((toast) => toast.message);
+      if (moved) {
+        expect(setGeneralError).not.toHaveBeenCalled();
+        expect(toasts).toEqual(['Fetch failed: sign-in cancelled']);
+      } else {
+        expect(setGeneralError).toHaveBeenCalledWith('Fetch failed: sign-in cancelled', expect.any(Error));
+        expect(toasts).toEqual([]);
+      }
+      unmount();
+    }
+  });
+
   it('opens the Create PR dialog for git.openPR', async () => {
     const pane = await buildPane();
     __seedGitStatusForTest(WORKSPACE, status({ branch: 'feature', isDefaultBranch: false }));

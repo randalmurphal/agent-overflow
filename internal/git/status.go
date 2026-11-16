@@ -28,6 +28,12 @@ type GitStatus struct {
 	AheadCount      int    `json:"aheadCount"`
 	BehindCount     int    `json:"behindCount"`
 	HasOriginRemote bool   `json:"hasOriginRemote"`
+	// RemoteSignInError is git's diagnosis when the repository's last
+	// unattended fetch of origin failed because the remote wanted a login
+	// (Core.RemoteSignInError), so the counts above may be stale until
+	// someone signs in; empty otherwise. Core.FetchOrigin is the fetch
+	// that may ask.
+	RemoteSignInError string `json:"remoteSignInError,omitempty"`
 	// Forge is the canonical id of the origin remote's forge:
 	// "github", "gitlab", or "" when the host is unknown / no origin
 	// is configured. Drives the UI's PR/MR label adaptation and gates
@@ -84,6 +90,7 @@ func (s GitStatus) Equal(other GitStatus) bool {
 		s.AheadCount == other.AheadCount &&
 		s.BehindCount == other.BehindCount &&
 		s.HasOriginRemote == other.HasOriginRemote &&
+		s.RemoteSignInError == other.RemoteSignInError &&
 		s.Forge == other.Forge &&
 		s.OpenPRURL == other.OpenPRURL &&
 		s.OpenPRNumber == other.OpenPRNumber &&
@@ -267,6 +274,9 @@ func (c *Core) baseStatus(cwd string) (GitStatus, error) {
 	}
 	status.IsRepo = true
 	status.HasOriginRemote = origin.known
+	if origin.known {
+		status.RemoteSignInError = c.RemoteSignInError(cwd)
+	}
 	status.Forge = forge
 	status.IsDefaultBranch = isDefaultBranchName(status.Branch, defaultBranch)
 	status.PendingOperation = pending

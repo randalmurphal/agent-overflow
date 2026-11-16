@@ -7,6 +7,7 @@
 // so it can be unit-tested without mounting the component.
 
 import {
+  GitFetchOrigin,
   GitPull,
   GitPush,
   RemoveOtherWorktree,
@@ -133,6 +134,22 @@ export async function runPullAction(ctx: GitActionCtx): Promise<void> {
   } catch (err) {
     console.error('Pull failed:', err);
     ctx.reportError(`Pull failed: ${errString(err)}`, err);
+  }
+}
+
+/**
+ * Fetch origin for a user who asked: unlike the app's background fetch it
+ * may ask for a login, so it is the way out of `status.remoteSignInError`.
+ * The status that follows says whether the login is still missing.
+ */
+export async function runFetchOriginAction(ctx: GitActionCtx): Promise<void> {
+  try {
+    await GitFetchOrigin(ctx.workspace);
+    addToast('success', 'Fetched origin');
+    await ctx.refreshStatus();
+  } catch (err) {
+    console.error('Fetch failed:', err);
+    ctx.reportError(`Fetch failed: ${errString(err)}`, err);
   }
 }
 

@@ -791,6 +791,15 @@ export class GitStatus {
     "hasOriginRemote": boolean;
 
     /**
+     * RemoteSignInError is git's diagnosis when the repository's last
+     * unattended fetch of origin failed because the remote wanted a login
+     * (Core.RemoteSignInError), so the counts above may be stale until
+     * someone signs in; empty otherwise. Core.FetchOrigin is the fetch
+     * that may ask.
+     */
+    "remoteSignInError"?: string;
+
+    /**
      * Forge is the canonical id of the origin remote's forge:
      * "github", "gitlab", or "" when the host is unknown / no origin
      * is configured. Drives the UI's PR/MR label adaptation and gates

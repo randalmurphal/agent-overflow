@@ -56,6 +56,14 @@ describe('<Button>', () => {
     expect(cls).not.toMatch(/(?<!\/)bg-error(?![-/])/); // not filled
   });
 
+  it('applies warning-outline variant (outlined warning, not filled)', () => {
+    const { getByRole } = render(Harness, { props: { variant: 'warning-outline' } });
+    const cls = getByRole('button').className;
+    expect(cls).toContain('border-warning/50');
+    expect(cls).toContain('text-warning');
+    expect(cls).not.toMatch(/(?<![:/])bg-warning(?![-/])/); // not filled
+  });
+
   it('applies danger-ghost variant (error text, transparent rest)', () => {
     const { getByRole } = render(Harness, { props: { variant: 'danger-ghost' } });
     const cls = getByRole('button').className;

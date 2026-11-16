@@ -257,6 +257,10 @@ func TestHarnessResetClearsHarnessState(t *testing.T) {
 	if host.forgeCachesReset != 1 {
 		t.Fatalf("forge caches reset %d times, want once", host.forgeCachesReset)
 	}
+	// So does each repository's fetch freshness and failure backoff.
+	if host.gitFetchesForgotten != 1 {
+		t.Fatalf("git fetches forgotten %d times, want once", host.gitFetchesForgotten)
+	}
 	// The aborted recording released its slot: a new one can start.
 	if _, err := h.HarnessRecordStart("fresh", "thread-r"); err != nil {
 		t.Fatalf("HarnessRecordStart after reset: %v", err)

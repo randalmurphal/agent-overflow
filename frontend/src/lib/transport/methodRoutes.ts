@@ -206,6 +206,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	429779991: 'workspace', // GitCreateBranchFrom
 	4106667105: 'workspace', // GitCreatePR
 	3327650914: 'thread', // GitCreateWorktree
+	3703670631: 'workspace', // GitFetchOrigin
 	3795082615: 'workspace', // GitListBranchPruneCandidates
 	2693102179: 'workspace', // GitListBranches
 	3443522126: 'workspace', // GitListTags

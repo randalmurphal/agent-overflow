@@ -10,6 +10,7 @@ import {
   menuPullEnabled,
   menuPushEnabled,
   primaryActionFor,
+  runFetchOriginAction,
   runPushAction,
   runPullAction,
   runRemoveWorktreeAction,
@@ -168,6 +169,30 @@ describe('runPullAction', () => {
     const c = ctx();
     await runPullAction(c);
     expect(c.reportError).toHaveBeenCalledWith('Pull failed: offline', failure);
+  });
+});
+
+describe('runFetchOriginAction', () => {
+  beforeEach(() => resetBindingMocks());
+
+  it('fetches the workspace and refreshes its status', async () => {
+    const fetch = setBindingMock('GitFetchOrigin', vi.fn(async () => ({ action: 'fetch' })));
+    const c = ctx();
+    await runFetchOriginAction(c);
+    expect(fetch).toHaveBeenCalledWith(WS);
+    expect(c.refreshStatus).toHaveBeenCalled();
+    expect(c.reportError).not.toHaveBeenCalled();
+  });
+
+  it('reports a refused sign-in and leaves the status alone', async () => {
+    const failure = new Error('Authentication failed');
+    setBindingMock('GitFetchOrigin', async () => {
+      throw failure;
+    });
+    const c = ctx();
+    await runFetchOriginAction(c);
+    expect(c.reportError).toHaveBeenCalledWith('Fetch failed: Authentication failed', failure);
+    expect(c.refreshStatus).not.toHaveBeenCalled();
   });
 });
 

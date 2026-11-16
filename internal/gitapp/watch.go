@@ -187,6 +187,29 @@ func (s *Service) RequestRefresh(workspace string) {
 	}
 }
 
+// refreshRepositoryStatus schedules a status refresh for every subscribed
+// workspace of the repository whose common dir is commonDir: its root and
+// each linked worktree carry the same GitStatus.RemoteSignInError, and a
+// fetch that failed wrote nothing their watchers see.
+func (s *Service) refreshRepositoryStatus(commonDir string) {
+	if s.watch == nil {
+		return
+	}
+	s.status.mu.Lock()
+	cwds := make([]string, 0, len(s.status.pumps))
+	for cwd := range s.status.pumps {
+		cwds = append(cwds, cwd)
+	}
+	s.status.mu.Unlock()
+	for _, cwd := range cwds {
+		// A subscribed workspace git no longer resolves is not this
+		// repository's; its own stream reports what became of it.
+		if dir, err := s.core.CommonDir(cwd); err == nil && dir == commonDir {
+			s.watch.RequestRefresh(cwd)
+		}
+	}
+}
+
 // SuppressStatus holds the status stream of workspace off the wire until
 // the returned resume runs or the stream's watcher stops. See
 // gitwatch.Manager.Suppress.
