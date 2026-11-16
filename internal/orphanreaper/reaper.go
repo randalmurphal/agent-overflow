@@ -25,6 +25,11 @@ const killGracePeriod = 2 * time.Second
 // discarded: a group that exited on SIGTERM fails the SIGKILL with ESRCH.
 // The summary is logged after the kills, since the stderr the sidecar
 // inherited may have died with the parent.
+//
+// The SIGKILL runs from the EXIT trap, so it needs no child process. sleep
+// is the script's one external command, and a shell that cannot fork it
+// (the user's process limit is spent) exits there: bash, dash and busybox
+// all do. The trap then sends the SIGKILL without the grace.
 const sidecarScript = `watched=
 while read -r verb pgid extra; do
 	case $verb:$pgid:$extra in
@@ -50,8 +55,8 @@ while read -r verb pgid extra; do
 done <&3
 [ -n "$watched" ] || exit 0
 for g in $watched; do kill -TERM "-$g" 2>/dev/null; done
-sleep "$2"
-for g in $watched; do kill -KILL "-$g" 2>/dev/null; done
+trap 'for g in $watched; do kill -KILL "-$g" 2>/dev/null; done
 set -- $watched
-echo "orphanreaper: parent died; reaped $# process group(s)" >&2
+echo "orphanreaper: parent died; reaped $# process group(s)" >&2' EXIT
+sleep "$2"
 `

@@ -5,6 +5,7 @@ package orphanreaper
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"io"
 	"os"
 	"os/exec"
@@ -70,6 +71,33 @@ func TestSidecarNoWatchedNoKills(t *testing.T) {
 	calls, _ := recordSidecar(t, "watch 100\nwatch 100\nrelease 100\nrelease 300\n")
 	if len(calls) != 0 {
 		t.Errorf("calls = %q, want none when everything was released", calls)
+	}
+}
+
+// A shell that cannot fork sleep exits at that line, which the recorded sleep
+// stands in for by exiting as bash does. The SIGKILL must still be sent.
+func TestSidecarKillsWhenTheShellExitsAtTheGrace(t *testing.T) {
+	control, feed, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := sidecarCommand(control, 7*time.Second)
+	cmd.Stdin = strings.NewReader(`kill() { echo "kill $*"; }; sleep() { exit 254; }` + "\n" + sidecarScript)
+	var out, errOut bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &errOut
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	_ = control.Close()
+	if _, err := io.WriteString(feed, formatWatch(200)); err != nil {
+		t.Fatal(err)
+	}
+	_ = feed.Close()
+	if exit, ok := errors.AsType[*exec.ExitError](cmd.Wait()); !ok || exit.ExitCode() != 254 {
+		t.Fatalf("sidecar exit = %v, want the shell's own failure (stderr %q)", exit, errOut.String())
+	}
+	if got, want := strings.Fields(out.String()), strings.Fields("kill -TERM -200 kill -KILL -200"); !slices.Equal(got, want) {
+		t.Errorf("calls = %q, want %q", got, want)
 	}
 }
 

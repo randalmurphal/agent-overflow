@@ -34,8 +34,10 @@ After the backend dies the sidecar runs from the system shell, not from the
 backend's executable, so an AppImage mount the runtime unmounts at exit
 (`internal/appimage`) cannot take its kill path away. It signals the groups,
 forks `sleep` for the grace, logs to the stderr it inherited and exits
-(`orphanreaper/reaper.go`). If that fork fails, SIGKILL follows SIGTERM
-without the grace.
+(`orphanreaper/reaper.go`). The SIGKILL is sent from the script's EXIT trap:
+a shell that cannot fork `sleep` exits there, and SIGKILL then follows
+SIGTERM without the grace, or after the shell's own fork retries (bash
+retries for about fifteen seconds).
 
 ## Which spawners end with the backend
 
