@@ -313,6 +313,22 @@ Widths are CSS pixels of the pane, not the window.
   [development data](../references/tracker-api-measurements.md#jira-cloud)
   is a fallback only, because its endpoints are undocumented.
 
+### Thread link
+
+A [second mockup](issues-thread-link-mockup.html) shows the link in the
+sidebar and the thread header, on desktop and on a phone.
+
+- A thread linked to a ticket shows the ticket's status mark and key as a
+  button in the thread header, before the pull request button. It opens the
+  ticket in the Issues pane.
+- The link outlives the pull request. It stays after the merge and after
+  the worktree is removed.
+- In the sidebar the key and its status mark join the row's second line,
+  the one that names the computer and the worktree. The key is left out
+  when the worktree name already contains it. A linked thread with no
+  second line gets one for the key. No other row grows.
+- Sidebar search also matches a thread by its ticket's key and title.
+
 ### Dashboards
 
 - A dashboard is a twelve-column grid of widgets with a toolbar: dashboard
@@ -376,6 +392,38 @@ Widths are CSS pixels of the pane, not the window.
   estimate field, poker and credit rules; the meetings and time-off
   tickets, draft approval and draft sources; and what agents may do.
 - A Linear project has no fields, credit or time settings.
+
+### Compact layout
+
+The [compact rules](../../frontend/AGENTS.md#compact-layout) apply: two
+screens, the compact hit size, nothing reached by hover alone, no drag, and
+menus anchored at their control. Both mockups show the compact layout in a
+window 640 wide or narrower. On top of those rules:
+
+- The top bar holds Back, the board picker, one picker for the tabs, a menu
+  with Display and Only mine, and Search. Back closes what is open on the
+  page before it leaves for the list.
+- The page never scrolls sideways. Board shows one status at a time, picked
+  from a strip of the statuses with their points. Time by day shows one day
+  at a time, picked from a strip of the five days with each day's total and
+  whether it is logged, drafted or waiting on a question.
+- A card moves by its status mark. A backlog row moves between the sprints
+  and the backlog from its menu. Ranking within a list is not offered.
+- A backlog row is two lines: the title, then type, key, epic, priority,
+  points and assignee. Labels show on the ticket only.
+- A ticket takes the whole pane in its narrow form. Back closes the fields
+  rail, then the ticket.
+- Dashboard widgets stack, number tiles two to a row. A tile shows How this
+  is counted and any control that is switched on; the limit and the board
+  pin show while the dashboard is being edited. A ticket list shows its
+  selection boxes at all times, with each row's note under its title.
+- Time by ticket keeps the grid and shows keys without titles.
+- Settings lists its sections as the page. A section opens over the list
+  and Back returns to it. A switch stays beside its text; a picker or a
+  button sits under it.
+- A linked thread's sidebar row carries the same second line. The thread
+  header keeps its diff badge and menu, and the ticket is a row in that
+  menu, above the pull request.
 
 ## Open questions
 
