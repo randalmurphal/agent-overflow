@@ -2,15 +2,19 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"slices"
+	"strings"
 
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/codex"
+	"agent-overflow/internal/settings"
 	"agent-overflow/internal/threadtools"
+	"agent-overflow/internal/transport"
 )
 
 // The agent roster and the sub-thread limit as this computer applies them
@@ -28,15 +32,76 @@ func (t threadToolsApp) Roster(context.Context) (threadtools.Roster, error) {
 		Notes:    make([]threadtools.AgentNote, 0, len(current.AgentNotes)),
 	}
 	for _, profile := range current.AgentProfiles {
-		roster.Profiles = append(roster.Profiles, threadtools.AgentProfile{
-			Name: profile.Name, UseFor: profile.UseFor, Provider: profile.Provider, Model: profile.Model,
-			Effort: profile.Effort, RuntimeMode: profile.RuntimeMode, Instructions: profile.Instructions,
-		})
+		roster.Profiles = append(roster.Profiles, rosterProfile(profile))
 	}
 	for _, note := range current.AgentNotes {
 		roster.Notes = append(roster.Notes, threadtools.AgentNote{Text: note.Text, When: note.When})
 	}
 	return roster, nil
+}
+
+// AgentProfileCheck is what the roster editor shows beside one profile
+// (threadtools.ProfileProblem): Problem, a choice that does not fit its
+// model here, which the editor and UpdateSettings refuse; Missing, a
+// provider or model this computer lacks, so threads here are not offered
+// the profile.
+type AgentProfileCheck struct {
+	Problem string `json:"problem,omitempty"`
+	Missing string `json:"missing,omitempty"`
+}
+
+// CheckAgentProfiles checks each profile against what this computer offers
+// a spawn, with the resolution its spawns and thread_options use, so the
+// editor refuses what thread_options would never list.
+//
+//ao:scope session
+//ao:route home
+func (a *App) CheckAgentProfiles(ctx context.Context, profiles []settings.AgentProfile) ([]AgentProfileCheck, error) {
+	catalog, err := a.threadTools().Catalog(ctx, threadtools.CatalogQuery{What: threadtools.OptionsModels})
+	if err != nil {
+		return nil, err
+	}
+	checks := make([]AgentProfileCheck, len(profiles))
+	for i, profile := range profiles {
+		checks[i].Problem, checks[i].Missing = threadtools.ProfileProblem(rosterProfile(profile), catalog.Providers)
+	}
+	return checks, nil
+}
+
+// refuseUnrunnableProfiles refuses a settings patch whose agent profiles
+// name an effort their model does not offer here (CheckAgentProfiles).
+func (a *App) refuseUnrunnableProfiles(ctx context.Context, patch map[string]any) error {
+	raw, ok := patch["agentProfiles"]
+	if !ok {
+		return nil
+	}
+	encoded, err := json.Marshal(raw)
+	if err != nil {
+		return err
+	}
+	var profiles []settings.AgentProfile
+	if err := json.Unmarshal(encoded, &profiles); err != nil {
+		// The settings update's own validation names the shape it wants.
+		return nil
+	}
+	checks, err := a.CheckAgentProfiles(ctx, profiles)
+	if err != nil {
+		return err
+	}
+	for i, check := range checks {
+		if check.Problem != "" {
+			return errorsx.Public(transport.ErrCodeBadParams, fmt.Sprintf("Agent profile %s: %s", strings.TrimSpace(profiles[i].Name), check.Problem), nil)
+		}
+	}
+	return nil
+}
+
+// rosterProfile is a settings profile as threadtools reads it.
+func rosterProfile(profile settings.AgentProfile) threadtools.AgentProfile {
+	return threadtools.AgentProfile{
+		Name: profile.Name, UseFor: profile.UseFor, Provider: profile.Provider, Model: profile.Model,
+		Effort: profile.Effort, RuntimeMode: profile.RuntimeMode, Instructions: profile.Instructions,
+	}
 }
 
 // providerOffered reports whether this computer offers a provider to a

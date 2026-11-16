@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"path/filepath"
+	"os"
 	"strconv"
 	"strings"
 	"testing"
@@ -168,6 +168,23 @@ func TestARefusedSpawnWithNotifyQueuesNoMessage(t *testing.T) {
 	f.nothingOwed(t)
 }
 
+// vanishingClaudeAfterTheSpawnIsChecked gives app a Claude binary that a
+// spawn's checks find and that is removed once the spawn's thread exists,
+// before its prompt is sent: the one way a spawn's thread can exist with
+// its provider unable to start.
+func vanishingClaudeAfterTheSpawnIsChecked(t *testing.T, app *App) {
+	t.Helper()
+	binary := createMockBinary(t, "2.1.284 (Claude Code)")
+	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": binary}); err != nil {
+		t.Fatalf("set claude binary: %v", err)
+	}
+	app.spawnNamingForTest = func(string) {
+		if err := os.Remove(binary); err != nil {
+			t.Errorf("remove the claude binary: %v", err)
+		}
+	}
+}
+
 // A spawn whose thread was created and whose prompt then could not be sent
 // names that thread in its refusal, whatever the cause, so the caller
 // continues it instead of spawning a second one.
@@ -194,10 +211,9 @@ func TestASpawnWhoseThreadExistsNamesItInTheRefusal(t *testing.T) {
 
 	f := newRequestFixture(t)
 	f.holdCallerTurn(t)
-	// No provider to run: the thread is created and its prompt cannot start.
-	if _, err := f.app.settings.Update(map[string]any{"claudeBinaryPath": filepath.Join(t.TempDir(), "no-such-claude")}); err != nil {
-		t.Fatalf("set claude binary: %v", err)
-	}
+	// The provider is there when the spawn is checked and gone once its
+	// thread exists, so the prompt cannot start.
+	vanishingClaudeAfterTheSpawnIsChecked(t, f.app)
 	_, err := f.adapter().Spawn(t.Context(), f.callerIdentity(), threadtools.SpawnCall{Prompt: "review the branch", Notify: true})
 	_, message, ok := errorsx.PublicDetails(err)
 	if !ok {

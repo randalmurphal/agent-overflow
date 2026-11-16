@@ -421,6 +421,32 @@ export class AgentComputer {
     }
 }
 
+/**
+ * AgentProfileCheck is what the roster editor shows beside one profile
+ * (threadtools.ProfileProblem): Problem, a choice that does not fit its
+ * model here, which the editor and UpdateSettings refuse; Missing, a
+ * provider or model this computer lacks, so threads here are not offered
+ * the profile.
+ */
+export class AgentProfileCheck {
+    "problem"?: string;
+    "missing"?: string;
+
+    /** Creates a new AgentProfileCheck instance. */
+    constructor($$source: Partial<AgentProfileCheck> = {}) {
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new AgentProfileCheck instance from a string or object.
+     */
+    static createFrom($$source: any = {}): AgentProfileCheck {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new AgentProfileCheck($$parsedSource as Partial<AgentProfileCheck>);
+    }
+}
+
 export class AgentRemoteRequest {
     "computerId": string;
     "workspace": gitapp$0.WorkspaceRef;

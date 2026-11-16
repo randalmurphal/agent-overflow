@@ -11,11 +11,18 @@ import (
 	"time"
 
 	"agent-overflow/internal/buildvariant/remotetest"
+	"agent-overflow/internal/codexmodels"
 	"agent-overflow/internal/errorsx"
+	"agent-overflow/internal/procutil"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/codex"
+	"agent-overflow/internal/settings"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/testutil"
+	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/threadtools"
+
+	"github.com/google/uuid"
 )
 
 // ownSpawn makes worker an owned spawn of caller, as a local thread_spawn's
@@ -304,6 +311,166 @@ func TestTheCatalogOffersOnlyInstalledEnabledProviders(t *testing.T) {
 		if got := providers(); !slices.Equal(got, tc.want) {
 			t.Errorf("%s: providers = %v, want %v", tc.name, got, tc.want)
 		}
+	}
+}
+
+// For every seeded profile, three that inherit, one with an effort on a
+// model that has none, and each caller and catalog below, what
+// thread_options lists for a profile is what a spawn naming it runs with,
+// through the tool calls an agent makes; a profile it does not list is
+// refused.
+func TestEveryListedProfileSpawnsWithWhatItLists(t *testing.T) {
+	f := newRequestFixture(t)
+	t.Cleanup(func() { _ = f.app.threadMCPServer().Close() })
+	// The Codex catalog the app ships, in place of the live one tests turn off.
+	f.app.providerDiscoveryCaches.CodexModels = codexmodels.NewWith(time.Minute, func(context.Context, string, procutil.Reaper) ([]provider.ModelInfo, error) {
+		return provider.CodexModels, nil
+	}, time.Now)
+	claudeBinary := testutil.WriteMockClaudeScript(t, t.TempDir(), [][]string{{mockClaudeInitLine}})
+	codexBinary := testutil.WriteMockCodexSession(t, t.TempDir(), map[string]string{
+		`"method":"initialize"`:   `{"jsonrpc":"2.0","id":%s,"result":{}}`,
+		`"method":"thread/start"`: `{"jsonrpc":"2.0","id":%s,"result":{"thread":{"id":"codex-thread"}}}`,
+		`"method":"config/read"`:  `{"jsonrpc":"2.0","id":%s,"result":{"config":{},"origins":{}}}`,
+		`"method":"turn/start"`:   `{"jsonrpc":"2.0","id":%s,"result":{"turn":{"id":"turn-1"}}}`,
+	})
+	profiles := append(slices.Clone(f.app.currentSettings().AgentProfiles),
+		settings.AgentProfile{Name: "Like me", UseFor: "Anything."},
+		settings.AgentProfile{Name: "Opus as me", UseFor: "Anything.", Provider: "claude", Model: "claude-opus-5"},
+		settings.AgentProfile{Name: "Sol as me", UseFor: "Anything.", Provider: "codex", Model: "gpt-5.6-sol"},
+		settings.AgentProfile{Name: "Effortless", UseFor: "Anything.", Provider: "claude", Model: "claude-haiku-4-5", Effort: "high"},
+	)
+	encoded, err := json.Marshal(profiles)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var roster []any
+	if err := json.Unmarshal(encoded, &roster); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.app.settings.Update(map[string]any{
+		"agentProfiles": roster, "claudeBinaryPath": claudeBinary, "codexBinaryPath": codexBinary,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	callers := []struct{ provider, model, effort string }{
+		{string(provider.Claude), "claude-opus-5", "medium"},
+		{string(provider.Claude), "claude-sonnet-5", "max"},
+		{string(provider.Codex), "gpt-5.6-sol", "xhigh"},
+	}
+	catalogs := []struct {
+		name          string
+		claude, codex bool
+	}{{"both", true, true}, {"Claude only", true, false}, {"Codex only", false, true}}
+	for _, catalog := range catalogs {
+		if _, err := f.app.settings.Update(map[string]any{"claudeEnabled": catalog.claude, "codexEnabled": catalog.codex}); err != nil {
+			t.Fatal(err)
+		}
+		for _, spec := range callers {
+			caller, err := createTestThread(t, f.app, spec.provider, t.TempDir(), spec.model, threadmode.ModeChat)
+			if err != nil {
+				t.Fatal(err)
+			}
+			caller.ReasoningEffort = spec.effort
+			if err := f.app.store.UpdateThread(caller); err != nil {
+				t.Fatal(err)
+			}
+			token := uuid.NewString()
+			f.app.sessionManager().put(caller.ID, session{Token: token, Provider: spec.provider})
+			servers, err := f.app.threadMCPConfigForThread(caller, token, subThreadPlace{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			endpoint := servers[threadMCPName].(map[string]any)["url"].(string)
+			var options struct {
+				Profiles []threadtools.ProfileOption `json:"profiles"`
+			}
+			if err := json.Unmarshal(remoteMCPCall(t, endpoint, "thread_options", map[string]any{}, false), &options); err != nil {
+				t.Fatal(err)
+			}
+			where := catalog.name + ", caller " + spec.model + " at " + spec.effort
+			if len(options.Profiles) == 0 {
+				t.Fatalf("%s: thread_options lists no profiles", where)
+			}
+			t.Logf("%s: lists %v", where, threadtools.ProfileNames(options.Profiles))
+			listed := map[string]threadtools.ProfileOption{}
+			for _, option := range options.Profiles {
+				listed[option.Name] = option
+			}
+			for _, profile := range profiles {
+				option, offered := listed[profile.Name]
+				if !offered {
+					text := remoteMCPCall(t, endpoint, "thread_spawn", map[string]any{"prompt": "work", "profile": profile.Name}, true)
+					if !strings.Contains(string(text), "cannot run") {
+						t.Errorf("%s: %s is not listed, and its spawn answers %s", where, profile.Name, text)
+					}
+					continue
+				}
+				var ack struct {
+					ThreadID string `json:"thread_id"`
+				}
+				if err := json.Unmarshal(remoteMCPCall(t, endpoint, "thread_spawn", map[string]any{"prompt": "work", "profile": profile.Name}, false), &ack); err != nil {
+					t.Fatal(err)
+				}
+				spawned, err := f.app.store.GetThread(ack.ThreadID)
+				if err != nil {
+					t.Fatalf("%s: %s: %v", where, profile.Name, err)
+				}
+				if spawned.Provider != option.Provider || spawned.Model != option.Model || spawned.ReasoningEffort != option.Effort {
+					t.Errorf("%s: %s lists %s/%s/%q and runs %s/%s/%q", where, profile.Name,
+						option.Provider, option.Model, option.Effort, spawned.Provider, spawned.Model, spawned.ReasoningEffort)
+				}
+			}
+		}
+	}
+}
+
+// The roster editor's check is the spawn's resolution: a profile whose
+// effort its model does not offer here is a problem the save is refused
+// for, and one whose provider this computer lacks is only noted.
+func TestTheEditorRefusesAProfileItsModelCannotRun(t *testing.T) {
+	t.Parallel()
+	app := newTestAppWithStore(t)
+	if _, err := app.settings.Update(map[string]any{
+		"claudeBinaryPath": createMockBinary(t, "2.1.284 (Claude Code)"),
+		"codexBinaryPath":  filepath.Join(t.TempDir(), "no-codex"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	profiles := []settings.AgentProfile{
+		{Name: "Fine", UseFor: "x", Provider: "claude", Model: "claude-opus-5", Effort: "high"},
+		{Name: "Effortless", UseFor: "x", Provider: "claude", Model: "claude-haiku-4-5", Effort: "high"},
+		{Name: "Elsewhere", UseFor: "x", Provider: "codex", Model: "gpt-5.6-sol", Effort: "high"},
+	}
+	checks, err := app.CheckAgentProfiles(context.Background(), profiles)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []AgentProfileCheck{
+		{},
+		{Problem: "Model claude-haiku-4-5 has no reasoning effort setting on this computer."},
+		{Missing: "Codex does not run on this computer."},
+	}
+	if !slices.Equal(checks, want) {
+		t.Fatalf("checks = %+v, want %+v", checks, want)
+	}
+	patch := func(list []settings.AgentProfile) map[string]any {
+		encoded, err := json.Marshal(list)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var raw []any
+		if err := json.Unmarshal(encoded, &raw); err != nil {
+			t.Fatal(err)
+		}
+		return map[string]any{"agentProfiles": raw}
+	}
+	_, err = app.UpdateSettings(context.Background(), patch(profiles))
+	if _, message, public := errorsx.PublicDetails(err); !public || message != "Agent profile Effortless: Model claude-haiku-4-5 has no reasoning effort setting on this computer." {
+		t.Fatalf("saving a profile its model cannot run = %v", err)
+	}
+	if _, err := app.UpdateSettings(context.Background(), patch([]settings.AgentProfile{profiles[0], profiles[2]})); err != nil {
+		t.Fatalf("saving runnable profiles: %v", err)
 	}
 }
 

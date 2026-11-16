@@ -40,7 +40,7 @@ func (t threadToolsApp) NewAssistant(ctx context.Context, caller threadtools.Cal
 	if err != nil {
 		return threadtools.NewAssistantAck{}, err
 	}
-	settings, err := t.spawnSettings(origin, threadtools.SpawnCall{})
+	settings, err := t.spawnSettings(ctx, origin, threadtools.SpawnCall{})
 	if err != nil {
 		return threadtools.NewAssistantAck{}, err
 	}

@@ -539,6 +539,11 @@ type ProviderOption struct {
 	Name         string        `json:"name,omitempty"`
 	DefaultModel string        `json:"default_model,omitempty"`
 	Models       []ModelOption `json:"models"`
+	// Unlisted are the models the provider no longer offers a new thread
+	// but still runs for one already on them, such as a spawner's own.
+	// The computer that has them resolves with them; they are never
+	// listed.
+	Unlisted []ModelOption `json:"-"`
 }
 
 // ModelOption is one model of one provider.

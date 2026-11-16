@@ -115,6 +115,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "CancelThreadRemoteCommand", ID: 378941854, Scope: "terminal:operate", Route: "thread"},                                           // main.App.CancelThreadRemoteCommand
 	{Name: "CancelThreadTransfer", ID: 930267104, Scope: "threads:operate", Route: "thread"},                                                 // main.App.CancelThreadTransfer
 	{Name: "CancelThreadWake", ID: 2490904523, Scope: "threads:operate", Route: "thread"},                                                    // main.App.CancelThreadWake
+	{Name: "CheckAgentProfiles", ID: 3008083046, Scope: "session", Route: "home"},                                                            // main.App.CheckAgentProfiles
 	{Name: "CheckForUpdate", ID: 2347956003, Scope: "host", Route: "home", Budget: 1 * time.Minute},                                          // main.App.CheckForUpdate
 	{Name: "CheckProviderUpdates", ID: 987486764, Scope: "access:admin", Route: "selected", Budget: 2 * time.Minute},                         // main.App.CheckProviderUpdates
 	{Name: "CheckThreadImportUpdates", ID: 2932719708, Scope: "threads:operate", Route: "thread"},                                            // main.App.CheckThreadImportUpdates

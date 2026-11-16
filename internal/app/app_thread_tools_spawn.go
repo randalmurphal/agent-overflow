@@ -118,7 +118,7 @@ func (t threadToolsApp) createSpawned(
 // know another provider's model ids and a wrong guess should cost one call,
 // not a discovery round trip.
 func (t threadToolsApp) spawnThreadOptions(ctx context.Context, origin threadRequestOrigin, call threadtools.SpawnCall) (spawnOptions, error) {
-	opts, err := t.resolveSpawnOptions(origin, call)
+	opts, err := t.resolveSpawnOptions(ctx, origin, call)
 	if err != nil {
 		return spawnOptions{}, err
 	}
@@ -136,9 +136,9 @@ func (t threadToolsApp) spawnThreadOptions(ctx context.Context, origin threadReq
 
 // resolveSpawnOptions is the resolution itself, split from the gate above so
 // the gate sees one answer for both shapes.
-func (t threadToolsApp) resolveSpawnOptions(origin threadRequestOrigin, call threadtools.SpawnCall) (spawnOptions, error) {
+func (t threadToolsApp) resolveSpawnOptions(ctx context.Context, origin threadRequestOrigin, call threadtools.SpawnCall) (spawnOptions, error) {
 	if call.FromThread != "" {
-		opts, err := t.forkSpawnOptions(origin, call)
+		opts, err := t.forkSpawnOptions(ctx, origin, call)
 		if err == nil {
 			err = refuseInstructionsUnappended(opts.Provider, call.Instructions)
 		}
@@ -155,7 +155,7 @@ func (t threadToolsApp) resolveSpawnOptions(origin threadRequestOrigin, call thr
 			return spawnOptions{}, err
 		}
 	}
-	settings, err := t.spawnSettings(origin, call)
+	settings, err := t.spawnSettings(ctx, origin, call)
 	if err != nil {
 		return spawnOptions{}, err
 	}
@@ -204,7 +204,7 @@ func (t threadToolsApp) resolveSpawnOptions(origin threadRequestOrigin, call thr
 // with the call's overrides, checked against this computer's catalogs.
 // Where the thread lives is the caller's to add. A spawn and an assistant
 // that thread_new_assistant creates both take them.
-func (t threadToolsApp) spawnSettings(origin threadRequestOrigin, call threadtools.SpawnCall) (CreateThreadOptions, error) {
+func (t threadToolsApp) spawnSettings(ctx context.Context, origin threadRequestOrigin, call threadtools.SpawnCall) (CreateThreadOptions, error) {
 	opts := CreateThreadOptions{
 		Provider:        origin.inherit.Provider,
 		Model:           origin.inherit.Model,
@@ -212,7 +212,7 @@ func (t threadToolsApp) spawnSettings(origin threadRequestOrigin, call threadtoo
 		ReasoningEffort: origin.inherit.Effort,
 		RuntimeMode:     cmp.Or(call.RuntimeMode, origin.inherit.RuntimeMode),
 	}
-	if err := t.applySpawnModel(&opts, call); err != nil {
+	if err := t.applySpawnModel(ctx, &opts, call); err != nil {
 		return CreateThreadOptions{}, err
 	}
 	return opts, nil
@@ -331,7 +331,7 @@ func (t threadToolsApp) requireAssistantFork(owner store.StandingAgent, source s
 // provider. Across providers the caller's model names nothing this fork could
 // start, so the source's stands, and an explicit one is validated against the
 // source's provider like any other spawn.
-func (t threadToolsApp) forkSpawnOptions(origin threadRequestOrigin, call threadtools.SpawnCall) (CreateThreadOptions, error) {
+func (t threadToolsApp) forkSpawnOptions(ctx context.Context, origin threadRequestOrigin, call threadtools.SpawnCall) (CreateThreadOptions, error) {
 	source, err := t.localThread(call.FromThread)
 	if err != nil {
 		return CreateThreadOptions{}, err
@@ -386,79 +386,30 @@ func (t threadToolsApp) forkSpawnOptions(origin threadRequestOrigin, call thread
 		// empty string that means "whatever the source runs".
 		opts.RuntimeMode = source.RuntimeMode
 	}
-	if err := t.applySpawnModel(&opts, call); err != nil {
+	if err := t.applySpawnModel(ctx, &opts, call); err != nil {
 		return CreateThreadOptions{}, err
 	}
 	return opts, nil
 }
 
-// applySpawnModel resolves provider, model and effort against THIS computer's
-// catalogs. A provider override with no model takes that provider's default,
-// because the two are one choice and the caller cannot be expected to know
-// the other provider's slugs.
-func (t threadToolsApp) applySpawnModel(opts *CreateThreadOptions, call threadtools.SpawnCall) error {
-	if call.Provider != "" && call.Provider != opts.Provider {
-		opts.Provider = call.Provider
-		// The inherited model and effort belong to the provider that was
-		// replaced, and naming them to the new one would be a refusal the
-		// caller did not earn.
-		opts.Model, opts.ReasoningEffort = "", ""
+// applySpawnModel resolves provider, model and effort with the one
+// resolution thread_options lists profiles by (threadtools.ResolveSpawn):
+// opts' own as the spawner's, the call's as the choice, against what this
+// computer offers.
+func (t threadToolsApp) applySpawnModel(ctx context.Context, opts *CreateThreadOptions, call threadtools.SpawnCall) error {
+	catalog, err := t.Catalog(ctx, threadtools.CatalogQuery{What: threadtools.OptionsModels})
+	if err != nil {
+		return err
 	}
-	option, resolvable, err := t.providerModelOptions(opts.Provider)
-	if err != nil || len(option.Models) == 0 {
-		return errorsx.Public(threadtools.CodeInvalidRequest,
-			fmt.Sprintf("This computer offers no models for %q. thread_options lists what it has.", opts.Provider), err)
+	resolved, err := threadtools.ResolveSpawn(
+		threadtools.SpawnDefaults{Provider: opts.Provider, Model: opts.Model, Effort: opts.ReasoningEffort},
+		threadtools.SpawnChoice{Provider: call.Provider, Model: call.Model, Effort: call.Effort},
+		catalog.Providers, "this computer")
+	if err != nil {
+		return errorsx.Public(threadtools.CodeInvalidRequest, err.Error()+" thread_options lists what it offers.", err)
 	}
-	if call.Model != "" {
-		opts.Model = call.Model
-	}
-	if opts.Model == "" {
-		opts.Model = option.DefaultModel
-	}
-	var model threadtools.ModelOption
-	for _, candidate := range resolvable {
-		if candidate.Slug == opts.Model {
-			model = candidate
-			break
-		}
-	}
-	if model.Slug == "" {
-		return errorsx.Public(threadtools.CodeInvalidRequest,
-			fmt.Sprintf("%s does not offer model %q on this computer. It offers: %s.",
-				option.Name, opts.Model, strings.Join(threadToolsModelSlugs(option.Models), ", ")), nil)
-	}
-	if call.Effort != "" {
-		opts.ReasoningEffort = call.Effort
-	}
-	if len(model.Efforts) == 0 {
-		// The model has no effort dimension; an inherited one would be
-		// coerced away anyway, and an explicit one is worth saying so about.
-		if call.Effort != "" {
-			return errorsx.Public(threadtools.CodeInvalidRequest,
-				fmt.Sprintf("Model %s has no reasoning effort setting on this computer.", model.Slug), nil)
-		}
-		opts.ReasoningEffort = ""
-		return nil
-	}
-	if opts.ReasoningEffort == "" {
-		opts.ReasoningEffort = model.DefaultEffort
-	}
-	for _, effort := range model.Efforts {
-		if effort == opts.ReasoningEffort {
-			return nil
-		}
-	}
-	return errorsx.Public(threadtools.CodeInvalidRequest,
-		fmt.Sprintf("Model %s does not offer effort %q. It offers: %s.",
-			model.Slug, opts.ReasoningEffort, strings.Join(model.Efforts, ", ")), nil)
-}
-
-func threadToolsModelSlugs(models []threadtools.ModelOption) []string {
-	slugs := make([]string, 0, len(models))
-	for _, model := range models {
-		slugs = append(slugs, model.Slug)
-	}
-	return slugs
+	opts.Provider, opts.Model, opts.ReasoningEffort = resolved.Provider, resolved.Model, resolved.Effort
+	return nil
 }
 
 // applySpawnWorktree runs the thread in the worktree of call's branch or

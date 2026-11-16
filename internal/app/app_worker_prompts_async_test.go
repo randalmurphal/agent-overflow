@@ -756,9 +756,7 @@ func TestASpawnedForkPutsTheAsyncQuestionsItCarriesToItsSpawner(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := f.app.settings.Update(map[string]any{"claudeBinaryPath": filepath.Join(t.TempDir(), "missing-claude")}); err != nil {
-				t.Fatal(err)
-			}
+			vanishingClaudeAfterTheSpawnIsChecked(t, f.app)
 			_, err := f.adapter().Spawn(t.Context(), f.callerIdentity(), threadtools.SpawnCall{Prompt: "start", FromThread: source.ID, Placement: placement})
 			made := regexp.MustCompile(`Thread (\S+) was created for it`).FindStringSubmatch(fmt.Sprint(err))
 			if made == nil {

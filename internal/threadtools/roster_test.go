@@ -3,6 +3,7 @@ package threadtools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -40,7 +41,8 @@ func testRoster() Roster {
 	return Roster{
 		Profiles: []AgentProfile{
 			{Name: "Opus", UseFor: "Implementation.", Provider: "claude", Model: "opus-5", Effort: "high"},
-			{Name: "Haiku", UseFor: "Mechanical work.", Provider: "claude", Model: "haiku-4", Effort: "high"},
+			{Name: "Haiku", UseFor: "Mechanical work.", Provider: "claude", Model: "haiku-4"},
+			{Name: "Hasty", UseFor: "Never listed: its model has no effort.", Provider: "claude", Model: "haiku-4", Effort: "high"},
 			{Name: "Sol", UseFor: "Review.", Provider: "codex", Model: "sol", Effort: "high", Instructions: "Look for bugs."},
 			{Name: "Astra", UseFor: "Architecture.", Provider: "codex", Model: "astra"},
 			{Name: "Mine", UseFor: "Like me, read-only.", RuntimeMode: "read-only"},
@@ -55,9 +57,10 @@ func testRoster() Roster {
 
 func profileNames(listed []ProfileOption) []string { return ProfileNames(listed) }
 
-// A profile is listed where its provider and model are offered: a model the
-// computer lacks leaves it out, a model with no effort drops the effort, and
-// an empty setting inherits the spawner's.
+// A profile is listed where its provider and model are offered and its
+// effort fits its model: a model the computer lacks leaves it out, and so
+// does an effort on a model with none. An empty setting inherits the
+// spawner's, an effort only where the model offers it.
 func TestListProfilesKeepsWhatTheComputerCanRun(t *testing.T) {
 	defaults := SpawnDefaults{Provider: "claude", Model: "opus-5", Effort: "medium"}
 	cases := []struct {
@@ -81,14 +84,93 @@ func TestListProfilesKeepsWhatTheComputerCanRun(t *testing.T) {
 	for _, option := range listed {
 		byName[option.Name] = option
 	}
-	if haiku := byName["Haiku"]; haiku.Effort != "" {
-		t.Errorf("Haiku lists effort %q for a model with none", haiku.Effort)
+	if haiku := byName["Haiku"]; haiku.Model != "haiku-4" || haiku.Effort != "" {
+		t.Errorf("Haiku resolves to %+v, want its model with no effort", haiku)
 	}
 	if mine := byName["Mine"]; mine.Provider != "claude" || mine.Model != "opus-5" || mine.Effort != "medium" || mine.RuntimeMode != "read-only" {
 		t.Errorf("an inheriting profile resolves to %+v, want the spawner's settings with its own mode", mine)
 	}
 	if sol := byName["Sol"]; !sol.Instructions || sol.Effort != "high" {
 		t.Errorf("Sol resolves to %+v", sol)
+	}
+	// A profile naming the spawner's model and no effort takes the
+	// spawner's effort, and the model's default where the model lacks it.
+	roster := Roster{Profiles: []AgentProfile{{Name: "Opus", UseFor: "x", Provider: "claude", Model: "opus-5"}}}
+	for spawnerEffort, want := range map[string]string{"medium": "medium", "max": "xhigh", "": "xhigh"} {
+		listed := ListProfiles(roster, []ProviderOption{claudeOption}, SpawnDefaults{Provider: "claude", Model: "opus-5", Effort: spawnerEffort})
+		if len(listed) != 1 || listed[0].Effort != want {
+			t.Errorf("spawner effort %q: listed %+v, want effort %q", spawnerEffort, listed, want)
+		}
+	}
+}
+
+// One resolution answers every spawn: what the choice names over the
+// spawner's settings, inheriting only on the spawner's provider, and a
+// refusal that says whether the computer lacks something or the choice
+// does not fit its model.
+func TestResolveSpawn(t *testing.T) {
+	claude := claudeOption
+	claude.Unlisted = []ModelOption{{Slug: "opus-4", Efforts: []string{"low"}, DefaultEffort: "low"}}
+	catalog := []ProviderOption{claude, codexOption}
+	spawner := SpawnDefaults{Provider: "claude", Model: "opus-5", Effort: "medium"}
+	cases := []struct {
+		name    string
+		spawner SpawnDefaults
+		choice  SpawnChoice
+		want    SpawnChoice
+		refusal string
+		missing bool
+	}{
+		{"all inherited", spawner, SpawnChoice{}, SpawnChoice{"claude", "opus-5", "medium"}, "", false},
+		{"explicit effort", spawner, SpawnChoice{Effort: "low"}, SpawnChoice{"claude", "opus-5", "low"}, "", false},
+		{"explicit model, inherited effort", spawner, SpawnChoice{Model: "opus-5"}, SpawnChoice{"claude", "opus-5", "medium"}, "", false},
+		{"inherited effort the model lacks", SpawnDefaults{Provider: "claude", Model: "opus-5", Effort: "max"}, SpawnChoice{}, SpawnChoice{"claude", "opus-5", "xhigh"}, "", false},
+		{"a model with no effort drops an inherited one", spawner, SpawnChoice{Model: "haiku-4"}, SpawnChoice{"claude", "haiku-4", ""}, "", false},
+		{"another provider inherits nothing", spawner, SpawnChoice{Provider: "codex"}, SpawnChoice{"codex", "sol", "low"}, "", false},
+		{"an unlisted model resolves", spawner, SpawnChoice{Model: "opus-4"}, SpawnChoice{"claude", "opus-4", "low"}, "", false},
+		{"an effort on a model with none", spawner, SpawnChoice{Model: "haiku-4", Effort: "high"}, SpawnChoice{}, "Model haiku-4 has no reasoning effort setting on here.", false},
+		{"an effort the model lacks", spawner, SpawnChoice{Effort: "max"}, SpawnChoice{}, `Model opus-5 does not offer effort "max" on here. It offers: low, medium, high, xhigh.`, false},
+		{"a model the provider lacks", spawner, SpawnChoice{Model: "opus-9"}, SpawnChoice{}, `Claude Code does not offer model "opus-9" on here. It offers: opus-5, haiku-4.`, true},
+		{"a provider not offered", spawner, SpawnChoice{Provider: "gemini"}, SpawnChoice{}, "gemini does not run on here.", true},
+	}
+	for _, tc := range cases {
+		got, err := ResolveSpawn(tc.spawner, tc.choice, catalog, "here")
+		if tc.refusal == "" {
+			if err != nil || got != tc.want {
+				t.Errorf("%s: %+v, %v; want %+v", tc.name, got, err, tc.want)
+			}
+			continue
+		}
+		var refusal *SpawnRefusal
+		if !errors.As(err, &refusal) || refusal.Reason != tc.refusal || refusal.Missing != tc.missing {
+			t.Errorf("%s: %v (%+v); want %q, missing %v", tc.name, err, refusal, tc.refusal, tc.missing)
+		}
+	}
+}
+
+// The settings editor refuses a profile whose effort does not fit its
+// model here and only notes one this computer lacks the provider or model
+// for; a profile that inherits its model is checked against each spawner.
+func TestProfileProblem(t *testing.T) {
+	catalog := []ProviderOption{claudeOption}
+	cases := []struct {
+		profile          AgentProfile
+		problem, missing string
+	}{
+		{AgentProfile{Provider: "claude", Model: "opus-5", Effort: "high"}, "", ""},
+		{AgentProfile{Provider: "claude", Model: "haiku-4", Effort: "high"}, "Model haiku-4 has no reasoning effort setting on this computer.", ""},
+		{AgentProfile{Provider: "claude", Model: "opus-5", Effort: "max"}, `Model opus-5 does not offer effort "max" on this computer. It offers: low, medium, high, xhigh.`, ""},
+		{AgentProfile{Provider: "claude", Model: "opus-9"}, "", `Claude Code does not offer model "opus-9" on this computer. It offers: opus-5, haiku-4.`},
+		{AgentProfile{Provider: "codex", Model: "sol", Effort: "high"}, "", "Codex does not run on this computer."},
+		{AgentProfile{Provider: "codex"}, "", "Codex does not run on this computer."},
+		{AgentProfile{Provider: "claude", Effort: "max"}, "", ""},
+		{AgentProfile{Effort: "max"}, "", ""},
+	}
+	for _, tc := range cases {
+		problem, missing := ProfileProblem(tc.profile, catalog)
+		if problem != tc.problem || missing != tc.missing {
+			t.Errorf("%+v: problem %q, missing %q; want %q, %q", tc.profile, problem, missing, tc.problem, tc.missing)
+		}
 	}
 }
 
@@ -214,7 +296,7 @@ func TestSpawnByProfileRefusesWhatCannotRun(t *testing.T) {
 		t.Errorf("unknown profile refusal = %q", message)
 	}
 	message = callErr(t, server, localCaller(), "thread_spawn", `{"prompt":"x","profile":"Sol"}`, CodeInvalidRequest)
-	if !strings.Contains(message, `"Sol" cannot run on this computer`) || !strings.Contains(message, "Codex") {
+	if !strings.Contains(message, `"Sol" cannot run: Codex does not run on this computer.`) {
 		t.Errorf("unoffered profile refusal = %q", message)
 	}
 	long := strings.Repeat("i", MaxSpawnInstructionsBytes)
@@ -241,7 +323,7 @@ func TestSpawnByProfileRunsOnAPairedComputerThatOffersIt(t *testing.T) {
 		t.Fatalf("spawn = %+v", got)
 	}
 	message := callErr(t, p.server, localCaller(), "thread_spawn", `{"prompt":"x","profile":"Opus","computer_id":"studio","project_id":"p1"}`, CodeInvalidRequest)
-	if !strings.Contains(message, "cannot run on Studio") {
+	if !strings.Contains(message, `"Opus" cannot run: Claude Code does not run on Studio.`) {
 		t.Errorf("refusal = %q", message)
 	}
 }
