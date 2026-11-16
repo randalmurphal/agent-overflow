@@ -41,7 +41,31 @@
       "toolName": "",
       "payload": null,
       "runs": [
+        "ls -la",
         "first needle part\n\n---\n\nsecond needle part"
+      ]
+    },
+    {
+      "name": "user with a command alone",
+      "kind": "user_text",
+      "summary": "!ls -la needle-dir",
+      "meta": "{\"attachments\":[{\"id\":\"att-alone\",\"threadId\":\"thread-1\",\"filename\":\"output.txt\",\"mimeType\":\"text/plain; charset=utf-8\",\"size\":8,\"kind\":\"file\",\"shell\":{\"command\":\"ls -la needle-dir\",\"exitCode\":0,\"durationMs\":5,\"preview\":\"total 0\\n\"}}]}",
+      "toolName": "",
+      "payload": null,
+      "runs": [
+        "ls -la needle-dir"
+      ]
+    },
+    {
+      "name": "user with a failed command whose text changed",
+      "kind": "user_text",
+      "summary": "run it again",
+      "meta": "{\"attachments\":[{\"id\":\"att-edited\",\"threadId\":\"thread-1\",\"filename\":\"output.txt\",\"mimeType\":\"text/plain; charset=utf-8\",\"size\":18,\"kind\":\"file\",\"shell\":{\"command\":\"make needle-target\",\"exitCode\":2,\"durationMs\":5,\"preview\":\"make: *** No rule\\n\"}}]}",
+      "toolName": "",
+      "payload": null,
+      "runs": [
+        "make needle-target",
+        "run it again"
       ]
     },
     {

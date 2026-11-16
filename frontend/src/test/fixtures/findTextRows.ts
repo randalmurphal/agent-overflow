@@ -40,6 +40,12 @@ function row(name: string, fields: Partial<Item> & Pick<Item, 'kind' | 'summary'
 }
 
 const bash = (input: Record<string, unknown>) => JSON.stringify({ input });
+const shellMeta = (id: string, command: string, exitCode: number, preview: string) => JSON.stringify({
+  attachments: [{
+    id, threadId: FIND_TEXT_THREAD, filename: 'output.txt', mimeType: 'text/plain; charset=utf-8', size: preview.length, kind: 'file',
+    shell: { command, exitCode, durationMs: 5, preview },
+  }],
+});
 
 export const FIND_TEXT_ROWS: FindTextRow[] = [
   row('user plain', { kind: 'user_text', summary: 'Please find **needle** and [docs](https://example.com/x) as typed' }),
@@ -58,6 +64,18 @@ export const FIND_TEXT_ROWS: FindTextRow[] = [
         shell: { command: 'ls -la', exitCode: 0, durationMs: 5, preview: 'ok\n' },
       }],
     }),
+  }),
+  // A command block shows the command its output's meta holds: alone, failed,
+  // and after the typed text was edited away from it.
+  row('user with a command alone', {
+    kind: 'user_text',
+    summary: '!ls -la needle-dir',
+    meta: shellMeta('att-alone', 'ls -la needle-dir', 0, 'total 0\n'),
+  }),
+  row('user with a failed command whose text changed', {
+    kind: 'user_text',
+    summary: 'run it again',
+    meta: shellMeta('att-edited', 'make needle-target', 2, 'make: *** No rule\n'),
   }),
   row('user with a bang that is no command', { kind: 'user_text', summary: 'Wow! !important: the needle stays\n\n---\n\n!still typed text' }),
   row('error', { kind: 'error', summary: 'Request failed: needle not found' }),

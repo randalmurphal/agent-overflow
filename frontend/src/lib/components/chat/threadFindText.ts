@@ -6,8 +6,10 @@
 // projects from the same functions its renderer shows text by.
 //
 // Find text, by what the row shows by default:
-//   - user_text: the bubble's text (userMessageVisibleText), without image
-//     blocks and the `!command` a shell output's block shows;
+//   - user_text: the command line of each shell output's block, as the
+//     row's meta holds it (the rest of a longer command shows only once the
+//     block is read), then the bubble's text (userMessageVisibleText),
+//     without image blocks and the typed `!command` the block stands for;
 //   - assistant_text: the rendered markdown (markdownFindText under the
 //     chat options, after the raw-JSON fence AssistantMessage applies); a
 //     generated image or a question card has none;
@@ -31,7 +33,7 @@
 import type { Item } from '../../types/models';
 import { parseJsonObject } from '../../utils/parseJsonObject';
 import { generatedImageRow } from '../../utils/generatedImageMeta';
-import { parseUserMessageAttachments, userMessageVisibleText } from '../../utils/userMessageMeta';
+import { isShellOutput, parseUserMessageAttachments, userMessageVisibleText } from '../../utils/userMessageMeta';
 import {
   COMPACTION_REASONING_PAYLOAD_EXPANSION_STATE_KEY,
   THINKING_PAYLOAD_EXPANSION_STATE_KEY,
@@ -113,8 +115,10 @@ function reasoningFindRuns(item: Item, context: FindTextContext): readonly strin
 export function rowFindRuns(item: Item, context: FindTextContext): readonly string[] {
   switch (item.kind) {
     case 'user_text': {
-      const text = userMessageVisibleText(item.summary, parseUserMessageAttachments(item.meta, item.threadId));
-      return text ? [text] : [];
+      const attachments = parseUserMessageAttachments(item.meta, item.threadId);
+      const commands = attachments.filter(isShellOutput).map((attachment) => attachment.shell.command);
+      const text = userMessageVisibleText(item.summary, attachments);
+      return text ? [...commands, text] : commands;
     }
     case 'assistant_text':
       return assistantFindRuns(item);

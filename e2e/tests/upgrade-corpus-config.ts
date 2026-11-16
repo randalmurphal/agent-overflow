@@ -56,8 +56,8 @@ export const fingerprintIgnoredTables: Record<string, string> = {
  * rewrite whenever the row's text does.
  */
 export const fingerprintIgnoredColumns: Record<string, string> = {
-  'items.find_text': "v150's thread-find candidate text, refilled by its triggers and deferred backfill",
-  'import_history_items.find_text': "v150's thread-find candidate text, refilled by its triggers and deferred backfill",
+  'items.find_text': "v150's thread-find candidate text, refilled by its triggers, its deferred backfill and v153",
+  'import_history_items.find_text': "v150's thread-find candidate text, refilled by its triggers, its deferred backfill and v153",
 };
 
 /**

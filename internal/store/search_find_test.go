@@ -196,17 +196,21 @@ func TestSearchThreadItems_FindsAcrossMarkdownTheReaderMustRead(t *testing.T) {
 	check("unfilled", "zebra", "[unsure]")
 }
 
-// A user row whose bubble joins the parts around a dropped `!command` is a
-// candidate for the joined run, stored and unfilled; a `!` that is not a
-// command leaves the row matched by its own text only.
-func TestSearchThreadItems_FindsAcrossADroppedCommand(t *testing.T) {
+// A user row is a candidate for the command its shell output's block shows,
+// stored and unfilled, also when the typed text no longer holds it, and the
+// text around a dropped `!command` narrows it like any other text.
+func TestSearchThreadItems_FindsAShellCommandItsBlockShows(t *testing.T) {
 	s := newTestStore(t)
 	mustCreateThreadForSearch(t, s, "t1", "x")
-	for i, row := range []struct{ id, summary string }{
-		{"joined", "first needle part\n\n---\n\n!ls -la\n\n---\n\nsecond needle part"},
-		{"bang", "Wow! !important: the needle stays"},
+	shell := func(command string) string {
+		return `{"attachments":[{"id":"att","threadId":"t1","filename":"output.txt","mimeType":"text/plain","size":3,"kind":"file","shell":{"command":"` + command + `","exitCode":2}}]}`
+	}
+	for i, row := range []struct{ id, summary, meta string }{
+		{"joined", "first needle part\n\n---\n\n!ls -la\n\n---\n\nsecond needle part", shell("ls -la")},
+		{"edited", "run it again", shell("make needle-target")},
+		{"bang", "Wow! !important: the needle stays", "{}"},
 	} {
-		if err := insertCarded(s, Item{ID: row.id, ThreadID: "t1", TurnIndex: i, Kind: "user_text", Role: "user", Status: "completed", Summary: row.summary, CreatedAt: int64(100 * (i + 1))}); err != nil {
+		if err := insertCarded(s, Item{ID: row.id, ThreadID: "t1", TurnIndex: i, Kind: "user_text", Role: "user", Status: "completed", Summary: row.summary, Meta: row.meta, CreatedAt: int64(100 * (i + 1))}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -226,8 +230,22 @@ func TestSearchThreadItems_FindsAcrossADroppedCommand(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		check(stage, "part second", "[joined]")
-		check(stage, "important: the needle", "[joined bang]")
-		check(stage, "zebra", "[joined]")
+		check(stage, "ls -la", "[joined]")
+		check(stage, "make needle-target", "[edited]")
+		check(stage, "second needle", "[joined]")
+		check(stage, "important: the needle", "[bang]")
+		check(stage, "zebra", "[]")
+	}
+}
+
+// A find query is one line: a match never crosses a line of what a row
+// shows, which the candidate text relies on.
+func TestSearchThreadItems_RefusesAQueryOfSeveralLines(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThreadForSearch(t, s, "t1", "x")
+	for _, query := range []string{"part\n\n---\n\nsecond", "a\rb"} {
+		if _, err := s.SearchThreadItems(context.Background(), "t1", query, TimelineSelection{}, 0, nil); err == nil {
+			t.Errorf("query %q answered, want refused", query)
+		}
 	}
 }
