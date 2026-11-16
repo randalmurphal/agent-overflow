@@ -57,7 +57,7 @@ func (s *Store) FinishThreadTransferAttempt(id string, nextAttempt int64, retrie
 		return errors.New("transfer: invalid retry state")
 	}
 	_, err := s.db.Exec(`UPDATE thread_transfers SET next_attempt_at = ?,retry_count = ?,
-updated_at = CASE WHEN error <> ? THEN ? ELSE updated_at END,error = ? WHERE id = ? AND (phase NOT IN ('complete','canceled') OR cleanup_pending = 1)`,
+updated_at = CASE WHEN error <> ? THEN MAX(?, updated_at + 1) ELSE updated_at END,error = ? WHERE id = ? AND (phase NOT IN ('complete','canceled') OR cleanup_pending = 1)`,
 		nextAttempt, retries, message, time.Now().UnixMilli(), message, id)
 	return err
 }
@@ -66,7 +66,8 @@ updated_at = CASE WHEN error <> ? THEN ? ELSE updated_at END,error = ? WHERE id 
 // merely repeats the idempotent cleanup; nonterminal recovery bytes cannot be
 // declared disposable by a caller.
 func (s *Store) FinishThreadTransferCleanup(id string) error {
-	result, err := s.db.Exec(`UPDATE thread_transfers SET cleanup_pending = 0,error = '',retry_count = 0 WHERE id = ? AND phase IN ('complete','canceled')`, id)
+	result, err := s.db.Exec(`UPDATE thread_transfers SET cleanup_pending = 0,error = '',retry_count = 0,
+updated_at = CASE WHEN error <> '' THEN MAX(?, updated_at + 1) ELSE updated_at END WHERE id = ? AND phase IN ('complete','canceled')`, time.Now().UnixMilli(), id)
 	if err != nil {
 		return err
 	}
