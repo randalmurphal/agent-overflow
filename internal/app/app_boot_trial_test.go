@@ -142,11 +142,18 @@ func TestAParkedTrialTouchesNothingOutsideTheDatabaseBeforeItsCommit(t *testing.
 
 	ActivateUnattendedWork(a, ServiceUpdateOutcome{})
 
-	waitUntil(t, 30*time.Second, func() bool {
-		_, terminalErr := a.store.GetThread(run.terminalThread)
-		_, forkErr := a.store.GetThread(run.preparingFork)
-		return errors.Is(terminalErr, sql.ErrNoRows) && errors.Is(forkErr, sql.ErrNoRows)
-	})
+	// The thread deletes land before the workflow release, so only the end
+	// of the steps says every one has run.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := a.waitForBootSteps(ctx); err != nil {
+		t.Fatalf("boot steps after the commit: %v", err)
+	}
+	for _, id := range []string{run.terminalThread, run.preparingFork} {
+		if _, err := a.store.GetThread(id); !errors.Is(err, sql.ErrNoRows) {
+			t.Errorf("thread %s after the commit: %v, want it removed", id, err)
+		}
+	}
 	for _, path := range run.removed() {
 		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
 			t.Errorf("%s after the commit: %v, want it removed", path, err)

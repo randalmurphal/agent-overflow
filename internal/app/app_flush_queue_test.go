@@ -770,7 +770,10 @@ func TestConfiguredFlushDispatcher_DoesNotBlockProviderEventHandler(t *testing.T
 		if err != nil {
 			t.Fatalf("RegisterQueueItem: %v", err)
 		}
-	case <-time.After(250 * time.Millisecond):
+	// The test holds the thread lock until after this wait, so a
+	// registration that waits on it never returns: a long bound still
+	// catches it.
+	case <-time.After(30 * time.Second):
 		t.Fatal("configured flush dispatcher blocked queue registration")
 	}
 	if got := app.flushDispatchItemCount(thread.ID); got != 1 {

@@ -229,6 +229,10 @@ func (r *serviceUpdateRig) log(format string, args ...any) {
 	r.logs = append(r.logs, fmt.Sprintf(format, args...))
 }
 
+// serviceUpdateWait bounds each wait on the flow or the check loop. They run
+// on their own goroutines, which a loaded runner can hold off for seconds.
+const serviceUpdateWait = 30 * time.Second
+
 // check returns once a passive check that began after the call has finished.
 // The tick channel is unbuffered and the loop receives only between checks, so
 // the second send proves the first one's check completed.
@@ -237,7 +241,7 @@ func (r *serviceUpdateRig) check() {
 	for range 2 {
 		select {
 		case r.checkTicks <- time.Now():
-		case <-time.After(10 * time.Second):
+		case <-time.After(serviceUpdateWait):
 			r.t.Fatal("the passive check loop stopped receiving ticks")
 		}
 	}
@@ -260,7 +264,7 @@ func (r *serviceUpdateRig) fakePreflight(_ context.Context, binary string) (supe
 // phase alone does not mean the flow has finished.
 func (r *serviceUpdateRig) settled() ServiceUpdateStatus {
 	r.t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(serviceUpdateWait)
 	for time.Now().Before(deadline) {
 		status, err := r.app.GetServiceUpdateStatus()
 		if err != nil {
@@ -649,7 +653,7 @@ func TestRequestServiceUpdateRefusesASecondFlow(t *testing.T) {
 	if err := rig.app.RequestServiceUpdate(context.Background(), "v1.5.0"); err != nil {
 		t.Fatalf("RequestServiceUpdate: %v", err)
 	}
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(serviceUpdateWait)
 	for {
 		status, err := rig.app.GetServiceUpdateStatus()
 		if err != nil {
@@ -842,7 +846,7 @@ func TestTheReleaseListAndThePassiveCheckReportWhatIsPublished(t *testing.T) {
 
 	// ConfigureServiceUpdates started the passive check on its own goroutine,
 	// so wait for the boot check's answer rather than assuming it landed.
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(serviceUpdateWait)
 	for {
 		status, err := rig.app.GetServiceUpdateStatus()
 		if err != nil {
@@ -874,7 +878,7 @@ func TestThePassiveCheckRunsDuringATrial(t *testing.T) {
 		Source: rig.source, Layout: rig.layout, Preflight: rig.fakePreflight,
 	})
 
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(serviceUpdateWait)
 	for {
 		status, err := rig.app.GetServiceUpdateStatus()
 		if err != nil {
@@ -1018,7 +1022,7 @@ func TestShutdownJoinsThePassiveCheck(t *testing.T) {
 	rig.mu.Unlock()
 	// The check in flight from rig.check may be the one that sees the change.
 	feed.set(false, "v1.6.0", "v1.5.0")
-	deadline := time.After(10 * time.Second)
+	deadline := time.After(serviceUpdateWait)
 waitForFrame:
 	for {
 		select {
@@ -1034,7 +1038,7 @@ waitForFrame:
 	go func() { done <- rig.app.Shutdown(context.Background()) }()
 	// Shutdown is at the join once the group refuses new members.
 	checks := &rig.app.serviceUpdate.checks
-	waitUntil(t, 10*time.Second, func() bool {
+	waitUntil(t, serviceUpdateWait, func() bool {
 		checks.mu.Lock()
 		defer checks.mu.Unlock()
 		return checks.closed
@@ -1050,7 +1054,7 @@ waitForFrame:
 		if err != nil {
 			t.Fatalf("Shutdown: %v", err)
 		}
-	case <-time.After(10 * time.Second):
+	case <-time.After(serviceUpdateWait):
 		t.Fatal("Shutdown never joined the release check loop")
 	}
 	if n := rig.app.serviceUpdate.checks.members(); n != 0 {
@@ -1078,7 +1082,7 @@ func TestShutdownStopsAPassiveCheckConfiguredBeforeStart(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Shutdown: %v", err)
 		}
-	case <-time.After(10 * time.Second):
+	case <-time.After(serviceUpdateWait):
 		t.Fatal("Shutdown never returned: the release check loop outlived it")
 	}
 	if n := rig.app.serviceUpdate.checks.members(); n != 0 {
@@ -1105,7 +1109,7 @@ func TestNoPassiveCheckStartsAfterShutdown(t *testing.T) {
 // requireCheckLoops waits for the number of running release check loops.
 func (r *serviceUpdateRig) requireCheckLoops(want int) {
 	r.t.Helper()
-	waitUntil(r.t, 10*time.Second, func() bool { return r.app.serviceUpdate.checks.members() == want })
+	waitUntil(r.t, serviceUpdateWait, func() bool { return r.app.serviceUpdate.checks.members() == want })
 }
 
 // A configuration replaces the one before it: taking the source away ends
@@ -1469,7 +1473,7 @@ func TestCancelServiceUpdateFencesLatePreparation(t *testing.T) {
 	}
 	select {
 	case <-entered:
-	case <-time.After(10 * time.Second):
+	case <-time.After(serviceUpdateWait):
 		t.Fatal("preflight did not start")
 	}
 	status, _ := rig.app.GetServiceUpdateStatus()
@@ -1513,7 +1517,7 @@ func TestCancelServiceUpdateCannotUndoSupervisorHandoff(t *testing.T) {
 	}
 	select {
 	case <-entered:
-	case <-time.After(10 * time.Second):
+	case <-time.After(serviceUpdateWait):
 		t.Fatal("handoff did not start")
 	}
 	status, _ := rig.app.GetServiceUpdateStatus()
