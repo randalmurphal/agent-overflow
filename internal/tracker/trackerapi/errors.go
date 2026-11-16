@@ -163,7 +163,9 @@ func (e *BodyTooLargeError) Error() string {
 // WriteNotApplied reports whether err, the error of one write, proves the
 // tracker did not apply it: the request was never sent, or the tracker
 // answered it in full with a 4xx (a refusal, a refused credential, a
-// 429). Every other failure leaves the outcome unknown (a timeout or reset
+// 429). A 4xx whose body was cut short counts as answered: the status
+// arrived in full, and the error is the status's with the body that came.
+// Every other failure leaves the outcome unknown (a timeout or reset
 // after the request may have been written, a 3xx, a 5xx, a 2xx cut short
 // or that did not decode, a refused login marked on a 2xx), and the
 // caller reads the tracker again before it offers the write again.

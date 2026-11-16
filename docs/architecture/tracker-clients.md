@@ -61,6 +61,7 @@ type Options struct {
     ReadTimeout  time.Duration   // a call whose Request.Timeout is zero; zero means 45s
     MaxBodyBytes int64           // a body Do and JSON read; zero means 8 MiB
     Proxy        func(*http.Request) (*url.URL, error) // nil connects directly
+    OnAnswer     func(status int, header http.Header)  // every answer's status and a header copy, before its body
 }
 
 func New(opts Options) (*Client, error) // misconfiguration is a construction error
@@ -99,7 +100,11 @@ type Request struct {
   (`StatusError` `Body`, `Message` and `Fields`, `AuthError.Message`) has
   the credential the request carried replaced by `<redacted>`. A client
   that builds an error from a successful body passes its text through
-  `Response.Scrub`. No error quotes a URL the tracker supplied beyond its
+  `Response.Scrub`. Once the client no longer holds that credential (a
+  re-read replaced it, `ForgetCredential`, `Close`) its bytes are zeroed
+  and cannot be found, so the text is withheld whole. An error from
+  another package whose text repeats the credential is replaced by its
+  scrubbed text. No error quotes a URL the tracker supplied beyond its
   scheme, host and path.
 - **Redirects.** The package follows redirects itself, for `GET` and
   `HEAD` only, at most ten requests. Every hop is admitted like a first
@@ -128,7 +133,9 @@ type Request struct {
   call marked `WithInteractive(ctx)` waits for the gate at most 10 seconds
   in all across its attempts and is sent again when the gate opens within
   what is left; otherwise it fails the same way. `MaxPerSecond` spaces
-  requests for a tracker that limits by address.
+  requests for a tracker that limits by address. A limit its status and
+  headers show settles the call that drew it at once; its body is read for
+  at most 2 seconds, only for a dialect to name a later time.
 - **Environment.** The package reads none. A caller that honors the
   user's proxy settings passes `http.ProxyFromEnvironment` as `Proxy`.
 - **Bodies are bounded.** `Do` and `JSON` refuse a body over the bound
@@ -137,7 +144,9 @@ type Request struct {
   less; the status stays the answer.
 - **Transfers.** A `Transfer` request has no total timeout. It fails when
   no byte moves for the stall timeout, or when the answer's headers take
-  longer than the header timeout after the request is sent.
+  longer than the header timeout after the request is sent. The timers
+  run per hop from its admission: waiting for the gate, the pacing or the
+  credential does not count.
 - **Isolation.** `New` refuses a `BaseURL` that is not https unless its host
   is a loopback IP address, so a test server is reachable and a mistyped
   scheme is not. The same rule holds for an absolute URL and every
@@ -234,10 +243,14 @@ to read and write each one.
 One `tempo.Client` per site and region. Worklogs are read by author and
 date range and written with the numeric issue ID, which the client gets
 from an `IssueIDs` its caller supplies. A change replaces the whole record,
-so it starts from the record as read. Validation runs before a write: the
-work attributes the site requires are present and each value is one the
-attribute allows. The user's required hours per day and the approval state
-of a period are reads.
+so it starts from the record as read. Checks run before a write: the work
+attributes the site requires are present, each value is one the attribute
+allows, and the start date is not in an approved or submitted timesheet. A
+check whose read the token may not make (Tempo answers 403) is skipped,
+the outcome lists it, and the write is sent for Tempo to judge. A batch
+reports each item as applied, refused, unknown, not attempted, or updated
+but not moved to the issue asked for. The user's required hours per day
+and the approval state of a period are reads.
 
 ## Linear
 

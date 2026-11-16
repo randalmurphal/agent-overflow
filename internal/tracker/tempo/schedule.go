@@ -69,14 +69,15 @@ func (c *Client) Schedule(ctx context.Context, accountID string, from, to Date) 
 		Path:  path("4/user-schedule", accountID),
 		Query: url.Values{"from": {from.String()}, "to": {to.String()}},
 	}
-	if _, err := c.http.JSON(ctx, r, &raw); err != nil {
+	resp, err := c.http.JSON(ctx, r, &raw)
+	if err != nil {
 		return nil, fmt.Errorf("tempo: read schedule of %s from %s to %s: %w", accountID, from, to, err)
 	}
 	out := make([]ScheduleDay, 0, len(raw.Results))
 	for _, d := range raw.Results {
 		date, err := ParseDate(d.Date)
 		if err != nil {
-			return nil, fmt.Errorf("tempo: read schedule of %s: %w", accountID, err)
+			return nil, fmt.Errorf("tempo: read schedule of %s: %w", accountID, unreadable(resp, err))
 		}
 		day := ScheduleDay{Date: date, Kind: DayKind(d.Type), Required: duration(d.Required)}
 		if h := d.Holiday; h != nil {
@@ -160,9 +161,18 @@ func (c *Client) approval(ctx context.Context, accountID string, day Date) (Appr
 		Path:  path("4/timesheet-approvals/user", accountID),
 		Query: url.Values{"from": {day.String()}, "to": {day.String()}},
 	}
-	if _, err := c.http.JSON(ctx, r, &raw); err != nil {
+	resp, err := c.http.JSON(ctx, r, &raw)
+	if err != nil {
 		return Approval{}, err
 	}
+	a, err := raw.approval(day)
+	if err != nil {
+		return Approval{}, unreadable(resp, err)
+	}
+	return a, nil
+}
+
+func (raw approvalJSON) approval(day Date) (Approval, error) {
 	a := Approval{Required: duration(raw.Required), Spent: duration(raw.Spent), Status: ApprovalOpen}
 	var err error
 	if a.From, err = ParseDate(raw.Period.From); err != nil {
@@ -185,8 +195,8 @@ func (c *Client) approval(ctx context.Context, accountID string, day Date) (Appr
 			a.Actor = s.Actor.AccountID
 		}
 		if s.UpdatedAt != "" {
-			if a.Changed, err = time.Parse(time.RFC3339, s.UpdatedAt); err != nil {
-				return Approval{}, fmt.Errorf("status updatedAt %q is not an RFC 3339 time", s.UpdatedAt)
+			if a.Changed, err = parseTimestamp(s.UpdatedAt); err != nil {
+				return Approval{}, fmt.Errorf("status updatedAt: %w", err)
 			}
 		}
 	}

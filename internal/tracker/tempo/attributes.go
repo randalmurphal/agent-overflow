@@ -30,9 +30,13 @@ type Attribute struct {
 	Required bool
 	// Options are a static list's allowed values in Tempo's order; empty
 	// for every other type. An account attribute allows the key of an
-	// account Accounts lists (open ones, and closed ones when
-	// Settings.ClosedAccountsAllowed).
+	// account Accounts lists (open ones, and closed and archived ones when
+	// Settings.InactiveAccountsAllowed).
 	Options []Option
+
+	// optionsText lists the options for a problem message, scrubbed of
+	// the credential when read.
+	optionsText string
 }
 
 // Option is one value a static list allows: Value is what a worklog
@@ -77,16 +81,18 @@ func (c *Client) attributes(ctx context.Context) ([]Attribute, error) {
 	v, err := c.site.attributes.get(ctx, func(ctx context.Context) ([]Attribute, error) {
 		var out []Attribute
 		options := 0
-		err := pages(ctx, c.http, trackerapi.Request{Path: "4/work-attributes"}, func(list []attributeJSON) error {
+		err := pages(ctx, c.http, trackerapi.Request{Path: "4/work-attributes"}, func(resp *trackerapi.Response, list []attributeJSON) error {
 			for _, a := range list {
 				options += len(a.Values)
 				if len(out) >= maxAttributes || options > maxOptions {
 					return fmt.Errorf("the site has more than %d work attributes or %d options, the most this client holds", maxAttributes, maxOptions)
 				}
-				attr := Attribute{Key: a.Key, Name: a.Name, Type: AttributeType(a.Type), Required: a.Required}
+				// Name is shown in problem messages, so it is scrubbed.
+				attr := Attribute{Key: a.Key, Name: resp.Scrub(a.Name), Type: AttributeType(a.Type), Required: a.Required}
 				for _, v := range a.Values {
-					attr.Options = append(attr.Options, Option{Value: v, Name: a.Names[v]})
+					attr.Options = append(attr.Options, Option{Value: v, Name: resp.Scrub(a.Names[v])})
 				}
+				attr.optionsText = resp.Scrub(optionNames(attr.Options))
 				out = append(out, attr)
 			}
 			return nil
@@ -102,9 +108,10 @@ func (c *Client) attributes(ctx context.Context) ([]Attribute, error) {
 // Settings are the Tempo site settings a worklog's checks and a time
 // grid use.
 type Settings struct {
-	// ClosedAccountsAllowed reports that a worklog may name a closed
-	// account.
-	ClosedAccountsAllowed bool
+	// InactiveAccountsAllowed reports that a worklog may name a closed or
+	// archived account (Tempo's "Users can log time for closed and
+	// archived accounts", allowLoggingOnClosedAccount in the API).
+	InactiveAccountsAllowed bool
 	// WeekStart is the first day of Tempo's week.
 	WeekStart time.Weekday
 	// ApprovalPeriod is "WEEK" or "MONTH".
@@ -143,7 +150,7 @@ func (c *Client) settings(ctx context.Context) (Settings, error) {
 			return Settings{}, err
 		}
 		s := Settings{
-			ClosedAccountsAllowed:     raw.AllowLoggingOnClosedAccount,
+			InactiveAccountsAllowed:   raw.AllowLoggingOnClosedAccount,
 			ApprovalPeriod:            raw.ApprovalPeriod,
 			WeekStart:                 time.Monday,
 			DescriptionRequired:       raw.DescriptionOptional != nil && !*raw.DescriptionOptional,

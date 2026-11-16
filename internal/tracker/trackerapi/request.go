@@ -67,9 +67,9 @@ type Response struct {
 	Header http.Header
 	// Body is the whole answer for Do and JSON; nil for Stream.
 	Body []byte
-	// auth is what Scrub removes; nil when the request carried no
+	// scrub is what Scrub removes; nil when the request carried no
 	// credential.
-	auth *sentAuth
+	scrub *scrubRef
 }
 
 // call is one prepared Request, sent by each attempt.

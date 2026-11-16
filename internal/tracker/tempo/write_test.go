@@ -93,18 +93,25 @@ func TestChangeDraft(t *testing.T) {
 	}
 	unread := from
 	unread.Billable = nil
+	text := ptr("x")
 	cases := []struct {
 		name string
 		ch   Change
 		want *time.Duration
 	}{
-		{"non-billable, text changed", Change{From: billable(0), Description: ptr("x")}, ptr(time.Duration(0))},
-		{"non-billable, time changed", Change{From: billable(0), Spent: ptr(2 * time.Hour)}, ptr(time.Duration(0))},
-		{"fully billable follows the time", Change{From: from, Spent: ptr(2 * time.Hour)}, ptr(2 * time.Hour)},
-		{"part billable is cut to the time", Change{From: billable(30 * time.Minute), Spent: ptr(15 * time.Minute)}, ptr(15 * time.Minute)},
-		{"part billable is kept", Change{From: billable(30 * time.Minute), Description: ptr("x")}, ptr(30 * time.Minute)},
-		{"set explicitly", Change{From: from, Billable: ptr(10 * time.Minute)}, ptr(10 * time.Minute)},
-		{"billable never read is left to Tempo", Change{From: unread, Spent: ptr(2 * time.Hour)}, nil},
+		// Spent is 1h in every From.
+		{"text only, billable above spent", Change{From: billable(2 * time.Hour), Description: text}, ptr(2 * time.Hour)},
+		{"text only, billable below spent", Change{From: billable(30 * time.Minute), Description: text}, ptr(30 * time.Minute)},
+		{"text only, billable equal to spent", Change{From: from, Description: text}, ptr(time.Hour)},
+		{"text only, non-billable", Change{From: billable(0), Description: text}, ptr(time.Duration(0))},
+		{"text only, billable never read", Change{From: unread, Description: text}, nil},
+		{"spent changed, billable equal follows it", Change{From: from, Spent: ptr(2 * time.Hour)}, ptr(2 * time.Hour)},
+		{"spent cut, billable equal follows it", Change{From: from, Spent: ptr(15 * time.Minute)}, ptr(15 * time.Minute)},
+		{"spent cut, billable above is kept", Change{From: billable(2 * time.Hour), Spent: ptr(30 * time.Minute)}, ptr(2 * time.Hour)},
+		{"spent cut, billable below is kept", Change{From: billable(30 * time.Minute), Spent: ptr(15 * time.Minute)}, ptr(30 * time.Minute)},
+		{"spent changed, billable never read", Change{From: unread, Spent: ptr(2 * time.Hour)}, nil},
+		{"spent changed to the same, billable equal", Change{From: from, Spent: ptr(time.Hour)}, ptr(time.Hour)},
+		{"set explicitly", Change{From: from, Billable: ptr(10 * time.Minute), Spent: ptr(2 * time.Hour)}, ptr(10 * time.Minute)},
 	}
 	for _, tc := range cases {
 		got := tc.ch.draft().Billable
@@ -149,5 +156,42 @@ func TestDelete(t *testing.T) {
 	}
 	if err := c.Delete(ctx, -1); !isType[*InvalidError](err) {
 		t.Fatalf("bad ID: %v", err)
+	}
+}
+
+// TestUpdateNotMoved: an update that names another issue and comes back
+// stored on the old one is neither applied nor a refusal.
+func TestUpdateNotMoved(t *testing.T) {
+	f := newFake(t)
+	c := testClient(t, f, newIssues())
+	openWeek(f)
+	from := Worklog{ID: 70, Issue: Issue{ID: 10002, Key: "WEB-2"}, Author: "acc-user1", Start: Start{Date: mustDate(t, "2026-11-10")},
+		Spent: time.Hour, Attributes: []AttributeValue{{"_Category_", "dev"}}}
+	body := `{"authorAccountId":"acc-user1","issueId":10001,"startDate":"2026-11-10","timeSpentSeconds":3600,"description":"","attributes":[{"key":"_Category_","value":"dev"}]}`
+	f.on("PUT", "/4/worklogs/70", nil, body, 200, wl{id: 70, issue: 10002, author: "acc-user1", date: "2026-11-10", spent: 3600}.json())
+	f.on("PUT", "/4/worklogs/71", nil, body, 200, wl{id: 71, issue: 10001, author: "acc-user1", date: "2026-11-10", spent: 3600}.json())
+	out := c.Apply(context.Background(), []Op{
+		UpdateOp(Change{From: from, Issue: &Issue{Key: "WEB-1"}}),
+		UpdateOp(Change{From: func() Worklog { w := from; w.ID = 71; return w }(), Issue: &Issue{Key: "WEB-1"}}),
+	})
+	kept := out[0]
+	notMoved, ok := errors.AsType[*NotMovedError](kept.Err)
+	if kept.Status != NotMoved || !ok || notMoved.Asked != 10001 || kept.Stored.Issue != (Issue{ID: 10002, Key: "WEB-2"}) ||
+		trackerapi.WriteNotApplied(kept.Err) || len(kept.Problems) != 1 || kept.Problems[0].Code != IssueKept {
+		t.Errorf("kept on the old issue: %+v", kept)
+	}
+	if out[1].Status != Applied || out[1].Stored.Issue != (Issue{ID: 10001, Key: "WEB-1"}) {
+		t.Errorf("moved: %+v", out[1])
+	}
+}
+
+func TestWriteRedirectIsUnknown(t *testing.T) {
+	f := newFake(t)
+	c := testClient(t, f, newIssues())
+	e := f.on("DELETE", "/4/worklogs/73", nil, "", 302, "")
+	e.header = map[string][]string{"Location": {f.srv.URL + "/4/worklogs/74"}}
+	out := c.Apply(context.Background(), []Op{DeleteOp(73)})[0]
+	if se, ok := errors.AsType[*trackerapi.StatusError](out.Err); out.Status != Unknown || !ok || se.Status != 302 || trackerapi.WriteNotApplied(out.Err) {
+		t.Fatalf("%+v", out)
 	}
 }

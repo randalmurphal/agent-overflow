@@ -2,96 +2,102 @@ package trackerapi
 
 import (
 	"bytes"
-	"encoding/base64"
+	"context"
 	"errors"
-	"strings"
+	"io"
 
 	"agent-overflow/internal/secret"
 )
 
-// sentAuth is the Authorization value a request carried and its scheme.
-// The value is the request's own header string; a Response holds it
-// behind a pointer, which formatters print as an address.
-type sentAuth struct {
-	scheme authScheme
-	value  string
+// scrubRef is what a Response keeps for Scrub: its client and the
+// credential its request carried. Both are pointers, which every fmt path
+// prints as an address, and the secret stays in the Credential's
+// secret.Bytes: a Response holds no copy of it.
+type scrubRef struct {
+	c    *Client
+	cred *Credential
 }
 
 // Scrub returns text with the credential this answer's request carried
 // replaced by secret.Redacted, in every form the transport removes from
 // its own errors. A caller passes it any text taken from the answer that
 // it places in an error or returns for display, such as an error list
-// inside a 200 body; the transport's own errors are already scrubbed. A
-// request off the base origin carried no credential, and text comes back
-// unchanged.
+// inside a 200 body; the transport's own errors are already scrubbed.
+//
+// A request off the base origin carried no credential, and text comes
+// back unchanged. Once the client no longer holds that credential (a
+// re-read replaced it, ForgetCredential, Close), its bytes are zeroed and
+// Scrub cannot find them: it returns secret.Redacted in place of any
+// non-empty text.
 func (r *Response) Scrub(text string) string {
-	if r == nil || r.auth == nil {
+	if r == nil || r.scrub == nil {
 		return text
 	}
-	s := newScrubber(r.auth.scheme, r.auth.value)
+	s := r.scrub.c.scrubber(sentWith{carried: true, cred: r.scrub.cred})
 	defer s.clear()
 	return s.text(text)
 }
 
 // scrubber replaces, in text an answer supplied, the credential its
-// request carried, in each form a tracker can repeat it: the
-// Authorization value, the value without its scheme, and the secret
-// alone. Its forms are copies made for one use and cleared after it.
-type scrubber struct{ forms [][]byte }
+// request carried, in each form Credential.forms names. Its forms are
+// copies made for one use and cleared after it.
+type scrubber struct {
+	forms [][]byte
+	// lost is a credential zeroed since it was sent: it can no longer be
+	// found, so every text is withheld.
+	lost bool
+}
 
-// newScrubber derives the forms from the Authorization value a hop sent;
-// a hop off the base origin carried none and has nothing to scrub. They
-// are added longest first, so a value goes whole before the secret inside
-// it.
-func newScrubber(scheme authScheme, auth string) *scrubber {
+// scrubber derives the forms of the credential a hop carried, under the
+// credential lock that guards its zeroing.
+func (c *Client) scrubber(sent sentWith) *scrubber {
 	s := &scrubber{}
-	if auth == "" {
+	if !sent.carried {
 		return s
 	}
-	s.add([]byte(auth))
-	switch scheme {
-	case schemeBasic:
-		encoded := strings.TrimPrefix(auth, "Basic ")
-		s.add([]byte(encoded))
-		if pair, err := base64.StdEncoding.DecodeString(encoded); err == nil {
-			if _, password, ok := bytes.Cut(pair, []byte(":")); ok {
-				s.add(bytes.Clone(password))
-			}
-			clear(pair)
-		}
-	case schemeBearer:
-		s.add([]byte(strings.TrimPrefix(auth, "Bearer ")))
+	c.credMu.RLock()
+	defer c.credMu.RUnlock()
+	if sent.cred.secret.Len() == 0 {
+		s.lost = true
+		return s
 	}
+	s.forms = sent.cred.forms()
 	return s
 }
 
-func (s *scrubber) add(form []byte) {
-	if len(form) > 0 {
-		s.forms = append(s.forms, form)
-	}
-}
-
-// clear zeroes the forms.
-func (s *scrubber) clear() {
-	for _, form := range s.forms {
-		clear(form)
-	}
-}
+func (s *scrubber) clear() { clearForms(s.forms) }
 
 // text is v with every form replaced by secret.Redacted.
 func (s *scrubber) text(v string) string {
-	b := []byte(v)
-	replaced := false
-	for _, form := range s.forms {
-		if bytes.Contains(b, form) {
-			b = bytes.ReplaceAll(b, form, []byte(secret.Redacted))
-			replaced = true
-		}
-	}
-	if !replaced {
+	if v == "" {
 		return v
 	}
-	return string(b)
+	if s.lost {
+		return secret.Redacted
+	}
+	b := []byte(v)
+	for _, form := range s.forms {
+		if bytes.Contains(b, form) {
+			next := bytes.ReplaceAll(b, form, []byte(secret.Redacted))
+			clear(b)
+			b = next
+		}
+	}
+	out := string(b)
+	clear(b)
+	return out
+}
+
+// holds reports whether v holds a form.
+func (s *scrubber) holds(v string) bool {
+	b := []byte(v)
+	defer clear(b)
+	for _, form := range s.forms {
+		if bytes.Contains(b, form) {
+			return true
+		}
+	}
+	return false
 }
 
 // trimCut drops the end of a body cut short when it begins a form, which
@@ -109,25 +115,70 @@ func (s *scrubber) trimCut(body []byte) []byte {
 	return body[:keep]
 }
 
-// error is err, or when its text holds a form, an error of the scrubbed
-// text alone: the original's chain would still reach the secret.
-func (s *scrubber) error(err error) error {
-	if err == nil || len(s.forms) == 0 {
+// sentinels are the errors whose identity a scrubbed cause keeps. Their
+// text is fixed, never the tracker's.
+var sentinels = []error{context.Canceled, context.DeadlineExceeded, errClosed, errStalled, io.EOF, io.ErrUnexpectedEOF}
+
+// cause is how an error from another package (net/http, net, crypto/tls,
+// encoding/json, io) enters an error this package returns, and the only
+// way its text does. It is err itself when no error in err's chain
+// repeats the credential the request carried. Otherwise it is an error of
+// err's scrubbed text that unwraps only to the sentinels err matched, so
+// nothing a caller can unwrap holds the secret.
+func (c *Client) cause(sent sentWith, err error) error {
+	if err == nil {
+		return nil
+	}
+	s := c.scrubber(sent)
+	defer s.clear()
+	if !s.lost && !s.inChain(err) {
 		return err
 	}
-	defer s.clear()
-	if text := s.text(err.Error()); text != err.Error() {
-		return errors.New(text)
+	scrubbed := &scrubbedError{text: s.text(err.Error())}
+	for _, sentinel := range sentinels {
+		if errors.Is(err, sentinel) {
+			scrubbed.matches = append(scrubbed.matches, sentinel)
+		}
 	}
-	return err
+	return scrubbed
 }
 
+// inChain reports whether err, or any error a caller can unwrap from it,
+// holds a form in its text.
+func (s *scrubber) inChain(err error) bool {
+	for stack := []error{err}; len(stack) > 0; {
+		e := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if e == nil {
+			continue
+		}
+		if s.holds(e.Error()) {
+			return true
+		}
+		switch u := e.(type) {
+		case interface{ Unwrap() error }:
+			stack = append(stack, u.Unwrap())
+		case interface{ Unwrap() []error }:
+			stack = append(stack, u.Unwrap()...)
+		}
+	}
+	return false
+}
+
+type scrubbedError struct {
+	text    string
+	matches []error
+}
+
+func (e *scrubbedError) Error() string   { return e.text }
+func (e *scrubbedError) Unwrap() []error { return e.matches }
+
 // answerText is the text of an error answer that an error carries: the
-// dialect's problem and the body, at most maxErrorBody bytes, scrubbed of
-// the credential the request carried. Every error built from an answer's
-// text takes it from here.
+// dialect's problem, scrubbed after the dialect returns it, and the body,
+// at most maxErrorBody bytes, scrubbed of the credential the request
+// carried. Every error built from an answer's text takes it from here.
 func (c *Client) answerText(a *answer) (Problem, string) {
-	s := newScrubber(a.sent.scheme, a.sent.auth)
+	s := c.scrubber(a.sent)
 	defer s.clear()
 	body := a.body
 	if a.cut {

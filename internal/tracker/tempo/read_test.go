@@ -144,3 +144,60 @@ func TestAccountsBound(t *testing.T) {
 		t.Fatal("a listing over the bound was returned")
 	}
 }
+
+// TestDateRange: every parse goes through NewDate's range, so a nonempty
+// string never reads as the zero Date.
+func TestDateRange(t *testing.T) {
+	for _, s := range []string{"0000-12-31", "0000-01-01"} {
+		if d, err := ParseDate(s); err == nil {
+			t.Errorf("ParseDate(%q) = %v with no error", s, d)
+		}
+	}
+	for _, t0 := range []time.Time{time.Date(0, time.January, 1, 12, 0, 0, 0, time.UTC), time.Date(10000, time.January, 1, 0, 0, 0, 0, time.UTC)} {
+		if d := DateOf(t0); !d.IsZero() {
+			t.Errorf("DateOf(%v) = %v, want the zero Date", t0, d)
+		}
+	}
+	if d, err := ParseDate("0001-01-01"); err != nil || d.IsZero() || d.String() != "0001-01-01" {
+		t.Errorf("first day: %v %v", d, err)
+	}
+	if d, err := ParseDate("9999-12-31"); err != nil || d.String() != "9999-12-31" {
+		t.Errorf("last day: %v %v", d, err)
+	}
+}
+
+// TestTimestamps: Tempo's timestamps are plain strings; the approval
+// status example is a date alone, the worklog examples RFC 3339 times.
+func TestTimestamps(t *testing.T) {
+	for in, want := range map[string]time.Time{
+		"2026-11-08T10:00:00Z":      time.Date(2026, 11, 8, 10, 0, 0, 0, time.UTC),
+		"2026-11-08T10:00:00+01:00": time.Date(2026, 11, 8, 9, 0, 0, 0, time.UTC),
+		"2022-01-01":                time.Date(2022, 1, 1, 0, 0, 0, 0, time.UTC),
+	} {
+		got, err := parseTimestamp(in)
+		if err != nil || !got.Equal(want) {
+			t.Errorf("%q: %v %v", in, got, err)
+		}
+	}
+	for _, bad := range []string{"01/01/2022", "2022-01-01 10:00", "0000-01-01"} {
+		if _, err := parseTimestamp(bad); err == nil {
+			t.Errorf("%q accepted", bad)
+		}
+	}
+
+	f := newFake(t)
+	c := testClient(t, f, newIssues())
+	approval := `{"self":"x","actions":{},"worklogs":{"self":"x"},"user":{"accountId":"acc-user1"},"period":{"from":"2026-11-02","to":"2026-11-08"},
+"requiredSeconds":0,"timeSpentSeconds":0,"status":{"key":"OPEN","updatedAt":"2022-01-01"}}`
+	f.on("GET", "/4/timesheet-approvals/user/acc-user1", q("from", "2026-11-04", "to", "2026-11-04"), "", 200, approval)
+	got, err := c.Approval(context.Background(), "acc-user1", mustDate(t, "2026-11-04"))
+	if err != nil || !got.Changed.Equal(time.Date(2022, 1, 1, 0, 0, 0, 0, time.UTC)) {
+		t.Fatalf("approval with a date-only updatedAt: %+v %v", got, err)
+	}
+	f.on("GET", "/4/worklogs/44", nil, "", 200, `{"tempoWorklogId":44,"issue":{"id":10001},"author":{"accountId":"acc-user1"},
+"startDate":"2026-11-04","timeSpentSeconds":60,"createdAt":"2026-11-04","updatedAt":"2026-11-05T08:00:00Z","attributes":{"values":[]}}`)
+	w, err := c.Worklog(context.Background(), 44)
+	if err != nil || !w.Created.Equal(time.Date(2026, 11, 4, 0, 0, 0, 0, time.UTC)) {
+		t.Fatalf("worklog with a date-only createdAt: %+v %v", w, err)
+	}
+}

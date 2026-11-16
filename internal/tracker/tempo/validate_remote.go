@@ -14,13 +14,19 @@ type accountValue struct {
 }
 
 // checkAccounts checks every account attribute value of out with one
-// account search, reading the settings only when a closed account needs
-// them.
-func (c *Client) checkAccounts(ctx context.Context, out []prepared, attrs []Attribute) error {
+// account search, reading the settings only when a closed or archived
+// account needs them. Without the attributes (attrsKnown false) account
+// values cannot be told apart, so every op with attribute values lists
+// the account check as not run.
+func (c *Client) checkAccounts(ctx context.Context, out []prepared, attrs []Attribute, attrsKnown bool) error {
 	var values []accountValue
 	var refs []string
 	for i := range out {
 		for _, v := range out[i].draft.Attributes {
+			if !attrsKnown {
+				out[i].skip(CheckAccounts)
+				break
+			}
 			at := slices.IndexFunc(attrs, func(a Attribute) bool { return a.Key == v.Key })
 			if at < 0 || attrs[at].Type != AttributeAccount || v.Value == "" {
 				continue
@@ -35,10 +41,17 @@ func (c *Client) checkAccounts(ctx context.Context, out []prepared, attrs []Attr
 		return nil
 	}
 	accounts, err := c.accounts(ctx, AccountQuery{Keys: refs})
+	if forbidden(err) {
+		for _, v := range values {
+			out[v.op].skip(CheckAccounts)
+		}
+		return nil
+	}
 	if err != nil {
 		return fmt.Errorf("read accounts: %w", err)
 	}
-	var closedAllowed *bool
+	var inactiveAllowed *bool // nil until read; settings not readable leaves it nil
+	settingsForbidden := false
 	for _, v := range values {
 		at := slices.IndexFunc(accounts, func(a Account) bool { return a.Key == v.ref })
 		problem := Problem{Field: FieldAttribute, Attribute: v.key, Code: NotAllowed}
@@ -47,44 +60,71 @@ func (c *Client) checkAccounts(ctx context.Context, out []prepared, attrs []Attr
 			problem.Code, problem.Message = NotFound, fmt.Sprintf("no account %s", v.ref)
 		case accounts[at].Status == AccountOpen:
 			continue
-		case accounts[at].Status == AccountClosed:
-			if closedAllowed == nil {
+		case accounts[at].Status == AccountClosed || accounts[at].Status == AccountArchived:
+			if inactiveAllowed == nil && !settingsForbidden {
 				s, err := c.settings(ctx)
-				if err != nil {
+				switch {
+				case forbidden(err):
+					settingsForbidden = true
+				case err != nil:
 					return err
+				default:
+					inactiveAllowed = &s.InactiveAccountsAllowed
 				}
-				closedAllowed = &s.ClosedAccountsAllowed
 			}
-			if *closedAllowed {
+			if settingsForbidden {
+				out[v.op].skip(CheckSettings)
 				continue
 			}
-			problem.Message = fmt.Sprintf("account %s is closed", v.ref)
+			if *inactiveAllowed {
+				continue
+			}
+			problem.Message = fmt.Sprintf("account %s is %s", v.ref, inactiveName(accounts[at].Status))
 		default:
-			problem.Message = fmt.Sprintf("account %s is %s, not open", v.ref, accounts[at].Status)
+			// A status the API reference does not list: Tempo judges it.
+			continue
 		}
 		out[v.op].problems = append(out[v.op].problems, problem)
 	}
 	return nil
 }
 
+func inactiveName(s AccountStatus) string {
+	if s == AccountArchived {
+		return "archived"
+	}
+	return "closed"
+}
+
 // checkApprovals adds a problem to each create or update whose start date,
 // or for an update whose current start date, falls in a timesheet that
 // is approved or waiting for approval. It reads one approval per author
-// and period.
+// and period; an author whose approvals Tempo answers with 403 has the
+// check skipped.
 func (c *Client) checkApprovals(ctx context.Context, ops []Op, out []prepared) error {
 	known := map[string][]Approval{}
-	lookup := func(author string, day Date) (Approval, error) {
+	refused := map[string]bool{}
+	// lookup is the approval holding day, or ok false when the token may
+	// not read the author's approvals.
+	lookup := func(author string, day Date) (a Approval, ok bool, err error) {
+		if refused[author] {
+			return Approval{}, false, nil
+		}
 		for _, a := range known[author] {
 			if !day.Before(a.From) && !day.After(a.To) {
-				return a, nil
+				return a, true, nil
 			}
 		}
-		a, err := c.approval(ctx, author, day)
+		a, err = c.approval(ctx, author, day)
+		if forbidden(err) {
+			refused[author] = true
+			return Approval{}, false, nil
+		}
 		if err != nil {
-			return Approval{}, fmt.Errorf("read the timesheet approval of %s on %s: %w", author, day, err)
+			return Approval{}, false, fmt.Errorf("read the timesheet approval of %s on %s: %w", author, day, err)
 		}
 		known[author] = append(known[author], a)
-		return a, nil
+		return a, true, nil
 	}
 	for i, op := range ops {
 		if op.kind != opCreate && op.kind != opUpdate {
@@ -99,24 +139,32 @@ func (c *Client) checkApprovals(ctx context.Context, ops []Op, out []prepared) e
 			if d.Author == "" || day.IsZero() {
 				continue
 			}
-			a, err := lookup(d.Author, day)
+			a, ok, err := lookup(d.Author, day)
 			if err != nil {
 				return err
+			}
+			if !ok {
+				out[i].skip(CheckApprovals)
+				continue
 			}
 			if !a.locked() {
 				continue
 			}
-			what := "the start date " + day.String()
-			if n > 0 {
-				what = "the worklog's current start date " + day.String()
-			}
-			problem := Problem{Field: FieldStartDate, Code: PeriodApproved, Message: fmt.Sprintf("%s is in the timesheet from %s to %s, which is approved", what, a.From, a.To)}
-			if a.Status == ApprovalInReview {
-				problem.Code = PeriodSubmitted
-				problem.Message = fmt.Sprintf("%s is in the timesheet from %s to %s, which is waiting for approval", what, a.From, a.To)
-			}
-			out[i].problems = append(out[i].problems, problem)
+			out[i].problems = append(out[i].problems, approvalProblem(a, day, n > 0))
 		}
 	}
 	return nil
+}
+
+// approvalProblem is a date in the locked timesheet a; current marks an
+// update's current date rather than the one it sets.
+func approvalProblem(a Approval, day Date, current bool) Problem {
+	what := "the start date " + day.String()
+	if current {
+		what = "the worklog's current start date " + day.String()
+	}
+	if a.Status == ApprovalInReview {
+		return Problem{Field: FieldStartDate, Code: PeriodSubmitted, Message: fmt.Sprintf("%s is in the timesheet from %s to %s, which is waiting for approval", what, a.From, a.To)}
+	}
+	return Problem{Field: FieldStartDate, Code: PeriodApproved, Message: fmt.Sprintf("%s is in the timesheet from %s to %s, which is approved", what, a.From, a.To)}
 }

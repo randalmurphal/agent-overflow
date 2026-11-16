@@ -2,8 +2,10 @@ package trackerapi
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"slices"
 	"strings"
@@ -37,11 +39,105 @@ func TestRateLimitClosesTheGateBeforeItsBody(t *testing.T) {
 		synctest.Wait()
 		_, err := c.Do(t.Context(), Request{Path: "other"})
 		cancel()
-		if first := <-done; !errors.Is(first, context.Canceled) {
-			t.Errorf("the limited call: %v, want its cancellation", first)
+		if _, ok := errors.AsType[*RateLimitedError](<-done); !ok {
+			t.Error("the limited call did not settle as its limit")
 		}
 		if _, ok := errors.AsType[*RateLimitedError](err); !ok || others.Load() != 0 {
 			t.Fatalf("Do = %v with %d requests sent, want the gate closed", err, others.Load())
+		}
+	})
+}
+
+// A rate limit known from its headers settles the call that drew it: the
+// body that stalls behind them neither holds the call past its short read
+// budget nor turns the limit into a transient failure that is retried.
+func TestRateLimitSettlesAtItsHeaders(t *testing.T) {
+	for _, transfer := range []bool{false, true} {
+		t.Run(fmt.Sprintf("transfer %v", transfer), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				var requests atomic.Int32
+				c := memoryClient(t, func(w http.ResponseWriter, r *http.Request) {
+					requests.Add(1)
+					w.Header().Set("Retry-After", "60")
+					w.WriteHeader(http.StatusTooManyRequests)
+					writeString(w, `{"message":`)
+					_ = http.NewResponseController(w).Flush()
+					hang(r)
+				}, nil)
+				start := time.Now()
+				var err error
+				if transfer {
+					var dst strings.Builder
+					_, err = c.Stream(t.Context(), Request{Path: "a", Transfer: true}, &dst, 100)
+				} else {
+					_, err = c.Do(t.Context(), Request{Path: "a"})
+				}
+				rate, ok := errors.AsType[*RateLimitedError](err)
+				if !ok || rate.Status != http.StatusTooManyRequests || !rate.Until.Equal(start.Add(time.Minute)) {
+					t.Fatalf("%v, want the 429's limit", err)
+				}
+				if elapsed := time.Since(start); elapsed > limitBodyWait || requests.Load() != 1 {
+					t.Fatalf("settled after %s and %d requests, want at once and one", elapsed, requests.Load())
+				}
+			})
+		})
+	}
+}
+
+// bodyTimeDialect names a limit's end in the body: {"until": <unix>}.
+type bodyTimeDialect struct{ PlainDialect }
+
+func (bodyTimeDialect) RateLimited(_ int, _ http.Header, body []byte) (time.Time, bool) {
+	var v struct{ Until int64 }
+	if json.Unmarshal(body, &v) != nil || v.Until == 0 {
+		return time.Time{}, false
+	}
+	return time.Unix(v.Until, 0), true
+}
+
+// A rate limit's body can move its end later, read within the body's
+// budget, and never earlier than the headers named.
+func TestRateLimitBodyRefinesTheTime(t *testing.T) {
+	t.Parallel()
+	start := newTestClock().now()
+	tr := newTracker(t, route{
+		"GET /later": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Retry-After", "5")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = fmt.Fprintf(w, `{"until":%d}`, start.Add(time.Minute).Unix())
+		},
+		"GET /earlier": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Retry-After", "5")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = fmt.Fprintf(w, `{"until":%d}`, start.Add(time.Second).Unix())
+		},
+	})
+	opts := testOptions(tr.url())
+	opts.Dialect = bodyTimeDialect{}
+	for path, want := range map[string]time.Duration{"later": time.Minute, "earlier": 5 * time.Second} {
+		c, _ := loopbackClient(t, opts)
+		_, err := c.Do(t.Context(), Request{Path: path})
+		if rate, ok := errors.AsType[*RateLimitedError](err); !ok || !rate.Until.Equal(start.Add(want)) {
+			t.Errorf("%s: %v, want the limit until %s from now", path, err, want)
+		}
+	}
+}
+
+// A transfer's stall and header timers start once the hop is admitted:
+// a long wait for the pacing does not stall it.
+func TestTransferTimersSkipAdmission(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		c := memoryClient(t, func(w http.ResponseWriter, r *http.Request) {
+			_, _ = io.Copy(io.Discard, r.Body)
+			writeString(w, `{}`)
+		}, func(o *Options) { o.MaxPerSecond = 0.01 })
+		if _, err := c.Do(t.Context(), Request{Path: "a"}); err != nil {
+			t.Fatal(err)
+		}
+		start := time.Now()
+		_, err := c.Do(t.Context(), Request{Method: http.MethodPost, Path: "upload", Body: []byte("data"), ContentType: "text/plain", Transfer: true})
+		if err != nil || time.Since(start) != 100*time.Second {
+			t.Fatalf("Do = %v after %s, want the upload sent after its 100s pacing wait", err, time.Since(start))
 		}
 	})
 }

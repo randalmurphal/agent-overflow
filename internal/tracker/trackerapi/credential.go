@@ -1,6 +1,7 @@
 package trackerapi
 
 import (
+	"bytes"
 	"context"
 	"crypto/subtle"
 	"encoding/base64"
@@ -83,7 +84,7 @@ func (cr *Credential) check() error {
 			return errors.New("a user name Basic authentication cannot carry")
 		}
 	case schemeBearer, schemeKey:
-		if hasControl(string(cr.secret.Reveal())) {
+		if bytes.ContainsFunc(cr.secret.Reveal(), func(r rune) bool { return r < 0x20 || r == 0x7f }) {
 			return errors.New("a secret with a line break or control character")
 		}
 	default:
@@ -96,23 +97,43 @@ func hasControl(s string) bool {
 	return strings.ContainsFunc(s, func(r rune) bool { return r < 0x20 || r == 0x7f })
 }
 
-// authorize sets h's Authorization. A nil or zeroed credential sets
-// nothing, so the tracker answers 401 and the client reads again.
-func (cr *Credential) authorize(h http.Header) {
+// authorize sets h's Authorization and reports whether it did. A nil or
+// zeroed credential sets nothing, so the tracker answers 401 and the
+// client reads again. The header's string is a copy net/http requires;
+// it lives as long as the request.
+func (cr *Credential) authorize(h http.Header) bool {
 	if cr == nil || cr.secret.Len() == 0 {
-		return
+		return false
 	}
+	forms := cr.forms()
+	h.Set("Authorization", string(forms[0]))
+	clearForms(forms)
+	return true
+}
+
+// forms is every form a request carries the credential in and a tracker
+// can repeat it in, longest first: the Authorization value, the value
+// without its scheme, and the secret alone. They are copies; the caller
+// holds the credential lock while reading them out and clears them.
+func (cr *Credential) forms() [][]byte {
 	raw := cr.secret.Reveal()
 	switch cr.scheme {
 	case schemeBasic:
 		plain := make([]byte, 0, len(cr.user)+1+len(raw))
 		plain = append(append(append(plain, cr.user...), ':'), raw...)
-		h.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString(plain))
+		encoded := make([]byte, base64.StdEncoding.EncodedLen(len(plain)))
+		base64.StdEncoding.Encode(encoded, plain)
 		clear(plain)
+		return [][]byte{append([]byte("Basic "), encoded...), encoded, bytes.Clone(raw)}
 	case schemeBearer:
-		h.Set("Authorization", "Bearer "+string(raw))
-	case schemeKey:
-		h.Set("Authorization", string(raw))
+		return [][]byte{append([]byte("Bearer "), raw...), bytes.Clone(raw)}
+	}
+	return [][]byte{bytes.Clone(raw)}
+}
+
+func clearForms(forms [][]byte) {
+	for _, form := range forms {
+		clear(form)
 	}
 }
 

@@ -28,7 +28,7 @@ func (c *Client) Do(ctx context.Context, r Request) (*Response, error) {
 	if err != nil {
 		return nil, err
 	}
-	return a.response(), nil
+	return c.response(a), nil
 }
 
 // JSON is Do decoding the answer into out, unless out is nil or the
@@ -44,12 +44,12 @@ func (c *Client) JSON(ctx context.Context, r Request, out any) (*Response, error
 	if err != nil {
 		return nil, err
 	}
-	resp := a.response()
+	resp := c.response(a)
 	if out == nil || a.status == http.StatusNoContent {
 		return resp, nil
 	}
 	if err := json.Unmarshal(a.body, out); err != nil {
-		return resp, fmt.Errorf("%s: decode the answer: %w", c.where(k.method, a.url), newScrubber(a.sent.scheme, a.sent.auth).error(err))
+		return resp, fmt.Errorf("%s: decode the answer: %w", c.where(k.method, a.url), c.cause(a.sent, err))
 	}
 	return resp, nil
 }
@@ -82,10 +82,10 @@ type answer struct {
 
 // response is the Response a caller gets for a. Body is nil for Stream,
 // which reads none into a.
-func (a *answer) response() *Response {
+func (c *Client) response(a *answer) *Response {
 	resp := &Response{Status: a.status, Header: a.header, Body: a.body}
-	if a.sent.auth != "" {
-		resp.auth = &sentAuth{scheme: a.sent.scheme, value: a.sent.auth}
+	if a.sent.carried {
+		resp.scrub = &scrubRef{c: c, cred: a.sent.cred}
 	}
 	return resp
 }
@@ -218,7 +218,7 @@ func (c *Client) readError(ctx context.Context, k *call, st *stall, a *answer, e
 	if ctx.Err() != nil {
 		return c.ended(ctx, where)
 	}
-	return &TransientError{Err: fmt.Errorf("%s: read the answer: %w", where, st.explain(err))}
+	return &TransientError{Err: fmt.Errorf("%s: read the answer: %w", where, c.cause(a.sent, st.explain(err)))}
 }
 
 // limitOf reports whether an answer is a rate limit, and until when when
@@ -240,11 +240,11 @@ func (c *Client) limitOf(status int, h http.Header, body []byte) (time.Time, boo
 // sendError maps a failure of the transport's RoundTrip: the call's end,
 // or a transient failure. A *url.Error, which quotes a whole URL, is
 // dropped for its cause.
-func (c *Client) sendError(ctx context.Context, where string, st *stall, err error) error {
+func (c *Client) sendError(ctx context.Context, where string, st *stall, sent sentWith, err error) error {
 	if ctx.Err() != nil {
 		return c.ended(ctx, where)
 	}
-	return &TransientError{Err: fmt.Errorf("%s: %w", where, st.explain(parseCause(err)))}
+	return &TransientError{Err: fmt.Errorf("%s: %w", where, c.cause(sent, st.explain(parseCause(err))))}
 }
 
 // ended is the error of a call whose context ended: closed by Close,

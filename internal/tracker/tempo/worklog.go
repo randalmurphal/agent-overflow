@@ -80,7 +80,17 @@ type attributeValueJSON struct {
 }
 
 // worklog reads w, refusing a record whose dates or times do not parse.
-func (w worklogJSON) worklog() (Worklog, error) {
+// resp is the answer w came in, whose credential the error text is
+// scrubbed of.
+func (w worklogJSON) worklog(resp *trackerapi.Response) (Worklog, error) {
+	out, err := w.read()
+	if err != nil {
+		return Worklog{}, unreadable(resp, err)
+	}
+	return out, nil
+}
+
+func (w worklogJSON) read() (Worklog, error) {
 	out := Worklog{
 		ID:          w.ID,
 		Issue:       Issue{ID: w.Issue.ID},
@@ -109,8 +119,8 @@ func (w worklogJSON) worklog() (Worklog, error) {
 		if ts.text == "" {
 			continue
 		}
-		if *ts.dst, err = time.Parse(time.RFC3339, ts.text); err != nil {
-			return Worklog{}, fmt.Errorf("worklog %d: %s %q is not an RFC 3339 time", w.ID, ts.name, ts.text)
+		if *ts.dst, err = parseTimestamp(ts.text); err != nil {
+			return Worklog{}, fmt.Errorf("worklog %d: %s: %w", w.ID, ts.name, err)
 		}
 	}
 	if len(w.Attributes.Values) > 0 {
@@ -162,10 +172,10 @@ func (c *Client) WorklogPages(ctx context.Context, q WorklogQuery, fn func([]Wor
 		return &trackerapi.NotSentError{Err: fmt.Errorf("tempo: list worklogs: %w", err)}
 	}
 	var fnErr error
-	err = pages(ctx, c.http, r, func(raw []worklogJSON) error {
+	err = pages(ctx, c.http, r, func(resp *trackerapi.Response, raw []worklogJSON) error {
 		list := make([]Worklog, len(raw))
 		for i, w := range raw {
-			if list[i], err = w.worklog(); err != nil {
+			if list[i], err = w.worklog(resp); err != nil {
 				return err
 			}
 		}
@@ -205,10 +215,11 @@ func (c *Client) Worklog(ctx context.Context, id int64) (Worklog, error) {
 		return Worklog{}, &trackerapi.NotSentError{Err: fmt.Errorf("tempo: read worklog: %d is not a worklog ID", id)}
 	}
 	var raw worklogJSON
-	if _, err := c.http.JSON(ctx, trackerapi.Request{Path: path("4/worklogs", strconv.FormatInt(id, 10))}, &raw); err != nil {
+	resp, err := c.http.JSON(ctx, trackerapi.Request{Path: path("4/worklogs", strconv.FormatInt(id, 10))}, &raw)
+	if err != nil {
 		return Worklog{}, fmt.Errorf("tempo: read worklog %d: %w", id, err)
 	}
-	w, err := raw.worklog()
+	w, err := raw.worklog(resp)
 	one := []Worklog{w}
 	if err == nil {
 		err = c.fillKeys(ctx, one)
@@ -220,7 +231,8 @@ func (c *Client) Worklog(ctx context.Context, id int64) (Worklog, error) {
 }
 
 // fillKeys sets the issue key of every worklog in list that has none,
-// with one IssueIDs.Keys call for the distinct IDs.
+// with one IssueIDs.Keys call for the distinct IDs, made under a context
+// Close also ends.
 func (c *Client) fillKeys(ctx context.Context, list []Worklog) error {
 	var ids []int64
 	for _, w := range list {
@@ -231,6 +243,8 @@ func (c *Client) fillKeys(ctx context.Context, list []Worklog) error {
 	if len(ids) == 0 {
 		return nil
 	}
+	ctx, done := c.bound(ctx)
+	defer done()
 	keys, err := c.issues.Keys(ctx, ids)
 	if err != nil {
 		return fmt.Errorf("resolve issue keys: %w", err)

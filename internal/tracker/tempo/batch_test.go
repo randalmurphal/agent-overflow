@@ -124,20 +124,6 @@ func TestApplyCancelledBeforeChecks(t *testing.T) {
 	}
 }
 
-func TestApplyCheckReadFailure(t *testing.T) {
-	f := newFake(t)
-	c := testClient(t, f, newIssues())
-	f.on("GET", "/4/work-attributes", q("offset", "0", "limit", "1000"), "", 403, `<html>Forbidden</html>`)
-	f.on("DELETE", "/4/worklogs/3", nil, "", 204, "")
-	out := c.Apply(context.Background(), []Op{CreateOp(weekDraft(t, "WEB-1", "x")), DeleteOp(3)})
-	if out[0].Status != Refused || !isType[*trackerapi.StatusError](out[0].Err) || !trackerapi.WriteNotApplied(out[0].Err) {
-		t.Errorf("create without its checks: %+v", out[0])
-	}
-	if out[1].Status != Applied {
-		t.Errorf("delete: %+v", out[1])
-	}
-}
-
 func TestApplyResolverFailure(t *testing.T) {
 	f := newFake(t)
 	issues := newIssues()

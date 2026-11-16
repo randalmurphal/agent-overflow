@@ -19,7 +19,9 @@ func TestAttributesCachedAndDropped(t *testing.T) {
 	}
 	want := Attribute{Key: "_Category_", Name: "Category", Type: AttributeList, Required: true,
 		Options: []Option{{Value: "dev", Name: "Development"}, {Value: "mtg", Name: "Meeting"}}}
-	if len(first) != 5 || !reflect.DeepEqual(first[0], want) || first[3].Type != AttributeAccount {
+	head := first[0]
+	head.optionsText = "" // the problem text, checked by the validation tests
+	if len(first) != 5 || !reflect.DeepEqual(head, want) || first[3].Type != AttributeAccount {
 		t.Fatalf("attributes %+v", first)
 	}
 	// The caller's copy is its own.
@@ -149,5 +151,38 @@ func TestConcurrentUse(t *testing.T) {
 	close(errs)
 	for err := range errs {
 		t.Error(err)
+	}
+}
+
+// TestDropDuringReadIsFenced: a read that was in flight when the cache was
+// dropped is not kept; its waiter reads again and gets the fresh list.
+func TestDropDuringReadIsFenced(t *testing.T) {
+	f := newFake(t)
+	c := testClient(t, f, newIssues())
+	started, release := make(chan struct{}), make(chan struct{})
+	stale := f.on("GET", "/4/work-attributes", q("offset", "0", "limit", "1000"), "", 200, attributesJSON)
+	stale.during = func() {
+		close(started)
+		<-release
+	}
+	f.on("GET", "/4/work-attributes", q("offset", "0", "limit", "1000"), "", 200, pageOf(0, false,
+		`{"key":"_New_","name":"New","type":"INPUT_FIELD","required":false}`))
+	got := make(chan []Attribute, 1)
+	go func() {
+		attrs, err := c.Attributes(context.Background())
+		if err != nil {
+			t.Error(err)
+		}
+		got <- attrs
+	}()
+	<-started
+	c.DropCache()
+	close(release)
+	if attrs := <-got; len(attrs) != 1 || attrs[0].Key != "_New_" {
+		t.Fatalf("the read dropped while in flight was kept: %+v", attrs)
+	}
+	again, err := c.Attributes(context.Background())
+	if err != nil || len(again) != 1 || again[0].Key != "_New_" {
+		t.Fatalf("cached after the fresh read: %+v %v", again, err)
 	}
 }

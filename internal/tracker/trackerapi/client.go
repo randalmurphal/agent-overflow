@@ -67,6 +67,14 @@ type Options struct {
 	// package reads no environment, so a caller that honors the user's
 	// proxy settings passes http.ProxyFromEnvironment.
 	Proxy func(*http.Request) (*url.URL, error)
+	// OnAnswer, when set, is told the status and headers of every answer
+	// whose headers arrive: on every redirect hop and every attempt,
+	// success or error, before its body is read and before the call
+	// settles. It is not called when nothing answered, and never after
+	// Close returns. It runs on the calling goroutine, so it must not
+	// block or call Close. The header is a copy it may keep; it carries no
+	// URL and no body.
+	OnAnswer func(status int, header http.Header)
 }
 
 // Client calls one tracker endpoint. It is safe for concurrent use. Close
@@ -85,6 +93,12 @@ type Client struct {
 	// no credential.
 	transport http.RoundTripper
 	closeIdle func()
+
+	onAnswer func(status int, header http.Header)
+	// reportMu is held for reading through each OnAnswer call; Close
+	// takes it to set reportsOff, so no report starts or runs after it.
+	reportMu   sync.RWMutex
+	reportsOff bool
 
 	gate gate
 	pace *pacer
@@ -158,6 +172,7 @@ func newClient(opts Options, transport http.RoundTripper) (*Client, error) {
 		maxBody:     opts.MaxBodyBytes,
 		transport:   transport,
 		closeIdle:   func() {},
+		onAnswer:    opts.OnAnswer,
 		now:         time.Now,
 		sleep:       sleep,
 	}
@@ -243,6 +258,9 @@ func (c *Client) ForgetCredential() {
 // call fails with a *NotSentError. Close may be called more than once.
 func (c *Client) Close() {
 	c.closeOnce.Do(func() {
+		c.reportMu.Lock()
+		c.reportsOff = true
+		c.reportMu.Unlock()
 		c.mu.Lock()
 		c.closed = true
 		c.mu.Unlock()

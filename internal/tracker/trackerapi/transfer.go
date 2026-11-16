@@ -69,12 +69,8 @@ func (s *stall) stop() {
 	s.cancel(nil)
 }
 
-// sent starts the wait for the answer once the request body is out, or a
-// redirect hop is sent.
+// sent starts the wait for the answer once the request body is out.
 func (s *stall) sent() {
-	if s == nil {
-		return
-	}
 	s.waiting.Store(true)
 	s.timer.Reset(headerTimeout)
 }

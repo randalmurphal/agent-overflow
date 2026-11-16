@@ -8,7 +8,12 @@ import (
 	"net/http/httptrace"
 	"net/url"
 	"sync/atomic"
+	"time"
 )
+
+// limitBodyWait bounds the read of a rate limit's body, which can only
+// refine a limit its status and headers already settled.
+const limitBodyWait = 2 * time.Second
 
 // redirectMode is what a call does with a 3xx.
 type redirectMode uint8
@@ -26,16 +31,34 @@ const (
 )
 
 // sentWith is what a hop put on the wire: whether it went to the base
-// origin, and then the credential and its generation, and the scheme and
-// Authorization value it was sent as. The value is the request's own
-// header string, held until the answer is settled, from which errors are
-// scrubbed.
+// origin and, when it did, the credential, its generation and whether
+// the request carried it (a zeroed credential sets no header).
 type sentWith struct {
-	onBase bool
-	cred   *Credential
-	gen    uint64
-	scheme authScheme
-	auth   string
+	onBase  bool
+	cred    *Credential
+	gen     uint64
+	carried bool
+}
+
+// exchange is one hop whose answer's headers arrived.
+type exchange struct {
+	resp *http.Response
+	sent sentWith
+	// st times the hop's transfer, from its admission; nil unless a
+	// transfer.
+	st *stall
+	// cancel ends the hop's request and its body read.
+	cancel context.CancelCauseFunc
+}
+
+// close ends the hop. A remainder left unread, over a bound or past an
+// error's read, can be slow to come and would hold the call, so the body
+// is closed without reading on; a body read to its end leaves the
+// connection reusable.
+func (x *exchange) close() {
+	_ = x.resp.Body.Close()
+	x.cancel(nil)
+	x.st.stop()
 }
 
 // attempt sends k once, following a GET's redirects hop by hop. The gate
@@ -54,14 +77,9 @@ func (c *Client) attempt(ctx context.Context, k *call, state *retries, recv rece
 		}
 		return nil, &NotSentError{Err: fmt.Errorf("%s: %w", where, err)}
 	}
-	var st *stall
-	if k.transfer {
-		st = newStall(ctx, len(k.body) > 0)
-		defer st.stop()
-	}
 	target := k.target
 	for hops := 0; ; hops++ {
-		resp, with, err := c.hop(ctx, k, state, st, target)
+		x, err := c.hop(ctx, k, state, target)
 		if err != nil {
 			if notSent, ok := errors.AsType[*NotSentError](err); ok && hops > 0 {
 				// The first request reached the tracker.
@@ -69,64 +87,78 @@ func (c *Client) attempt(ctx context.Context, k *call, state *retries, recv rece
 			}
 			return nil, err
 		}
-		next, err := c.redirectTarget(k, resp, hops)
+		next, err := c.redirectTarget(k, x.resp, hops)
 		if err != nil || next == nil {
 			var a *answer
 			if err == nil {
-				a, err = c.receive(ctx, k, state, st, resp, with, recv)
+				a, err = c.receive(ctx, k, state, x, recv)
 			}
-			// Closed without reading on: a remainder left unread, over a
-			// bound or past an error's read, can be slow to come and would
-			// hold the call. A body read to its end leaves the connection
-			// reusable.
-			_ = resp.Body.Close()
+			x.close()
 			return a, err
 		}
-		_ = resp.Body.Close()
-		st.sent()
+		x.close()
 		target = next
 	}
 }
 
-// hop admits and sends one request to target. Its error is a
-// *NotSentError until the transport holds a connection for the request:
-// nothing can have reached the tracker before. After that the outcome of
-// a write is unknown.
-func (c *Client) hop(ctx context.Context, k *call, state *retries, st *stall, target *url.URL) (*http.Response, sentWith, error) {
+// hop admits and sends one request to target. A transfer's stall and
+// header timers start once it is admitted. Its error is a *NotSentError
+// until the transport holds a connection for the request: nothing can
+// have reached the tracker before, and a context already ended fails
+// there too. After that the outcome of a write is unknown.
+func (c *Client) hop(ctx context.Context, k *call, state *retries, target *url.URL) (*exchange, error) {
 	where := c.where(k.method, target)
 	if err := c.admit(ctx, k, state); err != nil {
-		return nil, sentWith{}, err
+		return nil, err
+	}
+	var st *stall
+	if k.transfer {
+		st = newStall(ctx, len(k.body) > 0)
+	}
+	hopCtx, cancel := context.WithCancelCause(st.context(ctx))
+	fail := func(err error) (*exchange, error) {
+		cancel(nil)
+		st.stop()
+		return nil, err
 	}
 	var connected atomic.Bool
-	traced := httptrace.WithClientTrace(st.context(ctx), &httptrace.ClientTrace{
+	traced := httptrace.WithClientTrace(hopCtx, &httptrace.ClientTrace{
 		GotConn: func(httptrace.GotConnInfo) { connected.Store(true) },
 	})
 	req, err := k.request(traced, target, st, c.userAgent)
 	if err != nil {
-		return nil, sentWith{}, &NotSentError{Err: fmt.Errorf("%s: %w", where, err)}
+		return fail(&NotSentError{Err: fmt.Errorf("%s: %w", where, c.cause(sentWith{}, err))})
 	}
 	var with sentWith
 	if originOf(target) == c.origin {
 		c.credMu.RLock()
-		c.cred.authorize(req.Header)
-		with = sentWith{onBase: true, cred: c.cred, gen: c.credGen}
-		if c.cred != nil {
-			with.scheme = c.cred.scheme
-		}
+		with = sentWith{onBase: true, cred: c.cred, gen: c.credGen, carried: c.cred.authorize(req.Header)}
 		c.credMu.RUnlock()
-		with.auth = req.Header.Get("Authorization")
 	}
-	// A context already ended fails here too, before any connection.
 	resp, err := c.transport.RoundTrip(req)
 	if err != nil {
-		failure := c.sendError(ctx, where, st, newScrubber(with.scheme, with.auth).error(err))
+		failure := c.sendError(ctx, where, st, with, err)
 		if !connected.Load() {
 			failure = &NotSentError{Err: failure}
 		}
-		return nil, sentWith{}, failure
+		return fail(failure)
 	}
 	st.receiving()
-	return resp, with, nil
+	c.report(resp)
+	return &exchange{resp: resp, sent: with, st: st, cancel: cancel}, nil
+}
+
+// report hands an answer's status and a copy of its headers to OnAnswer,
+// unless Close has begun; Close waits for a report in progress.
+func (c *Client) report(resp *http.Response) {
+	if c.onAnswer == nil {
+		return
+	}
+	c.reportMu.RLock()
+	defer c.reportMu.RUnlock()
+	if !c.reportsOff {
+		c.onAnswer(resp.StatusCode, resp.Header.Clone())
+	}
 }
 
 // redirectTarget is the URL a followed redirect names, or nil when resp is
@@ -165,25 +197,48 @@ func followedStatus(status int) bool {
 }
 
 // receive turns the last hop's answer into an answer for settle. A rate
-// limit closes the gate from the status and headers before the body is
-// read; the body can only extend that closure.
-func (c *Client) receive(ctx context.Context, k *call, state *retries, st *stall, resp *http.Response, with sentWith, recv receiver) (*answer, error) {
-	a := &answer{status: resp.StatusCode, header: resp.Header, url: resp.Request.URL, sent: with}
-	if until, limited := c.limitOf(a.status, a.header, nil); limited {
+// limit its status and headers show closes the gate and settles the call
+// before the body is read; the body can only name a later time.
+func (c *Client) receive(ctx context.Context, k *call, state *retries, x *exchange, recv receiver) (*answer, error) {
+	resp := x.resp
+	a := &answer{status: resp.StatusCode, header: resp.Header, url: resp.Request.URL, sent: x.sent}
+	until, limited := c.limitOf(a.status, a.header, nil)
+	if limited {
 		if until.IsZero() {
 			until = c.now().Add(backoff(state.count))
 		}
 		c.gate.close(until)
 	}
-	a.refused = with.onBase && (a.status == http.StatusUnauthorized || c.dialect.RejectedLogin(a.header))
-	if a.refused || a.status >= 400 {
-		return a, c.readErrorBody(ctx, k, st, resp, a)
-	}
-	if a.status >= 300 && k.redirects == refuseRedirect {
+	a.refused = x.sent.onBase && (a.status == http.StatusUnauthorized || c.dialect.RejectedLogin(a.header))
+	switch {
+	case a.refused:
+		return a, c.readErrorBody(ctx, k, x.st, resp, a)
+	case limited:
+		c.readLimitBody(k, x, a, until)
+		return a, nil
+	case a.status >= 400:
+		return a, c.readErrorBody(ctx, k, x.st, resp, a)
+	case a.status >= 300 && k.redirects == refuseRedirect:
 		return a, nil
 	}
-	if err := recv(ctx, resp, st, a); err != nil {
+	if err := recv(ctx, resp, x.st, a); err != nil {
 		return nil, err
 	}
 	return a, nil
+}
+
+// readLimitBody settles a as the rate limit its headers showed, until
+// until or the time the dialect reads from the body; the gate keeps the
+// later of the two. Retry-After is not read again: it counts from the
+// answer's arrival. The body is read for at most limitBodyWait, whatever
+// the call's own time; a failure to read it, the call ending included,
+// changes nothing.
+func (c *Client) readLimitBody(k *call, x *exchange, a *answer, until time.Time) {
+	timer := time.AfterFunc(limitBodyWait, func() { x.cancel(nil) })
+	body, _ := readUpTo(x.st.reader(x.resp.Body), min(k.limit, errorReadLimit))
+	timer.Stop()
+	a.limited, a.until = true, until
+	if named, limited := c.dialect.RateLimited(a.status, a.header, body); limited {
+		a.until = named
+	}
 }

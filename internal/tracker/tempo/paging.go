@@ -27,11 +27,11 @@ type page[T any] struct {
 }
 
 // pages reads r page by page with offset and limit, handing each page's
-// results to fn, until Tempo names no next page. It reads the next page
+// answer and results to fn, until Tempo names no next page. It reads the next page
 // by offset rather than by following the link, so every request stays on
 // the base URL. A page that names a next page but holds nothing fails the
 // call instead of asking for the same offset again.
-func pages[T any](ctx context.Context, h *trackerapi.Client, r trackerapi.Request, fn func([]T) error) error {
+func pages[T any](ctx context.Context, h *trackerapi.Client, r trackerapi.Request, fn func(*trackerapi.Response, []T) error) error {
 	offset := 0
 	for {
 		q := maps.Clone(r.Query)
@@ -43,10 +43,11 @@ func pages[T any](ctx context.Context, h *trackerapi.Client, r trackerapi.Reques
 		req := r
 		req.Query = q
 		var p page[T]
-		if _, err := h.JSON(ctx, req, &p); err != nil {
+		resp, err := h.JSON(ctx, req, &p)
+		if err != nil {
 			return err
 		}
-		if err := fn(p.Results); err != nil {
+		if err := fn(resp, p.Results); err != nil {
 			return err
 		}
 		if p.Metadata.Next == "" {

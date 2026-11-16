@@ -32,7 +32,7 @@ func (c *Client) Stream(ctx context.Context, r Request, dst io.Writer, limit int
 	if err != nil {
 		return nil, err
 	}
-	return a.response(), nil
+	return c.response(a), nil
 }
 
 // prepareGet is prepareCall for a call that only takes a GET.
@@ -47,13 +47,10 @@ func (c *Client) prepareGet(r Request, name string) (*call, error) {
 	return k, nil
 }
 
-// copyBody is the receiver of Stream. The dialect sees the answer without
-// its body before a byte is copied.
+// copyBody is the receiver of Stream. An answer its headers mark as a
+// rate limit never reaches it, so no byte of one is copied.
 func (c *Client) copyBody(k *call, dst io.Writer) receiver {
 	return func(ctx context.Context, resp *http.Response, st *stall, a *answer) error {
-		if a.until, a.limited = c.limitOf(a.status, a.header, nil); a.limited {
-			return nil
-		}
 		if resp.ContentLength > k.limit {
 			return c.tooLarge(k, a)
 		}
@@ -112,10 +109,7 @@ func (c *Client) Location(ctx context.Context, r Request) (string, error) {
 		return "", err
 	}
 	k.redirects = answerRedirect
-	discard := func(ctx context.Context, resp *http.Response, st *stall, a *answer) error {
-		a.until, a.limited = c.limitOf(a.status, a.header, nil)
-		return nil
-	}
+	discard := func(context.Context, *http.Response, *stall, *answer) error { return nil }
 	a, err := c.execute(ctx, k, discard)
 	if err != nil {
 		return "", err

@@ -79,6 +79,9 @@ type Client struct {
 	http   *trackerapi.Client
 	issues IssueIDs
 	site   siteCache
+	// life ends at Close; calls into issues run under it too.
+	life context.Context
+	stop context.CancelFunc
 }
 
 // New builds a Client. Nothing is sent until the first call.
@@ -115,13 +118,16 @@ func newClient(topts trackerapi.Options, issues IssueIDs) (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("tempo: %w", err)
 	}
-	return &Client{http: h, issues: issues}, nil
+	life, stop := context.WithCancel(context.Background())
+	return &Client{http: h, issues: issues, life: life, stop: stop}, nil
 }
 
-// Close ends the calls in flight and releases the connection and the
-// credential. Every later call fails with a *trackerapi.NotSentError.
-// Close may be called more than once.
+// Close ends the calls in flight, including calls into IssueIDs, whose
+// context it cancels, and releases the connection and the credential.
+// Every later call fails with a *trackerapi.NotSentError. Close may be
+// called more than once.
 func (c *Client) Close() {
+	c.stop()
 	c.http.Close()
 	c.site.shut()
 }
@@ -136,6 +142,23 @@ func (c *Client) DropCache() { c.site.drop() }
 
 // errClosed is a call on a closed Client that the transport did not see.
 var errClosed = errors.New("tempo: client is closed")
+
+// bound is ctx, ended also by Close: the context of a call into the
+// caller's IssueIDs. done releases it.
+func (c *Client) bound(ctx context.Context) (context.Context, func()) {
+	ctx, cancel := context.WithCancelCause(ctx)
+	stop := context.AfterFunc(c.life, func() { cancel(errClosed) })
+	return ctx, func() {
+		stop()
+		cancel(nil)
+	}
+}
+
+// unreadable is a value in an answer that does not read, its text
+// scrubbed of the credential the request carried.
+func unreadable(resp *trackerapi.Response, err error) error {
+	return errors.New(resp.Scrub(err.Error()))
+}
 
 // path builds a request path from fixed segments and escaped values.
 func path(fixed string, values ...string) string {

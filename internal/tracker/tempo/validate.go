@@ -2,11 +2,15 @@ package tempo
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
+	"net/http"
 	"slices"
 	"strconv"
 	"strings"
+
+	"agent-overflow/internal/tracker/trackerapi"
 )
 
 // Field names the part of a worklog a Problem is about. A problem from
@@ -55,7 +59,37 @@ const (
 	PeriodSubmitted Code = "period_submitted"
 	// TempoRefused: Tempo refused the write; Message is Tempo's.
 	TempoRefused Code = "refused"
+	// IssueKept: Tempo applied an update but kept the worklog on its old
+	// issue instead of the one the change named.
+	IssueKept Code = "issue_kept"
 )
+
+// Check names a check that needs a read from Tempo. When the token may
+// not make that read (Tempo answers 403), the check is skipped for the
+// batch, each op it would have judged lists it as unchecked, and Tempo
+// alone judges the write.
+type Check string
+
+// The checks that read from Tempo.
+const (
+	// CheckAttributes: known attributes, allowed values, required ones.
+	// Without it the account check cannot tell account values either.
+	CheckAttributes Check = "attributes"
+	// CheckAccounts: an account value names an existing usable account.
+	CheckAccounts Check = "accounts"
+	// CheckSettings: whether a closed or archived account is allowed.
+	CheckSettings Check = "settings"
+	// CheckApprovals: the date is not in an approved or submitted
+	// timesheet.
+	CheckApprovals Check = "approvals"
+)
+
+// Report is what Validate found for one op.
+type Report struct {
+	Problems []Problem
+	// Unchecked are the checks the token may not make the reads for.
+	Unchecked []Check
+}
 
 // Problem is one reason a worklog write would be, or was, refused.
 type Problem struct {
@@ -86,21 +120,24 @@ func (e *InvalidError) Error() string {
 //   - an unknown attribute, an attribute given twice, an empty value, a
 //     value its type does not allow (a static list's options, true or
 //     false for a checkbox, a number, an existing account that is open,
-//     or closed where Settings allow it), a required attribute missing;
+//     or closed or archived where Settings allow it), a required attribute
+//     missing;
 //   - a start date, or for a change the current one, in a timesheet that
 //     is approved or waiting for approval.
 //
 // Tempo's API does not expose closed periods, so a date in one is found
-// only when Tempo refuses the write. The error is a failure to read what
-// the checks need; Apply runs the same checks before it writes.
-func (c *Client) Validate(ctx context.Context, ops []Op) ([][]Problem, error) {
+// only when Tempo refuses the write. A check whose read Tempo answers
+// with 403 is skipped and listed in Report.Unchecked. The error is any
+// other failure to read what the checks need. Apply runs the same checks
+// before it writes.
+func (c *Client) Validate(ctx context.Context, ops []Op) ([]Report, error) {
 	checked, err := c.check(ctx, ops)
 	if err != nil {
 		return nil, fmt.Errorf("tempo: check worklogs: %w", err)
 	}
-	out := make([][]Problem, len(ops))
+	out := make([]Report, len(ops))
 	for i := range checked {
-		out[i] = checked[i].problems
+		out[i] = Report{Problems: checked[i].problems, Unchecked: checked[i].unchecked}
 	}
 	return out, nil
 }
@@ -108,16 +145,32 @@ func (c *Client) Validate(ctx context.Context, ops []Op) ([][]Problem, error) {
 // prepared is one op after the checks: for a create or update, the record
 // it sends and the issue key it named.
 type prepared struct {
-	draft    Draft
-	issueKey string
-	body     worklogBody
-	problems []Problem
+	draft     Draft
+	issueKey  string
+	body      worklogBody
+	problems  []Problem
+	unchecked []Check
+}
+
+// skip records that check was not run for p.
+func (p *prepared) skip(check Check) {
+	if !slices.Contains(p.unchecked, check) {
+		p.unchecked = append(p.unchecked, check)
+	}
+}
+
+// forbidden reports a check read Tempo answered with 403: the token may
+// not make it.
+func forbidden(err error) bool {
+	se, ok := errors.AsType[*trackerapi.StatusError](err)
+	return ok && se.Status == http.StatusForbidden
 }
 
 // check runs every check on ops: one IssueIDs.IDs call for the keys they
-// name, the cached attributes, one account search, the settings only when
-// a closed account needs them, and one approval read per author and
-// period.
+// name (under a context Close also ends), the cached attributes, one
+// account search, the settings only when a closed or archived account
+// needs them, and one approval read per author and period. A read Tempo
+// answers with 403 skips its check; any other failure is the error.
 func (c *Client) check(ctx context.Context, ops []Op) ([]prepared, error) {
 	out := make([]prepared, len(ops))
 	var keys []string
@@ -143,15 +196,13 @@ func (c *Client) check(ctx context.Context, ops []Op) ([]prepared, error) {
 	if !writes {
 		return out, nil
 	}
-	ids := map[string]int64{}
-	if len(keys) > 0 {
-		var err error
-		if ids, err = c.issues.IDs(ctx, keys); err != nil {
-			return nil, fmt.Errorf("resolve issue IDs: %w", err)
-		}
+	ids, err := c.issueIDs(ctx, keys)
+	if err != nil {
+		return nil, err
 	}
 	attrs, err := c.attributes(ctx)
-	if err != nil {
+	attrsKnown := err == nil
+	if err != nil && !forbidden(err) {
 		return nil, err
 	}
 	issueIDs := make([]int64, len(ops))
@@ -165,9 +216,13 @@ func (c *Client) check(ctx context.Context, ops []Op) ([]prepared, error) {
 			p.problems = append(p.problems, changeProblems(op.change)...)
 		}
 		p.problems = append(p.problems, draftProblems(p.draft)...)
+		if !attrsKnown {
+			p.skip(CheckAttributes)
+			continue
+		}
 		p.problems = append(p.problems, attributeProblems(p.draft.Attributes, attrs)...)
 	}
-	if err := c.checkAccounts(ctx, out, attrs); err != nil {
+	if err := c.checkAccounts(ctx, out, attrs, attrsKnown); err != nil {
 		return nil, err
 	}
 	if err := c.checkApprovals(ctx, ops, out); err != nil {
@@ -179,6 +234,21 @@ func (c *Client) check(ctx context.Context, ops []Op) ([]prepared, error) {
 		}
 	}
 	return out, nil
+}
+
+// issueIDs resolves keys with one IssueIDs.IDs call under a context
+// Close also ends.
+func (c *Client) issueIDs(ctx context.Context, keys []string) (map[string]int64, error) {
+	if len(keys) == 0 {
+		return map[string]int64{}, nil
+	}
+	ctx, done := c.bound(ctx)
+	defer done()
+	ids, err := c.issues.IDs(ctx, keys)
+	if err != nil {
+		return nil, fmt.Errorf("resolve issue IDs: %w", err)
+	}
+	return ids, nil
 }
 
 func deleteProblems(id int64) []Problem {
@@ -267,7 +337,7 @@ func attributeProblems(values []AttributeValue, attrs []Attribute) []Problem {
 		switch a.Type {
 		case AttributeList:
 			if !slices.ContainsFunc(a.Options, func(o Option) bool { return o.Value == v.Value }) {
-				add(v.Key, NotAllowed, "%q is not an option of %s; options: %s", v.Value, a.Name, optionNames(a.Options))
+				add(v.Key, NotAllowed, "%q is not an option of %s; options: %s", v.Value, a.Name, a.optionsText)
 			}
 		case AttributeCheckbox:
 			if v.Value != "true" && v.Value != "false" {

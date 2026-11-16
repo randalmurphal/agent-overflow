@@ -21,33 +21,36 @@ type Date struct {
 // epochDays is the day count of 1970-01-01 from 0001-01-01.
 const epochDays = 719162
 
-// NewDate is the day year-month-day. It refuses a day the calendar does
-// not have, such as February 30.
+// NewDate is the day year-month-day, in years 1 to 9999. It refuses a
+// day the calendar does not have, such as February 30. Every Date other
+// than the zero Date comes from it.
 func NewDate(year int, month time.Month, day int) (Date, error) {
 	t := time.Date(year, month, day, 0, 0, 0, 0, time.UTC)
 	if t.Year() != year || t.Month() != month || t.Day() != day || year < 1 || year > 9999 {
-		return Date{}, fmt.Errorf("tempo: %04d-%02d-%02d is not a calendar date", year, int(month), day)
+		return Date{}, fmt.Errorf("tempo: %04d-%02d-%02d is not a calendar date in years 1 to 9999", year, int(month), day)
 	}
-	return dateOfUTC(t), nil
+	return Date{days: t.Unix()/86400 + epochDays + 1}, nil
 }
 
-// DateOf is the calendar day t falls on in t's own location.
+// DateOf is the calendar day t falls on in t's own location; the zero
+// Date when that day is outside years 1 to 9999.
 func DateOf(t time.Time) Date {
 	y, m, d := t.Date()
-	return dateOfUTC(time.Date(y, m, d, 0, 0, 0, 0, time.UTC))
+	out, err := NewDate(y, m, d)
+	if err != nil {
+		return Date{}
+	}
+	return out
 }
 
-func dateOfUTC(t time.Time) Date {
-	return Date{days: t.Unix()/86400 + epochDays + 1}
-}
-
-// ParseDate reads YYYY-MM-DD.
+// ParseDate reads YYYY-MM-DD in years 1 to 9999. It never returns the
+// zero Date without an error.
 func ParseDate(s string) (Date, error) {
 	t, err := time.Parse(dateLayout, s)
 	if err != nil {
 		return Date{}, fmt.Errorf("tempo: %q is not a YYYY-MM-DD date", s)
 	}
-	return dateOfUTC(t), nil
+	return NewDate(t.Date())
 }
 
 // IsZero reports the zero Date, which is no date.
@@ -212,6 +215,20 @@ type Start struct {
 	Date Date
 	// Time is the start time of day; unset leaves it to Tempo.
 	Time TimeOfDay
+}
+
+// parseTimestamp reads a time Tempo gives as a plain string: an RFC 3339
+// time, as the worklog examples show, or a date alone, as the approval
+// status example shows, which reads as midnight UTC of that date.
+func parseTimestamp(s string) (time.Time, error) {
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t, nil
+	}
+	d, err := ParseDate(s)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("tempo: %q is neither an RFC 3339 time nor a YYYY-MM-DD date", s)
+	}
+	return d.In(time.UTC), nil
 }
 
 // seconds is d in Tempo's unit, whole seconds, rounded to the nearest

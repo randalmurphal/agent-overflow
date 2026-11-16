@@ -100,44 +100,58 @@ func TestValidateRules(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i, tc := range cases {
-		if !reflect.DeepEqual(kinds(got[i]), tc.want) {
+		if !reflect.DeepEqual(kinds(got[i].Problems), tc.want) {
 			t.Errorf("%s: %+v, want %v", tc.name, got[i], tc.want)
 		}
-		for _, p := range got[i] {
+		for _, p := range got[i].Problems {
 			if p.Message == "" {
 				t.Errorf("%s: a problem without a message: %+v", tc.name, p)
 			}
+		}
+		if len(got[i].Unchecked) != 0 {
+			t.Errorf("%s: unchecked %v with every read allowed", tc.name, got[i].Unchecked)
 		}
 	}
 	idCalls, _ := issues.calls()
 	if !reflect.DeepEqual(idCalls, [][]string{{"WEB-1", "WEB-404"}}) {
 		t.Errorf("ID lookups %v", idCalls)
 	}
-	if msg := got[13][0].Message; !strings.Contains(msg, "Development (dev)") {
+	if msg := got[13].Problems[0].Message; !strings.Contains(msg, "Development (dev)") {
 		t.Errorf("a not-allowed option names the options: %q", msg)
 	}
-	if msg := got[25][0].Message; !strings.Contains(msg, "current start date 2026-11-03") {
+	if msg := got[25].Problems[0].Message; !strings.Contains(msg, "current start date 2026-11-03") {
 		t.Errorf("a move out of an approved week names the current date: %q", msg)
 	}
 }
 
-func TestValidateClosedAccountAllowed(t *testing.T) {
+// TestValidateInactiveAccountsAllowed: Tempo's one setting lets a
+// worklog name a closed or an archived account.
+func TestValidateInactiveAccountsAllowed(t *testing.T) {
 	f := newFake(t)
 	c := testClient(t, f, newIssues())
 	f.on("GET", "/4/work-attributes", q("offset", "0", "limit", "1000"), "", 200, attributesJSON)
-	f.on("POST", "/4/accounts/search", q("offset", "0", "limit", "1000"), `{"keys":["OLD"]}`, 200, pageOf(0, false,
-		`{"id":2,"key":"OLD","name":"Old","status":"CLOSED","global":false}`))
+	f.on("POST", "/4/accounts/search", q("offset", "0", "limit", "1000"), `{"keys":["OLD","GONE"]}`, 200, pageOf(0, false,
+		`{"id":2,"key":"OLD","name":"Old","status":"CLOSED","global":false}`,
+		`{"id":3,"key":"GONE","name":"Gone","status":"ARCHIVED","global":false}`))
 	f.on("GET", "/4/globalconfiguration", nil, "", 200, `{"allowLoggingOnClosedAccount":true,"weekStart":7}`)
 	f.on("GET", "/4/timesheet-approvals/user/acc-user1", q("from", "2026-11-10", "to", "2026-11-10"), "", 200, approvalJSONFor("2026-11-09", "2026-11-15", "OPEN"))
-	got, err := c.Validate(context.Background(), []Op{CreateOp(Draft{
-		Issue: Issue{ID: 10001}, Author: "acc-user1", Start: Start{Date: mustDate(t, "2026-11-10")}, Spent: time.Hour,
-		Attributes: []AttributeValue{{"_Category_", "mtg"}, {"_Account_", "OLD"}},
-	})})
-	if err != nil || len(got[0]) != 0 {
-		t.Fatalf("%v %v", got, err)
+	op := func(account string) Op {
+		return CreateOp(Draft{
+			Issue: Issue{ID: 10001}, Author: "acc-user1", Start: Start{Date: mustDate(t, "2026-11-10")}, Spent: time.Hour,
+			Attributes: []AttributeValue{{"_Category_", "mtg"}, {"_Account_", account}},
+		})
+	}
+	got, err := c.Validate(context.Background(), []Op{op("OLD"), op("GONE")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, r := range got {
+		if len(r.Problems) != 0 || len(r.Unchecked) != 0 {
+			t.Errorf("op %d: %+v", i, r)
+		}
 	}
 	s, err := c.Settings(context.Background())
-	if err != nil || s.WeekStart != time.Sunday || !s.ClosedAccountsAllowed {
+	if err != nil || s.WeekStart != time.Sunday || !s.InactiveAccountsAllowed {
 		t.Fatalf("settings from the cache %+v %v", s, err)
 	}
 }

@@ -2,6 +2,9 @@ package tempo
 
 import (
 	"context"
+	"strings"
+
+	"agent-overflow/internal/secret"
 	"errors"
 	"reflect"
 	"slices"
@@ -149,5 +152,35 @@ func TestWorklogRefusesABadRecord(t *testing.T) {
 	f.on("GET", "/4/worklogs/43", nil, "", 200, wl{id: 43, issue: 10001, author: "acc-user1", date: "09/11/2026", spent: 60}.json())
 	if _, err := c.Worklog(context.Background(), 43); err == nil {
 		t.Fatal("a worklog with a bad date was accepted")
+	}
+}
+
+// TestDecodeErrorsAreScrubbed: text an answer supplies that ends up in an
+// error is scrubbed of the credential the request carried.
+func TestDecodeErrorsAreScrubbed(t *testing.T) {
+	f := newFake(t)
+	c := testClient(t, f, newIssues())
+	f.on("GET", "/4/worklogs/45", nil, "", 200, wl{id: 45, issue: 10001, author: "acc-user1", date: "x" + testToken, spent: 60}.json())
+	f.on("GET", "/4/timesheet-approvals/user/acc-user1", q("from", "2026-11-04", "to", "2026-11-04"), "", 200,
+		`{"period":{"from":"`+testToken+`","to":"2026-11-08"}}`)
+	f.on("GET", "/4/work-attributes", q("offset", "0", "limit", "1000"), "", 200, pageOf(0, false,
+		`{"key":"_Category_","name":"Cat `+testToken+`","type":"STATIC_LIST","required":true,"values":["dev","x`+testToken+`"],"names":{"dev":"Dev `+testToken+`"}}`))
+	f.on("GET", "/4/timesheet-approvals/user/acc-user1", q("from", "2026-11-10", "to", "2026-11-10"), "", 200, approvalJSONFor("2026-11-09", "2026-11-15", "OPEN"))
+	ctx := context.Background()
+	_, err := c.Worklog(ctx, 45)
+	if err == nil || strings.Contains(err.Error(), testToken) || !strings.Contains(err.Error(), secret.Redacted) {
+		t.Errorf("worklog: %v", err)
+	}
+	_, err = c.Approval(ctx, "acc-user1", mustDate(t, "2026-11-04"))
+	if err == nil || strings.Contains(err.Error(), testToken) || !strings.Contains(err.Error(), secret.Redacted) {
+		t.Errorf("approval: %v", err)
+	}
+	reports, err := c.Validate(ctx, []Op{CreateOp(Draft{Issue: Issue{ID: 10001}, Author: "acc-user1", Start: Start{Date: mustDate(t, "2026-11-10")},
+		Spent: time.Hour, Attributes: []AttributeValue{{"_Category_", "lunch"}}})})
+	if err != nil || len(reports[0].Problems) != 1 {
+		t.Fatalf("%+v %v", reports, err)
+	}
+	if msg := reports[0].Problems[0].Message; strings.Contains(msg, testToken) || !strings.Contains(msg, secret.Redacted) {
+		t.Errorf("problem message: %q", msg)
 	}
 }
