@@ -497,7 +497,7 @@ func TestACommandThatSurvivesTheKillIsReported(t *testing.T) {
 	service := newService(t, rec, func(config *Config) {
 		config.Run = func(ctx context.Context, _ procutil.Reaper, _ procutil.GroupCommand) (procutil.GroupOutcome, error) {
 			<-ctx.Done()
-			return procutil.GroupOutcome{ExitCode: -1}, procutil.ErrGroupSurvived
+			return procutil.GroupOutcome{ExitCode: -1, Leftovers: true}, procutil.ErrGroupSurvived
 		}
 	})
 	if _, err := service.Start(shellRequest(t, "run-1", "sudo tail -f /dev/null")); err != nil {
@@ -508,6 +508,13 @@ func TestACommandThatSurvivesTheKillIsReported(t *testing.T) {
 	}
 	if final := rec.terminal(t); final.State != StateFailed || !strings.Contains(final.Error, "still running") {
 		t.Fatalf("terminal frame: %+v", final)
+	}
+	// Leftovers that outlived the kill are not said to be stopped.
+	events, _, _ := rec.snapshot()
+	for _, event := range events {
+		if strings.Contains(event.Chunk, strings.TrimSpace(leftoversNotice)) {
+			t.Fatalf("output %q says the surviving leftovers were stopped", event.Chunk)
+		}
 	}
 }
 
