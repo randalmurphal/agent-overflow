@@ -6074,7 +6074,8 @@ export class RegisteredQueueItem {
 
     /**
      * Origin, OriginThread and OriginWake attribute a message the app queued
-     * on an agent's behalf, as the row it becomes will. AgentMessage is
+     * on an agent's behalf, as the row it becomes will, a report's with its
+     * kind's descriptor (usermessage.OriginWake.Served). AgentMessage is
      * usermessage.IsAgentMessage of that attribution: the message is not
      * the person's, so the composer's queue preview leaves it out and the
      * Agents rail segment lists it as incoming instead.

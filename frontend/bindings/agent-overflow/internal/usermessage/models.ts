@@ -66,9 +66,7 @@ export class OriginThread {
  */
 export class OriginWake {
     /**
-     * Kind is `loop`, `watch` or `send`, `question` or `approval` for a
-     * worker's prompt put to the agent that spawned it, `completion` for a
-     * remote job's report, or `workflow` for a workflow run's wake.
+     * Kind is the report's ReportKind.
      */
     "kind": string;
 
@@ -90,9 +88,16 @@ export class OriginWake {
 
     /**
      * Facts is where the message's data is and what its row's header
-     * says, written with the text (WakeMessage).
+     * says, written with the text (Report).
      */
     "facts"?: threadtools$0.MessageFacts | null;
+
+    /**
+     * Report is what the report's kind means to a person's view of it,
+     * set only where a client receives the attribution (Served), never
+     * stored.
+     */
+    "report"?: ReportDescriptor | null;
 
     /** Creates a new OriginWake instance. */
     constructor($$source: Partial<OriginWake> = {}) {
@@ -108,14 +113,95 @@ export class OriginWake {
      */
     static createFrom($$source: any = {}): OriginWake {
         const $$createField4_0 = $$createType1;
+        const $$createField5_0 = $$createType3;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("facts" in $$parsedSource) {
             $$parsedSource["facts"] = $$createField4_0($$parsedSource["facts"]);
         }
+        if ("report" in $$parsedSource) {
+            $$parsedSource["report"] = $$createField5_0($$parsedSource["report"]);
+        }
         return new OriginWake($$parsedSource as Partial<OriginWake>);
+    }
+}
+
+/**
+ * ReportDescriptor is a report's kind as a person's view of its row reads
+ * it, resolved for the reporter its attribution names. It is served on the
+ * attribution of every report a client receives (OriginWake.Report): rows
+ * as Describe reads them and queued messages. The view takes the report's
+ * kind, sender and body from it and keeps only icons and layout, so a kind
+ * added here renders without a change there. A report of a kind this
+ * computer does not know carries none, and its row is shown whole.
+ */
+export class ReportDescriptor {
+    /**
+     * Category is what kind of report the row is; it chooses the row's
+     * icon, and a category the view has no icon for gets a default one.
+     */
+    "category": string;
+
+    /**
+     * Label is the row's gutter label, five characters at most; Title is
+     * the kind in words.
+     */
+    "label": string;
+    "title": string;
+
+    /**
+     * Sender is who the row's header names as the reporter, and Opens the
+     * thread that name opens, "" for none.
+     */
+    "sender": string;
+    "opens"?: string;
+
+    /**
+     * Badge names the report where it is a badge: a queued message, or a
+     * person's row it was joined into.
+     */
+    "badge": string;
+
+    /**
+     * Body is how the row shows the report's data: ReportBodyData or
+     * ReportBodyText.
+     */
+    "body": string;
+
+    /** Creates a new ReportDescriptor instance. */
+    constructor($$source: Partial<ReportDescriptor> = {}) {
+        if (!("category" in $$source)) {
+            this["category"] = "";
+        }
+        if (!("label" in $$source)) {
+            this["label"] = "";
+        }
+        if (!("title" in $$source)) {
+            this["title"] = "";
+        }
+        if (!("sender" in $$source)) {
+            this["sender"] = "";
+        }
+        if (!("badge" in $$source)) {
+            this["badge"] = "";
+        }
+        if (!("body" in $$source)) {
+            this["body"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ReportDescriptor instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ReportDescriptor {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ReportDescriptor($$parsedSource as Partial<ReportDescriptor>);
     }
 }
 
 // Private type creation functions
 const $$createType0 = threadtools$0.MessageFacts.createFrom;
 const $$createType1 = $Create.Nullable($$createType0);
+const $$createType2 = ReportDescriptor.createFrom;
+const $$createType3 = $Create.Nullable($$createType2);

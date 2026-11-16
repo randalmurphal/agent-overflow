@@ -3,5 +3,6 @@
 
 export {
     OriginThread,
-    OriginWake
+    OriginWake,
+    ReportDescriptor
 } from "./models.js";
