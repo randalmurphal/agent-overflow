@@ -16,6 +16,7 @@ import * as path from 'node:path';
 import { promisify } from 'node:util';
 import { launchHarness, type HarnessApp } from '../src/harness.js';
 import { test, expect } from './fixtures.js';
+import { awaitDeferredSettled } from './upgrade-corpus-helpers.js';
 
 const run = promisify(execFile);
 
@@ -58,7 +59,11 @@ test('an upgrade from v118 repairs stored history in the background', async ({ p
 
     host = await launchHarness({ dataDir: root });
     expect(host.bootstrap.dataDir).toBe(path.dirname(dbPath));
-    await expect.poll(() => watermark(dbPath), { timeout: 60_000 }).toBe(124);
+    // Every deferred phase of this build, not a fixed version: a later
+    // migration with a phase of its own moves the last watermark.
+    const settled = await awaitDeferredSettled(host, 60_000);
+    expect(settled.deferredLatest).toBeGreaterThanOrEqual(124);
+    expect(await watermark(dbPath)).toBe(settled.deferredLatest);
 
     expect(await count(dbPath, `SELECT count(*) AS n FROM deferred_migration_failures`)).toBe(0);
     expect(await count(dbPath, `SELECT count(*) AS n FROM subagent_aggregate_backfill`)).toBe(0);

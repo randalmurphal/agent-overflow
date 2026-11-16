@@ -53,8 +53,10 @@ type Host interface {
 	CreateThread(ThreadOptions) (store.Thread, error)
 	ArchiveThread(threadID string) error
 	// BroadcastThreadRow re-reads one thread and emits it to connected
-	// clients as a full row. The seeder writes history behind the store,
-	// which changes derived row columns (IsDraft) no store write announces.
+	// clients, as `listed` when the row now belongs in the sidebar. The
+	// seeder writes history behind the store, which changes derived row
+	// columns (IsDraft) and lists the thread, and no store write announces
+	// either.
 	BroadcastThreadRow(threadID string)
 	StopSession(threadID string) error
 	DeleteProject(projectID string) error

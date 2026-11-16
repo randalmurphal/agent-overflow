@@ -21,7 +21,6 @@ import (
 	"agent-overflow/internal/providerupdate/updatefake"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/transport"
-	"agent-overflow/internal/triage"
 	"agent-overflow/internal/workflow/def"
 )
 
@@ -244,7 +243,7 @@ func (h *harnessHost) ArchiveThread(threadID string) error {
 }
 
 func (h *harnessHost) BroadcastThreadRow(threadID string) {
-	h.app.announceThread(triage.ThreadActionFull, threadID)
+	h.app.announceThread(h.app.listedAction(threadID), threadID)
 }
 
 func (h *harnessHost) StopSession(threadID string) error {
