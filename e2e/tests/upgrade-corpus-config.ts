@@ -698,7 +698,7 @@ export const coverageAllowlist: CoverageAllowance[] = [
       'origin_thread_id', 'late_reply', 'late_reply_at', 'late_delivered_at', 'wake_attempts', 'wake_next_check', 'wake_issue',
       'lineage_only', 'superseded', 'late_confirmed_at', 'answer_agent', 'answer_agent_role', 'nested_open', 'target_provider',
       'late_delivered_how', 'made_in_thread_id', 'late_wake_item_id', 'open_below_0', 'open_below_1', 'open_below_2',
-      'open_below_3', 'late_reply_agent', 'late_reply_agent_role',
+      'open_below_3', 'late_reply_agent', 'late_reply_agent_role', 'rest_unreported',
     ],
     values: {
       kind: ['ask'],

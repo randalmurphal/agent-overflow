@@ -406,6 +406,11 @@ var agentHeldSQL = `held(token, thread) AS (
        AND ps.target_thread_id = f.caller_thread_id AND ` + agentSpawnLinkSQL("ps") + `
     UNION
     SELECT ps.token, ps.caller_thread_id
+      FROM thread_requests d INDEXED BY idx_thread_requests_answer_due CROSS JOIN thread_requests ps
+     WHERE ` + threadAnswerDueSQL("d") + `
+       AND ps.target_thread_id = d.caller_thread_id AND ` + agentSpawnLinkSQL("ps") + `
+    UNION
+    SELECT ps.token, ps.caller_thread_id
       FROM held CROSS JOIN thread_requests ps
      WHERE ps.target_thread_id = held.thread AND ` + agentSpawnLinkSQL("ps") + `)`
 
@@ -765,7 +770,7 @@ const threadAgentRequestColumns = `r.token, r.caller_thread_id, r.kind, COALESCE
     r.wake_attempts, r.wake_next_check, r.wake_issue, r.lineage_only, r.created_at, r.updated_at,
     COALESCE(r.confirmed_at, 0), COALESCE(r.late_confirmed_at, 0), r.answer_agent, r.answer_agent_role,
     r.target_provider, r.nested_open, r.late_delivered_how, r.made_in_thread_id,
-    r.late_reply_agent, r.late_reply_agent_role, ` + wakeItemSQL
+    r.late_reply_agent, r.late_reply_agent_role, r.rest_unreported, ` + wakeItemSQL
 
 // wakeItemSQL is the caller's row that carried request r's answer: the late
 // reply's confirmed wake, else the first answer's, each while the caller's

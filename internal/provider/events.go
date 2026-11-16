@@ -821,6 +821,13 @@ type SubagentProgressMeta struct {
 	AgentType string `json:"agentType,omitempty"`
 	// Summary is an optional provider-written progress summary.
 	Summary string `json:"summary,omitempty"`
+	// OutsideParentUsage marks an agent whose TotalTokens is not part of
+	// its parent thread's own turn usage: a Codex child, whose spend the
+	// parent's usage stream never carries. A Claude agent's spend is in
+	// its parent's modelUsage and is not marked. The thread's spend as a
+	// unit, its own and its native agents' (store.ThreadTally.Tokens), adds
+	// a marked agent's figure from its completion record.
+	OutsideParentUsage bool `json:"outsideParentUsage,omitempty"`
 }
 
 // SubagentBackgroundedMeta is the typed payload for

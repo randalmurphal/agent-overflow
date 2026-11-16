@@ -39,7 +39,19 @@ func seedAgentRequest(t *testing.T, s *Store, token, caller, kind, target string
 	}
 }
 
+// settleAgentRequest settles a request and hands its answer to its caller
+// in the reply of a call, so no answer is on its way to it.
 func settleAgentRequest(t *testing.T, s *Store, token string, at int64) {
+	t.Helper()
+	settleAgentRequestOwed(t, s, token, at)
+	if _, err := s.MarkThreadRequestDelivered(token, ThreadWakeInline, at, false); err != nil {
+		t.Fatalf("deliver %s: %v", token, err)
+	}
+}
+
+// settleAgentRequestOwed settles a request and leaves its answer owed to
+// its caller.
+func settleAgentRequestOwed(t *testing.T, s *Store, token string, at int64) {
 	t.Helper()
 	settled, err := s.SettleThreadRequest(token, ThreadRequestOpenStates(), ThreadRequestSettlement{
 		State: ThreadRequestFinished, Answer: []byte("done"), AnswerKind: ThreadAnswerFinal, SettledAt: at,

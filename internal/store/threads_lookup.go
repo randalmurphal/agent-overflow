@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // The two thread reads the agent thread tools resolve and list with. Both
@@ -282,8 +283,8 @@ type ThreadName struct {
 }
 
 // ThreadNames reads the title, provider, placement, archive state and
-// tally of each of ids that has a row, in one statement.
-func (s *Store) ThreadNames(ids []string) (_ map[string]ThreadName, err error) {
+// tally at now of each of ids that has a row, in one statement.
+func (s *Store) ThreadNames(ids []string, now time.Time) (_ map[string]ThreadName, err error) {
 	out := make(map[string]ThreadName, len(ids))
 	if len(ids) == 0 {
 		return out, nil
@@ -294,8 +295,8 @@ func (s *Store) ThreadNames(ids []string) (_ map[string]ThreadName, err error) {
 	}
 	rows, err := s.reader().Query(`SELECT t.id, t.title, t.provider,
 	       CASE WHEN `+unplaceableThreadSQL("t")+` THEN '' ELSE t.placement END, t.archived,
-	       `+threadTallyColumnsSQL("t.id")+`
-	  FROM json_each(?) j CROSS JOIN threads t WHERE t.id = j.value`, string(encoded))
+	       `+threadTallyColumnsSQL("t.id", "?2")+`
+	  FROM json_each(?1) j CROSS JOIN threads t WHERE t.id = j.value`, string(encoded), now.UnixMilli())
 	if err != nil {
 		return nil, fmt.Errorf("store: read thread names: %w", err)
 	}
@@ -303,7 +304,7 @@ func (s *Store) ThreadNames(ids []string) (_ map[string]ThreadName, err error) {
 	for rows.Next() {
 		var id string
 		var name ThreadName
-		if err := rows.Scan(&id, &name.Title, &name.Provider, &name.Placement, &name.Archived, &name.Tally.ToolCalls, &name.Tally.Tokens); err != nil {
+		if err := rows.Scan(&id, &name.Title, &name.Provider, &name.Placement, &name.Archived, &name.Tally.ToolCalls, &name.Tally.Tokens, &name.Tally.RuntimeMs, &name.Tally.Running); err != nil {
 			return nil, fmt.Errorf("store: scan a thread name: %w", err)
 		}
 		out[id] = name

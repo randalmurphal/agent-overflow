@@ -159,6 +159,12 @@ type ThreadRequest struct {
 	// when New Thread, Same Assistant moved it to CallerThreadID; empty
 	// when the caller made it.
 	MadeInThreadID string `json:"-"`
+	// RestUnreported marks a `finished` request a paired computer settled
+	// when its thread's turn ended, a computer that cannot report whether
+	// the thread is at rest: a spawn there, or a send to a thread the
+	// caller spawned there, whose answer means its turn ended
+	// (ThreadReceiptAnswer.RestUnreported).
+	RestUnreported bool `json:"-"`
 }
 
 // RemoteRequestSource is the thread a destination's receipts name for the
@@ -265,7 +271,7 @@ const threadRequestColumns = `token, caller_thread_id, kind, COALESCE(due_at, 0)
     wake_attempts, wake_next_check, wake_issue, lineage_only, created_at, updated_at,
     COALESCE(confirmed_at, 0), COALESCE(late_confirmed_at, 0), answer_agent, answer_agent_role,
     target_provider, nested_open, late_delivered_how, made_in_thread_id,
-    late_reply_agent, late_reply_agent_role`
+    late_reply_agent, late_reply_agent_role, rest_unreported`
 
 func scanThreadRequest(row rowScanner) (ThreadRequest, error) {
 	return scanThreadRequestWith(row, nil, nil)
@@ -277,7 +283,7 @@ func scanThreadRequest(row rowScanner) (ThreadRequest, error) {
 // to extra.
 func scanThreadRequestWith(row rowScanner, answer, lateReply any, extra ...any) (ThreadRequest, error) {
 	var r ThreadRequest
-	var notify, polling, lineageOnly, nestedOpen int
+	var notify, polling, lineageOnly, nestedOpen, restUnreported int
 	var answerAgentRole, lateReplyAgentRole string
 	var answerAgent, lateReplyAgent int64
 	if answer == nil {
@@ -296,9 +302,10 @@ func scanThreadRequestWith(row rowScanner, answer, lateReply any, extra ...any) 
 		&r.WakeAttempts, &r.WakeNextCheck, &r.WakeIssue, &lineageOnly, &r.CreatedAt, &r.UpdatedAt,
 		&r.ConfirmedAt, &r.LateConfirmedAt, &answerAgent, &answerAgentRole,
 		&r.TargetProvider, &nestedOpen, &r.LateDeliveredHow, &r.MadeInThreadID,
-		&lateReplyAgent, &lateReplyAgentRole,
+		&lateReplyAgent, &lateReplyAgentRole, &restUnreported,
 	}, extra...)...)
 	r.NestedOpen = nestedOpen != 0
+	r.RestUnreported = restUnreported != 0
 	r.AnswerAgent = answerAgentOf(answerAgent, answerAgentRole)
 	r.LateReplyAgent = answerAgentOf(lateReplyAgent, lateReplyAgentRole)
 	r.Notify = notify != 0
@@ -503,6 +510,11 @@ type ThreadReceiptAnswer struct {
 	LateReply      []byte
 	LateReplyAt    int64
 	LateReplyAgent *ThreadAnswerAgent
+	// RestUnreported is set by the source collecting a `finished` answer
+	// from a computer that settles when the turn ends rather than when the
+	// thread rests, for a request that waits for rest there
+	// (ThreadRequest.RestUnreported). A receipt never carries it.
+	RestUnreported bool
 }
 
 // Snapshot is what the receipt holds at its current revision.
@@ -581,6 +593,11 @@ func (s *Store) CollectThreadRequest(token string, answer ThreadReceiptAnswer, w
 	collected, err := collectThreadRequest(tx, token, answer, wake, "")
 	if err != nil {
 		return ThreadRequestCollected{}, err
+	}
+	if collected.Settled && answer.RestUnreported {
+		if _, err := tx.Exec(`UPDATE thread_requests SET rest_unreported = 1 WHERE token = ?`, token); err != nil {
+			return ThreadRequestCollected{}, fmt.Errorf("%s: mark its rest unreported: %w", action, err)
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return ThreadRequestCollected{}, fmt.Errorf("%s: commit: %w", action, err)

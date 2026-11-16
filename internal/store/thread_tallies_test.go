@@ -2,27 +2,41 @@ package store
 
 import (
 	"database/sql"
+	"maps"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
-// v154 counts what each thread did before it: its top-level tool calls and
-// the tokens its settled turns spent, cache reads not among them. A nested
-// tool call, another row kind, and the ledger rows of a deleted thread
-// count for nothing.
+// v154 counts what each thread did before it: its top-level tool calls, the
+// tokens its settled turns spent, cache reads not among them, and the time
+// its settled turns ran. A nested tool call, another row kind, the ledger
+// rows of a deleted thread, and what a pointer fork inherited through its
+// cut count for nothing.
 func TestThreadTalliesMigrationCountsEachThreadsPast(t *testing.T) {
 	db := migrateThrough(t, assistantsMigrationVersion-1)
 	mustExec(t, db, `INSERT INTO projects (id, path, name, created_at, updated_at) VALUES ('p', '/tmp/p', 'P', 1, 1)`)
-	for _, id := range []string{"busy", "idle"} {
+	for _, id := range []string{"busy", "idle", "forked"} {
 		mustExec(t, db, `INSERT INTO threads (id, project_id, title, provider, workspace_path, model, created_at, updated_at, archived, mode)
 			VALUES (?, 'p', ?, 'claude', '/tmp/p', 'm', 1, 1, 0, 'chat')`, id, id)
 	}
-	for i, row := range []struct{ id, kind, parent string }{
-		{"call-1", "tool_call", ""}, {"call-2", "tool_call", ""}, {"nested", "tool_call", "call-1"},
-		{"said", "assistant_text", ""},
+	mustExec(t, db, `UPDATE threads SET fork_source_thread_id = 'busy', fork_cut_turn_index = 0 WHERE id = 'forked'`)
+	for i, row := range []struct{ id, thread, kind, parent string }{
+		{"call-1", "busy", "tool_call", ""}, {"call-2", "busy", "tool_call", ""}, {"nested", "busy", "tool_call", "call-1"},
+		{"said", "busy", "assistant_text", ""}, {"call-1", "forked", "tool_call", ""},
 	} {
 		mustExec(t, db, `INSERT INTO items (id, thread_id, turn_index, item_index, kind, role, status, summary, parent_id, created_at, updated_at)
-			VALUES (?, 'busy', 0, ?, ?, 'assistant', 'completed', '', ?, 1, 1)`, row.id, i, row.kind, row.parent)
+			VALUES (?, ?, 0, ?, ?, 'assistant', 'completed', '', ?, 1, 1)`, row.id, row.thread, i, row.kind, row.parent)
+	}
+	mustExec(t, db, `INSERT INTO items (id, thread_id, turn_index, item_index, kind, role, status, summary, parent_id, created_at, updated_at)
+		VALUES ('own', 'forked', 1, 0, 'tool_call', 'assistant', 'completed', '', '', 1, 1)`)
+	for _, turn := range []struct {
+		thread           string
+		index            int
+		started, settled any
+	}{{"busy", 0, 1, 11}, {"busy", 1, 20, nil}, {"forked", 0, 1, 11}, {"forked", 1, 30, 35}} {
+		mustExec(t, db, `INSERT INTO turns (turn_id, thread_id, turn_index, started_at, completed_at, stop_reason, assistant_message_id, token_usage_json, error_message)
+			VALUES (? || ':' || ?, ?, ?, ?, ?, '', '', '', '')`, turn.thread, turn.index, turn.thread, turn.index, turn.started, turn.settled)
 	}
 	for _, thread := range []string{"busy", "busy", "gone"} {
 		mustExec(t, db, `INSERT INTO usage_ledger (created_at, thread_id, input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens, reasoning_output_tokens)
@@ -31,19 +45,26 @@ func TestThreadTalliesMigrationCountsEachThreadsPast(t *testing.T) {
 
 	migrateFrom(t, db, assistantsMigrationVersion-1)
 
-	if got := readTallies(t, db); len(got) != 1 || got["busy"] != (ThreadTally{ToolCalls: 2, Tokens: 2 * 34}) {
-		t.Fatalf("tallies after the upgrade %+v; want busy's two top-level calls and 68 tokens, nothing else", got)
+	got := readTallies(t, db)
+	want := map[string]ThreadTally{
+		"busy":   {ToolCalls: 2, Tokens: 2 * 34, RuntimeMs: 10},
+		"forked": {ToolCalls: 1, RuntimeMs: 5},
+	}
+	if !maps.Equal(got, want) {
+		t.Fatalf("tallies after the upgrade %+v; want %+v", got, want)
 	}
 }
 
-// From then on the triggers keep the counts in the write's own transaction,
-// and a read adds the running turn's pending tokens. A thread's row goes
-// with it; the ledger of a thread that no longer exists tallies nothing.
+// From then on each count is kept where the work is recorded, in its own
+// transaction, and a read adds the running turn's pending tokens and time.
+// A thread's row goes with it; the ledger of a thread that no longer exists
+// tallies nothing.
 func TestThreadTalliesFollowEveryWrite(t *testing.T) {
 	s := newTestStore(t)
 	mustCreateThread(t, s, "worker")
 	mustCreateThread(t, s, "other")
-	if got, err := s.ThreadTallies([]string{"worker", "other"}); err != nil || len(got) != 0 {
+	at := func(ms int64) time.Time { return time.UnixMilli(ms) }
+	if got, err := s.ThreadTallies([]string{"worker", "other"}, at(0)); err != nil || len(got) != 0 {
 		t.Fatalf("tallies of new threads %+v, %v; want none", got, err)
 	}
 	for i, row := range []struct{ id, kind, parent string }{
@@ -64,7 +85,7 @@ func TestThreadTalliesFollowEveryWrite(t *testing.T) {
 	if _, err := s.PutUsageProgress("scope", "seg", []UsageLedgerRow{pending}); err != nil {
 		t.Fatalf("put usage progress: %v", err)
 	}
-	got, err := s.ThreadTallies([]string{"worker", "other", "worker", "gone"})
+	got, err := s.ThreadTallies([]string{"worker", "other", "worker", "gone"}, at(0))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,9 +99,78 @@ func TestThreadTalliesFollowEveryWrite(t *testing.T) {
 	if err := s.AppendUsageAndReconcile("scope", []UsageLedgerRow{settled}); err != nil {
 		t.Fatalf("settle usage: %v", err)
 	}
-	if got, err := s.ThreadTallies([]string{"worker"}); err != nil || got["worker"] != (ThreadTally{ToolCalls: 2, Tokens: 160 + 20}) {
-		t.Fatalf("tallies once the turn settled %+v, %v; want its final tokens counted once", got, err)
+	tally := func(now int64) ThreadTally {
+		t.Helper()
+		got, err := s.ThreadTallies([]string{"worker"}, at(now))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got["worker"]
 	}
+	if got := tally(0); got != (ThreadTally{ToolCalls: 2, Tokens: 160 + 20}) {
+		t.Fatalf("tallies once the turn settled %+v; want its final tokens counted once", got)
+	}
+
+	// A native subagent whose spend is outside the thread's own usage adds
+	// what each of its completion records carries over the last; one inside
+	// it (a Claude agent's, in its parent's modelUsage) adds nothing.
+	for i, row := range []struct {
+		id, launch, meta string
+	}{
+		{"done-1", "spawn-1", `{"subagentProgress":{"totalTokens":100,"outsideParentUsage":true}}`},
+		{"done-1b", "spawn-1", `{"subagentProgress":{"totalTokens":150,"outsideParentUsage":true}}`},
+		{"done-2", "spawn-2", `{"subagentProgress":{"totalTokens":900}}`},
+	} {
+		if _, err := appendCarded(s, Item{ID: row.id, ThreadID: "worker", ItemIndex: 10 + i, Kind: "tool_completion", Role: "assistant",
+			Status: "completed", CompletionOf: row.launch, Meta: row.meta, CreatedAt: 1, UpdatedAt: 1}); err != nil {
+			t.Fatalf("append %s: %v", row.id, err)
+		}
+	}
+	if got := tally(0).Tokens; got != 180+150 {
+		t.Fatalf("tokens with the agents' %d; want the Codex child's 150 added once", got)
+	}
+	spend, err := s.AgentCompletionSpend("worker", []string{"spawn-1", "spawn-2", "spawn-3"})
+	if err != nil || !maps.Equal(spend, map[string]int64{"spawn-1": 150}) {
+		t.Fatalf("counted agent spend %+v, %v; want spawn-1's last", spend, err)
+	}
+
+	// Runtime is the time its turns ran: the running one's to now, then
+	// its span once it ends, taken back while it is reopened, moved by a
+	// late end, and nothing for the time between turns.
+	if err := s.InsertTurn(Turn{TurnID: "worker:0", ThreadID: "worker", TurnIndex: 0, StartedAt: 1000}); err != nil {
+		t.Fatal(err)
+	}
+	if got := tally(1500); got.RuntimeMs != 500 || !got.Running {
+		t.Fatalf("runtime mid-turn %+v; want 500 ms, running", got)
+	}
+	if err := s.UpdateTurnCompleted("worker:0", 1400, "end_turn", "", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if got := tally(9000); got.RuntimeMs != 400 || got.Running {
+		t.Fatalf("runtime at rest %+v; want the turn's 400 ms, not running", got)
+	}
+	if err := s.ReopenTurn("worker:0"); err != nil {
+		t.Fatal(err)
+	}
+	if got := tally(1500); got.RuntimeMs != 500 || !got.Running {
+		t.Fatalf("runtime of the reopened turn %+v; want it counted once, to now", got)
+	}
+	if err := s.UpdateTurnCompleted("worker:0", 1600, "end_turn", "", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateTurnLatePayload("worker:0", LateTurnPayload{CompletedAtAdvance: 1700}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.InsertTurn(Turn{TurnID: "worker:1", ThreadID: "worker", TurnIndex: 1, StartedAt: 5000}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateTurnCompleted("worker:1", 5300, "end_turn", "", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if got := tally(9000); got.RuntimeMs != 700+300 || got.Running {
+		t.Fatalf("runtime of two turns %+v; want 1000 ms, the idle time between them not counted", got)
+	}
+
 	if err := s.DeleteThread("worker"); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
@@ -89,9 +179,61 @@ func TestThreadTalliesFollowEveryWrite(t *testing.T) {
 	}
 }
 
+// History a fork copies is not work the fork did: a pointer fork of a
+// source still running its cut turn owns a copy of that turn's tool calls,
+// one of a settled source reads them by pointer, and a rewrite of an
+// inherited row gives the fork its own copy. None of it counts; each
+// fork's own call does, once.
+func TestThreadTalliesCountNoCopiedHistory(t *testing.T) {
+	s := newTestStore(t)
+	for _, source := range []string{"settled", "running"} {
+		mustCreateThread(t, s, source)
+		for i, row := range []Item{
+			{ID: "ask", Kind: "user_text", Role: "user"},
+			{ID: "inherited", Kind: "tool_call", Role: "assistant", ToolName: "Bash"},
+		} {
+			row.ThreadID, row.ItemIndex, row.Status, row.Meta, row.CreatedAt, row.UpdatedAt = source, i, "completed", "{}", 1, 1
+			if err := insertCarded(s, row); err != nil {
+				t.Fatalf("insert %s/%s: %v", source, row.ID, err)
+			}
+		}
+		if err := s.InsertTurn(Turn{TurnID: source + ":0", ThreadID: source, TurnIndex: 0, StartedAt: 1}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.UpdateTurnCompleted("settled:0", 2, "end_turn", "", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	mustPointerFork(t, s, "settled", "settled-fork", ForkCut{})
+	mustPointerFork(t, s, "running", "running-fork", ForkCut{})
+	if owned, err := queryIDs(s.db, `SELECT id FROM items WHERE thread_id = 'running-fork' AND kind = 'tool_call'`); err != nil || len(owned) != 1 {
+		t.Fatalf("the running source's fork owns %v, %v; want its copy of the call", owned, err)
+	}
+	// The source's rewrite of the settled call gives its fork a copy.
+	summary := "rewritten"
+	if _, err := s.UpdateItemFields("settled", "inherited", ItemPartialUpdate{Summary: &summary}); err != nil {
+		t.Fatalf("rewrite: %v", err)
+	}
+	for _, fork := range []string{"settled-fork", "running-fork"} {
+		if _, err := appendCarded(s, Item{ID: "own", ThreadID: fork, TurnIndex: 1, Kind: "tool_call", Role: "assistant",
+			Status: "completed", Meta: "{}", CreatedAt: 3, UpdatedAt: 3}); err != nil {
+			t.Fatalf("append to %s: %v", fork, err)
+		}
+	}
+	got, err := s.ThreadTallies([]string{"settled", "running", "settled-fork", "running-fork"}, time.UnixMilli(2))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for thread, want := range map[string]int64{"settled": 1, "running": 1, "settled-fork": 1, "running-fork": 1} {
+		if got[thread].ToolCalls != want {
+			t.Fatalf("%s counts %d tool calls (%+v); want %d", thread, got[thread].ToolCalls, got, want)
+		}
+	}
+}
+
 func readTallies(t *testing.T, db *sql.DB) map[string]ThreadTally {
 	t.Helper()
-	rows, err := db.Query(`SELECT thread_id, tool_calls, tokens FROM thread_tallies`)
+	rows, err := db.Query(`SELECT thread_id, tool_calls, tokens, turn_ms FROM thread_tallies`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,7 +242,7 @@ func readTallies(t *testing.T, db *sql.DB) map[string]ThreadTally {
 	for rows.Next() {
 		var id string
 		var tally ThreadTally
-		if err := rows.Scan(&id, &tally.ToolCalls, &tally.Tokens); err != nil {
+		if err := rows.Scan(&id, &tally.ToolCalls, &tally.Tokens, &tally.RuntimeMs); err != nil {
 			t.Fatal(err)
 		}
 		out[id] = tally
@@ -123,7 +265,7 @@ func TestThreadTalliesSurviveARestore(t *testing.T) {
 	if err := st.AppendUsage([]UsageLedgerRow{{CreatedAt: 1, ThreadID: "t1", TurnID: "t", Provider: "claude", Model: "m", InputTokens: 40}}); err != nil {
 		t.Fatal(err)
 	}
-	want, err := st.ThreadTallies([]string{"t1"})
+	want, err := st.ThreadTallies([]string{"t1"}, time.UnixMilli(0))
 	if err != nil || want["t1"].ToolCalls == 0 || want["t1"].Tokens != 40 {
 		t.Fatalf("tallies before the snapshot %+v, %v", want, err)
 	}
@@ -134,14 +276,14 @@ func TestThreadTalliesSurviveARestore(t *testing.T) {
 	if _, err := st.RestoreFrom(snap); err != nil {
 		t.Fatalf("RestoreFrom: %v", err)
 	}
-	if got, err := st.ThreadTallies([]string{"t1"}); err != nil || got["t1"] != want["t1"] {
+	if got, err := st.ThreadTallies([]string{"t1"}, time.UnixMilli(0)); err != nil || got["t1"] != want["t1"] {
 		t.Fatalf("tallies after the restore %+v, %v; want the snapshot's %+v", got, err, want)
 	}
 	if _, err := appendCarded(st, Item{ID: "after", ThreadID: "t1", TurnIndex: 2, ItemIndex: 0, Kind: "tool_call", Role: "assistant",
 		Status: "completed", CreatedAt: 2, UpdatedAt: 2}); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := st.ThreadTallies([]string{"t1"}); err != nil || got["t1"].ToolCalls != want["t1"].ToolCalls+1 {
+	if got, err := st.ThreadTallies([]string{"t1"}, time.UnixMilli(0)); err != nil || got["t1"].ToolCalls != want["t1"].ToolCalls+1 {
 		t.Fatalf("tallies after a call past the restore %+v, %v; want one more call", got, err)
 	}
 }

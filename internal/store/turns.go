@@ -112,20 +112,22 @@ func (s *Store) UpdateTurnCompleted(
 	}
 	label := fmt.Sprintf("store: update turn %s", turnID)
 	return s.writeTurn(turnID, label, func(tx *sql.Tx) error {
-		result, err := tx.Exec(
-			`UPDATE turns
-			    SET completed_at = ?,
-			        stop_reason = ?,
-			        assistant_message_id = ?,
-			        token_usage_json = ?,
-			        error_message = ?
-			  WHERE turn_id = ?`,
-			completedAt, stopReason, assistantMessageID, tokenUsageJSON, errorMessage, turnID,
-		)
-		if err != nil {
-			return fmt.Errorf("%s: %w", label, err)
-		}
-		return requireRowsAffected(result, label)
+		return tallyTurnSpanTx(tx, turnID, func() error {
+			result, err := tx.Exec(
+				`UPDATE turns
+				    SET completed_at = ?,
+				        stop_reason = ?,
+				        assistant_message_id = ?,
+				        token_usage_json = ?,
+				        error_message = ?
+				  WHERE turn_id = ?`,
+				completedAt, stopReason, assistantMessageID, tokenUsageJSON, errorMessage, turnID,
+			)
+			if err != nil {
+				return fmt.Errorf("%s: %w", label, err)
+			}
+			return requireRowsAffected(result, label)
+		})
 	}, func() error { return fmt.Errorf("%s: %w", label, sql.ErrNoRows) })
 }
 
@@ -138,11 +140,13 @@ func (s *Store) ReopenTurn(turnID string) error {
 	}
 	label := fmt.Sprintf("store: reopen turn %s", turnID)
 	return s.writeTurn(turnID, label, func(tx *sql.Tx) error {
-		result, err := tx.Exec(`UPDATE turns SET completed_at = NULL WHERE turn_id = ?`, turnID)
-		if err != nil {
-			return fmt.Errorf("%s: %w", label, err)
-		}
-		return requireRowsAffected(result, label)
+		return tallyTurnSpanTx(tx, turnID, func() error {
+			result, err := tx.Exec(`UPDATE turns SET completed_at = NULL WHERE turn_id = ?`, turnID)
+			if err != nil {
+				return fmt.Errorf("%s: %w", label, err)
+			}
+			return requireRowsAffected(result, label)
+		})
 	}, func() error { return fmt.Errorf("%s: %w", label, sql.ErrNoRows) })
 }
 
@@ -228,7 +232,7 @@ func (s *Store) UpdateTurnLatePayload(turnID string, payload LateTurnPayload) er
 	}
 	label := fmt.Sprintf("store: update turn %s late payload", turnID)
 	return s.writeTurn(turnID, label, func(tx *sql.Tx) error {
-		return updateTurnLatePayloadTx(tx, turnID, payload, label)
+		return tallyTurnSpanTx(tx, turnID, func() error { return updateTurnLatePayloadTx(tx, turnID, payload, label) })
 	}, func() error { return nil })
 }
 
