@@ -16,6 +16,18 @@ import (
 	"agent-overflow/internal/workflow/wake"
 )
 
+// builtMessage is the message a constructor returns; a refusal fails the
+// test.
+func builtMessage(t testing.TB) func(usermessage.AgentMessage, error) usermessage.AgentMessage {
+	return func(message usermessage.AgentMessage, err error) usermessage.AgentMessage {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return message
+	}
+}
+
 // factsOf is the facts a message's attribution carries, nil when it has
 // none.
 func factsOf(message usermessage.AgentMessage) *threadtools.MessageFacts {
@@ -58,26 +70,26 @@ func TestEveryAgentWakeWriterStoresItsFacts(t *testing.T) {
 		bodyHas  string
 		headline string
 	}{
-		{"a loop's fire", renderAgentLoopWake(store.AgentWake{Label: "nightly", Note: "Check  the build."}, agentWakeFire{missed: 2}),
+		{"a loop's fire", builtMessage(t)(renderAgentLoopWake(store.AgentWake{Label: "nightly", Note: "Check  the build."}, agentWakeFire{missed: 2})),
 			store.AgentWakeLoop, `Loop "nightly" fired. ` + agentWakeDataNotice, `note: "Check  the build."`, "Check the build."},
-		{"a watch's output", renderAgentWatchWake(store.AgentWake{Label: "ci"}, agentWakeFire{}, watchOut, cappedOutput{}),
+		{"a watch's output", builtMessage(t)(renderAgentWatchWake(store.AgentWake{Label: "ci"}, agentWakeFire{}, watchOut, cappedOutput{})),
 			store.AgentWakeWatch, `Watch "ci" reported. ` + agentWakeDataNotice, `"build failed: exit 2"`, "build failed: exit 2"},
-		{"an outside send", renderAgentSendWake("deploy finished\nall good"),
-			usermessage.OriginWakeKindSend, agentSendWakeHeader + " " + agentWakeDataNotice, `"all good"`, "deploy finished"},
-		{"a worker's approval request", workerPromptMessage("Worker", "t-worker", approval),
-			usermessage.OriginWakeKindApproval, `Thread "Worker" (t-worker), which you spawned, is waiting on your answer. ` + agentWakeDataNotice,
+		{"an outside send", builtMessage(t)(renderAgentSendWake("deploy finished\nall good")),
+			string(usermessage.ReportSend), agentSendWakeHeader + " " + agentWakeDataNotice, `"all good"`, "deploy finished"},
+		{"a worker's approval request", builtMessage(t)(workerPromptMessage("Worker", "t-worker", approval)),
+			string(usermessage.ReportApproval), `Thread "Worker" (t-worker), which you spawned, is waiting on your answer. ` + agentWakeDataNotice,
 			"token tok-1", "It asks for approval to use Bash."},
-		{"a worker's question", workerPromptMessage("Worker", "t-worker", question),
-			usermessage.OriginWakeKindQuestion, `Thread "Worker" (t-worker), which you spawned, is waiting on your answer. ` + agentWakeDataNotice,
+		{"a worker's question", builtMessage(t)(workerPromptMessage("Worker", "t-worker", question)),
+			string(usermessage.ReportQuestion), `Thread "Worker" (t-worker), which you spawned, is waiting on your answer. ` + agentWakeDataNotice,
 			"token tok-2", "1. Scope: Which module?"},
-		{"a remote job's report", remoteCompletionMessage(remote, "desk", remoteCompletionOutput{Tail: "ok"}),
-			usermessage.OriginWakeKindCompletion, "Remote job finished on desk: make test", "Output (untrusted):\nok", "finished; exit code: 2"},
-		{"a workflow run's wake", workflowWakeMessage("release", wake.Message{Notice: wake.DataNotice, Data: "run: \"release\""}),
-			usermessage.OriginWakeKindWorkflow, wake.DataNotice, `run: "release"`, ""},
-		{"an assistant's opening", assistantMessage(assistantSendID(usermessage.OriginWakeKindOpening, "a1"), "Ops", agenthome.OpeningMessage("Ops", "/config/agents/a1")),
-			usermessage.OriginWakeKindOpening, "", "Ops", ""},
-		{"an assistant's handoff", assistantMessage(assistantSendID(usermessage.OriginWakeKindHandOff, "a1"), "Ops", agenthome.HandOffMessage(agenthome.HandOff{Name: "Ops", PreviousThreadID: "t-old"})),
-			usermessage.OriginWakeKindHandOff, "", "t-old", ""},
+		{"a remote job's report", builtMessage(t)(remoteCompletionMessage(remote, "desk", remoteCompletionOutput{Tail: "ok"})),
+			string(usermessage.ReportCompletion), "Remote job finished on desk: make test", "Output (untrusted):\nok", "finished; exit code: 2"},
+		{"a workflow run's wake", builtMessage(t)(workflowWakeMessage("release", wake.Message{Notice: wake.DataNotice, Data: "run: \"release\""})),
+			string(usermessage.ReportWorkflow), wake.DataNotice, `run: "release"`, ""},
+		{"an assistant's opening", builtMessage(t)(assistantMessage(assistantSendID(string(usermessage.ReportOpening), "a1"), "Ops", agenthome.OpeningMessage("Ops", "/config/agents/a1"))),
+			string(usermessage.ReportOpening), "", "Ops", ""},
+		{"an assistant's handoff", builtMessage(t)(assistantMessage(assistantSendID(string(usermessage.ReportHandOff), "a1"), "Ops", agenthome.HandOffMessage(agenthome.HandOff{Name: "Ops", PreviousThreadID: "t-old"}))),
+			string(usermessage.ReportHandOff), "", "t-old", ""},
 	} {
 		facts := factsOf(tc.message)
 		attribution := tc.message.Attribution()
@@ -103,7 +115,7 @@ func TestEveryAgentWakeWriterStoresItsFacts(t *testing.T) {
 // A headline is one line, bounded, whatever the writer passes it.
 func TestAWakeHeadlineIsOneBoundedLine(t *testing.T) {
 	t.Parallel()
-	message := usermessage.Report(usermessage.ReportLoop, usermessage.Reporter{}, "notice", "data", "a\n  b\t"+strings.Repeat("界", usermessage.HeadlineBytes))
+	message := builtMessage(t)(usermessage.Report(usermessage.ReportLoop, usermessage.Reporter{}, "notice", "data", "a\n  b\t"+strings.Repeat("界", usermessage.HeadlineBytes)))
 	headline := factsOf(message).Headline
 	if strings.ContainsAny(headline, "\n\t") || !strings.HasPrefix(headline, "a b 界") || len(headline) > usermessage.HeadlineBytes {
 		t.Fatalf("headline %q (%d bytes), want one line within %d bytes", headline, len(headline), usermessage.HeadlineBytes)
@@ -121,7 +133,7 @@ func TestThreadWakeAndNoticeWritersStoreTheirFacts(t *testing.T) {
 		{Token: "tok-2", TargetThreadID: "t-remote", TargetComputerID: "c-desk", TargetThreadTitle: "Remote"},
 		{Token: "tok-3", TargetThreadID: "t-remote", TargetComputerID: "c-desk", TargetThreadTitle: "Remote"},
 	}
-	digest := usermessage.Answer(app.threadWakeFor(threadWakeMessage{kind: threadtools.WakeReply, text: "Same answer.", rows: rows}))
+	digest := builtMessage(t)(usermessage.Answer(app.threadWakeFor(threadWakeMessage{kind: threadtools.WakeReply, text: "Same answer.", rows: rows})))
 	facts := factsOf(digest)
 	if thread := digest.Attribution().Thread; digest.Origin() != usermessage.OriginAgentThread || thread.Kind != usermessage.OriginKindWake ||
 		thread.ThreadID != "t-local" || thread.Token != "tok-1" || facts == nil {
@@ -137,13 +149,13 @@ func TestThreadWakeAndNoticeWritersStoreTheirFacts(t *testing.T) {
 		t.Fatalf("digest threads = %+v, want the remote one with its computer id", facts.Threads)
 	}
 
-	single := usermessage.Answer(app.threadWakeFor(threadWakeMessage{kind: threadtools.WakeErrored, text: "boom", rows: rows[1:2]}))
+	single := builtMessage(t)(usermessage.Answer(app.threadWakeFor(threadWakeMessage{kind: threadtools.WakeErrored, text: "boom", rows: rows[1:2]})))
 	if facts, thread := factsOf(single), single.Attribution().Thread; facts == nil || facts.Outcome != threadtools.WakeErrored || len(facts.Threads) != 0 ||
 		bodyOf(t, single.Text(), facts) != "boom" || thread.ComputerID != "c-desk" || thread.ThreadID != "t-remote" || thread.Token != "tok-2" {
 		t.Fatalf("single wake %+v, facts %+v", thread, facts)
 	}
 
-	stopped := usermessage.StoppedWorker(threadtools.WorkerStopped{ThreadID: "t-worker", Title: "Worker", Token: "tok-9", Failures: []string{"its watch"}}, "", "")
+	stopped := builtMessage(t)(usermessage.StoppedWorker(threadtools.WorkerStopped{ThreadID: "t-worker", Title: "Worker", Token: "tok-9", Failures: []string{"its watch"}}, "", ""))
 	if facts := factsOf(stopped); facts == nil || facts.Outcome != threadtools.OutcomeWorkerStopped ||
 		!slices.Equal(facts.Tokens, []string{"tok-9"}) || bodyOf(t, stopped.Text(), facts) != stopped.Text() ||
 		!strings.Contains(stopped.Text(), "its watch") || stopped.Attribution().Thread.Kind != usermessage.OriginKindWake {
@@ -163,7 +175,7 @@ func TestADeliveredWakeIsQueuedWithItsFacts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RegisterAgentWake: %v", err)
 	}
-	message := renderAgentLoopWake(row, agentWakeFire{})
+	message := builtMessage(t)(renderAgentLoopWake(row, agentWakeFire{}))
 	if err := a.deliverAgentWake(context.Background(), row, 1, message); err != nil {
 		t.Fatalf("deliverAgentWake: %v", err)
 	}

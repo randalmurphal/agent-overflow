@@ -252,7 +252,12 @@ func (a *App) deliverWorkerPrompt(route provider.PromptRoute, prompt workerPromp
 		a.handBackWorkerPrompt(registered.token)
 		return
 	}
-	message := workerPromptMessage(worker.Title, prompt.workerID, &registered)
+	message, err := workerPromptMessage(worker.Title, prompt.workerID, &registered)
+	if err != nil {
+		log.Printf("worker prompts: put %s to %s: %v", prompt.workerID, route.ThreadID, err)
+		a.handBackWorkerPrompt(registered.token)
+		return
+	}
 	live := func() bool { return a.workerPromptLive(registered.token) }
 	// A thread New Thread, Same Assistant superseded after triage routed
 	// the prompt there takes nothing, so a wake is queued only where triage
@@ -536,7 +541,7 @@ func workerPromptAnswerKey(call threadtools.ReplyCall) string {
 // workerPromptMessage is the wake that puts a worker's prompt to its agent:
 // what the worker asks, quoted as data, and how to answer, headed in its
 // row by the prompt's first line.
-func workerPromptMessage(workerTitle, workerID string, prompt *workerPrompt) usermessage.AgentMessage {
+func workerPromptMessage(workerTitle, workerID string, prompt *workerPrompt) (usermessage.AgentMessage, error) {
 	kind := usermessage.ReportQuestion
 	if prompt.approval != nil {
 		kind = usermessage.ReportApproval

@@ -281,7 +281,7 @@ func TestWorkflowWakeQueuesIntoABusyBoundThread(t *testing.T) {
 	wake := flushqueue.ItemFromTriage(thread.ID, h.queuedItems[0])
 	h.mu.Unlock()
 	if !wake.AgentMessage || wake.Origin != usermessage.OriginAgentWake || wake.OriginWake == nil ||
-		wake.OriginWake.Kind != usermessage.OriginWakeKindWorkflow || wake.OriginWake.Label != item.WorkflowID {
+		wake.OriginWake.Kind != string(usermessage.ReportWorkflow) || wake.OriginWake.Label != item.WorkflowID {
 		t.Fatalf("queued wake attribution = agent %v origin %q wake %+v, want the workflow's", wake.AgentMessage, wake.Origin, wake.OriginWake)
 	}
 	// Its row shows the run's data, not the notice written for the agent.

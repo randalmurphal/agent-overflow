@@ -126,7 +126,7 @@ func TestThreadShowLabelsAgentMessagesWithTheirSender(t *testing.T) {
 	mixed.Meta = `{"origin":"agent-wake","originWake":{"kind":"loop"},"expandComposerCommands":true}`
 	// answer is the row the wake w delivers, as its writer stores it.
 	answer := func(id string, w threadtools.Wake) store.Item {
-		message := usermessage.Answer(w)
+		message := builtMessage(t)(usermessage.Answer(w))
 		attribution := message.Attribution()
 		meta, err := usermessage.MarshalMeta(usermessage.Meta{Origin: attribution.Origin, OriginThread: attribution.Thread, SendID: "thread-wake:k"})
 		if err != nil {
@@ -339,7 +339,7 @@ func TestRemoteCompletionQueuesAsAnAgentMessage(t *testing.T) {
 	if err := a.deliverRemoteCompletion(w, remoteCompletionOutput{Tail: w.Receipt.Output}); err != nil {
 		t.Fatal(err)
 	}
-	want := usermessage.OriginWake{Kind: usermessage.OriginWakeKindCompletion, Label: w.Label, Computer: w.ComputerID}
+	want := usermessage.OriginWake{Kind: string(usermessage.ReportCompletion), Label: w.Label, Computer: w.ComputerID}
 	check := func(source string, item QueuedItem) {
 		t.Helper()
 		if !item.AgentMessage || item.Origin != usermessage.OriginAgentWake || item.OriginWake == nil ||

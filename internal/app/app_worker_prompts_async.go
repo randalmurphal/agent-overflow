@@ -462,7 +462,7 @@ func (a *App) answerAsyncWorkerPrompt(ctx context.Context, prompt workerPrompt, 
 	defer unlock()
 	// The answer is the spawner's own message to its worker, all of it what
 	// the spawner says: no request, and no answer to one of the worker's.
-	written := func(text string) usermessage.AgentMessage { return usermessage.Message(spawner, text) }
+	written := func(text string) (usermessage.AgentMessage, error) { return usermessage.Message(spawner, text) }
 	asked := map[string]int64{prompt.requestID: int64(prompt.occurrence)}
 	return a.queueAsyncAnswers(prompt.workerID, sendID, answers, asked, written, agentNotice{
 		startFailed: func(err error) string {

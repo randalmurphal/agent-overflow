@@ -688,10 +688,14 @@ func (a *App) tellSpawnerOfUserStop(spawn store.ThreadRequest, sendID string, re
 	}
 	// The Stop's failures, named as its result names them: the worker is at
 	// rest when there are none.
-	note := usermessage.StoppedWorker(threadtools.WorkerStopped{
+	note, err := usermessage.StoppedWorker(threadtools.WorkerStopped{
 		Title: title, ThreadID: spawn.TargetThreadID, Token: spawn.Token, Failures: result.Failures,
 	}, computerID, computerName)
-	err := a.queueAgentNotice(agentNotice{
+	if err != nil {
+		result.Failures = append(result.Failures, "tell its spawner: "+err.Error())
+		return
+	}
+	err = a.queueAgentNotice(agentNotice{
 		threadID: spawn.CallerThreadID,
 		sendID:   sendID,
 		prepare:  func() (usermessage.AgentMessage, bool, error) { return note, true, nil },

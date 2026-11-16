@@ -17,9 +17,12 @@ the attribution its row is read by, with the facts it states
 (`OriginThread.Facts`, `OriginWake.Facts`, `threadtools.MessageFacts`). Make
 one only through its constructors (`Request`, `Answer`, `Message`,
 `StoppedWorker`, `Report`), which take text, facts and attribution from one
-source; a new kind of report is a new `ReportKind`. A message read back
-from a queue or a row goes through `DecodeStored`. `Attribution` returns a
-copy.
+source, share nothing with their inputs, and return an error for input no
+message can be made of: a request or thread message from no thread, a
+request with no token, an answer to no request, a report of no
+`ReportKind`. A message read back from a queue or a row goes through
+`DecodeStored`, which reads back everything the constructors write.
+`Attribution` returns a copy.
 
 `Describe` is the one reading of an agent's row for a person: the
 timeline (through `ProjectRowMeta`, which `itemwire` applies to every read

@@ -86,7 +86,7 @@ func agentMessageLabelCases(t *testing.T) []agentMessageLabelCase {
 	// answer is the wake w delivers; with no origin, its row names no
 	// thread.
 	answer := func(w threadtools.Wake, origin *usermessage.OriginThread) (string, string) {
-		return message(usermessage.Answer(w), origin != nil, "thread-wake:tok-1")
+		return message(builtMessage(t)(usermessage.Answer(w)), origin != nil, "thread-wake:tok-1")
 	}
 	appWake := func(m usermessage.AgentMessage) (string, string) {
 		return message(m, true, "agent-wake:w1:1")
@@ -210,41 +210,41 @@ func agentMessageLabelCases(t *testing.T) []agentMessageLabelCase {
 	text, meta = joined([]string{quoting, secondWake}, []string{quotingMeta, secondWakeMeta})
 	add("two wakes joined, the first answer quoting a wake", text, meta)
 	// A loop's wake joined ahead of an answer heads the row as a loop.
-	loopFirst, loopFirstMeta := appWake(renderAgentLoopWake(store.AgentWake{Label: "nightly", Note: "Go."}, agentWakeFire{}))
+	loopFirst, loopFirstMeta := appWake(builtMessage(t)(renderAgentLoopWake(store.AgentWake{Label: "nightly", Note: "Go."}, agentWakeFire{})))
 	text, meta = joined([]string{loopFirst, secondWake}, []string{loopFirstMeta, secondWakeMeta})
 	add("a loop's wake joined with an answer", text, meta)
 
 	loop := store.AgentWake{Label: "nightly", Note: "Check  the build."}
-	text, meta = appWake(renderAgentLoopWake(loop, agentWakeFire{missed: 2}))
+	text, meta = appWake(builtMessage(t)(renderAgentLoopWake(loop, agentWakeFire{missed: 2})))
 	add("a loop", text, meta)
-	text, meta = appWake(renderAgentLoopWake(store.AgentWake{Label: ""}, agentWakeFire{}))
+	text, meta = appWake(builtMessage(t)(renderAgentLoopWake(store.AgentWake{Label: ""}, agentWakeFire{})))
 	add("an unlabelled loop with no note", text, meta)
-	text, meta = appWake(renderAgentWatchWake(store.AgentWake{Label: "ci"}, agentWakeFire{}, newCappedText("\nbuild failed: exit 2\n", 1024), cappedOutput{}))
+	text, meta = appWake(builtMessage(t)(renderAgentWatchWake(store.AgentWake{Label: "ci"}, agentWakeFire{}, newCappedText("\nbuild failed: exit 2\n", 1024), cappedOutput{})))
 	add("a watch", text, meta)
-	text, meta = appWake(renderAgentWatchWake(store.AgentWake{Label: "quiet"}, agentWakeFire{}, cappedOutput{}, cappedOutput{}))
+	text, meta = appWake(builtMessage(t)(renderAgentWatchWake(store.AgentWake{Label: "quiet"}, agentWakeFire{}, cappedOutput{}, cappedOutput{})))
 	add("a watch that printed nothing", text, meta)
-	text, meta = appWake(renderAgentSendWake("deploy finished\nall good"))
+	text, meta = appWake(builtMessage(t)(renderAgentSendWake("deploy finished\nall good")))
 	add("a script's message", text, meta)
-	text, meta = message(renderAgentSendWake("unattributed"), false, "agent-wake:w1:1")
+	text, meta = message(builtMessage(t)(renderAgentSendWake("unattributed")), false, "agent-wake:w1:1")
 	add("a wake whose attribution did not decode", text, meta)
-	text, meta = appWake(workerPromptMessage(worker, "t-worker", &workerPrompt{token: "tok-1", approval: &provider.ApprovalRequest{ToolName: "Bash", Description: "Run the tests"}}))
+	text, meta = appWake(builtMessage(t)(workerPromptMessage(worker, "t-worker", &workerPrompt{token: "tok-1", approval: &provider.ApprovalRequest{ToolName: "Bash", Description: "Run the tests"}})))
 	add("a worker's approval request", text, meta)
-	text, meta = appWake(workerPromptMessage("", "t-worker", &workerPrompt{token: "tok-1", question: &provider.UserInputRequest{Questions: []provider.UserInputQuestion{{Header: "Scope", Question: "Which module?"}}}}))
+	text, meta = appWake(builtMessage(t)(workerPromptMessage("", "t-worker", &workerPrompt{token: "tok-1", question: &provider.UserInputRequest{Questions: []provider.UserInputQuestion{{Header: "Scope", Question: "Which module?"}}}})))
 	add("an untitled worker's question", text, meta)
 	watch := store.RemoteWatch{ComputerID: "c-desk", RequestID: "r-1", Label: "make test", Receipt: store.RemoteJob{Workspace: "/w", State: "finished", ExitCode: 0}}
-	text, meta = appWake(remoteCompletionMessage(watch, "desk", remoteCompletionOutput{Tail: "ok"}))
+	text, meta = appWake(builtMessage(t)(remoteCompletionMessage(watch, "desk", remoteCompletionOutput{Tail: "ok"})))
 	add("a remote job", text, meta)
-	text, meta = appWake(remoteCompletionMessage(store.RemoteWatch{ComputerID: "c-desk", Receipt: store.RemoteJob{ExitCode: -1}}, "", remoteCompletionOutput{}))
+	text, meta = appWake(builtMessage(t)(remoteCompletionMessage(store.RemoteWatch{ComputerID: "c-desk", Receipt: store.RemoteJob{ExitCode: -1}}, "", remoteCompletionOutput{})))
 	add("an unlabelled remote job", text, meta)
-	text, meta = appWake(workflowWakeMessage("release", wake.Message{Notice: wake.DataNotice, Data: "run: \"release\"\nstep: \"build\" finished"}))
+	text, meta = appWake(builtMessage(t)(workflowWakeMessage("release", wake.Message{Notice: wake.DataNotice, Data: "run: \"release\"\nstep: \"build\" finished"})))
 	add("a workflow wake", text, meta)
-	text, meta = appWake(workflowWakeMessage("release", wake.Message{Notice: wake.DataNotice, Data: `"\u003cb\u003e \\ \" \t \u200b \x41 caf\u00e9"`}))
+	text, meta = appWake(builtMessage(t)(workflowWakeMessage("release", wake.Message{Notice: wake.DataNotice, Data: `"\u003cb\u003e \\ \" \t \u200b \x41 caf\u00e9"`})))
 	add("a workflow wake whose data holds escapes", text, meta)
-	text, meta = appWake(assistantMessage(assistantSendID(usermessage.OriginWakeKindOpening, "a1"), "Ops", agenthome.OpeningMessage("Ops", "/config/agents/a1")))
+	text, meta = appWake(builtMessage(t)(assistantMessage(assistantSendID(string(usermessage.ReportOpening), "a1"), "Ops", agenthome.OpeningMessage("Ops", "/config/agents/a1"))))
 	add("an assistant's opening message", text, meta)
-	text, meta = appWake(assistantMessage(assistantSendID(usermessage.OriginWakeKindHandOff, "a1"), "Ops", agenthome.HandOffMessage(agenthome.HandOff{Name: "Ops", PreviousThreadID: "t-old", MovedWakes: 1})))
+	text, meta = appWake(builtMessage(t)(assistantMessage(assistantSendID(string(usermessage.ReportHandOff), "a1"), "Ops", agenthome.HandOffMessage(agenthome.HandOff{Name: "Ops", PreviousThreadID: "t-old", MovedWakes: 1}))))
 	add("an assistant's handoff block", text, meta)
-	text, meta = message(usermessage.StoppedWorker(threadtools.WorkerStopped{ThreadID: "t-worker", Title: worker, Token: "tok-1"}, "", ""), true, "thread-worker-stopped:tok-1")
+	text, meta = message(builtMessage(t)(usermessage.StoppedWorker(threadtools.WorkerStopped{ThreadID: "t-worker", Title: worker, Token: "tok-1"}, "", "")), true, "thread-worker-stopped:tok-1")
 	add("the notice that the user stopped a worker", text, meta)
 
 	// Rows main wrote, with no kind and no facts, read from their text

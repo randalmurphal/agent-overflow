@@ -138,8 +138,11 @@ func (a *App) workflowApplication() *workflowapp.Service {
 				// A run's wake is the workflow's report, not the person's.
 				QueueMessage: a.queueWorkflowWake,
 				SendMessage: func(threadID, workflowID string, composed wake.Message) error {
-					message := workflowWakeMessage(workflowID, composed)
-					_, err := a.sendMessageWithOptions(
+					message, err := workflowWakeMessage(workflowID, composed)
+					if err != nil {
+						return err
+					}
+					_, err = a.sendMessageWithOptions(
 						context.Background(), threadID, message.Text(), sendMessageOptions{
 							PreserveDraft: true,
 							Origin:        message.Origin(), OriginWake: message.Attribution().Wake,
@@ -336,8 +339,11 @@ func (a *App) queueWorkflowWake(threadID, workflowID string, composed wake.Messa
 	if onDurable != nil {
 		settled = func(string) { onDurable() }
 	}
-	message := workflowWakeMessage(workflowID, composed)
-	_, err := a.registerQueueItem(
+	message, err := workflowWakeMessage(workflowID, composed)
+	if err != nil {
+		return err
+	}
+	_, err = a.registerQueueItem(
 		threadID, message.Text(), SendMessageOptions{SendID: workflowWakeSendIDRoot + uuid.NewString()},
 		injectedQueueOptions{
 			preserveDraft: true, onDurable: settled,
@@ -351,6 +357,6 @@ func (a *App) queueWorkflowWake(threadID, workflowID string, composed wake.Messa
 // attributed to its workflow: the data notice it was composed with, written
 // for the agent, then what the row shows, headed by its first line, the
 // run's headline.
-func workflowWakeMessage(workflowID string, composed wake.Message) usermessage.AgentMessage {
+func workflowWakeMessage(workflowID string, composed wake.Message) (usermessage.AgentMessage, error) {
 	return usermessage.Report(usermessage.ReportWorkflow, usermessage.Reporter{Label: workflowID}, composed.Notice, composed.Data, "")
 }

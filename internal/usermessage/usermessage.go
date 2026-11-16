@@ -126,9 +126,7 @@ const OriginAgentWake = "agent-wake"
 // OriginWake identifies what wrote an `agent-wake` row: what its badge
 // renders.
 type OriginWake struct {
-	// Kind is `loop`, `watch` or `send`, `question` or `approval` for a
-	// worker's prompt put to the agent that spawned it, `completion` for a
-	// remote job's report, or `workflow` for a workflow run's wake.
+	// Kind is the report's ReportKind.
 	Kind string `json:"kind"`
 	// Label is the loop or watch label, the worker's title, the remote
 	// job's label or the workflow's id; empty for an outside send.
@@ -141,12 +139,6 @@ type OriginWake struct {
 	// says, written with the text (WakeMessage).
 	Facts *threadtools.MessageFacts `json:"facts,omitempty"`
 }
-
-// The OriginWake kinds of the app's own reports into a thread.
-const (
-	OriginWakeKindCompletion = "completion"
-	OriginWakeKindWorkflow   = "workflow"
-)
 
 // OriginApp is the Origin value of a row Agent Overflow wrote in its own voice.
 const OriginApp = "app"

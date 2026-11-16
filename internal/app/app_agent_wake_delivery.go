@@ -215,7 +215,7 @@ func (a *App) heldAgentWakeNotice(row store.AgentWake) (agentNotice, bool, error
 }
 
 // renderAgentLoopWake renders one loop fire, headed in its row by its note.
-func renderAgentLoopWake(row store.AgentWake, fire agentWakeFire) usermessage.AgentMessage {
+func renderAgentLoopWake(row store.AgentWake, fire agentWakeFire) (usermessage.AgentMessage, error) {
 	var out strings.Builder
 	writeAgentWakeFireLines(&out, fire)
 	out.WriteString("note: ")
@@ -229,7 +229,7 @@ func renderAgentLoopWake(row store.AgentWake, fire agentWakeFire) usermessage.Ag
 // headed in its row by the first line it printed. The row is read as it
 // stands now: when a wake of it did not reach the agent and none has said so
 // since, this one says where that wake's output is kept.
-func renderAgentWatchWake(row store.AgentWake, fire agentWakeFire, stdout, stderr cappedOutput) usermessage.AgentMessage {
+func renderAgentWatchWake(row store.AgentWake, fire agentWakeFire, stdout, stderr cappedOutput) (usermessage.AgentMessage, error) {
 	stdout = stdout.clip(agentWakeOutputCap - len(stderr.data))
 	var out strings.Builder
 	writeAgentWakeFireLines(&out, fire)
@@ -253,7 +253,7 @@ func renderAgentWatchWake(row store.AgentWake, fire agentWakeFire, stdout, stder
 
 // renderAgentSendWake renders a message an outside script sent with
 // `agent-overflow thread send`, headed in its row by its first line.
-func renderAgentSendWake(text string) usermessage.AgentMessage {
+func renderAgentSendWake(text string) (usermessage.AgentMessage, error) {
 	capped := newCappedText(text, agentWakeOutputCap)
 	var out strings.Builder
 	writeQuotedLines(&out, capped)
@@ -1324,7 +1324,11 @@ func (a *App) SendExternalThreadMessage(threadID, text string) (string, error) {
 	if thread.Archived {
 		return "", archived
 	}
-	sendID, err := a.queueOutsideSend(threadID, renderAgentSendWake(text))
+	message, err := renderAgentSendWake(text)
+	if err != nil {
+		return "", err
+	}
+	sendID, err := a.queueOutsideSend(threadID, message)
 	if errors.Is(err, errThreadArchived) {
 		return "", archived
 	}

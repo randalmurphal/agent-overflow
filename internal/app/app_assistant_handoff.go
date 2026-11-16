@@ -541,7 +541,7 @@ func (a *App) nextAssistantThread(ctx context.Context, threadID string, sessionL
 		SessionLost:      sessionLost,
 		Carried:          carried,
 	})
-	if err := a.queueAssistantMessage(successor.ID, assistantSendID(usermessage.OriginWakeKindHandOff, threadID), successor.Title, body); err != nil {
+	if err := a.queueAssistantMessage(successor.ID, assistantSendID(string(usermessage.ReportHandOff), threadID), successor.Title, body); err != nil {
 		return successor, fmt.Errorf("the assistant moved to its new thread, but its opening block could not be queued: %w", err)
 	}
 	log.Printf("assistants: %s moved from thread %s to %s", agent.ID, threadID, successor.ID)

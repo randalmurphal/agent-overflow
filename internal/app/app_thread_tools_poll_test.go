@@ -335,7 +335,7 @@ func TestRemoteTargetTitleSurvivesARestart(t *testing.T) {
 	}
 
 	after := f.restart(t)
-	origin := soloWakeOrigin(after.app, after.request(t, token))
+	origin := soloWakeOrigin(t, after.app, after.request(t, token))
 	if origin == nil || origin.Title != "Release checklist" || origin.ThreadID != target {
 		t.Fatalf("wake origin after a restart = %+v", origin)
 	}

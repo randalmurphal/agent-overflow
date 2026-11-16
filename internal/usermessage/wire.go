@@ -5,7 +5,6 @@ import (
 	"strconv"
 	"strings"
 
-	"agent-overflow/internal/store"
 	"agent-overflow/internal/stringsx"
 )
 
@@ -24,21 +23,6 @@ const (
 	senderSuffix = ". The user did not write it.]"
 	// maxSenderName bounds a title or label a sender line quotes.
 	maxSenderName = 200
-)
-
-// The OriginWake kinds of the app's messages other than a loop's or a
-// watch's, whose kinds are store.AgentWakeLoop and store.AgentWakeWatch.
-const (
-	// OriginWakeKindSend is an outside `agent-overflow thread send`.
-	OriginWakeKindSend = "send"
-	// OriginWakeKindQuestion and OriginWakeKindApproval are a worker's
-	// prompt put to the assistant that spawned it.
-	OriginWakeKindQuestion = "question"
-	OriginWakeKindApproval = "approval"
-	// OriginWakeKindOpening and OriginWakeKindHandOff are the messages that
-	// open an assistant's first thread and each later one.
-	OriginWakeKindOpening = "assistant"
-	OriginWakeKindHandOff = "handoff"
 )
 
 // WireText is text, a row's stored text with meta, as the model receives
@@ -132,16 +116,16 @@ func senderOf(origin string, thread *OriginThread, wake *OriginWake, here string
 		if wake != nil {
 			from = *wake
 		}
-		switch from.Kind {
-		case store.AgentWakeLoop:
+		switch ReportKind(from.Kind) {
+		case ReportLoop:
 			return "your loop " + quoteName(from.Label), true
-		case store.AgentWakeWatch:
+		case ReportWatch:
 			return "your watch " + quoteName(from.Label), true
-		case OriginWakeKindSend:
+		case ReportSend:
 			return "a script, through agent-overflow thread send", true
-		case OriginWakeKindQuestion, OriginWakeKindApproval:
+		case ReportQuestion, ReportApproval:
 			return threadName(from.Label, from.ThreadID, "") + ", which you spawned", true
-		case OriginWakeKindCompletion:
+		case ReportCompletion:
 			job := "a remote job"
 			if from.Label != "" {
 				job = "the remote job " + quoteName(from.Label)
@@ -150,7 +134,7 @@ func senderOf(origin string, thread *OriginThread, wake *OriginWake, here string
 				job += " on " + quoteName(from.Computer)
 			}
 			return job, true
-		case OriginWakeKindWorkflow:
+		case ReportWorkflow:
 			return "the workflow run " + quoteName(from.Label), true
 		}
 		return "", true

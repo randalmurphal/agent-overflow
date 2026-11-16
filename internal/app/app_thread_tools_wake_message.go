@@ -191,7 +191,11 @@ func (a *App) deliverThreadWakeMessage(message threadWakeMessage) bool {
 	// threads is attributed to the carrier's, which threadWakeFor lists first
 	// under its token, the one its echo confirms (ConfirmThreadWake), and
 	// names them all in its facts.
-	note := usermessage.Answer(a.threadWakeFor(message))
+	note, err := usermessage.Answer(a.threadWakeFor(message))
+	if err != nil {
+		fail("write the wake", err)
+		return true
+	}
 	if hook := a.threadWakeRenderedForTest; hook != nil {
 		hook(carrier.Token)
 	}

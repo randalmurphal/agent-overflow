@@ -75,7 +75,7 @@ func (a *App) CreateAssistant(ctx context.Context, opts CreateAssistantOptions) 
 		return store.Thread{}, refuseTakenAssistantName(err)
 	}
 	body := agenthome.OpeningMessage(thread.Title, agent.Home)
-	if err := a.queueAssistantMessage(thread.ID, assistantSendID(usermessage.OriginWakeKindOpening, agent.ID), thread.Title, body); err != nil {
+	if err := a.queueAssistantMessage(thread.ID, assistantSendID(string(usermessage.ReportOpening), agent.ID), thread.Title, body); err != nil {
 		return thread, fmt.Errorf("the assistant was created, but its opening message could not be queued: %w", err)
 	}
 	return thread, nil
@@ -221,7 +221,10 @@ func (a *App) recordNewAssistant(
 // queueAssistantMessage queues an app-written message that opens an
 // assistant's thread and starts its session.
 func (a *App) queueAssistantMessage(threadID, sendID, name, body string) error {
-	message := assistantMessage(sendID, name, body)
+	message, err := assistantMessage(sendID, name, body)
+	if err != nil {
+		return err
+	}
 	return a.queueAgentNotice(agentNotice{
 		threadID: threadID,
 		sendID:   sendID,
@@ -241,7 +244,11 @@ func (a *App) requeueAssistantMessage(threadID, sendID, body string) {
 		log.Printf("assistants: requeue %s on %s: %v", sendID, threadID, err)
 		return
 	}
-	message := assistantMessage(sendID, thread.Title, body)
+	message, err := assistantMessage(sendID, thread.Title, body)
+	if err != nil {
+		log.Printf("assistants: requeue %s on %s: %v", sendID, threadID, err)
+		return
+	}
 	if _, err := a.registerQueueItem(threadID, message.Text(), SendMessageOptions{SendID: sendID}, injectedQueueOptions{
 		preserveDraft:     true,
 		held:              true,
@@ -255,9 +262,9 @@ func (a *App) requeueAssistantMessage(threadID, sendID, body string) {
 
 // assistantMessage is an assistant's opening or handoff block, the app's
 // prose throughout, labelled with the assistant's name.
-func assistantMessage(sendID, name, body string) usermessage.AgentMessage {
+func assistantMessage(sendID, name, body string) (usermessage.AgentMessage, error) {
 	kind := usermessage.ReportOpening
-	if assistantSendIDKind(sendID) == usermessage.OriginWakeKindHandOff {
+	if assistantSendIDKind(sendID) == string(usermessage.ReportHandOff) {
 		kind = usermessage.ReportHandOff
 	}
 	return usermessage.Report(kind, usermessage.Reporter{Label: name}, "", body, "")

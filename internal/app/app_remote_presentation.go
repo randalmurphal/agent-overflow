@@ -79,7 +79,7 @@ const remoteJobWakeHeader = "Remote job finished on "
 // The message names the job and its computer on its first line, and its
 // row leads with the result; both are the report's own attribution
 // (usermessage.Report).
-func remoteCompletionMessage(w store.RemoteWatch, computerName string, output remoteCompletionOutput) usermessage.AgentMessage {
+func remoteCompletionMessage(w store.RemoteWatch, computerName string, output remoteCompletionOutput) (usermessage.AgentMessage, error) {
 	if computerName == "" {
 		computerName = w.ComputerID
 	}

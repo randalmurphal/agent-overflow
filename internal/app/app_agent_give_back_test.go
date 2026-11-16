@@ -228,8 +228,8 @@ func TestASessionDeathKeepsTheTextOfAPersonWithoutASendID(t *testing.T) {
 func TestSplitSessionEndPartsSplitsByTheRecordedParts(t *testing.T) {
 	t.Parallel()
 	wake, request := "agent-wake:w:1", threadRequestSendID("tok-1")
-	wakeWritten := usermessage.Report(usermessage.ReportLoop, usermessage.Reporter{Label: "l"}, "", "the wake", "the wake's note").Attribution()
-	requestWritten := usermessage.Message(usermessage.Sender{ThreadID: "t-lead", Title: "Lead"}, "the request").Attribution()
+	wakeWritten := builtMessage(t)(usermessage.Report(usermessage.ReportLoop, usermessage.Reporter{Label: "l"}, "", "the wake", "the wake's note")).Attribution()
+	requestWritten := builtMessage(t)(usermessage.Message(usermessage.Sender{ThreadID: "t-lead", Title: "Lead"}, "the request")).Attribution()
 	wakeFacts, requestFacts := wakeWritten.Wake.Facts, requestWritten.Thread.Facts
 	text, meta := usermessage.Join([]usermessage.JoinMember{
 		{Text: "mine, no send id"},
@@ -551,9 +551,9 @@ func TestAnUnsplittableJoinGoesToTheComposerWhole(t *testing.T) {
 			ids := []string{"person-send", agentSendIDRoot + "deploy", agentWakeSendID(wake.ID, 1000), prompt.sendID(), threadWakeSendID(token)}
 			content := strings.Join([]string{
 				"my own words",
-				renderAgentSendWake("deploy 11 is done").Text(),
-				renderAgentLoopWake(wake, agentWakeFire{}).Text(),
-				workerPromptMessage("Worker", "worker-thread", &prompt).Text(),
+				builtMessage(t)(renderAgentSendWake("deploy 11 is done")).Text(),
+				builtMessage(t)(renderAgentLoopWake(wake, agentWakeFire{})).Text(),
+				builtMessage(t)(workerPromptMessage("Worker", "worker-thread", &prompt)).Text(),
 				"the notes are ready",
 			}, usermessage.JoinSeparator)
 			meta, err := usermessage.Marshal(usermessage.Input{SendID: ids[0], JoinedSendIDs: ids})

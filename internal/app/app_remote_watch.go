@@ -473,7 +473,8 @@ func (a *App) prepareRemoteCompletion(w store.RemoteWatch, output remoteCompleti
 			return usermessage.AgentMessage{}, false, a.store.DismissRemoteWatch(w.ComputerID, w.RequestID)
 		}
 	}
-	return remoteCompletionMessage(w, a.remoteComputerNames()[w.ComputerID], output), true, nil
+	message, err := remoteCompletionMessage(w, a.remoteComputerNames()[w.ComputerID], output)
+	return message, err == nil, err
 }
 
 const remoteCompletionSendIDRoot = "remote-completion:"

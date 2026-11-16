@@ -30,7 +30,8 @@ func (a *App) SubmitAsyncAnswers(ctx context.Context, threadID, sendID string, a
 		return err
 	}
 	defer unlock()
-	return a.queueAsyncAnswers(threadID, sendID, answers, nil, usermessage.PersonMessage, agentNotice{
+	person := func(text string) (usermessage.AgentMessage, error) { return usermessage.PersonMessage(text), nil }
+	return a.queueAsyncAnswers(threadID, sendID, answers, nil, person, agentNotice{
 		startFailed: func(err error) string {
 			return "Your answers are queued, but the agent could not start: " + err.Error()
 		},
@@ -48,7 +49,7 @@ func (a *App) SubmitAsyncAnswers(ctx context.Context, threadID, sendID string, a
 // what the thread is told when its session will not start. A question
 // already answered or dismissed, or changed since asked, is
 // transport.ErrAlreadyHandled.
-func (a *App) queueAsyncAnswers(threadID, sendID string, answers []store.AsyncQuestionAnswer, asked map[string]int64, written func(text string) usermessage.AgentMessage, notice agentNotice) error {
+func (a *App) queueAsyncAnswers(threadID, sendID string, answers []store.AsyncQuestionAnswer, asked map[string]int64, written func(text string) (usermessage.AgentMessage, error), notice agentNotice) error {
 	notice.threadID, notice.sendID = threadID, sendID
 	text := func() (string, bool, error) {
 		thread, err := a.store.GetThread(threadID)
@@ -74,7 +75,11 @@ func (a *App) queueAsyncAnswers(threadID, sendID string, answers []store.AsyncQu
 	}
 	notice.prepare = func() (usermessage.AgentMessage, bool, error) {
 		body, proceed, err := text()
-		return written(body), proceed, err
+		if err != nil {
+			return usermessage.AgentMessage{}, false, err
+		}
+		message, err := written(body)
+		return message, proceed, err
 	}
 	notice.persist = func(item store.FlushQueueItem) error { return a.store.QueueAsyncAnswers(item, answers, asked) }
 	err := a.queueAgentNotice(notice)

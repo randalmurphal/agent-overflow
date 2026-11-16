@@ -105,8 +105,8 @@ func headline(d Described) string {
 	}
 	body := d.Facts.BodyOf(d.Text)
 	if d.Facts.Form == threadtools.FormReport && d.Wake != nil {
-		switch d.Wake.Kind {
-		case OriginWakeKindCompletion, OriginWakeKindOpening, OriginWakeKindHandOff:
+		switch ReportKind(d.Wake.Kind) {
+		case ReportCompletion, ReportOpening, ReportHandOff:
 			// A job's output and the app's prose are shown as written.
 		default:
 			body = ReadableWakeText(body)

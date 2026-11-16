@@ -228,9 +228,10 @@ func (a *App) currentAgentWake(row store.AgentWake) store.AgentWake {
 func (a *App) runAgentWakeFire(ctx context.Context, run *agentWakeRun, row store.AgentWake, fire agentWakeFire) {
 	var message usermessage.AgentMessage
 	var current store.AgentWake
+	var err error
 	switch row.Kind {
 	case store.AgentWakeLoop:
-		message = renderAgentLoopWake(row, fire)
+		message, err = renderAgentLoopWake(row, fire)
 		current = a.currentAgentWake(row)
 	case store.AgentWakeWatch:
 		result := a.runAgentWatchScript(ctx, row)
@@ -246,9 +247,13 @@ func (a *App) runAgentWakeFire(ctx context.Context, run *agentWakeRun, row store
 			return
 		}
 		current = a.currentAgentWake(row)
-		message = renderAgentWatchWake(current, fire, result.stdout, result.stderr)
+		message, err = renderAgentWatchWake(current, fire, result.stdout, result.stderr)
 	default:
 		a.finishAgentWakeFire(run, row, "error: unknown kind "+row.Kind, "", fire.missed, store.AgentWakeNoWake)
+		return
+	}
+	if err != nil {
+		a.finishAgentWakeFire(run, row, "error: "+err.Error(), "", fire.missed, store.AgentWakeNoWake)
 		return
 	}
 	a.settleAgentWakeDelivery(run, row, fire, message.Text(), a.deliverAgentWake(ctx, current, fire.at, message))
@@ -531,7 +536,7 @@ func (a *App) runAgentWatchProcess(ctx context.Context, run *agentWakeRun, row s
 
 	batch := newHeadOutput(agentWakeOutputCap)
 	var flush <-chan time.Time
-	render := func(current store.AgentWake, stderrPart cappedOutput) usermessage.AgentMessage {
+	render := func(current store.AgentWake, stderrPart cappedOutput) (usermessage.AgentMessage, error) {
 		return renderAgentWatchWake(current, agentWakeFire{}, batch.peek(), stderrPart)
 	}
 	deliver := func() bool {
@@ -539,8 +544,10 @@ func (a *App) runAgentWatchProcess(ctx context.Context, run *agentWakeRun, row s
 		// so a held wake still carries what the script said beside it.
 		taken := stderr.take()
 		current := a.currentAgentWake(row)
-		message := render(current, taken)
-		err := a.deliverAgentWake(ctx, current, time.Now().UnixMilli(), message)
+		message, err := render(current, taken)
+		if err == nil {
+			err = a.deliverAgentWake(ctx, current, time.Now().UnixMilli(), message)
+		}
 		switch {
 		case err == nil:
 			batch.take()
@@ -566,7 +573,11 @@ func (a *App) runAgentWatchProcess(ctx context.Context, run *agentWakeRun, row s
 				// Output that never reached the queue is not replayed; the
 				// script's own cursor decides whether its next run repeats
 				// it. The row keeps it for the agent to read.
-				a.noteAgentWakeUndelivered(row.ThreadID, row.ID, agentWakeOutcomeNotDelivered, render(a.currentAgentWake(row), stderr.take()).Text())
+				if message, err := render(a.currentAgentWake(row), stderr.take()); err != nil {
+					log.Printf("agent wakes: watch %q on %s: %v", row.Label, row.ThreadID, err)
+				} else {
+					a.noteAgentWakeUndelivered(row.ThreadID, row.ID, agentWakeOutcomeNotDelivered, message.Text())
+				}
 			}
 			if lines != nil {
 				// The reader may be blocked handing over a line; let it reach

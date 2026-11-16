@@ -334,7 +334,7 @@ func TestAWakeIsNotQueuedWithoutExecutionAccess(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = a.deliverAgentWake(t.Context(), watch, time.Now().UnixMilli(), testAgentWake(watch, "the news"))
+	err = a.deliverAgentWake(t.Context(), watch, time.Now().UnixMilli(), testAgentWake(t, watch, "the news"))
 	if !errors.Is(err, store.ErrForkPreparing) {
 		t.Fatalf("deliver = %v, want the access refusal", err)
 	}

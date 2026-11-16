@@ -24,12 +24,12 @@ import (
 // a start that fails is a row in the thread.
 
 // testAgentWake is a wake of row that says text, attributed to row.
-func testAgentWake(row store.AgentWake, text string) usermessage.AgentMessage {
+func testAgentWake(t testing.TB, row store.AgentWake, text string) usermessage.AgentMessage {
 	kind := usermessage.ReportLoop
 	if row.Kind == store.AgentWakeWatch {
 		kind = usermessage.ReportWatch
 	}
-	return usermessage.Report(kind, usermessage.Reporter{Label: row.Label}, "", text, "")
+	return builtMessage(t)(usermessage.Report(kind, usermessage.Reporter{Label: row.Label}, "", text, ""))
 }
 
 func noticeTestThread(t *testing.T, a *App, id string) store.Thread {
@@ -493,7 +493,7 @@ func TestALaterFireRetriesAStartThatFailed(t *testing.T) {
 	ctx := context.Background()
 	fire := func(at int64) error {
 		t.Helper()
-		err := a.deliverAgentWake(ctx, row, at, testAgentWake(row, fmt.Sprintf("fire %d", at)))
+		err := a.deliverAgentWake(ctx, row, at, testAgentWake(t, row, fmt.Sprintf("fire %d", at)))
 		a.waitAgentNoticeWork()
 		a.notifications.queue.Wait()
 		return err
@@ -685,7 +685,7 @@ func holdAgentWake(t *testing.T, a *App, thread store.Thread, kind, label string
 	if err != nil {
 		t.Fatalf("RegisterAgentWake %s: %v", label, err)
 	}
-	if err := a.deliverAgentWake(context.Background(), row, 1, testAgentWake(row, label+" fired")); err != nil {
+	if err := a.deliverAgentWake(context.Background(), row, 1, testAgentWake(t, row, label+" fired")); err != nil {
 		t.Fatalf("deliverAgentWake %s: %v", label, err)
 	}
 	a.waitAgentNoticeWork()
@@ -788,7 +788,7 @@ func TestARetryForAWakeNoLongerWantedWithdrawsTheHeldWake(t *testing.T) {
 	if _, _, err := a.store.CancelAgentWake(thread.ID, row.Label, "", agentWakeOutcomeCancelled); err != nil {
 		t.Fatalf("CancelAgentWake: %v", err)
 	}
-	notice, _ := a.agentWakeNotice(row, agentWakeSendID(row.ID, 2), testAgentWake(row, "board fired again"))
+	notice, _ := a.agentWakeNotice(row, agentWakeSendID(row.ID, 2), testAgentWake(t, row, "board fired again"))
 	if err := a.retryAgentWakeStart(row, notice); !errors.Is(err, store.ErrAgentWakeStillQueued) {
 		t.Fatalf("retryAgentWakeStart: %v, want ErrAgentWakeStillQueued", err)
 	}

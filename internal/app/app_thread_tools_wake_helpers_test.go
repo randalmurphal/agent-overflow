@@ -30,7 +30,7 @@ func wakeBodyOf(a *App, row store.ThreadRequest, late bool) (string, error) {
 
 // soloWakeOrigin is who a message carrying only this request's answer is
 // attributed to. It does not need the request settled.
-func soloWakeOrigin(a *App, row store.ThreadRequest) *usermessage.OriginThread {
+func soloWakeOrigin(t testing.TB, a *App, row store.ThreadRequest) *usermessage.OriginThread {
 	wake := a.threadWakeFor(threadWakeMessage{kind: threadtools.WakeReply, rows: []store.ThreadRequest{row}})
-	return usermessage.Answer(wake).Attribution().Thread
+	return builtMessage(t)(usermessage.Answer(wake)).Attribution().Thread
 }

@@ -105,7 +105,7 @@ func TestHandOffInterruptsAReadRequest(t *testing.T) {
 	if receipt.State != store.ThreadReceiptInterrupted || !strings.Contains(string(receipt.Answer), target.ID) {
 		t.Fatalf("receipt = %s %q, want interrupted naming %s", receipt.State, receipt.Answer, target.ID)
 	}
-	opening := awaitQueuedOrSent(t, f.app, successor.ID, assistantSendID(usermessage.OriginWakeKindHandOff, target.ID), stdinLog, "replaced your previous thread "+target.ID, 0)
+	opening := awaitQueuedOrSent(t, f.app, successor.ID, assistantSendID(string(usermessage.ReportHandOff), target.ID), stdinLog, "replaced your previous thread "+target.ID, 0)
 	if !strings.Contains(opening, "token "+ack.Token) || !strings.Contains(opening, f.caller.ID) {
 		t.Fatalf("handoff block does not list the interrupted request:\n%s", opening)
 	}
@@ -258,7 +258,7 @@ func TestHandOffMovesALoopWakeTheOldSessionHadNotTakenIn(t *testing.T) {
 		return live
 	})
 	loop := registerTestWake(t, f.app, store.AgentWake{ThreadID: target.ID, Kind: store.AgentWakeLoop, Label: "board", Note: "check", IntervalSeconds: 3600, NextAt: time.Now().Add(time.Hour).UnixMilli()})
-	if err := f.app.deliverAgentWake(t.Context(), loop, 7, testAgentWake(loop, "board fired")); err != nil {
+	if err := f.app.deliverAgentWake(t.Context(), loop, 7, testAgentWake(t, loop, "board fired")); err != nil {
 		t.Fatalf("deliverAgentWake: %v", err)
 	}
 	waitUntil(t, 20*time.Second, func() bool { return len(sentContaining(t, stdinLog, "board fired")) == 1 })

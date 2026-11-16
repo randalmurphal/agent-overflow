@@ -372,7 +372,7 @@ func TestDescribeShowsAMessageWhoseTextChangedWhole(t *testing.T) {
 		}
 	}
 	// A report's facts that do not hold are not read either.
-	report := Report(ReportLoop, Reporter{Label: "l"}, "Loop fired.", "note: \"x\"", "x")
+	report := built(t)(Report(ReportLoop, Reporter{Label: "l"}, "Loop fired.", "note: \"x\"", "x"))
 	wake := report.Attribution().Wake
 	if d := Describe(report.Text()+"!", Meta{Origin: OriginAgentWake, OriginWake: wake}); d[0].Facts.Form != threadtools.FormWhole {
 		t.Fatalf("an edited report read as %+v", d[0].Facts)
@@ -383,7 +383,7 @@ func TestDescribeShowsAMessageWhoseTextChangedWhole(t *testing.T) {
 // them and every other key as stored; a row that is the person's, or an
 // agent's whose facts already hold and say their header, is sent as it is.
 func TestProjectRowMetaKeepsWhatItDoesNotDescribe(t *testing.T) {
-	message := Report(ReportLoop, Reporter{Label: "l"}, "Loop fired.", "note: \"x\"", "x")
+	message := built(t)(Report(ReportLoop, Reporter{Label: "l"}, "Loop fired.", "note: \"x\"", "x"))
 	attribution := message.Attribution()
 	stored, err := MarshalMeta(Meta{Origin: attribution.Origin, OriginWake: attribution.Wake, SendID: "agent-wake:1"})
 	if err != nil {

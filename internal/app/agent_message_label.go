@@ -70,14 +70,14 @@ func agentReporterName(from *usermessage.OriginWake) string {
 		return "A wake"
 	}
 	switch from.Kind {
-	case usermessage.OriginWakeKindSend:
+	case string(usermessage.ReportSend):
 		return "A script"
-	case usermessage.OriginWakeKindCompletion:
+	case string(usermessage.ReportCompletion):
 		if name := strings.Join(nonEmpty(from.Label, from.Computer), " on "); name != "" {
 			return name
 		}
 		return "A remote job"
-	case usermessage.OriginWakeKindOpening, usermessage.OriginWakeKindHandOff:
+	case string(usermessage.ReportOpening), string(usermessage.ReportHandOff):
 		return "Agent Overflow"
 	}
 	if title, known := agentWakeKindTitles[from.Kind]; known {

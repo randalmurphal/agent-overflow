@@ -352,13 +352,13 @@ func agentMessageSender(row store.Item) (from string, ok bool) {
 	}
 	if wake := message.Wake; wake != nil {
 		switch wake.Kind {
-		case usermessage.OriginWakeKindSend:
+		case string(usermessage.ReportSend):
 			return "a script (agent-overflow thread send)", true
-		case usermessage.OriginWakeKindQuestion, usermessage.OriginWakeKindApproval:
+		case string(usermessage.ReportQuestion), string(usermessage.ReportApproval):
 			return fmt.Sprintf("%q (%s), its %s", wake.Label, wake.ThreadID, wake.Kind), true
-		case usermessage.OriginWakeKindCompletion:
+		case string(usermessage.ReportCompletion):
 			return fmt.Sprintf("remote job %q on %s", wake.Label, wake.Computer), true
-		case usermessage.OriginWakeKindWorkflow:
+		case string(usermessage.ReportWorkflow):
 			return fmt.Sprintf("workflow %q", wake.Label), true
 		default:
 			return fmt.Sprintf("%s %q", wake.Kind, wake.Label), true

@@ -89,9 +89,10 @@ var requestKinds = []string{store.ThreadRequestSpawn, store.ThreadRequestSend, s
 // Request is a thread's request of kind (store.ThreadRequestSpawn, Send or
 // Ask) carrying body, rendered with footer (threadtools.Footer.Message) and
 // attributed to from under the footer's token. from is the thread the
-// footer names: a sender that is not is refused. Its computer is the
-// attribution's alone (the footer names only another computer, and in this
-// computer's words for it), so a row opens the sender where it is.
+// footer names: a sender that is not, or no thread at all, is refused, as
+// is a footer with no token to answer by. Its computer is the attribution's
+// alone (the footer names only another computer, and in this computer's
+// words for it), so a row opens the sender where it is.
 func Request(kind string, from Sender, footer threadtools.Footer, body string) (AgentMessage, error) {
 	if !slices.Contains(requestKinds, kind) {
 		return AgentMessage{}, fmt.Errorf("a request of kind %q: the kinds are %s", kind, strings.Join(requestKinds, ", "))
@@ -99,6 +100,12 @@ func Request(kind string, from Sender, footer threadtools.Footer, body string) (
 	if from.ThreadID != footer.ThreadID || from.Title != footer.Title {
 		return AgentMessage{}, fmt.Errorf("a request from thread %q (%s) under a footer naming thread %q (%s)",
 			from.Title, from.ThreadID, footer.Title, footer.ThreadID)
+	}
+	if from.ThreadID == "" {
+		return AgentMessage{}, errors.New("a request from no thread")
+	}
+	if footer.Token == "" {
+		return AgentMessage{}, fmt.Errorf("a request from thread %s with no token", from.ThreadID)
 	}
 	text, facts := footer.Message(body)
 	return threadMessage(text, facts, OriginThread{
@@ -119,30 +126,46 @@ func threadMessage(text string, facts threadtools.MessageFacts, from OriginThrea
 // Answer is what a request's caller is told of it (threadtools.Wake.Message),
 // attributed to the first thread it speaks for under that thread's first
 // token: the request whose send id it is queued under. A wake that speaks
-// for several threads names them all in its facts; a reminder names none.
-func Answer(wake threadtools.Wake) AgentMessage {
-	text, facts := wake.Message()
-	from := OriginThread{Kind: OriginKindWake}
-	if len(wake.Sources) > 0 {
-		first := wake.Sources[0]
-		from.ComputerID, from.ComputerName, from.ThreadID, from.Title = first.ComputerID, first.Computer, first.ThreadID, first.Title
-		if len(first.Tokens) > 0 {
-			from.Token = first.Tokens[0]
+// for several threads names them all in its facts. A reminder is the
+// caller's own: its one source names the reminders it answers and no
+// thread, and it is attributed to none. A wake that answers no request, or
+// a reminder that names a thread, is refused.
+func Answer(wake threadtools.Wake) (AgentMessage, error) {
+	if len(wake.Sources) == 0 {
+		return AgentMessage{}, errors.New("an answer to no request")
+	}
+	for _, source := range wake.Sources {
+		if len(source.Tokens) == 0 {
+			return AgentMessage{}, fmt.Errorf("an answer from thread %q (%s) to none of its requests", source.Title, source.ThreadID)
 		}
 	}
-	return threadMessage(text, facts, from)
+	first := wake.Sources[0]
+	from := OriginThread{Kind: OriginKindWake, Token: first.Tokens[0]}
+	if wake.Kind == threadtools.WakeReminder {
+		if len(wake.Sources) > 1 || first.ThreadID != "" || first.Title != "" || first.ComputerID != "" || first.Computer != "" {
+			return AgentMessage{}, fmt.Errorf("a reminder from thread %q (%s): a reminder is the caller's own", first.Title, first.ThreadID)
+		}
+	} else {
+		from.ComputerID, from.ComputerName, from.ThreadID, from.Title = first.ComputerID, first.Computer, first.ThreadID, first.Title
+	}
+	text, facts := wake.Message()
+	return threadMessage(text, facts, from), nil
 }
 
 // StoppedWorker is the notice telling a spawner the user stopped its worker
 // after the spawn had answered (threadtools.WorkerStopped), attributed to the
 // worker under the spawn's token, as the spawn's answer was. computerID and
-// computerName name the worker's computer, empty for the spawner's own.
-func StoppedWorker(notice threadtools.WorkerStopped, computerID, computerName string) AgentMessage {
+// computerName name the worker's computer, empty for the spawner's own. A
+// notice that names no worker or no token is refused.
+func StoppedWorker(notice threadtools.WorkerStopped, computerID, computerName string) (AgentMessage, error) {
+	if notice.ThreadID == "" || notice.Token == "" {
+		return AgentMessage{}, fmt.Errorf("a stopped worker's notice for thread %q under token %q", notice.ThreadID, notice.Token)
+	}
 	text, facts := notice.Message()
 	return threadMessage(text, facts, OriginThread{
 		ComputerID: computerID, ComputerName: computerName, ThreadID: notice.ThreadID, Title: notice.Title,
 		Token: notice.Token, Kind: OriginKindWake,
-	})
+	}), nil
 }
 
 // Sender is the thread a Message is from.
@@ -155,33 +178,45 @@ type Sender struct {
 
 // Message is a thread's message that is no request and no answer to one of
 // the receiver's (threadtools.PlainMessage), such as a spawner's answer to
-// its worker's questions: body as written, attributed to from.
-func Message(from Sender, body string) AgentMessage {
+// its worker's questions: body as written, attributed to from. A message
+// from no thread is refused.
+func Message(from Sender, body string) (AgentMessage, error) {
+	if from.ThreadID == "" {
+		return AgentMessage{}, errors.New("a thread's message from no thread")
+	}
 	text, facts := threadtools.PlainMessage(body)
 	return threadMessage(text, facts, OriginThread{
 		ComputerID: from.ComputerID, ComputerName: from.ComputerName, ThreadID: from.ThreadID, Title: from.Title,
-	})
+	}), nil
 }
 
 // ReportKind is the kind of a Report, the OriginWake kind its row is badged
-// with: one of the Report* values, and no other.
-type ReportKind struct{ name string }
+// with: one of the Report* constants. Report writes no other and
+// DecodeStored reads no other (reportKinds).
+type ReportKind string
 
 // The kinds of Report.
-var (
-	ReportLoop       = ReportKind{store.AgentWakeLoop}
-	ReportWatch      = ReportKind{store.AgentWakeWatch}
-	ReportSend       = ReportKind{OriginWakeKindSend}
-	ReportQuestion   = ReportKind{OriginWakeKindQuestion}
-	ReportApproval   = ReportKind{OriginWakeKindApproval}
-	ReportCompletion = ReportKind{OriginWakeKindCompletion}
-	ReportWorkflow   = ReportKind{OriginWakeKindWorkflow}
-	ReportOpening    = ReportKind{OriginWakeKindOpening}
-	ReportHandOff    = ReportKind{OriginWakeKindHandOff}
+const (
+	// ReportLoop and ReportWatch are a loop's fire and a watch's output.
+	ReportLoop  ReportKind = store.AgentWakeLoop
+	ReportWatch ReportKind = store.AgentWakeWatch
+	// ReportSend is an outside `agent-overflow thread send`.
+	ReportSend ReportKind = "send"
+	// ReportQuestion and ReportApproval are a worker's prompt put to the
+	// thread that spawned it.
+	ReportQuestion ReportKind = "question"
+	ReportApproval ReportKind = "approval"
+	// ReportCompletion is a remote job's report.
+	ReportCompletion ReportKind = "completion"
+	// ReportWorkflow is a workflow run's wake.
+	ReportWorkflow ReportKind = "workflow"
+	// ReportOpening and ReportHandOff are the messages that open an
+	// assistant's first thread and each later one.
+	ReportOpening ReportKind = "assistant"
+	ReportHandOff ReportKind = "handoff"
 )
 
-// reportKinds are every ReportKind, the OriginWake kinds a stored report
-// may carry.
+// reportKinds are every ReportKind.
 var reportKinds = []ReportKind{
 	ReportLoop, ReportWatch, ReportSend, ReportQuestion, ReportApproval, ReportCompletion, ReportWorkflow,
 	ReportOpening, ReportHandOff,
@@ -207,7 +242,11 @@ const HeadlineBytes = 512
 // that is prose throughout has no notice. Blank lines that open data are
 // spacing, not body. headline is what the row's header says it is about,
 // folded onto one bounded line; empty when that is the data's first line.
-func Report(kind ReportKind, from Reporter, notice, data, headline string) AgentMessage {
+// A kind that is none of the ReportKinds is refused.
+func Report(kind ReportKind, from Reporter, notice, data, headline string) (AgentMessage, error) {
+	if !slices.Contains(reportKinds, kind) {
+		return AgentMessage{}, fmt.Errorf("a report of kind %q", kind)
+	}
 	text, start := data, 0
 	if notice != "" {
 		text, start = notice+"\n"+data, len(notice)+1
@@ -221,8 +260,8 @@ func Report(kind ReportKind, from Reporter, notice, data, headline string) Agent
 		facts.Body = []threadtools.Span{{Start: start, End: len(text)}}
 	}
 	return AgentMessage{text: text, origin: OriginAgentWake, wake: &OriginWake{
-		Kind: kind.name, Label: from.Label, ThreadID: from.ThreadID, Computer: from.Computer, Facts: &facts,
-	}}
+		Kind: string(kind), Label: from.Label, ThreadID: from.ThreadID, Computer: from.Computer, Facts: &facts,
+	}}, nil
 }
 
 // PersonMessage is the person's own words, which carry no attribution.
@@ -285,7 +324,7 @@ func DecodeStored(text, origin string, thread *OriginThread, wake *OriginWake) (
 		if wake == nil {
 			return message, fmt.Errorf("%w: a report names no reporter", ErrStoredMessage)
 		}
-		if !slices.Contains(reportKinds, ReportKind{wake.Kind}) {
+		if !slices.Contains(reportKinds, ReportKind(wake.Kind)) {
 			return refuse("a report of kind %q", wake.Kind)
 		}
 		if thread != nil {
