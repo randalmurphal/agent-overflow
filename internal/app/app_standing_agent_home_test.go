@@ -265,7 +265,7 @@ func TestDeletingAnAssistantWhoseHomeCannotBeRemovedFinishesLater(t *testing.T) 
 	if err := os.Chmod(locked, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.app.deleteThreadLocked(thread.ID); err != nil {
+	if err := f.app.deleteThreadPaced(thread.ID, nil); err != nil {
 		t.Fatalf("finish the delete: %v", err)
 	}
 	if _, err := os.Stat(row.Home); !os.IsNotExist(err) {

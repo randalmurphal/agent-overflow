@@ -355,48 +355,11 @@ func (s *Store) ListAssistants() (_ []AssistantListing, err error) {
 	return out, nil
 }
 
-// AssistantDependentThreadIDs are the threads that live under an assistant
-// besides its current thread: its past threads, then its helpers, each in
-// the order they were made.
-func (s *Store) AssistantDependentThreadIDs(agentID string) (_ []string, err error) {
-	action := fmt.Sprintf("store: read the threads under assistant %s", agentID)
-	rows, err := s.reader().Query(`SELECT thread_id FROM (
-		SELECT agent_past_threads.thread_id, 0 AS kind, superseded_at AS at FROM agent_past_threads WHERE agent_id = ?1
-		UNION ALL
-		SELECT agent_helpers.thread_id, 1, threads.created_at FROM agent_helpers
-		  JOIN threads ON threads.id = agent_helpers.thread_id WHERE agent_helpers.agent_id = ?1
-	) ORDER BY kind, at, thread_id`, agentID)
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w", action, err)
-	}
-	defer closeAgentWakeRows(rows, action, &err)
-	ids := []string{}
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("%s: scan: %w", action, err)
-		}
-		ids = append(ids, id)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("%s: %w", action, err)
-	}
-	return ids, nil
-}
-
-// AssistantDependentsOf counts the threads AssistantDependentThreadIDs
-// lists for the assistant whose current thread is threadID, past threads
-// and helpers apart; zero for any other thread.
-func (s *Store) AssistantDependentsOf(threadID string) (pastThreads, helpers int, err error) {
-	dependents, err := assistantDependentsOf(s.reader(), threadID)
-	return dependents.PastThreads, dependents.Helpers, err
-}
-
 // AssistantDependentsError refuses to drop the record of an assistant that
 // still has past threads or helpers: they live outside every project, so
 // without their assistant no sidebar section would list them. Every writer
-// that drops a record checks it (deleteAgentRecordTx), and a thread delete
-// checks it before its mark (BeginThreadDelete).
+// that drops a record checks it (deleteAgentRecordTx), so an assistant's
+// delete, marked first, drops its current thread last.
 type AssistantDependentsError struct {
 	AgentID              string
 	PastThreads, Helpers int
@@ -562,7 +525,8 @@ var ErrAssistantArchived = errors.New("this assistant is archived; unarchive it 
 // HandOffAssistant makes newThreadID the current thread of the assistant
 // whose current thread is oldThreadID, in one transaction, so the old
 // thread's state is read as it stands at the commit: an archived assistant
-// is refused (ErrAssistantArchived); the successor must pass the checks
+// is refused (ErrAssistantArchived), and one whose delete has begun
+// (ErrThreadGone); the successor must pass the checks
 // creation makes (requireAssistantThreadTx) under the old thread's title,
 // which is the name, and takes that title and the old thread's model
 // settings (handOffSettingsSQL); the record moves; the old thread is
@@ -589,9 +553,13 @@ func (s *Store) HandOffAssistant(oldThreadID, newThreadID string, now int64) (ha
 		return AssistantHandOff{}, fmt.Errorf("%s: read the assistant: %w", action, err)
 	}
 	var name string
-	var archived bool
-	if err := tx.QueryRow(`SELECT title, archived FROM threads WHERE id = ?`, oldThreadID).Scan(&name, &archived); err != nil {
+	var archived, deleting bool
+	if err := tx.QueryRow(`SELECT title, archived, deleting FROM threads WHERE id = ?`, oldThreadID).Scan(&name, &archived, &deleting); err != nil {
 		return AssistantHandOff{}, fmt.Errorf("%s: read the old thread: %w", action, err)
+	}
+	if deleting {
+		// Its delete takes the assistant with everything under it.
+		return AssistantHandOff{}, fmt.Errorf("%s: %w", action, ErrThreadGone)
 	}
 	if archived {
 		return AssistantHandOff{}, ErrAssistantArchived

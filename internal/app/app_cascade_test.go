@@ -238,7 +238,7 @@ func TestCascade_ThreadDeleteIsIdempotent(t *testing.T) {
 		t.Fatalf("first DeleteThread: %v", err)
 	}
 
-	// Second delete: deleteThreadLocked uses sql.ErrNoRows as idempotent-success.
+	// Second delete: the thread delete uses sql.ErrNoRows as idempotent-success.
 	err := app.deleteThread(thread.ID)
 	if err != nil {
 		// If the production code ever transitions to returning an error here,

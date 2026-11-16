@@ -283,15 +283,12 @@ func (a *App) runRetentionThreadSweep(cutoffMs int64) (deleted, failed int) {
 		if i > 0 {
 			a.retentionPause()
 		}
-		unlock := a.threadLocks().Lock(id)
-		delErr := a.deleteThreadPacedLocked(id, a.retentionPause)
-		unlock()
+		delErr := a.deleteThreadPaced(id, a.retentionPause)
 		if delErr != nil {
 			// errors.Is(delErr, sql.ErrNoRows) is normal (the user
-			// raced us and deleted the thread first), but
-			// deleteThreadLocked already swallows ErrNoRows at its
-			// own boundary, so any error here is genuinely worth
-			// logging.
+			// raced us and deleted the thread first), but the delete
+			// already swallows ErrNoRows at its own boundary, so any
+			// error here is genuinely worth logging.
 			log.Printf("app: retention sweep: delete thread %s: %v", id, delErr)
 			failed++
 			continue
@@ -301,15 +298,13 @@ func (a *App) runRetentionThreadSweep(cutoffMs int64) (deleted, failed int) {
 	return deleted, failed
 }
 
-// deleteThreadPacedLocked is deleteThreadLocked with the store's
-// item-chunk pause wired to the sweep's yield. The workers it deletes with
-// the thread are deleted at full speed: they are few, and owned by a thread
-// the sweep is deleting.
-func (a *App) deleteThreadPacedLocked(threadID string, pause store.ChunkPause) error {
-	cascade := newWorkerCascade(threadID)
-	ports := a.threadDeletePorts(cascade)
-	ports.ChunkPause = pause
-	err := a.threadApplication().DeleteThread(threadID, ports)
-	cascade.logFailures(threadID)
+// deleteThreadPaced is the delete of a thread no person asked for, a stale
+// one the sweep removes or one whose delete the boot finishes, with what
+// lives under it, the store's item-chunk pause wired to the caller's yield.
+// It cleans up a moved thread's cache as well (deleteRequest.cleanup). A
+// worker that could not be deleted is logged.
+func (a *App) deleteThreadPaced(threadID string, pause store.ChunkPause) error {
+	outcome, err := a.deleteThreads(deleteRequest{seeds: []string{threadID}, cleanup: true, pause: pause})
+	outcome.logFailures(threadID)
 	return err
 }

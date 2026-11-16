@@ -79,9 +79,11 @@ func (a *App) collectReleasedHolders() {
 	}()
 }
 
-// completeThreadDeletes deletes each thread list names under its action
-// lock. A thread that fails keeps its mark and is logged; the next boot
-// retries it.
+// completeThreadDeletes deletes each thread list names with what lives under
+// it, as its delete would have: a delete that stopped between the owner's
+// claim and its last worker resumes from the owner, whose spawn links still
+// name the workers not yet claimed (deleteThreadPaced). A thread that fails
+// keeps its mark and is logged; the next boot retries it.
 func (a *App) completeThreadDeletes(ctx context.Context, walk string, list func() ([]string, error)) {
 	ids, err := list()
 	if err != nil {
@@ -90,13 +92,10 @@ func (a *App) completeThreadDeletes(ctx context.Context, walk string, list func(
 	}
 	pause := a.maintenancePause(ctx)
 	for _, id := range ids {
-		unlock, err := a.threadLocks().LockCtx(ctx, id)
-		if err != nil {
+		if ctx.Err() != nil {
 			return
 		}
-		err = a.deleteThreadPacedLocked(id, pause)
-		unlock()
-		if err != nil {
+		if err := a.deleteThreadPaced(id, pause); err != nil {
 			log.Printf("app: %s: delete thread %s: %v", walk, id, err)
 		}
 	}

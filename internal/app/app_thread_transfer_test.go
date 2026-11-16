@@ -255,10 +255,7 @@ func testConversationTransfer(t *testing.T, kind string, fork, initiallyUnavaila
 		if !fork {
 			// Cleanup removes only the old local cache. A later return can
 			// reconstruct it without reviving the retired native identity.
-			unlock := source.threadLocks().Lock(thread.ID)
-			err := source.deleteThreadLocked(thread.ID)
-			unlock()
-			if err != nil {
+			if err := source.deleteThreadPaced(thread.ID, nil); err != nil {
 				t.Fatal(err)
 			}
 			if err := source.store.CheckThreadExecutionAccess(thread); err == nil {

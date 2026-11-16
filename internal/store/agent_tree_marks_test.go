@@ -178,14 +178,10 @@ func (r *agentTreeMarksRun) step(check func(what string)) {
 		}
 		// An assistant's delete takes what lives under it first, as the
 		// app's does: the store refuses the record's delete before.
-		if agent, found, err := s.GetStandingAgent(victim); err != nil {
+		if _, found, err := s.GetStandingAgent(victim); err != nil {
 			t.Fatal(err)
 		} else if found {
-			dependents, err := s.AssistantDependentThreadIDs(agent.ID)
-			if err != nil {
-				t.Fatal(err)
-			}
-			for _, id := range dependents {
+			for _, id := range assistantDependents(t, s, victim) {
 				if err := s.DeleteThread(id); err != nil {
 					t.Fatal(err)
 				}

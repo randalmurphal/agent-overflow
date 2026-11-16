@@ -80,10 +80,28 @@ func TestAnAssistantsThreadLivesInItsHome(t *testing.T) {
 	}
 }
 
-// Nothing deletes an assistant's record while threads live under it: a
-// thread delete's mark and the store delete are refused, naming the counts,
-// and leave everything in place. With them gone the mark goes through, and
-// from then on no helper is recorded for the assistant.
+// assistantDependents lists the past threads and helpers a delete of
+// threadID takes (ListDeleteFamily), in claim order.
+func assistantDependents(t *testing.T, s *Store, threadID string) []string {
+	t.Helper()
+	family, err := s.ListDeleteFamily([]string{threadID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := []string{}
+	for _, member := range family {
+		if member.Kind == DeletePastThread || member.Kind == DeleteHelper {
+			ids = append(ids, member.ThreadID)
+		}
+	}
+	return ids
+}
+
+// Nothing deletes an assistant's record while threads live under it. Its
+// delete claims its current thread first, and from the claim no helper is
+// recorded for it and no handoff moves it; the store delete's drop is
+// refused, naming the counts, and leaves the record and what is under it in
+// place. With them gone the delete goes through.
 func TestAnAssistantIsDeletedOnlyWithNothingUnderIt(t *testing.T) {
 	t.Parallel()
 	s := newTestStore(t)
@@ -99,38 +117,15 @@ func TestAnAssistantIsDeletedOnlyWithNothingUnderIt(t *testing.T) {
 		t.Fatal(err)
 	}
 	homeThread(t, s, "helper", agent.ID)
-	refused := func(what string, err error) {
-		t.Helper()
-		var dependents *AssistantDependentsError
-		if !errors.As(err, &dependents) || dependents.AgentID != agent.ID || dependents.PastThreads != 1 || dependents.Helpers != 1 {
-			t.Fatalf("%s = %v, want the past thread and the helper named", what, err)
-		}
-		if ids, err := s.AssistantDependentThreadIDs(agent.ID); err != nil || !slices.Equal(ids, []string{"old", "helper"}) {
-			t.Fatalf("after %s the threads under the assistant = %q %v", what, ids, err)
-		}
-		if _, found, err := s.GetStandingAgent("next"); err != nil || !found {
-			t.Fatalf("after %s the record = %v %v", what, found, err)
-		}
+	if ids := assistantDependents(t, s, "next"); !slices.Equal(ids, []string{"old", "helper"}) {
+		t.Fatalf("the threads under the assistant = %q", ids)
 	}
-	if past, helpers, err := s.AssistantDependentsOf("next"); err != nil || past != 1 || helpers != 1 {
-		t.Fatalf("dependents = %d %d %v", past, helpers, err)
+	if ids := assistantDependents(t, s, "helper"); len(ids) != 0 {
+		t.Fatalf("a helper's dependents = %q", ids)
 	}
-	if past, helpers, err := s.AssistantDependentsOf("helper"); err != nil || past != 0 || helpers != 0 {
-		t.Fatalf("a helper's dependents = %d %d %v", past, helpers, err)
-	}
-	refused("the delete mark", s.BeginThreadDelete("next"))
-	if pending, err := s.ListPendingThreadDeletes(); err != nil || len(pending) != 0 {
-		t.Fatalf("a refused mark marked %q %v", pending, err)
-	}
-	refused("the store delete", s.DeleteThread("next"))
 
-	for _, id := range []string{"old", "helper"} {
-		if err := s.DeleteThread(id); err != nil {
-			t.Fatal(err)
-		}
-	}
 	if err := s.BeginThreadDelete("next"); err != nil {
-		t.Fatalf("mark with nothing under the assistant: %v", err)
+		t.Fatalf("claim the assistant's current thread: %v", err)
 	}
 	late := makeThread("late", "claude")
 	late.ProjectID, late.WorkspacePath, late.HelperOfAgentID = "", agent.Home, agent.ID
@@ -139,6 +134,27 @@ func TestAnAssistantIsDeletedOnlyWithNothingUnderIt(t *testing.T) {
 	}
 	if _, err := s.GetThread("late"); err == nil {
 		t.Fatal("a refused helper left its thread")
+	}
+	homeThread(t, s, "successor", "")
+	mustPlaceInHome(t, s, "successor", agent.Home)
+	if _, err := s.HandOffAssistant("next", "successor", 20); !errors.Is(err, ErrThreadGone) {
+		t.Fatalf("a handoff of an assistant being deleted = %v, want ErrThreadGone", err)
+	}
+	var dependents *AssistantDependentsError
+	if err := s.DeleteThread("next"); !errors.As(err, &dependents) || dependents.AgentID != agent.ID || dependents.PastThreads != 1 || dependents.Helpers != 1 {
+		t.Fatalf("the store delete = %v, want the past thread and the helper named", err)
+	}
+	if _, found, err := s.GetStandingAgent("next"); err != nil || !found {
+		t.Fatalf("after the refused drop the record = %v %v", found, err)
+	}
+	if ids := assistantDependents(t, s, "next"); !slices.Equal(ids, []string{"old", "helper"}) {
+		t.Fatalf("after the refused drop the threads under the assistant = %q", ids)
+	}
+
+	for _, id := range []string{"old", "helper"} {
+		if err := s.DeleteThread(id); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := s.DeleteThread("next"); err != nil {
 		t.Fatal(err)
@@ -201,8 +217,8 @@ func TestAnAssistantsCurrentThreadDoesNotMove(t *testing.T) {
 		}
 		advanceTransfer(t, s, move.ID, "prepared", "committed")
 	}
-	if ids, err := s.AssistantDependentThreadIDs(agent.ID); err != nil || len(ids) != 0 {
-		t.Fatalf("after the moves the threads under the assistant = %q %v, want none", ids, err)
+	if ids := assistantDependents(t, s, "next"); len(ids) != 0 {
+		t.Fatalf("after the moves the threads under the assistant = %q, want none", ids)
 	}
 
 	homeThread(t, s, "early", "")
@@ -771,9 +787,8 @@ func TestHelpersLiveUnderTheirAssistant(t *testing.T) {
 	if _, err := s.HandOffAssistant("ops", "next", 10); err != nil {
 		t.Fatal(err)
 	}
-	ids, err := s.AssistantDependentThreadIDs(agent.ID)
-	if err != nil || !slices.Equal(ids, []string{"ops", "helper", "helper-fork"}) {
-		t.Fatalf("threads under the assistant = %q %v", ids, err)
+	if ids := assistantDependents(t, s, "next"); !slices.Equal(ids, []string{"ops", "helper", "helper-fork"}) {
+		t.Fatalf("threads under the assistant = %q", ids)
 	}
 	for _, placement := range []string{PlacementStandalone, PlacementOwned} {
 		if _, err := s.SetThreadPlacement([]string{"helper"}, placement); !errors.Is(err, ErrPlacementOutsideProjects) {
@@ -783,8 +798,8 @@ func TestHelpersLiveUnderTheirAssistant(t *testing.T) {
 	if err := s.DeleteThread("helper"); err != nil {
 		t.Fatal(err)
 	}
-	if ids, err := s.AssistantDependentThreadIDs(agent.ID); err != nil || !slices.Equal(ids, []string{"ops", "helper-fork"}) {
-		t.Fatalf("after deleting a helper = %q %v", ids, err)
+	if ids := assistantDependents(t, s, "next"); !slices.Equal(ids, []string{"ops", "helper-fork"}) {
+		t.Fatalf("after deleting a helper = %q", ids)
 	}
 }
 

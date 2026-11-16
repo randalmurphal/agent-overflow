@@ -3,22 +3,30 @@ package app
 import (
 	"database/sql"
 	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"agent-overflow/internal/entityid"
-	"agent-overflow/internal/eventchan"
+	"agent-overflow/internal/identity"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/terminal"
+	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/threadtools"
+	"agent-overflow/internal/transport"
 	"agent-overflow/internal/triage"
 )
 
-// Deleting a thread deletes the workers it owns, down the lineage
-// (docs/specs/standing-agents.md, "Owned workers"). A spawned thread with a
-// sidebar row is the person's and stays.
+// Deleting a thread deletes the workers it owns, down the lineage, as one
+// delete (docs/specs/standing-agents.md, "Owned workers"; familyDelete). A
+// spawned thread with a sidebar row is the person's and stays.
 
 // workerChain is an owner with three workers in a line under it, the
 // middle one archived, a worker it placed in the sidebar, and another
@@ -71,7 +79,8 @@ func newDeleteFixture(t *testing.T) *organizeFixture {
 	return f
 }
 
-// gone reports whether a thread's row is gone to every read.
+// gone reports whether a thread's row is gone to every read: dropped, or
+// claimed by a delete.
 func gone(t *testing.T, app *App, threadID string) bool {
 	t.Helper()
 	_, err := app.store.GetThread(threadID)
@@ -79,6 +88,19 @@ func gone(t *testing.T, app *App, threadID string) bool {
 		t.Fatalf("GetThread(%s): %v", threadID, err)
 	}
 	return err != nil
+}
+
+// untouched fails unless every thread named is present and unclaimed.
+func untouched(t *testing.T, app *App, ids ...string) {
+	t.Helper()
+	for _, id := range ids {
+		if gone(t, app, id) {
+			t.Errorf("%s was deleted or claimed", id)
+		}
+	}
+	if pending, err := app.store.ListPendingThreadDeletes(); err != nil || len(pending) != 0 {
+		t.Errorf("claims left = %v, %v; want none", pending, err)
+	}
 }
 
 func deletedFrames(frames []triage.ThreadUpdateEvent) []string {
@@ -90,6 +112,39 @@ func deletedFrames(frames []triage.ThreadUpdateEvent) []string {
 	}
 	slices.Sort(ids)
 	return ids
+}
+
+// armLoop gives threadID an armed loop, a wake its delete must take.
+func armLoop(t *testing.T, app *App, threadID string) {
+	t.Helper()
+	if _, err := (threadToolsApp{app: app}).Loop(t.Context(), threadtools.Caller{ThreadID: threadID},
+		threadtools.LoopCall{Label: "nightly", Note: "check", EverySeconds: 3600}); err != nil {
+		t.Fatalf("Loop: %v", err)
+	}
+}
+
+// startTransfer puts threadID in an outgoing transfer of kind.
+func startTransfer(t *testing.T, app *App, threadID, kind string) {
+	t.Helper()
+	if _, err := app.store.CreateThreadTransfer(store.ThreadTransfer{
+		ID: entityid.New(), ThreadID: threadID, PeerBackendID: entityid.New(), Kind: kind, Direction: "outgoing",
+		ActivationHash: strings.Repeat("a", 64), PrivateState: []byte(`{}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// within fails the test unless done delivers before the timeout.
+func within[T any](t *testing.T, what string, done <-chan T) T {
+	t.Helper()
+	select {
+	case value := <-done:
+		return value
+	case <-time.After(30 * time.Second):
+		t.Fatalf("%s never finished", what)
+		var zero T
+		return zero
+	}
 }
 
 // Every door that deletes a thread deletes its workers at any depth,
@@ -108,11 +163,18 @@ func TestDeletingAThreadDeletesItsWorkers(t *testing.T) {
 				t.Fatalf("workers not deleted = %+v", result.WorkersNotDeleted)
 			}
 		},
+		"with worktrees": func(t *testing.T, f *organizeFixture, chain workerChain) {
+			result, err := f.app.DeleteThreadAndWorktrees(t.Context(), chain.owner)
+			if err != nil {
+				t.Fatalf("DeleteThreadAndWorktrees: %v", err)
+			}
+			if len(result.WorkersNotDeleted) > 0 {
+				t.Fatalf("workers not deleted = %+v", result.WorkersNotDeleted)
+			}
+		},
 		"boot": func(t *testing.T, f *organizeFixture, chain workerChain) {
-			unlock := f.app.threadLocks().Lock(chain.owner)
-			defer unlock()
-			if err := f.app.deleteThreadPacedLocked(chain.owner, func() {}); err != nil {
-				t.Fatalf("deleteThreadPacedLocked: %v", err)
+			if err := f.app.deleteThreadPaced(chain.owner, func() {}); err != nil {
+				t.Fatalf("deleteThreadPaced: %v", err)
 			}
 		},
 		"project removal": func(t *testing.T, f *organizeFixture, chain workerChain) {
@@ -144,10 +206,7 @@ func TestDeletingAThreadDeletesItsWorkers(t *testing.T) {
 				// A project removal refuses while a worker runs.
 				runningSession(t, f.app, chain.worker)
 			}
-			if _, err := (threadToolsApp{app: f.app}).Loop(t.Context(), threadtools.Caller{ThreadID: chain.worker},
-				threadtools.LoopCall{Label: "nightly", Note: "check", EverySeconds: 3600}); err != nil {
-				t.Fatalf("Loop: %v", err)
-			}
+			armLoop(t, f.app, chain.worker)
 			if _, err := f.app.registerQueueItem(chain.worker, "later", SendMessageOptions{SendID: "send-later"},
 				injectedQueueOptions{preserveDraft: true}); err != nil {
 				t.Fatalf("queue a message: %v", err)
@@ -179,6 +238,9 @@ func TestDeletingAThreadDeletesItsWorkers(t *testing.T) {
 			if wakes, err := f.app.store.ListAgentWakes(chain.worker); err != nil || len(wakes) != 0 {
 				t.Errorf("the worker's loops after its delete = %+v, %v", wakes, err)
 			}
+			if pending, err := f.app.store.ListPendingThreadDeletes(); err != nil || len(pending) != 0 {
+				t.Errorf("claims left = %v, %v; want none", pending, err)
+			}
 			// Nothing the delete settled starts a session again.
 			f.app.threadRequestSettling.Wait()
 			f.app.agentNoticeWork.wg.Wait()
@@ -194,131 +256,645 @@ func TestDeletingAThreadDeletesItsWorkers(t *testing.T) {
 	}
 }
 
-// A worker whose delete is refused is named beside the owner's delete,
-// which goes on, and its siblings are deleted. The refused worker is
-// standalone in the sidebar once its owner is gone.
-func TestAWorkerThatCannotBeDeletedIsReported(t *testing.T) {
+// P owns W owns G. W moved to the sidebar after P's claim and before W's,
+// whether before the delete read P's workers or after, is the person's: W, its session, its loop and G are untouched, and the
+// delete reports nothing. A move after W's claim is refused, and W and G
+// go with P.
+func TestAWorkerIsTheDeletesOnlyFromItsClaim(t *testing.T) {
 	t.Parallel()
-	f := newDeleteFixture(t)
-	owner := f.thread(t, "owner")
-	stuck := f.thread(t, "stuck")
-	sibling := f.thread(t, "sibling")
-	withMessage(t, f.app, stuck.ID)
-	recordSpawn(t, f.app, "tok-stuck", owner.ID, stuck.ID)
-	recordSpawn(t, f.app, "tok-sibling", owner.ID, sibling.ID)
-	if _, err := f.app.store.CreateThreadTransfer(store.ThreadTransfer{
-		ID: entityid.New(), ThreadID: stuck.ID, PeerBackendID: entityid.New(), Kind: "copy", Direction: "outgoing",
-		ActivationHash: strings.Repeat("a", 64), PrivateState: []byte(`{}`),
-	}); err != nil {
-		t.Fatal(err)
-	}
-	f.events.reset()
-	result, err := f.app.DeleteThread(owner.ID)
-	if err != nil {
-		t.Fatalf("DeleteThread: %v", err)
-	}
-	if len(result.WorkersNotDeleted) != 1 {
-		t.Fatalf("workers not deleted = %+v, want the stuck one", result.WorkersNotDeleted)
-	}
-	failure := result.WorkersNotDeleted[0]
-	if failure.ThreadID != stuck.ID || failure.Title != stuck.Title || !strings.Contains(failure.Error, "transfer") {
-		t.Errorf("failure = %+v, want the stuck worker titled with its transfer", failure)
-	}
-	if !gone(t, f.app, owner.ID) || !gone(t, f.app, sibling.ID) {
-		t.Error("the owner or its other worker outlived the delete")
-	}
-	got := f.reload(t, stuck.ID)
-	if got.Placement != store.PlacementStandalone || got.SpawnedByThreadID != "" {
-		t.Errorf("the stuck worker = placement %s spawner %q, want standalone", got.Placement, got.SpawnedByThreadID)
-	}
-	placementFrames(t, "delete", f.threadFrames(t), stuck.ID, store.PlacementStandalone)
-	if ids := catalogIDs(t, f.app); !slices.Contains(ids, stuck.ID) {
-		t.Errorf("catalog = %v, want the stuck worker listed", ids)
-	}
-	host := &harnessHost{app: f.app}
-	other := f.thread(t, "other")
-	again := f.thread(t, "again")
-	recordSpawn(t, f.app, "tok-again", other.ID, again.ID)
-	if _, err := f.app.store.CreateThreadTransfer(store.ThreadTransfer{
-		ID: entityid.New(), ThreadID: again.ID, PeerBackendID: entityid.New(), Kind: "copy", Direction: "outgoing",
-		ActivationHash: strings.Repeat("b", 64), PrivateState: []byte(`{}`),
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if err := host.DeleteThread(other.ID); err == nil || !strings.Contains(err.Error(), again.ID) {
-		t.Errorf("the harness delete = %v, want it to fail naming the worker left standing", err)
-	}
-}
-
-// A worker given a sidebar row while its owner's delete runs is left
-// alone: not deleted, and nothing of it stopped.
-func TestAWorkerMovedDuringItsOwnersDeleteIsLeftAlone(t *testing.T) {
-	t.Parallel()
-	f := newDeleteFixture(t)
-	owner := f.thread(t, "owner")
-	first := f.thread(t, "w-a")
-	moved := f.thread(t, "w-b")
-	recordSpawn(t, f.app, "tok-a", owner.ID, first.ID)
-	recordSpawn(t, f.app, "tok-b", owner.ID, moved.ID)
-	runningSession(t, f.app, moved.ID)
-	if _, err := (threadToolsApp{app: f.app}).Loop(t.Context(), threadtools.Caller{ThreadID: moved.ID},
-		threadtools.LoopCall{Label: "nightly", Note: "check", EverySeconds: 3600}); err != nil {
-		t.Fatalf("Loop: %v", err)
-	}
-	// The workers are deleted in id order: once the first is gone, and
-	// before the second is reached, the person shows the second in the
-	// sidebar.
-	var once sync.Once
-	var moveErr error
-	f.app.testEmitHook = func(channel string, data any) {
-		f.events.capture(channel, data)
-		frame, ok := data.(triage.ThreadUpdateEvent)
-		if channel != eventchan.ThreadUpdated.String() || !ok || frame.Action != triage.ThreadActionDeleted || frame.ID != first.ID {
-			return
-		}
-		once.Do(func() {
-			_, moveErr = f.app.SetThreadPlacement([]string{moved.ID}, store.PlacementStandalone)
+	for _, moveAfter := range []string{"P", "a sibling", "W"} {
+		t.Run("move after "+moveAfter+"'s claim", func(t *testing.T) {
+			t.Parallel()
+			f := newDeleteFixture(t)
+			p, w, g := f.thread(t, "p"), f.thread(t, "w"), f.thread(t, "g")
+			// The sibling sorts before W: both are read in one pass, and the
+			// sibling's claim comes first, so a move after it is fenced by
+			// W's claim alone.
+			sibling := f.thread(t, "a-sibling")
+			recordSpawn(t, f.app, "tok-sibling", p.ID, sibling.ID)
+			recordSpawn(t, f.app, "tok-w", p.ID, w.ID)
+			recordSpawn(t, f.app, "tok-g", w.ID, g.ID)
+			runningSession(t, f.app, w.ID)
+			armLoop(t, f.app, w.ID)
+			at := map[string]string{"P": p.ID, "a sibling": sibling.ID, "W": w.ID}[moveAfter]
+			var moveErr error
+			var once sync.Once
+			f.app.deleteClaimedForTest = func(id string) {
+				if id == at {
+					once.Do(func() { _, moveErr = f.app.SetThreadPlacement([]string{w.ID}, store.PlacementStandalone) })
+				}
+			}
+			result, err := f.app.DeleteThread(p.ID)
+			if err != nil || len(result.WorkersNotDeleted) > 0 {
+				t.Fatalf("DeleteThread = %+v, %v; want a complete delete", result, err)
+			}
+			if !gone(t, f.app, p.ID) || !gone(t, f.app, sibling.ID) {
+				t.Error("P or its other worker outlived the delete")
+			}
+			if moveAfter == "W" {
+				if !errors.Is(moveErr, store.ErrThreadDeleting) {
+					t.Errorf("a move after W's claim = %v, want store.ErrThreadDeleting", moveErr)
+				}
+				if !gone(t, f.app, w.ID) || !gone(t, f.app, g.ID) {
+					t.Error("W or G outlived the delete")
+				}
+				return
+			}
+			if moveErr != nil {
+				t.Fatalf("a move before W's claim: %v", moveErr)
+			}
+			untouched(t, f.app, w.ID, g.ID)
+			if got := f.reload(t, w.ID); got.Placement != store.PlacementStandalone {
+				t.Errorf("W = placement %s, want standalone", got.Placement)
+			}
+			if got := f.reload(t, g.ID); got.Placement != store.PlacementOwned || got.SpawnedByThreadID != w.ID {
+				t.Errorf("G = placement %s spawner %q, want still W's", got.Placement, got.SpawnedByThreadID)
+			}
+			if _, live := f.app.sessionManager().get(w.ID); !live {
+				t.Error("W's session was stopped")
+			}
+			if wakes, err := f.app.store.ListAgentWakes(w.ID); err != nil || len(wakes) != 1 || wakes[0].State != store.AgentWakeArmed {
+				t.Errorf("W's loop = %+v, %v; want it armed", wakes, err)
+			}
 		})
 	}
-	result, err := f.app.DeleteThread(owner.ID)
-	if err != nil || len(result.WorkersNotDeleted) > 0 {
-		t.Fatalf("DeleteThread = %+v, %v", result, err)
-	}
-	if moveErr != nil {
-		t.Fatalf("move the worker: %v", moveErr)
-	}
-	if !gone(t, f.app, first.ID) {
-		t.Error("the first worker outlived the delete")
-	}
-	if gone(t, f.app, moved.ID) {
-		t.Fatal("the worker moved to the sidebar was deleted")
-	}
-	if _, live := f.app.sessionManager().get(moved.ID); !live {
-		t.Error("the moved worker's session was stopped")
-	}
-	if wakes, err := f.app.store.ListAgentWakes(moved.ID); err != nil || len(wakes) != 1 || wakes[0].State != store.AgentWakeArmed {
-		t.Errorf("the moved worker's loop = %+v, %v; want it armed", wakes, err)
+}
+
+// A delete that something under the thread refuses deletes nothing: a
+// worker in a transfer refuses it whether the transfer began before the
+// delete or between the owner's claim and the worker's, and the owner's
+// claim is taken back.
+func TestARefusedDeleteDeletesNothing(t *testing.T) {
+	t.Parallel()
+	for _, when := range []string{"before the delete", "after the owner's claim"} {
+		t.Run(when, func(t *testing.T) {
+			t.Parallel()
+			f := newDeleteFixture(t)
+			owner, stuck, sibling := f.thread(t, "owner"), f.thread(t, "stuck"), f.thread(t, "sibling")
+			recordSpawn(t, f.app, "tok-stuck", owner.ID, stuck.ID)
+			recordSpawn(t, f.app, "tok-sibling", owner.ID, sibling.ID)
+			runningSession(t, f.app, owner.ID)
+			if when == "before the delete" {
+				startTransfer(t, f.app, stuck.ID, "copy")
+			} else {
+				f.app.deleteClaimedForTest = func(id string) {
+					if id == owner.ID {
+						startTransfer(t, f.app, stuck.ID, "copy")
+					}
+				}
+			}
+			f.events.reset()
+			_, err := f.app.DeleteThread(owner.ID)
+			if err == nil || !strings.Contains(err.Error(), "thread "+stuck.ID+", which works under the thread being deleted, is being transferred") {
+				t.Fatalf("DeleteThread = %v, want it refused naming the worker", err)
+			}
+			untouched(t, f.app, owner.ID, stuck.ID, sibling.ID)
+			if _, live := f.app.sessionManager().get(owner.ID); !live {
+				t.Error("a refused delete stopped the owner's session")
+			}
+			if got := deletedFrames(f.threadFrames(t)); len(got) != 0 {
+				t.Errorf("deleted frames = %v, want none", got)
+			}
+		})
 	}
 }
 
-// A project removal refuses while a worker of one of its threads, in
-// another project, is running: the thread's delete would delete it.
-func TestAProjectRemovalRefusesWhileAWorkerOutsideRuns(t *testing.T) {
+// An assistant's delete is refused, with nothing deleted, while a thread
+// under it is in a transfer: here a helper, beside a helper the assistant
+// also spawned and project work it owns.
+func TestARefusedAssistantDeleteKeepsItsFamily(t *testing.T) {
+	t.Parallel()
+	for _, when := range []string{"before the delete", "after the assistant's claim"} {
+		t.Run(when, func(t *testing.T) {
+			t.Parallel()
+			f := newThreadToolsFixture(t)
+			home := filepath.Join(f.app.configDir, "agents", "agent")
+			if err := os.MkdirAll(home, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			current := f.thread(t, "agent")
+			if err := f.app.store.PlaceThreadInHome(current.ID, home); err != nil {
+				t.Fatal(err)
+			}
+			if err := f.app.store.CreateStandingAgent(storeAgent(current.ID, home)); err != nil {
+				t.Fatal(err)
+			}
+			helper := func(id string) {
+				f.thread(t, id, func(thread *store.Thread) {
+					thread.ProjectID, thread.WorkspacePath, thread.HelperOfAgentID = "", home, current.ID
+				})
+			}
+			helper("helper-moving")
+			helper("helper-spawned")
+			if err := f.app.store.InsertThreadRequest(store.ThreadRequest{
+				Token: "tok-helper", CallerThreadID: current.ID, Kind: store.ThreadRequestSpawn,
+				TargetThreadID: "helper-spawned", State: store.ThreadRequestFinished,
+				Answer: []byte("done"), AnswerKind: store.ThreadAnswerFinal, SettledAt: 2, CreatedAt: 1, UpdatedAt: 2,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			f.thread(t, "work")
+			recordSpawn(t, f.app, "tok-work", current.ID, "work")
+			if when == "before the delete" {
+				startTransfer(t, f.app, "helper-moving", "move")
+			} else {
+				f.app.deleteClaimedForTest = func(id string) {
+					if id == current.ID {
+						startTransfer(t, f.app, "helper-moving", "move")
+					}
+				}
+			}
+			err := f.app.deleteThread(current.ID)
+			if err == nil || !strings.Contains(err.Error(), "thread helper-moving, which lives under this assistant, is being transferred") {
+				t.Fatalf("DeleteThread = %v, want the helper's transfer named", err)
+			}
+			untouched(t, f.app, current.ID, "helper-moving", "helper-spawned", "work")
+			if _, err := os.Stat(home); err != nil {
+				t.Errorf("the home after a refused delete: %v", err)
+			}
+		})
+	}
+}
+
+// DeleteThread(Z) and the removal of Z's project cross where the old
+// cascade deadlocked: Z owns A, A sorts first, the delete has claimed Z and
+// is about to claim A, and the removal holds A's lock and wants Z's. Both
+// finish, because no delete holds one lock while it takes another.
+func TestADeleteAndAProjectRemovalCrossing(t *testing.T) {
 	t.Parallel()
 	f := newDeleteFixture(t)
-	other, err := f.app.store.CreateProject(store.Project{ID: entityid.New(), Path: t.TempDir(), Name: "Elsewhere"})
+	z, a := f.thread(t, "z-owner"), f.thread(t, "a-worker")
+	recordSpawn(t, f.app, "tok-a", z.ID, a.ID)
+	removalHoldsA := make(chan struct{})
+	var holds sync.Once
+	f.app.projectLockedForTest = func(id string) {
+		if id == a.ID {
+			holds.Do(func() { close(removalHoldsA) })
+		}
+	}
+	removed := make(chan error, 1)
+	var crossing sync.Once
+	f.app.deleteClaimedForTest = func(id string) {
+		if id != z.ID {
+			return
+		}
+		crossing.Do(func() {
+			go func() {
+				_, err := f.app.DeleteProject(f.project.ID)
+				removed <- err
+			}()
+			within(t, "the removal's lock on A", removalHoldsA)
+		})
+	}
+	deleted := make(chan error, 1)
+	go func() {
+		_, err := f.app.DeleteThread(z.ID)
+		deleted <- err
+	}()
+	if err := within(t, "DeleteThread(Z)", deleted); err != nil {
+		t.Errorf("DeleteThread(Z): %v", err)
+	}
+	if err := within(t, "DeleteProject", removed); err != nil {
+		t.Errorf("DeleteProject: %v", err)
+	}
+	if !gone(t, f.app, z.ID) || !gone(t, f.app, a.ID) {
+		t.Error("Z or A outlived both deletes")
+	}
+	if pending, err := f.app.store.ListPendingThreadDeletes(); err != nil || len(pending) != 0 {
+		t.Errorf("claims left = %v, %v; want none", pending, err)
+	}
+}
+
+// A spawn admitted before its owner's delete, held after its thread is made
+// and before it names it, finishes before the delete reads the owner's
+// workers, so the new worker goes with the owner: no worker of a deleted
+// thread survives it. Without the wait, the delete would read no worker,
+// the spawn would name its thread while the owner's rows drain, and the
+// worker would outlive the owner, standalone.
+func TestASpawnUnderWayIsDeletedWithItsOwner(t *testing.T) {
+	t.Parallel()
+	f := newRequestFixture(t)
+	f.mockClaudeHoldingTheTurn(t, "working on it")
+	// Enough items that the owner's drain pauses before its row drops.
+	for i := range 600 {
+		if err := f.app.store.InsertItem(store.Item{
+			ID: fmt.Sprintf("owner-%d", i), ThreadID: f.caller.ID, TurnIndex: i / 10, ItemIndex: i % 10,
+			Kind: "assistant_text", Role: "assistant", Status: "completed", Summary: "row",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	held, release := make(chan struct{}), make(chan struct{})
+	var hold, free sync.Once
+	f.app.spawnNamingForTest = func(id string) {
+		if id == f.caller.ID {
+			hold.Do(func() {
+				close(held)
+				<-release
+			})
+		}
+	}
+	spawned := make(chan error, 1)
+	go func() {
+		_, err := f.adapter().Spawn(t.Context(), f.callerIdentity(), threadtools.SpawnCall{Prompt: "work"})
+		spawned <- err
+	}()
+	within(t, "the spawn's hold", held)
+	var draining atomic.Bool
+	spawnDone := make(chan struct{})
+	deleted := make(chan error, 1)
+	go func() {
+		deleted <- f.app.deleteThreadPaced(f.caller.ID, func() {
+			draining.Store(true)
+			select {
+			case <-spawnDone:
+			case <-time.After(30 * time.Second):
+			}
+		})
+	}()
+	// The delete waits on the admission under way, or, were it not to,
+	// reaches the owner's drain first.
+	waitUntil(t, 10*time.Second, func() bool {
+		f.app.resting.mu.Lock()
+		defer f.app.resting.mu.Unlock()
+		return f.app.resting.closed[f.caller.ID] > 0 || draining.Load()
+	})
+	free.Do(func() { close(release) })
+	if err := within(t, "the spawn", spawned); err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	close(spawnDone)
+	if err := within(t, "the delete", deleted); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	f.app.threadRequestSettling.Wait()
+	f.app.agentNoticeWork.wg.Wait()
+	rows, err := f.app.store.ListThreads()
 	if err != nil {
 		t.Fatal(err)
 	}
+	if len(rows) != 0 {
+		t.Errorf("threads after the owner's delete = %d (%s, placement %s), want none", len(rows), rows[0].ID, rows[0].Placement)
+	}
+	if got := f.app.sessionManager().snapshot(); len(got) != 0 {
+		t.Errorf("sessions after the delete = %v, want none", got)
+	}
+}
+
+// A delete interrupted, as a crash interrupts it, with the database closed
+// and opened again, is finished by the boot with everything under the
+// thread: stopped after the owner's claim, before any worker was claimed,
+// and stopped between two workers.
+func TestABootFinishesAnInterruptedFamilyDelete(t *testing.T) {
+	t.Parallel()
+	for _, crash := range []string{"after the owner's claim", "between two workers"} {
+		t.Run(crash, func(t *testing.T) {
+			t.Parallel()
+			app, path := newTestAppWithStorePath(t)
+			ids := []string{"p", "w1", "w2", "g"}
+			for _, id := range ids {
+				if err := app.store.CreateThread(testThread(id)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			recordSpawn(t, app, "tok-w1", "p", "w1")
+			recordSpawn(t, app, "tok-w2", "p", "w2")
+			recordSpawn(t, app, "tok-g", "w1", "g")
+			if crash == "after the owner's claim" {
+				app.deleteClaimedForTest = func(id string) {
+					if id == "p" {
+						runtime.Goexit()
+					}
+				}
+			} else {
+				app.testEmitHook = func(_ string, data any) {
+					if frame, ok := data.(triage.ThreadUpdateEvent); ok && frame.Action == triage.ThreadActionDeleted {
+						runtime.Goexit()
+					}
+				}
+			}
+			stopped := make(chan bool, 1)
+			go func() {
+				returned := false
+				defer func() { stopped <- returned }()
+				_, _ = app.DeleteThread("p")
+				returned = true
+			}()
+			if within(t, "the interrupted delete", stopped) {
+				t.Fatal("the delete returned instead of stopping")
+			}
+			if left := remaining(t, app, ids); len(left) < 3 {
+				t.Fatalf("threads left after the interruption = %v, want the delete stopped early", left)
+			}
+			app.appCancel()
+			if err := app.store.Close(); err != nil {
+				t.Fatal(err)
+			}
+
+			boot := newTestAppAtStorePath(t, path)
+			boot.maintenance.firstReadsFallback = time.Millisecond
+			t.Cleanup(func() {
+				boot.appCancel()
+				boot.waitPendingThreadDeletes()
+			})
+			boot.startPendingThreadDeletes()
+			waitUntil(t, 10*time.Second, func() bool { return len(remaining(t, boot, ids)) == 0 })
+		})
+	}
+}
+
+// remaining lists the threads of ids still stored, claimed or not.
+func remaining(t *testing.T, app *App, ids []string) []string {
+	t.Helper()
+	pending, err := app.store.ListPendingThreadDeletes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var left []string
+	for _, id := range ids {
+		if !gone(t, app, id) || slices.Contains(pending, id) {
+			left = append(left, id)
+		}
+	}
+	return left
+}
+
+// deleteWorktreeFixture is a git project with linked worktrees for threads
+// to be on.
+type deleteWorktreeFixture struct {
+	*organizeFixture
+}
+
+func newDeleteWorktreeFixture(t *testing.T) deleteWorktreeFixture {
+	t.Helper()
+	f := newDeleteFixture(t)
+	f.gitProject(t, "first")
+	return deleteWorktreeFixture{f}
+}
+
+// worktree adds a linked worktree on branch.
+func (f deleteWorktreeFixture) worktree(t *testing.T, branch string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), branch)
+	testutil.RunGit(t, f.project.Path, "worktree", "add", "-b", branch, path)
+	return path
+}
+
+// on is a thread option putting the thread on worktree.
+func on(worktree string) func(*store.Thread) {
+	return func(row *store.Thread) {
+		row.WorkspacePath, row.WorktreePath, row.Branch = worktree, worktree, filepath.Base(worktree)
+	}
+}
+
+func exists(t *testing.T, path string) bool {
+	t.Helper()
+	_, err := os.Stat(path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatal(err)
+	}
+	return err == nil
+}
+
+// A person's delete removes the worktrees it empties, the thread's and its
+// workers', and keeps one a thread it does not take is on.
+func TestADeleteWithWorktreesRemovesTheOnesItEmpties(t *testing.T) {
+	t.Parallel()
+	f := newDeleteWorktreeFixture(t)
+	ownerTree, workerTree, sharedTree := f.worktree(t, "owner-tree"), f.worktree(t, "worker-tree"), f.worktree(t, "shared-tree")
+	owner := f.thread(t, "owner", on(ownerTree))
+	worker := f.thread(t, "worker", on(workerTree))
+	beside := f.thread(t, "beside", on(workerTree))
+	shared := f.thread(t, "shared", on(sharedTree))
+	stranger := f.thread(t, "stranger", on(sharedTree))
+	recordSpawn(t, f.app, "tok-worker", owner.ID, worker.ID)
+	recordSpawn(t, f.app, "tok-beside", worker.ID, beside.ID)
+	recordSpawn(t, f.app, "tok-shared", owner.ID, shared.ID)
+	result, err := f.app.DeleteThreadAndWorktrees(t.Context(), owner.ID)
+	if err != nil || len(result.WorkersNotDeleted) > 0 {
+		t.Fatalf("DeleteThreadAndWorktrees = %+v, %v", result, err)
+	}
+	for _, id := range []string{owner.ID, worker.ID, beside.ID, shared.ID} {
+		if !gone(t, f.app, id) {
+			t.Errorf("%s outlived the delete", id)
+		}
+	}
+	untouched(t, f.app, stranger.ID)
+	if exists(t, ownerTree) || exists(t, workerTree) {
+		t.Error("a worktree the delete emptied is still there")
+	}
+	if !exists(t, sharedTree) {
+		t.Error("the worktree another thread is on was removed")
+	}
+	if got := f.reload(t, stranger.ID); got.WorktreePath != sharedTree {
+		t.Errorf("the other thread on the shared worktree = %q, want it kept there", got.WorktreePath)
+	}
+}
+
+// A caller without git:operate deletes a thread with no worktree to
+// remove, and is refused, with nothing deleted, when there is one.
+func TestADeleteWithWorktreesAsksForGitOperateOnlyForAWorktree(t *testing.T) {
+	t.Parallel()
+	f := newDeleteWorktreeFixture(t)
+	if err := f.app.initIdentity("backend-under-test"); err != nil {
+		t.Fatal(err)
+	}
+	limited := callFrom(pairSessionWithScopes(t, f.app, "delete-limited", []identity.Scope{identity.ScopeThreadsOperate}).ID, false)
+	tree := f.worktree(t, "worker-tree")
+	plain := f.thread(t, "plain")
 	owner := f.thread(t, "owner")
-	worker := f.thread(t, "worker", func(row *store.Thread) { row.ProjectID = other.ID })
+	worker := f.thread(t, "worker", on(tree))
+	recordSpawn(t, f.app, "tok-worker", owner.ID, worker.ID)
+	if _, err := f.app.DeleteThreadAndWorktrees(limited, plain.ID); err != nil || !gone(t, f.app, plain.ID) {
+		t.Fatalf("a delete with no worktree to remove = %v, gone %v", err, gone(t, f.app, plain.ID))
+	}
+	_, err := f.app.DeleteThreadAndWorktrees(limited, owner.ID)
+	wantScopeRefusal(t, err, transport.ScopeGitOperate)
+	untouched(t, f.app, owner.ID, worker.ID)
+	if !exists(t, tree) {
+		t.Error("a refused delete removed the worktree")
+	}
+}
+
+// A delete without a person's worktree removal, as from a tool or the boot,
+// keeps every worktree.
+func TestADeleteKeepsWorktreesUnlessAPersonRemovesThem(t *testing.T) {
+	t.Parallel()
+	f := newDeleteWorktreeFixture(t)
+	tree := f.worktree(t, "worker-tree")
+	owner := f.thread(t, "owner")
+	worker := f.thread(t, "worker", on(tree))
+	recordSpawn(t, f.app, "tok-worker", owner.ID, worker.ID)
+	if _, err := f.app.DeleteThread(owner.ID); err != nil {
+		t.Fatal(err)
+	}
+	if !gone(t, f.app, worker.ID) || !exists(t, tree) {
+		t.Errorf("worker gone %v, worktree kept %v; want both", gone(t, f.app, worker.ID), exists(t, tree))
+	}
+}
+
+// A worker given a sidebar row by another client after the confirmation
+// read what the delete takes is the person's: the delete leaves its
+// session and worktree alone.
+func TestADeleteLeavesAWorkerPlacedAfterItsConfirmation(t *testing.T) {
+	t.Parallel()
+	f := newDeleteWorktreeFixture(t)
+	tree := f.worktree(t, "worker-tree")
+	owner := f.thread(t, "owner")
+	worker := f.thread(t, "worker", on(tree))
 	recordSpawn(t, f.app, "tok-worker", owner.ID, worker.ID)
 	runningSession(t, f.app, worker.ID)
-	if _, err := f.app.DeleteProject(f.project.ID); err == nil || !strings.Contains(err.Error(), "worker "+worker.ID) {
-		t.Fatalf("DeleteProject = %v, want it refused naming the running worker", err)
+	preview, err := f.app.GetDeleteDependents(owner.ID)
+	if err != nil || preview.Workers != 1 || len(preview.Worktrees) != 1 {
+		t.Fatalf("GetDeleteDependents = %+v, %v; want the worker and its worktree", preview, err)
 	}
-	if gone(t, f.app, owner.ID) || gone(t, f.app, worker.ID) {
-		t.Error("a refused project removal deleted a thread")
+	if _, err := f.app.SetThreadPlacement([]string{worker.ID}, store.PlacementStandalone); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.app.DeleteThreadAndWorktrees(t.Context(), owner.ID); err != nil {
+		t.Fatal(err)
+	}
+	if !gone(t, f.app, owner.ID) {
+		t.Error("the owner outlived its delete")
+	}
+	untouched(t, f.app, worker.ID)
+	if _, live := f.app.sessionManager().get(worker.ID); !live {
+		t.Error("the placed worker's session was stopped")
+	}
+	if !exists(t, tree) {
+		t.Error("the placed worker's worktree was removed")
+	}
+}
+
+// A worktree that cannot be removed fails the delete of the threads on it.
+// For the named thread nothing is deleted. A worker is named in the result
+// and stays with the threads under it, standalone once its owner is gone,
+// and the rest of the delete goes on.
+func TestAWorktreeThatCannotBeRemovedFailsTheDeleteOfItsThreads(t *testing.T) {
+	t.Parallel()
+	dirty := func(t *testing.T, tree string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(tree, "unsaved.txt"), []byte("work"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Run("a worker's", func(t *testing.T) {
+		t.Parallel()
+		f := newDeleteWorktreeFixture(t)
+		stuckTree, cleanTree := f.worktree(t, "stuck-tree"), f.worktree(t, "clean-tree")
+		owner := f.thread(t, "owner")
+		stuck := f.thread(t, "stuck", on(stuckTree))
+		under := f.thread(t, "under")
+		sibling := f.thread(t, "sibling", on(cleanTree))
+		recordSpawn(t, f.app, "tok-stuck", owner.ID, stuck.ID)
+		recordSpawn(t, f.app, "tok-under", stuck.ID, under.ID)
+		recordSpawn(t, f.app, "tok-sibling", owner.ID, sibling.ID)
+		withMessage(t, f.app, stuck.ID)
+		dirty(t, stuckTree)
+		result, err := f.app.DeleteThreadAndWorktrees(t.Context(), owner.ID)
+		if err != nil {
+			t.Fatalf("DeleteThreadAndWorktrees: %v", err)
+		}
+		if len(result.WorkersNotDeleted) != 1 {
+			t.Fatalf("workers not deleted = %+v, want the stuck one", result.WorkersNotDeleted)
+		}
+		failure := result.WorkersNotDeleted[0]
+		if failure.ThreadID != stuck.ID || failure.Title != stuck.Title || !strings.Contains(failure.Error, "unsaved work") {
+			t.Errorf("failure = %+v, want the stuck worker titled with its worktree's reason", failure)
+		}
+		if !gone(t, f.app, owner.ID) || !gone(t, f.app, sibling.ID) || exists(t, cleanTree) {
+			t.Error("the owner or its other worker outlived the delete, or kept its worktree")
+		}
+		untouched(t, f.app, stuck.ID, under.ID)
+		if !exists(t, stuckTree) {
+			t.Error("the worktree that could not be removed is gone")
+		}
+		if got := f.reload(t, stuck.ID); got.Placement != store.PlacementStandalone || got.SpawnedByThreadID != "" {
+			t.Errorf("the stuck worker = placement %s spawner %q, want standalone", got.Placement, got.SpawnedByThreadID)
+		}
+		if got := f.reload(t, under.ID); got.Placement != store.PlacementOwned || got.SpawnedByThreadID != stuck.ID {
+			t.Errorf("the thread under it = placement %s spawner %q, want still the stuck worker's", got.Placement, got.SpawnedByThreadID)
+		}
+		if ids := catalogIDs(t, f.app); !slices.Contains(ids, stuck.ID) {
+			t.Errorf("catalog = %v, want the stuck worker listed", ids)
+		}
+	})
+	t.Run("the named thread's", func(t *testing.T) {
+		t.Parallel()
+		f := newDeleteWorktreeFixture(t)
+		ownerTree, workerTree := f.worktree(t, "owner-tree"), f.worktree(t, "worker-tree")
+		owner := f.thread(t, "owner", on(ownerTree))
+		worker := f.thread(t, "worker", on(workerTree))
+		recordSpawn(t, f.app, "tok-worker", owner.ID, worker.ID)
+		dirty(t, ownerTree)
+		if _, err := f.app.DeleteThreadAndWorktrees(t.Context(), owner.ID); err == nil || !strings.Contains(err.Error(), "unsaved work") {
+			t.Fatalf("DeleteThreadAndWorktrees = %v, want the worktree's reason", err)
+		}
+		untouched(t, f.app, owner.ID, worker.ID)
+		if !exists(t, ownerTree) || !exists(t, workerTree) {
+			t.Error("a refused delete removed a worktree")
+		}
+	})
+}
+
+// What a delete confirmation counts is what the delete takes: an
+// assistant's past thread, the worker that past thread spawned, and the
+// worktree that worker is on with the terminals open in it; the delete
+// removes that worktree and closes those terminals.
+func TestTheDeleteConfirmationCountsWhatTheDeleteTakes(t *testing.T) {
+	t.Parallel()
+	f := newDeleteWorktreeFixture(t)
+	f.app.terminals = terminal.NewManager(nil, nil)
+	t.Cleanup(func() { _ = f.app.terminals.Shutdown() })
+	tree := f.worktree(t, "past-work")
+	home := filepath.Join(f.app.configDir, "agents", "agent")
+	past := f.thread(t, "agent")
+	if err := f.app.store.PlaceThreadInHome(past.ID, home); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(home, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.app.store.CreateStandingAgent(storeAgent(past.ID, home)); err != nil {
+		t.Fatal(err)
+	}
+	current := f.thread(t, "agent-next")
+	if err := f.app.store.PlaceThreadInHome(current.ID, home); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.app.store.HandOffAssistant(past.ID, current.ID, 1); err != nil {
+		t.Fatal(err)
+	}
+	// A handoff moves the old thread's spawns to the new one; this one the
+	// past thread made after it, finishing its last turn.
+	worker := f.thread(t, "past-worker", on(tree))
+	recordSpawn(t, f.app, "tok-past-worker", past.ID, worker.ID)
+	for range 2 {
+		if _, err := f.app.terminals.Open(worker.ID, terminal.SessionOptions{Shell: "/bin/sh", Args: []string{"-c", "sleep 30"}, Cwd: tree}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := f.app.GetDeleteDependents(current.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := DeleteDependents{PastThreads: 1, Workers: 1, Worktrees: []DeleteWorktree{{ProjectID: f.project.ID, WorktreePath: tree, Terminals: 2}}}
+	if gotJSON, wantJSON := mustJSON(t, got), mustJSON(t, want); gotJSON != wantJSON {
+		t.Fatalf("GetDeleteDependents = %s, want %s", gotJSON, wantJSON)
+	}
+	if result, err := f.app.DeleteThreadAndWorktrees(t.Context(), current.ID); err != nil || len(result.WorkersNotDeleted) > 0 {
+		t.Fatalf("DeleteThreadAndWorktrees = %+v, %v", result, err)
+	}
+	for _, id := range []string{current.ID, past.ID, worker.ID} {
+		if !gone(t, f.app, id) {
+			t.Errorf("%s outlived the delete", id)
+		}
+	}
+	if exists(t, tree) {
+		t.Error("the past thread's worker's worktree is still there")
+	}
+	if open := f.app.terminals.Matching(func(terminal.SessionSummary) bool { return true }); len(open) != 0 {
+		t.Errorf("terminals after the delete = %+v, want none", open)
 	}
 }
 
@@ -335,11 +911,46 @@ func TestGetDeleteDependentsCountsTheWorkers(t *testing.T) {
 	if got.Workers != 3 || got.PastThreads != 0 || got.Helpers != 0 {
 		t.Errorf("dependents = %+v, want three workers", got)
 	}
-	if len(got.WorkerWorktrees) != 1 || got.WorkerWorktrees[0].ProjectID != f.project.ID || got.WorkerWorktrees[0].WorktreePath != "/wt/deeper" || !slices.Equal(got.WorkerWorktrees[0].ThreadIDs, []string{chain.deeper}) {
-		t.Errorf("worker worktrees = %+v", got.WorkerWorktrees)
+	if len(got.Worktrees) != 1 || got.Worktrees[0].ProjectID != f.project.ID || got.Worktrees[0].WorktreePath != "/wt/deeper" {
+		t.Errorf("worktrees = %+v", got.Worktrees)
 	}
-	if got, err := f.app.GetDeleteDependents(chain.placed); err != nil || got.Workers != 0 || len(got.WorkerWorktrees) != 0 {
+	if got, err := f.app.GetDeleteDependents(chain.placed); err != nil || got.Workers != 0 || len(got.Worktrees) != 0 {
 		t.Errorf("a thread with no workers = %+v, %v", got, err)
+	}
+}
+
+// A project removal refuses while a worker of one of its threads, in
+// another project, is running, and the worker keeps running: whether it
+// ran before the removal or started a turn after the removal checked it.
+func TestAProjectRemovalRefusesWhileAWorkerOutsideRuns(t *testing.T) {
+	t.Parallel()
+	for _, when := range []string{"before the removal", "after its preflight"} {
+		t.Run(when, func(t *testing.T) {
+			t.Parallel()
+			f := newDeleteFixture(t)
+			other, err := f.app.store.CreateProject(store.Project{ID: entityid.New(), Path: t.TempDir(), Name: "Elsewhere"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			owner := f.thread(t, "owner")
+			worker := f.thread(t, "worker", func(row *store.Thread) { row.ProjectID = other.ID })
+			recordSpawn(t, f.app, "tok-worker", owner.ID, worker.ID)
+			if when == "before the removal" {
+				runningSession(t, f.app, worker.ID)
+			} else {
+				var start sync.Once
+				f.app.projectLockedForTest = func(string) {
+					start.Do(func() { runningSession(t, f.app, worker.ID) })
+				}
+			}
+			if _, err := f.app.DeleteProject(f.project.ID); err == nil || !strings.Contains(err.Error(), "worker "+worker.ID) {
+				t.Fatalf("DeleteProject = %v, want it refused naming the running worker", err)
+			}
+			untouched(t, f.app, owner.ID, worker.ID)
+			if _, live := f.app.sessionManager().get(worker.ID); !live {
+				t.Error("the refused removal stopped the worker")
+			}
+		})
 	}
 }
 
@@ -377,28 +988,26 @@ func TestDeletingAnOwnerStopsItsRunningWorker(t *testing.T) {
 }
 
 // A project removal deletes a thread's worker in the same project once,
-// by the removal's own delete of it, not by waiting on the lock the
-// removal holds.
+// as one of the project's own threads.
 func TestAProjectRemovalDeletesAWorkerInsideOnce(t *testing.T) {
 	t.Parallel()
 	f := newDeleteFixture(t)
 	owner := f.thread(t, "a-owner")
 	worker := f.thread(t, "b-worker")
 	recordSpawn(t, f.app, "tok-worker", owner.ID, worker.ID)
+	f.events.reset()
 	done := make(chan error, 1)
 	go func() {
 		_, err := f.app.DeleteProject(f.project.ID)
 		done <- err
 	}()
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("DeleteProject: %v", err)
-		}
-	case <-time.After(30 * time.Second):
-		t.Fatal("the project removal waited on a lock it holds")
+	if err := within(t, "the project removal", done); err != nil {
+		t.Fatalf("DeleteProject: %v", err)
 	}
 	if !gone(t, f.app, owner.ID) || !gone(t, f.app, worker.ID) {
 		t.Error("a thread of the removed project outlived it")
+	}
+	if got := deletedFrames(f.threadFrames(t)); !slices.Equal(got, []string{owner.ID, worker.ID}) {
+		t.Errorf("deleted frames = %v, want each thread once", got)
 	}
 }

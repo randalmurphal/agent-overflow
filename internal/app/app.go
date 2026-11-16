@@ -745,6 +745,18 @@ type App struct {
 	// its authentication and before its admission, so a test can hold it
 	// there while the thread is brought to rest.
 	admitWorkForTest func(threadID string)
+	// spawnNamingForTest, when set, runs in a local thread_spawn of
+	// callerThreadID's once its thread is made and before the spawn names
+	// it (acceptRequest), so a test can hold an admitted spawn there.
+	spawnNamingForTest func(callerThreadID string)
+	// deleteClaimedForTest, when set, runs once a delete has claimed
+	// threadID and released its action lock (familyDelete.claim), so a test
+	// can act between two claims.
+	deleteClaimedForTest func(threadID string)
+	// projectLockedForTest, when set, runs in a project removal once it
+	// holds the action lock of threadID, one of its threads, and before it
+	// takes the next (DeleteProject).
+	projectLockedForTest func(threadID string)
 	// restRunsListedForTest, when set, runs once a rest has listed the
 	// workflow runs that report to the thread and before it acts on any
 	// (pauseRunsOfRestingThread), so a test can move a run at that moment.

@@ -4,10 +4,8 @@ import (
 	"database/sql"
 	"errors"
 	"slices"
-	"strings"
 	"testing"
 
-	"agent-overflow/internal/entityid"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadmode"
 )
@@ -28,19 +26,24 @@ func TestDeleteThreadPreservesResourceOrder(t *testing.T) {
 		CloseTerminals:          func(id string) error { calls = append(calls, "terminal"); return nil },
 		CloseBrowserPages:       func(id string) error { calls = append(calls, "browser"); return nil },
 		ClearAutoReconnect:      func(id string) { calls = append(calls, "reconnect") },
-		DeleteWorkers:           func(id string) error { calls = append(calls, "workers"); return nil },
 		CleanupAttachments:      func(id string) error { calls = append(calls, "attachments"); return nil },
 		CleanupReplayLog:        func(id string) error { calls = append(calls, "replay"); return nil },
 		CleanupMemoryRecords:    func(id string) error { calls = append(calls, "records"); return nil },
 		Forget:                  func(id string) { calls = append(calls, "forget") },
 	}
+	// Nothing of the thread stops before its claim commits.
+	ports.CleanProviderBackground = func(thread store.Thread) error {
+		if pending, err := database.ListPendingThreadDeletes(); err != nil || !slices.Equal(pending, []string{thread.ID}) {
+			t.Errorf("pending deletes as the thread stops = %v, %v; want it claimed first", pending, err)
+		}
+		calls = append(calls, "background")
+		return nil
+	}
 	if err := service.DeleteThread(thread.ID, ports); err != nil {
 		t.Fatalf("DeleteThread: %v", err)
 	}
 	want := []string{
-		// The workers go once the thread's own session has stopped, before
-		// its mark.
-		"background", "session", "setup", "shell", "terminal", "browser", "reconnect", "workers",
+		"background", "session", "setup", "shell", "terminal", "browser", "reconnect",
 		// The second stop is under the mutation lock a command registers with.
 		"shell", "attachments", "replay", "records", "terminal", "browser", "forget",
 	}
@@ -87,10 +90,10 @@ func TestDeleteThreadContinuesCleanupButPreservesRowOnFailure(t *testing.T) {
 	}
 }
 
-// From its delete mark on a thread is gone to every read, so a delete that
-// fails after the mark still reports the row deleted, for clients to drop
-// it, and the next boot finishes it. One that fails before the mark keeps
-// the row listed and reports nothing.
+// From its claim, the delete mark and the delete's first write, a thread is
+// gone to every read, so a delete that fails after it still reports the row
+// deleted, for clients to drop it, and the next boot finishes it. One
+// refused before the claim keeps the row listed and reports nothing.
 func TestDeleteThreadReportsTheRowOnceItsDeleteMarkCommits(t *testing.T) {
 	service, database, _ := newServiceFixture(t)
 	afterMark, err := service.Create(CreateOptions{ProjectID: "project"})
@@ -121,20 +124,18 @@ func TestDeleteThreadReportsTheRowOnceItsDeleteMarkCommits(t *testing.T) {
 	}
 
 	deleted = nil
-	remoteErr := errors.New("remote command admitted during cleanup could not be stopped")
-	calls := 0
+	homeErr := errors.New("this assistant was not deleted: its home is not its own folder")
+	stopped := false
 	err = service.DeleteThread(beforeMark.ID, DeletePorts{
-		StopRemoteWork: func(string) error {
-			calls++
-			if calls == 2 {
-				return remoteErr
-			}
-			return nil
-		},
-		Deleted: report,
+		AssistantHome: func(string) (func() error, error) { return nil, homeErr },
+		StopSession:   func(string) error { stopped = true; return nil },
+		Deleted:       report,
 	})
-	if !errors.Is(err, remoteErr) {
+	if !errors.Is(err, homeErr) {
 		t.Fatalf("DeleteThread error = %v, want the refusal before the mark", err)
+	}
+	if stopped {
+		t.Fatal("a delete refused before its claim stopped the session")
 	}
 	if len(deleted) != 0 {
 		t.Fatalf("deleted = %v after a failure before the mark, want none", deleted)
@@ -260,11 +261,11 @@ func spawnWorker(t *testing.T, database *store.Store, token, owner, worker strin
 	}
 }
 
-// A worker's delete for its owner's is fenced by ownership: one that is no
-// longer the owner's worker is left whole, nothing of it stopped, and one
-// that stops being the owner's while its delete runs is left unmarked.
-// A failed read of the workers stops the owner's delete before its mark.
-func TestDeleteWorkerIsFencedByOwnership(t *testing.T) {
+// A worker's claim for its owner's delete is fenced by ownership: one that
+// is no longer the owner's worker is left unclaimed. Once claimed it stays
+// the owner's: Show in Sidebar and a group move are refused saying why. A
+// released claim lists it again and lets it move.
+func TestClaimDeleteIsFencedByOwnership(t *testing.T) {
 	service, database, _ := newServiceFixture(t)
 	create := func(id string) store.Thread {
 		t.Helper()
@@ -277,74 +278,47 @@ func TestDeleteWorkerIsFencedByOwnership(t *testing.T) {
 		}
 		return thread
 	}
-	owner, placed, moving := create("owner"), create("placed"), create("moving")
+	owner, placed, worker := create("owner"), create("placed"), create("worker")
 	spawnWorker(t, database, "tok-placed", owner.ID, placed.ID)
-	spawnWorker(t, database, "tok-moving", owner.ID, moving.ID)
+	spawnWorker(t, database, "tok-worker", owner.ID, worker.ID)
 	if _, err := database.SetThreadPlacement([]string{placed.ID}, store.PlacementStandalone); err != nil {
 		t.Fatal(err)
 	}
-	var stopped []string
-	ports := DeletePorts{StopSession: func(id string) error { stopped = append(stopped, id); return nil }}
-	if err := service.DeleteWorker(placed.ID, owner.ID, ports); !errors.Is(err, store.ErrWorkerNotOwned) {
-		t.Fatalf("a placed worker's delete = %v, want ErrWorkerNotOwned", err)
+	if _, err := service.ClaimDelete(placed.ID, owner.ID); !errors.Is(err, store.ErrWorkerNotOwned) {
+		t.Fatalf("a placed worker's claim = %v, want ErrWorkerNotOwned", err)
 	}
-	if len(stopped) != 0 {
-		t.Errorf("a worker no longer the owner's had %v stopped", stopped)
+	if pending, err := database.ListPendingThreadDeletes(); err != nil || len(pending) != 0 {
+		t.Fatalf("pending deletes = %v, %v; want the placed worker unclaimed", pending, err)
 	}
 
-	ports.CloseBrowserPages = func(id string) error {
-		_, err := database.SetThreadPlacement([]string{id}, store.PlacementStandalone)
-		return err
+	fresh, err := service.ClaimDelete(worker.ID, owner.ID)
+	if err != nil || !fresh {
+		t.Fatalf("the owner's worker = fresh %v, %v; want claimed", fresh, err)
 	}
-	if err := service.DeleteWorker(moving.ID, owner.ID, ports); !errors.Is(err, store.ErrWorkerNotOwned) {
-		t.Fatalf("a worker moved during its delete = %v, want ErrWorkerNotOwned", err)
+	if fresh, err := service.ClaimDelete(worker.ID, owner.ID); err != nil || fresh {
+		t.Fatalf("claimed again = fresh %v, %v; want the claim kept, not fresh", fresh, err)
 	}
-	if row, err := database.GetThread(moving.ID); err != nil || row.Placement != store.PlacementStandalone {
-		t.Errorf("the moved worker = %+v, %v; want it unmarked, in the sidebar", row, err)
+	if _, err := database.SetThreadPlacement([]string{worker.ID}, store.PlacementStandalone); !errors.Is(err, store.ErrThreadDeleting) {
+		t.Fatalf("Show in Sidebar on a claimed worker = %v, want ErrThreadDeleting", err)
 	}
-
-	readErr := errors.New("disk busy")
-	err := service.DeleteThread(owner.ID, DeletePorts{DeleteWorkers: func(string) error { return readErr }})
-	if !errors.Is(err, readErr) {
-		t.Fatalf("DeleteThread = %v, want the workers' read error", err)
-	}
-	if _, err := database.GetThread(owner.ID); err != nil {
-		t.Errorf("the owner after a failed read of its workers: %v, want it kept", err)
-	}
-}
-
-// The cleanup of a thread moved to another computer deletes the cache
-// left here and none of the workers it spawned here: the conversation was
-// not deleted.
-func TestAMovedThreadsCleanupDeletesNoWorkers(t *testing.T) {
-	service, database, _ := newServiceFixture(t)
-	if err := database.CreateThread(store.Thread{
-		ID: "moved", ProjectID: "project", Title: "moved", Provider: "claude", Model: "claude-opus-4-7",
-		Mode: threadmode.ModeChat, WorkspacePath: "/repo", RuntimeMode: "approval-required", CreatedAt: 1, UpdatedAt: 1,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	transfer, err := database.CreateThreadTransfer(store.ThreadTransfer{
-		ID: entityid.New(), ThreadID: "moved", PeerBackendID: entityid.New(), Kind: "move", Direction: "outgoing",
-		ActivationHash: strings.Repeat("a", 64), PrivateState: []byte(`{}`),
-	})
+	group, err := database.CreateThreadGroup("project", "g")
 	if err != nil {
 		t.Fatal(err)
 	}
-	manifest := strings.Repeat("b", 64)
-	for _, phase := range []string{"prepared", "committed", "complete"} {
-		if _, err := database.AdvanceThreadTransfer(transfer.ID, phase, manifest); err != nil {
-			t.Fatalf("advance to %s: %v", phase, err)
-		}
+	if _, err := database.SetThreadGroup([]string{worker.ID}, group.ID); !errors.Is(err, store.ErrThreadDeleting) {
+		t.Fatalf("a group move of a claimed worker = %v, want ErrThreadDeleting", err)
 	}
-	var asked []string
-	if err := service.DeleteThread("moved", DeletePorts{DeleteWorkers: func(id string) error {
-		asked = append(asked, id)
-		return nil
-	}}); err != nil {
-		t.Fatalf("DeleteThread: %v", err)
+	if row, err := database.GetThread(worker.ID); err != nil || row.Placement != store.PlacementOwned {
+		t.Fatalf("the claimed worker = %+v, %v; want it still owned", row, err)
 	}
-	if len(asked) != 0 {
-		t.Errorf("the cleanup of a moved thread deleted the workers of %v", asked)
+
+	if err := service.ReleaseDelete(worker.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Get(worker.ID); err != nil {
+		t.Fatalf("the released worker: %v, want it read again", err)
+	}
+	if _, err := database.SetThreadPlacement([]string{worker.ID}, store.PlacementStandalone); err != nil {
+		t.Fatalf("Show in Sidebar after the claim was released: %v", err)
 	}
 }

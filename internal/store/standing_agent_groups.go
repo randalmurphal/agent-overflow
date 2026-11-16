@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -52,29 +53,30 @@ type OwnedWorker struct {
 	OwnerID  string
 }
 
+// ownedStepSQL is one step down the owned lineage from the thread the
+// column expression owner names: the owned_threads row, as threads, of each
+// owned thread whose spawn link that thread made. A thread has one spawn
+// link (idx_thread_requests_spawn_link), so its caller is the owner
+// (spawnerOfSQL). It is the one owned edge: an archive's walk
+// (ListOwnedWorkersToArchive) and a delete's (ListDeleteFamily) take every
+// step with it, searching the owner's requests by caller and each worker
+// by id. Callers append their own conditions with AND.
+func ownedStepSQL(owner string) string {
+	return `thread_requests AS link
+	    CROSS JOIN owned_threads AS threads ON threads.id = link.target_thread_id
+	   WHERE link.caller_thread_id = ` + owner + ` AND ` + agentSpawnLinkSQL("link") + ` AND threads.placement = 'owned'`
+}
+
 // ListOwnedWorkersToArchive lists the unarchived threads ownerID owns, at
-// any depth through workers already archived: a thread owns the owned
-// threads whose spawn link it made, the owner SpawnedByThreadID reads. The walk stops at each unarchived worker, whose
-// own archive goes on to the threads it owns, so an archive of the owner
-// archives each of them, and a repeated one reaches a worker an earlier
-// one left open beneath a worker it did archive
-// (docs/specs/standing-agents.md, "Owned workers"). One recursive read;
-// it visits the archived workers under ownerID.
+// any depth through workers already archived (ownedStepSQL). The walk stops
+// at each unarchived worker, whose own archive goes on to the threads it
+// owns, so an archive of the owner archives each of them, and a repeated
+// one reaches a worker an earlier one left open beneath a worker it did
+// archive (docs/specs/standing-agents.md, "Owned workers"). One recursive
+// read; it visits the archived workers under ownerID.
 func (s *Store) ListOwnedWorkersToArchive(ownerID string) (workers []OwnedWorker, err error) {
 	action := fmt.Sprintf("store: list the workers %s owns", ownerID)
-	rows, err := s.reader().Query(`WITH RECURSIVE under(id) AS (
-		  SELECT ?
-		  UNION
-		  SELECT threads.id FROM under
-		    JOIN thread_requests AS link ON link.caller_thread_id = under.id AND `+agentSpawnLinkSQL("link")+`
-		    JOIN owned_threads AS threads ON threads.id = link.target_thread_id
-		   WHERE threads.archived = 1 AND `+ownedBySQL("under.id")+`
-		)
-		SELECT DISTINCT threads.id, under.id FROM under
-		  JOIN thread_requests AS link ON link.caller_thread_id = under.id AND `+agentSpawnLinkSQL("link")+`
-		  JOIN owned_threads AS threads ON threads.id = link.target_thread_id
-		 WHERE threads.archived = 0 AND `+ownedBySQL("under.id")+`
-		 ORDER BY threads.id`, ownerID)
+	rows, err := s.reader().Query(ownedWorkersToArchiveSQL, ownerID)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", action, err)
 	}
@@ -92,76 +94,117 @@ func (s *Store) ListOwnedWorkersToArchive(ownerID string) (workers []OwnedWorker
 	return workers, nil
 }
 
-// ListOwnedWorkers lists the threads ownerID owns, archived or not: the
-// owned threads whose spawn link it made. Deleting the owner deletes each
-// of them, and each of those deletes the threads it owns in turn
-// (docs/specs/standing-agents.md, "Owned workers"). A thread whose delete
-// has begun is not listed.
-func (s *Store) ListOwnedWorkers(ownerID string) ([]string, error) {
-	ids, err := queryIDs(s.reader(), `SELECT threads.id FROM thread_requests AS link
-		JOIN owned_threads AS threads ON threads.id = link.target_thread_id
-		WHERE link.caller_thread_id = ? AND `+agentSpawnLinkSQL("link")+` AND threads.placement = 'owned'
-		ORDER BY threads.id`, ownerID)
-	if err != nil {
-		return nil, fmt.Errorf("store: list the workers %s owns: %w", ownerID, err)
-	}
-	return ids, nil
-}
+var ownedWorkersToArchiveSQL = `WITH RECURSIVE under(id) AS (
+		  SELECT ?
+		  UNION
+		  SELECT threads.id FROM under CROSS JOIN ` + ownedStepSQL("under.id") + ` AND threads.archived = 1
+		)
+		SELECT DISTINCT threads.id, under.id FROM under CROSS JOIN ` + ownedStepSQL("under.id") + ` AND threads.archived = 0
+		 ORDER BY threads.id`
 
-// WorkerUnder is one thread a delete of the thread above it deletes with
-// it (ListWorkersUnder).
-type WorkerUnder struct {
-	ThreadID     string
+// DeleteMemberKind is why a delete takes a thread (ListDeleteFamily), in
+// the order a thread reached more than one way is counted.
+type DeleteMemberKind int
+
+const (
+	// DeleteNamed is a thread the delete names.
+	DeleteNamed DeleteMemberKind = iota
+	// DeletePastThread is a past thread of an assistant whose current
+	// thread the delete names.
+	DeletePastThread
+	// DeleteHelper is a helper of such an assistant.
+	DeleteHelper
+	// DeleteWorker is an owned thread under any of them.
+	DeleteWorker
+)
+
+// DeleteMember is one thread a delete takes.
+type DeleteMember struct {
+	ThreadID string
+	// Under is the thread it was reached from: a worker's owner, whose
+	// ownership fences the worker's claim (ClaimThreadDelete), or the
+	// assistant's current thread of a past thread or helper. Empty for a
+	// named thread.
+	Under        string
+	Kind         DeleteMemberKind
+	Depth        int
 	ProjectID    string
 	WorktreePath string
-	// Helper is an assistant's helper, which its assistant's delete counts
-	// apart.
-	Helper bool
 }
 
-// ListWorkersUnder lists the threads ownerID owns at any depth, archived or
-// not, which its delete deletes with it (ListOwnedWorkers at each level), in
-// thread id order. One recursive read.
-func (s *Store) ListWorkersUnder(ownerID string) (workers []WorkerUnder, err error) {
-	action := fmt.Sprintf("store: list the workers under %s", ownerID)
-	rows, err := s.reader().Query(workersUnderSQL, ownerID)
+// ListDeleteFamily lists what deleting the named threads takes, each thread
+// once: the named threads, for one that is an assistant's current thread its
+// past threads and helpers (ruling 39), and the owned workers under all of
+// them at any depth, archived or not (ownedStepSQL), each by the shallowest
+// way it is reached, in claim order: by depth, then kind, then id, so an
+// owner comes before its workers. A thread whose delete began is not reached
+// as a past thread, helper or worker: the delete that marked it walks what
+// is under it. One recursive read; the delete, its confirmation and boot's
+// resume of a delete all read it (docs/specs/standing-agents.md, "Owned
+// workers").
+func (s *Store) ListDeleteFamily(threadIDs []string) (members []DeleteMember, err error) {
+	ids := uniqueNonEmptyStrings(threadIDs)
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	named, err := json.Marshal(ids)
+	if err != nil {
+		return nil, fmt.Errorf("store: encode the threads a delete names: %w", err)
+	}
+	action := "store: list what a delete takes"
+	rows, err := s.reader().Query(deleteFamilySQL, string(named))
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", action, err)
 	}
 	defer closeAgentWakeRows(rows, action, &err)
+	seen := make(map[string]bool)
 	for rows.Next() {
-		var worker WorkerUnder
-		if err := rows.Scan(&worker.ThreadID, &worker.ProjectID, &worker.WorktreePath, &worker.Helper); err != nil {
+		var member DeleteMember
+		if err := rows.Scan(&member.ThreadID, &member.Under, &member.Depth, &member.Kind, &member.ProjectID, &member.WorktreePath); err != nil {
 			return nil, fmt.Errorf("%s: scan: %w", action, err)
 		}
-		workers = append(workers, worker)
+		if seen[member.ThreadID] {
+			continue
+		}
+		seen[member.ThreadID] = true
+		members = append(members, member)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("%s: %w", action, err)
 	}
-	return workers, nil
+	return members, nil
 }
 
-// workersUnderSQL is ListWorkersUnder's walk: each step searches the
-// queued thread's requests by caller and its spawned thread by id.
-var workersUnderSQL = `WITH RECURSIVE under(id) AS (
-		  SELECT ?1
+// deleteFamilySQL is ListDeleteFamily's walk. A thread reached two ways (a
+// helper its assistant also spawned) has a row for each, the shallowest
+// first; the reader keeps that one.
+var deleteFamilySQL = `WITH RECURSIVE
+		named(id) AS (SELECT value FROM json_each(?1)),
+		family(id, under, depth, kind) AS (
+		  SELECT id, '', 0, ` + strconv.Itoa(int(DeleteNamed)) + ` FROM named
 		  UNION
-		  SELECT threads.id FROM under
-		    CROSS JOIN thread_requests AS link ON link.caller_thread_id = under.id AND ` + agentSpawnLinkSQL("link") + `
-		    CROSS JOIN owned_threads AS threads ON threads.id = link.target_thread_id
-		   WHERE threads.placement = 'owned'
+		  SELECT past.thread_id, named.id, 0, ` + strconv.Itoa(int(DeletePastThread)) + ` FROM named
+		    CROSS JOIN agents ON agents.thread_id = named.id
+		    CROSS JOIN agent_past_threads AS past ON past.agent_id = agents.id
+		   WHERE EXISTS (SELECT 1 FROM owned_threads WHERE owned_threads.id = past.thread_id)
+		  UNION
+		  SELECT helper.thread_id, named.id, 0, ` + strconv.Itoa(int(DeleteHelper)) + ` FROM named
+		    CROSS JOIN agents ON agents.thread_id = named.id
+		    CROSS JOIN agent_helpers AS helper ON helper.agent_id = agents.id
+		   WHERE EXISTS (SELECT 1 FROM owned_threads WHERE owned_threads.id = helper.thread_id)
+		  UNION
+		  SELECT threads.id, family.id, family.depth + 1, ` + strconv.Itoa(int(DeleteWorker)) + `
+		    FROM family CROSS JOIN ` + ownedStepSQL("family.id") + `
 		)
-		SELECT threads.id, COALESCE(threads.project_id, ''), COALESCE(threads.worktree_path, ''),
-		       EXISTS (SELECT 1 FROM agent_helpers WHERE agent_helpers.thread_id = threads.id)
-		  FROM under CROSS JOIN owned_threads AS threads ON threads.id = under.id
-		 WHERE under.id <> ?1
-		 ORDER BY threads.id`
+		SELECT family.id, family.under, family.depth, family.kind,
+		       COALESCE(threads.project_id, ''), COALESCE(threads.worktree_path, '')
+		  FROM family CROSS JOIN threads ON threads.id = family.id
+		 ORDER BY family.depth, family.kind, family.id`
 
-// ErrWorkerNotOwned is a worker's delete, made for its owner's
-// (BeginWorkerDelete), finding the thread no longer that owner's worker:
-// it was given a sidebar row or another owner since the owner's delete
-// read it. The thread is left as it is.
+// ErrWorkerNotOwned is a worker's claim, made for its owner's delete
+// (ClaimThreadDelete), finding the thread no longer that owner's worker: it
+// was given a sidebar row or another owner since the owner's delete read
+// it. The thread is left as it is, with everything under it.
 var ErrWorkerNotOwned = errors.New("store: the thread is no longer a worker of the thread being deleted")
 
 // ownedBySQL holds for the threads row that owner, an SQL expression, owns:

@@ -91,32 +91,38 @@ func (s *Store) DeleteThreadPaced(id string, pause ChunkPause) error {
 // (ReleasableAttachments). Marking a marked row again is how a repeated
 // delete resumes.
 //
-// An assistant's current thread is marked only once nothing lives under
-// the assistant (*AssistantDependentsError): its delete deletes them first.
-// The check and the mark are one transaction, and a helper is recorded only
-// for an assistant whose current thread is not marked (recordAgentHelperTx),
-// so a helper made meanwhile either refuses the mark or is refused itself.
+// The mark is the delete's claim (ClaimThreadDelete). An assistant's
+// current thread is marked before the threads that live under the
+// assistant are deleted: from the mark no helper is recorded for it
+// (recordAgentHelperTx) and no handoff moves it (HandOffAssistant), and
+// its row drops only once none remains (deleteAgentRecordTx).
 func (s *Store) BeginThreadDelete(id string) error {
-	return s.beginThreadDelete(id, "")
+	_, err := s.ClaimThreadDelete(id, "")
+	return err
 }
 
-// BeginWorkerDelete is BeginThreadDelete for a worker its owner's delete
-// deletes: the mark holds only while ownerID still owns the thread, in the
-// same transaction. A thread given a sidebar row or another owner since is
-// left unmarked (ErrWorkerNotOwned).
-func (s *Store) BeginWorkerDelete(id, ownerID string) error {
-	return s.beginThreadDelete(id, ownerID)
-}
-
-func (s *Store) beginThreadDelete(id, ownerID string) (err error) {
+// ClaimThreadDelete marks id deleting as BeginThreadDelete does, and
+// reports whether this write set the mark. For a worker its owner's delete
+// takes, ownerID names that owner and is the claim's fence: the mark holds
+// only while ownerID still owns the thread, in the same transaction, and a
+// thread given a sidebar row or another owner since is left unmarked
+// (ErrWorkerNotOwned). Once marked, the thread's placement no longer
+// changes (refuseDeletingTx), so a claimed worker stays its owner's. A
+// missing thread is sql.ErrNoRows.
+func (s *Store) ClaimThreadDelete(id, ownerID string) (fresh bool, err error) {
 	action := fmt.Sprintf("store: mark thread %s deleting", id)
 	tx, err := s.db.Begin()
 	if err != nil {
-		return fmt.Errorf("%s: begin: %w", action, err)
+		return false, fmt.Errorf("%s: begin: %w", action, err)
 	}
 	defer rollbackAgentWakeTx(tx, action, &err)
-	if err := requireNoAssistantDependents(tx, id); err != nil {
-		return err
+	var marked bool
+	err = tx.QueryRow(`SELECT deleting FROM threads WHERE id = ?`, id).Scan(&marked)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, fmt.Errorf("store: delete thread %s: %w", id, err)
+	}
+	if err != nil {
+		return false, fmt.Errorf("%s: read: %w", action, err)
 	}
 	query, args := `UPDATE threads SET deleting = 1 WHERE id = ?`, []any{id}
 	if ownerID != "" {
@@ -125,23 +131,26 @@ func (s *Store) beginThreadDelete(id, ownerID string) (err error) {
 	}
 	result, err := tx.Exec(query, args...)
 	if err != nil {
-		return fmt.Errorf("%s: %w", action, err)
+		return false, fmt.Errorf("%s: %w", action, err)
 	}
-	if err := requireRowsAffected(result, fmt.Sprintf("store: delete thread %s", id)); err != nil {
-		if ownerID == "" || !errors.Is(err, sql.ErrNoRows) {
-			return err
-		}
-		var found bool
-		if probeErr := tx.QueryRow(`SELECT EXISTS (SELECT 1 FROM threads WHERE id = ?)`, id).Scan(&found); probeErr != nil {
-			return fmt.Errorf("%s: probe: %w", action, probeErr)
-		}
-		if found {
-			return ErrWorkerNotOwned
-		}
-		return err
+	if n, err := result.RowsAffected(); err != nil {
+		return false, fmt.Errorf("%s: %w", action, err)
+	} else if n == 0 {
+		return false, ErrWorkerNotOwned
 	}
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("%s: commit: %w", action, err)
+		return false, fmt.Errorf("%s: commit: %w", action, err)
+	}
+	return !marked, nil
+}
+
+// ReleaseThreadDelete takes back a claim nothing was deleted under: a
+// delete refused after it claimed id, or a thread whose worktree its
+// delete could not remove. The thread is listed again as it was. A holder
+// a released fork marked keeps its mark.
+func (s *Store) ReleaseThreadDelete(id string) error {
+	if _, err := s.db.Exec(`UPDATE threads SET deleting = 0 WHERE id = ? AND deleting = 1 AND mode <> ?`, id, threadmode.ModeHolder); err != nil {
+		return fmt.Errorf("store: release the delete of thread %s: %w", id, err)
 	}
 	return nil
 }

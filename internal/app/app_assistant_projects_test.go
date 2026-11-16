@@ -420,8 +420,8 @@ func TestARefusedAssistantDeleteKeepsWhatLivesUnderIt(t *testing.T) {
 	t.Run("the boot's delete", func(t *testing.T) {
 		t.Parallel()
 		f, current, ids := assistant(t, own)
-		if err := f.app.deleteThreadLocked(current); err != nil {
-			t.Fatalf("deleteThreadLocked: %v", err)
+		if err := f.app.deleteThreadPaced(current, nil); err != nil {
+			t.Fatalf("deleteThreadPaced: %v", err)
 		}
 		underIt(t, f, append(ids, current), false)
 	})

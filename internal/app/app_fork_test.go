@@ -1189,8 +1189,7 @@ func TestForkDuringASourceDeleteIsRefused(t *testing.T) {
 		app, sourceID := seed(t)
 		refusals := make(chan refusal, 2)
 		pauses := 0
-		unlock := app.threadLocks().Lock(sourceID)
-		err := app.deleteThreadPacedLocked(sourceID, func() {
+		err := app.deleteThreadPaced(sourceID, func() {
 			pauses++
 			if pauses > 1 {
 				return
@@ -1204,7 +1203,6 @@ func TestForkDuringASourceDeleteIsRefused(t *testing.T) {
 				refusals <- refusal{"ForkThreadFromMessage", err}
 			}()
 		})
-		unlock()
 		if err != nil {
 			t.Fatal(err)
 		}

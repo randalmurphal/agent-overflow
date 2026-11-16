@@ -303,6 +303,9 @@ func setThreadGroupTx(tx *sql.Tx, threadIDs []string, groupID string) ([]Thread,
 		if err := checkThreadTransferAccess(tx, id); err != nil {
 			return nil, err
 		}
+		if err := refuseDeletingTx(tx, id); err != nil {
+			return nil, err
+		}
 		var (
 			result sql.Result
 			err    error

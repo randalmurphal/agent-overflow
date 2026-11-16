@@ -264,9 +264,9 @@ func (a *App) restartWorkspaceSession(threadID string) error {
 	return a.reconnectSessionLocked(context.Background(), threadID)
 }
 
-// threadDeletePorts are one delete's ports. The workers it deletes, and the
-// threads under an assistant, are deleted on the same walk (cascade).
-func (a *App) threadDeletePorts(cascade *workerCascade) threadapp.DeletePorts {
+// threadDeletePorts are the ports of one thread's delete
+// (familyDelete.deleteMember).
+func (a *App) threadDeletePorts() threadapp.DeletePorts {
 	return threadapp.DeletePorts{
 		StopRemoteWork: func(threadID string) error {
 			// Runs twice per delete; both halves are conditional
@@ -291,12 +291,6 @@ func (a *App) threadDeletePorts(cascade *workerCascade) threadapp.DeletePorts {
 		CleanupAttachments:   a.cleanupThreadAttachmentFiles,
 		CleanupMemoryRecords: a.forgetMemoryRecords,
 		AssistantHome:        a.assistantHomeForDelete,
-		AssistantDependents: func(threadID string) error {
-			return a.deleteAssistantDependents(threadID, cascade)
-		},
-		DeleteWorkers: func(threadID string) error {
-			return a.deleteOwnedWorkers(threadID, cascade)
-		},
 		CleanupReplayLog: func(threadID string) error {
 			if a.replay == nil {
 				return nil
@@ -318,8 +312,9 @@ func (a *App) threadDeletePorts(cascade *workerCascade) threadapp.DeletePorts {
 			if err := a.forgetLiveWorker(thread.ID); err != nil {
 				log.Printf("agent rows: look up the spawns of live workers after deleting %s: %v", thread.ID, err)
 			}
-			// An owned worker its delete did not delete is standalone now
-			// and joins the sidebar.
+			// A worker its delete left (one restored when its worktree
+			// could not be removed, or one whose delete failed) is
+			// standalone now and joins the sidebar.
 			for _, id := range spawned {
 				a.announcePlaced(id)
 			}

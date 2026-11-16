@@ -85,7 +85,7 @@ func TestDeleteThreadStopsActiveSessionAndRemovesFromMap(t *testing.T) {
 
 // TestDeleteThreadStopSessionFailureSurfacesErrorAndLeavesRowIntact verifies
 // the error-path semantics: if stopping the session fails, the store row is
-// NOT deleted. This matches what deleteThreadLocked actually guarantees —
+// NOT deleted. This matches what deleteThread actually guarantees —
 // it returns early on stopSession error, so DB cleanup doesn't proceed.
 func TestDeleteThreadStopSessionFailureSurfacesErrorAndLeavesRowIntact(t *testing.T) {
 	t.Parallel()
@@ -143,7 +143,7 @@ func TestDeleteThreadPropagatesStoreErrors(t *testing.T) {
 	}
 
 	// Close the underlying database so any subsequent store call fails with
-	// a non-sql.ErrNoRows error. deleteThreadLocked should propagate the
+	// a non-sql.ErrNoRows error. deleteThread should propagate the
 	// failure instead of swallowing it.
 	if err := app.store.Close(); err != nil {
 		t.Fatalf("store.Close() error = %v", err)

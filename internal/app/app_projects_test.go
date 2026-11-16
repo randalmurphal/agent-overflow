@@ -156,7 +156,7 @@ func TestAppDeleteProjectAcrossConcurrentThreadChanges(t *testing.T) {
 		{
 			name: "thread deleted",
 			change: func(t *testing.T, app *App, _, heldID string) {
-				if err := app.deleteThreadLocked(heldID); err != nil {
+				if err := app.threadApplication().DeleteThread(heldID, app.threadDeletePorts()); err != nil {
 					t.Fatalf("delete held thread: %v", err)
 				}
 			},

@@ -77,8 +77,8 @@ func TestDeleteEmptyDraftThreadKeepsAnAssistantsThread(t *testing.T) {
 	if _, found, err := s.GetAgent(agent.ID); err != nil || !found {
 		t.Fatalf("the record after the cleanup = %v %v", found, err)
 	}
-	if ids, err := s.AssistantDependentThreadIDs(agent.ID); err != nil || len(ids) != 2 {
-		t.Fatalf("the threads under the assistant after the cleanup = %q %v", ids, err)
+	if ids := assistantDependents(t, s, "next"); len(ids) != 2 {
+		t.Fatalf("the threads under the assistant after the cleanup = %q", ids)
 	}
 	if len(deletedHomes) != 0 {
 		t.Fatalf("the cleanup deleted the records of %q", deletedHomes)

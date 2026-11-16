@@ -123,26 +123,40 @@ func (a *App) endTerminalThreadAfterExit(threadID string) {
 }
 
 // endTerminalThread deletes threadID if it is a terminal thread that has
-// ended, under the action lock and ownership check DeleteThread uses, and
-// returns its title for a report of a failed delete. The check takes the
-// mutation lock, so it never sees the moment inside a RestartTerminal
-// between the old shell's exit and the new one's start.
+// ended, through the delete DeleteThread runs, and returns its title for a
+// report of a failed delete. Whether it ended is read under the action lock
+// the delete claims it under, and takes the mutation lock, so it never sees
+// the moment inside a RestartTerminal between the old shell's exit and the
+// new one's start.
 func (a *App) endTerminalThread(ctx context.Context, threadID string) (string, error) {
-	unlock, err := a.threadLocks().LockCtx(ctx, threadID)
-	if err != nil {
+	if ctx.Err() != nil {
 		return "", nil // Shutting down: the next boot ends it.
 	}
-	defer unlock()
-	ended, err := a.terminalThreadEnded(ctx, threadID)
-	if err != nil || !ended {
-		return "", err
+	var title string
+	outcome, err := a.deleteThreads(deleteRequest{seeds: []string{threadID}, admit: func(string) error {
+		ended, err := a.terminalThreadEnded(ctx, threadID)
+		if err != nil {
+			return err
+		}
+		if !ended {
+			return errTerminalRunning
+		}
+		thread, err := a.threadApplication().Get(threadID)
+		if err != nil {
+			return err
+		}
+		title = thread.Title
+		return nil
+	}})
+	outcome.logFailures(threadID)
+	if errors.Is(err, errTerminalRunning) {
+		return "", nil
 	}
-	thread, err := a.threadApplication().Get(threadID)
-	if err != nil {
-		return "", err
-	}
-	return thread.Title, a.deleteThreadLocked(threadID)
+	return title, err
 }
+
+// errTerminalRunning keeps a terminal thread whose shell is running again.
+var errTerminalRunning = errors.New("the terminal thread's shell is running")
 
 // TerminalEndFailedEvent is the payload of `terminal:end_failed`.
 type TerminalEndFailedEvent struct {

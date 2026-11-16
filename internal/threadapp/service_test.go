@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -609,82 +610,51 @@ func TestCreateInAHome(t *testing.T) {
 	}
 }
 
-// An assistant's delete deletes what lives under it before the mark. A
-// helper made after they went (a spawn that read the assistant before the
-// pass) refuses the mark and sends the delete back for it, so the record
-// goes with nothing left without it; one that keeps coming gives up with
-// the assistant whole.
-func TestDeletingAnAssistantDeletesWhatLivesUnderItFirst(t *testing.T) {
+// An assistant's delete claims its current thread first: from the claim no
+// helper is recorded for it, and its row drops only once nothing lives
+// under it, so a delete that reaches the drop with a helper left keeps the
+// assistant claimed for the next attempt, which finishes it once the helper
+// is gone.
+func TestAnAssistantsDeleteDropsItOnlyOnceNothingLivesUnderIt(t *testing.T) {
 	service, database, _ := newServiceFixture(t)
 	next := 0
 	service.deps.NewID = func() string { next++; return fmt.Sprintf("thread-%d", next) }
-	assistant := func(t *testing.T, id string) store.Thread {
-		t.Helper()
-		home := "/config/agents/" + id
-		thread, err := service.Create(CreateOptions{Home: home, Title: id})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := database.CreateStandingAgent(store.StandingAgent{ID: id, ThreadID: thread.ID, Home: home}); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := service.Create(CreateOptions{Home: home, HelperOfAgentID: id}); err != nil {
-			t.Fatal(err)
-		}
-		return thread
+	home := "/config/agents/ops"
+	ops, err := service.Create(CreateOptions{Home: home, Title: "ops"})
+	if err != nil {
+		t.Fatal(err)
 	}
-	// dependents deletes the threads under the assistant, as the app's
-	// port does, and then lets late make one more.
-	dependents := func(passes *int, late func(pass int) bool) DeletePorts {
-		return DeletePorts{AssistantDependents: func(threadID string) error {
-			*passes++
-			agent, _, err := database.GetStandingAgent(threadID)
-			if err != nil {
-				return err
-			}
-			ids, err := database.AssistantDependentThreadIDs(agent.ID)
-			if err != nil {
-				return err
-			}
-			for _, id := range ids {
-				if err := service.DeleteThread(id, DeletePorts{}); err != nil {
-					return err
-				}
-			}
-			if late(*passes) {
-				_, err = service.Create(CreateOptions{Home: agent.Home, HelperOfAgentID: agent.ID})
-			}
-			return err
-		}}
+	if err := database.CreateStandingAgent(store.StandingAgent{ID: "ops", ThreadID: ops.ID, Home: home}); err != nil {
+		t.Fatal(err)
+	}
+	helper, err := service.Create(CreateOptions{Home: home, HelperOfAgentID: "ops"})
+	if err != nil {
+		t.Fatal(err)
 	}
 
-	ops := assistant(t, "ops")
-	passes := 0
-	if err := service.DeleteThread(ops.ID, dependents(&passes, func(pass int) bool { return pass == 1 })); err != nil {
-		t.Fatalf("DeleteThread: %v", err)
+	err = service.DeleteThread(ops.ID, DeletePorts{})
+	var left *store.AssistantDependentsError
+	if !errors.As(err, &left) || left.Helpers != 1 {
+		t.Fatalf("a delete with a helper left = %v, want the drop refused", err)
 	}
-	if passes != 2 {
-		t.Fatalf("passes = %d, want a second for the late helper", passes)
+	if _, found, err := database.GetStandingAgent(ops.ID); err != nil || !found {
+		t.Fatalf("the assistant after the refused drop = %v %v", found, err)
 	}
-	if outside, err := database.ThreadIDsOutsideProjects(); err != nil || len(outside) != 0 {
-		t.Fatalf("threads left outside every project = %q %v", outside, err)
+	if pending, err := database.ListPendingThreadDeletes(); err != nil || !slices.Equal(pending, []string{ops.ID}) {
+		t.Fatalf("pending deletes = %q %v, want the assistant claimed", pending, err)
+	}
+	if _, err := service.Create(CreateOptions{Home: home, HelperOfAgentID: "ops"}); !errors.Is(err, store.ErrHelperOfNoAssistant) {
+		t.Fatalf("a helper of a claimed assistant = %v, want it refused", err)
+	}
+
+	if err := service.DeleteThread(helper.ID, DeletePorts{}); err != nil {
+		t.Fatalf("delete the helper: %v", err)
+	}
+	if err := service.DeleteThread(ops.ID, DeletePorts{}); err != nil {
+		t.Fatalf("finish the assistant's delete: %v", err)
 	}
 	if _, found, err := database.GetAgent("ops"); err != nil || found {
 		t.Fatalf("the record after the delete = %v %v", found, err)
-	}
-
-	busy := assistant(t, "busy")
-	passes = 0
-	err := service.DeleteThread(busy.ID, dependents(&passes, func(int) bool { return true }))
-	var left *store.AssistantDependentsError
-	if !errors.As(err, &left) || left.Helpers != 1 || passes != maxDependentPasses {
-		t.Fatalf("a delete helpers keep coming to = %v after %d passes", err, passes)
-	}
-	if _, found, err := database.GetStandingAgent(busy.ID); err != nil || !found {
-		t.Fatalf("the assistant after the delete gave up = %v %v", found, err)
-	}
-	if pending, err := database.ListPendingThreadDeletes(); err != nil || len(pending) != 0 {
-		t.Fatalf("pending deletes = %q %v, want the assistant unmarked", pending, err)
 	}
 }
 

@@ -45,6 +45,25 @@ var ErrStandingAgentPlaced = errors.New("store: an assistant's own thread is a r
 // owned by its assistant, and a past thread is reached from its assistant.
 var ErrPlacementOutsideProjects = errors.New("store: a thread outside every project belongs to its assistant and takes no placement")
 
+// ErrThreadDeleting is a placement or group change asked for a thread whose
+// delete has begun (ClaimThreadDelete): a worker its owner's delete has
+// claimed goes with its owner, and a sidebar row can no longer keep it.
+var ErrThreadDeleting = errors.New("store: this thread is being deleted, so it can no longer be moved")
+
+// refuseDeletingTx refuses a placement or group write to threadID once its
+// delete has begun, in the write's own transaction.
+func refuseDeletingTx(tx *sql.Tx, threadID string) error {
+	var deleting bool
+	err := tx.QueryRow(`SELECT deleting FROM threads WHERE id = ?`, threadID).Scan(&deleting)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("store: probe the delete of %s: %w", threadID, err)
+	}
+	if deleting {
+		return ErrThreadDeleting
+	}
+	return nil
+}
+
 // insertedPlacement is the placement a new row is written with: grouped
 // with its group, else standalone. Nothing is inserted owned, because the
 // link ownership needs is written after the row exists.
@@ -114,6 +133,9 @@ func setThreadPlacementTx(tx *sql.Tx, threadID, placement string) (bool, error) 
 		return false, fmt.Errorf("%w: %q", ErrInvalidPlacement, placement)
 	}
 	if err := checkThreadTransferAccess(tx, threadID); err != nil {
+		return false, err
+	}
+	if err := refuseDeletingTx(tx, threadID); err != nil {
 		return false, err
 	}
 	var agent, outside, linked bool

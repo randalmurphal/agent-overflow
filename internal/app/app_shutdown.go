@@ -293,7 +293,7 @@ func (a *App) Shutdown(ctx context.Context) error {
 	a.permissionModeFollowWG.Wait()
 
 	// Step 3c: stop the retention TTL sweep. The sweep writes to
-	// SQLite (cascading thread deletes) and calls deleteThreadLocked
+	// SQLite (cascading thread deletes) and deletes threads (deleteThreadPaced),
 	// which mutates a.sessions via stopSession — running it concurrently
 	// with Step 4's snapshotAndClear would race the session map, and
 	// running it past Step 9's store close would write to a torn-down

@@ -578,7 +578,7 @@ func TestDeletingAThreadStopsItsShellCommand(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	app.threadDeletePorts(newWorkerCascade(thread.ID)).CancelShellCommand(thread.ID)
+	app.threadDeletePorts().CancelShellCommand(thread.ID)
 	if frames := shellFrames(rec, runID); len(frames) == 0 {
 		t.Fatal("no frames")
 	}

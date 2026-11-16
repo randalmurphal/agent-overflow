@@ -590,14 +590,16 @@ func TestArchiveOwnedWorkerIsFencedByItsOwnersArchive(t *testing.T) {
 	}
 }
 
-// ListOwnedWorkers names every owned thread whose spawn link the owner
-// made, archived or not: not a placed one, not one a later spawn row
-// supersedes, not a worker's own worker, and not one whose delete began.
-// ListWorkersUnder goes on down the lineage, through archived workers,
-// and marks a helper.
-func TestListOwnedWorkersAndWorkersUnder(t *testing.T) {
+// ListDeleteFamily lists what a delete takes, each thread once, owner
+// before worker: the named thread, every owned thread down the lineage
+// through archived ones, with the owner that fences its claim, and for an
+// assistant's current thread its past threads and helpers and their own
+// workers. Not a placed spawn, not one a later spawn row supersedes, not
+// one whose delete began; a named thread is walked from whatever its mark,
+// so a delete resumed at boot reaches the workers it had not claimed.
+func TestListDeleteFamily(t *testing.T) {
 	s := newTestStore(t)
-	for _, id := range []string{"owner", "other", "owned", "deep", "deeper", "placed", "archived", "moved", "marked"} {
+	for _, id := range []string{"owner", "other", "owned", "deep", "deeper", "placed", "archived", "moved", "marked", "past", "helper", "helper-work"} {
 		mustCreateThread(t, s, id)
 	}
 	spawnLocal(t, s, "tok-owned", "owner", "owned", true)
@@ -607,14 +609,14 @@ func TestListOwnedWorkersAndWorkersUnder(t *testing.T) {
 	spawnLocal(t, s, "tok-archived", "owner", "archived", true)
 	spawnLocal(t, s, "tok-moved", "owner", "moved", true)
 	spawnLocal(t, s, "tok-marked", "owner", "marked", true)
+	spawnLocal(t, s, "tok-helper-work", "helper", "helper-work", true)
 	if _, err := s.db.Exec(`UPDATE thread_requests SET caller_thread_id = 'other' WHERE token = 'tok-moved'`); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := s.ArchiveThread("archived"); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := s.ArchiveThread("deep"); err != nil {
-		t.Fatal(err)
+	for _, id := range []string{"archived", "deep"} {
+		if _, _, err := s.ArchiveThread(id); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := s.BeginThreadDelete("marked"); err != nil {
 		t.Fatal(err)
@@ -622,57 +624,84 @@ func TestListOwnedWorkersAndWorkersUnder(t *testing.T) {
 	if _, err := s.db.Exec(`UPDATE threads SET worktree_path = '/wt/deeper' WHERE id = 'deeper'`); err != nil {
 		t.Fatal(err)
 	}
-	owned := func(owner string) []string {
+	type row struct {
+		id, under string
+		kind      DeleteMemberKind
+		depth     int
+	}
+	family := func(ids ...string) []row {
 		t.Helper()
-		got, err := s.ListOwnedWorkers(owner)
+		members, err := s.ListDeleteFamily(ids)
 		if err != nil {
 			t.Fatal(err)
 		}
-		return got
+		rows := []row{}
+		for _, member := range members {
+			rows = append(rows, row{member.ThreadID, member.Under, member.Kind, member.Depth})
+			if member.ThreadID == "deeper" && (member.WorktreePath != "/wt/deeper" || member.ProjectID == "") {
+				t.Errorf("deeper = %+v, want its project and worktree", member)
+			}
+		}
+		return rows
 	}
-	if got := owned("owner"); !slices.Equal(got, []string{"archived", "owned"}) {
-		t.Errorf("owner's workers = %v, want [archived owned]", got)
+	want := []row{
+		{"owner", "", DeleteNamed, 0},
+		{"archived", "owner", DeleteWorker, 1},
+		{"owned", "owner", DeleteWorker, 1},
+		{"deep", "owned", DeleteWorker, 2},
+		{"deeper", "deep", DeleteWorker, 3},
 	}
-	if got := owned("owned"); !slices.Equal(got, []string{"deep"}) {
-		t.Errorf("a worker's workers = %v, want [deep]", got)
+	if got := family("owner"); !slices.Equal(got, want) {
+		t.Errorf("owner's family = %v, want %v", got, want)
 	}
-	under, err := s.ListWorkersUnder("owner")
-	if err != nil {
+	if err := s.BeginThreadDelete("owned"); err != nil {
 		t.Fatal(err)
 	}
-	ids := []string{}
-	for _, worker := range under {
-		ids = append(ids, worker.ThreadID)
-		if worker.Helper {
-			t.Errorf("%s read as a helper", worker.ThreadID)
-		}
-		if worker.ThreadID == "deeper" && worker.WorktreePath != "/wt/deeper" {
-			t.Errorf("deeper's worktree = %q", worker.WorktreePath)
-		}
+	if got := family("owner"); !slices.Equal(got, want[:2]) {
+		t.Errorf("owner's family with a worker claimed = %v, want it to stop there", got)
 	}
-	if !slices.Equal(ids, []string{"archived", "deep", "deeper", "owned"}) {
-		t.Errorf("workers under the owner = %v, want archived, deep, deeper and owned", ids)
+	if got := family("owner", "owned"); !slices.Equal(got, []row{{"owned", "", DeleteNamed, 0}, want[0], want[1], {"deep", "owned", DeleteWorker, 1}, {"deeper", "deep", DeleteWorker, 2}}) {
+		t.Errorf("the family of the claimed threads = %v, want each walked", got)
 	}
+	if err := s.ReleaseThreadDelete("owned"); err != nil {
+		t.Fatal(err)
+	}
+
+	// The owner is an assistant's current thread: its past thread and its
+	// helpers go with it, a helper it also spawned once, as a helper, and
+	// the workers of a helper with no spawn link too.
 	if _, err := s.db.Exec(`INSERT INTO agents (id, thread_id, home, created_at) VALUES ('agent', 'owner', '/home/agent', 1)`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.db.Exec(`INSERT INTO agent_helpers (thread_id, agent_id) VALUES ('owned', 'agent')`); err != nil {
+	if _, err := s.db.Exec(`INSERT INTO agent_helpers (thread_id, agent_id) VALUES ('owned', 'agent'), ('helper', 'agent')`); err != nil {
 		t.Fatal(err)
 	}
-	under, err = s.ListWorkersUnder("owner")
-	if err != nil {
+	if _, err := s.db.Exec(`INSERT INTO agent_past_threads (thread_id, agent_id, superseded_at) VALUES ('past', 'agent', 5)`); err != nil {
 		t.Fatal(err)
 	}
-	for _, worker := range under {
-		if worker.Helper != (worker.ThreadID == "owned") {
-			t.Errorf("%s helper = %v", worker.ThreadID, worker.Helper)
-		}
+	want = []row{
+		{"owner", "", DeleteNamed, 0},
+		{"past", "owner", DeletePastThread, 0},
+		{"helper", "owner", DeleteHelper, 0},
+		{"owned", "owner", DeleteHelper, 0},
+		{"archived", "owner", DeleteWorker, 1},
+		{"deep", "owned", DeleteWorker, 1},
+		{"helper-work", "helper", DeleteWorker, 1},
+		{"deeper", "deep", DeleteWorker, 2},
+	}
+	if got := family("owner"); !slices.Equal(got, want) {
+		t.Errorf("an assistant's family = %v, want %v", got, want)
+	}
+	if got := family("missing"); len(got) != 0 {
+		t.Errorf("a missing thread's family = %v, want none", got)
 	}
 }
 
-// BeginWorkerDelete marks a worker only while its owner still owns it,
-// and says so apart from a missing thread.
-func TestBeginWorkerDeleteIsFencedByOwnership(t *testing.T) {
+// ClaimThreadDelete marks a thread and says whether it set the mark. A
+// worker's claim holds only while its owner still owns it, and says so
+// apart from a missing thread. ReleaseThreadDelete takes a claim back, and
+// never a released holder's mark.
+func TestClaimThreadDeleteIsFencedByOwnership(t *testing.T) {
 	s := newTestStore(t)
 	for _, id := range []string{"owner", "other", "owned", "placed", "moved"} {
 		mustCreateThread(t, s, id)
@@ -692,17 +721,26 @@ func TestBeginWorkerDeleteIsFencedByOwnership(t *testing.T) {
 		return deleting
 	}
 	for _, id := range []string{"placed", "moved"} {
-		if err := s.BeginWorkerDelete(id, "owner"); !errors.Is(err, ErrWorkerNotOwned) || marked(id) {
+		if _, err := s.ClaimThreadDelete(id, "owner"); !errors.Is(err, ErrWorkerNotOwned) || marked(id) {
 			t.Errorf("%s, not the owner's = %v, marked %v; want ErrWorkerNotOwned and unmarked", id, err, marked(id))
 		}
 	}
-	if err := s.BeginWorkerDelete("owned", "owner"); err != nil || !marked("owned") {
-		t.Fatalf("the owner's worker = %v, marked %v", err, marked("owned"))
+	if fresh, err := s.ClaimThreadDelete("owned", "owner"); err != nil || !fresh || !marked("owned") {
+		t.Fatalf("the owner's worker = fresh %v, %v, marked %v", fresh, err, marked("owned"))
 	}
-	if err := s.BeginWorkerDelete("owned", "owner"); err != nil {
-		t.Errorf("a repeated mark = %v, want it to resume", err)
+	if fresh, err := s.ClaimThreadDelete("owned", "owner"); err != nil || fresh {
+		t.Errorf("a repeated claim = fresh %v, %v; want it kept, not fresh", fresh, err)
 	}
-	if err := s.BeginWorkerDelete("missing", "owner"); !errors.Is(err, sql.ErrNoRows) {
+	if _, err := s.ClaimThreadDelete("missing", "owner"); !errors.Is(err, sql.ErrNoRows) {
 		t.Errorf("a missing worker = %v, want sql.ErrNoRows", err)
+	}
+	if err := s.ReleaseThreadDelete("owned"); err != nil || marked("owned") {
+		t.Errorf("released = %v, marked %v; want unmarked", err, marked("owned"))
+	}
+	if _, err := s.db.Exec(`UPDATE threads SET mode = 'holder', deleting = 1 WHERE id = 'other'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ReleaseThreadDelete("other"); err != nil || !marked("other") {
+		t.Errorf("a released holder = %v, marked %v; want its mark kept", err, marked("other"))
 	}
 }
