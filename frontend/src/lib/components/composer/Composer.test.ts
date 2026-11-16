@@ -1201,6 +1201,51 @@ describe('<Composer>', () => {
     run.follow.dispose();
   });
 
+  // Whether another screen's draft kept the thread is unknown: the typed
+  // text leaves it as if one had, and the person is told why.
+  it.each([
+    ['the kept draft cannot be read', async (): Promise<boolean> => false, true],
+    ['the delete fails', async (): Promise<boolean> => { throw new Error('delete failed'); }, false],
+  ] as const)('moves text typed during the delete to a new thread when %s', async (_when, remove, readFails) => {
+    const run = await startEmptyDraftCleanup(`cleanup-unknown-${readFails}`, remove);
+    if (readFails) {
+      setBindingMock('GetDraft', async (threadId: string) => {
+        if (threadId === run.first.id) throw new Error('temporary read failure');
+        return { threadId, content: '', attachmentIds: [], terminalChips: [], updatedAt: 1 };
+      });
+    }
+    await fireEvent.input(run.textarea, { target: { value: 'my text' } });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    run.deleteGate.resolve();
+
+    await waitFor(() => expect(run.pane.threadId).toBe(run.replacement.id));
+    expect(run.draft.threadId).toBe(run.replacement.id);
+    expect(run.draft.content).toBe('my text');
+    await waitFor(() => expect(run.save).toHaveBeenCalledWith(run.replacement.id, 'my text', [], [], null));
+    expect(run.savedAfterDecision()).toEqual([]);
+    expect(run.errorToasts()).toEqual([expect.stringContaining(readFails ? 'temporary read failure' : 'delete failed')]);
+    // Its row is left to the backend's frames: it may be gone.
+    expect(getThreadById(run.first.id)).toBeUndefined();
+    run.follow.dispose();
+  });
+
+  it('treats a delete that failed after its deletion broadcast as a deletion', async () => {
+    const run = await startEmptyDraftCleanup('cleanup-broadcast-then-error', async (threadId) => {
+      applyThreadUpdated({ action: 'deleted', id: threadId });
+      throw new Error('close browser pages failed');
+    });
+    await fireEvent.input(run.textarea, { target: { value: 'my text' } });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    run.deleteGate.resolve();
+
+    await waitFor(() => expect(run.pane.threadId).toBe(run.replacement.id));
+    expect(run.draft.content).toBe('my text');
+    await waitFor(() => expect(run.save).toHaveBeenCalledWith(run.replacement.id, 'my text', [], [], null));
+    expect(run.savedAfterDecision()).toEqual([]);
+    expect(run.errorToasts()).toEqual([]);
+    run.follow.dispose();
+  });
+
   describe('a new thread another screen erases', () => {
     async function openSharedDraft(name: string) {
       resetToastsForTest();
