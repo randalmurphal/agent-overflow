@@ -54,38 +54,6 @@ func TestACloseRacingAFailedCreationLeavesNoHiddenTab(t *testing.T) {
 	}
 }
 
-// A close that found a page live before another close moved it to closing
-// joins that close instead of answering that the page is not found.
-func TestACloseThatFoundThePageLiveJoinsTheCloseThatWon(t *testing.T) {
-	manager, engine := newLifecycleManager(t)
-	access := Access{ThreadID: "thread", Workspace: t.TempDir()}
-	page := mustOpen(t, manager, access, "https://example.test/")
-	release := engine.hold(&engine.closeGate)
-	defer release()
-	p, scope, err := manager.lookupOwnedPage(access, page.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := manager.CloseCompanionPage(t.Context(), access, page.ID); err != nil {
-		t.Fatal(err)
-	}
-	won, err := manager.beginCloseLive(access, page.ID)
-	if err != nil {
-		t.Fatalf("the running close: %v", err)
-	}
-	joined, err := manager.closeFoundPage(p, scope)
-	if err != nil || joined != won {
-		t.Fatalf("the losing close = %p, %v, want the running close %p", joined, err, won)
-	}
-	release()
-	if err := await(t, async(func() error { return joined.wait(context.Background()) }), "the teardown"); err != nil {
-		t.Fatal(err)
-	}
-	if got := engine.closed.Load(); got != 1 {
-		t.Fatalf("the engine closed the page %d times", got)
-	}
-}
-
 // Two closes of one live page that run at once both join its one teardown;
 // neither answers that the page is not found.
 func TestConcurrentClosesJoinOneTeardown(t *testing.T) {
