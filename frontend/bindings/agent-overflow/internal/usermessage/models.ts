@@ -5,6 +5,10 @@
 // @ts-ignore: Unused imports
 import { Create as $Create } from "@wailsio/runtime";
 
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
+import * as threadtools$0 from "../threadtools/models.js";
+
 /**
  * OriginThread identifies the sending thread of an `agent-thread` row: what
  * the row's header names, and the request token that keeps three requests
@@ -25,6 +29,15 @@ export class OriginThread {
      */
     "kind"?: string;
 
+    /**
+     * Facts is what the message says, written with its text
+     * (ThreadMessage): a request's footer, an answer's outcome and the
+     * threads it speaks for. The timeline renders the row from these.
+     * Absent on rows written before they existed, whose text main's
+     * templates wrote and readers parse.
+     */
+    "facts"?: threadtools$0.MessageFacts | null;
+
     /** Creates a new OriginThread instance. */
     constructor($$source: Partial<OriginThread> = {}) {
         if (!("threadId" in $$source)) {
@@ -38,7 +51,11 @@ export class OriginThread {
      * Creates a new OriginThread instance from a string or object.
      */
     static createFrom($$source: any = {}): OriginThread {
+        const $$createField6_0 = $$createType1;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("facts" in $$parsedSource) {
+            $$parsedSource["facts"] = $$createField6_0($$parsedSource["facts"]);
+        }
         return new OriginThread($$parsedSource as Partial<OriginThread>);
     }
 }
@@ -71,6 +88,12 @@ export class OriginWake {
      */
     "computer"?: string;
 
+    /**
+     * Facts is where the message's data is and what its row's header
+     * says, written with the text (WakeMessage).
+     */
+    "facts"?: threadtools$0.MessageFacts | null;
+
     /** Creates a new OriginWake instance. */
     constructor($$source: Partial<OriginWake> = {}) {
         if (!("kind" in $$source)) {
@@ -84,7 +107,15 @@ export class OriginWake {
      * Creates a new OriginWake instance from a string or object.
      */
     static createFrom($$source: any = {}): OriginWake {
+        const $$createField4_0 = $$createType1;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("facts" in $$parsedSource) {
+            $$parsedSource["facts"] = $$createField4_0($$parsedSource["facts"]);
+        }
         return new OriginWake($$parsedSource as Partial<OriginWake>);
     }
 }
+
+// Private type creation functions
+const $$createType0 = threadtools$0.MessageFacts.createFrom;
+const $$createType1 = $Create.Nullable($$createType0);
