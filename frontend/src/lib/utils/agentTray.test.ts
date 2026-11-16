@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  agentRowBlockedLabel, agentRowCallers, agentRowOpenTarget, agentRowShownState, agentRowStateLabel, agentWorkerCount,
+  agentRowBlockedLabel, agentRowCallers, agentRowOpenTarget, agentRowRuntimeMs, agentRowShownState, agentRowStateLabel, agentWorkerCount,
   isOpenAgentRow, visibleAgentRows,
 } from './agentTray';
 import type { ThreadAgentRow } from '../stores/bindings';
@@ -109,5 +109,26 @@ describe('agentRowOpenTarget', () => {
     expect(agentRowOpenTarget(row('a', 0, 'replied', ask))).toEqual({ threadId: 'origin', asked: true });
     expect(agentRowOpenTarget(row('a', 0, 'replied', { kind: 'ask', threadId: 'copy' }))).toBeNull();
     expect(agentRowOpenTarget(row('q', 0, 'accepted', { threadId: '' }))).toBeNull();
+  });
+});
+
+describe('agentRowRuntimeMs', () => {
+  it("is the turns' time as read, the open turn's going on from the row's own read", () => {
+    const open = row('a', 0, 'running', { runtimeMs: 4_000, turnOpen: true });
+    expect(agentRowRuntimeMs(open, 10_000, 10_000)).toBe(4_000);
+    expect(agentRowRuntimeMs(open, 12_500, 10_000)).toBe(6_500);
+    // A clock read before the row was is no time.
+    expect(agentRowRuntimeMs(open, 9_000, 10_000)).toBe(4_000);
+  });
+
+  it('stops between turns', () => {
+    const idle = row('a', 0, 'finished', { runtimeMs: 4_000 });
+    expect(agentRowRuntimeMs(idle, 10_000, 1_000)).toBe(4_000);
+    expect(agentRowRuntimeMs(idle, 90_000, 1_000)).toBe(4_000);
+  });
+
+  it('is unknown for a row that does not report it', () => {
+    expect(agentRowRuntimeMs(row('a', 0, 'running'), 10_000, 0)).toBeNull();
+    expect(agentRowRuntimeMs(row('a', 0, 'running', { kind: 'send', runtimeMs: 4_000 }), 10_000, 0)).toBeNull();
   });
 });
