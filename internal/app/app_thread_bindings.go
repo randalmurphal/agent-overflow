@@ -3,7 +3,6 @@ package app
 import (
 	"context"
 	"fmt"
-	"log"
 	"strings"
 	"time"
 
@@ -638,12 +637,9 @@ func (a *App) DeleteThread(id string) error {
 	if err == nil {
 		return unstopped.err()
 	}
-	// The delete itself failed, and its error is the answer. The work it
-	// could not stop goes to the log: a cause's own public prose must not
-	// stand in for the delete's failure.
-	if cause := unstopped.err(); cause != nil {
-		log.Printf("app: delete thread %s: %v", id, cause)
-	}
+	// The delete itself failed, and its error is the answer: a cause's own
+	// public prose must not stand in for it. The work it could not stop is
+	// in the log (threadDeletePorts).
 	return err
 }
 

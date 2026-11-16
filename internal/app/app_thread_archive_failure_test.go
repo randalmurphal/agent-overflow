@@ -291,3 +291,68 @@ func TestThreadCleanupErrorMessage(t *testing.T) {
 		}
 	}
 }
+
+// A delete stops each thread's remote work twice, and an ask the first pass
+// could not stop is tried again: the second pass's answer stands. A command
+// whose cancel was not delivered is dismissed by the first pass and never
+// tried again, so it stays reported.
+func TestDeleteReportsAnAskByItsLastStopAttempt(t *testing.T) {
+	t.Parallel()
+	f := newCleanupFailureFixture(t)
+	computer := f.unreachableComputer(t)
+	f.startRemoteCommand(t, computer)
+	f.startAsk(t, computer)
+
+	unstopped := threadCleanupError{outcome: "deleted"}
+	ports := f.app.threadDeletePorts(&unstopped)
+	if err := ports.StopRemoteWork(f.thread.ID); err != nil {
+		t.Fatalf("first pass: %v", err)
+	}
+	requireCleanupError(t, unstopped.err(), "deleted", "an ask", "for up to an hour")
+
+	// The ask ends before the second pass, as it does when that pass's
+	// cancel reaches the computer.
+	execOnStore(t, f.dbPath, `UPDATE thread_requests SET state = 'cancelled'`)
+	if err := ports.StopRemoteWork(f.thread.ID); err != nil {
+		t.Fatalf("second pass: %v", err)
+	}
+	requireCleanupError(t, unstopped.err(), "deleted", "for up to an hour")
+
+	// Another thread's ask that stays unstopped is still reported.
+	other := testThread(uuid.NewString())
+	if err := f.app.store.CreateThread(other); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	if err := f.app.store.InsertThreadRequest(store.ThreadRequest{
+		Token: newThreadRequestToken(), CallerThreadID: other.ID, Kind: store.ThreadRequestAsk,
+		State: store.ThreadRequestAccepted, TargetComputerID: computer, TargetThreadID: uuid.NewString(),
+	}); err != nil {
+		t.Fatalf("InsertThreadRequest: %v", err)
+	}
+	if err := ports.StopRemoteWork(other.ID); err != nil {
+		t.Fatalf("other thread: %v", err)
+	}
+	if err := ports.StopRemoteWork(f.thread.ID); err != nil {
+		t.Fatalf("third pass: %v", err)
+	}
+	requireCleanupError(t, unstopped.err(), "deleted", "an ask", "for up to an hour")
+}
+
+// A cancel that was not delivered and a watch that could not be dismissed
+// are returned apart, so a caller that stops on the store failure still
+// has the undelivered cancel to report or log.
+func TestCancelThreadRemoteCommandsReturnsBothFailures(t *testing.T) {
+	t.Parallel()
+	f := newCleanupFailureFixture(t)
+	f.startRemoteCommand(t, f.unreachableComputer(t))
+	execOnStore(t, f.dbPath, `CREATE TRIGGER refuse_dismiss BEFORE UPDATE ON remote_watches
+		WHEN NEW.notification = 'dismissed' BEGIN SELECT RAISE(ABORT, 'injected dismiss failure'); END`)
+
+	undelivered, err := f.app.cancelThreadRemoteCommands(t.Context(), f.thread.ID)
+	if undelivered == nil || !strings.Contains(undelivered.Error(), "cancel not delivered") {
+		t.Fatalf("undelivered = %v, want the cancel that did not reach the computer", undelivered)
+	}
+	if err == nil || !strings.Contains(err.Error(), "injected dismiss failure") {
+		t.Fatalf("err = %v, want the dismiss failure", err)
+	}
+}

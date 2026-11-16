@@ -278,21 +278,33 @@ func (a *App) deleteThreadTreeWithSubtreeLocksHeld(threadID string) error {
 // delivered) does not hold the delete: it goes into unstopped when the
 // caller reports it, and to the log otherwise.
 func (a *App) threadDeletePorts(unstopped *threadCleanupError) threadapp.DeletePorts {
+	// DeleteTree stops each thread's remote work twice. An ask the first
+	// pass could not stop is still open, so the second pass tries it again
+	// and its answer is the one that stands. A command whose cancel was not
+	// delivered is dismissed either way and never tried again, so every
+	// pass's undelivered cancels count.
+	var askThreads []string
+	asksByThread := map[string]error{}
 	return threadapp.DeletePorts{
 		StopRemoteWork: func(threadID string) error {
-			// Runs twice for a thread with a subtree; both halves are
-			// conditional updates, so the second pass finds nothing to do.
 			asks, err := a.stopThreadRequestsForDeletedThread(context.Background(), threadID)
 			if err != nil {
 				return err
 			}
 			commands, err := a.cancelThreadRemoteCommands(context.Background(), threadID)
-			switch {
-			case unstopped != nil:
-				unstopped.asks = errors.Join(unstopped.asks, asks)
-				unstopped.commands = errors.Join(unstopped.commands, commands)
-			case asks != nil || commands != nil:
+			if asks != nil || commands != nil {
 				log.Printf("app: delete thread %s: %v", threadID, errors.Join(asks, commands))
+			}
+			if unstopped != nil {
+				if _, seen := asksByThread[threadID]; !seen {
+					askThreads = append(askThreads, threadID)
+				}
+				asksByThread[threadID] = asks
+				unstopped.asks = nil
+				for _, id := range askThreads {
+					unstopped.asks = errors.Join(unstopped.asks, asksByThread[id])
+				}
+				unstopped.commands = errors.Join(unstopped.commands, commands)
 			}
 			return err
 		},
