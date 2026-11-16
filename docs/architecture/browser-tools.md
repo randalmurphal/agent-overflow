@@ -71,9 +71,11 @@ per-platform no-op.
   thread.
 - A jar shares site data and nothing else. Navigation and file permissions,
   the download directory and the download quota stay per canonical
-  workspace, whichever jar a page is in. A popup the engine loads before the
-  Manager adopts it is held to its opener's policy, the one it gets on
-  adoption.
+  workspace, whichever jar a page is in. A request the jar's own policy
+  sees (headless Chromium's browser-wide interception) has the authority of
+  the page its frame belongs to, or for a popup not yet adopted, of its
+  opener chain; one whose owner is not resolved may open no workspace's
+  files.
 - Switching the jar with tabs open asks first in the pane. The Manager then
   suspends every live tab into the new jar: its page closes and a suspended
   record keeps its id, position, label and address, the active tab staying
@@ -82,10 +84,12 @@ per-platform no-op.
   ordinary restore: the pane brings back the tab it shows, and the others
   return when selected or used, with the navigation policy applied and no
   page history. A tab that cannot come back stays suspended with the error.
-  A restore waits until every page the switch closed is gone, its old
-  profile's disposal included, and until then a closing page and its record
-  hold one slot in the thread's cap; closing the record leaves the slot to
-  the page. A per-thread jar generation fences a create or restore that
+  No restore of the thread is admitted until every page it had closing at
+  the switch is gone, old profiles' disposal included, and until then a
+  closing page and its record hold one slot in the thread's cap; closing
+  the record leaves the slot to the page. Any restore is admitted only while
+  its record exists, and forgetting a record (closing the tab, clearing site
+  data, turning the browser off) cancels its restore. A per-thread jar generation fences a create or restore that
   began before the switch, so it lands in the new jar; a popup is admitted
   only beside a live opener, which a switch has already closed.
 - A thread gets an opaque MCP URL capability at provider-session start, and

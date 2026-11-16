@@ -38,10 +38,6 @@ type suspendedPage struct {
 	// restoring is the restore in flight, which concurrent touches wait for
 	// rather than loading the page twice.
 	restoring *restoreCall
-	// after holds the teardowns of the pages a jar switch closed when it
-	// recorded this one (SetJar); a restore waits for all of them first. Not
-	// saved: after a restart those pages are long gone.
-	after []<-chan struct{}
 }
 
 func (r *suspendedPage) info() PageInfo {
@@ -49,11 +45,18 @@ func (r *suspendedPage) info() PageInfo {
 }
 
 // restoreCall is one restore of a suspended page. err is written before done
-// closes.
+// closes. cancel ends the restore; forgetting its record calls it
+// (dropRecordLocked).
 type restoreCall struct {
-	done chan struct{}
-	err  error
+	done   chan struct{}
+	err    error
+	cancel context.CancelFunc
 }
+
+// errJarTeardown refuses a restore's admission while its thread's jar switch
+// is still tearing pages down (jarTeardownLocked); the restore waits and
+// tries again.
+var errJarTeardown = errors.New("browser: the cookie jar switch is still closing pages")
 
 // threadTab is one entry of a thread's tab set: a live page or a suspended
 // one.
@@ -189,11 +192,12 @@ func (m *Manager) resolvePage(ctx context.Context, access Access, pageID string,
 		call := rec.restoring
 		started := call == nil
 		if started {
-			call = &restoreCall{done: make(chan struct{})}
-			rec.restoring = call
 			// The restore runs on its own bounded context, so a caller that
 			// gives up does not fail the restore for the others waiting on it.
-			go m.runRestore(access, rec, call, skipLoad)
+			restoreCtx, cancel := context.WithTimeout(context.Background(), restoreTimeout)
+			call = &restoreCall{done: make(chan struct{}), cancel: cancel}
+			rec.restoring = call
+			go m.runRestore(restoreCtx, access, rec, call, skipLoad)
 		}
 		m.mu.Unlock()
 		if started {
@@ -212,15 +216,22 @@ func (m *Manager) resolvePage(ctx context.Context, access Access, pageID string,
 	}
 }
 
-func (m *Manager) runRestore(access Access, rec *suspendedPage, call *restoreCall, skipLoad bool) {
-	ctx, cancel := context.WithTimeout(context.Background(), restoreTimeout)
+func (m *Manager) runRestore(ctx context.Context, access Access, rec *suspendedPage, call *restoreCall, skipLoad bool) {
 	err := m.restorePage(ctx, access, rec, skipLoad)
-	cancel()
+	call.cancel()
 	m.mu.Lock()
 	if rec.restoring == call {
 		rec.restoring = nil
 	}
+	forgotten := m.suspended[rec.id] != rec
 	m.mu.Unlock()
+	if err != nil && forgotten && !errors.Is(err, errPageNotFound) {
+		// Forgetting the record cancelled the restore (dropRecordLocked): the
+		// tab is gone, not failed. What the cancelled restore reported, its
+		// page's cleanup included, is logged.
+		log.Printf("browser: restore page %s ended with its tab: %v", rec.id, err)
+		err = fmt.Errorf("browser: restore page %s: %w", rec.id, errPageNotFound)
+	}
 	call.err = err
 	close(call.done)
 	if err != nil {
@@ -235,13 +246,21 @@ func (m *Manager) runRestore(access Access, rec *suspendedPage, call *restoreCal
 // dropped, in one m.mu hold and only once it is fully loaded; any failure
 // leaves the record as it was. A page loaded in a jar its thread switched
 // away from meanwhile is closed and the restore starts again in the new
-// jar. A record a jar switch made first waits for the switch's teardown
-// (awaitSwitchTeardown).
+// jar.
+//
+// Each attempt waits for its thread's jar teardown (awaitJarTeardown) and
+// is admitted by openPageLocked only while rec is still the page's record
+// and no newer switch has teardown pending (restoreAdmissionLocked). The
+// check runs under m.mu, which forgetting a record holds as it cancels the
+// restore (dropRecordLocked), so a restore whose record is gone never
+// creates its page. One admitted first holds startMu until its page exists,
+// so clearing site data or turning the browser off closes that page with the
+// browser (closeBrowser) before removing any data.
 func (m *Manager) restorePage(ctx context.Context, access Access, rec *suspendedPage, skipLoad bool) error {
-	if err := m.awaitSwitchTeardown(ctx, rec); err != nil {
-		return err
-	}
 	for {
+		if err := m.awaitJarTeardown(ctx, rec.owner); err != nil {
+			return fmt.Errorf("browser: restore page %s: %w", rec.id, err)
+		}
 		m.mu.Lock()
 		target, title, label := rec.url, rec.title, rec.label
 		createdAt, lastUse := rec.createdAt, rec.lastUse
@@ -257,7 +276,10 @@ func (m *Manager) restorePage(ctx context.Context, access Access, rec *suspended
 		p.id, p.createdAt = rec.id, createdAt
 		p.lastUse.Store(lastUse)
 		p.info = PageInfo{ID: rec.id, URL: "about:blank", Label: label}
-		scope, err := m.openAndLoad(ctx, access, p, target, title)
+		scope, err := m.openAndLoad(ctx, access, p, target, title, func() error { return m.restoreAdmissionLocked(rec) })
+		if errors.Is(err, errJarTeardown) {
+			continue
+		}
 		if err != nil {
 			return fmt.Errorf("browser: restore page %s: %w", rec.id, err)
 		}
@@ -298,41 +320,71 @@ func (m *Manager) restorePage(ctx context.Context, access Access, rec *suspended
 	}
 }
 
-// awaitSwitchTeardown waits until the pages a jar switch closed when it
-// recorded rec have finished their teardown (SetJar), so the restore neither
-// shares the id with a page still closing nor meets a cap only they hold. A
-// record forgotten meanwhile (its tab closed, the thread closed, site data
-// cleared, the browser turned off) is not restored.
-func (m *Manager) awaitSwitchTeardown(ctx context.Context, rec *suspendedPage) error {
-	m.mu.Lock()
-	after := rec.after
-	m.mu.Unlock()
-	if len(after) == 0 {
-		return nil
-	}
-	for _, done := range after {
-		select {
-		case <-done:
-		case <-ctx.Done():
-			return fmt.Errorf("browser: restore page %s: the page it replaces in the previous cookie jar is still closing: %w", rec.id, ctx.Err())
-		}
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
+// restoreAdmissionLocked admits a restore of rec while rec is still its
+// page's record and its thread has no jar teardown pending. The caller holds
+// m.mu.
+func (m *Manager) restoreAdmissionLocked(rec *suspendedPage) error {
 	if m.suspended[rec.id] != rec {
-		return fmt.Errorf("browser: restore page %s: %w", rec.id, errPageNotFound)
+		return errPageNotFound
 	}
-	rec.after = nil
+	if len(m.jarTeardownLocked(rec.owner)) > 0 {
+		return errJarTeardown
+	}
 	return nil
 }
 
-// openAndLoad creates p's engine page (openPageLocked) and loads target in it when target is set, with title shown while
-// it loads. The load runs outside startMu, as any navigation does; the scope
-// stays reserved for the page until the caller registers or abandons it. A
-// failed load abandons the page.
-func (m *Manager) openAndLoad(ctx context.Context, access Access, p *managedPage, target, title string) (*jarScope, error) {
+// jarTeardownLocked answers the thread's jar teardowns still pending (SetJar)
+// and forgets the finished ones. The caller holds m.mu.
+func (m *Manager) jarTeardownLocked(threadID string) []<-chan struct{} {
+	info, ok := m.sessions[threadID]
+	if !ok || len(info.jarTeardown) == 0 {
+		return nil
+	}
+	var pending []<-chan struct{}
+	for _, done := range info.jarTeardown {
+		select {
+		case <-done:
+		default:
+			pending = append(pending, done)
+		}
+	}
+	if len(pending) != len(info.jarTeardown) {
+		info.jarTeardown = pending
+		m.sessions[threadID] = info
+	}
+	return pending
+}
+
+// awaitJarTeardown waits until the pages the thread's jar switches closed
+// have finished their teardown, their old profiles' disposal included, so a
+// restore neither shares an id with a page still closing nor meets a cap
+// only those pages hold.
+func (m *Manager) awaitJarTeardown(ctx context.Context, threadID string) error {
+	for {
+		m.mu.Lock()
+		pending := m.jarTeardownLocked(threadID)
+		m.mu.Unlock()
+		if len(pending) == 0 {
+			return nil
+		}
+		for _, done := range pending {
+			select {
+			case <-done:
+			case <-ctx.Done():
+				return fmt.Errorf("the pages its cookie jar switch closed are still closing: %w", ctx.Err())
+			}
+		}
+	}
+}
+
+// openAndLoad creates p's engine page (openPageLocked, which runs admit) and
+// loads target in it when target is set, with title shown while it loads.
+// The load runs outside startMu, as any navigation does; the scope stays
+// reserved for the page until the caller registers or abandons it. A failed
+// load abandons the page.
+func (m *Manager) openAndLoad(ctx context.Context, access Access, p *managedPage, target, title string, admit func() error) (*jarScope, error) {
 	m.startMu.Lock()
-	scope, err := m.openPageLocked(ctx, access, p)
+	scope, err := m.openPageLocked(ctx, access, p, admit)
 	m.startMu.Unlock()
 	if err != nil || target == "" {
 		return scope, err
@@ -477,7 +529,7 @@ func (m *Manager) forgetRecord(threadID, pageID string) error {
 	rec := m.suspended[strings.TrimSpace(pageID)]
 	found := rec != nil && rec.owner == threadID
 	if found {
-		delete(m.suspended, rec.id)
+		m.dropRecordLocked(rec)
 	}
 	m.mu.Unlock()
 	if !found {
@@ -494,9 +546,9 @@ func (m *Manager) forgetRecord(threadID, pageID string) error {
 func (m *Manager) forgetThreadRecords(threadID string) error {
 	m.mu.Lock()
 	found := false
-	for id, rec := range m.suspended {
+	for _, rec := range m.suspended {
 		if rec.owner == threadID {
-			delete(m.suspended, id)
+			m.dropRecordLocked(rec)
 			found = true
 		}
 	}
@@ -508,6 +560,15 @@ func (m *Manager) forgetThreadRecords(threadID string) error {
 	return m.persistThreads([]string{threadID})
 }
 
+// dropRecordLocked forgets rec and cancels its restore in flight, which
+// could only be refused at registration. The caller holds m.mu.
+func (m *Manager) dropRecordLocked(rec *suspendedPage) {
+	delete(m.suspended, rec.id)
+	if rec.restoring != nil {
+		rec.restoring.cancel()
+	}
+}
+
 // forgetAllRecords drops every suspended page and the saved copies. keepJars
 // keeps the threads' jar settings, saved again on their own; otherwise every
 // thread's browser returns to the default jar.
@@ -517,8 +578,8 @@ func (m *Manager) forgetAllRecords(keepJars bool) error {
 	threads := make(map[string]bool)
 	for _, rec := range m.suspended {
 		threads[rec.owner] = true
+		m.dropRecordLocked(rec)
 	}
-	m.suspended = make(map[string]*suspendedPage)
 	m.recordsCleared++
 	var jarThreads []string
 	for threadID, info := range m.sessions {

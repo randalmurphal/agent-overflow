@@ -26,7 +26,8 @@ mode. Product behavior and authority are defined in
   canonical workspace as its key so existing profile ids do not change. Jars
   carry site data only: navigation and file policy, download directories and
   quotas stay per workspace (`workspaceAuthority`); a jar profile's own
-  policy answers with a page's or its opener's authority (`jarAllows`). A
+  policy answers with the authority of the page owning the request's frame
+  or of its opener chain, and with none when unresolved (`jarAllows`). A
   switch (`jar_switch.go`) advances the thread's jar generation and suspends
   its live pages into durable records in one lock hold; the tabs return
   only through the restore path, and any create or restore admitted under

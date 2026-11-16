@@ -28,7 +28,7 @@ type headlessProfile struct {
 	downloadDir   string
 	// allow is the jar's navigation policy (profileOptions.Allow), which
 	// connect enables browser-wide.
-	allow func(page, opener, rawURL string) bool
+	allow func(owners []string, rawURL string) bool
 
 	// launchMu serializes ensureBrowser so a burst of concurrent page
 	// creations launches one Chromium rather than one each.
@@ -466,11 +466,11 @@ func (p *headlessProfile) subscribe(browserCtx context.Context) error {
 	targets := newHeadlessTargets(p)
 	if err := onBrowserEvent(browserCtx, fetch.RequestPaused, logf, func(event fetch.EventRequestPaused) {
 		// A page's main frame id is its target id, so a top-level request
-		// names its page, and a popup's names the opener whose authority it
-		// has until adoption gives it its own; a subframe's names neither.
-		page := string(event.FrameID)
-		opener := targets.opener(page)
-		answerPausedRequest(browserCtx, session, event, func(rawURL string) bool { return p.allow(page, opener, rawURL) })
+		// names its page, and a popup's is followed by the openers whose
+		// authority it has until adoption gives it its own. The Manager
+		// resolves a subframe to the page that reported it.
+		owners := targets.owners(string(event.FrameID))
+		answerPausedRequest(browserCtx, session, event, func(rawURL string) bool { return p.allow(owners, rawURL) })
 	}); err != nil {
 		return err
 	}
@@ -629,10 +629,21 @@ func (h *headlessTargets) retained() int {
 	return len(h.known) + len(h.openers) + h.gone.len() + h.heldInfo.len()
 }
 
-// opener answers the page that opened the popup page, or "" for a target
-// that is no known popup.
-func (h *headlessTargets) opener(page string) string {
+// owners answers frame followed by the pages that opened it, nearest first,
+// when frame is a known popup, and frame alone otherwise.
+func (h *headlessTargets) owners(frame string) []string {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return string(h.openers[target.ID(page)])
+	owners := []string{frame}
+	// A popup has one opener, so the chain is at most every known popup
+	// long; the bound stops a cycle.
+	for id := target.ID(frame); len(owners) <= len(h.openers); {
+		opener := h.openers[id]
+		if opener == "" {
+			break
+		}
+		owners = append(owners, string(opener))
+		id = opener
+	}
+	return owners
 }

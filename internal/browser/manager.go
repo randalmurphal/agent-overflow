@@ -656,8 +656,10 @@ func (m *Manager) pageForOpen(ctx context.Context, access Access, requested stri
 // thread's cap is the caller's: a new page is admitted when its tab appears
 // (createPage), and a restore's record already holds its thread's slot. A
 // profile of the jar still being disposed is waited for, so two profiles
-// never hold one jar's site data. The caller holds startMu.
-func (m *Manager) openPageLocked(ctx context.Context, access Access, p *managedPage) (*jarScope, error) {
+// never hold one jar's site data. admit, when set, decides the page's
+// admission under m.mu, after any such wait and before the caps. The caller
+// holds startMu.
+func (m *Manager) openPageLocked(ctx context.Context, access Access, p *managedPage, admit func() error) (*jarScope, error) {
 	workspace, err := canonicalRoot(access.Workspace)
 	if err != nil {
 		return nil, fmt.Errorf("browser: resolve workspace: %w", err)
@@ -704,6 +706,15 @@ func (m *Manager) openPageLocked(ctx context.Context, access Access, p *managedP
 			return nil, ctx.Err()
 		}
 		m.mu.Lock()
+	}
+	// Before the caps: a refused admission waits and tries again, where a
+	// cap only its own wait would lift fails.
+	if admit != nil {
+		if err := admit(); err != nil {
+			m.mu.Unlock()
+			m.scheduleIdleClose()
+			return nil, err
+		}
 	}
 	scope := m.scopes[jar.key]
 	if scope == nil && len(m.scopes)+len(m.disposing) >= maxWorkspaceContexts {
@@ -768,7 +779,11 @@ func (m *Manager) newPage(ctx context.Context, scope *jarScope, p *managedPage) 
 	if err != nil {
 		return err
 	}
+	// Under m.mu: the jar's policy resolves a request to the page being
+	// created (jarAllows) while it loads, before it is registered.
+	m.mu.Lock()
 	p.attach(driver)
+	m.mu.Unlock()
 	if err := m.applyViewport(p); err != nil {
 		driver.Close()
 		return err
@@ -791,8 +806,8 @@ func (m *Manager) pageHooks(p *managedPage) pageHooks {
 }
 
 // createScope creates the profile of one jar. Its profile-level navigation
-// policy answers with the authority of the page a request belongs to, or its
-// opener's (jarAllows).
+// policy answers with the authority of the page a request's frame belongs
+// to, or its opener's (jarAllows).
 func (m *Manager) createScope(jar jarIdentity) (*jarScope, error) {
 	downloadDir := filepath.Join(m.artifactRoot, "downloads", jarDirName(jar.key))
 	if err := os.MkdirAll(downloadDir, 0o700); err != nil {
@@ -805,7 +820,7 @@ func (m *Manager) createScope(jar jarIdentity) (*jarScope, error) {
 	}
 	profile, err := m.engine.NewProfile(context.Background(), profileOptions{
 		Jar: jar.key, DownloadDir: downloadDir, Ephemeral: jar.ephemeral,
-		Allow: func(page, opener, rawURL string) bool { return m.jarAllows(scope, page, opener, rawURL) },
+		Allow: func(owners []string, rawURL string) bool { return m.jarAllows(scope, owners, rawURL) },
 	})
 	if err != nil {
 		return nil, err

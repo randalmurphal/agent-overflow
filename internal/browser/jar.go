@@ -28,8 +28,8 @@ import (
 //
 // The jar is only the engine's storage partition. Authority stays with the
 // page's workspace: navigation and file permissions are the page's own
-// Access (pageHooks.Allow, and for a popup before adoption its opener's:
-// jarAllows), and download accounting is per workspace (workspaceAuthority). jarForLocked is the one place a thread and its
+// Access (pageHooks.Allow, and for a frame or popup the profile's policy
+// sees, its owning page's or opener's: jarAllows), and download accounting is per workspace (workspaceAuthority). jarForLocked is the one place a thread and its
 // setting become a jar identity; an engine receives only that identity and
 // whether the jar is ephemeral (profileOptions).
 
@@ -119,42 +119,48 @@ func (m *Manager) jarCurrentLocked(p *managedPage) bool {
 }
 
 // jarAllows is a jar profile's own navigation policy (profileOptions.Allow).
-// A jar carries site data, never authority: a request is allowed what the
-// page it belongs to may open, or for a popup the Manager has not adopted
-// yet, what its opener may, which is what the popup is allowed once adopted.
-// A request the engine names neither page for (a subframe, under the
-// headless engine's browser-wide interception) is allowed what some page of
-// the jar may open; the page's own policy, which the engine also applies,
-// still bounds it.
-func (m *Manager) jarAllows(scope *jarScope, page, opener, rawURL string) bool {
+// A jar carries site data, never authority. owners is the request's frame
+// and then the pages that opened its page, nearest first; the request is
+// allowed what the first owner that resolves to a page of the jar may open
+// (framePageLocked). So a popup the Manager has not adopted yet has its
+// opener's authority, which is what it is allowed once adopted. A request
+// none of whose owners resolves (a frame no page has reported, a popup seen
+// before its opener is known or after its opener closed) has no workspace's
+// authority: it may open what any page may, never a workspace file.
+func (m *Manager) jarAllows(scope *jarScope, owners []string, rawURL string) bool {
+	var access Access
 	m.mu.Lock()
-	var accesses []Access
-	if p := pageWithHandle(scope, page); page != "" && p != nil {
-		accesses = append(accesses, p.access)
-	} else if p := pageWithHandle(scope, opener); opener != "" && p != nil {
-		accesses = append(accesses, p.access)
-	} else {
-		seen := make(map[Access]bool)
-		add := func(p *managedPage) {
-			if !seen[p.access] {
-				seen[p.access] = true
-				accesses = append(accesses, p.access)
-			}
-		}
-		for _, p := range scope.pages {
-			add(p)
-		}
-		for p := range scope.creating {
-			add(p)
+	for _, owner := range owners {
+		if p := framePageLocked(scope, owner); p != nil {
+			access = p.access
+			break
 		}
 	}
 	m.mu.Unlock()
-	for _, access := range accesses {
-		if m.navigationAllowed(access, rawURL) {
-			return true
+	return m.navigationAllowed(access, rawURL)
+}
+
+// framePageLocked answers the page of scope, live or being created, that
+// frame belongs to, or nil. A page's main frame is its handle. The caller
+// holds m.mu.
+func framePageLocked(scope *jarScope, frame string) *managedPage {
+	if frame == "" {
+		return nil
+	}
+	owns := func(p *managedPage) bool {
+		return p.driver != nil && (p.driver.Handle() == frame || p.driver.OwnsFrame(frame))
+	}
+	for _, p := range scope.pages {
+		if owns(p) {
+			return p
 		}
 	}
-	return false
+	for p := range scope.creating {
+		if owns(p) {
+			return p
+		}
+	}
+	return nil
 }
 
 // workspaceAuthority is what a canonical workspace owns across every jar its

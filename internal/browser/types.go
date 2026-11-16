@@ -465,6 +465,10 @@ type SessionInfo struct {
 	// jarGen advances with every change of Jar; a page opened under an
 	// older generation is not admitted (jarCurrentLocked).
 	jarGen uint64
+	// jarTeardown holds the teardowns pending when Jar last changed (SetJar);
+	// no restore of the thread is admitted until all are done
+	// (jarTeardownLocked).
+	jarTeardown []<-chan struct{}
 	// privateJar is the token of the thread's live private jar, "" when it
 	// has none.
 	privateJar string

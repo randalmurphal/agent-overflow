@@ -21,9 +21,12 @@ import (
 // history, sign-ins kept in the old jar) does not come along; the pane asks
 // before it switches.
 //
-// A record's restore waits until every page the switch closed has finished
-// its teardown, its old profile's disposal included (suspendedPage.after), so
-// a restore never meets a cap that only the switch's own closing pages hold.
+// The switch's teardown barrier belongs to the thread's jar generation
+// (SessionInfo.jarTeardown): every page the thread has closing, this
+// switch's or an earlier one's, and every profile being disposed. No restore
+// of the thread is admitted until all are done (restoreAdmissionLocked), so
+// a restore, of a tab this switch suspended or one suspended before it,
+// never meets a cap only those pages hold.
 // Until then a closing page and its record are one tab: the record holds the
 // thread's slot (threadPageCountLocked), and a closed record leaves the slot
 // to its closing page.
@@ -61,10 +64,7 @@ func (m *Manager) SetJar(access Access, kind string) error {
 	}
 	info.Jar, info.jarGen, info.privateJar = kind, info.jarGen+1, ""
 	info.UpdatedAt = time.Now()
-	m.sessions[threadID] = info
 	var closes []switchClose
-	var records []*suspendedPage
-	var after []<-chan struct{}
 	for _, tab := range m.threadTabsLocked(threadID) {
 		old := tab.live
 		if old == nil {
@@ -75,12 +75,22 @@ func (m *Manager) SetJar(access Access, kind string) error {
 		rec := recordOf(old, old.cachedInfo())
 		m.suspended[old.id] = rec
 		closes = append(closes, switchClose{scope: scope, close: c})
-		records = append(records, rec)
-		after = append(after, c.done)
 	}
-	for _, rec := range records {
-		rec.after = after
+	var teardown []<-chan struct{}
+	for _, scope := range m.scopes {
+		for _, c := range scope.closing {
+			if c.p.owner == threadID {
+				teardown = append(teardown, c.done)
+			}
+		}
 	}
+	// A page whose close has left closing may still be disposing its
+	// profile, which holds a profile slot until it is done.
+	for _, done := range m.disposing {
+		teardown = append(teardown, done)
+	}
+	info.jarTeardown = teardown
+	m.sessions[threadID] = info
 	m.mu.Unlock()
 
 	err := m.persistThreads([]string{threadID})
