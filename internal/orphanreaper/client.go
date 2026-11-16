@@ -59,6 +59,10 @@ func sidecarCommand(control *os.File, grace time.Duration) *exec.Cmd {
 	cmd.Stdin = strings.NewReader(sidecarScript)
 	cmd.ExtraFiles = []*os.File{control} // lands as fd 3, which sidecarScript reads
 	cmd.Stderr = os.Stderr               // surface the sidecar's diagnostics
+	// Only PATH, which finds sleep: a shell that imports functions from its
+	// environment (bash as /bin/sh) would run an exported kill or sleep in
+	// place of the script's.
+	cmd.Env = []string{"PATH=" + os.Getenv("PATH")}
 	applySidecarProcessAttrs(cmd)
 	return cmd
 }

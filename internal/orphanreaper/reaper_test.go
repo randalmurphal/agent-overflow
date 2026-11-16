@@ -159,6 +159,40 @@ func TestSidecarKillsRealGroupsOnParentEOF(t *testing.T) {
 	}
 }
 
+// A function the user's environment exports must not stand in for the
+// script's kill: bash, which is /bin/sh on macOS and several Linux
+// distributions, imports exported functions at startup.
+func TestSidecarIgnoresFunctionsExportedInTheEnvironment(t *testing.T) {
+	t.Setenv("BASH_FUNC_kill%%", "() { :; }")
+	victim := startGroup(t, "echo ready; exec sleep 120")
+	control, feed, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sidecar := sidecarCommand(control, time.Second)
+	if err := sidecar.Start(); err != nil {
+		t.Fatalf("start sidecar: %v", err)
+	}
+	_ = control.Close()
+	if _, err := io.WriteString(feed, formatWatch(victim.Process.Pid)); err != nil {
+		t.Fatalf("write watch: %v", err)
+	}
+	_ = feed.Close()
+	if err := sidecar.Wait(); err != nil {
+		t.Fatalf("sidecar exit: %v", err)
+	}
+	reaped := make(chan struct{})
+	go func() {
+		_ = victim.Wait()
+		close(reaped)
+	}()
+	select {
+	case <-reaped:
+	case <-time.After(5 * time.Second):
+		t.Fatal("an exported kill function replaced the sidecar's kill")
+	}
+}
+
 // startGroup starts script under sh as the leader of its own process group,
 // as the app starts the groups it watches, and returns once the script has
 // printed its first line.
