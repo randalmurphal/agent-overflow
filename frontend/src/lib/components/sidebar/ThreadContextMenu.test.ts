@@ -313,7 +313,7 @@ describe('<ThreadContextMenu> Delete honors the confirm-delete setting', () => {
     await primeSettings({ confirmDelete: false });
     let deletedId: string | null = null;
     setBindingMock('GetDeleteDependents', async () => ({ pastThreads: 0, helpers: 0, workers: 0, worktrees: [] }));
-    setBindingMock('DeleteThreadAndWorktrees', async (id: string) => { deletedId = id; });
+    setBindingMock('DeleteThreadsAndWorktrees', async (ids: string[]) => { deletedId = ids[0]; });
 
     const { getByRole, queryByRole } = renderMenu(makeThread({ id: 'ctx-off' }));
     await fireEvent.click(getByRole('menuitem', { name: 'Delete' }));
@@ -329,7 +329,7 @@ describe('<ThreadContextMenu> Delete honors the confirm-delete setting', () => {
     await primeSettings({ confirmDelete: true });
     let deletedId: string | null = null;
     setBindingMock('GetDeleteDependents', async () => ({ pastThreads: 0, helpers: 0, workers: 0, worktrees: [] }));
-    setBindingMock('DeleteThreadAndWorktrees', async (id: string) => { deletedId = id; });
+    setBindingMock('DeleteThreadsAndWorktrees', async (ids: string[]) => { deletedId = ids[0]; });
 
     const { getByRole } = renderMenu(makeThread({ id: 'ctx-on' }));
     await fireEvent.click(getByRole('menuitem', { name: 'Delete' }));
@@ -349,7 +349,7 @@ describe('<ThreadContextMenu> Delete honors the confirm-delete setting', () => {
     await primeSettings({ confirmDelete: false });
     let deleted = false;
     setBindingMock('GetDeleteDependents', async () => ({ pastThreads: 0, helpers: 0, workers: 0, worktrees: [] }));
-    setBindingMock('DeleteThreadAndWorktrees', async () => { deleted = true; });
+    setBindingMock('DeleteThreadsAndWorktrees', async () => { deleted = true; });
 
     // Two selected threads (one is the right-clicked row) flips the menu
     // into bulk mode. Bulk delete deliberately ignores confirmDelete — a
@@ -392,17 +392,19 @@ describe('<ThreadContextMenu> Delete honors the confirm-delete setting', () => {
       const counted = setBindingMock('GetDeleteDependents', read);
       const view = renderMenu(makeThread({ id: 'plain' }));
       await fireEvent.click(view.getByRole('menuitem', { name: 'Delete' }));
-      await waitFor(() => expect(counted).toHaveBeenCalledWith('plain'));
+      await waitFor(() => expect(counted).toHaveBeenCalledWith(['plain']));
       for (let i = 0; i < 5; i += 1) await Promise.resolve();
       expect(view.baseElement.querySelector('[role="alertdialog"], [role="dialog"]')?.textContent).not.toContain('worker');
       view.unmount();
     }
   });
 
-  it('sums the workers of every selected thread in the bulk delete confirm', async () => {
+  // The selection is one delete on its computer: a worker under two of the
+  // threads counts once, as the backend reads the set.
+  it('counts the workers of the selected threads as one set in the bulk delete confirm', async () => {
     await primeSettings({ confirmDelete: false });
-    setBindingMock('GetDeleteDependents', async (id: string) => ({
-      pastThreads: 0, helpers: 0, workers: id === 'thread-1' ? 1 : 2, worktrees: [],
+    const counted = setBindingMock('GetDeleteDependents', async (ids: string[]) => ({
+      pastThreads: 0, helpers: 0, workers: ids.length === 2 ? 3 : 0, worktrees: [],
     }));
     replaceAllThreads([makeThread({ id: 'thread-1' }), makeThread({ id: 'thread-2' })]);
     setThreadSelection(['thread-1', 'thread-2']);
@@ -411,6 +413,22 @@ describe('<ThreadContextMenu> Delete honors the confirm-delete setting', () => {
     await waitFor(() => expect(baseElement.querySelector('[role="alertdialog"], [role="dialog"]')?.textContent).toContain(
       'Their 3 workers are deleted with them.',
     ));
+    expect(counted).toHaveBeenCalledWith(['thread-1', 'thread-2']);
+  });
+
+  it('deletes the selection as one delete on its computer', async () => {
+    await primeSettings({ confirmDelete: false });
+    setBindingMock('GetDeleteDependents', async () => ({ pastThreads: 0, helpers: 0, workers: 0, worktrees: [] }));
+    const remove = setBindingMock('DeleteThreadsAndWorktrees', vi.fn(async () => ({})));
+    replaceAllThreads([makeThread({ id: 'thread-1' }), makeThread({ id: 'thread-2' })]);
+    setThreadSelection(['thread-1', 'thread-2']);
+    const { getByRole, baseElement } = renderMenu(makeThread({ id: 'thread-1' }));
+    await fireEvent.click(getByRole('menuitem', { name: 'Delete (2)' }));
+    const confirm = Array.from(baseElement.querySelectorAll('button:not([role="menuitem"])')).find((b) => b.textContent?.trim() === 'Delete');
+    if (!confirm) throw new Error('confirm button not rendered');
+    await fireEvent.click(confirm);
+    await waitFor(() => expect(remove).toHaveBeenCalledTimes(1));
+    expect(remove).toHaveBeenCalledWith(['thread-1', 'thread-2']);
   });
 
   it('says how many terminals deleting a thread on a worktree closes', async () => {
@@ -433,9 +451,9 @@ describe('<ThreadContextMenu> Delete honors the confirm-delete setting', () => {
     const first = makeThread({ id: 'thread-1', projectId: 'project-1', workspacePath: '/tmp/wt-a', worktreePath: '/tmp/wt-a' });
     const second = makeThread({ id: 'thread-2', projectId: 'project-1', workspacePath: '/tmp/wt-b', worktreePath: '/tmp/wt-b' });
     replaceAllThreads([first, second]);
-    setBindingMock('GetDeleteDependents', async (id: string) => ({
+    setBindingMock('GetDeleteDependents', async (ids: string[]) => ({
       pastThreads: 0, helpers: 0, workers: 0,
-      worktrees: [{ projectId: 'project-1', worktreePath: id === 'thread-1' ? '/tmp/wt-a' : '/tmp/wt-b', terminals: 1 }],
+      worktrees: ids.map((id) => ({ projectId: 'project-1', worktreePath: id === 'thread-1' ? '/tmp/wt-a' : '/tmp/wt-b', terminals: 1 })),
     }));
     setThreadSelection(['thread-1', 'thread-2']);
 
@@ -1012,7 +1030,7 @@ describe('<ThreadContextMenu> standing agent', () => {
     setBindingMock('StopSession', async () => {});
     setBindingMock('GetStandingAgent', async () => ({ id: 'agent-1', threadId: 'thread-1', home: '/config/agents/agent-1' }));
     setBindingMock('GetDeleteDependents', async () => ({ pastThreads: 2, helpers: 1, workers: 0, worktrees: [] }));
-    const remove = setBindingMock('DeleteThreadAndWorktrees', async () => {});
+    const remove = setBindingMock('DeleteThreadsAndWorktrees', async () => {});
     const { baseElement } = renderAgentMenu(makeThread({ title: 'Ops', agentId: 'agent-1' }));
     await fireEvent.click(item(baseElement, 'Delete'));
     await tick();
@@ -1027,7 +1045,7 @@ describe('<ThreadContextMenu> standing agent', () => {
     const confirm = Array.from(baseElement.querySelectorAll('button:not([role="menuitem"])')).find((b) => b.textContent?.trim() === 'Delete');
     if (!confirm) throw new Error('confirm button not rendered');
     await fireEvent.click(confirm);
-    await waitFor(() => expect(remove).toHaveBeenCalledWith('thread-1'));
+    await waitFor(() => expect(remove).toHaveBeenCalledWith(['thread-1']));
   });
 
   it("still says an assistant's threads go with it when they could not be counted", async () => {

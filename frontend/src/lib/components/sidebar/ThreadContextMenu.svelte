@@ -30,6 +30,7 @@
     copyThreadIdAction,
     copyThreadPathAction,
     deleteThreadAction,
+    deleteThreadsAction,
     forkThreadAction,
     transferThreadAction,
     markThreadUnreadAction,
@@ -232,6 +233,19 @@
    * lightweight aggregate signal via the action's own `reportError`
    * channel by counting failures.
    */
+  /**
+   * Delete the selection as one delete per computer (deleteThreadsAction),
+   * so a worktree only selected threads are on is removed once. Selection
+   * is cleared once every computer's delete went through.
+   */
+  async function deleteSelected(): Promise<void> {
+    const complete = await deleteThreadsAction(selectedThreads.slice(), (msg, err) => {
+      if (pane) pane.setGeneralError(msg, err);
+      else addErrorToast(msg, err);
+    });
+    if (complete) clearThreadSelection();
+  }
+
   async function runBulk(
     action: (perThreadCtx: ThreadActionCtx) => Promise<void>,
   ): Promise<void> {
@@ -272,8 +286,8 @@
 
   // Single-row Delete gate. Mirrors ThreadRow's `handleDelete` (the
   // terminal row-X): honor the global confirmDelete setting — off →
-  // delete immediately, on → confirm first. Bulk delete (runBulk via
-  // showBulkDeleteConfirm) keeps its own always-on confirm; a
+  // delete immediately, on → confirm first. Bulk delete (deleteSelected
+  // via showBulkDeleteConfirm) keeps its own always-on confirm; a
   // multi-thread delete is a higher-stakes action.
   /**
    * The check reads the source transcript, which on a large session is not
@@ -721,7 +735,7 @@
     showBulkDeleteConfirm = false;
     deleteTerminalsNote.clear();
     deleteNote.clear();
-    void runBulk(deleteThreadAction);
+    void deleteSelected();
   }}
   onCancel={() => {
     showBulkDeleteConfirm = false;

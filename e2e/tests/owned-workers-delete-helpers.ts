@@ -3,11 +3,13 @@
 // worker on a worktree of its own and an archived worker that owns one of
 // its own, and has placed a standalone spawn in the sidebar. Deleting the
 // thread from its sidebar row says in the confirmation that its three
-// workers go with it; the running worker's session ends, its worktree is
-// removed, all three are gone, the standalone spawn stays and runs on, and
-// nothing starts a session for a deleted thread afterwards. Screenshots are
-// dark mode.
-import { existsSync } from 'node:fs';
+// workers go with it. While the running worker's worktree has unsaved work
+// the delete is refused with nothing stopped or deleted; once it is clean
+// the running worker's session ends, its worktree is removed, all three are
+// gone, the standalone spawn stays and runs on, and nothing starts a session
+// for a deleted thread afterwards. Screenshots are dark mode.
+import { existsSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 import type { Page } from '@playwright/test';
 
@@ -109,16 +111,33 @@ export async function runOwnedWorkersDelete(harness: HarnessApp, page: Page, lay
 
   // ---- The confirmation counts the three workers; the standalone spawn
   // has a row of its own and is not one of them.
-  if (layout === 'desktop') await page.mouse.move(800, 400);
-  await chooseRowMenuItem(page, layout, lead, 'Delete');
   const dialog = page.getByRole('dialog').or(page.getByRole('alertdialog'));
-  await expect(dialog).toContainText(
-    'This will permanently delete this thread and all its messages. This action cannot be undone. Its 3 workers are deleted with it.',
-  );
-  await capture(page, `${tag}-confirm.png`, dialog);
-  const confirm = dialog.getByRole('button', { name: 'Delete', exact: true });
-  if (layout === 'desktop') await confirm.click();
-  else await confirm.tap();
+  const confirmDelete = async (shot?: string) => {
+    if (layout === 'desktop') await page.mouse.move(800, 400);
+    await chooseRowMenuItem(page, layout, lead, 'Delete');
+    await expect(dialog).toContainText(
+      'This will permanently delete this thread and all its messages. This action cannot be undone. Its 3 workers are deleted with it.',
+    );
+    if (shot) await capture(page, shot, dialog);
+    const confirm = dialog.getByRole('button', { name: 'Delete', exact: true });
+    if (layout === 'desktop') await confirm.click();
+    else await confirm.tap();
+  };
+
+  // ---- Unsaved work on the running worker's worktree refuses the whole
+  // delete: every thread stays, and the worker keeps running.
+  const unsaved = join(runningTree, 'unsaved.txt');
+  writeFileSync(unsaved, 'work in progress\n');
+  await confirmDelete(`${tag}-confirm.png`);
+  await expect(page.getByText(/cannot be removed, so nothing was deleted/).first()).toBeVisible();
+  await expect(rowIn(page, lead)).not.toHaveCount(0);
+  for (const id of [lead, running, archived, nested]) await harness.rpc('GetThread', id);
+  expect(existsSync(runningTree)).toBe(true);
+  expect(exited()).toBe(0);
+
+  // ---- Once the worktree is clean, the delete goes ahead.
+  rmSync(unsaved);
+  await confirmDelete();
 
   await expect(rowIn(page, lead)).toHaveCount(0);
   await expect.poll(exited, { timeout: 15_000 }).toBe(1);

@@ -11,7 +11,6 @@ import type { GitWorkspaceState, WorkspaceRef } from '../types/git';
 import type { Thread } from '../types/models';
 import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
 import { userFacingError } from '../utils/userFacingError';
-import { sameNormalizedPath } from '../utils/path';
 import { workspaceRefForProject } from '../utils/workspaceKey';
 
 /** What `RemoveOtherWorktree` and `GitRemoveWorktree` answer (app.WorktreeRemoval). */
@@ -99,30 +98,32 @@ export async function terminalsClosingNoteForWorktree(ws: WorkspaceRef, worktree
 /**
  * The confirmation line for deleting these threads: the delete removes the
  * worktrees it empties, the threads' own and those of the threads under
- * them, closing the terminals opened in them. Each worktree counts once,
- * as the computer the delete runs on reads it (GetDeleteDependents). A
- * thread whose count cannot be read is reported and left out.
+ * them, closing the terminals opened in them. The threads of one computer
+ * are one delete there, so each computer reads them as one set
+ * (GetDeleteDependents), which counts a worktree only they are on once. A
+ * computer whose count cannot be read is reported and left out.
  */
 export async function terminalsClosingNoteForThreadDelete(threads: readonly Thread[]): Promise<string> {
-  const counted: (WorktreeOwner & { terminals: number })[] = [];
-  const reads = threads
-    .filter((thread) => threadHasScope('git:operate', thread.id, thread.projectId))
-    .map(async (thread) => {
-      try {
-        const backend = requireEntityBackend(threadOwner(thread.id));
-        const dependents = await withBackendTarget(backend, () => GetDeleteDependents(thread.id));
-        return (dependents?.worktrees ?? []).map((worktree) => ({ backend, ...worktree }));
-      } catch (err) {
-        reportFrontendDiagnostic('worktree terminal count unavailable for a removal confirmation', userFacingError(err));
-        return [];
-      }
-    });
-  for (const worktree of (await Promise.all(reads)).flat()) {
-    if (counted.some((other) => other.backend === worktree.backend && other.projectId === worktree.projectId
-      && sameNormalizedPath(other.worktreePath, worktree.worktreePath))) continue;
-    counted.push(worktree);
+  const byBackend = new Map<BackendKey, string[]>();
+  for (const thread of threads) {
+    if (!threadHasScope('git:operate', thread.id, thread.projectId)) continue;
+    try {
+      const backend = requireEntityBackend(threadOwner(thread.id));
+      byBackend.set(backend, [...(byBackend.get(backend) ?? []), thread.id]);
+    } catch (err) {
+      reportFrontendDiagnostic('worktree terminal count unavailable for a removal confirmation', userFacingError(err));
+    }
   }
-  return terminalsClosingNote(counted.reduce((sum, worktree) => sum + worktree.terminals, 0));
+  const reads = [...byBackend].map(async ([backend, ids]) => {
+    try {
+      const dependents = await withBackendTarget(backend, () => GetDeleteDependents(ids));
+      return (dependents?.worktrees ?? []).reduce((sum, worktree) => sum + worktree.terminals, 0);
+    } catch (err) {
+      reportFrontendDiagnostic('worktree terminal count unavailable for a removal confirmation', userFacingError(err));
+      return 0;
+    }
+  });
+  return terminalsClosingNote((await Promise.all(reads)).reduce((sum, terminals) => sum + terminals, 0));
 }
 
 /**

@@ -214,31 +214,6 @@ describe('<ProjectContextMenu> delete flow', () => {
     expect(warning?.message).toContain('2 uncommitted or untracked files');
   });
 
-  it("names a worker of one of its threads, outside the project, that was not deleted", async () => {
-    setBindingMock('ProjectDeletionPreview', async () => emptyPreview());
-    setBindingMock('DeleteProject', async () => ({
-      threadIds: ['thread-1'],
-      retainedWorktrees: [],
-      workersNotDeleted: [{ threadId: 'worker-1', title: 'Parser review', error: 'thread is being transferred' }],
-    }));
-    const { baseElement } = renderMenu();
-
-    await selectDelete(baseElement);
-    await waitFor(() => {
-      expect(baseElement.textContent).toContain('Permanently delete "Repo"');
-    });
-    const confirm = Array.from(baseElement.querySelectorAll('button')).find(
-      (el) => el.textContent?.trim() === 'Delete',
-    );
-    await fireEvent.click(confirm as Element);
-
-    await waitFor(() => {
-      expect(getToasts().find((toast) => toast.type === 'warning')?.message).toBe(
-        'Deleted "Repo", but its worker "Parser review" was not deleted: Thread is being transferred.',
-      );
-    });
-  });
-
   it('stops at the preview failure instead of deleting anything', async () => {
     setBindingMock('ProjectDeletionPreview', async () => {
       throw new Error('git is unavailable');

@@ -23,8 +23,8 @@ import { threadRows } from './thread-tools-helpers.js';
 
 const SOURCE_TITLE = 'Deleting source';
 const REFUSAL = 'This thread was deleted, so it cannot be forked.';
-// methodRoutes.ts: DeleteThreadAndWorktrees, the sidebar's delete.
-const DELETE_THREAD = 3734810511;
+// methodRoutes.ts: DeleteThreadsAndWorktrees, the sidebar's delete.
+const DELETE_THREAD = 4153346978;
 
 interface ThreadEvent {
   action: string;
@@ -64,7 +64,7 @@ test('a fork from a thread whose delete has begun is refused and creates no thre
     const server = socket.connectToServer();
     socket.onMessage((message) => {
       const frame = JSON.parse(String(message));
-      if (frame.type === 'rpc' && frame.methodId === DELETE_THREAD && frame.params?.[0] === sourceId) {
+      if (frame.type === 'rpc' && frame.methodId === DELETE_THREAD && frame.params?.[0]?.[0] === sourceId) {
         deleteCallId = frame.id;
         release = () => {
           release = undefined;

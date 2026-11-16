@@ -42,32 +42,30 @@ describe('terminalsClosingNote', () => {
 
 describe('terminalsClosingNoteForThreadDelete', () => {
   // The delete removes the worktrees it empties, the threads' own and their
-  // workers', as the backend reads them; each counts once.
-  it('counts each worktree the delete empties once', async () => {
-    const read = setBindingMock('GetDeleteDependents', async (id: string) => ({
+  // workers'. The threads of one computer are one delete there, read as one
+  // set, which counts each worktree once.
+  it('reads the threads of one computer as one set', async () => {
+    const read = setBindingMock('GetDeleteDependents', async () => ({
       pastThreads: 0, helpers: 0, workers: 1,
-      worktrees: id === 't1'
-        ? [{ projectId: 'p', worktreePath: '/wt/a', terminals: 2 }, { projectId: 'p', worktreePath: '/wt/worker', terminals: 1 }]
-        : [{ projectId: 'p', worktreePath: '/wt/a', terminals: 2 }],
+      worktrees: [{ projectId: 'p', worktreePath: '/wt/a', terminals: 2 }, { projectId: 'p', worktreePath: '/wt/worker', terminals: 1 }],
     }));
     const note = await terminalsClosingNoteForThreadDelete([
       makeThread({ id: 't1', workspacePath: '/wt/a', worktreePath: '/wt/a' }),
       makeThread({ id: 't2', workspacePath: '/repo', worktreePath: '' }),
     ]);
     expect(note).toBe('3 terminals will close.');
-    expect(read.mock.calls).toEqual([['t1'], ['t2']]);
+    expect(read.mock.calls).toEqual([[['t1', 't2']]]);
   });
 
   it('reports a count it cannot read and leaves it out', async () => {
-    setBindingMock('GetDeleteDependents', async (id: string) => {
-      if (id === 't1') throw new Error('database is locked');
-      return { pastThreads: 0, helpers: 0, workers: 0, worktrees: [{ projectId: 'p', worktreePath: '/wt/b', terminals: 1 }] };
+    setBindingMock('GetDeleteDependents', async () => {
+      throw new Error('database is locked');
     });
     const note = await terminalsClosingNoteForThreadDelete([
       makeThread({ id: 't1', workspacePath: '/wt/a', worktreePath: '/wt/a' }),
       makeThread({ id: 't2', workspacePath: '/wt/b', worktreePath: '/wt/b' }),
     ]);
-    expect(note).toBe('1 terminal will close.');
+    expect(note).toBe('');
     expect(reported).toHaveBeenCalledTimes(1);
   });
 });

@@ -3,6 +3,7 @@ import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-
 import {
   archiveThreadAction,
   deleteThreadAction,
+  deleteThreadsAction,
   forkThreadAction,
   nextAssistantThreadAction,
   pinThreadAction,
@@ -33,6 +34,7 @@ import { loadSettingsFixture as loadSettings } from '../../../test/helpers/setti
 import { makeSettings } from '../../../test/helpers/settings';
 import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
 import { getPinnedBackend } from '../../transport/backends';
+import { HOME_BACKEND } from '../../transport/backendKey';
 import { __resetEntityIndexForTest, noteThread } from '../../transport/entityIndex';
 
 function makeCtx(thread: Partial<Thread>): ThreadActionCtx {
@@ -201,20 +203,20 @@ describe('deleteThreadAction', () => {
     const removed = setBindingMock('RemoveOtherWorktree', vi.fn(async () => ({ workspace: null, reattached: [] })));
     const preview = setBindingMock('GetDeleteDependents', vi.fn(async () => ({ pastThreads: 0, helpers: 0, workers: 0, worktrees: [] })));
     const plain = setBindingMock('DeleteThread', vi.fn(async () => ({})));
-    const deleted = setBindingMock('DeleteThreadAndWorktrees', vi.fn(async () => ({})));
+    const deleted = setBindingMock('DeleteThreadsAndWorktrees', vi.fn(async () => ({})));
     prependThread(makeCtx({ projectId: 'project-1', workspacePath: own, worktreePath: own }).thread);
     const ctx = makeCtx({ projectId: 'project-1', workspacePath: own, worktreePath: own });
 
     await deleteThreadAction(ctx);
 
     expect(ctx.reportError).not.toHaveBeenCalled();
-    expect(deleted.mock.calls).toEqual([['thread-1']]);
+    expect(deleted.mock.calls).toEqual([[['thread-1']]]);
     expect(getThreadById('thread-1')).toBeUndefined();
     for (const call of [stopped, removed, preview, plain]) expect(call).not.toHaveBeenCalled();
   });
 
   it('keeps the row and says why when the delete is refused', async () => {
-    setBindingMock('DeleteThreadAndWorktrees', async () => {
+    setBindingMock('DeleteThreadsAndWorktrees', async () => {
       throw new Error('worktree /tmp/work-wt/own has unsaved work (dirty=true unpushed=0 orphan=0); pass force to discard');
     });
     prependThread(makeCtx({}).thread);
@@ -226,11 +228,14 @@ describe('deleteThreadAction', () => {
     expect((ctx.reportError as ReturnType<typeof vi.fn>).mock.calls[0][0]).toMatch(/unsaved work/i);
   });
 
-  it('treats a delete that left a worker as deleted, names the worker and deletes it again', async () => {
-    const remove = vi.fn(async (id: string) => (id === 'thread-1'
-      ? { workersNotDeleted: [{ threadId: 'worker-1', title: 'Parser review', error: 'worktree /tmp/wt/parser has unsaved work' }] }
+  // A thread under it whose destroy failed keeps itself and the thread
+  // hidden and unfinished; deleting the thread again finishes both.
+  it('names a thread under it that was not deleted and deletes the thread again', async () => {
+    let calls = 0;
+    const remove = vi.fn(async () => (++calls === 1
+      ? { workersNotDeleted: [{ threadId: 'worker-1', title: 'Parser review', error: 'the remote computer did not answer' }] }
       : {}));
-    setBindingMock('DeleteThreadAndWorktrees', remove);
+    setBindingMock('DeleteThreadsAndWorktrees', remove);
     prependThread(makeCtx({}).thread);
     const ctx = makeCtx({});
 
@@ -240,11 +245,55 @@ describe('deleteThreadAction', () => {
     expect(getThreadById('thread-1')).toBeUndefined();
     const [toast] = getToasts();
     expect(toast.type).toBe('warning');
-    expect(toast.message).toBe('Deleted "Source thread", but its worker "Parser review" was not deleted: Worktree /tmp/wt/parser has unsaved work.');
+    expect(toast.message).toBe('"Source thread" is not fully deleted: the thread "Parser review" under it was not deleted: The remote computer did not answer.');
     expect(toast.action?.label).toBe('Delete again');
     toast.action?.run();
-    await vi.waitFor(() => expect(remove).toHaveBeenCalledWith('worker-1'));
+    await vi.waitFor(() => expect(remove).toHaveBeenCalledTimes(2));
+    expect(remove.mock.calls[1]).toEqual([['thread-1']]);
     expect(getToasts()).toHaveLength(1);
+  });
+
+  it('names a worktree the delete left on disk', async () => {
+    setBindingMock('DeleteThreadsAndWorktrees', async () => ({
+      retainedWorktrees: [{ path: '/tmp/wt/parser', reason: 'worktree /tmp/wt/parser has unsaved work' }],
+    }));
+    prependThread(makeCtx({}).thread);
+    const ctx = makeCtx({});
+
+    await deleteThreadAction(ctx);
+
+    expect(getThreadById('thread-1')).toBeUndefined();
+    const [toast] = getToasts();
+    expect(toast.type).toBe('warning');
+    expect(toast.message).toBe('Deleted "Source thread". 1 checkout left in place: /tmp/wt/parser (worktree /tmp/wt/parser has unsaved work)');
+  });
+
+  // Threads selected together are one delete per computer they are on.
+  it('deletes a selection as one call per computer', async () => {
+    stageBackend();
+    try {
+      noteThread('thread-l1', 'laptop');
+      noteThread('thread-l2', 'laptop');
+      noteThread('thread-h', HOME_BACKEND);
+      const calls: Array<{ backend: string | null; ids: string[] }> = [];
+      setBindingMock('DeleteThreadsAndWorktrees', async (ids: string[]) => {
+        calls.push({ backend: getPinnedBackend(), ids });
+        return {};
+      });
+      const reportError = vi.fn();
+      const complete = await deleteThreadsAction([
+        { id: 'thread-l1', title: 'One' }, { id: 'thread-h', title: 'Here' }, { id: 'thread-l2', title: 'Two' },
+      ], reportError);
+
+      expect(complete).toBe(true);
+      expect(reportError).not.toHaveBeenCalled();
+      expect(calls).toHaveLength(2);
+      expect(calls.find((call) => call.backend === 'laptop')?.ids).toEqual(['thread-l1', 'thread-l2']);
+      expect(calls.find((call) => call.backend !== 'laptop')?.ids).toEqual(['thread-h']);
+    } finally {
+      resetStagedBackends();
+      __resetEntityIndexForTest();
+    }
   });
 
   it('deletes on the computer the thread lives on', async () => {
@@ -252,7 +301,7 @@ describe('deleteThreadAction', () => {
     try {
       noteThread('thread-1', 'laptop');
       const targets: Array<string | null> = [];
-      setBindingMock('DeleteThreadAndWorktrees', async () => {
+      setBindingMock('DeleteThreadsAndWorktrees', async () => {
         targets.push(getPinnedBackend());
         return {};
       });

@@ -43,7 +43,7 @@ export {
   ArchiveThread,
   UnarchiveThread,
   DeleteThread,
-  DeleteThreadAndWorktrees,
+  DeleteThreadsAndWorktrees,
   ForkThread,
   ForkThreadFromMessage,
   ForkSideChat,
