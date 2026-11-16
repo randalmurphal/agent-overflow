@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import type { Thread, ThreadGroup } from '../types/models';
 import { buildSidebarThreadTree, sidebarTreeNodeId } from './sidebarTree';
-import { flattenSidebarThreadTree, previewSidebarThreads, sameSidebarVisibleNodes } from './sidebarTreeView';
+import { previewSidebarThreads, sameSidebarVisibleRows } from './sidebarTreeView';
+import { flattenTreeNodes } from '../../test/helpers/sidebarTree';
 
 const group: ThreadGroup = { id: 'group', projectId: 'project', name: 'Work', createdAt: 0, updatedAt: 0 };
 
@@ -20,7 +21,7 @@ const threads = [
 ];
 
 function flatten(activeThreadId: string | null, collapsed = true, expandedThreadIds = new Set<string>()) {
-  return flattenSidebarThreadTree({
+  return flattenTreeNodes({
     nodes: buildSidebarThreadTree({ threads, groups: [group] }),
     expandedThreadIds,
     collapsedGroupIds: new Set(collapsed ? [group.id] : []),
@@ -78,7 +79,7 @@ describe('collapsed sidebar focus projection', () => {
       threads: [thread('root'), thread('mid', { parentThreadId: 'root' }), thread('leaf', { parentThreadId: 'mid' })],
       maxDepth: 3,
     });
-    const flat = flattenSidebarThreadTree({ nodes, expandedThreadIds: new Set(), activeThreadId: 'leaf' });
+    const flat = flattenTreeNodes({ nodes, expandedThreadIds: new Set(), activeThreadId: 'leaf' });
     expect(flat.map(sidebarTreeNodeId)).toEqual(['root', 'leaf']);
     expect(flat[1]).toMatchObject({ depth: 1, ownerGroupId: null });
   });
@@ -87,7 +88,7 @@ describe('collapsed sidebar focus projection', () => {
     const nodes = buildSidebarThreadTree({
       threads, groups: [group], liveStatusOf: id => id === 'child' ? 'running' : 'idle',
     });
-    const flat = flattenSidebarThreadTree({
+    const flat = flattenTreeNodes({
       nodes, expandedThreadIds: new Set(), collapsedGroupIds: new Set(['group']), activeThreadId: 'parent',
     });
     expect(flat[1].displayLiveStatus).toBe('idle');
@@ -104,8 +105,8 @@ describe('collapsed sidebar focus projection', () => {
   });
 
   it('updates the identity cutoff when focus changes and retains it for unchanged focus', () => {
-    expect(sameSidebarVisibleNodes(flatten('child'), flatten('sibling'))).toBe(false);
-    expect(sameSidebarVisibleNodes(flatten('child'), flatten('child'))).toBe(true);
-    expect(sameSidebarVisibleNodes(flatten('child'), flatten(null))).toBe(false);
+    expect(sameSidebarVisibleRows(flatten('child'), flatten('sibling'))).toBe(false);
+    expect(sameSidebarVisibleRows(flatten('child'), flatten('child'))).toBe(true);
+    expect(sameSidebarVisibleRows(flatten('child'), flatten(null))).toBe(false);
   });
 });

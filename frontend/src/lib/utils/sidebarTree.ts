@@ -9,21 +9,23 @@
 //   0. Drafts, newest first.
 //   1. Groups, a section of their own at the top level. Groups are not
 //      pinnable; within the section they take the normal comparator below.
-//   2. Pinned front-burner block, then pinned back-burner block.
-//      Within each block: the normal status/activity/id comparator below.
-//      A group's members pin the same way inside their group.
-//   3. needs-attention (error / pending-approval / awaiting-input / plan-ready / interrupted).
-//   4. running (any mode — Working / Planning / Designing / Discussing)
-//      and completed (idle + unread).
-//   5. paused (reserved for future; no current source emits it).
-//   6. idle + read (no pill).
-// Within each tier (after pinned): latestActivityAt desc, then thread.id
-// localeCompare for stability.
+//   2. Pinned front-burner block, then pinned back-burner block, then
+//      unpinned rows. Every block, a group's members included, orders by
+//      the status tiers below.
+// Status tiers (a pin is not one):
+//   a. needs-attention (error / pending-approval / awaiting-input /
+//      setup-failed / plan-ready / interrupted).
+//   b. running (any mode — Working / Planning / Designing / Discussing).
+//   c. completed (idle + unread). Below running because opening the row
+//      reads it and drops it to idle, and that move must not cross the
+//      running rows.
+//   d. idle + read (no pill).
+// Within each tier: latestActivityAt desc, then id for stability.
 //
 // Discussion children bubble:
-//   - displayStatus: a child's higher-priority status is shown on the
-//     parent row UNLESS the parent itself sits in a more important tier
-//     than the child.
+//   - displayStatus: the parent shows its most important child's status
+//     unless its own ranks strictly higher, by tier and then by live
+//     status.
 //   - latestActivityAt: parent's effective activity is the max of its own
 //     `updatedAt` and any descendant's latestActivityAt, so a parent
 //     with a freshly-active child surfaces in the sort even if its own
@@ -41,31 +43,24 @@ import { isHiddenThreadMode } from './threadModes';
 
 export const DEFAULT_SIDEBAR_TREE_MAX_DEPTH = 2;
 
+/** A row's status tier. A pin orders rows separately and is never a tier. */
 export type ThreadStatusSortGroup =
-  | 'pinned'
   | 'needs-attention'
   | 'running'
-  | 'paused'
   | 'completed'
   | 'idle';
 
-export type NormalThreadStatusSortGroup = Exclude<ThreadStatusSortGroup, 'pinned'>;
 export type SidebarPinGroup = 'front' | 'back' | null;
 
-// Running and completed rows share the non-blocking activity tier so
-// their relative order stays activity-driven. Plain idle/read rows sit
-// below them because they have no status indicator worth surfacing.
-export const SORT_GROUP_PRIORITY: Record<ThreadStatusSortGroup, number> = {
-  pinned: 3,
-  'needs-attention': 2,
-  running: 1,
-  paused: 1,
+const SORT_GROUP_PRIORITY: Record<ThreadStatusSortGroup, number> = {
+  'needs-attention': 3,
+  running: 2,
   completed: 1,
   idle: 0,
 };
 
-// Within-group ordering of live statuses. Used by displayStatus bubbling
-// to pick the most important child status, NOT by the tree compare
+// Ordering of live statuses inside one tier. Used by displayStatus
+// bubbling to pick the most important status, NOT by the tree compare
 // (which collapses all needs-attention rows into one tier and sorts by
 // activity timestamp). Higher number = higher priority.
 const STATUS_PRIORITY: Record<ThreadLiveStatus, number> = {
@@ -107,9 +102,8 @@ export interface SidebarTreeNodeBase {
    * Designing / Planning) read accurately.
    */
   displayStatus: ThreadStatusPill | null;
+  /** Status tier of the displayed status; orders rows inside a pin block. */
   sortGroup: ThreadStatusSortGroup;
-  /** Status tier without the pin override; orders rows inside a pin block. */
-  normalSortGroup: NormalThreadStatusSortGroup;
   /** Max(own updatedAt, max(child.latestActivityAt)). Unix ms. */
   latestActivityAt: number;
 }
@@ -159,19 +153,15 @@ export interface BuildSidebarThreadTreeInput {
   maxDepth?: number;
 }
 
-/**
- * statusPriority — null collapses to 0 (lowest) so an idle+read thread
- * loses the bubble check against any child that has any pill. Exported for
- * `sidebarTreeView.ts`'s rollup, which ranks the same statuses.
- */
-export function statusPriority(status: ThreadLiveStatus): number {
+/** A missing entry collapses to 0, the rank of idle. */
+function statusPriority(status: ThreadLiveStatus): number {
   return STATUS_PRIORITY[status] ?? 0;
 }
 
-function getNormalStatusSortGroup(
+function getStatusSortGroup(
   liveStatus: ThreadLiveStatus,
   status: ThreadStatusPill | null,
-): NormalThreadStatusSortGroup {
+): ThreadStatusSortGroup {
   switch (liveStatus) {
     case 'error':
     case 'pending-approval':
@@ -190,15 +180,6 @@ function getNormalStatusSortGroup(
       // it visible without claiming attention it hasn't earned.
       return 'idle';
   }
-}
-
-function getStatusSortGroup(
-  thread: Thread,
-  liveStatus: ThreadLiveStatus,
-  status: ThreadStatusPill | null,
-): ThreadStatusSortGroup {
-  if (thread.pinnedAt != null) return 'pinned';
-  return getNormalStatusSortGroup(liveStatus, status);
 }
 
 export function sidebarPinGroup(thread: Pick<Thread, 'pinnedAt' | 'pinGroup'>): SidebarPinGroup {
@@ -244,49 +225,39 @@ function resolveLatestActivityAt(
   return latest;
 }
 
+type RankedStatus = Pick<SidebarTreeNodeBase, 'sortGroup' | 'displayLiveStatus'>;
+
 /**
- * Pick the displayed status for a parent row given its own status and
- * its children. The parent keeps
- * its own status when it has a strictly higher group priority AND it's
- * not in passive rows (so an idle/read parent surfaces a "running"
- * child instead of dominating it). Otherwise the most-important child
- * status wins, including the contributing child's pill verbatim.
+ * Whether `a`'s displayed status ranks strictly above `b`'s: by tier,
+ * then by live-status priority inside the tier. The one rank for status
+ * bubbling and for the rollup in `sidebarTreeView.ts`. Pins play no part.
+ */
+export function displayStatusOutranks(a: RankedStatus, b: RankedStatus): boolean {
+  const tierCmp = SORT_GROUP_PRIORITY[a.sortGroup] - SORT_GROUP_PRIORITY[b.sortGroup];
+  if (tierCmp !== 0) return tierCmp > 0;
+  return statusPriority(a.displayLiveStatus) > statusPriority(b.displayLiveStatus);
+}
+
+/**
+ * Pick the displayed status for a parent row. The parent keeps its own
+ * status only when it outranks its top child; otherwise the child's
+ * status shows, its pill reused verbatim so mode-derived labels read
+ * accurately. A pinned idle member therefore never masks a running one.
  */
 function resolveDisplay(
   ownLiveStatus: ThreadLiveStatus,
   ownPill: ThreadStatusPill | null,
-  ownGroup: ThreadStatusSortGroup,
   children: readonly SidebarTreeNode[],
 ): { displayLiveStatus: ThreadLiveStatus; displayStatus: ThreadStatusPill | null } {
-  if (children.length === 0) {
-    return { displayLiveStatus: ownLiveStatus, displayStatus: ownPill };
-  }
-
-  // Single-pass max — highest status tier first, then highest live-status
-  // priority within that tier, without allocating a sorted copy. The tier
-  // ignores pins: a pinned idle group member must not mask a running one.
-  let topChild: SidebarTreeNode | null = null;
-  let topGroupPriority = -1;
-  let topPriority = -1;
+  let top: SidebarTreeNode | null = null;
   for (const child of children) {
-    const groupPriority = SORT_GROUP_PRIORITY[child.normalSortGroup];
-    const priority = statusPriority(child.displayLiveStatus);
-    if (groupPriority > topGroupPriority || (groupPriority === topGroupPriority && priority > topPriority)) {
-      topGroupPriority = groupPriority;
-      topPriority = priority;
-      topChild = child;
-    }
+    if (top === null || displayStatusOutranks(child, top)) top = child;
   }
-  if (!topChild) {
+  const own = { sortGroup: getStatusSortGroup(ownLiveStatus, ownPill), displayLiveStatus: ownLiveStatus };
+  if (top === null || displayStatusOutranks(own, top)) {
     return { displayLiveStatus: ownLiveStatus, displayStatus: ownPill };
   }
-
-  const childGroup = topChild.normalSortGroup;
-  const ownIsPassive = ownGroup === 'paused' || ownGroup === 'completed' || ownGroup === 'idle';
-  if (SORT_GROUP_PRIORITY[ownGroup] > SORT_GROUP_PRIORITY[childGroup] && !ownIsPassive) {
-    return { displayLiveStatus: ownLiveStatus, displayStatus: ownPill };
-  }
-  return { displayLiveStatus: topChild.displayLiveStatus, displayStatus: topChild.displayStatus };
+  return { displayLiveStatus: top.displayLiveStatus, displayStatus: top.displayStatus };
 }
 
 /**
@@ -322,9 +293,7 @@ function compareTreeNodes(left: SidebarTreeNode, right: SidebarTreeNode): number
     return leftPinGroup === 'front' ? -1 : 1;
   }
 
-  const leftSortGroup = leftPinGroup === null ? left.sortGroup : left.normalSortGroup;
-  const rightSortGroup = rightPinGroup === null ? right.sortGroup : right.normalSortGroup;
-  const groupCmp = SORT_GROUP_PRIORITY[rightSortGroup] - SORT_GROUP_PRIORITY[leftSortGroup];
+  const groupCmp = SORT_GROUP_PRIORITY[right.sortGroup] - SORT_GROUP_PRIORITY[left.sortGroup];
   if (groupCmp !== 0) return groupCmp;
 
   if (right.latestActivityAt !== left.latestActivityAt) {
@@ -390,8 +359,7 @@ export function buildSidebarThreadTree(input: BuildSidebarThreadTreeInput): Side
     const resolvedPill = resolveThreadStatusPill(thread, ownLiveStatus);
     const unreachableMachine = input.unreachableMachineOf?.(thread) ?? null;
     const ownPill = unreachableMachine !== null ? lastKnownThreadStatusPill(resolvedPill, unreachableMachine) : resolvedPill;
-    const ownGroup = getStatusSortGroup(thread, ownLiveStatus, ownPill);
-    const display = resolveDisplay(ownLiveStatus, ownPill, ownGroup, children);
+    const display = resolveDisplay(ownLiveStatus, ownPill, children);
     const latestActivityAt = resolveLatestActivityAt(
       input.activityOf ? input.activityOf(thread) : (thread.updatedAt ?? 0),
       children,
@@ -406,17 +374,15 @@ export function buildSidebarThreadTree(input: BuildSidebarThreadTreeInput): Side
       ownStatus: ownPill,
       displayLiveStatus: display.displayLiveStatus,
       displayStatus: display.displayStatus,
-      sortGroup: getStatusSortGroup(thread, display.displayLiveStatus, display.displayStatus),
-      normalSortGroup: getNormalStatusSortGroup(display.displayLiveStatus, display.displayStatus),
+      sortGroup: getStatusSortGroup(display.displayLiveStatus, display.displayStatus),
       latestActivityAt,
     };
   };
 
   const buildGroupNode = (group: ThreadGroup, children: SidebarTreeNode[]): SidebarTreeNode => {
     // A group has no status of its own, so the display resolve always
-    // yields the most important member status (an 'idle' own group is
-    // passive, so no member is ever suppressed).
-    const display = resolveDisplay('idle', null, 'idle', children);
+    // yields the most important member status.
+    const display = resolveDisplay('idle', null, children);
     return {
       kind: 'group',
       group,
@@ -426,8 +392,7 @@ export function buildSidebarThreadTree(input: BuildSidebarThreadTreeInput): Side
       ownStatus: null,
       displayLiveStatus: display.displayLiveStatus,
       displayStatus: display.displayStatus,
-      sortGroup: getNormalStatusSortGroup(display.displayLiveStatus, display.displayStatus),
-      normalSortGroup: getNormalStatusSortGroup(display.displayLiveStatus, display.displayStatus),
+      sortGroup: getStatusSortGroup(display.displayLiveStatus, display.displayStatus),
       // An empty group has nothing to bubble, so it sorts on its own last
       // write — which is when it was created or renamed.
       latestActivityAt: resolveLatestActivityAt(

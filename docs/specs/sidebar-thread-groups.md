@@ -51,6 +51,13 @@ row.
   for unpinned rows. Drafts and threads open in panes retain their
   visibility exceptions. A group takes one slot; its members take none
   (same as discussion children).
+- **Group preview cut.** An expanded group cuts its members by the same
+  rules against its own limit: the default preview, pinned and open
+  members always visible, then "Show N More" and "Show Less" under the
+  last member, with the hidden members' status dot. The limit persists
+  per group in the project limits map (`sidebar:threadListVisibleLimits`),
+  keyed by group id. The footer sits inside the group's rail and takes a
+  thread drop like a member row.
 - **No nesting.** No groups inside groups. A discussion tree moves as a
   unit: grouping a parent brings its children; a child cannot be grouped
   on its own. Render depth inside a group goes to three (group, parent,
@@ -307,7 +314,9 @@ Names are trimmed and non-empty; a blank rename is rejected.
   dividers for every combination of sections, none inside a group; pin
   targets, including a collapsed group's preview row; groups stay above
   the preview cut; a group takes one preview slot and its
-  members none; collapsed and expanded flatten shapes; search by group
+  members none; an expanded group cuts its members at its own limit,
+  keeps pinned and open members, and ends with a footer only when it
+  hid members or can show less; collapsed and expanded flatten shapes; search by group
   name pulls all members; focused descendants remain visible under
   collapsed groups and discussions;
   `sameSidebarVisibleNodes` distinguishes a group from a thread node at
