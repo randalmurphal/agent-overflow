@@ -563,7 +563,7 @@ type launcherApp struct {
 	// to the launcher directly (handlePaneGeometryMessage). It exists before
 	// the browser host and is safe from any goroutine.
 	paneGeometry *webview2host.GeometryMailbox
-	// chords routes Ctrl+R to the SPA while its browser pane is focused
+	// chords routes Ctrl+R to the SPA while it asks for the chord
 	// (uikeys.PageChords), reported over the same raw message channel.
 	chords *uikeys.PageChords
 

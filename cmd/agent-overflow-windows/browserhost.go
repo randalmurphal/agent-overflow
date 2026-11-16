@@ -176,8 +176,8 @@ func (a *launcherApp) ensureBrowserHost(bs *wsllauncher.Bootstrap) (*webview2hos
 	return host, nil
 }
 
-// handleRawMessage is Options.RawMessageHandler: the SPA's browser pane
-// focus reports (uikeys.PageChords) and its pane geometry.
+// handleRawMessage is Options.RawMessageHandler: the SPA's reload chord
+// reports (uikeys.PageChords) and its pane geometry.
 func (a *launcherApp) handleRawMessage(window application.Window, message string, origin *application.OriginInfo) {
 	if !strings.HasPrefix(message, uikeys.MessagePrefix) {
 		a.handlePaneGeometryMessage(window, message, origin)

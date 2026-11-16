@@ -62,8 +62,11 @@
     restorePickerFocus(reason, { triggerEl: moreAnchor?.querySelector<HTMLElement>('button') ?? undefined });
   }
 
+  // The chosen row is removed with the menu, so focus goes back to More
+  // before the action runs: a dialog the action opens returns focus there.
   function pick(action: () => void): void {
     moreOpen = false;
+    moreAnchor?.querySelector<HTMLElement>('button')?.focus();
     action();
   }
 

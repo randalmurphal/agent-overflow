@@ -9,29 +9,32 @@ import (
 )
 
 // The window binds Ctrl/Cmd+R to reloading the app before the SPA sees the
-// key. While the SPA's browser pane is its focused pane the same chord means
-// "reload the page", as it does inside the native page (the engine claims it
-// there and the SPA replays it). PageChords makes the window hand the chord to
-// the SPA exactly then:
+// key. While the SPA's browser pane is its focused pane and the SPA's
+// effective keybindings run a command for that chord there (by default
+// "reload the page", as inside the native page, where the engine claims the
+// chord and the SPA replays it), the window hands the chord to the SPA
+// instead. PageChords makes the window do that exactly then:
 //
 //   - The window advertises the capability to each document it loads
 //     (CapabilityScript, on the runtime-ready event) and forgets the previous
 //     document's state.
-//   - The SPA posts FocusMessage(true|false) over the webview's raw message
-//     channel as its browser pane gains and loses focus.
-//   - While the last report says focused, Ctrl/Cmd+R runs DispatchScript in
-//     the page instead of reloading. A SPA that finds its browser pane no
-//     longer focused posts ReloadAppMessage, and the window reloads as the
-//     binding would have. Anything else reloads at once, as before.
+//   - The SPA posts RouteMessage(true|false) over the webview's raw message
+//     channel as that answer changes. The SPA owns the effective bindings
+//     and their `when` contexts, so the decision is its own.
+//   - While the last report says route, Ctrl/Cmd+R runs DispatchScript in the
+//     page instead of reloading; the SPA replays it through its keybinding
+//     dispatcher. A chord nothing runs comes back as ReloadAppMessage, and
+//     the window reloads as the binding would have. Anything else reloads at
+//     once, as before.
 //
 // Ctrl/Cmd+Shift+R always reloads the app, so a page that stopped answering
 // can still be reloaded with the browser pane focused.
 type PageChords struct {
-	browserFocused atomic.Bool
-	reload         func(application.Window)
+	route  atomic.Bool
+	reload func(application.Window)
 }
 
-// NewPageChords returns a window's chord routing, browser pane unfocused.
+// NewPageChords returns a window's chord routing, not routing.
 func NewPageChords() *PageChords { return &PageChords{} }
 
 const (
@@ -45,7 +48,7 @@ const (
 	// HandlerGlobal is the SPA's function DispatchScript calls.
 	HandlerGlobal = "__aoShellChord"
 
-	focusMessage     = MessagePrefix + "browser-pane-focus:"
+	routeMessage     = MessagePrefix + "route-reload:"
 	ReloadAppMessage = MessagePrefix + "reload-app"
 )
 
@@ -63,13 +66,13 @@ const DispatchScript = `(function () {
   if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.external) { window.webkit.messageHandlers.external.postMessage(m); }
 })();`
 
-// FocusMessage is the message the SPA posts as its browser pane gains or
-// loses focus.
-func FocusMessage(focused bool) string {
-	if focused {
-		return focusMessage + "1"
+// RouteMessage is the message the SPA posts as it starts or stops taking
+// the reload chord.
+func RouteMessage(route bool) string {
+	if route {
+		return routeMessage + "1"
 	}
-	return focusMessage + "0"
+	return routeMessage + "0"
 }
 
 // Bindings returns bindings with its Ctrl/Cmd+R routed through c. The
@@ -81,7 +84,7 @@ func (c *PageChords) Bindings(bindings map[string]func(application.Window)) map[
 	}
 	c.reload = reload
 	bindings["CmdOrCtrl+r"] = func(window application.Window) {
-		if c.browserFocused.Load() {
+		if c.route.Load() {
 			window.ExecJS(DispatchScript)
 			return
 		}
@@ -90,10 +93,10 @@ func (c *PageChords) Bindings(bindings map[string]func(application.Window)) map[
 	return bindings
 }
 
-// DocumentLoaded forgets the previous document's focus and advertises the
+// DocumentLoaded forgets the previous document's report and advertises the
 // capability to the new one. Call it on each runtime-ready event.
 func (c *PageChords) DocumentLoaded(window application.Window) {
-	c.browserFocused.Store(false)
+	c.route.Store(false)
 	window.ExecJS(CapabilityScript)
 }
 
@@ -105,12 +108,12 @@ func (c *PageChords) HandleMessage(window application.Window, message string) bo
 		return false
 	}
 	switch message {
-	case FocusMessage(true):
-		c.browserFocused.Store(true)
-	case FocusMessage(false):
-		c.browserFocused.Store(false)
+	case RouteMessage(true):
+		c.route.Store(true)
+	case RouteMessage(false):
+		c.route.Store(false)
 	case ReloadAppMessage:
-		c.browserFocused.Store(false)
+		c.route.Store(false)
 		if c.reload != nil {
 			c.reload(window)
 		}
@@ -118,8 +121,8 @@ func (c *PageChords) HandleMessage(window application.Window, message string) bo
 	return true
 }
 
-// BrowserFocused reports the SPA's last focus report.
-func (c *PageChords) BrowserFocused() bool { return c.browserFocused.Load() }
+// Routing reports whether the SPA's last report asked for the chord.
+func (c *PageChords) Routing() bool { return c.route.Load() }
 
 // TrustedPage reports whether a raw message came from a document on the
 // page URL's origin (scheme and host:port), and its top-level document when

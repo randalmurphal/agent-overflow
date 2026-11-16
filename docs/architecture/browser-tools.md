@@ -194,9 +194,12 @@ behave as a desktop browser's:
   its own order and selection (`StepCompanionPage`), so presses faster than
   the state push each move one tab.
 - The desktop and Windows launcher windows bind `mod+r` to reloading the app
-  before the SPA sees the key. The SPA reports its browser pane focus over
-  the webview's raw message channel, and while it is focused the window
-  hands `mod+r` to the SPA, which runs `browser.reload` or hands it back
+  before the SPA sees the key. While the browser pane is focused and the
+  effective keybindings run a command for `mod+r` there, the SPA asks over
+  the webview's raw message channel for the chord. The window then hands it
+  over, and the SPA replays it as a keydown through the keybinding
+  dispatcher, as it does a chord claimed in the page; a chord nothing runs
+  goes back and reloads the app
   (`internal/uikeys/pagechords.go`, `frontend/src/lib/native/shellChords.svelte.ts`).
   `mod+shift+r` always reloads the app. The `--connect` window hosts no
   native page and keeps the plain binding.

@@ -9,7 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -39,22 +39,19 @@ var errNavigationAborted = errors.New("browser: navigation aborted")
 // the navigation holds the page (runUserNavigation), so a stop marks the
 // navigation it actually interrupted and no other.
 type userNavigation struct {
-	// mu is held across a stop's engine call, so the navigation reads the
-	// stop's outcome, not a stop still in flight.
-	mu      sync.Mutex
-	stopped bool
+	stopped atomic.Bool
 }
 
 type userNavigationKey struct{}
 
-func (n *userNavigation) wasStopped() bool {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	return n.stopped
-}
+func (n *userNavigation) wasStopped() bool { return n.stopped.Load() }
 
 // runUserNavigation records the context's address-bar navigation as the one
-// running on p; the result clears it. Call it holding p.mu.
+// running on p; the result clears it. Call it holding p.mu. Registering and
+// clearing take p.navMu, which a stop holds across its engine call
+// (StopCompanionLoad), so neither happens while a stop is in flight: the
+// navigation a stop marks is the one whose load it stopped, and a stopped
+// navigation finishes only after its mark.
 func (p *managedPage) runUserNavigation(ctx context.Context) func() {
 	nav, _ := ctx.Value(userNavigationKey{}).(*userNavigation)
 	if nav == nil {
@@ -199,20 +196,19 @@ func (m *Manager) StopCompanionLoad(ctx context.Context, access Access, pageID s
 	if err != nil {
 		return err
 	}
+	// navMu is held across the engine's stop (runUserNavigation): the
+	// navigation registered now is the one loading until the stop returns.
+	// It is taken only by address-bar navigations and stops, never from an
+	// engine callback, so the engine may run its stop on its UI thread.
 	p.navMu.Lock()
-	nav := p.userNav
-	p.navMu.Unlock()
-	if nav != nil {
-		nav.mu.Lock()
-		defer nav.mu.Unlock()
-	}
+	defer p.navMu.Unlock()
 	opCtx, cancel := operationContext(ctx, p.ctx, 5*time.Second)
 	defer cancel()
 	if err := p.driver.History(opCtx, "stop"); err != nil {
 		return err
 	}
-	if nav != nil {
-		nav.stopped = true
+	if p.userNav != nil {
+		p.userNav.stopped.Store(true)
 	}
 	return nil
 }
