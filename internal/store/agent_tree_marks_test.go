@@ -139,7 +139,7 @@ func (r *agentTreeMarksRun) step(check func(what string)) {
 		check("remote spawn")
 	case op == 11 && len(r.remote) > 0:
 		if r.random.IntN(4) == 0 {
-			if _, err := s.ClearThreadRequestsNestedOpenForComputer("pc"); err != nil {
+			if _, err := s.ForgetRemoteSpawnsOnComputer("pc"); err != nil {
 				t.Fatal(err)
 			}
 		} else if _, err := s.SetThreadRequestNestedOpen(r.pick(r.remote), r.random.IntN(3) > 0); err != nil {

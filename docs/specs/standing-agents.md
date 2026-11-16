@@ -782,8 +782,16 @@ Ruling 36, as built:
   one still at rest, or none, is kept nowhere and frames nothing; one
   that finds it working records it, and its row reopens. A computer that
   runs an older version answers that it cannot list, which records
-  nothing. A remote spawn the retention floor removed here is no longer
-  asked about.
+  nothing. Past the retention floor a remote spawn is kept here as its
+  lineage, as a local one is: its answer, late reply and wake cleared,
+  its poll stopped and its token unknown, and still its thread's link, so
+  the rest pass keeps asking about it and its row lists, counts and stops
+  as before. It goes once that computer refuses the thread as gone, the
+  spawner is deleted, or the computer is forgotten. What it keeps is one
+  row per such spawn, read only by the rest pass's pages and by the
+  Agents reads that reach it: a person with n old remote spawns whose
+  threads there still exist keeps n rows, each asked about every
+  ceil(n/32) × 30 s, at most one call a second in all.
 
 ### At rest
 
@@ -971,8 +979,9 @@ Mechanics, as built:
   the predecessors spawned, whose `spawnedByThreadId` it changes. The
   partial index `idx_thread_requests_spawn_target` serves the lookup,
   and while the thread it created exists the thread-request retention
-  sweep keeps a local spawn row past the floor as `lineage_only`, its
-  answer, late reply and wake cleared, once no open work is under it:
+  sweep keeps a spawn row past the floor as `lineage_only`, local or
+  remote ("Owned workers"), its answer, late reply and wake cleared, once
+  no open work is under it:
   a spawn the Agents segment lists for open work below it, local or
   remote, waits for that work to settle, so the floor never takes rows
   out of a tree. The ledger tools treat that

@@ -38,9 +38,9 @@ import (
 //
 // thread_requests and thread_request_receipts gain:
 //
-//   - `lineage_only`: a local spawn row the retention sweep kept past the
-//     floor with its payload cleared, as the record of which thread
-//     spawned its target. The ledger reads skip it: its token is unknown
+//   - `lineage_only`: a spawn row the retention sweep kept past the floor
+//     with its payload cleared, as the record of which thread spawned its
+//     target, here or on another computer. The ledger reads skip it: its token is unknown
 //     and its answer gone. It still links its target into the tree. On a
 //     receipt it is the same for a spawn's receipt: kept while the thread
 //     it made exists, as the record that the source thread there owns it,
@@ -114,14 +114,17 @@ import (
 // included, so the segment's Past list pages a caller's settled rows newest
 // first through it (ListThreadPastAgentRequests).
 // idx_thread_requests_nested_open holds the settled remote spawns
-// with open work there, in the order the sweep pages through them, and
-// idx_thread_requests_remote_rest the others, which it pages through at a
-// slower pace to find a thread there that left rest.
+// with open work there, their lineage included, in the order the sweep
+// pages through them, and idx_thread_requests_remote_rest the others,
+// which it pages through at a slower pace to find a thread there that left
+// rest.
 // idx_thread_requests_spawn_target serves the lineage reads by spawned
 // thread. idx_thread_requests_age and idx_thread_request_receipts_age index
 // the age of the rows the retention floor can remove, and
-// idx_thread_requests_lineage and idx_thread_request_receipts_lineage the
-// lineage rows, which the sweep deletes once their spawned thread is gone.
+// idx_thread_requests_lineage the local lineage rows and
+// idx_thread_request_receipts_lineage the receipts' lineage, which the
+// sweep deletes once their spawned thread is gone; a remote spawn's goes
+// when its computer says so.
 //
 // trg_thread_placement_spawn_gone makes an owned thread of a project
 // standalone when its link is deleted, as a spawner's delete does, so the
@@ -233,21 +236,21 @@ CREATE INDEX idx_thread_requests_spawn_target
  WHERE kind = 'spawn' AND target_computer_id = '';
 CREATE INDEX idx_thread_requests_nested_open ON thread_requests(settled_at, token)
   WHERE nested_open = 1 AND settled_at IS NOT NULL AND kind = 'spawn'
-    AND target_computer_id <> '' AND lineage_only = 0;
+    AND target_computer_id <> '';
 CREATE INDEX idx_thread_requests_remote_rest ON thread_requests(settled_at, token)
   WHERE nested_open = 0 AND settled_at IS NOT NULL AND kind = 'spawn'
-    AND target_computer_id <> '' AND target_thread_id <> '' AND lineage_only = 0;
+    AND target_computer_id <> '' AND target_thread_id <> '';
 CREATE INDEX idx_thread_requests_caller_settled
     ON thread_requests(caller_thread_id, settled_at, token);
 CREATE INDEX idx_thread_requests_nested_caller
     ON thread_requests(caller_thread_id)
- WHERE nested_open = 1 AND kind = 'spawn' AND target_computer_id <> '' AND lineage_only = 0;
+ WHERE nested_open = 1 AND kind = 'spawn' AND target_computer_id <> '';
 CREATE INDEX idx_thread_requests_age
     ON thread_requests(COALESCE(settled_at, due_at, created_at))
  WHERE lineage_only = 0 AND state NOT IN ('unconfirmed','accepted','running');
 CREATE INDEX idx_thread_requests_lineage
     ON thread_requests(target_thread_id)
- WHERE lineage_only = 1;
+ WHERE lineage_only = 1 AND target_computer_id = '';
 CREATE INDEX idx_thread_request_receipts_age
     ON thread_request_receipts(COALESCE(settled_at, created_at))
  WHERE lineage_only = 0 AND state NOT IN ('accepted','running');
@@ -270,27 +273,27 @@ CREATE INDEX idx_thread_requests_open_created
  WHERE lineage_only = 0 AND settled_at IS NULL;
 
 CREATE TRIGGER trg_thread_requests_open_below_insert AFTER INSERT ON thread_requests
-WHEN (NEW.lineage_only = 0 AND ((NEW.settled_at IS NULL AND (NEW.kind = 'spawn' OR (NEW.kind IN ('send','ask') AND NEW.notify = 1)))
-        OR (NEW.kind = 'spawn' AND NEW.target_computer_id <> '' AND NEW.nested_open = 1))) OR (NEW.kind = 'spawn' AND NEW.target_computer_id = '' AND NEW.superseded = 0 AND NEW.target_thread_id <> '')
+WHEN ((NEW.lineage_only = 0 AND NEW.settled_at IS NULL AND (NEW.kind = 'spawn' OR (NEW.kind IN ('send','ask') AND NEW.notify = 1)))
+        OR (NEW.kind = 'spawn' AND NEW.target_computer_id <> '' AND NEW.nested_open = 1)) OR (NEW.kind = 'spawn' AND NEW.target_computer_id = '' AND NEW.superseded = 0 AND NEW.target_thread_id <> '')
 BEGIN
   UPDATE thread_requests SET open_below_0 = open_below_0 + 1
-   WHERE (NEW.lineage_only = 0 AND ((NEW.settled_at IS NULL AND (NEW.kind = 'spawn' OR (NEW.kind IN ('send','ask') AND NEW.notify = 1)))
-        OR (NEW.kind = 'spawn' AND NEW.target_computer_id <> '' AND NEW.nested_open = 1))) AND kind = 'spawn' AND target_computer_id = '' AND superseded = 0 AND target_thread_id <> ''
+   WHERE ((NEW.lineage_only = 0 AND NEW.settled_at IS NULL AND (NEW.kind = 'spawn' OR (NEW.kind IN ('send','ask') AND NEW.notify = 1)))
+        OR (NEW.kind = 'spawn' AND NEW.target_computer_id <> '' AND NEW.nested_open = 1)) AND kind = 'spawn' AND target_computer_id = '' AND superseded = 0 AND target_thread_id <> ''
      AND target_thread_id = NEW.caller_thread_id;
   UPDATE thread_requests SET open_below_1 = open_below_1 + 1
-   WHERE (NEW.lineage_only = 0 AND ((NEW.settled_at IS NULL AND (NEW.kind = 'spawn' OR (NEW.kind IN ('send','ask') AND NEW.notify = 1)))
-        OR (NEW.kind = 'spawn' AND NEW.target_computer_id <> '' AND NEW.nested_open = 1))) AND kind = 'spawn' AND target_computer_id = '' AND superseded = 0 AND target_thread_id <> ''
+   WHERE ((NEW.lineage_only = 0 AND NEW.settled_at IS NULL AND (NEW.kind = 'spawn' OR (NEW.kind IN ('send','ask') AND NEW.notify = 1)))
+        OR (NEW.kind = 'spawn' AND NEW.target_computer_id <> '' AND NEW.nested_open = 1)) AND kind = 'spawn' AND target_computer_id = '' AND superseded = 0 AND target_thread_id <> ''
      AND target_thread_id = (SELECT p.caller_thread_id FROM thread_requests p
           WHERE p.kind = 'spawn' AND p.target_computer_id = '' AND p.superseded = 0 AND p.target_thread_id = NEW.caller_thread_id);
   UPDATE thread_requests SET open_below_2 = open_below_2 + 1
-   WHERE (NEW.lineage_only = 0 AND ((NEW.settled_at IS NULL AND (NEW.kind = 'spawn' OR (NEW.kind IN ('send','ask') AND NEW.notify = 1)))
-        OR (NEW.kind = 'spawn' AND NEW.target_computer_id <> '' AND NEW.nested_open = 1))) AND kind = 'spawn' AND target_computer_id = '' AND superseded = 0 AND target_thread_id <> ''
+   WHERE ((NEW.lineage_only = 0 AND NEW.settled_at IS NULL AND (NEW.kind = 'spawn' OR (NEW.kind IN ('send','ask') AND NEW.notify = 1)))
+        OR (NEW.kind = 'spawn' AND NEW.target_computer_id <> '' AND NEW.nested_open = 1)) AND kind = 'spawn' AND target_computer_id = '' AND superseded = 0 AND target_thread_id <> ''
      AND target_thread_id = (SELECT p.caller_thread_id FROM thread_requests p
           WHERE p.kind = 'spawn' AND p.target_computer_id = '' AND p.superseded = 0 AND p.target_thread_id = (SELECT p.caller_thread_id FROM thread_requests p
           WHERE p.kind = 'spawn' AND p.target_computer_id = '' AND p.superseded = 0 AND p.target_thread_id = NEW.caller_thread_id));
   UPDATE thread_requests SET open_below_3 = open_below_3 + 1
-   WHERE (NEW.lineage_only = 0 AND ((NEW.settled_at IS NULL AND (NEW.kind = 'spawn' OR (NEW.kind IN ('send','ask') AND NEW.notify = 1)))
-        OR (NEW.kind = 'spawn' AND NEW.target_computer_id <> '' AND NEW.nested_open = 1))) AND kind = 'spawn' AND target_computer_id = '' AND superseded = 0 AND target_thread_id <> ''
+   WHERE ((NEW.lineage_only = 0 AND NEW.settled_at IS NULL AND (NEW.kind = 'spawn' OR (NEW.kind IN ('send','ask') AND NEW.notify = 1)))
+        OR (NEW.kind = 'spawn' AND NEW.target_computer_id <> '' AND NEW.nested_open = 1)) AND kind = 'spawn' AND target_computer_id = '' AND superseded = 0 AND target_thread_id <> ''
      AND target_thread_id = (SELECT p.caller_thread_id FROM thread_requests p
           WHERE p.kind = 'spawn' AND p.target_computer_id = '' AND p.superseded = 0 AND p.target_thread_id = (SELECT p.caller_thread_id FROM thread_requests p
           WHERE p.kind = 'spawn' AND p.target_computer_id = '' AND p.superseded = 0 AND p.target_thread_id = (SELECT p.caller_thread_id FROM thread_requests p
@@ -298,7 +301,7 @@ BEGIN
   UPDATE thread_requests SET open_below_0 = (SELECT COUNT(*) FROM thread_requests c WHERE c.caller_thread_id = NEW.target_thread_id
         AND c.lineage_only = 0 AND c.settled_at IS NULL AND (c.kind = 'spawn' OR (c.kind IN ('send','ask') AND c.notify = 1)))
       + (SELECT COUNT(*) FROM thread_requests c WHERE c.caller_thread_id = NEW.target_thread_id
-        AND c.nested_open = 1 AND c.kind = 'spawn' AND c.target_computer_id <> '' AND c.lineage_only = 0 AND +c.settled_at IS NOT NULL),
+        AND c.nested_open = 1 AND c.kind = 'spawn' AND c.target_computer_id <> '' AND +c.settled_at IS NOT NULL),
     open_below_1 = (SELECT COALESCE(SUM(c.open_below_0), 0) FROM thread_requests c WHERE c.caller_thread_id = NEW.target_thread_id
         AND c.kind = 'spawn' AND c.target_computer_id = '' AND c.superseded = 0 AND c.target_thread_id <> ''
         AND (c.open_below_0 + c.open_below_1 + c.open_below_2 + c.open_below_3) > 0),
@@ -324,27 +327,27 @@ BEGIN
 END;
 
 CREATE TRIGGER trg_thread_requests_open_below_delete AFTER DELETE ON thread_requests
-WHEN (OLD.lineage_only = 0 AND ((OLD.settled_at IS NULL AND (OLD.kind = 'spawn' OR (OLD.kind IN ('send','ask') AND OLD.notify = 1)))
-        OR (OLD.kind = 'spawn' AND OLD.target_computer_id <> '' AND OLD.nested_open = 1))) OR (OLD.kind = 'spawn' AND OLD.target_computer_id = '' AND OLD.superseded = 0 AND OLD.target_thread_id <> '')
+WHEN ((OLD.lineage_only = 0 AND OLD.settled_at IS NULL AND (OLD.kind = 'spawn' OR (OLD.kind IN ('send','ask') AND OLD.notify = 1)))
+        OR (OLD.kind = 'spawn' AND OLD.target_computer_id <> '' AND OLD.nested_open = 1)) OR (OLD.kind = 'spawn' AND OLD.target_computer_id = '' AND OLD.superseded = 0 AND OLD.target_thread_id <> '')
 BEGIN
   UPDATE thread_requests SET open_below_0 = open_below_0 + -1
-   WHERE (OLD.lineage_only = 0 AND ((OLD.settled_at IS NULL AND (OLD.kind = 'spawn' OR (OLD.kind IN ('send','ask') AND OLD.notify = 1)))
-        OR (OLD.kind = 'spawn' AND OLD.target_computer_id <> '' AND OLD.nested_open = 1))) AND kind = 'spawn' AND target_computer_id = '' AND superseded = 0 AND target_thread_id <> ''
+   WHERE ((OLD.lineage_only = 0 AND OLD.settled_at IS NULL AND (OLD.kind = 'spawn' OR (OLD.kind IN ('send','ask') AND OLD.notify = 1)))
+        OR (OLD.kind = 'spawn' AND OLD.target_computer_id <> '' AND OLD.nested_open = 1)) AND kind = 'spawn' AND target_computer_id = '' AND superseded = 0 AND target_thread_id <> ''
      AND target_thread_id = OLD.caller_thread_id;
   UPDATE thread_requests SET open_below_1 = open_below_1 + -1
-   WHERE (OLD.lineage_only = 0 AND ((OLD.settled_at IS NULL AND (OLD.kind = 'spawn' OR (OLD.kind IN ('send','ask') AND OLD.notify = 1)))
-        OR (OLD.kind = 'spawn' AND OLD.target_computer_id <> '' AND OLD.nested_open = 1))) AND kind = 'spawn' AND target_computer_id = '' AND superseded = 0 AND target_thread_id <> ''
+   WHERE ((OLD.lineage_only = 0 AND OLD.settled_at IS NULL AND (OLD.kind = 'spawn' OR (OLD.kind IN ('send','ask') AND OLD.notify = 1)))
+        OR (OLD.kind = 'spawn' AND OLD.target_computer_id <> '' AND OLD.nested_open = 1)) AND kind = 'spawn' AND target_computer_id = '' AND superseded = 0 AND target_thread_id <> ''
      AND target_thread_id = (SELECT p.caller_thread_id FROM thread_requests p
           WHERE p.kind = 'spawn' AND p.target_computer_id = '' AND p.superseded = 0 AND p.target_thread_id = OLD.caller_thread_id);
   UPDATE thread_requests SET open_below_2 = open_below_2 + -1
-   WHERE (OLD.lineage_only = 0 AND ((OLD.settled_at IS NULL AND (OLD.kind = 'spawn' OR (OLD.kind IN ('send','ask') AND OLD.notify = 1)))
-        OR (OLD.kind = 'spawn' AND OLD.target_computer_id <> '' AND OLD.nested_open = 1))) AND kind = 'spawn' AND target_computer_id = '' AND superseded = 0 AND target_thread_id <> ''
+   WHERE ((OLD.lineage_only = 0 AND OLD.settled_at IS NULL AND (OLD.kind = 'spawn' OR (OLD.kind IN ('send','ask') AND OLD.notify = 1)))
+        OR (OLD.kind = 'spawn' AND OLD.target_computer_id <> '' AND OLD.nested_open = 1)) AND kind = 'spawn' AND target_computer_id = '' AND superseded = 0 AND target_thread_id <> ''
      AND target_thread_id = (SELECT p.caller_thread_id FROM thread_requests p
           WHERE p.kind = 'spawn' AND p.target_computer_id = '' AND p.superseded = 0 AND p.target_thread_id = (SELECT p.caller_thread_id FROM thread_requests p
           WHERE p.kind = 'spawn' AND p.target_computer_id = '' AND p.superseded = 0 AND p.target_thread_id = OLD.caller_thread_id));
   UPDATE thread_requests SET open_below_3 = open_below_3 + -1
-   WHERE (OLD.lineage_only = 0 AND ((OLD.settled_at IS NULL AND (OLD.kind = 'spawn' OR (OLD.kind IN ('send','ask') AND OLD.notify = 1)))
-        OR (OLD.kind = 'spawn' AND OLD.target_computer_id <> '' AND OLD.nested_open = 1))) AND kind = 'spawn' AND target_computer_id = '' AND superseded = 0 AND target_thread_id <> ''
+   WHERE ((OLD.lineage_only = 0 AND OLD.settled_at IS NULL AND (OLD.kind = 'spawn' OR (OLD.kind IN ('send','ask') AND OLD.notify = 1)))
+        OR (OLD.kind = 'spawn' AND OLD.target_computer_id <> '' AND OLD.nested_open = 1)) AND kind = 'spawn' AND target_computer_id = '' AND superseded = 0 AND target_thread_id <> ''
      AND target_thread_id = (SELECT p.caller_thread_id FROM thread_requests p
           WHERE p.kind = 'spawn' AND p.target_computer_id = '' AND p.superseded = 0 AND p.target_thread_id = (SELECT p.caller_thread_id FROM thread_requests p
           WHERE p.kind = 'spawn' AND p.target_computer_id = '' AND p.superseded = 0 AND p.target_thread_id = (SELECT p.caller_thread_id FROM thread_requests p
@@ -364,33 +367,33 @@ BEGIN
 END;
 
 CREATE TRIGGER trg_thread_requests_open_below_update AFTER UPDATE OF caller_thread_id, kind, notify, settled_at, nested_open, lineage_only, superseded, target_thread_id, target_computer_id ON thread_requests
-WHEN (OLD.lineage_only = 0 AND ((OLD.settled_at IS NULL AND (OLD.kind = 'spawn' OR (OLD.kind IN ('send','ask') AND OLD.notify = 1)))
-        OR (OLD.kind = 'spawn' AND OLD.target_computer_id <> '' AND OLD.nested_open = 1))) IS NOT (NEW.lineage_only = 0 AND ((NEW.settled_at IS NULL AND (NEW.kind = 'spawn' OR (NEW.kind IN ('send','ask') AND NEW.notify = 1)))
-        OR (NEW.kind = 'spawn' AND NEW.target_computer_id <> '' AND NEW.nested_open = 1))) OR (OLD.kind = 'spawn' AND OLD.target_computer_id = '' AND OLD.superseded = 0 AND OLD.target_thread_id <> '') IS NOT (NEW.kind = 'spawn' AND NEW.target_computer_id = '' AND NEW.superseded = 0 AND NEW.target_thread_id <> '') OR OLD.caller_thread_id IS NOT NEW.caller_thread_id
+WHEN ((OLD.lineage_only = 0 AND OLD.settled_at IS NULL AND (OLD.kind = 'spawn' OR (OLD.kind IN ('send','ask') AND OLD.notify = 1)))
+        OR (OLD.kind = 'spawn' AND OLD.target_computer_id <> '' AND OLD.nested_open = 1)) IS NOT ((NEW.lineage_only = 0 AND NEW.settled_at IS NULL AND (NEW.kind = 'spawn' OR (NEW.kind IN ('send','ask') AND NEW.notify = 1)))
+        OR (NEW.kind = 'spawn' AND NEW.target_computer_id <> '' AND NEW.nested_open = 1)) OR (OLD.kind = 'spawn' AND OLD.target_computer_id = '' AND OLD.superseded = 0 AND OLD.target_thread_id <> '') IS NOT (NEW.kind = 'spawn' AND NEW.target_computer_id = '' AND NEW.superseded = 0 AND NEW.target_thread_id <> '') OR OLD.caller_thread_id IS NOT NEW.caller_thread_id
   OR ((NEW.kind = 'spawn' AND NEW.target_computer_id = '' AND NEW.superseded = 0 AND NEW.target_thread_id <> '') AND OLD.target_thread_id IS NOT NEW.target_thread_id)
 BEGIN
   UPDATE thread_requests SET open_below_0 = open_below_0 + -1
-   WHERE (OLD.lineage_only = 0 AND ((OLD.settled_at IS NULL AND (OLD.kind = 'spawn' OR (OLD.kind IN ('send','ask') AND OLD.notify = 1)))
-        OR (OLD.kind = 'spawn' AND OLD.target_computer_id <> '' AND OLD.nested_open = 1))) AND (OLD.caller_thread_id IS NOT NEW.caller_thread_id OR NOT (NEW.lineage_only = 0 AND ((NEW.settled_at IS NULL AND (NEW.kind = 'spawn' OR (NEW.kind IN ('send','ask') AND NEW.notify = 1)))
-        OR (NEW.kind = 'spawn' AND NEW.target_computer_id <> '' AND NEW.nested_open = 1)))) AND kind = 'spawn' AND target_computer_id = '' AND superseded = 0 AND target_thread_id <> ''
+   WHERE ((OLD.lineage_only = 0 AND OLD.settled_at IS NULL AND (OLD.kind = 'spawn' OR (OLD.kind IN ('send','ask') AND OLD.notify = 1)))
+        OR (OLD.kind = 'spawn' AND OLD.target_computer_id <> '' AND OLD.nested_open = 1)) AND (OLD.caller_thread_id IS NOT NEW.caller_thread_id OR NOT ((NEW.lineage_only = 0 AND NEW.settled_at IS NULL AND (NEW.kind = 'spawn' OR (NEW.kind IN ('send','ask') AND NEW.notify = 1)))
+        OR (NEW.kind = 'spawn' AND NEW.target_computer_id <> '' AND NEW.nested_open = 1))) AND kind = 'spawn' AND target_computer_id = '' AND superseded = 0 AND target_thread_id <> ''
      AND target_thread_id = OLD.caller_thread_id;
   UPDATE thread_requests SET open_below_1 = open_below_1 + -1
-   WHERE (OLD.lineage_only = 0 AND ((OLD.settled_at IS NULL AND (OLD.kind = 'spawn' OR (OLD.kind IN ('send','ask') AND OLD.notify = 1)))
-        OR (OLD.kind = 'spawn' AND OLD.target_computer_id <> '' AND OLD.nested_open = 1))) AND (OLD.caller_thread_id IS NOT NEW.caller_thread_id OR NOT (NEW.lineage_only = 0 AND ((NEW.settled_at IS NULL AND (NEW.kind = 'spawn' OR (NEW.kind IN ('send','ask') AND NEW.notify = 1)))
-        OR (NEW.kind = 'spawn' AND NEW.target_computer_id <> '' AND NEW.nested_open = 1)))) AND kind = 'spawn' AND target_computer_id = '' AND superseded = 0 AND target_thread_id <> ''
+   WHERE ((OLD.lineage_only = 0 AND OLD.settled_at IS NULL AND (OLD.kind = 'spawn' OR (OLD.kind IN ('send','ask') AND OLD.notify = 1)))
+        OR (OLD.kind = 'spawn' AND OLD.target_computer_id <> '' AND OLD.nested_open = 1)) AND (OLD.caller_thread_id IS NOT NEW.caller_thread_id OR NOT ((NEW.lineage_only = 0 AND NEW.settled_at IS NULL AND (NEW.kind = 'spawn' OR (NEW.kind IN ('send','ask') AND NEW.notify = 1)))
+        OR (NEW.kind = 'spawn' AND NEW.target_computer_id <> '' AND NEW.nested_open = 1))) AND kind = 'spawn' AND target_computer_id = '' AND superseded = 0 AND target_thread_id <> ''
      AND target_thread_id = (SELECT p.caller_thread_id FROM thread_requests p
           WHERE p.kind = 'spawn' AND p.target_computer_id = '' AND p.superseded = 0 AND p.target_thread_id = OLD.caller_thread_id);
   UPDATE thread_requests SET open_below_2 = open_below_2 + -1
-   WHERE (OLD.lineage_only = 0 AND ((OLD.settled_at IS NULL AND (OLD.kind = 'spawn' OR (OLD.kind IN ('send','ask') AND OLD.notify = 1)))
-        OR (OLD.kind = 'spawn' AND OLD.target_computer_id <> '' AND OLD.nested_open = 1))) AND (OLD.caller_thread_id IS NOT NEW.caller_thread_id OR NOT (NEW.lineage_only = 0 AND ((NEW.settled_at IS NULL AND (NEW.kind = 'spawn' OR (NEW.kind IN ('send','ask') AND NEW.notify = 1)))
-        OR (NEW.kind = 'spawn' AND NEW.target_computer_id <> '' AND NEW.nested_open = 1)))) AND kind = 'spawn' AND target_computer_id = '' AND superseded = 0 AND target_thread_id <> ''
+   WHERE ((OLD.lineage_only = 0 AND OLD.settled_at IS NULL AND (OLD.kind = 'spawn' OR (OLD.kind IN ('send','ask') AND OLD.notify = 1)))
+        OR (OLD.kind = 'spawn' AND OLD.target_computer_id <> '' AND OLD.nested_open = 1)) AND (OLD.caller_thread_id IS NOT NEW.caller_thread_id OR NOT ((NEW.lineage_only = 0 AND NEW.settled_at IS NULL AND (NEW.kind = 'spawn' OR (NEW.kind IN ('send','ask') AND NEW.notify = 1)))
+        OR (NEW.kind = 'spawn' AND NEW.target_computer_id <> '' AND NEW.nested_open = 1))) AND kind = 'spawn' AND target_computer_id = '' AND superseded = 0 AND target_thread_id <> ''
      AND target_thread_id = (SELECT p.caller_thread_id FROM thread_requests p
           WHERE p.kind = 'spawn' AND p.target_computer_id = '' AND p.superseded = 0 AND p.target_thread_id = (SELECT p.caller_thread_id FROM thread_requests p
           WHERE p.kind = 'spawn' AND p.target_computer_id = '' AND p.superseded = 0 AND p.target_thread_id = OLD.caller_thread_id));
   UPDATE thread_requests SET open_below_3 = open_below_3 + -1
-   WHERE (OLD.lineage_only = 0 AND ((OLD.settled_at IS NULL AND (OLD.kind = 'spawn' OR (OLD.kind IN ('send','ask') AND OLD.notify = 1)))
-        OR (OLD.kind = 'spawn' AND OLD.target_computer_id <> '' AND OLD.nested_open = 1))) AND (OLD.caller_thread_id IS NOT NEW.caller_thread_id OR NOT (NEW.lineage_only = 0 AND ((NEW.settled_at IS NULL AND (NEW.kind = 'spawn' OR (NEW.kind IN ('send','ask') AND NEW.notify = 1)))
-        OR (NEW.kind = 'spawn' AND NEW.target_computer_id <> '' AND NEW.nested_open = 1)))) AND kind = 'spawn' AND target_computer_id = '' AND superseded = 0 AND target_thread_id <> ''
+   WHERE ((OLD.lineage_only = 0 AND OLD.settled_at IS NULL AND (OLD.kind = 'spawn' OR (OLD.kind IN ('send','ask') AND OLD.notify = 1)))
+        OR (OLD.kind = 'spawn' AND OLD.target_computer_id <> '' AND OLD.nested_open = 1)) AND (OLD.caller_thread_id IS NOT NEW.caller_thread_id OR NOT ((NEW.lineage_only = 0 AND NEW.settled_at IS NULL AND (NEW.kind = 'spawn' OR (NEW.kind IN ('send','ask') AND NEW.notify = 1)))
+        OR (NEW.kind = 'spawn' AND NEW.target_computer_id <> '' AND NEW.nested_open = 1))) AND kind = 'spawn' AND target_computer_id = '' AND superseded = 0 AND target_thread_id <> ''
      AND target_thread_id = (SELECT p.caller_thread_id FROM thread_requests p
           WHERE p.kind = 'spawn' AND p.target_computer_id = '' AND p.superseded = 0 AND p.target_thread_id = (SELECT p.caller_thread_id FROM thread_requests p
           WHERE p.kind = 'spawn' AND p.target_computer_id = '' AND p.superseded = 0 AND p.target_thread_id = (SELECT p.caller_thread_id FROM thread_requests p
@@ -410,7 +413,7 @@ BEGIN
   UPDATE thread_requests SET open_below_0 = (SELECT COUNT(*) FROM thread_requests c WHERE c.caller_thread_id = NEW.target_thread_id
         AND c.lineage_only = 0 AND c.settled_at IS NULL AND (c.kind = 'spawn' OR (c.kind IN ('send','ask') AND c.notify = 1)))
       + (SELECT COUNT(*) FROM thread_requests c WHERE c.caller_thread_id = NEW.target_thread_id
-        AND c.nested_open = 1 AND c.kind = 'spawn' AND c.target_computer_id <> '' AND c.lineage_only = 0 AND +c.settled_at IS NOT NULL),
+        AND c.nested_open = 1 AND c.kind = 'spawn' AND c.target_computer_id <> '' AND +c.settled_at IS NOT NULL),
     open_below_1 = (SELECT COALESCE(SUM(c.open_below_0), 0) FROM thread_requests c WHERE c.caller_thread_id = NEW.target_thread_id
         AND c.kind = 'spawn' AND c.target_computer_id = '' AND c.superseded = 0 AND c.target_thread_id <> ''
         AND (c.open_below_0 + c.open_below_1 + c.open_below_2 + c.open_below_3) > 0),
@@ -424,27 +427,27 @@ BEGIN
   UPDATE thread_requests SET open_below_0 = 0, open_below_1 = 0, open_below_2 = 0, open_below_3 = 0
    WHERE (OLD.kind = 'spawn' AND OLD.target_computer_id = '' AND OLD.superseded = 0 AND OLD.target_thread_id <> '') AND NOT (NEW.kind = 'spawn' AND NEW.target_computer_id = '' AND NEW.superseded = 0 AND NEW.target_thread_id <> '') AND token = NEW.token;
   UPDATE thread_requests SET open_below_0 = open_below_0 + 1
-   WHERE (NEW.lineage_only = 0 AND ((NEW.settled_at IS NULL AND (NEW.kind = 'spawn' OR (NEW.kind IN ('send','ask') AND NEW.notify = 1)))
-        OR (NEW.kind = 'spawn' AND NEW.target_computer_id <> '' AND NEW.nested_open = 1))) AND (OLD.caller_thread_id IS NOT NEW.caller_thread_id OR NOT (OLD.lineage_only = 0 AND ((OLD.settled_at IS NULL AND (OLD.kind = 'spawn' OR (OLD.kind IN ('send','ask') AND OLD.notify = 1)))
-        OR (OLD.kind = 'spawn' AND OLD.target_computer_id <> '' AND OLD.nested_open = 1)))) AND kind = 'spawn' AND target_computer_id = '' AND superseded = 0 AND target_thread_id <> ''
+   WHERE ((NEW.lineage_only = 0 AND NEW.settled_at IS NULL AND (NEW.kind = 'spawn' OR (NEW.kind IN ('send','ask') AND NEW.notify = 1)))
+        OR (NEW.kind = 'spawn' AND NEW.target_computer_id <> '' AND NEW.nested_open = 1)) AND (OLD.caller_thread_id IS NOT NEW.caller_thread_id OR NOT ((OLD.lineage_only = 0 AND OLD.settled_at IS NULL AND (OLD.kind = 'spawn' OR (OLD.kind IN ('send','ask') AND OLD.notify = 1)))
+        OR (OLD.kind = 'spawn' AND OLD.target_computer_id <> '' AND OLD.nested_open = 1))) AND kind = 'spawn' AND target_computer_id = '' AND superseded = 0 AND target_thread_id <> ''
      AND target_thread_id = NEW.caller_thread_id;
   UPDATE thread_requests SET open_below_1 = open_below_1 + 1
-   WHERE (NEW.lineage_only = 0 AND ((NEW.settled_at IS NULL AND (NEW.kind = 'spawn' OR (NEW.kind IN ('send','ask') AND NEW.notify = 1)))
-        OR (NEW.kind = 'spawn' AND NEW.target_computer_id <> '' AND NEW.nested_open = 1))) AND (OLD.caller_thread_id IS NOT NEW.caller_thread_id OR NOT (OLD.lineage_only = 0 AND ((OLD.settled_at IS NULL AND (OLD.kind = 'spawn' OR (OLD.kind IN ('send','ask') AND OLD.notify = 1)))
-        OR (OLD.kind = 'spawn' AND OLD.target_computer_id <> '' AND OLD.nested_open = 1)))) AND kind = 'spawn' AND target_computer_id = '' AND superseded = 0 AND target_thread_id <> ''
+   WHERE ((NEW.lineage_only = 0 AND NEW.settled_at IS NULL AND (NEW.kind = 'spawn' OR (NEW.kind IN ('send','ask') AND NEW.notify = 1)))
+        OR (NEW.kind = 'spawn' AND NEW.target_computer_id <> '' AND NEW.nested_open = 1)) AND (OLD.caller_thread_id IS NOT NEW.caller_thread_id OR NOT ((OLD.lineage_only = 0 AND OLD.settled_at IS NULL AND (OLD.kind = 'spawn' OR (OLD.kind IN ('send','ask') AND OLD.notify = 1)))
+        OR (OLD.kind = 'spawn' AND OLD.target_computer_id <> '' AND OLD.nested_open = 1))) AND kind = 'spawn' AND target_computer_id = '' AND superseded = 0 AND target_thread_id <> ''
      AND target_thread_id = (SELECT p.caller_thread_id FROM thread_requests p
           WHERE p.kind = 'spawn' AND p.target_computer_id = '' AND p.superseded = 0 AND p.target_thread_id = NEW.caller_thread_id);
   UPDATE thread_requests SET open_below_2 = open_below_2 + 1
-   WHERE (NEW.lineage_only = 0 AND ((NEW.settled_at IS NULL AND (NEW.kind = 'spawn' OR (NEW.kind IN ('send','ask') AND NEW.notify = 1)))
-        OR (NEW.kind = 'spawn' AND NEW.target_computer_id <> '' AND NEW.nested_open = 1))) AND (OLD.caller_thread_id IS NOT NEW.caller_thread_id OR NOT (OLD.lineage_only = 0 AND ((OLD.settled_at IS NULL AND (OLD.kind = 'spawn' OR (OLD.kind IN ('send','ask') AND OLD.notify = 1)))
-        OR (OLD.kind = 'spawn' AND OLD.target_computer_id <> '' AND OLD.nested_open = 1)))) AND kind = 'spawn' AND target_computer_id = '' AND superseded = 0 AND target_thread_id <> ''
+   WHERE ((NEW.lineage_only = 0 AND NEW.settled_at IS NULL AND (NEW.kind = 'spawn' OR (NEW.kind IN ('send','ask') AND NEW.notify = 1)))
+        OR (NEW.kind = 'spawn' AND NEW.target_computer_id <> '' AND NEW.nested_open = 1)) AND (OLD.caller_thread_id IS NOT NEW.caller_thread_id OR NOT ((OLD.lineage_only = 0 AND OLD.settled_at IS NULL AND (OLD.kind = 'spawn' OR (OLD.kind IN ('send','ask') AND OLD.notify = 1)))
+        OR (OLD.kind = 'spawn' AND OLD.target_computer_id <> '' AND OLD.nested_open = 1))) AND kind = 'spawn' AND target_computer_id = '' AND superseded = 0 AND target_thread_id <> ''
      AND target_thread_id = (SELECT p.caller_thread_id FROM thread_requests p
           WHERE p.kind = 'spawn' AND p.target_computer_id = '' AND p.superseded = 0 AND p.target_thread_id = (SELECT p.caller_thread_id FROM thread_requests p
           WHERE p.kind = 'spawn' AND p.target_computer_id = '' AND p.superseded = 0 AND p.target_thread_id = NEW.caller_thread_id));
   UPDATE thread_requests SET open_below_3 = open_below_3 + 1
-   WHERE (NEW.lineage_only = 0 AND ((NEW.settled_at IS NULL AND (NEW.kind = 'spawn' OR (NEW.kind IN ('send','ask') AND NEW.notify = 1)))
-        OR (NEW.kind = 'spawn' AND NEW.target_computer_id <> '' AND NEW.nested_open = 1))) AND (OLD.caller_thread_id IS NOT NEW.caller_thread_id OR NOT (OLD.lineage_only = 0 AND ((OLD.settled_at IS NULL AND (OLD.kind = 'spawn' OR (OLD.kind IN ('send','ask') AND OLD.notify = 1)))
-        OR (OLD.kind = 'spawn' AND OLD.target_computer_id <> '' AND OLD.nested_open = 1)))) AND kind = 'spawn' AND target_computer_id = '' AND superseded = 0 AND target_thread_id <> ''
+   WHERE ((NEW.lineage_only = 0 AND NEW.settled_at IS NULL AND (NEW.kind = 'spawn' OR (NEW.kind IN ('send','ask') AND NEW.notify = 1)))
+        OR (NEW.kind = 'spawn' AND NEW.target_computer_id <> '' AND NEW.nested_open = 1)) AND (OLD.caller_thread_id IS NOT NEW.caller_thread_id OR NOT ((OLD.lineage_only = 0 AND OLD.settled_at IS NULL AND (OLD.kind = 'spawn' OR (OLD.kind IN ('send','ask') AND OLD.notify = 1)))
+        OR (OLD.kind = 'spawn' AND OLD.target_computer_id <> '' AND OLD.nested_open = 1))) AND kind = 'spawn' AND target_computer_id = '' AND superseded = 0 AND target_thread_id <> ''
      AND target_thread_id = (SELECT p.caller_thread_id FROM thread_requests p
           WHERE p.kind = 'spawn' AND p.target_computer_id = '' AND p.superseded = 0 AND p.target_thread_id = (SELECT p.caller_thread_id FROM thread_requests p
           WHERE p.kind = 'spawn' AND p.target_computer_id = '' AND p.superseded = 0 AND p.target_thread_id = (SELECT p.caller_thread_id FROM thread_requests p

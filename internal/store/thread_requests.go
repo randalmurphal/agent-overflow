@@ -622,12 +622,14 @@ func (s *Store) SetThreadRequestNotify(token string, notify bool) (bool, error) 
 
 // SetThreadRequestNestedOpen records whether the last agent_rows answer for
 // a spawn on another computer listed open work. It reports whether the row
-// changed; a lineage-only row is left alone.
+// changed. A remote spawn's lineage takes it as the spawn did, since that
+// lineage is its thread's link here (spawnLineageSQL); any other
+// lineage-only row is left alone.
 func (s *Store) SetThreadRequestNestedOpen(token string, open bool) (bool, error) {
 	action := fmt.Sprintf("store: set thread request %s nested open", token)
 	result, err := s.db.Exec(
 		`UPDATE thread_requests SET nested_open = ?, updated_at = ?
-		  WHERE token = ? AND nested_open IS NOT ? AND lineage_only = 0`,
+		  WHERE token = ? AND nested_open IS NOT ? AND (lineage_only = 0 OR target_computer_id <> '')`,
 		boolToInt(open), nowMillis(), token, boolToInt(open),
 	)
 	if err != nil {
@@ -636,36 +638,65 @@ func (s *Store) SetThreadRequestNestedOpen(token string, open bool) (bool, error
 	return s.changedThreadRequest(token, result, action)
 }
 
-// ClearThreadRequestsNestedOpenForComputer clears nested_open on every
-// spawn to one computer, for a computer no longer paired: nothing will
-// answer for it again. It returns the callers whose rows changed. A
-// forgotten computer is rare, so the read is the table's.
-func (s *Store) ClearThreadRequestsNestedOpenForComputer(computerID string) ([]string, error) {
-	rows, err := s.db.Query(
-		`UPDATE thread_requests SET nested_open = 0, updated_at = ?
-		  WHERE target_computer_id = ? AND target_computer_id <> '' AND nested_open = 1 AND lineage_only = 0
-		  RETURNING caller_thread_id`,
-		nowMillis(), computerID,
-	)
+// ForgetRemoteSpawnsOnComputer forgets what this computer keeps of its
+// spawns to one computer no longer paired, where nothing will answer for
+// them again: nested_open is cleared on every spawn to it, and the lineage
+// of those past the retention floor is deleted, since it links a thread
+// nothing here can reach. It returns the callers whose rows changed. A
+// forgotten computer is rare, so the reads are the table's.
+func (s *Store) ForgetRemoteSpawnsOnComputer(computerID string) (_ []string, err error) {
+	action := fmt.Sprintf("store: forget the spawns on computer %s", computerID)
+	tx, err := s.db.Begin()
 	if err != nil {
-		return nil, fmt.Errorf("store: clear nested open for computer %s: %w", computerID, err)
+		return nil, fmt.Errorf("%s: begin: %w", action, err)
 	}
+	defer tx.Rollback()
 	var callers []string
-	for rows.Next() {
-		var caller string
-		if err := rows.Scan(&caller); err != nil {
-			_ = rows.Close()
-			return nil, fmt.Errorf("store: clear nested open for computer %s: %w", computerID, err)
+	for _, statement := range []string{
+		`DELETE FROM thread_requests
+		  WHERE target_computer_id = ` + textParam("?2") + ` AND target_computer_id <> '' AND lineage_only = 1
+		  RETURNING caller_thread_id`,
+		`UPDATE thread_requests SET nested_open = 0, updated_at = ?1
+		  WHERE target_computer_id = ` + textParam("?2") + ` AND target_computer_id <> '' AND nested_open = 1
+		  RETURNING caller_thread_id`,
+	} {
+		rows, err := tx.Query(statement, nowMillis(), computerID)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", action, err)
 		}
-		if !slices.Contains(callers, caller) {
-			callers = append(callers, caller)
+		for rows.Next() {
+			var caller string
+			if err := rows.Scan(&caller); err != nil {
+				_ = rows.Close()
+				return nil, fmt.Errorf("%s: scan: %w", action, err)
+			}
+			if !slices.Contains(callers, caller) {
+				callers = append(callers, caller)
+			}
+		}
+		// The write finishes when its rows close: either error is the write's.
+		if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+			return nil, fmt.Errorf("%s: %w", action, err)
 		}
 	}
-	// The update finishes when its rows close: either error is the write's.
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-		return nil, fmt.Errorf("store: clear nested open for computer %s: %w", computerID, err)
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("%s: commit: %w", action, err)
 	}
 	return callers, nil
+}
+
+// DeleteRemoteSpawnLineage deletes the lineage of a spawn on another
+// computer once that computer refused its thread as not the spawn's: the
+// thread there, or its receipt, is gone, and nothing will list it again. It
+// reports whether a row went; a spawn not reduced to its lineage stays.
+func (s *Store) DeleteRemoteSpawnLineage(token string) (bool, error) {
+	action := fmt.Sprintf("store: delete the lineage of remote spawn %s", token)
+	result, err := s.db.Exec(`DELETE FROM thread_requests
+		  WHERE token = ? AND lineage_only = 1 AND kind = 'spawn' AND target_computer_id <> ''`, token)
+	if err != nil {
+		return false, fmt.Errorf("%s: %w", action, err)
+	}
+	return s.changedThreadRequest(token, result, action)
 }
 
 // ListNestedOpenRemoteSpawns returns the settled spawns on other computers
@@ -686,11 +717,12 @@ func (s *Store) ListNestedOpenRemoteSpawns(afterSettledAt int64, afterToken stri
 }
 
 // nestedOpenRemoteSpawnsSQL reads one page of
-// idx_thread_requests_nested_open, whose predicate it states.
+// idx_thread_requests_nested_open, whose predicate it states. A remote
+// spawn's lineage is one of them: it is its thread's link here.
 func nestedOpenRemoteSpawnsSQL(limit int) string {
 	return `SELECT ` + threadRequestColumns + ` FROM thread_requests
 	  WHERE nested_open = 1 AND settled_at IS NOT NULL AND kind = 'spawn'
-	    AND target_computer_id <> '' AND lineage_only = 0
+	    AND target_computer_id <> ''
 	    AND (settled_at, token) > (?, ?)
 	  ORDER BY settled_at ASC, token ASC LIMIT ` + strconv.Itoa(limit)
 }
@@ -712,9 +744,10 @@ func (s *Store) ListRestingRemoteSpawns(afterSettledAt int64, afterToken string,
 }
 
 // restingRemoteSpawnSQL is the predicate of idx_thread_requests_remote_rest:
-// a settled spawn on another computer whose last answer listed no open work.
+// a settled spawn on another computer whose last answer listed no open work,
+// its lineage past the retention floor included.
 const restingRemoteSpawnSQL = `nested_open = 0 AND settled_at IS NOT NULL AND kind = 'spawn'
-	    AND target_computer_id <> '' AND target_thread_id <> '' AND lineage_only = 0`
+	    AND target_computer_id <> '' AND target_thread_id <> ''`
 
 // restingRemoteSpawnsSQL reads one page of idx_thread_requests_remote_rest.
 func restingRemoteSpawnsSQL(limit int) string {
@@ -902,8 +935,7 @@ func (s *Store) ListThreadRequestsByCaller(callerThreadID string, limit, offset 
 // agent_rows answer listed open work, the predicate of
 // idx_thread_requests_nested_caller.
 func nestedRemoteSpawnSQL(alias string) string {
-	return alias + `.nested_open = 1 AND ` + alias + `.kind = 'spawn' AND ` + alias + `.target_computer_id <> '' AND ` +
-		alias + `.lineage_only = 0`
+	return alias + `.nested_open = 1 AND ` + alias + `.kind = 'spawn' AND ` + alias + `.target_computer_id <> ''`
 }
 
 // openAgentRequestSQL matches an open request the activity rail lists as an
@@ -1145,7 +1177,7 @@ func (s *Store) NextThreadRequestWork() (ThreadRequestSchedule, error) {
 		     WHERE notify = 1 AND `+threadWakeOwedSQL+`),
 		   EXISTS (SELECT 1 FROM thread_requests
 		     WHERE nested_open = 1 AND settled_at IS NOT NULL AND kind = 'spawn'
-		       AND target_computer_id <> '' AND lineage_only = 0),
+		       AND target_computer_id <> ''),
 		   EXISTS (SELECT 1 FROM thread_requests WHERE `+restingRemoteSpawnSQL+`)`,
 	).Scan(&reminder, &poll, &wake, &nestedOpen, &restingRemote); err != nil {
 		return ThreadRequestSchedule{}, fmt.Errorf("store: read next thread request work: %w", err)
@@ -1187,28 +1219,34 @@ func (s *Store) DeleteThreadRequest(token string) (bool, error) {
 	return s.changedThreadRequest(token, result, action)
 }
 
-// spawnLineageSQL matches a local spawn request whose thread still exists.
-// The row is the only record of which thread started that one: it names a
-// spawned thread's owner, where its prompts go, and links it into its
-// owner's Agents tree, so its lineage lives as long as the thread it made. Past the retention floor the sweep keeps only that lineage
-// (clearLineagePayloadSQL). ON DELETE CASCADE on the caller takes it when
-// the spawner goes, and a thread deleted on its own leaves a lineage row
-// nothing reads, which the sweep deletes (orphanLineageSQL).
-const spawnLineageSQL = `kind = 'spawn' AND target_computer_id = ''
-			AND EXISTS (SELECT 1 FROM threads WHERE threads.id = thread_requests.target_thread_id)`
+// spawnLineageSQL matches a spawn request whose thread may still exist: a
+// local one whose thread does, or one on another computer that named its
+// thread there. The row is the only record here of which thread started
+// that one: a local one names a spawned thread's owner and where its
+// prompts go, and either links its thread into its owner's Agents tree, so
+// its lineage lives as long as the thread it made. Past the retention floor
+// the sweep keeps only that lineage (clearLineagePayloadSQL). ON DELETE
+// CASCADE on the caller takes it when the spawner goes. A local thread
+// deleted on its own leaves a lineage row nothing reads, which the sweep
+// deletes (orphanLineageSQL); a remote one goes when its computer refuses
+// the thread as gone (DeleteRemoteSpawnLineage) or is forgotten
+// (ForgetRemoteSpawnsOnComputer).
+const spawnLineageSQL = `kind = 'spawn' AND target_thread_id <> ''
+			AND (target_computer_id <> '' OR EXISTS (SELECT 1 FROM threads WHERE threads.id = thread_requests.target_thread_id))`
 
 // clearLineagePayloadSQL marks a lineage row lineage_only, empties
 // everything it answered and disarms its wake, so past the floor the row
 // names its caller, kind, target, state and times and nothing else: the
 // ledger reads skip it, an old answer is not kept for the life of the
-// thread, and a wake it never handed over is not delivered empty. The
+// thread, a remote spawn is no longer polled, and a wake it never handed
+// over is not delivered empty. The
 // delivery marks stay, because a cleared delivered_at would read as a wake
 // still owed. The sweep appends its floor to the WHERE, which skips rows
 // already marked.
 const clearLineagePayloadSQL = `UPDATE thread_requests
 	SET lineage_only = 1, answer = NULL, answer_kind = '', late_reply = NULL, late_reply_at = NULL,
 	    answer_agent = 0, answer_agent_role = '', late_reply_agent = 0, late_reply_agent_role = '', notify = 0, issue = '', wake_issue = '', expires_at = NULL,
-	    nested_open = 0, target_provider = ''
+	    nested_open = 0, target_provider = '', polling = 0
 	WHERE lineage_only = 0`
 
 // The retention floor's four sets, each stated as the partial predicate of
@@ -1238,7 +1276,7 @@ const (
 	requestPastFloorSQL = `lineage_only = 0 AND state NOT IN ('unconfirmed','accepted','running')
 	    AND COALESCE(settled_at, due_at, created_at) < ?
 	    AND (nested_open = 0 OR target_computer_id = '') AND (open_below_0 + open_below_1 + open_below_2 + open_below_3) = 0`
-	orphanLineageSQL = `lineage_only = 1
+	orphanLineageSQL = `lineage_only = 1 AND target_computer_id = ''
 	    AND NOT EXISTS (SELECT 1 FROM threads WHERE threads.id = thread_requests.target_thread_id)`
 )
 

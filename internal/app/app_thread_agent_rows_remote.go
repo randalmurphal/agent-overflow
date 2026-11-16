@@ -26,9 +26,11 @@ import (
 // keeps working after it answered is recorded as it settles. Nothing there
 // tells this computer when a thread that rested is continued, so the sweep
 // also asks about the settled remote spawns at rest, one page a
-// threadAgentRestPassEvery from a cursor, each once a cycle: an answer that
-// finds one still at rest is kept nowhere and frames nothing, and one that
-// finds it working records it as any answer does.
+// threadAgentRestPassEvery from a cursor, each once a cycle, those the
+// retention floor reduced to their lineage included: an answer that finds
+// one still at rest is kept nowhere and frames nothing, one that finds it
+// working records it as any answer does, and a refusal of its thread as
+// gone deletes a spawn's lineage.
 //
 // The asking is bounded whatever the number of spawns or computers: one
 // queue of spawns waiting to be asked, each once, at most
@@ -287,8 +289,9 @@ func (a *App) askPeerAgentRows(spawn store.ThreadRequest) {
 	c.recording.Lock()
 	c.mu.Lock()
 	// A probe that finds the thread still at rest, or gets no answer, has
-	// nothing to record: the spawn's row already says it is at rest.
-	probe := c.probes[spawn.Token] && (err != nil || !peerListingOpen(listing))
+	// nothing to record: the spawn's row already says it is at rest. A
+	// refusal is recorded: the thread there is gone.
+	probe := c.probes[spawn.Token] && !threadAgentPeerRefused(err) && (err != nil || !peerListingOpen(listing))
 	delete(c.probes, spawn.Token)
 	c.mu.Unlock()
 	record := !shutdown && a.peerStillPaired(spawn.TargetComputerID)
@@ -380,10 +383,14 @@ func (a *App) peerPaired(computerID string) (bool, error) {
 // the answer is cached, so a read that nests the rows finds the spawn kept
 // for them. A computer that did not answer
 // leaves the last record. One that refused the thread as not this spawn's
-// (its thread, or its receipt past the retention floor, is gone there) will
-// never list it again, so it records none.
+// (its thread, and so its receipt, is gone there) will never list it
+// again, so it records none, and a spawn past the retention floor, kept
+// here only as that thread's link, is deleted.
 func (a *App) recordPeerOpenWork(spawn store.ThreadRequest, listing ThreadAgentRows, err error) {
 	if threadAgentPeerRefused(err) {
+		if _, delErr := a.store.DeleteRemoteSpawnLineage(spawn.Token); delErr != nil {
+			log.Printf("agent rows: delete the lineage of %s: %v", spawn.Token, delErr)
+		}
 		err, listing = nil, ThreadAgentRows{}
 	}
 	if err != nil {
@@ -504,7 +511,7 @@ func (a *App) forgetPeerAgentRows(computerID string) {
 	c.waiting = kept
 	delete(c.backoff, computerID)
 	c.mu.Unlock()
-	callers, err := a.store.ClearThreadRequestsNestedOpenForComputer(computerID)
+	callers, err := a.store.ForgetRemoteSpawnsOnComputer(computerID)
 	c.recording.Unlock()
 	if err != nil {
 		// The sweep clears what this could not: it drops a spawn whose

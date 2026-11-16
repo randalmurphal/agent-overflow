@@ -470,7 +470,7 @@ func TestASpawnCycleWithinTheMarkDepthIsRefused(t *testing.T) {
 
 // Forgetting a computer clears open work on every spawn to it, and names
 // the callers whose rows changed.
-func TestClearThreadRequestsNestedOpenForComputer(t *testing.T) {
+func TestForgetRemoteSpawnsOnComputer(t *testing.T) {
 	t.Parallel()
 	s := newTestStore(t)
 	for _, id := range []string{"lead", "other"} {
@@ -487,7 +487,7 @@ func TestClearThreadRequestsNestedOpenForComputer(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	callers, err := s.ClearThreadRequestsNestedOpenForComputer("gone")
+	callers, err := s.ForgetRemoteSpawnsOnComputer("gone")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -501,7 +501,7 @@ func TestClearThreadRequestsNestedOpenForComputer(t *testing.T) {
 			t.Fatalf("%s nested open = %v, %v; want %v", token, row.NestedOpen, err, want)
 		}
 	}
-	if again, err := s.ClearThreadRequestsNestedOpenForComputer("gone"); err != nil || len(again) != 0 {
+	if again, err := s.ForgetRemoteSpawnsOnComputer("gone"); err != nil || len(again) != 0 {
 		t.Fatalf("a second clear = %v, %v; want no change", again, err)
 	}
 }

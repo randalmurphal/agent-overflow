@@ -504,8 +504,8 @@ func agentOpenBelowSQL(alias string) string {
 // these (migration v151).
 func agentOpenWorkSQL(alias string) string {
 	a := alias + "."
-	return `(` + a + `lineage_only = 0 AND ((` + a + `settled_at IS NULL AND (` + a + `kind = 'spawn' OR (` + a + `kind IN ('send','ask') AND ` + a + `notify = 1)))
-        OR (` + a + `kind = 'spawn' AND ` + a + `target_computer_id <> '' AND ` + a + `nested_open = 1)))`
+	return `((` + a + `lineage_only = 0 AND ` + a + `settled_at IS NULL AND (` + a + `kind = 'spawn' OR (` + a + `kind IN ('send','ask') AND ` + a + `notify = 1)))
+        OR (` + a + `kind = 'spawn' AND ` + a + `target_computer_id <> '' AND ` + a + `nested_open = 1))`
 }
 
 // agentOpenUnderSQL is whether thread, or a thread up to agentOpenDepth
@@ -533,8 +533,8 @@ func agentRowKindSQL(alias string) string {
 // found by its key.
 func agentRowListedSQL(alias string) string {
 	a := alias + "."
-	return `((` + a + `lineage_only = 0 AND (` + a + `settled_at IS NULL OR ` + a + `settled_at >= ` + agentWindowSQL + `
-         OR (` + a + `kind = 'spawn' AND ` + a + `target_computer_id <> '' AND ` + a + `nested_open = 1)))
+	return `((` + a + `lineage_only = 0 AND (` + a + `settled_at IS NULL OR ` + a + `settled_at >= ` + agentWindowSQL + `))
+         OR (` + a + `kind = 'spawn' AND ` + a + `target_computer_id <> '' AND ` + a + `nested_open = 1)
          OR (` + agentSpawnLinkSQL(alias) + ` AND (` + agentOpenBelowSQL(alias) + ` OR ` + a + `token IN (SELECT token FROM held))))`
 }
 

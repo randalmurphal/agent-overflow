@@ -67,7 +67,9 @@ func TestListThreadAgentTreeNestsInTreeOrder(t *testing.T) {
 // open under it: a local spawn settled long ago with an open request below
 // its target, and a remote spawn whose computer reported open work, list the
 // same after a sweep, by listing and by name. Once that work settles, the
-// next sweep keeps only the local spawn's lineage and deletes the remote one.
+// next sweep keeps both as their lineage: the remote one, its thread there
+// continued, lists again under its caller and in the marks above it, and
+// goes once that computer refuses the thread as gone.
 func TestRetentionKeepsSpawnsWithOpenWorkUnderThem(t *testing.T) {
 	t.Parallel()
 	s := newTestStore(t)
@@ -129,10 +131,64 @@ func TestRetentionKeepsSpawnsWithOpenWorkUnderThem(t *testing.T) {
 	if row := rawThreadRequest(t, s, "l-c"); !row.LineageOnly {
 		t.Fatal("the local spawn kept no lineage once the work under it settled")
 	}
-	var remote int
-	if err := s.db.QueryRow(`SELECT COUNT(*) FROM thread_requests WHERE token = 'remote'`).Scan(&remote); err != nil || remote != 0 {
-		t.Fatalf("the remote spawn after the work settled = %d rows %v, want deleted", remote, err)
+	remote := rawThreadRequest(t, s, "remote")
+	if !remote.LineageOnly || len(remote.Answer) != 0 || remote.Polling || remote.TargetThreadID != "far" {
+		t.Fatalf("the remote spawn after the work settled = %+v; want its lineage, naming its thread there", remote)
 	}
+	if _, found, err := s.GetThreadRequest("remote"); err != nil || found {
+		t.Fatalf("the remote lineage's token = %v %v; want unknown", found, err)
+	}
+	if resting, err := s.ListRestingRemoteSpawns(0, "", 8); err != nil || !slices.Equal(agentRequestTokens(resting), []string{"remote"}) {
+		t.Fatalf("the rest pass's spawns = %v, %v; want the remote lineage", agentRequestTokens(resting), err)
+	}
+
+	// Its thread there is continued: the lineage lists again, and counts
+	// in the marks of the spawns above its caller.
+	seedAgentRequest(t, s, "g-r", "grand", ThreadRequestSpawn, "", false, 7_000)
+	if _, err := s.db.Exec(`UPDATE thread_requests SET target_computer_id = 'desk', target_thread_id = 'far-2' WHERE token = 'g-r'`); err != nil {
+		t.Fatal(err)
+	}
+	settleAgentRequest(t, s, "g-r", 7_100)
+	if _, err := s.DeleteThreadRequestsBefore(9_000); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := s.SetThreadRequestNestedOpen("remote", true); err != nil || !ok {
+		t.Fatalf("the lineage's open work: %v %v", ok, err)
+	}
+	if ok, err := s.SetThreadRequestNestedOpen("g-r", true); err != nil || !ok {
+		t.Fatalf("the deep lineage's open work: %v %v", ok, err)
+	}
+	if got := listed(); !slices.Equal(got, []string{"l-c", "c-g", "g-r", "remote"}) {
+		t.Fatalf("with the remote threads continued the tree = %v", got)
+	}
+	if got := listed("remote"); !slices.Equal(got, []string{"remote"}) {
+		t.Fatalf("the remote lineage by name = %v", got)
+	}
+	if marks := agentTreeMarks(t, s.db)["l-c"]; marks[1] != 1 {
+		t.Fatalf("the lead's spawn marks %v; want the remote lineage two spawns down counted", marks)
+	}
+	assertAgentTreeMarks(t, s.db, "a remote lineage's open work")
+
+	// That computer refuses one thread as gone, and is forgotten with the
+	// other: both lineages go.
+	if gone, err := s.DeleteRemoteSpawnLineage("remote"); err != nil || !gone {
+		t.Fatalf("delete the refused lineage = %v, %v", gone, err)
+	}
+	if gone, err := s.DeleteRemoteSpawnLineage("l-c"); err != nil || gone {
+		t.Fatalf("delete a local lineage as remote = %v, %v; want it kept", gone, err)
+	}
+	callers, err := s.ForgetRemoteSpawnsOnComputer("desk")
+	if err != nil || !slices.Equal(callers, []string{"grand"}) {
+		t.Fatalf("forget the computer = %v, %v; want the deep lineage's caller", callers, err)
+	}
+	var left int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM thread_requests WHERE target_computer_id = 'desk'`).Scan(&left); err != nil || left != 0 {
+		t.Fatalf("remote rows left = %d, %v", left, err)
+	}
+	if marks := agentTreeMarks(t, s.db)["l-c"]; marks != [agentOpenDepth]int64{} {
+		t.Fatalf("the lead's spawn marks %v once the lineages went; want none", marks)
+	}
+	assertAgentTreeMarks(t, s.db, "the remote lineages gone")
 }
 
 // A spawn the retention floor reduced to its lineage still links its
