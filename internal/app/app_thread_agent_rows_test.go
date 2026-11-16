@@ -559,7 +559,9 @@ func TestThreadAgentRowsStopAllStopsPastTheTraysLimit(t *testing.T) {
 }
 
 // Stop All reaches open work three settled spawns down, which the pane
-// lists under the chain that leads to it.
+// lists under the chain that leads to it. Each settled spawn on the way was
+// not at rest while the work below it was open, so the top one reports
+// stopped and counts the two below it and the open request.
 func TestThreadAgentRowsStopAllReachesDeepOpenWork(t *testing.T) {
 	t.Parallel()
 	f := newRequestFixture(t)
@@ -588,7 +590,7 @@ func TestThreadAgentRowsStopAllReachesDeepOpenWork(t *testing.T) {
 	}
 
 	stops, err := f.app.StopThreadAgentRows(t.Context(), f.caller.ID)
-	if err != nil || len(stops) != 1 || stops[0].Outcome != threadAgentEnded || stops[0].Nested != 1 || len(stops[0].Failures) != 0 {
+	if err != nil || len(stops) != 1 || stops[0].Outcome != threadAgentStopped || stops[0].Nested != 3 || len(stops[0].Failures) != 0 {
 		t.Fatalf("StopThreadAgentRows = %+v, %v; want the chain's one open agent stopped", stops, err)
 	}
 	if row := f.awaitRequestState(t, open.Token, store.ThreadRequestCancelled); row.Notify {
@@ -599,7 +601,8 @@ func TestThreadAgentRowsStopAllReachesDeepOpenWork(t *testing.T) {
 // A worker reused after the retention floor cleared its spawn still belongs
 // to its owner: the new work it opens lists under the expired spawn, which
 // waits on it, both count in the owner's summary, and Stop of that row, or
-// Stop All, reaches it. The expired spawn shows no answer.
+// Stop All, reaches it and reports the row stopped. The expired spawn shows
+// no answer.
 func TestAnExpiredSpawnsNewWorkListsAndStopsUnderItsOwner(t *testing.T) {
 	t.Parallel()
 	for _, all := range []bool{false, true} {
@@ -644,8 +647,8 @@ func TestAnExpiredSpawnsNewWorkListsAndStopsUnderItsOwner(t *testing.T) {
 		} else if stop, err = f.app.StopThreadAgentRow(t.Context(), f.caller.ID, "lead-worker"); err != nil {
 			t.Fatalf("StopThreadAgentRow: %v", err)
 		}
-		if stop.Token != "lead-worker" || stop.Outcome != threadAgentEnded || stop.Nested != 1 || len(stop.Failures) != 0 {
-			t.Fatalf("stop (all %v) = %+v; want the expired spawn ended with its worker's one agent stopped", all, stop)
+		if stop.Token != "lead-worker" || stop.Outcome != threadAgentStopped || stop.Nested != 1 || len(stop.Failures) != 0 {
+			t.Fatalf("stop (all %v) = %+v; want the expired spawn stopped with its worker's one agent", all, stop)
 		}
 		f.awaitRequestState(t, open.Token, store.ThreadRequestCancelled)
 	}

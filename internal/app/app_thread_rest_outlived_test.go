@@ -7,7 +7,9 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/threadtools"
 )
 
@@ -247,6 +249,123 @@ func assertSpawnerToldOfTheUnpausedRun(t *testing.T, a *App, spawnerID, token st
 		strings.Contains(texts[0], "were paused") {
 		t.Fatalf("the message = %q, want it to name %q and not say the worker is at rest", texts[0], stop.Failures[0])
 	}
+}
+
+// settleSpawnByHand settles the spawn of token as finished in s, with no
+// answer delivered, so nothing wakes its caller.
+func settleSpawnByHand(t *testing.T, s *store.Store, token string) {
+	t.Helper()
+	if settled, err := s.SettleThreadRequest(token, store.ThreadRequestOpenStates(), store.ThreadRequestSettlement{
+		State: store.ThreadRequestFinished, Answer: []byte("done"), AnswerKind: store.ThreadAnswerFinal,
+		SettledAt: time.Now().UnixMilli(),
+	}); err != nil || !settled {
+		t.Fatalf("settle %s: %v %v", token, settled, err)
+	}
+}
+
+// awaitAtRest waits until threadID is at rest itself, its own turn ended.
+func awaitAtRest(t *testing.T, a *App, threadID string) {
+	t.Helper()
+	waitUntil(t, 10*time.Second, func() bool {
+		rest, err := a.workerUnrest(threadID)
+		return err == nil && rest.unrest == ""
+	})
+}
+
+// assertStopOfTheWorkBelow checks that a person's Stop of the settled spawn
+// of token in spawnerID's list, whose thread is at rest and has a worker
+// below it that is not, reports it stopped and tells the spawner once, and
+// that a repeated Stop finds it all at rest and tells nobody.
+func assertStopOfTheWorkBelow(t *testing.T, a *App, spawnerID, token string, nested int) {
+	t.Helper()
+	stop, err := a.StopThreadAgentRow(t.Context(), spawnerID, token)
+	if err != nil || stop.Outcome != threadAgentStopped || stop.Nested != nested || len(stop.Failures) != 0 {
+		t.Fatalf("Stop = %+v, %v; want it stopped with the worker below", stop, err)
+	}
+	if got := workerStoppedMessages(t, a, spawnerID, token); got != 1 {
+		t.Fatalf("the spawner was told %d times, want once", got)
+	}
+	again, err := a.StopThreadAgentRow(t.Context(), spawnerID, token)
+	if err != nil || again.Outcome != threadAgentEnded || again.Nested != 0 {
+		t.Fatalf("repeated Stop = %+v, %v; want it all found at rest", again, err)
+	}
+	if got := workerStoppedMessages(t, a, spawnerID, token); got != 1 {
+		t.Fatalf("after a repeated Stop the spawner was told %d times, want once", got)
+	}
+}
+
+// A settled spawn whose thread is at rest but has a worker below it that is
+// not is not at rest: a person's Stop of its row stops that worker, reports
+// the spawn stopped and tells its spawner once. The worker below may run on
+// a paired computer, under a thread here or one there.
+func TestAStopOfASettledSpawnStopsItsWorkerBelowAndTellsTheSpawner(t *testing.T) {
+	t.Parallel()
+	t.Run("here", func(t *testing.T) {
+		t.Parallel()
+		f := newRequestFixture(t)
+		f.mockClaudeHoldingTheTurn(t, "working")
+		a, b := f.plainThread(t), f.plainThread(t)
+		f.seedAgentRow(t, "a-spawned-b", a.ID, store.ThreadRequestSpawn, b.ID, false)
+		settleSpawnByHand(t, f.app.store, "a-spawned-b")
+		c, err := f.adapter().Spawn(t.Context(), f.targetIdentity(t, b.ID), threadtools.SpawnCall{Prompt: "keep going"})
+		if err != nil {
+			t.Fatalf("Spawn: %v", err)
+		}
+		f.awaitRequestState(t, c.Token, store.ThreadRequestRunning)
+		settleSpawnByHand(t, f.app.store, c.Token)
+		awaitAtRest(t, f.app, b.ID)
+
+		assertStopOfTheWorkBelow(t, f.app, a.ID, "a-spawned-b", 1)
+		if _, live := f.app.sessionManager().get(c.ThreadID); live {
+			t.Fatal("the worker below kept its session")
+		}
+	})
+	t.Run("below a thread here", func(t *testing.T) {
+		t.Parallel()
+		pair := newAgentPeerPair(t, func(t *testing.T, app *App) *pairedBackend { return servePairedApp(t, app) })
+		top, err := createTestThread(t, pair.source, string(provider.Claude), t.TempDir(), "claude-opus-4-7", threadmode.ModeChat)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := pair.source.store.InsertThreadRequest(store.ThreadRequest{
+			Token: "top-spawned-the-caller", CallerThreadID: top.ID, Kind: store.ThreadRequestSpawn,
+			TargetThreadID: pair.caller.ID, State: store.ThreadRequestAccepted,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		settleSpawnByHand(t, pair.source.store, "top-spawned-the-caller")
+		settleSpawnByHand(t, pair.source.store, pair.spawn.Token)
+		awaitAtRest(t, pair.source, pair.caller.ID)
+
+		// The worker there and the one it spawned.
+		assertStopOfTheWorkBelow(t, pair.source, top.ID, "top-spawned-the-caller", 2)
+		if _, live := pair.dest.sessionManager().get(pair.child); live {
+			t.Fatal("the worker there kept its session")
+		}
+	})
+	t.Run("below a thread there", func(t *testing.T) {
+		t.Parallel()
+		pair := newAgentPeerPair(t, func(t *testing.T, app *App) *pairedBackend { return servePairedApp(t, app) })
+		settleSpawnByHand(t, pair.source.store, pair.spawn.Token)
+		settleSpawnByHand(t, pair.dest.store, pair.grand)
+		if err := pair.dest.StopSession(pair.child); err != nil {
+			t.Fatal(err)
+		}
+		awaitAtRest(t, pair.dest, pair.child)
+		grand, _, err := pair.dest.store.GetThreadRequest(pair.grand)
+		if err != nil {
+			t.Fatal(err)
+		}
+		waitUntil(t, 10*time.Second, func() bool {
+			rest, err := pair.dest.workerUnrest(grand.TargetThreadID)
+			return err == nil && rest.unrest == workerRunning
+		})
+
+		assertStopOfTheWorkBelow(t, pair.source, pair.caller.ID, pair.spawn.Token, 1)
+		if _, live := pair.dest.sessionManager().get(grand.TargetThreadID); live {
+			t.Fatal("the worker below there kept its session")
+		}
+	})
 }
 
 // A worker that outlived its spawn and is stopped through a cascade, or by

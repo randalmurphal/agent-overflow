@@ -570,9 +570,9 @@ func (a *App) stopAgentRequestBy(ctx context.Context, row store.ThreadRequest, v
 	}
 	spawned := current.Kind == store.ThreadRequestSpawn && current.TargetThreadID != ""
 	// A Stop of a spawn that already settled that finds its worker not at
-	// rest, or cuts its turn or background work, reports it stopped; agents
-	// of its own stopped below it are counted in Nested and leave it ended.
-	// When a person pressed it, the spawner is told too, since no settlement
+	// rest, or whose rest stopped anything of it or below it
+	// (restStoppedWork), reports it stopped, and ended otherwise. When a
+	// person pressed it, the spawner is told too, since no settlement
 	// tells it. A cascade tells nobody: the spawner it reaches is being
 	// brought to rest itself. An agent's own thread_cancel does not come
 	// through here.
@@ -641,9 +641,11 @@ func (a *App) workerNotAtRest(threadID string, result *ThreadAgentStop) bool {
 }
 
 // restStoppedWork reports whether a rest added to after, over before, a cut
-// turn or stopped background work of the thread itself.
+// turn, stopped background work, or an agent stopped below the thread: a
+// thread with a worker below it that is not at rest is not at rest itself.
 func restStoppedWork(before, after ThreadAgentStop) bool {
-	return (after.Interrupted && !before.Interrupted) || after.Background > before.Background
+	return (after.Interrupted && !before.Interrupted) || after.Background > before.Background ||
+		after.Nested > before.Nested
 }
 
 // workerStoppedSendIDRoot opens the send id of the message that tells a

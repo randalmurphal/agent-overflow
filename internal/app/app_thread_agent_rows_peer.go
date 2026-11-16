@@ -197,8 +197,8 @@ func (a *App) serveThreadAgentPeer(ctx context.Context, owner string, call Threa
 
 // stopThreadAgentWorkHere is agent_stop on this computer: one row of
 // threadID's listing by token, or the whole work of threadID, reported
-// stopped when the thread was not at rest or the rest cut its turn or
-// background work, and ended otherwise.
+// stopped when the thread was not at rest or the rest stopped anything of it
+// or below it (restStoppedWork), and ended otherwise.
 func (a *App) stopThreadAgentWorkHere(ctx context.Context, threadID, token string) (ThreadAgentStop, error) {
 	if token != "" {
 		return a.stopThreadAgentRowIn(ctx, threadID, token)
