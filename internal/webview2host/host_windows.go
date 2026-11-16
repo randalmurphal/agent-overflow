@@ -70,8 +70,9 @@ type Config struct {
 	// page bound to a mount with a report there is placed from it; nil, or
 	// no report, places pages from the backend's bounds alone.
 	Geometry *GeometryMailbox
-	// Focus holds the SPA's focus intent arms and withdrawals
-	// (focusintent.go). Nil applies every focus directive.
+	// Focus holds the SPA's focus intent arms and withdrawals and the
+	// delivered focus directives (focusintent.go). Nil keeps directives
+	// alone, with no withdrawal heard.
 	Focus *FocusIntents
 }
 
@@ -171,6 +172,9 @@ func New(config Config) (*Host, error) {
 	if config.Logf == nil {
 		config.Logf = log.Printf
 	}
+	if config.Focus == nil {
+		config.Focus = NewFocusIntents()
+	}
 	if config.Report == nil {
 		config.Report = func(string, ReportKind, string) {}
 	}
@@ -241,26 +245,26 @@ func (h *Host) Apply(directive Directive) {
 	case OpFindStop:
 		h.withPage(directive.PageID, h.stopFind)
 	case OpFocus:
-		h.withPage(directive.PageID, func(page *hostPage) { h.focusPage(page, directive.Mount, directive.Intent) })
+		h.config.Focus.Deliver(directive.Mount, directive.Intent, directive.PageID)
+		h.withPage(directive.PageID, h.applyPendingFocus)
 	}
 }
 
-// focusPage moves keyboard focus into a page the host shows, while the
-// launcher window is the foreground window and the SPA has not withdrawn the
-// intent (focusDecision). Runs on the UI thread, so the view it checks is
-// the one on screen, and a withdrawal that arrives after the claim hands
-// focus back after this move (ReleasePageFocus, queued behind it).
-func (h *Host) focusPage(page *hostPage, mount string, intent uint64) {
-	claim := func() bool { return h.config.Focus.Claim(mount, intent, page.id) }
-	switch focusDecision(page.shown, isForeground(h.config.HostWindow()), claim) {
-	case focusNotShown:
-		h.config.Logf("browser host: page %s focus: not shown, focus left alone", page.id)
-		return
-	case focusNotForeground:
-		h.config.Logf("browser host: page %s focus: the launcher window is not in the foreground, focus left alone", page.id)
-		return
-	case focusWithdrawn:
-		h.config.Logf("browser host: page %s focus: withdrawn by the user, focus left alone", page.id)
+// applyPendingFocus moves keyboard focus into the page for the focus intent
+// delivered for it, while the host shows the page, the launcher window is
+// the foreground window and the intent still stands (focusDecision). A page
+// not shown or a window in the background leaves the intent pending, and the
+// page's next show applies it (present). Runs on the UI thread, so the view
+// it checks is the one on screen.
+func (h *Host) applyPendingFocus(page *hostPage) {
+	var mount string
+	var intent uint64
+	take := func() bool {
+		var ok bool
+		mount, intent, ok = h.config.Focus.Take(page.id)
+		return ok
+	}
+	if focusDecision(page.shown, isForeground(h.config.HostWindow()), take) != focusMove {
 		return
 	}
 	report := FocusReport{Mount: mount, Intent: intent}
@@ -271,24 +275,6 @@ func (h *Host) focusPage(page *hostPage, mount string, intent uint64) {
 		return
 	}
 	h.config.Report(page.id, ReportFocused, report.Encode())
-}
-
-// ReleasePageFocus gives the launcher window, and so the SPA, the keyboard
-// if the page holds it: a focus intent the SPA withdrew after the host moved
-// focus for it (FocusIntents.Note). Call it on the UI thread.
-func (h *Host) ReleasePageFocus(pageID string) {
-	h.mu.Lock()
-	page := h.pages[pageID]
-	h.mu.Unlock()
-	if page == nil || page.controller == nil {
-		return
-	}
-	if !focusWithin(page.raiseTarget()) {
-		return
-	}
-	if !focusWindow(h.config.HostWindow()) {
-		h.config.Logf("browser host: page %s: the withdrawn focus stays in the page (the launcher window is not in the foreground)", page.id)
-	}
 }
 
 // ApplyGeometry re-presents every page bound to a mount the reports name.
@@ -331,6 +317,9 @@ func (h *Host) present(page *hostPage, raise bool) {
 		h.hidePage(page)
 	}
 	page.shown = next
+	if step.show {
+		h.applyPendingFocus(page)
+	}
 }
 
 // showPage shows the page's clip container and raises it.

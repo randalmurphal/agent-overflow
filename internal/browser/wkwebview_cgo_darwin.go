@@ -429,16 +429,6 @@ func wkFocusPresentedView(view wkView, live func() bool) (focusResult, error) {
 	return focusMoved, nil
 }
 
-// wkReleaseViewFocus makes the SPA's webview first responder if the view
-// is.
-func wkReleaseViewFocus(view wkView) error {
-	released := 0
-	if err := view.do(func(view unsafe.Pointer) { released = int(C.ao_wkv_view_release_focus(view)) }); err != nil {
-		return err
-	}
-	return focusReleaseError(released)
-}
-
 // wkFocusApp hands keyboard focus to the SPA's webview.
 func wkFocusApp() error {
 	ok := false

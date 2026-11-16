@@ -268,7 +268,8 @@ so AO's chords have to be taken back at the engine:
   eligible; none of them overrides the user's next focus choice. The store
   withdraws the intent on a focus or pointer press outside the page area
   (the composer, the address bar again), another active tab, or the pane
-  unmounting, posting the withdrawal to the Windows launcher directly
+  unmounting, whatever the arm's answer was and however long it took,
+  posting the withdrawal to the Windows launcher directly
   (`ao:pane-focus:`, beside the pane geometry) and sending
   `focus-page-withdraw`. The `focus-page` action arms it in
   `Manager.FocusCompanionPage`, which applies it only while the mount
@@ -279,13 +280,17 @@ so AO's chords have to be taken back at the engine:
   live where its hides run, immediately before moving focus:
   `ao_wk_view_focus_presented` grabs GTK focus on the WebKitGTK view,
   `ao_wkv_view_focus_presented` makes the WKWebView first responder, and the
-  launcher applies a `focus` directive on the page's lane with
-  `ICoreWebView2Controller::MoveFocus` (programmatic) only while its window
-  is in the foreground and it has not heard the intent withdrawn
-  (`focusDecision`, `FocusIntents`), so AO never takes the OS focus from
-  another application. A withdrawal that arrives after the move gives the
-  keyboard back to the app if the page still holds it (`ReleasePageFocus`
-  in each engine, `Host.ReleasePageFocus` in the launcher). The outcome
+  launcher applies a `focus` directive with
+  `ICoreWebView2Controller::MoveFocus` (programmatic) only while it shows
+  the page, its window is in the foreground and it has not heard the intent
+  withdrawn or replaced (`focusDecision`, `FocusIntents`), so AO never takes
+  the OS focus from another application; a directive for a page its own
+  presentation hides waits and is applied once at the page's next show,
+  under the same checks and the same age bound. Nothing undoes a focus that
+  landed, so one can still land in the instant between the user's choice
+  elsewhere and the withdrawal reaching where focus is applied: one loopback
+  RPC from the SPA to the backend on Linux and macOS, one WebView2 web
+  message from the SPA to the launcher on Windows. The outcome
   reaches the pane as a Kind `focus` event naming the intent; a refusal
   (the launcher's `focus-failed` report) takes the pane's action banner
   unless the intent is no longer the latest or a newer action's banner is

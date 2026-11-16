@@ -447,10 +447,6 @@ int ao_wk_view_focus_presented(void *view) {
   return gtk_widget_grab_focus(GTK_WIDGET(view)) ? 1 : 0;
 }
 
-int ao_wk_view_release_focus(void *view) {
-  return ao_release_focus(ao_view_holds_focus(GTK_WIDGET(view)));
-}
-
 // ---------------------------------------------------------------------------
 // Downloads
 // ---------------------------------------------------------------------------

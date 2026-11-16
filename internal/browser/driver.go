@@ -67,13 +67,8 @@ type engineUIThread interface {
 // chord it claims, inside KeyChord on the UI thread, so the handoff lands
 // before the next key and before the chord is dispatched (keyChord). The
 // launcher-hosted WebView2 claims in its own process and hands focus there.
-//
-// ReleasePageFocus gives the app the keyboard only if the page's view holds
-// it: a focus intent withdrawn after the engine applied it (focus_intent.go).
-// A page that closed answers nil.
 type engineAppFocus interface {
 	FocusApp() error
-	ReleasePageFocus(handle string) error
 }
 
 // focusReleaseError reads a native engine's answer to hiding or closing a

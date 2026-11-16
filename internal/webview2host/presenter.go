@@ -74,27 +74,29 @@ const (
 	// focusNotForeground leaves focus alone: the launcher window is not the
 	// foreground window.
 	focusNotForeground
-	// focusWithdrawn leaves focus alone: the user made another focus
-	// choice after asking (FocusIntents.Claim).
-	focusWithdrawn
+	// focusNoIntent leaves focus alone: no intent is pending for the page,
+	// or the one pending was withdrawn, replaced or outlived its age
+	// (FocusIntents.Take).
+	focusNoIntent
 )
 
-// focusDecision answers what an OpFocus does for a page the host shows as
-// shown (the view it last applied). Only a page the host presents and shows
-// takes keyboard focus, and only while the launcher window is the foreground
-// window: moving focus into a window that is not would activate it, and AO
-// never takes the OS focus from another application (the rule the
-// accelerator hand-back keeps, focusWindow). Eligibility is not permission:
-// claim, asked last and only of an eligible page, answers whether the
-// user's request still stands, and records the move when it does.
-func focusDecision(shown paneView, launcherForeground bool, claim func() bool) focusOutcome {
+// focusDecision answers what the host does with a page's pending focus
+// intent, given the view it shows (the view it last applied). Only a page
+// the host presents and shows takes keyboard focus, and only while the
+// launcher window is the foreground window: moving focus into a window that
+// is not would activate it, and AO never takes the OS focus from another
+// application (the rule the accelerator hand-back keeps, focusWindow). An
+// ineligible page keeps its intent pending. Eligibility is not permission:
+// take, asked last and only of an eligible page, consumes the pending intent
+// and answers whether the user's request still stands.
+func focusDecision(shown paneView, launcherForeground bool, take func() bool) focusOutcome {
 	switch {
 	case !shown.visible || !shown.hasBounds:
 		return focusNotShown
 	case !launcherForeground:
 		return focusNotForeground
-	case !claim():
-		return focusWithdrawn
+	case !take():
+		return focusNoIntent
 	default:
 		return focusMove
 	}

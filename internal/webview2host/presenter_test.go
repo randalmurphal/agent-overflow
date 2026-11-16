@@ -158,29 +158,48 @@ func TestFocusDecisionNeedsAShownPageAndTheForeground(t *testing.T) {
 		{"never placed", paneView{visible: true}, true, focusNotShown},
 		{"nothing", paneView{}, false, focusNotShown},
 	} {
-		claimed := false
-		claim := func() bool { claimed = true; return true }
-		if got := focusDecision(tc.view, tc.foreground, claim); got != tc.want {
+		taken := false
+		take := func() bool { taken = true; return true }
+		if got := focusDecision(tc.view, tc.foreground, take); got != tc.want {
 			t.Errorf("%s: focusDecision = %v, want %v", tc.name, got, tc.want)
 		}
-		// Only an eligible page's request is claimed, so one declined for
-		// eligibility is not recorded as moved.
-		if claimed != (tc.want == focusMove) {
-			t.Errorf("%s: claimed %v", tc.name, claimed)
+		// Only an eligible page takes its pending intent; an ineligible one
+		// keeps it for its next show.
+		if taken != (tc.want == focusMove) {
+			t.Errorf("%s: taken %v", tc.name, taken)
 		}
 	}
 }
 
+// launcherFocus is the launcher's focus path for one page, as Host runs it:
+// a directive delivers its intent, and every decision (the directive's own,
+// each later show of the page) asks focusDecision with Take.
+type launcherFocus struct {
+	f    *FocusIntents
+	page string
+}
+
+func (l launcherFocus) decide(view paneView, foreground bool) (focusOutcome, uint64) {
+	var intent uint64
+	outcome := focusDecision(view, foreground, func() bool {
+		var ok bool
+		_, intent, ok = l.f.Take(l.page)
+		return ok
+	})
+	return outcome, intent
+}
+
+var (
+	focusShown  = paneView{bounds: paneBounds{W: 10, H: 10}, hasBounds: true, visible: true}
+	focusHidden = paneView{bounds: paneBounds{W: 10, H: 10}, hasBounds: true}
+)
+
 // A focus directive delayed on its way through WSL leaves the keyboard where
 // the user put it after asking: the SPA's withdrawal reaches the launcher
-// first, straight from the SPA, and the launcher drops the directive.
+// first, straight from the SPA, and the launcher never applies the directive.
 func TestALauncherFocusWithdrawnBeforeItsDirectiveArrivesIsDropped(t *testing.T) {
-	shown := paneView{bounds: paneBounds{W: 10, H: 10}, hasBounds: true, visible: true}
 	arm := FocusIntentMessage{Mount: "mount-1", Intent: 1}
 	withdraw := FocusIntentMessage{Mount: "mount-1", Intent: 1, Withdrawn: true}
-	decide := func(f *FocusIntents, intent uint64, page string) focusOutcome {
-		return focusDecision(shown, true, func() bool { return f.Claim("mount-1", intent, page) })
-	}
 	for _, tc := range []struct {
 		name     string
 		messages []FocusIntentMessage
@@ -194,63 +213,84 @@ func TestALauncherFocusWithdrawnBeforeItsDirectiveArrivesIsDropped(t *testing.T)
 		// A newer request supersedes the delayed one.
 		{"a newer request armed", []FocusIntentMessage{arm, {Mount: "mount-1", Intent: 2}}},
 	} {
-		f := NewFocusIntents()
+		l := launcherFocus{f: NewFocusIntents(), page: "page-1"}
 		for _, msg := range tc.messages {
-			if page := f.Note(msg); page != "" {
-				t.Fatalf("%s: a withdrawal of an intent never applied handed back %q", tc.name, page)
-			}
+			l.f.Note(msg)
 		}
-		if got := decide(f, 1, "page-1"); got != focusWithdrawn {
+		l.f.Deliver("mount-1", 1, "page-1")
+		if got, _ := l.decide(focusShown, true); got != focusNoIntent {
 			t.Errorf("%s: the delayed directive = %v, want it dropped", tc.name, got)
 		}
 	}
 
-	// A live intent moves focus, once per directive, and a directive that
-	// arrives before its arm moves it too.
-	f := NewFocusIntents()
-	f.Note(arm)
-	if got := decide(f, 1, "page-1"); got != focusMove {
-		t.Fatalf("a live intent = %v, want a move", got)
+	// A live intent moves focus once, and a directive that arrives before
+	// its arm moves it too.
+	l := launcherFocus{f: NewFocusIntents(), page: "page-1"}
+	l.f.Note(arm)
+	l.f.Deliver("mount-1", 1, "page-1")
+	if got, intent := l.decide(focusShown, true); got != focusMove || intent != 1 {
+		t.Fatalf("a live intent = %v (%d), want a move for intent 1", got, intent)
 	}
-	if got := decide(f, 2, "page-1"); got != focusMove {
-		t.Fatalf("a directive heard before its arm = %v, want a move", got)
+	if got, _ := l.decide(focusShown, true); got != focusNoIntent {
+		t.Fatalf("an applied intent = %v, want it applied once", got)
 	}
-	if page := f.Note(FocusIntentMessage{Mount: "mount-1", Intent: 2}); page != "" {
-		t.Fatalf("the late arm handed back %q", page)
-	}
-
-	// An intent older than FocusIntentMaxAge is dropped.
-	now := time.Unix(1000, 0)
-	f = NewFocusIntents()
-	f.now = func() time.Time { return now }
-	f.Note(arm)
-	now = now.Add(FocusIntentMaxAge + time.Second)
-	if got := decide(f, 1, "page-1"); got != focusWithdrawn {
-		t.Fatalf("an expired intent = %v, want it dropped", got)
+	l.f.Deliver("mount-1", 2, "page-1")
+	l.f.Note(FocusIntentMessage{Mount: "mount-1", Intent: 2})
+	if got, intent := l.decide(focusShown, true); got != focusMove || intent != 2 {
+		t.Fatalf("a directive heard before its arm = %v (%d), want a move for intent 2", got, intent)
 	}
 }
 
-// A withdrawal heard after the launcher moved focus for the intent (the
-// residual race) names the page to take the keyboard back from, once; a
-// stale one names nothing.
-func TestALauncherWithdrawalAfterTheMoveHandsFocusBack(t *testing.T) {
-	f := NewFocusIntents()
-	f.Note(FocusIntentMessage{Mount: "mount-1", Intent: 3})
-	if !f.Claim("mount-1", 3, "page-1") {
-		t.Fatal("a live intent was not claimed")
+// Delivery is not application: a directive whose page the launcher's own
+// presentation hides (a promote or demote moving the pane) waits, and the
+// page's next show applies it once, unless it was withdrawn, replaced or
+// outlived its age meanwhile.
+func TestALauncherFocusWaitsForThePagesNextShow(t *testing.T) {
+	now := time.Unix(1000, 0)
+	newFocus := func() launcherFocus {
+		f := NewFocusIntents()
+		f.now = func() time.Time { return now }
+		f.Note(FocusIntentMessage{Mount: "mount-1", Intent: 1})
+		f.Deliver("mount-1", 1, "page-1")
+		return launcherFocus{f: f, page: "page-1"}
 	}
-	if page := f.Note(FocusIntentMessage{Mount: "mount-1", Intent: 2, Withdrawn: true}); page != "" {
-		t.Fatalf("a stale withdrawal handed back %q", page)
+
+	l := newFocus()
+	if got, _ := l.decide(focusHidden, true); got != focusNotShown {
+		t.Fatalf("hidden = %v, want it left alone", got)
 	}
-	if page := f.Note(FocusIntentMessage{Mount: "mount-1", Intent: 3, Withdrawn: true}); page != "page-1" {
-		t.Fatalf("the withdrawal handed back %q, want page-1", page)
+	// Another page's show does not take it.
+	if _, _, ok := l.f.Take("page-2"); ok {
+		t.Fatal("another page took the intent")
 	}
-	if page := f.Note(FocusIntentMessage{Mount: "mount-1", Intent: 3, Withdrawn: true}); page != "" {
-		t.Fatalf("a repeated withdrawal handed back %q", page)
+	// The window in the background keeps it waiting too.
+	if got, _ := l.decide(focusShown, false); got != focusNotForeground {
+		t.Fatalf("in the background = %v", got)
 	}
-	// Another mount's intents are its own.
-	if !f.Claim("mount-2", 1, "page-2") {
-		t.Fatal("another mount's intent was not claimed")
+	if got, intent := l.decide(focusShown, true); got != focusMove || intent != 1 {
+		t.Fatalf("the next show = %v (%d), want the waiting intent applied", got, intent)
+	}
+	if got, _ := l.decide(focusShown, true); got != focusNoIntent {
+		t.Fatalf("a later show = %v, want the intent applied once", got)
+	}
+
+	for _, tc := range []struct {
+		name     string
+		meantime func(l launcherFocus)
+	}{
+		{"withdrawn", func(l launcherFocus) { l.f.Note(FocusIntentMessage{Mount: "mount-1", Intent: 1, Withdrawn: true}) }},
+		{"replaced", func(l launcherFocus) { l.f.Note(FocusIntentMessage{Mount: "mount-1", Intent: 2}) }},
+		{"too old", func(launcherFocus) { now = now.Add(FocusIntentMaxAge + time.Second) }},
+	} {
+		now = time.Unix(1000, 0)
+		l := newFocus()
+		if got, _ := l.decide(focusHidden, true); got != focusNotShown {
+			t.Fatalf("%s: hidden = %v", tc.name, got)
+		}
+		tc.meantime(l)
+		if got, _ := l.decide(focusShown, true); got != focusNoIntent {
+			t.Errorf("%s while waiting: the next show = %v, want nothing applied", tc.name, got)
+		}
 	}
 }
 

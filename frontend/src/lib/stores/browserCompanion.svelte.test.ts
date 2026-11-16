@@ -791,6 +791,37 @@ describe('handing the keyboard to the browser page', () => {
     expect(withdrawals()).toHaveLength(1);
   });
 
+  it('withdraws on the next choice however long the request took', async () => {
+    vi.useFakeTimers();
+    try {
+      deferFocusAnswers();
+      const request = focusBrowserPage(THREAD, 'a', area);
+      // Past every bound the backend and the launcher keep: only they know
+      // when they heard of it.
+      vi.advanceTimersByTime(60_000);
+      composer.focus();
+      expect(posted.at(-1)).toBe('ao:pane-focus:{"mount":"mount-1","intent":1,"withdrawn":true}');
+      expect(withdrawals()).toEqual([expect.objectContaining({ mount: 'mount-1', intent: 1 })]);
+      answerFocus();
+      await request;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('withdraws a request whose arm failed on the next choice: it may have landed', async () => {
+    setBindingMock('BrowserCompanionDo', vi.fn(async (_thread: string, action: Action) => {
+      actions.push({ ...action });
+      if (action.kind === 'focus-page') throw new Error('connection lost');
+      return shown;
+    }));
+    const failure = await focusBrowserPage(THREAD, 'a', area);
+    expect(failure?.error).toContain('connection lost');
+    composer.focus();
+    expect(posted.at(-1)).toBe('ao:pane-focus:{"mount":"mount-1","intent":1,"withdrawn":true}');
+    expect(withdrawals()).toEqual([expect.objectContaining({ mount: 'mount-1', intent: 1 })]);
+  });
+
   it('keeps the request through a focus or press inside the page area', async () => {
     deferFocusAnswers();
     const request = focusBrowserPage(THREAD, 'a', area);

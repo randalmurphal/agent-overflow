@@ -712,16 +712,6 @@ func webkitFocusPresentedView(view webkitView, live func() bool) (focusResult, e
 	return focusMoved, nil
 }
 
-// webkitReleaseViewFocus gives the SPA's webview the keyboard if the view
-// holds it.
-func webkitReleaseViewFocus(view webkitView) error {
-	released := 0
-	if err := view.do(func(view unsafe.Pointer) { released = int(C.ao_wk_view_release_focus(view)) }); err != nil {
-		return err
-	}
-	return focusReleaseError(released)
-}
-
 // webkitFocusApp hands keyboard focus to the SPA's webview.
 func webkitFocusApp() error {
 	ok := false

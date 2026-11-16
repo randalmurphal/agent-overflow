@@ -53,8 +53,9 @@ shows the page, the launcher window is the foreground window, and the SPA
 has not withdrawn the directive's focus intent (`focusDecision`,
 `focusintent.go`); AO never takes the OS focus from another application.
 The SPA posts each intent's arm and withdrawal to the launcher directly, so
-a withdrawal wins over a directive still crossing WSL; one heard after the
-move gives the keyboard back (`Host.ReleasePageFocus`).
+a withdrawal wins over a directive still crossing WSL. Delivery is not
+application: a directive for a page the launcher's own presentation hides
+stays pending, and the page's next show applies it once (`present`).
 
 All COM controller and HWND mutations run on the launcher UI thread. Completion
 handlers may arrive there, so never block on backend RPC inline. Serialize

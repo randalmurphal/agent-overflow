@@ -72,11 +72,6 @@ int ao_wk_host_presented(void *view);
 // alone. GTK moves focus only inside the window; it never activates it.
 int ao_wk_view_focus_presented(void *view);
 
-// ao_wk_view_release_focus gives the SPA's webview keyboard focus only if
-// the view holds it: 1 it held focus and the app took it, 0 it held none,
-// -1 it held focus and the app could not take it.
-int ao_wk_view_release_focus(void *view);
-
 // ---- session -------------------------------------------------------------
 
 // ao_wk_session_new creates one workspace's isolated WebKitNetworkSession over

@@ -661,15 +661,6 @@ int ao_wkv_view_focus_presented(void *view) {
   }
 }
 
-int ao_wkv_view_release_focus(void *view) {
-  @autoreleasepool {
-    if (view == NULL) {
-      return 0;
-    }
-    return ao_release_focus(ao_view_holds_focus((NSView *)view));
-  }
-}
-
 int ao_wkv_host_presented(void *view) {
   @autoreleasepool {
     if (view == NULL) {

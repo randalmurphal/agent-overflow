@@ -151,16 +151,19 @@ func TestNativeEngineRealClaimedChordFocusesTheApp(t *testing.T) {
 	if active && !pageHasFocus("focus the presented page") {
 		t.Fatal("focus the presented page: an active window's page does not have document focus")
 	}
-	// A withdrawal that lands after the move (the user chose elsewhere while
-	// it was on its way) gives the keyboard back to the app.
+	// A withdrawal that lands after the move changes nothing: the page keeps
+	// the keyboard, as it would after a click of its own.
 	if err := manager.WithdrawCompanionPageFocus(access, mount.ID, 1); err != nil {
 		t.Fatalf("withdraw the landed focus: %v", err)
 	}
-	if who, _ := holder("withdraw the landed focus"); who != focusHeldByApp {
-		t.Fatalf("withdraw the landed focus: the window's focus widget is %d, want the app's webview", who)
+	if who, _ := holder("withdraw the landed focus"); who != focusHeldByPage {
+		t.Fatalf("withdraw the landed focus: the window's focus widget is %d, want the page", who)
 	}
 	// The engine checks the intent on the GTK thread: a withdrawn one moves
 	// nothing, the page shown or not.
+	if err := manager.engine.(engineAppFocus).FocusApp(); err != nil {
+		t.Fatalf("give the app the keyboard: %v", err)
+	}
 	host := manager.engine.(paneHost)
 	withdrawn := focusRequest{Mount: mount.ID, Intent: 9, Live: func() bool { return false }}
 	if result, err := host.FocusPage(view.Handle(), withdrawn); err != nil || result != focusWithdrawn {
