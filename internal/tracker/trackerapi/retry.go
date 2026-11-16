@@ -37,14 +37,14 @@ func (c *Client) statusError(k *call, a *answer) *StatusError {
 	problem, body := c.answerText(a)
 	return &StatusError{
 		Tracker: c.name, Method: k.method, URL: redact(a.url), Status: a.status,
-		Message: problem.Message, Fields: problem.Fields, Body: body,
+		Message: problem.Message, Fields: problem.Fields, Body: body, scrub: c.scrubRef(a.sent),
 	}
 }
 
 // redirectError is a 3xx answering a call that does not follow one. Its
 // target is named redacted, or not at all when it is not a URL.
 func (c *Client) redirectError(k *call, a *answer) *StatusError {
-	failure := &StatusError{Tracker: c.name, Method: k.method, URL: redact(a.url), Status: a.status}
+	failure := &StatusError{Tracker: c.name, Method: k.method, URL: redact(a.url), Status: a.status, scrub: c.scrubRef(a.sent)}
 	if location := a.header.Get("Location"); location != "" {
 		if target, err := a.url.Parse(location); err == nil {
 			failure.Location = redact(target)
@@ -61,7 +61,7 @@ func (c *Client) afterRefusal(ctx context.Context, k *call, state *retries, a *a
 	problem, _ := c.answerText(a)
 	refusal := &AuthError{
 		Tracker: c.name, Method: k.method, URL: redact(a.url), Status: a.status,
-		Message: problem.Message,
+		Message: problem.Message, scrub: c.scrubRef(a.sent),
 	}
 	if state.reread || (!k.read && !clientError(a.status)) {
 		return false, refusal

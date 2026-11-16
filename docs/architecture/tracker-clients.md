@@ -98,12 +98,15 @@ type Request struct {
   `BaseURL`. A redirect to another origin, and an absolute URL on another
   origin, are requested without it. Answer text in an error
   (`StatusError` `Body`, `Message` and `Fields`, `AuthError.Message`) has
-  the credential the request carried replaced by `<redacted>`. A client
-  that builds an error from a successful body passes its text through
-  `Response.Scrub`. Once the client no longer holds that credential (a
-  re-read replaced it, `ForgetCredential`, `Close`) its bytes are zeroed
-  and cannot be found, so the text is withheld whole. An error from
-  another package whose text repeats the credential is replaced by its
+  the credential the request carried replaced by `<redacted>`. Answer
+  text is scrubbed after it is decoded, by whoever decodes it:
+  `Response.Scrub`, `StatusError.Scrub` and `AuthError.Scrub` remove that
+  credential from text a client decodes from a body or shows. They return
+  text unchanged when the request carried no credential, and `<redacted>`
+  in place of the text once the client no longer holds the credential (a
+  re-read replaced it, `ForgetCredential`, `Close`), since zeroed bytes
+  cannot be found. `StatusError.Body` is scrubbed as text only. An error
+  from another package whose text repeats the credential is replaced by its
   scrubbed text. No error quotes a URL the tracker supplied beyond its
   scheme, host and path.
 - **Redirects.** The package follows redirects itself, for `GET` and

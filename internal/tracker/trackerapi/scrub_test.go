@@ -3,6 +3,7 @@ package trackerapi
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -235,6 +236,74 @@ func TestCauseScrubsTheWholeChain(t *testing.T) {
 	}
 	if plain := errors.New("connection reset"); c.cause(sent, plain) != plain {
 		t.Error("a cause without the credential was replaced")
+	}
+}
+
+// A JSON escape hides the key from the textual scrub of StatusError.Body,
+// and decoding restores it: the error's Scrub removes it from what a
+// caller decodes, for a status, a refused credential and a refused
+// redirect, and withholds the text once the credential is gone.
+func TestErrorScrubAfterDecoding(t *testing.T) {
+	t.Parallel()
+	const raw = "lin_api_fake0042"
+	// The body escapes the key's "f" as a JSON \u escape; "\x5c" is the backslash.
+	const escaped = `{"message":"bad lin_api_` + "\x5c" + `u0066ake0042"}`
+	answer := func(status int) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(status)
+			writeString(w, escaped)
+		}
+	}
+	tr := newTracker(t, route{
+		"POST /graphql": answer(http.StatusBadRequest),
+		"GET /me":       answer(http.StatusUnauthorized),
+		"POST /moved":   func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, "/elsewhere", http.StatusSeeOther) },
+	})
+	opts := testOptions(tr.url())
+	opts.Dialect = testDialect{}
+	opts.Credentials = StaticCredentials(Key(secret.New([]byte(raw))))
+	c, _ := loopbackClient(t, opts)
+
+	_, err := c.Do(t.Context(), Request{Method: http.MethodPost, Path: "graphql", Body: map[string]string{}})
+	status, ok := errors.AsType[*StatusError](err)
+	if !ok || status.Body != escaped || strings.Contains(status.Message, raw) {
+		t.Fatalf("400: %#v, want the escaped body as sent and the message scrubbed", err)
+	}
+	var decoded struct{ Message string }
+	if err := json.Unmarshal([]byte(status.Body), &decoded); err != nil || !strings.Contains(decoded.Message, raw) {
+		t.Fatalf("decoding the body gave %q, %v; want the key restored", decoded.Message, err)
+	}
+	_, err = c.Do(t.Context(), Request{Path: "me"})
+	refusal, ok := errors.AsType[*AuthError](err)
+	if !ok {
+		t.Fatalf("401: %v, want an *AuthError", err)
+	}
+	_, err = c.Do(t.Context(), Request{Method: http.MethodPost, Path: "moved", Body: map[string]string{}})
+	redirect, ok := errors.AsType[*StatusError](err)
+	if !ok {
+		t.Fatalf("303: %v, want a *StatusError", err)
+	}
+	scrubs := map[string]func(string) string{"status": status.Scrub, "refusal": refusal.Scrub, "redirect": redirect.Scrub}
+	for name, scrub := range scrubs {
+		if got := scrub(decoded.Message); got != "bad "+secret.Redacted {
+			t.Errorf("%s: Scrub = %q", name, got)
+		}
+	}
+	c.ForgetCredential()
+	for name, scrub := range scrubs {
+		if got := scrub(decoded.Message); got != secret.Redacted {
+			t.Errorf("%s: Scrub after ForgetCredential = %q, want the text withheld", name, got)
+		}
+	}
+
+	media := newTracker(t, route{"GET /file/1": answer(http.StatusBadRequest)})
+	_, err = c.Do(t.Context(), Request{Path: media.srv.URL + "/file/1", Absolute: true})
+	if offOrigin, ok := errors.AsType[*StatusError](err); !ok || offOrigin.Scrub(raw) != raw {
+		t.Fatalf("off the base origin: %v, want text unchanged by a request that carried no credential", err)
+	}
+	if (&StatusError{}).Scrub(raw) != raw || (&AuthError{}).Scrub(raw) != raw ||
+		(*StatusError)(nil).Scrub(raw) != raw || (*AuthError)(nil).Scrub(raw) != raw {
+		t.Fatal("an error built without a credential changed the text")
 	}
 }
 

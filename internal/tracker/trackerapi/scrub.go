@@ -9,13 +9,34 @@ import (
 	"agent-overflow/internal/secret"
 )
 
-// scrubRef is what a Response keeps for Scrub: its client and the
-// credential its request carried. Both are pointers, which every fmt path
-// prints as an address, and the secret stays in the Credential's
-// secret.Bytes: a Response holds no copy of it.
+// scrubRef is what a Response, a *StatusError and an *AuthError keep for
+// Scrub: the client and the credential the request carried. Both are
+// pointers, which every fmt path prints as an address, and the secret
+// stays in the Credential's secret.Bytes: none of them holds a copy.
 type scrubRef struct {
 	c    *Client
 	cred *Credential
+}
+
+// scrubRef is what an answer to a hop that sent sent keeps for Scrub; nil
+// when the request carried no credential.
+func (c *Client) scrubRef(sent sentWith) *scrubRef {
+	if !sent.carried {
+		return nil
+	}
+	return &scrubRef{c: c, cred: sent.cred}
+}
+
+// text is every Scrub method: text with the credential replaced, the
+// text unchanged when the request carried none (r is nil), and
+// secret.Redacted for any non-empty text once the credential is zeroed.
+func (r *scrubRef) text(text string) string {
+	if r == nil {
+		return text
+	}
+	s := r.c.scrubber(sentWith{carried: true, cred: r.cred})
+	defer s.clear()
+	return s.text(text)
 }
 
 // Scrub returns text with the credential this answer's request carried
@@ -30,12 +51,10 @@ type scrubRef struct {
 // Scrub cannot find them: it returns secret.Redacted in place of any
 // non-empty text.
 func (r *Response) Scrub(text string) string {
-	if r == nil || r.scrub == nil {
+	if r == nil {
 		return text
 	}
-	s := r.scrub.c.scrubber(sentWith{carried: true, cred: r.scrub.cred})
-	defer s.clear()
-	return s.text(text)
+	return r.scrub.text(text)
 }
 
 // scrubber replaces, in text an answer supplied, the credential its

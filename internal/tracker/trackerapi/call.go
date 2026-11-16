@@ -83,11 +83,7 @@ type answer struct {
 // response is the Response a caller gets for a. Body is nil for Stream,
 // which reads none into a.
 func (c *Client) response(a *answer) *Response {
-	resp := &Response{Status: a.status, Header: a.header, Body: a.body}
-	if a.sent.carried {
-		resp.scrub = &scrubRef{c: c, cred: a.sent.cred}
-	}
-	return resp
+	return &Response{Status: a.status, Header: a.header, Body: a.body, scrub: c.scrubRef(a.sent)}
 }
 
 // receiver reads a successful answer (below 400 and not a refused login)

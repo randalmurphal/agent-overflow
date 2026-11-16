@@ -39,7 +39,8 @@ func (e *NotSentError) Unwrap() error { return e.Err }
 // login (Status is then the answer's, which can be a 2xx). Err is the
 // failure to read the credential again, when that is what ended the call.
 // Message has the credential the request carried replaced by
-// secret.Redacted.
+// secret.Redacted, as text only: a caller that decodes it further scrubs
+// what it decodes with Scrub.
 type AuthError struct {
 	Tracker string
 	Method  string
@@ -47,6 +48,19 @@ type AuthError struct {
 	Status  int
 	Message string // the tracker's, from the dialect
 	Err     error
+
+	scrub *scrubRef // nil when the request carried no credential
+}
+
+// Scrub is Response.Scrub for the answer e came from: text with the
+// credential its request carried replaced by secret.Redacted, unchanged
+// when the request carried none, and secret.Redacted for any non-empty
+// text once the client no longer holds that credential.
+func (e *AuthError) Scrub(text string) string {
+	if e == nil {
+		return text
+	}
+	return e.scrub.text(text)
 }
 
 func (e *AuthError) Error() string {
@@ -90,14 +104,30 @@ func (e *RateLimitedError) Error() string {
 // target, redacted; empty when it named none that parses. A 404 matches
 // ErrNotFound.
 type StatusError struct {
-	Tracker  string
-	Method   string
-	URL      string
-	Status   int
-	Message  string
-	Fields   map[string]string
+	Tracker string
+	Method  string
+	URL     string
+	Status  int
+	Message string
+	Fields  map[string]string
+	// Body is scrubbed as text only: the credential is replaced where it
+	// appears as sent. An escape can hide it from that, so a caller that
+	// decodes Body (as JSON, say) scrubs what it decodes with Scrub.
 	Body     string
 	Location string
+
+	scrub *scrubRef // nil when the request carried no credential
+}
+
+// Scrub is Response.Scrub for the answer e came from: text with the
+// credential its request carried replaced by secret.Redacted, unchanged
+// when the request carried none, and secret.Redacted for any non-empty
+// text once the client no longer holds that credential.
+func (e *StatusError) Scrub(text string) string {
+	if e == nil {
+		return text
+	}
+	return e.scrub.text(text)
 }
 
 func (e *StatusError) Error() string {
