@@ -120,6 +120,28 @@ export interface AoToolPresentation {
 export interface AoToolFact {
   label: string;
   value: string;
+  /** Characters shown unfolded, when more than FACT_MAX. */
+  max?: number;
+}
+
+/**
+ * The most a spawned thread's instructions can run to, a profile's and the
+ * call's together (internal/threadtools/limits.go
+ * MaxSpawnInstructionsBytes), so the row shows them whole.
+ */
+const INSTRUCTIONS_FACT_MAX = 8 * 1024;
+
+/**
+ * A spawn row's facts with the instructions the spawned thread was given
+ * for its whole life, as that thread stores them (its profile's, then the
+ * call's), in place of the call's own. A thread this client does not have,
+ * such as one on another computer, keeps the call's.
+ */
+export function withSpawnInstructions(facts: AoToolFact[], stored: string | undefined): AoToolFact[] {
+  if (!stored) return facts;
+  const fact = { label: 'instructions', value: stored, max: INSTRUCTIONS_FACT_MAX };
+  const at = facts.findIndex((entry) => entry.label === 'instructions');
+  return at < 0 ? [...facts, fact] : facts.map((entry, index) => (index === at ? fact : entry));
 }
 
 type Input = Record<string, unknown>;
@@ -890,6 +912,10 @@ export function aoToolFacts(
     if (HIDDEN_FACTS.has(key) || value === undefined || value === null || value === '') continue;
     if (shown?.has(key)) continue;
     const text = factText(value);
+    if (mcp.tool === 'thread_spawn' && key === 'instructions') {
+      facts.push({ label: 'instructions', value: text, max: INSTRUCTIONS_FACT_MAX });
+      continue;
+    }
     facts.push({ label: FACT_LABELS[key] ?? key.replace(/_/g, ' '), value: text.length > FACT_MAX ? `${text.slice(0, FACT_MAX - 1)}…` : text });
   }
   const script = str(input, 'script');

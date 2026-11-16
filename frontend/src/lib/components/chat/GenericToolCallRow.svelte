@@ -1,7 +1,9 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
   import { untrack } from 'svelte';
-  import type { Item } from '../../types/models';
+  import type { Item, Thread } from '../../types/models';
+  import { GetThread } from '../../stores/bindings';
+  import { withBackendTarget } from '../../transport/backends';
   import { chatRowDomId } from '../../utils/chatDomIds';
   import { paneWorkspacePath } from '../../stores/thread.svelte';
   import type {
@@ -34,6 +36,7 @@
   import { useLeasedItemExpansion } from './useLeasedPayloadExpansion.svelte';
   import {
     aoToolFacts,
+    withSpawnInstructions,
     aoToolPresentation,
     aoToolServer,
     computerName as aoComputerName,
@@ -145,7 +148,23 @@
     const input = aoFactsMeta?.input;
     return input && typeof input === 'object' && !Array.isArray(input) ? (input as Record<string, unknown>) : {};
   });
-  let aoFacts = $derived(aoServer ? aoToolFacts(aoFactsMeta, aoNames) : []);
+  // The thread a spawn on this computer made, for the instructions it runs
+  // with. An owned worker is not in the thread list, so an expanded row
+  // reads it; a spawn on another computer shows the call's instructions.
+  let spawnedId = $derived(
+    aoTool?.server === THREAD_TOOLS_SERVER && aoTool.tool === 'thread_spawn' && !aoInput.computer_id
+      ? aoTool.result.threadId
+      : '',
+  );
+  let spawnedRead = $state<{ id: string; instructions: string } | null>(null);
+  let aoFacts = $derived.by(() => {
+    if (!aoServer) return [];
+    const facts = aoToolFacts(aoFactsMeta, aoNames);
+    if (!spawnedId) return facts;
+    const stored = getThreadById(spawnedId)?.spawnInstructions
+      ?? (spawnedRead?.id === spawnedId ? spawnedRead.instructions : undefined);
+    return withSpawnInstructions(facts, stored);
+  });
   let classification = $derived(
     aoTool
       ? { icon: aoTool.icon, label: aoTool.label, isSubagent: false }
@@ -166,6 +185,24 @@
     getFallback: () => localFallback,
   });
   const expansion = $derived(expansionRef.current!);
+  $effect(() => {
+    const id = spawnedId;
+    if (!id || !expansion.expanded || spawnedRead?.id === id || getThreadById(id)) return;
+    const backend = threadMachine(item.threadId, pane?.thread?.projectId);
+    let live = true;
+    withBackendTarget(backend, () => GetThread(id)).then(
+      (row) => {
+        if (live) spawnedRead = { id, instructions: (row as Thread | null)?.spawnInstructions ?? '' };
+      },
+      (err: unknown) => {
+        // The call's own instructions stay on the row.
+        if (live) console.warn(`Could not read spawned thread ${id} for its instructions:`, err);
+      },
+    );
+    return () => {
+      live = false;
+    };
+  });
 
   let summaryMeta = $derived(parseJsonObject(effectiveDisplayItem.payloadMeta));
   let itemMeta = $derived(parseJsonObject(item.meta));

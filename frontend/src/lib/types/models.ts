@@ -125,6 +125,12 @@ export interface Thread {
   /** The local thread whose thread_spawn made this one; absent when the user started it. */
   spawnedByThreadId?: string;
   /**
+   * What the spawn that made this thread appended to its system prompt for
+   * its whole life: the profile's instructions, then the call's. Absent
+   * when it had none.
+   */
+  spawnInstructions?: string;
+  /**
    * Where the sidebar shows the row (docs/specs/standing-agents.md ruling
    * 36): nowhere while it is owned by the thread that spawned it, in
    * `groupId`'s group, or as a plain row of its project. A row from a
