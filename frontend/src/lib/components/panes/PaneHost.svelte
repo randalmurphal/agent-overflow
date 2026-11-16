@@ -328,6 +328,9 @@
     const next = promotedId;
     const instant = compact;
     void paneStructureKey;
+    // A reveal waiting on a demote belongs to the navigation that asked for
+    // it; a new promotion, or the same one taken back, supersedes it.
+    if (next !== null) revealAfterDemote = null;
     untrack(() => promotion.follow(next, {
       instant,
       present: (paneId) => layoutItems.some((item) => item.paneId === paneId),
@@ -335,12 +338,20 @@
   });
 
   // Focus moving to another pane demotes: the promoted pane is the only one
-  // on screen, and the newly focused one must be seen.
+  // on screen, and the newly focused one must be seen, so the demote reveals
+  // it once it lands (the strip does not move before). Panes under the
+  // layer stay tabbable rather than inert: a pane command moves DOM focus
+  // into its target in the same task as the focus change (alt+l focuses the
+  // next composer), before any attribute could be cleared, and Tab out of a
+  // promoted pane is a way to leave it. A focus change with no promotion
+  // still reveals nothing.
   $effect(() => {
     const focused = focusedPaneId;
     untrack(() => {
       const intent = getPromotedPaneId();
-      if (intent !== null && focused !== null && focused !== intent) demotePane();
+      if (intent === null || focused === null || focused === intent) return;
+      revealAfterDemote = focused;
+      demotePane();
     });
   });
 
