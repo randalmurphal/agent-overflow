@@ -537,7 +537,7 @@ test('a session that fails to import keeps the surface open with its stamps', as
   try {
     await expect(page.getByTestId('session-import-progress-headline')).toHaveText('Imported 0 of 1');
   } catch (error) {
-    throw new Error(`the strip did not settle; the page received ${pageFrames.length} progress frame(s): ${pageFrames.join(' ')}`, { cause: error });
+    throw new Error(`the strip did not settle; the page received ${pageFrames.length} progress frame(s): ${pageFrames.join(' ')}\n${String(error)}`, { cause: error });
   }
   await expect(page.getByTestId('session-import-progress-detail')).toHaveText('1 failed');
   await expect(page.getByTestId(`session-import-outcome-${broken.rowId}`)).toBeVisible();

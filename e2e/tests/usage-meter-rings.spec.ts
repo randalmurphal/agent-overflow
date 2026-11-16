@@ -50,8 +50,12 @@ test('a weekly-only account shows one 7d meter, with a scoped weekly limit as it
     try {
       await expect(page.getByTestId('composer-rate-limit-5h')).toHaveCount(0);
     } catch (error) {
-      const held = JSON.stringify(await harness.rpc('GetRateLimitsSnapshots'));
-      throw new Error(`a 5h meter is shown; the backend holds ${held}`, { cause: error });
+      // The original failure is kept whatever the read does.
+      const held = await harness.rpc('GetRateLimitsSnapshots').then(
+        (snapshots) => JSON.stringify(snapshots),
+        (readError) => `unreadable (${String(readError)})`,
+      );
+      throw new Error(`a 5h meter is shown; the backend holds ${held}\n${String(error)}`, { cause: error });
     }
   };
 
