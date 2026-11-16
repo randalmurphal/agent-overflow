@@ -77,7 +77,7 @@ func TestEveryDoorRefusesAClaimedThread(t *testing.T) {
 			if err != nil || len(wakes) != 1 {
 				t.Fatalf("wakes = %+v, %v", wakes, err)
 			}
-			return f.app.deliverAgentWake(t.Context(), wakes[0], int64(nth+1), testAgentWake(wakes[0], "fired"))
+			return f.app.deliverAgentWake(t.Context(), wakes[0], int64(nth+1), testAgentWake(t, wakes[0], "fired"))
 		}},
 		"fork": {func(t *testing.T, f *requestFixture) string {
 			return f.forkableThread(t, "sess-door-fork").ID
