@@ -40,10 +40,7 @@ func Spawn(selfExe string) (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("orphanreaper: pipe: %w", err)
 	}
-	cmd := exec.Command(selfExe, reapSubcommand)
-	cmd.ExtraFiles = []*os.File{r} // lands as fd 3 (controlFD) in the child
-	cmd.Stderr = os.Stderr         // surface the sidecar's diagnostics
-	applySidecarProcessAttrs(cmd)
+	cmd := sidecarCommand(selfExe, r)
 	if err := cmd.Start(); err != nil {
 		r.Close()
 		w.Close()
@@ -53,6 +50,26 @@ func Spawn(selfExe string) (*Client, error) {
 	// pipe has exactly one reader (child) and one writer (this parent).
 	r.Close()
 	return &Client{cmd: cmd, w: w}, nil
+}
+
+// sidecarRuntimeEnv runs the sidecar's Go runtime with one P. The sidecar
+// only blocks on a pipe read, signals and sleeps, so more Ps buy nothing,
+// while each costs an OS thread and per-P caches for the app's whole life.
+// It is set through the environment because the app's package inits run
+// before RunChild, and runtime.GOMAXPROCS there cannot retire the threads
+// they already started.
+const sidecarRuntimeEnv = "GOMAXPROCS=1"
+
+// sidecarCommand builds the sidecar process with control on fd 3. Appending
+// sidecarRuntimeEnv after the inherited environment overrides any GOMAXPROCS
+// the app itself was started with.
+func sidecarCommand(selfExe string, control *os.File) *exec.Cmd {
+	cmd := exec.Command(selfExe, reapSubcommand)
+	cmd.Env = append(os.Environ(), sidecarRuntimeEnv)
+	cmd.ExtraFiles = []*os.File{control} // lands as fd 3 (controlFD) in the child
+	cmd.Stderr = os.Stderr               // surface the sidecar's diagnostics
+	applySidecarProcessAttrs(cmd)
+	return cmd
 }
 
 // Watch tells the sidecar to kill process group pgid if the parent dies.
