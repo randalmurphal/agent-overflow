@@ -144,6 +144,34 @@ describe('<BrowserPane> chrome', () => {
     expect(act).not.toHaveBeenCalledWith(THREAD, expect.objectContaining({ address: '/repo/old/html.file' }));
   });
 
+  it('returns focus to More after an action launched from its menu, the file picker included', async () => {
+    setBindingMock('BrowserCompanionDo', vi.fn(async () => state([page('a', { url: 'file:///repo/x.html' })])));
+    setBindingMock('BrowserCompanionRevealPageFile', vi.fn(async () => undefined));
+    const view = mount([page('a', { url: 'file:///repo/x.html' })]);
+    await ready(view);
+    const more = view.getByTestId('browser-more');
+    const choose = async (label: string) => {
+      more.focus();
+      await fireEvent.click(more);
+      const item = (await view.findAllByRole('menuitem')).find((el) => el.textContent?.includes(label))!;
+      item.focus();
+      await fireEvent.click(item);
+    };
+
+    await choose('Open file');
+    const field = await view.findByTestId('browser-file-search');
+    await waitFor(() => expect(document.activeElement).toBe(field));
+    await fireEvent.keyDown(field, { key: 'Escape' });
+    await waitFor(() => expect(view.queryByTestId('browser-file-picker')).toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(more));
+
+    for (const label of ['Show in folder', 'Open devtools']) {
+      await choose(label);
+      await waitFor(() => expect(view.queryAllByRole('menuitem')).toHaveLength(0));
+      expect(document.activeElement, label).toBe(more);
+    }
+  });
+
   it('shows a failed search in the picker', async () => {
     setBindingMock('SearchWorkspaceFiles', vi.fn(async () => {
       throw new Error('workspace is gone');
