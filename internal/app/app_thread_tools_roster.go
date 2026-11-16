@@ -54,7 +54,7 @@ type AgentProfileCheck struct {
 // a spawn, with the resolution its spawns and thread_options use, so the
 // editor refuses what thread_options would never list.
 //
-//ao:scope session
+//ao:scope settings:read
 //ao:route home
 func (a *App) CheckAgentProfiles(ctx context.Context, profiles []settings.AgentProfile) ([]AgentProfileCheck, error) {
 	catalog, err := a.threadTools().Catalog(ctx, threadtools.CatalogQuery{What: threadtools.OptionsModels})
