@@ -21,7 +21,8 @@ import { copyFile, mkdir, readdir, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { promisify } from 'node:util';
 import {
-  fingerprintIgnoredColumns, fingerprintIgnoredTables, recoveryRules, sendConfirmed, sendRecorded, unconfirmedUserRow, type RecoveryRule,
+  fingerprintIgnoredColumns, fingerprintIgnoredTables, recoveryRules, sendConfirmed, sendRecorded, unconfirmedUserRow,
+  type MigrationException, type RecoveryRule,
 } from './upgrade-corpus-config.js';
 import { CONFIG_FILE, exceptionsFor } from './upgrade-corpus-helpers.js';
 import { dbQuery, harnessTool, tableNames } from './upgrade-corpus-tools.js';
@@ -150,12 +151,14 @@ async function migrate(db: string, through?: number): Promise<void> {
  * names every change no migrationExceptions entry for (from, to] or
  * recoveryRules entry explains. Rows the trial added are not its concern.
  * `migrated` returns a copy of the snapshot the migrations alone ran on;
- * it is called only when a row changed.
+ * it is called only when a row changed. `exceptions` is the configured
+ * list for the span; a spec of the exception mechanism passes its own,
+ * because the configured list empties at each release.
  */
 export async function fingerprint(
   dbPath: string, snapshotPath: string, from: number, to: number, migrated: () => Promise<string>,
+  exceptions: MigrationException[] = exceptionsFor(from, to),
 ): Promise<Fingerprint> {
-  const exceptions = exceptionsFor(from, to);
   const span = to <= from ? 'the store open (no migration was pending)'
     : from + 1 === to ? `migration v${to}` : `the migrations v${from + 1}..v${to}`;
   const out: Fingerprint = {
