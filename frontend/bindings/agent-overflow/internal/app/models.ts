@@ -9185,6 +9185,13 @@ export class ThreadPeerRequest {
      */
     "lateReplyAgent"?: ThreadPeerAgent | null;
 
+    /**
+     * Instructions are what the spawn this call made appended to its
+     * thread's system prompt, as that thread stores them, for the spawn's
+     * reply on the calling computer. Set only on the reply to the spawn.
+     */
+    "instructions"?: string;
+
     /** Creates a new ThreadPeerRequest instance. */
     constructor($$source: Partial<ThreadPeerRequest> = {}) {
         if (!("token" in $$source)) {
