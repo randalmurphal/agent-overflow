@@ -850,8 +850,10 @@ Ruling 36, as built:
   which reads its durable sources again: its unanswered questions, the
   answers on their way to it, the background inventory, its workflow
   runs, its loops and watches, and its reminders). A changed request
-  re-evaluates its caller, and a workflow run's state change the thread
-  it reports to. A session's end settles the
+  re-evaluates its caller when that caller is a worker, named by the same
+  read that names the request's frames (`ThreadAgentRowFrames`), and a
+  workflow run's state change the thread it reports to. A session's end
+  settles the
   background work it owned and ends its timers. At boot one indexed read
   per durable source (armed loops and watches, unfired reminders, pending
   remote commands, answers on their way, running workflow runs,

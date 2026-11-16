@@ -1376,7 +1376,7 @@ func (a *App) drainThreadAgentEmits() {
 		e.tokens, e.callers, e.targets = map[string]struct{}{}, map[string]struct{}{}, map[string]struct{}{}
 		e.liveness, e.workflowRuns = map[string]bool{}, map[string]struct{}{}
 		e.mu.Unlock()
-		for _, threadID := range a.durableRestChanges(tokens, callers, runs) {
+		for _, threadID := range a.durableRestChanges(callers, runs) {
 			liveness[threadID] = true
 		}
 		for threadID, durable := range liveness {
@@ -1399,9 +1399,11 @@ func (a *App) drainThreadAgentEmits() {
 		// One statement names every frame: each changed request's caller,
 		// and each thread up to the listing's depth above it, whose listing
 		// and worker summary change with it.
-		frames, err := a.store.ThreadAgentRowFrames(slices.Collect(maps.Keys(tokens)), slices.Collect(maps.Keys(targets)),
+		frames, rest, err := a.store.ThreadAgentRowFrames(slices.Collect(maps.Keys(tokens)), slices.Collect(maps.Keys(targets)),
 			slices.Collect(maps.Keys(callers)), threadReceiptLocalOwner, threadAgentRowDepth)
 		if err != nil {
+			// The workers among the changed requests' callers keep what
+			// they last said until their next change.
 			log.Printf("agent rows: name the frames of %d changed requests, %d targets and %d callers: %v", len(tokens), len(targets), len(callers), err)
 			// The callers are known without the read; their readers read
 			// their lists again.
@@ -1413,23 +1415,22 @@ func (a *App) drainThreadAgentEmits() {
 		for _, frame := range frames {
 			a.emit(eventchan.ThreadAgentRowsChanged, ThreadAgentRowChange{ThreadID: frame.ThreadID, ID: frame.Token})
 		}
+		// A worker whose request changed may have an answer on its way, or
+		// no longer: the next pass reassesses it, framing it if it moved.
+		for _, threadID := range rest {
+			a.noteWorkerWaiting(threadID)
+		}
 	}
 }
 
 // durableRestChanges names the threads whose durable sources of rest the
-// drained changes may have changed: the caller of each changed request and
-// each caller named, whom an answer on its way keeps from rest, and the
-// thread each changed workflow run reports to. A read that fails is
-// logged: its threads keep what they last said until their next change.
-func (a *App) durableRestChanges(tokens, callers, runs map[string]struct{}) []string {
+// drained changes may have changed without a request's caller frame naming
+// them (ThreadAgentRowFrames names those): each caller named, whose wakes
+// were disarmed or moved, and the thread each changed workflow run reports
+// to. A read that fails is logged: its thread keeps what it last said
+// until its next change.
+func (a *App) durableRestChanges(callers, runs map[string]struct{}) []string {
 	out := slices.Collect(maps.Keys(callers))
-	if len(tokens) > 0 {
-		named, err := a.store.ThreadRequestCallers(slices.Collect(maps.Keys(tokens)))
-		if err != nil {
-			log.Printf("agent rows: read the callers of %d changed requests: %v", len(tokens), err)
-		}
-		out = append(out, named...)
-	}
 	for itemID := range runs {
 		origin, err := a.store.WorkItemOriginThread(itemID)
 		if err != nil {

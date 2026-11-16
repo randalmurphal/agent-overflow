@@ -111,7 +111,8 @@ func TestALiveLeafKeepsEverySpawnAboveItOpen(t *testing.T) {
 
 // The same chain whose leaf has nothing running but a request it is owed an
 // answer for: stored open work deeper than the listing's marks count still
-// holds every spawn above it open, and its answer settles them.
+// holds every spawn above it open, and so does its answer while it is on
+// its way to the leaf; its delivery settles them.
 func TestOpenWorkBelowTheListingKeepsEverySpawnAboveItOpen(t *testing.T) {
 	t.Parallel()
 	f := newRequestFixture(t)
@@ -130,9 +131,57 @@ func TestOpenWorkBelowTheListingKeepsEverySpawnAboveItOpen(t *testing.T) {
 	}); err != nil || !settled {
 		t.Fatalf("settle the leaf's send: %v, %v", settled, err)
 	}
+	f.app.threadRequestsWG.Wait()
+	f.expectChainOpen(t, threads, tokens)
+	if marked, err := f.app.store.MarkThreadRequestDelivered("leaf-send", store.ThreadWakeInline, time.Now().UnixMilli(), false); err != nil || !marked {
+		t.Fatalf("deliver the leaf's answer: %v, %v", marked, err)
+	}
 	waitUntil(t, 10*time.Second, func() bool {
 		f.app.threadRequestsWG.Wait()
 		return f.callerAgentFrames(t, f.caller.ID) > rootFrames
 	})
 	f.expectChainRested(t, threads, tokens)
+}
+
+// A worker whose own request settled with its answer owed as a message is
+// not at rest until a turn of it reads that answer: with no turn of its
+// own, its spawn's row reads it queued, framed for its spawner as its
+// request changes. Once the answer reached it, its row settles into Past.
+func TestAWorkersRowReadsQueuedWhileAnAnswerIsOnItsWayToIt(t *testing.T) {
+	t.Parallel()
+	f := newRequestFixture(t)
+	f.watchAgentRows()
+	worker, other := f.plainThread(t), f.plainThread(t)
+	f.seedAgentRow(t, "spawn-w", f.caller.ID, store.ThreadRequestSpawn, worker.ID, false)
+	settleSpawnByHand(t, f.app.store, "spawn-w")
+	f.seedAgentRow(t, "w-ask", worker.ID, store.ThreadRequestSend, other.ID, true)
+	f.app.threadRequestsWG.Wait()
+	frames := f.callerAgentFrames(t, f.caller.ID)
+
+	if settled, err := f.app.store.SettleThreadRequest("w-ask", store.ThreadRequestOpenStates(), store.ThreadRequestSettlement{
+		State: store.ThreadRequestReplied, Answer: []byte("done"), AnswerKind: store.ThreadAnswerReply, SettledAt: time.Now().UnixMilli(),
+	}); err != nil || !settled {
+		t.Fatalf("settle the worker's ask: %v, %v", settled, err)
+	}
+	var row ThreadAgentRow
+	waitUntil(t, 10*time.Second, func() bool {
+		f.app.threadRequestsWG.Wait()
+		row, _ = agentRowByToken(f.listingAfterWindow(t, f.caller.ID).Rows, "spawn-w")
+		return f.callerAgentFrames(t, f.caller.ID) > frames && row.Worker == workerQueued
+	})
+	if !row.open() {
+		t.Fatalf("row %+v; want it open while the answer is on its way", row)
+	}
+
+	if marked, err := f.app.store.MarkThreadRequestDelivered("w-ask", store.ThreadWakeInline, time.Now().UnixMilli(), false); err != nil || !marked {
+		t.Fatalf("deliver the answer: %v, %v", marked, err)
+	}
+	waitUntil(t, 10*time.Second, func() bool {
+		f.app.threadRequestsWG.Wait()
+		_, listed := agentRowByToken(f.listingAfterWindow(t, f.caller.ID).Rows, "spawn-w")
+		return !listed
+	})
+	if past := f.pastTokens(t, f.caller.ID); !slices.Contains(past, "spawn-w") {
+		t.Fatalf("past %v; want the spawn there", past)
+	}
 }

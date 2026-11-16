@@ -2,7 +2,6 @@ package store
 
 import (
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 )
@@ -97,20 +96,6 @@ func (s *Store) WorkItemOriginThread(itemID string) (string, error) {
 		return "", fmt.Errorf("store: read the thread workflow run %s reports to: %w", itemID, err)
 	}
 	return thread, nil
-}
-
-// ThreadRequestCallers names the caller of each of tokens this computer's
-// ledger holds, a token it does not hold left out.
-func (s *Store) ThreadRequestCallers(tokens []string) ([]string, error) {
-	if len(tokens) == 0 {
-		return nil, nil
-	}
-	encoded, err := json.Marshal(tokens)
-	if err != nil {
-		return nil, fmt.Errorf("store: encode request tokens: %w", err)
-	}
-	return s.queryThreadIDs("store: read the callers of changed requests",
-		`SELECT DISTINCT r.caller_thread_id FROM json_each(?) j CROSS JOIN thread_requests r WHERE r.token = j.value`, string(encoded))
 }
 
 // CallerSpawnedRemote reports whether callerThreadID spawned threadID on
