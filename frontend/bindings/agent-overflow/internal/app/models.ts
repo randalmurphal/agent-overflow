@@ -8144,10 +8144,22 @@ export class ThreadAgentRow {
     "blockedRoutedTo"?: string;
 
     /**
-     * Activity is what a running local target did last: its latest
-     * top-level tool call or message, while the request runs.
+     * Activity is what a running target did last: its latest top-level
+     * tool call, while the request runs or its worker is not at rest; a
+     * waiting worker's is what it waits on. A paired computer reports its
+     * spawn's.
      */
     "activity"?: string;
+
+    /**
+     * ToolCalls and Tokens are what the thread a spawn made did over its
+     * life: its top-level tool calls and the tokens its turns spent, the
+     * running turn's included (store.ThreadTallies), read here or reported
+     * by the paired computer that holds it; zero for every other kind and
+     * from a computer that does not report them.
+     */
+    "toolCalls"?: number;
+    "tokens"?: number;
 
     /**
      * LastMessage is who spoke last in a local target and the end of it.
@@ -8294,6 +8306,15 @@ export class ThreadAgentRows {
      * whose rows say what they can (peerListingOpen).
      */
     "open"?: boolean | null;
+
+    /**
+     * Activity, ToolCalls and Tokens are the listed thread's own, answered
+     * by agent_rows for the spawn row on the computer that asked
+     * (ThreadAgentRow). A computer that predates them sends none.
+     */
+    "activity"?: string;
+    "toolCalls"?: number;
+    "tokens"?: number;
 
     /** Creates a new ThreadAgentRows instance. */
     constructor($$source: Partial<ThreadAgentRows> = {}) {
@@ -9146,6 +9167,15 @@ export class ThreadPeerRequest {
     "blockedRoutedTo"?: string;
 
     /**
+     * WaitingOn is what the target still waits on while its request waits
+     * for its rest: a spawn, or a send from the thread that spawned it,
+     * whose turn ended with work of its own left (restSettlement). Live,
+     * never stored. A computer that does not send it settles such a
+     * request when its turn ends.
+     */
+    "waitingOn"?: string;
+
+    /**
      * AnswerAgent is set on a settled request whose thread was a standing
      * agent when the answer was written, with the role line its wake quotes.
      * A computer that does not send it is read as having answered from an
@@ -9175,14 +9205,14 @@ export class ThreadPeerRequest {
      * Creates a new ThreadPeerRequest instance from a string or object.
      */
     static createFrom($$source: any = {}): ThreadPeerRequest {
-        const $$createField17_0 = $$createType166;
         const $$createField18_0 = $$createType166;
+        const $$createField19_0 = $$createType166;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("answerAgent" in $$parsedSource) {
-            $$parsedSource["answerAgent"] = $$createField17_0($$parsedSource["answerAgent"]);
+            $$parsedSource["answerAgent"] = $$createField18_0($$parsedSource["answerAgent"]);
         }
         if ("lateReplyAgent" in $$parsedSource) {
-            $$parsedSource["lateReplyAgent"] = $$createField18_0($$parsedSource["lateReplyAgent"]);
+            $$parsedSource["lateReplyAgent"] = $$createField19_0($$parsedSource["lateReplyAgent"]);
         }
         return new ThreadPeerRequest($$parsedSource as Partial<ThreadPeerRequest>);
     }
