@@ -3,7 +3,12 @@
 This package owns six utilities:
 
 - `ConfigureGroup` and `KillConfiguredGroup` arrange and terminate an owned
-  child process group using the platform implementation. On Unix,
+  child process group using the platform implementation.
+  `StopConfiguredGroup` is the graceful stop: SIGTERM to the group, SIGKILL
+  to the group once its grace passes with any member left, and a return
+  only once the group is gone or with the error that left it running. Use
+  it as `exec.Cmd.Cancel` rather than pairing a SIGTERM with `WaitDelay`,
+  which kills only the leader. `Group` stops through the same function. On Unix,
   `SignalGroup` returns `os.ErrProcessDone` once no member of a group can
   still run, including the exited, unreaped group that macOS refuses with
   EPERM. Use it wherever a group signal's result is checked.

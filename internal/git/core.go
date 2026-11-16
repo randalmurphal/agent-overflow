@@ -69,8 +69,9 @@ const (
 	// push or pull carries routinely outlasts defaultTimeout; the bound is
 	// there to end a hook that hangs, not to rush one that works.
 	HookTimeout = 10 * time.Minute
-	// HookStopGrace is how long a stopped command has to exit after
-	// SIGTERM, which it and its hooks get together, before it is killed.
+	// HookStopGrace is how long a stopped command's process group, the
+	// command and its hooks together, has to exit after SIGTERM before the
+	// group is killed.
 	HookStopGrace = 5 * time.Second
 )
 
@@ -97,8 +98,10 @@ type Core struct {
 	repositoryLookups     repositoryLookups
 	repositoryLookupSlots chan struct{}
 	timeout               time.Duration
-	// hookTimeout replaces HookTimeout for a test; zero keeps it.
+	// hookTimeout and hookStopGrace replace HookTimeout and HookStopGrace
+	// for a test; zero keeps them.
 	hookTimeout    time.Duration
+	hookStopGrace  time.Duration
 	maxOutputBytes int64
 
 	// prCache memoizes lookupOpenPR results so a refresh storm (gitwatch
@@ -669,8 +672,9 @@ type commandSpec struct {
 	// runsHooks marks a command that runs the user's hooks (HookTimeout):
 	// it is bounded by HookTimeout, unless timeout says otherwise, runs in
 	// its own process group, and is stopped, at its bound or its context's
-	// end, with SIGTERM to the group (then SIGKILL after HookStopGrace), so
-	// the hooks it started stop with it.
+	// end, with SIGTERM to the group (then SIGKILL to the group after
+	// HookStopGrace), so the hooks it started stop with it. The run returns
+	// once the group is gone.
 	runsHooks bool
 	// maxBytes caps stdout and stderr independently; <= 0 falls back to
 	// the Core's configured cap, then the package default.
@@ -761,10 +765,23 @@ func (c *Core) runSpec(spec commandSpec) (commandResult, error) {
 	}
 	cmd := exec.CommandContext(ctx, target.path, spec.args...)
 	cmd.Args[0] = target.argv0
+	// stopErr is what left the group running after a stop. exec calls
+	// Cancel before its Wait returns and RunDrained calls it from this
+	// goroutine, so it is read below without a lock.
+	var stopErr error
 	if spec.runsHooks {
+		grace := c.hookStopGrace
+		if grace <= 0 {
+			grace = HookStopGrace
+		}
 		procutil.ConfigureGroup(cmd)
-		cmd.Cancel = func() error { return procutil.TerminateConfiguredGroup(cmd) }
-		cmd.WaitDelay = HookStopGrace
+		cmd.Cancel = func() error {
+			err := procutil.StopConfiguredGroup(cmd, grace)
+			if err != nil && !errors.Is(err, os.ErrProcessDone) {
+				stopErr = errors.Join(stopErr, err)
+			}
+			return err
+		}
 	}
 	// Background-cadence git (`status` every debounce edge) must not
 	// opportunistically rewrite .git/index: the write is a pure cache
@@ -808,18 +825,21 @@ func (c *Core) runSpec(spec commandSpec) (commandResult, error) {
 		stdout: stdoutBuf.String(),
 		stderr: stderrBuf.String(),
 	}
+	if stopErr != nil {
+		stopErr = fmt.Errorf("stop %s: %w", formatCommand(spec.binary, spec.args...), stopErr)
+	}
 	if streamed != nil && streamed.err != nil {
-		return result, fmt.Errorf("%s output stream failed: %w", formatCommand(spec.binary, spec.args...), streamed.err)
+		return result, errors.Join(fmt.Errorf("%s output stream failed: %w", formatCommand(spec.binary, spec.args...), streamed.err), stopErr)
 	}
 
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		return result, &commandStoppedError{fmt.Sprintf("%s timed out after %s", formatCommand(spec.binary, spec.args...), timeout)}
+		return result, errors.Join(&commandStoppedError{fmt.Sprintf("%s timed out after %s", formatCommand(spec.binary, spec.args...), timeout)}, stopErr)
 	}
 	// Cancelled by the caller's context rather than by our own timeout —
 	// app shutdown killing a background command mid-flight. Distinct
 	// message so it never reads as a repository or network problem.
 	if errors.Is(ctx.Err(), context.Canceled) {
-		return result, &commandStoppedError{fmt.Sprintf("%s cancelled", formatCommand(spec.binary, spec.args...))}
+		return result, errors.Join(&commandStoppedError{fmt.Sprintf("%s cancelled", formatCommand(spec.binary, spec.args...))}, stopErr)
 	}
 	if stdoutBuf.Truncated() || stderrBuf.Truncated() {
 		return result, fmt.Errorf(

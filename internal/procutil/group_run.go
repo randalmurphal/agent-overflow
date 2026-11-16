@@ -213,7 +213,9 @@ func (g *Group) supervise() (GroupOutcome, error) {
 	case waitErr = <-waited:
 	case <-g.ctx.Done():
 		stopped = true
-		stopGroup(g.cmd, g.grace, g.kill)
+		// A failed stop shows next: a leader that does not exit is
+		// ErrGroupSurvived, members that remain are the leftover sweep's.
+		_ = stopGroup(g.cmd, g.grace, g.kill)
 		select {
 		case waitErr = <-waited:
 		case <-time.After(g.grace):
@@ -223,7 +225,8 @@ func (g *Group) supervise() (GroupOutcome, error) {
 	leftovers := ConfiguredGroupAlive(g.cmd)
 	ending := true
 	if leftovers && !g.keepLeftovers {
-		ending = stopGroup(g.cmd, g.grace, g.kill)
+		err := stopGroup(g.cmd, g.grace, g.kill)
+		ending = err == nil || errors.Is(err, os.ErrProcessDone)
 	}
 	if ending {
 		g.reaper.Release(g.cmd.Process.Pid)
@@ -261,30 +264,67 @@ func RunGroup(ctx context.Context, reaper Reaper, command GroupCommand) (GroupOu
 	return group.Wait()
 }
 
-// stopGroup terminates the group politely, then kills whatever ignored it,
-// and reports whether the group is ending: it was gone, or took SIGKILL.
-// The grace runs on group emptiness, not on the leader: a shell wrapper
-// exits at once on SIGTERM while the server it started still needs its
-// moment to shut down.
-func stopGroup(cmd *exec.Cmd, grace time.Duration, kill func(*exec.Cmd) error) bool {
-	if err := TerminateConfiguredGroup(cmd); errors.Is(err, os.ErrProcessDone) {
-		return true
+// groupKillJoin bounds how long StopConfiguredGroup waits for the group to
+// be gone once SIGKILL was delivered: the members are dying, and each must
+// still be reaped by its parent or by init.
+const groupKillJoin = time.Second
+
+// errGroupOutlivedKill is StopConfiguredGroup's error for a group that still
+// has members groupKillJoin after SIGKILL was delivered.
+var errGroupOutlivedKill = errors.New("procutil: processes in the group outlived SIGKILL")
+
+// StopConfiguredGroup stops the group ConfigureGroup arranged for command and
+// returns once it is gone: SIGTERM to every member, then SIGKILL to the
+// group once grace has passed with any member still present, then a short
+// wait for the killed members to be reaped. The grace runs on group
+// emptiness, not on the leader: a leader that exits at once on SIGTERM
+// (git, a shell wrapper) can leave a hook or server that still needs its
+// moment, or that ignores SIGTERM and must be killed.
+//
+// It returns os.ErrProcessDone when the group was already gone, nil once
+// the group is gone after the signals, and otherwise the error that left
+// members running. It suits exec.Cmd.Cancel: the leader is reaped by Wait
+// while it blocks. On Windows the stop is the forced tree kill.
+func StopConfiguredGroup(command *exec.Cmd, grace time.Duration) error {
+	return stopGroup(command, grace, KillConfiguredGroup)
+}
+
+func stopGroup(cmd *exec.Cmd, grace time.Duration, kill func(*exec.Cmd) error) error {
+	// A refused SIGTERM still gets the grace and the kill: some members may
+	// have taken it, and the kill reports what is left.
+	termErr := terminateConfiguredGroup(cmd)
+	if errors.Is(termErr, os.ErrProcessDone) {
+		return termErr
 	}
-	deadline := time.NewTimer(grace)
+	if waitGroupGone(cmd, grace) {
+		return nil
+	}
+	if err := kill(cmd); errors.Is(err, os.ErrProcessDone) {
+		return nil
+	} else if err != nil {
+		return errors.Join(termErr, err)
+	}
+	if waitGroupGone(cmd, groupKillJoin) {
+		return nil
+	}
+	return errGroupOutlivedKill
+}
+
+// waitGroupGone polls until no member of cmd's group remains or bound ends,
+// and reports whether the group is gone.
+func waitGroupGone(cmd *exec.Cmd, bound time.Duration) bool {
+	deadline := time.NewTimer(bound)
 	defer deadline.Stop()
 	poll := time.NewTicker(50 * time.Millisecond)
 	defer poll.Stop()
 	for {
+		if !ConfiguredGroupAlive(cmd) {
+			return true
+		}
 		select {
 		case <-deadline.C:
-			// On cancellation a refused kill also shows as a leader that
-			// does not exit, which Wait reports as ErrGroupSurvived.
-			err := kill(cmd)
-			return err == nil || errors.Is(err, os.ErrProcessDone)
+			return !ConfiguredGroupAlive(cmd)
 		case <-poll.C:
-			if !ConfiguredGroupAlive(cmd) {
-				return true
-			}
 		}
 	}
 }
