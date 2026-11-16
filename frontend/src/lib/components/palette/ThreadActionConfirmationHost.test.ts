@@ -27,7 +27,7 @@ afterEach(() => resetThreadActionConfirmationsForTest());
 
 describe('<ThreadActionConfirmationHost>', () => {
   it('says how many terminals deleting a thread on a worktree closes', async () => {
-    setBindingMock('GitWorktreeStatus', async () => ({ path: '/tmp/wt/palette', terminals: 1 }));
+    setBindingMock('GetDeleteDependents', async () => ({ pastThreads: 0, helpers: 0, workers: 0, worktrees: [{ projectId: 'project-1', worktreePath: '/tmp/wt/palette', terminals: 1 }] }));
     const { findByText } = render(ThreadActionConfirmationHost);
 
     requestThreadActionConfirmation('delete', ctxFor({ workspacePath: '/tmp/wt/palette', worktreePath: '/tmp/wt/palette' }));
@@ -36,13 +36,12 @@ describe('<ThreadActionConfirmationHost>', () => {
   });
 
   it('adds nothing for a thread at the project root', async () => {
-    const status = setBindingMock('GitWorktreeStatus', async () => ({ terminals: 4 }));
+    setBindingMock('GetDeleteDependents', async () => ({ pastThreads: 0, helpers: 0, workers: 0, worktrees: [] }));
     const { findByText, queryByText } = render(ThreadActionConfirmationHost);
 
     requestThreadActionConfirmation('delete', ctxFor({ worktreePath: '' }));
 
     await findByText(/This action cannot be undone\./);
     expect(queryByText(/will close/)).toBeNull();
-    expect(status).not.toHaveBeenCalled();
   });
 });

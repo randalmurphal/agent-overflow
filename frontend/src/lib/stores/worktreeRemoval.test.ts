@@ -8,7 +8,7 @@ import {
   withTerminalsNote,
 } from './worktreeRemoval.svelte';
 import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
-import { getBindingMock, resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
 import { buildPane, makeThread } from '../../test/helpers/chat';
 import { resetPanesForTest } from './panes.svelte';
 import { threadRowFrameMark } from './threadRowFrames';
@@ -41,36 +41,34 @@ describe('terminalsClosingNote', () => {
 });
 
 describe('terminalsClosingNoteForThreadDelete', () => {
-  it('counts each worktree once and skips threads without one', async () => {
-    const status = setBindingMock('GitWorktreeStatus', async (_ws: unknown, path: string) => ({
-      path,
-      terminals: path === '/wt/a' ? 2 : 1,
+  // The delete removes the worktrees it empties, the threads' own and their
+  // workers', as the backend reads them; each counts once.
+  it('counts each worktree the delete empties once', async () => {
+    const read = setBindingMock('GetDeleteDependents', async (id: string) => ({
+      pastThreads: 0, helpers: 0, workers: 1,
+      worktrees: id === 't1'
+        ? [{ projectId: 'p', worktreePath: '/wt/a', terminals: 2 }, { projectId: 'p', worktreePath: '/wt/worker', terminals: 1 }]
+        : [{ projectId: 'p', worktreePath: '/wt/a', terminals: 2 }],
     }));
     const note = await terminalsClosingNoteForThreadDelete([
       makeThread({ id: 't1', workspacePath: '/wt/a', worktreePath: '/wt/a' }),
-      makeThread({ id: 't2', workspacePath: '/wt/a', worktreePath: '/wt/a' }),
-      makeThread({ id: 't3', workspacePath: '/wt/b', worktreePath: '/wt/b' }),
-      makeThread({ id: 't4', workspacePath: '/repo', worktreePath: '' }),
+      makeThread({ id: 't2', workspacePath: '/repo', worktreePath: '' }),
     ]);
     expect(note).toBe('3 terminals will close.');
-    expect(status).toHaveBeenCalledTimes(2);
+    expect(read.mock.calls).toEqual([['t1'], ['t2']]);
   });
 
   it('reports a count it cannot read and leaves it out', async () => {
-    setBindingMock('GitWorktreeStatus', async () => {
-      throw new Error('worktree status: exit 128');
+    setBindingMock('GetDeleteDependents', async (id: string) => {
+      if (id === 't1') throw new Error('database is locked');
+      return { pastThreads: 0, helpers: 0, workers: 0, worktrees: [{ projectId: 'p', worktreePath: '/wt/b', terminals: 1 }] };
     });
     const note = await terminalsClosingNoteForThreadDelete([
       makeThread({ id: 't1', workspacePath: '/wt/a', worktreePath: '/wt/a' }),
+      makeThread({ id: 't2', workspacePath: '/wt/b', worktreePath: '/wt/b' }),
     ]);
-    expect(note).toBe('');
+    expect(note).toBe('1 terminal will close.');
     expect(reported).toHaveBeenCalledTimes(1);
-  });
-
-  it('asks nothing when no thread is on a worktree', async () => {
-    const note = await terminalsClosingNoteForThreadDelete([makeThread({ id: 't1', worktreePath: '' })]);
-    expect(note).toBe('');
-    expect(getBindingMock('GitWorktreeStatus')).toBeUndefined();
   });
 });
 

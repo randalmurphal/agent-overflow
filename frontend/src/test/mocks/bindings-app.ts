@@ -141,6 +141,7 @@ export const GetThreadDefaults = dispatch('GetThreadDefaults');
 // the import. Keep the mock complete against everything bindings.ts imports.
 export const StartTerminal = dispatch('StartTerminal');
 export const DeleteThread = dispatch('DeleteThread');
+export const DeleteThreadAndWorktrees = dispatch('DeleteThreadAndWorktrees');
 export const ForkThread = dispatch('ForkThread');
 export const ForkSideChat = dispatch('ForkSideChat');
 export const PromoteScratchThread = dispatch('PromoteScratchThread');

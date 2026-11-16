@@ -168,8 +168,8 @@ describe('App integration — keybindings + palette', () => {
 
   it('palette thread delete requires confirmation before deleting', async () => {
     const thread = makeThread({ title: 'To Be Deleted' });
-    setBindingMock('GetDeleteDependents', async () => ({ pastThreads: 0, helpers: 0, workers: 0, workerWorktrees: [] }));
-    const deleteMock = setBindingMock('DeleteThread', async () => {});
+    setBindingMock('GetDeleteDependents', async () => ({ pastThreads: 0, helpers: 0, workers: 0, worktrees: [] }));
+    const deleteMock = setBindingMock('DeleteThreadAndWorktrees', async () => {});
     setBindingMock('StopSession', async () => {});
     const rendered = await mountBareApp([thread]);
     const rows = rendered.getAllByText(thread.title);

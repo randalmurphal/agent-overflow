@@ -15,17 +15,15 @@ import { withForkProgress } from '../../stores/forkPreparation.svelte';
 
 import {
   ArchiveThread,
-  DeleteThread,
+  DeleteThreadAndWorktrees,
   ForkThread,
   PinThread,
   RenameThread,
   SetThreadPinGroup,
   StartNextAssistantThread,
-  StopSession,
   UnpinThread,
 } from '../../stores/bindings';
 import {
-  getThreadById,
   markThreadsRead,
   markThreadUnread,
   prependThreadReply,
@@ -35,14 +33,12 @@ import {
 } from '../../stores/threads.svelte';
 import { closePanesShowingThread, panesShowingThread } from '../../stores/panes.svelte';
 import { getComposerDraftForPane } from '../../stores/composerDraftRegistry.svelte';
-import { removeWorktreeAt, threadWorktreeOwner } from '../../stores/worktreeRemoval.svelte';
-import { sameNormalizedPath } from '../../utils/path';
 import { threadRowFrameMark } from '../../stores/threadRowFrames';
 import { expandProject } from '../../stores/sidebar.svelte';
 import { addErrorToast, addToast } from '../../stores/toast.svelte';
 import { copyToClipboard } from '../../utils/clipboard';
 import { userFacingError } from '../../utils/userFacingError';
-import { isAssistantNameTaken, readDeleteDependents } from '../../stores/assistants.svelte';
+import { isAssistantNameTaken } from '../../stores/assistants.svelte';
 import type { ArchiveThreadResult, DeleteThreadResult, Thread, WorkerFailure } from '../../types/models';
 import { autoPinNewThread } from '../../stores/threadAutoPin';
 import { requireEntityBackend, withBackendTarget } from '../../transport/backends';
@@ -247,44 +243,25 @@ export async function deleteThreadAction(ctx: ThreadActionCtx): Promise<void> {
 }
 
 /**
- * Deletes a thread the way the sidebar does: its session stops and the
- * worktree it is on is removed, then the backend deletes it with the
- * workers it owns (docs/specs/standing-agents.md, "Owned workers"). The
- * worktrees those workers are on are removed with it, each once, after the
- * sessions of the workers on them stop, as their own deletes would. A
- * worktree that cannot be removed stops the delete before anything is
- * deleted. Returns the computer the thread is on, captured before the
- * first await, and what the delete left undone.
+ * Deletes a thread the way the sidebar does: the backend deletes it with
+ * everything under it and removes the worktrees the delete empties, after
+ * stopping the sessions on them (DeleteThreadAndWorktrees;
+ * docs/specs/standing-agents.md, "Owned workers"). Returns the computer the
+ * thread is on, captured before the first await, and what the delete left
+ * undone.
  */
 export async function deleteThreadWithWorktrees(
-  thread: Pick<Thread, 'id' | 'projectId' | 'worktreePath'>,
+  thread: Pick<Thread, 'id'>,
 ): Promise<{ backend: BackendKey; result: DeleteThreadResult }> {
   const backend = requireEntityBackend(threadOwner(thread.id));
-  const worktree = threadWorktreeOwner(thread);
-  await StopSession(thread.id).catch((err) => {
-    console.error('Failed to stop session before delete:', err);
-  });
-  const dependents = await readDeleteDependents(backend, thread.id);
-  const workerWorktrees = dependents?.workerWorktrees ?? [];
-  for (const workerWorktree of workerWorktrees) {
-    for (const id of workerWorktree.threadIds ?? []) {
-      await withBackendTarget(backend, () => StopSession(id)).catch((err) => {
-        console.error('Failed to stop a worker session before delete:', err);
-      });
-    }
-  }
-  if (worktree) await removeWorktreeAt(worktree);
-  for (const { projectId, worktreePath } of workerWorktrees) {
-    if (worktree && worktree.projectId === projectId && sameNormalizedPath(worktree.worktreePath, worktreePath)) continue;
-    await removeWorktreeAt({ backend, projectId, worktreePath });
-  }
-  const result = await withBackendTarget(backend, () => DeleteThread(thread.id));
+  const result = await withBackendTarget(backend, () => DeleteThreadAndWorktrees(thread.id));
   return { backend, result: result ?? {} };
 }
 
 /**
- * A delete that went through can leave workers it could not delete: they
- * are standalone in the sidebar now, and the toast deletes them again.
+ * A delete that went through can leave workers it could not delete: one
+ * whose worktree was kept is standalone in the sidebar now, and the toast
+ * deletes them again.
  */
 export function reportDeleteLeftovers(
   backend: BackendKey,
@@ -305,12 +282,8 @@ async function deleteWorkersAgain(backend: BackendKey, workers: WorkerFailure[])
   for (const worker of workers) {
     const title = worker.title || worker.threadId;
     try {
-      // Standalone now, the worker is usually listed, and its worktree goes
-      // as a sidebar delete's does.
-      const row = getThreadById(worker.threadId);
-      const result = row
-        ? (await deleteThreadWithWorktrees(row)).result
-        : (await withBackendTarget(backend, () => DeleteThread(worker.threadId))) ?? {};
+      // Its worktree goes as a sidebar delete's does.
+      const result = (await withBackendTarget(backend, () => DeleteThreadAndWorktrees(worker.threadId))) ?? {};
       removeThread(worker.threadId);
       closePanesShowingThread(worker.threadId);
       reportDeleteLeftovers(backend, title, result);
