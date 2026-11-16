@@ -133,10 +133,16 @@ func personalStop(transcriptRootIDs []string) *agentKillConsent {
 // not cover. Only a Claude session is refused: its interrupt is the one
 // that kills async agents. A confirmed agent that has ended since is no
 // reason to refuse.
+//
+// The events already read from the provider are handled first, so an agent
+// whose launch is reported and not yet stored is counted. The event worker
+// never takes the thread action lock, so the wait is safe under it. An
+// agent the CLI launches after this check is beyond what the app can see.
 func (a *App) refuseBackgroundKill(threadID string, sess session, consent *agentKillConsent) error {
 	if consent == nil || sess.Claude == nil {
 		return nil
 	}
+	a.drainProviderEvents(threadID, "stop: count live background agents")
 	agents, err := a.runningBackgroundAgents(threadID)
 	if err != nil {
 		return fmt.Errorf("interrupt %s: %w", threadID, err)
