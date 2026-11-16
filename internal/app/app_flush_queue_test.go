@@ -1926,6 +1926,7 @@ func TestRegisterQueueItem_AppendsAndEmitsState(t *testing.T) {
 		t.Fatalf("CreateThread: %v", err)
 	}
 
+	holdFlushQueue(app)
 	queued, err := app.RegisterQueueItem(context.Background(), thread.ID, "hello", SendMessageOptions{})
 	if err != nil {
 		t.Fatalf("RegisterQueueItem: %v", err)
@@ -3254,6 +3255,7 @@ func TestQueueStateChanged_PayloadDecodesAttachmentIDs(t *testing.T) {
 		t.Fatalf("CreateThread: %v", err)
 	}
 
+	holdFlushQueue(app)
 	if _, err := app.RegisterQueueItem(context.Background(), thread.ID, "with attachments", SendMessageOptions{
 		AttachmentIDs: []string{"att-1", "att-2"},
 	}); err != nil {
