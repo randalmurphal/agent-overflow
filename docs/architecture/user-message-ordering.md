@@ -159,7 +159,11 @@ did consume is confirmed instead.
 A crash runs no teardown: the boot restore (`restoreDurableFlushQueueAtBoot`)
 takes back each main-timeline user row still marked `pendingFlush` that is
 residue, in its thread's last turn and written by that thread, and returns its
-text to the composer, once when its queue row survived too. A marked row a
+text to the composer whole. A queue row that survived beside it as a copy of
+a message it carries adds no text: a joined row cannot be split back into its
+members, so it is the unit. A queue row whose message a row the provider
+confirmed carries was delivered and is dropped. A dispatch deletes the queue
+rows of every message it carried in one statement. A marked row a
 later turn follows is history a later session ran with: the boot leaves it
 and the composer alone, and the store refuses to retire it
 (`RestoreFlushQueueToDraft`). Migration v152 cleared the marks earlier builds

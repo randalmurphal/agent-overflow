@@ -157,7 +157,7 @@ func TestRequeuedUnconfirmedMessageIsDurableAgain(t *testing.T) {
 	if len(queued) != 1 {
 		t.Fatalf("queued = %+v, want the message queued once", queued)
 	}
-	queued[0].Settlement.Settle()
+	app.settleFlushGroup(thread.ID, queued)
 	if rows := durableQueueRows(t, app, thread.ID); len(rows) != 0 {
 		t.Fatalf("durable rows after its dispatch settled = %+v, want none", rows)
 	}

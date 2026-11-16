@@ -521,7 +521,7 @@ func (a *App) dispatchFlushWithGeneration(threadID string, items []triage.Queued
 			// Older clients admitted empty rows. They have no input to retry
 			// or restore, and must not block the meaningful tail of the queue.
 			a.noteFlushDispatchGroupSettled(threadID, group)
-			settleFlushGroup(group)
+			a.settleFlushGroup(threadID, group)
 			continue
 		}
 		if err != nil {
@@ -563,7 +563,7 @@ func (a *App) dispatchFlushWithGeneration(threadID string, items []triage.Queued
 		// other. The shared settlement is exactly-once if those paths race, and
 		// every member of a joined group settles on the one write that carried
 		// it.
-		settleFlushGroup(group)
+		a.settleFlushGroup(threadID, group)
 	}
 	a.emitQueueStateChanged(threadID)
 }
@@ -646,7 +646,19 @@ func (a *App) publishFlushDispatch(threadID string, group []triage.QueuedFlushIt
 	a.emit(eventchan.ProviderQueueFlushed, QueueFlushedEvent{ThreadID: threadID, Items: items})
 }
 
-func settleFlushGroup(group []triage.QueuedFlushItem) {
+// settleFlushGroup ends a group the provider write carried, or that had
+// nothing to send: every member's durable queue row goes in one statement
+// (store.DeleteDispatchedFlushQueueItems), so a joined message never keeps
+// some members' rows and loses the others', then each member's injector
+// bookkeeping runs.
+func (a *App) settleFlushGroup(threadID string, group []triage.QueuedFlushItem) {
+	ids := make([]string, 0, len(group))
+	for _, item := range group {
+		ids = append(ids, item.ID)
+	}
+	if err := a.store.DeleteDispatchedFlushQueueItems(ids); err != nil {
+		log.Printf("flush queue: delete durable rows [%s] of %s: %v", strings.Join(ids, " "), threadID, err)
+	}
 	for _, item := range group {
 		item.Settlement.Settle()
 	}
@@ -1214,21 +1226,6 @@ type injectedQueueOptions struct {
 	originThread *usermessage.OriginThread
 }
 
-// flushQueueSettlement runs injector bookkeeping once after dispatch or draft
-// restoration. Async answers retain their durable queue row until the provider
-// echoes consumption; restoration retires it atomically with the draft write.
-// A failed dispatch cleanup keeps its recovery record and is logged.
-func (a *App) flushQueueSettlement(threadID, id string, onDurable func()) *triage.FlushSettlement {
-	return triage.NewFlushSettlement(func() {
-		if err := a.store.DeleteDispatchedFlushQueueItem(id); err != nil {
-			log.Printf("flush queue: delete durable row %s/%s: %v", threadID, id, err)
-		}
-		if onDurable != nil {
-			onDurable()
-		}
-	})
-}
-
 // dropDurableFlushQueue deletes every durable queue row of a thread. Its
 // callers are the WHOLESALE DROPS — a teardown whose triage cleanup discards
 // the in-memory queue without restoring it, and the Codex rollback purge —
@@ -1402,7 +1399,11 @@ func (a *App) registerQueueItem(
 		Message:    message,
 		Payload:    payloadBytes,
 		EnqueuedAt: enqueuedAt,
-		Settlement: a.flushQueueSettlement(threadID, id, injected.onDurable),
+		// The durable row leaves with the dispatch that carries the message
+		// (settleFlushGroup) or the restore that takes it back
+		// (store.RestoreFlushQueueToDraft); the settlement is the injector's
+		// bookkeeping, once after either.
+		Settlement: triage.NewFlushSettlement(injected.onDurable),
 	})
 
 	wireItem := QueuedItem{
