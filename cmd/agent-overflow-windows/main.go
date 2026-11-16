@@ -559,6 +559,10 @@ type launcherApp struct {
 	// submission happens from a WebView2 completion handler on the UI
 	// thread, which must never block. Zero value ready.
 	browserReports serialqueue.Queue
+	// paneGeometry holds the SPA's own browser pane geometry reports, posted
+	// to the launcher directly (handlePaneGeometryMessage). It exists before
+	// the browser host and is safe from any goroutine.
+	paneGeometry *webview2host.GeometryMailbox
 
 	// flushGeometry persists the window placement immediately. Set on the
 	// ApplicationStarted handler (with window) and read on shutdown as a
@@ -1382,6 +1386,7 @@ func buildApp(distros []wsllauncher.Distro, initialURL, chosen string, transient
 		distros:                 distros,
 		notificationActivations: wsllauncher.NewNotificationActivationQueue(),
 		disableGPUVsync:         disableGPUVsync,
+		paneGeometry:            webview2host.NewGeometryMailbox(),
 	}
 	if disableGPUVsync {
 		log.Printf("webview2: GPU vsync disabled by Settings > Performance (%s on the app window and the browser pane)", disableGPUVsyncArg)
@@ -1437,6 +1442,9 @@ func buildApp(distros []wsllauncher.Distro, initialURL, chosen string, transient
 			}, func() startuppage.Report { return a.loading.Report(time.Now()) }),
 		},
 		Windows: webviewBrowserOptions(mode, profileDir, diagnosticsDir, !applier, disableGPUVsync),
+		// The SPA's browser pane geometry, posted straight to this process
+		// (browserhost.go). Wails keeps "wails:" messages for itself.
+		RawMessageHandler: a.handlePaneGeometryMessage,
 		// Cancel app shutdown until the user explicitly closes the
 		// window. Without this, a transient WSL hiccup during launch
 		// would crash us silently.
@@ -1534,6 +1542,7 @@ func buildApp(distros []wsllauncher.Distro, initialURL, chosen string, transient
 		// so the picker / loading / error pages never reach this — and
 		// a.pageTicket refuses anyway until a backend exists to mint one.
 		uiwindow.DeliverPageTicket(w, a.pageTicket)
+		advertisePaneGeometry(w)
 		a.mu.Lock()
 		a.window = w
 		a.flushGeometry = flush

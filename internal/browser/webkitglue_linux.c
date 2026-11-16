@@ -362,10 +362,18 @@ static void ao_fill_at(GtkWidget *w, int x, int y, int right, int bottom) {
   gtk_widget_set_margin_bottom(w, bottom < 0 ? 0 : bottom);
 }
 
-void ao_wk_host_present(void *view, double x, double y, double width,
-                        double height, double clip_x, double clip_y,
-                        double clip_width, double clip_height, double vw,
-                        double vh, double scale) {
+int ao_wk_overlay_size(int *width, int *height) {
+  if (ao_overlay == NULL) {
+    return 0;
+  }
+  *width = gtk_widget_get_width(ao_overlay);
+  *height = gtk_widget_get_height(ao_overlay);
+  return 1;
+}
+
+void ao_wk_host_present(void *view, int clip_left, int clip_top,
+                        int clip_right, int clip_bottom, int off_x, int off_y,
+                        double scale) {
   if (ao_overlay == NULL) {
     return;
   }
@@ -376,47 +384,16 @@ void ao_wk_host_present(void *view, double x, double y, double width,
   GtkWidget *w = GTK_WIDGET(host);
   int overlay_w = gtk_widget_get_width(ao_overlay);
   int overlay_h = gtk_widget_get_height(ao_overlay);
-  // CSS pixels -> overlay logical pixels by proportion (see header).
-  double sx = (vw > 0.0 && overlay_w > 0) ? overlay_w / vw : 1.0;
-  double sy = (vh > 0.0 && overlay_h > 0) ? overlay_h / vh : 1.0;
-  int ix = (int)(x * sx + 0.5);
-  int iy = (int)(y * sy + 0.5);
-  int iw = (int)(width * sx + 0.5);
-  int ih = (int)(height * sy + 0.5);
-  int cx = (int)(clip_x * sx + 0.5);
-  int cy = (int)(clip_y * sy + 0.5);
-  int cw = (int)(clip_width * sx + 0.5);
-  int ch = (int)(clip_height * sy + 0.5);
-  // The clip is the visible intersection, so it can only ever crop the rect.
-  // A caller that sends none (or one rounding left empty) means unclipped; an
-  // empty intersection is the Manager's to withhold, never a host's to invent.
-  if (cx < ix) {
-    cw -= ix - cx;
-    cx = ix;
-  }
-  if (cy < iy) {
-    ch -= iy - cy;
-    cy = iy;
-  }
-  if (cx + cw > ix + iw) cw = ix + iw - cx;
-  if (cy + ch > iy + ih) ch = iy + ih - cy;
-  if (cw <= 0 || ch <= 0) {
-    cx = ix;
-    cy = iy;
-    cw = iw;
-    ch = ih;
-  }
   if (gtk_widget_get_parent(w) != ao_overlay) {
     ao_host_detach(host);
     gtk_overlay_add_overlay(GTK_OVERLAY(ao_overlay), w);
   }
   // The host is the clip box; the view is drawn inside it at the fitted
-  // rect's offset from the clip, scaled by the pane's scale times the
-  // CSS-to-overlay proportion (the page's CSS pixels are overlay pixels).
-  ao_fill_at(w, cx, cy, overlay_w - (cx + cw), overlay_h - (cy + ch));
-  host->off_x = ix - cx;
-  host->off_y = iy - cy;
-  host->scale = (scale > 0.0 ? scale : 1.0) * sx;
+  // rect's offset from the clip, scaled (see header).
+  ao_fill_at(w, clip_left, clip_top, overlay_w - clip_right, overlay_h - clip_bottom);
+  host->off_x = off_x;
+  host->off_y = off_y;
+  host->scale = scale > 0.0 ? scale : 1.0;
   // A pane scrolling under a fixed header changes the offset while the clip
   // keeps its size, and nothing about the host's own box changed then, so
   // the re-allocation has to be asked for.

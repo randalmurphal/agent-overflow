@@ -6,6 +6,7 @@
 #import <WebKit/WebKit.h>
 #import <objc/runtime.h>
 #include <Block.h>
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -504,6 +505,16 @@ static void ao_apply_background(WKWebView *view, NSView *clip, int bg) {
   }
 }
 
+// ao_snap_edge mirrors paneplace.SnapEdge in backing pixels: an edge given in
+// host points lands on the nearest device pixel, halves going up, the same
+// way on both sides of zero.
+static CGFloat ao_snap_edge(CGFloat v, CGFloat backing) {
+  if (!(backing > 0.0)) {
+    backing = 1.0;
+  }
+  return floor(v * backing + 0.5) / backing;
+}
+
 void ao_wkv_host_present(void *view, double x, double y, double width, double height,
                          double clip_x, double clip_y, double clip_width, double clip_height,
                          double vw, double vh, int bg) {
@@ -540,15 +551,34 @@ void ao_wkv_host_present(void *view, double x, double y, double width, double he
                      ? bounds.size.height / (CGFloat)vh
                      : 1.0;
     // Both rects are in the SPA's TOP-LEFT coordinates, so fy / cy are
-    // distances from the host's top edge and grow downwards.
-    CGFloat fx = (CGFloat)x * sx;
-    CGFloat fy = (CGFloat)y * sy;
-    CGFloat fw = (CGFloat)width * sx;
-    CGFloat fh = (CGFloat)height * sy;
-    CGFloat cx = (CGFloat)clip_x * sx;
-    CGFloat cy = (CGFloat)clip_y * sy;
-    CGFloat cw = (CGFloat)clip_width * sx;
-    CGFloat ch = (CGFloat)clip_height * sy;
+    // distances from the host's top edge and grow downwards. Every EDGE is
+    // snapped to a backing pixel (paneplace.Layout's rule) and sizes are
+    // right minus left, so the page never sits between device pixels and the
+    // clip shares the page's edges exactly.
+    NSWindow *window = [ao_host window];
+    CGFloat backing = window != nil ? [window backingScaleFactor] : 1.0;
+    CGFloat fl = ao_snap_edge((CGFloat)x * sx, backing);
+    CGFloat ft = ao_snap_edge((CGFloat)y * sy, backing);
+    CGFloat fr = ao_snap_edge((CGFloat)(x + width) * sx, backing);
+    CGFloat fb = ao_snap_edge((CGFloat)(y + height) * sy, backing);
+    CGFloat cl = MAX(ao_snap_edge((CGFloat)clip_x * sx, backing), fl);
+    CGFloat ct = MAX(ao_snap_edge((CGFloat)clip_y * sy, backing), ft);
+    CGFloat cr = MIN(ao_snap_edge((CGFloat)(clip_x + clip_width) * sx, backing), fr);
+    CGFloat cb = MIN(ao_snap_edge((CGFloat)(clip_y + clip_height) * sy, backing), fb);
+    if (!(cr > cl) || !(cb > ct)) {
+      cl = fl;
+      ct = ft;
+      cr = fr;
+      cb = fb;
+    }
+    CGFloat fx = fl;
+    CGFloat fy = ft;
+    CGFloat fw = fr - fl;
+    CGFloat fh = fb - ft;
+    CGFloat cx = cl;
+    CGFloat cy = ct;
+    CGFloat cw = cr - cl;
+    CGFloat ch = cb - ct;
     // AppKit's content view is bottom-left unless it says otherwise, so the
     // flip is asked for rather than assumed. The container takes the clip
     // rect, exactly where the whole view used to go.

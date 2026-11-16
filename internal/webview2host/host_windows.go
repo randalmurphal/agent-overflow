@@ -81,6 +81,10 @@ type Config struct {
 	Report func(pageID string, kind ReportKind, detail string)
 	// OnMain runs fn on the UI thread and returns once it has run.
 	OnMain func(fn func())
+	// Geometry holds the SPA's own pane geometry reports (geometry.go). A
+	// page bound to a mount with a report there is placed from it; nil, or
+	// no report, places pages from the backend's bounds alone.
+	Geometry *GeometryMailbox
 }
 
 type hostPage struct {
@@ -124,6 +128,10 @@ type hostPage struct {
 	// pendingHandlers keeps every COM callback object this page handed to
 	// WebView2 alive for as long as WebView2 can invoke it.
 	pendingHandlers []any
+	// pres is what the backend said about the page's presentation, and
+	// shown what the host last applied (presenter.go). UI thread only.
+	pres  pagePresentation
+	shown paneView
 }
 
 // raiseTarget is the window that must sit on top of the host's child
@@ -209,39 +217,19 @@ func (h *Host) Apply(directive Directive) {
 	case OpCreate:
 		h.create(directive)
 	case OpBounds:
-		h.withPage(directive.PageID, func(page *hostPage) { h.applyBounds(page, directive) })
+		h.withPage(directive.PageID, func(page *hostPage) {
+			page.pres.noteBounds(directive)
+			h.present(page, false)
+		})
 	case OpShow:
 		h.withPage(directive.PageID, func(page *hostPage) {
-			if err := page.controller.putIsVisible(true); err != nil {
-				h.config.Logf("browser host: page %s show: %v", page.id, err)
-				return
-			}
-			// The container tracks visibility too. It is not decoration: a
-			// shown container with nothing in it is an invisible window
-			// swallowing every click over its rectangle, which is exactly
-			// what a hidden pane must not do.
-			showWindow(page.container, true)
-			// Every show re-raises: Wails' own recovery path can recreate
-			// the SPA controller, which would land it above the pane
-			// again, and a raise is cheap.
-			raiseChild(page.raiseTarget())
+			page.pres.backendShown = true
+			h.present(page, true)
 		})
 	case OpHide:
 		h.withPage(directive.PageID, func(page *hostPage) {
-			// Hiding is the CONTAINER's: the controller stays IsVisible so
-			// Chromium keeps compositing the page (rAF, scroll state, and
-			// the frame a screenshot copies). IsVisible=false stops all of
-			// that and evicts the surface, so a hidden page's first
-			// capture would wait for a frame that never comes (spike
-			// 2026-09-14). Only the unclipped fallback, with no container
-			// to hide, has to hide the controller itself.
-			held := focusWithin(page.raiseTarget())
-			if page.container != 0 {
-				showWindow(page.container, false)
-			} else if err := page.controller.putIsVisible(false); err != nil {
-				h.config.Logf("browser host: page %s hide: %v", page.id, err)
-			}
-			h.releaseFocus(page, held)
+			page.pres.backendShown = false
+			h.present(page, false)
 		})
 	case OpDevTools:
 		h.withPage(directive.PageID, func(page *hostPage) {
@@ -264,24 +252,93 @@ func (h *Host) Apply(directive Directive) {
 	}
 }
 
+// ApplyGeometry re-presents every page bound to a mount the reports name.
+// It runs on the UI thread, as the launcher's single pending drain of the
+// geometry mailbox, and must not be called from anywhere else.
+func (h *Host) ApplyGeometry(reports []PaneGeometry) {
+	if len(reports) == 0 {
+		return
+	}
+	mounts := make(map[string]bool, len(reports))
+	for _, report := range reports {
+		mounts[report.Mount] = true
+	}
+	h.mu.Lock()
+	pages := make([]*hostPage, 0, len(h.pages))
+	for _, page := range h.pages {
+		pages = append(pages, page)
+	}
+	h.mu.Unlock()
+	for _, page := range pages {
+		if page.controller != nil && page.pres.mount != "" && mounts[page.pres.mount] {
+			h.present(page, false)
+		}
+	}
+}
+
+// present brings one page to the view its presentation calls for
+// (presenter.go): moved before it is shown, never moved while hidden. raise
+// re-raises a page already shown. Runs on the UI thread.
+func (h *Host) present(page *hostPage, raise bool) {
+	local, hasLocal := h.config.Geometry.Latest(page.pres.mount)
+	step, next := nextPresentStep(page.shown, page.pres.view(local, hasLocal), raise)
+	if step.move {
+		h.applyBounds(page, step.bounds)
+	}
+	if step.show && !h.showPage(page) {
+		next.visible = page.shown.visible
+	}
+	if step.hide {
+		h.hidePage(page)
+	}
+	page.shown = next
+}
+
+// showPage shows the page's clip container and raises it.
+func (h *Host) showPage(page *hostPage) bool {
+	if err := page.controller.putIsVisible(true); err != nil {
+		h.config.Logf("browser host: page %s show: %v", page.id, err)
+		return false
+	}
+	// The container tracks visibility too. It is not decoration: a shown
+	// container with nothing in it is an invisible window swallowing every
+	// click over its rectangle, which is exactly what a hidden pane must not
+	// do.
+	showWindow(page.container, true)
+	// Every backend show re-raises: Wails' own recovery path can recreate
+	// the SPA controller, which would land it above the pane again, and a
+	// raise is cheap.
+	raiseChild(page.raiseTarget())
+	return true
+}
+
+// hidePage hides the page's clip container. Hiding is the CONTAINER's: the
+// controller stays IsVisible so Chromium keeps compositing the page (rAF,
+// scroll state, and the frame a screenshot copies). IsVisible=false stops
+// all of that and evicts the surface, so a hidden page's first capture would
+// wait for a frame that never comes (spike 2026-09-14). Only the unclipped
+// fallback, with no container to hide, has to hide the controller itself.
+func (h *Host) hidePage(page *hostPage) {
+	held := focusWithin(page.raiseTarget())
+	if page.container != 0 {
+		showWindow(page.container, false)
+	} else if err := page.controller.putIsVisible(false); err != nil {
+		h.config.Logf("browser host: page %s hide: %v", page.id, err)
+	}
+	h.releaseFocus(page, held)
+}
+
 // applyBounds positions one page and paints its surface colour. Runs on
 // the UI thread.
 //
-// The rect arrives in the SPA's CSS pixels together with the viewport it
-// was measured in; the client area is the same surface in physical pixels,
-// so the proportion IS the whole DPI-and-zoom answer. A missing viewport
-// means client pixels. BOTH rects are scaled by that one factor pair — a
-// clip scaled differently from the rect it crops would slide across the
-// page as the window resized.
-func (h *Host) applyBounds(page *hostPage, directive Directive) {
-	sx, sy := 1.0, 1.0
-	if directive.VW > 0 && directive.VH > 0 {
-		if cw, ch, ok := clientSize(h.config.HostWindow()); ok && cw > 0 && ch > 0 {
-			sx = float64(cw) / directive.VW
-			sy = float64(ch) / directive.VH
-		}
-	}
-	layout := resolvePaneLayout(directive, sx, sy)
+// The rect arrives in the SPA's CSS pixels with the pixel ratio and viewport
+// it was measured under (deviceScale). BOTH rects are scaled by that one
+// factor pair: a clip scaled differently from the rect it crops would slide
+// across the page as the window resized.
+func (h *Host) applyBounds(page *hostPage, b paneBounds) {
+	cw, ch, hasClient := clientSize(h.config.HostWindow())
+	sx, sy := deviceScale(b, cw, ch, hasClient)
+	layout := resolvePaneLayout(b, sx, sy)
 
 	bounds := layout.Controller
 	if page.container == 0 {
@@ -304,7 +361,7 @@ func (h *Host) applyBounds(page *hostPage, directive Directive) {
 	if err := page.controller.putBounds(bounds); err != nil {
 		h.config.Logf("browser host: page %s bounds: %v", page.id, err)
 	}
-	h.applyBackground(page, directive.Bg)
+	h.applyBackground(page, b.Bg)
 }
 
 // applyBackground sets the controller's default background colour when it

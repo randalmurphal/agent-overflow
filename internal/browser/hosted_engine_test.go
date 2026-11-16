@@ -1060,7 +1060,7 @@ func TestHostedEngineViewScaleIsLatestWins(t *testing.T) {
 	engine.mu.Unlock()
 
 	for i := 1; i <= 50; i++ {
-		engine.applyViewScale("page1", float64(i)/100)
+		engine.applyViewScale("page1", viewScale{placement: float64(i) / 100})
 	}
 	deadline := time.Now().Add(5 * time.Second)
 	for {
@@ -1082,7 +1082,7 @@ func TestHostedEngineViewScaleIsLatestWins(t *testing.T) {
 		t.Fatalf("the page must end at the last scale asked for, got %v", got)
 	}
 	// A page this engine no longer owns gets no drain at all.
-	engine.applyViewScale("page2", 0.25)
+	engine.applyViewScale("page2", viewScale{placement: 0.25})
 	engine.mu.Lock()
 	_, queued := engine.scales["page2"]
 	engine.mu.Unlock()

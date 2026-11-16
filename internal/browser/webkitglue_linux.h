@@ -42,20 +42,20 @@ void ao_wk_host_park(void *view, int slot);
 // ao_wk_host_unpark removes a view's host from whichever container holds it.
 void ao_wk_host_unpark(void *view);
 
+// ao_wk_overlay_size reads the pane overlay's size in its logical pixels. It
+// answers 0, leaving both untouched, when there is no overlay.
+int ao_wk_overlay_size(int *width, int *height);
+
 // ao_wk_host_present shows one view inside the pane: its host becomes an
-// overlay child filling the pane's VISIBLE clip rect (four margins with
-// ALIGN_FILL), and the view is drawn inside it at the FITTED rect's offset,
-// scaled. The view's own allocation stays its viewport (ao_wk_view_set_size);
-// the pane never resizes a page, it shows it scaled to fit.
-// x/y/width/height is the fitted rect and clip_* its visible intersection,
-// both in the SPA's CSS pixels; vw/vh are the SPA viewport they were measured
-// in, and the overlay's own size over that viewport is the CSS-to-overlay
-// proportion. vw/vh <= 0 means the rects are already in overlay units. scale
-// is the fitted rect's size over the viewport, in CSS pixels.
-void ao_wk_host_present(void *view, double x, double y, double width,
-                        double height, double clip_x, double clip_y,
-                        double clip_width, double clip_height, double vw,
-                        double vh, double scale);
+// overlay child filling the pane's VISIBLE clip box (four margins with
+// ALIGN_FILL), and the view is drawn inside it at off_x/off_y from the box's
+// top-left, scaled by scale. The view's own allocation stays its viewport
+// (ao_wk_view_set_size); the pane never resizes a page, it shows it scaled to
+// fit. Every value is in overlay logical pixels, already snapped by the Go
+// side (paneplace.Layout, webkitPaneLayout), which owns the arithmetic.
+void ao_wk_host_present(void *view, int clip_left, int clip_top,
+                        int clip_right, int clip_bottom, int off_x, int off_y,
+                        double scale);
 
 // ao_wk_host_hide ends a presentation and parks the view at slot. A view
 // that held keyboard focus hands it to the SPA's webview: it answers 1 when

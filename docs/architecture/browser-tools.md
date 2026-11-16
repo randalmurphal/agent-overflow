@@ -78,7 +78,9 @@ per-platform no-op.
   is larger) and labels the size and scale in its address row. `reset`
   returns to following the pane, and `get` reports the current size, whether
   it is pinned, and the pane size. Screenshots, coordinates, and layout always
-  mean the current viewport. Hidden pages keep rendering, so screenshots and
+  mean the current viewport: a pane resize lays out the shown page at once,
+  and every other page of the thread before it is shown or a tool acts on
+  it. Hidden pages keep rendering, so screenshots and
   scrolls work with the pane closed, and a screenshot that produces no frame
   fails with a bounded error instead of hanging.
 - `pane.close` (Mod+W) on a focused browser companion closes the active tab;

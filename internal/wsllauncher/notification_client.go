@@ -104,6 +104,9 @@ type NotificationClient struct {
 	handleWebviewTrim func(reason string)
 	handleKeepAwake   func(mode string)
 	handleBrowserHost func(directive webview2host.Directive)
+	// browserHostLanes orders handleBrowserHost calls per page; nil when
+	// the channel is not subscribed.
+	browserHostLanes *directiveLanes
 	// channels is the exact subscribe-frame payload, fixed at construction so
 	// every reconnect asks for the same set.
 	channels []string
@@ -194,7 +197,12 @@ func NewNotificationClient(config NotificationClientConfig) (*NotificationClient
 		channels = append(channels, string(eventchan.PowerKeepAwake))
 		levelChannels = append(levelChannels, string(eventchan.PowerKeepAwake))
 	}
+	var lanes *directiveLanes
+	if config.HandleBrowserHost != nil {
+		lanes = newDirectiveLanes(config.HandleBrowserHost)
+	}
 	return &NotificationClient{
+		browserHostLanes:  lanes,
 		wsURL:             parsed.String(),
 		token:             config.Token,
 		session:           newSessionCredentialSource(parsed.String(), config.Token),
@@ -529,7 +537,8 @@ func (c *NotificationClient) handleWebviewTrimDirective(data json.RawMessage) {
 // thread and, on the first directive, on a cold WebView2 environment
 // create that takes seconds. Running it inline would stall notification
 // delivery and the report RPC the handler itself posts back over this
-// same connection.
+// same connection. Unlike its siblings it keeps arrival order per page
+// (directiveLanes): a page's bounds, show and hide must apply in order.
 func (c *NotificationClient) handleBrowserHostDirective(data json.RawMessage) {
 	if c.handleBrowserHost == nil {
 		c.logf("browser host: ignore directive on an unsubscribed connection")
@@ -544,7 +553,7 @@ func (c *NotificationClient) handleBrowserHostDirective(data json.RawMessage) {
 		c.logf("browser host: ignore invalid directive: %v", err)
 		return
 	}
-	go c.handleBrowserHost(directive)
+	c.browserHostLanes.submit(directive)
 }
 
 // handleKeepAwakeDirective decodes one power:keepawake frame and hands its
