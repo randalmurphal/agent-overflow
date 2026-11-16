@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+
+	"agent-overflow/internal/forgeapi"
 )
 
 // The variable rules GitHub and GitLab (both graphql-ruby) validate a
@@ -98,7 +100,7 @@ func GraphQLRequestProblems(document string, vars map[string]any) []GraphQLProbl
 
 // ParseGraphQLOperation reads the one operation document defines.
 func ParseGraphQLOperation(document string) (GraphQLOperation, error) {
-	toks, err := graphQLTokens(document)
+	toks, err := forgeapi.GraphQLTokens(document)
 	if err != nil {
 		return GraphQLOperation{}, err
 	}
@@ -113,7 +115,7 @@ func ParseGraphQLOperation(document string) (GraphQLOperation, error) {
 		}
 		op.Kind = toks[i]
 		i++
-		if i < len(toks) && graphQLName(toks[i]) {
+		if i < len(toks) && forgeapi.GraphQLName(toks[i]) {
 			op.Name = toks[i]
 			i++
 		}
@@ -217,98 +219,4 @@ func graphQLSkipDirective(toks []string, i int) (int, error) {
 		return i, errors.New("a directive's arguments are not closed")
 	}
 	return i, nil
-}
-
-func graphQLName(tok string) bool {
-	if tok == "" {
-		return false
-	}
-	for j, r := range tok {
-		letter := r == '_' || ('a' <= r && r <= 'z') || ('A' <= r && r <= 'Z')
-		digit := j > 0 && '0' <= r && r <= '9'
-		if !letter && !digit {
-			return false
-		}
-	}
-	return true
-}
-
-// graphQLTokens splits document into punctuators, names, $variables and
-// numbers. Strings, block strings, comments, commas and white space are
-// dropped.
-func graphQLTokens(document string) ([]string, error) {
-	var toks []string
-	s := document
-	for i := 0; i < len(s); {
-		c := s[i]
-		switch {
-		case c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == ',':
-			i++
-		case strings.HasPrefix(s[i:], "\ufeff"):
-			i += len("\ufeff")
-		case c == '#':
-			for i < len(s) && s[i] != '\n' && s[i] != '\r' {
-				i++
-			}
-		case strings.HasPrefix(s[i:], `"""`):
-			i += 3
-			for {
-				if i >= len(s) {
-					return nil, errors.New("a block string is not closed")
-				}
-				if strings.HasPrefix(s[i:], `\"""`) {
-					i += 4
-					continue
-				}
-				if strings.HasPrefix(s[i:], `"""`) {
-					i += 3
-					break
-				}
-				i++
-			}
-		case c == '"':
-			i++
-			for {
-				if i >= len(s) || s[i] == '\n' || s[i] == '\r' {
-					return nil, errors.New("a string is not closed")
-				}
-				if s[i] == '\\' {
-					i += 2
-					continue
-				}
-				if s[i] == '"' {
-					i++
-					break
-				}
-				i++
-			}
-		case strings.HasPrefix(s[i:], "..."):
-			toks = append(toks, "...")
-			i += 3
-		case strings.IndexByte("!():=@[]{}|&", c) >= 0:
-			toks = append(toks, string(c))
-			i++
-		case c == '$' || c == '_' || ('a' <= c && c <= 'z') || ('A' <= c && c <= 'Z'):
-			j := i + 1
-			for j < len(s) && (s[j] == '_' || ('a' <= s[j] && s[j] <= 'z') || ('A' <= s[j] && s[j] <= 'Z') || ('0' <= s[j] && s[j] <= '9')) {
-				j++
-			}
-			tok := s[i:j]
-			if c == '$' && !graphQLName(tok[1:]) {
-				return nil, fmt.Errorf("%q is not a variable", tok)
-			}
-			toks = append(toks, tok)
-			i = j
-		case c == '-' || ('0' <= c && c <= '9'):
-			j := i + 1
-			for j < len(s) && strings.IndexByte("0123456789.eE+-", s[j]) >= 0 {
-				j++
-			}
-			toks = append(toks, s[i:j])
-			i = j
-		default:
-			return nil, fmt.Errorf("unexpected character %q", c)
-		}
-	}
-	return toks, nil
 }

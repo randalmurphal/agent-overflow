@@ -13,17 +13,17 @@ import (
 // addReaction or removeReaction when the viewer's reaction is not
 // already as asked.
 
-const githubReactionTargetQuery = `query ReactionTarget($id: ID!) {
-  node(id: $id) { ` + githubCommentOwnerFields + ` ... on Reactable { viewerCanReact ` + githubReactionFields + ` } }
-}`
+var githubReactionTargetQuery = forgeapi.NewDocument(forgeapi.ForgeGitHub, `query ReactionTarget($id: ID!) {
+  node(id: $id) { `+githubCommentOwnerFields+` ... on Reactable { viewerCanReact `+githubReactionFields+` } }
+}`)
 
-const (
-	githubAddReactionMutation = `mutation AddReaction($subjectID: ID!, $content: ReactionContent!) {
+var (
+	githubAddReactionMutation = forgeapi.NewDocument(forgeapi.ForgeGitHub, `mutation AddReaction($subjectID: ID!, $content: ReactionContent!) {
   addReaction(input: {subjectId: $subjectID, content: $content}) { reaction { content } }
-}`
-	githubRemoveReactionMutation = `mutation RemoveReaction($subjectID: ID!, $content: ReactionContent!) {
+}`)
+	githubRemoveReactionMutation = forgeapi.NewDocument(forgeapi.ForgeGitHub, `mutation RemoveReaction($subjectID: ID!, $content: ReactionContent!) {
   removeReaction(input: {subjectId: $subjectID, content: $content}) { reaction { content } }
-}`
+}`)
 )
 
 // SetCommentReaction refuses a comment that is not of the kind target
@@ -43,7 +43,7 @@ func (f *githubForge) SetCommentReaction(ctx context.Context, ref PRReference, t
 			ReactionGroups []githubReactionGroupRaw `json:"reactionGroups"`
 		} `json:"node"`
 	}
-	if _, err := client.GraphQL(ctx, "ReactionTarget", githubReactionTargetQuery, map[string]any{"id": target.CommentID}, &raw); err != nil {
+	if _, err := client.GraphQL(ctx, githubReactionTargetQuery, map[string]any{"id": target.CommentID}, &raw); err != nil {
 		var gql *forgeapi.GraphQLError
 		if errors.As(err, &gql) && graphQLNotFound(gql) {
 			return &CommentNotOnPRError{CommentID: target.CommentID}
@@ -62,16 +62,16 @@ func (f *githubForge) SetCommentReaction(ctx context.Context, ref PRReference, t
 			return nil
 		}
 	}
-	operation, document, field := "AddReaction", githubAddReactionMutation, "addReaction"
+	document, field := githubAddReactionMutation, "addReaction"
 	if !reacted {
-		operation, document, field = "RemoveReaction", githubRemoveReactionMutation, "removeReaction"
+		document, field = githubRemoveReactionMutation, "removeReaction"
 	}
 	var answer map[string]*struct {
 		Reaction *struct {
 			Content string `json:"content"`
 		} `json:"reaction"`
 	}
-	if _, err := client.GraphQL(ctx, operation, document, map[string]any{"subjectID": target.CommentID, "content": content}, &answer); err != nil {
+	if _, err := client.GraphQL(ctx, document, map[string]any{"subjectID": target.CommentID, "content": content}, &answer); err != nil {
 		return writeOutcome(err)
 	}
 	if answer[field] == nil {

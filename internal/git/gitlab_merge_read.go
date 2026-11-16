@@ -63,9 +63,9 @@ const gitlabDeveloperAccess = 30
 // project." (GraphQL reference at 18.0), so it counts a group the project
 // is shared with; REST permissions do not (their group_access is the
 // project's own group and its ancestors).
-const gitlabProjectAccessQuery = `query ProjectAccess($fullPath: ID!) {
+var gitlabProjectAccessQuery = forgeapi.NewDocument(forgeapi.ForgeGitLab, `query ProjectAccess($fullPath: ID!) {
   project(fullPath: $fullPath) { maxAccessLevel { integerValue } }
-}`
+}`)
 
 // gitlabCache holds values read from GitLab for gitlabCacheTTL, at most
 // gitlabCacheMax of them.
@@ -215,7 +215,7 @@ func (f *gitlabForge) viewerAccess(ctx context.Context, client *forgeapi.Client,
 			} `json:"maxAccessLevel"`
 		} `json:"project"`
 	}
-	resp, err := client.GraphQL(ctx, "ProjectAccess", gitlabProjectAccessQuery, map[string]any{"fullPath": ref.Project()}, &raw)
+	resp, err := client.GraphQL(ctx, gitlabProjectAccessQuery, map[string]any{"fullPath": ref.Project()}, &raw)
 	if err != nil {
 		return 0, err
 	}

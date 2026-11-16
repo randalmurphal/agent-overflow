@@ -46,7 +46,7 @@ const gitlabCIJobsMaxPages = 5
 // from 17.2, the cancel permissions (JobPermissions.cancelBuild,
 // PipelinePermissions.cancelPipeline) from 16.6. A server below the floor
 // is refused before the read (readGitLabPipeline).
-const gitlabPipelineJobsQuery = `query PipelineJobs($fullPath: ID!, $id: CiPipelineID!, $after: String) {
+var gitlabPipelineJobsQuery = forgeapi.NewDocument(forgeapi.ForgeGitLab, `query PipelineJobs($fullPath: ID!, $id: CiPipelineID!, $after: String) {
   project(fullPath: $fullPath) {
     pipeline(id: $id) {
       retryable cancelable
@@ -66,7 +66,7 @@ const gitlabPipelineJobsQuery = `query PipelineJobs($fullPath: ID!, $id: CiPipel
       }
     }
   }
-}`
+}`)
 
 // The gid types of a pipeline's rows.
 const (
@@ -170,7 +170,7 @@ func (f *gitlabForge) readGitLabPipeline(ctx context.Context, client *forgeapi.C
 			"id":       "gid://gitlab/Ci::Pipeline/" + strconv.FormatInt(pipeline.ID, 10),
 			"after":    after,
 		}
-		if _, err := client.GraphQL(ctx, "PipelineJobs", gitlabPipelineJobsQuery, vars, &raw); err != nil {
+		if _, err := client.GraphQL(ctx, gitlabPipelineJobsQuery, vars, &raw); err != nil {
 			return CIPipeline{}, fmt.Errorf("GitLab pipeline %d rows: %w", pipeline.ID, err)
 		}
 		if raw.Project == nil || raw.Project.Pipeline == nil {

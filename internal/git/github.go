@@ -125,7 +125,7 @@ type githubHeadRepoRaw struct {
 // githubOpenPRsQuery finds open pull requests by head branch name. The
 // filter matches a fork's branch of the same name too, so each node says
 // whose repository its head is in.
-const githubOpenPRsQuery = `query OpenPRsByHead($owner: String!, $name: String!, $head: String!, $after: String) {
+var githubOpenPRsQuery = forgeapi.NewDocument(forgeapi.ForgeGitHub, `query OpenPRsByHead($owner: String!, $name: String!, $head: String!, $after: String) {
   repository(owner: $owner, name: $name) {
     id parent { owner { login } name }
     pullRequests(headRefName: $head, states: [OPEN], first: 100, after: $after) {
@@ -133,7 +133,7 @@ const githubOpenPRsQuery = `query OpenPRsByHead($owner: String!, $name: String!,
       nodes { id url number title state baseRefName isCrossRepository headRepository { id } }
     }
   }
-}`
+}`)
 
 // ListOpenPRs returns the open pull requests whose head is the given
 // branch of cwd's origin repository itself: those opened in the origin
@@ -182,7 +182,7 @@ func githubOpenPRsByHead(ctx context.Context, client *forgeapi.Client, owner, na
 			} `json:"repository"`
 		}
 		vars := map[string]any{"owner": owner, "name": name, "head": head, "after": after}
-		if _, err := client.GraphQL(ctx, "OpenPRsByHead", githubOpenPRsQuery, vars, &raw); err != nil {
+		if _, err := client.GraphQL(ctx, githubOpenPRsQuery, vars, &raw); err != nil {
 			return githubRepoParentRaw{}, nil, err
 		}
 		if raw.Repository == nil {
@@ -214,7 +214,7 @@ func githubOpenPRsByHead(ctx context.Context, client *forgeapi.Client, owner, na
 
 // githubMergedPRsQuery lists merged pull requests, most recently updated
 // first, each with its head repository.
-const githubMergedPRsQuery = `query MergedPRs($owner: String!, $name: String!, $first: Int!, $after: String) {
+var githubMergedPRsQuery = forgeapi.NewDocument(forgeapi.ForgeGitHub, `query MergedPRs($owner: String!, $name: String!, $first: Int!, $after: String) {
   repository(owner: $owner, name: $name) {
     id parent { owner { login } name }
     pullRequests(states: [MERGED], first: $first, after: $after, orderBy: {field: UPDATED_AT, direction: DESC}) {
@@ -222,7 +222,7 @@ const githubMergedPRsQuery = `query MergedPRs($owner: String!, $name: String!, $
       nodes { headRefName headRefOid url headRepository { id } }
     }
   }
-}`
+}`)
 
 // ListMergedPRHeads fetches up to limit recently merged PRs' head
 // coordinates, 100 per request: the origin's, and when the origin is a
@@ -271,7 +271,7 @@ func githubMergedPRHeads(ctx context.Context, client *forgeapi.Client, owner, na
 			} `json:"repository"`
 		}
 		vars := map[string]any{"owner": owner, "name": name, "first": min(limit-read, githubReadPageSize), "after": after}
-		if _, err := client.GraphQL(ctx, "MergedPRs", githubMergedPRsQuery, vars, &raw); err != nil {
+		if _, err := client.GraphQL(ctx, githubMergedPRsQuery, vars, &raw); err != nil {
 			return githubRepoParentRaw{}, nil, err
 		}
 		if raw.Repository == nil {
@@ -551,20 +551,20 @@ func (f *githubForge) ReplyToThread(ctx context.Context, ref PRReference, thread
 // githubSetThreadResolvedMutation runs resolveReviewThread or
 // unresolveReviewThread on one thread, chosen by $resolved, with the
 // thread's state after it.
-const githubSetThreadResolvedMutation = `mutation SetThreadResolved($threadID: ID!, $resolved: Boolean!) {
+var githubSetThreadResolvedMutation = forgeapi.NewDocument(forgeapi.ForgeGitHub, `mutation SetThreadResolved($threadID: ID!, $resolved: Boolean!) {
   resolve: resolveReviewThread(input: {threadId: $threadID}) @include(if: $resolved) { thread { isResolved } }
   unresolve: unresolveReviewThread(input: {threadId: $threadID}) @skip(if: $resolved) { thread { isResolved } }
-}`
+}`)
 
 // githubThreadOwnerQuery reads which pull request a review thread's node
 // id belongs to: the id is global on its host, so the mutation alone names
 // nothing about the PR the caller named.
-const githubThreadOwnerQuery = `query ThreadOwner($id: ID!) {
+var githubThreadOwnerQuery = forgeapi.NewDocument(forgeapi.ForgeGitHub, `query ThreadOwner($id: ID!) {
   node(id: $id) {
     __typename
     ... on PullRequestReviewThread { pullRequest { number repository { nameWithOwner } } }
   }
-}`
+}`)
 
 // SetThreadResolved flips one review thread's resolved state, after
 // reading that the thread is one of ref's pull request and refusing,
@@ -588,7 +588,7 @@ func (f *githubForge) SetThreadResolved(ctx context.Context, ref PRReference, th
 			} `json:"pullRequest"`
 		} `json:"node"`
 	}
-	if _, err := client.GraphQL(ctx, "ThreadOwner", githubThreadOwnerQuery, map[string]any{"id": threadID}, &raw); err != nil && !graphQLNotFoundError(err) {
+	if _, err := client.GraphQL(ctx, githubThreadOwnerQuery, map[string]any{"id": threadID}, &raw); err != nil && !graphQLNotFoundError(err) {
 		return err
 	}
 	node := raw.Node
@@ -621,7 +621,7 @@ func setGitHubThreadResolved(ctx context.Context, client *forgeapi.Client, threa
 		Resolve   *payload `json:"resolve"`
 		Unresolve *payload `json:"unresolve"`
 	}
-	if _, err := client.GraphQL(ctx, "SetThreadResolved", githubSetThreadResolvedMutation, map[string]any{"threadID": threadID, "resolved": resolved}, &raw); err != nil {
+	if _, err := client.GraphQL(ctx, githubSetThreadResolvedMutation, map[string]any{"threadID": threadID, "resolved": resolved}, &raw); err != nil {
 		return writeOutcome(err)
 	}
 	answer := raw.Unresolve
