@@ -202,7 +202,7 @@
    * failure throws, the user keeps the selection and can retry the
    * unaffected rows. Each action reports its failure through the
    * `reportError` given here, which counts it; the walk shows one
-   * aggregate message at the end.
+   * aggregate toast at the end.
    */
   async function runBulk(
     action: (perThreadCtx: ThreadActionCtx) => Promise<void>,
@@ -238,8 +238,8 @@
     } else {
       const message = `${targets.length - failures}/${targets.length} succeeded` +
         (lastError ? ` — ${lastError}` : '');
-      if (pane) pane.setGeneralError(message, lastCause);
-      else addErrorToast(message, lastCause);
+      // A toast: a pane the walk archived or deleted is gone by now.
+      addErrorToast(message, lastCause);
     }
   }
 
