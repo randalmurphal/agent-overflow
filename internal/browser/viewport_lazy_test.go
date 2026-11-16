@@ -6,6 +6,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -161,6 +162,167 @@ func TestAResizeDuringTheApplyIsAppliedBeforeTheOperation(t *testing.T) {
 	f.awaitFollowIdle(t)
 }
 
+// A lagging page the user selects while a tool operation holds its lock is
+// shown once the operation has laid it out, while the operation still runs:
+// the show waits for that layout only, not for the operation's page work.
+func TestASelectedPageShowsOnceAnOperationLaysItOut(t *testing.T) {
+	f := newPaneFollowFixture(t)
+	mount := f.attach(t)
+	if err := f.manager.SetPaneRect(mount, paneRect(800, 600)); err != nil {
+		t.Fatalf("set pane rect: %v", err)
+	}
+	f.awaitActiveAt(t, 800, 600)
+	f.awaitFollowIdle(t)
+
+	hidden := f.pages[0]
+	handle := hidden.Handle()
+	applying, releaseApply := make(chan struct{}), make(chan struct{})
+	shooting, releaseShot := make(chan struct{}), make(chan struct{})
+	var applyOnce, shotOnce sync.Once
+	hidden.mu.Lock()
+	hidden.viewportHook = func(w, h int) {
+		if w == 800 && h == 600 {
+			applyOnce.Do(func() { close(applying); <-releaseApply })
+		}
+	}
+	hidden.screenshot = func(context.Context) ([]byte, error) {
+		shotOnce.Do(func() { close(shooting); <-releaseShot })
+		return []byte("png"), nil
+	}
+	hidden.mu.Unlock()
+	shown := make(chan struct{}, 8)
+	f.engine.mu.Lock()
+	f.engine.onShow = func(h string) {
+		if h == handle {
+			shown <- struct{}{}
+		}
+	}
+	f.engine.mu.Unlock()
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := f.manager.Screenshot(context.Background(), f.access, ScreenshotOptions{PageID: f.ids[0]})
+		done <- err
+	}()
+	<-applying
+	if err := f.manager.ActivateCompanionPage(t.Context(), f.access, f.ids[0]); err != nil {
+		close(releaseApply)
+		close(releaseShot)
+		t.Fatalf("activate: %v", err)
+	}
+	// The drain the selection scheduled waits for the page lock the
+	// operation holds; it cannot be what shows the page.
+	if !awaitPageLockWaitIn("(*Manager).syncPageViewport(", done) {
+		close(releaseApply)
+		close(releaseShot)
+		t.Fatal("the selection's drain never waited on the page lock")
+	}
+	select {
+	case <-shown:
+		t.Fatal("the page was shown before it was laid out")
+	default:
+	}
+	close(releaseApply)
+	<-shooting
+	select {
+	case <-shown:
+	case <-time.After(5 * time.Second):
+		close(releaseShot)
+		t.Fatal("the page was not shown while the operation that laid it out still ran")
+	}
+	close(releaseShot)
+	if err := <-done; err != nil {
+		t.Fatalf("screenshot: %v", err)
+	}
+}
+
+// The layout can land after the presentation pass found the page lagging
+// and before it recorded the page as waiting for one, when the apply finds
+// nothing to notify and the drain is held behind the operation's lock. The
+// pass sees that itself and shows the page.
+func TestALayoutLandingAsThePassHidesThePageStillShowsIt(t *testing.T) {
+	f := newPaneFollowFixture(t)
+	mount := f.attach(t)
+	if err := f.manager.SetPaneRect(mount, paneRect(800, 600)); err != nil {
+		t.Fatalf("set pane rect: %v", err)
+	}
+	f.awaitActiveAt(t, 800, 600)
+	f.awaitFollowIdle(t)
+
+	hidden := f.pages[0]
+	handle := hidden.Handle()
+	applying, releaseApply := make(chan struct{}), make(chan struct{})
+	shooting, releaseShot := make(chan struct{}), make(chan struct{})
+	var applyOnce, shotOnce, hideOnce sync.Once
+	var armed atomic.Bool
+	hidden.mu.Lock()
+	hidden.viewportHook = func(w, h int) {
+		if w == 800 && h == 600 {
+			applyOnce.Do(func() { close(applying); <-releaseApply })
+		}
+	}
+	hidden.screenshot = func(context.Context) ([]byte, error) {
+		shotOnce.Do(func() { close(shooting); <-releaseShot })
+		return []byte("png"), nil
+	}
+	hidden.mu.Unlock()
+	shown := make(chan struct{}, 8)
+	f.engine.mu.Lock()
+	f.engine.onShow = func(h string) {
+		if h == handle {
+			shown <- struct{}{}
+		}
+	}
+	// presentPanes hides the lagging page between its check and its
+	// record; once armed, the layout lands right there.
+	f.engine.onHide = func(h string) {
+		if h == handle && armed.Load() {
+			hideOnce.Do(func() { close(releaseApply); <-shooting })
+		}
+	}
+	f.engine.mu.Unlock()
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := f.manager.Screenshot(context.Background(), f.access, ScreenshotOptions{PageID: f.ids[0]})
+		done <- err
+	}()
+	<-applying
+	// Selecting the lagging page starts a drain that waits on the page lock
+	// the operation holds; selecting back leaves nothing awaiting a layout.
+	if err := f.manager.ActivateCompanionPage(t.Context(), f.access, f.ids[0]); err != nil {
+		close(releaseApply)
+		close(releaseShot)
+		t.Fatalf("activate: %v", err)
+	}
+	if !awaitPageLockWaitIn("(*Manager).syncPageViewport(", done) {
+		close(releaseApply)
+		close(releaseShot)
+		t.Fatal("the selection's drain never waited on the page lock")
+	}
+	if err := f.manager.ActivateCompanionPage(t.Context(), f.access, f.ids[1]); err != nil {
+		close(releaseApply)
+		close(releaseShot)
+		t.Fatalf("activate: %v", err)
+	}
+	armed.Store(true)
+	activated := make(chan error, 1)
+	go func() { activated <- f.manager.ActivateCompanionPage(context.Background(), f.access, f.ids[0]) }()
+	select {
+	case <-shown:
+	case <-time.After(5 * time.Second):
+		close(releaseShot)
+		t.Fatal("a layout that landed as the pass hid the page left it hidden")
+	}
+	close(releaseShot)
+	if err := <-activated; err != nil {
+		t.Fatalf("activate: %v", err)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("screenshot: %v", err)
+	}
+}
+
 // recordScreenshotViewport makes page's screenshots record the size the page
 // was laid out at when they ran.
 func recordScreenshotViewport(page *fakePage) func() (int, int) {
@@ -183,8 +345,8 @@ func recordScreenshotViewport(page *fakePage) func() (int, int) {
 }
 
 // awaitPageLockWaitIn reports whether a goroutine running fn waits on a
-// mutex taken by fn itself or by lockPageForOperation, past the page lookup,
-// before done delivers. done is left for the caller.
+// mutex, past the page lookup, before done delivers. done is left for the
+// caller.
 func awaitPageLockWaitIn(fn string, done chan error) bool {
 	buf := make([]byte, 1<<20)
 	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); {

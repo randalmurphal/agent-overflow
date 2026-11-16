@@ -10,7 +10,8 @@ import (
 )
 
 // SelectPage pins one of the caller's tabs as the companion's. The pane
-// presents it first; a suspended page then restores, and its info is read.
+// presents it first; a suspended page then restores, a page that lags the
+// pane takes its size and is shown, and its info is read.
 func (m *Manager) SelectPage(ctx context.Context, access Access, pageID string) (PageInfo, error) {
 	pageID = strings.TrimSpace(pageID)
 	if err := m.selectTab(access, pageID); err != nil {
@@ -20,7 +21,13 @@ func (m *Manager) SelectPage(ctx context.Context, access Access, pageID string) 
 	if err != nil {
 		return PageInfo{}, err
 	}
-	p.mu.Lock()
+	// The page takes the thread viewport before its info is read: a page
+	// that lagged the pane is shown as soon as that layout lands
+	// (presentLaidOut), not after the read, which the drain would otherwise
+	// wait behind for the page lock.
+	if err := m.lockPageForOperation(ctx, p); err != nil {
+		return PageInfo{}, err
+	}
 	opCtx, cancel := operationContext(ctx, p.ctx, 5*time.Second)
 	info, infoErr := m.pageInfo(opCtx, p)
 	cancel()

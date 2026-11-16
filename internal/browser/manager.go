@@ -136,7 +136,12 @@ type Manager struct {
 	presenting map[string]*presentSync
 	// presented is, per thread, the page the last presentation pass showed
 	// (presentPanes); a thread showing none has no entry. Guarded by mu.
-	presented      map[string]string
+	presented map[string]string
+	// awaitingLayout is, per thread, the active page the last presentation
+	// pass held hidden because it lagged the thread viewport. Whichever
+	// apply lays it out first (applyViewportLocked) asks for the pass that
+	// shows it. Guarded by mu.
+	awaitingLayout map[string]string
 	artifactRoot   string
 	artifactInitMu sync.Mutex
 	artifactReady  bool

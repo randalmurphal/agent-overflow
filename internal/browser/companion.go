@@ -690,6 +690,22 @@ func (m *Manager) presentPanes(threadID string) {
 	} else {
 		delete(m.presented, threadID)
 	}
+	delete(m.awaitingLayout, threadID)
+	if lagging {
+		want := packViewport(sessionViewport(m.sessions[threadID]))
+		if active.viewport.Load() == want || active.viewportFailed.Load() == want {
+			// Laid out since the check above, by an apply that found no
+			// page awaiting it: this pass's loop runs another.
+			if st := m.presenting[threadID]; st != nil {
+				st.dirty = true
+			}
+		} else {
+			if m.awaitingLayout == nil {
+				m.awaitingLayout = make(map[string]string)
+			}
+			m.awaitingLayout[threadID] = active.id
+		}
+	}
 	m.mu.Unlock()
 	if lagging {
 		m.scheduleViewport(threadID)

@@ -24,6 +24,8 @@ type recordingPaneHost struct {
 	onBounds func(PanePlacement)
 	// onShow, when set, sees every ShowPage after it is recorded.
 	onShow func(handle string)
+	// onHide, when set, sees every HidePage after it is recorded.
+	onHide func(handle string)
 }
 
 func (e *recordingPaneHost) record(call string) {
@@ -41,7 +43,15 @@ func (e *recordingPaneHost) ShowPage(handle string) {
 		onShow(handle)
 	}
 }
-func (e *recordingPaneHost) HidePage(handle string) { e.record("hide:" + handle) }
+func (e *recordingPaneHost) HidePage(handle string) {
+	e.record("hide:" + handle)
+	e.mu.Lock()
+	onHide := e.onHide
+	e.mu.Unlock()
+	if onHide != nil {
+		onHide(handle)
+	}
+}
 func (e *recordingPaneHost) SetPageBounds(handle string, placement PanePlacement) {
 	e.record("bounds:" + handle)
 	e.mu.Lock()

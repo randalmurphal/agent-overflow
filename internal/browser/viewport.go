@@ -98,7 +98,9 @@ func (m *Manager) Viewport(_ context.Context, access Access, opts ViewportOption
 // shows. Every other page lags until it is needed: lockPageForOperation
 // brings a page to the viewport under the operation's own lock (coordinates
 // and screenshots mean the current viewport), and presentPanes never newly
-// shows a page that lags; it asks the drain to lay the page out first.
+// shows a page that lags; it asks the drain to lay the page out, and the
+// first apply that does (the drain's or an operation's) shows it
+// (presentLaidOut).
 type viewportSync struct {
 	apply sync.Mutex
 	busy  bool
@@ -266,18 +268,42 @@ func (m *Manager) applyViewport(p *managedPage) error {
 }
 
 // applyViewportLocked is applyViewport with p.mu held by the caller. It
-// records the size the page took, or the size it refused.
+// records the size the page took, or the size it refused, and then asks for
+// the presentation pass a page held hidden for its layout is waiting on.
 func (m *Manager) applyViewportLocked(p *managedPage) error {
 	m.mu.Lock()
 	width, height := sessionViewport(m.sessionLocked(p.owner))
 	m.mu.Unlock()
 	ctx, cancel := operationContext(context.Background(), p.ctx, 5*time.Second)
 	defer cancel()
-	if err := p.driver.SetViewport(ctx, width, height); err != nil {
+	err := p.driver.SetViewport(ctx, width, height)
+	if err != nil {
 		p.viewportFailed.Store(packViewport(width, height))
-		return fmt.Errorf("browser: apply viewport: %w", err)
+		err = fmt.Errorf("browser: apply viewport: %w", err)
+	} else {
+		p.viewport.Store(packViewport(width, height))
+		p.viewportFailed.Store(0)
 	}
-	p.viewport.Store(packViewport(width, height))
-	p.viewportFailed.Store(0)
-	return nil
+	m.presentLaidOut(p)
+	return err
+}
+
+// presentLaidOut runs the presentation pass for a page that presentPanes
+// held hidden until it was laid out, now that an apply settled it (a refused
+// size is shown too). The caller holds p.mu, which the operation that laid
+// the page out may keep for its own work, so the pass runs on a goroutine of
+// its own: the show waits for the layout only, never for page work, and no
+// engine host call is made under the page lock. presentPanes re-checks the
+// page under Manager.mu after recording it, so an apply that lands before
+// the record is seen there instead.
+func (m *Manager) presentLaidOut(p *managedPage) {
+	m.mu.Lock()
+	awaiting := m.awaitingLayout[p.owner] == p.id
+	if awaiting {
+		delete(m.awaitingLayout, p.owner)
+	}
+	m.mu.Unlock()
+	if awaiting {
+		m.goLife(func() { m.syncPanePresentation(p.owner) })
+	}
 }
