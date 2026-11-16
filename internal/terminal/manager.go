@@ -248,36 +248,6 @@ func (m *Manager) Summary(terminalID string) (SessionSummary, error) {
 	return sess.Summary(), nil
 }
 
-// Restart closes the current session and starts a fresh one with the same
-// options. The new session's ID replaces the old one.
-//
-// A failed close still starts the replacement: Close returns once the old
-// shell has exited, and a process it could not end stays watched by the
-// reaper, which ends it with the backend. The close error is then returned
-// alongside the replacement's summary, so a non-empty TerminalID with an
-// error means the replacement is running.
-func (m *Manager) Restart(terminalID string) (SessionSummary, error) {
-	m.mu.Lock()
-	sess, ok := m.sessions[terminalID]
-	if ok {
-		delete(m.sessions, terminalID)
-	}
-	m.mu.Unlock()
-	if !ok {
-		return SessionSummary{}, ErrTerminalNotFound
-	}
-
-	threadID := sess.ThreadID()
-	opts := sess.opts
-	// Close the old session before spawning the replacement.
-	var closeErr error
-	if err := sess.Close(); err != nil {
-		closeErr = fmt.Errorf("terminal: restart: close the old terminal: %w", err)
-	}
-	summary, err := m.Open(threadID, opts)
-	return summary, errors.Join(closeErr, err)
-}
-
 // Matching returns the summaries of every active session, of any thread,
 // that match accepts, in start order. match must not call back into m.
 func (m *Manager) Matching(match func(SessionSummary) bool) []SessionSummary {

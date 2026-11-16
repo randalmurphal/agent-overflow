@@ -4,14 +4,11 @@ package terminal
 
 import (
 	"errors"
-	"os/exec"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	"agent-overflow/internal/procutil"
 	"agent-overflow/internal/procutil/procutiltest"
 )
 
@@ -206,9 +203,6 @@ func TestManagerMissingTerminalErrors(t *testing.T) {
 	if _, err := m.Replay("x"); !errors.Is(err, ErrTerminalNotFound) {
 		t.Fatalf("Replay: expected ErrTerminalNotFound, got %v", err)
 	}
-	if _, err := m.Restart("x"); !errors.Is(err, ErrTerminalNotFound) {
-		t.Fatalf("Restart: expected ErrTerminalNotFound, got %v", err)
-	}
 }
 
 func TestManagerCloseThreadClosesAll(t *testing.T) {
@@ -286,35 +280,6 @@ func TestManagerMoveThreadRekeysLiveSessions(t *testing.T) {
 		case <-deadline:
 			t.Fatal("did not observe output after terminal move")
 		}
-	}
-}
-
-func TestManagerRestartReplacesSession(t *testing.T) {
-	m := NewManager(nil, nil)
-	summary, err := m.Open("thread-x", SessionOptions{
-		Reaper: procutiltest.Reaper(),
-		Shell:  "/bin/sh",
-		Args:   []string{"-c", "sleep 10"},
-		Cwd:    t.TempDir(),
-	})
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	t.Cleanup(func() { _ = m.CloseThread("thread-x") })
-
-	newSummary, err := m.Restart(summary.TerminalID)
-	if err != nil {
-		t.Fatalf("Restart: %v", err)
-	}
-	if newSummary.TerminalID == summary.TerminalID {
-		t.Fatal("restart must produce a new terminal ID")
-	}
-	list := m.List("thread-x")
-	if len(list) != 1 {
-		t.Fatalf("expected 1 session after restart, got %d", len(list))
-	}
-	if list[0].TerminalID != newSummary.TerminalID {
-		t.Fatalf("list ID mismatch: %s vs %s", list[0].TerminalID, newSummary.TerminalID)
 	}
 }
 
@@ -544,43 +509,5 @@ func TestManagerCloseMatchingClosesAcrossThreads(t *testing.T) {
 	}
 	if !seen[a.TerminalID] || !seen[b.TerminalID] {
 		t.Fatalf("exit callbacks = %v, want %s and %s", seen, a.TerminalID, b.TerminalID)
-	}
-}
-
-// A restart whose old terminal cannot be closed cleanly (a job it left
-// survives) reports that, and still starts the replacement: the old shell
-// has exited, and the job stays watched by the reaper.
-func TestManagerRestartReportsAnOldTerminalItCouldNotClose(t *testing.T) {
-	ensurePTYAvailable(t)
-	prev := stopLeftovers
-	stopLeftovers = func(*exec.Cmd, time.Duration) error { return procutil.ErrGroupSurvived }
-	t.Cleanup(func() { stopLeftovers = prev })
-
-	m := NewManager(nil, nil)
-	t.Cleanup(func() { _ = m.Shutdown() })
-	pidFile := filepath.Join(t.TempDir(), "job.pid")
-	old, err := m.Open("thread-restart", SessionOptions{
-		Reaper: procutiltest.Reaper(),
-		Shell:  "/bin/sh",
-		Args: []string{"-c",
-			`sh -c "trap '' HUP TERM; echo \$\$ > \"\$0\"; exec sleep 120" "$0" & sleep 120`,
-			pidFile},
-		Cwd: t.TempDir(),
-	})
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	backgroundJobPID(t, pidFile)
-
-	replacement, err := m.Restart(old.TerminalID)
-	if !errors.Is(err, procutil.ErrGroupSurvived) {
-		t.Fatalf("Restart = %v, want the old terminal's close failure", err)
-	}
-	if replacement.TerminalID == "" || replacement.TerminalID == old.TerminalID {
-		t.Fatalf("replacement = %q (old %q), want a new running terminal", replacement.TerminalID, old.TerminalID)
-	}
-	list := m.List("thread-restart")
-	if len(list) != 1 || list[0].TerminalID != replacement.TerminalID {
-		t.Fatalf("terminals after the restart = %+v, want only the replacement", list)
 	}
 }

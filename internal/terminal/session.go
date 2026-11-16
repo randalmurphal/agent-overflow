@@ -76,7 +76,6 @@ type Session struct {
 	cwd      string
 	rows     uint16
 	cols     uint16
-	opts     SessionOptions
 	started  time.Time
 
 	proc *Process
@@ -131,7 +130,6 @@ func newSession(id, threadID string, opts SessionOptions, onOutput outputEmitter
 		cwd:      opts.Cwd,
 		rows:     rows,
 		cols:     cols,
-		opts:     opts,
 		started:  time.Now(),
 		proc:     proc,
 		ring:     newRingBuffer(maxReplayBytes),

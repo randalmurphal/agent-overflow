@@ -179,7 +179,6 @@ export const OpenTerminal = dispatch('OpenTerminal');
 export const MoveThreadTerminals = dispatch('MoveThreadTerminals');
 export const RefreshTerminal = dispatch('RefreshTerminal');
 export const ResizeTerminal = dispatch('ResizeTerminal');
-export const RestartTerminal = dispatch('RestartTerminal');
 export const WriteTerminal = dispatch('WriteTerminal');
 // TerminalOpenOptions mirrors the generated class (internal/terminal open args).
 // builtinCommands / TerminalSurface construct `new TerminalOpenOptions({ cwd })`;
