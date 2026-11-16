@@ -1,11 +1,14 @@
 // Shared body of owned-workers-delete.spec.ts and its compact twin
 // (docs/specs/standing-agents.md, "Owned workers"). A thread owns a running
-// worker and an archived worker that owns one of its own, and has placed a
-// standalone spawn in the sidebar. Deleting the thread from its sidebar row
-// says in the confirmation that its three workers go with it; the running
-// worker's session ends, all three are gone, the standalone spawn stays and
-// runs on, and nothing starts a session for a deleted thread afterwards.
-// Screenshots are dark mode.
+// worker on a worktree of its own and an archived worker that owns one of
+// its own, and has placed a standalone spawn in the sidebar. Deleting the
+// thread from its sidebar row says in the confirmation that its three
+// workers go with it; the running worker's session ends, its worktree is
+// removed, all three are gone, the standalone spawn stays and runs on, and
+// nothing starts a session for a deleted thread afterwards. Screenshots are
+// dark mode.
+import { existsSync } from 'node:fs';
+
 import type { Page } from '@playwright/test';
 
 import { expect, type SeedResult } from './fixtures.js';
@@ -51,15 +54,19 @@ export async function runOwnedWorkersDelete(harness: HarnessApp, page: Page, lay
     name: `${tag}-lead`, provider: 'claude',
     turns: [{
       steps: [
-        spawn('Running worker', ownedProject.projectId),
+        // On a worktree of its own, made from the local head: the harness
+        // project has no origin to fetch from.
+        spawn('Running worker', ownedProject.projectId, { worktree: `${tag}-running`, base_local: true }),
         spawn('Standalone worker', looseProject.projectId, { placement: 'standalone' }),
       ],
       text: 'Spawned two.',
     }],
     afterTurns: 'silent',
   }));
-  for (const project of [ownedProject, looseProject]) {
-    await setScenario(harness, project.path, threadToolsScenario({
+  // The running worker's worktree is named only once it is made, so its
+  // script is the one for every workspace without its own.
+  for (const path of ['', looseProject.path]) {
+    await setScenario(harness, path, threadToolsScenario({
       name: `${tag}-worker`, provider: 'claude',
       turns: [{ steps: [{ gate: 'worker-hold' }], text: 'Done.' }],
       afterTurns: 'silent',
@@ -81,7 +88,10 @@ export async function runOwnedWorkersDelete(harness: HarnessApp, page: Page, lay
   }
   await leadTurn;
   const [running, loose] = spawned;
-  const runningGate = (await awaitGate(harness, 'worker-hold', ownedProject.path)).mockId;
+  const runningTree = (await harness.rpc<{ worktreePath?: string }>('GetThread', running)).worktreePath ?? '';
+  expect(runningTree, 'the running worker is on a worktree').not.toBe('');
+  expect(existsSync(runningTree)).toBe(true);
+  const runningGate = (await awaitGate(harness, 'worker-hold', runningTree)).mockId;
   const looseGate = (await awaitGate(harness, 'worker-hold', looseProject.path)).mockId;
   await expect(projectItem(page, looseProject.projectId).locator(`[data-sidebar-thread-id="${loose}"]`)).toBeVisible();
   await expect(rowIn(page, running)).toHaveCount(0);
@@ -94,7 +104,7 @@ export async function runOwnedWorkersDelete(harness: HarnessApp, page: Page, lay
   const exited = () => harness.countEvents<HarnessMockEventData>(
     'harness:mock', (ev) => ev.mockId === runningGate && ev.report.kind === 'exiting',
   );
-  const before = { lead: registered(leadProject.path), worker: registered(ownedProject.path) };
+  const before = { lead: registered(leadProject.path), worker: registered(runningTree) };
   expect(exited()).toBe(0);
 
   // ---- The confirmation counts the three workers; the standalone spawn
@@ -115,6 +125,7 @@ export async function runOwnedWorkersDelete(harness: HarnessApp, page: Page, lay
   for (const id of [lead, running, archived, nested]) {
     await expect(harness.rpc('GetThread', id), `${id} outlived its owner`).rejects.toThrow();
   }
+  await expect.poll(() => existsSync(runningTree), { message: "the running worker's worktree outlived it" }).toBe(false);
   await expect(page.getByTestId('toast').filter({ hasText: 'was not deleted' })).toHaveCount(0);
 
   // ---- The placed spawn stays and finishes its turn.
@@ -127,6 +138,6 @@ export async function runOwnedWorkersDelete(harness: HarnessApp, page: Page, lay
   // ---- Nothing starts a session for a deleted thread.
   await page.waitForTimeout(2_000);
   expect(registered(leadProject.path)).toBe(before.lead);
-  expect(registered(ownedProject.path)).toBe(before.worker);
+  expect(registered(runningTree)).toBe(before.worker);
   expect(exited()).toBe(1);
 }
