@@ -105,9 +105,12 @@ export async function writeThreadRequests(harness: HarnessApp, version: string, 
       timeoutMs: 180_000,
     },
   });
+  // The caller echoes each message as a real app-server does, so its wakes
+  // are confirmed and name the row that carried them (wake_item_id).
   await setScenario(harness, cwd, threadToolsScenario({
     name: `topup-caller-${nonce}`,
     provider: 'codex',
+    echoUserMessage: true,
     turns: [
       { steps: [send('Where does the top-up stand?', true)], text: 'The other thread replied.' },
       { steps: [send('Anything else?', true)], text: 'The other thread finished.' },
