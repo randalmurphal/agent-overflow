@@ -172,7 +172,12 @@ worker's async questions that never reached the agent go back to their
 owners through one path (`giveBackToOwners`), from an End
 Session, an archive, a revert, a session end, a failed Codex resend and the
 boot sweep,
-whether still queued or handed to the provider and not confirmed. The
+whether still queued or handed to the provider and not confirmed. A
+message taken out of the queue before the agent read it (an Incoming
+withdrawal, a rest, an archive, a handoff, a loop's cancel) goes back to
+its owner through one dispatch keyed by its send id root
+(`withdrawQueuedMessage`); a new root in `appSendIDRoots` needs an owner
+there. The
 provider's echo confirms the owner's delivery mark (`confirmOwnedDeliveries`,
 on triage's `SetFlushSendConsumedHook`), and a completion a session end returned is
 paced on the wake retry ladder (`completionRedelivery`). A message

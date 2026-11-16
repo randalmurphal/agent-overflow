@@ -1,8 +1,6 @@
 package app
 
 import (
-	"errors"
-	"fmt"
 	"log"
 	"strings"
 	"time"
@@ -37,42 +35,6 @@ func threadWakeFromSendID(sendID string) (token string, late, ok bool) {
 	}
 	token, ok = strings.CutPrefix(sendID, "thread-wake:")
 	return token, false, ok && token != ""
-}
-
-// withdrawHeldThreadWakes takes an archived thread's queued answers and
-// reminders back to their requests (store.WithdrawThreadWake): owed again
-// and disarmed, as a wake the archive refused at the queue write is, so
-// none reaches the agent when the thread is next started. thread_status
-// still returns each answer, and a wake re-armed by a later wait or
-// thread_status delivers it and unarchives the thread. A wake the dispatch
-// already took stays delivered. match picks the queued messages by send id.
-// A message that answered several requests gives every one of them back.
-func (a *App) withdrawHeldThreadWakes(threadID string, match func(sendID string) bool) error {
-	rows, err := a.store.ListFlushQueueItems(threadID)
-	if err != nil {
-		return fmt.Errorf("withdraw the queued thread wakes of %s: %w", threadID, err)
-	}
-	var errs []error
-	for _, row := range rows {
-		token, late, ok := threadWakeFromSendID(row.SendID)
-		if !ok || !match(row.SendID) {
-			continue
-		}
-		var returned []string
-		removal, err := a.removeQueuedItemWith(a.lifeCtx(), threadID, row.SendID, func(row store.FlushQueueItem) error {
-			var err error
-			returned, err = a.store.WithdrawThreadWake(token, late, row.ID, store.WithdrawQueued)
-			return err
-		})
-		if err != nil {
-			errs = append(errs, fmt.Errorf("withdraw %s from %s: %w", row.SendID, threadID, err))
-			continue
-		}
-		if removal == queueRemovalRemoved {
-			a.redeliverHandedOffWakes(threadID, returned, late)
-		}
-	}
-	return errors.Join(errs...)
 }
 
 // redeliverHandedOffWakes sends the answers or reminders a thread New

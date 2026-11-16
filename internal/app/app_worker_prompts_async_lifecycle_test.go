@@ -251,6 +251,40 @@ func TestAnEchoedSpawnerAnswerWhoseConfirmationFailsIsKept(t *testing.T) {
 	}
 }
 
+// An archive of a worker with no session takes the spawner's queued answer
+// back to its questions, as a queue drop does: the archived worker asks
+// nobody, its unarchive puts the question to the spawner again under a new
+// token, and the worker's next start does not deliver the old answer.
+func TestArchivingASessionlessWorkerReturnsItsQueuedAnswer(t *testing.T) {
+	t.Parallel()
+	f := newAsyncQuestionFixture(t, "async-answer-archived", store.PlacementOwned)
+	sendID := f.answered(t)
+	if _, live := f.app.sessionManager().get(f.worker.ID); live {
+		t.Fatal("the worker has a session")
+	}
+	if result, err := f.app.ArchiveThread(f.worker.ID); err != nil || result.CleanupError != "" {
+		t.Fatalf("archive = %+v, %v", result, err)
+	}
+	f.drain(t)
+	f.requireReturned(t, sendID)
+	answered := strings.TrimPrefix(sendID, workerAnswerSendIDRoot)
+	if tokens := workerPromptTokens(t, f.app, f.spawner.ID); slices.ContainsFunc(tokens, func(token string) bool { return token != answered }) {
+		t.Fatalf("the archived worker's question was put to the spawner: %q", tokens)
+	}
+	if _, err := f.app.UnarchiveThread(f.worker.ID); err != nil {
+		t.Fatal(err)
+	}
+	f.drain(t)
+	f.requireRoutedAgain(t, sendID)
+	if _, err := f.app.RegisterQueueItem(t.Context(), f.worker.ID, "carry on", SendMessageOptions{SendID: "person-send"}); err != nil {
+		t.Fatal(err)
+	}
+	f.drain(t)
+	if durable, memory := queuedSendIDs(t, f.app, f.worker.ID); slices.Contains(durable, sendID) || slices.Contains(memory, sendID) {
+		t.Fatalf("the worker's start would deliver the archived answer: %q (in memory %q)", durable, memory)
+	}
+}
+
 // A person's withdrawal of the spawner's answer puts its questions to the
 // person even when a reconcile that read the item before the return
 // publishes after it: that older reading neither takes the person's

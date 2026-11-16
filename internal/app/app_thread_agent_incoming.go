@@ -2,7 +2,6 @@ package app
 
 import (
 	"context"
-	"strings"
 
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/store"
@@ -12,8 +11,9 @@ import (
 // The Agents segment's incoming rows are the messages agents and wakes
 // queued for a thread behind its current turn, read by the client from the
 // thread's queue (QueuedItem.AgentMessage). A person can withdraw one before the
-// thread's agent takes it in; each kind goes back the way a wholesale queue
-// drop sends it back, so its owner learns it was not delivered:
+// thread's agent takes it in; each goes back to its owner through the one
+// withdrawal every caller uses (withdrawQueuedMessage, byPerson), so its
+// owner learns it was not delivered:
 //
 //   - a request another thread made: its receipt is cancelled, and the
 //     sender is told the user withdrew it;
@@ -65,56 +65,18 @@ func (a *App) incomingAgentSendIDs(threadID string) []string {
 }
 
 // withdrawIncomingAgentMessage takes one incoming message back out of the
-// thread's queue and settles it with its owner.
+// thread's queue and settles it with its owner (withdrawQueuedMessage).
 func (a *App) withdrawIncomingAgentMessage(ctx context.Context, threadID, sendID string) ThreadAgentStop {
 	result := ThreadAgentStop{Token: sendID, Outcome: threadAgentStopped, Incoming: true}
-	var withdrawn store.FlushQueueItem
-	deleteRow := func(row store.FlushQueueItem) error {
-		withdrawn = row
-		return a.store.DeleteFlushQueueItem(row.ID)
-	}
-	if token, late, ok := threadWakeFromSendID(sendID); ok {
-		deleteRow = func(row store.FlushQueueItem) error {
-			_, err := a.store.WithdrawThreadWake(token, late, row.ID, store.WithdrawQueued)
-			return err
-		}
-	}
-	if isWorkerAnswer(sendID) {
-		deleteRow = func(row store.FlushQueueItem) error { return a.returnWorkerAnswer(threadID, row.SendID, true) }
-	}
-	computerID, requestID, isCompletion := remoteCompletionFromSendID(sendID)
-	if isCompletion {
-		deleteRow = func(row store.FlushQueueItem) error {
-			return a.store.WithdrawRemoteCompletion(computerID, requestID, row.ID, store.WithdrawQueued, stoppedRemoteCompletion)
-		}
-	}
-	removal, err := a.removeQueuedItemWith(ctx, threadID, sendID, deleteRow)
-	if err != nil {
+	removal, err := a.withdrawQueuedMessage(ctx, threadID, sendID, queuedWithdrawal{byPerson: true})
+	switch {
+	case removal == queueRemovalRemoved && err != nil:
+		result.Failures = append(result.Failures, err.Error())
+	case err != nil:
 		result.Outcome = threadAgentFailed
 		result.Failures = append(result.Failures, "withdraw it: "+err.Error())
-		return result
-	}
-	if removal != queueRemovalRemoved {
+	case removal != queueRemovalRemoved:
 		result.Outcome = threadAgentEnded
-		return result
-	}
-	switch {
-	case strings.HasPrefix(sendID, threadRequestSendIDPrefix):
-		token := strings.TrimPrefix(sendID, threadRequestSendIDPrefix)
-		if err := a.settleThreadReceipt(token, []string{store.ThreadReceiptAccepted}, store.ThreadRequestSettlement{
-			State: store.ThreadReceiptCancelled, Answer: []byte(threadRequestUserWithdrew), AnswerKind: store.ThreadAnswerError,
-		}); err != nil {
-			result.Failures = append(result.Failures, "tell its sender: "+err.Error())
-		}
-	case isCompletion:
-		a.emitBackgroundChanged(threadID)
-	case a.handBackWorkerPromptWake(sendID):
-	case strings.HasPrefix(sendID, agentSendIDRoot):
-		a.noteAgentSendNotDelivered(threadID, "the user withdrew it from the queue")
-	default:
-		if wakeID, _, ok := agentWakeFromSendID(sendID); ok {
-			a.noteAgentWakeUndelivered(threadID, wakeID, agentWakeOutcomeWithdrawn, withdrawn.Message)
-		}
 	}
 	return result
 }

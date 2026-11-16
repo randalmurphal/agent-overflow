@@ -650,19 +650,15 @@ func (a *App) interruptedByHandOff(tokens []string) []agenthome.InterruptedReque
 func (a *App) continueAfterHandOff(oldThreadID, newThreadID string, handOff store.AssistantHandOff) {
 	// Loop and watch wakes and other threads' requests still queued for the
 	// old thread go on to the successor's queue. Everything else
-	// app-written goes on through its give-back
-	// (withdrawQueuedAgentMessages).
+	// app-written goes on through its owner (withdrawQueuedMessages), and an
+	// opening the old thread never read is dropped: it is not the
+	// successor's.
 	rows, err := a.store.ListFlushQueueItems(oldThreadID)
 	if err != nil {
 		log.Printf("assistants: hand off %s: read its queue: %v", oldThreadID, err)
 	}
 	for _, row := range rows {
 		switch {
-		case strings.HasPrefix(row.SendID, assistantSendIDRoot):
-			// An opening the old thread never read is not the successor's.
-			if _, err := a.removeQueuedItem(a.lifeCtx(), oldThreadID, row.SendID); err != nil {
-				log.Printf("assistants: hand off %s: drop %s: %v", oldThreadID, row.SendID, err)
-			}
 		case threadRequestSendIDToken(row.SendID) != "":
 			a.moveQueuedRequest(oldThreadID, row)
 		default:
@@ -671,13 +667,7 @@ func (a *App) continueAfterHandOff(oldThreadID, newThreadID string, handOff stor
 			}
 		}
 	}
-	if err := a.withdrawQueuedAgentMessages(oldThreadID, everyQueuedMessage, "the assistant moved to a new thread before the agent took it in"); err != nil {
-		log.Printf("assistants: hand off %s: %v", oldThreadID, err)
-	}
-	if err := a.withdrawHeldThreadWakes(oldThreadID, everyQueuedMessage); err != nil {
-		log.Printf("assistants: hand off %s: %v", oldThreadID, err)
-	}
-	if err := a.withdrawHeldRemoteCompletions(oldThreadID, everyQueuedMessage); err != nil {
+	if err := a.withdrawQueuedMessages(oldThreadID, everyQueuedMessage, queuedWithdrawal{why: "the assistant moved to a new thread before the agent took it in"}); err != nil {
 		log.Printf("assistants: hand off %s: %v", oldThreadID, err)
 	}
 	// A worker's prompt the old thread took in and left unanswered is the

@@ -135,22 +135,20 @@ func (a *App) stopRestingThreadWork(work restingThreadWork) error {
 		return work.err
 	}
 	ctx, id := a.lifeCtx(), work.threadID
-	// What the app had queued for the thread goes, live session or not, so
-	// nothing of it reaches the agent when the thread is next started. Its
-	// loops and watches were cancelled with the capture.
-	withdrawErr := a.withdrawQueuedAgentMessages(id, work.held, work.cause.why)
-	// A request's answer or reminder goes back to its request, disarmed
-	// with it, so the retry cannot bring the thread back.
-	wakesErr := a.withdrawHeldThreadWakes(id, work.held)
 	a.cancelOwnedAsks(ctx, id, work.asks)
 	undelivered, remoteErr := a.cancelRemoteCommands(ctx, id, work.commands, work.cause.keepFinished)
-	// A finished job's completion an archive keeps is kept for the thread:
-	// the cancel keeps its watch, and one already held in the queue goes back
-	// to its watch after the cancel has run. It arrives once the thread is
-	// unarchived. One the cause does not keep was dismissed with the capture,
-	// so its queued message is only taken out.
-	completionsErr := a.withdrawHeldRemoteCompletions(id, work.held)
-	return errors.Join(work.err, withdrawErr, wakesErr, undelivered, remoteErr, completionsErr)
+	// What the app had queued for the thread goes back to its owners, live
+	// session or not, so nothing of it reaches the agent when the thread is
+	// next started (withdrawQueuedMessages): a request's answer or reminder
+	// to its request, disarmed with it, so the retry cannot bring the thread
+	// back, and the spawner's answer to its async questions to them. Its
+	// loops and watches were cancelled with the capture. After the cancel, so
+	// a finished job's completion an archive keeps goes back to the watch the
+	// cancel kept, and arrives once the thread is unarchived; one the cause
+	// does not keep was dismissed with the capture, so its queued message is
+	// only taken out.
+	withdrawErr := a.withdrawQueuedMessages(id, work.held, queuedWithdrawal{why: work.cause.why})
+	return errors.Join(work.err, undelivered, remoteErr, withdrawErr)
 }
 
 // errThreadResting refuses an app-written message for a thread a Stop is

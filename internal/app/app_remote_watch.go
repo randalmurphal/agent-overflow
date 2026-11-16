@@ -490,40 +490,6 @@ func remoteCompletionFromSendID(sendID string) (computerID, requestID string, ok
 	return computerID, requestID, isCompletion && ok
 }
 
-// withdrawHeldRemoteCompletions takes an archived thread's queued remote
-// completions back out of its queue and returns each to its watch, so none
-// reaches the agent when the thread is next started and the watcher delivers
-// it once the thread is unarchived. A completion the dispatch already took
-// stays delivered. One queued in a live session goes back when the archive's
-// teardown drops the queue (giveBackToOwners). match picks the queued
-// messages by send id.
-func (a *App) withdrawHeldRemoteCompletions(threadID string, match func(sendID string) bool) error {
-	rows, err := a.store.ListFlushQueueItems(threadID)
-	if err != nil {
-		return fmt.Errorf("withdraw the queued remote completions of %s: %w", threadID, err)
-	}
-	var errs []error
-	withdrawn := false
-	for _, row := range rows {
-		computerID, requestID, ok := remoteCompletionFromSendID(row.SendID)
-		if !ok || !match(row.SendID) {
-			continue
-		}
-		removal, err := a.removeQueuedItemWith(a.lifeCtx(), threadID, row.SendID, func(row store.FlushQueueItem) error {
-			return a.store.WithdrawRemoteCompletion(computerID, requestID, row.ID, store.WithdrawQueued, nil)
-		})
-		if err != nil {
-			errs = append(errs, fmt.Errorf("withdraw %s from %s: %w", row.SendID, threadID, err))
-			continue
-		}
-		withdrawn = withdrawn || removal == queueRemovalRemoved
-	}
-	if withdrawn {
-		a.emitBackgroundChanged(threadID)
-	}
-	return errors.Join(errs...)
-}
-
 // ListThreadRemoteCommands lists a conversation's tracked remote jobs, pending
 // first, with each computer's name. The transcript resolves job labels and
 // computer names from it; the tray reads its own projection.

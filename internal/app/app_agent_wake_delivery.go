@@ -1243,57 +1243,18 @@ func completionRedelivery(now time.Time, attempts int64) store.CompletionReturn 
 	return store.CompletionReturn{NextCheck: now.Add(threadWakeRetryDelay(attempts)).UnixMilli(), Attempts: attempts}
 }
 
-// withdrawQueuedAgentMessages takes the app-written messages match picks
-// back out of a thread's queue, whether or not a session is live: an archive
-// takes them all, and a cancel takes its loop's or watch's wakes. Left
-// queued, they would reach the agent at the thread's next start, whoever
-// made it. Each one withdrawn is settled as a wholesale drop settles it: a
-// worker's prompt goes back to the user in the worker and an outside send
-// leaves the thread a notice ending in why. A wake needs nothing more: the
-// cancel that withdraws it records its row's outcome. A message already
-// handed to the session is the session's.
-//
-// An error names each message left queued: a later start would deliver it,
-// so the caller reports it. One left by shutdown is the next boot's, which
-// discards it the same way (discardAgentWakeAtBoot).
-//
-// It takes send admission, so it runs with the thread's action lock released.
-func (a *App) withdrawQueuedAgentMessages(threadID string, match func(sendID string) bool, why string) error {
-	rows, err := a.store.ListFlushQueueItems(threadID)
-	if err != nil {
-		return fmt.Errorf("withdraw the queued messages of %s: %w", threadID, err)
-	}
-	var errs []error
-	for _, row := range rows {
-		if agentAppPartRoot(row.SendID) == "" || !match(row.SendID) {
-			continue
-		}
-		removal, err := a.removeQueuedItem(a.lifeCtx(), threadID, row.SendID)
-		if err != nil {
-			errs = append(errs, fmt.Errorf("withdraw %s from %s: %w", row.SendID, threadID, err))
-			continue
-		}
-		if removal != queueRemovalRemoved {
-			continue
-		}
-		if !a.handBackWorkerPromptWake(row.SendID) && strings.HasPrefix(row.SendID, agentSendIDRoot) {
-			a.outsideSendNotTakenIn(threadID, queuedAgentMessage(row), why)
-		}
-	}
-	return errors.Join(errs...)
-}
-
 // everyQueuedMessage matches every queued message of a thread.
 func everyQueuedMessage(string) bool { return true }
 
 // withdrawCancelledAgentWakes takes the queued wakes of cancelled loops and
-// watches back out of their thread's queue; no ids takes every wake queued
-// there.
+// watches back out of their thread's queue (withdrawQueuedMessages); no ids
+// takes every wake queued there. A wake needs nothing more: the cancel that
+// withdraws it records its row's outcome.
 func (a *App) withdrawCancelledAgentWakes(threadID string, wakeIDs ...string) error {
-	return a.withdrawQueuedAgentMessages(threadID, func(sendID string) bool {
+	return a.withdrawQueuedMessages(threadID, func(sendID string) bool {
 		wakeID, _, ok := agentWakeFromSendID(sendID)
 		return ok && (len(wakeIDs) == 0 || slices.Contains(wakeIDs, wakeID))
-	}, "")
+	}, queuedWithdrawal{})
 }
 
 // noteAgentSendsCleared tells a thread that the outside sends whose queue

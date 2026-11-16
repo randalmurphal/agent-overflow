@@ -377,11 +377,13 @@ func isWorkerAnswer(sendID string) bool {
 // queue row goes and the questions it answered are unanswered again
 // (store.ReturnAsyncAnswer), and their change routes them again under a
 // fresh token. It never goes to the worker's composer: it is not the
-// person's to send. Every exit an undelivered answer takes comes here: a
-// person's withdrawal from the worker's Incoming rows, and, through
-// giveBackToOwners, a session that ended or a provider that refused it, a
-// failed Codex resend, a wholesale drop (End Session, a Stop, an archive, a
-// revert, a cleared queue) and the boot.
+// person's to send. Every exit an undelivered answer takes comes here:
+// through withdrawQueuedMessage, a person's withdrawal from the worker's
+// Incoming rows and a rest or an archive taking back what the worker held
+// queued, session or not; and through giveBackToOwners, a session that
+// ended or a provider that refused it, a failed Codex resend, a wholesale
+// drop (End Session, a Stop, an archive, a revert, a cleared queue) and the
+// boot.
 //
 // Returned by the app or a failure, the questions go where the worker's
 // questions route now, the spawner when it can take them. Withdrawn by a

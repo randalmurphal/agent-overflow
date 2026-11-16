@@ -527,8 +527,10 @@ included, and puts the parts left to the spawner under a new one. It
 outlives the worker's session, is put to the spawner again under a new
 token after a restart, and is dismissed by a Stop of the worker; an
 archived worker's question waits for its unarchive. A reply the worker
-never takes in (its session ends or refuses it, a queue drop, a restart)
-puts its parts back unanswered, to the spawner under a new token; one
+never takes in (its session ends or refuses it, a queue drop, an archive,
+a restart) puts its parts back unanswered, to the spawner under a new
+token; one the worker took in stays answered, its echo's own write failed
+or not; one
 the user withdraws from the worker's Incoming rows puts them to the
 user. It never becomes text in the worker's composer. `decision` and
 `answers` on any other token are refused.

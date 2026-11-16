@@ -237,7 +237,7 @@ func (a *App) deliverThreadWakeMessage(message threadWakeMessage) bool {
 //
 // A thread that is not archived is not locked: an archive that lands after
 // this read is refused by the queue write (errThreadArchived) or takes the
-// wake back (withdrawHeldThreadWakes). An archived one is unarchived under
+// wake back (withdrawQueuedMessages). An archived one is unarchived under
 // the caller's action lock, which an archive holds while it flips the row
 // and disarms the thread's wakes, so a wake that was on its way when the
 // thread was archived finds its request disarmed and is not delivered, and
