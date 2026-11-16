@@ -82,15 +82,22 @@ func findTextArg(name string, value driver.Value) (string, bool, error) {
 }
 
 // findMatchSQL is the condition that a row's candidate text holds the
-// loose needle bound at needle. A row the backfill has not reached yet
-// computes its candidate text from its own row; one among them whose
-// candidate text reads its payload, which the read does not load, is taken
-// as a candidate.
+// loose needle bound at needle, or is findAnyCandidate. A row the backfill
+// has not reached yet computes its candidate text from its own row; one
+// among them whose candidate text reads its payload, which the read does
+// not load, is taken as a candidate.
 func findMatchSQL(alias, needle string) string {
-	return `(CASE WHEN ` + alias + `find_text IS NOT NULL THEN instr(` + alias + `find_text, ` + needle + `) > 0
+	candidate := `find_candidate(` + alias + `kind, ` + alias + `summary, ` + alias + `meta, ` + alias + `tool_name, NULL)`
+	return `(CASE WHEN ` + alias + `find_text IS NOT NULL THEN ` + findHoldsSQL(alias+`find_text`, needle) + `
 	      WHEN ` + alias + `payload_id IS NOT NULL
 	       AND ` + alias + `kind IN ('thinking', 'compaction_reasoning', 'tool_call', 'tool_completion') THEN 1
-	      ELSE instr(find_candidate(` + alias + `kind, ` + alias + `summary, ` + alias + `meta, ` + alias + `tool_name, NULL), ` + needle + `) > 0 END)`
+	      ELSE ` + findHoldsSQL(candidate, needle) + ` END)`
+}
+
+// findHoldsSQL is the condition that the candidate text expression text
+// holds needle or is findAnyCandidate.
+func findHoldsSQL(text, needle string) string {
+	return `(instr(` + text + `, ` + needle + `) > 0 OR ` + text + ` = ` + sqlTextLiteral(findAnyCandidate) + `)`
 }
 
 // findNeedle is the trimmed query's loose form, the bound value of

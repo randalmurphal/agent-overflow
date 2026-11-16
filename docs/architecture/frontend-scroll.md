@@ -1743,9 +1743,10 @@ and only for an owner advertising `thread-find.v1`: `SearchThreadItems` and
 shows (main top-level rows, or an agent scope's direct children) in
 document order, walking the timeline arms on the call's context. A
 candidate's stored candidate text (`items.find_text`,
-`internal/store/find_candidate.go`) holds the query's loose form; a
-candidate may hold no match, and a row that holds one is always a
-candidate. The pane counts a candidate's matches in its find text, the
+`internal/store/find_candidate.go`) holds the query's loose form, or
+matches every query for a row whose Markdown the store cannot read as the
+frontend does; a candidate may hold no match, and a row that holds one is
+always a candidate. The pane counts a candidate's matches in its find text, the
 text its renderer marks `data-find-text` and the highlighter paints, by
 the find rule over the projection beside each row renderer
 (`chat/threadFindText.ts`), so the count and the paint read the same
