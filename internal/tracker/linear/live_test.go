@@ -92,6 +92,10 @@ func TestLive(t *testing.T) {
 		created = append(created, issue)
 		t.Cleanup(func() { l.cleanup(issue) })
 		t.Logf("created %s sortOrder %v", issue.Identifier, issue.SortOrder)
+		// RenumberIssues accepts only this spelling of an issue ID.
+		if !canonicalUUID(issue.ID) {
+			t.Errorf("issue ID %q is not a lowercase UUID", issue.ID)
+		}
 	}
 	ids := []string{created[0].ID, created[1].ID, created[2].ID}
 

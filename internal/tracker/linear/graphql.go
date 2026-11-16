@@ -25,11 +25,10 @@ type envelope struct {
 	Errors []wireError     `json:"errors"`
 }
 
-// payload is a mutation's result as its document aliases it. Success is
-// a pointer so that a missing or null success is told from false.
+// payload is a mutation's result as its document aliases it; its
+// success is read by readPayload.
 type payload[T any] struct {
-	Success *bool `json:"success"`
-	Value   *T    `json:"value"`
+	Value *T `json:"value"`
 }
 
 // reply is what a call reports beside its data.
@@ -68,8 +67,12 @@ func (c *Client) call(ctx context.Context, op operation, vars, out any) (reply, 
 	if err := json.Unmarshal(resp.Body, &env); err != nil {
 		return r, a.decodeError("decode the answer", err)
 	}
-	if len(env.Errors) > 0 {
-		return r, c.failure(a, env.Errors, env.Data, nil)
+	outcome := payloadNone
+	if op.mutation {
+		outcome = readPayload(env.Data)
+	}
+	if len(env.Errors) > 0 || (op.mutation && outcome != payloadSucceeded) {
+		return r, c.failure(a, env.Errors, outcome, nil)
 	}
 	if absent(env.Data) {
 		return r, &Error{Op: op.name, Status: resp.Status}
@@ -84,24 +87,57 @@ func absent(raw json.RawMessage) bool {
 	return len(raw) == 0 || bytes.Equal(raw, []byte("null"))
 }
 
+// payloadState is what a mutation answer's data says about the write.
+type payloadState int
+
+const (
+	// payloadNone is no result: data or the result absent or null.
+	payloadNone payloadState = iota
+	// payloadUnsaid is a result without a boolean success: missing,
+	// null or malformed.
+	payloadUnsaid
+	payloadFailed    // success: false
+	payloadSucceeded // success: true
+)
+
+// readPayload reads the success of a mutation answer's result.
+func readPayload(data json.RawMessage) payloadState {
+	if absent(data) {
+		return payloadNone
+	}
+	var d struct {
+		Result json.RawMessage `json:"result"`
+	}
+	if json.Unmarshal(data, &d) != nil {
+		return payloadUnsaid
+	}
+	if absent(d.Result) {
+		return payloadNone
+	}
+	var p struct {
+		Success any `json:"success"`
+	}
+	if json.Unmarshal(d.Result, &p) != nil {
+		return payloadUnsaid
+	}
+	switch p.Success {
+	case true:
+		return payloadSucceeded
+	case false:
+		return payloadFailed
+	}
+	return payloadUnsaid
+}
+
 // mutate sends a mutation and returns its payload's entity, nil when
-// the payload holds none. Only a present success: false is a refusal;
-// a payload that is missing or does not say it succeeded leaves the
-// outcome unknown.
+// the payload holds none. call returns no error only for a payload
+// that says success: true; failure classifies every other answer.
 func mutate[T any](ctx context.Context, c *Client, op operation, vars any) (*T, error) {
 	var data struct {
 		Result *payload[T] `json:"result"`
 	}
-	r, err := c.call(ctx, op, vars, &data)
-	switch {
-	case err != nil:
+	if _, err := c.call(ctx, op, vars, &data); err != nil {
 		return nil, err
-	case data.Result == nil:
-		return nil, &Error{Op: op.name, Status: r.Status}
-	case data.Result.Success == nil:
-		return nil, fmt.Errorf("linear %s: the payload does not say whether the mutation succeeded", op.name)
-	case !*data.Result.Success:
-		return nil, &Error{Op: op.name, Status: r.Status, Unsuccessful: true, Refused: true}
 	}
 	return data.Result.Value, nil
 }
@@ -127,59 +163,72 @@ func invalid(call, format string, args ...any) error {
 }
 
 // transportError types a failed call. An error answer carrying GraphQL
-// errors becomes an *Error wrapping the transport's error. Its body is
-// the transport's, already scrubbed.
+// errors becomes an *Error wrapping the transport's error. Its body was
+// scrubbed as text, which decoding can undo (a JSON escape inside the
+// key), so what is decoded from it is scrubbed again by failure, with
+// the error's own Scrub.
 func (c *Client) transportError(op operation, err error) error {
 	statusErr, ok := errors.AsType[*trackerapi.StatusError](err)
 	if !ok {
 		return fmt.Errorf("linear %s: %w", op.name, err)
 	}
-	wire, _ := parseErrors([]byte(statusErr.Body))
-	if len(wire) == 0 {
+	var env envelope
+	if json.Unmarshal([]byte(statusErr.Body), &env) != nil || len(env.Errors) == 0 {
 		return fmt.Errorf("linear %s: %w", op.name, err)
 	}
-	return c.failure(answer{op: op, status: statusErr.Status, scrub: unscrubbed}, wire, nil, err)
+	outcome := payloadNone
+	if op.mutation {
+		outcome = readPayload(env.Data)
+	}
+	return c.failure(answer{op: op, status: statusErr.Status, scrub: statusErr.Scrub}, env.Errors, outcome, err)
 }
 
-// failure builds the error of an answer that carries GraphQL errors;
-// every error built from answer text passes through it or decodeError.
-// The key refused under a status the transport did not take as a
-// refusal is an *trackerapi.AuthError. A write is refused when the
-// transport's error proves it (an HTTP 4xx) or when it produced no
-// payload and every error blames the input; otherwise its outcome is
-// unknown.
-func (c *Client) failure(a answer, wire []wireError, data json.RawMessage, transportErr error) error {
+// failure builds the error of a GraphQL answer that failed: one with
+// errors, or a mutation's without success: true. It is the one place
+// decoded answer text becomes error text, through a.scrub, whatever the
+// status; decodeError is the other path, for an answer that did not
+// decode. The key refused under a status the transport did not take as
+// a refusal is an *trackerapi.AuthError; with success: false it is the
+// Err of a refused *Error.
+//
+// A write is refused when its payload says success: false, with or
+// without errors; when the transport's error proves it (an HTTP 4xx);
+// or, on an answer the transport passed, when there is no payload and
+// every error blames the input. Every other outcome is unknown.
+func (c *Client) failure(a answer, wire []wireError, outcome payloadState, transportErr error) error {
 	errs := typedErrors(wire, a.scrub)
-	for _, e := range errs {
-		if e.Code == CodeAuthentication {
-			auth := &trackerapi.AuthError{Tracker: "linear", Method: http.MethodPost, URL: c.endpoint, Status: a.status, Message: joinErrors(errs)}
+	unsuccessful := a.op.mutation && outcome == payloadFailed
+	cause := transportErr
+	for _, g := range errs {
+		if g.Code != CodeAuthentication {
+			continue
+		}
+		auth := &trackerapi.AuthError{Tracker: "linear", Method: http.MethodPost, URL: c.endpoint, Status: a.status, Message: joinErrors(errs)}
+		if !unsuccessful {
 			return fmt.Errorf("linear %s: %w", a.op.name, auth)
 		}
+		// success: false still proves the refusal; the AuthError stays
+		// reachable through errors.As.
+		cause = auth
+		break
 	}
-	e := &Error{Op: a.op.name, Status: a.status, Errors: errs, Err: transportErr}
-	allUser := true
+	e := &Error{Op: a.op.name, Status: a.status, Errors: errs, Err: cause}
+	allUser := len(errs) > 0
 	for _, g := range errs {
 		allUser = allUser && g.UserError
 		e.notFound = e.notFound || g.notFound(a.op.root)
 	}
 	switch {
+	case unsuccessful:
+		e.Unsuccessful, e.Refused = true, true
 	case transportErr != nil:
 		e.Refused = trackerapi.WriteNotApplied(transportErr)
-	case a.op.mutation && allUser:
-		e.Refused = payloadAbsent(data)
+	case a.op.mutation && outcome == payloadNone:
+		e.Refused = allUser
+	case a.op.mutation && outcome == payloadUnsaid && len(errs) == 0:
+		e.Err = errors.New("the payload does not say whether the mutation succeeded")
 	}
 	return e
-}
-
-// payloadAbsent reports a mutation answer whose data holds no result.
-func payloadAbsent(data json.RawMessage) bool {
-	if absent(data) {
-		return true
-	}
-	var d struct {
-		Result json.RawMessage `json:"result"`
-	}
-	return json.Unmarshal(data, &d) == nil && absent(d.Result)
 }
 
 // decodeError is an answer that did not decode. The decoder's message

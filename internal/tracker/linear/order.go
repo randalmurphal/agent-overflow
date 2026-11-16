@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"math/bits"
 )
 
 // OrderField is one of an issue's manual orders, each lowest first.
@@ -35,31 +36,20 @@ const endStep = 1
 
 // Between returns an order value strictly between the neighbors' values,
 // before and after; nil is that end of the list, and both nil is an
-// empty list. It fails with ErrNoRoom when no such value exists.
+// empty list. It is Spread of one value, and fails with ErrNoRoom when
+// no representable value lies strictly between the neighbors.
 func Between(before, after *float64) (float64, error) {
-	if err := checkFinite(before, after); err != nil {
+	values, err := Spread(before, after, 1)
+	if err != nil {
 		return 0, err
 	}
-	switch {
-	case before == nil && after == nil:
-		return 0, nil
-	case before == nil:
-		return beyond(*after, -1)
-	case after == nil:
-		return beyond(*before, 1)
-	}
-	lo, hi := *before, *after
-	mid := interpolate(lo, hi, 0.5)
-	if !(lo < mid && mid < hi) {
-		return 0, ErrNoRoom
-	}
-	return mid, nil
+	return values[0], nil
 }
 
-// beyond is the end-of-list rule both Between and Spread use: a value
-// past v in direction dir (-1 or 1), endStep away, or the nearest
-// representable value where v is too large for endStep to show. It fails
-// with ErrNoRoom past the largest finite value.
+// beyond is the end-of-list rule: a value past v in direction dir (-1 or
+// 1), endStep away, or the nearest representable value where v is too
+// large for endStep to show. It fails with ErrNoRoom past the largest
+// finite value.
 func beyond(v float64, dir float64) (float64, error) {
 	out := v + dir*endStep
 	if out == v {
@@ -81,10 +71,12 @@ func interpolate(lo, hi, f float64) float64 {
 }
 
 // Spread returns n increasing order values strictly between before and
-// after (nil is that end of the list), evenly spaced between two
-// neighbors and spaced by the end-of-list rule at an end, for renumbering
-// a run of n issues. It fails with ErrNoRoom when the span cannot hold n
-// distinct values.
+// after (nil is that end of the list), for renumbering a run of n
+// issues. Between two neighbors they are evenly spaced, or stepped
+// through the representable values when even spacing would make two of
+// them equal; at an end they follow the end-of-list rule. It fails with
+// ErrNoRoom only when fewer than n representable values lie strictly
+// between the neighbors (or past the end one).
 func Spread(before, after *float64, n int) ([]float64, error) {
 	if n < 0 {
 		return nil, errors.New("linear: Spread of a negative count")
@@ -93,13 +85,16 @@ func Spread(before, after *float64, n int) ([]float64, error) {
 		return nil, err
 	}
 	out := make([]float64, n)
+	if n == 0 {
+		return out, nil
+	}
 	var err error
 	switch {
+	case before != nil && after != nil:
+		return spreadBetween(*before, *after, n)
 	case before == nil && after == nil:
-		for i := range out {
-			if i > 0 {
-				out[i], err = beyond(out[i-1], 1)
-			}
+		for i := 1; i < n && err == nil; i++ {
+			out[i], err = beyond(out[i-1], 1)
 		}
 	case before == nil:
 		v := *after
@@ -107,37 +102,79 @@ func Spread(before, after *float64, n int) ([]float64, error) {
 			v, err = beyond(v, -1)
 			out[i] = v
 		}
-	case after == nil:
+	default:
 		v := *before
 		for i := 0; i < n && err == nil; i++ {
 			v, err = beyond(v, 1)
 			out[i] = v
 		}
-	default:
-		for i := range out {
-			out[i] = interpolate(*before, *after, float64(i+1)/float64(n+1))
-		}
 	}
 	if err != nil {
 		return nil, err
 	}
-	prev, last := math.Inf(-1), math.Inf(1)
-	if before != nil {
-		prev = *before
-	}
-	if after != nil {
-		last = *after
-	}
-	for _, v := range out {
-		if !(prev < v) || math.IsInf(v, 0) {
-			return nil, ErrNoRoom
-		}
-		prev = v
-	}
-	if n > 0 && !(prev < last) {
+	return out, nil
+}
+
+// spreadBetween is Spread between two finite neighbors. Room is counted
+// in representable values: ordinal numbers them in order, so the values
+// strictly between lo and hi are the ordinals strictly between theirs.
+func spreadBetween(lo, hi float64, n int) ([]float64, error) {
+	kl, kh := ordinal(lo), ordinal(hi)
+	if kh <= kl {
 		return nil, ErrNoRoom
 	}
+	// The distance fits in a uint64 even when the int64 difference
+	// overflows; the wrapped subtraction gives it exactly.
+	d := uint64(kh) - uint64(kl)
+	if d-1 < uint64(n) {
+		return nil, ErrNoRoom
+	}
+	out := make([]float64, n)
+	prev := lo
+	for i := range out {
+		v := interpolate(lo, hi, float64(i+1)/float64(n+1))
+		// Rounding can make v equal prev. It reaches hi only for n
+		// near 2^52, beyond any slice; the check keeps the result
+		// strictly inside without relying on that bound.
+		if !(prev < v && v < hi) {
+			return stepBetween(kl, d, n), nil
+		}
+		out[i], prev = v, v
+	}
 	return out, nil
+}
+
+// stepBetween is n values whose ordinals divide the d steps from kl
+// evenly. With at least n values strictly inside (d > n), consecutive
+// positions differ by at least one and stay strictly inside.
+func stepBetween(kl int64, d uint64, n int) []float64 {
+	out := make([]float64, n)
+	for i := range out {
+		// (i+1)*d/(n+1) without overflow; the quotient is below d.
+		hi, lo := bits.Mul64(uint64(i+1), d)
+		q, _ := bits.Div64(hi, lo, uint64(n+1))
+		out[i] = fromOrdinal(int64(uint64(kl) + q))
+	}
+	return out
+}
+
+// ordinal numbers the finite float64 values in increasing order, with
+// -0 and +0 one value: consecutive representable values have consecutive
+// ordinals.
+func ordinal(f float64) int64 {
+	b := math.Float64bits(f)
+	if b>>63 == 0 {
+		return int64(b)
+	}
+	return -int64(b &^ (1 << 63))
+}
+
+// fromOrdinal is the value with ordinal k; 0 is +0.
+func fromOrdinal(k int64) float64 {
+	if k >= 0 {
+		return math.Float64frombits(uint64(k))
+	}
+	return math.Float64frombits(uint64(-k) | 1<<63)
 }
 
 func checkFinite(values ...*float64) error {
@@ -202,9 +239,10 @@ type RenumberInput struct {
 }
 
 // RenumberIssues writes Spread values to the run, one issue update each,
-// in order. An ID listed twice is refused before any request; the same
-// issue named once by ID and once by identifier cannot be told apart.
-// It returns the issues as stored; on failure they are the ones updated
+// in order. IssueIDs are issue IDs (Issue.ID, a lowercase UUID), never
+// identifiers such as WEB-1, so that each issue has one spelling; any
+// other form, or an ID listed twice, is refused before any request. It
+// returns the issues as stored; on failure they are the ones updated
 // before it, and the failed update's own outcome is the error's
 // (WriteNotApplied). Linear has no update that sets distinct values on
 // several issues at once.
@@ -212,8 +250,8 @@ func (c *Client) RenumberIssues(ctx context.Context, in RenumberInput) ([]Issue,
 	seen := make(map[string]bool, len(in.IssueIDs))
 	for _, id := range in.IssueIDs {
 		switch {
-		case id == "":
-			return nil, invalid("RenumberIssues", "IssueIDs holds an empty ID")
+		case !canonicalUUID(id):
+			return nil, invalid("RenumberIssues", "IssueIDs holds %q, not an issue ID (a lowercase UUID)", id)
 		case seen[id]:
 			return nil, invalid("RenumberIssues", "IssueIDs names %s twice", id)
 		}
@@ -238,3 +276,26 @@ func (c *Client) RenumberIssues(ctx context.Context, in RenumberInput) ([]Issue,
 	}
 	return out, nil
 }
+
+// canonicalUUID reports a UUID in Linear's spelling of its IDs: 36
+// characters, lowercase hexadecimal digits in groups of 8-4-4-4-12.
+func canonicalUUID(s string) bool {
+	if len(s) != 36 {
+		return false
+	}
+	for i := range len(s) {
+		switch ch := s[i]; i {
+		case 8, 13, 18, 23:
+			if ch != '-' {
+				return false
+			}
+		default:
+			if !isLowerHex(ch) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func isLowerHex(ch byte) bool { return '0' <= ch && ch <= '9' || 'a' <= ch && ch <= 'f' }

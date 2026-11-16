@@ -12,29 +12,50 @@ import (
 	"agent-overflow/internal/tracker/trackerapi"
 )
 
+// escapedKey is testKey as JSON may spell it inside a string, its first
+// underscore written as a \u escape, which a text scrub of the raw body
+// cannot match.
+var escapedKey = strings.Replace(testKey, "_", `\`+"u005f", 1)
+
+type scrubCase struct {
+	name   string
+	status int
+	body   string
+	issue  bool // ask for an issue rather than the viewer
+}
+
+// scrubCases puts the key, as written and JSON-escaped, in each place
+// of an error answer, under each status that reaches a different path:
+// a 200 the client decodes, a 400 the transport refuses with a body,
+// and a 401 the transport takes as a refused key.
+func scrubCases() []scrubCase {
+	var cases []scrubCase
+	for _, key := range []string{testKey, escapedKey} {
+		bodies := map[string]string{
+			"message, code, type and path": `{"data":null,"errors":[{"message":"bad ` + key + `","path":["` + key + `"],` +
+				`"extensions":{"code":"` + key + `","type":"` + key + `","userError":true}}]}`,
+			"presentable message": `{"errors":[{"message":"m","extensions":{"code":"INPUT_ERROR","userPresentableMessage":"key ` + key + `"}}]}`,
+			"raw message":         `{"errors":[{"message":"key ` + key + `","extensions":{"code":"INPUT_ERROR","userPresentableMessage":"m"}}]}`,
+			"refused key":         `{"errors":[{"message":"key ` + key + ` refused","extensions":{"code":"AUTHENTICATION_ERROR"}}]}`,
+		}
+		for what, body := range bodies {
+			for _, status := range []int{http.StatusOK, http.StatusBadRequest, http.StatusUnauthorized} {
+				cases = append(cases, scrubCase{name: fmt.Sprintf("%s, %s, HTTP %d", key, what, status), status: status, body: body})
+			}
+		}
+		issue := strings.Replace(issueJSON("issue-1", "WEB-1", "KEY", 1), `"updatedAt":"KEY"`, `"updatedAt":"`+key+`"`, 1)
+		cases = append(cases, scrubCase{name: key + ", decoder quote", status: http.StatusOK, body: `{"data":{"issue":` + issue + `}}`, issue: true})
+	}
+	return cases
+}
+
 // Answer text that echoes the key the request carried never reaches an
-// error: GraphQL messages, codes, types and paths, Linear's message
-// for a refused key, and a decoder's quote of the data.
+// error, however JSON spells it: GraphQL messages, codes, types and
+// paths, Linear's message for a refused key, and a decoder's quote of
+// the data. Text is scrubbed after it is decoded.
 func TestAnswerTextIsScrubbed(t *testing.T) {
 	t.Parallel()
-	echoed := `{"data":null,"errors":[{"message":"bad ` + testKey + `","path":["` + testKey + `"],` +
-		`"extensions":{"code":"` + testKey + `","type":"` + testKey + `","userError":true}}]}`
-	presentable := `{"errors":[{"message":"m","extensions":{"code":"INPUT_ERROR","userPresentableMessage":"key ` + testKey + `"}}]}`
-	auth := `{"errors":[{"message":"key ` + testKey + ` refused","extensions":{"code":"AUTHENTICATION_ERROR"}}]}`
-	badTime := `{"data":{"issue":` + issueJSON("issue-1", "WEB-1", testKey, 1) + `}}`
-	for _, tc := range []struct {
-		name   string
-		status int
-		body   string
-		issue  bool // ask for an issue rather than the viewer
-	}{
-		{"errors on 200", 200, echoed, false},
-		{"errors on 400", 400, echoed, false},
-		{"presentable message", 200, presentable, false},
-		{"refused key on 200", 200, auth, false},
-		{"refused key on 401", 401, auth, false},
-		{"decoder quote", 200, badTime, true},
-	} {
+	for _, tc := range scrubCases() {
 		var err error
 		if tc.issue {
 			f := newFake(t, exchange{op: "Issue", vars: `{"id":"WEB-1"}`, status: tc.status, body: tc.body})
@@ -56,7 +77,10 @@ func TestAnswerTextIsScrubbed(t *testing.T) {
 		if auth, ok := errors.AsType[*trackerapi.AuthError](err); ok {
 			text += auth.Message
 		}
-		if strings.Contains(text, testKey) || !strings.Contains(text, secret.Redacted) {
+		// The transport's message for a 401 shows the presentable message
+		// only, so the raw one leaves no trace to redact.
+		shown := tc.status != http.StatusUnauthorized || !strings.Contains(tc.name, "raw message")
+		if strings.Contains(text, testKey) || (shown && !strings.Contains(text, secret.Redacted)) {
 			t.Errorf("%s: %s", tc.name, text)
 		}
 	}

@@ -96,7 +96,7 @@ func (w wireError) typed(scrub func(string) string) GraphQLError {
 }
 
 // Error is a call Linear answered with GraphQL errors, or a mutation
-// whose payload reported success: false.
+// whose payload did not report success: true.
 //
 // A read fails on any error, even when the answer also carries data:
 // the typed result cannot say which of its fields an error left out. A
@@ -110,17 +110,18 @@ type Error struct {
 	Op string
 	// Status is the HTTP status of the answer.
 	Status int
-	// Errors are the answer's errors; empty for success: false.
+	// Errors are the answer's errors, kept with success: false too.
 	Errors []GraphQLError
 	// Unsuccessful is a mutation payload's success: false.
 	Unsuccessful bool
 	// Refused reports that the answer proves a write was not applied:
-	// an HTTP 4xx, a mutation answered with no payload and only user
-	// errors, or success: false. A write with Refused false and an error
-	// has an unknown outcome; read the entity again before offering it
-	// again.
+	// success: false (with or without errors), an HTTP 4xx, or a
+	// mutation answered with no payload and only user errors. A write
+	// with Refused false and an error has an unknown outcome; read the
+	// entity again before offering it again.
 	Refused bool
-	// Err is the transport's error for an answer of HTTP 400 or above.
+	// Err is the transport's error for an answer of HTTP 400 or above,
+	// or what made a payload's outcome unknown.
 	Err error
 
 	notFound bool
@@ -131,6 +132,9 @@ func (e *Error) Error() string {
 	switch {
 	case e.Unsuccessful:
 		msg += "Linear reported the mutation as not successful"
+		if len(e.Errors) > 0 {
+			msg += ": " + joinErrors(e.Errors)
+		}
 	case len(e.Errors) > 0:
 		msg += joinErrors(e.Errors)
 	case e.Err != nil:
