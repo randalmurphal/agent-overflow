@@ -328,9 +328,18 @@ func (p *cdpPage) HistoryState(ctx context.Context) (bool, bool, error) {
 
 func (p *cdpPage) Navigate(ctx context.Context, url string) error {
 	if err := chromedp.Do(ctx, chromedp.Navigate(url)); err != nil {
-		return fmt.Errorf("browser: navigate: %w", err)
+		return cdpNavigateError(err)
 	}
 	return nil
+}
+
+// cdpNavigateError marks the load error Chromium answers for a navigation a
+// stop abandoned (errNavigationAborted).
+func cdpNavigateError(err error) error {
+	if loadErr := (*chromedp.LoadError)(nil); errors.As(err, &loadErr) && loadErr.ErrorText == "net::ERR_ABORTED" {
+		return fmt.Errorf("browser: navigate: %w: %w", errNavigationAborted, err)
+	}
+	return fmt.Errorf("browser: navigate: %w", err)
 }
 
 func (p *cdpPage) History(ctx context.Context, action string) error {

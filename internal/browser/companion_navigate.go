@@ -9,29 +9,65 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
 // NavigateCompanion is the pane's address bar: a file address opens the file
 // under the file authorization (OpenFile), anything else is a web address, a
 // host, or a search. A navigation the user stopped (StopCompanionLoad) while
-// it ran is no error.
+// it ran answers its own abort without an error; any other failure stands.
 func (m *Manager) NavigateCompanion(ctx context.Context, access Access, pageID, address string) (PageInfo, error) {
 	address = strings.TrimSpace(address)
 	if address == "" {
 		return PageInfo{}, fmt.Errorf("browser: address is required")
 	}
-	var stopsBefore uint64
-	stopped := func() bool { return false }
-	if p, _, err := m.lookupOwnedPage(access, strings.TrimSpace(pageID)); err == nil {
-		stopsBefore = p.userStops.Load()
-		stopped = func() bool { return p.userStops.Load() != stopsBefore }
-	}
-	info, err := m.navigateCompanion(ctx, access, pageID, address)
-	if err != nil && stopped() {
+	nav := &userNavigation{}
+	info, err := m.navigateCompanion(context.WithValue(ctx, userNavigationKey{}, nav), access, pageID, address)
+	if errors.Is(err, errNavigationAborted) && nav.wasStopped() {
 		return info, nil
 	}
 	return info, err
+}
+
+// errNavigationAborted marks a navigation the engine abandoned because the
+// load was stopped (CDP net::ERR_ABORTED). The WebKit engines end a stopped
+// load without an error.
+var errNavigationAborted = errors.New("browser: navigation aborted")
+
+// userNavigation is one address-bar navigation. The page records it while
+// the navigation holds the page (runUserNavigation), so a stop marks the
+// navigation it actually interrupted and no other.
+type userNavigation struct {
+	// mu is held across a stop's engine call, so the navigation reads the
+	// stop's outcome, not a stop still in flight.
+	mu      sync.Mutex
+	stopped bool
+}
+
+type userNavigationKey struct{}
+
+func (n *userNavigation) wasStopped() bool {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.stopped
+}
+
+// runUserNavigation records the context's address-bar navigation as the one
+// running on p; the result clears it. Call it holding p.mu.
+func (p *managedPage) runUserNavigation(ctx context.Context) func() {
+	nav, _ := ctx.Value(userNavigationKey{}).(*userNavigation)
+	if nav == nil {
+		return func() {}
+	}
+	p.navMu.Lock()
+	p.userNav = nav
+	p.navMu.Unlock()
+	return func() {
+		p.navMu.Lock()
+		p.userNav = nil
+		p.navMu.Unlock()
+	}
 }
 
 func (m *Manager) navigateCompanion(ctx context.Context, access Access, pageID, address string) (PageInfo, error) {
@@ -150,9 +186,10 @@ func (m *Manager) backendPathForWindows(ctx context.Context, windowsPath string)
 
 // StopCompanionLoad is the pane's stop button: it stops the page's load in
 // flight. It takes no operation lock, because the load it stops is often an
-// address-bar navigation that holds the page's lock until its load ends; the
-// navigation then answers without an error (NavigateCompanion). A tab with no
-// live page (being created, suspended) has nothing loading.
+// address-bar navigation that holds the page's lock until its load ends.
+// Once the engine has stopped, that navigation (and only it) answers its
+// abort without an error (NavigateCompanion). A tab with no live page (being
+// created, suspended) has nothing loading.
 func (m *Manager) StopCompanionLoad(ctx context.Context, access Access, pageID string) error {
 	pageID = strings.TrimSpace(pageID)
 	p, _, err := m.lookupOwnedPage(access, pageID)
@@ -162,8 +199,20 @@ func (m *Manager) StopCompanionLoad(ctx context.Context, access Access, pageID s
 	if err != nil {
 		return err
 	}
-	p.userStops.Add(1)
+	p.navMu.Lock()
+	nav := p.userNav
+	p.navMu.Unlock()
+	if nav != nil {
+		nav.mu.Lock()
+		defer nav.mu.Unlock()
+	}
 	opCtx, cancel := operationContext(ctx, p.ctx, 5*time.Second)
 	defer cancel()
-	return p.driver.History(opCtx, "stop")
+	if err := p.driver.History(opCtx, "stop"); err != nil {
+		return err
+	}
+	if nav != nil {
+		nav.stopped = true
+	}
+	return nil
 }

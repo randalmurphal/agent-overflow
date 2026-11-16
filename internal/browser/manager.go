@@ -282,9 +282,10 @@ type managedPage struct {
 	// frame committed, stamped on the engine's own thread (find.go).
 	incarnation uint64
 	docEpoch    atomic.Uint64
-	// userStops counts the pane's stop presses (StopCompanionLoad), so an
-	// address-bar navigation the user stopped answers without an error.
-	userStops atomic.Uint64
+	// userNav is the address-bar navigation running under mu, for the stop
+	// button to mark (companion_navigate.go); navMu guards it.
+	navMu   sync.Mutex
+	userNav *userNavigation
 	// viewport is the size the page last laid out at (packViewport), and
 	// viewportFailed the size it last refused (viewport.go). A pane resize
 	// lays out only the active page, so a hidden page lags its thread's
@@ -464,6 +465,7 @@ func (m *Manager) navigate(ctx context.Context, access Access, targetURL string,
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	defer p.runUserNavigation(ctx)()
 	opCtx, cancel := operationContext(ctx, p.ctx, operationTimeout)
 	defer cancel()
 	if err := p.driver.Navigate(opCtx, targetURL); err != nil {

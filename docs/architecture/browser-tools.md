@@ -163,8 +163,10 @@ behave as a desktop browser's:
   keyboard focus from a click, as § Keyboard says. Switching tabs replaces
   an edit with the new tab's address.
 - While the page loads, reload is stop. `StopCompanionLoad` takes no page
-  lock, so it stops an address-bar navigation in flight, and that
-  navigation answers without an error. Every engine stops a load (CDP
+  lock, so it stops an address-bar navigation in flight. Once the engine
+  has stopped, the navigation it interrupted (not one queued behind it)
+  answers its abort (CDP `net::ERR_ABORTED`) without an error; any other
+  failure stands. Every engine stops a load (CDP
   `Page.stopLoading`, `webkit_web_view_stop_loading`, WKWebView
   `stopLoading`).
 - The address takes a backend path, a workspace-relative file, a `file:`
