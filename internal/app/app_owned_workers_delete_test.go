@@ -335,7 +335,7 @@ func TestGetDeleteDependentsCountsTheWorkers(t *testing.T) {
 	if got.Workers != 3 || got.PastThreads != 0 || got.Helpers != 0 {
 		t.Errorf("dependents = %+v, want three workers", got)
 	}
-	if len(got.WorkerWorktrees) != 1 || got.WorkerWorktrees[0] != (WorkerWorktree{ProjectID: f.project.ID, WorktreePath: "/wt/deeper"}) {
+	if len(got.WorkerWorktrees) != 1 || got.WorkerWorktrees[0].ProjectID != f.project.ID || got.WorkerWorktrees[0].WorktreePath != "/wt/deeper" || !slices.Equal(got.WorkerWorktrees[0].ThreadIDs, []string{chain.deeper}) {
 		t.Errorf("worker worktrees = %+v", got.WorkerWorktrees)
 	}
 	if got, err := f.app.GetDeleteDependents(chain.placed); err != nil || got.Workers != 0 || len(got.WorkerWorktrees) != 0 {

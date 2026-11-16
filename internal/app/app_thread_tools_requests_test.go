@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -2767,7 +2768,8 @@ func TestThreadRequestsStopWhenTheCallerIsArchived(t *testing.T) {
 
 // Deleting the caller takes its requests with it: the ledger is the caller's
 // record, and a record with no owner is nothing to collect. The hidden work
-// it started goes too; the threads a person can see do not.
+// it started goes too, and so does the worker it owns
+// (docs/specs/standing-agents.md, "Owned workers").
 func TestDeletingTheCallerTakesItsRequests(t *testing.T) {
 	t.Parallel()
 	f := newRequestFixture(t)
@@ -2793,10 +2795,9 @@ func TestDeletingTheCallerTakesItsRequests(t *testing.T) {
 	if _, err := f.app.store.GetThread(ask.ThreadID); err == nil {
 		t.Errorf("the ask's scratch thread %s outlived its caller", ask.ThreadID)
 	}
-	// The spawned thread is work a person can see, and deleting the thread
-	// that asked for it is not a reason to destroy it.
-	if _, err := f.app.store.GetThread(spawn.ThreadID); err != nil {
-		t.Errorf("the spawned thread was deleted with its caller: %v", err)
+	// The spawn has no sidebar placement, so it is the caller's owned worker.
+	if _, err := f.app.store.GetThread(spawn.ThreadID); !errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("the caller's owned worker %s outlived it: %v", spawn.ThreadID, err)
 	}
 }
 

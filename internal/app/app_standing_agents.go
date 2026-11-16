@@ -277,14 +277,15 @@ type DeleteDependents struct {
 	Workers     int `json:"workers"`
 	// WorkerWorktrees are the worktrees those workers and helpers are on,
 	// each once, which a delete from the sidebar removes as it removes the
-	// thread's own.
+	// thread's own, after it stops the sessions of the workers on them.
 	WorkerWorktrees []WorkerWorktree `json:"workerWorktrees"`
 }
 
-// WorkerWorktree is one worktree a worker of a deleted thread is on.
+// WorkerWorktree is one worktree workers of a deleted thread are on.
 type WorkerWorktree struct {
-	ProjectID    string `json:"projectId"`
-	WorktreePath string `json:"worktreePath"`
+	ProjectID    string   `json:"projectId"`
+	WorktreePath string   `json:"worktreePath"`
+	ThreadIDs    []string `json:"threadIds"`
 }
 
 // GetDeleteDependents reads what deleting threadID deletes with it, for its
@@ -305,10 +306,17 @@ func (a *App) GetDeleteDependents(threadID string) (DeleteDependents, error) {
 		if !worker.Helper {
 			dependents.Workers++
 		}
-		worktree := WorkerWorktree{ProjectID: worker.ProjectID, WorktreePath: worker.WorktreePath}
-		if worktree.WorktreePath != "" && worktree.ProjectID != "" && !slices.Contains(dependents.WorkerWorktrees, worktree) {
-			dependents.WorkerWorktrees = append(dependents.WorkerWorktrees, worktree)
+		if worker.WorktreePath == "" || worker.ProjectID == "" {
+			continue
 		}
+		at := slices.IndexFunc(dependents.WorkerWorktrees, func(worktree WorkerWorktree) bool {
+			return worktree.ProjectID == worker.ProjectID && worktree.WorktreePath == worker.WorktreePath
+		})
+		if at < 0 {
+			at = len(dependents.WorkerWorktrees)
+			dependents.WorkerWorktrees = append(dependents.WorkerWorktrees, WorkerWorktree{ProjectID: worker.ProjectID, WorktreePath: worker.WorktreePath})
+		}
+		dependents.WorkerWorktrees[at].ThreadIDs = append(dependents.WorkerWorktrees[at].ThreadIDs, worker.ThreadID)
 	}
 	return dependents, nil
 }
