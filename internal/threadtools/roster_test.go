@@ -262,7 +262,10 @@ func TestSpawnByProfileTakesItsSettingsWithOverrides(t *testing.T) {
 	app.addThread(Thread{ID: "caller-thread", Provider: "claude", Model: "opus-5"})
 	server := New(app)
 
-	call(t, server, localCaller(), "thread_spawn", `{"prompt":"review","profile":"sol","instructions":"Focus on the parser."}`)
+	reply := call(t, server, localCaller(), "thread_spawn", `{"prompt":"review","profile":"sol","instructions":"Focus on the parser."}`)
+	if reply["instructions"] != "Look for bugs.\n\nFocus on the parser." {
+		t.Fatalf("the spawn's reply records instructions %q", reply["instructions"])
+	}
 	got := app.spawns[0]
 	if got.Profile != "Sol" || got.Provider != "codex" || got.Model != "sol" || got.Effort != "high" {
 		t.Fatalf("spawn = %+v, want Sol's settings", got)

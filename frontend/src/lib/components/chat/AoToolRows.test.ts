@@ -94,8 +94,6 @@ describe('AO thread tool rows', () => {
     projectSendResolved(CHILD);
     noteThread(THREAD, HOME_BACKEND);
     replyWith('');
-    // An opened spawn row reads the worker it made when the list lacks it.
-    setBindingMock('GetThread', async () => null);
   });
 
   it('heads a spawn with the new thread\'s title and opens to its reply as facts, never JSON', async () => {
@@ -121,72 +119,71 @@ describe('AO thread tool rows', () => {
     expect(getByTestId('tool-call-card-output').textContent).not.toContain('"token"');
   });
 
-  // The instructions a spawned thread runs with for its whole life: as the
-  // thread stores them (its profile's, then the call's) when this client
-  // has it, else as the call gave them; whole, not cut at a fact's length.
-  it('shows the instructions the spawned thread was given, whole', async () => {
-    const stored = `Profile role.\n\n${'Answer in one line. '.repeat(150)}`;
-    replaceAllThreads([makeThread({ id: CHILD, title: 'Docs slice', spawnInstructions: stored })]);
-    const item = thread('thread_spawn', {
-      input: { prompt: 'p', profile: 'Sol', instructions: 'Answer in one line.' },
-      ao_result: { token: TOKEN, thread_id: CHILD, title: 'Docs slice', state: 'running', outcome: 'backgrounded' },
+  // The instructions a spawned thread runs with for its whole life come from
+  // the spawn's own reply, so the row shows what the spawn did whatever
+  // became of the thread: deleted, on another computer, or a fork whose
+  // source's instructions the call never named. Never read from the thread.
+  describe('spawn instructions', () => {
+    const recorded = `Profile role.\n\n${'Answer in one line. '.repeat(150)}`.trim();
+    const ackWith = (extra: Record<string, unknown>) => JSON.stringify({ ...JSON.parse(spawnAck), ...extra });
+    const spawnRow = (input: Record<string, unknown>) =>
+      thread('thread_spawn', {
+        input: { prompt: 'p', ...input },
+        ao_result: { token: TOKEN, thread_id: CHILD, title: 'Docs slice', state: 'running', outcome: 'backgrounded' },
+      }, { payloadId: 'p-spawn' });
+    let read: ReturnType<typeof vi.fn>;
+    beforeEach(() => {
+      read = vi.fn(async () => makeThread({ id: CHILD, title: 'Docs slice' }));
+      setBindingMock('GetThread', read);
     });
-    const view = render(GenericToolCallRow, { props: { item } });
-    await fireEvent.click(view.getByTestId('tool-call-card-toggle'));
 
-    const facts = view.getAllByTestId('tool-call-card-ao-fact');
-    expect(facts.map((el) => el.dataset.fact)).toEqual(['prompt', 'profile', 'instructions']);
-    const instructions = facts[2];
-    const toggle = instructions.querySelector<HTMLElement>('[data-testid="tool-call-card-ao-fact-text-toggle"]')!;
-    await fireEvent.click(toggle);
-    expect(instructions.textContent).toContain(stored.trim().slice(-40));
-    expect(instructions.textContent).not.toContain('…');
-  });
+    async function openedInstructions(item: Item) {
+      const view = render(GenericToolCallRow, { props: { item } });
+      await fireEvent.click(view.getByTestId('tool-call-card-toggle'));
+      const fact = await waitFor(() => {
+        const found = view.getAllByTestId('tool-call-card-ao-result-fact').find((el) => el.dataset.fact === 'instructions');
+        expect(found).toBeTruthy();
+        return found!;
+      });
+      return { view, fact };
+    }
 
-  // An owned worker is not in the thread list: the row reads it once it
-  // opens, and only then.
-  it('reads an owned worker it does not have when the row opens', async () => {
-    const read = vi.fn(async () => makeThread({ id: CHILD, title: 'Docs slice', spawnInstructions: 'Profile role.\n\nAnswer in one line.' }));
-    setBindingMock('GetThread', read);
-    const item = thread('thread_spawn', {
-      input: { prompt: 'p', profile: 'Sol', instructions: 'Answer in one line.' },
-      ao_result: { token: TOKEN, thread_id: CHILD, title: 'Docs slice', state: 'running', outcome: 'backgrounded' },
+    it('shows them whole from the reply, with no spawned thread on this client', async () => {
+      replyWith(ackWith({ instructions: recorded }));
+      const { view, fact } = await openedInstructions(spawnRow({ profile: 'Sol', instructions: 'Answer in one line.' }));
+      // The call's own instructions are not listed again beside them.
+      expect(view.queryAllByTestId('tool-call-card-ao-fact').map((el) => el.dataset.fact)).toEqual(['prompt', 'profile']);
+      await fireEvent.click(fact.querySelector<HTMLElement>('[data-testid="tool-call-card-ao-result-fact-text-toggle"]')!);
+      expect(fact.textContent).toContain(recorded.slice(-40));
+      expect(fact.textContent).toContain('Profile role.');
+      expect(fact.textContent).not.toContain('…');
+      expect(read).not.toHaveBeenCalled();
     });
-    const view = render(GenericToolCallRow, { props: { item } });
-    expect(read).not.toHaveBeenCalled();
-    await fireEvent.click(view.getByTestId('tool-call-card-toggle'));
-    await waitFor(() => expect(read).toHaveBeenCalledWith(CHILD));
-    const instructions = () => view.getAllByTestId('tool-call-card-ao-fact').find((el) => el.dataset.fact === 'instructions');
-    await waitFor(() => expect(instructions()?.textContent).toContain('Profile role.'));
-    expect(read).toHaveBeenCalledTimes(1);
-  });
 
-  it('keeps the call\'s instructions when the spawned thread cannot be read, or is on another computer', async () => {
-    const read = vi.fn(async () => {
-      throw new Error('gone');
+    it('shows the same after a remount', async () => {
+      replyWith(ackWith({ instructions: 'Profile role.\n\nAnswer in one line.' }));
+      const item = spawnRow({ profile: 'Sol', instructions: 'Answer in one line.' });
+      const first = await openedInstructions(item);
+      first.view.unmount();
+      const again = await openedInstructions(item);
+      expect(again.fact.textContent).toContain('Profile role.');
+      expect(read).not.toHaveBeenCalled();
     });
-    setBindingMock('GetThread', read);
-    const local = thread('thread_spawn', {
-      input: { prompt: 'p', instructions: 'Answer in one line.' },
-      ao_result: { token: TOKEN, thread_id: CHILD, title: 'Docs slice', state: 'running', outcome: 'backgrounded' },
-    });
-    const view = render(GenericToolCallRow, { props: { item: local } });
-    await fireEvent.click(view.getByTestId('tool-call-card-toggle'));
-    await waitFor(() => expect(read).toHaveBeenCalledTimes(1));
-    const instructions = view.getAllByTestId('tool-call-card-ao-fact').find((el) => el.dataset.fact === 'instructions');
-    expect(instructions?.textContent?.trim()).toBe('Answer in one line.');
-    view.unmount();
 
-    read.mockClear();
-    const remote = thread('thread_spawn', {
-      input: { prompt: 'p', computer_id: 'mac', instructions: 'Answer in one line.' },
-      ao_result: { token: TOKEN, thread_id: CHILD, title: 'Docs slice', state: 'running', outcome: 'backgrounded' },
+    it('shows them for a spawn on another computer', async () => {
+      replyWith(ackWith({ computer_id: 'mac', computer_name: 'Mac', instructions: 'Profile role.\n\nAnswer in one line.' }));
+      const { fact } = await openedInstructions(spawnRow({ computer_id: 'mac', profile: 'Sol', instructions: 'Answer in one line.' }));
+      expect(fact.textContent).toContain('Profile role.');
+      expect(read).not.toHaveBeenCalled();
     });
-    const other = render(GenericToolCallRow, { props: { item: remote } });
-    await fireEvent.click(other.getByTestId('tool-call-card-toggle'));
-    expect(other.getAllByTestId('tool-call-card-ao-fact').find((el) => el.dataset.fact === 'instructions')?.textContent?.trim())
-      .toBe('Answer in one line.');
-    expect(read).not.toHaveBeenCalled();
+
+    it('shows a fork\'s, which the call never named', async () => {
+      replyWith(ackWith({ instructions: 'Review only.\n\nBe brief.' }));
+      const { view, fact } = await openedInstructions(spawnRow({ from_thread: 'source-thread', instructions: 'Be brief.' }));
+      expect(fact.textContent?.trim()).toBe('Review only.\n\nBe brief.');
+      expect(view.queryAllByTestId('tool-call-card-ao-fact').some((el) => el.dataset.fact === 'instructions')).toBe(false);
+      expect(read).not.toHaveBeenCalled();
+    });
   });
 
   it('reads a clipped prompt from the stored row when the body opens', async () => {
@@ -609,8 +606,6 @@ describe('AO workflow tool rows', () => {
     __resetEntityIndexForTest();
     noteThread(THREAD, HOME_BACKEND);
     replyWith('');
-    // An opened spawn row reads the worker it made when the list lacks it.
-    setBindingMock('GetThread', async () => null);
   });
 
   it('heads a run status with its workflow and state and links the run', async () => {

@@ -474,6 +474,59 @@ func TestTheEditorRefusesAProfileItsModelCannotRun(t *testing.T) {
 	}
 }
 
+// instructedForkableThreadOn is forkableThreadOn for a thread a spawn gave
+// instructions, which only its creation writes.
+func instructedForkableThreadOn(t *testing.T, app *App, sessionID, instructions string) store.Thread {
+	t.Helper()
+	workspace := t.TempDir()
+	writeClaudeProjectSession(t, testProviderHome(t, app), workspace, sessionID, `{"type":"user","uuid":"u0","parentUuid":null,"sessionId":"`+sessionID+`","message":{"role":"user","content":"what is the retry policy"}}
+{"type":"assistant","uuid":"a0","parentUuid":"u0","sessionId":"`+sessionID+`","message":{"role":"assistant","content":[{"type":"text","text":"three attempts"}]}}
+`)
+	project, err := app.ensureProjectForWorkspace(workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	thread := store.Thread{
+		ID: uuid.NewString(), ProjectID: project.ID, ProjectPath: project.Path, WorkspacePath: workspace,
+		Provider: string(provider.Claude), Model: "claude-opus-4-7", Mode: threadmode.ModeChat,
+		SessionRef: sessionID, SpawnInstructions: instructions, Title: "Instructed",
+	}
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatal(err)
+	}
+	insertUserItemWithMeta(t, app.store, thread.ID, thread.ID+":u0", 0, "what is the retry policy", `{"provider_item_id":"u0"}`)
+	insertAssistantTextItem(t, app.store, thread.ID, thread.ID+":a0", 0, "three attempts")
+	created, err := app.store.GetThread(thread.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return created
+}
+
+// A spawn's reply records the instructions its thread stores, so the
+// spawn's row shows them from its own record: the call's on a fresh
+// thread, and a fork's source's before the call's.
+func TestASpawnsReplyRecordsTheInstructionsItsThreadRunsWith(t *testing.T) {
+	f := newRequestFixture(t)
+	installMockClaudeTurns(t, f.app, [][]string{{mockClaudeInitLine}})
+	fresh, err := f.adapter().Spawn(t.Context(), f.callerIdentity(), threadtools.SpawnCall{Prompt: "work", Instructions: "Look for bugs."})
+	if err != nil || fresh.Instructions != "Look for bugs." {
+		t.Fatalf("a fresh spawn's reply = %+v, %v", fresh, err)
+	}
+	source := instructedForkableThreadOn(t, f.app, "instructed-source", "Review only.")
+	fork, err := f.adapter().Spawn(t.Context(), f.callerIdentity(), threadtools.SpawnCall{Prompt: "again", FromThread: source.ID, Instructions: "Be brief."})
+	if err != nil || fork.Instructions != "Review only.\n\nBe brief." {
+		t.Fatalf("a fork's reply = %+v, %v", fork, err)
+	}
+	if forked, err := f.app.store.GetThread(fork.ThreadID); err != nil || forked.SpawnInstructions != fork.Instructions {
+		t.Fatalf("the fork stores %q, %v; its reply says %q", forked.SpawnInstructions, err, fork.Instructions)
+	}
+	plain, err := f.adapter().Spawn(t.Context(), f.callerIdentity(), threadtools.SpawnCall{Prompt: "work"})
+	if err != nil || plain.Instructions != "" {
+		t.Fatalf("a spawn with no instructions replies %+v, %v", plain, err)
+	}
+}
+
 // A paired computer's spawn carries its thread's level: the destination
 // stores it with the thread, counts that thread's own workers from it,
 // and refuses a spawn whose thread would sit past its own limit. A spawn's
@@ -497,6 +550,20 @@ func TestARemoteSpawnCarriesItsLevelAndInstructions(t *testing.T) {
 	}
 	if thread.SpawnLevel != 2 || thread.SpawnInstructions != "Answer in one line." {
 		t.Fatalf("the destination's thread carries level %d and instructions %q", thread.SpawnLevel, thread.SpawnInstructions)
+	}
+	if ack.Instructions != "Answer in one line." {
+		t.Fatalf("the spawn's reply records instructions %q", ack.Instructions)
+	}
+	// A fork there records its source's instructions, which only the
+	// destination knows, before the call's.
+	instructed := instructedForkableThreadOn(t, pair.dest, "instructed-there", "Review only.")
+	forkCtx, cancelFork := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancelFork()
+	forked, err := pair.adapter().Spawn(forkCtx, pair.callerIdentity(), threadtools.SpawnCall{
+		Prompt: "again", FromThread: instructed.ID, FromThreadComputer: pair.computer, ComputerID: pair.computer, Instructions: "Be brief.",
+	})
+	if err != nil || forked.Instructions != "Review only.\n\nBe brief." {
+		t.Fatalf("a fork there replies %+v, %v", forked, err)
 	}
 	if level, err := pair.dest.store.SubThreadLevel(child); err != nil || level != 2 {
 		t.Fatalf("SubThreadLevel there = %d, %v", level, err)

@@ -83,7 +83,10 @@ type ackResult struct {
 	ExpiresAt  string `json:"expires_at,omitempty"`
 	// NextFire is when a reminder fires.
 	NextFire string `json:"next_fire,omitempty"`
-	Note     string `json:"note,omitempty"`
+	// Instructions are a spawn's, as its thread stores them
+	// (RequestAck.Instructions); the spawn's row shows them from here.
+	Instructions string `json:"instructions,omitempty"`
+	Note         string `json:"note,omitempty"`
 }
 
 func (c *session) spawn(ctx context.Context, raw json.RawMessage) (any, error) {
@@ -412,6 +415,8 @@ func (c *session) ack(receipt RequestAck, kind string) ackResult {
 		Notify:     receipt.Notify,
 		Delivered:  receipt.Delivered,
 		ExpiresAt:  unixMsToRFC3339(receipt.ExpiresAt),
+
+		Instructions: receipt.Instructions,
 	}
 	result.Note = ackNote(result)
 	return result

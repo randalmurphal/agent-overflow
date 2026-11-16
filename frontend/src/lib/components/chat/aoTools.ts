@@ -129,20 +129,7 @@ export interface AoToolFact {
  * call's together (internal/threadtools/limits.go
  * MaxSpawnInstructionsBytes), so the row shows them whole.
  */
-const INSTRUCTIONS_FACT_MAX = 8 * 1024;
-
-/**
- * A spawn row's facts with the instructions the spawned thread was given
- * for its whole life, as that thread stores them (its profile's, then the
- * call's), in place of the call's own. A thread this client does not have,
- * such as one on another computer, keeps the call's.
- */
-export function withSpawnInstructions(facts: AoToolFact[], stored: string | undefined): AoToolFact[] {
-  if (!stored) return facts;
-  const fact = { label: 'instructions', value: stored, max: INSTRUCTIONS_FACT_MAX };
-  const at = facts.findIndex((entry) => entry.label === 'instructions');
-  return at < 0 ? [...facts, fact] : facts.map((entry, index) => (index === at ? fact : entry));
-}
+export const INSTRUCTIONS_FACT_MAX = 8 * 1024;
 
 type Input = Record<string, unknown>;
 

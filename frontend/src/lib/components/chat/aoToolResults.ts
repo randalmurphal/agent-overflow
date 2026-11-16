@@ -17,6 +17,7 @@ import { BROWSER_TOOLS_SERVER } from '../../utils/browserTools';
 import { formatDurationMs, formatTimeOfDay, formatCalendarDate } from '../../utils/format';
 import {
   FACT_MAX,
+  INSTRUCTIONS_FACT_MAX,
   REMOTE_TOOLS_SERVER,
   THREAD_TOOLS_SERVER,
   WORKFLOW_TOOLS_SERVER,
@@ -276,6 +277,11 @@ function threadAckView(tool: string, reply: Input, input: Input, names: AoToolNa
   fact(view.facts, 'model', str(input, 'model'));
   fact(view.facts, 'effort', str(input, 'effort'));
   fact(view.facts, 'group', str(input, 'group'));
+  // What the spawn appended to its thread's system prompt, as the thread
+  // stores them (a fork's source's, a profile's, then the call's), from the
+  // spawn's own reply: whole, and whatever became of the thread since.
+  const instructions = tool === 'thread_spawn' ? str(reply, 'instructions') : '';
+  if (instructions) view.facts.push({ label: 'instructions', value: instructions, max: INSTRUCTIONS_FACT_MAX });
   const nextFire = str(reply, 'next_fire');
   if (nextFire) fact(view.facts, 'fires', whenText(nextFire));
   fact(view.facts, 'notify', reply.notify === true ? 'armed' : '');

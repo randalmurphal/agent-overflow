@@ -328,7 +328,12 @@ func (t threadToolsApp) startRemoteRequest(
 		return threadtools.RequestAck{}, err
 	}
 	done()
-	return t.ackRequest(ctx, caller, row.Token, waitSeconds)
+	ack, err := t.ackRequest(ctx, caller, row.Token, waitSeconds)
+	if err != nil {
+		return threadtools.RequestAck{}, err
+	}
+	ack.Instructions = reply.Instructions
+	return ack, nil
 }
 
 // threadPeerAdmissionAttempts is how many times one request-minting call is

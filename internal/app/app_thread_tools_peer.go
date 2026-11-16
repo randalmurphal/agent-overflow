@@ -133,6 +133,10 @@ type ThreadPeerRequest struct {
 	// LateReplyAgent is AnswerAgent for the late reply, as it was when the
 	// late reply was written.
 	LateReplyAgent *ThreadPeerAgent `json:"lateReplyAgent,omitempty"`
+	// Instructions are what the spawn this call made appended to its
+	// thread's system prompt, as that thread stores them, for the spawn's
+	// reply on the calling computer. Set only on the reply to the spawn.
+	Instructions string `json:"instructions,omitempty"`
 }
 
 // ThreadPeerPoll is one source's whole outstanding set for this computer:
@@ -463,13 +467,14 @@ func (a *App) runThreadPeerRequest(ctx context.Context, owner string, call Threa
 	}
 	adapter := a.threadTools()
 	var err error
+	spawned := ""
 	switch call.Tool {
 	case "thread_spawn":
 		var spawn threadtools.SpawnCall
 		if err = json.Unmarshal(call.Args, &spawn); err == nil {
 			if err = refuseForwardedHomeFiles(spawn.HomeFiles); err == nil {
 				spawn.ComputerID = ""
-				_, err = adapter.acceptSpawn(ctx, origin, token, spawn)
+				spawned, err = adapter.acceptSpawn(ctx, origin, token, spawn)
 			}
 		}
 	case "thread_send":
@@ -493,6 +498,9 @@ func (a *App) runThreadPeerRequest(ctx context.Context, owner string, call Threa
 	state, err := a.threadPeerRequestState(ctx, owner, token)
 	if err != nil {
 		return ThreadPeerReply{}, err
+	}
+	if spawned != "" {
+		state.Instructions = adapter.spawnedInstructions(spawned)
 	}
 	return ThreadPeerReply{Request: &state}, nil
 }

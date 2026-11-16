@@ -243,6 +243,11 @@ const (
 type RequestAck struct {
 	RequestState
 	Outcome string `json:"outcome"`
+	// Instructions are what a spawn appended to its thread's system prompt
+	// as the thread stores them: a profile's, then the call's, after a
+	// fork's source's. The reply records them, so the spawn's row shows
+	// them whatever happens to the thread later.
+	Instructions string `json:"instructions,omitempty"`
 }
 
 // ReplyAck is what thread_reply returns.
