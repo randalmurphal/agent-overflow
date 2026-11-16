@@ -6,7 +6,8 @@
 // that spawned it, answered with thread_reply, and settled by the user
 // answering in the worker; and a worker's approval or question handed back
 // to the user, and notified, when its agent's session died before taking it
-// in.
+// in; and a Codex worker's async question routed and answered the same way,
+// or handed back to the person.
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import type { Page } from '@playwright/test';
@@ -31,6 +32,7 @@ import {
   shoot,
   type NotificationSend,
 } from './standing-agent-wake-helpers.js';
+import { runAsyncQuestionAnsweredBySpawner, runAsyncQuestionHandedBack } from './standing-agent-worker-async-questions-flow.js';
 
 /**
  * Captures a sidebar row's status dot under the pointer. The dot's label is
@@ -499,3 +501,20 @@ for (const provider of ['claude', 'codex'] as const satisfies readonly ProviderN
   });
   }
 }
+
+// A Codex worker's async question goes where its blocking prompts go: to
+// the thread that spawned it, answered there, or back to the person when
+// that thread cannot take it. The body is
+// standing-agent-worker-async-questions-flow.ts, which the compact twin
+// runs too.
+for (const lead of ['claude', 'codex'] as const satisfies readonly ProviderName[]) {
+  test(`${lead} lead: an owned Codex worker's async question goes to the lead, which answers it`, async ({ harness, page }) => {
+    test.setTimeout(120_000);
+    await runAsyncQuestionAnsweredBySpawner(harness, page, 'desktop', lead);
+  });
+}
+
+test(`an owned Codex worker's async question its lead never took in goes to the person`, async ({ harness, page }) => {
+  test.setTimeout(120_000);
+  await runAsyncQuestionHandedBack(harness, page, 'desktop');
+});
