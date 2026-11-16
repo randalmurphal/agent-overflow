@@ -8,7 +8,7 @@ import (
 // While assistants are paused, nothing scheduled for a thread under an
 // assistant (its current thread or a helper) is due, and the
 // sweep's next moment does not count it; an ordinary thread's loops and
-// reminders are due as before. The rows are untouched, so unpausing makes
+// reminders are due as before, and a worker of the assistant asks the user. The rows are untouched, so unpausing makes
 // them due again with the schedule they had.
 func TestPausedAssistantsHaveNothingDue(t *testing.T) {
 	t.Parallel()
@@ -21,6 +21,8 @@ func TestPausedAssistantsHaveNothingDue(t *testing.T) {
 	}
 	homeThread(t, s, "helper", agent.ID)
 	mustCreateThread(t, s, "plain")
+	mustCreateThread(t, s, "worker")
+	seedAgentRequest(t, s, "ops-worker", "ops", ThreadRequestSpawn, "worker", false, 100)
 	for _, row := range []AgentWake{
 		{ID: "w-ops", ThreadID: "ops", Kind: AgentWakeLoop, Label: "board", IntervalSeconds: 60, NextAt: 100, CreatedAt: 1},
 		{ID: "w-watch", ThreadID: "ops", Kind: AgentWakeWatch, Label: "tail", Command: "true", LongRunning: true, CreatedAt: 2},
@@ -74,6 +76,11 @@ func TestPausedAssistantsHaveNothingDue(t *testing.T) {
 		}
 		if !slices.Equal(tokens, reminders) {
 			t.Errorf("paused=%v DueThreadReminders = %v, want %v", paused, tokens, reminders)
+		}
+		// A worker's questions go to its spawner only while that one runs.
+		spawner, _, found, err := s.SpawnerOf("worker")
+		if err != nil || found == paused || (found && spawner != "ops") {
+			t.Errorf("paused=%v SpawnerOf(worker) = %q found=%v err=%v", paused, spawner, found, err)
 		}
 		schedule, err := s.NextThreadRequestWork()
 		if err != nil {
