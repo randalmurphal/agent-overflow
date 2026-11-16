@@ -68,7 +68,7 @@ function fakeReview(overrides: Partial<Record<keyof ReviewPaneState, unknown>> =
     setReplyBody: vi.fn(),
     sendPRThreadReply: vi.fn(async () => {}),
     // A backend without suggestions and reactions.
-    reactions: { available: false, canAdd: false, withheld: null, reactionsOf: () => [], pending: () => false, error: () => null, toggle: vi.fn(), pickerOpen: () => false, setPickerOpen: vi.fn() },
+    reactions: { available: false, canAdd: false, withheld: null, reactionsOf: () => [], refused: () => null, pending: () => false, error: () => null, toggle: vi.fn(), pickerOpen: () => false, setPickerOpen: vi.fn() },
     suggestions: { available: false, withheld: null, pending: () => false, error: () => null, apply: vi.fn(), currentFile: () => null, threadSource: () => null, lineSource: () => null },
     editorPreviews: createEditorPreviews(() => new Set(), HOME_BACKEND),
     reactionsUnavailable: null,

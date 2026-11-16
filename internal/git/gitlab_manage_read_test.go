@@ -1,7 +1,6 @@
 package git
 
 import (
-	"encoding/json"
 	"errors"
 	"net/http"
 	"slices"
@@ -471,32 +470,6 @@ func TestParseGitLabVersion(t *testing.T) {
 	}
 }
 
-// A refusal of anything but the element asked about, or one beside data,
-// is not a schema gap.
-func TestGitLabSchemaLacksNamesTheElement(t *testing.T) {
-	t.Parallel()
-	gqlErr := func(data, message string) error {
-		return &forgeapi.GraphQLError{Problems: []forgeapi.GraphQLProblem{{Message: message}}, Data: json.RawMessage(data)}
-	}
-	for _, tc := range []struct {
-		err     error
-		element string
-		want    bool
-	}{
-		{gqlErr("", "Field 'mergeabilityChecks' doesn't exist on type 'MergeRequest'"), "mergeabilityChecks", true},
-		{gqlErr("", "InputObject 'MergeRequestSetLabelsInput' doesn't accept argument 'operationMode'"), "operationMode", true},
-		{gqlErr("", "Field 'mergeRequestReviewerRereview' doesn't exist on type 'Mutation'"), "mergeRequestReviewerRereview", true},
-		{gqlErr("", "Field '__type' doesn't exist on type 'Query'"), "mergeabilityChecks", false},
-		{gqlErr("", "Field 'mergeabilityChecksV2' doesn't exist on type 'MergeRequest'"), "mergeabilityChecks", false},
-		{gqlErr(`{"x":1}`, "Field 'mergeabilityChecks' doesn't exist on type 'MergeRequest'"), "mergeabilityChecks", false},
-		{errors.New("Field 'mergeabilityChecks' doesn't exist on type 'MergeRequest'"), "mergeabilityChecks", false},
-	} {
-		if got := gitlabSchemaLacks(tc.err, tc.element); got != tc.want {
-			t.Errorf("gitlabSchemaLacks(%v, %q) = %v, want %v", tc.err, tc.element, got, tc.want)
-		}
-	}
-}
-
 // A harness reset forgets each host's release and each merge request's
 // state events backoff: the next read asks the release again and reads
 // the state events at once.
@@ -580,10 +553,7 @@ func TestResetForgeCachesReachesEveryAdapterCache(t *testing.T) {
 	gh := core.forges["github"].(*githubForge)
 	gl.projects.put("k", gitlabProjectSettings{}, now)
 	gl.viewers.put("k", gitlabViewer{}, now)
-	gl.noApprovalState.put("k", true, now)
-	gl.noCIJobCancelPermission.put("k", true, now)
-	gl.versions.put("k", gitlabVersion{19, 3}, now)
-	gl.routes.remember("k")
+	gl.servers.put("k", gitlabServer{version: gitlabVersion{19, 3}}, now)
 	gl.stateEventRetries.failed("k", gitlabStateEventsRetry{failures: 1, due: now.Add(time.Hour)})
 	state, start, _ := gl.pipelineTags.beginListing("k", []int64{1})
 	gl.pipelineTags.endListing("k", state, start, map[int64]bool{1: true})
@@ -594,15 +564,13 @@ func TestResetForgeCachesReachesEveryAdapterCache(t *testing.T) {
 
 	_, project := gl.projects.get("k", now)
 	_, viewer := gl.viewers.get("k", now)
-	_, approval := gl.noApprovalState.get("k", now)
-	_, cancel := gl.noCIJobCancelPermission.get("k", now)
-	_, schema := gl.versions.get("k", now)
+	_, schema := gl.servers.get("k", now)
 	due, _ := gl.stateEventRetries.due("k", now)
 	_, _, known := gl.pipelineTags.beginListing("k", []int64{1})
 	_, _, permission := gh.ciPermissions.get("k", now)
 	_, _, artifacts := gh.ciArtifacts.get("k", now)
-	if project || viewer || approval || cancel || schema || gl.routes.get("k") || !due || len(known) != 0 || permission || artifacts {
-		t.Fatalf("kept: project %v viewer %v approval %v cancel %v schema %v route %v backoff %v tags %v permission %v artifacts %v",
-			project, viewer, approval, cancel, schema, gl.routes.get("k"), !due, known, permission, artifacts)
+	if project || viewer || schema || !due || len(known) != 0 || permission || artifacts {
+		t.Fatalf("kept: project %v viewer %v schema %v backoff %v tags %v permission %v artifacts %v",
+			project, viewer, schema, !due, known, permission, artifacts)
 	}
 }

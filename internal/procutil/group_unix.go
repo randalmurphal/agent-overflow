@@ -43,9 +43,9 @@ func KillConfiguredGroup(command *exec.Cmd) error {
 	return signalConfiguredGroup(command, syscall.SIGKILL)
 }
 
-// TerminateConfiguredGroup asks every member of the configured group to exit
-// with SIGTERM. Callers pair it with KillConfiguredGroup after a grace period.
-func TerminateConfiguredGroup(command *exec.Cmd) error {
+// terminateConfiguredGroup asks every member of the configured group to exit
+// with SIGTERM. StopConfiguredGroup pairs it with the kill after the grace.
+func terminateConfiguredGroup(command *exec.Cmd) error {
 	if command == nil || command.Process == nil {
 		return os.ErrProcessDone
 	}

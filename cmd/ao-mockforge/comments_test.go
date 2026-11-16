@@ -416,7 +416,11 @@ func TestGitLabRangesReadBackAsPostedThroughTheAppsForgeCode(t *testing.T) {
 // the named pull's first: its own thread resolves, and the same thread
 // named under another pull is refused with nothing changed.
 func TestGitHubResolveChecksTheThreadsPullThroughTheAppsForgeCode(t *testing.T) {
-	r := newRig(t, commentFixture(githubMergeFixture("success")))
+	// GitHub lets the author and write access resolve; commentFixture's
+	// TRIAGE viewer may not.
+	fixture := commentFixture(githubMergeFixture("success"))
+	fixture.Repos[0].Merge.Permission = "WRITE"
+	r := newRig(t, fixture)
 	ctx := forgeapi.WithInteractive(t.Context())
 	ref := gitops.PRReference{Forge: "github", Host: "github.com", Namespace: "acme", Repo: "merge", Number: 9}
 	thread := threadByBody(mergeRead(t, r, ref), "theirs")

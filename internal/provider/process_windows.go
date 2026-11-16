@@ -16,8 +16,8 @@ import (
 // and provider children never spawn here. We deliberately don't reach
 // for Job Objects in this stub — the launcher's Job Object (in
 // internal/wsllauncher) is the right place for that lifecycle hook.
-func applySysProcAttr(cmd *exec.Cmd, parentDeathSignal bool) {
-	_, _ = cmd, parentDeathSignal
+func applySysProcAttr(cmd *exec.Cmd) {
+	_ = cmd
 }
 
 // signalGroupPlatform is a no-op on Windows. If a future port wires

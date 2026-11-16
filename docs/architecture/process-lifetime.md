@@ -32,27 +32,41 @@ After the backend dies the sidecar execs nothing and opens nothing: it
 signals the groups, sleeps, logs to the stderr it inherited and exits
 (`orphanreaper/reaper.go`). Its code is still read from its executable on
 first use, because the kernel loads an executable's pages when they first
-run, and the kill path first runs after the backend died. Under an AppImage
-that executable is in the squashfs mount the AppImage runtime unmounts when
-the backend exits (`internal/appimage`), so the sidecar can fail to load its
-kill path there and leave the groups to the next launch's sweep. The update
-helper avoids the same mount by running the `.AppImage` file itself
-(`desktopInstall` in `main_update_apply.go`); the sidecar does not yet.
+run, and the kill path first runs after the backend died. No AppImage is
+released: Linux releases are plain binaries. Run from an AppImage someone
+builds, that executable is in the squashfs mount the AppImage runtime
+unmounts when the backend exits (`internal/appimage`), so the sidecar can
+fail to load its kill path and leave the groups to the next launch's sweep.
+The update helper avoids the same mount by running the `.AppImage` file
+itself (`desktopInstall` in `main_update_apply.go`); the sidecar does not.
 
 ## Which spawners end with the backend
 
+A group is released only once no member of it is alive. A leader's exit is
+not its group's: Wait proves only that the leader is gone, so the owner ends
+what the leader left (SIGTERM, then SIGKILL after a grace, through
+`procutil.StopConfiguredGroup`) before it releases. A group the owner cannot empty
+stays watched and the owner reports the failure.
+
 `procutil.StartGroup` and `RunGroup` take a `procutil.Reaper` and refuse a nil
-one, so every supervised command group is watched for its whole run and
-released once Wait has seen it end. The headless browser's launch follows the
-same rule: `startChromium` takes the reaper and refuses a nil one, the engine
-is not built without one (`HeadlessChromiumOptions.Reaper`), and the group is
-released once `stop` has killed it. A provider spawn given a reaper
-(`provider.SpawnConfig.Reaper`, and `terminal.SessionOptions.Reaper` for the
-Claude TUI's pty) is watched the same way and released once Wait has seen its
-leader exit. The app gives one to every provider session and to the temporary
-Codex app-server a fork starts. Processes a command leaves running under
-`KeepLeftovers` are released with it and outlive the backend, as they outlive
-the command. A group the kill could not end stays watched.
+one, so every supervised command group is watched for its whole run. Wait
+stops leftovers, and returns `ErrGroupSurvived` when one survives SIGKILL.
+Processes a command leaves running under `KeepLeftovers` when it exits on
+its own are the one deliberate exception: they are released alive and
+outlive the backend, as they outlive the command. Cancellation still stops
+them. The headless browser's launch follows the same rule:
+`startChromium` takes the reaper and refuses a nil one, the engine is not
+built without one (`HeadlessChromiumOptions.Reaper`), and the group is
+released once `stop` has seen every process exit. `provider.Spawn` takes a
+required `Lifetime` with two forms, watched the same way: `Watched` for a
+process that runs until its owner closes it, `Bounded` for one that finishes
+within its context's deadline, which a bounded launch must have. When the
+leader exits, the `provider.Process` ends what it left before Done closes,
+and `Close` and `Kill` return a failure to end it. The terminal launcher has one
+form: its `SessionOptions.Reaper` is required, since a pty process runs until
+it is closed. A job the shell leaves in its group runs on while the terminal
+is open, so the group stays watched until `Close` ends it. A launch with no
+lifetime starts nothing.
 
 | Spawner | Lifetime | Mechanism |
 |---|---|---|
@@ -62,10 +76,11 @@ the command. A group the kill could not end stays watched.
 | Remote jobs (`remotejobs`) | Ends with the backend | Reaper |
 | Provider update and doctor runs (`app_provider_update.go`) | Ends with the backend | Reaper |
 | ACME DNS hooks (`acmecert`) | Ends with the backend | Reaper |
-| Claude and Codex sessions, and a fork's temporary Codex app-server (`provider/process.go`) | Ends with the backend | Reaper |
-| Claude TUI sessions (`claudetui`) | Ends with the backend | Reaper. The pty hangup reaches it too: the kernel sends it when the master closes |
-| Provider probes, logins, account reads and one-shot app-servers (`provider.Spawn` without a reaper) | Ends with the backend on Linux | Linux: SIGTERM to the leader (Pdeathsig). macOS: nothing; their timeouts end with the backend |
-| Terminal panes (`terminal`) | Ends with the backend | The pty master closes, and the kernel hangs up the session |
+| Claude and Codex sessions, and a fork's temporary Codex app-server (`provider.Watched`) | Ends with the backend | Reaper |
+| Claude and Codex sign-ins and MCP sign-ins, which wait on a person (`provider.Watched`) | Ends with the backend | Reaper |
+| A conversation transfer's Codex snapshot, whose length follows the subagents it walks (`provider.Watched`) | Ends with the backend | Reaper |
+| Account probes and identity reads, Codex usage, skills and model-list reads, a Codex fork's one-shot app-server (`provider.Bounded`) | Finishes within its deadline, or ends with the backend | Reaper |
+| Claude TUI sessions (`claudetui`) and terminal panes (`terminal`) | Ends with the backend | Reaper. The pty hangup reaches them too: the kernel sends it when the master closes |
 | Headless Chromium (`browser/headless_process*.go`) | Ends with the backend | Reaper. Its renderer, GPU, network and storage processes are in its group and write into the profile until they die |
 | `caffeinate` (`power`, macOS) | Ends with the backend | `-w <backend pid>` |
 | Bounded one-shots: git, `gh`/`glab` token reads, version and MCP status probes, the login-shell probe, `ssh` setup, `security`, `lsof`, `systemctl`/`launchctl`, `wslpath` | Finishes on its own | Each runs under a timeout or ends at EOF; none is watched |
@@ -77,10 +92,12 @@ Not backend children: the desktop supervisor's backend child and preflight
 harness CLI's backend launch (`harnessclient`), and the test network helper
 (`netisolate`).
 
-A watched provider gets no parent-death signal. It would end the leader at
-the backend's death, and a sweep that finds the leader gone cannot tell the
-group from a later one with the same id, so the MCP servers in it would
-outlive a sidecar that died with the backend.
+No provider launch uses a parent-death signal, bounded ones included. A
+bounded launch's deadline lives in the backend, and the Claude CLI does not
+exit when its stdin closes, so on macOS nothing else would end one the
+backend left. On Linux the signal reaches only the leader, which leaves what
+a probe's hooks and plugins started, and it ends the leader that the next
+launch's sweep identifies the group by.
 
 The two seconds between the sidecar's SIGTERM and SIGKILL are the grace
 `provider.Process.Close` gives a provider after its own SIGTERM, so a dying

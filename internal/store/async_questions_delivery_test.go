@@ -33,7 +33,7 @@ func TestAsyncAnswerEchoRequiresIdentityAndSettlesOnMetaUpdate(t *testing.T) {
 			if err != nil || rows[0].State != "submitted" {
 				t.Fatalf("unconfirmed echo marked delivered: %+v %v", rows, err)
 			}
-			if err := s.DeleteDispatchedFlushQueueItem("queue"); err != nil {
+			if err := s.DeleteDispatchedFlushQueueItems([]string{"queue"}); err != nil {
 				t.Fatal(err)
 			}
 			if queued, err := s.ListFlushQueueItems("q"); err != nil || len(queued) != 1 {

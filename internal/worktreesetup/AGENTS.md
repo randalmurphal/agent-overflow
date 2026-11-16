@@ -4,7 +4,7 @@ Validates and executes a project's worktree setup recipe. Persistence and provis
 
 ## Execution
 
-`RunObserved` is the single engine and `Run` uses it with a no-op observer. Copy steps run first, then argv commands in authored order. One context deadline covers the whole recipe. Each command runs through `procutil.RunGroup`: timeout and cancellation stop its process group with SIGTERM, then SIGKILL, and a command stopped that way has failed whatever its exit status. A process a command leaves running in its group is kept (`KeepLeftovers`); one that still holds the command's output after the drain grace fails the command. Stop on the first failure and include the bounded output tail. `ResolveSteps` must project exactly the steps the runner executes.
+`RunObserved` is the single engine and `Run` uses it with a no-op observer. Copy steps run first, then argv commands in authored order. One context deadline covers the whole recipe. Each command runs through `procutil.RunGroup`: timeout and cancellation stop its process group with SIGTERM, then SIGKILL, and a command stopped that way has failed whatever its exit status. A process a command leaves running in its group is kept (`KeepLeftovers`) and outlives the backend; one that still holds the command's output after the drain grace fails the command. Stop on the first failure and include the bounded output tail. `ResolveSteps` must project exactly the steps the runner executes.
 
 Commands are argv, not shell text. Run them in the new worktree with the inherited toolchain environment plus authoritative `AO_PROJECT_ROOT` and `AO_WORKTREE_PATH` values appended last.
 

@@ -79,10 +79,11 @@ func (a *App) OpenTerminal(threadID string, opts TerminalOpenOptions) (TerminalH
 		return TerminalHandle{}, err
 	}
 	summary, err := a.terminals.Open(threadID, terminal.SessionOptions{
-		Shell: opts.Shell,
-		Cwd:   opts.Cwd,
-		Rows:  opts.Rows,
-		Cols:  opts.Cols,
+		Shell:  opts.Shell,
+		Cwd:    opts.Cwd,
+		Rows:   opts.Rows,
+		Cols:   opts.Cols,
+		Reaper: a.groupReaper("terminal"),
 	})
 	if err != nil {
 		return TerminalHandle{}, err

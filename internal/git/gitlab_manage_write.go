@@ -91,12 +91,17 @@ func gitlabMRVars(ref PRReference) map[string]any {
 	return map[string]any{"projectPath": ref.Project(), "iid": strconv.Itoa(ref.Number)}
 }
 
+// The set mutations answer whether the project takes more than one
+// person: without it (GitLab Free), GitLab keeps the first of the list and
+// drops the rest without an error. MergeRequest.allowsMultipleReviewers is
+// "Allows assigning multiple reviewers to a merge request." (GraphQL
+// reference at 18.0), allowsMultipleAssignees the same for assignees.
 const gitlabSetReviewersMutation = `mutation PRSetReviewers($projectPath: ID!, $iid: String!, $usernames: [String!]!, $mode: MutationOperationMode!) {
-  mergeRequestSetReviewers(input: {projectPath: $projectPath, iid: $iid, reviewerUsernames: $usernames, operationMode: $mode}) { errors mergeRequest { reviewers(first: 100) { pageInfo { hasNextPage } nodes { username } } } }
+  mergeRequestSetReviewers(input: {projectPath: $projectPath, iid: $iid, reviewerUsernames: $usernames, operationMode: $mode}) { errors mergeRequest { allowsMultipleReviewers reviewers(first: 100) { pageInfo { hasNextPage } nodes { username } } } }
 }`
 
 const gitlabSetAssigneesMutation = `mutation PRSetAssignees($projectPath: ID!, $iid: String!, $usernames: [String!]!, $mode: MutationOperationMode!) {
-  mergeRequestSetAssignees(input: {projectPath: $projectPath, iid: $iid, assigneeUsernames: $usernames, operationMode: $mode}) { errors mergeRequest { assignees(first: 100) { pageInfo { hasNextPage } nodes { username } } } }
+  mergeRequestSetAssignees(input: {projectPath: $projectPath, iid: $iid, assigneeUsernames: $usernames, operationMode: $mode}) { errors mergeRequest { allowsMultipleAssignees assignees(first: 100) { pageInfo { hasNextPage } nodes { username } } } }
 }`
 
 type gitlabUserConnection struct {
@@ -107,8 +112,10 @@ type gitlabUserConnection struct {
 type gitlabPeoplePayload struct {
 	Errors       []string `json:"errors"`
 	MergeRequest *struct {
-		Reviewers *gitlabUserConnection `json:"reviewers"`
-		Assignees *gitlabUserConnection `json:"assignees"`
+		AllowsMultipleReviewers bool                  `json:"allowsMultipleReviewers"`
+		AllowsMultipleAssignees bool                  `json:"allowsMultipleAssignees"`
+		Reviewers               *gitlabUserConnection `json:"reviewers"`
+		Assignees               *gitlabUserConnection `json:"assignees"`
 	} `json:"mergeRequest"`
 }
 
@@ -135,9 +142,9 @@ func (f *gitlabForge) SetPRPeople(ctx context.Context, ref PRReference, reviewer
 			if payload.MergeRequest == nil {
 				return &UnconfirmedWriteError{Err: fmt.Errorf("GitLab answered no merge request after setting its %s", list)}
 			}
-			now := payload.MergeRequest.Assignees
+			now, multiple, one := payload.MergeRequest.Assignees, payload.MergeRequest.AllowsMultipleAssignees, "assignee"
 			if reviewers {
-				now = payload.MergeRequest.Reviewers
+				now, multiple, one = payload.MergeRequest.Reviewers, payload.MergeRequest.AllowsMultipleReviewers, "reviewer"
 			}
 			if now == nil {
 				return &UnconfirmedWriteError{Err: fmt.Errorf("GitLab answered no %s after setting them", list)}
@@ -151,8 +158,8 @@ func (f *gitlabForge) SetPRPeople(ctx context.Context, ref PRReference, reviewer
 					return &ForgeActionError{Kind: ForgeErrorRefused, Message: fmt.Sprintf("GitLab kept %s on the %s.", joinClauses(missed), list)}
 				}
 				why := "they may not be members of the project"
-				if !reviewers {
-					why = "they may not be members of the project, or the project takes fewer assignees"
+				if !multiple && len(now.Nodes) > 0 {
+					why = fmt.Sprintf("this project allows one %s per merge request; more need GitLab Premium", one)
 				}
 				return &ForgeActionError{Kind: ForgeErrorRefused, Message: fmt.Sprintf("GitLab did not add %s to the %s: %s.", joinClauses(missed), list, why)}
 			})

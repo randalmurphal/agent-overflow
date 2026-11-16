@@ -85,10 +85,7 @@ func (e *Engine) gitlabMRJSON(r *Repo, p *Pull) map[string]any {
 	if p.CI != nil {
 		pipeline = gitlabPipelineJSON(r, p.CI)
 	}
-	source := r.ID
-	if p.HeadRepo != "" {
-		source = p.headRepoID
-	}
+	source := e.headRepoID(r, p)
 	var mergedAt, closedAt, mergeCommit, squashCommit any
 	mergedBy, closedBy, mergeUser := "", "", ""
 	switch p.State {
@@ -249,6 +246,9 @@ func (e *Engine) gitlabApprovalsJSON(r *Repo, p *Pull) map[string]any {
 		"approved_by":        approved,
 		"user_has_approved":  gitlabViewerApproved(p, e.viewer),
 		"user_can_approve":   e.gitlabCanApprove(r, p),
+		// The fake's servers are Enterprise Edition (GET metadata), whose
+		// approval state carries it.
+		"require_password_to_approve": r.Merge.ApprovalPassword,
 	}
 }
 
@@ -298,8 +298,17 @@ func glabProjectRead(e *Engine, c *call, m []string) response {
 		return fail
 	}
 	settings := r.Merge
+	var direct any
+	if !settings.SharedAccess {
+		direct = map[string]any{"access_level": gitlabRoles[settings.Permission], "notification_level": 3}
+	}
+	var forkedFrom any
+	if parent := e.repoOn("gitlab", r.Host, r.Parent); r.Parent != "" && parent != nil {
+		forkedFrom = map[string]any{"id": parent.ID, "path_with_namespace": parent.Project}
+	}
 	return glabOK(jsonResponse(map[string]any{
 		"id":                                    r.ID,
+		"forked_from_project":                   forkedFrom,
 		"full_name":                             r.Project,
 		"path_with_namespace":                   r.Project,
 		"merge_method":                          settings.MergeMethod,
@@ -307,11 +316,30 @@ func glabProjectRead(e *Engine, c *call, m []string) response {
 		"remove_source_branch_after_merge":      settings.DeleteBranchOnMerge,
 		"only_allow_merge_if_pipeline_succeeds": settings.PipelineMustSucceed,
 		"only_allow_merge_if_all_discussions_are_resolved": settings.DiscussionsMustResolve,
+		"merge_trains_enabled":                             settings.MergeTrains,
 		"permissions": map[string]any{
-			"project_access": map[string]any{"access_level": gitlabRoles[settings.Permission], "notification_level": 3},
+			"project_access": direct,
 			"group_access":   nil,
 		},
 	}))
+}
+
+// glabProjectAccess answers ProjectAccess(fullPath): project(fullPath) {
+// maxAccessLevel { integerValue } }, the viewer's role however it was
+// granted ("Maximum access level of the current user in the project.").
+// A project not on the host is a null project.
+func glabProjectAccess(e *Engine, c *call, v graphQLVars) response {
+	fullPath, err := v.str("fullPath")
+	if err != nil {
+		return unhandled("GitLab project access read: %v", err)
+	}
+	r := e.repoOn("gitlab", c.http.host, fullPath)
+	if r == nil {
+		return graphQLData(map[string]any{"project": nil})
+	}
+	return graphQLData(map[string]any{"project": map[string]any{
+		"maxAccessLevel": map[string]any{"integerValue": gitlabRoles[r.Merge.Permission]},
+	}})
 }
 
 func glabDiscussions(e *Engine, c *call, m []string) response {
@@ -408,6 +436,19 @@ func gitlabDiscussions(p *Pull) []map[string]any {
 // gitlabNoteBody is an event's system note in the phrasing GitLab writes
 // (app/services/system_notes/; docs/references/forge-api-measurements.md).
 func gitlabNoteBody(event Event) string {
+	switch event.Train {
+	case gitlabTrainAdded:
+		if event.Ref == "1" {
+			return "started a [merge train](https://gitlab.com/-/merge_trains)"
+		}
+		return "added this merge request to the [merge train](https://gitlab.com/-/merge_trains) at position " + event.Ref
+	case gitlabTrainScheduled:
+		return "enabled automatic add to merge train when checks pass"
+	case gitlabTrainRemoved:
+		return "removed this merge request from the merge train"
+	case gitlabTrainUnscheduled:
+		return "cancelled automatic add to merge train"
+	}
 	switch event.Kind {
 	case "approved":
 		return "approved this merge request"
@@ -470,7 +511,7 @@ func gitlabNote(comment Comment, extra map[string]any) map[string]any {
 // project the path names: the open MRs from a source branch name (a
 // fork's included, as source_branch matches them), recently merged MRs,
 // and named MRs in any state (iids[] with state=all). Items are the full
-// view.
+// view; a state list answers its X-Total.
 func glabMRList(e *Engine, c *call, m []string) response {
 	r, fail, ok := e.glabProject(c, m[1])
 	if !ok {
@@ -508,7 +549,7 @@ func glabMRList(e *Engine, c *call, m []string) response {
 	if items == nil {
 		items = []map[string]any{}
 	}
-	return glabOK(jsonResponse(items), "X-Next-Page: "+next)
+	return glabOK(jsonResponse(items), "X-Next-Page: "+next, "X-Total: "+strconv.Itoa(len(matches)))
 }
 
 // glabMRsByIID answers the merge requests iids names, in any state, newest
@@ -552,10 +593,7 @@ func (e *Engine) gitlabMRListItem(r *Repo, p *Pull) map[string]any {
 	if p.MergedAt != "" {
 		mergedAt = p.MergedAt
 	}
-	source := r.ID
-	if p.HeadRepo != "" {
-		source = p.headRepoID
-	}
+	source := e.headRepoID(r, p)
 	return map[string]any{
 		"iid":               p.Number,
 		"project_id":        r.ID,
@@ -823,8 +861,10 @@ func glabSHAMismatch(p *Pull) response {
 
 // glabApprove approves the merge request as the viewer: `{sha}` pins the
 // head (409 when it moved). A viewer GitLab does not take an approval
-// from, the merge request's own approver included, is refused with 401.
-// The approval joins approved_by and leaves its system note.
+// from, the merge request's own approver included, is refused with 401,
+// as is any approval on a project that requires the approver's password
+// (merge.approvalPassword; the fake takes no approval_password). The
+// approval joins approved_by and leaves its system note.
 func glabApprove(e *Engine, c *call, m []string) response {
 	var in struct {
 		SHA string `json:"sha"`
@@ -837,7 +877,7 @@ func glabApprove(e *Engine, c *call, m []string) response {
 		return fail
 	}
 	switch {
-	case !e.gitlabCanApprove(r, p):
+	case !e.gitlabCanApprove(r, p), r.Merge.ApprovalPassword:
 		return glabStatus(http.StatusUnauthorized, "401 Unauthorized")
 	case in.SHA != "" && in.SHA != p.HeadSHA:
 		return glabSHAMismatch(p)
@@ -943,7 +983,12 @@ func glabMerge(e *Engine, c *call, m []string) response {
 		now := glabNow()
 		p.squash, p.forceRemove = squash, remove
 		p.Readiness.AutoMerge = &AutoMerge{Method: gitlabArmMethod(r, squash), By: e.viewer, At: now}
-		p.Events = append(p.Events, Event{ID: e.ids.next(), Kind: "auto_merge_set", Actor: e.viewer, At: now, Ref: p.HeadSHA})
+		event := Event{ID: e.ids.next(), Kind: "auto_merge_set", Actor: e.viewer, At: now, Ref: p.HeadSHA}
+		if r.Merge.MergeTrains {
+			// The preferred strategy of a train project.
+			p.Readiness.AutoMerge.Strategy, event.Ref, event.Train = gitlabStrategyAddWhenReady, "", gitlabTrainScheduled
+		}
+		p.Events = append(p.Events, event)
 		return glabOK(jsonResponse(e.gitlabMRJSON(r, p)))
 	}
 	now := glabNow()
@@ -960,12 +1005,20 @@ func glabMerge(e *Engine, c *call, m []string) response {
 	return glabOK(jsonResponse(e.gitlabMRJSON(r, p)))
 }
 
+// gitlabCancelAutoMergeRelease is the release that added
+// cancel_auto_merge.
+var gitlabCancelAutoMergeRelease = [2]int{19, 5}
+
 // glabCancelAutoMerge disarms an armed auto-merge (409 when none is
 // armed, 403 for a viewer who cannot merge) and answers the merge request
-// with its system note added.
+// with its system note added. A host before 19.5 has no such route and
+// answers GitLab's 404.
 func glabCancelAutoMerge(e *Engine, c *call, m []string) response {
 	if err := noRESTBody(c); err != nil {
 		return unhandled("%v", err)
+	}
+	if !e.gitlabAtLeast(c.http.host, gitlabCancelAutoMergeRelease) {
+		return glabStatus(http.StatusNotFound, "404 Not Found")
 	}
 	r, p, fail, ok := e.glabMRFrom(c, m)
 	if !ok {
@@ -977,11 +1030,51 @@ func glabCancelAutoMerge(e *Engine, c *call, m []string) response {
 	case p.Readiness.AutoMerge == nil:
 		return glabStatus(http.StatusConflict, "409 Conflict: Can't cancel the automatic merge")
 	}
-	p.Readiness.AutoMerge = nil
-	p.Events = append(p.Events, Event{ID: e.ids.next(), Kind: "auto_merge_canceled", Actor: e.viewer, At: glabNow()})
+	e.cancelGitLabAutoMerge(p)
 	resp := glabOK(jsonResponse(e.gitlabMRJSON(r, p)))
 	resp.status = http.StatusCreated
 	return resp
+}
+
+// glabCancelMergeWhenPipelineSucceeds is the deprecated cancel route every
+// supported release has: 401 for a viewer who cannot merge, else 201 with
+// a status hash, "error" with GitLab's 406 inside it when nothing is
+// armed.
+func glabCancelMergeWhenPipelineSucceeds(e *Engine, c *call, m []string) response {
+	if err := noRESTBody(c); err != nil {
+		return unhandled("%v", err)
+	}
+	r, p, fail, ok := e.glabMRFrom(c, m)
+	if !ok {
+		return fail
+	}
+	if gitlabRoles[r.Merge.Permission] < gitlabRoles["developer"] {
+		return glabStatus(http.StatusUnauthorized, "401 Unauthorized")
+	}
+	answer := map[string]any{"status": "success"}
+	if p.Readiness.AutoMerge == nil {
+		answer = map[string]any{"status": "error", "message": "Can't cancel the automatic merge", "http_status": 406}
+	} else {
+		e.cancelGitLabAutoMerge(p)
+	}
+	resp := glabOK(jsonResponse(answer))
+	resp.status = http.StatusCreated
+	return resp
+}
+
+// cancelGitLabAutoMerge disarms p's auto-merge with its system note; a
+// car leaves its train, as AutoMerge::MergeTrainService#cancel destroys
+// it.
+func (e *Engine) cancelGitLabAutoMerge(p *Pull) {
+	event := Event{ID: e.ids.next(), Kind: "auto_merge_canceled", Actor: e.viewer, At: glabNow()}
+	switch p.Readiness.AutoMerge.Strategy {
+	case gitlabStrategyMergeTrain:
+		event.Train = gitlabTrainRemoved
+	case gitlabStrategyAddWhenReady:
+		event.Train = gitlabTrainUnscheduled
+	}
+	p.Readiness.AutoMerge = nil
+	p.Events = append(p.Events, event)
 }
 
 // glabRebase rebases the source branch onto the target: 202

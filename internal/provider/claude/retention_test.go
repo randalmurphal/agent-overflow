@@ -6,6 +6,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"agent-overflow/internal/procutil/procutiltest"
 )
 
 // writeUserSettings writes content as the user-level settings file of a new
@@ -210,7 +212,7 @@ func TestCleanupPeriodOverrideOnlyLengthensTheUsersPeriod(t *testing.T) {
 // The session block carries the retention beside its other keys, in one
 // `--settings` flag.
 func TestBuildArgsCarriesCleanupPeriodDaysInTheSettingsBlock(t *testing.T) {
-	args := buildArgs(Config{FastMode: true, Retention: UserHomeRetention(90)}, "", "")
+	args := buildArgs(Config{Reaper: procutiltest.Reaper(), FastMode: true, Retention: UserHomeRetention(90)}, "", "")
 	joined := strings.Join(args, " ")
 	if want := `--settings {"fastMode":true,"cleanupPeriodDays":90}`; !strings.Contains(joined, want) {
 		t.Fatalf("args missing %q: %v", want, args)
@@ -220,20 +222,20 @@ func TestBuildArgsCarriesCleanupPeriodDaysInTheSettingsBlock(t *testing.T) {
 	}
 
 	// A value the CLI's schema rejects is never rendered.
-	if joined := strings.Join(buildArgs(Config{Retention: UserHomeRetention(-3)}, "", ""), " "); strings.Contains(joined, "--settings") {
+	if joined := strings.Join(buildArgs(Config{Reaper: procutiltest.Reaper(), Retention: UserHomeRetention(-3)}, "", ""), " "); strings.Contains(joined, "--settings") {
 		t.Fatalf("a negative period rendered a settings block: %s", joined)
 	}
 }
 
 func TestProbeArgsCarryCleanupPeriodDays(t *testing.T) {
-	line, err := probeCommandLine(ProbeConfig{Retention: UserHomeRetention(90)})
+	line, err := probeCommandLine(ProbeConfig{Reaper: procutiltest.Reaper(), Retention: UserHomeRetention(90)})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if args := line.Args(); !slices.Contains(args, `{"cleanupPeriodDays":90}`) || !slices.Contains(args, "--settings") {
 		t.Fatalf("probe args carry no retention: %v", args)
 	}
-	line, err = probeCommandLine(ProbeConfig{Retention: UserHomeRetention(0)})
+	line, err = probeCommandLine(ProbeConfig{Reaper: procutiltest.Reaper(), Retention: UserHomeRetention(0)})
 	if err != nil {
 		t.Fatal(err)
 	}

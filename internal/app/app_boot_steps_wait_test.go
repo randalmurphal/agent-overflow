@@ -24,7 +24,7 @@ func holdBootSteps(t *testing.T, a *App) (finish func()) {
 	a.activation.beginBoot()
 	return func() {
 		t.Helper()
-		noop := func() error { return nil }
+		noop := []bootStep{func() error { return nil }}
 		if err := a.activation.Run(context.Background(), noop, noop, func(err error) { t.Errorf("report: %v", err) }); err != nil {
 			t.Fatalf("Run: %v", err)
 		}

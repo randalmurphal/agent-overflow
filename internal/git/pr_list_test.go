@@ -3,6 +3,7 @@ package git
 import (
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"testing"
 )
@@ -86,7 +87,8 @@ func TestGitHubListProjectPRsParsesTheSearch(t *testing.T) {
 }
 
 // A search past one page is read from the page's endCursor, and the read
-// stops at prListMaxPages pages even when GitHub says there are more.
+// stops at prListMaxPages pages even when GitHub says there are more,
+// saying the list was cut.
 func TestGitHubListProjectPRsPagesTheSearch(t *testing.T) {
 	t.Parallel()
 	core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
@@ -108,8 +110,8 @@ func TestGitHubListProjectPRsPagesTheSearch(t *testing.T) {
 		return githubData(fmt.Sprintf(`{"viewer":{"login":"alice"},"search":{"pageInfo":{"hasNextPage":true,"endCursor":"c%d"},"nodes":[%s]}}`, page+1, strings.Join(nodes, ",")))
 	})
 	rows, err := core.ListProjectPRs(t.Context(), githubTestRepo())
-	if err != nil {
-		t.Fatalf("ListProjectPRs: %v", err)
+	if notice, ok := PRListNotices(err); !ok || notice != "Showing the 1000 most recently updated open pull requests: the list reads at most 1000." {
+		t.Fatalf("ListProjectPRs: %v, want the cut list's notice", err)
 	}
 	if got := len(calls.all()); got != prListMaxPages {
 		t.Fatalf("requests = %d, want %d", got, prListMaxPages)
@@ -119,6 +121,87 @@ func TestGitHubListProjectPRsPagesTheSearch(t *testing.T) {
 	}
 	if after := calls.all()[1].Vars["after"]; after != "c1" {
 		t.Fatalf("second page after = %v, want the first page's endCursor", after)
+	}
+}
+
+// GitHub's search answers at most 1000 results: a count past the rows
+// read says so, with the count; a count the rows cover says nothing.
+func TestGitHubListSaysWhenTheSearchCountsMore(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		count  int
+		notice string
+	}{
+		{1, ""},
+		{1500, "Showing 1 of 1500 open pull requests: the list reads at most 1000."},
+	} {
+		core, _ := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
+			return githubData(fmt.Sprintf(`{"viewer":{"login":"alice"},"search":{"issueCount":%d,"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PR_1","number":1,"author":{"login":"x"},"commits":{"totalCount":1,"nodes":[]}}]}}`, tc.count))
+		})
+		rows, err := core.ListProjectPRs(t.Context(), githubTestRepo())
+		notice, _ := PRListNotices(err)
+		if len(rows) != 1 || notice != tc.notice || (tc.notice == "") != (err == nil) {
+			t.Fatalf("count %d: ListProjectPRs = %d rows, %v; want %q", tc.count, len(rows), err, tc.notice)
+		}
+	}
+}
+
+// A search refused only in its rows' check states is read again without
+// them: the rows land with a notice saying so, and a refusal of the token
+// is remembered, so the next list leaves them out at once. An error
+// elsewhere, or a single sign-on refusal, fails the list.
+func TestGitHubListLeavesOutRefusedCheckStates(t *testing.T) {
+	t.Parallel()
+	refusal := `{"type":"FORBIDDEN","message":"Resource not accessible by personal access token","path":["search","nodes",0,"commits","nodes",0,"commit","statusCheckRollup"]}`
+	for _, tc := range []struct {
+		name       string
+		errors     string
+		header     http.Header
+		fails      bool
+		remembered bool
+		notice     string
+	}{
+		{name: "a fine-grained token", errors: `[` + refusal + `]`, remembered: true, notice: "Check states are not shown: forge.example does not let this fine-grained token read them."},
+		{name: "a passing error", errors: `[{"message":"Something went wrong","path":["search","nodes",0,"commits","nodes",0,"commit","statusCheckRollup"]}]`, notice: "Check states are not shown: forge.example refused them (Something went wrong)."},
+		{name: "an error elsewhere too", errors: `[` + refusal + `,{"message":"no","path":["search","nodes",0,"reviewThreads"]}]`, fails: true},
+		{name: "single sign-on", errors: `[` + refusal + `]`, header: http.Header{"X-Github-Sso": {"required; url=https://github.com/orgs/acme/sso?authorization_request=x"}}, fails: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
+				if call.Op != "PullsSearch" {
+					return forgeUnexpected(t, call)
+				}
+				rollup, errs := `,"statusCheckRollup":{"state":"SUCCESS"}`, ""
+				if call.Vars["wantChecks"] != true {
+					rollup = ""
+				} else {
+					rollup, errs = `,"statusCheckRollup":null`, `,"errors":`+tc.errors
+				}
+				return forgeAPIAnswer{Header: tc.header, Body: `{"data":{"viewer":{"login":"alice"},"search":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[` +
+					`{"id":"PR_1","number":1,"author":{"login":"x"},"commits":{"totalCount":1,"nodes":[{"commit":{"committedDate":"2026-01-01T00:00:00Z"` + rollup + `}}]}}]}}` + errs + `}`}
+			})
+			rows, err := core.ListProjectPRs(t.Context(), githubTestRepo())
+			if tc.fails {
+				if err == nil || errors.As(err, new(*PRListDetailError)) || len(calls.all()) != 1 {
+					t.Fatalf("ListProjectPRs = %d rows, %v after %d requests; want the one failed request", len(rows), err, len(calls.all()))
+				}
+				return
+			}
+			notice, ok := PRListNotices(err)
+			if !ok || notice != tc.notice || len(rows) != 1 || rows[0].ChecksState != "" {
+				t.Fatalf("ListProjectPRs = %+v, %v; want the row without its check state and %q", rows, err, tc.notice)
+			}
+			if got := calls.all(); len(got) != 2 || got[0].Vars["wantChecks"] != true || got[1].Vars["wantChecks"] != false {
+				t.Fatalf("requests = %+v, want the list then the list without check states", got)
+			}
+			if _, err := core.ListProjectPRs(t.Context(), githubTestRepo()); err == nil {
+				t.Fatal("the next list carries no notice")
+			}
+			if first := calls.all()[2].Vars["wantChecks"] == false; first != tc.remembered {
+				t.Fatalf("the next list leaves check states out at once = %v, want %v", first, tc.remembered)
+			}
+		})
 	}
 }
 

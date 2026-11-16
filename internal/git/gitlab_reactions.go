@@ -127,18 +127,6 @@ func (m *gitlabReactionMemory) generationLocked(key string) gitlabReactionGen {
 	return gitlabReactionGen{key: key, epoch: m.epoch, gen: m.gens[key]}
 }
 
-// ifCurrent runs record under the memory's lock when gen is still
-// current, and reports whether it ran.
-func (m *gitlabReactionMemory) ifCurrent(gen gitlabReactionGen, record func()) bool {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.generationLocked(gen.key) != gen {
-		return false
-	}
-	record()
-	return true
-}
-
 // fresh is key's read when it covers stamp and is younger than
 // gitlabReactionsMaxAge.
 func (m *gitlabReactionMemory) fresh(key, stamp string, now time.Time) (gitlabNoteReactions, bool) {
@@ -274,9 +262,6 @@ func gitlabReactionsKey(fp string, ref PRReference) string {
 // stand whatever happens.
 func (f *gitlabForge) fillReactions(ctx context.Context, client *forgeapi.Client, ref PRReference, threads []ReviewThread) string {
 	unavailable := "Reactions are not shown: GitLab's reactions could not be read."
-	if _, lacks := f.noNoteAwardEmoji.get(strings.ToLower(ref.Host), f.core.nowFn()); lacks {
-		return "Reactions are not shown: this GitLab server does not report them."
-	}
 	fp, err := client.CredentialFingerprint(ctx)
 	if err != nil {
 		return unavailable
@@ -294,11 +279,6 @@ func (f *gitlabForge) fillReactions(ctx context.Context, client *forgeapi.Client
 		if err != nil {
 			if ctx.Err() != nil {
 				return unavailable
-			}
-			if gitlabLacksAwardEmoji(err) {
-				f.reactions.ifCurrent(gen, func() { f.noNoteAwardEmoji.put(strings.ToLower(ref.Host), true, f.core.nowFn()) })
-				log.Printf("gitlab: %s has no Note.awardEmoji; reactions are not read there for %s: %v", ref.Host, gitlabCacheTTL, err)
-				return "Reactions are not shown: this GitLab server does not report them."
 			}
 			retry := f.reactions.failed(gen, func(failures int) time.Time { return now.Add(f.core.prLookupErrorDelay(failures)) })
 			log.Printf("gitlab: reactions of %s!%d on %s unavailable until %s (failure %d): %v", ref.Project(), ref.Number, ref.Host, retry.due.Format(time.RFC3339), retry.failures, err)
@@ -336,11 +316,6 @@ func gitlabCommentReactions(awards []gitlabAward, viewer string) []CommentReacti
 		}
 	}
 	return out
-}
-
-// gitlabLacksAwardEmoji is a server whose schema has no Note.awardEmoji.
-func gitlabLacksAwardEmoji(err error) bool {
-	return gitlabSchemaLacks(err, "awardEmoji")
 }
 
 // readGitLabNoteReactions reads the notes' awards, at most

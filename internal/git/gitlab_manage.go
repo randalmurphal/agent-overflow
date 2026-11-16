@@ -93,7 +93,7 @@ type gitlabManage struct {
 
 // readManage is the Details read of mr (see the file comment).
 func (f *gitlabForge) readManage(ctx context.Context, client *forgeapi.Client, ref PRReference, mr gitlabMRRaw) (gitlabManage, error) {
-	if err := f.server(ctx, client, ref.Host).supported(ref); err != nil {
+	if err := f.server(ctx, client, ref.Host).supported(ref.Host); err != nil {
 		return gitlabManage{}, err
 	}
 	var raw gitlabManageRaw

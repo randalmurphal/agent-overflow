@@ -24,14 +24,31 @@ import (
 // github_readiness.go. See docs/specs/pull-requests.md.
 
 // githubPRTargetQuery reads what a merge action addresses: the PR's node
-// id, its head branch and whether that is a fork's, and whether the
-// repository deletes merged branches itself.
+// id, its head branch and whether that is a fork's, whether the
+// repository deletes merged branches itself, and whether the base merges
+// only through a merge queue and the PR is in it.
 const githubPRTargetQuery = `query PRMergeTarget($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
     deleteBranchOnMerge
-    pullRequest(number: $number) { id headRefName isCrossRepository }
+    pullRequest(number: $number) { id headRefName isCrossRepository isMergeQueueEnabled isInMergeQueue }
   }
 }`
+
+// The merge queue's mutations. A merge on a queue's base joins it now
+// (enqueuePullRequest, which GitHub refuses unless the PR can join at
+// once) or when ready (enablePullRequestAutoMerge with no method: the
+// queue's applies), as GitHub's Merge when ready does.
+const (
+	githubEnqueuePRMutation = `mutation EnqueuePR($pullRequestID: ID!, $expectedHeadOid: GitObjectID!) {
+  enqueuePullRequest(input: {pullRequestId: $pullRequestID, expectedHeadOid: $expectedHeadOid}) { mergeQueueEntry { id } }
+}`
+	githubDequeuePRMutation = `mutation DequeuePR($pullRequestID: ID!) {
+  dequeuePullRequest(input: {id: $pullRequestID}) { mergeQueueEntry { id } }
+}`
+	githubEnableQueuedAutoMergeMutation = `mutation EnableQueuedAutoMerge($pullRequestID: ID!, $expectedHeadOid: GitObjectID!) {
+  enablePullRequestAutoMerge(input: {pullRequestId: $pullRequestID, expectedHeadOid: $expectedHeadOid}) { pullRequest { isInMergeQueue autoMergeRequest { enabledAt } } }
+}`
+)
 
 const githubMergePRMutation = `mutation MergePR($pullRequestID: ID!, $method: PullRequestMergeMethod!, $expectedHeadOid: GitObjectID!) {
   mergePullRequest(input: {pullRequestId: $pullRequestID, mergeMethod: $method, expectedHeadOid: $expectedHeadOid}) { pullRequest { merged mergeCommit { oid } } }
@@ -100,6 +117,8 @@ type githubPRTarget struct {
 	HeadRefName         string
 	IsCrossRepository   bool
 	DeleteBranchOnMerge bool
+	IsMergeQueueEnabled bool
+	IsInMergeQueue      bool
 }
 
 // prTarget reads ref's node id and head for a mutation.
@@ -116,9 +135,11 @@ func (f *githubForge) prTarget(ctx context.Context, ref PRReference) (*forgeapi.
 		Repository *struct {
 			DeleteBranchOnMerge bool `json:"deleteBranchOnMerge"`
 			PullRequest         *struct {
-				ID                string `json:"id"`
-				HeadRefName       string `json:"headRefName"`
-				IsCrossRepository bool   `json:"isCrossRepository"`
+				ID                  string `json:"id"`
+				HeadRefName         string `json:"headRefName"`
+				IsCrossRepository   bool   `json:"isCrossRepository"`
+				IsMergeQueueEnabled bool   `json:"isMergeQueueEnabled"`
+				IsInMergeQueue      bool   `json:"isInMergeQueue"`
 			} `json:"pullRequest"`
 		} `json:"repository"`
 	}
@@ -129,7 +150,10 @@ func (f *githubForge) prTarget(ctx context.Context, ref PRReference) (*forgeapi.
 		return nil, githubPRTarget{}, fmt.Errorf("GitHub answered no pull request %s#%d on %s", ref.Project(), ref.Number, ref.Host)
 	}
 	pull := raw.Repository.PullRequest
-	return client, githubPRTarget{ID: pull.ID, HeadRefName: pull.HeadRefName, IsCrossRepository: pull.IsCrossRepository, DeleteBranchOnMerge: raw.Repository.DeleteBranchOnMerge}, nil
+	return client, githubPRTarget{
+		ID: pull.ID, HeadRefName: pull.HeadRefName, IsCrossRepository: pull.IsCrossRepository, DeleteBranchOnMerge: raw.Repository.DeleteBranchOnMerge,
+		IsMergeQueueEnabled: pull.IsMergeQueueEnabled, IsInMergeQueue: pull.IsInMergeQueue,
+	}, nil
 }
 
 // validMergeHead checks a head sha argument.
@@ -231,6 +255,12 @@ func (f *githubForge) Merge(ctx context.Context, ref PRReference, req MergeReque
 	if err != nil {
 		return MergeOutcome{}, err
 	}
+	if target.IsMergeQueueEnabled {
+		return joinGitHubMergeQueue(ctx, client, ref, target, req)
+	}
+	if req.Method == "" {
+		return MergeOutcome{}, fmt.Errorf("%s#%d merges with a method: its base has no merge queue", ref.Project(), ref.Number)
+	}
 	vars := map[string]any{"pullRequestID": target.ID, "method": githubMergeMethodEnum(req.Method), "expectedHeadOid": strings.TrimSpace(req.HeadSHA)}
 	mergeOp, mergeDoc, autoOp, autoDoc := "MergePR", githubMergePRMutation, "EnableAutoMerge", githubEnableAutoMergeMutation
 	if m := req.CommitMessage; m != nil {
@@ -289,6 +319,77 @@ func (f *githubForge) Merge(ctx context.Context, ref PRReference, req MergeReque
 	return outcome, nil
 }
 
+// joinGitHubMergeQueue is Merge on a base that merges only through its
+// merge queue, which this app never merges around: a PR already queued
+// is answered as armed (gh: "already queued to merge"), a merge now joins
+// the queue at the head the caller saw, and an auto-merge arms GitHub's
+// join-when-ready. Each answers AutoMerge, as the GitLab train does: the
+// forge merges the PR when its turn comes. The queue's own method and
+// branch handling apply, so req.Method and DeleteBranch are not sent; an
+// edited commit message, which the queue takes no parameter for, is
+// refused before the write.
+func joinGitHubMergeQueue(ctx context.Context, client *forgeapi.Client, ref PRReference, target githubPRTarget, req MergeRequest) (MergeOutcome, error) {
+	if req.CommitMessage != nil {
+		return MergeOutcome{}, &ForgeActionError{Kind: ForgeErrorRefused, Message: "This branch merges through a merge queue, which takes no commit message."}
+	}
+	if target.IsInMergeQueue {
+		return MergeOutcome{AutoMerge: true}, nil
+	}
+	vars := map[string]any{"pullRequestID": target.ID, "expectedHeadOid": strings.TrimSpace(req.HeadSHA)}
+	if req.AutoMerge {
+		var raw struct {
+			Enable *struct {
+				PullRequest *struct {
+					IsInMergeQueue   bool `json:"isInMergeQueue"`
+					AutoMergeRequest *struct {
+						EnabledAt string `json:"enabledAt"`
+					} `json:"autoMergeRequest"`
+				} `json:"pullRequest"`
+			} `json:"enablePullRequestAutoMerge"`
+		}
+		if _, err := client.GraphQL(ctx, "EnableQueuedAutoMerge", githubEnableQueuedAutoMergeMutation, vars, &raw); err != nil {
+			return MergeOutcome{}, err
+		}
+		// A PR that could merge now joins the queue at once instead.
+		if pull := raw.Enable; pull != nil && pull.PullRequest != nil && (pull.PullRequest.IsInMergeQueue || pull.PullRequest.AutoMergeRequest != nil) {
+			return MergeOutcome{AutoMerge: true}, nil
+		}
+		return MergeOutcome{}, fmt.Errorf("GitHub reported %s#%d neither queued nor set to join its merge queue", ref.Project(), ref.Number)
+	}
+	var raw struct {
+		Enqueue *struct {
+			Entry *struct {
+				ID string `json:"id"`
+			} `json:"mergeQueueEntry"`
+		} `json:"enqueuePullRequest"`
+	}
+	if _, err := client.GraphQL(ctx, "EnqueuePR", githubEnqueuePRMutation, vars, &raw); err != nil {
+		return MergeOutcome{}, err
+	}
+	if raw.Enqueue == nil || raw.Enqueue.Entry == nil {
+		return MergeOutcome{}, fmt.Errorf("GitHub reported no merge queue entry for %s#%d after adding it", ref.Project(), ref.Number)
+	}
+	return MergeOutcome{AutoMerge: true}, nil
+}
+
+// dequeueGitHubPR takes a queued PR out of its base's merge queue.
+func dequeueGitHubPR(ctx context.Context, client *forgeapi.Client, ref PRReference, target githubPRTarget) error {
+	var raw struct {
+		Dequeue *struct {
+			Entry *struct {
+				ID string `json:"id"`
+			} `json:"mergeQueueEntry"`
+		} `json:"dequeuePullRequest"`
+	}
+	if _, err := client.GraphQL(ctx, "DequeuePR", githubDequeuePRMutation, map[string]any{"pullRequestID": target.ID}, &raw); err != nil {
+		return err
+	}
+	if raw.Dequeue == nil || raw.Dequeue.Entry == nil {
+		return fmt.Errorf("GitHub reported no merge queue entry for %s#%d after removing it", ref.Project(), ref.Number)
+	}
+	return nil
+}
+
 // deleteGitHubBranch deletes refs/heads/branch of ref's repository. A
 // branch already gone (422 "Reference does not exist") is deleted.
 func deleteGitHubBranch(ctx context.Context, client *forgeapi.Client, ref PRReference, branch string) error {
@@ -314,6 +415,11 @@ func (f *githubForge) CancelAutoMerge(ctx context.Context, ref PRReference) erro
 	client, target, err := f.prTarget(ctx, ref)
 	if err != nil {
 		return err
+	}
+	if target.IsInMergeQueue {
+		// Removal from the queue is the queued PR's cancel, as on the
+		// GitLab train.
+		return dequeueGitHubPR(ctx, client, ref, target)
 	}
 	var raw struct {
 		Disable *struct {

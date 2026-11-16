@@ -362,46 +362,160 @@ func ThreadRequestOpenStates() []string {
 // computer: writing its answer into that row would be wrong.
 const threadRequestLocalSQL = ` AND target_computer_id = ''`
 
-// LocalThreadRequestSettlement is what SettleLocalThreadRequest wrote:
-// whether the receipt settled, and whether the request settled with it.
-type LocalThreadRequestSettlement struct {
-	Receipt bool
-	Request bool
+// ThreadReceiptAnswer is everything a receipt holds for its request at one
+// revision: the settlement and the late reply that followed it. A request
+// collects it whole (collectThreadRequest), so a revision acknowledged after
+// a collection is one whose every part the request holds.
+type ThreadReceiptAnswer struct {
+	Revision int64
+	// State is the receipt's word; the request stores its own for it.
+	State       string
+	Answer      []byte
+	AnswerKind  string
+	SettledAt   int64
+	ExpiresAt   int64
+	LateReply   []byte
+	LateReplyAt int64
 }
 
-// SettleLocalThreadRequest settles a receipt and the request on this computer
-// it answers in one transaction, and records the request as having collected
-// the receipt. A request between two threads of one computer has both rows
-// here, and one written without the other is a request nothing can settle any
-// more: the boot sweep reads open receipts and the poller reads requests to
-// other computers.
+// Snapshot is what the receipt holds at its current revision.
+func (r ThreadRequestReceipt) Snapshot() ThreadReceiptAnswer {
+	return ThreadReceiptAnswer{
+		Revision: r.Revision, State: r.State, Answer: r.Answer, AnswerKind: r.AnswerKind,
+		SettledAt: r.SettledAt, ExpiresAt: r.ExpiresAt, LateReply: r.LateReply, LateReplyAt: r.LateReplyAt,
+	}
+}
+
+// ThreadRequestWake is the request's half of a collection. ReplyArms is
+// whether an explicit reply the collection carries is owed to the caller as a
+// message (ThreadRequestSettlement.ArmWake); a caller may pass false for a
+// collection that carries no reply. Disarm turns the wake off with the
+// collection, for a request its own sender cancelled, and wins over ReplyArms.
+type ThreadRequestWake struct {
+	ReplyArms bool
+	Disarm    bool
+}
+
+// ThreadRequestCollected is what a collection wrote on the request: the
+// receipt's settlement, its late reply, or both.
+type ThreadRequestCollected struct {
+	Settled   bool
+	LateReply bool
+}
+
+// Any reports whether the collection wrote anything.
+func (c ThreadRequestCollected) Any() bool { return c.Settled || c.LateReply }
+
+// collectThreadRequest copies one receipt answer onto its request: the
+// settlement while the request is still open, and the late reply while the
+// request has none. Each write is conditional, so a collection repeated with
+// the same answer writes nothing. `where` narrows the request rows it may
+// write.
+func collectThreadRequest(db sqlExecutor, token string, answer ThreadReceiptAnswer, wake ThreadRequestWake, where string) (ThreadRequestCollected, error) {
+	if !ThreadReceiptSettled(answer.State) {
+		return ThreadRequestCollected{}, nil
+	}
+	arms := wake.ReplyArms && !wake.Disarm
+	settled, err := settleThreadRequest(db, token, threadRequestOpenStates, ThreadRequestSettlement{
+		State:      threadRequestStateForReceipt(answer.State),
+		Answer:     answer.Answer,
+		AnswerKind: answer.AnswerKind,
+		SettledAt:  answer.SettledAt,
+		ExpiresAt:  answer.ExpiresAt,
+		ArmWake:    arms && answer.AnswerKind == ThreadAnswerReply,
+		DisarmWake: wake.Disarm,
+	}, where)
+	if err != nil {
+		return ThreadRequestCollected{}, err
+	}
+	collected := ThreadRequestCollected{Settled: settled}
+	if len(answer.LateReply) > 0 {
+		collected.LateReply, err = storeThreadRequestLateReply(db, token, answer.LateReply, answer.LateReplyAt, arms, where)
+		if err != nil {
+			return ThreadRequestCollected{}, err
+		}
+	}
+	return collected, nil
+}
+
+// CollectThreadRequest copies an answer another computer reported onto the
+// request this computer sent there, settlement and late reply in one
+// transaction. The caller acknowledges answer.Revision to that computer after
+// it commits; a lost acknowledgement is sent again by the next poll, which
+// finds the request already holding the revision.
+func (s *Store) CollectThreadRequest(token string, answer ThreadReceiptAnswer, wake ThreadRequestWake) (_ ThreadRequestCollected, err error) {
+	action := fmt.Sprintf("store: collect thread request %s", token)
+	tx, err := s.db.Begin()
+	if err != nil {
+		return ThreadRequestCollected{}, fmt.Errorf("%s: begin: %w", action, err)
+	}
+	defer rollbackTx(tx, action, &err)
+	collected, err := collectThreadRequest(tx, token, answer, wake, "")
+	if err != nil {
+		return ThreadRequestCollected{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return ThreadRequestCollected{}, fmt.Errorf("%s: commit: %w", action, err)
+	}
+	return collected, nil
+}
+
+// collectLocalThreadReceiptTx is the one collection of a receipt by the
+// request on this computer it answers: it reads the receipt at its current
+// revision, copies that whole answer onto the request, and acknowledges that
+// revision, all on the caller's transaction. A collection that wrote nothing
+// acknowledges nothing; one that wrote either part acknowledges the revision
+// it read, because the request now holds every part that it will ever take.
+// A request already settled another way (a refusal its own call returned)
+// keeps that settlement.
+func collectLocalThreadReceiptTx(tx *sql.Tx, token string, wake ThreadRequestWake) (ThreadRequestCollected, error) {
+	receipt, err := scanThreadReceipt(tx.QueryRow(
+		`SELECT `+threadReceiptColumns+` FROM thread_request_receipts WHERE token = ?`, token))
+	if errors.Is(err, sql.ErrNoRows) {
+		return ThreadRequestCollected{}, nil
+	}
+	if err != nil {
+		return ThreadRequestCollected{}, fmt.Errorf("store: read thread receipt %s to collect: %w", token, err)
+	}
+	collected, err := collectThreadRequest(tx, token, receipt.Snapshot(), wake, threadRequestLocalSQL)
+	if err != nil || !collected.Any() {
+		return ThreadRequestCollected{}, err
+	}
+	if _, err := ackThreadReceipt(tx, token, receipt.Revision, nowMillis()); err != nil {
+		return ThreadRequestCollected{}, err
+	}
+	return collected, nil
+}
+
+// LocalThreadRequestSettlement is what a write to a receipt answering a
+// request on this computer did: whether the receipt took the write, and what
+// the request collected with it.
+type LocalThreadRequestSettlement struct {
+	Receipt bool
+	Request ThreadRequestCollected
+}
+
+// SettleLocalThreadRequest settles a receipt and collects it into the request
+// on this computer it answers, in one transaction. A request between two
+// threads of one computer has both rows here, and one written without the
+// other is a request nothing can settle any more: the boot sweep reads open
+// receipts and the poller reads requests to other computers.
 //
-// `request` is the request's half: its state word, the wake it arms or
-// disarms. The answer, its kind and its moments are the receipt's. A receipt
-// that does not settle writes nothing. A request already settled another way
-// (a refusal its own call returned) keeps that settlement, and the receipt
-// settles alone.
-func (s *Store) SettleLocalThreadRequest(token string, from []string, receipt, request ThreadRequestSettlement) (_ LocalThreadRequestSettlement, err error) {
+// A receipt that does not settle writes nothing.
+func (s *Store) SettleLocalThreadRequest(token string, from []string, receipt ThreadRequestSettlement, wake ThreadRequestWake) (_ LocalThreadRequestSettlement, err error) {
 	action := fmt.Sprintf("store: settle local thread request %s", token)
 	tx, err := s.db.Begin()
 	if err != nil {
 		return LocalThreadRequestSettlement{}, fmt.Errorf("%s: begin: %w", action, err)
 	}
 	defer rollbackTx(tx, action, &err)
-	settled, stored, err := settleThreadReceipt(tx, token, from, receipt)
+	settled, _, err := settleThreadReceipt(tx, token, from, receipt)
 	if err != nil || !settled {
 		return LocalThreadRequestSettlement{}, err
 	}
-	request.Answer, request.AnswerKind = stored.Answer, stored.AnswerKind
-	request.SettledAt, request.ExpiresAt = stored.SettledAt, stored.ExpiresAt
-	collected, err := settleThreadRequest(tx, token, threadRequestOpenStates, request, threadRequestLocalSQL)
+	collected, err := collectLocalThreadReceiptTx(tx, token, wake)
 	if err != nil {
 		return LocalThreadRequestSettlement{}, err
-	}
-	if collected {
-		if err := ackThreadReceiptCollectedTx(tx, token); err != nil {
-			return LocalThreadRequestSettlement{}, err
-		}
 	}
 	if err := tx.Commit(); err != nil {
 		return LocalThreadRequestSettlement{}, fmt.Errorf("%s: commit: %w", action, err)
@@ -409,12 +523,12 @@ func (s *Store) SettleLocalThreadRequest(token string, from []string, receipt, r
 	return LocalThreadRequestSettlement{Receipt: true, Request: collected}, nil
 }
 
-// StoreLocalThreadRequestLateReply is StoreThreadReceiptLateReply and
-// StoreThreadRequestLateReply in one transaction, for a request this computer
-// made of its own thread, for the reason SettleLocalThreadRequest is one: a
-// reply stored on the receipt alone is lost, because a retry of the same text
-// is the same reply and stores nothing.
-func (s *Store) StoreLocalThreadRequestLateReply(token string, reply []byte, at int64, armWake bool) (_ LocalThreadRequestSettlement, err error) {
+// StoreLocalThreadRequestLateReply stores a late reply on a receipt and
+// collects it into the request on this computer it answers, in one
+// transaction, for the reason SettleLocalThreadRequest is one: a reply stored
+// on the receipt alone is lost, because a retry of the same text is the same
+// reply and stores nothing.
+func (s *Store) StoreLocalThreadRequestLateReply(token string, reply []byte, at int64, replyArms bool) (_ LocalThreadRequestSettlement, err error) {
 	action := fmt.Sprintf("store: store local thread request late reply %s", token)
 	if at == 0 {
 		at = nowMillis()
@@ -428,19 +542,59 @@ func (s *Store) StoreLocalThreadRequestLateReply(token string, reply []byte, at 
 	if err != nil || !stored {
 		return LocalThreadRequestSettlement{}, err
 	}
-	collected, err := storeThreadRequestLateReply(tx, token, reply, at, armWake, threadRequestLocalSQL)
+	collected, err := collectLocalThreadReceiptTx(tx, token, ThreadRequestWake{ReplyArms: replyArms})
 	if err != nil {
 		return LocalThreadRequestSettlement{}, err
-	}
-	if collected {
-		if err := ackThreadReceiptCollectedTx(tx, token); err != nil {
-			return LocalThreadRequestSettlement{}, err
-		}
 	}
 	if err := tx.Commit(); err != nil {
 		return LocalThreadRequestSettlement{}, fmt.Errorf("%s: commit: %w", action, err)
 	}
 	return LocalThreadRequestSettlement{Receipt: true, Request: collected}, nil
+}
+
+// CollectLocalThreadReceipt collects a receipt that is already settled into
+// the request on this computer it answers, and acknowledges it, in one
+// transaction. It is the boot's repair of a request left open beside its
+// settled receipt; collecting one that holds everything already writes
+// nothing.
+func (s *Store) CollectLocalThreadReceipt(token string, wake ThreadRequestWake) (_ ThreadRequestCollected, err error) {
+	action := fmt.Sprintf("store: collect local thread receipt %s", token)
+	tx, err := s.db.Begin()
+	if err != nil {
+		return ThreadRequestCollected{}, fmt.Errorf("%s: begin: %w", action, err)
+	}
+	defer rollbackTx(tx, action, &err)
+	collected, err := collectLocalThreadReceiptTx(tx, token, wake)
+	if err != nil {
+		return ThreadRequestCollected{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return ThreadRequestCollected{}, fmt.Errorf("%s: commit: %w", action, err)
+	}
+	return collected, nil
+}
+
+// threadRequestStateForReceipt maps a receipt state onto the request's
+// vocabulary. The two sets differ only where the source knows something the
+// destination cannot (`unconfirmed`, `refused`), so everything settled has a
+// name on both sides.
+func threadRequestStateForReceipt(state string) string {
+	switch state {
+	case ThreadReceiptReplied:
+		return ThreadRequestReplied
+	case ThreadReceiptFinished:
+		return ThreadRequestFinished
+	case ThreadReceiptErrored:
+		return ThreadRequestErrored
+	case ThreadReceiptCancelled:
+		return ThreadRequestCancelled
+	case ThreadReceiptInterrupted:
+		return ThreadRequestInterrupted
+	case ThreadReceiptExpired:
+		return ThreadRequestExpired
+	default:
+		return ThreadRequestErrored
+	}
 }
 
 // StoreThreadRequestLateReply records a thread_reply that arrived after the

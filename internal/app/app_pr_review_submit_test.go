@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -42,13 +43,17 @@ const reviewTestDiff = "diff --git a/main.go b/main.go\n--- a/main.go\n+++ b/mai
 // reviewTestHead is the pull's head, the one every case's diff was loaded at.
 const reviewTestHead = "c0ffee0000000000000000000000000000000001"
 
-func newReviewSubmitCase(t *testing.T, forge string) *reviewSubmitCase {
+func newReviewSubmitCase(t *testing.T, forge string, setup ...func(*forgefake.Repo)) *reviewSubmitCase {
 	t.Helper()
 	app, path := newTestAppWithStorePath(t)
 	engine := forgefake.New(forgefake.Options{APIToken: mergeForgeToken})
-	if _, err := engine.Seed(forgefake.Fixture{Viewer: "alice", Repos: []forgefake.Repo{{Forge: forge, Project: "acme/widgets", Pulls: []forgefake.Pull{
+	repo := forgefake.Repo{Forge: forge, Project: "acme/widgets", Pulls: []forgefake.Pull{
 		{Number: 9, Title: "Widgets", Author: "octo", HeadRef: "feature", HeadSHA: reviewTestHead, State: "open", Diff: reviewTestDiff},
-	}}}}); err != nil {
+	}}
+	for _, apply := range setup {
+		apply(&repo)
+	}
+	if _, err := engine.Seed(forgefake.Fixture{Viewer: "alice", Repos: []forgefake.Repo{repo}}); err != nil {
 		t.Fatal(err)
 	}
 	gate := &forgeGate{next: engine, publish: map[string]string{"gitlab": "/draft_notes/bulk_publish", "github": "/reviews"}[forge]}
@@ -438,6 +443,33 @@ func TestSubmitPRReviewGitLabSubmitsOfOneMergeRequestDoNotInterleave(t *testing.
 	}
 }
 
+// A review whose verdict is Approve, on a GitLab project that asks the
+// approver for their password, is refused with the Approve control's
+// sentence before any write: no draft note is created or published, no
+// approval is sent, and the stored drafts stay drafts to send again.
+func TestSubmitPRReviewGitLabApproveOnAPasswordProjectWritesNothing(t *testing.T) {
+	t.Parallel()
+	c := newReviewSubmitCase(t, "gitlab", func(r *forgefake.Repo) {
+		r.Merge = &forgefake.RepoMerge{ApprovalPassword: true}
+	})
+	draft := c.draft(t, false, 3, "Looks right.")
+	review := c.request(false, draft)
+	review.Verdict = gitops.ReviewVerdictApprove
+	_, err := c.submit(review)
+	if refused, ok := errors.AsType[*gitops.ForgeActionError](err); !ok || refused.Kind != gitops.ForgeErrorRefused ||
+		refused.Message != "GitLab asks for your password to approve in this project. Approve on GitLab." {
+		t.Fatalf("submit = %v, want the password refusal", err)
+	}
+	for _, inv := range c.engine.Invocations(0).Invocations {
+		if inv.Method != http.MethodGet {
+			t.Errorf("a refused review sent %s %s (route %q)", inv.Method, inv.Path, inv.Route)
+		}
+	}
+	if got := c.comment(t, false, draft.ID).Status; got != "draft" {
+		t.Fatalf("draft status = %q, want it kept as a draft", got)
+	}
+}
+
 // The PR's lock is its identity, not its spelling: a submit naming the
 // merge request with its path cased otherwise waits for the first's
 // publish too, as GitLab resolves both to one merge request.
@@ -711,58 +743,13 @@ func TestSubmitPRReviewAttemptOutcomeWaitsForARunningAttempt(t *testing.T) {
 	}
 }
 
-// The attempts a process remembers are bounded, and it never says an
-// attempt it may have received never arrived: an attempt whose outcome
-// was dropped reads forgotten, and so does every id it does not hold once
-// ids have left its window too. A repeat of a forgotten id posts nothing.
-func TestReviewAttemptsForgetTheOldestFinished(t *testing.T) {
-	t.Parallel()
-	var attempts reviewAttempts
-	finish := func(i int) {
-		attempt, _ := attempts.begin(fmt.Sprintf("a%d", i), "pr")
-		attempts.finish(attempt, SubmitPRReviewResult{Posted: true}, nil)
-	}
-	for i := range reviewAttemptsKept + 1 {
-		finish(i)
-	}
-	if kept, _ := attempts.find(fmt.Sprintf("a%d", reviewAttemptsKept), "pr"); kept == nil {
-		t.Fatal("forgot the newest attempt")
-	}
-	if kept, forgotten := attempts.find("a0", "pr"); kept != nil || !forgotten {
-		t.Fatalf("the evicted attempt = %v, forgotten %v; want forgotten", kept, forgotten)
-	}
-	if _, forgotten := attempts.find("never-sent", "pr"); forgotten {
-		t.Fatal("an id never received reads forgotten while every id is kept")
-	}
-	if len(attempts.byID) != reviewAttemptsKept {
-		t.Fatalf("%d outcomes kept, want %d", len(attempts.byID), reviewAttemptsKept)
-	}
-	repeat, repeated := attempts.begin("a0", "pr")
-	if !repeated {
-		t.Fatal("a forgotten id began again")
-	}
-	if _, err := repeat.wait(context.Background()); err == nil {
-		t.Fatal("a repeat of a forgotten id answered without an error")
-	}
-
-	for i := reviewAttemptsKept + 1; i <= reviewAttemptsKept+reviewAttemptIDsKept+1; i++ {
-		finish(i)
-	}
-	if len(attempts.forgotten) != reviewAttemptIDsKept {
-		t.Fatalf("%d ids kept, want %d", len(attempts.forgotten), reviewAttemptIDsKept)
-	}
-	if _, forgotten := attempts.find("never-sent", "pr"); !forgotten {
-		t.Fatal("an id not held reads never received after ids overflowed")
-	}
-}
-
 // The outcome read of an attempt whose outcome was dropped says so, and
 // one of an id the process never received says that.
 func TestGetPRReviewSubmitOutcomeForgottenAndNeverReceived(t *testing.T) {
 	t.Parallel()
 	c := newReviewSubmitCase(t, "github")
-	for i := range reviewAttemptsKept + 1 {
-		attempt, _ := c.app.reviewAttempts.begin(fmt.Sprintf("a%d", i), c.pr.Key())
+	for i := range writeAttemptsKept + 1 {
+		attempt, _ := c.app.reviewAttempts.begin(fmt.Sprintf("a%d", i), c.pr.Identity())
 		c.app.reviewAttempts.finish(attempt, SubmitPRReviewResult{Posted: true}, nil)
 	}
 	if outcome, err := c.app.GetPRReviewSubmitOutcome(context.Background(), c.pr, "a0"); err != nil || outcome.State != "forgotten" {

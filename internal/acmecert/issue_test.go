@@ -10,6 +10,8 @@ import (
 	"testing"
 
 	"golang.org/x/crypto/acme"
+
+	"agent-overflow/internal/procutil/procutiltest"
 )
 
 // The happy path, and the ordering that makes it work: the record is
@@ -308,7 +310,7 @@ func TestNewRefusesAConfigurationThatCannotOrder(t *testing.T) {
 // The domain is normalized once, at construction, so the challenge name
 // and the certificate's names cannot disagree about its spelling.
 func TestNewNormalizesTheDomain(t *testing.T) {
-	issuer, err := New(Config{Dir: t.TempDir(), Domain: "  Backend.Example  ", Hook: []string{"hook"}, Reaper: nopReaper{}})
+	issuer, err := New(Config{Dir: t.TempDir(), Domain: "  Backend.Example  ", Hook: []string{"hook"}, Reaper: procutiltest.Reaper()})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

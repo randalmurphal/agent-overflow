@@ -92,8 +92,12 @@ type ThreadPeerRequest struct {
 	LateReply   string `json:"lateReply,omitempty"`
 	LateReplyAt int64  `json:"lateReplyAt,omitempty"`
 	Revision    int64  `json:"revision,omitempty"`
-	SettledAt   int64  `json:"settledAt,omitempty"`
-	ExpiresAt   int64  `json:"expiresAt,omitempty"`
+	// CollectedRevision is the revision the source last acknowledged. A
+	// source holding Revision sends its acknowledgement again while this is
+	// behind it.
+	CollectedRevision int64 `json:"collectedRevision,omitempty"`
+	SettledAt         int64 `json:"settledAt,omitempty"`
+	ExpiresAt         int64 `json:"expiresAt,omitempty"`
 	// Blocked is whether the target is waiting on a person right now. It
 	// is a live property, never stored, and it is what lets a wait on a
 	// remote request end on blocked the way a local one does.
@@ -507,6 +511,7 @@ func (a *App) threadPeerRequestState(ctx context.Context, owner, token string) (
 	state.LateReply = string(receipt.LateReply)
 	state.LateReplyAt = receipt.LateReplyAt
 	state.Revision = receipt.Revision
+	state.CollectedRevision = receipt.CollectedRevision
 	state.SettledAt = receipt.SettledAt
 	state.ExpiresAt = receipt.ExpiresAt
 	if receipt.TargetThreadID != "" {

@@ -228,8 +228,9 @@ backend log line `(id: <ref>)` that holds the full error, `detail.method` and
 `detail.at` name the call and its time, and `detail.chain` lists the error's
 wrap layers outermost first (`errorsx.Chain`). Every caller is an
 authenticated session that was allowed to make the call, so the message and
-chain are the method's own on every origin. A panic's value stays in the log;
-its frame carries only the reference. `already_handled` carries no detail.
+chain are the method's own on every origin (`transport.CallerError`, the
+one rule for what a caller is told about an error). A panic's value stays
+in the log; its frame carries only the reference. `already_handled` carries no detail.
 A `forge_rate_limited` failure also carries `reserve` (the forge's quota was
 kept for the user's own actions rather than spent) and `resumeAt` (RFC 3339,
 when the forge may be asked again), from `forgeapi.RateLimitedError`, so a
@@ -308,14 +309,24 @@ and names the bound in `methodServerBounds`
 the packages that own each step. A method that repeats a bounded step
 (downloads, resumed fetches, chunks) bounds its whole run by its budget
 with `withinMethodBudget`. A wait for a lock another run holds is not
-covered.
+covered. `TestEveryMethodReachingALongStepDeclaresItsBudget`
+(`internal/app/app_budget_reach_test.go`) finds the methods that need a
+budget: it walks the typed call graph from every bound method to the
+functions that apply each long step (a hooked command, the bounds
+`methodServerBounds` adds up) and fails when the method's budget is
+under the longest step it reaches.
 
 A write whose answer can still be lost (the connection drops while it runs)
 takes a client-minted attempt id and has an outcome method that waits for
 a running attempt: `GitCommit`, `GitPush`, `GitPull` and `GitCreatePR` with
-`GetGitActionOutcome`, `SubmitPRReview` with `GetPRReviewSubmitOutcome`. A repeated id is answered from the first
-arrival. Attempts live in process memory, so a restarted backend answers
-`unknown` for every earlier attempt.
+`GetGitActionOutcome`, `SubmitPRReview` with `GetPRReviewSubmitOutcome`.
+One record keeps them (`writeAttempts` in
+`internal/app/app_write_attempts.go`): a repeated id writes nothing and is
+answered from the first arrival, and every outcome method answers a
+failure with the code, message and chain its first caller was told
+(`transport.CallerError`), so a lost answer still says why a hook or git
+refused the write. Attempts live in process memory, so a restarted
+backend answers `unknown` for every earlier attempt.
 
 ## Event replay and filtering
 

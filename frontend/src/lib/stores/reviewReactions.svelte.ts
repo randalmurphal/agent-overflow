@@ -25,6 +25,8 @@ export interface ReviewReactions {
   readonly canAdd: boolean;
   /** Why a reaction write is withheld now (the now writes' reason), or null. */
   readonly withheld: string | null;
+  /** Why the forge does not let the viewer react to this comment, or null. */
+  refused(comment: ReviewComment): string | null;
   /** The reactions present on a comment, chip order (the forge's). */
   reactionsOf(comment: ReviewComment): readonly CommentReaction[];
   /** The chip for `name` on the comment is waiting for the forge. */
@@ -72,11 +74,12 @@ export function createReviewReactions(host: ReviewReactionsHost): ReviewReaction
     get available() { return available; },
     get canAdd() { return canAdd; },
     get withheld() { return host.withheld(); },
+    refused: (comment) => comment.cannotReactReason || null,
     reactionsOf: (comment) => (available ? comment.reactions ?? NO_REACTIONS : NO_REACTIONS),
     pending: (thread, comment, name) => host.ops.pending(reactionOpKey(thread, comment, name)),
     error: (thread, comment) => host.ops.error(`reactions:${commentKey(thread, comment)}`),
     async toggle(thread, comment, name, reacted) {
-      if (!available || host.withheld() !== null || comment.id === '') return;
+      if (!available || host.withheld() !== null || comment.id === '' || comment.cannotReactReason) return;
       const target = { threadId: thread.id, commentId: comment.id };
       await host.ops.run(
         reactionOpKey(thread, comment, name),

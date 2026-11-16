@@ -15,6 +15,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/testutil/providerpath"
 )
 
@@ -139,7 +140,7 @@ func TestTransferSnapshotUsesThreadlessProcessForEveryNativeChild(t *testing.T) 
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			snapshot, err := ReadTransferSnapshot(ctx, TransferSnapshotConfig{Binary: binary, Home: filepath.Join(home, ".codex"), WorkDir: work, Env: env}, root)
+			snapshot, err := ReadTransferSnapshot(ctx, TransferSnapshotConfig{Reaper: procutiltest.Reaper(), Binary: binary, Home: filepath.Join(home, ".codex"), WorkDir: work, Env: env}, root)
 			if queued {
 				if err == nil || !strings.Contains(err.Error(), "queued Codex") {
 					t.Fatalf("ignored child queue: %v", err)
@@ -182,7 +183,7 @@ func TestTransferAccountUsesOnlyAccountRead(t *testing.T) {
 				t.Fatal(err)
 			}
 			logPath := filepath.Join(work, "calls")
-			err = CheckTransferAccount(context.Background(), ProbeConfig{Binary: binary, WorkDir: work, Env: map[string]string{
+			err = CheckTransferAccount(context.Background(), ProbeConfig{Reaper: procutiltest.Reaper(), Binary: binary, WorkDir: work, Env: map[string]string{
 				"HOME": home, "USERPROFILE": home, "AO_TEST_CODEX_TRANSFER_SERVER": "1", "AO_TEST_TRANSFER_PATHS": "{}", "AO_TEST_TRANSFER_CALLS": logPath, "AO_TEST_TRANSFER_ACCOUNT": tc.result,
 			}})
 			if (err == nil) != tc.ready {

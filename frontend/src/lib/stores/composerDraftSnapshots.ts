@@ -24,6 +24,7 @@ const deletedDraftThreads = new Set<string>();
 interface DraftWrite {
   write: () => Promise<unknown>;
   replaceable: boolean;
+  cleanup: boolean;
   promise: Promise<boolean>;
   resolve: (written: boolean) => void;
   reject: (error: unknown) => void;
@@ -176,7 +177,7 @@ export function queueDraftSave(
   let resolve!: DraftWrite['resolve'];
   let reject!: DraftWrite['reject'];
   const promise = new Promise<boolean>((done, fail) => { resolve = done; reject = fail; });
-  const operation: DraftWrite = { write, replaceable: kind === 'autosave', promise, resolve, reject };
+  const operation: DraftWrite = { write, replaceable: kind === 'autosave', cleanup: kind === 'cleanup', promise, resolve, reject };
   let owner = draftWriters.get(threadId);
   if (!owner) { owner = { pending: [] }; draftWriters.set(threadId, owner); }
   if (!owner.active) startDraftWrite(threadId, owner, operation);
@@ -197,8 +198,15 @@ export function queueDraftSave(
  */
 export async function queueDraftThreadCleanup<T>(threadId: string, run: () => Promise<T>): Promise<T> {
   let answer!: T;
-  await queueDraftSave(threadId, async () => { answer = await run(); }, 'cleanup');
+  if (!(await queueDraftSave(threadId, async () => { answer = await run(); }, 'cleanup'))) {
+    throw new Error('The empty-draft cleanup was dropped before it ran.');
+  }
   return answer;
+}
+
+/** Is a draft write (not a cleanup) queued for the thread behind the one running? */
+export function hasWaitingDraftWrites(threadId: string): boolean {
+  return draftWriters.get(threadId)?.pending.some((pending) => !pending.cleanup) ?? false;
 }
 
 /** Unsaved local edits for the thread with something in them, if any. */
@@ -232,17 +240,27 @@ export function markDraftThreadDeleted(threadId: string): ComposerDraftSnapshot 
 }
 
 /**
- * The thread stays but now holds another client's draft: drop this client's
+ * The thread may hold another client's draft: drop this client's
  * waiting writes so they cannot overwrite it, and return the unsaved edits
- * they carried for the caller to keep in another thread.
+ * they carried for the caller to keep in another thread. A cleanup queued
+ * behind them writes nothing, so it stays and runs in its turn.
  */
 export function abandonDraftThreadWrites(threadId: string): ComposerDraftSnapshot | undefined {
   const unsaved = unsavedDraftSnapshot(threadId);
   localDraftSnapshots.delete(threadId);
   const owner = draftWriters.get(threadId);
   if (owner) {
-    for (const pending of owner.pending.splice(0)) pending.resolve(false);
-    if (!owner.active) draftWriters.delete(threadId);
+    const cleanups: DraftWrite[] = [];
+    for (const pending of owner.pending.splice(0)) {
+      if (pending.cleanup) cleanups.push(pending);
+      else pending.resolve(false);
+    }
+    owner.pending.push(...cleanups);
+    if (!owner.active) {
+      const next = owner.pending.shift();
+      if (next) startDraftWrite(threadId, owner, next);
+      else draftWriters.delete(threadId);
+    }
   }
   return unsaved;
 }

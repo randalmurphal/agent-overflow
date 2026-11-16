@@ -4,6 +4,7 @@ package app
 // lives in internal/diffreview.
 
 import (
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/testutil/mockexec"
 	"context"
 	"encoding/json"
@@ -72,7 +73,7 @@ func TestSendPlanRevisionCommentsSendsDraftsAndMarksSent(t *testing.T) {
 	sess, err := claude.NewSession(
 		context.Background(),
 		thread.ID,
-		claude.Config{Retention: claude.UserHomeRetention(0), Binary: writeClaudeControlPassthroughBinary(t), WorkDir: thread.WorkspacePath},
+		claude.Config{Reaper: procutiltest.Reaper(), Retention: claude.UserHomeRetention(0), Binary: writeClaudeControlPassthroughBinary(t), WorkDir: thread.WorkspacePath},
 		func(provider.ProviderEvent) {},
 	)
 	if err != nil {
@@ -174,7 +175,7 @@ func TestSendMessageWithOptionsAppendsDraftPlanComments(t *testing.T) {
 	sess, err := claude.NewSession(
 		context.Background(),
 		thread.ID,
-		claude.Config{Retention: claude.UserHomeRetention(0), Binary: writeClaudeControlPassthroughBinary(t), WorkDir: thread.WorkspacePath},
+		claude.Config{Reaper: procutiltest.Reaper(), Retention: claude.UserHomeRetention(0), Binary: writeClaudeControlPassthroughBinary(t), WorkDir: thread.WorkspacePath},
 		func(provider.ProviderEvent) {},
 	)
 	if err != nil {
@@ -325,7 +326,7 @@ func diffReviewSendThread(t *testing.T, app *App, id string) store.Thread {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
 	sess, err := claude.NewSession(context.Background(), thread.ID,
-		claude.Config{Retention: claude.UserHomeRetention(0), Binary: writeClaudeControlPassthroughBinary(t), WorkDir: thread.WorkspacePath},
+		claude.Config{Reaper: procutiltest.Reaper(), Retention: claude.UserHomeRetention(0), Binary: writeClaudeControlPassthroughBinary(t), WorkDir: thread.WorkspacePath},
 		func(provider.ProviderEvent) {})
 	if err != nil {
 		t.Fatalf("NewSession() error = %v", err)

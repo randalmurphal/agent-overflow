@@ -101,7 +101,7 @@ Sources. GitLab: `detailed_merge_status` (one blocker per value;
 `mergeable` is ready, `checking`, `unchecked`, `preparing` and
 `approvals_syncing` are checking), `has_conflicts`, the approvals read's
 `approvals_required`, `approvals_left`, `user_has_approved`,
-`user_can_approve`, and the MR's `user.can_merge`,
+`user_can_approve`, `require_password_to_approve`, and the MR's `user.can_merge`,
 `merge_when_pipeline_succeeds`, `blocking_discussions_resolved`. GitHub:
 `mergeStateStatus` (`CLEAN` and `HAS_HOOKS` are ready, `UNKNOWN` is
 checking, `DRAFT` is draft, `DIRTY` conflicts, `BEHIND` rebase, `BLOCKED`
@@ -109,7 +109,8 @@ and `UNSTABLE` expand into `reviewDecision`, the failed or pending
 required checks of the rollup, and unresolved threads when the repository
 requires conversation resolution; a remainder is `rules`), `mergeable`,
 `autoMergeRequest`, `viewerCanEnableAutoMerge`, `viewerCanDisableAutoMerge`,
-`viewerCanMergeAsAdmin`, and the repository's `mergeCommitAllowed`,
+`viewerCanMergeAsAdmin`, `isMergeQueueEnabled`, `isInMergeQueue`,
+`mergeQueueEntry`, `mergeQueue`, and the repository's `mergeCommitAllowed`,
 `squashMergeAllowed`, `rebaseMergeAllowed`, `deleteBranchOnMerge`,
 `autoMergeAllowed`, `viewerPermission`.
 
@@ -117,7 +118,9 @@ requires conversation resolution; a remainder is `rules`), `mergeable`,
 
 `PRDetail.Merge` is `{Methods, DeleteBranchOffered, DeleteBranchDefault,
 AutoMergeAvailable, AutoMerge, ViewerCanMerge, ViewerCanApprove,
-ViewerApproved, CannotApproveReason, CannotMergeReason}`. `Methods` lists
+ViewerApproved, CannotApproveReason, CannotMergeReason,
+ViewerCanUpdateBranch, ViewerCanUnapprove, ViewerCanMarkReady}`, each of
+the last three with its `Cannot*Reason`. `Methods` lists
 what the project allows (`merge`, `squash`, `rebase`; GitLab's `ff` is
 `rebase`), the project default first. `AutoMerge` is the armed request
 when one exists (`{Method, ByLogin, ByName, At, WaitsFor, CanCancel}`).
@@ -137,23 +140,71 @@ base's rulesets (`allowedMergeMethods`).
   `latestOpinionatedReviews` (`viewerDidAuthor`) for the pull request
   named: the caller names no review, so nothing of another login's or
   another pull request's can be dismissed. A viewer who cannot approve
-  (GitHub: the author; GitLab: `user_can_approve` false) sees no button,
-  and the approvals blocker row says why.
+  (GitHub: the author; GitLab: `user_can_approve` false, or a project that
+  asks for the approver's password, `require_password_to_approve`, which the
+  app does not send) sees no button,
+  and the approvals blocker row says why. On such a GitLab project every
+  approve the app sends, Approve and a review whose verdict is Approve,
+  reads the approvals first and is refused with that sentence before any
+  write, so a review's drafts are neither created nor published. GitHub's
+  dismissal needs write
+  access, so an approver without it sees no Unapprove and a row saying
+  why; a null `viewerPermission` does not hide it.
+- Update branch and Mark ready are the rebase and draft blockers' fixes,
+  shown when the forge would take them and otherwise replaced by the
+  reason. GitHub: `viewerCanUpdateBranch` (a fork's head whose author
+  turned off maintainer edits, `maintainerCanModify` false, is the
+  author's alone) and `viewerCanUpdate`, or the author and those who may
+  merge when the read left the management fields out. GitLab: merge
+  rights (`can_merge`), and the author for Mark ready.
+- A thread's Resolve is disabled, with the reason as its hover text, when
+  the forge would refuse it: GitHub `viewerCanResolve` (open) or
+  `viewerCanUnresolve` (resolved); GitLab below the Developer role, unless
+  the viewer opened the merge request. GitHub's `viewerCanReply` false
+  puts the reason in place of the reply field.
 - Merge now: GitLab `PUT .../merge` with `squash`,
   `should_remove_source_branch` and the head `sha`; GitHub
   `mergePullRequest` with `mergeMethod` and `expectedHeadOid`, then the
   branch delete when asked and the repository does not do it itself. The
   head SHA is always sent: a push the pane has not seen yet is refused by
   the forge (409), not merged blind.
-- Auto-merge when ready: GitLab `PUT .../merge` with `auto_merge` (17.11+)
-  and `merge_when_pipeline_succeeds` (before) in one request; the server's
-  answer decides which checks it waits for, and the armed row shows the
-  forge's own wording;
+- Auto-merge when ready: GitLab `PUT .../merge` with `auto_merge`; the
+  server's answer decides which checks it waits for, and the armed row
+  shows the forge's own wording;
   GitHub `enablePullRequestAutoMerge`. Cancel: GitLab
-  `POST .../cancel_merge_when_pipeline_succeeds` (`cancel_auto_merge` on
-  19.5+), GitHub `disablePullRequestAutoMerge`. An armed auto-merge shows
+  `POST .../cancel_auto_merge` on 19.5 and later,
+  `POST .../cancel_merge_when_pipeline_succeeds` before, chosen by the
+  server's release; GitHub `disablePullRequestAutoMerge`. An armed auto-merge shows
   as a settled row "Auto-merge set by X · method" with Cancel, and the
   button reads "Auto-merge set".
+- A merge queue (`MergeOptions.Queue`; GitLab's merge train, Premium and
+  Ultimate, when the project's `merge_trains_enabled`): nothing merges
+  around it. Merge now reads "Add to merge train" (GitLab
+  `POST .../merge_trains/merge_requests/N` with `sha`, `squash`), auto-merge
+  "Add to merge train when ready" (the same with `auto_merge`, which joins
+  once the checks pass); the train takes no commit message and no branch
+  delete, so neither is offered and the adapter refuses either. Queued, the
+  button reads "In merge train" and the armed row "In the merge train · 2
+  of 3" (GitLab: the car, then its place among the target branch's active
+  cars, unknown past the first 100) with Remove, which cancels the
+  auto-merge and so takes it off the train; waiting to join, the row reads
+  "Joins the merge train once all checks pass". GitLab's "Merge
+  immediately" is not offered.
+- GitHub's merge queue (`MergeOptions.Queue`, when the base's
+  `isMergeQueueEnabled`): nothing merges around it, and the queue's own
+  configuration sets the method, so no method, branch delete or commit
+  message is offered (`Methods` is empty and the request's `Method`
+  empty). Merge now reads "Add to merge queue" (`enqueuePullRequest`,
+  which GitHub takes only from a PR that could merge now), auto-merge
+  "Add to merge queue when ready" (`enablePullRequestAutoMerge` with no
+  method, which joins once ready, or at once when it could merge now),
+  after gh's "will be added to the merge queue ... when ready". Queued
+  (`isInMergeQueue`), the place is the entry's `position` of the queue's
+  `entries.totalCount`; a PR queued at once has no `autoMergeRequest`, so
+  its entry's enqueuer and time stand as the armed request. Remove is
+  Cancel auto-merge, which there is `dequeuePullRequest`. GitHub's schema
+  has no viewer field for removal, so it is offered to those who may
+  merge. Admin bypass is not offered.
 - No optimistic state: a successful action asks the PR's pump to poll at
   once and the pane follows the forge's answer. The action answers with
   the pump's sequence after that poll (`PRActionResult.Seq`); the button
@@ -300,7 +351,10 @@ scope, on both surfaces and both forges:
   `:name:`. No row for a comment without reactions. When the forge's
   reactions read failed (`reactionsUnavailable`), one muted line at the
   top of the Conversation says so, the chips stay as last read and Add
-  reaction is not offered.
+  reaction is not offered. A GitHub comment whose `viewerCanReact` is
+  false (a locked conversation, an archived repository) disables its
+  chips and Add reaction, the reason as their hover text, and the write
+  is refused before it reaches GitHub.
 - Bounded read. A PR with more threads or comments than one read takes
   (ten pages of 100 on either forge) shows its first ones and a muted
   line at the top of the Conversation saying the rest are on the forge
@@ -404,15 +458,19 @@ and correlation id stay behind "Details". The sentences:
 | Case | Sentence |
 |---|---|
 | CLI missing | existing `SetupError` text |
+| gh too old | "GitHub CLI (`gh`) is too old: the app reads its login with `gh auth token`, which needs gh 2.17.0 or later. Update gh from https://cli.github.com and try again" (`SetupError` kind `outdated`) |
 | Not logged in | "Your `glab` login for HOST has no token. Run `glab auth login --hostname HOST`." |
 | Token expired | "Your GitLab token for HOST expired on DATE. Run `glab auth login --hostname HOST`." (the expiry is learned while the token works: GitLab `GET personal_access_tokens/self` once per personal token, GitHub the `GitHub-Authentication-Token-Expiration` header; see forge transport "Credentials") |
-| Token lacks scope | "Your HOST token lacks the `api` scope, so NAME cannot ACTION." (GitLab `insufficient_scope`; GitHub `X-Accepted-OAuth-Scopes` none of which `X-OAuth-Scopes` grants. A fine-grained token's "Resource not accessible by personal access token" reads "GitHub blocks this: REASON" on an action and "No access" on a read) |
-| No access | "No access to PROJECT with this login." |
+| Token lacks scope | "Your HOST token lacks the `api` scope, so NAME cannot ACTION." (GitLab `insufficient_scope`; GitHub `X-Accepted-OAuth-Scopes` none of which `X-OAuth-Scopes` grants, or a GraphQL `INSUFFICIENT_SCOPES` naming the scope) |
+| Not authorized for SSO | "Your HOST token is not authorized for the single sign-on of the organization that owns PROJECT, so the app cannot ACTION NAME. Authorize it at URL (the link expires after an hour), then try again." (GitHub 403 or 404 with `X-GitHub-SSO: required; url=URL`, a GraphQL answer with that header, or the "SAML enforcement" message; without a URL the fix is the token's settings; kind `forbidden`, read or write) |
+| Fine-grained token refused | "Your HOST token is a fine-grained token that cannot ACTION NAME (it needs PERMISSIONS). ..." (GitHub "Resource not accessible by personal access token", REST or GraphQL, with `X-Accepted-GitHub-Permissions` when sent; such a token cannot write where the user is an outside collaborator or not a member; kind `forbidden`) |
+| Token policy | "The organization that owns PROJECT does not accept this token: REASON. Log gh in with a token it allows." (GitHub 403 "... forbids access via ...") |
+| No access | "No access to PROJECT with this login." (a 403 on a read, a GitHub GraphQL `FORBIDDEN` read) |
 | Project or PR gone | "PROJECT!N was not found on HOST, or this login cannot see it." (REST 404, GitHub GraphQL `NOT_FOUND`) |
 | Head moved | "The branch moved after you loaded this MR. Reload and try again." (409) |
 | Not mergeable | "FORGE refused the merge: REASON." (GitLab 405/422 body, GitHub 405/422 message) |
 | Rules block | "FORGE blocks this merge: REASON." (GitHub 403 with a protection message, GitLab 401 on merge) |
-| Cannot approve | "You cannot approve your own merge request." / "You are not an eligible approver." |
+| Cannot approve | "You cannot approve your own merge request." / "You are not an eligible approver." / "GitLab asks for your password to approve in this project. Approve on GitLab." |
 | Comment answer lost | "FORGE may have posted this comment. Check the thread before sending it again." (kind `unconfirmed`: a comment or reply posted now whose response did not say; the pane's next frame shows what the forge holds) |
 | Comment elsewhere | "That comment is not on PROJECT#N, so it was not changed." (kind `not_found`: an edit or delete naming a GitHub comment of another PR) |
 | Pending review on GitLab | "You have N pending comments on PROJECT!N that this app did not write, and sending would publish them with this review. Submit or discard them on GitLab, then send again." (kind `refused`: the viewer's draft notes the submit did not create; nothing is written) |
@@ -797,10 +855,12 @@ fake forge on desktop and compact.
 | Checking | `Checking…` grey | actions present, Merge now greyed | "The forge is checking whether this can merge." row |
 | Draft | `Draft` grey | Approve · `Auto-merge when ready ▾` | "Draft" row with Mark ready |
 | Auto-merge armed (e2e) | as blocked or ready | `Auto-merge set` button, menu offers Cancel | "Auto-merge set by X · method" row with Cancel |
+| GitHub merge queue, queued (e2e) | as ready | `In merge queue` button, menu offers Remove from merge queue | "In the merge queue · N of M" row, "Added by X", with Remove |
 | Merged (e2e) | `Merged` accent | no actions | "Merged by X · time" row |
 | Closed | `Closed` red | no actions | "Closed without merging · time" row |
 | Viewer cannot merge | as above | no Merge button | a row with `CannotMergeReason` |
 | Viewer is the author | as above | no Approve | the approvals blocker row carries no Approve; without one, a row with `CannotApproveReason` |
+| Viewer cannot update, mark ready or unapprove | as above | no Unapprove when it cannot | the rebase and draft rows carry the reason in place of their fix; a row with `CannotUnapproveReason` |
 | Action in flight | unchanged | the pressed button spins; every merge control disables until the pump's answer is on screen: the action answers with the pump's seq after its poll and the pane waits for its watermark to reach it (a poll that found nothing changed settles at once) | unchanged |
 | Action failed (e2e: 403, 409) | unchanged | buttons re-enable | toast with sentence, Details, Reload when 409 |
 | Stale snapshot under a banner (the diff predates the live head, or the pump is failing), or the PR's diff not loaded (loading, or its load failed) | last known | every action disabled, its hover text the reason; head-pinned actions always send the head the DIFF was loaded at | last known rows |
@@ -814,11 +874,6 @@ fake forge on desktop and compact.
 - GitLab Free has no approval rules: `approvals_required` is 0 and
   `approved` is true with any approval; the approvals row then reads
   "N approvals" as a settled row, never a blocker.
-- GitLab before 17.11 has no `auto_merge` and ignores it as an undeclared
-  parameter (it never answers 400 for it), so auto-merge sends
-  `auto_merge` and `merge_when_pipeline_succeeds` together; 17.11+ reads
-  either. Cancel tries `cancel_auto_merge` and, on a 404 (before 19.5),
-  `cancel_merge_when_pipeline_succeeds`, remembered per host.
 - GitHub `latestReviews` lists each author's latest review, so a comment
   after an approval hides it; `latestOpinionatedReviews` lists each
   author's latest approval or change request, and the viewer's approval
@@ -915,7 +970,9 @@ workspace, branch and edits diffs, offer no link.
 
 ## Non-goals
 
-- Merge queues and merge trains: the forge's own page.
+- Managing a merge queue or train beyond this PR's own place in it
+  (reordering, merging immediately, the queue's page): the forge's own
+  page.
 - Milestones, changing the target branch.
 - Creating MRs from the page (the chat header's create flow stays).
 - A full activity timeline: only the event kinds listed.

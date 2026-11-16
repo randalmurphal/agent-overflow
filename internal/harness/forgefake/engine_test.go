@@ -367,7 +367,7 @@ func TestCreateOpensAPullForTheCheckoutsBranch(t *testing.T) {
 	srv := testServer(t, e)
 	open := graphQL(t, srv, "github.com", "OpenPRsByHead", map[string]any{"owner": "acme", "name": "widgets", "head": branch})
 	if !strings.Contains(open.body, `"number":8,"state":"OPEN","title":"Topic","url":"https://github.com/acme/widgets/pull/8"}]`) ||
-		!strings.Contains(open.body, `"nodes":[{"baseRefName":"main","id":"PR_ao`) {
+		!strings.Contains(open.body, `"isCrossRepository":false,"number":8`) || !strings.Contains(open.body, `"id":"PR_ao`) {
 		t.Fatalf("open pulls after create = %s", open.body)
 	}
 	var created8 struct {
@@ -840,11 +840,34 @@ func testDocument(kind, op, decl string) string {
 	return kind + " " + op + decl + " " + selection
 }
 
+type readPartDefault struct {
+	name  string
+	value any
+}
+
+var (
+	pageSizeDefault  = readPartDefault{"pageSize", 100}
+	readPartDefaults = map[string][]readPartDefault{
+		"PRTick":             {pageSizeDefault, {"wantManage", true}, {"wantTeams", true}, {"wantCheckRuns", true}, {"wantWorkflowRuns", true}},
+		"PRThreadsPage":      {pageSizeDefault},
+		"PRCommentsPage":     {pageSizeDefault},
+		"PRTimelinePage":     {{"wantTeams", true}},
+		"RollupContextsPage": {{"wantCheckRuns", true}, {"wantWorkflowRuns", true}},
+		"PullsSearch":        {{"wantChecks", true}},
+	}
+)
+
 // graphQL sends one operation to the GitHub GraphQL mount for host.
 func graphQL(t *testing.T, srv *httptest.Server, host, op string, vars map[string]any) httpAnswer {
 	t.Helper()
 	if _, set := vars["wantReactions"]; !set && slices.Contains([]string{"PRTick", "PRThreadsPage", "PRCommentsPage", "ThreadCommentsPage"}, op) {
 		vars["wantReactions"] = true
+	}
+	// The read's optional parts default to the full read.
+	for _, part := range readPartDefaults[op] {
+		if _, set := vars[part.name]; !set {
+			vars[part.name] = part.value
+		}
 	}
 	return httpRequest(t, srv, "POST", host, "/github/graphql", mustJSON(t, map[string]any{
 		"query": graphQLDocument(t, op), "operationName": op, "variables": vars,
@@ -953,7 +976,7 @@ func TestHTTPMountsAnswerFromTheRouteTables(t *testing.T) {
 		t.Fatalf("PRTick = %+v", tick)
 	}
 	if got := lastInvocation(t, e); got.Path != "graphql" || got.Route != "gh graphql PRTick" || got.Operation != "PRTick" ||
-		string(got.Variables) != `{"name":"widgets","number":7,"owner":"acme","wantChecks":false,"wantDetail":false,"wantEvents":false,"wantReactions":true,"wantThreads":true}` {
+		string(got.Variables) != `{"name":"widgets","number":7,"owner":"acme","pageSize":100,"wantCheckRuns":true,"wantChecks":false,"wantDetail":false,"wantEvents":false,"wantManage":true,"wantReactions":true,"wantTeams":true,"wantThreads":true,"wantWorkflowRuns":true}` {
 		t.Fatalf("PRTick invocation = %+v (variables %s)", got, got.Variables)
 	}
 	missing := prTick(t, srv, "ghe.example:8443", "acme", "widgets", 7, true, true, true)
@@ -1450,7 +1473,8 @@ func TestGraphQLRefusesADriftedOperation(t *testing.T) {
 	t.Parallel()
 	e, _ := seeded(t, Options{})
 	srv := testServer(t, e)
-	tick := map[string]any{"owner": "acme", "name": "widgets", "number": 7, "wantDetail": true, "wantThreads": false, "wantEvents": false, "wantChecks": false}
+	tick := map[string]any{"owner": "acme", "name": "widgets", "number": 7, "wantDetail": true, "wantThreads": false, "wantEvents": false, "wantChecks": false,
+		"wantReactions": true, "pageSize": 100, "wantManage": true, "wantTeams": true, "wantCheckRuns": true, "wantWorkflowRuns": true}
 	send := func(query, op string, vars map[string]any) httpAnswer {
 		return httpRequest(t, srv, "POST", "github.com", "/github/graphql", mustJSON(t, map[string]any{"query": query, "operationName": op, "variables": vars}), nil)
 	}
@@ -1661,8 +1685,29 @@ func TestGitHubPullLists(t *testing.T) {
 	}
 	srv := testServer(t, e)
 	open := graphQL(t, srv, "github.com", "OpenPRsByHead", map[string]any{"owner": "a", "name": "b", "head": "topic"})
-	if !strings.Contains(open.body, `"nodes":[{"baseRefName":"main","id":"PR_one","isCrossRepository":false,"number":1,"state":"OPEN","title":"open","url":"https://github.com/a/b/pull/1"},`+
-		`{"baseRefName":"main","id":"PR_fork","isCrossRepository":true,"number":6,"state":"OPEN","title":"fork","url":"https://github.com/a/b/pull/6"}]`) ||
+	// Each node names its head repository: the repository's own, a fork's
+	// generated id.
+	var ids struct {
+		Data struct {
+			Repository struct {
+				ID           string `json:"id"`
+				PullRequests struct {
+					Nodes []struct {
+						HeadRepository struct {
+							ID string `json:"id"`
+						} `json:"headRepository"`
+					} `json:"nodes"`
+				} `json:"pullRequests"`
+			} `json:"repository"`
+		} `json:"data"`
+	}
+	decodeBody(t, open, &ids)
+	if nodes := ids.Data.Repository.PullRequests.Nodes; len(nodes) != 2 || nodes[0].HeadRepository.ID != ids.Data.Repository.ID || nodes[1].HeadRepository.ID == ids.Data.Repository.ID || nodes[1].HeadRepository.ID == "" {
+		t.Fatalf("head repositories = %+v of %s", nodes, ids.Data.Repository.ID)
+	}
+	if !strings.Contains(open.body, `"id":"PR_one","isCrossRepository":false,"number":1,"state":"OPEN","title":"open","url":"https://github.com/a/b/pull/1"},`) ||
+		!strings.Contains(open.body, `"id":"PR_fork","isCrossRepository":true,"number":6,"state":"OPEN","title":"fork","url":"https://github.com/a/b/pull/6"}]`) ||
+		!strings.Contains(open.body, `"parent":null`) ||
 		!strings.Contains(open.body, `"pageInfo":{"endCursor":"cursor:2","hasNextPage":false}`) {
 		t.Fatalf("open = %s", open.body)
 	}
@@ -2051,6 +2096,200 @@ func TestGitHubTimelineAndThreadStatesPage(t *testing.T) {
 	decodeBody(t, graphQL(t, srv, "github.com", "PRThreadStatesPage", map[string]any{"owner": "a", "name": "b", "number": 1, "after": states.PageInfo.EndCursor}), &page)
 	if rest := page.Data.Repository.PullRequest.ReviewThreads; len(rest.Nodes) != 20 || rest.PageInfo.HasNextPage || rest.Nodes[10]["isResolved"] != false {
 		t.Fatalf("second thread states page = %+v", rest)
+	}
+}
+
+// GitLab's cancel routes follow the host's release: cancel_auto_merge
+// exists from 19.5 (before it GitLab's route 404), and
+// cancel_merge_when_pipeline_succeeds on every supported release answers
+// 201 with a status hash, "error" when nothing is armed.
+func TestGitLabCancelRoutesFollowTheRelease(t *testing.T) {
+	t.Parallel()
+	e, srv := mergeEngine(t)
+	const mrPath = "projects/grp%2Fmerge/merge_requests/2"
+	const head = "3333333333333333333333333333333333333333"
+	arm := func() {
+		t.Helper()
+		if got := glabSend(t, srv, "PUT", mrPath+"/merge", `{"sha":"`+head+`","auto_merge":true}`); got.status != http.StatusOK {
+			t.Fatalf("auto-merge = %+v", got)
+		}
+	}
+	e.repoOn("gitlab", "gitlab.com", "grp/merge").ServerVersion = "19.4.2-ee"
+	arm()
+	if got := glabSend(t, srv, "POST", mrPath+"/cancel_auto_merge", ""); got.status != http.StatusNotFound {
+		t.Fatalf("cancel_auto_merge on 19.4 = %+v, want GitLab's 404 for a route it lacks", got)
+	}
+	if got := glabSend(t, srv, "POST", mrPath+"/cancel_merge_when_pipeline_succeeds", ""); got.status != http.StatusCreated || !strings.Contains(got.body, `"status":"success"`) {
+		t.Fatalf("legacy cancel = %+v", got)
+	}
+	if mr := glabJSON(t, srv, mrPath); mr["merge_when_pipeline_succeeds"] != false {
+		t.Fatalf("after the legacy cancel: %v", mr)
+	}
+	if got := glabSend(t, srv, "POST", mrPath+"/cancel_merge_when_pipeline_succeeds", ""); got.status != http.StatusCreated || !strings.Contains(got.body, `"status":"error"`) || !strings.Contains(got.body, "Can't cancel the automatic merge") {
+		t.Fatalf("a legacy cancel with nothing armed = %+v", got)
+	}
+	e.repoOn("gitlab", "gitlab.com", "grp/merge").ServerVersion = "19.5.0-ee"
+	arm()
+	if got := glabSend(t, srv, "POST", mrPath+"/cancel_auto_merge", ""); got.status != http.StatusCreated {
+		t.Fatalf("cancel_auto_merge on 19.5 = %+v", got)
+	}
+	arm()
+	if got := glabSend(t, srv, "POST", mrPath+"/cancel_merge_when_pipeline_succeeds", ""); got.status != http.StatusCreated || !strings.Contains(got.body, `"status":"success"`) {
+		t.Fatalf("legacy cancel on 19.5 = %+v", got)
+	}
+}
+
+// A merge train project: projects/P says so; a merge request joins the
+// train directly when mergeable (201) or once its checks pass with
+// auto_merge (202), each refused when its strategy is not available
+// (400) or already armed (409); the car and the train's list answer in
+// train order, the list desc by default; cancel removes the car with
+// GitLab's note; a project without trains answers the routes 403, and a
+// PUT merge with auto_merge on a train project schedules the train add.
+func TestGitLabMergeTrains(t *testing.T) {
+	t.Parallel()
+	_, plain := mergeEngine(t)
+	const project = "projects/grp%2Fmerge"
+	if got := glabSend(t, plain, "POST", project+"/merge_trains/merge_requests/1", `{}`); got.status != http.StatusForbidden {
+		t.Fatalf("a project without trains = %+v", got)
+	}
+	e := New(Options{APIToken: testAPIToken})
+	if _, err := seedJSON(e, `{"viewer": "octo", "repos": [{"forge": "gitlab", "project": "grp/merge", "id": 7700, "merge": {"mergeTrains": true}, "pulls": [
+	  {"number": 1, "title": "No pipeline", "headRef": "one"},
+	  {"number": 2, "title": "Running", "headRef": "two", "headSha": "3333333333333333333333333333333333333333",
+	   "readiness": {"requiredApprovals": 1}, "ci": {"jobs": [{"name": "unit", "status": "running"}]}},
+	  {"number": 4, "title": "Ready", "headRef": "four", "ci": {"jobs": [{"name": "unit", "status": "success"}]}},
+	  {"number": 5, "title": "Ready too", "headRef": "five", "ci": {"jobs": [{"name": "unit", "status": "success"}]}},
+	  {"number": 6, "title": "Running too", "headRef": "six", "readiness": {"requiredApprovals": 1}, "ci": {"jobs": [{"name": "unit", "status": "running"}]}}
+	]}]}`); err != nil {
+		t.Fatal(err)
+	}
+	srv := testServer(t, e)
+	if got := glabJSON(t, srv, project); got["merge_trains_enabled"] != true {
+		t.Fatalf("project = %v", got)
+	}
+	// #1 has no pipeline: neither strategy is available.
+	if got := glabSend(t, srv, "POST", project+"/merge_trains/merge_requests/1", `{}`); got.status != http.StatusBadRequest || !strings.Contains(got.body, "Failed to merge") {
+		t.Fatalf("no pipeline = %+v", got)
+	}
+	// #2's pipeline runs and it needs an approval: it may only join once ready.
+	if got := glabSend(t, srv, "POST", project+"/merge_trains/merge_requests/2", `{"sha":"3333333333333333333333333333333333333333"}`); got.status != http.StatusBadRequest {
+		t.Fatalf("direct add while running = %+v", got)
+	}
+	if got := glabSend(t, srv, "POST", project+"/merge_trains/merge_requests/2", `{"sha":"3333333333333333333333333333333333333333","auto_merge":true}`); got.status != http.StatusAccepted || got.body != "[]\n" {
+		t.Fatalf("auto add = %+v", got)
+	}
+	if got := glabSend(t, srv, "POST", project+"/merge_trains/merge_requests/2", `{"auto_merge":true}`); got.status != http.StatusConflict || !strings.Contains(got.body, "already set to Auto-Merge") {
+		t.Fatalf("second add = %+v", got)
+	}
+	if got := glabSend(t, srv, "GET", project+"/merge_trains/merge_requests/2", ""); got.status != http.StatusNotFound {
+		t.Fatalf("a scheduled add's car = %+v", got)
+	}
+	if mr := glabJSON(t, srv, project+"/merge_requests/2"); mr["merge_when_pipeline_succeeds"] != true {
+		t.Fatalf("scheduled add: %v", mr)
+	}
+	// Two mergeable merge requests join directly, in order.
+	for i, n := range []int{4, 5} {
+		got := glabSend(t, srv, "POST", fmt.Sprintf("%s/merge_trains/merge_requests/%d", project, n), `{"squash":true}`)
+		if got.status != http.StatusCreated || strings.Count(got.body, `"target_branch":"main"`) != i+1 {
+			t.Fatalf("add #%d = %+v", n, got)
+		}
+	}
+	car := glabJSON(t, srv, project+"/merge_trains/merge_requests/5")
+	if car["merge_request"].(map[string]any)["iid"] != float64(5) || car["status"] != "idle" || car["target_branch"] != "main" {
+		t.Fatalf("car = %v", car)
+	}
+	list := glabSend(t, srv, "GET", project+"/merge_trains?scope=active&sort=asc&per_page=1", "")
+	if list.status != http.StatusOK || !strings.Contains(list.body, `"iid":4`) || list.header.Get("X-Next-Page") != "2" || list.header.Get("X-Total") != "2" {
+		t.Fatalf("asc list = %+v", list)
+	}
+	if desc := glabSend(t, srv, "GET", project+"/merge_trains", ""); strings.Index(desc.body, `"iid":5`) > strings.Index(desc.body, `"iid":4`) {
+		t.Fatalf("default list = %s, want desc", desc.body)
+	}
+	if got := glabSend(t, srv, "POST", project+"/merge_requests/4/cancel_auto_merge", ""); got.status != http.StatusCreated {
+		t.Fatalf("cancel = %+v", got)
+	}
+	if got := glabSend(t, srv, "GET", project+"/merge_trains/merge_requests/4", ""); got.status != http.StatusNotFound {
+		t.Fatalf("a removed car = %+v", got)
+	}
+	notes := glabSend(t, srv, "GET", project+"/merge_requests/5/discussions?per_page=100", "").body
+	if !strings.Contains(notes, "added this merge request to the [merge train](https://gitlab.com/-/merge_trains) at position 2") {
+		t.Fatalf("#5 notes = %s", notes)
+	}
+	notes = glabSend(t, srv, "GET", project+"/merge_requests/4/discussions?per_page=100", "").body
+	if !strings.Contains(notes, "started a [merge train]") || !strings.Contains(notes, "removed this merge request from the merge train") {
+		t.Fatalf("#4 notes = %s", notes)
+	}
+	// A PUT merge with auto_merge on a train project schedules the add.
+	if got := glabSend(t, srv, "PUT", project+"/merge_requests/6/merge", `{"auto_merge":true}`); got.status != http.StatusOK {
+		t.Fatalf("PUT auto-merge = %+v", got)
+	}
+	if notes := glabSend(t, srv, "GET", project+"/merge_requests/6/discussions?per_page=100", "").body; !strings.Contains(notes, "enabled automatic add to merge train when checks pass") {
+		t.Fatalf("#6 notes = %s", notes)
+	}
+	if _, err := seedJSON(New(Options{}), `{"repos": [{"forge": "gitlab", "project": "a/b", "pulls": [{"number": 1, "title": "t", "readiness": {"autoMerge": {"strategy": "merge_train"}}}]}]}`); err == nil {
+		t.Fatal("a car seeded on a project without trains")
+	}
+}
+
+// A project that requires the approver's password says so in the
+// approvals answer and refuses an approve without one with GitLab's 401,
+// eligibility unchanged.
+func TestGitLabApprovalPasswordRefusesTheApprove(t *testing.T) {
+	t.Parallel()
+	e, srv := mergeEngine(t)
+	const mrPath = "projects/grp%2Fmerge/merge_requests/2"
+	const head = "3333333333333333333333333333333333333333"
+	if got := glabJSON(t, srv, mrPath+"/approvals"); got["require_password_to_approve"] != false {
+		t.Fatalf("approvals = %v", got)
+	}
+	e.repoOn("gitlab", "gitlab.com", "grp/merge").Merge.ApprovalPassword = true
+	if got := glabJSON(t, srv, mrPath+"/approvals"); got["require_password_to_approve"] != true || got["user_can_approve"] != true {
+		t.Fatalf("approvals with the password required = %v", got)
+	}
+	if got := glabSend(t, srv, "POST", mrPath+"/approve", `{"sha":"`+head+`"}`); got.status != http.StatusUnauthorized {
+		t.Fatalf("approve without a password = %+v", got)
+	}
+	if got := glabJSON(t, srv, mrPath+"/approvals"); got["user_has_approved"] != false {
+		t.Fatalf("after the refused approve: %v", got)
+	}
+}
+
+// A role through a group share leaves GitLab's REST permissions empty;
+// GraphQL maxAccessLevel answers it either way, and a project not on the
+// host is a null project.
+func TestGitLabSharedAccessIsReadFromMaxAccessLevel(t *testing.T) {
+	t.Parallel()
+	e, srv := mergeEngine(t)
+	r := e.repoOn("gitlab", "gitlab.com", "grp/merge")
+	r.Merge.Permission = "maintainer"
+	access := func() any {
+		t.Helper()
+		got := glabGraphQL(t, srv, "ProjectAccess", "query", map[string]any{"fullPath": "grp/merge"})
+		return got["data"].(map[string]any)["project"].(map[string]any)["maxAccessLevel"].(map[string]any)["integerValue"]
+	}
+	permissions := func() map[string]any {
+		t.Helper()
+		return glabJSON(t, srv, "projects/grp%2Fmerge")["permissions"].(map[string]any)
+	}
+	if got := permissions()["project_access"]; got.(map[string]any)["access_level"] != float64(40) {
+		t.Fatalf("direct project_access = %v", got)
+	}
+	if got := access(); got != float64(40) {
+		t.Fatalf("direct maxAccessLevel = %v", got)
+	}
+	r.Merge.SharedAccess = true
+	if got := permissions(); got["project_access"] != nil || got["group_access"] != nil {
+		t.Fatalf("shared permissions = %v, want both null", got)
+	}
+	if got := access(); got != float64(40) {
+		t.Fatalf("shared maxAccessLevel = %v", got)
+	}
+	if got := glabGraphQL(t, srv, "ProjectAccess", "query", map[string]any{"fullPath": "grp/none"}); got["data"].(map[string]any)["project"] != nil {
+		t.Fatalf("missing project = %v", got)
+	}
+	if _, err := seedJSON(New(Options{}), `{"repos": [{"forge": "github", "project": "a/b", "merge": {"sharedAccess": true}}]}`); err == nil {
+		t.Fatal("a GitHub repository seeded sharedAccess")
 	}
 }
 

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
+	"time"
 
 	"agent-overflow/internal/forgeapi"
 	"agent-overflow/internal/forgeattach"
@@ -37,9 +39,11 @@ type Forge interface {
 	// ListOpenPRs returns open PRs/MRs for the given head/source branch.
 	ListOpenPRs(ctx context.Context, cwd, head string) ([]GitPR, error)
 	// ListMergedPRHeads returns the head branch name + head SHA of up to
-	// `limit` recently merged PRs/MRs. One bulk read backing the prune
-	// preview's squash-merge detection: a gone local branch whose tip
-	// matches a merged PR head was fully pushed before the merge.
+	// `limit` recently merged PRs/MRs, and of a fork's merged into its
+	// parent. One bulk read backing the prune preview's squash-merge
+	// detection: a gone local branch whose tip matches a merged PR head
+	// was fully pushed before the merge. A failed read of the parent
+	// answers the origin's heads beside its error.
 	ListMergedPRHeads(ctx context.Context, cwd string, limit int) ([]MergedPRHead, error)
 	// ReadPRStates reads the state and merge time of every PR in prs, all
 	// of repo's repository, in one request per 100 PRs. A PR the forge does
@@ -212,6 +216,11 @@ type PRDetail struct {
 	// Manage is the Details section and the management capabilities
 	// (forge_manage.go).
 	Manage PRManage `json:"manage"`
+	// Unavailable is a sentence for each optional part of the read the
+	// forge would not answer (team reviewers, check runs, workflow runs),
+	// saying what is not shown and why. The management part's sentence is
+	// Manage.Unavailable.
+	Unavailable []string `json:"unavailable,omitempty"`
 }
 
 type PRDiffRefs struct {
@@ -277,6 +286,13 @@ type ReviewThread struct {
 	IsResolved   bool            `json:"isResolved"`
 	IsOutdated   bool            `json:"isOutdated"`
 	Comments     []ReviewComment `json:"comments"`
+	// CannotResolveReason, set on a resolvable thread, is why the viewer
+	// may not resolve it (or reopen it, once resolved): GitHub's
+	// viewerCanResolve and viewerCanUnresolve, GitLab's role and
+	// authorship. CannotReplyReason is why the viewer may not reply
+	// (GitHub's viewerCanReply). Empty is allowed or unknown.
+	CannotResolveReason string `json:"cannotResolveReason,omitempty"`
+	CannotReplyReason   string `json:"cannotReplyReason,omitempty"`
 }
 
 // ReviewComment is one comment of a thread. ID is what an edit or a
@@ -306,6 +322,10 @@ type ReviewComment struct {
 	URL             string              `json:"url,omitempty"`
 	Suggestions     []CommentSuggestion `json:"suggestions,omitempty"`
 	Reactions       []CommentReaction   `json:"reactions,omitempty"`
+	// CannotReactReason is why the viewer may not add or remove a
+	// reaction here (GitHub's viewerCanReact); empty is allowed or
+	// unknown (GitLab's notes carry no permission).
+	CannotReactReason string `json:"cannotReactReason,omitempty"`
 }
 
 type ReviewReplyTo struct {
@@ -702,9 +722,92 @@ func NormalizePRState(s string) string {
 // without its cancellation. A write the forge may already have applied must
 // finish and report, because a caller that stopped waiting cannot tell an
 // applied write from one never sent. Each request keeps its own bound
-// (forgeapi's read timeout, the Core command timeout).
+// (forgeapi's read timeout, the Core command timeout). The caller's
+// deadline still bounds a write of several requests (writeSteps).
 func forgeWrite(ctx context.Context) context.Context {
-	return context.WithoutCancel(ctx)
+	return context.WithValue(context.WithoutCancel(ctx), forgeWriteCallerKey{}, ctx)
+}
+
+type forgeWriteCallerKey struct{}
+
+// SubmitSettleTimeout bounds the read or cleanup that settles one submit
+// write whose answer did not decide it: GitHub's read of the viewer's
+// reviews, GitLab's read of its pending draft notes and its removal of the
+// drafts a stopped submit created.
+const SubmitSettleTimeout = 30 * time.Second
+
+// writeSteps is the context the steps of a write of several requests run
+// under, from a forgeWrite context: it ends when the caller ends at its
+// deadline, with the caller's cause, and not when the caller cancels. Its
+// reads run on it, so the deadline cuts them; each write runs on the
+// forgeWrite context and asks stopped first, so the deadline stops the
+// write before it starts and never while it is in flight. A run past the
+// deadline is then one write and what settles it (SubmitSettleTimeout).
+func writeSteps(ctx context.Context) (context.Context, context.CancelFunc) {
+	steps, cancel := context.WithCancelCause(ctx)
+	caller := writeCaller(ctx)
+	if caller == nil {
+		return steps, func() { cancel(nil) }
+	}
+	var mu sync.Mutex
+	var timer *time.Timer
+	stop := context.AfterFunc(caller, func() {
+		if cause := deadlineCause(caller); cause != nil {
+			cancel(cause)
+			return
+		}
+		// Cancelled first: the deadline still ends the steps.
+		if deadline, ok := caller.Deadline(); ok {
+			mu.Lock()
+			timer = time.AfterFunc(time.Until(deadline), func() { cancel(context.DeadlineExceeded) })
+			mu.Unlock()
+		}
+	})
+	return steps, func() {
+		stop()
+		mu.Lock()
+		if timer != nil {
+			timer.Stop()
+		}
+		mu.Unlock()
+		cancel(nil)
+	}
+}
+
+// writeCaller is the caller's context forgeWrite detached ctx from, or nil.
+func writeCaller(ctx context.Context) context.Context {
+	caller, _ := ctx.Value(forgeWriteCallerKey{}).(context.Context)
+	return caller
+}
+
+// deadlineCause is caller's cause once it has ended at its deadline, else
+// nil.
+func deadlineCause(caller context.Context) error {
+	select {
+	case <-caller.Done():
+	default:
+		return nil
+	}
+	if !errors.Is(caller.Err(), context.DeadlineExceeded) {
+		return nil
+	}
+	return context.Cause(caller)
+}
+
+// stopped is the error a write of several requests answers instead of
+// starting its next one once its caller's deadline ended it: a request
+// never sent. It reads the caller itself, so a deadline that has ended
+// stops the next request whether or not steps has been told yet.
+func stopped(steps context.Context) error {
+	if caller := writeCaller(steps); caller != nil {
+		if cause := deadlineCause(caller); cause != nil {
+			return &forgeapi.NotSentError{Err: cause}
+		}
+	}
+	if steps.Err() == nil {
+		return nil
+	}
+	return &forgeapi.NotSentError{Err: context.Cause(steps)}
 }
 
 // ReadPR reads the parts of ref want names in one forge read (see

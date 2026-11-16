@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/providertest"
 	"agent-overflow/internal/testutil/mockexec"
 )
 
@@ -51,7 +52,7 @@ func newBackgroundTasksResponderSession(t *testing.T, mode string, timeout time.
 	scriptPath := t.TempDir() + "/fake-claude"
 	mockexec.Write(t, scriptPath, backgroundTasksResponderScript(mode))
 	ctx, cancel := context.WithCancel(context.Background())
-	proc, err := provider.Spawn(ctx, provider.SpawnConfig{Binary: scriptPath})
+	proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{Binary: scriptPath})
 	if err != nil {
 		t.Fatalf("spawn: %v", err)
 	}

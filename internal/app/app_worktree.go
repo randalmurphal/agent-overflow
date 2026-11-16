@@ -88,6 +88,7 @@ type WorktreeListItem struct {
 // Preserves legacy semantics — no carry-over of local changes.
 //
 //ao:scope git:operate
+//ao:budget 12m
 func (a *App) GitCreateWorktree(threadID, branch string) (string, error) {
 	updated, err := a.PrepareThreadWorktree(threadID, "", branch, false)
 	if err != nil {
@@ -833,12 +834,16 @@ func (a *App) reattachThreadsFromRemovedWorktree(removal *worktreeRemoval, mutab
 		stop := a.detachSessionForRemovedWorkspace(id)
 		// Only the triple, so a write to another column since the read above
 		// survives.
-		row, changed, updateErr := a.store.UpdateThreadCheckout(id, t.WorkspacePath, t.WorktreePath, t.Branch)
+		write, updateErr := a.store.UpdateThreadCheckout(id, t.WorkspacePath, t.WorktreePath, t.Branch)
 		if updateErr == nil {
-			if changed {
-				t = row
+			if write.Changed {
+				t = write.Row
 			}
-			a.announceThread(triage.ThreadActionFull, id)
+			// A never-sent thread the worktree alone listed leaves the
+			// sidebar with it.
+			if !a.announceListing(id, write.Listing) {
+				a.announceThread(triage.ThreadActionFull, id)
+			}
 		}
 		if stop != nil {
 			if err := stop(); err != nil {
@@ -1219,7 +1224,8 @@ func (a *App) commitThreadCheckout(thread store.Thread, move threadCheckoutMove)
 	}
 	// Only the triple: the row was read before the git work above, and a
 	// write to another column since then must survive.
-	if _, _, err := a.store.UpdateThreadCheckout(threadID, thread.WorkspacePath, thread.WorktreePath, thread.Branch); err != nil {
+	write, err := a.store.UpdateThreadCheckout(threadID, thread.WorkspacePath, thread.WorktreePath, thread.Branch)
+	if err != nil {
 		rollback()
 		return store.Thread{}, err
 	}
@@ -1238,10 +1244,14 @@ func (a *App) commitThreadCheckout(thread store.Thread, move threadCheckoutMove)
 	// new checkout. `store.UpdateThread` rewrites the whole row, so the
 	// no-change test is the three fields a move owns — re-selecting the
 	// workspace the thread already sits in moves nothing and says nothing.
-	a.announceThreadIfChanged(triage.ThreadActionFull, threadID,
-		move.previousWorkspace != thread.WorkspacePath ||
-			move.previousWorktree != thread.WorktreePath ||
-			move.previousBranch != thread.Branch)
+	// Binding a worktree to a never-sent thread lists it, and unbinding one
+	// takes it off the list.
+	if !a.announceListing(threadID, write.Listing) {
+		a.announceThreadIfChanged(triage.ThreadActionFull, threadID,
+			move.previousWorkspace != thread.WorkspacePath ||
+				move.previousWorktree != thread.WorktreePath ||
+				move.previousBranch != thread.Branch)
+	}
 	return refreshed, nil
 }
 

@@ -3,11 +3,14 @@
 // thread-scoped worktree operation creates and binds the checkout atomically.
 // Empty-draft cleanup ignores staged and attached worktree drafts, so it
 // cannot delete the owner while the operation is in flight or after it lands.
+// Every screen lists such a draft once it is real (a bound worktree or draft
+// text), whether it opened before or after, and erasing its text unlists it
+// everywhere unless a worktree is bound.
 // The final tests keep the inverse transition pinned: an ordinary text-only
 // draft still dematerializes when its text is erased, and text typed while
 // that delete's reply is held (a slow connection) or on another screen is
 // never saved to the deleted row and ends up in a thread of its own.
-import type { Page } from '@playwright/test';
+import type { Browser, Page } from '@playwright/test';
 import { realpath } from 'node:fs/promises';
 import { test, expect, type HarnessMockEvent, type SeedResult } from './fixtures.js';
 import type { HarnessApp } from '../src/harness.js';
@@ -108,12 +111,15 @@ test('worktree selection materializes a draft and create binds it to an existing
 
   await stageNewWorktree(page);
   await expect.poll(async () => (await threadRows(harness)).length).toBe(1);
-  await expect(page.getByTestId('thread-row')).toHaveCount(1);
+  // A staged choice lives on this screen only; the sidebar lists the
+  // thread once a worktree is bound to it.
+  await expect(page.getByTestId('thread-row')).toHaveCount(0);
   await page.getByTestId('branch-picker-trigger').click();
   await page.getByRole('menuitem', { name: EXISTING_BRANCH }).click();
   await expect(stripLabels(page).branch).toHaveText(EXISTING_BRANCH);
 
   await page.getByTestId('apply-worktree-intent-button').click();
+  await expect(page.getByTestId('thread-row')).toHaveCount(1);
 
   // Await the success toast first: it lands when the RPC resolves, so the
   // no-error assertion below is checked after the window an error could
@@ -279,6 +285,132 @@ test('erasing a text draft removes it live from another client and leaves the co
     await expect(errorToasts(phone)).toHaveCount(0);
   } finally {
     await observer.close();
+  }
+});
+
+/** Bind the open draft to a worktree on EXISTING_BRANCH and wait for the bind. */
+async function applyExistingBranchWorktree(page: Page): Promise<void> {
+  await page.getByTestId('branch-picker-trigger').click();
+  await page.getByRole('menuitem', { name: EXISTING_BRANCH }).click();
+  await page.getByTestId('apply-worktree-intent-button').click();
+  await expect(
+    page.getByRole('alert').filter({ hasText: `Created worktree on ${EXISTING_BRANCH}` }),
+  ).toBeVisible();
+}
+
+/** A screen of its own (a separate browser context), opened now. */
+async function openScreen(harness: HarnessApp, browser: Browser): Promise<{ page: Page; close: () => Promise<void> }> {
+  const context = await browser.newContext();
+  const screen = await context.newPage();
+  await harness.open(screen);
+  await expect(screen.getByTestId('project-item-new-thread').first()).toBeVisible();
+  return { page: screen, close: () => context.close() };
+}
+
+// The sidebar lists a never-sent thread once it is real: draft content, a
+// bound worktree, or an item. A screen that opens later and a screen already
+// open list the same never-sent threads.
+test('a screen opened after an empty draft was bound to a worktree lists it, as the open screens do', async ({
+  harness, page, browser,
+}) => {
+  await seedProject(harness);
+  await openFreshDraft(harness, page);
+  await stageNewWorktree(page);
+  await expect.poll(async () => (await threadRows(harness)).length).toBe(1);
+
+  const early = await openScreen(harness, browser);
+  try {
+    // Staged but not bound: no screen lists it.
+    await expect(early.page.getByTestId('thread-row')).toHaveCount(0);
+    await expect(page.getByTestId('thread-row')).toHaveCount(0);
+
+    await applyExistingBranchWorktree(page);
+    await expect(page.getByTestId('thread-row')).toHaveCount(1);
+    await expect(early.page.getByTestId('thread-row')).toHaveCount(1);
+
+    const late = await openScreen(harness, browser);
+    try {
+      await expect(late.page.getByTestId('thread-row')).toHaveCount(1);
+      const [row] = await threadRows(harness);
+      await expect(late.page.locator(`[data-sidebar-thread-id="${row.id}"]`)).toHaveCount(1);
+    } finally {
+      await late.close();
+    }
+    await expect(errorToasts(page)).toHaveCount(0);
+  } finally {
+    await early.close();
+  }
+});
+
+test('erasing the text of a worktree-bound draft keeps it listed on every screen', async ({
+  harness, page, browser,
+}) => {
+  await seedProject(harness);
+  await openFreshDraft(harness, page);
+  await stageNewWorktree(page);
+  await applyExistingBranchWorktree(page);
+  const input = page.getByLabel('Message Input');
+  await input.fill('half a thought');
+  const [row] = await threadRows(harness);
+  await expect.poll(async () => (await harness.rpc<{ content: string }>('GetDraft', row.id)).content).toBe('half a thought');
+
+  const other = await openScreen(harness, browser);
+  try {
+    await expect(other.page.getByTestId('thread-row')).toHaveCount(1);
+    await input.fill('');
+    await expect.poll(async () => (await harness.rpc<{ content: string }>('GetDraft', row.id)).content).toBe('');
+    await expect(page.getByTestId('thread-row')).toHaveCount(1);
+    await expect(other.page.getByTestId('thread-row')).toHaveCount(1);
+    const late = await openScreen(harness, browser);
+    try {
+      await expect(late.page.getByTestId('thread-row')).toHaveCount(1);
+    } finally {
+      await late.close();
+    }
+    expect((await threadRows(harness)).map((r) => r.id)).toEqual([row.id]);
+  } finally {
+    await other.close();
+  }
+});
+
+// A staged worktree choice keeps the erased draft's row (empty-draft cleanup
+// skips it), but nothing makes the thread real: it leaves every sidebar and
+// the pane typing into it stays on it.
+test('erasing the text of a draft with no worktree takes it off every screen and keeps the pane', async ({
+  harness, page, browser,
+}) => {
+  await seedProject(harness);
+  await openFreshDraft(harness, page);
+  await stageNewWorktree(page);
+  const input = page.getByLabel('Message Input');
+  await input.fill('half a thought');
+  await expect(page.getByTestId('thread-row')).toHaveCount(1);
+  await expect.poll(async () => (await threadRows(harness)).length).toBe(1);
+  const [row] = await threadRows(harness);
+  await expect.poll(async () => (await harness.rpc<{ content: string }>('GetDraft', row.id)).content).toBe('half a thought');
+
+  const other = await openScreen(harness, browser);
+  try {
+    await expect(other.page.getByTestId('thread-row')).toHaveCount(1);
+    await input.fill('');
+    await expect(page.getByTestId('thread-row')).toHaveCount(0);
+    await expect(other.page.getByTestId('thread-row')).toHaveCount(0);
+    const late = await openScreen(harness, browser);
+    try {
+      await expect(late.page.getByTestId('thread-row')).toHaveCount(0);
+    } finally {
+      await late.close();
+    }
+    // The pane typing into it keeps its thread and its staged choice.
+    expect((await threadRows(harness)).map((r) => r.id)).toEqual([row.id]);
+    await expect(stripLabels(page).env).toHaveText('New Worktree');
+    await input.fill('typed again');
+    await expect(page.getByTestId('thread-row')).toHaveCount(1);
+    await expect(other.page.getByTestId('thread-row')).toHaveCount(1);
+    expect((await threadRows(harness)).map((r) => r.id)).toEqual([row.id]);
+    await expect(errorToasts(page)).toHaveCount(0);
+  } finally {
+    await other.close();
   }
 });
 

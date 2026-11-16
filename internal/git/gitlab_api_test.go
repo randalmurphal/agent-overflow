@@ -117,8 +117,8 @@ func TestGitLabReadPRReadsTheMergeRequestOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	paths := gitlabPaths(calls)
-	if countPrefix(paths, "GET "+mr) != 1 || len(paths) != 10 {
-		t.Fatalf("requests = %q, want one MR read, the approvals, the project, the viewer, the release, PRManageChecks, two discussion pages, one MRNoteReactions page and one PipelineJobs page", paths)
+	if countPrefix(paths, "GET "+mr) != 1 || len(paths) != 11 {
+		t.Fatalf("requests = %q, want one MR read, the approvals, the project, the viewer and its role, the release, PRManageChecks, two discussion pages, one MRNoteReactions page and one PipelineJobs page", paths)
 	}
 	for _, call := range calls.all() {
 		if call.Host != testForgeHost || call.Header.Get("Private-Token") != "test-token" {
@@ -162,6 +162,8 @@ func TestGitLabReadPRRequestsOnlyTheWantedParts(t *testing.T) {
 			return forgeAPIAnswer{Body: gitlabNoReactions}
 		case call.Path == mr+"/resource_state_events?per_page=100":
 			return forgeAPIAnswer{Body: `[]`}
+		case call.Op == "ProjectAccess":
+			return forgeAPIAnswer{Body: gitlabDeveloperRole}
 		case call.Path == gitlabTestProject:
 			return forgeAPIAnswer{Body: gitlabTestProjectSettings}
 		case call.Path == "user":
@@ -174,7 +176,7 @@ func TestGitLabReadPRRequestsOnlyTheWantedParts(t *testing.T) {
 		pipeline int32
 		paths    []string
 	}{
-		{PRReadParts{Detail: true}, 77, []string{"GET " + mr, "GET " + mr + "/approvals", "GET " + gitlabTestProject, "GET user", "GET metadata", "GRAPHQL PRManageChecks"}},
+		{PRReadParts{Detail: true}, 77, []string{"GET " + mr, "GET " + mr + "/approvals", "GET " + gitlabTestProject, "GET user", "GRAPHQL ProjectAccess", "GET metadata", "GRAPHQL PRManageChecks"}},
 		{PRReadParts{Detail: true}, 77, []string{"GET " + mr, "GET " + mr + "/approvals", "GRAPHQL PRManageChecks"}},
 		// The first threads read reads the reactions; the next, with the
 		// same notes, answers them from memory.
@@ -217,8 +219,8 @@ func TestGitLabThreadsStopOnANextPageThatDoesNotAdvance(t *testing.T) {
 			return forgeAPIAnswer{Body: gitlabTestMR(7, 0)}
 		case strings.HasPrefix(call.Path, mr+"/discussions?"):
 			return forgeAPIAnswer{Body: "[" + gitlabDiscussion("d", "ab12cd34") + "]", Header: http.Header{"X-Next-Page": {"1"}}}
-		case call.Path == gitlabTestProject:
-			return forgeAPIAnswer{Body: gitlabTestProjectSettings}
+		case call.Op == "ProjectAccess":
+			return forgeAPIAnswer{Body: gitlabDeveloperRole}
 		case call.Path == "user":
 			return forgeAPIAnswer{Body: `{"id":1,"username":"viewer"}`}
 		case call.Op == "MRNoteReactions":
@@ -231,7 +233,7 @@ func TestGitLabThreadsStopOnANextPageThatDoesNotAdvance(t *testing.T) {
 		t.Fatalf("ListReviewThreads = %+v, %v", threads, err)
 	}
 	if n := len(calls.all()); n != 5 {
-		t.Fatalf("requests = %q, want the MR, one discussions page, the project, the viewer and the reactions", gitlabPaths(calls))
+		t.Fatalf("requests = %q, want the MR, one discussions page, the viewer and its role, and the reactions", gitlabPaths(calls))
 	}
 }
 
@@ -282,6 +284,8 @@ func TestGitLabSubmitReview(t *testing.T) {
 		switch call.Method + " " + call.Path {
 		case "GET " + mr:
 			return forgeAPIAnswer{Body: gitlabTestMR(7, 0)}
+		case "GET " + mr + "/approvals":
+			return forgeAPIAnswer{Body: `{"user_can_approve":true}`}
 		case "GET " + mr + "/draft_notes?per_page=100":
 			return forgeAPIAnswer{Body: `[]`}
 		case "GET " + mr + "/diffs?per_page=100":
@@ -307,13 +311,14 @@ func TestGitLabSubmitReview(t *testing.T) {
 	if err != nil || !result.PostedReview {
 		t.Fatalf("SubmitReview = %+v, %v", result, err)
 	}
-	want := []string{"GET metadata", "GET " + mr, "GET " + mr + "/draft_notes?per_page=100", "GET " + mr + "/diffs?per_page=100", "POST " + mr + "/draft_notes", "POST " + mr + "/draft_notes", "POST " + mr + "/draft_notes", "POST " + mr + "/draft_notes/bulk_publish", "POST " + mr + "/approve"}
+	want := []string{"GET metadata", "GET " + mr, "GET " + mr + "/approvals", "GET " + mr + "/draft_notes?per_page=100", "GET " + mr + "/diffs?per_page=100", "POST " + mr + "/draft_notes", "POST " + mr + "/draft_notes", "POST " + mr + "/draft_notes", "POST " + mr + "/draft_notes/bulk_publish", "POST " + mr + "/approve"}
 	if got := gitlabPaths(calls); strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("requests = %q, want %q", got, want)
 	}
-	// Past the release and pending draft notes reads, the writes in order.
+	// Past the release, approvals and pending draft notes reads, the
+	// writes in order.
 	sent := slices.Delete(calls.all(), 0, 1)
-	sent = slices.Delete(sent, 1, 2)
+	sent = slices.Delete(sent, 1, 3)
 	var summary, right, left struct {
 		Note     string             `json:"note"`
 		Position *gitlabPositionRaw `json:"position"`
@@ -542,6 +547,10 @@ func TestGitLabOriginScopedLists(t *testing.T) {
 	t.Parallel()
 	list := gitlabTestProject + "/merge_requests"
 	core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
+		if call.Path == gitlabTestProject {
+			// The origin is no fork.
+			return forgeAPIAnswer{Body: `{"id":10}`}
+		}
 		u, err := url.Parse(call.Path)
 		if err != nil || u.EscapedPath() != list {
 			return forgeUnexpected(t, call)
@@ -594,6 +603,9 @@ func TestGitLabOriginScopedLists(t *testing.T) {
 	want := []string{
 		"GET " + list + "?per_page=100&source_branch=feature%2Fx+y&state=opened",
 		"GET " + list + "?per_page=100&source_branch=none&state=opened",
+		// A branch with no merge request of its own asks whether the
+		// origin is a fork, once per login per gitlabCacheTTL.
+		"GET " + gitlabTestProject,
 		"GET " + list + "?order_by=updated_at&per_page=100&sort=desc&state=merged",
 		"GET " + list + "?order_by=updated_at&page=2&per_page=100&sort=desc&state=merged",
 		"GET " + list + "?order_by=updated_at&per_page=30&sort=desc&state=merged",
@@ -621,6 +633,9 @@ func TestGitLabListOpenPRsReadsPastForks(t *testing.T) {
 		return "[" + strings.Join(rows, ",") + "]"
 	}
 	core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
+		if call.Path == gitlabTestProject {
+			return forgeAPIAnswer{Body: `{"id":10}`}
+		}
 		u, err := url.Parse(call.Path)
 		if err != nil {
 			return forgeUnexpected(t, call)
@@ -646,8 +661,55 @@ func TestGitLabListOpenPRsReadsPastForks(t *testing.T) {
 	if err != nil || len(pulls) != 0 {
 		t.Fatalf("ListOpenPRs(forks-only) = %d pulls, %v", len(pulls), err)
 	}
-	if n := len(calls.all()) - 2; n != gitlabOpenMRsMaxPages {
-		t.Fatalf("forks-only lookup sent %d requests, want %d", n, gitlabOpenMRsMaxPages)
+	// The pages, then whether the origin is a fork (it is not).
+	if n := len(calls.all()) - 2; n != gitlabOpenMRsMaxPages+1 {
+		t.Fatalf("forks-only lookup sent %d requests, want %d", n, gitlabOpenMRsMaxPages+1)
+	}
+}
+
+// A checkout of a fork whose branch has no merge request in the fork
+// finds the one it opened in the project it was forked from: its source
+// is the fork, not another fork's or the source project's own branch of
+// the same name. Its merged heads add the source project's merges from
+// the fork.
+func TestGitLabForkCheckoutFindsItsUpstreamMR(t *testing.T) {
+	t.Parallel()
+	fork, upstream := gitlabTestProject+"/merge_requests", "projects/10/merge_requests"
+	core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
+		if call.Path == gitlabTestProject {
+			return forgeAPIAnswer{Body: `{"id":20,"forked_from_project":{"id":10,"path_with_namespace":"grp/upstream"}}`}
+		}
+		u, err := url.Parse(call.Path)
+		if err != nil {
+			return forgeUnexpected(t, call)
+		}
+		switch q := u.Query(); {
+		case u.EscapedPath() == fork && q.Get("state") == "opened":
+			return forgeAPIAnswer{Body: `[]`}
+		case u.EscapedPath() == fork:
+			return forgeAPIAnswer{Body: `[{"web_url":"https://gitlab.com/grp/sub/app/-/merge_requests/1","iid":1,"title":"Fork's own","state":"merged","project_id":20,"source_project_id":20,"source_branch":"local","sha":"aaa"}]`}
+		case u.EscapedPath() == upstream && q.Get("state") == "opened":
+			return forgeAPIAnswer{Body: `[{"web_url":"https://gitlab.com/grp/upstream/-/merge_requests/5","iid":5,"title":"Other fork","state":"opened","project_id":10,"source_project_id":30},` +
+				`{"web_url":"https://gitlab.com/grp/upstream/-/merge_requests/6","iid":6,"title":"Mine","state":"opened","project_id":10,"source_project_id":20,"target_branch":"main"}]`}
+		case u.EscapedPath() == upstream:
+			return forgeAPIAnswer{Body: `[{"source_branch":"feature","sha":"bbb","web_url":"https://gitlab.com/grp/upstream/-/merge_requests/6","source_project_id":20},` +
+				`{"source_branch":"feature","sha":"ccc","web_url":"https://gitlab.com/grp/upstream/-/merge_requests/5","source_project_id":30}]`}
+		}
+		return forgeUnexpected(t, call)
+	})
+	cwd := t.TempDir()
+	core.recordOrigin(cwd, originIdentity{url: "git@gitlab.com:grp/sub/app.git", known: true}, core.nowFn())
+	pulls, err := core.ListOpenPRs(t.Context(), cwd, "feature")
+	if err != nil || len(pulls) != 1 || pulls[0] != (GitPR{URL: "https://gitlab.com/grp/upstream/-/merge_requests/6", Number: 6, Title: "Mine", State: "open", BaseBranch: "main"}) {
+		t.Fatalf("ListOpenPRs = %+v, %v; want the fork's merge request in its source project", pulls, err)
+	}
+	heads, err := core.ListMergedPRHeads(t.Context(), cwd, 50)
+	want := []MergedPRHead{{HeadRefName: "local", HeadOid: "aaa", URL: "https://gitlab.com/grp/sub/app/-/merge_requests/1"}, {HeadRefName: "feature", HeadOid: "bbb", URL: "https://gitlab.com/grp/upstream/-/merge_requests/6"}}
+	if err != nil || !slices.Equal(heads, want) {
+		t.Fatalf("ListMergedPRHeads = %+v, %v; want %+v", heads, err, want)
+	}
+	if got := gitlabPaths(calls); !slices.Contains(got, "GET "+upstream+"?per_page=100&source_branch=feature&state=opened") {
+		t.Fatalf("requests = %v", got)
 	}
 }
 
@@ -706,11 +768,33 @@ func TestGitLabFetchAttachment(t *testing.T) {
 		t.Fatalf("FetchAttachment = %q %q %v", data, name, err)
 	}
 	sent := calls.all()
-	if len(sent) != 1 || sent[0].Host != "gitlab.example.com:8443" || sent[0].Header.Get("Accept") != "*/*" || sent[0].Header.Get("Private-Token") != "test-token" {
-		t.Fatalf("attachment request = %+v", sent)
+	if len(sent) != 2 || sent[0].Path != "metadata" || sent[1].Host != "gitlab.example.com:8443" || sent[1].Header.Get("Accept") != "*/*" || sent[1].Header.Get("Private-Token") != "test-token" {
+		t.Fatalf("attachment requests = %+v", sent)
 	}
 	if _, _, err := core.FetchAttachment(t.Context(), ref.Repository(), href, 4); err == nil || err.Error() != "attachment is larger than 4 bytes" {
 		t.Fatalf("over-cap attachment = %v", err)
+	}
+}
+
+// The uploads route a GitLab attachment is fetched from first exists in
+// 17.4: a server below the supported floor is refused with the floor
+// sentence before the upload is asked for.
+func TestGitLabFetchAttachmentBelowTheFloorIsRefused(t *testing.T) {
+	t.Parallel()
+	core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
+		if call.Path == "metadata" {
+			return forgeAPIAnswer{Body: `{"version":"17.3.7-ee","enterprise":true}`}
+		}
+		t.Errorf("sent %s %s to a server below the floor", call.Method, call.Path)
+		return forgeAPIAnswer{Status: http.StatusNotFound, Body: `{"message":"404 Not Found"}`}
+	})
+	ref := PRReference{Forge: "gitlab", Host: "gitlab.com", Namespace: "g", Repo: "r", Number: 1}
+	_, _, err := core.FetchAttachment(t.Context(), ref.Repository(), "/uploads/"+testUploadSecretB+"/a.png", 1<<20)
+	if refused, ok := errors.AsType[*ForgeActionError](err); !ok || refused.Message != "GitLab on gitlab.com runs 17.3; GitLab 18.0 or later is needed." {
+		t.Fatalf("FetchAttachment below the floor = %v", err)
+	}
+	if n := len(calls.all()); n != 1 {
+		t.Fatalf("requests = %d, want the release read alone", n)
 	}
 }
 
@@ -720,7 +804,10 @@ func TestGitLabFetchAttachment(t *testing.T) {
 func TestGitLabFetchAttachmentFailureHidesTheSecret(t *testing.T) {
 	t.Parallel()
 	var mode atomic.Value
-	core, _ := newForgeAPICore(t, func(forgeAPICall) forgeAPIAnswer {
+	core, _ := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
+		if call.Path == "metadata" {
+			return forgeUnexpected(t, call)
+		}
 		switch mode.Load() {
 		case "drop":
 			panic(http.ErrAbortHandler)

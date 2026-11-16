@@ -36,6 +36,10 @@ var (
 	killGrace = 2 * time.Second
 )
 
+// stopLeftovers ends what the leader left in its group. A test replaces it
+// with a stop that fails.
+var stopLeftovers = procutil.StopConfiguredGroup
+
 // ErrLineTooLong is returned when a single stdout line exceeds maxLineSize.
 // Callers should treat this as session-fatal: the subprocess is killed by
 // ReadLine before the error is surfaced so no orphan process remains.
@@ -43,12 +47,15 @@ var ErrLineTooLong = errors.New("provider: stdout line exceeded maximum size")
 
 // Process manages a subprocess with stdin/stdout pipes.
 type Process struct {
-	cmd              *exec.Cmd
-	stdin            io.WriteCloser
-	stdout           *bufio.Reader
-	stdoutFile       *os.File
-	done             chan struct{}
-	err              error
+	cmd        *exec.Cmd
+	stdin      io.WriteCloser
+	stdout     *bufio.Reader
+	stdoutFile *os.File
+	done       chan struct{}
+	err        error
+	// groupErr is set before done closes when processes the leader left in
+	// its group could not be ended; the group then stays watched.
+	groupErr         error
 	mu               sync.Mutex
 	eventLogger      *logging.Logger
 	eventLogRedactor EventLogRedactor
@@ -85,23 +92,14 @@ type SpawnConfig struct {
 	// answer and its write to disk destroys the login with no copy anywhere.
 	// SIGTERM lets the CLI finish the write and exit.
 	//
-	// The SIGTERM goes to the process group; the WaitDelay escalation is
-	// exec's own, which kills the LEADER only. Grandchildren that ignore
-	// SIGTERM are still collected by the caller's Close()/Kill() ladder,
-	// which signals the group.
+	// Both signals go to the process group (procutil.StopConfiguredGroup),
+	// so a helper that ignores SIGTERM is killed with the leader; exec's own
+	// WaitDelay escalation would kill only the leader.
 	//
 	// Session spawns deliberately do not set it: their Close() already runs
 	// the graceful stdin/TERM/KILL ladder, and a context cancel there is a
 	// teardown that must not wait.
 	GracefulCancel bool
-	// Reaper, when set, is handed the group as soon as the leader starts and
-	// released once Wait has seen the leader exit, so the orphan reaper ends
-	// the group if the backend dies first. Sessions set it: they run for
-	// hours and start MCP servers into their group. A spawn without one gets
-	// SIGTERM to its leader when the backend dies, on Linux only (Pdeathsig).
-	// A reaped spawn gets no Pdeathsig: it would end the leader whose start
-	// time the next launch's sweep identifies the group by.
-	Reaper procutil.Reaper
 }
 
 // EventLogRedactor rewrites provider stdin/stdout lines before they are
@@ -111,21 +109,30 @@ type EventLogRedactor func(direction string, data []byte) []byte
 
 // Spawn starts a subprocess with stdin/stdout pipes and process group isolation.
 // The context is associated with the command — canceling it will kill the process.
-// Prefer Close() for graceful shutdown.
-func Spawn(ctx context.Context, cfg SpawnConfig) (*Process, error) {
+// Prefer Close() for graceful shutdown. lifetime says what ends the process if
+// the backend dies first; a launch without one is refused before it starts.
+func Spawn(ctx context.Context, lifetime Lifetime, cfg SpawnConfig) (*Process, error) {
+	if err := lifetime.check(ctx); err != nil {
+		return nil, err
+	}
+	reaper := lifetime.reaper
 	cmd := exec.CommandContext(ctx, cfg.Binary, cfg.Args...)
 	cmd.Dir = cfg.Dir
 	// applySysProcAttr is platform-split: POSIX wires up Setpgid so we
 	// can signal the whole tree later; the Windows stub leaves the
 	// default attrs in place because the launcher never spawns provider
 	// children on Windows (the WSL-side Linux backend does).
-	applySysProcAttr(cmd, cfg.Reaper == nil)
+	applySysProcAttr(cmd)
 	if cfg.GracefulCancel {
-		// Returning nil rather than an error keeps exec's own accounting:
-		// a process that then exits leaves Wait reporting the context error,
-		// exactly as the default Kill-based cancel does.
+		// Returning nil once the group is gone keeps exec's own accounting: the
+		// exit leaves Wait reporting the context error, exactly as the default
+		// Kill-based cancel does. A group the stop could not empty is Wait's
+		// error, and settleGroup keeps it watched. WaitDelay only bounds Wait
+		// once the stop has returned.
 		cmd.Cancel = func() error {
-			signalGroupPlatform(cmd.Process.Pid, syscall.SIGTERM)
+			if err := procutil.StopConfiguredGroup(cmd, killGrace); err != nil && !errors.Is(err, os.ErrProcessDone) {
+				return err
+			}
 			return nil
 		}
 		cmd.WaitDelay = killGrace
@@ -173,9 +180,7 @@ func Spawn(ctx context.Context, cfg SpawnConfig) (*Process, error) {
 		stderrWrite.Close()
 		return nil, fmt.Errorf("provider: start %s: %w", cfg.Binary, err)
 	}
-	if cfg.Reaper != nil {
-		cfg.Reaper.Watch(cmd.Process.Pid)
-	}
+	reaper.Watch(cmd.Process.Pid)
 	// The child inherited stdoutWrite. The parent must close its copy so the
 	// reader observes EOF after the child exits and its final bytes drain.
 	if err := stdoutWrite.Close(); err != nil {
@@ -227,17 +232,34 @@ func Spawn(ctx context.Context, cfg SpawnConfig) (*Process, error) {
 		provider:         cfg.Provider,
 	}
 
-	// Wait goroutine: detect process exit. The release lands before done
-	// closes, so a returned Close has nothing left watched.
+	// Wait goroutine: detect process exit. Wait sees only the leader; what
+	// it left in the group (an MCP server, a backgrounded helper) has nobody
+	// to manage it, so it is ended here, and the group is released only once
+	// it is empty. Both land before done closes, so a returned Close has
+	// nothing left running or watched.
 	go func() {
 		p.err = cmd.Wait()
-		if cfg.Reaper != nil {
-			cfg.Reaper.Release(cmd.Process.Pid)
-		}
+		p.groupErr = p.settleGroup(reaper)
 		close(p.done)
 	}()
 
 	return p, nil
+}
+
+// settleGroup ends what the exited leader left in its group and releases the
+// group once it is empty. A group it cannot empty stays watched, so the orphan
+// reaper still ends it with the backend, and the failure is logged and
+// returned from Close and Kill.
+func (p *Process) settleGroup(reaper procutil.Reaper) error {
+	if procutil.ConfiguredGroupAlive(p.cmd) {
+		if err := stopLeftovers(p.cmd, killGrace); err != nil && !errors.Is(err, os.ErrProcessDone) {
+			err = fmt.Errorf("provider: end processes left in group %d: %w", p.cmd.Process.Pid, err)
+			log.Printf("provider: provider=%q thread=%q: %v", p.provider, p.threadID, err)
+			return err
+		}
+	}
+	reaper.Release(p.cmd.Process.Pid)
+	return nil
 }
 
 // WriteLine writes a line to stdin (appends newline).
@@ -385,7 +407,8 @@ func (p *Process) Err() error {
 // 4. Wait killGrace
 // 5. SIGKILL the process group
 //
-// Returns nil when the process is gone, regardless of its exit code.
+// Returns nil when no process of the group is left, regardless of the
+// leader's exit code; an error when one could not be ended.
 // A subprocess exiting non-zero is the goal of Close, not a failure of
 // it — propagating `cmd.Wait`'s ExitError up the call chain caused
 // "Revert failed: Exit status 1" toasts when callers (e.g. revert,
@@ -404,7 +427,7 @@ func (p *Process) Close() error {
 
 	select {
 	case <-p.done:
-		return p.closeResult(p.err)
+		return p.closed()
 	case <-time.After(shutdownGrace):
 	}
 
@@ -413,19 +436,27 @@ func (p *Process) Close() error {
 
 	select {
 	case <-p.done:
-		return p.closeResult(p.err)
+		return p.closed()
 	case <-time.After(killGrace):
 	}
 
 	// SIGKILL the process group.
-	return p.closeResult(p.Kill())
+	p.signalGroup(syscall.SIGKILL)
+	<-p.done
+	return p.closed()
 }
 
-// Kill immediately kills the process group.
+// Kill immediately kills the process group. It returns the leader's exit
+// error joined with a failure to end what the leader left in its group.
 func (p *Process) Kill() error {
 	p.signalGroup(syscall.SIGKILL)
 	<-p.done
-	return p.err
+	return errors.Join(p.err, p.groupErr)
+}
+
+// closed is Close's result once done has closed.
+func (p *Process) closed() error {
+	return errors.Join(p.closeResult(p.err), p.groupErr)
 }
 
 // closeResult treats a subprocess exit (any code or signal) as a

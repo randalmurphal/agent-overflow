@@ -201,6 +201,16 @@ export function listThread(thread: Thread): void {
 }
 
 /**
+ * The row left the sidebar but the thread still exists (an `emptied`
+ * frame): only the catalog entry goes. Panes showing it, and the per-thread
+ * state they use, stay; `removeThread` is for a thread that is gone.
+ */
+export function unlistThread(id: string): void {
+  invalidateReplicaCatalog(threadBackend(id) ?? '', 'threads');
+  catalogWriter.mutate(threadBackend(id), (rows) => rows.filter((t) => t.id !== id));
+}
+
+/**
  * `prependThread` for a row an RPC returned, from a call started at `mark`
  * (threadRowFrameMark): a thread:updated frame that arrived during the call
  * (the new row's `listed` echo, a later write) is kept over the reply

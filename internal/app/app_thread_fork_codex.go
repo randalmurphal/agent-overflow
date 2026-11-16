@@ -121,6 +121,7 @@ func (a *App) forkCodexThreadAt(ctx context.Context, source store.Thread, lastTu
 		Env:            a.sessionProcessEnv(source.Provider, nil, aoSessionCredential{}),
 		SourceThreadID: source.SessionRef,
 		LastTurnID:     lastTurnID,
+		Reaper:         a.groupReaper("codex fork"),
 	})
 }
 

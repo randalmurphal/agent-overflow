@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"regexp"
 	"strings"
+	"unicode"
 
 	"agent-overflow/internal/stringsx"
 )
@@ -16,8 +17,8 @@ import (
 // row's candidate text (items.find_text, import_history_items.find_text) is
 // a loose form of what the row can show, stored when the row is written, and
 // a row is a candidate when its candidate text holds the loose form of the
-// query. A candidate may hold no match; a row that holds one is always a
-// candidate.
+// query, or is findAnyCandidate. A candidate may hold no match; a row that
+// holds one is always a candidate.
 //
 // The loose form (findLoose) is the text folded by the find rule with every
 // ASCII byte that is not a letter or digit removed: markup punctuation,
@@ -26,23 +27,25 @@ import (
 // keeps every match a substring. What rendering adds or removes beyond such
 // bytes is covered by variants, joined by "\n", which no loose query holds:
 //
-//   - every row: its summary, and its summary with the markup that renders
-//     no letters erased outside code (findErased): link destinations and
-//     reference labels, images, and HTML tags and comments (a character
-//     reference shows as written); and the text of each table cell a
-//     row-span marker merges into the cell above;
+//   - every row: its summary;
+//   - assistant rows: the summary as its Markdown shows (findShownMarkdown),
+//     and the text of each table cell a row-span marker merges into the cell
+//     above;
+//   - user rows: the summary without its attachment image blocks;
 //   - tool rows: also the tool name and every string in meta and in their
 //     payload's meta, where a card's command and arguments come from;
 //   - reasoning rows: the full streamed content, which an expanded row
 //     shows and the summary keeps only the tail of.
 //
-// A match the frontend counts spans no content find skips: the highlighter
-// and the projections end a run at each skipped island (math, diagrams,
-// images, a blocked link's tag). The variants cover each construct as shown
-// or as erased, not a line that mixes both: a query spanning literal markup
-// that looks like a link or tag and, on the same line, markup that renders
-// erased is not a candidate. findCandidateVectors.json holds the frontend's
-// find text to this filter.
+// Why this holds every Markdown match: a run of an assistant row is its
+// block's source less the spans the renderer erases (link destinations,
+// images, HTML tags and comments, reference labels), cut where find skips,
+// and moved only by a table merge. findShownMarkdown erases exactly those
+// spans when it reads the text as the frontend's lexer does, so each run lies
+// in the shown variant, or in the summary for code shown as written; when it
+// cannot, the row's candidate text is findAnyCandidate, which every query
+// matches. findCandidateVectors.json holds the frontend's find text to this
+// filter.
 
 // findSeparator joins candidate variants; no loose text holds it.
 const findSeparator = "\n"
@@ -89,6 +92,11 @@ func findPayloadKind(kind string) bool {
 	return findReasoningKind(kind) || findToolKind(kind)
 }
 
+// findAnyCandidate is the candidate text of a row the filter cannot narrow,
+// which every query matches (findMatchSQL). Joined variants never form it:
+// each is nonempty, and the separator only joins them.
+const findAnyCandidate = findSeparator
+
 // findCandidateText is a row's candidate text. payload is the part of the
 // row's payload it shows: a reasoning row's full streamed text, a tool
 // row's payload meta, or nil when the row has no payload.
@@ -103,12 +111,28 @@ func findCandidateText(kind, summary, meta, toolName string, payload *string) st
 		return findLoose(summary)
 	}
 	variants := []string{findLoose(summary)}
-	erased := findErased(summary)
-	if erased != summary {
-		variants = append(variants, findLoose(erased))
-	}
-	for _, merged := range findTableMerges(erased) {
-		variants = append(variants, findLoose(merged))
+	switch kind {
+	case "assistant_text":
+		shown, sure := findShownMarkdown(summary)
+		if !sure {
+			return findAnyCandidate
+		}
+		if shown != summary {
+			variants = append(variants, findLoose(shown))
+		}
+		for _, merged := range findTableMerges(shown) {
+			variants = append(variants, findLoose(merged))
+		}
+	case "user_text":
+		// The bubble shows its text as typed, less the image blocks
+		// (frontend utils/userMessageMeta.ts stripAttachmentImages).
+		stripped := findUserImageBlock.ReplaceAllString(summary, "")
+		if findUserMayJoinAroundCommand(stripped) {
+			return findAnyCandidate
+		}
+		if stripped != summary {
+			variants = append(variants, findLoose(stripped))
+		}
 	}
 	if findToolKind(kind) {
 		variants = append(variants, findLoose(toolName))
@@ -174,94 +198,31 @@ func appendMetaStrings(variants []string, meta string) []string {
 	return variants
 }
 
+// findMessageJoin mirrors usermessage.JoinSeparator, which the store cannot
+// import.
+const findMessageJoin = "\n\n---\n\n"
+
+// findUserMayJoinAroundCommand reports whether the bubble may join text
+// across a removed `!command`. The bubble drops each shell invocation, a run
+// of whole parts split on findMessageJoin whose trimmed text is `!command`
+// (usermessage.ShellInvocationRuns), so the run's first part starts with `!`
+// after white space. Dropping a run at either end leaves a substring of the
+// text; only a run with a part before and after it joins two parts, and its
+// first part is then one of the inner parts, which this checks.
+func findUserMayJoinAroundCommand(text string) bool {
+	parts := strings.Split(text, findMessageJoin)
+	for _, part := range parts[1:max(1, len(parts)-1)] {
+		if strings.HasPrefix(strings.TrimLeftFunc(part, unicode.IsSpace), "!") {
+			return true
+		}
+	}
+	return false
+}
+
 var (
-	findFenceOpen   = regexp.MustCompile("^ {0,3}(`{3,}|~{3,})")
-	findCodeSpan    = regexp.MustCompile("`+")
-	findHTMLComment = regexp.MustCompile(`(?s)<!--.*?-->`)
-	findImage       = regexp.MustCompile(`!\[[^\]\n]*\](?:\([^()\n]*(?:\([^()\n]*\)[^()\n]*)*\)|\[[^\]\n]*\])`)
-	findLinkTarget  = regexp.MustCompile(`\](?:\([^()\n]*(?:\([^()\n]*\)[^()\n]*)*\)|\[[^\]\n]*\])`)
-	findHTMLTag     = regexp.MustCompile(`</?[A-Za-z][A-Za-z0-9-]*(?:\s[^<>]*)?/?>`)
+	findUserImageBlock  = regexp.MustCompile(`\n\n!\[[^\]]*\]\(attachment://[^\s)]+\)`)
+	findSuperscriptCell = regexp.MustCompile(`\^[^^\n\r]+\^$`)
 )
-
-// findErased is text with the markup that renders no letters erased
-// outside fenced code blocks and code spans, which show their text as it
-// is. It reads markup lexically and liberally: a construct the renderer
-// shows as written stays in the summary variant.
-func findErased(text string) string {
-	if !strings.ContainsAny(text, "<[") {
-		return text
-	}
-	var out strings.Builder
-	out.Grow(len(text))
-	var prose strings.Builder
-	flush := func() {
-		if prose.Len() > 0 {
-			out.WriteString(findErasedProse(prose.String()))
-			prose.Reset()
-		}
-	}
-	fence := ""
-	for _, line := range strings.SplitAfter(text, "\n") {
-		if fence != "" {
-			out.WriteString(line)
-			trimmed := strings.TrimSpace(line)
-			if strings.HasPrefix(trimmed, fence) && strings.Trim(trimmed, fence[:1]) == "" {
-				fence = ""
-			}
-			continue
-		}
-		if m := findFenceOpen.FindStringSubmatch(line); m != nil {
-			flush()
-			fence = m[1]
-			out.WriteString(line)
-			continue
-		}
-		prose.WriteString(line)
-	}
-	flush()
-	return out.String()
-}
-
-// findErasedProse erases markup in text outside code spans: a run of n
-// backticks opens a span the next run of exactly n closes.
-func findErasedProse(text string) string {
-	var out strings.Builder
-	out.Grow(len(text))
-	runs := findCodeSpan.FindAllStringIndex(text, -1)
-	at := 0
-	for i := 0; i < len(runs); i++ {
-		open := runs[i]
-		width := open[1] - open[0]
-		closing := -1
-		for j := i + 1; j < len(runs); j++ {
-			if runs[j][1]-runs[j][0] == width {
-				closing = j
-				break
-			}
-		}
-		if closing < 0 {
-			continue
-		}
-		out.WriteString(eraseFindMarkup(text[at:open[0]]))
-		out.WriteString(text[open[0]:runs[closing][1]])
-		at = runs[closing][1]
-		i = closing
-	}
-	out.WriteString(eraseFindMarkup(text[at:]))
-	return out.String()
-}
-
-func eraseFindMarkup(text string) string {
-	if !strings.ContainsAny(text, "<[") {
-		return text
-	}
-	text = findHTMLComment.ReplaceAllString(text, "")
-	text = findImage.ReplaceAllString(text, "")
-	text = findLinkTarget.ReplaceAllString(text, "]")
-	return findHTMLTag.ReplaceAllString(text, "")
-}
-
-var findSuperscriptCell = regexp.MustCompile(`\^[^^\n\r]+\^$`)
 
 // findTableMerges is the text of each table cell a row-span marker merges:
 // a cell ending in "^" joins its text, after a space, to the cell above it

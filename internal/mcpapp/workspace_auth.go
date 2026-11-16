@@ -203,6 +203,7 @@ func (a *Service) claudeWorkspaceAuthConfig(workspacePath string) claude.Config 
 		Env:         a.sessionProcessEnv(string(provider.Claude)),
 		EventLogger: a.logger,
 		Retention:   a.claudeRetention(workspacePath),
+		Reaper:      a.deps.Reaper,
 	}
 }
 
@@ -238,6 +239,7 @@ func (a *Service) startWorkspaceMCPAuth(
 			WorkDir:        workspacePath,
 			Env:            a.sessionProcessEnv(providerName),
 			RequestTimeout: AuthRoundTripTimeout,
+			Reaper:         a.deps.Reaper,
 		}, serverName)
 		if err != nil {
 			return nil, err

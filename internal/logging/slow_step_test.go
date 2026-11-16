@@ -64,6 +64,28 @@ func TestErrorOutcomeClassifiesHowAStepEnded(t *testing.T) {
 	}
 }
 
+// A transport failure keeps its own classification; a completed exchange
+// is classified by its status.
+func TestHTTPOutcomeClassifiesAnExchange(t *testing.T) {
+	for _, tc := range []struct {
+		status int
+		err    error
+		want   string
+	}{
+		{http.StatusOK, nil, "ok"},
+		{http.StatusNotFound, nil, "refused"},
+		{http.StatusServiceUnavailable, nil, "error"},
+		{0, fmt.Errorf("wrapped: %w", context.Canceled), "canceled"},
+		{http.StatusServiceUnavailable, fmt.Errorf("read body: %w", context.Canceled), "canceled"},
+		{http.StatusOK, fmt.Errorf("read body: %w", timeoutErr{}), "timeout"},
+		{0, errors.New("connection refused"), "error"},
+	} {
+		if got := logging.HTTPOutcome(tc.status, tc.err); got != tc.want {
+			t.Errorf("HTTPOutcome(%d, %v) = %q, want %q", tc.status, tc.err, got, tc.want)
+		}
+	}
+}
+
 func TestStatusOutcomeClassifiesAnAnswer(t *testing.T) {
 	for status, want := range map[int]string{
 		http.StatusOK: "ok", http.StatusSwitchingProtocols: "ok", http.StatusNotFound: "refused",

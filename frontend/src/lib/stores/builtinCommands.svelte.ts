@@ -1140,7 +1140,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
           const answer = await pushWorkspace(workspace);
           const failure = gitAttemptFailure('push', answer);
           if (!failure) addToast('success', 'Pushed.');
-          else addErrorToast(answer.kind === 'failed' && answer.error ? userFacingError(answer.error) : failure.message, failure.error);
+          else addErrorToast(failure.message, failure.error);
         } catch (err) {
           addErrorToast(userFacingError(err), err);
         }
@@ -1158,7 +1158,7 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
           const answer = await pullWorkspace(workspace);
           const failure = gitAttemptFailure('pull', answer);
           if (!failure) addToast('success', 'Pulled.');
-          else addErrorToast(answer.kind === 'failed' && answer.error ? userFacingError(answer.error) : failure.message, failure.error);
+          else addErrorToast(failure.message, failure.error);
         } catch (err) {
           addErrorToast(userFacingError(err), err);
         }

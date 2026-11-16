@@ -6,6 +6,7 @@ import (
 
 	"agent-overflow/internal/claudemodels"
 	"agent-overflow/internal/codexmodels"
+	"agent-overflow/internal/procutil"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/codex"
@@ -39,6 +40,8 @@ type AccountProbeRequest struct {
 // specific probe constructors remain separate so Claude and Codex transactions
 // cannot accidentally collapse into a lowest-common-denominator abstraction.
 type Deps struct {
+	// Reaper ends a model-list process if the backend dies first.
+	Reaper                     procutil.Reaper
 	CurrentSettings            func() settings.Settings
 	SettingsService            func() *settings.Service
 	ProviderBinary             func(providerName string) string

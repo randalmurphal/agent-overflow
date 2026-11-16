@@ -91,8 +91,11 @@ func TestForgeListReadsTakeAPageOverTheDefaultBodyBound(t *testing.T) {
 		t.Parallel()
 		page := overDefault(t, pageOf(100, gitlabMR))
 		core, _ := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
-			if strings.HasPrefix(call.Path, gitlabTestProject+"/merge_requests?") {
+			switch {
+			case strings.HasPrefix(call.Path, gitlabTestProject+"/merge_requests?"):
 				return forgeAPIAnswer{Body: page}
+			case call.Path == gitlabTestProject:
+				return forgeAPIAnswer{Body: `{"id":10}`}
 			}
 			return forgeUnexpected(t, call)
 		})
@@ -112,7 +115,7 @@ func TestForgeListReadsTakeAPageOverTheDefaultBodyBound(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		listed, err := readGitLabMRList(t.Context(), client, gitlabTestRef(1).Repository())
+		listed, _, err := readGitLabMRList(t.Context(), client, gitlabTestRef(1).Repository())
 		if err != nil || len(listed) != 100 {
 			t.Fatalf("readGitLabMRList = %d, %v", len(listed), err)
 		}
@@ -138,8 +141,8 @@ func TestForgeListReadsTakeAPageOverTheDefaultBodyBound(t *testing.T) {
 				return forgeAPIAnswer{Body: gitlabTestMR(7, 0)}
 			case strings.HasPrefix(call.Path, mr+"/discussions?"):
 				return forgeAPIAnswer{Body: page}
-			case call.Path == gitlabTestProject:
-				return forgeAPIAnswer{Body: gitlabTestProjectSettings}
+			case call.Op == "ProjectAccess":
+				return forgeAPIAnswer{Body: gitlabDeveloperRole}
 			case call.Path == "user":
 				return forgeAPIAnswer{Body: `{"id":1,"username":"viewer"}`}
 			case call.Op == "MRNoteReactions":

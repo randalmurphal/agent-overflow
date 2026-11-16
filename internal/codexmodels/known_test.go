@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/procutil"
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 )
 
@@ -15,11 +17,14 @@ func TestKnownModelSurvivesExpiryRefreshAndFailure(t *testing.T) {
 	next := []provider.ModelInfo{{Slug: "m", Provider: "codex", Capabilities: []string{provider.ModelCapabilityFastMode}, FastModeTier: &provider.FastModeTier{ID: "turbo"}, ReasoningEfforts: []provider.ReasoningEffortOption{{Slug: "high", Default: true}}}}
 	var failure error
 	calls := 0
-	cache := NewWith(time.Minute, func(context.Context, string) ([]provider.ModelInfo, error) { calls++; return next, failure }, func() time.Time { return now })
+	cache := NewWith(time.Minute, func(context.Context, string, procutil.Reaper) ([]provider.ModelInfo, error) {
+		calls++
+		return next, failure
+	}, func() time.Time { return now })
 	if _, ok := cache.KnownModel("codex", "m"); ok || calls != 0 {
 		t.Fatal("cold evidence started a lookup")
 	}
-	if _, err := cache.Get(context.Background(), "codex"); err != nil {
+	if _, err := cache.Get(context.Background(), "codex", procutiltest.Reaper()); err != nil {
 		t.Fatal(err)
 	}
 	assertKnown := func() {
@@ -36,7 +41,7 @@ func TestKnownModelSurvivesExpiryRefreshAndFailure(t *testing.T) {
 		t.Fatal("expired evidence started a lookup")
 	}
 	next = []provider.ModelInfo{{Slug: "m", Provider: "codex", ReasoningEfforts: []provider.ReasoningEffortOption{{Slug: "low", Default: true}}}}
-	current, err := cache.Get(context.Background(), "codex")
+	current, err := cache.Get(context.Background(), "codex", procutiltest.Reaper())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,7 +52,7 @@ func TestKnownModelSurvivesExpiryRefreshAndFailure(t *testing.T) {
 	now = now.Add(2 * time.Minute)
 	next = nil
 	failure = errors.New("offline")
-	if _, err := cache.Get(context.Background(), "codex"); err == nil {
+	if _, err := cache.Get(context.Background(), "codex", procutiltest.Reaper()); err == nil {
 		t.Fatal("expected refresh error")
 	}
 	assertKnown()

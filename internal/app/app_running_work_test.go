@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/providerupdate"
 	"agent-overflow/internal/providerupdate/updatefake"
@@ -76,7 +77,7 @@ func TestMergedPRWorktreeBusyWaitsForAShellCommandAndATerminal(t *testing.T) {
 
 	app.terminals = terminal.NewManager(nil, nil)
 	t.Cleanup(func() { _ = app.terminals.Shutdown() })
-	summary, err := app.terminals.Open("draft:placeholder", terminal.SessionOptions{Shell: "/bin/sh", Args: []string{"-c", "sleep 30"}, Cwd: path})
+	summary, err := app.terminals.Open("draft:placeholder", terminal.SessionOptions{Reaper: procutiltest.Reaper(), Shell: "/bin/sh", Args: []string{"-c", "sleep 30"}, Cwd: path})
 	if err != nil {
 		t.Fatalf("open terminal: %v", err)
 	}

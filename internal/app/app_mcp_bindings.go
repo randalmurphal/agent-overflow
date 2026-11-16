@@ -96,6 +96,7 @@ func (a *App) mcpService() *mcpapp.Service {
 
 func (a *App) mcpDeps() mcpapp.Deps {
 	return mcpapp.Deps{
+		Reaper:         a.groupReaper("mcp sign-in"),
 		Context:        a.lifeCtx,
 		IsShuttingDown: a.shuttingDown.Load,
 		// Under the thread's action lock, as a send starts one, so the

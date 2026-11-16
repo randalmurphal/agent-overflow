@@ -47,12 +47,12 @@ func (a *App) armWorktreeWatch() {
 		return
 	}
 	a.worktreeWatchArmed.Store(true)
-	go func() {
+	a.unattendedLoops.Go(func() {
 		if err := a.awaitFirstReadsSettled(a.lifeCtx()); err != nil {
 			return
 		}
 		a.syncWorktreeWatch()
-	}()
+	})
 }
 
 // syncWorktreeWatch makes the watched set equal to the project rows,

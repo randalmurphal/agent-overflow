@@ -3,7 +3,15 @@
 This package owns six utilities:
 
 - `ConfigureGroup` and `KillConfiguredGroup` arrange and terminate an owned
-  child process group using the platform implementation. On Unix,
+  child process group using the platform implementation.
+  `StopConfiguredGroup` is the graceful stop: SIGTERM to the group, SIGKILL
+  to the group once its grace passes with any member left, and a return
+  only once the group is gone or with the error that left it running. Use
+  it as `exec.Cmd.Cancel` rather than pairing a SIGTERM with `WaitDelay`,
+  which kills only the leader. `Group` stops through the same function, and
+  an owner of a group `StartGroup` does not supervise (a provider, a
+  terminal) uses it to end what a reaped leader left before it releases the
+  group's watch. On Unix,
   `SignalGroup` returns `os.ErrProcessDone` once no member of a group can
   still run, including the exited, unreaped group that macOS refuses with
   EPERM. Use it wherever a group signal's result is checked.
@@ -24,8 +32,9 @@ This package owns six utilities:
   returns a `Group`; `Group.Wait` supervises it to the end, and `RunGroup` is
   the two together. Both take the `Reaper` that ends the group if this
   process dies, and refuse a nil one (`ErrNoReaper`): the group is watched
-  before `StartGroup` returns and released once `Wait` has seen it end, or
-  leave only kept leftovers. A group the kill could not end stays watched.
+  before `StartGroup` returns and released once no member is alive; a group
+  the kill could not end stays watched. Kept leftovers are the one exception:
+  released alive, they outlive this process.
   Which spawners use it, and what ends the others, is in
   [process lifetime](../../docs/architecture/process-lifetime.md). This is the one implementation of pipe ownership,
   cancellation, the leftover sweep and the drain: do not build another from
@@ -35,11 +44,12 @@ This package owns six utilities:
   `TerminateGrace`, and sets `Stopped`: an exit status is then the command's
   answer to the signal, not its result. After the leader exits `Wait` stops
   whatever is still in the group and reports those processes as `Leftovers`;
-  `KeepLeftovers` leaves them running for a command that may start a service
-  on purpose. `OutputHeld` reports a pipe still open after the drain grace.
+  `KeepLeftovers` leaves them running, and releases them from the reaper, for
+  a command that may start a service on purpose. `OutputHeld` reports a pipe
+  still open after the drain grace.
   `Wait`'s error is `*exec.ExitError` for a non-zero exit or a signal death,
-  or `ErrGroupSurvived` when the leader ignored SIGKILL (it runs as another
-  user) and was abandoned. `Output` should not return an error; one is
+  or `ErrGroupSurvived` when the leader, or a leftover the sweep stopped,
+  outlived SIGKILL (it runs as another user) and was abandoned. `Output` should not return an error; one is
   reported as `PipeErr` and the rest of the output is discarded.
   `GroupOutcome.OutputErr` folds `PipeErr` and `OutputHeld` (as
   `ErrOutputHeld`) into one error for a caller that fails a command whose
@@ -61,6 +71,10 @@ This package owns six utilities:
   it busy, and running it fails with "text file busy". Every process start
   waits, so hold it only across the write, and not for an executable another
   process runs.
+
+Tests whose subject refuses to start without a reaper pass
+`procutiltest.Reaper()`, which watches nothing, or a `procutiltest.Recorder`
+to assert what is watched. Production code must not import `procutiltest`.
 
 Call `ConfigureGroup` before starting the command and pass the same command to
 `KillConfiguredGroup`. These APIs do not verify process identity or establish

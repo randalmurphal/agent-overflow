@@ -87,13 +87,25 @@ func (s *Store) DeleteFlushQueueItem(id string) error {
 	return nil
 }
 
-// DeleteDispatchedFlushQueueItem retires a successful provider write. Async
-// answers retain recovery until a stable user-message echo confirms consumption.
-func (s *Store) DeleteDispatchedFlushQueueItem(id string) error {
-	_, err := s.db.Exec(`DELETE FROM flush_queue_items WHERE id=? AND NOT EXISTS (
+// DeleteDispatchedFlushQueueItems retires the queue rows of the messages one
+// successful provider write carried, in one statement: the members of a
+// joined message lose their rows together, so a crash leaves all of them for
+// the boot restore or none. Async answers retain recovery until a stable
+// user-message echo confirms consumption.
+func (s *Store) DeleteDispatchedFlushQueueItems(ids []string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	encoded, err := json.Marshal(ids)
+	if err != nil {
+		return fmt.Errorf("store: delete dispatched flush queue items: %w", err)
+	}
+	if _, err := s.db.Exec(`DELETE FROM flush_queue_items WHERE id IN (SELECT value FROM json_each(?)) AND NOT EXISTS (
  SELECT 1 FROM async_questions q WHERE q.thread_id=flush_queue_items.thread_id
- AND q.send_id<>'' AND q.send_id=flush_queue_items.send_id AND q.state='submitted')`, id)
-	return err
+ AND q.send_id<>'' AND q.send_id=flush_queue_items.send_id AND q.state='submitted')`, string(encoded)); err != nil {
+		return fmt.Errorf("store: delete dispatched flush queue items: %w", err)
+	}
+	return nil
 }
 
 // QueueDraftRestore is one return of undelivered messages to a thread's

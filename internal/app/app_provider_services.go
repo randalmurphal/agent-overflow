@@ -22,6 +22,7 @@ func (a *App) providerDiscoveryService() *providerdiscoveryapp.Service {
 			caches = providerdiscoveryapp.DefaultCaches()
 		}
 		a.providerDiscovery = providerdiscoveryapp.New(providerdiscoveryapp.Deps{
+			Reaper:          a.groupReaper("codex model list"),
 			CurrentSettings: a.currentSettings,
 			SettingsService: func() *settings.Service { return a.settings },
 			ProviderBinary:  a.providerBinaryPath,

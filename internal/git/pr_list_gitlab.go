@@ -58,8 +58,8 @@ const gitlabPullsActivityFields = `iid resolvableDiscussionsCount resolvedDiscus
 // which already apply its target branch and any per-merge-request
 // override. approvalsRequired and approvalsLeft would answer the count
 // directly but cost GitLab about 2 s more on 57 rows. approvalState is an
-// EE field: GitLab CE answers that it does not exist, and has no required
-// approvals (gitlabNoApprovalState).
+// EE field: GitLab CE, which has no required approvals, is not asked
+// (gitlabServer.enterprise).
 const gitlabPullsApprovalFields = `iid approvalState { rules { type approvalsRequired } }`
 
 // gitlabPullsQuery is one GraphQL read of a project's open merge requests
@@ -174,6 +174,14 @@ func (f *gitlabForge) ListProjectPRs(ctx context.Context, repo RepoReference) ([
 	if err != nil {
 		return nil, fmt.Errorf("gitlab: list %s: %w", repo.Project(), err)
 	}
+	// The detail reads select fields of the supported releases (the
+	// discussion counts from 17.7), and CE has no approvalState: the
+	// server's release and edition decide, never a refused document.
+	server := f.server(ctx, client, repo.Host)
+	if err := server.supported(repo.Host); err != nil {
+		return nil, fmt.Errorf("gitlab: list %s: %w", repo.Project(), err)
+	}
+	noApprovals := !server.enterprise
 	var (
 		wg        sync.WaitGroup
 		raw       []gitlabListMRRaw
@@ -183,8 +191,8 @@ func (f *gitlabForge) ListProjectPRs(ctx context.Context, repo RepoReference) ([
 		activity  gitlabActivity
 		eventsErr error
 	)
-	wg.Go(func() { raw, listErr = readGitLabMRList(ctx, client, repo) })
-	_, noApprovals := f.noApprovalState.get(repo.Host, f.core.nowFn())
+	var truncated *PRListNotice
+	wg.Go(func() { raw, truncated, listErr = readGitLabMRList(ctx, client, repo) })
 	for i, read := range gitlabPullsReads {
 		if read.selection == gitlabPullsApprovals && noApprovals {
 			continue
@@ -197,12 +205,6 @@ func (f *gitlabForge) ListProjectPRs(ctx context.Context, repo RepoReference) ([
 	wg.Wait()
 	if listErr != nil {
 		return nil, listErr
-	}
-	for i, read := range gitlabPullsReads {
-		if read.selection == gitlabPullsApprovals && gitlabNoApprovalState(nodeErrs[i]) {
-			nodeErrs[i], noApprovals = nil, true
-			f.noApprovalState.put(repo.Host, true, f.core.nowFn())
-		}
 	}
 	rows := make([]PRListRow, 0, len(raw))
 	byIID := make(map[int]int, len(raw))
@@ -244,17 +246,17 @@ func (f *gitlabForge) ListProjectPRs(ctx context.Context, repo RepoReference) ([
 			}
 		}
 	}
-	return rows, detailError(append(nodeErrs, eventsErr)...)
+	errs := append(nodeErrs, eventsErr)
+	if truncated != nil {
+		errs = append(errs, truncated)
+	}
+	return rows, detailError(errs...)
 }
 
-// gitlabNoApprovalState reports whether err is GitLab CE's answer to a
-// selection of approvalState: the field does not exist on its schema.
-func gitlabNoApprovalState(err error) bool {
-	return gitlabSchemaLacks(err, "approvalState")
-}
-
-// readGitLabMRList is the open merge request list.
-func readGitLabMRList(ctx context.Context, client *forgeapi.Client, repo RepoReference) ([]gitlabListMRRaw, error) {
+// readGitLabMRList is the open merge request list, with the notice of
+// one cut at prListMaxPages pages (its total from X-Total, which GitLab
+// leaves out past 10,000 rows).
+func readGitLabMRList(ctx context.Context, client *forgeapi.Client, repo RepoReference) ([]gitlabListMRRaw, *PRListNotice, error) {
 	request := forgeapi.Request{
 		Path: gitlabProjectPath(repo.Project()) + "/merge_requests",
 		Query: url.Values{
@@ -264,6 +266,7 @@ func readGitLabMRList(ctx context.Context, client *forgeapi.Client, repo RepoRef
 		MaxBodyBytes: gitlabMRListMaxBody,
 	}
 	var raw []gitlabListMRRaw
+	var truncated *PRListNotice
 	page, pages := 1, 0
 	err := client.Pages(ctx, request, func(resp *forgeapi.Response) (bool, error) {
 		var pageMRs []gitlabListMRRaw
@@ -272,12 +275,18 @@ func readGitLabMRList(ctx context.Context, client *forgeapi.Client, repo RepoRef
 		}
 		raw = append(raw, pageMRs...)
 		pages++
-		return len(pageMRs) == gitlabPageSize && pages < prListMaxPages && advanceGitLabPage(resp, &page), nil
+		more := len(pageMRs) == gitlabPageSize && advanceGitLabPage(resp, &page)
+		if more && pages >= prListMaxPages {
+			total, _ := strconv.Atoi(strings.TrimSpace(resp.Header.Get("X-Total")))
+			truncated = prListTruncated(repo.Forge, len(raw), total)
+			return false, nil
+		}
+		return more, nil
 	})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return raw, nil
+	return raw, truncated, nil
 }
 
 // readGitLabPulls reads one GraphQL selection's pages, at most

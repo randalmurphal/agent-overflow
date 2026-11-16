@@ -65,11 +65,11 @@ func getThreadDraft(q sqlQueryer, threadID string) (ThreadDraft, bool, error) {
 type DraftWrite struct {
 	// Changed reports that the stored draft differs from before.
 	Changed bool
-	// Listed reports that the write admitted the thread to the sidebar list
-	// (ListThreadsWithItems): a thread with nothing else to list it is listed
-	// once its draft has content. A screen whose catalog read came before the
-	// write learns of the thread only from the announcement this calls for.
-	Listed bool
+	// Listing reports whether the write moved the thread across the sidebar
+	// listing rule: a thread with nothing else to list it is listed while its
+	// draft has content. A screen whose catalog read came before the write
+	// learns of the change only from the announcement this calls for.
+	Listing ListingChange
 }
 
 // UpsertThreadDraft writes the draft for a thread, replacing any existing row,
@@ -86,7 +86,7 @@ type DraftWrite struct {
 // was, which is the honest answer (nothing was edited) and which nothing
 // reads: the draft's updated_at is not rendered anywhere.
 func (s *Store) UpsertThreadDraft(d ThreadDraft) (DraftWrite, error) {
-	tx, err := s.db.Begin()
+	tx, err := s.beginListingWrite()
 	if err != nil {
 		return DraftWrite{}, fmt.Errorf("store: upsert thread draft %s: %w", d.ThreadID, err)
 	}
@@ -122,19 +122,15 @@ func upsertThreadDraft(q sqlQueryer, d ThreadDraft) (DraftWrite, error) {
 		d.PendingPlanImplementation != "" {
 		hasContent = 1
 	}
-	// Only content can list a thread, so a write without it lists nothing.
-	listedBefore := true
-	if hasContent == 1 {
-		var err error
-		if listedBefore, err = threadListed(q, d.ThreadID); err != nil {
-			return DraftWrite{}, err
-		}
+	listedBefore, err := threadListed(q, d.ThreadID)
+	if err != nil {
+		return DraftWrite{}, err
 	}
 	// `IS NOT` rather than `<>` on every term: pending_plan_implementation is
 	// nullable and `NULL <> 'x'` is NULL, which SQLite reads as false — a `<>`
 	// predicate would report a plan link appearing or disappearing as a no-op.
 	var written string
-	err := q.QueryRow(
+	err = q.QueryRow(
 		`INSERT INTO thread_drafts (thread_id, content, attachments, terminal_chips, pending_plan_implementation, updated_at, has_content)
 		 VALUES (?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(thread_id) DO UPDATE SET
@@ -164,21 +160,19 @@ func upsertThreadDraft(q sqlQueryer, d ThreadDraft) (DraftWrite, error) {
 	if err != nil {
 		return DraftWrite{}, fmt.Errorf("store: upsert thread draft %s: %w", d.ThreadID, err)
 	}
-	write := DraftWrite{Changed: true}
-	if !listedBefore {
-		if write.Listed, err = threadListed(q, d.ThreadID); err != nil {
-			return DraftWrite{}, err
-		}
+	listedAfter, err := threadListed(q, d.ThreadID)
+	if err != nil {
+		return DraftWrite{}, err
 	}
-	return write, nil
+	return DraftWrite{Changed: true, Listing: listingChange(listedBefore, listedAfter)}, nil
 }
 
 // DeleteThreadDraft removes the draft for a thread and reports whether a row
-// was there to remove. Missing rows are not an error — clearing something that
+// was there to remove (Changed) and whether that unlisted the thread. Missing rows are not an error — clearing something that
 // was never there is a no-op, and it is one nothing needs to hear about.
 // A non-nil expected snapshot is compared atomically with deletion, so another
 // client saving while a send is in flight cannot lose its newer draft.
-func (s *Store) DeleteThreadDraft(threadID string, expected *ThreadDraft) (bool, error) {
+func (s *Store) DeleteThreadDraft(threadID string, expected *ThreadDraft) (DraftWrite, error) {
 	query := `DELETE FROM thread_drafts WHERE thread_id = ?`
 	args := []any{threadID}
 	if expected != nil {
@@ -198,15 +192,32 @@ func (s *Store) DeleteThreadDraft(threadID string, expected *ThreadDraft) (bool,
 		args = append(args, expected.Content, attachments, chips, plan)
 	}
 
+	tx, err := s.beginListingWrite()
+	if err != nil {
+		return DraftWrite{}, fmt.Errorf("store: delete thread draft %s: %w", threadID, err)
+	}
+	defer tx.Rollback()
+	listedBefore, err := threadListed(tx, threadID)
+	if err != nil {
+		return DraftWrite{}, err
+	}
 	var deleted string
-	err := s.db.QueryRow(
+	err = tx.QueryRow(
 		query+` RETURNING thread_id`, args...,
 	).Scan(&deleted)
 	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil
+		return DraftWrite{}, tx.Commit()
 	}
 	if err != nil {
-		return false, fmt.Errorf("store: delete thread draft %s: %w", threadID, err)
+		return DraftWrite{}, fmt.Errorf("store: delete thread draft %s: %w", threadID, err)
 	}
-	return true, nil
+	listedAfter, err := threadListed(tx, threadID)
+	if err != nil {
+		return DraftWrite{}, err
+	}
+	write := DraftWrite{Changed: true, Listing: listingChange(listedBefore, listedAfter)}
+	if err := tx.Commit(); err != nil {
+		return DraftWrite{}, fmt.Errorf("store: commit delete thread draft %s: %w", threadID, err)
+	}
+	return write, nil
 }

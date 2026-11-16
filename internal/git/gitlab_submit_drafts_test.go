@@ -44,6 +44,8 @@ func (f *gitlabDraftForge) answer(t *testing.T, mr string) func(call forgeAPICal
 		switch {
 		case key == "GET "+mr:
 			return forgeAPIAnswer{Body: gitlabTestMR(7, 0)}
+		case key == "GET "+mr+"/approvals":
+			return forgeAPIAnswer{Body: `{"user_can_approve":true}`}
 		case key == "GET "+mr+"/diffs?per_page=100":
 			return gitlabTestDiffsAnswer()
 		case key == "POST "+mr+"/draft_notes":

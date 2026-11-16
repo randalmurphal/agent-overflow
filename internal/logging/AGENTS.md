@@ -17,7 +17,8 @@ daily log files and leaves unrelated files alone. Tests use temporary roots.
 `LogSlowStep` is the one line for a step on the path between two computers
 (credential exchange, dial, handler, lock wait) that outlasted the threshold:
 `<component>: slow step=<step> duration=<d> outcome=<outcome>`. Steps are
-constant names and outcomes come from `ErrorOutcome` or `StatusOutcome`; the
+constant names and outcomes come from `ErrorOutcome`, `StatusOutcome` or,
+for an exchange that returns its status beside a nil error, `HTTPOutcome`; the
 line never carries an endpoint, credential, token, verification number or
 label. A step that waits on work by design (an agent call) is not timed.
 

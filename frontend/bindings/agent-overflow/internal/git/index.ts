@@ -28,6 +28,7 @@ export {
     MergeMessage,
     MergeOptions,
     MergeOutcome,
+    MergeQueue,
     MergeReadiness,
     MergeRequest,
     PRCandidates,

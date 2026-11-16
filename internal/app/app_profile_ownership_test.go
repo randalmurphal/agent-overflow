@@ -288,10 +288,17 @@ func TestUserCreationPublishesRememberedDefaults(t *testing.T) {
 			t.Errorf("creation was not protected from host handoff: %q, %v", reason, err)
 		}
 	}
-	_, err := app.CreateThread(t.Context(), CreateThreadOptions{ProjectID: defaultTestProjectID, Title: "User selection", Provider: "claude", Model: "claude-opus-4-7", RuntimeMode: "read-only", ReasoningEffort: "low"})
+	// A worktree makes the new thread real, so its creation is announced.
+	repo := initMainGitRepo(t)
+	project, err := app.ensureProjectForWorkspace(repo)
 	if err != nil {
 		t.Fatal(err)
 	}
+	created, err := app.CreateThread(t.Context(), CreateThreadOptions{ProjectID: project.ID, Title: "User selection", Provider: "claude", Model: "claude-opus-4-7", RuntimeMode: "read-only", ReasoningEffort: "low", WorktreeBranch: "user-selection"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = app.gitCore().RemoveWorktreeForce(repo, created.WorktreePath, true) })
 	if !published {
 		t.Fatal("created thread was not announced")
 	}

@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/store"
@@ -34,7 +35,6 @@ func TestRegisterQueueItemWritesItsDurableRowFirst(t *testing.T) {
 		t.Fatalf("CreateThread: %v", err)
 	}
 
-	holdFlushQueue(app)
 	queued, err := app.RegisterQueueItem(context.Background(), thread.ID, "queued follow-up", SendMessageOptions{
 		SendID:        "send-abc",
 		AttachmentIDs: []string{"att-1"},
@@ -125,6 +125,8 @@ func TestSessionDeathRestoreDropsTheDurableRow(t *testing.T) {
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}
+	// The message waits in the queue for the death: a dispatch would start
+	// a session for a thread that has none.
 	holdFlushQueue(app)
 	if _, err := app.RegisterQueueItem(context.Background(), thread.ID, "not delivered", SendMessageOptions{}); err != nil {
 		t.Fatalf("RegisterQueueItem: %v", err)
@@ -205,7 +207,7 @@ func TestSessionTeardownDropsDurableQueueRows(t *testing.T) {
 
 	sess, err := claude.NewSession(
 		context.Background(), thread.ID,
-		claude.Config{Retention: claude.UserHomeRetention(0), Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
+		claude.Config{Reaper: procutiltest.Reaper(), Retention: claude.UserHomeRetention(0), Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
 		func(provider.ProviderEvent) {},
 	)
 	if err != nil {
@@ -500,7 +502,7 @@ func TestSendMessageAnswersARepeatedSendFromItsItem(t *testing.T) {
 			}
 			sess, err := claude.NewSession(
 				context.Background(), thread.ID,
-				claude.Config{Retention: claude.UserHomeRetention(0), Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
+				claude.Config{Reaper: procutiltest.Reaper(), Retention: claude.UserHomeRetention(0), Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
 				func(provider.ProviderEvent) {},
 			)
 			if err != nil {
@@ -659,8 +661,8 @@ func TestFindRecordedSendSurvivesNewerMessages(t *testing.T) {
 }
 
 // A queued item registered by an INJECTOR still settles its injector's
-// bookkeeping when the durable row is deleted: the row deletion is composed
-// into the settlement rather than replacing it.
+// bookkeeping when its dispatch deletes the durable row, and only once when
+// both endpoints reach it.
 func TestDurableRowDeletionComposesWithTheInjectorSettlement(t *testing.T) {
 	t.Parallel()
 	app, _ := newAppForFlushQueueRPC(t)
@@ -683,7 +685,7 @@ func TestDurableRowDeletionComposesWithTheInjectorSettlement(t *testing.T) {
 	if len(items) != 1 {
 		t.Fatalf("queued items: got %d, want 1", len(items))
 	}
-	items[0].Settlement.Settle()
+	app.settleFlushGroup(thread.ID, items)
 
 	if settled != 1 {
 		t.Fatalf("injector settlement ran %d times, want 1", settled)
@@ -691,7 +693,7 @@ func TestDurableRowDeletionComposesWithTheInjectorSettlement(t *testing.T) {
 	if rows := durableQueueRows(t, app, thread.ID); len(rows) != 0 {
 		t.Fatalf("durable rows after settling: got %+v, want none", rows)
 	}
-	// sync.Once: the two endpoints can race and the delete stays exactly once.
+	// sync.Once: the two endpoints can race and the bookkeeping runs once.
 	items[0].Settlement.Settle()
 	if settled != 1 {
 		t.Fatalf("injector settlement ran again: %d", settled)

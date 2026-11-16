@@ -21,3 +21,9 @@ const (
 func logSlowStep(step string, started time.Time, err error) {
 	logging.LogSlowStep("deviceclient", step, started, logging.ErrorOutcome(err))
 }
+
+// logSlowHTTPStep logs an HTTP step that returns its answer's status beside
+// a nil error, so a slow 4xx or 5xx is not logged as ok.
+func logSlowHTTPStep(step string, started time.Time, status int, err error) {
+	logging.LogSlowStep("deviceclient", step, started, logging.HTTPOutcome(status, err))
+}

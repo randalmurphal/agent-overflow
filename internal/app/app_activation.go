@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 
 	"agent-overflow/internal/eventchan"
@@ -75,6 +76,8 @@ type activation struct {
 	// on every boot. nil means no boot is in progress, which is what a test
 	// App that never starts sees.
 	booting chan struct{}
+	// deferred is the goroutine a parked Run started, which stop joins.
+	deferred *deferredRun
 }
 
 // beginBoot holds waitForBootSteps until Run's first half finished. Start
@@ -160,53 +163,113 @@ func (g *activation) Parked() bool {
 	return g.parked != nil
 }
 
+// bootStep is one of the boot's deferred steps. Its error is one that fails
+// an ordinary boot; a failure that does not reports through bootPhaseFailed
+// itself and returns nil.
+type bootStep func() error
+
 // Run performs the boot's deferred steps once the gate is open: first
-// beforeClients, then work.
+// beforeClients, then work. It checks ctx before each step, so once ctx
+// ends no further step begins; the step already running finishes.
 //
-// Open (the ordinary case): inline, returning the first error, so a failure
-// still fails the boot exactly as it did before.
+// Open (the ordinary case): inline, in the caller's goroutine. Every step of
+// beforeClients runs and their failures are returned together, before work
+// begins; work stops at its first failure and returns it. Either way a
+// failure still fails the boot exactly as it did before, and a cancellation
+// is returned as one.
 //
-// Parked: on a goroutine that waits for the commit, runs beforeClients,
-// admits clients, then runs work. Either way waitForBootSteps returns once
-// beforeClients finished, and on an ordinary boot only if it succeeded. An error can no longer fail a boot that
+// Parked: on a goroutine the gate owns, which waits for the commit, runs
+// beforeClients, admits clients, then runs work. stop cancels and joins it.
+// Either way waitForBootSteps returns once beforeClients finished, and on an
+// ordinary boot only if it succeeded. An error can no longer fail a boot that
 // already succeeded, so each goes to report, which is the honest consequence
 // of deferring work past the moment a caller could act on it, and it only
-// ever applies to a trial. A boot shut down before its commit runs neither
-// and admits nobody.
-func (g *activation) Run(ctx context.Context, beforeClients, work func() error, report func(error)) error {
+// ever applies to a trial. A boot stopped before its commit runs neither and
+// admits nobody; one stopped during beforeClients admits nobody either.
+func (g *activation) Run(ctx context.Context, beforeClients, work []bootStep, report func(error)) error {
 	g.mu.Lock()
 	parked := g.parked
-	if parked != nil {
-		g.pending = true
-	}
-	g.mu.Unlock()
 	if parked == nil {
-		if err := beforeClients(); err != nil {
-			return err
+		g.mu.Unlock()
+		if failed, stopped := runBootSteps(ctx, beforeClients, false); failed != nil || stopped != nil {
+			return errors.Join(failed, stopped)
 		}
 		g.mu.Lock()
 		g.bootStepsDoneLocked()
 		g.mu.Unlock()
-		return work()
+		failed, stopped := runBootSteps(ctx, work, true)
+		return errors.Join(failed, stopped)
 	}
+	g.pending = true
+	runCtx, cancel := context.WithCancel(ctx)
+	run := &deferredRun{cancel: cancel, done: make(chan struct{})}
+	g.deferred = run
+	g.mu.Unlock()
 	go func() {
+		defer close(run.done)
+		defer cancel()
 		select {
-		case <-ctx.Done():
+		case <-runCtx.Done():
 			return
 		case <-parked:
 		}
-		if err := beforeClients(); err != nil {
-			report(err)
+		failed, _ := runBootSteps(runCtx, beforeClients, false)
+		if failed != nil {
+			report(failed)
+		}
+		if runCtx.Err() != nil {
+			return
 		}
 		g.mu.Lock()
 		g.bootStepsDoneLocked()
 		g.admitLocked()
 		g.mu.Unlock()
-		if err := work(); err != nil {
-			report(err)
+		if failed, _ := runBootSteps(runCtx, work, true); failed != nil {
+			report(failed)
 		}
 	}()
 	return nil
+}
+
+// runBootSteps runs steps in order and checks ctx before each, reporting
+// what failed and, apart from it, whether ctx stopped a step from starting.
+// stopAtFailure ends at the first failure; otherwise every step runs and
+// the failures are joined.
+func runBootSteps(ctx context.Context, steps []bootStep, stopAtFailure bool) (failed, stopped error) {
+	var errs []error
+	for _, step := range steps {
+		if err := ctx.Err(); err != nil {
+			return errors.Join(errs...), fmt.Errorf("startup stopped before its deferred steps finished: %w", err)
+		}
+		if err := step(); err != nil {
+			errs = append(errs, err)
+			if stopAtFailure {
+				break
+			}
+		}
+	}
+	return errors.Join(errs...), nil
+}
+
+// deferredRun is a parked Run's goroutine.
+type deferredRun struct {
+	cancel context.CancelFunc
+	done   chan struct{}
+}
+
+// stop cancels a parked Run and waits for it: one still waiting for its
+// commit returns at once, and one running a step returns when that step
+// does. Shutdown calls it before it tears down anything a step uses.
+// Idempotent, and a no-op when no Run was parked.
+func (g *activation) stop() {
+	g.mu.Lock()
+	run := g.deferred
+	g.mu.Unlock()
+	if run == nil {
+		return
+	}
+	run.cancel()
+	<-run.done
 }
 
 // ParkUnattendedWork closes the activation gate. Bootstrap-boundary function

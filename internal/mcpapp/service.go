@@ -12,6 +12,7 @@ import (
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/logging"
 	"agent-overflow/internal/mcpstatus"
+	"agent-overflow/internal/procutil"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/store"
@@ -37,7 +38,10 @@ type ClaudeLiveSession struct {
 
 // Deps supplies root-owned lifecycle, session, credential, and event seams.
 type Deps struct {
-	Context        func() context.Context
+	Context func() context.Context
+	// Reaper ends the provider processes this service starts if the
+	// backend dies first.
+	Reaper         procutil.Reaper
 	IsShuttingDown func() bool
 	// EnsureSession starts the thread's session when none is live.
 	EnsureSession     func(threadID string) error

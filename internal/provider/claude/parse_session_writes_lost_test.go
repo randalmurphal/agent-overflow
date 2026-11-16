@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/providertest"
 	"agent-overflow/internal/testutil/mockexec"
 )
 
@@ -99,7 +100,7 @@ printf '%s\n' '{"type":"system","subtype":"session_writes_lost","error_code":"EN
 exit 0
 `)
 	ctx, cancel := context.WithCancel(context.Background())
-	proc, err := provider.Spawn(ctx, provider.SpawnConfig{Binary: path})
+	proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{Binary: path})
 	if err != nil {
 		cancel()
 		t.Fatalf("spawn: %v", err)

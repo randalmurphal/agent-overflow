@@ -11,6 +11,8 @@ import (
 	"agent-overflow/internal/claudecatalog"
 	"agent-overflow/internal/claudemodels"
 	"agent-overflow/internal/codexmodels"
+	"agent-overflow/internal/procutil"
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/codex"
@@ -51,11 +53,12 @@ func TestClaudeProbeCachesAndRecheckInvalidates(t *testing.T) {
 	t.Cleanup(claudecatalog.Reset)
 	var calls atomic.Int32
 	service := New(Deps{
+		Reaper:          procutiltest.Reaper(),
 		ProviderBinary:  func(string) string { return "/mock/claude" },
 		Selection:       func(string) AccountSelection { return AccountSelection{AccountID: "account"} },
 		ProbeKey:        testProbeKey,
 		RunAccountProbe: cachedProbeRunner,
-		ClaudeConfig:    func(string) claude.ProbeConfig { return claude.ProbeConfig{} },
+		ClaudeConfig:    func(string) claude.ProbeConfig { return claude.ProbeConfig{Reaper: procutiltest.Reaper()} },
 		ProbeClaude: func(context.Context, claude.ProbeConfig) (provider.AccountInfo, error) {
 			call := calls.Add(1)
 			return provider.AccountInfo{SubscriptionType: string(rune('0' + call))}, nil
@@ -91,6 +94,7 @@ func TestClaudeProbeCommitsWireCatalogInAfterAdopt(t *testing.T) {
 	key := testProbeKey("", "/mock/claude", "account")
 	var enrichedBeforeAdopt, enrichedAfterAdopt bool
 	service := New(Deps{
+		Reaper:         procutiltest.Reaper(),
 		ProviderBinary: func(string) string { return "/mock/claude" },
 		Selection:      func(string) AccountSelection { return AccountSelection{AccountID: "account"} },
 		ProbeKey:       testProbeKey,
@@ -104,7 +108,7 @@ func TestClaudeProbeCommitsWireCatalogInAfterAdopt(t *testing.T) {
 			enrichedAfterAdopt = hasModel(catalogModels(key), "claude-newthing-1")
 			return info, nil
 		},
-		ClaudeConfig: func(string) claude.ProbeConfig { return claude.ProbeConfig{} },
+		ClaudeConfig: func(string) claude.ProbeConfig { return claude.ProbeConfig{Reaper: procutiltest.Reaper()} },
 		ProbeClaude: func(_ context.Context, cfg claude.ProbeConfig) (provider.AccountInfo, error) {
 			cfg.OnModels([]claude.WireModel{{Value: "claude-newthing-1", DisplayName: "Newthing"}}, nil)
 			return provider.AccountInfo{SubscriptionType: "max"}, nil
@@ -140,11 +144,12 @@ func TestCodexProbePublishesAdoptedSnapshotOnlyOnMiss(t *testing.T) {
 	var calls atomic.Int32
 	var published []provider.RateLimitsSnapshot
 	service := New(Deps{
+		Reaper:          procutiltest.Reaper(),
 		ProviderBinary:  func(string) string { return "/mock/codex" },
 		Selection:       func(string) AccountSelection { return AccountSelection{} },
 		ProbeKey:        testProbeKey,
 		RunAccountProbe: cachedProbeRunner,
-		CodexConfig:     func(string) codex.ProbeConfig { return codex.ProbeConfig{} },
+		CodexConfig:     func(string) codex.ProbeConfig { return codex.ProbeConfig{Reaper: procutiltest.Reaper()} },
 		ProbeCodex: func(_ context.Context, cfg codex.ProbeConfig) (provider.AccountInfo, error) {
 			calls.Add(1)
 			cfg.OnSnapshot(provider.RateLimitsSnapshot{
@@ -182,6 +187,7 @@ func TestCustomEnvChangeInvalidatesOldAndNewIdentities(t *testing.T) {
 		}
 	}
 	service := New(Deps{
+		Reaper:          procutiltest.Reaper(),
 		CurrentSettings: settingsService.Get,
 		SettingsService: func() *settings.Service { return settingsService },
 		ProviderBinary:  func(string) string { return "/mock/claude" },
@@ -210,6 +216,7 @@ func TestCustomEnvChangeInvalidatesOldAndNewIdentities(t *testing.T) {
 func TestProviderStatusesEmitsOnlyFailures(t *testing.T) {
 	var emitted []providerstatus.Event
 	service := New(Deps{
+		Reaper: procutiltest.Reaper(),
 		CurrentSettings: func() settings.Settings {
 			return settings.Settings{ClaudeBinaryPath: "claude", CodexBinaryPath: "codex"}
 		},
@@ -266,6 +273,7 @@ func TestModelsForProviderStampsProvenance(t *testing.T) {
 	t.Cleanup(claudecatalog.Reset)
 	key := testProbeKey("", "/mock/claude", "account")
 	service := New(Deps{
+		Reaper:         procutiltest.Reaper(),
 		ProviderBinary: func(string) string { return "/mock/claude" },
 		Selection:      func(string) AccountSelection { return AccountSelection{AccountID: "account"} },
 		ProbeKey:       testProbeKey,
@@ -321,10 +329,11 @@ func TestModelsForProviderStampsProvenance(t *testing.T) {
 // stays an error rather than degrading into a shipped-looking catalog.
 func TestModelsForProviderReportsCodexLive(t *testing.T) {
 	caches := testCaches()
-	caches.CodexModels = codexmodels.NewWith(time.Minute, func(context.Context, string) ([]provider.ModelInfo, error) {
+	caches.CodexModels = codexmodels.NewWith(time.Minute, func(context.Context, string, procutil.Reaper) ([]provider.ModelInfo, error) {
 		return []provider.ModelInfo{{Slug: "gpt-5.5", Name: "GPT-5.5", Provider: "codex"}}, nil
 	}, time.Now)
 	service := New(Deps{
+		Reaper:         procutiltest.Reaper(),
 		ProviderBinary: func(string) string { return "/mock/codex" },
 	}, caches)
 
@@ -342,10 +351,10 @@ func TestModelsForProviderReportsCodexLive(t *testing.T) {
 	// A failed `model/list` is a failure, not a shipped-looking catalog: the
 	// picker must show the error rather than a list nobody vouched for.
 	failing := testCaches()
-	failing.CodexModels = codexmodels.NewWith(time.Minute, func(context.Context, string) ([]provider.ModelInfo, error) {
+	failing.CodexModels = codexmodels.NewWith(time.Minute, func(context.Context, string, procutil.Reaper) ([]provider.ModelInfo, error) {
 		return nil, errors.New("app-server refused")
 	}, time.Now)
-	broken := New(Deps{ProviderBinary: func(string) string { return "/mock/codex" }}, failing)
+	broken := New(Deps{Reaper: procutiltest.Reaper(), ProviderBinary: func(string) string { return "/mock/codex" }}, failing)
 	answer, err := broken.ModelsForProvider(context.Background(), string(provider.Codex))
 	if err == nil {
 		t.Fatalf("ModelsForProvider = %+v, want the lister's error", answer)
@@ -372,11 +381,12 @@ func TestClaudeProbePersistsTheCommittedCatalog(t *testing.T) {
 	var got claudemodels.Snapshot
 	var calls int
 	service := New(Deps{
+		Reaper:          procutiltest.Reaper(),
 		ProviderBinary:  func(string) string { return "/mock/claude" },
 		Selection:       func(string) AccountSelection { return AccountSelection{AccountID: "account"} },
 		ProbeKey:        testProbeKey,
 		RunAccountProbe: cachedProbeRunner,
-		ClaudeConfig:    func(string) claude.ProbeConfig { return claude.ProbeConfig{} },
+		ClaudeConfig:    func(string) claude.ProbeConfig { return claude.ProbeConfig{Reaper: procutiltest.Reaper()} },
 		ProbeClaude: func(_ context.Context, cfg claude.ProbeConfig) (provider.AccountInfo, error) {
 			cfg.OnModels([]claude.WireModel{{Value: "claude-newthing-1"}}, nil)
 			return provider.AccountInfo{SubscriptionType: "max"}, nil
@@ -414,11 +424,12 @@ func TestClaudeProbeWithoutPersistenceDepStillProbes(t *testing.T) {
 	claudecatalog.Reset()
 	t.Cleanup(claudecatalog.Reset)
 	service := New(Deps{
+		Reaper:          procutiltest.Reaper(),
 		ProviderBinary:  func(string) string { return "/mock/claude" },
 		Selection:       func(string) AccountSelection { return AccountSelection{AccountID: "account"} },
 		ProbeKey:        testProbeKey,
 		RunAccountProbe: cachedProbeRunner,
-		ClaudeConfig:    func(string) claude.ProbeConfig { return claude.ProbeConfig{} },
+		ClaudeConfig:    func(string) claude.ProbeConfig { return claude.ProbeConfig{Reaper: procutiltest.Reaper()} },
 		ProbeClaude: func(_ context.Context, cfg claude.ProbeConfig) (provider.AccountInfo, error) {
 			cfg.OnModels([]claude.WireModel{{Value: "claude-newthing-1"}}, nil)
 			return provider.AccountInfo{SubscriptionType: "max"}, nil
@@ -441,6 +452,7 @@ func TestClaudeProbePersistsUnderTheSelectionWhenAdoptionIsEmpty(t *testing.T) {
 	t.Cleanup(claudecatalog.Reset)
 	var gotAccountID string
 	service := New(Deps{
+		Reaper:         procutiltest.Reaper(),
 		ProviderBinary: func(string) string { return "/mock/claude" },
 		Selection:      func(string) AccountSelection { return AccountSelection{AccountID: "selected"} },
 		ProbeKey:       testProbeKey,
@@ -452,7 +464,7 @@ func TestClaudeProbePersistsUnderTheSelectionWhenAdoptionIsEmpty(t *testing.T) {
 			request.AfterAdopt(provideraccounts.Account{})
 			return info, nil
 		},
-		ClaudeConfig: func(string) claude.ProbeConfig { return claude.ProbeConfig{} },
+		ClaudeConfig: func(string) claude.ProbeConfig { return claude.ProbeConfig{Reaper: procutiltest.Reaper()} },
 		ProbeClaude: func(_ context.Context, cfg claude.ProbeConfig) (provider.AccountInfo, error) {
 			cfg.OnModels([]claude.WireModel{{Value: "claude-newthing-1"}}, nil)
 			return provider.AccountInfo{SubscriptionType: "max"}, nil

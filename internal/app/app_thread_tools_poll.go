@@ -612,7 +612,7 @@ func (a *App) applyThreadPeerRequest(token, computerID string, answer ThreadPeer
 			return 0, nil, err
 		}
 	}
-	if !threadReceiptSettledState(answer.State) {
+	if !store.ThreadReceiptSettled(answer.State) {
 		// Still accepted or running there. The source row follows so
 		// thread_status reads the same word on both computers.
 		if answer.State == store.ThreadReceiptRunning {
@@ -632,8 +632,13 @@ func (a *App) applyThreadPeerRequest(token, computerID string, answer ThreadPeer
 	if threadRequestSettled(row) && answer.Revision <= row.Revision {
 		// Already collected. The row stays in the poll only because a
 		// `finished` request can still take a late reply, and a settled
-		// request blocks nobody.
+		// request blocks nobody. A destination still waiting for the
+		// acknowledgement lost the one sent after the collection, so it is
+		// sent again: the row holds every revision up to its own.
 		a.forgetRemoteRequestBlocked(token)
+		if answer.CollectedRevision < answer.Revision {
+			return answer.Revision, nil, nil
+		}
 		return 0, nil, nil
 	}
 	return a.collectRemoteThreadRequest(row, answer)
@@ -711,66 +716,53 @@ func (a *App) settleUnknownRemoteRequest(row store.ThreadRequest) ([]threadWakeR
 	return a.settleRemoteThreadRequestOwing(row, settlement)
 }
 
-// collectRemoteThreadRequest copies one destination settlement onto the
-// source row, exactly as the local collector does for a request that ran
-// here, and returns the wakes it owes the caller thread.
+// collectRemoteThreadRequest copies one destination answer onto the source
+// row, settlement and late reply together, and returns the revision to
+// acknowledge and the wakes it owes the caller thread.
 //
 // The settle lock covers the durable write and the delivery decision; the
 // wakes it decides are delivered by the caller after it is released, because
 // a wake takes the caller thread's own locks and can start its session.
 func (a *App) collectRemoteThreadRequest(row store.ThreadRequest, answer ThreadPeerRequest) (int64, []threadWakeRef, error) {
-	wake, lateWake, err := a.collectRemoteThreadRequestLocked(row, answer)
-	var wakes []threadWakeRef
-	if wake {
-		wakes = append(wakes, threadWakeRef{token: row.Token})
-	}
-	if lateWake {
-		wakes = append(wakes, threadWakeRef{token: row.Token, late: true})
-	}
+	wake, late, err := a.collectRemoteThreadRequestLocked(row, answer)
 	if err != nil {
-		return 0, wakes, err
+		return 0, nil, err
 	}
 	a.forgetRemoteRequestBlocked(row.Token)
+	var wakes []threadWakeRef
+	if wake {
+		wakes = append(wakes, threadWakeRef{token: row.Token, late: late})
+	}
 	return answer.Revision, wakes, nil
 }
 
 // collectRemoteThreadRequestLocked is the locked half of the remote
-// collection. It reports which of the row's two wakes it decided are owed.
-func (a *App) collectRemoteThreadRequestLocked(row store.ThreadRequest, answer ThreadPeerRequest) (wake, lateWake bool, err error) {
+// collection. It reports the wake it decided is owed.
+func (a *App) collectRemoteThreadRequestLocked(row store.ThreadRequest, answer ThreadPeerRequest) (wake, late bool, err error) {
 	unlock := a.threadRequestSettleLock(row.Token)
 	defer unlock()
-	// Re-read under the lock: a cancel on this computer can settle the row
-	// between the poll's read and this write.
+	// Re-read under the lock: the wake decision reads `notify`, which a
+	// cancel or an archive on this computer can change after the poll's read.
 	current, found, err := a.store.GetThreadRequest(row.Token)
 	if err != nil || !found {
 		return false, false, err
 	}
-	if !threadRequestSettled(current) {
-		settled, err := a.store.SettleThreadRequest(row.Token, store.ThreadRequestOpenStates(), store.ThreadRequestSettlement{
-			State:      threadRequestStateForReceipt(answer.State),
-			Answer:     []byte(answer.Answer),
-			AnswerKind: answer.AnswerKind,
-			SettledAt:  answer.SettledAt,
-			ExpiresAt:  answer.ExpiresAt,
-			ArmWake:    answer.AnswerKind == store.ThreadAnswerReply && a.replyArmsWake(current),
-		})
-		if err != nil {
-			return false, false, err
-		}
-		if settled {
-			wake = a.finishThreadRequestCollection(row.Token, false)
-		}
+	replyArms := (answer.AnswerKind == store.ThreadAnswerReply || answer.LateReply != "") && a.replyArmsWake(current)
+	collected, err := a.store.CollectThreadRequest(row.Token, store.ThreadReceiptAnswer{
+		Revision:    answer.Revision,
+		State:       answer.State,
+		Answer:      []byte(answer.Answer),
+		AnswerKind:  answer.AnswerKind,
+		SettledAt:   answer.SettledAt,
+		ExpiresAt:   answer.ExpiresAt,
+		LateReply:   []byte(answer.LateReply),
+		LateReplyAt: answer.LateReplyAt,
+	}, store.ThreadRequestWake{ReplyArms: replyArms})
+	if err != nil {
+		return false, false, err
 	}
-	if answer.LateReply != "" && len(current.LateReply) == 0 {
-		stored, err := a.store.StoreThreadRequestLateReply(row.Token, []byte(answer.LateReply), answer.LateReplyAt, a.replyArmsWake(current))
-		if err != nil {
-			return wake, false, err
-		}
-		if stored {
-			lateWake = a.finishThreadRequestCollection(row.Token, true)
-		}
-	}
-	return wake, lateWake, nil
+	wake, late = a.collectionWake(row.Token, collected)
+	return wake, late, nil
 }
 
 // settleRemoteThreadRequest settles a source row for a reason the
@@ -803,17 +795,6 @@ func (a *App) settleRemoteThreadRequestOwing(row store.ThreadRequest, settlement
 		return nil, nil
 	}
 	return []threadWakeRef{{token: row.Token}}, nil
-}
-
-// threadReceiptSettledState reports whether a destination state is one the
-// source can collect. It is the receipt's own vocabulary, which differs
-// from the source's only in the two words a destination never uses.
-func threadReceiptSettledState(state string) bool {
-	switch state {
-	case "", store.ThreadReceiptAccepted, store.ThreadReceiptRunning:
-		return false
-	}
-	return true
 }
 
 // expireThreadRequests is the retention pass: answers nobody collected are
@@ -948,50 +929,37 @@ func (a *App) sweepThreadRequestsAtBoot() {
 // settleOrphanedThreadRequest settles, at boot, a request this computer made
 // of its own thread that nothing else can settle: its receipt was settled
 // without it by an older build, or was never written because the process
-// died first. A settled receipt is the answer; no receipt is a restart.
+// died first. A settled receipt is the answer, collected whole with its late
+// reply by the same transaction every local collection runs; no receipt is a
+// restart.
 func (a *App) settleOrphanedThreadRequest(row store.ThreadRequest) (threadSettlementWork, error) {
 	unlock := a.threadRequestSettleLock(row.Token)
 	defer unlock()
-	receipt, found, err := a.store.GetThreadRequestReceipt(row.Token)
+	_, found, err := a.store.GetThreadRequestReceipt(row.Token)
 	if err != nil {
 		return threadSettlementWork{}, err
 	}
-	if found && slices.Contains(store.ThreadReceiptOpenStates(), receipt.State) {
-		// The receipt sweep could not settle it and reported why. Its own
-		// settlement collects this row.
-		return threadSettlementWork{}, nil
+	work := threadSettlementWork{token: row.Token, targetThread: row.TargetThreadID}
+	if found {
+		// An open receipt collects nothing: the receipt sweep could not
+		// settle it and reported why, and its own settlement collects this
+		// row.
+		collected, err := a.store.CollectLocalThreadReceipt(row.Token, store.ThreadRequestWake{ReplyArms: a.replyArmsWake(row)})
+		if err != nil || !collected.Any() {
+			return threadSettlementWork{}, err
+		}
+		work.wake, work.late = a.collectionWake(row.Token, collected)
+		return work, nil
 	}
-	settlement := store.ThreadRequestSettlement{
+	settled, err := a.store.SettleThreadRequest(row.Token, store.ThreadRequestOpenStates(), store.ThreadRequestSettlement{
 		State:      store.ThreadRequestInterrupted,
 		Answer:     []byte(threadReceiptRestarted),
 		AnswerKind: store.ThreadAnswerError,
-	}
-	if found {
-		settlement = store.ThreadRequestSettlement{
-			State:      threadRequestStateForReceipt(receipt.State),
-			Answer:     receipt.Answer,
-			AnswerKind: receipt.AnswerKind,
-			SettledAt:  receipt.SettledAt,
-			ExpiresAt:  receipt.ExpiresAt,
-			ArmWake:    receipt.AnswerKind == store.ThreadAnswerReply && a.replyArmsWake(row),
-		}
-	}
-	settled, err := a.store.SettleThreadRequest(row.Token, store.ThreadRequestOpenStates(), settlement)
+	})
 	if err != nil || !settled {
 		return threadSettlementWork{}, err
 	}
-	work := threadSettlementWork{
-		token:        row.Token,
-		targetThread: row.TargetThreadID,
-		wake:         a.finishThreadRequestCollection(row.Token, false),
-	}
-	if found {
-		// The request holds the answer now. A failed acknowledgement costs
-		// only the receipt's copy, which expires as uncollected.
-		if _, err := a.store.AckThreadRequestReceipt(row.Token, receipt.Revision, 0); err != nil {
-			return work, err
-		}
-	}
+	work.wake = a.finishThreadRequestCollection(row.Token, false)
 	return work, nil
 }
 

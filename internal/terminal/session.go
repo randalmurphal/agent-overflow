@@ -21,10 +21,11 @@ type SessionOptions struct {
 	Env   []string
 	Rows  uint16
 	Cols  uint16
-	// Reaper, when set, is handed the session's process group as the
-	// process starts and released once it has exited, so the orphan reaper
-	// ends the group if the backend dies first. Without one the session ends
-	// with the backend through the hangup of its pty.
+	// Reaper is handed the session's process group as the process starts
+	// and released once it has exited, so the orphan reaper ends the group if
+	// the backend dies first. Required: the pty's hangup reaches only what
+	// still holds the terminal and does not ignore SIGHUP, and a pty process
+	// runs until it is closed.
 	Reaper procutil.Reaper
 }
 

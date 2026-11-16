@@ -267,7 +267,9 @@ export class CIPipeline {
      * ActionsUnavailable is the sentence saying why some actions are not
      * offered: a read behind their flags (GitHub's repository permission,
      * a run's artifacts) failed, and the flags it would have set are
-     * absent. Empty when every flag was read.
+     * absent. A GitHub PR read that left out check runs or workflow runs
+     * (githubReadParts) leads with their sentences. Empty when every flag
+     * was read.
      */
     "actionsUnavailable"?: string;
 
@@ -797,6 +799,13 @@ export class GitStatus {
      * the "Create PR" action.
      */
     "forge"?: string;
+
+    /**
+     * ForgeUnsupported is the sentence the PR features show in their
+     * place when Forge is empty because the origin is on a forge host
+     * this release does not support (GitHub Enterprise); "" otherwise.
+     */
+    "forgeUnsupported"?: string;
     "openPrUrl"?: string;
     "openPrNumber"?: number;
 
@@ -1061,6 +1070,28 @@ export class MergeOptions {
      */
     "cannotMergeReason"?: string;
 
+    /**
+     * ViewerCanUpdateBranch is whether the forge would update the head
+     * branch from the base for this login (GitHub viewerCanUpdateBranch,
+     * GitLab can_merge); ViewerCanUnapprove whether it would withdraw the
+     * login's standing approval (GitHub dismisses it, which needs write
+     * access); ViewerCanMarkReady whether it would mark the draft ready
+     * (GitHub viewerCanUpdate). Each Cannot*Reason says why not, where
+     * the control would show.
+     */
+    "viewerCanUpdateBranch": boolean;
+    "cannotUpdateBranchReason"?: string;
+    "viewerCanUnapprove": boolean;
+    "cannotUnapproveReason"?: string;
+    "viewerCanMarkReady": boolean;
+    "cannotMarkReadyReason"?: string;
+
+    /**
+     * Queue is the merge queue the target branch merges through (a
+     * GitLab merge train or a GitHub merge queue), nil when it has none.
+     */
+    "queue"?: MergeQueue | null;
+
     /** Creates a new MergeOptions instance. */
     constructor($$source: Partial<MergeOptions> = {}) {
         if (!("methods" in $$source)) {
@@ -1084,6 +1115,15 @@ export class MergeOptions {
         if (!("viewerApproved" in $$source)) {
             this["viewerApproved"] = false;
         }
+        if (!("viewerCanUpdateBranch" in $$source)) {
+            this["viewerCanUpdateBranch"] = false;
+        }
+        if (!("viewerCanUnapprove" in $$source)) {
+            this["viewerCanUnapprove"] = false;
+        }
+        if (!("viewerCanMarkReady" in $$source)) {
+            this["viewerCanMarkReady"] = false;
+        }
 
         Object.assign(this, $$source);
     }
@@ -1094,12 +1134,16 @@ export class MergeOptions {
     static createFrom($$source: any = {}): MergeOptions {
         const $$createField0_0 = $$createType0;
         const $$createField4_0 = $$createType14;
+        const $$createField16_0 = $$createType16;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("methods" in $$parsedSource) {
             $$parsedSource["methods"] = $$createField0_0($$parsedSource["methods"]);
         }
         if ("autoMerge" in $$parsedSource) {
             $$parsedSource["autoMerge"] = $$createField4_0($$parsedSource["autoMerge"]);
+        }
+        if ("queue" in $$parsedSource) {
+            $$parsedSource["queue"] = $$createField16_0($$parsedSource["queue"]);
         }
         return new MergeOptions($$parsedSource as Partial<MergeOptions>);
     }
@@ -1135,6 +1179,47 @@ export class MergeOutcome {
     static createFrom($$source: any = {}): MergeOutcome {
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         return new MergeOutcome($$parsedSource as Partial<MergeOutcome>);
+    }
+}
+
+/**
+ * MergeQueue is a target branch's merge queue as one pull request sees
+ * it. Required: every merge goes through the queue, so Merge now adds the
+ * pull request to it and auto-merge adds it once its checks pass; the
+ * forge merges it when its turn comes. Queued: it is in the queue now,
+ * Position its 1-based place and Size the queue's length, each 0 when
+ * unknown. An armed AutoMerge that is not Queued waits to join.
+ * CanRemove: the viewer may take it out, which cancelling the auto-merge
+ * does.
+ */
+export class MergeQueue {
+    "required": boolean;
+    "queued": boolean;
+    "position"?: number;
+    "size"?: number;
+    "canRemove": boolean;
+
+    /** Creates a new MergeQueue instance. */
+    constructor($$source: Partial<MergeQueue> = {}) {
+        if (!("required" in $$source)) {
+            this["required"] = false;
+        }
+        if (!("queued" in $$source)) {
+            this["queued"] = false;
+        }
+        if (!("canRemove" in $$source)) {
+            this["canRemove"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new MergeQueue instance from a string or object.
+     */
+    static createFrom($$source: any = {}): MergeQueue {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new MergeQueue($$parsedSource as Partial<MergeQueue>);
     }
 }
 
@@ -1182,9 +1267,9 @@ export class MergeReadiness {
      * Creates a new MergeReadiness instance from a string or object.
      */
     static createFrom($$source: any = {}): MergeReadiness {
-        const $$createField1_0 = $$createType16;
-        const $$createField2_0 = $$createType16;
-        const $$createField3_0 = $$createType17;
+        const $$createField1_0 = $$createType18;
+        const $$createField2_0 = $$createType18;
+        const $$createField3_0 = $$createType19;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("blockers" in $$parsedSource) {
             $$parsedSource["blockers"] = $$createField1_0($$parsedSource["blockers"]);
@@ -1201,7 +1286,8 @@ export class MergeReadiness {
 
 /**
  * MergeRequest is one merge action. Method must be one of the PR's
- * MergeOptions.Methods; HeadSHA is the head the caller saw and the forge
+ * MergeOptions.Methods, or empty when a required Queue offers none (its
+ * own method applies); HeadSHA is the head the caller saw and the forge
  * refuses the merge when the branch moved past it. AutoMerge arms the
  * merge for when the checks pass instead of merging now.
  */
@@ -1240,7 +1326,7 @@ export class MergeRequest {
      * Creates a new MergeRequest instance from a string or object.
      */
     static createFrom($$source: any = {}): MergeRequest {
-        const $$createField4_0 = $$createType19;
+        const $$createField4_0 = $$createType21;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("commitMessage" in $$parsedSource) {
             $$parsedSource["commitMessage"] = $$createField4_0($$parsedSource["commitMessage"]);
@@ -1278,8 +1364,8 @@ export class PRCandidates {
      * Creates a new PRCandidates instance from a string or object.
      */
     static createFrom($$source: any = {}): PRCandidates {
-        const $$createField0_0 = $$createType21;
-        const $$createField1_0 = $$createType23;
+        const $$createField0_0 = $$createType23;
+        const $$createField1_0 = $$createType25;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("people" in $$parsedSource) {
             $$parsedSource["people"] = $$createField0_0($$parsedSource["people"]);
@@ -1346,6 +1432,14 @@ export class PRDetail {
      * (forge_manage.go).
      */
     "manage": PRManage;
+
+    /**
+     * Unavailable is a sentence for each optional part of the read the
+     * forge would not answer (team reviewers, check runs, workflow runs),
+     * saying what is not shown and why. The management part's sentence is
+     * Manage.Unavailable.
+     */
+    "unavailable"?: string[];
 
     /** Creates a new PRDetail instance. */
     constructor($$source: Partial<PRDetail> = {}) {
@@ -1423,12 +1517,13 @@ export class PRDetail {
      * Creates a new PRDetail instance from a string or object.
      */
     static createFrom($$source: any = {}): PRDetail {
-        const $$createField17_0 = $$createType25;
-        const $$createField18_0 = $$createType26;
-        const $$createField20_0 = $$createType28;
-        const $$createField21_0 = $$createType29;
-        const $$createField22_0 = $$createType30;
-        const $$createField26_0 = $$createType31;
+        const $$createField17_0 = $$createType27;
+        const $$createField18_0 = $$createType28;
+        const $$createField20_0 = $$createType30;
+        const $$createField21_0 = $$createType31;
+        const $$createField22_0 = $$createType32;
+        const $$createField26_0 = $$createType33;
+        const $$createField27_0 = $$createType0;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("latestReviews" in $$parsedSource) {
             $$parsedSource["latestReviews"] = $$createField17_0($$parsedSource["latestReviews"]);
@@ -1447,6 +1542,9 @@ export class PRDetail {
         }
         if ("manage" in $$parsedSource) {
             $$parsedSource["manage"] = $$createField26_0($$parsedSource["manage"]);
+        }
+        if ("unavailable" in $$parsedSource) {
+            $$parsedSource["unavailable"] = $$createField27_0($$parsedSource["unavailable"]);
         }
         return new PRDetail($$parsedSource as Partial<PRDetail>);
     }
@@ -1560,8 +1658,8 @@ export class PRLabelChange {
      * Creates a new PRLabelChange instance from a string or object.
      */
     static createFrom($$source: any = {}): PRLabelChange {
-        const $$createField0_0 = $$createType23;
-        const $$createField1_0 = $$createType23;
+        const $$createField0_0 = $$createType25;
+        const $$createField1_0 = $$createType25;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("add" in $$parsedSource) {
             $$parsedSource["add"] = $$createField0_0($$parsedSource["add"]);
@@ -1658,10 +1756,10 @@ export class PRManage {
      * Creates a new PRManage instance from a string or object.
      */
     static createFrom($$source: any = {}): PRManage {
-        const $$createField0_0 = $$createType33;
-        const $$createField1_0 = $$createType21;
-        const $$createField2_0 = $$createType23;
-        const $$createField3_0 = $$createType34;
+        const $$createField0_0 = $$createType35;
+        const $$createField1_0 = $$createType23;
+        const $$createField2_0 = $$createType25;
+        const $$createField3_0 = $$createType36;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("reviewers" in $$parsedSource) {
             $$parsedSource["reviewers"] = $$createField0_0($$parsedSource["reviewers"]);
@@ -1779,8 +1877,8 @@ export class PRPeopleChange {
      * Creates a new PRPeopleChange instance from a string or object.
      */
     static createFrom($$source: any = {}): PRPeopleChange {
-        const $$createField0_0 = $$createType21;
-        const $$createField1_0 = $$createType21;
+        const $$createField0_0 = $$createType23;
+        const $$createField1_0 = $$createType23;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("add" in $$parsedSource) {
             $$parsedSource["add"] = $$createField0_0($$parsedSource["add"]);
@@ -2162,6 +2260,13 @@ export class ReviewComment {
     "suggestions"?: CommentSuggestion[];
     "reactions"?: CommentReaction[];
 
+    /**
+     * CannotReactReason is why the viewer may not add or remove a
+     * reaction here (GitHub's viewerCanReact); empty is allowed or
+     * unknown (GitLab's notes carry no permission).
+     */
+    "cannotReactReason"?: string;
+
     /** Creates a new ReviewComment instance. */
     constructor($$source: Partial<ReviewComment> = {}) {
         if (!("id" in $$source)) {
@@ -2193,9 +2298,9 @@ export class ReviewComment {
      * Creates a new ReviewComment instance from a string or object.
      */
     static createFrom($$source: any = {}): ReviewComment {
-        const $$createField7_0 = $$createType36;
-        const $$createField11_0 = $$createType38;
-        const $$createField12_0 = $$createType40;
+        const $$createField7_0 = $$createType38;
+        const $$createField11_0 = $$createType40;
+        const $$createField12_0 = $$createType42;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("replyTo" in $$parsedSource) {
             $$parsedSource["replyTo"] = $$createField7_0($$parsedSource["replyTo"]);
@@ -2300,8 +2405,8 @@ export class ReviewLineComment {
      * Creates a new ReviewLineComment instance from a string or object.
      */
     static createFrom($$source: any = {}): ReviewLineComment {
-        const $$createField5_0 = $$createType42;
-        const $$createField6_0 = $$createType44;
+        const $$createField5_0 = $$createType44;
+        const $$createField6_0 = $$createType46;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("start" in $$parsedSource) {
             $$parsedSource["start"] = $$createField5_0($$parsedSource["start"]);
@@ -2408,6 +2513,16 @@ export class ReviewThread {
     "isOutdated": boolean;
     "comments": ReviewComment[];
 
+    /**
+     * CannotResolveReason, set on a resolvable thread, is why the viewer
+     * may not resolve it (or reopen it, once resolved): GitHub's
+     * viewerCanResolve and viewerCanUnresolve, GitLab's role and
+     * authorship. CannotReplyReason is why the viewer may not reply
+     * (GitHub's viewerCanReply). Empty is allowed or unknown.
+     */
+    "cannotResolveReason"?: string;
+    "cannotReplyReason"?: string;
+
     /** Creates a new ReviewThread instance. */
     constructor($$source: Partial<ReviewThread> = {}) {
         if (!("id" in $$source)) {
@@ -2445,7 +2560,7 @@ export class ReviewThread {
      * Creates a new ReviewThread instance from a string or object.
      */
     static createFrom($$source: any = {}): ReviewThread {
-        const $$createField11_0 = $$createType46;
+        const $$createField11_0 = $$createType48;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("comments" in $$parsedSource) {
             $$parsedSource["comments"] = $$createField11_0($$parsedSource["comments"]);
@@ -2560,7 +2675,7 @@ export class SuggestionApply {
      * Creates a new SuggestionApply instance from a string or object.
      */
     static createFrom($$source: any = {}): SuggestionApply {
-        const $$createField0_0 = $$createType47;
+        const $$createField0_0 = $$createType49;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("target" in $$parsedSource) {
             $$parsedSource["target"] = $$createField0_0($$parsedSource["target"]);
@@ -2585,36 +2700,38 @@ const $$createType11 = ChangeRequest.createFrom;
 const $$createType12 = $Create.Array($$createType11);
 const $$createType13 = AutoMergeRequest.createFrom;
 const $$createType14 = $Create.Nullable($$createType13);
-const $$createType15 = MergeBlocker.createFrom;
-const $$createType16 = $Create.Array($$createType15);
-const $$createType17 = ApprovalCount.createFrom;
-const $$createType18 = MergeMessage.createFrom;
-const $$createType19 = $Create.Nullable($$createType18);
-const $$createType20 = PRPerson.createFrom;
-const $$createType21 = $Create.Array($$createType20);
-const $$createType22 = PRLabel.createFrom;
+const $$createType15 = MergeQueue.createFrom;
+const $$createType16 = $Create.Nullable($$createType15);
+const $$createType17 = MergeBlocker.createFrom;
+const $$createType18 = $Create.Array($$createType17);
+const $$createType19 = ApprovalCount.createFrom;
+const $$createType20 = MergeMessage.createFrom;
+const $$createType21 = $Create.Nullable($$createType20);
+const $$createType22 = PRPerson.createFrom;
 const $$createType23 = $Create.Array($$createType22);
-const $$createType24 = ReviewVerdict.createFrom;
+const $$createType24 = PRLabel.createFrom;
 const $$createType25 = $Create.Array($$createType24);
-const $$createType26 = CheckSummary.createFrom;
-const $$createType27 = PRDiffRefs.createFrom;
-const $$createType28 = $Create.Nullable($$createType27);
-const $$createType29 = MergeReadiness.createFrom;
-const $$createType30 = MergeOptions.createFrom;
-const $$createType31 = PRManage.createFrom;
-const $$createType32 = PRReviewer.createFrom;
-const $$createType33 = $Create.Array($$createType32);
-const $$createType34 = PRManageCan.createFrom;
-const $$createType35 = ReviewReplyTo.createFrom;
-const $$createType36 = $Create.Nullable($$createType35);
-const $$createType37 = CommentSuggestion.createFrom;
-const $$createType38 = $Create.Array($$createType37);
-const $$createType39 = CommentReaction.createFrom;
+const $$createType26 = ReviewVerdict.createFrom;
+const $$createType27 = $Create.Array($$createType26);
+const $$createType28 = CheckSummary.createFrom;
+const $$createType29 = PRDiffRefs.createFrom;
+const $$createType30 = $Create.Nullable($$createType29);
+const $$createType31 = MergeReadiness.createFrom;
+const $$createType32 = MergeOptions.createFrom;
+const $$createType33 = PRManage.createFrom;
+const $$createType34 = PRReviewer.createFrom;
+const $$createType35 = $Create.Array($$createType34);
+const $$createType36 = PRManageCan.createFrom;
+const $$createType37 = ReviewReplyTo.createFrom;
+const $$createType38 = $Create.Nullable($$createType37);
+const $$createType39 = CommentSuggestion.createFrom;
 const $$createType40 = $Create.Array($$createType39);
-const $$createType41 = ReviewLineStart.createFrom;
-const $$createType42 = $Create.Nullable($$createType41);
-const $$createType43 = ReviewThreadReply.createFrom;
+const $$createType41 = CommentReaction.createFrom;
+const $$createType42 = $Create.Array($$createType41);
+const $$createType43 = ReviewLineStart.createFrom;
 const $$createType44 = $Create.Nullable($$createType43);
-const $$createType45 = ReviewComment.createFrom;
-const $$createType46 = $Create.Array($$createType45);
-const $$createType47 = CommentTarget.createFrom;
+const $$createType45 = ReviewThreadReply.createFrom;
+const $$createType46 = $Create.Nullable($$createType45);
+const $$createType47 = ReviewComment.createFrom;
+const $$createType48 = $Create.Array($$createType47);
+const $$createType49 = CommentTarget.createFrom;

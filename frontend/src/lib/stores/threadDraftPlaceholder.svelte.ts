@@ -292,7 +292,8 @@ export function createThreadDraftPlaceholder(
    * the stale-create guard checks the placeholder id at completion.
    *
    * Side effects on success: seeds the default worktree intent for the
-   * new thread, prepends it to the sidebar threads registry, adopts it
+   * new thread, prepends it to the sidebar threads registry when the
+   * composer holds content, adopts it
    * on the pane, and points the pane's registered composer-draft store
    * at the new thread id (so typed text saved against the placeholder
    * id flushes through to the real thread row).
@@ -338,9 +339,15 @@ export function createThreadDraftPlaceholder(
         const listed = getThreadById(created.id);
         created = threadReplyRow(created, mark, listed) ?? listed ?? created;
         seedDefaultWorktreeIntentForDraft(created);
-        prependThread(created);
-        adoptMaterializedDraftThread(created);
         const draftStore = getComposerDraftForPane(paneId);
+        // The sidebar lists a never-sent thread once it is real
+        // (store.sidebarListedClause). Typed text makes it real with the
+        // save that follows, so this screen lists it now rather than a
+        // debounce later; a row created already real arrived as `listed`.
+        // One materialized for anything else (a staged workspace choice) is
+        // listed by the write that makes it real, on every screen at once.
+        if (draftStore?.hasDraft) prependThread(created);
+        adoptMaterializedDraftThread(created);
         if (draftStore) draftStore.adoptThread(created.id);
         return created.id;
       } catch (err) {

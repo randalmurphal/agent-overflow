@@ -1,6 +1,7 @@
 package app
 
 import (
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/testutil/mockexec"
 	"context"
 	"encoding/json"
@@ -383,14 +384,14 @@ func TestRemoteMCPRefreshesLiveProvidersAndKeepsThreadDisable(t *testing.T) {
 				script := []byte(mockScript(t, binary))
 				script = []byte(strings.ReplaceAll(string(script), `"subtype":"mcp_toggle"`, `"subtype":"mcp_reconnect"`))
 				mockexec.Write(t, binary, string(script))
-				ps, err := claude.NewSession(ctx, thread.ID, claude.Config{Retention: claude.UserHomeRetention(0), Binary: binary, WorkDir: thread.WorkspacePath}, func(provider.ProviderEvent) {})
+				ps, err := claude.NewSession(ctx, thread.ID, claude.Config{Reaper: procutiltest.Reaper(), Retention: claude.UserHomeRetention(0), Binary: binary, WorkDir: thread.WorkspacePath}, func(provider.ProviderEvent) {})
 				if err != nil {
 					t.Fatal(err)
 				}
 				t.Cleanup(func() { _ = ps.Close() })
 				a.sessionManager().put(thread.ID, session{Token: token, Provider: name, Claude: ps})
 			} else {
-				ps, err := codex.NewSession(ctx, thread.ID, codex.Config{Binary: writeCodexRefreshCaptureBinary(t, capture, "remote-provider", ""), Model: "gpt-5", WorkDir: thread.WorkspacePath}, func(provider.ProviderEvent) {})
+				ps, err := codex.NewSession(ctx, thread.ID, codex.Config{Reaper: procutiltest.Reaper(), Binary: writeCodexRefreshCaptureBinary(t, capture, "remote-provider", ""), Model: "gpt-5", WorkDir: thread.WorkspacePath}, func(provider.ProviderEvent) {})
 				if err != nil {
 					t.Fatal(err)
 				}

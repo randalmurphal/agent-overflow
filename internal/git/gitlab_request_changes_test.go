@@ -27,7 +27,7 @@ func TestGitLabRequestChangesPostsAThreadAndSetsTheState(t *testing.T) {
 			[]string{"GET metadata", "GET " + mr, "GET " + mr + "/draft_notes?per_page=100", "GET " + mr + "/diffs?per_page=100", "POST " + mr + "/draft_notes", "POST " + mr + "/draft_notes/bulk_publish", "POST " + mr + "/discussions"},
 			`{"reviewer_state":"requested_changes"}`},
 		{"19.6 alone", "19.6.0-ee", nil,
-			[]string{"GET metadata", "GET " + mr, "POST " + mr + "/draft_notes/bulk_publish", "POST " + mr + "/discussions"},
+			[]string{"GET metadata", "GET " + mr, "GET " + mr + "/draft_notes?per_page=100", "POST " + mr + "/draft_notes/bulk_publish", "POST " + mr + "/discussions"},
 			`{"reviewer_state":"requested_changes"}`},
 		{"18.5 with a comment", "18.5.2", []ReviewLineComment{comment},
 			[]string{"GET metadata", "GET " + mr, "GET " + mr + "/draft_notes?per_page=100", "GET " + mr + "/diffs?per_page=100", "POST " + mr + "/draft_notes", "POST " + mr + "/draft_notes/bulk_publish", "POST " + mr + "/discussions"},
@@ -70,6 +70,57 @@ func TestGitLabRequestChangesPostsAThreadAndSetsTheState(t *testing.T) {
 						t.Fatal("the summary went out as a draft note")
 					}
 				}
+			}
+		})
+	}
+}
+
+// A Request changes with no comment publishes the reviewer state from
+// 19.3, and that publish would post the viewer's pending draft notes too,
+// so one this submit did not create refuses it before any write. Before
+// 19.3 the same review sends no publish and is not refused.
+func TestGitLabRequestChangesAloneRefusesPendingDraftNotesWhereItPublishes(t *testing.T) {
+	t.Parallel()
+	mr := gitlabTestProject + "/merge_requests/7"
+	review := SubmitReviewRequest{Verdict: ReviewVerdictRequestChanges, HeadSHA: gitlabTestHead, Body: "Rename it."}
+	for _, tc := range []struct {
+		name, version string
+		refused       bool
+		want          []string
+	}{
+		{"19.6", "19.6.0-ee", true,
+			[]string{"GET metadata", "GET " + mr, "GET " + mr + "/draft_notes?per_page=100"}},
+		{"18.5", "18.5.2", false,
+			[]string{"GET metadata", "GET " + mr, "POST " + mr + "/discussions"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			forge := &gitlabDraftForge{next: 100, pending: map[int64]string{41: `{"note":"started on GitLab"}`}}
+			core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
+				switch {
+				case call.Op == "" && call.Path == "metadata":
+					return gitlabMetadata(tc.version)
+				case call.Method == http.MethodPost && call.Path == mr+"/discussions":
+					return forgeAPIAnswer{Status: http.StatusCreated, Body: `{"id":"abc","individual_note":false,"notes":[{"id":5,"type":"DiscussionNote","resolvable":true}]}`}
+				}
+				return forge.answer(t, mr)(call)
+			})
+			result, err := core.SubmitReview(t.Context(), gitlabTestRef(7), review)
+			refused, isRefused := errors.AsType[*PendingDraftNotesError](err)
+			switch {
+			case tc.refused && (!isRefused || refused.Count != 1 || result.PostedReview):
+				t.Fatalf("submit = %+v, %v; want a PendingDraftNotesError for 1", result, err)
+			case !tc.refused && (err != nil || !result.PostedReview):
+				t.Fatalf("submit = %+v, %v; want the thread posted", result, err)
+			}
+			if got := gitlabPaths(calls); !slices.Equal(got, tc.want) {
+				t.Fatalf("requests = %q\nwant %q", got, tc.want)
+			}
+			if forge.publishes != 0 {
+				t.Fatal("the submit published the viewer's pending draft")
+			}
+			if got := forge.pendingIDs(); !slices.Equal(got, []int64{41}) {
+				t.Fatalf("pending drafts = %v, want the viewer's own untouched", got)
 			}
 		})
 	}

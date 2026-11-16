@@ -8,19 +8,21 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/procutil"
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 )
 
 func TestGet_CachesUntilTTLExpires(t *testing.T) {
 	calls := 0
 	now := time.Unix(1000, 0)
-	cache := NewWith(time.Minute, func(_ context.Context, _ string) ([]provider.ModelInfo, error) {
+	cache := NewWith(time.Minute, func(_ context.Context, _ string, _ procutil.Reaper) ([]provider.ModelInfo, error) {
 		calls++
 		return []provider.ModelInfo{{Slug: "first"}}, nil
 	}, func() time.Time { return now })
 
 	for i := 0; i < 3; i++ {
-		got, err := cache.Get(context.Background(), "codex")
+		got, err := cache.Get(context.Background(), "codex", procutiltest.Reaper())
 		if err != nil {
 			t.Fatalf("iteration %d Get: %v", i, err)
 		}
@@ -33,7 +35,7 @@ func TestGet_CachesUntilTTLExpires(t *testing.T) {
 	}
 
 	now = now.Add(2 * time.Minute)
-	if _, err := cache.Get(context.Background(), "codex"); err != nil {
+	if _, err := cache.Get(context.Background(), "codex", procutiltest.Reaper()); err != nil {
 		t.Fatalf("post-expiry Get: %v", err)
 	}
 	if calls != 2 {
@@ -42,16 +44,16 @@ func TestGet_CachesUntilTTLExpires(t *testing.T) {
 }
 
 func TestGet_ReturnsDefensiveClone(t *testing.T) {
-	cache := NewWith(time.Minute, func(_ context.Context, _ string) ([]provider.ModelInfo, error) {
+	cache := NewWith(time.Minute, func(_ context.Context, _ string, _ procutil.Reaper) ([]provider.ModelInfo, error) {
 		return []provider.ModelInfo{{Slug: "m", Capabilities: []string{"a", "b"}}}, nil
 	}, nil)
-	got, err := cache.Get(context.Background(), "codex")
+	got, err := cache.Get(context.Background(), "codex", procutiltest.Reaper())
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
 	got[0].Capabilities[0] = "CLOBBERED"
 
-	again, err := cache.Get(context.Background(), "codex")
+	again, err := cache.Get(context.Background(), "codex", procutiltest.Reaper())
 	if err != nil {
 		t.Fatalf("Get again: %v", err)
 	}
@@ -64,7 +66,7 @@ func TestPeek_IsNonBlockingAndReturnsOnlyFreshCachedResults(t *testing.T) {
 	now := time.Unix(1000, 0)
 	started := make(chan struct{})
 	release := make(chan struct{})
-	cache := NewWith(time.Minute, func(_ context.Context, _ string) ([]provider.ModelInfo, error) {
+	cache := NewWith(time.Minute, func(_ context.Context, _ string, _ procutil.Reaper) ([]provider.ModelInfo, error) {
 		close(started)
 		<-release
 		return []provider.ModelInfo{{Slug: "cached", Capabilities: []string{"fast"}}}, nil
@@ -75,7 +77,7 @@ func TestPeek_IsNonBlockingAndReturnsOnlyFreshCachedResults(t *testing.T) {
 	}
 	done := make(chan error, 1)
 	go func() {
-		_, err := cache.Get(context.Background(), "codex")
+		_, err := cache.Get(context.Background(), "codex", procutiltest.Reaper())
 		done <- err
 	}()
 	<-started
@@ -107,7 +109,7 @@ func TestReset_DetachesInFlightLookup(t *testing.T) {
 	firstStarted := make(chan struct{})
 	releaseFirst := make(chan struct{})
 	calls := 0
-	cache := NewWith(time.Hour, func(_ context.Context, _ string) ([]provider.ModelInfo, error) {
+	cache := NewWith(time.Hour, func(_ context.Context, _ string, _ procutil.Reaper) ([]provider.ModelInfo, error) {
 		calls++
 		if calls == 1 {
 			close(firstStarted)
@@ -119,13 +121,13 @@ func TestReset_DetachesInFlightLookup(t *testing.T) {
 
 	firstDone := make(chan error, 1)
 	go func() {
-		_, err := cache.Get(context.Background(), "codex")
+		_, err := cache.Get(context.Background(), "codex", procutiltest.Reaper())
 		firstDone <- err
 	}()
 	<-firstStarted
 	cache.Reset()
 
-	models, err := cache.Get(context.Background(), "codex")
+	models, err := cache.Get(context.Background(), "codex", procutiltest.Reaper())
 	if err != nil {
 		t.Fatalf("post-reset Get: %v", err)
 	}
@@ -145,16 +147,16 @@ func TestReset_DetachesInFlightLookup(t *testing.T) {
 
 func TestGet_DropsCachedEntryOnReset(t *testing.T) {
 	calls := 0
-	cache := NewWith(time.Hour, func(_ context.Context, _ string) ([]provider.ModelInfo, error) {
+	cache := NewWith(time.Hour, func(_ context.Context, _ string, _ procutil.Reaper) ([]provider.ModelInfo, error) {
 		calls++
 		return []provider.ModelInfo{{Slug: "x"}}, nil
 	}, nil)
 
-	if _, err := cache.Get(context.Background(), "codex"); err != nil {
+	if _, err := cache.Get(context.Background(), "codex", procutiltest.Reaper()); err != nil {
 		t.Fatalf("Get: %v", err)
 	}
 	cache.Reset()
-	if _, err := cache.Get(context.Background(), "codex"); err != nil {
+	if _, err := cache.Get(context.Background(), "codex", procutiltest.Reaper()); err != nil {
 		t.Fatalf("post-reset Get: %v", err)
 	}
 	if calls != 2 {
@@ -166,7 +168,7 @@ func TestGet_SingleFlightsConcurrentCalls(t *testing.T) {
 	gate := make(chan struct{})
 	var calls int
 	var callMu sync.Mutex
-	cache := NewWith(time.Minute, func(ctx context.Context, _ string) ([]provider.ModelInfo, error) {
+	cache := NewWith(time.Minute, func(ctx context.Context, _ string, _ procutil.Reaper) ([]provider.ModelInfo, error) {
 		callMu.Lock()
 		calls++
 		callMu.Unlock()
@@ -182,7 +184,7 @@ func TestGet_SingleFlightsConcurrentCalls(t *testing.T) {
 	results := make(chan error, N)
 	for i := 0; i < N; i++ {
 		go func() {
-			_, err := cache.Get(context.Background(), "codex")
+			_, err := cache.Get(context.Background(), "codex", procutiltest.Reaper())
 			results <- err
 		}()
 	}
@@ -205,13 +207,13 @@ func TestGet_SingleFlightsConcurrentCalls(t *testing.T) {
 func TestGet_ErrorIsCachedBriefly(t *testing.T) {
 	calls := 0
 	now := time.Unix(1000, 0)
-	cache := NewWith(time.Hour, func(_ context.Context, _ string) ([]provider.ModelInfo, error) {
+	cache := NewWith(time.Hour, func(_ context.Context, _ string, _ procutil.Reaper) ([]provider.ModelInfo, error) {
 		calls++
 		return nil, errors.New("boom")
 	}, func() time.Time { return now })
 
 	for i := 0; i < 3; i++ {
-		if _, err := cache.Get(context.Background(), "codex"); err == nil {
+		if _, err := cache.Get(context.Background(), "codex", procutiltest.Reaper()); err == nil {
 			t.Fatalf("iteration %d expected error", i)
 		}
 	}
@@ -223,7 +225,7 @@ func TestGet_ErrorIsCachedBriefly(t *testing.T) {
 	}
 
 	now = now.Add(DefaultErrorTTL + time.Second)
-	if _, err := cache.Get(context.Background(), "codex"); err == nil {
+	if _, err := cache.Get(context.Background(), "codex", procutiltest.Reaper()); err == nil {
 		t.Fatal("post-expiry Get error = nil, want error")
 	}
 	if calls != 2 {
@@ -233,19 +235,19 @@ func TestGet_ErrorIsCachedBriefly(t *testing.T) {
 
 func TestGet_CtxCancelledWhileSingleFlightInflight(t *testing.T) {
 	block := make(chan struct{})
-	cache := NewWith(time.Minute, func(ctx context.Context, _ string) ([]provider.ModelInfo, error) {
+	cache := NewWith(time.Minute, func(ctx context.Context, _ string, _ procutil.Reaper) ([]provider.ModelInfo, error) {
 		<-block
 		return nil, nil
 	}, nil)
 
 	go func() {
-		_, _ = cache.Get(context.Background(), "codex")
+		_, _ = cache.Get(context.Background(), "codex", procutiltest.Reaper())
 	}()
 	time.Sleep(20 * time.Millisecond)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := cache.Get(ctx, "codex"); err == nil {
+	if _, err := cache.Get(ctx, "codex", procutiltest.Reaper()); err == nil {
 		t.Fatalf("expected context error")
 	}
 	close(block)
@@ -258,7 +260,7 @@ func TestGet_FirstCallerLeavingEndsOnlyItsWait(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})
 	var calls atomic.Int32
-	cache := NewWith(time.Minute, func(ctx context.Context, _ string) ([]provider.ModelInfo, error) {
+	cache := NewWith(time.Minute, func(ctx context.Context, _ string, _ procutil.Reaper) ([]provider.ModelInfo, error) {
 		if calls.Add(1) == 1 {
 			close(started)
 			select {
@@ -273,13 +275,13 @@ func TestGet_FirstCallerLeavingEndsOnlyItsWait(t *testing.T) {
 	callerA, leaveA := context.WithCancel(context.Background())
 	aDone := make(chan error, 1)
 	go func() {
-		_, err := cache.Get(callerA, "codex")
+		_, err := cache.Get(callerA, "codex", procutiltest.Reaper())
 		aDone <- err
 	}()
 	<-started
 	bDone := make(chan error, 1)
 	go func() {
-		_, err := cache.Get(context.Background(), "codex")
+		_, err := cache.Get(context.Background(), "codex", procutiltest.Reaper())
 		bDone <- err
 	}()
 	leaveA()
@@ -290,7 +292,7 @@ func TestGet_FirstCallerLeavingEndsOnlyItsWait(t *testing.T) {
 	if err := <-bDone; err != nil {
 		t.Fatalf("caller B, sharing the lookup: %v", err)
 	}
-	if got, err := cache.Get(context.Background(), "codex"); err != nil || len(got) != 1 {
+	if got, err := cache.Get(context.Background(), "codex", procutiltest.Reaper()); err != nil || len(got) != 1 {
 		t.Fatalf("next Get = %v, %v, want the cached answer", got, err)
 	}
 	if n := calls.Load(); n != 1 {

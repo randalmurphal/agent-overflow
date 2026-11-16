@@ -2671,14 +2671,16 @@ export class GeneratedCommitMessage {
 
 /**
  * GitActionOutcome is what a git attempt did: "succeeded" (Result),
- * "failed" (Message: it wrote nothing it reports), "unknown" (this process
- * never received it), or "forgotten" (it may have received it and no longer
- * keeps the outcome).
+ * "failed" (Code, Message and Chain, what its first caller was told: it
+ * wrote nothing it reports), "unknown" (this process never received it), or "forgotten" (it
+ * may have received it and no longer keeps the outcome).
  */
 export class GitActionOutcome {
     "state": string;
     "result"?: git$0.GitActionResult | null;
+    "code"?: string;
     "message"?: string;
+    "chain"?: string[];
 
     /** Creates a new GitActionOutcome instance. */
     constructor($$source: Partial<GitActionOutcome> = {}) {
@@ -2694,9 +2696,13 @@ export class GitActionOutcome {
      */
     static createFrom($$source: any = {}): GitActionOutcome {
         const $$createField1_0 = $$createType42;
+        const $$createField4_0 = $$createType8;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("result" in $$parsedSource) {
             $$parsedSource["result"] = $$createField1_0($$parsedSource["result"]);
+        }
+        if ("chain" in $$parsedSource) {
+            $$parsedSource["chain"] = $$createField4_0($$parsedSource["chain"]);
         }
         return new GitActionOutcome($$parsedSource as Partial<GitActionOutcome>);
     }
@@ -4605,8 +4611,8 @@ export class PRReason {
 
 /**
  * PRReviewSubmitOutcome is what a submit attempt did: "posted" (Result),
- * "unconfirmed" (Result: the forge did not say), "failed" (Code and
- * Message: it posted nothing), "unknown" (this process never received
+ * "unconfirmed" (Result: the forge did not say), "failed" (Code,
+ * Message and Chain, what its first caller was told: it posted nothing), "unknown" (this process never received
  * it), or "forgotten" (it may have received it and no longer keeps the
  * outcome).
  */
@@ -4615,6 +4621,7 @@ export class PRReviewSubmitOutcome {
     "result"?: SubmitPRReviewResult | null;
     "code"?: string;
     "message"?: string;
+    "chain"?: string[];
 
     /** Creates a new PRReviewSubmitOutcome instance. */
     constructor($$source: Partial<PRReviewSubmitOutcome> = {}) {
@@ -4630,9 +4637,13 @@ export class PRReviewSubmitOutcome {
      */
     static createFrom($$source: any = {}): PRReviewSubmitOutcome {
         const $$createField1_0 = $$createType74;
+        const $$createField4_0 = $$createType8;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("result" in $$parsedSource) {
             $$parsedSource["result"] = $$createField1_0($$parsedSource["result"]);
+        }
+        if ("chain" in $$parsedSource) {
+            $$parsedSource["chain"] = $$createField4_0($$parsedSource["chain"]);
         }
         return new PRReviewSubmitOutcome($$parsedSource as Partial<PRReviewSubmitOutcome>);
     }
@@ -8519,6 +8530,13 @@ export class ThreadPeerRequest {
     "lateReply"?: string;
     "lateReplyAt"?: number;
     "revision"?: number;
+
+    /**
+     * CollectedRevision is the revision the source last acknowledged. A
+     * source holding Revision sends its acknowledgement again while this is
+     * behind it.
+     */
+    "collectedRevision"?: number;
     "settledAt"?: number;
     "expiresAt"?: number;
 

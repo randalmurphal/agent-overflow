@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 )
@@ -49,7 +50,7 @@ done
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	session, err := claude.NewSession(ctx, "thread", claude.Config{Binary: scriptPath, Retention: claude.UserHomeRetention(0)}, func(provider.ProviderEvent) {})
+	session, err := claude.NewSession(ctx, "thread", claude.Config{Reaper: procutiltest.Reaper(), Binary: scriptPath, Retention: claude.UserHomeRetention(0)}, func(provider.ProviderEvent) {})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}

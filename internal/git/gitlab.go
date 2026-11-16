@@ -11,7 +11,6 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
-	"time"
 
 	"agent-overflow/internal/forgeapi"
 )
@@ -20,52 +19,38 @@ import (
 // Core's forge API transport. Only CreatePR runs glab.
 type gitlabForge struct {
 	core *Core
-	// projects caches each login's merge settings of a project and
-	// viewers each login's account on a host (gitlab_merge_read.go).
+	// projects caches each login's merge settings of a project, access
+	// its access level there and viewers its account on a host
+	// (gitlab_merge_read.go).
 	projects gitlabCache[gitlabProjectSettings]
+	access   gitlabCache[int]
 	viewers  gitlabCache[gitlabViewer]
-	// noApprovalState marks a host whose GraphQL has no
-	// MergeRequest.approvalState (GitLab CE), for gitlabCacheTTL
-	// (pr_list_gitlab.go).
-	noApprovalState gitlabCache[bool]
-	// noCIJobCancelPermission marks a host whose GraphQL has no
-	// JobPermissions.cancelBuild or PipelinePermissions.cancelPipeline
-	// (before GitLab 16.6), for gitlabCacheTTL (ci_gitlab.go).
-	noCIJobCancelPermission gitlabCache[bool]
 	// activity is each host's viewer activity, read once per list round
 	// (pr_list_gitlab.go).
 	activity gitlabActivityRounds
-	// routes remembers, per host, a server that answered the older cancel
-	// route (gitlab_merge.go).
-	routes gitlabRouteMemory
 	// pipelineTags remembers which listed pipelines ran on a tag
 	// (ci_gitlab.go).
 	pipelineTags gitlabPipelineTags
-	// versions is each host's release (gitlab_version.go).
-	versions gitlabCache[gitlabVersion]
+	// servers is each host's release and edition (gitlab_version.go).
+	servers gitlabCache[gitlabServer]
 	// stateEventRetries holds the merge requests whose state events read
 	// failed, until it is due again (gitlab_manage.go).
 	stateEventRetries gitlabStateEventRetries
-	// reactions is each login's reaction reads per merge request, and
-	// noNoteAwardEmoji marks a host whose GraphQL has no Note.awardEmoji
+	// reactions is each login's reaction reads per merge request
 	// (gitlab_reactions.go).
-	reactions        gitlabReactionMemory
-	noNoteAwardEmoji gitlabCache[bool]
+	reactions gitlabReactionMemory
 }
 
 // resetCaches forgets what the adapter remembers of each host and
 // project (Core.ResetForgeCaches).
 func (f *gitlabForge) resetCaches() {
 	f.projects.clear()
+	f.access.clear()
 	f.viewers.clear()
-	f.noApprovalState.clear()
-	f.noCIJobCancelPermission.clear()
-	f.routes.clear()
 	f.pipelineTags.forget()
-	f.versions.clear()
+	f.servers.clear()
 	f.stateEventRetries.clear()
 	f.reactions.clear()
-	f.noNoteAwardEmoji.clear()
 }
 
 func (f *gitlabForge) ID() string         { return "gitlab" }
@@ -114,21 +99,25 @@ func (f *gitlabForge) CreatePR(ctx context.Context, cwd, title, body, base strin
 	return url, nil
 }
 
-// gitlabOriginProject is the GitLab project cwd's origin names, as an
-// API path, and the API client of its host.
-func (f *gitlabForge) gitlabOriginProject(cwd string) (*forgeapi.Client, string, error) {
+// gitlabOriginProject is the GitLab project cwd's origin names and the
+// API client of its host.
+func (f *gitlabForge) gitlabOriginProject(cwd string) (*forgeapi.Client, RepoReference, error) {
 	forge, host, project, err := f.core.originCoordinates(cwd)
 	if err != nil {
-		return nil, "", err
+		return nil, RepoReference{}, err
 	}
 	if forge != "gitlab" {
-		return nil, "", &OriginUnknownError{Cwd: cwd, Reason: "the origin is not a GitLab repository"}
+		return nil, RepoReference{}, &OriginUnknownError{Cwd: cwd, Reason: "the origin is not a GitLab repository"}
+	}
+	namespace, name, err := SplitProjectForForge(forge, project)
+	if err != nil {
+		return nil, RepoReference{}, &OriginUnknownError{Cwd: cwd, Reason: "the origin URL does not name a gitlab repository"}
 	}
 	client, err := f.core.gitlabAPI(host)
 	if err != nil {
-		return nil, "", err
+		return nil, RepoReference{}, err
 	}
-	return client, gitlabProjectPath(project), nil
+	return client, RepoReference{Forge: forge, Host: host, Namespace: namespace, Repo: name}, nil
 }
 
 // gitlabOpenMRsMaxPages bounds the pages one open merge request lookup
@@ -136,21 +125,41 @@ func (f *gitlabForge) gitlabOriginProject(cwd string) (*forgeapi.Client, string,
 const gitlabOpenMRsMaxPages = 5
 
 // ListOpenPRs returns the open merge request whose source is the given
-// branch of cwd's origin project itself. The source_branch filter also
-// matches a fork's branch of the same name, which is someone else's work:
-// a merge request counts only when its source project is the target
-// project. GitLab keeps one open merge request per source branch, so the
-// read stops at it. The full view is read because the simple one carries
-// no source_project_id.
+// branch of cwd's origin project itself: one opened in the origin from
+// its own branch, else, when the origin is a fork, one opened in the
+// project it was forked from (projectSettings, cached) from the fork's
+// branch. The source_branch filter also matches another fork's branch of
+// the same name, which is someone else's work: a merge request counts
+// only when its source project is the origin. GitLab keeps one open merge
+// request per source branch and target, so each read stops at it. The
+// full view is read because the simple one carries no source_project_id.
 func (f *gitlabForge) ListOpenPRs(ctx context.Context, cwd, head string) ([]GitPR, error) {
 	sourceBranch := strings.TrimSpace(head)
 	if sourceBranch == "" {
 		return nil, errors.New("merge request source branch is required")
 	}
-	client, project, err := f.gitlabOriginProject(cwd)
+	client, origin, err := f.gitlabOriginProject(cwd)
 	if err != nil {
 		return nil, err
 	}
+	pulls, err := gitlabOpenMRsFrom(ctx, client, gitlabProjectPath(origin.Project()), sourceBranch, func(source, target int64) bool { return source == target })
+	if err != nil || len(pulls) > 0 {
+		return pulls, err
+	}
+	settings, err := f.projectSettings(ctx, client, origin)
+	if err != nil {
+		return nil, err
+	}
+	if settings.ForkedFrom == nil || settings.ForkedFrom.ID == 0 || settings.ID == 0 {
+		return pulls, nil
+	}
+	return gitlabOpenMRsFrom(ctx, client, gitlabProjectPath(strconv.FormatInt(settings.ForkedFrom.ID, 10)), sourceBranch, func(source, _ int64) bool { return source == settings.ID })
+}
+
+// gitlabOpenMRsFrom reads project's open merge requests from a source
+// branch named sourceBranch until keep accepts one by its source and
+// target project ids, at most gitlabOpenMRsMaxPages pages.
+func gitlabOpenMRsFrom(ctx context.Context, client *forgeapi.Client, project, sourceBranch string, keep func(source, target int64) bool) ([]GitPR, error) {
 	request := forgeapi.Request{
 		Path:         project + "/merge_requests",
 		Query:        url.Values{"state": {"opened"}, "source_branch": {sourceBranch}, "per_page": {strconv.Itoa(gitlabPageSize)}},
@@ -158,7 +167,7 @@ func (f *gitlabForge) ListOpenPRs(ctx context.Context, cwd, head string) ([]GitP
 	}
 	pulls := []GitPR{}
 	page, pages := 1, 0
-	err = client.Pages(ctx, request, func(resp *forgeapi.Response) (bool, error) {
+	err := client.Pages(ctx, request, func(resp *forgeapi.Response) (bool, error) {
 		var raw []struct {
 			WebURL          string `json:"web_url"`
 			IID             int    `json:"iid"`
@@ -172,7 +181,7 @@ func (f *gitlabForge) ListOpenPRs(ctx context.Context, cwd, head string) ([]GitP
 			return false, fmt.Errorf("GitLab open merge requests: decode response: %w", err)
 		}
 		for _, r := range raw {
-			if r.SourceProjectID != r.ProjectID {
+			if !keep(r.SourceProjectID, r.ProjectID) {
 				continue
 			}
 			pulls = append(pulls, GitPR{URL: r.WebURL, Number: r.IID, Title: r.Title, State: NormalizePRState(r.State), BaseBranch: r.TargetBranch})
@@ -191,16 +200,39 @@ func (f *gitlabForge) ListOpenPRs(ctx context.Context, cwd, head string) ([]GitP
 const gitlabPageSize = 100
 
 // ListMergedPRHeads fetches up to limit recently merged MRs' source-branch
-// heads, most recently updated first. `sha` is the source branch's last
-// commit before merge, exactly the pre-squash tip prune needs.
+// heads, most recently updated first: the origin's, and when the origin
+// is a fork, those among its source project's latest limit whose source
+// was the fork. `sha` is the source branch's last commit before merge,
+// exactly the pre-squash tip prune needs.
 func (f *gitlabForge) ListMergedPRHeads(ctx context.Context, cwd string, limit int) ([]MergedPRHead, error) {
 	if limit <= 0 {
 		return nil, errors.New("merged MR list limit must be positive")
 	}
-	client, project, err := f.gitlabOriginProject(cwd)
+	client, origin, err := f.gitlabOriginProject(cwd)
 	if err != nil {
 		return nil, err
 	}
+	heads, err := gitlabMergedHeads(ctx, client, gitlabProjectPath(origin.Project()), limit, func(int64) bool { return true })
+	if err != nil {
+		return nil, err
+	}
+	settings, err := f.projectSettings(ctx, client, origin)
+	if err != nil {
+		return heads, err
+	}
+	if settings.ForkedFrom == nil || settings.ForkedFrom.ID == 0 || settings.ID == 0 {
+		return heads, nil
+	}
+	upstream, err := gitlabMergedHeads(ctx, client, gitlabProjectPath(strconv.FormatInt(settings.ForkedFrom.ID, 10)), limit, func(source int64) bool { return source == settings.ID })
+	if err != nil {
+		return heads, err
+	}
+	return append(heads, upstream...), nil
+}
+
+// gitlabMergedHeads reads project's latest limit merged merge requests,
+// keeping those keep accepts by their source project id.
+func gitlabMergedHeads(ctx context.Context, client *forgeapi.Client, project string, limit int, keep func(source int64) bool) ([]MergedPRHead, error) {
 	perPage := min(limit, gitlabPageSize)
 	request := forgeapi.Request{
 		Path: project + "/merge_requests",
@@ -211,23 +243,27 @@ func (f *gitlabForge) ListMergedPRHeads(ctx context.Context, cwd string, limit i
 		MaxBodyBytes: gitlabMRListMaxBody,
 	}
 	heads := make([]MergedPRHead, 0, perPage)
-	page := 1
-	err = client.Pages(ctx, request, func(resp *forgeapi.Response) (bool, error) {
+	page, read := 1, 0
+	err := client.Pages(ctx, request, func(resp *forgeapi.Response) (bool, error) {
 		var raw []struct {
-			SourceBranch string `json:"source_branch"`
-			SHA          string `json:"sha"`
-			WebURL       string `json:"web_url"`
+			SourceBranch    string `json:"source_branch"`
+			SHA             string `json:"sha"`
+			WebURL          string `json:"web_url"`
+			SourceProjectID int64  `json:"source_project_id"`
 		}
 		if err := json.Unmarshal(resp.Body, &raw); err != nil {
 			return false, fmt.Errorf("GitLab merged merge requests: decode response: %w", err)
 		}
 		for _, r := range raw {
-			if len(heads) == limit {
+			if read == limit {
 				break
 			}
-			heads = append(heads, MergedPRHead{HeadRefName: r.SourceBranch, HeadOid: r.SHA, URL: r.WebURL})
+			read++
+			if keep(r.SourceProjectID) {
+				heads = append(heads, MergedPRHead{HeadRefName: r.SourceBranch, HeadOid: r.SHA, URL: r.WebURL})
+			}
 		}
-		return len(heads) < limit && len(raw) == perPage && advanceGitLabPage(resp, &page), nil
+		return read < limit && len(raw) == perPage && advanceGitLabPage(resp, &page), nil
 	})
 	if err != nil {
 		return nil, err
@@ -319,6 +355,13 @@ func (f *gitlabForge) ReadPR(ctx context.Context, ref PRReference, want PRReadPa
 		if err != nil {
 			return PRRead{}, err
 		}
+		// The role words why the viewer cannot merge.
+		access := 0
+		if !mr.User.CanMerge {
+			if access, err = f.viewerAccess(ctx, client, ref.Repository()); err != nil {
+				return PRRead{}, err
+			}
+		}
 		// The Details read is the detail's own: its failure is said in
 		// the detail and hides nothing else.
 		manage, err := f.readManage(ctx, client, ref, mr)
@@ -330,7 +373,12 @@ func (f *gitlabForge) ReadPR(ctx context.Context, ref PRReference, want PRReadPa
 		}
 		viewer := f.viewerLogin(ctx, client, ref.Host)
 		out.Detail = gitlabPRDetail(mr, gitlabApprovalVerdicts(approvals))
-		gitlabFillMerge(&out.Detail, mr, approvals, settings, events, viewer)
+		gitlabFillMerge(&out.Detail, mr, approvals, settings, access, events, viewer)
+		if settings.MergeTrainsEnabled && NormalizePRState(mr.State) == "open" {
+			if out.Detail.Merge.Queue, err = readGitLabMergeTrain(ctx, client, ref, mr, mr.User.CanMerge || out.Detail.ViewerIsAuthor); err != nil {
+				return PRRead{}, err
+			}
+		}
 		manage.apply(&out.Detail)
 	}
 	if want.Threads {
@@ -338,12 +386,14 @@ func (f *gitlabForge) ReadPR(ctx context.Context, ref PRReference, want PRReadPa
 		// a maintainer or owner (GitLab's notes carry no permission). The
 		// login and the role are the detail's cached reads, so a tick that
 		// reads both costs no request of its own for them.
-		settings, err := f.projectSettings(ctx, client, ref.Repository())
+		access, err := f.viewerAccess(ctx, client, ref.Repository())
 		if err != nil {
 			return PRRead{}, err
 		}
-		markGitLabViewerNotes(out.Threads, f.viewerLogin(ctx, client, ref.Host), settings.accessLevel())
-		gateGitLabSuggestions(out.Threads, settings.accessLevel())
+		viewer := f.viewerLogin(ctx, client, ref.Host)
+		markGitLabViewerNotes(out.Threads, viewer, access)
+		gateGitLabThreadResolve(out.Threads, viewer != "" && strings.EqualFold(viewer, mr.Author.Username), access)
+		gateGitLabSuggestions(out.Threads, access)
 		out.ReactionsUnavailable = f.fillReactions(ctx, client, ref, out.Threads)
 	}
 	if want.CI {
@@ -442,7 +492,13 @@ type gitlabApprovalsRaw struct {
 	ApprovalsLeft     int  `json:"approvals_left"`
 	UserHasApproved   bool `json:"user_has_approved"`
 	UserCanApprove    bool `json:"user_can_approve"`
-	ApprovedBy        []struct {
+	// RequirePasswordToApprove is the project's "Require user
+	// re-authentication to approve" with password sign-in enabled
+	// (Enterprise Edition; ee/lib/ee/api/entities/approval_state.rb at
+	// v18.0.0-ee). The approve endpoint then needs approval_password:
+	// "Required if Require user re-authentication to approve is enabled".
+	RequirePasswordToApprove bool `json:"require_password_to_approve"`
+	ApprovedBy               []struct {
 		ApprovedAt string          `json:"approved_at"`
 		User       gitlabAuthorRaw `json:"user"`
 	} `json:"approved_by"`
@@ -562,6 +618,23 @@ func markGitLabViewerNotes(threads []ReviewThread, viewer string, access int) {
 		}
 	}
 }
+
+// gateGitLabThreadResolve says on each resolvable thread that the viewer
+// cannot resolve it: GitLab lets the merge request's author and the
+// developer role and above resolve threads, and its discussions carry no
+// permission. An unknown role (0) gates nothing; the forge refuses.
+func gateGitLabThreadResolve(threads []ReviewThread, author bool, access int) {
+	if author || access == 0 || access >= gitlabDeveloperAccess {
+		return
+	}
+	for i := range threads {
+		if threads[i].IsResolvable {
+			threads[i].CannotResolveReason = gitlabCannotResolveReason
+		}
+	}
+}
+
+const gitlabCannotResolveReason = "Only the merge request's author and people with the Developer role or above can resolve threads."
 
 // readGitLabDiscussions reads the merge request's discussions, at most
 // prReadMaxPages pages (truncated says there were more): the human notes
@@ -770,36 +843,59 @@ func gitlabPointLine(point gitlabLineRangePoint, prefer string) (string, *int) {
 	return "right", point.NewLine
 }
 
+// SubmitReview creates the review's draft notes, publishes them, and
+// writes the verdict last. Past the caller's deadline it starts no request
+// (writeSteps): before the publish it removes the drafts it created and
+// posts nothing; after it, the verdict it did not start is reported as not
+// posted.
 func (f *gitlabForge) SubmitReview(ctx context.Context, ref PRReference, review SubmitReviewRequest) (SubmitReviewResult, error) {
-	client, err := f.writeClient(ctx, ref)
+	steps, done := writeSteps(ctx)
+	defer done()
+	client, server, err := f.writeServer(steps, ref)
 	if err != nil {
 		return SubmitReviewResult{}, err
 	}
 	// The draft notes are positioned on the diff the reviewer loaded, which
 	// is the MR's only while its head is the one they loaded; the approval
 	// names that head too, so a push after this read is refused by GitLab.
-	mr, err := readGitLabMR(ctx, client, ref)
+	mr, err := readGitLabMR(steps, client, ref)
 	if err != nil {
 		return SubmitReviewResult{}, err
 	}
 	if have := mr.headSHA(); !strings.EqualFold(have, review.HeadSHA) {
 		return SubmitReviewResult{}, &HeadMovedError{Want: review.HeadSHA, Have: have}
 	}
-	diffRefs := mr.diffRefs()
-	notes := gitlabDraftNotes(review)
+	// The verdict's own write comes last: the approval, or the
+	// changes-requested thread. An approval GitLab cannot take from the app
+	// refuses the review here, before any draft is written.
+	var verdict forgeapi.Request
+	step := ""
 	mrPath := gitlabMRPath(ref)
 	// Request changes sets the viewer's reviewer state where the publish
 	// takes it, and always posts its summary as a thread to resolve.
 	requestChanges := strings.EqualFold(review.Verdict, ReviewVerdictRequestChanges)
+	switch {
+	case strings.EqualFold(review.Verdict, ReviewVerdictApprove):
+		if verdict, err = gitlabApproveRequest(steps, client, ref, review.HeadSHA); err != nil {
+			return SubmitReviewResult{}, err
+		}
+		step = SubmitStepApproval
+	case requestChanges:
+		verdict, step = forgeapi.Request{Method: http.MethodPost, Path: mrPath + "/discussions", Body: map[string]string{"body": gitlabChangesThreadBody(review.Body)}}, SubmitStepChangesThread
+	}
+	diffRefs := mr.diffRefs()
+	notes := gitlabDraftNotes(review)
 	var publish any
-	if requestChanges && f.server(ctx, client, ref.Host).has(gitlabReviewerStateSince) {
+	if requestChanges && server.has(gitlabReviewerStateSince) {
 		publish = map[string]string{"reviewer_state": "requested_changes"}
 	}
-	// The publish takes every pending draft note of the viewer's, so one
-	// this submit did not create (a review started on GitLab, or one an
-	// earlier submit could not remove) refuses it before any write.
-	if len(notes) > 0 {
-		pending, err := gitlabPendingDraftIDs(ctx, client, mrPath)
+	// The publish runs for a draft or a reviewer state, and takes every
+	// pending draft note of the viewer's, so one this submit did not create
+	// (a review started on GitLab, or one an earlier submit could not
+	// remove) refuses any submit that publishes, before any write.
+	publishes := len(notes) > 0 || publish != nil
+	if publishes {
+		pending, err := gitlabPendingDraftIDs(steps, client, mrPath)
 		if err != nil {
 			return SubmitReviewResult{}, err
 		}
@@ -817,7 +913,7 @@ func (f *gitlabForge) SubmitReview(ctx context.Context, ref PRReference, review 
 	// draft keeps its discussion resolved or open (gitlab_replies.go).
 	var before gitlabReplyThreads
 	if len(replies) > 0 {
-		if before, err = readGitLabReplyThreads(ctx, client, ref, mr); err != nil {
+		if before, err = readGitLabReplyThreads(steps, client, ref, mr); err != nil {
 			return SubmitReviewResult{}, err
 		}
 		for _, reply := range replies {
@@ -828,7 +924,7 @@ func (f *gitlabForge) SubmitReview(ctx context.Context, ref PRReference, review 
 	}
 	var files map[string]gitlabDiffFile
 	if paths := gitlabPositionedPaths(notes); len(paths) > 0 {
-		if files, err = readGitLabDiffFiles(ctx, client, ref, paths); err != nil {
+		if files, err = readGitLabDiffFiles(steps, client, ref, paths); err != nil {
 			return SubmitReviewResult{}, err
 		}
 	}
@@ -852,8 +948,11 @@ func (f *gitlabForge) SubmitReview(ctx context.Context, ref PRReference, review 
 		var draft struct {
 			ID int64 `json:"id"`
 		}
+		if err := stopped(steps); err != nil {
+			return SubmitReviewResult{}, removeGitLabDrafts(ctx, client, mrPath, created, 0, err)
+		}
 		if _, err := client.JSON(ctx, forgeapi.Request{Method: http.MethodPost, Path: mrPath + "/draft_notes", Body: body}, &draft); err != nil {
-			if body.InReplyToDiscussionID != "" && gitlabReplyRefused(ctx, client, ref, body.InReplyToDiscussionID, err) {
+			if body.InReplyToDiscussionID != "" && gitlabReplyRefused(steps, client, ref, body.InReplyToDiscussionID, err) {
 				err = &ReplyThreadGoneError{ThreadID: body.InReplyToDiscussionID, Err: err}
 			}
 			unknown := 1
@@ -869,7 +968,10 @@ func (f *gitlabForge) SubmitReview(ctx context.Context, ref PRReference, review 
 		created = append(created, draft.ID)
 	}
 	out := SubmitReviewResult{}
-	if len(notes) > 0 || publish != nil {
+	if publishes {
+		if err := stopped(steps); err != nil {
+			return SubmitReviewResult{}, removeGitLabDrafts(ctx, client, mrPath, created, 0, err)
+		}
 		if _, err := client.JSON(ctx, forgeapi.Request{Method: http.MethodPost, Path: mrPath + "/draft_notes/bulk_publish", Body: publish}, nil); err != nil {
 			if forgeapi.WriteNotApplied(err) {
 				return SubmitReviewResult{}, removeGitLabDrafts(ctx, client, mrPath, created, 0, err)
@@ -889,20 +991,14 @@ func (f *gitlabForge) SubmitReview(ctx context.Context, ref PRReference, review 
 	// GitLab says nothing, so the discussions say.
 	var replyFailure *PartialSubmitError
 	if len(replies) > 0 {
-		replyFailure = f.confirmGitLabReplies(ctx, client, ref, mr, before, replies, &out)
-	}
-	// The verdict's own write comes last: the approval, or the
-	// changes-requested thread.
-	var verdict forgeapi.Request
-	step := ""
-	switch {
-	case strings.EqualFold(review.Verdict, ReviewVerdictApprove):
-		verdict, step = forgeapi.Request{Method: http.MethodPost, Path: mrPath + "/approve", Body: map[string]string{"sha": review.HeadSHA}}, SubmitStepApproval
-	case requestChanges:
-		verdict, step = forgeapi.Request{Method: http.MethodPost, Path: mrPath + "/discussions", Body: map[string]string{"body": gitlabChangesThreadBody(review.Body)}}, SubmitStepChangesThread
+		replyFailure = f.confirmGitLabReplies(steps, client, ref, mr, before, replies, &out)
 	}
 	if step != "" {
-		if _, err := client.JSON(ctx, verdict, nil); err != nil {
+		err := stopped(steps)
+		if err == nil {
+			_, err = client.JSON(ctx, verdict, nil)
+		}
+		if err != nil {
 			if replyFailure == nil {
 				return out, gitlabVerdictFailure(out, step, err)
 			}
@@ -960,7 +1056,7 @@ func gitlabReplyRefused(ctx context.Context, client *forgeapi.Client, ref PRRefe
 // means it did not, and they are removed. Anything else, or a failed
 // read, is an UnconfirmedSubmitError around publishErr.
 func resolveGitLabPublish(ctx context.Context, client *forgeapi.Client, mrPath string, created []int64, publishErr error) (bool, error) {
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), gitlabDraftCleanupTimeout)
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), SubmitSettleTimeout)
 	defer cancel()
 	// A publish of the reviewer state alone leaves no draft to tell by.
 	if len(created) == 0 {
@@ -1056,9 +1152,6 @@ type gitlabDraftNoteIn struct {
 	ResolveDiscussion *bool `json:"resolve_discussion,omitempty"`
 }
 
-// gitlabDraftCleanupTimeout bounds removing a failed submit's drafts.
-const gitlabDraftCleanupTimeout = 30 * time.Second
-
 // removeGitLabDrafts deletes the drafts with ids, the ones a failed submit
 // created, and no other, then returns failure. unknown counts drafts the
 // submit created without learning their ids. A draft it could not remove
@@ -1066,7 +1159,7 @@ const gitlabDraftCleanupTimeout = 30 * time.Second
 // (404) was not removed by this submit: another publish of the viewer's
 // drafts may have posted it, so failure becomes an UnconfirmedSubmitError.
 func removeGitLabDrafts(ctx context.Context, client *forgeapi.Client, mrPath string, ids []int64, unknown int, failure error) error {
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), gitlabDraftCleanupTimeout)
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), SubmitSettleTimeout)
 	defer cancel()
 	left, gone := unknown, 0
 	var errs []error

@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/store/storetest"
 	"agent-overflow/internal/testutil/providerpath"
 	"github.com/google/uuid"
@@ -74,7 +75,7 @@ func helperArgv(t *testing.T, role string) ([]string, func() []string) {
 func TestManagerRecordsLeftoverWarningOnSuccessfulReceipt(t *testing.T) {
 	t.Parallel()
 	argv, env := helperArgv(t, "leave-child")
-	m, _ := logManager(t, logOptions(t, 1<<20), ProcessRunner(nopReaper{}, env))
+	m, _ := logManager(t, logOptions(t, 1<<20), ProcessRunner(procutiltest.Reaper(), env))
 	r := request()
 	r.Argv = argv
 	r.TimeoutSeconds = 0
@@ -95,10 +96,3 @@ func TestManagerRecordsLeftoverWarningOnSuccessfulReceipt(t *testing.T) {
 		}
 	}
 }
-
-// nopReaper watches nothing: no command these tests start outlives the test
-// binary that waits for it.
-type nopReaper struct{}
-
-func (nopReaper) Watch(int)   {}
-func (nopReaper) Release(int) {}

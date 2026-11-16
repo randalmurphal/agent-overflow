@@ -255,6 +255,8 @@ func (m *Manager) execute(ctx context.Context, job *liveJob, request Request) {
 	}
 	if receipt.State == "failed" {
 		switch {
+		case errors.Is(err, procutil.ErrGroupSurvived):
+			receipt.Error = "The command, or a process it left running, could not be stopped and is still running on the destination. It runs as another user, so end it there."
 		case errors.Is(err, exec.ErrNotFound):
 			receipt.Error = "The executable was not found on the destination's PATH. Install it there or use its absolute path."
 		case errors.Is(err, os.ErrNotExist):

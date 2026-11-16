@@ -876,21 +876,22 @@ func TestUpdateThreadCheckoutWritesOnlyTheTriple(t *testing.T) {
 	if err := s.UpdateTitle(thr.ID, "Renamed"); err != nil {
 		t.Fatalf("UpdateTitle(): %v", err)
 	}
-	row, changed, err := s.UpdateThreadCheckout(thr.ID, "/tmp/wt", "/tmp/wt", "feature")
-	if err != nil || !changed {
-		t.Fatalf("UpdateThreadCheckout() = changed %v, %v", changed, err)
+	write, err := s.UpdateThreadCheckout(thr.ID, "/tmp/wt", "/tmp/wt", "feature")
+	if err != nil || !write.Changed {
+		t.Fatalf("UpdateThreadCheckout() = %+v, %v", write, err)
 	}
+	row := write.Row
 	if row.WorkspacePath != "/tmp/wt" || row.WorktreePath != "/tmp/wt" || row.Branch != "feature" || row.Title != "Renamed" {
 		t.Fatalf("row = %+v, want the triple moved and the title kept", row)
 	}
-	if _, changed, err := s.UpdateThreadCheckout(thr.ID, "/tmp/wt", "/tmp/wt", "feature"); err != nil || changed {
-		t.Fatalf("restated checkout = changed %v, %v; want no change", changed, err)
+	if write, err := s.UpdateThreadCheckout(thr.ID, "/tmp/wt", "/tmp/wt", "feature"); err != nil || write.Changed {
+		t.Fatalf("restated checkout = %+v, %v; want no change", write, err)
 	}
-	row, changed, err = s.UpdateThreadCheckout(thr.ID, "/tmp/root", "", "main")
-	if err != nil || !changed || row.WorktreePath != "" {
-		t.Fatalf("move to the root = %+v changed %v, %v", row, changed, err)
+	write, err = s.UpdateThreadCheckout(thr.ID, "/tmp/root", "", "main")
+	if err != nil || !write.Changed || write.Row.WorktreePath != "" {
+		t.Fatalf("move to the root = %+v, %v", write, err)
 	}
-	if _, _, err := s.UpdateThreadCheckout("missing", "/tmp/x", "", ""); !errors.Is(err, sql.ErrNoRows) {
+	if _, err := s.UpdateThreadCheckout("missing", "/tmp/x", "", ""); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("missing row error = %v, want sql.ErrNoRows", err)
 	}
 }

@@ -25,9 +25,6 @@ const githubViewerReviewsQuery = `query ViewerReviews($owner: String!, $name: St
   }
 }`
 
-// githubReviewSettleTimeout bounds the read that settles a lost answer.
-const githubReviewSettleTimeout = gitlabDraftCleanupTimeout
-
 type githubViewerReview struct {
 	DatabaseID      int64  `json:"databaseId"`
 	ViewerDidAuthor bool   `json:"viewerDidAuthor"`
@@ -79,7 +76,7 @@ var githubReviewStates = map[string]string{"APPROVE": "APPROVED", "REQUEST_CHANG
 // answer is nil. Anything else, or a failed read, is an
 // UnconfirmedSubmitError around postErr.
 func settleGitHubReview(ctx context.Context, client *forgeapi.Client, ref PRReference, review githubReviewIn, before map[int64]githubViewerReview, postErr error) error {
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), githubReviewSettleTimeout)
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), SubmitSettleTimeout)
 	defer cancel()
 	after, err := readGitHubViewerReviews(ctx, client, ref)
 	if err != nil {

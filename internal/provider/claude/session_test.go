@@ -5,7 +5,9 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/providertest"
 	"agent-overflow/internal/testutil/mockexec"
 )
 
@@ -15,6 +17,7 @@ func TestNewSessionWithMock(t *testing.T) {
 	ctx := context.Background()
 	eventCh := make(chan provider.ProviderEvent, 100)
 	s, err := NewSession(ctx, testThread, Config{
+		Reaper:    procutiltest.Reaper(),
 		Retention: UserHomeRetention(0),
 		Binary:    "bash",
 		Model:     "", // keep args minimal
@@ -45,7 +48,7 @@ func TestNewSessionSpawnsAndRunsReadLoop(t *testing.T) {
 
 	ctx := context.Background()
 	eventCh := make(chan provider.ProviderEvent, 100)
-	s, err := NewSession(ctx, testThread, Config{Retention: UserHomeRetention(0), Binary: scriptPath}, func(evt provider.ProviderEvent) {
+	s, err := NewSession(ctx, testThread, Config{Reaper: procutiltest.Reaper(), Retention: UserHomeRetention(0), Binary: scriptPath}, func(evt provider.ProviderEvent) {
 		eventCh <- evt
 	})
 	if err != nil {
@@ -74,7 +77,7 @@ func TestNewSessionSpawnsAndRunsReadLoop(t *testing.T) {
 
 func TestCloseWaitsForDisconnectedHandler(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	proc, err := provider.Spawn(ctx, provider.SpawnConfig{Binary: "cat"})
+	proc, err := provider.Spawn(ctx, providertest.Lifetime(), provider.SpawnConfig{Binary: "cat"})
 	if err != nil {
 		t.Fatalf("spawn: %v", err)
 	}

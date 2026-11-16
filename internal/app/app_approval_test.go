@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/codex"
 )
@@ -29,6 +30,7 @@ func TestRespondToApprovalRejectsUntrackedCodexRequest(t *testing.T) {
 		context.Background(),
 		thread.ID,
 		codex.Config{
+			Reaper:  procutiltest.Reaper(),
 			Binary:  binary,
 			WorkDir: thread.WorkspacePath,
 		},
@@ -72,6 +74,7 @@ func TestRespondToApprovalPropagatesProviderError(t *testing.T) {
 		context.Background(),
 		thread.ID,
 		codex.Config{
+			Reaper:  procutiltest.Reaper(),
 			Binary:  binary,
 			WorkDir: thread.WorkspacePath,
 		},

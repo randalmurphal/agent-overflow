@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"agent-overflow/internal/procutil"
 	"agent-overflow/internal/provider"
 )
 
@@ -176,6 +177,8 @@ const DefaultAccountUsageTimeout = 20 * time.Second
 // provider state is mutated.
 type AccountUsageFetcher struct {
 	Binary string
+	// Reaper ends the process if the backend dies first. Required.
+	Reaper procutil.Reaper
 	// WorkDir is the required absolute parent of the isolated account directory.
 	WorkDir string
 	Env     map[string]string
@@ -208,7 +211,7 @@ func (f *AccountUsageFetcher) Fetch(ctx context.Context) (_ AccountUsage, retErr
 		return AccountUsage{}, err
 	}
 	defer func() { retErr = errors.Join(retErr, cleanup()) }()
-	proc, err := provider.Spawn(ctx, spawnCfg)
+	proc, err := provider.Spawn(ctx, provider.Bounded(f.Reaper), spawnCfg)
 	if err != nil {
 		return AccountUsage{}, fmt.Errorf("codex account usage: spawn: %w", err)
 	}

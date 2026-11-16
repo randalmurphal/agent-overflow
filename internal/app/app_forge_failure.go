@@ -28,8 +28,10 @@ const (
 	// is missing or has no token for the host.
 	forgeFailureSetup = "setup"
 	// forgeFailureForbidden is a forge that refused the login: a token
-	// without the scope, or no access to the project. The wire carries the
-	// sentence naming which (git.ExplainForgeError).
+	// without the scope, not authorized for single sign-on or refused by
+	// an organization's policy, a GitHub GraphQL FORBIDDEN or
+	// INSUFFICIENT_SCOPES answer, or no access to the project. The wire
+	// carries the sentence naming which (git.ExplainForgeError).
 	forgeFailureForbidden = "forbidden"
 	// forgeFailureForge is every other forge answer: a status, a GraphQL
 	// error, a body the app could not read.
@@ -50,12 +52,13 @@ func classifyForgeFailure(err error) (kind string, reserve bool, until time.Time
 	var transient *forgeapi.TransientError
 	var setup *forgeapi.SetupError
 	var forbidden *forgeapi.ForbiddenError
+	var graphQL *forgeapi.GraphQLError
 	switch {
 	case errors.As(err, &limited):
 		return forgeFailureRateLimited, limited.Reserve, limited.Until
 	case errors.As(err, &setup):
 		return forgeFailureSetup, false, time.Time{}
-	case errors.As(err, &forbidden):
+	case errors.As(err, &forbidden), errors.As(err, &graphQL) && graphQL.Forbidden():
 		return forgeFailureForbidden, false, time.Time{}
 	case errors.As(err, &transient), errors.Is(err, context.DeadlineExceeded):
 		return forgeFailureTransient, false, time.Time{}
@@ -136,12 +139,18 @@ func repoRefreshErrorMessage(correlationID string) string {
 
 // newForgeFailure classifies err with summary as the correlation sentence
 // and explain as the sentence of a setup or forbidden failure; read names
-// the read in the failure's detail.
+// the read in the failure's detail. A list read whose detail errors are
+// all notices (git.PRListNotices) carries their sentences, which name
+// what the rows leave out.
 func (a *App) newForgeFailure(err error, read string, summary func(correlationID string) string, explain func(error) error) prForgeFailure {
 	kind, reserve, until := classifyForgeFailure(err)
 	f := prForgeFailure{key: err.Error(), kind: kind, correlationID: uuid.NewString()}
 	f.wire = summary(f.correlationID)
 	f.detail = &ForgeErrorDetail{Ref: f.correlationID, Method: read, At: time.Now().UnixMilli(), Chain: errorsx.Chain(err)}
+	if notices, ok := gitops.PRListNotices(err); ok {
+		f.wire = notices
+		return f
+	}
 	switch kind {
 	case forgeFailureSetup, forgeFailureForbidden:
 		f.wire = explain(err).Error()
@@ -150,6 +159,12 @@ func (a *App) newForgeFailure(err error, read string, summary func(correlationID
 		f.resumeAt = until.UTC().Format(time.RFC3339)
 		f.key = fmt.Sprintf("%s\x00%t\x00%s", kind, reserve, f.resumeAt)
 		f.release = until.Add(a.prUpdateStagger())
+	default:
+		// A read the forge adapter refused in its own words (a GitLab below
+		// the supported floor) says that sentence.
+		if refused, ok := errors.AsType[*gitops.ForgeActionError](err); ok && refused.Kind == gitops.ForgeErrorRefused {
+			f.wire = refused.Message
+		}
 	}
 	return f
 }

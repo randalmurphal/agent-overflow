@@ -27,9 +27,13 @@
 // answers; a GitLab 19.6 that refuses introspection offers every
 // control; and a GitLab 17.11, below the supported floor, shows Details
 // as the sentence naming its release and the floor, with no management
-// control anywhere. A Request changes on GitLab 19.6 and 18.5 posts a
-// thread to resolve, and Details shows the reviewer state each recorded
-// (changes requested, reviewed). A held Enter on the title bar's
+// control anywhere. A GitLab project that asks for the approver's
+// password offers no Approve and says why, refuses a review sent with
+// Approve the same way before any write, and one that takes one
+// reviewer refuses a second with that limit. A Request changes on
+// GitLab 19.6 and 18.5 posts a thread to resolve, and Details shows the
+// reviewer state each recorded (changes requested, reviewed). A held
+// Enter on the title bar's
 // `⋯` opens the menu and activates nothing. Closing the pane with Ctrl+W
 // while a picker holds a change writes that change (desktop). A
 // description save whose answer the fake holds until Back (compact) or
@@ -691,6 +695,58 @@ export function reviewManageFlow({ compact }: ManageSurface): void {
     await expect(details.getByTestId('review-details-rows')).toHaveCount(0);
     for (const id of MANAGE_CONTROLS) await expect(page.getByTestId(id), id).toHaveCount(0);
     await details.screenshot({ path: testInfo.outputPath(`${testInfo.project.name}-gitlab-details-older-host.png`) });
+    await expectEveryForgeCallHandled(harness);
+  });
+
+  // A GitLab project that asks for the approver's password and takes one
+  // reviewer per merge request: the Merge section offers no Approve and
+  // says why, and a second reviewer GitLab drops is refused with the
+  // project's limit, not as a non-member.
+  test("gitlab: a password-to-approve project says why Approve is absent, and a one-reviewer project says why a second is dropped", async ({ harness, page }) => {
+    test.setTimeout(180_000);
+    const thread = 'Manage free project thread';
+    await seedPullRequest(harness, 'gitlab', thread, (seed) => ({
+      ...seed,
+      merge: { free: true, approvalPassword: true },
+      pulls: [{ ...seed.pulls![0], reviewers: ['alee'], changeRequests: [] }],
+    }));
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await harness.open(page);
+    const review = await openReview(page, thread, 'gitlab', compact);
+    const press = (target: Locator) => (compact ? target.tap() : target.click());
+    await expect(review.getByTestId('review-pr-title')).toContainText(TITLE, { timeout: 30_000 });
+    const merge = await expandReviewSection(page, 'review-pr-merge');
+    await expect(merge).toContainText('GitLab asks for your password to approve in this project. Approve on GitLab.');
+    await expect(merge.getByTestId('review-merge-approve')).toHaveCount(0);
+
+    // A review sent with Approve gets the same refusal before any write:
+    // no draft note, publish or approval, and the comment stays to send.
+    const since = await lastSeq(harness);
+    const row = review.locator('[data-testid="review-line-block"] > div').filter({ hasText: 'await post()' });
+    if (!compact) await row.hover();
+    await press(row.getByTestId('review-add-comment'));
+    const editor = review.getByTestId('review-draft-editor');
+    await editor.locator('textarea').fill('Retry here, once.');
+    await press(editor.getByTestId('review-draft-editor-add'));
+    const strip = review.getByTestId('review-send-strip');
+    await strip.getByTestId('review-submit-target').selectOption('pr');
+    await press(strip.getByRole('button', { name: 'Approve' }));
+    await press(strip.getByTestId('review-send-comments'));
+    await expect(review.getByTestId('review-submit-error')).toContainText('GitLab asks for your password to approve in this project. Approve on GitLab.', { timeout: 30_000 });
+    await expect(strip).toBeVisible();
+    expect(await writes(harness, ['glab api create draft note', 'glab api publish draft notes', 'glab api approve'], since)).toEqual([]);
+
+    const details = review.getByTestId('review-pr-details');
+    await press(details.locator('button[aria-expanded]').first());
+    await expect(details.getByTestId('review-details-rows')).toBeVisible();
+    await press(details.getByTestId('review-details-edit-reviewers'));
+    const picker = page.getByTestId('review-picker');
+    await picker.getByTestId('review-picker-search').fill('jane');
+    await press(picker.locator('[data-testid="review-picker-option"][data-key="u:jdoe"]'));
+    await page.keyboard.press('Escape');
+    await expect(picker).toHaveCount(0);
+    await expect(details.getByTestId('review-details-error-reviewers-message')).toContainText('this project allows one reviewer per merge request; more need GitLab Premium');
+    await expect(details.locator('[data-testid="review-details-reviewer"][data-login="jdoe"]')).toHaveCount(0);
     await expectEveryForgeCallHandled(harness);
   });
 

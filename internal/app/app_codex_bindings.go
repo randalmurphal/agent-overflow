@@ -188,33 +188,38 @@ func (a *App) GetCodexAccountUsage() (*CodexAccountUsage, error) {
 
 func (a *App) codexAppService() *codexapp.Service {
 	a.codexAppOnce.Do(func() {
-		a.codexApp = codexapp.New(codexapp.Deps{
-			Session: func(threadID string) (*codex.Session, bool) {
-				session, active := a.sessionManager().get(threadID)
-				return session.Codex, active
-			},
-			SessionForBinary: a.sessionManager().codexSessionForBinary,
-			AnySession:       a.sessionManager().anyCodexSession,
-			Binary: func() string {
-				return a.providerBinaryPath(string(provider.Codex))
-			},
-			CustomEnv: func() map[string]string {
-				return a.providerCustomEnv(string(provider.Codex))
-			},
-			ProbeEnv: func() map[string]string {
-				return a.providerProbeEnv(string(provider.Codex), nil)
-			},
-			ProbeWorkDir: providerProbeWorkDir,
-			LifeContext:  a.lifeCtx,
-			ActiveAccount: func() codexapp.AccountSelection {
-				selection := a.captureProviderAccountSelection(string(provider.Codex))
-				return codexapp.AccountSelection{
-					ID: selection.AccountID, Email: strings.TrimSpace(selection.Account.Email),
-				}
-			},
-		})
+		a.codexApp = codexapp.New(a.codexAppDeps())
 	})
 	return a.codexApp
+}
+
+func (a *App) codexAppDeps() codexapp.Deps {
+	return codexapp.Deps{
+		Reaper: a.groupReaper("codex read"),
+		Session: func(threadID string) (*codex.Session, bool) {
+			session, active := a.sessionManager().get(threadID)
+			return session.Codex, active
+		},
+		SessionForBinary: a.sessionManager().codexSessionForBinary,
+		AnySession:       a.sessionManager().anyCodexSession,
+		Binary: func() string {
+			return a.providerBinaryPath(string(provider.Codex))
+		},
+		CustomEnv: func() map[string]string {
+			return a.providerCustomEnv(string(provider.Codex))
+		},
+		ProbeEnv: func() map[string]string {
+			return a.providerProbeEnv(string(provider.Codex), nil)
+		},
+		ProbeWorkDir: providerProbeWorkDir,
+		LifeContext:  a.lifeCtx,
+		ActiveAccount: func() codexapp.AccountSelection {
+			selection := a.captureProviderAccountSelection(string(provider.Codex))
+			return codexapp.AccountSelection{
+				ID: selection.AccountID, Email: strings.TrimSpace(selection.Account.Email),
+			}
+		},
+	}
 }
 
 func (a *App) handleCodexSkillsChanged() {

@@ -3,6 +3,8 @@ package app
 import (
 	"context"
 	"sync"
+
+	"agent-overflow/internal/transport"
 )
 
 // writeAttempts holds the attempts of one kind of write this process
@@ -44,6 +46,41 @@ type writeAttempt[T any] struct {
 	// forgotten marks an attempt begin made for an id whose outcome was
 	// dropped: it ran before, and nothing says what it did.
 	forgotten bool
+}
+
+// attemptRefusals are a write's answers to a repeated id it does not run:
+// one its first arrival used for another key (other), one whose outcome
+// was dropped (forgotten). panicked is the outcome of a write that
+// panicked.
+type attemptRefusals struct {
+	other, forgotten, panicked error
+}
+
+// run runs write as attempt id to key and records its outcome. A repeated
+// id writes nothing: it waits on ctx for the first arrival's outcome and
+// answers with it, or with refuse's answer. A panic in write still settles
+// the attempt, so nothing waits on it forever.
+func (l *writeAttempts[T]) run(ctx context.Context, id, key string, refuse attemptRefusals, write func() (T, error)) (result T, err error) {
+	attempt, repeated := l.begin(id, key)
+	if repeated {
+		var zero T
+		switch {
+		case attempt.key != key:
+			return zero, refuse.other
+		case attempt.forgotten:
+			return zero, refuse.forgotten
+		}
+		return attempt.wait(ctx)
+	}
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			var zero T
+			l.finish(attempt, zero, refuse.panicked)
+			panic(recovered)
+		}
+		l.finish(attempt, result, err)
+	}()
+	return write()
 }
 
 // begin records attempt id to key, or returns the one already recorded
@@ -108,6 +145,47 @@ func (l *writeAttempts[T]) find(id, key string) (attempt *writeAttempt[T], forgo
 		return nil, forgottenKey == key
 	}
 	return nil, l.overflowed
+}
+
+// The states of an attempt's outcome (attemptOutcome).
+const (
+	attemptDone      = "done"
+	attemptFailed    = "failed"
+	attemptUnknown   = "unknown"   // this process never received it
+	attemptForgotten = "forgotten" // it may have, and no longer keeps the outcome
+)
+
+// attemptOutcome is what a recorded attempt did, as every outcome method
+// answers it: the result when it is done; when it failed, the code,
+// message and wrap chain its first caller was told.
+type attemptOutcome[T any] struct {
+	state         string
+	result        T
+	code, message string
+	chain         []string
+}
+
+// outcome answers what attempt id to key did, waiting on ctx for one still
+// running. A failure answers with what the transport told the write's
+// first caller (transport.CallerError): a lost answer says what the first
+// would have, a hook's or git's own reason included.
+func (l *writeAttempts[T]) outcome(ctx context.Context, id, key string) (attemptOutcome[T], error) {
+	attempt, forgotten := l.find(id, key)
+	switch {
+	case forgotten:
+		return attemptOutcome[T]{state: attemptForgotten}, nil
+	case attempt == nil:
+		return attemptOutcome[T]{state: attemptUnknown}, nil
+	}
+	result, err := attempt.wait(ctx)
+	if ctx.Err() != nil {
+		return attemptOutcome[T]{}, ctx.Err()
+	}
+	if err == nil {
+		return attemptOutcome[T]{state: attemptDone, result: result}, nil
+	}
+	answer := transport.CallerError(err)
+	return attemptOutcome[T]{state: attemptFailed, code: answer.Code, message: answer.Message, chain: answer.Chain}, nil
 }
 
 // wait returns the attempt's outcome once it has one.

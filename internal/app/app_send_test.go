@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/eventchan"
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/store"
@@ -296,7 +297,7 @@ func TestSendMessageWithOptionsImplementSwitchesPlanModeToChat(t *testing.T) {
 	sess, err := claude.NewSession(
 		context.Background(),
 		thread.ID,
-		claude.Config{Retention: claude.UserHomeRetention(0), Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
+		claude.Config{Reaper: procutiltest.Reaper(), Retention: claude.UserHomeRetention(0), Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
 		func(provider.ProviderEvent) {},
 	)
 	if err != nil {
@@ -463,7 +464,7 @@ func TestSendMessageWithOptionsImplementOnAlreadyImplementedPlanKeepsFirstAttrib
 	sess, err := claude.NewSession(
 		context.Background(),
 		thread.ID,
-		claude.Config{Retention: claude.UserHomeRetention(0), Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
+		claude.Config{Reaper: procutiltest.Reaper(), Retention: claude.UserHomeRetention(0), Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
 		func(provider.ProviderEvent) {},
 	)
 	if err != nil {
@@ -555,7 +556,7 @@ func TestSendMessageWithOptionsPersistsSourceProposedPlan(t *testing.T) {
 	sess, err := claude.NewSession(
 		context.Background(),
 		thread.ID,
-		claude.Config{Retention: claude.UserHomeRetention(0), Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
+		claude.Config{Reaper: procutiltest.Reaper(), Retention: claude.UserHomeRetention(0), Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
 		func(provider.ProviderEvent) {},
 	)
 	if err != nil {
@@ -702,7 +703,7 @@ func TestSendMessageWithOptionsPersistsCrossThreadSourceProposedPlan(t *testing.
 	sess, err := claude.NewSession(
 		context.Background(),
 		targetThread.ID,
-		claude.Config{Retention: claude.UserHomeRetention(0), Binary: writeClaudePassthroughBinary(t), WorkDir: targetThread.WorkspacePath},
+		claude.Config{Reaper: procutiltest.Reaper(), Retention: claude.UserHomeRetention(0), Binary: writeClaudePassthroughBinary(t), WorkDir: targetThread.WorkspacePath},
 		func(provider.ProviderEvent) {},
 	)
 	if err != nil {
@@ -778,6 +779,7 @@ func TestSendMessageIncrementsTurnIndex(t *testing.T) {
 		context.Background(),
 		thread.ID,
 		claude.Config{
+			Reaper:    procutiltest.Reaper(),
 			Retention: claude.UserHomeRetention(0),
 			Binary:    writeClaudePassthroughBinary(t),
 			WorkDir:   thread.WorkspacePath,
@@ -838,6 +840,7 @@ func TestSendMessageRecordsMessageAnchorForEachUserMessage(t *testing.T) {
 		context.Background(),
 		thread.ID,
 		claude.Config{
+			Reaper:    procutiltest.Reaper(),
 			Retention: claude.UserHomeRetention(0),
 			Binary:    writeClaudePassthroughBinary(t),
 			WorkDir:   thread.WorkspacePath,
@@ -913,7 +916,7 @@ func TestSendMessageStampsProviderItemIDOnRowAndAnchorBeforeEcho(t *testing.T) {
 	sess, err := claude.NewSession(
 		context.Background(),
 		thread.ID,
-		claude.Config{Retention: claude.UserHomeRetention(0), Binary: writeClaudePassthroughBinary(t), WorkDir: workspace},
+		claude.Config{Reaper: procutiltest.Reaper(), Retention: claude.UserHomeRetention(0), Binary: writeClaudePassthroughBinary(t), WorkDir: workspace},
 		func(provider.ProviderEvent) {},
 	)
 	if err != nil {
@@ -1038,6 +1041,7 @@ func TestSendMessageGeneratesClaudeThreadTitleOnFirstTurn(t *testing.T) {
 		context.Background(),
 		thread.ID,
 		claude.Config{
+			Reaper:    procutiltest.Reaper(),
 			Retention: claude.UserHomeRetention(0),
 			Binary:    writeClaudePassthroughBinary(t),
 			WorkDir:   thread.WorkspacePath,
@@ -1126,6 +1130,7 @@ func TestSendMessageDoesNotOverwriteRenamedThreadTitle(t *testing.T) {
 		context.Background(),
 		thread.ID,
 		claude.Config{
+			Reaper:    procutiltest.Reaper(),
 			Retention: claude.UserHomeRetention(0),
 			Binary:    writeClaudePassthroughBinary(t),
 			WorkDir:   thread.WorkspacePath,
@@ -1218,6 +1223,7 @@ func TestSendMessageRenamesTemporaryWorktreeBranchOnFirstTurn(t *testing.T) {
 		context.Background(),
 		thread.ID,
 		claude.Config{
+			Reaper:    procutiltest.Reaper(),
 			Retention: claude.UserHomeRetention(0),
 			Binary:    writeClaudePassthroughBinary(t),
 			WorkDir:   worktreePath,
@@ -1285,6 +1291,7 @@ func TestRespondToApprovalRejectsUntrackedClaudeRequest(t *testing.T) {
 		context.Background(),
 		thread.ID,
 		claude.Config{
+			Reaper:    procutiltest.Reaper(),
 			Retention: claude.UserHomeRetention(0),
 			Binary:    writeClaudePassthroughBinary(t),
 			WorkDir:   thread.WorkspacePath,
@@ -1372,6 +1379,7 @@ func TestInterruptTurnHappyPathClaude(t *testing.T) {
 		context.Background(),
 		thread.ID,
 		claude.Config{
+			Reaper:    procutiltest.Reaper(),
 			Retention: claude.UserHomeRetention(0),
 			Binary:    writeClaudeInterruptResponderBinary(t),
 			WorkDir:   thread.WorkspacePath,
@@ -1452,6 +1460,7 @@ func TestInterruptCreatesStoppedSystemError(t *testing.T) {
 		context.Background(),
 		thread.ID,
 		claude.Config{
+			Reaper:    procutiltest.Reaper(),
 			Retention: claude.UserHomeRetention(0),
 			Binary:    writeClaudeInterruptResponderBinary(t),
 			WorkDir:   thread.WorkspacePath,
@@ -1584,6 +1593,7 @@ func TestInterrupt_LeavesBackgroundTasksRunning(t *testing.T) {
 				context.Background(),
 				thread.ID,
 				claude.Config{
+					Reaper:    procutiltest.Reaper(),
 					Retention: claude.UserHomeRetention(0),
 					Binary:    writeClaudeInterruptResponderBinary(t),
 					WorkDir:   thread.WorkspacePath,
@@ -1635,6 +1645,7 @@ func TestStopSessionRemovesFromMap(t *testing.T) {
 		context.Background(),
 		thread.ID,
 		claude.Config{
+			Reaper:    procutiltest.Reaper(),
 			Retention: claude.UserHomeRetention(0),
 			Binary:    writeClaudePassthroughBinary(t),
 			WorkDir:   thread.WorkspacePath,
@@ -1690,6 +1701,7 @@ func TestInternalSendMessageSerialPerThread(t *testing.T) {
 		context.Background(),
 		thread.ID,
 		claude.Config{
+			Reaper:    procutiltest.Reaper(),
 			Retention: claude.UserHomeRetention(0),
 			Binary:    writeClaudePassthroughBinary(t),
 			WorkDir:   thread.WorkspacePath,
@@ -1776,6 +1788,7 @@ func TestSendMessageParallelDifferentThreads(t *testing.T) {
 		context.Background(),
 		threadA.ID,
 		claude.Config{
+			Reaper:    procutiltest.Reaper(),
 			Retention: claude.UserHomeRetention(0),
 			Binary:    writeClaudePassthroughBinary(t),
 			WorkDir:   threadA.WorkspacePath,
@@ -1790,6 +1803,7 @@ func TestSendMessageParallelDifferentThreads(t *testing.T) {
 		context.Background(),
 		threadB.ID,
 		claude.Config{
+			Reaper:    procutiltest.Reaper(),
 			Retention: claude.UserHomeRetention(0),
 			Binary:    writeClaudePassthroughBinary(t),
 			WorkDir:   threadB.WorkspacePath,
@@ -1837,6 +1851,7 @@ func TestSendMessagePersistsUserItemAndErrorWhenProviderSendFails(t *testing.T) 
 		context.Background(),
 		thread.ID,
 		claude.Config{
+			Reaper:    procutiltest.Reaper(),
 			Retention: claude.UserHomeRetention(0),
 			Binary:    writeClaudePassthroughBinary(t),
 			WorkDir:   thread.WorkspacePath,
@@ -1919,6 +1934,7 @@ func TestSendMessageGoesThroughRouter(t *testing.T) {
 		context.Background(),
 		thread.ID,
 		claude.Config{
+			Reaper:    procutiltest.Reaper(),
 			Retention: claude.UserHomeRetention(0),
 			Binary:    writeClaudePassthroughBinary(t),
 			WorkDir:   thread.WorkspacePath,
@@ -2000,6 +2016,7 @@ func TestSendMessagePersistsUserItemOnSuccess(t *testing.T) {
 		context.Background(),
 		thread.ID,
 		claude.Config{
+			Reaper:    procutiltest.Reaper(),
 			Retention: claude.UserHomeRetention(0),
 			Binary:    writeClaudePassthroughBinary(t),
 			WorkDir:   thread.WorkspacePath,
@@ -2069,6 +2086,7 @@ func TestSendMessageDoesNotEmitSyntheticTurnStart(t *testing.T) {
 		context.Background(),
 		thread.ID,
 		claude.Config{
+			Reaper:    procutiltest.Reaper(),
 			Retention: claude.UserHomeRetention(0),
 			Binary:    writeClaudePassthroughBinary(t),
 			WorkDir:   thread.WorkspacePath,
@@ -2119,6 +2137,7 @@ func TestSendMessageRegistersPendingSend(t *testing.T) {
 		context.Background(),
 		thread.ID,
 		claude.Config{
+			Reaper:    procutiltest.Reaper(),
 			Retention: claude.UserHomeRetention(0),
 			Binary:    writeClaudePassthroughBinary(t),
 			WorkDir:   thread.WorkspacePath,
@@ -2169,6 +2188,7 @@ func TestSendMessageClearsPendingSendOnFailure(t *testing.T) {
 		context.Background(),
 		thread.ID,
 		claude.Config{
+			Reaper:    procutiltest.Reaper(),
 			Retention: claude.UserHomeRetention(0),
 			Binary:    writeClaudePassthroughBinary(t),
 			WorkDir:   thread.WorkspacePath,
@@ -2251,6 +2271,7 @@ func TestSendMessageBroadcastsListedRowOnFirstItem(t *testing.T) {
 		context.Background(),
 		thread.ID,
 		claude.Config{
+			Reaper:    procutiltest.Reaper(),
 			Retention: claude.UserHomeRetention(0),
 			Binary:    writeClaudePassthroughBinary(t),
 			WorkDir:   thread.WorkspacePath,
@@ -2297,6 +2318,7 @@ func TestSendMessageBroadcastsListedRowOnFirstItem(t *testing.T) {
 		context.Background(),
 		seeded.ID,
 		claude.Config{
+			Reaper:    procutiltest.Reaper(),
 			Retention: claude.UserHomeRetention(0),
 			Binary:    writeClaudePassthroughBinary(t),
 			WorkDir:   seeded.WorkspacePath,

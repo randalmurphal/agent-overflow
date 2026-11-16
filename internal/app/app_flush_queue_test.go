@@ -16,6 +16,7 @@ import (
 	"agent-overflow/internal/attachment"
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/flushqueue"
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/provider/codex"
@@ -1300,7 +1301,7 @@ func TestDispatchFlush_Claude_EagerPersistAtActiveTurn(t *testing.T) {
 
 	sess, err := claude.NewSession(
 		context.Background(), thread.ID,
-		claude.Config{Retention: claude.UserHomeRetention(0), Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
+		claude.Config{Reaper: procutiltest.Reaper(), Retention: claude.UserHomeRetention(0), Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
 		func(provider.ProviderEvent) {},
 	)
 	if err != nil {
@@ -1470,7 +1471,7 @@ func TestDispatchFlush_Claude_EagerPersist_RepositionsAfterContentBeforeEcho(t *
 
 	sess, err := claude.NewSession(
 		context.Background(), thread.ID,
-		claude.Config{Retention: claude.UserHomeRetention(0), Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
+		claude.Config{Reaper: procutiltest.Reaper(), Retention: claude.UserHomeRetention(0), Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
 		func(provider.ProviderEvent) {},
 	)
 	if err != nil {
@@ -1610,7 +1611,7 @@ func TestDispatchFlush_Claude_InterruptPromotesAfterStoppedByUser(t *testing.T) 
 
 	sess, err := claude.NewSession(
 		context.Background(), thread.ID,
-		claude.Config{Retention: claude.UserHomeRetention(0), Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
+		claude.Config{Reaper: procutiltest.Reaper(), Retention: claude.UserHomeRetention(0), Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
 		func(provider.ProviderEvent) {},
 	)
 	if err != nil {
@@ -1739,7 +1740,7 @@ func TestDispatchFlush_Claude_NoActiveTurn_DefersLikeCodex(t *testing.T) {
 
 	sess, err := claude.NewSession(
 		context.Background(), thread.ID,
-		claude.Config{Retention: claude.UserHomeRetention(0), Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
+		claude.Config{Reaper: procutiltest.Reaper(), Retention: claude.UserHomeRetention(0), Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
 		func(provider.ProviderEvent) {},
 	)
 	if err != nil {
@@ -2270,7 +2271,7 @@ func TestDispatchFlush_StaleRowCleanupBeforePersist(t *testing.T) {
 
 	sess, err := claude.NewSession(
 		context.Background(), thread.ID,
-		claude.Config{Retention: claude.UserHomeRetention(0), Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
+		claude.Config{Reaper: procutiltest.Reaper(), Retention: claude.UserHomeRetention(0), Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
 		func(provider.ProviderEvent) {},
 	)
 	if err != nil {
@@ -2398,7 +2399,7 @@ func TestDispatchFlush_PostPersistFailureRequeuesWithFreshRowMarker(t *testing.T
 	// resolution and the quiet persist succeed, the stdin write fails.
 	sess, err := claude.NewSession(
 		context.Background(), thread.ID,
-		claude.Config{Retention: claude.UserHomeRetention(0), Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
+		claude.Config{Reaper: procutiltest.Reaper(), Retention: claude.UserHomeRetention(0), Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
 		func(provider.ProviderEvent) {},
 	)
 	if err != nil {
@@ -2468,7 +2469,7 @@ func TestDispatchFlush_RequeueAfterQueueFlushedRepublishesTheQueueID(t *testing.
 	// allocation and the quiet persist all succeed, the stdin write fails.
 	sess, err := claude.NewSession(
 		context.Background(), thread.ID,
-		claude.Config{Retention: claude.UserHomeRetention(0), Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
+		claude.Config{Reaper: procutiltest.Reaper(), Retention: claude.UserHomeRetention(0), Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
 		func(provider.ProviderEvent) {},
 	)
 	if err != nil {
@@ -3950,7 +3951,7 @@ func TestDispatchFlush_QuietRowDoesNotDeliverItsReviewDrafts(t *testing.T) {
 			}
 			sess, err := claude.NewSession(
 				context.Background(), thread.ID,
-				claude.Config{Retention: claude.UserHomeRetention(0), Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
+				claude.Config{Reaper: procutiltest.Reaper(), Retention: claude.UserHomeRetention(0), Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
 				func(provider.ProviderEvent) {},
 			)
 			if err != nil {

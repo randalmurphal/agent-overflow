@@ -2,6 +2,7 @@ package git
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -48,6 +49,29 @@ func withOrigin(t *testing.T, repo string) string {
 // hookedOperations are the operations a person waits on that run hooks.
 func hookedOperations() map[string]func(t *testing.T) hookedOperation {
 	return map[string]func(t *testing.T) hookedOperation{
+		"commit all": func(t *testing.T) hookedOperation {
+			repo := initGitRepo(t)
+			writeRepoFile(t, repo, "README.txt", "hello\ncommitted\n")
+			return hookedOperation{
+				install: func(script string) { installHook(t, repo, "pre-commit", script) },
+				run: func(core *Core) error {
+					_, err := core.CommitSelected(repo, "all", "", CommitSelection{All: true})
+					return err
+				},
+			}
+		},
+		"commit files": func(t *testing.T) hookedOperation {
+			repo := initGitRepo(t)
+			writeRepoFile(t, repo, "README.txt", "hello\ncommitted\n")
+			selection := listedSelection(t, repo, "README.txt")
+			return hookedOperation{
+				install: func(script string) { installHook(t, repo, "pre-commit", script) },
+				run: func(core *Core) error {
+					_, err := core.CommitSelected(repo, "files", "", selection)
+					return err
+				},
+			}
+		},
 		"push": func(t *testing.T) hookedOperation {
 			repo := initGitRepo(t)
 			withOrigin(t, repo)
@@ -167,25 +191,115 @@ func TestAStoppedHookedOperationEndsItsHook(t *testing.T) {
 			if err == nil || !strings.Contains(err.Error(), "timed out after 1s") {
 				t.Fatalf("%s past the hook bound = %v, want its command named as timed out", name, err)
 			}
-			pidText, readErr := os.ReadFile(pidFile)
-			if readErr != nil {
-				t.Fatalf("the hook did not start: %v", readErr)
-			}
-			pid, convErr := strconv.Atoi(strings.TrimSpace(string(pidText)))
-			if convErr != nil {
-				t.Fatal(convErr)
-			}
-			hook, findErr := os.FindProcess(pid)
-			if findErr != nil {
-				t.Fatal(findErr)
-			}
-			deadline := time.Now().Add(HookStopGrace)
-			for hook.Signal(syscall.Signal(0)) == nil {
-				if time.Now().After(deadline) {
-					t.Fatal("the hook outlived the stopped operation")
-				}
-				time.Sleep(20 * time.Millisecond)
+			if pid := recordedHookPID(t, pidFile); processExists(pid) {
+				t.Fatal("the hook outlived the stopped operation")
 			}
 		})
 	}
+}
+
+// A hook that ignores SIGTERM, and the child it started, are killed once the
+// stop grace has passed, and the stopped operation returns only after both
+// are gone.
+func TestAStoppedHookedOperationKillsAHookThatIgnoresTerminate(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the hook is a POSIX shell script")
+	}
+	t.Parallel()
+	const bound, grace = time.Second, time.Second
+	for name, setup := range hookedOperations() {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			op := setup(t)
+			dir := t.TempDir()
+			hookPIDFile, childPIDFile := filepath.Join(dir, "hook.pid"), filepath.Join(dir, "child.pid")
+			// The ignored SIGTERM is inherited by the child.
+			op.install("trap '' TERM\nsleep 60 &\necho $! > '" + childPIDFile + "'\necho $$ > '" + hookPIDFile + "'\nwait\n")
+			core := NewCore(op.options...)
+			core.hookTimeout, core.hookStopGrace = bound, grace
+			started := time.Now()
+			err := op.run(core)
+			elapsed := time.Since(started)
+			child, hook := recordedHookPID(t, childPIDFile), recordedHookPID(t, hookPIDFile)
+			hookAlive, childAlive := processExists(hook), processExists(child)
+			if err == nil || !strings.Contains(err.Error(), "timed out after 1s") {
+				t.Fatalf("%s past the hook bound = %v, want its command named as timed out", name, err)
+			}
+			if hookAlive || childAlive {
+				t.Fatalf("after the stopped operation returned: hook alive %v, its child alive %v", hookAlive, childAlive)
+			}
+			if limit := bound + grace + 1500*time.Millisecond; elapsed > limit {
+				t.Fatalf("the stopped operation returned after %s, want within %s", elapsed, limit)
+			}
+		})
+	}
+}
+
+// A hook that handles SIGTERM gets it, and the grace to finish its cleanup,
+// before the stopped operation returns; the operation does not wait out the
+// grace once the hook is done.
+func TestAStoppedHookedOperationLetsItsHookCleanUp(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the hook is a POSIX shell script")
+	}
+	t.Parallel()
+	const bound, grace = time.Second, 5 * time.Second
+	for name, setup := range hookedOperations() {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			op := setup(t)
+			dir := t.TempDir()
+			pidFile, cleaned := filepath.Join(dir, "hook.pid"), filepath.Join(dir, "cleaned")
+			op.install("trap 'sleep 0.3; echo done > \"" + cleaned + "\"; exit 0' TERM\necho $$ > '" + pidFile + "'\nwhile :; do sleep 0.05; done\n")
+			core := NewCore(op.options...)
+			core.hookTimeout, core.hookStopGrace = bound, grace
+			started := time.Now()
+			err := op.run(core)
+			elapsed := time.Since(started)
+			pid := recordedHookPID(t, pidFile)
+			if err == nil || !strings.Contains(err.Error(), "timed out after 1s") {
+				t.Fatalf("%s past the hook bound = %v, want its command named as timed out", name, err)
+			}
+			if _, statErr := os.Stat(cleaned); statErr != nil {
+				t.Fatalf("the hook's SIGTERM cleanup did not finish before the operation returned: %v", statErr)
+			}
+			if processExists(pid) {
+				t.Fatal("the hook outlived the stopped operation")
+			}
+			if elapsed >= bound+grace {
+				t.Fatalf("the stopped operation waited out the grace (%s) after its hook exited", elapsed)
+			}
+		})
+	}
+}
+
+// recordedHookPID reads the pid a hook wrote to path and, when the hook did
+// write one, kills that process when the test ends so a failure leaves
+// nothing running.
+func recordedHookPID(t *testing.T, path string) int {
+	t.Helper()
+	text, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("the hook did not record a pid: %v", err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(text)))
+	if err != nil || pid <= 0 {
+		t.Fatalf("recorded pid %q: %v", text, err)
+	}
+	t.Cleanup(func() {
+		process, err := os.FindProcess(pid)
+		if err != nil {
+			return
+		}
+		if err := process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+			t.Errorf("kill process %d: %v", pid, err)
+		}
+	})
+	return pid
+}
+
+// processExists reports whether pid names a process that signal 0 reaches.
+func processExists(pid int) bool {
+	process, err := os.FindProcess(pid)
+	return err == nil && process.Signal(syscall.Signal(0)) == nil
 }

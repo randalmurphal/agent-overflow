@@ -36,6 +36,13 @@ func TestClassifyForgeFailure(t *testing.T) {
 		{"transient", fmt.Errorf("read: %w", &forgeapi.TransientError{Err: errors.New("dial tcp: connection refused")}), forgeFailureTransient, false, time.Time{}},
 		{"deadline", fmt.Errorf("read: %w", context.DeadlineExceeded), forgeFailureTransient, false, time.Time{}},
 		{"forge", errors.New("forge GET repos/o/r/pulls/9: HTTP 500"), forgeFailureForge, false, time.Time{}},
+		// GitHub refuses a GraphQL read for the login (single sign-on, a
+		// scope, an organization's policy) as a FORBIDDEN or
+		// INSUFFICIENT_SCOPES answer: the login's to fix, not a failed
+		// refresh to retry.
+		{"GraphQL FORBIDDEN", fmt.Errorf("read: %w", &forgeapi.GraphQLError{Problems: []forgeapi.GraphQLProblem{{Type: "FORBIDDEN", Message: "Resource protected by organization SAML enforcement."}}}), forgeFailureForbidden, false, time.Time{}},
+		{"GraphQL scopes", &forgeapi.GraphQLError{Problems: []forgeapi.GraphQLProblem{{Type: "INSUFFICIENT_SCOPES", Message: "needs read:org"}}}, forgeFailureForbidden, false, time.Time{}},
+		{"GraphQL other", &forgeapi.GraphQLError{Problems: []forgeapi.GraphQLProblem{{Message: "Something went wrong"}}}, forgeFailureForge, false, time.Time{}},
 	}
 	for _, tc := range cases {
 		kind, reserve, got := classifyForgeFailure(tc.err)
@@ -300,6 +307,17 @@ func TestPRUpdateSetupFailureCarriesItsMessage(t *testing.T) {
 	}
 	if recovered := awaitPRUpdate(t, events, "recovery"); recovered.Error != "" || recovered.ErrorKind != "" {
 		t.Fatalf("recovery = %+v", recovered)
+	}
+}
+
+// A read the forge adapter refused in its own words (a GitLab below the
+// supported floor) carries that sentence, not the correlation summary.
+func TestPRUpdateRefusedReadCarriesItsSentence(t *testing.T) {
+	t.Parallel()
+	refused := fmt.Errorf("read: %w", &gitops.ForgeActionError{Kind: gitops.ForgeErrorRefused, Message: "GitLab on gitlab.example runs 17.6; GitLab 18.0 or later is needed."})
+	_, _, _, sub := newScriptedPump(t, fails(refused), ok)
+	if sub.ErrorKind != forgeFailureForge || sub.Error != "GitLab on gitlab.example runs 17.6; GitLab 18.0 or later is needed." {
+		t.Fatalf("subscribe = %+v", sub)
 	}
 }
 

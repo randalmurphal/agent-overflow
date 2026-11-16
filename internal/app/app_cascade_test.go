@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/attachment"
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/store"
@@ -160,11 +161,12 @@ func TestCascade_DeleteThreadRemovesAllDependents(t *testing.T) {
 	// 2 open terminals.
 	for i := 0; i < 2; i++ {
 		if _, err := app.terminals.Open(thread.ID, terminal.SessionOptions{
-			Shell: "/bin/sh",
-			Args:  []string{"-c", "sleep 60"},
-			Cwd:   workspace,
-			Rows:  24,
-			Cols:  80,
+			Reaper: procutiltest.Reaper(),
+			Shell:  "/bin/sh",
+			Args:   []string{"-c", "sleep 60"},
+			Cwd:    workspace,
+			Rows:   24,
+			Cols:   80,
 		}); err != nil {
 			t.Fatalf("Open terminal %d: %v", i, err)
 		}

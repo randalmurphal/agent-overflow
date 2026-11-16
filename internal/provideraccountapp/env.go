@@ -127,6 +127,7 @@ func (m *Manager) claudeProbeConfig(binary string, pins map[string]string) claud
 		Binary:         binary,
 		WorkDir:        providerProbeWorkDir(),
 		Env:            m.providerProbeEnv(string(provider.Claude), pins),
+		Reaper:         m.deps.Reaper,
 		ReadCredential: m.claudeProbeCredentialReader(pins),
 		// Sent to a probe of an isolated home too, where it has nothing to
 		// keep: one rule for every probe.
@@ -193,6 +194,7 @@ func (m *Manager) codexProbeConfig(binary string, pins map[string]string) codex.
 		Binary:  binary,
 		WorkDir: providerProbeWorkDir(),
 		Env:     m.providerProbeEnv(string(provider.Codex), pins),
+		Reaper:  m.deps.Reaper,
 	}
 }
 

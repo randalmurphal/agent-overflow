@@ -263,8 +263,8 @@ func TestGitHubReadCarriesCommentPermissions(t *testing.T) {
 		}
 		return githubData(`{"repository":{"pullRequest":{"number":5,
 			"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PRRT_1","isResolved":false,"isOutdated":false,"path":"a.go","line":3,"startLine":null,"diffSide":"RIGHT","subjectType":"LINE",
-				"comments":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PRRC_2","databaseId":2,"author":{"login":"me"},"body":"b","createdAt":"t","lastEditedAt":"t2","url":"https://github.com/o/r/pull/5#discussion_r2","viewerCanUpdate":true,"viewerCanDelete":true,"replyTo":null}]}}]},
-			"comments":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"IC_3","databaseId":3,"author":{"login":"other"},"body":"c","createdAt":"t","lastEditedAt":null,"url":"https://github.com/o/r/pull/5#issuecomment-3","viewerCanUpdate":false,"viewerCanDelete":true,"isMinimized":false}]}}}}`)
+				"comments":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PRRC_2","fullDatabaseId":"2","author":{"login":"me"},"body":"b","createdAt":"t","lastEditedAt":"t2","url":"https://github.com/o/r/pull/5#discussion_r2","viewerCanUpdate":true,"viewerCanDelete":true,"replyTo":null}]}}]},
+			"comments":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"IC_3","fullDatabaseId":"3","author":{"login":"other"},"body":"c","createdAt":"t","lastEditedAt":null,"url":"https://github.com/o/r/pull/5#issuecomment-3","viewerCanUpdate":false,"viewerCanDelete":true,"isMinimized":false}]}}}}`)
 	})
 	threads, err := core.ListReviewThreads(t.Context(), githubTestRef(5))
 	if err != nil || len(threads) != 2 {
@@ -481,8 +481,10 @@ func TestGitLabSubmitReviewHeldReply(t *testing.T) {
 }
 
 // A developer may edit and delete its own notes and no other; a
-// maintainer or owner every note. Each note links to its anchor on the
-// merge request.
+// maintainer or owner every note, however the role was granted: the role
+// is maxAccessLevel, which counts a group share that leaves the project's
+// REST permissions empty. Each note links to its anchor on the merge
+// request.
 func TestGitLabReadMarksTheViewersNotes(t *testing.T) {
 	t.Parallel()
 	mr := gitlabTestProject + "/merge_requests/7"
@@ -497,7 +499,9 @@ func TestGitLabReadMarksTheViewersNotes(t *testing.T) {
 			case strings.HasPrefix(call.Path, mr+"/discussions?"):
 				return forgeAPIAnswer{Body: `[{"id":"d","notes":[{"id":1,"body":"mine","author":{"username":"Me"}},{"id":2,"body":"theirs","author":{"username":"rev"}}]}]`}
 			case call.Path == gitlabTestProject:
-				return forgeAPIAnswer{Body: fmt.Sprintf(`{"permissions":{"project_access":null,"group_access":{"access_level":%d}}}`, tc.access)}
+				return forgeAPIAnswer{Body: `{"permissions":{"project_access":null,"group_access":null}}`}
+			case call.Op == "ProjectAccess":
+				return forgeAPIAnswer{Body: fmt.Sprintf(`{"data":{"project":{"maxAccessLevel":{"integerValue":%d}}}}`, tc.access)}
 			case call.Path == "user":
 				return forgeAPIAnswer{Body: `{"id":1,"username":"me"}`}
 			case call.Op == "MRNoteReactions":

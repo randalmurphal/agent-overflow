@@ -1,6 +1,7 @@
 package git
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -32,6 +33,8 @@ type forgeAPICall struct {
 	Path     string
 	Header   http.Header
 	Body     []byte
+	// Context is the request's, done once the client gives up on it.
+	Context context.Context
 }
 
 // forgeAPIAnswer is the fake's reply. A zero Status is 200.
@@ -81,7 +84,7 @@ func newForgeAPIService(t *testing.T, answer func(call forgeAPICall) forgeAPIAns
 	var restBase string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
-		call := forgeAPICall{RESTBase: restBase, Host: r.Host, Method: r.Method, Header: r.Header.Clone(), Body: body}
+		call := forgeAPICall{RESTBase: restBase, Host: r.Host, Method: r.Method, Header: r.Header.Clone(), Body: body, Context: r.Context()}
 		switch {
 		case r.URL.Path == "/github/graphql" || r.URL.Path == "/gitlab/api/graphql":
 			var payload struct {
@@ -173,7 +176,7 @@ func githubData(data string) forgeAPIAnswer {
 // something else gets answered as a current GitLab.
 func forgeUnexpected(t *testing.T, call forgeAPICall) forgeAPIAnswer {
 	if call.Op == "" && call.Method == http.MethodGet && call.Path == "metadata" {
-		return forgeAPIAnswer{Body: `{"version":"19.3.0-ee"}`}
+		return forgeAPIAnswer{Body: `{"version":"19.3.0-ee","enterprise":true}`}
 	}
 	t.Errorf("unexpected forge request %q %s %s", call.Op, call.Method, call.Path)
 	return forgeAPIAnswer{Status: http.StatusNotFound, Body: `{"message":"Not Found"}`}
@@ -322,17 +325,17 @@ func TestReadPRActorShapes(t *testing.T) {
 		"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[
 			{"id":"T1","isResolved":false,"isOutdated":false,"path":"a.go","line":3,"startLine":null,"originalLine":3,"originalStartLine":null,"diffSide":"RIGHT","startDiffSide":null,"subjectType":"LINE",
 			 "comments":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[
-				{"id":"c1","databaseId":11,"author":{"login":"github-actions"},"body":"bot","createdAt":"2026-01-01T00:00:00Z","replyTo":null},
-				{"id":"c2","databaseId":12,"author":null,"body":"ghost","createdAt":"2026-01-01T00:00:01Z","replyTo":{"id":"c1","databaseId":11}}
+				{"id":"c1","fullDatabaseId":"11","author":{"login":"github-actions"},"body":"bot","createdAt":"2026-01-01T00:00:00Z","replyTo":null},
+				{"id":"c2","fullDatabaseId":"12","author":null,"body":"ghost","createdAt":"2026-01-01T00:00:01Z","replyTo":{"id":"c1","fullDatabaseId":"11"}}
 			 ]}},
 			{"id":"T2","isResolved":false,"isOutdated":true,"path":"a.go","line":null,"startLine":null,"originalLine":5,"originalStartLine":4,"diffSide":"RIGHT","startDiffSide":null,"subjectType":"LINE",
 			 "comments":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[
-				{"id":"c3","databaseId":13,"author":{"login":"plain"},"body":"old","createdAt":"2026-01-01T00:00:02Z","replyTo":null}
+				{"id":"c3","fullDatabaseId":"13","author":{"login":"plain"},"body":"old","createdAt":"2026-01-01T00:00:02Z","replyTo":null}
 			 ]}}
 		]},
 		"comments":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[
-			{"id":"k1","databaseId":21,"author":{"login":"plain","name":null},"body":"shown","createdAt":"2026-01-01T00:00:00Z","isMinimized":false},
-			{"id":"k2","databaseId":22,"author":{"login":"spammer","name":"S"},"body":"hidden","createdAt":"2026-01-01T00:00:01Z","isMinimized":true}
+			{"id":"k1","fullDatabaseId":"21","author":{"login":"plain","name":null},"body":"shown","createdAt":"2026-01-01T00:00:00Z","isMinimized":false},
+			{"id":"k2","fullDatabaseId":"22","author":{"login":"spammer","name":"S"},"body":"hidden","createdAt":"2026-01-01T00:00:01Z","isMinimized":true}
 		]}
 	}}}}`
 	core, _ := newForgeAPICore(t, func(forgeAPICall) forgeAPIAnswer { return forgeAPIAnswer{Body: answer} })
@@ -405,7 +408,8 @@ func TestReadPRRequestsOnlyTheWantedParts(t *testing.T) {
 		}
 		vars := sent[0].Vars
 		if vars["owner"] != "o" || vars["name"] != "r" || vars["number"] != float64(14571) ||
-			vars["wantDetail"] != tc.detail || vars["wantThreads"] != tc.threads || vars["wantEvents"] != tc.events || vars["wantChecks"] != tc.checks {
+			vars["wantDetail"] != tc.detail || vars["wantThreads"] != tc.threads || vars["wantEvents"] != tc.events || vars["wantChecks"] != tc.checks ||
+			vars["pageSize"] != float64(100) || vars["wantManage"] != true || vars["wantTeams"] != true || vars["wantCheckRuns"] != true || vars["wantWorkflowRuns"] != true {
 			t.Fatalf("%+v: variables = %v", tc.want, vars)
 		}
 		if query != "" && sent[0].Query != query {
@@ -420,12 +424,22 @@ func TestReadPRRequestsOnlyTheWantedParts(t *testing.T) {
 		"viewer @include(if: $wantDetail)",
 		"... @include(if: $wantDetail)",
 		"commits(last: 1) @include(if: $wantChecks)",
-		"reviewThreads(first: 100) @include(if: $wantThreads)",
-		"comments(first: 100) @include(if: $wantThreads)",
+		"reviewThreads(first: $pageSize) @include(if: $wantThreads)",
+		"comments(first: $pageSize) @include(if: $wantThreads)",
+		"... @include(if: $wantManage)",
+		"... on Team @include(if: $wantTeams)",
+		"... on CheckRun @include(if: $wantCheckRuns)",
+		"checkSuite @include(if: $wantWorkflowRuns)",
 		"]) @include(if: $wantEvents)",
 	} {
 		if !strings.Contains(query, gate) {
 			t.Fatalf("PRTick lacks %q", gate)
+		}
+	}
+	// What the viewer may do is GitHub's answer, read with the parts.
+	for _, field := range []string{" viewerCanUpdateBranch maintainerCanModify ", " viewerCanResolve viewerCanUnresolve viewerCanReply ", " viewerCanDelete viewerCanReact "} {
+		if !strings.Contains(query, field) {
+			t.Fatalf("PRTick lacks %q", field)
 		}
 	}
 	if _, err := NewCore().ReadPR(t.Context(), githubTestRef(1), PRReadParts{}, nil, nil); err == nil {
@@ -434,8 +448,47 @@ func TestReadPRRequestsOnlyTheWantedParts(t *testing.T) {
 }
 
 func githubThreadJSON(id string, comments []string, hasNext bool) string {
-	return fmt.Sprintf(`{"id":%q,"isResolved":false,"isOutdated":false,"path":"a.go","line":1,"startLine":null,"originalLine":1,"originalStartLine":null,"diffSide":"RIGHT","startDiffSide":null,"subjectType":"LINE","comments":{"pageInfo":{"hasNextPage":%t,"endCursor":"c-%s"},"nodes":[%s]}}`,
+	return fmt.Sprintf(`{"id":%q,"isResolved":false,"isOutdated":false,"path":"a.go","line":1,"startLine":null,"originalLine":1,"originalStartLine":null,"diffSide":"RIGHT","startDiffSide":null,"subjectType":"LINE","viewerCanResolve":true,"viewerCanUnresolve":true,"viewerCanReply":true,"comments":{"pageInfo":{"hasNextPage":%t,"endCursor":"c-%s"},"nodes":[%s]}}`,
 		id, hasNext, id, strings.Join(comments, ","))
+}
+
+// A comment GitHub says the viewer may not react to (a locked
+// conversation, an archived repository) says why; one it may says
+// nothing.
+func TestGitHubCommentReactionsFollowGitHub(t *testing.T) {
+	t.Parallel()
+	for _, may := range []bool{true, false} {
+		var out ReviewComment
+		githubViewerCommentRaw{ViewerCanReact: may}.fill(&out)
+		if (out.CannotReactReason == "") != may {
+			t.Fatalf("viewerCanReact %v: reason %q", may, out.CannotReactReason)
+		}
+	}
+}
+
+// A thread says why its Resolve or Reply is unavailable from GitHub's
+// answer for the direction the thread's state offers: an open thread by
+// viewerCanResolve, a resolved one by viewerCanUnresolve.
+func TestGitHubThreadControlsFollowGitHub(t *testing.T) {
+	t.Parallel()
+	thread := func(resolved, resolve, unresolve, reply bool) ReviewThread {
+		return githubReviewThreads([]githubThreadRaw{{ID: "T", IsResolved: resolved, ViewerCanResolve: resolve, ViewerCanUnresolve: unresolve, ViewerCanReply: reply}})[0]
+	}
+	for _, tc := range []struct {
+		name                       string
+		got                        ReviewThread
+		cannotResolve, cannotReply bool
+	}{
+		{"may do both", thread(false, true, false, true), false, false},
+		{"open, may not resolve", thread(false, false, true, true), true, false},
+		{"resolved, may reopen", thread(true, false, true, true), false, false},
+		{"resolved, may not reopen", thread(true, true, false, true), true, false},
+		{"may not reply", thread(false, true, true, false), false, true},
+	} {
+		if (tc.got.CannotResolveReason != "") != tc.cannotResolve || (tc.got.CannotReplyReason != "") != tc.cannotReply {
+			t.Fatalf("%s: resolve %q, reply %q", tc.name, tc.got.CannotResolveReason, tc.got.CannotReplyReason)
+		}
+	}
 }
 
 func githubCommentsJSON(prefix string, from, n int, reply bool) []string {
@@ -443,9 +496,9 @@ func githubCommentsJSON(prefix string, from, n int, reply bool) []string {
 	for i := from; i < from+n; i++ {
 		replyTo := "null"
 		if reply {
-			replyTo = `{"id":"root","databaseId":1}`
+			replyTo = `{"id":"root","fullDatabaseId":"1"}`
 		}
-		out = append(out, fmt.Sprintf(`{"id":"%s%d","databaseId":%d,"author":{"login":"u"},"body":"b%d","createdAt":"2026-01-01T00:00:00Z","replyTo":%s,"isMinimized":false}`, prefix, i, i+1, i, replyTo))
+		out = append(out, fmt.Sprintf(`{"id":"%s%d","fullDatabaseId":"%d","author":{"login":"u"},"body":"b%d","createdAt":"2026-01-01T00:00:00Z","replyTo":%s,"isMinimized":false}`, prefix, i, i+1, i, replyTo))
 	}
 	return out
 }
@@ -1173,6 +1226,51 @@ func TestGitHubListOpenPRsReadsPastForks(t *testing.T) {
 	}
 	if n := len(calls.all()) - 2; n != githubReadMaxPages {
 		t.Fatalf("forks-only lookup sent %d requests, want %d", n, githubReadMaxPages)
+	}
+}
+
+// A checkout of a fork finds the pull requests it opened in the fork's
+// parent: those whose head is the fork's branch, not another fork's or the
+// parent's own branch of the same name. Its merged heads add the parent's
+// merges from the fork. A repository that is no fork sends nothing more.
+func TestGitHubForkCheckoutFindsItsUpstreamPRs(t *testing.T) {
+	t.Parallel()
+	core, calls := newForgeAPICore(t, func(call forgeAPICall) forgeAPIAnswer {
+		upstream := call.Vars["owner"] == "acme"
+		switch {
+		case call.Op == "OpenPRsByHead" && !upstream:
+			return githubData(`{"repository":{"id":"R_fork","parent":{"owner":{"login":"acme"},"name":"repo"},"pullRequests":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}`)
+		case call.Op == "OpenPRsByHead":
+			return githubData(`{"repository":{"id":"R_acme","parent":null,"pullRequests":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[` +
+				`{"id":"PR_other","url":"https://github.com/acme/repo/pull/1","number":1,"title":"Other fork","state":"OPEN","isCrossRepository":true,"headRepository":{"id":"R_other"}},` +
+				`{"id":"PR_mine","url":"https://github.com/acme/repo/pull/2","number":2,"title":"Mine","state":"OPEN","baseRefName":"main","isCrossRepository":true,"headRepository":{"id":"R_fork"}},` +
+				`{"id":"PR_theirs","url":"https://github.com/acme/repo/pull/3","number":3,"title":"Upstream's own","state":"OPEN","isCrossRepository":false,"headRepository":{"id":"R_acme"}}]}}}`)
+		case call.Op == "MergedPRs" && !upstream:
+			return githubData(`{"repository":{"id":"R_fork","parent":{"owner":{"login":"acme"},"name":"repo"},"pullRequests":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"headRefName":"local","headRefOid":"aaa","url":"https://github.com/alice/repo/pull/1","headRepository":{"id":"R_fork"}}]}}}`)
+		case call.Op == "MergedPRs":
+			return githubData(`{"repository":{"id":"R_acme","parent":null,"pullRequests":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[` +
+				`{"headRefName":"feature","headRefOid":"bbb","url":"https://github.com/acme/repo/pull/9","headRepository":{"id":"R_fork"}},` +
+				`{"headRefName":"feature","headRefOid":"ccc","url":"https://github.com/acme/repo/pull/8","headRepository":{"id":"R_other"}},` +
+				`{"headRefName":"gone","headRefOid":"ddd","url":"https://github.com/acme/repo/pull/7","headRepository":null}]}}}`)
+		}
+		return forgeUnexpected(t, call)
+	})
+	cwd := t.TempDir()
+	seedForgeCacheGitHubOrigin(t, core, cwd, "https://github.com/alice/repo.git")
+	pulls, err := core.ListOpenPRs(t.Context(), cwd, "feature")
+	if err != nil || len(pulls) != 1 || pulls[0] != (GitPR{ID: "PR_mine", URL: "https://github.com/acme/repo/pull/2", Number: 2, Title: "Mine", State: "open", BaseBranch: "main"}) {
+		t.Fatalf("ListOpenPRs = %+v, %v; want the fork's PR in acme/repo alone", pulls, err)
+	}
+	if sent := calls.all(); len(sent) != 2 || sent[0].Vars["owner"] != "alice" || sent[1].Vars["owner"] != "acme" || sent[1].Vars["name"] != "repo" || sent[1].Vars["head"] != "feature" {
+		t.Fatalf("requests = %+v", sent)
+	}
+	heads, err := core.ListMergedPRHeads(t.Context(), cwd, 50)
+	want := []MergedPRHead{{HeadRefName: "local", HeadOid: "aaa", URL: "https://github.com/alice/repo/pull/1"}, {HeadRefName: "feature", HeadOid: "bbb", URL: "https://github.com/acme/repo/pull/9"}}
+	if err != nil || !slices.Equal(heads, want) {
+		t.Fatalf("ListMergedPRHeads = %+v, %v; want %+v", heads, err, want)
+	}
+	if sent := calls.all()[3]; sent.Vars["owner"] != "acme" || sent.Vars["first"] != float64(50) {
+		t.Fatalf("parent merged read = %+v", sent.Vars)
 	}
 }
 

@@ -250,7 +250,7 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 
 	childCtx, cancel := context.WithCancel(ctx)
 
-	proc, err := provider.Spawn(childCtx, provider.SpawnConfig{
+	proc, err := provider.Spawn(childCtx, provider.Watched(cfg.Reaper), provider.SpawnConfig{
 		Binary:      binary,
 		Args:        line.Args(),
 		Dir:         cfg.WorkDir,
@@ -259,7 +259,6 @@ func NewSession(ctx context.Context, threadID string, cfg Config, onEvent func(p
 		EventLogger: cfg.EventLogger,
 		ThreadID:    threadID,
 		Provider:    string(provider.Claude),
-		Reaper:      cfg.Reaper,
 	})
 	if err != nil {
 		cancel()

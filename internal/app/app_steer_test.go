@@ -1,6 +1,7 @@
 package app
 
 import (
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/testutil/mockexec"
 	"context"
 	"errors"
@@ -99,6 +100,7 @@ func installCodexTestSessionWithBinary(t *testing.T, app *App, thread store.Thre
 		context.Background(),
 		thread.ID,
 		codex.Config{
+			Reaper:  procutiltest.Reaper(),
 			Binary:  binary,
 			WorkDir: thread.WorkspacePath,
 		},

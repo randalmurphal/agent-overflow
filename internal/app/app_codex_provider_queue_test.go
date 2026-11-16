@@ -1,6 +1,7 @@
 package app
 
 import (
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/testutil/mockexec"
 	"context"
 	"encoding/json"
@@ -312,6 +313,7 @@ func newProviderQueueSessionWith(
 		context.Background(),
 		thread.ID,
 		codex.Config{
+			Reaper:  procutiltest.Reaper(),
 			Binary:  binary,
 			WorkDir: thread.WorkspacePath,
 		},
@@ -338,6 +340,7 @@ func newProviderQueueResumeSession(
 		context.Background(),
 		thread.ID,
 		codex.Config{
+			Reaper:         procutiltest.Reaper(),
 			Binary:         binary,
 			WorkDir:        thread.WorkspacePath,
 			ResumeThreadID: thread.SessionRef,
@@ -988,6 +991,7 @@ func TestConversationRollbackPurgesTheProviderQueue(t *testing.T) {
 		t.Fatalf("update settings: %v", err)
 	}
 	sess, err := codex.NewSession(context.Background(), thread.ID, codex.Config{
+		Reaper:         procutiltest.Reaper(),
 		Binary:         binary,
 		Model:          "test-model",
 		WorkDir:        workspace,

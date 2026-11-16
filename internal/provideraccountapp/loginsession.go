@@ -439,6 +439,7 @@ func (m *Manager) openClaudeLoginFlow(
 			Binary:    run.attempt.binary,
 			ConfigDir: run.attempt.home.Path,
 			Env:       m.providerLoginEnv(run.provider, nil),
+			Reaper:    m.deps.Reaper,
 		})
 		if err != nil {
 			return loginFlow{}, "", err
@@ -488,6 +489,7 @@ func (m *Manager) openCodexLoginFlow(
 			Env: m.providerLoginEnv(run.provider, map[string]string{
 				"CODEX_HOME": run.attempt.home.Path,
 			}),
+			Reaper: m.deps.Reaper,
 		})
 		if err != nil {
 			return loginFlow{}, "", err

@@ -63,6 +63,11 @@ func (f *gitlabForge) FetchAttachment(ctx context.Context, ref RepoReference, ta
 	if err != nil {
 		return nil, err
 	}
+	// GET projects/:id/uploads/:secret/:filename is from 17.4: a server
+	// below the supported floor is refused with its sentence.
+	if err := f.server(ctx, client, ref.Host).supported(ref.Host); err != nil {
+		return nil, err
+	}
 	var body bytes.Buffer
 	_, err = client.Stream(ctx, forgeapi.Request{
 		Path:       target.Request,

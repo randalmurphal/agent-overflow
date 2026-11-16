@@ -10,13 +10,14 @@ import (
 )
 
 // gitlabReviewersAnswer is a mergeRequestSetReviewers answer listing
-// usernames as the merge request's reviewers.
+// usernames as the merge request's reviewers, on a project that allows
+// more than one.
 func gitlabReviewersAnswer(usernames ...string) string {
 	nodes := make([]string, 0, len(usernames))
 	for _, name := range usernames {
 		nodes = append(nodes, `{"username":"`+name+`"}`)
 	}
-	return `{"mergeRequestSetReviewers":{"errors":[],"mergeRequest":{"reviewers":{"nodes":[` + strings.Join(nodes, ",") + `]}}}}`
+	return `{"mergeRequestSetReviewers":{"errors":[],"mergeRequest":{"allowsMultipleReviewers":true,"reviewers":{"nodes":[` + strings.Join(nodes, ",") + `]}}}}`
 }
 
 // A GitLab people change is a REMOVE, then an APPEND, each checked
@@ -50,6 +51,12 @@ func TestGitLabPeopleChangeWritesInOrder(t *testing.T) {
 			want:   "Removed carol from the reviewers of grp/sub/app!7; adding bob was refused: "},
 		{name: "second did not add", first: removed, second: removed, writes: 2, partial: true, refused: true,
 			want: "Removed carol from the reviewers of grp/sub/app!7; adding bob was refused: GitLab did not add bob to the reviewers: they may not be members of the project."},
+		{name: "second dropped on a project of one reviewer", first: removed, writes: 2, partial: true, refused: true,
+			second: forgeAPIAnswer{Body: `{"data":` + strings.Replace(gitlabReviewersAnswer("dave"), `"allowsMultipleReviewers":true`, `"allowsMultipleReviewers":false`, 1) + `}`},
+			want:   "Removed carol from the reviewers of grp/sub/app!7; adding bob was refused: GitLab did not add bob to the reviewers: this project allows one reviewer per merge request; more need GitLab Premium."},
+		{name: "second not added to an empty list on a project of one reviewer", first: removed, writes: 2, partial: true, refused: true,
+			second: forgeAPIAnswer{Body: `{"data":` + strings.Replace(gitlabReviewersAnswer(), `"allowsMultipleReviewers":true`, `"allowsMultipleReviewers":false`, 1) + `}`},
+			want:   "Removed carol from the reviewers of grp/sub/app!7; adding bob was refused: GitLab did not add bob to the reviewers: they may not be members of the project."},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -101,7 +108,7 @@ func TestGitLabSetBatchOutcomes(t *testing.T) {
 		for _, name := range usernames {
 			nodes = append(nodes, `{"username":"`+name+`"}`)
 		}
-		return forgeAPIAnswer{Body: fmt.Sprintf(`{"data":{"mergeRequestSetReviewers":{"errors":[],"mergeRequest":{"reviewers":{"pageInfo":{"hasNextPage":%v},"nodes":[%s]}}}}}`, more, strings.Join(nodes, ","))}
+		return forgeAPIAnswer{Body: fmt.Sprintf(`{"data":{"mergeRequestSetReviewers":{"errors":[],"mergeRequest":{"allowsMultipleReviewers":true,"reviewers":{"pageInfo":{"hasNextPage":%v},"nodes":[%s]}}}}}`, more, strings.Join(nodes, ","))}
 	}
 	for _, tc := range []struct {
 		name          string

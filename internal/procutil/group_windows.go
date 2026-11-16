@@ -36,9 +36,9 @@ func KillConfiguredGroup(command *exec.Cmd) error {
 	return nil
 }
 
-// TerminateConfiguredGroup has no graceful tree signal on Windows; the forced
+// terminateConfiguredGroup has no graceful tree signal on Windows; the forced
 // tree kill is the only termination available to the launcher-side harness.
-func TerminateConfiguredGroup(command *exec.Cmd) error {
+func terminateConfiguredGroup(command *exec.Cmd) error {
 	return KillConfiguredGroup(command)
 }
 

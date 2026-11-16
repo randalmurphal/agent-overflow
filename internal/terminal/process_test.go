@@ -3,17 +3,21 @@
 package terminal
 
 import (
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"slices"
 	"strconv"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
+
+	"agent-overflow/internal/procutil"
+	"agent-overflow/internal/procutil/procutiltest"
 )
 
 func TestProcessStartNormalizesTerminalCapabilities(t *testing.T) {
@@ -21,9 +25,10 @@ func TestProcessStartNormalizesTerminalCapabilities(t *testing.T) {
 	t.Setenv("COLORTERM", "legacy")
 
 	p, err := Start(ProcessConfig{
-		Shell: "/bin/sh",
-		Args:  []string{"-c", `printf 'TERM=%s COLORTERM=%s\n' "$TERM" "$COLORTERM"`},
-		Cwd:   t.TempDir(),
+		Reaper: procutiltest.Reaper(),
+		Shell:  "/bin/sh",
+		Args:   []string{"-c", `printf 'TERM=%s COLORTERM=%s\n' "$TERM" "$COLORTERM"`},
+		Cwd:    t.TempDir(),
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -41,9 +46,10 @@ func TestProcessStartNormalizesTerminalCapabilities(t *testing.T) {
 // closes.
 func TestProcessStartEcho(t *testing.T) {
 	p, err := Start(ProcessConfig{
-		Shell: "/bin/sh",
-		Args:  []string{"-c", "echo hi"},
-		Cwd:   t.TempDir(),
+		Reaper: procutiltest.Reaper(),
+		Shell:  "/bin/sh",
+		Args:   []string{"-c", "echo hi"},
+		Cwd:    t.TempDir(),
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -74,9 +80,10 @@ func TestProcessStartEcho(t *testing.T) {
 // back.
 func TestProcessWriteInput(t *testing.T) {
 	p, err := Start(ProcessConfig{
-		Shell: "/bin/sh",
-		Args:  []string{"-c", "cat"},
-		Cwd:   t.TempDir(),
+		Reaper: procutiltest.Reaper(),
+		Shell:  "/bin/sh",
+		Args:   []string{"-c", "cat"},
+		Cwd:    t.TempDir(),
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -102,11 +109,12 @@ func TestProcessWriteInput(t *testing.T) {
 // PTY and check the visible columns match.
 func TestProcessResize(t *testing.T) {
 	p, err := Start(ProcessConfig{
-		Shell: "/bin/sh",
-		Args:  []string{"-c", "stty -a; sleep 0.1; exit 0"},
-		Cwd:   t.TempDir(),
-		Rows:  24,
-		Cols:  80,
+		Reaper: procutiltest.Reaper(),
+		Shell:  "/bin/sh",
+		Args:   []string{"-c", "stty -a; sleep 0.1; exit 0"},
+		Cwd:    t.TempDir(),
+		Rows:   24,
+		Cols:   80,
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -145,11 +153,12 @@ const winchSizeReporter = `trap 'w=1' WINCH; echo READY; while :; do if [ -n "$w
 // refresh, so READY models the steady state Refresh actually runs against.
 func TestProcessRefreshNudgesAndRestores(t *testing.T) {
 	p, err := Start(ProcessConfig{
-		Shell: "/bin/sh",
-		Args:  []string{"-c", winchSizeReporter},
-		Cwd:   t.TempDir(),
-		Rows:  24,
-		Cols:  80,
+		Reaper: procutiltest.Reaper(),
+		Shell:  "/bin/sh",
+		Args:   []string{"-c", winchSizeReporter},
+		Cwd:    t.TempDir(),
+		Rows:   24,
+		Cols:   80,
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -214,9 +223,10 @@ func TestNudgeRows(t *testing.T) {
 func TestProcessKillsGroup(t *testing.T) {
 	// `sh -c "sleep 60 & echo $!; wait"` — prints the child pid then waits.
 	p, err := Start(ProcessConfig{
-		Shell: "/bin/sh",
-		Args:  []string{"-c", "sleep 60 & echo CHILDPID=$!; wait"},
-		Cwd:   t.TempDir(),
+		Reaper: procutiltest.Reaper(),
+		Shell:  "/bin/sh",
+		Args:   []string{"-c", "sleep 60 & echo CHILDPID=$!; wait"},
+		Cwd:    t.TempDir(),
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -323,9 +333,10 @@ func TestProcessDeliversOutputWrittenBetweenAnEmptyReadAndTheShellsExit(t *testi
 		return syscall.Read(fd, buf)
 	}
 	p, err := startWithRead(ProcessConfig{
-		Shell: "/bin/sh",
-		Args:  []string{"-c", `read line; printf 'last words'`},
-		Cwd:   t.TempDir(),
+		Reaper: procutiltest.Reaper(),
+		Shell:  "/bin/sh",
+		Args:   []string{"-c", `read line; printf 'last words'`},
+		Cwd:    t.TempDir(),
 	}, read)
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -352,9 +363,10 @@ func startShellWithBackgroundJob(t *testing.T, script string) (*Process, int) {
 	t.Helper()
 	pidFile := filepath.Join(t.TempDir(), "job.pid")
 	p, err := Start(ProcessConfig{
-		Shell: "/bin/sh",
-		Args:  []string{"-c", `(trap '' HUP; exec sleep 30) & echo $! > "$0"; ` + script, pidFile},
-		Cwd:   t.TempDir(),
+		Reaper: procutiltest.Reaper(),
+		Shell:  "/bin/sh",
+		Args:   []string{"-c", `(trap '' HUP; exec sleep 30) & echo $! > "$0"; ` + script, pidFile},
+		Cwd:    t.TempDir(),
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -402,9 +414,10 @@ func collectOutput(ch <-chan []byte, timeout time.Duration) (string, bool) {
 // TestProcessStartRejectsBadCwd confirms we surface pty-spawn errors.
 func TestProcessStartRejectsBadCwd(t *testing.T) {
 	_, err := Start(ProcessConfig{
-		Shell: "/bin/sh",
-		Args:  []string{"-c", "true"},
-		Cwd:   "/this/path/does/not/exist",
+		Reaper: procutiltest.Reaper(),
+		Shell:  "/bin/sh",
+		Args:   []string{"-c", "true"},
+		Cwd:    "/this/path/does/not/exist",
 	})
 	if err == nil {
 		t.Fatal("expected Start to fail for missing cwd")
@@ -493,29 +506,21 @@ func processAlive(pid int) bool {
 	return err == nil
 }
 
-// recordingReaper records the groups a process has watched and released.
-type recordingReaper struct {
-	mu       sync.Mutex
-	watched  []int
-	released []int
-}
-
-func (r *recordingReaper) Watch(pgid int) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.watched = append(r.watched, pgid)
-}
-
-func (r *recordingReaper) Release(pgid int) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.released = append(r.released, pgid)
-}
-
-func (r *recordingReaper) calls() (watched, released []int) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return slices.Clone(r.watched), slices.Clone(r.released)
+// A process given no reaper would have nothing to end it with the backend,
+// so Start refuses it before running anything.
+func TestAProcessWithoutAReaperStartsNothing(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "started")
+	p, err := Start(ProcessConfig{Shell: "/bin/sh", Args: []string{"-c", "touch " + marker}, Cwd: t.TempDir()})
+	if err == nil {
+		_ = p.Kill()
+	}
+	if !errors.Is(err, ErrNoReaper) {
+		t.Fatalf("Start = %v, want ErrNoReaper", err)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if _, statErr := os.Stat(marker); statErr == nil {
+		t.Fatal("the refused process ran")
+	}
 }
 
 // A process given a reaper is watched before Start returns and released once
@@ -530,21 +535,95 @@ func TestAReapedProcessIsWatchedFromItsStartUntilItExits(t *testing.T) {
 		{"exited on its own", []string{"-c", "exit 0"}, func(p *Process) { <-p.Done() }},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			reaper := &recordingReaper{}
+			reaper := &procutiltest.Recorder{}
 			p, err := Start(ProcessConfig{Shell: "/bin/sh", Args: c.args, Cwd: t.TempDir(), Reaper: reaper})
 			if err != nil {
 				t.Fatalf("Start: %v", err)
 			}
 			t.Cleanup(func() { _ = p.Kill() })
 			pid := p.PID()
-			if watched, _ := reaper.calls(); !slices.Equal(watched, []int{pid}) {
+			if watched, _ := reaper.Calls(); !slices.Equal(watched, []int{pid}) {
 				t.Fatalf("watched %v when Start returned, want [%d]", watched, pid)
 			}
 			c.end(p)
-			watched, released := reaper.calls()
+			watched, released := reaper.Calls()
 			if !slices.Equal(watched, []int{pid}) || !slices.Equal(released, []int{pid}) {
 				t.Fatalf("watched %v released %v once the process was gone, want [%d] each", watched, released, pid)
 			}
 		})
+	}
+}
+
+// startShellLeavingAJob starts a shell, watched by reaper, that leaves a job
+// in its own group ignoring the signals in traps, and exits once the job has
+// set its traps. It returns the process, once the shell has exited, and the
+// job's pid, which the test's cleanup kills.
+func startShellLeavingAJob(t *testing.T, reaper *procutiltest.Recorder, traps string) (*Process, int) {
+	t.Helper()
+	pidFile := filepath.Join(t.TempDir(), "job.pid")
+	p, err := Start(ProcessConfig{
+		Reaper: reaper,
+		Shell:  "/bin/sh",
+		Args: []string{"-c",
+			`sh -c "trap '' $1; echo \$\$ > \"\$0\"; exec sleep 120" "$0" & while [ ! -s "$0" ]; do sleep 0.01; done; exit 0`,
+			pidFile, traps},
+		Cwd: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = p.Kill() })
+	pid := backgroundJobPID(t, pidFile)
+	select {
+	case <-p.Done():
+	case <-time.After(10 * time.Second):
+		t.Fatal("process did not report the shell's exit")
+	}
+	return p, pid
+}
+
+// A job the shell left in its group runs on while the terminal is open, so
+// the group stays watched; Close ends the job, even one ignoring SIGTERM, and
+// returns only once it is gone, then releases the group.
+func TestCloseEndsAJobTheShellLeftBeforeReleasingItsGroup(t *testing.T) {
+	for _, c := range []struct{ name, traps string }{
+		{"job", "HUP"},
+		{"job ignoring SIGTERM", "HUP TERM"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			reaper := &procutiltest.Recorder{}
+			p, job := startShellLeavingAJob(t, reaper, c.traps)
+			if !processAlive(job) {
+				t.Fatal("the job ended with the shell")
+			}
+			if _, released := reaper.Calls(); len(released) != 0 {
+				t.Fatalf("released %v while the job runs, want the group still watched", released)
+			}
+			if err := p.Close(); err != nil {
+				t.Fatalf("Close = %v, want nil", err)
+			}
+			if processAlive(job) {
+				t.Fatalf("job %d still exists once Close returned", job)
+			}
+			if _, released := reaper.Calls(); !slices.Equal(released, []int{p.PID()}) {
+				t.Fatalf("released %v once Close returned, want [%d]", released, p.PID())
+			}
+		})
+	}
+}
+
+// A job Close cannot end keeps its group watched, for the reaper to end with
+// the backend, and Close reports it.
+func TestAJobCloseCannotEndKeepsItsGroupWatched(t *testing.T) {
+	prev := stopLeftovers
+	stopLeftovers = func(*exec.Cmd, time.Duration) error { return procutil.ErrGroupSurvived }
+	t.Cleanup(func() { stopLeftovers = prev })
+	reaper := &procutiltest.Recorder{}
+	p, _ := startShellLeavingAJob(t, reaper, "HUP TERM")
+	if err := p.Close(); !errors.Is(err, procutil.ErrGroupSurvived) {
+		t.Fatalf("Close = %v, want ErrGroupSurvived", err)
+	}
+	if _, released := reaper.Calls(); len(released) != 0 {
+		t.Fatalf("released %v, want the group still watched", released)
 	}
 }

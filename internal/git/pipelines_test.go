@@ -693,7 +693,7 @@ func TestGitLabReadPipelineReadsThePipelineAndItsJobs(t *testing.T) {
 		pipeline.Stages[0].Name != "build" || pipeline.Stages[1].Jobs[0].Name != "deploy" {
 		t.Fatalf("pipeline = %+v", pipeline)
 	}
-	if ops := calls.ops(); len(ops) != 2 {
+	if ops := calls.ops(); len(ops) != 3 {
 		t.Fatalf("requests = %v", ops)
 	}
 }

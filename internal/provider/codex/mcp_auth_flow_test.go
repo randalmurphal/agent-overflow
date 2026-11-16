@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"agent-overflow/internal/procutil/procutiltest"
 )
 
 func TestMCPAuthFlowUsesThreadlessAppServerThroughCompletion(t *testing.T) {
@@ -37,6 +39,7 @@ done
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	flow, result, err := StartMCPAuth(ctx, MCPAuthConfig{
+		Reaper:         procutiltest.Reaper(),
 		Binary:         binary,
 		WorkDir:        t.TempDir(),
 		Env:            map[string]string{"TRACE_PATH": tracePath},
@@ -73,7 +76,7 @@ done
 
 func TestMCPAuthFlowRequiresAbsoluteWorkspace(t *testing.T) {
 	t.Parallel()
-	_, _, err := StartMCPAuth(context.Background(), MCPAuthConfig{WorkDir: "relative"}, "srv")
+	_, _, err := StartMCPAuth(context.Background(), MCPAuthConfig{Reaper: procutiltest.Reaper(), WorkDir: "relative"}, "srv")
 	if err == nil || !strings.Contains(err.Error(), "must be absolute") {
 		t.Fatalf("error = %v, want absolute-workspace refusal", err)
 	}
@@ -81,7 +84,7 @@ func TestMCPAuthFlowRequiresAbsoluteWorkspace(t *testing.T) {
 
 func TestMCPAuthFlowRequiresBoundedRequest(t *testing.T) {
 	t.Parallel()
-	_, _, err := StartMCPAuth(context.Background(), MCPAuthConfig{WorkDir: t.TempDir()}, "srv")
+	_, _, err := StartMCPAuth(context.Background(), MCPAuthConfig{Reaper: procutiltest.Reaper(), WorkDir: t.TempDir()}, "srv")
 	if err == nil || !strings.Contains(err.Error(), "timeout must be positive") {
 		t.Fatalf("error = %v, want positive-timeout refusal", err)
 	}

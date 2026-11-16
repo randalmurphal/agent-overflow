@@ -3,6 +3,7 @@ package provideraccountapp
 import (
 	"testing"
 
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider/claude"
 )
 
@@ -11,7 +12,7 @@ import (
 // session does, for pinned and unpinned homes alike.
 func TestClaudeProbeConfigCarriesCleanupPeriodDays(t *testing.T) {
 	// The period is resolved for the directory the probe runs in.
-	manager := NewManager(Deps{ClaudeRetention: func(workDir string) claude.Retention {
+	manager := NewManager(Deps{Reaper: procutiltest.Reaper(), ClaudeRetention: func(workDir string) claude.Retention {
 		if workDir != providerProbeWorkDir() {
 			return claude.UserHomeRetention(0)
 		}
@@ -26,7 +27,7 @@ func TestClaudeProbeConfigCarriesCleanupPeriodDays(t *testing.T) {
 		}
 	}
 	// With no dependency the probe gives no answer, which refuses it.
-	if got := NewManager(Deps{}).claudeProbeConfig("claude", nil).Retention; got != (claude.Retention{}) {
+	if got := NewManager(Deps{Reaper: procutiltest.Reaper()}).claudeProbeConfig("claude", nil).Retention; got != (claude.Retention{}) {
 		t.Fatalf("Retention with no dependency = %+v, want none", got)
 	}
 }

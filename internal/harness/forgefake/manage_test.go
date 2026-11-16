@@ -155,6 +155,39 @@ func glabGraphQL(t *testing.T, srv *httptest.Server, op, kind string, vars map[s
 	return out
 }
 
+// A Free project's set mutations keep the list's first: an APPEND to a
+// list of one drops the addition without an error, as GitLab does, and
+// the answer says the project allows one.
+func TestGitLabFreeProjectKeepsOneReviewer(t *testing.T) {
+	t.Parallel()
+	e := New(Options{APIToken: testAPIToken})
+	fixture := strings.Replace(manageFixture, `"members": [{"login": "bob", "id": 11}],`, `"merge": {"free": true}, "members": [{"login": "bob", "id": 11}, {"login": "carol", "id": 12}],`, 1)
+	if _, err := seedJSON(e, fixture); err != nil {
+		t.Fatal(err)
+	}
+	srv := testServer(t, e)
+	for _, tc := range []struct{ op, field, list string }{
+		{"PRSetReviewers", "mergeRequestSetReviewers", "reviewers"},
+		{"PRSetAssignees", "mergeRequestSetAssignees", "assignees"},
+	} {
+		vars := map[string]any{"projectPath": "grp/m", "iid": "1", "usernames": []string{"bob"}, "mode": "APPEND"}
+		glabGraphQL(t, srv, tc.op, "mutation", vars)
+		vars["usernames"] = []string{"carol"}
+		got := glabGraphQL(t, srv, tc.op, "mutation", vars)
+		payload := got["data"].(map[string]any)[tc.field].(map[string]any)
+		if want := `{"allowsMultipleAssignees":false,"allowsMultipleReviewers":false,"` + tc.list + `":{"nodes":[{"username":"bob"}],"pageInfo":{"hasNextPage":false}}}`; mustJSON(t, payload["mergeRequest"]) != want || len(payload["errors"].([]any)) != 0 {
+			t.Fatalf("%s: a second on a Free project = %v, want %s", tc.op, payload, want)
+		}
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for _, r := range e.repos {
+		if p := r.pull(1); r.Project == "grp/m" && !slices.Equal(p.Reviewers, []string{"bob"}) {
+			t.Fatalf("reviewers = %v", p.Reviewers)
+		}
+	}
+}
+
 // The GitLab set mutations append and remove by username or label id,
 // skip what GitLab skips (a non-member, an unknown label id), answer
 // the list as it stands, and deny a viewer without adminMergeRequest;
@@ -191,7 +224,7 @@ func TestGitLabSetMutations(t *testing.T) {
 		return out
 	}
 	got := glabGraphQL(t, srv, "PRSetAssignees", "mutation", with(map[string]any{"usernames": []string{"bob", "eve"}, "mode": "APPEND"}))
-	if nodes := mustJSON(t, got["data"].(map[string]any)["mergeRequestSetAssignees"].(map[string]any)["mergeRequest"]); nodes != `{"assignees":{"nodes":[{"username":"bob"}],"pageInfo":{"hasNextPage":false}}}` {
+	if nodes := mustJSON(t, got["data"].(map[string]any)["mergeRequestSetAssignees"].(map[string]any)["mergeRequest"]); nodes != `{"allowsMultipleAssignees":true,"allowsMultipleReviewers":true,"assignees":{"nodes":[{"username":"bob"}],"pageInfo":{"hasNextPage":false}}}` {
 		t.Fatalf("append assignees = %s", nodes)
 	}
 	glabGraphQL(t, srv, "PRSetReviewers", "mutation", with(map[string]any{"usernames": []string{"bob"}, "mode": "REMOVE"}))

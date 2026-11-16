@@ -5,12 +5,14 @@ import (
 	"path/filepath"
 	"slices"
 	"testing"
+
+	"agent-overflow/internal/procutil/procutiltest"
 )
 
 // -- Session unit tests (wire format verification) --
 
 func TestBuildArgsDefault(t *testing.T) {
-	args := buildArgs(Config{}, "", "")
+	args := buildArgs(Config{Reaper: procutiltest.Reaper()}, "", "")
 
 	// Baseline flags that every spawn must include. Adding a new flag to
 	// buildArgs should extend this list intentionally.
@@ -55,7 +57,7 @@ func TestBuildArgsForwardsSubagentText(t *testing.T) {
 }
 
 func TestBuildArgsOmitsResumeAtWithoutResume(t *testing.T) {
-	args := buildArgs(Config{ResumeAt: "leaf-456"}, "", "")
+	args := buildArgs(Config{Reaper: procutiltest.Reaper(), ResumeAt: "leaf-456"}, "", "")
 	for _, arg := range args {
 		if arg == "--resume-session-at" {
 			t.Fatalf("args include --resume-session-at without --resume: %v", args)
@@ -65,6 +67,7 @@ func TestBuildArgsOmitsResumeAtWithoutResume(t *testing.T) {
 
 func TestBuildArgsWithAllOptions(t *testing.T) {
 	cfg := Config{
+		Reaper:          procutiltest.Reaper(),
 		Model:           "opus",
 		Resume:          "session-123",
 		ResumeAt:        "leaf-456",
@@ -162,7 +165,7 @@ func TestWriteSystemPromptFile(t *testing.T) {
 		RemoveSystemPromptFile(path)
 		t.Fatalf("WriteSystemPromptFile(\"\") = %q, want no file for a session with no override", path)
 	}
-	if args := buildArgs(Config{}, "", ""); slices.Contains(args, "--system-prompt-file") {
+	if args := buildArgs(Config{Reaper: procutiltest.Reaper()}, "", ""); slices.Contains(args, "--system-prompt-file") {
 		t.Errorf("argv carries --system-prompt-file without a prompt: %v", args)
 	}
 
@@ -199,7 +202,7 @@ func TestWriteSystemPromptFile(t *testing.T) {
 }
 
 func TestBuildArgsNoPermissionFlagsOmitsAll(t *testing.T) {
-	args := buildArgs(Config{PermissionFlags: nil}, "", "")
+	args := buildArgs(Config{Reaper: procutiltest.Reaper(), PermissionFlags: nil}, "", "")
 
 	for _, a := range args {
 		if a == "--permission-mode" || a == "--allow-dangerously-skip-permissions" {
@@ -211,7 +214,7 @@ func TestBuildArgsNoPermissionFlagsOmitsAll(t *testing.T) {
 // TestBuildArgsDangerousSkipPermissions confirms the full-access flow emits
 // the bypass permission mode plus the bare dangerous-skip allow flag.
 func TestBuildArgsDangerousSkipPermissions(t *testing.T) {
-	args := buildArgs(Config{PermissionFlags: []string{"--permission-mode", "bypassPermissions", "--allow-dangerously-skip-permissions"}}, "", "")
+	args := buildArgs(Config{Reaper: procutiltest.Reaper(), PermissionFlags: []string{"--permission-mode", "bypassPermissions", "--allow-dangerously-skip-permissions"}}, "", "")
 	found := false
 	for i, a := range args {
 		if a != "--allow-dangerously-skip-permissions" {
@@ -345,6 +348,7 @@ func TestWithClaudeSessionEnvDefaults(t *testing.T) {
 // 11.1.0 and `--add-dir <directories...>` in the CLI's main.tsx.
 func TestBuildArgsEmitsOneAddDirPerAdditionalDir(t *testing.T) {
 	args := buildArgs(Config{
+		Reaper:          procutiltest.Reaper(),
 		AdditionalDirs:  []string{"/var/attachments", "/var/other"},
 		PermissionFlags: []string{"--permission-mode", "acceptEdits"},
 	}, "", "")
@@ -371,7 +375,7 @@ func TestBuildArgsEmitsOneAddDirPerAdditionalDir(t *testing.T) {
 // The zero value says nothing, so a session with no additional directory
 // keeps the argv it has always had.
 func TestBuildArgsOmitsAddDirWhenUnset(t *testing.T) {
-	if args := buildArgs(Config{}, "", ""); slices.Contains(args, "--add-dir") {
+	if args := buildArgs(Config{Reaper: procutiltest.Reaper()}, "", ""); slices.Contains(args, "--add-dir") {
 		t.Fatalf("expected no --add-dir with no AdditionalDirs; got %v", args)
 	}
 }

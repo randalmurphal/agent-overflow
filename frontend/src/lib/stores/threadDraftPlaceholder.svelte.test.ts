@@ -29,6 +29,10 @@ import {
   getExistingThreadTerminalState,
   getThreadTerminalState,
 } from '../components/terminal/terminalStore.svelte';
+import { createComposerDraftStore } from './composerDraft.svelte';
+import { registerComposerDraft } from './composerDraftRegistry.svelte';
+import { getThreads } from './threads.svelte';
+import { applyThreadUpdated } from './eventsThreadRows';
 
 describe('threadDraftPlaceholder', () => {
   beforeEach(installThreadPaneTestEnv);
@@ -456,6 +460,42 @@ describe('threadDraftPlaceholder', () => {
     } finally {
       resetWorktreeIntent();
     }
+  });
+});
+
+// The sidebar lists a never-sent thread once it is real (draft content, a
+// worktree, an item). The creating screen lists typed text at once, a row
+// the backend already listed stays listed, and anything else waits for the
+// write that makes it real.
+describe('sidebar row of a materialized draft', () => {
+  beforeEach(installThreadPaneTestEnv);
+  const project: Project = { id: 'p-list', path: '/tmp/list-project', name: 'Listed', sortPosition: 0, createdAt: 0, updatedAt: 0, archived: false };
+  const created = makeThread({ id: 'materialized-list', projectId: project.id, projectPath: project.path, workspacePath: project.path, isDraft: true });
+
+  async function materialize(content: string, onCreate?: () => void): Promise<string[]> {
+    const pane = openEmptyPane();
+    const draft = createComposerDraftStore({ persistence: 'none' });
+    const dispose = registerComposerDraft(pane.paneId, draft);
+    try {
+      pane.startDraftPlaceholder(project, 'chat');
+      draft.setContent(content);
+      setBindingMock('CreateThread', async () => { onCreate?.(); return created; });
+      expect(await pane.ensureMaterializedThread()).toBe(created.id);
+      expect(pane.thread?.id).toBe(created.id);
+      return getThreads().map((t) => t.id);
+    } finally { dispose(); pane.clear(); }
+  }
+
+  it('lists the thread when the composer holds text', async () => {
+    expect(await materialize('typed')).toEqual([created.id]);
+  });
+
+  it('leaves an empty thread off the list until a write makes it real', async () => {
+    expect(await materialize('')).toEqual([]);
+  });
+
+  it('keeps a row the backend listed during creation', async () => {
+    expect(await materialize('', () => applyThreadUpdated({ action: 'listed', thread: created }))).toEqual([created.id]);
   });
 });
 

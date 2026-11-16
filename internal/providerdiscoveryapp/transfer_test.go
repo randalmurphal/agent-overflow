@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 )
 
@@ -21,7 +22,7 @@ func TestTransferReadinessChecksOnlySelectedProviderAndFreshAccount(t *testing.T
 				return accountError
 			}
 			wrong := func(context.Context, string) error { t.Fatal("probed another provider"); return nil }
-			deps := Deps{ProviderBinary: func(provider string) string {
+			deps := Deps{Reaper: procutiltest.Reaper(), ProviderBinary: func(provider string) string {
 				if provider != name {
 					t.Fatal("wrong provider", provider)
 				}
@@ -68,7 +69,7 @@ func TestTransferReadinessUsesNativeFormatFloorBeforeAccountProbe(t *testing.T) 
 	} {
 		t.Run(tc.version+"/"+tc.floor, func(t *testing.T) {
 			calls := 0
-			s := New(Deps{ProviderBinary: func(string) string { return "mock" },
+			s := New(Deps{Reaper: procutiltest.Reaper(), ProviderBinary: func(string) string { return "mock" },
 				DetectProvider: func(string, string) provider.ProviderStatus {
 					return provider.ProviderStatus{Status: "ready", Version: tc.version}
 				},

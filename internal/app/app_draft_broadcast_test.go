@@ -2,14 +2,17 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"go/ast"
 	"slices"
 	"strings"
 	"testing"
 
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/threadtransfer"
 	"agent-overflow/internal/transport"
 	"agent-overflow/internal/triage"
 )
@@ -238,9 +241,38 @@ func TestDraftBroadcastHasOneEmitSite(t *testing.T) {
 	}
 	slices.Sort(emitters)
 	emitters = slices.Compact(emitters)
-	want := []string{"announceDraftWrite", "announceTransferredDraft", "removeThreadDraft", "writeMovedThreadDraft"}
+	want := []string{"announceDraftWrite", "announceTransferredDraft"}
 	if !slices.Equal(emitters, want) {
 		t.Fatalf("broadcastDraft callers = %v, want exactly %v", emitters, want)
+	}
+}
+
+// A completed transfer consumed the source's draft without a frontend. When
+// that draft was all that listed the never-sent source, the source leaves
+// every sidebar; a worktree keeps it listed.
+func TestATransferThatConsumedTheListingDraftEmptiesTheSource(t *testing.T) {
+	t.Parallel()
+	app := draftTestApp(t, "thr-moved", "thr-bound")
+	if _, err := app.store.UpdateThreadCheckout("thr-bound", "/tmp/wt/bound", "/tmp/wt/bound", "bound"); err != nil {
+		t.Fatal(err)
+	}
+	private, err := json.Marshal(threadtransfer.SourceData{DraftToConsume: &store.ThreadDraft{Content: "moved away"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for id, want := range map[string]string{"thr-moved": triage.ThreadActionEmptied, "thr-bound": triage.ThreadActionFull} {
+		var actions []string
+		app.emitEventFn = func(_ string, data any) {
+			if evt, ok := data.(triage.ThreadUpdateEvent); ok && evt.Thread != nil && evt.Thread.ID == id {
+				actions = append(actions, evt.Action)
+			}
+		}
+		if err := app.announceTransferredDraft(store.ThreadTransfer{ThreadID: id, Direction: "outgoing", Phase: "complete", PrivateState: private}); err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Equal(actions, []string{want}) {
+			t.Errorf("%s: actions %v, want [%s]", id, actions, want)
+		}
 	}
 }
 
@@ -294,7 +326,7 @@ func TestASendConsumingADraftNamesTheSendingScreen(t *testing.T) {
 		sess, err := claude.NewSession(
 			context.Background(),
 			thread.ID,
-			claude.Config{Retention: claude.UserHomeRetention(0), Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
+			claude.Config{Reaper: procutiltest.Reaper(), Retention: claude.UserHomeRetention(0), Binary: writeClaudePassthroughBinary(t), WorkDir: thread.WorkspacePath},
 			func(provider.ProviderEvent) {},
 		)
 		if err != nil {
@@ -373,7 +405,8 @@ func TestASendConsumingADraftNamesTheSendingScreen(t *testing.T) {
 // ListThreads lists a never-sent thread once its draft has content, so the
 // save that gives it content announces the row as listed, ahead of its draft
 // frame: a screen whose catalog read came after the thread's creation and
-// before that save has no other way to learn the thread is listed.
+// before that save has no other way to learn the thread is listed. The erase
+// that takes the content away announces it `emptied` the same way.
 func TestTheDraftSaveThatListsAThreadAnnouncesIt(t *testing.T) {
 	t.Parallel()
 	app := draftTestApp(t, "thr-new", "thr-sent")
@@ -417,5 +450,25 @@ func TestTheDraftSaveThatListsAThreadAnnouncesIt(t *testing.T) {
 	}
 	if got := save("thr-sent", "follow-up"); !slices.Equal(got, draftOnly("thr-sent")) {
 		t.Fatalf("a sent thread's draft: frames %+v, want only the draft frame", got)
+	}
+
+	// Erasing the text that listed it takes it off every sidebar, by a save
+	// of empty text or by a clear; a sent thread's erase is draft-only.
+	emptied := []frame{{"thread:updated", triage.ThreadActionEmptied, "thr-new"}, {name: "draft:updated", thread: "thr-new"}}
+	if got := save("thr-new", ""); !slices.Equal(got, emptied) {
+		t.Fatalf("erased content: frames %+v, want %+v", got, emptied)
+	}
+	if got := save("thr-new", "again"); !slices.Equal(got, listed) {
+		t.Fatalf("retyped content: frames %+v, want %+v", got, listed)
+	}
+	frames = nil
+	if err := app.ClearDraft(context.Background(), "thr-new"); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(frames, emptied) {
+		t.Fatalf("cleared draft: frames %+v, want %+v", frames, emptied)
+	}
+	if got := save("thr-sent", ""); !slices.Equal(got, draftOnly("thr-sent")) {
+		t.Fatalf("a sent thread's erase: frames %+v, want only the draft frame", got)
 	}
 }

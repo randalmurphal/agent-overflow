@@ -30,46 +30,27 @@ func gitAttemptKey(action string, ws WorkspaceRef) string {
 // A repeated id waits for and answers with the first arrival's outcome.
 func (a *App) attemptGitAction(
 	action string, ws WorkspaceRef, attemptID string, write func() (gitops.GitActionResult, error),
-) (result gitops.GitActionResult, err error) {
+) (gitops.GitActionResult, error) {
 	if attemptID == "" {
 		return write()
 	}
-	key := gitAttemptKey(action, ws)
-	attempt, repeated := a.gitActionAttempts.begin(attemptID, key)
-	if repeated {
-		if attempt.key != key {
-			return gitops.GitActionResult{}, fmt.Errorf("%s: attempt %s was another git action or in another workspace", action, attemptID)
-		}
-		if attempt.forgotten {
-			return gitops.GitActionResult{}, gitAttemptForgotten(action)
-		}
-		return attempt.wait(a.lifeCtx())
-	}
-	defer func() {
-		// A panic still settles the attempt, so nothing waits on it forever.
-		if recovered := recover(); recovered != nil {
-			a.gitActionAttempts.finish(attempt, gitops.GitActionResult{}, fmt.Errorf("%s: failed unexpectedly", action))
-			panic(recovered)
-		}
-		a.gitActionAttempts.finish(attempt, result, err)
-	}()
-	return write()
-}
-
-// gitAttemptForgotten answers a repeated attempt whose outcome this process
-// no longer keeps.
-func gitAttemptForgotten(action string) error {
-	return fmt.Errorf("%s: this attempt ran before and its outcome is no longer kept; check the workspace before trying again", action)
+	return a.gitActionAttempts.run(a.lifeCtx(), attemptID, gitAttemptKey(action, ws), attemptRefusals{
+		other:     fmt.Errorf("%s: attempt %s was another git action or in another workspace", action, attemptID),
+		forgotten: fmt.Errorf("%s: this attempt ran before and its outcome is no longer kept; check the workspace before trying again", action),
+		panicked:  fmt.Errorf("%s: failed unexpectedly", action),
+	}, write)
 }
 
 // GitActionOutcome is what a git attempt did: "succeeded" (Result),
-// "failed" (Message: it wrote nothing it reports), "unknown" (this process
-// never received it), or "forgotten" (it may have received it and no longer
-// keeps the outcome).
+// "failed" (Code, Message and Chain, what its first caller was told: it
+// wrote nothing it reports), "unknown" (this process never received it), or "forgotten" (it
+// may have received it and no longer keeps the outcome).
 type GitActionOutcome struct {
 	State   string                  `json:"state"`
 	Result  *gitops.GitActionResult `json:"result,omitempty"`
+	Code    string                  `json:"code,omitempty"`
 	Message string                  `json:"message,omitempty"`
+	Chain   []string                `json:"chain,omitempty"`
 }
 
 // GetGitActionOutcome answers what attempt attemptID of action ("commit",
@@ -85,19 +66,15 @@ func (a *App) GetGitActionOutcome(ctx context.Context, ws WorkspaceRef, action, 
 	default:
 		return GitActionOutcome{}, fmt.Errorf("git action outcome: unknown action %q", action)
 	}
-	attempt, forgotten := a.gitActionAttempts.find(attemptID, gitAttemptKey(action, ws))
-	if forgotten {
-		return GitActionOutcome{State: "forgotten"}, nil
-	}
-	if attempt == nil {
-		return GitActionOutcome{State: "unknown"}, nil
-	}
-	result, err := attempt.wait(ctx)
-	if ctx.Err() != nil {
-		return GitActionOutcome{}, ctx.Err()
-	}
+	outcome, err := a.gitActionAttempts.outcome(ctx, attemptID, gitAttemptKey(action, ws))
 	if err != nil {
-		return GitActionOutcome{State: "failed", Message: err.Error()}, nil
+		return GitActionOutcome{}, err
 	}
-	return GitActionOutcome{State: "succeeded", Result: &result}, nil
+	switch outcome.state {
+	case attemptDone:
+		return GitActionOutcome{State: "succeeded", Result: &outcome.result}, nil
+	case attemptFailed:
+		return GitActionOutcome{State: "failed", Code: outcome.code, Message: outcome.message, Chain: outcome.chain}, nil
+	}
+	return GitActionOutcome{State: outcome.state}, nil
 }

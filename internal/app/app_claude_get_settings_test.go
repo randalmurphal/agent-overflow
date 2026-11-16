@@ -1,6 +1,7 @@
 package app
 
 import (
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/testutil/mockexec"
 	"context"
 	"path/filepath"
@@ -62,6 +63,7 @@ func seedClaudeGetSettingsThread(
 	started := seedClaudeLiveConfigThread(t, app, id, token, launchOpts)
 
 	sess, err := claude.NewSession(context.Background(), id, claude.Config{
+		Reaper:          procutiltest.Reaper(),
 		Retention:       claude.UserHomeRetention(0),
 		Binary:          binary,
 		Model:           "claude-opus-5",

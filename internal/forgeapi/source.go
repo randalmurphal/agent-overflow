@@ -36,6 +36,23 @@ type SourceInfo struct {
 	// config, whose expiry the client asks personal_access_tokens/self
 	// for once (expiry.go). An OAuth2 login is refreshed by glab instead.
 	ExpiryLookup bool
+	// Network is glab's per-host TLS and proxy settings.
+	Network HostNetwork
+}
+
+// HostNetwork is how glab reaches a host: ca_cert ("Path to a CA
+// certificate (PEM) used to verify the GitLab server's TLS
+// certificate"), client_cert and client_key (mutual TLS, PEM),
+// skip_tls_verify ("Skip TLS certificate verification when talking to
+// this host (true/false)") and proxy ("Custom proxy for this host.
+// Overrides environment proxy settings when set."), each empty when
+// unset. The client's transport follows them (Service.hostClient).
+type HostNetwork struct {
+	CACert        string
+	ClientCert    string
+	ClientKey     string
+	SkipTLSVerify bool
+	Proxy         string
 }
 
 // TokenSource reads a host's token. forge is ForgeGitHub or ForgeGitLab;
@@ -136,6 +153,20 @@ func (s CLITokenSource) gitlabToken(ctx context.Context, name string) ([]byte, S
 	if info.APIProtocol, err = config("api_protocol"); err != nil {
 		return nil, SourceInfo{}, err
 	}
+	network := &info.Network
+	for _, key := range []struct {
+		name string
+		into *string
+	}{{"ca_cert", &network.CACert}, {"client_cert", &network.ClientCert}, {"client_key", &network.ClientKey}, {"proxy", &network.Proxy}} {
+		if *key.into, err = config(key.name); err != nil {
+			return nil, SourceInfo{}, err
+		}
+	}
+	skip, err := config("skip_tls_verify")
+	if err != nil {
+		return nil, SourceInfo{}, err
+	}
+	network.SkipTLSVerify = strings.EqualFold(skip, "true")
 	out, err := s.run(ctx, ForgeGitLab, true, "glab", "config", "get", "token", "--host", name)
 	if err != nil {
 		return nil, SourceInfo{}, err
@@ -203,6 +234,11 @@ func (s CLITokenSource) run(ctx context.Context, forge string, secret bool, name
 	command := name + " " + strings.Join(args, " ")
 	stderr := string(bytes.TrimSpace(out.Stderr))
 	failure := fmt.Errorf("%s exited with status %d: %s", command, out.ExitCode, boundText(stderr))
+	// Checked first: the usage an old gh prints beside it can name the
+	// login command.
+	if name == "gh" && ghLacksAuthToken.MatchString(stderr) {
+		return ProcessResult{}, OutdatedCLIError(failure)
+	}
 	if namesMissingLogin(stderr) {
 		return ProcessResult{}, UnauthenticatedError(forge, failure)
 	}
@@ -232,6 +268,10 @@ func classifyRunError(ctx context.Context, forge, command string, err error) err
 var missingLogin = regexp.MustCompile(`(?i)auth login|not logged in|not been authenticated|no (oauth )?token|unauthorized`)
 
 func namesMissingLogin(stderr string) bool { return missingLogin.MatchString(stderr) }
+
+// ghLacksAuthToken matches the stderr of a gh older than 2.17.0 asked
+// for `gh auth token`: cobra's `unknown command "token" for "gh auth"`.
+var ghLacksAuthToken = regexp.MustCompile(`unknown command "token" for "gh auth"`)
 
 // handoffToken validates a printed token: one line of printable ASCII
 // with no spaces, so it can never split a header. An empty one is no

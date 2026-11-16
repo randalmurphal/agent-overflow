@@ -165,3 +165,69 @@ func TestSearchThreadItems_MatchesPastAnEmbeddedNUL(t *testing.T) {
 		}
 	}
 }
+
+// A row is a candidate for a query its rendered Markdown spells across an
+// escaped link-like run and a real link, and a row whose Markdown the
+// candidate reader cannot read is a candidate for any query, from its
+// stored candidate text and from one computed while the backfill has not
+// reached it.
+func TestSearchThreadItems_FindsAcrossMarkdownTheReaderMustRead(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThreadForSearch(t, s, "t1", "x")
+	mustInsertItemForSearch(t, s, "t1", "mixed", 0, `a \[b](literal) c [d](https://example.com) e`, 100)
+	mustInsertItemForSearch(t, s, "t1", "unsure", 1, "nested [outer [inner](https://example.com/i) rest](https://example.com/o) after", 200)
+	mustInsertItemForSearch(t, s, "t1", "plain", 2, "nothing to see", 300)
+	check := func(stage, query, want string) {
+		t.Helper()
+		got, err := s.SearchThreadItems(context.Background(), "t1", query, TimelineSelection{}, 0, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ids := findHitIDs(got); ids != want {
+			t.Fatalf("%s: %q hits = %s, want %s", stage, query, ids, want)
+		}
+	}
+	check("stored", "literal) c d e", "[mixed unsure]")
+	check("stored", "zebra", "[unsure]")
+	if _, err := s.db.Exec(`UPDATE items SET find_text = NULL WHERE thread_id = 't1'`); err != nil {
+		t.Fatal(err)
+	}
+	check("unfilled", "literal) c d e", "[mixed unsure]")
+	check("unfilled", "zebra", "[unsure]")
+}
+
+// A user row whose bubble joins the parts around a dropped `!command` is a
+// candidate for the joined run, stored and unfilled; a `!` that is not a
+// command leaves the row matched by its own text only.
+func TestSearchThreadItems_FindsAcrossADroppedCommand(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThreadForSearch(t, s, "t1", "x")
+	for i, row := range []struct{ id, summary string }{
+		{"joined", "first needle part\n\n---\n\n!ls -la\n\n---\n\nsecond needle part"},
+		{"bang", "Wow! !important: the needle stays"},
+	} {
+		if err := insertCarded(s, Item{ID: row.id, ThreadID: "t1", TurnIndex: i, Kind: "user_text", Role: "user", Status: "completed", Summary: row.summary, CreatedAt: int64(100 * (i + 1))}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	check := func(stage, query, want string) {
+		t.Helper()
+		got, err := s.SearchThreadItems(context.Background(), "t1", query, TimelineSelection{}, 0, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ids := findHitIDs(got); ids != want {
+			t.Fatalf("%s: %q hits = %s, want %s", stage, query, ids, want)
+		}
+	}
+	for _, stage := range []string{"stored", "unfilled"} {
+		if stage == "unfilled" {
+			if _, err := s.db.Exec(`UPDATE items SET find_text = NULL WHERE thread_id = 't1'`); err != nil {
+				t.Fatal(err)
+			}
+		}
+		check(stage, "part second", "[joined]")
+		check(stage, "important: the needle", "[joined bang]")
+		check(stage, "zebra", "[joined]")
+	}
+}

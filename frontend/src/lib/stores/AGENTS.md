@@ -81,8 +81,10 @@ the second `wailsEventOn` argument; an empty `backendId` means unknown origin.
 Treat persisted row events as distributed convergence:
 
 - `thread:updated` and `project:updated` apply the complete row for `full` and
-  `listed`; `unlisted` and `deleted` remove it. A thread `full` frame never adds
-  unknown sidebar membership. A `patch` changes only its named fields.
+  `listed`; `unlisted` and `deleted` remove it. A thread `emptied` frame removes
+  only its sidebar row: panes showing it and its per-thread state stay. A thread
+  `full` frame never adds unknown sidebar membership. A `patch` changes only its
+  named fields.
 - A thread row an RPC returns is applied with `syncThreadReply` (or
   `threadReplyRow`) and a `threadRowFrameMark` taken before the call, so a
   frame that arrived during the call is not undone by the older reply.
@@ -281,7 +283,8 @@ thread keeps its buffer for the replacement the composer materializes. Text a
 client holds unsaved for a thread that is deleted under it, by its own cleanup
 or another screen's, moves to a new draft thread of its own and is never
 dropped; a delete refused because another screen saved first leaves that
-screen's draft alone. Controls that write a thread row wait for an in-flight
+screen's draft alone, and so does a delete that failed or whose kept draft
+could not be read. Controls that write a thread row wait for an in-flight
 cleanup with `settleEmptyDraftCleanup` and act on what it leaves.
 Hydration preserves attachment ID order and treats a missing attachment record
 as an error.

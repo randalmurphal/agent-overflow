@@ -16,6 +16,7 @@ import (
 	"agent-overflow/internal/attachment"
 	"agent-overflow/internal/buildvariant/remotetest"
 	gitops "agent-overflow/internal/git"
+	"agent-overflow/internal/procutil/procutiltest"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude/sessionfork"
 	"agent-overflow/internal/providerdiscoveryapp"
@@ -45,6 +46,7 @@ func transferTestBackendOn(t *testing.T, backend *pairedBackend, readiness ...fu
 	}
 	a.providerDiscoveryOnce.Do(func() {
 		a.providerDiscovery = providerdiscoveryapp.New(providerdiscoveryapp.Deps{
+			Reaper:         procutiltest.Reaper(),
 			ProviderBinary: func(string) string { return "mock-provider" },
 			DetectProvider: func(name, binary string) provider.ProviderStatus {
 				return provider.ProviderStatus{Provider: name, BinaryPath: binary, Status: "ready", Installed: true, Version: "99.0.0"}

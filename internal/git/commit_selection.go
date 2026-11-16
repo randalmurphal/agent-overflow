@@ -107,9 +107,10 @@ type indexEntry struct {
 // commitFiles commits the listed files as one snapshot read them, after
 // checking that snapshot still holds each as it was listed, so the content
 // checked is the content committed. It builds the commit in a temporary
-// index (HEAD plus the files), as `git commit --only` does, and then records
-// the same entries in the user's index, whose other entries stay as they
-// were. A failure before the commit leaves the user's index untouched.
+// index (HEAD plus the files), as `git commit --only` does, and then sets the
+// user's index at the paths the commit recorded to what it holds there
+// (recordCommittedEntries), whose other entries stay as they were. A failure
+// before the commit leaves the user's index untouched.
 func (c *Core) commitFiles(cwd, subject, body string, selection CommitSelection) (sha string, err error) {
 	ctx := context.Background()
 	scratch, err := os.MkdirTemp(selection.SnapshotRoot, "commit-")
@@ -149,14 +150,145 @@ func (c *Core) commitFiles(cwd, subject, body string, selection CommitSelection)
 	if err := c.commit(cwd, index, subject, body); err != nil {
 		return "", err
 	}
-	if err := c.writeIndexEntries(cwd, nil, entries); err != nil {
-		return "", fmt.Errorf("git commit: committed, but the index was not updated for the committed files: %w", err)
-	}
 	stdout, _, err := c.Execute(cwd, "rev-parse", "HEAD")
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("git commit: committed, but the index was not updated for the committed files: %w", err)
 	}
-	return strings.TrimSpace(stdout), nil
+	sha = strings.TrimSpace(stdout)
+	if err := c.recordCommittedEntries(cwd, sha, entries); err != nil {
+		return "", fmt.Errorf("git commit: committed, but the index was not updated for the committed files: %w", err)
+	}
+	return sha, nil
+}
+
+// recordCommittedEntries sets the user's index at the paths commit sha
+// recorded to what sha holds there, leaving every other entry as it was.
+// Those paths are the selected ones (entries) and any other path a
+// pre-commit hook changed in the temporary index, so a hook that formats and
+// stages a file leaves the index agreeing with the commit rather than with
+// the content listed before the hook ran.
+//
+// A path the hook changed that was not selected takes the commit's entry
+// only while the user's index still holds the parent's entry there: an
+// entry the user staged differs from the parent, and is kept.
+func (c *Core) recordCommittedEntries(cwd, sha string, entries []indexEntry) error {
+	selected := make(map[string]bool, len(entries))
+	paths := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if !selected[entry.path] {
+			selected[entry.path] = true
+			paths = append(paths, entry.path)
+		}
+	}
+	changes, err := c.commitChanges(cwd, sha)
+	if err != nil {
+		return err
+	}
+	parent := make(map[string]string)
+	var hooked []string
+	for _, change := range changes {
+		if !selected[change.path] {
+			hooked = append(hooked, change.path)
+			parent[change.path] = change.before
+		}
+	}
+	if len(hooked) > 0 {
+		staged, err := c.indexStageZero(cwd, hooked)
+		if err != nil {
+			return err
+		}
+		for _, path := range hooked {
+			if current, ok := staged[path]; ok && current == parent[path] {
+				paths = append(paths, path)
+			}
+		}
+	}
+	if len(paths) == 0 {
+		// An empty pathspec list would reset the whole index.
+		return errors.New("git commit: no committed paths to record in the index")
+	}
+	var pathspecs strings.Builder
+	for _, path := range paths {
+		pathspecs.WriteString(path)
+		pathspecs.WriteByte(0)
+	}
+	_, _, err = c.executeSpec(commandSpec{binary: "git", cwd: cwd, stdin: pathspecs.String(),
+		args: []string{"--literal-pathspecs", "reset", "--quiet", sha, "--pathspec-from-file=-", "--pathspec-file-nul"}})
+	return err
+}
+
+// commitChange is one path a commit changed against its parent; before is
+// the parent's "mode oid" there, or empty when the parent had no entry.
+type commitChange struct {
+	path, before string
+}
+
+// commitChanges lists the paths commit sha changed against its parent, or
+// against nothing for a root commit, renames reported as removal and
+// addition.
+func (c *Core) commitChanges(cwd, sha string) ([]commitChange, error) {
+	stdout, _, err := c.Execute(cwd, "diff-tree", "-r", "-z", "--no-renames", "--root", "--no-commit-id", sha)
+	if err != nil {
+		return nil, err
+	}
+	fields := strings.Split(strings.TrimSuffix(stdout, "\x00"), "\x00")
+	if len(fields) == 1 && fields[0] == "" {
+		return nil, nil
+	}
+	if len(fields)%2 != 0 {
+		return nil, fmt.Errorf("git diff-tree %s: malformed output", sha)
+	}
+	changes := make([]commitChange, 0, len(fields)/2)
+	for i := 0; i < len(fields); i += 2 {
+		// ":<old mode> <new mode> <old oid> <new oid> <status>"
+		meta := strings.Fields(strings.TrimPrefix(fields[i], ":"))
+		if len(meta) != 5 {
+			return nil, fmt.Errorf("git diff-tree %s: malformed entry %q", sha, fields[i])
+		}
+		change := commitChange{path: fields[i+1]}
+		if strings.Trim(meta[0], "0") != "" {
+			change.before = meta[0] + " " + meta[2]
+		}
+		changes = append(changes, change)
+	}
+	return changes, nil
+}
+
+// indexStageZero returns the user's index entry, as "mode oid", at each of
+// paths that has one. A path present only as a conflict stage maps to a
+// value no tree entry has, and a missing path to empty.
+func (c *Core) indexStageZero(cwd string, paths []string) (map[string]string, error) {
+	args := append([]string{"--literal-pathspecs", "ls-files", "--stage", "-z", "--"}, paths...)
+	stdout, _, err := c.Execute(cwd, args...)
+	if err != nil {
+		return nil, err
+	}
+	want := make(map[string]bool, len(paths))
+	staged := make(map[string]string, len(paths))
+	for _, path := range paths {
+		want[path] = true
+		staged[path] = ""
+	}
+	for _, record := range strings.Split(strings.TrimSuffix(stdout, "\x00"), "\x00") {
+		if record == "" {
+			continue
+		}
+		// "<mode> <oid> <stage>\t<path>"
+		meta, path, ok := strings.Cut(record, "\t")
+		fields := strings.Fields(meta)
+		if !ok || len(fields) != 3 {
+			return nil, fmt.Errorf("git ls-files: malformed entry %q", record)
+		}
+		if !want[path] {
+			continue // Under a directory the pathspec named.
+		}
+		if fields[2] != "0" {
+			staged[path] = "conflict"
+			continue
+		}
+		staged[path] = fields[0] + " " + fields[1]
+	}
+	return staged, nil
 }
 
 // listedEntries checks each listed file against the snapshot and returns

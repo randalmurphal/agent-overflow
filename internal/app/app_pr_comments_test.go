@@ -29,7 +29,11 @@ func (c *reviewSubmitCase) seedTheirThread(t *testing.T, gone bool) {
 	repo := forgefake.Repo{Forge: c.pr.Forge, Project: "acme/widgets", Pulls: []forgefake.Pull{pull}}
 	if c.pr.Forge == "github" {
 		// Below write access, which may edit and delete others' comments.
+		// GitHub would not let TRIAGE resolve either; the knob lets it, so
+		// the resolve cases test the pull check, not the permission.
 		repo.Merge = &forgefake.RepoMerge{Permission: "TRIAGE"}
+		may := true
+		repo.Pulls[0].Viewer = &forgefake.ViewerCan{Resolve: &may}
 	}
 	if _, err := c.engine.Seed(forgefake.Fixture{Viewer: "alice", Repos: []forgefake.Repo{repo}}); err != nil {
 		t.Fatal(err)

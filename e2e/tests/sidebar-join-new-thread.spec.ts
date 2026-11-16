@@ -1,8 +1,8 @@
 // A screen that connects while another screen's new thread is being created
 // lists that thread in its sidebar. The sidebar's catalog read (ListThreads)
-// lists a never-sent thread only once its draft has content, so the save that
-// gives it content is what announces the thread as listed, to every screen
-// connected by then.
+// lists a never-sent thread only once it is real, here by its draft content,
+// so the save that gives it content is what announces the thread as listed,
+// to every screen connected by then.
 // Covers: a screen that loads its catalog between the thread's creation and
 // its first draft save lists the thread once the save lands; a screen whose
 // catalog answer was read before the thread existed and arrives after the

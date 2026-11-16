@@ -139,7 +139,7 @@ func TestLegacyEmptyQueueSettlesWithoutBlockingMeaningfulInput(t *testing.T) {
 				if err := app.store.InsertFlushQueueItem(row); err != nil {
 					t.Fatal(err)
 				}
-				batch = append(batch, triage.QueuedFlushItem{ID: row.ID, Message: row.Message, Payload: row.Payload, Settlement: app.flushQueueSettlement(thread.ID, row.ID, nil)})
+				batch = append(batch, triage.QueuedFlushItem{ID: row.ID, Message: row.Message, Payload: row.Payload})
 			}
 			batch[0].StaleUserItemID = "stale-empty-user"
 			if err := app.store.InsertItem(store.Item{ID: batch[0].StaleUserItemID, ThreadID: thread.ID, Kind: "user_text", Role: "user"}); err != nil {
