@@ -445,6 +445,10 @@ scheduler's `viewport-fill` pass (`timelinePaging.ts#maybeFillViewport`)
 pages one section per pass, older first, until the window is taller
 than `clientHeight + 2 × AUTO_LOAD_OFFSET_PX`, there is nothing more to
 page, or the window holds `ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS` rows.
+It decides only once every mounted row has measured (the content-geometry
+sample's `windowMeasured`): a load pauses auto-scroll, so a fill started
+on estimates would leave a pinned reader where the estimates put the
+bottom while the rows measure taller under it.
 
 A mounted timeline normally defers the
 cut to visual quiet because reconciling hundreds of rows is still expensive
