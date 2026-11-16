@@ -33,7 +33,8 @@ import (
 // thread's questions emits provider:async_questions_changed, a revert emits
 // user_message:reverted, and every thread frame but a patch says the thread
 // may have been made, copied, moved here, forked (a fork carries its
-// source's questions), archived, unarchived, deleted or placed. Each queues
+// source's questions), archived, unarchived, deleted or placed, and a
+// move's transfer row says it may have left this computer. Each queues
 // one reconcile of that thread on the prompts' serial queue
 // (syncAsyncQuestionPrompts), none once shutdown has begun, which reads the
 // thread's unanswered questions in one statement and announces what opened

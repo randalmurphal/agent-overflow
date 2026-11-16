@@ -13,6 +13,7 @@ import (
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/serialqueue"
+	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadtools"
 	"agent-overflow/internal/transport"
 	"agent-overflow/internal/triage"
@@ -162,7 +163,8 @@ func (a *App) routeWorkerPrompt(threadID string) *provider.PromptRoute {
 // its routed registration. A change to a thread's async questions
 // reconciles its async question prompts, and so does every thread frame but
 // a patch: a thread made, copied, moved here or forked, an archive or an
-// unarchive, a delete, a placement, a handoff.
+// unarchive, a delete, a placement, a handoff; and so does a transfer that
+// moves a thread away.
 func (a *App) tapWorkerPrompt(name eventchan.Channel, data any) {
 	if event, ok := data.(triage.ThreadUpdateEvent); ok {
 		if event.Action != triage.ThreadActionPatch {
@@ -183,6 +185,13 @@ func (a *App) tapWorkerPrompt(name eventchan.Channel, data any) {
 	case eventchan.UserMessageReverted:
 		if event, ok := data.(UserMessageRevertedEvent); ok {
 			a.syncAsyncQuestionPrompts(event.ThreadID)
+		}
+		return
+	case eventchan.ThreadTransfer:
+		// A move takes the thread from this computer once it commits, with
+		// no thread frame here.
+		if row, ok := data.(store.ThreadTransfer); ok && row.Direction == "outgoing" && row.Kind == "move" {
+			a.syncAsyncQuestionPrompts(row.ThreadID)
 		}
 		return
 	}

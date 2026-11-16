@@ -526,7 +526,9 @@ one in the worker) refuses the token, a reply already on its way
 included, and puts the parts left to the spawner under a new one. It
 outlives the worker's session, is put to the spawner again under a new
 token after a restart, and is dismissed by a Stop of the worker; an
-archived worker's question waits for its unarchive. A reply the worker
+archived worker's question waits for its unarchive, and a conversation
+copied or moved to another computer takes it there, where it waits on
+the user from the moment it lands and no longer on the spawner here. A reply the worker
 never takes in (its session ends or refuses it, a queue drop, an archive,
 a restart) puts its parts back unanswered, to the spawner under a new
 token; one the worker took in stays answered, its echo's own write failed
