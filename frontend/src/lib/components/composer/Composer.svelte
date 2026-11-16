@@ -430,7 +430,7 @@
   ): Promise<void> {
     // Also reached when only the deletion broadcast proved the delete.
     const unsaved = (deleted ? cleanupDraft.releaseDeletedThread(threadId) : null)
-      ?? (answer && answer.outcome !== 'kept' ? answer.unsaved : null);
+      ?? (answer && 'unsaved' in answer ? answer.unsaved : null);
     // Unknown is treated as contested: the store already moved the text off
     // the thread and reported why.
     const yielded = !deleted && (answer?.outcome === 'contested' || answer?.outcome === 'unknown');
