@@ -98,8 +98,10 @@ func (a *App) checkTransferIdle(thread store.Thread) error {
 		return errors.New("this conversation belongs to a workflow. Transfer an independent conversation")
 	}
 	// Moving the conversation ends whatever runs for it here, so every
-	// kind of running work refuses.
-	work, err := a.runningWorkIn(workScope{threads: []string{thread.ID}})
+	// kind of running work refuses but an assistant's watch: the assistant
+	// stays on this computer with its watches (errAssistantStays refuses its
+	// move), and its copy carries none of them.
+	work, err := a.runningWorkIn(workScope{threads: []string{thread.ID}}, workAgentWatch)
 	if err != nil {
 		return err
 	}

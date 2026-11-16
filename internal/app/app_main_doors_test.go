@@ -198,6 +198,11 @@ func TestARunningWatchScriptIsWorkInItsThreadAndCheckout(t *testing.T) {
 			t.Errorf("%s: running work = %+v, %v; want the watch script", name, work, err)
 		}
 	}
+	// The watch stays with its assistant on this computer, so it holds no
+	// copy of the conversation back.
+	if err := f.app.checkTransferIdle(thread); err != nil {
+		t.Errorf("a transfer of the thread whose watch runs was refused: %v", err)
+	}
 	run.runIn("")
 	if work, err := f.app.runningWorkIn(workScope{dir: checkout}); err != nil || work.running() {
 		t.Errorf("after the script ended: running work = %+v, %v; want none", work, err)
