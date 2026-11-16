@@ -4,11 +4,9 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"strings"
 	"time"
 
 	"agent-overflow/internal/store"
-	"agent-overflow/internal/threadtools"
 	"agent-overflow/internal/triage"
 )
 
@@ -40,9 +38,9 @@ import (
 // carrying it.
 //
 // The row flip commits first and the cleanup follows. A cleanup that
-// fails returns an *archiveCleanupError: the archive itself has
-// committed and been announced, and the error says so and names what may
-// still be running or open.
+// fails returns a *threadCleanupError: the archive itself has committed
+// and been announced, and the error says so and names what may still be
+// running or open.
 //
 //ao:scope threads:operate
 //ao:route thread
@@ -62,61 +60,7 @@ type archivedThreadWork struct {
 	threadID string
 	asks     []store.ThreadRequest
 	commands []store.RemoteWatch
-	cleanup  archiveCleanupError
-}
-
-// archiveCleanupError is the cleanup after a committed archive that did
-// not finish. Each field is the cause of one part that failed. Its public
-// message says the thread was archived and what may still be running or
-// open, so no caller reads it as an archive that did not happen.
-type archiveCleanupError struct {
-	// session is set when the provider session was not closed: its turn
-	// history could not be read, or its teardown failed.
-	session error
-	browser error
-	// remote is set when the thread's remote commands may not all have
-	// been cancelled.
-	remote error
-}
-
-// err is the cleanup's failure, or nil when every part succeeded.
-func (e archiveCleanupError) err() error {
-	if e.session == nil && e.browser == nil && e.remote == nil {
-		return nil
-	}
-	return &e
-}
-
-func (e *archiveCleanupError) Error() string {
-	return e.message() + ": " + e.Unwrap().Error()
-}
-
-func (e *archiveCleanupError) Unwrap() error {
-	return errors.Join(e.session, e.browser, e.remote)
-}
-
-// PublicDetails makes the message what every caller is shown
-// (errorsx.Detailed); the causes stay in the host log.
-func (e *archiveCleanupError) PublicDetails() (code, message string) {
-	return threadtools.CodeArchiveCleanupFailed, e.message()
-}
-
-func (e *archiveCleanupError) message() string {
-	var parts []string
-	if e.session != nil {
-		parts = append(parts, "its provider session could not be closed, so it and the processes it started may still be running")
-	}
-	if e.browser != nil {
-		parts = append(parts, "its browser pages could not all be closed")
-	}
-	if e.remote != nil {
-		parts = append(parts, "its commands on other computers may not all have been cancelled")
-	}
-	last := len(parts) - 1
-	if last > 0 {
-		parts[last] = "and " + parts[last]
-	}
-	return "The thread was archived, but " + strings.Join(parts, ", ") + "."
+	cleanup  threadCleanupError
 }
 
 // captureArchivedThreadWork runs in the critical section that commits the
@@ -132,15 +76,15 @@ func (e *archiveCleanupError) message() string {
 // the stop acts on these identities alone, never on what the thread is
 // running by the time it gets there.
 func (a *App) captureArchivedThreadWork(id string) archivedThreadWork {
-	work := archivedThreadWork{threadID: id}
+	work := newArchivedThreadWork(id)
 	asks, askErr := a.disarmThreadRequests(id)
 	commands, commandErr := a.disarmRemoteCommands(id)
-	if askErr != nil {
-		log.Printf("thread tools: archive %s: cancel requests: %v", id, askErr)
-	}
 	work.asks, work.commands = asks, commands
+	if askErr != nil {
+		work.cleanup.asks = fmt.Errorf("disarm requests: %w", askErr)
+	}
 	if commandErr != nil {
-		work.cleanup.remote = fmt.Errorf("list remote commands: %w", commandErr)
+		work.cleanup.commandRecords = fmt.Errorf("list remote commands: %w", commandErr)
 	}
 	return work
 }
@@ -152,14 +96,18 @@ func (a *App) captureArchivedThreadWork(id string) archivedThreadWork {
 // already durable, and outside the locks because reaching the other
 // computer may take a while. It returns everything the archive's cleanup
 // could not do, stopArchivedThreadSession's part included, as one
-// *archiveCleanupError.
+// *threadCleanupError.
 func (a *App) stopArchivedThreadWork(work archivedThreadWork) error {
 	ctx := a.lifeCtx()
-	a.cancelOwnedAsks(ctx, work.threadID, work.asks)
-	if err := a.cancelRemoteCommands(ctx, work.threadID, work.commands); err != nil {
-		work.cleanup.remote = errors.Join(work.cleanup.remote, fmt.Errorf("cancel remote commands: %w", err))
-	}
+	work.cleanup.asks = errors.Join(work.cleanup.asks, a.cancelOwnedAsks(ctx, work.threadID, work.asks))
+	undelivered, err := a.cancelRemoteCommands(ctx, work.threadID, work.commands)
+	work.cleanup.commands = undelivered
+	work.cleanup.commandRecords = errors.Join(work.cleanup.commandRecords, err)
 	return work.cleanup.err()
+}
+
+func newArchivedThreadWork(threadID string) archivedThreadWork {
+	return archivedThreadWork{threadID: threadID, cleanup: threadCleanupError{outcome: "archived"}}
 }
 
 func (a *App) archiveThreadLocked(id string) (archivedThreadWork, error) {
@@ -194,7 +142,7 @@ func (a *App) commitArchive(id string) (archivedThreadWork, bool, error) {
 	defer unlock()
 	_, changed, err := a.threadApplication().Archive(id)
 	if err != nil || !changed {
-		return archivedThreadWork{threadID: id}, changed, err
+		return newArchivedThreadWork(id), changed, err
 	}
 	return a.captureArchivedThreadWork(id), true, nil
 }
@@ -286,7 +234,9 @@ func (a *App) stopArchivedThreadSession(work *archivedThreadWork, requestedAtMil
 			return
 		}
 		if sess, ok := a.sessionManager().take(threadID); ok {
-			if err := a.teardownAndCloseSession(threadID, sess); err != nil {
+			if err := a.teardownAndCloseSession(threadID, sess); errors.Is(err, errBackgroundNotRetired) {
+				work.cleanup.background = err
+			} else if err != nil {
 				work.cleanup.session = fmt.Errorf("close provider session: %w", err)
 			}
 		}

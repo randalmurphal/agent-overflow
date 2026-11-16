@@ -1292,7 +1292,7 @@ func TestThreadToolsMovedTargetSettlesOnTheComputerThatAcceptedIt(t *testing.T) 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	sourceID, _ := pair.source.backendIdentity()
-	if err := pair.dest.stopThreadRequestsForMovedThread(ctx, target, sourceID); err != nil {
+	if _, err := pair.dest.stopThreadRequestsForMovedThread(ctx, target, sourceID); err != nil {
 		t.Fatalf("settle the moved thread's requests: %v", err)
 	}
 	receipt := pair.receipt(t, spawn.Token)

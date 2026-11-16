@@ -22,6 +22,8 @@
   import { threadRowFrameMark } from '../../stores/threadRowFrames';
   import { addErrorToast, addToast } from '../../stores/toast.svelte';
   import { errString } from '../../utils/errors';
+  import { userFacingError } from '../../utils/userFacingError';
+  import { threadCleanupFailure } from '../../transport/threadCleanupFailure';
   import { relativeTime } from '../../utils/format';
   import { threadBackend } from '../../transport/entityIndex';
   import { HOME_BACKEND } from '../../transport/backendKey';
@@ -70,10 +72,11 @@
         console.error('Failed to stop session before delete:', err);
       });
       if (worktree) await removeWorktreeAt(worktree);
-      await DeleteThread(thread.id);
+      const cleanupFailure = await threadCleanupFailure(DeleteThread(thread.id));
       archivedThreads = archivedThreads.filter((t) => t.id !== thread.id);
       closePanesShowingThread(thread.id);
-      addToast('info', `Deleted "${thread.title || 'thread'}".`);
+      if (cleanupFailure) addErrorToast(userFacingError(cleanupFailure), cleanupFailure);
+      else addToast('info', `Deleted "${thread.title || 'thread'}".`);
     } catch (err) {
       console.error('Failed to delete archived thread:', err);
       addErrorToast(`Failed to delete: ${errString(err)}`, err);

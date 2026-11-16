@@ -280,7 +280,7 @@ type UpdateReport struct {
 // ThreadUpdateResult is one thread's outcome. A refusal names the thread
 // and the reason and leaves that thread untouched. An error on an updated
 // thread is an archive whose cleanup did not finish
-// (CodeArchiveCleanupFailed): the patch applied.
+// (CodeCleanupFailed): the patch applied.
 type ThreadUpdateResult struct {
 	ThreadID   string `json:"thread_id"`
 	ComputerID string `json:"computer_id,omitempty"`

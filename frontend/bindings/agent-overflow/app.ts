@@ -286,13 +286,10 @@ export function ArchiveProject(id: string): $CancellablePromise<void> {
  * sidebar, and closes the thread's provider session so the host stops
  * carrying it.
  * 
- * The row flip commits first and the close follows. A failed close is
- * logged rather than returned: the archive itself has already succeeded
- * durably, and failing the call would tell the caller otherwise. That
- * is also the policy the desktop client encoded before this moved
- * server-side — it called StopSession, swallowed any failure, and
- * archived anyway. Moving it here is what makes the stop true for every
- * client instead of only the one that remembers to ask.
+ * The row flip commits first and the cleanup follows. A cleanup that
+ * fails returns a *threadCleanupError: the archive itself has committed
+ * and been announced, and the error says so and names what may still be
+ * running or open.
  */
 export function ArchiveThread(id: string): $CancellablePromise<void> {
     return $Call.ByID(3655608409, id);
@@ -1070,7 +1067,9 @@ export function DeleteSoundFile(id: string): $CancellablePromise<void> {
 
 /**
  * DeleteThread tears down the thread and any child threads. The recursive
- * cascade logic lives in app_thread_delete.go.
+ * cascade logic lives in app_thread_delete.go. A delete that finished but
+ * could not stop work the thread started elsewhere returns a
+ * *threadCleanupError saying the thread was deleted.
  * 
  * Every dropped row — the named thread and each of its children — is
  * broadcast as `deleted` so a second attached client drops the same rows and
