@@ -6,12 +6,8 @@
 // replayBrowserAccelerator). Closing a tab is `pane.close`.
 
 import { registerCommand } from './commandRegistry.svelte';
-import {
-  browserCompanionAct,
-  focusBrowserAddressBar,
-  focusedBrowser,
-  openBrowserTab,
-} from './browserCompanion.svelte';
+import { browserCompanionAct, focusedBrowser, openBrowserTab } from './browserCompanion.svelte';
+import { focusBrowserAddressBar } from './browserAddressFocus.svelte';
 
 export function isBrowserPaneFocused(): boolean {
   return focusedBrowser() !== null;

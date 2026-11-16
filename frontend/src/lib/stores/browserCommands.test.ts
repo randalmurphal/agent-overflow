@@ -2,12 +2,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { clearCommandRegistry, getCommand, runCommand, type CommandContext } from './commandRegistry.svelte';
 import { isBrowserPaneFocused, registerBrowserCommands } from './browserCommands.svelte';
 import {
-  addressFocusIntent,
   applyBrowserCompanionState,
-  registerBrowserAddressBar,
   resetBrowserCompanionForTest,
   setBrowserPaneMountForTest,
 } from './browserCompanion.svelte';
+import { addressFocusIntent, registerBrowserAddressBar } from './browserAddressFocus.svelte';
 import { installCompanionPanes, openCompanion, resetCompanionPanesForTest } from './companionPanes.svelte';
 import { createPane, focusPane, getFocusedPaneId, resetPanesForTest } from './panes.svelte';
 import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from './paneLayout.svelte';

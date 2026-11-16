@@ -90,8 +90,8 @@ const THREADS_STORE = 'lib/stores/threads.svelte.ts';
 const ENTITY_OWNED_BINDINGS: Record<string, EntityOwnedBinding> = {
   BrowserCompanionPaneAttach: owned(BROWSER_COMPANION_STORE, 'attachBrowserCompanion()'),
   BrowserCompanionPaneDetach: owned(BROWSER_COMPANION_STORE, 'the attachment release()'),
-  BrowserCompanionPaneRect: owned(BROWSER_COMPANION_STORE, 'reportBrowserPaneRect()'),
-  BrowserCompanionDo: owned(BROWSER_COMPANION_STORE, 'browserCompanionAct()'),
+  BrowserCompanionPaneRect: owned('lib/stores/browserPaneRectReports.ts', 'reportBrowserPaneRect()'),
+  BrowserCompanionDo: owned(BROWSER_COMPANION_STORE, 'browserCompanionAct() / sendBrowserPageFocus()'),
   BrowserCompanionThreadState: owned(BROWSER_COMPANION_STORE, 'hydrateBrowserCompanionState()'),
   BrowserCompanionFind: owned(BROWSER_FIND_STORE, 'createBrowserFind()'),
   // The read marker is the one thread-row field where the newest value is

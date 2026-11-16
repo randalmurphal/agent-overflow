@@ -1,4 +1,4 @@
-import { reportBrowserPaneRect } from '../../stores/browserCompanion.svelte';
+import { reportBrowserPaneRect } from '../../stores/browserPaneRectReports';
 import { airspaceIntersects, airspaceSurfaces } from '../../utils/paneAirspace.svelte';
 import { promotedLayerClip, promotedLayerFrame } from '../../utils/panePromotion.svelte';
 import { rgbChannels, toConcreteColor } from '../../utils/cssColorProbe';

@@ -1,9 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import {
-  reportBrowserPaneRect,
-  resetBrowserCompanionForTest,
-  setBrowserPaneMountForTest,
-} from './browserCompanion.svelte';
+import { resetBrowserCompanionForTest, setBrowserPaneMountForTest } from './browserCompanion.svelte';
+import { reportBrowserPaneRect } from './browserPaneRectReports';
 import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
 
 const THREAD = 'thread-browser';

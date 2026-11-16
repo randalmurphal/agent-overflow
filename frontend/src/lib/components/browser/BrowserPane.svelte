@@ -1,18 +1,16 @@
 <script lang="ts">
   import type { PanelContext } from '../../stores/panelContext.svelte';
   import {
-    addressFocusIntent,
     attachBrowserCompanion,
     browserCompanionAct,
     browserPaneMountId,
-    focusBrowserPage,
     openBrowserTab,
-    takeAddressFocus,
     noteBrowserActionError,
-    registerBrowserAddressBar,
     noteBrowserFindCleanupError,
     browserFindCleanupError,
   } from '../../stores/browserCompanion.svelte';
+  import { addressFocusIntent, registerBrowserAddressBar, takeAddressFocus } from '../../stores/browserAddressFocus.svelte';
+  import { focusBrowserPage } from '../../stores/browserPageFocus';
   import { BrowserCompanionRevealPageFile } from '../../stores/bindings';
   import { errString } from '../../utils/errors';
   import { tick, untrack } from 'svelte';
