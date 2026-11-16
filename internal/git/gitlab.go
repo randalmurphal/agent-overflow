@@ -889,10 +889,12 @@ func (f *gitlabForge) SubmitReview(ctx context.Context, ref PRReference, review 
 	if requestChanges && server.has(gitlabReviewerStateSince) {
 		publish = map[string]string{"reviewer_state": "requested_changes"}
 	}
-	// The publish takes every pending draft note of the viewer's, so one
-	// this submit did not create (a review started on GitLab, or one an
-	// earlier submit could not remove) refuses it before any write.
-	if len(notes) > 0 {
+	// The publish runs for a draft or a reviewer state, and takes every
+	// pending draft note of the viewer's, so one this submit did not create
+	// (a review started on GitLab, or one an earlier submit could not
+	// remove) refuses any submit that publishes, before any write.
+	publishes := len(notes) > 0 || publish != nil
+	if publishes {
 		pending, err := gitlabPendingDraftIDs(steps, client, mrPath)
 		if err != nil {
 			return SubmitReviewResult{}, err
@@ -966,7 +968,7 @@ func (f *gitlabForge) SubmitReview(ctx context.Context, ref PRReference, review 
 		created = append(created, draft.ID)
 	}
 	out := SubmitReviewResult{}
-	if len(notes) > 0 || publish != nil {
+	if publishes {
 		if err := stopped(steps); err != nil {
 			return SubmitReviewResult{}, removeGitLabDrafts(ctx, client, mrPath, created, 0, err)
 		}
