@@ -95,10 +95,10 @@ func (m *Manager) Viewport(_ context.Context, access Access, opts ViewportOption
 // other's size.
 //
 // A pane resize lays out only the thread's active page, the one the pane
-// shows. Every other page lags until it is needed: resolvePage brings a page
-// to the viewport before any operation on it (coordinates and screenshots
-// mean the current viewport), and presentPanes never newly shows a page that
-// lags; it asks the drain to lay the page out first.
+// shows. Every other page lags until it is needed: lockPageForOperation
+// brings a page to the viewport under the operation's own lock (coordinates
+// and screenshots mean the current viewport), and presentPanes never newly
+// shows a page that lags; it asks the drain to lay the page out first.
 type viewportSync struct {
 	apply sync.Mutex
 	busy  bool
@@ -196,9 +196,39 @@ func (m *Manager) applyThreadViewport(threadID string) error {
 	return firstErr
 }
 
+// lockPageForOperation takes p.mu for an operation that acts on the page's
+// content, coordinates or screenshots (find, which locks on its own
+// schedule, calls syncViewportLocked) and, under that lock, brings the page
+// to its thread's viewport. Holding the lock is what makes the size stick: a
+// resize that lands after a check made before the lock, or while the size
+// is being applied, is seen here and applied before the operation runs. On
+// error p.mu is not held.
+func (m *Manager) lockPageForOperation(ctx context.Context, p *managedPage) error {
+	p.mu.Lock()
+	if err := m.syncViewportLocked(ctx, p); err != nil {
+		p.mu.Unlock()
+		return err
+	}
+	return nil
+}
+
+// syncViewportLocked brings a page whose p.mu the caller holds to its
+// thread's viewport, applying again while the viewport moved during the last
+// apply. A drag that never settles holds the operation until ctx ends.
+func (m *Manager) syncViewportLocked(ctx context.Context, p *managedPage) error {
+	for !m.pageViewportCurrent(p) {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := m.applyViewportLocked(p); err != nil {
+			return fmt.Errorf("%w (page %s)", err, p.id)
+		}
+	}
+	return nil
+}
+
 // syncPageViewport lays a page out at its thread's viewport unless it is
-// already there: the lazy half of a pane resize, run before a page is shown
-// or operated on.
+// already there: the drain's lazy half of a pane resize for the active page.
 func (m *Manager) syncPageViewport(p *managedPage) error {
 	if m.pageViewportCurrent(p) {
 		return nil

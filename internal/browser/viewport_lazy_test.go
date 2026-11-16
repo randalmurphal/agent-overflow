@@ -3,6 +3,7 @@ package browser
 import (
 	"context"
 	"errors"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -71,6 +72,140 @@ func TestALaggingPageTakesTheViewportBeforeAToolOperation(t *testing.T) {
 	if _, err := f.manager.Screenshot(t.Context(), f.access, ScreenshotOptions{PageID: hiddenID}); err == nil || !strings.Contains(err.Error(), "engine refused") {
 		t.Fatalf("an operation on a page that refused the viewport = %v", err)
 	}
+}
+
+// A resize that lands after an operation found its page but before it took
+// the page's lock is applied under that lock, so the operation runs at the
+// newest viewport. The page is current when the operation looks it up, and
+// a concurrent holder of the page lock keeps the operation waiting while the
+// pane resizes.
+func TestAResizeBetweenLookupAndLockIsAppliedBeforeTheOperation(t *testing.T) {
+	f := newPaneFollowFixture(t)
+	mount := f.attach(t)
+	if err := f.manager.SetPaneRect(mount, paneRect(800, 600)); err != nil {
+		t.Fatalf("set pane rect: %v", err)
+	}
+	f.awaitActiveAt(t, 800, 600)
+	f.awaitFollowIdle(t)
+	hiddenID := f.ids[0]
+	hidden := f.pages[0]
+	seen := recordScreenshotViewport(hidden)
+	if _, err := f.manager.Screenshot(t.Context(), f.access, ScreenshotOptions{PageID: hiddenID}); err != nil {
+		t.Fatalf("screenshot: %v", err)
+	}
+
+	page, _, err := f.manager.lookupOwnedPage(f.access, hiddenID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	page.mu.Lock()
+	done := make(chan error, 1)
+	go func() {
+		_, err := f.manager.Screenshot(context.Background(), f.access, ScreenshotOptions{PageID: hiddenID})
+		done <- err
+	}()
+	if !awaitPageLockWaitIn("(*Manager).Screenshot(", done) {
+		page.mu.Unlock()
+		t.Fatalf("the screenshot never waited on the page lock: %v", <-done)
+	}
+	if err := f.manager.SetPaneRect(mount, paneRect(900, 700)); err != nil {
+		page.mu.Unlock()
+		t.Fatalf("set pane rect: %v", err)
+	}
+	f.awaitActiveAt(t, 900, 700)
+	f.awaitFollowIdle(t)
+	page.mu.Unlock()
+	if err := <-done; err != nil {
+		t.Fatalf("screenshot: %v", err)
+	}
+	if w, h := seen(); w != 900 || h != 700 {
+		t.Fatalf("the screenshot ran at %dx%d, want the thread viewport 900x700", w, h)
+	}
+}
+
+// A resize that lands while a lagging page is taking the viewport is applied
+// too before the operation runs.
+func TestAResizeDuringTheApplyIsAppliedBeforeTheOperation(t *testing.T) {
+	f := newPaneFollowFixture(t)
+	mount := f.attach(t)
+	if err := f.manager.SetPaneRect(mount, paneRect(800, 600)); err != nil {
+		t.Fatalf("set pane rect: %v", err)
+	}
+	f.awaitActiveAt(t, 800, 600)
+	f.awaitFollowIdle(t)
+	hidden := f.pages[0]
+	seen := recordScreenshotViewport(hidden)
+	resized := make(chan error, 1)
+	var once sync.Once
+	hidden.mu.Lock()
+	hidden.viewportHook = func(w, h int) {
+		if w == 800 && h == 600 {
+			once.Do(func() { resized <- f.manager.SetPaneRect(mount, paneRect(900, 700)) })
+		}
+	}
+	hidden.mu.Unlock()
+	if _, err := f.manager.Screenshot(t.Context(), f.access, ScreenshotOptions{PageID: f.ids[0]}); err != nil {
+		t.Fatalf("screenshot: %v", err)
+	}
+	select {
+	case err := <-resized:
+		if err != nil {
+			t.Fatalf("set pane rect during the apply: %v", err)
+		}
+	default:
+		t.Fatal("the lagging page was never laid out at 800x600")
+	}
+	if w, h := seen(); w != 900 || h != 700 {
+		t.Fatalf("the screenshot ran at %dx%d, want the thread viewport 900x700", w, h)
+	}
+	f.awaitFollowIdle(t)
+}
+
+// recordScreenshotViewport makes page's screenshots record the size the page
+// was laid out at when they ran.
+func recordScreenshotViewport(page *fakePage) func() (int, int) {
+	var mu sync.Mutex
+	var w, h int
+	page.mu.Lock()
+	page.screenshot = func(context.Context) ([]byte, error) {
+		pw, ph := page.lastViewport()
+		mu.Lock()
+		w, h = pw, ph
+		mu.Unlock()
+		return []byte("png"), nil
+	}
+	page.mu.Unlock()
+	return func() (int, int) {
+		mu.Lock()
+		defer mu.Unlock()
+		return w, h
+	}
+}
+
+// awaitPageLockWaitIn reports whether a goroutine running fn waits on a
+// mutex taken by fn itself or by lockPageForOperation, past the page lookup,
+// before done delivers. done is left for the caller.
+func awaitPageLockWaitIn(fn string, done chan error) bool {
+	buf := make([]byte, 1<<20)
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); {
+		n := runtime.Stack(buf, true)
+		if n == len(buf) {
+			buf = make([]byte, 2*len(buf))
+			continue
+		}
+		for _, stack := range strings.Split(string(buf[:n]), "\n\n") {
+			if strings.Contains(stack, fn) && strings.Contains(stack, "sync.(*Mutex).Lock") && !strings.Contains(stack, "resolvePage") {
+				return true
+			}
+		}
+		select {
+		case err := <-done:
+			done <- err
+			return false
+		case <-time.After(time.Millisecond):
+		}
+	}
+	return false
 }
 
 // Activating a lagging page lays it out before it is shown, through the

@@ -400,7 +400,9 @@ func (m *Manager) NewPage(ctx context.Context, access Access) (PageInfo, error) 
 	if err != nil {
 		return PageInfo{}, err
 	}
-	p.mu.Lock()
+	if err := m.lockPageForOperation(ctx, p); err != nil {
+		return PageInfo{}, err
+	}
 	defer p.mu.Unlock()
 	opCtx, cancel := operationContext(ctx, p.ctx, 5*time.Second)
 	defer cancel()
@@ -435,7 +437,9 @@ func (m *Manager) navigate(ctx context.Context, access Access, targetURL string,
 	if err != nil {
 		return PageInfo{}, err
 	}
-	p.mu.Lock()
+	if err := m.lockPageForOperation(ctx, p); err != nil {
+		return PageInfo{}, err
+	}
 	defer p.mu.Unlock()
 	opCtx, cancel := operationContext(ctx, p.ctx, operationTimeout)
 	defer cancel()

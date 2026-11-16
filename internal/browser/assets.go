@@ -57,7 +57,9 @@ func (m *Manager) Assets(ctx context.Context, access Access, opts AssetOptions) 
 }
 
 func (m *Manager) listAssets(ctx context.Context, p *managedPage) (AssetInventory, error) {
-	p.mu.Lock()
+	if err := m.lockPageForOperation(ctx, p); err != nil {
+		return AssetInventory{}, err
+	}
 	defer p.mu.Unlock()
 	opCtx, cancel := operationContext(ctx, p.ctx, operationTimeout)
 	defer cancel()

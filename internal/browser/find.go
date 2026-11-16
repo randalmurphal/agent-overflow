@@ -278,6 +278,13 @@ func (m *Manager) findTransition(actionCtx context.Context, p *managedPage, kind
 	if err := cmp.Or(actionCtx.Err(), opCtx.Err()); err != nil {
 		return FindState{}, fmt.Errorf("browser: find %s: %w", kind, err)
 	}
+	// A match is scrolled into view at the page's layout, so the page takes
+	// the thread viewport first; a stop only clears.
+	if kind != FindStop {
+		if err := m.syncViewportLocked(opCtx, p); err != nil {
+			return FindState{}, fmt.Errorf("browser: find %s: %w", kind, err)
+		}
+	}
 	settled := m.beginFindLocked(opCtx, p)
 	defer m.endFindTransitionLocked(opCtx, p)
 	return run(opCtx, settled)

@@ -14,7 +14,9 @@ func (m *Manager) Snapshot(ctx context.Context, access Access, pageID string) (S
 	if err != nil {
 		return Snapshot{}, err
 	}
-	p.mu.Lock()
+	if err := m.lockPageForOperation(ctx, p); err != nil {
+		return Snapshot{}, err
+	}
 	defer p.mu.Unlock()
 	opCtx, cancel := operationContext(ctx, p.ctx, operationTimeout)
 	defer cancel()
@@ -36,7 +38,9 @@ func (m *Manager) Screenshot(ctx context.Context, access Access, opts Screenshot
 	if err != nil {
 		return nil, err
 	}
-	p.mu.Lock()
+	if err := m.lockPageForOperation(ctx, p); err != nil {
+		return nil, err
+	}
 	defer p.mu.Unlock()
 	if opts.FullPage && opts.Clip != nil {
 		return nil, fmt.Errorf("browser: screenshot clip and full_page are mutually exclusive")
@@ -77,7 +81,9 @@ func (m *Manager) Click(ctx context.Context, access Access, pageID, selector str
 	if err != nil {
 		return PageInfo{}, err
 	}
-	p.mu.Lock()
+	if err := m.lockPageForOperation(ctx, p); err != nil {
+		return PageInfo{}, err
+	}
 	defer p.mu.Unlock()
 	opCtx, cancel := operationContext(ctx, p.ctx, operationTimeout)
 	defer cancel()
@@ -99,7 +105,9 @@ func (m *Manager) Type(ctx context.Context, access Access, opts TypeOptions) (Pa
 	if err != nil {
 		return PageInfo{}, err
 	}
-	p.mu.Lock()
+	if err := m.lockPageForOperation(ctx, p); err != nil {
+		return PageInfo{}, err
+	}
 	defer p.mu.Unlock()
 	opCtx, cancel := operationContext(ctx, p.ctx, operationTimeout)
 	defer cancel()
@@ -120,7 +128,9 @@ func (m *Manager) Press(ctx context.Context, access Access, pageID, key string) 
 	if err != nil {
 		return PageInfo{}, err
 	}
-	p.mu.Lock()
+	if err := m.lockPageForOperation(ctx, p); err != nil {
+		return PageInfo{}, err
+	}
 	defer p.mu.Unlock()
 	opCtx, cancel := operationContext(ctx, p.ctx, operationTimeout)
 	defer cancel()
@@ -204,7 +214,9 @@ func (m *Manager) Scroll(ctx context.Context, access Access, pageID, selector st
 	if err != nil {
 		return PageInfo{}, err
 	}
-	p.mu.Lock()
+	if err := m.lockPageForOperation(ctx, p); err != nil {
+		return PageInfo{}, err
+	}
 	defer p.mu.Unlock()
 	opCtx, cancel := operationContext(ctx, p.ctx, operationTimeout)
 	defer cancel()
@@ -219,7 +231,9 @@ func (m *Manager) Wait(ctx context.Context, access Access, pageID, selector stri
 	if err != nil {
 		return PageInfo{}, err
 	}
-	p.mu.Lock()
+	if err := m.lockPageForOperation(ctx, p); err != nil {
+		return PageInfo{}, err
+	}
 	defer p.mu.Unlock()
 	if milliseconds < 0 || milliseconds > 30_000 {
 		return PageInfo{}, fmt.Errorf("browser: wait duration must be between 0 and 30000 ms")
@@ -253,7 +267,9 @@ func (m *Manager) History(ctx context.Context, access Access, pageID, action str
 	if err != nil {
 		return PageInfo{}, err
 	}
-	p.mu.Lock()
+	if err := m.lockPageForOperation(ctx, p); err != nil {
+		return PageInfo{}, err
+	}
 	defer p.mu.Unlock()
 	opCtx, cancel := operationContext(ctx, p.ctx, operationTimeout)
 	defer cancel()
@@ -311,7 +327,9 @@ func (m *Manager) evaluate(ctx context.Context, access Access, pageID, code stri
 	if err != nil {
 		return nil, "", err
 	}
-	p.mu.Lock()
+	if err := m.lockPageForOperation(ctx, p); err != nil {
+		return nil, "", err
+	}
 	defer p.mu.Unlock()
 	opCtx, cancel := operationContext(ctx, p.ctx, operationTimeout)
 	defer cancel()
