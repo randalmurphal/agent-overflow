@@ -133,6 +133,9 @@ type UnconfirmedFlushItem struct {
 	Queued bool
 	// NoRow is the queued message's QueuedFlushItem.NoRow.
 	NoRow bool
+	// RowRetired is the pending send's: the provider was handed the message
+	// and the write retired its queue row, or it had none.
+	RowRetired bool
 }
 
 // FlushSettlement owns the one durable-delivery transition for an injected
@@ -813,6 +816,27 @@ func (r *Router) UnconfirmedFlushSends(threadID string) []UnconfirmedFlushItem {
 	return append(sends, st.undeliveredSends...)
 }
 
+// NoteFlushRowRetired records on the flush send of queue item queueItemID,
+// pending or retired unrun, that its write retired the item's durable row.
+func (r *Router) NoteFlushRowRetired(threadID, queueItemID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	st := r.threadStateIfPresent(threadID)
+	if st == nil {
+		return
+	}
+	for i := range st.pendingSends {
+		if st.pendingSends[i].QueueItemID == queueItemID && st.pendingSends[i].Shape == sendShapeFlush {
+			st.pendingSends[i].RowRetired = true
+		}
+	}
+	for i := range st.undeliveredSends {
+		if st.undeliveredSends[i].QueueItemID == queueItemID {
+			st.undeliveredSends[i].RowRetired = true
+		}
+	}
+}
+
 // unconfirmedFlushItemFromPending is the restore form of a pending send the
 // provider never consumed: its identity and whichever retained copy it holds.
 // A direct send retains none; its row is in the store under UserItemID.
@@ -822,6 +846,7 @@ func unconfirmedFlushItemFromPending(entry pendingSend) UnconfirmedFlushItem {
 		UserItemID:  entry.AOItemID,
 		EnqueuedAt:  entry.EnqueuedAt,
 		JoinedParts: entry.JoinedParts,
+		RowRetired:  entry.RowRetired,
 	}
 	if entry.DeferredItem != nil {
 		item := *entry.DeferredItem

@@ -335,7 +335,7 @@ func TestAFailedResendGivesBackItsAnswerAndCompletion(t *testing.T) {
 	f.app.triage.CleanupThread(f.caller.ID)
 	var persisted []triage.EagerPersistedFlush
 	for i, row := range rows {
-		if err := f.app.store.DeleteDispatchedFlushQueueItems([]string{row.ID}); err != nil {
+		if _, err := f.app.store.DeleteDispatchedFlushQueueItems([]string{row.ID}); err != nil {
 			t.Fatal(err)
 		}
 		meta, err := usermessage.Marshal(usermessage.Input{SendID: row.SendID})
@@ -978,7 +978,7 @@ func TestACompletionASessionEndGaveBackWaitsOnTheLadder(t *testing.T) {
 		if err := f.app.store.QueueRemoteCompletion(w.ComputerID, w.RequestID, item); err != nil {
 			t.Fatal(err)
 		}
-		if err := f.app.store.DeleteDispatchedFlushQueueItems([]string{item.ID}); err != nil {
+		if _, err := f.app.store.DeleteDispatchedFlushQueueItems([]string{item.ID}); err != nil {
 			t.Fatal(err)
 		}
 	}

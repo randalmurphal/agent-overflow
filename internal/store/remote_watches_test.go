@@ -334,7 +334,7 @@ func TestRemoteCompletionDeliveryIsConfirmedByItsEcho(t *testing.T) {
 		if err := s.QueueRemoteCompletion(w.ComputerID, w.RequestID, item); err != nil {
 			t.Fatal(err)
 		}
-		if err := s.DeleteDispatchedFlushQueueItems([]string{item.ID}); err != nil {
+		if _, err := s.DeleteDispatchedFlushQueueItems([]string{item.ID}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -389,7 +389,7 @@ func TestRemoteCompletionGivenBackWithAPace(t *testing.T) {
 		if err := s.QueueRemoteCompletion(w.ComputerID, w.RequestID, item); err != nil {
 			t.Fatal(err)
 		}
-		if err := s.DeleteDispatchedFlushQueueItems([]string{item.ID}); err != nil {
+		if _, err := s.DeleteDispatchedFlushQueueItems([]string{item.ID}); err != nil {
 			t.Fatal(err)
 		}
 	}

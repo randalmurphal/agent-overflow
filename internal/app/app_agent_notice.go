@@ -190,9 +190,10 @@ func (a *App) goAgentNoticeWork(threadID string, fn func()) bool {
 // every other app message is withdrawn (stopRestingThreadWork).
 //
 // A thread a delete claimed is waited on, without the lock, until the delete
-// decides or ctx ends (waitDeleteDecision), and the start is then tried
-// again from the top; a thread a delete committed starts nothing, and its
-// teardown takes the queue. Neither is a failure.
+// decides or ctx ends (waitDeleteDecision), and a refused delete's start is
+// then tried again from the top; a thread a delete committed starts nothing,
+// its row gone or not, and its teardown takes the queue. Neither is a
+// failure.
 //
 // A retry is a later fire trying the start again for a wake an earlier
 // failed start left queued. It runs only once the thread's last failed
@@ -244,6 +245,13 @@ func (a *App) startAgentNoticeSession(ctx context.Context, notice agentNotice, r
 			a.startAgentNoticeSession(ctx, notice, retry)
 	}
 	failed := checkErr != nil || startErr != nil
+	if failed {
+		if _, err := a.store.GetThread(notice.threadID); threadGone(err) {
+			// Deleted since the claim was read: nothing failed.
+			unlock()
+			return false
+		}
+	}
 	stopping := failed && (errors.Is(startErr, ErrShuttingDown) || a.lifeCtx().Err() != nil)
 	first := false
 	if failed && !stopping {

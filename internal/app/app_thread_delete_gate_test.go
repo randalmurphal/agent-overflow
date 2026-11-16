@@ -70,19 +70,18 @@ func nothingWaits(t *testing.T, a *App) {
 func abandonGates(a *App) {
 	a.deleteDecisions.mu.Lock()
 	defer a.deleteDecisions.mu.Unlock()
-	for id, gate := range a.deleteDecisions.gates {
-		close(gate.decided)
-		delete(a.deleteDecisions.gates, id)
+	for op, decision := range a.deleteDecisions.ops {
+		close(decision.decided)
+		delete(a.deleteDecisions.ops, op)
 	}
 }
 
-// claimForTest claims ids for the delete op as a delete does, opening each
-// thread's gate before its claim; releaseForTest refuses it.
+// claimForTest claims ids for the delete op as a delete does, its decision
+// registered before its claim; releaseForTest refuses it.
 func claimForTest(t *testing.T, a *App, op string, ids []string) {
 	t.Helper()
-	if _, err := a.store.ClaimDeleteFamily(op, ids, func(threads []string) error {
-		return a.deleteDecisions.open(op, threads)
-	}); err != nil {
+	a.deleteDecisions.open(op)
+	if _, err := a.store.ClaimDeleteFamily(op, ids); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -92,7 +91,7 @@ func releaseForTest(t *testing.T, a *App, op string) {
 	if err := a.store.ReleaseDeleteClaim(op); err != nil {
 		t.Fatal(err)
 	}
-	a.deleteDecisions.shut(op, nil)
+	a.deleteDecisions.decide(op, false)
 }
 
 // deleteOf runs a delete of threadID, refused or committed as refuse says,
@@ -210,6 +209,15 @@ func TestACommitEndsEveryStartWaitingForIt(t *testing.T) {
 	}
 	batch := "batch-" + entityid.New()
 	reminders := []string{"remind-" + entityid.New(), "remind-" + entityid.New()}
+	// The commit itself lets the starts go, not the end of the delete.
+	waitedOut := make(chan bool, 1)
+	f.app.deleteCommittedForTest = func([]string) {
+		deadline := time.Now().Add(5 * time.Second)
+		for waitingAtGates(f.app) != 0 && time.Now().Before(deadline) {
+			time.Sleep(time.Millisecond)
+		}
+		waitedOut <- waitingAtGates(f.app) != 0
+	}
 	done := deleteOf(t, f.app, f.caller.ID, false, func() {
 		queueTestWake(t, f.app, f.caller.ID, batch)
 		for _, token := range reminders {
@@ -220,6 +228,9 @@ func TestACommitEndsEveryStartWaitingForIt(t *testing.T) {
 		waitAtGates(t, f.app, 3)
 	})
 	decided(t, done, false)
+	if <-waitedOut {
+		t.Fatal("starts still waited for the decision after the delete committed")
+	}
 	nothingWaits(t, f.app)
 	if n := len(recordedUserEnvelopes(t, f.stdin)); n != 0 {
 		t.Fatalf("the committed family's provider was written %d messages", n)
@@ -413,7 +424,7 @@ func TestAReleaseBeforeTheBatchReachesTheGateIsNotMissed(t *testing.T) {
 func TestTheBootLeavesNoClaimWithoutItsDelete(t *testing.T) {
 	t.Parallel()
 	f := newClaimFixture(t)
-	if _, err := f.app.store.ClaimDeleteFamily("quit-op", []string{f.caller.ID}, nil); err != nil {
+	if _, err := f.app.store.ClaimDeleteFamily("quit-op", []string{f.caller.ID}); err != nil {
 		t.Fatal(err)
 	}
 	after := f.restart(t)
@@ -440,7 +451,7 @@ func TestAClaimNoDeleteDecidesEndsTheStart(t *testing.T) {
 		t.Fatal(err)
 	}
 	worker := f.plainThread(t)
-	if _, err := f.app.store.ClaimDeleteFamily("quit-op", []string{f.caller.ID, worker.ID}, nil); err != nil {
+	if _, err := f.app.store.ClaimDeleteFamily("quit-op", []string{f.caller.ID, worker.ID}); err != nil {
 		t.Fatal(err)
 	}
 	queueTestWake(t, f.app, f.caller.ID, "batch-"+entityid.New())
@@ -463,8 +474,8 @@ func TestAClaimNoDeleteDecidesEndsTheStart(t *testing.T) {
 	}
 }
 
-// A claim whose write fails after its gates opened shuts them: nothing is
-// left gated, and the next delete of the thread goes ahead.
+// A delete whose claim fails ends its decision: nothing is left waiting for
+// one, and the next delete of the thread goes ahead.
 func TestAClaimThatFailsShutsTheGatesItOpened(t *testing.T) {
 	t.Parallel()
 	f := newClaimFixture(t)
@@ -474,10 +485,10 @@ func TestAClaimThatFailsShutsTheGatesItOpened(t *testing.T) {
 	}
 	execOnStore(t, f.dbPath, `DROP TRIGGER refuse_claim`)
 	f.app.deleteDecisions.mu.Lock()
-	gates := len(f.app.deleteDecisions.gates)
+	open := len(f.app.deleteDecisions.ops)
 	f.app.deleteDecisions.mu.Unlock()
-	if gates != 0 {
-		t.Fatalf("%d gates left open by the failed claim", gates)
+	if open != 0 {
+		t.Fatalf("%d decisions left open by the failed claim", open)
 	}
 	if result, err := f.app.DeleteThread(f.caller.ID); err != nil || len(result.WorkersNotDeleted) > 0 {
 		t.Fatalf("the next delete = %+v, %v", result, err)
@@ -564,6 +575,78 @@ func TestATeardownGivingAWakeBackDoesNotWaitForADeleteThatNeedsItsLock(t *testin
 				}
 			}
 			nothingWaits(t, f.app)
+		})
+	}
+}
+
+// S r9 finding 2: a start that waited for a delete which then committed ends
+// with nothing recorded and nothing started, even when the delete dropped
+// the thread's row before the start went on: no failure streak and no
+// notification. So whether the start is held once the decision is made, or
+// before it looks for the decision at all.
+func TestAStartWhoseDeleteCommittedEndsSilentlyOnceTheRowIsGone(t *testing.T) {
+	t.Parallel()
+	for _, at := range []string{"once the decision is made", "before it looks for the decision"} {
+		t.Run(at, func(t *testing.T) {
+			t.Parallel()
+			f := newClaimFixture(t)
+			notified := &recordingNotificationSender{}
+			f.app.osNotifications = notified
+			f.app.storeIdentity.Store(&store.Identity{BackendID: "backend-under-test"})
+			hook, held, proceed := holdOnce()
+			if at == "once the decision is made" {
+				f.app.deleteDecisionMadeForTest = hook
+			} else {
+				f.app.deleteDecisionReadForTest = hook
+			}
+			token := "remind-" + entityid.New()
+			committedDelete(t, f.app, f.caller.ID, func() {
+				insertTestReminder(t, f.app, token, f.caller.ID, "remind "+token, time.Now().Add(-time.Second).UnixMilli())
+				f.app.fireDueThreadReminders(time.Now())
+				if at == "once the decision is made" {
+					waitAtGates(t, f.app, 1)
+				} else {
+					within(t, "the start at the claim", held)
+				}
+			})
+			within(t, "the start held", held)
+			if _, err := f.app.store.GetThread(f.caller.ID); err == nil {
+				t.Fatal("the deleted thread's row is still there")
+			}
+			unlock := func() {}
+			if at == "once the decision is made" {
+				// A start that knows the delete committed does not come back
+				// for the thread's lock.
+				unlock = f.app.threadLocks().Lock(f.caller.ID)
+			}
+			close(proceed)
+			done := make(chan struct{})
+			go func() {
+				f.app.waitAgentNoticeWork()
+				close(done)
+			}()
+			select {
+			case <-done:
+			case <-time.After(5 * time.Second):
+				unlock()
+				<-done
+				t.Fatal("the start went back for the thread's lock after its delete committed")
+			}
+			unlock()
+			nothingWaits(t, f.app)
+			f.app.notifications.queue.Wait()
+			f.app.agentNoticeWork.mu.Lock()
+			failing := len(f.app.agentNoticeWork.failing)
+			f.app.agentNoticeWork.mu.Unlock()
+			if failing != 0 {
+				t.Errorf("%d failed starts recorded for the deleted thread", failing)
+			}
+			if sends := notified.snapshot(); len(sends) != 0 {
+				t.Errorf("notifications = %+v, want none", sends)
+			}
+			if _, live := f.app.sessionManager().get(f.caller.ID); live {
+				t.Error("the deleted thread started")
+			}
 		})
 	}
 }

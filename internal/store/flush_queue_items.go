@@ -124,21 +124,37 @@ func (s *Store) FlushQueueItemsPresent(threadID string, ids []string) (map[strin
 // successful provider write carried, in one statement: the members of a
 // joined message lose their rows together, so a crash leaves all of them for
 // the boot restore or none. Async answers retain recovery until a stable
-// user-message echo confirms consumption.
-func (s *Store) DeleteDispatchedFlushQueueItems(ids []string) error {
+// user-message echo confirms consumption. It reports the ids whose rows it
+// deleted, which the write records as retired (triage.Router.NoteFlushRowRetired).
+func (s *Store) DeleteDispatchedFlushQueueItems(ids []string) (map[string]bool, error) {
+	retired := make(map[string]bool, len(ids))
 	if len(ids) == 0 {
-		return nil
+		return retired, nil
 	}
 	encoded, err := json.Marshal(ids)
 	if err != nil {
-		return fmt.Errorf("store: delete dispatched flush queue items: %w", err)
+		return nil, fmt.Errorf("store: delete dispatched flush queue items: %w", err)
 	}
-	if _, err := s.db.Exec(`DELETE FROM flush_queue_items WHERE id IN (SELECT value FROM json_each(?)) AND NOT EXISTS (
+	rows, err := s.db.Query(`DELETE FROM flush_queue_items WHERE id IN (SELECT value FROM json_each(?)) AND NOT EXISTS (
  SELECT 1 FROM async_questions q WHERE q.thread_id=flush_queue_items.thread_id
- AND q.send_id<>'' AND q.send_id=flush_queue_items.send_id AND q.state='submitted')`, string(encoded)); err != nil {
-		return fmt.Errorf("store: delete dispatched flush queue items: %w", err)
+ AND q.send_id<>'' AND q.send_id=flush_queue_items.send_id AND q.state='submitted') RETURNING id`, string(encoded))
+	if err != nil {
+		return nil, fmt.Errorf("store: delete dispatched flush queue items: %w", err)
 	}
-	return nil
+	scanErr := func() error {
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				return err
+			}
+			retired[id] = true
+		}
+		return rows.Err()
+	}()
+	if err := errors.Join(scanErr, rows.Close()); err != nil {
+		return nil, fmt.Errorf("store: delete dispatched flush queue items: %w", err)
+	}
+	return retired, nil
 }
 
 // QueueDraftRestore is one return of undelivered messages to a thread's

@@ -38,8 +38,12 @@ import (
 // a Claude quiet row can belong to a different display turn. See
 // docs/architecture/user-message-ordering.md.
 type pendingSend struct {
-	AOItemID     string // opaque send-derived ID, or a legacy numeric ID
-	QueueItemID  string
+	AOItemID    string // opaque send-derived ID, or a legacy numeric ID
+	QueueItemID string
+	// RowRetired is set when the write retired the message's durable queue
+	// row, or it had none (NoteFlushRowRetired). Without it the row stands
+	// until the echo, as an async answer's does.
+	RowRetired   bool
 	TurnIndex    int
 	EnqueuedAt   int64
 	DeferredItem *store.Item
@@ -944,6 +948,8 @@ type EagerPersistedFlush struct {
 	// TurnInput is the send's pendingSend.TurnInput: it went out as the
 	// input of a turn it starts, which the interrupt did not discard.
 	TurnInput bool
+	// RowRetired is the pending send's (pendingSend.RowRetired).
+	RowRetired bool
 }
 
 // EagerPersistDeferredFlushSends immediately persists all deferred
@@ -1031,6 +1037,7 @@ func (r *Router) EagerPersistDeferredFlushSends(threadID string, interruptedTurn
 		queueItemID string
 		enqueuedAt  int64
 		turnInput   bool
+		rowRetired  bool
 	}
 	var snapshots []eagerSnapshot
 	for i := range pending {
@@ -1040,6 +1047,7 @@ func (r *Router) EagerPersistDeferredFlushSends(threadID string, interruptedTurn
 				queueItemID: pending[i].QueueItemID,
 				enqueuedAt:  pending[i].EnqueuedAt,
 				turnInput:   pending[i].TurnInput,
+				rowRetired:  pending[i].RowRetired,
 			})
 			pending[i].QuietItem = pending[i].DeferredItem
 			pending[i].DeferredItem = nil
@@ -1080,6 +1088,7 @@ func (r *Router) EagerPersistDeferredFlushSends(threadID string, interruptedTurn
 			QueueItemID: snap.queueItemID,
 			EnqueuedAt:  snap.enqueuedAt,
 			TurnInput:   snap.turnInput,
+			RowRetired:  snap.rowRetired,
 		})
 	}
 	return result

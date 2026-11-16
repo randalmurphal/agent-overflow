@@ -173,7 +173,7 @@ func TestAFailedResendReturnsASpawnerAnswer(t *testing.T) {
 	for _, row := range rows {
 		// The dispatch took it: the provider write keeps an answer's row
 		// until its echo.
-		if err := f.app.store.DeleteDispatchedFlushQueueItems([]string{row.ID}); err != nil {
+		if _, err := f.app.store.DeleteDispatchedFlushQueueItems([]string{row.ID}); err != nil {
 			t.Fatal(err)
 		}
 		meta, err := usermessage.Marshal(usermessage.Input{SendID: row.SendID})

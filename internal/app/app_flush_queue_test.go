@@ -2225,6 +2225,7 @@ func TestSessionDeathRestoresDeferredAndQuietFlushesToDraft(t *testing.T) {
 		t.Fatalf("PersistItemQuiet: %v", err)
 	}
 	app.triage.RegisterPendingQuietFlushSendWithExpectation(thread.ID, "queue:quiet", quiet, 0, 10, triage.PendingSendExpectation{ProviderItemID: ""})
+	app.triage.NoteFlushRowRetired(thread.ID, "queue:quiet")
 	deferred := store.Item{
 		ID:        "user:1:flush:1",
 		ThreadID:  thread.ID,
@@ -2237,6 +2238,7 @@ func TestSessionDeathRestoresDeferredAndQuietFlushesToDraft(t *testing.T) {
 		UpdatedAt: now + 1,
 	}
 	app.triage.RegisterPendingFlushSendWithExpectation(thread.ID, "queue:deferred", deferred, 20, triage.PendingSendExpectation{ProviderItemID: ""})
+	app.triage.NoteFlushRowRetired(thread.ID, "queue:deferred")
 
 	app.restoreUnconfirmedQueueOnSessionDeath(thread.ID)
 
@@ -2702,6 +2704,7 @@ func TestCodexResendAfterInterrupt_DraftMergeFailureRequeues(t *testing.T) {
 		Summary: "resend me",
 	}
 	app.triage.RegisterPendingFlushSendWithExpectation(thread.ID, "queue:q1", deferred, 10, triage.PendingSendExpectation{ProviderItemID: ""})
+	app.triage.NoteFlushRowRetired(thread.ID, "queue:q1")
 	tok := app.triage.MarkFlushSendsInterrupted(thread.ID, -1)
 
 	app.eagerPersistFlushSendsOnInterrupt(thread.ID, appSess, -1, tok)
@@ -2768,7 +2771,7 @@ func TestResendFailureRequeuesTheRenderedReviewComments(t *testing.T) {
 	}
 
 	app.restoreEagerPersistedFlushesToDraft(thread.ID, []triage.EagerPersistedFlush{{
-		UserItemID: rowID, TurnIndex: 1, Content: resolved.content, Meta: resolved.userMessageMeta, QueueItemID: "queue:q1", EnqueuedAt: 10,
+		UserItemID: rowID, TurnIndex: 1, Content: resolved.content, Meta: resolved.userMessageMeta, QueueItemID: "queue:q1", EnqueuedAt: 10, RowRetired: true,
 	}})
 
 	requeued := app.triage.QueuedFlushItems(thread.ID)
@@ -3009,6 +3012,7 @@ func TestSessionDeathDedupeDispatchCurrentAndPendingFlush(t *testing.T) {
 		CreatedAt: time.Now().UnixMilli(),
 		UpdatedAt: time.Now().UnixMilli(),
 	}, 10, triage.PendingSendExpectation{ProviderItemID: ""})
+	app.triage.NoteFlushRowRetired(thread.ID, "queue:same")
 
 	app.restoreUnconfirmedQueueOnSessionDeath(thread.ID)
 
@@ -3751,6 +3755,7 @@ func TestUndeliveredSendReturnsToComposer(t *testing.T) {
 				app.triage.RegisterPendingSendWithExpectation(thread.ID, row.ID, 0, expect)
 			} else {
 				app.triage.RegisterPendingFlushSendWithExpectation(thread.ID, "queue:unrun", row, now, expect)
+				app.triage.NoteFlushRowRetired(thread.ID, "queue:unrun")
 			}
 			for _, state := range []provider.CommandLifecycleState{provider.CommandQueued, provider.CommandCancelled} {
 				meta, err := json.Marshal(provider.CommandLifecycleMeta{CommandUUID: "u-unrun", State: state})
@@ -3799,6 +3804,7 @@ func TestDiscardedSendsRestoreWithTheQueueInOrder(t *testing.T) {
 	for i, text := range []string{"first", "second"} {
 		row := store.Item{ID: fmt.Sprintf("user:flush:%d", i), ThreadID: thread.ID, Kind: "user_text", Role: "user", Status: "completed", Summary: text, CreatedAt: now, UpdatedAt: now}
 		app.triage.RegisterPendingFlushSendWithExpectation(thread.ID, fmt.Sprintf("queue:%d", i), row, int64(10*(i+1)), triage.PendingSendExpectation{ProviderItemID: fmt.Sprintf("u-%d", i)})
+		app.triage.NoteFlushRowRetired(thread.ID, fmt.Sprintf("queue:%d", i))
 	}
 	app.triage.RegisterQueueItem(thread.ID, triage.QueuedFlushItem{ID: "queue:third", Message: "third", Payload: json.RawMessage(`{}`), EnqueuedAt: 30, NoRow: true})
 
@@ -3892,6 +3898,7 @@ func TestSessionReplacementReturnsDiscardedSends(t *testing.T) {
 			now := time.Now().UnixMilli()
 			row := store.Item{ID: "user:flush:0", ThreadID: thread.ID, Kind: "user_text", Role: "user", Status: "completed", Summary: "never ran", CreatedAt: now, UpdatedAt: now}
 			app.triage.RegisterPendingFlushSendWithExpectation(thread.ID, "queue:0", row, 10, triage.PendingSendExpectation{ProviderItemID: "u-0"})
+			app.triage.NoteFlushRowRetired(thread.ID, "queue:0")
 			for _, state := range []provider.CommandLifecycleState{provider.CommandQueued, provider.CommandDiscarded} {
 				meta, err := json.Marshal(provider.CommandLifecycleMeta{CommandUUID: "u-0", State: state})
 				if err != nil {

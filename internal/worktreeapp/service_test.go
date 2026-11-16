@@ -116,7 +116,7 @@ func TestThreadsReferencingWorkspacesAnswersEachDirectory(t *testing.T) {
 	seedThread(t, database, "worktree-ref", "project", t.TempDir(), alias)
 	seedThread(t, database, "both", "project", second, second)
 	seedThread(t, database, "elsewhere", "project", t.TempDir(), "")
-	if _, err := database.ClaimDeleteFamily("op-1", []string{"both"}, nil); err != nil {
+	if _, err := database.ClaimDeleteFamily("op-1", []string{"both"}); err != nil {
 		t.Fatal(err)
 	}
 

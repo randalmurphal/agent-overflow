@@ -760,9 +760,10 @@ Ruling 36, as built:
   something waits for the decision, with no failure recorded: a notice's
   session start (`ErrThreadDeleteClaimed`) and a queue dispatch, to a live
   session or with the session start it makes (`lockFlushDispatch`),
-  release the thread's action lock and wait at the delete's decision gate
-  (`deleteDecisions`), which the delete opens before it writes a
-  thread's claim and shuts once the claim is released or committed. No
+  release the thread's action lock and wait for the decision of the delete
+  the thread's claim names (`deleteDecisions`), which the delete registers
+  before it writes a claim and makes once its claims are released or
+  committed. No
   wait there holds a thread's lock: a teardown that gives a moved wake
   back runs the start it tries again as notice work. The
   dispatch keeps its batch as the one it is sending meanwhile, so the

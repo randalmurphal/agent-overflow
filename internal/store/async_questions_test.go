@@ -356,7 +356,7 @@ func TestAConfirmedAsyncAnswerIsTakenIn(t *testing.T) {
 	if err := s.QueueAsyncAnswers(FlushQueueItem{ID: "queue", ThreadID: "q", SendID: "agent-answer:t", Message: body}, answers, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.DeleteDispatchedFlushQueueItems([]string{"queue"}); err != nil {
+	if _, err := s.DeleteDispatchedFlushQueueItems([]string{"queue"}); err != nil {
 		t.Fatal(err)
 	}
 	if queued, err := s.ListFlushQueueItems("q"); err != nil || len(queued) != 1 {

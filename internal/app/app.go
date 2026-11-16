@@ -758,6 +758,10 @@ type App struct {
 	// delete's gate (waitDeleteDecision), so a test can decide the delete
 	// at that moment.
 	deleteDecisionReadForTest func(threadID string)
+	// deleteDecisionMadeForTest, when set, runs in a start that waited for
+	// a delete's decision once it is made, before the start goes on
+	// (waitDeleteDecision), so a test can finish the delete meanwhile.
+	deleteDecisionMadeForTest func(threadID string)
 	// flushHandoffForTest, when set, runs as triage hands a batch to the
 	// dispatch (enqueueFlushDispatch), before the dispatch records it, so a
 	// test can withdraw a message in the handoff.

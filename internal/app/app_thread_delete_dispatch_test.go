@@ -28,7 +28,10 @@ func queueTestWake(t *testing.T, a *App, threadID, marker string) string {
 			return row.SendID
 		}
 	}
-	t.Fatalf("%s is not queued", marker)
+	// A live session's dispatch may have written it already, retiring its row.
+	if _, live := a.sessionManager().get(threadID); !live {
+		t.Fatalf("%s is not queued", marker)
+	}
 	return ""
 }
 

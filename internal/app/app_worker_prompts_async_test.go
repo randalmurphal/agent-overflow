@@ -614,6 +614,52 @@ func TestASessionDeathSplitsASpawnerAnswerFromThePersonsText(t *testing.T) {
 	f.requireRoutedAgain(t, sendID)
 }
 
+// An answer written to the worker and never confirmed keeps its queue row
+// until its echo. A session death that cannot retire its quiet row requeues
+// it; withdrawn before the teardown registers that requeue again, it stays
+// withdrawn: the re-registration does not take its missing row for one the
+// write retired, and nothing sends it again.
+func TestAWrittenAnswerWithdrawnAfterAFailedRestoreStaysWithdrawn(t *testing.T) {
+	t.Parallel()
+	f := newAsyncQuestionFixture(t, "async-answer-requeued", store.PlacementOwned)
+	sendID := f.answered(t)
+	// A Claude turn running, so the dispatch persists the answer's row
+	// quietly into it.
+	execOnStore(t, f.dbPath, fmt.Sprintf(`UPDATE threads SET provider = 'claude' WHERE id = '%s'`, f.worker.ID))
+	if err := f.app.store.InsertTurn(store.Turn{TurnID: "turn-0", ThreadID: f.worker.ID, TurnIndex: 0, StartedAt: time.Now().UnixMilli()}); err != nil {
+		t.Fatal(err)
+	}
+	stdinLog := f.workerRecordingSession(t)
+	f.app.triage.FlushQueuedItems(f.worker.ID)
+	waitForRecordedUserEnvelopes(t, stdinLog, 1)
+	f.app.flushDispatch.wg.Wait()
+	sends := f.app.triage.UnconfirmedFlushSends(f.worker.ID)
+	if len(sends) != 1 || sends[0].QuietItem == nil {
+		t.Fatalf("unconfirmed sends = %+v, want the answer with its quiet row", sends)
+	}
+	if durable, _ := queuedSendIDs(t, f.app, f.worker.ID); !slices.Contains(durable, sendID) {
+		t.Fatalf("the worker's queue %q dropped the written answer's row before its echo", durable)
+	}
+	execOnStore(t, f.dbPath, fmt.Sprintf(`CREATE TRIGGER refuse_row_delete BEFORE DELETE ON items WHEN OLD.id = '%s' BEGIN SELECT RAISE(ABORT, 'injected delete failure'); END`, sends[0].QuietItem.ID))
+	requeued := f.app.restoreUnconfirmedQueueOnSessionDeath(f.worker.ID)
+	execOnStore(t, f.dbPath, `DROP TRIGGER refuse_row_delete`)
+	if len(requeued) != 1 {
+		t.Fatalf("requeued = %+v, want the answer whose row cleanup failed", requeued)
+	}
+	if stop, err := f.app.StopThreadAgentIncoming(t.Context(), f.worker.ID, sendID); err != nil || stop.Outcome != threadAgentStopped {
+		t.Fatalf("withdraw = %+v, %v", stop, err)
+	}
+	f.app.triage.CleanupThread(f.worker.ID)
+	f.app.requeueUnconfirmedFlushItems(f.worker.ID, requeued)
+	f.app.triage.FlushQueuedItems(f.worker.ID)
+	f.app.flushDispatch.wg.Wait()
+	f.drain(t)
+	if n := len(recordedUserEnvelopes(t, stdinLog)); n != 1 {
+		t.Fatalf("the worker was written %d messages, want the answer once", n)
+	}
+	f.requireReturned(t, sendID)
+}
+
 // A hand-back announced behind the reconcile that closed its question
 // raises nothing: the person answered first, and the question's last
 // notification stays the retraction.

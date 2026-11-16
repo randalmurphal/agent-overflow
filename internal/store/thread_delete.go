@@ -254,10 +254,8 @@ type ThreadDeleteHold struct {
 // delete only goes forward, and this one joins it. A thread op already
 // claimed stays claimed, so a delete reads its family again with the same
 // call, which claims the threads a drained spawn added. It returns the
-// family as claimed. gate, when set, runs in the transaction before any
-// claim is written, with the threads about to be claimed; its error refuses
-// the claim, changing nothing.
-func (s *Store) ClaimDeleteFamily(op string, ids []string, gate func(threads []string) error) (members []DeleteMember, err error) {
+// family as claimed.
+func (s *Store) ClaimDeleteFamily(op string, ids []string) (members []DeleteMember, err error) {
 	if op == "" {
 		return nil, errors.New("store: a delete claim needs its operation's id")
 	}
@@ -274,17 +272,6 @@ func (s *Store) ClaimDeleteFamily(op string, ids []string, gate func(threads []s
 	for _, member := range members {
 		if !member.Committed && member.Claim != "" && member.Claim != op {
 			return nil, &DeleteClaimedError{ThreadID: member.ThreadID}
-		}
-	}
-	var claiming []string
-	for _, member := range members {
-		if !member.Committed && member.Claim != op {
-			claiming = append(claiming, member.ThreadID)
-		}
-	}
-	if gate != nil && len(claiming) > 0 {
-		if err := gate(claiming); err != nil {
-			return nil, err
 		}
 	}
 	for i, member := range members {

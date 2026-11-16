@@ -1522,7 +1522,7 @@ func TestWithdrawThreadWakeReturnsAnUnconfirmedWakeWithNoRow(t *testing.T) {
 		t.Fatalf("QueueThreadWake: %v", err)
 	}
 	// The dispatch retired the row at the provider write.
-	if err := s.DeleteDispatchedFlushQueueItems([]string{"queue:sent"}); err != nil {
+	if _, err := s.DeleteDispatchedFlushQueueItems([]string{"queue:sent"}); err != nil {
 		t.Fatalf("DeleteDispatchedFlushQueueItems: %v", err)
 	}
 	if _, err := s.WithdrawThreadWake("tok-sent", false, "queue:sent", WithdrawUnconfirmed); err != nil {
@@ -1764,7 +1764,7 @@ func TestThreadWakeDeliveryIsConfirmedByItsEcho(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("QueueThreadWake %s: %v", id, err)
 		}
-		if err := s.DeleteDispatchedFlushQueueItems([]string{id}); err != nil {
+		if _, err := s.DeleteDispatchedFlushQueueItems([]string{id}); err != nil {
 			t.Fatalf("DeleteDispatchedFlushQueueItems %s: %v", id, err)
 		}
 	}

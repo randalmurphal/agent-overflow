@@ -1036,7 +1036,6 @@ func TestAStoppedWorkerNoticeAndAContinueToAClaimedThreadAreQueued(t *testing.T)
 	})
 	f.settle(t)
 	waitUntil(t, 20*time.Second, func() bool { return len(durableQueueRows(t, f.app, f.caller.ID)) == 0 })
-	if n := len(recordedUserEnvelopes(t, f.stdin)); n == 0 {
-		t.Fatal("the released thread was sent nothing")
-	}
+	// The provider records what it reads after the write that retired the rows.
+	waitUntil(t, 20*time.Second, func() bool { return len(recordedUserEnvelopes(t, f.stdin)) > 0 })
 }

@@ -297,7 +297,7 @@ func TestWithdrawThreadWakeGivesItsRidersBack(t *testing.T) {
 			rowID := "queue:carrier"
 			if scope == WithdrawUnconfirmed {
 				// The dispatch retired the row at the provider write.
-				if err := s.DeleteDispatchedFlushQueueItems([]string{rowID}); err != nil {
+				if _, err := s.DeleteDispatchedFlushQueueItems([]string{rowID}); err != nil {
 					t.Fatalf("DeleteDispatchedFlushQueueItems: %v", err)
 				}
 				rowID = ""
@@ -407,7 +407,7 @@ func TestADroppedUnconfirmedWakeGoesBackWithItsRiders(t *testing.T) {
 		t.Fatalf("QueueThreadWake: %v", err)
 	}
 	// The dispatch wrote the carrier's message and dropped its queue row.
-	if err := s.DeleteDispatchedFlushQueueItems([]string{"queue:carrier"}); err != nil {
+	if _, err := s.DeleteDispatchedFlushQueueItems([]string{"queue:carrier"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.AppendItem(Item{

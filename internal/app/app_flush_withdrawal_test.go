@@ -405,70 +405,95 @@ func TestAWithdrawalAroundAFailedGroupsRequeue(t *testing.T) {
 // that replaces it: a death's restore puts it in the composer, and a Stop's
 // drop took its row with the rest. A message requeued without a row after
 // its write goes the same way (S r8 finding 3): into the composer once
-// after a death, and nowhere after a Stop.
+// after a death, and nowhere after a Stop. A drop of the overtaken
+// generation that comes while the death's restore of the handoff waits for
+// the thread's action lock, a revert's or a Stop's, has the last word: the
+// handoff goes nowhere.
 func TestAHandoffARecoveryOvertookGoesWithTheRestOfItsQueue(t *testing.T) {
 	t.Parallel()
+	drops := map[string]func(a *App, threadID string){
+		"":                nil,
+		", then a revert": func(a *App, threadID string) { a.dropFlushQueue(threadID) },
+		", then a stop's drop": func(a *App, threadID string) {
+			held, owed, _ := a.settleQueueForTeardown(threadID, false, dropQueue)
+			a.giveBackToOwners(threadID, held)
+			a.giveBackTeardownRequests(threadID, owed)
+		},
+	}
 	for _, death := range []bool{true, false} {
-		name := "a session death"
-		if !death {
-			name = "a stop and a restart"
-		}
-		t.Run(name, func(t *testing.T) {
-			t.Parallel()
-			f := newClaimFixture(t)
-			if err := f.app.StartSession(f.caller.ID); err != nil {
-				t.Fatal(err)
+		for later, drop := range drops {
+			if !death && drop != nil {
+				continue
 			}
-			marker := "overtaken-" + entityid.New()
-			id, _ := queueHeldPersonMessage(t, f.app, f.caller.ID, marker)
-			rowless := "rowless-" + entityid.New()
-			f.app.triage.RegisterQueueItem(f.caller.ID, triage.QueuedFlushItem{ID: "queue:" + entityid.New(), Message: rowless, NoRow: true})
-			hook, at, proceed := holdOnce()
-			f.app.flushHandoffForTest = hook
-			drained := make(chan bool, 1)
-			go func() { drained <- f.app.triage.FlushQueuedItems(f.caller.ID) }()
-			within(t, "the handoff", at)
-			if death {
-				f.app.restoreUnconfirmedQueueOnSessionDeath(f.caller.ID)
-			} else if err := f.app.StopSession(f.caller.ID); err != nil {
-				t.Fatal(err)
+			name := "a session death" + later
+			if !death {
+				name = "a stop and a restart"
 			}
-			if err := f.app.StartSession(f.caller.ID); err != nil {
-				t.Fatal(err)
-			}
-			close(proceed)
-			within(t, "the handoff's end", drained)
-			f.settle(t)
-			after := "after-" + entityid.New()
-			queueTestWake(t, f.app, f.caller.ID, after)
-			f.deliveredOnce(t, after)
-			draft, _, err := f.app.store.GetThreadDraft(f.caller.ID)
-			if err != nil {
-				t.Fatal(err)
-			}
-			for _, overtaken := range []string{marker, rowless} {
-				if n := f.sent(t, overtaken); n != 0 {
-					t.Fatalf("the replacement session was written %q %d times", overtaken, n)
+			t.Run(name, func(t *testing.T) {
+				t.Parallel()
+				f := newClaimFixture(t)
+				if err := f.app.StartSession(f.caller.ID); err != nil {
+					t.Fatal(err)
 				}
-				want := 0
+				marker := "overtaken-" + entityid.New()
+				id, _ := queueHeldPersonMessage(t, f.app, f.caller.ID, marker)
+				rowless := "rowless-" + entityid.New()
+				f.app.triage.RegisterQueueItem(f.caller.ID, triage.QueuedFlushItem{ID: "queue:" + entityid.New(), Message: rowless, NoRow: true})
+				hook, at, proceed := holdOnce()
+				f.app.flushHandoffForTest = hook
+				drained := make(chan bool, 1)
+				go func() { drained <- f.app.triage.FlushQueuedItems(f.caller.ID) }()
+				within(t, "the handoff", at)
 				if death {
-					want = 1
+					f.app.restoreUnconfirmedQueueOnSessionDeath(f.caller.ID)
+				} else if err := f.app.StopSession(f.caller.ID); err != nil {
+					t.Fatal(err)
 				}
-				if n := strings.Count(draft.Content, overtaken); n != want {
-					t.Fatalf("the composer holds %q %d times, want %d: %q", overtaken, n, want, draft.Content)
+				if err := f.app.StartSession(f.caller.ID); err != nil {
+					t.Fatal(err)
 				}
-				for _, item := range f.app.queueSnapshotForThread(f.caller.ID) {
-					if strings.Contains(item.Message, overtaken) {
-						t.Fatalf("%q is queued again: %+v", overtaken, item)
+				unlock := func() {}
+				if drop != nil {
+					unlock = f.app.threadLocks().Lock(f.caller.ID)
+				}
+				close(proceed)
+				within(t, "the handoff's end", drained)
+				if drop != nil {
+					drop(f.app, f.caller.ID)
+					unlock()
+				}
+				f.settle(t)
+				after := "after-" + entityid.New()
+				queueTestWake(t, f.app, f.caller.ID, after)
+				f.deliveredOnce(t, after)
+				draft, _, err := f.app.store.GetThreadDraft(f.caller.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, overtaken := range []string{marker, rowless} {
+					if n := f.sent(t, overtaken); n != 0 {
+						t.Fatalf("the replacement session was written %q %d times", overtaken, n)
+					}
+					want := 0
+					if death && drop == nil {
+						want = 1
+					}
+					if n := strings.Count(draft.Content, overtaken); n != want {
+						t.Fatalf("the composer holds %q %d times, want %d: %q", overtaken, n, want, draft.Content)
+					}
+					for _, item := range f.app.queueSnapshotForThread(f.caller.ID) {
+						if strings.Contains(item.Message, overtaken) {
+							t.Fatalf("%q is queued again: %+v", overtaken, item)
+						}
 					}
 				}
-			}
-			for _, row := range durableQueueRows(t, f.app, f.caller.ID) {
-				if row.ID == id {
-					t.Fatalf("the overtaken message's row is left: %+v", row)
+				for _, row := range durableQueueRows(t, f.app, f.caller.ID) {
+					if row.ID == id {
+						t.Fatalf("the overtaken message's row is left: %+v", row)
+					}
 				}
-			}
-		})
+			})
+		}
 	}
 }
 
@@ -537,12 +562,16 @@ func TestAMessageRequeuedAfterItsWriteIsSentAgain(t *testing.T) {
 		if !q.sent(id) {
 			t.Fatal("the next drain did not send the requeued message")
 		}
+		// Written again with no row, and again not confirmed: the next
+		// session end puts it in the composer.
+		q.app.restoreUnconfirmedQueueOnSessionDeath(q.thread.ID)
+		requireDraft(t, q.app, q.thread.ID, "handed over")
 	})
 	t.Run("a failed resend", func(t *testing.T) {
 		t.Parallel()
 		q := newCodexQueue(t)
 		q.app.requeueEagerPersistedFlushes(q.thread.ID, []triage.EagerPersistedFlush{{
-			UserItemID: "user:3:eager:1", Content: "interrupted", QueueItemID: "queue:interrupted", EnqueuedAt: 1,
+			UserItemID: "user:3:eager:1", Content: "interrupted", QueueItemID: "queue:interrupted", EnqueuedAt: 1, RowRetired: true,
 		}})
 		q.flush(t)
 		if !q.sent("queue:interrupted") {
@@ -757,7 +786,7 @@ func TestARequeuedUnconfirmedSendIsWithdrawnLikeAQueuedOne(t *testing.T) {
 	sendID := workflowWakeSendIDRoot + entityid.New()
 	unlock := app.threadApplication().LockMutations(thread.ID)
 	requeued, err := app.requeueUnconfirmedFlushItemsLocked(thread.ID, []triage.UnconfirmedFlushItem{{
-		QueueItemID: "queue:handed", Message: "handed over", EnqueuedAt: 1,
+		QueueItemID: "queue:handed", Message: "handed over", EnqueuedAt: 1, RowRetired: true,
 		Payload: flushQueuePayloadJSON(t, flushQueuePayload{SendID: sendID}),
 	}})
 	unlock()

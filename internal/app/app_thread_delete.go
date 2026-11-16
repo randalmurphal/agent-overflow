@@ -277,6 +277,11 @@ func (o deleteOutcome) logFailures(what string) {
 func (a *App) deleteThreads(req deleteRequest) (deleteOutcome, error) {
 	op := a.newFamilyDelete(req)
 	defer op.reopen()
+	a.deleteDecisions.open(op.id)
+	// A delete that ends without committing lets its waiters go: they find
+	// its claims released, or standing with no delete when the claim or the
+	// release failed. A commit decides earlier (commit).
+	defer a.deleteDecisions.decide(op.id, false)
 	if err := op.claim(); err != nil {
 		return deleteOutcome{}, err
 	}
@@ -346,107 +351,88 @@ func (op *familyDelete) closeAdmission(threadID string) {
 	op.reopens = append(op.reopens, op.app.resting.close(threadID))
 }
 
-// claimFamily reads and claims the family (store.ClaimDeleteFamily),
-// opening the decision gate of each thread it claims before the claim is
-// written; a claim that fails shuts the gates it opened.
+// claimFamily reads and claims the family (store.ClaimDeleteFamily).
 func (op *familyDelete) claimFamily() ([]store.DeleteMember, error) {
 	if hook := op.app.deleteFamilyReadForTest; hook != nil {
 		hook()
 	}
-	opened := []string{}
-	members, err := op.app.store.ClaimDeleteFamily(op.id, op.req.seeds, func(threads []string) error {
-		if err := op.app.deleteDecisions.open(op.id, threads); err != nil {
-			return err
-		}
-		opened = threads
-		return nil
-	})
+	members, err := op.app.store.ClaimDeleteFamily(op.id, op.req.seeds)
 	if err != nil {
-		op.app.deleteDecisions.shut(op.id, opened)
 		return nil, op.claimRefusal(err)
 	}
 	return members, nil
 }
 
-// deleteDecisions are the running deletes' decision gates, by thread. A
-// delete opens a thread's gate before it writes the thread's claim
-// (claimFamily) and shuts it once the claim is released or committed
-// (refuse, commit), so on a running app a claimed thread's gate is open; the
-// boot releases every claim no delete committed before anything starts
-// (releaseUndecidedDeletes). A start the app makes on its own, a dispatch or
-// a notice's session start, that meets a claim waits at the gate holding no
-// lock (waitDeleteDecision); a person's doors refuse at once. A delete never
-// waits at a gate. Zero value ready.
+// deleteDecisions are the running deletes' decisions, by delete operation:
+// the claim on a thread's row names the delete that decides it. A delete
+// registers its decision before it writes a claim (deleteThreads) and makes
+// it as it commits (commit) or, failing that, as it ends, so on a running app a claim names a decision still to come or one
+// already made; the boot releases every claim no delete committed before
+// anything starts (releaseUndecidedDeletes). A start the app makes on its
+// own, a dispatch or a notice's session start, that meets a claim waits for
+// the decision holding no lock (waitDeleteDecision); a person's doors refuse
+// at once. A delete never waits for a decision. Zero value ready.
 type deleteDecisions struct {
 	mu      sync.Mutex
-	gates   map[string]deleteGate
-	waiting int // starts waiting at a gate
+	ops     map[string]*deleteDecision
+	waiting int // starts waiting for a decision
 }
 
-// deleteGate is one thread's gate: its delete, and what the decision closes.
-type deleteGate struct {
-	op      string
-	decided chan struct{}
+// deleteDecision is one delete's decision: decided closes once it is made,
+// and committed says which it was.
+type deleteDecision struct {
+	decided   chan struct{}
+	committed bool
 }
 
-// open opens op's gate on each of threads, all or none: a thread another
-// delete's gate is open on refuses them (*store.DeleteClaimedError).
-func (d *deleteDecisions) open(op string, threads []string) error {
+// open registers op's decision, still to come.
+func (d *deleteDecisions) open(op string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	for _, id := range threads {
-		if gate, ok := d.gates[id]; ok && gate.op != op {
-			return &store.DeleteClaimedError{ThreadID: id}
-		}
+	if d.ops == nil {
+		d.ops = make(map[string]*deleteDecision)
 	}
-	if d.gates == nil {
-		d.gates = make(map[string]deleteGate)
+	if d.ops[op] == nil {
+		d.ops[op] = &deleteDecision{decided: make(chan struct{})}
 	}
-	for _, id := range threads {
-		if _, ok := d.gates[id]; !ok {
-			d.gates[id] = deleteGate{op: op, decided: make(chan struct{})}
-		}
-	}
-	return nil
 }
 
-// shut shuts op's gates on threads, or every one of op's for nil: the starts
-// waiting there go on.
-func (d *deleteDecisions) shut(op string, threads []string) {
+// decide makes op's decision, and the starts waiting for it go on. A
+// decision is made once; a later call does nothing.
+func (d *deleteDecisions) decide(op string, committed bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	for id, gate := range d.gates {
-		if gate.op == op && (threads == nil || slices.Contains(threads, id)) {
-			close(gate.decided)
-			delete(d.gates, id)
-		}
+	if decision, ok := d.ops[op]; ok {
+		decision.committed = committed
+		close(decision.decided)
+		delete(d.ops, op)
 	}
 }
 
 // waitDeleteDecision waits, holding no lock, for the decision of the delete
 // that claims threadID, and reports whether the start is to try again from
-// the top: false when ctx ended first, or when the claim stands with no
-// delete under way to decide it (a boot whose release failed), which leaves
-// the thread's queue to the next boot.
+// the top: false when the delete committed the thread, when ctx ended first,
+// or when the claim stands with no delete under way to decide it (a boot or
+// a delete whose release failed), which leaves the thread's queue to the
+// next boot.
 func (a *App) waitDeleteDecision(ctx context.Context, threadID string) bool {
 	claim, committed, err := a.store.ThreadDeleteClaim(threadID)
 	if err != nil || committed || claim == "" {
 		// Decided, or unread: the start's own check reads it again.
-		return true
+		return err != nil || !committed
 	}
 	if hook := a.deleteDecisionReadForTest; hook != nil {
 		hook(threadID)
 	}
 	d := &a.deleteDecisions
 	d.mu.Lock()
-	gate, open := d.gates[threadID]
-	open = open && gate.op == claim
+	decision, open := d.ops[claim]
 	if open {
 		d.waiting++
 	}
 	d.mu.Unlock()
 	if !open {
-		// A gate shuts after its claim is decided: a claim standing now has no delete.
+		// A decision is made after its claims: a claim standing now has no delete.
 		if again, committed, err := a.store.ThreadDeleteClaim(threadID); err == nil && again == claim && !committed {
 			log.Printf("app: thread %s is claimed by delete %s, which is not under way; what it queued waits for the next boot", threadID, claim)
 			return false
@@ -459,8 +445,12 @@ func (a *App) waitDeleteDecision(ctx context.Context, threadID string) bool {
 		d.mu.Unlock()
 	}()
 	select {
-	case <-gate.decided:
-		return true
+	case <-decision.decided:
+		if hook := a.deleteDecisionMadeForTest; hook != nil {
+			hook(threadID)
+		}
+		// A committed thread starts nothing, and its row may be gone already.
+		return !decision.committed
 	case <-ctx.Done():
 		return false
 	}
@@ -748,14 +738,13 @@ func familyRefusal(member store.DeleteMember, err error) error {
 
 // refuse releases every claim of the delete, in one transaction, and
 // returns cause: a refused delete changes nothing, and the starts waiting
-// for its decision go on. A release that fails leaves the claims fenced, and
-// those starts waiting, until the next boot releases them, and is said
-// beside cause.
+// for its decision go on as it ends (deleteThreads). A release that fails
+// leaves the claims fenced until the next boot releases them, and the starts
+// that meet them end, the queue left to that boot; it is said beside cause.
 func (op *familyDelete) refuse(cause error) error {
 	if err := op.app.store.ReleaseDeleteClaim(op.id); err != nil {
 		return errors.Join(cause, fmt.Errorf("and the delete's claim could not be taken back until the app restarts: %w", err))
 	}
-	op.app.deleteDecisions.shut(op.id, nil)
 	return cause
 }
 
@@ -781,7 +770,7 @@ func (op *familyDelete) commit() error {
 	}
 	// The starts waiting for the decision find the threads committed and
 	// start nothing; their queues are their teardowns'.
-	op.app.deleteDecisions.shut(op.id, nil)
+	op.app.deleteDecisions.decide(op.id, true)
 	for _, site := range op.sites {
 		if occupant := committed.Occupied[site.path]; occupant != "" {
 			op.kept = append(op.kept, RetainedWorktree{Path: site.path, Reason: op.app.keptFor(occupant)})

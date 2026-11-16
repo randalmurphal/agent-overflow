@@ -164,14 +164,10 @@ func (a *App) enqueueFlushDispatch(threadID string, items []triage.QueuedFlushIt
 	// overlapping claim before starting it, so a later snapshot cannot
 	// resurrect a message whose dispatch has already settled.
 	a.triage.ReleaseFlushClaim(threadID, items)
-	switch {
-	case stale && a.triage.FlushGenerationDropped(threadID, generation):
-		// A Stop's teardown or a revert threw its generation's queue away,
-		// and the handoff goes with it: its rows went with that drop.
-	case stale:
+	if stale {
 		a.flushDispatch.wg.Add(1)
 		go a.restoreStaleFlushHandoff(threadID, slices.Clone(items))
-	default:
+	} else {
 		a.startFlushDispatchWorkerLocked(threadID)
 	}
 	a.flushDispatch.mu.Unlock()
@@ -181,17 +177,28 @@ func (a *App) enqueueFlushDispatch(threadID string, items []triage.QueuedFlushIt
 // overtook (enqueueFlushDispatch) as that recovery took the rest of the
 // queue: back to the composer, or to their owners, while their rows stand.
 // A withdrawal took the rows of the others, and they go nowhere
-// (restoreFlushItemsToDraftLocked).
+// (restoreFlushItemsToDraftLocked). So does the whole handoff once a Stop's
+// teardown or a revert threw its generation's queue away, before the
+// restore or while it waited: the drops mark it under the mutation lock
+// (discardFlushDispatch), which the restore holds from its check through
+// its writes.
 func (a *App) restoreStaleFlushHandoff(threadID string, items []triage.QueuedFlushItem) {
 	defer a.flushDispatch.wg.Done()
 	unlock := a.threadLocks().Lock(threadID)
 	defer unlock()
+	unlockMutations := a.threadApplication().LockMutations(threadID)
+	if a.triage.FlushGenerationDropped(threadID, items[0].DispatchGeneration) {
+		unlockMutations()
+		return
+	}
 	drained := make([]triage.UnconfirmedFlushItem, 0, len(items))
 	for _, item := range items {
 		drained = append(drained, unconfirmedFromQueued(item))
 	}
 	sortByEnqueuedAt(drained)
-	a.restoreFlushItemsToDraftLocked(threadID, drained, queueRestoredReasonSessionDied)
+	restore := a.restoreFlushItemsToDraftOwing(threadID, drained, queueRestoredReasonSessionDied)
+	unlockMutations()
+	a.finishFlushRestore(threadID, restore)
 }
 
 // unconfirmedFromQueued is a queued message, never handed to the provider,
@@ -1071,16 +1078,22 @@ func (a *App) publishFlushDispatch(threadID string, group []triage.QueuedFlushIt
 // (store.DeleteDispatchedFlushQueueItems), so a joined message never keeps
 // some members' rows and loses the others', then each member's injector
 // bookkeeping runs. session is the token of the session the group was
-// written to, empty when it was not written.
+// written to, empty when it was not written. A written member whose row the
+// statement retired, or that never had one, says so on its pending send
+// (triage.Router.NoteFlushRowRetired): a recovery has no row to look for.
 func (a *App) settleFlushGroup(threadID string, group []triage.QueuedFlushItem, session string) {
 	ids := make([]string, 0, len(group))
 	for _, item := range group {
 		ids = append(ids, item.ID)
 	}
-	if err := a.store.DeleteDispatchedFlushQueueItems(ids); err != nil {
+	retired, err := a.store.DeleteDispatchedFlushQueueItems(ids)
+	if err != nil {
 		log.Printf("flush queue: delete durable rows [%s] of %s: %v", strings.Join(ids, " "), threadID, err)
 	}
 	for _, item := range group {
+		if session != "" && (item.NoRow || retired[item.ID]) {
+			a.triage.NoteFlushRowRetired(threadID, item.ID)
+		}
 		item.Settlement.Settle(session)
 	}
 }

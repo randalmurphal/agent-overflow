@@ -277,13 +277,14 @@ func (a *App) lockForQueuedRows(threadID string, drained []triage.UnconfirmedFlu
 	return a.threadApplication().LockMutations(threadID)
 }
 
-// hasQueueRow reports whether item was drained from a queue with its durable
-// row.
+// hasQueueRow reports whether item has a durable row for as long as it is
+// wanted: a queued message with one, or one the provider was handed whose
+// write kept it (an answer awaiting its echo).
 func hasQueueRow(item triage.UnconfirmedFlushItem) bool {
-	return item.Queued && !item.NoRow && item.QueueItemID != ""
+	return !item.NoRow && !item.RowRetired && item.QueueItemID != ""
 }
 
-// withoutWithdrawnQueued is drained less the queued messages whose rows are
+// withoutWithdrawnQueued is drained less the messages whose rows are
 // gone. A failed read keeps every message: a message the person queued is
 // not lost to a store error. The caller holds the thread's mutation lock.
 func (a *App) withoutWithdrawnQueued(threadID string, drained []triage.UnconfirmedFlushItem) []triage.UnconfirmedFlushItem {
@@ -576,18 +577,25 @@ func (a *App) requeueEagerPersistedFlushes(threadID string, persisted []triage.E
 	if a.triage == nil || len(persisted) == 0 {
 		return
 	}
-	ids := make([]string, 0, len(persisted))
+	// The provider was handed these. One whose write kept its row (an
+	// answer awaiting its echo) is withdrawn once the row is gone, and is
+	// read under the mutation lock a withdrawal takes; the rest have none.
+	rowKept := func(p triage.EagerPersistedFlush) bool { return p.QueueItemID != "" && !p.RowRetired }
+	var ids []string
 	for _, p := range persisted {
-		if p.QueueItemID != "" {
+		if rowKept(p) {
 			ids = append(ids, p.QueueItemID)
 		}
 	}
-	// The provider was handed these, which retired their rows; one that
-	// still stands is an answer's, kept until its echo, and a withdrawal
-	// takes it back. The persisted row is each one's durable copy, so none
-	// gets a queue row again. A failed read marks them all rowless.
-	present, _ := a.queueRowsPresent(threadID, ids)
+	unlock := func() {}
+	if len(ids) > 0 {
+		unlock = a.threadApplication().LockMutations(threadID)
+	}
+	present, read := a.queueRowsPresent(threadID, ids)
 	for _, p := range persisted {
+		if rowKept(p) && read && !present[p.QueueItemID] {
+			continue
+		}
 		payload, err := flushPayloadFromUserMeta(p.Meta)
 		if err != nil {
 			// Requeue anyway: the message text survives; only the
@@ -604,9 +612,10 @@ func (a *App) requeueEagerPersistedFlushes(threadID string, persisted []triage.E
 			Payload:         payload,
 			EnqueuedAt:      p.EnqueuedAt,
 			StaleUserItemID: p.UserItemID,
-			NoRow:           !present[queueID],
+			NoRow:           !rowKept(p),
 		})
 	}
+	unlock()
 	a.emitQueueStateChanged(threadID)
 }
 
@@ -812,28 +821,28 @@ func (a *App) requeueUnconfirmedFlushItems(threadID string, items []triage.Uncon
 // message, and returns them as queued, for a caller that must queue them
 // again after a cleanup wiped the queue.
 //
-// A queued message's row is what says it is wanted: one whose row is gone was
-// withdrawn, and is dropped. A message the provider was handed lost its row at
-// that write, unless it is an answer awaiting its echo, so it gets the row
-// again under its queue id, which the dispatch or restore of the requeued
-// message retires. One whose earlier row is still in the store
-// (StaleUserItemID) keeps that row as its durable copy instead and is queued
-// without a queue row (triage.QueuedFlushItem.NoRow): the boot restore takes
-// an unconfirmed row back with its text, so a queue row as well would put the
-// message in the composer twice. A failed read keeps every queued message as
-// it was queued and treats every handed one as rowless. err joins the rows
-// that could not be written; those messages stay queued without one.
+// A message is known to have no row only when it never had one or the write
+// that handed it to the provider retired it (hasQueueRow). Any other message
+// whose row is gone was withdrawn, and is dropped; a failed read drops none.
+// A handed message whose write retired its row gets the row again under its
+// queue id, which the dispatch or restore of the requeued message retires.
+// One whose earlier row is still in the store (StaleUserItemID) keeps that
+// row as its durable copy instead and is queued without a queue row
+// (triage.QueuedFlushItem.NoRow): the boot restore takes an unconfirmed row
+// back with its text, so a queue row as well would put the message in the
+// composer twice. err joins the rows that could not be written; those
+// messages stay queued without one.
 //
-// The caller holds the thread's mutation lock when one of items was queued
-// with its row (lockForQueuedRows), so no withdrawal fits between the read
-// and the queueing it guards.
+// The caller holds the thread's mutation lock when one of items has its row
+// (lockForQueuedRows), so no withdrawal fits between the read and the
+// queueing it guards.
 func (a *App) requeueUnconfirmedFlushItemsLocked(threadID string, items []triage.UnconfirmedFlushItem) ([]triage.UnconfirmedFlushItem, error) {
 	if a.triage == nil {
 		return nil, nil
 	}
 	ids := make([]string, 0, len(items))
 	for _, item := range items {
-		if item.QueueItemID != "" && !item.NoRow {
+		if hasQueueRow(item) {
 			ids = append(ids, item.QueueItemID)
 		}
 	}
@@ -848,10 +857,10 @@ func (a *App) requeueUnconfirmedFlushItemsLocked(threadID string, items []triage
 		if !ok {
 			continue
 		}
-		rowless := item.NoRow || (read && !present[queued.ID]) || (!read && !item.Queued)
-		if item.Queued && !item.NoRow && rowless {
+		if hasQueueRow(item) && read && !present[item.QueueItemID] {
 			continue
 		}
+		rowless := !hasQueueRow(item)
 		if rowless && !item.Queued && queued.StaleUserItemID == "" {
 			if err := a.persistRequeuedFlushItem(threadID, queued); err != nil {
 				failed = append(failed, err)
