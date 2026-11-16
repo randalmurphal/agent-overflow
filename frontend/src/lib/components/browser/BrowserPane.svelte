@@ -8,6 +8,7 @@
     openBrowserTab,
     takeAddressFocus,
     noteBrowserActionError,
+    registerBrowserAddressBar,
     noteBrowserFindCleanupError,
     browserFindCleanupError,
   } from '../../stores/browserCompanion.svelte';
@@ -19,6 +20,11 @@
   import { closePaneFind, registerPaneFindProvider } from '../../stores/paneFind.svelte';
   import { createBrowserFind } from '../../stores/browserFind.svelte';
   import BrowserAddressBar from './BrowserAddressBar.svelte';
+  import BrowserFilePicker from './BrowserFilePicker.svelte';
+  import { togglePanePromotion } from '../../stores/panes.svelte';
+  import { isCompactLayout } from '../../stores/layoutMode.svelte';
+  import { threadBackend } from '../../transport/entityIndex';
+  import { HOME_BACKEND } from '../../transport/backendKey';
   import BrowserTabStrip from './BrowserTabStrip.svelte';
   import { createBrowserPaneGeometry } from './browserPaneGeometry.svelte';
 
@@ -142,9 +148,40 @@
     void tick().then(() => addressBar?.focusAddress());
   });
 
+  // The focus-address command (mod+l) reaches the bar through the store.
+  $effect(() => {
+    const threadId = ctx.threadId;
+    if (!threadId) return;
+    return registerBrowserAddressBar(threadId, () => addressBar?.focusAddress());
+  });
+
   function openNewTab(): void {
     const threadId = ctx.threadId;
     if (threadId) void openBrowserTab(threadId, { focusAddress: true });
+  }
+
+  /** Leaves the address for the page area (the host rect). */
+  function leaveAddress(): void {
+    surface?.focus();
+  }
+
+  function togglePromotion(): void {
+    if (browserPaneId && !isCompactLayout()) togglePanePromotion(browserPaneId);
+  }
+
+  // The file picker. A chosen file opens in the active tab, or in a new tab
+  // when no tab can take an address, through the companion's navigation, so
+  // the backend's file authorization decides and its refusal is the banner.
+  let pickingFile = $state(false);
+  let pickerBackend = $derived(ctx.threadId ? (threadBackend(ctx.threadId) ?? HOME_BACKEND) : HOME_BACKEND);
+
+  function openPickedFile(path: string): void {
+    pickingFile = false;
+    const threadId = ctx.threadId;
+    if (!threadId) return;
+    const page = activePage;
+    if (page && !page.creating && !page.error) void act('navigate', page.id, path);
+    else void openBrowserTab(threadId, { address: path });
   }
 
   // What the host rect says while the active tab has no page to present.
@@ -171,9 +208,28 @@
 </script>
 
 <div class="flex h-full min-h-0 flex-col bg-surface-0" data-testid="browser-pane">
-  <BrowserTabStrip {sessionName} {pages} {activePageId} onAct={act} onNewTab={openNewTab} />
+  <BrowserTabStrip {sessionName} {pages} {activePageId} onAct={act} onNewTab={openNewTab} onEmptyDoubleClick={togglePromotion} />
 
-  <BrowserAddressBar bind:this={addressBar} {activePage} {sizeLabel} onAct={act} onRevealPageFile={revealPageFile} />
+  <BrowserAddressBar
+    bind:this={addressBar}
+    {activePage}
+    {sizeLabel}
+    promotePaneId={browserPaneId}
+    onAct={act}
+    onRevealPageFile={revealPageFile}
+    onOpenFile={() => (pickingFile = true)}
+    onLeave={leaveAddress}
+  />
+
+  {#if pickingFile}
+    <BrowserFilePicker
+      workspace={ctx.workspace}
+      rootPath={ctx.workspacePath ?? '~'}
+      backend={pickerBackend}
+      onChoose={openPickedFile}
+      onClose={() => (pickingFile = false)}
+    />
+  {/if}
 
   {#if browserPaneId}
     <PaneFindBar paneId={browserPaneId} title={activePage?.title || 'Browser'} fallbackFocus={() => surface ?? null} />
