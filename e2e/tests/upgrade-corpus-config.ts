@@ -723,7 +723,6 @@ export const coverageAllowlist: CoverageAllowance[] = [
       answer_kind: ['', 'error', 'note'],
       answer_agent: [1],
       late_reply_agent: [1],
-      own_turn: [0],
       lineage_only: [1],
     },
     reason: "a target receipts sends and spawns only (a reminder has no target); the top-up stages no ask, late reply, failed or stopped request or answer from a standing agent, open states are ones a request passes through, and a spawn's receipt the retention floor keeps as its lineage is a month old",
@@ -763,6 +762,7 @@ export const coverageAllowlist: CoverageAllowance[] = [
   // Provider accounting the mock does not report.
   { table: 'usage_ledger', reason: 'token usage the provider reports; the mock reports none' },
   { table: 'usage_pending', reason: 'token usage the provider reports; the mock reports none' },
+  { table: 'thread_tallies', columns: ['tokens'], reason: "the tokens a thread spent, counted from the usage the provider reports; the mock reports none" },
   { table: 'provider_thread_cost', reason: 'cost the provider reports; the mock reports none' },
   { table: 'turns', columns: ['token_usage_json'], reason: 'token usage the provider reports; the mock reports none' },
   { table: 'threads', columns: ['last_token_usage', 'live_todo'], reason: 'token usage and a TodoWrite list, which no library scenario emits' },
