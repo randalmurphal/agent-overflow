@@ -19,6 +19,8 @@ import (
 func remoteLoopWorker(t *testing.T, pair *reachPair) (*agentPeerPair, string) {
 	t.Helper()
 	installMockClaudeReplies(t, pair.dest, "watching the deploy")
+	// The caller here is told when a person stops the worker.
+	installMockClaudeReplies(t, pair.source, "noted")
 	ack := pair.spawnThere(t, "watch the deploy", nil)
 	child := pair.receipt(t, ack.Token).TargetThreadID
 	waitUntil(t, 10*time.Second, func() bool { return pair.receipt(t, ack.Token).SettledAt != 0 })
