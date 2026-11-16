@@ -241,6 +241,12 @@ func TestCommitSelectedRecordsWhatAHookStagedInTheIndex(t *testing.T) {
 			status:    "MM other.txt\n?? \"new ab.txt\"\n",
 			committed: "M\x00README.txt\x00A\x00new *.txt\x00M\x00other.txt\x00",
 		},
+		// The commit holds the parent's README.txt, and so does the index.
+		"hook undoes a selected change": {
+			hook:      "git reset --quiet HEAD -- README.txt\n",
+			status:    " M README.txt\nMM other.txt\n?? \"new ab.txt\"\n",
+			committed: "A\x00new *.txt\x00",
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -276,6 +282,153 @@ func TestCommitSelectedRecordsWhatAHookStagedInTheIndex(t *testing.T) {
 					len(headFields) > 0 && (headFields[0] != indexFields[0] || headFields[2] != indexFields[1]) {
 					t.Fatalf("%s: HEAD has %q, the index %q", path, inHead, inIndex)
 				}
+			}
+		})
+	}
+}
+
+// A committed removal of a file takes that one entry out of the index: the
+// entries the user staged under the same name, now a directory, stay.
+func TestCommitSelectedKeepsStagedEntriesUnderARemovedFile(t *testing.T) {
+	t.Parallel()
+	repo := initGitRepo(t)
+	commitRepoFile(t, repo, "node", "file\n", "add node")
+	if err := os.Remove(filepath.Join(repo, "node")); err != nil {
+		t.Fatal(err)
+	}
+	writeRepoFile(t, repo, "node/child.txt", "child\n")
+	testutil.RunGit(t, repo, "add", "-A", "--", "node")
+	staged := runGitStdout(t, repo, "ls-files", "--stage", "--", "node/child.txt")
+
+	if _, err := NewCore().CommitSelected(repo, "drop node", "", listedSelection(t, repo, "node")); err != nil {
+		t.Fatalf("CommitSelected: %v", err)
+	}
+	if got := runGitStdout(t, repo, "show", "--format=", "--name-status", "-z", "HEAD"); got != "D\x00node\x00" {
+		t.Fatalf("committed %q", got)
+	}
+	if got := runGitStdout(t, repo, "ls-files", "--stage", "--", "node/child.txt"); got != staged {
+		t.Fatalf("staged node/child.txt became %q, was %q", got, staged)
+	}
+	if got := runGitStdout(t, repo, "status", "--porcelain"); got != "A  node/child.txt\n" {
+		t.Fatalf("status = %q", got)
+	}
+}
+
+// A selected directory-to-file change whose file would displace an entry the
+// user staged under the directory is refused before anything is committed,
+// naming that entry, and the index is left as it was.
+func TestCommitSelectedRefusesAFileThatDisplacesAStagedEntry(t *testing.T) {
+	t.Parallel()
+	repo := initGitRepo(t)
+	commitRepoFile(t, repo, "dir/a.txt", "a\n", "add dir")
+	writeRepoFile(t, repo, "dir/b.txt", "b\n")
+	testutil.RunGit(t, repo, "add", "--", "dir/b.txt")
+	if err := os.RemoveAll(filepath.Join(repo, "dir")); err != nil {
+		t.Fatal(err)
+	}
+	writeRepoFile(t, repo, "dir", "now a file\n")
+	head := runGitStdout(t, repo, "rev-parse", "HEAD")
+	index := runGitStdout(t, repo, "ls-files", "--stage")
+	core := NewCore()
+
+	// The listing cannot read this shape yet (it inspects dir/a.txt through
+	// the file dir), so the selection is the one the dialog would send.
+	oid := strings.TrimSpace(runGitStdout(t, repo, "hash-object", "-w", "--", "dir"))
+	selection := []indexEntry{{path: "dir/a.txt"}, {mode: "100644", oid: oid, path: "dir"}}
+	around, err := core.readIndexAround(repo, selection)
+	if err != nil {
+		t.Fatalf("readIndexAround: %v", err)
+	}
+	if err := around.displaced(selection); !errors.Is(err, ErrCommitDisplacesIndexEntries) || !strings.Contains(err.Error(), "dir/b.txt") || strings.Contains(err.Error(), "a.txt") {
+		t.Fatalf("displaced = %v, want ErrCommitDisplacesIndexEntries naming dir/b.txt alone", err)
+	}
+	// Selecting the staged entry's removal too resolves it.
+	if err := around.displaced(append(selection, indexEntry{path: "dir/b.txt"})); err != nil {
+		t.Fatalf("displaced with every entry under dir recorded = %v", err)
+	}
+
+	if _, err := core.CommitSelected(repo, "dir to file", "", CommitSelection{
+		Files:        []gitdiff.ChangedFile{{Path: "dir/a.txt", Status: "D"}, {Path: "dir", Status: "A"}},
+		SnapshotRoot: t.TempDir(),
+	}); err == nil {
+		t.Fatal("CommitSelected committed a file over a staged entry")
+	}
+	if got := runGitStdout(t, repo, "rev-parse", "HEAD"); got != head {
+		t.Fatalf("HEAD moved to %q", got)
+	}
+	if got := runGitStdout(t, repo, "ls-files", "--stage"); got != index {
+		t.Fatalf("index became:\n%s\nwas:\n%s", got, index)
+	}
+}
+
+// A hook that stages a file over entries the user staged under that name
+// leaves the commit made and says the index was not updated, rather than
+// dropping those entries; the index is left as it was.
+func TestCommitSelectedReportsAHookFileThatDisplacesAStagedEntry(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the hook is a POSIX shell script")
+	}
+	t.Parallel()
+	repo := initGitRepo(t)
+	writeRepoFile(t, repo, "gen/x.txt", "staged\n")
+	testutil.RunGit(t, repo, "add", "--", "gen/x.txt")
+	writeRepoFile(t, repo, "README.txt", "hello\nedited\n")
+	selection := listedSelection(t, repo, "README.txt")
+	installPreCommitHook(t, repo, "oid=$(printf 'generated\\n' | git hash-object -w --stdin)\ngit update-index --add --cacheinfo 100644,$oid,gen\n")
+	index := runGitStdout(t, repo, "ls-files", "--stage", "--", "gen/x.txt")
+
+	_, err := NewCore().CommitSelected(repo, "readme", "", selection)
+	if !errors.Is(err, ErrCommitDisplacesIndexEntries) || !strings.Contains(err.Error(), "gen/x.txt") || !strings.Contains(err.Error(), "committed, but") {
+		t.Fatalf("CommitSelected = %v, want the commit made and ErrCommitDisplacesIndexEntries naming gen/x.txt", err)
+	}
+	if got := runGitStdout(t, repo, "show", "--format=", "--name-status", "-z", "HEAD"); got != "M\x00README.txt\x00A\x00gen\x00" {
+		t.Fatalf("committed %q", got)
+	}
+	if got := runGitStdout(t, repo, "ls-files", "--stage", "--", "gen/x.txt"); got != index {
+		t.Fatalf("staged gen/x.txt became %q, was %q", got, index)
+	}
+}
+
+// A selected path that is a prefix of other staged names without being
+// their directory, or that git would read as a pattern, changes only its
+// own index entry.
+func TestCommitSelectedRecordsOnlyTheSelectedNames(t *testing.T) {
+	t.Parallel()
+	for name, tc := range map[string]struct {
+		selected string
+		// staged are paths the user stages a change to and does not select.
+		staged []string
+	}{
+		"name prefix":         {selected: "foo", staged: []string{"foo.txt", "foo-bar/x"}},
+		"dash, newline, glob": {selected: "-new\nline [x]*.txt", staged: []string{"-new\nline xa.txt", "-new\nline [x]*.txt.bak"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if runtime.GOOS == "windows" && strings.ContainsAny(tc.selected, "\n*") {
+				t.Skip("the file system does not take the name")
+			}
+			t.Parallel()
+			repo := initGitRepo(t)
+			commitRepoFile(t, repo, tc.selected, "one\n", "add selected")
+			for _, path := range tc.staged {
+				commitRepoFile(t, repo, path, "one\n", "add "+path)
+				writeRepoFile(t, repo, path, "one\nstaged\n")
+				testutil.RunGit(t, repo, "add", "--", path)
+			}
+			args := append([]string{"--literal-pathspecs", "ls-files", "--stage", "-z", "--"}, tc.staged...)
+			staged := runGitStdout(t, repo, args...)
+			writeRepoFile(t, repo, tc.selected, "one\ncommitted\n")
+
+			if _, err := NewCore().CommitSelected(repo, "selected", "", listedSelection(t, repo, tc.selected)); err != nil {
+				t.Fatalf("CommitSelected: %v", err)
+			}
+			if got := runGitStdout(t, repo, "show", "--format=", "--name-only", "-z", "HEAD"); got != tc.selected+"\x00" {
+				t.Fatalf("committed %q", got)
+			}
+			if got := runGitStdout(t, repo, args...); got != staged {
+				t.Fatalf("staged entries became %q, were %q", got, staged)
+			}
+			if got := runGitStdout(t, repo, "--literal-pathspecs", "status", "--porcelain", "-z", "--", tc.selected); got != "" {
+				t.Fatalf("the selected path is not clean after its commit: %q", got)
 			}
 		})
 	}
