@@ -184,10 +184,14 @@ behave as a desktop browser's:
 - Chords, live while the browser pane is the focused pane
   (`browserPaneFocused`): new tab `mod+t`, focus the address `mod+l`, reload
   `mod+r` and `f5`, next and previous tab `ctrl+tab` and `ctrl+shift+tab`,
-  beside close tab `mod+w`. The app window reloads the app on `mod+r` before
-  the SPA sees it (`internal/uikeys`), so `mod+r` reaches the browser only
-  from the page, through the accelerator replay; `f5` is the reload from the
-  pane's chrome. A bare `f5` is never claimed from the page.
+  beside close tab `mod+w`. A bare `f5` is never claimed from the page.
+- The desktop and Windows launcher windows bind `mod+r` to reloading the app
+  before the SPA sees the key. The SPA reports its browser pane focus over
+  the webview's raw message channel, and while it is focused the window
+  hands `mod+r` to the SPA, which runs `browser.reload` or hands it back
+  (`internal/uikeys/pagechords.go`, `frontend/src/lib/native/shellChords.svelte.ts`).
+  `mod+shift+r` always reloads the app. The `--connect` window hosts no
+  native page and keeps the plain binding.
 
 ## Keyboard
 

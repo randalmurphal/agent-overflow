@@ -10,3 +10,8 @@ callback is evaluated on each reload so a launcher may update the URL.
 `WithDevTools` is opt-in because native and WSL launcher builds have different
 devtools availability. Return fresh maps so one window cannot mutate another
 window's bindings.
+
+`PageChords` routes the reload chord to the SPA while it reports its browser
+pane focused. A window that hosts the native browser pane wraps its bindings
+with it, feeds it raw messages only from its own page's origin
+(`TrustedPage`), and calls `DocumentLoaded` on each runtime-ready event.
