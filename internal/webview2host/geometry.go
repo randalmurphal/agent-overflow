@@ -88,8 +88,12 @@ func ParseGeometryMessage(message string) (PaneGeometry, error) {
 	return g, nil
 }
 
-// Validate holds a report to the bounds directive's contract (paneBounds):
-// it moves a real window too.
+// Validate holds a report to the raw geometry contract. It moves a real
+// window, so its numbers meet a bounds directive's bounds
+// (paneBounds.validateNumbers), but its clip is the measured visible
+// intersection, computed per axis: a pane scrolled out on one axis reports
+// an empty clip on that axis alone. An empty clip on either axis is a hidden
+// pane (presenter.go), not a malformed report.
 func (g PaneGeometry) Validate() error {
 	if err := validateToken("mount id", g.Mount, maxPageIDLen); err != nil {
 		return err
@@ -97,7 +101,7 @@ func (g PaneGeometry) Validate() error {
 	if g.Seq == 0 {
 		return errors.New("pane geometry sequence must start at 1")
 	}
-	return g.bounds().validate()
+	return g.bounds().validateNumbers()
 }
 
 // bounds is the report's whole host rect as a paneBounds.

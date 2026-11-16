@@ -227,10 +227,25 @@ func (d Directive) paneBounds() paneBounds {
 // the host's int32 clamp.
 const maxPaneDPR = 64.0
 
-// validate checks every number is finite and bounded and every pair is
-// all-or-nothing. It does not require a positive size: a geometry report
-// for a pane with nothing to show is valid and simply hides the page.
+// validate is a bounds directive's contract: validateNumbers, and a clip
+// that is all-or-nothing like the viewport. The backend hides a fully
+// clipped pane rather than sizing it to nothing, so a half-empty clip in a
+// directive is malformed.
 func (b paneBounds) validate() error {
+	if err := b.validateNumbers(); err != nil {
+		return err
+	}
+	if (b.CW > 0) != (b.CH > 0) {
+		return fmt.Errorf("bounds clip must be a positive pair or absent, got %gx%g", b.CW, b.CH)
+	}
+	return nil
+}
+
+// validateNumbers checks every number is finite and bounded, sizes and clip
+// sizes are not negative, the viewport pair is all-or-nothing, and the DPR
+// and background are in range. It does not require a positive size or clip:
+// a pane with nothing to show is valid and simply hides the page.
+func (b paneBounds) validateNumbers() error {
 	for name, value := range map[string]float64{
 		"x": b.X, "y": b.Y, "w": b.W, "h": b.H,
 		"cx": b.CX, "cy": b.CY, "cw": b.CW, "ch": b.CH,
@@ -246,10 +261,8 @@ func (b paneBounds) validate() error {
 	if b.W < 0 || b.H < 0 {
 		return fmt.Errorf("bounds size must not be negative, got %gx%g", b.W, b.H)
 	}
-	// The clip is all-or-nothing like the viewport: a fully clipped pane is
-	// hidden upstream, never sized to nothing here.
-	if (b.CW > 0) != (b.CH > 0) || b.CW < 0 || b.CH < 0 {
-		return fmt.Errorf("bounds clip must be a positive pair or absent, got %gx%g", b.CW, b.CH)
+	if b.CW < 0 || b.CH < 0 {
+		return fmt.Errorf("bounds clip size must not be negative, got %gx%g", b.CW, b.CH)
 	}
 	// The viewport pair is all-or-nothing: scaling one axis and not the
 	// other could only misplace the view.
