@@ -10,6 +10,7 @@ import ProviderAccountsSettings from './ProviderAccountsSettings.svelte';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
 import { resetForTest as resetProviderAccountsForTest } from '../../stores/providerAccounts.svelte';
+import { resetForTest as resetRateLimitsForTest, setProviderRateLimits } from '../../stores/rateLimitsInfo.svelte';
 
 const DAY_MS = 24 * 3600_000;
 
@@ -39,6 +40,7 @@ afterEach(() => {
   cleanup();
   host.remove();
   resetProviderAccountsForTest();
+  resetRateLimitsForTest();
   setCompactLayoutForTest(false);
 });
 
@@ -75,3 +77,109 @@ it.each([
   // The name gives way instead, and nothing leaves the card.
   expect(card.scrollWidth).toBeLessThanOrEqual(card.clientWidth + 1);
 });
+
+// An email is how a person tells two saved logins apart, so on a phone the
+// name takes the card's width and the controls move to a row beneath it.
+const LONG_EMAIL = 'morgan.alvarez-kowalski@northwind-engineering.test';
+// Each state lists its cards in order; every card is `acct-<position>`.
+const ACCOUNT_STATES: [string, Record<string, unknown>[]][] = [
+  ['a Codex login that is gone', [{ needsLogin: true }]],
+  ['a Codex login with a long email that is gone', [{ needsLogin: true, email: LONG_EMAIL }]],
+  ['a signed-in Codex account with a long email', [{ email: LONG_EMAIL }]],
+  ['an inactive Codex account with usage shown', [{ email: LONG_EMAIL, active: false, usage: true }]],
+  ['a Codex login about to expire', [{ refreshTokenExpiresAt: Date.now() + 2 * DAY_MS }]],
+  [
+    'several Claude accounts, one inactive and gone',
+    [
+      { provider: 'claude', email: LONG_EMAIL, orgName: 'Northwind', usage: true },
+      { provider: 'claude', active: false, needsLogin: true, email: 'sam@northwind.test' },
+    ],
+  ],
+];
+
+function renderAccounts(width: number, rows: Record<string, unknown>[]) {
+  const provider = (rows[0].provider as 'codex' | 'claude' | undefined) ?? 'codex';
+  const accounts = rows.map(({ usage, ...overrides }, index) => {
+    const id = `acct-${index + 1}`;
+    if (usage) {
+      setProviderRateLimits({
+        provider,
+        accountId: id,
+        updatedAt: Date.now(),
+        limits: [
+          { limitId: 'primary', limitName: '', usedPercent: 42, windowMins: 300, resetsAt: Date.now() / 1000 + 3600 },
+          { limitId: 'secondary', limitName: '', usedPercent: 7, windowMins: 10080, resetsAt: Date.now() / 1000 + DAY_MS / 1000 },
+        ],
+      });
+    }
+    return account({ id, provider, ...overrides });
+  });
+  setBindingMock('ListProviderAccounts', async () => accounts);
+  setCompactLayoutForTest(width < 600);
+  host.style.cssText = `width:${width}px;overflow-wrap:anywhere;background:var(--color-surface-0);color:var(--color-fg)`;
+  return render(ProviderAccountsSettings, { target: host, props: { provider } });
+}
+
+/** The card's width inside its padding, which the name competes for. */
+function innerWidth(card: HTMLElement): number {
+  const style = getComputedStyle(card);
+  return card.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+}
+
+it.each(ACCOUNT_STATES.flatMap(([label, rows]) => [320, 380].map((width) => [label, width, rows] as const)))(
+  'gives the name the card width for %s at %ipx',
+  async (_label, width, rows) => {
+    const view = renderAccounts(width, rows);
+    for (let index = 0; index < rows.length; index++) {
+      const id = `acct-${index + 1}`;
+      const card = await view.findByTestId(`provider-account-${id}`);
+      const name = view.getByTestId(`provider-account-name-${id}`);
+      const controls = view.getByTestId(`provider-account-controls-${id}`);
+      expect(card.textContent?.includes('Usage not checked yet.')).toBe(!rows[index].usage);
+      // A name that fits is shown whole; a longer one keeps most of the card
+      // (the rest of its row is the grip, the status dot and the pill).
+      expect(name.clientWidth).toBeGreaterThanOrEqual(Math.min(name.scrollWidth, innerWidth(card) * 0.6));
+      // Its column runs to the card's edge, so the explanation lines below
+      // it get the same width, and the controls sit on their own row
+      // beneath, inside the card.
+      const column = name.closest('button')!.getBoundingClientRect();
+      const contentRight = card.getBoundingClientRect().right - parseFloat(getComputedStyle(card).paddingRight) - 1;
+      expect(column.right).toBeCloseTo(contentRight, 0);
+      expect(controls.getBoundingClientRect().top).toBeGreaterThanOrEqual(name.getBoundingClientRect().bottom);
+      expect(controls.getBoundingClientRect().right).toBeLessThanOrEqual(card.getBoundingClientRect().right);
+      expect(card.scrollWidth).toBeLessThanOrEqual(card.clientWidth + 1);
+    }
+  },
+);
+
+it('keeps the phone layout while an account is refreshing', async () => {
+  setBindingMock('RefreshProviderAccountUsage', () => new Promise<void>(() => {}));
+  const view = renderAccounts(380, [{ email: LONG_EMAIL }]);
+  const card = await view.findByTestId('provider-account-acct-1');
+  view.getByRole('button', { name: `Refresh usage for ${LONG_EMAIL}` }).click();
+  await waitFor(() => expect(card.querySelector('.animate-spin')).toBeTruthy());
+  const name = view.getByTestId('provider-account-name-acct-1');
+  expect(name.clientWidth).toBeGreaterThanOrEqual(innerWidth(card) * 0.6);
+  expect(view.getByTestId('provider-account-controls-acct-1').getBoundingClientRect().top)
+    .toBeGreaterThanOrEqual(name.getBoundingClientRect().bottom);
+});
+
+// Desktop keeps one row: the name column on the left, the controls beside it
+// at the top right.
+it.each(ACCOUNT_STATES.flatMap(([label, rows]) => [768, 1024].map((width) => [label, width, rows] as const)))(
+  'keeps the controls beside the name for %s at %ipx',
+  async (_label, width, rows) => {
+    const view = renderAccounts(width, rows);
+    for (let index = 0; index < rows.length; index++) {
+      const id = `acct-${index + 1}`;
+      const card = await view.findByTestId(`provider-account-${id}`);
+      const name = view.getByTestId(`provider-account-name-${id}`).getBoundingClientRect();
+      const controls = view.getByTestId(`provider-account-controls-${id}`).getBoundingClientRect();
+      const cardBox = card.getBoundingClientRect();
+      const padding = parseFloat(getComputedStyle(card).paddingTop);
+      expect(controls.top).toBeCloseTo(cardBox.top + padding + 1, 0);
+      expect(controls.left).toBeGreaterThanOrEqual(name.right);
+      expect(cardBox.right - controls.right).toBeCloseTo(parseFloat(getComputedStyle(card).paddingRight) + 1, 0);
+    }
+  },
+);

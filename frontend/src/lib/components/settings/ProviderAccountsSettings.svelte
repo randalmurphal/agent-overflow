@@ -335,7 +335,9 @@
     </p>
   {:else}
     <p class="sr-only" aria-live="polite">{reorderNotice}</p>
-    <div class="flex flex-col gap-2" bind:this={listEl}>
+    <!-- A narrow list (a phone) gives each card's name the full width it
+         needs to be told apart, and the controls a row of their own. -->
+    <div class="@container/accounts flex flex-col gap-2" bind:this={listEl}>
       {#each accounts as account, index (account.id)}
         {@const limits = getProviderRateLimits(provider, account.id, backend)}
         {@const orgLabel = providerAccountOrgLabel(account)}
@@ -356,7 +358,7 @@
           data-testid="provider-account-{account.id}"
           data-account-card={account.id}
         >
-          <div class="flex items-start justify-between gap-3">
+          <div class="flex items-start justify-between gap-3 @max-lg/accounts:flex-wrap @max-lg/accounts:gap-y-1">
             {#if canReorder}
               <button
                 type="button"
@@ -399,6 +401,7 @@
                   class="truncate text-[0.75rem] font-medium {account.needsLogin
                     ? 'text-fg-muted'
                     : 'text-fg'}"
+                  data-testid="provider-account-name-{account.id}"
                 >
                   {providerAccountName(account)}
                 </span>
@@ -432,7 +435,9 @@
               {/if}
             </button>
 
-            <div class="flex shrink-0 items-center gap-1">
+            <div
+              class="flex shrink-0 items-center gap-1 @max-lg/accounts:basis-full @max-lg/accounts:justify-end"
+              data-testid="provider-account-controls-{account.id}">
               <label
                 class="flex cursor-pointer items-center gap-1.5 whitespace-nowrap px-1 text-[0.71875rem] text-fg-muted has-[:disabled]:cursor-not-allowed has-[:disabled]:opacity-50 compact:select-none"
                 title={ungrantedTitle ?? 'Let Agent Overflow switch to and from this account when a usage limit is near'}

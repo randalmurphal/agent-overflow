@@ -1,10 +1,20 @@
+import { rm } from 'node:fs/promises';
+import path from 'node:path';
 import { expect, type Page } from '@playwright/test';
 import type { HarnessApp } from '../src/harness.js';
 import type { SeedResult } from './fixtures.js';
+import { completeCodexSignIn } from './provider-account-helpers.js';
 
 export interface LayoutFault {
   section: string;
-  kind: 'panel-overflow' | 'content-clipped' | 'word-broken' | 'control-wraps' | 'input-crushed' | 'command-wraps';
+  kind:
+    | 'panel-overflow'
+    | 'content-clipped'
+    | 'text-crushed'
+    | 'word-broken'
+    | 'control-wraps'
+    | 'input-crushed'
+    | 'command-wraps';
   text: string;
 }
 
@@ -12,9 +22,9 @@ const panelSelector = '[role="tabpanel"][id^="settings-panel-"]';
 
 /**
  * Every layout fault the open settings page shows: content wider than the
- * panel or cut off by a box inside it, a word broken mid-word, a labelled
- * control wrapped onto a second line, or a text field squeezed too narrow
- * to read. A break at a hyphen,
+ * panel or cut off by a box inside it, a truncated text cut to a few
+ * letters, a word broken mid-word, a labelled control wrapped onto a second
+ * line, or a text field squeezed too narrow to read. A break at a hyphen,
  * dot or underscore is a legitimate wrap point; paths and words longer than
  * the column may break anywhere.
  */
@@ -40,10 +50,18 @@ export async function layoutFaults(page: Page, section: string): Promise<LayoutF
       return tops.size;
     };
 
-    // A field scrolls its own value and an ellipsis is a deliberate cut.
+    // A field scrolls its own value and an ellipsis is a deliberate cut, as
+    // long as it leaves enough letters (6em) to tell the text apart.
     for (const el of root.querySelectorAll<HTMLElement>('*')) {
       if (el.scrollWidth <= el.clientWidth + 1 || !shown(el) || el.closest('input, textarea, select, pre, .sr-only')) continue;
       const style = getComputedStyle(el);
+      if (style.textOverflow === 'ellipsis' && el.clientWidth < 6 * parseFloat(style.fontSize)) {
+        faults.push({
+          kind: 'text-crushed',
+          text: `"${(el.textContent ?? '').trim().slice(0, 40)}" cut to ${el.clientWidth}px`,
+        });
+        continue;
+      }
       if (style.overflowX === 'visible' || style.textOverflow === 'ellipsis') continue;
       faults.push({
         kind: 'content-clipped',
@@ -141,16 +159,22 @@ async function settle(page: Page): Promise<void> {
 
 /**
  * Opens Settings and measures every section, populated: a project, saved
- * variables on each provider page, and a rebound chord. On compact each
- * section is a page reached from the rail.
+ * variables on each provider page, a saved Codex account that needs signing
+ * in again, and a rebound chord. On compact each section is a page reached
+ * from the rail. Saving the account is process-wide state, so the caller
+ * passes a backend it owns.
  */
 export async function settingsLayoutFaults(harness: HarnessApp, page: Page, compact: boolean): Promise<LayoutFault[]> {
   await harness.rpc<SeedResult>('HarnessSeed', { projects: [{ name: 'settings-layout', repo: {} }] });
   await harness.open(page);
   await page.getByTestId('sidebar-settings-button').click();
+  await saveCodexAccountNeedingSignIn(harness, page, compact);
   const faults: LayoutFault[] = [];
   for (const name of await sectionNames(page)) {
     await openSection(page, name);
+    if (name === 'Codex') {
+      await expect(page.locator('[data-testid^="provider-account-sign-in-"]')).toBeVisible();
+    }
     const providerPage = await page.getByTestId('settings-provider-env-name-input').isVisible();
     if (providerPage) {
       await addEnvVars(page);
@@ -165,6 +189,18 @@ export async function settingsLayoutFaults(harness: HarnessApp, page: Page, comp
     if (compact) await page.getByTestId('settings-page-back').click();
   }
   return faults;
+}
+
+/**
+ * The account card with the most to fit: the active Codex account whose
+ * credential is gone shows its name, Active, Auto-switch, Sign in again,
+ * refresh, remove and the reason it needs a sign-in.
+ */
+async function saveCodexAccountNeedingSignIn(harness: HarnessApp, page: Page, compact: boolean): Promise<void> {
+  await openSection(page, 'Codex');
+  await completeCodexSignIn(harness, page);
+  await rm(path.join(harness.bootstrap.homeDir!, '.codex', 'auth.json'));
+  if (compact) await page.getByTestId('settings-page-back').click();
 }
 
 const envVars = [
