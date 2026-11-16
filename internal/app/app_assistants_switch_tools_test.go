@@ -96,3 +96,26 @@ func TestAgentsAreNotOfferedAssistantsWhileOff(t *testing.T) {
 		t.Fatal("assistants are not offered again once turned on")
 	}
 }
+
+// While assistants are off, a moment of an assistant's thread is a hidden
+// thread's, which raises nothing unless the screen opted into hidden
+// threads; an ordinary thread's is not. On again, it raises as before.
+func TestAPausedAssistantsThreadIsHiddenFromNotifications(t *testing.T) {
+	t.Parallel()
+	f := newAssistantFixture(t)
+	a := f.app
+	a.registerSettingsBroadcast()
+	target, _ := f.assistantTarget(t, "Ops.")
+
+	setAssistants(t, a, false)
+	if !a.notificationThreadRef(target.ID).Hidden {
+		t.Error("an assistant's thread is not hidden from notifications while assistants are off")
+	}
+	if a.notificationThreadRef(f.caller.ID).Hidden {
+		t.Error("an ordinary thread is hidden from notifications while assistants are off")
+	}
+	setAssistants(t, a, true)
+	if a.notificationThreadRef(target.ID).Hidden {
+		t.Error("an assistant's thread stays hidden from notifications once assistants are on")
+	}
+}

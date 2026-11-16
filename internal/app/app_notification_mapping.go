@@ -335,6 +335,15 @@ func (a *App) notificationThreadRef(threadID string) notify.ThreadRef {
 	}
 	ref.Title = facts.Title
 	ref.Hidden = !facts.Exists || threadmode.IsHidden(facts.Mode)
+	if !ref.Hidden {
+		// An assistant's thread while assistants are off is one the
+		// sidebar does not list either.
+		paused, err := a.pausedAssistantThread(threadID)
+		if err != nil {
+			log.Printf("notifications: read whether %s lives under an assistant: %v", threadID, err)
+		}
+		ref.Hidden = paused
+	}
 	ref.Owned = facts.Owned
 	ref.Attention, ref.AttentionAt = facts.Attention, facts.AttentionAt
 	return ref
