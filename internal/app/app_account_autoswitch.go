@@ -188,12 +188,8 @@ func (a *App) continueAfterUsageLimit(ctx context.Context, threadID string, admi
 	return a.queueAgentNotice(agentNotice{
 		threadID: threadID,
 		sendID:   "usage-continue:" + threadID + ":" + uuid.NewString(),
-		origin:   usermessage.OriginApp,
-		prepare: func() (string, bool, error) {
-			if !admit() {
-				return "", false, nil
-			}
-			return accountswitch.ContinueMessage, true, nil
+		prepare: func() (usermessage.AgentMessage, bool, error) {
+			return usermessage.AppMessage(accountswitch.ContinueMessage), admit(), nil
 		},
 		startFailed: func(err error) string {
 			return "Could not start this thread to continue it after the usage limit: " + err.Error()

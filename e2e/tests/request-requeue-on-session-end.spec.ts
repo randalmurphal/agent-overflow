@@ -20,7 +20,7 @@ import type { Locator, Page } from '@playwright/test';
 import { test, expect, type SeedResult } from './fixtures.js';
 import type { HarnessApp } from '../src/harness.js';
 import { advanceGate, awaitGate, awaitToolAnswer, plainScenario, setScenario, threadToolsScenario } from './thread-tools-helpers.js';
-import { goTemplate, type FlushedEvent } from './agent-message-rows-helpers.js';
+import { goRow, type FlushedEvent } from './agent-message-rows-helpers.js';
 import { captureAgentMessage, captureAgentMessageInView } from './wake-rows-helpers.js';
 import { agentsBody, openAgents } from './agents-tray-helpers.js';
 
@@ -200,8 +200,7 @@ for (const provider of ['claude', 'codex'] as const) {
     const turns = [];
     for (const [i, row] of UNANSWERED.entries()) {
       turns.push({
-        userText: await goTemplate(row.fixture),
-        userMeta: { origin: 'agent-thread', originThread: { threadId: 't-work', title: 'Worker', kind: 'wake', token: `tok-${i}` }, sendId: `thread-wake:tok-${i}` },
+        ...await goRow(row.fixture, { threadId: 't-work', title: 'Worker', kind: 'wake', token: `tok-${i}` }, `thread-wake:tok-${i}`),
         items: [{ kind: 'assistant_text', summary: `Noted ${i}.` }],
       });
     }

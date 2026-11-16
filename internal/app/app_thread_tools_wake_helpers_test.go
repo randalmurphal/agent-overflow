@@ -32,6 +32,5 @@ func wakeBodyOf(a *App, row store.ThreadRequest, late bool) (string, error) {
 // attributed to. It does not need the request settled.
 func soloWakeOrigin(a *App, row store.ThreadRequest) *usermessage.OriginThread {
 	wake := a.threadWakeFor(threadWakeMessage{kind: threadtools.WakeReply, rows: []store.ThreadRequest{row}})
-	_, origin := a.threadWakeAttribution(row, wake)
-	return origin
+	return a.threadWakeNote(row, wake).OriginThread()
 }

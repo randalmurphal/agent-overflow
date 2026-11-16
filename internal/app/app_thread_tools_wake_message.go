@@ -186,9 +186,7 @@ func (a *App) deliverThreadWakeMessage(message threadWakeMessage) bool {
 		fail("deliver to "+thread.ID, err)
 		return true
 	}
-	wake := a.threadWakeFor(message)
-	origin, originThread := a.threadWakeAttribution(carrier, wake)
-	body := wake.String()
+	note := a.threadWakeNote(carrier, a.threadWakeFor(message))
 	if hook := a.threadWakeRenderedForTest; hook != nil {
 		hook(carrier.Token)
 	}
@@ -200,16 +198,14 @@ func (a *App) deliverThreadWakeMessage(message threadWakeMessage) bool {
 	// handoff moved with the thread they were made in.
 	recipient := thread.ID
 	if err := a.queueAgentNotice(agentNotice{
-		threadID:     thread.ID,
-		sendID:       threadWakeSendIDFor(carrier.Token, message.late),
-		origin:       origin,
-		originThread: originThread,
-		recipient:    func(threadID string) { recipient = threadID },
-		prepare: func() (string, bool, error) {
+		threadID:  thread.ID,
+		sendID:    threadWakeSendIDFor(carrier.Token, message.late),
+		recipient: func(threadID string) { recipient = threadID },
+		prepare: func() (usermessage.AgentMessage, bool, error) {
 			if recipient != thread.ID {
-				return "", false, fmt.Errorf("request %s was built for %s and goes to %s: %w", carrier.Token, thread.ID, recipient, store.ErrThreadWakeNotOwed)
+				return note, false, fmt.Errorf("request %s was built for %s and goes to %s: %w", carrier.Token, thread.ID, recipient, store.ErrThreadWakeNotOwed)
 			}
-			return body, true, a.unarchiveForThreadWake(recipient, carrier, message.late)
+			return note, true, a.unarchiveForThreadWake(recipient, carrier, message.late)
 		},
 		// One transaction writes the durable queue row and every delivery
 		// mark, so a second observation of the same settlement cannot queue
@@ -277,22 +273,23 @@ func (a *App) unarchiveForThreadWake(threadID string, carrier store.ThreadReques
 	return nil
 }
 
-// threadWakeAttribution says who a wake's message is from: the thread that
-// answered, for the same reason the request itself is attributed to its
-// sender, so a person reading the timeline can see where it came from. A
-// message that lists several threads is attributed to its carrier's (the
-// first listed) and names them all in its text: it is still an agent's
-// message, never the person's, and the carrier's token is the one its echo
-// confirms (ConfirmThreadWake).
-func (a *App) threadWakeAttribution(carrier store.ThreadRequest, wake threadtools.Wake) (string, *usermessage.OriginThread) {
-	origin := &usermessage.OriginThread{ThreadID: carrier.TargetThreadID, Token: carrier.Token, Kind: usermessage.OriginKindWake}
+// threadWakeNote is a wake's message: its text and facts, from the wake,
+// attributed to the thread that answered, for the same reason the request
+// itself is attributed to its sender, so a person reading the timeline can
+// see where it came from. A message that lists several threads is
+// attributed to its carrier's (the first listed) and names them all in its
+// facts: it is still an agent's message, never the person's, and the
+// carrier's token is the one its echo confirms (ConfirmThreadWake).
+func (a *App) threadWakeNote(carrier store.ThreadRequest, wake threadtools.Wake) usermessage.AgentMessage {
+	origin := usermessage.OriginThread{ThreadID: carrier.TargetThreadID, Token: carrier.Token, Kind: usermessage.OriginKindWake}
 	if len(wake.Sources) > 0 {
 		origin.Title = wake.Sources[0].Title
 	}
 	if carrier.TargetComputerID != "" {
 		origin.ComputerName, origin.ComputerID = a.threadTools().threadToolsBackendName(carrier.TargetComputerID)
 	}
-	return usermessage.OriginAgentThread, origin
+	text, facts := wake.Message()
+	return usermessage.ThreadMessage(origin, text, facts)
 }
 
 // threadWakeFor renders one message's wake from the fixed template: the thread
@@ -332,7 +329,7 @@ func (a *App) threadWakeFor(message threadWakeMessage) threadtools.Wake {
 			source := threadtools.WakeSource{ThreadID: row.TargetThreadID}
 			if row.TargetComputerID != "" {
 				source.Title = row.TargetThreadTitle
-				source.Computer, _ = a.threadTools().threadToolsBackendName(row.TargetComputerID)
+				source.Computer, source.ComputerID = a.threadTools().threadToolsBackendName(row.TargetComputerID)
 			} else if row.TargetThreadID != "" {
 				if thread, err := a.store.GetThread(row.TargetThreadID); err == nil {
 					source.Title = thread.Title

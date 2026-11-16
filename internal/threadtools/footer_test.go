@@ -200,13 +200,17 @@ func TestWakeTemplates(t *testing.T) {
 // TestWakeBodyPreviewPointer: a body over the preview budget ends with the
 // pointer to the whole answer, and one inside it is untouched.
 func TestWakeBodyPreviewPointer(t *testing.T) {
+	reminder := func(text string) (string, MessageFacts) {
+		message, facts := Wake{Kind: WakeReminder, Sources: []WakeSource{{Tokens: []string{"tok"}}}, Text: text}.Message()
+		return strings.TrimPrefix(message, "Reminder you set [token tok]:\n"), facts
+	}
 	short := strings.Repeat("x", WakePreviewBytes)
-	if got := WakeBody(short, "tok"); got != short {
+	if got, facts := reminder(short); got != short || facts.Clipped {
 		t.Fatalf("a body inside the budget was changed")
 	}
 	long := strings.Repeat("x", WakePreviewBytes+1)
-	got := WakeBody(long, "tok")
-	if !strings.HasSuffix(got, "\n[preview; thread_status tok for the whole answer]") {
+	got, facts := reminder(long)
+	if !strings.HasSuffix(got, "\n[preview; thread_status tok for the whole answer]") || !facts.Clipped {
 		t.Fatalf("no preview pointer: %q", got[len(got)-80:])
 	}
 	if len(got) != WakePreviewBytes+1+len(WakePreviewPointer("tok")) {
@@ -218,7 +222,8 @@ func TestWakeBodyPreviewPointer(t *testing.T) {
 // being cut in half by the preview budget.
 func TestWakeBodyClipsOnACharacterBoundary(t *testing.T) {
 	body := strings.Repeat("x", WakePreviewBytes-1) + "é" + "tail"
-	got := WakeBody(body, "tok")
+	message, _ := Wake{Kind: WakeReminder, Sources: []WakeSource{{Tokens: []string{"tok"}}}, Text: body}.Message()
+	got := strings.TrimPrefix(message, "Reminder you set [token tok]:\n")
 	preview := strings.TrimSuffix(got, "\n"+WakePreviewPointer("tok"))
 	if strings.HasSuffix(preview, "\xc3") {
 		t.Fatalf("the preview split a character: %q", preview[len(preview)-4:])
@@ -507,29 +512,5 @@ func TestWakeDigestNamesStandingAgentsAndThePastThread(t *testing.T) {
 	}, "\n")
 	if got != want {
 		t.Fatalf("wake:\n%s\nwant:\n%s", got, want)
-	}
-}
-
-// TestCutWakeMadeInReadsWhatWakeMadeInWrites: the readers take the line off
-// a wake by this, and anything else stays the answer.
-func TestCutWakeMadeInReadsWhatWakeMadeInWrites(t *testing.T) {
-	madeIn, now, rest, ok := CutWakeMadeIn(WakeMadeIn("old1", "new2") + "\ndone")
-	if !ok || madeIn != "old1" || now != "new2" || rest != "done" {
-		t.Fatalf("CutWakeMadeIn = %q, %q, %q, %v", madeIn, now, rest, ok)
-	}
-	if _, _, rest, ok := CutWakeMadeIn(WakeMadeIn("old1", "new2")); !ok || rest != "" {
-		t.Fatalf("a last line: rest %q, ok %v", rest, ok)
-	}
-	for _, text := range []string{
-		"done",
-		"Made in thread old1, before New Thread, Same Assistant; now new2",
-		"Made in thread old1, before New Thread, Same Assistant; now .",
-		"Made in thread , before New Thread, Same Assistant; now new2.",
-		"Made in thread my old one, before New Thread, Same Assistant; now new2.",
-		"Made in thread old1.\nMore.",
-	} {
-		if _, _, rest, ok := CutWakeMadeIn(text); ok || rest != text {
-			t.Errorf("CutWakeMadeIn(%q) = %q, %v, want it unchanged", text, rest, ok)
-		}
 	}
 }

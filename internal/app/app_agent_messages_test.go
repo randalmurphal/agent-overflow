@@ -317,7 +317,9 @@ func TestRemoteCompletionQueuesAsAnAgentMessage(t *testing.T) {
 	want := usermessage.OriginWake{Kind: usermessage.OriginWakeKindCompletion, Label: w.Label, Computer: w.ComputerID}
 	check := func(source string, item QueuedItem) {
 		t.Helper()
-		if !item.AgentMessage || item.Origin != usermessage.OriginAgentWake || item.OriginWake == nil || *item.OriginWake != want {
+		if !item.AgentMessage || item.Origin != usermessage.OriginAgentWake || item.OriginWake == nil ||
+			item.OriginWake.Kind != want.Kind || item.OriginWake.Label != want.Label || item.OriginWake.Computer != want.Computer ||
+			item.OriginWake.Facts == nil || !strings.HasPrefix(item.OriginWake.Facts.Headline, w.Receipt.State) {
 			t.Fatalf("%s: queued completion = agent %v origin %q wake %+v, want an agent message from %+v", source, item.AgentMessage, item.Origin, item.OriginWake, want)
 		}
 	}

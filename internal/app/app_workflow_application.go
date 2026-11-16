@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"strings"
 
 	"agent-overflow/internal/eventchan"
 	gitops "agent-overflow/internal/git"
@@ -11,6 +12,7 @@ import (
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/usermessage"
 	"agent-overflow/internal/workflow/engine"
+	"agent-overflow/internal/workflow/wake"
 	"agent-overflow/internal/workflowapp"
 
 	"github.com/google/uuid"
@@ -136,11 +138,12 @@ func (a *App) workflowApplication() *workflowapp.Service {
 				},
 				// A run's wake is the workflow's report, not the person's.
 				QueueMessage: a.queueWorkflowWake,
-				SendMessage: func(threadID, workflowID, message string) error {
+				SendMessage: func(threadID, workflowID, text string) error {
+					message := workflowWakeMessage(workflowID, text)
 					_, err := a.sendMessageWithOptions(
-						context.Background(), threadID, message, sendMessageOptions{
+						context.Background(), threadID, message.Text(), sendMessageOptions{
 							PreserveDraft: true,
-							Origin:        usermessage.OriginAgentWake, OriginWake: workflowWakeOrigin(workflowID),
+							Origin:        message.Origin(), OriginWake: message.OriginWake(),
 						},
 					)
 					return err
@@ -329,22 +332,30 @@ func projectWorkflowWatch(value workflowapp.WatchResult) WorkflowAgentWatchResul
 const workflowWakeSendIDRoot = "workflow-wake:"
 
 // queueWorkflowWake queues a run's wake for the thread's agent.
-func (a *App) queueWorkflowWake(threadID, workflowID, message string, onDurable func()) error {
+func (a *App) queueWorkflowWake(threadID, workflowID, text string, onDurable func()) error {
 	var settled func(string)
 	if onDurable != nil {
 		settled = func(string) { onDurable() }
 	}
+	message := workflowWakeMessage(workflowID, text)
 	_, err := a.registerQueueItem(
-		threadID, message, SendMessageOptions{SendID: workflowWakeSendIDRoot + uuid.NewString()},
+		threadID, message.Text(), SendMessageOptions{SendID: workflowWakeSendIDRoot + uuid.NewString()},
 		injectedQueueOptions{
 			preserveDraft: true, onDurable: settled,
-			origin: usermessage.OriginAgentWake, originWake: workflowWakeOrigin(workflowID),
+			origin: message.Origin(), originWake: message.OriginWake(),
 		},
 	)
 	return err
 }
 
-// workflowWakeOrigin attributes a run's wake to its workflow.
-func workflowWakeOrigin(workflowID string) *usermessage.OriginWake {
-	return &usermessage.OriginWake{Kind: usermessage.OriginWakeKindWorkflow, Label: workflowID}
+// workflowWakeMessage is a run's wake (wake.Compose, wake.ComposeProgress),
+// attributed to its workflow: the data notice those open with, written for
+// the agent, then what the row shows, headed by its first line, the run's
+// headline.
+func workflowWakeMessage(workflowID, text string) usermessage.AgentMessage {
+	from := usermessage.OriginWake{Kind: usermessage.OriginWakeKindWorkflow, Label: workflowID}
+	if data, ok := strings.CutPrefix(text, wake.DataNotice+"\n"); ok {
+		return usermessage.WakeMessage(from, wake.DataNotice, data, "")
+	}
+	return usermessage.WakeMessage(from, "", text, "")
 }

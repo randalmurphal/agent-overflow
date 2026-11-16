@@ -24,6 +24,7 @@ import (
 	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/transport"
 	"agent-overflow/internal/triage"
+	"agent-overflow/internal/usermessage"
 	"agent-overflow/internal/workflow/def"
 	"agent-overflow/internal/workflow/engine"
 	"github.com/google/uuid"
@@ -660,7 +661,7 @@ func TestARemoteCompletionQueuedAfterAnArchiveIsHeld(t *testing.T) {
 			} else if work, err = a.archiveThreadLocked(thread.ID, ""); err != nil {
 				t.Fatalf("archiveThreadLocked: %v", err)
 			}
-			notice.prepare = func() (string, bool, error) { return body, true, nil }
+			notice.prepare = func() (usermessage.AgentMessage, bool, error) { return body, true, nil }
 			if err := a.queueAgentNotice(notice); !errors.Is(err, errThreadArchived) {
 				t.Errorf("queueAgentNotice: %v, want %v", err, errThreadArchived)
 			}

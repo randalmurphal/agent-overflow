@@ -392,17 +392,12 @@ func (a *App) deliverRemoteCompletion(w store.RemoteWatch, output remoteCompleti
 
 // remoteCompletionNotice is the notice that carries w's completion.
 func (a *App) remoteCompletionNotice(w store.RemoteWatch, output remoteCompletionOutput) agentNotice {
-	computer := a.remoteComputerNames()[w.ComputerID]
-	if computer == "" {
-		computer = w.ComputerID
-	}
 	return agentNotice{
 		threadID: w.ThreadID,
 		sendID:   remoteCompletionSendID(w),
-		// The app's report, not the person's: an agent row naming the job.
-		origin:     usermessage.OriginAgentWake,
-		originWake: &usermessage.OriginWake{Kind: usermessage.OriginWakeKindCompletion, Label: w.Label, Computer: computer},
-		prepare:    func() (string, bool, error) { return a.prepareRemoteCompletion(w, output) },
+		// The app's report, not the person's: an agent row naming the job
+		// (remoteCompletionMessage).
+		prepare: func() (usermessage.AgentMessage, bool, error) { return a.prepareRemoteCompletion(w, output) },
 		persist: func(item store.FlushQueueItem) error {
 			return a.store.QueueRemoteCompletion(w.ComputerID, w.RequestID, item)
 		},
@@ -417,14 +412,14 @@ func (a *App) remoteCompletionNotice(w store.RemoteWatch, output remoteCompletio
 // prepareRemoteCompletion is this notice's own policy: whether the
 // completion is still owed, and what it says. Every read it makes can have
 // changed since the watcher observed the receipt.
-func (a *App) prepareRemoteCompletion(w store.RemoteWatch, output remoteCompletionOutput) (string, bool, error) {
+func (a *App) prepareRemoteCompletion(w store.RemoteWatch, output remoteCompletionOutput) (usermessage.AgentMessage, bool, error) {
 	current, err := a.store.GetRemoteWatch(w.ComputerID, w.RequestID)
 	if err != nil {
-		return "", false, err
+		return usermessage.AgentMessage{}, false, err
 	}
 	if current.Notification != "pending" || current.CancelOwedAt != 0 {
 		// A job whose cancel is owed is delivered once the cancel settles.
-		return "", false, nil
+		return usermessage.AgentMessage{}, false, nil
 	}
 	// A direct status/cancel can finish while this watcher is in flight. The
 	// durable receipt wins; only reuse this excerpt when it describes that
@@ -436,18 +431,18 @@ func (a *App) prepareRemoteCompletion(w store.RemoteWatch, output remoteCompleti
 	}
 	w = current
 	if w.Receipt.ID == "" || w.Receipt.State == "running" {
-		return "", false, nil
+		return usermessage.AgentMessage{}, false, nil
 	}
 	thread, err := a.store.GetThread(w.ThreadID)
 	if err != nil {
-		return "", false, err
+		return usermessage.AgentMessage{}, false, err
 	}
 	if thread.Archived {
 		// Owed once the thread is unarchived; the watcher skips it until then.
-		return "", false, nil
+		return usermessage.AgentMessage{}, false, nil
 	}
 	if err = a.store.CheckThreadExecutionAccess(thread); err != nil {
-		return "", false, err
+		return usermessage.AgentMessage{}, false, err
 	}
 	if thread.Mode == threadmode.ModeWorkflow {
 		// A workflow owns its phase lifetime. Finishing a remote job cannot reopen
@@ -455,14 +450,14 @@ func (a *App) prepareRemoteCompletion(w store.RemoteWatch, output remoteCompleti
 		_, live := a.sessionManager().get(thread.ID)
 		unit, found, e := a.store.GetWorkItemUnitByThread(thread.ID)
 		if e != nil {
-			return "", false, e
+			return usermessage.AgentMessage{}, false, e
 		}
 		itemID := unit.ItemID
 		running := found && unit.Status == store.WorkItemUnitRunning
 		if !found {
 			phase, exists, e := a.store.GetWorkItemPhaseByThread(thread.ID)
 			if e != nil {
-				return "", false, e
+				return usermessage.AgentMessage{}, false, e
 			}
 			itemID = phase.ItemID
 			running = exists && phase.Status == "running"
@@ -470,12 +465,12 @@ func (a *App) prepareRemoteCompletion(w store.RemoteWatch, output remoteCompleti
 		if running {
 			item, e := a.store.GetWorkItem(itemID)
 			if e != nil {
-				return "", false, e
+				return usermessage.AgentMessage{}, false, e
 			}
 			running = item.State == "running"
 		}
 		if !running || !live {
-			return "", false, a.store.DismissRemoteWatch(w.ComputerID, w.RequestID)
+			return usermessage.AgentMessage{}, false, a.store.DismissRemoteWatch(w.ComputerID, w.RequestID)
 		}
 	}
 	return remoteCompletionMessage(w, a.remoteComputerNames()[w.ComputerID], output), true, nil

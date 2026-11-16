@@ -51,15 +51,13 @@ type agentNotice struct {
 	// sendID is the notice's identity for send admission, so a repeated
 	// observation of the same event cannot queue it twice.
 	sendID string
-	// origin, originThread and originWake attribute the message in the
-	// timeline. Every notice that is not the person's own words (fromPerson)
-	// carries one, so it reads as an agent's message and not as theirs.
-	origin       string
-	originThread *usermessage.OriginThread
-	originWake   *usermessage.OriginWake
-	// prepare returns the message body. A false result abandons the notice
-	// without an error: the reason for it went away.
-	prepare func() (string, bool, error)
+	// prepare returns the message: its text, and the attribution and facts
+	// the timeline reads it by, built together (usermessage.AgentMessage).
+	// Every notice that is not the person's own words (fromPerson) is
+	// attributed, so it reads as an agent's message and not as theirs. A
+	// false result abandons the notice without an error: the reason for it
+	// went away.
+	prepare func() (usermessage.AgentMessage, bool, error)
 	// persist writes the caller's durable record in the queue insert's own
 	// transaction.
 	persist func(store.FlushQueueItem) error
@@ -85,6 +83,15 @@ type agentNotice struct {
 	recipient func(threadID string)
 }
 
+// personMessage is the prepare of a notice that carries the person's own
+// words (fromPerson), from one that returns their text.
+func personMessage(prepare func() (string, bool, error)) func() (usermessage.AgentMessage, bool, error) {
+	return func() (usermessage.AgentMessage, bool, error) {
+		text, proceed, err := prepare()
+		return usermessage.PersonMessage(text), proceed, err
+	}
+}
+
 // queueAgentNotice queues one notice and makes sure something will run to
 // read it. It returns once the notice is in the durable queue; a session
 // start it needs runs afterwards (startAgentNoticeSession). An archived
@@ -105,17 +112,17 @@ func (a *App) queueAgentNotice(notice agentNotice) error {
 	if notice.recipient != nil {
 		notice.recipient(notice.threadID)
 	}
-	body, proceed, err := notice.prepare()
+	message, proceed, err := notice.prepare()
 	if err != nil || !proceed {
 		return err
 	}
-	if _, err := a.registerQueueItem(notice.threadID, body,
+	if _, err := a.registerQueueItem(notice.threadID, message.Text(),
 		SendMessageOptions{SendID: notice.sendID},
 		injectedQueueOptions{
 			preserveDraft: true,
-			origin:        notice.origin,
-			originThread:  notice.originThread,
-			originWake:    notice.originWake,
+			origin:        message.Origin(),
+			originThread:  message.OriginThread(),
+			originWake:    message.OriginWake(),
 			persist:       notice.persist,
 			// The flag, not the check, is the notice's: the queue write
 			// decides it under the lock both archive doors take.

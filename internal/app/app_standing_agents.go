@@ -221,13 +221,11 @@ func (a *App) recordNewAssistant(
 // queueAssistantMessage queues an app-written message that opens an
 // assistant's thread and starts its session.
 func (a *App) queueAssistantMessage(threadID, sendID, name, body string) error {
-	kind := assistantSendIDKind(sendID)
+	message := assistantMessage(sendID, name, body)
 	return a.queueAgentNotice(agentNotice{
-		threadID:   threadID,
-		sendID:     sendID,
-		origin:     usermessage.OriginAgentWake,
-		originWake: &usermessage.OriginWake{Kind: kind, Label: name},
-		prepare:    func() (string, bool, error) { return body, true, nil },
+		threadID: threadID,
+		sendID:   sendID,
+		prepare:  func() (usermessage.AgentMessage, bool, error) { return message, true, nil },
 		startFailed: func(err error) string {
 			return "This assistant's opening message is queued, but its agent could not start: " + err.Error()
 		},
@@ -238,21 +236,27 @@ func (a *App) queueAssistantMessage(threadID, sendID, name, body string) error {
 // back on its thread's queue, held: the next session start sends it. A
 // thread that is archived or gone takes none.
 func (a *App) requeueAssistantMessage(threadID, sendID, body string) {
-	kind := assistantSendIDKind(sendID)
 	thread, err := a.store.GetThread(threadID)
 	if err != nil {
 		log.Printf("assistants: requeue %s on %s: %v", sendID, threadID, err)
 		return
 	}
-	if _, err := a.registerQueueItem(threadID, body, SendMessageOptions{SendID: sendID}, injectedQueueOptions{
+	message := assistantMessage(sendID, thread.Title, body)
+	if _, err := a.registerQueueItem(threadID, message.Text(), SendMessageOptions{SendID: sendID}, injectedQueueOptions{
 		preserveDraft:     true,
 		held:              true,
 		heldWhileArchived: true,
-		origin:            usermessage.OriginAgentWake,
-		originWake:        &usermessage.OriginWake{Kind: kind, Label: thread.Title},
+		origin:            message.Origin(),
+		originWake:        message.OriginWake(),
 	}); err != nil && !errors.Is(err, errThreadArchived) {
 		log.Printf("assistants: requeue %s on %s: %v", sendID, threadID, err)
 	}
+}
+
+// assistantMessage is an assistant's opening or handoff block, the app's
+// prose throughout, labelled with the assistant's name.
+func assistantMessage(sendID, name, body string) usermessage.AgentMessage {
+	return usermessage.WakeMessage(usermessage.OriginWake{Kind: assistantSendIDKind(sendID), Label: name}, "", body, "")
 }
 
 // GetStandingAgent returns the assistant whose current thread this is, or

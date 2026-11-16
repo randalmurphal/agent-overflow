@@ -699,7 +699,7 @@ func (a *App) moveQueuedRequest(oldThreadID string, row store.FlushQueueItem) {
 	if removal != queueRemovalRemoved {
 		return
 	}
-	a.giveBackRequest(oldThreadID, token, row.Message)
+	a.giveBackRequest(oldThreadID, token, queuedAgentMessage(row))
 }
 
 // moveQueuedAgentWake takes a loop or watch wake still queued on the old
@@ -713,7 +713,7 @@ func (a *App) moveQueuedAgentWake(oldThreadID string, row store.FlushQueueItem) 
 		return
 	}
 	if removal == queueRemovalRemoved {
-		a.redeliverMovedAgentWake(oldThreadID, returnedWake{sendID: row.SendID, body: row.Message})
+		a.redeliverMovedAgentWake(oldThreadID, returnedWake{sendID: row.SendID, message: queuedAgentMessage(row)})
 	}
 }
 
@@ -728,7 +728,7 @@ func (a *App) redeliverMovedAgentWake(oldThreadID string, w returnedWake) {
 		return
 	}
 	if err == nil {
-		err = a.deliverAgentWake(a.lifeCtx(), row, fireAt, w.body)
+		err = a.deliverAgentWake(a.lifeCtx(), row, fireAt, w.message)
 	}
 	if err != nil {
 		log.Printf("assistants: hand off %s: move %s on: %v", oldThreadID, w.sendID, err)
@@ -744,7 +744,7 @@ func (a *App) noteMovedAgentWakeUndelivered(oldThreadID string, w returnedWake) 
 	if current, ok := a.assistantCurrentThread(oldThreadID); ok {
 		threadID = current
 	}
-	a.noteAgentWakeUndelivered(threadID, wakeID, agentWakeOutcomeNotDelivered+": the assistant moved to a new thread", w.body)
+	a.noteAgentWakeUndelivered(threadID, wakeID, agentWakeOutcomeNotDelivered+": the assistant moved to a new thread", w.message.Text())
 }
 
 // restartMovedAgentWakes moves the runs of the loops and watches the
@@ -775,18 +775,8 @@ func (a *App) restartMovedAgentWakes(oldThreadID, newThreadID string, ids []stri
 
 // redeliverOutsideSend queues an outside `thread send` the old thread never
 // took in on the assistant's current thread.
-func (a *App) redeliverOutsideSend(threadID, body string) {
-	err := a.queueAgentNotice(agentNotice{
-		threadID:   threadID,
-		sendID:     agentSendIDRoot + newAgentWakeID(),
-		origin:     usermessage.OriginAgentWake,
-		originWake: &usermessage.OriginWake{Kind: usermessage.OriginWakeKindSend},
-		prepare:    func() (string, bool, error) { return body, true, nil },
-		startFailed: func(err error) string {
-			return "A message sent with agent-overflow thread send is queued, but the agent could not start: " + err.Error()
-		},
-	})
-	if err != nil {
+func (a *App) redeliverOutsideSend(threadID string, message usermessage.AgentMessage) {
+	if _, err := a.queueOutsideSend(threadID, message); err != nil {
 		log.Printf("assistants: send an outside message on to %s: %v", threadID, err)
 		a.noteAgentSendNotDelivered(threadID, "the assistant moved to a new thread and the message could not follow it")
 	}

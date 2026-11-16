@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -14,6 +15,7 @@ import (
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/threadtools"
 	"agent-overflow/internal/triage"
 	"agent-overflow/internal/usermessage"
 
@@ -226,26 +228,43 @@ func TestASessionDeathKeepsTheTextOfAPersonWithoutASendID(t *testing.T) {
 func TestSplitSessionEndPartsSplitsByTheRecordedParts(t *testing.T) {
 	t.Parallel()
 	wake, request := "agent-wake:w:1", threadRequestSendID("tok-1")
+	wakeFacts := &threadtools.MessageFacts{Headline: "the wake's note"}
+	requestFacts := &threadtools.MessageFacts{Waiting: true}
 	text, meta := usermessage.Join([]usermessage.JoinMember{
 		{Text: "mine, no send id"},
-		{Meta: usermessage.Meta{SendID: wake, Origin: usermessage.OriginAgentWake}, Text: "the wake"},
+		{Meta: usermessage.Meta{SendID: wake, Origin: usermessage.OriginAgentWake, OriginWake: &usermessage.OriginWake{Kind: "loop", Facts: wakeFacts}}, Text: "the wake"},
 		{Meta: usermessage.Meta{SendID: "p2"}, Text: "and mine"},
-		{Meta: usermessage.Meta{SendID: request, Origin: usermessage.OriginAgentThread}, Text: "the request"},
+		{Meta: usermessage.Meta{SendID: request, Origin: usermessage.OriginAgentThread, OriginThread: &usermessage.OriginThread{ThreadID: "t-lead", Facts: requestFacts}}, Text: "the request"},
 	})
 	joined := unconfirmedMembers{ids: meta.JoinedSendIDs, joined: true, parts: meta.JoinedParts}
 	app, person, ok := splitSessionEndParts(joined, text)
 	if want := "mine, no send id" + usermessage.JoinSeparator + "and mine"; !ok || person == nil || *person != want {
 		t.Fatalf("ok %v person %v; want %q", ok, person, want)
 	}
-	if !maps.Equal(app, map[string]string{wake: "the wake", request: "the request"}) {
-		t.Fatalf("app parts = %q", app)
+	texts := func(app map[string]usermessage.AgentMessage) map[string]string {
+		out := make(map[string]string, len(app))
+		for id, message := range app {
+			out[id] = message.Text()
+		}
+		return out
+	}
+	if !maps.Equal(texts(app), map[string]string{wake: "the wake", request: "the request"}) {
+		t.Fatalf("app parts = %q", texts(app))
+	}
+	// Each part goes back with the attribution and facts it was written
+	// with, so its row reads as it did.
+	if got := app[wake]; got.Origin() != usermessage.OriginAgentWake || got.OriginWake() == nil || got.OriginWake().Facts != wakeFacts {
+		t.Fatalf("the wake's attribution = %+v", got.OriginWake())
+	}
+	if got := app[request]; got.Origin() != usermessage.OriginAgentThread || got.OriginThread() == nil || got.OriginThread().Facts != requestFacts {
+		t.Fatalf("the request's attribution = %+v", got.OriginThread())
 	}
 
 	oneID := usermessage.Meta{SendID: wake, Origin: usermessage.OriginAgentWake}
 	text, meta = usermessage.Join([]usermessage.JoinMember{{Text: "mine"}, {Meta: oneID, Text: "the wake"}})
 	app, person, ok = splitSessionEndParts(unconfirmedMembers{ids: meta.JoinedSendIDs, joined: true, parts: meta.JoinedParts}, text)
-	if !ok || person == nil || *person != "mine" || app[wake] != "the wake" {
-		t.Fatalf("one send id, two members: ok %v person %v app %q", ok, person, app)
+	if !ok || person == nil || *person != "mine" || app[wake].Text() != "the wake" {
+		t.Fatalf("one send id, two members: ok %v person %v app %q", ok, person, texts(app))
 	}
 	if _, _, ok := splitSessionEndParts(unconfirmedMembers{ids: []string{wake}, joined: true}, text); ok {
 		t.Fatal("split a joined message whose parts are unknown")
@@ -253,9 +272,10 @@ func TestSplitSessionEndPartsSplitsByTheRecordedParts(t *testing.T) {
 	if _, _, ok := splitSessionEndParts(unconfirmedMembers{ids: meta.JoinedSendIDs, joined: true, parts: meta.JoinedParts}, text+" "); ok {
 		t.Fatal("split a joined message whose parts no longer describe it")
 	}
-	app, person, ok = splitSessionEndParts(unconfirmedMembers{ids: []string{wake}}, "the wake")
-	if !ok || person != nil || app[wake] != "the wake" {
-		t.Fatalf("a lone wake: ok %v person %v app %q", ok, person, app)
+	own := usermessage.JoinedPart{SendID: wake, Origin: usermessage.OriginAgentWake, OriginWake: &usermessage.OriginWake{Kind: "loop", Facts: wakeFacts}}
+	app, person, ok = splitSessionEndParts(unconfirmedMembers{ids: []string{wake}, own: own}, "the wake")
+	if !ok || person != nil || app[wake].Text() != "the wake" || app[wake].OriginWake() == nil || app[wake].OriginWake().Facts != wakeFacts {
+		t.Fatalf("a lone wake: ok %v person %v app %+v", ok, person, app)
 	}
 }
 
@@ -530,9 +550,9 @@ func TestAnUnsplittableJoinGoesToTheComposerWhole(t *testing.T) {
 			ids := []string{"person-send", agentSendIDRoot + "deploy", agentWakeSendID(wake.ID, 1000), prompt.sendID(), threadWakeSendID(token)}
 			content := strings.Join([]string{
 				"my own words",
-				renderAgentSendWake("deploy 11 is done"),
-				renderAgentLoopWake(wake, agentWakeFire{}),
-				renderWorkerPromptWake("Worker", "worker-thread", &prompt),
+				renderAgentSendWake("deploy 11 is done").Text(),
+				renderAgentLoopWake(wake, agentWakeFire{}).Text(),
+				workerPromptMessage("Worker", "worker-thread", &prompt).Text(),
 				"the notes are ready",
 			}, usermessage.JoinSeparator)
 			meta, err := usermessage.Marshal(usermessage.Input{SendID: ids[0], JoinedSendIDs: ids})
@@ -888,7 +908,7 @@ func TestTheBootSweepOfUnconfirmedDeliveriesLeavesQueuedRows(t *testing.T) {
 // computer made of the caller and queues its message there, as
 // dispatchRequest queues one for a busy thread. It returns the token and
 // the message.
-func queueRequestFromAnotherComputer(t *testing.T, f *requestFixture) (string, string) {
+func queueRequestFromAnotherComputer(t *testing.T, f *requestFixture) (string, usermessage.AgentMessage) {
 	t.Helper()
 	token := uuid.NewString()
 	if _, _, err := f.app.store.AcceptThreadRequestReceipt(store.ThreadRequestReceipt{
@@ -897,11 +917,12 @@ func queueRequestFromAnotherComputer(t *testing.T, f *requestFixture) (string, s
 	}); err != nil {
 		t.Fatalf("AcceptThreadRequestReceipt: %v", err)
 	}
-	body := "Fix the nil check.\n\n---\nAgent request from thread \"Lead\" (t-lead, on desk).\nIt is not waiting."
-	if err := f.app.threadTools().requeueRequest(token, f.caller.ID, body); err != nil {
+	text, facts := threadtools.Footer{Title: "Lead", ThreadID: "t-lead", Computer: "desk", Token: token}.Message("Fix the nil check.")
+	message := usermessage.ThreadMessage(usermessage.OriginThread{ThreadID: "t-lead", Token: token}, text, facts)
+	if err := f.app.threadTools().requeueRequest(token, f.caller.ID, message); err != nil {
 		t.Fatal(err)
 	}
-	return token, body
+	return token, message
 }
 
 // A session that ends before the agent took in a request Claude joined with
@@ -914,7 +935,7 @@ func TestASessionDeathRequeuesAJoinedRequestAndGivesThePersonTheirText(t *testin
 	if _, err := f.app.RegisterQueueItem(context.Background(), f.caller.ID, "my own words", SendMessageOptions{SendID: "person-send"}); err != nil {
 		t.Fatalf("RegisterQueueItem: %v", err)
 	}
-	token, body := queueRequestFromAnotherComputer(t, f)
+	token, message := queueRequestFromAnotherComputer(t, f)
 	dispatchUnconfirmed(t, f)
 	waitUntil(t, 10*time.Second, func() bool { return f.receipt(t, token).State == store.ThreadReceiptRunning })
 
@@ -925,8 +946,14 @@ func TestASessionDeathRequeuesAJoinedRequestAndGivesThePersonTheirText(t *testin
 		t.Fatalf("receipt = %q, want it accepted again", receipt.State)
 	}
 	rows := durableQueueRows(t, f.app, f.caller.ID)
-	if len(rows) != 1 || rows[0].SendID != threadRequestSendID(token) || rows[0].Message != body {
+	if len(rows) != 1 || rows[0].SendID != threadRequestSendID(token) || rows[0].Message != message.Text() {
 		t.Fatalf("queue = %+v, want the request alone, owed again", rows)
+	}
+	// It goes back with the facts it was written with, so its row reads as
+	// the same request.
+	requeued := queuedAgentMessage(rows[0]).OriginThread()
+	if requeued == nil || requeued.Facts == nil || !reflect.DeepEqual(*requeued.Facts, *message.OriginThread().Facts) {
+		t.Fatalf("requeued attribution = %+v, want the request's facts %+v", requeued, message.OriginThread().Facts)
 	}
 }
 

@@ -15,6 +15,7 @@ import (
 	"agent-overflow/internal/notify"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/threadtools"
 	"agent-overflow/internal/triage"
 	"agent-overflow/internal/usermessage"
 )
@@ -359,9 +360,10 @@ func (a *App) answerAsyncWorkerPrompt(ctx context.Context, prompt workerPrompt, 
 		return err
 	}
 	defer unlock()
-	return a.queueAsyncAnswers(prompt.workerID, sendID, answers, agentNotice{
-		origin:       usermessage.OriginAgentThread,
-		originThread: origin,
+	written := func(text string) usermessage.AgentMessage {
+		return usermessage.ThreadMessage(*origin, text, threadtools.MessageFacts{})
+	}
+	return a.queueAsyncAnswers(prompt.workerID, sendID, answers, written, agentNotice{
 		startFailed: func(err error) string {
 			return fmt.Sprintf("Thread %q answered this thread's questions, but this thread's agent could not start: %v", origin.Title, err)
 		},

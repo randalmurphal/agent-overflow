@@ -7,6 +7,7 @@ import (
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/threadmode"
+	"agent-overflow/internal/threadtools"
 	"agent-overflow/internal/triage"
 	"agent-overflow/internal/untrustedtext"
 	"agent-overflow/internal/usermessage"
@@ -277,11 +278,18 @@ func TestWorkflowWakeQueuesIntoABusyBoundThread(t *testing.T) {
 	}
 	// The wake is the workflow's report, not the person's message.
 	h.mu.Lock()
+	notice := wake.DataNotice
 	wake := flushqueue.ItemFromTriage(thread.ID, h.queuedItems[0])
 	h.mu.Unlock()
 	if !wake.AgentMessage || wake.Origin != usermessage.OriginAgentWake || wake.OriginWake == nil ||
-		*wake.OriginWake != (usermessage.OriginWake{Kind: usermessage.OriginWakeKindWorkflow, Label: item.WorkflowID}) {
+		wake.OriginWake.Kind != usermessage.OriginWakeKindWorkflow || wake.OriginWake.Label != item.WorkflowID {
 		t.Fatalf("queued wake attribution = agent %v origin %q wake %+v, want the workflow's", wake.AgentMessage, wake.Origin, wake.OriginWake)
+	}
+	// Its row shows the run's data, not the notice written for the agent.
+	if facts := wake.OriginWake.Facts; facts == nil ||
+		threadtools.SpanText(queued[0], facts.Body) != strings.TrimLeft(strings.TrimPrefix(queued[0], notice+"\n"), "\n") ||
+		!strings.HasPrefix(queued[0], notice+"\n") {
+		t.Fatalf("queued wake facts = %+v over %q, want the data after the notice as the body", wake.OriginWake.Facts, queued[0])
 	}
 }
 

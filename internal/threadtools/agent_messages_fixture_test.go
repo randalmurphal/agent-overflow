@@ -3,18 +3,21 @@ package threadtools
 import (
 	"encoding/json"
 	"os"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 )
 
-// The frontend renders an agent's message from its text: the request body
-// and footer facts, or the wake's status line. Its parser
-// (frontend/src/lib/utils/agentMessage.ts) reads the fixture this test
-// writes, so a change to either template that the parser does not follow
-// fails there, and a fixture that no longer matches the templates fails
-// here. Regenerate with UPDATE_AGENT_MESSAGES=1 make go-test
+// The frontend renders an agent's message from the facts its writer stored
+// with it (MessageFacts): each case is a message's text, the attribution
+// and facts Footer.Message or Wake.Message wrote with it, and what the row
+// shows, which this test derives from the template's inputs on its own and
+// holds the facts to. frontend/src/lib/utils/agentMessage.test.ts renders
+// every case from its facts, and the cases marked legacy, whose text main's
+// templates also wrote, from their text alone, as a row written before the
+// facts is read. Regenerate with UPDATE_AGENT_MESSAGES=1 make go-test
 // GO_TEST_PKGS=./internal/threadtools GO_TEST_FLAGS='-run
 // TestAgentMessageFixture'.
 
@@ -54,12 +57,13 @@ type fixtureWake struct {
 }
 
 type fixtureWakeThread struct {
-	Title     string   `json:"title"`
-	ThreadID  string   `json:"threadId"`
-	Computer  string   `json:"computer"`
-	Age       string   `json:"age"`
-	Tokens    []string `json:"tokens"`
-	AgentRole *string  `json:"agentRole"`
+	Title      string   `json:"title"`
+	ThreadID   string   `json:"threadId"`
+	Computer   string   `json:"computer"`
+	ComputerID string   `json:"computerId"`
+	Age        string   `json:"age"`
+	Tokens     []string `json:"tokens"`
+	AgentRole  *string  `json:"agentRole"`
 }
 
 type fixturePart struct {
@@ -68,14 +72,40 @@ type fixturePart struct {
 	Wake   *fixtureWake   `json:"wake"`
 }
 
-// fixtureCase is a row's text and its messages. Members is each joined
+// fixtureOrigin is the attribution a row of the message carries, in
+// usermessage.OriginThread's JSON shape, facts included.
+type fixtureOrigin struct {
+	ComputerID   string       `json:"computerId,omitempty"`
+	ComputerName string       `json:"computerName,omitempty"`
+	ThreadID     string       `json:"threadId"`
+	Title        string       `json:"title,omitempty"`
+	Token        string       `json:"token,omitempty"`
+	Kind         string       `json:"kind"`
+	Facts        MessageFacts `json:"facts"`
+}
+
+// fixtureCase is a row's text, each of its messages' attribution as the
+// writer stored it, and what the row shows of each. Members is each joined
 // member's length in bytes, as usermessage.JoinedPart records it, so the
-// frontend splits the row the way a stored row's meta tells it to.
+// frontend splits the row the way a stored row's meta tells it to. Legacy
+// marks a text main's templates also wrote, which a row written before the
+// facts holds.
 type fixtureCase struct {
-	Name    string        `json:"name"`
-	Text    string        `json:"text"`
-	Members []int         `json:"members"`
-	Parts   []fixturePart `json:"parts"`
+	Name    string          `json:"name"`
+	Text    string          `json:"text"`
+	Members []int           `json:"members"`
+	Legacy  bool            `json:"legacy"`
+	Origins []fixtureOrigin `json:"origins"`
+	Parts   []fixturePart   `json:"parts"`
+}
+
+// fixtureMessage is one message of a case: its text, its attribution, what
+// its row shows, and whether main's templates wrote the same text.
+type fixtureMessage struct {
+	text   string
+	origin fixtureOrigin
+	part   fixturePart
+	legacy bool
 }
 
 func role(agent *SenderAgent) *string {
@@ -86,20 +116,38 @@ func role(agent *SenderAgent) *string {
 	return &value
 }
 
-func requestPart(body string, footer Footer) (string, fixturePart) {
-	text := QuoteFooterMimics(body) + "\n\n" + footer.String()
-	return text, fixturePart{
-		Body: QuoteFooterMimics(body),
-		Footer: &fixtureFooter{
-			Title:         footer.Title,
-			ThreadID:      footer.ThreadID,
-			Computer:      footer.Computer,
-			Token:         footer.Token,
-			Waiting:       footer.AnswerRequested,
-			Reachable:     footer.SenderReachable,
-			UserMessage:   clipRunes(strings.TrimSpace(collapseLines(footer.UserMessage)), UserMessageQuoteRunes),
-			AgentRole:     role(footer.Agent),
-			RoutesPrompts: footer.RoutesPrompts,
+// computerID stands for the id of the computer a fixture names, which the
+// text never states.
+func computerID(name string) string {
+	if name == "" {
+		return ""
+	}
+	return "computer-" + name
+}
+
+func requestPart(body string, footer Footer) fixtureMessage {
+	text, facts := footer.Message(body)
+	return fixtureMessage{
+		text: text,
+		origin: fixtureOrigin{
+			ComputerID: computerID(footer.Computer), ComputerName: footer.Computer, ThreadID: footer.ThreadID,
+			Title: footer.Title, Token: footer.Token, Kind: "send", Facts: facts,
+		},
+		// main's footer had no standing-agent or routing line.
+		legacy: footer.Agent == nil && !footer.RoutesPrompts,
+		part: fixturePart{
+			Body: QuoteFooterMimics(body),
+			Footer: &fixtureFooter{
+				Title:         footer.Title,
+				ThreadID:      footer.ThreadID,
+				Computer:      footer.Computer,
+				Token:         footer.Token,
+				Waiting:       footer.AnswerRequested,
+				Reachable:     footer.SenderReachable,
+				UserMessage:   clipRunes(strings.TrimSpace(collapseLines(footer.UserMessage)), UserMessageQuoteRunes),
+				AgentRole:     role(footer.Agent),
+				RoutesPrompts: footer.RoutesPrompts,
+			},
 		},
 	}
 }
@@ -111,7 +159,28 @@ func fixtureAge(age time.Duration) string {
 	return Age(age)
 }
 
-func wakePart(wake Wake) (string, fixturePart) {
+// mainWakeKinds are the wakes whose text main's templates wrote as these
+// do, for a thread that is no standing agent and a request made where it
+// is answered.
+var mainWakeKinds = []string{WakeReply, WakeFinished, WakeErrored, WakeExpired, WakeReminder}
+
+func wakePart(wake Wake) fixtureMessage {
+	text, facts := wake.Message()
+	first := wake.source()
+	if len(wake.Sources) > 1 {
+		first = wake.Sources[0]
+	}
+	message := fixtureMessage{
+		text: text,
+		origin: fixtureOrigin{
+			ComputerID: first.ComputerID, ComputerName: first.Computer, ThreadID: first.ThreadID,
+			Title: first.Title, Token: wake.firstToken(), Kind: "wake", Facts: facts,
+		},
+		// main attributed a wake for several threads to the app, so no agent
+		// row holds main's digest.
+		legacy: len(wake.Sources) <= 1 && wake.MadeIn == "" && !slices.ContainsFunc(wake.Sources, func(source WakeSource) bool { return source.Agent != nil }) &&
+			(slices.Contains(mainWakeKinds, wake.Kind) || wake.Kind == WakeCancelled && wake.Text == ""),
+	}
 	part := fixturePart{Wake: &fixtureWake{Kind: wake.Kind, Token: wake.firstToken(), Tokens: []string{}, Threads: []fixtureWakeThread{}, MadeIn: wake.MadeIn, Now: wake.Now}}
 	for _, source := range wake.Sources {
 		part.Wake.Tokens = append(part.Wake.Tokens, source.Tokens...)
@@ -121,7 +190,7 @@ func wakePart(wake Wake) (string, fixturePart) {
 	case len(wake.Sources) > 1:
 		for _, source := range wake.Sources {
 			part.Wake.Threads = append(part.Wake.Threads, fixtureWakeThread{
-				Title: source.Title, ThreadID: source.ThreadID, Computer: source.Computer,
+				Title: source.Title, ThreadID: source.ThreadID, Computer: source.Computer, ComputerID: source.ComputerID,
 				Age: fixtureAge(source.Age), Tokens: source.Tokens, AgentRole: role(source.Agent),
 			})
 		}
@@ -152,13 +221,13 @@ func wakePart(wake Wake) (string, fixturePart) {
 		case wake.Text == InterruptRestart:
 			part.Wake.StoppedBy = "a restart of " + restarted
 		case slices.Contains(InterruptSessionEndedReasons, wake.Text):
-			part.Wake.StoppedBy = sessionEndedBy(wake.Text)
+			part.Wake.StoppedBy = wantSessionEndedBy(wake.Text)
 		case wake.Text == InterruptNotTakenIn:
 			part.Wake.StoppedBy = "the thread did not take it in"
 		case wake.Text == InterruptNotTakenInToComposer:
 			part.Wake.StoppedBy = "the thread did not take it in, and its message went back to that thread's composer"
 		case strings.HasPrefix(wake.Text, InterruptSessionEndedMidTurn+SessionEndedWrittenSoFar):
-			part.Wake.StoppedBy = sessionEndedBy(InterruptSessionEndedMidTurn)
+			part.Wake.StoppedBy = wantSessionEndedBy(InterruptSessionEndedMidTurn)
 			part.Body = strings.TrimPrefix(wake.Text, InterruptSessionEndedMidTurn+SessionEndedWrittenSoFar)
 			if len(part.Body) > WakePreviewBytes {
 				part.Body = clipBytes(part.Body, WakePreviewBytes)
@@ -183,38 +252,36 @@ func wakePart(wake Wake) (string, fixturePart) {
 		part.Wake.Kind = WakeInterrupted
 		part.Wake.StoppedBy = "the user"
 	}
-	return wake.String(), part
+	message.part = part
+	return message
 }
 
-func join(cases ...func() (string, fixturePart)) (string, []int, []fixturePart) {
-	texts := make([]string, 0, len(cases))
-	members := make([]int, 0, len(cases))
-	parts := make([]fixturePart, 0, len(cases))
-	for _, build := range cases {
-		text, part := build()
-		texts = append(texts, text)
-		members = append(members, len(text))
-		parts = append(parts, part)
+// join is the row a provider joins messages into, as usermessage.Join
+// records it.
+func join(name string, messages ...fixtureMessage) fixtureCase {
+	joined := fixtureCase{Name: name, Legacy: true}
+	texts := make([]string, 0, len(messages))
+	for _, message := range messages {
+		texts = append(texts, message.text)
+		joined.Members = append(joined.Members, len(message.text))
+		joined.Origins = append(joined.Origins, message.origin)
+		joined.Parts = append(joined.Parts, message.part)
+		// main recorded no joined members: a joined row of its is read
+		// whole, which tells requests apart by their footers and nothing
+		// else apart.
+		joined.Legacy = joined.Legacy && message.legacy && (len(messages) == 1 || message.part.Footer != nil)
 	}
-	return strings.Join(texts, "\n\n---\n\n"), members, parts
+	joined.Text = strings.Join(texts, "\n\n---\n\n")
+	return joined
 }
 
 func agentMessageFixtureCases() []fixtureCase {
 	const token = "0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d"
-	request := func(body string, footer Footer) func() (string, fixturePart) {
-		return func() (string, fixturePart) { return requestPart(body, footer) }
-	}
-	wake := func(w Wake) func() (string, fixturePart) {
-		return func() (string, fixturePart) { return wakePart(w) }
-	}
-	one := func(name string, build func() (string, fixturePart)) fixtureCase {
-		text, part := build()
-		return fixtureCase{Name: name, Text: text, Members: []int{len(text)}, Parts: []fixturePart{part}}
-	}
+	request, wake, one := requestPart, wakePart, join
 	long := strings.Repeat("0123456789abcdef", WakePreviewBytes/16+4)
 	digestSources := []WakeSource{
 		{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}},
-		{Title: "Lexer", ThreadID: "t-lex", Computer: "desk", Tokens: []string{"tok-2", "tok-3"}, Age: 3 * time.Hour},
+		{Title: "Lexer", ThreadID: "t-lex", Computer: "desk", ComputerID: "computer-desk", Tokens: []string{"tok-2", "tok-3"}, Age: 3 * time.Hour},
 	}
 	cases := []fixtureCase{
 		one("request waiting, local, quoting the user", request("Review the parser.\n\nThen report back.", Footer{
@@ -244,13 +311,13 @@ func agentMessageFixtureCases() []fixtureCase {
 		})),
 		one("empty-bodied request", request("", Footer{Title: "Lead", ThreadID: "t-lead", Token: token, SenderReachable: true})),
 		one("reply", wake(Wake{Kind: WakeReply, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}, Text: "All green.\nSecond line."})),
-		one("late reply with age, computer and a standing agent", wake(Wake{Kind: WakeReply, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Computer: "desk", Tokens: []string{token}, Age: 5 * time.Minute, Agent: &SenderAgent{Role: "Runs the builds."}}}, Text: "Done."})),
+		one("late reply with age, computer and a standing agent", wake(Wake{Kind: WakeReply, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Computer: "desk", ComputerID: computerID("desk"), Tokens: []string{token}, Age: 5 * time.Minute, Agent: &SenderAgent{Role: "Runs the builds."}}}, Text: "Done."})),
 		one("finished without a reply", wake(Wake{Kind: WakeFinished, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}, Text: "Final words."})),
 		one("errored, agent, multi-line error", wake(Wake{Kind: WakeErrored, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}, Agent: &SenderAgent{}}}, Text: "boom\nstack"})),
 		one("errored with no error text", wake(Wake{Kind: WakeErrored, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}})),
 		one("cancelled", wake(Wake{Kind: WakeCancelled, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}})),
 		one("interrupted by a restart locally", wake(Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}, Text: InterruptRestart})),
-		one("interrupted by a restart on another computer", wake(Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Computer: "desk", Tokens: []string{token}}}, Text: InterruptRestart})),
+		one("interrupted by a restart on another computer", wake(Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Computer: "desk", ComputerID: computerID("desk"), Tokens: []string{token}}}, Text: InterruptRestart})),
 		one("interrupted by its session ending before it read the request", wake(Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}, Text: InterruptSessionEndedUnread})),
 		one("interrupted by its session ending before it answered the request", wake(Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}, Text: InterruptSessionEndedUnanswered})),
 		one("interrupted by its session ending during the turn, having written nothing", wake(Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}, Text: InterruptSessionEndedMidTurn})),
@@ -267,7 +334,7 @@ func agentMessageFixtureCases() []fixtureCase {
 		one("interrupted with no reason recorded", wake(Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}})),
 		one("interrupted before its thread existed", wake(Wake{Kind: WakeInterrupted, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}, Text: InterruptNeverStarted})),
 		one("stopped by the person with its last message", wake(Wake{Kind: WakeStopped, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}, Text: "Half done.\nSecond line."})),
-		one("stopped by the person before it said anything, standing agent", wake(Wake{Kind: WakeStopped, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Computer: "desk", Tokens: []string{token}, Agent: &SenderAgent{Role: "Runs the builds."}}}})),
+		one("stopped by the person before it said anything, standing agent", wake(Wake{Kind: WakeStopped, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Computer: "desk", ComputerID: computerID("desk"), Tokens: []string{token}, Agent: &SenderAgent{Role: "Runs the builds."}}}})),
 		one("expired", wake(Wake{Kind: WakeExpired, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}, Age: 26 * time.Hour}}})),
 		one("reminder", wake(Wake{Kind: WakeReminder, Sources: []WakeSource{{Tokens: []string{token}}}, Text: "Check the build."})),
 		one("clipped reply", wake(Wake{Kind: WakeReply, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}}}, Text: long})),
@@ -276,7 +343,7 @@ func agentMessageFixtureCases() []fixtureCase {
 		one("several requests, clipped", wake(Wake{Kind: WakeReply, Sources: []WakeSource{{Title: "Worker", ThreadID: "t-work", Tokens: []string{token, "tok-2"}}}, Text: long})),
 		one("digest: the same reply, a standing agent and an age", wake(Wake{Kind: WakeReply, Text: "Done.\nSecond line.", Sources: []WakeSource{
 			{Title: "Worker", ThreadID: "t-work", Tokens: []string{token}, Agent: &SenderAgent{Role: "Runs the builds."}},
-			{Title: "Lexer \"two\"", ThreadID: "t-lex", Computer: "desk", Tokens: []string{"tok-2", "tok-3"}, Age: 3 * time.Hour},
+			{Title: "Lexer \"two\"", ThreadID: "t-lex", Computer: "desk", ComputerID: computerID("desk"), Tokens: []string{"tok-2", "tok-3"}, Age: 3 * time.Hour},
 		}})),
 		one("digest: the same final message", wake(Wake{Kind: WakeFinished, Text: "ok", Sources: digestSources})),
 		one("digest: errored with one error", wake(Wake{Kind: WakeErrored, Text: "The thread was deleted before it answered.", Sources: digestSources})),
@@ -285,8 +352,8 @@ func agentMessageFixtureCases() []fixtureCase {
 		one("digest: cancelled for the caller", wake(Wake{Kind: WakeCancelled, Text: "Its workflow cancelled it.", Sources: digestSources})),
 		one("digest: interrupted by restarts of several computers", wake(Wake{Kind: WakeInterrupted, Text: InterruptRestart, Sources: digestSources})),
 		one("digest: interrupted by a restart of one computer", wake(Wake{Kind: WakeInterrupted, Text: InterruptRestart, Sources: []WakeSource{
-			{Title: "Worker", ThreadID: "t-work", Computer: "desk", Tokens: []string{token}},
-			{Title: "Lexer", ThreadID: "t-lex", Computer: "desk", Tokens: []string{"tok-2"}},
+			{Title: "Worker", ThreadID: "t-work", Computer: "desk", ComputerID: computerID("desk"), Tokens: []string{token}},
+			{Title: "Lexer", ThreadID: "t-lex", Computer: "desk", ComputerID: computerID("desk"), Tokens: []string{"tok-2"}},
 		}})),
 		one("digest: interrupted by their sessions ending", wake(Wake{Kind: WakeInterrupted, Text: InterruptSessionEndedUnread, Sources: digestSources})),
 		one("digest: interrupted mid-turn, with what they wrote", wake(Wake{Kind: WakeInterrupted, Text: InterruptSessionEndedMidTurn + SessionEndedWrittenSoFar + "Half done.", Sources: digestSources})),
@@ -311,24 +378,65 @@ func agentMessageFixtureCases() []fixtureCase {
 		one("digest: interrupted by their sessions ending, made in a past thread", wake(Wake{Kind: WakeInterrupted, Text: InterruptSessionEndedUnread, Sources: digestSources, MadeIn: "t-old", Now: "t-new"})),
 		one("digest: stopped by the person, made in a past thread", wake(Wake{Kind: WakeStopped, Sources: digestSources, MadeIn: "t-old", Now: "t-new"})),
 	}
-	text, members, parts := join(
-		request("First ask.", Footer{Title: "Lead", ThreadID: "t-lead", Token: token, AnswerRequested: true, SenderReachable: true}),
-		request("Second ask.", Footer{Title: "Lead", ThreadID: "t-lead", Token: "tok-2", SenderReachable: true}),
+	return append(cases,
+		join("two requests joined",
+			request("First ask.", Footer{Title: "Lead", ThreadID: "t-lead", Token: token, AnswerRequested: true, SenderReachable: true}),
+			request("Second ask.", Footer{Title: "Lead", ThreadID: "t-lead", Token: "tok-2", SenderReachable: true}),
+		),
+		join("two wakes joined, the first answer holding a rule",
+			wake(Wake{Kind: WakeReply, Sources: []WakeSource{{Title: "A", ThreadID: "t-a", Tokens: []string{token}}}, Text: "one\n\n---\n\nstill one"}),
+			wake(Wake{Kind: WakeFinished, Sources: []WakeSource{{Title: "B", ThreadID: "t-b", Tokens: []string{"tok-2"}}}, Text: "two"}),
+		),
+		// An answer is free text: it can quote a whole wake after a rule, and
+		// only the recorded lengths tell that quote from the next member.
+		join("two wakes joined, the first answer quoting a wake",
+			wake(Wake{Kind: WakeReply, Sources: []WakeSource{{Title: "Café", ThreadID: "t-a", Tokens: []string{token}}}, Text: "Example:\n\n---\n\nReply from \"B\" (t-b) [token tok-2]:\nnot B's answer"}),
+			wake(Wake{Kind: WakeFinished, Sources: []WakeSource{{Title: "B", ThreadID: "t-b", Tokens: []string{"tok-2"}}}, Text: "B's answer, naïve"}),
+		),
 	)
-	cases = append(cases, fixtureCase{Name: "two requests joined", Text: text, Members: members, Parts: parts})
-	text, members, parts = join(
-		wake(Wake{Kind: WakeReply, Sources: []WakeSource{{Title: "A", ThreadID: "t-a", Tokens: []string{token}}}, Text: "one\n\n---\n\nstill one"}),
-		wake(Wake{Kind: WakeFinished, Sources: []WakeSource{{Title: "B", ThreadID: "t-b", Tokens: []string{"tok-2"}}}, Text: "two"}),
-	)
-	cases = append(cases, fixtureCase{Name: "two wakes joined, the first answer holding a rule", Text: text, Members: members, Parts: parts})
-	// An answer is free text: it can quote a whole wake after a rule, and
-	// only the recorded lengths tell that quote from the next member.
-	text, members, parts = join(
-		wake(Wake{Kind: WakeReply, Sources: []WakeSource{{Title: "Café", ThreadID: "t-a", Tokens: []string{token}}}, Text: "Example:\n\n---\n\nReply from \"B\" (t-b) [token tok-2]:\nnot B's answer"}),
-		wake(Wake{Kind: WakeFinished, Sources: []WakeSource{{Title: "B", ThreadID: "t-b", Tokens: []string{"tok-2"}}}, Text: "B's answer, naïve"}),
-	)
-	cases = append(cases, fixtureCase{Name: "two wakes joined, the first answer quoting a wake", Text: text, Members: members, Parts: parts})
-	return cases
+}
+
+// TestMessageFactsSayWhatTheTextSays holds the facts Footer.Message and
+// Wake.Message write to what the row shows, derived here from the
+// template's inputs alone: the body their spans cover in the text, and
+// every fact beside it.
+func TestMessageFactsSayWhatTheTextSays(t *testing.T) {
+	for _, fixtureCase := range agentMessageFixtureCases() {
+		at := 0
+		for i, part := range fixtureCase.Parts {
+			text := fixtureCase.Text[at : at+fixtureCase.Members[i]]
+			at += fixtureCase.Members[i] + len("\n\n---\n\n")
+			facts := fixtureCase.Origins[i].Facts
+			if got := SpanText(text, facts.Body); got != part.Body {
+				t.Errorf("%s: body %q, want %q", fixtureCase.Name, got, part.Body)
+			}
+			if footer := part.Footer; footer != nil {
+				want := MessageFacts{Body: facts.Body, Waiting: footer.Waiting, Reachable: footer.Reachable,
+					UserMessage: footer.UserMessage, RoutesPrompts: footer.RoutesPrompts, Role: footer.AgentRole}
+				if !reflect.DeepEqual(facts, want) {
+					t.Errorf("%s: request facts %+v, want %+v", fixtureCase.Name, facts, want)
+				}
+				continue
+			}
+			wake := part.Wake
+			want := MessageFacts{
+				Outcome: wake.Kind, Body: facts.Body, Tokens: wake.Tokens, StoppedBy: wake.StoppedBy,
+				Clipped: wake.Clipped, MadeIn: wake.MadeIn, Now: wake.Now, Age: wake.Age, Role: wake.AgentRole,
+			}
+			for _, thread := range wake.Threads {
+				want.Threads = append(want.Threads, FactsThread{
+					ThreadID: thread.ThreadID, Title: thread.Title, ComputerID: thread.ComputerID, ComputerName: thread.Computer,
+					Age: thread.Age, Tokens: thread.Tokens, Role: thread.AgentRole,
+				})
+			}
+			if len(want.Tokens) == 0 {
+				want.Tokens = nil
+			}
+			if !reflect.DeepEqual(facts, want) {
+				t.Errorf("%s: wake facts\n%+v\nwant\n%+v", fixtureCase.Name, facts, want)
+			}
+		}
+	}
 }
 
 func TestAgentMessageFixture(t *testing.T) {
@@ -348,7 +456,7 @@ func TestAgentMessageFixture(t *testing.T) {
 		t.Fatal(err)
 	}
 	if string(stored) != string(encoded) {
-		t.Fatalf("%s is stale: regenerate it (see the comment above) and update the frontend parser if it fails", agentMessagesFixture)
+		t.Fatalf("%s is stale: regenerate it (see the comment above) and check the frontend renders it", agentMessagesFixture)
 	}
 }
 
@@ -375,8 +483,8 @@ func TestRowHeadNamesTheSenderOfAnAgentRow(t *testing.T) {
 	}
 }
 
-// sessionEndedBy is what the frontend names as having stopped a request whose
+// wantSessionEndedBy is what a row names as having stopped a request whose
 // session ended: the reason without its subject.
-func sessionEndedBy(reason string) string {
+func wantSessionEndedBy(reason string) string {
 	return "the session ended " + strings.TrimSuffix(strings.TrimPrefix(reason, "The thread's session ended "), ".")
 }

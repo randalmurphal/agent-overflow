@@ -12,6 +12,14 @@ that text to the composer, and its comments return to drafts.
 shape boundary used by send, queue, retry, fork, and draft restoration.
 Coordinate JSON field changes with store, triage, App, and frontend consumers.
 
+A message the app writes into a thread is an `AgentMessage`: its text and
+the attribution its row is read by, with the facts it states
+(`OriginThread.Facts`, `OriginWake.Facts`, `threadtools.MessageFacts`). Make
+one only through its constructors, which take text and facts from one
+value; a new kind of app-written message uses `WakeMessage`. The frontend
+renders agent rows from the facts, so never write an agent row's text
+without them.
+
 `provider_item_id` and `provider_parent_uuid` share the JSON object but are
 not fields of typed `Meta`. Modify an existing blob with
 `MergeProviderIDs`, `MergeProviderItemID`, or the other merge helpers so

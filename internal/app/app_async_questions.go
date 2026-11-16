@@ -8,6 +8,7 @@ import (
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/transport"
+	"agent-overflow/internal/usermessage"
 )
 
 // ListAsyncQuestions reads outstanding questions or one historical question group.
@@ -29,7 +30,7 @@ func (a *App) SubmitAsyncAnswers(ctx context.Context, threadID, sendID string, a
 		return err
 	}
 	defer unlock()
-	return a.queueAsyncAnswers(threadID, sendID, answers, agentNotice{
+	return a.queueAsyncAnswers(threadID, sendID, answers, usermessage.PersonMessage, agentNotice{
 		startFailed: func(err error) string {
 			return "Your answers are queued, but the agent could not start: " + err.Error()
 		},
@@ -41,12 +42,13 @@ func (a *App) SubmitAsyncAnswers(ctx context.Context, threadID, sendID string, a
 // queueAsyncAnswers claims answers to threadID's async questions and queues
 // them as one message, under sendID, whose admission lock its caller holds:
 // the person's (SubmitAsyncAnswers) or the spawner's agent's, written for a
-// worker (answerAsyncWorkerPrompt). notice brings who wrote it and what the
-// thread is told when its session will not start. A question already
-// answered or dismissed is transport.ErrAlreadyHandled.
-func (a *App) queueAsyncAnswers(threadID, sendID string, answers []store.AsyncQuestionAnswer, notice agentNotice) error {
+// worker (answerAsyncWorkerPrompt). written attributes the answers' text to
+// who wrote it, and notice brings what the thread is told when its session
+// will not start. A question already answered or dismissed is
+// transport.ErrAlreadyHandled.
+func (a *App) queueAsyncAnswers(threadID, sendID string, answers []store.AsyncQuestionAnswer, written func(text string) usermessage.AgentMessage, notice agentNotice) error {
 	notice.threadID, notice.sendID = threadID, sendID
-	notice.prepare = func() (string, bool, error) {
+	text := func() (string, bool, error) {
 		thread, err := a.store.GetThread(threadID)
 		if err != nil {
 			return "", false, err
@@ -67,6 +69,10 @@ func (a *App) queueAsyncAnswers(threadID, sendID string, answers []store.AsyncQu
 			return "", false, fmt.Errorf("submission identity already belongs to a different message")
 		}
 		return body, true, nil
+	}
+	notice.prepare = func() (usermessage.AgentMessage, bool, error) {
+		body, proceed, err := text()
+		return written(body), proceed, err
 	}
 	notice.persist = func(item store.FlushQueueItem) error { return a.store.QueueAsyncAnswers(item, answers) }
 	err := a.queueAgentNotice(notice)

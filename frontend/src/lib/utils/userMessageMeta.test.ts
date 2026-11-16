@@ -10,6 +10,8 @@ import {
   userMessageOriginThread,
   userMessageOriginWake,
   agentWakeOriginLabel,
+  spanText,
+  userMessageFacts,
 } from './userMessageMeta';
 import {
   DEFAULT_MAX_ATTACHMENT_SIZE,
@@ -278,5 +280,35 @@ describe('isAgentMessageMeta and isReaderAuthoredUserText', () => {
     expect(isReaderAuthoredUserText(row({ origin: 'agent-wake' }))).toBe(false);
     expect(isReaderAuthoredUserText(row({ wire_only: true }))).toBe(false);
     expect(isReaderAuthoredUserText(row({}, 'tool-1'))).toBe(false);
+  });
+});
+
+describe('userMessageFacts and spanText', () => {
+  const bytes = (s: string) => new TextEncoder().encode(s).length;
+  const head = 'Reply from "Café" [token k]:\n';
+  const text = `${head}naïve answer\nThat thread is a standing agent.\nrest`;
+
+  it('reads the facts of the attribution the row is from', () => {
+    const facts = { outcome: 'reply', body: [{ start: 0, end: 4 }], tokens: ['k', '', 7], role: '', stoppedBy: '  the user ' };
+    expect(userMessageFacts({ origin: 'agent-thread', originThread: { threadId: 't', facts } })).toMatchObject({
+      outcome: 'reply', body: [{ start: 0, end: 4 }], tokens: ['k'], role: '', stoppedBy: '  the user ', threads: [], headline: '',
+    });
+    expect(userMessageFacts({ origin: 'agent-wake', originWake: { kind: 'loop', facts: { headline: 'go' } } })?.headline).toBe('go');
+    // Not this row's attribution, or none at all.
+    expect(userMessageFacts({ origin: 'agent-wake', originThread: { threadId: 't', facts } })).toBeNull();
+    expect(userMessageFacts({ origin: 'agent-thread', originThread: { threadId: 't' } })).toBeNull();
+    // A body that is not spans is not facts.
+    expect(userMessageFacts({ origin: 'agent-thread', originThread: { facts: { body: [{ start: 'a', end: 2 }] } } })).toBeNull();
+  });
+
+  it('cuts the text by UTF-8 bytes, joining spans and clamping to the text', () => {
+    const answer = { start: bytes(head), end: bytes(head) + bytes('naïve answer') };
+    expect(spanText(text, [answer])).toBe('naïve answer');
+    // Two spans around a line spliced into the body read as one body.
+    const rest = bytes(text) - bytes('rest');
+    expect(spanText(text, [answer, { start: rest - 1, end: rest + 100 }])).toBe('naïve answer\nrest');
+    expect(spanText('ascii only', [{ start: 6, end: 10 }])).toBe('only');
+    expect(spanText('short', [{ start: 10, end: 20 }, { start: -3, end: 2 }])).toBe('sh');
+    expect(spanText('anything', [])).toBe('');
   });
 });

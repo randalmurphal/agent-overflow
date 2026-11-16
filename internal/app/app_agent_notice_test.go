@@ -16,11 +16,17 @@ import (
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadtools"
 	"agent-overflow/internal/triage"
+	"agent-overflow/internal/usermessage"
 )
 
 // A notice is accepted once it is queued. Its session starts afterwards, so
 // neither a slow start nor a held action lock keeps the sender waiting, and
 // a start that fails is a row in the thread.
+
+// testAgentWake is a wake of row that says text, attributed to row.
+func testAgentWake(row store.AgentWake, text string) usermessage.AgentMessage {
+	return usermessage.WakeMessage(usermessage.OriginWake{Kind: row.Kind, Label: row.Label}, "", text, "")
+}
 
 func noticeTestThread(t *testing.T, a *App, id string) store.Thread {
 	t.Helper()
@@ -483,7 +489,7 @@ func TestALaterFireRetriesAStartThatFailed(t *testing.T) {
 	ctx := context.Background()
 	fire := func(at int64) error {
 		t.Helper()
-		err := a.deliverAgentWake(ctx, row, at, fmt.Sprintf("fire %d", at))
+		err := a.deliverAgentWake(ctx, row, at, testAgentWake(row, fmt.Sprintf("fire %d", at)))
 		a.waitAgentNoticeWork()
 		a.notifications.queue.Wait()
 		return err
@@ -585,7 +591,7 @@ func TestANoticeWhoseCheckCannotReadSaysWhichRead(t *testing.T) {
 	if err := a.queueAgentNotice(agentNotice{
 		threadID:    thread.ID,
 		sendID:      agentSendIDRoot + "check",
-		prepare:     func() (string, bool, error) { return "deploy 12 is done", true, nil },
+		prepare:     personMessage(func() (string, bool, error) { return "deploy 12 is done", true, nil }),
 		keep:        func() (bool, error) { return false, errors.New("read the thread: database is locked") },
 		startFailed: func(err error) string { return "the agent could not start: " + err.Error() },
 	}); err != nil {
@@ -618,7 +624,7 @@ func TestAPanicInANoticeStartIsAStartFailure(t *testing.T) {
 	if err := a.queueAgentNotice(agentNotice{
 		threadID:    thread.ID,
 		sendID:      agentSendIDRoot + "panic",
-		prepare:     func() (string, bool, error) { return "deploy 12 is done", true, nil },
+		prepare:     personMessage(func() (string, bool, error) { return "deploy 12 is done", true, nil }),
 		startFailed: func(err error) string { return "the agent could not start: " + err.Error() },
 	}); err != nil {
 		t.Fatalf("queueAgentNotice: %v", err)
@@ -675,7 +681,7 @@ func holdAgentWake(t *testing.T, a *App, thread store.Thread, kind, label string
 	if err != nil {
 		t.Fatalf("RegisterAgentWake %s: %v", label, err)
 	}
-	if err := a.deliverAgentWake(context.Background(), row, 1, label+" fired"); err != nil {
+	if err := a.deliverAgentWake(context.Background(), row, 1, testAgentWake(row, label+" fired")); err != nil {
 		t.Fatalf("deliverAgentWake %s: %v", label, err)
 	}
 	a.waitAgentNoticeWork()
@@ -778,7 +784,7 @@ func TestARetryForAWakeNoLongerWantedWithdrawsTheHeldWake(t *testing.T) {
 	if _, _, err := a.store.CancelAgentWake(thread.ID, row.Label, "", agentWakeOutcomeCancelled); err != nil {
 		t.Fatalf("CancelAgentWake: %v", err)
 	}
-	notice, _ := a.agentWakeNotice(row, agentWakeSendID(row.ID, 2), "board fired again")
+	notice, _ := a.agentWakeNotice(row, agentWakeSendID(row.ID, 2), testAgentWake(row, "board fired again"))
 	if err := a.retryAgentWakeStart(row, notice); !errors.Is(err, store.ErrAgentWakeStillQueued) {
 		t.Fatalf("retryAgentWakeStart: %v, want ErrAgentWakeStillQueued", err)
 	}
@@ -874,7 +880,7 @@ func TestAnIncompleteAgentNoticeIsRefused(t *testing.T) {
 	a, thread := heldNoticeFixture(t, "notice-incomplete")
 	err := a.queueAgentNotice(agentNotice{
 		threadID: thread.ID, sendID: "agent-send:incomplete",
-		prepare: func() (string, bool, error) { return "deploy 14 is done", true, nil },
+		prepare: personMessage(func() (string, bool, error) { return "deploy 14 is done", true, nil }),
 	})
 	if err == nil {
 		t.Fatal("queued a notice with no start-failure message")

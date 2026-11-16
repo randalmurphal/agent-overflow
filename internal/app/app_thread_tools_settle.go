@@ -16,6 +16,7 @@ import (
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadtools"
 	"agent-overflow/internal/triage"
+	"agent-overflow/internal/usermessage"
 )
 
 // The settling half: how a request stops being open, and how the answer
@@ -294,19 +295,19 @@ func (a *App) sessionEndSettlement(threadID, turnID string) (store.ThreadRequest
 // start sends it. One the agent did take in is the session end's to settle.
 // One its queue refuses (an archived thread, a failed write) settles as
 // never read.
-func (a *App) giveBackRequest(threadID, token, body string) {
-	a.runThreadSettlementWorkDetached(a.giveBackRequestWork(threadID, token, body))
+func (a *App) giveBackRequest(threadID, token string, message usermessage.AgentMessage) {
+	a.runThreadSettlementWorkDetached(a.giveBackRequestWork(threadID, token, message))
 }
 
 // giveBackRequestWork is giveBackRequest returning the work a settlement owes
 // instead of running it, for a restore that gives back several requests and
 // runs their work together.
-func (a *App) giveBackRequestWork(threadID, token, body string) threadSettlementWork {
+func (a *App) giveBackRequestWork(threadID, token string, message usermessage.AgentMessage) threadSettlementWork {
 	tools := a.threadTools()
 	if !tools.returnRequestNotTakenIn(threadID, token) {
 		return threadSettlementWork{}
 	}
-	if err := tools.requeueRequest(token, threadID, body); err != nil {
+	if err := tools.requeueRequest(token, threadID, message); err != nil {
 		log.Printf("thread tools: give request %s back to %s: %v", token, threadID, err)
 		return a.settleReceiptNotRead(threadID, token, store.ThreadReceiptAccepted, threadtools.InterruptSessionEndedUnread)
 	}

@@ -17,6 +17,7 @@ import (
 	"agent-overflow/internal/procutil"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadtools"
+	"agent-overflow/internal/usermessage"
 )
 
 // The wake supervisor's clock and processes. The thread request sweep calls
@@ -225,11 +226,11 @@ func (a *App) currentAgentWake(row store.AgentWake) store.AgentWake {
 
 // runAgentWakeFire runs one claimed fire to its outcome.
 func (a *App) runAgentWakeFire(ctx context.Context, run *agentWakeRun, row store.AgentWake, fire agentWakeFire) {
-	var body string
+	var message usermessage.AgentMessage
 	var current store.AgentWake
 	switch row.Kind {
 	case store.AgentWakeLoop:
-		body = renderAgentLoopWake(row, fire)
+		message = renderAgentLoopWake(row, fire)
 		current = a.currentAgentWake(row)
 	case store.AgentWakeWatch:
 		result := a.runAgentWatchScript(ctx, row)
@@ -245,12 +246,12 @@ func (a *App) runAgentWakeFire(ctx context.Context, run *agentWakeRun, row store
 			return
 		}
 		current = a.currentAgentWake(row)
-		body = renderAgentWatchWake(current, fire, result.stdout, result.stderr)
+		message = renderAgentWatchWake(current, fire, result.stdout, result.stderr)
 	default:
 		a.finishAgentWakeFire(run, row, "error: unknown kind "+row.Kind, "", fire.missed, store.AgentWakeNoWake)
 		return
 	}
-	a.settleAgentWakeDelivery(run, row, fire, body, a.deliverAgentWake(ctx, current, fire.at, body))
+	a.settleAgentWakeDelivery(run, row, fire, message.Text(), a.deliverAgentWake(ctx, current, fire.at, message))
 }
 
 // settleAgentWakeDelivery records on its row what delivering one fire's wake
@@ -530,7 +531,7 @@ func (a *App) runAgentWatchProcess(ctx context.Context, run *agentWakeRun, row s
 
 	batch := newHeadOutput(agentWakeOutputCap)
 	var flush <-chan time.Time
-	render := func(current store.AgentWake, stderrPart cappedOutput) string {
+	render := func(current store.AgentWake, stderrPart cappedOutput) usermessage.AgentMessage {
 		return renderAgentWatchWake(current, agentWakeFire{}, batch.peek(), stderrPart)
 	}
 	deliver := func() bool {
@@ -538,8 +539,8 @@ func (a *App) runAgentWatchProcess(ctx context.Context, run *agentWakeRun, row s
 		// so a held wake still carries what the script said beside it.
 		taken := stderr.take()
 		current := a.currentAgentWake(row)
-		body := render(current, taken)
-		err := a.deliverAgentWake(ctx, current, time.Now().UnixMilli(), body)
+		message := render(current, taken)
+		err := a.deliverAgentWake(ctx, current, time.Now().UnixMilli(), message)
 		switch {
 		case err == nil:
 			batch.take()
@@ -553,7 +554,7 @@ func (a *App) runAgentWatchProcess(ctx context.Context, run *agentWakeRun, row s
 			log.Printf("agent wakes: watch %q on %s: %v", row.Label, row.ThreadID, err)
 			batch.take()
 			if !run.wasStopped() {
-				a.noteAgentWakeUndelivered(row.ThreadID, row.ID, agentWakeOutcomeNotDelivered+": "+err.Error(), body)
+				a.noteAgentWakeUndelivered(row.ThreadID, row.ID, agentWakeOutcomeNotDelivered+": "+err.Error(), message.Text())
 			}
 			return true
 		}
@@ -565,7 +566,7 @@ func (a *App) runAgentWatchProcess(ctx context.Context, run *agentWakeRun, row s
 				// Output that never reached the queue is not replayed; the
 				// script's own cursor decides whether its next run repeats
 				// it. The row keeps it for the agent to read.
-				a.noteAgentWakeUndelivered(row.ThreadID, row.ID, agentWakeOutcomeNotDelivered, render(a.currentAgentWake(row), stderr.take()))
+				a.noteAgentWakeUndelivered(row.ThreadID, row.ID, agentWakeOutcomeNotDelivered, render(a.currentAgentWake(row), stderr.take()).Text())
 			}
 			if lines != nil {
 				// The reader may be blocked handing over a line; let it reach

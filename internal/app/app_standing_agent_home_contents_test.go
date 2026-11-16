@@ -738,7 +738,7 @@ func TestAHomeFileStoppedByTheRawBoundStartsTheSession(t *testing.T) {
 	if err := queued.queueAgentNotice(agentNotice{
 		threadID:    thread.ID,
 		sendID:      agentSendIDRoot + "raw-bound",
-		prepare:     func() (string, bool, error) { return "the deploy finished", true, nil },
+		prepare:     personMessage(func() (string, bool, error) { return "the deploy finished", true, nil }),
 		startFailed: func(err error) string { return "the agent could not start: " + err.Error() },
 	}); err != nil {
 		t.Fatalf("queueAgentNotice: %v", err)

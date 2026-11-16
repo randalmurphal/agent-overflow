@@ -1294,10 +1294,24 @@ thread shows where a message came from, and the caller's wake shows
 where the answer came from. The token keeps three requests from one
 thread to another distinguishable; a wake answering several requests
 carries the oldest one's, the one it is queued under. A wake that
-speaks for several threads is attributed to the first thread it lists,
-and its row names the threads from its text rather than from the
-attribution. A row written before `kind` existed
-is read by its send id (`thread-request:`, `thread-wake`). When Claude
+speaks for several threads is attributed to the first thread it lists.
+A row written before `kind` existed
+is read by its send id (`thread-request:`, `thread-wake`).
+
+Every message the app writes for an agent also stores what it says, as
+`facts` on its `originThread` or `originWake` (`threadtools.MessageFacts`):
+where its own words are in its text, as UTF-8 byte spans; on a request,
+its footer's routing; on an answer, its outcome, every token it answers,
+its age, what stopped it, whether it was clipped, the assistant's past
+thread it was made in, and for a wake that speaks for several threads
+each thread with its computer's id; on a report, the line its row is
+headed by. One function renders the text and the facts from one value:
+`Footer.Message` and `Wake.Message` in `internal/threadtools`, and
+`usermessage.WakeMessage` for every other message, a new kind included.
+The facts travel wherever the attribution does: the queue payload, a
+joined row's parts, a message given back or requeued, a fork or handoff
+copy. A row rebuilt from a provider's session file has no attribution
+and is the person's row with the wire marks in its text. When Claude
 joins messages that queued together into one row, the attribution is the
 first member's (a thread or a wake), and `meta.joinedParts` records each
 member's length, attribution and token. A member that was itself joined
@@ -1325,8 +1339,9 @@ The timeline renders such a row folded, in the register of a tool row
 (`AgentMessageRow.svelte`): an icon and a gutter label for the kind,
 then one header line naming the sender (with `on <computer>` when
 remote, a button opening its thread in a pane when this client reaches
-it), a standing agent's role line, and the message's first line. Opened,
-it shows the message and the routing parsed into facts: whether the
+it), a standing agent's role line, and the message's first line. It
+renders from the row's facts, never from its text. Opened,
+it shows the message and its routing as facts: whether the
 sender waits, whether a reply reaches it, its role, where its spawned
 thread's prompts go, the sender's user message it quoted and the token;
 on an answer, who answered, how long ago, what stopped it,
@@ -1334,9 +1349,10 @@ where the clipped rest is, and for a request made in an assistant's
 past thread that thread and the current one. An answer to several requests is one row
 listing every token; a wake that lists several threads is one row whose
 sender is the count of threads; opened, it names each thread as a
-sender, with its age, role and tokens as facts, and opens only a thread
-on the caller's own computer, since the text names another computer by
-display name alone. A joined row shows each member its
+sender, with its age, role and tokens as facts, and opens it, on another
+computer through that computer's id, when this client reaches it. A
+notice that the person stopped a worker after it answered is a `Stop`
+row from the worker. A joined row shows each member its
 `joinedParts` record, cut by their lengths and read by their own
 attribution, never by finding separators in its text; the header names
 the first member's sender, and opened, each member is headed by its own
@@ -1350,11 +1366,18 @@ workflow wake names the workflow and leads with the run's headline. Every
 message the app writes into a thread that is not the person's own words
 carries one of these origins; the person's answers to a Codex question,
 review comments they send, the workflow messages they start from a
-button and a workflow phase prompt stay theirs. The parser reads the
-Go templates, pinned by `internal/threadtools/testdata/agent_messages.json`.
-Agent-thread and agent-wake rows written before this render the same way;
-a remote job's completion or a workflow wake written before it carries no
-origin and renders as the person's.
+button and a workflow phase prompt stay theirs. The Go templates and
+the facts they return are pinned by
+`internal/threadtools/testdata/agent_messages.json`, which the
+frontend renders. A row released builds wrote before the facts is read
+from its text, for the shapes they wrote and no others: a request footer
+with no standing-agent or routing line, and an answer for one thread
+(`reply`, a final message, an error, `was cancelled.`, `was
+interrupted` with or without its cause, an expiry, a settlement or a
+reminder); the fixture's `legacy` cases pin them. Those builds
+attributed a wake for several threads to the app and wrote no
+`agent-wake` row; a remote job's completion or a workflow wake they
+wrote carries no origin and renders as the person's.
 
 The model tells these messages from the person's by their marks. On the
 wire, a message with one of these origins, member by member in a joined

@@ -225,8 +225,8 @@ func TestThreadSpawnRunsTheWorkAndSettlesOnItsOwnTurn(t *testing.T) {
 		t.Errorf("spawn title = %q", spawned.Title)
 	}
 
-	// The message the spawned thread read: the prompt, the footer both ends
-	// parse, and the attribution an agent row names its sender by.
+	// The message the spawned thread read: the prompt, the footer the agent
+	// reads, and the attribution an agent row names its sender by.
 	row := f.userRow(t, ack.ThreadID, ack.Token)
 	if !strings.Contains(row.Summary, "check the windows build") {
 		t.Errorf("user row lost the prompt: %q", row.Summary)
@@ -242,6 +242,13 @@ func TestThreadSpawnRunsTheWorkAndSettlesOnItsOwnTurn(t *testing.T) {
 		meta.OriginThread.ThreadID != f.caller.ID || meta.OriginThread.Token != ack.Token ||
 		meta.OriginThread.Kind != store.ThreadRequestSpawn {
 		t.Fatalf("origin attribution = %+v", meta)
+	}
+	// Its row reads the facts its footer was written from: the prompt
+	// alone as the body.
+	if facts := meta.OriginThread.Facts; facts == nil ||
+		strings.TrimSpace(threadtools.SpanText(row.Summary, facts.Body)) != strings.TrimSpace(strings.SplitN(row.Summary, "\n\n---\n", 2)[0]) ||
+		strings.Contains(threadtools.SpanText(row.Summary, facts.Body), threadtools.FooterMarker) {
+		t.Fatalf("spawn facts = %+v over %q, want the prompt as the body", meta.OriginThread.Facts, row.Summary)
 	}
 
 	// The receipt names the turn it was consumed by, and the request is
@@ -1069,6 +1076,10 @@ func TestThreadRequestWithNoWaitArrivesAsAMessage(t *testing.T) {
 	if payload.Origin != string(usermessage.OriginAgentThread) || payload.OriginThread == nil ||
 		payload.OriginThread.Kind != usermessage.OriginKindWake {
 		t.Errorf("wake payload = %+v, want the agent-thread attribution of a wake", payload)
+	} else if facts := payload.OriginThread.Facts; facts == nil || facts.Outcome != threadtools.WakeFinished ||
+		!slices.Equal(facts.Tokens, []string{ack.Token}) || !strings.Contains(threadtools.SpanText(wake.Message, facts.Body), "reversible") ||
+		strings.Contains(threadtools.SpanText(wake.Message, facts.Body), ack.Token) {
+		t.Errorf("wake facts = %+v, want the final message answering %s, the answer alone as its body", payload.OriginThread.Facts, ack.Token)
 	}
 	delivered := f.request(t, ack.Token)
 	if delivered.DeliveredHow != store.ThreadWakeQueued || delivered.DeliveredAt == 0 {

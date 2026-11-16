@@ -228,11 +228,7 @@ func (a *App) deliverWorkerPrompt(route provider.PromptRoute, prompt workerPromp
 		a.handBackWorkerPrompt(registered.token)
 		return
 	}
-	kind := usermessage.OriginWakeKindQuestion
-	if prompt.approval != nil {
-		kind = usermessage.OriginWakeKindApproval
-	}
-	body := renderWorkerPromptWake(worker.Title, prompt.workerID, &registered)
+	message := workerPromptMessage(worker.Title, prompt.workerID, &registered)
 	live := func() bool { return a.workerPromptLive(registered.token) }
 	// A thread New Thread, Same Assistant superseded after triage routed
 	// the prompt there takes nothing, so a wake is queued only where triage
@@ -243,16 +239,11 @@ func (a *App) deliverWorkerPrompt(route provider.PromptRoute, prompt workerPromp
 	// before a session is started for it. An archive of the agent is the
 	// queue's and the start's to hold (queueAgentNotice).
 	err = a.queueAgentNotice(agentNotice{
-		threadID:   route.ThreadID,
-		recipient:  func(threadID string) { moved = threadID != route.ThreadID },
-		sendID:     registered.sendID(),
-		origin:     usermessage.OriginAgentWake,
-		originWake: &usermessage.OriginWake{Kind: kind, Label: worker.Title, ThreadID: prompt.workerID},
-		prepare: func() (string, bool, error) {
-			if moved || !live() {
-				return "", false, nil
-			}
-			return body, true, nil
+		threadID:  route.ThreadID,
+		recipient: func(threadID string) { moved = threadID != route.ThreadID },
+		sendID:    registered.sendID(),
+		prepare: func() (usermessage.AgentMessage, bool, error) {
+			return message, !moved && live(), nil
 		},
 		keep:      func() (bool, error) { return live(), nil },
 		withdrawn: func() { a.handBackWorkerPrompt(registered.token) },
@@ -518,12 +509,17 @@ func workerPromptAnswerKey(call threadtools.ReplyCall) string {
 	return strings.Join(append([]string{call.Decision, call.Text}, call.Answers...), "\x00")
 }
 
-// renderWorkerPromptWake renders the wake that puts a worker's prompt to
-// its agent: what the worker asks, quoted as data, and how to answer.
-func renderWorkerPromptWake(workerTitle, workerID string, prompt *workerPrompt) string {
-	var out strings.Builder
-	fmt.Fprintf(&out, "Thread %s (%s), which you spawned, is waiting on your answer. %s\n",
+// workerPromptMessage is the wake that puts a worker's prompt to its agent:
+// what the worker asks, quoted as data, and how to answer, headed in its
+// row by the prompt's first line.
+func workerPromptMessage(workerTitle, workerID string, prompt *workerPrompt) usermessage.AgentMessage {
+	kind := usermessage.OriginWakeKindQuestion
+	if prompt.approval != nil {
+		kind = usermessage.OriginWakeKindApproval
+	}
+	notice := fmt.Sprintf("Thread %s (%s), which you spawned, is waiting on your answer. %s",
 		untrustedtext.Quote(workerTitle, 0), workerID, agentWakeDataNotice)
+	var out strings.Builder
 	var data strings.Builder
 	if prompt.approval != nil {
 		request := prompt.approval
@@ -562,7 +558,8 @@ func renderWorkerPromptWake(workerTitle, workerID string, prompt *workerPrompt) 
 		fmt.Fprintf(&out, "Answer with thread_reply, token %s, once: one answer per part in answers, in order, and a summary in text.", prompt.token)
 	}
 	out.WriteString(" If it is not yours to decide, ask the user yourself, as one question with this context. The user can also answer in that thread, which settles this and refuses your reply.")
-	return out.String()
+	return usermessage.WakeMessage(usermessage.OriginWake{Kind: kind, Label: workerTitle, ThreadID: workerID},
+		notice, out.String(), firstDataLine(data.String()))
 }
 
 // add registers a prompt under a fresh token as the prompt's current

@@ -165,7 +165,7 @@ func TestAWakeTheSessionNeverTookInTellsTheTray(t *testing.T) {
 	before := len(wakeChanges(rec, thread.ID))
 
 	a.settleNotTakenIn(thread.ID, []notTakenIn{{messages: []appMessageOutcome{{
-		sendID: agentWakeSendID(loop.ID, now.UnixMilli()), wakeOutcome: agentWakeOutcomeSessionEnded, body: "Loop \"board\" fired.",
+		sendID: agentWakeSendID(loop.ID, now.UnixMilli()), wakeOutcome: agentWakeOutcomeSessionEnded, message: testAgentWake(loop, "Loop \"board\" fired."),
 	}}}})
 	changes := wakeChanges(rec, thread.ID)[before:]
 	if len(changes) != 1 || changes[0].ID != loop.ID || changes[0].Row == nil ||

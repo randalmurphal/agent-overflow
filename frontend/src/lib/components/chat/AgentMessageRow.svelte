@@ -5,9 +5,9 @@
   // on the wire and a `user_text` row in the store, but it is not the
   // person speaking, so it renders in the register of a tool row rather
   // than as the user bubble: icon, gutter label, one header line naming the
-  // sender, folded body. The body is the message with its routing parsed
-  // into facts; the footer and status-line text the agent reads never
-  // render raw.
+  // sender, folded body. The body is the message's own words with the
+  // facts its writer stored beside them; the footer and status-line text
+  // the agent reads never render raw.
   //
   // Expansion is the pane's per-item user-message state, so it survives
   // virtualization and feeds the size priors like the bubble's own clamp.
@@ -69,6 +69,7 @@
     expired: ClockAlert,
     reminder: AlarmClock,
     settled: Reply,
+    'worker-stopped': OctagonX,
     loop: Repeat,
     watch: Eye,
     script: Terminal,
@@ -121,7 +122,7 @@
   }
 
   /** What a thread that answered adds: its role and how long ago it answered. */
-  function answererFacts(thread: WakeThreadFacts): Fact[] {
+  function answererFacts(thread: Pick<WakeThreadFacts, 'agentRole' | 'age'>): Fact[] {
     const facts: Fact[] = [];
     if (thread.agentRole !== null) facts.push({ label: 'Role', value: thread.agentRole || 'Standing agent' });
     if (thread.age) facts.push({ label: 'Answered', value: `${thread.age} ago` });

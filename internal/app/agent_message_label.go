@@ -2,18 +2,13 @@ package app
 
 import (
 	"regexp"
-	"slices"
 	"strconv"
 	"strings"
 	"unicode"
 
 	"agent-overflow/internal/threadtools"
 	"agent-overflow/internal/usermessage"
-	"agent-overflow/internal/workflow/wake"
 )
-
-// remoteJobWakeHeader opens a remote job's completion (remoteCompletionMessage).
-const remoteJobWakeHeader = "Remote job finished on "
 
 // promptLabel is the text that names a turn by the message that started it,
 // where a list shows turns by their prompts (the review pane's Edits
@@ -30,8 +25,9 @@ func promptLabel(text string, meta usermessage.Meta) string {
 }
 
 // agentMessageLabel names an agent's message as the timeline's agent row
-// heads it: the sender, then the first line of what it says, without the
-// request's footer or the wake's template. It is the Go twin of the
+// heads it: the sender, then the first line of what it says. It reads the
+// facts the message was written with (threadtools.MessageFacts), and the
+// text only of a row main wrote before them. It is the Go twin of the
 // frontend's agentMessageFromItem sender and firstLine (agentMessage.ts),
 // held to it by testdata/agent_message_labels.json.
 func agentMessageLabel(text string, meta usermessage.Meta) string {
@@ -54,18 +50,37 @@ func agentMessageHead(text string, meta usermessage.Meta) (sender, head string) 
 		return agentWakeHead(text, meta.OriginWake)
 	}
 	var origin usermessage.OriginThread
-	if meta.OriginThread != nil && meta.OriginThread.ThreadID != "" {
+	if meta.OriginThread != nil {
 		origin = *meta.OriginThread
 	}
-	if origin.Kind == "wake" || origin.Kind == "" && strings.HasPrefix(meta.SendID, "thread-wake") {
-		if titles, body, ok := readThreadWakeDigest(text); ok {
+	if facts := origin.Facts; facts != nil {
+		body := threadtools.SpanText(text, facts.Body)
+		switch {
+		case len(facts.Threads) > 1:
 			// A digest speaks for several threads; no one of them sends it.
 			if head = firstLineOf(body); head == "" {
-				head = strings.Join(titles, ", ")
+				names := make([]string, 0, len(facts.Threads))
+				for _, thread := range facts.Threads {
+					names = append(names, firstNonEmpty(thread.Title, thread.ThreadID))
+				}
+				head = strings.Join(names, ", ")
 			}
-			return strconv.Itoa(len(titles)) + " threads", head
+			return strconv.Itoa(len(facts.Threads)) + " threads", head
+		case facts.Outcome == threadtools.WakeReminder:
+			return "This thread", firstLineOf(body)
 		}
-		if title, body, reminder, ok := readThreadWake(text); ok {
+		return firstNonEmpty(origin.Title, "another thread"), firstLineOf(body)
+	}
+	return legacyThreadHead(text, origin, meta.SendID)
+}
+
+// legacyThreadHead reads a row main wrote, which carries no facts: a request
+// whose footer main's Footer wrote, or an answer one of main's Wake
+// templates wrote for one thread. main attributed a wake that listed
+// several threads to the app, so no agent row holds one.
+func legacyThreadHead(text string, origin usermessage.OriginThread, sendID string) (sender, head string) {
+	if strings.HasPrefix(sendID, "thread-wake") {
+		if title, body, reminder, ok := readLegacyWake(text); ok {
 			if reminder {
 				return "This thread", firstLineOf(body)
 			}
@@ -92,16 +107,15 @@ func firstRequestBody(text string) (body, title string) {
 	return text[:at], title
 }
 
-// readThreadWake reads a wake an answer, a reminder or a settlement wrote
-// (threadtools.Wake): the answering thread's title and the body after the
-// status line, the standing-agent line and the past-thread line. ok is false when text is not one.
-func readThreadWake(text string) (title, body string, reminder, ok bool) {
+// readLegacyWake reads a wake main's Wake template wrote for one thread:
+// the answering thread's title and the body after the status line. ok is
+// false when text is not one.
+func readLegacyWake(text string) (title, body string, reminder, ok bool) {
 	head, after, _ := strings.Cut(text, "\n")
 	if rest, found := strings.CutPrefix(head, "Reminder you set"); found {
 		if _, rest = cutWakeToken(rest); rest != ":" {
 			return "", "", false, false
 		}
-		_, _, after, _ = threadtools.CutWakeMadeIn(after)
 		return "", after, true, true
 	}
 	reply := strings.HasPrefix(head, "Reply from ")
@@ -116,92 +130,18 @@ func readThreadWake(text string) (title, body string, reminder, ok bool) {
 		return "", "", false, false
 	}
 	_, rest := cutWakeToken(naming[len(quoted)+close+1:])
-	if line, next, _ := strings.Cut(after, "\n"); strings.HasPrefix(line, "That thread "+threadtools.AgentSentence) {
-		after = next
-	}
-	_, _, after, _ = threadtools.CutWakeMadeIn(after)
-	if reply {
-		if rest != ":" {
-			return "", "", false, false
-		}
-		return title, after, false, true
-	}
-	body, ok = wakeStatusBody(rest, after)
-	return title, body, false, ok
-}
-
-// wakeStatusBody is the body of a wake whose status line goes on with rest
-// after the thread and its tokens: the answer, the error, the cause or what
-// the turn had written.
-func wakeStatusBody(rest, after string) (body string, ok bool) {
 	switch {
-	case strings.HasPrefix(rest, " errored: "), strings.HasPrefix(rest, " was cancelled: "):
+	case reply && rest == ":",
+		rest == " finished its turn without calling thread_reply. Its final message:":
+		return title, after, false, true
+	case strings.HasPrefix(rest, " errored: "), strings.HasPrefix(rest, " was interrupted: "):
 		_, inline, _ := strings.Cut(rest, ": ")
-		body = inline + "\n" + after
-	case strings.HasPrefix(rest, " finished its turn without calling thread_reply. Its final message:"),
-		rest == ": "+threadtools.WakePersonStopped+" Its last message:":
-		body = after
-	case rest == ": "+threadtools.InterruptNeverStarted:
-		body = threadtools.InterruptNeverStarted
-	case rest == ": "+threadtools.InterruptSessionEndedMidTurn+strings.TrimRight(threadtools.SessionEndedWrittenSoFar, "\n"):
-		body = strings.TrimPrefix(after, "\n")
-	case strings.HasPrefix(rest, ": ") && slices.Contains(threadtools.InterruptSessionEndedReasons, rest[len(": "):]),
-		rest == ": "+threadtools.WakePersonStopped, rest == ": "+threadtools.InterruptTurn,
-		rest == ": "+threadtools.InterruptNotTakenIn, rest == ": "+threadtools.InterruptNotTakenInToComposer,
-		strings.HasPrefix(rest, ": The thread was moved to ") && strings.HasSuffix(rest, " before it answered."),
-		strings.HasPrefix(rest, " was cancelled."), strings.HasPrefix(rest, " was interrupted by a restart of "),
-		rest == " did not answer within a day.", rest == " settled.":
-	case strings.HasPrefix(rest, ": ") && after == "":
-		// Who stopped the turn, worded by the stop (app_turn_stop.go).
-		body = rest[len(": "):]
-	case strings.HasPrefix(rest, " errored."):
-	default:
-		return "", false
+		return title, inline + "\n" + after, false, true
+	case !reply && (rest == " errored." || rest == " was cancelled." || rest == " was interrupted." ||
+		rest == " did not answer within a day." || rest == " settled."):
+		return title, "", false, true
 	}
-	return body, true
-}
-
-// readThreadWakeDigest reads a wake that speaks for several threads
-// (threadtools.Wake digest): the titles it lists and the text after the
-// list, read as a single wake's would be. ok is false when text is not one.
-func readThreadWakeDigest(text string) (titles []string, body string, ok bool) {
-	lines := strings.Split(text, "\n")
-	count, opening, found := strings.Cut(lines[0], " threads")
-	want, err := strconv.Atoi(count)
-	if !found || err != nil || want < 2 {
-		return nil, "", false
-	}
-	// The list is exactly as long as the count: a shared text that opens
-	// with a Markdown list is text, not more threads.
-	at := 1
-	for ; len(titles) < want; at++ {
-		if at >= len(lines) || !strings.HasPrefix(lines[at], "- ") {
-			return nil, "", false
-		}
-		naming := lines[at][len("- "):]
-		quoted, err := strconv.QuotedPrefix(naming)
-		if err != nil || !strings.HasPrefix(naming[len(quoted):], " (") {
-			return nil, "", false
-		}
-		title, _ := strconv.Unquote(quoted)
-		if title == "" {
-			if close := strings.Index(naming[len(quoted)+2:], ")"); close >= 0 {
-				title, _, _ = strings.Cut(naming[len(quoted)+2:len(quoted)+2+close], ",")
-			}
-		}
-		titles = append(titles, title)
-		if at+1 < len(lines) && strings.HasPrefix(lines[at+1], "  That thread "+threadtools.AgentSentence) {
-			at++
-		}
-	}
-	_, _, body, _ = threadtools.CutWakeMadeIn(strings.Join(lines[at:], "\n"))
-	if opening == " were interrupted, each for the same reason:" {
-		sentence, after, _ := strings.Cut(body, "\n")
-		if reason, known := wakeStatusBody(": "+sentence, after); known {
-			body = reason
-		}
-	}
-	return titles, body, true
+	return "", "", false, false
 }
 
 // cutWakeToken takes a status line's ` [token X]` or ` [tokens X, Y]` off
@@ -221,7 +161,9 @@ func cutWakeToken(rest string) (tokens, after string) {
 }
 
 // agentWakeHead is the sender and first line of a loop's, a watch's, a
-// script's, a worker's, a remote job's or a workflow's wake.
+// script's, a worker's, a remote job's or a workflow's wake, or an
+// assistant's opening. main wrote none, so every one carries its facts; a
+// row whose facts did not decode is headed by its text's first line.
 func agentWakeHead(text string, origin *usermessage.OriginWake) (sender, head string) {
 	kind, label, computer := "send", "", ""
 	if origin != nil {
@@ -239,24 +181,29 @@ func agentWakeHead(text string, origin *usermessage.OriginWake) (sender, head st
 			sender = "A remote job"
 		}
 	case usermessage.OriginWakeKindOpening, usermessage.OriginWakeKindHandOff:
-		// The app writes an assistant's opening and handoff blocks; they
-		// are prose, not quoted data.
-		return "Agent Overflow", firstLineOf(text)
+		sender = "Agent Overflow"
 	default:
 		sender = firstNonEmpty(label, agentWakeKindTitles[kind])
 	}
-	switch kind {
-	case "completion":
-		for _, line := range strings.Split(text, "\n") {
-			if result, found := strings.CutPrefix(line, "Result: "); found {
-				return sender, strings.TrimSpace(result)
-			}
-		}
-		return sender, firstLineOf(agentWakeBody(text))
-	case "workflow":
-		return sender, firstLineOf(agentWakeBody(text))
+	if origin == nil || origin.Facts == nil {
+		return sender, firstLineOf(text)
 	}
-	return sender, agentWakeDataLine(text)
+	if origin.Facts.Headline != "" {
+		return sender, origin.Facts.Headline
+	}
+	return sender, firstLineOf(agentWakeBody(text, *origin))
+}
+
+// agentWakeBody is what a wake's row shows of it: its data, quoted values
+// decoded for reading, or as written where it is prose (an assistant's
+// opening) or the job's own output (a remote job's).
+func agentWakeBody(text string, origin usermessage.OriginWake) string {
+	body := threadtools.SpanText(text, origin.Facts.Body)
+	switch origin.Kind {
+	case usermessage.OriginWakeKindCompletion, usermessage.OriginWakeKindOpening, usermessage.OriginWakeKindHandOff:
+		return body
+	}
+	return readableWakeText(body)
 }
 
 // agentWakeKindTitles name a wake by its kind, as the frontend's agent row
@@ -267,36 +214,6 @@ var agentWakeKindTitles = map[string]string{
 	"question": "Worker's question",
 	"approval": "Worker's approval request",
 	"workflow": "Workflow wake",
-}
-
-// agentWakeDataLine is the first quoted data line of a wake, whose own first
-// line is the template.
-func agentWakeDataLine(text string) string {
-	_, rest, _ := strings.Cut(text, "\n")
-	for _, line := range strings.Split(rest, "\n") {
-		line = strings.TrimPrefix(line, "note: ")
-		quoted, err := strconv.QuotedPrefix(line)
-		if err != nil {
-			continue
-		}
-		if value, err := strconv.Unquote(quoted); err == nil && strings.TrimSpace(value) != "" {
-			return strings.Join(strings.Fields(value), " ")
-		}
-	}
-	return firstLineOf(rest)
-}
-
-// agentWakeBody is a wake without its data notice line. A remote job's
-// output follows its header as written; other data lines are quoted.
-func agentWakeBody(text string) string {
-	first, rest, _ := strings.Cut(text, "\n")
-	if strings.HasPrefix(first, remoteJobWakeHeader) {
-		return rest
-	}
-	if !strings.HasSuffix(first, " "+agentWakeDataNotice) && first != wake.DataNotice {
-		rest = text
-	}
-	return readableWakeText(rest)
 }
 
 // readableWakeText is a wake's text with the escapes of its quoted data

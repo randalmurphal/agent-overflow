@@ -31,6 +31,21 @@ type agentMessageLabelCase struct {
 	Label string `json:"label"`
 }
 
+// mainWakeTexts are wakes for one thread as main's Wake template wrote them
+// (git show origin/main:internal/threadtools/footer.go), one per status
+// line it had.
+var mainWakeTexts = []string{
+	"Reply from \"Worker\" (t-worker) [token tok-1]:\nAll green.\nSecond line.",
+	"\"Worker\" (t-worker, answered 3h ago) [token tok-1] finished its turn without calling thread_reply. Its final message:\nFinal words.",
+	"\"Worker\" (t-worker) [token tok-1] errored: boom\nstack",
+	"\"Worker\" (t-worker) [token tok-1] errored.",
+	"\"Worker\" (t-worker) [token tok-1] was cancelled.",
+	"\"Worker\" (t-worker) [token tok-1] was interrupted.",
+	"\"Worker\" (t-worker) [token tok-1] was interrupted: The computer running it restarted.\nIt had started the build.",
+	"\"Worker\" (t-worker, on desk) [tokens tok-1, tok-2] did not answer within a day.",
+	"\"Worker\" (t-worker) [token tok-1] settled.",
+}
+
 func agentMessageLabelCases(t *testing.T) []agentMessageLabelCase {
 	t.Helper()
 	marshal := func(meta usermessage.Meta) string {
@@ -43,16 +58,42 @@ func agentMessageLabelCases(t *testing.T) []agentMessageLabelCase {
 	from := func(kind, title string) *usermessage.OriginThread {
 		return &usermessage.OriginThread{ThreadID: "t-" + strings.ToLower(title), Title: title, Kind: kind, Token: "tok-1"}
 	}
+	// message is a row of an agent's message as its writer stores it: the
+	// attribution with the facts, or none when it did not decode.
+	message := func(m usermessage.AgentMessage, attributed bool, sendID string) (string, string) {
+		meta := usermessage.Meta{Origin: m.Origin(), SendID: sendID}
+		if attributed {
+			meta.OriginThread, meta.OriginWake = m.OriginThread(), m.OriginWake()
+		}
+		return m.Text(), marshal(meta)
+	}
 	request := func(origin *usermessage.OriginThread, body string, footer threadtools.Footer) (string, string) {
-		return threadtools.QuoteFooterMimics(body) + "\n\n" + footer.String(),
-			marshal(usermessage.Meta{Origin: usermessage.OriginAgentThread, OriginThread: origin, SendID: "thread-request:tok-1"})
+		text, facts := footer.Message(body)
+		var from usermessage.OriginThread
+		if origin != nil {
+			from = *origin
+		}
+		return message(usermessage.ThreadMessage(from, text, facts), origin != nil, "thread-request:tok-1")
 	}
 	footer := threadtools.Footer{Title: "Lead", ThreadID: "t-lead", Token: "tok-1", AnswerRequested: true, SenderReachable: true}
 	answer := func(w threadtools.Wake, origin *usermessage.OriginThread) (string, string) {
-		return w.String(), marshal(usermessage.Meta{Origin: usermessage.OriginAgentThread, OriginThread: origin, SendID: "thread-wake:tok-1"})
+		text, facts := w.Message()
+		var from usermessage.OriginThread
+		if origin != nil {
+			from = *origin
+		}
+		return message(usermessage.ThreadMessage(from, text, facts), origin != nil, "thread-wake:tok-1")
 	}
-	appWake := func(text string, origin *usermessage.OriginWake) (string, string) {
-		return text, marshal(usermessage.Meta{Origin: usermessage.OriginAgentWake, OriginWake: origin, SendID: "agent-wake:w1:1"})
+	appWake := func(m usermessage.AgentMessage) (string, string) {
+		return message(m, true, "agent-wake:w1:1")
+	}
+	// legacy is a row main wrote: its text, attributed to the thread with no
+	// kind and no facts.
+	legacy := func(text string, origin *usermessage.OriginThread, sendID string) (string, string) {
+		return text, marshal(usermessage.Meta{Origin: usermessage.OriginAgentThread, OriginThread: origin, SendID: sendID})
+	}
+	mainFrom := func(title string) *usermessage.OriginThread {
+		return &usermessage.OriginThread{ThreadID: "t-" + strings.ToLower(title), Title: title, Token: "tok-1"}
 	}
 	// joined is the row a join makes of its members (usermessage.Join).
 	joined := func(texts []string, metas []string) (string, string) {
@@ -165,40 +206,57 @@ func agentMessageLabelCases(t *testing.T) []agentMessageLabelCase {
 	text, meta = joined([]string{quoting, secondWake}, []string{quotingMeta, secondWakeMeta})
 	add("two wakes joined, the first answer quoting a wake", text, meta)
 	// A loop's wake joined ahead of an answer heads the row as a loop.
-	loopFirst, loopFirstMeta := appWake(renderAgentLoopWake(store.AgentWake{Label: "nightly", Note: "Go."}, agentWakeFire{}), &usermessage.OriginWake{Kind: "loop", Label: "nightly"})
+	loopFirst, loopFirstMeta := appWake(renderAgentLoopWake(store.AgentWake{Label: "nightly", Note: "Go."}, agentWakeFire{}))
 	text, meta = joined([]string{loopFirst, secondWake}, []string{loopFirstMeta, secondWakeMeta})
 	add("a loop's wake joined with an answer", text, meta)
 
 	loop := store.AgentWake{Label: "nightly", Note: "Check  the build."}
-	text, meta = appWake(renderAgentLoopWake(loop, agentWakeFire{missed: 2}), &usermessage.OriginWake{Kind: "loop", Label: "nightly"})
+	text, meta = appWake(renderAgentLoopWake(loop, agentWakeFire{missed: 2}))
 	add("a loop", text, meta)
-	text, meta = appWake(renderAgentLoopWake(store.AgentWake{Label: ""}, agentWakeFire{}), &usermessage.OriginWake{Kind: "loop"})
+	text, meta = appWake(renderAgentLoopWake(store.AgentWake{Label: ""}, agentWakeFire{}))
 	add("an unlabelled loop with no note", text, meta)
-	text, meta = appWake(renderAgentWatchWake(store.AgentWake{Label: "ci"}, agentWakeFire{}, newCappedText("\nbuild failed: exit 2\n", 1024), cappedOutput{}), &usermessage.OriginWake{Kind: "watch", Label: "ci"})
+	text, meta = appWake(renderAgentWatchWake(store.AgentWake{Label: "ci"}, agentWakeFire{}, newCappedText("\nbuild failed: exit 2\n", 1024), cappedOutput{}))
 	add("a watch", text, meta)
-	text, meta = appWake(renderAgentSendWake("deploy finished\nall good"), &usermessage.OriginWake{Kind: "send"})
+	text, meta = appWake(renderAgentWatchWake(store.AgentWake{Label: "quiet"}, agentWakeFire{}, cappedOutput{}, cappedOutput{}))
+	add("a watch that printed nothing", text, meta)
+	text, meta = appWake(renderAgentSendWake("deploy finished\nall good"))
 	add("a script's message", text, meta)
-	text, meta = appWake(renderAgentSendWake("unattributed"), nil)
+	text, meta = message(renderAgentSendWake("unattributed"), false, "agent-wake:w1:1")
 	add("a wake whose attribution did not decode", text, meta)
-	text, meta = appWake(renderWorkerPromptWake(worker, "t-worker", &workerPrompt{token: "tok-1", approval: &provider.ApprovalRequest{ToolName: "Bash", Description: "Run the tests"}}),
-		&usermessage.OriginWake{Kind: "approval", Label: worker, ThreadID: "t-worker"})
+	text, meta = appWake(workerPromptMessage(worker, "t-worker", &workerPrompt{token: "tok-1", approval: &provider.ApprovalRequest{ToolName: "Bash", Description: "Run the tests"}}))
 	add("a worker's approval request", text, meta)
-	text, meta = appWake(renderWorkerPromptWake("", "t-worker", &workerPrompt{token: "tok-1", question: &provider.UserInputRequest{Questions: []provider.UserInputQuestion{{Header: "Scope", Question: "Which module?"}}}}),
-		&usermessage.OriginWake{Kind: "question", ThreadID: "t-worker"})
+	text, meta = appWake(workerPromptMessage("", "t-worker", &workerPrompt{token: "tok-1", question: &provider.UserInputRequest{Questions: []provider.UserInputQuestion{{Header: "Scope", Question: "Which module?"}}}}))
 	add("an untitled worker's question", text, meta)
 	watch := store.RemoteWatch{ComputerID: "c-desk", RequestID: "r-1", Label: "make test", Receipt: store.RemoteJob{Workspace: "/w", State: "finished", ExitCode: 0}}
-	text, meta = appWake(remoteCompletionMessage(watch, "desk", remoteCompletionOutput{Tail: "ok"}), &usermessage.OriginWake{Kind: "completion", Label: "make test", Computer: "desk"})
+	text, meta = appWake(remoteCompletionMessage(watch, "desk", remoteCompletionOutput{Tail: "ok"}))
 	add("a remote job", text, meta)
-	text, meta = appWake(remoteCompletionMessage(store.RemoteWatch{ComputerID: "c-desk", Receipt: store.RemoteJob{ExitCode: -1}}, "", remoteCompletionOutput{}), &usermessage.OriginWake{Kind: "completion"})
+	text, meta = appWake(remoteCompletionMessage(store.RemoteWatch{ComputerID: "c-desk", Receipt: store.RemoteJob{ExitCode: -1}}, "", remoteCompletionOutput{}))
 	add("an unlabelled remote job", text, meta)
-	text, meta = appWake(wake.DataNotice+"\nrun: \"release\"\nstep: \"build\" finished", &usermessage.OriginWake{Kind: "workflow", Label: "release"})
+	text, meta = appWake(workflowWakeMessage("release", wake.DataNotice+"\nrun: \"release\"\nstep: \"build\" finished"))
 	add("a workflow wake", text, meta)
-	text, meta = appWake(wake.DataNotice+"\n"+`"\u003cb\u003e \\ \" \t \u200b \x41 caf\u00e9"`, &usermessage.OriginWake{Kind: "workflow", Label: "release"})
+	text, meta = appWake(workflowWakeMessage("release", wake.DataNotice+"\n"+`"\u003cb\u003e \\ \" \t \u200b \x41 caf\u00e9"`))
 	add("a workflow wake whose data holds escapes", text, meta)
-	text, meta = appWake(agenthome.OpeningMessage("Ops", "/config/agents/a1"), &usermessage.OriginWake{Kind: usermessage.OriginWakeKindOpening, Label: "Ops"})
+	text, meta = appWake(assistantMessage(assistantSendID(usermessage.OriginWakeKindOpening, "a1"), "Ops", agenthome.OpeningMessage("Ops", "/config/agents/a1")))
 	add("an assistant's opening message", text, meta)
-	text, meta = appWake(agenthome.HandOffMessage(agenthome.HandOff{Name: "Ops", PreviousThreadID: "t-old", MovedWakes: 1}), &usermessage.OriginWake{Kind: usermessage.OriginWakeKindHandOff, Label: "Ops"})
+	text, meta = appWake(assistantMessage(assistantSendID(usermessage.OriginWakeKindHandOff, "a1"), "Ops", agenthome.HandOffMessage(agenthome.HandOff{Name: "Ops", PreviousThreadID: "t-old", MovedWakes: 1})))
 	add("an assistant's handoff block", text, meta)
+	text, meta = message(workerStoppedNote(usermessage.OriginThread{ThreadID: "t-worker", Title: worker, Kind: usermessage.OriginKindWake}, "tok-1", nil), true, "thread-worker-stopped:tok-1")
+	add("the notice that the user stopped a worker", text, meta)
+
+	// Rows main wrote, with no kind and no facts, read from their text
+	// (legacyThreadHead): its request footer and its wakes for one thread.
+	// main attributed a wake for several threads to the app.
+	mainFooter := "\n\n---\nAgent request from thread \"Lead\" (t-lead).\nIt is waiting for your answer. When you are done, call thread_reply with token tok-1, once. The sender sees only your reply text, so make it self-contained."
+	text, meta = legacy("Review the parser.\nThen report back."+mainFooter, mainFrom("Lead"), "thread-request:tok-1")
+	add("main: a request", text, meta)
+	text, meta = legacy("First ask."+mainFooter+usermessage.JoinSeparator+"Second ask."+mainFooter, mainFrom("Lead"), "thread-request:tok-1")
+	add("main: two requests a provider joined", text, meta)
+	for _, status := range mainWakeTexts {
+		text, meta = legacy(status, mainFrom(worker), "thread-wake:tok-1")
+		add("main: "+status, text, meta)
+	}
+	text, meta = legacy("Reminder you set [token tok-1]:\nCheck the build.", &usermessage.OriginThread{Token: "tok-1"}, "thread-wake:tok-1")
+	add("main: a reminder", text, meta)
 
 	for i := range cases {
 		decoded, err := usermessage.FromItem(store.Item{Meta: cases[i].Meta})
@@ -247,6 +305,21 @@ func TestAgentMessageLabelQuotesTheAnswerNotTheRouting(t *testing.T) {
 		"made in a past thread: reply from 2 sources, Same answer.":                                         "2 threads: Same answer.",
 		"made in a past thread: interrupted from 2 sources, " + threadtools.InterruptSessionEndedUnread:     "2 threads: Worker, Lexer",
 		"a digest whose shared reply is a Markdown list":                                                    "2 threads: - No findings.",
+		"an error":                 "Worker: boom",
+		"a standing agent's reply": "Worker: Done.",
+		"a loop":                   "nightly: Check the build.",
+		"a watch":                  "ci: build failed: exit 2",
+		"a remote job":             "make test on desk: finished; exit code: 0",
+		"the notice that the user stopped a worker": "Worker: The user stopped thread \"Worker\" (t-worker), which you spawned, from the Agents tray after it had answered you; you did not stop it. It is at rest, with nothing running or queued; nothing it did was undone. A later message starts it again.",
+		"main: a request":                      "Lead: Review the parser.",
+		"main: two requests a provider joined": "Lead: First ask.",
+		"main: a reminder":                     "This thread: Check the build.",
+		"main: " + mainWakeTexts[0]:            "Worker: All green.",
+		"main: " + mainWakeTexts[1]:            "Worker: Final words.",
+		"main: " + mainWakeTexts[2]:            "Worker: boom",
+		"main: " + mainWakeTexts[3]:            "Worker",
+		"main: " + mainWakeTexts[6]:            "Worker: The computer running it restarted.",
+		"main: " + mainWakeTexts[7]:            "Worker",
 	}
 	seen := 0
 	for _, tc := range agentMessageLabelCases(t) {

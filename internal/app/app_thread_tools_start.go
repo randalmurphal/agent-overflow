@@ -731,33 +731,24 @@ func (t threadToolsApp) dispatchRequest(
 	if err := t.app.requireAutonomyForThread(ctx, targetThreadID, ""); err != nil {
 		return err
 	}
-	caller := origin.caller
-	body, err := t.requestMessageBody(origin, token, targetThreadID, text, wantsAnswer)
+	message, err := t.requestMessage(origin, token, kind, targetThreadID, text, wantsAnswer)
 	if err != nil {
 		return err
-	}
-	attribution := &usermessage.OriginThread{
-		ComputerID:   caller.ComputerID,
-		ComputerName: caller.ComputerName,
-		ThreadID:     caller.ThreadID,
-		Title:        caller.Title,
-		Token:        token,
-		Kind:         kind,
 	}
 	sendID := threadRequestSendID(token)
 	// writtenTo is the session an idle thread's send wrote the message to.
 	// A repeated frame writes nothing and leaves it empty: the first frame
 	// bound the receipt.
 	var writtenTo string
-	item, err := t.app.sendMessageWithOptions(ctx, targetThreadID, body, sendMessageOptions{
+	item, err := t.app.sendMessageWithOptions(ctx, targetThreadID, message.Text(), sendMessageOptions{
 		SendID:            sendID,
 		ReconcileBySendID: true,
 		QueueIfActive:     true,
 		// The target's composer holds whatever the person at that thread
 		// typed and has not sent. An agent's message must never take it.
 		PreserveDraft:     true,
-		Origin:            usermessage.OriginAgentThread,
-		OriginThread:      attribution,
+		Origin:            message.Origin(),
+		OriginThread:      message.OriginThread(),
 		onDurable:         func(session string) { t.requestDispatched(token, targetThreadID, session) },
 		onSessionDispatch: func(session string) { writtenTo = session },
 	})
@@ -838,13 +829,14 @@ func (t threadToolsApp) returnRequestLocked(token string) bool {
 }
 
 // requeueRequest puts a returned request's message (body, footer included)
-// back on its target's queue, attributed as dispatchRequest attributed it. It
-// is held: the session end or teardown that gave it back does not start a turn
-// for it, and the thread's next turn boundary or session start sends it. An
-// archived thread refuses it, except one New Thread, Same Assistant
+// back on its target's queue, attributed as dispatchRequest attributed it:
+// the sender its receipt names, and the facts the message was written with.
+// It is held: the session end or teardown that gave it back does not start
+// a turn for it, and the thread's next turn boundary or session start sends
+// it. An archived thread refuses it, except one New Thread, Same Assistant
 // superseded: its request moves to the assistant's current thread, receipt
 // and all, and is queued there.
-func (t threadToolsApp) requeueRequest(token, targetThreadID, body string) error {
+func (t threadToolsApp) requeueRequest(token, targetThreadID string, message usermessage.AgentMessage) error {
 	if current, ok := t.app.assistantCurrentThread(targetThreadID); ok {
 		moved, err := t.app.store.RetargetThreadReceipt(token, targetThreadID, current)
 		if err != nil {
@@ -861,20 +853,24 @@ func (t threadToolsApp) requeueRequest(token, targetThreadID, body string) error
 	if !found || receipt.State != store.ThreadReceiptAccepted {
 		return nil
 	}
-	_, err = t.app.registerQueueItem(targetThreadID, body, SendMessageOptions{SendID: threadRequestSendID(token)}, injectedQueueOptions{
+	origin := &usermessage.OriginThread{
+		ComputerID:   receipt.SourceComputerID,
+		ComputerName: receipt.SourceComputerName,
+		ThreadID:     receipt.SourceThreadID,
+		Title:        receipt.SourceThreadTitle,
+		Token:        token,
+		Kind:         receipt.Kind,
+	}
+	if written := message.OriginThread(); written != nil {
+		origin.Facts = written.Facts
+	}
+	_, err = t.app.registerQueueItem(targetThreadID, message.Text(), SendMessageOptions{SendID: threadRequestSendID(token)}, injectedQueueOptions{
 		preserveDraft:     true,
 		held:              true,
 		heldWhileArchived: true,
 		origin:            usermessage.OriginAgentThread,
-		originThread: &usermessage.OriginThread{
-			ComputerID:   receipt.SourceComputerID,
-			ComputerName: receipt.SourceComputerName,
-			ThreadID:     receipt.SourceThreadID,
-			Title:        receipt.SourceThreadTitle,
-			Token:        token,
-			Kind:         receipt.Kind,
-		},
-		onDurable: func(session string) { t.requestDispatched(token, targetThreadID, session) },
+		originThread:      origin,
+		onDurable:         func(session string) { t.requestDispatched(token, targetThreadID, session) },
 	})
 	if err != nil {
 		return fmt.Errorf("requeue request %s: %w", token, err)
@@ -1037,19 +1033,20 @@ func (t threadToolsApp) settleIfTurnAlreadyEnded(token, targetThreadID string, t
 	return work
 }
 
-// requestMessageBody is the message the target thread reads: the sender's
-// text, then the fixed footer. The footer is never hand-written here; both
-// ends read the same template, and a variant wording is a variant contract.
-func (t threadToolsApp) requestMessageBody(
-	origin threadRequestOrigin, token, targetThreadID, text string, wantsAnswer bool,
-) (string, error) {
+// requestMessage is the message the target thread reads: the sender's
+// text, then the fixed footer, attributed to the sender with the facts the
+// footer states. The footer is never hand-written here; the model reads the
+// template and the timeline its facts, both from Footer.Message.
+func (t threadToolsApp) requestMessage(
+	origin threadRequestOrigin, token, kind, targetThreadID, text string, wantsAnswer bool,
+) (usermessage.AgentMessage, error) {
 	caller := origin.caller
 	latest := origin.userMessage
 	if !origin.foreign {
 		var err error
 		latest, _, err = t.app.store.LatestHumanUserText(caller.ThreadID)
 		if err != nil {
-			return "", err
+			return usermessage.AgentMessage{}, err
 		}
 	}
 	footer := threadtools.Footer{
@@ -1072,14 +1069,22 @@ func (t threadToolsApp) requestMessageBody(
 		// computer never routes them.
 		spawner, _, found, err := t.app.store.SpawnerOf(targetThreadID)
 		if err != nil {
-			return "", err
+			return usermessage.AgentMessage{}, err
 		}
 		footer.RoutesPrompts = found && spawner == caller.ThreadID
 	}
 	// The body is the sender's text and the footer is this computer's; a
 	// body line that opens like the footer is quoted so only the footer
 	// reads as one.
-	return threadtools.QuoteFooterMimics(strings.TrimRight(text, "\n")) + "\n\n" + footer.String(), nil
+	message, facts := footer.Message(text)
+	return usermessage.ThreadMessage(usermessage.OriginThread{
+		ComputerID:   caller.ComputerID,
+		ComputerName: caller.ComputerName,
+		ThreadID:     caller.ThreadID,
+		Title:        caller.Title,
+		Token:        token,
+		Kind:         kind,
+	}, message, facts), nil
 }
 
 // senderComputerName is what the footer calls the sender's computer: what

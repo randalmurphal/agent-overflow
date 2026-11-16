@@ -2,6 +2,7 @@ package app
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -337,7 +338,7 @@ func TestARestoreSettlingTwoRequestsUnreadWakesTheirSenderOnce(t *testing.T) {
 			}
 			var owed teardownRequests
 			for _, r := range requests {
-				owed.queued = append(owed.queued, returnedRequest{token: r.token, body: r.row.Summary})
+				owed.queued = append(owed.queued, returnedRequest{token: r.token, message: usermessage.StoredMessage(r.row.Summary, usermessage.OriginAgentThread, nil, nil)})
 			}
 			q.f.app.giveBackTeardownRequests(q.target.ID, owed)
 		}},
@@ -396,6 +397,11 @@ func TestARestartTellsASenderOnceAboutEveryInterruptedRequest(t *testing.T) {
 	if payload.Origin != usermessage.OriginAgentThread || payload.OriginThread == nil ||
 		payload.OriginThread.Kind != usermessage.OriginKindWake || payload.OriginThread.Token != first.Token {
 		t.Errorf("wake payload = %+v, want an agent's wake attributed to its carrier %s", payload, first.Token)
+	} else if facts := payload.OriginThread.Facts; facts == nil || facts.Outcome != threadtools.WakeInterrupted ||
+		facts.StoppedBy != "a restart of this computer" || len(facts.Threads) != 2 ||
+		facts.Threads[0].ThreadID != first.ThreadID || !slices.Equal(facts.Threads[0].Tokens, []string{first.Token}) ||
+		facts.Threads[1].ThreadID != second.ThreadID || !slices.Equal(facts.Threads[1].Tokens, []string{second.Token}) {
+		t.Errorf("wake facts = %+v, want both threads with their tokens, stopped by the restart", payload.OriginThread.Facts)
 	}
 	after.nothingOwed(t)
 }

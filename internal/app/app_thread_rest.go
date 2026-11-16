@@ -683,7 +683,7 @@ func (a *App) tellSpawnerOfUserStop(spawn store.ThreadRequest, sendID string, re
 	if sendID == "" {
 		return
 	}
-	origin := &usermessage.OriginThread{ThreadID: spawn.TargetThreadID, Token: spawn.Token, Kind: usermessage.OriginKindWake}
+	origin := usermessage.OriginThread{ThreadID: spawn.TargetThreadID, Token: spawn.Token, Kind: usermessage.OriginKindWake}
 	title := spawn.TargetThreadTitle
 	if spawn.TargetComputerID != "" {
 		origin.ComputerName, origin.ComputerID = a.threadTools().threadToolsBackendName(spawn.TargetComputerID)
@@ -691,13 +691,11 @@ func (a *App) tellSpawnerOfUserStop(spawn store.ThreadRequest, sendID string, re
 		title = thread.Title
 	}
 	origin.Title = title
-	body := workerStoppedBody(title, spawn.TargetThreadID, result.Failures)
+	note := workerStoppedNote(origin, spawn.Token, result.Failures)
 	err := a.queueAgentNotice(agentNotice{
-		threadID:     spawn.CallerThreadID,
-		sendID:       sendID,
-		origin:       usermessage.OriginAgentThread,
-		originThread: origin,
-		prepare:      func() (string, bool, error) { return body, true, nil },
+		threadID: spawn.CallerThreadID,
+		sendID:   sendID,
+		prepare:  func() (usermessage.AgentMessage, bool, error) { return note, true, nil },
 		startFailed: func(err error) string {
 			return "A message that the user stopped a thread this one spawned is queued, but the agent could not start: " + err.Error()
 		},
@@ -707,18 +705,23 @@ func (a *App) tellSpawnerOfUserStop(spawn store.ThreadRequest, sendID string, re
 	}
 }
 
-// workerStoppedBody is the message telling a spawner the user stopped its
-// worker, from the Stop's failures: at rest when there are none, and
-// otherwise each part the Stop could not bring to rest, named as the Stop's
-// result names it.
-func workerStoppedBody(title, threadID string, failures []string) string {
+// workerStoppedNote is the message telling a spawner the user stopped its
+// worker, attributed to the worker (from) under its spawn's token, from the
+// Stop's failures: at rest when there are none, and otherwise each part the
+// Stop could not bring to rest, named as the Stop's result names it. The
+// whole text is its body.
+func workerStoppedNote(from usermessage.OriginThread, token string, failures []string) usermessage.AgentMessage {
 	state := "It is at rest, with nothing running or queued; nothing it did was undone."
 	if len(failures) > 0 {
 		state = "These parts of the stop failed and may still be running or queued: " +
 			strings.TrimSuffix(strings.Join(failures, "; "), ".") + "."
 	}
-	return fmt.Sprintf("The user stopped thread %q (%s), which you spawned, from the Agents tray after it had answered you; you did not stop it. %s A later message starts it again.",
-		title, threadID, state)
+	text := fmt.Sprintf("The user stopped thread %q (%s), which you spawned, from the Agents tray after it had answered you; you did not stop it. %s A later message starts it again.",
+		from.Title, from.ThreadID, state)
+	return usermessage.ThreadMessage(from, text, threadtools.MessageFacts{
+		Outcome: threadtools.OutcomeWorkerStopped, Tokens: []string{token}, StoppedBy: "the user",
+		Body: []threadtools.Span{{Start: 0, End: len(text)}},
+	})
 }
 
 // stopRemoteAgentRequestBy is stopAgentRequestBy for a target on a paired

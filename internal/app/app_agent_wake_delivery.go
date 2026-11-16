@@ -86,11 +86,11 @@ func agentWakeFromSendID(sendID string) (wakeID string, fireAt int64, ok bool) {
 // nothing. row is the row as it stands now, read by the caller after any
 // work of its own (currentAgentWake): a handoff moves a row while a run of
 // it is in flight, and the wake is the thread's that holds the row now.
-func (a *App) deliverAgentWake(ctx context.Context, row store.AgentWake, fireAt int64, body string) error {
+func (a *App) deliverAgentWake(ctx context.Context, row store.AgentWake, fireAt int64, message usermessage.AgentMessage) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	notice, abandoned := a.agentWakeNotice(row, agentWakeSendID(row.ID, fireAt), body)
+	notice, abandoned := a.agentWakeNotice(row, agentWakeSendID(row.ID, fireAt), message)
 	err := a.queueAgentNotice(notice)
 	if errors.Is(err, store.ErrAgentWakeStillQueued) {
 		err = a.retryAgentWakeStart(row, notice)
@@ -101,9 +101,10 @@ func (a *App) deliverAgentWake(ctx context.Context, row store.AgentWake, fireAt 
 	return *abandoned
 }
 
-// agentWakeNotice is the notice that carries one wake of row. abandoned is
-// set when the notice is refused before it is queued.
-func (a *App) agentWakeNotice(row store.AgentWake, sendID, body string) (agentNotice, *error) {
+// agentWakeNotice is the notice that carries one wake of row, message, as
+// its run rendered it or its queue row kept it. abandoned is set when the
+// notice is refused before it is queued.
+func (a *App) agentWakeNotice(row store.AgentWake, sendID string, message usermessage.AgentMessage) (agentNotice, *error) {
 	abandoned := new(error)
 	// An archive or a cancel that landed while this run worked has the last
 	// word, here and again when a session is started for the wake. The queue
@@ -127,19 +128,17 @@ func (a *App) agentWakeNotice(row store.AgentWake, sendID, body string) (agentNo
 		return "", nil
 	}
 	return agentNotice{
-		threadID:   row.ThreadID,
-		sendID:     sendID,
-		origin:     usermessage.OriginAgentWake,
-		originWake: &usermessage.OriginWake{Kind: row.Kind, Label: row.Label},
-		prepare: func() (string, bool, error) {
+		threadID: row.ThreadID,
+		sendID:   sendID,
+		prepare: func() (usermessage.AgentMessage, bool, error) {
 			refused, err := refusal()
 			if err != nil || refused != "" {
 				if refused != "" {
 					*abandoned = errors.New(refused)
 				}
-				return "", false, err
+				return message, false, err
 			}
-			return body, true, nil
+			return message, true, nil
 		},
 		persist: func(item store.FlushQueueItem) error {
 			return a.store.QueueAgentWake(item, agentWakeSendIDPrefix(row.ID), 0)
@@ -208,31 +207,31 @@ func (a *App) heldAgentWakeNotice(row store.AgentWake) (agentNotice, bool, error
 	prefix := agentWakeSendIDPrefix(row.ID)
 	for _, item := range items {
 		if strings.HasPrefix(item.SendID, prefix) {
-			notice, _ := a.agentWakeNotice(row, item.SendID, item.Message)
+			notice, _ := a.agentWakeNotice(row, item.SendID, queuedAgentMessage(item))
 			return notice, true, nil
 		}
 	}
 	return agentNotice{}, false, nil
 }
 
-// renderAgentLoopWake renders one loop fire.
-func renderAgentLoopWake(row store.AgentWake, fire agentWakeFire) string {
+// renderAgentLoopWake renders one loop fire, headed in its row by its note.
+func renderAgentLoopWake(row store.AgentWake, fire agentWakeFire) usermessage.AgentMessage {
 	var out strings.Builder
-	fmt.Fprintf(&out, "Loop %s fired. %s\n", untrustedtext.Quote(row.Label, 0), agentWakeDataNotice)
 	writeAgentWakeFireLines(&out, fire)
 	out.WriteString("note: ")
 	out.WriteString(untrustedtext.Quote(row.Note, 0))
-	return out.String()
+	return usermessage.WakeMessage(usermessage.OriginWake{Kind: store.AgentWakeLoop, Label: row.Label},
+		fmt.Sprintf("Loop %s fired. %s", untrustedtext.Quote(row.Label, 0), agentWakeDataNotice), out.String(), row.Note)
 }
 
 // renderAgentWatchWake renders one watch wake: its stdout, then its stderr
-// tail, together capped at agentWakeOutputCap with what was dropped stated.
-// The row is read as it stands now: when a wake of it did not reach the agent
-// and none has said so since, this one says where that wake's output is kept.
-func renderAgentWatchWake(row store.AgentWake, fire agentWakeFire, stdout, stderr cappedOutput) string {
+// tail, together capped at agentWakeOutputCap with what was dropped stated,
+// headed in its row by the first line it printed. The row is read as it
+// stands now: when a wake of it did not reach the agent and none has said so
+// since, this one says where that wake's output is kept.
+func renderAgentWatchWake(row store.AgentWake, fire agentWakeFire, stdout, stderr cappedOutput) usermessage.AgentMessage {
 	stdout = stdout.clip(agentWakeOutputCap - len(stderr.data))
 	var out strings.Builder
-	fmt.Fprintf(&out, "Watch %s reported. %s\n", untrustedtext.Quote(row.Label, 0), agentWakeDataNotice)
 	writeAgentWakeFireLines(&out, fire)
 	if row.LastOutput != "" && row.Undelivered != "" {
 		out.WriteString("The previous wake of this watch did not reach you; thread_status shows its output as last_output.\n")
@@ -243,16 +242,48 @@ func renderAgentWatchWake(row store.AgentWake, fire agentWakeFire, stdout, stder
 		out.WriteString("stderr:\n")
 		writeQuotedLines(&out, stderr)
 	}
-	return strings.TrimRight(out.String(), "\n")
+	headline := firstDataLine(string(stdout.data))
+	if headline == "" {
+		headline = firstDataLine(string(stderr.data))
+	}
+	return usermessage.WakeMessage(usermessage.OriginWake{Kind: store.AgentWakeWatch, Label: row.Label},
+		fmt.Sprintf("Watch %s reported. %s", untrustedtext.Quote(row.Label, 0), agentWakeDataNotice),
+		strings.TrimRight(out.String(), "\n"), headline)
 }
 
 // renderAgentSendWake renders a message an outside script sent with
-// `agent-overflow thread send`.
-func renderAgentSendWake(text string) string {
+// `agent-overflow thread send`, headed in its row by its first line.
+func renderAgentSendWake(text string) usermessage.AgentMessage {
+	capped := newCappedText(text, agentWakeOutputCap)
 	var out strings.Builder
-	fmt.Fprintf(&out, "%s %s\n", agentSendWakeHeader, agentWakeDataNotice)
-	writeQuotedLines(&out, newCappedText(text, agentWakeOutputCap))
-	return strings.TrimRight(out.String(), "\n")
+	writeQuotedLines(&out, capped)
+	return usermessage.WakeMessage(usermessage.OriginWake{Kind: usermessage.OriginWakeKindSend},
+		agentSendWakeHeader+" "+agentWakeDataNotice, strings.TrimRight(out.String(), "\n"), firstDataLine(string(capped.data)))
+}
+
+// firstDataLine is the first line of data that says something, the line a
+// wake's row is headed by.
+func firstDataLine(data string) string {
+	for line := range strings.SplitSeq(data, "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			return line
+		}
+	}
+	return ""
+}
+
+// queuedAgentMessage is the message a queue row holds, with the attribution
+// and facts its payload kept: what a wake taken back or moved is queued
+// again with. A payload that does not decode leaves the text alone, read as
+// an agent's message with no facts.
+func queuedAgentMessage(item store.FlushQueueItem) usermessage.AgentMessage {
+	var payload flushQueuePayload
+	if len(item.Payload) > 0 {
+		if err := json.Unmarshal(item.Payload, &payload); err != nil {
+			log.Printf("agent wakes: decode the payload of queued %s: %v", item.SendID, err)
+		}
+	}
+	return usermessage.StoredMessage(item.Message, payload.Origin, payload.OriginThread, payload.OriginWake)
 }
 
 // writeAgentWakeFireLines states what a fire stands for besides itself.
@@ -462,9 +493,9 @@ func (a *App) discardAgentWakeAtBoot(row store.FlushQueueItem) bool {
 // outsideSendNotTakenIn is what an outside send its thread never took in
 // is owed: on a thread a handoff superseded it goes on to the assistant's
 // current thread, and on any other the thread is told it was not delivered.
-func (a *App) outsideSendNotTakenIn(threadID, body, why string) {
-	if current, ok := a.assistantCurrentThread(threadID); ok && body != "" {
-		a.redeliverOutsideSend(current, body)
+func (a *App) outsideSendNotTakenIn(threadID string, message usermessage.AgentMessage, why string) {
+	if current, ok := a.assistantCurrentThread(threadID); ok && message.Text() != "" {
+		a.redeliverOutsideSend(current, message)
 		return
 	}
 	a.noteAgentSendNotDelivered(threadID, why)
@@ -526,7 +557,7 @@ func (a *App) agentPartsNotTakenIn(threadID string, item triage.UnconfirmedFlush
 		}
 		owed.owned = append(owed.owned, ownedMessage{sendID: id, rowID: rowID, unconfirmed: true, ended: true})
 	}
-	bodies, person, split := splitSessionEndParts(members, part.Content)
+	messages, person, split := splitSessionEndParts(members, part.Content)
 	if !split {
 		// The text does not hold a part for every app message the item
 		// names, so none of it can be told apart from the person's: all of
@@ -549,11 +580,11 @@ func (a *App) agentPartsNotTakenIn(threadID string, item triage.UnconfirmedFlush
 	}
 	for _, id := range ids {
 		if agentAppPartRoot(id) != "" {
-			owed.messages = append(owed.messages, appMessageOutcome{sendID: id, wakeOutcome: wakeOutcome, body: bodies[id], sendWhy: sendWhy})
+			owed.messages = append(owed.messages, appMessageOutcome{sendID: id, wakeOutcome: wakeOutcome, message: messages[id], sendWhy: sendWhy})
 		}
 		if token := threadRequestSendIDToken(id); token != "" {
 			if sessionEnded {
-				owed.requests = append(owed.requests, returnedRequest{token: token, body: bodies[id]})
+				owed.requests = append(owed.requests, returnedRequest{token: token, message: messages[id]})
 			} else {
 				owed.unread = append(owed.unread, unreadRequest{token: token, why: threadtools.InterruptNotTakenIn})
 			}
@@ -599,8 +630,8 @@ type teardownSend struct {
 
 // returnedWake is a loop or watch wake a handoff's teardown took back.
 type returnedWake struct {
-	sendID string
-	body   string
+	sendID  string
+	message usermessage.AgentMessage
 }
 
 // returnRequestsAtTeardown takes back the requests a teardown is about to
@@ -623,7 +654,7 @@ func (a *App) returnRequestsAtTeardown(threadID string) teardownRequests {
 	}
 	for _, row := range rows {
 		if token := threadRequestSendIDToken(row.SendID); token != "" && tools.returnRequestNotTakenIn(threadID, token) {
-			owed.queued = append(owed.queued, returnedRequest{token: token, body: row.Message})
+			owed.queued = append(owed.queued, returnedRequest{token: token, message: queuedAgentMessage(row)})
 		} else if movedWake(row.SendID) {
 			// Its row goes now, so the drop does not record the wake as
 			// cleared (noteAgentWakesDropped).
@@ -631,7 +662,7 @@ func (a *App) returnRequestsAtTeardown(threadID string) teardownRequests {
 				logThreadRequestSweep("take back the queued wake "+row.SendID, err)
 				continue
 			}
-			owed.wakes = append(owed.wakes, returnedWake{sendID: row.SendID, body: row.Message})
+			owed.wakes = append(owed.wakes, returnedWake{sendID: row.SendID, message: queuedAgentMessage(row)})
 		}
 	}
 	for _, item := range a.triage.UnconfirmedFlushSends(threadID) {
@@ -640,7 +671,7 @@ func (a *App) returnRequestsAtTeardown(threadID string) teardownRequests {
 		if len(ids) == 0 || slices.ContainsFunc(ids, func(id string) bool { return threadRequestSendIDToken(id) == "" && !movedWake(id) }) {
 			continue
 		}
-		bodies, person, split := splitSessionEndParts(members, a.restoredFlushDraftPart(threadID, item).Content)
+		messages, person, split := splitSessionEndParts(members, a.restoredFlushDraftPart(threadID, item).Content)
 		if !split || person != nil {
 			continue
 		}
@@ -650,12 +681,12 @@ func (a *App) returnRequestsAtTeardown(threadID string) teardownRequests {
 		}
 		for _, id := range ids {
 			if movedWake(id) {
-				send.wakes = append(send.wakes, returnedWake{sendID: id, body: bodies[id]})
+				send.wakes = append(send.wakes, returnedWake{sendID: id, message: messages[id]})
 				continue
 			}
 			token := threadRequestSendIDToken(id)
 			if tools.returnRequestNotTakenIn(threadID, token) {
-				send.requests = append(send.requests, returnedRequest{token: token, body: bodies[id]})
+				send.requests = append(send.requests, returnedRequest{token: token, message: messages[id]})
 			}
 		}
 		if len(send.requests) > 0 || len(send.wakes) > 0 {
@@ -709,7 +740,7 @@ func (a *App) giveBackTeardownRequests(threadID string, owed teardownRequests) {
 	}
 	requeued := false
 	for _, r := range requests {
-		if err := a.threadTools().requeueRequest(r.token, threadID, r.body); err != nil {
+		if err := a.threadTools().requeueRequest(r.token, threadID, r.message); err != nil {
 			log.Printf("thread tools: give request %s back to %s after its session's end: %v", r.token, threadID, err)
 			settled = append(settled, a.settleReceiptNotRead(threadID, r.token, store.ThreadReceiptAccepted, threadtools.InterruptSessionEndedUnread))
 			continue
@@ -750,10 +781,10 @@ type notTakenIn struct {
 }
 
 // returnedRequest is another thread's request whose message goes back to its
-// queue: by its token, with its message's text.
+// queue: by its token, with its message as it was written.
 type returnedRequest struct {
-	token string
-	body  string
+	token   string
+	message usermessage.AgentMessage
 }
 
 // unreadRequest is another thread's request a restore settles, with why.
@@ -763,13 +794,13 @@ type unreadRequest struct {
 }
 
 // appMessageOutcome is one app-written message the agent did not take in: a
-// loop or watch wake's row records wakeOutcome and keeps body, an outside
+// loop or watch wake's row records wakeOutcome and keeps its text, an outside
 // send leaves its thread a notice saying sendWhy, and a worker's prompt goes
 // back to the user in the worker.
 type appMessageOutcome struct {
 	sendID      string
 	wakeOutcome string
-	body        string
+	message     usermessage.AgentMessage
 	sendWhy     string
 }
 
@@ -783,12 +814,12 @@ func (a *App) settleNotTakenIn(threadID string, owed []notTakenIn) {
 			switch {
 			case a.handBackWorkerPromptWake(m.sendID):
 			case strings.HasPrefix(m.sendID, agentSendIDRoot):
-				a.outsideSendNotTakenIn(threadID, m.body, m.sendWhy)
+				a.outsideSendNotTakenIn(threadID, m.message, m.sendWhy)
 			case strings.HasPrefix(m.sendID, assistantSendIDRoot):
-				a.requeueAssistantMessage(threadID, m.sendID, m.body)
+				a.requeueAssistantMessage(threadID, m.sendID, m.message.Text())
 			default:
 				if wakeID, _, ok := agentWakeFromSendID(m.sendID); ok {
-					a.noteAgentWakeUndelivered(threadID, wakeID, m.wakeOutcome, m.body)
+					a.noteAgentWakeUndelivered(threadID, wakeID, m.wakeOutcome, m.message.Text())
 				}
 			}
 		}
@@ -799,7 +830,7 @@ func (a *App) settleNotTakenIn(threadID string, owed []notTakenIn) {
 		}
 		owned = append(owned, item.owned...)
 		for _, r := range item.requests {
-			settled = append(settled, a.giveBackRequestWork(threadID, r.token, r.body))
+			settled = append(settled, a.giveBackRequestWork(threadID, r.token, r.message))
 		}
 		for _, r := range item.unread {
 			settled = append(settled, a.settleReceiptNotRead(threadID, r.token, store.ThreadReceiptRunning, r.why))
@@ -830,28 +861,32 @@ func threadRequestSendIDToken(sendID string) string {
 	return token
 }
 
-// splitSessionEndParts splits an unconfirmed item's text into the bodies of
-// the app-written messages it names, by send id, and the rest, which is the
-// person's (person nil when nothing is left). A message of one member is all
-// that member's. A joined one splits by the parts its dispatch recorded,
-// exactly, whatever number of its members have send ids; one whose parts
-// are unknown or no longer describe its text does not split.
-func splitSessionEndParts(members unconfirmedMembers, content string) (app map[string]string, person *string, ok bool) {
+// splitSessionEndParts splits an unconfirmed item's text into the
+// app-written messages it names, by send id, each with the attribution it
+// was written with, and the rest, which is the person's (person nil when
+// nothing is left). A message of one member is all that member's. A joined
+// one splits by the parts its dispatch recorded, exactly, whatever number
+// of its members have send ids; one whose parts are unknown or no longer
+// describe its text does not split.
+func splitSessionEndParts(members unconfirmedMembers, content string) (app map[string]usermessage.AgentMessage, person *string, ok bool) {
 	if !members.joined {
 		if len(members.ids) != 1 {
 			return nil, nil, false
 		}
-		return map[string]string{members.ids[0]: content}, nil, true
+		own := members.own
+		return map[string]usermessage.AgentMessage{
+			members.ids[0]: usermessage.StoredMessage(content, own.Origin, own.OriginThread, own.OriginWake),
+		}, nil, true
 	}
 	texts, fits := usermessage.SplitJoinedParts(content, members.parts)
 	if !fits || !partsNameIDs(members.parts, members.ids) {
 		return nil, nil, false
 	}
-	app = make(map[string]string)
+	app = make(map[string]usermessage.AgentMessage)
 	var kept []string
 	for i, part := range members.parts {
 		if appWrittenSendID(part.SendID) {
-			app[part.SendID] = texts[i]
+			app[part.SendID] = usermessage.StoredMessage(texts[i], part.Origin, part.OriginThread, part.OriginWake)
 			continue
 		}
 		kept = append(kept, texts[i])
@@ -894,6 +929,9 @@ type unconfirmedMembers struct {
 	ids    []string
 	joined bool
 	parts  []usermessage.JoinedPart
+	// own is the attribution of an item of one message, its facts
+	// included: its row's, or its payload's when it has no row.
+	own usermessage.JoinedPart
 }
 
 // unconfirmedMembersOf reads an unconfirmed item's members: from the row it
@@ -906,6 +944,16 @@ func unconfirmedMembersOf(item triage.UnconfirmedFlushItem) unconfirmedMembers {
 	members.ids, members.joined = unconfirmedSendIDs(item)
 	var payload flushQueuePayload
 	decoded := len(item.Payload) > 0 && json.Unmarshal(item.Payload, &payload) == nil
+	members.own = usermessage.JoinedPart{Origin: payload.Origin, OriginThread: payload.OriginThread, OriginWake: payload.OriginWake}
+	for _, row := range []*store.Item{item.QuietItem, item.DeferredItem} {
+		if row == nil {
+			continue
+		}
+		if meta, err := usermessage.FromItem(*row); err == nil {
+			members.own = usermessage.JoinedPart{Origin: meta.Origin, OriginThread: meta.OriginThread, OriginWake: meta.OriginWake}
+			break
+		}
+	}
 	switch {
 	case len(item.JoinedParts) > 0:
 		members.parts = item.JoinedParts
@@ -1205,7 +1253,7 @@ func (a *App) withdrawQueuedAgentMessages(threadID string, match func(sendID str
 			continue
 		}
 		if !a.handBackWorkerPromptWake(row.SendID) && strings.HasPrefix(row.SendID, agentSendIDRoot) {
-			a.outsideSendNotTakenIn(threadID, row.Message, why)
+			a.outsideSendNotTakenIn(threadID, queuedAgentMessage(row), why)
 		}
 	}
 	return errors.Join(errs...)
@@ -1291,18 +1339,7 @@ func (a *App) SendExternalThreadMessage(threadID, text string) (string, error) {
 	if thread.Archived {
 		return "", archived
 	}
-	body := renderAgentSendWake(text)
-	sendID := agentSendIDRoot + newAgentWakeID()
-	err = a.queueAgentNotice(agentNotice{
-		threadID:   threadID,
-		sendID:     sendID,
-		origin:     usermessage.OriginAgentWake,
-		originWake: &usermessage.OriginWake{Kind: usermessage.OriginWakeKindSend},
-		prepare:    func() (string, bool, error) { return body, true, nil },
-		startFailed: func(err error) string {
-			return "A message sent with agent-overflow thread send is queued, but the agent could not start: " + err.Error()
-		},
-	})
+	sendID, err := a.queueOutsideSend(threadID, renderAgentSendWake(text))
 	if errors.Is(err, errThreadArchived) {
 		return "", archived
 	}
@@ -1310,4 +1347,19 @@ func (a *App) SendExternalThreadMessage(threadID, text string) (string, error) {
 		return "", err
 	}
 	return sendID, nil
+}
+
+// queueOutsideSend queues an outside `thread send`'s message, as it was
+// rendered or as a thread that never took it in kept it, under a new send
+// id, which it returns.
+func (a *App) queueOutsideSend(threadID string, message usermessage.AgentMessage) (string, error) {
+	sendID := agentSendIDRoot + newAgentWakeID()
+	return sendID, a.queueAgentNotice(agentNotice{
+		threadID: threadID,
+		sendID:   sendID,
+		prepare:  func() (usermessage.AgentMessage, bool, error) { return message, true, nil },
+		startFailed: func(err error) string {
+			return "A message sent with agent-overflow thread send is queued, but the agent could not start: " + err.Error()
+		},
+	})
 }

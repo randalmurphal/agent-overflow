@@ -16,6 +16,7 @@ import (
 	"unicode/utf8"
 
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/threadtools"
 )
 
 // Meta is the JSON shape stored in store.Item.Meta for user_text rows.
@@ -136,6 +137,9 @@ type OriginWake struct {
 	ThreadID string `json:"threadId,omitempty"`
 	// Computer names the computer a `completion`'s job ran on.
 	Computer string `json:"computer,omitempty"`
+	// Facts is where the message's data is and what its row's header
+	// says, written with the text (WakeMessage).
+	Facts *threadtools.MessageFacts `json:"facts,omitempty"`
 }
 
 // The OriginWake kinds of the app's own reports into a thread.
@@ -161,9 +165,15 @@ type OriginThread struct {
 	// request's answer back. Absent on rows written before it existed;
 	// readers fall back to the row's send id.
 	Kind string `json:"kind,omitempty"`
+	// Facts is what the message says, written with its text
+	// (ThreadMessage): a request's footer, an answer's outcome and the
+	// threads it speaks for. The timeline renders the row from these.
+	// Absent on rows written before they existed, whose text main's
+	// templates wrote and readers parse.
+	Facts *threadtools.MessageFacts `json:"facts,omitempty"`
 }
 
-// OriginKindWake is OriginThread.Kind on a wake. The status line says which
+// OriginKindWake is OriginThread.Kind on a wake. Its facts say which
 // settlement it carries.
 const OriginKindWake = "wake"
 

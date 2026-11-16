@@ -20,11 +20,15 @@ vi.mock('../../stores/threads.svelte', async (importOriginal) => ({
   getThreadById: (id: string) => (id === 't-plan' || id === 't-work' ? makeThread({ id }) : undefined),
 }));
 
-const fixtureCase = (name: string) => (fixture as { name: string; text: string; members: number[] }[]).find((c) => c.name === name)!;
+type Origin = Record<string, unknown>;
+const fixtureCase = (name: string) =>
+  (fixture as { name: string; text: string; members: number[]; origins: { facts: unknown }[] }[]).find((c) => c.name === name)!;
 const text = (name: string) => fixtureCase(name).text;
-/** The joinedParts a join records for a fixture case's members, each attributed `origins[i]`. */
-const joinedParts = (name: string, origins: Record<string, unknown>[]) =>
-  fixtureCase(name).members.map((bytes, index) => ({ bytes, origin: 'agent-thread', originThread: origins[index] }));
+/** `attribution` with the facts the writer of a fixture case's member `index` stored. */
+const withFacts = (name: string, attribution: Origin, index = 0): Origin => ({ ...attribution, facts: fixtureCase(name).origins[index].facts });
+/** The joinedParts a join records for a fixture case's members, each attributed `origins[i]` with its facts. */
+const joinedParts = (name: string, origins: Origin[]) =>
+  fixtureCase(name).members.map((bytes, index) => ({ bytes, origin: 'agent-thread', originThread: withFacts(name, origins[index], index) }));
 
 function agentRow(summary: string, meta: Record<string, unknown>, overrides: Partial<Item> = {}): Item {
   return makeItem({ id: 'msg-1', kind: 'user_text', role: 'user', summary, meta: JSON.stringify(meta), ...overrides });
@@ -42,7 +46,7 @@ describe('<AgentMessageRow> through TimelineLeaf', () => {
     const pane = await buildPane();
     const item = agentRow(text('request from a standing agent that spawned the receiver'), {
       origin: 'agent-thread',
-      originThread: { threadId: 't-plan', title: 'Planner', token: 'tok', kind: 'spawn' },
+      originThread: withFacts('request from a standing agent that spawned the receiver', { threadId: 't-plan', title: 'Planner', token: 'tok', kind: 'spawn' }),
       sendId: 'thread-request:tok',
     });
     const view = render(TimelineLeaf, { props: { pane, item } });
@@ -72,13 +76,14 @@ describe('<AgentMessageRow> through TimelineLeaf', () => {
     expect(fact('Waiting')).toBe('Yes, for an answer');
     expect(fact('Reply')).toBe('This thread can read the sender and answer it');
     expect(fact('Prompts')).toBe('Go to the sender, which spawned this thread');
-    expect(fact('Token')).toBe('0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d');
+    // The token is the request's attribution's.
+    expect(fact('Token')).toBe('tok');
     expect(body.textContent).not.toContain('call thread_reply');
   });
 
   it('keeps its fold across a remount, as virtualization does', async () => {
     const pane = await buildPane();
-    const item = agentRow(text('reply'), { origin: 'agent-thread', originThread: { threadId: 't-work', title: 'Worker', kind: 'wake' } });
+    const item = agentRow(text('reply'), { origin: 'agent-thread', originThread: withFacts('reply', { threadId: 't-work', title: 'Worker', kind: 'wake' }) });
     const first = render(TimelineLeaf, { props: { pane, item } });
     await fireEvent.click(first.getByTestId('agent-message-toggle'));
     await tick();
@@ -92,7 +97,7 @@ describe('<AgentMessageRow> through TimelineLeaf', () => {
     const pane = await buildPane();
     const item = agentRow(text('request waiting, local, quoting the user'), {
       origin: 'agent-thread',
-      originThread: { threadId: 't-plan', title: 'Planner', kind: 'send' },
+      originThread: withFacts('request waiting, local, quoting the user', { threadId: 't-plan', title: 'Planner', kind: 'send' }),
     });
     const view = render(TimelineLeaf, { props: { pane, item } });
     const sender = view.getByTestId('agent-message-sender');
@@ -107,7 +112,7 @@ describe('<AgentMessageRow> through TimelineLeaf', () => {
     const pane = await buildPane();
     const item = agentRow(text('request waiting, local, quoting the user'), {
       origin: 'agent-thread',
-      originThread: { computerId: 'home-uuid', computerName: 'workstation-7', threadId: 't-plan', title: 'Planner', kind: 'send' },
+      originThread: withFacts('request waiting, local, quoting the user', { computerId: 'home-uuid', computerName: 'workstation-7', threadId: 't-plan', title: 'Planner', kind: 'send' }),
     });
     const view = render(TimelineLeaf, { props: { pane, item } });
     const sender = view.getByTestId('agent-message-sender');
@@ -119,7 +124,7 @@ describe('<AgentMessageRow> through TimelineLeaf', () => {
     const pane = await buildPane();
     const item = agentRow(text('late reply with age, computer and a standing agent'), {
       origin: 'agent-thread',
-      originThread: { computerId: 'gone', computerName: 'desk', threadId: 't-work', title: 'Worker', kind: 'wake' },
+      originThread: withFacts('late reply with age, computer and a standing agent', { computerId: 'gone', computerName: 'desk', threadId: 't-work', title: 'Worker', kind: 'wake' }),
     });
     const view = render(TimelineLeaf, { props: { pane, item } });
     const sender = view.getByTestId('agent-message-sender');
@@ -141,7 +146,7 @@ describe('<AgentMessageRow> through TimelineLeaf', () => {
     pane.setUserMessageExpanded('msg-1', true);
     const item = agentRow(text('two wakes joined, the first answer holding a rule'), {
       origin: 'agent-thread',
-      originThread: { threadId: 't-a', title: 'A', kind: 'wake' },
+      originThread: withFacts('two wakes joined, the first answer holding a rule', { threadId: 't-a', title: 'A', kind: 'wake' }),
       joinedSendIds: ['thread-wake:a', 'thread-wake:b'],
       joinedParts: joinedParts('two wakes joined, the first answer holding a rule', [
         { threadId: 't-a', title: 'A', kind: 'wake' },
@@ -165,13 +170,14 @@ describe('<AgentMessageRow> through TimelineLeaf', () => {
     const requests = fixtureCase('two requests joined');
     // A third member: the first request again, from a thread on a computer this client is not paired with.
     const first = new TextDecoder().decode(new TextEncoder().encode(requests.text).subarray(0, requests.members[0]));
+    const attributed = origins.map((origin, index) => withFacts('two requests joined', origin, index % 2));
     const item = agentRow(`${requests.text}\n\n---\n\n${first}`, {
       origin: 'agent-thread',
-      originThread: origins[0],
+      originThread: attributed[0],
       sendId: 'thread-request:tok-a',
       joinedSendIds: origins.map((origin) => `thread-request:${origin.token}`),
       joinedParts: [...requests.members, requests.members[0]].map((bytes, index) => ({
-        sendId: `thread-request:${origins[index].token}`, bytes, origin: 'agent-thread', originThread: origins[index],
+        sendId: `thread-request:${origins[index].token}`, bytes, origin: 'agent-thread', originThread: attributed[index],
       })),
     });
     const view = render(TimelineLeaf, { props: { pane, item } });
@@ -185,9 +191,8 @@ describe('<AgentMessageRow> through TimelineLeaf', () => {
       ['Worker', 'BUTTON'],
       ['Far on desk', 'SPAN'],
     ]);
-    expect(parts.map((part) => part.querySelector('[data-fact="Token"]')?.textContent)).toEqual([
-      '0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d', 'tok-2', '0b5c7f2e-1111-4a2b-9c3d-5e6f7a8b9c0d',
-    ]);
+    // Each request's token is its attribution's.
+    expect(parts.map((part) => part.querySelector('[data-fact="Token"]')?.textContent)).toEqual(['tok-a', 'tok-b', 'tok-c']);
     await fireEvent.click(senders[1]);
     await vi.waitFor(() => expect(openThreadInPane).toHaveBeenCalledTimes(1));
     expect(openThreadInPane).toHaveBeenCalledWith(expect.objectContaining({ id: 't-work' }));
@@ -200,7 +205,7 @@ describe('<AgentMessageRow> through TimelineLeaf', () => {
     pane.setUserMessageExpanded('msg-1', true);
     const item = agentRow(text('two requests joined'), {
       origin: 'agent-thread',
-      originThread: { threadId: 't-lead', title: 'Lead', kind: 'send' },
+      originThread: withFacts('two requests joined', { threadId: 't-lead', title: 'Lead', kind: 'send' }),
       joinedSendIds: ['thread-request:a', 'thread-request:b'],
       joinedParts: joinedParts('two requests joined', [
         { threadId: 't-lead', title: 'Lead', kind: 'send' },
@@ -217,7 +222,7 @@ describe('<AgentMessageRow> through TimelineLeaf', () => {
       const pane = await buildPane();
       const item = agentRow(text(name), {
         origin: 'agent-thread',
-        originThread: { threadId: 't-work', title: 'Worker', token: 'tok', kind: 'wake' },
+        originThread: withFacts(name, { threadId: 't-work', title: 'Worker', token: 'tok', kind: 'wake' }),
         sendId: 'thread-wake:tok',
       });
       const view = render(TimelineLeaf, { props: { pane, item } });
@@ -253,7 +258,7 @@ describe('<AgentMessageRow> through TimelineLeaf', () => {
         props: {
           pane,
           item: agentRow(text(name), {
-            origin: 'agent-thread', originThread: { threadId: 't-work', title: 'Worker', token: 'tok', kind: 'wake' },
+            origin: 'agent-thread', originThread: withFacts(name, { threadId: 't-work', title: 'Worker', token: 'tok', kind: 'wake' }),
           }),
         },
       });
@@ -274,7 +279,7 @@ describe('<AgentMessageRow> through TimelineLeaf', () => {
       props: {
         pane,
         item: agentRow(text('one turn answering several requests'), {
-          origin: 'agent-thread', originThread: { threadId: 't-work', title: 'Worker', token: 'tok', kind: 'wake' },
+          origin: 'agent-thread', originThread: withFacts('one turn answering several requests', { threadId: 't-work', title: 'Worker', token: 'tok', kind: 'wake' }),
         }),
       },
     });
@@ -287,14 +292,11 @@ describe('<AgentMessageRow> through TimelineLeaf', () => {
     expect(several.container.querySelector('[data-fact="Token"]')).toBeNull();
     several.unmount();
 
-    const digest = render(TimelineLeaf, {
-      props: {
-        pane,
-        item: agentRow(text('digest: the same reply, a standing agent and an age'), {
-          origin: 'agent-thread', originThread: { threadId: 't-work', title: 'Worker', token: 'tok', kind: 'wake' },
-        }, { id: 'msg-2' }),
-      },
-    });
+    const digestRow = agentRow(text('digest: the same reply, a standing agent and an age'), {
+      origin: 'agent-thread',
+      originThread: withFacts('digest: the same reply, a standing agent and an age', { threadId: 't-work', title: 'Worker', token: 'tok', kind: 'wake' }),
+    }, { id: 'msg-2' });
+    const digest = render(TimelineLeaf, { props: { pane, item: digestRow } });
     expect(digest.getByTestId('agent-message-sender').textContent).toBe('2 threads');
     expect(digest.getByTestId('agent-message-sender').tagName).not.toBe('BUTTON');
     await fireEvent.click(digest.getByTestId('agent-message-toggle'));
@@ -302,7 +304,8 @@ describe('<AgentMessageRow> through TimelineLeaf', () => {
     expect(digest.getAllByTestId('agent-message-part')).toHaveLength(1);
     expect(digest.getByTestId('agent-message-text').textContent).toBe('Done.\nSecond line.');
     // Each thread it speaks for is named the way a joined part's sender is,
-    // with its own facts; only the one on this computer opens.
+    // with its own facts; one on a computer this client is not paired with
+    // does not open.
     const threads = digest.getAllByTestId('agent-message-thread');
     const facts = (thread: HTMLElement) =>
       [...thread.querySelectorAll('[data-fact]')].map((fact) => `${fact.getAttribute('data-fact')}: ${fact.textContent}`);
@@ -319,6 +322,17 @@ describe('<AgentMessageRow> through TimelineLeaf', () => {
     expect(digest.getByTestId('agent-message-row').textContent).not.toContain('threads sent the same reply');
     await fireEvent.click(senders[0]);
     await vi.waitFor(() => expect(openThreadInPane).toHaveBeenCalledWith(expect.objectContaining({ id: 't-work' })));
+    digest.unmount();
+
+    // A member on a paired computer that is up opens there, named as this
+    // client names that computer.
+    stageBackend({ id: 'desk-key', backendId: 'computer-desk', name: 'Desk' });
+    const paired = render(TimelineLeaf, { props: { pane, item: digestRow } });
+    const pairedSenders = paired.getAllByTestId('agent-message-thread-source-sender');
+    expect(pairedSenders.map((sender) => [sender.textContent, sender.tagName])).toEqual([
+      ['Worker', 'BUTTON'],
+      ['Lexer "two" on Desk', 'BUTTON'],
+    ]);
   });
 
   it('renders a loop wake decoded and a provider agent\'s message as agent rows', async () => {
@@ -327,7 +341,8 @@ describe('<AgentMessageRow> through TimelineLeaf', () => {
       props: {
         pane,
         item: agentRow('Loop "nightly" fired. x\nnote: "\\u003cgo\\u003e"', {
-          origin: 'agent-wake', originWake: { kind: 'loop', label: 'nightly' }, sendId: 'agent-wake:1',
+          origin: 'agent-wake', sendId: 'agent-wake:1',
+          originWake: { kind: 'loop', label: 'nightly', facts: { body: [{ start: 24, end: 46 }], headline: '<go>' } },
         }),
       },
     });

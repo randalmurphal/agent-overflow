@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/usermessage"
 )
 
 // Presentation uses saved profiles only; naming a result never probes a peer.
@@ -69,17 +70,25 @@ type remoteCompletionOutput struct {
 	Unavailable bool
 }
 
+// remoteJobWakeHeader opens a remote job's completion.
+const remoteJobWakeHeader = "Remote job finished on "
+
 // Notifications retain a small useful excerpt even when the tool reply was
 // lost. General instructions belong in tool descriptions, not every message.
-func remoteCompletionMessage(w store.RemoteWatch, computerName string, output remoteCompletionOutput) string {
+//
+// The message names the job and its computer on its first line, and its
+// row leads with the result; both are the report's own attribution
+// (usermessage.WakeMessage).
+func remoteCompletionMessage(w store.RemoteWatch, computerName string, output remoteCompletionOutput) usermessage.AgentMessage {
 	if computerName == "" {
 		computerName = w.ComputerID
 	}
 	r := w.Receipt
-	message := fmt.Sprintf(remoteJobWakeHeader+"%s: %s\ncomputer_id: %s\nrequest_id: %s\nWorkspace: %s\nResult: %s", computerName, w.Label, w.ComputerID, w.RequestID, r.Workspace, r.State)
+	result := r.State
 	if r.ExitCode >= 0 {
-		message += fmt.Sprintf("; exit code: %d", r.ExitCode)
+		result += fmt.Sprintf("; exit code: %d", r.ExitCode)
 	}
+	message := fmt.Sprintf("computer_id: %s\nrequest_id: %s\nWorkspace: %s\nResult: %s", w.ComputerID, w.RequestID, r.Workspace, result)
 	if r.Error != "" {
 		message += "\n" + r.Error
 	}
@@ -103,5 +112,7 @@ func remoteCompletionMessage(w store.RemoteWatch, computerName string, output re
 	} else if output.Omitted || output.Truncated || len(head) < len(output.Head) || len(tail) < len(output.Tail) {
 		message += "\nOutput omitted. Use remote_read_log or remote_search_log with the IDs above, or remote_fetch_log for the whole log."
 	}
-	return message
+	return usermessage.WakeMessage(
+		usermessage.OriginWake{Kind: usermessage.OriginWakeKindCompletion, Label: w.Label, Computer: computerName},
+		fmt.Sprintf("%s%s: %s", remoteJobWakeHeader, computerName, w.Label), message, result)
 }

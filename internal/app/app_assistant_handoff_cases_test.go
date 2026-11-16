@@ -258,7 +258,7 @@ func TestHandOffMovesALoopWakeTheOldSessionHadNotTakenIn(t *testing.T) {
 		return live
 	})
 	loop := registerTestWake(t, f.app, store.AgentWake{ThreadID: target.ID, Kind: store.AgentWakeLoop, Label: "board", Note: "check", IntervalSeconds: 3600, NextAt: time.Now().Add(time.Hour).UnixMilli()})
-	if err := f.app.deliverAgentWake(t.Context(), loop, 7, "board fired"); err != nil {
+	if err := f.app.deliverAgentWake(t.Context(), loop, 7, testAgentWake(loop, "board fired")); err != nil {
 		t.Fatalf("deliverAgentWake: %v", err)
 	}
 	waitUntil(t, 20*time.Second, func() bool { return len(sentContaining(t, stdinLog, "board fired")) == 1 })
