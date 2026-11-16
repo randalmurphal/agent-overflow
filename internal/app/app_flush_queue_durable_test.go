@@ -35,6 +35,8 @@ func TestRegisterQueueItemWritesItsDurableRowFirst(t *testing.T) {
 		t.Fatalf("CreateThread: %v", err)
 	}
 
+	// The thread has no session: a dispatch would start one.
+	holdFlushQueue(app)
 	queued, err := app.RegisterQueueItem(context.Background(), thread.ID, "queued follow-up", SendMessageOptions{
 		SendID:        "send-abc",
 		AttachmentIDs: []string{"att-1"},
@@ -85,6 +87,8 @@ func TestDispatchedQueueItemDropsItsDurableRow(t *testing.T) {
 		t.Fatalf("set binary: %v", err)
 	}
 
+	// Held until the row is checked, so the dispatch cannot settle it first.
+	holdFlushQueue(app)
 	if _, err := app.RegisterQueueItem(context.Background(), thread.ID, "flush me", SendMessageOptions{
 		SendID: "send-dispatch",
 	}); err != nil {
@@ -94,6 +98,7 @@ func TestDispatchedQueueItemDropsItsDurableRow(t *testing.T) {
 		t.Fatal("no durable row after register")
 	}
 
+	app.triage.SetFlushDispatcher(app.enqueueFlushDispatch)
 	if err := app.StartSession(thread.ID); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
