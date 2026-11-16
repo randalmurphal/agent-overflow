@@ -135,6 +135,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "DeleteProviderCustomEnvVar", ID: 784096448, Scope: "settings:write", Route: "home", StepUp: true},                 // main.App.DeleteProviderCustomEnvVar
 	{Name: "DeleteSoundFile", ID: 2725195951, Scope: "settings:write", Route: "home"},                                         // main.App.DeleteSoundFile
 	{Name: "DeleteThread", ID: 1186337974, Scope: "threads:operate", Route: "thread"},                                         // main.App.DeleteThread
+	{Name: "DeleteThreadAndWorktrees", ID: 3734810511, Scope: "threads:operate", Route: "thread"},                             // main.App.DeleteThreadAndWorktrees
 	{Name: "DeleteThreadGroup", ID: 4104302889, Scope: "threads:operate", Route: "home"},                                      // main.App.DeleteThreadGroup
 	{Name: "DevicePairingStatus", ID: 604263015, Scope: "access:admin", Route: "home"},                                        // main.App.DevicePairingStatus
 	{Name: "DictationSources", ID: 1721991996, Scope: "threads:operate", Route: "selected"},                                   // main.App.DictationSources

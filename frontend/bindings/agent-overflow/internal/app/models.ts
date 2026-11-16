@@ -1799,10 +1799,11 @@ export class CreateThreadOptions {
 }
 
 /**
- * DeleteDependents is what deleting a thread deletes with it: the past
+ * DeleteDependents is what deleting a thread takes with it, read from the
+ * same projection the delete runs on (store.ListDeleteFamily): the past
  * threads and helpers of the assistant whose current thread it is (ruling
- * 39), and the workers it owns at any depth, helpers apart
- * (docs/specs/standing-agents.md, "Owned workers").
+ * 39), the workers under all of them at any depth, and the worktrees a
+ * delete from the sidebar or the archived threads list removes.
  */
 export class DeleteDependents {
     "pastThreads": number;
@@ -1810,11 +1811,10 @@ export class DeleteDependents {
     "workers": number;
 
     /**
-     * WorkerWorktrees are the worktrees those workers and helpers are on,
-     * each once, which a delete from the sidebar removes as it removes the
-     * thread's own, after it stops the sessions of the workers on them.
+     * Worktrees are the worktrees the thread and those threads are on that
+     * no other thread is on, each once.
      */
-    "workerWorktrees": WorkerWorktree[];
+    "worktrees": DeleteWorktree[];
 
     /** Creates a new DeleteDependents instance. */
     constructor($$source: Partial<DeleteDependents> = {}) {
@@ -1827,8 +1827,8 @@ export class DeleteDependents {
         if (!("workers" in $$source)) {
             this["workers"] = 0;
         }
-        if (!("workerWorktrees" in $$source)) {
-            this["workerWorktrees"] = [];
+        if (!("worktrees" in $$source)) {
+            this["worktrees"] = [];
         }
 
         Object.assign(this, $$source);
@@ -1840,8 +1840,8 @@ export class DeleteDependents {
     static createFrom($$source: any = {}): DeleteDependents {
         const $$createField3_0 = $$createType33;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
-        if ("workerWorktrees" in $$parsedSource) {
-            $$parsedSource["workerWorktrees"] = $$createField3_0($$parsedSource["workerWorktrees"]);
+        if ("worktrees" in $$parsedSource) {
+            $$parsedSource["worktrees"] = $$createField3_0($$parsedSource["worktrees"]);
         }
         return new DeleteDependents($$parsedSource as Partial<DeleteDependents>);
     }
@@ -1854,8 +1854,10 @@ export class DeleteDependents {
 export class DeleteThreadResult {
     /**
      * WorkersNotDeleted names each worker under the thread, at any depth,
-     * whose delete failed. It stays, standalone in the sidebar once the
-     * thread above it is gone; deleting it again retries it.
+     * whose delete failed after its claim, and why. One whose worktree could
+     * not be removed stays with the threads under it, standalone in the
+     * sidebar once the thread above it is gone; one that failed later stays
+     * hidden until deleting it again, or the next boot, finishes it.
      */
     "workersNotDeleted"?: WorkerFailure[];
 
@@ -1875,6 +1877,39 @@ export class DeleteThreadResult {
             $$parsedSource["workersNotDeleted"] = $$createField0_0($$parsedSource["workersNotDeleted"]);
         }
         return new DeleteThreadResult($$parsedSource as Partial<DeleteThreadResult>);
+    }
+}
+
+/**
+ * DeleteWorktree is one worktree a delete removes, and how many terminals
+ * open in it the removal closes.
+ */
+export class DeleteWorktree {
+    "projectId": string;
+    "worktreePath": string;
+    "terminals": number;
+
+    /** Creates a new DeleteWorktree instance. */
+    constructor($$source: Partial<DeleteWorktree> = {}) {
+        if (!("projectId" in $$source)) {
+            this["projectId"] = "";
+        }
+        if (!("worktreePath" in $$source)) {
+            this["worktreePath"] = "";
+        }
+        if (!("terminals" in $$source)) {
+            this["terminals"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new DeleteWorktree instance from a string or object.
+     */
+    static createFrom($$source: any = {}): DeleteWorktree {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new DeleteWorktree($$parsedSource as Partial<DeleteWorktree>);
     }
 }
 
@@ -9829,42 +9864,6 @@ export class WorkerFailure {
 }
 
 /**
- * WorkerWorktree is one worktree workers of a deleted thread are on.
- */
-export class WorkerWorktree {
-    "projectId": string;
-    "worktreePath": string;
-    "threadIds": string[];
-
-    /** Creates a new WorkerWorktree instance. */
-    constructor($$source: Partial<WorkerWorktree> = {}) {
-        if (!("projectId" in $$source)) {
-            this["projectId"] = "";
-        }
-        if (!("worktreePath" in $$source)) {
-            this["worktreePath"] = "";
-        }
-        if (!("threadIds" in $$source)) {
-            this["threadIds"] = [];
-        }
-
-        Object.assign(this, $$source);
-    }
-
-    /**
-     * Creates a new WorkerWorktree instance from a string or object.
-     */
-    static createFrom($$source: any = {}): WorkerWorktree {
-        const $$createField2_0 = $$createType8;
-        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
-        if ("threadIds" in $$parsedSource) {
-            $$parsedSource["threadIds"] = $$createField2_0($$parsedSource["threadIds"]);
-        }
-        return new WorkerWorktree($$parsedSource as Partial<WorkerWorktree>);
-    }
-}
-
-/**
  * WorkflowAgentRunBudget is the ceiling in force for one run and where its run
  * TREE stands against it. Present only on a run that has one: most runs
  * declare no budget, and a field saying "no ceiling" on every one of them would
@@ -11698,7 +11697,7 @@ const $$createType28 = gitdiff$0.ChangedFile.createFrom;
 const $$createType29 = $Create.Array($$createType28);
 const $$createType30 = provider$0.ContextWindowOption.createFrom;
 const $$createType31 = $Create.Array($$createType30);
-const $$createType32 = WorkerWorktree.createFrom;
+const $$createType32 = DeleteWorktree.createFrom;
 const $$createType33 = $Create.Array($$createType32);
 const $$createType34 = TerminalChip.createFrom;
 const $$createType35 = $Create.Array($$createType34);

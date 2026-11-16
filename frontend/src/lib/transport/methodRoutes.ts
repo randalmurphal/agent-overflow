@@ -96,6 +96,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	784096448: 'home', // DeleteProviderCustomEnvVar
 	2725195951: 'home', // DeleteSoundFile
 	1186337974: 'thread', // DeleteThread
+	3734810511: 'thread', // DeleteThreadAndWorktrees
 	4104302889: 'home', // DeleteThreadGroup
 	604263015: 'home', // DevicePairingStatus
 	1721991996: 'selected', // DictationSources

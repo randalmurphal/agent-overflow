@@ -1048,21 +1048,30 @@ export function DeleteSoundFile(id: string): $CancellablePromise<void> {
 }
 
 /**
- * DeleteThread tears down the thread and drops its row, with the workers
- * it owns: each is deleted the way this delete deletes the thread, under
- * its own lock, once this thread's session has stopped and before its row
- * is marked (threadapp.DeletePorts.DeleteWorkers).
- * 
- * Every dropped row is broadcast as `deleted` so a second attached client
- * drops the same rows and their caches without a refresh. The fan-out rides
- * the delete port's per-row Deleted callback.
- * 
- * The thread's own delete does not wait on its workers': a worker whose
- * delete fails is named in the result, and it is standalone once the
- * thread's row is gone.
+ * DeleteThread deletes the thread with everything under it, and drops
+ * their rows. Each dropped row is broadcast as `deleted`, so a second
+ * attached client drops the same rows and their caches without a refresh.
+ * A worker whose delete failed after its claim is named in the result
+ * (DeleteThreadResult).
  */
 export function DeleteThread(id: string): $CancellablePromise<app$0.DeleteThreadResult> {
     return $Call.ByID(1186337974, id).then(($result: any) => {
+        return $$createType30($result);
+    });
+}
+
+/**
+ * DeleteThreadAndWorktrees is DeleteThread for a person's delete from the
+ * sidebar or the archived threads list: it also removes the worktrees the
+ * delete empties, the thread's and its workers', as Remove Worktree does,
+ * keeping one another thread is on. A worktree that cannot be removed fails
+ * the delete of the threads on it: for the named thread nothing is deleted,
+ * and a worker is named in the result and stays with the threads under it.
+ * A caller without git:operate is refused, with nothing deleted, when there
+ * is a worktree to remove.
+ */
+export function DeleteThreadAndWorktrees(threadID: string): $CancellablePromise<app$0.DeleteThreadResult> {
+    return $Call.ByID(3734810511, threadID).then(($result: any) => {
         return $$createType30($result);
     });
 }
@@ -1628,8 +1637,8 @@ export function GetConversationMutationState(threadID: string, userItemID: strin
 }
 
 /**
- * GetDeleteDependents reads what deleting threadID deletes with it, for its
- * delete confirmation and the worktrees the delete removes first.
+ * GetDeleteDependents reads what deleting threadID takes with it, for its
+ * delete confirmation.
  */
 export function GetDeleteDependents(threadID: string): $CancellablePromise<app$0.DeleteDependents> {
     return $Call.ByID(1944158988, threadID).then(($result: any) => {
