@@ -316,6 +316,13 @@ export interface Settings {
    */
   agentGuideEnabled: boolean;
   /**
+   * Show this computer's assistants and let them run. Off hides every
+   * assistant surface in this window, wherever the assistant lives, and
+   * pauses this computer's assistants; nothing is deleted
+   * (docs/specs/standing-agents.md, "Turning assistants off").
+   */
+  assistantsEnabled: boolean;
+  /**
    * Deliver project and user memory to every thread's sessions, not only to
    * assistants' (docs/specs/memory.md). Read at spawn.
    */
