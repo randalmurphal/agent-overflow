@@ -201,10 +201,16 @@ fingerprint always shows boot changes. A lineage corpus was written by a
 process that stopped cleanly and normally shows none.
 
 Each `recoveryRules` entry names one boot writer (the Go function), the
-table it writes, the snapshot rows it selects (an SQL condition over the
-snapshot row `s`, mirroring the writer's own selection), the columns or
-`meta` keys it may change, a condition the booted row `b` must meet, and
-whether it deletes rows. Stamps follow writes, never stand alone: a row's
+table it writes, the old rows it selects (an SQL condition over the row
+`s` as the migrations left it, mirroring the writer's own selection), the
+columns or `meta` keys it may change, a condition the booted row `b` must
+meet, and whether it deletes rows. A rule reads the snapshot migrated
+alone, never the snapshot, so it names columns at the build's schema
+whatever release wrote the root. A rule that removes or rewrites a row
+holding a person's words also checks where they went: a queued message, an
+unconfirmed one and a resend's recovery are removed only when the booted
+draft holds their text and attachments, and the draft they land in must
+keep its own. Stamps follow writes, never stand alone: a row's
 `rev`, the thread's `history_rev` and `history_epoch`, and a subagent card
 may move only in a thread whose `items` rows the boot changed, removed or
 added (`rows: 'thread-write'`), also on a row another rule settles. A boot
@@ -255,8 +261,11 @@ snapshot and trial and a candidate boot on its root, and holds the report
 and the census to the rules it must show. It also proves that a change
 outside each rule, an altered settled row, a deleted settled user row and
 a stamp moved in an unwritten thread fail as the boot's doing, that a
-change the migrated copy also carries fails as the migrations', and that
-an exception explains the migrations' change but not the boot's.
+change the migrated copy also carries fails as the migrations', that an
+exception explains the migrations' change but not the boot's, and that a
+restore whose draft lost the queued text, the old draft or an attachment
+fails. A second case builds a root at a schema older than the rules' columns
+and holds its boot's recovery to them.
 
 ## Where it runs
 

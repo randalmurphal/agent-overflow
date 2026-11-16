@@ -93,20 +93,22 @@ export interface RecoveryRule {
   writer: string;
   table: string;
   /**
-   * The rows it applies to, as an SQL condition over the snapshot's row
-   * `s` (other snapshot tables are `snap.<table>`, the booted store's
-   * `main.<table>`), or 'thread-write': the
+   * The rows it applies to, as an SQL condition over the row `s` as the
+   * migrations left it, which is what the Go writer read (the snapshot
+   * migrated alone; its other tables are `mig.<table>`, the booted store's
+   * `main.<table>`). A rule never reads the snapshot itself, whose schema
+   * may predate the columns it names. Or 'thread-write': the
    * row's thread had a row of `items` changed, removed or added by the
    * boot, or for the `items` and `threads` stamp rules also a changed
    * `subagent_aggregates` row. Stamps move with the writes that cause them,
    * never on their own.
    */
   rows: string | 'thread-write';
-  /** The columns it may change from the row the migrations left (`m`), ['*'] for any. */
+  /** The columns it may change from `s`, ['*'] for any. */
   columns?: string[];
   /** Keys of `meta` it may set; the rest of `meta` must be unchanged. */
   metaKeys?: string[];
-  /** A condition over the booted row `b` (and `s`, `m`) a changed row must meet. */
+  /** A condition over the booted row `b` (and `s`) a changed row must meet. */
   to?: string;
   /** It deletes the row. */
   removes?: boolean;
@@ -119,8 +121,8 @@ const meta = (alias: string, key: string) => `(CASE WHEN json_valid(${alias}.met
 /** The Claude background launch `x` no live agent or shell will report: RecoverOrphanedBackgroundTasks' selection. */
 const orphanedClaudeLaunch = (x: string) => `${x}.kind = 'tool_call' AND ${x}.status = 'running' AND ${x}.is_background = 1
   AND COALESCE(${meta(x, 'live_background_active')}, 1) != 0
-  AND NOT EXISTS (SELECT 1 FROM snap.items c WHERE c.thread_id = ${x}.thread_id AND c.completion_of = ${x}.id AND c.completion_of <> '')
-  AND EXISTS (SELECT 1 FROM snap.threads t WHERE t.id = ${x}.thread_id AND t.provider IN ('claude', 'claude-tui'))`;
+  AND NOT EXISTS (SELECT 1 FROM mig.items c WHERE c.thread_id = ${x}.thread_id AND c.completion_of = ${x}.id AND c.completion_of <> '')
+  AND EXISTS (SELECT 1 FROM mig.threads t WHERE t.id = ${x}.thread_id AND t.provider IN ('claude', 'claude-tui'))`;
 /**
  * The user row `x` of a message the previous process wrote to the provider
  * and never saw confirmed: still marked pendingFlush, and residue, which
@@ -130,20 +132,69 @@ const orphanedClaudeLaunch = (x: string) => `${x}.kind = 'tool_call' AND ${x}.st
  * v152 clears and the boot leaves alone.
  */
 const unconfirmedUserRow = (x: string) => `${x}.kind = 'user_text' AND ${x}.parent_id = '' AND ${meta(x, 'pendingFlush')} = 1
-  AND ${x}.created_at >= (SELECT t.created_at FROM snap.threads t WHERE t.id = ${x}.thread_id)
-  AND NOT EXISTS (SELECT 1 FROM snap.turns t WHERE t.thread_id = ${x}.thread_id AND t.turn_index > ${x}.turn_index)
-  AND NOT EXISTS (SELECT 1 FROM snap.items l WHERE l.thread_id = ${x}.thread_id AND l.turn_index > ${x}.turn_index AND l.parent_id = '')`;
+  AND ${x}.created_at >= (SELECT t.created_at FROM mig.threads t WHERE t.id = ${x}.thread_id)
+  AND NOT EXISTS (SELECT 1 FROM mig.turns t WHERE t.thread_id = ${x}.thread_id AND t.turn_index > ${x}.turn_index)
+  AND NOT EXISTS (SELECT 1 FROM mig.items l WHERE l.thread_id = ${x}.thread_id AND l.turn_index > ${x}.turn_index AND l.parent_id = '')`;
 /** The thread request `x` whose wake is still queued: a durable queue row or an unconfirmed user row carries its send id. */
-const queuedWake = (x: string) => `(EXISTS (SELECT 1 FROM snap.flush_queue_items q
+const queuedWake = (x: string) => `(EXISTS (SELECT 1 FROM mig.flush_queue_items q
     WHERE q.send_id IN ('thread-wake:' || ${x}.token, 'thread-wake-late:' || ${x}.token))
-  OR EXISTS (SELECT 1 FROM snap.items u WHERE ${unconfirmedUserRow('u')} AND instr(u.meta, ${x}.token) > 0))`;
+  OR EXISTS (SELECT 1 FROM mig.items u WHERE ${unconfirmedUserRow('u')} AND instr(u.meta, ${x}.token) > 0))`;
 /** The pairing link `x` of an approved own-device admission the last run did not finish: store.IncompleteOwnAdmissions' selection. */
 const incompleteOwnAdmission = (x: string) => `${x}.purpose <> '' AND ${x}.confirmed_at IS NOT NULL AND ${x}.canceled_at IS NULL
-  AND ${x}.session_id NOT IN (SELECT session_id FROM snap.own_device_sessions)
-  AND ${x}.session_id IN (SELECT id FROM snap.sessions WHERE revoked_at IS NULL)`;
+  AND ${x}.session_id NOT IN (SELECT session_id FROM mig.own_device_sessions)
+  AND ${x}.session_id IN (SELECT id FROM mig.sessions WHERE revoked_at IS NULL)`;
+/**
+ * Whether `json` is a JSON array, and the array or an empty one, so
+ * json_each never reads a corrupt value. CASE keeps the JSON functions
+ * from running on one: SQLite may evaluate both sides of an AND.
+ */
+const isArray = (json: string) => `(CASE WHEN json_valid(${json}) THEN json_type(${json}) END) = 'array'`;
+const jsonArray = (json: string) => `(CASE WHEN ${isArray(json)} THEN ${json} ELSE '[]' END)`;
+/**
+ * The booted draft `d` holds one restored message: its trimmed text, when it
+ * has any, and every attachment id `ids` (a query of a column `id`) names.
+ * composerdraft.MergeParts joins each message's trimmed text ahead of the
+ * old draft's and keeps every attachment id once.
+ */
+const draftHolds = (d: string, text: string, ids: string) => `(trim(${text}) = '' OR instr(${d}.content, trim(${text})) > 0)
+  AND ${isArray(`${d}.attachments`)}
+  AND NOT EXISTS (SELECT 1 FROM (${ids}) n WHERE n.id <> ''
+    AND NOT EXISTS (SELECT 1 FROM json_each(${jsonArray(`${d}.attachments`)}) h WHERE h.value = n.id))`;
+/** The booted draft of the thread of `x` holds that message. */
+const restoredToDraft = (x: string, text: string, ids: string) =>
+  `EXISTS (SELECT 1 FROM main.thread_drafts d WHERE d.thread_id = ${x}.thread_id AND ${draftHolds('d', text, ids)})`;
+/** A user row's meta, or an empty object when it is not JSON (the restore then takes only its summary). */
+const userMeta = (x: string) => `(CASE WHEN json_valid(${x}.meta) THEN ${x}.meta ELSE '{}' END)`;
+/** The queue row `x`'s payload as JSON, or an empty object when it does not decode (draftPartFromQueueRow then takes only its text). */
+const queuePayload = (x: string) => `(CASE WHEN json_valid(CAST(${x}.payload AS TEXT)) THEN CAST(${x}.payload AS TEXT) ELSE '{}' END)`;
+/** A send id of the user row `x` (its own, or a joined member's) is a queue row's of its thread, which lends the text instead. */
+const sendQueued = (x: string) => `EXISTS (SELECT 1 FROM mig.flush_queue_items q WHERE q.thread_id = ${x}.thread_id AND q.send_id <> ''
+  AND (q.send_id = json_extract(${userMeta(x)}, '$.sendId')
+    OR q.send_id IN (SELECT value FROM json_each(${jsonArray(`json_extract(${userMeta(x)}, '$.joinedSendIds')`)}))))`;
+/** The send `sendId` is recorded in the thread of `x`: a user row or a queue row carries it (app.findRecordedSend). */
+const sendRecorded = (x: string, sendId: string) => `(EXISTS (SELECT 1 FROM mig.items u WHERE u.thread_id = ${x}.thread_id AND u.kind = 'user_text'
+    AND (json_extract(${userMeta('u')}, '$.sendId') = ${sendId}
+      OR ${sendId} IN (SELECT value FROM json_each(${jsonArray(`json_extract(${userMeta('u')}, '$.joinedSendIds')`)}))))
+  OR EXISTS (SELECT 1 FROM mig.flush_queue_items q WHERE q.thread_id = ${x}.thread_id AND q.send_id = ${sendId}))`;
+/**
+ * The draft a restore wrote over `s`: MergeParts keeps the old draft's text
+ * and attachments, its terminal chips (an empty value becomes '[]') and its
+ * pending plan, and adds the restored messages, which their own rules check.
+ */
+const draftKept = `(trim(s.content) = '' OR instr(b.content, trim(s.content)) > 0)
+  AND ${isArray('b.attachments')}
+  AND NOT EXISTS (SELECT 1 FROM json_each(${jsonArray('s.attachments')}) o
+    WHERE NOT EXISTS (SELECT 1 FROM json_each(${jsonArray('b.attachments')}) h WHERE h.value = o.value))
+  AND (b.terminal_chips = s.terminal_chips OR (trim(s.terminal_chips) = '' AND b.terminal_chips = '[]'))
+  AND (COALESCE(s.pending_plan_implementation, '') = '' OR b.pending_plan_implementation IS s.pending_plan_implementation)`;
+const draftColumns = ['content', 'attachments', 'terminal_chips', 'pending_plan_implementation', 'updated_at', 'has_content'];
+/** A review comment a claim release returned: a sent one is a draft again, any other keeps its status; the claim is cleared and the body kept. */
+const claimReturned = `b.claim_thread_id = '' AND b.claim_item_id = '' AND b.claim_settles = ''
+  AND CASE WHEN s.status = 'sent' THEN b.status = 'draft' AND b.sent_at = 0 AND b.sent_turn_id = ''
+    ELSE b.status = s.status AND b.sent_at = s.sent_at AND b.sent_turn_id = s.sent_turn_id END`;
 /** A credential row PruneCredentials deletes: expired a day before now. */
 const prunedBefore = `(CAST(strftime('%s', 'now') AS INTEGER) * 1000 - 86400000)`;
-const workflowRunLive = `EXISTS (SELECT 1 FROM snap.work_items w WHERE w.id = s.item_id AND w.state IN ('running', 'needs-human'))`;
+const workflowRunLive = `EXISTS (SELECT 1 FROM mig.work_items w WHERE w.id = s.item_id AND w.state IN ('running', 'needs-human'))`;
 
 export const recoveryRules: RecoveryRule[] = [
   {
@@ -154,14 +205,14 @@ export const recoveryRules: RecoveryRule[] = [
   {
     name: 'crashed-turn-rows', writer: 'store.(*Store).RecoverCrashedTurns (flipCrashedTurnItemsTx)', table: 'items',
     rows: `s.status IN ('streaming', 'running') AND NOT (s.is_background = 1 AND s.kind = 'tool_call')
-      AND EXISTS (SELECT 1 FROM snap.turns t WHERE t.thread_id = s.thread_id AND t.turn_index = s.turn_index AND t.completed_at IS NULL)`,
+      AND EXISTS (SELECT 1 FROM mig.turns t WHERE t.thread_id = s.thread_id AND t.turn_index = s.turn_index AND t.completed_at IS NULL)`,
     columns: ['status', 'summary', 'updated_at', 'rev'], to: "b.status = 'errored'",
   },
   {
     name: 'codex-background-runtime', writer: 'store.(*Store).RecoverCodexBackgroundRuntime', table: 'items',
     rows: `s.kind = 'tool_call' AND s.status = 'running' AND s.is_background = 1 AND s.tool_name <> 'collab_agent'
       AND COALESCE(${meta('s', 'live_background_active')}, 1) != 0
-      AND EXISTS (SELECT 1 FROM snap.threads t WHERE t.id = s.thread_id AND t.provider = 'codex')`,
+      AND EXISTS (SELECT 1 FROM mig.threads t WHERE t.id = s.thread_id AND t.provider = 'codex')`,
     columns: ['status', 'summary', 'decision', 'updated_at', 'rev'], to: "b.status = 'errored' AND b.decision = 'lost'",
   },
   {
@@ -175,30 +226,36 @@ export const recoveryRules: RecoveryRule[] = [
     table: 'items',
     rows: `s.status IN ('running', 'streaming') AND s.parent_id <> '' AND (s.thread_id, s.id) IN (
       WITH RECURSIVE owned(thread_id, id, depth) AS (
-        SELECT x.thread_id, x.id, 0 FROM snap.items x WHERE ${orphanedClaudeLaunch('x')}
+        SELECT x.thread_id, x.id, 0 FROM mig.items x WHERE ${orphanedClaudeLaunch('x')}
         UNION
-        SELECT x.thread_id, ${meta('x', 'transcript_root_id')}, 0 FROM snap.items x
+        SELECT x.thread_id, ${meta('x', 'transcript_root_id')}, 0 FROM mig.items x
          WHERE ${orphanedClaudeLaunch('x')} AND ${meta('x', 'transcript_root_id')} <> ''
         UNION
-        SELECT c.thread_id, c.id, o.depth + 1 FROM owned o JOIN snap.items c ON c.thread_id = o.thread_id AND c.parent_id = o.id
+        SELECT c.thread_id, c.id, o.depth + 1 FROM owned o JOIN mig.items c ON c.thread_id = o.thread_id AND c.parent_id = o.id
          WHERE o.depth < 64
       ) SELECT thread_id, id FROM owned)`,
     columns: ['status', 'summary', 'updated_at', 'rev'], to: "b.status IN ('errored', 'completed')",
   },
   {
-    name: 'unconfirmed-queued-messages', writer: 'app.(*App).restoreThreadQueueAtBoot (store.RetireUndeliveredUserRow)',
-    table: 'items', rows: unconfirmedUserRow('s'), removes: true,
+    // Its text without the review comments it rendered, and its attachments,
+    // go to the draft (draftPartFromUserItem), unless a queue row carries
+    // the same send.
+    name: 'unconfirmed-queued-messages', writer: 'app.(*App).restoreThreadQueueAtBoot (store.RestoreFlushQueueToDraft)',
+    table: 'items', removes: true,
+    rows: `${unconfirmedUserRow('s')} AND (${sendQueued('s')} OR ${restoredToDraft('s',
+      `COALESCE(json_extract(${userMeta('s')}, '$.textBeforeReviewComments'), s.summary)`,
+      `SELECT trim(json_extract(a.value, '$.id')) AS id FROM json_each(${jsonArray(`json_extract(${userMeta('s')}, '$.attachments')`)}) a`)})`,
   },
   {
     name: 'unconfirmed-message-search-rows', writer: 'store.RetireUndeliveredUserRow (deleteThreadItemTx clears its search rows)',
     table: 'thread_search_rows', removes: true,
-    rows: `s.item_id <> '' AND EXISTS (SELECT 1 FROM snap.items i WHERE i.thread_id = s.thread_id AND i.id = s.item_id
+    rows: `s.item_id <> '' AND EXISTS (SELECT 1 FROM mig.items i WHERE i.thread_id = s.thread_id AND i.id = s.item_id
       AND ${unconfirmedUserRow('i')})`,
   },
   {
     name: 'payloads-of-removed-items', writer: 'trg_items_gc_payload and trg_items_gc_input_payload (store/migrate_sql_items.go)',
     table: 'payloads', removes: true,
-    rows: `EXISTS (SELECT 1 FROM snap.items i WHERE i.thread_id = s.thread_id AND (i.payload_id = s.id OR i.input_payload_id = s.id))
+    rows: `EXISTS (SELECT 1 FROM mig.items i WHERE i.thread_id = s.thread_id AND (i.payload_id = s.id OR i.input_payload_id = s.id))
       AND NOT EXISTS (SELECT 1 FROM main.items i WHERE i.thread_id = s.thread_id AND (i.payload_id = s.id OR i.input_payload_id = s.id))`,
   },
   {
@@ -211,7 +268,7 @@ export const recoveryRules: RecoveryRule[] = [
   },
   {
     name: 'live-agent-cards', writer: 'store.(*Store).RecoverSubagentCards', table: 'subagent_aggregates',
-    rows: `EXISTS (SELECT 1 FROM snap.items x WHERE x.thread_id = s.thread_id AND x.kind = 'tool_call' AND x.status = 'running'
+    rows: `EXISTS (SELECT 1 FROM mig.items x WHERE x.thread_id = s.thread_id AND x.kind = 'tool_call' AND x.status = 'running'
       AND x.tool_name <> 'collab_agent' AND (x.is_background = 0 OR COALESCE(${meta('x', 'live_background_active')}, 1) != 0))`,
     columns: ['*'],
   },
@@ -229,40 +286,48 @@ export const recoveryRules: RecoveryRule[] = [
     rows: "s.worktree_setup_state = 'running'", columns: ['worktree_setup_state'], to: "b.worktree_setup_state = 'failed'",
   },
   {
-    name: 'queued-messages', writer: 'app.(*App).restoreThreadQueueAtBoot', table: 'flush_queue_items', rows: '1', removes: true,
+    // Its text and its payload's attachments go to the draft (draftPartFromQueueRow).
+    name: 'queued-messages', writer: 'app.(*App).restoreThreadQueueAtBoot (store.RestoreFlushQueueToDraft)',
+    table: 'flush_queue_items', removes: true,
+    rows: restoredToDraft('s', 's.message',
+      `SELECT a.value AS id FROM json_each(${jsonArray(`json_extract(${queuePayload('s')}, '$.attachmentIds')`)}) a`),
   },
   {
-    name: 'queued-message-drafts', writer: 'app.(*App).restoreQueuedDraft', table: 'thread_drafts',
-    rows: `EXISTS (SELECT 1 FROM snap.flush_queue_items q WHERE q.thread_id = s.thread_id)
-      OR EXISTS (SELECT 1 FROM snap.items u WHERE u.thread_id = s.thread_id AND ${unconfirmedUserRow('u')})`,
-    columns: ['*'],
+    name: 'queued-message-drafts', writer: 'app.(*App).restoreQueuedDraft (composerdraft.MergeParts)', table: 'thread_drafts',
+    rows: `EXISTS (SELECT 1 FROM mig.flush_queue_items q WHERE q.thread_id = s.thread_id)
+      OR EXISTS (SELECT 1 FROM mig.items u WHERE u.thread_id = s.thread_id AND ${unconfirmedUserRow('u')})`,
+    columns: draftColumns, to: draftKept,
   },
   {
     name: 'queued-wakes-to-draft', writer: 'app.noteThreadWakeRestoredToDraft (store.MarkThreadRequestDeliveredAsDraft)',
     table: 'thread_requests',
     // The wake's own request, and the requests that rode with it (delivered_with).
     rows: `${queuedWake('s')} OR (s.delivered_with <> ''
-      AND EXISTS (SELECT 1 FROM snap.thread_requests w WHERE w.token = s.delivered_with AND ${queuedWake('w')}))`,
+      AND EXISTS (SELECT 1 FROM mig.thread_requests w WHERE w.token = s.delivered_with AND ${queuedWake('w')}))`,
     columns: ['delivered_how', 'updated_at'], to: "b.delivered_how = 'draft'",
   },
   {
     name: 'retired-message-claims', writer: 'store.(*Store).RetireUndeliveredUserRow', table: 'diff_review_comments',
-    rows: `s.claim_item_id <> '' AND EXISTS (SELECT 1 FROM snap.items u WHERE u.thread_id = s.claim_thread_id AND u.id = s.claim_item_id
+    rows: `s.claim_item_id <> '' AND EXISTS (SELECT 1 FROM mig.items u WHERE u.thread_id = s.claim_thread_id AND u.id = s.claim_item_id
       AND ${unconfirmedUserRow('u')})`,
-    columns: ['status', 'sent_at', 'sent_turn_id', 'claim_thread_id', 'claim_item_id', 'claim_settles'], to: "b.claim_item_id = ''",
+    columns: ['status', 'sent_at', 'sent_turn_id', 'claim_thread_id', 'claim_item_id', 'claim_settles'], to: claimReturned,
   },
   {
     name: 'unsettled-review-claims', writer: 'store.(*Store).ReleaseUnsettledDiffReviewClaims', table: 'diff_review_comments',
     rows: "s.claim_item_id <> '' AND s.claim_settles <> ''",
-    columns: ['status', 'sent_at', 'sent_turn_id', 'claim_thread_id', 'claim_item_id', 'claim_settles'], to: "b.claim_item_id = ''",
+    columns: ['status', 'sent_at', 'sent_turn_id', 'claim_thread_id', 'claim_item_id', 'claim_settles'], to: claimReturned,
   },
   {
+    // A recovery whose send is recorded is dropped (its message is in the
+    // history or the queue); any other goes to the draft (recoverReplacementDraft).
     name: 'replacement-draft-recoveries', writer: 'app.(*App).restoreReplacementDraftsAtBoot', table: 'thread_draft_recoveries',
-    rows: '1', removes: true,
+    removes: true,
+    rows: `${sendRecorded('s', 's.send_id')} OR ${restoredToDraft('s', 's.content',
+      `SELECT a.value AS id FROM json_each(${jsonArray('s.attachments')}) a`)}`,
   },
   {
-    name: 'replacement-drafts', writer: 'app.(*App).recoverReplacementDraft', table: 'thread_drafts',
-    rows: 'EXISTS (SELECT 1 FROM snap.thread_draft_recoveries r WHERE r.thread_id = s.thread_id)', columns: ['*'],
+    name: 'replacement-drafts', writer: 'app.(*App).recoverReplacementDraft (composerdraft.MergeParts)', table: 'thread_drafts',
+    rows: 'EXISTS (SELECT 1 FROM mig.thread_draft_recoveries r WHERE r.thread_id = s.thread_id)', columns: draftColumns, to: draftKept,
   },
   {
     name: 'open-receipts', writer: 'app.(*App).sweepThreadRequestsAtBoot', table: 'thread_request_receipts',
@@ -271,7 +336,7 @@ export const recoveryRules: RecoveryRule[] = [
   {
     name: 'open-local-requests', writer: 'app.(*App).sweepThreadRequestsAtBoot', table: 'thread_requests',
     rows: `(s.state IN ('unconfirmed', 'accepted', 'running') AND s.kind <> 'remind' AND s.target_computer_id = '')
-      OR EXISTS (SELECT 1 FROM snap.thread_request_receipts r WHERE r.token = s.token AND r.state IN ('accepted', 'running'))`,
+      OR EXISTS (SELECT 1 FROM mig.thread_request_receipts r WHERE r.token = s.token AND r.state IN ('accepted', 'running'))`,
     columns: ['*'],
   },
   {
@@ -307,31 +372,31 @@ export const recoveryRules: RecoveryRule[] = [
   {
     name: 'local-session-scopes', writer: 'store.(*Store).EnsureLocalSession', table: 'sessions',
     rows: `s.binding_class = 'loopback-only' AND s.revoked_at IS NULL
-      AND EXISTS (SELECT 1 FROM snap.devices d WHERE d.id = s.device_id AND d.channel = 'local' AND d.revoked_at IS NULL)`,
+      AND EXISTS (SELECT 1 FROM mig.devices d WHERE d.id = s.device_id AND d.channel = 'local' AND d.revoked_at IS NULL)`,
     columns: ['scopes'],
   },
   {
     name: 'own-admission-members', writer: 'identity.(*Sessions).RecoverOwnAdmissions (store.AdmitOwnPairing)', table: 'own_devices',
-    rows: `EXISTS (SELECT 1 FROM snap.pairing_links l WHERE ${incompleteOwnAdmission('l')}
+    rows: `EXISTS (SELECT 1 FROM mig.pairing_links l WHERE ${incompleteOwnAdmission('l')}
       AND l.purpose <> 'own-introduction' AND l.key_thumbprint = s.key_thumbprint)`,
     columns: ['member', 'generation', 'removed'], to: 'b.removed = 0',
   },
   {
     name: 'own-admission-revocations', writer: 'identity.(*Sessions).RecoverOwnAdmissions (RevokeSession when AdmitOwnPairing refuses)',
-    table: 'sessions', rows: `s.id IN (SELECT l.session_id FROM snap.pairing_links l WHERE ${incompleteOwnAdmission('l')})`,
+    table: 'sessions', rows: `s.id IN (SELECT l.session_id FROM mig.pairing_links l WHERE ${incompleteOwnAdmission('l')})`,
     columns: ['revoked_at'], to: 'b.revoked_at IS NOT NULL',
   },
   {
     name: 'expired-sessions', writer: 'identity.(*Sessions).PruneCredentials (store.DeleteSessionsExpiredBefore)', table: 'sessions',
     rows: `s.expires_at < ${prunedBefore}
-      AND NOT EXISTS (SELECT 1 FROM snap.refresh_secrets r WHERE r.session_id = s.id AND r.expires_at >= ${prunedBefore})`,
+      AND NOT EXISTS (SELECT 1 FROM mig.refresh_secrets r WHERE r.session_id = s.id AND r.expires_at >= ${prunedBefore})`,
     removes: true,
   },
   {
     name: 'expired-refresh-secrets', writer: 'identity.(*Sessions).PruneCredentials (store.DeleteRefreshSecretsExpiredBefore)',
     table: 'refresh_secrets',
     rows: `s.expires_at < ${prunedBefore}
-      AND NOT EXISTS (SELECT 1 FROM snap.refresh_secrets n WHERE n.secret_hash = s.next_secret_hash AND n.consumed_at IS NULL)`,
+      AND NOT EXISTS (SELECT 1 FROM mig.refresh_secrets n WHERE n.secret_hash = s.next_secret_hash AND n.consumed_at IS NULL)`,
     removes: true,
   },
   {

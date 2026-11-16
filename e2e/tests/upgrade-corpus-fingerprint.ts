@@ -10,7 +10,9 @@
 // the migrations' doing, held to migrationExceptions; M against the trial's
 // store (B), over every shared column, is the boot's, held to
 // recoveryRules. An exception narrows only the migrations' comparison, so a
-// column a migration may rewrite is still compared for the boot. The copy
+// column a migration may rewrite is still compared for the boot. A rule
+// selects over M, the store the boot's writers read, at the build's schema
+// whatever the snapshot's version. The copy
 // is made only when some row changed. Row content never leaves SQLite: the
 // queries return keys, column names and flags.
 import { execFile } from 'node:child_process';
@@ -123,10 +125,16 @@ export async function buildSchema(dir: string): Promise<number> {
   return version;
 }
 
-async function migrate(db: string): Promise<void> {
+/** storeAt writes a new, empty store at `db` at schema `version`, for a test of a root older than the build. */
+export async function storeAt(db: string, version: number): Promise<void> {
+  await writeFile(db, '', { flag: 'wx' });
+  await migrate(db, version);
+}
+
+async function migrate(db: string, through?: number): Promise<void> {
   const { stdout } = await run(harnessTool('ao-store-test'),
     ['-test.run', '^TestMigrateHarnessDatabase$', '-test.count=1', '-test.timeout=0', '-test.v'], {
-      env: { ...process.env, AO_TEST_MIGRATE_DATABASE: db },
+      env: { ...process.env, AO_TEST_MIGRATE_DATABASE: db, ...(through ? { AO_TEST_MIGRATE_THROUGH: String(through) } : {}) },
       maxBuffer: 16 * 1024 * 1024,
     });
   // The test skips, and exits 0, when it is not handed a path.
@@ -284,8 +292,8 @@ interface BootRow {
 /**
  * classifyBootChanges names, for every old row the migrations kept and the
  * boot changed, the recovery rule that explains it, and fails on the rest.
- * A rule's selection runs on the snapshot row; its allowed change on the
- * booted row. 'thread-write' rules run last, over the threads the boot
+ * A rule's selection runs on the row the migrations left (`s`, in M); its
+ * allowed change on the booted row. 'thread-write' rules run last, over the threads the boot
  * wrote rows in.
  */
 async function classifyBootChanges(dbPath: string, schemas: Record<string, string>, boot: Compared[], out: Fingerprint): Promise<void> {
@@ -304,8 +312,8 @@ async function classifyBootChanges(dbPath: string, schemas: Record<string, strin
     const thread = names.has('thread_id') ? 's."thread_id"' : table === 'threads' ? 's."id"' : 'NULL';
     const join = (a: string, b: string) => key.map((name) => `${a}.${quote(name)} IS ${b}.${quote(name)}`).join(' AND ');
     const removed = `NOT EXISTS (SELECT 1 FROM main.${quote(table)} x WHERE ${join('x', 's')})`;
-    // What the boot changed: the row as the migrations left it (m) against the booted row (b).
-    const flags = columns.map((column, i) => `NOT (${same(column, 'm', 'b')}) AS c${i}`);
+    // What the boot changed: the row as the migrations left it (s) against the booted row (b).
+    const flags = columns.map((column, i) => `NOT (${same(column, 's', 'b')}) AS c${i}`);
     const scoped = rules.filter((rule) => rule.rows !== 'thread-write');
     // A row one rule settles in a thread the boot also wrote in carries that
     // write's stamps as well: the rule may explain its columns plus them.
@@ -321,8 +329,7 @@ async function classifyBootChanges(dbPath: string, schemas: Record<string, strin
     const sql = `SELECT ${key.map((name, i) => `s.${quote(name)} AS k${i}`).join(', ')}, ${thread} AS thread,
         ${removed} AS removed, ${top} AS top, ${bytes} AS bytes, ${[...flags, ...matches].join(', ')}
       FROM (${changed}) d
-      JOIN snap.${quote(table)} s ON ${join('s', 'd')}
-      JOIN mig.${quote(table)} m ON ${join('m', 's')}
+      JOIN mig.${quote(table)} s ON ${join('s', 'd')}
       LEFT JOIN main.${quote(table)} b ON ${join('b', 's')}`;
     for (const row of await dbQuery<Record<string, unknown>>(dbPath, sql, schemas)) {
       const isRemoved = row.removed === 1;
@@ -402,19 +409,23 @@ async function classifyBootChanges(dbPath: string, schemas: Record<string, strin
 }
 
 /**
- * ruleMatch is the SQL for "rule explains this change": the snapshot row
+ * ruleMatch is the SQL for "rule explains this change": the migrated row
  * `s` is one it selects, and the booted row `b` is gone when it removes
- * rows, or differs from the migrated row `m` only in its columns and meta
- * keys, and meets its `to`.
+ * rows, or differs from `s` only in its columns and meta keys, and meets
+ * its `to`. Every rule is composed here, and none may read the snapshot:
+ * a snapshot older than a column a rule names would abort the check.
  */
 function ruleMatch(rule: RecoveryRule, columns: Column[], removed: string): string {
+  if (/\bsnap\./.test(`${rule.rows} ${rule.to ?? ''}`)) {
+    throw new Error(`recovery rule ${rule.name} reads the snapshot (snap.); a rule selects over the migrated store (mig.), whose schema is the build's`);
+  }
   const any = rule.columns?.includes('*') ?? false;
   const allowed = new Set([...(rule.columns ?? []), ...(rule.metaKeys ? ['meta'] : [])]);
-  const kept = any ? [] : columns.filter((column) => !allowed.has(column.name)).map((column) => same(column, 'm', 'b'));
+  const kept = any ? [] : columns.filter((column) => !allowed.has(column.name)).map((column) => same(column, 's', 'b'));
   if (rule.metaKeys) {
     const keys = rule.metaKeys.map((key) => `'$.${key}'`).join(', ');
-    kept.push(`(CASE WHEN json_valid(m.meta) AND json_valid(b.meta) THEN json_remove(m.meta, ${keys}) IS json_remove(b.meta, ${keys})
-      ELSE m.meta IS b.meta END)`);
+    kept.push(`(CASE WHEN json_valid(s.meta) AND json_valid(b.meta) THEN json_remove(s.meta, ${keys}) IS json_remove(b.meta, ${keys})
+      ELSE s.meta IS b.meta END)`);
   }
   if (rule.to) kept.push(`(${rule.to})`);
   const change = kept.length > 0 ? kept.join(' AND ') : '1';

@@ -51,7 +51,7 @@ import {
   waitForGate,
 } from './agent-visibility-helpers.js';
 import type { SweepContext } from './upgrade-corpus-config.js';
-import { fingerprint, migrateAlone, type Fingerprint } from './upgrade-corpus-fingerprint.js';
+import { fingerprint, migrateAlone, storeAt, type Fingerprint } from './upgrade-corpus-fingerprint.js';
 import {
   census,
   compareCensus,
@@ -68,6 +68,9 @@ import { buildVersion, dbQuery } from './upgrade-corpus-tools.js';
 
 const COMMAND_TIMEOUT_MS = 120_000;
 const QUEUED = 'Queued behind the open turn.';
+const QUEUED_WAKE = 'An answer arrived.';
+const TYPED = 'Typed in the composer.';
+const REPLACED = 'The text a resend replaced.';
 
 interface Staged {
   threadId: string;
@@ -249,14 +252,16 @@ async function stageFixtures(rig: Sandbox, s: Staged): Promise<void> {
     INSERT INTO thread_request_receipts (token, owner_device_id, kind, target_thread_id, state, created_at, updated_at)
       VALUES ('rcpt-open', '${local.device}', 'send', '${s.codexId}', 'running', ${now}, ${now}),
              ('rcpt-settled', '${local.device}', 'send', '${s.codexId}', 'finished', ${now}, ${now});
-    INSERT INTO flush_queue_items (id, thread_id, send_id, message, enqueued_at)
-      VALUES ('fq-wake', '${s.codexId}', 'thread-wake:req-wake', 'An answer arrived.', ${now});
+    INSERT INTO flush_queue_items (id, thread_id, send_id, message, payload, enqueued_at)
+      VALUES ('fq-wake', '${s.codexId}', 'thread-wake:req-wake', '${QUEUED_WAKE}', CAST('{"attachmentIds":["att-queued"]}' AS BLOB), ${now});
     -- queued-message-drafts and replacement-drafts: the drafts a restore
-    -- writes into, a recovery a resend left, and a settled draft.
-    INSERT INTO thread_drafts (thread_id, content, updated_at, has_content)
-      VALUES ('${s.codexId}', 'typed', ${now}, 1), ('${s.draftId}', 'typed', ${now}, 1), ('${s.quietId}', 'kept', ${now}, 1);
+    -- writes into, with typed text and an attachment, a recovery a resend
+    -- left, and a settled draft.
+    INSERT INTO thread_drafts (thread_id, content, attachments, updated_at, has_content)
+      VALUES ('${s.codexId}', '${TYPED}', '["att-typed"]', ${now}, 1), ('${s.draftId}', '${TYPED}', '[]', ${now}, 1),
+             ('${s.quietId}', 'kept', '[]', ${now}, 1);
     INSERT INTO thread_draft_recoveries (thread_id, send_id, content, attachments)
-      VALUES ('${s.draftId}', 'send-lost', 'The text a resend replaced.', '[]');
+      VALUES ('${s.draftId}', 'send-lost', '${REPLACED}', '[]');
     -- background-terminal-stashes: a background task's end that outran its row.
     INSERT INTO pending_background_task_terminals (thread_id, task_id, tool_use_id, status, source, created_at)
       VALUES ('${s.threadId}', 'task-stash', 'tu-stash', 'completed', 'notification', ${now});
@@ -348,6 +353,9 @@ test('the release upgrade check tells a dead process\'s recovered rows from alte
     const clean = await check(rig.dbPath);
     expect(clean.failures).toEqual([]);
     expect(clean.bootUnexplained).toEqual([]);
+    // The restore's draft: the queued message ahead of what the composer held.
+    expect(await dbQuery(rig.dbPath, `SELECT content, attachments FROM thread_drafts WHERE thread_id = '${codexId}'`))
+      .toEqual([{ content: `${QUEUED_WAKE}\n\n${TYPED}`, attachments: '["att-queued","att-typed"]' }]);
     expect(byRule(clean)).toEqual({
       'crashed-turns turns': 1,
       'crashed-turn-rows items': 1,
@@ -400,7 +408,28 @@ test('the release upgrade check tells a dead process\'s recovered rows from alte
       { rule: 'open-receipts', table: 'thread_request_receipts', sql: `UPDATE thread_request_receipts SET source_thread_title = 'edited' WHERE token = 'rcpt-settled'` },
       { rule: 'queued-wakes-to-draft', table: 'thread_requests', sql: `UPDATE thread_requests SET issue = 'edited' WHERE token = 'req-rider'` },
       { rule: 'queued-messages', table: 'flush_queue_items', sql: `INSERT INTO flush_queue_items SELECT id, thread_id, send_id, 'edited', payload, enqueued_at FROM snap.flush_queue_items` },
-      { rule: 'queued-message-drafts and replacement-drafts', table: 'thread_drafts', sql: `UPDATE thread_drafts SET content = 'edited' WHERE thread_id = '${quietId}'` },
+      // A restore's destination draft must hold the old draft and every
+      // restored message, text and attachments.
+      { rule: 'queued-messages: draft missing', table: 'flush_queue_items', sql: `DELETE FROM thread_drafts WHERE thread_id = '${codexId}'` },
+      { rule: 'queued-message-drafts: draft holds only the queued message', table: 'thread_drafts',
+        sql: `UPDATE thread_drafts SET content = '${QUEUED_WAKE}', attachments = '["att-queued"]' WHERE thread_id = '${codexId}'` },
+      { rule: 'queued-messages: draft holds only the old draft', table: 'flush_queue_items',
+        sql: `UPDATE thread_drafts SET content = '${TYPED}', attachments = '["att-typed"]' WHERE thread_id = '${codexId}'` },
+      { rule: 'queued-messages: the queued attachment lost', table: 'flush_queue_items',
+        sql: `UPDATE thread_drafts SET attachments = '["att-typed"]' WHERE thread_id = '${codexId}'` },
+      { rule: 'queued-message-drafts: the old attachment lost', table: 'thread_drafts',
+        sql: `UPDATE thread_drafts SET attachments = '["att-queued"]' WHERE thread_id = '${codexId}'` },
+      { rule: 'queued-message-drafts: attachments corrupted', table: 'thread_drafts',
+        sql: `UPDATE thread_drafts SET attachments = 'att-queued,att-typed' WHERE thread_id = '${codexId}'` },
+      { rule: 'unconfirmed-queued-messages: draft missing', table: 'items', sql: `DELETE FROM thread_drafts WHERE thread_id = '${threadId}'` },
+      { rule: 'replacement-drafts: draft holds only the old draft', table: 'thread_draft_recoveries',
+        sql: `UPDATE thread_drafts SET content = '${TYPED}' WHERE thread_id = '${staged.draftId}'` },
+      { rule: 'replacement-drafts: draft holds only the replaced text', table: 'thread_drafts',
+        sql: `UPDATE thread_drafts SET content = '${REPLACED}' WHERE thread_id = '${staged.draftId}'` },
+      { rule: 'retired-message-claims: resolved, not returned', table: 'diff_review_comments',
+        sql: `UPDATE diff_review_comments SET status = 'resolved' WHERE id = 'drc-retired'` },
+      { rule: 'unsettled-review-claims: resolved, not returned', table: 'diff_review_comments',
+        sql: `UPDATE diff_review_comments SET status = 'resolved' WHERE id = 'drc-unsettled'` },
       { rule: 'replacement-draft-recoveries', table: 'thread_draft_recoveries', sql: `INSERT INTO thread_draft_recoveries SELECT thread_id, send_id, 'edited', attachments FROM snap.thread_draft_recoveries` },
       { rule: 'background-terminal-stashes', table: 'pending_background_task_terminals', sql: `INSERT INTO pending_background_task_terminals SELECT thread_id, task_id, tool_use_id, 'failed', exit_code, output_file, end_time, source, created_at FROM snap.pending_background_task_terminals` },
       { rule: 'running-remote-jobs', table: 'remote_jobs', sql: `UPDATE remote_jobs SET output = 'edited' WHERE id = 'job-running'` },
@@ -561,6 +590,46 @@ test('the release upgrade check tells a dead process\'s recovered rows from alte
     // A thread no rule selects that loses a row.
     const lost: Census = { ...after, threadItems: { ...after.threadItems, [quietId]: postTrial.threadItems[quietId] - 1 } };
     expect(() => compareCensus(postTrial, lost, schema, schema, 'boot', sweeps.growth)).toThrow(`thread ${quietId} had`);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+// A root from a release older than a column a recovery rule names: v148,
+// before thread_requests.delivered_with (v149), with an open local request
+// the dead process left running. The trial migrates it and its boot settles
+// the request; the fingerprint must classify that settlement over the store
+// the migrations left, not fail on the snapshot's older schema.
+const BEFORE_WAKE_CARRIER = 148;
+
+test('the release upgrade check classifies a boot recovery on a snapshot older than the rules', async () => {
+  test.setTimeout(3 * 60_000);
+  const root = await mkdtemp(path.join(tmpdir(), 'ao-upgrade-recovery-old-'));
+  try {
+    const rig = await buildSandbox(root);
+    await storeAt(rig.dbPath, BEFORE_WAKE_CARRIER);
+    const workspace = path.join(rig.dataRoot, 'workspaces', 'old');
+    await mkdir(workspace, { recursive: true });
+    write(rig.dbPath, `
+      INSERT INTO projects (id, path, name, created_at, updated_at) VALUES ('p-old', '${workspace}', 'Old', 1, 1);
+      INSERT INTO threads (id, project_id, title, provider, workspace_path, model, created_at, updated_at, archived, mode)
+        VALUES ('t-old', 'p-old', 'Caller', 'claude', '${workspace}', 'test-model', 1, 1, 0, 'chat');
+      INSERT INTO thread_requests (token, caller_thread_id, kind, state, created_at, updated_at)
+        VALUES ('req-old', 't-old', 'send', 'running', 1, 1);
+    `);
+    const id = newUpdateID();
+    const snapshot = await runUpdateCommand(rig, ['__update-snapshot', '--id', id], COMMAND_TIMEOUT_MS);
+    expect(updateResult(snapshot.events), snapshot.stderr).toMatchObject({ outcome: 'ok', schema: BEFORE_WAKE_CARRIER });
+    const trial = await runUpdateCommand(rig,
+      ['__update-trial-run', '--id', id, '--to', await buildVersion(), '--attempt', '1'], COMMAND_TIMEOUT_MS);
+    expect(updateResult(trial.events), trial.stderr).toMatchObject({ outcome: 'prepared' });
+    const snapshotDB = path.join(rig.dataRoot, 'agent-overflow', 'runtime', 'app-update', 'snapshot', 'agent-overflow.db');
+    const [{ schema }] = await dbQuery<{ schema: number }>(rig.dbPath, 'SELECT MAX(version) AS schema FROM migration_versions');
+    const result = await fingerprint(rig.dbPath, snapshotDB, BEFORE_WAKE_CARRIER, schema,
+      () => migrateAlone(snapshotDB, path.join(root, 'migrated-alone')));
+    expect(result.failures).toEqual([]);
+    expect(Object.fromEntries(result.recovery.map((entry) => [entry.rule, entry.rows]))).toMatchObject({ 'open-local-requests': 1 });
+    expect(await dbQuery(rig.dbPath, `SELECT state FROM thread_requests WHERE token = 'req-old'`)).toEqual([{ state: 'interrupted' }]);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
