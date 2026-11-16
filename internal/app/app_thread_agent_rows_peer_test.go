@@ -758,11 +758,11 @@ func TestThreadAgentPeerBackoffDoublesAndAnAnswerClearsIt(t *testing.T) {
 	var waits []time.Duration
 	for range 6 {
 		before := time.Now()
-		cache.noteAnswerLocked(spawn, ThreadAgentRows{}, timedOut)
+		cache.noteAnswerLocked(spawn, ThreadAgentRows{}, timedOut, false)
 		backoff := cache.backoff["computer"]
 		waits = append(waits, backoff.until.Sub(before).Round(time.Second))
 		// A second call timing out within the backoff is the same outage.
-		cache.noteAnswerLocked(spawn, ThreadAgentRows{}, timedOut)
+		cache.noteAnswerLocked(spawn, ThreadAgentRows{}, timedOut, false)
 		if cache.backoff["computer"] != backoff {
 			t.Fatal("a timeout inside the backoff lengthened it")
 		}
@@ -774,12 +774,12 @@ func TestThreadAgentPeerBackoffDoublesAndAnAnswerClearsIt(t *testing.T) {
 	if !slices.Equal(waits, want) {
 		t.Fatalf("backoffs %v; want %v", waits, want)
 	}
-	cache.noteAnswerLocked(spawn, ThreadAgentRows{}, timedOut)
-	cache.noteAnswerLocked(spawn, ThreadAgentRows{}, errors.New("refused"))
+	cache.noteAnswerLocked(spawn, ThreadAgentRows{}, timedOut, false)
+	cache.noteAnswerLocked(spawn, ThreadAgentRows{}, errors.New("refused"), false)
 	if !cache.backingOffLocked("computer") {
 		t.Fatal("a refusal cleared the backoff")
 	}
-	cache.noteAnswerLocked(spawn, ThreadAgentRows{}, nil)
+	cache.noteAnswerLocked(spawn, ThreadAgentRows{}, nil, false)
 	if cache.backingOffLocked("computer") {
 		t.Fatal("an answer left the computer backing off")
 	}
@@ -1046,7 +1046,7 @@ func TestThreadAgentRowsAnswerAfterTheForgetIsNotRecorded(t *testing.T) {
 	if err := a.RemoveBackend(pair.computer, true); err != nil {
 		t.Fatalf("forget the computer: %v", err)
 	}
-	a.notePeerAgentRows(pair.spawn, answer.listing, nil)
+	a.notePeerAgentRows(pair.spawn, answer.listing, nil, false)
 	a.threadRequestsWG.Wait()
 	requireForgotten(t, pair, frames)
 }

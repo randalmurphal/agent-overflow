@@ -19,8 +19,9 @@ import (
 // background, and an answer that changes anything emits
 // `thread:agent_rows_changed` for the spawn's caller, so the pane reads
 // again. Every answer also records on the spawn's row whether that
-// computer listed open work or said the spawn's thread is not at rest
-// (`nested_open`), which keeps a settled remote spawn listed while it does;
+// computer said the spawn's thread is open, not at rest or with open work
+// at any depth below it (`nested_open`, peerListingOpen), which keeps a
+// settled remote spawn listed while it is;
 // the poller asks again at its own pace while a row says so. The poll that
 // collects a remote spawn's answer asks for its rows too, so a thread that
 // keeps working after it answered is recorded as it settles. Nothing there
@@ -311,7 +312,7 @@ func (a *App) askPeerAgentRows(spawn store.ThreadRequest) {
 	case record && probe:
 		c.noteBackoffLocked(spawn.TargetComputerID, err)
 	case record:
-		changed = c.noteAnswerLocked(spawn, listing, err)
+		changed = c.noteAnswerLocked(spawn, listing, err, false)
 	}
 	var reread []string
 	if len(c.waiting) < threadAgentPeerCacheLimit {
@@ -334,8 +335,9 @@ func (a *App) askPeerAgentRows(spawn store.ThreadRequest) {
 	}
 }
 
-// notePeerAgentRows records an answer a live listing read itself.
-func (a *App) notePeerAgentRows(spawn store.ThreadRequest, listing ThreadAgentRows, err error) {
+// notePeerAgentRows records an answer a live listing read itself; stateOnly
+// says it is the thread's state alone.
+func (a *App) notePeerAgentRows(spawn store.ThreadRequest, listing ThreadAgentRows, err error, stateOnly bool) {
 	if errors.Is(err, context.Canceled) && a.lifeCtx().Err() != nil {
 		return
 	}
@@ -347,7 +349,7 @@ func (a *App) notePeerAgentRows(spawn store.ThreadRequest, listing ThreadAgentRo
 	}
 	a.recordPeerOpenWork(spawn, listing, err)
 	c.mu.Lock()
-	changed := c.noteAnswerLocked(spawn, listing, err)
+	changed := c.noteAnswerLocked(spawn, listing, err, stateOnly)
 	c.mu.Unlock()
 	c.recording.Unlock()
 	if changed {
@@ -378,8 +380,8 @@ func (a *App) peerPaired(computerID string) (bool, error) {
 	return err == nil && found, err
 }
 
-// recordPeerOpenWork writes whether an answer listed open work, or said
-// the spawn's thread is not at rest, on the spawn's row. It runs before
+// recordPeerOpenWork writes whether an answer said the spawn's thread is
+// open (peerListingOpen) on the spawn's row. It runs before
 // the answer is cached, so a read that nests the rows finds the spawn kept
 // for them. A computer that did not answer
 // leaves the last record. One that refused the thread as not this spawn's
@@ -401,9 +403,14 @@ func (a *App) recordPeerOpenWork(spawn store.ThreadRequest, listing ThreadAgentR
 	}
 }
 
-// peerListingOpen reports whether an agent_rows answer lists open work or
-// says the spawn's thread is not at rest.
+// peerListingOpen reports whether an agent_rows answer says the spawn's
+// thread is open: not at rest, or with open work at any depth below it. A
+// computer that predates saying so is read from the rows it returned, as
+// far as they reach.
 func peerListingOpen(listing ThreadAgentRows) bool {
+	if listing.Open != nil {
+		return *listing.Open
+	}
 	open := listing.Worker != ""
 	for _, row := range listing.Rows {
 		open = open || row.SettledAt == 0 || row.Worker != ""
@@ -421,9 +428,12 @@ func threadAgentPeerRefused(err error) bool {
 
 // noteAnswerLocked caches one answer, keeps the cache to its bound by
 // dropping the oldest other answers, and moves the computer's backoff: a
-// timeout once the last backoff passed lengthens it, an answer clears it. It reports whether the answer
-// changed what the caller's pane shows.
-func (c *threadAgentPeerCache) noteAnswerLocked(spawn store.ThreadRequest, listing ThreadAgentRows, err error) bool {
+// timeout once the last backoff passed lengthens it, an answer clears it.
+// An answer of the thread's state alone (stateOnly) keeps the rows the
+// last one listed, and their age, so a read that nests them asks for them
+// again on its own pace. It reports whether the answer changed what the
+// caller's pane shows.
+func (c *threadAgentPeerCache) noteAnswerLocked(spawn store.ThreadRequest, listing ThreadAgentRows, err error, stateOnly bool) bool {
 	if c.entries == nil {
 		c.entries = map[string]*threadAgentPeerEntry{}
 	}
@@ -433,12 +443,18 @@ func (c *threadAgentPeerCache) noteAnswerLocked(spawn store.ThreadRequest, listi
 		entry = &threadAgentPeerEntry{}
 		c.entries[spawn.Token] = entry
 	}
+	if stateOnly && ok && err == nil {
+		listing.Rows, listing.Hidden = entry.listing.Rows, entry.listing.Hidden
+	}
 	changed := !ok || errorText(entry.err) != errorText(err) ||
 		(err == nil && !reflect.DeepEqual(entry.listing, listing))
 	// A failed call keeps the last answer, which the row still shows; a
 	// refusal of the thread as not this spawn's is an answer, and leaves
 	// nothing of it.
-	entry.spawn, entry.at, entry.err = spawn, time.Now(), err
+	entry.spawn, entry.err = spawn, err
+	if !stateOnly {
+		entry.at = time.Now()
+	}
 	if err == nil {
 		entry.listing = listing
 	} else if threadAgentPeerRefused(err) {

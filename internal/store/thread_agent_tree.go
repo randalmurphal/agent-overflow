@@ -521,6 +521,50 @@ func agentOpenUnderSQL(thread string) string {
               WHERE o.caller_thread_id = ` + thread + ` AND ` + agentSpawnLinkSQL("o") + ` AND ` + agentOpenBelowSQL("o") + `))`
 }
 
+// ThreadAgentStateRead is one read of what a thread's own Agents listing
+// says of it, with ThreadAgentTreeRead's Waiting, Live and SettledSince.
+type ThreadAgentStateRead struct {
+	Thread       string
+	Waiting      []string
+	Live         []string
+	SettledSince int64
+}
+
+// ThreadAgentState is what a thread's Agents listing says of the thread
+// whatever rows it has room for.
+type ThreadAgentState struct {
+	// OpenBelow is whether the thread has open work at any depth below it,
+	// as agentTargetOpenSQL reads it for a spawn of it: a request it made
+	// that is open work, or a local spawn it made whose marks count open
+	// work, within agentOpenDepth (agentOpenUnderSQL), or a spawn it made
+	// above held work (agentHeldSQL), deeper or only in memory.
+	OpenBelow bool
+	// Rows is whether its listing has a row.
+	Rows bool
+}
+
+// ReadThreadAgentState reads what a thread's Agents listing says of it,
+// in one statement: a search of each index agentOpenUnderSQL and
+// agentRowArms name, and the held work's climb.
+func (s *Store) ReadThreadAgentState(read ThreadAgentStateRead) (ThreadAgentState, error) {
+	action := "store: read the agents state of " + read.Thread
+	held, err := agentHeldParam(read.Waiting, read.Live)
+	if err != nil {
+		return ThreadAgentState{}, fmt.Errorf("%s: %w", action, err)
+	}
+	var state ThreadAgentState
+	if err := s.reader().QueryRow(threadAgentStateSQL, read.Thread, held, read.SettledSince).Scan(&state.OpenBelow, &state.Rows); err != nil {
+		return ThreadAgentState{}, fmt.Errorf("%s: %w", action, err)
+	}
+	return state, nil
+}
+
+// threadAgentStateSQL is ReadThreadAgentState's read: ?1 the thread, ?2 the
+// held work (agentHeldParam), ?3 the settled window.
+var threadAgentStateSQL = `WITH RECURSIVE ` + agentHeldSQL + `
+SELECT (` + agentOpenUnderSQL(agentRootSQL) + ` OR EXISTS (SELECT 1 FROM held WHERE held.thread = ` + agentRootSQL + `)),
+       (` + agentRowsUnderSQL(agentRootSQL) + `)`
+
 // agentRowKindSQL matches a request kind the listing shows: every spawn,
 // and a send or ask whose wake is armed or that a call is parked on (?2).
 func agentRowKindSQL(alias string) string {

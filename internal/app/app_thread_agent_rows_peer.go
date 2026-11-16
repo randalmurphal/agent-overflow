@@ -12,6 +12,7 @@ import (
 	"agent-overflow/internal/entityid"
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/rpcclient"
+	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadtools"
 )
 
@@ -60,6 +61,10 @@ type threadAgentPeerArgs struct {
 	Token string `json:"token,omitempty"`
 	// Depth is how many nesting levels the listing may still use.
 	Depth int `json:"depth,omitempty"`
+	// StateOnly asks for the thread's state without its rows: the caller
+	// lists the spawn at its last level. It is sent with Depth 1, which a
+	// computer that predates it lists instead.
+	StateOnly bool `json:"state_only,omitempty"`
 }
 
 // errThreadAgentPeerTimedOut marks a forwarded call that ran out its own
@@ -123,11 +128,15 @@ func (a *App) callThreadAgentPeer(ctx context.Context, method, computerID, sourc
 }
 
 // peerThreadAgentRows reads the Agents rows of a thread this computer's
-// thread spawned on a paired computer.
+// thread spawned on a paired computer, nested depth levels, or with depth 0
+// the thread's state alone.
 func (a *App) peerThreadAgentRows(ctx context.Context, computerID, sourceThreadID, threadID string, depth int) (ThreadAgentRows, error) {
+	args := threadAgentPeerArgs{ThreadID: threadID, Depth: depth}
+	if depth <= 0 {
+		args.Depth, args.StateOnly = 1, true
+	}
 	var rows ThreadAgentRows
-	err := a.callThreadAgentPeer(ctx, "ThreadToolQuery", computerID, sourceThreadID,
-		threadAgentPeerArgs{ThreadID: threadID, Depth: depth}, &rows)
+	err := a.callThreadAgentPeer(ctx, "ThreadToolQuery", computerID, sourceThreadID, args, &rows)
 	return rows, err
 }
 
@@ -157,26 +166,10 @@ func (a *App) serveThreadAgentPeer(ctx context.Context, owner string, call Threa
 	var result any
 	switch call.Tool {
 	case threadAgentPeerRows:
-		depth := args.Depth
-		if depth <= 0 || depth > threadAgentRowDepth {
-			depth = threadAgentRowDepth
-		}
-		listing, _, err := a.threadAgentTreeDepth(ctx, newThreadAgentView(a), args.ThreadID, depth, threadAgentPeersLive)
+		listing, err := a.answerThreadAgentRows(ctx, args)
 		if err != nil {
 			return ThreadPeerReply{}, err
 		}
-		thread, err := a.store.GetThread(args.ThreadID)
-		if err != nil {
-			return ThreadPeerReply{}, fmt.Errorf("read thread %s: %w", args.ThreadID, err)
-		}
-		listing.ThreadProvider = thread.Provider
-		// No spawn here made the thread, so no row here follows its rest:
-		// the computer that asked reads it from this answer.
-		rest, err := a.workerUnrest(args.ThreadID)
-		if err != nil {
-			return ThreadPeerReply{}, fmt.Errorf("read whether thread %s is at rest: %w", args.ThreadID, err)
-		}
-		listing.Worker = rest.unrest
 		result = listing
 	case threadAgentPeerStop:
 		stop, err := a.stopThreadAgentWorkHere(ctx, args.ThreadID, args.Token)
@@ -193,6 +186,54 @@ func (a *App) serveThreadAgentPeer(ctx context.Context, owner string, call Threa
 		return ThreadPeerReply{}, fmt.Errorf("thread tools: encode %s result: %w", call.Tool, err)
 	}
 	return ThreadPeerReply{Result: encoded}, nil
+}
+
+// answerThreadAgentRows is agent_rows on this computer: the thread's rows
+// nested the levels asked, none for a call that asks for its state alone,
+// and what the asking computer cannot read from rows that have no room for
+// it, or from none. No spawn here made the thread, so no row here follows
+// it: the answer says why it is not at rest (Worker), and whether it is
+// open, at rest or not, with open work at any depth below it, as a spawn
+// of it here would read it (store.ReadThreadAgentState). That is read
+// after the rows, so the answers of computers further on that the rows
+// asked for are recorded in it. A call for the state alone asks no other
+// computer: Hidden says whether the thread has rows.
+func (a *App) answerThreadAgentRows(ctx context.Context, args threadAgentPeerArgs) (ThreadAgentRows, error) {
+	var listing ThreadAgentRows
+	if !args.StateOnly {
+		depth := args.Depth
+		if depth <= 0 || depth > threadAgentRowDepth {
+			depth = threadAgentRowDepth
+		}
+		var err error
+		listing, _, err = a.threadAgentTreeDepth(ctx, newThreadAgentView(a), args.ThreadID, depth, threadAgentPeersLive)
+		if err != nil {
+			return ThreadAgentRows{}, err
+		}
+	}
+	thread, err := a.store.GetThread(args.ThreadID)
+	if err != nil {
+		return ThreadAgentRows{}, fmt.Errorf("read thread %s: %w", args.ThreadID, err)
+	}
+	listing.ThreadProvider = thread.Provider
+	rest, err := a.workerUnrest(args.ThreadID)
+	if err != nil {
+		return ThreadAgentRows{}, fmt.Errorf("read whether thread %s is at rest: %w", args.ThreadID, err)
+	}
+	listing.Worker = rest.unrest
+	view := newThreadAgentView(a)
+	state, err := a.store.ReadThreadAgentState(store.ThreadAgentStateRead{
+		Thread: args.ThreadID, Waiting: view.waiting, Live: view.live, SettledSince: view.since,
+	})
+	if err != nil {
+		return ThreadAgentRows{}, fmt.Errorf("read whether thread %s has open work: %w", args.ThreadID, err)
+	}
+	open := rest.unrest != "" || state.OpenBelow
+	listing.Open = &open
+	if args.StateOnly {
+		listing.Hidden = state.Rows
+	}
+	return listing, nil
 }
 
 // stopThreadAgentWorkHere is agent_stop on this computer: one row of

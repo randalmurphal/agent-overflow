@@ -110,6 +110,20 @@ func TestThreadAgentTreeSearchesItsArms(t *testing.T) {
 				}
 			}
 		}
+		// A thread's own state searches the indexes that hold its open work
+		// and those of its rows' arms, and climbs the held work by the
+		// spawn link.
+		name := fmt.Sprintf("threadAgentStateSQL (analyzed %v)", analyzed)
+		stateArgs := []any{chief, "[]", since}
+		assertPlanSearches(t, s, name, "o", []string{"idx_thread_requests_open_created", "idx_thread_requests_nested_caller",
+			"idx_thread_requests_open_below"}, threadAgentStateSQL, stateArgs...)
+		assertPlanSearches(t, s, name, "c", []string{"idx_thread_requests_open_created", "idx_thread_requests_caller_settled",
+			"idx_thread_requests_open_below", "sqlite_autoindex_thread_requests_1", "idx_thread_requests_nested_caller"},
+			threadAgentStateSQL, stateArgs...)
+		assertPlanSearches(t, s, name, "ps", []string{"idx_thread_requests_spawn_link"}, threadAgentStateSQL, stateArgs...)
+		if text := planText(explainPlan(t, s, threadAgentStateSQL, stateArgs...)); strings.Contains(text, "settled_at<?") {
+			t.Errorf("%s reads the settled history:\n%s", name, text)
+		}
 	}
 	// A Stop All's page reads each arm through its index from its cursor,
 	// with the same parameters, once the planner has statistics.

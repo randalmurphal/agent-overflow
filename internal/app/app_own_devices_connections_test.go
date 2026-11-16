@@ -425,7 +425,7 @@ func TestOwnDeviceRetireForgetsTheMachinesAgentRows(t *testing.T) {
 	}
 	peers := &a.app.threadAgentPeers
 	peers.mu.Lock()
-	peers.noteAnswerLocked(spawn, ThreadAgentRows{Rows: []ThreadAgentRow{{Token: "there"}}}, nil)
+	peers.noteAnswerLocked(spawn, ThreadAgentRows{Rows: []ThreadAgentRow{{Token: "there"}}}, nil, false)
 	peers.backoff[b.id] = threadAgentPeerBackoff{until: time.Now().Add(time.Minute)}
 	peers.mu.Unlock()
 	frames := recordAgentRowFrames(a.app)

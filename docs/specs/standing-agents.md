@@ -761,11 +761,16 @@ Ruling 36, as built:
   when it changes, every spawn above it framed for its own caller up to
   the root. Once the worker rests the row is in Past: at once when
   its request settled outside the settled window, after the linger
-  otherwise. A paired computer's `agent_rows` answer carries whether the
-  spawn's thread there is not at rest, and the sweep keeps asking while
-  it is (`thread_requests.nested_open`); a remote spawn at the listing's
-  last level reads that answer for its own state and nests none of its
-  rows. A failed call is no news of rest: the row keeps the state the
+  otherwise. A paired computer's `agent_rows` answer carries why the
+  spawn's thread there is not at rest, and whether it is open: not at
+  rest, or with open work at any depth below it, read there as a spawn of
+  it would read it, whatever rows the answer has room for. The sweep keeps
+  asking while it is (`thread_requests.nested_open`). A remote spawn at
+  the listing's last level asks for that state alone, which lists no rows
+  and asks no computer further on, so a chain of computers is asked no
+  deeper than the listing shows; its row says when that thread has rows.
+  A computer that predates the open state is read from the rows it
+  returns, as far as they reach. A failed call is no news of rest: the row keeps the state the
   last answer gave, says that computer did not answer, and stays open,
   counted and out of Past; with no answer remembered, as after a
   restart, its recorded open work keeps it open, waiting. Only an answer
@@ -1445,7 +1450,7 @@ closes up their spacing so the row holds at a phone width.
 - **Nesting.** A spawned thread's own rows nest under its row, as provider
   subagents nest under theirs, four levels deep; a row at the bound whose
   thread has agents of its own says so. A settled spawn stays listed while
-  its worker or anything nested under it within the bound is open, here or, by the last
+  its worker or anything nested under it at any depth is open, here or, by the last
   `agent_rows` answer, on a paired computer. The listing holds at most 128
   rows and says when it left some out.
 - **Lifetime.** An open row stays: its request is open, or its spawn's

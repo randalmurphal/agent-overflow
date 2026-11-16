@@ -163,6 +163,11 @@ type ThreadAgentRows struct {
 	// agent_rows so the spawn row on the computer that asked is open while
 	// it is (ThreadAgentRow.Worker).
 	Worker string `json:"worker,omitempty"`
+	// Open is whether the listed thread is not at rest or has open work at
+	// any depth below it, answered by agent_rows whatever rows it has room
+	// for (answerThreadAgentRows). Nil from a computer that predates it,
+	// whose rows say what they can (peerListingOpen).
+	Open *bool `json:"open,omitempty"`
 }
 
 // ThreadAgentRowChange is one `thread:agent_rows_changed` frame: the request
@@ -522,8 +527,8 @@ func (a *App) threadAgentTreeDepth(ctx context.Context, view threadAgentView, th
 		request := &requests[index].ThreadRequest
 		entries = append(entries, threadAgentEntry{request: request})
 		depth := requests[index].Depth
-		// A remote spawn at the last level still reads its answer, for its
-		// own state; it nests none of the rows.
+		// A remote spawn at the last level still reads its thread's state;
+		// it nests none of its rows.
 		if request.Kind == store.ThreadRequestSpawn && request.TargetThreadID != "" && request.TargetComputerID != "" {
 			remote = append(remote, threadAgentRemoteSlot{index: index, depth: depth + 1, spawn: *request})
 		}
@@ -535,7 +540,9 @@ func (a *App) threadAgentTreeDepth(ctx context.Context, view threadAgentView, th
 		at := remote[i].index + 1
 		out.Rows = append(out.Rows[:at], append(rows, out.Rows[at:]...)...)
 		entries = append(entries[:at], append(rowEntries, entries[at:]...)...)
-		out.Hidden = out.Hidden || answers[i].listing.Hidden
+		// At the last level every row is past the bound, which the spawn's
+		// row says (NestedHidden).
+		out.Hidden = out.Hidden || (remote[i].depth < maxDepth && answers[i].listing.Hidden)
 	}
 	if len(out.Rows) > threadAgentRowLimit {
 		out.Rows, entries, out.Hidden = out.Rows[:threadAgentRowLimit], entries[:threadAgentRowLimit], true
@@ -572,10 +579,13 @@ func (a *App) remoteAgentAnswers(ctx context.Context, remote []threadAgentRemote
 			i := ask[n]
 			call, cancel := context.WithTimeout(ctx, threadAgentPeerServeTimeout)
 			defer cancel()
-			// One level at the bound: the answer's own state, no rows to nest.
+			// The levels its rows may still use, none at the bound: there the
+			// answer is the thread's state alone, and that computer asks
+			// none further on.
+			depth := maxDepth - remote[i].depth
 			listing, err := a.peerThreadAgentRows(call, remote[i].spawn.TargetComputerID, remote[i].spawn.MadeIn(),
-				remote[i].spawn.TargetThreadID, max(1, maxDepth-remote[i].depth))
-			a.notePeerAgentRows(remote[i].spawn, listing, err)
+				remote[i].spawn.TargetThreadID, depth)
+			a.notePeerAgentRows(remote[i].spawn, listing, err, depth <= 0 && listing.Open != nil)
 			answers[i] = threadAgentPeerAnswer{listing: listing, err: err}
 		})
 		return answers
@@ -594,14 +604,17 @@ func (a *App) remoteAgentAnswers(ctx context.Context, remote []threadAgentRemote
 // out with their parent marked. A computer that did not answer leaves the
 // reason on the spawn's row, and the state its last answer gave.
 func (a *App) nestPeerAgentRows(parent *ThreadAgentRow, slot threadAgentRemoteSlot, answer threadAgentPeerAnswer, maxDepth int) ([]ThreadAgentRow, []threadAgentEntry) {
-	// That computer says why the thread is not at rest; one with only open
-	// work below it there answers none, and its row waits on it
-	// (nested_open). A failed call is no news of rest: the last answer
-	// stands, which a refusal clears (noteAnswerLocked). A spawn whose
-	// request settled waits on a person there when it is blocked, as
-	// nothing routes a remote worker's prompts.
-	if answer.listing.Worker != "" {
+	// That computer says why the thread is not at rest, and whether it is
+	// open; one with only open work below it there waits on it, as its
+	// row's nested_open says once recorded. A failed call is no news of
+	// rest: the last answer stands, which a refusal clears
+	// (noteAnswerLocked). A spawn whose request settled waits on a person
+	// there when it is blocked, as nothing routes a remote worker's prompts.
+	switch open := answer.listing.Open; {
+	case answer.listing.Worker != "":
 		parent.Worker = answer.listing.Worker
+	case open != nil && *open && parent.Worker == "":
+		parent.Worker = workerWaiting
 	}
 	if parent.SettledAt != 0 && parent.Worker == workerBlocked {
 		parent.BlockedOn = "person"
@@ -612,6 +625,10 @@ func (a *App) nestPeerAgentRows(parent *ThreadAgentRow, slot threadAgentRemoteSl
 	}
 	if parent.Provider == "" {
 		parent.Provider = answer.listing.ThreadProvider
+	}
+	if slot.depth >= maxDepth && answer.listing.Hidden {
+		// The thread's state alone, for a thread with rows past the bound.
+		parent.NestedHidden = true
 	}
 	self, _ := a.backendIdentity()
 	rows := make([]ThreadAgentRow, 0, len(answer.listing.Rows))

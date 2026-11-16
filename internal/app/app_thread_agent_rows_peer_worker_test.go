@@ -159,9 +159,9 @@ func TestARefusalForgetsTheLastWorkerState(t *testing.T) {
 	t.Parallel()
 	c := &threadAgentPeerCache{}
 	spawn := store.ThreadRequest{Token: "gone", TargetComputerID: "elsewhere"}
-	c.noteAnswerLocked(spawn, ThreadAgentRows{Worker: workerRunning}, nil)
+	c.noteAnswerLocked(spawn, ThreadAgentRows{Worker: workerRunning}, nil, false)
 	refused := errorsx.Public(threadtools.CodeNotYours, "That thread is not this spawn's.", nil)
-	c.noteAnswerLocked(spawn, ThreadAgentRows{}, refused)
+	c.noteAnswerLocked(spawn, ThreadAgentRows{}, refused, false)
 	if entry := c.entries[spawn.Token]; entry.listing.Worker != "" || entry.err == nil {
 		t.Fatalf("entry %+v; want the refusal kept and no worker state", entry)
 	}
