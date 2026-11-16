@@ -106,6 +106,29 @@ Codex and claude-tui keep one message per queued item. See
 `internal/app/app_flush_dispatch_join.go` and
 [claude-wire.md](../references/claude-wire.md).
 
+A queued message's durable row is what says it is still wanted. Withdrawing
+it deletes the row; the dispatch reads its group's rows under the thread's
+mutation lock right before writing the group (`commitFlushGroup`), drops the
+messages whose rows are gone, and marks the rest as being written. A
+withdrawal under the same lock either removes the message before that read or
+finds it dispatched, never both. The row stays until the provider write
+settles, so a crash at any point before it leaves the message to the boot
+sweep. A failed write's requeue and a session end's restore keep only
+messages whose rows stand. An unconfirmed send a failed restore requeues
+gets its row again (`requeueUnconfirmedFlushItemsLocked`). A message is
+rowless (`QueuedFlushItem.NoRow`), and passes those checks, only when the
+app retired its row as it wrote it to the provider and the row is not
+written again: its timeline row stays its durable copy (an interrupted
+Codex message's resend, a requeued send that still has its row), or the
+write failed. A queued message never written whose row is gone was
+withdrawn, and is dropped. Every handoff carries the dispatch generation it
+was made in (`QueuedFlushItem.DispatchGeneration`): one a recovery overtook
+goes where that recovery took the rest of the queue, and one of a
+generation a Stop's teardown or a revert dropped is dropped with it,
+rowless messages included (`FlushGenerationDropped`). Neither goes to a
+replacement session. A claimed thread's dispatch waits for the delete's
+decision holding its batch.
+
 A quiet row is persisted without a `provider:item_event`, so a connected
 client keeps showing the message above its composer until the echo emits one.
 That marker is live state, not an inference: `LiveStateSnapshotForThread`

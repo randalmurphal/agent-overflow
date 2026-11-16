@@ -989,7 +989,10 @@ running, and immediately from `RegisterQueueItem`.
 App worker serializes dispatch per thread behind the thread lock. A thread
 with no session gets one started by the worker
 (`ensureSessionForFlushLocked`), as a direct send does; when the start
-fails, the batch returns to the composer with the reason on the thread.
+fails, the batch returns to the composer with the reason on the thread. A
+thread a Stop is bringing to rest or an archived one is not started and
+keeps the batch queued; one a delete claimed is waited on, as a live
+session's dispatch is, until the delete decides (`lockFlushDispatch`).
 While a queued message is undispatched, a composer send queues behind it
 rather than overtaking it. Per item,
 `dispatchFlushItem` resolves placement, allocates the row identity, registers
@@ -1091,9 +1094,10 @@ pending messages and a count of the earlier ones. Its height is part of the
 composer clearance, so an unbounded list would cover the timeline.
 
 **Removal before dispatch.** `removeQueuedItem` deletes a queued message that
-has not been sent: it takes the durable row and the triage entry out together
-and refuses once the dispatcher has claimed the batch, when only an interrupt
-can stop the message. Cancelling an agent's thread request is its only caller
+has not been sent: it deletes the durable row, which every copy of the message
+the dispatch still holds is checked against before it is written
+([user-message-ordering.md](user-message-ordering.md)), and refuses once a
+dispatch committed to writing it, when only an interrupt can stop the message. Cancelling an agent's thread request is its only caller
 (`internal/app/app_thread_tools_lifecycle.go`); a person's queued message is
 removed through the composer.
 

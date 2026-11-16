@@ -538,9 +538,11 @@ removed (`threadapp.DeletePorts.AssistantHome`), and a record naming
 any other path refuses the delete before anything stops, naming the
 folder. The past threads and helpers, and the workers under them, go in
 the same delete as any thread's workers ("Owned workers"): a transfer of
-any of them refuses the whole delete before anything stops. From the
-delete's claim no handoff moves the current thread (`ErrThreadDeleting`),
-and from its commit no helper is recorded for it. Its home, row and
+any of them refuses the whole delete before anything stops. While the
+delete decides, a claimed thread takes the app's messages into its queue,
+and a start the app makes for one waits for the decision ("Owned
+workers"). From the delete's claim no handoff moves the current thread
+(`ErrThreadDeleting`), and from its commit no helper is recorded for it. Its home, row and
 record go last, only once nothing is under it: its teardown refuses,
 before touching anything, while a past thread or helper remains
 (`AssistantDependentsError`). A helper whose teardown fails keeps the
@@ -743,16 +745,44 @@ Ruling 36, as built:
   `ClaimDeleteFamily`), and refuses, claiming nothing, when another
   delete holds a claim in it (`DeleteClaimedError`). A worker's claim
   holds only while its owner still owns it (`ErrWorkerNotOwned`). A
-  claimed thread stays listed and read, and runs and moves nothing:
-  execution (`CheckThreadExecutionAccess`), work admission, edits, a
-  placement or group move, a handoff and an outgoing transfer refuse it
-  (`ErrThreadDeleting`). A claim defers what is owed to the thread and
-  a commit ends it (`ErrThreadDeleteClaimed`, `CheckThreadDeliverable`):
-  a reply owed to a claimed sender stays owed and its wake's retry
-  brings it, a loop or interval watch is not fired while the claim
-  stands and its refused fire is due again, a long-running watch holds
-  its output, and a worker's prompt stays routed to its claimed spawner
-  and is put to it again when the claim is released. Verify: the claimed threads have their work
+  claimed thread stays listed and read, takes what the app queues for
+  it, and starts nothing. A person's or another agent's door refuses it
+  (`ErrThreadDeleting`): execution (`CheckThreadExecutionAccess`), work
+  admission, edits, a send, a steer or an outside `thread send`, a
+  placement or group move, a handoff and an outgoing transfer. A
+  message the app writes for it (an answer, a reminder, a loop or watch
+  wake, a worker's prompt, answer or stop notice, a remote completion,
+  a continue after a usage limit, a wake a handoff moves, a workflow
+  run's wake) is written to
+  its queue and withdrawn from it as on a stopped thread
+  (`CheckThreadDeliverable`, `threadapp.LockDeliverable`), so the claim
+  changes nothing that is due, spent or recorded. What would start
+  something waits for the decision, with no failure recorded: a notice's
+  session start (`ErrThreadDeleteClaimed`) and a queue dispatch, to a live
+  session or with the session start it makes (`lockFlushDispatch`),
+  release the thread's action lock and wait at the delete's decision gate
+  (`deleteDecisions`), which the delete opens before it writes a
+  thread's claim and shuts once the claim is released or committed. No
+  wait there holds a thread's lock: a teardown that gives a moved wake
+  back runs the start it tries again as notice work. The
+  dispatch keeps its batch as the one it is sending meanwhile, so the
+  queue shows it, a withdrawal reaches it and a teardown discards it. A
+  refused delete's starts then go on as if the claim had never stood; a
+  committed thread's start nothing, and the destroy's teardown gives the
+  queue back to its owners. A shutdown ends the wait, and a fire's run
+  waiting there ends with its cancel. A queued message's durable row
+  says it is still wanted: a withdrawal deletes it, and the dispatch
+  reads the rows of each group under the lock the withdrawal takes, right
+  before writing it (`commitFlushGroup`), so a message withdrawn before
+  then is never sent and one withdrawn after is reported dispatched. A
+  failed write's requeue and a session end's restore keep only messages
+  whose rows stand. The boot releases every claim no delete committed
+  before anything starts, so no claim stands without a delete to decide
+  it, and gives every queue back to its owners before any session
+  starts. A committed thread's loops and watches do not fire. A fire never claims
+  a wake whose previous run is still registered, and a run retires and
+  publishes its row in one step, writing nothing once a cancel took its
+  registration. Verify: the claimed threads have their work
   admission closed and drained (`threadRestFence.close`), so a spawn
   already admitted names its thread; then the family is claimed again
   once, which takes such a worker, and each thread's refusals run under
@@ -798,9 +828,10 @@ Ruling 36, as built:
   its row drops. Threads selected together are one such delete per
   computer, so a worktree only they are on counts and goes once. A
   worktree with unsaved work refuses the whole delete at its verify,
-  with nothing stopped. A worktree a thread outside the delete is on
-  stays; when every such thread is one another delete has claimed or
-  committed, the two deletes would each leave it to the other, so their
+  with nothing stopped. The threads on a worktree and how far a delete
+  has gone with each are one read. A worktree a thread outside the
+  delete is on stays; when every such thread is one another delete has
+  claimed or committed, the two deletes would each leave it to the other, so their
   claims are compared (delete ids sort in the order the deletes began):
   the younger is refused, naming that thread ("is being deleted. Delete
   again when that ends"), and its retry, once the older ended, finds the
