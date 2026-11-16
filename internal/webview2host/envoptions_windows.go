@@ -130,19 +130,19 @@ var envOptionsVtblInstance = envOptionsVtbl{
 	PutAllowSingleSignOnUsingOSPrimary: newComProc(func(_ *envOptions, _ int32) uintptr { return 0 }),
 }
 
-// newEnvOptions returns a COM pointer usable as the environmentOptions
-// argument. The Go object is retained by the caller for the environment's
-// lifetime; the returned uintptr is not a Go pointer the collector
-// tracks.
+// newEnvOptions returns the options object and a COM pointer to it usable as
+// the environmentOptions argument. The uintptr is not a Go pointer the
+// collector tracks, and refs never frees the object, so it is rooted for the
+// process like every handler (keepForWebView2).
 func newEnvOptions(args, targetVersion string) (*envOptions, uintptr) {
 	if targetVersion == "" {
 		targetVersion = minTargetBrowserVersion
 	}
-	options := &envOptions{
+	options := keepForWebView2(&envOptions{
 		vtbl:          &envOptionsVtblInstance,
 		refs:          1,
 		args:          args,
 		targetVersion: targetVersion,
-	}
+	})
 	return options, uintptr(unsafe.Pointer(options))
 }

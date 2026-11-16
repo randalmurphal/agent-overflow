@@ -93,7 +93,6 @@ func (h *Host) openFind(page *hostPage, query string) error {
 				h.config.Logf("browser host: page %s find start: %v", id, err)
 			}
 		})
-		page.pendingHandlers = append(page.pendingHandlers, page.findStarted)
 	}
 	return find.start(options, page.findStarted)
 }

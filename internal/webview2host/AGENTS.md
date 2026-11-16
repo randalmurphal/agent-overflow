@@ -50,11 +50,15 @@ reports to preserve created before later states such as closed.
 Maintain handwritten COM interfaces in ABI order with explicit HRESULT,
 reference-count, UTF-16 ownership, and callback-lifetime handling. Close the
 host before its parent HWND and release controllers, handlers, relay,
-environment, and COM references in dependency order.
+environment, and COM references in dependency order. A Go object handed to
+WebView2 as a COM pointer counts no references, so its constructor roots it
+for the process (`keepForWebView2`); never make its lifetime depend on a page
+or a clear.
 
 Real WebView2 behavior is covered only by the `AO_NATIVE_BROWSER_SMOKE=1`
-Windows tests (`find_smoke_windows_test.go`), which need an installed
-runtime and open a window. From WSL, build them with `GOOS=windows go test -c`
-and run the binary with `WSLENV=AO_NATIVE_BROWSER_SMOKE`.
+Windows tests (`find_smoke_windows_test.go`, `process_smoke_windows_test.go`),
+which need an installed runtime and open a window. From WSL, build them with
+`GOOS=windows go test -c` and run the binary with
+`WSLENV=AO_NATIVE_BROWSER_SMOKE`.
 
 See [embedded browser specification](../../docs/specs/embedded-browser.md).

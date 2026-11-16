@@ -47,8 +47,6 @@ type Host struct {
 	env         *iCoreWebView2Environment
 	env10       *iCoreWebView2Environment10
 	envErr      error
-	envKeep     *envOptions
-	envHandle   *iEnvironmentCompletedHandler
 
 	pages map[string]*hostPage
 	// accelerators is the bound-chord set every page's key events are gated
@@ -123,11 +121,8 @@ type hostPage struct {
 	bgUnsupported bool
 	failHandler   *iProcessFailedHandler
 	// findStarted is the page's one Start completion handler, made on the
-	// first find and kept in pendingHandlers (find_windows.go).
+	// first find (find_windows.go).
 	findStarted *iFindStartCompletedHandler
-	// pendingHandlers keeps every COM callback object this page handed to
-	// WebView2 alive for as long as WebView2 can invoke it.
-	pendingHandlers []any
 	// pres is what the backend said about the page's presentation, and
 	// shown what the host last applied (presenter.go). UI thread only.
 	pres  pagePresentation
@@ -529,7 +524,7 @@ func (h *Host) startEnvironment() {
 
 	// The port is the pane environment's alone; see paneEnvironmentArgs.
 	args := paneEnvironmentArgs(h.cdpPort, h.config.ExtraBrowserArgs)
-	options, optionsPtr := newEnvOptions(args, installed)
+	_, optionsPtr := newEnvOptions(args, installed)
 
 	handler := newEnvironmentCompletedHandler(func(hr uintptr, env *iCoreWebView2Environment) {
 		h.environmentCompleted(gen, hr, env)
@@ -539,11 +534,6 @@ func (h *Host) startEnvironment() {
 		h.settleEnvironment(gen, fmt.Errorf("encode user data folder: %w", err))
 		return
 	}
-
-	h.mu.Lock()
-	h.envKeep = options
-	h.envHandle = handler
-	h.mu.Unlock()
 
 	hr, err := webviewloader.CreateCoreWebView2EnvironmentWithOptions(
 		nil,
@@ -683,10 +673,6 @@ func (h *Host) releaseEnvironment() {
 	h.mu.Lock()
 	env, env10 := h.env, h.env10
 	h.env, h.env10 = nil, nil
-	// envKeep and envHandle are Go objects whose COM refcounting is a no-op
-	// (see com_windows.go): dropping the reference IS the release, and it
-	// must not happen before the environment's own refs go back.
-	h.envKeep, h.envHandle = nil, nil
 	h.envErr = nil
 	h.envStarting = false
 	h.envGen++
@@ -821,7 +807,6 @@ func (h *Host) create(directive Directive) {
 		handler := newControllerCompletedHandler(func(hr uintptr, controller *iCoreWebView2Controller) {
 			h.controllerCompleted(page, hwnd, hr, controller)
 		})
-		page.pendingHandlers = append(page.pendingHandlers, handler)
 
 		if err := env10.createControllerWithOptions(parent, options, handler); err != nil {
 			h.failUncreated(page, "create controller: "+err.Error())
@@ -902,14 +887,12 @@ func (h *Host) controllerCompleted(page *hostPage, hwnd uintptr, hr uintptr, con
 		h.config.Report(page.id, ReportProcessFailed, processFailedKindName(kind))
 	})
 	page.failHandler = failHandler
-	page.pendingHandlers = append(page.pendingHandlers, failHandler)
 	if _, err := view.addProcessFailed(failHandler); err != nil {
 		h.config.Logf("browser host: page %s process-failed subscription: %v", page.id, err)
 	}
 	keyHandler := newAcceleratorKeyPressedHandler(func(args *iAcceleratorKeyPressedEventArgs) {
 		h.acceleratorPressed(page, args)
 	})
-	page.pendingHandlers = append(page.pendingHandlers, keyHandler)
 	if _, err := controller.addAcceleratorKeyPressed(keyHandler); err != nil {
 		h.config.Logf("browser host: page %s accelerator subscription: %v", page.id, err)
 	}
@@ -941,7 +924,6 @@ func (h *Host) controllerCompleted(page *hostPage, hwnd uintptr, hr uintptr, con
 		}
 		h.config.Report(page.id, ReportCreated, targetID)
 	})
-	page.pendingHandlers = append(page.pendingHandlers, done)
 	if err := view.callDevToolsProtocolMethod("Target.getTargetInfo", "{}", done); err != nil {
 		h.discardCreated(page, "Target.getTargetInfo dispatch: "+err.Error())
 	}
