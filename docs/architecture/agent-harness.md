@@ -1401,8 +1401,9 @@ only the repeats that measured it.
 ### Health rollup
 
 `ao-harness health` is the generalized `make soak-check`: process
-liveness and uptime, new `frontend-errors.jsonl` lines, ui-trace oracle
-triggers (`timeline.margin.diverge`, `timeline.reasoning.tailJump`, not
+liveness and uptime, new `frontend-errors.jsonl` lines (an uncaught
+error is red; an app diagnostic or a ResizeObserver notice is warn),
+ui-trace oracle triggers (`timeline.margin.diverge`, `timeline.reasoning.tailJump`, not
 the continuous `timeline.row.resize` tracker), new backend stderr, the
 process tree's RSS via `procrss.SampleAll`, database size, mock liveness,
 replay state, any armed perf run, and embedded-asset freshness (a

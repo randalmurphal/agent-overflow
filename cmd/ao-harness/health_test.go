@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"agent-overflow/internal/uitrace"
 )
 
 func TestHealthWatchJSONIsOneNDJSONRecordPerCheck(t *testing.T) {
@@ -372,6 +374,44 @@ func TestScanFrontendErrorsSplitsNoticesFromFaults(t *testing.T) {
 	}
 	if len(scan.Sample) != 1 || !strings.Contains(scan.Sample[0], "TypeError") {
 		t.Errorf("sample = %v, want only the fault", scan.Sample)
+	}
+}
+
+// A diagnostic is a condition the app caught and reported itself (a failed
+// read shown with Retry, a recovered transport outage). It is evidence, not
+// an uncaught error, so it warns with its lines instead of turning the
+// rollup red; a thrown error beside it still does.
+func TestFrontendErrorSectionWarnsOnAppDiagnostics(t *testing.T) {
+	diagnostic := `{"kind":"diagnostic","message":"Agents segment: agent rows read failed","stack":"the ledger could not be read"}`
+	thrown := `{"kind":"unhandledrejection","message":"TypeError: x is undefined","stack":"at load"}`
+	for _, tc := range []struct {
+		name   string
+		lines  []string
+		status healthStatus
+		sample string
+	}{
+		{name: "diagnostic only", lines: []string{diagnostic}, status: healthWarn, sample: "agent rows read failed"},
+		{name: "diagnostic beside a thrown error", lines: []string{diagnostic, thrown}, status: healthRed, sample: "TypeError"},
+		{name: "an undecodable line", lines: []string{"not json"}, status: healthRed, sample: "not json"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dataDir := t.TempDir()
+			path := filepath.Join(dataDir, uitrace.DirName, uitrace.ErrorFileName)
+			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte(strings.Join(tc.lines, "\n")+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			e, _, _ := testEnv(t.TempDir())
+			section, _ := e.frontendErrorSection(dataDir, healthFileCursor{})
+			if section.Status != tc.status {
+				t.Fatalf("status = %s (%s), want %s", section.Status, section.Detail, tc.status)
+			}
+			if len(section.Lines) == 0 || !strings.Contains(section.Lines[0], tc.sample) {
+				t.Fatalf("lines = %v, want a sample containing %q", section.Lines, tc.sample)
+			}
+		})
 	}
 }
 
