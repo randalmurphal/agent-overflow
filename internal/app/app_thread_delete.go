@@ -26,12 +26,13 @@ import (
 //     (store.ClaimDeleteFamily), refused, with nothing claimed, when another
 //     delete holds a claim in it. A claimed thread stays listed, and runs
 //     and moves nothing (store.CheckThreadNotDeleting).
-//  2. Verify. Each claimed thread in turn has its work admission closed and
-//     drained (threadRestFence.close), and then, under its action lock
-//     alone, the family is claimed again, which takes a worker a drained
-//     spawn added, and the thread's refusals run: a transfer, an assistant
-//     home the delete may not remove, the terminal's own gate, and for a
-//     project removal a running thread. A delete that removes worktrees
+//  2. Verify. The claimed threads have their work admission closed and
+//     drained (threadRestFence.close), the family is claimed again, which
+//     takes a worker a drained spawn added, and each thread's refusals run
+//     under its action lock alone: a transfer, an assistant home the delete
+//     may not remove, the terminal's own gate, and for a project removal a
+//     running thread. The threads that claim added go the same way, until
+//     none is added. A delete that removes worktrees
 //     then asks for git:operate and runs each emptied worktree's
 //     loss-of-work gate. Nothing is stopped or removed; a refusal releases
 //     every claim in one transaction (store.ReleaseDeleteClaim).
@@ -269,11 +270,12 @@ type familyDelete struct {
 	req deleteRequest
 	// id is the operation's, the claim it writes.
 	id string
-	// members is the family as last claimed, in claim order.
+	// members is the family as last claimed, in claim order, and index
+	// each member's place in it.
 	members []store.DeleteMember
-	// verified are the claimed threads whose refusals ran, and retired
-	// those that are a moved thread's cache or a holder.
-	verified, retired map[string]bool
+	index   map[string]int
+	// retired are the members that are a moved thread's cache or a holder.
+	retired map[string]bool
 	// changes counts the claims that found new threads.
 	changes int
 	// reopens are the admission closures, released when the delete ends.
@@ -283,12 +285,11 @@ type familyDelete struct {
 
 func (a *App) newFamilyDelete(req deleteRequest) *familyDelete {
 	return &familyDelete{
-		app:      a,
-		req:      req,
-		id:       entityid.New(),
-		verified: make(map[string]bool),
-		retired:  make(map[string]bool),
-		closed:   make(map[string]bool),
+		app:     a,
+		req:     req,
+		id:      entityid.New(),
+		retired: make(map[string]bool),
+		closed:  make(map[string]bool),
 	}
 }
 
@@ -311,13 +312,25 @@ func (op *familyDelete) closeAdmission(threadID string) {
 	op.reopens = append(op.reopens, op.app.resting.close(threadID))
 }
 
-// claim claims the family (phase 1).
-func (op *familyDelete) claim() error {
+// claimFamily reads and claims the family (store.ClaimDeleteFamily).
+func (op *familyDelete) claimFamily() ([]store.DeleteMember, error) {
+	if hook := op.app.deleteFamilyReadForTest; hook != nil {
+		hook()
+	}
 	members, err := op.app.store.ClaimDeleteFamily(op.id, op.req.seeds)
 	if err != nil {
-		return op.claimRefusal(err)
+		return nil, op.claimRefusal(err)
 	}
-	op.members = members
+	return members, nil
+}
+
+// claim claims the family (phase 1).
+func (op *familyDelete) claim() error {
+	members, err := op.claimFamily()
+	if err != nil {
+		return err
+	}
+	op.setMembers(members)
 	if hook := op.app.deleteClaimedForTest; hook != nil {
 		ids := make([]string, 0, len(members))
 		for _, member := range members {
@@ -343,45 +356,72 @@ func (op *familyDelete) claimRefusal(err error) error {
 		claimed.ThreadID, op.req.seeds[0], store.ErrThreadDeleting)
 }
 
-// reclaim claims the family again for this delete, which takes the
-// threads that joined it since, and reports whether any did.
-func (op *familyDelete) reclaim() (bool, error) {
-	members, err := op.app.store.ClaimDeleteFamily(op.id, op.req.seeds)
-	if err != nil {
-		return false, op.claimRefusal(err)
-	}
-	grew := false
-	for _, member := range members {
-		if !slices.ContainsFunc(op.members, func(known store.DeleteMember) bool { return known.ThreadID == member.ThreadID }) {
-			grew = true
-		}
-	}
+// setMembers records members as the family, indexed by thread.
+func (op *familyDelete) setMembers(members []store.DeleteMember) {
 	op.members = members
-	return grew, nil
+	op.index = make(map[string]int, len(members))
+	for i, member := range members {
+		op.index[member.ThreadID] = i
+	}
 }
 
-// verify runs every refusal over the claimed family (phase 2), each thread
-// under its own action lock with its admission closed and drained, until
-// the family stops growing; then the worktrees' gates. It stops nothing.
+// reclaim claims the family again for this delete, which takes the
+// threads that joined it since, and returns those it has not verified.
+func (op *familyDelete) reclaim() ([]string, error) {
+	members, err := op.claimFamily()
+	if err != nil {
+		return nil, err
+	}
+	var added []string
+	for _, member := range members {
+		if _, known := op.index[member.ThreadID]; !known && !member.Committed {
+			added = append(added, member.ThreadID)
+		}
+	}
+	op.setMembers(members)
+	return added, nil
+}
+
+// verify runs every refusal over the claimed family (phase 2), then the
+// worktrees' gates. It stops nothing. It goes a frontier at a time, from
+// the threads the claim took: each thread of the frontier has its
+// admission closed and drained, so a spawn it admitted has named its
+// thread; the family is claimed again once, which takes such a thread; and
+// each thread of the frontier runs its refusals under its own action lock.
+// The threads that claim took are the next frontier.
 func (op *familyDelete) verify() error {
-	for {
-		var next *store.DeleteMember
-		for i := range op.members {
-			member := op.members[i]
-			if !member.Committed && !op.verified[member.ThreadID] {
-				next = &member
-				break
-			}
+	var frontier []string
+	for _, member := range op.members {
+		if !member.Committed {
+			frontier = append(frontier, member.ThreadID)
 		}
-		if next == nil {
-			break
+	}
+	for len(frontier) > 0 {
+		for _, id := range frontier {
+			op.closeAdmission(id)
 		}
-		if err := op.verifyMember(*next); err != nil {
+		added, err := op.reclaim()
+		if err != nil {
 			return err
 		}
-		if hook := op.app.deleteVerifiedForTest; hook != nil {
-			hook(next.ThreadID)
+		if len(added) > 0 {
+			if op.changes++; op.changes > maxFamilyChanges {
+				return fmt.Errorf("delete thread %s: the threads under it kept changing; try again", op.req.seeds[0])
+			}
 		}
+		for _, id := range frontier {
+			i, ok := op.index[id]
+			if !ok {
+				continue
+			}
+			if err := op.verifyMember(op.members[i]); err != nil {
+				return err
+			}
+			if hook := op.app.deleteVerifiedForTest; hook != nil {
+				hook(id)
+			}
+		}
+		frontier = added
 	}
 	if op.req.verified != nil {
 		if err := op.req.verified(op.members); err != nil {
@@ -422,26 +462,11 @@ func (op *familyDelete) removes(member store.DeleteMember) bool {
 	return !member.Committed && !member.Holder && !op.retired[member.ThreadID]
 }
 
-// verifyMember closes member's admission and, under its action lock, claims
-// the family again and runs member's refusals.
+// verifyMember runs member's refusals under its action lock.
 func (op *familyDelete) verifyMember(member store.DeleteMember) error {
-	op.closeAdmission(member.ThreadID)
 	unlock := op.app.threadLocks().Lock(member.ThreadID)
 	defer unlock()
-	grew, err := op.reclaim()
-	if err != nil {
-		return err
-	}
-	if grew {
-		if op.changes++; op.changes > maxFamilyChanges {
-			return fmt.Errorf("delete thread %s: the threads under it kept changing; try again", op.req.seeds[0])
-		}
-	}
-	if err := op.check(member); err != nil {
-		return err
-	}
-	op.verified[member.ThreadID] = true
-	return nil
+	return op.check(member)
 }
 
 // check is a member's refusals, under its action lock: a thread that is
@@ -526,10 +551,12 @@ func (op *familyDelete) commit() error {
 	if err != nil {
 		return err
 	}
-	for i, member := range op.members {
-		if !slices.Contains(committed, member.ThreadID) {
+	for _, id := range committed {
+		i, ok := op.index[id]
+		if !ok {
 			continue
 		}
+		member := op.members[i]
 		op.members[i].Committed, op.members[i].RemoveWorktrees = true, removeWorktrees
 		if member.Holder {
 			// No client lists a holder.

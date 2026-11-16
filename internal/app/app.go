@@ -758,6 +758,10 @@ type App struct {
 	// and before it verifies anything (familyDelete.claim), with the
 	// threads it claimed.
 	deleteClaimedForTest func(threadIDs []string)
+	// deleteFamilyReadForTest, when set, runs each time a delete reads and
+	// claims its family (store.ClaimDeleteFamily), so a test can count the
+	// reads.
+	deleteFamilyReadForTest func()
 	// deleteVerifiedForTest, when set, runs once a delete verified
 	// threadID and released its action lock (familyDelete.verify), so a
 	// test can act between two threads' checks.

@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -207,6 +208,75 @@ func TestDeletesOverOneFamilyDoNotOverlap(t *testing.T) {
 			t.Error("a plain delete removed the worktree")
 		}
 	})
+}
+
+// A delete reads its family once to claim it and once per growth pass of its
+// verify, however many threads it has: an unchanged family of 200 is read
+// twice, and a spawn its owner admitted before the delete, which names its
+// worker while the delete drains that admission, adds one pass.
+func TestADeleteReadsItsFamilyOncePerGrowthPass(t *testing.T) {
+	t.Parallel()
+	for _, late := range []bool{false, true} {
+		t.Run(map[bool]string{false: "unchanged", true: "one late spawn"}[late], func(t *testing.T) {
+			t.Parallel()
+			f := newDeleteFixture(t)
+			owner := f.thread(t, "owner")
+			ids := []string{owner.ID}
+			for i := range 199 {
+				worker := f.thread(t, fmt.Sprintf("worker-%03d", i))
+				recordSpawn(t, f.app, "tok-"+worker.ID, owner.ID, worker.ID)
+				ids = append(ids, worker.ID)
+			}
+			if late {
+				done, err := f.app.admitWork(owner.ID, "")
+				if err != nil {
+					t.Fatal(err)
+				}
+				spawned := f.thread(t, "late-worker")
+				ids = append(ids, spawned.ID)
+				if _, err := f.app.store.AcceptLocalThreadRequest(store.ThreadRequest{
+					Token: "tok-late", CallerThreadID: owner.ID, Kind: store.ThreadRequestSpawn, State: store.ThreadRequestUnconfirmed,
+				}, store.ThreadRequestReceipt{Token: "tok-late", OwnerDeviceID: "device", Kind: store.ThreadRequestSpawn, SourceThreadID: owner.ID}); err != nil {
+					t.Fatal(err)
+				}
+				named := make(chan error, 1)
+				go func() {
+					defer done()
+					// Name the spawn's thread once the delete waits on it.
+					for {
+						f.app.resting.mu.Lock()
+						closed := f.app.resting.closed[owner.ID] > 0
+						f.app.resting.mu.Unlock()
+						if closed {
+							break
+						}
+						time.Sleep(time.Millisecond)
+					}
+					named <- f.app.store.NameLocalThreadRequestTarget("tok-late", spawned.ID, true)
+				}()
+				t.Cleanup(func() {
+					if err := within(t, "the late spawn", named); err != nil {
+						t.Errorf("name the late spawn's thread: %v", err)
+					}
+				})
+			}
+			var reads atomic.Int32
+			f.app.deleteFamilyReadForTest = func() { reads.Add(1) }
+			if result, err := f.app.DeleteThread(owner.ID); err != nil || len(result.WorkersNotDeleted) > 0 {
+				t.Fatalf("DeleteThread = %+v, %v", result, err)
+			}
+			if left := remaining(t, f.app, ids); len(left) > 0 {
+				t.Fatalf("threads left = %v", left)
+			}
+			want := int32(2)
+			if late {
+				want = 3
+			}
+			if got := reads.Load(); got != want {
+				t.Errorf("family reads = %d, want %d", got, want)
+			}
+		})
+	}
 }
 
 // A worker running a real turn on a worktree with unsaved work refuses its

@@ -746,14 +746,15 @@ Ruling 36, as built:
   claimed thread stays listed and read, and runs and moves nothing:
   execution (`CheckThreadExecutionAccess`), work admission, edits, a
   placement or group move, a handoff and an outgoing transfer refuse it
-  (`ErrThreadDeleting`). Verify: each claimed thread in turn has its work
+  (`ErrThreadDeleting`). Verify: the claimed threads have their work
   admission closed and drained (`threadRestFence.close`), so a spawn
-  already admitted names its thread; then, under that thread's action
-  lock alone, the family is claimed again, which takes such a worker,
-  and the thread's refusals run: a transfer, an assistant home the
-  delete may not remove, an ended terminal's own check, and for a
-  project removal a running thread inside the project or out. A family
-  that keeps growing refuses the delete. A delete that removes worktrees
+  already admitted names its thread; then the family is claimed again
+  once, which takes such a worker, and each thread's refusals run under
+  its action lock alone: a transfer, an assistant home the delete may
+  not remove, an ended terminal's own check, and for a project removal a
+  running thread inside the project or out. The threads that claim
+  added go the same way, so the family is read once per pass whatever
+  its size. A family that keeps growing refuses the delete. A delete that removes worktrees
   then asks for `git:operate` and runs the loss-of-work gate of each
   worktree it would empty. Nothing is stopped. A refusal releases every
   claim in one transaction (`ReleaseDeleteClaim`), so a refused delete
