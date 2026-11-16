@@ -197,7 +197,7 @@ describe('browser address row layout', () => {
             const row = host.querySelector<HTMLElement>('[data-testid="browser-address-row"]')!;
             const input = host.querySelector<HTMLElement>('input[aria-label="Address"]')!;
             expect(row.scrollWidth).toBeLessThanOrEqual(row.clientWidth + 1);
-            expect(box(input).width).toBeGreaterThanOrEqual(width < 480 ? 96 : 200);
+            expect(box(input).width).toBeGreaterThanOrEqual(width < 480 ? 96 : width < 800 ? 150 : 200);
             const target = compact ? 36 : 28;
             const buttons = [...row.querySelectorAll<HTMLElement>('button')].filter(shown);
             expect(buttons.length).toBeGreaterThanOrEqual(4);
@@ -208,7 +208,7 @@ describe('browser address row layout', () => {
 
             const more = host.querySelector<HTMLElement>('[data-testid="browser-more"]');
             const label = host.querySelector('[data-testid="browser-pane-size"]');
-            if (width >= 576) {
+            if (width >= (compact ? 576 : 448)) {
               expect(shown(more)).toBe(false);
               expect(shown(host.querySelector('[data-testid="browser-open-file"]'))).toBe(true);
               expect(shown(label)).toBe(!!sizeLabel);

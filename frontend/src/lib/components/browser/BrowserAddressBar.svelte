@@ -143,7 +143,8 @@
 </script>
 
 <!-- The history buttons, the address and the pane's own controls always
-     show at full size. Below 36rem the page's secondary controls (its size,
+     show at full size. Below a 28rem row (36rem under compact, whose
+     buttons are larger) the page's secondary controls (its size,
      open file, show in folder, devtools) move into the More menu, so the
      address keeps its room. -->
 <div class="@container flex h-10 shrink-0 items-center gap-0.5 border-b border-border-subtle bg-surface-0 px-1.5 compact:h-12" data-testid="browser-address-row">
@@ -176,7 +177,7 @@
     onkeydown={onKeydown}
   />
   <div class="flex shrink-0 items-center gap-0.5">
-    <div class="flex items-center gap-0.5 @max-[36rem]:hidden" data-testid="browser-address-secondary">
+    <div class="flex items-center gap-0.5 @max-[28rem]:hidden compact:@max-[36rem]:hidden" data-testid="browser-address-secondary">
       {#if sizeLabel}
         <span
           class="whitespace-nowrap px-1 font-mono text-[0.65rem] tabular-nums text-fg-muted"
@@ -190,7 +191,7 @@
       {/if}
       <IconButton label="Open devtools" size="sm" onClick={() => void onAct('devtools')}><Icon icon={SquareCode} size={14} /></IconButton>
     </div>
-    <div class="hidden @max-[36rem]:flex" bind:this={moreAnchor}>
+    <div class="hidden @max-[28rem]:flex compact:@max-[36rem]:flex" bind:this={moreAnchor}>
       <IconButton label="More browser actions" size="sm" testId="browser-more" ariaHaspopup="menu" ariaExpanded={moreOpen} onClick={() => (moreOpen = !moreOpen)}><Icon icon={Ellipsis} size={15} /></IconButton>
     </div>
     {#if promotePaneId}
