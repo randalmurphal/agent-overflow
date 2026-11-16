@@ -3537,7 +3537,7 @@ export function ListThreadMcpServers(threadID: string): $CancellablePromise<app$
  * ListThreadPastAgentRows lists one page of the requests the thread made
  * that its Agents segment lists under Past: every spawn and ask it made and
  * its sends with their wake armed, once settled and, for a spawn, once the
- * thread it made is at rest (liveSpawnTokens), newest settled first, from
+ * thread it made is at rest, as the listing reads it, newest settled first, from
  * after the cursor, at most limit (1 to store.MaxPastAgentRowsPage) rows.
  * Each row carries what an open row carries, derived the same way; a spawn
  * the retention floor reduced to its lineage shows no answer.

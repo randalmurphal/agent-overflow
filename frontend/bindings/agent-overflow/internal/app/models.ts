@@ -7979,10 +7979,11 @@ export class ThreadAgentRow {
     /**
      * Worker is why the thread a spawn made is not at rest, whatever State
      * says: blocked, running, queued, or waiting on what it started
-     * (background work, a loop, watch or reminder, a provider timer); empty
-     * while it is at rest, and for
-     * every other kind. A spawn whose worker is not at rest is open: one
-     * that replied and keeps working shows its reply and this.
+     * (background work, a loop, watch or reminder, a provider timer) or on
+     * its own workers, open work at any depth below it; empty while it is
+     * at rest, and for every other kind. A spawn whose worker is not at
+     * rest is open: one that replied and keeps working shows its reply and
+     * this.
      */
     "worker"?: string;
 
