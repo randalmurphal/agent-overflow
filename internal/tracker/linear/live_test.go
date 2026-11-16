@@ -41,15 +41,18 @@ func TestLive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read the key file: %v", err)
 	}
-	key := bytes.TrimSpace(raw)
-	c, err := New(Options{Version: "live-check", Credentials: trackerapi.StaticCredentials(trackerapi.Key(secret.New(key)))})
+	key := secret.New(bytes.TrimSpace(raw))
 	clear(raw)
+	// Registered first, so the key is zeroed after every client is closed.
+	t.Cleanup(key.Zero)
+	creds := trackerapi.StaticCredentials(trackerapi.Key(key))
+	c, err := New(Options{Version: "live-check", Credentials: creds})
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Registered first, so it runs after the cleanup of every issue below.
+	// Registered next, so it runs after the cleanup of every issue below.
 	t.Cleanup(c.Close)
-	l := &live{t: t, c: c}
+	l := &live{t: t, c: c, creds: creds}
 
 	var viewer *Viewer
 	l.must("Viewer", func(ctx context.Context) (err error) { viewer, err = c.Viewer(ctx); return err })
@@ -94,6 +97,7 @@ func TestLive(t *testing.T) {
 
 	l.checkList(team, ids)
 	l.checkPoll(team, since, ids)
+	l.checkCursorAcrossClients(team, since, created[0])
 	l.checkReorder(team, created)
 	l.checkComments(created[0])
 	l.checkUpdate(team, viewer, created[1])
@@ -118,8 +122,9 @@ func TestLive(t *testing.T) {
 
 // live runs the check's steps, logging each.
 type live struct {
-	t *testing.T
-	c *Client
+	t     *testing.T
+	c     *Client
+	creds trackerapi.CredentialSource
 }
 
 // step runs one call and logs its outcome and the budget headers; a
@@ -231,11 +236,11 @@ func (l *live) checkList(team Team, ids []string) {
 
 func (l *live) checkPoll(team Team, since time.Time, ids []string) {
 	l.step("PollIssues", func(ctx context.Context) error {
-		q := PollQuery{TeamID: team.ID, Since: since, IncludeArchived: true}
-		found, after := 0, ""
+		q := PollQuery{TeamID: team.ID, IncludeArchived: true, From: PollCursor{Since: since}}
+		found := 0
 		var last time.Time
 		for {
-			p, err := l.c.PollIssues(ctx, q, after)
+			p, err := l.c.PollIssues(ctx, q)
 			if err != nil {
 				return err
 			}
@@ -248,16 +253,74 @@ func (l *live) checkPoll(team Team, since time.Time, ids []string) {
 					found++
 				}
 			}
-			l.t.Logf("poll page: %d issues, resume %v", len(p.Items), p.Resume)
+			l.t.Logf("poll page: %d issues, next %+v, restarted %t", len(p.Items), p.Next, p.Restarted)
 			if !p.HasNextPage {
 				break
 			}
-			after = p.EndCursor
+			q.From = p.Next
 		}
 		if found != len(ids) {
 			return fmt.Errorf("the poll delivered %d of the %d created issues", found, len(ids))
 		}
 		return nil
+	})
+}
+
+// checkCursorAcrossClients measures whether a poll cursor one client
+// received continues the walk in another, as a restarted sync loop does
+// with a stored PollCursor: it reads the walk's end cursor, updates an
+// issue the walk already delivered, and continues from that cursor in a
+// second client. The updated issue moves past the cursor, so the second
+// client must deliver it without restarting.
+func (l *live) checkCursorAcrossClients(team Team, since time.Time, issue *Issue) {
+	var from PollCursor
+	if !l.step("PollIssues for a cursor", func(ctx context.Context) error {
+		q := PollQuery{TeamID: team.ID, IncludeArchived: true, From: PollCursor{Since: since}}
+		for {
+			p, err := l.c.PollIssues(ctx, q)
+			if err != nil {
+				return err
+			}
+			if !p.HasNextPage {
+				if p.EndCursor == "" {
+					return errors.New("the last page carries no end cursor")
+				}
+				from = PollCursor{Since: q.From.Since, After: p.EndCursor, Floor: p.Next.Floor}
+				return nil
+			}
+			q.From = p.Next
+		}
+	}) {
+		return
+	}
+	var updated *Issue
+	if !l.step("UpdateIssue past the cursor", func(ctx context.Context) (err error) {
+		updated, err = l.c.UpdateIssue(ctx, issue.ID, UpdateIssueInput{Priority: Set(PriorityLow)})
+		return err
+	}) {
+		return
+	}
+	other, err := New(Options{Version: "live-check", Credentials: l.creds})
+	if err != nil {
+		l.t.Errorf("a second client: %v", err)
+		return
+	}
+	defer other.Close()
+	l.step("PollIssues from the cursor in a second client", func(ctx context.Context) error {
+		p, err := other.PollIssues(ctx, PollQuery{TeamID: team.ID, IncludeArchived: true, From: from})
+		if err != nil {
+			return err
+		}
+		l.t.Logf("continued walk: %d issues, restarted %t", len(p.Items), p.Restarted)
+		if p.Restarted {
+			return errors.New("Linear refused the cursor another client received")
+		}
+		for _, got := range p.Items {
+			if got.ID == issue.ID && !got.UpdatedAt.Before(updated.UpdatedAt) {
+				return nil
+			}
+		}
+		return fmt.Errorf("the continued walk did not deliver %s, updated after the cursor", issue.Identifier)
 	})
 }
 

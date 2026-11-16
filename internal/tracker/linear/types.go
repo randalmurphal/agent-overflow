@@ -289,7 +289,9 @@ const (
 	RelationBlocks    RelationType = "blocks"
 	RelationDuplicate RelationType = "duplicate"
 	RelationRelated   RelationType = "related"
-	RelationSimilar   RelationType = "similar"
+	// RelationSimilar is deprecated by Linear: it can be read but
+	// CreateRelation refuses it.
+	RelationSimilar RelationType = "similar"
 )
 
 // Relation is a relation between two issues: Issue blocks, duplicates,

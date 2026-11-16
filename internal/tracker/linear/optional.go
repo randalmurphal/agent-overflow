@@ -3,6 +3,7 @@ package linear
 import (
 	"encoding/json"
 	"errors"
+	"reflect"
 )
 
 // Optional is an input field that is left alone, set to a value, or
@@ -37,12 +38,16 @@ func (o Optional[T]) Value() T { return o.value }
 // IsZero reports an unset field, which omitzero leaves out.
 func (o Optional[T]) IsZero() bool { return o.state == unset }
 
-// MarshalJSON writes the value or null. An unset field reaching it (a
-// struct field without omitzero) fails the encoding rather than clear
-// the field.
+// MarshalJSON writes the value or null. A Set nil slice is written as
+// an empty list, never as null, so Set(nil) cannot clear a field by
+// accident. An unset field reaching it (a struct field without
+// omitzero) fails the encoding rather than clear the field.
 func (o Optional[T]) MarshalJSON() ([]byte, error) {
 	switch o.state {
 	case set:
+		if v := reflect.ValueOf(o.value); v.Kind() == reflect.Slice && v.IsNil() {
+			return []byte("[]"), nil
+		}
 		return json.Marshal(o.value)
 	case null:
 		return []byte("null"), nil

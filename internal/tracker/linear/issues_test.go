@@ -40,6 +40,24 @@ func TestListIssuesVariables(t *testing.T) {
 	}
 }
 
+// A page that does not say whether more follow, or says so without a
+// cursor to continue from, is an error, never the end of the list.
+func TestPageInfoChecked(t *testing.T) {
+	t.Parallel()
+	node := issueJSON("issue-1", "WEB-1", "2026-11-02T10:00:00.000Z", 1)
+	vars := `{"first":100,"sort":[{"manual":{"order":"Ascending"}}]}`
+	for name, info := range map[string]string{
+		"missing hasNextPage": `{"endCursor":"c1"}`,
+		"null hasNextPage":    `{"hasNextPage":null,"endCursor":"c1"}`,
+		"next without cursor": `{"hasNextPage":true,"endCursor":null}`,
+	} {
+		f := newFake(t, exchange{op: "Issues", vars: vars, body: data(`"page":{"nodes":[` + node + `],"pageInfo":` + info + `}`)})
+		if p, err := f.client(t).ListIssues(context.Background(), IssueQuery{}, ""); err == nil {
+			t.Errorf("%s: page %+v", name, p)
+		}
+	}
+}
+
 func TestIssueDetail(t *testing.T) {
 	t.Parallel()
 	ref := func(id, key string) string {

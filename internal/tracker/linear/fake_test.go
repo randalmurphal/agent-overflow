@@ -38,6 +38,11 @@ type exchange struct {
 	// telling arrived that the request is in.
 	wait    bool
 	arrived chan<- struct{}
+	// reset, when set, closes the connection without an answer.
+	reset bool
+	// beforeBody, when set, runs after the status and headers are sent
+	// and before the body.
+	beforeBody func()
 }
 
 // fake is a loopback Linear. Each request must match an expected
@@ -45,7 +50,11 @@ type exchange struct {
 // answers once; any other request fails the test. Every document it
 // receives is checked against the schema.
 type fake struct {
-	t       *testing.T
+	t *testing.T
+	// report records a request the fake refuses; t.Errorf unless a test
+	// of the fake itself replaces it.
+	report func(format string, args ...any)
+
 	srv     *httptest.Server
 	mu      sync.Mutex
 	pending []*exchange
@@ -54,7 +63,7 @@ type fake struct {
 
 func newFake(t *testing.T, script ...exchange) *fake {
 	t.Helper()
-	f := &fake{t: t}
+	f := &fake{t: t, report: t.Errorf}
 	for i := range script {
 		f.pending = append(f.pending, &script[i])
 	}
@@ -86,7 +95,10 @@ func (f *fake) client(t *testing.T) *Client {
 
 func (f *fake) serve(w http.ResponseWriter, r *http.Request) {
 	fail := func(format string, args ...any) {
-		f.t.Errorf("fake Linear: "+format, args...)
+		f.mu.Lock()
+		report := f.report
+		f.mu.Unlock()
+		report("fake Linear: "+format, args...)
 		http.Error(w, "unexpected request", http.StatusTeapot)
 	}
 	if r.Method != http.MethodPost || r.URL.Path != "/graphql" || r.URL.RawQuery != "" {
@@ -119,10 +131,23 @@ func (f *fake) serve(w http.ResponseWriter, r *http.Request) {
 		fail("document %s: %s", req.OperationName, strings.Join(problems, "; "))
 		return
 	}
+	if problems := variableProblems(req.Query, req.OperationName, req.Variables); len(problems) > 0 {
+		fail("variables of %s: %s", req.OperationName, strings.Join(problems, "; "))
+		return
+	}
 	exercised.Store(req.OperationName, true)
 	e := f.take(req.OperationName, req.Variables)
 	if e == nil {
 		fail("unexpected %s with variables %s", req.OperationName, req.Variables)
+		return
+	}
+	if e.reset {
+		conn, _, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			fail("hijack: %v", err)
+			return
+		}
+		_ = conn.Close()
 		return
 	}
 	if e.wait {
@@ -145,6 +170,13 @@ func (f *fake) serve(w http.ResponseWriter, r *http.Request) {
 		answer = e.respond(req.Variables)
 	}
 	w.WriteHeader(status)
+	if e.beforeBody != nil {
+		if err := http.NewResponseController(w).Flush(); err != nil {
+			fail("flush: %v", err)
+			return
+		}
+		e.beforeBody()
+	}
 	_, _ = io.WriteString(w, answer)
 }
 

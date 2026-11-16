@@ -1,6 +1,9 @@
 package linear
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
 
 // Each fragment below and the wire type after it are kept in step: the
 // type has a field for each selection, and the schema test validates the
@@ -175,9 +178,10 @@ func (w wireProject) typed() Project {
 	}
 }
 
-// pageInfo is a connection's paging state.
+// pageInfo is a connection's paging state. HasNextPage is a pointer so
+// that an answer which does not say is told from one that says no more.
 type pageInfo struct {
-	HasNextPage bool   `json:"hasNextPage"`
+	HasNextPage *bool  `json:"hasNextPage"`
 	EndCursor   string `json:"endCursor"`
 }
 
@@ -188,13 +192,40 @@ type connection[W any] struct {
 	PageInfo pageInfo `json:"pageInfo"`
 }
 
-// page converts a connection with each node's typed form.
-func page[W any, T any](c connection[W], usage Usage, typed func(W) T) Page[T] {
+// more reports whether more pages follow; an answer that does not say
+// is an error, never the end of the list.
+func (c connection[W]) more(op operation) (bool, error) {
+	if c.PageInfo.HasNextPage == nil {
+		return false, fmt.Errorf("linear %s: the answer does not say whether more pages follow", op.name)
+	}
+	return *c.PageInfo.HasNextPage, nil
+}
+
+// page converts a connection with each node's typed form, for a
+// selection that continues with endCursor.
+func page[W any, T any](op operation, c connection[W], usage Usage, typed func(W) T) (Page[T], error) {
+	items, more, err := firstPage(op, c, typed)
+	if err != nil {
+		return Page[T]{}, err
+	}
+	if more && c.PageInfo.EndCursor == "" {
+		return Page[T]{}, fmt.Errorf("linear %s: the answer reports a next page without a cursor", op.name)
+	}
+	return Page[T]{Items: items, EndCursor: c.PageInfo.EndCursor, HasNextPage: more, Usage: usage}, nil
+}
+
+// firstPage converts a connection a document selects without endCursor,
+// reporting only whether more items exist.
+func firstPage[W any, T any](op operation, c connection[W], typed func(W) T) ([]T, bool, error) {
+	more, err := c.more(op)
+	if err != nil {
+		return nil, false, err
+	}
 	items := make([]T, len(c.Nodes))
 	for i, n := range c.Nodes {
 		items[i] = typed(n)
 	}
-	return Page[T]{Items: items, EndCursor: c.PageInfo.EndCursor, HasNextPage: c.PageInfo.HasNextPage, Usage: usage}
+	return items, more, nil
 }
 
 func same[T any](v T) T { return v }

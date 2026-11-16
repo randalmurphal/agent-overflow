@@ -3,7 +3,6 @@ package linear
 import (
 	"context"
 	"fmt"
-	"time"
 )
 
 // Page sizes of the issue reads. A page of issues costs about 1,100
@@ -41,12 +40,12 @@ type IssueQuery struct {
 	IncludeArchived bool
 }
 
-var opIssues = operation{name: "Issues", maxBody: issueBodyBytes, text: `query Issues($filter: IssueFilter, $sort: [IssueSortInput!], $includeArchived: Boolean, $first: Int!, $after: String) {
+var opIssues = newQuery("Issues", "page", `query Issues($filter: IssueFilter, $sort: [IssueSortInput!], $includeArchived: Boolean, $first: Int!, $after: String) {
   page: issues(filter: $filter, sort: $sort, includeArchived: $includeArchived, first: $first, after: $after) {
     nodes { ...IssueFields } pageInfo { hasNextPage endCursor }
   }
 }
-` + issueFields}
+`+issueFields).withMaxBody(issueBodyBytes)
 
 type sortDirection struct {
 	Order string `json:"order"`
@@ -92,7 +91,7 @@ func (c *Client) ListIssues(ctx context.Context, q IssueQuery, after string) (Pa
 	if err != nil {
 		return Page[Issue]{}, invalid(opIssues.name, "%w", err)
 	}
-	return fetchPage(ctx, c, opIssues, vars, false, wireIssue.typed)
+	return fetchPage(ctx, c, opIssues, vars, wireIssue.typed)
 }
 
 func issueVars(q IssueQuery, after string) (issuesVars, error) {
@@ -107,64 +106,7 @@ func issueVars(q IssueQuery, after string) (issuesVars, error) {
 	return issuesVars{pageVars{First: issuePage, After: after}, filter, sort, q.IncludeArchived}, nil
 }
 
-// PollQuery selects the issues a sync loop polls.
-type PollQuery struct {
-	// TeamID limits the poll to one team; empty polls every team.
-	TeamID string
-	// Since is inclusive: issues updated at or after it. Zero reads every
-	// issue.
-	Since           time.Time
-	IncludeArchived bool
-}
-
-// PollPage is a page of a poll and where the next poll resumes.
-type PollPage struct {
-	Page[Issue]
-	// Resume is the Since to poll from next: the latest UpdatedAt read so
-	// far, or the query's Since when the page is empty.
-	Resume time.Time
-}
-
-// PollIssues returns the page after the cursor after of the issues
-// updated at or after q.Since, oldest update first. Pass the same q for
-// every page of one walk.
-//
-// Resume rule: after any page, the walk may stop and the next poll
-// passes that page's Resume as Since. Pages run in update order, so
-// every issue updated before Resume was delivered; Since is inclusive,
-// so issues updated at Resume are delivered again, and the caller keeps
-// an issue only when its UpdatedAt is newer than the copy it holds. An
-// issue updated during a walk moves to the end of the order and is
-// delivered by a later page or the next poll.
-//
-// Archived issues come only with IncludeArchived. Archiving and
-// unarchiving update the issue, so a poll that includes archived issues
-// sees both. A permanently deleted issue cannot be seen by polling; a
-// sync loop finds one by reading the issue and getting ErrNotFound.
-func (c *Client) PollIssues(ctx context.Context, q PollQuery, after string) (PollPage, error) {
-	var filter IssueFilter
-	if q.TeamID != "" {
-		filter.Teams = []string{q.TeamID}
-	}
-	filter.UpdatedSince = q.Since
-	vars, err := issueVars(IssueQuery{Filter: filter, Order: orderUpdatedOldest, IncludeArchived: q.IncludeArchived}, after)
-	if err != nil {
-		return PollPage{}, invalid(opIssues.name, "%w", err)
-	}
-	p, err := fetchPage(ctx, c, opIssues, vars, false, wireIssue.typed)
-	if err != nil {
-		return PollPage{}, err
-	}
-	out := PollPage{Page: p, Resume: q.Since}
-	for _, issue := range p.Items {
-		if issue.UpdatedAt.After(out.Resume) {
-			out.Resume = issue.UpdatedAt
-		}
-	}
-	return out, nil
-}
-
-var opIssue = operation{name: "Issue", text: `query Issue($id: String!) {
+var opIssue = newQuery("Issue", "issue", `query Issue($id: String!) {
   issue(id: $id) {
     ...IssueFields
     parent { ...IssueRefFields }
@@ -175,7 +117,7 @@ var opIssue = operation{name: "Issue", text: `query Issue($id: String!) {
     inverseRelations(first: 25) { nodes { ...RelationFields } pageInfo { hasNextPage } }
   }
 }
-` + issueFields + issueRefFields + commentFields + attachmentFields + relationFields}
+`+issueFields+issueRefFields+commentFields+attachmentFields+relationFields)
 
 type wireIssueDetail struct {
 	wireIssue
@@ -201,30 +143,39 @@ func (c *Client) Issue(ctx context.Context, idOrIdentifier string) (*IssueDetail
 	var data struct {
 		Issue *wireIssueDetail `json:"issue"`
 	}
-	usage, err := c.call(ctx, opIssue, idVars{idOrIdentifier}, &data)
+	r, err := c.call(ctx, opIssue, idVars{idOrIdentifier}, &data)
 	if err != nil {
 		return nil, err
 	}
 	if data.Issue == nil {
 		return nil, fmt.Errorf("linear %s: the answer holds no issue", opIssue.name)
 	}
-	w := data.Issue
-	d := &IssueDetail{
-		Issue:           w.typed(),
-		Parent:          w.Parent.typedPtr(),
-		Children:        page(w.Children, usage, wireIssueRef.typed).Items,
-		MoreChildren:    w.Children.PageInfo.HasNextPage,
-		Comments:        page(w.Comments, usage, wireComment.typed),
-		Attachments:     page(w.Attachments, usage, wireAttachment.typed).Items,
-		MoreAttachments: w.Attachments.PageInfo.HasNextPage,
-		MoreRelations:   w.Relations.PageInfo.HasNextPage || w.InverseRelations.PageInfo.HasNextPage,
-	}
+	return data.Issue.detail(r.Usage)
+}
+
+func (w *wireIssueDetail) detail(usage Usage) (*IssueDetail, error) {
+	d := &IssueDetail{Issue: w.typed(), Parent: w.Parent.typedPtr()}
 	// The detail's parent selection shadows the fragment's parent { id }.
 	if d.Parent != nil {
 		d.ParentID = d.Parent.ID
 	}
-	for _, r := range append(w.Relations.Nodes, w.InverseRelations.Nodes...) {
-		d.Relations = append(d.Relations, r.typed())
+	var err error
+	if d.Children, d.MoreChildren, err = firstPage(opIssue, w.Children, wireIssueRef.typed); err != nil {
+		return nil, err
+	}
+	if d.Comments, err = page(opIssue, w.Comments, usage, wireComment.typed); err != nil {
+		return nil, err
+	}
+	if d.Attachments, d.MoreAttachments, err = firstPage(opIssue, w.Attachments, wireAttachment.typed); err != nil {
+		return nil, err
+	}
+	for _, conn := range []connection[wireRelation]{w.Relations, w.InverseRelations} {
+		rels, more, err := firstPage(opIssue, conn, wireRelation.typed)
+		if err != nil {
+			return nil, err
+		}
+		d.Relations = append(d.Relations, rels...)
+		d.MoreRelations = d.MoreRelations || more
 	}
 	return d, nil
 }
@@ -234,12 +185,12 @@ type issuePageVars struct {
 	ID string `json:"id"`
 }
 
-var opIssueComments = operation{name: "IssueComments", text: `query IssueComments($id: String!, $first: Int!, $after: String) {
+var opIssueComments = newQuery("IssueComments", "node", `query IssueComments($id: String!, $first: Int!, $after: String) {
   node: issue(id: $id) {
     page: comments(first: $first, after: $after) { nodes { ...CommentFields } pageInfo { hasNextPage endCursor } }
   }
 }
-` + commentFields}
+`+commentFields)
 
 // IssueComments returns the page of an issue's comments after the cursor
 // after, newest first (Linear's default order); replies carry their
@@ -248,15 +199,15 @@ func (c *Client) IssueComments(ctx context.Context, issueID, after string) (Page
 	if issueID == "" {
 		return Page[Comment]{}, invalid("IssueComments", "an issue ID is required")
 	}
-	return fetchPage(ctx, c, opIssueComments, issuePageVars{pageVars{commentPage, after}, issueID}, true, wireComment.typed)
+	return fetchPage(ctx, c, opIssueComments, issuePageVars{pageVars{commentPage, after}, issueID}, wireComment.typed)
 }
 
-var opIssueHistory = operation{name: "IssueHistory", text: `query IssueHistory($id: String!, $first: Int!, $after: String) {
+var opIssueHistory = newQuery("IssueHistory", "node", `query IssueHistory($id: String!, $first: Int!, $after: String) {
   node: issue(id: $id) {
     page: history(first: $first, after: $after) { nodes { ...HistoryFields } pageInfo { hasNextPage endCursor } }
   }
 }
-` + historyFields}
+`+historyFields)
 
 // IssueHistory returns the page of an issue's recorded changes after the
 // cursor after, newest first (Linear's default order).
@@ -266,15 +217,15 @@ func (c *Client) IssueHistory(ctx context.Context, issueID, after string) (Page[
 	if issueID == "" {
 		return Page[HistoryEntry]{}, invalid("IssueHistory", "an issue ID is required")
 	}
-	return fetchPage(ctx, c, opIssueHistory, issuePageVars{pageVars{historyPage, after}, issueID}, true, wireHistory.typed)
+	return fetchPage(ctx, c, opIssueHistory, issuePageVars{pageVars{historyPage, after}, issueID}, wireHistory.typed)
 }
 
-var opIssueStateSpans = operation{name: "IssueStateSpans", text: `query IssueStateSpans($id: String!, $first: Int!, $after: String) {
+var opIssueStateSpans = newQuery("IssueStateSpans", "node", `query IssueStateSpans($id: String!, $first: Int!, $after: String) {
   node: issue(id: $id) {
     page: stateHistory(first: $first, after: $after) { nodes { ...StateSpanFields } pageInfo { hasNextPage endCursor } }
   }
 }
-` + stateSpanFields}
+`+stateSpanFields)
 
 // IssueStateSpans returns the page of periods an issue spent in each
 // status after the cursor after, oldest first. Re-entering a status
@@ -283,5 +234,5 @@ func (c *Client) IssueStateSpans(ctx context.Context, issueID, after string) (Pa
 	if issueID == "" {
 		return Page[StateSpan]{}, invalid("IssueStateSpans", "an issue ID is required")
 	}
-	return fetchPage(ctx, c, opIssueStateSpans, issuePageVars{pageVars{historyPage, after}, issueID}, true, wireStateSpan.typed)
+	return fetchPage(ctx, c, opIssueStateSpans, issuePageVars{pageVars{historyPage, after}, issueID}, wireStateSpan.typed)
 }

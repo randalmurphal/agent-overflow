@@ -166,6 +166,8 @@ Source for schema facts: the
   -1080, -1986), and `issueUpdate` with a `sortOrder` between two
   neighbors places it between them in the manual order. An issue edited
   seconds after it was created has no `history` entries for those edits.
+  A page's end cursor continues the walk from a second client, and an
+  issue updated after the cursor was taken arrives on that continuation.
   Reported cost per request: a mutation 2 to 8 points; one page of three
   issues 9; the catalog reads (teams, states, users, labels, projects,
   cycles) 310 to 730 each; one issue with its comments, attachments and

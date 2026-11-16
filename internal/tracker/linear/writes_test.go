@@ -51,6 +51,8 @@ func TestUpdateIssueOptionalStates(t *testing.T) {
 		exchange{op: "UpdateIssue", body: issue, vars: `{"id":"WEB-1","input":{"assigneeId":"user-2","estimate":0,"priority":0,"cycleId":"cycle-2","stateId":"state-done","teamId":"team-app"}}`},
 		exchange{op: "UpdateIssue", body: issue, vars: `{"id":"WEB-1","input":{"description":"","labelIds":[]}}`},
 		exchange{op: "UpdateIssue", body: issue, vars: `{"id":"WEB-1","input":{"addedLabelIds":["label-a"],"removedLabelIds":["label-b"]}}`},
+		exchange{op: "UpdateIssue", body: issue, vars: `{"id":"WEB-1","input":{"labelIds":[]}}`},
+		exchange{op: "UpdateIssue", body: issue, vars: `{"id":"WEB-1","input":{"labelIds":[]}}`},
 	)
 	c := f.client(t)
 	ctx := context.Background()
@@ -60,6 +62,9 @@ func TestUpdateIssueOptionalStates(t *testing.T) {
 		{AssigneeID: Set("user-2"), Estimate: Set(0), Priority: Set(PriorityNone), CycleID: Set("cycle-2"), StateID: Set("state-done"), TeamID: Set("team-app")},
 		{Description: Null[string](), LabelIDs: Null[[]string]()},
 		{AddedLabelIDs: []string{"label-a"}, RemovedLabelIDs: []string{"label-b"}},
+		// Set of a nil or an empty list sends an empty list, never null.
+		{LabelIDs: Set[[]string](nil)},
+		{LabelIDs: Set([]string{})},
 	} {
 		if _, err := c.UpdateIssue(ctx, "WEB-1", in); err != nil {
 			t.Errorf("%+v: %v", in, err)
@@ -116,13 +121,17 @@ func TestWriteValidation(t *testing.T) {
 			_, err := c.UpdateIssue(ctx, "WEB-1", UpdateIssueInput{RemovedLabelIDs: []string{""}})
 			return err
 		},
-		"archive without id":     func() error { _, err := c.ArchiveIssue(ctx, ""); return err },
-		"delete without id":      func() error { return c.DeleteIssue(ctx, "", false) },
-		"comment without body":   func() error { _, err := c.CreateComment(ctx, CreateCommentInput{IssueID: "WEB-1"}); return err },
-		"update comment no body": func() error { _, err := c.UpdateComment(ctx, "comment-1", ""); return err },
-		"delete comment no id":   func() error { return c.DeleteComment(ctx, "") },
+		"archive without id":   func() error { _, err := c.ArchiveIssue(ctx, ""); return err },
+		"delete without id":    func() error { return c.DeleteIssue(ctx, "", false) },
+		"comment without body": func() error { _, err := c.CreateComment(ctx, CreateCommentInput{IssueID: "WEB-1"}); return err },
+		"update comment no id": func() error { _, err := c.UpdateComment(ctx, "", "x"); return err },
+		"delete comment no id": func() error { return c.DeleteComment(ctx, "") },
 		"relation without type": func() error {
 			_, err := c.CreateRelation(ctx, CreateRelationInput{IssueID: "a", RelatedIssueID: "b"})
+			return err
+		},
+		"deprecated similar relation": func() error {
+			_, err := c.CreateRelation(ctx, CreateRelationInput{IssueID: "a", RelatedIssueID: "b", Type: RelationSimilar})
 			return err
 		},
 		"link without title": func() error {
@@ -175,6 +184,7 @@ func TestComments(t *testing.T) {
 		exchange{op: "CreateComment", vars: `{"input":{"issueId":"WEB-1","body":"Agreed, **ship it**.","parentId":"comment-1"}}`, body: `{"data":{"result":{"success":true,"value":` + commentJSON + `}}}`},
 		exchange{op: "CreateComment", vars: `{"input":{"issueId":"WEB-1","body":"Top level"}}`, body: `{"data":{"result":{"success":true,"value":` + commentJSON + `}}}`},
 		exchange{op: "UpdateComment", vars: `{"id":"comment-2","input":{"body":"Edited"}}`, body: `{"data":{"result":{"success":true,"value":` + commentJSON + `}}}`},
+		exchange{op: "UpdateComment", vars: `{"id":"comment-2","input":{"body":""}}`, body: `{"data":{"result":{"success":true,"value":` + commentJSON + `}}}`},
 		exchange{op: "DeleteComment", vars: `{"id":"comment-2"}`, body: `{"data":{"result":{"success":true}}}`},
 		exchange{op: "DeleteComment", vars: `{"id":"comment-3"}`, body: `{"data":{"result":{"success":false}}}`},
 	)
@@ -188,6 +198,10 @@ func TestComments(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := c.UpdateComment(ctx, "comment-2", "Edited"); err != nil {
+		t.Fatal(err)
+	}
+	// The schema documents an empty body as clearing the comment.
+	if _, err := c.UpdateComment(ctx, "comment-2", ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := c.DeleteComment(ctx, "comment-2"); err != nil {

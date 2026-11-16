@@ -34,7 +34,7 @@ func (dialect) Problem(_ int, body []byte) trackerapi.Problem {
 	if !ok || len(errs) == 0 {
 		return trackerapi.Problem{}
 	}
-	return trackerapi.Problem{Message: joinErrors(errs)}
+	return trackerapi.Problem{Message: joinErrors(typedErrors(errs, unscrubbed))}
 }
 
 // RateLimited reports a RATELIMITED answer. When the answer names no
@@ -46,7 +46,7 @@ func (dialect) RateLimited(status int, h http.Header, body []byte) (time.Time, b
 	if !limited && bytes.Contains(body, []byte(CodeRateLimited)) {
 		errs, _ := parseErrors(body)
 		for _, e := range errs {
-			if e.Code == CodeRateLimited {
+			if e.Extensions.Code == CodeRateLimited {
 				limited = true
 				break
 			}
@@ -69,18 +69,26 @@ func (dialect) RateLimited(status int, h http.Header, body []byte) (time.Time, b
 
 // parseErrors reads the errors member of a GraphQL answer; false when
 // body is not a GraphQL answer.
-func parseErrors(body []byte) ([]GraphQLError, bool) {
+func parseErrors(body []byte) ([]wireError, bool) {
 	var env struct {
 		Errors []wireError `json:"errors"`
 	}
 	if err := json.Unmarshal(body, &env); err != nil {
 		return nil, false
 	}
-	out := make([]GraphQLError, 0, len(env.Errors))
-	for _, w := range env.Errors {
-		out = append(out, w.typed())
+	return env.Errors, true
+}
+
+// unscrubbed passes text through: Problem's message goes into the
+// transport's errors, which the transport scrubs itself.
+func unscrubbed(text string) string { return text }
+
+func typedErrors(wire []wireError, scrub func(string) string) []GraphQLError {
+	out := make([]GraphQLError, 0, len(wire))
+	for _, w := range wire {
+		out = append(out, w.typed(scrub))
 	}
-	return out, true
+	return out
 }
 
 func joinErrors(errs []GraphQLError) string {

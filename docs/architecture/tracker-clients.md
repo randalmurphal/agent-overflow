@@ -255,11 +255,31 @@ and the approval state of a period are reads.
 ## Linear
 
 One `linear.Client` per workspace. Every GraphQL document is a package
-variable. A test checks each one against Linear's public schema, embedded
-for tests and refreshed by a make target as the forge schemas are, and
-fails on a field the schema marks deprecated. Reads page with Relay
-cursors. Issues are polled by `updatedAt`. Manual order is one
-`issueUpdate` per issue with a `sortOrder` between its neighbors.
+variable made by `newQuery` or `newMutation`, which register it; a test
+fails on an operation built any other way. A test checks each registered
+document against Linear's public schema, embedded for tests and refreshed
+by `make linear-schema` as the forge schemas are, and fails on a field the
+schema marks deprecated and on a document no test sends. The test server
+checks every request's variables against the schema as well.
+
+A 200 that carries GraphQL errors is an error. A read fails on any of
+them, since a typed result cannot show which fields were left out. A
+mutation is refused only by a 4xx, by user errors with no payload, or by a
+payload whose `success` is false; a missing `success` is an unknown
+outcome. Not found is matched only at the root field the call asked for.
+
+Reads page with Relay cursors. Issues are polled oldest update first from
+a stored `PollCursor` that carries Linear's cursor with the time, so a run
+of issues sharing one timestamp larger than a page drains across
+restarts; a refused cursor restarts the walk at the last fully delivered
+time, inclusive. Polling cannot see a hard delete. Manual order is one
+`issueUpdate` per issue with a `sortOrder` between its neighbors. Every
+page reports its request's cost and the remaining budgets, and
+`Client.Usage` holds the latest answer's, failed answers included.
+
+`live_test.go`, behind the `linearlive` build tag, is a manual check
+against a blank workspace with a key read from the file a variable names.
+No test run includes it.
 
 ## Left in atl
 

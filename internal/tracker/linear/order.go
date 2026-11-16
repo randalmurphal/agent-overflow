@@ -49,15 +49,17 @@ func Between(before, after *float64) (float64, error) {
 		return beyond(*before, 1)
 	}
 	lo, hi := *before, *after
-	mid := lo + (hi-lo)/2
+	mid := interpolate(lo, hi, 0.5)
 	if !(lo < mid && mid < hi) {
 		return 0, ErrNoRoom
 	}
 	return mid, nil
 }
 
-// beyond is a value past v in direction dir: endStep away, or the
-// nearest representable value where v is too large for endStep to show.
+// beyond is the end-of-list rule both Between and Spread use: a value
+// past v in direction dir (-1 or 1), endStep away, or the nearest
+// representable value where v is too large for endStep to show. It fails
+// with ErrNoRoom past the largest finite value.
 func beyond(v float64, dir float64) (float64, error) {
 	out := v + dir*endStep
 	if out == v {
@@ -69,9 +71,19 @@ func beyond(v float64, dir float64) (float64, error) {
 	return out, nil
 }
 
+// interpolate is the value a fraction f of the way from lo to hi, without
+// overflow when the span exceeds the largest finite value.
+func interpolate(lo, hi, f float64) float64 {
+	if span := hi - lo; !math.IsInf(span, 0) {
+		return lo + span*f
+	}
+	return lo*(1-f) + hi*f
+}
+
 // Spread returns n increasing order values strictly between before and
-// after (nil is that end of the list), evenly spaced, for renumbering a
-// run of n issues. It fails with ErrNoRoom when the span cannot hold n
+// after (nil is that end of the list), evenly spaced between two
+// neighbors and spaced by the end-of-list rule at an end, for renumbering
+// a run of n issues. It fails with ErrNoRoom when the span cannot hold n
 // distinct values.
 func Spread(before, after *float64, n int) ([]float64, error) {
 	if n < 0 {
@@ -81,24 +93,33 @@ func Spread(before, after *float64, n int) ([]float64, error) {
 		return nil, err
 	}
 	out := make([]float64, n)
+	var err error
 	switch {
 	case before == nil && after == nil:
 		for i := range out {
-			out[i] = float64(i) * endStep
+			if i > 0 {
+				out[i], err = beyond(out[i-1], 1)
+			}
 		}
 	case before == nil:
-		for i := range out {
-			out[i] = *after - float64(n-i)*endStep
+		v := *after
+		for i := n - 1; i >= 0 && err == nil; i-- {
+			v, err = beyond(v, -1)
+			out[i] = v
 		}
 	case after == nil:
-		for i := range out {
-			out[i] = *before + float64(i+1)*endStep
+		v := *before
+		for i := 0; i < n && err == nil; i++ {
+			v, err = beyond(v, 1)
+			out[i] = v
 		}
 	default:
-		step := (*after - *before) / float64(n+1)
 		for i := range out {
-			out[i] = *before + step*float64(i+1)
+			out[i] = interpolate(*before, *after, float64(i+1)/float64(n+1))
 		}
+	}
+	if err != nil {
+		return nil, err
 	}
 	prev, last := math.Inf(-1), math.Inf(1)
 	if before != nil {
@@ -181,15 +202,25 @@ type RenumberInput struct {
 }
 
 // RenumberIssues writes Spread values to the run, one issue update each,
-// in order. It returns the issues as stored; on failure they are the
-// ones updated before it, and the failed update's own outcome is the
-// error's (WriteNotApplied). Linear has no update that sets distinct
-// values on several issues at once.
+// in order. An ID listed twice is refused before any request; the same
+// issue named once by ID and once by identifier cannot be told apart.
+// It returns the issues as stored; on failure they are the ones updated
+// before it, and the failed update's own outcome is the error's
+// (WriteNotApplied). Linear has no update that sets distinct values on
+// several issues at once.
 func (c *Client) RenumberIssues(ctx context.Context, in RenumberInput) ([]Issue, error) {
+	seen := make(map[string]bool, len(in.IssueIDs))
 	for _, id := range in.IssueIDs {
-		if id == "" {
+		switch {
+		case id == "":
 			return nil, invalid("RenumberIssues", "IssueIDs holds an empty ID")
+		case seen[id]:
+			return nil, invalid("RenumberIssues", "IssueIDs names %s twice", id)
 		}
+		seen[id] = true
+	}
+	if err := in.Field.set(&issueInput{}, 0); err != nil {
+		return nil, invalid("RenumberIssues", "%w", err)
 	}
 	values, err := Spread(in.Before, in.After, len(in.IssueIDs))
 	if err != nil {
@@ -198,9 +229,7 @@ func (c *Client) RenumberIssues(ctx context.Context, in RenumberInput) ([]Issue,
 	out := make([]Issue, 0, len(in.IssueIDs))
 	for i, id := range in.IssueIDs {
 		var w issueInput
-		if err := in.Field.set(&w, values[i]); err != nil {
-			return nil, invalid("RenumberIssues", "%w", err)
-		}
+		_ = in.Field.set(&w, values[i]) // checked above
 		issue, err := c.updateIssue(ctx, id, w)
 		if err != nil {
 			return out, fmt.Errorf("linear RenumberIssues: %d of %d issues renumbered: %w", i, len(in.IssueIDs), err)

@@ -27,6 +27,7 @@ func TestBetween(t *testing.T) {
 		{"bottom of a huge value", f64(1e300), nil, math.Nextafter(1e300, math.Inf(1)), nil},
 		{"top at the float limit", nil, f64(-math.MaxFloat64), 0, ErrNoRoom},
 		{"bottom at the float limit", f64(math.MaxFloat64), nil, 0, ErrNoRoom},
+		{"span past the float limit", f64(-math.MaxFloat64), f64(math.MaxFloat64), 0, nil},
 		{"equal neighbors", f64(5), f64(5), 0, ErrNoRoom},
 		{"adjacent floats", f64(1), f64(math.Nextafter(1, 2)), 0, ErrNoRoom},
 		{"out of order", f64(2), f64(1), 0, ErrNoRoom},
@@ -84,6 +85,12 @@ func TestSpread(t *testing.T) {
 		{"crowded", f64(1), f64(math.Nextafter(1, 2)), 2, nil, ErrNoRoom},
 		{"collision inside the span", f64(1), f64(1 + 3*(math.Nextafter(1, 2)-1)), 4, nil, ErrNoRoom},
 		{"out of order", f64(4), f64(0), 1, nil, ErrNoRoom},
+		{"span past the float limit", f64(-math.MaxFloat64), f64(math.MaxFloat64), 1, []float64{0}, nil},
+		// The end rule is Between's: endStep, or the next value when
+		// endStep does not show.
+		{"bottom of a huge value", f64(1e300), nil, 1, []float64{math.Nextafter(1e300, math.Inf(1))}, nil},
+		{"top of a huge value", nil, f64(-1e300), 1, []float64{math.Nextafter(-1e300, math.Inf(-1))}, nil},
+		{"bottom at the float limit", f64(math.MaxFloat64), nil, 1, nil, ErrNoRoom},
 	} {
 		got, err := Spread(tc.before, tc.after, tc.n)
 		if !errors.Is(err, tc.err) {
@@ -96,6 +103,22 @@ func TestSpread(t *testing.T) {
 	}
 	if _, err := Spread(nil, nil, -1); err == nil {
 		t.Error("negative count accepted")
+	}
+	for _, bad := range []float64{math.NaN(), math.Inf(1), math.Inf(-1)} {
+		for _, pair := range [][2]*float64{{f64(bad), nil}, {nil, f64(bad)}, {f64(0), f64(bad)}} {
+			if _, err := Spread(pair[0], pair[1], 1); err == nil || errors.Is(err, ErrNoRoom) {
+				t.Errorf("neighbor %v: %v, want a refusal of the value", bad, err)
+			}
+		}
+	}
+}
+
+// RenumberIssues refuses a run naming one ID twice, before any request.
+func TestRenumberIssuesDuplicate(t *testing.T) {
+	t.Parallel()
+	_, err := newFake(t).client(t).RenumberIssues(context.Background(), RenumberInput{IssueIDs: []string{"WEB-1", "WEB-2", "WEB-1"}})
+	if err == nil || !WriteNotApplied(err) || !strings.Contains(err.Error(), "WEB-1 twice") {
+		t.Errorf("duplicate: %v", err)
 	}
 }
 

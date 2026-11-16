@@ -187,10 +187,11 @@ func TestNotFound(t *testing.T) {
 	}
 }
 
-// What an answer to a mutation proves about the write: an HTTP 4xx or
-// a missing payload with only user errors is a refusal; a payload with
-// errors, a missing payload with a server error, a 5xx and an answer
-// that does not decode leave the outcome unknown.
+// What an answer to a mutation proves about the write: an HTTP 4xx, a
+// missing payload with only user errors, or success: false is a refusal;
+// a payload with errors, a missing payload with a server error, a 5xx,
+// a payload that does not say it succeeded and an answer that does not
+// decode leave the outcome unknown.
 func TestMutationOutcome(t *testing.T) {
 	t.Parallel()
 	const vars = `{"id":"WEB-1"}`
@@ -211,6 +212,11 @@ func TestMutationOutcome(t *testing.T) {
 		{"server error", 500, `{"errors":[{"message":"boom"}]}`, false, true},
 		{"not JSON", 200, `{"data":`, false, false},
 		{"success without entity", 200, `{"data":{"result":{"success":true,"value":null}}}`, false, false},
+		// Only a present false refuses.
+		{"success missing", 200, `{"data":{"result":{"value":null}}}`, false, false},
+		{"success null", 200, `{"data":{"result":{"success":null,"value":null}}}`, false, false},
+		{"success malformed", 200, `{"data":{"result":{"success":"false","value":null}}}`, false, false},
+		{"empty payload", 200, `{"data":{"result":{}}}`, false, false},
 	} {
 		f := newFake(t, exchange{op: "ArchiveIssue", vars: vars, status: tc.status, body: tc.body})
 		_, err := f.client(t).ArchiveIssue(context.Background(), "WEB-1")

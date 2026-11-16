@@ -60,6 +60,7 @@ func New(opts Options) (*Client, error) {
 	if base == "" {
 		base = DefaultBaseURL
 	}
+	c := &Client{endpoint: base}
 	hc, err := trackerapi.New(trackerapi.Options{
 		Name:        "linear",
 		BaseURL:     base,
@@ -67,16 +68,17 @@ func New(opts Options) (*Client, error) {
 		Credentials: opts.Credentials,
 		Dialect:     dialect{},
 		Proxy:       opts.Proxy,
+		OnAnswer:    c.observeAnswer,
 	})
 	if err != nil {
 		return nil, err
 	}
-	endpoint := base
+	c.http = hc
 	if u, err := url.Parse(base); err == nil {
 		u.Path = u.JoinPath(graphqlPath).Path
-		endpoint = u.String()
+		c.endpoint = u.String()
 	}
-	return &Client{http: hc, endpoint: endpoint}, nil
+	return c, nil
 }
 
 // Close cancels the calls in flight and zeroes the held credential. Every
@@ -88,17 +90,33 @@ func (c *Client) Close() { c.http.Close() }
 // credential source again, for a caller that knows the key changed.
 func (c *Client) ForgetCredential() { c.http.ForgetCredential() }
 
-// Usage is the rate limit budget the most recent answer reported, whichever
-// call it answered. A walk's pages carry their own; this is for a caller
-// that made a single call. Zero before the first answer.
+// Usage is the rate limit budget as of the most recent answer, whichever
+// call it answered and whether or not it succeeded: a 429 or another
+// failed answer counts. Complexity is that answer's; each Budget is from
+// the most recent answer that carried its headers, so an answer without
+// them (an error page from a proxy) does not make a spent budget look
+// unknown. A page carries its own answer's Usage. Zero before the first
+// answer.
 func (c *Client) Usage() Usage {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.usage
 }
 
-func (c *Client) recordUsage(u Usage) {
+// observeAnswer is the transport's OnAnswer, told of every answer on the
+// calling goroutine before its body is read. It is the only place the
+// client's Usage is recorded. A call's own Usage is read from its own
+// answer's headers, never from here, so concurrent calls cannot swap
+// their pages' budgets.
+func (c *Client) observeAnswer(_ int, h http.Header) {
+	u := usageOf(h)
 	c.mu.Lock()
-	c.usage = u
-	c.mu.Unlock()
+	defer c.mu.Unlock()
+	c.usage.Complexity = u.Complexity
+	if u.Requests.Known {
+		c.usage.Requests = u.Requests
+	}
+	if u.Points.Known {
+		c.usage.Points = u.Points
+	}
 }

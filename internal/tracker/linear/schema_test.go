@@ -4,6 +4,7 @@ import (
 	_ "embed"
 	"flag"
 	"fmt"
+	"maps"
 	"os"
 	"slices"
 	"strings"
@@ -23,13 +24,13 @@ import (
 //go:embed testdata/schema.graphql
 var schemaSDL string
 
-// allOperations is every document the package sends.
-var allOperations = []operation{
-	opViewer, opTeams, opWorkflowStates, opCycles, opUsers, opTeamMembers, opLabels, opProjects,
-	opIssues, opIssue, opIssueComments, opIssueHistory, opIssueStateSpans,
-	opCreateIssue, opUpdateIssue, opArchiveIssue, opUnarchiveIssue, opDeleteIssue,
-	opCreateComment, opUpdateComment, opDeleteComment, opCreateRelation, opDeleteRelation,
-	opLinkURL, opStartUpcomingCycle,
+// allOperations is every document the package registered, by name.
+func allOperations() []operation {
+	var out []operation
+	for _, name := range slices.Sorted(maps.Keys(registered)) {
+		out = append(out, registered[name])
+	}
+	return out
 }
 
 // exercised records the operations a fake answered during this run.
@@ -128,7 +129,7 @@ func noDeprecated(found map[string]string) func(*core.Events, core.AddErrFunc) {
 func TestDocumentsMatchSchema(t *testing.T) {
 	t.Parallel()
 	names := map[string]bool{}
-	for _, op := range allOperations {
+	for _, op := range allOperations() {
 		if names[op.name] {
 			t.Errorf("operation name %s is used twice", op.name)
 		}
@@ -172,7 +173,7 @@ func TestMain(m *testing.M) {
 	code := m.Run()
 	if code == 0 && fullRun() {
 		known := map[string]bool{}
-		for _, op := range allOperations {
+		for _, op := range allOperations() {
 			known[op.name] = true
 			if _, ok := exercised.Load(op.name); !ok {
 				fmt.Fprintf(os.Stderr, "FAIL: document %s is not exercised by any call under test\n", op.name)

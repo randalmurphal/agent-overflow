@@ -24,19 +24,19 @@ type nestedPage[W any] struct {
 }
 
 // fetchPage requests one page of op and converts its nodes.
-func fetchPage[W, T any](ctx context.Context, c *Client, op operation, vars any, nested bool, typed func(W) T) (Page[T], error) {
+func fetchPage[W, T any](ctx context.Context, c *Client, op operation, vars any, typed func(W) T) (Page[T], error) {
 	var conn *connection[W]
-	var usage Usage
+	var r reply
 	var err error
-	if nested {
+	if op.root == "node" {
 		var data nestedPage[W]
-		usage, err = c.call(ctx, op, vars, &data)
+		r, err = c.call(ctx, op, vars, &data)
 		if data.Node != nil {
 			conn = data.Node.Page
 		}
 	} else {
 		var data rootPage[W]
-		usage, err = c.call(ctx, op, vars, &data)
+		r, err = c.call(ctx, op, vars, &data)
 		conn = data.Page
 	}
 	if err != nil {
@@ -45,20 +45,17 @@ func fetchPage[W, T any](ctx context.Context, c *Client, op operation, vars any,
 	if conn == nil {
 		return Page[T]{}, fmt.Errorf("linear %s: the answer holds no page", op.name)
 	}
-	if conn.PageInfo.HasNextPage && conn.PageInfo.EndCursor == "" {
-		return Page[T]{}, fmt.Errorf("linear %s: the answer reports a next page without a cursor", op.name)
-	}
-	return page(*conn, usage, typed), nil
+	return page(op, *conn, r.Usage, typed)
 }
 
 // collect pages op to the end, for a list whose whole size a caller
 // holds anyway (teams, states, labels). varsFor builds a page's
 // variables from its cursor. A failure on any page fails the call.
-func collect[W, T any](ctx context.Context, c *Client, op operation, nested bool, varsFor func(after string) any, typed func(W) T) ([]T, error) {
+func collect[W, T any](ctx context.Context, c *Client, op operation, varsFor func(after string) any, typed func(W) T) ([]T, error) {
 	var out []T
 	after := ""
 	for {
-		p, err := fetchPage(ctx, c, op, varsFor(after), nested, typed)
+		p, err := fetchPage(ctx, c, op, varsFor(after), typed)
 		if err != nil {
 			if len(out) > 0 {
 				return nil, fmt.Errorf("%w (%d items were read before it)", err, len(out))

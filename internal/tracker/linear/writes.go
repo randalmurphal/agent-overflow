@@ -51,10 +51,10 @@ type issueInput struct {
 	SubIssueSortOrder Optional[float64]  `json:"subIssueSortOrder,omitzero"`
 }
 
-var opCreateIssue = operation{name: "CreateIssue", mutation: true, text: `mutation CreateIssue($input: IssueCreateInput!) {
+var opCreateIssue = newMutation("CreateIssue", `mutation CreateIssue($input: IssueCreateInput!) {
   result: issueCreate(input: $input) { success value: issue { ...IssueFields } }
 }
-` + issueFields}
+`+issueFields)
 
 type inputVars struct {
 	Input any `json:"input"`
@@ -148,10 +148,10 @@ type UpdateIssueInput struct {
 	TeamID Optional[string]
 }
 
-var opUpdateIssue = operation{name: "UpdateIssue", mutation: true, text: `mutation UpdateIssue($id: String!, $input: IssueUpdateInput!) {
+var opUpdateIssue = newMutation("UpdateIssue", `mutation UpdateIssue($id: String!, $input: IssueUpdateInput!) {
   result: issueUpdate(id: $id, input: $input) { success value: issue { ...IssueFields } }
 }
-` + issueFields}
+`+issueFields)
 
 type updateVars struct {
 	ID    string `json:"id"`
@@ -225,10 +225,10 @@ func (w issueInput) empty() bool {
 		w.PrioritySortOrder.IsZero() && w.SubIssueSortOrder.IsZero()
 }
 
-var opArchiveIssue = operation{name: "ArchiveIssue", mutation: true, text: `mutation ArchiveIssue($id: String!) {
+var opArchiveIssue = newMutation("ArchiveIssue", `mutation ArchiveIssue($id: String!) {
   result: issueArchive(id: $id) { success value: entity { ...IssueFields } }
 }
-` + issueFields}
+`+issueFields)
 
 // ArchiveIssue archives an issue and its sub-issues; UnarchiveIssue
 // restores it.
@@ -236,10 +236,10 @@ func (c *Client) ArchiveIssue(ctx context.Context, id string) (*Issue, error) {
 	return c.issueByID(ctx, opArchiveIssue, id)
 }
 
-var opUnarchiveIssue = operation{name: "UnarchiveIssue", mutation: true, text: `mutation UnarchiveIssue($id: String!) {
+var opUnarchiveIssue = newMutation("UnarchiveIssue", `mutation UnarchiveIssue($id: String!) {
   result: issueUnarchive(id: $id) { success value: entity { ...IssueFields } }
 }
-` + issueFields}
+`+issueFields)
 
 // UnarchiveIssue restores an archived or trashed issue.
 func (c *Client) UnarchiveIssue(ctx context.Context, id string) (*Issue, error) {
@@ -253,9 +253,9 @@ func (c *Client) issueByID(ctx context.Context, op operation, id string) (*Issue
 	return mutateStored(ctx, c, op, idVars{id}, wireIssue.typed)
 }
 
-var opDeleteIssue = operation{name: "DeleteIssue", mutation: true, text: `mutation DeleteIssue($id: String!, $permanently: Boolean) {
+var opDeleteIssue = newMutation("DeleteIssue", `mutation DeleteIssue($id: String!, $permanently: Boolean) {
   result: issueDelete(id: $id, permanentlyDelete: $permanently) { success }
-}`}
+}`)
 
 type deleteIssueVars struct {
 	ID          string `json:"id"`
