@@ -241,6 +241,7 @@ export {
     WorkspaceActivity,
     WorkspaceFileSearchResult,
     WorkspaceRef,
+    WorktreeCleanupFailure,
     WorktreeListItem,
     WorktreeRemoval,
     WorktreeSetupConfig,

@@ -1081,7 +1081,8 @@ export function DeleteThreadGroup(id: string): $CancellablePromise<void> {
  * thread outside the delete is on. A worktree with unsaved work refuses the
  * whole delete, with nothing stopped or deleted. A caller without
  * git:operate is refused, with nothing deleted, when there is a worktree to
- * remove.
+ * remove. One that another delete under way also takes a thread of refuses
+ * it when that delete is the older, and is otherwise kept and named.
  */
 export function DeleteThreadsAndWorktrees(threadIDs: string[]): $CancellablePromise<app$0.DeleteThreadResult> {
     return $Call.ByID(4153346978, threadIDs).then(($result: any) => {
