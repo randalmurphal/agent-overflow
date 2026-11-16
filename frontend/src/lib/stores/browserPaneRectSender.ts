@@ -5,8 +5,10 @@
 // runs each call on its own goroutine, last writer wins) and a drag cannot
 // fill the transport's in-flight cap. A report equal to the last one the
 // backend accepted is not sent; the key is recorded only once a send
-// succeeds, so a failed report is never mistaken for a delivered one. A
-// failure is retried, bounded, with the newest report: a lost final report
+// succeeds and cleared by any failure, since a failed send may have applied
+// anyway, so the backend's rect is unknown until the next success. A
+// failure is retried, bounded, with the newest report, and the newest
+// report behind a send that gave up still goes out: a lost final report
 // would leave the native view where the pane no longer is. A refusal that
 // says the mount is gone ends the mount's reports (the pane is tearing down,
 // and a new attach reports afresh).
@@ -53,7 +55,8 @@ interface MountState {
   current: Pending | null;
   /** The newest report that arrived while `current` was out. */
   next: Pending | null;
-  /** The last report the backend accepted. */
+  /** The backend's rect, known since the last send succeeded; '' when a
+   *  send failed after it. */
   acceptedKey: string;
   failures: number;
   retryTimer: ReturnType<typeof setTimeout> | null;
@@ -98,6 +101,10 @@ export function createBrowserPaneRectSender(options: BrowserPaneRectSenderOption
       mounts.delete(mount);
       return;
     }
+    // A failed send may still have applied (the transport rejects on a lost
+    // reply without undoing the call), so the backend's rect is unknown and
+    // no later report may be skipped as already delivered.
+    state.acceptedKey = '';
     state.failures += 1;
     if (state.failures > maxRetries) {
       state.failures = 0;
