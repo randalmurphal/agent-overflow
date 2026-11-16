@@ -10,7 +10,7 @@ import {
   userMessageOriginThread,
   userMessageOriginWake,
   agentWakeOriginLabel,
-  spanText,
+  factsBody,
   userMessageFacts,
   userMessageOriginTokens,
 } from './userMessageMeta';
@@ -284,33 +284,51 @@ describe('isAgentMessageMeta and isReaderAuthoredUserText', () => {
   });
 });
 
-describe('userMessageFacts and spanText', () => {
+describe('userMessageFacts and factsBody', () => {
   const bytes = (s: string) => new TextEncoder().encode(s).length;
   const head = 'Reply from "Café" [token k]:\n';
   const text = `${head}naïve answer\nThat thread is a standing agent.\nrest`;
+  const answer = { start: bytes(head), end: bytes(head) + bytes('naïve answer') };
+  const rest = { start: bytes(text) - bytes('\nrest'), end: bytes(text) };
+  const facts = { form: 'answer', bytes: bytes(text), outcome: 'reply', body: [answer, rest], tokens: ['k'], role: '', headline: 'naïve answer' };
+  const thread = (value: unknown) => ({ origin: 'agent-thread', originThread: { threadId: 't', facts: value } });
 
-  it('reads the facts of the attribution the row is from', () => {
-    const facts = { outcome: 'reply', body: [{ start: 0, end: 4 }], tokens: ['k', '', 7], role: '', stoppedBy: '  the user ' };
-    expect(userMessageFacts({ origin: 'agent-thread', originThread: { threadId: 't', facts } })).toMatchObject({
-      outcome: 'reply', body: [{ start: 0, end: 4 }], tokens: ['k'], role: '', stoppedBy: '  the user ', threads: [], headline: '',
-    });
-    expect(userMessageFacts({ origin: 'agent-wake', originWake: { kind: 'loop', facts: { headline: 'go' } } })?.headline).toBe('go');
+  it('reads the facts of the attribution the row is from when they describe its text', () => {
+    expect(userMessageFacts(text, thread(facts))).toMatchObject({ form: 'answer', outcome: 'reply', tokens: ['k'], role: '', headline: 'naïve answer' });
+    const report = { form: 'report', bytes: 2, body: [{ start: 0, end: 2 }], headline: 'go' };
+    expect(userMessageFacts('go', { origin: 'agent-wake', originWake: { kind: 'loop', facts: report } })?.headline).toBe('go');
     // Not this row's attribution, or none at all.
-    expect(userMessageFacts({ origin: 'agent-wake', originThread: { threadId: 't', facts } })).toBeNull();
-    expect(userMessageFacts({ origin: 'agent-thread', originThread: { threadId: 't' } })).toBeNull();
-    // A body that is not spans is not facts.
-    expect(userMessageFacts({ origin: 'agent-thread', originThread: { facts: { body: [{ start: 'a', end: 2 }] } } })).toBeNull();
+    expect(userMessageFacts(text, { origin: 'agent-wake', originThread: { threadId: 't', facts } })).toBeNull();
+    expect(userMessageFacts(text, { origin: 'agent-thread', originThread: { threadId: 't' } })).toBeNull();
   });
 
-  it('cuts the text by UTF-8 bytes, joining spans and clamping to the text', () => {
-    const answer = { start: bytes(head), end: bytes(head) + bytes('naïve answer') };
-    expect(spanText(text, [answer])).toBe('naïve answer');
-    // Two spans around a line spliced into the body read as one body.
-    const rest = bytes(text) - bytes('rest');
-    expect(spanText(text, [answer, { start: rest - 1, end: rest + 100 }])).toBe('naïve answer\nrest');
-    expect(spanText('ascii only', [{ start: 6, end: 10 }])).toBe('only');
-    expect(spanText('short', [{ start: 10, end: 20 }, { start: -3, end: 2 }])).toBe('sh');
-    expect(spanText('anything', [])).toBe('');
+  it('refuses facts that do not describe the text', () => {
+    for (const refused of [
+      { ...facts, form: '' },
+      { ...facts, form: 'note' },
+      { ...facts, bytes: bytes(text) - 1 },
+      { ...facts, bytes: undefined },
+      { ...facts, body: [{ start: 'a', end: 2 }] },
+      { ...facts, body: [answer, { start: rest.start, end: rest.end + 1 }] },
+      { ...facts, body: [{ start: -1, end: 2 }] },
+      { ...facts, body: [{ start: 2, end: 2 }] },
+      { ...facts, body: [rest, answer] },
+      { ...facts, body: [answer, { start: answer.end - 1, end: rest.end }] },
+      // Cutting the ï of naïve.
+      { ...facts, body: [{ start: answer.start, end: answer.start + 3 }] },
+      { ...facts, body: [{ start: answer.start + 3, end: answer.end }] },
+    ]) {
+      expect(userMessageFacts(text, thread(refused))).toBeNull();
+    }
+    // The same facts over text changed behind their back.
+    expect(userMessageFacts(`${text}!`, thread(facts))).toBeNull();
+  });
+
+  it('reads the body spans cover, joined, by UTF-8 bytes', () => {
+    expect(factsBody(text, userMessageFacts(text, thread(facts))!)).toBe('naïve answer\nrest');
+    const ascii = { form: 'message', bytes: 10, body: [{ start: 6, end: 10 }] };
+    expect(factsBody('ascii only', userMessageFacts('ascii only', thread(ascii))!)).toBe('only');
+    expect(factsBody('anything', userMessageFacts('anything', thread({ form: 'answer', bytes: 8, outcome: 'settled' }))!)).toBe('');
   });
 
   it('counts every request a joined or digest answer says it answers', () => {

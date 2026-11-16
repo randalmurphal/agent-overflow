@@ -258,15 +258,16 @@ export async function goRow(name: string, originThread: Record<string, unknown>,
 }
 
 /**
- * The meta usermessage.WakeMessage stores for a report whose first line is
- * the notice written for the agent: the rest is its body, less the blank
- * lines that open it, headed by `headline`.
+ * The meta usermessage.Report stores for a report whose first line is the
+ * notice written for the agent: the rest is its body, less the blank lines
+ * that open it, headed by `headline`.
  */
 export function wakeMeta(text: string, originWake: Record<string, unknown>, sendId: string, headline = ''): Record<string, unknown> {
   const notice = text.slice(0, text.indexOf('\n') + 1);
   const data = text.slice(notice.length);
   const start = Buffer.byteLength(notice) + Buffer.byteLength(data) - Buffer.byteLength(data.replace(/^\n+/, ''));
-  return { origin: 'agent-wake', originWake: { ...originWake, facts: { body: [{ start, end: Buffer.byteLength(text) }], headline } }, sendId };
+  const facts = { form: 'report', bytes: Buffer.byteLength(text), body: [{ start, end: Buffer.byteLength(text) }], headline };
+  return { origin: 'agent-wake', originWake: { ...originWake, facts }, sendId };
 }
 
 /** The senders of the row seedInbox joins from two threads' requests. */

@@ -6,6 +6,7 @@ import {
   type AttachmentKind,
 } from '../types/attachment';
 import type { Item, SourceProposedPlan } from '../types/models';
+import { MessageFacts } from '../../../bindings/agent-overflow/internal/threadtools/models';
 import { commandWordRanges, type CommandWordRange } from './commandWords';
 import type { ShellOutputMeta } from './shellInvocation';
 
@@ -140,8 +141,8 @@ export function userMessageOriginThread(meta: UserMessageMeta): UserMessageOrigi
  */
 export function userMessageOriginTokens(meta: UserMessageMeta): string[] {
   const own = (member: UserMessageMeta): string[] => {
-    const facts = userMessageFacts(member);
-    if (facts && facts.tokens.length > 0) return facts.tokens;
+    const tokens = (storedFacts(member)?.tokens ?? []).filter((token) => typeof token === 'string' && token !== '');
+    if (tokens.length > 0) return tokens;
     const token = userMessageOriginThread(member)?.token;
     return token ? [token] : [];
   };
@@ -156,125 +157,52 @@ export function userMessageOriginTokens(meta: UserMessageMeta): string[] {
   return userMessageOrigin(meta) === 'agent-thread' ? own(meta) : [];
 }
 
-/** A range of a message's text in UTF-8 bytes, end exclusive. */
-export interface MessageSpan {
-  start: number;
-  end: number;
-}
-
-/** One thread a digest answer speaks for (threadtools FactsThread). */
-export interface MessageFactsThread {
-  threadId: string;
-  title: string;
-  /** The thread's computer, '' for the caller's own: the id the row opens it through and the name it reads as. */
-  computerId: string;
-  computerName: string;
-  age: string;
-  tokens: string[];
-  role: string | null;
-}
-
-/**
- * What a message the app wrote for an agent says, as its writer stored it
- * beside the text (threadtools.MessageFacts on `originThread.facts` or
- * `originWake.facts`). A row renders from these, never from the text, which
- * is written for the agent.
- */
-export interface MessageFacts {
-  /** What an answer says happened (a wake kind, `settled` or `worker-stopped`); '' on a request or a wake. */
-  outcome: string;
-  /** Where the message's own words are in its text. */
-  body: MessageSpan[];
-  /** The row's header line when it is not the body's first line. */
-  headline: string;
-  waiting: boolean;
-  reachable: boolean;
-  userMessage: string;
-  routesPrompts: boolean;
-  /** The sender's or answering thread's role when it is a standing agent ('' for none); null when it is not one. */
-  role: string | null;
-  tokens: string[];
-  age: string;
-  stoppedBy: string;
-  clipped: boolean;
-  madeIn: string;
-  now: string;
-  /** A digest's threads, two or more. */
-  threads: MessageFactsThread[];
-}
-
-/**
- * The facts a row's attribution carries: an `agent-thread` row's on its
- * originThread, an `agent-wake` row's on its originWake. null for a row
- * written before them or with none.
- */
-export function userMessageFacts(meta: UserMessageMeta): MessageFacts | null {
-  const origin = userMessageOrigin(meta);
-  const attribution = objectRecord(origin === 'agent-thread' ? meta.originThread : origin === 'agent-wake' ? meta.originWake : null);
-  const record = objectRecord(attribution?.facts);
-  if (!record) return null;
-  const spans = Array.isArray(record.body) ? record.body : [];
-  const body: MessageSpan[] = [];
-  for (const value of spans) {
-    const span = objectRecord(value);
-    const start = span?.start;
-    const end = span?.end;
-    if (!Number.isInteger(start) || !Number.isInteger(end)) return null;
-    body.push({ start: start as number, end: end as number });
-  }
-  const threads: MessageFactsThread[] = [];
-  for (const value of Array.isArray(record.threads) ? record.threads : []) {
-    const thread = objectRecord(value);
-    if (!thread) continue;
-    threads.push({
-      threadId: stringField(thread.threadId),
-      title: textField(thread.title),
-      computerId: stringField(thread.computerId),
-      computerName: textField(thread.computerName),
-      age: stringField(thread.age),
-      tokens: stringList(thread.tokens),
-      role: typeof thread.role === 'string' ? thread.role : null,
-    });
-  }
-  return {
-    outcome: stringField(record.outcome),
-    body,
-    headline: textField(record.headline),
-    waiting: record.waiting === true,
-    reachable: record.reachable === true,
-    userMessage: textField(record.userMessage),
-    routesPrompts: record.routesPrompts === true,
-    role: typeof record.role === 'string' ? record.role : null,
-    tokens: stringList(record.tokens),
-    age: stringField(record.age),
-    stoppedBy: textField(record.stoppedBy),
-    clipped: record.clipped === true,
-    madeIn: stringField(record.madeIn),
-    now: stringField(record.now),
-    threads,
-  };
-}
-
+const FACT_FORMS: ReadonlySet<string> = new Set(['request', 'answer', 'message', 'report', 'whole']);
 const utf8 = new TextEncoder();
 const utf8Text = new TextDecoder();
 
+/** The facts a row's attribution stores (threadtools.MessageFacts), not yet held to any text. */
+function storedFacts(meta: UserMessageMeta): MessageFacts | null {
+  const origin = userMessageOrigin(meta);
+  const attribution = objectRecord(origin === 'agent-thread' ? meta.originThread : origin === 'agent-wake' ? meta.originWake : null);
+  const record = objectRecord(attribution?.facts);
+  return record ? MessageFacts.createFrom(record) : null;
+}
+
 /**
- * The text spans cover in text, joined as they are: the TypeScript twin of
- * threadtools.SpanText. A span past the text's end is cut at it; a span
- * that cuts a character reads it as the replacement character.
+ * The facts a row's attribution carries (`originThread.facts` on an
+ * `agent-thread` row, `originWake.facts` on an `agent-wake` row) when they
+ * describe text: of a known form, written for its length in UTF-8 bytes,
+ * with body spans inside it, in order, not empty and on character
+ * boundaries, as threadtools MessageFacts.Check holds them. The served row
+ * carries facts usermessage.Describe checked; facts that do not describe
+ * the text a client holds are null, and the row shows that text whole.
  */
-export function spanText(text: string, spans: readonly MessageSpan[]): string {
+export function userMessageFacts(text: string, meta: UserMessageMeta): MessageFacts | null {
+  const facts = storedFacts(meta);
+  if (!facts || !FACT_FORMS.has(facts.form)) return null;
+  const bytes = utf8.encode(text);
+  if (facts.bytes !== bytes.length) return null;
+  const continues = (at: number) => at < bytes.length && (bytes[at] & 0xc0) === 0x80;
+  let at = 0;
+  for (const span of facts.body ?? []) {
+    const { start, end } = span;
+    if (!Number.isInteger(start) || !Number.isInteger(end) || start < at || end <= start || end > bytes.length || continues(start) || continues(end)) {
+      return null;
+    }
+    at = end;
+  }
+  return facts;
+}
+
+/** The words facts' body spans cover in text, joined as they are; facts are userMessageFacts' of text. */
+export function factsBody(text: string, facts: MessageFacts): string {
+  const spans = facts.body ?? [];
   if (spans.length === 0) return '';
   const bytes = utf8.encode(text);
   // Offsets are characters too when every character is one byte.
-  const ascii = bytes.length === text.length;
-  let out = '';
-  for (const span of spans) {
-    const start = Math.min(Math.max(span.start, 0), bytes.length);
-    const end = Math.min(Math.max(span.end, 0), bytes.length);
-    if (start < end) out += ascii ? text.slice(start, end) : utf8Text.decode(bytes.subarray(start, end));
-  }
-  return out;
+  if (bytes.length === text.length) return spans.map((span) => text.slice(span.start, span.end)).join('');
+  return spans.map((span) => utf8Text.decode(bytes.subarray(span.start, span.end))).join('');
 }
 
 /** One member of a joined row: its text and its own attribution. */
@@ -375,15 +303,6 @@ export function agentWakeOriginLabel(wake: UserMessageOriginWake): string {
 
 function stringField(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
-}
-
-/** Words as written, spaces kept. */
-function textField(value: unknown): string {
-  return typeof value === 'string' ? value : '';
-}
-
-function stringList(value: unknown): string[] {
-  return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === 'string' && entry !== '') : [];
 }
 
 function sizeField(value: unknown, maxBytes: number): number | null {

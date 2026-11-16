@@ -7,7 +7,7 @@
 // its next message. When the spawner's session dies before taking the
 // question in, it goes to the person: it notifies, the spawner's row counts
 // a worker waiting on them, and their answer withdraws both.
-import type { Page } from '@playwright/test';
+import type { Locator, Page } from '@playwright/test';
 
 import { expect, type SeedResult } from './fixtures.js';
 import type { HarnessApp } from '../src/harness.js';
@@ -138,6 +138,21 @@ export async function runAsyncQuestionAnsweredBySpawner(
   await awaitTurnCompleted(harness, worker);
   await expect(row.getByTestId('agent-tray-row-blocked')).toHaveCount(0);
   expect(harness.countEvents<NotificationSend>('notification:send', (data) => !data.retract && data.target.threadId === worker)).toBe(0);
+
+  // ---- The worker's row shows the answer as the lead's message, all of
+  // it, with no request facts about it.
+  const press = (target: Locator) => (layout === 'compact' ? target.tap() : target.click());
+  await press(row.getByTestId('agent-tray-row-open'));
+  await expect(page.getByTestId('chat-header-title').filter({ hasText: 'Release worker' })).toBeVisible();
+  const answer = page.locator('[data-testid="agent-message-row"][data-agent-message-kind="message"]');
+  await expect(answer.getByTestId('agent-message-sender')).toHaveText(LEAD);
+  await expect(answer.getByTestId('agent-message-first-line')).toHaveText(`Question: ${QUESTION}`);
+  await press(answer.getByTestId('agent-message-toggle'));
+  const body = answer.getByTestId('agent-message-body');
+  await expect(body.getByTestId('agent-message-text')).toHaveText(`Question: ${QUESTION}\nAnswer: staging`);
+  await expect(body.getByTestId('agent-message-facts')).toHaveCount(0);
+  await answer.scrollIntoViewIfNeeded();
+  await capture(page, `async-question-${lead}-${layout}-answer-row.png`, answer);
 }
 
 /**

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import fixture from '../../../../../internal/threadtools/testdata/agent_messages.json';
+import servedRows from '../../../../../internal/usermessage/testdata/served_rows.json';
 import { buildPane, makeItem, makeThread } from '../../../test/helpers/chat';
 import { resetBindingMocks } from '../../../test/mocks/bindings-app';
 import { stageBackend, resetStagedBackends } from '../../../test/helpers/backends';
@@ -24,8 +25,17 @@ type Origin = Record<string, unknown>;
 const fixtureCase = (name: string) =>
   (fixture as { name: string; text: string; members: number[]; origins: { facts: unknown }[] }[]).find((c) => c.name === name)!;
 const text = (name: string) => fixtureCase(name).text;
-/** `attribution` with the facts the writer of a fixture case's member `index` stored. */
-const withFacts = (name: string, attribution: Origin, index = 0): Origin => ({ ...attribution, facts: fixtureCase(name).origins[index].facts });
+/**
+ * `attribution` with the facts a client receives for a fixture case's member
+ * `index` (internal/usermessage/testdata/served_rows.json).
+ */
+const withFacts = (name: string, attribution: Origin, index = 0): Origin => {
+  const served = JSON.parse(servedRows.find((row) => row.name === name)!.meta) as {
+    originThread: Origin; joinedParts?: { originThread: Origin }[];
+  };
+  const member = served.joinedParts ? served.joinedParts[index].originThread : served.originThread;
+  return { ...attribution, facts: member.facts };
+};
 /** The joinedParts a join records for a fixture case's members, each attributed `origins[i]` with its facts. */
 const joinedParts = (name: string, origins: Origin[]) =>
   fixtureCase(name).members.map((bytes, index) => ({ bytes, origin: 'agent-thread', originThread: withFacts(name, origins[index], index) }));
@@ -342,7 +352,7 @@ describe('<AgentMessageRow> through TimelineLeaf', () => {
         pane,
         item: agentRow('Loop "nightly" fired. x\nnote: "\\u003cgo\\u003e"', {
           origin: 'agent-wake', sendId: 'agent-wake:1',
-          originWake: { kind: 'loop', label: 'nightly', facts: { body: [{ start: 24, end: 46 }], headline: '<go>' } },
+          originWake: { kind: 'loop', label: 'nightly', facts: { form: 'report', bytes: 46, body: [{ start: 24, end: 46 }], headline: '<go>' } },
         }),
       },
     });

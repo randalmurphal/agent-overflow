@@ -5,29 +5,30 @@
  * as `user_text` rows with their origin meta (isAgentMessageMeta). The
  * timeline renders them as an agent-message row instead of the user bubble
  * (`chat/AgentMessageRow.svelte`): who sent it, what kind of message it is,
- * its first line, and, expanded, its body with the routing the agent reads
+ * its headline, and, expanded, its body with the routing the agent reads
  * shown as facts.
  *
- * Every message the app writes for an agent stores what it says beside its
- * text (userMessageFacts, threadtools.MessageFacts), made from the same
- * value as the text, and the row renders from those fields. Only a row main
- * wrote before them is read from its text (the legacy reader below): a
- * request with main's footer, or main's answer for one thread. Both ends are
- * pinned by internal/threadtools/testdata/agent_messages.json, which the Go
- * templates write and agentMessage.test.ts reads.
+ * The row renders from the facts its served meta carries
+ * (threadtools.MessageFacts, userMessageFacts), never from its text, which
+ * is written for the agent. Go reads every row a client receives through
+ * usermessage.Describe, rows main wrote before the facts included, and
+ * serves each agent message with facts that describe its text. A message
+ * whose facts do not describe the text this client holds is shown whole.
+ * internal/threadtools/testdata/agent_messages.json, which the Go templates
+ * write, pins both ends.
  */
 
+import type { MessageFacts } from '../../../bindings/agent-overflow/internal/threadtools/models';
 import type { Item } from '../types/models';
 import {
+  factsBody,
   isAgentMessageMeta,
   parseUserMessageMeta,
-  spanText,
   splitJoinedParts,
   userMessageFacts,
   userMessageOrigin,
   userMessageOriginThread,
   userMessageOriginWake,
-  type MessageFacts,
   type UserMessageMeta,
   type UserMessageOriginThread,
 } from './userMessageMeta';
@@ -224,8 +225,12 @@ function source(kind: AgentMessageKind, sender: string, senderThread: UserMessag
   return { kind, kindLabel: label, kindTitle: title, sender, senderThread, senderRole };
 }
 
-/** The first non-empty line of `text`, whitespace collapsed. */
-export function firstLineOf(text: string): string {
+/**
+ * The first non-empty line of `text`, whitespace collapsed: the headline of
+ * a message whose facts do not describe its text, and of a provider's own
+ * message, which carries none (usermessage.FirstLine).
+ */
+function firstLineOf(text: string): string {
   for (const line of text.split('\n')) {
     const trimmed = line.replace(/^>\s?/, '').trim();
     if (trimmed !== '' && trimmed !== '---') return trimmed.replace(/\s+/g, ' ');
@@ -245,55 +250,69 @@ function emptyWake(kind: WakeKind): WakeFacts {
   };
 }
 
-/** An `agent-thread` row: a request, or the answer coming back. */
+/**
+ * An `agent-thread` row: a request, the answer coming back, or a plain
+ * message from the thread. A row whose facts do not describe its text is
+ * shown whole: a request as the kind its attribution records, anything
+ * else as a message.
+ */
 function fromThread(text: string, meta: UserMessageMeta): AgentMessage {
-  const facts = userMessageFacts(meta);
-  if (!facts) return fromLegacyThread(text, meta);
+  const facts = userMessageFacts(text, meta);
   // The thread it opens, which a reminder's attribution does not name; the
   // fields are read either way.
   const origin = userMessageOriginThread(meta);
-  const raw = meta.originThread as Record<string, unknown>;
+  const raw = (meta.originThread ?? {}) as Record<string, unknown>;
   const field = (name: string) => (typeof raw[name] === 'string' ? (raw[name] as string).trim() : '');
-  const body = spanText(text, facts.body);
-  const role = facts.role ?? '';
-  if (facts.outcome === '') {
-    const kind = REQUEST_KINDS[field('kind')] ?? 'request';
+  const sender = field('title') || 'another thread';
+  if (!facts || facts.form === 'whole') {
+    const kind = REQUEST_KINDS[field('kind')] ?? (field('kind') === '' ? 'request' : 'message');
+    return sourced(source(kind, sender, origin), facts?.headline ?? firstLineOf(text), [{ body: text, footer: null, wake: null }]);
+  }
+  const body = factsBody(text, facts);
+  const headline = facts.headline ?? '';
+  const role = facts.role ?? null;
+  if (facts.form === 'message') {
+    return sourced(source('message', sender, origin, role ?? ''), headline, [{ body, footer: null, wake: null }]);
+  }
+  if (facts.form === 'request') {
     const footer: RequestFooterFacts = {
       title: field('title'), threadId: field('threadId'), computer: field('computerName'), token: field('token'),
-      waiting: facts.waiting, reachable: facts.reachable, userMessage: facts.userMessage,
-      agentRole: facts.role, routesPrompts: facts.routesPrompts,
+      waiting: facts.waiting === true, reachable: facts.reachable === true, userMessage: facts.userMessage ?? '',
+      agentRole: role, routesPrompts: facts.routesPrompts === true,
     };
-    return sourced(source(kind, field('title') || 'another thread', origin, role), firstLineOf(body), [{ body, footer, wake: null }]);
+    return sourced(source(REQUEST_KINDS[field('kind')] ?? 'request', sender, origin, role ?? ''), headline, [{ body, footer, wake: null }]);
   }
-  const kind: WakeKind = WAKE_KINDS.has(facts.outcome) ? facts.outcome as WakeKind : 'settled';
+  const outcome = facts.outcome ?? '';
+  const kind: WakeKind = WAKE_KINDS.has(outcome) ? outcome as WakeKind : 'settled';
   const wake = wakeFrom(kind, facts);
-  if (facts.threads.length > 1) {
+  if (wake.threads.length > 1) {
     // A digest speaks for several threads, which it lists; no one of them
     // is its sender.
-    const names = facts.threads.map((thread) => thread.title || thread.threadId).join(', ');
-    return sourced(source(kind, `${facts.threads.length} threads`, null), firstLineOf(body) || names, [{ body, footer: null, wake }]);
+    return sourced(source(kind, `${wake.threads.length} threads`, null), headline, [{ body, footer: null, wake }]);
   }
   if (kind === 'reminder') {
     // The thread's own, set by its agent.
-    return sourced(source(kind, 'This thread', null), firstLineOf(body), [{ body, footer: null, wake }]);
+    return sourced(source(kind, 'This thread', null), headline, [{ body, footer: null, wake }]);
   }
-  Object.assign(wake, { title: field('title'), threadId: field('threadId'), computer: field('computerName'), age: facts.age, agentRole: facts.role });
-  return sourced(source(kind, field('title') || 'another thread', origin, role), firstLineOf(body), [{ body, footer: null, wake }]);
+  Object.assign(wake, { title: field('title'), threadId: field('threadId'), computer: field('computerName'), age: facts.age ?? '', agentRole: role });
+  return sourced(source(kind, sender, origin, role ?? ''), headline, [{ body, footer: null, wake }]);
 }
 
 function wakeFrom(kind: WakeKind, facts: MessageFacts): WakeFacts {
+  const tokens = facts.tokens ?? [];
+  const threads = facts.threads ?? [];
   return {
     ...emptyWake(kind),
-    token: facts.tokens[0] ?? '',
-    tokens: facts.tokens,
-    stoppedBy: facts.stoppedBy,
-    clipped: facts.clipped,
-    madeIn: facts.madeIn,
-    now: facts.now,
-    threads: facts.threads.length > 1
-      ? facts.threads.map((thread) => ({
-          title: thread.title, threadId: thread.threadId, computer: thread.computerName, computerId: thread.computerId,
-          age: thread.age, tokens: thread.tokens, agentRole: thread.role,
+    token: tokens[0] ?? '',
+    tokens,
+    stoppedBy: facts.stoppedBy ?? '',
+    clipped: facts.clipped === true,
+    madeIn: facts.madeIn ?? '',
+    now: facts.now ?? '',
+    threads: threads.length > 1
+      ? threads.map((thread) => ({
+          title: thread.title ?? '', threadId: thread.threadId, computer: thread.computerName ?? '', computerId: thread.computerId ?? '',
+          age: thread.age ?? '', tokens: thread.tokens ?? [], agentRole: thread.role ?? null,
         }))
       : [],
   };
@@ -312,8 +331,8 @@ const WAKE_ORIGIN_KINDS: Record<string, AgentMessageKind> = {
 };
 
 /**
- * An `agent-wake` row: a report the app wrote, from its facts. main wrote
- * none, so one without facts is a row whose attribution did not decode,
+ * An `agent-wake` row: a report the app wrote, from its facts. One whose
+ * facts do not describe its text, or whose attribution did not decode, is
  * shown whole.
  */
 function fromWake(text: string, meta: UserMessageMeta): AgentMessage {
@@ -329,221 +348,15 @@ function fromWake(text: string, meta: UserMessageMeta): AgentMessage {
   const senderThread = wake.threadId !== ''
     ? { computerId: '', computerName: '', threadId: wake.threadId, title: wake.label, token: '', kind: '' }
     : null;
-  const facts = decoded ? userMessageFacts(meta) : null;
-  let body = text;
-  let firstLine = '';
-  if (facts) {
-    body = spanText(text, facts.body);
-    // A report's data is quoted for the agent and decoded for the person;
-    // a job's output and the app's prose are shown as written.
-    if (kind !== 'job' && kind !== 'opening' && kind !== 'handoff') body = readableWakeText(body);
-    firstLine = facts.headline;
+  const facts = decoded ? userMessageFacts(text, meta) : null;
+  if (!facts || facts.form !== 'report') {
+    return sourced(source(kind, sender, senderThread), facts?.headline ?? firstLineOf(text), [{ body: text, footer: null, wake: null }]);
   }
-  return sourced(source(kind, sender, senderThread), firstLine || firstLineOf(body), [{ body, footer: null, wake: null }]);
-}
-
-// The legacy reader: rows main wrote, with no facts. main's footer had no
-// standing-agent or routing line, and main attributed only a wake for one
-// thread to it; a wake for several was the app's own row.
-
-const FOOTER_MARKER = 'Agent request from thread ';
-const WAITING_PREFIX = 'It is waiting for your answer. When you are done, call thread_reply with token ';
-const NOT_WAITING_PREFIX = 'It is not waiting for an answer. If it should hear something back, call thread_reply with token ';
-const REACHABLE = " To read the sender's thread, use thread_show with its id.";
-const USER_MESSAGE_PREFIX = "The user's latest message in that thread: ";
-const PREVIEW_POINTER = /\n\[preview; thread_status \S+ for the whole answer\]$/;
-
-/**
- * Read a Go `%q` literal starting at `start` (the opening quote). Returns the
- * decoded value and the index past the closing quote, or null when there is
- * no well-formed literal there.
- */
-export function readGoQuoted(text: string, start: number): { value: string; end: number } | null {
-  if (text[start] !== '"') return null;
-  let value = '';
-  for (let i = start + 1; i < text.length; i++) {
-    const char = text[i];
-    if (char === '"') return { value, end: i + 1 };
-    if (char === '\n') return null;
-    if (char !== '\\') {
-      value += char;
-      continue;
-    }
-    const next = text[++i];
-    switch (next) {
-      case 'a': value += '\x07'; break;
-      case 'b': value += '\b'; break;
-      case 'f': value += '\f'; break;
-      case 'n': value += '\n'; break;
-      case 'r': value += '\r'; break;
-      case 't': value += '\t'; break;
-      case 'v': value += '\v'; break;
-      case '\\': value += '\\'; break;
-      case '"': value += '"'; break;
-      case 'x':
-      case 'u':
-      case 'U': {
-        const width = next === 'x' ? 2 : next === 'u' ? 4 : 8;
-        const hex = text.slice(i + 1, i + 1 + width);
-        if (!/^[0-9a-fA-F]+$/.test(hex) || hex.length !== width) return null;
-        const code = Number.parseInt(hex, 16);
-        // A `\x` escape is a byte Go could not print as UTF-8; it reads as
-        // the replacement character, as a browser decodes it.
-        value += next === 'x' || code > 0x10ffff ? '�' : String.fromCodePoint(code);
-        i += width;
-        break;
-      }
-      default:
-        return null;
-    }
-  }
-  return null;
-}
-
-/** `"title" (id[, on computer][, answered age ago])` at the start of `text`. */
-function readThreadNaming(text: string): { title: string; threadId: string; computer: string; age: string; rest: string } | null {
-  const quoted = readGoQuoted(text, 0);
-  if (!quoted || !text.startsWith(' (', quoted.end)) return null;
-  const close = text.indexOf(')', quoted.end + 2);
-  if (close < 0) return null;
-  let inner = text.slice(quoted.end + 2, close);
-  let age = '';
-  const answered = /, answered (\S+) ago$/.exec(inner);
-  if (answered) {
-    age = answered[1];
-    inner = inner.slice(0, answered.index);
-  }
-  let computer = '';
-  const on = inner.indexOf(', on ');
-  if (on >= 0) {
-    computer = inner.slice(on + 5);
-    inner = inner.slice(0, on);
-  }
-  return { title: quoted.value, threadId: inner, computer, age, rest: text.slice(close + 1) };
-}
-
-/** main's footer at `lines[at]` (the `---` line): its facts and the index past it, or null. */
-function readLegacyFooter(lines: string[], at: number): { facts: RequestFooterFacts; next: number } | null {
-  if (lines[at] !== '---' || !lines[at + 1]?.startsWith(FOOTER_MARKER)) return null;
-  const naming = readThreadNaming(lines[at + 1].slice(FOOTER_MARKER.length));
-  if (!naming || naming.rest !== '.' || naming.age !== '') return null;
-  const answer = lines[at + 2] ?? '';
-  const prefix = answer.startsWith(WAITING_PREFIX) ? WAITING_PREFIX : answer.startsWith(NOT_WAITING_PREFIX) ? NOT_WAITING_PREFIX : '';
-  const token = prefix === '' ? null : /^(\S+), once[.:]/.exec(answer.slice(prefix.length));
-  if (!token) return null;
-  const facts: RequestFooterFacts = {
-    title: naming.title, threadId: naming.threadId, computer: naming.computer, token: token[1],
-    waiting: prefix === WAITING_PREFIX, reachable: answer.endsWith(REACHABLE), userMessage: '',
-    agentRole: null, routesPrompts: false,
-  };
-  let next = at + 3;
-  if (lines[next]?.startsWith(USER_MESSAGE_PREFIX)) {
-    const quoted = readGoQuoted(lines[next], USER_MESSAGE_PREFIX.length);
-    if (quoted && quoted.end === lines[next].length) {
-      facts.userMessage = quoted.value;
-      next++;
-    }
-  }
-  return { facts, next };
-}
-
-/**
- * Split main's request text into its messages: each body with the footer
- * after it. A footer is the `---` line opening with the marker;
- * QuoteFooterMimics keeps a body from holding one. main recorded no joined
- * members, so requests a provider joined are told apart by their footers.
- * Text with no footer returns null.
- */
-export function parseLegacyRequestText(text: string): AgentMessagePart[] | null {
-  const lines = text.split('\n');
-  const parts: AgentMessagePart[] = [];
-  let bodyStart = 0;
-  for (let i = 0; i < lines.length; i++) {
-    const footer = lines[i] === '---' ? readLegacyFooter(lines, i) : null;
-    if (!footer) continue;
-    parts.push({ body: lines.slice(bodyStart, i).join('\n').trim(), footer: footer.facts, wake: null });
-    bodyStart = footer.next;
-    // A joined message continues after the separator: an empty line, a rule
-    // and another empty line.
-    if (lines[footer.next] === '' && lines[footer.next + 1] === '---' && lines[footer.next + 2] === '') bodyStart = footer.next + 3;
-    i = bodyStart - 1;
-  }
-  if (parts.length === 0) return null;
-  const tail = lines.slice(bodyStart).join('\n').trim();
-  if (tail !== '') parts.push({ body: tail, footer: null, wake: null });
-  return parts;
-}
-
-/** main's status lines after a thread's naming and tokens, with where each puts its answer. */
-const LEGACY_TAILS: ReadonlyArray<{ kind: WakeKind; opening: string; body: 'inline' | 'next' | 'none'; stoppedBy?: string }> = [
-  { kind: 'finished', opening: ' finished its turn without calling thread_reply. Its final message:', body: 'next' },
-  { kind: 'errored', opening: ' errored: ', body: 'inline' },
-  { kind: 'errored', opening: ' errored.', body: 'none' },
-  { kind: 'cancelled', opening: ' was cancelled.', body: 'none' },
-  // The cause the settling code recorded, which main stated as written.
-  { kind: 'interrupted', opening: ' was interrupted: ', body: 'inline' },
-  { kind: 'interrupted', opening: ' was interrupted.', body: 'none', stoppedBy: 'an interrupt' },
-  { kind: 'expired', opening: ' did not answer within a day.', body: 'none' },
-  { kind: 'settled', opening: ' settled.', body: 'none' },
-];
-
-/** ` [token X]` or ` [tokens X, Y]` at the start of `text`. */
-function readTokens(text: string): { tokens: string[]; rest: string } {
-  const one = /^ \[token ([^\]\s]+)\]/.exec(text);
-  if (one) return { tokens: [one[1]], rest: text.slice(one[0].length) };
-  const several = /^ \[tokens ([^\]\s,]+(?:, [^\]\s,]+)+)\]/.exec(text);
-  if (several) return { tokens: several[1].split(', '), rest: text.slice(several[0].length) };
-  return { tokens: [], rest: text };
-}
-
-/** Parse main's wake for one thread: its status line, then its answer. null when the text is not one. */
-export function parseLegacyWakeText(text: string): AgentMessagePart | null {
-  const newline = text.indexOf('\n');
-  const head = newline < 0 ? text : text.slice(0, newline);
-  const after = newline < 0 ? '' : text.slice(newline + 1);
-  let wake: WakeFacts;
-  let body = '';
-  if (head.startsWith('Reminder you set')) {
-    const { tokens, rest } = readTokens(head.slice('Reminder you set'.length));
-    if (rest !== ':') return null;
-    wake = { ...emptyWake('reminder'), tokens, token: tokens[0] ?? '' };
-    body = after;
-  } else {
-    const reply = head.startsWith('Reply from ');
-    const naming = readThreadNaming(reply ? head.slice('Reply from '.length) : head);
-    if (!naming) return null;
-    const { tokens, rest } = readTokens(naming.rest);
-    const tail = reply ? null : LEGACY_TAILS.find((candidate) => rest.startsWith(candidate.opening));
-    if (reply ? rest !== ':' : !tail) return null;
-    const inline = tail ? rest.slice(tail.opening.length) : '';
-    if (tail?.body === 'inline') body = after === '' ? inline : `${inline}\n${after}`;
-    else if (inline !== '' || (tail?.body === 'none' && after !== '')) return null;
-    else body = after;
-    wake = {
-      ...emptyWake(tail?.kind ?? 'reply'),
-      title: naming.title, threadId: naming.threadId, computer: naming.computer, age: naming.age,
-      tokens, token: tokens[0] ?? '', stoppedBy: tail?.stoppedBy ?? '',
-    };
-  }
-  if (PREVIEW_POINTER.test(body)) {
-    wake.clipped = true;
-    body = body.replace(PREVIEW_POINTER, '');
-  }
-  return { body, footer: null, wake };
-}
-
-/** A row main wrote, read from its text. */
-function fromLegacyThread(text: string, meta: UserMessageMeta): AgentMessage {
-  const origin = userMessageOriginThread(meta);
-  const sendId = typeof meta.sendId === 'string' ? meta.sendId : '';
-  const wake = sendId.startsWith('thread-wake') ? parseLegacyWakeText(text) : null;
-  // A row that reads as neither is still the agent's: shown whole.
-  const parts = (wake ? [wake] : parseLegacyRequestText(text)) ?? [{ body: text, footer: null, wake: null }];
-  const lead = parts[0];
-  const kind: AgentMessageKind = lead.wake?.kind ?? 'request';
-  if (kind === 'reminder') return sourced(source(kind, 'This thread', null), firstLineOf(lead.body), parts);
-  const sender = origin?.title || lead.footer?.title || lead.wake?.title || 'another thread';
-  return sourced(source(kind, sender, origin), firstLineOf(lead.body), parts);
+  let body = factsBody(text, facts);
+  // A report's data is quoted for the agent and decoded for the person;
+  // a job's output and the app's prose are shown as written.
+  if (kind !== 'job' && kind !== 'opening' && kind !== 'handoff') body = readableWakeText(body);
+  return sourced(source(kind, sender, senderThread), facts.headline ?? '', [{ body, footer: null, wake: null }]);
 }
 
 const CODEX_MESSAGE_KINDS: Record<string, AgentMessageKind> = {
