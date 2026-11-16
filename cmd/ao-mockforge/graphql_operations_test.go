@@ -5,17 +5,11 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"go/ast"
-	"go/parser"
-	"go/token"
 	"io"
 	"maps"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
-	"regexp"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -29,10 +23,8 @@ import (
 // rig's engine validates each request (forgefake.GraphQLRequestProblems)
 // and a rig test fails on one it refuses (recordRigInvocation); a run of
 // the whole package then fails when an operation internal/git's source
-// defines never reached a rig (checkEveryGraphQLOperationSent, from
-// TestMain), so a new document needs a test here that sends it. Two
-// documents under one operation name (PipelineJobs and its form without
-// the cancel permissions) count as one.
+// sends never reached a rig (checkEveryGraphQLOperationSent, from
+// TestMain), so a new document needs a test here that sends it.
 
 // gitSourceDir is the package whose documents are checked.
 const gitSourceDir = "../../internal/git"
@@ -95,39 +87,20 @@ func answerChecked(t testing.TB, engine http.Handler) http.Handler {
 	})
 }
 
-// graphQLOperationHeader is a document's start: every document opens
-// with its kind and name in one string literal.
-var graphQLOperationHeader = regexp.MustCompile(`^\s*(query|mutation|subscription)\s+([A-Za-z_][A-Za-z0-9_]*)\s*[({@]`)
-
-// productionGraphQLOperations are the operation names dir's non-test
-// source defines, read from its string literals.
+// productionGraphQLOperations are the operation names internal/git
+// sends, found where it sends them (forgeschema.Sends). Its list reads
+// (gitlabPullsReads) build their documents at run time, out of reach of
+// this package, so their operations are not required here.
 func productionGraphQLOperations(dir string) ([]string, error) {
-	files, err := filepath.Glob(filepath.Join(dir, "*.go"))
+	sends, _, err := forgeschema.Sends(dir, map[string]any{"gitlabPullsReads": nil})
 	if err != nil {
 		return nil, err
 	}
-	fset := token.NewFileSet()
 	var ops []string
-	for _, name := range files {
-		if strings.HasSuffix(name, "_test.go") {
-			continue
+	for _, send := range sends {
+		if !slices.Contains(ops, send.Operation) {
+			ops = append(ops, send.Operation)
 		}
-		file, err := parser.ParseFile(fset, name, nil, parser.SkipObjectResolution)
-		if err != nil {
-			return nil, err
-		}
-		ast.Inspect(file, func(n ast.Node) bool {
-			lit, ok := n.(*ast.BasicLit)
-			if !ok || lit.Kind != token.STRING {
-				return true
-			}
-			if text, err := strconv.Unquote(lit.Value); err == nil {
-				if m := graphQLOperationHeader.FindStringSubmatch(text); m != nil && !slices.Contains(ops, m[2]) {
-					ops = append(ops, m[2])
-				}
-			}
-			return true
-		})
 	}
 	slices.Sort(ops)
 	return ops, nil

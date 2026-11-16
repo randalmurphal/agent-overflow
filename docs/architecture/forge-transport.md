@@ -1135,7 +1135,10 @@ func (c *Client) CredentialFingerprint(ctx context.Context) (string, error) // s
   the query, and the operation as `operationName`; a call without one is
   refused. Errors in the GraphQL envelope become `*GraphQLError`; data
   beside errors is handed back so a caller can decide what partial data it
-  accepts.
+  accepts. It is the only way a document is sent: a REST path that
+  resolves to the GraphQL endpoint (`graphql` on github.com's base) is
+  refused, so every document is one `internal/git`'s schema test traces
+  from a `GraphQL` call.
 - A body past its bound fails the call with `ErrBodyTooLarge`. A list
   read whose measured page can pass 1 MiB names its own bound
   (`internal/git/forge_body_limits.go`, sized in

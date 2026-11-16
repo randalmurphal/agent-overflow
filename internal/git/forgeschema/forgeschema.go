@@ -1,9 +1,10 @@
 // Package forgeschema holds the GitHub and gitlab.com GraphQL schemas and
-// checks documents and answers against them, for tests: that every
-// document internal/git sends is valid and selects nothing deprecated
-// (internal/git's graphql_schema_test.go), and that a fake forge's answer
-// to one has the shape the document selects (internal/git's test forge,
-// the fake forge's rigs in cmd/ao-mockforge).
+// checks documents and answers against them, for tests: it finds every
+// document internal/git sends where it is sent (Sends), checks that each
+// is valid and selects nothing deprecated (internal/git's
+// graphql_schema_test.go), and that a fake forge's answer to one has the
+// shape the document selects (internal/git's test forge, the fake
+// forge's rigs in cmd/ao-mockforge).
 //
 // Only tests import it: the schemas are embedded, about 2 MB. Refresh them
 // with `make forge-schemas` (refresh/), never from a test.

@@ -36,10 +36,13 @@ directory. Keep main-worktree resolution and stale registration rules in
 internal/gitroot.
 
 GraphQL documents are package-level constants named for their forge
-(`github...`, `gitlab...`); one assembled at run time has its builder
-listed in `graphql_schema_test.go`. That test validates every document
-against the checked-in forge schemas (`forgeschema`, refreshed with
-`make forge-schemas`) and refuses deprecated selections. When two inline
+(`github...`, `gitlab...`), passed to `Client.GraphQL` directly or
+through locals, parameters, or a range over a table listed in
+`graphql_schema_test.go`. That test traces every `GraphQL` call to its
+documents (`forgeschema.Sends`; a call it cannot trace fails), checks
+the call's operation name against the document's, validates each
+against the checked-in forge schemas (refreshed with `make
+forge-schemas`) and refuses deprecated selections. When two inline
 fragments select one name with different types, alias one side. Test
 forges' answers are checked against the document's shape too
 (`checkGraphQLAnswer`).

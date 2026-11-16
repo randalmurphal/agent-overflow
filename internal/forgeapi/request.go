@@ -84,6 +84,12 @@ func (c *Client) build(ctx context.Context, r Request, graphQL bool) (*http.Requ
 			return nil, false, fmt.Errorf("forgeapi: request path %q must be relative to the API base", r.Path)
 		}
 		target = rest.ResolveReference(parsed)
+		// GitHub's REST base is the GraphQL endpoint's parent: a GraphQL
+		// request goes through GraphQL, whose documents are the ones
+		// checked against the forge's schema.
+		if gql != nil && target.Host == gql.Host && strings.TrimSuffix(target.Path, "/") == gql.Path {
+			return nil, false, fmt.Errorf("forgeapi: request path %q is the GraphQL endpoint; send it with GraphQL", r.Path)
+		}
 		if c.svc.isolated != nil {
 			virtualHost = c.host
 		}

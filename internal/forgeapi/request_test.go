@@ -122,3 +122,28 @@ func TestRequestRefusals(t *testing.T) {
 		t.Fatalf("a refused request reached the server %d times", hits.Load())
 	}
 }
+
+// GitHub's REST base is the GraphQL endpoint's parent, so a REST path of
+// "graphql" would post a document outside GraphQL; it is refused.
+func TestRESTRefusesTheGraphQLEndpoint(t *testing.T) {
+	t.Parallel()
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { hits.Add(1) }))
+	defer srv.Close()
+	s, _ := liveService(t, &testSource{tokens: []string{testSecret}}, srv)
+	base, err := url.Parse(srv.URL + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.resolveBase = func(string, string, SourceInfo) (*url.URL, *url.URL, error) {
+		return base, base.JoinPath("graphql"), nil
+	}
+	for _, path := range []string{"graphql", "graphql/", "graphql?x=1"} {
+		if _, err := s.GitHub("github.com").JSON(t.Context(), Request{Method: http.MethodPost, Path: path, Body: map[string]string{"query": "query Q { viewer { login } }"}}, nil); err == nil || !strings.Contains(err.Error(), "GraphQL endpoint") {
+			t.Errorf("REST %s: %v", path, err)
+		}
+	}
+	if hits.Load() != 0 {
+		t.Fatalf("a refused request reached the server %d times", hits.Load())
+	}
+}
