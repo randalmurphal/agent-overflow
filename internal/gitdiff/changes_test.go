@@ -346,6 +346,50 @@ func TestWorktreeChangesListsRepositoriesAsGitlinks(t *testing.T) {
 // it now is: an untracked file, link or repository not at all, a tracked
 // file or submodule as deleted. The rest of the listing is unaffected. Serial: it sets
 // beforeWorktreeHash.
+// A tracked path whose directory became a file is deleted, and the file is
+// added; the reverse lists the same way.
+func TestWorktreeChangesListAPathWhoseParentChangedKind(t *testing.T) {
+	t.Parallel()
+	for name, tc := range map[string]struct {
+		tracked, replaced, added string
+		want                     []ChangedFile
+	}{
+		"directory became a file": {
+			tracked: "dir/a.txt", replaced: "dir", added: "dir",
+			want: []ChangedFile{
+				{Path: "dir", Status: "A", Additions: 1},
+				{Path: "dir/a.txt", Status: "D", Deletions: 1},
+			},
+		},
+		"file became a directory": {
+			tracked: "node", replaced: "node", added: "node/child.txt",
+			want: []ChangedFile{
+				{Path: "node", Status: "D", Deletions: 1},
+				{Path: "node/child.txt", Status: "A", Additions: 1},
+			},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			repo := testutil.InitGitRepo(t)
+			if err := os.MkdirAll(filepath.Dir(filepath.Join(repo, tc.tracked)), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			commitFile(t, repo, tc.tracked, "tracked\n", "add tracked")
+			if err := os.RemoveAll(filepath.Join(repo, tc.replaced)); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(filepath.Dir(filepath.Join(repo, tc.added)), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			writeFile(t, repo, tc.added, "added\n")
+			if got := worktreeChanges(t, repo); !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("changes:\n got %+v\nwant %+v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestWorktreeChangesSkipPathsRemovedWhileListing(t *testing.T) {
 	repo := testutil.InitGitRepo(t)
 	inner := testutil.InitGitRepo(t)

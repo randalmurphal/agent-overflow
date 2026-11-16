@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 )
 
 // syntheticWorktreeTree is a temp-index tree object of the current
@@ -237,7 +239,7 @@ func stageWorktreeNoFilters(ctx context.Context, workspace string, env []string)
 		}
 		seen[p] = struct{}{}
 		info, statErr := os.Lstat(filepath.Join(workspace, p))
-		if errors.Is(statErr, os.ErrNotExist) {
+		if isAbsent(statErr) {
 			deleted = append(deleted, p)
 			continue
 		}
@@ -360,7 +362,14 @@ func hashWorktreeFiles(ctx context.Context, workspace string, env []string, file
 // working tree.
 func removedFromWorktree(workspace, p string) bool {
 	_, err := os.Lstat(filepath.Join(workspace, p))
-	return errors.Is(err, os.ErrNotExist)
+	return isAbsent(err)
+}
+
+// isAbsent reports a stat or open error that means the path names nothing:
+// it does not exist, or a directory above it is no longer a directory
+// (ENOTDIR), as when a tracked dir/a.txt's dir became a file.
+func isAbsent(err error) bool {
+	return errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ENOTDIR)
 }
 
 // nestedRepositoryHead returns the commit the repository at dir has checked
@@ -369,7 +378,7 @@ func removedFromWorktree(workspace, p string) bool {
 func nestedRepositoryHead(ctx context.Context, dir string) (string, error) {
 	// Without its own .git, rev-parse would answer for the enclosing
 	// repository.
-	if _, err := os.Lstat(filepath.Join(dir, ".git")); errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Lstat(filepath.Join(dir, ".git")); isAbsent(err) {
 		return "", nil
 	} else if err != nil {
 		return "", err

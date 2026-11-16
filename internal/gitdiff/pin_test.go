@@ -180,6 +180,13 @@ func TestReadWorktreeFileProvesThePinnedBlob(t *testing.T) {
 	if err := sides.ReadWorktreeFile("img/a.png", blob, make([]byte, len(content))); !errors.Is(err, ErrChangedSinceRead) {
 		t.Fatalf("a directory now: %v", err)
 	}
+	if err := os.RemoveAll(filepath.Join(repo, "img")); err != nil {
+		t.Fatal(err)
+	}
+	writeBytes(t, repo, "img", content)
+	if err := sides.ReadWorktreeFile("img/a.png", blob, make([]byte, len(content))); !errors.Is(err, ErrChangedSinceRead) {
+		t.Fatalf("its directory a file now: %v", err)
+	}
 }
 
 // A symlink swapped in after the path was checked, at the leaf or at a
