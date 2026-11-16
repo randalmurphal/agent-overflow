@@ -9,11 +9,12 @@ import (
 
 // Lifetime is what ends a provider process: Spawn takes one and refuses the
 // zero value before starting anything. It has two forms, and in both the
-// orphan reaper is handed the group just after the leader forks and released
-// once Wait has seen the leader exit, so the group ends if the backend dies
-// first. Nothing else ends a provider process the backend leaves behind: its
-// timeout lived in the backend, and the Claude CLI does not exit when its
-// stdin closes.
+// orphan reaper is handed the group just after the leader forks, so the group
+// ends if the backend dies first. Once the leader exits, the Process ends what
+// it left in the group and releases the group when it is empty; a group it
+// cannot empty stays watched. Nothing else ends a provider process the backend
+// leaves behind: its timeout lived in the backend, and the Claude CLI does not
+// exit when its stdin closes.
 type Lifetime struct {
 	reaper  procutil.Reaper
 	bounded bool

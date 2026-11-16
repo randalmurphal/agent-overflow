@@ -1,6 +1,6 @@
 # Process helpers
 
-This package owns six utilities:
+This package owns seven utilities:
 
 - `ConfigureGroup` and `KillConfiguredGroup` arrange and terminate an owned
   child process group using the platform implementation. On Unix,
@@ -10,6 +10,11 @@ This package owns six utilities:
   `Exited` reports a process that has exited but is not yet reaped, which
   signal 0 still finds. On macOS, `RunningGroupMembers` and `RunningInGroup`
   read group membership without counting exited members.
+- `StopGroup` ends a configured group whose leader `Wait` has reaped:
+  SIGTERM, SIGKILL after the grace, then nil once no member is alive or
+  `ErrGroupSurvived`. It is `Group`'s own stop; an owner of a group that
+  `StartGroup` does not supervise (a provider, a terminal) uses it before it
+  releases the group's watch.
 - `TailBuffer` retains the last bounded bytes written to it and reports
   whether older bytes were discarded.
 - `RunDrained` runs a command whose output must arrive whole. Use it instead
@@ -24,8 +29,8 @@ This package owns six utilities:
   returns a `Group`; `Group.Wait` supervises it to the end, and `RunGroup` is
   the two together. Both take the `Reaper` that ends the group if this
   process dies, and refuse a nil one (`ErrNoReaper`): the group is watched
-  before `StartGroup` returns and released once `Wait` has seen it end, or
-  leave only kept leftovers. A group the kill could not end stays watched.
+  before `StartGroup` returns and released once no member is alive. Kept
+  leftovers and a group the kill could not end stay watched.
   Which spawners use it, and what ends the others, is in
   [process lifetime](../../docs/architecture/process-lifetime.md). This is the one implementation of pipe ownership,
   cancellation, the leftover sweep and the drain: do not build another from
@@ -35,11 +40,11 @@ This package owns six utilities:
   `TerminateGrace`, and sets `Stopped`: an exit status is then the command's
   answer to the signal, not its result. After the leader exits `Wait` stops
   whatever is still in the group and reports those processes as `Leftovers`;
-  `KeepLeftovers` leaves them running for a command that may start a service
-  on purpose. `OutputHeld` reports a pipe still open after the drain grace.
+  `KeepLeftovers` leaves them running, until this process exits, for a
+  command that may start a service on purpose. `OutputHeld` reports a pipe still open after the drain grace.
   `Wait`'s error is `*exec.ExitError` for a non-zero exit or a signal death,
-  or `ErrGroupSurvived` when the leader ignored SIGKILL (it runs as another
-  user) and was abandoned. `Output` should not return an error; one is
+  or `ErrGroupSurvived` when the leader, or a leftover the sweep stopped,
+  outlived SIGKILL (it runs as another user) and was abandoned. `Output` should not return an error; one is
   reported as `PipeErr` and the rest of the output is discarded.
   `GroupOutcome.OutputErr` folds `PipeErr` and `OutputHeld` (as
   `ErrOutputHeld`) into one error for a caller that fails a command whose

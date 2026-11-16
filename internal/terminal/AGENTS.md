@@ -15,8 +15,9 @@ current size. Normalize TERM and COLORTERM for xterm.js and route the remaining
 child environment through internal/appimage.
 
 `SessionOptions.Reaper` is required: `Start` refuses a nil one before running
-anything, watches the group just after the fork and releases it once Wait has
-seen the process exit. Tests pass `procutiltest.Reaper()`.
+anything, watches the group just after the fork and releases it once the shell
+has exited and the group is empty. A job the shell left in its group runs on
+until `Close`, which ends it before releasing. Tests pass `procutiltest.Reaper()`.
 
 Close PTY descriptors and reap children on every path. A session ends when its
 shell exits, after delivering what the pty already holds, even while a

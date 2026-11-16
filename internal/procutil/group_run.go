@@ -85,8 +85,9 @@ func (o GroupOutcome) OutputErr() error {
 // stopping them: the app's orphan reaper. A signal to the leader alone, such
 // as Linux's parent-death signal, would leave running what a shell started.
 // StartGroup has it watch every group, by the leader's pid, before StartGroup
-// returns, and Wait releases the group once it has ended or only leftovers
-// KeepLeftovers keeps remain. A group the kill could not end stays watched.
+// returns, and Wait releases the group once no member is alive. Leftovers
+// KeepLeftovers keeps stay watched, so they end with this process, and so
+// does a group the kill could not end.
 type Reaper interface {
 	Watch(pgid int)
 	Release(pgid int)
@@ -96,9 +97,11 @@ type Reaper interface {
 // starts without one to end it with this process.
 var ErrNoReaper = errors.New("procutil: run group: no reaper watches the group")
 
-// ErrGroupSurvived is returned when cancellation could not end the command:
-// its leader ignored SIGKILL, which means it runs as another user (sudo).
-// The command is abandoned still running, with its output pipe closed.
+// ErrGroupSurvived is returned when a process of the group is still alive
+// after SIGKILL: on cancellation the leader ignored it, or a process the
+// command left outlived the leftover sweep. Such a process runs as another
+// user (sudo) or is stuck in the kernel. It is abandoned still running, with
+// the output pipe closed and the group still watched.
 var ErrGroupSurvived = errors.New("procutil: the command could not be stopped and is still running")
 
 // Group is a started command that leads its own process group. Wait must be
@@ -197,8 +200,8 @@ func StartGroup(ctx context.Context, reaper Reaper, command GroupCommand) (*Grou
 // run does not report finished while a child the sweep stops still holds the
 // pipe. Cancelling the ctx given to StartGroup stops the group with SIGTERM,
 // then SIGKILL after the grace. The returned error is what the command's own
-// Wait reported, or ErrGroupSurvived when the kill had no effect. Every call
-// returns the first call's result.
+// Wait reported, joined with ErrGroupSurvived when a process outlived the
+// kill. Every call returns the first call's result.
 func (g *Group) Wait() (GroupOutcome, error) {
 	g.once.Do(func() { g.outcome, g.err = g.supervise() })
 	return g.outcome, g.err
@@ -213,21 +216,26 @@ func (g *Group) supervise() (GroupOutcome, error) {
 	case waitErr = <-waited:
 	case <-g.ctx.Done():
 		stopped = true
-		stopGroup(g.cmd, g.grace, g.kill)
+		// What this stop could not end is found again below, once the
+		// leader is reaped, and reported from there.
+		_ = stopGroup(g.cmd, g.grace, g.kill)
 		select {
 		case waitErr = <-waited:
 		case <-time.After(g.grace):
 			return GroupOutcome{ExitCode: -1, Stopped: true, PipeErr: g.settle()}, ErrGroupSurvived
 		}
 	}
+	// The leader's exit is not the group's: release only once no member is
+	// alive. A kept leftover stays watched and ends with this process.
 	leftovers := ConfiguredGroupAlive(g.cmd)
-	ending := true
+	var stopErr error
 	if leftovers && !g.keepLeftovers {
-		ending = stopGroup(g.cmd, g.grace, g.kill)
+		stopErr = stopGroup(g.cmd, g.grace, g.kill)
 	}
-	if ending {
+	if stopErr == nil && !(leftovers && g.keepLeftovers) {
 		g.reaper.Release(g.cmd.Process.Pid)
 	}
+	waitErr = errors.Join(waitErr, stopErr)
 	held := false
 	select {
 	case <-g.drained:
@@ -261,30 +269,53 @@ func RunGroup(ctx context.Context, reaper Reaper, command GroupCommand) (GroupOu
 	return group.Wait()
 }
 
-// stopGroup terminates the group politely, then kills whatever ignored it,
-// and reports whether the group is ending: it was gone, or took SIGKILL.
-// The grace runs on group emptiness, not on the leader: a shell wrapper
-// exits at once on SIGTERM while the server it started still needs its
-// moment to shut down.
-func stopGroup(cmd *exec.Cmd, grace time.Duration, kill func(*exec.Cmd) error) bool {
+// StopGroup ends a command's process group: SIGTERM to every member, SIGKILL
+// after grace to whatever ignored it, then up to grace more for the killed
+// members to be gone. It returns nil once no member is alive and
+// ErrGroupSurvived otherwise. The command must lead its own group
+// (ConfigureGroup or Setpgid). An owner whose leader Wait has reaped uses it
+// to end what the leader left before it releases the group's watch; it is the
+// stop Group.Wait applies to leftovers and on cancellation.
+func StopGroup(cmd *exec.Cmd, grace time.Duration) error {
+	return stopGroup(cmd, grace, KillConfiguredGroup)
+}
+
+// stopGroup is StopGroup with the kill injected for tests. The grace runs on
+// group emptiness, not on the leader: a shell wrapper exits at once on
+// SIGTERM while the server it started still needs its moment to shut down.
+// On cancellation a refused kill also shows as a leader that does not exit,
+// which Wait reports as ErrGroupSurvived.
+func stopGroup(cmd *exec.Cmd, grace time.Duration, kill func(*exec.Cmd) error) error {
 	if err := TerminateConfiguredGroup(cmd); errors.Is(err, os.ErrProcessDone) {
-		return true
+		return nil
 	}
+	if groupEmptyWithin(cmd, grace) {
+		return nil
+	}
+	if err := kill(cmd); err != nil && !errors.Is(err, os.ErrProcessDone) {
+		return errors.Join(ErrGroupSurvived, err)
+	}
+	if groupEmptyWithin(cmd, grace) {
+		return nil
+	}
+	return ErrGroupSurvived
+}
+
+// groupEmptyWithin reports whether the command's group has no live member by
+// the end of grace.
+func groupEmptyWithin(cmd *exec.Cmd, grace time.Duration) bool {
 	deadline := time.NewTimer(grace)
 	defer deadline.Stop()
 	poll := time.NewTicker(50 * time.Millisecond)
 	defer poll.Stop()
 	for {
+		if !ConfiguredGroupAlive(cmd) {
+			return true
+		}
 		select {
 		case <-deadline.C:
-			// On cancellation a refused kill also shows as a leader that
-			// does not exit, which Wait reports as ErrGroupSurvived.
-			err := kill(cmd)
-			return err == nil || errors.Is(err, os.ErrProcessDone)
+			return !ConfiguredGroupAlive(cmd)
 		case <-poll.C:
-			if !ConfiguredGroupAlive(cmd) {
-				return true
-			}
 		}
 	}
 }
