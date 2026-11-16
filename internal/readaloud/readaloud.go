@@ -1,13 +1,15 @@
 // Package readaloud admits sections of a reply to be read aloud in an
 // OpenAI voice and runs their synthesis. A section is one request, however
-// many sentences it holds; the types keep the name Sentence.
+// many sentences it holds; the set keeps the name Sentences.
 //
 // A bound method admits a section and gets an id; the client fetches the
-// audio for that id once, and only then is the section spoken. Admission
-// is bounded (MaxPending sections waiting, each single-use and expiring),
-// synthesis is capped (MaxSpeaking at once; another is refused, not
-// queued), and a synthesis whose transcript is not a reading of the text
-// (openai.IsReading) is retried once and then refused. A clip keeps its
+// audio for that id once, and only then is the section spoken. Synthesize
+// spends the id and registers its synthesis in one step, so a Release or
+// RevokeBefore always finds an admitted section, waiting or speaking.
+// Admission is bounded (MaxPending sections waiting, each single-use and
+// expiring), synthesis is capped (MaxSpeaking at once; another is refused,
+// not queued), and a synthesis whose transcript is not a reading of the
+// text (openai.IsReading) is retried once and then refused. A clip keeps its
 // synthesis slot until it is closed, so the audio held for delivery is
 // bounded by the same cap. A reader that skips or stops Releases what it
 // gave up, which frees its place and slot at once.
@@ -84,15 +86,6 @@ func (o off) PublicDetails() (code, message string) { return OffCode, o.Error() 
 // SpeakFunc reads one request aloud.
 type SpeakFunc func(ctx context.Context, request openai.SpeechRequest) (openai.Speech, error)
 
-// Sentence is one admitted section.
-type Sentence struct {
-	// ID is the id Admit returned, by which its reader may Release it.
-	ID      string
-	Request openai.SpeechRequest
-	// Admitted is the settings revision the section was admitted at.
-	Admitted uint64
-}
-
 // Clip is one section's audio as a WAV file. It holds its synthesis slot
 // until closed.
 type Clip struct {
@@ -122,13 +115,18 @@ type Sentences struct {
 
 	slots chan struct{}
 
+	// started, when set by a test, runs once a synthesis has taken its
+	// section and before it first speaks.
+	started func()
 	// beforeFinish, when set by a test, runs once a synthesis has its
 	// result and before that result is decided against a revocation.
 	beforeFinish func()
 }
 
 type pendingSentence struct {
-	sentence Sentence
+	request openai.SpeechRequest
+	// admitted is the settings revision the section was admitted at.
+	admitted uint64
 	expires  time.Time
 }
 
@@ -196,7 +194,8 @@ func (s *Sentences) Admit(text, voice string, admitted uint64) (string, error) {
 		return "", ErrBacklog
 	}
 	s.pending[id] = pendingSentence{
-		sentence: Sentence{ID: id, Request: openai.SpeechRequest{Text: text, Voice: voice}, Admitted: admitted},
+		request:  openai.SpeechRequest{Text: text, Voice: voice},
+		admitted: admitted,
 		expires:  now.Add(s.ttl),
 	}
 	return id, nil
@@ -248,24 +247,6 @@ func admittedAt(id string) (uint64, bool) {
 	return admitted, err == nil
 }
 
-// Take spends id and returns its section. An id admitted before a
-// RevokeBefore is ErrOff, known from the id, so the dropped section need
-// not be kept to say why it is gone.
-func (s *Sentences) Take(id string) (Sentence, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if admitted, ok := admittedAt(id); ok && admitted < s.revokedBefore {
-		return Sentence{}, ErrOff
-	}
-	s.dropExpired(s.now())
-	held, ok := s.pending[id]
-	if !ok {
-		return Sentence{}, ErrUnknown
-	}
-	delete(s.pending, id)
-	return held.sentence, nil
-}
-
 // Pending counts the sections waiting.
 func (s *Sentences) Pending() int {
 	s.mu.Lock()
@@ -295,7 +276,7 @@ func (s *Sentences) RevokeBefore(revision uint64) {
 		s.revokedBefore = revision
 	}
 	for id, held := range s.pending {
-		if held.sentence.Admitted < revision {
+		if held.admitted < revision {
 			delete(s.pending, id)
 		}
 	}
@@ -307,21 +288,24 @@ func (s *Sentences) RevokeBefore(revision uint64) {
 	}
 }
 
-// Synthesize reads sentence aloud with speak, in a synthesis slot, and
-// returns the clip once its transcript is a reading of the text; the
-// caller closes the clip to free the slot. One result that is not a
-// reading is retried; a second is ErrMisread. A section revoked before or
-// during the synthesis is ErrOff, also when every slot is taken; one
-// released during it is ErrUnknown.
-func (s *Sentences) Synthesize(ctx context.Context, sentence Sentence, speak SpeakFunc) (*Clip, error) {
+// Synthesize spends id, reads its section aloud with speak, in a synthesis
+// slot, and returns the clip once its transcript is a reading of the text;
+// the caller closes the clip to free the slot. One result that is not a
+// reading is retried; a second is ErrMisread. An id already spent, expired
+// or released is ErrUnknown, as is one released during the synthesis; one
+// revoked before or during it is ErrOff, also when every slot is taken.
+func (s *Sentences) Synthesize(ctx context.Context, id string, speak SpeakFunc) (*Clip, error) {
 	running, stop := context.WithCancel(ctx)
 	defer stop()
-	work := &synthesis{id: sentence.ID, admitted: sentence.Admitted, stop: stop, free: sync.OnceFunc(func() { <-s.slots })}
-	if err := s.begin(work); err != nil {
+	work, request, err := s.begin(id, stop)
+	if err != nil {
 		return nil, err
 	}
+	if s.started != nil {
+		s.started()
+	}
 
-	wav, err := s.read(running, work, sentence.Request, speak)
+	wav, err := s.read(running, work, request, speak)
 	if s.beforeFinish != nil {
 		s.beforeFinish()
 	}
@@ -345,36 +329,40 @@ func (s *Sentences) Synthesize(ctx context.Context, sentence Sentence, speak Spe
 	return &Clip{Reader: bytes.NewReader(wav), release: work.free}, nil
 }
 
-// begin takes a synthesis slot for work and adds it to the set. The
-// revocation is checked first, so a revoked admission is ErrOff and not
-// ErrBusy when every slot is taken.
-func (s *Sentences) begin(work *synthesis) error {
+// begin spends id, takes a synthesis slot for it and adds its synthesis,
+// stopped by stop, to the set under one lock, so the section is never in
+// neither pending nor speaking where a Release or RevokeBefore would miss
+// it. An id admitted before a RevokeBefore is ErrOff, known from the id,
+// so the dropped section need not be kept to say why it is gone, and
+// checked first, so it is ErrOff and not ErrBusy when every slot is taken.
+// A section refused for want of a slot is spent, as its fetch is.
+func (s *Sentences) begin(id string, stop context.CancelFunc) (*synthesis, openai.SpeechRequest, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if work.admitted < s.revokedBefore {
-		return ErrOff
+	if admitted, ok := admittedAt(id); ok && admitted < s.revokedBefore {
+		return nil, openai.SpeechRequest{}, ErrOff
 	}
+	s.dropExpired(s.now())
+	held, ok := s.pending[id]
+	if !ok {
+		return nil, openai.SpeechRequest{}, ErrUnknown
+	}
+	delete(s.pending, id)
 	select {
 	case s.slots <- struct{}{}:
 	default:
-		return ErrBusy
+		return nil, openai.SpeechRequest{}, ErrBusy
 	}
+	work := &synthesis{id: id, admitted: held.admitted, stop: stop, free: sync.OnceFunc(func() { <-s.slots })}
 	s.speaking[work] = struct{}{}
-	return nil
+	return work, held.request, nil
 }
 
 // read asks speak for the request until the transcript is a reading of its
-// text, twice at most, and returns the reading as a WAV file.
+// text, twice at most, and returns the reading as a WAV file. A section
+// revoked or released is not asked for, the first time or again.
 func (s *Sentences) read(ctx context.Context, work *synthesis, request openai.SpeechRequest, speak SpeakFunc) ([]byte, error) {
 	for attempt := 0; attempt < 2; attempt++ {
-		speech, err := speak(ctx, request)
-		if err != nil {
-			return nil, err
-		}
-		if openai.IsReading(request.Text, speech.Transcript) {
-			return WAV(speech.PCM, openai.SpeechSampleRate)
-		}
-		// A revoked or released section is not asked for a second time.
 		s.mu.Lock()
 		revoked, released := work.revoked, work.released
 		s.mu.Unlock()
@@ -383,6 +371,13 @@ func (s *Sentences) read(ctx context.Context, work *synthesis, request openai.Sp
 			return nil, ErrOff
 		case released:
 			return nil, ErrUnknown
+		}
+		speech, err := speak(ctx, request)
+		if err != nil {
+			return nil, err
+		}
+		if openai.IsReading(request.Text, speech.Transcript) {
+			return WAV(speech.PCM, openai.SpeechSampleRate)
 		}
 	}
 	return nil, ErrMisread
