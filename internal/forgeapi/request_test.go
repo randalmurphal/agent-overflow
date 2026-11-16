@@ -143,6 +143,21 @@ func TestRESTRefusesTheGraphQLEndpoint(t *testing.T) {
 			t.Errorf("REST %s: %v", path, err)
 		}
 	}
+	// An attachment request may name an absolute https URL, the endpoint's
+	// own included.
+	endpoint, err := url.Parse("https://api.github.example/graphql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.resolveBase = func(string, string, SourceInfo) (*url.URL, *url.URL, error) {
+		return endpoint.JoinPath(".."), endpoint, nil
+	}
+	for _, path := range []string{"https://api.github.example/graphql", "https://API.github.example/graphql/"} {
+		_, err := s.GitHub("github.example").JSON(t.Context(), Request{Method: http.MethodPost, Path: path, Attachment: true, Body: map[string]string{"query": "query Q { viewer { login } }"}}, nil)
+		if err == nil || !strings.Contains(err.Error(), "is the GraphQL endpoint") {
+			t.Errorf("attachment %s: %v", path, err)
+		}
+	}
 	if hits.Load() != 0 {
 		t.Fatalf("a refused request reached the server %d times", hits.Load())
 	}

@@ -1,6 +1,13 @@
 package git
 
 import (
+	"bytes"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"io/fs"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -68,4 +75,99 @@ func registered(docs []forgeapi.Document) string {
 		b.WriteString(d.Forge() + " " + d.Operation() + "\n")
 	}
 	return b.String()
+}
+
+// initTimeDocumentBuilders are the functions that may call
+// forgeapi.NewDocument: each is called from a package-level var's
+// initializer, so its documents are registered at init.
+var initTimeDocumentBuilders = map[string]bool{"gitlabPullsQuery": true}
+
+// The registry TestGraphQLDocumentsMatchForgeSchemas reads holds only the
+// documents made by the time it runs, so every forgeapi.NewDocument call
+// in the module's non-test source must run at package init: inside a
+// package-level var's initializer, or inside a listed builder that such an
+// initializer calls. A document made later would be sent unchecked.
+func TestGraphQLDocumentsAreMadeAtInit(t *testing.T) {
+	t.Parallel()
+	root := filepath.Join("..", "..")
+	fset := token.NewFileSet()
+	calls := 0
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			switch d.Name() {
+			case ".git", ".claude", "node_modules", "frontend", "e2e", "mobile", "dist", "bin", "build", "docs":
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		src, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if !bytes.Contains(src, []byte("NewDocument(")) {
+			return nil
+		}
+		file, err := parser.ParseFile(fset, path, src, parser.SkipObjectResolution)
+		if err != nil {
+			return err
+		}
+		// In forgeapi itself the constructor is called unqualified.
+		isNewDocument := func(call *ast.CallExpr) bool {
+			switch fun := call.Fun.(type) {
+			case *ast.SelectorExpr:
+				pkg, ok := fun.X.(*ast.Ident)
+				return ok && pkg.Name == "forgeapi" && fun.Sel.Name == "NewDocument"
+			case *ast.Ident:
+				return file.Name.Name == "forgeapi" && fun.Name == "NewDocument"
+			}
+			return false
+		}
+		calledAtInit := map[string]bool{}
+		for _, decl := range file.Decls {
+			if gen, ok := decl.(*ast.GenDecl); ok && gen.Tok == token.VAR {
+				ast.Inspect(gen, func(n ast.Node) bool {
+					if call, ok := n.(*ast.CallExpr); ok {
+						if name, ok := call.Fun.(*ast.Ident); ok {
+							calledAtInit[name.Name] = true
+						}
+					}
+					return true
+				})
+			}
+		}
+		for _, decl := range file.Decls {
+			fn, inFunc := decl.(*ast.FuncDecl)
+			gen, inGen := decl.(*ast.GenDecl)
+			ast.Inspect(decl, func(n ast.Node) bool {
+				call, ok := n.(*ast.CallExpr)
+				if !ok || !isNewDocument(call) {
+					return true
+				}
+				calls++
+				where := fset.Position(call.Pos()).String()
+				switch {
+				case inGen && gen.Tok == token.VAR:
+				case inFunc && fn.Recv == nil && initTimeDocumentBuilders[fn.Name.Name] && calledAtInit[fn.Name.Name]:
+				case inFunc && fn.Recv == nil && initTimeDocumentBuilders[fn.Name.Name]:
+					t.Errorf("%s: %s is listed as an init-time builder, but no package-level var in its file calls it", where, fn.Name.Name)
+				default:
+					t.Errorf("%s: forgeapi.NewDocument is called outside a package-level var; make the document a package-level value so the schema check sees it", where)
+				}
+				return true
+			})
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls < len(forgeapi.Documents())-len(gitlabPullsReads)+1 {
+		t.Fatalf("found %d NewDocument calls for %d registered documents: the scan misses source", calls, len(forgeapi.Documents()))
+	}
 }
