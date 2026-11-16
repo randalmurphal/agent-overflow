@@ -1,4 +1,4 @@
-.PHONY: help ao-harness-docs methodgen forge-schemas go-lint go-vet fmt-check go-vuln bindings-check frontend-lint install dev dev-wsl launch-wsl harness-wsl perf-wsl soak soak-check soak-contract build build-wsl test check verify release release-wsl-noremote release-macos go-build netns-tool go-test test-race provider-smoke-compile provider-smoke provider-smoke-revert import-corpus-smoke mockprovider mockforge harness-build harness harness-window soak-window e2e e2e-mobile-browser release-upgrade-check apk apk-release e2e-android
+.PHONY: help ao-harness-docs methodgen forge-schemas linear-schema go-lint go-vet fmt-check go-vuln bindings-check frontend-lint install dev dev-wsl launch-wsl harness-wsl perf-wsl soak soak-check soak-contract build build-wsl test check verify release release-wsl-noremote release-macos go-build netns-tool go-test test-race provider-smoke-compile provider-smoke provider-smoke-revert import-corpus-smoke mockprovider mockforge harness-build harness harness-window soak-window e2e e2e-mobile-browser release-upgrade-check apk apk-release e2e-android
 
 # Print the supported build, test, harness, and smoke targets. Keep this
 # short enough to use from an unfamiliar checkout. `make e2e` is the
@@ -19,7 +19,7 @@ help:
 		'Release: make release-upgrade-check [PREVIOUS_RELEASE=vX.Y.Z] [RELEASE_UPGRADE_BOOTSTRAP=1 RELEASE_UPGRADE_SCALE=0.02] [RELEASE_UPGRADE_ARCHIVE_OUT=FILE] [RELEASE_UPGRADE_CORPUS=/data-root]' \
 		'Import:  make import-corpus-smoke AO_IMPORT_CORPUS_CLAUDE=/copy AO_IMPORT_CORPUS_CODEX=/copy' \
 		'Docs:    make ao-harness-docs' \
-		'Codegen: make methodgen | make forge-schemas'
+		'Codegen: make methodgen | make forge-schemas | make linear-schema'
 
 ao-harness-docs:
 	go generate ./cmd/ao-harness
@@ -39,6 +39,13 @@ methodgen:
 # fetch them.
 forge-schemas:
 	go run ./internal/git/forgeschema/refresh
+
+# Refresh Linear's public GraphQL schema that internal/tracker/linear's
+# documents are checked against (its testdata/schema.graphql). It fetches
+# the published SDL on the host network with no key; review the diff,
+# then commit it. Tests never fetch it.
+linear-schema:
+	go run ./internal/tracker/linear/refresh
 
 # `make dev DEBUG=1` / `make dev-wsl DEBUG=1` enables every debug surface
 # wired through this Makefile: frontend UI render tracing, raw provider

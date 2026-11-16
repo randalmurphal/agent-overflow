@@ -1,0 +1,137 @@
+package linear
+
+import (
+	"context"
+)
+
+// CreateCommentInput is a new comment on an issue.
+type CreateCommentInput struct {
+	IssueID string // an issue ID or identifier; required
+	Body    string // Markdown; required
+	// ParentID makes the comment a reply to that comment.
+	ParentID string
+}
+
+var opCreateComment = operation{name: "CreateComment", mutation: true, text: `mutation CreateComment($input: CommentCreateInput!) {
+  result: commentCreate(input: $input) { success value: comment { ...CommentFields } }
+}
+` + commentFields}
+
+type commentCreateInput struct {
+	IssueID  string `json:"issueId"`
+	Body     string `json:"body"`
+	ParentID string `json:"parentId,omitempty"`
+}
+
+// CreateComment adds a comment and returns it.
+func (c *Client) CreateComment(ctx context.Context, in CreateCommentInput) (*Comment, error) {
+	if in.IssueID == "" || in.Body == "" {
+		return nil, invalid(opCreateComment.name, "an issue ID and a body are required")
+	}
+	return mutateStored(ctx, c, opCreateComment, inputVars{commentCreateInput(in)}, wireComment.typed)
+}
+
+var opUpdateComment = operation{name: "UpdateComment", mutation: true, text: `mutation UpdateComment($id: String!, $input: CommentUpdateInput!) {
+  result: commentUpdate(id: $id, input: $input) { success value: comment { ...CommentFields } }
+}
+` + commentFields}
+
+type commentUpdateInput struct {
+	Body string `json:"body"`
+}
+
+// UpdateComment replaces a comment's Markdown body and returns it.
+func (c *Client) UpdateComment(ctx context.Context, id, body string) (*Comment, error) {
+	if id == "" || body == "" {
+		return nil, invalid(opUpdateComment.name, "a comment ID and a body are required")
+	}
+	return mutateStored(ctx, c, opUpdateComment, updateVars{id, commentUpdateInput{body}}, wireComment.typed)
+}
+
+var opDeleteComment = operation{name: "DeleteComment", mutation: true, text: `mutation DeleteComment($id: String!) {
+  result: commentDelete(id: $id) { success }
+}`}
+
+// DeleteComment deletes a comment.
+func (c *Client) DeleteComment(ctx context.Context, id string) error {
+	return c.deleteByID(ctx, opDeleteComment, id)
+}
+
+func (c *Client) deleteByID(ctx context.Context, op operation, id string) error {
+	if id == "" {
+		return invalid(op.name, "an ID is required")
+	}
+	_, err := mutate[struct{}](ctx, c, op, idVars{id})
+	return err
+}
+
+// CreateRelationInput relates two issues: IssueID blocks, duplicates,
+// or relates to RelatedIssueID.
+type CreateRelationInput struct {
+	IssueID        string       `json:"issueId"`
+	RelatedIssueID string       `json:"relatedIssueId"`
+	Type           RelationType `json:"type"`
+}
+
+var opCreateRelation = operation{name: "CreateRelation", mutation: true, text: `mutation CreateRelation($input: IssueRelationCreateInput!) {
+  result: issueRelationCreate(input: $input) { success value: issueRelation { ...RelationFields } }
+}
+` + relationFields + issueRefFields}
+
+// CreateRelation relates two issues and returns the relation.
+func (c *Client) CreateRelation(ctx context.Context, in CreateRelationInput) (*Relation, error) {
+	if in.IssueID == "" || in.RelatedIssueID == "" || in.Type == "" {
+		return nil, invalid(opCreateRelation.name, "both issue IDs and a type are required")
+	}
+	return mutateStored(ctx, c, opCreateRelation, inputVars{in}, wireRelation.typed)
+}
+
+var opDeleteRelation = operation{name: "DeleteRelation", mutation: true, text: `mutation DeleteRelation($id: String!) {
+  result: issueRelationDelete(id: $id) { success }
+}`}
+
+// DeleteRelation deletes a relation.
+func (c *Client) DeleteRelation(ctx context.Context, id string) error {
+	return c.deleteByID(ctx, opDeleteRelation, id)
+}
+
+// LinkInput is a link to record on an issue, such as a pull request.
+type LinkInput struct {
+	IssueID  string `json:"issueId"` // an issue ID or identifier
+	URL      string `json:"url"`
+	Title    string `json:"title"`
+	Subtitle string `json:"subtitle,omitempty"` // such as the pull request's state
+}
+
+var opLinkURL = operation{name: "LinkURL", mutation: true, text: `mutation LinkURL($input: AttachmentCreateInput!) {
+  result: attachmentCreate(input: $input) { success value: attachment { ...AttachmentFields } }
+}
+` + attachmentFields}
+
+// LinkURL records a link on an issue and returns the attachment. Linear
+// keeps one attachment per URL on an issue: linking the same URL again
+// updates its title and subtitle, so repeating the call after an
+// unknown outcome is safe. No integration fetches anything for it.
+func (c *Client) LinkURL(ctx context.Context, in LinkInput) (*Attachment, error) {
+	if in.IssueID == "" || in.URL == "" || in.Title == "" {
+		return nil, invalid(opLinkURL.name, "an issue ID, a URL and a title are required")
+	}
+	return mutateStored(ctx, c, opLinkURL, inputVars{in}, wireAttachment.typed)
+}
+
+var opStartUpcomingCycle = operation{name: "StartUpcomingCycle", mutation: true, text: `mutation StartUpcomingCycle($id: String!) {
+  result: cycleStartUpcomingCycleToday(id: $id) { success value: cycle { ...CycleFields } }
+}
+` + cycleFields}
+
+// StartUpcomingCycle starts a team's next cycle as of midnight today and
+// completes the current one if it has not ended; its unfinished issues
+// roll over by the team's settings. id must be the upcoming cycle. This
+// is the only cycle schedule change the client offers: Linear generates
+// cycles and cannot create one through the API.
+func (c *Client) StartUpcomingCycle(ctx context.Context, id string) (*Cycle, error) {
+	if id == "" {
+		return nil, invalid("StartUpcomingCycle", "a cycle ID is required")
+	}
+	return mutateStored(ctx, c, opStartUpcomingCycle, idVars{id}, wireCycle.typed)
+}
