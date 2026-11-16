@@ -158,6 +158,16 @@ echo "the only report"
 
       // ---- The agent reads what it missed at its next turn, and the
       // watch's next wake says where to look.
+      // The turn the death cut off (Codex's) also reported a completion, so
+      // each turn below waits for one that finished. Otherwise the release
+      // and the outside send race the turn still running and are steered
+      // into it.
+      const turnFinished = () =>
+        harness.waitForEvent<{ threadId?: string; aborted?: boolean }>(
+          'provider:turn_completed',
+          (data) => data.threadId === thread && !data.aborted,
+          120_000,
+        );
       // Codex: the outside message below starts turn 3, which parks without
       // echoing it.
       await setScenario(
@@ -190,13 +200,13 @@ echo "the only report"
       expect(once.last_outcome).toBe('not delivered: the session ended before it took the wake in');
       expect(once.undelivered).toBe('not delivered: the session ended before it took the wake in');
       expect(once.last_output).toContain('"the only report"');
-      await awaitTurnCompleted(harness, thread);
+      await turnFinished();
       await writeFile(join(home, 'again.release'), '');
       const second = await wakeInput(harness, home, 'the second report');
       expect(second.report.input).toContain(
         'The previous wake of this watch did not reach you; thread_status shows its output as last_output.',
       );
-      await awaitTurnCompleted(harness, thread);
+      await turnFinished();
 
       // ---- An outside script's message the session never took in is
       // thrown away with a notice, never put in the composer.
