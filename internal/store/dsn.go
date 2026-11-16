@@ -135,6 +135,20 @@ func poolDSN(dbPath string, pragmas []connPragma) string {
 	return "file:" + dsnEscaper.Replace(dbPath) + "?" + strings.Join(tokens, "&")
 }
 
+// writerDSN is poolDSN for the writer pool, whose transactions begin
+// IMMEDIATE (_txlock): each takes the write lock at BEGIN, where
+// busy_timeout waits out another connection's write. A deferred
+// transaction that reads first holds a snapshot, and SQLite fails its
+// later write at once, without the busy handler, when another connection
+// holds the write lock (SQLITE_BUSY) or committed since the read
+// (SQLITE_BUSY_SNAPSHOT). The pool's one connection already serializes
+// the process's transactions, so taking the lock at BEGIN excludes only
+// other processes' writers; WAL readers never wait for it. A transaction
+// begun with sql.TxOptions.ReadOnly stays deferred.
+func writerDSN(dbPath string, pragmas []connPragma) string {
+	return poolDSN(dbPath, pragmas) + "&_txlock=immediate"
+}
+
 // verifyConnPragmas reads each pragma back and fails when it did not
 // take.
 //

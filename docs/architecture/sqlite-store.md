@@ -27,6 +27,11 @@ Both pools open through `conngate.go`, which interposes on the driver's
 `Connect`. The conversion swap holds that gate so no replacement connection can
 attach to a file it is about to rename away.
 
+The writer's DSN (`writerDSN`) begins every transaction IMMEDIATE, so a
+transaction that reads before it writes holds the write lock from BEGIN, where
+`busy_timeout` waits out another connection's write; a deferred one would
+fail its first write at once with `SQLITE_BUSY` or `SQLITE_BUSY_SNAPSHOT`.
+
 The writer pool holds one connection (`SetMaxOpenConns(1)`) and the read pool
 `readPoolConns`; `historyReadSlots` (`conngate.go`) bounds how many of them
 long reads and checkpoints hold. `modernc.org/sqlite` compiles every `Exec` and
