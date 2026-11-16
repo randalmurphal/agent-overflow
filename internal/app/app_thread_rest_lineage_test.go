@@ -75,7 +75,11 @@ func execOnBusyStore(t *testing.T, path, statement string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer raw.Close()
+	defer func() {
+		if err := raw.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
 	if _, err := raw.Exec(statement); err != nil {
 		t.Fatal(err)
 	}

@@ -97,7 +97,11 @@ func readRemoteSpawnRow(t *testing.T, pair *reachPair, token string) remoteSpawn
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer raw.Close()
+	defer func() {
+		if err := raw.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
 	var row remoteSpawnRow
 	err = raw.QueryRow(`SELECT lineage_only, answer IS NOT NULL, nested_open, target_thread_id
 		FROM thread_requests WHERE token = ?`, token).Scan(&row.lineage, &row.answer, &row.nested, &row.target)

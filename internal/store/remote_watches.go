@@ -481,16 +481,15 @@ func (s *Store) ListOwedRemoteCancels(due int64, limit int) ([]RemoteWatch, erro
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 	out := []RemoteWatch{}
 	for rows.Next() {
 		w, e := scanRemoteWatch(rows)
 		if e != nil {
-			return nil, e
+			return nil, errors.Join(e, rows.Close())
 		}
 		out = append(out, w)
 	}
-	return out, rows.Err()
+	return out, errors.Join(rows.Err(), rows.Close())
 }
 
 // SettleRemoteCancel records that the job owes no cancel any more.

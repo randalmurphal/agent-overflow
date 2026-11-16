@@ -113,7 +113,7 @@ func TestSessionStartDeliveryQuotesTheFailure(t *testing.T) {
 	t.Parallel()
 	d := newTestDelivery(t, testHook())
 	d.Expect(SessionStartAfterStart)
-	d.Fail("exit code 127:\n\x1b[31msh: /gone/agent-overflow: not found\x1b[0m‮")
+	d.Fail("exit code 127:\n\x1b[31msh: /gone/agent-overflow: not found\x1b[0m\u202e")
 	d.Fail("exit code 1: later")
 	if got, want := d.Settle(), "Agent Overflow memory did not reach this session after its start: a SessionStart hook failed (exit code 127: [31msh: /gone/agent-overflow: not found [0m)."; got != want {
 		t.Fatalf("warning = %q, want %q", got, want)

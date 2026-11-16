@@ -215,13 +215,13 @@ func WriteMockCodexSession(t *testing.T, dir string, responses map[string]string
 	b.WriteString("  if [ -z \"$id\" ]; then continue; fi\n")
 	for _, key := range keys {
 		tmpl := responses[key]
-		b.WriteString(fmt.Sprintf("  if /bin/echo \"$line\" | /usr/bin/grep -q %s; then\n", stringsx.ShellQuote(key)))
-		b.WriteString(fmt.Sprintf("    printf %s \"$id\"\n", stringsx.ShellQuote(tmpl+"\n")))
+		fmt.Fprintf(&b, "  if /bin/echo \"$line\" | /usr/bin/grep -q %s; then\n", stringsx.ShellQuote(key))
+		fmt.Fprintf(&b, "    printf %s \"$id\"\n", stringsx.ShellQuote(tmpl+"\n"))
 		b.WriteString("    continue\n")
 		b.WriteString("  fi\n")
 	}
 	if hasFallback {
-		b.WriteString(fmt.Sprintf("  printf %s \"$id\"\n", stringsx.ShellQuote(fallback+"\n")))
+		fmt.Fprintf(&b, "  printf %s \"$id\"\n", stringsx.ShellQuote(fallback+"\n"))
 	}
 	b.WriteString("done\n")
 	b.WriteString("exit 0\n")
@@ -251,7 +251,7 @@ func WriteMockGhCLI(t *testing.T, dir string, responses map[string]string) strin
 			b.WriteString(fmt.Sprintf("elif %s; then\n", cond))
 		}
 		// Escape body by rendering via printf %s and passing through single-quoted.
-		b.WriteString(fmt.Sprintf("  printf '%%s\\n' %s\n", stringsx.ShellQuote(body)))
+		fmt.Fprintf(&b, "  printf '%%s\\n' %s\n", stringsx.ShellQuote(body))
 		b.WriteString("  exit 0\n")
 	}
 	if !first {

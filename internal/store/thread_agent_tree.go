@@ -499,9 +499,9 @@ func agentOpenBelowSQL(alias string) string {
 }
 
 // agentOpenWorkSQL matches a request that is open work under a spawn: an
-// open request the listing counts (openAgentRequestSQL), or a spawn on
-// another computer that last reported open work there. The marks count
-// these (migration v151).
+// open request the listing counts (a spawn, or a send or ask whose wake is
+// armed), or a spawn on another computer that last reported open work
+// there. The marks count these (migration v151).
 func agentOpenWorkSQL(alias string) string {
 	a := alias + "."
 	return `((` + a + `lineage_only = 0 AND ` + a + `settled_at IS NULL AND (` + a + `kind = 'spawn' OR (` + a + `kind IN ('send','ask') AND ` + a + `notify = 1)))

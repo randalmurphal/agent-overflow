@@ -93,15 +93,35 @@ type hookInput struct {
 // and a record that cannot be read or written go to stderr, and the run
 // still exits 0. A refused argument, or a panic, exits 1 with nothing on
 // stdout: never 2, which both providers read as a refusal of the prompt.
+// A run whose report stderr does not take exits 1; a report lost before
+// the delivery also stops the run, so it prints and records nothing.
 func RunHook(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	return runHookAt(args, stdin, stdout, stderr, time.Now())
 }
 
+// hookStderr writes a run's reports to stderr and keeps the first write
+// that failed, which fails the run: stderr is where the provider shows why
+// a run went wrong, and a run that cannot say so does not pass as clean.
+type hookStderr struct {
+	w   io.Writer
+	err error
+}
+
+func (s *hookStderr) printf(format string, args ...any) {
+	if _, err := fmt.Fprintf(s.w, "%s: "+format, append([]any{HookSubcommand}, args...)...); err != nil && s.err == nil {
+		s.err = err
+	}
+}
+
 // runHookAt is RunHook at the time now.
 func runHookAt(args []string, stdin io.Reader, stdout, stderr io.Writer, now time.Time) (code int) {
+	report := &hookStderr{w: stderr}
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			fmt.Fprintf(stderr, "%s: %v\n%s", HookSubcommand, recovered, debug.Stack())
+			report.printf("%v\n%s", recovered, debug.Stack())
+			code = 1
+		}
+		if report.err != nil {
 			code = 1
 		}
 	}()
@@ -110,47 +130,47 @@ func runHookAt(args []string, stdin io.Reader, stdout, stderr io.Writer, now tim
 		inputErr = err
 	}
 	if inputErr != nil {
-		fmt.Fprintf(stderr, "%s: read the hook input: %v\n", HookSubcommand, inputErr)
+		report.printf("read the hook input: %v\n", inputErr)
 	}
 	if len(args) != 2 {
-		fmt.Fprintf(stderr, "%s: want the event and the memory plan, got %d arguments\n", HookSubcommand, len(args))
+		report.printf("want the event and the memory plan, got %d arguments\n", len(args))
 		return 1
 	}
 	event := HookEvent(args[0])
 	if _, ok := hookEventName[event]; !ok {
-		fmt.Fprintf(stderr, "%s: %q is not a hook event\n", HookSubcommand, args[0])
+		report.printf("%q is not a hook event\n", args[0])
 		return 1
 	}
 	var plan Plan
 	decoder := json.NewDecoder(bytes.NewReader([]byte(args[1])))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&plan); err != nil {
-		fmt.Fprintf(stderr, "%s: read the memory plan: %v\n", HookSubcommand, err)
+		report.printf("read the memory plan: %v\n", err)
 		return 1
 	}
 	if err := plan.validateFor(event); err != nil {
-		fmt.Fprintf(stderr, "%s: %v\n", HookSubcommand, err)
+		report.printf("%v\n", err)
 		return 1
 	}
 	var session hookInput
 	if err := json.Unmarshal(input, &session); err != nil {
-		fmt.Fprintf(stderr, "%s: the hook input names no session, so nothing is recorded: %v\n", HookSubcommand, err)
+		report.printf("the hook input names no session, so nothing is recorded: %v\n", err)
 		session = hookInput{}
 	} else if session.AgentID != "" {
 		return 0
 	} else if session.SessionID == "" {
-		fmt.Fprintf(stderr, "%s: the hook input names no session, so nothing is recorded\n", HookSubcommand)
+		report.printf("the hook input names no session, so nothing is recorded\n")
 	}
 	d := readDelivery(plan, now)
 	for _, problem := range d.errs {
-		fmt.Fprintf(stderr, "%s: %v\n", HookSubcommand, problem)
+		report.printf("%v\n", problem)
 	}
 	sections := d.sections()
 	context := ""
 	if event == AtPrompt && session.SessionID != "" {
 		prior, err := readRecord(plan.Records, session.SessionID)
 		if err != nil {
-			fmt.Fprintf(stderr, "%s: %v; the whole memory is delivered\n", HookSubcommand, err)
+			report.printf("%v; the whole memory is delivered\n", err)
 		}
 		if prior != nil {
 			if context = changes(prior.Sections, sections); context == "" {
@@ -158,21 +178,24 @@ func runHookAt(args []string, stdin io.Reader, stdout, stderr io.Writer, now tim
 			}
 		}
 	}
+	if report.err != nil {
+		return 1
+	}
 	if context == "" {
 		context = Stamp(d.render(sections), now)
 	}
 	data, err := json.Marshal(hookOutput{HookSpecificOutput: hookSpecificOutput{HookEventName: hookEventName[event], AdditionalContext: context}})
 	if err != nil {
-		fmt.Fprintf(stderr, "%s: encode the output: %v\n", HookSubcommand, err)
+		report.printf("encode the output: %v\n", err)
 		return 1
 	}
 	if _, err := stdout.Write(append(data, '\n')); err != nil {
-		fmt.Fprintf(stderr, "%s: write the output: %v\n", HookSubcommand, err)
+		report.printf("write the output: %v\n", err)
 		return 1
 	}
 	if plan.Records != "" && session.SessionID != "" {
 		if err := writeRecord(plan.Records, session.SessionID, sections, now); err != nil {
-			fmt.Fprintf(stderr, "%s: %v\n", HookSubcommand, err)
+			report.printf("%v\n", err)
 		}
 	}
 	return 0

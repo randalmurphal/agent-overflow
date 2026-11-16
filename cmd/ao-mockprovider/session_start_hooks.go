@@ -71,7 +71,7 @@ func sessionStartMatcherTakes(matcher, source string) bool {
 	}
 	exact := true
 	for _, c := range matcher {
-		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_' || c == '|') {
+		if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && (c < '0' || c > '9') && c != '_' && c != '|' {
 			exact = false
 			break
 		}

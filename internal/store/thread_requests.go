@@ -650,7 +650,7 @@ func (s *Store) ForgetRemoteSpawnsOnComputer(computerID string) (_ []string, err
 	if err != nil {
 		return nil, fmt.Errorf("%s: begin: %w", action, err)
 	}
-	defer tx.Rollback()
+	defer rollbackTx(tx, action, &err)
 	var callers []string
 	for _, statement := range []string{
 		`DELETE FROM thread_requests
@@ -936,14 +936,6 @@ func (s *Store) ListThreadRequestsByCaller(callerThreadID string, limit, offset 
 // idx_thread_requests_nested_caller.
 func nestedRemoteSpawnSQL(alias string) string {
 	return alias + `.nested_open = 1 AND ` + alias + `.kind = 'spawn' AND ` + alias + `.target_computer_id <> ''`
-}
-
-// openAgentRequestSQL matches an open request the activity rail lists as an
-// agent: a spawn, or a send or ask whose wake is armed. Its first terms are
-// the idx_thread_requests_caller_settled probe for an open row.
-func openAgentRequestSQL(alias string) string {
-	return alias + `.lineage_only = 0 AND ` + alias + `.settled_at IS NULL AND (` + alias + `.kind = 'spawn' OR (` +
-		alias + `.kind IN ('send','ask') AND ` + alias + `.notify = 1))`
 }
 
 // ListOpenThreadRequestsForComputer returns the unsettled requests one

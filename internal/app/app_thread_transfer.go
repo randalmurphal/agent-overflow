@@ -13,6 +13,7 @@ import (
 	"reflect"
 
 	"agent-overflow/internal/entityid"
+	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/eventchan"
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/store"
@@ -41,8 +42,9 @@ type ThreadTransferIntent struct {
 
 // errAssistantStays refuses a move of an assistant's current thread, before
 // the move stops anything (store.ErrAssistantThreadStays refuses its
-// transfer row as well).
-var errAssistantStays = errors.New("This conversation is an assistant, which stays on this computer with its home, memory, loops and watches. Copy it instead: the copy is an ordinary conversation.")
+// transfer row as well). Its code is method_error, the refusal the transfer
+// dialog reopens its choices on.
+var errAssistantStays = errorsx.Public(transport.ErrCodeMethodError, "This conversation is an assistant, which stays on this computer with its home, memory, loops and watches. Copy it instead: the copy is an ordinary conversation.", nil)
 
 type transferSourceDetails struct {
 	DraftMCP         *draftMCPPreferences `json:"draftMcp,omitempty"`
@@ -107,7 +109,7 @@ func (a *App) beginThreadTransfer(ctx context.Context, threadID, operationID, de
 		// A thread outside every project runs in its assistant's home,
 		// which stays on this computer: there is no workspace to carry.
 		if thread.ProjectID == "" {
-			return ThreadTransferIntent{}, errors.New("This conversation has no project workspace to include. Transfer it without workspace changes.")
+			return ThreadTransferIntent{}, errorsx.Public(transport.ErrCodeMethodError, "This conversation has no project workspace to include. Transfer it without workspace changes.", nil)
 		}
 	}
 	// A move takes the conversation away from the computer that owns its

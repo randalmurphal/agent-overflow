@@ -302,16 +302,15 @@ func (s *Store) queryThreadIDs(action, query string, args ...any) ([]string, err
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", action, err)
 	}
-	defer rows.Close()
 	var ids []string
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("%s: %w", action, err)
+			return nil, fmt.Errorf("%s: %w", action, errors.Join(err, rows.Close()))
 		}
 		ids = append(ids, id)
 	}
-	if err := rows.Err(); err != nil {
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		return nil, fmt.Errorf("%s: %w", action, err)
 	}
 	return ids, nil

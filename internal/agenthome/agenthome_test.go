@@ -3,7 +3,6 @@ package agenthome
 import (
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 )
@@ -223,8 +222,6 @@ var boundRoleSeeds = []string{
 	strings.Repeat("r", RoleRunes+5), strings.Repeat("r", RoleRunes-1) + " # tail", "# " + strings.Repeat("é", RoleRunes+1),
 	"Role\r\nnext", "", "#1 reviewer", "#hashtag lover", "# #1 x", "# # #", "# # x", "  ## \t# x",
 }
-
-func itoa(n int) string { return strconv.Itoa(n) }
 
 // rawBoundInputs are files whose cleaned text stays under every cap while
 // the read stops at MaxRawRead raw bytes with more to come.

@@ -222,7 +222,7 @@ func TestAnExpiredSpawnStillNestsItsThreadsNewWork(t *testing.T) {
 	if got, want := agentTreeEntries(rows), []string{"l-c@0", "c-g@1", "c-p@1"}; !slices.Equal(got, want) {
 		t.Fatalf("the owner's tree %v; want %v", got, want)
 	}
-	if rows[0].AnswerHead != nil && len(rows[0].AnswerHead) != 0 {
+	if len(rows[0].AnswerHead) != 0 {
 		t.Fatalf("the expired spawn's row carries answer %q", rows[0].AnswerHead)
 	}
 	named := agentTreeRead("lead", 4)

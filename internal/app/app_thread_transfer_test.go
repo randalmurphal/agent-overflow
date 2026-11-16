@@ -15,12 +15,14 @@ import (
 
 	"agent-overflow/internal/attachment"
 	"agent-overflow/internal/buildvariant/remotetest"
+	"agent-overflow/internal/errorsx"
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude/sessionfork"
 	"agent-overflow/internal/providerdiscoveryapp"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/testutil"
+	"agent-overflow/internal/transport"
 	"github.com/google/uuid"
 )
 
@@ -387,14 +389,24 @@ func TestAThreadOutsideEveryProjectTransfersWithoutAWorkspace(t *testing.T) {
 	}
 	destinationID, _ := destination.backendIdentity()
 	refused := uuid.NewString()
-	if _, err := source.BeginThreadTransfer(ctx, thread.ID, refused, destinationID, "move", true); err == nil || !strings.Contains(err.Error(), "no project workspace") {
-		t.Fatalf("a workspace transfer of a thread outside every project = %v, want the refusal", err)
-	}
+	_, err := source.BeginThreadTransfer(ctx, thread.ID, refused, destinationID, "move", true)
+	requireDeclinedTransfer(t, err, "This conversation has no project workspace to include. Transfer it without workspace changes.")
 	if _, err := source.store.GetThreadTransfer(refused); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("the refused transfer left a row: %v", err)
 	}
 	if _, err := source.BeginThreadTransfer(ctx, thread.ID, uuid.NewString(), destinationID, "move", false); err != nil {
 		t.Fatalf("a transfer without the workspace: %v", err)
+	}
+}
+
+// requireDeclinedTransfer checks that a begin's refusal reaches the person
+// as message under method_error, the code the transfer dialog reopens its
+// choices on.
+func requireDeclinedTransfer(t *testing.T, err error, message string) {
+	t.Helper()
+	code, text, ok := errorsx.PublicDetails(err)
+	if !ok || code != transport.ErrCodeMethodError || text != message {
+		t.Fatalf("refusal = %v (public %v, code %q, message %q), want method_error %q", err, ok, code, text, message)
 	}
 }
 
@@ -429,9 +441,11 @@ func TestAnAssistantsCurrentThreadDoesNotMove(t *testing.T) {
 	destinationID, _ := destination.backendIdentity()
 
 	refused := uuid.NewString()
-	if _, err := source.BeginThreadTransfer(ctx, "current", refused, destinationID, "move", false); !errors.Is(err, errAssistantStays) {
+	_, err := source.BeginThreadTransfer(ctx, "current", refused, destinationID, "move", false)
+	if !errors.Is(err, errAssistantStays) {
 		t.Fatalf("moving an assistant's current thread = %v, want %v", err, errAssistantStays)
 	}
+	requireDeclinedTransfer(t, err, "This conversation is an assistant, which stays on this computer with its home, memory, loops and watches. Copy it instead: the copy is an ordinary conversation.")
 	if _, err := source.store.GetThreadTransfer(refused); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("the refused move left a transfer: %v", err)
 	}

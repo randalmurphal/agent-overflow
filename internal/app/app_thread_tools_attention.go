@@ -50,5 +50,5 @@ func (t threadToolsApp) FlagAttention(ctx context.Context, caller threadtools.Ca
 		return threadtools.AttentionAck{}, err
 	}
 	t.app.announceThreadIfChanged(triage.ThreadActionFull, thread.ID, changed)
-	return threadtools.AttentionAck{Kind: call.Kind, Reason: call.Reason}, nil
+	return threadtools.AttentionAck(call), nil
 }

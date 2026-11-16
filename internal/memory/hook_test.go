@@ -146,6 +146,38 @@ type failingWriter struct{}
 
 func (failingWriter) Write([]byte) (int, error) { return 0, errors.New("output gone") }
 
+// A run whose report stderr does not take fails: before the delivery it
+// prints and records nothing, after it the run still exits 1. A run with
+// nothing to report never writes stderr and delivers.
+func TestRunHookFailsWhenStderrRefusesAReport(t *testing.T) {
+	t.Parallel()
+	s := newScopes(t)
+	plan := encodedPlan(t, s.plan)
+
+	var stdout strings.Builder
+	if code := runHookAt([]string{string(AtSessionStart), plan}, strings.NewReader("{}"), &stdout, failingWriter{}, day); code != 1 || stdout.Len() > 0 {
+		t.Fatalf("report before the delivery: exit %d, stdout %q", code, stdout.String())
+	}
+
+	blocked := filepath.Join(t.TempDir(), "file")
+	write(t, filepath.Dir(blocked), "file", "a file where the records folder goes")
+	unwritable := s.plan
+	unwritable.Records = filepath.Join(blocked, "thread")
+	stdout.Reset()
+	if code := runHookAt([]string{string(AtSessionStart), encodedPlan(t, unwritable)}, strings.NewReader(`{"session_id":"s1"}`), &stdout, failingWriter{}, day); code != 1 {
+		t.Fatalf("report after the delivery: exit %d", code)
+	}
+
+	stdout.Reset()
+	if code := runHookAt([]string{string(AtSessionStart), plan}, strings.NewReader(`{"session_id":"s1"}`), &stdout, failingWriter{}, day); code != 0 {
+		t.Fatalf("nothing to report: exit %d", code)
+	}
+	built, _ := Build(s.plan, day)
+	if got := hookContext(t, stdout.String()); got != Stamp(built, day) {
+		t.Fatalf("context = %q", got)
+	}
+}
+
 // Both providers run the hook command through a POSIX shell, so the binary
 // and every folder survive spaces, quotes and shell syntax in their paths.
 func TestHookCommandRunsThroughAShell(t *testing.T) {
