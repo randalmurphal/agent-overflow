@@ -45,7 +45,7 @@ itself (`desktopInstall` in `main_update_apply.go`); the sidecar does not.
 A group is released only once no member of it is alive. A leader's exit is
 not its group's: Wait proves only that the leader is gone, so the owner ends
 what the leader left (SIGTERM, then SIGKILL after a grace, through
-`procutil.StopGroup`) before it releases. A group the owner cannot empty
+`procutil.StopConfiguredGroup`) before it releases. A group the owner cannot empty
 stays watched and the owner reports the failure.
 
 `procutil.StartGroup` and `RunGroup` take a `procutil.Reaper` and refuse a nil

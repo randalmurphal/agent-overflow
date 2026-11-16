@@ -103,9 +103,7 @@ func (a *App) MintReadAloudTicket(ctx context.Context, text, voice string) (stri
 	}
 	url, err := server.MintSpeechTicket(id)
 	if err != nil {
-		if _, takeErr := sentences.Take(id); takeErr != nil {
-			return "", errors.Join(err, takeErr)
-		}
+		sentences.Release(id)
 		return "", err
 	}
 	return url, nil
@@ -148,17 +146,9 @@ func (t readAloudTransfer) SpeakSentence(ctx context.Context, speechID string) (
 	if !a.readAloudAPIOn() {
 		return nil, &transport.SpeechError{Status: readAloudOffStatus, Err: readaloud.ErrOff}
 	}
-	sentence, err := a.readAloudSentences().Take(speechID)
-	switch {
-	case errors.Is(err, readaloud.ErrOff):
-		// Dropped by a write to the switch, which may be back on by now.
-		return nil, &transport.SpeechError{Status: readAloudOffStatus, Err: err}
-	case err != nil:
-		return nil, &transport.SpeechError{Status: http.StatusNotFound, Err: err}
-	}
 	speaking, cancel := context.WithTimeout(ctx, readAloudTimeout)
 	defer cancel()
-	clip, err := a.readAloudSentences().Synthesize(speaking, sentence, a.speakWithOpenAI)
+	clip, err := a.readAloudSentences().Synthesize(speaking, speechID, a.speakWithOpenAI)
 	if err != nil {
 		return nil, readAloudFailure(ctx, err)
 	}
@@ -194,9 +184,10 @@ func readAloudFailure(request context.Context, err error) error {
 	case request.Err() != nil, errors.As(err, &classified):
 		return err
 	case errors.Is(err, readaloud.ErrOff):
+		// Dropped by a write to the switch, which may be back on by now.
 		return &transport.SpeechError{Status: readAloudOffStatus, Err: err}
 	case errors.Is(err, readaloud.ErrUnknown):
-		// Given back by its reader while it was synthesized.
+		// Already spent, expired, or given back by its reader.
 		return &transport.SpeechError{Status: http.StatusNotFound, Err: err}
 	case errors.Is(err, context.DeadlineExceeded):
 		return &transport.SpeechError{Status: http.StatusGatewayTimeout,

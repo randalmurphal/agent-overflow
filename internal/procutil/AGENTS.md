@@ -1,20 +1,23 @@
 # Process helpers
 
-This package owns seven utilities:
+This package owns six utilities:
 
 - `ConfigureGroup` and `KillConfiguredGroup` arrange and terminate an owned
-  child process group using the platform implementation. On Unix,
+  child process group using the platform implementation.
+  `StopConfiguredGroup` is the graceful stop: SIGTERM to the group, SIGKILL
+  to the group once its grace passes with any member left, and a return
+  only once the group is gone or with the error that left it running. Use
+  it as `exec.Cmd.Cancel` rather than pairing a SIGTERM with `WaitDelay`,
+  which kills only the leader. `Group` stops through the same function, and
+  an owner of a group `StartGroup` does not supervise (a provider, a
+  terminal) uses it to end what a reaped leader left before it releases the
+  group's watch. On Unix,
   `SignalGroup` returns `os.ErrProcessDone` once no member of a group can
   still run, including the exited, unreaped group that macOS refuses with
   EPERM. Use it wherever a group signal's result is checked.
   `Exited` reports a process that has exited but is not yet reaped, which
   signal 0 still finds. On macOS, `RunningGroupMembers` and `RunningInGroup`
   read group membership without counting exited members.
-- `StopGroup` ends a configured group whose leader `Wait` has reaped:
-  SIGTERM, SIGKILL after the grace, then nil once no member is alive or
-  `ErrGroupSurvived`. It is `Group`'s own stop; an owner of a group that
-  `StartGroup` does not supervise (a provider, a terminal) uses it before it
-  releases the group's watch.
 - `TailBuffer` retains the last bounded bytes written to it and reports
   whether older bytes were discarded.
 - `RunDrained` runs a command whose output must arrive whole. Use it instead

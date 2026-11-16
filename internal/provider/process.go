@@ -38,7 +38,7 @@ var (
 
 // stopLeftovers ends what the leader left in its group. A test replaces it
 // with a stop that fails.
-var stopLeftovers = procutil.StopGroup
+var stopLeftovers = procutil.StopConfiguredGroup
 
 // ErrLineTooLong is returned when a single stdout line exceeds maxLineSize.
 // Callers should treat this as session-fatal: the subprocess is killed by
@@ -249,7 +249,7 @@ func Spawn(ctx context.Context, lifetime Lifetime, cfg SpawnConfig) (*Process, e
 // returned from Close and Kill.
 func (p *Process) settleGroup(reaper procutil.Reaper) error {
 	if procutil.ConfiguredGroupAlive(p.cmd) {
-		if err := stopLeftovers(p.cmd, killGrace); err != nil {
+		if err := stopLeftovers(p.cmd, killGrace); err != nil && !errors.Is(err, os.ErrProcessDone) {
 			err = fmt.Errorf("provider: end processes left in group %d: %w", p.cmd.Process.Pid, err)
 			log.Printf("provider: provider=%q thread=%q: %v", p.provider, p.threadID, err)
 			return err

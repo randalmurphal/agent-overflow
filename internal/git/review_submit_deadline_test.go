@@ -137,7 +137,7 @@ func TestGitLabRequestChangesStopsAtItsCallersDeadline(t *testing.T) {
 	if !ok || !result.PostedReview || !partial.PostedReview || partial.Verdict != SubmitStepChangesThread || partial.Unconfirmed {
 		t.Fatalf("SubmitReview = %+v, %v; want the publish kept and the thread stopped, not unconfirmed", result, err)
 	}
-	want := []string{"GET metadata", "GET " + mr, "POST " + mr + "/draft_notes/bulk_publish"}
+	want := []string{"GET metadata", "GET " + mr, "GET " + mr + "/draft_notes?per_page=100", "POST " + mr + "/draft_notes/bulk_publish"}
 	if got := gitlabPaths(calls); !slices.Equal(got, want) {
 		t.Fatalf("requests = %q\nwant %q", got, want)
 	}

@@ -57,7 +57,7 @@ const (
 
 // stopLeftovers ends what the shell left in its group. A test replaces it
 // with a stop that fails.
-var stopLeftovers = procutil.StopGroup
+var stopLeftovers = procutil.StopConfiguredGroup
 
 // errOutputDrained ends the output pump once the shell has exited and the
 // pty holds nothing more.
@@ -490,7 +490,7 @@ func (p *Process) settleGroup() error {
 		return nil
 	}
 	if procutil.ConfiguredGroupAlive(p.cmd) {
-		if err := stopLeftovers(p.cmd, killGrace); err != nil {
+		if err := stopLeftovers(p.cmd, killGrace); err != nil && !errors.Is(err, os.ErrProcessDone) {
 			err = fmt.Errorf("terminal: end processes left in group %d: %w", p.cmd.Process.Pid, err)
 			log.Printf("%v", err)
 			return err

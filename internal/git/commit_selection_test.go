@@ -202,6 +202,85 @@ func TestCommitSelectedCommitsExactlyTheNamedPaths(t *testing.T) {
 	}
 }
 
+// After a commit of selected files the user's index holds what the commit
+// recorded at the paths it recorded, including what a pre-commit hook staged,
+// and every other entry the user staged is kept.
+func TestCommitSelectedRecordsWhatAHookStagedInTheIndex(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the hook is a POSIX shell script")
+	}
+	t.Parallel()
+	for name, tc := range map[string]struct {
+		hook string
+		// status is `git status --porcelain` after the commit.
+		status string
+		// committed is the commit's name-status.
+		committed string
+	}{
+		"hook changes nothing": {
+			hook:      "true\n",
+			status:    "MM other.txt\n?? \"new ab.txt\"\n",
+			committed: "M\x00README.txt\x00A\x00new *.txt\x00",
+		},
+		// The hook rewrites a selected file and stages it, as a formatter
+		// does, and stages a file of its own the user did not touch.
+		"hook formats a selected file": {
+			hook:      "printf 'hello\\nformatted\\n' > README.txt\nprintf 'generated\\n' > generated.txt\ngit add README.txt generated.txt\n",
+			status:    "MM other.txt\n?? \"new ab.txt\"\n",
+			committed: "M\x00README.txt\x00A\x00generated.txt\x00A\x00new *.txt\x00",
+		},
+		"hook removes a selected file": {
+			hook:      "git --literal-pathspecs rm --cached --quiet -- 'new *.txt'\n",
+			status:    "MM other.txt\n?? \"new *.txt\"\n?? \"new ab.txt\"\n",
+			committed: "M\x00README.txt\x00",
+		},
+		// The hook stages a path the user had staged a change of their own
+		// in: the commit has the hook's content, the index keeps the user's.
+		"hook stages a path the user staged": {
+			hook:      "printf 'other\\nhook\\n' > other.txt\ngit add other.txt\nprintf 'other\\nstaged\\nunstaged\\n' > other.txt\n",
+			status:    "MM other.txt\n?? \"new ab.txt\"\n",
+			committed: "M\x00README.txt\x00A\x00new *.txt\x00M\x00other.txt\x00",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			repo := initGitRepo(t)
+			commitRepoFile(t, repo, "other.txt", "other\n", "add other")
+			writeRepoFile(t, repo, "other.txt", "other\nstaged\n")
+			testutil.RunGit(t, repo, "add", "other.txt")
+			writeRepoFile(t, repo, "other.txt", "other\nstaged\nunstaged\n")
+			stagedOther := runGitStdout(t, repo, "ls-files", "--stage", "--", "other.txt")
+			writeRepoFile(t, repo, "README.txt", "hello\nunformatted   \n")
+			writeRepoFile(t, repo, "new *.txt", "fresh\n")
+			writeRepoFile(t, repo, "new ab.txt", "must not match the star\n")
+			selection := listedSelection(t, repo, "README.txt", "new *.txt")
+			installPreCommitHook(t, repo, tc.hook)
+
+			if _, err := NewCore().CommitSelected(repo, "pick", "", selection); err != nil {
+				t.Fatalf("CommitSelected: %v", err)
+			}
+			if got := runGitStdout(t, repo, "show", "--format=", "--name-status", "--no-renames", "-z", "HEAD"); got != tc.committed {
+				t.Fatalf("committed %q, want %q", got, tc.committed)
+			}
+			if got := runGitStdout(t, repo, "status", "--porcelain"); got != tc.status {
+				t.Fatalf("status after the commit = %q, want %q", got, tc.status)
+			}
+			if got := runGitStdout(t, repo, "ls-files", "--stage", "--", "other.txt"); got != stagedOther {
+				t.Fatalf("the user's staged other.txt changed:\n%s\nwas:\n%s", got, stagedOther)
+			}
+			// What the index holds at every committed path is what HEAD holds.
+			for _, path := range []string{"README.txt", "generated.txt", "new *.txt"} {
+				inHead := runGitStdout(t, repo, "--literal-pathspecs", "ls-tree", "HEAD", "--", path)
+				inIndex := runGitStdout(t, repo, "--literal-pathspecs", "ls-files", "--stage", "--", path)
+				if headFields, indexFields := strings.Fields(inHead), strings.Fields(inIndex); len(headFields) != len(indexFields) ||
+					len(headFields) > 0 && (headFields[0] != indexFields[0] || headFields[2] != indexFields[1]) {
+					t.Fatalf("%s: HEAD has %q, the index %q", path, inHead, inIndex)
+				}
+			}
+		})
+	}
+}
+
 func TestCommitSelectedAllStagesAndCommitsEverything(t *testing.T) {
 	t.Parallel()
 	repo := initGitRepo(t)

@@ -216,8 +216,8 @@ func (g *Group) supervise() (GroupOutcome, error) {
 	case waitErr = <-waited:
 	case <-g.ctx.Done():
 		stopped = true
-		// What this stop could not end is found again below, once the
-		// leader is reaped, and reported from there.
+		// A failed stop shows next: a leader that does not exit is
+		// ErrGroupSurvived, members that remain are the leftover sweep's.
 		_ = stopGroup(g.cmd, g.grace, g.kill)
 		select {
 		case waitErr = <-waited:
@@ -230,7 +230,9 @@ func (g *Group) supervise() (GroupOutcome, error) {
 	leftovers := ConfiguredGroupAlive(g.cmd)
 	var stopErr error
 	if leftovers && !g.keepLeftovers {
-		stopErr = stopGroup(g.cmd, g.grace, g.kill)
+		if err := stopGroup(g.cmd, g.grace, g.kill); err != nil && !errors.Is(err, os.ErrProcessDone) {
+			stopErr = errors.Join(ErrGroupSurvived, err)
+		}
 	}
 	if stopErr == nil && !(leftovers && g.keepLeftovers) {
 		g.reaper.Release(g.cmd.Process.Pid)
@@ -269,42 +271,56 @@ func RunGroup(ctx context.Context, reaper Reaper, command GroupCommand) (GroupOu
 	return group.Wait()
 }
 
-// StopGroup ends a command's process group: SIGTERM to every member, SIGKILL
-// after grace to whatever ignored it, then up to grace more for the killed
-// members to be gone. It returns nil once no member is alive and
-// ErrGroupSurvived otherwise. The command must lead its own group
-// (ConfigureGroup or Setpgid). An owner whose leader Wait has reaped uses it
-// to end what the leader left before it releases the group's watch; it is the
-// stop Group.Wait applies to leftovers and on cancellation.
-func StopGroup(cmd *exec.Cmd, grace time.Duration) error {
-	return stopGroup(cmd, grace, KillConfiguredGroup)
+// groupKillJoin bounds how long StopConfiguredGroup waits for the group to
+// be gone once SIGKILL was delivered: the members are dying, and each must
+// still be reaped by its parent or by init.
+const groupKillJoin = time.Second
+
+// errGroupOutlivedKill is StopConfiguredGroup's error for a group that still
+// has members groupKillJoin after SIGKILL was delivered.
+var errGroupOutlivedKill = errors.New("procutil: processes in the group outlived SIGKILL")
+
+// StopConfiguredGroup stops the group ConfigureGroup arranged for command and
+// returns once it is gone: SIGTERM to every member, then SIGKILL to the
+// group once grace has passed with any member still present, then a short
+// wait for the killed members to be reaped. The grace runs on group
+// emptiness, not on the leader: a leader that exits at once on SIGTERM
+// (git, a shell wrapper) can leave a hook or server that still needs its
+// moment, or that ignores SIGTERM and must be killed.
+//
+// It returns os.ErrProcessDone when the group was already gone, nil once
+// the group is gone after the signals, and otherwise the error that left
+// members running. It suits exec.Cmd.Cancel: the leader is reaped by Wait
+// while it blocks. On Windows the stop is the forced tree kill.
+func StopConfiguredGroup(command *exec.Cmd, grace time.Duration) error {
+	return stopGroup(command, grace, KillConfiguredGroup)
 }
 
-// stopGroup is StopGroup with the kill injected for tests. The grace runs on
-// group emptiness, not on the leader: a shell wrapper exits at once on
-// SIGTERM while the server it started still needs its moment to shut down.
-// On cancellation a refused kill also shows as a leader that does not exit,
-// which Wait reports as ErrGroupSurvived.
 func stopGroup(cmd *exec.Cmd, grace time.Duration, kill func(*exec.Cmd) error) error {
-	if err := TerminateConfiguredGroup(cmd); errors.Is(err, os.ErrProcessDone) {
+	// A refused SIGTERM still gets the grace and the kill: some members may
+	// have taken it, and the kill reports what is left.
+	termErr := terminateConfiguredGroup(cmd)
+	if errors.Is(termErr, os.ErrProcessDone) {
+		return termErr
+	}
+	if waitGroupGone(cmd, grace) {
 		return nil
 	}
-	if groupEmptyWithin(cmd, grace) {
+	if err := kill(cmd); errors.Is(err, os.ErrProcessDone) {
+		return nil
+	} else if err != nil {
+		return errors.Join(termErr, err)
+	}
+	if waitGroupGone(cmd, groupKillJoin) {
 		return nil
 	}
-	if err := kill(cmd); err != nil && !errors.Is(err, os.ErrProcessDone) {
-		return errors.Join(ErrGroupSurvived, err)
-	}
-	if groupEmptyWithin(cmd, grace) {
-		return nil
-	}
-	return ErrGroupSurvived
+	return errGroupOutlivedKill
 }
 
-// groupEmptyWithin reports whether the command's group has no live member by
-// the end of grace.
-func groupEmptyWithin(cmd *exec.Cmd, grace time.Duration) bool {
-	deadline := time.NewTimer(grace)
+// waitGroupGone polls until no member of cmd's group remains or bound ends,
+// and reports whether the group is gone.
+func waitGroupGone(cmd *exec.Cmd, bound time.Duration) bool {
+	deadline := time.NewTimer(bound)
 	defer deadline.Stop()
 	poll := time.NewTicker(50 * time.Millisecond)
 	defer poll.Stop()

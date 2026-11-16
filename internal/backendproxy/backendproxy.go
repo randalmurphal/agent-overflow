@@ -213,11 +213,7 @@ func (c *Carrier) BootstrapURL() string { return c.bootstrapURL }
 // caller that wants the manifest's own fields has them.
 func (c *Carrier) FetchBootstrap(ctx context.Context) (status int, _ []byte, err error) {
 	defer func(started time.Time) {
-		outcome := logging.ErrorOutcome(err)
-		if err == nil {
-			outcome = logging.StatusOutcome(status)
-		}
-		logging.LogSlowStep(slowStepComponent, stepManifest, started, outcome)
+		logging.LogSlowStep(slowStepComponent, stepManifest, started, logging.HTTPOutcome(status, err))
 	}(time.Now())
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.bootstrapURL, nil)
 	if err != nil {
