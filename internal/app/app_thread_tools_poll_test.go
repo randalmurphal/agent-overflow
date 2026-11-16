@@ -418,28 +418,30 @@ func TestSweepScheduleKeepsRemindersWhileAPollIsInFlight(t *testing.T) {
 	if err := f.app.store.RescheduleThreadRequest(remote, time.Now().Add(time.Minute).UnixMilli(), 0, ""); err != nil {
 		t.Fatalf("reschedule: %v", err)
 	}
+	// The moments are far enough apart that a loaded host's pauses between
+	// the steps do not change which one each delay is.
 	if err := f.app.store.InsertThreadRequest(store.ThreadRequest{
 		Token: uuid.NewString(), CallerThreadID: f.caller.ID, Kind: store.ThreadRequestRemind,
-		State: store.ThreadRequestAccepted, DueAt: time.Now().Add(3 * time.Second).UnixMilli(),
+		State: store.ThreadRequestAccepted, DueAt: time.Now().Add(30 * time.Second).UnixMilli(),
 	}); err != nil {
 		t.Fatalf("insert reminder: %v", err)
 	}
 	lastExpiry := time.Now()
 
-	if delay := f.app.threadRequestSweepDelay(lastExpiry); delay > 3*time.Second {
-		t.Fatalf("delay = %v, want the reminder's three seconds", delay)
+	if delay := f.app.threadRequestSweepDelay(lastExpiry); delay > 30*time.Second {
+		t.Fatalf("delay = %v, want the reminder's thirty seconds", delay)
 	}
 	if !f.app.beginThreadRequestPoll() {
 		t.Fatal("the poll slot was taken")
 	}
 	defer f.app.endThreadRequestPoll()
-	if delay := f.app.threadRequestSweepDelay(lastExpiry); delay > 3*time.Second {
+	if delay := f.app.threadRequestSweepDelay(lastExpiry); delay > 30*time.Second {
 		t.Fatalf("delay with a poll in flight = %v, want the reminder still served", delay)
 	}
 	if err := f.app.store.RescheduleThreadRequest(remote, time.Now().Add(time.Second).UnixMilli(), 0, ""); err != nil {
 		t.Fatalf("reschedule: %v", err)
 	}
-	if delay := f.app.threadRequestSweepDelay(lastExpiry); delay < 2*time.Second {
+	if delay := f.app.threadRequestSweepDelay(lastExpiry); delay < 10*time.Second {
 		t.Fatalf("delay = %v, want the in-flight poll's rows left out", delay)
 	}
 }
