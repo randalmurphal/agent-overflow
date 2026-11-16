@@ -277,10 +277,12 @@ type ThreadName struct {
 	// an Agents row offers for the thread its spawn made.
 	Placement string
 	Archived  bool
+	// Tally is what the thread did, which a spawn's Agents row counts.
+	Tally ThreadTally
 }
 
-// ThreadNames reads the title, provider, placement and archive state of
-// each of ids that has a row, in one statement.
+// ThreadNames reads the title, provider, placement, archive state and
+// tally of each of ids that has a row, in one statement.
 func (s *Store) ThreadNames(ids []string) (_ map[string]ThreadName, err error) {
 	out := make(map[string]ThreadName, len(ids))
 	if len(ids) == 0 {
@@ -291,7 +293,8 @@ func (s *Store) ThreadNames(ids []string) (_ map[string]ThreadName, err error) {
 		return nil, fmt.Errorf("store: encode thread ids for their names: %w", err)
 	}
 	rows, err := s.reader().Query(`SELECT t.id, t.title, t.provider,
-	       CASE WHEN `+unplaceableThreadSQL("t")+` THEN '' ELSE t.placement END, t.archived
+	       CASE WHEN `+unplaceableThreadSQL("t")+` THEN '' ELSE t.placement END, t.archived,
+	       `+threadTallyColumnsSQL("t.id")+`
 	  FROM json_each(?) j CROSS JOIN threads t WHERE t.id = j.value`, string(encoded))
 	if err != nil {
 		return nil, fmt.Errorf("store: read thread names: %w", err)
@@ -300,7 +303,7 @@ func (s *Store) ThreadNames(ids []string) (_ map[string]ThreadName, err error) {
 	for rows.Next() {
 		var id string
 		var name ThreadName
-		if err := rows.Scan(&id, &name.Title, &name.Provider, &name.Placement, &name.Archived); err != nil {
+		if err := rows.Scan(&id, &name.Title, &name.Provider, &name.Placement, &name.Archived, &name.Tally.ToolCalls, &name.Tally.Tokens); err != nil {
 			return nil, fmt.Errorf("store: scan a thread name: %w", err)
 		}
 		out[id] = name

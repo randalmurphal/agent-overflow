@@ -79,6 +79,15 @@ type ThreadTally struct {
 	Tokens    int64
 }
 
+// threadTallyColumnsSQL is the two columns of the tally of the thread id
+// names, tool calls then tokens: one probe of thread_tallies and one of the
+// running turn's usage_pending rows, which a read adds.
+func threadTallyColumnsSQL(id string) string {
+	return `COALESCE((SELECT tool_calls FROM thread_tallies WHERE thread_id = ` + id + `), 0),
+		COALESCE((SELECT tokens FROM thread_tallies WHERE thread_id = ` + id + `), 0)
+		+ COALESCE((SELECT SUM(` + usageSpendSQLPlain + `) FROM usage_pending WHERE thread_id = ` + id + `), 0)`
+}
+
 // ThreadTallies reads the tallies of threadIDs, keyed by thread; a thread
 // that has done nothing yet is left out.
 func (s *Store) ThreadTallies(threadIDs []string) (map[string]ThreadTally, error) {
@@ -90,10 +99,8 @@ func (s *Store) ThreadTallies(threadIDs []string) (map[string]ThreadTally, error
 	if err != nil {
 		return nil, fmt.Errorf("store: read thread tallies: %w", err)
 	}
-	rows, err := s.reader().Query(`SELECT ids.value, COALESCE(t.tool_calls, 0),
-		COALESCE(t.tokens, 0) + COALESCE((SELECT SUM(`+usageSpendSQLPlain+`) FROM usage_pending p WHERE p.thread_id = ids.value), 0)
-		  FROM (SELECT DISTINCT value FROM json_each(?)) AS ids
-		  LEFT JOIN thread_tallies t ON t.thread_id = ids.value`, string(ids))
+	rows, err := s.reader().Query(`SELECT ids.value, `+threadTallyColumnsSQL("ids.value")+`
+		  FROM (SELECT DISTINCT value FROM json_each(?)) AS ids`, string(ids))
 	if err != nil {
 		return nil, fmt.Errorf("store: read thread tallies: %w", err)
 	}

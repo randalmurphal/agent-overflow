@@ -1557,8 +1557,8 @@ closes up their spacing so the row holds at a phone width.
   top-level tool calls and the tokens its turns spent over the thread's
   life, counted as a subagent's are (fresh input, cache writes and
   output; a cached prompt read again is no spend), the running turn's
-  included (`store.ThreadTallies`, kept by
-  triggers, one probe per thread a read), live while it works and kept,
+  included (`store.ThreadTally`, kept by triggers and read with the
+  thread's name, one probe per thread), live while it works and kept,
   final, once it rests and under Past. A running target's latest
   top-level tool call is its activity, beside the counts on a second
   line, emitted at most every 2 s; its messages are not activity, its

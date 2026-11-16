@@ -129,7 +129,7 @@ type ThreadAgentRow struct {
 	Activity string `json:"activity,omitempty"`
 	// ToolCalls and Tokens are what the thread a spawn made did over its
 	// life: its top-level tool calls and the tokens its turns spent, the
-	// running turn's included (store.ThreadTallies), read here or reported
+	// running turn's included (store.ThreadTally), read here or reported
 	// by the paired computer that holds it; zero for every other kind and
 	// from a computer that does not report them.
 	ToolCalls int64 `json:"toolCalls,omitempty"`
@@ -767,34 +767,7 @@ func (v threadAgentView) rows(requests []store.ThreadAgentRequest) ([]ThreadAgen
 		out = append(out, v.row(request, names))
 	}
 	v.attachLastMessages(out)
-	v.attachTallies(out)
 	return out, nil
-}
-
-// attachTallies reads what the thread each local spawn made did, for every
-// such row at once.
-func (v threadAgentView) attachTallies(rows []ThreadAgentRow) {
-	ids := make([]string, 0, len(rows))
-	for _, row := range rows {
-		if row.Kind == store.ThreadRequestSpawn && row.ComputerID == "" && row.ThreadID != "" {
-			ids = append(ids, row.ThreadID)
-		}
-	}
-	if len(ids) == 0 {
-		return
-	}
-	tallies, err := v.app.store.ThreadTallies(ids)
-	if err != nil {
-		// The counts are beside the row; the row stands.
-		log.Printf("agent rows: read thread tallies: %v", err)
-		return
-	}
-	for index := range rows {
-		row := &rows[index]
-		if tally, ok := tallies[row.ThreadID]; ok && row.Kind == store.ThreadRequestSpawn && row.ComputerID == "" {
-			row.ToolCalls, row.Tokens = tally.ToolCalls, tally.Tokens
-		}
-	}
 }
 
 func (v threadAgentView) row(request store.ThreadAgentRequest, names map[string]store.ThreadName) ThreadAgentRow {
@@ -864,6 +837,8 @@ func (v threadAgentView) row(request store.ThreadAgentRequest, names map[string]
 		out.Provider = name.Provider
 		if row.Kind == store.ThreadRequestSpawn {
 			out.Placement, out.Archived = name.Placement, name.Archived
+			// What the thread it made did, read with its name.
+			out.ToolCalls, out.Tokens = name.Tally.ToolCalls, name.Tally.Tokens
 		}
 	}
 	if asked, ok := names[row.OriginThreadID]; ok && local && row.Kind == store.ThreadRequestAsk {
