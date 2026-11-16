@@ -177,8 +177,7 @@ func scopeRefusal(scope Scope, methodName string) *FrameError {
 		Code:    ErrCodeScopeRequired,
 		Message: fmt.Sprintf("%s requires the %s scope, which this session was not granted", methodName, scope),
 		// The scope name is a FIELD, not prose to parse: it is what a
-		// client branches on to explain a disabled surface, and prose does
-		// not survive the wire for a non-loopback caller.
+		// client branches on to explain a disabled surface.
 		Scope: string(scope),
 	}
 }
@@ -189,11 +188,11 @@ func scopeRefusal(scope Scope, methodName string) *FrameError {
 // is the FLOOR"). Selecting an autonomous runtime mode and writing a
 // host-tier settings key are the two.
 //
-// It exists so an in-method refusal reaches the wire as the SAME code and
-// message a pre-call refusal would. Without it a method could only return
-// an ordinary error, which the dispatcher redacts for a non-loopback
-// caller — so the client that most needs to know which scope it lacks is
-// the one that would be told "method failed".
+// It exists so an in-method refusal reaches the wire as the SAME code,
+// message and scope field a pre-call refusal would. Without it a method
+// could only return an ordinary error, which reaches every caller as
+// method_error with no scope field (CallerError), so the client could not
+// tell which scope it lacks.
 type authzError struct{ frame FrameError }
 
 func (e *authzError) Error() string { return e.frame.Message }
@@ -251,9 +250,9 @@ func AuthRefused(reasonCode string) error {
 }
 
 // AuthzFrame reports the wire refusal a method error carries, if it is one
-// the constructors above built. The dispatcher asks before its redaction
-// path, because these messages are the answer rather than an internal
-// detail.
+// the constructors above built. The dispatcher asks before CallerError and
+// sends the frame as built, because the refusal is the answer rather than a
+// failure to log and describe.
 //
 // Exported because the constructors are: a package that returns one of
 // these from a bound method is the package that has to assert what its

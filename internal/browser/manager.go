@@ -530,11 +530,12 @@ func (m *Manager) closeFoundPage(ctx context.Context, access Access, p *managedP
 // them opens while it runs, forgets its suspended pages and their saved copy,
 // and forgets the thread's browser session. A page the engine closed
 // meanwhile counts as closed. A workspace profile that fails to dispose once
-// its last page is gone is logged rather than returned: the thread's pages
-// are closed, and the profile is no longer registered for a retry to
-// dispose. A saved copy that cannot be removed is logged the same way: its
-// pages are gone from memory, and the next boot removes the saved copy of a
-// deleted or archived thread.
+// its last page is gone (a browser process that would not stop, ephemeral
+// site data left on disk) is returned, as ClosePage returns it, after every
+// page is closed; the profile is no longer registered, so a second close
+// does not repeat the failure. A saved copy that cannot be removed is logged
+// instead: its pages are gone from memory, and the next boot removes the
+// saved copy of a deleted or archived thread.
 //
 // The records go first, so no restore can register a page after the loop
 // below has closed the thread's live ones.
@@ -542,21 +543,22 @@ func (m *Manager) CloseThread(ctx context.Context, threadID string) error {
 	if err := m.forgetThreadRecords(threadID); err != nil {
 		log.Printf("browser: close thread %s: %v", threadID, err)
 	}
+	var errs []error
 	for pages := m.ownedPages(threadID); len(pages) > 0; pages = m.ownedPages(threadID) {
 		if err := ctx.Err(); err != nil {
-			return fmt.Errorf("browser: close thread pages: %w", err)
+			return errors.Join(append(errs, fmt.Errorf("browser: close thread pages: %w", err))...)
 		}
 		for _, p := range pages {
 			access := Access{ThreadID: threadID, Workspace: m.workspaceForPage(p.id)}
 			if err := m.closeLivePage(ctx, access, p.id); err != nil && !errors.Is(err, errPageNotFound) {
-				log.Printf("browser: close thread %s: %v", threadID, err)
+				errs = append(errs, fmt.Errorf("browser: close thread %s: %w", threadID, err))
 			}
 		}
 	}
 	m.mu.Lock()
 	delete(m.sessions, threadID)
 	m.mu.Unlock()
-	return nil
+	return errors.Join(errs...)
 }
 
 // ClearSiteData closes every engine page first, then deletes the site data
