@@ -184,7 +184,7 @@ The public E2E gate runs through the fixed-purpose `ao-harness-e2e` launcher.
 It starts `pnpm exec playwright test` inside one boundary, so the test runner,
 browser processes, harness backends, mock providers, and their descendants
 share the same limit. `pnpm test` invokes this launcher through `go run` when
-the standalone binary is not present. The two-worker gate reserves 6 GiB by
+the standalone binary is not present. The gate reserves 8 GiB by
 default and accepts `--memory-limit-bytes` for machine-specific runs. Direct
 Windows use of `launchHarness` refuses unless this launcher marker is present.
 The suite runs in a process group of its own, so an interrupt (and on Unix
