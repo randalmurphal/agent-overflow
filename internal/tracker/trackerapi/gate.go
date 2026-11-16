@@ -86,9 +86,9 @@ func (p *pacer) wait(ctx context.Context, now func() time.Time, sleep func(conte
 // admit passes the rate gate and the pacing, in that order, and checks
 // the gate again after pacing, which another call's rate limit may have
 // closed meanwhile. Its errors are *NotSentError.
-func (c *Client) admit(ctx context.Context, k *call) error {
+func (c *Client) admit(ctx context.Context, k *call, state *retries) error {
 	for {
-		if err := c.waitGate(ctx, k); err != nil {
+		if err := c.waitGate(ctx, k, state); err != nil {
 			return err
 		}
 		if err := c.pace.wait(ctx, c.now, c.sleep); err != nil {
@@ -101,9 +101,10 @@ func (c *Client) admit(ctx context.Context, k *call) error {
 }
 
 // waitGate returns once the gate is open. A background call fails at once
-// while it is closed; an interactive one waits when the gate opens within
-// interactiveGateWait and before its deadline.
-func (c *Client) waitGate(ctx context.Context, k *call) error {
+// while it is closed; an interactive one waits when the gate opens before
+// its deadline and within what is left of interactiveGateWait, one budget
+// for every wait of the call.
+func (c *Client) waitGate(ctx context.Context, k *call, state *retries) error {
 	for {
 		now := c.now()
 		until, closed := c.gate.closedUntil(now)
@@ -111,12 +112,13 @@ func (c *Client) waitGate(ctx context.Context, k *call) error {
 			return nil
 		}
 		wait := until.Sub(now)
-		if !IsInteractive(ctx) || wait > interactiveGateWait || pastDeadline(ctx, wait) {
+		if !IsInteractive(ctx) || wait > interactiveGateWait-state.gateWaited || pastDeadline(ctx, wait) {
 			return &NotSentError{Err: &RateLimitedError{Tracker: c.name, Until: until}}
 		}
 		if err := c.sleep(ctx, wait); err != nil {
 			return &NotSentError{Err: c.ended(ctx, c.where(k.method, k.target))}
 		}
+		state.gateWaited += wait
 	}
 }
 

@@ -116,7 +116,7 @@ func TestStallTimesTheUploadBody(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		st := newStall(t.Context(), true)
 		defer st.stop()
-		body, _ := st.upload(make([]byte, 10))
+		body := st.upload(make([]byte, 10))
 		for range 3 {
 			time.Sleep(stallTimeout - time.Second)
 			if _, err := body.Read(make([]byte, 1)); err != nil || st.ctx.Err() != nil {
@@ -131,7 +131,7 @@ func TestStallTimesTheUploadBody(t *testing.T) {
 
 		st = newStall(t.Context(), true)
 		defer st.stop()
-		body, _ = st.upload(make([]byte, 10))
+		body = st.upload(make([]byte, 10))
 		if _, err := io.ReadAll(body); err != nil {
 			t.Fatal(err)
 		}

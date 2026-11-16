@@ -6,7 +6,9 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"testing/synctest"
 )
 
 // The credential goes only to the base origin: a redirect to another
@@ -56,8 +58,9 @@ func TestCredentialStaysOnTheBaseOrigin(t *testing.T) {
 	}
 }
 
-// A redirect to plain http off loopback is refused, and the redirect
-// policy drops the credential headers on a hop to another origin.
+// A redirect to plain http off loopback is refused, a hop carries the
+// credential only on the base origin, and a call follows at most
+// maxRedirects-1 redirects.
 func TestRedirectPolicy(t *testing.T) {
 	t.Parallel()
 	tr := newTracker(t, route{
@@ -74,23 +77,42 @@ func TestRedirectPolicy(t *testing.T) {
 		t.Fatalf("a refused redirect is not transient: %v", err)
 	}
 
-	first, _ := http.NewRequest(http.MethodGet, "https://example.atlassian.net/a", nil)
 	for target, kept := range map[string]bool{
 		"https://example.atlassian.net/b":      true,
 		"https://example.atlassian.net:443/b":  true,
+		"HTTPS://EXAMPLE.atlassian.net/b":      true,
 		"https://media.example.com/b":          false,
 		"https://example.atlassian.net:8443/b": false,
 	} {
-		hop, _ := http.NewRequest(http.MethodGet, target, nil)
-		hop.Header.Set("Authorization", "Bearer x")
-		hop.Header.Set("Cookie", "a=b")
-		if err := checkRedirect(hop, []*http.Request{first}); err != nil {
-			t.Fatal(err)
-		}
-		if got := hop.Header.Get("Authorization") != "" && hop.Header.Get("Cookie") != ""; got != kept {
-			t.Errorf("%s: credential headers kept = %v, want %v", target, got, kept)
-		}
+		synctest.Test(t, func(t *testing.T) {
+			var auth atomic.Value
+			c := memoryClient(t, func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/a" {
+					http.Redirect(w, r, target, http.StatusFound)
+					return
+				}
+				auth.Store(r.Header.Get("Authorization"))
+			}, nil)
+			if _, err := c.Do(t.Context(), Request{Path: "a"}); err != nil {
+				t.Fatal(err)
+			}
+			if got := auth.Load().(string) != ""; got != kept {
+				t.Errorf("%s: credential kept = %v, want %v", target, got, kept)
+			}
+		})
 	}
+
+	synctest.Test(t, func(t *testing.T) {
+		var hops atomic.Int32
+		c := memoryClient(t, func(w http.ResponseWriter, r *http.Request) {
+			hops.Add(1)
+			http.Redirect(w, r, "/loop", http.StatusFound)
+		}, nil)
+		_, err := c.Do(t.Context(), Request{Path: "loop"})
+		if !errors.Is(err, errRedirect) || hops.Load() != maxRedirects {
+			t.Fatalf("Do = %v after %d requests, want the redirects stopped at %d", err, hops.Load(), maxRedirects)
+		}
+	})
 }
 
 // A 401 from another origin is that origin's answer, not a refusal of
@@ -112,8 +134,9 @@ func TestUnauthorizedOffTheBaseOriginIsAStatus(t *testing.T) {
 	}
 }
 
-// The request a Client builds carries no credential: only authTransport's
-// per-hop clone does.
+// The request a Client builds carries no credential, which a hop adds only
+// on the base origin, and has no GetBody that would let net/http send it
+// again.
 func TestBuiltRequestCarriesNoCredential(t *testing.T) {
 	t.Parallel()
 	c, _ := loopbackClient(t, testOptions("https://example.atlassian.net/"))
@@ -124,9 +147,12 @@ func TestBuiltRequestCarriesNoCredential(t *testing.T) {
 	if err := c.loadCredential(t.Context(), false, 0); err != nil {
 		t.Fatal(err)
 	}
-	req, err := k.request(t.Context(), nil, c.userAgent)
+	req, err := k.request(t.Context(), k.target, nil, c.userAgent)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if req.GetBody != nil || req.ContentLength != int64(len(k.body)) {
+		t.Fatalf("GetBody set %v, length %d", req.GetBody != nil, req.ContentLength)
 	}
 	dump, err := httputil.DumpRequestOut(req, true)
 	if err != nil {

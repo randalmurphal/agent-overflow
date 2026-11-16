@@ -3,7 +3,6 @@ package trackerapi
 import (
 	"errors"
 	"fmt"
-	"net"
 	"net/http"
 	"slices"
 	"strings"
@@ -26,9 +25,10 @@ const maxErrorBody = 4 << 10
 
 // NotSentError is a call whose request never left this process: the
 // client was closed, the request was malformed, the credential could not
-// be read, the rate gate was closed, the call ended while waiting, or the
-// connection was never made (a dial or name lookup failure). The tracker
-// never saw it.
+// be read, the rate gate was closed, the call ended while waiting to send
+// (for the gate, the pacing or the credential), or the transport never
+// held a connection for it (a dial, name lookup, proxy or TLS failure, or
+// the call ending first). The tracker never saw it.
 type NotSentError struct{ Err error }
 
 func (e *NotSentError) Error() string { return e.Err.Error() }
@@ -38,6 +38,8 @@ func (e *NotSentError) Unwrap() error { return e.Err }
 // credential was read again, or an answer the dialect marks as a refused
 // login (Status is then the answer's, which can be a 2xx). Err is the
 // failure to read the credential again, when that is what ended the call.
+// Message has the credential the request carried replaced by
+// secret.Redacted.
 type AuthError struct {
 	Tracker string
 	Method  string
@@ -79,23 +81,35 @@ func (e *RateLimitedError) Error() string {
 }
 
 // StatusError is an answer of 400 or above that is neither a refused
-// credential nor a rate limit. URL is redacted, Body holds at most 4 KiB
-// of the answer, and Message and Fields are what the dialect read from
-// it: Fields maps a field ID to its message. A 404 matches ErrNotFound.
+// credential nor a rate limit, or a 3xx answering a call that follows no
+// redirect (any method but GET and HEAD), for which a write's outcome is
+// unknown. URL is redacted, Body holds at most 4 KiB of the answer, and
+// Message and Fields are what the dialect read from it: Fields maps a
+// field ID to its message. Body, Message and Fields have the credential
+// the request carried replaced by secret.Redacted. Location is a 3xx's
+// target, redacted; empty when it named none that parses. A 404 matches
+// ErrNotFound.
 type StatusError struct {
-	Tracker string
-	Method  string
-	URL     string
-	Status  int
-	Message string
-	Fields  map[string]string
-	Body    string
+	Tracker  string
+	Method   string
+	URL      string
+	Status   int
+	Message  string
+	Fields   map[string]string
+	Body     string
+	Location string
 }
 
 func (e *StatusError) Error() string {
 	msg := fmt.Sprintf("%s %s %s: HTTP %d", e.Tracker, e.Method, e.URL, e.Status)
 	if text := http.StatusText(e.Status); text != "" {
 		msg += " " + text
+	}
+	if e.Status >= 300 && e.Status <= 399 {
+		msg += ", a redirect not followed"
+		if e.Location != "" {
+			msg += " to " + e.Location
+		}
 	}
 	detail := e.Message
 	if len(e.Fields) > 0 {
@@ -150,38 +164,33 @@ func (e *BodyTooLargeError) Error() string {
 // tracker did not apply it: the request was never sent, or the tracker
 // answered it in full with a 4xx (a refusal, a refused credential, a
 // 429). Every other failure leaves the outcome unknown (a timeout or reset
-// after the request was written, a 5xx, a 2xx cut short or that did not
-// decode, a refused login marked on a 2xx), and the caller reads the
-// tracker again before it offers the write again.
+// after the request may have been written, a 3xx, a 5xx, a 2xx cut short
+// or that did not decode, a refused login marked on a 2xx), and the
+// caller reads the tracker again before it offers the write again.
+//
+// The outermost of these errors in err's chain decides: a *NotSentError
+// wrapping an answer's error (a check read that failed before the write)
+// proves the write not sent, and an answer's error wrapping a
+// *NotSentError (a failed re-read) is judged by its status.
 func WriteNotApplied(err error) bool {
-	if err == nil {
-		return false
-	}
-	// An answer's status decides before NotSentError, so an answer is
-	// never judged by an error found inside it.
-	if e, ok := errors.AsType[*AuthError](err); ok {
-		return clientError(e.Status)
-	}
-	if e, ok := errors.AsType[*StatusError](err); ok {
-		return clientError(e.Status)
-	}
-	if e, ok := errors.AsType[*RateLimitedError](err); ok && e.Status != 0 {
-		return clientError(e.Status)
-	}
-	_, ok := errors.AsType[*NotSentError](err)
-	return ok
-}
-
-func clientError(status int) bool { return status >= 400 && status <= 499 }
-
-// neverConnected reports a transport failure before a connection existed,
-// so no byte of the request reached the tracker.
-func neverConnected(cause error) bool {
-	if _, ok := errors.AsType[*net.DNSError](cause); ok {
-		return true
-	}
-	if op, ok := errors.AsType[*net.OpError](cause); ok {
-		return op.Op == "dial"
+	if e, ok := errors.AsType[outcome](err); ok {
+		return e.notApplied()
 	}
 	return false
 }
+
+// outcome is an error that tells whether a write was applied.
+type outcome interface {
+	error
+	notApplied() bool
+}
+
+func (e *NotSentError) notApplied() bool { return true }
+func (e *AuthError) notApplied() bool    { return clientError(e.Status) }
+func (e *StatusError) notApplied() bool  { return clientError(e.Status) }
+
+// notApplied is false for the gate's refusal (Status zero) unwrapped,
+// which only a redirect hop of a read returns.
+func (e *RateLimitedError) notApplied() bool { return clientError(e.Status) }
+
+func clientError(status int) bool { return status >= 400 && status <= 499 }

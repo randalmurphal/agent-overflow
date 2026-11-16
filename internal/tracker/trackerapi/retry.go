@@ -27,20 +27,30 @@ func (c *Client) settle(ctx context.Context, k *call, state *retries, a *answer)
 		return c.retryWait(ctx, k, state, min(wait, maxRetryWait), failure)
 	case a.status >= 400:
 		return false, c.statusError(k, a)
+	case a.status >= 300 && k.redirects == refuseRedirect:
+		return false, c.redirectError(k, a)
 	}
 	return false, nil
 }
 
 func (c *Client) statusError(k *call, a *answer) *StatusError {
-	problem := c.dialect.Problem(a.status, a.body)
-	body := a.body
-	if len(body) > maxErrorBody {
-		body = body[:maxErrorBody]
-	}
+	problem, body := c.answerText(a)
 	return &StatusError{
 		Tracker: c.name, Method: k.method, URL: redact(a.url), Status: a.status,
-		Message: problem.Message, Fields: problem.Fields, Body: string(body),
+		Message: problem.Message, Fields: problem.Fields, Body: body,
 	}
+}
+
+// redirectError is a 3xx answering a call that does not follow one. Its
+// target is named redacted, or not at all when it is not a URL.
+func (c *Client) redirectError(k *call, a *answer) *StatusError {
+	failure := &StatusError{Tracker: c.name, Method: k.method, URL: redact(a.url), Status: a.status}
+	if location := a.header.Get("Location"); location != "" {
+		if target, err := a.url.Parse(location); err == nil {
+			failure.Location = redact(target)
+		}
+	}
+	return failure
 }
 
 // afterRefusal reads the credential again after the first refusal and
@@ -48,15 +58,16 @@ func (c *Client) statusError(k *call, a *answer) *StatusError {
 // answered. A refusal marked on an answer that is not a 4xx may have run
 // a write, so a write goes again only after a 4xx.
 func (c *Client) afterRefusal(ctx context.Context, k *call, state *retries, a *answer) (bool, error) {
+	problem, _ := c.answerText(a)
 	refusal := &AuthError{
 		Tracker: c.name, Method: k.method, URL: redact(a.url), Status: a.status,
-		Message: c.dialect.Problem(a.status, a.body).Message,
+		Message: problem.Message,
 	}
 	if state.reread || (!k.read && !clientError(a.status)) {
 		return false, refusal
 	}
 	state.reread = true
-	if err := c.loadCredential(ctx, true, a.sentGen); err != nil {
+	if err := c.loadCredential(ctx, true, a.sent.gen); err != nil {
 		if ctx.Err() != nil {
 			err = c.ended(ctx, c.where(k.method, k.target))
 		}
@@ -64,7 +75,7 @@ func (c *Client) afterRefusal(ctx context.Context, k *call, state *retries, a *a
 		return false, refusal
 	}
 	c.credMu.RLock()
-	unchanged := c.cred == a.sentTo
+	unchanged := c.cred == a.sent.cred
 	c.credMu.RUnlock()
 	if unchanged {
 		return false, refusal
@@ -73,9 +84,10 @@ func (c *Client) afterRefusal(ctx context.Context, k *call, state *retries, a *a
 }
 
 // afterLimit closes the gate and fails the call, unless it is interactive,
-// may be sent again, has retries left and the gate opens soon enough: the
-// next attempt then waits for the gate in admit. A write is sent again
-// only after a 429, which the tracker answers before it applies anything.
+// may be sent again, has retries left and the gate opens within what is
+// left of its gate-wait budget: the next attempt then waits for the gate
+// in admit. A write is sent again only after a 429, which the tracker
+// answers before it applies anything.
 func (c *Client) afterLimit(ctx context.Context, k *call, state *retries, a *answer) (bool, error) {
 	now := c.now()
 	until := a.until
@@ -86,7 +98,7 @@ func (c *Client) afterLimit(ctx context.Context, k *call, state *retries, a *ans
 	limited := &RateLimitedError{Tracker: c.name, Until: until, Status: a.status}
 	wait := until.Sub(now)
 	resend := k.read || a.status == http.StatusTooManyRequests
-	if !resend || !IsInteractive(ctx) || state.count >= maxRetries || wait > interactiveGateWait || pastDeadline(ctx, wait) {
+	if !resend || !IsInteractive(ctx) || state.count >= maxRetries || wait > interactiveGateWait-state.gateWaited || pastDeadline(ctx, wait) {
 		return false, limited
 	}
 	state.count++

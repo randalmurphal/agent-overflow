@@ -17,6 +17,8 @@ import (
 // Request is one call.
 type Request struct {
 	// Method is GET, HEAD, POST, PUT, PATCH or DELETE; empty means GET.
+	// Only a GET or HEAD follows a redirect. A 3xx answering any other
+	// method fails the call with a *StatusError: a write is never sent on.
 	Method string
 	// Path is relative to Options.BaseURL ("rest/api/3/issue/WEB-1"), with
 	// an optional query, and never starts with "/" or holds a dot segment.
@@ -26,16 +28,16 @@ type Request struct {
 	Query url.Values // added to Path's query, replacing keys it repeats
 	// Header carries headers such as Accept or Range. Authorization,
 	// Proxy-Authorization, Cookie, Host, User-Agent, Content-Type and
-	// Content-Length are refused.
+	// Content-Length are refused, and so are Idempotency-Key and
+	// X-Idempotency-Key, which would let net/http send a write again.
 	Header http.Header
-	// Body is JSON-encoded, except a []byte or an io.Reader, which is sent
-	// as is with ContentType. A reader is read whole before the first
-	// send, so a retry can send it again; the caller bounds its size
-	// (Multipart does). The caller does not change a []byte until the call
-	// returns. GET and HEAD carry no body.
+	// Body is JSON-encoded, except a []byte, which is sent as is with
+	// ContentType. An io.Reader is refused: Multipart turns an upload into
+	// bytes. The caller does not change a []byte until the call returns.
+	// GET and HEAD carry no body.
 	Body any
-	// ContentType is the body's type: required for a []byte or io.Reader
-	// body, application/json when empty for any other.
+	// ContentType is the body's type: required for a []byte body,
+	// application/json when empty for any other.
 	ContentType string
 	// ReadOnly marks a POST that only reads (a search, a GraphQL query):
 	// it is retried like a GET. Refused on any other method.
@@ -53,7 +55,9 @@ type Request struct {
 	Timeout time.Duration
 	// MaxBodyBytes bounds the answer body Do and JSON read; zero takes
 	// Options.MaxBodyBytes. Stream takes its limit as an argument and
-	// refuses one here.
+	// refuses one here. An error answer's body is read up to this bound or
+	// 64 KiB, whichever is less, and kept as far as it was read: the
+	// status is the answer, never a *BodyTooLargeError.
 	MaxBodyBytes int64
 }
 
@@ -63,6 +67,9 @@ type Response struct {
 	Header http.Header
 	// Body is the whole answer for Do and JSON; nil for Stream.
 	Body []byte
+	// auth is what Scrub removes; nil when the request carried no
+	// credential.
+	auth *sentAuth
 }
 
 // call is one prepared Request, sent by each attempt.
@@ -76,8 +83,8 @@ type call struct {
 	read        bool // retried on a connection failure and a 503
 	transfer    bool
 	timeout     time.Duration
-	limit       int64  // the body bound of Do and JSON
-	follow      bool   // false for Location
+	limit       int64 // the body bound of Do and JSON, or Stream's limit
+	redirects   redirectMode
 	accept      string // Accept when the caller sets none
 	// committed is set once Stream wrote to its destination, after which
 	// the call is never retried.
@@ -87,13 +94,14 @@ type call struct {
 // prepare checks r and builds what every attempt sends. Its errors are
 // the caller's and nothing is sent.
 func (c *Client) prepare(r Request) (*call, error) {
-	k := &call{method: strings.ToUpper(r.Method), timeout: r.Timeout, transfer: r.Transfer, follow: true}
+	k := &call{method: strings.ToUpper(r.Method), timeout: r.Timeout, transfer: r.Transfer}
 	if k.method == "" {
 		k.method = http.MethodGet
 	}
 	switch k.method {
 	case http.MethodGet, http.MethodHead:
 		k.read = true
+		k.redirects = followRedirect
 	case http.MethodPost:
 		k.read = r.ReadOnly
 	case http.MethodPut, http.MethodPatch, http.MethodDelete:
@@ -139,7 +147,8 @@ func (c *Client) prepare(r Request) (*call, error) {
 func (c *Client) resolve(r Request) (*url.URL, error) {
 	parsed, err := url.Parse(r.Path)
 	if err != nil {
-		return nil, fmt.Errorf("request path is not a URL: %w", parseCause(err))
+		// Not quoted: an Absolute path is the tracker's and can be signed.
+		return nil, errors.New("request path is not a URL")
 	}
 	parsed.Fragment, parsed.RawFragment = "", ""
 	if r.Absolute {
@@ -197,14 +206,9 @@ func (k *call) setBody(r Request) error {
 		}
 		k.body = b
 	case io.Reader:
-		if r.ContentType == "" {
-			return errors.New("an io.Reader body needs a ContentType")
-		}
-		read, err := io.ReadAll(b)
-		if err != nil {
-			return fmt.Errorf("read the request body: %w", err)
-		}
-		k.body = read
+		// Encoded as JSON it would send "{}"; read here it would block
+		// before the call can be cancelled.
+		return errors.New("an io.Reader body is refused; pass its bytes")
 	default:
 		encoded, err := json.Marshal(b)
 		if err != nil {
@@ -227,9 +231,11 @@ func (k *call) setBody(r Request) error {
 }
 
 func checkHeader(name string, values []string) error {
-	// The transport owns these.
+	// The transport owns these. An idempotency key makes net/http resend
+	// a write whose connection fails, and no tracker here honors one.
 	switch canonical := http.CanonicalHeaderKey(name); canonical {
-	case "Authorization", "Proxy-Authorization", "Cookie", "Host", "User-Agent", "Content-Type", "Content-Length":
+	case "Authorization", "Proxy-Authorization", "Cookie", "Host", "User-Agent", "Content-Type", "Content-Length",
+		"Idempotency-Key", "X-Idempotency-Key":
 		return fmt.Errorf("a request may not set %s", canonical)
 	}
 	if name == "" || strings.ContainsFunc(name, func(r rune) bool { return !isTokenChar(r) }) {
@@ -248,19 +254,25 @@ func isTokenChar(r rune) bool {
 	return r < 0x7f && r > 0x20 && !strings.ContainsRune(`"(),/:;<=>?@[\]{}`, r)
 }
 
-// request builds one attempt's http.Request on ctx. A transfer's body
-// reports its progress to st.
-func (k *call) request(ctx context.Context, st *stall, userAgent string) (*http.Request, error) {
-	var body io.Reader
-	if k.hasBody {
-		body = bytes.NewReader(k.body)
-	}
-	req, err := http.NewRequestWithContext(ctx, k.method, k.target.String(), body)
+// request builds one hop's http.Request to target on ctx, without a
+// credential. It has no GetBody, so net/http never sends its body again:
+// a request with a body is replayed only through GetBody. A transfer's
+// body reports its progress to st.
+func (k *call) request(ctx context.Context, target *url.URL, st *stall, userAgent string) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, k.method, "", nil)
 	if err != nil {
-		return nil, fmt.Errorf("build the request: %w", parseCause(err))
+		return nil, fmt.Errorf("build the request: %w", err)
 	}
-	if k.hasBody && st != nil {
-		req.Body, req.GetBody = st.upload(k.body)
+	u := *target
+	req.URL = &u
+	switch {
+	case !k.hasBody:
+	case len(k.body) == 0:
+		req.Body = http.NoBody
+	case st != nil:
+		req.Body, req.ContentLength = st.upload(k.body), int64(len(k.body))
+	default:
+		req.Body, req.ContentLength = io.NopCloser(bytes.NewReader(k.body)), int64(len(k.body))
 	}
 	for name, values := range k.header {
 		req.Header[name] = append([]string(nil), values...)
@@ -304,25 +316,6 @@ func allowedURL(u *url.URL) error {
 		}
 	}
 	return fmt.Errorf("%s is not https", redact(u))
-}
-
-// checkRedirect is the followed-redirect policy: at most ten hops, each
-// to an allowed URL. authTransport authorizes only hops on the base
-// origin; dropping the credential headers on a hop to another origin
-// here is a second guard.
-func checkRedirect(req *http.Request, via []*http.Request) error {
-	if len(via) >= maxRedirects {
-		return fmt.Errorf("%w: stopped after %d redirects", errRedirect, maxRedirects)
-	}
-	if err := allowedURL(req.URL); err != nil {
-		return fmt.Errorf("%w: %w", errRedirect, err)
-	}
-	if originOf(req.URL) != originOf(via[0].URL) {
-		for _, name := range []string{"Authorization", "Proxy-Authorization", "Cookie"} {
-			req.Header.Del(name)
-		}
-	}
-	return nil
 }
 
 // redact renders u for an error: scheme, host and path. User info, query

@@ -156,6 +156,20 @@ Source for schema facts: the
   whose `extensions.code` is `AUTHENTICATION_ERROR`. A valid key sent with a
   `Bearer` prefix answers HTTP 400 with `extensions.code` `INPUT_ERROR`, so
   a 400 is not proof that the query is wrong.
+- Measured the same day with the client's live check
+  (`internal/tracker/linear/live_test.go`). An issue ID that does not
+  exist answers with `extensions.code` `INPUT_ERROR` and a message that
+  starts `Entity not found`; there is no code of its own for it.
+  `issues(sort: [{updatedAt: {order: Ascending}}])` returns issues oldest
+  update first, which the polling walk relies on. A new issue gets a
+  `sortOrder` below every existing one (three created in a row: -10,
+  -1080, -1986), and `issueUpdate` with a `sortOrder` between two
+  neighbors places it between them in the manual order. An issue edited
+  seconds after it was created has no `history` entries for those edits.
+  Reported cost per request: a mutation 2 to 8 points; one page of three
+  issues 9; the catalog reads (teams, states, users, labels, projects,
+  cycles) 310 to 730 each; one issue with its comments, attachments and
+  relations 286; an issue's history 641.
 - Webhooks need a public HTTPS URL
   ([webhooks](https://linear.app/developers/webhooks)). Polling filters and
   orders by `updatedAt`. Polling cannot see hard deletes.

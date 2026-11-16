@@ -28,7 +28,7 @@ func (c *Client) Do(ctx context.Context, r Request) (*Response, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Response{Status: a.status, Header: a.header, Body: a.body}, nil
+	return a.response(), nil
 }
 
 // JSON is Do decoding the answer into out, unless out is nil or the
@@ -44,12 +44,12 @@ func (c *Client) JSON(ctx context.Context, r Request, out any) (*Response, error
 	if err != nil {
 		return nil, err
 	}
-	resp := &Response{Status: a.status, Header: a.header, Body: a.body}
+	resp := a.response()
 	if out == nil || a.status == http.StatusNoContent {
 		return resp, nil
 	}
 	if err := json.Unmarshal(a.body, out); err != nil {
-		return resp, fmt.Errorf("%s: decode the answer: %w", c.where(k.method, a.url), err)
+		return resp, fmt.Errorf("%s: decode the answer: %w", c.where(k.method, a.url), newScrubber(a.sent.scheme, a.sent.auth).error(err))
 	}
 	return resp, nil
 }
@@ -68,14 +68,26 @@ type answer struct {
 	status int
 	header http.Header
 	body   []byte
-	url    *url.URL // the URL that answered, after redirects
+	// cut is an error body that stops short of the answer's end: at its
+	// bound, or cut short.
+	cut bool
+	url *url.URL // the URL that answered, after redirects
 	// refused is a 401 or a dialect's refused login, on a hop that was
 	// sent to the base origin.
 	refused bool
 	limited bool
 	until   time.Time // when a limit lifts; zero when the answer named no time
-	sentGen uint64
-	sentTo  *Credential
+	sent    sentWith
+}
+
+// response is the Response a caller gets for a. Body is nil for Stream,
+// which reads none into a.
+func (a *answer) response() *Response {
+	resp := &Response{Status: a.status, Header: a.header, Body: a.body}
+	if a.sent.auth != "" {
+		resp.auth = &sentAuth{scheme: a.sent.scheme, value: a.sent.auth}
+	}
+	return resp
 }
 
 // receiver reads a successful answer (below 400 and not a refused login)
@@ -87,6 +99,9 @@ type receiver func(ctx context.Context, resp *http.Response, st *stall, a *answe
 type retries struct {
 	count  int  // retries after a connection failure, a limit or a 503
 	reread bool // the credential was read again after a refusal
+	// gateWaited is the time an interactive call waited for the gate, at
+	// most interactiveGateWait over all of its attempts.
+	gateWaited time.Duration
 }
 
 // execute runs k until an answer settles it: retries reads after a
@@ -106,7 +121,7 @@ func (c *Client) execute(ctx context.Context, k *call, recv receiver) (*answer, 
 	}
 	state := &retries{}
 	for {
-		a, err := c.attempt(ctx, k, recv)
+		a, err := c.attempt(ctx, k, state, recv)
 		var again bool
 		if err != nil {
 			again, err = c.afterFailure(ctx, k, state, err)
@@ -122,59 +137,6 @@ func (c *Client) execute(ctx context.Context, k *call, recv receiver) (*answer, 
 	}
 }
 
-// attempt sends k once. Its error is a failure to send or to read the
-// answer; an answer of any status is returned for settle.
-func (c *Client) attempt(ctx context.Context, k *call, recv receiver) (*answer, error) {
-	where := c.where(k.method, k.target)
-	if err := c.loadCredential(ctx, false, 0); err != nil {
-		if ctx.Err() != nil {
-			return nil, &NotSentError{Err: c.ended(ctx, where)}
-		}
-		return nil, &NotSentError{Err: fmt.Errorf("%s: %w", where, err)}
-	}
-	if err := c.admit(ctx, k); err != nil {
-		return nil, err
-	}
-	var st *stall
-	if k.transfer {
-		st = newStall(ctx, len(k.body) > 0)
-		defer st.stop()
-	}
-	slot := &sent{}
-	req, err := k.request(context.WithValue(st.context(ctx), sentKey{}, slot), st, c.userAgent)
-	if err != nil {
-		return nil, &NotSentError{Err: fmt.Errorf("%s: %w", where, err)}
-	}
-	client := c.follow
-	if !k.follow {
-		client = c.noFollow
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, c.sendError(ctx, where, st, err)
-	}
-	// Closed without reading on: a remainder left unread, over a bound or
-	// past an error's first 64 KiB, can be slow to come and would hold
-	// the call. A body read to its end leaves the connection reusable.
-	defer func() { _ = resp.Body.Close() }()
-	st.receiving()
-	a := &answer{status: resp.StatusCode, header: resp.Header, url: resp.Request.URL}
-	onBase, cred, gen := slot.get()
-	a.sentTo, a.sentGen = cred, gen
-	a.refused = onBase && (resp.StatusCode == http.StatusUnauthorized || c.dialect.RejectedLogin(resp.Header))
-	if a.refused || resp.StatusCode >= 400 {
-		// The status settles an error answer; a body cut short keeps what
-		// arrived, for the dialect's message.
-		a.body, _ = io.ReadAll(io.LimitReader(st.reader(resp.Body), errorReadLimit))
-		a.until, a.limited = c.limitOf(a.status, a.header, a.body)
-		return a, nil
-	}
-	if err := recv(ctx, resp, st, a); err != nil {
-		return nil, err
-	}
-	return a, nil
-}
-
 // readBody is the receiver of Do and JSON: the answer whole, refused
 // unread when its length is over the bound.
 func (c *Client) readBody(k *call) receiver {
@@ -182,20 +144,61 @@ func (c *Client) readBody(k *call) receiver {
 		if resp.ContentLength > k.limit {
 			return c.tooLarge(k, a)
 		}
-		body, err := io.ReadAll(io.LimitReader(st.reader(resp.Body), k.limit+1))
+		body, err := readUpTo(st.reader(resp.Body), k.limit)
+		over := false
+		if err == nil && int64(len(body)) == k.limit {
+			over, err = hasMore(st.reader(resp.Body))
+		}
 		if err == nil {
 			err = cutOff(ctx, st)
 		}
-		if err != nil {
+		switch {
+		case err != nil:
 			return c.readError(ctx, k, st, a, err)
-		}
-		if int64(len(body)) > k.limit {
+		case over:
 			return c.tooLarge(k, a)
 		}
 		a.body = body
 		a.until, a.limited = c.limitOf(a.status, a.header, a.body)
 		return nil
 	}
+}
+
+// readErrorBody reads an error answer's body, up to the call's bound or
+// errorReadLimit, whichever is less, and keeps what fits: the status is
+// the answer. A body cut short fails a read as transient and leaves a
+// write's status standing with what arrived. The call ending during the
+// read is reported as its end.
+func (c *Client) readErrorBody(ctx context.Context, k *call, st *stall, resp *http.Response, a *answer) error {
+	limit := min(k.limit, errorReadLimit)
+	body, err := readUpTo(st.reader(resp.Body), limit)
+	if err == nil {
+		err = cutOff(ctx, st)
+	}
+	if err != nil && (k.read || ctx.Err() != nil) {
+		return c.readError(ctx, k, st, a, err)
+	}
+	a.body, a.cut = body, err != nil || int64(len(body)) == limit
+	a.until, a.limited = c.limitOf(a.status, a.header, a.body)
+	return nil
+}
+
+// readUpTo reads r to its end or limit bytes, whichever comes first.
+func readUpTo(r io.Reader, limit int64) ([]byte, error) {
+	return io.ReadAll(io.LimitReader(r, limit))
+}
+
+// hasMore reports whether r holds another byte.
+func hasMore(r io.Reader) (bool, error) {
+	var probe [1]byte
+	n, err := io.ReadFull(r, probe[:])
+	if n > 0 {
+		return true, nil
+	}
+	if errors.Is(err, io.EOF) {
+		return false, nil
+	}
+	return false, err
 }
 
 func (c *Client) tooLarge(k *call, a *answer) error {
@@ -234,23 +237,14 @@ func (c *Client) limitOf(status int, h http.Header, body []byte) (time.Time, boo
 	return until, limited
 }
 
-// sendError maps a failure of http.Client.Do. The *url.Error wrapper is
-// dropped: its message carries the whole URL, query included.
+// sendError maps a failure of the transport's RoundTrip: the call's end,
+// or a transient failure. A *url.Error, which quotes a whole URL, is
+// dropped for its cause.
 func (c *Client) sendError(ctx context.Context, where string, st *stall, err error) error {
-	cause := st.explain(parseCause(err))
-	var out error
-	switch {
-	case ctx.Err() != nil:
-		out = c.ended(ctx, where)
-	case errors.Is(cause, errRedirect):
-		out = fmt.Errorf("%s: %w", where, cause)
-	default:
-		out = &TransientError{Err: fmt.Errorf("%s: %w", where, cause)}
+	if ctx.Err() != nil {
+		return c.ended(ctx, where)
 	}
-	if neverConnected(cause) {
-		out = &NotSentError{Err: out}
-	}
-	return out
+	return &TransientError{Err: fmt.Errorf("%s: %w", where, st.explain(parseCause(err)))}
 }
 
 // ended is the error of a call whose context ended: closed by Close,

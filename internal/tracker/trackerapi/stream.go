@@ -32,7 +32,7 @@ func (c *Client) Stream(ctx context.Context, r Request, dst io.Writer, limit int
 	if err != nil {
 		return nil, err
 	}
-	return &Response{Status: a.status, Header: a.header}, nil
+	return a.response(), nil
 }
 
 // prepareGet is prepareCall for a call that only takes a GET.
@@ -111,7 +111,7 @@ func (c *Client) Location(ctx context.Context, r Request) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	k.follow = false
+	k.redirects = answerRedirect
 	discard := func(ctx context.Context, resp *http.Response, st *stall, a *answer) error {
 		a.until, a.limited = c.limitOf(a.status, a.header, nil)
 		return nil
@@ -127,7 +127,8 @@ func (c *Client) Location(ctx context.Context, r Request) (string, error) {
 	}
 	target, err := a.url.Parse(location)
 	if err != nil {
-		return "", fmt.Errorf("%s: the redirect target is not a URL: %w", where, parseCause(err))
+		// Not quoted: the target can be signed.
+		return "", fmt.Errorf("%s: the redirect target is not a URL", where)
 	}
 	return target.String(), nil
 }

@@ -54,7 +54,8 @@ type Options struct {
 	// Required; PlainDialect reads none.
 	Dialect Dialect
 	// MaxPerSecond spaces every request of this client, retries included,
-	// at most this many a second. Zero does not pace.
+	// at most this many a second. Zero does not pace. A rate whose spacing
+	// is under a nanosecond or over a time.Duration is refused.
 	MaxPerSecond float64
 	// ReadTimeout bounds a call whose Request.Timeout is zero, retries and
 	// waits included; zero means 45s. A Transfer call has no total bound.
@@ -80,8 +81,9 @@ type Client struct {
 	readTimeout time.Duration
 	maxBody     int64
 
-	follow    *http.Client // follows redirects
-	noFollow  *http.Client // Location: answers a redirect as is
+	// transport sends each hop as built: it follows no redirect and adds
+	// no credential.
+	transport http.RoundTripper
 	closeIdle func()
 
 	gate gate
@@ -139,9 +141,8 @@ func New(opts Options) (*Client, error) {
 	return c, nil
 }
 
-// newClient builds a Client on base, the round tripper every request goes
-// through once authorized.
-func newClient(opts Options, base http.RoundTripper) (*Client, error) {
+// newClient builds a Client on transport, which every hop goes through.
+func newClient(opts Options, transport http.RoundTripper) (*Client, error) {
 	baseURL, err := checkOptions(opts)
 	if err != nil {
 		return nil, err
@@ -155,6 +156,7 @@ func newClient(opts Options, base http.RoundTripper) (*Client, error) {
 		dialect:     opts.Dialect,
 		readTimeout: opts.ReadTimeout,
 		maxBody:     opts.MaxBodyBytes,
+		transport:   transport,
 		closeIdle:   func() {},
 		now:         time.Now,
 		sleep:       sleep,
@@ -166,15 +168,20 @@ func newClient(opts Options, base http.RoundTripper) (*Client, error) {
 		c.maxBody = defaultMaxBodyBytes
 	}
 	if opts.MaxPerSecond > 0 {
-		c.pace = newPacer(time.Duration(float64(time.Second) / opts.MaxPerSecond))
+		c.pace = newPacer(paceInterval(opts.MaxPerSecond))
 	}
 	c.life, c.stop = context.WithCancel(context.Background())
-	rt := authTransport{c: c, base: base}
-	c.follow = &http.Client{Transport: rt, CheckRedirect: checkRedirect}
-	c.noFollow = &http.Client{Transport: rt, CheckRedirect: func(*http.Request, []*http.Request) error {
-		return http.ErrUseLastResponse
-	}}
 	return c, nil
+}
+
+// paceInterval is the spacing that rate requests a second take, or zero
+// when it is under a nanosecond or does not fit a time.Duration.
+func paceInterval(rate float64) time.Duration {
+	interval := float64(time.Second) / rate
+	if interval >= math.MaxInt64 {
+		return 0
+	}
+	return time.Duration(interval)
 }
 
 func checkOptions(opts Options) (*url.URL, error) {
@@ -189,6 +196,8 @@ func checkOptions(opts Options) (*url.URL, error) {
 		return nil, errors.New("trackerapi: Options.Dialect is required")
 	case opts.MaxPerSecond < 0 || math.IsNaN(opts.MaxPerSecond) || math.IsInf(opts.MaxPerSecond, 0):
 		return nil, fmt.Errorf("trackerapi: Options.MaxPerSecond %v is not a finite rate of zero or more", opts.MaxPerSecond)
+	case opts.MaxPerSecond > 0 && paceInterval(opts.MaxPerSecond) == 0:
+		return nil, fmt.Errorf("trackerapi: Options.MaxPerSecond %v spaces requests by less than a nanosecond or more than a time.Duration holds", opts.MaxPerSecond)
 	case opts.ReadTimeout < 0:
 		return nil, errors.New("trackerapi: Options.ReadTimeout is negative")
 	case opts.MaxBodyBytes < 0:

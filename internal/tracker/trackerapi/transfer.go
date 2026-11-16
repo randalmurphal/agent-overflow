@@ -69,8 +69,12 @@ func (s *stall) stop() {
 	s.cancel(nil)
 }
 
-// sent starts the wait for the answer once the request body is out.
+// sent starts the wait for the answer once the request body is out, or a
+// redirect hop is sent.
 func (s *stall) sent() {
+	if s == nil {
+		return
+	}
 	s.waiting.Store(true)
 	s.timer.Reset(headerTimeout)
 }
@@ -106,14 +110,9 @@ func (s *stall) reader(r io.Reader) io.Reader {
 }
 
 // upload is a request body that counts its progress and starts the wait
-// for the answer once it is all read, with the GetBody a redirect that
-// resends it uses.
-func (s *stall) upload(body []byte) (io.ReadCloser, func() (io.ReadCloser, error)) {
-	open := func() (io.ReadCloser, error) {
-		return io.NopCloser(&progressReader{r: bytes.NewReader(body), s: s, left: int64(len(body))}), nil
-	}
-	first, _ := open()
-	return first, open
+// for the answer once it is all read.
+func (s *stall) upload(body []byte) io.ReadCloser {
+	return io.NopCloser(&progressReader{r: bytes.NewReader(body), s: s, left: int64(len(body))})
 }
 
 type progressReader struct {
@@ -128,10 +127,6 @@ func (p *progressReader) Read(b []byte) (int, error) {
 		p.s.moved()
 	}
 	if p.left >= 0 {
-		if n > 0 {
-			// A resend after a redirect is sending again.
-			p.s.waiting.Store(false)
-		}
 		p.left -= int64(n)
 		if p.left <= 0 || err != nil {
 			p.left = -1

@@ -9,7 +9,6 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
-	"sync"
 
 	"agent-overflow/internal/secret"
 )
@@ -244,56 +243,4 @@ func (c *Client) storeCredential(ctx context.Context, epoch uint64) error {
 	}
 	c.credGen++
 	return nil
-}
-
-// sentKey carries a request's *sent slot in its context.
-type sentKey struct{}
-
-// sent is what authTransport put on the wire for the hop that answered:
-// whether it was on the base origin, and the credential and its
-// generation when it was.
-type sent struct {
-	mu     sync.Mutex
-	onBase bool
-	cred   *Credential
-	gen    uint64
-}
-
-func (s *sent) record(onBase bool, cred *Credential, gen uint64) {
-	if s == nil {
-		return
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.onBase, s.cred, s.gen = onBase, cred, gen
-}
-
-func (s *sent) get() (onBase bool, cred *Credential, gen uint64) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.onBase, s.cred, s.gen
-}
-
-// authTransport is where a credential meets a request. The request a
-// Client builds carries none; each hop, redirects included, is cloned and
-// authorized only when it is on the base origin, so no request a caller,
-// an error or a redirect copy can see holds the secret.
-type authTransport struct {
-	c    *Client
-	base http.RoundTripper
-}
-
-func (t authTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	slot, _ := req.Context().Value(sentKey{}).(*sent)
-	if originOf(req.URL) != t.c.origin {
-		slot.record(false, nil, 0)
-		return t.base.RoundTrip(req)
-	}
-	hop := req.Clone(req.Context())
-	t.c.credMu.RLock()
-	t.c.cred.authorize(hop.Header)
-	cred, gen := t.c.cred, t.c.credGen
-	t.c.credMu.RUnlock()
-	slot.record(true, cred, gen)
-	return t.base.RoundTrip(hop)
 }
