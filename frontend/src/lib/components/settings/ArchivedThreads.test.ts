@@ -45,6 +45,7 @@ describe('<ArchivedThreads> delete of a thread on a worktree', () => {
       workspace: { workspacePath: '/tmp/workspace', worktreePath: '', branch: 'main' },
       reattached: [{ ...sibling, workspacePath: '/tmp/workspace', worktreePath: '', branch: 'main' }],
     }));
+    setBindingMock('GetDeleteDependents', async () => ({ pastThreads: 0, helpers: 0, workers: 0, workerWorktrees: [] }));
     const deleted = setBindingMock('DeleteThread', async () => {});
 
     const { findByLabelText, findByText, getByRole } = render(ArchivedThreads);
@@ -56,6 +57,41 @@ describe('<ArchivedThreads> delete of a thread on a worktree', () => {
     expect(removed).toHaveBeenCalledWith({ projectId: 'project-1', workspacePath: '' }, worktree, false);
     expect(siblingPane.thread?.worktreePath).toBe('');
     expect(siblingPane.thread?.branch).toBe('main');
+  });
+});
+
+describe('<ArchivedThreads> delete of a thread with workers', () => {
+  beforeEach(() => {
+    resetBindingMocks();
+    resetPanesForTest();
+    resetToastsForTest();
+  });
+
+  it("removes its workers' worktree and names a worker that was not deleted", async () => {
+    const archived = makeThread({ id: 'archived-owner', title: 'Owner', archived: true, projectId: 'project-1' });
+    setBindingMock('ListArchivedThreads', async () => [archived]);
+    setBindingMock('StopSession', async () => {});
+    setBindingMock('GetDeleteDependents', async () => ({
+      pastThreads: 0, helpers: 0, workers: 2,
+      workerWorktrees: [{ projectId: 'project-1', worktreePath: '/tmp/wt/worker', threadIds: ['worker-1'] }],
+    }));
+    const removed = setBindingMock('RemoveOtherWorktree', async () => ({
+      workspace: { workspacePath: '/tmp/workspace', worktreePath: '', branch: 'main' }, reattached: [],
+    }));
+    const deleted = setBindingMock('DeleteThread', async () => ({
+      workersNotDeleted: [{ threadId: 'worker-2', title: 'Parser review', error: 'thread is being transferred' }],
+    }));
+
+    const { findByLabelText, findByText, getByRole } = render(ArchivedThreads);
+    await fireEvent.click(await findByLabelText('Delete permanently'));
+    await findByText(/This action cannot be undone\. Its 2 workers are deleted with it\./);
+    await fireEvent.click(getByRole('button', { name: 'Delete' }));
+
+    await waitFor(() => expect(deleted).toHaveBeenCalledWith('archived-owner'));
+    expect(removed).toHaveBeenCalledWith({ projectId: 'project-1', workspacePath: '' }, '/tmp/wt/worker', false);
+    await waitFor(() => expect(getToasts().find((toast) => toast.type === 'warning')?.message).toBe(
+      'Deleted "Owner", but its worker "Parser review" was not deleted: Thread is being transferred.',
+    ));
   });
 });
 
@@ -93,6 +129,7 @@ describe('<ArchivedThreads> delete with two computers attached', () => {
       removalTargets.push(getPinnedBackend());
       return { workspace: { workspacePath: '/tmp/repo', worktreePath: '', branch: 'main' }, reattached: [] };
     });
+    setBindingMock('GetDeleteDependents', async () => ({ pastThreads: 0, helpers: 0, workers: 0, workerWorktrees: [] }));
     const deleted = setBindingMock('DeleteThread', async () => {});
 
     const { findByLabelText, findByText, getByRole } = render(ArchivedThreads);
@@ -112,6 +149,7 @@ describe('<ArchivedThreads> delete with two computers attached', () => {
     setBindingMock('GitWorktreeStatus', async () => ({ path: worktree, terminals: 0 }));
     const stopped = setBindingMock('StopSession', async () => {});
     const removed = setBindingMock('RemoveOtherWorktree', async () => ({ workspace: null, reattached: [] }));
+    setBindingMock('GetDeleteDependents', async () => ({ pastThreads: 0, helpers: 0, workers: 0, workerWorktrees: [] }));
     const deleted = setBindingMock('DeleteThread', async () => {});
 
     const { findByLabelText, getByRole } = render(ArchivedThreads);
@@ -131,6 +169,7 @@ describe('<ArchivedThreads> delete with two computers attached', () => {
     setBindingMock('GitWorktreeStatus', async () => ({ path: worktree, terminals: 0 }));
     setBindingMock('StopSession', async () => {});
     setBindingMock('RemoveOtherWorktree', async () => { throw new Error('client closed'); });
+    setBindingMock('GetDeleteDependents', async () => ({ pastThreads: 0, helpers: 0, workers: 0, workerWorktrees: [] }));
     const deleted = setBindingMock('DeleteThread', async () => {});
 
     const { findByLabelText, getByRole, findByText } = render(ArchivedThreads);

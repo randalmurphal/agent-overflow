@@ -74,10 +74,10 @@
   import { countNoun } from '../../utils/format';
   import { canOfferConversationTransfer } from '../../stores/conversationTransfers.svelte';
   import {
-    AssistantDeleteNote,
+    ThreadDeleteNote,
     confirmsThreadDelete,
     threadDeleteTitle,
-    withAssistantNote,
+    withDeleteNote,
   } from '../../stores/assistants.svelte';
   import { threadMachine } from '../../stores/attachedBackends.svelte';
 
@@ -128,7 +128,7 @@
   // Deleting a thread on a worktree removes it; the confirmation says which
   // terminals that closes.
   const deleteTerminalsNote = new TerminalsClosingNote();
-  const deleteAssistantNote = new AssistantDeleteNote();
+  const deleteNote = new ThreadDeleteNote();
   // Provider-update check: in flight while the backend reads the session
   // file (it builds the rows a refresh WOULD write, so it is a real read of
   // a possibly-large transcript, not an instant stat), then the plan it
@@ -298,7 +298,7 @@
     if (confirmsThreadDelete([thread])) {
       showDeleteConfirm = true;
       deleteTerminalsNote.load(() => terminalsClosingNoteForThreadDelete([thread]));
-      deleteAssistantNote.load([thread]);
+      deleteNote.load([thread]);
     } else {
       void deleteThreadAction(ctx());
     }
@@ -470,7 +470,7 @@
               showBulkDeleteConfirm = true;
               const targets = selectedThreads.slice();
               deleteTerminalsNote.load(() => terminalsClosingNoteForThreadDelete(targets));
-              deleteAssistantNote.load(targets);
+              deleteNote.load(targets);
             }}
           />
         {:else}
@@ -659,22 +659,22 @@
 <ConfirmDialog
   open={showDeleteConfirm}
   title={threadDeleteTitle(thread)}
-  description={withAssistantNote(withTerminalsNote(
+  description={withDeleteNote(withTerminalsNote(
     'This will permanently delete this thread and all its messages. This action cannot be undone.',
     deleteTerminalsNote.note,
-  ), deleteAssistantNote.note)}
+  ), deleteNote.note)}
   confirmLabel="Delete"
   destructive={true}
   onConfirm={() => {
     showDeleteConfirm = false;
     deleteTerminalsNote.clear();
-    deleteAssistantNote.clear();
+    deleteNote.clear();
     void deleteThreadAction(ctx());
   }}
   onCancel={() => {
     showDeleteConfirm = false;
     deleteTerminalsNote.clear();
-    deleteAssistantNote.clear();
+    deleteNote.clear();
   }}
 />
 
@@ -711,21 +711,21 @@
 <ConfirmDialog
   open={showBulkDeleteConfirm}
   title={`Delete ${selectedIds.size} Threads`}
-  description={withAssistantNote(withTerminalsNote(
+  description={withDeleteNote(withTerminalsNote(
     `This will permanently delete ${selectedIds.size} threads and all their messages. This action cannot be undone.`,
     deleteTerminalsNote.note,
-  ), deleteAssistantNote.note)}
+  ), deleteNote.note)}
   confirmLabel="Delete"
   destructive={true}
   onConfirm={() => {
     showBulkDeleteConfirm = false;
     deleteTerminalsNote.clear();
-    deleteAssistantNote.clear();
+    deleteNote.clear();
     void runBulk(deleteThreadAction);
   }}
   onCancel={() => {
     showBulkDeleteConfirm = false;
     deleteTerminalsNote.clear();
-    deleteAssistantNote.clear();
+    deleteNote.clear();
   }}
 />

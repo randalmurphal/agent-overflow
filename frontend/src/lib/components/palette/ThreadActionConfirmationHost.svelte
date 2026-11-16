@@ -14,26 +14,26 @@
     terminalsClosingNoteForThreadDelete,
     withTerminalsNote,
   } from '../../stores/worktreeRemoval.svelte';
-  import { AssistantDeleteNote, threadDeleteTitle, withAssistantNote } from '../../stores/assistants.svelte';
+  import { ThreadDeleteNote, threadDeleteTitle, withDeleteNote } from '../../stores/assistants.svelte';
 
   let pending = $derived(getPendingThreadActionConfirmation());
   // Deleting a thread on a worktree removes it; the confirmation says which
   // terminals that closes. Read once per pending delete.
   const deleteTerminalsNote = new TerminalsClosingNote();
-  const deleteAssistantNote = new AssistantDeleteNote();
+  const deleteNote = new ThreadDeleteNote();
   $effect(() => {
     const current = pending;
     if (current?.kind !== 'delete') {
       untrack(() => {
         deleteTerminalsNote.clear();
-        deleteAssistantNote.clear();
+        deleteNote.clear();
       });
       return;
     }
     const thread = current.ctx.thread;
     untrack(() => {
       deleteTerminalsNote.load(() => terminalsClosingNoteForThreadDelete([thread]));
-      deleteAssistantNote.load([thread]);
+      deleteNote.load([thread]);
     });
   });
 
@@ -65,10 +65,10 @@
 <ConfirmDialog
   open={pending?.kind === 'delete'}
   title={pending ? threadDeleteTitle(pending.ctx.thread) : 'Delete Thread'}
-  description={withAssistantNote(withTerminalsNote(
+  description={withDeleteNote(withTerminalsNote(
     'This will permanently delete this thread and all its messages. This action cannot be undone.',
     deleteTerminalsNote.note,
-  ), deleteAssistantNote.note)}
+  ), deleteNote.note)}
   confirmLabel="Delete"
   destructive={true}
   onConfirm={confirm}

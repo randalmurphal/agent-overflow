@@ -3,19 +3,20 @@
 // the editors branch on. Deleting an assistant's current thread deletes the
 // assistant and removes its home folder ("Deletion, archive and transfer"):
 // every confirmation of such a delete names the folder, and the delete is
-// always confirmed, whatever the confirmDelete setting says. End Session is
-// an assistant thread's own action beside Interrupt ("Interrupt and end
-// session").
+// always confirmed, whatever the confirmDelete setting says. Any thread's
+// delete confirmation counts the workers that go with it ("Owned workers").
+// End Session is an assistant thread's own action beside Interrupt
+// ("Interrupt and end session").
 
-import { GetAssistantDependents, GetStandingAgent, StopSession } from './bindings';
+import { GetDeleteDependents, GetStandingAgent, StopSession } from './bindings';
 import { addErrorToast } from './toast.svelte';
 import { backendDisplayName, getAttachedBackends } from './attachedBackends.svelte';
 import { getThreads } from './threads.svelte';
 import { getSettings } from './settings.svelte';
 import { withBackendTarget } from '../transport/backends';
-import { HOME_BACKEND } from '../transport/backendKey';
+import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
 import { threadBackend } from '../transport/entityIndex';
-import type { AssistantDependents, Thread } from '../types/models';
+import type { DeleteDependents, Thread } from '../types/models';
 import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
 import { userFacingError } from '../utils/userFacingError';
 import { TransportError } from '../transport/wsClient';
@@ -111,6 +112,11 @@ function counted(n: number, one: string, many: string): string {
   return `${n} ${n === 1 ? one : many}`;
 }
 
+/** "a", "a and b", "a, b and c". */
+function listed(parts: readonly string[]): string {
+  return parts.length < 2 ? parts.join('') : `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`;
+}
+
 /**
  * The sentence for one assistant a delete removes (docs/specs/standing-
  * agents.md ruling 39). Until its record is read the folder is not named
@@ -121,62 +127,93 @@ function counted(n: number, one: string, many: string): string {
 export function assistantDeleteSentence(
   name: string,
   home: string | undefined,
-  dependents?: AssistantDependents | null,
+  dependents?: DeleteDependents | null,
 ): string {
   const folder = home ? `its home folder ${home}` : 'its home folder';
   const under = [
     dependents?.pastThreads ? counted(dependents.pastThreads, 'past thread', 'past threads') : '',
     dependents?.helpers ? counted(dependents.helpers, 'helper', 'helpers') : '',
+    dependents?.workers ? counted(dependents.workers, 'worker', 'workers') : '',
   ].filter(Boolean);
   const also = dependents === null
     ? ' with every thread that lives under it,'
-    : under.length > 0 ? ` with its ${under.join(' and ')},` : '';
+    : under.length > 0 ? ` with its ${listed(under)},` : '';
   return `The assistant "${name}" is deleted too,${also} and ${folder} is removed with everything in it.`;
 }
 
-/** `description` followed by the assistant sentences, when there are any. */
-export function withAssistantNote(description: string, note: string): string {
+/**
+ * The sentence for the workers deleted with threads that are not
+ * assistants ("Owned workers"), or '' for none. `threads` is how many
+ * threads the delete names.
+ */
+export function workersDeleteSentence(workers: number, threads: number): string {
+  if (workers <= 0) return '';
+  const owner = threads === 1 ? ['Its', 'it'] : ['Their', 'them'];
+  return workers === 1
+    ? `${owner[0]} worker is deleted with ${owner[1]}.`
+    : `${owner[0]} ${workers} workers are deleted with ${owner[1]}.`;
+}
+
+/**
+ * What deleting the thread deletes with it, read on the computer it is on.
+ * A call that fails as it is made is a rejection, as one that fails later is.
+ */
+export async function readDeleteDependents(backend: BackendKey, threadId: string): Promise<DeleteDependents> {
+  return withBackendTarget(backend, () => GetDeleteDependents(threadId));
+}
+
+/** `description` followed by the delete's sentences, when there are any. */
+export function withDeleteNote(description: string, note: string): string {
   return note ? `${description} ${note}` : description;
 }
 
 /**
- * The assistant sentences a delete confirmation shows while it is open.
- * `load` starts reading the homes for the dialog being opened; `clear` drops
- * them when it closes, so a late answer for an earlier opening never shows.
- * A count that could not be read is null.
+ * The sentences a delete confirmation shows while it is open about what
+ * goes with the threads: each assistant's home and the threads under it,
+ * and the workers of the others. `load` starts the reads for the dialog
+ * being opened; `clear` drops them when it closes, so a late answer for an
+ * earlier opening never shows. A count that could not be read is null: an
+ * assistant's sentence says its threads go, and another thread's workers
+ * are left out of the count.
  */
-export class AssistantDeleteNote {
-  #assistants = $state<readonly Thread[]>([]);
+export class ThreadDeleteNote {
+  #threads = $state<readonly Thread[]>([]);
   #homes = $state<ReadonlyMap<string, string>>(new Map());
-  #dependents = $state<ReadonlyMap<string, AssistantDependents | null>>(new Map());
+  #dependents = $state<ReadonlyMap<string, DeleteDependents | null>>(new Map());
   #generation = 0;
 
   get note(): string {
-    return this.#assistants
-      .map((thread) => assistantDeleteSentence(thread.title, this.#homes.get(thread.id), this.#dependents.get(thread.id)))
-      .join(' ');
+    const sentences = this.#threads
+      .filter((thread) => Boolean(thread.agentId))
+      .map((thread) => assistantDeleteSentence(thread.title, this.#homes.get(thread.id), this.#dependents.get(thread.id)));
+    const workers = this.#threads
+      .filter((thread) => !thread.agentId)
+      .reduce((sum, thread) => sum + (this.#dependents.get(thread.id)?.workers ?? 0), 0);
+    return [...sentences, workersDeleteSentence(workers, this.#threads.length)].filter(Boolean).join(' ');
   }
 
   load(threads: readonly Thread[]): void {
     const generation = ++this.#generation;
-    this.#assistants = threads.filter((thread) => Boolean(thread.agentId));
+    this.#threads = threads.slice();
     this.#homes = new Map();
     this.#dependents = new Map();
-    for (const thread of this.#assistants) {
+    for (const thread of this.#threads) {
       const backend = threadBackend(thread.id) ?? HOME_BACKEND;
-      void withBackendTarget(backend, () => GetStandingAgent(thread.id)).then((agent) => {
-        if (generation !== this.#generation || !agent?.home) return;
-        const next = new Map(this.#homes);
-        next.set(thread.id, agent.home);
-        this.#homes = next;
-      }).catch((err: unknown) => {
-        reportFrontendDiagnostic('assistant home for a delete confirmation failed', userFacingError(err));
-      });
-      void withBackendTarget(backend, () => GetAssistantDependents(thread.id)).then((counts) => {
+      if (thread.agentId) {
+        void withBackendTarget(backend, () => GetStandingAgent(thread.id)).then((agent) => {
+          if (generation !== this.#generation || !agent?.home) return;
+          const next = new Map(this.#homes);
+          next.set(thread.id, agent.home);
+          this.#homes = next;
+        }).catch((err: unknown) => {
+          reportFrontendDiagnostic('assistant home for a delete confirmation failed', userFacingError(err));
+        });
+      }
+      void readDeleteDependents(backend, thread.id).then((counts) => {
         if (generation !== this.#generation || !counts) return;
         this.#setDependents(thread.id, counts);
       }).catch((err: unknown) => {
-        reportFrontendDiagnostic('assistant threads for a delete confirmation failed', userFacingError(err));
+        reportFrontendDiagnostic('threads deleted with a thread for a delete confirmation failed', userFacingError(err));
         if (generation === this.#generation) this.#setDependents(thread.id, null);
       });
     }
@@ -184,12 +221,12 @@ export class AssistantDeleteNote {
 
   clear(): void {
     this.#generation++;
-    this.#assistants = [];
+    this.#threads = [];
     this.#homes = new Map();
     this.#dependents = new Map();
   }
 
-  #setDependents(threadId: string, counts: AssistantDependents | null): void {
+  #setDependents(threadId: string, counts: DeleteDependents | null): void {
     const next = new Map(this.#dependents);
     next.set(threadId, counts);
     this.#dependents = next;

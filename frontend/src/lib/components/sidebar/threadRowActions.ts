@@ -25,6 +25,7 @@ import {
   UnpinThread,
 } from '../../stores/bindings';
 import {
+  getThreadById,
   markThreadsRead,
   markThreadUnread,
   prependThreadReply,
@@ -35,19 +36,19 @@ import {
 import { closePanesShowingThread, panesShowingThread } from '../../stores/panes.svelte';
 import { getComposerDraftForPane } from '../../stores/composerDraftRegistry.svelte';
 import { removeWorktreeAt, threadWorktreeOwner } from '../../stores/worktreeRemoval.svelte';
+import { sameNormalizedPath } from '../../utils/path';
 import { threadRowFrameMark } from '../../stores/threadRowFrames';
 import { expandProject } from '../../stores/sidebar.svelte';
 import { addErrorToast, addToast } from '../../stores/toast.svelte';
 import { copyToClipboard } from '../../utils/clipboard';
 import { userFacingError } from '../../utils/userFacingError';
-import { isAssistantNameTaken } from '../../stores/assistants.svelte';
-import type { ArchiveThreadResult, Thread } from '../../types/models';
-
-type ArchiveWorkerFailure = NonNullable<ArchiveThreadResult['workersNotArchived']>[number];
+import { isAssistantNameTaken, readDeleteDependents } from '../../stores/assistants.svelte';
+import type { ArchiveThreadResult, DeleteThreadResult, Thread, WorkerFailure } from '../../types/models';
 import { autoPinNewThread } from '../../stores/threadAutoPin';
 import { requireEntityBackend, withBackendTarget } from '../../transport/backends';
 import type { BackendKey } from '../../transport/backendKey';
 import { resolveThreadBackend } from '../../transport/entityIndex';
+import { threadOwner } from '../../transport/threadOwner';
 import { openConversationTransfer } from '../../stores/conversationTransfers.svelte';
 
 export function transferThreadAction(ctx: ThreadActionCtx): void {
@@ -201,7 +202,7 @@ function reportArchiveLeftovers(backend: BackendKey, title: string, result: Arch
   }
 }
 
-async function archiveWorkersAgain(backend: BackendKey, workers: ArchiveWorkerFailure[]): Promise<void> {
+async function archiveWorkersAgain(backend: BackendKey, workers: WorkerFailure[]): Promise<void> {
   for (const worker of workers) {
     const title = worker.title || worker.threadId;
     try {
@@ -235,17 +236,88 @@ export async function forkThreadAction(ctx: ThreadActionCtx): Promise<void> {
 
 export async function deleteThreadAction(ctx: ThreadActionCtx): Promise<void> {
   try {
-    const worktree = threadWorktreeOwner(ctx.thread);
-    await StopSession(ctx.thread.id).catch((err) => {
-      console.error('Failed to stop session before delete:', err);
-    });
-    if (worktree) await removeWorktreeAt(worktree);
-    await DeleteThread(ctx.thread.id);
+    const { backend, result } = await deleteThreadWithWorktrees(ctx.thread);
     removeThread(ctx.thread.id);
     closePanesShowingThread(ctx.thread.id);
+    reportDeleteLeftovers(backend, ctx.thread.title, result);
   } catch (err) {
     console.error('Failed to delete thread:', err);
     ctx.reportError(userFacingError(err), err);
+  }
+}
+
+/**
+ * Deletes a thread the way the sidebar does: its session stops and the
+ * worktree it is on is removed, then the backend deletes it with the
+ * workers it owns (docs/specs/standing-agents.md, "Owned workers"). The
+ * worktrees those workers are on are removed with it, each once, after the
+ * sessions of the workers on them stop, as their own deletes would. A
+ * worktree that cannot be removed stops the delete before anything is
+ * deleted. Returns the computer the thread is on, captured before the
+ * first await, and what the delete left undone.
+ */
+export async function deleteThreadWithWorktrees(
+  thread: Pick<Thread, 'id' | 'projectId' | 'worktreePath'>,
+): Promise<{ backend: BackendKey; result: DeleteThreadResult }> {
+  const backend = requireEntityBackend(threadOwner(thread.id));
+  const worktree = threadWorktreeOwner(thread);
+  await StopSession(thread.id).catch((err) => {
+    console.error('Failed to stop session before delete:', err);
+  });
+  const dependents = await readDeleteDependents(backend, thread.id);
+  const workerWorktrees = dependents?.workerWorktrees ?? [];
+  for (const workerWorktree of workerWorktrees) {
+    for (const id of workerWorktree.threadIds ?? []) {
+      await withBackendTarget(backend, () => StopSession(id)).catch((err) => {
+        console.error('Failed to stop a worker session before delete:', err);
+      });
+    }
+  }
+  if (worktree) await removeWorktreeAt(worktree);
+  for (const { projectId, worktreePath } of workerWorktrees) {
+    if (worktree && worktree.projectId === projectId && sameNormalizedPath(worktree.worktreePath, worktreePath)) continue;
+    await removeWorktreeAt({ backend, projectId, worktreePath });
+  }
+  const result = await withBackendTarget(backend, () => DeleteThread(thread.id));
+  return { backend, result: result ?? {} };
+}
+
+/**
+ * A delete that went through can leave workers it could not delete: they
+ * are standalone in the sidebar now, and the toast deletes them again.
+ */
+export function reportDeleteLeftovers(
+  backend: BackendKey,
+  title: string,
+  result: Pick<DeleteThreadResult, 'workersNotDeleted'>,
+): void {
+  const workers = result.workersNotDeleted ?? [];
+  if (workers.length === 0) return;
+  const names = workers.map((worker) => `"${worker.title || worker.threadId}"`).join(', ');
+  const which = workers.length === 1 ? `its worker ${names} was` : `its workers ${names} were`;
+  addToast('warning', `Deleted "${title}", but ${which} not deleted: ${userFacingError(workers[0].error)}`, 10000, {
+    label: 'Delete again',
+    run: () => void deleteWorkersAgain(backend, workers),
+  });
+}
+
+async function deleteWorkersAgain(backend: BackendKey, workers: WorkerFailure[]): Promise<void> {
+  for (const worker of workers) {
+    const title = worker.title || worker.threadId;
+    try {
+      // Standalone now, the worker is usually listed, and its worktree goes
+      // as a sidebar delete's does.
+      const row = getThreadById(worker.threadId);
+      const result = row
+        ? (await deleteThreadWithWorktrees(row)).result
+        : (await withBackendTarget(backend, () => DeleteThread(worker.threadId))) ?? {};
+      removeThread(worker.threadId);
+      closePanesShowingThread(worker.threadId);
+      reportDeleteLeftovers(backend, title, result);
+    } catch (err) {
+      console.error('Failed to delete worker:', err);
+      addErrorToast(`Could not delete "${title}": ${userFacingError(err)}`, err);
+    }
   }
 }
 

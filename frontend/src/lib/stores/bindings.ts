@@ -48,7 +48,7 @@ export {
   ForkSideChat,
   PromoteScratchThread,
   GetStandingAgent,
-  GetAssistantDependents,
+  GetDeleteDependents,
   BeginThreadTransfer,
   GetThreadTransferDestinationProject,
   BindThreadTransferDestination,

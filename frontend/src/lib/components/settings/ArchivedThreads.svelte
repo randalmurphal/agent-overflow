@@ -4,17 +4,10 @@
   import Icon from '../primitives/Icon.svelte';
   import SettingsHeader from './SettingsHeader.svelte';
   import ConfirmDialog from '../shared/ConfirmDialog.svelte';
-  import {
-    DeleteThread,
-    ListArchivedThreads,
-    StopSession,
-    UnarchiveThread,
-  } from '../../stores/bindings';
+  import { ListArchivedThreads, UnarchiveThread } from '../../stores/bindings';
   import { prependThreadReply } from '../../stores/threads.svelte';
   import { closePanesShowingThread } from '../../stores/panes.svelte';
   import {
-    removeWorktreeAt,
-    threadWorktreeOwner,
     TerminalsClosingNote,
     terminalsClosingNoteForThreadDelete,
     withTerminalsNote,
@@ -27,14 +20,15 @@
   import { HOME_BACKEND } from '../../transport/backendKey';
   import { displayModelLabel } from '../../utils/modelLabels';
   import type { Thread } from '../../types/models';
-  import { AssistantDeleteNote, withAssistantNote } from '../../stores/assistants.svelte';
+  import { ThreadDeleteNote, withDeleteNote } from '../../stores/assistants.svelte';
+  import { deleteThreadWithWorktrees, reportDeleteLeftovers } from '../sidebar/threadRowActions';
 
   let archivedThreads: Thread[] = $state([]);
   let loading = $state(true);
   let loadError: string | null = $state(null);
   let deleteTarget: Thread | null = $state(null);
   const deleteTerminalsNote = new TerminalsClosingNote();
-  const deleteAssistantNote = new AssistantDeleteNote();
+  const deleteNote = new ThreadDeleteNote();
 
   $effect(() => {
     loading = true;
@@ -67,15 +61,11 @@
 
   async function handleDelete(thread: Thread): Promise<void> {
     try {
-      const worktree = threadWorktreeOwner(thread);
-      await StopSession(thread.id).catch((err) => {
-        console.error('Failed to stop session before delete:', err);
-      });
-      if (worktree) await removeWorktreeAt(worktree);
-      await DeleteThread(thread.id);
+      const { backend, result } = await deleteThreadWithWorktrees(thread);
       archivedThreads = archivedThreads.filter((t) => t.id !== thread.id);
       closePanesShowingThread(thread.id);
       addToast('info', `Deleted "${thread.title || 'thread'}".`);
+      reportDeleteLeftovers(backend, thread.title || 'thread', result);
     } catch (err) {
       console.error('Failed to delete archived thread:', err);
       addErrorToast(`Failed to delete: ${errString(err)}`, err);
@@ -85,13 +75,13 @@
   function confirmDelete(thread: Thread): void {
     deleteTarget = thread;
     deleteTerminalsNote.load(() => terminalsClosingNoteForThreadDelete([thread]));
-    deleteAssistantNote.load([thread]);
+    deleteNote.load([thread]);
   }
 
   function cancelDelete(): void {
     deleteTarget = null;
     deleteTerminalsNote.clear();
-    deleteAssistantNote.clear();
+    deleteNote.clear();
   }
 
   function executeDelete(): void {
@@ -99,7 +89,7 @@
     const target = deleteTarget;
     deleteTarget = null;
     deleteTerminalsNote.clear();
-    deleteAssistantNote.clear();
+    deleteNote.clear();
     void handleDelete(target);
   }
 
@@ -172,10 +162,10 @@
 <ConfirmDialog
   open={deleteTarget !== null}
   title={deleteTarget?.agentId ? 'Delete Archived Assistant' : 'Delete Archived Thread'}
-  description={withAssistantNote(withTerminalsNote(
+  description={withDeleteNote(withTerminalsNote(
     'This will permanently delete this thread and all its messages. This action cannot be undone.',
     deleteTerminalsNote.note,
-  ), deleteAssistantNote.note)}
+  ), deleteNote.note)}
   confirmLabel="Delete"
   destructive={true}
   onConfirm={executeDelete}

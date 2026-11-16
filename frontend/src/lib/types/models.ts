@@ -2,13 +2,16 @@ import type { ProviderID } from './providers';
 import type { ReasoningEffort } from './settings';
 
 // Wire shapes re-exported so feature code does not import from the
-// generated bindings tree: what an assistant's delete removes
-// (GetAssistantDependents), whether Claude's and Codex's own memory is on
-// (GetNativeMemoryStatus), and what an archive left undone (ArchiveThread).
+// generated bindings tree: what a delete removes with a thread
+// (GetDeleteDependents), whether Claude's and Codex's own memory is on
+// (GetNativeMemoryStatus), and what an archive or a delete left undone
+// (ArchiveThread, DeleteThread, DeleteProject).
 export type {
   ArchiveThreadResult,
-  AssistantDependents,
+  DeleteDependents,
+  DeleteThreadResult,
   NativeMemoryStatus,
+  WorkerFailure,
 } from '../../../bindings/agent-overflow/internal/app/models';
 
 export type RuntimeMode =

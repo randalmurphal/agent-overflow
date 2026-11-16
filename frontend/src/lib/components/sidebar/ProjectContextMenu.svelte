@@ -30,6 +30,7 @@
   import { hasScope } from '../../transport/scopes';
   import { isCompactLayout } from '../../stores/layoutMode.svelte';
   import { newThreadGroupInProject } from './threadGroupActions';
+  import { reportDeleteLeftovers } from './threadRowActions';
 
   interface Props {
     project: ProjectWithCounts;
@@ -117,6 +118,7 @@
   }
 
   async function doDelete(): Promise<void> {
+    const backend = projectBackend(project.project.id) ?? HOME_BACKEND;
     deleting = true;
     // Capture before removeProjectLocal drops the row from the label map.
     const label = labelText;
@@ -133,6 +135,9 @@
       // success line is how it goes unread.
       const notice = retainedNotice(result.retainedWorktrees);
       if (notice) addToast('warning', notice, 12000);
+      // A worker of one of its threads in another project, whose delete
+      // failed, is standalone there now.
+      reportDeleteLeftovers(backend, label, result);
     } catch (err) {
       console.error('Failed to delete project:', err);
       addErrorToast(userFacingError(err), err);

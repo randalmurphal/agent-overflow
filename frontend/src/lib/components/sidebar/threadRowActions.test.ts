@@ -190,6 +190,74 @@ describe('deleteThreadAction', () => {
     clearThreadsForTest();
   });
 
+  // Its workers go with it (docs/specs/standing-agents.md, "Owned
+  // workers"): the worktrees they are on are removed as the thread's own
+  // is, once the sessions of the workers on them stop, each worktree once.
+  it("removes its workers' worktrees with its own before the delete", async () => {
+    const own = '/tmp/work-wt/own';
+    const order: string[] = [];
+    setBindingMock('StopSession', async (id: string) => { order.push(`stop ${id}`); });
+    setBindingMock('GetDeleteDependents', async () => ({
+      pastThreads: 0, helpers: 0, workers: 3,
+      workerWorktrees: [
+        { projectId: 'project-1', worktreePath: own, threadIds: ['worker-a'] },
+        { projectId: 'project-2', worktreePath: '/tmp/other-wt/review', threadIds: ['worker-b', 'worker-c'] },
+      ],
+    }));
+    setBindingMock('RemoveOtherWorktree', async (ws: { projectId: string }, path: string) => {
+      order.push(`remove ${ws.projectId} ${path}`);
+      return { workspace: { workspacePath: '/tmp/work', worktreePath: '', branch: 'main' }, reattached: [] };
+    });
+    setBindingMock('DeleteThread', async (id: string) => { order.push(`delete ${id}`); return {}; });
+    const ctx = makeCtx({ projectId: 'project-1', workspacePath: own, worktreePath: own });
+
+    await deleteThreadAction(ctx);
+
+    expect(ctx.reportError).not.toHaveBeenCalled();
+    expect(order).toEqual([
+      'stop thread-1', 'stop worker-a', 'stop worker-b', 'stop worker-c',
+      `remove project-1 ${own}`, 'remove project-2 /tmp/other-wt/review', 'delete thread-1',
+    ]);
+  });
+
+  it('deletes nothing when what goes with the thread cannot be read', async () => {
+    setBindingMock('StopSession', async () => {});
+    setBindingMock('GetDeleteDependents', async () => { throw new Error('database is locked'); });
+    const deleted = setBindingMock('DeleteThread', vi.fn(async () => ({})));
+    prependThread(makeCtx({}).thread);
+    const ctx = makeCtx({});
+
+    await deleteThreadAction(ctx);
+
+    expect(deleted).not.toHaveBeenCalled();
+    expect(getThreadById('thread-1')).toBeDefined();
+    expect((ctx.reportError as ReturnType<typeof vi.fn>).mock.calls[0][0]).toMatch(/database is locked/i);
+  });
+
+  it('treats a delete that left a worker as deleted, names the worker and deletes it again', async () => {
+    for (const toast of getToasts()) removeToast(toast.id);
+    setBindingMock('StopSession', async () => {});
+    setBindingMock('GetDeleteDependents', async () => ({ pastThreads: 0, helpers: 0, workers: 2, workerWorktrees: [] }));
+    const remove = vi.fn(async (id: string) => (id === 'thread-1'
+      ? { workersNotDeleted: [{ threadId: 'worker-1', title: 'Parser review', error: 'thread is being transferred' }] }
+      : {}));
+    setBindingMock('DeleteThread', remove);
+    prependThread(makeCtx({}).thread);
+    const ctx = makeCtx({});
+
+    await deleteThreadAction(ctx);
+
+    expect(ctx.reportError).not.toHaveBeenCalled();
+    expect(getThreadById('thread-1')).toBeUndefined();
+    const [toast] = getToasts();
+    expect(toast.type).toBe('warning');
+    expect(toast.message).toBe('Deleted "Source thread", but its worker "Parser review" was not deleted: Thread is being transferred.');
+    expect(toast.action?.label).toBe('Delete again');
+    toast.action?.run();
+    await vi.waitFor(() => expect(remove).toHaveBeenCalledWith('worker-1'));
+    expect(getToasts()).toHaveLength(1);
+  });
+
   it('applies the rows its worktree removal moved before deleting the thread', async () => {
     const worktree = '/tmp/work-wt/feature';
     const sibling = makeBaseThread({ id: 'thread-sibling', workspacePath: worktree, worktreePath: worktree, projectPath: '/tmp/work', branch: 'feature' });
@@ -203,6 +271,7 @@ describe('deleteThreadAction', () => {
         reattached: [{ ...sibling, workspacePath: '/tmp/work', worktreePath: '', branch: 'main' }],
       };
     });
+    setBindingMock('GetDeleteDependents', async () => ({ pastThreads: 0, helpers: 0, workers: 0, workerWorktrees: [] }));
     setBindingMock('DeleteThread', async () => {
       order.push(`delete, sibling at ${siblingPane.thread?.workspacePath}`);
     });
@@ -225,6 +294,7 @@ describe('deleteThreadAction', () => {
         targets.push(getPinnedBackend());
         return { workspace: { workspacePath: '/tmp/work', worktreePath: '', branch: 'main' }, reattached: [] };
       });
+      setBindingMock('GetDeleteDependents', async () => ({ pastThreads: 0, helpers: 0, workers: 0, workerWorktrees: [] }));
       const deleted = setBindingMock('DeleteThread', async () => {});
       const ctx = makeCtx({ projectId: 'project-laptop', workspacePath: worktree, worktreePath: worktree });
 

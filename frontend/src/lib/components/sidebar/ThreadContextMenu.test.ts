@@ -312,6 +312,7 @@ describe('<ThreadContextMenu> Delete honors the confirm-delete setting', () => {
   it('deletes immediately, without a confirm dialog, when confirmDelete is off', async () => {
     await primeSettings({ confirmDelete: false });
     let deletedId: string | null = null;
+    setBindingMock('GetDeleteDependents', async () => ({ pastThreads: 0, helpers: 0, workers: 0, workerWorktrees: [] }));
     setBindingMock('DeleteThread', async (id: string) => { deletedId = id; });
 
     const { getByRole, queryByRole } = renderMenu(makeThread({ id: 'ctx-off' }));
@@ -327,6 +328,7 @@ describe('<ThreadContextMenu> Delete honors the confirm-delete setting', () => {
   it('confirms first when confirmDelete is on, deleting only after confirm', async () => {
     await primeSettings({ confirmDelete: true });
     let deletedId: string | null = null;
+    setBindingMock('GetDeleteDependents', async () => ({ pastThreads: 0, helpers: 0, workers: 0, workerWorktrees: [] }));
     setBindingMock('DeleteThread', async (id: string) => { deletedId = id; });
 
     const { getByRole } = renderMenu(makeThread({ id: 'ctx-on' }));
@@ -346,6 +348,7 @@ describe('<ThreadContextMenu> Delete honors the confirm-delete setting', () => {
   it('keeps bulk delete always-confirming even when confirmDelete is off', async () => {
     await primeSettings({ confirmDelete: false });
     let deleted = false;
+    setBindingMock('GetDeleteDependents', async () => ({ pastThreads: 0, helpers: 0, workers: 0, workerWorktrees: [] }));
     setBindingMock('DeleteThread', async () => { deleted = true; });
 
     // Two selected threads (one is the right-clicked row) flips the menu
@@ -359,6 +362,55 @@ describe('<ThreadContextMenu> Delete honors the confirm-delete setting', () => {
 
     expect(getByRole('button', { name: 'Delete' })).toBeInTheDocument();
     expect(deleted).toBe(false);
+  });
+
+  // The confirmation says how many workers go with the thread
+  // (docs/specs/standing-agents.md, "Owned workers").
+  it('counts the workers a delete takes with the thread', async () => {
+    await primeSettings({ confirmDelete: true });
+    for (const [workers, sentence] of [
+      [3, 'Its 3 workers are deleted with it.'],
+      [1, 'Its worker is deleted with it.'],
+    ] as const) {
+      setBindingMock('GetDeleteDependents', async () => ({ pastThreads: 0, helpers: 0, workers, workerWorktrees: [] }));
+      const view = renderMenu(makeThread({ id: `owner-${workers}` }));
+      await fireEvent.click(view.getByRole('menuitem', { name: 'Delete' }));
+      const dialog = () => view.baseElement.querySelector('[role="alertdialog"], [role="dialog"]');
+      await waitFor(() => expect(dialog()?.textContent).toContain(
+        `This will permanently delete this thread and all its messages. This action cannot be undone. ${sentence}`,
+      ));
+      view.unmount();
+    }
+  });
+
+  it('says nothing of workers when the thread has none or they could not be counted', async () => {
+    await primeSettings({ confirmDelete: true });
+    for (const read of [
+      async () => ({ pastThreads: 0, helpers: 0, workers: 0, workerWorktrees: [] }),
+      async () => { throw new Error('database is locked'); },
+    ]) {
+      const counted = setBindingMock('GetDeleteDependents', read);
+      const view = renderMenu(makeThread({ id: 'plain' }));
+      await fireEvent.click(view.getByRole('menuitem', { name: 'Delete' }));
+      await waitFor(() => expect(counted).toHaveBeenCalledWith('plain'));
+      for (let i = 0; i < 5; i += 1) await Promise.resolve();
+      expect(view.baseElement.querySelector('[role="alertdialog"], [role="dialog"]')?.textContent).not.toContain('worker');
+      view.unmount();
+    }
+  });
+
+  it('sums the workers of every selected thread in the bulk delete confirm', async () => {
+    await primeSettings({ confirmDelete: false });
+    setBindingMock('GetDeleteDependents', async (id: string) => ({
+      pastThreads: 0, helpers: 0, workers: id === 'thread-1' ? 1 : 2, workerWorktrees: [],
+    }));
+    replaceAllThreads([makeThread({ id: 'thread-1' }), makeThread({ id: 'thread-2' })]);
+    setThreadSelection(['thread-1', 'thread-2']);
+    const { getByRole, baseElement } = renderMenu(makeThread({ id: 'thread-1' }));
+    await fireEvent.click(getByRole('menuitem', { name: 'Delete (2)' }));
+    await waitFor(() => expect(baseElement.querySelector('[role="alertdialog"], [role="dialog"]')?.textContent).toContain(
+      'Their 3 workers are deleted with them.',
+    ));
   });
 
   it('says how many terminals deleting a thread on a worktree closes', async () => {
@@ -956,7 +1008,7 @@ describe('<ThreadContextMenu> standing agent', () => {
     await loadSettings();
     setBindingMock('StopSession', async () => {});
     setBindingMock('GetStandingAgent', async () => ({ id: 'agent-1', threadId: 'thread-1', home: '/config/agents/agent-1' }));
-    setBindingMock('GetAssistantDependents', async () => ({ pastThreads: 2, helpers: 1 }));
+    setBindingMock('GetDeleteDependents', async () => ({ pastThreads: 2, helpers: 1, workers: 0, workerWorktrees: [] }));
     const remove = setBindingMock('DeleteThread', async () => {});
     const { baseElement } = renderAgentMenu(makeThread({ title: 'Ops', agentId: 'agent-1' }));
     await fireEvent.click(item(baseElement, 'Delete'));
@@ -977,13 +1029,23 @@ describe('<ThreadContextMenu> standing agent', () => {
 
   it("still says an assistant's threads go with it when they could not be counted", async () => {
     setBindingMock('GetStandingAgent', async () => ({ id: 'agent-1', threadId: 'thread-1', home: '/config/agents/agent-1' }));
-    setBindingMock('GetAssistantDependents', async () => {
+    setBindingMock('GetDeleteDependents', async () => {
       throw new Error('database is locked');
     });
     const { baseElement } = renderAgentMenu(makeThread({ title: 'Ops', agentId: 'agent-1' }));
     await fireEvent.click(item(baseElement, 'Delete'));
     await waitFor(() => expect(baseElement.querySelector('[role="alertdialog"], [role="dialog"]')?.textContent).toContain(
       'The assistant "Ops" is deleted too, with every thread that lives under it, and its home folder /config/agents/agent-1 is removed with everything in it.',
+    ));
+  });
+
+  it("counts an assistant's workers beside its past threads and helpers", async () => {
+    setBindingMock('GetStandingAgent', async () => ({ id: 'agent-1', threadId: 'thread-1', home: '/config/agents/agent-1' }));
+    setBindingMock('GetDeleteDependents', async () => ({ pastThreads: 2, helpers: 1, workers: 3, workerWorktrees: [] }));
+    const { baseElement } = renderAgentMenu(makeThread({ title: 'Ops', agentId: 'agent-1' }));
+    await fireEvent.click(item(baseElement, 'Delete'));
+    await waitFor(() => expect(baseElement.querySelector('[role="alertdialog"], [role="dialog"]')?.textContent).toContain(
+      'The assistant "Ops" is deleted too, with its 2 past threads, 1 helper and 3 workers, and its home folder /config/agents/agent-1 is removed with everything in it.',
     ));
   });
 
@@ -994,7 +1056,7 @@ describe('<ThreadContextMenu> standing agent', () => {
     ]);
     setThreadSelection(['a', 'b']);
     setBindingMock('GetStandingAgent', async () => ({ id: 'agent-a', threadId: 'a', home: '/config/agents/agent-a' }));
-    setBindingMock('GetAssistantDependents', async () => ({ pastThreads: 0, helpers: 0 }));
+    setBindingMock('GetDeleteDependents', async () => ({ pastThreads: 0, helpers: 0, workers: 0, workerWorktrees: [] }));
     const { baseElement } = renderAgentMenu(makeThread({ id: 'a', projectId: 'project-1' }));
     await fireEvent.click(item(baseElement, 'Delete (2)'));
     await waitFor(() => expect(baseElement.querySelector('[role="alertdialog"], [role="dialog"]')?.textContent).toContain(
