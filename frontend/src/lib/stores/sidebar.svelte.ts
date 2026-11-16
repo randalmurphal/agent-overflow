@@ -29,7 +29,7 @@
 // persists across refreshes).
 
 import type { ProjectSortMode } from '../types/settings';
-import { THREAD_PREVIEW_LIMIT, THREAD_REVEAL_INCREMENT } from '../utils/sidebarThreadLimits';
+import { THREAD_PREVIEW_LIMIT } from '../utils/sidebarThreadLimits';
 import {
   appStorageAdoptLegacyKey,
   appStorageDelete,
@@ -350,23 +350,15 @@ export function toggleGroup(id: string): void {
 }
 
 /**
- * Per-project thread preview size. Projects start at THREAD_PREVIEW_LIMIT;
- * each "Show more" click adds THREAD_REVEAL_INCREMENT, and "Show less"
- * drops the project back to the default preview.
+ * Thread-list preview size, keyed by the list's owner: a project id for
+ * its top level, a group id for the group's members (both are random
+ * entity ids, so they share one map). A list starts at
+ * THREAD_PREVIEW_LIMIT; each "Show more" click reveals up to
+ * THREAD_REVEAL_INCREMENT hidden rows, and "Show less" drops it back to
+ * the default preview.
  */
-export function isThreadListExpanded(id: string): boolean {
-  return getThreadListVisibleLimit(id) > THREAD_PREVIEW_LIMIT;
-}
-
 export function getThreadListVisibleLimit(id: string): number {
   return threadListVisibleLimits[id] ?? THREAD_PREVIEW_LIMIT;
-}
-
-export function revealMoreThreadList(id: string): void {
-  const current = getThreadListVisibleLimit(id);
-  const next = visibleLimitsWith(id, current + THREAD_REVEAL_INCREMENT);
-  threadListVisibleLimits = next;
-  writeThreadListVisibleLimits(next);
 }
 
 export function setThreadListVisibleLimit(id: string, limit: number): void {

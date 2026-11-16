@@ -10,6 +10,8 @@
 // the pin blocks behind a divider, and deleting the group returns its
 // members to the list unpinned.
 // Spec: docs/specs/sidebar-thread-groups.md.
+// A group longer than the preview shows its first members and reveals the
+// rest like a project list, and the reveal persists through reload.
 // Collapse keeps only the focused member visible across pane switches,
 // backend updates and reload.
 import { test, expect, type SeedResult } from './fixtures.js';
@@ -256,6 +258,36 @@ test('a collapsed group keeps only its focused member through focus changes and 
   await page.locator(`[data-sidebar-thread-id="${threadIds[2]}"]`).click();
   await expect(members).toHaveCount(0);
   await expect(groupRow).toHaveAttribute('data-expanded', 'false');
+});
+
+test('a large group shows its first members, reveals the rest, and keeps the reveal through reload', async ({ harness, page }) => {
+  const titles = Array.from({ length: 11 }, (_, i) => `Member ${i}`);
+  const seed = await harness.rpc<SeedResult>('HarnessSeed', seedProject('group-cut', [...titles, 'Outside']));
+  const { projectId, threadIds } = seed.projects[0];
+  const group = await harness.rpc<ThreadGroup>('CreateThreadGroup', projectId, 'Big group');
+  await harness.rpc('SetThreadGroup', threadIds.slice(0, 11), group.id);
+  await harness.open(page);
+  const members = page.locator('[data-group-member] [data-sidebar-thread-id]');
+  const showMore = page.getByTestId('thread-group-show-more');
+  const showLess = page.getByTestId('thread-group-show-less');
+
+  await expect(members).toHaveCount(8);
+  await expect(showMore).toHaveText('Show 3 More');
+  await expect(showLess).toHaveCount(0);
+  // The group takes one project slot: the outside thread is not cut.
+  await expect(page.locator(`[data-sidebar-thread-id="${threadIds[11]}"]`)).toBeVisible();
+  await expect(page.getByTestId('project-thread-list-show-more')).toHaveCount(0);
+
+  await showMore.click();
+  await expect(members).toHaveCount(11);
+  await expect(showMore).toHaveCount(0);
+  await expect(showLess).toBeVisible();
+
+  await page.reload();
+  await expect(members).toHaveCount(11);
+  await showLess.click();
+  await expect(members).toHaveCount(8);
+  await expect(showMore).toHaveText('Show 3 More');
 });
 
 

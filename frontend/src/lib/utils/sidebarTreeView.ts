@@ -11,7 +11,8 @@ import type { ThreadLiveStatus } from '../stores/threadStatuses.svelte';
 import type { ThreadStatusPill } from './threadStatusPill';
 import {
   sidebarNodeSection,
-  statusPriority,
+  sidebarTreeNodeId,
+  displayStatusOutranks,
   type SidebarThreadTreeNode,
   type SidebarTreeNode,
 } from './sidebarTree';
@@ -42,6 +43,28 @@ export type SidebarTreeVisibleNode = SidebarTreeNode & {
   isPinTarget: boolean;
 };
 
+/**
+ * The footer under an expanded group whose members were cut: "Show N More"
+ * and "Show Less", the same controls a project's list ends with.
+ */
+export interface SidebarGroupMoreRow {
+  kind: 'group-more';
+  groupId: string;
+  /** Members behind the cut. */
+  hiddenCount: number;
+  /** The most important status among the hidden members. */
+  hiddenStatus: SidebarStatusRollup | null;
+  canShowLess: boolean;
+}
+
+/** A row the sidebar renders: a tree node, or a group's show-more footer. */
+export type SidebarTreeVisibleRow = SidebarTreeVisibleNode | SidebarGroupMoreRow;
+
+/** Each-block key; a footer's key cannot collide with a node id. */
+export function sidebarVisibleRowKey(row: SidebarTreeVisibleRow): string {
+  return row.kind === 'group-more' ? `${row.groupId}:more` : sidebarTreeNodeId(row);
+}
+
 export interface FlattenSidebarThreadTreeInput {
   nodes: readonly SidebarTreeNode[];
   expandedThreadIds: ReadonlySet<string>;
@@ -52,6 +75,10 @@ export interface FlattenSidebarThreadTreeInput {
   collapsedGroupIds?: ReadonlySet<string>;
   /** A closed container shows only this descendant directly beneath it. */
   activeThreadId?: string | null;
+  /** Threads mounted in any pane; a group's preview cut never hides these. */
+  openThreadIds: ReadonlySet<string>;
+  /** An expanded group's preview limit, by group id. */
+  groupVisibleLimit: (groupId: string) => number;
 }
 
 /**
@@ -64,11 +91,16 @@ export interface FlattenSidebarThreadTreeInput {
  * ones), a group is open until the user closes it (`collapsedGroupIds`
  * lists the closed ones), because a group the user just made must show
  * what is in it.
+ *
+ * An expanded group's members take the project's preview cut
+ * (`previewSidebarThreads`) against the group's own limit, and a
+ * `group-more` footer follows the last member when the cut hid any or the
+ * group can be shown less.
  */
 export function flattenSidebarThreadTree(
   input: FlattenSidebarThreadTreeInput,
-): SidebarTreeVisibleNode[] {
-  const visibleNodes: SidebarTreeVisibleNode[] = [];
+): SidebarTreeVisibleRow[] {
+  const visibleNodes: SidebarTreeVisibleRow[] = [];
   const collapsedGroupIds = input.collapsedGroupIds;
 
   const visit = (
@@ -110,7 +142,25 @@ export function flattenSidebarThreadTree(
       }
       return;
     }
-    for (const child of node.children) visit(child, false, childOwner);
+    if (node.kind === 'thread') {
+      for (const child of node.children) visit(child, false, childOwner);
+      return;
+    }
+    const cut = previewSidebarThreads({
+      nodes: node.children,
+      openThreadIds: input.openThreadIds,
+      limit: input.groupVisibleLimit(node.group.id),
+    });
+    for (const child of cut.visibleNodes) visit(child, false, childOwner);
+    if (cut.hiddenNodes.length > 0 || cut.canShowLess) {
+      visibleNodes.push({
+        kind: 'group-more',
+        groupId: node.group.id,
+        hiddenCount: cut.hiddenNodes.length,
+        hiddenStatus: rollupDisplayStatus(cut.hiddenNodes),
+        canShowLess: cut.canShowLess,
+      });
+    }
   };
 
   // The top level arrives sorted, so each section is one contiguous run.
@@ -160,6 +210,15 @@ export function sameThreadStatusPill(
     && a.glowClass === b.glowClass;
 }
 
+function sameStatusRollup(
+  a: SidebarStatusRollup | null,
+  b: SidebarStatusRollup | null,
+): boolean {
+  if (a === b) return true;
+  if (a === null || b === null) return false;
+  return a.liveStatus === b.liveStatus && sameThreadStatusPill(a.pill, b.pill);
+}
+
 /**
  * Render-content equality for the flattened sidebar list. The
  * ProjectThreadList derived returns its PREVIOUS array when this holds,
@@ -171,14 +230,21 @@ export function sameThreadStatusPill(
  * sort input rather than render input, and comparing it would defeat
  * the cutoff.
  */
-export function sameSidebarVisibleNodes(
-  a: readonly SidebarTreeVisibleNode[],
-  b: readonly SidebarTreeVisibleNode[],
+export function sameSidebarVisibleRows(
+  a: readonly SidebarTreeVisibleRow[],
+  b: readonly SidebarTreeVisibleRow[],
 ): boolean {
   if (a.length !== b.length) return false;
   for (let i = 0; i < a.length; i++) {
     const x = a[i];
     const y = b[i];
+    if (x.kind === 'group-more' || y.kind === 'group-more') {
+      if (x.kind !== 'group-more' || y.kind !== 'group-more') return false;
+      if (x.groupId !== y.groupId || x.hiddenCount !== y.hiddenCount) return false;
+      if (x.canShowLess !== y.canShowLess) return false;
+      if (!sameStatusRollup(x.hiddenStatus, y.hiddenStatus)) return false;
+      continue;
+    }
     if (x.kind !== y.kind) return false;
     if (x.kind === 'thread' && y.kind === 'thread' && x.thread !== y.thread) return false;
     if (x.kind === 'group' && y.kind === 'group') {
@@ -238,6 +304,8 @@ function subtreeHoldsOpenThread(
 export interface PreviewThreadsResult {
   visibleNodes: SidebarTreeNode[];
   hiddenNodes: SidebarTreeNode[];
+  /** The list was revealed past the default preview and is longer than it. */
+  canShowLess: boolean;
 }
 
 /**
@@ -250,6 +318,9 @@ export interface PreviewThreadsResult {
  *
  * A group or discussion takes one slot. Its descendants take none.
  * Discussions with an open descendant stay visible above the cut.
+ *
+ * The same cut applies to a project's top level and to an expanded
+ * group's members, each against its own limit.
  */
 export function previewSidebarThreads(input: {
   nodes: readonly SidebarTreeNode[];
@@ -271,12 +342,13 @@ export function previewSidebarThreads(input: {
     else pinned.push(node);
   }
 
+  const canShowLess = limit > THREAD_PREVIEW_LIMIT && input.nodes.length > THREAD_PREVIEW_LIMIT;
   const unpinnedLimit = Math.max(0, limit - pinned.length);
   const head = rest.slice(0, unpinnedLimit);
   const tail = rest.slice(unpinnedLimit);
 
   if (tail.length === 0) {
-    return { visibleNodes: [...drafts, ...pinned, ...head], hiddenNodes: [] };
+    return { visibleNodes: [...drafts, ...pinned, ...head], hiddenNodes: [], canShowLess };
   }
 
   // Open threads in the tail float back into view, in tail order; the rest
@@ -291,6 +363,7 @@ export function previewSidebarThreads(input: {
   return {
     visibleNodes: [...drafts, ...pinned, ...head, ...floated],
     hiddenNodes: hidden,
+    canShowLess,
   };
 }
 
@@ -321,6 +394,11 @@ export function nextSidebarThreadRevealLimit(input: {
   return nextLimit;
 }
 
+export interface SidebarStatusRollup {
+  liveStatus: ThreadLiveStatus;
+  pill: ThreadStatusPill;
+}
+
 /**
  * Roll up the most-important display status across a list of nodes —
  * used both for the "Show more" hidden-status pill and the per-project
@@ -328,18 +406,18 @@ export function nextSidebarThreadRevealLimit(input: {
  */
 export function rollupDisplayStatus(
   nodes: readonly SidebarTreeNode[],
-): { liveStatus: ThreadLiveStatus; pill: ThreadStatusPill } | null {
-  let best: { liveStatus: ThreadLiveStatus; pill: ThreadStatusPill } | null = null;
-  let bestPriority = 0;
+): SidebarStatusRollup | null {
+  let best: SidebarTreeNode | null = null;
+  let bestPill: ThreadStatusPill | null = null;
   for (const node of nodes) {
-    if (node.displayStatus == null) continue;
-    const priority = statusPriority(node.displayLiveStatus);
-    if (priority > bestPriority) {
-      best = { liveStatus: node.displayLiveStatus, pill: node.displayStatus };
-      bestPriority = priority;
+    if (node.displayStatus === null) continue;
+    if (best === null || displayStatusOutranks(node, best)) {
+      best = node;
+      bestPill = node.displayStatus;
     }
   }
-  return best;
+  if (best === null || bestPill === null) return null;
+  return { liveStatus: best.displayLiveStatus, pill: bestPill };
 }
 
 /** Remove leaf IDs belonging to this tree without changing other projects. */

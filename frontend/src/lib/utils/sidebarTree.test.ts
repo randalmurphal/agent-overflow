@@ -81,21 +81,34 @@ describe('buildSidebarThreadTree', () => {
     expect(tree[1].sortGroup).toBe('idle');
   });
 
-  it('keeps running and unread completed threads in the same activity tier', () => {
+  it('puts running threads above unread completed ones regardless of activity time', () => {
+    // Opening a completed row reads it and drops it to the idle tier. With
+    // completed below running, that move never crosses a running row.
     const running = mkThread('running', { updatedAt: 1000 });
     const completed = mkThread('completed', {
       updatedAt: 9000,
       latestTurnCompletedAt: 9000,
       lastReadAt: 1000,
     });
+    const plain = mkThread('plain', { updatedAt: 99_000 });
     const tree = buildSidebarThreadTree({
-      threads: [running, completed],
+      threads: [plain, completed, running],
       liveStatusOf: liveStatusMap({ running: 'running' }),
     });
 
-    expect(tree.map(nodeId)).toEqual(['completed', 'running']);
-    expect(tree[0].sortGroup).toBe('completed');
-    expect(tree[1].sortGroup).toBe('running');
+    expect(tree.map(nodeId)).toEqual(['running', 'completed', 'plain']);
+    expect(tree.map((n) => n.sortGroup)).toEqual(['running', 'completed', 'idle']);
+  });
+
+  it('orders running above completed inside a pin block', () => {
+    const tree = buildSidebarThreadTree({
+      threads: [
+        mkThread('front-completed', { pinnedAt: 1, updatedAt: 9000, latestTurnCompletedAt: 9000, lastReadAt: 1 }),
+        mkThread('front-running', { pinnedAt: 2, updatedAt: 1000 }),
+      ],
+      liveStatusOf: liveStatusMap({ 'front-running': 'running' }),
+    });
+    expect(tree.map(nodeId)).toEqual(['front-running', 'front-completed']);
   });
 
   it('uses the running tier for every running thread mode', () => {
@@ -319,6 +332,58 @@ describe('buildSidebarThreadTree', () => {
     expect(tree.map(nodeId)).toEqual(['parent', 'plain']);
     expect(tree[0].displayStatus?.label).toBe('Completed');
     expect(tree[0].sortGroup).toBe('completed');
+  });
+
+  it("bubbles a running child to a pinned idle parent and sorts it in the running tier", () => {
+    // A pin orders rows; it is not a status. A pinned parent whose own
+    // status is idle shows and sorts by its busiest child.
+    const tree = buildSidebarThreadTree({
+      threads: [
+        mkThread('parent', { pinnedAt: 1, updatedAt: 1 }),
+        mkThread('child', { parentThreadId: 'parent', updatedAt: 1 }),
+        mkThread('pinned-completed', { pinnedAt: 2, updatedAt: 9000, latestTurnCompletedAt: 9000, lastReadAt: 1 }),
+      ],
+      liveStatusOf: liveStatusMap({ child: 'running' }),
+    });
+    expect(tree.map(nodeId)).toEqual(['parent', 'pinned-completed']);
+    expect(tree[0].displayLiveStatus).toBe('running');
+    expect(tree[0].displayStatus?.label).toBe('Working');
+    expect(tree[0].sortGroup).toBe('running');
+  });
+
+  it("keeps a completed parent's pill over a read idle child", () => {
+    const tree = buildSidebarThreadTree({
+      threads: [
+        mkThread('parent', { updatedAt: 9000, latestTurnCompletedAt: 9000, lastReadAt: 1 }),
+        mkThread('child', { parentThreadId: 'parent', updatedAt: 1 }),
+      ],
+      liveStatusOf: liveStatusMap({}),
+    });
+    expect(tree[0].displayStatus?.label).toBe('Completed');
+    expect(tree[0].sortGroup).toBe('completed');
+  });
+
+  it("keeps a running parent's status over a completed child", () => {
+    const tree = buildSidebarThreadTree({
+      threads: [
+        mkThread('parent', { updatedAt: 1 }),
+        mkThread('child', { parentThreadId: 'parent', updatedAt: 9000, latestTurnCompletedAt: 9000, lastReadAt: 1 }),
+      ],
+      liveStatusOf: liveStatusMap({ parent: 'running' }),
+    });
+    expect(tree[0].displayLiveStatus).toBe('running');
+    expect(tree[0].displayStatus?.label).toBe('Working');
+  });
+
+  it("keeps a failed parent's status over a lower-priority needs-attention child", () => {
+    const tree = buildSidebarThreadTree({
+      threads: [
+        mkThread('parent', { updatedAt: 1, hasFailedTurn: true }),
+        mkThread('child', { parentThreadId: 'parent', updatedAt: 9000, hasIncompleteTurn: true }),
+      ],
+      liveStatusOf: liveStatusMap({}),
+    });
+    expect(tree[0].displayLiveStatus).toBe('error');
   });
 
   it("bubbles a needs-attention child above a running child", () => {
