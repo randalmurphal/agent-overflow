@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	"agent-overflow/internal/buildvariant"
 	"agent-overflow/internal/identity"
 	"agent-overflow/internal/settings"
 )
@@ -29,16 +30,27 @@ const (
 func adminReadApp(t *testing.T) *App {
 	t.Helper()
 	app := accessApp(t)
+	setAdminReadHook(t, app)
+	if _, err := app.settings.Update(map[string]any{"observabilityOtlpEndpoint": adminReadOTLPSecret}); err != nil {
+		t.Fatalf("Update observabilityOtlpEndpoint: %v", err)
+	}
+	return app
+}
+
+// setAdminReadHook saves a DNS hook. A build without remote access refuses
+// the remote network fields, so there the network block has nothing to
+// withhold and the OTLP endpoint is the value under test.
+func setAdminReadHook(t *testing.T, app *App) {
+	t.Helper()
+	if !buildvariant.RemoteAccess {
+		return
+	}
 	if _, err := app.settings.SetNetwork(settings.NetworkSettings{
 		CanonicalDomain: "backend.example.test",
 		ACMEDNSHook:     []string{"/usr/local/bin/dns-hook", adminReadHookSecret},
 	}); err != nil {
 		t.Fatalf("SetNetwork: %v", err)
 	}
-	if _, err := app.settings.Update(map[string]any{"observabilityOtlpEndpoint": adminReadOTLPSecret}); err != nil {
-		t.Fatalf("Update observabilityOtlpEndpoint: %v", err)
-	}
-	return app
 }
 
 // settingsReads calls every bound method that returns a Settings value.
@@ -97,7 +109,7 @@ func TestSettingsReadsKeepAdminValuesForAdminAndLocalCallers(t *testing.T) {
 		"sessionless in-place": context.Background(),
 	} {
 		for method, got := range settingsReads(t, app, ctx) {
-			if !slices.Contains(got.Network.ACMEDNSHook, adminReadHookSecret) {
+			if buildvariant.RemoteAccess && !slices.Contains(got.Network.ACMEDNSHook, adminReadHookSecret) {
 				t.Errorf("%s via %s: network = %+v, want the DNS hook", caller, method, got.Network)
 			}
 			if got.ObservabilityOtlpEndpoint != adminReadOTLPSecret {
@@ -126,12 +138,7 @@ func TestSettingsWritesEmitNoSettingsValues(t *testing.T) {
 	if _, err := app.SetProviderCustomEnvVar(context.Background(), "claude", "MY_VAR", envSecret, true); err != nil {
 		t.Fatalf("SetProviderCustomEnvVar: %v", err)
 	}
-	if _, err := app.settings.SetNetwork(settings.NetworkSettings{
-		CanonicalDomain: "backend.example.test",
-		ACMEDNSHook:     []string{"/usr/local/bin/dns-hook", adminReadHookSecret},
-	}); err != nil {
-		t.Fatalf("SetNetwork: %v", err)
-	}
+	setAdminReadHook(t, app)
 	if _, err := app.UpdateSettings(context.Background(), map[string]any{"observabilityOtlpEndpoint": adminReadOTLPSecret}); err != nil {
 		t.Fatalf("UpdateSettings: %v", err)
 	}
