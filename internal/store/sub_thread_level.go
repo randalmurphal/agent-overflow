@@ -65,7 +65,8 @@ func (s *Store) DelegationChain(threadID string) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("store: delegation chain of %s: %w", threadID, err)
 	}
-	defer rows.Close()
+	// A read's close fails only with an error rows.Err reports.
+	defer func() { _ = rows.Close() }()
 	var chain []string
 	for rows.Next() {
 		var id string
