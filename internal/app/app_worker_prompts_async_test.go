@@ -303,7 +303,7 @@ func TestAWorkersAsyncQuestionGoesToThePersonWhenItsSpawnerLeaves(t *testing.T) 
 			if leave == "archive" {
 				_, err = f.app.ArchiveThread(f.spawner.ID)
 			} else {
-				err = f.app.DeleteThread(f.spawner.ID)
+				_, err = f.app.DeleteThread(f.spawner.ID)
 			}
 			if err != nil {
 				t.Fatal(err)
