@@ -4,10 +4,13 @@ import { createThreadPane, type ThreadPane } from './thread.svelte';
 import {
   addPaneLayoutItem,
   averagePaneWidthPx,
+  demotePane,
   getPaneLayoutItems,
+  getPromotedPaneId,
   isToolKind,
   movePaneLayoutItem,
   notePaneLayoutMutation,
+  promotePane,
   removePaneLayoutItem,
   sourcePaneIdOf,
   type PaneLayoutItem,
@@ -299,6 +302,21 @@ export function focusPane(id: string): void {
 
 export function getFocusedPaneId(): string | null {
   return focusedPaneId;
+}
+
+/**
+ * The header button, title double-click and `pane.togglePromoted`: demote
+ * the promoted pane, or focus and promote this one. Focus comes first
+ * because focus moving to another pane demotes (PaneHost).
+ */
+export function togglePanePromotion(paneId: string): void {
+  if (getPromotedPaneId() === paneId) {
+    demotePane();
+    return;
+  }
+  if (!hasLayoutPane(paneId)) return;
+  focusPane(paneId);
+  promotePane(paneId);
 }
 
 export function getAllPanes(): Map<string, ThreadPane> {

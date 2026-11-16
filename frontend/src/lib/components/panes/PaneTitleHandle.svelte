@@ -19,6 +19,8 @@
   } from '../../stores/paneTitleRename';
   import { isImeComposingEvent } from '../../utils/imeComposition';
   import { isCompactLayout } from '../../stores/layoutMode.svelte';
+  import { togglePanePromotion } from '../../stores/panes.svelte';
+  import { getPromotedPaneId } from '../../stores/paneLayout.svelte';
 
   interface Props {
     pane: ThreadPane;
@@ -162,7 +164,8 @@
   {:else}
     <!-- Title is the pane drag-handle. Right-click renames; mousedown + drag
          reorders the pane. Left-click is reserved for the drag gesture so a
-         fast click doesn't accidentally start an edit. -->
+         fast click doesn't accidentally start an edit. Double-click
+         maximizes the pane or restores it, as a window title bar does. -->
     <button
       type="button"
       oncontextmenu={(event) => {
@@ -171,8 +174,13 @@
       }}
       draggable={onPaneDragStart != null && !isCompactLayout()}
       ondragstart={(event) => onPaneDragStart?.(event)}
+      ondblclick={() => {
+        if (!isCompactLayout()) togglePanePromotion(pane.paneId);
+      }}
       data-testid={titleTestId}
-      title={`${pane.thread.title} (right-click to rename)`}
+      title={isCompactLayout()
+        ? `${pane.thread.title} (right-click to rename)`
+        : `${pane.thread.title} (double-click to ${getPromotedPaneId() === pane.paneId ? 'restore' : 'maximize'}, right-click to rename)`}
       class={[
         'text-sm font-medium min-w-0 text-left bg-transparent border-none px-1.5 py-0.5 compact:py-1.5 compact:select-none rounded-[var(--radius-field)] text-fg transition-colors hover:bg-surface-2/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40',
         fade ? 'flex-1 overflow-hidden' : 'truncate',

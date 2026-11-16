@@ -31,6 +31,7 @@
   import Button from '../primitives/Button.svelte';
   import Icon from '../primitives/Icon.svelte';
   import IconButton from '../primitives/IconButton.svelte';
+  import PanePromoteButton from '../panes/PanePromoteButton.svelte';
   import ProposedPlanActions from './ProposedPlanActions.svelte';
   import ProposedPlanReviewSurface from './ProposedPlanReviewSurface.svelte';
   import ProposedPlanSaveModal from './ProposedPlanSaveModal.svelte';
@@ -248,6 +249,9 @@
             getCopyText={planExport.getCopyableMarkdown}
             onSave={planExport.openSaveDialog}
           />
+        {/if}
+        {#if planPaneId}
+          <PanePromoteButton paneId={planPaneId} testId="plan-sidebar-promote" />
         {/if}
         <IconButton
           label="Close Plan Sidebar"
