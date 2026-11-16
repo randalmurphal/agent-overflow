@@ -299,7 +299,7 @@ func TestHandOffTeardownTakesBackAQueuedWake(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	held, owed := f.app.settleQueueForTeardown(target.ID, false, dropQueue)
+	held, owed, _ := f.app.settleQueueForTeardown(target.ID, false, dropQueue)
 	f.app.giveBackToOwners(target.ID, held)
 	f.app.giveBackTeardownRequests(target.ID, owed)
 	awaitQueuedOrSent(t, f.app, successor.ID, sendID, stdinLog, "inbox fired", 0)

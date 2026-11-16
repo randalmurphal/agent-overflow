@@ -1457,15 +1457,18 @@ func (a *App) teardownSession(threadID string, sess session, mutationsHeld bool,
 	a.drainProviderEvents(threadID, "stop session")
 	var held []ownedMessage
 	var requests teardownRequests
+	var restore flushRestore
 	if a.triage != nil {
-		held, requests = a.settleQueueForTeardown(threadID, mutationsHeld, queue)
+		held, requests, restore = a.settleQueueForTeardown(threadID, mutationsHeld, queue)
 	}
 	// The answers and remote completions the drop held go back to their
 	// requests and watches once the session is closed, so a completion the
 	// watcher queues again starts a session only after this one is gone.
 	// Other threads' requests go back on the queue the cleanup emptied; a
 	// caller holding the mutation lock a queue write takes (the idle
-	// reaper) has them queued once it lets go.
+	// reaper) has them queued once it lets go. A restore's app messages
+	// are settled the same way, after the mutation lock is released.
+	defer a.finishFlushRestore(threadID, restore)
 	defer a.giveBackToOwners(threadID, held)
 	if mutationsHeld && !requests.empty() {
 		defer a.goThreadRequestSettling(func() { a.giveBackTeardownRequests(threadID, requests) })
@@ -1528,20 +1531,22 @@ func (a *App) teardownSession(threadID string, sess session, mutationsHeld bool,
 // the queue the teardown empties, and settled with it, or queued once the
 // memory cleanup is done, durable and in memory for the next session. A
 // drop takes nothing else; a restore needs the thread action lock its
-// caller holds.
-func (a *App) settleQueueForTeardown(threadID string, mutationsHeld bool, queue teardownQueue) ([]ownedMessage, teardownRequests) {
+// caller holds. A restore returns what it owes the app's messages for the
+// caller to settle once the lock is released (finishFlushRestore): settling
+// requeues other threads' requests, which is a queue write.
+func (a *App) settleQueueForTeardown(threadID string, mutationsHeld bool, queue teardownQueue) ([]ownedMessage, teardownRequests, flushRestore) {
 	if !mutationsHeld {
 		defer a.threadApplication().LockMutations(threadID)()
 	}
 	var held []ownedMessage
 	var requests teardownRequests
-	var requeued []triage.UnconfirmedFlushItem
+	var restore flushRestore
 	switch queue {
 	case restoreQueue:
 		// The restore settles what the app wrote as a session end does
 		// (agentPartsNotTakenIn): answers and completions back to their
 		// owners, other threads' requests back to their queue.
-		requeued = a.restoreUnconfirmedQueueLocked(threadID)
+		restore = a.restoreUnconfirmedQueueOwing(threadID)
 	default:
 		requests = a.returnRequestsAtTeardown(threadID)
 		var dispatched []triage.QueuedFlushItem
@@ -1551,12 +1556,12 @@ func (a *App) settleQueueForTeardown(threadID string, mutationsHeld bool, queue 
 		a.dropUnconfirmedSends(threadID, dispatched, requests)
 	}
 	a.triage.CleanupThread(threadID)
-	if len(requeued) > 0 {
+	if len(restore.requeued) > 0 {
 		// The cleanup wiped the queue these re-entered.
-		a.requeueUnconfirmedFlushItems(threadID, requeued)
+		a.requeueUnconfirmedFlushItems(threadID, restore.requeued)
 		a.emitQueueStateChanged(threadID)
 	}
-	return held, requests
+	return held, requests, restore
 }
 
 // unconfirmedOwnedMessages names the answers, reminders and completions

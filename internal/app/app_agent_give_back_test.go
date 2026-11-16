@@ -1092,6 +1092,46 @@ func TestASessionDeathRequeuesAJoinedRequestAndGivesThePersonTheirText(t *testin
 	}
 }
 
+// A reconnect's stop hands the queue back as a death does, and a request
+// the agent had not taken in goes back on its queue, owed again, in memory
+// and durably, for the reconnected session to send. The stop restores under
+// the queue's mutation lock, which the requeue's queue write takes too, so
+// the requeue waits until the teardown lets go of it.
+func TestAReconnectsStopRequeuesARequestTheAgentHadNotTakenIn(t *testing.T) {
+	t.Parallel()
+	f := newRequestFixture(t)
+	f.app.startSessionFn = func(string) error { return nil }
+	token, message := queueRequestFromAnotherComputer(t, f)
+	dispatchUnconfirmed(t, f)
+	waitUntil(t, 10*time.Second, func() bool { return f.receipt(t, token).State == store.ThreadReceiptRunning })
+
+	stopped := make(chan error, 1)
+	go func() {
+		unlock := f.app.threadLocks().Lock(f.caller.ID)
+		defer unlock()
+		stopped <- f.app.stopSessionForRestart(f.caller.ID)
+	}()
+	select {
+	case err := <-stopped:
+		if err != nil {
+			t.Fatalf("stopSessionForRestart: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the reconnect's stop never returned: its requeue waits on the queue lock the stop holds")
+	}
+
+	if receipt := f.receipt(t, token); receipt.State != store.ThreadReceiptAccepted {
+		t.Fatalf("receipt = %q, want it accepted again", receipt.State)
+	}
+	rows := durableQueueRows(t, f.app, f.caller.ID)
+	if len(rows) != 1 || rows[0].SendID != threadRequestSendID(token) || rows[0].Message != message.Text() {
+		t.Fatalf("queue = %+v, want the request alone, owed again", rows)
+	}
+	if !f.app.triage.HasQueuedFlushItems(f.caller.ID) {
+		t.Fatal("the request is not on the in-memory queue the next session start sends")
+	}
+}
+
 // A request still queued at quit is not the person's to send: the boot
 // restore leaves it out of the composer, and the boot sweep tells its
 // sender the request was interrupted by the restart.

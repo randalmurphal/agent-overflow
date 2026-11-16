@@ -64,9 +64,19 @@ func (a *App) restoreUnconfirmedQueueOnSessionDeathIf(
 // for a reason other than the person's own Stop hands its queued messages
 // back to the composer the same way a death does.
 func (a *App) restoreUnconfirmedQueueLocked(threadID string) []triage.UnconfirmedFlushItem {
+	restore := a.restoreUnconfirmedQueueOwing(threadID)
+	a.finishFlushRestore(threadID, restore)
+	return restore.requeued
+}
+
+// restoreUnconfirmedQueueOwing is restoreUnconfirmedQueueLocked leaving the
+// settlement of what the app wrote to the caller (finishFlushRestore), for a
+// teardown that restores under the thread's mutation lock: settling
+// requeues other threads' requests, a queue write that takes that lock.
+func (a *App) restoreUnconfirmedQueueOwing(threadID string) flushRestore {
 	a.forgetAgentWakeTurns(threadID)
 	if a.triage == nil {
-		return nil
+		return flushRestore{}
 	}
 	// threadLock -> a.flushDispatch.mu is the established lock order documented
 	// by RegisterQueueItem. Draining here, rather than before the thread lock,
@@ -88,9 +98,9 @@ func (a *App) restoreUnconfirmedQueueLocked(threadID string) []triage.Unconfirme
 	drained = dedupeUnconfirmedFlushItems(drained)
 	sortByEnqueuedAt(drained)
 	if len(drained) == 0 {
-		return nil
+		return flushRestore{}
 	}
-	return a.restoreFlushItemsToDraftLocked(threadID, drained, queueRestoredReasonSessionDied)
+	return a.restoreFlushItemsToDraftOwing(threadID, drained, queueRestoredReasonSessionDied)
 }
 
 // restoreUndeliveredSends returns the sends Claude cancelled without running
@@ -140,6 +150,39 @@ func sortByEnqueuedAt(items []triage.UnconfirmedFlushItem) {
 // rest has committed. A restore that fails requeues the items whole, the
 // app's messages included, and they are still queued.
 func (a *App) restoreFlushItemsToDraftLocked(threadID string, drained []triage.UnconfirmedFlushItem, reason string) []triage.UnconfirmedFlushItem {
+	restore := a.restoreFlushItemsToDraftOwing(threadID, drained, reason)
+	a.finishFlushRestore(threadID, restore)
+	return restore.requeued
+}
+
+// flushRestore is a restore whose composer write is done and whose
+// settlement of what the app wrote is owed (finishFlushRestore).
+type flushRestore struct {
+	// requeued are the items a failed restore requeued instead; nothing
+	// else is owed then.
+	requeued []triage.UnconfirmedFlushItem
+	// restored is set when the composer write committed.
+	restored bool
+	owed     []notTakenIn
+	event    QueueRestoredEvent
+}
+
+// finishFlushRestore settles what the app wrote among a committed restore's
+// messages (settleNotTakenIn) and tells clients what the restore changed.
+// The caller holds the thread action lock and not its mutation lock.
+func (a *App) finishFlushRestore(threadID string, restore flushRestore) {
+	if !restore.restored {
+		return
+	}
+	a.settleNotTakenIn(threadID, restore.owed)
+	a.emit(eventchan.ProviderAsyncQuestionsChanged, map[string]string{"threadId": threadID})
+	a.emitQueueStateChanged(threadID)
+	a.emit(eventchan.ProviderQueueRestored, restore.event)
+}
+
+// restoreFlushItemsToDraftOwing is restoreFlushItemsToDraftLocked leaving
+// the settlement and the announcement to finishFlushRestore.
+func (a *App) restoreFlushItemsToDraftOwing(threadID string, drained []triage.UnconfirmedFlushItem, reason string) flushRestore {
 	// The composer write, the queue rows' removal and the retire of every
 	// row the messages have (a quiet row, a stale row a requeue carries, or
 	// the id a deferred message's review drafts were claimed for) are one
@@ -186,23 +229,18 @@ func (a *App) restoreFlushItemsToDraftLocked(threadID string, drained []triage.U
 			a.emitWireErrorToThread(threadID, "Could not restore queued messages: "+err.Error())
 			a.requeueUnconfirmedFlushItems(threadID, drained)
 			a.emitQueueStateChanged(threadID)
-			return drained
+			return flushRestore{requeued: drained}
 		}
 	}
 	for _, settlement := range settlements {
 		settlement.Settle("")
 	}
-	a.settleNotTakenIn(threadID, owed)
-	a.emit(eventchan.ProviderAsyncQuestionsChanged, map[string]string{"threadId": threadID})
-
-	a.emitQueueStateChanged(threadID)
-	a.emit(eventchan.ProviderQueueRestored, QueueRestoredEvent{
+	return flushRestore{restored: true, owed: owed, event: QueueRestoredEvent{
 		ThreadID:     threadID,
 		Reason:       reason,
 		QueueItemIDs: queueItemIDs,
 		UserItemIDs:  userItemIDs,
-	})
-	return nil
+	}}
 }
 
 // cleanupStaleFlushRow takes back a message the provider never consumed,
