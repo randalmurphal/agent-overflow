@@ -76,7 +76,7 @@ func (t threadToolsApp) updateOneThread(ctx context.Context, caller threadtools.
 	}
 
 	applied, err := t.app.applyThreadOrganizePatch(ctx, threadID, patch)
-	var cleanup *archiveCleanupError
+	var cleanup *threadCleanupError
 	if err != nil && !errors.As(err, &cleanup) {
 		result.Error, result.ErrorCode = organizeRefusal(threadID, err)
 		return result
@@ -88,7 +88,7 @@ func (t threadToolsApp) updateOneThread(ctx context.Context, caller threadtools.
 	if cleanup != nil {
 		// The patch applied; what follows is what the archive's cleanup
 		// could not do, for the agent to pass on.
-		result.ErrorCode, result.Error = cleanup.PublicDetails()
+		result.ErrorCode, result.Error, _ = errorsx.PublicDetails(err)
 	}
 	return result
 }
@@ -96,7 +96,7 @@ func (t threadToolsApp) updateOneThread(ctx context.Context, caller threadtools.
 // applyThreadOrganizePatch is the write itself, with the locks, the events
 // and the archive side effects the sidebar's own bindings carry. A patch
 // that archived the thread and whose cleanup failed returns the applied
-// result with an *archiveCleanupError, as ArchiveThread does.
+// result with a *threadCleanupError, as ArchiveThread does.
 //
 // Archiving releases the thread's provider session (app_thread_archive.go
 // says why), and that release is serialized by the ACTION lock, so a patch

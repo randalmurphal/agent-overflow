@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -613,7 +614,9 @@ func (a *App) UpdateThreadBranch(workspacePath, branch string) ([]store.Thread, 
 }
 
 // DeleteThread tears down the thread and any child threads. The recursive
-// cascade logic lives in app_thread_delete.go.
+// cascade logic lives in app_thread_delete.go. A delete that finished but
+// could not stop work the thread started elsewhere returns a
+// *threadCleanupError saying the thread was deleted.
 //
 // Every dropped row — the named thread and each of its children — is
 // broadcast as `deleted` so a second attached client drops the same rows and
@@ -630,7 +633,18 @@ func (a *App) DeleteThread(id string) error {
 	if err := a.threadApplication().CheckMutable(id); err != nil {
 		return err
 	}
-	return a.deleteThreadTreeLocked(id)
+	unstopped := threadCleanupError{outcome: "deleted"}
+	err := a.threadApplication().DeleteTree(id, false, a.threadDeletePorts(&unstopped))
+	if err == nil {
+		return unstopped.err()
+	}
+	// The delete itself failed, and its error is the answer. The work it
+	// could not stop goes to the log: a cause's own public prose must not
+	// stand in for the delete's failure.
+	if cause := unstopped.err(); cause != nil {
+		log.Printf("app: delete thread %s: %v", id, cause)
+	}
+	return err
 }
 
 // UpdateThreadContextWindow persists the context window size and

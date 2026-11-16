@@ -304,7 +304,7 @@ func (a *App) runRetentionThreadSweep(cutoffMs int64) (deleted, failed int) {
 // deleteThreadTreePacedLocked is deleteThreadTreeLocked with the store's
 // item-chunk pause wired to the sweep's yield.
 func (a *App) deleteThreadTreePacedLocked(threadID string, pause store.ChunkPause) error {
-	ports := a.threadDeletePorts()
+	ports := a.threadDeletePorts(nil)
 	ports.ChunkPause = pause
 	return a.threadApplication().DeleteTree(threadID, false, ports)
 }

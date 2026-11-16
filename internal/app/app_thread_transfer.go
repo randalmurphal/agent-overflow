@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"log"
 	"path/filepath"
 	"reflect"
 
@@ -101,14 +102,25 @@ func (a *App) beginThreadTransfer(ctx context.Context, threadID, operationID, de
 	// recorded whether or not the caller still waits.
 	if kind == "move" {
 		ctx = context.WithoutCancel(ctx)
-		if err := a.cancelThreadRemoteCommands(ctx, threadID); err != nil {
+		// Work whose stop could not be delivered does not hold the move: a
+		// command ends on its computer after the owner grace, and an ask's
+		// scratch thread is swept at that computer's next boot.
+		undelivered, err := a.cancelThreadRemoteCommands(ctx, threadID)
+		if err != nil {
 			return ThreadTransferIntent{}, err
+		}
+		if undelivered != nil {
+			log.Printf("transfer: move thread %s: %v", threadID, undelivered)
 		}
 		// The thread stops being answerable here, so open receipts against it
 		// settle and the requests it made are cancelled. The receipts stay on
 		// this computer and their callers collect them as usual.
-		if err := a.stopThreadRequestsForMovedThread(ctx, threadID, a.threadRequestDestinationName(destinationBackendID)); err != nil {
+		undelivered, err = a.stopThreadRequestsForMovedThread(ctx, threadID, a.threadRequestDestinationName(destinationBackendID))
+		if err != nil {
 			return ThreadTransferIntent{}, err
+		}
+		if undelivered != nil {
+			log.Printf("transfer: move thread %s: %v", threadID, undelivered)
 		}
 	}
 	unlock, err := a.threadLocks().LockCtx(ctx, threadID)

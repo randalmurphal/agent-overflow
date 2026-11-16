@@ -151,7 +151,7 @@ describe('archiveThreadAction', () => {
     await buildPane(thread, [], 'pane-archived');
     const message = 'The thread was archived, but its browser pages could not all be closed.';
     setBindingMock('ArchiveThread', async () => {
-      throw new TransportError('thread_archive_cleanup_failed', message);
+      throw new TransportError('thread_cleanup_failed', message);
     });
     const ctx = makeCtx({ id: 'thread-1' });
 
@@ -187,6 +187,26 @@ describe('deleteThreadAction', () => {
     resetBindingMocks();
     resetPanesForTest();
     clearThreadsForTest();
+  });
+
+  it('drops the thread and toasts work a delete that happened could not stop', async () => {
+    const thread = makeBaseThread({ id: 'thread-1' });
+    prependThread(thread);
+    await buildPane(thread, [], 'pane-deleted');
+    for (const toast of getToasts()) removeToast(toast.id);
+    const message = 'The thread was deleted, but a command it started on another computer could not be cancelled and may keep running there for up to an hour.';
+    setBindingMock('StopSession', async () => {});
+    setBindingMock('DeleteThread', async () => {
+      throw new TransportError('thread_cleanup_failed', message);
+    });
+    const ctx = makeCtx({ id: 'thread-1' });
+
+    await deleteThreadAction(ctx);
+
+    expect(getThreadById('thread-1')).toBeUndefined();
+    expect(getPane('pane-deleted')).toBeUndefined();
+    expect(ctx.reportError).not.toHaveBeenCalled();
+    expect(getToasts().filter((t) => t.type === 'error').map((t) => t.message)).toEqual([message]);
   });
 
   it('applies the rows its worktree removal moved before deleting the thread', async () => {
