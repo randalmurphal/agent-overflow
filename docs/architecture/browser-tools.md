@@ -157,6 +157,9 @@ behave as a desktop browser's:
   alert when it failed. Close shows on the active tab and on hover, always
   under compact; a middle click closes. A double-click on the strip's empty
   space maximizes or restores the pane, as a pane title does.
+- The address row's buttons never shrink and the address keeps at least
+  6rem. Below a 36rem row the page's size label, open file, show in folder
+  and devtools move into a More menu.
 - Focusing the address selects it; a second click places the caret. Enter
   (plain or with Shift) navigates; Escape puts the page's address back and
   moves focus to the page area. DOM focus only: the native page takes
