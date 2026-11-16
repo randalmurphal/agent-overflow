@@ -1543,8 +1543,9 @@ closes up their spacing so the row holds at a phone width.
   Their Stop withdraws the message and gives it back the way a queue drop
   does: a request's sender is told the user withdrew it, an answer is owed
   again and disarmed for `thread_status`, a worker's question goes back to
-  the user, a wake's row records it as not delivered, and a workflow run's
-  wake is dropped. A completion is dismissed on its watch with the reason
+  the user, the spawner's answer to a worker's async questions puts them
+  back to unanswered and the user's, as a hand-back does, a wake's row
+  records it as not delivered, and a workflow run's wake is dropped. A completion is dismissed on its watch with the reason
   instead of going back to it, which would queue it again on the next
   check; `remote_jobs` and `remote_status` still return the result.
 - **Stop** (`StopThreadAgentRow`) cancels the request as `thread_cancel`

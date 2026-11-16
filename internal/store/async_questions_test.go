@@ -258,6 +258,47 @@ func TestUnansweredAsyncQuestionsAreListedAndDismissedByThread(t *testing.T) {
 	}
 }
 
+// An app-written answer the provider did not take in goes back whole: its
+// queue row goes and its questions are unanswered, in one transaction. One
+// the provider took in, or returned before, reopens nothing.
+func TestAReturnedAsyncAnswerReopensItsQuestions(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThread(t, s, "q")
+	questionFixture(t, s, "q", "question:call")
+	answers := []AsyncQuestionAnswer{{ItemID: "question:call", Index: 0, Answer: "Two"}, {ItemID: "question:call", Index: 1, Answer: "Friday"}}
+	body, _, err := s.AsyncAnswerMessage("q", "agent-answer:t", answers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.QueueAsyncAnswers(FlushQueueItem{ID: "queue", ThreadID: "q", SendID: "agent-answer:t", Message: body}, answers, nil); err != nil {
+		t.Fatal(err)
+	}
+	if items, err := s.AsyncAnswerItems("q", "agent-answer:t"); err != nil || !slices.Equal(items, []string{"question:call"}) {
+		t.Fatalf("the answer's items = %q, %v", items, err)
+	}
+	if reopened, err := s.ReturnAsyncAnswer("q", "agent-answer:t"); err != nil || !reopened {
+		t.Fatalf("return = %v, %v; want its questions reopened", reopened, err)
+	}
+	if groups, err := s.UnansweredAsyncQuestions("q"); err != nil || len(groups) != 1 || len(groups[0].Questions) != 2 {
+		t.Fatalf("after the return = %+v, %v; want both questions unanswered", groups, err)
+	}
+	if queued, err := s.ListFlushQueueItems("q"); err != nil || len(queued) != 0 {
+		t.Fatalf("the returned answer is still queued: %+v, %v", queued, err)
+	}
+	if reopened, err := s.ReturnAsyncAnswer("q", "agent-answer:t"); err != nil || reopened {
+		t.Fatalf("a second return = %v, %v; want nothing reopened", reopened, err)
+	}
+	if err := s.QueueAsyncAnswers(FlushQueueItem{ID: "queue-2", ThreadID: "q", SendID: "agent-answer:u", Message: body}, answers, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.InsertItem(Item{ID: "echo", ThreadID: "q", ItemIndex: 1, Kind: "user_text", Role: "user", Meta: `{"sendId":"agent-answer:u","provider_item_id":"native"}`, CreatedAt: 4, UpdatedAt: 4}); err != nil {
+		t.Fatal(err)
+	}
+	if reopened, err := s.ReturnAsyncAnswer("q", "agent-answer:u"); err != nil || reopened {
+		t.Fatalf("returning a delivered answer = %v, %v; want nothing reopened", reopened, err)
+	}
+}
+
 // An item's unanswered questions are read together with its revision, on
 // the pending index, and an answer claimed against a revision the item
 // left is refused whole, its questions and its queue row untouched.

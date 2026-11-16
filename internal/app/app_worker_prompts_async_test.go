@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -18,6 +19,8 @@ import (
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/notify"
+	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadtools"
 	"agent-overflow/internal/triage"
@@ -424,6 +427,177 @@ func TestAWorkersOpenAsyncQuestionIsRoutedAgainAtBoot(t *testing.T) {
 	if row, _ := f.row(t); row.Worker != workerBlocked || row.BlockedRoutedTo != f.spawner.Title {
 		t.Fatalf("the worker's row after the boot = %+v", row)
 	}
+}
+
+// answered has the spawner answer the worker's one question with "One" and
+// returns the answer's send id, still queued in the worker.
+func (f asyncQuestionFixture) answered(t *testing.T) string {
+	t.Helper()
+	f.ask(t, "question:ask", `{"delivery":"async","questions":[{"title":"Which scope?"}]}`)
+	token, _ := f.wake(t, f.spawner.ID)
+	if ack, _, err := f.app.answerWorkerPrompt(t.Context(), threadtools.Caller{ThreadID: f.spawner.ID}, threadtools.ReplyCall{Token: token, Text: "One"}); err != nil || !ack.Accepted {
+		t.Fatalf("the spawner's reply = %+v, %v", ack, err)
+	}
+	f.drain(t)
+	sendID := workerAnswerSendIDRoot + token
+	if durable, _ := queuedSendIDs(t, f.app, f.worker.ID); !slices.Contains(durable, sendID) {
+		t.Fatalf("the worker's queue %q does not hold the answer", durable)
+	}
+	return sendID
+}
+
+// requireReturned fails unless the answer under sendID is gone from the
+// worker's queue and its composer, and its question is unanswered again.
+func (f asyncQuestionFixture) requireReturned(t *testing.T, sendID string) {
+	t.Helper()
+	if durable, memory := queuedSendIDs(t, f.app, f.worker.ID); slices.Contains(durable, sendID) || slices.Contains(memory, sendID) {
+		t.Fatalf("the worker's queue %q (in memory %q) still holds the answer", durable, memory)
+	}
+	if draft, _, err := f.app.store.GetThreadDraft(f.worker.ID); err != nil || strings.Contains(draft.Content, "Answer: One") {
+		t.Fatalf("the worker's composer = %q, %v; want the spawner's answer kept out of it", draft.Content, err)
+	}
+	questions, err := f.app.store.ListAsyncQuestions(f.worker.ID, "question:ask")
+	if err != nil || questions[0].State != "unanswered" || questions[0].SendID != "" {
+		t.Fatalf("the question = %+v, %v; want it unanswered", questions, err)
+	}
+}
+
+// requireRoutedAgain fails unless the returned question is put to the
+// spawner again under a token other than old's.
+func (f asyncQuestionFixture) requireRoutedAgain(t *testing.T, sendID string) {
+	t.Helper()
+	token, _ := f.wake(t, f.spawner.ID)
+	if workerAnswerSendIDRoot+token == sendID {
+		t.Fatal("the returned question went back to the spawner under its old token")
+	}
+	if row, _ := f.row(t); row.Worker != workerBlocked || row.BlockedRoutedTo != f.spawner.Title {
+		t.Fatalf("the worker's row = %+v, want blocked on its question, routed to the spawner", row)
+	}
+}
+
+// A person withdrawing the spawner's queued answer from the worker's
+// Incoming rows overrules the agent: the question is unanswered again and
+// the person's, as a hand-back leaves it, and the person can answer it.
+func TestAWithdrawnSpawnerAnswerPutsTheQuestionToThePerson(t *testing.T) {
+	t.Parallel()
+	f := newAsyncQuestionFixture(t, "async-withdrawn", store.PlacementOwned)
+	sendID := f.answered(t)
+	stop, err := f.app.StopThreadAgentIncoming(t.Context(), f.worker.ID, sendID)
+	if err != nil || stop.Outcome != threadAgentStopped {
+		t.Fatalf("withdraw = %+v, %v", stop, err)
+	}
+	f.drain(t)
+	f.requireReturned(t, sendID)
+	// The fixture's spawner answered without its wake being delivered, so
+	// that wake may still be queued; it is inert (workerPromptLive). Only a
+	// wake under another token would put the question to it again.
+	answeredToken := strings.TrimPrefix(sendID, workerAnswerSendIDRoot)
+	if tokens := workerPromptTokens(t, f.app, f.spawner.ID); slices.ContainsFunc(tokens, func(token string) bool { return token != answeredToken }) {
+		t.Fatalf("the spawner was given the question again: %q", tokens)
+	}
+	row, summary := f.row(t)
+	if row.Worker != workerBlocked || row.BlockedRoutedTo != "" || summary.NeedYou != 1 {
+		t.Fatalf("the worker's row = %+v, summary %+v; want it blocked on the person", row, summary)
+	}
+	if sends := f.questionSends("question:ask"); len(sends) == 0 || sends[len(sends)-1].Retract {
+		t.Fatalf("question notifications = %+v, want the last one raised for the person", sends)
+	}
+	if err := f.app.SubmitAsyncAnswers(t.Context(), f.worker.ID, "person", []store.AsyncQuestionAnswer{{ItemID: "question:ask", Index: 0, Answer: "Two"}}); err != nil {
+		t.Fatalf("the person's answer: %v", err)
+	}
+}
+
+// An answer still queued when the app quits is the question's again at the
+// boot, never the worker's composer text, and goes to the spawner again
+// under a new token.
+func TestASpawnerAnswerQueuedAtQuitIsReturnedAtBoot(t *testing.T) {
+	t.Parallel()
+	f := newAsyncQuestionFixture(t, "async-answer-boot", store.PlacementOwned)
+	sendID := f.answered(t)
+	f.app.workerPrompts.mu.Lock()
+	f.app.workerPrompts.byToken, f.app.workerPrompts.current = nil, nil
+	f.app.workerPrompts.mu.Unlock()
+	f.app.workerPrompts.async.mu.Lock()
+	f.app.workerPrompts.async.open = nil
+	f.app.workerPrompts.async.mu.Unlock()
+	f.app.triage = triage.NewRouter(f.app.store, f.app.emit)
+	f.app.configureTriageQueueCallbacks()
+	f.app.restoreDurableFlushQueueAtBoot()
+	f.drain(t)
+	f.requireReturned(t, sendID)
+	f.app.seedAsyncQuestionPrompts()
+	f.drain(t)
+	f.requireRoutedAgain(t, sendID)
+}
+
+// A session that ends with the spawner's answer still queued gives it back
+// to its question, which goes to the spawner again.
+func TestASessionDeathReturnsAQueuedSpawnerAnswer(t *testing.T) {
+	t.Parallel()
+	f := newAsyncQuestionFixture(t, "async-answer-died", store.PlacementOwned)
+	sendID := f.answered(t)
+	f.app.restoreUnconfirmedQueueOnSessionDeath(f.worker.ID)
+	f.drain(t)
+	f.requireReturned(t, sendID)
+	f.requireRoutedAgain(t, sendID)
+}
+
+// A wholesale drop of the worker's queue (here End Session's) keeps the
+// spawner's answer out of the drop and gives it back to its question.
+func TestAQueueDropReturnsASpawnerAnswer(t *testing.T) {
+	t.Parallel()
+	f := newAsyncQuestionFixture(t, "async-answer-dropped", store.PlacementOwned)
+	sendID := f.answered(t)
+	if err := f.app.StopSession(f.worker.ID); err != nil {
+		t.Fatal(err)
+	}
+	f.drain(t)
+	f.requireReturned(t, sendID)
+	f.requireRoutedAgain(t, sendID)
+}
+
+// workerRecordingSession gives the worker a live session whose stdin is
+// recorded and which never echoes, joining what is queued into one message
+// as Claude does, so what is written to it stays unconfirmed.
+func (f asyncQuestionFixture) workerRecordingSession(t *testing.T) string {
+	t.Helper()
+	stdinLog := filepath.Join(t.TempDir(), "stdin.jsonl")
+	sess, err := claude.NewSession(context.Background(), f.worker.ID,
+		claude.Config{Binary: writeClaudeStdinRecorderBinary(t, stdinLog), WorkDir: f.worker.WorkspacePath},
+		func(provider.ProviderEvent) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sess.Close() })
+	f.app.sessionManager().put(f.worker.ID, session{Provider: string(provider.Claude), Token: "tok", Claude: sess, Liveness: newSessionLiveness(time.Now())})
+	return stdinLog
+}
+
+// The spawner's answer joined with the person's text and never confirmed:
+// the session's end splits them, the person's text alone goes to the
+// composer, and the answer goes back to its question, which goes to the
+// spawner again.
+func TestASessionDeathSplitsASpawnerAnswerFromThePersonsText(t *testing.T) {
+	t.Parallel()
+	f := newAsyncQuestionFixture(t, "async-answer-joined", store.PlacementOwned)
+	sendID := f.answered(t)
+	if _, err := f.app.RegisterQueueItem(t.Context(), f.worker.ID, "my own words", SendMessageOptions{SendID: "person-send"}); err != nil {
+		t.Fatal(err)
+	}
+	stdinLog := f.workerRecordingSession(t)
+	f.app.triage.FlushQueuedItems(f.worker.ID)
+	if envelopes := waitForRecordedUserEnvelopes(t, stdinLog, 1); len(envelopes) != 1 {
+		t.Fatalf("the session was written %d messages, want one joined", len(envelopes))
+	}
+	f.app.flushDispatch.wg.Wait()
+	if sends := f.app.triage.UnconfirmedFlushSends(f.worker.ID); len(sends) != 1 || !unconfirmedMembersOf(sends[0]).joined {
+		t.Fatalf("unconfirmed sends = %+v, want one joined message", sends)
+	}
+	f.app.restoreUnconfirmedQueueOnSessionDeath(f.worker.ID)
+	f.drain(t)
+	requireDraft(t, f.app, f.worker.ID, "my own words")
+	f.requireReturned(t, sendID)
+	f.requireRoutedAgain(t, sendID)
 }
 
 // holdPrompts holds the prompts' serial queue until the returned release

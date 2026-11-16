@@ -1065,19 +1065,22 @@ func (m ownedMessage) withdrawal() store.WakeWithdrawal {
 }
 
 // ownedSendID reports an answer's, a reminder's or a remote completion's
-// send id.
+// send id, or an agent's answer to its worker's async questions, whose
+// owner is those questions (returnWorkerAnswer).
 func ownedSendID(sendID string) bool {
 	_, _, isAnswer := threadWakeFromSendID(sendID)
 	_, _, isCompletion := remoteCompletionFromSendID(sendID)
-	return isAnswer || isCompletion
+	return isAnswer || isCompletion || isWorkerAnswer(sendID)
 }
 
 // giveBackToOwners gives answers, reminders and remote completions that
 // never reached the agent back to their owners. A request is owed its answer
 // again, disarmed, so thread_status returns it and nothing delivers it
 // unasked; a watch is pending again, and the watcher delivers its completion
-// as it does one that finishes later, starting the session for it. None of
-// them goes to the composer: it is not the person's to send.
+// as it does one that finishes later, starting the session for it; a
+// spawner's answer to its worker's async questions puts them back to
+// unanswered, routed again (returnWorkerAnswer). None of them goes to the
+// composer: it is not the person's to send.
 //
 // A completion a session end gave back (ended) is delivered again on the
 // thread request wake retry's ladder rather than at once, so a session that
@@ -1098,6 +1101,12 @@ func (a *App) giveBackToOwners(threadID string, messages []ownedMessage) {
 	returned := false
 	a.retryOwnedEchoes(threadID)
 	for _, m := range messages {
+		if isWorkerAnswer(m.sendID) {
+			// Its questions say whether the provider took it in: an echo
+			// marks them delivered, and nothing returns them then.
+			logThreadRequestSweep("return "+m.sendID+" to its questions", a.returnWorkerAnswer(threadID, m.sendID, false))
+			continue
+		}
 		if a.echoed(m.sendID) {
 			// The provider took it in; only its confirmation is unwritten.
 			continue

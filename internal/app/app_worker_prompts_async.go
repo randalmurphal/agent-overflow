@@ -59,6 +59,10 @@ import (
 type asyncQuestionRoutes struct {
 	mu   sync.Mutex
 	open map[workerPromptKey]asyncQuestionPrompt
+	// toPerson names the items a person took the spawner's answer back from
+	// (returnWorkerAnswer): their next occurrence is the person's, as a
+	// hand-back is.
+	toPerson map[workerPromptKey]bool
 }
 
 // asyncQuestionPrompt is one item's unanswered questions, as one prompt:
@@ -133,8 +137,13 @@ func (a *App) reconcileAsyncQuestions(threadID string) {
 			routes.open = make(map[workerPromptKey]asyncQuestionPrompt)
 		}
 		for _, prompt := range open {
+			key := workerPromptKey{workerID: threadID, requestID: prompt.request.RequestID}
 			prompt.route = route
-			routes.open[workerPromptKey{workerID: threadID, requestID: prompt.request.RequestID}] = prompt
+			if routes.toPerson[key] {
+				prompt.route = nil
+				delete(routes.toPerson, key)
+			}
+			routes.open[key] = prompt
 			opened = append(opened, prompt)
 		}
 		routes.mu.Unlock()
@@ -335,6 +344,71 @@ func (a *App) dismissRestingAsyncQuestions(threadID string) error {
 		a.emit(eventchan.ProviderAsyncQuestionsChanged, map[string]string{"threadId": threadID})
 	}
 	return nil
+}
+
+// isWorkerAnswer reports the send id of an agent's answer to its worker's
+// async questions.
+func isWorkerAnswer(sendID string) bool {
+	return strings.HasPrefix(sendID, workerAnswerSendIDRoot)
+}
+
+// returnWorkerAnswer takes back the spawner's answer to a worker's async
+// questions, which never reached the worker: in one store transaction its
+// queue row goes and the questions it answered are unanswered again
+// (store.ReturnAsyncAnswer), and their change routes them again under a
+// fresh token. It never goes to the worker's composer: it is not the
+// person's to send. Every exit an undelivered answer takes comes here: a
+// person's withdrawal from the worker's Incoming rows, and, through
+// giveBackToOwners, a session that ended or a provider that refused it, a
+// failed Codex resend, a wholesale drop (End Session, a Stop, an archive, a
+// revert, a cleared queue) and the boot.
+//
+// Returned by the app or a failure, the questions go where the worker's
+// questions route now, the spawner when it can take them. Withdrawn by a
+// person (byPerson), who overruled the agent, they go to the person, as a
+// hand-back does: the items are marked before the write, so no reconcile
+// opens them for the spawner in between.
+func (a *App) returnWorkerAnswer(threadID, sendID string, byPerson bool) error {
+	var marked []workerPromptKey
+	if byPerson {
+		items, err := a.store.AsyncAnswerItems(threadID, sendID)
+		if err != nil {
+			return err
+		}
+		marked = a.workerPrompts.async.markToPerson(threadID, items)
+	}
+	reopened, err := a.store.ReturnAsyncAnswer(threadID, sendID)
+	if err != nil {
+		a.workerPrompts.async.unmarkToPerson(marked)
+		return err
+	}
+	if reopened {
+		a.emit(eventchan.ProviderAsyncQuestionsChanged, map[string]string{"threadId": threadID})
+	}
+	return nil
+}
+
+func (r *asyncQuestionRoutes) markToPerson(threadID string, items []string) []workerPromptKey {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.toPerson == nil {
+		r.toPerson = make(map[workerPromptKey]bool)
+	}
+	keys := make([]workerPromptKey, 0, len(items))
+	for _, item := range items {
+		key := workerPromptKey{workerID: threadID, requestID: item}
+		r.toPerson[key] = true
+		keys = append(keys, key)
+	}
+	return keys
+}
+
+func (r *asyncQuestionRoutes) unmarkToPerson(keys []workerPromptKey) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, key := range keys {
+		delete(r.toPerson, key)
+	}
 }
 
 // answerAsyncWorkerPrompt writes the spawner's answer to a worker's async

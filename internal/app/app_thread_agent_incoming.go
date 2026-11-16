@@ -21,6 +21,9 @@ import (
 //     (store.WithdrawThreadWake), as an archive leaves it, so thread_status
 //     still returns it;
 //   - a worker's question: back to the user in the worker;
+//   - the spawner's answer to this worker's async questions: they are
+//     unanswered again and the person's, as a hand-back leaves them
+//     (returnWorkerAnswer);
 //   - a loop or watch wake: recorded on its row as not delivered;
 //   - an outside `thread send`: a notice in the thread;
 //   - a remote job's completion: dismissed on its watch with the reason
@@ -75,6 +78,9 @@ func (a *App) withdrawIncomingAgentMessage(ctx context.Context, threadID, sendID
 			_, err := a.store.WithdrawThreadWake(token, late, row.ID, store.WithdrawQueued)
 			return err
 		}
+	}
+	if isWorkerAnswer(sendID) {
+		deleteRow = func(row store.FlushQueueItem) error { return a.returnWorkerAnswer(threadID, row.SendID, true) }
 	}
 	computerID, requestID, isCompletion := remoteCompletionFromSendID(sendID)
 	if isCompletion {
