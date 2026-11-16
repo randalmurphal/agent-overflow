@@ -255,10 +255,11 @@
 
   <!-- The host rect. The native browser view is positioned exactly over this
        element by the platform host; what renders HERE is only visible when
-       no view is presented (no engine, or the page is hidden). -->
+       no view is presented (no engine, or the page is hidden). It takes DOM
+       focus only as a stand-in for the page, so it draws no focus ring. -->
   <div
     bind:this={surface}
-    class="relative min-h-0 flex-1 overflow-hidden bg-surface-0"
+    class="relative min-h-0 flex-1 overflow-hidden bg-surface-0 outline-none"
     data-testid="browser-pane-host-rect"
     aria-label="Browser page"
     tabindex="-1"

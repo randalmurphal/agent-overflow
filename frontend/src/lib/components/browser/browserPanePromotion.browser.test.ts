@@ -7,7 +7,7 @@
 // (internal/browser `paneCanShow`).
 
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { page } from 'vitest/browser';
+import { page, userEvent } from 'vitest/browser';
 import { mount, unmount } from 'svelte';
 import '../../../app.css';
 
@@ -170,4 +170,17 @@ it('a browser pane under another pane\'s promoted layer reports itself hidden un
   togglePanePromotion('main');
   await waitFor(settledDemoted, 'the demote landed');
   await waitFor(() => reports.at(-1)?.visible === true, 'the browser view shown again');
+});
+
+// The host rect takes DOM focus as a stand-in for the page when a key leaves
+// the address. It is not a control, and a ring on it would frame the native
+// view that sits exactly over it.
+it('draws no focus ring on the page area when a key moves focus there', async () => {
+  const address = host.querySelector<HTMLInputElement>('input[aria-label="Address"]');
+  if (!address) throw new Error('no address field');
+  address.focus();
+  await userEvent.keyboard('{Escape}');
+  await waitFor(() => document.activeElement === hostRect(), 'focus on the page area');
+  expect(hostRect().matches(':focus-visible')).toBe(true);
+  expect(getComputedStyle(hostRect()).outlineStyle).toBe('none');
 });
